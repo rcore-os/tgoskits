@@ -182,7 +182,7 @@ cargo axvisor defconfig qemu-aarch64
 cargo axvisor qemu
 ```
 
-axbuild 需要 Node ≥ 24 与 npm ≥ 11.12.1（与 `package.json` 的 `engines` 一致）。需要手工生成产物时（例如调试前端本身），仍然可以在本目录执行 `npm ci && npm run build`，但产物只用于本地检查，不再入库、也不再被 Cargo 读取。
+axbuild 需要 Node ≥ 24 与 npm ≥ 11（与 `package.json` 的 `engines` 一致）。需要手工生成产物时（例如调试前端本身），仍然可以在本目录执行 `npm ci && npm run build`，但产物只用于本地检查，不再入库、也不再被 Cargo 读取。
 
 `node_modules/` 与 `dist/` 均不入库。产物带内容哈希，内核以 `immutable` 缓存策略与精确的内容类型提供它们，因此同一次构建内文件不会被替换，路径也不会被复用。
 

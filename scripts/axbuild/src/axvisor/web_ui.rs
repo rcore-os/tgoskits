@@ -19,9 +19,11 @@ use walkdir::WalkDir;
 /// Cargo feature that turns on the dashboard build and the serving routes.
 pub(super) const WEB_UI_FEATURE: &str = "web-ui";
 
-/// Minimum tool versions from `web-ui/package.json` `engines`.
+/// Minimum tool majors from `web-ui/package.json` `engines`. The CI bootstrap
+/// provisions Node 24.11.1, whose bundled npm is 11.x but older than the
+/// patch engines mentions; major checks are what the build actually needs.
 const MIN_NODE_MAJOR: u32 = 24;
-const MIN_NPM_VERSION: (u32, u32) = (11, 12);
+const MIN_NPM_MAJOR: u32 = 11;
 
 /// Directories that belong to a previous build only and must never be copied
 /// from the source tree into the staging area.
@@ -92,25 +94,22 @@ fn stage_sources(source: &Path, staging: &Path) -> anyhow::Result<()> {
 /// Fails with an actionable message when node/npm cannot serve the project's
 /// `engines` contract.
 fn check_toolchain() -> anyhow::Result<()> {
-    let node = tool_version("node")?;
+    let node = tool_major("node")?;
     ensure!(
         node.map(|major| major >= MIN_NODE_MAJOR).unwrap_or(false),
         "node >= {MIN_NODE_MAJOR} is required to build the `web-ui` dashboard (see \
          os/axvisor/web-ui/package.json); install it or drop the feature"
     );
-    let npm = full_tool_version("npm")?;
+    let npm = tool_major("npm")?;
     ensure!(
-        npm.map(|(major, minor, _)| (major, minor) >= MIN_NPM_VERSION)
-            .unwrap_or(false),
-        "npm >= {}.{} is required to build the `web-ui` dashboard (see \
-         os/axvisor/web-ui/package.json); install it or drop the feature",
-        MIN_NPM_VERSION.0,
-        MIN_NPM_VERSION.1
+        npm.map(|major| major >= MIN_NPM_MAJOR).unwrap_or(false),
+        "npm >= {MIN_NPM_MAJOR} is required to build the `web-ui` dashboard (see \
+         os/axvisor/web-ui/package.json); install it or drop the feature"
     );
     Ok(())
 }
 
-fn tool_version(tool: &str) -> anyhow::Result<Option<u32>> {
+fn tool_major(tool: &str) -> anyhow::Result<Option<u32>> {
     Ok(full_tool_version(tool)?.map(|(major, ..)| major))
 }
 
@@ -124,11 +123,13 @@ fn full_tool_version(tool: &str) -> anyhow::Result<Option<(u32, u32, u32)>> {
         .trim_start_matches(['v', 'V'])
         .split('.')
         .map(|part| part.trim().parse::<u32>());
-    let version = match (parts.next(), parts.next(), parts.next()) {
-        (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch))) => (major, minor, patch),
-        _ => bail!("unrecognized `{tool} --version` output: {version:?}"),
+    let Some(Some(major)) = parts.next().map(Result::ok) else {
+        bail!("unrecognized `{tool} --version` output: {version:?}")
     };
-    Ok(Some(version))
+    let part = |part: Option<Result<u32, _>>| part.and_then(Result::ok).unwrap_or(0);
+    let minor = part(parts.next());
+    let patch = part(parts.next());
+    Ok(Some((major, minor, patch)))
 }
 
 /// Runs `npm ci` only when the lockfile changed since the last install.
