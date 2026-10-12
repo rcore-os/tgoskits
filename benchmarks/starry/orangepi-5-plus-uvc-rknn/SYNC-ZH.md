@@ -341,7 +341,19 @@ cargo xtask starry app board -t benchmark/orangepi-5-plus-uvc-rknn \
 UVC_RKNN_VALIDATE_PASS images=3
 UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=... infer_fps=... bytes=... throughput_mib_s=... dropped_latest=... decode_errors=... inference_errors=... decode_ms_avg=... decode_ms_p50=... decode_ms_p95=... infer_ms_avg=... infer_ms_p50=... infer_ms_p95=... detections=... vm_size_kb=... vm_rss_kb=... vm_hwm_kb=... mem_total_kb=... mem_free_kb=... mem_available_kb=...
 UVC_RKNN_BENCH_DONE
+UVC_RKNN_BENCH_PASSED
 ```
+
+工作负载只写在 `init.sh` 里，板端配置通过 `UVC_RKNN_MODE` 选择一种模式：
+`bench` 先跑固定图片验证、再跑 60 秒摄像头 benchmark；`smoke` 跑有界摄像头
+短测；`stream` 只输出 `UVC_RKNN_STREAM_BEGIN` 后进入无限流。运行器把
+`shell_cmd` 拼在 `init.sh` 前面，并且 `success_regex` 是“任一匹配即结束板端
+会话”的语义，所以板端配置里再启动一次同一程序会重复工作负载，进程内的
+`UVC_RKNN_VALIDATE_PASS`、`UVC_RKNN_BENCH_RESULT`、`UVC_RKNN_BENCH_DONE` 也
+都不能当作成功条件：一旦提前匹配，运行器会在 60 秒 benchmark 结束前终止会话。
+只有 `UVC_RKNN_BENCH_PASSED` 是终止判定，它要求固定三张图片的
+`UVC_RKNN_VALIDATE_PASS images=3` 和 60 秒 benchmark 的零错误退出都已成立；
+任一失败路径输出 `UVC_RKNN_BENCH_FAILED`，由板端 `fail_regex` 直接判失败。
 
 需要拆分 RKNN 路径耗时时，可以打开 profile 模式：
 

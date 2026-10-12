@@ -219,6 +219,28 @@ UVC_RKNN_BENCH_RESULT duration_sec=... captured=... capture_fps=... inferences=.
 UVC_RKNN_BENCH_DONE
 ```
 
+`init.sh` is the only place that starts a workload, and every board config
+selects one workload through `UVC_RKNN_MODE`:
+
+- `bench` runs the fixed-image validation followed by the 60-second benchmark
+  and then prints the terminal `UVC_RKNN_BENCH_PASSED` verdict;
+- `smoke` runs the bounded stream smoke test and lets the program print
+  `UVC_RKNN_STREAM_DONE`;
+- `stream` prints `UVC_RKNN_STREAM_BEGIN` and hands the session to the
+  unbounded stream.
+
+The benchmark verdict is strict: `UVC_RKNN_BENCH_PASSED` appears only after
+`UVC_RKNN_VALIDATE_PASS images=3` was observed for the fixed three-image set
+and after `rknn_yolov8_bench` finished the 60-second run with a zero exit
+status, which the program itself only returns with at least one inference and
+zero inference errors. Any failing step prints `UVC_RKNN_BENCH_FAILED` and no
+pass marker. `UVC_RKNN_BENCH_RESULT` and `UVC_RKNN_BENCH_DONE` stay in the log
+as benchmark evidence, but they are not board-config success conditions:
+`success_regex` is a disjunction that ends the board session on the first
+match, so an earlier marker would stop the run before the benchmark finished.
+Because `init.sh` owns the workload, a board config must not start the same
+binary again in `shell_cmd`.
+
 To split the RKNN path into preprocessing, runtime, output, and postprocess
 costs, enable profile mode:
 
@@ -236,8 +258,8 @@ UVC_RKNN_BENCH_PROFILE_RESULT profile_samples=... perf_run_query_errors=... tota
 Use `RKNN_BENCH_PROFILE_FRAMES=1` or `--profile-frames` for one
 `RKNN_PROFILE` line per inference.
 
-The same bounded smoke-test command is also stored in
-`board-orangepi-5-plus.toml`, so this direct board command runs the default
+The same bounded smoke test is also selected by `board-orangepi-5-plus.toml`
+through `UVC_RKNN_MODE=smoke`, so this direct board command runs the default
 example as well:
 
 ```bash

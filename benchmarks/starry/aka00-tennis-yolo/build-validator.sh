@@ -79,4 +79,14 @@ echo STARRY_AKA00_TENNIS_DETECT_OK
 RUN_SH
 chmod 0755 "$install_dir/run.sh"
 
+# One self-contained archive is what the board session uploads: the validator
+# binary, the committed model and validation assets, and the TPU runtime
+# libraries always travel together, so a board run cannot mix the current
+# validator with assets of an older deployment. The archive also stays usable
+# for the manual Linux deployment described in README.md.
+deploy_archive="$case_dir/install/sg2002_riscv64_musl/akars_tennis-deploy.tar"
+rm -f "$deploy_archive"
+tar -C "$install_dir" -cf "$deploy_archive" .
+
 echo "installed: $install_dir"
+echo "deploy archive: $deploy_archive"
