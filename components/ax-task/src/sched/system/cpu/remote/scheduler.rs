@@ -12,6 +12,24 @@ const REQUEST_PARK_PREEMPT_LAZY_DEFERRED: u64 = 1 << 5;
 const DEFERRED_SCHEDULER_WORK_OFFLINE_INVARIANT: u32 = 0x4453_574f;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchedulerWorkRearm {
+    Local,
+    Doorbell,
+}
+
+fn scheduler_work_rearm(
+    owner: CpuId,
+    current: RuntimeCpuId,
+    local_published: bool,
+) -> SchedulerWorkRearm {
+    if current.as_u32() == owner.as_u32() && local_published {
+        SchedulerWorkRearm::Local
+    } else {
+        SchedulerWorkRearm::Doorbell
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SchedulerRequestDelivery {
     /// The owner is in the idle polling protocol and will observe the sticky
     /// work bit before committing to sleep.
@@ -412,12 +430,13 @@ impl CpuRemote {
             .is_none_or(|publication| self.deliver_scheduler_work_owned(publication))
     }
 
-    /// Rearms the physical doorbell after an owner-side bounded drain.
+    /// Rearms scheduler work after an owner-side bounded drain.
     ///
-    /// Unlike producer delivery, this must not suppress a local notification:
-    /// the current scheduler safe point has already consumed its delivery
-    /// edge and is about to return. A remaining batch therefore needs a fresh
-    /// interrupt even when the owner itself is the current CPU.
+    /// The owner-side safe point has already consumed its delivery edge and is
+    /// about to return. A remaining batch therefore needs a fresh local
+    /// scheduler publication when this is the current CPU; only a genuinely
+    /// remote owner needs another physical IPI. Reusing the local publication
+    /// path keeps single-CPU runtimes independent of an IPI backend.
     pub(crate) fn defer_scheduler_work(&self) {
         let Some(_publication) = self.begin_owner_delivery() else {
             task_runtime::fatal_invariant(
@@ -429,7 +448,17 @@ impl CpuRemote {
         self.scheduler_request
             .request
             .fetch_or(REQUEST_OWNER_WORK, Ordering::Release);
-        self.ring_scheduler_doorbell();
+        let current = unsafe { task_runtime::current_cpu_id() };
+        let local_published = if current.as_u32() == self.owner.as_u32() {
+            task_runtime::publish_local_scheduler_work()
+        } else {
+            false
+        };
+        if scheduler_work_rearm(self.owner, current, local_published)
+            == SchedulerWorkRearm::Doorbell
+        {
+            self.ring_scheduler_doorbell();
+        }
     }
 
     pub(super) fn deliver_scheduler_work_owned(
@@ -570,6 +599,26 @@ impl CpuRemote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_rearm_uses_local_scheduler_publication() {
+        assert_eq!(
+            scheduler_work_rearm(CpuId::new(1), RuntimeCpuId::new(1), true),
+            SchedulerWorkRearm::Local,
+        );
+    }
+
+    #[test]
+    fn remote_or_unpublished_rearm_requires_a_doorbell() {
+        assert_eq!(
+            scheduler_work_rearm(CpuId::new(1), RuntimeCpuId::new(1), false),
+            SchedulerWorkRearm::Doorbell,
+        );
+        assert_eq!(
+            scheduler_work_rearm(CpuId::new(1), RuntimeCpuId::new(0), true),
+            SchedulerWorkRearm::Doorbell,
+        );
+    }
 
     #[test]
     fn ordinary_request_folds_a_later_lazy_request() {
