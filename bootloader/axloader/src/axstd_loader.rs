@@ -871,6 +871,49 @@ struct LoadedPe {
 }
 
 impl LoadedPe {
+    /// Returns the PE32+ ImageBase field offset after checking its fixed header.
+    fn image_base_offset(image: &[u8]) -> Result<usize, &'static str> {
+        if image.len() < 0x40 || &image[..2] != b"MZ" {
+            return Err("invalid EFI image signature");
+        }
+        let pe_offset = read_u32(image, 0x3c)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or("invalid EFI PE offset")?;
+        let optional = pe_offset.checked_add(24).ok_or("EFI PE offset overflows")?;
+        let optional_size = usize::from(
+            read_u16(
+                image,
+                pe_offset.checked_add(20).ok_or("EFI PE offset overflows")?,
+            )
+            .ok_or("missing EFI PE optional header size")?,
+        );
+        if pe_offset
+            .checked_add(24)
+            .and_then(|offset| offset.checked_add(optional_size))
+            .is_none_or(|end| end > image.len())
+            || read_u32(image, pe_offset) != Some(u32::from_le_bytes(*b"PE\0\0"))
+            || read_u16(image, optional) != Some(PE32_PLUS_MAGIC)
+            || optional_size < PE32_PLUS_OPTIONAL_HEADER_SIZE
+        {
+            return Err("unsupported EFI PE optional header");
+        }
+        optional
+            .checked_add(24)
+            .ok_or("EFI PE image base offset overflows")
+    }
+
+    /// Canonicalizes a firmware-loaded image before it becomes an OTA slot.
+    ///
+    /// Some UEFI PE loaders rewrite the in-memory ImageBase field with the
+    /// address selected for the image. The on-disk someboot image deliberately
+    /// uses ImageBase = 0, so clear only this firmware-owned header field while
+    /// preserving the already loaded sections and relocation table.
+    fn canonicalize_loaded_image(image: &mut [u8]) -> Result<(), &'static str> {
+        let image_base = Self::image_base_offset(image)?;
+        image[image_base..image_base + 8].fill(0);
+        Ok(())
+    }
+
     fn validate(image: &[u8]) -> Result<(), &'static str> {
         let (headers, sections, image_size, entry) = pe_layout(image)?;
         if headers > image_size || entry < headers || entry >= image_size {
@@ -1411,7 +1454,9 @@ impl LaOta {
     }
 
     fn persist_slot_image(slot: Slot, image: &[u8]) -> Result<(), &'static str> {
-        LoadedPe::validate(image).map_err(|_| "invalid initial LoongArch EFI image")?;
+        // Preserve the parser's concrete reason so a bad firmware image or an
+        // incorrect physical alias is diagnosable before it is persisted.
+        LoadedPe::validate(image)?;
         let path = Self::slot_path(slot);
         let temporary = Self::slot_temporary_path(slot);
         let mut file = OpenOptions::new()
@@ -1666,7 +1711,9 @@ fn current_loader_image() -> Option<Vec<u8>> {
     let pointer = someboot::mem::phys_to_virt(start);
     // SAFETY: someboot records the firmware-owned image range before handing
     // control to axstd, and the allocation remains reserved for this loader.
-    Some(unsafe { core::slice::from_raw_parts(pointer.cast_const(), len) }.to_vec())
+    let mut image = unsafe { core::slice::from_raw_parts(pointer.cast_const(), len) }.to_vec();
+    LoadedPe::canonicalize_loaded_image(&mut image).ok()?;
+    Some(image)
 }
 
 impl OtaStorage for LaOta {
