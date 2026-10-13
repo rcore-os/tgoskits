@@ -204,11 +204,17 @@ initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出�
 LoongArch 的 CI 使用 `qemu-loongarch64-http.toml` 启动持久 FAT 卷，并由
 `scripts/loong-http-smoke.py` 通过 `hostfwd` 执行真实控制面请求。该 smoke 覆盖
 状态读取、相同 manifest 重试、direct serial continue、未绑定启动拒绝、坏 ELF
-拒绝、坏 OTA 镜像拒绝、有效 PE 槽位写入、重启后的 trial 和 confirm；因此不会把
-单独的 `network_ready` 日志误写成 HTTP 或 OTA 通过。它仍未执行有效 Loong ELF 的
-`efi_pe_entry` 交接、cmdline/initramfs 目标验收或失败 trial 的跨重启 rollback；这些
-路径保持为后续独立 QEMU 场景。`qemu-loongarch64.toml` 仍可用于只观察
-`network_ready` 与 `loader_server` 启动标记。
+拒绝、坏 OTA 镜像拒绝、有效 PE 槽位写入、重启后的 trial 和 confirm；随后构建
+独立的 `arceos-helloworld` EFI ELF，将 `test-suit/host-initramfs` 作为 HTTP 上传的
+目标归档，并以 `elf_loaded`、`ready_to_handoff`、`HOST_CMDLINE:
+axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!` 作为正向交接证据。
+因此不会把单独的 `network_ready` 日志误写成 HTTP、OTA 或目标启动通过。LoongArch
+失败 trial 的跨重启 rollback 仍留给后续独立 QEMU 场景。`qemu-loongarch64.toml`
+仍可用于只观察 `network_ready` 与 `loader_server` 启动标记。
+
+独立目标 ELF 使用 `bootloader/axloader/build-loongarch64-helloworld-efi.toml` 构建，
+宿主归档由 `cargo xtask image pack-initramfs test-suit/host-initramfs`
+生成；两者都通过 HTTP 启动事务上传，不能使用 axloader 自身 ELF 作为目标镜像。
 
 ## x86_64 OTA 布局与状态
 

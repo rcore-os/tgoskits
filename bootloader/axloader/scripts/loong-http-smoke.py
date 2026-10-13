@@ -70,6 +70,8 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=3999)
     parser.add_argument("--image", type=Path, required=True)
+    parser.add_argument("--elf-image", type=Path, required=True)
+    parser.add_argument("--initramfs", type=Path, required=True)
     args = parser.parse_args()
 
     # The first response includes the cold ArceOS build on self-hosted CI
@@ -200,7 +202,89 @@ def main():
         lambda value: not value.get("ota", {}).get("trial")
         and value.get("ota", {}).get("pending_update_id") is None,
     )
-    print("loong axloader HTTP/OTA smoke: status, idempotent boot, serial gate, ELF rejection, stage, reset, confirm passed")
+
+    # The target must be an independent ArceOS EFI application. Reusing the
+    # loader ELF would make its inherited image range fail the loader's PE
+    # self-image check before the payload handoff can be observed.
+    elf_image_path = args.elf_image
+    initramfs_path = args.initramfs
+    elf_image = elf_image_path.read_bytes()
+    initramfs = initramfs_path.read_bytes()
+    positive_epoch = wait_status(
+        args.host,
+        args.port,
+        lambda value: not value.get("ota", {}).get("trial"),
+    )["boot_epoch"]
+    positive_manifest = {
+        "boot_id": "loong-valid-elf",
+        "arch": "loongarch64",
+        "image_format": "elf64",
+        "kernel": {
+            "size": len(elf_image),
+            "sha256": hashlib.sha256(elf_image).hexdigest(),
+        },
+        "initramfs": {
+            "size": len(initramfs),
+            "sha256": hashlib.sha256(initramfs).hexdigest(),
+        },
+        "cmdline": "axloader-positive=1",
+        "entry_symbol": "efi_pe_entry",
+    }
+    positive_headers = {
+        "X-Boot-Epoch": positive_epoch,
+        "Content-Type": "application/json",
+    }
+    response = request(
+        args.host,
+        args.port,
+        "POST",
+        "/api/v1/boot/jobs",
+        json.dumps(positive_manifest, separators=(",", ":")).encode(),
+        positive_headers,
+    )
+    expect(response[0], 201, "valid Loong ELF manifest", response[1])
+    for kind, image, digest in (
+        ("kernel", elf_image, positive_manifest["kernel"]["sha256"]),
+        ("initramfs", initramfs, positive_manifest["initramfs"]["sha256"]),
+    ):
+        response = request(
+            args.host,
+            args.port,
+            "PUT",
+            f"/api/v1/boot/jobs/loong-valid-elf/{kind}",
+            image,
+            {"X-Boot-Epoch": positive_epoch, "X-Image-Sha256": digest},
+        )
+        expect(response[0], 200, f"valid Loong ELF {kind} upload", response[1])
+    binding = {
+        "serial_id": positive_epoch,
+        "binding_id": "0" * 32,
+        "mode": "direct",
+    }
+    response = request(
+        args.host,
+        args.port,
+        "POST",
+        "/api/v1/serial/continue",
+        json.dumps(binding, separators=(",", ":")).encode(),
+        positive_headers,
+    )
+    expect(response[0], 200, "valid Loong ELF direct serial continue", response[1])
+    response = request(
+        args.host,
+        args.port,
+        "POST",
+        "/api/v1/boot/jobs/loong-valid-elf/start",
+        headers={
+            "X-Boot-Epoch": positive_epoch,
+            "X-Serial-Binding": binding["binding_id"],
+        },
+    )
+    expect(response[0], 202, "valid Loong ELF handoff accepted", response[1])
+    print(
+        "loong axloader HTTP/OTA/ELF smoke: status, idempotent boot, serial gate, "
+        "ELF rejection, valid ELF handoff, stage, reset, confirm passed"
+    )
 
 
 if __name__ == "__main__":
