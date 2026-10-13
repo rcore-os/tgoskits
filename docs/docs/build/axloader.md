@@ -5,7 +5,7 @@ sidebar_label: "Axloader"
 
 # Axloader
 
-`cargo xtask axloader` 负责构建 x86_64 UEFI 装载器，并在本地 OVMF/QEMU 中验证设备 HTTP 启动、可选 cmdline/initramfs 和 A/B OTA。axloader 启动后是 TCP4 HTTP 服务端；直连工具与 ostool-server 都调用同一组设备接口。串口在启动前输出本次 `serial_id` 身份帧和诊断，绑定完成或交接后才交给目标系统，测试不会向串口注入控制命令。
+`cargo xtask axloader` 负责构建 x86_64 UEFI 装载器；LoongArch EFI 前端通过 `cargo xtask arceos` 使用 axstd 构建。两条路径都提供设备 HTTP 启动、可选 cmdline/initramfs 和 A/B OTA。axloader 启动后是 TCP4 HTTP 服务端；直连工具与 ostool-server 都调用同一组设备接口。x86 固件路径提供串口身份帧，LoongArch axstd 路径明确报告 UART binding 不可用并要求显式 `direct` continue。
 
 ## 1. 构建入口
 
@@ -39,6 +39,39 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 | `axloader.efi` | `EFI/AXLOADER/A.EFI` 或 `B.EFI` | 广播设备、提供 HTTP 启动和 OTA 接口、交接目标内核 |
 
 `axloader::ota::State` 保存稳定槽、待试槽、摘要、升级 ID、来源和结果；`axloader::ota::OtaDisk` 负责 `STATE0.BIN`、`STATE1.BIN` 与槽文件的 Flush 和读回校验。两份状态都损坏或没有可信槽时，启动器停止并要求外部介质恢复。
+
+### 1.3 LoongArch EFI 构建
+
+LoongArch 目标使用 `loongarch64-unknown-none-softfloat` 和 `arceos-efi`，由
+`bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml` 选择
+axstd、FAT/NVMe 和 EFI loader 特性，再由
+`bootloader/axloader/qemu-loongarch64.toml` 配置 `virt`、virtio-net、NVMe/FAT
+磁盘、`uefi = true` 和 `to_bin = true`。`axstd_loader::run()` 负责单任务轮询
+发现和 HTTP 路由；`TargetSpec` 的 `LOONGARCH64_EFI` 固定 ELF machine
+`EM_LOONGARCH` 与 `efi_pe_entry`，someboot 的 `LoongBootPayload` 交接目标镜像、
+cmdline、initramfs 和内存图。该结构是 LoongArch 专用 v2 EFI 配置表，使用独立
+GUID，不复用最新 dev 已移除的 `host-boot-abi` v1；x86_64 继续使用最新 dev 的
+Linux EFI `LoadFile2` initrd 协议。
+
+```bash
+cargo xtask arceos build \
+  --package axloader \
+  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml
+cargo xtask arceos qemu \
+  --package axloader \
+  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml \
+  --qemu-config bootloader/axloader/qemu-loongarch64.toml
+```
+
+LoongArch 的持久文件位于 FAT 卷的 `axloader/` 目录：`A.EFI`、`B.EFI`、
+`STATE0.BIN` 和 `STATE1.BIN`。`LaOta::prepare_bootstrap()` 在进入待试槽前提交
+`attempted`，`loader_slot` 随 EFI 配置表传给下一份 axstd loader，确认请求由
+`LaOta::confirm()` 按升级 ID 和来源提交。非 EFI LoongArch 启动和 UHI FDT handoff
+暂不属于此阶段。
+
+首次启动时，loader 会校验并 Flush 自身的 someboot LoongArch PE 到
+`A.EFI`，然后创建 `STATE0.BIN`。该引导种子只接受 `ImageBase = 0` 且没有
+base relocation directory 的 someboot 产物；其他 PE 会在写入稳定槽前拒绝。
 
 ## 2. 设备控制
 
@@ -78,6 +111,12 @@ sequenceDiagram
 | `POST /api/v1/boot/jobs/{id}/start` | 完成 ELF 与载荷检查，核对 `X-Serial-Binding`，回复 `202`，关闭网络对象后交接 |
 
 v6 只接受 `__x86_64_efi_pe_entry`。cmdline 经 `entry::PreparedLoadOptions` 编码为带 NUL 的 UCS-2 EFI LoadOptions；initramfs 存在时由 `payload::PreparedPayload` 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。上传、状态查询和 OTA 不受串口门禁限制；没有隧道需求的调用方必须显式使用 `direct` continue。
+
+LoongArch 请求使用 `BootArch::Loongarch64`、`ImageFormat::Elf64` 和
+`efi_pe_entry`。`axstd_loader::LoadedElf` 拒绝错误 machine、入口、重叠
+`PT_LOAD` 或与当前 loader 重叠的装载区域；`PublishedPayload` 通过
+`someboot::loader_set_payload_with_image()` 交接 cmdline/initramfs。目标 EFI
+镜像由 `LoadedPe` 校验 LoongArch PE/COFF machine 并从独立槽位内存池装载。
 
 v6 设备必须与支持 `POST /api/v1/serial/continue`、`X-Serial-Binding` 的 ostool-server
 配套，板卡 ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。启动返回
@@ -144,6 +183,11 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 - OTA 场景跨 QEMU 启动验证坏摘要、短请求、未确认复位回滚、确认持久化和再次启动。
 
 QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
+
+LoongArch 验证还要观察 `network_ready: arch=loongarch64`、`ready_to_handoff` 和
+目标 `efi_pe_entry` 的输出，并在同一 FAT 卷上检查槽摘要、pending/attempted、
+确认和回滚。当前 LoongArch QEMU 配置把宿主控制端口映射到 `3999`；guest 服务仍
+监听 `2999`。
 
 ## 4. 故障定位
 

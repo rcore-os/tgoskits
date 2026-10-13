@@ -18,6 +18,8 @@ fp-simd = [
 ]
 riscv-thead-mae = ["ax-cpu/riscv-thead-mae"]
 rtc = ["axplat-dyn/rtc"]
+efi = ["axplat-dyn/efi"]
+efi-loader = ["axplat-dyn/efi-loader"]
 paging = [
     "dep:ax-alloc",
     "dep:page-table-generic",

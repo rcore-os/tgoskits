@@ -149,6 +149,7 @@ fn run_loader_build(
     ];
     if target == DEFAULT_UEFI_TARGET {
         args.extend(["--bin", LAUNCHER_BIN]);
+        args.extend(["--features", "uefi-launcher"]);
     }
     if release {
         args.push("--release");

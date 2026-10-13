@@ -11,6 +11,7 @@ version = "0.7.2"
 
 [features]
 efi = []
+efi-loader = ["efi"]
 hv = []
 mmu = []
 thead-mae = ["ax-cpu/riscv-thead-mae"]
