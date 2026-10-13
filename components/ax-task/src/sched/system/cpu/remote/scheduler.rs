@@ -412,13 +412,13 @@ impl CpuRemote {
             .is_none_or(|publication| self.deliver_scheduler_work_owned(publication))
     }
 
-    /// Rearms scheduler work after an owner-side bounded drain.
+    /// Rearms the current owner's scheduler work after a bounded drain.
     ///
-    /// The owner-side safe point has already consumed its delivery edge and is
-    /// about to return. A remaining batch therefore needs a fresh local
-    /// scheduler publication when this is the current CPU; only a genuinely
-    /// remote owner needs another physical IPI. Reusing the local publication
-    /// path keeps single-CPU runtimes independent of an IPI backend.
+    /// The caller must pass the owner-local endpoint for the current CPU. The
+    /// owner-side safe point has already consumed its delivery edge and is
+    /// about to return, so a remaining batch is republished through the local
+    /// scheduler state. Remote delivery uses
+    /// [`Self::deliver_scheduler_work_owned`] instead.
     pub(crate) fn defer_scheduler_work(&self) {
         let Some(_publication) = self.begin_owner_delivery() else {
             task_runtime::fatal_invariant(
