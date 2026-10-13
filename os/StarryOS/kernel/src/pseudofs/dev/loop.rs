@@ -167,11 +167,20 @@ impl LoopDevice {
         Ok(self.state.lock().binding()?.file.clone())
     }
 
+    // The three mount-holder entry points below serve the ext4 loop mount, so
+    // they share the `ext4` gate of their only caller (`mount_ext4`). They are
+    // inherent methods whose names collide with no `DeviceOps` method, so with
+    // `ext4` disabled they are merely absent: no `self.<name>()` call inside
+    // `impl DeviceOps for LoopDevice` can resolve to the trait and recurse into
+    // itself. Keeping the state they mutate (`mounted`, `mount_flush_target`)
+    // unconditional is what lets the always-built `BLKFLSBUF` path read it.
     /// Claims the mount holder for a filesystem mount.
     ///
-    /// Returns EBUSY when another mount already holds this binding, matching
-    /// Linux: mounting the same loop backing device twice is rejected while an
-    /// ordinary open of the mounted device keeps working.
+    /// Returns EBUSY when another StarryOS filesystem mount already holds this
+    /// binding. StarryOS keeps this policy to avoid two independent filesystem
+    /// instances sharing one loop backing; Linux can instead reuse a mounted
+    /// superblock in this case. Ordinary opens of the mounted device keep
+    /// working.
     #[cfg(feature = "ext4")]
     pub(crate) fn acquire_mount_holder(&self) -> VfsResult<()> {
         let mut state = self.state.lock();

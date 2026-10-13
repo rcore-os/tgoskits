@@ -13,10 +13,10 @@ sandbox_was_disabled() {
     grep -qi 'disabling sandbox\|sandbox.*disabled\|sandbox.*not supported' "$1" 2>/dev/null
 }
 
-# A sandbox=true build is still considered enforced when the builder really
-# started, received its /nix/store output path through $out, and was then
-# refused write access to exactly that path. In the Starry sandbox the store is
-# exposed read-only, so this denial is the expected enforcement result.
+# A sandbox=true build that started the builder, handed it its /nix/store output
+# path through $out and was then refused write access to exactly that path shows
+# the private root keeping the store read-only. It is reported as enforcement
+# evidence only: the build still failed, so the test must fail with it.
 builder_hit_readonly_store() {
     log=$1
     [ -r "$log" ] || return 1
@@ -98,9 +98,10 @@ mkdir -p /nix/var/nix /etc/nix /tmp/nix-sandbox
 # derivation output path ($out), the only store location Nix makes writable for
 # the build. Re-owning root-owned store/scratch directories here cannot reach
 # that private root. The sandbox itself stays enabled and the sandbox=true
-# assertion below is unchanged: a build that fails only because the private
-# root refuses writes to exactly $out counts as the sandbox enforcing a
-# read-only store, while a disabled or otherwise failing sandbox still fails.
+# assertion below is unchanged: a build that fails because the private root
+# refuses writes to exactly $out is still a failed build, so the phase fails
+# while the readonly-store denial is recorded separately as enforcement
+# evidence.
 cat > /etc/nix/nix.conf <<'NIXCONF'
 sandbox = true
 build-users-group =
@@ -169,11 +170,7 @@ if [ "$build_rc" -ne 0 ]; then
     echo 'NIX_SANDBOX_DIAG_FAILURE_END'
     if builder_hit_readonly_store /tmp/nix-sandbox/build.log; then
         echo 'NIX_SANDBOX_INFO: sandboxed builder started and was denied writing its /nix/store output path'
-        echo 'NIX_SANDBOX_INFO: Starry exposes the sandbox store read-only, so this denial is the expected enforcement result'
         echo 'NIX_SANDBOX_ENFORCED_READONLY_STORE'
-        echo 'NIX_SANDBOX_PHASE_BUILD_DONE'
-        echo 'NIX_SANDBOX_TEST_PASSED'
-        exit 0
     fi
     fail "nix-build sandbox=true failed with exit $build_rc"
 fi

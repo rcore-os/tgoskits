@@ -56,9 +56,14 @@ Set `BROWSER_URL` to point the same build at a different page.
 The run does not pass merely by staying alive. It requires the profile's cache
 to show entries the browser wrote for the page it was asked to open, so a blank
 window, a browser that died on its first frame, and a load that never started
-are told apart rather than all reported as success. While Firefox still holds
-the screen, the guest reads the scanout back through QEMU's VNC server and
-requires the colour count of a painted page.
+are told apart rather than all reported as success.
+
+That network fetch is coverage, not the render gate. A remote page's colour
+count depends on what its CDN serves that day, so the pixel proof runs on the
+`test.html` bundled in the rootfs: it paints a 320x200 block in `#36b2a0`, a
+colour nothing else on screen uses, and `render_check.py` reads the scanout back
+through QEMU's VNC server until it sees that colour. A blank window and a page
+that painted are told apart without depending on the network.
 
 The GPU configuration must also show that the GPU was used: Weston's GL renderer
 has to be virgl, and a process other than Weston has to hold the render node.

@@ -1,7 +1,5 @@
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
-#[cfg(feature = "ext4")]
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
@@ -813,32 +811,28 @@ fn mount_source(source: &str) -> &str {
     if source.is_empty() { "none" } else { source }
 }
 
+/// Holder token for a loop device backing an ext4 mount.
+///
+/// The mount's filesystem owns the only copy of this lease, so the holder is
+/// released exactly when the filesystem itself is dropped: not before, and
+/// never twice. The lease is deliberately neither `Clone` nor guarded by a
+/// release flag - a second copy dropped early would hand the backing store to
+/// a new mount while the detached filesystem still holds dirty data for it.
 #[cfg(feature = "ext4")]
-#[derive(Clone)]
 struct LoopMountLease {
     device: Arc<dyn crate::pseudofs::DeviceOps>,
-    released: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "ext4")]
 impl LoopMountLease {
     fn new(device: Arc<dyn crate::pseudofs::DeviceOps>) -> Self {
-        Self {
-            device,
-            released: Arc::new(AtomicBool::new(false)),
-        }
+        Self { device }
     }
+}
 
-    /// Releases the loop mount holder exactly once.
-    ///
-    /// The filesystem owns the holder for its complete lifetime, including
-    /// lazy detach and open files. Keeping this lease with the filesystem
-    /// prevents a second mount from reusing the backing store before dirty
-    /// data held by the detached filesystem has been written back.
-    fn release(&self) {
-        if self.released.swap(true, Ordering::AcqRel) {
-            return;
-        }
+#[cfg(feature = "ext4")]
+impl Drop for LoopMountLease {
+    fn drop(&mut self) {
         // The mount holder is separate from the ordinary open/O_EXCL path so a
         // mounted loop device stays openable for ioctls such as BLKROSET.
         if let Some(loop_device) = self
@@ -848,13 +842,6 @@ impl LoopMountLease {
         {
             loop_device.release_mount_holder();
         }
-    }
-}
-
-#[cfg(feature = "ext4")]
-impl Drop for LoopMountLease {
-    fn drop(&mut self) {
-        self.release();
     }
 }
 
@@ -910,8 +897,10 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     if !readonly && loop_device.is_read_only()? {
         return Err(StarryError::ReadOnlyFilesystem);
     }
-    // The filesystem owns the lease, including across lazy detach and open files.
-    // No filesystem-context lock is held during superblock or backing-file I/O.
+    // The filesystem is the lease's sole owner, so the loop holder is released
+    // only when the filesystem itself - including a lazily detached one with
+    // open files - is dropped. No filesystem-context lock is held during
+    // superblock or backing-file I/O.
     let fs = new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)?;
     let mount = target_location.mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly());
@@ -984,12 +973,30 @@ pub fn sys_umount2(
     if plan.targets().any(is_mount_busy) {
         return Err(StarryError::from(Errno::EBUSY));
     }
-    // The unmount is admitted, so it is committed even when a flush failed:
-    // retaining the mount would keep its lifetime guard (a loop mount holder,
-    // for example) active while userspace only learns about the error. The
-    // first failure is still reported after the mount is released.
-    let commit = target.commit_unmount(plan);
-    crate::file::notify_mount_namespace_changed(&mount_namespace);
+    // Two deliberate deviations from Linux v6.12 are visible here.
+    //
+    // 1. Linux shuts the superblock down inside `ksys_umount()` ->
+    //    `deactivate_locked_super()` -> `generic_shutdown_super()`, and that
+    //    shutdown is `void`: a writeback failure while the superblock goes away
+    //    is not reported back to `umount2()` at all. StarryOS instead flushes
+    //    the filesystem first and returns that error, so callers can see that
+    //    dirty data did not reach the device.
+    // 2. The flush error does not cancel the unmount. The unmount was already
+    //    admitted as not busy, so retaining it to report the error would hold
+    //    its lifetime guard - a loop mount holder, for example - for an
+    //    unbounded time, blocking every later mount of that backing store while
+    //    the caller merely waits for an errno it has already been given.
+    //    `commit_unmount()` therefore releases the mount and its guard, and the
+    //    first failure is reported to userspace afterwards.
+    //
+    // The namespace is only notified once the commit was accepted: a commit
+    // rejected by a concurrent topology change keeps the mount attached, and
+    // announcing an unmount that never happened would be worse than the missing
+    // wakeup for the flush-failure path above.
+    let (commit, committed) = target.commit_unmount_with_status(plan);
+    if committed {
+        crate::file::notify_mount_namespace_changed(&mount_namespace);
+    }
     commit?;
     cached_files?;
 

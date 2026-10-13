@@ -738,7 +738,49 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 - 而且 shared/private/slave/unbindable / bind / move / readonly / umount2 核心路径已经具备稳定可验证的 Linux 风格语义
 - 但并不意味着 Linux 整体 mount namespace 语义已经“全部实现”
 
-## 9. 参考
+## 9. 与 Linux v6.12 的三项有意偏离
+
+loop 挂载持有者（mount holder）落地后，有三处行为与 Linux v6.12 不同。StarryOS 的 loop 设备只用
+`DeviceOps` 暴露块设备语义，没有 Linux 的 `block_device` / `bd_holder` 结构，文件系统实例也没有
+“按 backing 复用 superblock”的注册表，所以其中几项互斥必须在文件系统生命周期上自行建立。这里
+单独列出，避免以后被当成 bug 改回去。
+
+### 9.1 同一 loop backing 的第二次 mount 返回 `EBUSY`
+
+- StarryOS：某个 loop backing 上已经有一个文件系统实例时，再次
+  `mount("/dev/loopX", ..., "ext4", ...)` 返回 `EBUSY`（`LoopDevice::acquire_mount_holder()`）。
+- Linux v6.12：`fs/super.c` 的 `mount_bdev()` / `sget_fc()` 对同一个 block device 复用已有
+  `super_block`，第二个挂载点只是同一个文件系统的另一个挂载，不会返回 `EBUSY`。
+- 为什么必须偏离：`new_filesystem_from_file()` 每次都会新建一个独立文件系统实例（各自的 inode
+  缓存与脏页）。允许第二次挂载等于让两个实例同时写同一份 backing，后写者覆盖先写者。mount holder
+  把“一个 backing 同时只服务一个文件系统实例”变成显式约束。
+
+### 9.2 已挂载只读 loop 的 `BLKFLSBUF` 返回 `EIO`
+
+- StarryOS：`LoopDevice::ioctl(BLKFLSBUF)` 先检查 `mounted && LO_FLAGS_READ_ONLY`，命中即返回
+  `EIO`，不驱动文件系统写回。
+- Linux v6.12：`blkdev_flush()` / `sync_blockdev()` 不因设备只读而返回 `EIO`；正常状态下也不
+  存在“只读设备上有脏页”的情形，因为写入在更早的位置就以 `EROFS` 失败。
+- 为什么必须偏离：StarryOS 允许在文件系统已挂载之后用 `BLKROSET` 把 loop 设备改成只读，此时页
+  缓存里可能已有脏页。若照 Linux 那样继续写回，被拒绝的元数据写入会让 ext4 的回滚失败并把
+  文件系统置为 abort，之后所有 `sync` 一并失败。返回 `EIO` 并保留缓存，等写保护解除后再刷新，
+  是这一状态下唯一不破坏文件系统的做法。`ltp-isolation-exit-fs` 覆盖这条路径：只读时
+  `BLKFLSBUF` 返回 `-1` / `EIO` 且 backing 不变；解除只读后 `BLKFLSBUF` 成功并把脏页写回。
+
+### 9.3 刷新失败时 `umount` 已提交但返回错误
+
+- StarryOS：`sys_umount2()` 先做 busy 检查并接纳卸载，再调用 `Location::commit_unmount()`。即使
+  `flush` 失败，卸载仍然提交（mount 被摘下、lifetime guard 例如 loop mount holder 被释放），
+  错误在挂载已经释放之后返回给调用方。只有提交本身被拒绝（并发拓扑变化）时 mount 才保留。
+- Linux v6.12：`ksys_umount()` 经由 `deactivate_locked_super()` -> `generic_shutdown_super()`
+  关闭 superblock，而 `generic_shutdown_super()` 返回 `void`，该路径上的写回错误不会回传给
+  `umount2()`。
+- 为什么必须偏离：卸载一旦被判定为不忙就已提交；为上报错误而保留 mount，会让它的 lifetime
+  guard 无限期占用 backing，使同一 backing 的后续挂载全部失败，而调用方只是多拿一个 errno。
+  因此这里“先释放、后报错”，并且只在提交被接受时才 `notify_mount_namespace_changed()`：提交
+  失败的挂载并没有卸载，不能提前通知 namespace。
+
+## 10. 参考
 
 - [mount(2) - Linux manual page](https://man7.org/linux/man-pages/man2/mount.2.html)
 - [umount(2) / umount2(2) - Linux manual page](https://www.man7.org/linux/man-pages/man2/umount2.2.html)

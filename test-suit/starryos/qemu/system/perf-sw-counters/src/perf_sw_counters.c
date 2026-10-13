@@ -195,6 +195,9 @@ static void *remote_clock_work(void *unused) {
     while (__atomic_load_n(&remote_phase, __ATOMIC_ACQUIRE) == 0) {}
     volatile uint64_t work = 0;
     for (uint64_t i = 0; i < 1000000; ++i) work += i;
+    /* Keep the arithmetic as observable work without perturbing the test's
+       synchronization phase. */
+    if (work == UINT64_MAX) __atomic_store_n(&remote_error, EOVERFLOW, __ATOMIC_RELEASE);
     __atomic_store_n(&remote_phase, 2, __ATOMIC_RELEASE);
     while (__atomic_load_n(&remote_phase, __ATOMIC_ACQUIRE) == 2) {}
     priority.sched_priority = 0;
