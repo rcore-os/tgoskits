@@ -5,8 +5,19 @@ extern crate alloc;
 use alloc::{boxed::Box, format, vec::Vec};
 use core::ptr;
 
-use axloader::{integrity::decode_sha256, ota::OtaController, target::X86_64};
-use httpboot_protocol::{DEVICE_PROTOCOL_VERSION, DeviceBootJob, LoaderDeviceStatus, OtaSource};
+use axloader::{
+    http_control::{
+        MAX_HEADER_BYTES, error_status, parse_head, parse_update_id, valid_image_version,
+        validate_body_length,
+    },
+    integrity::decode_sha256,
+    ota::OtaController,
+    target::X86_64,
+};
+use httpboot_protocol::{
+    DEVICE_PROTOCOL_VERSION, DeviceBootJob, LoaderDeviceStatus, MAX_HTTP_BOOT_INITRAMFS_BYTES,
+    OtaSource,
+};
 use uefi::{
     Event, Handle, Status, StatusExt,
     boot::{self, EventType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol, Tpl},
@@ -27,7 +38,6 @@ use super::boot_server::{BootExecution, BootServer, FileKind};
 
 const TCP4_BINDING_GUID: uefi::Guid = uefi::guid!("00720665-67eb-4a99-baf7-d3c33a1c7cc9");
 const TCP4_GUID: uefi::Guid = uefi::guid!("65530bc7-a359-410f-b010-5aadc7ec2b62");
-const MAX_HEADER: usize = 4096;
 const IO_WAIT_POLLS: usize = 3000;
 
 #[derive(Debug)]
@@ -365,10 +375,10 @@ impl<'a> Connection<'a> {
         ota: &mut Option<OtaController>,
         boot_server: &mut BootServer,
     ) -> uefi::Result<Action> {
-        let mut header = [0; MAX_HEADER + 1];
+        let mut header = [0; MAX_HEADER_BYTES + 1];
         let mut used = 0;
         let header_end = loop {
-            if used >= MAX_HEADER {
+            if used >= MAX_HEADER_BYTES {
                 self.reply("431 Request Header Fields Too Large", b"{}")?;
                 return Ok(Action::None);
             }
@@ -381,66 +391,42 @@ impl<'a> Connection<'a> {
                 .windows(4)
                 .position(|part| part == b"\r\n\r\n")
             {
-                if index + 4 > MAX_HEADER {
+                if index + 4 > MAX_HEADER_BYTES {
                     self.reply("431 Request Header Fields Too Large", b"{}")?;
                     return Ok(Action::None);
                 }
                 break index + 4;
             }
         };
-        let request =
-            core::str::from_utf8(&header[..header_end]).map_err(|_| Status::INVALID_PARAMETER)?;
-        let Some(first) = request.split("\r\n").next() else {
-            return Ok(Action::None);
+        let (head, parsed_header_end) = match parse_head(&header[..used]) {
+            Ok(value) => value,
+            Err(error) => {
+                self.reply(error_status(error), b"{}")?;
+                return Ok(Action::None);
+            }
         };
-        let mut words = first.split_ascii_whitespace();
-        let (Some(method), Some(path), Some("HTTP/1.1" | "HTTP/1.0"), None) =
-            (words.next(), words.next(), words.next(), words.next())
-        else {
-            self.reply("400 Bad Request", b"{}")?;
-            return Ok(Action::None);
-        };
-        let mut content_length = None;
+        debug_assert_eq!(parsed_header_end, header_end);
+        let method = head.method.as_str();
+        let path = head.path.as_str();
+        let content_length = Some(head.content_length);
         let mut sha256 = None;
         let mut display_version = None;
         let mut update_id = None;
         let mut source = OtaSource::Direct;
         let mut epoch = None;
         let mut serial_binding = None;
-        for line in request.split("\r\n").skip(1) {
-            if line.is_empty() {
-                break;
-            }
-            let Some((key, value)) = line.split_once(':') else {
-                self.reply("400 Bad Request", b"{}")?;
-                return Ok(Action::None);
-            };
+        for (key, value) in &head.headers {
             let value = value.trim();
-            if key.eq_ignore_ascii_case("content-length") {
-                if content_length
-                    .replace(
-                        value
-                            .parse::<usize>()
-                            .map_err(|_| Status::INVALID_PARAMETER)?,
-                    )
-                    .is_some()
-                {
-                    self.reply("400 Bad Request", b"{}")?;
-                    return Ok(Action::None);
-                }
-            } else if key.eq_ignore_ascii_case("transfer-encoding") {
-                self.reply("400 Bad Request", b"{}")?;
-                return Ok(Action::None);
-            } else if key.eq_ignore_ascii_case("x-image-sha256") {
+            if key.eq_ignore_ascii_case("x-image-sha256") {
                 sha256 = decode_sha256(value);
             } else if key.eq_ignore_ascii_case("x-image-version") {
-                if value.len() > 96 || !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+                if !valid_image_version(value) {
                     self.reply("400 Bad Request", b"{}")?;
                     return Ok(Action::None);
                 }
                 display_version = Some(value);
             } else if key.eq_ignore_ascii_case("x-update-id") {
-                update_id = Some(value);
+                update_id = parse_update_id(value);
             } else if key.eq_ignore_ascii_case("x-update-source") {
                 if value != "server" {
                     self.reply("400 Bad Request", b"{}")?;
@@ -454,6 +440,16 @@ impl<'a> Connection<'a> {
             }
         }
         let initial = &header[header_end..used];
+        if let Err(error) = validate_body_length(
+            method,
+            path,
+            head.content_length,
+            initial.len(),
+            MAX_HTTP_BOOT_INITRAMFS_BYTES,
+        ) {
+            self.reply(error_status(error), b"{}")?;
+            return Ok(Action::None);
+        }
         if method == "GET" && path == "/api/v1/status" {
             let body = serde_json::to_vec(&LoaderDeviceStatus {
                 protocol_version: DEVICE_PROTOCOL_VERSION,
@@ -581,8 +577,7 @@ impl<'a> Connection<'a> {
                     return Ok(Action::None);
                 }
                 let id = if source == OtaSource::Server {
-                    let Some(id) = update_id.and_then(|value| value.as_bytes().try_into().ok())
-                    else {
+                    let Some(id) = update_id else {
                         self.reply("400 Bad Request", b"{}")?;
                         return Ok(Action::None);
                     };
@@ -643,7 +638,7 @@ impl<'a> Connection<'a> {
             return Ok(Action::None);
         }
         if method == "POST" && path == "/api/v1/boot/jobs" {
-            let Some(length) = content_length.filter(|size| *size > 0 && *size <= MAX_HEADER)
+            let Some(length) = content_length.filter(|size| *size > 0 && *size <= MAX_HEADER_BYTES)
             else {
                 self.reply("400 Bad Request", b"{}")?;
                 return Ok(Action::None);
