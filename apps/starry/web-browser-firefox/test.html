@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>StarryOS NetSurf</title>
+  <title>StarryOS Firefox render probe</title>
   <style>
     body { font-family: sans-serif; margin: 24px; background: #f4f6fb; color: #222; }
     h1 { color: #1a4d8f; border-bottom: 3px solid #1a4d8f; padding-bottom: 6px; }
@@ -18,10 +18,17 @@
   </style>
 </head>
 <body>
-  <h1>StarryOS - NetSurf software render</h1>
+  <h1>StarryOS - Firefox software render</h1>
+  <!-- The teal block is the render probe: render-check.py counts pixels of
+       exactly this colour in the scanout, so a page that reached the screen is
+       told apart from one that was merely fetched. Keep the colour and the size
+       in step with the probe arguments in test_browser.sh. -->
+  <div style="width:320px;height:200px;background:#36b2a0;border:1px solid #333"></div>
+  <p>Above: a 320x200 block in #36b2a0, a colour nothing else on this screen
+     uses. If it is in the scanout, this page was laid out and painted.</p>
   <div class="box">
     <p class="ok">If you can read this styled page, HTML + CSS rendering works.</p>
-    <p>Rendered by the NetSurf engine on a pixman software surface, presented
+    <p>Rendered by Gecko's software WebRender on a pixman surface, presented
        through virtio-gpu and viewed over QEMU VNC.</p>
   </div>
   <div class="box">
