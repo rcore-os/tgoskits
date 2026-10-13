@@ -201,10 +201,14 @@ initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出�
 `docs/axloader-network-control.md`。
 
 上述 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 描述的是 x86 harness。
-LoongArch 的 `cargo xtask arceos qemu --package axloader` 当前 CI 门禁只要求
-`network_ready: arch=loongarch64`，用于证明空白卷上的 bootstrap、网络接口选择和
-HTTP listener 已到达；它不证明继承 EFI 入口，且不会自行发起宿主 HTTP 请求。完整 LoongArch HTTP/OTA 运行时
-验证仍需带宿主控制器的独立 QEMU harness。
+LoongArch 的 CI 使用 `qemu-loongarch64-http.toml` 启动持久 FAT 卷，并由
+`scripts/loong-http-smoke.py` 通过 `hostfwd` 执行真实控制面请求。该 smoke 覆盖
+状态读取、相同 manifest 重试、direct serial continue、未绑定启动拒绝、坏 ELF
+拒绝、坏 OTA 镜像拒绝、有效 PE 槽位写入、重启后的 trial 和 confirm；因此不会把
+单独的 `network_ready` 日志误写成 HTTP 或 OTA 通过。它仍未执行有效 Loong ELF 的
+`efi_pe_entry` 交接、cmdline/initramfs 目标验收或失败 trial 的跨重启 rollback；这些
+路径保持为后续独立 QEMU 场景。`qemu-loongarch64.toml` 仍可用于只观察
+`network_ready` 与 `loader_server` 启动标记。
 
 ## x86_64 OTA 布局与状态
 

@@ -15,4 +15,4 @@ to_bin = true
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
 
 [[shell_check_steps]]
-success_regex = ["network_ready: arch=loongarch64"]
+success_regex = ["(?s)network_ready: arch=loongarch64.*loader_server: port=2999"]

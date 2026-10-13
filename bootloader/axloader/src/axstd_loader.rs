@@ -13,6 +13,11 @@ use std::{
 
 use axloader::{
     boot_job::{BootJobStore, FileKind},
+    efi_image,
+    http_control::{
+        MAX_HEADER_BYTES, MAX_IMAGE_BYTES, error_status, parse_head, parse_update_id,
+        valid_image_version, validate_body_length,
+    },
     integrity,
     ota::{self, Outcome, Slot, State},
     platform::{BootTransport, EfiHandoff, ImageMemory, OtaStorage},
@@ -28,17 +33,9 @@ use uefi::Status;
 
 const HTTP_PORT: u16 = 2999;
 const DISCOVERY_PORT: u16 = 2998;
-const MAX_HEADER: usize = 4 * 1024;
-const MAX_SERIAL_BINDING_BYTES: usize = 1024;
-const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const OTA_ROOT: &str = "axloader";
-const PE_MACHINE_LOONGARCH64: u16 = 0x6264;
 const PE32_PLUS_MAGIC: u16 = 0x20b;
 const PE32_PLUS_OPTIONAL_HEADER_SIZE: usize = 112;
-const PE_DATA_DIRECTORY_OFFSET: usize = 112;
-const PE_BASE_RELOCATION_DIRECTORY: usize = 5;
-const PE_SECTION_HEADER_SIZE: usize = 40;
-const PE_SECTION_EXECUTE: u32 = 0x2000_0000;
 const ELF_PF_X: u32 = 1;
 pub fn run() {
     println!("axloader: LoongArch ArceOS EFI frontend");
@@ -289,55 +286,15 @@ fn handle_connection(
     Ok(response.action)
 }
 
-fn error_status(error: &str) -> &'static str {
-    match error {
-        "unknown_boot_job" => "404 Not Found",
-        "body too large" => "413 Payload Too Large",
-        "request body too large" => "400 Bad Request",
-        "request header too large" => "431 Request Header Fields Too Large",
-        _ => "400 Bad Request",
-    }
-}
-
-fn request_body_limit(method: &str, path: &str) -> usize {
-    match (method, path) {
-        ("POST", "/api/v1/serial/continue") | ("POST", "/api/v1/ota/confirm") => {
-            MAX_SERIAL_BINDING_BYTES
-        }
-        ("POST", "/api/v1/boot/jobs") => MAX_HEADER,
-        ("PUT", "/api/v1/ota/image") => MAX_IMAGE_BYTES,
-        _ => MAX_IMAGE_BYTES.max(MAX_HTTP_BOOT_INITRAMFS_BYTES),
-    }
-}
-
 fn error_json(error: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "error": error })).unwrap_or_else(|_| b"{}".to_vec())
-}
-
-fn parse_update_id(value: &str) -> Option<[u8; 36]> {
-    let bytes: [u8; 36] = value.as_bytes().try_into().ok()?;
-    bytes
-        .iter()
-        .enumerate()
-        .all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                *byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
-        .then_some(bytes)
-}
-
-fn valid_image_version(value: &str) -> bool {
-    value.len() <= 96 && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; 2048];
     let header_end = loop {
-        if bytes.len() >= MAX_HEADER {
+        if bytes.len() >= MAX_HEADER_BYTES {
             return Err("request header too large".into());
         }
         let count = stream
@@ -349,62 +306,26 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         bytes.extend_from_slice(&chunk[..count]);
         if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
             let header_end = index + 4;
-            if header_end > MAX_HEADER {
+            if header_end > MAX_HEADER_BYTES {
                 return Err("request header too large".into());
             }
             break header_end;
         }
     };
-    let header = core::str::from_utf8(&bytes[..header_end])
-        .map_err(|_| "request is not UTF-8".to_string())?;
-    let mut lines = header.split("\r\n");
-    let first = lines
-        .next()
-        .ok_or_else(|| "missing request line".to_string())?;
-    let mut words = first.split_ascii_whitespace();
-    let method = words.next().unwrap_or_default();
-    let path = words.next().unwrap_or_default();
-    let version = words.next().unwrap_or_default();
-    if !matches!(version, "HTTP/1.1" | "HTTP/1.0") || words.next().is_some() {
-        return Err("invalid HTTP request".to_string());
-    }
-    let mut headers: Vec<(String, String)> = Vec::new();
-    for line in lines.take_while(|line| !line.is_empty()) {
-        let (key, value) = line
-            .split_once(':')
-            .ok_or_else(|| "invalid HTTP header".to_string())?;
-        headers.push((key.trim().into(), value.trim().into()));
-    }
-    let mut length = None;
-    for (key, value) in &headers {
-        if key.eq_ignore_ascii_case("content-length") {
-            if length.is_some() {
-                return Err("duplicate content length".to_string());
-            }
-            length = Some(
-                value
-                    .parse::<usize>()
-                    .map_err(|_| "invalid content length".to_string())?,
-            );
-        } else if key.eq_ignore_ascii_case("transfer-encoding") {
-            return Err("transfer encoding is unsupported".to_string());
-        }
-    }
-    let length = length.unwrap_or(0);
-    let body_limit = request_body_limit(method, path);
-    if length > body_limit {
-        let error = match (method, path) {
-            ("POST", "/api/v1/serial/continue")
-            | ("POST", "/api/v1/ota/confirm")
-            | ("POST", "/api/v1/boot/jobs") => "request body too large",
-            _ => "body too large",
-        };
-        return Err(error.to_string());
-    }
+    let (head, parsed_header_end) = parse_head(&bytes).map_err(str::to_string)?;
+    debug_assert_eq!(parsed_header_end, header_end);
+    let method = head.method.as_str();
+    let path = head.path.as_str();
+    let length = head.content_length;
     let mut body = bytes[header_end..].to_vec();
-    if body.len() > length {
-        return Err("body exceeds content length".to_string());
-    }
+    validate_body_length(
+        method,
+        path,
+        length,
+        body.len(),
+        MAX_HTTP_BOOT_INITRAMFS_BYTES,
+    )
+    .map_err(str::to_string)?;
     body.try_reserve(length.saturating_sub(body.len()))
         .map_err(|_| "body allocation failed".to_string())?;
     while body.len() < length {
@@ -423,7 +344,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     Ok(HttpRequest {
         method: method.into(),
         path: path.into(),
-        headers,
+        headers: head.headers,
         body,
     })
 }
@@ -1049,52 +970,14 @@ impl LoadedPe {
     }
 
     fn validate(image: &[u8]) -> Result<(), &'static str> {
-        let (headers, sections, image_size, entry) = pe_layout(image)?;
-        if headers > image_size || entry < headers || entry >= image_size {
-            return Err("invalid EFI image layout");
-        }
-        let mut virtual_ranges = Vec::with_capacity(sections.len());
-        let mut entry_is_executable = false;
-        for section in sections {
-            let virtual_end = section
-                .virtual_address
-                .checked_add(section.virtual_size.max(section.raw_size))
-                .ok_or("EFI section range overflows")?;
-            if virtual_end > image_size {
-                return Err("EFI section is outside the image");
-            }
-            let raw_end = section
-                .raw_offset
-                .checked_add(section.raw_size)
-                .ok_or("EFI section file range overflows")?;
-            if raw_end > image.len() {
-                return Err("EFI section is outside the file");
-            }
-            if section.virtual_address < headers {
-                return Err("EFI section overlaps PE headers");
-            }
-            if section.characteristics & PE_SECTION_EXECUTE != 0
-                && entry >= section.virtual_address
-                && entry < virtual_end
-            {
-                entry_is_executable = true;
-            }
-            virtual_ranges.push((section.virtual_address, virtual_end));
-        }
-        if !entry_is_executable {
-            return Err("EFI entry is outside executable sections");
-        }
-        virtual_ranges.sort_unstable_by_key(|(start, _)| *start);
-        if virtual_ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
-            return Err("EFI sections overlap");
-        }
-        Ok(())
+        let layout = efi_image::layout(image)?;
+        layout.validate(image.len())
     }
 
     fn load(image: &[u8]) -> Result<Self, &'static str> {
-        Self::validate(image)?;
-        let (headers, sections, image_size, entry) = pe_layout(image)?;
-        let page_count = image_size.div_ceil(4096);
+        let layout = efi_image::layout(image)?;
+        layout.validate(image.len())?;
+        let page_count = layout.image_size.div_ceil(4096);
         let load_addr = someboot::loader_allocate_slot(page_count)
             .ok_or("EFI slot image pool is unavailable")?;
         let target = someboot::mem::phys_to_virt(load_addr);
@@ -1102,15 +985,15 @@ impl LoadedPe {
         // inside the fixed allocation returned above.
         unsafe {
             core::ptr::write_bytes(target, 0, page_count * 4096);
-            core::ptr::copy_nonoverlapping(image.as_ptr(), target, headers);
+            core::ptr::copy_nonoverlapping(image.as_ptr(), target, layout.headers);
         }
-        for section in sections {
-            // SAFETY: `pe_layout` checked each section's virtual range against
+        for section in layout.sections {
+            // SAFETY: `efi_image::Layout::validate` checked each section's virtual range against
             // `image_size`, and `target` points to the allocation of
             // `page_count * 4096` bytes covering that complete image.
             let destination = unsafe { target.add(section.virtual_address) };
             if section.raw_size != 0 {
-                // SAFETY: pe_layout checked the raw range and the destination
+                // SAFETY: `efi_image::Layout::validate` checked the raw range and the destination
                 // section range against the allocated image.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
@@ -1123,7 +1006,7 @@ impl LoadedPe {
         }
         someboot::loader_flush_icache();
         Ok(Self {
-            entry_point: someboot::mem::phys_to_virt(load_addr + entry) as u64,
+            entry_point: someboot::mem::phys_to_virt(load_addr + layout.entry) as u64,
             load_addr,
             load_end: load_addr + page_count * 4096,
             page_count,
@@ -1137,119 +1020,6 @@ impl Drop for LoadedPe {
     }
 }
 
-#[derive(Clone, Copy)]
-struct PeSection {
-    virtual_address: usize,
-    virtual_size: usize,
-    raw_offset: usize,
-    raw_size: usize,
-    characteristics: u32,
-}
-
-fn pe_layout(image: &[u8]) -> Result<(usize, Vec<PeSection>, usize, usize), &'static str> {
-    if image.len() < 0x40 || &image[..2] != b"MZ" {
-        return Err("invalid EFI image signature");
-    }
-    let pe_offset = read_u32(image, 0x3c)
-        .and_then(|value| usize::try_from(value).ok())
-        .ok_or("invalid EFI PE offset")?;
-    if pe_offset
-        .checked_add(24)
-        .is_none_or(|end| end > image.len())
-        || &image[pe_offset..pe_offset + 4] != b"PE\0\0"
-    {
-        return Err("invalid EFI PE signature");
-    }
-    let machine = read_u16(image, pe_offset + 4).ok_or("missing EFI PE machine")?;
-    if machine != PE_MACHINE_LOONGARCH64 {
-        return Err("unsupported EFI PE machine");
-    }
-    let section_count =
-        usize::from(read_u16(image, pe_offset + 6).ok_or("missing EFI PE section count")?);
-    let optional_size =
-        usize::from(read_u16(image, pe_offset + 20).ok_or("missing EFI optional header size")?);
-    let optional = pe_offset.checked_add(24).ok_or("EFI PE offset overflows")?;
-    if optional
-        .checked_add(optional_size)
-        .is_none_or(|end| end > image.len())
-        || read_u16(image, optional) != Some(PE32_PLUS_MAGIC)
-    {
-        return Err("unsupported EFI PE optional header");
-    }
-    if optional_size < PE32_PLUS_OPTIONAL_HEADER_SIZE {
-        return Err("truncated EFI PE optional header");
-    }
-    if read_u64(image, optional + 24) != Some(0) {
-        return Err("unsupported EFI image base");
-    }
-    let directory_count =
-        read_u32(image, optional + 108).ok_or("missing EFI PE data-directory count")?;
-    if directory_count > PE_BASE_RELOCATION_DIRECTORY as u32 {
-        let relocation_directory = optional
-            .checked_add(PE_DATA_DIRECTORY_OFFSET)
-            .and_then(|offset| offset.checked_add(PE_BASE_RELOCATION_DIRECTORY.checked_mul(8)?))
-            .ok_or("EFI PE relocation directory overflows")?;
-        if relocation_directory
-            .checked_add(8)
-            .is_none_or(|end| end > optional + optional_size)
-        {
-            return Err("truncated EFI PE relocation directory");
-        }
-        if read_u32(image, relocation_directory) != Some(0)
-            || read_u32(image, relocation_directory + 4) != Some(0)
-        {
-            return Err("EFI PE base relocations are unsupported");
-        }
-    }
-    let entry = usize::try_from(read_u32(image, optional + 16).ok_or("missing EFI PE entry")?)
-        .map_err(|_| "EFI PE entry overflows")?;
-    let image_size = usize::try_from(read_u32(image, optional + 56).ok_or("missing EFI PE size")?)
-        .map_err(|_| "EFI PE size overflows")?;
-    let headers = usize::try_from(read_u32(image, optional + 60).ok_or("missing EFI PE headers")?)
-        .map_err(|_| "EFI PE headers overflow")?;
-    if image_size == 0 || image_size > MAX_IMAGE_BYTES || headers > image.len() {
-        return Err("invalid EFI PE size");
-    }
-    let section_table = optional
-        .checked_add(optional_size)
-        .ok_or("EFI section table overflows")?;
-    let section_bytes = section_count
-        .checked_mul(PE_SECTION_HEADER_SIZE)
-        .ok_or("EFI section table size overflows")?;
-    if section_table
-        .checked_add(section_bytes)
-        .is_none_or(|end| end > image.len())
-    {
-        return Err("EFI section table is truncated");
-    }
-    let mut sections = Vec::with_capacity(section_count);
-    for index in 0..section_count {
-        let offset = section_table + index * PE_SECTION_HEADER_SIZE;
-        let virtual_size =
-            usize::try_from(read_u32(image, offset + 8).ok_or("missing EFI section size")?)
-                .map_err(|_| "EFI section size overflows")?;
-        let virtual_address =
-            usize::try_from(read_u32(image, offset + 12).ok_or("missing EFI section address")?)
-                .map_err(|_| "EFI section address overflows")?;
-        let raw_size =
-            usize::try_from(read_u32(image, offset + 16).ok_or("missing EFI section raw size")?)
-                .map_err(|_| "EFI section raw size overflows")?;
-        let raw_offset =
-            usize::try_from(read_u32(image, offset + 20).ok_or("missing EFI section raw offset")?)
-                .map_err(|_| "EFI section raw offset overflows")?;
-        let characteristics =
-            read_u32(image, offset + 36).ok_or("missing EFI section characteristics")?;
-        sections.push(PeSection {
-            virtual_address,
-            virtual_size,
-            raw_offset,
-            raw_size,
-            characteristics,
-        });
-    }
-    Ok((headers, sections, image_size, entry))
-}
-
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     bytes
         .get(offset..offset.checked_add(2)?)
@@ -1260,12 +1030,6 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     bytes
         .get(offset..offset.checked_add(4)?)
         .map(|value| u32::from_le_bytes(value.try_into().unwrap()))
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
-    bytes
-        .get(offset..offset.checked_add(8)?)
-        .map(|value| u64::from_le_bytes(value.try_into().unwrap()))
 }
 
 fn load_segments(image: &[u8], header: &Elf64Header) -> Result<Vec<LoadSegment>, ElfError> {
