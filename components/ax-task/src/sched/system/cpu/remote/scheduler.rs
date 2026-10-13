@@ -430,19 +430,11 @@ impl CpuRemote {
         self.scheduler_request
             .request
             .fetch_or(REQUEST_OWNER_WORK, Ordering::Release);
-        // SAFETY: `IrqScope` pins the current CPU until this method returns;
-        // the owner identity and local publication therefore describe one
-        // scheduler owner transaction.
-        let current = unsafe { task_runtime::current_cpu_id() };
-        if current.as_u32() == self.owner.as_u32() {
-            // The owner-side drain returns into the same IRQ/preemption
-            // transaction, whose final safe-point recheck consumes the
-            // sticky owner-work bit even when this nested publication cannot
-            // itself claim the scheduler baton.
-            let _self_serviced = task_runtime::publish_local_scheduler_work();
-        } else {
-            self.ring_scheduler_doorbell();
-        }
+        // The only caller passes the current CPU's owner-local endpoint after
+        // `ensure_owner_cpu_context` has succeeded. A false result only means
+        // this nested IRQ scope cannot claim the scheduler baton; the outer
+        // RuntimeIrqGuard still rechecks the sticky owner-work bit at exit.
+        let _self_serviced = task_runtime::publish_local_scheduler_work();
     }
 
     pub(super) fn deliver_scheduler_work_owned(
