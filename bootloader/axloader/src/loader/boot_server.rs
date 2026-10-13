@@ -2,38 +2,25 @@
 
 extern crate alloc;
 
-use alloc::{rc::Rc, string::String, vec::Vec};
+use alloc::{rc::Rc, string::String};
 use core::{cell::RefCell, ptr::NonNull};
 
+pub use axloader::boot_job::FileKind;
+use axloader::{boot_job::BootJobStore, target::X86_64};
 use httpboot_protocol::{
-    BootArch, DeviceBootImage, DeviceBootJob, DeviceBootStatus, ImageFormat, LoaderHardwareInfo,
-    MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress,
+    DeviceBootJob, LoaderHardwareInfo, MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress,
 };
-use sha2::{Digest, Sha256};
 use uefi::boot;
 
 use super::{elf_loader, entry, payload};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileKind {
-    Kernel,
-    Initramfs,
-}
 
 pub struct BootServer {
     epoch: String,
     mac_address: MacAddress,
     current_mac_address: MacAddress,
     hardware: LoaderHardwareInfo,
-    job: Option<Job>,
+    jobs: BootJobStore,
     pub serial: Rc<RefCell<httpboot_protocol::LoaderSerialStatus>>,
-}
-
-struct Job {
-    manifest: DeviceBootJob,
-    kernel: Option<Vec<u8>>,
-    initramfs: Option<Vec<u8>>,
-    last_error: Option<String>,
 }
 
 pub struct BootExecution {
@@ -55,7 +42,7 @@ impl BootServer {
             mac_address,
             current_mac_address,
             hardware,
-            job: None,
+            jobs: BootJobStore::default(),
             serial,
         }
     }
@@ -65,7 +52,7 @@ impl BootServer {
     }
 
     pub fn busy(&self) -> bool {
-        self.job.is_some()
+        self.jobs.busy()
     }
 
     pub fn mac_address(&self) -> MacAddress {
@@ -80,99 +67,38 @@ impl BootServer {
         &self.hardware
     }
 
-    pub fn status(&self) -> Option<DeviceBootStatus> {
-        self.job.as_ref().map(|job| DeviceBootStatus {
-            boot_id: job.manifest.boot_id.clone(),
-            phase: if job.kernel.is_some()
-                && (job.manifest.initramfs.is_none() || job.initramfs.is_some())
-            {
-                "ready"
-            } else {
-                "receiving"
-            }
-            .into(),
-            kernel_received: job.kernel.is_some(),
-            initramfs_received: job.initramfs.is_some(),
-            last_error: job.last_error.clone(),
-        })
+    pub fn status(&self) -> Option<httpboot_protocol::DeviceBootStatus> {
+        self.jobs.status()
     }
 
     pub fn create(&mut self, manifest: DeviceBootJob) -> Result<bool, &'static str> {
-        if let Some(job) = &self.job {
-            return if job.manifest == manifest {
-                Ok(false)
-            } else {
-                Err("boot_job_busy")
-            };
-        }
-        if manifest.boot_id.is_empty()
-            || manifest.boot_id.len() > 96
-            || !manifest
-                .boot_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-            || manifest.arch != BootArch::X86_64
-            || manifest.image_format != ImageFormat::Elf64
-            || !valid_image(&manifest.kernel)
-            || manifest
-                .initramfs
-                .as_ref()
-                .is_some_and(|image| !valid_image(image))
-            || manifest
-                .cmdline
-                .as_deref()
-                .is_some_and(|cmdline| !httpboot_protocol::valid_host_cmdline(cmdline))
-            || manifest.entry_symbol.as_deref() != Some(elf_loader::EFI_ENTRY_SYMBOL)
-        {
-            return Err("invalid_boot_manifest");
-        }
-        self.job = Some(Job {
+        self.jobs.create(
             manifest,
-            kernel: None,
-            initramfs: None,
-            last_error: None,
-        });
-        Ok(true)
+            X86_64,
+            MAX_HTTP_BOOT_INITRAMFS_BYTES,
+            MAX_HTTP_BOOT_INITRAMFS_BYTES,
+        )
     }
 
-    pub fn descriptor(&self, id: &str, kind: FileKind) -> Result<&DeviceBootImage, &'static str> {
-        let job = self.job.as_ref().ok_or("unknown_boot_job")?;
-        if job.manifest.boot_id != id {
-            return Err("unknown_boot_job");
-        }
-        match kind {
-            FileKind::Kernel => Ok(&job.manifest.kernel),
-            FileKind::Initramfs => job
-                .manifest
-                .initramfs
-                .as_ref()
-                .ok_or("initramfs_not_requested"),
-        }
+    pub fn descriptor(
+        &self,
+        id: &str,
+        kind: FileKind,
+    ) -> Result<&httpboot_protocol::DeviceBootImage, &'static str> {
+        self.jobs.descriptor(id, kind)
     }
 
-    pub fn upload(&mut self, id: &str, kind: FileKind, data: Vec<u8>) -> Result<(), &'static str> {
-        let desc = self.descriptor(id, kind)?;
-        if desc.size != data.len() as u64
-            || axloader::integrity::decode_sha256(&desc.sha256).as_ref()
-                != Some(&Sha256::digest(&data).into())
-        {
-            self.job = None;
-            return Err("image_digest_mismatch");
-        }
-        let job = self.job.as_mut().expect("descriptor requires a job");
-        let target = match kind {
-            FileKind::Kernel => &mut job.kernel,
-            FileKind::Initramfs => &mut job.initramfs,
-        };
-        *target = Some(data);
-        job.last_error = None;
-        Ok(())
+    pub fn upload(
+        &mut self,
+        id: &str,
+        kind: FileKind,
+        data: alloc::vec::Vec<u8>,
+    ) -> Result<(), &'static str> {
+        self.jobs.upload(id, kind, data)
     }
 
     pub fn cancel(&mut self, id: &str) -> Result<(), &'static str> {
-        self.descriptor(id, FileKind::Kernel)?;
-        self.job = None;
-        Ok(())
+        self.jobs.cancel(id)
     }
 
     pub fn prepare(
@@ -183,7 +109,7 @@ impl BootServer {
         if !binding.is_some_and(|id| self.serial.borrow().permits_start(id)) {
             return Err("serial_binding_required");
         }
-        let job = self.job.as_ref().ok_or("unknown_boot_job")?;
+        let job = self.jobs.job().ok_or("unknown_boot_job")?;
         if job.manifest.boot_id != id {
             return Err("unknown_boot_job");
         }
@@ -194,7 +120,7 @@ impl BootServer {
         let elf = match elf_loader::load_elf(bytes, job.manifest.entry_symbol.as_deref()) {
             Ok(elf) => elf,
             Err(_) => {
-                self.job = None;
+                self.jobs.clear();
                 return Err("kernel_load_failed");
             }
         };
@@ -205,7 +131,7 @@ impl BootServer {
             Ok(load_options) => load_options,
             Err(_) => {
                 free_loaded_elf(&elf);
-                self.job = None;
+                self.jobs.clear();
                 return Err("host_payload_failed");
             }
         };
@@ -213,7 +139,7 @@ impl BootServer {
             Ok(payload) => payload,
             Err(_) => {
                 free_loaded_elf(&elf);
-                self.job = None;
+                self.jobs.clear();
                 return Err("host_payload_failed");
             }
         };
@@ -234,10 +160,4 @@ pub(super) fn free_loaded_elf(elf: &elf_loader::LoadedElf) {
         )
     }
     .expect("failed to free ELF pages");
-}
-
-fn valid_image(image: &DeviceBootImage) -> bool {
-    image.size > 0
-        && image.size <= MAX_HTTP_BOOT_INITRAMFS_BYTES as u64
-        && axloader::integrity::decode_sha256(&image.sha256).is_some()
 }

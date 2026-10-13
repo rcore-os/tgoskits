@@ -5,10 +5,13 @@ extern crate alloc;
 #[cfg(any(windows, unix))]
 pub mod elf_image;
 
+pub mod boot_job;
 pub mod integrity;
 pub mod ota;
+pub mod platform;
 pub mod serial_path;
 pub mod smbios;
+pub mod target;
 
 #[cfg(any(windows, unix))]
 pub use elf_image::{

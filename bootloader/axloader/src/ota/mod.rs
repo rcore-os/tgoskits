@@ -2,6 +2,8 @@
 
 mod state;
 
+#[cfg(any(target_os = "uefi", target_arch = "loongarch64", test))]
+pub use state::newest;
 pub use state::{Outcome, Slot, State, StateError};
 
 #[cfg(target_os = "uefi")]

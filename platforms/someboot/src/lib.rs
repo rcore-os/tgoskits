@@ -51,8 +51,16 @@ pub mod smp;
 pub mod timer;
 
 pub use acpi::rsdp_addr_phys;
+#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
+pub use boot_payload::inherited_loader_slot;
 pub use boot_payload::{InitramfsRange, initramfs_range, take_initramfs_range};
 pub use cmdline::cmdline;
+#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
+pub use efi_stub::{
+    loader_allocate_image, loader_allocate_slot, loader_efi_context, loader_flush_icache,
+    loader_image_range, loader_release_image, loader_release_slot, loader_set_payload_with_image,
+    loader_set_slot,
+};
 pub use entropy::boot_entropy;
 pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};
 pub use page_table_generic::*;

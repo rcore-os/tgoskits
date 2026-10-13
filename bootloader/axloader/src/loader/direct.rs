@@ -5,10 +5,8 @@ extern crate alloc;
 use alloc::{boxed::Box, format, vec::Vec};
 use core::ptr;
 
-use axloader::{integrity::decode_sha256, ota::OtaController};
-use httpboot_protocol::{
-    BootArch, DEVICE_PROTOCOL_VERSION, DeviceBootJob, LoaderDeviceStatus, OtaSource,
-};
+use axloader::{integrity::decode_sha256, ota::OtaController, target::X86_64};
+use httpboot_protocol::{DEVICE_PROTOCOL_VERSION, DeviceBootJob, LoaderDeviceStatus, OtaSource};
 use uefi::{
     Event, Handle, Status, StatusExt,
     boot::{self, EventType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol, Tpl},
@@ -462,7 +460,7 @@ impl<'a> Connection<'a> {
                 boot_epoch: boot_server.epoch().into(),
                 mac_address: boot_server.mac_address(),
                 current_mac_address: boot_server.current_mac_address(),
-                arch: BootArch::X86_64,
+                arch: X86_64.boot_arch,
                 loader_version: env!("CARGO_PKG_VERSION").into(),
                 hardware: boot_server.hardware().clone(),
                 boot: boot_server.status(),

@@ -121,11 +121,19 @@ and rejects tables larger than 1 MiB.
 | Architecture | Rust UEFI target | EFI boot filename |
 | --- | --- | --- |
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
+| `loongarch64` | `loongarch64-unknown-none-softfloat` | `BOOTLOONGARCH64.EFI` |
 
 The current loader accepts little-endian x86_64 ELF64 images. `PT_LOAD`
 segments must have page-aligned physical addresses. Protocol v6 requires the
 `__x86_64_efi_pe_entry` symbol and rejects `httpboot_entry`, an ELF header entry,
 or a `BootInfo` fallback. The maximum uploaded kernel is 256 MiB.
+
+LoongArch uses the `arceos-efi` axstd frontend. Its uploaded kernel is a
+little-endian ELF64 image with `EM_LOONGARCH` and the fixed `efi_pe_entry`
+symbol; the loader copies it into the reserved image pool at `0x200000` and
+passes the cmdline, initramfs and memory map through the someboot EFI payload
+table. The axstd frontend reports UART binding as unavailable, so a client must
+use an explicit `direct` serial continue before starting a kernel job.
 
 ## Build and test
 
@@ -144,6 +152,37 @@ The output is:
 target/x86_64-unknown-uefi/release/axloader.efi
 target/x86_64-unknown-uefi/release/axloader-launcher.efi
 ```
+
+LoongArch ArceOS EFI is built through the ArceOS task runner. The build config
+selects `loongarch64-unknown-none-softfloat`, `arceos-efi`, one CPU and the
+EFI binary conversion; the QEMU config supplies the NVMe/FAT volume, virtio
+network and port forwarding from host port `3999` to guest port `2999`.
+
+```bash
+cargo xtask arceos build \
+  --package axloader \
+  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml
+cargo xtask arceos qemu \
+  --package axloader \
+  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml \
+  --qemu-config bootloader/axloader/qemu-loongarch64.toml
+```
+
+The LoongArch axstd runtime stores OTA files on the FAT volume under
+`axloader/A.EFI`, `axloader/B.EFI`, `axloader/STATE0.BIN` and
+`axloader/STATE1.BIN`. `State::mark_attempt()` is committed before a pending
+slot is entered; the running slot inherits its marker through
+`LoongBootPayload`, and `/api/v1/ota/confirm` commits the matching update ID and
+source. `LoongBootPayload` is a LoongArch-only v2 EFI configuration-table ABI with
+its own GUID; it does not reuse the `host-boot-abi` v1 contract removed by the
+latest dev initrd migration. Non-EFI LoongArch boot and UHI FDT handoff are
+outside this phase.
+
+On the first boot, the loader validates and flushes its own relocation-free
+LoongArch PE image into `A.EFI` before creating `STATE0.BIN`; subsequent boots
+therefore always have a materialized stable slot. This bootstrap accepts only
+the PE produced by the someboot EFI build (`ImageBase = 0` and no base
+relocation directory), and rejects another EFI image format.
 
 QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
 跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅

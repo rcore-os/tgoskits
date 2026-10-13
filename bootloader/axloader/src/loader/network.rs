@@ -2,8 +2,9 @@ extern crate alloc;
 
 use core::{ffi::c_void, ptr, time::Duration};
 
+use axloader::target::X86_64;
 use httpboot_protocol::{
-    BootArch, DEVICE_PROTOCOL_VERSION, LoaderAnnouncement, MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress,
+    DEVICE_PROTOCOL_VERSION, LoaderAnnouncement, MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress,
 };
 use uefi::{
     Event, Handle, Status, StatusExt,
@@ -107,7 +108,7 @@ impl Announcer {
             protocol_version: DEVICE_PROTOCOL_VERSION,
             mac_address: interface.mac_address,
             current_mac_address: interface.current_mac_address,
-            arch: BootArch::X86_64,
+            arch: X86_64.boot_arch,
             loader_version: env!("CARGO_PKG_VERSION").into(),
             boot_epoch: boot_epoch.into(),
             http_port: 2999,

@@ -24,6 +24,8 @@ default = ["alloc", "tls", "fd"]
 # Baseline required by every ArceOS Rust application. Applications enable this
 # through their own `arceos` feature instead of axbuild completing it at runtime.
 arceos = ["paging", "std-compat", "smp"]
+efi = ["ax-runtime/efi"]
+efi-loader = ["ax-runtime/efi-loader"]
 
 # Host-side implementations for OS-specific ArceOS capabilities.
 host-test = [
