@@ -295,6 +295,7 @@ fn error_status(error: &str) -> &'static str {
     match error {
         "unknown_boot_job" => "404 Not Found",
         "body too large" => "413 Payload Too Large",
+        "request header too large" => "431 Request Header Fields Too Large",
         _ => "400 Bad Request",
     }
 }
@@ -337,7 +338,11 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         }
         bytes.extend_from_slice(&chunk[..count]);
         if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-            break index + 4;
+            let header_end = index + 4;
+            if header_end > MAX_HEADER {
+                return Err("request header too large".into());
+            }
+            break header_end;
         }
     };
     let header = core::str::from_utf8(&bytes[..header_end])
@@ -360,17 +365,29 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
             .ok_or_else(|| "invalid HTTP header".to_string())?;
         headers.push((key.trim().into(), value.trim().into()));
     }
-    let length = headers
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
-        .map(|(_, value)| value.parse::<usize>())
-        .transpose()
-        .map_err(|_| "invalid content length".to_string())?
-        .unwrap_or(0);
+    let mut length = None;
+    for (key, value) in &headers {
+        if key.eq_ignore_ascii_case("content-length") {
+            if length.is_some() {
+                return Err("duplicate content length".to_string());
+            }
+            length = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid content length".to_string())?,
+            );
+        } else if key.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("transfer encoding is unsupported".to_string());
+        }
+    }
+    let length = length.unwrap_or(0);
     if length > MAX_IMAGE_BYTES.max(MAX_HTTP_BOOT_INITRAMFS_BYTES) {
         return Err("body too large".to_string());
     }
     let mut body = bytes[header_end..].to_vec();
+    if body.len() > length {
+        return Err("body exceeds content length".to_string());
+    }
     body.try_reserve(length.saturating_sub(body.len()))
         .map_err(|_| "body allocation failed".to_string())?;
     while body.len() < length {
@@ -382,7 +399,6 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         }
         body.extend_from_slice(&chunk[..count.min(length - body.len())]);
     }
-    body.truncate(length);
     Ok(HttpRequest {
         method: method.into(),
         path: path.into(),
