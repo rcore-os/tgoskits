@@ -1,13 +1,14 @@
+# See the aarch64 unified QEMU build for why `web-ui` rides along here.
 features = [
   "ax-driver/nvme",
-
+  "web-ui",
 ]
 log = "Info"
 max_cpu_num = 3
 target = "loongarch64-unknown-none-softfloat"
 vm_configs = [
-    "os/axvisor/configs/vms/qemu/loongarch64/linux-virtio-blk.toml",
-    "os/axvisor/configs/vms/qemu/loongarch64/linux-virtio-blk-vm2.toml",
+  "os/axvisor/configs/vms/qemu/loongarch64/linux-virtio-blk.toml",
+  "os/axvisor/configs/vms/qemu/loongarch64/linux-virtio-blk-vm2.toml",
 ]
 
 [env]
