@@ -19,6 +19,13 @@
 #define LOOP_SET_STATUS64 0x4c04
 #define LOOP_GET_STATUS64 0x4c05
 #define LO_FLAGS_AUTOCLEAR 4
+/* Block-device ioctls are _IO(0x12,nr) on every architecture this suite runs. */
+#ifndef BLKROSET
+#define BLKROSET 0x125d   /* _IO(0x12,93) */
+#endif
+#ifndef BLKFLSBUF
+#define BLKFLSBUF 0x1261  /* _IO(0x12,97) */
+#endif
 struct loop_info64 {
     uint64_t lo_device, lo_inode, lo_rdevice, lo_offset, lo_sizelimit;
     uint32_t lo_number, lo_encrypt_type, lo_encrypt_key_size, lo_flags;
@@ -106,6 +113,30 @@ static int check_exit_fs(int private_fs)
     return 0;
 }
 
+/* Rolling checksum of the raw backing image. The image is compared across a
+ * rejected flush to show the writeback really did not reach the store, and
+ * across a successful one to show that it did. */
+static int image_checksum(int fd, uint64_t *checksum)
+{
+    unsigned char buffer[16384];
+    uint64_t sum = 1469598103934665603ULL;
+    if (lseek(fd, 0, SEEK_SET) < 0)
+        return -1;
+    for (;;) {
+        ssize_t count = read(fd, buffer, sizeof(buffer));
+        if (count < 0)
+            return -1;
+        if (count == 0)
+            break;
+        for (ssize_t i = 0; i < count; i++)
+            sum = (sum ^ buffer[i]) * 1099511628211ULL;
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0)
+        return -1;
+    *checksum = sum;
+    return 0;
+}
+
 static int check_loop_mount_lifetime(void)
 {
     char image[] = "/tmp/ltp-loop-image.XXXXXX";
@@ -113,8 +144,11 @@ static int check_loop_mount_lifetime(void)
     char alias[] = "/tmp/ltp-loop-alias.XXXXXX";
     char other[] = "/tmp/ltp-loop-other.XXXXXX";
     char path[128];
+    char content[6];
     int image_fd = -1, loop_fd = -1, held_fd = -1, path_fd = -1;
-    int bound = 0, mounted = 0, alias_mounted = 0, result = 1;
+    int bound = 0, mounted = 0, alias_mounted = 0, other_mounted = 0, result = 1;
+    uint64_t image_before = 0, image_after = 0;
+    unsigned write_protect = 1;
     struct loop_info64 info = {0};
     image_fd = mkstemp(image);
     if (image_fd < 0 || ftruncate(image_fd, 64 * 1024 * 1024) ||
@@ -170,6 +204,44 @@ static int check_loop_mount_lifetime(void)
         fprintf(stderr, "mounted loop allowed a second mount\n");
         goto cleanup;
     }
+    /* Rejecting the second mount must leave the first one untouched. */
+    if (pwrite(held_fd, "usable", 6, 0) != 6 || fsync(held_fd) ||
+        pread(held_fd, content, sizeof(content), 0) != (ssize_t)sizeof(content) ||
+        memcmp(content, "usable", sizeof(content))) {
+        fprintf(stderr, "the mounted loop stopped working after a rejected second mount\n");
+        goto cleanup;
+    }
+    /* A mounted loop that became write-protected cannot persist its dirty
+       cache. BLKFLSBUF reports the EIO a rejected writeback would produce,
+       leaves the backing image byte-for-byte untouched, and keeps the cached
+       data for the next flush. */
+    if (ioctl(loop_fd, BLKROSET, &write_protect) ||
+        image_checksum(image_fd, &image_before))
+        goto cleanup;
+    errno = 0;
+    if (ioctl(loop_fd, BLKFLSBUF, 0) != -1 || errno != EIO) {
+        fprintf(stderr, "write-protected mounted loop flush was not rejected: errno=%d\n", errno);
+        goto cleanup;
+    }
+    if (image_checksum(image_fd, &image_after) || image_after != image_before) {
+        fprintf(stderr, "a rejected flush still wrote to the backing image\n");
+        goto cleanup;
+    }
+    /* Clearing the write protection lets the same call write new dirty cache
+       back: only the flush may touch the store, so the image changes exactly
+       when the flush succeeds. */
+    write_protect = 0;
+    if (ioctl(loop_fd, BLKROSET, &write_protect) || pwrite(held_fd, "after", 6, 0) != 6)
+        goto cleanup;
+    if (ioctl(loop_fd, BLKFLSBUF, 0)) {
+        fprintf(stderr, "flush after clearing write protection failed: errno=%d\n", errno);
+        goto cleanup;
+    }
+    if (image_checksum(image_fd, &image_after) || image_after == image_before) {
+        fprintf(stderr, "a successful flush did not write the dirty cache back\n");
+        goto cleanup;
+    }
+    puts("LOOP_READONLY_FLUSH_REJECTED_THEN_WRITTEN_BACK");
     close(loop_fd);
     loop_fd = -1;
     if (pwrite(held_fd, "shared", 6, 0) != 6 || fsync(held_fd))
@@ -188,7 +260,6 @@ static int check_loop_mount_lifetime(void)
     }
     close(loop_fd);
     loop_fd = -1;
-    char content[6];
     snprintf(path, sizeof(path), "%s/held", alias);
     path_fd = open(path, O_RDONLY | O_CLOEXEC);
     if (path_fd < 0 || pread(path_fd, content, sizeof(content), 0) != (ssize_t)sizeof(content) ||
@@ -234,6 +305,24 @@ static int check_loop_mount_lifetime(void)
     if (syscall(SYS_umount2, target, 0))
         goto cleanup;
     mounted = 0;
+    /* A committed unmount releases its mount holder, so the same backing store
+       is mountable again and still carries what the first mount wrote. */
+    if (mount("/dev/loop0", other, "ext4", 0, NULL))
+        goto cleanup;
+    other_mounted = 1;
+    snprintf(path, sizeof(path), "%s/held", other);
+    held_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (held_fd < 0 || pread(held_fd, content, sizeof(content), 0) != (ssize_t)sizeof(content) ||
+        memcmp(content, "cached", sizeof(content))) {
+        fprintf(stderr, "the same backing was not mountable after an unmount\n");
+        goto cleanup;
+    }
+    close(held_fd);
+    held_fd = -1;
+    if (syscall(SYS_umount2, other, 0))
+        goto cleanup;
+    other_mounted = 0;
+    puts("LOOP_MOUNT_REUSABLE_AFTER_UNMOUNT");
     puts("LOOP_MOUNT_LEASE_RELEASED_AFTER_LAST_FILE");
     result = 0;
 cleanup:
@@ -247,6 +336,8 @@ cleanup:
         umount2(alias, MNT_DETACH);
     if (mounted)
         umount2(target, MNT_DETACH);
+    if (other_mounted)
+        umount2(other, MNT_DETACH);
     if (bound && loop_fd >= 0)
         ioctl(loop_fd, LOOP_CLR_FD);
     if (loop_fd >= 0)
