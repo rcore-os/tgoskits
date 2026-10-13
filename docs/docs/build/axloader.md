@@ -63,6 +63,11 @@ cargo xtask arceos qemu \
   --qemu-config bootloader/axloader/qemu-loongarch64.toml
 ```
 
+CI 的控制面 smoke 改用 `qemu-loongarch64-http.toml`，并在后台运行同一 ArceOS
+镜像后执行 `python3 bootloader/axloader/scripts/loong-http-smoke.py`。该配置不以
+串口成功标记提前停止 QEMU，而是保留 `hostfwd`，让脚本完成状态、启动事务和
+OTA trial/confirm 后再关闭实例。
+
 LoongArch 的持久文件位于 FAT 卷的 `axloader/` 目录：`A.EFI`、`B.EFI`、
 `STATE0.BIN` 和 `STATE1.BIN`。`LaOta::prepare_bootstrap()` 在进入待试槽前提交
 `attempted`，`loader_slot` 随 EFI 配置表传给下一份 axstd loader，确认请求由
@@ -185,13 +190,14 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 
 QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
 
-当前配置的 LoongArch CI/QEMU 门禁只以 `network_ready: arch=loongarch64` 为正向成功
-判据，覆盖空白卷上的自身 bootstrap、网络接口选择和 HTTP listener；它不覆盖继承 EFI
-入口；宿主控制端口
-映射到 `3999`，guest 服务仍监听 `2999`，可供外部控制器使用。该命令不会自行发起宿主
-HTTP 请求，因此完整的 HTTP、目标 `efi_pe_entry`、cmdline/initramfs 和 OTA
-trial/confirm/rollback 仍需在带宿主控制器的独立 QEMU 场景中观察；其中
-`ready_to_handoff` 只表示 loader 已准备交接。LoongArch axstd 前端在活动 runtime UART
+当前 LoongArch CI/QEMU 门禁使用 `qemu-loongarch64-http.toml` 和
+`scripts/loong-http-smoke.py`，通过 host `3999` 到 guest `2999` 的转发执行真实
+HTTP 请求。它覆盖状态读取、manifest 幂等、serial continue、坏 ELF/OTA 拒绝、有效
+PE 槽位写入、重启 trial 和 confirm；普通 `qemu-loongarch64.toml` 的启动配置则以
+跨行正则同时等待 `network_ready: arch=loongarch64` 和
+`loader_server: port=2999`。当前 smoke 仍不执行有效 Loong ELF 的 `efi_pe_entry`
+目标交接、cmdline/initramfs 目标验收和失败 trial 的跨重启 rollback，这些路径需要
+后续独立 QEMU 场景；其中 `ready_to_handoff` 只表示 loader 已准备交接。LoongArch axstd 前端在活动 runtime UART
 未绑定时通过 axstd console 输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧，并在状态/UDP
 公告中报告 runtime 波特率和 8N1 参数；没有活动 UART 时报告 `ready=false`，客户端使用
 显式 `direct` continue。绑定后暂停身份帧，撤销绑定后恢复输出。

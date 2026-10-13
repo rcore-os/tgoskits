@@ -164,8 +164,8 @@ fn valid_image(image: &DeviceBootImage, max_size: usize) -> bool {
 mod tests {
     use httpboot_protocol::{BootArch, DeviceBootJob, ImageFormat};
 
-    use super::BootJobStore;
-    use crate::target::X86_64;
+    use super::{BootJobStore, FileKind};
+    use crate::target::{LOONGARCH64_EFI, X86_64};
 
     fn manifest(id: &str) -> DeviceBootJob {
         serde_json::from_value(serde_json::json!({
@@ -174,6 +174,20 @@ mod tests {
             "image_format": "elf64",
             "kernel": { "size": 1, "sha256": "00".repeat(32) },
             "entry_symbol": "__x86_64_efi_pe_entry"
+        }))
+        .unwrap()
+    }
+
+    fn loong_manifest(id: &str) -> DeviceBootJob {
+        serde_json::from_value(serde_json::json!({
+            "boot_id": id,
+            "arch": "loongarch64",
+            "image_format": "elf64",
+            "kernel": {
+                "size": 1,
+                "sha256": "ca358758f6d27e6cf45272937977a748fd88391db679ceda7dc7bf1f005ee879"
+            },
+            "entry_symbol": "efi_pe_entry"
         }))
         .unwrap()
     }
@@ -188,5 +202,22 @@ mod tests {
         different.arch = BootArch::Loongarch64;
         different.image_format = ImageFormat::Elf64;
         assert_eq!(jobs.create(different, X86_64, 1, 1), Err("boot_job_busy"));
+    }
+
+    #[test]
+    fn loong_manifest_retry_and_upload_reach_ready() {
+        let mut jobs = BootJobStore::default();
+        let first = loong_manifest("loong");
+        assert_eq!(jobs.create(first.clone(), LOONGARCH64_EFI, 1, 1), Ok(true));
+        assert_eq!(jobs.create(first, LOONGARCH64_EFI, 1, 1), Ok(false));
+        assert_eq!(jobs.upload("loong", FileKind::Kernel, vec![7]), Ok(()));
+        assert_eq!(jobs.status().unwrap().phase, "ready");
+
+        let mut different = loong_manifest("other");
+        different.entry_symbol = Some("wrong_entry".into());
+        assert_eq!(
+            jobs.create(different, LOONGARCH64_EFI, 1, 1),
+            Err("boot_job_busy")
+        );
     }
 }

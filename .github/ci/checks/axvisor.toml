@@ -227,10 +227,38 @@ runner = "ubuntu-axvisor-lvz"
 cache_key = ""
 timeout_minutes = 90
 command = '''
+set -euo pipefail
+cargo test -p axloader --lib
+python3 - <<'PY'
+from pathlib import Path
+
+Path("target/axbuild/rootfs/arceos-loongarch64-fat32.img").unlink(missing_ok=True)
+PY
+qemu_log="$(mktemp)"
 cargo xtask arceos qemu \
   --package axloader \
   --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml \
-  --qemu-config bootloader/axloader/qemu-loongarch64.toml
+  --qemu-config bootloader/axloader/qemu-loongarch64-http.toml \
+  >"$qemu_log" 2>&1 &
+qemu_pid=$!
+cleanup_qemu() {
+  kill "$qemu_pid" 2>/dev/null || true
+  wait "$qemu_pid" 2>/dev/null || true
+}
+trap cleanup_qemu EXIT
+python3 bootloader/axloader/scripts/loong-http-smoke.py \
+  --image target/loongarch64-unknown-linux-musl/release/axloader.bin
+cleanup_qemu
+trap - EXIT
+python3 - "$qemu_log" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+log = Path(sys.argv[1]).read_text(errors="replace")
+if re.search(r"\bpanic(?:ked)?\b", log, re.IGNORECASE):
+    raise SystemExit(f"LoongArch axloader QEMU panic detected:\n{log[-4000:]}")
+PY
 '''
 
 [[check]]
