@@ -184,10 +184,12 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 
 QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
 
-LoongArch 验证还要观察 `network_ready: arch=loongarch64`、`ready_to_handoff` 和
-目标 `efi_pe_entry` 的输出，并在同一 FAT 卷上检查槽摘要、pending/attempted、
-确认和回滚。当前 LoongArch QEMU 配置把宿主控制端口映射到 `3999`；guest 服务仍
-监听 `2999`。
+当前配置的 LoongArch CI/QEMU 门禁只以 `network_ready: arch=loongarch64` 为正向成功
+判据，覆盖自身 bootstrap、继承 EFI 入口、网络接口选择和 HTTP listener；宿主控制端口
+映射到 `3999`，guest 服务仍监听 `2999`，可供外部控制器使用。该命令不会自行发起宿主
+HTTP 请求，因此完整的 HTTP、目标 `efi_pe_entry`、cmdline/initramfs 和 OTA
+trial/confirm/rollback 仍需在带宿主控制器的独立 QEMU 场景中观察；其中
+`ready_to_handoff` 只表示 loader 已准备交接。
 
 ## 4. 故障定位
 
