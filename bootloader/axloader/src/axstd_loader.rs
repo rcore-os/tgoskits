@@ -21,7 +21,7 @@ use axloader::{
 use httpboot_protocol::{
     BootArch, DEVICE_PROTOCOL_VERSION, DeviceBootJob, LoaderAnnouncement, LoaderDeviceStatus,
     LoaderHardwareInfo, LoaderOtaState, MAX_DISCOVERY_DATAGRAM_BYTES,
-    MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress, OtaOutcome, OtaSource,
+    MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress, OtaOutcome, OtaSource, SerialParameters,
 };
 use sha2::{Digest, Sha256};
 use uefi::Status;
@@ -29,6 +29,7 @@ use uefi::Status;
 const HTTP_PORT: u16 = 2999;
 const DISCOVERY_PORT: u16 = 2998;
 const MAX_HEADER: usize = 4 * 1024;
+const MAX_SERIAL_BINDING_BYTES: usize = 1024;
 const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const OTA_ROOT: &str = "axloader";
 const PE_MACHINE_LOONGARCH64: u16 = 0x6264;
@@ -79,12 +80,13 @@ pub fn run() {
     }
     let interface = select_interface().unwrap_or_else(|error| panic!("network_ready: {error}"));
     let epoch = boot_epoch(interface.mac_address(), ota.boot_identity(current_digest));
-    interface.announce(epoch.as_str());
     let mut server = BootServer::new(
         epoch,
         interface.mac_address(),
         interface.current_mac_address(),
     );
+    server.serial_beacon();
+    interface.announce(server.epoch.as_str(), server.serial_ready());
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, HTTP_PORT))
         .unwrap_or_else(|error| panic!("loader_server: {error}"));
     println!(
@@ -94,7 +96,8 @@ pub fn run() {
     println!("loader_server: port={HTTP_PORT}");
 
     loop {
-        interface.announce(server.epoch.as_str());
+        server.serial_beacon();
+        interface.announce(server.epoch.as_str(), server.serial_ready());
         let (mut stream, _) = listener
             .accept()
             .unwrap_or_else(|error| panic!("loader_accept: {error}"));
@@ -154,8 +157,8 @@ impl BootTransport for Interface {
 }
 
 impl Interface {
-    fn announce(&self, epoch: &str) {
-        announce(self.mac_address(), epoch);
+    fn announce(&self, epoch: &str, serial_ready: bool) {
+        announce(self.mac_address(), epoch, serial_ready);
     }
 }
 
@@ -175,7 +178,7 @@ fn select_interface() -> Result<Interface, &'static str> {
         .ok_or("no usable Ethernet interface")
 }
 
-fn announce(mac: MacAddress, epoch: &str) {
+fn announce(mac: MacAddress, epoch: &str, serial_ready: bool) {
     let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
         return;
     };
@@ -188,7 +191,7 @@ fn announce(mac: MacAddress, epoch: &str) {
         boot_epoch: epoch.into(),
         http_port: HTTP_PORT,
         serial_id: Some(epoch.into()),
-        serial_ready: false,
+        serial_ready,
     }) else {
         return;
     };
@@ -269,12 +272,7 @@ fn handle_connection(
     let request = match read_request(stream) {
         Ok(request) => request,
         Err(error) => {
-            let status = if error == "body too large" {
-                "413 Payload Too Large"
-            } else {
-                "400 Bad Request"
-            };
-            let response = Response::json(status, error_json(&error), Action::None);
+            let response = Response::json(error_status(&error), error_json(&error), Action::None);
             stream
                 .write_all(response.bytes())
                 .map_err(|_| "response write failed".to_string())?;
@@ -295,8 +293,20 @@ fn error_status(error: &str) -> &'static str {
     match error {
         "unknown_boot_job" => "404 Not Found",
         "body too large" => "413 Payload Too Large",
+        "request body too large" => "400 Bad Request",
         "request header too large" => "431 Request Header Fields Too Large",
         _ => "400 Bad Request",
+    }
+}
+
+fn request_body_limit(method: &str, path: &str) -> usize {
+    match (method, path) {
+        ("POST", "/api/v1/serial/continue") | ("POST", "/api/v1/ota/confirm") => {
+            MAX_SERIAL_BINDING_BYTES
+        }
+        ("POST", "/api/v1/boot/jobs") => MAX_HEADER,
+        ("PUT", "/api/v1/ota/image") => MAX_IMAGE_BYTES,
+        _ => MAX_IMAGE_BYTES.max(MAX_HTTP_BOOT_INITRAMFS_BYTES),
     }
 }
 
@@ -381,8 +391,15 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         }
     }
     let length = length.unwrap_or(0);
-    if length > MAX_IMAGE_BYTES.max(MAX_HTTP_BOOT_INITRAMFS_BYTES) {
-        return Err("body too large".to_string());
+    let body_limit = request_body_limit(method, path);
+    if length > body_limit {
+        let error = match (method, path) {
+            ("POST", "/api/v1/serial/continue")
+            | ("POST", "/api/v1/ota/confirm")
+            | ("POST", "/api/v1/boot/jobs") => "request body too large",
+            _ => "body too large",
+        };
+        return Err(error.to_string());
     }
     let mut body = bytes[header_end..].to_vec();
     if body.len() > length {
@@ -397,7 +414,11 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         if count == 0 {
             return Err("short body".to_string());
         }
-        body.extend_from_slice(&chunk[..count.min(length - body.len())]);
+        let remaining = length - body.len();
+        if count > remaining {
+            return Err("body exceeds content length".to_string());
+        }
+        body.extend_from_slice(&chunk[..count]);
     }
     Ok(HttpRequest {
         method: method.into(),
@@ -519,6 +540,13 @@ fn route(
         ));
     }
     if request.method == "PUT" && request.path == "/api/v1/ota/image" {
+        if ota.state.pending.is_some() {
+            return Ok(Response::json(
+                "409 Conflict",
+                br#"{"error":"ota_trial_requires_confirmation"}"#,
+                Action::None,
+            ));
+        }
         if server.busy() {
             return Ok(Response::json(
                 "409 Conflict",
@@ -668,6 +696,7 @@ struct BootServer {
 impl BootServer {
     fn new(epoch: String, mac: MacAddress, current_mac: MacAddress) -> Self {
         let serial_id = epoch.clone();
+        let parameters = active_serial_parameters();
         Self {
             epoch,
             mac,
@@ -675,11 +704,23 @@ impl BootServer {
             jobs: BootJobStore::default(),
             serial: httpboot_protocol::LoaderSerialStatus {
                 serial_id,
-                ready: false,
-                parameters: None,
+                ready: parameters.is_some(),
+                parameters,
                 binding: None,
-                error: Some("UART serial binding is unavailable in axstd EFI mode".into()),
+                error: parameters
+                    .is_none()
+                    .then(|| "axstd runtime console has no active UART binding".into()),
             },
+        }
+    }
+
+    fn serial_ready(&self) -> bool {
+        self.serial.ready
+    }
+
+    fn serial_beacon(&self) {
+        if self.serial.ready && self.serial.binding.is_none() {
+            println!("AXLOADER-SERIAL/1 {}", self.serial.serial_id);
         }
     }
 
@@ -748,6 +789,20 @@ impl BootServer {
         .map_err(|_| "host_payload_failed")?;
         Ok(BootExecution { elf, payload })
     }
+}
+
+fn active_serial_parameters() -> Option<SerialParameters> {
+    let runtime = std::os::arceos::modules::ax_runtime::serial::runtimes()
+        .iter()
+        .find(|runtime| std::os::arceos::modules::ax_runtime::console::is_active(runtime))?;
+    let baud_rate = u64::from(runtime.info().initial_baudrate);
+    // The runtime keeps the firmware's adopted line settings; only the
+    // baud-rate field is exposed by SerialDeviceInfo. The remaining fields
+    // use the protocol's documented 8N1/no-flow-control default.
+    (baud_rate != 0).then(|| SerialParameters {
+        baud_rate,
+        ..SerialParameters::default()
+    })
 }
 
 #[derive(Debug)]
@@ -1050,6 +1105,9 @@ impl LoadedPe {
             core::ptr::copy_nonoverlapping(image.as_ptr(), target, headers);
         }
         for section in sections {
+            // SAFETY: `pe_layout` checked each section's virtual range against
+            // `image_size`, and `target` points to the allocation of
+            // `page_count * 4096` bytes covering that complete image.
             let destination = unsafe { target.add(section.virtual_address) };
             if section.raw_size != 0 {
                 // SAFETY: pe_layout checked the raw range and the destination
@@ -1266,6 +1324,9 @@ fn copy_segments(
 ) -> Result<(), ElfError> {
     for segment in segments {
         let offset = usize::try_from(segment.paddr - load_addr).map_err(|_| ElfError::Invalid)?;
+        // SAFETY: `load_segments` rejects overlapping/out-of-range PT_LOAD
+        // ranges, and the image allocation covers the complete aligned range
+        // from `load_addr` through every segment end.
         let destination = unsafe { target.as_ptr().add(offset) };
         let source = usize::try_from(segment.offset).map_err(|_| ElfError::Invalid)?;
         let filesz = usize::try_from(segment.filesz).map_err(|_| ElfError::Invalid)?;
@@ -1282,7 +1343,8 @@ fn copy_segments(
             }
         }
         if memsz > filesz {
-            // SAFETY: the bss tail is inside the allocated PT_LOAD range.
+            // SAFETY: `filesz <= memsz` and the validated PT_LOAD range keeps
+            // both the start and the zeroed tail within the allocation.
             unsafe { core::ptr::write_bytes(destination.add(filesz), 0, memsz - filesz) };
         }
     }
@@ -1345,7 +1407,11 @@ fn section_bytes(image: &[u8], offset: u64, size: u64) -> Option<&[u8]> {
 
 fn read_struct<T: Copy>(image: &[u8], offset: usize) -> Option<T> {
     let end = offset.checked_add(mem::size_of::<T>())?;
-    Some(unsafe { core::ptr::read_unaligned(image.get(offset..end)?.as_ptr().cast()) })
+    let bytes = image.get(offset..end)?;
+    // SAFETY: `bytes` has exactly `size_of::<T>()` bytes, its pointer is valid
+    // for reads, and `read_unaligned` does not require alignment. Every caller
+    // uses a `Copy` POD header whose bit patterns are valid values.
+    Some(unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast()) })
 }
 
 fn align_down(value: u64, align: u64) -> u64 {
@@ -1663,6 +1729,10 @@ impl LaOta {
     }
 
     fn commit(&mut self, state: &State) -> Result<(), &'static str> {
+        <Self as OtaStorage>::commit_state(self, state)
+    }
+
+    fn commit_inner(&mut self, state: &State) -> Result<(), &'static str> {
         self.index = Self::write_state(self.index, state)?;
         self.state = state.clone();
         Ok(())
@@ -1827,7 +1897,7 @@ impl OtaStorage for LaOta {
     type Error = &'static str;
 
     fn commit_state(&mut self, state: &State) -> Result<(), Self::Error> {
-        self.commit(state)
+        self.commit_inner(state)
     }
 }
 
