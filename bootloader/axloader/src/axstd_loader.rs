@@ -48,12 +48,15 @@ static BOOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn run() {
     println!("axloader: LoongArch ArceOS EFI frontend");
-    let mut ota = LaOta::open();
+    let current_image = current_loader_image()
+        .unwrap_or_else(|| panic!("ota_bootstrap: current loader image unavailable"));
+    let current_digest: [u8; 32] = Sha256::digest(&current_image).into();
+    let mut ota = LaOta::open(&current_image);
     if let Some(slot) = someboot::inherited_loader_slot() {
         ota.set_running_slot(slot)
             .unwrap_or_else(|error| panic!("ota_slot: {error}"));
     } else if let Some(slot) = ota
-        .prepare_bootstrap()
+        .prepare_bootstrap(current_digest)
         .unwrap_or_else(|error| panic!("ota_bootstrap: {error}"))
     {
         match ota.launch_slot(slot) {
@@ -1358,7 +1361,7 @@ struct LaOta {
 }
 
 impl LaOta {
-    fn open() -> Self {
+    fn open(current_image: &[u8]) -> Self {
         fs::create_dir_all(OTA_ROOT)
             .unwrap_or_else(|_| panic!("ota_bootstrap: failed to access OTA directory"));
         Self::cleanup_temporary_slots();
@@ -1377,13 +1380,10 @@ impl LaOta {
                             Sha256::digest(&bytes).into()
                         }
                         None => {
-                            let bytes = current_loader_image().unwrap_or_else(|| {
-                                panic!("ota_bootstrap: no stable LoongArch EFI image")
-                            });
-                            Self::persist_slot_image(Slot::A, &bytes).unwrap_or_else(|error| {
-                                panic!("ota_bootstrap: failed to persist A.EFI: {error}")
-                            });
-                            Sha256::digest(&bytes).into()
+                            Self::persist_slot_image(Slot::A, current_image).unwrap_or_else(
+                                |error| panic!("ota_bootstrap: failed to persist A.EFI: {error}"),
+                            );
+                            Sha256::digest(current_image).into()
                         }
                     };
                     let state = State::initial(digest).expect("nonzero initial OTA digest");
@@ -1413,7 +1413,10 @@ impl LaOta {
         Ok(())
     }
 
-    fn prepare_bootstrap(&mut self) -> Result<Option<Slot>, &'static str> {
+    fn prepare_bootstrap(
+        &mut self,
+        current_digest: [u8; 32],
+    ) -> Result<Option<Slot>, &'static str> {
         if self.state.attempted {
             let next = self
                 .state
@@ -1442,7 +1445,14 @@ impl LaOta {
             self.commit(&next)?;
         }
         self.slot = candidate;
-        Ok(Some(candidate))
+        // The LoongArch EFI entry is the loader itself, rather than a separate
+        // launcher. Continue in place when firmware already loaded the selected
+        // slot; only invoke the slot image when the firmware image is different.
+        if current_digest.as_slice() == self.state.digest(candidate) {
+            Ok(None)
+        } else {
+            Ok(Some(candidate))
+        }
     }
 
     fn slot_matches_state(&self, slot: Slot) -> Result<bool, &'static str> {
