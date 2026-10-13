@@ -8,7 +8,7 @@ AxVisor 通过 `qemu,virtual-cpufreq` 为 Linux 客户机提供归一化性能�
 
 ### 1.1 设备与宿主端口
 
-设备节点使用 `compatible = "qemu,virtual-cpufreq"`，每个 vCPU bank 占 `0x1000`。寄存器由 `VirtualCpuFreqDevice` 按 upstream ABI 处理，`SET_PERF` 的范围是 `1..=1024`，性能表只包含归一化值，不暴露频率或电压。
+设备节点使用 `compatible = "qemu,virtual-cpufreq"`，每个 vCPU bank 占 `0x1000`。寄存器由 `VirtualCpuFreqDevice` 按 upstream ABI 处理，`SET_PERF` 的范围是 `1..=VIRTUAL_CPUFREQ_MAX_PERFORMANCE`（当前为 1024），性能表只包含归一化值，不暴露频率或电压。AxVisor 适配层用编译期断言把该上限与 `ax-runtime::cpufreq::GUEST_MAX_PERFORMANCE` 绑在一起。
 
 | 偏移 | 方向 | 作用 |
 | ---: | :---: | :--- |

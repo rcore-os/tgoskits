@@ -19,7 +19,7 @@ use crate::{
     guest_memory::GuestMemoryPort,
     host::{HostTime, HostTimer, default_host},
     irq::model::SourceEvent,
-    manager::{ControlShared, GuestCpuFreqBackend},
+    manager::{ControlShared, GuestCpuFreqBackend, GuestCpuFreqError},
     sync::MutexExt,
 };
 
@@ -470,9 +470,9 @@ impl GuestCpuFreqPort for DevicePorts {
         performance: u32,
     ) -> DeviceManagerResult {
         let backend = self.cpu_freq.as_ref().ok_or_else(|| {
-            port_error(
+            cpu_freq_port_error(
                 "set guest CPU frequency hint",
-                "no host CPU frequency backend",
+                GuestCpuFreqError::Unavailable("no host CPU frequency backend"),
             )
         })?;
         let run = self.signals.run_id();
@@ -484,7 +484,7 @@ impl GuestCpuFreqPort for DevicePorts {
                 domain,
                 performance,
             )
-            .map_err(|error| port_error("set guest CPU frequency hint", error))
+            .map_err(|error| cpu_freq_port_error("set guest CPU frequency hint", error))
     }
 
     fn current_performance(
@@ -494,9 +494,9 @@ impl GuestCpuFreqPort for DevicePorts {
         domain: u32,
     ) -> DeviceManagerResult<u32> {
         let backend = self.cpu_freq.as_ref().ok_or_else(|| {
-            port_error(
+            cpu_freq_port_error(
                 "read guest CPU frequency performance",
-                "no host CPU frequency backend",
+                GuestCpuFreqError::Unavailable("no host CPU frequency backend"),
             )
         })?;
         let run = self.signals.run_id();
@@ -507,7 +507,7 @@ impl GuestCpuFreqPort for DevicePorts {
                 vcpu_id.as_usize(),
                 domain,
             )
-            .map_err(|error| port_error("read guest CPU frequency performance", error))
+            .map_err(|error| cpu_freq_port_error("read guest CPU frequency performance", error))
     }
 }
 
@@ -557,5 +557,201 @@ fn port_error(operation: &'static str, error: impl std::fmt::Debug) -> DeviceMan
     DeviceManagerError::InvalidState {
         operation,
         detail: format!("{error:?}"),
+    }
+}
+
+fn cpu_freq_port_error(operation: &'static str, error: GuestCpuFreqError) -> DeviceManagerError {
+    let detail = error.to_string();
+    match error {
+        GuestCpuFreqError::InvalidRequest(_) => {
+            DeviceManagerError::InvalidInput { operation, detail }
+        }
+        GuestCpuFreqError::Unavailable(_) | GuestCpuFreqError::HardwareFailure(_) => {
+            DeviceManagerError::InvalidState { operation, detail }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod cpu_freq_port_tests {
+    use std::sync::{Arc, Mutex, Weak};
+
+    use axdevice::DeviceManagerError;
+    use axdevice_base::{DeviceId, DeviceVcpuId};
+
+    use super::*;
+    use crate::{GuestCpuFreqBackend, GuestCpuFreqError, RunId, VMId, VmKey};
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl RecordingBackend {
+        fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+
+        fn push(&self, event: impl Into<String>) {
+            self.events.lock().unwrap().push(event.into());
+        }
+    }
+
+    impl GuestCpuFreqBackend for RecordingBackend {
+        fn bind(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("bind {vm_id} {run_generation}"));
+        }
+
+        fn set_hint(
+            &self,
+            vm_id: VMId,
+            run_generation: u64,
+            vcpu_id: usize,
+            domain: u32,
+            performance: u32,
+        ) -> Result<(), GuestCpuFreqError> {
+            self.push(format!(
+                "set {vm_id} {run_generation} {vcpu_id} {domain} {performance}"
+            ));
+            Ok(())
+        }
+
+        fn current_performance(
+            &self,
+            vm_id: VMId,
+            run_generation: u64,
+            vcpu_id: usize,
+            domain: u32,
+        ) -> Result<u32, GuestCpuFreqError> {
+            self.push(format!(
+                "current {vm_id} {run_generation} {vcpu_id} {domain}"
+            ));
+            Ok(512)
+        }
+
+        fn clear(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("clear {vm_id} {run_generation}"));
+        }
+
+        fn suspend(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("suspend {vm_id} {run_generation}"));
+        }
+
+        fn resume(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("resume {vm_id} {run_generation}"));
+        }
+    }
+
+    struct RejectingBackend;
+
+    impl GuestCpuFreqBackend for RejectingBackend {
+        fn set_hint(
+            &self,
+            _vm_id: VMId,
+            _run_generation: u64,
+            _vcpu_id: usize,
+            _domain: u32,
+            _performance: u32,
+        ) -> Result<(), GuestCpuFreqError> {
+            Err(GuestCpuFreqError::InvalidRequest(
+                "guest CPU frequency domain is invalid",
+            ))
+        }
+
+        fn current_performance(
+            &self,
+            _vm_id: VMId,
+            _run_generation: u64,
+            _vcpu_id: usize,
+            _domain: u32,
+        ) -> Result<u32, GuestCpuFreqError> {
+            Err(GuestCpuFreqError::Unavailable(
+                "host CPU frequency worker is not ready",
+            ))
+        }
+
+        fn clear(&self, _vm_id: VMId, _run_generation: u64) {}
+
+        fn suspend(&self, _vm_id: VMId, _run_generation: u64) {}
+
+        fn resume(&self, _vm_id: VMId, _run_generation: u64) {}
+    }
+
+    fn ports(generation: u64, backend: Option<Arc<dyn GuestCpuFreqBackend>>) -> Arc<DevicePorts> {
+        let signals = RunSignals::new(RunId::new(VmKey::new(1, 1), generation), 1)
+            .expect("valid run signals");
+        DevicePorts::new(signals, Weak::new(), backend)
+    }
+
+    #[test]
+    fn device_ports_bind_clear_suspend_and_resume_one_run_generation() {
+        let backend = Arc::new(RecordingBackend::default());
+        let ports = ports(7, Some(backend.clone()));
+        ports
+            .set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 3, 900)
+            .unwrap();
+        assert_eq!(
+            ports.current_performance(DeviceId::new(1), DeviceVcpuId::new(0), 3),
+            Ok(512)
+        );
+        ports.clear_cpu_freq_hints();
+        ports.clear_cpu_freq_hints();
+        ports.suspend().unwrap();
+        ports.resume().unwrap();
+        ports.close();
+        assert_eq!(
+            backend.events(),
+            [
+                "bind 1 7",
+                "set 1 7 0 3 900",
+                "current 1 7 0 3",
+                "clear 1 7",
+                "clear 1 7",
+                "suspend 1 7",
+                "resume 1 7",
+                "clear 1 7",
+            ]
+        );
+    }
+
+    #[test]
+    fn clearing_one_run_generation_does_not_bind_or_clear_another() {
+        let backend = Arc::new(RecordingBackend::default());
+        let first = ports(1, Some(backend.clone()));
+        first
+            .set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 1, 256)
+            .unwrap();
+        first.close();
+        let second = ports(2, Some(backend.clone()));
+        second
+            .set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 1, 1024)
+            .unwrap();
+        second.close();
+        assert_eq!(
+            backend.events(),
+            [
+                "bind 1 1",
+                "set 1 1 0 1 256",
+                "clear 1 1",
+                "bind 1 2",
+                "set 1 2 0 1 1024",
+                "clear 1 2",
+            ]
+        );
+    }
+
+    #[test]
+    fn cpu_freq_port_maps_typed_backend_errors() {
+        let ports = ports(1, Some(Arc::new(RejectingBackend)));
+        assert!(matches!(
+            ports.set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 0, 256),
+            Err(DeviceManagerError::InvalidInput { operation, .. })
+                if operation == "set guest CPU frequency hint"
+        ));
+        assert!(matches!(
+            ports.current_performance(DeviceId::new(1), DeviceVcpuId::new(0), 0),
+            Err(DeviceManagerError::InvalidState { operation, .. })
+                if operation == "read guest CPU frequency performance"
+        ));
     }
 }

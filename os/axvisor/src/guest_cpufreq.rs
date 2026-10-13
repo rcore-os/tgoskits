@@ -7,7 +7,10 @@
 use alloc::vec::Vec;
 
 use ax_runtime::cpufreq::{self, FrequencyError};
-use axvm::{GuestCpuFreqBackend, VMId};
+use axvm::{GuestCpuFreqBackend, GuestCpuFreqError, VMId};
+
+const _: () =
+    assert!(axvm::VIRTUAL_CPUFREQ_MAX_PERFORMANCE == ax_runtime::cpufreq::GUEST_MAX_PERFORMANCE);
 
 pub(crate) struct GuestCpuFreqService;
 
@@ -17,14 +20,48 @@ impl GuestCpuFreqService {
     }
 }
 
-fn error_detail(error: FrequencyError) -> &'static str {
+fn map_frequency_error(error: FrequencyError) -> GuestCpuFreqError {
     match error {
-        FrequencyError::NotSupported => "host CPU frequency control is unsupported",
-        FrequencyError::NotReady => "host CPU frequency worker is not ready",
-        FrequencyError::InvalidDomain => "guest CPU frequency domain is invalid",
-        FrequencyError::OppUnavailable => "no safe host OPP is available",
-        FrequencyError::HardwareFailure => "host CPU frequency transition failed",
+        FrequencyError::NotSupported => {
+            GuestCpuFreqError::Unavailable("host CPU frequency control is unsupported")
+        }
+        FrequencyError::NotReady => {
+            GuestCpuFreqError::Unavailable("host CPU frequency worker is not ready")
+        }
+        FrequencyError::InvalidDomain => {
+            GuestCpuFreqError::InvalidRequest("guest CPU frequency domain is invalid")
+        }
+        FrequencyError::OppUnavailable => {
+            GuestCpuFreqError::Unavailable("no safe host OPP is available")
+        }
+        FrequencyError::HardwareFailure => {
+            GuestCpuFreqError::HardwareFailure("host CPU frequency transition failed")
+        }
     }
+}
+
+fn domain_overflow() -> GuestCpuFreqError {
+    GuestCpuFreqError::InvalidRequest("guest CPU frequency domain overflows")
+}
+
+fn missing_domain() -> GuestCpuFreqError {
+    GuestCpuFreqError::InvalidRequest("guest CPU frequency domain is not present on this host")
+}
+
+fn ambiguous_domain() -> GuestCpuFreqError {
+    GuestCpuFreqError::InvalidRequest(
+        "host CPU frequency domains are not contiguous; refusing an ambiguous guest domain",
+    )
+}
+
+fn resolve_domain(domain: u32) -> Result<(usize, cpufreq::DomainInfo), GuestCpuFreqError> {
+    let domain = usize::try_from(domain).map_err(|_| domain_overflow())?;
+    let infos = cpufreq::domains().map_err(map_frequency_error)?;
+    let info = infos.get(domain).cloned().ok_or_else(missing_domain)?;
+    if usize::try_from(info.id.raw()).ok() != Some(domain) {
+        return Err(ambiguous_domain());
+    }
+    Ok((domain, info))
 }
 
 impl GuestCpuFreqBackend for GuestCpuFreqService {
@@ -32,29 +69,26 @@ impl GuestCpuFreqBackend for GuestCpuFreqService {
         cpufreq::bind_guest_run(vm_id, run_generation);
     }
 
-    fn performance_table(&self, domain: u32) -> Result<Vec<u32>, &'static str> {
-        let domain = usize::try_from(domain).map_err(|_| "guest CPU frequency domain overflows")?;
-        let infos = cpufreq::domains().map_err(error_detail)?;
-        let info = infos
-            .get(domain)
-            .ok_or("guest CPU frequency domain is not present on this host")?;
-        if usize::try_from(info.id.raw()).ok() != Some(domain) {
-            return Err(
-                "host CPU frequency domains are not contiguous; refusing an ambiguous guest domain",
-            );
-        }
-        let snapshot = cpufreq::snapshot(info.id).map_err(error_detail)?;
+    fn performance_table(&self, domain: u32) -> Result<Vec<u32>, GuestCpuFreqError> {
+        let (domain, info) = resolve_domain(domain)?;
+        let snapshot = cpufreq::snapshot(info.id).map_err(map_frequency_error)?;
         if snapshot.available_opps.is_empty() {
-            return Err("host CPU frequency domain has no currently safe OPP");
+            return Err(GuestCpuFreqError::Unavailable(
+                "host CPU frequency domain has no currently safe OPP",
+            ));
         }
         let mut opps = snapshot.all_opps;
         opps.sort_unstable_by_key(|opp| opp.frequency_hz);
         opps.dedup_by_key(|opp| opp.frequency_hz);
         if opps.is_empty() {
-            return Err("host CPU frequency domain has no hardware OPP");
+            return Err(GuestCpuFreqError::Unavailable(
+                "host CPU frequency domain has no hardware OPP",
+            ));
         }
         if opps.len() > 64 {
-            return Err("host CPU frequency domain exposes more than 64 safe OPPs");
+            return Err(GuestCpuFreqError::InvalidRequest(
+                "host CPU frequency domain exposes more than 64 safe OPPs",
+            ));
         }
         let table = cpufreq::guest_performance_table(&opps);
         let current_index = opps
@@ -62,23 +96,20 @@ impl GuestCpuFreqBackend for GuestCpuFreqService {
             .rposition(|opp| opp.frequency_hz <= snapshot.current_opp.frequency_hz)
             .unwrap_or(0);
         cpufreq::seed_guest_domain_performance(domain, table[current_index])
-            .map_err(error_detail)?;
+            .map_err(map_frequency_error)?;
         Ok(table)
     }
 
-    fn validate_placement(&self, domain: u32, host_cpus: &[usize]) -> Result<(), &'static str> {
-        let domain = usize::try_from(domain).map_err(|_| "guest CPU frequency domain overflows")?;
-        let infos = cpufreq::domains().map_err(error_detail)?;
-        let info = infos
-            .get(domain)
-            .ok_or("guest CPU frequency domain is not present on this host")?;
-        if usize::try_from(info.id.raw()).ok() != Some(domain) {
-            return Err(
-                "host CPU frequency domains are not contiguous; refusing an ambiguous guest domain",
-            );
-        }
+    fn validate_placement(
+        &self,
+        domain: u32,
+        host_cpus: &[usize],
+    ) -> Result<(), GuestCpuFreqError> {
+        let (_, info) = resolve_domain(domain)?;
         if host_cpus.is_empty() || host_cpus.iter().any(|cpu| !info.cpu_ids.contains(cpu)) {
-            return Err("guest vCPU placement is outside the selected host CPU frequency domain");
+            return Err(GuestCpuFreqError::InvalidRequest(
+                "guest vCPU placement is outside the selected host CPU frequency domain",
+            ));
         }
         Ok(())
     }
@@ -90,13 +121,13 @@ impl GuestCpuFreqBackend for GuestCpuFreqService {
         vcpu_id: usize,
         domain: u32,
         performance: u32,
-    ) -> Result<(), &'static str> {
-        let domain = usize::try_from(domain).map_err(|_| "guest CPU frequency domain overflows")?;
+    ) -> Result<(), GuestCpuFreqError> {
+        let domain = usize::try_from(domain).map_err(|_| domain_overflow())?;
         if cpufreq::domain_count().is_none_or(|count| domain >= count) {
-            return Err("guest CPU frequency domain is not present on this host");
+            return Err(missing_domain());
         }
         cpufreq::publish_guest_hint(vm_id, run_generation, vcpu_id, domain, performance)
-            .map_err(error_detail)
+            .map_err(map_frequency_error)
     }
 
     fn current_performance(
@@ -105,14 +136,14 @@ impl GuestCpuFreqBackend for GuestCpuFreqService {
         run_generation: u64,
         vcpu_id: usize,
         domain: u32,
-    ) -> Result<u32, &'static str> {
-        let domain = usize::try_from(domain).map_err(|_| "guest CPU frequency domain overflows")?;
+    ) -> Result<u32, GuestCpuFreqError> {
+        let domain = usize::try_from(domain).map_err(|_| domain_overflow())?;
         if cpufreq::domain_count().is_none_or(|count| domain >= count) {
-            return Err("guest CPU frequency domain is not present on this host");
+            return Err(missing_domain());
         }
         cpufreq::guest_hint_performance(vm_id, run_generation, vcpu_id, domain)
             .and_then(|performance| performance.ok_or(FrequencyError::NotReady))
-            .map_err(error_detail)
+            .map_err(map_frequency_error)
     }
 
     fn clear(&self, vm_id: VMId, run_generation: u64) {

@@ -24,6 +24,10 @@ const PERFTBL_LEN: u64 = 0x08;
 const PERFTBL_SEL: u64 = 0x0c;
 const PERFTBL_RD: u64 = 0x10;
 const PERF_DOMAIN: u64 = 0x14;
+/// Normalized guest performance ceiling (`qemu,virtual-cpufreq` `SET_PERF`).
+///
+/// AxVisor keeps this equal to `ax-runtime::cpufreq::GUEST_MAX_PERFORMANCE`
+/// with a compile-time assert in the host adapter.
 pub const VIRTUAL_CPUFREQ_MAX_PERFORMANCE: u32 = 1024;
 const DEFAULT_TABLE: &[u32] = &[256, 512, 768, VIRTUAL_CPUFREQ_MAX_PERFORMANCE];
 
@@ -397,7 +401,14 @@ mod tests {
         let options = VirtualCpuFreqOptions::from_request(&request).unwrap();
         assert_eq!(options.domain, 1);
         assert_eq!(options.vcpu_count, 1);
-        assert_eq!(options.performance_table, [256, 512, 768, 1024]);
+        assert_eq!(
+            options.performance_table,
+            [256, 512, 768, VIRTUAL_CPUFREQ_MAX_PERFORMANCE]
+        );
+        assert_eq!(
+            *options.performance_table.last().unwrap(),
+            VIRTUAL_CPUFREQ_MAX_PERFORMANCE
+        );
 
         VirtualCpuFreqOptions::replace_performance_table(&mut request, vec![408, 816, 1024])
             .unwrap();
@@ -459,7 +470,11 @@ mod tests {
             Err(DeviceError::InvalidInput { .. })
         ));
         assert!(matches!(
-            device.write(&access(0, SET_PERF), 1025, &mut context),
+            device.write(
+                &access(0, SET_PERF),
+                u64::from(VIRTUAL_CPUFREQ_MAX_PERFORMANCE) + 1,
+                &mut context
+            ),
             Err(DeviceError::InvalidInput { .. })
         ));
         assert!(matches!(
