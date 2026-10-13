@@ -1,11 +1,6 @@
 //! LoongArch ArceOS EFI loader frontend.
 
-use core::{
-    ffi::c_void,
-    mem,
-    ptr::NonNull,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::{ffi::c_void, mem, ptr::NonNull};
 use std::{
     format,
     fs::{self, File, OpenOptions},
@@ -44,21 +39,29 @@ const PE_BASE_RELOCATION_DIRECTORY: usize = 5;
 const PE_SECTION_HEADER_SIZE: usize = 40;
 const PE_SECTION_EXECUTE: u32 = 0x2000_0000;
 const ELF_PF_X: u32 = 1;
-static BOOT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 pub fn run() {
     println!("axloader: LoongArch ArceOS EFI frontend");
     let current_image = current_loader_image()
         .unwrap_or_else(|| panic!("ota_bootstrap: current loader image unavailable"));
     let current_digest: [u8; 32] = Sha256::digest(&current_image).into();
     let mut ota = LaOta::open(&current_image);
-    if let Some(slot) = someboot::inherited_loader_slot() {
+    let inherited_slot = someboot::inherited_loader_slot();
+    // The parent commits the generation immediately before entering an
+    // inherited loader. Treat that handoff as the same boot attempt instead
+    // of advancing the durable identity a second time in the child.
+    let mut boot_advanced = inherited_slot.is_some();
+    if let Some(slot) = inherited_slot {
         ota.set_running_slot(slot)
             .unwrap_or_else(|error| panic!("ota_slot: {error}"));
     } else if let Some(slot) = ota
         .prepare_bootstrap(current_digest)
         .unwrap_or_else(|error| panic!("ota_bootstrap: {error}"))
     {
+        // Commit the generation before entering a different slot so the child
+        // can reuse this durable identity through the inherited handoff.
+        ota.advance_boot()
+            .unwrap_or_else(|error| panic!("ota_bootstrap: {error}"));
+        boot_advanced = true;
         match ota.launch_slot(slot) {
             Ok(()) => panic!("ota_slot_returned"),
             Err(error) => {
@@ -68,8 +71,14 @@ pub fn run() {
         }
     }
 
+    if !boot_advanced {
+        // Stable boots and firmware-loaded slots without an inherited payload
+        // publish an epoch only after committing their new generation.
+        ota.advance_boot()
+            .unwrap_or_else(|error| panic!("ota_bootstrap: {error}"));
+    }
     let interface = select_interface().unwrap_or_else(|error| panic!("network_ready: {error}"));
-    let epoch = boot_epoch(interface.mac_address());
+    let epoch = boot_epoch(interface.mac_address(), ota.boot_identity(current_digest));
     interface.announce(epoch.as_str());
     let mut server = BootServer::new(
         epoch,
@@ -192,16 +201,16 @@ fn announce(mac: MacAddress, epoch: &str) {
     );
 }
 
-fn boot_epoch(mac: MacAddress) -> String {
+fn boot_epoch(mac: MacAddress, fallback_identity: [u8; 32]) -> String {
     let mut hash = Sha256::new();
     hash.update(mac.octets());
     if let Some(seed) = someboot::boot_entropy() {
         hash.update(seed);
     } else {
         // Firmware without a trusted entropy source cannot provide a
-        // cryptographic identity. Keep the fallback explicit and include the
-        // per-process counter so retries within one invocation remain distinct.
-        hash.update(BOOT_COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+        // cryptographic identity. The durable OTA generation is committed
+        // before this value is published, so a reboot cannot replay it.
+        hash.update(fallback_identity);
     }
     hex(&hash.finalize()[..16])
 }
@@ -257,12 +266,60 @@ fn handle_connection(
     ota: &mut LaOta,
     server: &mut BootServer,
 ) -> Result<Action, String> {
-    let request = read_request(stream)?;
-    let response = route(request, ota, server)?;
+    let request = match read_request(stream) {
+        Ok(request) => request,
+        Err(error) => {
+            let status = if error == "body too large" {
+                "413 Payload Too Large"
+            } else {
+                "400 Bad Request"
+            };
+            let response = Response::json(status, error_json(&error), Action::None);
+            stream
+                .write_all(response.bytes())
+                .map_err(|_| "response write failed".to_string())?;
+            return Ok(Action::None);
+        }
+    };
+    let response = match route(request, ota, server) {
+        Ok(response) => response,
+        Err(error) => Response::json(error_status(&error), error_json(&error), Action::None),
+    };
     stream
         .write_all(response.bytes())
         .map_err(|_| "response write failed".to_string())?;
     Ok(response.action)
+}
+
+fn error_status(error: &str) -> &'static str {
+    match error {
+        "unknown_boot_job" => "404 Not Found",
+        "body too large" => "413 Payload Too Large",
+        _ => "400 Bad Request",
+    }
+}
+
+fn error_json(error: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "error": error })).unwrap_or_else(|_| b"{}".to_vec())
+}
+
+fn parse_update_id(value: &str) -> Option<[u8; 36]> {
+    let bytes: [u8; 36] = value.as_bytes().try_into().ok()?;
+    bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+        .then_some(bytes)
+}
+
+fn valid_image_version(value: &str) -> bool {
+    value.len() <= 96 && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
@@ -428,11 +485,12 @@ fn route(
             .get("update_id")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "missing OTA update id".to_string())?;
+        if parse_update_id(update_id).is_none() {
+            return Err("invalid OTA update id".to_string());
+        }
         let source = match request.header("x-update-source") {
             Some("server") => OtaSource::Server,
-            Some(value) if value != "direct" => {
-                return Ok(Response::json("400 Bad Request", b"{}", Action::None));
-            }
+            Some(_) => return Err("invalid OTA update source".to_string()),
             _ => OtaSource::Direct,
         };
         if ota.confirm(update_id, source).is_err() {
@@ -461,25 +519,24 @@ fn route(
         if request.body.is_empty() || request.body.len() > MAX_IMAGE_BYTES {
             return Ok(Response::json("413 Payload Too Large", b"{}", Action::None));
         }
-        let update_id = request
-            .header("x-update-id")
-            .and_then(|value| value.as_bytes().try_into().ok())
-            .unwrap_or_else(|| ota.next_direct_id(&expected));
         let source = match request.header("x-update-source") {
             Some("server") => OtaSource::Server,
-            Some(value) if value != "direct" => {
-                return Ok(Response::json("400 Bad Request", b"{}", Action::None));
-            }
+            Some(_) => return Err("invalid OTA update source".to_string()),
             _ => OtaSource::Direct,
         };
+        let version = request.header("x-image-version");
+        if version.is_some_and(|value| !valid_image_version(value)) {
+            return Err("invalid OTA image version".to_string());
+        }
+        let update_id = match source {
+            OtaSource::Server => request
+                .header("x-update-id")
+                .and_then(parse_update_id)
+                .ok_or_else(|| "invalid OTA update id".to_string())?,
+            OtaSource::Direct => ota.next_direct_id(&expected),
+        };
         if ota
-            .stage_image(
-                &request.body,
-                expected,
-                update_id,
-                request.header("x-image-version"),
-                source,
-            )
+            .stage_image(&request.body, expected, update_id, version, source)
             .is_err()
         {
             return Ok(Response::json(
@@ -843,6 +900,9 @@ impl LoadedElf {
         // The fixed image pool may be reused after a failed handoff. Clear the
         // complete allocation so alignment gaps between PT_LOAD segments never
         // expose bytes left by an earlier image.
+        // SAFETY: `target` is the non-null virtual alias returned for the
+        // contiguous `allocation_bytes` image allocation, and the validated
+        // page count keeps the write within that allocation.
         unsafe { core::ptr::write_bytes(target.as_ptr(), 0, allocation_bytes) };
         if copy_segments(image, &segments, link_addr, target).is_err() {
             someboot::loader_release_image(target_phys, page_count);
@@ -1341,6 +1401,13 @@ impl BootExecution {
     }
 }
 
+/// Calls a validated LoongArch EFI image entry point.
+///
+/// # Safety
+/// `entry_point` must be the `efi_pe_entry` address found by `LoadedElf` or
+/// `LoadedPe` inside an executable, validated image range. The target image
+/// allocation must remain live and unmoved for the duration of the call, and
+/// `image_handle`/`system_table` must be the current firmware EFI context.
 unsafe fn call_efi_entry(
     entry_point: u64,
     image_handle: uefi::Handle,
@@ -1387,10 +1454,10 @@ impl LaOta {
                         }
                     };
                     let state = State::initial(digest).expect("nonzero initial OTA digest");
-                    Self::write_state(0, &state).unwrap_or_else(|error| {
+                    let index = Self::write_state(0, &state).unwrap_or_else(|error| {
                         panic!("ota_bootstrap: failed to persist state: {error}")
                     });
-                    (state, 0)
+                    (state, index)
                 }
             };
         Self {
@@ -1411,6 +1478,22 @@ impl LaOta {
             return Err("inherited OTA slot was not marked attempted");
         }
         Ok(())
+    }
+
+    fn advance_boot(&mut self) -> Result<(), &'static str> {
+        let next = self
+            .state
+            .advance_boot()
+            .map_err(|_| "OTA boot generation overflow")?;
+        self.commit(&next)
+    }
+
+    fn boot_identity(&self, current_digest: [u8; 32]) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"axloader-loongarch-boot-v1");
+        hash.update(self.state.generation.to_le_bytes());
+        hash.update(current_digest);
+        hash.finalize().into()
     }
 
     fn prepare_bootstrap(
@@ -1566,7 +1649,6 @@ impl LaOta {
     fn commit(&mut self, state: &State) -> Result<(), &'static str> {
         self.index = Self::write_state(self.index, state)?;
         self.state = state.clone();
-        self.slot = self.state.active;
         Ok(())
     }
 
@@ -1579,7 +1661,9 @@ impl LaOta {
             .state
             .rollback(outcome)
             .map_err(|_| "invalid OTA rollback")?;
-        self.commit(&next)
+        self.commit(&next)?;
+        self.slot = self.state.active;
+        Ok(())
     }
 
     fn next_direct_id(&self, digest: &[u8; 32]) -> [u8; 36] {
@@ -1646,10 +1730,7 @@ impl LaOta {
     }
 
     fn confirm(&mut self, update_id: &str, source: OtaSource) -> Result<(), &'static str> {
-        let id: [u8; 36] = update_id
-            .as_bytes()
-            .try_into()
-            .map_err(|_| "invalid update id")?;
+        let id = parse_update_id(update_id).ok_or("invalid update id")?;
         let next = self
             .state
             .confirm(self.slot, &id, source)
