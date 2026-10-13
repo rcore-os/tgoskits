@@ -5,7 +5,7 @@ sidebar_label: "Axloader"
 
 # Axloader
 
-`cargo xtask axloader` 负责构建 x86_64 UEFI 装载器；LoongArch EFI 前端通过 `cargo xtask arceos` 使用 axstd 构建。两条路径都提供设备 HTTP 启动、可选 cmdline/initramfs 和 A/B OTA。axloader 启动后是 TCP4 HTTP 服务端；直连工具与 ostool-server 都调用同一组设备接口。x86 固件路径提供串口身份帧，LoongArch axstd 路径明确报告 UART binding 不可用并要求显式 `direct` continue。
+`cargo xtask axloader` 负责构建 x86_64 UEFI 装载器；LoongArch EFI 前端通过 `cargo xtask arceos` 使用 axstd 构建。两条路径都提供设备 HTTP 启动、可选 cmdline/initramfs 和 A/B OTA。axloader 启动后是 TCP4 HTTP 服务端；直连工具与 ostool-server 都调用同一组设备接口。x86 固件路径和 LoongArch axstd 路径都提供串口身份帧，后者在 ArceOS 激活 runtime UART 时通过 axstd console 报告实际波特率和 8N1 参数；没有活动 UART 时继续 fail-closed 并要求显式 `direct` continue。
 
 ## 1. 构建入口
 
@@ -191,7 +191,10 @@ QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶�
 映射到 `3999`，guest 服务仍监听 `2999`，可供外部控制器使用。该命令不会自行发起宿主
 HTTP 请求，因此完整的 HTTP、目标 `efi_pe_entry`、cmdline/initramfs 和 OTA
 trial/confirm/rollback 仍需在带宿主控制器的独立 QEMU 场景中观察；其中
-`ready_to_handoff` 只表示 loader 已准备交接。
+`ready_to_handoff` 只表示 loader 已准备交接。LoongArch axstd 前端在活动 runtime UART
+未绑定时通过 axstd console 输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧，并在状态/UDP
+公告中报告 runtime 波特率和 8N1 参数；没有活动 UART 时报告 `ready=false`，客户端使用
+显式 `direct` continue。绑定后暂停身份帧，撤销绑定后恢复输出。
 
 ## 4. 故障定位
 
@@ -207,7 +210,7 @@ trial/confirm/rollback 仍需在带宿主控制器的独立 QEMU 场景中观察
 | `loader_tcp4_listen_failed` | 固件能否在 TCP `2999` 建立被动监听，端口是否已占用 |
 | `loader_broadcast_error` | UDP `2998` 的广播地址和载荷大小；公告是可选发现路径，有设备 IP 时仍可直连 |
 | `serial_binding_required` | 先读取当前 `serial_id`，通过 `POST /api/v1/serial/continue` 完成 `bound` 或显式 `direct` continue，再在启动请求中携带返回的绑定令牌 |
-| `serial` 为 `ready=false` | 检查 `parameters`、`error` 和 `ConOut` 对应的唯一 `SerialIo`；无法唯一选择或读取参数时不能猜测串口 |
+| `serial` 为 `ready=false` | 检查 UEFI `ConOut` 或 axstd EFI console 是否可用，再读取新的 `serial_id` 和 `boot_epoch` |
 | `409 stale_boot_epoch` | 重新读取 `/api/v1/status` 并使用新的启动代次 |
 | 上传被拒绝 | `Content-Length`、`X-Image-Sha256`、清单长度和当前事务 ID |
 
