@@ -134,8 +134,11 @@ LoongArch uses the `arceos-efi` axstd frontend. Its uploaded kernel is a
 little-endian ELF64 image with `EM_LOONGARCH` and the fixed `efi_pe_entry`
 symbol; the loader copies it into the reserved image pool at `0x200000` and
 passes the cmdline, initramfs and memory map through the someboot EFI payload
-table. The axstd frontend reports UART binding as unavailable, so a client must
-use an explicit `direct` serial continue before starting a kernel job.
+table. When ArceOS activates a runtime UART, the axstd frontend reports its
+baud rate with the conventional 8N1 parameters and emits the same identity
+beacon as the UEFI frontend while no binding is active. If no runtime UART is
+selected, status remains `ready=false` and the client must use an explicit
+`direct` serial continue.
 
 ## Build and test
 
