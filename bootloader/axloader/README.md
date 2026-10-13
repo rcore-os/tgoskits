@@ -84,8 +84,10 @@ SMBIOS serial 作为启动身份。
 
 ### 2.1 本次身份与门禁
 
-每次启动的 `serial_id` 是独立 128 位 ID；优先 UEFI RNG，缺失时将平台单调计数、
-固件时间和 MAC 哈希为 ID，不能仅靠秒级时间和栈地址区分快速复位。
+每次启动的 `serial_id` 是独立 128 位 ID。x86_64 UEFI 优先使用 UEFI RNG，缺失时
+使用平台提供的单调启动值；LoongArch axstd EFI 在没有可信启动熵时，先把持久化
+OTA 代次提交到 `STATE0.BIN`/`STATE1.BIN`，再用代次和当前镜像摘要派生身份，不能
+仅靠秒级时间、进程计数器或栈地址区分快速复位。
 `SerialBeacon::progress()` 每 250 ms 启动 ASCII 身份帧发送，以最多 4 字节的部分写入推进。
 `BootServer` 状态与 UDP 公告关联同一 serial_id 和 epoch；网络确认后停止身份帧。
 
@@ -173,7 +175,10 @@ The LoongArch axstd runtime stores OTA files on the FAT volume under
 `axloader/STATE1.BIN`. `State::mark_attempt()` is committed before a pending
 slot is entered; the running slot inherits its marker through
 `LoongBootPayload`, and `/api/v1/ota/confirm` commits the matching update ID and
-source. `LoongBootPayload` is a LoongArch-only v2 EFI configuration-table ABI with
+source. A LoongArch boot commits one durable generation before publishing its
+control-plane epoch when no trusted UEFI/FDT seed is available; an inherited
+loader reuses the generation already committed by its parent. `LoongBootPayload`
+is a LoongArch-only v2 EFI configuration-table ABI with
 its own GUID; it does not reuse the `host-boot-abi` v1 contract removed by the
 latest dev initrd migration. Non-EFI LoongArch boot and UHI FDT handoff are
 outside this phase.
@@ -194,8 +199,8 @@ initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出�
 
 上述 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 描述的是 x86 harness。
 LoongArch 的 `cargo xtask arceos qemu --package axloader` 当前 CI 门禁只要求
-`network_ready: arch=loongarch64`，用于证明 bootstrap、继承 EFI 入口、网络接口选择和
-HTTP listener 已到达；该命令不会自行发起宿主 HTTP 请求。完整 LoongArch HTTP/OTA 运行时
+`network_ready: arch=loongarch64`，用于证明空白卷上的 bootstrap、网络接口选择和
+HTTP listener 已到达；它不证明继承 EFI 入口，且不会自行发起宿主 HTTP 请求。完整 LoongArch HTTP/OTA 运行时
 验证仍需带宿主控制器的独立 QEMU harness。
 
 ## x86_64 OTA 布局与状态

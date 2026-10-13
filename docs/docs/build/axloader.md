@@ -66,8 +66,9 @@ cargo xtask arceos qemu \
 LoongArch 的持久文件位于 FAT 卷的 `axloader/` 目录：`A.EFI`、`B.EFI`、
 `STATE0.BIN` 和 `STATE1.BIN`。`LaOta::prepare_bootstrap()` 在进入待试槽前提交
 `attempted`，`loader_slot` 随 EFI 配置表传给下一份 axstd loader，确认请求由
-`LaOta::confirm()` 按升级 ID 和来源提交。非 EFI LoongArch 启动和 UHI FDT handoff
-暂不属于此阶段。
+`LaOta::confirm()` 按升级 ID 和来源提交。没有可信 UEFI/FDT 启动熵时，loader
+会先提交持久化启动代次，再用代次和当前镜像摘要派生 `boot_epoch`；继承入口复用
+父 loader 已提交的代次。非 EFI LoongArch 启动和 UHI FDT handoff 暂不属于此阶段。
 
 首次启动时，loader 会校验并 Flush 自身的 someboot LoongArch PE 到
 `A.EFI`，然后创建 `STATE0.BIN`。该引导种子只接受 `ImageBase = 0` 且没有
@@ -185,7 +186,8 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
 
 当前配置的 LoongArch CI/QEMU 门禁只以 `network_ready: arch=loongarch64` 为正向成功
-判据，覆盖自身 bootstrap、继承 EFI 入口、网络接口选择和 HTTP listener；宿主控制端口
+判据，覆盖空白卷上的自身 bootstrap、网络接口选择和 HTTP listener；它不覆盖继承 EFI
+入口；宿主控制端口
 映射到 `3999`，guest 服务仍监听 `2999`，可供外部控制器使用。该命令不会自行发起宿主
 HTTP 请求，因此完整的 HTTP、目标 `efi_pe_entry`、cmdline/initramfs 和 OTA
 trial/confirm/rollback 仍需在带宿主控制器的独立 QEMU 场景中观察；其中
