@@ -59,10 +59,15 @@ local_ip_of_vm() {
 #     order (tail first: VM4, then VM3, then VM2, then VM1).
 # In both modes the delay gives the just-attached guest time to finish its
 # network setup before its client dials the next hop.
-# VM4 is the tail of the chain and its peer 10.0.2.19 is intentionally absent, so
-# a modest delay would make it flood the virtual switch with ARP pending frames
-# for an address nobody owns; park it far beyond the test window (600000 ms) so
-# it never attempts a connection within the window.
+# VM4 is the tail of the chain and its peer 10.0.2.19 is intentionally absent.
+# Dialing it inside either test window (240 s default, 360 s `--vcpus`, 600 s
+# CI wrapper) floods the virtual switch with ARP pending frames for an address
+# nobody owns, which is what filled the pending queue in #2599. 600000 ms sits
+# past all three windows, so VM4 never dials here.
+# That also means neither QEMU scenario executes the unreachable-peer retry
+# (`connect_retry_backoff`, `VMx_VIRTIO_NET_CONNECT_RETRY`). The queue behavior
+# that retry used to expose is covered by the ax-net pending-TTL test; the
+# backoff itself is a pure function of the failure count.
 connect_start_delay_of_vm() {
     case "$1" in
         vm1 | vm2 | vm3) echo "10000" ;;

@@ -610,7 +610,7 @@ class CiPlanTests(unittest.TestCase):
             "rknpu-resources --board orangepi-5-plus",
         )
 
-    def test_sg2002_board_build_change_groups_shared_feature_cases(self) -> None:
+    def test_sg2002_board_build_change_groups_all_feature_cases(self) -> None:
         path = (
             "test-suit/starryos/board-aka-00-sg2002/"
             "build-riscv64gc-unknown-none-elf.toml"
@@ -625,26 +625,7 @@ class CiPlanTests(unittest.TestCase):
         self.assertEqual(
             selections[0].command,
             "cargo xtask starry test board --test-case "
-            "boot,tennis-yolo,vdec,wifi-network-smoke "
-            "--board aka-00-sg2002",
-        )
-
-    def test_sg2002_usb2_lsusb_build_change_selects_only_that_case(self) -> None:
-        path = (
-            "test-suit/starryos/board-aka-00-sg2002/usb2-lsusb/"
-            "build-riscv64gc-unknown-none-elf.toml"
-        )
-        selections = ci_plan.resolve_suite_selections(
-            ci_plan.WORKSPACE_ROOT,
-            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
-            [path],
-        )
-
-        self.assertEqual(len(selections), 1)
-        self.assertEqual(
-            selections[0].command,
-            "cargo xtask starry test board --test-case "
-            "board-aka-00-sg2002/usb2-lsusb "
+            "boot,tennis-yolo,usb2-lsusb,vdec,wifi-network-smoke "
             "--board aka-00-sg2002",
         )
 

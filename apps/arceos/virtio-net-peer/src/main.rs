@@ -15,6 +15,8 @@
 //! `VMx_VIRTIO_NET_FAIL` stays reserved for setup errors that cannot be
 //! recovered from.
 
+#[cfg(not(feature = "arceos"))]
+use core::time::Duration;
 #[cfg(feature = "arceos")]
 use std::{
     io::{Read, Write},
@@ -59,12 +61,11 @@ const CONNECT_TIMEOUT_MS: &str = match option_env!("AXVIRTIO_CONNECT_TIMEOUT_MS"
     None => "4000",
 };
 /// Grace period before the client's first connect attempt (compile-time
-/// override). AxVisor auto-starts every guest, so the `--vcpus` QEMU shell steps
-/// only attach consoles tail first (VM4, then VM3, then VM2, then VM1) and replay
-/// their output; attaching neither starts a guest nor changes boot order. The
-/// delay gives the just-attached guest time to finish its network setup, and the
-/// attach order keeps VM1 foregrounded during its handshake. Failed ARP retries
-/// are paced by `connect_retry_backoff`.
+/// override). `run.sh` is the source of the per-guest value and of how the two
+/// QEMU scenarios start guests: the default scenario auto-starts them, while
+/// `--vcpus` enables `no-auto-start` and starts them with `vm start`. The delay
+/// lets the guest finish its own network setup before it dials the next hop.
+/// Failed ARP retries are paced by `connect_retry_backoff`.
 const CONNECT_START_DELAY_MS: &str = match option_env!("AXVIRTIO_CONNECT_START_DELAY_MS") {
     Some(value) => value,
     None => "10000",
@@ -413,11 +414,30 @@ fn retry_delay() -> Duration {
 /// peer resolving ARP once per second, and several guests doing that at once
 /// floods the switch with pending frames; widening the gap keeps retries calm
 /// while a peer that appears later is still picked up.
-#[cfg(feature = "arceos")]
 fn connect_retry_backoff(failures: u64) -> Duration {
     let shift = failures.saturating_sub(1).min(3);
     let delay_ms = (RETRY_DELAY_MS << shift).min(CONNECT_RETRY_MAX_DELAY_MS);
     Duration::from_millis(delay_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CONNECT_RETRY_MAX_DELAY_MS, RETRY_DELAY_MS, connect_retry_backoff};
+
+    #[test]
+    fn connect_retry_backoff_grows_then_stays_capped() {
+        let expected = [
+            RETRY_DELAY_MS,
+            RETRY_DELAY_MS * 2,
+            RETRY_DELAY_MS * 4,
+            CONNECT_RETRY_MAX_DELAY_MS,
+            CONNECT_RETRY_MAX_DELAY_MS,
+        ];
+        for (failures, delay_ms) in (1..=5).zip(expected) {
+            assert_eq!(connect_retry_backoff(failures).as_millis() as u64, delay_ms);
+        }
+        assert_eq!(connect_retry_backoff(0).as_millis() as u64, RETRY_DELAY_MS);
+    }
 }
 
 #[cfg(feature = "arceos")]
