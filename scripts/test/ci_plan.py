@@ -108,6 +108,7 @@ CHECK_FIELDS = {
     "download_xtask_bin_artifact",
     "xtask_bin_artifact_name",
     "container_preflight",
+    "node_version",
     "events",
     "enable_boolean_input",
     "impact_targets",
@@ -457,6 +458,14 @@ def _validate_check(
         raise PlanError(f"{location} resource_group must use lowercase kebab-case")
     if resource_group and "board" not in runs_on:
         raise PlanError(f"{location} resource_group requires a board runner")
+
+    node_version = check.get("node_version", "")
+    if not isinstance(node_version, str) or (
+        node_version and re.fullmatch(r"\d+(?:\.\d+){0,2}", node_version) is None
+    ):
+        raise PlanError(
+            f"{location} node_version must be a Node version like '24' or '24.11.1'"
+        )
 
     artifact_name = check.get("xtask_bin_artifact_name")
     if artifact_name is not None and (
@@ -826,6 +835,7 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "container_preflight": preflight,
         "command": command.strip(),
         "cache_key": check.get("cache_key", ""),
+        "node_version": check.get("node_version", ""),
         "resource_group": "" if fallback else check.get("resource_group", ""),
         "apk_region": check.get("apk_region", "china"),
         "wifi_secrets": check.get("wifi_secrets", False),

@@ -8,12 +8,10 @@ id = "test-axvisor-aarch64-qemu-smoke-axtest"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · Smoke + virtio-blk guest + axtest"
 timeout_minutes = 30
+# The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
+node_version = "24"
 command = '''
 echo "==> axvisor aarch64 smoke + host initramfs"
-# The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
-eval "$(bash scripts/ci/ensure-node-24.sh)"
-node --version
-npm --version
 cargo xtask axvisor test qemu --arch aarch64 --test-case smoke,qemu-host-initramfs
 echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
@@ -56,11 +54,9 @@ id = "test-axvisor-web-ui-assets"
 impact_targets = ["axvisor:aarch64"]
 name = "Web UI · Unit tests and bundle"
 timeout_minutes = 15
+node_version = "24"
 command = '''
 echo "==> axvisor web UI typecheck, unit tests, and bundle"
-eval "$(bash scripts/ci/ensure-node-24.sh)"
-node --version
-npm --version
 (
   cd os/axvisor/web-ui
   npm ci
@@ -74,10 +70,8 @@ id = "test-axvisor-aarch64-qemu-web-ui"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · Web dashboard from the disk root and the initramfs root"
 timeout_minutes = 30
+node_version = "24"
 command = '''
-eval "$(bash scripts/ci/ensure-node-24.sh)"
-node --version
-npm --version
 echo "==> axvisor aarch64 web dashboard (axbuild runs npm itself for the bundle)"
 cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui,web-ui-diskless
 '''
@@ -119,12 +113,10 @@ id = "test-axvisor-riscv64-qemu-smoke-ipi"
 impact_targets = ["axvisor:riscv64"]
 name = "QEMU riscv64 · Smoke + IPI"
 timeout_minutes = 30
+# The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
+node_version = "24"
 command = '''
 echo "==> axvisor riscv64 smoke"
-# The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
-eval "$(bash scripts/ci/ensure-node-24.sh)"
-node --version
-npm --version
 cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
 echo "==> axvisor riscv64 IPI cross-test"
 cargo xtask cross-test --arch riscv64 \
@@ -144,11 +136,9 @@ name = "QEMU loongarch64 · Suites"
 runner = "ubuntu-axvisor-lvz"
 cache_key = "test-axvisor-loongarch64"
 download_xtask_bin_artifact = true
-command = '''
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
-eval "$(bash scripts/ci/ensure-node-24.sh)"
-node --version
-npm --version
+node_version = "24"
+command = '''
 target/debug/tg-xtask axvisor test qemu --arch loongarch64
 '''
 
@@ -180,12 +170,10 @@ name = "VMX x86_64 · Smoke, ACPI and PCI"
 runner = "kvm-intel"
 cache_key = ""
 timeout_minutes = 120
+# The unified QEMU smoke build (smoke-vmx) carries `web-ui`, so axbuild runs npm.
+node_version = "24"
 command = '''
 echo "==> axvisor x86_64 VMX smoke, ACPI and PCI"
-# The unified QEMU smoke build (smoke-vmx) carries `web-ui`, so axbuild runs npm.
-eval "$(bash scripts/ci/ensure-node-24.sh)"
-node --version
-npm --version
 cargo xtask axvisor test qemu --arch x86_64 \
   --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx
 '''

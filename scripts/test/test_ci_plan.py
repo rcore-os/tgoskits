@@ -1374,6 +1374,50 @@ command = "true"
                 f"one registered board must use one resource group: {board}",
             )
 
+    def test_node_version_flows_into_matrix_and_defaults_to_empty(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="schedule",
+        )
+        catalog = {
+            check["id"]: check
+            for check in ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS)
+        }
+        rows = main_test_rows(ci_plan.build_main_plan(context))
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(
+                row["node_version"], catalog[row["id"]].get("node_version", "")
+            )
+        declared = {check.get("node_version", "") for check in catalog.values()}
+        self.assertIn("24", declared)
+        self.assertIn("", declared)
+
+    def test_manifest_rejects_invalid_node_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest = Path(temp_dir) / "node.toml"
+            manifest.write_text(
+                """\
+schema_version = 3
+phase = "test"
+group = "AxVisor"
+
+[[check]]
+id = "node-check"
+name = "Node check"
+command = "true"
+node_version = "latest"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ci_plan.PlanError,
+                "node_version must be a Node version",
+            ):
+                ci_plan.load_catalog((manifest,))
+
     def test_event_and_boolean_input_select_checks_independently(self) -> None:
         check = {"events": ["schedule"], "enable_boolean_input": "run_optional"}
         for event, enabled, expected in (

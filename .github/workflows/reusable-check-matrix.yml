@@ -150,6 +150,12 @@ jobs:
           chmod +x "${xtask_path}"
           test -x "${xtask_path}"
 
+      - name: Set up Node
+        if: matrix.node_version != ''
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node_version }}
+
       - name: Show Rust version
         run: rustc --version
 
