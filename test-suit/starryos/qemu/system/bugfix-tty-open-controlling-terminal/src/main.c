@@ -8,6 +8,7 @@
 #include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +90,75 @@ static void no_terminal_dev_tty_fails_enxio(void)
     CHECK_ERR(open("/dev/tty", O_RDWR), ENXIO, "/dev/tty without a controlling terminal fails ENXIO");
 }
 
+static void notty_without_terminal_returns_enotty(void)
+{
+    int slave = open(slave_name, O_RDWR | O_NOCTTY);
+    CHECK(slave >= 0, "open a tty without acquiring it");
+    if (slave < 0)
+        return;
+    CHECK_ERR(ioctl(slave, TIOCNOTTY, 0), ENOTTY,
+              "TIOCNOTTY on a tty that is not this process's controlling terminal fails ENOTTY");
+    close(slave);
+}
+
+static void session_leader_notty_detaches_session(void)
+{
+    signal(SIGHUP, SIG_IGN);
+    int slave = open(slave_name, O_RDWR | O_NOCTTY);
+    CHECK(slave >= 0, "open the tty before TIOCSCTTY");
+    if (slave < 0)
+        return;
+    CHECK_RET(ioctl(slave, TIOCSCTTY, 0), 0,
+              "session leader acquires the tty explicitly");
+    int current = open("/dev/tty", O_RDWR);
+    CHECK(current >= 0, "the session leader sees its controlling terminal");
+    if (current >= 0)
+        close(current);
+    CHECK_RET(ioctl(slave, TIOCNOTTY, 0), 0,
+              "session leader detaches its controlling terminal");
+    CHECK_ERR(open("/dev/tty", O_RDWR), ENXIO,
+               "detaching the terminal makes /dev/tty unavailable");
+    close(slave);
+}
+
+static void non_session_leader_notty_detaches_only_itself(void)
+{
+    signal(SIGHUP, SIG_IGN);
+    int slave = open(slave_name, O_RDWR | O_NOCTTY);
+    CHECK(slave >= 0, "open the tty for the session");
+    if (slave < 0)
+        return;
+    CHECK_RET(ioctl(slave, TIOCSCTTY, 0), 0,
+              "session leader acquires the tty for the non-leader check");
+
+    fflush(stdout);
+    int failed_before = __fail;
+    pid_t child = fork();
+    if (child < 0) {
+        CHECK(0, "fork a non-session leader");
+        close(slave);
+        return;
+    }
+    if (child == 0) {
+        CHECK_RET(ioctl(slave, TIOCNOTTY, 0), 0,
+                  "a non-session leader detaches its own controlling terminal");
+        CHECK_ERR(open("/dev/tty", O_RDWR), ENXIO,
+                   "the detaching non-session leader loses /dev/tty");
+        fflush(stdout);
+        _exit(__fail > failed_before);
+    }
+    int status = 0;
+    CHECK_RET(waitpid(child, &status, 0), child,
+              "wait for the non-session leader to detach");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "the non-session leader's checks pass");
+    int current = open("/dev/tty", O_RDWR);
+    CHECK(current >= 0, "the session leader retains the controlling terminal");
+    if (current >= 0)
+        close(current);
+    close(slave);
+}
+
 static void noctty_open_does_not_acquire(void)
 {
     CHECK(open(slave_name, O_RDWR | O_NOCTTY) >= 0, "open the slave with O_NOCTTY");
@@ -165,11 +235,14 @@ static void leader_open_acquires(void)
 
 int main(void)
 {
-    TEST_START("opening a tty sets the controlling terminal as Linux tty_open does");
+    TEST_START("opening and detaching a tty follows Linux job-control semantics");
 
     in_child("no controlling terminal", 1, no_terminal_dev_tty_fails_enxio);
 
     shared_master = open_pty();
+    in_child("TIOCNOTTY without a terminal", 1, notty_without_terminal_returns_enotty);
+    in_child("session leader TIOCNOTTY", 1, session_leader_notty_detaches_session);
+    in_child("non-session leader TIOCNOTTY", 1, non_session_leader_notty_detaches_only_itself);
     in_child("O_NOCTTY", 1, noctty_open_does_not_acquire);
     in_child("write-only open", 1, write_only_open_does_not_acquire);
     in_child("EMFILE open", 1, emfile_open_does_not_acquire);

@@ -1,9 +1,7 @@
 use alloc::sync::{Arc, Weak};
-#[cfg(all(test, axtest))]
 use alloc::vec::Vec;
 use core::{any::Any, fmt};
 
-#[cfg(all(test, axtest))]
 use super::ProcessGroup;
 use super::SessionGroups;
 use crate::{
@@ -57,6 +55,11 @@ impl Session {
     /// The [`ProcessGroup`]s that belong to this [`Session`].
     #[cfg(all(test, axtest))]
     pub fn process_groups(&self) -> Vec<Arc<ProcessGroup>> {
+        self.process_groups_snapshot()
+    }
+
+    /// Returns a stable snapshot of the process groups in this session.
+    pub(crate) fn process_groups_snapshot(&self) -> Vec<Arc<ProcessGroup>> {
         loop {
             let group_count = self.process_groups.lock().len();
             let mut groups = Vec::with_capacity(group_count);
@@ -67,6 +70,20 @@ impl Session {
             }
             relations.snapshot(&mut groups);
             return groups;
+        }
+    }
+
+    /// Clears a terminal binding from every live process in this session.
+    pub(crate) fn clear_terminal_from_processes(
+        &self,
+        terminal: &Arc<dyn Any + Send + Sync>,
+    ) {
+        for group in self.process_groups_snapshot() {
+            for process in group.processes() {
+                if let Some(proc_data) = process.identity().live_data() {
+                    proc_data.clear_controlling_terminal_if(terminal);
+                }
+            }
         }
     }
 
@@ -94,10 +111,6 @@ impl Session {
         }
     }
 
-    /// Gets the terminal for this session, if it exists.
-    pub fn terminal(&self) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.terminal.lock().clone()
-    }
 }
 
 impl fmt::Debug for Session {

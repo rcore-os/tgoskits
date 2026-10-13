@@ -38,6 +38,7 @@ mod user_memory_access;
 mod user_wait;
 
 use alloc::sync::Arc;
+use core::any::Any;
 
 pub(crate) use process_ptrace::{PtraceAttachMode, PtraceWaitAction, PtraceWaitStop};
 pub use process_ptrace::{PtraceStopFpData, SyscallTraceState};
@@ -78,6 +79,12 @@ pub struct ProcessData {
     tgid_lease: RawSpinLock<Option<PidRoleLease<Tgid>>>,
     /// Process topology object.
     pub proc: Arc<Process>,
+    /// Controlling terminal inherited by this process generation.
+    ///
+    /// Linux stores this in the process signal state rather than only in the
+    /// session's terminal relationship. Keeping the binding here lets
+    /// `TIOCNOTTY` detach one non-session-leader without detaching its peers.
+    controlling_terminal: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
     /// Stable identity shared by PID namespaces, pidfds, and observers.
     identity: Arc<PidIdentity>,
     /// Executable metadata independently synchronized for exec and procfs.
@@ -118,6 +125,7 @@ pub struct ProcessDataInit {
     exit_signal: Option<Signo>,
     wait_parent_tid: TidNumber,
     shared_memory: Option<process_memory::ProcessMemoryShare>,
+    controlling_terminal: Option<Arc<dyn Any + Send + Sync>>,
 }
 
 impl ProcessDataInit {
@@ -139,12 +147,19 @@ impl ProcessDataInit {
             exit_signal,
             wait_parent_tid,
             shared_memory: None,
+            controlling_terminal: None,
         }
     }
 
     /// Makes a non-thread clone share the parent's Linux mm generation.
     pub(crate) fn with_shared_memory(mut self, parent: &ProcessData) -> Self {
         self.shared_memory = Some(parent.memory_share());
+        self
+    }
+
+    /// Inherits the parent's controlling terminal across a process fork.
+    pub(crate) fn with_controlling_terminal(mut self, parent: &ProcessData) -> Self {
+        self.controlling_terminal = parent.controlling_terminal();
         self
     }
 
@@ -172,6 +187,7 @@ impl ProcessData {
             exit_signal,
             wait_parent_tid,
             shared_memory,
+            controlling_terminal,
         } = init;
         let wait = ProcessWaitState::new(exit_signal, wait_parent_tid);
         let exit_event = wait.exit_event_arc();
@@ -187,6 +203,7 @@ impl ProcessData {
         };
         let this = Arc::new(Self {
             proc: proc.clone(),
+            controlling_terminal: Mutex::new(controlling_terminal),
             identity: identity.clone(),
             tgid_lease: RawSpinLock::new(Some(tgid_lease)),
             image: ProcessImageState::new(image),
@@ -210,6 +227,38 @@ impl ProcessData {
     /// Returns this process generation's stable PID identity.
     pub(crate) fn identity(&self) -> Arc<PidIdentity> {
         self.identity.clone()
+    }
+
+    /// Returns the controlling terminal binding for this process generation.
+    pub(crate) fn controlling_terminal(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.controlling_terminal.lock().clone()
+    }
+
+    /// Publishes a controlling terminal binding for this process generation.
+    pub(crate) fn set_controlling_terminal(&self, terminal: Arc<dyn Any + Send + Sync>) {
+        *self.controlling_terminal.lock() = Some(terminal);
+    }
+
+    /// Drops this process generation's controlling terminal.
+    pub(crate) fn clear_controlling_terminal(&self) {
+        *self.controlling_terminal.lock() = None;
+    }
+
+    /// Clears a binding only when it is still the process's controlling terminal.
+    pub(crate) fn clear_controlling_terminal_if(
+        &self,
+        terminal: &Arc<dyn Any + Send + Sync>,
+    ) -> bool {
+        let mut current = self.controlling_terminal.lock();
+        if current
+            .as_ref()
+            .is_some_and(|existing| Arc::ptr_eq(existing, terminal))
+        {
+            *current = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// Transfers the process-owned TGID lease into its immutable zombie.

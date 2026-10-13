@@ -207,7 +207,6 @@ impl SessionGroups {
         self.entries.get(pid).and_then(Weak::upgrade)
     }
 
-    #[cfg(all(test, axtest))]
     pub(crate) fn snapshot(&self, output: &mut Vec<Arc<ProcessGroup>>) {
         assert!(
             output.capacity() - output.len() >= self.entries.len(),

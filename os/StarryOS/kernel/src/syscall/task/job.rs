@@ -56,6 +56,13 @@ pub fn sys_setsid(current: &UserTaskRef) -> StarryResult<isize> {
     let (session, _group) = proc
         .create_session()
         .ok_or(StarryError::OperationNotPermitted)?;
+    // Linux clears signal->tty when a process successfully creates a new
+    // session; the previous session's terminal relationship remains owned by
+    // that session until its last member leaves or explicitly detaches it.
+    current
+        .as_thread()
+        .proc_data
+        .clear_controlling_terminal();
     Ok(current_view(current)
         .visible_session_number(&session.identity())
         .expect("new session is visible to its creator")
