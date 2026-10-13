@@ -26,10 +26,12 @@
 //! no path literal as a result, and there is no module cycle between the two.
 //!
 //! Only `capability`, `transport`, and `web` are exclusive to this feature;
-//! [`domain`] is the part the onboard shell is allowed to depend on too, which
-//! is why it lives here rather than at the crate root. Everything the crate
-//! exports from this module is therefore either [`serve`] (the entry point) or
-//! a status query used by the startup banner.
+//! [`domain`] is the part the onboard shell is allowed to depend on too. The
+//! shared VM candidate pool is kept at [`crate::vm_pool`] so shell and HTTP
+//! callers use the same scanner, while this module continues to own the HTTP
+//! domain namespace. Everything the crate exports from this module is
+//! therefore either [`serve`] (the entry point) or a status query used by the
+//! startup banner.
 
 pub mod capability;
 pub mod domain;
