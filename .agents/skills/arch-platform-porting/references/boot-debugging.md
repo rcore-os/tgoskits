@@ -390,6 +390,41 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 - `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 必须上传真实 ArceOS UEFI ELF，跨同一 FAT 镜像的独立启动验证无附加字段、仅 cmdline、仅 initramfs、两者都有以及 ESP initramfs 回退；成功证据来自内核的 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED`，不能只停在 `ready_to_handoff`。
 - 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
 
+#### LoongArch ArceOS EFI
+
+- LoongArch axstd 前端只接受 little-endian ELF64、`e_machine = EM_LOONGARCH`（258）和
+  `efi_pe_entry` 符号；EFI PE 入口固定为 `efi_pe_entry(image_handle, system_table)`。
+  目标镜像装入固定的 `0x200000` image pool，段之间的空洞先清零并在交接前刷新
+  指令缓存，任何无法证明不覆盖当前 loader 的地址都必须拒绝启动。
+- 首次 EFI loader 安装 `LoongBootPayload` v2 配置表。它使用独立 GUID
+  `5d34b5d2-9a5b-4d0f-8e3c-6bb3dfc6a1fe`，不兼容已经移除的 host-boot-abi v1；表中
+  固定保留 image、archive 和 slot 三个池（分别为 32 MiB、256 MiB 和 32 MiB），并把
+  cmdline、initramfs、目标镜像范围、内存图和当前 loader 槽位交给下一次 EFI 入口。
+- 目标继承表后走 `inherited_handoff` 路径：复用上一 loader 发布的内存图和池游标，
+  不再次清零或重新分配启动池，也不重复调用 `ExitBootServices`；只有首个 loader
+  仍在固件应用阶段获取内存图并在关闭网络服务后退出启动服务。进入继承路径前必须
+  校验 v2 magic、版本、大小、池范围、槽位和目标镜像不重叠。
+- axstd 控制面没有可绑定的 UART，QEMU/服务端测试必须显式使用 `direct` serial
+  continue。启动阶段应观察 `network_ready: arch=loongarch64`、`ready_to_handoff`；
+  装载或 EFI 跳转失败观察 `jump_error`，A/B 槽校验、提交或回滚失败观察
+  `ota_slot_failed`。
+- 持久 FAT 卷使用 `axloader/A.EFI`、`axloader/B.EFI`、`axloader/STATE0.BIN` 和
+  `axloader/STATE1.BIN`。进入 pending 槽前先持久化 attempt 计数，目标通过
+  `/api/v1/ota/confirm` 确认匹配的更新 ID 和来源后再提交稳定槽；未确认或校验失败
+  时启动下一次先回滚到已验证的稳定槽。
+- 真实 EFI QEMU 验证使用：
+
+  ```bash
+  cargo xtask arceos qemu \
+    --package axloader \
+    --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml \
+    --qemu-config bootloader/axloader/qemu-loongarch64.toml
+  ```
+
+  检查网络发现、HTTP 长度和 SHA-256、ELF/PE 入口、cmdline/initramfs、继承交接以及
+  OTA trial/confirm/rollback；`ready_to_handoff` 只证明 loader 已准备交接，必须继续
+  收集目标内核的启动和 OTA 结果。
+
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。
 - 加入 `-d int,cpu_reset,guest_errors` 记录陷阱、复位和无效客户机访问。
 - 用短串口标记隔离阶段，例如 `E` 表示固件入口，`M` 表示内存映射，`X` 表示退出启动服务前，`x` 表示退出后，`P` 和 `p` 表示分页前后，`T` 表示陷阱向量后，`S` 表示释放次处理器前。
