@@ -220,6 +220,21 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 '''
 
 [[check]]
+id = "test-axloader-loongarch64-efi"
+impact_packages = ["axloader"]
+impact_targets = ["arceos:loongarch64"]
+name = "UEFI loongarch64 · AxLoader HTTP boot"
+runner = "ubuntu-axvisor-lvz"
+cache_key = ""
+timeout_minutes = 90
+command = '''
+cargo xtask arceos qemu \
+  --package axloader \
+  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml \
+  --qemu-config bootloader/axloader/qemu-loongarch64.toml
+'''
+
+[[check]]
 id = "test-starry-self-hosted-board-orangepi-5-plus"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus · StarryOS board suites"
