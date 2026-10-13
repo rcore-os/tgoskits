@@ -162,6 +162,13 @@ jobs:
       - name: Run command
         env:
           STARRY_APK_REGION: ${{ matrix.apk_region }}
+          STARRY_APK_MIRROR: ${{ matrix.apk_mirror }}
+          ALPINE_CDN: ${{ matrix.apk_mirror }}
+          ALPINE_MIRROR: ${{ matrix.apk_mirror }}
+          DNSMASQ_APK_MIRROR: ${{ matrix.apk_mirror }}
+          DROPBEAR_APK_MIRROR: ${{ matrix.apk_mirror }}
+          STARRYWRT_APK_MIRROR: ${{ matrix.apk_mirror }}
+          VISUAL_ALPINE_MIRROR: ${{ matrix.apk_mirror }}
           SINCE_REF: ${{ inputs.since_ref }}
           CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
           STARRY_WIFI_SSID: ${{ matrix.wifi_secrets && secrets.STARRY_WIFI_SSID || '' }}

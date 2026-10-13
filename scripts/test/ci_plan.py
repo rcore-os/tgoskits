@@ -104,6 +104,7 @@ CHECK_FIELDS = {
     "resource_group",
     "wifi_secrets",
     "apk_region",
+    "apk_mirror",
     "upload_xtask_bin_artifact",
     "download_xtask_bin_artifact",
     "xtask_bin_artifact_name",
@@ -401,6 +402,13 @@ def _validate_check(
     group = check.get("group")
     if group is not None and (not isinstance(group, str) or not group.strip()):
         raise PlanError(f"{location} field 'group' must be a non-empty string")
+    apk_mirror = check.get("apk_mirror")
+    if apk_mirror is not None and (
+        not isinstance(apk_mirror, str) or not apk_mirror.strip()
+    ):
+        raise PlanError(
+            f"{location} field 'apk_mirror' must be a non-empty string when set"
+        )
     runs_on = check["runs_on"]
     required_base = check.get("required_base_branch")
     if required_base is not None and (
@@ -837,7 +845,8 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "cache_key": check.get("cache_key", ""),
         "node_version": check.get("node_version", ""),
         "resource_group": "" if fallback else check.get("resource_group", ""),
-        "apk_region": check.get("apk_region", "china"),
+        "apk_region": "us" if fallback else check.get("apk_region", "china"),
+        "apk_mirror": "" if fallback else check.get("apk_mirror", ""),
         "wifi_secrets": check.get("wifi_secrets", False),
         "fetch_depth": fetch_depth,
         "timeout_minutes": check.get("timeout_minutes", 360),

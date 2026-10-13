@@ -21,7 +21,10 @@ pub(crate) fn starry_case_asset_config() -> case::CaseAssetConfig {
             case_build_dir: "STARRY_CASE_BUILD_DIR".to_string(),
             case_overlay_dir: "STARRY_CASE_OVERLAY_DIR".to_string(),
         },
-        cache_env_vars: vec![crate::starry::apk::STARRY_APK_REGION_VAR.to_string()],
+        cache_env_vars: vec![
+            crate::starry::apk::STARRY_APK_REGION_VAR.to_string(),
+            crate::starry::apk::STARRY_APK_MIRROR_VAR.to_string(),
+        ],
         prepare_staging_root: crate::starry::resolver::write_host_resolver_config,
         prepare_guest_package_env: Some(starry_guest_package_env),
     }
@@ -29,23 +32,31 @@ pub(crate) fn starry_case_asset_config() -> case::CaseAssetConfig {
 
 fn starry_guest_package_env(staging_root: &Path) -> anyhow::Result<Vec<(String, String)>> {
     let region = crate::starry::apk::apk_region_from_env()?;
-    crate::starry::apk::rewrite_apk_repositories_for_region(staging_root, region)?;
-    log_starry_apk_prebuild_context(staging_root, region)?;
-    Ok(vec![(
-        crate::starry::apk::STARRY_APK_REGION_VAR.to_string(),
-        region.canonical_name().to_string(),
-    )])
+    let mirror = crate::starry::apk::rewrite_apk_repositories_for_env(staging_root)?;
+    log_starry_apk_prebuild_context(staging_root, region, &mirror)?;
+    Ok(vec![
+        (
+            crate::starry::apk::STARRY_APK_REGION_VAR.to_string(),
+            region.canonical_name().to_string(),
+        ),
+        (
+            crate::starry::apk::STARRY_APK_MIRROR_VAR.to_string(),
+            mirror,
+        ),
+    ])
 }
 
 fn log_starry_apk_prebuild_context(
     staging_root: &Path,
     region: crate::starry::apk::ApkRegion,
+    mirror: &str,
 ) -> anyhow::Result<()> {
     let repositories_path = staging_root.join("etc/apk/repositories");
     let repositories = fs::read_to_string(&repositories_path)
         .with_context(|| format!("failed to read {}", repositories_path.display()))?;
 
     println!("STARRY_APK_REGION={}", region.canonical_name());
+    println!("STARRY_APK_MIRROR={mirror}");
     println!("apk repositories:");
     print!("{repositories}");
     if !repositories.ends_with('\n') {

@@ -12,6 +12,14 @@ fail_regex = [
   '(?i)SIGSEGV',
   'exit with code: 139',
   '(?m)^(?:\x1b\[[0-9;]*m)*\[VISION_USB_CI\] RESULT=FAIL .*$',
+  # The deploy directory step has no success criterion of its own, so a shell
+  # command that arrives mangled on the serial console must fail the run here
+  # instead of stalling the next step until the case times out. The command
+  # below builds this literal from a variable so the echoed command line cannot
+  # match it, and uses no quote characters at all: a dropped byte inside a
+  # quote leaves the shell waiting for the closing one and swallows the next
+  # step. Keep it quote-free; do not fold the marker back into one word.
+  '(?m)^(?:\x1b\[[0-9;]*m)*USB_DIR_MISSING(?:\x1b\[[0-9;]*m)*[ \t\r]*$',
 ]
 
 [[shell_check_steps]]
@@ -20,7 +28,17 @@ shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
 shell_prefix = "HOSTNAME=starry"
-shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-virtual'
+shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-virtual; [ -x $d/run_vision_usb_ci_once.sh ] && b=OK || b=MISSING; echo USB_DIR_$b'
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~#"
+# The guest kernel enumerates USB behind an external hub and finishes right
+# around the moment the guest init starts, so the application used to race it
+# and report a missing 0403:6001 adapter. Wait, bounded, for the adapter to
+# appear in the kernel tree the application itself reads. A timeout does not
+# fail the run here: the application still starts and reports its own
+# diagnostic, with the wait count as context in the log.
+shell_cmd = 'i=0; while [ $i -lt 10 ]; do grep -l 0403 /sys/bus/usb/devices/*/idVendor >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done; echo USB_PRESENT_WAITED=$i'
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:~#"

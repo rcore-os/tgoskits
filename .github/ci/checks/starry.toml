@@ -77,6 +77,8 @@ impact_targets = ["starry:riscv64"]
 name = "Board AKA-00 SG2002 · Suites"
 runner = "board"
 cache_key = ""
+apk_region = "local"
+apk_mirror = "http://192.168.1.2:3143/alpine"
 wifi_secrets = true
 command = '''
 cargo xtask starry test board --board aka-00-sg2002
@@ -92,6 +94,8 @@ impact_targets = ["starry:riscv64"]
 name = "Board VisionFive 2 · Suites"
 runner = "board"
 cache_key = ""
+apk_region = "local"
+apk_mirror = "http://192.168.1.2:3143/alpine"
 command = '''
 cargo xtask starry test board --board visionfive2
 '''
@@ -106,6 +110,8 @@ impact_targets = ["starry:loongarch64"]
 name = "Board JL LSGD2K10 · Suites"
 runner = "board"
 cache_key = ""
+apk_region = "local"
+apk_mirror = "http://192.168.1.2:3143/alpine"
 command = '''
 cargo xtask starry test board --board jl-lsgd2k10
 '''

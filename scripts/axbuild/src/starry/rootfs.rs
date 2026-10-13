@@ -223,8 +223,8 @@ pub(crate) fn ensure_apk_region_in_rootfs(rootfs_img: &Path) -> anyhow::Result<(
         sync_qemu_slirp_resolver_in_rootfs(rootfs_img)?;
         return Ok(());
     };
-    let region = apk::apk_region_from_env()?;
-    let rewritten = apk::rewrite_apk_repositories_content(&original, region);
+    let mirror = apk::apk_mirror_from_env()?;
+    let rewritten = apk::rewrite_apk_repositories_content_with_mirror(&original, &mirror);
     replace_rootfs_text_file_if_changed(rootfs_img, APK_REPOSITORIES_PATH, &rewritten)?;
     sync_qemu_slirp_resolver_in_rootfs(rootfs_img)
 }
