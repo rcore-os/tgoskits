@@ -221,7 +221,16 @@ cleanup_qemu() {
   kill "$qemu_pid" 2>/dev/null || true
   wait "$qemu_pid" 2>/dev/null || true
 }
-trap cleanup_qemu EXIT
+on_exit() {
+  status=$?
+  cleanup_qemu
+  if [ "$status" -ne 0 ]; then
+    echo "==> LoongArch axloader QEMU log tail"
+    tail -200 "$qemu_log" || true
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
 python3 bootloader/axloader/scripts/loong-http-smoke.py \
   --image target/loongarch64-unknown-linux-musl/release/axloader.bin
 cleanup_qemu
