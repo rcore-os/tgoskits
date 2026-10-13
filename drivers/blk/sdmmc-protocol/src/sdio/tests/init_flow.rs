@@ -163,7 +163,7 @@ fn poll_init_request_falls_back_to_cmd1_after_acmd41_not_ready_timeout() {
         advance_init_once(&mut driver, &mut request).unwrap(),
         OperationProgress::Pending
     ));
-    for _ in 0..4 {
+    for _ in 0..5 {
         assert!(matches!(
             advance_init_once(&mut driver, &mut request).unwrap(),
             OperationProgress::Pending
@@ -187,6 +187,14 @@ fn poll_init_request_falls_back_to_cmd1_after_acmd41_not_ready_timeout() {
             .count(),
         1
     );
+    assert!(matches!(
+        driver.host().bus_ops.as_slice(),
+        [
+            ..,
+            sdmmc_host::BusOp::ResetAll,
+            sdmmc_host::BusOp::SetClock(ClockSpeed::Identification)
+        ]
+    ));
 }
 
 #[test]
@@ -199,6 +207,7 @@ fn mmc_fallback_register_states_are_runnable_without_a_new_irq() {
     for state in [
         SdMmcInitState::BeginMmcFallback,
         SdMmcInitState::PollMmcFallbackReset,
+        SdMmcInitState::PollMmcFallbackClock,
         SdMmcInitState::MmcFallbackCmd0,
     ] {
         request.state = state;

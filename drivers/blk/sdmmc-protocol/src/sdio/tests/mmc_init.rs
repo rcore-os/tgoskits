@@ -59,6 +59,15 @@ fn init_falls_back_to_mmc_when_cmd8_and_acmd41_fail() {
         2,
         "MMC fallback must reset the host before issuing CMD1"
     );
+    assert!(driver.host().bus_ops.windows(2).any(|ops| {
+        matches!(
+            ops,
+            [
+                sdmmc_host::BusOp::ResetAll,
+                sdmmc_host::BusOp::SetClock(ClockSpeed::Identification)
+            ]
+        )
+    }));
 
     // Two CMD6 SWITCHes — one for BUS_WIDTH, one for HS_TIMING.
     let cmd6s: Vec<&Command> = cmds.iter().filter(|c| c.index == 6).collect();

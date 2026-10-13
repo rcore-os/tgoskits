@@ -190,6 +190,7 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
             | SdMmcInitState::SubmitAcmd41Retry
             | SdMmcInitState::BeginMmcFallback
             | SdMmcInitState::PollMmcFallbackReset
+            | SdMmcInitState::PollMmcFallbackClock
             | SdMmcInitState::MmcFallbackCmd0
             | SdMmcInitState::PollMmcFallbackCmd0
             | SdMmcInitState::PollMmcInitial

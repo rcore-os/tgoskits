@@ -259,6 +259,16 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
             SdMmcInitState::PollMmcFallbackReset => {
                 match self.advance_init_bus_op(request, cause)? {
                     OperationProgress::Pending => Ok(OperationProgress::Pending),
+                    OperationProgress::Complete(()) => self.submit_init_bus_op(
+                        request,
+                        SdMmcBusOp::SetClock(ClockSpeed::Identification),
+                        SdMmcInitState::PollMmcFallbackClock,
+                    ),
+                }
+            }
+            SdMmcInitState::PollMmcFallbackClock => {
+                match self.advance_init_bus_op(request, cause)? {
+                    OperationProgress::Pending => Ok(OperationProgress::Pending),
                     OperationProgress::Complete(()) => {
                         request.state = SdMmcInitState::MmcFallbackCmd0;
                         Ok(OperationProgress::Pending)
