@@ -8,6 +8,7 @@ publish = false
 [features]
 default = ["arceos"]
 arceos = ["dep:ax-std", "ax-std/arceos"]
+loong-efi-smoke = ["initramfs-smoke", "ax-std/efi"]
 cmdline-smoke = ["arceos", "dep:ax-hal"]
 initramfs-smoke = ["cmdline-smoke", "ax-std/fs", "dep:ax-fs-ng"]
 block-root-smoke = ["initramfs-smoke", "ax-std/ext4fs", "ax-std/nvme"]

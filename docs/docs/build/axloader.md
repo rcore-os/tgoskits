@@ -63,6 +63,21 @@ cargo xtask arceos qemu \
   --qemu-config bootloader/axloader/qemu-loongarch64.toml
 ```
 
+要验证目标 ELF 的正向交接，先构建独立的 ArceOS EFI 应用并打包宿主归档：
+
+```bash
+cargo xtask image pack-initramfs test-suit/host-initramfs \
+  target/axbuild/host-initramfs/loong-host.cpio
+cargo xtask arceos build \
+  --package arceos-helloworld \
+  --config bootloader/axloader/build-loongarch64-helloworld-efi.toml
+```
+
+该配置启用 `loong-efi-smoke`，使用 `loongarch64-unknown-none-softfloat`、
+`ax-std/efi`、cmdline/initramfs smoke 特性，生成
+`target/loongarch64-unknown-linux-musl/release/arceos-helloworld`。目标应用的
+输出用于确认 EFI 入口已经完成 cmdline 和宿主 initramfs 交接。
+
 CI 的控制面 smoke 改用 `qemu-loongarch64-http.toml`，并在后台运行同一 ArceOS
 镜像后执行 `python3 bootloader/axloader/scripts/loong-http-smoke.py`。该配置不以
 串口成功标记提前停止 QEMU，而是保留 `hostfwd`，让脚本完成状态、启动事务和
@@ -193,11 +208,13 @@ QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶�
 当前 LoongArch CI/QEMU 门禁使用 `qemu-loongarch64-http.toml` 和
 `scripts/loong-http-smoke.py`，通过 host `3999` 到 guest `2999` 的转发执行真实
 HTTP 请求。它覆盖状态读取、manifest 幂等、serial continue、坏 ELF/OTA 拒绝、有效
-PE 槽位写入、重启 trial 和 confirm；普通 `qemu-loongarch64.toml` 的启动配置则以
-跨行正则同时等待 `network_ready: arch=loongarch64` 和
-`loader_server: port=2999`。当前 smoke 仍不执行有效 Loong ELF 的 `efi_pe_entry`
-目标交接、cmdline/initramfs 目标验收和失败 trial 的跨重启 rollback，这些路径需要
-后续独立 QEMU 场景；其中 `ready_to_handoff` 只表示 loader 已准备交接。LoongArch axstd 前端在活动 runtime UART
+PE 槽位写入、重启 trial 和 confirm；随后构建独立的 `arceos-helloworld` EFI ELF，
+将 `test-suit/host-initramfs` 作为 HTTP 上传的目标归档，并检查
+`elf_loaded`、`ready_to_handoff`、`HOST_CMDLINE: axloader-positive=1`、
+`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。普通 `qemu-loongarch64.toml` 的启动
+配置则以跨行正则同时等待 `network_ready: arch=loongarch64` 和
+`loader_server: port=2999`。失败 trial 的跨重启 rollback 仍需要后续独立 QEMU
+场景；其中 `ready_to_handoff` 单独出现时只表示 loader 已准备交接。LoongArch axstd 前端在活动 runtime UART
 未绑定时通过 axstd console 输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧，并在状态/UDP
 公告中报告 runtime 波特率和 8N1 参数；没有活动 UART 时报告 `ready=false`，客户端使用
 显式 `direct` continue。绑定后暂停身份帧，撤销绑定后恢复输出。
