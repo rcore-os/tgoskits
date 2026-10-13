@@ -184,13 +184,19 @@ therefore always have a materialized stable slot. This bootstrap accepts only
 the PE produced by the someboot EFI build (`ImageBase = 0` and no base
 relocation directory), and rejects another EFI image format.
 
-QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
+上述 x86_64 UEFI QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
 跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅
 initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出的 `HOST_CMDLINE`、
 `HOST_INITRAMFS_PASSED` 为成功证据。测试先核对真实 UART 身份及上报参数，再验证 bound/direct 放行、错误绑定令牌拒绝，
 并覆盖 SHA-256、OTA 待试槽确认和
 回滚。服务端协议测试另见 ostool 的
 `docs/axloader-network-control.md`。
+
+上述 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 描述的是 x86 harness。
+LoongArch 的 `cargo xtask arceos qemu --package axloader` 当前 CI 门禁只要求
+`network_ready: arch=loongarch64`，用于证明 bootstrap、继承 EFI 入口、网络接口选择和
+HTTP listener 已到达；该命令不会自行发起宿主 HTTP 请求。完整 LoongArch HTTP/OTA 运行时
+验证仍需带宿主控制器的独立 QEMU harness。
 
 ## x86_64 OTA 布局与状态
 

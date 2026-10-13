@@ -421,9 +421,11 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
     --qemu-config bootloader/axloader/qemu-loongarch64.toml
   ```
 
-  检查网络发现、HTTP 长度和 SHA-256、ELF/PE 入口、cmdline/initramfs、继承交接以及
-  OTA trial/confirm/rollback；`ready_to_handoff` 只证明 loader 已准备交接，必须继续
-  收集目标内核的启动和 OTA 结果。
+  这条 CI/QEMU 门禁当前以 `network_ready: arch=loongarch64` 作为正向成功判据，证明
+  自身 A.EFI bootstrap、继承 EFI 入口、网络接口选择和 HTTP listener 已到达；它不启动
+  宿主 HTTP 控制客户端，因此不把 HTTP body 长度/SHA、目标 ELF/PE 交接、cmdline/initramfs
+  目标输出或 OTA confirm/rollback 写成该命令的已验证证据。完整控制面和 OTA 场景需要
+  带宿主控制器的独立 QEMU harness；`ready_to_handoff` 仍只表示 loader 准备交接。
 
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。
 - 加入 `-d int,cpu_reset,guest_errors` 记录陷阱、复位和无效客户机访问。
