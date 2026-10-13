@@ -97,6 +97,12 @@ impl Interface for Rk3588CpuFreq {
             .map_err(to_error)
     }
 
+    fn all_opps(&self, domain: DomainId) -> Result<Vec<OperatingPoint>, FrequencyError> {
+        super::all_opps(to_domain(domain)?)
+            .map(|opps| opps.into_iter().map(to_opp).collect())
+            .map_err(to_error)
+    }
+
     fn current_opp(&self, domain: DomainId) -> Result<OperatingPoint, FrequencyError> {
         super::current_opp(to_domain(domain)?)
             .map(to_opp)

@@ -15,6 +15,7 @@ mod devices;
 pub use append::DefaultVirtualDeviceIntent;
 pub(crate) use append::append_configured_devices;
 pub use devices::{
+    VIRTUAL_CPUFREQ_MAX_PERFORMANCE, VIRTUAL_CPUFREQ_MODEL, VirtualCpuFreqOptions,
     virtio_net::{
         PhysicalUplink, PhysicalUplinkError, install_physical_uplink, physical_uplink_installed,
         reserve_host_mac, switch_from_physical_rx,

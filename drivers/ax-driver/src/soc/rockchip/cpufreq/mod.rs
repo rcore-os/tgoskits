@@ -398,6 +398,18 @@ pub fn available_opps(domain: FrequencyDomain) -> Result<Vec<OperatingPoint>, Fr
         .collect())
 }
 
+/// Returns the hardware-validated board OPP table without dynamic limits.
+pub fn all_opps(domain: FrequencyDomain) -> Result<Vec<OperatingPoint>, FrequencyError> {
+    check_ready(domain)?;
+    Ok(domain
+        .cluster()
+        .opps()
+        .iter()
+        .copied()
+        .map(describe)
+        .collect())
+}
+
 /// Returns the last fully confirmed OPP for a domain.
 pub fn current_opp(domain: FrequencyDomain) -> Result<OperatingPoint, FrequencyError> {
     check_ready(domain)?;

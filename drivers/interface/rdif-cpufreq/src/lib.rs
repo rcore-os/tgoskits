@@ -76,6 +76,16 @@ pub trait Interface: DriverGeneric {
     /// Returns only OPPs currently established as safe to use on this hardware.
     fn available_opps(&self, domain: DomainId) -> Result<Vec<OperatingPoint>, FrequencyError>;
 
+    /// Returns the complete board OPP table before dynamic thermal or
+    /// dependent-domain limits are applied. Reported voltages are nominal
+    /// board values rather than the current thermal derating.
+    ///
+    /// The returned points must still be hardware-validated OPPs that the
+    /// driver knows how to apply. Callers must use [`available_opps`] and
+    /// [`limits`] before issuing a transition; this method supplies a stable
+    /// scale for reporting a performance value across changing limits.
+    fn all_opps(&self, domain: DomainId) -> Result<Vec<OperatingPoint>, FrequencyError>;
+
     /// Returns the last fully confirmed requested OPP.
     ///
     /// This is a policy state, not a measurement of delivered CPU frequency.

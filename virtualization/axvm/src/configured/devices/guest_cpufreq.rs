@@ -15,7 +15,7 @@ use axvmconfig::VirtualDeviceRequest;
 
 use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 
-const MODEL: &str = "virtual-cpufreq";
+pub const VIRTUAL_CPUFREQ_MODEL: &str = "virtual-cpufreq";
 const MMIO_SLOT: &str = "registers";
 const VCPU_STRIDE: u64 = 0x1000;
 const CUR_PERF: u64 = 0x00;
@@ -24,33 +24,88 @@ const PERFTBL_LEN: u64 = 0x08;
 const PERFTBL_SEL: u64 = 0x0c;
 const PERFTBL_RD: u64 = 0x10;
 const PERF_DOMAIN: u64 = 0x14;
-const MAX_PERFORMANCE: u32 = 1024;
-const DEFAULT_TABLE: &[u32] = &[256, 512, 768, MAX_PERFORMANCE];
+pub const VIRTUAL_CPUFREQ_MAX_PERFORMANCE: u32 = 1024;
+const DEFAULT_TABLE: &[u32] = &[256, 512, 768, VIRTUAL_CPUFREQ_MAX_PERFORMANCE];
 
 /// Catalog entry for `[[devices.virtual]] model = "virtual-cpufreq"`.
 pub(super) const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
-    model: MODEL,
+    model: VIRTUAL_CPUFREQ_MODEL,
     create: create_device_node,
 };
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct Options {
+pub struct VirtualCpuFreqOptions {
     /// Host cpufreq domain ordinal.  It is intentionally not a physical Hz.
-    domain: u32,
+    pub domain: u32,
     /// Number of guest vCPU banks represented by this device.
-    vcpu_count: u32,
+    pub vcpu_count: u32,
     /// Normalized performance table consumed by Linux's virtual driver.
-    performance_table: Vec<u32>,
+    pub performance_table: Vec<u32>,
 }
 
-impl Default for Options {
+impl Default for VirtualCpuFreqOptions {
     fn default() -> Self {
         Self {
             domain: 0,
             vcpu_count: 1,
             performance_table: DEFAULT_TABLE.to_vec(),
         }
+    }
+}
+
+impl VirtualCpuFreqOptions {
+    /// Parses and validates options at the AxVM model boundary.
+    pub fn from_request(request: &VirtualDeviceRequest) -> Result<Self, String> {
+        let options = request
+            .deserialize_options::<Self>()
+            .map_err(|error| error.to_string())?;
+        options.validate().map_err(String::from)?;
+        Ok(options)
+    }
+
+    /// Validates values shared by configuration materialization and device creation.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let vcpu_count = usize::try_from(self.vcpu_count).ok();
+        if !vcpu_count.is_some_and(|count| (1..=64).contains(&count)) {
+            return Err("vcpu_count must be between 1 and 64");
+        }
+        if self.performance_table.is_empty() || self.performance_table.len() > 64 {
+            return Err("performance_table must contain between 1 and 64 entries");
+        }
+        if self
+            .performance_table
+            .iter()
+            .any(|value| *value == 0 || *value > VIRTUAL_CPUFREQ_MAX_PERFORMANCE)
+            || self
+                .performance_table
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err("performance_table must be strictly increasing in 1..=1024");
+        }
+        Ok(())
+    }
+
+    /// Replaces the host-materialized table while retaining the model-owned schema validation.
+    pub fn replace_performance_table(
+        request: &mut VirtualDeviceRequest,
+        performance_table: Vec<u32>,
+    ) -> Result<(), String> {
+        let mut options = Self::from_request(request)?;
+        options.performance_table = performance_table;
+        options.validate().map_err(String::from)?;
+        request.options.insert(
+            String::from("performance_table"),
+            toml::Value::Array(
+                options
+                    .performance_table
+                    .into_iter()
+                    .map(|value| toml::Value::Integer(i64::from(value)))
+                    .collect(),
+            ),
+        );
+        Ok(())
     }
 }
 
@@ -70,33 +125,9 @@ fn create_device_node(
     request: &VirtualDeviceRequest,
     _context: &DeviceInstantiationContext,
 ) -> Result<DeviceNodeSpec, ConfiguredDeviceError> {
-    let options = request
-        .deserialize_options::<Options>()
-        .map_err(|error| invalid_options(request, error.to_string()))?;
-    let vcpu_count = usize::try_from(options.vcpu_count)
-        .ok()
-        .filter(|count| (1..=64).contains(count))
-        .ok_or_else(|| invalid_options(request, "vcpu_count must be between 1 and 64"))?;
-    if options.performance_table.is_empty() || options.performance_table.len() > 64 {
-        return Err(invalid_options(
-            request,
-            "performance_table must contain between 1 and 64 entries",
-        ));
-    }
-    if options
-        .performance_table
-        .iter()
-        .any(|value| *value == 0 || *value > MAX_PERFORMANCE)
-        || options
-            .performance_table
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1])
-    {
-        return Err(invalid_options(
-            request,
-            "performance_table must be strictly increasing in 1..=1024",
-        ));
-    }
+    let options = VirtualCpuFreqOptions::from_request(request)
+        .map_err(|error| invalid_options(request, error))?;
+    let vcpu_count = usize::try_from(options.vcpu_count).expect("validated vcpu_count");
     Ok(DeviceNodeSpec::virtual_device(
         id,
         Arc::new(VirtualCpuFreqModel {
@@ -213,7 +244,7 @@ impl VirtualCpuFreqDevice {
 
 impl Device for VirtualCpuFreqDevice {
     fn name(&self) -> &str {
-        MODEL
+        VIRTUAL_CPUFREQ_MODEL
     }
 
     fn resources(&self) -> &[Resource] {
@@ -253,7 +284,7 @@ impl Device for VirtualCpuFreqDevice {
         })?;
         match register {
             SET_PERF => {
-                if !(1..=MAX_PERFORMANCE).contains(&value) {
+                if !(1..=VIRTUAL_CPUFREQ_MAX_PERFORMANCE).contains(&value) {
                     return Err(DeviceError::InvalidInput {
                         operation: "write virtual CPU frequency performance",
                         detail: "normalized performance must be in 1..=1024".into(),
@@ -351,6 +382,37 @@ mod tests {
             0x1000 + vcpu as u64 * VCPU_STRIDE + offset,
             AccessWidth::Dword,
         )
+    }
+
+    #[test]
+    fn model_schema_owns_defaults_and_materialized_table_validation() {
+        let mut request: axvmconfig::VirtualDeviceRequest = toml::from_str(
+            r#"
+                id = "cpu"
+                model = "virtual-cpufreq"
+                domain = 1
+            "#,
+        )
+        .unwrap();
+        let options = VirtualCpuFreqOptions::from_request(&request).unwrap();
+        assert_eq!(options.domain, 1);
+        assert_eq!(options.vcpu_count, 1);
+        assert_eq!(options.performance_table, [256, 512, 768, 1024]);
+
+        VirtualCpuFreqOptions::replace_performance_table(&mut request, vec![408, 816, 1024])
+            .unwrap();
+        assert_eq!(
+            VirtualCpuFreqOptions::from_request(&request)
+                .unwrap()
+                .performance_table,
+            [408, 816, 1024]
+        );
+
+        request.options.insert(
+            String::from("performance_table"),
+            toml::Value::Array(vec![toml::Value::Integer(1024), toml::Value::Integer(512)]),
+        );
+        assert!(VirtualCpuFreqOptions::from_request(&request).is_err());
     }
 
     #[test]

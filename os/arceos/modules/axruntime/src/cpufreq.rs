@@ -38,6 +38,7 @@ enum Policy {
 pub struct DomainSnapshot {
     pub info: DomainInfo,
     pub available_opps: Vec<OperatingPoint>,
+    pub all_opps: Vec<OperatingPoint>,
     pub current_opp: OperatingPoint,
     pub limits: FrequencyLimits,
 }
@@ -73,6 +74,7 @@ enum Request {
     Domains(Arc<Completion<Vec<DomainInfo>>>),
     Snapshot(DomainId, Arc<Completion<DomainSnapshot>>),
     AvailableOpps(DomainId, Arc<Completion<Vec<OperatingPoint>>>),
+    AllOpps(DomainId, Arc<Completion<Vec<OperatingPoint>>>),
     CurrentOpp(DomainId, Arc<Completion<OperatingPoint>>),
     Limits(DomainId, Arc<Completion<FrequencyLimits>>),
     SetGovernor(Governor, Arc<Completion<()>>),
@@ -93,7 +95,6 @@ struct GuestHint {
     vcpu_id: usize,
     domain: usize,
     performance: u32,
-    effective: u32,
     suspended: bool,
 }
 
@@ -149,6 +150,11 @@ pub fn snapshot(domain: DomainId) -> Result<DomainSnapshot, FrequencyError> {
 /// Returns the currently usable OPPs for one domain.
 pub fn available_opps(domain: DomainId) -> Result<Vec<OperatingPoint>, FrequencyError> {
     submit(|completion| Request::AvailableOpps(domain, completion))
+}
+
+/// Returns the hardware-validated OPP table before dynamic limits.
+pub fn all_opps(domain: DomainId) -> Result<Vec<OperatingPoint>, FrequencyError> {
+    submit(|completion| Request::AllOpps(domain, completion))
 }
 
 /// Returns the last fully confirmed OPP for one domain.
@@ -255,7 +261,6 @@ pub fn publish_guest_hint(
             vcpu_id,
             domain,
             performance: performance.clamp(1, 1024),
-            effective: 0,
             suspended: false,
         });
     }
@@ -284,7 +289,6 @@ pub fn suspend_guest_hints(vm_id: usize, run_generation: u64) {
         .filter(|hint| hint.vm_id == vm_id && hint.run_generation == run_generation)
     {
         hint.suspended = true;
-        hint.effective = 0;
     }
     WAKE.notify_one();
 }
@@ -367,6 +371,7 @@ fn domain_snapshot(
     Ok(DomainSnapshot {
         info,
         available_opps: driver.available_opps(domain)?,
+        all_opps: driver.all_opps(domain)?,
         current_opp: driver.current_opp(domain)?,
         limits: driver.limits(domain)?,
     })
@@ -387,6 +392,9 @@ fn handle_request(
         }
         Request::AvailableOpps(domain, done) => {
             done.finish(with_device(device, |driver| driver.available_opps(domain)));
+        }
+        Request::AllOpps(domain, done) => {
+            done.finish(with_device(device, |driver| driver.all_opps(domain)));
         }
         Request::CurrentOpp(domain, done) => {
             done.finish(with_device(device, |driver| driver.current_opp(domain)));
@@ -429,7 +437,9 @@ fn eligible_opps(
     domain: DomainId,
 ) -> Result<Vec<OperatingPoint>, FrequencyError> {
     let limits = driver.limits(domain)?;
-    let mut opps = all_available_opps(driver, domain)?;
+    let mut opps = driver.available_opps(domain)?;
+    opps.sort_unstable_by_key(|opp| opp.frequency_hz);
+    opps.dedup_by_key(|opp| opp.frequency_hz);
     opps.retain(|opp| (limits.min_hz..=limits.max_hz).contains(&opp.frequency_hz));
     if opps.is_empty() {
         return Err(FrequencyError::OppUnavailable);
@@ -441,11 +451,11 @@ fn eligible_opps(
 /// dependent-domain limits are applied. Guest performance values use this
 /// stable scale so a later thermal ceiling produces a lower `cur_perf` value
 /// instead of renormalizing the reduced table back to 1024.
-fn all_available_opps(
+fn all_reference_opps(
     driver: &mut rdif_cpufreq::CpuFreq,
     domain: DomainId,
 ) -> Result<Vec<OperatingPoint>, FrequencyError> {
-    let mut opps = driver.available_opps(domain)?;
+    let mut opps = driver.all_opps(domain)?;
     opps.sort_unstable_by_key(|opp| opp.frequency_hz);
     opps.dedup_by_key(|opp| opp.frequency_hz);
     if opps.is_empty() {
@@ -498,7 +508,7 @@ fn target_frequency(
     guest_hints: &[GuestHint],
 ) -> Result<PolicyDecision, FrequencyError> {
     let domain = state.info.id;
-    let reference_opps = all_available_opps(driver, domain)?;
+    let reference_opps = all_reference_opps(driver, domain)?;
     let opps = eligible_opps(driver, domain)?;
     let current = driver.current_opp(domain)?.frequency_hz;
     let target = match state.policy {
@@ -581,13 +591,6 @@ fn publish_effective_performance(
     if let Some(value) = GUEST_DOMAIN_EFFECTIVE.lock().get_mut(domain) {
         *value = Some(effective);
     }
-    for hint in GUEST_HINTS
-        .lock()
-        .iter_mut()
-        .filter(|hint| hint.domain == domain && !hint.suspended)
-    {
-        hint.effective = effective;
-    }
 }
 
 fn record_guest_domain_error(domain: usize, error: FrequencyError) {
@@ -624,7 +627,7 @@ fn apply_policies(
                 driver.set_frequency(state.info.id, target)?;
             }
             let current = driver.current_opp(state.info.id)?.frequency_hz;
-            let reference_opps = all_available_opps(driver, state.info.id)?;
+            let reference_opps = all_reference_opps(driver, state.info.id)?;
             Ok((decision.fixed_adjustment, current, reference_opps))
         });
         match result {
@@ -860,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn guest_performance_is_normalized_against_safe_opps() {
+    fn guest_performance_is_normalized_against_reference_opps() {
         let opps = [408, 816, 1200].map(|mhz| OperatingPoint {
             frequency_hz: mhz * 1_000_000,
             voltage_uv: None,
@@ -869,6 +872,7 @@ mod tests {
         assert_eq!(normalized_performance(816_000_000, &opps), 512);
         assert_eq!(normalized_performance(1_200_000_000, &opps), 1024);
         assert_eq!(normalized_performance(500_000_000, &opps), 1);
+        assert_eq!(normalized_performance(816_000_000, &opps[..2]), 1024);
     }
 
     #[test]
@@ -884,7 +888,6 @@ mod tests {
                 vcpu_id: 0,
                 domain: 1,
                 performance: 256,
-                effective: 0,
                 suspended: false,
             },
             GuestHint {
@@ -893,7 +896,6 @@ mod tests {
                 vcpu_id: 0,
                 domain: 1,
                 performance: 1024,
-                effective: 0,
                 suspended: true,
             },
             GuestHint {
@@ -902,7 +904,6 @@ mod tests {
                 vcpu_id: 0,
                 domain: 1,
                 performance: 512,
-                effective: 0,
                 suspended: false,
             },
         ];
@@ -918,7 +919,6 @@ mod tests {
                     vcpu_id: 0,
                     domain: 1,
                     performance: 1,
-                    effective: 0,
                     suspended: false,
                 }],
                 1,
@@ -946,7 +946,6 @@ mod tests {
                     vcpu_id: 0,
                     domain: 0,
                     performance: 512,
-                    effective: 0,
                     suspended: false,
                 }],
                 0,

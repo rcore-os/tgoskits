@@ -14,7 +14,7 @@
 
 extern crate alloc;
 
-use alloc::{string::String, sync::Arc};
+use alloc::sync::Arc;
 
 #[cfg(all(any(
     target_arch = "aarch64",
@@ -102,38 +102,16 @@ fn materialize_guest_cpufreq_tables(
         .devices
         .virtual_devices
         .iter_mut()
-        .filter(|request| request.model == "virtual-cpufreq")
+        .filter(|request| request.model == axvm::VIRTUAL_CPUFREQ_MODEL)
     {
-        let domain = request
-            .options
-            .get("domain")
-            .and_then(toml::Value::as_integer)
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "virtual-cpufreq device {} requires a non-negative domain",
-                    request.id
-                )
-            })?;
+        let options = axvm::VirtualCpuFreqOptions::from_request(request)
+            .map_err(|error| anyhow::anyhow!("parse virtual-cpufreq options: {error}"))?;
+        let domain = options.domain;
         let table = backend
             .performance_table(domain)
             .map_err(|error| anyhow::anyhow!("materialize virtual-cpufreq OPP table: {error}"))?;
-        if table.is_empty()
-            || table.len() > 64
-            || table.iter().any(|value| *value == 0 || *value > 1024)
-            || table.windows(2).any(|pair| pair[0] >= pair[1])
-        {
-            bail!("host returned an invalid virtual-cpufreq performance table for domain {domain}");
-        }
-        request.options.insert(
-            String::from("performance_table"),
-            toml::Value::Array(
-                table
-                    .into_iter()
-                    .map(|value| toml::Value::Integer(i64::from(value)))
-                    .collect(),
-            ),
-        );
+        axvm::VirtualCpuFreqOptions::replace_performance_table(request, table)
+            .map_err(|error| anyhow::anyhow!("materialize virtual-cpufreq OPP table: {error}"))?;
     }
     Ok(())
 }
@@ -145,7 +123,7 @@ fn validate_guest_cpufreq_placement(
     let requests = vm_config
         .virtual_device_requests()
         .iter()
-        .filter(|request| request.model == "virtual-cpufreq")
+        .filter(|request| request.model == axvm::VIRTUAL_CPUFREQ_MODEL)
         .collect::<Vec<_>>();
     if requests.is_empty() {
         return Ok(());
@@ -157,18 +135,10 @@ fn validate_guest_cpufreq_placement(
         );
     }
     let request = requests[0];
-    let domain = request
-        .options
-        .get("domain")
-        .and_then(toml::Value::as_integer)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| anyhow::anyhow!("virtual-cpufreq requires a non-negative domain"))?;
-    let vcpu_count = request
-        .options
-        .get("vcpu_count")
-        .and_then(toml::Value::as_integer)
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(1);
+    let options = axvm::VirtualCpuFreqOptions::from_request(request)
+        .map_err(|error| anyhow::anyhow!("parse virtual-cpufreq options: {error}"))?;
+    let domain = options.domain;
+    let vcpu_count = usize::try_from(options.vcpu_count).expect("validated vcpu_count");
     let placements = vm_config.phys_cpu_ls().get_vcpu_affinities_pcpu_ids();
     if vcpu_count != placements.len() || vcpu_count != vm_config.phys_cpu_ls().cpu_num() {
         bail!("virtual-cpufreq vcpu_count={vcpu_count} must cover every configured vCPU");

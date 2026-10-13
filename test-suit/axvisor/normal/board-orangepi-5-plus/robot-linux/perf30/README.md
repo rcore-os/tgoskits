@@ -4,7 +4,11 @@
 RKNN/NPU 流水线。它单独建立高性能 profile，不改变 `robot-linux/smoke` 的普通
 28 FPS 回归入口。
 
-## 配置边界
+## 1. 配置边界
+
+本节说明 perf30 用例的 CPU、宿主 governor、客户机 devfreq 和 benchmark 资产边界。
+这些约束由对应的 TOML 与 board shell step 实现，普通 `robot-linux/smoke` 入口仍保持
+独立的默认 governor 和 28 FPS 回归门槛。
 
 - `linux-smp1-emmc-perf30.toml` 将一个 Linux vCPU 显式固定到宿主 A76 CPU4：
   `phys_cpu_ids = [0x400]` 是客户机可见 MPIDR，`phys_cpu_sets = [0x10]` 才是宿主
@@ -39,7 +43,7 @@ RKNN/NPU 流水线。它单独建立高性能 profile，不改变 `robot-linux/s
 `virt-cpufreq` 驱动。后续 virtual-cpufreq 客户机资产可以只替换 VM 的
 `kernel_path`，沿用同一块板卡验收协议。
 
-## 板卡入口
+## 2. 板卡入口
 
 从仓库根目录运行：
 
@@ -52,7 +56,13 @@ cargo xtask axvisor test board \
 `aka-rk3588-virtual` 运行包放到板卡的 `/guest` 或客户机根文件系统中，并按上面的
 benchmark 资产合同准备 `/rknn_yolov8_image`。
 
-## 当前验证边界
+## 3. 当前验证边界
+
+本次 PR 的实体板记录只覆盖下面的 `robot-linux-perf30` 入口。双客户机目录中同步修改的
+`dual-linux-zephyr/linux-smp1-sd.toml` 与 `dual-starry-zephyr/zephyr-smp1.toml` 已完成编译
+检查，但没有在本次硬件窗口按新的 CPU4/CPU2 绑定重新运行；它们不属于当前 CI 板卡矩阵，
+现有双客户机历史记录不能替代这次绑定变更的实机证据。后续运行应单独保存 session、
+亲和性、温度和完整 IVC/执行器结果。
 
 实体 OrangePi 验证记录（2026-10-12，`OrangePi-5-Plus-1`，board-runner
 session `fda87432-169a-4b24-b736-6cfb2fbb229a`）如下：

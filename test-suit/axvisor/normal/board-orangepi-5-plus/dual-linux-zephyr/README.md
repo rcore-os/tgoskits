@@ -1,6 +1,6 @@
 # Orange Pi 5 Plus Linux 与 Zephyr 双客户机场景
 
-该场景在 SD 版 Orange Pi 5 Plus 上通过 Axvisor 同时运行 Linux 感知客户机和 Zephyr 控制客户机。Linux 使用 USB 摄像头和 RKNPU 生成感知结果，通过 `robot-ivc` 发送给 Zephyr；Zephyr 独占 UART6，负责底盘、机械臂和输入看门狗。仓库只保留已验证的 SD 配置；eMMC 迁移要求见第6节。
+该场景在 SD 版 Orange Pi 5 Plus 上通过 Axvisor 同时运行 Linux 感知客户机和 Zephyr 控制客户机。Linux 使用 USB 摄像头和 RKNPU 生成感知结果，通过 `robot-ivc` 发送给 Zephyr；Zephyr 独占 UART6，负责底盘、机械臂和输入看门狗。仓库只保留已有实机验收记录的 SD 配置；本次 PR 同步调整的 CPU4/CPU2 亲和性尚未在本次硬件窗口重新运行，不能把 perf30 单客户机结果当作双客户机绑定验证。eMMC 迁移要求见第6节。
 
 ## 1. 工作负载与资产
 

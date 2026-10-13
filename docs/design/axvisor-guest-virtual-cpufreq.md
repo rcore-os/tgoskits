@@ -61,8 +61,9 @@ sequenceDiagram
 
 带 backport 的 Linux 资产在 VM TOML 中加入一个虚拟设备请求。模型选项与 `Options` 对应，
 `domain` 和 `vcpu_count` 由配置提供；`performance_table` 在 AxVisor 准备 VM 时由
-`GuestCpuFreqBackend::performance_table` 读取当前 `ax-runtime::cpufreq::snapshot` 的
-宿主已验证 OPP 表，并转换成严格递增的归一化值。动态 thermal/DSU 上限不从表中删除，
+`GuestCpuFreqBackend::performance_table` 读取 `ax-runtime::cpufreq::snapshot` 返回的
+宿主完整硬件 OPP 表（`rdif-cpufreq::Interface::all_opps`），并转换成严格递增的归一化值。
+`available_opps` 仍单独表示当前安全集合；动态 thermal/DSU 上限不从稳定表中删除，
 而由宿主 worker 在每次请求时约束；这样上限降低后 `cur_perf` 仍按完整硬件 OPP 基准
 下降，而不会把受限最高点重新标成 1024。配置中的示例值只作为序列化模板，实际 FDT
 表项以板卡启动时的 OPP 表为准：
@@ -73,7 +74,8 @@ id = "guest-cpufreq"
 model = "virtual-cpufreq"
 domain = 1
 vcpu_count = 1
-# Materialized from the host's currently safe OPPs during VM preparation.
+# Materialized from the host's complete hardware-validated OPP table during VM preparation.
+# Runtime thermal and dependent-domain limits clamp requests after boot.
 performance_table = [256, 512, 768, 1024]
 ```
 
@@ -93,12 +95,19 @@ QEMU/AArch64 只验证 FDT、MMIO bank、非法值和 Linux driver probe；RK358
 
 ### 3.1 负向检查
 
+这些检查覆盖设备寄存器边界、run 代际清理和宿主限制收紧。它们应在 AxVM 单元测试与
+带 virtual-cpufreq 前端的客户机 probe 中同时观察，以区分设备模型错误和宿主 OPP 失败。
+
 - `SET_PERF` 为 `0` 或大于 `1024`、未对齐访问、未知寄存器和越界 bank 必须返回 typed device error。
 - 两个 VM 的 hint 必须按 domain 取最大值；清除旧 generation 后，旧请求不能在 worker 下一轮重新出现。
 - 热控收紧或 host adapter 不可用时，客户机只能读到较低值或得到明确错误，不能继续写越界 OPP。
 - 缺少 Linux virtual-cpufreq 前端时只报告 `CPUFREQ_VIRT_UNAVAILABLE_HOST_PERF`，回滚到 stock 6.1.99 + host-performance profile 不需要该设备。
 
 ### 3.2 实体板入口
+
+实体板入口只证明 RK3588 的实际 OPP、thermal、NPU、摄像头和机器人流水线；QEMU 测试不能
+替代这些硬件条件。运行前先保存版本和资产指纹，运行后保留每个 FPS 窗口的原始值，便于
+把性能回归与客户机镜像或板卡温度变化区分开。
 
 ```text
 cargo xtask axvisor test board --board orangepi-5-plus-robot-linux-perf30

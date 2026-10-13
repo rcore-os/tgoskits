@@ -44,14 +44,14 @@ impl GuestCpuFreqBackend for GuestCpuFreqService {
             );
         }
         let snapshot = cpufreq::snapshot(info.id).map_err(error_detail)?;
-        let mut opps = snapshot.available_opps;
-        opps.retain(|opp| {
-            (snapshot.limits.min_hz..=snapshot.limits.max_hz).contains(&opp.frequency_hz)
-        });
+        if snapshot.available_opps.is_empty() {
+            return Err("host CPU frequency domain has no currently safe OPP");
+        }
+        let mut opps = snapshot.all_opps;
         opps.sort_unstable_by_key(|opp| opp.frequency_hz);
         opps.dedup_by_key(|opp| opp.frequency_hz);
         if opps.is_empty() {
-            return Err("host CPU frequency domain has no safe OPP");
+            return Err("host CPU frequency domain has no hardware OPP");
         }
         if opps.len() > 64 {
             return Err("host CPU frequency domain exposes more than 64 safe OPPs");

@@ -23,6 +23,10 @@ pub(super) fn register_devices(
     Ok(())
 }
 
+pub use guest_cpufreq::{
+    VIRTUAL_CPUFREQ_MAX_PERFORMANCE, VIRTUAL_CPUFREQ_MODEL, VirtualCpuFreqOptions,
+};
+
 #[cfg(test)]
 mod gated_visibility_tests {
     use axvmconfig::VirtualDeviceRequest;
