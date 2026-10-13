@@ -9,15 +9,16 @@
 #   it into `/guest/builtin/images` instead of embedding it in the hypervisor
 #   binary at build time.
 # - the `virtio-blk` virtual device is backed by the ext4 image at
-#   `/guest/rootfs-aarch64-alpine-0.img`, a file in the same filesystem. The guest
-#   boots from it as `/dev/vda`, so it runs a full Alpine userland. A guest that
-#   only has a minimal initramfs answers `sh: ls: not found`, which reads like a
-#   broken console even when the wiring is correct -- and the dashboard's guest
-#   terminal exists to be typed into, so the case has to type into a real shell.
+#   `/guest/rootfs-aarch64-alpine-0.img`, a numbered copy the managed rootfs
+#   image ships inside `/guest`. The guest boots from it as `/dev/vda`, so it
+#   runs a full Alpine userland. A guest that only has a minimal initramfs
+#   answers `sh: ls: not found`, which reads like a broken console even when
+#   the wiring is correct -- and the dashboard's guest terminal exists to be
+#   typed into, so the case has to type into a real shell.
 #
-# The guest disk is mounted `ro`. The hypervisor mounts the same file as its own
-# root filesystem, so a writable guest disk would be a second writer on one ext4
-# image and corrupt it; a read-only mount is enough to run a shell.
+# The guest disk is mounted `ro`. The nested copy is the same ext4 image the
+# hypervisor roots from, so a writable guest disk would be a second writer on
+# one ext4 image and corrupt it; a read-only mount is enough to run a shell.
 #
 # The machine model is the one
 # `os/axvisor/configs/vms/qemu/aarch64/linux-virtio-blk.toml` boots:

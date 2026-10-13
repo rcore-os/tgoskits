@@ -4,7 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::{
     future::Future,
     pin::Pin,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::Ordering,
     task::{Context, Poll},
 };
 
@@ -112,18 +112,20 @@ struct CapacityWaiter {
 /// still cannot fit hands unused capacity to smaller waiters before sleeping.
 pub(super) struct CapacityWaiters {
     waiters: RawSpinLock<Vec<CapacityWaiter>>,
-    count: AtomicUsize,
     #[cfg(test)]
     registration_hook: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    detach_hook: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl CapacityWaiters {
     pub(super) const fn new() -> Self {
         Self {
             waiters: RawSpinLock::new(Vec::new()),
-            count: AtomicUsize::new(0),
             #[cfg(test)]
             registration_hook: RawSpinLock::new(None),
+            #[cfg(test)]
+            detach_hook: RawSpinLock::new(None),
         }
     }
 
@@ -139,7 +141,6 @@ impl CapacityWaiters {
                 required,
                 notification: Arc::clone(&notification),
             });
-            self.count.store(waiters.len(), Ordering::Release);
         }
         #[cfg(test)]
         self.run_registration_hook();
@@ -157,7 +158,7 @@ impl CapacityWaiters {
     }
 
     pub(super) fn notify_available(&self, mut available: usize) {
-        if available == 0 || self.count.load(Ordering::Acquire) == 0 {
+        if available == 0 {
             return;
         }
 
@@ -174,7 +175,6 @@ impl CapacityWaiters {
                     index += 1;
                 }
             }
-            self.count.store(waiters.len(), Ordering::Release);
             notifications
         };
         for notification in notifications {
@@ -184,7 +184,8 @@ impl CapacityWaiters {
 
     pub(super) fn notify_all(&self) {
         let waiters = core::mem::take(&mut *self.waiters.lock_irqsave());
-        self.count.store(0, Ordering::Release);
+        #[cfg(test)]
+        self.run_detach_hook();
         for waiter in waiters {
             waiter.notification.notify();
         }
@@ -197,13 +198,12 @@ impl CapacityWaiters {
             .position(|waiter| Arc::ptr_eq(&waiter.notification, notification))
         {
             waiters.remove(index);
-            self.count.store(waiters.len(), Ordering::Release);
         }
     }
 
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
-        self.count.load(Ordering::Acquire)
+        self.waiters.lock_irqsave().len()
     }
 
     #[cfg(test)]
@@ -225,6 +225,20 @@ impl CapacityWaiters {
             hook();
         }
     }
+
+    #[cfg(test)]
+    fn set_detach_hook(&self, hook: impl FnOnce() + Send + 'static) {
+        let previous = self.detach_hook.lock_irqsave().replace(Box::new(hook));
+        assert!(previous.is_none(), "detach hook already installed");
+    }
+
+    #[cfg(test)]
+    fn run_detach_hook(&self) {
+        let hook = self.detach_hook.lock_irqsave().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -232,11 +246,76 @@ mod tests {
     use alloc::sync::Arc;
     use core::{
         future::Future,
+        sync::atomic::AtomicUsize,
         task::{Context, Poll, Waker},
     };
     use std::{sync::mpsc, task::Wake, time::Duration};
 
     use super::*;
+
+    struct CountingNotification {
+        wakes: AtomicUsize,
+    }
+
+    impl BlockNotification for CountingNotification {
+        fn notify(&self) {
+            self.wakes.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn wait(&self) {
+            unreachable!("the notification is never waited on in this test");
+        }
+
+        fn wait_timeout(&self, _: Duration) -> bool {
+            unreachable!("the notification is never waited on in this test");
+        }
+    }
+
+    #[test]
+    fn available_capacity_notifies_registered_waiter() {
+        let registry = CapacityWaiters::new();
+        let notification = Arc::new(CountingNotification {
+            wakes: AtomicUsize::new(0),
+        });
+        registry.waiters.lock_irqsave().push(CapacityWaiter {
+            required: 1,
+            notification: notification.clone(),
+        });
+
+        registry.notify_available(1);
+        assert_eq!(notification.wakes.load(Ordering::Relaxed), 1);
+        assert!(registry.waiters.lock_irqsave().is_empty());
+    }
+
+    #[test]
+    fn capacity_waiter_registered_after_detach_remains_visible() {
+        let registry = Arc::new(CapacityWaiters::new());
+        let first = Arc::new(CountingNotification {
+            wakes: AtomicUsize::new(0),
+        });
+        registry.waiters.lock_irqsave().push(CapacityWaiter {
+            required: 1,
+            notification: first.clone(),
+        });
+
+        let second = Arc::new(CountingNotification {
+            wakes: AtomicUsize::new(0),
+        });
+        let publisher = Arc::clone(&registry);
+        let second_notification = Arc::clone(&second);
+        registry.set_detach_hook(move || {
+            let mut waiters = publisher.waiters.lock_irqsave();
+            waiters.push(CapacityWaiter {
+                required: 1,
+                notification: second_notification,
+            });
+        });
+
+        registry.notify_all();
+        assert_eq!(first.wakes.load(Ordering::Relaxed), 1);
+        registry.notify_available(1);
+        assert_eq!(second.wakes.load(Ordering::Relaxed), 1);
+    }
 
     struct ReentrantWake {
         waiters: Arc<AsyncWaiters>,

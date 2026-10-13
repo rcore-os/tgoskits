@@ -174,6 +174,22 @@ impl rsext4::Clock for Ext4Clock {
     }
 }
 
+impl rsext4::ForkBlockIo for Ext4Disk {
+    fn fork_io(&self) -> Ext4Result<Self> {
+        let device = self.device.fork_region().map_err(|error| match error {
+            crate::BlockError::Unsupported => {
+                Ext4Error::unsupported_capability("runtime:independent_block_io")
+            }
+            crate::BlockError::NoMemory => Ext4Error::no_memory(),
+            _ => Ext4Error::io(),
+        })?;
+        Ok(Self {
+            device,
+            geometry: self.geometry,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;

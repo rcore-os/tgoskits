@@ -85,18 +85,13 @@
 //! }
 //! ```
 //!
-//! # Feature Flags
+//! # Features
 //!
-//! This crate currently has no optional feature flags. All functionality is available
-//! by default.
+//! - `runtime-internal`: Enables constructors and lifecycle operations used by the
+//!   `axdevice` runtime to establish and revoke access-scoped capabilities. This
+//!   feature is intended for the runtime integration, not individual device models.
 
 #![no_std]
-// trait_upcasting has been stabilized in Rust 1.86, but we still need a while to update the minimum
-// Rust version of Axvisor.
-#![allow(stable_features)]
-#![feature(trait_upcasting)]
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
 #![warn(missing_docs)]
 
 extern crate alloc;

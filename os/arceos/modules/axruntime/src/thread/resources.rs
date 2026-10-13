@@ -92,6 +92,12 @@ fn drain_cached_virtual_stacks() {
 
 #[cfg(feature = "paging")]
 fn take_cached_virtual_stack(layout: VirtualStackLayout) -> Option<Box<RuntimeStack>> {
+    // Only the probing creator needs cold allocation boundaries. Unrelated
+    // threads must retain normal cache reuse even in fault-injection builds.
+    #[cfg(feature = "fault-injection")]
+    if ax_task::thread::ThreadAllocationProbe::is_active_for_current() {
+        return None;
+    }
     let mut eviction = None;
     for slot in CACHED_VIRTUAL_STACKS
         .iter()

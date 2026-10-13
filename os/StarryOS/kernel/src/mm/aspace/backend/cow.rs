@@ -802,6 +802,19 @@ impl CowBackend {
         }
     }
 
+    pub(super) fn fork_zeroed(&self, start: VirtAddr) -> MappingOperation {
+        MappingOperation::from_cow(Self {
+            start,
+            page_size: self.page_size,
+            mapping_id: allocate_mapping_id(),
+            pages: Arc::new(RawSpinLock::new(CowPageIndex::new())),
+            cache_domain: Arc::new(Mutex::new(None)),
+            file: None,
+            name: self.name.clone(),
+            shared: false,
+        })
+    }
+
     pub fn is_anonymous(&self) -> bool {
         self.file.is_none()
     }

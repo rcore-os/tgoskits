@@ -50,7 +50,7 @@ cases = ["smoke", "qemu-host-initramfs"]
 [[check]]
 id = "test-axvisor-web-ui-assets"
 impact_targets = ["axvisor:aarch64"]
-name = "Web UI · Unit tests and bundled assets"
+name = "Web UI · Unit tests and bundle"
 timeout_minutes = 15
 command = '''
 echo "==> axvisor web UI typecheck, unit tests, and bundle"
@@ -94,10 +94,56 @@ echo "==> axvisor web UI typecheck, unit tests, and bundle"
   npm test
   npm run build
 )
-repo_root="$(pwd)"
-git --git-dir="${repo_root}/.git" --work-tree="${repo_root}" diff --exit-code -- os/axvisor/web-ui/dist
-test -z "$(git --git-dir="${repo_root}/.git" --work-tree="${repo_root}" status --porcelain --untracked-files=all -- os/axvisor/web-ui/dist)"
 '''
+
+[[check]]
+id = "test-axvisor-aarch64-qemu-web-ui"
+impact_targets = ["axvisor:aarch64"]
+name = "QEMU aarch64 · Web dashboard from the disk root and the initramfs root"
+timeout_minutes = 30
+command = '''
+node_version="v24.11.1"
+node_platform="linux-x64"
+node_archive="node-${node_version}-${node_platform}.tar.xz"
+node_sha256="60e3b0a8500819514aca603487c254298cd776de0698d3cd08f11dba5b8289a8"
+node_root="$(mktemp -d)"
+trap 'rm -rf "${node_root}"' EXIT
+node_is_compatible() {
+  command -v node >/dev/null 2>&1 \
+    && command -v npm >/dev/null 2>&1 \
+    && node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)'
+}
+if ! node_is_compatible; then
+  command -v curl >/dev/null 2>&1 || {
+    echo "node/npm are unavailable and curl is required to provision Node ${node_version}" >&2
+    exit 1
+  }
+  command -v sha256sum >/dev/null 2>&1 || {
+    echo "node/npm are unavailable and sha256sum is required to verify Node ${node_version}" >&2
+    exit 1
+  }
+  command -v tar >/dev/null 2>&1 || {
+    echo "node/npm are unavailable and tar is required to unpack Node ${node_version}" >&2
+    exit 1
+  }
+  curl --fail --location --retry 3 --silent --show-error \
+    "https://nodejs.org/dist/${node_version}/${node_archive}" \
+    --output "${node_root}/${node_archive}"
+  printf '%s  %s\n' "${node_sha256}" "${node_root}/${node_archive}" \
+    | sha256sum --check --status -
+  tar -xJf "${node_root}/${node_archive}" -C "${node_root}"
+  export PATH="${node_root}/node-${node_version}-${node_platform}/bin:${PATH}"
+fi
+node --version
+npm --version
+echo "==> axvisor aarch64 web dashboard (axbuild runs npm itself for the bundle)"
+cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui,web-ui-diskless
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["web-ui", "web-ui-diskless"]
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"

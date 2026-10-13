@@ -25,10 +25,9 @@
 //!   exclusion. Immutable writeback snapshots permit concurrent redirty.
 //! * Resident and in-flight frames share a 1024-frame budget. With no spare
 //!   frame, writeback locks only its folio's data until I/O completes.
-//! * One short reservation bitmap excludes overlapping direct and buffered
-//!   requests. Its sixty-four stripes are reserved atomically, not held as
-//!   nested OS locks. Disjoint ranges can collide on a stripe; conflict waits
-//!   happen outside the reservation and cache-index locks.
+//! * A short active-range index excludes overlapping direct and buffered
+//!   requests. Disjoint ranges proceed independently; conflict waits happen
+//!   outside the reservation and cache-index locks.
 //! * The metadata/data split is expressed at folio granularity: requests
 //!   inside one folio take the buffered path, multi-folio requests go
 //!   device-direct. Linux declares the same split at the filesystem layer

@@ -116,6 +116,8 @@ Axvisor 自带资源安装、共享根切换与内存回收重构的实际命令
 
 `axbuild::axvisor::bundle` 复用 newc 打包器，生成 `/guest/builtin/configs`、`/guest/builtin/images` 和可选的 `/guest/builtin/symbols`（与客户机启动镜像同名的 `.axbt` 及可选 `.axks` sidecar）。内核统一从文件加载，五种启动资源包括 kernel、DTB、BIOS、UEFI firmware 和客户机 initrd；可写客户机磁盘维持原路径。`vm_configs` 不进入 Cargo 环境或内核编译依赖。
 
+构建配置启用 `web-ui` 特性时，同一打包器把管理台前端产物收进 `/guest/builtin/web-ui`：axbuild 先在 target 目录暂存区用 npm 构建 `os/axvisor/web-ui`（`node_modules` 与 `dist` 不落源码树、不入库），再把 `dist` 整树复制进包。该目录不属于任何客户机配置；`validate_builtin` 要求其中的 `index.html` 非空，HTTP 控制面在同一活动根路径下直服仪表盘，无盘与有盘两种根因此共享同一条托管路径。没有客户机配置而只有仪表盘时，包同样成立。
+
 ### 5.1 安装发布
 
 `builtin::prepare_root()` 先调用 `prepare_block_root()`，通过独立 `PreparedRoot::context()` 安装资源，再调用 `PreparedRoot::commit()`。`bundle::install_directory()` 将整个包复制到 `builtin.new`，校验配置及镜像、刷盘后发布；旧包独有文件一并删除。Ext4 用 `RenameOptions::EXCHANGE`，FAT 用 `builtin.old` 备份、目录发布和失败回滚；FAT 不保证断电原子性。后续启动先处理遗留临时及备份目录。

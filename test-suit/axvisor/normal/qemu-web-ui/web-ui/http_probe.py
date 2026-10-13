@@ -43,9 +43,9 @@ contract a browser depends on, not a browser:
     DELETE /api/vms/1             -> 204   (cleanup)
 
 The bundle assertions are the reason this case exists beyond the API cases: a
-stale or mismatched `web-ui/dist` still builds and still serves a page, but it
-would call endpoints this contract check pins down. They are byte-level checks
-on the served asset, so they run without a browser.
+stale or mismatched dashboard build still serves a page, but it would call
+endpoints this contract check pins down. They are byte-level checks on the
+served asset, so they run without a browser.
 
 Environment (set by the generic runner):
 

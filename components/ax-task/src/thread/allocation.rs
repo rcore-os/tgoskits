@@ -47,6 +47,17 @@ mod probe {
         pub fn allocation_point() -> Result<(), TaskError> {
             allocation_point()
         }
+        /// Whether this task is observing or injecting allocation failures.
+        ///
+        /// Resource providers can bypass reuse caches for this transaction so
+        /// observation and failure runs reach the same allocation boundaries.
+        /// Other tasks and hard-IRQ work are not part of the transaction.
+        pub fn is_active_for_current() -> bool {
+            let owner = OWNER.load(Ordering::Acquire);
+            owner != 0
+                && !crate::runtime::task_runtime::in_hard_irq()
+                && crate::thread::current::current_thread_id().map(|id| id.as_u64()) == Ok(owner)
+        }
         /// Number of actual allocation boundaries reached by this creator.
         pub fn attempts(&self) -> usize {
             ATTEMPTS.load(Ordering::Acquire)

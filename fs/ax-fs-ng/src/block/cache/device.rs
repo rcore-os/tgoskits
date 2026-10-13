@@ -169,6 +169,15 @@ impl<T: FsBlockDevice> BufferedBlockDevice<T> {
 }
 
 impl<T: FsBlockDevice> FsBlockDevice for BufferedBlockDevice<T> {
+    #[cfg(feature = "ext4")]
+    fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
+        let inner = self.inner.fork_io()?;
+        self.shared.acquire_consumer()?;
+        Ok(Box::new(BufferedBlockDevice {
+            inner,
+            shared: Arc::clone(&self.shared),
+        }))
+    }
     fn name(&self) -> &str {
         self.inner.name()
     }

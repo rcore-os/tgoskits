@@ -99,8 +99,13 @@ pub enum ApicError {
     #[error("APIC id {0:#x} exceeds the 8-bit xAPIC destination field")]
     XapicDestinationOverflow(u32),
 
-    /// The local APIC ICR stayed busy past the delivery-wait budget.
-    #[error("timed out waiting for local APIC IPI delivery")]
+    /// The xAPIC ICR delivery-status bit stayed set past the polling budget.
+    ///
+    /// This may be returned while waiting for a previous command before a new
+    /// write, or while waiting for the current command's status after writing
+    /// it. A post-write timeout does not establish that the IPI was not
+    /// delivered.
+    #[error("timed out waiting for local APIC ICR delivery status")]
     IpiDeliveryTimeout,
 
     /// The local APIC did not retain the mask bit for both local interrupt pins.

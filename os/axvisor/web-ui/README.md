@@ -4,7 +4,7 @@
 
 ## 1 定位与边界
 
-控制台的目标是把内核已经具备的控制面能力（客户机登记表、配置池、生命周期动作、终端网关）暴露为一个可长期维护的网页界面，而不是再把实验性的单页 HTML 手工拼进内核源码。前端与内核之间只有 HTTP 与 WebSocket 两种通道，构建产物在编译期内嵌进 AxVisor 二进制，运行期不读宿主文件系统。
+控制台的目标是把内核已经具备的控制面能力（客户机登记表、配置池、生命周期动作、终端网关）暴露为一个可长期维护的网页界面，而不是再把实验性的单页 HTML 手工拼进内核源码。前端与内核之间只有 HTTP 与 WebSocket 两种通道，构建产物由 axbuild 打进宿主 initramfs 的 builtin 包（`/guest/builtin/web-ui`），运行期由内核从活动根（无盘时的 initramfs 内存根，或安装后的磁盘根）读取，不内嵌进二进制。
 
 ### 1.1 职责
 
@@ -169,19 +169,22 @@ graph LR
 
 ## 4 构建与调试
 
-前端构建独立于 Cargo：Cargo 只读取构建产物，不调用 npm。这样做的代价是构建二进制之前必须先生成产物，收益是内核构建过程不依赖网络与包管理器，也不会因为 npm 的解析行为变化而随机失败。
+前端构建由 axbuild 编排（与 Tauri、Trunk 在 cargo 之前跑前端工具链的做法一致）：当构建配置的 features 含 `web-ui` 时，`cargo axvisor build/qemu/test` 会先把本目录源码（排除 `node_modules/` 与 `dist/`）复制到工作区 target 目录下的暂存区，在那里执行 `npm ci` 与 `npm run build`，再把 `dist/` 打进宿主 initramfs。npm 的全部副作用只落在 target 目录，源码树不出现 `node_modules/` 与 `dist/`；Cargo 内核构建本身不依赖网络与包管理器。
 
 ### 4.1 构建产物
 
-生成产物使用下面两条命令，产物目录是 `dist/`。Cargo 在开启 `web-ui` 特性时把它整表内嵌进二进制；产物缺失或为空时，构建会以一条指明该命令的错误终止，而不是让二进制在没有界面的状态下静默构建成功。
+标准入口只需要 defconfig 之后的三个动作：
 
 ```bash
-cd os/axvisor/web-ui
-npm ci
-npm run build
+cargo axvisor defconfig qemu-aarch64
+# 编辑 tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml，
+# 在 features 中加入 "web-ui"
+cargo axvisor qemu
 ```
 
-`node_modules/` 不入库；`dist/` 是随源码提交的可发布构建产物，保证启用 `web-ui` 的 Cargo registry 包也能直接内嵌页面。源码改变后重新运行上面的构建命令并提交产物。产物带内容哈希，内核以 `immutable` 缓存策略与精确的内容类型提供它们，因此同一次构建内文件不会被替换，路径也不会被复用。
+axbuild 需要 Node ≥ 24 与 npm ≥ 11（与 `package.json` 的 `engines` 一致）。需要手工生成产物时（例如调试前端本身），仍然可以在本目录执行 `npm ci && npm run build`，但产物只用于本地检查，不再入库、也不再被 Cargo 读取。
+
+`node_modules/` 与 `dist/` 均不入库。产物带内容哈希，内核以 `immutable` 缓存策略与精确的内容类型提供它们，因此同一次构建内文件不会被替换，路径也不会被复用。
 
 ### 4.2 本地联调
 
@@ -219,4 +222,4 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui
 
 ### 5.2 持续集成
 
-持续集成通过独立的 Web UI 检查准备 Node 环境并生成产物：若运行器上不存在 Node 24 和 npm，就下载并校验固定版本 Node `v24.11.1` 到临时目录并加入 `PATH`，随后执行 `npm ci`、`npm test` 与 `npm run build`，再检查入库产物没有变化。这样做的原因是自托管运行器不保证预装 npm，而把产物入库会让仓库里同时存在源码与可变产物两份事实来源；前端检查与 QEMU 控制面检查分开，失败时可以直接区分资源校验和运行时行为。
+持续集成通过独立的 Web UI 检查准备 Node 环境并运行前端质量门禁：若运行器上不存在 Node 24 和 npm，就下载并校验固定版本 Node `v24.11.1` 到临时目录并加入 `PATH`，随后执行 `npm ci`、`npm test` 与 `npm run build`。产物不再入库，所以检查不再比对入库产物；QEMU 用例需要的产物由 axbuild 在用例构建时按 feature 自动生成，同样需要该 Node 环境。前端检查与 QEMU 控制面检查分开，失败时可以直接区分资源校验和运行时行为。

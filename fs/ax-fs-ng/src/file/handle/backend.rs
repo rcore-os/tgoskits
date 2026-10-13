@@ -3,8 +3,8 @@ use core::io::BorrowedCursor;
 
 use ax_io::prelude::*;
 use axfs_ng_vfs::{
-    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PreallocationMode,
-    VfsError, VfsResult,
+    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, NodeType,
+    PreallocationMode, VfsError, VfsResult, WritebackPolicy,
 };
 
 use crate::{file::cache::CachedFile, io_error_to_vfs_error, vfs_error_to_io_error};
@@ -97,7 +97,9 @@ impl FileBackend {
     /// Writes `src` to the file at `offset`.
     pub fn write_at(&self, mut src: impl Read + IoBuf, mut offset: u64) -> VfsResult<usize> {
         match self {
-            Self::Cached(cached) => cached.write_at(src, offset),
+            Self::Cached(cached) => cached.write_at_with_completion(src, offset, |written| {
+                Self::finish_cached_write(cached, written)
+            }),
             Self::Direct(loc) => {
                 if loc.flags().contains(NodeFlags::PACKET) {
                     let len = src.remaining();
@@ -143,7 +145,8 @@ impl FileBackend {
     /// Appends `src` to the end of the file. Returns `(bytes_written, new_end)`.
     pub fn append(&self, mut src: impl Read + IoBuf) -> VfsResult<(usize, u64)> {
         match self {
-            Self::Cached(cached) => cached.append(src),
+            Self::Cached(cached) => cached
+                .append_with_completion(src, |written| Self::finish_cached_write(cached, written)),
             Self::Direct(loc) => {
                 let mut total = 0;
                 let mut end = loc.entry().as_file()?.len()?;
@@ -178,6 +181,25 @@ impl FileBackend {
                 Ok((total, end))
             }
         }
+    }
+
+    fn finish_cached_write(cached: &CachedFile, written: usize) -> VfsResult<()> {
+        if written != 0
+            && matches!(
+                cached.location().node_type(),
+                NodeType::RegularFile | NodeType::BlockDevice
+            )
+            && cached
+                .location()
+                .entry()
+                .writeback_policy()?
+                .contains(WritebackPolicy::SYNCHRONOUS)
+        {
+            // Complete dirty cache pages before a write to a synchronous inode
+            // is reported successful, including writes from file-backed block I/O.
+            cached.sync(false)?;
+        }
+        Ok(())
     }
 
     /// Returns a reference to the underlying [`Location`].

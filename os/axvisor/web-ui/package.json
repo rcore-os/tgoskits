@@ -6,7 +6,7 @@
   "description": "AxVisor management dashboard (React + TypeScript + Vite + shadcn/ui).",
   "engines": {
     "node": ">=24",
-    "npm": ">=11.12.1"
+    "npm": ">=11"
   },
   "scripts": {
     "dev": "vite",

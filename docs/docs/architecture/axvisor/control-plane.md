@@ -20,9 +20,9 @@ sidebar_label: "控制面"
 | 声明 | `control/capability/` | 路由表与清单描述符，路径字面量的唯一出现处 |
 | 传输 | `control/transport/` | Axum 服务、WebSocket 升级、各资源的请求处理函数 |
 | 领域 | `control/domain/` | 配置池扫描、文件暂存、登记表差分 |
-| 内嵌前端 | `control/web/` | 直服 `build.rs` 生成的静态资源表 |
+| 前端托管 | `control/web/` | 从 builtin 包路径 `/guest/builtin/web-ui` 直服仪表盘静态资源 |
 
-前端源码 `web-ui/` 位于这四层之外。它不进内核二进制，只在构建期产出 `dist/`，由 `build.rs` 读取后变成资源表。装配根 `control/mod.rs` 的 `serve()` 把声明层产出的路由表当**数据**交给传输层，因此传输层不需要引用声明层，路径也只在声明层出现一次。
+前端源码 `web-ui/` 位于这四层之外。它不进内核二进制：axbuild 在构建配置启用 `web-ui` 时用 npm 在 target 目录暂存区生成 `dist/`，并把它打进宿主 initramfs 的 builtin 包；内核运行时从活动根（无盘时的 initramfs 内存根，或安装后的磁盘根）读取。装配根 `control/mod.rs` 的 `serve()` 把声明层产出的路由表当**数据**交给传输层，因此传输层不需要引用声明层，路径也只在声明层出现一次。
 
 ### 1.2 构建特性组合
 
@@ -31,11 +31,11 @@ sidebar_label: "控制面"
 | feature | 打开后新增 |
 | :-- | :-- |
 | `web` | `vms`、`files`、`host`、`console`、`shell` 面板，HTTP API、WebSocket 网关、事件流与配置池 |
-| `web-ui` | 内嵌仪表盘 `/` 与 `/assets/*`，隐含依赖 `web` |
+| `web-ui` | 仪表盘 `/` 与 `/assets/*`（由 initramfs builtin 包提供），隐含依赖 `web` |
 
 
 
-`web-ui` 不在默认特性里，所以干净检出上 `cargo build` 不受前端产物影响；只有显式打开它时，`build.rs` 才会要求 `web-ui/dist` 存在。`web` 统一提供 API、事件流和终端通道，`web-ui` 只增加静态资源。
+`web-ui` 不在默认特性里，所以干净检出上 `cargo build` 不跑 npm、不受前端产物影响；只有显式打开它时，axbuild 才会用 npm 构建前端并把 `dist` 打进 initramfs。`web` 统一提供 API、事件流和终端通道，`web-ui` 只增加静态资源。
 
 ## 2. 能力声明
 
@@ -82,7 +82,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    WEB["web 内嵌资源"]
+    WEB["web 前端托管"]
     CAP["capability 声明"]
     TRA["transport 传输"]
     DOM["domain 领域"]
@@ -281,9 +281,9 @@ sequenceDiagram
 
 面板级隔离由错误边界承担：某个面板渲染失败只降级成一张卡片，外壳、导航和其他面板继续工作。卡片按失败性质给出不同说明，把「取不回分片」和「契约字段不符」区分为两类问题。
 
-## 9. 构建与内嵌
+## 9. 构建与托管
 
-前端产物在内核构建期变成一张静态资源表，运行期没有任何文件系统依赖。这条链路的代价是构建顺序有要求，收益是设备端不需要携带资源目录，也不依赖外部内容分发网络。
+前端产物由 axbuild 在 cargo 之前构建并打进宿主 initramfs，运行期由内核从活动根的 builtin 包路径读取。这条链路把前端构建放在编排层（与 Tauri、Trunk 的做法一致），内核构建本身不调用包管理器，也不依赖外部内容分发网络。
 
 ### 9.1 产物管线
 
@@ -291,20 +291,19 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    SRC["web-ui/src 源码"] -->|"npm run build"| DIST["web-ui/dist 带内容哈希"]
-    DIST -->|"build.rs 编译期读取"| TAB["生成的资源表"]
-    TAB -->|"include 展开"| AR["control/web/assets.rs"]
-    AR -->|"内存直服"| HTTP["根路径与 assets 路径"]
+    SRC["web-ui/src 源码"] -->|"axbuild 复制到 target 暂存区"| STG["target/axbuild/axvisor/web-ui"]
+    STG -->|"npm ci + npm run build"| DIST["dist 带内容哈希"]
+    DIST -->|"builtin 包打包"| INIT["宿主 initramfs /guest/builtin/web-ui"]
+    INIT -->|"无盘: 内存根直读; 有盘: 安装到磁盘根"| AR["control/web/assets.rs"]
+    AR -->|"文件系统直服"| HTTP["根路径与 assets 路径"]
     DEV["npm run dev 开发服务器"] -->|"代理接口与终端路径"| K["内核监听端口"]
 ```
 
-产物文件名带内容哈希，内核以不可变策略提供它们，因此同一次构建内不会有文件被替换。资源表把整份产物嵌进二进制，服务时直接从内存返回，不读磁盘。
+产物文件名带内容哈希，内核以不可变策略提供它们，因此同一次构建内不会有文件被替换。npm 的全部副作用（`node_modules` 与 `dist`）都落在 target 目录的暂存区，源码树不出现任何前端产物，`dist` 也不入库。
 
 ### 9.2 失败模式
 
-构建链路上有三处刻意让构建失败而不是静默降级。产物目录缺失、内容超出大小限制、或类型与预期不符时，`build.rs` 写出 `compile_error!` 并提示先手工构建前端。这背后的前提是内核构建不调用包管理器，因此构建系统无法替操作者补上这一步。
-
-对应的一个已知短板是重编触发条件不完整：`cargo:rerun-if-changed` 只登记了生成资源表时存在的文件，产物目录内新增或删除的文件不一定触发重新编译。修改前端后如果只增删文件而不改内容，需要显式触发一次重建。
+构建链路上有多处刻意让构建失败而不是静默降级。node/npm 版本不满足 `engines`、npm 安装或构建失败、或产物缺少 `dist/index.html` 时，axbuild 以指明原因的错误终止。启动镜像的 initramfs 里没有 builtin 仪表盘包时（例如绕过 xtask 手工组装的镜像），内核启动日志给出警告，仪表盘路由返回 503 而不是一串难以分辨来源的 404。
 
 ## 10. 不变量与已知边界
 
@@ -312,7 +311,7 @@ flowchart LR
 
 ### 10.1 有门禁的不变量
 
-三条约束有工具兜底。请求路径不出现在前端的面板与外壳里，由静态检查脚本扫描前端源码，引导路径还与内核侧常量成对比较。产物缺失时构建必须失败，由 `build.rs` 的条件编译错误保证。测试用例引用的资源与产物保持一致，由用例按产物引用递归抓取，抓取结果缩水即判失败。
+三条约束有工具兜底。请求路径不出现在前端的面板与外壳里，由静态检查脚本扫描前端源码，引导路径还与内核侧常量成对比较。前端工具链或产物校验失败时构建必须失败，由 axbuild 的 npm 构建步骤与产物检查保证。测试用例引用的资源与产物保持一致，由用例按产物引用递归抓取，抓取结果缩水即判失败。
 
 静态检查脚本同时负责分层约束：它拒绝 Rust 侧在声明层之外出现路径字面量，拒绝传输层与内嵌资源层引用声明层，也拒绝领域层引用上层。
 

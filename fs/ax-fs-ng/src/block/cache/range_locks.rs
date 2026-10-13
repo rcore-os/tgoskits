@@ -1,58 +1,96 @@
-//! Bounded range exclusion between direct requests and cache consumers.
+//! Exact range exclusion between direct requests and cache consumers.
+
+use alloc::vec::Vec;
 
 use crate::{
     BlockError, BlockResult,
     os::{sync::RawSpinLock, waiters::TaskWaiters},
 };
 
-const STRIPES: usize = 64;
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FrameRange {
+    first: u64,
+    last: u64,
+}
+
+impl FrameRange {
+    fn overlaps(self, other: Self) -> bool {
+        self.first <= other.last && other.first <= self.last
+    }
+}
 
 pub(super) struct RangeLocks {
-    active: RawSpinLock<u64>,
+    active: RawSpinLock<Vec<FrameRange>>,
     waiters: TaskWaiters,
 }
 
 impl RangeLocks {
     pub(super) fn new() -> Self {
         Self {
-            active: RawSpinLock::new(0),
+            active: RawSpinLock::new(Vec::new()),
             waiters: TaskWaiters::new(),
         }
     }
 
     pub(super) fn lock(&self, first_frame: u64, last_frame: u64) -> BlockResult<RangeGuard<'_>> {
-        let span = last_frame
-            .checked_sub(first_frame)
-            .ok_or(BlockError::InvalidRequest)?;
-        let mask = if span >= (STRIPES - 1) as u64 {
-            u64::MAX
-        } else {
-            (first_frame..=last_frame).fold(0, |mask, frame| mask | (1 << (frame % STRIPES as u64)))
+        if first_frame > last_frame {
+            return Err(BlockError::InvalidRequest);
+        }
+        let requested = FrameRange {
+            first: first_frame,
+            last: last_frame,
         };
+        let mut spare = Vec::new();
         loop {
             {
                 let mut active = self.active.lock_irqsave();
-                if *active & mask == 0 {
-                    *active |= mask;
-                    return Ok(RangeGuard { ranges: self, mask });
+                if !active.iter().any(|range| range.overlaps(requested)) {
+                    if active.len() == active.capacity() {
+                        let required = active.len().checked_add(1).ok_or(BlockError::NoMemory)?;
+                        if spare.capacity() < required {
+                            drop(active);
+                            spare
+                                .try_reserve_exact(required)
+                                .map_err(|_| BlockError::NoMemory)?;
+                            continue;
+                        }
+                        // Grow outside IRQ exclusion; move existing entries
+                        // into the already-reserved buffer while locked.
+                        spare.extend(active.drain(..));
+                        core::mem::swap(&mut *active, &mut spare);
+                    }
+                    active.push(requested);
+                    drop(active);
+                    return Ok(RangeGuard {
+                        ranges: self,
+                        reserved: requested,
+                    });
                 }
             }
-            // Reserve every stripe atomically: no partial reservation or
-            // nested OS locks survive while waiting for overlapping I/O.
-            self.waiters
-                .wait_while(|| *self.active.lock_irqsave() & mask != 0)?;
+            self.waiters.wait_while(|| {
+                self.active
+                    .lock_irqsave()
+                    .iter()
+                    .any(|range| range.overlaps(requested))
+            })?;
         }
     }
 }
 
 pub(super) struct RangeGuard<'a> {
     ranges: &'a RangeLocks,
-    mask: u64,
+    reserved: FrameRange,
 }
 
 impl Drop for RangeGuard<'_> {
     fn drop(&mut self) {
-        *self.ranges.active.lock_irqsave() &= !self.mask;
+        let mut active = self.ranges.active.lock_irqsave();
+        let position = active
+            .iter()
+            .position(|range| *range == self.reserved)
+            .expect("active range reservation missing");
+        active.swap_remove(position);
+        drop(active);
         self.ranges.waiters.notify_all();
     }
 }
@@ -65,7 +103,7 @@ mod tests {
     fn reversed_range_does_not_reserve_stripes_or_wait() {
         let ranges = RangeLocks::new();
         assert!(matches!(ranges.lock(8, 7), Err(BlockError::InvalidRequest)));
-        assert_eq!(*ranges.active.lock_irqsave(), 0);
+        assert!(ranges.active.lock_irqsave().is_empty());
         assert_eq!(ranges.waiters.len(), 0);
     }
 
@@ -73,10 +111,33 @@ mod tests {
     fn a_wide_range_is_released_as_one_reservation() {
         let ranges = RangeLocks::new();
         let guard = ranges.lock(0, 128).unwrap();
-        assert_eq!(*ranges.active.lock_irqsave(), u64::MAX);
+        assert_eq!(ranges.active.lock_irqsave().len(), 1);
         drop(guard);
-        assert_eq!(*ranges.active.lock_irqsave(), 0);
+        assert!(ranges.active.lock_irqsave().is_empty());
         drop(ranges.lock(63, 64).unwrap());
+    }
+
+    #[test]
+    fn wide_range_does_not_exclude_distant_single_frame() {
+        use std::{
+            sync::{Arc, mpsc},
+            thread,
+            time::Duration,
+        };
+        crate::os::task::install_test_runtime_ops();
+        let ranges = Arc::new(RangeLocks::new());
+        let wide = ranges.lock(0, 128).unwrap();
+        let distant_ranges = Arc::clone(&ranges);
+        let (done, received) = mpsc::channel();
+        let task = thread::spawn(move || {
+            let _distant = distant_ranges.lock(256, 256).unwrap();
+            done.send(()).unwrap();
+        });
+        // Frame 256 hashes to frame 0's stripe, but does not overlap it.
+        let advanced = received.recv_timeout(Duration::from_secs(5)).is_ok();
+        drop(wide);
+        task.join().unwrap();
+        assert!(advanced, "distant frame waited for an unrelated wide range");
     }
 
     #[test]

@@ -232,6 +232,9 @@ fn allocation_failure_rollback() {
         sched::{DeadlineFlags, DeadlinePolicy},
         thread::ThreadAllocationProbe,
     };
+    // Use a layout distinct from service stacks: the first observation starts
+    // cold, while rollback and recovery may populate the virtual stack cache.
+    const STACK_SIZE: usize = 320 * 1024;
     struct EntryDrop(Arc<AtomicUsize>);
     impl Drop for EntryDrop {
         fn drop(&mut self) {
@@ -244,6 +247,7 @@ fn allocation_failure_rollback() {
     for policy in [SchedulePolicy::default(), deadline] {
         let probe = ThreadAllocationProbe::fail_at(usize::MAX).unwrap();
         let prepared = ax_runtime::thread::builder("allocation-context".into())
+            .stack_size(STACK_SIZE)
             .policy(policy)
             .prepare(|| {})
             .unwrap();
@@ -264,6 +268,7 @@ fn allocation_failure_rollback() {
             let entry_drop = EntryDrop(Arc::clone(&entry_drops));
             let probe = ThreadAllocationProbe::fail_at(fail_at).unwrap();
             let result = ax_runtime::thread::builder("allocation-failure".into())
+                .stack_size(STACK_SIZE)
                 .policy(policy)
                 .extension(extension)
                 .prepare(move || {
@@ -283,6 +288,7 @@ fn allocation_failure_rollback() {
             // Repeated high-utilization Deadline creation detects leaked
             // admission charges; prepare must remain possible after each OOM.
             let recovered = ax_runtime::thread::builder("allocation-recovered".into())
+                .stack_size(STACK_SIZE)
                 .policy(policy)
                 .prepare(|| {})
                 .unwrap();

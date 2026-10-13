@@ -1,8 +1,16 @@
+//! Registry ownership, writeback snapshots, and best-effort clean-cache reclaim.
+//!
+//! Pruning and pressure reclaim bound each scan by its initial registry length.
+//! Concurrent removal can move an unvisited entry behind the cursor, so one
+//! pass may retain a clean, closed file. Later registration, ext4 directory
+//! operations, or writeback can retry pruning; allocator retries revisit clean
+//! pages. Neither scan promises to collect every eligible entry in one pass.
+//! Dirty or externally owned files remain registered. Explicit writeback takes
+//! an owned snapshot, and final mount retirement uses the inode index, so those
+//! durability paths do not rely on a best-effort scan reaching every entry.
+
 use alloc::{sync::Arc, vec::Vec as AllocVec};
-use core::{
-    mem,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use axfs_ng_vfs::VfsResult;
 use heapless::Vec as InlineVec;
@@ -46,26 +54,43 @@ impl CachedFileRegistry {
         self.prune_with(|| {});
     }
 
-    fn prune_with(&self, before_restore: impl FnOnce()) {
-        // Cached-file destruction can take a sleepable filesystem lock.
-        let mut files = {
-            let mut registry = self.files.write();
-            mem::take(&mut *registry)
-        };
-        files.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
-        before_restore();
-        for file in files {
-            let mut registry = self.files.write();
-            // Unlink publishes this flag before taking the registry lock.
-            // Recheck under that same lock: either restoration observes it,
-            // or unlink subsequently removes the restored registration.
-            if file.unlinked.load(Ordering::Acquire) || file.retired.load(Ordering::Acquire) {
-                drop(registry);
-                drop(file);
-            } else if !registry.iter().any(|cached| Arc::ptr_eq(cached, &file)) {
-                registry.push(file);
+    fn prune_with(&self, after_scan: impl FnOnce()) {
+        // Keep live entries visible to sync and writeback throughout pruning.
+        // Examine only the entries present at the start, even if new files
+        // register concurrently.
+        let mut remaining = self.files.read().len();
+        let mut position = 0;
+        while remaining != 0 {
+            let removed = {
+                // Weak-key upgrades take this lock. An opener either raises
+                // the count before the check or observes retirement afterward.
+                let _index = super::CACHED_FILE_BY_INODE.lock();
+                let mut registry = self.files.write();
+                if registry.get(position).is_none() {
+                    break;
+                }
+                remaining -= 1;
+                let closed_and_clean = registry.get(position).is_some_and(|cached| {
+                    Arc::strong_count(cached) == 1
+                        && cached
+                            .page_cache
+                            .try_lock()
+                            .is_some_and(|pages| !pages.iter().any(|(_, page)| page.dirty))
+                });
+                if closed_and_clean {
+                    registry[position].retired.store(true, Ordering::Release);
+                    Some(registry.swap_remove(position))
+                } else {
+                    None
+                }
+            };
+            // The backing FileNode can reap an ext4 inode in Drop.
+            if removed.is_none() {
+                position += 1;
             }
+            drop(removed);
         }
+        after_scan();
     }
 }
 
@@ -170,10 +195,13 @@ pub(super) fn release_cached_file(file: &Arc<CachedFileShared>) {
 }
 
 pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
-    sync_cached_files(None)
+    writeback_cached_files(None, CachedFileShared::writeback_dirty_for_global_sync)
 }
 
-fn sync_cached_files(filesystem: Option<&dyn axfs_ng_vfs::FilesystemOps>) -> VfsResult<()> {
+pub(super) fn writeback_cached_files(
+    filesystem: Option<&dyn axfs_ng_vfs::FilesystemOps>,
+    writeback: fn(&CachedFileShared) -> VfsResult<()>,
+) -> VfsResult<()> {
     let files = GLOBAL_CACHED_FILES.files.read().clone();
     let mut first_error = None;
     for file in &files {
@@ -184,7 +212,7 @@ fn sync_cached_files(filesystem: Option<&dyn axfs_ng_vfs::FilesystemOps>) -> Vfs
         {
             continue;
         }
-        if let Err(error) = file.writeback_dirty_for_global_sync()
+        if let Err(error) = writeback(file)
             && first_error.is_none()
         {
             first_error = Some(error);
@@ -198,10 +226,13 @@ fn sync_cached_files(filesystem: Option<&dyn axfs_ng_vfs::FilesystemOps>) -> Vfs
 
 /// Writes back cached files belonging to one filesystem before its unmount.
 pub fn sync_filesystem_cached_files(filesystem: &dyn axfs_ng_vfs::FilesystemOps) -> VfsResult<()> {
-    sync_cached_files(Some(filesystem))
+    writeback_cached_files(
+        Some(filesystem),
+        CachedFileShared::writeback_dirty_for_global_sync,
+    )
 }
 
-fn prune_cached_files() {
+pub(crate) fn prune_cached_files() {
     GLOBAL_CACHED_FILES.prune();
 }
 
@@ -377,13 +408,21 @@ mod tests {
     #[cfg(feature = "ext4")]
     #[test]
     fn registry_does_not_restore_retired_cache_owners_after_pruning() {
-        // Force retirement while pruning temporarily owns the registry entries.
+        // Retire cached owners after a scan while checking registry visibility.
         for unlinked in [true, false] {
             let registry = CachedFileRegistry::new();
             let cached = Arc::new(CachedFileShared::new_unbounded(0));
             let lifetime = Arc::downgrade(&cached);
             registry.files.write().push(cached.clone());
             registry.prune_with(|| {
+                assert!(
+                    registry
+                        .files
+                        .read()
+                        .iter()
+                        .any(|registered| Arc::ptr_eq(registered, &cached)),
+                    "a live cache must remain visible to writeback while pruning"
+                );
                 if unlinked {
                     cached.mark_unlinked();
                 } else {

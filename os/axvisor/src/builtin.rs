@@ -13,6 +13,13 @@ use ax_fs_ng::{
 };
 use axvmconfig::{BUILTIN_GUEST_DIR, GuestConfig};
 
+/// Absolute path of the dashboard package inside the built-in bundle: it is
+/// the `web-ui` entry directly under [`BUILTIN_GUEST_DIR`]. `axbuild` packs
+/// the frontend `dist` tree there when the `web-ui` feature is enabled, and
+/// the HTTP control plane serves the dashboard from this path on whichever
+/// root (initramfs memory root or installed disk root) is active.
+pub const BUILTIN_WEB_UI_DIR: &str = "/guest/builtin/web-ui";
+
 /// Installs archive assets before an explicitly requested disk root is committed.
 #[cfg(any(target_os = "none", target_env = "musl"))]
 pub fn prepare_root() -> Result<()> {
@@ -128,21 +135,25 @@ fn validate_builtin_assets(
         Err(VfsError::NotFound) => return Ok(()),
         Err(error) => return Err(error).context("read built-in guest package"),
     };
-    let mut nonempty = false;
+    let mut has_guest_assets = false;
     for entry in entries {
         let entry = entry?;
         match entry.name.as_str() {
             "." | ".." => {}
             "configs" | "images" | "symbols" => {
-                nonempty = true;
+                has_guest_assets = true;
                 context
                     .resolve(format!("{staged}/{}", entry.name))?
                     .check_is_dir()?;
             }
+            "web-ui" => {
+                validate_web_ui(context, staged)?;
+            }
             _ => bail!("unexpected entry in built-in guest package: {}", entry.name),
         }
     }
-    if !nonempty {
+    if !has_guest_assets {
+        // A package may carry only the dashboard when no guest is bundled.
         return Ok(());
     }
     context
@@ -180,6 +191,25 @@ fn validate_builtin_assets(
                 bail!("empty guest boot asset: {path}");
             }
         }
+    }
+    Ok(())
+}
+
+/// Validates the bundled dashboard tree: the app shell must be a non-empty
+/// file, so a truncated or hand-assembled package fails before publication
+/// instead of serving a UI whose navigation immediately 404s.
+fn validate_web_ui(context: &FsContext, staged: &str) -> Result<()> {
+    let directory = format!("{staged}/web-ui");
+    context
+        .resolve(&directory)?
+        .check_is_dir()
+        .with_context(|| format!("check built-in dashboard package {BUILTIN_WEB_UI_DIR}"))?;
+    let shell = context.resolve(format!("{directory}/index.html"))?;
+    shell
+        .check_is_file()
+        .with_context(|| format!("check built-in dashboard shell {BUILTIN_WEB_UI_DIR}"))?;
+    if shell.len()? == 0 {
+        bail!("built-in dashboard shell {BUILTIN_WEB_UI_DIR}/index.html is empty");
     }
     Ok(())
 }

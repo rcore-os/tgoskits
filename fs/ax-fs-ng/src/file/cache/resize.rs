@@ -112,6 +112,7 @@ impl RetiredPageBatch {
 impl CachedFile {
     /// Reserves backing storage and keeps the cached length coherent.
     pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
         let file = self.inner.entry().as_file()?;
         let _layout = self.shared.mapping_layout_lock.lock();
@@ -139,6 +140,7 @@ impl CachedFile {
         if let FileRangeOperation::Allocate(mode) = operation {
             return self.preallocate(offset, len, mode);
         }
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         if matches!(
             operation,
             FileRangeOperation::CollapseRange | FileRangeOperation::InsertRange
@@ -589,6 +591,7 @@ impl CachedFile {
 
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         let file = self.inner.entry().as_file()?;
         loop {
             let observed_len = self.shared.len();

@@ -179,7 +179,7 @@ test-suit/starryos/qemu/system/drm-test-drm-modeset,test-drm-modeset,待审计,,
 test-suit/starryos/qemu/system/drm-test-drm-version,test-drm-version,待审计,,,,,
 test-suit/starryos/qemu/system/evdev-test-evdev-minor,test-evdev-minor,待审计,,,,,
 test-suit/starryos/qemu/system/evdev-test-evdev-prop-bits,test-evdev-prop-bits,待审计,,,,,
-test-suit/starryos/qemu/system/getdents64-bounded-buffer,test-getdents64-bounded-buffer,待审计,,,,,
+test-suit/starryos/qemu/system/getdents64-bounded-buffer,test-getdents64-bounded-buffer,合并后清理,,test-getdents64-buffer-abi 保留目录读取哨兵和 EBADF 检查,旧用例没有独立剩余断言,源码逐项对照确认新用例额外覆盖高位 count EINVAL,ci(starry): consolidate qemu tests around shared kernel
 test-suit/starryos/qemu/system/ltp-syscalls,待核实安装程序,待审计,,,,,
 test-suit/starryos/qemu/system/mm-transition-safety,mm-transition-safety,待审计,,,,,
 test-suit/starryos/qemu/system/mqueue-fd-read-status,test-mqueue-fd-read-status,待审计,,,,,
@@ -418,7 +418,7 @@ test-suit/starryos/qemu/system/test-personality-abi-width,test-personality-abi-w
 test-suit/starryos/qemu/system/test-pidfd-poll-exit,test-pidfd-poll-exit,待审计,,,,,
 test-suit/starryos/qemu/system/test-pipe-poll-close,test-pipe-poll-close,待审计,,,,,
 test-suit/starryos/qemu/system/test-pivot-root,test-pivot-root,待审计,,,,,
-test-suit/starryos/qemu/system/test-pivot-root-namespace,test-pivot-root-namespace,待审计,,,,,
+test-suit/starryos/qemu/system/test-pivot-root-namespace,test-pivot-root-namespace,合并后清理,,test-pivot-root 保留私有 mount namespace 隔离和父 namespace 可见性,旧用例没有独立剩余断言,源码逐项对照确认新用例额外覆盖普通目录 EINVAL mountinfo 和旧根 detach,ci(starry): consolidate qemu tests around shared kernel
 test-suit/starryos/qemu/system/test-proc-environ,test-proc-environ,待审计,,,,,
 test-suit/starryos/qemu/system/test-proc-root-cwd,test-proc-root-cwd,待审计,,,,,
 test-suit/starryos/qemu/system/test-proc-status-groups,test_proc_status_groups,待审计,,,,,
@@ -469,7 +469,7 @@ test-suit/starryos/qemu/system/zombie-bugfix-bug-kill-zombie-esrch,bug-kill-zomb
 test-suit/starryos/qemu/system/zombie-bugfix-bug-kill-zombie-perm,bug-kill-zombie-perm,待审计,,,,,
 test-suit/starryos/qemu/system/zombie-bugfix-bug-waitid-basic,bug-waitid-basic,待审计,,,,,
 test-suit/starryos/qemu-e1000/system/test-e1000-napi-runtime,test-e1000-napi-runtime,待审计,,,,,
-test-suit/starryos/qemu-rga/system/rga-lifecycle,rga-lifecycle,待审计,,,,,
+test-suit/starryos/qemu/system/rga-lifecycle,rga-lifecycle,待审计,,,,,
 test-suit/starryos/timer-preemption-x86/c,timer-preemption-x86,待审计,,,,,
 test-suit/starryos/qemu/system/bugfix-epoll-nested-stale-waiter,bugfix-epoll-nested-stale-waiter,无对应项保留,,,固定LTP仅验证epoll嵌套深度，未测试嵌套唤醒和返回waiter注销,2026-09-14固定LTP源码审计；未删除原测试；未新增运行覆盖；x86_64/aarch64/riscv64/loongarch64=无对应项，未运行迁移候选,test(starry): migrate bugfix and syscall probes to LTP
 test-suit/starryos/qemu/system/bugfix-setns-requires-cap-sys-admin,bugfix-setns-requires-cap-sys-admin,LTP失败暂缓，保留原测试,setns01,无CAP_SYS_ADMIN时setns拒绝五种namespace fd,pidfd多namespace原子加入、子user namespace权限范围与uid/gid映射,2026-09-14；x86_64 exit=1 /tmp/starry-ltp-5fb8-evidence/setns01-x86_64.log；setns01.c:132: TFAIL: regular file fd exp_errno=22 (EINVAL): EBADF (9) / setns01.c:132: TFAIL: regular file fd exp_errno=22 (EINVAL): EBADF (9) / setns01.c:132: TFAIL: regular file fd exp_errno=22 (EINVAL): EBADF (9)；aarch64=前序架构失败后未运行；riscv64=前序架构失败后未运行；loongarch64=前序架构失败后未运行,test(starry): migrate bugfix and syscall probes to LTP

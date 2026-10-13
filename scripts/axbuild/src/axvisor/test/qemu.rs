@@ -141,6 +141,20 @@ impl Axvisor {
                 self.app.workspace_context(),
             )
         })?;
+        // The dashboard bundle depends only on the frontend sources, so build
+        // it once for the first group that enables the feature; Phase 2 then
+        // packs it into every such case's initramfs.
+        let mut web_ui_dist = None;
+        for build_group in &build_groups {
+            if crate::axvisor::web_ui::enabled(&build_group.cargo.features) {
+                web_ui_dist = crate::axvisor::web_ui::build_dist(
+                    &build_group.cargo.features,
+                    &request.axvisor_dir,
+                    self.app.target_dir(),
+                )?;
+                break;
+            }
+        }
         let artifact_parent = self.app.target_dir().to_path_buf();
         std::fs::create_dir_all(&artifact_parent).with_context(|| {
             format!(
@@ -256,6 +270,7 @@ impl Axvisor {
                     case,
                     case_artifact.build_artifact,
                     &asset_config,
+                    web_ui_dist.as_deref(),
                 )
                 .await
             }
@@ -356,6 +371,7 @@ impl Axvisor {
         request: &ResolvedAxvisorRequest,
         case: &PreparedAxvisorQemuCase,
         asset_config: &test_case::CaseAssetConfig,
+        web_ui_dist: Option<&Path>,
     ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
         let mut qemu = case.qemu.clone();
         let inputs = crate::axvisor::bundle::case_inputs(&case.case.case.case_dir)?;
@@ -368,6 +384,7 @@ impl Axvisor {
         crate::axvisor::bundle::attach(
             &request.vmconfigs,
             inputs.vm_configs.is_some(),
+            web_ui_dist,
             &bundle_path,
             &mut qemu.boot.initramfs,
         )?;
@@ -412,10 +429,11 @@ impl Axvisor {
         case: &PreparedAxvisorQemuCase,
         kernel: &Path,
         asset_config: &test_case::CaseAssetConfig,
+        web_ui_dist: Option<&Path>,
     ) -> anyhow::Result<()> {
         let prepare_started = Instant::now();
         let (mut qemu, prepared_assets) = self
-            .load_qemu_case_config(request, case, asset_config)
+            .load_qemu_case_config(request, case, asset_config, web_ui_dist)
             .await?;
         crate::test::qemu::append_backtrace_map(
             &mut qemu,

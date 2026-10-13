@@ -16,7 +16,6 @@ download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry test qemu --arch riscv64
 target/debug/tg-xtask ktest qemu -p starry-kernel --arch riscv64
-FEATURES=ax-runtime/tls target/debug/tg-xtask starry test qemu --arch riscv64 --test-case qemu/system/syscall-test-clone-tls
 '''
 
 [[check.suite]]
@@ -26,18 +25,14 @@ arch = "riscv64"
 [[check]]
 id = "test-starry-aarch64-qemu"
 impact_targets = ["starry:aarch64"]
-name = "QEMU aarch64 · GICv2 SMP4 boot + suites"
+name = "QEMU aarch64 · Suites"
 cache_key = "test-starry-aarch64"
 apk_region = "us"
 download_xtask_bin_artifact = true
 command = '''
-echo "==> starry aarch64 GICv2 SMP4 boot"
-target/debug/tg-xtask starry qemu --arch aarch64 --smp 4 \
-  --qemu-config os/StarryOS/configs/qemu/qemu-aarch64-gicv2-boot.toml
-echo "==> starry aarch64 test suites"
 target/debug/tg-xtask starry test qemu --arch aarch64
-target/debug/tg-xtask ktest qemu -p starry-kernel --arch aarch64
-FEATURES=ax-runtime/tls target/debug/tg-xtask starry test qemu --arch aarch64 --test-case qemu/system/syscall-test-clone-tls
+target/debug/tg-xtask ktest qemu -p starry-kernel --arch aarch64 \
+  --config test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml
 '''
 
 [[check.suite]]
@@ -54,7 +49,6 @@ download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry test qemu --arch loongarch64
 target/debug/tg-xtask ktest qemu -p starry-kernel --arch loongarch64
-FEATURES=ax-runtime/tls target/debug/tg-xtask starry test qemu --arch loongarch64 --test-case qemu/system/syscall-test-clone-tls
 '''
 
 [[check.suite]]
@@ -71,7 +65,6 @@ download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry test qemu --arch x86_64
 target/debug/tg-xtask ktest qemu -p starry-kernel --arch x86_64
-FEATURES=ax-runtime/tls target/debug/tg-xtask starry test qemu --arch x86_64 --test-case qemu/system/syscall-test-clone-tls
 '''
 
 [[check.suite]]

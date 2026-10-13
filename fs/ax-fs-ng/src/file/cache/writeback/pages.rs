@@ -74,7 +74,7 @@ impl<'a> WritebackPages<'a> {
         Ok(())
     }
 
-    #[cfg(feature = "vfs")]
+    #[cfg(any(feature = "vfs", feature = "ext4"))]
     pub(super) fn protect_available(&mut self) -> VfsResult<()> {
         for page in &mut self.pages {
             match self

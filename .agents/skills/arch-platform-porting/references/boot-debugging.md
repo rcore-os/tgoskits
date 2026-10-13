@@ -180,6 +180,12 @@ StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直
 11. 启动参数与页表对其他处理器可见后才释放次处理器。
 12. 体系结构钩子只负责唤醒传输。someboot 公共所有者在调用前发布逐处理器 `KICKED`，等待次处理器在公共入口报告 `ALIVE`，再把该处理器释放为 `SHOULD_ONLINE`。握手不进入不可变跳板元数据，并与稍后的调度器、中断和定时器在线发布分离。详见 `docs/design/someboot-secondary-cpu-startup.md`。
 
+## GICv3 ITS 挂起表
+
+`somehal::arch::gic::its::GicItsProvider::new` 必须为每个 redistributor 分配独立且按 64 KiB 对齐的 LPI pending table。`GICR_PENDBASER` 只保存物理地址位 `[51:16]`；即使 16 位 INTID 只需要 8 KiB 位图，也不能采用 8 KiB 步长。只对齐整个分配会让多个 CPU 的挂起表地址被截断为同一地址。按 [Linux v7.1 的 `LPI_PENDBASE_SZ`](https://github.com/torvalds/linux/blob/v7.1/drivers/irqchip/irq-gic-v3-its.c) 将每张表向上对齐，并检查总分配长度的乘法溢出。
+
+SMP4、ITS、NVMe 测试停滞时，先采样各核调用栈和实际中断标识，再从当前设备树或 `PRIMARY_GICR_PHYS_BASE` 确认 redistributor 地址，读取各核 `GICR_PENDBASER` 的地址字段。所有地址必须独立；不能仅凭分配指针不同或某次完整套件通过就认定正确。保留原来的测试配置，不通过改用 GICv2、关闭 ITS 或改成单核绕过缺陷。
+
 ## RISC-V 扁平设备树多处理器
 
 - 只枚举固件标为可用的处理器节点。没有 `status` 表示可用，`okay` 或 `ok` 表示可用，`disabled` 必须跳过。

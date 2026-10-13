@@ -16,6 +16,11 @@ axtest target 由拥有完整运行时的上层 consumer（例如 `starry-kernel
 
 `qemu` 从 Cargo metadata 建立 workspace 执行计划；`board` 显式选择一个 package 和 test target。两种模式都只接收明确的 `harness = false` target，避免误把 host 测试当作内核测试执行。
 
+Starry 的主 CI 矩阵在四个架构的普通 QEMU 套件后追加 `starry-kernel` 测例。AArch64
+行通过 `--config test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml` 复用
+普通 QEMU 的 RGA 与 kernel-TLS 配置，避免执行默认无 RGA 的 kernel 构建。普通 QEMU 的
+C/LTP 与 `axtest_kernel` 仍是两条独立的运行时断言链。
+
 ### 1.1 QEMU 参数
 
 无参数 QEMU 命令等价于 workspace 全量选择。`-p/--package`、`--exclude`、`--test` 均可重复；未给出 `--test` 时会展开所有符合约束的 target。`--arch` 只保留支持该架构的执行单元，`--coverage` 会启用 axtest 覆盖率捕获。
