@@ -1127,6 +1127,14 @@ impl MappingOperation {
         matches!(&self.kind, MappingOperationKind::Linear(_))
     }
 
+    /// Creates an independent lazy anonymous source for a wiped fork VMA.
+    pub(super) fn fork_zeroed(&self, start: VirtAddr) -> StarryResult<Self> {
+        match &self.kind {
+            MappingOperationKind::Cow(cow) if cow.is_anonymous() => Ok(cow.fork_zeroed(start)),
+            _ => Err(StarryError::InvalidInput),
+        }
+    }
+
     pub(crate) fn is_private_anonymous(&self) -> bool {
         self.supports_mremap_dontunmap()
     }

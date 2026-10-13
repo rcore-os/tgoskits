@@ -11,8 +11,8 @@ use crate::{
     StarryError, StarryResult,
     file::get_file_like,
     mm::{
-        HugePageAdvice, MappingOperation, MappingPublication, MemlockLimit, SharedMemoryObject,
-        VmaAccessPattern, VmaAdviceUpdate, VmaLockMode, VmaMremapSource,
+        HugePageAdvice, MappingOperation, MappingPublication, MemlockLimit, PopulateAccess,
+        SharedMemoryObject, VmaAccessPattern, VmaAdviceUpdate, VmaLockMode, VmaMremapSource,
     },
     pseudofs::{Device, DeviceMmap},
     syscall::fs::{memfd_check_write_seal, memfd_check_write_seal_for_shared_file_backend},
@@ -1385,13 +1385,15 @@ pub fn sys_madvise(
     match advice as u32 {
         MADV_NORMAL | MADV_RANDOM | MADV_SEQUENTIAL | MADV_WILLNEED | MADV_DONTNEED | MADV_FREE
         | MADV_REMOVE | MADV_DONTFORK | MADV_DOFORK | MADV_HUGEPAGE | MADV_NOHUGEPAGE
-        | MADV_DONTDUMP | MADV_DODUMP | MADV_PAGEOUT | MADV_DONTNEED_LOCKED => {}
+        | MADV_DONTDUMP | MADV_DODUMP | MADV_PAGEOUT | MADV_DONTNEED_LOCKED | MADV_WIPEONFORK
+        | MADV_KEEPONFORK | MADV_POPULATE_READ | MADV_POPULATE_WRITE => {}
         // Recognized Linux advice values without a Starry implementation must
         // be visible to callers.  Returning EOPNOTSUPP prevents an accidental
         // successful no-op from being mistaken for reclaim, THP, or poisoning.
-        MADV_WIPEONFORK | MADV_KEEPONFORK | MADV_MERGEABLE | MADV_UNMERGEABLE | MADV_COLD
-        | MADV_POPULATE_READ | MADV_POPULATE_WRITE | MADV_COLLAPSE | MADV_HWPOISON
-        | MADV_SOFT_OFFLINE => return Err(StarryError::OperationNotSupported),
+        MADV_MERGEABLE | MADV_UNMERGEABLE | MADV_COLD | MADV_COLLAPSE | MADV_HWPOISON
+        | MADV_SOFT_OFFLINE => {
+            return Err(StarryError::OperationNotSupported);
+        }
         _ => return Err(StarryError::InvalidInput),
     }
 
@@ -1413,6 +1415,22 @@ pub fn sys_madvise(
     let aspace_arc = curr.as_thread().proc_data.pin_aspace()?;
     let mut cursor = start_va;
     let mut saw_gap = false;
+
+    if matches!(advice as u32, MADV_POPULATE_READ | MADV_POPULATE_WRITE) {
+        let access = if advice as u32 == MADV_POPULATE_WRITE {
+            PopulateAccess::Write
+        } else {
+            PopulateAccess::Read
+        };
+        aspace_arc.populate_advised_range(VirtAddrRange::new(start_va, end), access, || {
+            current
+                .as_thread()
+                .signal()
+                .pending()
+                .has(starry_signal::Signo::SIGKILL)
+        })?;
+        return Ok(0);
+    }
 
     if advice as u32 == MADV_REMOVE {
         while cursor < end {
@@ -1487,6 +1505,8 @@ pub fn sys_madvise(
             | MADV_SEQUENTIAL
             | MADV_DONTFORK
             | MADV_DOFORK
+            | MADV_WIPEONFORK
+            | MADV_KEEPONFORK
             | MADV_DONTDUMP
             | MADV_DODUMP
     ) {
@@ -1496,6 +1516,8 @@ pub fn sys_madvise(
             MADV_SEQUENTIAL => VmaAdviceUpdate::AccessPattern(VmaAccessPattern::Sequential),
             MADV_DONTFORK => VmaAdviceUpdate::DontFork(true),
             MADV_DOFORK => VmaAdviceUpdate::DontFork(false),
+            MADV_WIPEONFORK => VmaAdviceUpdate::WipeOnFork(true),
+            MADV_KEEPONFORK => VmaAdviceUpdate::WipeOnFork(false),
             MADV_DONTDUMP => VmaAdviceUpdate::DontDump(true),
             MADV_DODUMP => VmaAdviceUpdate::DontDump(false),
             _ => unreachable!(),
@@ -1508,12 +1530,26 @@ pub fn sys_madvise(
                 break;
             };
             saw_gap |= fragment.gap_before;
-            if reject_special && fragment.is_special() {
+            if (reject_special && fragment.is_special())
+                || (advice as u32 == MADV_WIPEONFORK && !fragment.is_private_anonymous())
+            {
                 return Err(StarryError::InvalidInput);
             }
             let fragment_start = fragment.range.start;
             let fragment_len = fragment.range.size();
-            aspace.advise_vma_policy(fragment_start, fragment_len, update)?;
+            aspace
+                .advise_vma_policy(fragment_start, fragment_len, update)
+                .map_err(|error| {
+                    // Linux madvise_behavior translates VMA-update ENOMEM
+                    // to EAGAIN; an unmapped hole is reported separately below.
+                    if matches!(advice as u32, MADV_WIPEONFORK | MADV_KEEPONFORK)
+                        && matches!(error, StarryError::NoMemory)
+                    {
+                        StarryError::WouldBlock
+                    } else {
+                        error
+                    }
+                })?;
             cursor = fragment_start
                 .checked_add(fragment_len)
                 .ok_or(StarryError::InvalidInput)?;

@@ -31,6 +31,10 @@ cargo xtask starry app qemu -t apache --arch x86_64
 # Manual Apache phase rerun
 cargo xtask starry app qemu -t apache --arch x86_64 \
   --qemu-config apps/starry/apache/qemu/phase/qemu-x86_64-phase20.toml
+
+# Host-side runner dispatch regression
+sh apps/starry/apache/runner/apache-runner-lib-tests.sh
+# expected marker: APACHE_RUNNER_LIB_TESTS_PASSED
 ```
 
 ## Layout

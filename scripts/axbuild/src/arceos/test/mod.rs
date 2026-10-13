@@ -37,6 +37,7 @@ const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[
     ARCEOS_RUST_TASK_IRQ_FEATURE,
     ARCEOS_RUST_CPU_LIFECYCLE_FEATURE,
     "iommu-dma",
+    "intel-itco-qemu",
     "nvme-qemu",
     "serial-rx",
     "virtio-block-lifecycle",
@@ -55,6 +56,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE,
     "fs-basic",
     "iommu-dma",
+    "intel-itco-qemu",
     "nvme-qemu",
     "lockdep-baseline",
     ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
@@ -121,7 +123,7 @@ pub(super) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<
 fn rust_qemu_feature_supports_arch(feature: &str, arch: &str) -> bool {
     match feature {
         "serial-rx" | "iommu-dma" | "virtio-block-lifecycle" => arch == "aarch64",
-        "nvme-qemu" => arch == "x86_64",
+        "intel-itco-qemu" | "nvme-qemu" => arch == "x86_64",
         _ => true,
     }
 }

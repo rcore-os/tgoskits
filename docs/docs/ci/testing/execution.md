@@ -33,10 +33,16 @@ sidebar_label: "矩阵执行"
 | --- | --- |
 | Workspace | 增量 Clippy；std 白名单测试；同一行追加 Linux perf 下载契约、task-switch 换算和 qperf 描述符/入口回归 |
 | ArceOS | 各架构 `arceos test qemu`；部分行先验证启动、SMP 或追加 task-ipi 场景 |
-| Starry | `starry test qemu` 后追加 `ktest qemu -p starry-kernel`；独立板卡行运行 `starry test board` |
+| Starry | 四个架构行都在 `starry test qemu` 后追加 `ktest qemu -p starry-kernel`；AArch64 的 ktest 显式复用含 RGA 与 kernel-TLS 的普通 QEMU build 配置；独立板卡行运行 `starry test board` |
 | AxVisor | 按清单运行 QEMU、Intel VMX、AMD SVM 和具体板卡场景；一行可包含多个启动变体 |
 
 完整命令以 `.github/ci/checks/*.toml` 的 `command` 为准。ArceOS、Starry 和 AxVisor 的集成测试不能用一次宿主 `cargo test` 替代，Workspace 的 std 测试也不证明内核启动或硬件行为。
+
+AArch64 的普通 Starry QEMU wrapper 复用包含 `rga` 和 `ax-runtime/tls` 的 kernel build
+identity。该行随后使用同一份 `test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml`
+运行独立的 `starry-kernel` `axtest_kernel`，因此保留约 228 个内核 axtest 注册项的失败
+信号，同时不会重新引入默认无 RGA 的 kernel 构建。普通 QEMU 的 native C/LTP 结果与
+内核 axtest 各自承担不同运行时断言。
 
 ### 1.3 并行与失败范围
 
@@ -89,6 +95,12 @@ exclusive 套件行禁用 artifact 依赖并直接调用 `cargo xtask`。自托�
 `scripts/axbuild/src/test/qemu/discovery.rs` 的 `discover_qemu_cases()` 发现配置并查找最近的构建包装文件，`group_cases_by_build_config()` 按构建配置归组，`prepare_case_build_groups()` 为各组准备构建。共享框架尽量复用相同构建，但不同配置和独立矩阵 job 并不自动共用一次编译。
 
 Starry、AxVisor 的资产层还会选择 `CasePipeline` 并准备 rootfs、overlay 和测试程序；ArceOS 使用自己的 feature-based runner。完整实现与系统差异见[测试基础设施](../../build/test_infra.md)、[ArceOS 测试](../../build/arceos/test.md)、[StarryOS 测试](../../build/starry/test.md)及[AxVisor 测试](../../build/axvisor/test.md)。
+
+当前 Starry `qemu` 和 `qemu-e1000` wrapper 的 kernel build identity 都包含
+`ax-runtime/tls`，因此普通 QEMU runtime 证据只覆盖 kernel-TLS profile；旧的无 kernel-TLS
+（userspace-TLS）全套 QEMU lane 已从这组矩阵中移除。`check_kernel_tls_modes.py` 只检查
+cpu-local/ax-cpu 的 feature 传播和 rustc cfg，不替代另一 profile 的真实 QEMU runtime
+验证。
 
 ### 3.2 运行与判定
 

@@ -14,9 +14,6 @@ license = "Apache-2.0"
 runtime-internal = []
 
 [dependencies]
-log = "0.4"
-serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
-
 # ArceOS and AxVisor crates.
 ax-memory-addr = { workspace = true }
 axvm-types = { workspace = true }

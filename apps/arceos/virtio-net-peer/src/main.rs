@@ -15,6 +15,8 @@
 //! `VMx_VIRTIO_NET_FAIL` stays reserved for setup errors that cannot be
 //! recovered from.
 
+#[cfg(not(feature = "arceos"))]
+use core::time::Duration;
 #[cfg(feature = "arceos")]
 use std::{
     io::{Read, Write},
@@ -39,7 +41,7 @@ const HEARTBEAT_PERIOD_MS: &str = match option_env!("AXVIRTIO_HEARTBEAT_PERIOD_M
     Some(value) => value,
     None => "4000",
 };
-/// Successful heartbeats after which the pass marker is printed, once.
+/// Successful heartbeats after which the pass marker is first printed.
 const PASS_AFTER_HEARTBEATS: &str = match option_env!("AXVIRTIO_HEARTBEAT_PASS_AFTER") {
     Some(value) => value,
     None => "3",
@@ -59,17 +61,22 @@ const CONNECT_TIMEOUT_MS: &str = match option_env!("AXVIRTIO_CONNECT_TIMEOUT_MS"
     None => "4000",
 };
 /// Grace period before the client's first connect attempt (compile-time
-/// override). All guests boot at the same time and only configure their address
-/// after their DHCP bootstrap times out, so starting immediately would race the
-/// neighbours' configuration and poison the ARP cache with exponential backoff.
+/// override). `run.sh` is the source of the per-guest value and of how the two
+/// QEMU scenarios start guests: the default scenario auto-starts them, while
+/// `--vcpus` enables `no-auto-start` and starts them with `vm start`. The delay
+/// lets the guest finish its own network setup before it dials the next hop.
+/// Failed ARP retries are paced by `connect_retry_backoff`.
 const CONNECT_START_DELAY_MS: &str = match option_env!("AXVIRTIO_CONNECT_START_DELAY_MS") {
     Some(value) => value,
     None => "10000",
 };
 const DEFAULT_HEARTBEAT_PERIOD_MS: u64 = 4000;
 const DEFAULT_PASS_AFTER_HEARTBEATS: u64 = 3;
-/// Delay before the next connect attempt or session, so retries stay calm.
+/// Base delay for a connect retry and for the next session after a drop, so
+/// retries stay calm. Failed connect attempts grow exponentially from here.
 const RETRY_DELAY_MS: u64 = 1000;
+/// Upper bound of the exponential connect-backoff growth (milliseconds).
+const CONNECT_RETRY_MAX_DELAY_MS: u64 = 8000;
 /// Log every connect retry up to this count, then only every tenth attempt.
 const CONNECT_RETRY_LOG_BURST: u64 = 5;
 const TEST_PORT: u16 = 5001;
@@ -179,7 +186,11 @@ fn run_server() -> std::io::Result<()> {
                 "{VM_TAG}_VIRTIO_NET_HB_RX session={sessions} count={heartbeats} seq={sequence} \
                  local={LOCAL_IP} peer={peer} payload=\"{line}\""
             );
-            if !pass_reported && heartbeats >= pass_after_heartbeats() {
+            // Report the first pass immediately, then repeat it on the status
+            // cadence so a console attached after the pass still sees it.
+            if heartbeats >= pass_after_heartbeats()
+                && (!pass_reported || heartbeats.is_multiple_of(STATUS_EVERY_HEARTBEATS))
+            {
                 pass_reported = true;
                 println!("{VM_TAG}_VIRTIO_NET_PASS role=server heartbeats={heartbeats}");
             }
@@ -210,9 +221,10 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
     let mut failed_sessions = 0u64;
     let mut pass_reported = false;
 
-    // Let the neighbours finish booting and configuring their addresses before
-    // the first attempt, so the chain connects instead of poisoning the ARP
-    // cache with failed resolutions.
+    // The grace period gives the peer, when one is already started, time to
+    // finish its initialization and configure its network address before the
+    // first TCP connect attempt; the chain then connects instead of poisoning
+    // the ARP cache with failed resolutions.
     thread::sleep(connect_start_delay());
 
     loop {
@@ -294,12 +306,17 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
 }
 
 /// Connects to `target`, retrying forever: a peer that is not listening yet is
-/// an expected state while the guest chain boots, so this never gives up. The
-/// first few attempts are logged, later ones only every tenth attempt.
+/// an expected state while the guest chain boots, so this never gives up. Each
+/// failed attempt waits on a bounded exponential backoff (1s, 2s, 4s, 8s) so an
+/// absent peer stops emitting one ARP pending frame per second; the backoff
+/// restarts from the base value because a successful connection returns and the
+/// caller invokes this fresh. The first few attempts are logged, later ones only
+/// every tenth attempt.
 #[cfg(feature = "arceos")]
 fn connect_forever(target: (Ipv4Addr, u16), attempts: &mut u64) -> TcpStream {
     let (peer_ip, port) = target;
     let address = SocketAddr::from((peer_ip, port));
+    let mut failures = 0u64;
     loop {
         match TcpStream::connect_timeout(&address, connect_timeout()) {
             Ok(stream) => return stream,
@@ -312,7 +329,8 @@ fn connect_forever(target: (Ipv4Addr, u16), attempts: &mut u64) -> TcpStream {
                         *attempts
                     );
                 }
-                thread::sleep(retry_delay());
+                failures += 1;
+                thread::sleep(connect_retry_backoff(failures));
             }
         }
     }
@@ -389,6 +407,37 @@ fn pass_after_heartbeats() -> u64 {
 #[cfg(feature = "arceos")]
 fn retry_delay() -> Duration {
     Duration::from_millis(RETRY_DELAY_MS)
+}
+
+/// Bounded exponential backoff for the nth consecutive failed connect attempt:
+/// 1s, 2s, 4s, then capped at 8s. A fixed one-second retry keeps an unreachable
+/// peer resolving ARP once per second, and several guests doing that at once
+/// floods the switch with pending frames; widening the gap keeps retries calm
+/// while a peer that appears later is still picked up.
+fn connect_retry_backoff(failures: u64) -> Duration {
+    let shift = failures.saturating_sub(1).min(3);
+    let delay_ms = (RETRY_DELAY_MS << shift).min(CONNECT_RETRY_MAX_DELAY_MS);
+    Duration::from_millis(delay_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CONNECT_RETRY_MAX_DELAY_MS, RETRY_DELAY_MS, connect_retry_backoff};
+
+    #[test]
+    fn connect_retry_backoff_grows_then_stays_capped() {
+        let expected = [
+            RETRY_DELAY_MS,
+            RETRY_DELAY_MS * 2,
+            RETRY_DELAY_MS * 4,
+            CONNECT_RETRY_MAX_DELAY_MS,
+            CONNECT_RETRY_MAX_DELAY_MS,
+        ];
+        for (failures, delay_ms) in (1..=5).zip(expected) {
+            assert_eq!(connect_retry_backoff(failures).as_millis() as u64, delay_ms);
+        }
+        assert_eq!(connect_retry_backoff(0).as_millis() as u64, RETRY_DELAY_MS);
+    }
 }
 
 #[cfg(feature = "arceos")]

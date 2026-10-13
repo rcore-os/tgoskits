@@ -325,6 +325,48 @@ fn run_concurrent_hard_calls(target_cpu: usize, sender_cpus: &[usize]) {
     }
 }
 
+fn verify_fixed_ipi_preserves_local_irq_state(sender_cpu: usize, target_cpu: usize) {
+    pin_current_to_cpu(sender_cpu);
+    assert!(ax_cpu::interrupt::irqs_enabled());
+
+    let calls_before = EXECUTED_HARD_CALLS.load(Ordering::Relaxed);
+    // SAFETY: the call is synchronous and the stack-local target remains valid
+    // until the bounded hard-IRQ callback completes on the remote CPU.
+    unsafe {
+        ax_ipi::call_on_cpu(
+            CpuId(target_cpu),
+            counting_hard_call,
+            core::ptr::from_ref(&target_cpu).cast_mut().cast(),
+        )
+    }
+    .expect("enabled-interrupt remote IPI call failed");
+    assert!(ax_cpu::interrupt::irqs_enabled());
+    assert_eq!(
+        EXECUTED_HARD_CALLS.load(Ordering::Relaxed),
+        calls_before + 1
+    );
+
+    ax_cpu::interrupt::disable_irqs();
+    assert!(!ax_cpu::interrupt::irqs_enabled());
+    let calls_before = EXECUTED_HARD_CALLS.load(Ordering::Relaxed);
+    // SAFETY: the same synchronous hard-IRQ-safe callback contract applies;
+    // the sender intentionally enters the LAPIC path with local IRQs disabled.
+    unsafe {
+        ax_ipi::call_on_cpu(
+            CpuId(target_cpu),
+            counting_hard_call,
+            core::ptr::from_ref(&target_cpu).cast_mut().cast(),
+        )
+    }
+    .expect("disabled-interrupt remote IPI call failed");
+    assert!(!ax_cpu::interrupt::irqs_enabled());
+    ax_cpu::interrupt::enable_irqs();
+    assert_eq!(
+        EXECUTED_HARD_CALLS.load(Ordering::Relaxed),
+        calls_before + 1
+    );
+}
+
 pub fn run() -> crate::TestResult {
     let cpu_num = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     if cpu_num < 2 {
@@ -341,6 +383,7 @@ pub fn run() -> crate::TestResult {
     TARGET_CPU.store(target_cpu, Ordering::Relaxed);
     pin_current_to_cpu(sender_cpus[0]);
     exercise_irq_masked_idle_wake(target_cpu, sender_cpus[0]);
+    verify_fixed_ipi_preserves_local_irq_state(sender_cpus[0], target_cpu);
     verify_self_ipi_delivery(sender_cpus[0]);
     run_concurrent_hard_calls(target_cpu, &sender_cpus);
 

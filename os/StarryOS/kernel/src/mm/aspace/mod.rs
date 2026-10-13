@@ -40,6 +40,7 @@ fn complete_page_fault_with(
 }
 
 mod accounting;
+mod advice;
 mod backend;
 pub(crate) mod domain;
 pub mod lifecycle;
@@ -2733,6 +2734,15 @@ impl AddrSpace {
         if affected.is_empty() || !previous_root.contains_range(start, size) {
             return Err(StarryError::NoMemory);
         }
+        // Linux hugetlb VMAs have a file backing even for MAP_ANONYMOUS;
+        // Starry models that choice as an explicit page-size policy instead.
+        if matches!(update, VmaAdviceUpdate::WipeOnFork(true))
+            && affected
+                .iter()
+                .any(|vma| matches!(vma.group.page_policy, PageSizePolicy::ExplicitHuge { .. }))
+        {
+            return Err(StarryError::InvalidInput);
+        }
         if affected
             .iter()
             .all(|vma| vma.advice_policy.apply(update) == vma.advice_policy)
@@ -2742,7 +2752,11 @@ impl AddrSpace {
         let successor = previous_root
             .with_advice_update(range, update)
             .ok_or(StarryError::NoMemory)?;
-        self.publish_vma_metadata_successor(previous_root, successor, "VMA madvise policy")
+        if matches!(update, VmaAdviceUpdate::WipeOnFork(true)) {
+            self.publish_wipe_on_fork(previous_root, successor, range)
+        } else {
+            self.publish_vma_metadata_successor(previous_root, successor, "VMA madvise policy")
+        }
     }
 
     /// Publishes Linux `VM_LOCKED`/`VM_LOCKONFAULT` policy for a fully mapped
@@ -6664,7 +6678,9 @@ impl AddrSpace {
         let mut ranges = Vec::new();
 
         for entry in self.vma_root.iter_entries() {
-            if entry.snapshot().advice_policy.dont_fork() {
+            if entry.snapshot().advice_policy.dont_fork()
+                || entry.snapshot().advice_policy.wipe_on_fork()
+            {
                 continue;
             }
             if !entry.operation().requires_fork_write_protect() {
@@ -6860,12 +6876,22 @@ impl AddrSpace {
                 if entry.snapshot().advice_policy.dont_fork() {
                     continue;
                 }
-                let (new_backend, materialization) = entry.operation().clone_map(
-                    entry.range(),
-                    entry.rights(),
-                    self_modify,
-                    &mut guard.pt,
-                )?;
+                let (new_backend, materialization) =
+                    if entry.snapshot().advice_policy.wipe_on_fork() {
+                        // Keep the VMA policy, but give the unpublished child an
+                        // independent zero-fill source and no parent PTE owners.
+                        (
+                            entry.operation().fork_zeroed(entry.start())?,
+                            PteMaterialization::empty(),
+                        )
+                    } else {
+                        entry.operation().clone_map(
+                            entry.range(),
+                            entry.rights(),
+                            self_modify,
+                            &mut guard.pt,
+                        )?
+                    };
                 // Parent VMAs do not overlap, and the child is built from an
                 // empty root. No prior child mapping can be replaced here.
                 if let Some(delta) = crate::syscall::memfd_prepare_new_mapping_delta(

@@ -18,6 +18,83 @@ timeout = 360
 to_bin = true
 uefi = false
 
+# The board config enables `no-auto-start`, so no guest runs until these steps
+# launch it: the `vm start` order below really is the guest boot order. Guests
+# are started tail first (VM4, then VM3, then VM2, then VM1), so every client is
+# launched only after the server that has to answer it is already running, and
+# each console is attached -- and its pass checks read -- right after its own
+# guest has been started.
+# Attaching VM1 last also removes the scheduling asymmetry that made a detached
+# VM1 stall: its two vCPUs both live on pCPU0 alongside the host, so a detached
+# VM1 gets backgrounded while VM2/VM3/VM4 keep running and never reaches its
+# client pass.
+
+# VM4 is the tail of the chain and the server VM3 talks to, so it is started and
+# its console attached first.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 4"
+success_regex = ["VM\\[4\\] started successfully"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 4"
+
+[[shell_check_steps]]
+success_regex = ["VM4_VIRTIO_NET_READY"]
+
+# The boot marker is printed once, so the detach anchors on the line the guest
+# writes right after it.
+[[shell_check_steps]]
+shell_prefix = "VM4_VIRTIO_NET_IFACES"
+shell_cmd = "\u0018h"
+
+# Back at the Axvisor shell with VM4's console detached, VM3 is started: its
+# client dials VM4, which is already running.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 3"
+success_regex = ["VM\\[3\\] started successfully"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+
+[[shell_check_steps]]
+success_regex = ["VM3_VIRTIO_NET_READY"]
+
+[[shell_check_steps]]
+shell_prefix = "VM3_VIRTIO_NET_IFACES"
+shell_cmd = "\u0018h"
+
+# VM3 has been started and its console detached, so VM2 is started next; VM2's
+# client dials VM3, which is already running.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 2"
+success_regex = ["VM\\[2\\] started successfully"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+
+[[shell_check_steps]]
+success_regex = ["VM2_VIRTIO_NET_READY"]
+
+[[shell_check_steps]]
+shell_prefix = "VM2_VIRTIO_NET_IFACES"
+shell_cmd = "\u0018h"
+
+# VM1 is the head of the chain and is started last, once its peer VM2 and the rest
+# of the chain are already running; this attach keeps its console in the
+# foreground: the runner does not detach until the client pass and a repeating
+# heartbeat are observed, which keeps VM1's two vCPUs scheduled while the other
+# guests run.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 1"
+success_regex = ["VM\\[1\\] started successfully"]
+
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
@@ -27,13 +104,20 @@ shell_cmd = "vm console 1"
 [[shell_check_steps]]
 success_regex = ["VM1_VIRTIO_NET_READY.*cpus=2"]
 
+# The client pass is checked on the same attached console, so VM1 stays
+# foregrounded for the whole handshake with VM2's already running server.
 [[shell_check_steps]]
 success_regex = ["VM1_VIRTIO_NET_PASS role=client"]
 
+# VM2 acknowledges the heartbeats, so this client marker repeats and can anchor
+# the detach back to the Axvisor shell.
 [[shell_check_steps]]
 shell_prefix = "VM1_VIRTIO_NET_HB_TX"
 shell_cmd = "\u0018h"
 
+# VM2's boot output was already replayed by its first attach above, so this second
+# attach only waits for the client pass; VM3 answers it because VM3 was started
+# before VM2.
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 2"
@@ -41,10 +125,14 @@ shell_cmd = "vm console 2"
 [[shell_check_steps]]
 success_regex = ["VM2_VIRTIO_NET_PASS role=client"]
 
+# VM3 acknowledges the heartbeats, so this client marker repeats and can anchor
+# the detach back to the Axvisor shell.
 [[shell_check_steps]]
 shell_prefix = "VM2_VIRTIO_NET_HB_TX"
 shell_cmd = "\u0018h"
 
+# VM3's boot output was already replayed by its first attach above; its pass needs
+# VM4's server, which was likewise started before VM3.
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 3"
@@ -52,16 +140,21 @@ shell_cmd = "vm console 3"
 [[shell_check_steps]]
 success_regex = ["VM3_VIRTIO_NET_PASS role=client"]
 
+# VM4 acknowledges the heartbeats, so this client marker repeats and can anchor
+# the detach back to the Axvisor shell.
 [[shell_check_steps]]
 shell_prefix = "VM3_VIRTIO_NET_HB_TX"
 shell_cmd = "\u0018h"
 
+# Closing pass: VM4 answered VM3 for the whole window, so its console holds a
+# sustained heartbeat count (any count of 5 or more) followed by the repeating
+# server pass.
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 4"
 
 [[shell_check_steps]]
-success_regex = ["VM4_VIRTIO_NET_PASS role=server"]
+success_regex = ["VM4_VIRTIO_NET_HB_RX.*count=(?:[5-9]|[1-9][0-9]+)"]
 
 [[shell_check_steps]]
-success_regex = ["VM4_VIRTIO_NET_HB_RX.*count=5"]
+success_regex = ["VM4_VIRTIO_NET_PASS role=server"]

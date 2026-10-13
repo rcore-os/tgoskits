@@ -124,7 +124,7 @@ DMA host test 使用 tracking `DmaOp` 记录 allocation、free、map、unmap和 
 | accelerator import | operation结束前 owner live，driver不释放 |
 | reset/timeout | quiesce 后 complete；无法证明时 quarantine/leak |
 
-`qemu-rga/system/rga-lifecycle` 和 dma-buf 最后引用释放用例应作为设备路径回归；物理板还要验证 JPEG/NPU/TPU 使用同一 Dma32 ownership模型。
+`qemu/system/rga-lifecycle` 和 dma-buf 最后引用释放用例应作为设备路径回归；物理板还要验证 JPEG/NPU/TPU 使用同一 Dma32 ownership模型。
 
 ### 3.3 MMIO 映射与寄存器访问
 

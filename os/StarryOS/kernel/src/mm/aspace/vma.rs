@@ -322,6 +322,7 @@ impl VmaLockMode {
 pub(crate) struct VmaAdvicePolicy {
     access_pattern: VmaAccessPattern,
     dont_fork: bool,
+    wipe_on_fork: bool,
     dont_dump: bool,
 }
 
@@ -329,11 +330,16 @@ impl VmaAdvicePolicy {
     pub const DEFAULT: Self = Self {
         access_pattern: VmaAccessPattern::Normal,
         dont_fork: false,
+        wipe_on_fork: false,
         dont_dump: false,
     };
 
     pub const fn dont_fork(self) -> bool {
         self.dont_fork
+    }
+
+    pub const fn wipe_on_fork(self) -> bool {
+        self.wipe_on_fork
     }
 
     pub const fn apply(self, update: VmaAdviceUpdate) -> Self {
@@ -343,6 +349,10 @@ impl VmaAdvicePolicy {
                 ..self
             },
             VmaAdviceUpdate::DontFork(dont_fork) => Self { dont_fork, ..self },
+            VmaAdviceUpdate::WipeOnFork(wipe_on_fork) => Self {
+                wipe_on_fork,
+                ..self
+            },
             VmaAdviceUpdate::DontDump(dont_dump) => Self { dont_dump, ..self },
         }
     }
@@ -360,6 +370,7 @@ pub(crate) enum VmaAccessPattern {
 pub(crate) enum VmaAdviceUpdate {
     AccessPattern(VmaAccessPattern),
     DontFork(bool),
+    WipeOnFork(bool),
     DontDump(bool),
 }
 

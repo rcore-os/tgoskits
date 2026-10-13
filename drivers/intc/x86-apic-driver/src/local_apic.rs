@@ -68,6 +68,57 @@ const ICR_DELIVERY_STATUS: u32 = 0x0000_1000;
 
 const IPI_DELIVERY_WAIT_SPINS: usize = 1_000_000;
 const LVT_MASKED: u32 = 1 << 16;
+#[cfg(not(test))]
+const RFLAGS_INTERRUPT_ENABLE: u64 = 1 << 9;
+
+/// Saves the current interrupt-enable flag and masks local interrupts until
+/// the xAPIC ICR transaction has finished. This does not mask NMI.
+#[must_use]
+struct LocalIrqSaveGuard {
+    restore_interrupts: bool,
+    _not_send: core::marker::PhantomData<*mut ()>,
+}
+
+impl LocalIrqSaveGuard {
+    fn new() -> Self {
+        #[cfg(test)]
+        let restore_interrupts = tests::save_and_disable_test_irqs();
+        #[cfg(not(test))]
+        let restore_interrupts = save_and_disable_local_irqs();
+
+        Self {
+            restore_interrupts,
+            _not_send: core::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for LocalIrqSaveGuard {
+    fn drop(&mut self) {
+        #[cfg(test)]
+        tests::restore_test_irqs(self.restore_interrupts);
+        #[cfg(not(test))]
+        if self.restore_interrupts {
+            // SAFETY: `new` saved IF on this CPU, and the guard cannot move to
+            // another CPU. Restore only when interrupts were enabled on entry.
+            unsafe {
+                core::arch::asm!("sti");
+            }
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn save_and_disable_local_irqs() -> bool {
+    let flags: u64;
+    // SAFETY: driver users execute this privileged kernel operation at CPL0.
+    // The balanced push/pop captures IF immediately before CLI takes effect;
+    // any interrupt before CLI completes occurs before the ICR is accessed.
+    unsafe {
+        core::arch::asm!("pushfq", "pop {flags}", "cli", flags = out(reg) flags);
+    }
+    flags & RFLAGS_INTERRUPT_ENABLE != 0
+}
 
 /// OS-facing local APIC driver.
 ///
@@ -176,6 +227,8 @@ impl X86LocalApic {
     /// handler. A timeout can occur before this command is written or after
     /// publication; a post-write timeout does not mean the IPI was not
     /// delivered.
+    /// The entire xAPIC transaction masks local interrupts but not NMI;
+    /// NMI handlers must not send xAPIC IPIs concurrently.
     ///
     /// Fails with [`ApicError::XapicDestinationOverflow`] on xAPIC systems
     /// whose destination id does not fit the 8-bit ICR-high field.
@@ -188,20 +241,22 @@ impl X86LocalApic {
                     dest_apic_id,
                     ICR_FIXED_LEVEL | u32::from(vector),
                 ));
+                self.wait_ipi_delivery()
             },
             // x2apic 0.5 writes the destination into ICR_HIGH without the
             // shift into bits 31:24 that the xAPIC destination field
             // requires, so the xAPIC path uses the raw encoding.
             ApicMode::XApic => {
+                let _irq_guard = LocalIrqSaveGuard::new();
                 let destination = xapic_destination(dest_apic_id)?;
                 let icr_low = ICR_FIXED_LEVEL | u32::from(vector);
                 self.wait_ipi_delivery()?;
                 unsafe {
                     write_xapic_icr(self.xapic_mmio_base, destination, icr_low);
                 }
+                self.wait_ipi_delivery()
             }
         }
-        self.wait_ipi_delivery()
     }
 
     /// Sends a fixed self-IPI with `vector` to the current CPU.
@@ -213,6 +268,8 @@ impl X86LocalApic {
     /// execute. On xAPIC, a timeout may occur before the command is written or
     /// after publication; a post-write timeout does not mean the IPI was not
     /// delivered.
+    /// The entire xAPIC transaction masks local interrupts but not NMI;
+    /// NMI handlers must not send xAPIC IPIs concurrently.
     pub fn send_self_ipi(&self, vector: u8) -> Result<(), ApicError> {
         if self.runtime_mode() == ApicMode::X2Apic {
             unsafe {
@@ -220,6 +277,7 @@ impl X86LocalApic {
             }
             return Ok(());
         }
+        let _irq_guard = LocalIrqSaveGuard::new();
         self.wait_ipi_delivery()?;
         let icr_low = ICR_FIXED_LEVEL | ICR_DEST_SELF | u32::from(vector);
         unsafe {
@@ -580,10 +638,14 @@ unsafe fn mmio_write(base: VirtAddr, offset: u32, value: u32) {
             .byte_add(offset as usize)
             .write_volatile(value)
     }
+    #[cfg(test)]
+    tests::after_mmio_write(offset);
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
 
     #[test]
@@ -619,6 +681,7 @@ mod tests {
 
     #[test]
     fn xapic_timeout_does_not_overwrite_a_pending_command() {
+        reset_irq_test_state();
         // The backing page makes the old write-first sequence overwrite the
         // busy bit before its post-write wait can observe it.
         let mut registers = mock_xapic_registers();
@@ -627,12 +690,13 @@ mod tests {
         registers[icr_high] = 0xa500_0000;
         registers[icr_low] = ICR_DELIVERY_STATUS | ICR_FIXED_LEVEL | 0x41;
 
-        let local_apic = mock_xapic_local_apic(&mut registers);
+        let local_apic = mock_xapic_local_apic(VirtAddr::new(registers.as_mut_ptr() as usize));
 
         assert_eq!(
             local_apic.send_fixed_ipi(0x2a, 0xf1),
             Err(ApicError::IpiDeliveryTimeout)
         );
+        assert!(TEST_IRQ_ENABLED.with(Cell::get));
         assert_eq!(registers[icr_high], 0xa500_0000);
         assert_eq!(
             registers[icr_low],
@@ -642,6 +706,7 @@ mod tests {
 
     #[test]
     fn xapic_self_ipi_timeout_does_not_overwrite_a_pending_command() {
+        reset_irq_test_state();
         let mut registers = mock_xapic_registers();
         let esr = (XAPIC_REG_ESR / 4) as usize;
         let icr_high = (XAPIC_REG_ICR_HIGH / 4) as usize;
@@ -650,12 +715,13 @@ mod tests {
         registers[icr_high] = 0xa500_0000;
         registers[icr_low] = ICR_DELIVERY_STATUS | ICR_FIXED_LEVEL | 0x41;
 
-        let local_apic = mock_xapic_local_apic(&mut registers);
+        let local_apic = mock_xapic_local_apic(VirtAddr::new(registers.as_mut_ptr() as usize));
 
         assert_eq!(
             local_apic.send_self_ipi(0xf1),
             Err(ApicError::IpiDeliveryTimeout)
         );
+        assert!(TEST_IRQ_ENABLED.with(Cell::get));
         assert_eq!(registers[icr_high], 0xa500_0000);
         assert_eq!(
             registers[icr_low],
@@ -666,11 +732,12 @@ mod tests {
 
     #[test]
     fn idle_xapic_fixed_and_self_ipis_publish_expected_icr_fields() {
+        reset_irq_test_state();
         let mut registers = mock_xapic_registers();
         let esr = (XAPIC_REG_ESR / 4) as usize;
         let icr_high = (XAPIC_REG_ICR_HIGH / 4) as usize;
         let icr_low = (XAPIC_REG_ICR_LOW / 4) as usize;
-        let local_apic = mock_xapic_local_apic(&mut registers);
+        let local_apic = mock_xapic_local_apic(VirtAddr::new(registers.as_mut_ptr() as usize));
 
         local_apic.send_fixed_ipi(0x2a, 0xf1).unwrap();
         assert_eq!(registers[icr_high], 0x2a00_0000);
@@ -681,6 +748,40 @@ mod tests {
         assert_eq!(registers[esr], 0);
         assert_eq!(registers[icr_high], 0);
         assert_eq!(registers[icr_low], ICR_FIXED_LEVEL | ICR_DEST_SELF | 0xf2);
+    }
+
+    #[test]
+    fn xapic_ipi_destination_and_command_writes_are_not_interruptible() {
+        reset_irq_test_state();
+        let mut registers = [0; 256];
+        let base = VirtAddr::new(registers.as_mut_ptr() as usize);
+        let outer = mock_xapic_local_apic(base);
+        let icr_high = (XAPIC_REG_ICR_HIGH / 4) as usize;
+        let icr_low = (XAPIC_REG_ICR_LOW / 4) as usize;
+        install_nested_ipi(base);
+
+        outer.send_fixed_ipi(0x2a, 0xf1).unwrap();
+
+        assert_eq!(registers[icr_high], 0x2b00_0000);
+        assert_eq!(registers[icr_low], ICR_FIXED_LEVEL | 0xf2);
+    }
+
+    #[test]
+    fn xapic_guard_preserves_disabled_if_and_restores_it_after_validation_error() {
+        reset_irq_test_state();
+        let mut registers = [0; 256];
+        let local_apic = mock_xapic_local_apic(VirtAddr::new(registers.as_mut_ptr() as usize));
+
+        TEST_IRQ_ENABLED.with(|enabled| enabled.set(false));
+        local_apic.send_fixed_ipi(0x2a, 0xf1).unwrap();
+        assert!(!TEST_IRQ_ENABLED.with(Cell::get));
+
+        TEST_IRQ_ENABLED.with(|enabled| enabled.set(true));
+        assert_eq!(
+            local_apic.send_fixed_ipi(0x100, 0xf1),
+            Err(ApicError::XapicDestinationOverflow(0x100))
+        );
+        assert!(TEST_IRQ_ENABLED.with(Cell::get));
     }
 
     #[test]
@@ -737,7 +838,26 @@ mod tests {
         [0; 256]
     }
 
-    fn mock_xapic_local_apic(registers: &mut [u32; 256]) -> X86LocalApic {
+    use std::cell::Cell;
+
+    std::thread_local! {
+        static TEST_IRQ_ENABLED: Cell<bool> = const { Cell::new(true) };
+        static TEST_IRQ_PENDING: Cell<bool> = const { Cell::new(false) };
+        static NESTED_IPI_BASE: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn reset_irq_test_state() {
+        TEST_IRQ_ENABLED.with(|enabled| enabled.set(true));
+        TEST_IRQ_PENDING.with(|pending| pending.set(false));
+        NESTED_IPI_BASE.with(|base| base.set(0));
+    }
+
+    fn install_nested_ipi(base: VirtAddr) {
+        NESTED_IPI_BASE.with(|nested_base| nested_base.set(base.as_usize()));
+        TEST_IRQ_PENDING.with(|pending| pending.set(true));
+    }
+
+    fn mock_xapic_local_apic(base: VirtAddr) -> X86LocalApic {
         X86LocalApic {
             config: LocalApicConfig {
                 timer_vector: 32,
@@ -747,8 +867,43 @@ mod tests {
                 timer_divide: TimerDivide::Div1,
                 timer_initial: 0,
             },
-            xapic_mmio_base: VirtAddr::new(registers.as_mut_ptr() as usize),
+            xapic_mmio_base: base,
             access: runtime_access(ApicMode::XApic),
         }
+    }
+
+    pub(super) fn after_mmio_write(offset: u32) {
+        if offset != XAPIC_REG_ICR_HIGH {
+            return;
+        }
+
+        let nested_base = NESTED_IPI_BASE.with(Cell::get);
+        if nested_base == 0 || !TEST_IRQ_PENDING.with(Cell::get) {
+            return;
+        }
+
+        // Deliver the scheduled maskable interrupt immediately after HIGH,
+        // the precise point where an unguarded sender can lose its destination.
+        if TEST_IRQ_ENABLED.with(Cell::get) {
+            TEST_IRQ_PENDING.with(|pending| pending.set(false));
+            send_nested_ipi(nested_base);
+        }
+    }
+
+    pub(super) fn save_and_disable_test_irqs() -> bool {
+        TEST_IRQ_ENABLED.with(|enabled| enabled.replace(false))
+    }
+
+    pub(super) fn restore_test_irqs(was_enabled: bool) {
+        TEST_IRQ_ENABLED.with(|enabled| enabled.set(was_enabled));
+        if was_enabled && TEST_IRQ_PENDING.with(|pending| pending.replace(false)) {
+            send_nested_ipi(NESTED_IPI_BASE.with(Cell::get));
+        }
+    }
+
+    fn send_nested_ipi(base: usize) {
+        mock_xapic_local_apic(VirtAddr::new(base))
+            .send_fixed_ipi(0x2b, 0xf2)
+            .unwrap();
     }
 }

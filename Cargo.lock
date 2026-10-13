@@ -513,6 +513,7 @@ dependencies = [
  "axklib",
  "dma-api",
  "embedded-graphics",
+ "intel-itco-watchdog",
  "libc",
  "mmio-api",
  "rand 0.8.8",
@@ -1492,8 +1493,6 @@ version = "0.7.2"
 dependencies = [
  "ax-memory-addr",
  "axvm-types",
- "log",
- "serde",
  "thiserror 2.0.21",
 ]
 
@@ -1743,7 +1742,7 @@ dependencies = [
  "serde_json",
  "shlex 2.0.1",
  "tokio",
- "toml 1.1.6+spec-1.1.0",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
@@ -4526,6 +4525,13 @@ dependencies = [
  "dma-api",
  "mmio-api",
  "rdif-audio",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "intel-itco-watchdog"
+version = "0.1.0"
+dependencies = [
  "thiserror 2.0.21",
 ]
 

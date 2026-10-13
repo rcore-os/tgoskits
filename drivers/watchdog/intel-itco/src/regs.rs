@@ -1,0 +1,15 @@
+pub const RELOAD: u16 = 0x00;
+pub const STATUS1: u16 = 0x04;
+pub const STATUS2: u16 = 0x06;
+pub const CONTROL1: u16 = 0x08;
+pub const TIMER: u16 = 0x12;
+pub const TIMER_MASK: u16 = 0x03ff;
+pub const HALT: u16 = 1 << 11;
+pub const NMI_NOW: u16 = 1 << 8;
+pub const NO_REBOOT_V2: u32 = 1 << 5;
+pub const NO_REBOOT_V6: u16 = 1;
+pub const SMI_WDT_CLEAR_BIT: u16 = 13;
+pub const BOOT_STATUS: u16 = 1 << 2;
+pub const STATUS1_W1C: u16 = 1 << 3;
+pub const STATUS2_W1C_V2: u16 = (1 << 1) | (1 << 2);
+pub const STATUS2_W1C_V6: u16 = 1 << 1;

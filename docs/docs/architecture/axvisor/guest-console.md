@@ -320,9 +320,9 @@ active admission/stable identity 语义一致。
 | 输出并发 | `output_lock` 覆盖 active admission、record 入队、`retained_tx` 记/清与 retry drain；ordered record queue 保持 guest 写入顺序，固定 64 KiB transport 保持直接 replay 的事务边界，只有 output worker 等待 UART | guest record queue 满时 `try_write()` 返回 0 且不丢弃已排队记录，由 PL011 重试，并由 pop 路径锁外 `notify_vm()` 唤醒；直接 host transport 事务满时整事务回滚并报告摘要；per-guest ring 淘汰最旧字节；这些路径不等待 UART；任务 mutex 竞争可以睡眠 |
 | 网络输出 | 每端点独立 64 KiB 固定队列；vCPU 复制原始字节并通过 `IrqNotify` 唤醒对应网页输出任务 | 无连接时也保留最近 64 KiB，后来接入的会话会回放；慢客户端只影响自身通道并最终触发该端点队列丢弃摘要 |
 
-统一的 `web` 功能提供控制台字节流的 WebSocket 网关，`web-ui` 在其上增加编译期内嵌的管理台静态资源；
-管理台通过 HTTP API 读取 VM registry。`web-ui` 只能在 `web` 之上启用，API、WebSocket
-和管理台共享同一监听器。
+统一的 `web` 功能提供控制台字节流的 WebSocket 网关，`web-ui` 在其上增加由 initramfs builtin
+包提供的管理台静态资源；管理台通过 HTTP API 读取 VM registry。`web-ui` 只能在 `web` 之上启用，
+API、WebSocket 和管理台共享同一监听器。
 
 `network_console` 的通道表是运行期注册表而不是启动快照：VM 创建时为它登记一条客户机通道，
 VM 删除时释放，通道号取最小空位，因此释放过的通道可以复用，客户机也可能出现在任意通道上。
@@ -351,7 +351,7 @@ SMP 路径仍不能让任意 vCPU poll，那会破坏设备 poll 的 single-owne
 | 配置或资源 | 所有者 | 维护含义 |
 | --- | --- | --- |
 | `ax-driver/rk3588-pcie` 与 `ax-driver/realtek-rtl8125` | Axvisor | 探测并驱动 Orange Pi 5 Plus 的 RTL8125 管理网卡 |
-| `web` 与 `AXVM_HTTP_BIND` | Axvisor | 发布 `web-ui` 内嵌页面（若启用）、`/api/consoles` 和各控制台 WebSocket |
+| `web` 与 `AXVM_HTTP_BIND` | Axvisor | 发布 `web-ui` 仪表盘（若启用）、`/api/consoles` 和各控制台 WebSocket |
 | PCIe Host Bridge、PCIe PHY 和网卡依赖 | Axvisor | 客户机不得重新配置、复位或关闭这些实体资源 |
 | 客户机虚拟 UART backend | 对应 VM，Axvisor 路由 | 只承载 Shell 字节，不要求客户机拥有实体网卡 |
 

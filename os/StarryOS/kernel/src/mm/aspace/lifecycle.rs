@@ -22,8 +22,13 @@ use core::{
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::{hal::trap::PageFaultFlags, task::sync::WaitQueue};
 
-use super::{AddrSpace, FaultResult, PageFaultApplyOutcome, TransparentHugePageMode};
+use super::{
+    AddrSpace, FaultResult, PageFaultApplyOutcome, PageFaultPlan, TransparentHugePageMode,
+};
 use crate::sync::{Mutex, RawSpinLock};
+
+mod populate;
+pub(crate) use populate::PopulateAccess;
 
 mod work_queue;
 use work_queue::{MmWorkLink, MmWorkQueue};
@@ -973,6 +978,10 @@ impl MmPin {
                 Err(result) => return result,
             }
         };
+        self.resolve_page_fault_plan(plan, vaddr)
+    }
+
+    fn resolve_page_fault_plan(&self, plan: PageFaultPlan, vaddr: VirtAddr) -> FaultResult {
         // Allocation, file I/O and page-cache reservation happen with no
         // address-space metadata lock held. The apply phase below rechecks the
         // exact VMA epoch and PTE preimage before publishing anything.

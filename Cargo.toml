@@ -84,6 +84,7 @@ members = [
     "drivers/tpu/*",
     "drivers/vpu/*",
     "drivers/usb/test_crates/*",
+    "drivers/watchdog/intel-itco",
     "drivers/usb/usb-device/hid/*",
     "drivers/usb/usb-device/uvc",
     "drivers/usb/usb-host",
@@ -224,6 +225,7 @@ x86-apic-driver = { version = "0.2", path = "drivers/intc/x86-apic-driver" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }
 riscv_vplic = { version = "0.5", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.8", path = "drivers/blk/nvme-driver" }
+intel-itco-watchdog = { version = "0.1", path = "drivers/watchdog/intel-itco" }
 intel-hda = { version = "0.1", path = "drivers/audio/intel-hda" }
 acpica-interpreter = { version = "0.1", path = "drivers/firmware/acpica-interpreter" }
 pcie = { version = "0.7", path = "drivers/pci/pcie" }

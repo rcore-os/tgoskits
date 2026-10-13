@@ -26,7 +26,7 @@ Axvisor 的客户机管理目前只能通过物理串口上的管理 shell 完�
 
 ## 选定架构
 
-控制面按职责切成四层：声明层（`control/capability/`）、传输层（`control/transport/`）、领域层（`control/domain/`）和内嵌资源层（`control/web/`）。前端源码 `web-ui/` 位于内核之外，只在构建期产出被人被打包进二进制的静态资源。
+控制面按职责切成四层：声明层（`control/capability/`）、传输层（`control/transport/`）、领域层（`control/domain/`）和前端托管层（`control/web/`）。前端源码 `web-ui/` 位于内核之外：axbuild 在编排层用 npm 构建产物并把它打进宿主 initramfs 的 builtin 包（`/guest/builtin/web-ui`），内核运行期从活动根读取，不再内嵌进二进制。
 
 ### 能力声明与两个投影
 
@@ -144,9 +144,9 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-vm-pool
 cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-vm-pool-http
 ```
 
-前端产物由独立的 web UI 步骤验证：`cd os/axvisor/web-ui && npm ci && npm test && npm run build`。内核构建不调用包管理器，因此这一步必须显式写进 CI，而不能依赖宿主预装或某个 QEMU 用例的副作用。
+前端质量门禁由独立的 web UI 检查执行（`npm ci`、`npm test`、`npm run build`，需要 Node 24）；仪表盘产物本身由 axbuild 在启用 `web-ui` 特性的构建里自动生成并打进 initramfs，因此 QEMU 用例不再依赖任何手工产物步骤。
 
-CI 采用的用例集合登记在 `.github/ci/checks/axvisor.toml`：aarch64 控制面检查运行 `http-control-plane`、`browser-console` 和 `qemu-ivc-arceos`，并在同一检查中执行 web UI 的 `npm test` 与 `npm run build`；`web-ui`、`qemu-vm-pool`、`qemu-vm-pool-http` 以及三客户机终端用例仍是手工诊断入口，未计入 CI 绿灯。
+CI 采用的用例集合登记在 `.github/ci/checks/axvisor.toml`：aarch64 控制面检查运行 `http-control-plane`、`browser-console` 和 `qemu-ivc-arceos`；web UI 检查运行 `web-ui`（NVMe 磁盘根托管）与 `web-ui-diskless`（initramfs 内存根托管）两条用例；`qemu-vm-pool`、`qemu-vm-pool-http` 以及三客户机终端用例仍是手工诊断入口，未计入 CI 绿灯。
 
 覆盖的缺口需要如实记录：文件传输的存储不足与完整分片上限仍没有在仓库用例资产中断言；当前已覆盖范围不可表示和声明总长超限，以及 400、404、409、200 与 204 这些路径。另外，`axvmconfig` 新增的必填参数改变了命令行行为，未在本文档的验证范围内提供独立用例。
 

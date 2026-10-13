@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+project(madvise-inheritance C)
+add_executable(madvise-inheritance src/main.c)
+target_compile_options(madvise-inheritance PRIVATE -Wall -Wextra -Werror)
+install(TARGETS madvise-inheritance RUNTIME DESTINATION usr/bin/starry-test-suit)
