@@ -13,7 +13,7 @@ trait IrqVecWriteable {
     fn set_irq_bit(&self, intid: u32);
     fn clear_irq_bit(&self, intid: u32);
 }
-trait IrqVecReadable {
+pub(crate) trait IrqVecReadable {
     fn get_irq_bit(&self, intid: u32) -> bool;
 }
 

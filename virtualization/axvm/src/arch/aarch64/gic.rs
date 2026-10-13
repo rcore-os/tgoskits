@@ -359,18 +359,35 @@ fn configure_physical_interrupt(
     expected_trigger: Trigger,
     expected_target: PhysicalSpiTarget,
 ) -> Result<(), GicV3BackendError> {
+    // Bind always starts from a disabled SPI. `GICD_ICFGR` and the route
+    // registers are UNPREDICTABLE while the SPI is enabled, and RK3588 drops
+    // an IROUTER write in that state. Guest enable happens later, after this
+    // route is visible.
     try_with_gic("configure assigned physical interrupt", |gic| {
         match (version, expected_target) {
             (HostGicVersion::V2, PhysicalSpiTarget::V2(target)) => {
                 gic.typed_mut::<arm_gic_driver::v2::Gic>().map(|gic| {
-                    gic.set_irq_enable(intid, false);
+                    if matches!(
+                        crate::arch::physical_route_update(gic.is_irq_enable(intid)),
+                        crate::arch::PhysicalRouteUpdate::DisableWriteThenRestore
+                    ) {
+                        gic.set_irq_enable(intid, false);
+                    }
                     gic.set_cfg(intid, expected_trigger);
                     gic.route_interrupt_to_cpu(intid, target);
                 })
             }
             (HostGicVersion::V3, PhysicalSpiTarget::V3(target)) => {
                 gic.typed_mut::<arm_gic_driver::v3::Gic>().map(|gic| {
-                    gic.set_irq_enable(intid, false);
+                    // `set_target_cpu` disables an enabled SPI before IROUTER.
+                    // Trigger configuration is also UNPREDICTABLE while enabled,
+                    // so mask first and leave the SPI disabled for the guest.
+                    if matches!(
+                        crate::arch::physical_route_update(gic.is_irq_enable(intid)),
+                        crate::arch::PhysicalRouteUpdate::DisableWriteThenRestore
+                    ) {
+                        gic.set_irq_enable(intid, false);
+                    }
                     gic.set_cfg(intid, expected_trigger);
                     gic.set_target_cpu(intid, target);
                 })
@@ -533,12 +550,14 @@ pub(crate) fn register_assigned_spi_routes(
 
 /// Routes assigned SPIs to the host CPU that is about to enter the guest.
 ///
-/// The initial bind uses the control-plane CPU. Fair scheduling can later run
-/// the same vCPU elsewhere. A GICv3 SPI is acknowledged only on its IROUTER
-/// target, and a GICv2 SPI only on the CPU interface selected in
-/// `GICD_ITARGETSR`. Retargeting here keeps USB and other passthrough event
-/// rings draining on the CPU that owns the guest entry. An empty list is the
-/// inactive-runtime case and leaves the distributor unchanged.
+/// The initial bind uses the control-plane CPU. The vCPU task can later enter
+/// on another allowed CPU, and a GICv3 SPI is acknowledged only on its
+/// IROUTER target. Rewriting IROUTER while the SPI stays enabled is ignored
+/// on RK3588, so the previous target keeps the completions and the guest
+/// event ring fills. Each retarget therefore disables the SPI, waits for the
+/// distributor write to retire, writes the route, and restores the enable
+/// bit. An empty list is the inactive-runtime case and leaves the distributor
+/// unchanged.
 pub(crate) fn retarget_assigned_spis_to_current_cpu(
     intids: &[u32],
 ) -> Result<(), GicV3BackendError> {
@@ -555,17 +574,48 @@ pub(crate) fn retarget_assigned_spis_to_current_cpu(
                 raw as u64,
             )
         })?;
-        try_with_gic(
-            "retarget assigned physical interrupt",
-            |gic| match &target {
-                PhysicalSpiTarget::V2(target) => gic
-                    .typed_mut::<arm_gic_driver::v2::Gic>()
-                    .map(|gic| gic.route_interrupt_to_cpu(intid, *target)),
-                PhysicalSpiTarget::V3(target) => gic
-                    .typed_mut::<arm_gic_driver::v3::Gic>()
-                    .map(|gic| gic.set_target_cpu(intid, *target)),
-            },
-        )?
+        try_with_gic("retarget assigned physical interrupt", |gic| {
+            match &target {
+                PhysicalSpiTarget::V2(target) => {
+                    gic.typed_mut::<arm_gic_driver::v2::Gic>().map(|gic| {
+                        // GICv2 has no distributor RWP. Disable first so
+                        // ITARGETSR is not written while the SPI is enabled,
+                        // then restore the enable bit the guest left set.
+                        let was_enabled = gic.is_irq_enable(intid);
+                        if matches!(
+                            crate::arch::physical_route_update(was_enabled),
+                            crate::arch::PhysicalRouteUpdate::DisableWriteThenRestore
+                        ) {
+                            gic.set_irq_enable(intid, false);
+                        }
+                        gic.route_interrupt_to_cpu(intid, *target);
+                        if was_enabled {
+                            gic.set_irq_enable(intid, true);
+                        }
+                    })
+                }
+                PhysicalSpiTarget::V3(target) => {
+                    gic.typed_mut::<arm_gic_driver::v3::Gic>().map(|gic| {
+                        // Mask before the route write. `set_target_cpu` also
+                        // masks an enabled SPI, waits for RWP, and restores
+                        // the enable bit; doing it here keeps the guest's
+                        // previous enable state if that helper is a plain
+                        // IROUTER store.
+                        let was_enabled = gic.is_irq_enable(intid);
+                        if matches!(
+                            crate::arch::physical_route_update(was_enabled),
+                            crate::arch::PhysicalRouteUpdate::DisableWriteThenRestore
+                        ) {
+                            gic.set_irq_enable(intid, false);
+                        }
+                        gic.set_target_cpu(intid, *target);
+                        if was_enabled && !gic.is_irq_enable(intid) {
+                            gic.set_irq_enable(intid, true);
+                        }
+                    })
+                }
+            }
+        })?
         .ok_or_else(|| {
             GicV3BackendError::new(
                 "retarget assigned physical interrupt",

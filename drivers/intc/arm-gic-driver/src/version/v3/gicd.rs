@@ -6,6 +6,7 @@ use crate::{
     IntId, arch,
     define::{SPI_RANGE, Trigger},
     v3::Affinity,
+    version::IrqVecReadable,
 };
 
 /// Access context for CTLR register operations
@@ -396,7 +397,15 @@ impl DistributorReg {
         write_reg32_range(self, GICD_ICFGR, num_regs, 0);
     }
 
-    /// Set interrupt routing (affinity) using IROUTER registers
+    /// Set interrupt routing (affinity) using IROUTER registers.
+    ///
+    /// A write to `GICD_IROUTER<n>` is architecturally UNPREDICTABLE while SPI
+    /// `n` is enabled. RK3588 treats that write as ignored, so a later vCPU
+    /// entry that only rewrites IROUTER leaves the SPI on the CPU that bound
+    /// it. That CPU is not in guest context, the xHCI event ring is not
+    /// drained, and the controller posts Host Controller Event TRBs. Disable
+    /// the SPI, wait for the distributor write to retire, then program the
+    /// route and restore the previous enable bit.
     pub fn set_interrupt_route(&self, intid: u32, aff: Option<Affinity>) {
         // Check if this is a valid SPI in the standard range
         if !SPI_RANGE.contains(&intid) {
@@ -433,7 +442,21 @@ impl DistributorReg {
                 route_value |= 1u64 << 31;
             }
         }
+        let was_enabled = self.ISENABLER.get_irq_bit(intid);
+        if was_enabled {
+            self.irq_disable(intid);
+            // A timed-out RWP still leaves the SPI disabled. Skip the route
+            // write rather than store IROUTER while the previous enable may
+            // still be retiring, and do not re-enable a half-updated SPI.
+            if self.wait_for_rwp().is_err() {
+                return;
+            }
+        }
         self.IROUTER[router_idx].set(route_value);
+        if was_enabled {
+            let _ = self.wait_for_rwp();
+            self.irq_enable(intid);
+        }
     }
 
     /// Get interrupt routing information
