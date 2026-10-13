@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::{mem, ptr::NonNull};
 
+use axloader::target::{X86_64, ranges_overlap};
 use uefi::{
     boot::{self, AllocateType},
     mem::memory_map::MemoryType,
@@ -12,7 +13,6 @@ const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 const ELF_CLASS_64: u8 = 2;
 const ELF_DATA_LSB: u8 = 1;
 const ELF_VERSION_CURRENT: u8 = 1;
-const ELF_MACHINE_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
 const UEFI_PAGE_SIZE: u64 = 4096;
 pub const EFI_ENTRY_SYMBOL: &str = "__x86_64_efi_pe_entry";
@@ -209,7 +209,7 @@ fn validate_header(header: &Elf64Header) -> Result<(), ElfLoadError> {
     if header.ident[6] != ELF_VERSION_CURRENT || header.e_version != 1 {
         return Err(ElfLoadError::UnsupportedVersion);
     }
-    if header.e_machine != ELF_MACHINE_X86_64 {
+    if !X86_64.matches_machine(header.e_machine) {
         return Err(ElfLoadError::UnsupportedMachine);
     }
     Ok(())
@@ -266,6 +266,12 @@ fn load_segments(image: &[u8], header: &Elf64Header) -> Result<Vec<LoadSegment>,
     }
 
     segments.sort_by_key(|segment| segment.paddr);
+    if segments
+        .windows(2)
+        .any(|pair| ranges_overlap(pair[0].paddr, pair[0].memsz, pair[1].paddr))
+    {
+        return Err(ElfLoadError::SegmentRange);
+    }
     Ok(segments)
 }
 

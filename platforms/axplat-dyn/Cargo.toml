@@ -14,6 +14,7 @@ default = ["smp"]
 smp = ["ax-plat/smp"]
 rtc = []
 efi = ["somehal/efi"]
+efi-loader = ["somehal/efi-loader"]
 fp-simd = ["ax-cpu/fp-simd"]
 # Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["somehal/tls", "ax-cpu/tls", "cpu-local/tls"]

@@ -295,8 +295,8 @@ impl State {
     }
 }
 
-#[cfg(any(target_os = "uefi", test))]
-pub(super) fn newest(first: &[u8], second: &[u8]) -> Result<(State, usize), StateError> {
+#[cfg(any(target_os = "uefi", target_arch = "loongarch64", test))]
+pub fn newest(first: &[u8], second: &[u8]) -> Result<(State, usize), StateError> {
     match (State::decode(first), State::decode(second)) {
         (Ok(a), Ok(b)) if b.generation > a.generation => Ok((b, 1)),
         (Ok(a), _) => Ok((a, 0)),

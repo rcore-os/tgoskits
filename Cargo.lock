@@ -1551,11 +1551,14 @@ name = "axloader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ax-net",
+ "ax-std",
  "httpboot-protocol 0.5.0",
  "object 0.38.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "someboot",
  "uefi",
  "uefi-raw",
 ]
