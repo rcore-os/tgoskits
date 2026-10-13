@@ -198,7 +198,6 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 [[check]]
 id = "test-axloader-loongarch64-efi"
 impact_packages = ["axloader"]
-impact_targets = ["arceos:loongarch64"]
 name = "UEFI loongarch64 · AxLoader HTTP boot"
 runner = "ubuntu-axvisor-lvz"
 cache_key = ""
