@@ -2,7 +2,7 @@
 
 use core::{
     marker::PhantomData,
-    sync::atomic::{AtomicU8, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
 use ax_task::thread::{TaskError, current};
@@ -10,6 +10,19 @@ use ax_task::thread::{TaskError, current};
 static OWNER: AtomicU64 = AtomicU64::new(0);
 static FAILURE: AtomicU8 = AtomicU8::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
+static SCHEDULER_IPI_DISABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn disable_scheduler_ipi_for_test() {
+    SCHEDULER_IPI_DISABLED.store(true, Ordering::Release);
+}
+
+pub fn enable_scheduler_ipi_for_test() {
+    SCHEDULER_IPI_DISABLED.store(false, Ordering::Release);
+}
+
+pub(super) fn scheduler_ipi_disabled() -> bool {
+    SCHEDULER_IPI_DISABLED.load(Ordering::Acquire)
+}
 
 /// Recoverable resource stages before a newly created task is published.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

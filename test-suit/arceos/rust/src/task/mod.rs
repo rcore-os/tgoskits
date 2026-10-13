@@ -26,6 +26,8 @@ pub mod priority;
 pub mod rt_policy;
 #[cfg(feature = "task-scheduler-irq-window")]
 pub mod scheduler_irq_window;
+#[cfg(feature = "task-scheduler-local-rearm")]
+pub mod scheduler_local_rearm;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;
 #[cfg(feature = "task-smp-online")]
