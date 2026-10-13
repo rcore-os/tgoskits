@@ -45,7 +45,7 @@ def request(host, port, method, path, body=b"", headers=None, allow_empty=False)
     return status, value, response_body
 
 
-def wait_status(host, port, predicate, timeout=90):
+def wait_status(host, port, predicate, timeout=180):
     deadline = time.monotonic() + timeout
     last_error = "no response"
     while time.monotonic() < deadline:
@@ -72,7 +72,15 @@ def main():
     parser.add_argument("--image", type=Path, required=True)
     args = parser.parse_args()
 
-    status = wait_status(args.host, args.port, lambda value: value.get("arch") == "loongarch64")
+    # The first response includes the cold ArceOS build on self-hosted CI
+    # runners, so allow that build to finish before treating a refused socket
+    # as a failed control-plane boot.
+    status = wait_status(
+        args.host,
+        args.port,
+        lambda value: value.get("arch") == "loongarch64",
+        timeout=300,
+    )
     epoch = status["boot_epoch"]
     headers = {"X-Boot-Epoch": epoch, "Content-Type": "application/json"}
     bad_kernel = b"\x07"
