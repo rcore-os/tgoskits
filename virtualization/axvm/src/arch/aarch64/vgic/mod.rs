@@ -82,14 +82,6 @@ pub(crate) struct Aarch64VgicRuntime {
     /// is released before the deferred kick is published. The wake callback
     /// shares only this raw slot, never the full runtime.
     run: Arc<RawSpinLock<Option<Arc<RunSignals>>>>,
-    /// Assigned host SPI routes published while the runtime is active.
-    ///
-    /// Guest entry clones this snapshot, releases the raw lock, then writes
-    /// IROUTER. The host GIC device lock is sleepable, so it must not be taken
-    /// while this raw lock is held. Deactivation clears the slot before
-    /// teardown and republishes it if teardown is rejected.
-    routes: RawSpinLock<Option<Arc<AssignedSpiRoutes>>>,
-
     inputs: Mutex<BTreeMap<usize, (InterruptTriggerMode, WiredIrqInput)>>,
     wired_sink: Arc<Aarch64VgicWiredSink>,
 }
@@ -112,7 +104,6 @@ impl Aarch64VgicRuntime {
             host_virtual_timer_intid,
             phase: Mutex::new(RuntimePhase::Inactive),
             run: Arc::new(RawSpinLock::new(None)),
-            routes: RawSpinLock::new(None),
             inputs: Mutex::new(BTreeMap::new()),
             wired_sink: Arc::new(Aarch64VgicWiredSink {
                 runtime: runtime.clone(),
@@ -256,22 +247,8 @@ impl Aarch64VgicRuntime {
                 };
             }
         };
-        *self.routes.lock_irqsave() = Some(routes.clone());
         *self.phase.lock_unpoisoned() = RuntimePhase::Active(routes);
         Ok(())
-    }
-
-    /// Host INTIDs assigned to `vcpu` while this runtime owns their routes.
-    ///
-    /// Returns an empty list before activation and after a successful
-    /// deactivation. The snapshot is cloned under the raw lock; the INTID list
-    /// is built after that lock is released.
-    pub(crate) fn assigned_intids(&self, vcpu: usize) -> Vec<u32> {
-        let routes = self.routes.lock_irqsave().clone();
-        routes
-            .as_ref()
-            .map(|routes| routes.intids_for_vcpu(vcpu))
-            .unwrap_or_default()
     }
 
     /// Removes routes only after every physical delivery is quiescent.
@@ -295,12 +272,8 @@ impl Aarch64VgicRuntime {
         };
 
         routes.quiesce();
-        // Clear the entry snapshot before teardown. A rejected teardown
-        // republishes the same route owner so the next guest entry can retarget.
-        *self.routes.lock_irqsave() = None;
         if let Err(error) = self.core.teardown_assigned_spis() {
             routes.resume();
-            *self.routes.lock_irqsave() = Some(routes.clone());
             *self.phase.lock_unpoisoned() = RuntimePhase::Active(routes);
             return Err(AxVmError::interrupt(
                 "tear down assigned physical SPIs",

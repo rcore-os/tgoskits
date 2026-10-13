@@ -96,6 +96,11 @@ const GICD_ICACTIVER: usize = 0x0380;
 const GICD_IPRIORITYR: usize = 0x0400;
 const GICD_ICFGR: usize = 0x0c00;
 
+/// Bits of `GICD_IROUTER<n>` that select the target: Aff0..Aff3 and the
+/// Interrupt_Routing_Mode bit. Reserved bits are excluded so a read-back still
+/// compares equal to the value that was just stored.
+const IROUTER_TARGET_MASK: u64 = 0xff | (0xff << 8) | (0xff << 16) | (1u64 << 31) | (0xffu64 << 32);
+
 #[inline(always)]
 fn reg32_addr(base: *const DistributorReg, offset: usize, index: usize) -> *mut u32 {
     (base as usize + offset + index * core::mem::size_of::<u32>()) as *mut u32
@@ -400,12 +405,13 @@ impl DistributorReg {
     /// Set interrupt routing (affinity) using IROUTER registers.
     ///
     /// A write to `GICD_IROUTER<n>` is architecturally UNPREDICTABLE while SPI
-    /// `n` is enabled. RK3588 treats that write as ignored, so a later vCPU
-    /// entry that only rewrites IROUTER leaves the SPI on the CPU that bound
-    /// it. That CPU is not in guest context, the xHCI event ring is not
-    /// drained, and the controller posts Host Controller Event TRBs. Disable
-    /// the SPI, wait for the distributor write to retire, then program the
-    /// route and restore the previous enable bit.
+    /// `n` is enabled, and RK3588 drops such a write. An enabled SPI is
+    /// therefore masked, the distributor write is retired, the route is stored,
+    /// and the previous enable bit is restored.
+    ///
+    /// A route that already selects the requested target returns before that
+    /// cycle: the distributor state cannot change, and masking a live source
+    /// only adds jitter to its interrupt.
     pub fn set_interrupt_route(&self, intid: u32, aff: Option<Affinity>) {
         // Check if this is a valid SPI in the standard range
         if !SPI_RANGE.contains(&intid) {
@@ -442,13 +448,22 @@ impl DistributorReg {
                 route_value |= 1u64 << 31;
             }
         }
+        // `Some` stores specific affinities with Interrupt_Routing_Mode = 0 and
+        // `None` stores the any-participating-PE mode, so the mode bit cannot
+        // be confused with a specific affinity whose levels are all zero.
+        if self.IROUTER[router_idx].get() & IROUTER_TARGET_MASK == route_value {
+            return;
+        }
         let was_enabled = self.ISENABLER.get_irq_bit(intid);
         if was_enabled {
             self.irq_disable(intid);
             // A timed-out RWP still leaves the SPI disabled. Skip the route
             // write rather than store IROUTER while the previous enable may
-            // still be retiring, and do not re-enable a half-updated SPI.
+            // still be retiring, but restore the enable bit: a source the guest
+            // already allowed to interrupt must not stay masked forever, and
+            // its previous route is still programmed.
             if self.wait_for_rwp().is_err() {
+                self.irq_enable(intid);
                 return;
             }
         }
@@ -768,3 +783,124 @@ register_bitfields! [
         Aff3 OFFSET(32) NUMBITS(8) [],
     ],
 ];
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+
+    /// `DistributorReg` ends at the last `IROUTER` entry plus eight bytes, so
+    /// one aligned window backs every register the struct maps.
+    const DISTRIBUTOR_WINDOW: usize = 0x8000;
+
+    /// Fake distributor window. `IROUTER` is a 64-bit register, so the backing
+    /// store must be 8-byte aligned for the volatile accesses.
+    #[repr(align(8))]
+    struct FakeDistributor([u8; DISTRIBUTOR_WINDOW]);
+
+    impl FakeDistributor {
+        fn new() -> std::boxed::Box<Self> {
+            std::boxed::Box::new(Self([0; DISTRIBUTOR_WINDOW]))
+        }
+
+        fn regs(&self) -> &DistributorReg {
+            // Safety: the window is aligned for `DistributorReg`'s widest
+            // register and large enough for every field it maps.
+            unsafe { &*(self.0.as_ptr().cast::<DistributorReg>()) }
+        }
+    }
+
+    /// The first SPI: `IROUTER[0]`, `ISENABLER[1]` and `ICENABLER[1]`.
+    const SPI: u32 = 32;
+    const SPI_REG: usize = (SPI / 32) as usize;
+    const SPI_BIT: u32 = 1 << (SPI % 32);
+
+    fn affinity(aff0: u8) -> Affinity {
+        Affinity {
+            aff0,
+            ..Default::default()
+        }
+    }
+
+    /// The periodic guest-entry retarget must be free when the distributor
+    /// already selects the CPU that is about to enter the guest.
+    #[test]
+    fn already_routed_spi_is_left_untouched() {
+        let distributor = FakeDistributor::new();
+        let regs = distributor.regs();
+        // Reserved `IROUTER` bits survive a skipped store, so a surviving
+        // non-zero bit proves the register was not rewritten.
+        const RESERVED: u64 = 1 << 40;
+        regs.IROUTER[0].set(affinity(1).aff0 as u64 | RESERVED);
+        // The guest owns the enable bit; the driver must not disturb it.
+        regs.irq_enable(SPI);
+
+        regs.set_interrupt_route(SPI, Some(affinity(1)));
+
+        assert_eq!(
+            regs.ICENABLER[SPI_REG].get(),
+            0,
+            "a route that is already correct must not mask the SPI"
+        );
+        assert_eq!(
+            regs.IROUTER[0].get(),
+            affinity(1).aff0 as u64 | RESERVED,
+            "a route that is already correct must not be rewritten"
+        );
+    }
+
+    /// Any-participating-PE routing shares no affinity bits with a specific
+    /// target, so the mode bit has to take part in the comparison.
+    #[test]
+    fn any_pe_route_is_not_confused_with_a_specific_affinity() {
+        let distributor = FakeDistributor::new();
+        let regs = distributor.regs();
+        regs.IROUTER[0].set(1u64 << 31);
+
+        regs.set_interrupt_route(SPI, Some(affinity(0)));
+
+        assert_eq!(
+            regs.IROUTER[0].get(),
+            0,
+            "specific routing must replace any-participating-PE mode"
+        );
+
+        regs.set_interrupt_route(SPI, None);
+
+        assert_eq!(
+            regs.IROUTER[0].get(),
+            1u64 << 31,
+            "any-participating-PE mode must replace specific routing"
+        );
+    }
+
+    /// A genuinely different route keeps the mask, retire, store and unmask
+    /// sequence, because `IROUTER` is not writable while the SPI is enabled.
+    #[test]
+    fn different_route_masks_and_rewrites_router() {
+        let distributor = FakeDistributor::new();
+        let regs = distributor.regs();
+        regs.IROUTER[0].set(4);
+        // The restore stores the enable bit by itself, so a second bit in the
+        // same register disappears exactly when that store runs. A fake window
+        // cannot model ICENABLER clearing ISENABLER, and that store is what
+        // proves the SPI is not left masked.
+        const NEIGHBOUR_BIT: u32 = 1 << 1;
+        regs.ISENABLER[SPI_REG].set(SPI_BIT | NEIGHBOUR_BIT);
+
+        regs.set_interrupt_route(SPI, Some(affinity(1)));
+
+        assert_eq!(regs.IROUTER[0].get(), 1);
+        assert_eq!(
+            regs.ICENABLER[SPI_REG].get(),
+            SPI_BIT,
+            "an enabled SPI is masked before the IROUTER store"
+        );
+        assert_eq!(
+            regs.ISENABLER[SPI_REG].get(),
+            SPI_BIT,
+            "the SPI is enabled again after the route is stored"
+        );
+    }
+}

@@ -42,7 +42,6 @@ impl AssignedSpiRoutes {
             .map(|assigned| {
                 Arc::new(AssignedSpiBinding {
                     irq: assigned.host_irq(),
-                    target_vcpu: assigned.target_vcpu(),
                     controller: controller.clone(),
                     accepting: AtomicBool::new(false),
                     delivery: RawSpinLock::new(AssignedSpiDelivery::Idle),
@@ -92,19 +91,6 @@ impl AssignedSpiRoutes {
             binding.accepting.store(true, Ordering::Release);
         }
     }
-
-    /// Host INTIDs whose guest delivery is owned by `vcpu`.
-    ///
-    /// The snapshot is taken under the registration lock so a concurrent
-    /// teardown cannot hand back an INTID whose route is already unpublished.
-    pub(crate) fn intids_for_vcpu(&self, vcpu: usize) -> Vec<u32> {
-        let _registrations = self.registrations.lock_irqsave();
-        self.bindings
-            .iter()
-            .filter(|binding| binding.target_vcpu == vcpu)
-            .map(|binding| binding.irq.value() as u32)
-            .collect()
-    }
 }
 
 impl Drop for AssignedSpiRoutes {
@@ -116,7 +102,6 @@ impl Drop for AssignedSpiRoutes {
 
 struct AssignedSpiBinding {
     irq: HostIrqId,
-    target_vcpu: usize,
     controller: GicV3Native,
     accepting: AtomicBool,
     delivery: RawSpinLock<AssignedSpiDelivery>,

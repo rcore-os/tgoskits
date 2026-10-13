@@ -3,7 +3,10 @@ id = 1
 name = "linux"
 guest_type = "passthrough"
 cpu_num = 1
-phys_cpu_ids = [0x00]
+# Keep the Linux USB/vision workload on A76 CPU0 (MPIDR 0x100). The A55
+# affinity used by the Starry smoke test is limited to the board's boot OPP
+# under AxVisor and cannot sustain the Linux guest's interrupt load.
+phys_cpu_ids = [0x100]
 
 [kernel]
 entry_point = 0x2_4008_0000
