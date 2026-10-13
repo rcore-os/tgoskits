@@ -56,27 +56,14 @@ impl GuestCpuFreqBackend for GuestCpuFreqService {
         if opps.len() > 64 {
             return Err("host CPU frequency domain exposes more than 64 safe OPPs");
         }
-        if opps.len() == 1 {
-            cpufreq::seed_guest_domain_performance(domain, 1024).map_err(error_detail)?;
-            return Ok(vec![1024]);
-        }
+        let table = cpufreq::guest_performance_table(&opps);
         let current_index = opps
             .iter()
             .rposition(|opp| opp.frequency_hz <= snapshot.current_opp.frequency_hz)
             .unwrap_or(0);
-        let current = 1 + ((current_index * 1023) / (opps.len() - 1)) as u32;
-        cpufreq::seed_guest_domain_performance(domain, current).map_err(error_detail)?;
-        Ok(opps
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                if index == 0 {
-                    1
-                } else {
-                    1 + ((index * 1023) / (opps.len() - 1)) as u32
-                }
-            })
-            .collect())
+        cpufreq::seed_guest_domain_performance(domain, table[current_index])
+            .map_err(error_detail)?;
+        Ok(table)
     }
 
     fn validate_placement(&self, domain: u32, host_cpus: &[usize]) -> Result<(), &'static str> {

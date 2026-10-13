@@ -44,9 +44,13 @@ sequenceDiagram
     P-->>L: last published/confirmed normalized value
 ```
 
-宿主 worker 读回或刷新限制失败时，客户机读取 `cur_perf` 返回 typed error，不伪造最高性能；
-热控降低上限时归一化值只能下降。v1 的 `domain` 是 host domain ordinal，配置层从
-`phys_cpu_sets` 推导并拒绝跨 A55、big0、big1 的 vCPU 映射。
+客户机性能表由 `ax-runtime::cpufreq::guest_performance_table` 根据完整硬件 OPP 表生成，
+同一模块的 `guest_performance_index` 按该公式把 `SET_PERF` 写回原索引；AxVisor 适配层只调用表入口。
+宿主策略或 `refresh_limits()` 失败时，`guest_hint_performance` 仍返回该域上一次确认的归一化值，
+策略线程只写日志、保持当前频率。Linux `virt-cpufreq` 每个调度 tick 都会读 `CUR_PERF`，
+MMIO 读错误会经设备模型变成 vCPU Fault 并停止整个 VM run，因此瞬时宿主失败不能出现在读路径上。
+热控降低上限并在下一轮成功确认后，归一化值只能下降。v1 的 `domain` 是 host domain ordinal，
+配置层从 `phys_cpu_sets` 推导并拒绝跨 A55、big0、big1 的 vCPU 映射。
 
 ## 2. 配置和客户机资产
 
@@ -100,7 +104,7 @@ QEMU/AArch64 只验证 FDT、MMIO bank、非法值和 Linux driver probe；RK358
 
 - `SET_PERF` 为 `0` 或大于 `1024`、未对齐访问、未知寄存器和越界 bank 必须返回 typed device error。
 - 两个 VM 的 hint 必须按 domain 取最大值；清除旧 generation 后，旧请求不能在 worker 下一轮重新出现。
-- 热控收紧或 host adapter 不可用时，客户机只能读到较低值或得到明确错误，不能继续写越界 OPP。
+- 热控收紧后，客户机读到的 `CUR_PERF` 按完整参考表下降；宿主策略瞬时失败时仍返回上一次确认值，VM 继续运行。越界 `SET_PERF` 和未绑定 run 仍返回 typed device error。
 - 缺少 Linux virtual-cpufreq 前端时只报告 `CPUFREQ_VIRT_UNAVAILABLE_HOST_PERF`，回滚到 stock 6.1.99 + host-performance profile 不需要该设备。
 
 ### 3.2 实体板入口

@@ -17,6 +17,9 @@ use crate::task::sync::{Mutex, WaitQueue};
 const POLL_PERIOD: Duration = Duration::from_millis(100);
 const UP_THRESHOLD_PCT: u64 = 80;
 const DOWN_THRESHOLD_PCT: u64 = 30;
+/// Highest normalized performance published to a guest (`qemu,virtual-cpufreq`).
+pub const GUEST_MAX_PERFORMANCE: u32 = 1024;
+const GUEST_PERFORMANCE_SPAN: usize = (GUEST_MAX_PERFORMANCE - 1) as usize;
 
 type Device = rdrive::Device<rdif_cpufreq::CpuFreq>;
 
@@ -108,7 +111,6 @@ static DOMAIN_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::Atomi
 static REQUESTS: Mutex<VecDeque<Request>> = Mutex::new(VecDeque::new());
 static GUEST_HINTS: Mutex<Vec<GuestHint>> = Mutex::new(Vec::new());
 static GUEST_RUNS: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
-static GUEST_DOMAIN_ERRORS: Mutex<Vec<(usize, FrequencyError)>> = Mutex::new(Vec::new());
 static GUEST_DOMAIN_EFFECTIVE: Mutex<Vec<Option<u32>>> = Mutex::new(Vec::new());
 static WAKE: WaitQueue = WaitQueue::new();
 
@@ -201,13 +203,7 @@ pub fn seed_guest_domain_performance(
     let Some(value) = effective.get_mut(domain) else {
         return Err(FrequencyError::InvalidDomain);
     };
-    *value = Some(performance.clamp(1, 1024));
-    drop(effective);
-    // A newly materialized VM has just obtained a coherent host snapshot. Do
-    // not let a retired run's previous transition error poison this exact
-    // domain forever; later worker failures are recorded again by
-    // `apply_policies` and remain fail-closed for the guest.
-    clear_guest_domain_error(domain);
+    *value = Some(performance.clamp(1, GUEST_MAX_PERFORMANCE));
     Ok(())
 }
 
@@ -253,14 +249,14 @@ pub fn publish_guest_hint(
             && hint.vcpu_id == vcpu_id
             && hint.domain == domain
     }) {
-        existing.performance = performance.clamp(1, 1024);
+        existing.performance = performance.clamp(1, GUEST_MAX_PERFORMANCE);
     } else {
         hints.push(GuestHint {
             vm_id,
             run_generation,
             vcpu_id,
             domain,
-            performance: performance.clamp(1, 1024),
+            performance: performance.clamp(1, GUEST_MAX_PERFORMANCE),
             suspended: false,
         });
     }
@@ -307,8 +303,10 @@ pub fn resume_guest_hints(vm_id: usize, run_generation: u64) {
 
 /// Returns the latest host-confirmed normalized value for one exact guest vCPU.
 ///
-/// A failed hardware read-back or policy transition is returned to the guest
-/// device instead of reusing a stale value.
+/// Host policy or limit-refresh failures keep this last confirmed value. The
+/// Linux `virt-cpufreq` driver reads `CUR_PERF` on every scheduler tick, and a
+/// typed error on that path becomes a vCPU fault; a recoverable host failure
+/// must not stop the guest. `SET_PERF` still rejects an unbound run.
 pub fn guest_hint_performance(
     vm_id: usize,
     run_generation: u64,
@@ -323,13 +321,6 @@ pub fn guest_hint_performance(
         })
     {
         return Err(FrequencyError::NotReady);
-    }
-    if let Some((_, error)) = GUEST_DOMAIN_ERRORS
-        .lock()
-        .iter()
-        .find(|(failed_domain, _)| *failed_domain == domain)
-    {
-        return Err(*error);
     }
     let effective = GUEST_DOMAIN_EFFECTIVE.lock().get(domain).copied().flatten();
     if effective.is_none() {
@@ -547,15 +538,53 @@ fn target_frequency(
     })
 }
 
+/// Builds the strictly increasing guest performance table for one OPP list.
+///
+/// `opps` must already be sorted by frequency and de-duplicated. Index `0` is
+/// always `1` and the last index is always [`GUEST_MAX_PERFORMANCE`].
+/// Intermediate values use `1 + (index * 1023) / (n - 1)` so the same formula
+/// owns both table materialization and later `CUR_PERF` read-back.
+pub fn guest_performance_table(opps: &[OperatingPoint]) -> Vec<u32> {
+    if opps.len() <= 1 {
+        return vec![GUEST_MAX_PERFORMANCE];
+    }
+    (0..opps.len())
+        .map(|index| guest_performance_for_index(index, opps.len()))
+        .collect()
+}
+
+fn guest_performance_for_index(index: usize, count: usize) -> u32 {
+    if count <= 1 {
+        return GUEST_MAX_PERFORMANCE;
+    }
+    1 + ((index * GUEST_PERFORMANCE_SPAN) / (count - 1)) as u32
+}
+
+/// Maps a guest table value back to the same OPP index that produced it.
+///
+/// `opps` must already be sorted by frequency. The inverse takes the largest
+/// index whose table value is `<= performance`, so every value produced by
+/// [`guest_performance_table`] round-trips to its original index.
+fn guest_performance_index(performance: u32, opps: &[OperatingPoint]) -> usize {
+    if opps.is_empty() {
+        return 0;
+    }
+    let performance = performance.clamp(1, GUEST_MAX_PERFORMANCE);
+    (0..opps.len())
+        .rev()
+        .find(|&index| performance >= guest_performance_for_index(index, opps.len()))
+        .unwrap_or(0)
+}
+
 fn normalized_performance(frequency_hz: u64, opps: &[OperatingPoint]) -> u32 {
     if opps.len() <= 1 {
-        return 1024;
+        return GUEST_MAX_PERFORMANCE;
     }
     let index = opps
         .iter()
         .rposition(|opp| opp.frequency_hz <= frequency_hz)
         .unwrap_or(0);
-    1 + ((index * 1023) / (opps.len() - 1)) as u32
+    guest_performance_for_index(index, opps.len())
 }
 
 fn guest_floor_with_reference(
@@ -571,7 +600,7 @@ fn guest_floor_with_reference(
         .iter()
         .filter(|hint| hint.domain == domain && !hint.suspended)
         .map(|hint| {
-            let index = (hint.performance as usize * (reference_opps.len() - 1)) / 1024;
+            let index = guest_performance_index(hint.performance, reference_opps);
             let requested = reference_opps[index].frequency_hz;
             opps.iter()
                 .find(|opp| opp.frequency_hz >= requested)
@@ -591,24 +620,6 @@ fn publish_effective_performance(
     if let Some(value) = GUEST_DOMAIN_EFFECTIVE.lock().get_mut(domain) {
         *value = Some(effective);
     }
-}
-
-fn record_guest_domain_error(domain: usize, error: FrequencyError) {
-    let mut errors = GUEST_DOMAIN_ERRORS.lock();
-    if let Some((_, existing)) = errors
-        .iter_mut()
-        .find(|(failed_domain, _)| *failed_domain == domain)
-    {
-        *existing = error;
-    } else {
-        errors.push((domain, error));
-    }
-}
-
-fn clear_guest_domain_error(domain: usize) {
-    GUEST_DOMAIN_ERRORS
-        .lock()
-        .retain(|(failed_domain, _)| *failed_domain != domain);
 }
 
 fn apply_policies(
@@ -632,7 +643,6 @@ fn apply_policies(
         });
         match result {
             Ok((adjustment, current, reference_opps)) => {
-                clear_guest_domain_error(domain_index);
                 publish_effective_performance(domain_index, current, &reference_opps);
                 if let Some((requested, applied)) = adjustment {
                     if state.last_fixed_adjustment != Some(applied) {
@@ -654,7 +664,6 @@ fn apply_policies(
                 state.last_error = None;
             }
             Err(error) => {
-                record_guest_domain_error(domain_index, error);
                 if state.last_error != Some(error) && error != FrequencyError::NotReady {
                     warn!(
                         "cpufreq: domain {:?} policy update failed: {error}",
@@ -734,9 +743,6 @@ fn run_worker(device: Device, infos: Vec<DomainInfo>, initial: Governor) {
         match refresh {
             Ok(()) => last_refresh_error = None,
             Err(error) => {
-                for domain in 0..states.len() {
-                    record_guest_domain_error(domain, error);
-                }
                 if last_refresh_error != Some(error) {
                     warn!("cpufreq: hardware limit refresh failed: {error}");
                 }
@@ -797,9 +803,9 @@ pub(crate) fn start_from_host_bootargs(bootargs: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Governor, GuestHint, OperatingPoint, busy_percent, fixed_target,
-        guest_floor_with_reference, next_ondemand_frequency, normalized_performance,
-        observe_window, parse_governor,
+        GUEST_MAX_PERFORMANCE, Governor, GuestHint, OperatingPoint, busy_percent, fixed_target,
+        guest_floor_with_reference, guest_performance_index, guest_performance_table,
+        next_ondemand_frequency, normalized_performance, observe_window, parse_governor,
     };
 
     #[test]
@@ -928,6 +934,49 @@ mod tests {
             Some(408_000_000)
         );
         assert_eq!(guest_floor_with_reference(&hints, 0, &opps, &opps), None);
+    }
+
+    #[test]
+    fn guest_table_entries_round_trip_to_the_same_opp_index() {
+        for count in 2..=64 {
+            let opps: Vec<_> = (1..=count as u64)
+                .map(|i| OperatingPoint {
+                    frequency_hz: i * 100_000_000,
+                    voltage_uv: None,
+                })
+                .collect();
+            let table = guest_performance_table(&opps);
+            assert_eq!(table.first().copied(), Some(1));
+            assert_eq!(table.last().copied(), Some(GUEST_MAX_PERFORMANCE));
+            for (index, performance) in table.iter().copied().enumerate() {
+                assert_eq!(
+                    guest_performance_index(performance, &opps),
+                    index,
+                    "count={count} index={index} performance={performance}"
+                );
+                assert_eq!(
+                    guest_floor_with_reference(
+                        &[GuestHint {
+                            vm_id: 1,
+                            run_generation: 1,
+                            vcpu_id: 0,
+                            domain: 0,
+                            performance,
+                            suspended: false,
+                        }],
+                        0,
+                        &opps,
+                        &opps,
+                    ),
+                    Some(opps[index].frequency_hz),
+                    "count={count} index={index} performance={performance}"
+                );
+                assert_eq!(
+                    normalized_performance(opps[index].frequency_hz, &opps),
+                    performance
+                );
+            }
+        }
     }
 
     #[test]
