@@ -1,0 +1,351 @@
+# Orange Pi 5 Plus three-guest functional checks for AxVisor.
+#
+# Discovered through the standard board entry:
+#   cargo xtask axvisor test board --test-group normal \
+#     --test-case functional \
+#     --board orangepi-5-plus-triple-guest-functional
+#
+# Linux (VM 1) and StarryOS (VM 2) run from independent file-backed VirtIO block
+# devices (VM1 `/dev/vda`, VM2 whole-disk `root=/dev/sda`) and share one AxVisor
+# internal L2 switch through virtio-net. Zephyr (VM 3) keeps the host GIC/UART identity
+# of its board image. The deployed Zephyr asset must be the interactive Shell image;
+# the top-level fail marker `PROJECT EXECUTION SUCCESSFUL` discriminates a wrong
+# benchmark/sample deployment, not a Zephyr functional check.
+#
+# Preconditions: both guest images are prepared offline by
+# triple-guest-functional/prepare-guest-apt-repo.sh on the board native Linux (see its
+# header), the case build enables the default AxVisor network path with the
+# RTL8125 driver, and the StarryOS kernel is built
+# from this checkout and packaged into the host initramfs by the board runner, so
+# build it first with triple-guest-functional/starry-guest-build.toml.
+#
+# Guest networking before the ping step:
+#   * interface preparation is split into `IFLIST`/`IFNAME`/`LINKUP`, each its own
+#     bounded step. `LINKUP` reports `LINKUP_READY` when the guest stack already holds
+#     a non-link-local address on an up interface and otherwise runs `ip link set up`
+#     and reports its own exit status, avoiding the StarryOS rtnetlink limitation
+#     (`os/StarryOS/kernel/src/file/netlink.rs`: no RTM_NEWLINK/RTM_SETLINK),
+#   * the StarryOS console interleaves kernel INFO lines, so every network marker is
+#     matched as a substring and printed twice; one intact copy completes the step,
+#   * each guest needs its own non-link-local IPv4 address, from the distinct guest
+#     MACs below plus LAN DHCP, or from TRIPLE_LINUX_IP/TRIPLE_LINUX_GW and
+#     TRIPLE_STARRY_IP/TRIPLE_STARRY_GW on boards without a DHCP path,
+#   * the ping target is TRIPLE_PING_TARGET or the guest's default gateway. The NET
+#     step requires exit status 0, `0% packet loss` and exactly five reply lines whose
+#     literal target is that address; without the physical uplink the address and ping
+#     steps fail closed.
+#
+# Guest APT scenario:
+#   * each guest exports APT_CONFIG=/etc/apt/axvisor-guest.conf and proves with
+#     `apt-cache policy hello` that the candidate comes from the local `file:`
+#     repository before any apt-get call,
+#   * the install and purge apt-get commands stay literally identical for Linux and
+#     StarryOS, run the real apt-get and are each bounded; the purge step distinguishes
+#     a completed purge, an already-installed package and a failing apt-get purge.
+board_type = "OrangePi-5-Plus"
+uboot_cmd = [
+  "setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "Kernel panic - not syncing",
+  "Failed to initialize guest VM",
+  "Failed to start VM",
+  "VM\\[[123]\\] run VCpu\\[0\\] get error",
+  "VFS: Cannot open root device",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  '(?m)^(?:LINUX|STARRY)_(?:MOUNTS|SYNC|CPU|FILE|IFLIST|IFNAME|IP|ROUTE|NET|APTSRC|STATE|INSTALL|HELLO|PURGE|RESTORE)_(?:FAIL|NONE)\b',
+  '(?m)^(?:LINUX|STARRY)_LINKUP_(?:FAIL|[1-9][0-9]*)\b',
+  # Wrong Zephyr firmware discriminator: the benchmark/sample image ends with
+  # this banner and exits instead of keeping the interactive Shell alive, so no
+  # `zephyr:~$` step can ever match. Fail the run immediately rather than
+  # waiting for the top-level timeout. The `\s+` separators also tolerate output
+  # that was wrapped or split by carriage returns.
+  'PROJECT\s+EXECUTION\s+SUCCESSFUL',
+]
+timeout = 1800
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm list"
+success_regex = ['(?ms)^1[ \t]+linux[ \t]+running[^\r\n]*\r?\n2[ \t]+starry[ \t]+running[^\r\n]*\r?\n3[ \t]+zephyr-triple-guest-functional[ \t]+running[^\r\n]*\r?\n']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "vm console 2"
+success_regex = ['Attached VM\[2\] console']
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:~# "
+shell_cmd = "pwd"
+success_regex = ['(?m)^/root\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "p=STARRY; grep -q '^processor' /proc/cpuinfo && echo ${p}_CPU_PASS || echo ${p}_CPU_FAIL"
+success_regex = ['(?m)^STARRY_CPU_PASS\s*$']
+fail_regex = ['(?m)^STARRY_CPU_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "p=STARRY; echo AXVISOR_ROOTFS_RW > /root/.axv-rootfs-file && grep -q AXVISOR_ROOTFS_RW /root/.axv-rootfs-file && sync && rm -f /root/.axv-rootfs-file && echo ${p}_FILE_PASS || echo ${p}_FILE_FAIL"
+success_regex = ['(?m)^STARRY_FILE_PASS\s*$']
+fail_regex = ['(?m)^STARRY_FILE_FAIL\s*$']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "ip -o link show > /root/.axv-if 2>&1; l1=$?; ip -4 -o addr show >> /root/.axv-if 2>&1; l2=$?; cat /root/.axv-if; [ $l1 -eq 0 ] && [ $l2 -eq 0 ] && echo ${p}_IFLIST_PASS ${p}_IFLIST_PASS || echo ${p}_IFLIST_FAIL ${p}_IFLIST_FAIL"
+success_regex = ['STARRY_IFLIST_PASS']
+fail_regex = ['STARRY_IFLIST_FAIL']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "n=$(awk -F'[ :]+' '$2!=\"lo\"{print $2; exit}' /root/.axv-if); [ -n \"$n\" ] && { echo ${p}_IFNAME_PASS ${p}_IFNAME_PASS; echo $n; } || echo ${p}_IFNAME_FAIL ${p}_IFNAME_FAIL"
+success_regex = ['STARRY_IFNAME_PASS']
+fail_regex = ['STARRY_IFNAME_FAIL']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "a=$(ip -4 -o addr show dev $n | awk '$4!~/^169\\.254/{print $4; exit}'); if [ -n \"$a\" ] && ip -o link show dev $n | grep -q '<[^>]*UP'; then echo ${p}_LINKUP_READY ${p}_LINKUP_READY $a; else ip link set $n up; l=$?; echo ${p}_LINKUP_$l ${p}_LINKUP_$l; fi"
+success_regex = ['STARRY_LINKUP_(?:0|READY)']
+fail_regex = ['STARRY_LINKUP_[1-9][0-9]*']
+timeout = 20
+
+[[shell_check_steps]]
+shell_cmd = "s='${env:TRIPLE_STARRY_IP}'; g='${env:TRIPLE_STARRY_GW}'; [ -z \"$s\" ] || ip addr add $s dev $n; [ -z \"$g\" ] || ip route add default via $g dev $n; echo ${p}_STATIC_DONE ${p}_STATIC_DONE"
+success_regex = ['STARRY_STATIC_DONE']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "c=; for x in dhclient dhcpcd udhcpc; do command -v $x >/dev/null 2>&1 && { c=$x; break; }; done; [ -n \"$c\" ] && echo ${p}_DHCP_$c ${p}_DHCP_$c || echo ${p}_DHCP_NONE ${p}_DHCP_NONE"
+success_regex = ['STARRY_DHCP_(?:dhclient|dhcpcd|udhcpc|NONE)']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "a=$(ip -4 -o addr show dev $n | awk '$4!~/^169\\.254/{print $4; exit}'); [ -n \"$a\" ] || [ -z \"$c\" ] || case $c in dhclient) $c -1 $n;; dhcpcd) $c $n;; *) $c -n -t 10 -i $n;; esac; echo ${p}_DHCP_DONE ${p}_DHCP_DONE"
+success_regex = ['STARRY_DHCP_DONE']
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "a=$(ip -4 -o addr show dev $n | awk '$4!~/^169\\.254/{print $4; exit}'); [ -n \"$a\" ] && echo ${p}_IP_PASS ${p}_IP_PASS $a || echo ${p}_IP_FAIL ${p}_IP_FAIL"
+success_regex = ['STARRY_IP_PASS']
+fail_regex = ['STARRY_IP_FAIL']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "t='${env:TRIPLE_PING_TARGET}'; [ -n \"$t\" ] || t=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}'); [ -n \"$t\" ] && echo ${p}_ROUTE_PASS ${p}_ROUTE_PASS $t || echo ${p}_ROUTE_FAIL ${p}_ROUTE_FAIL"
+success_regex = ['STARRY_ROUTE_PASS']
+fail_regex = ['STARRY_ROUTE_FAIL']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "o=$(ping -4 -c 5 -W 2 \"$t\" 2>&1); s=$?; n=$(echo \"$o\" | grep -Fc \"bytes from $t:\"); [ $s -eq 0 ] && [ \"$n\" = 5 ] && echo \"$o\" | grep -q ' 0% packet loss' && echo ${p}_NET_PASS ${p}_NET_PASS || { echo \"$o\"; echo ${p}_NET_FAIL ${p}_NET_FAIL; }"
+success_regex = ['STARRY_NET_PASS']
+fail_regex = ['STARRY_NET_FAIL']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "export APT_CONFIG=/etc/apt/axvisor-guest.conf; apt-cache policy hello | grep -q /usr/local/share/axvisor-guest-apt/repo && echo ${p}_APTSRC_PASS ${p}_APTSRC_PASS || echo ${p}_APTSRC_FAIL ${p}_APTSRC_FAIL"
+success_regex = ['STARRY_APTSRC_PASS']
+fail_regex = ['STARRY_APTSRC_FAIL']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "o=$(dpkg-query -W -f='${Status} ${Version}' hello 2>/dev/null); echo ${p}_STATE_CAPTURED"
+success_regex = ['(?m)^STARRY_STATE_CAPTURED\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "case \"$o\" in 'install ok installed '*) r=keep; pk=\"hello=${o##* }\";; '') r=purge; pk=hello;; *) r=bad;; esac; [ \"$r\" = bad ] && echo ${p}_STATE_FAIL || echo ${p}_STATE_PASS"
+success_regex = ['(?m)^STARRY_STATE_PASS\s*$']
+fail_regex = ['(?m)^STARRY_STATE_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "[ \"$r\" = keep ] && a=--reinstall || a=; apt-get $a install -y --no-install-recommends \"$pk\" && echo ${p}_INSTALL_PASS || echo ${p}_INSTALL_FAIL"
+success_regex = ['(?m)^STARRY_INSTALL_PASS\s*$']
+fail_regex = ['(?m)^STARRY_INSTALL_FAIL\s*$']
+timeout = 300
+
+[[shell_check_steps]]
+shell_cmd = "hello >/root/.axv-hello-out 2>&1; s=$?; grep -q 'Hello, world!' /root/.axv-hello-out && [ $s -eq 0 ] && echo ${p}_HELLO_PASS || echo ${p}_HELLO_FAIL"
+success_regex = ['(?m)^STARRY_HELLO_PASS\s*$']
+fail_regex = ['(?m)^STARRY_HELLO_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "[ \"$r\" = purge ] && { apt-get purge -y hello && echo ${p}_PURGE_DONE ${p}_PURGE_DONE || echo ${p}_PURGE_FAIL ${p}_PURGE_FAIL; } || echo ${p}_PURGE_SKIP ${p}_PURGE_SKIP"
+success_regex = ['STARRY_PURGE_(?:DONE|SKIP)']
+fail_regex = ['STARRY_PURGE_FAIL']
+timeout = 300
+
+[[shell_check_steps]]
+shell_cmd = "if [ \"$r\" = purge ]; then ! dpkg-query -W hello >/dev/null 2>&1; else [ \"$(dpkg-query -W -f='${Status} ${Version}' hello 2>/dev/null)\" = \"$o\" ]; fi && echo ${p}_RESTORE_PASS || echo ${p}_RESTORE_FAIL"
+success_regex = ['(?m)^STARRY_RESTORE_PASS\s*$']
+fail_regex = ['(?m)^STARRY_RESTORE_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "p=STARRY; sync; s=$?; [ $s -eq 0 ] && echo ${p}_SYNC_PASS ${p}_SYNC_PASS || echo ${p}_SYNC_FAIL ${p}_SYNC_FAIL"
+success_regex = ['STARRY_SYNC_PASS']
+fail_regex = ['STARRY_SYNC_FAIL']
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "\u0018hvm console 1"
+success_regex = ['Attached VM\[1\] console']
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = "pwd"
+success_regex = ['(?m)^/\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "p=LINUX; [ -r /proc/cpuinfo ] || mount -t proc proc /proc; grep -qs ' /sys sysfs ' /proc/mounts || mount -t sysfs sysfs /sys; [ -r /proc/cpuinfo ] && grep -qs ' /sys sysfs ' /proc/mounts && echo ${p}_MOUNTS_PASS || echo ${p}_MOUNTS_FAIL"
+success_regex = ['(?m)^LINUX_MOUNTS_PASS\s*$']
+fail_regex = ['(?m)^LINUX_MOUNTS_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "p=LINUX; grep -q '^processor' /proc/cpuinfo && echo ${p}_CPU_PASS || echo ${p}_CPU_FAIL"
+success_regex = ['(?m)^LINUX_CPU_PASS\s*$']
+fail_regex = ['(?m)^LINUX_CPU_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "p=LINUX; echo AXVISOR_ROOTFS_RW > /root/.axv-rootfs-file && grep -q AXVISOR_ROOTFS_RW /root/.axv-rootfs-file && sync && rm -f /root/.axv-rootfs-file && echo ${p}_FILE_PASS || echo ${p}_FILE_FAIL"
+success_regex = ['(?m)^LINUX_FILE_PASS\s*$']
+fail_regex = ['(?m)^LINUX_FILE_FAIL\s*$']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "ip -o link show > /root/.axv-if 2>&1; l1=$?; ip -4 -o addr show >> /root/.axv-if 2>&1; l2=$?; cat /root/.axv-if; [ $l1 -eq 0 ] && [ $l2 -eq 0 ] && echo ${p}_IFLIST_PASS ${p}_IFLIST_PASS || echo ${p}_IFLIST_FAIL ${p}_IFLIST_FAIL"
+success_regex = ['LINUX_IFLIST_PASS']
+fail_regex = ['LINUX_IFLIST_FAIL']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "n=$(awk -F'[ :]+' '$2!=\"lo\"{print $2; exit}' /root/.axv-if); [ -n \"$n\" ] && { echo ${p}_IFNAME_PASS ${p}_IFNAME_PASS; echo $n; } || echo ${p}_IFNAME_FAIL ${p}_IFNAME_FAIL"
+success_regex = ['LINUX_IFNAME_PASS']
+fail_regex = ['LINUX_IFNAME_FAIL']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "a=$(ip -4 -o addr show dev $n | awk '$4!~/^169\\.254/{print $4; exit}'); if [ -n \"$a\" ] && ip -o link show dev $n | grep -q '<[^>]*UP'; then echo ${p}_LINKUP_READY ${p}_LINKUP_READY $a; else ip link set $n up; l=$?; echo ${p}_LINKUP_$l ${p}_LINKUP_$l; fi"
+success_regex = ['LINUX_LINKUP_(?:0|READY)']
+fail_regex = ['LINUX_LINKUP_[1-9][0-9]*']
+timeout = 20
+
+[[shell_check_steps]]
+shell_cmd = "s='${env:TRIPLE_LINUX_IP}'; g='${env:TRIPLE_LINUX_GW}'; [ -z \"$s\" ] || ip addr add $s dev $n; [ -z \"$g\" ] || ip route add default via $g dev $n; echo ${p}_STATIC_DONE ${p}_STATIC_DONE"
+success_regex = ['LINUX_STATIC_DONE']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "c=; for x in dhclient dhcpcd udhcpc; do command -v $x >/dev/null 2>&1 && { c=$x; break; }; done; [ -n \"$c\" ] && echo ${p}_DHCP_$c ${p}_DHCP_$c || echo ${p}_DHCP_NONE ${p}_DHCP_NONE"
+success_regex = ['LINUX_DHCP_(?:dhclient|dhcpcd|udhcpc|NONE)']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "a=$(ip -4 -o addr show dev $n | awk '$4!~/^169\\.254/{print $4; exit}'); [ -n \"$a\" ] || [ -z \"$c\" ] || case $c in dhclient) $c -1 $n;; dhcpcd) $c $n;; *) $c -n -t 10 -i $n;; esac; echo ${p}_DHCP_DONE ${p}_DHCP_DONE"
+success_regex = ['LINUX_DHCP_DONE']
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "a=$(ip -4 -o addr show dev $n | awk '$4!~/^169\\.254/{print $4; exit}'); [ -n \"$a\" ] && echo ${p}_IP_PASS ${p}_IP_PASS $a || echo ${p}_IP_FAIL ${p}_IP_FAIL"
+success_regex = ['LINUX_IP_PASS']
+fail_regex = ['LINUX_IP_FAIL']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "t='${env:TRIPLE_PING_TARGET}'; [ -n \"$t\" ] || t=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}'); [ -n \"$t\" ] && echo ${p}_ROUTE_PASS ${p}_ROUTE_PASS $t || echo ${p}_ROUTE_FAIL ${p}_ROUTE_FAIL"
+success_regex = ['LINUX_ROUTE_PASS']
+fail_regex = ['LINUX_ROUTE_FAIL']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "o=$(ping -4 -c 5 -W 2 \"$t\" 2>&1); s=$?; n=$(echo \"$o\" | grep -Fc \"bytes from $t:\"); [ $s -eq 0 ] && [ \"$n\" = 5 ] && echo \"$o\" | grep -q ' 0% packet loss' && echo ${p}_NET_PASS ${p}_NET_PASS || { echo \"$o\"; echo ${p}_NET_FAIL ${p}_NET_FAIL; }"
+success_regex = ['LINUX_NET_PASS']
+fail_regex = ['LINUX_NET_FAIL']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "export APT_CONFIG=/etc/apt/axvisor-guest.conf; apt-cache policy hello | grep -q /usr/local/share/axvisor-guest-apt/repo && echo ${p}_APTSRC_PASS ${p}_APTSRC_PASS || echo ${p}_APTSRC_FAIL ${p}_APTSRC_FAIL"
+success_regex = ['LINUX_APTSRC_PASS']
+fail_regex = ['LINUX_APTSRC_FAIL']
+timeout = 60
+
+[[shell_check_steps]]
+shell_cmd = "o=$(dpkg-query -W -f='${Status} ${Version}' hello 2>/dev/null); echo ${p}_STATE_CAPTURED"
+success_regex = ['(?m)^LINUX_STATE_CAPTURED\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "case \"$o\" in 'install ok installed '*) r=keep; pk=\"hello=${o##* }\";; '') r=purge; pk=hello;; *) r=bad;; esac; [ \"$r\" = bad ] && echo ${p}_STATE_FAIL || echo ${p}_STATE_PASS"
+success_regex = ['(?m)^LINUX_STATE_PASS\s*$']
+fail_regex = ['(?m)^LINUX_STATE_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "[ \"$r\" = keep ] && a=--reinstall || a=; apt-get $a install -y --no-install-recommends \"$pk\" && echo ${p}_INSTALL_PASS || echo ${p}_INSTALL_FAIL"
+success_regex = ['(?m)^LINUX_INSTALL_PASS\s*$']
+fail_regex = ['(?m)^LINUX_INSTALL_FAIL\s*$']
+timeout = 300
+
+[[shell_check_steps]]
+shell_cmd = "hello >/root/.axv-hello-out 2>&1; s=$?; grep -q 'Hello, world!' /root/.axv-hello-out && [ $s -eq 0 ] && echo ${p}_HELLO_PASS || echo ${p}_HELLO_FAIL"
+success_regex = ['(?m)^LINUX_HELLO_PASS\s*$']
+fail_regex = ['(?m)^LINUX_HELLO_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "[ \"$r\" = purge ] && { apt-get purge -y hello && echo ${p}_PURGE_DONE ${p}_PURGE_DONE || echo ${p}_PURGE_FAIL ${p}_PURGE_FAIL; } || echo ${p}_PURGE_SKIP ${p}_PURGE_SKIP"
+success_regex = ['LINUX_PURGE_(?:DONE|SKIP)']
+fail_regex = ['LINUX_PURGE_FAIL']
+timeout = 300
+
+[[shell_check_steps]]
+shell_cmd = "if [ \"$r\" = purge ]; then ! dpkg-query -W hello >/dev/null 2>&1; else [ \"$(dpkg-query -W -f='${Status} ${Version}' hello 2>/dev/null)\" = \"$o\" ]; fi && echo ${p}_RESTORE_PASS || echo ${p}_RESTORE_FAIL"
+success_regex = ['(?m)^LINUX_RESTORE_PASS\s*$']
+fail_regex = ['(?m)^LINUX_RESTORE_FAIL\s*$']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "p=LINUX; sync; s=$?; [ $s -eq 0 ] && echo ${p}_SYNC_PASS ${p}_SYNC_PASS || echo ${p}_SYNC_FAIL ${p}_SYNC_FAIL"
+success_regex = ['LINUX_SYNC_PASS']
+fail_regex = ['LINUX_SYNC_FAIL']
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "\u0018hvm console 3"
+success_regex = ['Attached VM\[3\] console']
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "kernel version"
+success_regex = ['(?m)^Zephyr version [0-9]+\.[0-9]+\.[0-9]+[^\r\n]*\r?$']
+fail_regex = ['(?i)unknown command|command not found|fatal']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "kernel thread list"
+success_regex = ['(?s)Threads:\r?\n[ \t]*\*?0x[0-9a-fA-F]+[ \t]+shell_uart\b.*?\r?\n[ \t]*\*?0x[0-9a-fA-F]+[ \t]+idle\b']
+fail_regex = ['(?i)unknown command|command not found|fatal']
+timeout = 30
+
+[[shell_check_steps]]
+shell_cmd = "device list"
+success_regex = ['(?ms)^devices:\r?\n.*?^- interrupt-controller@fe600000 \(READY\).*?^- serial@feb50000 \(READY\)']
+fail_regex = ['(?i)unknown command|command not found|fatal']
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "\u0018hvm list"
+success_regex = ['(?ms)^1[ \t]+linux[ \t]+running[^\r\n]*\r?\n2[ \t]+starry[ \t]+running[^\r\n]*\r?\n3[ \t]+zephyr-triple-guest-functional[ \t]+running[^\r\n]*\r?\n']
+timeout = 30

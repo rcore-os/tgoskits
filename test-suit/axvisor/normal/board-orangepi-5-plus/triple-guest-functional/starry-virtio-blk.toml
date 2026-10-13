@@ -1,0 +1,63 @@
+# StarryOS guest, VM id 2, of the Orange Pi 5 Plus three-guest functional test.
+#
+# Its kernel is built from this checkout with the VirtIO block/network drivers, and
+# `cargo xtask axvisor test board` packages the built `starryos.bin` into the host
+# initramfs as a builtin resource (`/guest/builtin/images`) and rewrites this config
+# to that installed path; it is never taken from a tgosimages release. Build the
+# kernel first with `starry-guest-build.toml`.
+#
+# CPU0 stays with the host for the eMMC IRQ, the single hardware-depth-1 block hctx
+# worker and hypervisor housekeeping; the three guests of this case are spread over
+# CPU1, CPU2 and CPU3 so that concurrent file-backed guests cannot block the host
+# eMMC I/O path.
+#
+# Why `root=/dev/sda`: StarryOS parses `root=` with `RootSpec`
+# (`fs/ax-fs-ng/src/root.rs`), which only accepts `PARTUUID=`, `PARTLABEL=`,
+# `/dev/sd*`, `/dev/nvme*n1` and `/dev/mmcblk*`; `init_root` panics on any other
+# value, so the Linux virtio name `/dev/vd*` cannot be used here. The Jammy image is
+# a whole raw ext4 file system with no partition table (no PARTUUID/PARTLABEL to
+# select), and this VM has exactly one virtio-blk disk, which is its disk 0.
+# `/dev/sda` is the explicit supported spelling of that unique raw root disk
+# (`parse_sd_like` resolves it to disk 0 with no partition); keep exactly one disk in
+# this VM so the selection stays unambiguous.
+#
+# Why the explicit shell: `starryos/legacy-board-init` has been removed, and the
+# default Alpine-style `/sbin/init` finds none of the OpenRC assets on a Jammy root
+# file system. The cmdline reuses the explicit interactive shell of the other Orange
+# Pi 5 Plus board guests: `init=/bin/sh` plus HOME/USER/HOSTNAME and a PS1 of
+# `$USER@$HOSTNAME:~#` on the `--` shell command line. That makes the real guest
+# prompt the `root@starry:~# ` the board checks wait for, and it keeps the root file
+# system writable for the file and APT steps. The value stays single-quoted so the
+# host does not expand `$USER`/`$HOSTNAME` before AxVisor writes it into the guest
+# `/chosen/bootargs`.
+[base]
+id = 2
+name = "starry"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x300]
+
+[kernel]
+entry_point = 0x4008_0000
+kernel_load_addr = 0x4008_0000
+kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+cmdline = 'root=/dev/sda rw init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+dtb_load_addr = 0x4000_0000
+memory_regions = [
+  [0x4000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "starry-rootfs"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-orangepi-jammy-1.img"
+filesystem = "ext4"
+
+[[devices.virtual]]
+id = "starry-net"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x54, 0x01, 0x02]

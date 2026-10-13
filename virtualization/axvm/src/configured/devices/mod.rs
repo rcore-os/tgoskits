@@ -7,6 +7,15 @@ pub(crate) mod virtio_pci;
 #[cfg(feature = "vpci-test-device")]
 mod vpci_test;
 
+/// Placement granularity of one AxVisor-emulated MMIO window.
+///
+/// The guest layout owns an emulated device by the guest page containing its
+/// window (`VmRegionKind::EmulatedDevice`), so two emulated devices must never
+/// share a page. A model declares its real register-block `size` but requests
+/// this page alignment, so the shared MMIO allocator hands the next device a
+/// different page.
+pub(super) const EMULATED_MMIO_PLACEMENT_ALIGNMENT: u64 = ax_memory_addr::PAGE_SIZE_4K as u64;
+
 #[cfg(test)]
 pub(super) use ivc::IVC_CHANNEL_SHARED_RANGE_SIZE;
 

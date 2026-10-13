@@ -1,0 +1,20 @@
+# Build the StarryOS guest kernel before building AxVisor.
+#
+# `starry-virtio-blk.toml` references the output
+# `target/aarch64-unknown-none-softfloat/release/starryos.bin`, which
+# `cargo xtask axvisor test board` packages into the host initramfs as a builtin
+# resource (`/guest/builtin/images`). Only the VirtIO block and network drivers are
+# needed: the guest boots the Jammy board root file system from a file-backed
+# VirtIO disk, and `starry-virtio-blk.toml` passes the board guest cmdline
+# `init=/bin/sh` to set up its interactive shell.
+#
+#   cargo xtask starry build \
+#     --config test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/starry-guest-build.toml \
+#     --smp 1
+target = "aarch64-unknown-none-softfloat"
+features = [
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+]
+log = "Warn"
+max_cpu_num = 1

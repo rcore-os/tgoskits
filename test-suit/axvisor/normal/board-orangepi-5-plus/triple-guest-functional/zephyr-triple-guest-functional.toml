@@ -1,0 +1,42 @@
+# Zephyr guest, VM id 3, of the Orange Pi 5 Plus three-guest functional test.
+#
+# It is a fully virtualized guest running the `zephyr-triple-guest-functional` shell
+# image published by tgosimages; tgoskits does not build or vendor this image. Build
+# the image with tgosimages (from the tgosimages repository root) and deploy its
+# binary and DTB to the board paths below:
+#   ./scripts/apps/zephyr-triple-guest-functional.sh
+#   IMAGES/orangepi/zephyr/zephyr-triple-guest-functional
+#   IMAGES/orangepi/zephyr/zephyr-triple-guest-functional.elf
+#   IMAGES/orangepi/zephyr/zephyr-triple-guest-functional.dtb
+#   /guest/zephyr/zephyr-triple-guest-functional
+#   /guest/zephyr/zephyr-triple-guest-functional.dtb
+#
+# Always deploy the `.dtb` produced by the same build as the binary; the board checks
+# assert the guest devicetree identity `serial@feb50000` and
+# `interrupt-controller@fe600000`, which only the matching DTB carries, and the
+# `entry_point` below is the one the tgosimages `orangepi_5_plus_rk3588` target emits.
+#
+# The synthetic vGIC automatically adopts the host firmware GIC address that the
+# board-compiled image expects (`interrupt-controller@fe600000`); the physical GIC
+# stays with AxVisor and is never mapped into the guest. AxVisor supplies the virtual
+# serial and interrupt controller itself, so the passthrough and disabled lists are
+# both empty.
+[base]
+id = 3
+name = "zephyr-triple-guest-functional"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x200]
+
+[kernel]
+entry_point = 0x4000_100c
+kernel_load_addr = 0x4000_0000
+kernel_path = "/guest/zephyr/zephyr-triple-guest-functional"
+dtb_path = "/guest/zephyr/zephyr-triple-guest-functional.dtb"
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
