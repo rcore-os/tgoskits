@@ -6,7 +6,7 @@
 
 mod policy;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use arm_vgic::{GicV3Native, GicV3VcpuBinding, IntId};
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -246,7 +246,20 @@ impl ArchOps for Aarch64Arch {
             .is_none_or(|binding| binding.entry_cpu_is_ready())
     }
 
-    fn before_guest(vcpu: &mut Self::VCpu, _vcpu_id: usize, _entry: &Self::Entry) -> AxVmResult {
+    fn before_guest(vcpu: &mut Self::VCpu, vcpu_id: usize, _entry: &Self::Entry) -> AxVmResult {
+        // The backend is pinned to the CPU that will enter the guest. Move
+        // this vCPU's assigned SPIs onto that CPU before the entry IRQ mask,
+        // so the host distributor acknowledges them where the guest can drain
+        // them. Guest-visible redistributor affinity stays unchanged.
+        let intids = vcpu
+            .vgic_runtime
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .map(|runtime| runtime.assigned_intids(vcpu_id))
+            .unwrap_or_default();
+        gic::retarget_assigned_spis_to_current_cpu(&intids).map_err(|error| {
+            crate::AxVmError::interrupt("retarget assigned physical SPIs", error)
+        })?;
         // Only canonical timer levels are published while the backend is
         // loaded; host cancellation and remote completion ran before CPU pin.
         VcpuLocalInterrupts::prepare_entry(vcpu)
@@ -512,6 +525,12 @@ pub(crate) struct AxvmArmVcpu {
     inner: ArmVcpu,
     vgic: Option<GicV3Native>,
     vgic_binding: Option<GicV3VcpuBinding>,
+    /// Runtime that publishes assigned SPI routes after activation.
+    ///
+    /// A weak reference keeps the vCPU from retaining the sleepable runtime
+    /// after the VM drops it. Guest entry upgrades it only to read the route
+    /// snapshot, then releases it before writing the host distributor.
+    vgic_runtime: Option<Weak<vgic::Aarch64VgicRuntime>>,
     timer_binding: Option<Arc<vtimer::Aarch64TimerBinding>>,
 }
 
@@ -519,6 +538,7 @@ impl AxvmArmVcpu {
     pub(crate) fn attach_vgic(
         &mut self,
         vgic: GicV3Native,
+        runtime: &Arc<vgic::Aarch64VgicRuntime>,
         irq_binding: vgic::Aarch64VcpuIrqBinding,
         timer_config: crate::arch::aarch64::policy::ArmTimerVmConfig,
     ) -> AxVmResult {
@@ -546,6 +566,7 @@ impl AxvmArmVcpu {
         })?;
         self.vgic = Some(vgic);
         self.vgic_binding = Some(binding);
+        self.vgic_runtime = Some(Arc::downgrade(runtime));
         self.timer_binding = Some(timer_binding);
         Ok(())
     }
@@ -683,6 +704,7 @@ impl VmArchVcpuOps for AxvmArmVcpu {
             inner,
             vgic: None,
             vgic_binding: None,
+            vgic_runtime: None,
             timer_binding: None,
         })
     }

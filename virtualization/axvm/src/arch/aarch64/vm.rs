@@ -62,7 +62,12 @@ impl Aarch64Arch {
                         crate::AxVmError::interrupt("attach vCPU to virtual GIC", error)
                     })?;
                 vcpu.with_backend(|backend| {
-                    backend.attach_vgic(vgic_runtime.native().clone(), binding, timer_config)
+                    backend.attach_vgic(
+                        vgic_runtime.native().clone(),
+                        &vgic_runtime,
+                        binding,
+                        timer_config,
+                    )
                 })?;
             }
 
