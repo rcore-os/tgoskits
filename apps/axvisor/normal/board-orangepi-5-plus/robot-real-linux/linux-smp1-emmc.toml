@@ -3,9 +3,8 @@ id = 1
 name = "linux"
 guest_type = "passthrough"
 cpu_num = 1
-# Keep the Linux USB/vision workload on A76 CPU0 (MPIDR 0x400). The A55
-# affinity used by the Starry smoke test is limited to the board's boot OPP
-# under AxVisor and cannot sustain the Linux guest's interrupt load.
+# Bind the Linux USB/vision workload to the RK3588 A76 core at /cpus/cpu@400
+# (MPIDR 0x400), separate from Starry's /cpus/cpu@0 affinity.
 phys_cpu_ids = [0x400]
 
 [kernel]
