@@ -321,40 +321,53 @@ fail_regex = ['LINUX_SYNC_FAIL']
 timeout = 120
 
 [[shell_check_steps]]
-shell_cmd = "\u0018hvm console 3"
-success_regex = ['Attached VM\[3\] console']
-timeout = 30
-
-[[shell_check_steps]]
-# The guest console drops bytes while the guest is still printing its boot log,
-# and the harness matches this prefix as an exact substring: waiting for the
-# prefix has neither a retry nor a timeout of its own, so a partially received
-# prompt used to stall the step until the case timeout. `:$` is the tail of the
-# guest prompt (`zephyr:~$ `, set by CONFIG_SHELL_PROMPT_UART in the image) and
-# survives a lost character elsewhere in the prompt; a full run log contains no
-# other occurrence of it, so it cannot match before the shell is ready. Keep the
-# image prompt's tail intact when the image is rebuilt.
-shell_prefix = ":$"
-shell_cmd = "kernel version"
+# Attach VM[3] and drive its first command in one burst. The guest prints its
+# prompt as soon as the console attaches, which lands inside this step's own
+# result window: the next step then starts looking for that prompt behind the
+# console switch and misses it, and the case stalls until its timeout (CI run
+# 38426687138 lost its whole 1800s budget that way; the harness has no timeout
+# while it waits for a prefix).
+#
+# The Zephyr steps below cannot wait for the guest prompt either: it has no
+# trailing newline, and a line-oriented stage in the console path holds it back
+# until the next newline-terminated output arrives, so waiting for it stalls
+# whenever the board goes quiet. Every command therefore ends with one extra
+# `kernel version`, and the next step uses the `Zephyr version` line it prints
+# as its prefix: that line is newline-terminated output, so it always arrives,
+# it appears after the previous step's own match, and it proves the command
+# before it reached the shell. It has to be a real command, because this guest
+# shell has no `echo`.
+#
+# The newlines after `console 3` run the attach and leave the guest shell with
+# fresh prompts of its own, so the first command never waits for text the attach
+# already swallowed. The success regex is the guest command's output, which
+# proves the whole chain: attach, guest shell ready, command executed.
+shell_cmd = "\u0018hvm console 3\n\n\nkernel version\nkernel version"
 success_regex = ['(?m)^Zephyr version [0-9]+\.[0-9]+\.[0-9]+[^\r\n]*\r?$']
 fail_regex = ['(?i)unknown command|command not found|fatal']
 timeout = 30
 
 [[shell_check_steps]]
-shell_cmd = "kernel thread list"
+# Prefix: the `Zephyr version` line printed by the token above. The command's
+# own output is the verification; its trailing token only hands over to the
+# next step.
+shell_prefix = "Zephyr version"
+shell_cmd = "kernel thread list\nkernel version"
 success_regex = ['(?s)Threads:\r?\n[ \t]*\*?0x[0-9a-fA-F]+[ \t]+shell_uart\b.*?\r?\n[ \t]*\*?0x[0-9a-fA-F]+[ \t]+idle\b']
 fail_regex = ['(?i)unknown command|command not found|fatal']
 timeout = 30
 
 [[shell_check_steps]]
-shell_cmd = "device list"
+shell_prefix = "Zephyr version"
+shell_cmd = "device list\nkernel version"
 success_regex = ['(?ms)^devices:\r?\n.*?^- interrupt-controller@fe600000 \(READY\).*?^- serial@feb50000 \(READY\)']
 fail_regex = ['(?i)unknown command|command not found|fatal']
 timeout = 30
 
 [[shell_check_steps]]
-# Same loss-tolerant prompt tail as the earlier guest step.
-shell_prefix = ":$"
+# Prefix: the token from the step above. These keystrokes are handled by the
+# host console (Ctrl+X, then `h`), not by the guest.
+shell_prefix = "Zephyr version"
 shell_cmd = "\u0018hvm list"
 success_regex = ['(?ms)^1[ \t]+linux[ \t]+running[^\r\n]*\r?\n2[ \t]+starry[ \t]+running[^\r\n]*\r?\n3[ \t]+zephyr-triple-guest-functional[ \t]+running[^\r\n]*\r?\n']
 timeout = 30
