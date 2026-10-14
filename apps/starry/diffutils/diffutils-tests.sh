@@ -21,8 +21,29 @@ expect_status()
 
 echo "=== GNU diffutils app test ==="
 
-apk update || fail "apk update"
-apk add diffutils || fail "apk add diffutils"
+install_diffutils()
+{
+    # A cached APKINDEX is often enough for the package and avoids turning a
+    # transient mirror outage into a failed application test. If it is stale,
+    # refresh it with retries before reporting the real installation error.
+    if apk add diffutils; then
+        return 0
+    fi
+
+    attempt=1
+    while [ "$attempt" -le 4 ]; do
+        if apk update && apk add diffutils; then
+            return 0
+        fi
+        if [ "$attempt" -lt 4 ]; then
+            sleep $((attempt * 2))
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+install_diffutils || fail "apk add diffutils"
 
 command -v diff >/dev/null 2>&1 || fail "diff is missing"
 diff --version | head -n 1 | grep -q "GNU diffutils" || fail "not GNU diffutils diff"
