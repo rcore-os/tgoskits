@@ -127,7 +127,19 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { DwMmc::new(mmio_base) };
-    host.set_card_detect(CardDetect::ControllerActiveLow);
+    let non_removable = info.node.as_node().get_property("non-removable").is_some();
+    host.set_card_detect(if non_removable {
+        CardDetect::AlwaysPresent
+    } else {
+        CardDetect::ControllerActiveLow
+    });
+    if !non_removable && !host.card_present() {
+        info!(
+            "rockchip-dwmmc: skip controller={} because no removable card is present",
+            info.node.path()
+        );
+        return Ok(());
+    }
     let clock_setup = dwmmc_clock_setup(info)?;
     if let Some(setup) = clock_setup {
         info!(

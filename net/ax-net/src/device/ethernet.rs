@@ -89,6 +89,10 @@ pub struct EthernetDevice {
     accept_multicast: bool,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
+    /// First time a still-unresolved next hop occupied a pending slot.
+    /// Used to age out packets for a peer that never answers ARP, so one
+    /// unreachable address cannot hold the queue until it reports full.
+    pending_since: HashMap<IpAddress, Instant>,
     /// Replies owned by the protocol executor until TX space is available.
     /// A full data queue must not prevent a peer from resolving our address.
     pending_arp_replies: VecDeque<(EthernetAddress, ArpRepr)>,
@@ -129,6 +133,15 @@ impl EthernetDevice {
     /// at once.
     const NEIGHBOR_TTL: Duration = Duration::from_secs(300);
     const ARP_REQUEST_RETRY: Duration = Duration::from_secs(1);
+    /// How long an unresolved next hop may occupy the pending queue.
+    ///
+    /// A TCP connect to an address nobody owns retries and enqueues another
+    /// packet on every attempt. Those packets stay queued until ARP succeeds,
+    /// so one unreachable peer fills all `ETHERNET_MAX_PENDING_PACKETS` slots
+    /// and later sends, including ones for a neighbour that does answer, hit
+    /// `Pending packets buffer is full` and are dropped. Aging the hop out
+    /// frees the slots; the next send starts resolution again.
+    const PENDING_PACKET_TTL: Duration = Duration::from_secs(8);
 
     /// Creates the protocol-side adapter for an IRQ-backed queue pipeline.
     pub fn new(
@@ -155,6 +168,7 @@ impl EthernetDevice {
             accept_multicast: false,
 
             pending_packets,
+            pending_since: HashMap::new(),
             pending_arp_replies: VecDeque::new(),
             deferred_tx_frame_lens: Vec::new(),
             deferred_rx_frame_lens: Vec::new(),
@@ -163,6 +177,57 @@ impl EthernetDevice {
             deferred_rx_errors: 0,
             deferred_rx_drops: 0,
         }
+    }
+
+    /// Records the first time `next_hop` occupied a pending slot. A later
+    /// enqueue for the same unresolved hop keeps that time, so the TTL measures
+    /// how long the hop has been stuck, not how recently it was retried.
+    fn note_pending(&mut self, next_hop: IpAddress, timestamp: Instant) {
+        self.pending_since.entry(next_hop).or_insert(timestamp);
+    }
+
+    /// Drops every pending packet whose next hop has stayed unresolved for
+    /// `PENDING_PACKET_TTL`. Survivors keep their arrival order and their
+    /// original enqueue time.
+    fn expire_stale_pending(&mut self, now: Instant) {
+        let capacity = self.pending_packets.packet_capacity();
+        let mut kept: Vec<(IpAddress, Vec<u8>)> = Vec::new();
+        let mut dropped = 0u64;
+        for _ in 0..capacity {
+            let Ok((&next_hop, packet)) = self.pending_packets.peek() else {
+                break;
+            };
+            let stale = self
+                .pending_since
+                .get(&next_hop)
+                .is_some_and(|enqueued_at| now >= *enqueued_at + Self::PENDING_PACKET_TTL);
+            let packet = packet.to_vec();
+            self.pending_packets
+                .dequeue()
+                .expect("peek succeeded moments ago; dequeue must succeed");
+            if stale {
+                dropped += 1;
+            } else {
+                kept.push((next_hop, packet));
+            }
+        }
+        let mut still_pending = HashMap::new();
+        for (next_hop, packet) in kept {
+            let Ok(dst) = self.pending_packets.enqueue(packet.len(), next_hop) else {
+                warn!(
+                    "{}: pending buffer overflow while restoring aged queue entry to {}",
+                    self.name, next_hop
+                );
+                dropped += 1;
+                continue;
+            };
+            dst.copy_from_slice(&packet);
+            if let Some(enqueued_at) = self.pending_since.get(&next_hop) {
+                still_pending.insert(next_hop, *enqueued_at);
+            }
+        }
+        self.pending_since = still_pending;
+        self.deferred_tx_drops += dropped;
     }
 
     /// Moves queued guest frames onto the physical device TX path.
@@ -498,8 +563,9 @@ impl EthernetDevice {
                 "{}: ARP {} -> {}",
                 self.name, source_protocol_addr, source_hardware_addr
             );
-            self.pending_neighbors
-                .remove(&IpAddress::Ipv4(source_protocol_addr));
+            let resolved = IpAddress::Ipv4(source_protocol_addr);
+            self.pending_neighbors.remove(&resolved);
+            self.pending_since.remove(&resolved);
             self.neighbors.insert(
                 IpAddress::Ipv4(source_protocol_addr),
                 Neighbor {
@@ -608,6 +674,7 @@ impl EthernetDevice {
                     break;
                 };
                 dst.copy_from_slice(&payload);
+                self.note_pending(next_hop, now);
             }
         }
     }
@@ -849,6 +916,7 @@ impl Device for EthernetDevice {
         if need_request {
             self.request_arp(next_hop, timestamp)?;
         }
+        self.expire_stale_pending(timestamp);
         if self.pending_packets.is_full() {
             warn!(
                 "{}: Pending packets buffer is full, dropping packet",
@@ -863,6 +931,7 @@ impl Device for EthernetDevice {
             return Ok(0);
         };
         dst_buffer.copy_from_slice(packet);
+        self.note_pending(next_hop, timestamp);
         Ok(0)
     }
 
@@ -894,6 +963,7 @@ impl Device for EthernetDevice {
         self.ip = addr;
         self.neighbors.clear();
         self.pending_neighbors.clear();
+        self.pending_since.clear();
         self.deferred_tx_drops += self.pending_arp_replies.len() as u64;
         self.pending_arp_replies.clear();
         // The deferred TX/RX frame-length accumulators are deliberately left
@@ -1127,6 +1197,7 @@ mod ethernet_counter_tests {
             .enqueue(packet.len(), IpAddress::Ipv4(REMOTE_IP))
             .expect("the empty pending queue has capacity")
             .copy_from_slice(packet);
+        device.note_pending(IpAddress::Ipv4(REMOTE_IP), Instant::ZERO);
     }
 
     fn process_remote_arp_reply(device: &mut EthernetDevice, timestamp: Instant) {
@@ -1551,6 +1622,43 @@ mod ethernet_counter_tests {
             assert_eq!(device.drain_deferred_tx_errors(), 0);
             assert_eq!(device.drain_deferred_tx_drops(), 0);
         }
+    }
+
+    #[test]
+    fn unreachable_peer_releases_pending_slots_so_a_later_neighbour_can_queue() {
+        let (mut device, _probe) = make_recording_device(TxChecksumCapabilities::NONE);
+        let absent = IpAddress::Ipv4(Ipv4Address::new(10, 0, 2, 19));
+        let neighbour = IpAddress::Ipv4(REMOTE_IP);
+        let started = Instant::from_secs(0);
+        let packet = raw_tcp_packet();
+
+        // The old queue kept every unresolved packet until it reported full, so
+        // one unreachable peer occupied every slot and the next send was dropped.
+        for _ in 0..ETHERNET_MAX_PENDING_PACKETS {
+            assert_eq!(device.try_send(absent, &packet, started), Ok(0));
+        }
+        assert!(device.pending_packets.is_full());
+        assert_eq!(device.try_send(neighbour, &packet, started), Ok(0));
+        assert_eq!(device.drain_deferred_tx_drops(), 1);
+
+        // Once the absent hop is older than the TTL, that send frees its slots
+        // and the neighbour packet is queued instead of dropped.
+        let expired = started + EthernetDevice::PENDING_PACKET_TTL;
+        assert_eq!(device.try_send(neighbour, &packet, expired), Ok(0));
+        assert_eq!(
+            device.drain_deferred_tx_drops(),
+            ETHERNET_MAX_PENDING_PACKETS as u64
+        );
+        assert!(!device.pending_packets.is_full());
+        assert_eq!(device.pending_since.get(&neighbour), Some(&expired));
+        assert!(!device.pending_since.contains_key(&absent));
+
+        // A retry of the same neighbour inside the TTL keeps the original age
+        // and does not drop the packet that was just accepted.
+        let still_fresh = expired + Duration::from_secs(1);
+        assert_eq!(device.try_send(neighbour, &packet, still_fresh), Ok(0));
+        assert_eq!(device.drain_deferred_tx_drops(), 0);
+        assert_eq!(device.pending_since.get(&neighbour), Some(&expired));
     }
 
     #[test]

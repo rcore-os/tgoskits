@@ -1,6 +1,36 @@
 use super::*;
 
 impl<H: SdMmcIrqHost> SdMmcCard<H> {
+    fn begin_mmc_fallback(
+        &mut self,
+        request: &mut SdMmcInitRequest<H>,
+    ) -> Result<OperationProgress<CardInfo>, Error> {
+        // SD probing may leave a stale command/status context in the host.
+        // Linux starts MMC attach from a fresh host/card identity; replay the
+        // same boundary before issuing MMC CMD0/CMD1 so a failed ACMD41 can
+        // never be interpreted as progress from the MMC probe.
+        request.sd_v2 = false;
+        request.acmd41_polls = 0;
+        request.acmd41_started_ms = None;
+        request.mmc_polls = 0;
+        request.mmc_started_ms = None;
+        request.mmc_ocr_arg = 0;
+        request.needs_pace = false;
+        match self.submit_init_bus_op_direct(
+            request,
+            SdMmcBusOp::ResetAll,
+            SdMmcInitState::PollMmcFallbackReset,
+        ) {
+            Ok(()) => {}
+            Err(Error::UnsupportedCommand) => {
+                debug!("sdio: host does not support fallback reset");
+                request.state = SdMmcInitState::MmcFallbackCmd0;
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(OperationProgress::Pending)
+    }
+
     pub(super) fn advance_identification(
         &mut self,
         request: &mut SdMmcInitRequest<H>,
@@ -157,11 +187,10 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                         return Err(_sd_err);
                     }
                     debug!(
-                        "sdio: ACMD41 prologue failed ({:?}), trying MMC CMD1",
+                        "sdio: ACMD41 prologue failed ({:?}), restarting host for MMC attach",
                         _sd_err
                     );
-                    self.host.submit_command(&crate::cmd::cmd1(0))?;
-                    request.state = SdMmcInitState::PollMmcInitial;
+                    request.state = SdMmcInitState::BeginMmcFallback;
                     Ok(OperationProgress::Pending)
                 }
             },
@@ -184,12 +213,11 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                             }
                             warn!(
                                 "sdio: ACMD41 timed out after {} polls (~{} ms at the recommended \
-                                 cadence), trying MMC CMD1",
+                                 cadence), restarting host for MMC attach",
                                 request.acmd41_polls,
                                 request.acmd41_polls * SdMmcInitTiming::POLL_TICK_MS_HINT,
                             );
-                            self.host.submit_command(&crate::cmd::cmd1(0))?;
-                            request.state = SdMmcInitState::PollMmcInitial;
+                            request.state = SdMmcInitState::BeginMmcFallback;
                             return Ok(OperationProgress::Pending);
                         }
                         if request.acmd41_started_ms.is_none() {
@@ -205,18 +233,19 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                     if !request.preference.allows_mmc_fallback() {
                         return Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 41)));
                     }
-                    debug!("sdio: ACMD41 returned bad response, trying MMC CMD1");
-                    self.host.submit_command(&crate::cmd::cmd1(0))?;
-                    request.state = SdMmcInitState::PollMmcInitial;
+                    debug!("sdio: ACMD41 returned bad response, restarting host for MMC attach");
+                    request.state = SdMmcInitState::BeginMmcFallback;
                     Ok(OperationProgress::Pending)
                 }
                 Err(_sd_err) => {
                     if !request.preference.allows_mmc_fallback() {
                         return Err(_sd_err);
                     }
-                    debug!("sdio: ACMD41 failed ({:?}), trying MMC CMD1", _sd_err);
-                    self.host.submit_command(&crate::cmd::cmd1(0))?;
-                    request.state = SdMmcInitState::PollMmcInitial;
+                    debug!(
+                        "sdio: ACMD41 failed ({:?}), restarting host for MMC attach",
+                        _sd_err
+                    );
+                    request.state = SdMmcInitState::BeginMmcFallback;
                     Ok(OperationProgress::Pending)
                 }
             },
@@ -225,6 +254,43 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                 self.host.submit_command(&cmd55)?;
                 request.state = SdMmcInitState::PollAcmd41Cmd55;
                 Ok(OperationProgress::Pending)
+            }
+            SdMmcInitState::BeginMmcFallback => self.begin_mmc_fallback(request),
+            SdMmcInitState::PollMmcFallbackReset => {
+                match self.advance_init_bus_op(request, cause)? {
+                    OperationProgress::Pending => Ok(OperationProgress::Pending),
+                    OperationProgress::Complete(()) => self.submit_init_bus_op(
+                        request,
+                        SdMmcBusOp::SetClock(ClockSpeed::Identification),
+                        SdMmcInitState::PollMmcFallbackClock,
+                    ),
+                }
+            }
+            SdMmcInitState::PollMmcFallbackClock => {
+                match self.advance_init_bus_op(request, cause)? {
+                    OperationProgress::Pending => Ok(OperationProgress::Pending),
+                    OperationProgress::Complete(()) => {
+                        request.state = SdMmcInitState::MmcFallbackCmd0;
+                        Ok(OperationProgress::Pending)
+                    }
+                }
+            }
+            SdMmcInitState::MmcFallbackCmd0 => {
+                debug!("sdio: MMC fallback CMD0 reset");
+                self.host.submit_command(&crate::cmd::CMD0)?;
+                request.state = SdMmcInitState::PollMmcFallbackCmd0;
+                Ok(OperationProgress::Pending)
+            }
+            SdMmcInitState::PollMmcFallbackCmd0 => {
+                match self.host.advance_command_response(cause)? {
+                    CommandResponseProgress::Pending => Ok(OperationProgress::Pending),
+                    CommandResponseProgress::Complete(_) => {
+                        debug!("sdio: MMC fallback CMD1");
+                        self.host.submit_command(&crate::cmd::cmd1(0))?;
+                        request.state = SdMmcInitState::PollMmcInitial;
+                        Ok(OperationProgress::Pending)
+                    }
+                }
             }
             SdMmcInitState::PollMmcInitial => match self.host.advance_command_response(cause)? {
                 CommandResponseProgress::Pending => Ok(OperationProgress::Pending),

@@ -103,6 +103,7 @@ management HTTP server (axum) listening on 127.0.0.1:8080
 | 现象 | 原因 | 处理 |
 | :-- | :-- | :-- |
 | axbuild 报 node/npm 版本不满足 | 构建机 Node 低于 24 或 npm 低于 11 | 安装满足 `package.json` `engines` 的工具链，或去掉 `web-ui` 特性 |
+| x86_64 上开 `web` 报 `rustc-LLVM ERROR: Do not know how to split...`（httparse/sha1） | x86_64 std 目标禁用全部向量指令（宿主任务切换不保存 XMM 状态），而升级前编过的 httparse 构建脚本输出仍被缓存 | 升级到带修复的版本后执行一次 `cargo clean -p httparse` 再重建；全新检出无此问题 |
 | 页面返回 503 且启动日志警告无 dashboard 包 | 启动镜像的 initramfs 里没有 `/guest/builtin/web-ui`（例如绕过 xtask 手工组装了 initramfs） | 用 `cargo axvisor build/qemu` 重新生成带 builtin 包的 initramfs |
 | 页面返回 404 但日志显示监听成功 | 该构建没有启用 `web-ui` | 在构建配置里启用该特性 |
 | 浏览器无法连接 | QEMU 配置没有 `hostfwd` | 加入端口转发参数 |

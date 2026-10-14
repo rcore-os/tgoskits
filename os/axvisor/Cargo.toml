@@ -75,6 +75,7 @@ web = [
   "dep:axum",
   "dep:futures-util",
   "dep:serde_json",
+  "dep:sha1",
   "dep:tokio",
 ]
 # React dashboard served from the same listener. `axbuild` builds the frontend
@@ -105,6 +106,11 @@ log = "0.4"
 axum = { version = "0.8", optional = true }
 futures-util = { version = "0.3", optional = true, features = ["sink"] }
 serde_json = { version = "1", optional = true }
+# Feature unification only: tungstenite pulls sha1 for the WebSocket accept
+# hash, and sha1's default x86_64 build compiles SSE intrinsics that the
+# no-vector kernel target cannot lower. `force-soft` keeps the software
+# implementation; the alias reference satisfies unused_crate_dependencies.
+sha1 = { version = "0.10", optional = true, features = ["force-soft"] }
 # The runtime only enables the IO driver (`enable_io()`), so no `time` driver
 # and thus no `timerfd` syscall is needed. `rt` + `net` cover the manually
 # built current-thread runtime and `TcpListener`; `sync` + `macros` add the

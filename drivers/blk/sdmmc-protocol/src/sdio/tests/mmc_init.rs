@@ -13,6 +13,7 @@ fn init_falls_back_to_mmc_when_cmd8_and_acmd41_fail() {
         cmd8_timeout(),             // CMD8 — eMMC ignores
         Ok(ok_r1()),                // CMD55 (ACMD41 prologue)
         acmd41_timeout(),           // ACMD41 — eMMC ignores
+        Ok(ok_r1()),                // CMD0 — MMC fallback reset
         Ok(ocr_ready_mmc_sector()), // CMD1 — card reports ready
         Ok(cid_response()),         // CMD2
         Ok(ok_r1()),                // CMD3 (host-assigned RCA, R1 ack)
@@ -43,6 +44,30 @@ fn init_falls_back_to_mmc_when_cmd8_and_acmd41_fail() {
     let cmd3 = cmds.iter().find(|c| c.index == 3).expect("CMD3 issued");
     assert_eq!(cmd3.argument, 1u32 << 16);
     assert!(cmds.iter().any(|c| c.index == 1), "CMD1 issued");
+    assert_eq!(
+        cmds.iter().filter(|command| command.index == 0).count(),
+        2,
+        "MMC fallback must reset the card with CMD0 after the failed SD probe"
+    );
+    assert_eq!(
+        driver
+            .host()
+            .bus_ops
+            .iter()
+            .filter(|op| matches!(op, sdmmc_host::BusOp::ResetAll))
+            .count(),
+        2,
+        "MMC fallback must reset the host before issuing CMD1"
+    );
+    assert!(driver.host().bus_ops.windows(2).any(|ops| {
+        matches!(
+            ops,
+            [
+                sdmmc_host::BusOp::ResetAll,
+                sdmmc_host::BusOp::SetClock(ClockSpeed::Identification)
+            ]
+        )
+    }));
 
     // Two CMD6 SWITCHes — one for BUS_WIDTH, one for HS_TIMING.
     let cmd6s: Vec<&Command> = cmds.iter().filter(|c| c.index == 6).collect();
@@ -65,6 +90,7 @@ fn mmc_init_enables_an_advertised_write_cache_before_completion() {
         cmd8_timeout(),             // CMD8
         Ok(ok_r1()),                // CMD55
         acmd41_timeout(),           // ACMD41
+        Ok(ok_r1()),                // CMD0 — MMC fallback reset
         Ok(ocr_ready_mmc_sector()), // CMD1
         Ok(cid_response()),         // CMD2
         Ok(ok_r1()),                // CMD3
@@ -114,6 +140,7 @@ fn mmc_init_falls_back_to_4bit_when_host_refuses_8bit() {
         cmd8_timeout(),             // CMD8
         Ok(ok_r1()),                // CMD55
         acmd41_timeout(),           // ACMD41
+        Ok(ok_r1()),                // CMD0 — MMC fallback reset
         Ok(ocr_ready_mmc_sector()), // CMD1
         Ok(cid_response()),         // CMD2
         Ok(ok_r1()),                // CMD3
@@ -196,6 +223,7 @@ fn mmc_init_picks_hs200_when_card_and_host_agree() {
         cmd8_timeout(),             // CMD8
         Ok(ok_r1()),                // CMD55
         acmd41_timeout(),           // ACMD41
+        Ok(ok_r1()),                // CMD0 — MMC fallback reset
         Ok(ocr_ready_mmc_sector()), // CMD1
         Ok(cid_response()),         // CMD2
         Ok(ok_r1()),                // CMD3
@@ -272,6 +300,7 @@ fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
         cmd8_timeout(),             // CMD8
         Ok(ok_r1()),                // CMD55
         acmd41_timeout(),           // ACMD41
+        Ok(ok_r1()),                // CMD0 — MMC fallback reset
         Ok(ocr_ready_mmc_sector()), // CMD1
         Ok(cid_response()),         // CMD2
         Ok(ok_r1()),                // CMD3
@@ -357,6 +386,7 @@ fn mmc_init_skips_hs200_when_host_refuses_voltage_switch() {
         cmd8_timeout(),             // CMD8
         Ok(ok_r1()),                // CMD55
         acmd41_timeout(),           // ACMD41
+        Ok(ok_r1()),                // CMD0 — MMC fallback reset
         Ok(ocr_ready_mmc_sector()), // CMD1
         Ok(cid_response()),         // CMD2
         Ok(ok_r1()),                // CMD3

@@ -286,6 +286,10 @@ impl<H: SdMmcIrqHost + 'static> SdMmcInitRequest<H> {
             | SdMmcInitState::PostIdentificationClockDelay
             | SdMmcInitState::SubmitCmd0
             | SdMmcInitState::SubmitAcmd41Retry
+            | SdMmcInitState::BeginMmcFallback
+            | SdMmcInitState::PollMmcFallbackReset
+            | SdMmcInitState::PollMmcFallbackClock
+            | SdMmcInitState::MmcFallbackCmd0
             | SdMmcInitState::SubmitMmcReadyRetry
             | SdMmcInitState::PollSdHostBusWidth
             | SdMmcInitState::FinishCardSetup
@@ -323,6 +327,11 @@ pub(super) enum SdMmcInitState {
     PollAcmd41Cmd55,
     PollAcmd41,
     SubmitAcmd41Retry,
+    BeginMmcFallback,
+    PollMmcFallbackReset,
+    PollMmcFallbackClock,
+    MmcFallbackCmd0,
+    PollMmcFallbackCmd0,
     PollMmcInitial,
     PollMmcReady,
     SubmitMmcReadyRetry,

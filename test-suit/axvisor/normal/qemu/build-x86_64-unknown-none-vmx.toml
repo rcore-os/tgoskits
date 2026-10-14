@@ -1,6 +1,10 @@
+# See the aarch64 unified QEMU build for why `web-ui` rides along here. On
+# x86_64 this is the guard that keeps the no-vector kernel target compiling
+# the web stack (axbuild disables httparse's SIMD and Cargo feature
+# unification forces sha1's software path for exactly this target).
 features = [
     "ax-driver/nvme",
-
+    "web-ui",
 ]
 log = "Info"
 target = "x86_64-unknown-none"

@@ -104,10 +104,12 @@ CHECK_FIELDS = {
     "resource_group",
     "wifi_secrets",
     "apk_region",
+    "apk_mirror",
     "upload_xtask_bin_artifact",
     "download_xtask_bin_artifact",
     "xtask_bin_artifact_name",
     "container_preflight",
+    "node_version",
     "events",
     "enable_boolean_input",
     "impact_targets",
@@ -400,6 +402,13 @@ def _validate_check(
     group = check.get("group")
     if group is not None and (not isinstance(group, str) or not group.strip()):
         raise PlanError(f"{location} field 'group' must be a non-empty string")
+    apk_mirror = check.get("apk_mirror")
+    if apk_mirror is not None and (
+        not isinstance(apk_mirror, str) or not apk_mirror.strip()
+    ):
+        raise PlanError(
+            f"{location} field 'apk_mirror' must be a non-empty string when set"
+        )
     runs_on = check["runs_on"]
     required_base = check.get("required_base_branch")
     if required_base is not None and (
@@ -457,6 +466,14 @@ def _validate_check(
         raise PlanError(f"{location} resource_group must use lowercase kebab-case")
     if resource_group and "board" not in runs_on:
         raise PlanError(f"{location} resource_group requires a board runner")
+
+    node_version = check.get("node_version", "")
+    if not isinstance(node_version, str) or (
+        node_version and re.fullmatch(r"\d+(?:\.\d+){0,2}", node_version) is None
+    ):
+        raise PlanError(
+            f"{location} node_version must be a Node version like '24' or '24.11.1'"
+        )
 
     artifact_name = check.get("xtask_bin_artifact_name")
     if artifact_name is not None and (
@@ -681,11 +698,16 @@ def _normalize_suite_selection(
     context: PlanContext,
 ) -> dict[str, Any]:
     row = _normalize_check(template, context)
+    # An incremental pull request runs the check's complete
+    # `pull_request_command` instead of the exact suite command. Both commands
+    # already contain their own prerequisites, so the normalized command is kept
+    # as-is instead of being replaced or concatenated with the selection.
+    if not _pull_request_command_override(template, context):
+        row["command"] = selection.command
     row.update(
         {
             "id": selection.row_id,
             "name": selection.leaf_name,
-            "command": selection.command,
             "template_id": selection.template_id,
             "upload_xtask_bin_artifact": False,
             "download_xtask_bin_artifact": False,
@@ -781,6 +803,23 @@ def _suite_path_os(path: str) -> str | None:
     return None
 
 
+def _pull_request_command_override(
+    check: dict[str, Any], context: PlanContext
+) -> str | None:
+    """Returns a check's incremental pull-request command, if it applies.
+
+    The declared value is a complete replacement for the check's regular
+    `command`, not a prefix to be combined with another command.
+    """
+    if (
+        context.event_name != "pull_request"
+        or context.impact is None
+        or context.impact.full
+    ):
+        return None
+    return check.get("pull_request_command")
+
+
 def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, Any]:
     runs_on = list(check["runs_on"])
     environment = check["environment"]
@@ -809,13 +848,9 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         download_xtask = True
 
     command = check["command"]
-    if (
-        context.event_name == "pull_request"
-        and context.impact is not None
-        and not context.impact.full
-        and check.get("pull_request_command")
-    ):
-        command = check["pull_request_command"]
+    pull_request_command = _pull_request_command_override(check, context)
+    if pull_request_command:
+        command = pull_request_command
 
     return {
         "id": check["id"],
@@ -826,8 +861,10 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "container_preflight": preflight,
         "command": command.strip(),
         "cache_key": check.get("cache_key", ""),
+        "node_version": check.get("node_version", ""),
         "resource_group": "" if fallback else check.get("resource_group", ""),
-        "apk_region": check.get("apk_region", "china"),
+        "apk_region": "us" if fallback else check.get("apk_region", "china"),
+        "apk_mirror": "" if fallback else check.get("apk_mirror", ""),
         "wifi_secrets": check.get("wifi_secrets", False),
         "fetch_depth": fetch_depth,
         "timeout_minutes": check.get("timeout_minutes", 360),

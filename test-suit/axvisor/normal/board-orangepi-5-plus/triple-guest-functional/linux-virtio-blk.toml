@@ -1,0 +1,57 @@
+# Linux guest, VM id 1, of the Orange Pi 5 Plus three-guest functional test.
+#
+# It is a fully virtualized guest (`guest_type = "virtualized"`): AxVisor owns the
+# board eMMC root file system and both physical RTL8125 NICs, so this guest receives
+# no physical passthrough and every device it uses (console, interrupt controller,
+# block and network) is an emulated AxVisor window.
+#
+# The kernel is the `orangepi-5-plus-6.1.99-virtualized` guest image (a 6.1.99
+# virtualized guest variant) deployed on the board at the absolute path below, not a
+# board BSP kernel and not built by this checkout. It must actually provide
+# virtio-mmio/virtio-blk/virtio-net, the 16550 console the guest sees as ttyS0 at the
+# emulated `0xfeb50000` window the cmdline expects, and ext4 for:
+#   - cmdline        `root=/dev/vda rw console=ttyS0 earlycon=uart8250,mmio32,0xfeb50000`
+#   - devices        `console0` uart16550-mmio, file-backed ext4 root `/dev/vda`, virtual NIC
+# Only a real board run reaching the checked markers proves that compatibility; a
+# missing driver fails the boot instead of falling back to physical passthrough.
+#
+# That absolute path lives on the board root file system: board/uboot entries keep it
+# external and validate it on the prepared board root, while a plain
+# `cargo xtask axvisor build` requires every referenced boot asset to exist locally
+# because it packages a self-contained host initramfs.
+[base]
+id = 1
+name = "linux"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x100]
+
+[kernel]
+entry_point = 0x8020_0000
+kernel_load_addr = 0x8020_0000
+kernel_path = "/guest/linux/orangepi-5-plus-6.1.99-virtualized"
+cmdline = "root=/dev/vda rw console=ttyS0 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 devtmpfs.mount=1 init=/bin/sh ignore_loglevel loglevel=8"
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "console0"
+model = "uart16550-mmio"
+address = 0xfeb50000
+
+[[devices.virtual]]
+id = "guest-rootfs"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-orangepi-jammy-0.img"
+filesystem = "ext4"
+
+[[devices.virtual]]
+id = "guest-net"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x54, 0x01, 0x01]

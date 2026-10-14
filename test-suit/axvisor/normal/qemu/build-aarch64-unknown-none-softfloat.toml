@@ -1,6 +1,12 @@
+# `web-ui` rides along with the unified QEMU smoke build so every architecture
+# keeps compiling (and booting) the full web control-plane stack: the crate
+# tree behind it (httparse, sha1) assumes desktop ISA baselines unless steered
+# off them, and only a real build per target catches that. Booting the smoke
+# cases with the dashboard compiled in also exercises the HTTP server and the
+# initramfs-carried bundle without a dedicated case.
 features = [
     "ax-driver/nvme",
-
+    "web-ui",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

@@ -77,6 +77,18 @@ fn patch_axvisor_cargo_config(cargo: &mut Cargo, request: &ResolvedAxvisorReques
     cargo
         .env
         .insert("AX_TARGET".to_string(), request.target.clone());
+    if request.arch == "x86_64" {
+        // The x86_64 std target disables every vector ISA (kernel policy: host
+        // task switches do not save XMM state). httparse otherwise compiles its
+        // SSE4.2 module for any std x86_64 build and LLVM cannot legalize the
+        // 128-bit vectors, so take the crate's documented no-SIMD switch. The
+        // build script only re-reads this on a fresh run; flipping it requires
+        // `cargo clean -p httparse` once on machines with cached artifacts.
+        cargo.env.insert(
+            "CARGO_CFG_HTTPARSE_DISABLE_SIMD".to_string(),
+            "1".to_string(),
+        );
+    }
     cargo.features.sort();
     cargo.features.dedup();
 }

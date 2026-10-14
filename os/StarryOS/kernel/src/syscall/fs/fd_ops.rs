@@ -168,10 +168,7 @@ fn add_to_fd(
                     let term = current
                         .as_thread()
                         .proc_data
-                        .proc
-                        .group()
-                        .session()
-                        .terminal()
+                        .controlling_terminal()
                         .ok_or(StarryError::NoSuchDeviceOrAddress)?;
                     let target = tty::terminal_device(term.as_ref()).ok_or_else(|| {
                         warn!("unknown controlling terminal type for /dev/tty");

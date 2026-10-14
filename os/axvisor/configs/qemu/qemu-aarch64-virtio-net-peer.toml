@@ -60,7 +60,9 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 4"
 
 # VM4 closes the chain: it answers VM3's heartbeats and has no further neighbour
-# to connect to (its client only logs CONNECT_RETRY for 10.0.2.19).
+# to connect to. `run.sh` parks its client at 600000 ms, past this 240 s window,
+# so it never dials the absent 10.0.2.19 here. The unreachable-peer retry that
+# used to run on this console is covered by the ax-net pending-TTL test.
 [[shell_check_steps]]
 success_regex = ["VM4_VIRTIO_NET_PASS role=server"]
 

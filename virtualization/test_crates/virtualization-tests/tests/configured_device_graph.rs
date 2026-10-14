@@ -418,6 +418,58 @@ guest_mac = [2, 0, 0, 0, 0, 1]
 }
 
 #[test]
+fn virtio_net_guest_mac_is_optional_but_validated_when_present() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "net0"
+model = "virtio-net"
+
+[[devices.virtual]]
+id = "net1"
+model = "virtio-net"
+guest_mac = [2, 0, 0, 0, 0, 1]
+"#,
+    )
+    .unwrap();
+    let context = DeviceInstantiationContext::new().with_default_wired_controller(
+        DeviceNodeId::new("controller").unwrap(),
+        InterruptControllerId::new(0),
+    );
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut catalog).unwrap();
+
+    // Omitting `guest_mac` must still instantiate; the address is chosen later
+    // at build time.
+    assert!(
+        catalog
+            .instantiate_node(&config.devices.virtual_devices[0], &context)
+            .is_ok()
+    );
+    assert!(
+        catalog
+            .instantiate_node(&config.devices.virtual_devices[1], &context)
+            .is_ok()
+    );
+
+    let invalid = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "net2"
+model = "virtio-net"
+guest_mac = [1, 0, 0, 0, 0, 1]
+"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        catalog.instantiate_node(&invalid.devices.virtual_devices[0], &context),
+        Err(ConfiguredDeviceError::InvalidOptions { .. })
+    ));
+}
+
+#[test]
 fn virtio_blk_pci_requires_architecture_pci_host() {
     let config = GuestConfig::from_toml(
         r#"

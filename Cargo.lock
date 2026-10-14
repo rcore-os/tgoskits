@@ -1740,6 +1740,7 @@ dependencies = [
  "heapless",
  "log",
  "serde_json",
+ "sha1 0.10.7",
  "shlex 2.0.1",
  "tokio",
  "toml 1.1.8+spec-1.1.0",

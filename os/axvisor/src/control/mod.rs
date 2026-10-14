@@ -39,6 +39,11 @@ pub mod transport;
 #[cfg(feature = "web-ui")]
 pub mod web;
 
+// `sha1` rides along only so feature unification forces its software
+// implementation on the no-vector x86_64 kernel target (see Cargo.toml);
+// referencing it here keeps the dependency counted as used.
+use sha1 as _;
+
 /// Blocking entry point for the configured HTTP services.
 ///
 /// Spawned on its own task (see `crate::main`); builds the tokio runtime and

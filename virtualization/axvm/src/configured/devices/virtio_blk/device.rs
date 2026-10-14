@@ -316,7 +316,7 @@ impl DeviceModel for VirtioBlkModel {
                 .with_mmio(
                     ResourceSlot::new(MMIO_SLOT)?,
                     MMIO_SIZE,
-                    MMIO_SIZE,
+                    super::super::EMULATED_MMIO_PLACEMENT_ALIGNMENT,
                     ResourceRequest::Auto,
                 )?
                 .with_wired_irq(

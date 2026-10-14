@@ -1,5 +1,7 @@
+# See the aarch64 unified QEMU build for why `web-ui` rides along here.
 features = [
     "ax-driver/nvme",
+    "web-ui",
 
     "sstc",
 ]
