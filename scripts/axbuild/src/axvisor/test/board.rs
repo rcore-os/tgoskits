@@ -374,46 +374,22 @@ fn is_transient_board_server_transport_error(error: &anyhow::Error) -> bool {
     })
 }
 
-/// Returns whether a board test command line only selects AxVisor guests.
-fn is_axvisor_startup_selector(cmdline: &str) -> bool {
-    let mut has_selector = false;
-    for token in cmdline.split_whitespace() {
-        if token.strip_prefix("axvisor.vm_start=").is_some() {
-            has_selector = true;
-        } else {
-            return false;
-        }
-    }
-    has_selector
-}
-
-fn merge_board_test_cmdline(
-    base_cmdline: Option<&str>,
-    test_cmdline: Option<String>,
-) -> Option<String> {
-    let test_cmdline = test_cmdline?;
-    if !is_axvisor_startup_selector(&test_cmdline) {
-        return Some(test_cmdline);
-    }
-    match base_cmdline {
-        Some(base_cmdline) if !base_cmdline.trim().is_empty() => {
-            Some(format!("{base_cmdline} {test_cmdline}"))
-        }
-        _ => Some(test_cmdline),
-    }
-}
-
 fn merge_board_test_uboot_config(
     base: Option<UbootConfig>,
     board_test: ostool::board::config::BoardRunConfig,
 ) -> UbootConfig {
     let mut uboot = base.unwrap_or_default();
-    let base_cmdline = uboot.boot.cmdline.clone();
-    let base_uboot_cmd = uboot.uboot_cmd.clone();
     let test_uboot = UbootConfig::from_board_run_config(&board_test);
-    let test_cmdline = test_uboot.boot.cmdline.clone();
     if test_uboot.boot.initramfs.is_some() {
         uboot.boot.initramfs = test_uboot.boot.initramfs;
+    }
+    // A board test command line is the single source of the host bootargs: a
+    // case that provides `cmdline` states the complete host boot line
+    // (including `axvisor.vm_start`) and replaces the base preset instead of
+    // being merged with it. The remote board-server path applies the same
+    // rule because it consumes the test config without any preset merge.
+    if test_uboot.boot.cmdline.is_some() {
+        uboot.boot.cmdline = test_uboot.boot.cmdline;
     }
     if test_uboot.dtb_file.is_some() {
         uboot.dtb_file = test_uboot.dtb_file;
@@ -432,21 +408,6 @@ fn merge_board_test_uboot_config(
     uboot.shell_check_steps = test_uboot.shell_check_steps;
     if test_uboot.timeout.is_some() {
         uboot.timeout = test_uboot.timeout;
-    }
-    if let Some(test_cmdline) = test_cmdline {
-        if is_axvisor_startup_selector(&test_cmdline) && base_cmdline.is_none() {
-            uboot.boot.cmdline = None;
-            let mut uboot_cmd = uboot
-                .uboot_cmd
-                .take()
-                .or(base_uboot_cmd)
-                .unwrap_or_default();
-            uboot_cmd.push(format!(r#"setenv bootargs "${{bootargs}} {test_cmdline}""#));
-            uboot.uboot_cmd = Some(uboot_cmd);
-        } else {
-            uboot.boot.cmdline =
-                merge_board_test_cmdline(base_cmdline.as_deref(), Some(test_cmdline));
-        }
     }
     uboot
 }
@@ -531,32 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn selector_only_board_cmdline_keeps_base_host_bootargs() {
-        let base = UbootConfig {
-            boot: ostool::BootPayloadConfig {
-                cmdline: Some("console=ttyS0 root=/dev/mmcblk0p2 rw".to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let board_test = ostool::board::config::BoardRunConfig {
-            board_type: "board".to_string(),
-            boot: ostool::BootPayloadConfig {
-                cmdline: Some("axvisor.vm_start=1".to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let merged = merge_board_test_uboot_config(Some(base), board_test);
-
-        assert_eq!(
-            merged.boot.cmdline.as_deref(),
-            Some("console=ttyS0 root=/dev/mmcblk0p2 rw axvisor.vm_start=1")
-        );
-    }
-
-    #[test]
     fn complete_board_cmdline_still_replaces_base_host_bootargs() {
         let base = UbootConfig {
             boot: ostool::BootPayloadConfig {
@@ -583,12 +518,18 @@ mod tests {
     }
 
     #[test]
-    fn selector_without_local_bootargs_appends_to_uboot_bootargs() {
-        let base = UbootConfig::default();
+    fn selector_only_board_cmdline_replaces_base_host_bootargs() {
+        let base = UbootConfig {
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("console=ttyS0 root=/dev/mmcblk0p2 rw".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let board_test = ostool::board::config::BoardRunConfig {
             board_type: "board".to_string(),
             boot: ostool::BootPayloadConfig {
-                cmdline: Some("axvisor.vm_start=1,2".to_string()),
+                cmdline: Some("axvisor.vm_start=1".to_string()),
                 ..Default::default()
             },
             ..Default::default()
@@ -596,12 +537,6 @@ mod tests {
 
         let merged = merge_board_test_uboot_config(Some(base), board_test);
 
-        assert_eq!(merged.boot.cmdline, None);
-        assert_eq!(
-            merged.uboot_cmd,
-            Some(vec![
-                r#"setenv bootargs "${bootargs} axvisor.vm_start=1,2""#.to_string()
-            ])
-        );
+        assert_eq!(merged.boot.cmdline.as_deref(), Some("axvisor.vm_start=1"));
     }
 }

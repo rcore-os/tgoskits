@@ -546,7 +546,12 @@ Axvisor 使用 `deferred-rootfs`，在读取 VM 配置前安装 `/guest/builtin`
 Axvisor 启动阶段只索引 `/guest/builtin/configs`，不把归档中的配置直接实例化。
 需要开机启动的客户机通过宿主参数 `axvisor.vm_start=1,2` 选择；该参数应出现在
 QEMU `-append`、UEFI LoadOptions 或 U-Boot `bootargs`，不应写入 guest
-`[kernel].cmdline`。缺少参数表示零个 VM；`/guest` 下的动态 pool（排除
+`[kernel].cmdline`。板卡用例的 `cmdline` 字段（或 `uboot_cmd` 中的
+`setenv bootargs`）就是宿主 bootargs 的完整唯一来源，必须携带 `root=`、
+`console=`、`earlycon` 等全部宿主参数和 selector；axbuild 不向板卡环境
+`${bootargs}` 或 base preset 隐式追加，本地 `test uboot` 与远端
+`test board` 路径都按该字段整体设置 bootargs。缺少参数表示零个 VM；
+`/guest` 下的动态 pool（排除
 `/guest/builtin`）由 HTTP/shell 的 start 命令按需创建。排查“guest 没有起来”时，
 先核对实际宿主 cmdline、builtin catalog 的 VM ID 与测试 case 的 shell/HTTP 启动
 步骤，再检查客户机内核或 initrd；不要恢复已删除的自动启动 feature 或
