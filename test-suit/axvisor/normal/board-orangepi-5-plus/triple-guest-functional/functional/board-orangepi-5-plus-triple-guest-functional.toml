@@ -326,7 +326,15 @@ success_regex = ['Attached VM\[3\] console']
 timeout = 30
 
 [[shell_check_steps]]
-shell_prefix = "zephyr:~$"
+# The guest console drops bytes while the guest is still printing its boot log,
+# and the harness matches this prefix as an exact substring: waiting for the
+# prefix has neither a retry nor a timeout of its own, so a partially received
+# prompt used to stall the step until the case timeout. `:$` is the tail of the
+# guest prompt (`zephyr:~$ `, set by CONFIG_SHELL_PROMPT_UART in the image) and
+# survives a lost character elsewhere in the prompt; a full run log contains no
+# other occurrence of it, so it cannot match before the shell is ready. Keep the
+# image prompt's tail intact when the image is rebuilt.
+shell_prefix = ":$"
 shell_cmd = "kernel version"
 success_regex = ['(?m)^Zephyr version [0-9]+\.[0-9]+\.[0-9]+[^\r\n]*\r?$']
 fail_regex = ['(?i)unknown command|command not found|fatal']
@@ -345,7 +353,8 @@ fail_regex = ['(?i)unknown command|command not found|fatal']
 timeout = 30
 
 [[shell_check_steps]]
-shell_prefix = "zephyr:~$"
+# Same loss-tolerant prompt tail as the earlier guest step.
+shell_prefix = ":$"
 shell_cmd = "\u0018hvm list"
 success_regex = ['(?ms)^1[ \t]+linux[ \t]+running[^\r\n]*\r?\n2[ \t]+starry[ \t]+running[^\r\n]*\r?\n3[ \t]+zephyr-triple-guest-functional[ \t]+running[^\r\n]*\r?\n']
 timeout = 30
