@@ -34,8 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Compatibility
 
 - 共享内存布局采用 256 字节 slot，每个 ring 包含 32 个槽位，region 总大小为
-  17152 字节；两个 ring 的偏移为 256、8704，各占 8448 字节。region 版本仍为 3，
-  旧版 v3 通过布局校验被拒绝；通信双方在升级或回滚时必须保持布局一致。
+  17152 字节；两个 ring 的偏移为 256、8704，各占 8448 字节。region layout 版本
+  从 v2 升级到 v3，与旧 v2 固定 Request/Ack slot 格式不兼容；通信双方在升级或
+  回滚时必须使用一致的 region 版本和布局参数，仅版本相同不足以保证兼容。
 - 将 `cell` 类型、常量、方法和 `CellFull` 错误统一改名为 `slot`/`SlotFull`，
   同步两个 ArceOS demo 的分片边界和满 ring 消息长度，不保留旧接口别名。
 
