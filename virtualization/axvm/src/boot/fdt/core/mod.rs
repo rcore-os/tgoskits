@@ -12,7 +12,7 @@ use crate::boot::{BootImageProvider, fdt::GuestDtbImage};
 use crate::{
     AxVmResult, ax_err_type,
     config::AxVMConfig,
-    machine::{GuestGicCpuRegion, GuestGicProfile, GuestSerialFdtInterrupt},
+    machine::{GuestGicCpuRegion, GuestGicProfile, GuestPlicProfile, GuestSerialFdtInterrupt},
 };
 
 #[cfg(any(target_arch = "aarch64", test))]
@@ -57,11 +57,23 @@ pub fn prepare_dtb_guest(
     };
     // Explicit guest firmware owns the virtualized GIC and UART resources.
     // Resolve them exactly once so the console contract validated below is the
-    // one the immutable device plan is actually built from.
+    // one the immutable device plan is actually built from. Adopting supplied
+    // firmware overwrites the machine profiles, so the controller baseline is
+    // captured first: the console contract has to be serviceable by the
+    // controller this VM would otherwise provide.
+    let explicit_console = has_explicit_console(vm_config);
+    let baseline_gic = vm_config.gic_profile().cloned();
+    let baseline_plic = vm_config.plic_profile().cloned();
     if !uefi {
-        select_guest_machine_resources(vm_config, provided_dtb.as_deref())?;
+        select_guest_machine_resources(vm_config, provided_dtb.as_deref(), explicit_console)?;
     }
-    resolve_console_profile(vm_config, host_fdt_bytes, provided_dtb.as_deref())?;
+    resolve_console_profile(
+        vm_config,
+        host_fdt_bytes,
+        provided_dtb.as_deref(),
+        baseline_gic,
+        baseline_plic,
+    )?;
 
     if uefi {
         skip_guest_dtb(vm_config, vm_create_config);
@@ -82,15 +94,14 @@ fn resolve_console_profile(
     vm_config: &mut AxVMConfig,
     host_fdt_bytes: Option<&[u8]>,
     provided_dtb: Option<&[u8]>,
+    baseline_gic: Option<GuestGicProfile>,
+    baseline_plic: Option<GuestPlicProfile>,
 ) -> AxVmResult {
     let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
     let Some(interrupt_encoding) = machine.serial_fdt_interrupt else {
         return Ok(());
     };
-    let explicit_console = vm_config
-        .virtual_device_requests()
-        .iter()
-        .any(|request| request.id == "console0");
+    let explicit_console = has_explicit_console(vm_config);
     let Some(resolved) = serial::resolve_console_source(
         vm_config.serial_profile(),
         interrupt_encoding,
@@ -104,7 +115,12 @@ fn resolve_console_profile(
 
     let source = resolved.source;
     if source == serial::ConsoleSource::Supplied {
-        validate_supplied_console_controller(vm_config, &resolved, interrupt_encoding)?;
+        validate_supplied_console_controller(
+            baseline_gic,
+            baseline_plic,
+            &resolved,
+            interrupt_encoding,
+        )?;
     }
     let controller_phandle = vm_config
         .gic_profile()
@@ -131,8 +147,23 @@ fn resolve_console_profile(
 
 /// Rejects a supplied DTB whose selected console names an interrupt controller
 /// the prepared per-VM controller cannot serve.
+fn has_explicit_console(vm_config: &AxVMConfig) -> bool {
+    vm_config
+        .virtual_device_requests()
+        .iter()
+        .any(|request| request.id == "console0")
+}
+
+/// Checks that supplied firmware's console controller can be served here.
+///
+/// `baseline_gic`/`baseline_plic` are the controller profiles captured before
+/// supplied firmware was adopted, so the comparison is against the controller
+/// this VM would otherwise provide rather than against a copy of the same
+/// firmware. Path and phandle differences are normalized later and therefore
+/// do not take part in the comparison.
 fn validate_supplied_console_controller(
-    vm_config: &AxVMConfig,
+    baseline_gic: Option<GuestGicProfile>,
+    baseline_plic: Option<GuestPlicProfile>,
     resolved: &serial::ResolvedConsole,
     interrupt_encoding: GuestSerialFdtInterrupt,
 ) -> AxVmResult {
@@ -144,13 +175,13 @@ fn validate_supplied_console_controller(
                     "supplied guest DTB console has no usable GIC interrupt controller"
                 )
             })?;
-            let runtime = vm_config.gic_profile().ok_or_else(|| {
+            let runtime = baseline_gic.ok_or_else(|| {
                 ax_err_type!(
                     InvalidData,
                     "per-VM AArch64 GIC is unavailable for the supplied console"
                 )
             })?;
-            if !gic_controller_layout_compatible(runtime, supplied) {
+            if !gic_controller_layout_compatible(&runtime, supplied) {
                 return Err(ax_err_type!(
                     InvalidData,
                     "supplied guest DTB console GIC layout cannot be served by the per-VM GIC"
@@ -164,7 +195,7 @@ fn validate_supplied_console_controller(
                     "supplied guest DTB console has no usable PLIC interrupt controller"
                 )
             })?;
-            let runtime = vm_config.plic_profile().ok_or_else(|| {
+            let runtime = baseline_plic.ok_or_else(|| {
                 ax_err_type!(
                     InvalidData,
                     "per-VM RISC-V PLIC is unavailable for the supplied console"
@@ -312,6 +343,7 @@ fn build_guest_dtb(
 fn select_guest_machine_resources(
     vm_config: &mut AxVMConfig,
     provided_dtb: Option<&[u8]>,
+    explicit_console: bool,
 ) -> AxVmResult {
     if let Some(current) = vm_config.gic_profile() {
         let gic = interrupt::select_guest_gic(
@@ -322,7 +354,11 @@ fn select_guest_machine_resources(
         vm_config.replace_machine_gic(gic)?;
     }
     let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
+    // An explicit `console0` virtual device outranks supplied firmware, so the
+    // machine serial profile must stay untouched for it to remain the source of
+    // truth the console resolution below reads.
     if let Some(interrupt_encoding) = machine.serial_fdt_interrupt
+        && !explicit_console
         && let Some(serial) = serial::select_guest_serial(
             vm_config.serial_profile(),
             provided_dtb,
@@ -415,6 +451,10 @@ mod tests {
         gic_controller_layout_compatible, resolve_console_profile,
         resolve_machine_resources_from_host,
     };
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    use super::{select_guest_machine_resources, serial};
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    use crate::machine::GuestSerialFdtInterrupt;
     use crate::{
         config::{AddressSpacePolicy, AxVMConfig, AxVMConfigParams},
         machine::{
@@ -450,8 +490,115 @@ mod tests {
         });
         let original = config.serial_profile();
         resolve_machine_resources_from_host(&mut config, None).unwrap();
-        resolve_console_profile(&mut config, None, None).unwrap();
+        let baseline_gic = config.gic_profile().cloned();
+        let baseline_plic = config.plic_profile().cloned();
+        resolve_console_profile(&mut config, None, None, baseline_gic, baseline_plic).unwrap();
         assert_eq!(config.serial_profile(), original);
+    }
+
+    /// Builds a supplied firmware DTB whose console is a PL011 in a window the
+    /// machine does not use by default, so an adopting path would replace the
+    /// serial profile.
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    fn supplied_pl011_firmware() -> Vec<u8> {
+        use fdt_edit::{Node, Property};
+        use fdt_raw::RegInfo;
+
+        use super::tree::{FdtTree, prop_string};
+
+        fn prop_u32(name: &str, value: u32) -> Property {
+            let mut prop = Property::new(name, std::vec![]);
+            prop.set_u32_ls(&[value]);
+            prop
+        }
+
+        fn prop_u32_list(name: &str, values: &[u32]) -> Property {
+            let mut prop = Property::new(name, std::vec![]);
+            prop.set_u32_ls(values);
+            prop
+        }
+
+        let mut tree = FdtTree::new();
+        let root = tree.inner().root_id();
+        tree.set_property(root, prop_u32("#address-cells", 2))
+            .unwrap();
+        tree.set_property(root, prop_u32("#size-cells", 2)).unwrap();
+        tree.set_property(root, prop_u32("interrupt-parent", 7))
+            .unwrap();
+        let gic = tree.add_node(root, Node::new("intc@8000000"));
+        tree.set_property(gic, prop_string("compatible", "arm,gic-v3"))
+            .unwrap();
+        tree.set_property(gic, Property::new("interrupt-controller", std::vec![]))
+            .unwrap();
+        tree.set_property(gic, prop_u32("#interrupt-cells", 3))
+            .unwrap();
+        tree.set_property(gic, prop_u32("phandle", 7)).unwrap();
+        tree.inner_mut().view_typed_mut(gic).unwrap().set_regs(&[
+            RegInfo::new(0x0800_0000, Some(0x1_0000)),
+            RegInfo::new(0x080a_0000, Some(0xf6_0000)),
+        ]);
+        let serial = tree.add_node(root, Node::new("pl011@fe000000"));
+        tree.set_property(
+            serial,
+            Property::new("compatible", b"arm,pl011\0arm,primecell\0".to_vec()),
+        )
+        .unwrap();
+        tree.inner_mut()
+            .view_typed_mut(serial)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0xfe00_0000, Some(0x1000))]);
+        tree.set_property(serial, prop_u32_list("interrupts", &[0, 1, 4]))
+            .unwrap();
+        let chosen = tree.ensure_path("/chosen").unwrap();
+        tree.set_property(chosen, prop_string("stdout-path", "/pl011@fe000000"))
+            .unwrap();
+        tree.finish()
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    fn explicit_console0_keeps_the_machine_serial_profile() {
+        use axvmconfig::VirtualDeviceRequest;
+
+        let supplied = supplied_pl011_firmware();
+        let request = || VirtualDeviceRequest {
+            id: String::from("console0"),
+            model: String::from("mmio-serial"),
+            options: Default::default(),
+        };
+        let config_with = |requests: Vec<VirtualDeviceRequest>| {
+            AxVMConfig::new(AxVMConfigParams {
+                address_space_policy: AddressSpacePolicy::Virtualized,
+                virtual_device_requests: requests,
+                ..Default::default()
+            })
+        };
+
+        // Control: without an explicit console0 the supplied firmware owns the
+        // virtual UART, which is what makes the assertion below meaningful.
+        let mut adopted = config_with(Vec::new());
+        let before = adopted.serial_profile();
+        let probe = serial::select_guest_serial(
+            before,
+            Some(&supplied),
+            false,
+            GuestSerialFdtInterrupt::GicSpi,
+        )
+        .expect("supplied firmware must be adoptable");
+        assert!(probe.is_some(), "supplied firmware declares a console");
+        select_guest_machine_resources(&mut adopted, Some(&supplied), false).unwrap();
+        assert_ne!(
+            adopted.serial_profile(),
+            before,
+            "control: supplied firmware owns the virtual UART when no console0 is declared"
+        );
+
+        // An explicit `console0` outranks supplied firmware: the machine serial
+        // profile must stay the source of truth for the console resolution.
+        let mut explicit = config_with(vec![request()]);
+        let original = explicit.serial_profile();
+        select_guest_machine_resources(&mut explicit, Some(&supplied), true).unwrap();
+        assert_eq!(explicit.serial_profile(), original);
     }
 
     #[test]

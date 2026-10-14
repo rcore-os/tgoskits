@@ -979,8 +979,10 @@ struct SelectedConsole {
 
 /// Resolves every console selector that `/chosen` declares.
 ///
-/// Both the standard `stdout-path`/`linux,stdout-path` string selectors and the
-/// Zephyr `zephyr,console`/`zephyr,shell-uart` phandle selectors are honored.
+/// The standard `stdout-path`/`linux,stdout-path` string selectors and Zephyr's
+/// `zephyr,console` selector are honored. `zephyr,shell-uart` is validated but
+/// names the shell backend rather than the console, so it does not constrain
+/// the console choice.
 /// When several are present they must name the same serial node; a conflicting,
 /// dangling, mistyped, or unparsable selector is rejected instead of being
 /// silently ignored. Only a `/chosen` with no console selector at all falls
@@ -1007,15 +1009,22 @@ fn console_selection(fdt: &Fdt) -> AxVmResult<Option<(String, String)>> {
         let Some(property) = chosen.get_property(name) else {
             continue;
         };
-        if let Some(phandle) = property.get_u32() {
-            selected.push(resolve_phandle_selector(fdt, name, phandle)?);
+        let resolved = if let Some(phandle) = property.get_u32() {
+            resolve_phandle_selector(fdt, name, phandle)?
         } else if let Some(raw) = property.as_str() {
-            selected.push(resolve_zephyr_path_selector(fdt, name, raw)?);
+            resolve_zephyr_path_selector(fdt, name, raw)?
         } else {
             return Err(ax_err_type!(
                 InvalidData,
                 format!("/chosen {name} is present but is neither a phandle nor a path string")
             ));
+        };
+        // `zephyr,shell-uart` points at the shell backend, which Zephyr keeps
+        // independent of the console device. It is still resolved so a
+        // dangling or mistyped selector keeps failing closed, but it does not
+        // take part in the "all console selectors agree" rule below.
+        if name == "zephyr,console" {
+            selected.push(resolved);
         }
     }
     let Some(first) = selected.first() else {

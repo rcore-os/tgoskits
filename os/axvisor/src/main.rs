@@ -80,7 +80,15 @@ fn main() {
     // that a passthrough guest can also program. Let the host own it: guest
     // SMC calls carrying SCMI traffic are serialized with the host's own
     // transactions, and the CPU clock writes stay with the host governor.
-    #[cfg(feature = "ax-driver")]
+    // `soc::scmi` exists only for the boards that own CPU DVFS through it, so
+    // the relay is installed under the same conditions as that module.
+    #[cfg(all(
+        feature = "ax-driver",
+        any(
+            feature = "ax-driver/rk3588-cpufreq",
+            feature = "ax-driver/rockchip-dwmmc"
+        )
+    ))]
     axvm::install_smc_relay(ax_driver::soc::scmi::relay_guest_smc);
 
     // Bridge guest virtio-net ports onto the selected host interface before any

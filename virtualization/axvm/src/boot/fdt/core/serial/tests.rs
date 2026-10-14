@@ -1498,3 +1498,91 @@ fn rejects_malformed_zephyr_console_property() {
         "a present but non-absolute zephyr,shell-uart path must fail closed"
     );
 }
+
+/// Zephyr keeps the shell backend independent of the console device: a
+/// firmware that points `zephyr,shell-uart` at another UART still declares a
+/// usable console, so the selector must not force a conflict.
+#[test]
+fn zephyr_shell_uart_does_not_constrain_the_console_choice() {
+    let mut tree = zephyr_phandle_console_tree();
+    let root = tree.inner().root_id();
+    let shell = tree.add_node(root, Node::new("serial@fe660000"));
+    tree.set_property(
+        shell,
+        prop_string_list("compatible", &["rockchip,rk3588-uart", "snps,dw-apb-uart"]),
+    )
+    .unwrap();
+    tree.inner_mut()
+        .view_typed_mut(shell)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0xfe66_0000, Some(0x100))]);
+    tree.set_property(shell, prop_string("status", "okay"))
+        .unwrap();
+    tree.set_property(shell, prop_u32("phandle", 0x33)).unwrap();
+    let chosen = tree.inner().get_by_path_id("/chosen").unwrap();
+    tree.set_property(chosen, prop_u32("zephyr,shell-uart", 0x33))
+        .unwrap();
+
+    let fdt = tree.finish();
+    let parsed = Fdt::from_bytes(&fdt).unwrap();
+    let (_, path) = console_selection(&parsed)
+        .unwrap()
+        .expect("the console selection must survive a split shell backend");
+    assert_eq!(path, "/serial@feb50000");
+}
+
+/// The supplied console's controller is compared against the machine
+/// controller baseline, not against a copy of the same supplied firmware.
+#[test]
+fn supplied_console_controller_is_compared_against_the_machine_baseline() {
+    use crate::machine::{GuestGicCpuRegion, GuestGicRedistributorProfile, GuestMmioRegion};
+
+    let provided = zephyr_phandle_console_tree().finish();
+    let resolved = resolve_console_source(
+        zephyr_console_fallback(),
+        GuestSerialFdtInterrupt::GicSpi,
+        false,
+        Some(provided.as_slice()),
+        None,
+    )
+    .unwrap()
+    .expect("supplied firmware must resolve its console");
+    let supplied = resolved
+        .supplied_gic
+        .clone()
+        .expect("supplied firmware declares a GIC");
+
+    // Geometry the board's own controller does not provide.
+    let mut machine = supplied.clone();
+    machine.distributor = GuestMmioRegion {
+        base: 0xfe60_0000,
+        length: 0x1_0000,
+    };
+    machine.cpu_region = GuestGicCpuRegion::Redistributors(GuestGicRedistributorProfile {
+        regions: vec![GuestMmioRegion {
+            base: 0xfe68_0000,
+            length: 0x10_0000,
+        }],
+        stride: 0x2_0000,
+    });
+    let error = crate::boot::fdt::core::validate_supplied_console_controller(
+        Some(machine),
+        None,
+        &resolved,
+        GuestSerialFdtInterrupt::GicSpi,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("cannot be served"),
+        "a supplied GIC window outside the machine baseline must fail closed: {error}"
+    );
+
+    // The controller the supplied firmware itself declares stays acceptable.
+    crate::boot::fdt::core::validate_supplied_console_controller(
+        Some(supplied),
+        None,
+        &resolved,
+        GuestSerialFdtInterrupt::GicSpi,
+    )
+    .unwrap();
+}
