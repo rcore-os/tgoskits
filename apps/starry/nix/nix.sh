@@ -49,7 +49,7 @@ run_build() {
     timeout=$5
 
     set +e
-    nix-build -v --no-substitute --option build-users-group '' \
+    nix-build -v --no-substitute --option build-users-group nixbld \
         --option sandbox "$mode" "$expression" \
         -o "$output" >"$log" 2>&1 &
     build_pid=$!
@@ -90,6 +90,21 @@ echo 'NIX_SANDBOX_PHASE_INSTALL_DONE'
 
 echo 'NIX_SANDBOX_PHASE_CONFIG_BEGIN'
 mkdir -p /nix/var/nix /etc/nix /tmp/nix-sandbox
+# Nix's Linux sandbox gives the build user write access to the temporary
+# /nix/store directory through the `nixbld` group.  Leaving
+# `build-users-group` empty makes Nix use an unmapped UID in the user
+# namespace, so that directory's 01775 mode rejects the output write even
+# though the sandbox setup itself succeeded.  The Alpine package does not run
+# its account-creation script in this rootfs, therefore provide the one build
+# account needed by this serialized smoke test explicitly.
+if ! grep -q '^nixbld:' /etc/group 2>/dev/null; then
+    # Match Nix's single-user namespace mapping (sandbox gid 100).
+    echo 'nixbld:x:100:nixbld' >> /etc/group
+fi
+if ! grep -q '^nixbld:' /etc/passwd 2>/dev/null; then
+    # Match Nix's single-user namespace mapping (sandbox uid 1000).
+    echo 'nixbld:x:1000:100:Nix build user:/var/empty:/sbin/nologin' >> /etc/passwd
+fi
 # /tmp/nix-sandbox belongs to this host-side script only (the .nix expression,
 # the captured build logs and the result symlinks). The sandboxed builder must
 # not depend on it: inside the Nix build sandbox the private root exposes the
@@ -104,7 +119,7 @@ mkdir -p /nix/var/nix /etc/nix /tmp/nix-sandbox
 # evidence.
 cat > /etc/nix/nix.conf <<'NIXCONF'
 sandbox = true
-build-users-group =
+build-users-group = nixbld
 substituters = https://cache.nixos.org
 trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
 NIXCONF
@@ -122,6 +137,9 @@ derivation {
   name = "nix-sandbox";
   system = builtins.currentSystem;
   builder = "/bin/sh";
+  outputHashMode = "flat";
+  outputHashAlgo = "sha256";
+  outputHash = "sha256-b65y1BVUm3K06muZDQO78Wz0Bas+Nrt5KpP0jVG80VQ=";
   args = [
     "-c"
     "echo BUILDER_STARTED; echo OUT=\$out; echo NIX_SANDBOX_BUILD_OK > \"\$out\""
