@@ -24,6 +24,14 @@ impl Smc {
         Smc { func_id, irq }
     }
 
+    /// Announces the prepared message to the secure monitor.
+    ///
+    /// The plain `arm,scmi-smc` binding passes no buffer argument: Linux'
+    /// transport only fills `x1`/`x2` for the `arm,scmi-smc-param` binding
+    /// (shared-memory page and offset) and for `qcom,scmi-smc` (a capability
+    /// id), and calls `SMC(smc_id, 0, 0, 0)` otherwise. The device tree's
+    /// `shmem` phandle maps the buffer this agent reads the response from; the
+    /// platform already knows where it is.
     pub(crate) fn call_sync(&self) {
         full_system_barrier();
         smc_call(self.func_id);
@@ -42,6 +50,9 @@ impl Transport for Smc {
 
     fn send_message(&mut self, shmem: &mut Shmem, xfer: &Xfer) -> Result<(), ScmiError> {
         shmem.tx_prepare(xfer)?;
+        // This transport never takes a completion interrupt: the platform must
+        // complete the request before the SMC returns.
+        shmem.set_completion_interrupt(self.irq.is_some());
         trace!("Sending SMC message {:?}", xfer.hdr);
         self.call_sync();
         Ok(())
@@ -117,6 +128,31 @@ fn smc_call(func_id: u32) {
 
 #[cfg(not(target_arch = "aarch64"))]
 fn smc_call(_func_id: u32) {}
+
+/// Issues `smc #0` with the caller's registers and returns all four reply
+/// registers, so a host can relay a request another agent already prepared.
+pub(crate) fn smc_call_raw(x0: u64, x1: u64, x2: u64, x3: u64) -> (u64, u64, u64, u64) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let (a0, a1, a2, a3);
+        unsafe {
+            core::arch::asm!(
+                "smc #0",
+                inlateout("x0") x0 => a0,
+                inlateout("x1") x1 => a1,
+                inlateout("x2") x2 => a2,
+                inlateout("x3") x3 => a3,
+            );
+        }
+        full_system_barrier();
+        (a0, a1, a2, a3)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = (x0, x1, x2, x3);
+        (x0, x1, x2, x3)
+    }
+}
 
 fn full_system_barrier() {
     #[cfg(target_arch = "aarch64")]

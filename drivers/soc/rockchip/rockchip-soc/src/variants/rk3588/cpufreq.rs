@@ -52,6 +52,25 @@ pub const fn dsu_minimum_hz(big_frequency_hz: u64) -> u64 {
     (big_frequency_hz.saturating_mul(4) / 5 / 100_000_000) * 100_000_000
 }
 
+/// Sentinel for a board whose `soc-thermal` sensor has never produced a
+/// usable reading.
+pub const NO_TEMPERATURE_MC: i32 = i32::MIN;
+
+/// Folds one sensor sample into the reading the thermal rules run on.
+///
+/// A passthrough guest that owns the sensor's controller is free to
+/// reconfigure it, and every later host read then fails for as long as that
+/// guest runs. A reading that was once taken therefore has to keep the thermal
+/// rules alive; only a board that never produced one falls back to the
+/// boot-rate limits. Returns the reading to apply and the one to remember.
+pub fn sample_reading(last: i32, sample: Option<i32>) -> (i32, Option<i32>) {
+    match sample {
+        Some(value) => (value, Some(value)),
+        None if last != NO_TEMPERATURE_MC => (last, Some(last)),
+        None => (last, None),
+    }
+}
+
 /// Thermal state of one CPU frequency domain.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ThermalState {
@@ -175,6 +194,31 @@ mod tests {
         state = state.update(None);
         assert_eq!(state.maximum_hz(true), 1_008_000_000);
         assert_eq!(state.effective_voltage_uv(675_000), 750_000);
+    }
+
+    #[test]
+    fn a_lost_sensor_holds_the_last_reading_but_a_missing_one_does_not() {
+        // A guest reconfigures the shared sensor: every later read fails, and
+        // the last reading must keep the thermal rules alive rather than
+        // dropping the CPU domain to the boot-rate limits.
+        let (last, applied) = sample_reading(NO_TEMPERATURE_MC, Some(52_000));
+        assert_eq!((last, applied), (52_000, Some(52_000)));
+        let (last, applied) = sample_reading(last, None);
+        assert_eq!((last, applied), (52_000, Some(52_000)));
+        assert_eq!(
+            ThermalState::default().update(applied).maximum_hz(true),
+            u64::MAX
+        );
+        // A board whose sensor never worked still gets the conservative limit.
+        let (last, applied) = sample_reading(NO_TEMPERATURE_MC, None);
+        assert_eq!((last, applied), (NO_TEMPERATURE_MC, None));
+        assert_eq!(
+            ThermalState::default().update(applied).maximum_hz(true),
+            1_008_000_000
+        );
+        // A fresh reading always wins over the remembered one.
+        let (last, applied) = sample_reading(52_000, Some(86_000));
+        assert_eq!((last, applied), (86_000, Some(86_000)));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::{
     arch::current::{ArchNestedPageTable, CurrentArch},
     architecture::ArchOps,
     guest_memory::{DecodeMemory, GuestRange, MappingLease, MemoryRevision, MemoryUpdate},
-    runtime::vcpus::VcpuCommand,
+    runtime::{ivc::IvcApertureAllocatorKey, vcpus::VcpuCommand},
 };
 
 /// Installation may have reached only some owners when it fails. This value
@@ -145,12 +145,43 @@ impl Owner {
         update: MemoryUpdate,
     ) -> AxVmResult<MemoryRevision> {
         // Physical DMA needs a separate driver/IOMMU revocation capability. No
-        // observation timeout or guest CPU stop is a proof that it ended.
-        if !self.vm.config().pass_through_devices().is_empty() {
-            return Err(AxVmError::unsupported(
-                "update guest memory",
-                "assigned host devices do not provide DMA quiescence",
-            ));
+        // observation timeout or guest CPU stop is a proof that it ended, so an
+        // assigned host device normally rejects any translation update that
+        // disturbs an existing translation.
+        //
+        // The AXIVC shared region is the exception that keeps the passthrough
+        // guest ABI working. Its aperture is host-owned RAM planned outside
+        // every guest RAM region, and the publisher or subscriber is the only
+        // participant of a binding. Installing that host region is a pure
+        // addition, because the atomic root replacement keeps every pre-existing
+        // guest RAM translation unchanged; in-flight passthrough DMA therefore
+        // keeps targeting the same physical pages through the same stage-2
+        // entries. Unmapping the same aperture later frees no guest RAM and no
+        // assigned device memory: the shared frames stay owned by the IVC
+        // backing until both endpoints are retired. Any update that does disturb
+        // an existing translation outside the IVC aperture still requires DMA
+        // quiescence and stays rejected.
+        let range = match &update {
+            MemoryUpdate::Map(lease) => lease.range,
+            MemoryUpdate::Unmap(range) => *range,
+        };
+        if !self.vm.config().pass_through_devices().is_empty()
+            && !self.memory_update_targets_ivc_aperture(range)?
+        {
+            let disturbs_existing = self
+                .vm
+                .resources
+                .address_space
+                .linear_mappings()
+                .map_err(|error| AxVmError::from_addrspace("snapshot guest translations", error))?
+                .iter()
+                .any(|mapping| overlaps(mapping.guest.as_usize(), mapping.size, range));
+            if disturbs_existing {
+                return Err(AxVmError::unsupported(
+                    "update guest memory",
+                    "assigned host devices do not provide DMA quiescence",
+                ));
+            }
         }
         let prepared = self.prepare_memory_update(update)?;
         self.run
@@ -162,6 +193,24 @@ impl Owner {
             run.memory_operation = None;
         }
         result
+    }
+
+    /// Returns whether `range` is one of this run's IVC shared bindings.
+    ///
+    /// The per-VM IVC aperture is planned outside guest RAM, so membership in
+    /// the aperture pool is the discriminator between an IVC binding and guest
+    /// RAM or an assigned device's translation.
+    fn memory_update_targets_ivc_aperture(&self, range: GuestRange) -> AxVmResult<bool> {
+        let run = self
+            .run
+            .as_ref()
+            .ok_or_else(|| AxVmError::invalid_state("update guest memory", "no active run"))?;
+        let aperture = match run.services.devices().service::<IvcApertureAllocatorKey>() {
+            Ok(aperture) => aperture,
+            Err(axdevice::DeviceManagerError::ResourceNotFound { .. }) => return Ok(false),
+            Err(error) => return Err(AxVmError::device("resolve IVC aperture", error)),
+        };
+        Ok(aperture.owns_range(range.start, range.length))
     }
 
     fn install_memory_update(

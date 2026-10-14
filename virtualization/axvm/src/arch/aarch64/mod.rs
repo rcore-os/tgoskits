@@ -6,7 +6,7 @@
 
 mod policy;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arm_vgic::{GicV3Native, GicV3VcpuBinding, IntId};
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -138,6 +138,25 @@ pub(crate) enum Aarch64Exit {
     WaitForInterrupt,
     /// The vCPU handled the event internally.
     Nothing,
+}
+
+/// Signature of the host relay offered every guest `SMC` call.
+///
+/// The relay returns `Some(registers)` when it handled the call. It is how a
+/// host mediates firmware services whose backing resource is shared with a
+/// guest, such as the single SCMI channel the platform exposes.
+pub type SmcRelay = fn(u64, u64, u64, u64) -> Option<(u64, u64, u64, u64)>;
+
+static SMC_RELAY: OnceLock<SmcRelay> = OnceLock::new();
+
+/// Installs the relay that runs before the default forwarding path.
+pub(crate) fn install_smc_relay(relay: SmcRelay) {
+    let _ = SMC_RELAY.set(relay);
+}
+
+/// Offers one `SMC` call to the installed relay.
+pub(crate) fn relay_smc_call(x0: u64, x1: u64, x2: u64, x3: u64) -> Option<(u64, u64, u64, u64)> {
+    SMC_RELAY.get().and_then(|relay| relay(x0, x1, x2, x3))
 }
 
 impl ArchOps for Aarch64Arch {

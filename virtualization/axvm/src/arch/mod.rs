@@ -3,7 +3,7 @@
 use crate::{architecture::*, *};
 
 #[cfg(target_arch = "aarch64")]
-mod aarch64;
+pub(crate) mod aarch64;
 #[cfg(target_arch = "loongarch64")]
 mod loongarch64;
 #[cfg(target_arch = "riscv64")]

@@ -66,11 +66,13 @@ pub(crate) fn create_guest_fdt(
     let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         policy.should_keep(node_id, path, node)
     })?;
-    // A derived guest tree must not inherit the host CPU's DVFS controls. The
-    // CPU clock, OPP and regulator providers are physical host resources; the
-    // guest may still use the rest of the passthrough tree, but it must not be
-    // given bindings that make its cpufreq driver a second owner of those
-    // resources.
+    // No guest type may inherit the host CPU's DVFS controls. The CPU clock,
+    // OPP table and regulator providers are single physical resources: a
+    // guest that programs them makes the host governor unenforceable and lets
+    // two owners race on the same clock and rail. The host owns CPU DVFS for
+    // passthrough guests as well; a passthrough guest that needs a higher
+    // clock rate gets it from the host policy, not from its own cpufreq
+    // driver.
     strip_cpu_power_dependencies(&mut guest_tree)?;
     prune_cpu_references(fdt, &mut guest_tree)?;
     super::disabled::apply(&mut guest_tree, crate_config)?;

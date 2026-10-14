@@ -1,6 +1,8 @@
 use alloc::{format, string::ToString, sync::Arc};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-use arm_scmi_rs::{Scmi, ScmiError, Shmem, Smc};
+use arm_scmi_rs::{MSG_HEADER_WORD, PAYLOAD_WORD, Scmi, ScmiError, Shmem, Smc};
+use ax_lazyinit::OnceLock;
 use ax_sync::RawSpinLock;
 use fdt_edit::Phandle;
 use log::{info, warn};
@@ -69,6 +71,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         size: shmem_size,
     };
     let agent = Arc::new(RawSpinLock::new(Scmi::new(Smc::new(smc_id, None), shmem)));
+    // Kept for the guest relay: the host serializes the single shared channel
+    // and answers the guest's CPU-clock requests itself.
+    CHANNEL_AGENT.call_once(|| agent.clone());
+    SMC_ID.call_once(|| smc_id);
     if let Some(clock_child) = clock_protocol_child(&info) {
         let clock_path = clock_child.path().to_string();
         let clock_phandle = clock_child.node().as_node().phandle();
@@ -121,6 +127,83 @@ pub fn clock_rate(phandle: Phandle, clock_id: u32) -> Option<u64> {
             );
         })
         .ok()
+}
+
+/// The probe's SCMI agent, used to serialize every transaction on the single
+/// shared channel, including the ones relayed for a guest.
+static CHANNEL_AGENT: OnceLock<ScmiAgent> = OnceLock::new();
+/// The platform's SCMI SMC function identifier from the device tree.
+static SMC_ID: OnceLock<u32> = OnceLock::new();
+/// Number of guest CPU-clock writes answered by the host, so the log reports
+/// the first few and stays quiet for a guest that retries.
+static DENIED_WRITES: AtomicUsize = AtomicUsize::new(0);
+
+/// SCMI protocol and message identifiers used by the CPU-clock ownership rule.
+const SCMI_CLOCK_PROTOCOL: u32 = 0x14;
+const SCMI_CLOCK_RATE_SET: u32 = 0x05;
+const SCMI_CLOCK_CONFIG_SET: u32 = 0x07;
+/// SCMI clock identifiers of the three CPU frequency domains.
+const CPU_CLOCK_IDS: [u32; 3] = [0, 2, 3];
+/// The clock identifier a message addresses, if it carries one.
+///
+/// `CLOCK_RATE_SET` carries `flags, clock_id, rate` while `CLOCK_CONFIG_SET`
+/// carries `clock_id, attributes`, so only the rate request leads with flags.
+fn message_clock_id(message: u32, words: &[u32; 9]) -> Option<u32> {
+    let offset = match message {
+        SCMI_CLOCK_RATE_SET => PAYLOAD_WORD + 1,
+        SCMI_CLOCK_CONFIG_SET => PAYLOAD_WORD,
+        _ => return None,
+    };
+    words.get(offset).copied()
+}
+
+/// Relays one guest SMC that carries an SCMI request, or answers it here.
+///
+/// The host owns CPU DVFS, but the platform has a single SCMI shared channel
+/// that the passthrough guest also writes to. Two agents using that channel
+/// concurrently corrupt each other's messages, so the host takes the channel
+/// lock for both its own transactions and the guest's relayed ones, and it
+/// answers the guest's CPU-clock *writes* itself instead of letting the guest
+/// program the same clock the host governor owns.
+///
+/// Returns `None` when the call is not an SCMI request for this channel, which
+/// leaves the platform's normal forwarding path in charge.
+pub fn relay_guest_smc(x0: u64, x1: u64, x2: u64, x3: u64) -> Option<(u64, u64, u64, u64)> {
+    let smc_id = *SMC_ID.get()?;
+    if x0 as u32 != smc_id {
+        return None;
+    }
+    let agent = CHANNEL_AGENT.get()?;
+    // The plain `arm,scmi-smc` binding sends no buffer argument, so any call
+    // with this function id carries SCMI traffic for the one shared channel.
+    // A guest that fills the parameter registers (the `arm,scmi-smc-param` or
+    // Qualcomm bindings) addresses a different channel and stays on the
+    // platform's own forwarding path.
+    if x1 != 0 || x2 != 0 {
+        return None;
+    }
+    let agent = agent.lock_irqsave();
+    let words = agent.debug_words();
+    let header = words[MSG_HEADER_WORD];
+    // Protocol id occupies bits 17:10 of the message header, message id bits
+    // 7:0, exactly as `arm-scmi-rs` encodes them.
+    let protocol = (header >> 10) & 0xff;
+    let message = header & 0xff;
+    let clock_id = (protocol == SCMI_CLOCK_PROTOCOL)
+        .then(|| message_clock_id(message, &words))
+        .flatten();
+    if clock_id.is_some_and(|clock_id| CPU_CLOCK_IDS.contains(&clock_id)) {
+        if DENIED_WRITES.fetch_add(1, Ordering::Relaxed) < 3 {
+            warn!(
+                "SCMI relay: guest CPU clock write denied, message={message:#x}, clock={}; the \
+                 host owns CPU DVFS",
+                clock_id.unwrap_or_default()
+            );
+        }
+        agent.publish_response(0);
+        return Some((0, x1, x2, x3));
+    }
+    Some(agent.relay_smc(x0, x1, x2, x3))
 }
 
 pub fn enable_clock(phandle: Phandle, clock_id: u32) -> Option<()> {

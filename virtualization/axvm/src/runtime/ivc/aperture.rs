@@ -17,6 +17,18 @@ pub(crate) trait IvcApertureAllocator: Send + Sync {
     fn allocate(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr>;
 
     fn release(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult;
+
+    /// Returns whether `[addr, addr + size)` lies wholly inside this VM's IVC
+    /// shared aperture.
+    ///
+    /// The aperture is planned outside every guest RAM region, so this is the
+    /// exact test that separates an IVC shared binding from guest RAM when the
+    /// translation owner must decide whether an unmap disturbs existing
+    /// translations. The default reports "not an IVC range", which keeps any
+    /// test double or alternative allocator from claiming guest RAM.
+    fn owns_range(&self, _addr: GuestPhysAddr, _size: usize) -> bool {
+        false
+    }
 }
 
 /// Type key for a VM's IVC aperture allocator service.
@@ -130,6 +142,16 @@ impl IvcApertureAllocator for IvcAperturePool {
                 ),
             })
         }
+    }
+
+    fn owns_range(&self, addr: GuestPhysAddr, size: usize) -> bool {
+        let ranges = self.ranges();
+        let start = addr.as_usize();
+        let Some(end) = start.checked_add(size) else {
+            return false;
+        };
+        let bounds = &ranges.initial;
+        start >= bounds.start && end <= bounds.end && is_aligned_4k(start) && is_aligned_4k(size)
     }
 }
 

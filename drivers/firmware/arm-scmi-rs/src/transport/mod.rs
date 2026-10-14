@@ -1,6 +1,6 @@
 use crate::{Shmem, err::ScmiError, protocol::Xfer};
 
-mod smc;
+pub(crate) mod smc;
 
 pub use smc::Smc;
 

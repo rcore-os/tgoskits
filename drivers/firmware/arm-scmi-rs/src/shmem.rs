@@ -5,10 +5,17 @@ use tock_registers::{interfaces::*, registers::*};
 
 use crate::{Xfer, err::ScmiError};
 
+// Field offsets are Linux `struct scmi_shared_mem` in
+// `drivers/firmware/arm_scmi/shmem.c`: a leading reserved word, then
+// channel_status, two more reserved words, flags, length, msg_header and the
+// payload at 0x1C. The platform reads `length` to decide how much of the
+// message to consume and `msg_header` to find the protocol, so a header that
+// starts one word early reads back as an empty message that the platform
+// silently drops, and this side then reads its own request as the response.
 tock_registers::register_structs! {
     pub ShmemHeader {
         (0x00 => reserved: u32),
-        (0x04 => channel_status: ReadWrite<u32,  ChannelStatus::Register>),
+        (0x04 => channel_status: ReadWrite<u32, ChannelStatus::Register>),
         (0x08 => reserved1: [u32; 2]),
         (0x10 => flags: ReadWrite<u32, ShmemFlags::Register>),
         (0x14 => pub length: ReadWrite<u32>),
@@ -16,6 +23,15 @@ tock_registers::register_structs! {
         (0x1C => @END),
     }
 }
+
+/// Offset of the channel status word, for the paths that poll it without
+/// taking the header view.
+const CHANNEL_STATUS: usize = 0x04;
+
+/// Word index of the message header and of the first payload word, for a
+/// relay that inspects a message another agent wrote.
+pub const MSG_HEADER_WORD: usize = 0x18 / 4;
+pub const PAYLOAD_WORD: usize = 0x1C / 4;
 
 tock_registers::register_bitfields![
     u32,
@@ -26,6 +42,9 @@ tock_registers::register_bitfields![
         ]
     ],
     ShmemFlags [
+        /// Set when the agent asked the platform to signal completion with an
+        /// interrupt. An agent without a completion interrupt leaves it clear,
+        /// which is what Linux does for `no_completion_irq` transports.
         INTR_ENABLED OFFSET(0) NUMBITS(1) [],
     ],
 ];
@@ -79,9 +98,55 @@ impl Shmem {
         self.header().msg_header.set(0);
     }
 
+    /// Raw 32-bit word of the channel, so a relay can inspect a message
+    /// another agent has already written into it.
+    pub(crate) fn word(&self, offset: usize) -> u32 {
+        self.read_u32(offset)
+    }
+
     pub(crate) fn header(&mut self) -> &mut ShmemHeader {
         unsafe { &mut *(self.address.as_ptr() as *mut ShmemHeader) }
     }
+    /// Marks the channel free, as the platform does when a request has been
+    /// consumed. An agent that answers a request itself must publish the same
+    /// state, because the requester polls this bit before reading.
+    pub fn mark_channel_free(&mut self) {
+        self.header()
+            .channel_status
+            .write(ChannelStatus::STATUS::FREE);
+    }
+
+    /// Waits until the platform reports the channel free, i.e. until the
+    /// request has completed and the response occupies the buffer.
+    ///
+    /// A platform that signals completion sets `CHANNEL_FREE` in the channel
+    /// status word; reading the response before that yields the bytes this
+    /// side wrote, which reads like a reply that echoes the request. The SMC
+    /// transport also allows a platform to finish inside the call and leave
+    /// the status word alone, so a timeout is not by itself an error.
+    ///
+    /// Returns `false` on timeout.
+    pub fn wait_channel_free(&self, spins: u32) -> bool {
+        for _ in 0..spins {
+            if self.read_u32(CHANNEL_STATUS) & 1 != 0 {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+
+    /// Publishes whether this agent takes a completion interrupt. A platform
+    /// told to interrupt an agent which never subscribed can leave the request
+    /// unfinished, and the agent then reads stale bytes as the response.
+    pub fn set_completion_interrupt(&mut self, enabled: bool) {
+        if enabled {
+            self.header().flags.write(ShmemFlags::INTR_ENABLED::SET);
+        } else {
+            self.header().flags.write(ShmemFlags::INTR_ENABLED::CLEAR);
+        }
+    }
+
     pub fn tx_prepare(&mut self, xfer: &Xfer) -> Result<(), ScmiError> {
         self.header().channel_status.set(0);
         self.header().flags.set(0);
@@ -199,7 +264,15 @@ impl Shmem {
     pub const COMPATIBLE: &str = "arm,scmi-shmem";
 }
 
+/// Encodes the SCMI message header word: `message_id` in bits 0-7,
+/// `protocol_id` in bits 8-15 and the token, unused here, in bits 16-31.
 const fn encode_message_header(protocol_id: u32, message_id: u8) -> u32 {
+    // Linux `common.h` packs the header as message id in bits 7:0, message type
+    // in bits 9:8, protocol id in bits 17:10 and the token in bits 27:18. All
+    // commands use message type 0. A protocol id at bits 15:8 reaches the
+    // platform as a different protocol, which then answers about the wrong
+    // service or rejects the message, exactly like a buffer that stayed
+    // untouched.
     ((protocol_id & 0xff) << 10) | (message_id as u32 & 0xff)
 }
 
@@ -208,6 +281,48 @@ mod tests {
     use tock_registers::interfaces::{Readable, Writeable};
 
     use super::*;
+
+    #[test]
+    fn layout_matches_the_linux_shared_memory_structure() {
+        // Linux `struct scmi_shared_mem` in `drivers/firmware/arm_scmi/shmem.c`
+        // places the fields at reserved@0x00, channel_status@0x04,
+        // reserved1[2]@0x08, flags@0x10, length@0x14, msg_header@0x18 and the
+        // payload at 0x1C. A header written one word early leaves `length` at
+        // zero where the platform reads it, and the platform then drops the
+        // message instead of answering it.
+        let mut buffer = [0u32; 8];
+        let address = NonNull::new(buffer.as_mut_ptr().cast::<u8>()).unwrap();
+        let mut shmem = unsafe { Shmem::new(address, 0, size_of_val(&buffer)) };
+
+        assert_eq!(MSG_HEADER_WORD, 6);
+        assert_eq!(PAYLOAD_WORD, 7);
+
+        shmem.write_message_header(0x14, 0x05, 4).unwrap();
+        shmem.write_payload_u32(0, 0xabcdef).unwrap();
+
+        assert_eq!(buffer[1], 0, "channel_status marks the request in flight");
+        assert_eq!(buffer[4], 0, "no completion interrupt is requested");
+        assert_eq!(
+            buffer[5], 8,
+            "length covers the status word and the payload"
+        );
+        assert_eq!(buffer[6], 0x5005, "protocol id 0x14 and message id 0x05");
+        assert_eq!(
+            buffer[7], 0xabcdef,
+            "payload starts after the message header"
+        );
+    }
+
+    #[test]
+    fn message_header_matches_the_specification_field_positions() {
+        // Clock protocol, RATE_GET: protocol id 0x14 at bits 17:10, message id
+        // 0x05 at bits 7:0.
+        let header = encode_message_header(0x14, 0x05);
+        assert_eq!(header, 0x5005);
+        assert_eq!((header >> 10) & 0xff, 0x14);
+        assert_eq!((header >> 8) & 0b11, 0);
+        assert_eq!(header & 0xff, 0x05);
+    }
 
     #[test]
     fn reset_marks_channel_status_free() {

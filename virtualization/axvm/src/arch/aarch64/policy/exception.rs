@@ -276,6 +276,15 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     // CPU clock and OPP bindings are removed from the derived guest FDT, so a
     // normal guest cpufreq driver has no host CPU control surface while device
     // drivers can still use the shared firmware service they require.
+    // A host relay may own this service, for example a firmware channel whose
+    // single buffer is shared with the guest. Only forwards when it declines.
+    if let Some(registers) =
+        crate::arch::aarch64::relay_smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3])
+    {
+        (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) = registers;
+        return Ok(ArmVmExit::Nothing);
+    }
+
     // The args are from lower EL, so it is safe to call the ATF.
     (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
         unsafe { super::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };

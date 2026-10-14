@@ -527,6 +527,13 @@ impl<H: PagingHandler + 'static> IvcManager<H> {
     /// addressed channel, and both endpoints must belong to the run currently
     /// installed in the table. The notify endpoint and signal handle are cloned
     /// out of the table lock before any device call or wake.
+    ///
+    /// When the addressed peer is a valid participant that has not installed or
+    /// activated its endpoint yet, the notify is reported as accepted without
+    /// pulsing an IRQ. The bytes already written into the shared ring survive
+    /// until the peer consumes them, and the peer's own install handshake
+    /// publishes the wake-up, so a temporary missing peer must not drive the
+    /// source into a full-ring retry loop.
     pub(crate) fn notify_channel(
         self: &Arc<Self>,
         publisher_vm_id: usize,
@@ -534,33 +541,37 @@ impl<H: PagingHandler + 'static> IvcManager<H> {
         source: VmKey,
         target_vm_id: usize,
     ) -> AxVmResult<()> {
-        let Some(notification) =
-            self.resolve_notification(publisher_vm_id, key, source, target_vm_id)
-        else {
-            return Err(notification_not_found(
+        match self.resolve_notification(publisher_vm_id, key, source, target_vm_id) {
+            Resolve::Missing => Err(notification_not_found(
                 publisher_vm_id,
                 key,
                 source,
                 target_vm_id,
-            ));
-        };
-
-        let Some(endpoint) = notification.target.notify.as_ref() else {
-            return Err(AxVmError::resource_unavailable(
-                "IVC notify endpoint",
-                "the target run has no bound notify port",
-            ));
-        };
-        endpoint.notify().map_err(|error| {
-            AxVmError::resource_unavailable(
-                "IVC notify endpoint",
-                format!("the target notify port is closed: {error}"),
-            )
-        })?;
-        notification.target.signals.notify_work().map_err(|error| {
-            AxVmError::interrupt("wake IVC notify target", format!("{error:?}"))
-        })?;
-        Ok(())
+            )),
+            // The peer has not finished installing its endpoint yet. The bytes
+            // the source already wrote into the shared ring persist until the
+            // peer consumes them, and the peer's own install handshake publishes
+            // the wake-up, so accept the notify instead of failing the source.
+            Resolve::PeerPending => Ok(()),
+            Resolve::Deliver(target) => {
+                let Some(endpoint) = target.notify.as_ref() else {
+                    return Err(AxVmError::resource_unavailable(
+                        "IVC notify endpoint",
+                        "the target run has no bound notify port",
+                    ));
+                };
+                endpoint.notify().map_err(|error| {
+                    AxVmError::resource_unavailable(
+                        "IVC notify endpoint",
+                        format!("the target notify port is closed: {error}"),
+                    )
+                })?;
+                target.signals.notify_work().map_err(|error| {
+                    AxVmError::interrupt("wake IVC notify target", format!("{error:?}"))
+                })?;
+                Ok(())
+            }
+        }
     }
 
     fn detach_for(
@@ -620,7 +631,7 @@ impl<H: PagingHandler + 'static> IvcManager<H> {
         key: usize,
         source: VmKey,
         target_vm_id: usize,
-    ) -> Option<NotificationEndpoint> {
+    ) -> Resolve {
         for channel in self.channels_for_numeric_publisher(publisher_vm_id, key) {
             let state = channel.lock_unpoisoned();
             if state.retired || !state.published {
@@ -629,26 +640,58 @@ impl<H: PagingHandler + 'static> IvcManager<H> {
             let Some(publisher) = state.publisher.as_ref() else {
                 continue;
             };
-            let Some(subscriber) = state.subscriber.as_ref() else {
-                continue;
-            };
-            if !publisher.installed
-                || !subscriber.installed
-                || publisher.closing
-                || subscriber.closing
-            {
+            if !publisher.installed || publisher.closing {
                 continue;
             }
 
-            let (source_endpoint, target_endpoint) = if source == state.key.publisher {
-                (publisher, subscriber)
-            } else if source == subscriber.vm {
-                (subscriber, publisher)
-            } else {
-                continue;
+            let (source_endpoint, target_endpoint) = match state.subscriber.as_ref() {
+                // A live subscriber lets the source address the publisher or the
+                // subscriber by identity.
+                Some(subscriber) => {
+                    if subscriber.closing {
+                        continue;
+                    }
+                    if source == state.key.publisher {
+                        (publisher, subscriber)
+                    } else if source == subscriber.vm {
+                        (subscriber, publisher)
+                    } else {
+                        continue;
+                    }
+                }
+                // No subscriber endpoint yet: only the live publisher can start
+                // a notify, and the target must be the not-yet-installed peer.
+                None => {
+                    if source != state.key.publisher {
+                        continue;
+                    }
+                    if target_vm_id == IVC_NOTIFY_PEER {
+                        return Resolve::PeerPending;
+                    }
+                    continue;
+                }
             };
-            if !endpoint_is_active(source_endpoint) || !endpoint_is_active(target_endpoint) {
+
+            // The source must be a live, installed participant. A parked or
+            // stopped publisher or subscriber cannot originate a notify.
+            if !endpoint_is_active(source_endpoint) {
                 continue;
+            }
+            // The peer slot exists but is still installing (or already closed).
+            // The shared ring already retains any written bytes, so accept the
+            // notify without pulsing an IRQ; the peer's install handshake
+            // publishes the wake-up.
+            if target_endpoint.closing {
+                return Resolve::PeerPending;
+            }
+            if !target_endpoint.installed {
+                return Resolve::PeerPending;
+            }
+            // The peer slot exists and is installed, but its run is not live yet
+            // (for example a parked subscriber). The shared ring survives, so
+            // report the not-yet-ready peer instead of failing the source.
+            if !endpoint_is_active(target_endpoint) {
+                return Resolve::PeerPending;
             }
 
             let resolved_target = if target_vm_id == IVC_NOTIFY_PEER {
@@ -660,11 +703,9 @@ impl<H: PagingHandler + 'static> IvcManager<H> {
                 continue;
             }
 
-            return Some(NotificationEndpoint {
-                target: target_endpoint.clone(),
-            });
+            return Resolve::Deliver(target_endpoint.clone());
         }
-        None
+        Resolve::Missing
     }
 
     fn remove_channel_if_retired(&self, key: ChannelKey, channel: &Arc<Mutex<ChannelState<H>>>) {
@@ -689,8 +730,16 @@ impl<H: PagingHandler + 'static> IvcManager<H> {
     }
 }
 
-struct NotificationEndpoint {
-    target: EndpointState,
+/// Outcome of resolving one IVC notify request.
+enum Resolve {
+    /// The channel or the source is not a valid participant of it.
+    Missing,
+    /// The channel and source are valid, but the peer has not installed or
+    /// activated its endpoint yet. The shared ring already retains any written
+    /// bytes, so the notify is reported as accepted without pulsing an IRQ.
+    PeerPending,
+    /// The peer is installed and live; pulse its notify endpoint and wake it.
+    Deliver(EndpointState),
 }
 
 /// A run is only a valid notify peer while its bound signals report the same
@@ -1076,7 +1125,9 @@ mod tests {
     use axdevice::{DeviceManagerError, DeviceManagerResult};
     use axvm_types::GuestPhysAddr;
 
-    use super::{IvcApertureAllocator, IvcEndpointPlan, IvcManager, IvcNotifyEndpoint};
+    use super::{
+        IVC_NOTIFY_PEER, IvcApertureAllocator, IvcEndpointPlan, IvcManager, IvcNotifyEndpoint,
+    };
     use crate::{
         RunId, VmKey, guest_memory::MemoryRevision, host::paging::test_frames::TestFrames,
         services::RunSignals,
@@ -1194,6 +1245,19 @@ mod tests {
             notify: notify_dyn,
             signals: RunSignals::new(run, 1).unwrap(),
         }
+    }
+
+    /// Builds a plan whose single vCPU is registered, matching a participant
+    /// that is live while an IVC notify reaches it.
+    fn plan_with_active_vcpu(
+        owner: VmKey,
+        run: RunId,
+        aperture: &Arc<TrackingAperture>,
+        notify: &Arc<CountingNotify>,
+    ) -> IvcEndpointPlan {
+        let endpoint = plan(owner, run, aperture, notify);
+        endpoint.signals.mark_test_vcpu_active(0);
+        endpoint
     }
 
     fn revision(run: RunId, sequence: u64) -> MemoryRevision {
@@ -1545,5 +1609,110 @@ mod tests {
             .commit(revision(second_run, 2))
             .unwrap();
         assert_eq!(second_aperture.release_count(), 1);
+    }
+
+    #[test]
+    fn notify_with_no_installed_peer_is_accepted_without_a_pulse() {
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
+        let publisher = VmKey::new(30, 1);
+        let publisher_run = RunId::new(publisher, 1);
+        let aperture = TrackingAperture::new(0xa000_0000);
+        let notify = CountingNotify::new();
+
+        let publish = manager
+            .prepare_publish(
+                0x80,
+                PAGE_SIZE_4K,
+                1,
+                plan(publisher, publisher_run, &aperture, &notify),
+            )
+            .unwrap();
+        publish.commit(revision(publisher_run, 1)).unwrap();
+
+        // The peer sentinel resolves to a subscriber that has not published yet.
+        // The already-written ring bytes survive, so the notify is accepted
+        // instead of failing the source, and no IRQ is pulsed at a missing peer.
+        assert!(
+            manager
+                .notify_channel(30, 0x80, publisher, IVC_NOTIFY_PEER)
+                .is_ok()
+        );
+        assert_eq!(notify.pulses(), 0);
+        assert_eq!(aperture.outstanding(), 1);
+    }
+
+    #[test]
+    fn notify_of_an_uninstalled_subscriber_is_accepted_without_a_pulse() {
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
+        let publisher = VmKey::new(31, 1);
+        let subscriber = VmKey::new(32, 1);
+        let publisher_run = RunId::new(publisher, 1);
+        let subscriber_run = RunId::new(subscriber, 1);
+        let publisher_notify = CountingNotify::new();
+        let subscriber_notify = CountingNotify::new();
+
+        let publish = manager
+            .prepare_publish(
+                0x81,
+                PAGE_SIZE_4K,
+                1,
+                plan_with_active_vcpu(
+                    publisher,
+                    publisher_run,
+                    &TrackingAperture::new(0xb000_0000),
+                    &publisher_notify,
+                ),
+            )
+            .unwrap();
+        publish.commit(revision(publisher_run, 1)).unwrap();
+
+        // Reserve a subscriber slot but do not commit it: the peer is not
+        // installed yet, so the notify must not fail the publisher.
+        let _subscriber_reservation = manager
+            .prepare_subscribe(
+                31,
+                0x81,
+                PAGE_SIZE_4K,
+                plan(
+                    subscriber,
+                    subscriber_run,
+                    &TrackingAperture::new(0xc000_0000),
+                    &subscriber_notify,
+                ),
+            )
+            .unwrap();
+
+        assert!(
+            manager
+                .notify_channel(31, 0x81, publisher, IVC_NOTIFY_PEER)
+                .is_ok()
+        );
+        assert_eq!(subscriber_notify.pulses(), 0);
+    }
+
+    #[test]
+    fn notify_whose_source_never_published_is_still_rejected() {
+        let manager = Arc::new(IvcManager::<TestFrames>::new());
+        let publisher = VmKey::new(33, 1);
+        let publisher_run = RunId::new(publisher, 1);
+        let aperture = TrackingAperture::new(0xd000_0000);
+        let notify = CountingNotify::new();
+
+        // A reserved but uncommitted publisher is not a valid source.
+        let _publish_reservation = manager
+            .prepare_publish(
+                0x82,
+                PAGE_SIZE_4K,
+                1,
+                plan(publisher, publisher_run, &aperture, &notify),
+            )
+            .unwrap();
+
+        assert!(
+            manager
+                .notify_channel(33, 0x82, publisher, IVC_NOTIFY_PEER)
+                .is_err()
+        );
+        assert_eq!(notify.pulses(), 0);
     }
 }

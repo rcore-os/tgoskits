@@ -14,8 +14,8 @@ use crate::{
     sync::{Mutex, RawSpinRwLock},
     task::{
         PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit, ProcessImage,
-        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, UserThreadOptions, new_user_task,
-        prepare_user_thread, spawn_alarm_task,
+        ROOT_PID_NS, Tgid, Thread, Tid, TidNumber, UserThreadOptions, kernel_thread_builder,
+        new_user_task, prepare_user_thread, sleep, spawn_alarm_task,
     },
     tracepoint::tracepoint_init,
 };
@@ -45,6 +45,14 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
     crate::file::epoll::start_epoll_notify_worker();
     spawn_alarm_task();
     crate::mm::spawn_reclaimer_task();
+    // Keep the passthrough Starry guest's existing CPU governor active. The
+    // host AxVisor governor remains the board-wide fallback for Linux guests.
+    if ax_driver::cpufreq::calibrate_wanted() {
+        run_opp_calibration();
+    } else {
+        spawn_cpufreq_governor();
+    }
+    ax_driver::cpufreq::log_frequency_readout();
     pseudofs::usbfs::start_event_pump();
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
@@ -180,4 +188,46 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
     // must neither return nor poll a second process-lifecycle state here.
     let _exit_code = task.join();
     match crate::task::future::block_on(core::future::pending::<core::convert::Infallible>()) {}
+}
+
+fn run_opp_calibration() {
+    info!("cpufreq: running OPP calibration sweep (governor disabled this boot)");
+    for &(cluster_idx, cpu) in &[(0usize, 0usize), (1, 4), (2, 6)] {
+        let mut affinity = ax_runtime::task::sched::CpuSet::empty(ax_runtime::hal::cpu_num());
+        let cpu_id = u32::try_from(cpu).expect("cpufreq CPU id does not fit in u32");
+        assert!(
+            affinity.insert(ax_runtime::task::sched::CpuId::new(cpu_id)),
+            "cpufreq calibration CPU is outside the runtime topology"
+        );
+        let task = kernel_thread_builder(String::from("cpufreq-cal"))
+            .affinity(affinity)
+            .spawn(move || ax_driver::cpufreq::calibrate_cluster(cluster_idx, cpu))
+            .expect("failed to spawn cpufreq calibration task");
+        let _exit_code = task.join().expect("failed to join cpufreq calibration task");
+    }
+}
+
+fn spawn_cpufreq_governor() {
+    if !ax_driver::cpufreq::governor_wanted() {
+        return;
+    }
+    info!("Initialize cpufreq ondemand governor...");
+    let _ = kernel_thread_builder(String::from("cpufreq-gov"))
+        .spawn(cpufreq_governor_loop)
+        .expect("failed to spawn cpufreq governor");
+}
+
+fn cpufreq_governor_loop() {
+    let period = core::time::Duration::from_millis(ax_driver::cpufreq::governor_period_ms());
+    loop {
+        sleep(period);
+        let mut busy = [0u64; 8];
+        for (cpu, slot) in busy.iter_mut().enumerate() {
+            *slot = ax_runtime::task::sched::cpu_busy_runtime_ns(
+                ax_runtime::task::sched::CpuId::new(cpu as u32),
+            )
+            .unwrap_or(0);
+        }
+        ax_driver::cpufreq::governor_poll(&busy);
+    }
 }

@@ -50,6 +50,28 @@ mod vm;
 
 pub mod config;
 
+/// Installs the host relay for guest `SMC` calls, which runs before the
+/// hypervisor forwards a call to the platform firmware.
+///
+/// A platform can expose one firmware channel that a passthrough guest also
+/// uses. The relay lets the host serialize that channel and answer the
+/// requests it must own itself, instead of letting both agents corrupt each
+/// other's messages. Without an installed relay every non-PSCI call is
+/// forwarded unchanged.
+pub fn install_smc_relay(relay: SmcRelay) {
+    #[cfg(target_arch = "aarch64")]
+    arch::aarch64::install_smc_relay(relay);
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = relay;
+}
+
+/// A host relay for guest `SMC` calls: the arguments of the call, and the reply
+/// registers when the host answers it itself.
+#[cfg(target_arch = "aarch64")]
+pub use arch::aarch64::SmcRelay;
+#[cfg(not(target_arch = "aarch64"))]
+pub type SmcRelay = fn(u64, u64, u64, u64) -> Option<(u64, u64, u64, u64)>;
+
 pub use ax_cpumask::CpuMask;
 pub use ax_std::os::arceos::task::sched::{RtPriority, SchedulePolicy};
 pub use axdevice::{SerialBackend, SerialBackendFactory};

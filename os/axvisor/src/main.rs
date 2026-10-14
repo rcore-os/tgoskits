@@ -76,6 +76,13 @@ fn main() {
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
+    // The platform firmware channel (SCMI) is a single shared-memory buffer
+    // that a passthrough guest can also program. Let the host own it: guest
+    // SMC calls carrying SCMI traffic are serialized with the host's own
+    // transactions, and the CPU clock writes stay with the host governor.
+    #[cfg(feature = "ax-driver")]
+    axvm::install_smc_relay(ax_driver::soc::scmi::relay_guest_smc);
+
     // Bridge guest virtio-net ports onto the selected host interface before any
     // guest device is created, so the host DHCP/console stack keeps owning the
     // wire and guest MACs are validated against the reserved host MACs.

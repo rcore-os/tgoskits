@@ -103,6 +103,8 @@ rockchip-dwmmc = [
     "rockchip-pm",
     "rockchip-soc",
     "dep:arm-scmi-rs",
+    # The shared SCMI module also caches the channel it relays guest calls on.
+    "dep:ax-lazyinit",
     "dep:dwmmc-host",
     "dep:rdif-clk",
     "dep:sdmmc-protocol",

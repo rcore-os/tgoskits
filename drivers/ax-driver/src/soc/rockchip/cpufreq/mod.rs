@@ -31,9 +31,7 @@
 //! `ax-runtime` worker serializes every later OPP request and thermal refresh.
 
 use alloc::{format, vec::Vec};
-#[cfg(feature = "rk3588-cpufreq-thermal-test")]
-use core::sync::atomic::AtomicI32;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use ax_lazyinit::OnceLock;
 use fdt_edit::{Fdt, NodeType, Phandle};
@@ -478,7 +476,38 @@ pub fn refresh_limits() -> Result<(), FrequencyError> {
     initialize_post_boot();
     let mut first_error = None;
     let mut previous = [soc_cpufreq::ThermalState::default(); 3];
-    let temperature = sensors::soc_temperature_millidegrees().ok();
+    let sample = sensors::soc_temperature_millidegrees();
+    let failed = sample.as_ref().err().map(|error| format!("{error:?}"));
+    let (last, temperature) =
+        soc_cpufreq::sample_reading(LAST_TEMPERATURE_MC.load(Ordering::Relaxed), sample.ok());
+    LAST_TEMPERATURE_MC.store(last, Ordering::Relaxed);
+    match failed {
+        Some(error) => {
+            // A passthrough guest that owns the shared TSADC leaves it in a
+            // configuration this read rejects, so the failure is a lasting
+            // property of that guest rather than a transient fault. Holding the
+            // last reading keeps the voltage rules and the 85 C cap alive; the
+            // hardware shutdown comparator stays armed by whichever agent
+            // programmed the sensor last.
+            if !TEMPERATURE_READ_FAILED.swap(true, Ordering::AcqRel) {
+                match temperature {
+                    Some(held) => warn!(
+                        "cpufreq: soc-thermal read failed: {error}; holding the last reading of \
+                         {held} mC"
+                    ),
+                    None => warn!(
+                        "cpufreq: soc-thermal read failed: {error}, and no reading has ever \
+                         succeeded; holding the conservative boot-rate limits until one does"
+                    ),
+                }
+            }
+        }
+        None => {
+            if TEMPERATURE_READ_FAILED.swap(false, Ordering::AcqRel) {
+                warn!("cpufreq: soc-thermal read recovered");
+            }
+        }
+    }
     for domain in [
         FrequencyDomain::Big0,
         FrequencyDomain::Big1,
@@ -655,6 +684,13 @@ impl Cluster {
 
 /// Set once both big-cluster boot rails have been confirmed.
 static GOV_READY: AtomicBool = AtomicBool::new(false);
+/// Last `soc-thermal` read outcome. The sensor is shared with passthrough
+/// guests, so a reconfiguration must be visible: while the read keeps failing
+/// every domain is held at the conservative boot-rate limits, unless a reading
+/// has already succeeded, in which case that one keeps the thermal rules alive.
+static TEMPERATURE_READ_FAILED: AtomicBool = AtomicBool::new(false);
+/// The most recent usable `soc-thermal` reading, in millidegrees.
+static LAST_TEMPERATURE_MC: AtomicI32 = AtomicI32::new(soc_cpufreq::NO_TEMPERATURE_MC);
 /// A failed transition can leave a safe but only partly applied state.
 static DOMAIN_READY: [AtomicBool; 3] = [const { AtomicBool::new(true) }; 3];
 /// The RK806 path must read back the boot rail before publishing A55 OPPs.

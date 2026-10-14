@@ -24,6 +24,12 @@ passthrough = []
 disabled = [
   # UART6 belongs exclusively to the Zephyr controller.
   { path = "/serial@feb90000" },
+  # A guest cannot lose the TSADC or its thermal zones: the CPU OPP table
+  # references `rockchip,pvtm-thermal-zone`, so removing them costs the guest
+  # every supported OPP and its whole CPUFreq stack. Axvisor therefore tolerates
+  # a guest re-programming the shared controller: the host CPUFreq driver treats
+  # an unusable temperature reading as "hold the last known good one" and only
+  # falls back to the boot-rate limits when no reading ever succeeded.
   # Axvisor owns the PCIe fabric used by the RTL8125 management interface.
   # Keep every PCIe PHY outside Linux even though the PCIe bridges themselves
   # are already filtered from an implicit root passthrough guest.

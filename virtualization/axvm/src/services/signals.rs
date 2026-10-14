@@ -274,6 +274,21 @@ impl RunSignals {
         self.active_mask.load(Ordering::Acquire)
     }
 
+    /// Marks vCPU `vcpu_id` as registered for tests that exercise flows which
+    /// require a live participant.
+    ///
+    /// Production code only reaches the active state through [`Self::register`]
+    /// with a real host wake handle, which a host test cannot construct. This
+    /// helper reuses the same validation and the same active bit so a test
+    /// fixture observes exactly the state `endpoint_is_active` reads.
+    #[cfg(test)]
+    pub(crate) fn mark_test_vcpu_active(&self, vcpu_id: usize) {
+        let bit = self
+            .vcpu_bit(vcpu_id)
+            .expect("test vCPU id must be inside the run bitmap");
+        self.active_mask.fetch_or(bit, Ordering::Release);
+    }
+
     fn vcpu_bit(&self, vcpu_id: usize) -> Option<usize> {
         (vcpu_id < self.vcpu_count)
             .then(|| 1usize.checked_shl(vcpu_id as u32))
