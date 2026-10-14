@@ -100,8 +100,7 @@ impl AxvmManager {
     }
 
     fn create_vm_from_toml_locked(&self, raw_cfg: &str) -> Result<(VmOperation<VmHandle>, bool)> {
-        let prepared =
-            crate::config::prepare_guest_vm(raw_cfg, self.cpu_freq_backend.clone())?;
+        let prepared = crate::config::prepare_guest_vm(raw_cfg, self.cpu_freq_backend.clone())?;
         let release_host_filesystem = prepared.release_host_filesystem;
         let operation = self.create_plan_locked(prepared.plan)?;
         Ok((operation, release_host_filesystem))

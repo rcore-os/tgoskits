@@ -547,8 +547,10 @@ Axvisor 启动阶段只索引 `/guest/builtin/configs`，不把归档中的配�
 需要开机启动的客户机通过宿主参数 `axvisor.vm_start=1,2` 选择；该参数应出现在
 QEMU `-append`、UEFI LoadOptions 或 U-Boot `bootargs`，不应写入 guest
 `[kernel].cmdline`。板卡用例的 `cmdline` 字段（或 `uboot_cmd` 中的
-`setenv bootargs`）就是宿主 bootargs 的完整唯一来源，必须携带 `root=`、
-`console=`、`earlycon` 等全部宿主参数和 selector；axbuild 不向板卡环境
+`setenv bootargs`）就是宿主 bootargs 的完整唯一来源，必须携带该板卡所需的
+全部宿主参数和 selector——接磁盘根的板卡要含 `root=`、`console=`、
+`earlycon` 等，纯 initramfs、无磁盘根切换的板卡（如 ASUS NUC15CRH 的
+x86_64 httpboot 用例）可以只含 selector；axbuild 不向板卡环境
 `${bootargs}` 或 base preset 隐式追加，本地 `test uboot` 与远端
 `test board` 路径都按该字段整体设置 bootargs。缺少参数表示零个 VM；
 `/guest` 下的动态 pool（排除
