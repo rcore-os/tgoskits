@@ -1,5 +1,6 @@
 use core::hint::spin_loop;
 
+use log::warn;
 use tock_registers::{interfaces::*, register_bitfields, register_structs, registers::*};
 
 use crate::{
@@ -412,11 +413,15 @@ impl DistributorReg {
     /// A route that already selects the requested target returns before that
     /// cycle: the distributor state cannot change, and masking a live source
     /// only adds jitter to its interrupt.
-    pub fn set_interrupt_route(&self, intid: u32, aff: Option<Affinity>) {
+    pub fn set_interrupt_route(
+        &self,
+        intid: u32,
+        aff: Option<Affinity>,
+    ) -> Result<(), &'static str> {
         // Check if this is a valid SPI in the standard range
         if !SPI_RANGE.contains(&intid) {
             // TODO: Check for Extended SPI support in TYPER2 register when extended range is used
-            return; // Only SPIs (32-1019) can be routed currently
+            return Ok(()); // Only SPIs (32-1019) can be routed currently
         }
 
         // Calculate IROUTER register index
@@ -424,7 +429,7 @@ impl DistributorReg {
         let router_idx = (intid - 32) as usize;
 
         if router_idx >= self.IROUTER.len() {
-            return; // Out of range for IROUTER registers
+            return Ok(()); // Out of range for IROUTER registers
         }
 
         let mut route_value = 0u64;
@@ -452,7 +457,7 @@ impl DistributorReg {
         // `None` stores the any-participating-PE mode, so the mode bit cannot
         // be confused with a specific affinity whose levels are all zero.
         if self.IROUTER[router_idx].get() & IROUTER_TARGET_MASK == route_value {
-            return;
+            return Ok(());
         }
         let was_enabled = self.ISENABLER.get_irq_bit(intid);
         if was_enabled {
@@ -462,16 +467,29 @@ impl DistributorReg {
             // still be retiring, but restore the enable bit: a source the guest
             // already allowed to interrupt must not stay masked forever, and
             // its previous route is still programmed.
-            if self.wait_for_rwp().is_err() {
+            if let Err(error) = self.wait_for_rwp() {
                 self.irq_enable(intid);
-                return;
+                warn!(
+                    "GICv3 SPI {intid} route update aborted while masking; affinity={aff:?}: \
+                     {error}"
+                );
+                return Err(error);
             }
         }
         self.IROUTER[router_idx].set(route_value);
+        let wait_result = if was_enabled {
+            self.wait_for_rwp()
+        } else {
+            Ok(())
+        };
         if was_enabled {
-            let _ = self.wait_for_rwp();
             self.irq_enable(intid);
         }
+        if let Err(error) = wait_result {
+            warn!("GICv3 SPI {intid} route update did not retire; affinity={aff:?}: {error}");
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Get interrupt routing information
@@ -560,7 +578,9 @@ impl DistributorReg {
         let current = Affinity::current();
         for i in SPI_RANGE.start..max_interrupts {
             // Set all SPIs to route to current CPU
-            self.set_interrupt_route(i, Some(current));
+            if let Err(error) = self.set_interrupt_route(i, Some(current)) {
+                warn!("GICv3 failed to route SPI {i} to {current:?}: {error}");
+            }
         }
     }
 
@@ -836,7 +856,7 @@ mod tests {
         // The guest owns the enable bit; the driver must not disturb it.
         regs.irq_enable(SPI);
 
-        regs.set_interrupt_route(SPI, Some(affinity(1)));
+        assert!(regs.set_interrupt_route(SPI, Some(affinity(1))).is_ok());
 
         assert_eq!(
             regs.ICENABLER[SPI_REG].get(),
@@ -858,7 +878,7 @@ mod tests {
         let regs = distributor.regs();
         regs.IROUTER[0].set(1u64 << 31);
 
-        regs.set_interrupt_route(SPI, Some(affinity(0)));
+        assert!(regs.set_interrupt_route(SPI, Some(affinity(0))).is_ok());
 
         assert_eq!(
             regs.IROUTER[0].get(),
@@ -866,7 +886,7 @@ mod tests {
             "specific routing must replace any-participating-PE mode"
         );
 
-        regs.set_interrupt_route(SPI, None);
+        assert!(regs.set_interrupt_route(SPI, None).is_ok());
 
         assert_eq!(
             regs.IROUTER[0].get(),
@@ -889,7 +909,7 @@ mod tests {
         const NEIGHBOUR_BIT: u32 = 1 << 1;
         regs.ISENABLER[SPI_REG].set(SPI_BIT | NEIGHBOUR_BIT);
 
-        regs.set_interrupt_route(SPI, Some(affinity(1)));
+        assert!(regs.set_interrupt_route(SPI, Some(affinity(1))).is_ok());
 
         assert_eq!(regs.IROUTER[0].get(), 1);
         assert_eq!(

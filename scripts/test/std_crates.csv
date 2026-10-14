@@ -44,6 +44,7 @@ some-serial
 virtio-gpu
 ax-arm-pl031
 ranges-ext
+arm-gic-driver
 x86-apic-driver
 ax-memory-set
 ax-cpumask
