@@ -264,6 +264,19 @@ pub(crate) fn run(
 
 impl Owner {
     fn command(&mut self, command: Command, exit: &ControlExit) -> bool {
+        // Reject before accepting a stop/reset/delete or replying to a guest
+        // reset. A policy refusal must not close admission or retire producers.
+        if matches!(
+            &command,
+            Command::Stop(..)
+                | Command::Reset(..)
+                | Command::GuestReset { .. }
+                | Command::Destroy(..)
+        ) && let Err(error) = self.require_stop_supported()
+        {
+            command.reject(error);
+            return false;
+        }
         let operation = command.id();
         self.current_operation = Some(operation);
         self.publish();

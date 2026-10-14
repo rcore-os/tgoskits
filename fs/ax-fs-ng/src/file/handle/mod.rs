@@ -384,6 +384,7 @@ mod tests {
     struct MetadataTrackingTestFile {
         filesystem: &'static dyn FilesystemOps,
         metadata_updates: Arc<AtomicUsize>,
+        read_record_size: Option<usize>,
     }
 
     impl MetadataTrackingTestFile {
@@ -391,6 +392,7 @@ mod tests {
             Self {
                 filesystem,
                 metadata_updates,
+                read_record_size: None,
             }
         }
     }
@@ -437,7 +439,11 @@ mod tests {
         }
 
         fn flags(&self) -> NodeFlags {
-            NodeFlags::empty()
+            if self.read_record_size.is_some() {
+                NodeFlags::NON_CACHEABLE
+            } else {
+                NodeFlags::empty()
+            }
         }
     }
 
@@ -456,6 +462,17 @@ mod tests {
 
     impl FileNodeOps for MetadataTrackingTestFile {
         fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+            if let Some(record_size) = self.read_record_size {
+                let record = offset as usize / record_size;
+                if record >= 3 {
+                    return Ok(0);
+                }
+                if buf.len() < record_size {
+                    return Err(VfsError::InvalidInput);
+                }
+                buf[..record_size].fill(b'A' + record as u8);
+                return Ok(record_size);
+            }
             if offset == 0
                 && let Some(byte) = buf.first_mut()
             {
@@ -547,5 +564,37 @@ mod tests {
 
         assert_eq!(metadata_updates.load(Ordering::Relaxed), 1);
         assert_eq!(DROP_METADATA_UPDATE_ATTEMPTS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn direct_read_preserves_progress_before_a_later_error() {
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem {
+            name: "direct-read-progress-test",
+            readonly: true,
+        }));
+        let mut node =
+            MetadataTrackingTestFile::new(&READONLY_TEST_FILESYSTEM, Arc::new(AtomicUsize::new(0)));
+        node.read_record_size = Some(32);
+        let location = Location::new(
+            Mountpoint::new_root(&filesystem),
+            test_entry(Arc::new(node)),
+        );
+        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+
+        // A first-record error must remain an error and leave the cursor intact.
+        let mut small = [b'?'; 16];
+        assert_eq!(file.read(&mut small[..]), Err(ax_io::Error::InvalidInput));
+        assert_eq!(small, [b'?'; 16]);
+
+        // Two records fit; failure on the third must report completed bytes.
+        let mut buffer = [b'?'; 80];
+        assert_eq!(file.read(&mut buffer[..]).unwrap(), 64);
+        assert_eq!(&buffer[..32], &[b'A'; 32]);
+        assert_eq!(&buffer[32..64], &[b'B'; 32]);
+        assert_eq!(&buffer[64..], &[b'?'; 16]);
+        let mut last = [0; 32];
+        assert_eq!(file.read(&mut last[..]).unwrap(), 32);
+        assert_eq!(last, [b'C'; 32]);
+        assert_eq!(file.read(&mut last[..]).unwrap(), 0);
     }
 }

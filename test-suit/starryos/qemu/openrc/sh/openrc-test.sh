@@ -36,6 +36,10 @@ depend() { need openrc-test-failure; }
 start() { touch /run/openrc-test-unexpected; }
 SERVICE
 chmod +x /etc/init.d/openrc-test-*
+# New service scripts may share the cached tree's second-resolution mtime.
+# Refresh explicitly so dependency checks use the services created above.
+stage=dependency-cache
+rc-update -u
 stage=service-start
 rc-service openrc-test-daemon start
 [ "$(cat /run/openrc-test-order)" = "$(printf 'dependency\ndaemon')" ]

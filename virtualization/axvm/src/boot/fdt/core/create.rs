@@ -88,6 +88,8 @@ fn strip_cpu_power_dependencies(guest: &mut FdtTree) -> AxVmResult {
         "clocks",
         "cpu-supply",
         "dynamic-power-coefficient",
+        "cpu-idle-states",
+        "next-level-cache",
         "mem-supply",
         "nvmem-cell-names",
         "nvmem-cells",

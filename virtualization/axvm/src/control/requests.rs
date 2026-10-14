@@ -394,7 +394,7 @@ impl Owner {
                             .ivc
                             .prepare_unpublish(self.shared.key(), args[0] as usize)?
                     };
-                    self.retire_ivc(operation, detach)?;
+                    self.close_ivc(operation, detach)?;
                     return Err(error);
                 }
                 Ok(0)
@@ -404,7 +404,7 @@ impl Owner {
                     .shared
                     .ivc
                     .prepare_unpublish(self.shared.key(), args[0] as usize)?;
-                self.retire_ivc(operation, detach)?;
+                self.close_ivc(operation, detach)?;
                 self.ivc_bindings.retain(|binding| {
                     !(binding.key().publisher == self.shared.key()
                         && binding.key().key == args[0] as usize)
@@ -417,7 +417,7 @@ impl Owner {
                     args[1] as usize,
                     self.shared.key(),
                 )?;
-                self.retire_ivc(operation, detach)?;
+                self.close_ivc(operation, detach)?;
                 self.ivc_bindings.retain(|binding| {
                     !(binding.key().publisher.vm_id() == args[0] as usize
                         && binding.key().key == args[1] as usize)
@@ -438,6 +438,33 @@ impl Owner {
                 format_args!("code={:#x}", code as u32),
             )),
         }
+    }
+
+    fn close_ivc(
+        &mut self,
+        operation: OperationId,
+        detach: ivc::IvcDetach<crate::HostPagingHandler>,
+    ) -> AxVmResult {
+        let run = self.run.as_ref().expect("IVC close run");
+        if detach.vm() != self.shared.key() || detach.run() != run.id {
+            return Err(AxVmError::StaleRun {
+                expected: detach.run(),
+                current: Some(run.id),
+            });
+        }
+        if !self.vm.config().pass_through_devices().is_empty() && self.state != VmStatus::Stopping {
+            // The manager retains the closed endpoint and aperture; the VM's
+            // mapping lease retains its backing. Stop/reset/delete must refuse
+            // before teardown until assigned DMA quiescence can be proven.
+            detach.retain_closed_mapping()?;
+            warn!(
+                "IVC endpoint closed; mapping retained until board reset for VM[{}] GPA={:#x}",
+                self.shared.key().vm_id(),
+                detach.range().start().as_usize(),
+            );
+            return Ok(());
+        }
+        self.retire_ivc(operation, detach)
     }
 
     fn retire_ivc(

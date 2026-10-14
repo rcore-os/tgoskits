@@ -463,6 +463,28 @@ impl<H: PagingHandler + 'static> IvcManager<H> {
         Err(missing_subscriber_error(publisher_vm_id, key, subscriber))
     }
 
+    /// Refuses physical retirement while a run still owns IVC endpoints.
+    /// Logical close does not remove ownership or prove assigned DMA is quiet.
+    /// This observation never closes an endpoint or invokes device callbacks.
+    pub(crate) fn require_no_endpoints(&self, run: RunId) -> AxVmResult<()> {
+        let table = self.channels.lock_unpoisoned();
+        for channel in table.values() {
+            let state = channel.lock_unpoisoned();
+            if state
+                .publisher
+                .iter()
+                .chain(state.subscriber.iter())
+                .any(|endpoint| endpoint.run == run)
+            {
+                return Err(AxVmError::unsupported(
+                    "stop VM",
+                    "assigned host devices retain IVC endpoints; board reset is required",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Closes every endpoint owned by `owner`, in either role, whether or not its
     /// guest mapping was ever installed.
     ///
@@ -905,6 +927,32 @@ impl<H: PagingHandler + 'static> IvcDetach<H> {
         self.run
     }
 
+    /// Confirms logical close while the owner retains the live mapping.
+    ///
+    /// No aperture or backing is released and no retirement revision is
+    /// fabricated. The endpoint remains discoverable by prepare_teardown.
+    pub(crate) fn retain_closed_mapping(&self) -> AxVmResult<()> {
+        let mut state = self.channel.lock_unpoisoned();
+        let exact = state.key == self.channel_key
+            && !state.retired
+            && state.endpoint(self.role).is_some_and(|endpoint| {
+                endpoint.vm == self.vm
+                    && endpoint.run == self.run
+                    && endpoint.closing
+                    && !endpoint.releasing
+            });
+        if !exact {
+            return Err(AxVmError::invalid_state(
+                "retain closed IVC mapping",
+                "endpoint is stale or already retiring",
+            ));
+        }
+        if self.role == EndpointRole::Publisher {
+            state.published = false;
+        }
+        Ok(())
+    }
+
     /// Releases the endpoint's guest aperture binding after the owning run has
     /// confirmed the retirement of `retired`.
     ///
@@ -1259,8 +1307,22 @@ mod tests {
         assert_eq!(subscriber_notify.pulses(), 0);
 
         // Unpublishing the publisher keeps the subscriber binding alive.
+        assert!(manager.require_no_endpoints(publisher_run).is_err());
+        assert!(manager.require_no_endpoints(subscriber_run).is_err());
+        assert!(
+            manager
+                .require_no_endpoints(RunId::new(publisher, 2))
+                .is_ok()
+        );
         let unpublish = manager.prepare_unpublish(publisher, 0x51).unwrap();
+        unpublish.retain_closed_mapping().unwrap();
+        assert!(manager.require_no_endpoints(publisher_run).is_err());
+        // Logical close must keep its aperture until physical retirement.
+        assert_eq!(publisher_aperture.outstanding(), 1);
+        assert_eq!(publisher_aperture.release_count(), 0);
+        assert_eq!(manager.prepare_teardown(publisher).unwrap().len(), 1);
         unpublish.commit(revision(publisher_run, 2)).unwrap();
+        assert!(manager.require_no_endpoints(publisher_run).is_ok());
         assert_eq!(publisher_aperture.outstanding(), 0);
         assert_eq!(publisher_aperture.release_count(), 1);
         assert_eq!(subscriber_aperture.outstanding(), 1);

@@ -1,0 +1,30 @@
+[base]
+id = 1
+name = "linux-ivc-publisher"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+[kernel]
+entry_point = 0x4008_0000
+kernel_load_addr = 0x4008_0000
+kernel_path = "/guest/ivc-test/linux/orangepi-5-plus"
+cmdline = "root=/dev/vda rw console=ttyS0,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 devtmpfs.mount=1 init=/bin/sh"
+dtb_load_addr = 0x4000_0000
+ramdisk_path = "/guest/ivc-test/linux/initramfs.cpio"
+ramdisk_load_addr = 0x8000_0000
+memory_regions = [[0x4000_0000, 0x5000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "linux-rootfs"
+model = "virtio-blk"
+path = "/guest/ivc-test/rootfs/rootfs-aarch64-busybox.img"
+filesystem = "ext4"
+
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"

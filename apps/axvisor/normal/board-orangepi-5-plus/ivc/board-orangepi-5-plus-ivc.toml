@@ -1,0 +1,166 @@
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 splash=verbose consoleblank=0 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 loglevel=8 usb-storage.quirks= cma=128M cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1'
+board_type = "OrangePi-5-Plus"
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "mkdir -p /tmp && insmod /root/axvisor.ko && echo IVC_LINUX_READY"
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+success_regex = ["(?m)^IVC_LINUX_READY\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "( /root/ivc-roundtrip publish 0x100 linux-to-zephyr zephyr-to-linux || echo IVC_LINK_FAILED ) >/tmp/linux-zephyr.log 2>&1 </dev/null &"
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018hvm console 3"
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "ivc subscriber"
+success_regex = ["(?m)^state=passed result=0\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "\u0018hvm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[1] console"
+shell_cmd = "i=0; while ! grep -q 'IVC_ROUNDTRIP_PASSED\\|IVC_ROUNDTRIP_FAILED' /tmp/linux-zephyr.log && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done; cat /tmp/linux-zephyr.log"
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+success_regex = ["(?m)^IVC_ROUNDTRIP_PASSED role=publish key=0x100 count=5\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "( /root/ivc-roundtrip publish 0x101 linux-to-starry starry-to-linux || echo IVC_LINK_FAILED ) >/tmp/linux-starry.log 2>&1 </dev/null &"
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018hvm console 2"
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = "mkdir -p /tmp; ( /usr/bin/ivc-roundtrip subscribe 1 0x101 linux-to-starry starry-to-linux || echo IVC_LINK_FAILED ) >/tmp/starry-linux.log 2>&1 </dev/null & i=0; while ! grep -q 'IVC_ROUNDTRIP_PASSED\\|IVC_ROUNDTRIP_FAILED' /tmp/starry-linux.log && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done; cat /tmp/starry-linux.log"
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+success_regex = ["(?m)^IVC_ROUNDTRIP_PASSED role=subscribe key=0x101 count=5\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = "\u0018hvm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[1] console"
+shell_cmd = "i=0; while ! grep -q 'IVC_ROUNDTRIP_PASSED\\|IVC_ROUNDTRIP_FAILED' /tmp/linux-starry.log && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done; cat /tmp/linux-starry.log"
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+success_regex = ["(?m)^IVC_ROUNDTRIP_PASSED role=publish key=0x101 count=5\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018hvm console 3"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[3] console"
+shell_cmd = "ivc ivc_demo"
+
+[[shell_check_steps]]
+shell_prefix = "ORANGEPI_ZEPHYR_IVC_DEMO_WAITING"
+shell_cmd = "\u0018hvm console 2"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[2] console"
+shell_cmd = "mkdir -p /tmp; ( /usr/bin/ivc-roundtrip subscribe 3 0x100 zephyr-to-starry starry-to-zephyr || echo IVC_LINK_FAILED ) >/tmp/starry-zephyr.log 2>&1 </dev/null & echo IVC_STARRY_ZEPHYR_PEER_STARTED"
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+success_regex = ["(?m)^IVC_STARRY_ZEPHYR_PEER_STARTED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = "\u0018hvm console 3"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[3] console"
+shell_cmd = "status"
+success_regex = ["(?m)^state=passed result=0\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "\u0018hvm console 2"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[2] console"
+shell_cmd = "cat /tmp/starry-zephyr.log"
+success_regex = ["(?m)^IVC_ROUNDTRIP_PASSED role=subscribe key=0x100 count=5\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = "\u0018hvm console 3"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[3] console"
+shell_cmd = "ivc subscriber 1000"
+success_regex = ["(?m)^elapsed_ms=1[0-9]{3} timeout_ms=1000\\r?\\nstate=failed result=-116\\s*$"]
+fail_regex = ["(?m)^state=passed result=0\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "ivc subscriber 30000"
+
+[[shell_check_steps]]
+shell_prefix = "TEST_RUNNING timeout_ms=30000"
+shell_cmd = "\u0003"
+success_regex = ["(?m)^elapsed_ms=(?:[0-9]{1,3}|[1-4][0-9]{3}) timeout_ms=30000\\r?\\nstate=canceled result=-140\\s*$"]
+fail_regex = ["(?m)^state=(?:passed|failed) result="]
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "ivc latency"
+success_regex = ["(?m)^state=passed result=0\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "\u0018hvm list"
+success_regex = ["(?im)^1\\s+linux-ivc-publisher\\s+running\\s+0\\s+1GB\\s+Rdy:1\\s*$", "(?im)^2\\s+starry-ivc-peer\\s+running\\s+0\\s+1GB\\s+Rdy:1\\s*$", "(?im)^3\\s+zephyr-orangepi-shell\\s+running\\s+0\\s+128MB\\s+Rdy:1\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
+
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 3"
+success_regex = ["unsupported VM operation stop VM: assigned host devices retain IVC endpoints; board reset is required"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "VM\\[3\\] stopped successfully"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm list"
+success_regex = ["(?im)^3\\s+zephyr-orangepi-shell\\s+running\\s+0\\s+128MB\\s+Rdy:1\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm reset 3"
+success_regex = ["unsupported VM operation stop VM: assigned host devices retain IVC endpoints; board reset is required"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete --force 3"
+success_regex = ["unsupported VM operation stop VM: assigned host devices retain IVC endpoints; board reset is required"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "VM\\[3\\] removed from VM list"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[3] console"
+shell_cmd = "ivc latency"
+success_regex = ["(?m)^state=passed result=0\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^state=(?:failed|canceled) result="]

@@ -90,15 +90,6 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         .base
         .id;
 
-    #[cfg(all(any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64"
-    )))]
-    let release_host_filesystem = vm_config_needs_host_filesystem_release(
-        &GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?,
-    );
-
     crate::manager::manager()
         .create_vm_from_toml_and_wait(raw_cfg)
         .with_context(|| format!("create VM[{vm_id}]"))?;
@@ -108,8 +99,20 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         target_arch = "x86_64",
         target_arch = "loongarch64"
     )))]
-    if release_host_filesystem {
-        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
+    {
+        let config = GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
+        let legacy_release = vm_config_needs_host_filesystem_release(&config);
+        let snapshot = crate::manager::manager().require_vm(vm_id)?.snapshot();
+        let release_host_filesystem =
+            if ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block) {
+                axvm::host::storage::guest_uses_host_block_controller(&snapshot.description)
+                    .unwrap_or(legacy_release)
+            } else {
+                legacy_release
+            };
+        if release_host_filesystem {
+            HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
+        }
     }
 
     Ok(vm_id)

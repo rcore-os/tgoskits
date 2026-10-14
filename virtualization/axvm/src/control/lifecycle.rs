@@ -233,7 +233,17 @@ impl Owner {
         Ok(())
     }
 
+    pub(super) fn require_stop_supported(&self) -> AxVmResult {
+        if !self.vm.config().pass_through_devices().is_empty()
+            && let Some(run) = &self.run
+        {
+            self.shared.ivc.require_no_endpoints(run.id)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn stop(&mut self, operation: OperationId) -> AxVmResult {
+        self.require_stop_supported()?;
         let result = self.stop_run(operation);
         if let Err(error) = &result {
             self.record_failure(error.clone());

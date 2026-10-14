@@ -48,3 +48,6 @@ pub fn prepare_block_passthrough_device() {
     #[cfg(target_arch = "x86_64")]
     arceos::prepare_qemu_block_passthrough_device();
 }
+
+#[cfg(any(feature = "host-fs", test))]
+pub mod storage;

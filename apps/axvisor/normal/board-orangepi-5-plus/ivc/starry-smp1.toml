@@ -1,0 +1,40 @@
+[base]
+id = 2
+name = "starry-ivc-peer"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x400]
+
+[kernel]
+entry_point = 0x4008_0000
+kernel_load_addr = 0x4008_0000
+kernel_path = "/guest/ivc-test/starry/orangepi-5-plus"
+cmdline = "rw earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait cma=128M init=/bin/sh"
+dtb_load_addr = 0x4000_0000
+
+memory_regions = [[0x4000_0000, 0x4000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = [
+  { path = "/serial@feb90000" },
+  { path = "/pcie@fe150000" },
+  { path = "/pcie@fe160000" },
+  { path = "/pcie@fe170000" },
+  { path = "/pcie@fe180000" },
+  { path = "/pcie@fe190000" },
+  { path = "/phy@fee00000" },
+  { path = "/phy@fee10000" },
+  { path = "/phy@fee20000" },
+  { path = "/phy@fee80000" },
+]
+
+[[devices.virtual]]
+id = "starry-rootfs"
+model = "virtio-blk"
+path = "/guest/ivc-test/rootfs/rootfs-aarch64-orangepi-jammy.img"
+filesystem = "ext4"
+
+[[devices.virtual]]
+id = "ivc0"
+model = "ivc-channel"
