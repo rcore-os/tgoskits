@@ -122,6 +122,11 @@ async fn prepare_default_qemu_app_rootfs(
     inject::set_directory_owner_and_mode(&run.rootfs_path, "/root", 0, 0, 0o700)?;
 
     let prepare_result = (|| -> anyhow::Result<()> {
+        // App prebuilds run against a copied rootfs, so the generic test asset
+        // preparation hook does not get a chance to select the CI mirror. Keep
+        // the guest repository aligned with STARRY_APK_REGION before a
+        // prebuild extracts the image and installs its packages.
+        rootfs::ensure_apk_region_in_rootfs(&run.rootfs_path)?;
         reset_dir(&run.staging_root)?;
         reset_dir(&run.overlay_dir)?;
 

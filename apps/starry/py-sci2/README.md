@@ -67,6 +67,13 @@ Statsmodels 地毯的 Logit 混淆表优先真调 `pred_table()`；conda-forge �
 捕获 stdout/stderr，只在无法导入该入口时退回子进程调用；顶层帮助的等价拼写探测也复用同一个入口。因此每条
 命令仍然是独立一次调用、独立检查返回值与输出，只是不再重复付出启动开销。
 
+抽样边界是有意固定的：只抽查帮助文本中最能区分命令形态的 `info`、`config`、`install`、`env`、`run`、
+`search`、`package`、`repoquery`，未抽查的顶层命令仍通过 `create/remove/clean/env/run/compare/search/notices/
+doctor/package/repoquery` 的真实调用覆盖。该集合覆盖帮助解析、配置往返、求解预览、环境管理、命令执行、
+索引查询和插件查询；它不声称逐一验证 conda 的全部插件或网络上传命令。aarch64 的
+`numpy.ravel_multi_index` 兼容回退也只处理 Matplotlib `GridSpec` 实际传入的整数坐标、正维度、C-order、
+`mode="raise"` 组合，其他参数保持调用原生实现并继续失败，这样不会把回退扩大成通用 NumPy 替代品。
+
 ## glibc-on-StarryOS 机制
 
 conda 栈的每个二进制都是 glibc 动态链接的 aarch64/x86_64 ELF，其 ELF 解释器烘焙为

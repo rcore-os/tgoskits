@@ -19,7 +19,10 @@ comparison (raw-frame reader, PSNR, SSIM, radix-2 FFT, SHA-256, PTS/drift math) 
      documented bounded tolerance of golden `luma8x8_hex` (32 gray levels per tile, mean absolute
      deviation <= 8; swscale's bicubic/gray kernels are not byte-stable across architectures and
      FFmpeg builds), and threshold each pixel to B/W (Rec.601 luma >= 128) and assert the white-pixel
-     ratio == the golden ratio within 1e-4.
+     ratio == the golden ratio within 1e-4. The bound is deliberately limited to 32/255 per tile
+     and 8/255 on average: it absorbs the observed rounding difference between the host FFmpeg
+     6.1.1 golden and the target FFmpeg 8.1.2 path without allowing a blurred, shifted, or uniform
+     frame to pass; the independent rgb24 SHA and silhouette-ratio checks remain exact.
    - *Synthetic testsrc leg* (always runs, no asset): `smptebars` seven-bar closed-form colors at known
      columns; a C-synthesized rgb24 gradient and checkerboard pushed through `ffv1` (lossless) and
      asserted byte-identical + closed-form linear ramp on decode.

@@ -1713,11 +1713,20 @@ impl SimpleDirOps for ThreadDir {
                             }
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
+                            let was_namespace_root = cred.euid == 0;
                             cred.uid = orig;
                             cred.euid = orig;
                             cred.suid = orig;
                             cred.fsuid = orig;
-                            if orig == 0 {
+                            if orig == 0 || was_namespace_root {
+                                // A task that was root in the newly-created
+                                // user namespace keeps that namespace's
+                                // capabilities after its map is installed.
+                                // The simplified credential model stores the
+                                // mapped numeric ID directly, so retain the
+                                // capability sets here to preserve the
+                                // namespace-root semantics needed by mount
+                                // and UTS operations during sandbox setup.
                                 let mask = Cred::cap_mask();
                                 cred.cap_permitted = mask;
                                 cred.cap_effective = mask;
