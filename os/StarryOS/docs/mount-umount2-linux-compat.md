@@ -780,6 +780,17 @@ loop 挂载持有者（mount holder）落地后，有三处行为与 Linux v6.12
   因此这里“先释放、后报错”，并且只在提交被接受时才 `notify_mount_namespace_changed()`：提交
   失败的挂载并没有卸载，不能提前通知 namespace。
 
+### 9.4 用户命名空间凭据能力范围
+
+- StarryOS：`/proc/<pid>/uid_map` 与 `gid_map` 当前把映射后的数字 ID 写入线程凭据，
+  并为命名空间内的 root 保留能力集合；能力检查仍读取线程凭据，尚未像 Linux 那样把每项
+  capability 绑定到对应的 user namespace。
+- Linux v6.12：`ns_capable()` 和 `capable_wrt_inode_uidgid()` 会同时检查 capability
+  所属的 user namespace，子命名空间的 root 不能直接获得初始命名空间资源的权限。
+- 影响范围：当前兼容路径可能出现“非 root 数字 ID + namespace-root 能力”的组合；需要在
+  初始命名空间中执行的 `setns` 等路径仍额外检查 namespace 身份。更细粒度的 capability
+  作用域需要在凭据结构中保存 user namespace，并统一替换当前的全局 capability 查询。
+
 ## 10. 参考
 
 - [mount(2) - Linux manual page](https://man7.org/linux/man-pages/man2/mount.2.html)
