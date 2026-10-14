@@ -264,14 +264,16 @@ impl Owner {
             self.state = VmStatus::Stopped;
             return Ok(());
         }
-        // Stop admission before teardown and clear the exact run generation
-        // immediately. If a later teardown step fails, this retired run must
-        // still be unable to influence host CPU-frequency policy.
+        // Retire the exact run generation before teardown. If a later teardown
+        // step fails, this retired run must still be unable to influence host
+        // CPU-frequency policy. The binding is released from `close()` once
+        // every vCPU has stopped, so guest reads of the current performance
+        // keep being served while the guest is still running.
         self.run
             .as_ref()
             .expect("stopping run")
             .ports
-            .clear_cpu_freq_hints();
+            .retire_cpu_freq_hints();
         self.state = VmStatus::Stopping;
         self.publish();
         let run = self.run.as_mut().expect("stopping run");

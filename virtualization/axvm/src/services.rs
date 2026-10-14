@@ -425,17 +425,32 @@ impl DevicePorts {
     }
 
     pub(crate) fn close(&self) {
-        self.clear_cpu_freq_hints();
+        self.retire_cpu_freq_hints();
+        self.release_cpu_freq_binding();
         self.signals.close_interrupts();
     }
 
-    /// Remove this run's host CPU-frequency hints without closing device
-    /// signals. Stop uses this before teardown so a failed cleanup cannot
-    /// leave a retired run affecting a later VM generation.
-    pub(crate) fn clear_cpu_freq_hints(&self) {
+    /// Retires this run's host CPU-frequency hints without closing device
+    /// signals. Stop uses this before teardown so a failed cleanup cannot leave
+    /// a retired run raising the host CPU-frequency floor.
+    ///
+    /// The binding is deliberately kept: the guest may still read the current
+    /// performance while its vCPUs are stopping, and an error on that read is
+    /// reported as a vCPU fault.
+    pub(crate) fn retire_cpu_freq_hints(&self) {
         let run = self.signals.run_id();
         if let Some(backend) = &self.cpu_freq {
-            backend.clear(run.vm().vm_id(), run.generation());
+            backend.retire(run.vm().vm_id(), run.generation());
+        }
+    }
+
+    /// Releases this run's host CPU-frequency binding. Only valid once every
+    /// vCPU of the run has returned and retired, so no device access can
+    /// observe the missing binding.
+    pub(crate) fn release_cpu_freq_binding(&self) {
+        let run = self.signals.run_id();
+        if let Some(backend) = &self.cpu_freq {
+            backend.unbind(run.vm().vm_id(), run.generation());
         }
     }
 
@@ -629,8 +644,12 @@ mod cpu_freq_port_tests {
             Ok(512)
         }
 
-        fn clear(&self, vm_id: VMId, run_generation: u64) {
-            self.push(format!("clear {vm_id} {run_generation}"));
+        fn retire(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("retire {vm_id} {run_generation}"));
+        }
+
+        fn unbind(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("unbind {vm_id} {run_generation}"));
         }
 
         fn suspend(&self, vm_id: VMId, run_generation: u64) {
@@ -670,7 +689,9 @@ mod cpu_freq_port_tests {
             ))
         }
 
-        fn clear(&self, _vm_id: VMId, _run_generation: u64) {}
+        fn retire(&self, _vm_id: VMId, _run_generation: u64) {}
+
+        fn unbind(&self, _vm_id: VMId, _run_generation: u64) {}
 
         fn suspend(&self, _vm_id: VMId, _run_generation: u64) {}
 
@@ -684,7 +705,7 @@ mod cpu_freq_port_tests {
     }
 
     #[test]
-    fn device_ports_bind_clear_suspend_and_resume_one_run_generation() {
+    fn device_ports_bind_retire_suspend_and_resume_one_run_generation() {
         let backend = Arc::new(RecordingBackend::default());
         let ports = ports(7, Some(backend.clone()));
         ports
@@ -694,8 +715,8 @@ mod cpu_freq_port_tests {
             ports.current_performance(DeviceId::new(1), DeviceVcpuId::new(0), 3),
             Ok(512)
         );
-        ports.clear_cpu_freq_hints();
-        ports.clear_cpu_freq_hints();
+        ports.retire_cpu_freq_hints();
+        ports.retire_cpu_freq_hints();
         ports.suspend().unwrap();
         ports.resume().unwrap();
         ports.close();
@@ -705,37 +726,44 @@ mod cpu_freq_port_tests {
                 "bind 1 7",
                 "set 1 7 0 3 900",
                 "current 1 7 0 3",
-                "clear 1 7",
-                "clear 1 7",
+                "retire 1 7",
+                "retire 1 7",
                 "suspend 1 7",
                 "resume 1 7",
-                "clear 1 7",
+                "retire 1 7",
+                "unbind 1 7",
             ]
         );
     }
 
+    /// Stop retires the generation while its vCPUs may still be running guest
+    /// code, so the binding must survive until `close()`.
     #[test]
-    fn clearing_one_run_generation_does_not_bind_or_clear_another() {
+    fn retiring_one_run_generation_keeps_its_binding_until_close() {
         let backend = Arc::new(RecordingBackend::default());
         let first = ports(1, Some(backend.clone()));
         first
             .set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 1, 256)
             .unwrap();
-        first.close();
+        first.retire_cpu_freq_hints();
         let second = ports(2, Some(backend.clone()));
         second
             .set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 1, 1024)
             .unwrap();
         second.close();
+        first.close();
         assert_eq!(
             backend.events(),
             [
                 "bind 1 1",
                 "set 1 1 0 1 256",
-                "clear 1 1",
+                "retire 1 1",
                 "bind 1 2",
                 "set 1 2 0 1 1024",
-                "clear 1 2",
+                "retire 1 2",
+                "unbind 1 2",
+                "retire 1 1",
+                "unbind 1 1",
             ]
         );
     }

@@ -19,7 +19,7 @@ AxVisor 通过 `qemu,virtual-cpufreq` 为 Linux 客户机提供归一化性能�
 | `0x10` | 读 | 读取所选归一化性能值 |
 | `0x14` | 读 | 宿主调频域 ordinal |
 
-`DevicePorts` 为每次 `RunId` 创建 `GuestCpuFreqPort`。`set_performance` 将 `vm_id + run_generation + vcpu_id + domain` 传给 `GuestCpuFreqBackend`；`DevicePorts::close` 在 stop、destroy 或准备失败时清除同一 generation 的所有提示。旧 run 的请求因此不能影响复用同一数字 VM ID 的新 run。
+`DevicePorts` 为每次 `RunId` 创建 `GuestCpuFreqPort`。`set_performance` 将 `vm_id + run_generation + vcpu_id + domain` 传给 `GuestCpuFreqBackend`；停机和失败路径先 retire 同一 generation（提示立即退出宿主聚合），只有 vCPU 全部退出后由 `close` 解除绑定。retired 但未解除绑定的 run 仍然服务 `CUR_PERF` 读，因此停机窗口内不会把正常停机变成 vCPU Fault；旧 run 的请求也不能影响复用同一数字 VM ID 的新 run。
 
 ### 1.2 宿主聚合策略
 
@@ -47,7 +47,8 @@ sequenceDiagram
 客户机性能表由 `ax-runtime::cpufreq::guest_performance_table` 根据完整硬件 OPP 表生成，
 同一模块的 `guest_performance_index` 按该公式把 `SET_PERF` 写回原索引；AxVisor 适配层只调用表入口。
 宿主策略或 `refresh_limits()` 失败时，`guest_hint_performance` 仍返回该域上一次确认的归一化值，
-策略线程只写日志、保持当前频率。Linux `virt-cpufreq` 每个调度 tick 都会读 `CUR_PERF`，
+策略线程只写日志、保持当前频率；run 在停机 retire 之后、绑定解除之前保持同一读语义。
+Linux `virt-cpufreq` 每个调度 tick 都会读 `CUR_PERF`，
 MMIO 读错误会经设备模型变成 vCPU Fault 并停止整个 VM run，因此瞬时宿主失败不能出现在读路径上。
 热控降低上限并在下一轮成功确认后，归一化值只能下降。v1 的 `domain` 是 host domain ordinal，
 配置层从 `phys_cpu_sets` 推导并拒绝跨 A55、big0、big1 的 vCPU 映射。
@@ -103,8 +104,8 @@ QEMU/AArch64 只验证 FDT、MMIO bank、非法值和 Linux driver probe；RK358
 带 virtual-cpufreq 前端的客户机 probe 中同时观察，以区分设备模型错误和宿主 OPP 失败。
 
 - `SET_PERF` 为 `0` 或大于 `1024`、未对齐访问、未知寄存器和越界 bank 必须返回 typed device error。
-- 两个 VM 的 hint 必须按 domain 取最大值；清除旧 generation 后，旧请求不能在 worker 下一轮重新出现。
-- 热控收紧后，客户机读到的 `CUR_PERF` 按完整参考表下降；宿主策略瞬时失败时仍返回上一次确认值，VM 继续运行。越界 `SET_PERF` 和未绑定 run 仍返回 typed device error。
+- 两个 VM 的 hint 必须按 domain 取最大值；retire 旧 generation 后，旧请求不能在 worker 下一轮重新出现，该 generation 随后的 `SET_PERF` 也不能重新抬高宿主下限。
+- 热控收紧后，客户机读到的 `CUR_PERF` 按完整参考表下降；宿主策略瞬时失败时仍返回上一次确认值，VM 继续运行。retired 但尚未解除绑定的 run 在 vCPU 停止前仍服务 `CUR_PERF` 读；越界 `SET_PERF` 和未绑定 run 仍返回 typed device error。
 - 缺少 Linux virtual-cpufreq 前端时只报告 `CPUFREQ_VIRT_UNAVAILABLE_HOST_PERF`，回滚到 stock 6.1.99 + host-performance profile 不需要该设备。
 
 ### 3.2 实体板入口

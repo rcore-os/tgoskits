@@ -115,8 +115,18 @@ pub trait GuestCpuFreqBackend: Send + Sync {
         domain: u32,
     ) -> Result<u32, GuestCpuFreqError>;
 
-    /// Removes every hint belonging to one exact execution generation.
-    fn clear(&self, vm_id: VMId, run_generation: u64);
+    /// Retires one exact execution generation.
+    ///
+    /// Its hints stop contributing to host policy immediately, while the
+    /// binding stays so a guest read of the current performance keeps being
+    /// served until the run is unbound.
+    fn retire(&self, vm_id: VMId, run_generation: u64);
+
+    /// Releases one exact execution generation's binding.
+    ///
+    /// Callers must only use this once no vCPU of that run can access the
+    /// device again.
+    fn unbind(&self, vm_id: VMId, run_generation: u64);
 
     /// Temporarily removes a paused run from host aggregation while retaining
     /// its desired values for a subsequent resume.

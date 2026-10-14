@@ -427,6 +427,47 @@ mod tests {
     }
 
     #[test]
+    fn mmio_bank_layout_and_fdt_node_are_the_declared_abi() {
+        let model = VirtualCpuFreqModel {
+            domain: 1,
+            vcpu_count: 2,
+            performance_table: vec![256, 512, 1024],
+        };
+        let requirements = model.requirements().unwrap();
+        assert_eq!(requirements.entries().len(), 1);
+        let DeviceRequirement::Mmio {
+            slot,
+            size,
+            alignment,
+            ..
+        } = &requirements.entries()[0]
+        else {
+            panic!("virtual CPU frequency device declares one MMIO window");
+        };
+        // Upstream addresses a vCPU bank as `cpu * PER_CPU_OFFSET`, so the
+        // window length and its stride are a binary interface contract.
+        assert_eq!(slot.as_str(), MMIO_SLOT);
+        assert_eq!(*size, VCPU_STRIDE * 2);
+        assert_eq!(*alignment, VCPU_STRIDE);
+
+        let firmware = model.firmware();
+        let [FdtContributionSpec::Conventional(node)] = firmware
+            .fdt()
+            .expect("virtual CPU frequency device describes FDT")
+        else {
+            panic!("virtual CPU frequency device contributes one conventional FDT node");
+        };
+        assert_eq!(node.compatible(), &[String::from("qemu,virtual-cpufreq")]);
+        assert_eq!(node.register_slots().len(), 1);
+        assert_eq!(node.register_slots()[0].as_str(), MMIO_SLOT);
+        assert!(node.properties().iter().any(|property| matches!(
+            property,
+            DeviceFirmwareProperty::String { name, value }
+                if name.as_str() == "status" && value.as_str() == "okay"
+        )));
+    }
+
+    #[test]
     fn exposes_upstream_register_banks_and_forwards_set_perf() {
         let device = device();
         let mut context = TestContext {

@@ -408,7 +408,9 @@ impl Owner {
         if let Some(run) = &mut self.run {
             // Confirmation waits observe this failure as well as snapshots.
             // A failed reaper may have no remaining task to emit another event.
-            run.ports.clear_cpu_freq_hints();
+            // Retiring keeps a still-running vCPU's device reads served; the
+            // binding is released once the run is closed.
+            run.ports.retire_cpu_freq_hints();
             run.failure.get_or_insert(error);
             run.admission.store(false, Ordering::Release);
             run.signals.close_interrupts();
@@ -423,8 +425,10 @@ impl Owner {
             }
         } else if let Some(ports) = &self.preparing_ports {
             // Preparation may have bound a run generation before publishing a
-            // RunState. Clear that capability on a failed construction too.
-            ports.clear_cpu_freq_hints();
+            // RunState. No vCPU of a never-published run can reach the device,
+            // so that capability is retired and released outright.
+            ports.retire_cpu_freq_hints();
+            ports.release_cpu_freq_binding();
         }
         self.shared.publish_run_services(None);
     }

@@ -146,8 +146,12 @@ impl GuestCpuFreqBackend for GuestCpuFreqService {
             .map_err(map_frequency_error)
     }
 
-    fn clear(&self, vm_id: VMId, run_generation: u64) {
-        cpufreq::clear_guest_hints(vm_id, run_generation);
+    fn retire(&self, vm_id: VMId, run_generation: u64) {
+        cpufreq::retire_guest_run(vm_id, run_generation);
+    }
+
+    fn unbind(&self, vm_id: VMId, run_generation: u64) {
+        cpufreq::unbind_guest_run(vm_id, run_generation);
     }
 
     fn suspend(&self, vm_id: VMId, run_generation: u64) {

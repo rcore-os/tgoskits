@@ -101,6 +101,158 @@ struct GuestHint {
     suspended: bool,
 }
 
+impl GuestHint {
+    fn belongs_to(&self, vm_id: usize, run_generation: u64) -> bool {
+        self.vm_id == vm_id && self.run_generation == run_generation
+    }
+}
+
+/// One VM execution generation admitted to the host aggregation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GuestRun {
+    vm_id: usize,
+    run_generation: u64,
+    /// A retiring run no longer contributes hints. Its binding stays until the
+    /// run is unbound so guest reads keep being served while its vCPUs are
+    /// still executing guest code.
+    retiring: bool,
+}
+
+impl GuestRun {
+    fn belongs_to(&self, vm_id: usize, run_generation: u64) -> bool {
+        self.vm_id == vm_id && self.run_generation == run_generation
+    }
+}
+
+/// Run-scoped guest requests owned by the single host policy worker.
+///
+/// This registry is the only owner of the "may this run influence host policy"
+/// decision, so the guest MMIO path never derives it from VM lifecycle state.
+#[derive(Default)]
+struct GuestRequests {
+    hints: Vec<GuestHint>,
+    runs: Vec<GuestRun>,
+}
+
+impl GuestRequests {
+    const fn new() -> Self {
+        Self {
+            hints: Vec::new(),
+            runs: Vec::new(),
+        }
+    }
+
+    /// Admits one run generation. Binding is idempotent.
+    fn bind(&mut self, vm_id: usize, run_generation: u64) {
+        if !self.serves(vm_id, run_generation) {
+            self.runs.push(GuestRun {
+                vm_id,
+                run_generation,
+                retiring: false,
+            });
+        }
+    }
+
+    /// Reports whether this generation is still bound to the host worker.
+    ///
+    /// A retiring run stays bound: Linux reads the current performance on every
+    /// scheduler tick, and an MMIO error on that path faults the vCPU.
+    fn serves(&self, vm_id: usize, run_generation: u64) -> bool {
+        self.runs
+            .iter()
+            .any(|run| run.belongs_to(vm_id, run_generation))
+    }
+
+    /// Retires one generation: its hints stop contributing to host policy
+    /// immediately, while the binding stays until the run is unbound.
+    fn retire(&mut self, vm_id: usize, run_generation: u64) {
+        self.hints
+            .retain(|hint| !hint.belongs_to(vm_id, run_generation));
+        if let Some(run) = self
+            .runs
+            .iter_mut()
+            .find(|run| run.belongs_to(vm_id, run_generation))
+        {
+            run.retiring = true;
+        }
+    }
+
+    /// Releases one generation once no vCPU of that run can access the device.
+    fn unbind(&mut self, vm_id: usize, run_generation: u64) {
+        self.hints
+            .retain(|hint| !hint.belongs_to(vm_id, run_generation));
+        self.runs
+            .retain(|run| !run.belongs_to(vm_id, run_generation));
+    }
+
+    /// Stores one normalized hint.
+    ///
+    /// A retiring generation accepts the request without recording it: the vCPU
+    /// that issued it may still be running guest code during teardown, and
+    /// reporting an MMIO error there would fault that vCPU and misattribute the
+    /// stop reason.
+    fn publish(
+        &mut self,
+        vm_id: usize,
+        run_generation: u64,
+        vcpu_id: usize,
+        domain: usize,
+        performance: u32,
+    ) -> Result<(), FrequencyError> {
+        let Some(run) = self
+            .runs
+            .iter()
+            .find(|run| run.belongs_to(vm_id, run_generation))
+        else {
+            return Err(FrequencyError::NotReady);
+        };
+        if run.retiring {
+            return Ok(());
+        }
+        let performance = performance.clamp(1, GUEST_MAX_PERFORMANCE);
+        if let Some(existing) = self.hints.iter_mut().find(|hint| {
+            hint.vm_id == vm_id
+                && hint.run_generation == run_generation
+                && hint.vcpu_id == vcpu_id
+                && hint.domain == domain
+        }) {
+            existing.performance = performance;
+        } else {
+            self.hints.push(GuestHint {
+                vm_id,
+                run_generation,
+                vcpu_id,
+                domain,
+                performance,
+                suspended: false,
+            });
+        }
+        Ok(())
+    }
+
+    /// Temporarily excludes one run from aggregation while retaining its values.
+    fn suspend(&mut self, vm_id: usize, run_generation: u64) {
+        for hint in self
+            .hints
+            .iter_mut()
+            .filter(|hint| hint.belongs_to(vm_id, run_generation))
+        {
+            hint.suspended = true;
+        }
+    }
+
+    /// Re-enables one run's retained hints.
+    fn resume(&mut self, vm_id: usize, run_generation: u64) {
+        for hint in self
+            .hints
+            .iter_mut()
+            .filter(|hint| hint.belongs_to(vm_id, run_generation))
+        {
+            hint.suspended = false;
+        }
+    }
+}
+
 struct CpuBusy {
     cpu: usize,
     last_ns: u64,
@@ -109,8 +261,7 @@ struct CpuBusy {
 static STARTED: AtomicBool = AtomicBool::new(false);
 static DOMAIN_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 static REQUESTS: Mutex<VecDeque<Request>> = Mutex::new(VecDeque::new());
-static GUEST_HINTS: Mutex<Vec<GuestHint>> = Mutex::new(Vec::new());
-static GUEST_RUNS: Mutex<Vec<(usize, u64)>> = Mutex::new(Vec::new());
+static GUEST_REQUESTS: Mutex<GuestRequests> = Mutex::new(GuestRequests::new());
 static GUEST_DOMAIN_EFFECTIVE: Mutex<Vec<Option<u32>>> = Mutex::new(Vec::new());
 static WAKE: WaitQueue = WaitQueue::new();
 
@@ -209,12 +360,7 @@ pub fn seed_guest_domain_performance(
 
 /// Marks one VM execution generation as eligible to publish/read hints.
 pub fn bind_guest_run(vm_id: usize, run_generation: u64) {
-    let mut runs = GUEST_RUNS.lock();
-    if !runs.iter().any(|(bound_vm, bound_generation)| {
-        *bound_vm == vm_id && *bound_generation == run_generation
-    }) {
-        runs.push((vm_id, run_generation));
-    }
+    GUEST_REQUESTS.lock().bind(vm_id, run_generation);
 }
 
 /// Publishes or replaces one normalized guest hint without waiting for a
@@ -233,93 +379,60 @@ pub fn publish_guest_hint(
     if domain >= DOMAIN_COUNT.load(Ordering::Acquire) {
         return Err(FrequencyError::InvalidDomain);
     }
-    if !GUEST_RUNS
+    GUEST_REQUESTS
         .lock()
-        .iter()
-        .any(|(bound_vm, bound_generation)| {
-            *bound_vm == vm_id && *bound_generation == run_generation
-        })
-    {
-        return Err(FrequencyError::NotReady);
-    }
-    let mut hints = GUEST_HINTS.lock();
-    if let Some(existing) = hints.iter_mut().find(|hint| {
-        hint.vm_id == vm_id
-            && hint.run_generation == run_generation
-            && hint.vcpu_id == vcpu_id
-            && hint.domain == domain
-    }) {
-        existing.performance = performance.clamp(1, GUEST_MAX_PERFORMANCE);
-    } else {
-        hints.push(GuestHint {
-            vm_id,
-            run_generation,
-            vcpu_id,
-            domain,
-            performance: performance.clamp(1, GUEST_MAX_PERFORMANCE),
-            suspended: false,
-        });
-    }
-    drop(hints);
+        .publish(vm_id, run_generation, vcpu_id, domain, performance)?;
     WAKE.notify_one();
     Ok(())
 }
 
-/// Removes all hints for one exact VM execution generation.
-pub fn clear_guest_hints(vm_id: usize, run_generation: u64) {
-    GUEST_HINTS
-        .lock()
-        .retain(|hint| hint.vm_id != vm_id || hint.run_generation != run_generation);
-    GUEST_RUNS.lock().retain(|(bound_vm, bound_generation)| {
-        *bound_vm != vm_id || *bound_generation != run_generation
-    });
+/// Retires one exact VM execution generation.
+///
+/// Stop calls this before teardown, so a failed cleanup cannot leave a retired
+/// run raising the host CPU-frequency floor. The binding is kept until
+/// [`unbind_guest_run`], because the guest may still read `CUR_PERF` while its
+/// vCPUs are stopping.
+pub fn retire_guest_run(vm_id: usize, run_generation: u64) {
+    GUEST_REQUESTS.lock().retire(vm_id, run_generation);
+    WAKE.notify_one();
+}
+
+/// Releases one exact VM execution generation.
+///
+/// The caller must only use this once every vCPU of the run has stopped, so no
+/// device access can observe the missing binding.
+pub fn unbind_guest_run(vm_id: usize, run_generation: u64) {
+    GUEST_REQUESTS.lock().unbind(vm_id, run_generation);
     WAKE.notify_one();
 }
 
 /// Temporarily excludes one run from aggregation while retaining its desired
 /// values for resume.
 pub fn suspend_guest_hints(vm_id: usize, run_generation: u64) {
-    for hint in GUEST_HINTS
-        .lock()
-        .iter_mut()
-        .filter(|hint| hint.vm_id == vm_id && hint.run_generation == run_generation)
-    {
-        hint.suspended = true;
-    }
+    GUEST_REQUESTS.lock().suspend(vm_id, run_generation);
     WAKE.notify_one();
 }
 
 /// Re-enables one run's retained guest hints.
 pub fn resume_guest_hints(vm_id: usize, run_generation: u64) {
-    for hint in GUEST_HINTS
-        .lock()
-        .iter_mut()
-        .filter(|hint| hint.vm_id == vm_id && hint.run_generation == run_generation)
-    {
-        hint.suspended = false;
-    }
+    GUEST_REQUESTS.lock().resume(vm_id, run_generation);
     WAKE.notify_one();
 }
 
 /// Returns the latest host-confirmed normalized value for one exact guest vCPU.
 ///
-/// Host policy or limit-refresh failures keep this last confirmed value. The
-/// Linux `virt-cpufreq` driver reads `CUR_PERF` on every scheduler tick, and a
-/// typed error on that path becomes a vCPU fault; a recoverable host failure
-/// must not stop the guest. `SET_PERF` still rejects an unbound run.
+/// Host policy or limit-refresh failures keep this last confirmed value, and a
+/// retiring run keeps being served until it is unbound. The Linux
+/// `virt-cpufreq` driver reads `CUR_PERF` on every scheduler tick, and a typed
+/// error on that path becomes a vCPU fault; a recoverable host failure must not
+/// stop the guest. `SET_PERF` still rejects an unbound run.
 pub fn guest_hint_performance(
     vm_id: usize,
     run_generation: u64,
     vcpu_id: usize,
     domain: usize,
 ) -> Result<Option<u32>, FrequencyError> {
-    if !GUEST_RUNS
-        .lock()
-        .iter()
-        .any(|(bound_vm, bound_generation)| {
-            *bound_vm == vm_id && *bound_generation == run_generation
-        })
-    {
+    if !GUEST_REQUESTS.lock().serves(vm_id, run_generation) {
         return Err(FrequencyError::NotReady);
     }
     let effective = GUEST_DOMAIN_EFFECTIVE.lock().get(domain).copied().flatten();
@@ -755,7 +868,7 @@ fn run_worker(device: Device, infos: Vec<DomainInfo>, initial: Governor) {
             handle_request(request, &device, &mut states, refresh);
         }
         let (samples, priming) = sample_load(&mut busy, &mut last_poll_ns);
-        let guest_hints = GUEST_HINTS.lock().clone();
+        let guest_hints = GUEST_REQUESTS.lock().hints.clone();
         if refresh.is_ok() {
             let _ = apply_policies(&device, &mut states, &samples, priming, &guest_hints);
         }
@@ -803,9 +916,10 @@ pub(crate) fn start_from_host_bootargs(bootargs: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        GUEST_MAX_PERFORMANCE, Governor, GuestHint, OperatingPoint, busy_percent, fixed_target,
-        guest_floor_with_reference, guest_performance_index, guest_performance_table,
-        next_ondemand_frequency, normalized_performance, observe_window, parse_governor,
+        FrequencyError, GUEST_MAX_PERFORMANCE, Governor, GuestHint, GuestRequests, OperatingPoint,
+        busy_percent, fixed_target, guest_floor_with_reference, guest_performance_index,
+        guest_performance_table, next_ondemand_frequency, normalized_performance, observe_window,
+        parse_governor,
     };
 
     #[test]
@@ -1014,5 +1128,58 @@ mod tests {
         assert_eq!(fixed_target(816_000_000, &opps), 816_000_000);
         assert_eq!(fixed_target(1_800_000_000, &opps[..3]), 1_200_000_000);
         assert_eq!(fixed_target(408_000_000, &opps[2..]), 1_200_000_000);
+    }
+
+    /// A run retires before its vCPUs stop. Linux keeps reading `CUR_PERF`
+    /// every scheduler tick until then, and a device error on that read stops
+    /// the whole VM run as a fault, so retirement must keep serving reads while
+    /// dropping the run from host aggregation.
+    #[test]
+    fn retiring_a_run_stops_raising_the_floor_without_erroring_cur_perf_reads() {
+        let mut requests = GuestRequests::new();
+        requests.bind(4, 7);
+        requests
+            .publish(4, 7, 0, 0, 1024)
+            .expect("a bound run accepts hints");
+        assert_eq!(requests.hints.len(), 1);
+
+        requests.retire(4, 7);
+        assert!(requests.serves(4, 7));
+        assert!(requests.hints.is_empty());
+
+        // A vCPU still executing guest code must not be able to re-raise the
+        // host floor, and must not observe a device error either.
+        requests
+            .publish(4, 7, 0, 0, 1024)
+            .expect("a retiring run keeps accepting hints");
+        requests
+            .publish(4, 7, 1, 0, 1024)
+            .expect("a retiring run keeps accepting hints");
+        assert!(requests.hints.is_empty());
+
+        requests.unbind(4, 7);
+        assert!(!requests.serves(4, 7));
+        assert_eq!(
+            requests.publish(4, 7, 0, 0, 256),
+            Err(FrequencyError::NotReady)
+        );
+    }
+
+    #[test]
+    fn retiring_one_generation_keeps_other_generations_aggregating() {
+        let mut requests = GuestRequests::new();
+        requests.bind(4, 7);
+        requests.bind(4, 8);
+        requests
+            .publish(4, 7, 0, 0, 1024)
+            .expect("a bound run accepts hints");
+        requests
+            .publish(4, 8, 0, 0, 256)
+            .expect("a bound run accepts hints");
+
+        requests.retire(4, 7);
+        assert!(requests.serves(4, 8));
+        assert_eq!(requests.hints.len(), 1);
+        assert_eq!(requests.hints[0].run_generation, 8);
     }
 }
