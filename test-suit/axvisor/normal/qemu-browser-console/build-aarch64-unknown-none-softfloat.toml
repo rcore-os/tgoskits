@@ -3,8 +3,11 @@
 # Axvisor's own console lane and that this build deliberately owns no page
 # (`/` and `/assets/*` stay 404), while axtest covers how a guest takes and
 # releases a console lane. The API, file and host routes remain part of the
-# unified `web` feature even though this fixture has no guest VM.
-features = ["web"]
+# unified `web` feature even though this fixture has no guest VM. Keep the
+# NVMe driver feature aligned with the HTTP control-plane case: the grouped
+# QEMU CI invocation can then reuse one AxVisor ELF, while this case still
+# boots without an NVMe device and verifies the same minimal web surface.
+features = ["ax-driver/nvme", "web"]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = []
