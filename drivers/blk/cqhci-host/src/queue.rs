@@ -604,7 +604,7 @@ mod tests {
         DmaDirection, DmaDomainId, DmaError, DmaMapHandle, DmaOp,
     };
     use rdif_block::{BatchSubmitDisposition, CompletedRequest, RequestFlags, SubmissionSink};
-    use sdmmc_protocol::sdio::host::SdMmcIrqHandle;
+    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, SdMmcIrqHandle};
 
     use super::*;
 
@@ -616,9 +616,15 @@ mod tests {
         let mut platform = TestPlatform::new(true);
         platform.disable_failures = 1;
         let platform_state = Arc::clone(&platform.state);
-        let (mut queue, mut irq) =
-            unsafe { crate::queue_and_irq(base, dma.clone(), Box::new(platform), TestLegacyIrq) }
-                .unwrap();
+        let (mut queue, mut irq) = unsafe {
+            crate::queue_and_irq(
+                base,
+                dma.clone(),
+                Box::new(platform),
+                TestLegacyIrq::default(),
+            )
+        }
+        .unwrap();
         let mut config = BlockConfig::dma("cqhci-test", 1024, &dma);
         config.limits.supported_flags = RequestFlags::ALL_KNOWN;
         let activation = CommandQueueActivation {
@@ -832,7 +838,12 @@ mod tests {
             // SAFETY: the aligned register array outlives both endpoints.
             // All accesses are serialized and no physical DMA is performed.
             let (mut queue, irq) = unsafe {
-                crate::queue_and_irq(base, dma.clone(), Box::new(platform), TestLegacyIrq)
+                crate::queue_and_irq(
+                    base,
+                    dma.clone(),
+                    Box::new(platform),
+                    TestLegacyIrq::default(),
+                )
             }
             .unwrap();
             if let Some(expected) = enable_result {
@@ -882,100 +893,115 @@ mod tests {
 
     #[test]
     fn failed_quiesce_quarantines_descriptors_and_payload_and_closes_queue() {
-        let backend = Box::leak(Box::new(TestDma::default()));
-        let dma = DeviceDma::new(
-            DmaDeviceInfo::new(
-                DmaDomainId::Direct,
-                DmaCoherency::NonCoherent,
-                DmaConstraints::new(u32::MAX as u64),
-            ),
-            backend,
-        );
-        let mut registers = [0u32; 32];
-        let base = NonNull::new(registers.as_mut_ptr().cast::<u8>()).unwrap();
-        let platform = TestPlatform::new(false);
-        let platform_state = Arc::clone(&platform.state);
-        // SAFETY: the aligned register array outlives both endpoints and all
-        // accesses are serialized by this test. No physical DMA is performed.
-        let (mut queue, mut irq) =
-            unsafe { crate::queue_and_irq(base, dma.clone(), Box::new(platform), TestLegacyIrq) }
-                .unwrap();
-        queue
-            .activate(
-                CommandQueueActivation {
-                    rca: 1,
-                    card_depth: 2,
-                    cache_enabled: false,
-                },
-                &mut BlockConfig::dma("quarantine", 1024, &dma),
-            )
+        for legacy_error in [false, true] {
+            let backend = Box::leak(Box::new(TestDma::default()));
+            let dma = DeviceDma::new(
+                DmaDeviceInfo::new(
+                    DmaDomainId::Direct,
+                    DmaCoherency::NonCoherent,
+                    DmaConstraints::new(u32::MAX as u64),
+                ),
+                backend,
+            );
+            let mut registers = [0u32; 32];
+            let base = NonNull::new(registers.as_mut_ptr().cast::<u8>()).unwrap();
+            let platform = TestPlatform::new(false);
+            let platform_state = Arc::clone(&platform.state);
+            // SAFETY: the aligned register array outlives both endpoints and all
+            // accesses are serialized by this test. No physical DMA is performed.
+            let (mut queue, mut irq) = unsafe {
+                crate::queue_and_irq(
+                    base,
+                    dma.clone(),
+                    Box::new(platform),
+                    TestLegacyIrq(if legacy_error {
+                        HostEventKind::Error
+                    } else {
+                        HostEventKind::None
+                    }),
+                )
+            }
             .unwrap();
-        let mut batch = [read_request(&dma, 0)].into_iter().collect();
-        let mut submitted = SubmittedIds::default();
-        assert_eq!(
             queue
-                .submit_batch_owned(&mut batch, &mut submitted)
-                .accepted(),
-            1
-        );
-        queue.commit_submissions().unwrap();
-        write_u32(
-            base.as_ptr() as usize,
-            IS,
-            IS_RESPONSE_ERROR | IS_TASK_COMPLETE,
-        );
-        write_u32(base.as_ptr() as usize, TCN, 1);
-        irq.ack();
-        let mut completed = CompletedRequests::default();
-        assert_eq!(queue.drain_completions(&mut completed), Err(BlkError::Io));
-        assert_eq!(completed.0.len(), 1);
-        assert_eq!(completed.0[0].result, Err(BlkError::Io));
-        assert!(
-            completed.0[0].data.is_none(),
-            "unquiesced memory must not return to the CPU"
-        );
-        // A genuinely new late interrupt must not revive the poisoned tag.
-        write_u32(base.as_ptr() as usize, IS, IS_TASK_COMPLETE);
-        write_u32(base.as_ptr() as usize, TCN, 1);
-        irq.ack();
-        assert_eq!(queue.drain_completions(&mut completed), Err(BlkError::Io));
-        assert_eq!(
-            completed.0.len(),
-            1,
-            "a stale event cannot complete the tag twice"
-        );
-        assert_eq!(queue.commit_submissions(), Err(BlkError::Io));
-        assert_eq!(queue.shutdown(&mut completed), Err(BlkError::Io));
-        assert!(
-            queue.is_active(),
-            "failed shutdown must keep card-session ownership"
-        );
-        let mut rejected = [flush_request()].into_iter().collect();
-        let mut rejected_ids = SubmittedIds::default();
-        let result = queue.submit_batch_owned(&mut rejected, &mut rejected_ids);
-        assert_eq!(result.accepted(), 0);
-        assert_eq!(
-            result.disposition(),
-            BatchSubmitDisposition::Fatal(BlkError::Io)
-        );
-        assert_eq!(rejected.len(), 1);
-        assert!(rejected_ids.0.is_empty());
-        assert_eq!(completed.0.len(), 1);
-        drop(queue);
-        drop(irq);
-        assert_eq!(
-            read_u32(base.as_ptr() as usize, CTL) & (CTL_HALT | CTL_CLEAR_ALL_TASKS),
-            CTL_HALT | CTL_CLEAR_ALL_TASKS,
-            "HALT readback cannot replace the device's task-clear acknowledgement"
-        );
-        assert_ne!(read_u32(base.as_ptr() as usize, CFG) & CFG_ENABLE, 0);
-        assert!(platform_state.data_path_enabled.load(Ordering::Relaxed));
-        assert_eq!(platform_state.disable_attempts.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            backend.deallocations.load(Ordering::Relaxed),
-            0,
-            "neither descriptor table nor payload may be freed after failed task clear"
-        );
+                .activate(
+                    CommandQueueActivation {
+                        rca: 1,
+                        card_depth: 2,
+                        cache_enabled: false,
+                    },
+                    &mut BlockConfig::dma("quarantine", 1024, &dma),
+                )
+                .unwrap();
+            let mut batch = [read_request(&dma, 0)].into_iter().collect();
+            let mut submitted = SubmittedIds::default();
+            assert_eq!(
+                queue
+                    .submit_batch_owned(&mut batch, &mut submitted)
+                    .accepted(),
+                1
+            );
+            queue.commit_submissions().unwrap();
+            let (status, completed_tags) = if legacy_error {
+                (0, 0)
+            } else {
+                (IS_RESPONSE_ERROR | IS_TASK_COMPLETE, 1)
+            };
+            write_u32(base.as_ptr() as usize, IS, status);
+            write_u32(base.as_ptr() as usize, TCN, completed_tags);
+            let ack = irq.ack();
+            assert!(!ack.is_spurious());
+            assert!(ack.queues().contains(0));
+            let mut completed = CompletedRequests::default();
+            assert_eq!(queue.drain_completions(&mut completed), Err(BlkError::Io));
+            assert_eq!(completed.0.len(), 1);
+            assert_eq!(completed.0[0].result, Err(BlkError::Io));
+            assert!(
+                completed.0[0].data.is_none(),
+                "unquiesced memory must not return to the CPU"
+            );
+            // A genuinely new late interrupt must not revive the poisoned tag.
+            write_u32(base.as_ptr() as usize, IS, IS_TASK_COMPLETE);
+            write_u32(base.as_ptr() as usize, TCN, 1);
+            irq.ack();
+            assert_eq!(queue.drain_completions(&mut completed), Err(BlkError::Io));
+            assert_eq!(
+                completed.0.len(),
+                1,
+                "a stale event cannot complete the tag twice"
+            );
+            assert_eq!(queue.commit_submissions(), Err(BlkError::Io));
+            assert_eq!(queue.shutdown(&mut completed), Err(BlkError::Io));
+            assert!(
+                queue.is_active(),
+                "failed shutdown must keep card-session ownership"
+            );
+            let mut rejected = [flush_request()].into_iter().collect();
+            let mut rejected_ids = SubmittedIds::default();
+            let result = queue.submit_batch_owned(&mut rejected, &mut rejected_ids);
+            assert_eq!(result.accepted(), 0);
+            assert_eq!(
+                result.disposition(),
+                BatchSubmitDisposition::Fatal(BlkError::Io)
+            );
+            assert_eq!(rejected.len(), 1);
+            assert!(rejected_ids.0.is_empty());
+            assert_eq!(completed.0.len(), 1);
+            drop(queue);
+            drop(irq);
+            assert_eq!(
+                read_u32(base.as_ptr() as usize, CTL) & (CTL_HALT | CTL_CLEAR_ALL_TASKS),
+                CTL_HALT | CTL_CLEAR_ALL_TASKS,
+                "HALT readback cannot replace the device's task-clear acknowledgement"
+            );
+            assert_ne!(read_u32(base.as_ptr() as usize, CFG) & CFG_ENABLE, 0);
+            assert!(platform_state.data_path_enabled.load(Ordering::Relaxed));
+            assert_eq!(platform_state.disable_attempts.load(Ordering::Relaxed), 0);
+            assert_eq!(
+                backend.deallocations.load(Ordering::Relaxed),
+                0,
+                "neither descriptor table nor payload may be freed after failed task clear"
+            );
+        }
     }
 
     fn read_request(dma: &DeviceDma, lba: u64) -> OwnedRequest {
@@ -1090,12 +1116,24 @@ mod tests {
         }
     }
 
-    struct TestLegacyIrq;
+    #[derive(Default)]
+    struct TestLegacyIrq(HostEventKind);
+
+    #[derive(Default)]
+    struct TestLegacyEvent(HostEventKind);
+
+    impl HostEvent for TestLegacyEvent {
+        fn kind(&self) -> HostEventKind {
+            self.0
+        }
+    }
 
     impl SdMmcIrqHandle for TestLegacyIrq {
-        type Event = ();
+        type Event = TestLegacyEvent;
 
-        fn handle_irq(&mut self) -> Self::Event {}
+        fn handle_irq(&mut self) -> Self::Event {
+            TestLegacyEvent(core::mem::take(&mut self.0))
+        }
     }
 
     #[derive(Default)]

@@ -69,6 +69,9 @@ fn issued_command_keeps_irq_generation_active_for_completion_cache() {
     .unwrap();
     assert_ne!(host.irq.state.generation(), 0);
 
+    // Plain memory does not implement W1C; model the error status cleared by
+    // command submission before delivering an error-free completion.
+    host.write_u16(REG_ERROR_INT_STATUS, 0);
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
     let mut irq = host.irq_endpoint();
     assert_eq!(irq.handle_irq(), crate::Event::CommandComplete);
@@ -129,6 +132,9 @@ fn r1b_command_completes_when_dat0_is_already_released_at_command_irq() {
 
     host.submit_command(&cmd7(1)).unwrap();
     host.write_u32(REG_PRESENT_STATE, PRESENT_DAT0_LINE_SIGNAL_LEVEL);
+    // Plain memory does not implement W1C; model the error status cleared by
+    // command submission before delivering an error-free completion.
+    host.write_u16(REG_ERROR_INT_STATUS, 0);
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
     let mut irq = host.irq_endpoint();
     assert_eq!(irq.handle_irq(), crate::Event::CommandComplete);
@@ -148,6 +154,9 @@ fn r1b_busy_release_is_register_progress_after_command_irq() {
     host.enable_completion_irq();
 
     host.submit_command(&cmd7(1)).unwrap();
+    // Plain memory does not implement W1C; model the error status cleared by
+    // command submission before delivering an error-free completion.
+    host.write_u16(REG_ERROR_INT_STATUS, 0);
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
     let mut irq = host.irq_endpoint();
     assert_eq!(irq.handle_irq(), crate::Event::CommandComplete);

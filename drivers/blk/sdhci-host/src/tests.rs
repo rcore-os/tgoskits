@@ -296,6 +296,9 @@ fn host2_r1b_busy_release_advances_on_register_retry() {
     let mut request =
         unsafe { <Sdhci as sdmmc_host::SdMmcHost>::submit_transaction(&mut host, transaction) }
             .unwrap();
+    // Plain memory does not implement W1C; model the error status cleared by
+    // command submission before delivering an error-free completion.
+    host.write_u16(REG_ERROR_INT_STATUS, 0);
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
     let mut irq = host.irq_endpoint();
     assert_eq!(irq.handle_irq(), Event::CommandComplete);
@@ -674,6 +677,16 @@ fn owned_irq_endpoint_acks_and_caches_status() {
     host.irq.state.begin_request();
     host.enable_interrupt_status_capture();
     host.enable_completion_irq();
+    // Linux CQE enables individual error sources without enabling the normal
+    // summary bit. The IRQ endpoint must still publish the latched error.
+    host.write_u16(
+        REG_NORMAL_INT_STATUS_ENABLE,
+        host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & !NORMAL_INT_ERROR,
+    );
+    host.write_u16(
+        REG_NORMAL_INT_SIGNAL_ENABLE,
+        host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE) & !NORMAL_INT_ERROR,
+    );
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_ERROR);
     host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_DATA_TIMEOUT);
 
@@ -702,12 +715,17 @@ fn masked_irq_status_is_acked_without_publishing_an_event() {
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
     host.irq.state.begin_request();
-    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_XFER_COMPLETE);
+    host.write_u16(
+        REG_NORMAL_INT_STATUS,
+        NORMAL_INT_XFER_COMPLETE | NORMAL_INT_ERROR,
+    );
+    host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_DATA_TIMEOUT);
 
     let mut handle = host.irq_endpoint();
 
     assert_eq!(handle.handle_irq(), Event::None);
     assert_eq!(host.irq.state.pending_normal(), 0);
+    assert_eq!(host.irq.state.pending_error(), 0);
 }
 
 #[test]

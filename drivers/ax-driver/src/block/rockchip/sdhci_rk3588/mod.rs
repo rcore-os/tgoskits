@@ -85,11 +85,11 @@ const SDHCI_DMA_SELECT_MASK: u8 = 0b11 << 3;
 const SDHCI_DMA_SELECT_ADMA32: u8 = 0b10 << 3;
 const SDHCI_BLOCK_SIZE_MASK: u16 = 0x0fff;
 const SDHCI_CQE_BLOCK_SIZE: u16 = 512;
-const SDHCI_INT_ERROR_SUMMARY: u32 = 1 << 15;
 const SDHCI_INT_CQE: u32 = 1 << 14;
-const SDHCI_CQE_ERROR_MASK: u32 = 0x027f_0000;
-const SDHCI_CQE_INTERRUPT_MASK: u32 =
-    SDHCI_CQE_ERROR_MASK | SDHCI_INT_CQE | SDHCI_INT_ERROR_SUMMARY;
+const SDHCI_CQE_ERROR_MASK: u32 = 0x02ff_0000;
+// Match Linux SDHCI_CQE_INT_MASK. Bit 15 summarizes enabled error sources;
+// it is not an independently enabled interrupt source.
+const SDHCI_CQE_INTERRUPT_MASK: u32 = SDHCI_CQE_ERROR_MASK | SDHCI_INT_CQE;
 const DWCMSHC_SDHCI_CQE_TRANSFER_MODE: u16 = (1 << 5) | (1 << 1) | 1;
 const CQHCI_SSC1: usize = 0x40;
 const CQHCI_SSC1_CIT_MASK: u32 = 0xffff;
@@ -732,11 +732,10 @@ mod tests {
             read_u16(base, SDHCI_BLOCK_SIZE) & SDHCI_BLOCK_SIZE_MASK,
             SDHCI_CQE_BLOCK_SIZE
         );
-        assert_eq!(read_u32(base, SDHCI_INT_ENABLE), SDHCI_CQE_INTERRUPT_MASK);
-        assert_eq!(
-            read_u32(base, SDHCI_SIGNAL_ENABLE),
-            SDHCI_CQE_INTERRUPT_MASK
-        );
+        // Check the programmed registers against Linux's mask, independently
+        // of the constant used by enable_data_path().
+        assert_eq!(read_u32(base, SDHCI_INT_ENABLE), 0x02ff_4000);
+        assert_eq!(read_u32(base, SDHCI_SIGNAL_ENABLE), 0x02ff_4000);
 
         cqhci_host::CqhciPlatform::disable_data_path(&mut platform).unwrap();
         assert_eq!(read_u32(base, SDHCI_INT_ENABLE), 0x1234_5678);

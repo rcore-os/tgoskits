@@ -289,12 +289,9 @@ fn mmc_init_picks_hs200_when_card_and_host_agree() {
 }
 
 #[test]
-fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
-    // Card advertises HS200 + HS @ 52 MHz, but the host's
-    // execute_tuning rejects (e.g. controller couldn't lock onto a
-    // sampling phase). The driver must then re-enter the HS @ 52
-    // MHz path: CMD6 HS_TIMING=1 + set_clock(HighSpeed). The card
-    // ends up in HighSpeed, not Hs200.
+fn mmc_init_requires_confirmed_clock_rollback_before_hs52() {
+    // A tuning failure permits HS52 only after the host confirms the
+    // rollback clock. A rejected or failed rollback must abort initialization.
     let replies = std::vec![
         Ok(ok_r1()),                // CMD0
         cmd8_timeout(),             // CMD8
@@ -312,54 +309,104 @@ fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
         // try_hs200 attempts HS_TIMING=2 + tuning, then fails:
         Ok(ok_r1()),         // CMD6 HS_TIMING=2
         Ok(r1_tran_ready()), // CMD13 (post-switch)
-        // tuning fails — driver falls through to HS @ 52 MHz:
+        // Successful rollback permits HS @ 52 MHz:
         Ok(ok_r1()),         // CMD6 HS_TIMING=1
         Ok(r1_tran_ready()), // CMD13 (post-switch)
     ];
-    let mut host = MockHost::with_results(replies);
-    host.next_read_payload = Some(ext_csd_blob_hs200());
-    host.tuning_result = Some(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 21)));
-    host.multi_step_hs200_rollback = true;
-    let mut driver = SdMmcCard::new(host);
-    let _info =
-        poll_init_to_completion(&mut driver).expect("init succeeds even when HS200 tuning fails");
+    for (failure, expected_error) in [
+        (None, None),
+        (
+            Some(MockBusFailure::Submit(sdmmc_host::Error::Busy)),
+            Some(Error::Busy),
+        ),
+        (
+            Some(MockBusFailure::Complete(sdmmc_host::Error::InvalidArgument)),
+            Some(Error::InvalidArgument),
+        ),
+    ] {
+        let mut host = MockHost::with_results(replies.clone());
+        host.next_read_payload = Some(ext_csd_blob_hs200());
+        host.tuning_result = Some(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 21)));
+        host.multi_step_hs200_rollback = true;
+        let mut driver = SdMmcCard::new(host);
+        let mut request = driver.submit_init().expect("initialization starts");
+        let mut failure_to_arm = failure;
+        let result = loop {
+            // Earlier initialization also uses Default; inject only after HS200.
+            if driver.host().last_clock == Some(ClockSpeed::Hs200)
+                && let Some(failure) = failure_to_arm.take()
+            {
+                driver.host_mut().bus_op_failure =
+                    Some((sdmmc_host::BusOp::SetClock(ClockSpeed::Default), failure));
+            }
+            match advance_init_once(&mut driver, &mut request) {
+                Ok(OperationProgress::Pending) => {}
+                Ok(OperationProgress::Complete(info)) => break Ok(info),
+                Err(error) => break Err(error),
+            }
+        };
+        assert!(
+            failure_to_arm.is_none(),
+            "HS200 must be reached: {failure:?}"
+        );
+        assert!(
+            driver.host().bus_op_failure.is_none(),
+            "rollback must consume the injected failure: {failure:?}"
+        );
+        assert_eq!(
+            driver.host().last_tuning,
+            Some((21, crate::cmd::MMC_TUNING_BLOCK_SIZE_8BIT as u16))
+        );
+        let hs_timing_writes: Vec<u8> = driver
+            .host()
+            .commands
+            .iter()
+            .filter(|c| c.index == 6 && ((c.argument >> 16) & 0xFF) as u8 == 185)
+            .map(|c| ((c.argument >> 8) & 0xFF) as u8)
+            .collect();
 
-    // Timing fallback retains the successfully selected 1.8 V signal.
-    // A fixed-rail eMMC board cannot switch its VCCQ to 3.3 V.
-    let voltage_switches: Vec<SignalVoltage> = driver
-        .host()
-        .events
-        .iter()
-        .filter_map(|event| match event {
-            MockEvent::Voltage(v) => Some(*v),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        voltage_switches,
-        std::vec![SignalVoltage::V330, SignalVoltage::V180]
-    );
-    assert_eq!(
-        driver.host().last_tuning,
-        Some((21, crate::cmd::MMC_TUNING_BLOCK_SIZE_8BIT as u16))
-    );
-    // But ended up at HighSpeed, not Hs200.
-    assert_eq!(driver.host().last_clock, Some(ClockSpeed::HighSpeed));
-
-    // Two CMD6 SWITCHes for HS_TIMING: first =2 (HS200, failed),
-    // then =1 (HS @ 52 MHz, succeeded).
-    let hs_timing_writes: Vec<u8> = driver
-        .host()
-        .commands
-        .iter()
-        .filter(|c| c.index == 6 && ((c.argument >> 16) & 0xFF) as u8 == 185)
-        .map(|c| ((c.argument >> 8) & 0xFF) as u8)
-        .collect();
-    assert_eq!(hs_timing_writes, std::vec![0x02, 0x01]);
-    assert!(
-        driver.host().aborted_bus_ops.is_empty(),
-        "HS200 fallback must drive every rollback bus operation to completion"
-    );
+        if let Some(expected_error) = expected_error {
+            assert_eq!(
+                result.expect_err("failed clock rollback must abort initialization"),
+                expected_error,
+                "rollback failure must reach the caller: {failure:?}"
+            );
+            assert_eq!(hs_timing_writes, std::vec![0x02]);
+            assert!(
+                !driver
+                    .host()
+                    .events
+                    .contains(&MockEvent::Clock(ClockSpeed::HighSpeed)),
+                "failed rollback must not enter HS52: {failure:?}"
+            );
+            assert_eq!(driver.rca(), 0);
+            assert!(!driver.is_high_capacity());
+            assert_eq!(driver.bus_width, BusWidth::Bit1);
+        } else {
+            result.expect("confirmed clock rollback permits HS52 initialization");
+            // Timing fallback retains the successfully selected 1.8 V signal.
+            // A fixed-rail eMMC board cannot switch its VCCQ to 3.3 V.
+            let voltage_switches: Vec<SignalVoltage> = driver
+                .host()
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    MockEvent::Voltage(v) => Some(*v),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                voltage_switches,
+                std::vec![SignalVoltage::V330, SignalVoltage::V180]
+            );
+            assert_eq!(driver.host().last_clock, Some(ClockSpeed::HighSpeed));
+            assert_eq!(hs_timing_writes, std::vec![0x02, 0x01]);
+            assert!(
+                driver.host().aborted_bus_ops.is_empty(),
+                "HS200 fallback must drive every rollback bus operation to completion"
+            );
+        }
+    }
 }
 
 #[test]

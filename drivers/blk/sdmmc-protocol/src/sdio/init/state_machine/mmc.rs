@@ -271,6 +271,8 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                     Ok(OperationProgress::Complete(())) => {
                         self.prepare_mmc_hs52_or_complete(request)
                     }
+                    // The card may still be at an unverified HS200 clock.
+                    // Do not issue the HS52 switch after a failed rollback.
                     Err(err) => Err(err),
                 }
             }
@@ -447,6 +449,7 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                 request.state = SdMmcInitState::PollMmcHs200RollbackClock;
                 Ok(OperationProgress::Pending)
             }
+            // Submission failure leaves the previous clock unconfirmed too.
             Err(err) => Err(err),
         }
     }

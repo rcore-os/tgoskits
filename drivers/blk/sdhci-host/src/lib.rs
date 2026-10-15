@@ -487,11 +487,9 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
         host::read_irq_register(irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
 
     let normal_enabled = raw_normal & normal_status_enable;
-    let error_enabled = if normal_enabled & NORMAL_INT_ERROR != 0 {
-        raw_error & error_status_enable
-    } else {
-        0
-    };
+    // Error status has its own enable bits. The normal error bit is only a
+    // summary, so Linux-compatible masks need not enable that bit separately.
+    let error = raw_error & error_status_enable;
 
     // STATUS_ENABLE controls which latched bits the driver owns and
     // SIGNAL_ENABLE gates assertion of the external IRQ line. A CARD_INT can
@@ -499,7 +497,6 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
     // facts in this snapshot before masking the level source below.
     let visible_card = normal_enabled & signal_enable & NORMAL_INT_CARD_INTERRUPT;
     let normal = (normal_enabled & !NORMAL_INT_CARD_INTERRUPT) | visible_card;
-    let error = error_enabled;
 
     let normal_to_ack = raw_normal & !NORMAL_INT_CARD_INTERRUPT;
     if normal_to_ack != 0 || raw_error != 0 {
@@ -514,7 +511,7 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
     let normal = if error == 0 {
         normal & !NORMAL_INT_ERROR
     } else {
-        normal
+        normal | NORMAL_INT_ERROR
     };
     if normal & NORMAL_INT_CARD_INTERRUPT != 0 {
         // Linux's SDHCI `ier` is written to both INT_ENABLE and

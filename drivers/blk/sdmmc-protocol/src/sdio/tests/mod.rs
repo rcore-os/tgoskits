@@ -33,6 +33,12 @@ enum MockEvent {
     Voltage(SignalVoltage),
 }
 
+#[derive(Clone, Copy, Debug)]
+enum MockBusFailure {
+    Submit(sdmmc_host::Error),
+    Complete(sdmmc_host::Error),
+}
+
 /// Mock host that replays canned responses in order. Used to verify the
 /// init sequence and that the driver tracks RCA on its own.
 struct MockHost {
@@ -40,6 +46,8 @@ struct MockHost {
     commands: Vec<Command>,
     events: Vec<MockEvent>,
     bus_ops: Vec<sdmmc_host::BusOp>,
+    /// Fail the next matching bus operation at submission or terminal completion.
+    bus_op_failure: Option<(sdmmc_host::BusOp, MockBusFailure)>,
     bus_width: Option<BusWidth>,
     data_requests: Vec<(sdmmc_host::DataDirection, u32, u32)>,
     next_read_payload: Option<Vec<u8>>,
@@ -89,6 +97,7 @@ struct MockTransactionRequest {
 struct MockBusRequest {
     op: sdmmc_host::BusOp,
     pending_advances: usize,
+    completion_error: Option<sdmmc_host::Error>,
     done: bool,
 }
 
@@ -99,6 +108,7 @@ impl MockHost {
             commands: Vec::new(),
             events: Vec::new(),
             bus_ops: Vec::new(),
+            bus_op_failure: None,
             bus_width: None,
             data_requests: Vec::new(),
             next_read_payload: None,
@@ -127,6 +137,7 @@ impl MockHost {
             commands: Vec::new(),
             events: Vec::new(),
             bus_ops: Vec::new(),
+            bus_op_failure: None,
             bus_width: None,
             data_requests: Vec::new(),
             next_read_payload: None,
@@ -306,6 +317,16 @@ impl sdmmc_host::SdMmcHost for MockHost {
         op: sdmmc_host::BusOp,
     ) -> Result<Self::BusRequest, sdmmc_host::Error> {
         self.bus_ops.push(op);
+        let completion_error = match self.bus_op_failure {
+            Some((target, failure)) if target == op => {
+                self.bus_op_failure = None;
+                match failure {
+                    MockBusFailure::Submit(error) => return Err(error),
+                    MockBusFailure::Complete(error) => Some(error),
+                }
+            }
+            _ => None,
+        };
         match op {
             sdmmc_host::BusOp::SetBusWidth(width) => {
                 if self.reject_bit8 && matches!(width, BusWidth::Bit8) {
@@ -353,6 +374,7 @@ impl sdmmc_host::SdMmcHost for MockHost {
         Ok(MockBusRequest {
             op,
             pending_advances,
+            completion_error,
             done: false,
         })
     }
@@ -372,7 +394,8 @@ impl sdmmc_host::SdMmcHost for MockHost {
             });
         }
         request.done = true;
-        Ok(sdmmc_host::RequestProgress::Complete(Ok(())))
+        let result = request.completion_error.take().map_or(Ok(()), Err);
+        Ok(sdmmc_host::RequestProgress::Complete(result))
     }
 
     fn abort_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<(), sdmmc_host::Error> {
