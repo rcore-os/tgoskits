@@ -319,6 +319,7 @@ impl AicDevice {
                         );
                         continue;
                     }
+                    self.complete_connect_confirmation()?;
                     let indication = match parse_connect_indication(&payload) {
                         Ok(indication) => indication,
                         Err(error @ AicError::FirmwareRejected { .. })
