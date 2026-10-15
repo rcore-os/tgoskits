@@ -136,7 +136,7 @@ flowchart TB
 
 接口契约的静态检查由 `scripts/test/check_axvisor_control_layers.py` 承担，它拒绝声明层之外出现路径字面量、拒绝传输层与资源层引用声明层、拒绝领域层引用上层，并比对前端引导路径与内核侧常量是否成对一致。
 
-宿主侧测试位于 `os/axvisor/tests/axtest.rs`，覆盖登记表投影、通道分配与释放、通道满载、事件差量与传输会话校验等不需要完整虚拟化环境的路径，可直接以宿主目标运行。
+内核侧测试位于 `os/axvisor/tests/axtest.rs`，覆盖登记表投影、通道分配与释放、通道满载、事件差量与传输会话校验等不需要创建客户机的路径，由 `cargo xtask ktest qemu -p axvisor --test axtest` 在目标内执行。
 
 端到端验证使用仓库统一入口，逐用例运行：
 
@@ -150,7 +150,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-vm-pool-http
 
 前端质量门禁由独立的 web UI 检查执行（`npm ci`、`npm test`、`npm run build`，需要 Node 24）；仪表盘产物本身由 axbuild 在启用 `web-ui` 特性的构建里自动生成并打进 initramfs，因此 QEMU 用例不再依赖任何手工产物步骤。
 
-CI 采用的用例集合登记在 `.github/ci/checks/axvisor.toml`：aarch64 控制面检查运行 `http-control-plane`、`browser-console` 和 `qemu-ivc-arceos`；web UI 检查运行 `web-ui`（NVMe 磁盘根托管）与 `web-ui-diskless`（initramfs 内存根托管）两条用例；`qemu-vm-pool`、`qemu-vm-pool-http` 以及三客户机终端用例仍是手工诊断入口，未计入 CI 绿灯。
+CI 采用的用例集合登记在 `.github/ci/checks/axvisor.toml`：aarch64 控制面检查运行 `http-control-plane`、`qemu-vm-pool`、`qemu-vm-pool-http`、`browser-console` 和 `qemu-ivc-arceos`。两条 pool 用例分别通过 shell 和 HTTP 验证零启动、动态候选发现、按 ID 创建及删除后重建，补齐按需创建路径的运行时证据；它们也登记在 `check.suite` 中，修改用例时可由增量 CI 路由到对应检查。web UI 检查运行 `web-ui`（NVMe 磁盘根托管）与 `web-ui-diskless`（initramfs 内存根托管）两条用例；三客户机终端用例仍是手工诊断入口，未计入 CI 绿灯。
 
 覆盖的缺口需要如实记录：文件传输的存储不足与完整分片上限仍没有在仓库用例资产中断言；当前已覆盖范围不可表示和声明总长超限，以及 400、404、409、200 与 204 这些路径。另外，`axvmconfig` 新增的必填参数改变了命令行行为，未在本文档的验证范围内提供独立用例。
 
