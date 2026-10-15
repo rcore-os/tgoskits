@@ -118,6 +118,9 @@ impl PreparedHandoff {
             return Err(HandoffError::Unavailable);
         }
         let transaction = Transaction::begin()?;
+        // Rebind after the transaction so error paths also release the archive
+        // before relinquishing exclusive publication ownership.
+        let archive = archive;
         let next = Self::build_record(spec, archive.as_ref())?;
         // SAFETY: the transaction grants exclusive producer ownership; no target runs yet.
         unsafe {
@@ -198,7 +201,8 @@ impl PreparedHandoff {
     /// # Safety
     /// `entry` must identify executable code with the EFI ABI in the validated
     /// target image. Its allocation must remain live throughout this call. The
-    /// caller must quiesce network/device services and finish persistent writes.
+    /// caller must quiesce other CPUs, resource allocations and network/device
+    /// services, and finish persistent writes before transferring execution.
     pub unsafe fn enter(&self, entry: u64) -> Result<(), HandoffError> {
         let address = usize::try_from(entry).map_err(|_| HandoffError::InvalidTarget)?;
         let physical = physical_alias(address).ok_or(HandoffError::InvalidTarget)? as u64;
