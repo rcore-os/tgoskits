@@ -27,10 +27,10 @@ fn function_body<'source>(source: &'source str, signature: &str) -> &'source str
 
 #[test]
 fn task_tls_checks_oom_before_pointer_arithmetic() {
-    let allocate = function_body(AXHAL_TLS, "pub fn alloc() -> Self");
+    let allocate = function_body(AXHAL_TLS, "pub fn try_alloc() -> Option<Self>");
     let checked = allocate
-        .find("handle_alloc_error(layout)")
-        .expect("TLS allocation must use the allocator's fatal OOM path");
+        .find("NonNull::new(unsafe { alloc_zeroed(layout) })?")
+        .expect("TLS allocation must reject OOM before pointer arithmetic");
     let arithmetic = allocate
         .find("area_base.as_ptr().add(static_tls_offset())")
         .expect("TLS initialization must copy into the checked allocation");
