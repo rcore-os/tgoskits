@@ -900,9 +900,11 @@ const gz_testStep = time.Millisecond * 50
 // gz_noRollInterval keeps RollingWindow tests within one bucket. go-zero's
 // timex.Now() is based on time.Since of a wall-clock timestamp, so a forward
 // guest wall-clock/RTC step can otherwise look like a multi-hour gap and reset
-// the window between Add calls. The maximum time.Duration exceeds any forward
-// step representable by the 32-bit RTC epoch used on the AArch64 QEMU target.
-const gz_noRollInterval = time.Duration(1<<63 - 1)
+// the window between Add calls. go-zero subtracts and aligns durations while
+// updating a window; MaxInt64 exercises the overflow edge on AArch64. 2^62
+// nanoseconds is still more than a century, so adjacent Adds stay in one
+// bucket without relying on the maximum duration value.
+const gz_noRollInterval = time.Duration(1 << 62)
 
 func gz_sortedInts(in []int) []int {
 	out := append([]int(nil), in...)
