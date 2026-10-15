@@ -1,10 +1,6 @@
-# `no-auto-start` keeps every guest in `Ready` so the QEMU shell steps own the
-# explicit `vm start` order used by the vCPUs scenario. That order is a
-# stability measure for the 5-guest-vCPU / 2-host-pCPU case: each client starts
-# only after the server it dials is already running. The ARP pending overflow
-# from an unreachable peer is covered by the ax-net pending-TTL regression, not
-# by racing these guests in CI.
-features = ["no-auto-start"]
+# The QEMU test config selects guests in tail-first order so each client starts
+# only after the server it dials is already running.
+features = []
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [

@@ -1,12 +1,12 @@
 //! Domain execution behind the control plane.
 //!
-//! This is the half of `control` that is not exclusive to it: the onboard
-//! shell depends on [`pool`] for its `vm pool` subcommand just as the HTTP
-//! handlers do. Modules here know the domain (VMs, configs on disk, registry
-//! changes) and never know a URL, which is why the crate root keeps no copy of
-//! them.
+//! Modules here know the domain (VMs, configs on disk, registry changes) and
+//! never know a URL. The shared [`crate::vm_pool`] module lives at the crate
+//! root because the onboard shell and the HTTP handlers both use it; this
+//! module re-exports that implementation only for the HTTP-side namespace.
 //!
-//! - [`pool`]: the guest configuration directories, scanned and written.
+//! - [`pool`]: the guest configuration directories, scanned and written. The
+//!   implementation is shared with shell commands through [`crate::vm_pool`].
 //! - [`files`]: files staged on their way into the guest filesystem. The
 //!   transfer routes are part of the unified `web` control-plane feature.
 //! - [`events`]: registry change events consumed by `/ws/events`. The watcher
@@ -16,4 +16,4 @@
 pub mod events;
 pub mod files;
 pub mod host;
-pub mod pool;
+pub(crate) use crate::vm_pool as pool;

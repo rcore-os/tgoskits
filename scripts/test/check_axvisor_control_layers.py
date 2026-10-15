@@ -3,8 +3,10 @@
 
 `os/axvisor/src/control` has four layers: `capability` (which request paths
 exist), `transport` (the handlers behind them), `web` (the bundle the handlers
-serve) and `domain` (the VM registry and the configuration pool the handlers
-call). The permitted edges are one-way and few:
+serve) and `domain` (the VM registry and HTTP-facing domain operations). The
+shared configuration pool is `src/vm_pool.rs` at the crate root so the shell
+can use it without enabling `web`; it has the same prohibition on depending
+on control-plane layers. The permitted edges are one-way and few:
 
     web         -> capability     capability -> transport
     transport   -> domain         capability -> domain
@@ -80,6 +82,15 @@ CODE_EDGES = (
             "super::web",
         ),
     ),
+    (
+        "the shared VM pool must not depend on control-plane layers",
+        ("src/vm_pool.rs",),
+        (
+            "crate::control::capability",
+            "crate::control::transport",
+            "crate::control::web",
+        ),
+    ),
 )
 
 # (rule, scanned roots relative to os/axvisor, directories allowed to declare
@@ -104,16 +115,17 @@ RETIRED_PATHS = (
         CRATE_SOURCES,
         (
             "crate::http",
-            "crate::vm_pool",
             "crate::vm_events",
             "crate::web",
             "src/http/",
-            "src/vm_pool.rs",
             "src/vm_events.rs",
             "src/web/",
         ),
     ),
 )
+
+# `crate::vm_pool` and `src/vm_pool.rs` are intentionally absent from this
+# retired-path list: the pool moved to the crate root and now resolves there.
 
 # The frontend half of the same contract. The dashboard now reads every
 # operation out of the manifest, so its sources must not spell a request path
@@ -454,7 +466,8 @@ def check_scan_coverage(errors: list[str], seen: set[Path], seen_web: set[Path])
     """Every gate must still cover something, or it silently stops working."""
     for rule, owners, _ in CODE_EDGES:
         for owner in owners:
-            if not (AXVISOR / owner).is_dir():
+            target = AXVISOR / owner
+            if not target.exists():
                 errors.append(f"{rule}: os/axvisor/{owner} is gone")
             elif not sources(owner):
                 errors.append(f"{rule}: os/axvisor/{owner} holds no Rust source")

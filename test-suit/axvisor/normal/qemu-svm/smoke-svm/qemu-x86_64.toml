@@ -1,4 +1,4 @@
-cmdline = "root=/dev/nvme0n1 rw"
+cmdline = "root=/dev/nvme0n1 rw axvisor.vm_start=1,2"
 args = [
   "-no-user-config",
   "-display",

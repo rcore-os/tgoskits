@@ -383,6 +383,11 @@ fn merge_board_test_uboot_config(
     if test_uboot.boot.initramfs.is_some() {
         uboot.boot.initramfs = test_uboot.boot.initramfs;
     }
+    // A board test command line is the single source of the host bootargs: a
+    // case that provides `cmdline` states the complete host boot line
+    // (including `axvisor.vm_start`) and replaces the base preset instead of
+    // being merged with it. The remote board-server path applies the same
+    // rule because it consumes the test config without any preset merge.
     if test_uboot.boot.cmdline.is_some() {
         uboot.boot.cmdline = test_uboot.boot.cmdline;
     }
@@ -484,5 +489,54 @@ mod tests {
         assert_eq!(merged.timeout, Some(300));
         assert_eq!(merged.local.serial.as_deref(), Some("/dev/ttyUSB1"));
         assert_eq!(merged.local.baud_rate.as_deref(), Some("1500000"));
+    }
+
+    #[test]
+    fn complete_board_cmdline_still_replaces_base_host_bootargs() {
+        let base = UbootConfig {
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("root=/dev/mmcblk0p2 rw".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let board_test = ostool::board::config::BoardRunConfig {
+            board_type: "board".to_string(),
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("console=ttyS0 root=/dev/nvme0n1 rw".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged = merge_board_test_uboot_config(Some(base), board_test);
+
+        assert_eq!(
+            merged.boot.cmdline.as_deref(),
+            Some("console=ttyS0 root=/dev/nvme0n1 rw")
+        );
+    }
+
+    #[test]
+    fn selector_only_board_cmdline_replaces_base_host_bootargs() {
+        let base = UbootConfig {
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("console=ttyS0 root=/dev/mmcblk0p2 rw".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let board_test = ostool::board::config::BoardRunConfig {
+            board_type: "board".to_string(),
+            boot: ostool::BootPayloadConfig {
+                cmdline: Some("axvisor.vm_start=1".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let merged = merge_board_test_uboot_config(Some(base), board_test);
+
+        assert_eq!(merged.boot.cmdline.as_deref(), Some("axvisor.vm_start=1"));
     }
 }

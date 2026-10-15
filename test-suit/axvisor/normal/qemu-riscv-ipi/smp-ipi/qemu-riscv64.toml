@@ -17,7 +17,7 @@ args = [
   "-drive",
   "id=disk1,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img,readonly=on,snapshot=on",
   "-append",
-  "root=/dev/nvme0n1 rw init=/bin/sh",
+  "root=/dev/nvme0n1 rw init=/bin/sh axvisor.vm_start=1",
   "-m",
   "4G",
 ]

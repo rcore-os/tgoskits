@@ -17,6 +17,8 @@ args = [
     "unix:/tmp/qemu-mon.sock,server,nowait",
     "-gdb",
     "tcp::1234",
+    "-append",
+    "axvisor.vm_start=1,2,3",
     "-d",
     "int,guest_errors",
     "-D",

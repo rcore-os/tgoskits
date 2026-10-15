@@ -33,8 +33,28 @@ fail_regex = [
 ]
 to_bin = true
 uefi = true
+cmdline = "axvisor.vm_start=1"
 
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 success_regex = ["(?m)^AXVISOR_X86_PCI_BLOCK_RO_PASSED\\s*$"]
+
+# The first passthrough start releases the host filesystem. Recreate the
+# builtin guest afterwards to prove its immutable boot assets remain available
+# from the retained initramfs namespace while the host disk stays released.
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ["detached VM\\[1\\] console"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete --force 1"
+success_regex = ["(?m)^✓ VM\\[1\\] deleted completely\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "vm start 1"
+success_regex = ["(?m)^✓ VM\\[1\\] started successfully\\s*$"]
+timeout = 120

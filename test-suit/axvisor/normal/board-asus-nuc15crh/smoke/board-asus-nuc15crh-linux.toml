@@ -1,4 +1,5 @@
 board_type = "Asus-nuc15-x86_64-vmx"
+cmdline = "axvisor.vm_start=1"
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",

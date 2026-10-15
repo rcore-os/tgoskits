@@ -20,7 +20,7 @@ Environment (set by the generic runner):
     AXVISOR_HTTP_CONNECT_TIMEOUT seconds for the initial reachability wait
     AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
 
-The case boots with no default guest and a pool directory holding three complete
+The case boots with no builtin guest selected and a pool directory holding three complete
 guest configs plus one unusable file, all injected into the guest filesystem by
 the `sh/` asset pipeline. The probe drives the whole browser control plane in one
 boot:
@@ -226,11 +226,11 @@ def pool_body(label):
     expect_status(label, status, 200)
     if not isinstance(body, dict):
         raise AssertionError("%s did not return a JSON object: %r" % (label, body))
-    for field in ("directory", "sources", "entries", "issues"):
+    for field in ("directory", "sources", "builtin", "entries", "issues"):
         if field not in body:
             raise AssertionError("%s had no %s field: %r" % (label, field, body))
-    if not isinstance(body["entries"], list) or not isinstance(body["issues"], list):
-        raise AssertionError("%s had non-list entries/issues: %r" % (label, body))
+    if not all(isinstance(body[field], list) for field in ("builtin", "entries", "issues")):
+        raise AssertionError("%s had non-list builtin/entries/issues: %r" % (label, body))
     return body
 
 
@@ -745,6 +745,10 @@ def phase_pool():
 
     pool = pool_body("GET /api/vms/pool")
     check("pool directory", pool["directory"], "/usr/bin")
+    # This fixture intentionally has no builtin vm_configs.  The response
+    # still exposes the read-only catalog partition so callers can distinguish
+    # it from the dynamic pool without inferring startup behavior from entries.
+    check("builtin catalog", pool["builtin"], [])
     # The read sources are the folder a config is written to and, last, the guest
     # tree: a config anywhere under the tree is a candidate, and the write folder
     # is read first so it keeps precedence for a taken id.

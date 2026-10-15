@@ -58,7 +58,8 @@ RTL8125 当前以硬件的 all-unicast 能力实现 `Normal`/`AllUnicast`，并�
 1. 预留所有已发布 host MAC，防止 guest 端口复用宿主地址。
 2. 以 `InterfaceId` 选择并切换一个支持 `AllUnicast` 的 Ethernet 接口。
 3. 在本地创建并绑定 `UplinkRuntime`，登记 ingress sink，先安装 `PhysicalUplink` adapter，再发布 runtime 指针。
-4. 完成后才调用 `AxvmManager::init_default_vms`，让 guest virtio-net 端口加入交换机。
+4. 完成后才建立 `AxvmManager` 的 builtin catalog；catalog 阶段只索引配置，实际
+   guest virtio-net 端口在宿主 `axvisor.vm_start` 选择或后续按需创建时加入交换机。
 
 候选接口不支持所需模式时不会修改其他接口；AxVM 上联注册竞争失败时会把候选接口恢复为 `Normal` 并终止本次安装。runtime 只有在 adapter 注册成功后才发布，避免竞争失败留下可见的半初始化对象。物理接口启动、停止和 queue rearm 仍由 `ax-net` 的既有 owner-CPU 生命周期负责，本层不模拟 Linux `phylink` 或 `ethtool` 控制面。
 

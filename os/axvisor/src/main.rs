@@ -41,9 +41,11 @@ mod net_uplink;
 #[cfg(feature = "vcpu-perf-load")]
 mod perf_load;
 mod shell;
+mod startup;
 mod sync;
 #[cfg(feature = "test-virq-delivery")]
 mod virq_regression;
+mod vm_pool;
 
 /// Axvisor kernel entry point.
 ///
@@ -52,11 +54,10 @@ mod virq_regression;
 /// 1. Configure the sole runtime host-console owner.
 /// 2. Print the startup banner through its output worker.
 /// 3. Check and enable hardware virtualization on every CPU.
-/// 4. Build the default guest VMs, then report the pool of configs the
-///    management plane may start on demand.
-/// 5. Spawn the management plane first — the configured HTTP service and the
-///    registry watcher that feeds the browser UI — so they are live before any
-///    guest boots, then the VM lifecycle waiter and the physical-console shell.
+/// 4. Index the builtin guest configs, select any requested guests from the
+///    host command line, and report the dynamic pool for on-demand starts.
+/// 5. Create and start the selected builtin guests, then expose management
+///    services and the physical-console shell for subsequent on-demand starts.
 ///
 fn main() {
     // The boot instant is recorded before anything else so the control plane's
@@ -82,20 +83,30 @@ fn main() {
     // wire and guest MACs are validated against the reserved host MACs.
     net_uplink::start();
     manager
-        .init_default_vms()
-        .unwrap_or_else(|error| panic!("failed to initialize default VMs: {error:#}"));
+        .init_builtin_catalog()
+        .unwrap_or_else(|error| panic!("failed to index builtin guest configs: {error:#}"));
+    let selected_vm_ids =
+        startup::selected_vm_ids(ax_hal::boot::bootargs(), manager.builtin_catalog())
+            .unwrap_or_else(|error| panic!("invalid host VM startup selector: {error:#}"));
+
+    // Pool indexing is observational. It never creates a VM; each selected
+    // builtin is created and started only after all selector validation passes.
+    vm_pool::log_startup_state(manager.builtin_catalog());
     #[cfg(feature = "vcpu-perf-load")]
     let _performance_load = perf_load::start();
-
-    // The pool reports what it found under the guest tree: a config there
-    // becomes a VM only when the shell or the control plane asks for it.
-    #[cfg(feature = "web")]
-    control::domain::pool::log_startup_state();
 
     // The registry watcher behind `/ws/events` is started before HTTP so the
     // first subscriber cannot miss a change.
     #[cfg(feature = "web")]
     control::domain::events::start();
+
+    manager
+        .start_selected_vms(&selected_vm_ids)
+        .unwrap_or_else(|error| panic!("failed to start selected builtin VMs: {error:#}"));
+    info!(
+        "Builtin VM startup selector registered {} guest(s)",
+        selected_vm_ids.len()
+    );
 
     // The optional HTTP server accepts connections in a loop and needs its
     // own task so neither the shell nor the VMM blocks it. The server's bind
@@ -117,23 +128,8 @@ fn main() {
     #[cfg(feature = "web")]
     control::network_status::start();
 
-    // With `no-auto-start` the default VMs are only created (staying in
-    // `Ready`) and the management plane boots them on demand, so nothing is
-    // launched or waited on here.
-    #[cfg(not(feature = "no-auto-start"))]
-    let _ = manager.launch_default_vms();
-
     #[cfg(feature = "test-virq-delivery")]
     virq_regression::start();
-
-    #[cfg(not(feature = "no-auto-start"))]
-    std::thread::Builder::new()
-        .name("axvisor-vm-wait".into())
-        .spawn(move || manager.wait_for_default_vms())
-        .unwrap_or_else(|error| panic!("failed to start VM completion waiter: {error}"));
-
-    #[cfg(not(feature = "no-auto-start"))]
-    info!("[OK] Default guest initialized");
 
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 

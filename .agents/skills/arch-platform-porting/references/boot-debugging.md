@@ -602,3 +602,19 @@ Axvisor 宿主 archive 可以与明确命名的 guest drive 并存；判断是�
 `prepare_block_root()` 不改变当前根；`PreparedRoot::commit()` 切根、更新同命名空间中的 root/cwd、脱离旧根。ArceOS 在应用启动前处理显式 `root=`；Starry 的 `rdinit=` 或 `/init` 可访问时由早期用户态切根，没有早期 init 时由内核切根。早期 init 执行失败不得再次挂载磁盘。
 
 Axvisor 使用 `deferred-rootfs`，在读取 VM 配置前安装 `/guest/builtin`，然后提交磁盘切根。无块设备驱动、无宿主块设备或未请求磁盘根时，直接在 initramfs 运行 VM，不切根；无块设备时即使继承了 `root=` 也保持内存根。已接入块设备且显式选择的根不可用时报告错误。HTTP 删除、重建 VM 的验证应使用打包后或已安装的资源路径，不能依赖内核内嵌镜像。
+
+Axvisor 启动阶段只索引 `/guest/builtin/configs`，不把归档中的配置直接实例化。
+需要开机启动的客户机通过宿主参数 `axvisor.vm_start=1,2` 选择；该参数应出现在
+QEMU `-append`、UEFI LoadOptions 或 U-Boot `bootargs`，不应写入 guest
+`[kernel].cmdline`。板卡用例的 `cmdline` 字段（或 `uboot_cmd` 中的
+`setenv bootargs`）就是宿主 bootargs 的完整唯一来源，必须携带该板卡所需的
+全部宿主参数和 selector——接磁盘根的板卡要含 `root=`、`console=`、
+`earlycon` 等，纯 initramfs、无磁盘根切换的板卡（如 ASUS NUC15CRH 的
+x86_64 httpboot 用例）可以只含 selector；axbuild 不向板卡环境
+`${bootargs}` 或 base preset 隐式追加，本地 `test uboot` 与远端
+`test board` 路径都按该字段整体设置 bootargs。缺少参数表示零个 VM；
+`/guest` 下的动态 pool（排除
+`/guest/builtin`）由 HTTP/shell 的 start 命令按需创建。排查“guest 没有起来”时，
+先核对实际宿主 cmdline、builtin catalog 的 VM ID 与测试 case 的 shell/HTTP 启动
+步骤，再检查客户机内核或 initrd；不要恢复已删除的自动启动 feature 或
+`/guest/vm_default` 启动覆盖路径。

@@ -7,7 +7,7 @@ args = [
   "-smp",
   "4",
   "-append",
-  "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 axvisor.timer_case=gicv3-its",
+  "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 axvisor.timer_case=gicv3-its axvisor.vm_start=1",
   "-m",
   "8g",
 ]

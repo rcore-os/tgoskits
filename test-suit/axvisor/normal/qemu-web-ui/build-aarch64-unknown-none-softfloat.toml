@@ -5,10 +5,9 @@
 # tree) and packs the resulting `dist` into the host initramfs under
 # `/guest/builtin/web-ui`. The kernel serves the dashboard from there — from
 # the initramfs memory root in the diskless case, from the installed disk root
-# in the NVMe case. `no-auto-start` keeps the default VM
-# (`linux-virtio-blk-fs.toml` in the shared config library) in `Ready`
-# (registered but not booted), so the probe can assert the lane table and then
-# drive start/close/create itself.
+# in the NVMe case. Startup remains at zero VMs unless the host command line
+# carries `axvisor.vm_start=<id>[,<id>...]`; the probe creates the builtin VM
+# through HTTP start when needed.
 #
 # The filesystem-backed kernel and disk paths plus `ax-driver/nvme` make the disk
 # case's guest possible: the guest kernel, and the ext4 image the guest roots
@@ -19,7 +18,6 @@
 features = [
     "web-ui",
     "ax-driver/nvme",
-    "no-auto-start",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

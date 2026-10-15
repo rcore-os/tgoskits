@@ -16,9 +16,11 @@ pub(crate) fn missing_guest_image(config: &GuestConfig) -> Option<String> {
         .boot_image_paths()
         .filter(|path| !path.is_empty())
         .find(|path| {
-            ax_std::fs::metadata(path)
-                .map(|metadata| !metadata.is_file())
-                .unwrap_or(true)
+            !(ax_std::fs::metadata(path)
+                .map(|metadata| metadata.is_file())
+                .unwrap_or(false)
+                || (axvisor::builtin::is_builtin_path(path)
+                    && axvisor::builtin::boot_asset_exists(path)))
         })
         .map(str::to_owned)
         .or_else(|| {
@@ -28,9 +30,11 @@ pub(crate) fn missing_guest_image(config: &GuestConfig) -> Option<String> {
                 .iter()
                 .filter_map(file_backing_path)
                 .find(|path| {
-                    ax_std::fs::metadata(path)
-                        .map(|metadata| !metadata.is_file())
-                        .unwrap_or(true)
+                    !(ax_std::fs::metadata(path)
+                        .map(|metadata| metadata.is_file())
+                        .unwrap_or(false)
+                        || (axvisor::builtin::is_builtin_path(path)
+                            && axvisor::builtin::boot_asset_exists(path)))
                 })
         })
 }

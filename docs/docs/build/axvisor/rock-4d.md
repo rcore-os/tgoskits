@@ -46,6 +46,8 @@ test -s "${AXVISOR_GUEST_ASSETS}/linux/rock-4d-linux-smp1.dtb"
 
 本地资源准备完成后，通过现有板卡服务运行完整 U-Boot、Axvisor、Linux 客户机链路。
 
+用例 `smoke/board-rock-4d-linux.toml` 在宿主 `cmdline` 中设置 `axvisor.vm_start=1`，因此启动时创建并启动打包的 builtin VM。手工运行时若省略该参数，Axvisor 只索引配置，需在 shell 执行 `vm start 1`；guest `[kernel].cmdline` 只传给 Linux，不承担宿主选择。
+
 ```bash
 cd "${TGOSKITS_ROOT}"
 cargo xtask axvisor test board --board rock-4d-linux
@@ -53,4 +55,4 @@ cargo xtask axvisor test board --board rock-4d-linux
 
 ### 2.2 根文件系统选择
 
-没有宿主 `root=` 时直接从 initramfs 加载客户机，不切根。显式磁盘根时，`builtin::prepare_root()` 将 `/guest/builtin` 整包替换到磁盘、刷盘并切根；只读根、空间不足或安装失败会停止启动。板卡实际交接及根切换需要在对应硬件上验证，QEMU 结果不能代替。
+没有宿主 `root=` 时保留 initramfs 根；选中的客户机从该根加载资源，不切根。显式磁盘根时，`builtin::prepare_root()` 将 `/guest/builtin` 整包替换到磁盘、刷盘并切根；只读根、空间不足或安装失败会停止启动。板卡实际交接及根切换需要在对应硬件上验证，QEMU 结果不能代替。

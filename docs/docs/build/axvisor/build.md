@@ -25,11 +25,11 @@ sidebar_label: "构建"
 
 ## 2. 自带资源打包
 
-`load_vmconfigs()` 与 `bundle::attach()` 在内核构建之外解析客户机配置、准备镜像并复用现有 newc 打包器。运行器将归档交给 QEMU、FIT 或板卡 HTTP Boot。
+`load_vmconfigs()` 与 `bundle::attach()` 在内核构建之外解析客户机配置、准备镜像并复用现有 newc 打包器。运行器将归档交给 QEMU、FIT 或板卡 HTTP Boot。归档中的配置只建立 builtin catalog；Axvisor 启动时按宿主 `axvisor.vm_start=<id>[,<id>...]` 延迟创建选中客户机。
 
 ### 2.1 打包输入
 
-CLI 的 `--vmconfig <PATH>` 可重复，`--vmconfigs` 为兼容别名；非空 CLI 列表覆盖 Build Config 的 `vm_configs`。测试用例可在自己的 `host-initramfs.toml` 中指定列表，与共享 Build Config 分离。
+CLI 的 `--vmconfig <PATH>` 可重复，`--vmconfigs` 为兼容别名；非空 CLI 列表覆盖 Build Config 的 `vm_configs`。对于固定构建产物，Build Config 的 `vm_configs` 是 builtin 资源的权威来源；测试用例可在自己的 `host-initramfs.toml` 中指定列表，与共享 Build Config 分离。它们不会决定开机是否创建 VM，启动选择由宿主 cmdline 控制。
 
 `kernel_path`、`dtb_path`、`bios_path`、`uefi_firmware_path`、`ramdisk_path` 可引用构建机文件，支持 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:NAME}`；相对路径按 VM TOML 所在目录解释。板卡自行构建的资源使用 `${env:AXVISOR_GUEST_ASSETS}` 指定本地资产目录。板卡启动也允许保留 rootfs 已提供的绝对资源路径；可取得的本地文件仍优先复制到自带包。客户机可写磁盘路径维持原值。
 

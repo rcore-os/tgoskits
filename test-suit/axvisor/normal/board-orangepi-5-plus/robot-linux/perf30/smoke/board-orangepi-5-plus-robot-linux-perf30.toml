@@ -2,7 +2,7 @@
 # `cmdline` is the AxVisor host U-Boot bootargs supplied by BoardRunConfig; it
 # is intentionally separate from the guest kernel cmdline in the VM TOML.
 board_type = "OrangePi-5-Plus"
-cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 splash=verbose consoleblank=0 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 loglevel=8 usb-storage.quirks= cma=128M cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1 cpufreq.default_governor=performance'
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 splash=verbose consoleblank=0 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 loglevel=8 usb-storage.quirks= cma=128M cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1 cpufreq.default_governor=performance axvisor.vm_start=1'
 timeout = 900
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',

@@ -1,6 +1,6 @@
 # Three-guest browser-console build for the axum management HTTP + web console.
-# Enables unified `web` (NOT `no-auto-start`, so the three default VMs are
-# actually booted and appear as three guest console panes in the web UI).
+# Enables unified `web`; the QEMU host cmdline explicitly selects all three
+# builtin guests with `axvisor.vm_start=1,2,3`.
 # The filesystem-backed kernel paths plus `ax-driver/nvme` make the guests possible: all three kernels
 # are read from the hypervisor's own filesystem on the QEMU NVMe disk instead of
 # being embedded in the hypervisor binary, so a case that wants different guests

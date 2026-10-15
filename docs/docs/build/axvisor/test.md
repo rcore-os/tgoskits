@@ -46,7 +46,7 @@ test-suit/axvisor/
 
 ### 3.1 QEMU 测试
 
-最常用的测试模式，在 QEMU 中启动 Axvisor 和配置的 Guest VM。执行链位于 `axvisor/test/qemu.rs::test_qemu()`，采用**两阶段**策略：先编译所有 build group，再运行所有 QEMU 用例。
+最常用的测试模式，在 QEMU 中启动 Axvisor 和配置的 Guest VM。执行链位于 `axvisor/test/qemu.rs::test_qemu()`，采用**两阶段**策略：先编译所有 build group，再运行所有 QEMU 用例。`vm_configs` 只构建 `/guest/builtin` catalog；每个需要开机客户机的 QEMU case 都必须在 host `cmdline`/`-append` 中显式写入 `axvisor.vm_start=<id>[,<id>...]`，没有 selector 的 case 应验证零启动或通过 shell/HTTP 按需启动。
 
 ```mermaid
 flowchart TD
@@ -76,12 +76,12 @@ flowchart TD
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
 | 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/` 与 `apps/axvisor/<group>/`，默认 group 为 `normal` |
-| VM 配置 | `qemu_group_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表 |
+| VM 配置 | `qemu_group_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表；只产生 builtin catalog |
 | rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 根据每个用例的宿主根盘接线准备磁盘；纯 initramfs 用例不下载宿主根盘 |
 | 分组命令校验 | `discovery.rs::load_qemu_case()` | 在构建前拒绝非空 `test_commands`，提示改用 `shell_check_steps` |
 | 结果判定 | `QemuTestSummary` | 收集所有 case 的 pass/fail，最终 `finish_with_total_detail()` 统一判定退出码 |
 
-单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：保留显式 `shell_check_steps`、应用 `apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 直接保留目标串口输出，由目标侧 AXBT map 完成回溯符号化。
+单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：保留显式 `shell_check_steps`、应用 `apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 直接保留目标串口输出，由目标侧 AXBT map 完成回溯符号化。宿主 selector 属于 QEMU/板卡 cmdline，不要写入 guest VM TOML 的 `[kernel].cmdline`。
 
 ### 3.2 U-Boot 测试
 
@@ -113,7 +113,7 @@ flowchart TD
 关键步骤：
 
 - **用例定位**：`discover_uboot_test_group()` 按 board 名和 guest 名定位唯一的 board test group。
-- **U-Boot config 合并**：`merge_board_test_uboot_config()` 把 base config（来自 `--uboot-config` 或自动发现）与 board test config（来自 `board-test-*.toml`）合并。合并策略：board test 的 `fail_regex`、`uboot_cmd` 以及有序 `shell_check_steps` **整体覆盖** base；步骤内使用可选的 `shell_prefix`、`shell_cmd` 和成功/失败判定，无命令步骤可只检查自行产生的输出。地址类字段（`kernel_load_addr`、`fit_load_addr`、`bootm_addr`）仅在 board test 提供时覆盖；base 的 `local`（串口、波特率）和 `dtb_file` **保留**。
+- **U-Boot config 合并**：`merge_board_test_uboot_config()` 把 base config（来自 `--uboot-config` 或自动发现）与 board test config（来自 `board-test-*.toml`）合并。合并策略：board test 的 `fail_regex`、`uboot_cmd` 以及有序 `shell_check_steps` **整体覆盖** base；步骤内使用可选的 `shell_prefix`、`shell_cmd` 和成功/失败判定，无命令步骤可只检查自行产生的输出。地址类字段（`kernel_load_addr`、`fit_load_addr`、`bootm_addr`）仅在 board test 提供时覆盖；base 的 `local`（串口、波特率）和 `dtb_file` **保留**。`cmdline` 同样整体覆盖：board test 的 `cmdline`（或 `uboot_cmd` 中的 `setenv bootargs`）是宿主 bootargs 的**唯一来源**，用例必须写入该板卡所需的全部宿主启动参数和 `axvisor.vm_start`（接磁盘根的板卡含 `root=`、`console=`、`earlycon` 等；纯 initramfs、无磁盘根切换的板卡（如 ASUS NUC15CRH 的 x86_64 httpboot 用例）可以只含 selector），不存在向板卡环境 `${bootargs}` 或 base preset 的隐式追加；远端 `test board` 路径不经合并，行为与此一致。
 - **编译与运行**：`app.uboot()` 一次性完成编译和 U-Boot 运行，由合并后的 U-Boot config 判定结果。
 
 该模式验证完整的"U-Boot → Axvisor → Guest"引导链路，覆盖真实硬件上 U-Boot 加载 Axvisor ELF、Axvisor 初始化硬件虚拟化扩展、再启动 Guest 的全流程。

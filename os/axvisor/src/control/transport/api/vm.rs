@@ -11,11 +11,12 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use axvisor::builtin::BuiltinCatalog;
 use axvm::{AxVmError, VmSnapshot};
 use axvmconfig::{GuestConfig, GuestType, VmMemConfig, VmMemMappingType};
 use serde_json::{Value, json};
 
-use crate::manager::manager;
+use crate::manager::{VmCandidateNotFound, manager};
 
 const GUEST_RAM_FLAGS: usize = 0x7;
 
@@ -306,21 +307,17 @@ pub async fn vm_create(Json(payload): Json<Value>) -> Response {
 pub async fn vm_delete(Path(id): Path<String>) -> Result<StatusCode, StatusCode> {
     let id = parse_vm_id(id)?;
     manager().get(id).ok_or(StatusCode::NOT_FOUND)?;
-    let console_backend = crate::guest_console::backend_identity(id);
     manager().destroy_vm(id).map_err(map_axvm_error)?;
-    if let Some(identity) = console_backend {
-        crate::guest_console::remove_if_backend(identity);
-    }
-    crate::guest_console::mark_stopped(id);
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /api/vms/pool` — list candidate configurations.
 pub async fn vm_pool() -> Json<Value> {
-    let pool = crate::control::domain::pool::scan();
+    let pool = crate::vm_pool::scan_with_builtin(manager().builtin_catalog());
     Json(json!({
         "directory": pool.directory(),
         "sources": pool.sources(),
+        "builtin": builtin_entries_json(manager().builtin_catalog()),
         "entries": entries_json(pool.entries()),
         "issues": issues_json(pool.issues()),
     }))
@@ -335,8 +332,8 @@ pub async fn vm_browse(
         .map(String::as_str)
         .filter(|path| !path.trim().is_empty())
         .map(ToString::to_string)
-        .unwrap_or_else(|| crate::control::domain::pool::directory().to_string());
-    let folder = crate::control::domain::pool::browse(&path);
+        .unwrap_or_else(|| crate::vm_pool::directory().to_string());
+    let folder = crate::vm_pool::browse(&path);
     Json(json!({
         "path": folder.path(),
         "parent": folder.parent(),
@@ -354,27 +351,40 @@ pub async fn vm_pool_save(Json(payload): Json<Value>) -> Result<Json<Value>, Sta
         .get("toml")
         .and_then(Value::as_str)
         .ok_or(StatusCode::BAD_REQUEST)?;
-    match crate::control::domain::pool::save(name, raw) {
+    match crate::vm_pool::save(name, raw) {
         Ok(path) => Ok(Json(json!({"path": path}))),
-        Err(crate::control::domain::pool::SaveError::Exists(_)) => Err(StatusCode::CONFLICT),
-        Err(crate::control::domain::pool::SaveError::Unwritable(_)) => {
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(crate::vm_pool::SaveError::Exists(_)) => Err(StatusCode::CONFLICT),
+        Err(crate::vm_pool::SaveError::Unwritable(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
         Err(_) => Err(StatusCode::BAD_REQUEST),
     }
 }
 
-fn files_json(files: &[crate::control::domain::pool::File]) -> Vec<Value> {
+fn files_json(files: &[crate::vm_pool::File]) -> Vec<Value> {
     files
         .iter()
         .map(|file| json!({"name": file.name(), "path": file.path(), "size": file.size()}))
         .collect()
 }
-fn entries_json(entries: &[crate::control::domain::pool::Entry]) -> Vec<Value> {
+fn entries_json(entries: &[crate::vm_pool::Entry]) -> Vec<Value> {
     entries.iter().map(|entry| json!({"id": entry.id(), "name": entry.name(), "path": entry.path(), "source": entry.source(), "toml": entry.toml()})).collect()
 }
-fn issues_json(issues: &[crate::control::domain::pool::Issue]) -> Vec<Value> {
+fn issues_json(issues: &[crate::vm_pool::Issue]) -> Vec<Value> {
     issues.iter().map(|issue| json!({"kind": issue.kind().as_str(), "path": issue.path(), "detail": issue.kind().to_string()})).collect()
+}
+
+fn builtin_entries_json(catalog: &BuiltinCatalog) -> Vec<Value> {
+    catalog
+        .entries()
+        .map(|entry| {
+            json!({
+                "id": entry.id(),
+                "name": entry.name(),
+                "path": entry.path(),
+                "source": "builtin",
+                "toml": entry.toml(),
+            })
+        })
+        .collect()
 }
 
 pub async fn vm_start(Path(id): Path<String>) -> Result<Json<Value>, StatusCode> {
@@ -407,9 +417,7 @@ enum VmAction {
 
 fn vm_action(id: usize, action: VmAction) -> Result<Json<Value>, StatusCode> {
     if matches!(action, VmAction::Start) && manager().get(id).is_none() {
-        if !manager().ensure_vm_from_pool(id).map_err(map_axvm_error)? {
-            return Err(StatusCode::NOT_FOUND);
-        }
+        manager().ensure_vm(id).map_err(map_axvm_error)?;
     }
     let vm = manager().get(id).ok_or(StatusCode::NOT_FOUND)?;
     let result = match action {
@@ -424,6 +432,13 @@ fn vm_action(id: usize, action: VmAction) -> Result<Json<Value>, StatusCode> {
 }
 
 fn map_axvm_error(error: anyhow::Error) -> StatusCode {
+    if error
+        .root_cause()
+        .downcast_ref::<VmCandidateNotFound>()
+        .is_some()
+    {
+        return StatusCode::NOT_FOUND;
+    }
     match error.root_cause().downcast_ref::<AxVmError>() {
         Some(
             AxVmError::InvalidTransition { .. }

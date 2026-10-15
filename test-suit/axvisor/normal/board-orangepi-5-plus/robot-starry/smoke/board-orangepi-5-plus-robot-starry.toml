@@ -4,6 +4,7 @@
 # The ordinary OrangePi 5 Plus board type carries the camera and FT232 loopback
 # hardware used by the virtual CI checks.
 board_type = "OrangePi-5-Plus"
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
 timeout = 900
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',

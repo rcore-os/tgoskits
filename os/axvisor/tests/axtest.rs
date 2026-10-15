@@ -48,8 +48,13 @@ mod network_console;
 mod control {
     pub(crate) use crate::network_console;
 }
-#[path = "../src/control/domain/pool.rs"]
-mod pool;
+#[path = "../src/vm_pool.rs"]
+mod vm_pool;
+mod pool {
+    pub(crate) use crate::vm_pool::*;
+}
+#[path = "../src/startup.rs"]
+mod startup;
 #[path = "../src/sync.rs"]
 mod sync;
 // The pool suites clean their fixtures through the production filesystem
@@ -82,7 +87,7 @@ mod tests {
     use ax_fs_ng::vfs::FsContext;
     use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission};
     use axtest::prelude::*;
-    use axvisor::builtin::{install_builtin, selected_configs};
+    use axvisor::builtin::{install_builtin, load_catalog};
 
     #[test]
     fn placed_file_can_be_reopened_idempotently() {
@@ -162,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn user_configs_override_defaults_and_invalid_user_configs_stop_loading() {
+    fn builtin_catalog_ignores_vm_default_and_rejects_invalid_builtin_configs() {
         let context =
             FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
         for path in [
@@ -186,26 +191,25 @@ mod tests {
         context
             .write("/guest/builtin/configs/default.toml", builtin)
             .unwrap();
+        let catalog = load_catalog(&context).unwrap();
         ax_assert_eq!(
-            selected_configs(&context).unwrap(),
-            alloc::vec![builtin.to_owned()]
+            catalog.ids().collect::<alloc::vec::Vec<_>>(),
+            alloc::vec![1]
         );
+        ax_assert_eq!(catalog.get(1).unwrap().toml(), builtin);
         context
             .write("/guest/vm_default/custom.toml", &user)
             .unwrap();
-        ax_assert_eq!(selected_configs(&context).unwrap(), alloc::vec![user]);
-        context.write("/guest/vm_default/custom.toml", "").unwrap();
-        ax_assert!(selected_configs(&context).is_err());
-        context
-            .remove_file(
-                "/guest/vm_default/custom.toml",
-                &MutationCredentials::root(),
-            )
-            .unwrap();
+        let catalog = load_catalog(&context).unwrap();
         ax_assert_eq!(
-            selected_configs(&context).unwrap(),
-            alloc::vec![builtin.to_owned()]
+            catalog.ids().collect::<alloc::vec::Vec<_>>(),
+            alloc::vec![1]
         );
+        ax_assert_eq!(catalog.get(1).unwrap().toml(), builtin);
+        context
+            .write("/guest/builtin/configs/invalid.toml", "")
+            .unwrap();
+        ax_assert!(load_catalog(&context).is_err());
     }
 
     #[test]

@@ -4,18 +4,40 @@ extern crate alloc;
 
 use alloc::{vec, vec::Vec};
 
-use anyhow::anyhow;
 use anyhow::{Context, Result};
-#[cfg(not(feature = "no-auto-start"))]
-use axvm::VmStatus;
+use anyhow::{anyhow, bail};
+use axvisor::builtin::BuiltinCatalog;
 use axvm::{StopReason, VMId, VmHandle, VmManager, VmOperation};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::sync::MutexExt;
 
+/// A start request named an ID that is not registered and has no candidate
+/// configuration in either the builtin catalog or the dynamic pool.
+#[derive(Debug)]
+pub struct VmCandidateNotFound {
+    pub vm_id: VMId,
+}
+
+impl core::fmt::Display for VmCandidateNotFound {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "VM[{}] is neither registered nor in the builtin catalog or dynamic pool",
+            self.vm_id
+        )
+    }
+}
+
+impl std::error::Error for VmCandidateNotFound {}
+
 /// Application policy and its instance-owned VM registry.
 pub struct AxvmManager {
     runtime: VmManager,
+    /// Immutable configurations shipped under `/guest/builtin`.
+    builtin: OnceLock<BuiltinCatalog>,
+    /// Protected by `lifecycle`; records the one-way host filesystem handoff.
+    host_filesystem_released: Mutex<bool>,
     /// Serializes VM creation completion and destruction with console-lane
     /// reclamation. A lane must not be reused between the runtime operation
     /// finishing and the old owner releasing it.
@@ -32,10 +54,27 @@ pub fn manager() -> &'static AxvmManager {
         .expect("application installs its manager before starting services")
 }
 
+/// Refines the configuration-level host filesystem handoff decision with the
+/// created VM's device snapshot. On a block root the handoff follows whether
+/// the guest actually assigned the registered host block controller: the
+/// resolved device names decide this more precisely than the raw TOML, and a
+/// passthrough guest that leaves host storage shared must not trigger the
+/// handoff. When ownership cannot be proven, the configured decision stands.
+fn guest_took_host_storage(vm: &VmHandle, configured: bool) -> bool {
+    if ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block) {
+        axvm::host::storage::guest_uses_host_block_controller(&vm.snapshot().description)
+            .unwrap_or(configured)
+    } else {
+        configured
+    }
+}
+
 impl AxvmManager {
     pub fn new() -> Result<Arc<Self>> {
         let manager = Arc::new(Self {
             runtime: VmManager::new().context("initialize AxVM runtime")?,
+            builtin: OnceLock::new(),
+            host_filesystem_released: Mutex::new(false),
             lifecycle: Mutex::new(()),
             cpu_freq_backend: Arc::new(crate::guest_cpufreq::GuestCpuFreqService::new()),
         });
@@ -45,56 +84,33 @@ impl AxvmManager {
         Ok(manager)
     }
 
-    pub fn init_default_vms(&self) -> Result<()> {
-        crate::config::init_guest_vms()?;
-        self.release_host_filesystem_for_guest_passthrough();
+    /// Indexes builtin configurations only; it never creates or starts a VM.
+    pub fn init_builtin_catalog(&self) -> Result<()> {
+        let catalog = crate::config::load_builtin_catalog()?;
+        self.builtin
+            .set(catalog)
+            .map_err(|_| anyhow!("builtin guest catalog is already initialized"))?;
         Ok(())
     }
 
-    #[cfg(not(feature = "no-auto-start"))]
-    pub fn launch_default_vms(&self) -> Vec<VMId> {
-        let mut started = Vec::new();
-        for vm in self.runtime.list() {
-            match vm.start().and_then(VmOperation::wait) {
-                Ok(_) => started.push(vm.key().vm_id()),
-                Err(error) => error!("VM[{}] failed to start: {error}", vm.key().vm_id()),
-            }
-        }
-        started
+    pub fn builtin_catalog(&self) -> &BuiltinCatalog {
+        self.builtin
+            .get()
+            .expect("builtin guest catalog is initialized before services start")
     }
 
-    #[cfg(not(feature = "no-auto-start"))]
-    pub fn wait_for_default_vms(&self) {
-        while self.runtime.list().iter().any(|vm| {
-            matches!(
-                vm.snapshot().state,
-                VmStatus::Running | VmStatus::Pausing | VmStatus::Paused | VmStatus::Stopping
-            )
-        }) {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-
-    pub fn create_vm_from_toml(&self, raw_cfg: &str) -> Result<VmOperation<VmHandle>> {
-        let _lifecycle = self.lifecycle.lock_unpoisoned();
-        self.create_vm_from_toml_locked(raw_cfg)
-    }
-
-    fn create_vm_from_toml_locked(&self, raw_cfg: &str) -> Result<VmOperation<VmHandle>> {
-        let plan = crate::config::prepare_guest_vm(raw_cfg, self.cpu_freq_backend.clone())?;
-        self.create_plan_locked(plan)
+    fn create_vm_from_toml_locked(&self, raw_cfg: &str) -> Result<(VmOperation<VmHandle>, bool)> {
+        let prepared = crate::config::prepare_guest_vm(raw_cfg, self.cpu_freq_backend.clone())?;
+        let release_host_filesystem = prepared.release_host_filesystem;
+        let operation = self.create_plan_locked(prepared.plan)?;
+        Ok((operation, release_host_filesystem))
     }
 
     /// Creates one VM and waits until its control task has finished setup.
     pub fn create_vm_from_toml_and_wait(&self, raw_cfg: &str) -> Result<VmHandle> {
         let _lifecycle = self.lifecycle.lock_unpoisoned();
-        let operation = self.create_vm_from_toml_locked(raw_cfg)?;
-        self.wait_for_created_vm_locked(operation)
-    }
-
-    pub fn create_plan(&self, plan: axvm::VmCreatePlan) -> Result<VmOperation<VmHandle>> {
-        let _lifecycle = self.lifecycle.lock_unpoisoned();
-        self.create_plan_locked(plan)
+        let (operation, release_host_filesystem) = self.create_vm_from_toml_locked(raw_cfg)?;
+        self.complete_created_vm_locked(operation, release_host_filesystem)
     }
 
     fn create_plan_locked(&self, plan: axvm::VmCreatePlan) -> Result<VmOperation<VmHandle>> {
@@ -118,88 +134,175 @@ impl AxvmManager {
         }
     }
 
-    /// Waits for VM initialization and releases its browser lane on failure.
-    pub fn wait_for_created_vm(&self, operation: VmOperation<VmHandle>) -> Result<VmHandle> {
-        let _lifecycle = self.lifecycle.lock_unpoisoned();
-        self.wait_for_created_vm_locked(operation)
-    }
-
+    /// Waits for VM initialization and cleans up a failed creation in every
+    /// build. A failed operation may retain its registry entry until an
+    /// explicit destroy, so returning early would make a later retry collide
+    /// with a stale VM ID or console lane.
     fn wait_for_created_vm_locked(&self, operation: VmOperation<VmHandle>) -> Result<VmHandle> {
-        #[cfg(feature = "web")]
         let vm_id = operation.id().vm().vm_id();
         match operation.wait() {
             Ok(vm) => Ok(vm),
             Err(error) => {
-                #[cfg(feature = "web")]
-                {
-                    // AxVM keeps a failed creation in the registry so the
-                    // caller can inspect its snapshot. Remove that failed
-                    // entry before returning, otherwise releasing its lane
-                    // would let a new VM claim the same route while the old
-                    // numeric id is still reserved.
-                    let cleanup_finished = match self.get(vm_id) {
-                        None => true,
-                        Some(vm) => match vm.destroy() {
-                            Ok(destroy) => match destroy.wait() {
-                                Ok(()) => match vm.join_control_task() {
-                                    Ok(()) => true,
-                                    Err(cleanup_error) => {
-                                        warn!(
-                                            "VM[{vm_id}] creation failed and control task did not join: {cleanup_error:#}"
-                                        );
-                                        false
-                                    }
-                                },
-                                Err(cleanup_error) => {
-                                    warn!(
-                                        "VM[{vm_id}] creation failed and cleanup did not finish: {cleanup_error:#}"
-                                    );
-                                    false
-                                }
-                            },
-                            Err(cleanup_error) => {
-                                warn!(
-                                    "VM[{vm_id}] creation failed and cleanup could not start: {cleanup_error:#}"
-                                );
-                                false
-                            }
-                        },
-                    };
-                    if cleanup_finished {
-                        crate::control::network_console::release_guest(vm_id);
-                    }
+                // AxVM keeps a failed creation in the registry so the caller
+                // can inspect its snapshot. Remove that failed entry before
+                // returning, otherwise a retry collides with a stale VM ID.
+                if let Err(cleanup_error) = self.cleanup_created_vms_locked(&[vm_id]) {
+                    warn!("VM[{vm_id}] creation cleanup failed: {cleanup_error}");
                 }
                 Err(error.into())
             }
         }
     }
 
-    /// Ensures that `vm_id` is registered, creating it from the current pool
-    /// entry when necessary. A pool entry is a candidate until a start request
-    /// names it; no VM or console lane is reserved by merely listing the pool.
-    #[cfg(feature = "web")]
-    pub fn ensure_vm_from_pool(&self, vm_id: VMId) -> Result<bool> {
+    fn complete_created_vm_locked(
+        &self,
+        operation: VmOperation<VmHandle>,
+        release_host_filesystem: bool,
+    ) -> Result<VmHandle> {
+        let vm_id = operation.id().vm().vm_id();
+        let vm = self.wait_for_created_vm_locked(operation)?;
+        let release_host_filesystem = guest_took_host_storage(&vm, release_host_filesystem);
+        if release_host_filesystem {
+            if let Err(error) = self.release_host_filesystem_for_guest_passthrough_locked() {
+                if let Err(cleanup_error) = self.cleanup_created_vms_locked(&[vm_id]) {
+                    warn!("VM[{vm_id}] release cleanup failed: {cleanup_error}");
+                }
+                return Err(error);
+            }
+        }
+        Ok(vm)
+    }
+
+    fn cleanup_created_vms_locked(&self, ids: &[VMId]) -> Result<()> {
+        let mut first_error = None;
+        for &vm_id in ids.iter().rev() {
+            let Some(vm) = self.get(vm_id) else {
+                continue;
+            };
+            let console_backend = crate::guest_console::backend_identity(vm_id);
+            let destroyed = if let Err(error) = vm.destroy().and_then(VmOperation::wait) {
+                warn!("VM[{vm_id}] startup rollback failed: {error}");
+                if first_error.is_none() {
+                    first_error = Some(anyhow!(error).context(format!("destroy VM[{vm_id}]")));
+                }
+                false
+            } else {
+                true
+            };
+            let joined = if let Err(error) = vm.join_control_task() {
+                warn!("VM[{vm_id}] startup rollback join failed: {error}");
+                if first_error.is_none() {
+                    first_error = Some(anyhow!(error).context(format!("join VM[{vm_id}]")));
+                }
+                false
+            } else {
+                true
+            };
+            if !destroyed || !joined {
+                continue;
+            }
+            #[cfg(feature = "web")]
+            crate::control::network_console::release_guest(vm_id);
+            if let Some(identity) = console_backend {
+                crate::guest_console::remove_if_backend(identity);
+            }
+            crate::guest_console::mark_stopped(vm_id);
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Ensures that `vm_id` is registered, preferring the immutable builtin
+    /// catalog and then the current dynamic pool. Listing a candidate never
+    /// allocates a VM or reserves a console lane.
+    pub fn ensure_vm(&self, vm_id: VMId) -> Result<VmHandle> {
         let _lifecycle = self.lifecycle.lock_unpoisoned();
-        if self.get(vm_id).is_some() {
-            return Ok(true);
+        if let Some(vm) = self.get(vm_id) {
+            return Ok(vm);
         }
 
-        let pool = crate::control::domain::pool::scan();
+        if let Some(entry) = self.builtin_catalog().get(vm_id) {
+            let (operation, release_host_filesystem) = self
+                .create_vm_from_toml_locked(entry.toml())
+                .with_context(|| format!("create builtin VM[{vm_id}] from `{}`", entry.path()))?;
+            return self
+                .complete_created_vm_locked(operation, release_host_filesystem)
+                .with_context(|| format!("initialize builtin VM[{vm_id}]"));
+        }
+
+        if *self.host_filesystem_released.lock_unpoisoned() {
+            return Err(anyhow!(VmCandidateNotFound { vm_id })
+                .context("host filesystem was released; dynamic VM assets are unavailable"));
+        }
+        let pool = crate::vm_pool::scan_with_builtin(self.builtin_catalog());
         let Some(entry) = pool.entries().iter().find(|entry| entry.id() == vm_id) else {
-            crate::control::domain::pool::log_issues(&pool);
-            return Ok(false);
+            crate::vm_pool::log_issues(&pool);
+            return Err(anyhow!(VmCandidateNotFound { vm_id }));
         };
-        let operation = self
+        let (operation, release_host_filesystem) = self
             .create_vm_from_toml_locked(entry.toml())
             .with_context(|| format!("create VM[{vm_id}] from VM pool entry `{}`", entry.path()))?;
-        self.wait_for_created_vm_locked(operation)
+        self.complete_created_vm_locked(operation, release_host_filesystem)
             .with_context(|| {
                 format!(
                     "initialize VM[{vm_id}] from VM pool entry `{}`",
                     entry.path()
                 )
-            })?;
-        Ok(true)
+            })
+    }
+
+    /// Creates and starts the selected builtin guests in command-line order.
+    /// Every ID is validated before the first VM is created. Any guest created
+    /// by this selector is destroyed when a later operation fails.
+    pub fn start_selected_vms(&self, ids: &[VMId]) -> Result<()> {
+        let _lifecycle = self.lifecycle.lock_unpoisoned();
+        for &vm_id in ids {
+            if self.builtin_catalog().get(vm_id).is_none() {
+                bail!("VM[{vm_id}] selected by the host selector is not builtin");
+            }
+        }
+
+        let mut created = Vec::new();
+        let mut release_host_filesystem = false;
+        let result = (|| {
+            for &vm_id in ids {
+                if self.get(vm_id).is_some() {
+                    bail!("VM[{vm_id}] is already registered");
+                }
+                let entry = self
+                    .builtin_catalog()
+                    .get(vm_id)
+                    .expect("builtin ID was validated above");
+                let (operation, needs_release) = self
+                    .create_vm_from_toml_locked(entry.toml())
+                    .with_context(|| {
+                        format!("create builtin VM[{vm_id}] from `{}`", entry.path())
+                    })?;
+                let vm = self
+                    .wait_for_created_vm_locked(operation)
+                    .with_context(|| format!("initialize builtin VM[{vm_id}]"))?;
+                release_host_filesystem |= guest_took_host_storage(&vm, needs_release);
+                created.push(vm_id);
+            }
+            if release_host_filesystem {
+                self.release_host_filesystem_for_guest_passthrough_locked()?;
+            }
+            for &vm_id in ids {
+                self.require_vm(vm_id)?
+                    .start()?
+                    .wait()
+                    .with_context(|| format!("start builtin VM[{vm_id}]"))?;
+                crate::guest_console::mark_running(vm_id);
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            if let Err(cleanup_error) = self.cleanup_created_vms_locked(&created) {
+                warn!("startup rollback encountered another error: {cleanup_error}");
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn get(&self, vm_id: VMId) -> Option<VmHandle> {
@@ -215,7 +318,9 @@ impl AxvmManager {
         self.require_vm(vm_id)?
             .stop(StopReason::Forced)?
             .wait()
-            .context("stop VM")
+            .context("stop VM")?;
+        crate::guest_console::mark_stopped(vm_id);
+        Ok(())
     }
 
     pub fn start_vm(&self, vm_id: VMId) -> Result<()> {
@@ -224,7 +329,9 @@ impl AxvmManager {
             .start()?
             .wait()
             .map(|_run| ())
-            .context("start VM")
+            .context("start VM")?;
+        crate::guest_console::mark_running(vm_id);
+        Ok(())
     }
 
     pub fn pause_vm(&self, vm_id: VMId) -> Result<()> {
@@ -237,7 +344,9 @@ impl AxvmManager {
         self.require_vm(vm_id)?
             .resume()?
             .wait()
-            .context("resume VM")
+            .context("resume VM")?;
+        crate::guest_console::mark_running(vm_id);
+        Ok(())
     }
 
     pub fn reset_vm(&self, vm_id: VMId) -> Result<()> {
@@ -246,16 +355,23 @@ impl AxvmManager {
             .reset()?
             .wait()
             .map(|_| ())
-            .context("reset VM")
+            .context("reset VM")?;
+        crate::guest_console::mark_running(vm_id);
+        Ok(())
     }
 
     pub fn destroy_vm(&self, vm_id: VMId) -> Result<()> {
         let _lifecycle = self.lifecycle.lock_unpoisoned();
         let vm = self.require_vm(vm_id)?;
+        let console_backend = crate::guest_console::backend_identity(vm_id);
         vm.destroy()?.wait().context("destroy VM")?;
         vm.join_control_task().context("join VM control task")?;
         #[cfg(feature = "web")]
         crate::control::network_console::release_guest(vm_id);
+        if let Some(identity) = console_backend {
+            crate::guest_console::remove_if_backend(identity);
+        }
+        crate::guest_console::mark_stopped(vm_id);
         Ok(())
     }
 
@@ -275,16 +391,18 @@ impl AxvmManager {
         target_arch = "x86_64",
         target_arch = "loongarch64"
     ))]
-    fn release_host_filesystem_for_guest_passthrough(&self) {
-        if !crate::config::host_filesystem_release_required() {
-            return;
+    fn release_host_filesystem_for_guest_passthrough_locked(&self) -> Result<()> {
+        let mut released = self.host_filesystem_released.lock_unpoisoned();
+        if *released {
+            return Ok(());
         }
 
-        axvm::host::shutdown_filesystems().expect(
-            "Failed to release host filesystem before guest passthrough devices take ownership",
-        );
+        axvm::host::shutdown_filesystems()
+            .context("release host filesystem before guest passthrough")?;
         axvm::host::prepare_block_passthrough_device();
+        *released = true;
         info!("Host filesystem cleanly unmounted before guest passthrough devices start");
+        Ok(())
     }
 
     #[cfg(not(any(
@@ -292,7 +410,9 @@ impl AxvmManager {
         target_arch = "x86_64",
         target_arch = "loongarch64"
     )))]
-    fn release_host_filesystem_for_guest_passthrough(&self) {}
+    fn release_host_filesystem_for_guest_passthrough_locked(&self) -> Result<()> {
+        Ok(())
+    }
 
     fn open_file(file_name: &str) -> Result<ax_std::fs::File> {
         ax_std::fs::File::open(file_name)

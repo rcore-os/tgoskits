@@ -1,4 +1,4 @@
-# No default guest is configured for this case, so the shell starts with an
+# No builtin guest is selected for this case, so the shell starts with an
 # empty VM registry and `/pool` as the only candidate list. The steps below
 # provision that list the way a console user would — copy a guest image next to
 # it, copy a config in, write configs — then check listing, issue reporting and
@@ -59,7 +59,9 @@ success_regex = ["(?m)^No virtual machines found\\.\\s*$"]
 # missing id instead of starting something else.
 [[shell_check_steps]]
 shell_cmd = "vm start 7"
-success_regex = ["(?m)^✗ VM\\[7\\] is neither registered nor listed in the VM pool\\s*$"]
+success_regex = [
+    "(?m)^✗ VM\\[7\\](?: failed to start: .*VM\\[7\\])? is neither registered nor in the builtin catalog or dynamic pool\\s*$",
+]
 
 # Provision the pool: a guest image next to it plus one config per candidate.
 [[shell_check_steps]]
@@ -121,7 +123,9 @@ shell_cmd = """echo 'base = {id = 11, name = "pool-txt", cpu_num = 1}' > /pool/n
 
 [[shell_check_steps]]
 shell_cmd = "vm start 11"
-success_regex = ["(?m)^✗ VM\\[11\\] is neither registered nor listed in the VM pool\\s*$"]
+success_regex = [
+    "(?m)^✗ VM\\[11\\](?: failed to start: .*VM\\[11\\])? is neither registered nor in the builtin catalog or dynamic pool\\s*$",
+]
 
 # Starting the entry creates the VM on demand from the pool entry. The config
 # above has no `base` table, so AxVM's boot validation rejects it: the point of
@@ -130,7 +134,7 @@ success_regex = ["(?m)^✗ VM\\[11\\] is neither registered nor listed in the VM
 [[shell_check_steps]]
 shell_cmd = "vm start 0"
 success_regex = [
-    "(?m)^✗ create VM\\[0\\] from VM pool entry `/pool/boot\\.toml`: .+$",
+    "(?m)^✗ VM\\[0\\] failed to start: (?:look up VM\\[0\\] in builtin catalog and VM pool: )?create VM\\[0\\] from VM pool entry `/pool/boot\\.toml`: .+$",
 ]
 
 # The asset pipeline put a complete config into the guest filesystem. Copy it
@@ -167,7 +171,7 @@ success_regex = ["(?m)^5\\s+pool-guest\\s+running\\s+/pool/pool-guest\\.toml\\s*
 # which is what makes the next start possible.
 [[shell_check_steps]]
 shell_cmd = "vm delete --force 5"
-success_regex = ["(?m)^✓ VM\\[5\\] deletion completed\\s*$"]
+success_regex = ["(?m)^✓ VM\\[5\\] deleted completely\\s*$"]
 timeout = 120
 
 [[shell_check_steps]]

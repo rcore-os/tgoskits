@@ -34,7 +34,7 @@ flowchart LR
     axvisorRuntime["AxvisorRuntime: main hal vmm task shell driver"]
     guestSystems["GuestSystems: ArceOS Linux RT-Thread FreeRTOS Zephyr"]
     boardConfig["BoardConfig: configs/board/*.toml"]
-    vmConfig["VmConfig: configs/vms/**/*.toml 或 /guest/vm_default/*.toml"]
+    vmConfig["VmConfig: build vm_configs -> /guest/builtin/configs；/guest 动态池"]
 
     hardware --> arceosBase
     arceosBase --> apiBridge
@@ -91,15 +91,20 @@ fn main() {
     info!("Starting virtualization...");
     ensure_hardware_support();
     hal::enable_virtualization();
-    vmm::init();
-    vmm::launch_default_vms();
-    spawn_vm_completion_waiter();
-    info!("[OK] Default guest initialized");
+    manager.init_builtin_catalog()?; // index builtin configs only
+    let ids = startup::selected_vm_ids(ax_hal::boot::bootargs(), manager.builtin_catalog())?;
+    manager.start_selected_vms(&ids)?;
     shell::console_init();
 }
 ```
 
-运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM 与完成等待任务 → 进入并发运行的管理 shell。`GuestConsoleMux` 是宿主控制台的唯一输入读取者。默认启动的客户机输出先进入各自的有界缓存，管理 shell 保持前台；执行 `vm console <VM_ID>` 后才处理目标客户机的缓存：运行中的 VM 回放后接管输入，已停止的 VM 只回放并立即返回 shell。交互附着后，`Ctrl+X` 后输入 `h` 返回 shell，输入 `[` 或 `]` 在运行中客户机之间循环切换。
+运行时主线可概括为：检查硬件支持 → 使能虚拟化 → 准备根文件系统 → 索引
+`/guest/builtin/configs` → 解析宿主 `axvisor.vm_start=<id>[,<id>...]` →
+按序创建并启动选中的 VM → 进入并发运行的管理 shell。缺少该参数时保持零个
+已创建 VM；Web 或 shell 的 start 命令随后按 ID 延迟创建。`GuestConsoleMux` 是
+宿主控制台的唯一输入读取者。客户机输出先进入各自的有界缓存，管理 shell 保持前台；
+执行 `vm console <VM_ID>` 后才处理目标客户机的缓存。交互附着后，`Ctrl+X` 后输入
+`h` 返回 shell，输入 `[` 或 `]` 在运行中客户机之间循环切换。
 
 ### 架构适配
 
@@ -118,9 +123,12 @@ fn main() {
 
 ### 配置驱动的 VM 实例化
 
-`vmm::init()` 会先调用 `config::init_guest_vms()`，优先从文件系统读取 `/guest/vm_default/*.toml`，若无则回退到静态内置配置。随后对每份配置执行：解析 TOML → 构造 VM 配置 → 创建 VM 实例 → 分配内存 → 加载镜像 → 初始化 VM。
-
-Guest 的存在方式是"配置驱动的 VM 实例化过程"，而非代码中写死的默认 VM。
+`AxvmManager::init_builtin_catalog()` 会调用 `config::load_builtin_catalog()` 建立 builtin catalog：读取并校验
+`/guest/builtin/configs/*.toml`，记录 VM ID、名称和配置文本，但不分配客户机内存、
+vCPU 或设备。随后由宿主 `axvisor.vm_start` 选择器，或 Web/shell 的按需 start，执行：
+解析 TOML → 构造 VM 配置 → 创建 VM 实例 → 分配内存 → 加载镜像 → 初始化 VM。
+`/guest` 下的动态池使用相同创建路径，且不扫描 `/guest/builtin`；`/guest/vm_default`
+不再有启动覆盖语义。
 
 ### vCPU 作为 ArceOS task
 
@@ -210,33 +218,39 @@ flowchart TD
 此链路有两个常见问题点：
 
 - `.build.toml` 仅控制"Hypervisor 如何构建"，不会自动准备 Guest 镜像。
-- `qemu-aarch64.toml` 默认 `vm_configs = []`，若未额外传入生成的 VM config，无法确定启动哪个 Guest。
+- `vm_configs` 为空表示没有 builtin candidate；即使存在 `vm_configs`，也只有宿主
+  cmdline 的 `axvisor.vm_start` 选择 ID 才会开机创建和启动 Guest。
 
 ### VMM 初始化与 VM 启动
 
-当 Hypervisor 进入 `vmm::init()` 后，会读取 VM 配置、创建 VM 实例、分配内存并加载镜像。`vmm::start()` 随后唤醒主 vCPU 开始执行。以下时序图描述了这一过程的关键步骤。
+`AxvmManager::new()` 完成宿主虚拟化能力检查并安装应用级 manager。随后
+`AxvmManager::init_builtin_catalog()` 读取并校验 builtin catalog；只有 selector 或控制面调用
+`ensure_vm()` 时才会创建 VM 实例、分配内存并加载镜像。随后由 `start_selected_vms()` 或显式
+start 唤醒主 vCPU 开始执行。以下时序图描述了这一过程的关键步骤。
 
 ```mermaid
 sequenceDiagram
     participant Main
     participant Hal
-    participant Vmm
+    participant Manager
     participant Config
     participant Vm
     participant VcpuTask
 
     Main->>Hal: enable_virtualization()
-    Main->>Vmm: init()
-    Vmm->>Config: init_guest_vms()
-    Config->>Config: 读取文件系统或静态 VM 配置
+    Main->>Manager: init_builtin_catalog()
+    Manager->>Config: load_builtin_catalog()
+    Config->>Config: 索引并校验 /guest/builtin/configs
+    Main->>Manager: parse axvisor.vm_start
+    Manager->>Config: ensure selected builtin VM IDs
     Config->>Vm: VM::new + 分配内存 + 加载镜像 + vm.init()
-    Config-->>Vmm: VM 状态进入 Loaded
-    Vmm->>VcpuTask: setup_vm_primary_vcpu()
-    Main->>Vmm: launch_default_vms()
-    Vmm->>Vm: vm.boot()
-    Vmm->>VcpuTask: notify_primary_vcpu()
+    Config-->>Manager: 选中的 VM 状态进入 Loaded
+    Manager->>VcpuTask: setup_vm_primary_vcpu()
+    Main->>Manager: start_selected_vms()
+    Manager->>Vm: vm.boot()
+    Manager->>VcpuTask: notify_primary_vcpu()
     VcpuTask->>Vm: run_vcpu() 循环执行
-    Main->>Main: spawn wait_for_all_vms task
+    Main->>Main: keep registry empty when selector is absent
     Main->>Main: run GuestConsoleMux + shell
 ```
 
@@ -279,7 +293,7 @@ VM 从创建到退出经历多个离散状态：
 stateDiagram-v2
     [*] --> Loading
     Loading --> Loaded: 配置解析 内存建立 镜像装载完成
-    Loaded --> Running: vm start 或启动时自动 boot
+    Loaded --> Running: `vm start` 或宿主 selector `axvisor.vm_start`
     Running --> Suspended: vm suspend
     Suspended --> Running: vm resume
     Running --> Stopping: shutdown error stop

@@ -14,11 +14,12 @@
 
 //! Candidate guest configs that a start request may create on demand.
 //!
-//! A candidate is any guest config under the guest tree: [`scan`] reads the
-//! directory a new config is written to ([`directory`], `AXVISOR_VM_POOL` when
-//! set and [`DEFAULT_VM_ROOT`] otherwise), then every `AXVISOR_VM_DIRS` entry,
-//! then [`DEFAULT_VM_ROOT`] itself, each of them recursively to
-//! [`MAX_SCAN_DEPTH`]. An entry is only a candidate: nothing is created at
+//! A candidate is any guest config under the dynamic guest tree: [`scan`] reads
+//! the directory a new config is written to ([`directory`], `AXVISOR_VM_POOL`
+//! when set and [`DEFAULT_VM_ROOT`] otherwise), then every `AXVISOR_VM_DIRS`
+//! entry, then [`DEFAULT_VM_ROOT`] itself, each of them recursively to
+//! [`MAX_SCAN_DEPTH`]. The immutable `/guest/builtin` subtree is skipped because
+//! it has its own catalog. An entry is only a candidate: nothing is created at
 //! startup, so an idle pool costs no guest memory and may list more guests than
 //! the machine can run at once.
 //!
@@ -34,19 +35,26 @@
 //! does not have is one of those values, because it is a pool file that cannot
 //! become a VM.
 
+#[cfg(any(feature = "web", test, axtest))]
+use alloc::vec;
 use alloc::{
     collections::BTreeSet,
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
+#[cfg(any(feature = "web", test, axtest))]
 use std::sync::{LazyLock, Mutex};
 
-use ax_std::fs::{FileTypeExt, OpenOptions};
+use ax_std::fs::FileTypeExt;
+#[cfg(any(feature = "web", test, axtest))]
+use ax_std::fs::OpenOptions;
+#[cfg(any(feature = "web", test, axtest))]
 use ax_std::io::{Error as IoError, Write};
+use axvisor::builtin::BuiltinCatalog;
 use axvmconfig::GuestConfig;
 
+#[cfg(any(feature = "web", test, axtest))]
 use crate::sync::MutexExt;
 
 /// Guest tree the pool reads, and writes a new config into, by default.
@@ -69,8 +77,10 @@ pub const MAX_SCAN_DEPTH: usize = 8;
 /// It is kept out of pool scans and folder pickers even when a transfer target
 /// happens to be one of the configured pool roots.
 const STAGING_DIR: &str = ".files";
+#[cfg(any(feature = "web", test, axtest))]
 const PRIVATE_DIRECTORY_DETAIL: &str = "the file-transfer staging directory is private";
 
+#[cfg(any(feature = "web", test, axtest))]
 static SAVE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Directory a new config is written to: `[env] AXVISOR_VM_POOL` wins over
@@ -88,10 +98,8 @@ pub fn directory() -> &'static str {
 /// guest tree is a candidate as well. Every source is read recursively, to
 /// [`MAX_SCAN_DEPTH`].
 ///
-/// The startup directory is not listed separately: the guest tree covers it. A
-/// config there is listed by that scan, and because its id is already registered
-/// as a default guest, a second file claiming the id is reported by the
-/// duplicate rule and a start request for it fails like any other taken id.
+/// Builtin configs are excluded from traversal. Their IDs remain reserved even
+/// before a VM is created, so a dynamic file cannot replace a builtin candidate.
 pub fn sources() -> Vec<String> {
     let mut sources: Vec<String> = Vec::new();
     let mut push = |directory: &str| {
@@ -125,6 +133,7 @@ impl Entry {
     }
 
     /// Directory this entry was read from.
+    #[cfg(any(feature = "web", test, axtest))]
     pub fn source(&self) -> &str {
         &self.source
     }
@@ -159,6 +168,8 @@ pub enum IssueKind {
     /// An earlier file in the same scan already claims this `base.id`, so this
     /// config cannot be registered while that one is in the pool.
     DuplicateId { id: usize, claimed_by: String },
+    /// The immutable builtin catalog reserves this ID.
+    ReservedId { id: usize, builtin: String },
     /// The config reads its guest images from the filesystem and names one that
     /// does not exist, so creating it would fail partway through.
     MissingImage(String),
@@ -168,6 +179,7 @@ impl IssueKind {
     /// Stable token naming the kind, for machine readers such as the control
     /// plane's JSON. The `Display` text is human-facing and may change; this
     /// token is the part clients may match on.
+    #[cfg(any(feature = "web", test, axtest))]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::DirectoryUnavailable(_) => "directory-unavailable",
@@ -175,6 +187,7 @@ impl IssueKind {
             Self::Empty => "empty",
             Self::InvalidToml(_) => "invalid-toml",
             Self::DuplicateId { .. } => "duplicate-id",
+            Self::ReservedId { .. } => "reserved-id",
             Self::MissingImage(_) => "missing-image",
         }
     }
@@ -193,6 +206,10 @@ impl core::fmt::Display for IssueKind {
                 formatter,
                 "asks for VM id {id}, which `{claimed_by}` already claims in this pool"
             ),
+            Self::ReservedId { id, builtin } => write!(
+                formatter,
+                "asks for VM id {id}, which builtin config `{builtin}` reserves"
+            ),
             Self::MissingImage(path) => {
                 write!(formatter, "names an image that does not exist: {path}")
             }
@@ -209,6 +226,7 @@ pub struct Issue {
 
 impl Issue {
     /// Path of the file that could not be used, or of the directory itself.
+    #[cfg(any(feature = "web", test, axtest))]
     pub fn path(&self) -> &str {
         &self.path
     }
@@ -255,11 +273,37 @@ impl Pool {
     pub fn issues(&self) -> &[Issue] {
         &self.issues
     }
+
+    /// Reports dynamic candidates that conflict with an immutable builtin ID.
+    pub fn reserve_builtin(&mut self, builtin: &BuiltinCatalog) {
+        let mut conflicts = Vec::new();
+        self.entries.retain(|entry| {
+            let Some(reserved) = builtin.get(entry.id) else {
+                return true;
+            };
+            conflicts.push(Issue {
+                path: entry.path.clone(),
+                kind: IssueKind::ReservedId {
+                    id: entry.id,
+                    builtin: reserved.path().to_string(),
+                },
+            });
+            false
+        });
+        self.issues.extend(conflicts);
+    }
 }
 
-/// Scan every directory reported by [`sources`].
+/// Scan every directory reported by [`sources`] without applying builtin ID reservations.
 pub fn scan() -> Pool {
     scan_dirs(&sources())
+}
+
+/// Scan every directory reported by [`sources`] and reserve builtin IDs.
+pub fn scan_with_builtin(builtin: &BuiltinCatalog) -> Pool {
+    let mut pool = scan();
+    pool.reserve_builtin(builtin);
+    pool
 }
 
 /// Scan one directory of guest configs.
@@ -303,7 +347,7 @@ struct Scan {
 impl Scan {
     /// Read `directory`, then every directory below it, to [`MAX_SCAN_DEPTH`].
     fn walk(&mut self, directory: &str, depth: usize) {
-        if is_staging_path(directory) {
+        if is_staging_path(directory) || axvisor::builtin::is_builtin_path(directory) {
             return;
         }
         let read_dir = match ax_std::fs::read_dir(directory) {
@@ -331,7 +375,10 @@ impl Scan {
             // A symlink to a directory has its own type, so it is not descended
             // into; that also keeps a link pointing back up the tree finite.
             if is_directory {
-                if !is_staging_path(&path) && depth < MAX_SCAN_DEPTH {
+                if !is_staging_path(&path)
+                    && !axvisor::builtin::is_builtin_path(&path)
+                    && depth < MAX_SCAN_DEPTH
+                {
                     self.walk(&path, depth + 1);
                 }
                 continue;
@@ -367,8 +414,8 @@ impl Scan {
 /// The startup path only reports the pool: creating a candidate is the start
 /// request's job. Reporting here makes a broken pool visible in the serial log
 /// before anything asks for it.
-pub fn log_startup_state() {
-    let pool = scan();
+pub fn log_startup_state(builtin: &BuiltinCatalog) {
+    let pool = scan_with_builtin(builtin);
     info!(
         "VM pool: {} folder(s): {}",
         pool.sources().len(),
@@ -459,6 +506,7 @@ fn looks_like_guest_config(toml: &str) -> bool {
 }
 
 /// Why a document that names no guest config key is not one.
+#[cfg(any(feature = "web", test, axtest))]
 const NO_GUEST_CONFIG_KEY: &str = "it names neither a `base` nor a `kernel` table";
 
 /// Whether one compacted line names `key` at the top level.
@@ -475,6 +523,7 @@ fn line_names_top_level_key(compact: &str, key: &str) -> bool {
 }
 
 /// One entry of a browsed folder: a subdirectory or a config file.
+#[cfg(any(feature = "web", test, axtest))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Folder {
     path: String,
@@ -491,6 +540,7 @@ pub struct Folder {
 /// whoever references it, so this carries only what the filesystem knows: the
 /// name, the path, and how long it is. The configuration pool's own view of the
 /// same folder is [`Entry`], which exists only for files that can become a VM.
+#[cfg(any(feature = "web", test, axtest))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct File {
     name: String,
@@ -498,6 +548,7 @@ pub struct File {
     size: usize,
 }
 
+#[cfg(any(feature = "web", test, axtest))]
 impl File {
     /// Last component of the path.
     pub fn name(&self) -> &str {
@@ -516,12 +567,14 @@ impl File {
 }
 
 /// One subdirectory that can be browsed into.
+#[cfg(any(feature = "web", test, axtest))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Directory {
     name: String,
     path: String,
 }
 
+#[cfg(any(feature = "web", test, axtest))]
 impl Directory {
     /// Last component of the path.
     pub fn name(&self) -> &str {
@@ -534,6 +587,7 @@ impl Directory {
     }
 }
 
+#[cfg(any(feature = "web", test, axtest))]
 impl Folder {
     /// Directory that was read.
     pub fn path(&self) -> &str {
@@ -576,6 +630,7 @@ impl Folder {
 /// about the folder the caller asked for. A directory that cannot be read comes
 /// back as an empty [`Folder`] with a [`IssueKind::DirectoryUnavailable`] issue,
 /// the same shape a pool scan uses.
+#[cfg(any(feature = "web", test, axtest))]
 pub fn browse(path: &str) -> Folder {
     if is_staging_path(path) {
         return Folder {
@@ -614,6 +669,15 @@ pub fn browse(path: &str) -> Folder {
                     .unwrap_or(&entry_path)
                     .to_string();
                 if name == ".files" {
+                    continue;
+                }
+                // The root browser is a dynamic-pool view. Keep the builtin
+                // subtree available when the caller explicitly opens it (the
+                // create form uses `/guest/builtin/images`), but never present
+                // it as a dynamic directory beneath `/guest`.
+                if axvisor::builtin::is_builtin_path(&entry_path)
+                    && !axvisor::builtin::is_builtin_path(path)
+                {
                     continue;
                 }
                 // `ax_std::fs::metadata` opens the path, which fails on a
@@ -684,6 +748,7 @@ fn is_staging_path(path: &str) -> bool {
         .any(|component| component == STAGING_DIR)
 }
 
+#[cfg(any(feature = "web", test, axtest))]
 fn parent_path(path: &str) -> Option<String> {
     let trimmed = path.trim_end_matches('/');
     match trimmed.rsplit_once('/') {
@@ -696,6 +761,7 @@ fn parent_path(path: &str) -> Option<String> {
 }
 
 /// Why a config could not be stored in the pool directory.
+#[cfg(any(feature = "web", test, axtest))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveError {
     /// The name is not a plain `*.toml` file name.
@@ -708,6 +774,7 @@ pub enum SaveError {
     Unwritable(String),
 }
 
+#[cfg(any(feature = "web", test, axtest))]
 impl core::fmt::Display for SaveError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -729,9 +796,9 @@ impl core::fmt::Display for SaveError {
 /// ever ensures one level. An existing directory is left untouched, which is
 /// what makes this callable on every start and on every save.
 ///
-/// Shared with the file transfer ([`super::files`]), which stages bytes in a
-/// namespace of its own inside the target directory and therefore needs the same
-/// one-level creation.
+/// The file transfer stages bytes in a namespace of its own inside the target
+/// directory and therefore needs the same one-level creation behavior.
+#[cfg(any(feature = "web", test, axtest))]
 pub(crate) fn ensure_directory(directory: &str) -> Result<(), String> {
     if ax_std::fs::read_dir(directory).is_ok() {
         return Ok(());
@@ -746,6 +813,7 @@ pub(crate) fn ensure_directory(directory: &str) -> Result<(), String> {
 /// pool file, after which it is a candidate like any other. The name is
 /// restricted to a plain `*.toml` file name so the request cannot write outside
 /// that directory.
+#[cfg(any(feature = "web", test, axtest))]
 pub fn save(name: &str, toml: &str) -> Result<String, SaveError> {
     save_in(&directory(), name, toml)
 }
@@ -757,6 +825,7 @@ pub fn save(name: &str, toml: &str) -> Result<String, SaveError> {
 /// instead of the deployed tree. Validation is identical in both cases: the name
 /// must be a plain `*.toml` file name (no separators, no leading dot) and the
 /// text must parse as a guest config before anything is written.
+#[cfg(any(feature = "web", test, axtest))]
 pub fn save_in(directory: &str, name: &str, toml: &str) -> Result<String, SaveError> {
     let _save = SAVE_LOCK.lock_unpoisoned();
     let name = name.trim();

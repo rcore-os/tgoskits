@@ -16,6 +16,9 @@ args = [
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-loongarch64-alpine.img",
 ]
+# Preserve the host root/serial handoff and select both builtin guests explicitly;
+# no VM is created implicitly at boot.
+cmdline = "root=/dev/nvme0n1 earlycon=uart8250,mmio,0x1fe001e0,115200 axvisor.vm_start=1,2"
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",

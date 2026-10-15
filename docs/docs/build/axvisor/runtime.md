@@ -21,7 +21,10 @@ flowchart TD
     E --> G
     C -->|失败| F[报错停止启动]
     D -->|失败| F
-    G --> H[准备设备并启动 VM]
+    G --> H[索引 /guest/builtin 配置]
+    H --> I{宿主参数 axvisor.vm_start}
+    I -->|缺少| J[保持零个已创建 VM]
+    I -->|指定 ID| K[按序创建并启动选中的 VM]
 ```
 
 没有块设备驱动或磁盘根时，可以省略 `root=`，直接从 initramfs 运行客户机。显式 `root=` 无法满足时报告错误，不启动 VM。
@@ -46,7 +49,11 @@ QEMU rootfs 路径的选择顺序为：
 
 磁盘根上的自带资源目录固定为 `/guest/builtin`。源目录存在时整包替换；空包清空旧资源，源目录缺失时保留已安装版本。Ext4 使用 `EXCHANGE` 发布；FAT 使用备份与失败回滚，不保证断电原子性。安装失败时不切根、不启动客户机。可写客户机磁盘不参与替换。
 
-`/guest/vm_default` 中有效非空配置优先；空目录或目录缺失时使用 `/guest/builtin/configs`，无效用户配置明确报错。HTTP 或命令行重建 VM 可直接引用安装后的启动镜像路径。
+`/guest/builtin/configs` 是 build TOML 的 `vm_configs` 生成的唯一内置启动目录。
+启动时只索引并校验这些配置，不预先创建 VM；宿主命令行中的
+`axvisor.vm_start=1,2` 按 ID 选择需要创建并启动的客户机。`/guest` 下的其他
+配置属于动态池，供 HTTP 或 shell 按需创建；`/guest/vm_default` 不再具有覆盖
+语义。HTTP 或命令行重建 VM 可直接引用安装后的启动镜像路径。
 
 ### 1.2 启动产物
 
@@ -75,7 +82,9 @@ guest UEFI firmware 的路径属于 VM config（例如 `boot_protocol = "uefi"` 
 
 带管理台的运行不需要任何手工前端步骤：构建配置的 features 含 `web-ui` 时，axbuild 会先把 `os/axvisor/web-ui` 源码复制到工作区 target 目录的暂存区并在那里执行 `npm ci && npm run build`（需要 Node ≥ 24、npm ≥ 11），再把生成的 `dist` 打进宿主 initramfs 的 builtin 包（`/guest/builtin/web-ui`）。内核运行时从活动根读取该目录——无盘启动用 initramfs 内存根，有盘启动由 builtin 安装逻辑把包安装到磁盘根后读取——`node_modules/` 与 `dist/` 都不进源码树、不进仓库。
 
-`web` 特性启用管理面与终端网关，`web-ui` 在其上增加仪表盘静态资源。使用 `no-auto-start` 可以让默认客户机停在 `Ready`，便于观察登记表与配置池。在 QEMU 配置里加入端口转发后运行：
+`web` 特性启用管理面与终端网关，`web-ui` 在其上增加仪表盘静态资源。在宿主
+QEMU 或板卡命令行加入 `axvisor.vm_start=<id>[,<id>...]` 才会开机创建并启动对应
+客户机；缺少该参数时保持零个已创建客户机。在 QEMU 配置里加入端口转发后运行：
 
 ```bash
 cargo xtask axvisor qemu \
@@ -122,7 +131,10 @@ management HTTP server (axum) listening on 127.0.0.1:8080
 | `build-<target>.toml` | **测试用例**。命名匹配用例发现规则，会出现在 `cargo xtask axvisor test` 的运行里 |
 | `demo-fs-build*.toml` | **本地演示**。命名不匹配发现规则，因此不会出现在任何测试运行中 |
 
-当前演示配置启用 `web-ui` + `ax-driver/nvme` + `no-auto-start`，并且**故意不带 `vm_configs`**：启动时不注册任何客户机，页面上的每一个客户机都来自操作者放进 `/guest` 的配置。池子递归读取 `/guest` 下所有 `.toml`，而控制台保存的配置也写回 `/guest`。
+当前演示配置启用 `web-ui` + `web` + `ax-driver/nvme`，并且**故意不带
+`vm_configs`**：启动时不建立 builtin 客户机，页面上的每一个客户机都来自操作者
+放进动态 `/guest` 树的配置。池子递归读取 `/guest` 下的 `.toml`（排除
+`/guest/builtin`），而控制台保存的配置也写回 `/guest`。
 
 仓库提供 aarch64 的官方演示配置：
 

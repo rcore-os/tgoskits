@@ -1,4 +1,5 @@
 board_type = "OrangePi-5-Plus"
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
 timeout = 120
 fail_regex = ['VCPU_PERF_FAIL', '(?i)\bpanic(?:ked)?\b', 'Failed to initialize guest VM', 'VM\[1\] run VCpu\[0\] get error']
 

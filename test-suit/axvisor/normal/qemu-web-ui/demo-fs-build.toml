@@ -5,15 +5,15 @@
 #   cargo xtask axvisor qemu -c <this file> --qemu-config web-ui/qemu-aarch64-hostfwd.toml --arch aarch64
 # and open http://localhost:8080/.
 #
-# `vm_configs` is deliberately absent: no guest is registered at boot, so every
-# guest on the page comes from a config the operator puts in the guest tree. The
-# pool reads every `.toml` under `/guest` (recursively), and a config the
+# `vm_configs` is deliberately absent: no guest is registered or indexed as a
+# builtin at boot, so every guest on the page comes from a config the operator
+# puts in the dynamic guest tree. The pool reads every `.toml` under `/guest`
+# (recursively, excluding `/guest/builtin`), and a config the
 # dashboard saves goes to `/guest` too; `AXVISOR_VM_DIRS` / `AXVISOR_VM_POOL`
 # could point those elsewhere, and this demo needs neither.
 features = [
     "web-ui",
     "ax-driver/nvme",
-    "no-auto-start",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

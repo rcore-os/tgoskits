@@ -55,6 +55,11 @@ CLI 传入的 `--vmconfigs` 非空时覆盖该配置中的 `vm_configs`；否则
 变量，并按原 VM config 目录解析相对路径。解析后的配置用于生成宿主 initramfs 的 `/guest/builtin/configs` 和
 `/guest/builtin/images`；镜像旁的 `.axbt` sidecar 放入 `/guest/builtin/symbols`，与 Cargo 构建请求分离。Axvisor 统一按文件路径加载启动资源。
 
+启动只索引 `/guest/builtin/configs`，不会因为配置被打包就创建客户机。宿主启动参数
+`axvisor.vm_start=1,2` 选择按序创建并启动的 builtin ID；未选择的配置由 Web 或
+shell 按需创建。`/guest` 下的动态池不覆盖 builtin ID，`/guest/vm_default` 不再
+是启动覆盖目录。
+
 ## 3. 虚拟化后端
 
 x86 后端由 CPUID 在运行时选择；QEMU TOML 暴露 VMX 或 SVM 扩展，Build Config 不选择同名 Cargo feature。SVM 六个用例共用 `test-suit/axvisor/normal/qemu-svm/build-x86_64-unknown-none.toml`，每个子目录提供自己的 VM 打包输入及 QEMU 配置。
