@@ -146,10 +146,12 @@ group = "cpu"
 id = "test-arceos-drivers-x86-64"
 impact_targets = ["arceos:x86_64"]
 name = "QEMU x86_64 · Portable driver contracts"
-runner = "qcs"
+# PCM polling has a bounded deadline; isolate it from shared-host vCPU stalls.
+runner = "ubuntu-base"
 timeout_minutes = 30
 cache_key = ""
 command = '''
+qemu-system-x86_64 --version
 cargo xtask arceos test qemu --arch x86_64 --test-group drivers
 '''
 
