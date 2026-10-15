@@ -1,8 +1,10 @@
-# axivc over ivshmem：共享环形缓冲消息协议
+# axvisor-ivshmem：共享环形缓冲消息协议
 
-状态：设计提案（未实现）
+状态：协议设计提案，不以当前实现作为约束或完成证明。
 
-本文描述把 axivc 的消息通道迁移到 ivshmem 共享内存设备上的协议设计。核心目标：任意 VM 可以向指定 VM 发送消息，数据路径不经过 hypervisor（无 syscall、无逐消息 VM-exit），并尊重 ivshmem 的权限模型。
+本文描述 ivshmem 共享内存设备上的多 peer ring 协议。核心目标是任意 VM 可以向指定 VM 发送消息，共享页数据访问不逐次经过 hypervisor，并尊重 ivshmem 的权限模型。
+
+正文中的字段示意和伪代码只表达拟议协议，不对应具体源文件。面向应用的 `ivshmem_socket` 接口、端口/session、统一 IPC 缓冲及验收，以 [ivshmem_socket 设计](axvisor-ivshmem-socket.md) 为准。该提案由一个 guest 服务独占设备，通过 connect 建立 session，不同 session 的片段交错发布并独立重组；接收额度、控制消息与 CRC 使用拟议 Message V2。共享页访问、MMIO 通知和本地 IPC 是不同路径，本地 IPC 会使用 guest 系统调用。
 
 ## 权限模型约束
 
@@ -16,7 +18,7 @@ ivshmem BAR2 分为 State Table（全员只读）、可选的公共 R/W 区、�
 
 ## BAR2 分区与页布局
 
-`IvshmemMemoryLayout::derive()` 按 4 KiB 页划分 BAR2：State Table 占起始一页，可选 Common 区随后，各 peer 的 output section 按 peer id 顺序排列。本文选择每个 peer 一个 4 KiB output section，即一页容纳一个完整的发送 ring（含消费其他 ring 的 credit）。一个 64 KiB BAR2 在无 Common 时最多容纳 15 个这样的 peer；下面以包含一页 Common、三个 peer 的 `LinkProfile::new(3, 0x1000, 0x1000)` 为例说明拟议布局。
+BAR2 按 4 KiB 页划分：State Table 占起始一页，可选 Common 区随后，各 peer 的 output section 按 peer id 顺序排列。本文选择每个 peer 一个 4 KiB output section，即一页容纳一个完整的发送 ring（含消费其他 ring 的 credit）。一个 64 KiB BAR2 在无 Common 时最多容纳 15 个这样的 peer；下面以包含一页 Common、三个 peer、每 peer 一页 output 的配置为例说明拟议布局。
 
 ```text
 BAR2 page/slot  | 00  | 01  | 02  | 03  | 04  | 05  | 06  | 07  | 08  | 09  | 10  | 11  | 12  | 13  | 14  | 15  |
@@ -35,9 +37,9 @@ Dxx = data slot index within that peer's ring (D00..D14)
 Output peer N = read/write for peer N, read-only for other peers
 ```
 
-该图覆盖整个 64 KiB BAR2，省略号代表页 5..15；每个完整行是一个 4 KiB 页，每列对应页内 256B 范围，只有 output section 的列才按协议解释为 slot。页 0（`0x0000..0x1000`）是所有 peer 只读的 State Table，其中状态条目实际以 4B 为单位，并非 16 个协议 slot。页 1（`0x1000..0x2000`）是全员可写但本协议不使用的 Common。页 2、3、4 分别是 `Output(0)`（`0x2000..0x3000`）、`Output(1)`（`0x3000..0x4000`）和 `Output(2)`（`0x4000..0x5000`）；各页只有属主可写，其他 peer 只读。页 5..15（`0x5000..0x10000`）是未映射的 BAR2 Reserved，而非可供 ring 使用的空闲页。每个 output section 正好放 16 个 256B slot：第 0 个存 `SectionHeader` 和 `credit[max_peers]`，第 1..15 个存负载，没有单独的元数据页。`LinkProfile::baseline()` 当前仍为两个 peer、每个 output section 7 页；采用本布局需要选用每 peer 1 页的 profile，并不会由本文自动修改设备配置。`SectionHeader` 与 credit 合计不能超过 256B；当前设备上限 `MAX_PEERS_LIMIT=15` 时，5 个 32 位 header 字段和 15 个 32 位 credit 字段共 80B，留给对齐和扩展的空间仍在该 slot 内。
+该图覆盖整个 64 KiB BAR2，省略号代表页 5..15；每个完整行是一个 4 KiB 页，每列对应页内 256B 范围，只有 output section 的列才按协议解释为 slot。页 0（`0x0000..0x1000`）是所有 peer 只读的 State Table，其中状态条目实际以 4B 为单位，并非 16 个协议 slot。页 1（`0x1000..0x2000`）是全员可写但本协议不使用的 Common。页 2、3、4 分别是 `Output(0)`（`0x2000..0x3000`）、`Output(1)`（`0x3000..0x4000`）和 `Output(2)`（`0x4000..0x5000`）；各页只有属主可写，其他 peer 只读。页 5..15（`0x5000..0x10000`）是未映射的 BAR2 Reserved，而非可供 ring 使用的空闲页。每个 output section 正好放 16 个 256B slot：第 0 个存 `SectionHeader` 和 `credit[max_peers]`，第 1..15 个存负载，没有单独的元数据页。部署必须明确选择每 peer 一页 output 的 profile，不能依赖某个实现的默认配置。metadata header 与 credit 合计不能超过 256B；以 15 个 peer 为例，5 个 32 位 header 字段和 15 个 32 位 credit 字段共 80B，其余空间仍在该 slot 内。
 
-权限以整个 `Output(P)` 页为单位：P 可写自己的 metadata slot 和数据 slot，其他 peer 只能读。因此接收方不能在 P 的 ring 中更新 head，而应写自己 metadata slot 中的 `credit[P]`；P 读取对端的 `credit[P]` 才能回收负载。现有 `IvshmemDirectPlan::derive()` 已按 `IvshmemMemoryLayout::outputs()` 做页粒度 stage-2 映射（属主 RW、其他 peer R），BAR2 尾部 Reserved 页不映射。页内 slot 格式只是协议提案，尚未在设备上实现。
+权限以整个 `Output(P)` 页为单位：P 可写自己的 metadata slot 和数据 slot，其他 peer 只能读。因此接收方不能在 P 的 ring 中更新 head，而应写自己 metadata slot 中的 `credit[P]`；P 读取对端的 `credit[P]` 才能回收负载。stage-2 映射必须按页体现 output 所有权（属主 RW、其他 peer R），BAR2 尾部 Reserved 页不映射；页内 slot 格式按本协议独立解释，不能从具体映射代码推断。
 
 ## 总体结构
 
@@ -64,7 +66,7 @@ Peer P 的 output section（4 KiB，P 写，其他 peer 只读）
 
 ## ABI 布局
 
-所有跨 VM 字段为对齐的 32 位原子量（与现有 `IvcRing` 的可移植性约定一致）。每个 slot 固定 256B，metadata 占 1 个 slot，数据 ring 容量固定为 `CAP=15`。它不再沿用现有 `IvcRing` 的 2 的幂容量。
+共享控制字段和载荷的访问单元约定为对齐的 32 位原子量。每个 slot 固定 256B，metadata 占 1 个 slot，数据 ring 容量固定为 `CAP=15`。下面的类型仅用于示意字段关系，实际 ABI 以字节尺寸、对齐和访问契约为准，不由某种语言的结构体布局决定。
 
 ```rust
 /// Metadata slot，位于每个 output section 起始的 256B。
@@ -90,9 +92,9 @@ struct Slot {
 }
 ```
 
-`seq` 使消费者能检测强制回收造成的丢步（见下文）；`dst` 是唯一的寻址信息。`SectionHeader`（含 credit）必须补齐到恰好 256B；其后的第一个数据 slot 从页内偏移 `0x100` 开始，数据 slot `i` 的页内偏移为 `(i + 1) × 256`。slot 以 256B 对齐，因而不会跨 4 KiB 页。数据 slot 的四个 32 位字段占 16B，余下最多 240B 用于 payload；若仍将现有 axivc 的 24B frame header 放进 payload，单条片段的有效载荷最多为 216B。
+`seq` 使消费者能检测强制回收造成的丢步（见下文）；`dst` 是唯一的寻址信息。`SectionHeader`（含 credit）必须补齐到恰好 256B；其后的第一个数据 slot 从页内偏移 `0x100` 开始，数据 slot `i` 的页内偏移为 `(i + 1) × 256`。slot 以 256B 对齐，因而不会跨 4 KiB 页。数据 slot 的四个 32 位字段占 16B，余下最多 240B 用于 payload；消息头也占用 payload，正文片段上限为 240B 减去消息头长度；`ivshmem_socket` 提案选择 44B 消息头，因此正文片段最多 196B。
 
-`CAP=15` 时不能直接让回绕的 `u32` 序号按 `% CAP` 定位：`2^32` 不能被 15 整除，回绕处会重复选中同一数据 slot。本协议将 `0xffff_ffff` 保留为未初始化的序号值，有效序号为 `0..0xffff_fffe`，下一个序号在 `0xffff_fffe` 后回到 0。循环长度 `M=0xffff_ffff` 能被 15 整除，因此 `seq % 15` 在回绕处仍指向下一个 slot。发送、接收、credit 和 slot 的 `seq` 均使用同一套序号规则。`seq_next(x)` 在 `x == M - 1` 时返回 0，否则返回 `x + 1`；`seq_distance(a, b)` 是从 a 前进到 b 的模 M 距离，即 `b >= a` 时为 `b - a`，否则为 `M - a + b`。反向移动的 `seq_sub` 也按模 M 计算。不能直接用普通大小比较、`u32::wrapping_sub` 或普通 `min` 判断新旧。长时间停滞且允许覆写的 peer 若落后整整一圈序号，单凭 32 位序号无法辨别新旧；必须在发生这种情况前重建 link 或增加代际信息。
+`CAP=15` 时不能直接让回绕的 `u32` 序号按 `% CAP` 定位：`2^32` 不能被 15 整除，回绕处会重复选中同一数据 slot。本协议将 `0xffff_ffff` 保留为未初始化的序号值，有效序号为 `0..0xffff_fffe`，下一个序号在 `0xffff_fffe` 后回到 0。循环长度 `M=0xffff_ffff` 能被 15 整除，因此 `seq % 15` 在回绕处仍指向下一个 slot。发送、接收、credit 和 slot 的 `seq` 均使用同一套序号规则。`seq_next(x)` 在 `x == M - 1` 时返回 0，否则返回 `x + 1`；`seq_distance(a, b)` 是从 a 前进到 b 的模 M 距离，即 `b >= a` 时为 `b - a`，否则为 `M - a + b`。反向移动的 `seq_sub` 也按模 M 计算。不能直接用普通大小比较、按模 2^32 回绕的减法或普通最小值判断新旧。长时间停滞且允许覆写的 peer 若落后整整一圈序号，单凭 32 位序号无法辨别新旧；必须在发生这种情况前重建 link 或增加代际信息。
 
 ## 发送流程（P → B）
 
@@ -196,22 +198,24 @@ fn max_ready_lag(&self, tail: u32) -> u32 {
 
 ## 内存序
 
-沿用现有 `IvcRing` 的 SPSC 约定，仅方向变为跨 VM：
+内存序由共享页的发布、观察和回收契约定义，不依赖某个队列实现：
 
 - 发布者：写 slot 内容 → `Release` 存 `seq`/`tail`；doorbell 的 MMIO 写保证此前的数据写对接收方可见（ivshmem 规范要求）；
 - 消费者：`Acquire` 读 `tail` 与 `seq` → 读 slot → 处理/跳过后 `Release` 存 credit；
 - 发布者回收前 `Acquire` 读各 peer credit。
 
-## 与现有 axivc 代码的关系
+## 协议分层
 
-- `IvcRing`（head/tail 同结构、单区域双 ring）按本文拆分为：属主侧的 `tail + slots` 与 `credit[]`，分别位于不同 section；
-- `IvcRegionHeader` 的自描述思想（magic/version/参数字段 + ABI 断言测试）保留，迁移到 `SectionHeader`；
-- 现有 `try_push_slot` / `try_peek_slot` / `pop_slot` 的 Release/Acquire 语义直接映射到发送/接收流程；
-- 上层 `message` 模块的 frame 编解码不变，slot payload 即 frame 载体。
+共享 ring 只负责物理槽位、目的 peer、序号及回收，不决定应用连接和完整消息的语义。层间通过 payload 长度和发布顺序建立契约，不要求某个现有模块的接口或编码保持不变。
+
+- metadata 描述 magic、version、容量及槽位大小，初始化时必须检查兼容性；
+- 发送者维护自己 output 中的 tail 和 slots，消费者在各自 output 中维护 credit；
+- 上层消息协议解释 payload 内的 session、message ID、分片标志和 CRC；
+- `ivshmem_socket` 应用接口负责监听、连接和完整消息交付，不向应用暴露物理 ring 索引。
 
 ## 容量规划
 
-每个 output section 固定一页：1 个 metadata slot 加 15 个数据 slot，恰好 `16 × 256B = 4096B`。64 KiB BAR2 扣除 State Table 的一页，无 Common 时最多支持 15 个 peer；如图保留一页 Common 时，最多支持 14 个 peer。图示布局使用 `LinkProfile::new(3, 0x1000, 0x1000)`，而不是当前每 peer 7 页的 `LinkProfile::baseline()`。每条 ring 最多积压 15 个 slot；若消息需要多个 frame，实际可排队的完整消息更少。容量固定后，应检查最慢 READY peer 的容忍延迟与峰值速率能否在 15 个 slot 内消化；不满足时需要增加每 peer 的页数或拆分 link，而不是假定一页能覆盖所有负载。
+每个 output section 固定一页：1 个 metadata slot 加 15 个数据 slot，恰好 `16 × 256B = 4096B`。64 KiB BAR2 扣除 State Table 的一页，无 Common 时最多支持 15 个 peer；如图保留一页 Common 时，最多支持 14 个 peer。图示配置明确选择三个 peer、一页 Common 和每 peer 一页 output，部署参数必须逐项核对，不采用隐含的默认布局。每条 ring 最多积压 15 个 slot；若消息需要多个 frame，实际可排队的完整消息更少。容量固定后，应检查最慢 READY peer 的容忍延迟与峰值速率能否在 15 个 slot 内消化；不满足时需要增加每 peer 的页数或拆分 link，而不是假定一页能覆盖所有负载。
 
 ## 演进路径
 
