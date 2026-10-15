@@ -10,7 +10,7 @@ axbuild 将一次构建或运行拆成四类相互独立的输入：命令行参
 | 配置 | 典型位置 | 负责内容 | 不负责内容 |
 | --- | --- | --- | --- |
 | Snapshot | `tmp/axbuild/.arceos.toml` 等 | 最近使用的 package、arch、target、config 和运行配置路径 | Cargo feature、QEMU 参数 |
-| Build Config | `tmp/axbuild/config/<package>/build-<target>.toml` | feature、环境变量、日志、CPU 数，以及系统专属字段 | firmware、CPU 型号、ELF/BIN 转换 |
+| Build Config | `tmp/axbuild/config/<package>/build-<target>.toml` | feature、环境变量、日志、CPU 数，以及系统专属字段和显式产物转换 | firmware、CPU 型号 |
 | Board Build Config | `os/<system>/configs/board/*.toml` | checked-in 的 target、能力和板卡默认值 | QEMU 命令行 |
 | QEMU Config | `os/<system>/configs/qemu/qemu-<arch>.toml` 或测试目录 | QEMU 参数、UEFI、`to_bin`、成功/失败判定 | Cargo feature |
 | U-Boot / Board Run Config | 显式路径或 ostool 约定位置 | 下载、部署和运行协议 | 构建能力选择 |
@@ -120,7 +120,7 @@ tmp/axbuild/config/<package>/build-<logical-target>.toml
 
 | 系统 | 额外字段 | 缺失默认配置时 |
 | --- | --- | --- |
-| ArceOS | board 文件可含 `package`、`target`；C app 配置可含 `app-c` | `build`/`qemu` 优先复制 target 和 package 匹配的 `qemu-*` board；否则生成空能力配置 |
+| ArceOS | board 文件可含 `package`、`target`；可用 `to_bin` 请求 BIN；C app 配置可含 `app-c` | `build`/`qemu` 优先复制 target 和 package 匹配的 `qemu-*` board；否则生成空能力配置 |
 | StarryOS | board 文件含 `target`，可有同名 `.its` | `build`/`qemu` 必须找到 target 对应的默认 `qemu-*` board 并复制；`.its` 一并复制 |
 | Axvisor | board 文件含 `target`、`vm_configs` | 读取配置时优先复制 target 匹配的默认 board；找不到才生成空能力配置 |
 
@@ -161,7 +161,7 @@ Build Config 中 `[env]` 的以下键会补充 Rust 工具链选项：
 
 ## 4. 产物与启动
 
-Cargo 基础配置以 `to_bin = false` 创建：`cargo xtask <system> build` 输出 ELF，运行器根据选中的启动配置准备实际加载的产物格式。
+Cargo 基础配置以 `to_bin = false` 创建，默认 `build` 输出 ELF，运行器根据选中的启动配置准备实际加载的产物格式。ArceOS 可在 Build Config 根声明 `to_bin = true`，由 `load_cargo_config()` 将请求交给 ostool，使 `cargo xtask arceos build` 同时输出 ELF 和 raw BIN。需要在运行前把 EFI 镜像写入 FAT 时，loader 配置使用这一显式请求。
 
 需要 QEMU 启动时，`to_bin` 必须由所选 QEMU TOML 显式给出：
 
