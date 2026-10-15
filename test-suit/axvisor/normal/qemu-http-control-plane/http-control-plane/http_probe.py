@@ -572,12 +572,12 @@ def check_create_form(packaged_kernel_path):
     fields = {field["name"]: field for field in body.get("fields", [])}
     expected = {
         "id", "name", "guest_type", "cpu_num", "entry_point", "kernel_path",
-        "kernel_load_addr", "cmdline", "memory_base", "memory_mb", "rootfs_path",
+        "kernel_load_addr", "cmdline", "memory_base", "memory_mb", "rootfs_path", "rootfs_read_only",
     }
     if set(fields) != expected:
         raise AssertionError("schema fields are %r" % (sorted(fields),))
     for required in (
-        "id", "name", "kernel_path", "entry_point",
+        "name", "kernel_path", "entry_point",
         "kernel_load_addr", "memory_base", "memory_mb",
     ):
         if not fields[required].get("required"):

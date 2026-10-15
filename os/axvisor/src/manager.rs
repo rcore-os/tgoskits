@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "web")]
+use alloc::collections::BTreeSet;
 use alloc::{vec, vec::Vec};
 
 use anyhow::{Context, Result};
@@ -110,6 +112,31 @@ impl AxvmManager {
     pub fn create_vm_from_toml_and_wait(&self, raw_cfg: &str) -> Result<VmHandle> {
         let _lifecycle = self.lifecycle.lock_unpoisoned();
         let (operation, release_host_filesystem) = self.create_vm_from_toml_locked(raw_cfg)?;
+        self.complete_created_vm_locked(operation, release_host_filesystem)
+    }
+
+    /// Allocates a free ID and completes creation under the same lifecycle
+    /// lock. Candidate IDs stay available for their builtin or pool configs;
+    /// failed creation follows the normal registry and console-lane rollback.
+    #[cfg(feature = "web")]
+    pub fn create_vm_with_auto_id_and_wait(
+        &self,
+        mut config: axvmconfig::GuestConfig,
+    ) -> Result<VmHandle> {
+        let _lifecycle = self.lifecycle.lock_unpoisoned();
+        let mut occupied: BTreeSet<_> = self.list().iter().map(|vm| vm.vm_id()).collect();
+        occupied.extend(self.builtin_catalog().entries().map(|entry| entry.id()));
+        if !*self.host_filesystem_released.lock_unpoisoned() {
+            let pool = crate::vm_pool::scan_with_builtin(self.builtin_catalog());
+            occupied.extend(pool.entries().iter().map(|entry| entry.id()));
+        }
+        let mut id = 1;
+        while occupied.contains(&id) {
+            id = id.checked_add(1).context("no free VM ID")?;
+        }
+        config.base.id = id;
+        let raw = toml::to_string(&config).context("serialize automatically numbered VM")?;
+        let (operation, release_host_filesystem) = self.create_vm_from_toml_locked(&raw)?;
         self.complete_created_vm_locked(operation, release_host_filesystem)
     }
 

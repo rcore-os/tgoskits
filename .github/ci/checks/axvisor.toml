@@ -72,7 +72,7 @@ qemu_config = "virtualization/axvm/tests/vcpu-runtime/qemu-aarch64.toml"
 
 [[check]]
 id = "test-axvisor-web-ui-assets"
-impact_targets = ["axvisor:aarch64"]
+impact_targets = ["axvisor:aarch64", "axvisor:x86_64"]
 name = "Web UI · Unit tests and bundle"
 timeout_minutes = 15
 node_version = "24"
@@ -190,7 +190,7 @@ cases = ["smoke-svm", "direct-acpi-svm", "ovmf-acpi-svm", "pci-enumeration-svm",
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-vmx"
 impact_targets = ["axvisor:x86_64"]
-name = "VMX x86_64 · Smoke, ACPI and PCI"
+name = "VMX x86_64 · Smoke, ACPI, PCI and Web UI"
 runner = "kvm-intel"
 cache_key = ""
 timeout_minutes = 120
@@ -199,13 +199,13 @@ node_version = "24"
 command = '''
 echo "==> axvisor x86_64 VMX smoke, ACPI and PCI"
 cargo xtask axvisor test qemu --arch x86_64 \
-  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx
+  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx,web-ui-vmx
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "x86_64"
-cases = ["smoke-vmx", "direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx", "pci-enumeration-vmx", "pci-block-rw-vmx", "pci-block-ro-vmx"]
+cases = ["smoke-vmx", "direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx", "pci-enumeration-vmx", "pci-block-rw-vmx", "pci-block-ro-vmx", "web-ui-vmx"]
 
 [[check]]
 id = "test-axloader-http-smoke"

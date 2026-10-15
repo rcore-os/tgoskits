@@ -62,6 +62,10 @@ impl board_test::BoardTestGroupInfo for BoardTestGroup {
 /// test layer.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct AxvisorHttpProbeConfig {
+    /// QEMU network device used for the management connection. Keep the
+    /// existing virtio default; hardware-driver cases can select e.g. e1000.
+    #[serde(default = "default_probe_nic_model")]
+    pub(crate) nic_model: String,
     /// Guest-side port the in-guest HTTP server binds to. The harness forwards a
     /// freshly picked host port to it via hostfwd, so the two never collide.
     #[serde(default = "default_probe_guest_port")]
@@ -89,6 +93,10 @@ pub(crate) struct AxvisorHttpProbeConfig {
 
 /// Default probe-asset file name inside the case directory.
 pub(crate) const DEFAULT_PROBE_SCRIPT: &str = "http_probe.py";
+
+fn default_probe_nic_model() -> String {
+    "virtio-net-pci".to_string()
+}
 
 fn default_probe_guest_port() -> u16 {
     8080
