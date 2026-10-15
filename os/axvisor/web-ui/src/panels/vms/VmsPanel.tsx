@@ -11,8 +11,8 @@
 //!   action took effect, so every mutation is followed by a settle poll after the
 //!   HTTP response confirms the owner transition.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Pause, Play, RefreshCw, Square, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Pause, Play, RefreshCw, Square, Terminal, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -72,8 +72,8 @@ export default function VmsPanel({
   link,
   files = null,
   resources = [],
-  focusVm = null,
   host = null,
+  onOpenVm,
 }: PanelProps) {
   const [registry, setRegistry] = useState<VmSummary[]>(resources)
   const [pool, setPool] = useState<PoolInfo | null>(null)
@@ -93,6 +93,21 @@ export default function VmsPanel({
   const [browsePath, setBrowsePath] = useState('')
   const [browseInfo, setBrowseInfo] = useState<BrowseInfo | null>(null)
   const [browseError, setBrowseError] = useState<string | null>(null)
+  // The guest the last creation made: the panel keeps offering to start it and
+  // open its terminal, because that is the rest of the journey the operator
+  // started by creating it, and the row's own buttons are easy to lose among the
+  // other guests.
+  const [created, setCreated] = useState<number | null>(null)
+  /**
+   * The guest a 启动并打开终端 is in flight for.
+   *
+   * `busy` already disables every action, but the start and the terminal open
+   * are two steps of one gesture: this is what keeps a second click from
+   * starting the same guest again or opening a terminal ahead of the settle.
+   */
+  const pendingOpenRef = useRef<number | null>(null)
+  // The guest a 删除 is being confirmed for; `null` when nothing is being deleted.
+  const [deleting, setDeleting] = useState<VmSummary | null>(null)
   // Detail of every guest listed, keyed by id. The registry carries neither the
   // affinity mask nor the entry counters, and both are what the overview and
   // the matrix below are drawn from.
@@ -104,20 +119,9 @@ export default function VmsPanel({
   registryRef.current = registry
   const registryKey = registry.map((vm) => vm.id).join(',')
   const physCpuCount = host?.phys_cpu_count ?? null
-
-  // The id a fresh form should pre-fill: one past every id the registry and the
-  // pool already hold, so the operator starts from a value that cannot collide
-  // instead of having to invent a free one by hand (which is how two candidates
-  // end up claiming the same id and one is flagged `duplicate-id`). It is only a
-  // starting point — the field stays editable and the server remains the authority.
-  const suggestedId = useMemo(() => {
-    let max = 0
-    for (const vm of registry) if (vm.id > max) max = vm.id
-    if (pool !== null) {
-      for (const entry of [...pool.builtin, ...pool.entries]) if (entry.id > max) max = entry.id
-    }
-    return max + 1
-  }, [registry, pool])
+  // The just-created guest as the registry now reports it: the banner's action
+  // follows the state it is actually in, not the state it was in at creation.
+  const createdVm = created === null ? undefined : registry.find((vm) => vm.id === created)
 
   const refreshRegistry = useCallback(async () => {
     try {
@@ -157,7 +161,11 @@ export default function VmsPanel({
         const current = known.get(vm.id)
         return current === undefined
           ? vm
-          : { ...current, name: vm.name, status: vm.status }
+          : {
+              ...vm,
+              cpu_num: vm.cpu_num || current.cpu_num,
+              memory_mb: vm.memory_mb || current.memory_mb,
+            }
       })
     })
   }, [resources])
@@ -212,19 +220,25 @@ export default function VmsPanel({
     [api, link],
   )
 
-  useEffect(() => {
-    if (focusVm !== null) void showDetail(focusVm)
-  }, [focusVm, showDetail])
-
   /**
    * Runs one mutating operation and then proves it landed.
    *
    * The baseline counters are sampled before the request so the settle poll can
    * require a strict increase; without it a status flip alone would pass for a
    * start that never entered the guest.
+   *
+   * The answer is whether the operation really settled, which a caller that acts
+   * *after* the operation needs: opening a terminal on a start that timed out
+   * would attach to a console whose guest never entered.
    */
   const run = useCallback(
-    async (key: string, op: LifecycleOp, id: number, action: () => Promise<unknown>, hint: string) => {
+    async (
+      key: string,
+      op: LifecycleOp,
+      id: number,
+      action: () => Promise<unknown>,
+      hint: string,
+    ): Promise<boolean> => {
       setBusy(key)
       setNote(hint)
       const detailUrl = link.url('detail', { id })
@@ -238,11 +252,15 @@ export default function VmsPanel({
           api.get<VmDetail>(detailUrl, signal),
         )
         setNote(result.ok ? `${op} 完成` : result.message)
-        if (result.detail) setDetail(result.detail)
+        if (result.detail) {
+          setDetail((current) => current?.id === id ? result.detail ?? null : current)
+        }
         await refreshRegistry()
         await refreshPool()
+        return result.ok
       } catch (e: unknown) {
         setNote(describeError(e))
+        return false
       } finally {
         setBusy(null)
       }
@@ -280,8 +298,36 @@ export default function VmsPanel({
       `恢复 VM[${id}]…`,
     )
 
-  const close = (id: number) =>
-    run(`close-${id}`, 'delete', id, () => api.del(link.url('delete', { id })), `关闭 VM[${id}]…`)
+  const remove = (id: number) =>
+    run(`delete-${id}`, 'delete', id, () => api.del(link.url('delete', { id })), `删除 VM[${id}]…`)
+
+  /**
+   * Start one guest and open its terminal once the start has really landed.
+   *
+   * The order is the whole point: a console lane exists as soon as the guest is
+   * registered, so opening the terminal first would attach to a console whose
+   * guest is not running yet and the operator would type into nothing. The
+   * terminal is opened only after the settle poll proved a vCPU entered the
+   * guest. A start that does not land leaves the reason and the button in place,
+   * and pressing it again is the retry.
+   */
+  const startAndOpen = async (id: number) => {
+    if (onOpenVm === undefined || busy !== null || pendingOpenRef.current !== null) return
+    pendingOpenRef.current = id
+    try {
+      if (await start(id)) {
+        setCreated(null)
+        setNote(`VM[${id}] 已进入 guest，正在打开终端…`)
+        onOpenVm(id)
+      } else {
+        setNote((current) =>
+          current === null ? '启动没有完成，可重试' : `${current} · 终端未打开，可重试`,
+        )
+      }
+    } finally {
+      pendingOpenRef.current = null
+    }
+  }
 
   const create = async () => {
     setCreateError(null)
@@ -290,7 +336,8 @@ export default function VmsPanel({
       const created = await api.post<{ id: number }>(link.url('create'), { toml: createToml })
       setCreateOpen(false)
       setCreateToml('')
-      setNote(`已创建 VM[${created.id}]，可用「启动」进入 guest`)
+      setCreated(created.id)
+      setNote(`已创建 VM[${created.id}]，可用「启动」或「启动并打开终端」进入 guest`)
       await refreshRegistry()
       await refreshPool()
     } catch (e: unknown) {
@@ -364,7 +411,8 @@ export default function VmsPanel({
     try {
       const created = await api.post<{ id: number }>(link.url('create'), { path })
       setBrowseOpen(false)
-      setNote(`已创建 VM[${created.id}]，可用「启动」进入 guest`)
+      setCreated(created.id)
+      setNote(`已创建 VM[${created.id}]，可用「启动」或「启动并打开终端」进入 guest`)
       await refreshRegistry()
       await refreshPool()
     } catch (e: unknown) {
@@ -385,6 +433,47 @@ export default function VmsPanel({
       )}
       {note && <Banner tone="info">{busy ? `${note}（等待真实状态收敛）` : note}</Banner>}
 
+      {created !== null && (
+        <Banner tone="info">
+          <span>
+            已创建客户机 <span className="font-mono">VM[{created}]</span>。
+          </span>
+          {/* A status the plane will refuse a start for disables the button, so
+              the refusal is not discovered by pressing it; a guest the registry
+              does not list yet is left to the request to answer. */}
+          {createdVm?.status === 'running' && onOpenVm !== undefined ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onOpenVm(created)}
+              title="在终端面板里打开这台客户机的通道"
+            >
+              <Terminal className="mr-1 h-3 w-3" />
+              打开终端
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              disabled={busy !== null || (createdVm !== undefined && !canStart(createdVm.status))}
+              onClick={() =>
+                onOpenVm === undefined ? void start(created) : void startAndOpen(created)
+              }
+              title={
+                onOpenVm === undefined
+                  ? '启动这台客户机'
+                  : '先启动这台客户机，等它真正进入 guest 之后再打开它的终端'
+              }
+            >
+              <Terminal className="mr-1 h-3 w-3" />
+              {onOpenVm === undefined ? '启动' : '启动并打开终端'}
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setCreated(null)}>
+            知道了
+          </Button>
+        </Banner>
+      )}
+
       <Overview vms={registry} details={details} physCpuCount={physCpuCount} />
 
       <AffinityMatrix vms={registry} details={details} physCpuCount={physCpuCount} />
@@ -394,7 +483,7 @@ export default function VmsPanel({
           <div>
             <CardTitle>已注册客户机</CardTitle>
             <CardDescription>
-              来自 `GET /api/vms`；启动、暂停等动作会在返回后继续轮询，直到计数器或状态证明它真的生效。
+              使用默认值创建第一台客户机，启动后即可在网页终端输入命令。
             </CardDescription>
           </div>
           <div className="flex gap-2">
@@ -441,6 +530,17 @@ export default function VmsPanel({
                       启动
                     </Button>
                   )}
+                  {vm.status === 'running' && onOpenVm !== undefined && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onOpenVm(vm.id)}
+                      title="在终端面板里打开这台客户机的通道（不重新启动它）"
+                    >
+                      <Terminal className="mr-1 h-3 w-3" />
+                      打开终端
+                    </Button>
+                  )}
                   {canStop(vm.status) && (
                     <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void stop(vm.id)}>
                       <Square className="mr-1 h-3 w-3" />
@@ -459,16 +559,22 @@ export default function VmsPanel({
                       恢复
                     </Button>
                   )}
-                  <Button size="sm" variant="destructive" disabled={busy !== null} onClick={() => void close(vm.id)}>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={busy !== null}
+                    onClick={() => setDeleting(vm)}
+                    title="删除这台客户机：先销毁它，再从注册表移除"
+                  >
                     <Trash2 className="mr-1 h-3 w-3" />
-                    关闭
+                    删除客户机
                   </Button>
                 </span>
               </li>
             ))}
             {registry.length === 0 && (
               <li className="rounded-lg border border-dashed px-3 py-8 text-center text-sm text-muted-foreground">
-                注册表中没有客户机——从下面的候选配置启动一台，或粘贴一份配置创建。
+                还没有客户机。点击「填表创建」，使用默认值即可开始，无需上传镜像。
               </li>
             )}
           </ul>
@@ -476,6 +582,48 @@ export default function VmsPanel({
       </Card>
 
       <DetailDrawer detail={detail} onClose={() => setDetail(null)} />
+
+      <Dialog
+        open={deleting !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleting(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              删除客户机{deleting !== null && ` VM[${deleting.id}] ${deleting.name}`}
+            </DialogTitle>
+            <DialogDescription>
+              删除会先销毁这台客户机（正在运行的会被停下），并释放它占用的终端通道；注册表里的
+              条目随之消失。配置池里的配置不会被删除——需要时用同一份配置重新创建即可。
+            </DialogDescription>
+          </DialogHeader>
+          {deleting !== null && (
+            <p className="text-sm text-muted-foreground">
+              确定删除 <span className="font-mono">VM[{deleting.id}]</span>（{deleting.name}）吗？
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleting(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={busy !== null}
+              onClick={() => {
+                // Close first: the dialog is about one guest, and the request it
+                // starts outlives it. The row's own state carries the progress.
+                const target = deleting
+                setDeleting(null)
+                if (target !== null) void remove(target.id)
+              }}
+            >
+              删除客户机
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Card>
         <CardHeader className="flex-row items-center justify-between space-y-0">
@@ -523,13 +671,14 @@ export default function VmsPanel({
                         </span>
                         <span className="flex items-center gap-2">
                           <span className="font-mono text-xs text-muted-foreground">{entry.path}</span>
-                          <Button
-                            size="sm"
-                            disabled={busy !== null}
-                            onClick={() => void start(entry.id)}
-                          >
-                            启动
-                          </Button>
+                          <CandidateAction
+                            entryId={entry.id}
+                            registry={registry}
+                            busy={busy !== null}
+                            onOpenVm={onOpenVm}
+                            onStart={() => void start(entry.id)}
+                            onStartAndOpen={() => void startAndOpen(entry.id)}
+                          />
                         </span>
                       </div>
                     </li>
@@ -550,13 +699,14 @@ export default function VmsPanel({
                         </span>
                         <span className="flex items-center gap-2">
                           <span className="font-mono text-xs text-muted-foreground">{entry.path}</span>
-                          <Button
-                            size="sm"
-                            disabled={busy !== null}
-                            onClick={() => void start(entry.id)}
-                          >
-                            启动
-                          </Button>
+                          <CandidateAction
+                            entryId={entry.id}
+                            registry={registry}
+                            busy={busy !== null}
+                            onOpenVm={onOpenVm}
+                            onStart={() => void start(entry.id)}
+                            onStartAndOpen={() => void startAndOpen(entry.id)}
+                          />
                         </span>
                       </div>
                     </li>
@@ -585,8 +735,8 @@ export default function VmsPanel({
           <DialogHeader>
             <DialogTitle>从目录里选配置创建客户机</DialogTitle>
             <DialogDescription>
-              `GET /api/vms/browse` 逐层列目录；每个 `.toml` 已经解析过，能启动的才给「创建」，
-              不能启动的在下面写明原因。创建走 `POST /api/vms/create` 的 `path` 形式。
+              逐层列目录；每个 `.toml` 都已经解析过，能启动的才给「创建」，不能启动的在下面
+              写明原因。
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 text-sm">
@@ -676,8 +826,8 @@ export default function VmsPanel({
           <DialogHeader>
             <DialogTitle>粘贴客户机配置</DialogTitle>
             <DialogDescription>
-              「创建」把 TOML 交给 `POST /api/vms/create`；「存为候选配置」把它写到候选配置卡片
-              显示的写入目录——没有专门的文件夹，写进去的文件就是整棵客户机树里的一个候选。
+              「创建」用这份 TOML 建一台客户机；「存为候选配置」把它写进候选配置卡片显示的
+              目录，写进去的配置会出现在动态池里，之后可以直接启动。
             </DialogDescription>
           </DialogHeader>
           <textarea
@@ -723,16 +873,12 @@ export default function VmsPanel({
         files={files}
         open={formOpen}
         onOpenChange={setFormOpen}
-        suggestedId={suggestedId}
         onCreated={(id, saved) => {
           // A form-made guest is registered the same way a pool-made one is and
           // its configuration is written to the guest tree, so both lists are
           // refreshed rather than assumed.
-          setNote(
-            saved
-              ? `已创建 VM[${id}]，候选配置：${saved}，可用「启动」进入 guest`
-              : `已创建 VM[${id}]，可用「启动」进入 guest`,
-          )
+          setCreated(id)
+          setNote(saved ? `已创建 VM[${id}]，候选配置：${saved}` : `已创建 VM[${id}]`)
           void refreshRegistry()
           void refreshPool()
         }}
@@ -757,12 +903,77 @@ export function canStop(status: VmStatus): boolean {
   return status === 'running' || status === 'paused'
 }
 
+/**
+ * The actions one configuration-pool candidate offers.
+ *
+ * A candidate is a config, not a guest: starting it is what creates the guest,
+ * so a candidate whose id is already in the registry is not a candidate to start
+ * again. The second 启动 would create a VM that is already there (or be refused),
+ * and either way the operator meant the running guest — so the row names its
+ * state and offers the terminal instead.
+ */
+function CandidateAction({
+  entryId,
+  registry,
+  busy,
+  onOpenVm,
+  onStart,
+  onStartAndOpen,
+}: {
+  entryId: number
+  registry: VmSummary[]
+  busy: boolean
+  onOpenVm: ((id: number) => void) | undefined
+  onStart(): void
+  onStartAndOpen(): void
+}) {
+  const registered = registry.find((vm) => vm.id === entryId)
+  if (registered !== undefined) {
+    return (
+      <>
+        <span className="text-xs text-muted-foreground">
+          已注册（{describeStatus(registered.status)}），不再重复启动
+        </span>
+        {registered.status === 'running' && onOpenVm !== undefined && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onOpenVm(registered.id)}
+            title="在终端面板里打开这台客户机的通道"
+          >
+            <Terminal className="mr-1 h-3 w-3" />
+            打开终端
+          </Button>
+        )}
+      </>
+    )
+  }
+  return (
+    <>
+      <Button size="sm" disabled={busy} onClick={onStart}>
+        启动
+      </Button>
+      {onOpenVm !== undefined && (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={onStartAndOpen}
+          title="启动这台候选配置，等它真正进入 guest 之后再打开它的终端"
+        >
+          <Terminal className="mr-1 h-3 w-3" />
+          启动并打开终端
+        </Button>
+      )}
+    </>
+  )
+}
 
 function Banner({ tone, children }: { tone: 'info' | 'error'; children: ReactNode }) {
   return (
     <p
       className={cn(
-        'rounded-md border px-3 py-2 text-sm',
+        'flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm',
         tone === 'error' ? 'border-destructive/40 bg-destructive/10' : 'bg-muted',
       )}
     >

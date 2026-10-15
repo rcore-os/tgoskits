@@ -144,13 +144,14 @@ flowchart TB
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 cargo xtask axvisor test qemu --arch aarch64 --test-case browser-console
 cargo xtask axvisor test qemu --arch aarch64 --test-case web-ui
+cargo xtask axvisor test qemu --arch x86_64 --test-case web-ui-vmx
 cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-vm-pool
 cargo xtask axvisor test qemu --arch aarch64 --test-case qemu-vm-pool-http
 ```
 
 前端质量门禁由独立的 web UI 检查执行（`npm ci`、`npm test`、`npm run build`，需要 Node 24）；仪表盘产物本身由 axbuild 在启用 `web-ui` 特性的构建里自动生成并打进 initramfs，因此 QEMU 用例不再依赖任何手工产物步骤。
 
-CI 采用的用例集合登记在 `.github/ci/checks/axvisor.toml`：aarch64 控制面检查运行 `http-control-plane`、`qemu-vm-pool`、`qemu-vm-pool-http`、`browser-console` 和 `qemu-ivc-arceos`。两条 pool 用例分别通过 shell 和 HTTP 验证零启动、动态候选发现、按 ID 创建及删除后重建，补齐按需创建路径的运行时证据；它们也登记在 `check.suite` 中，修改用例时可由增量 CI 路由到对应检查。web UI 检查运行 `web-ui`（NVMe 磁盘根托管）与 `web-ui-diskless`（initramfs 内存根托管）两条用例；三客户机终端用例仍是手工诊断入口，未计入 CI 绿灯。
+CI 采用的用例集合登记在 `.github/ci/checks/axvisor.toml`：aarch64 控制面检查运行 `http-control-plane`、`qemu-vm-pool`、`qemu-vm-pool-http`、`browser-console` 和 `qemu-ivc-arceos`。两条 pool 用例分别通过 shell 和 HTTP 验证零启动、动态候选发现、按 ID 创建及删除后重建，补齐按需创建路径的运行时证据；它们也登记在 `check.suite` 中，修改用例时可由增量 CI 路由到对应检查。web UI 检查运行 `web-ui`（NVMe 磁盘根托管）与 `web-ui-diskless`（initramfs 内存根托管）两条用例；x86 VMX 检查增加 `web-ui-vmx`：e1000 管理网络、空初始登记表、defaults 接口零上传创建、真实 Alpine shell 输入与重连、停止删除及自动 ID 重用。客户机 shell 验收仍为 90 秒。三客户机终端用例仍是手工诊断入口，未计入 CI 绿灯。
 
 覆盖的缺口需要如实记录：文件传输的存储不足与完整分片上限仍没有在仓库用例资产中断言；当前已覆盖范围不可表示和声明总长超限，以及 400、404、409、200 与 204 这些路径。另外，`axvmconfig` 新增的必填参数改变了命令行行为，未在本文档的验证范围内提供独立用例。
 

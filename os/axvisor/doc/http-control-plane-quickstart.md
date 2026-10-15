@@ -41,14 +41,20 @@ virtio-net-pci，并在转发端口可达后执行 `http-control-plane/http_prob
 | 方法 | 路径 | 语义 | 成功码 |
 | --- | --- | --- | --- |
 | GET | `/api/vms` | 列出所有 VM 摘要 | 200 |
+| GET | `/api/vms/schema` | 网页创建字段及展示信息 | 200 |
+| GET | `/api/vms/defaults` | 可直接用于创建的初始 `fields` | 200 |
 | GET | `/api/vms/pool` | 列出动态 pool 与只读 builtin catalog | 200 |
 | GET | `/api/vms/{id}` | 单个 VM 详情 | 200 |
-| POST | `/api/vms/create` | 从 TOML 创建并注册 | 200 `{"id": n}` |
+| POST | `/api/vms/create` | 从 `fields`、TOML 或配置路径创建并注册 | 200 `{"id": n}` |
 | DELETE | `/api/vms/{id}` | 销毁并注销 | 204 |
 | POST | `/api/vms/{id}/start` | 启动（等待完成） | 200 |
 | POST | `/api/vms/{id}/pause` | 暂停（等待完成） | 200 |
 | POST | `/api/vms/{id}/resume` | 恢复（等待完成） | 200 |
 | POST | `/api/vms/{id}/stop` | 停止（等待完成） | 200 |
+
+默认创建可先读取 `GET /api/vms/defaults`，将返回的 `{"fields": {...}}` 原样提交至 `POST /api/vms/create`。`fields.id` 缺省或为 `null` 时，`AxvmManager::create_vm_with_auto_id_and_wait()` 在既有生命周期锁内分配未使用的正整数 ID；已注册客户机及 builtin、动态池候选占用的 ID 均会跳过，创建失败沿用原有资源回滚。显式 ID 继续检查冲突；`toml` 和 `path` 请求仍使用配置中的 ID。
+
+x86_64 初始值引用原始镜像中的 Linux 内核和 Alpine 根盘，磁盘使用 `virtio-blk` PCI 传输。`fields.rootfs_read_only` 是可选布尔值：defaults 接口提供 `true` 以保护共享镜像；旧请求省略时保留可写语义。创建前校验物理 CPU 数量、当前空闲内存和镜像路径，缺失镜像返回包含具体路径的 409，网页可修改路径或上传后重试。默认 QEMU 网页入口与依赖见[运行文档](../../../docs/docs/build/axvisor/runtime.md#16-x86_64-默认客户机)。
 
 详情响应字段：`id`、`name`、`status`、`cpu_num`、`memory_mb`、
 `vcpu_states`、`guest_entry_count`、`guest_park_count`。列表（摘要）不含
@@ -82,7 +88,7 @@ vCPU 与计数器字段。
 
 | 状态码 | 含义 |
 | --- | --- |
-| 400 | 请求体非法：缺少 `toml` 字段，或 TOML 无法解析 |
+| 400 | 请求体非法：缺少创建内容、字段非法、资源请求超过当前可用量，或 TOML 无法解析 |
 | 404 | `{id}` 非数字或未知 VM |
 | 409 | 非法状态转换、重复注册、陈旧 run、入口已关闭等冲突 |
 | 503 | 宿主资源暂不可用（内存、vCPU、设备，或操作被取消） |

@@ -34,9 +34,12 @@ interface TabsProps {
   /** The host facts the shell read once; `null` when this build exports none. */
   host: HostInfo | null
   focusVm: number | null
+  focusRequest: number
   onActivate: (id: string) => void
   onClose: (id: string) => void
   onNew: (kind: string) => void
+  /** Opens `id`'s terminal, the way clicking the guest in the navigation does. */
+  onOpenVm: (id: number) => void
 }
 
 export function Tabs(props: TabsProps) {
@@ -52,9 +55,11 @@ export function Tabs(props: TabsProps) {
     live,
     host,
     focusVm,
+    focusRequest,
     onActivate,
     onClose,
     onNew,
+    onOpenVm,
   } = props
   const [pickerOpen, setPickerOpen] = useState(false)
 
@@ -159,6 +164,11 @@ export function Tabs(props: TabsProps) {
                   take the shell, the navigation or the other tabs down. */}
               <PanelErrorBoundary title={meta.title}>
                 <Suspense fallback={<p className="text-sm text-muted-foreground">加载面板…</p>}>
+                  {/* `active` and `onOpenVm` are the two facts a panel cannot
+                      derive: which tab is on screen (a hidden panel and an
+                      unopened one look the same from inside), and how to open a
+                      guest's terminal through the shell. Both are injected for
+                      the same reason as the rest: the shell owns them. */}
                   <Panel
                     meta={meta}
                     api={api}
@@ -168,6 +178,9 @@ export function Tabs(props: TabsProps) {
                     live={live}
                     host={host}
                     focusVm={focusVm}
+                    focusRequest={focusRequest}
+                    active={tab.id === activeId}
+                    onOpenVm={onOpenVm}
                   />
                 </Suspense>
               </PanelErrorBoundary>

@@ -45,6 +45,7 @@ export default function App({ registry }: { registry: PanelRegistry }) {
   const [tabs, setTabs] = useState<TabState[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [focusVm, setFocusVm] = useState<number | null>(null)
+  const [focusRequest, setFocusRequest] = useState(0)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const bootstrappedRef = useRef(false)
   const capabilities = useMemo(() => new Capabilities(manifest?.panels ?? []), [manifest])
@@ -167,6 +168,7 @@ export default function App({ registry }: { registry: PanelRegistry }) {
       const terminal = registry.terminalKind
       if (terminal && manifest?.panels.some((panel) => panel.kind === terminal)) openPanel(terminal)
       setFocusVm(id)
+      setFocusRequest((current) => current + 1)
     },
     [manifest, openPanel, registry],
   )
@@ -186,7 +188,7 @@ export default function App({ registry }: { registry: PanelRegistry }) {
           <span className="flex min-w-0 flex-col leading-tight">
             <span className="truncate text-sm font-semibold tracking-tight">AxVisor 管理台</span>
             <span className="truncate font-mono text-[11px] text-muted-foreground">
-              {hostLine ?? `manifest proto ${manifest?.proto ?? '-'} · ${panels.length} 个面板`}
+              {hostLine ?? `${panels.length} 个管理面板`}
             </span>
           </span>
         </div>
@@ -201,13 +203,13 @@ export default function App({ registry }: { registry: PanelRegistry }) {
             <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">⌘K</kbd>
           </button>
           <span className="hidden font-mono text-[11px] text-muted-foreground lg:inline">
-            proto {manifest?.proto ?? '-'} · {panels.length} 面板
+            {panels.length} 个管理面板
           </span>
           <ThemeToggle />
           {/* Re-reading the manifest is how a capability change becomes visible
               without a page reload: the navigation follows the declaration. */}
           <Button size="sm" variant="ghost" onClick={() => setReloadKey((key) => key + 1)}>
-            刷新能力清单
+            刷新管理功能
           </Button>
         </div>
       </header>
@@ -242,9 +244,11 @@ export default function App({ registry }: { registry: PanelRegistry }) {
           live={live}
           host={host}
           focusVm={focusVm}
+          focusRequest={focusRequest}
           onActivate={setActiveId}
           onClose={closeTab}
           onNew={newTab}
+          onOpenVm={openVm}
         />
       </div>
 

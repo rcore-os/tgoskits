@@ -15,6 +15,8 @@ import { describeStatus, type PanelMeta, type VmSummary } from '@/api/types'
 import { STATUS_DOT } from '@/lib/status'
 import { cn } from '@/lib/utils'
 
+const VERB_LABELS: Record<string, string> = { read: '查看', write: '管理', stream: '终端' }
+
 interface NavProps {
   panels: PanelMeta[]
   resources: VmSummary[]
@@ -27,7 +29,7 @@ interface NavProps {
 export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: NavProps) {
   return (
     <nav className="flex w-60 shrink-0 flex-col overflow-y-auto border-r">
-      <div className="px-4 pb-1.5 pt-3.5 eyebrow">能力 · 来自 manifest</div>
+      <div className="px-4 pb-1.5 pt-3.5 eyebrow">管理功能</div>
       <ul className="flex flex-col gap-0.5 px-2">
         {panels.map((panel) => {
           const Icon = panelIcon(panel)
@@ -70,7 +72,7 @@ export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: N
                       what a panel may do — but as a caption: as badges they read
                       as debug output. */}
                   <span className="truncate font-mono text-[10px] text-muted-foreground">
-                    {panel.verbs.join(' · ')}
+                    {panel.verbs.map((verb) => VERB_LABELS[verb] ?? verb).join(' · ')}
                   </span>
                 </span>
               </button>
@@ -106,14 +108,23 @@ export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: N
             <button
               type="button"
               onClick={() => onOpenVm(vm.id)}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent/40"
+              title={`打开 VM[${vm.id}] ${vm.name} 的终端`}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent/40"
             >
               <span
                 className={cn('h-1.5 w-1.5 shrink-0 rounded-full', STATUS_DOT[vm.status] ?? 'bg-muted-foreground')}
                 title={describeStatus(vm.status)}
               />
-              <span className="min-w-0 flex-1 truncate font-mono text-xs">VM[{vm.id}]</span>
-              <span className="shrink-0 text-[10px] text-muted-foreground">
+              {/* The name first, because that is how an operator refers to a
+                  guest; the id stays beside it, because that is what the
+                  terminal lane, the pool entry and the API all call it. */}
+              <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                <span className="truncate text-sm">{vm.name}</span>
+                <span className="truncate font-mono text-[10px] text-muted-foreground">
+                  VM[{vm.id}]
+                </span>
+              </span>
+              <span className="shrink-0 text-[10px] text-muted-foreground" title="客户机状态">
                 {describeStatus(vm.status)}
               </span>
             </button>
