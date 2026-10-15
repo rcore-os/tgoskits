@@ -210,6 +210,9 @@ cargo xtask image pack-initramfs test-suit/host-initramfs \
 cargo xtask arceos build \
   --package arceos-helloworld \
   --config bootloader/axloader/build-loongarch64-helloworld-efi.toml
+cargo xtask arceos build \
+  --package axloader \
+  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml
 python3 - <<'PY'
 from pathlib import Path
 

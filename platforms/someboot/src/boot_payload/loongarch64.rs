@@ -1,44 +1,25 @@
-#[cfg(all(efi, target_arch = "loongarch64"))]
-use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+//! LoongArch EFI payload ABI and inherited boot state.
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
-use crate::mem::KIMAGE_MAP_ALIGN;
-#[cfg(efi)]
-use crate::mem::{MemoryDescriptor, MemoryType, add_memory_descriptor};
+use core::{
+    mem::size_of,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
-static PUBLISHED: AtomicBool = AtomicBool::new(false);
-static START: AtomicUsize = AtomicUsize::new(0);
-static END: AtomicUsize = AtomicUsize::new(0);
-static RECLAIMABLE: AtomicBool = AtomicBool::new(false);
-#[cfg(efi)]
-static PENDING_START: AtomicUsize = AtomicUsize::new(0);
-#[cfg(efi)]
-static PENDING_END: AtomicUsize = AtomicUsize::new(0);
+use crate::mem::{KIMAGE_MAP_ALIGN, MemoryDescriptor, MemoryType, add_memory_descriptor};
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 /// LoongArch-only v2 payload ABI. This GUID is intentionally distinct from the
 /// removed host-boot-abi v1 table, so an old table cannot be interpreted here.
 pub(crate) const LOONG_BOOT_PAYLOAD_GUID: uefi::Guid =
     uefi::guid!("5d34b5d2-9a5b-4d0f-8e3c-6bb3dfc6a1fe");
-#[cfg(all(efi, target_arch = "loongarch64"))]
 const LOONG_BOOT_PAYLOAD_MAGIC: u64 = 0x5447_4f53_494e_4954;
-#[cfg(all(efi, target_arch = "loongarch64"))]
 const LOONG_BOOT_PAYLOAD_VERSION: u32 = 2;
-#[cfg(all(efi, target_arch = "loongarch64"))]
 const LOONG_BOOT_PAYLOAD_MAX_CMDLINE: usize = 4095;
-#[cfg(all(efi, target_arch = "loongarch64"))]
 const LOONG_BOOT_PAYLOAD_MAX_REGIONS: usize = 128;
-#[cfg(all(efi, target_arch = "loongarch64"))]
 const LOONGARCH_PHYSICAL_ADDRESS_LIMIT: u64 = 1 << 48;
-#[cfg(all(efi, target_arch = "loongarch64"))]
 pub(crate) const LOONG_IMAGE_POOL_BYTES: u64 = 8192 * 4096;
-#[cfg(all(efi, target_arch = "loongarch64"))]
 pub(crate) const LOONG_ARCHIVE_POOL_BYTES: u64 = 65536 * 4096;
-#[cfg(all(efi, target_arch = "loongarch64"))]
 pub(crate) const LOONG_SLOT_POOL_BYTES: u64 = 8192 * 4096;
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct LoongBootMemoryRegion {
@@ -48,7 +29,6 @@ pub(crate) struct LoongBootMemoryRegion {
     pub reserved: u32,
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 #[repr(C)]
 struct LoongBootPayloadHeader {
     magic: u64,
@@ -57,7 +37,6 @@ struct LoongBootPayloadHeader {
     reserved: u32,
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 #[repr(C)]
 pub(crate) struct LoongBootPayload {
     magic: u64,
@@ -86,7 +65,6 @@ pub(crate) struct LoongBootPayload {
     pub memory_map: [LoongBootMemoryRegion; LOONG_BOOT_PAYLOAD_MAX_REGIONS],
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 impl LoongBootPayload {
     #[cfg(feature = "efi-loader")]
     pub const fn empty() -> Self {
@@ -237,11 +215,14 @@ impl LoongBootPayload {
         if self.current_image_start == 0 || self.current_image_len == 0 {
             return Err("missing current EFI image");
         }
-        if self.current_image_start % 4096 != 0 || self.current_image_len % 4096 != 0 {
+        if !self.current_image_start.is_multiple_of(4096)
+            || !self.current_image_len.is_multiple_of(4096)
+        {
             return Err("unaligned current EFI image");
         }
         if self.target_image_len != 0
-            && (self.target_image_start % 4096 != 0 || self.target_image_len % 4096 != 0)
+            && (!self.target_image_start.is_multiple_of(4096)
+                || !self.target_image_len.is_multiple_of(4096))
         {
             return Err("unaligned target EFI image");
         }
@@ -284,8 +265,8 @@ impl LoongBootPayload {
         for region in &self.memory_map[..self.memory_map_len as usize] {
             if region.size_in_bytes == 0
                 || !valid_memory_range(region.physical_start, region.size_in_bytes)
-                || region.physical_start % 4096 != 0
-                || region.size_in_bytes % 4096 != 0
+                || !region.physical_start.is_multiple_of(4096)
+                || !region.size_in_bytes.is_multiple_of(4096)
                 || region.memory_type > 5
                 || region.reserved != 0
             {
@@ -332,7 +313,6 @@ impl LoongBootPayload {
     }
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 fn valid_range(start: u64, len: u64) -> bool {
     (start == 0) == (len == 0)
         && start < LOONGARCH_PHYSICAL_ADDRESS_LIMIT
@@ -341,7 +321,6 @@ fn valid_range(start: u64, len: u64) -> bool {
             .is_some_and(|end| end <= LOONGARCH_PHYSICAL_ADDRESS_LIMIT)
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 fn valid_memory_range(start: u64, len: u64) -> bool {
     len != 0
         && start < LOONGARCH_PHYSICAL_ADDRESS_LIMIT
@@ -350,22 +329,19 @@ fn valid_memory_range(start: u64, len: u64) -> bool {
             .is_some_and(|end| end <= LOONGARCH_PHYSICAL_ADDRESS_LIMIT)
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 fn valid_pool(start: u64, len: u64, cursor: u64) -> bool {
     valid_range(start, len)
         && (start == 0
-            || (start % 4096 == 0
+            || (start.is_multiple_of(4096)
                 && cursor >= start
                 && cursor <= start.saturating_add(len)
-                && cursor % 4096 == 0))
+                && cursor.is_multiple_of(4096)))
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 fn valid_nonempty_pool(start: u64, len: u64, cursor: u64) -> bool {
-    valid_pool(start, len, cursor) && len != 0 && len % 4096 == 0
+    valid_pool(start, len, cursor) && len != 0 && len.is_multiple_of(4096)
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 fn range_contains(outer_start: u64, outer_len: u64, inner_start: u64, inner_len: u64) -> bool {
     valid_range(outer_start, outer_len)
         && valid_range(inner_start, inner_len)
@@ -378,7 +354,6 @@ fn range_contains(outer_start: u64, outer_len: u64, inner_start: u64, inner_len:
                 })))
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 fn range_in_any_pool(
     start: u64,
     len: u64,
@@ -391,7 +366,6 @@ fn range_in_any_pool(
         || range_contains(second_start, second_len, start, len)
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 fn ranges_overlap(first_start: u64, first_len: u64, second_start: u64, second_len: u64) -> bool {
     first_len != 0
         && second_len != 0
@@ -399,42 +373,10 @@ fn ranges_overlap(first_start: u64, first_len: u64, second_start: u64, second_le
         && second_start < first_start.saturating_add(first_len)
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 static INHERITED_PAYLOAD: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", efi, target_arch = "loongarch64"))]
+#[cfg(feature = "efi-loader")]
 static INHERITED_LOADER_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// Physical host archive pinned until the runtime finishes unpacking it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InitramfsRange {
-    pub start: usize,
-    pub end: usize,
-    pub reclaimable: bool,
-}
-
-pub fn initramfs_range() -> Option<InitramfsRange> {
-    let end = END.load(Ordering::Acquire);
-    (end != 0).then(|| InitramfsRange {
-        start: START.load(Ordering::Relaxed),
-        end,
-        reclaimable: RECLAIMABLE.load(Ordering::Relaxed),
-    })
-}
-
-/// Transfers the reserved archive to its sole runtime consumer.
-///
-/// The caller must finish every archive borrow before reclaiming owned pages.
-/// Subsequent callers and metadata queries cannot observe the consumed range.
-pub fn take_initramfs_range() -> Option<InitramfsRange> {
-    let end = END.swap(0, Ordering::AcqRel);
-    (end != 0).then(|| InitramfsRange {
-        start: START.load(Ordering::Relaxed),
-        end,
-        reclaimable: RECLAIMABLE.load(Ordering::Relaxed),
-    })
-}
-
-#[cfg(all(efi, target_arch = "loongarch64"))]
 pub(crate) fn remember_inherited_payload(payload: *const LoongBootPayload) {
     assert!(!payload.is_null(), "null inherited LoongArch EFI payload");
     // Read only the fixed header before interpreting the complete table. The
@@ -456,24 +398,21 @@ pub(crate) fn remember_inherited_payload(payload: *const LoongBootPayload) {
         .expect("invalid inherited LoongArch EFI payload");
     INHERITED_PAYLOAD.store(payload as usize, Ordering::Release);
     #[cfg(feature = "efi-loader")]
-    let slot = payload_ref.loader_slot;
-    #[cfg(feature = "efi-loader")]
-    INHERITED_LOADER_SLOT.store(slot as usize, Ordering::Release);
+    INHERITED_LOADER_SLOT.store(payload_ref.loader_slot as usize, Ordering::Release);
 }
 
-#[cfg(all(feature = "efi-loader", efi, target_arch = "loongarch64"))]
+#[cfg(feature = "efi-loader")]
 pub(crate) fn inherited_payload() -> Option<&'static LoongBootPayload> {
     let address = INHERITED_PAYLOAD.load(Ordering::Acquire);
     (address != 0).then(|| unsafe { &*(address as *const LoongBootPayload) })
 }
 
-#[cfg(all(feature = "efi-loader", efi, target_arch = "loongarch64"))]
+#[cfg(feature = "efi-loader")]
 pub fn inherited_loader_slot() -> Option<u8> {
     let slot = INHERITED_LOADER_SLOT.load(Ordering::Acquire);
     (slot <= 1).then_some(slot as u8)
 }
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
 pub(crate) fn restore_inherited_memory_map() {
     let address = INHERITED_PAYLOAD.swap(0, Ordering::AcqRel);
     if address == 0 {
@@ -554,48 +493,4 @@ pub(crate) fn restore_inherited_memory_map() {
             }
         }
     }
-}
-
-pub(crate) fn publish(start: usize, end: usize, reclaimable: bool) {
-    // Only the boot CPU publishes, before secondary CPUs or archive consumers
-    // can run. AArch64 exclusive atomics cannot be used before MMU enablement.
-    assert!(start < end && !PUBLISHED.load(Ordering::Relaxed));
-    PUBLISHED.store(true, Ordering::Relaxed);
-    RECLAIMABLE.store(reclaimable, Ordering::Relaxed);
-    START.store(start, Ordering::Relaxed);
-    END.store(end, Ordering::Release);
-}
-
-/// Registers a UEFI loader allocation before ExitBootServices. It remains
-/// invisible to the runtime until the final firmware map has reserved it.
-#[cfg(efi)]
-pub(crate) fn stage_uefi(start: usize, end: usize) {
-    assert!(start < end && PENDING_END.load(Ordering::Relaxed) == 0);
-    PENDING_START.store(start, Ordering::Relaxed);
-    PENDING_END.store(end, Ordering::Release);
-}
-
-#[cfg(efi)]
-pub(crate) fn reserve_staged_uefi() {
-    let end = PENDING_END.load(Ordering::Acquire);
-    if end == 0 {
-        return;
-    }
-    let start = PENDING_START.load(Ordering::Relaxed);
-    assert!(end.checked_add(crate::consts::PAGE_SIZE - 1).is_some());
-    let reservation = MemoryDescriptor::new_aligned(
-        start,
-        end - start,
-        MemoryType::Reserved,
-        crate::consts::PAGE_SIZE,
-    );
-    add_memory_descriptor(reservation)
-        .unwrap_or_else(|error| panic!("failed to reserve UEFI host initramfs: {error:?}"));
-    publish(start, end, true);
-}
-
-#[cfg(efi)]
-pub(crate) fn staged_uefi() -> Option<(usize, usize)> {
-    let end = PENDING_END.load(Ordering::Acquire);
-    (end != 0).then(|| (PENDING_START.load(Ordering::Relaxed), end))
 }

@@ -53,6 +53,10 @@ cmdline、initramfs 和内存图。该结构是 LoongArch 专用 v2 EFI 配置�
 GUID，不复用最新 dev 已移除的 `host-boot-abi` v1；x86_64 继续使用最新 dev 的
 Linux EFI `LoadFile2` initrd 协议。
 
+`axstd_loader::run()` 在启动及每次连接处理后发送 UDP 公告，阻塞等待连接期间
+不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或启动广播丢失时，
+使用已知设备 IP 直接访问 HTTP 接口。
+
 ```bash
 cargo xtask arceos build \
   --package axloader \
