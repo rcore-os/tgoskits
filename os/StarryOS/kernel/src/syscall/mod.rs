@@ -508,6 +508,11 @@ pub fn handle_syscall(
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        Sysno::readahead => sys_readahead(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+        ),
         Sysno::pread64 => sys_pread64(
             current,
             uctx.arg0() as _,
