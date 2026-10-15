@@ -61,4 +61,3 @@
 ### 3.2 在 CI 中的登记
 
 `.github/ci/checks/axvisor.toml` 的 AArch64 QEMU 作业同时登记本测例：`package = "axvm"`、`test = "vcpu_runtime"`、`arch = "aarch64"` 以及上面两个配置文件路径。规划器会用这份登记校验包、测试目标与配置文件确实存在，并把改动这两个文件或其所在目录的拉取请求路由到同一个作业。
-

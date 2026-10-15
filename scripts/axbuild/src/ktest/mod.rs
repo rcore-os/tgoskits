@@ -41,7 +41,7 @@ const PANIC_FAIL: &str = "panicked at";
 ///
 /// `axtest` prints `AXTEST_SUMMARY pass=<n> fail=<n> skip=<n> total=<n>` after
 /// the last case, so a suite that selected nothing must not look successful.
-const AXTEST_SUMMARY_GATE: &str = r"AXTEST_SUMMARY pass=[1-9][0-9]* fail=0\b";
+const AXTEST_SUMMARY_GATE: &str = r"AXTEST_SUMMARY pass=[1-9][0-9]* fail=0(?-u:\b)";
 const COVERAGE_IGNORED_SOURCE_REGEX: &str = r"[/\\](\.(cargo|rustup)|target)[/\\]";
 
 #[derive(Args, Debug, Clone)]
@@ -1181,7 +1181,7 @@ fn apply_axtest_qemu_markers(qemu: &mut QemuConfig) {
 /// array as alternatives: a separate entry for the summary and for the marker
 /// could complete the run on either of them alone.
 fn suite_gate_regex() -> String {
-    format!(r"(?s)AXTEST_CASE status=pass\b.*{AXTEST_SUMMARY_GATE}.*{AXTEST_SUITE_OK}")
+    format!(r"(?s)AXTEST_CASE status=pass(?-u:\b).*{AXTEST_SUMMARY_GATE}.*{AXTEST_SUITE_OK}")
 }
 
 /// Makes [`suite_gate_regex`] the mandatory final completion condition.

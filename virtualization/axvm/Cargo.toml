@@ -30,17 +30,17 @@ board_only = true
 [[test]]
 name = "vcpu_runtime"
 harness = false
-required-features = ["axtest"]
+required-features = ["axtest", "tls"]
 
 [[test]]
 name = "vcpu_perf"
 harness = false
-required-features = ["axtest"]
+required-features = ["axtest", "tls"]
 
 [[test]]
 name = "task_switch"
 harness = false
-required-features = ["axtest"]
+required-features = ["axtest", "tls"]
 
 [features]
 host-fs = ["dep:ax-driver"]
@@ -135,9 +135,9 @@ acpi_tables.workspace = true
 acpi_tables.workspace = true
 rdif-clk = { path = "../../drivers/interface/rdif-clk" }
 
-axtest = { path = "../../components/axtest/axtest" }
+axtest.workspace = true
 anyhow.workspace = true
-ax-hal = { path = "../../os/arceos/modules/axhal" }
-ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["deferred-rootfs"] }
-ax-driver = { path = "../../drivers/ax-driver" }
-ax-std = { path = "../../os/arceos/ulib/axstd", features = ["alloc", "std-compat", "tls", "backtrace"] }
+ax-hal.workspace = true
+ax-runtime = { workspace = true, features = ["deferred-rootfs"] }
+ax-driver.workspace = true
+ax-std = { workspace = true, features = ["alloc", "std-compat"] }

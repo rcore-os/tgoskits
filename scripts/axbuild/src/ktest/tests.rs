@@ -1,11 +1,12 @@
 use super::{
     plan::{
         AARCH64_TARGET, DiscoveredKtestPackage, KtestExecutionUnit, KtestRuntime,
-        LOONGARCH64_TARGET, PlanFailure, QemuPlanSelector, RISCV64_TARGET, X86_64_TARGET,
-        build_qemu_plan, run_plan_units,
+        LOONGARCH64_TARGET, QemuPlanSelector, RISCV64_TARGET, X86_64_TARGET, build_qemu_plan,
+        run_plan_units,
     },
     *,
 };
+use crate::support::qemu_success::{QemuSuccessOutput, verify_qemu_success_contract};
 
 fn discovered_package(
     name: &str,
@@ -531,6 +532,13 @@ fn assert_suite_gate(patterns: &[String]) {
         "AXTEST_CASE status=pass module=demo name=case\nAXTEST_SUMMARY pass=2 fail=0 skip=0 \
          total=2\nAXTEST_SUITE_OK\n"
     ));
+    // Use the runner's streaming DFA as well as the test regex engine. Some
+    // regex features accepted by `regex` cannot compile into that DFA.
+    let output = QemuSuccessOutput::new(patterns);
+    output.append(b"AXTEST_CASE status=pass module=demo name=case\n");
+    output.append(b"AXTEST_SUMMARY pass=1 fail=0 skip=0 total=1\n");
+    output.append(b"AXTEST_SUITE_OK\n");
+    verify_qemu_success_contract(Ok(()), Some(&output)).unwrap();
     assert!(
         !gate.is_match("GUEST_PASS\n"),
         "a guest success is not a suite result"

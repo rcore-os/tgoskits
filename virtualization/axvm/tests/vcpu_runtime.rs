@@ -69,7 +69,7 @@ fn wait_mailbox(
     memory: &GuestMemoryPort,
     address: GuestPhysAddr,
     deadline: Instant,
-    ready: impl Fn(&[u32; 5]) -> bool,
+    mut ready: impl FnMut(&[u32; 5]) -> bool,
 ) -> Result<[u32; 5]> {
     loop {
         fixture.flush_console()?;
@@ -120,8 +120,21 @@ fn exercise(fixture: &mut Fixture, address: GuestPhysAddr, policy: SchedulePolic
     // BSS. The new serial backend proves this run reached main before polling.
     wait_ready(fixture)?;
     let deadline = Instant::now() + Duration::from_secs(30);
+    // Zephyr's SMP startup may still deliver a scheduler IPI after both ready
+    // stores. Establish an idle boundary before the first pulse; the captured
+    // count then stays fixed for the complete 300-delivery interval.
+    let mut parks = None;
+    let mut quiet_since = Instant::now();
     let initial = wait_mailbox(fixture, &memory, address, deadline, |state| {
-        state[0] == 1 && state[1] == 1 && state[3] != 0
+        if parks != Some(state[3]) {
+            parks = Some(state[3]);
+            quiet_since = Instant::now();
+        }
+        state[2] != 0
+            || (state[0] == 1
+                && state[1] == 1
+                && state[3] != 0
+                && quiet_since.elapsed() >= Duration::from_millis(50))
     })?;
     fixture.check_policy(policy, 2)?;
     ensure!(initial[2] == 0, "guest received an unrequested interrupt");
