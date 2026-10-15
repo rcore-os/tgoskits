@@ -1024,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn active_connect_rejection_is_not_discarded_as_a_startup_indication() {
+    fn active_connect_rejection_reports_failure_and_allows_another_connection() {
         let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
         let mut control = super::super::control::build(
             ControlRequest::Connect {
@@ -1043,16 +1043,40 @@ mod tests {
         device.lifecycle.control = Some(control);
         let mut payload = vec![0; 11];
         payload[0] = 1;
+        device.io.pending = Some(PendingIo {
+            id: 7,
+            purpose: IoPurpose::ReceiveData(RxPath::Command),
+        });
         assert_eq!(
-            device.consume_receive_data(
-                RxPath::Command,
-                SdioResponse::Data(indication_fifo(SM_CONNECT_IND, &payload)),
-            ),
-            Err(AicError::FirmwareRejected {
+            device.advance(AicInput {
+                now: MonotonicTime::default(),
+                event: Some(AicInputEvent::Sdio(SdioCompletion {
+                    request_id: 7,
+                    result: Ok(SdioResponse::Data(indication_fifo(
+                        SM_CONNECT_IND,
+                        &payload
+                    ))),
+                })),
+            }),
+            AicAction::Event(AicEvent::ControlFailed(AicError::FirmwareRejected {
                 message_id: SM_CONNECT_IND,
                 status: 1
-            })
+            }))
         );
+        assert_eq!(device.state(), AicState::Ready);
+        assert!(device.data.link.peer().is_none());
+        assert!(matches!(
+            device.advance(AicInput {
+                now: MonotonicTime::default(),
+                event: Some(AicInputEvent::Control(ControlRequest::Connect {
+                    ssid: b"network".to_vec(),
+                    pmk: None,
+                    entropy: None,
+                })),
+            }),
+            AicAction::SubmitSdio(_)
+        ));
+        assert_eq!(device.state(), AicState::Ready);
     }
 
     #[test]

@@ -167,6 +167,119 @@ mod tests {
     use crate::rdif::device::WifiChannels;
 
     #[test]
+    fn transient_association_retries_are_delayed_bounded_and_preserve_the_request() {
+        let wifi = WifiChannels::new();
+        let mut requests = wifi.requests_rx;
+        let mut progress = wifi.progress_tx;
+        let mut control = AicWifiControl::new(
+            wifi.requests_tx,
+            wifi.progress_rx,
+            wifi.progress_signal,
+            None,
+            Duration::from_secs(10),
+        );
+        let operation = WifiTransaction::connect_open("network");
+        let rejected = AicError::FirmwareRejected {
+            message_id: crate::lmac::SM_CONNECT_IND,
+            status: 1,
+        };
+        control.start(operation.operation(), 0).unwrap();
+        let request = requests.try_pop().unwrap();
+        let mut now = 1;
+        for _ in 0..2 {
+            progress.try_push(Err(rejected.clone())).unwrap();
+            let WifiControlProgress::RetryAt { deadline_nanos } = control.advance(now).unwrap()
+            else {
+                panic!("association failure must wait before reconnecting");
+            };
+            assert!(deadline_nanos > now);
+            assert_eq!(
+                control.advance(deadline_nanos - 1).unwrap(),
+                WifiControlProgress::RetryAt { deadline_nanos }
+            );
+            assert!(requests.try_pop().is_none());
+            assert!(matches!(
+                control.advance(deadline_nanos).unwrap(),
+                WifiControlProgress::WaitForInterruptUntil {
+                    deadline_nanos: 10_000_000_000,
+                }
+            ));
+            assert_eq!(requests.try_pop(), Some(request.clone()));
+            now = deadline_nanos + 1;
+        }
+        progress.try_push(Err(rejected.clone())).unwrap();
+        let Err(NetError::Other(error)) = control.advance(now) else {
+            panic!("association retry budget must return the final failure");
+        };
+        assert_eq!(error.downcast_ref::<AicError>(), Some(&rejected));
+        assert!(requests.try_pop().is_none());
+
+        control.start(operation.operation(), now).unwrap();
+        requests.try_pop().unwrap();
+        progress
+            .try_push(Ok(WifiControlProgress::Complete))
+            .unwrap();
+        assert_eq!(control.advance(now).unwrap(), WifiControlProgress::Complete);
+    }
+
+    #[test]
+    fn connect_backoff_respects_cancellation_deadline_and_permanent_errors() {
+        let wifi = WifiChannels::new();
+        let mut requests = wifi.requests_rx;
+        let mut progress = wifi.progress_tx;
+        let mut control = AicWifiControl::new(
+            wifi.requests_tx,
+            wifi.progress_rx,
+            wifi.progress_signal,
+            None,
+            Duration::from_secs(1),
+        );
+        let operation = WifiTransaction::connect_open("network");
+        let rejected = AicError::FirmwareRejected {
+            message_id: crate::lmac::SM_CONNECT_IND,
+            status: 1,
+        };
+        control.start(operation.operation(), 0).unwrap();
+        requests.try_pop().unwrap();
+        progress.try_push(Err(rejected.clone())).unwrap();
+        assert!(matches!(
+            control.advance(1),
+            Ok(WifiControlProgress::RetryAt { .. })
+        ));
+        control.cancel().unwrap();
+        // The core already completed the rejected attempt. A Cancel sent now
+        // would target no active operation and turn recovery into a core error.
+        assert!(requests.try_pop().is_none());
+
+        for error in [
+            AicError::WpaMic,
+            AicError::Sdio(SdioFailure::Crc),
+            AicError::FirmwareRejected {
+                message_id: crate::lmac::SM_CONNECT_IND,
+                status: 13,
+            },
+        ] {
+            control.start(operation.operation(), 0).unwrap();
+            requests.try_pop().unwrap();
+            progress.try_push(Err(error.clone())).unwrap();
+            let Err(NetError::Other(actual)) = control.advance(1) else {
+                panic!("non-transient errors must be returned without retrying");
+            };
+            assert_eq!(actual.downcast_ref::<AicError>(), Some(&error));
+            assert!(requests.try_pop().is_none());
+        }
+
+        control.start(operation.operation(), 0).unwrap();
+        requests.try_pop().unwrap();
+        progress.try_push(Err(rejected)).unwrap();
+        assert!(matches!(
+            control.advance(999_999_999),
+            Err(NetError::Other(_))
+        ));
+        assert!(requests.try_pop().is_none());
+    }
+
+    #[test]
     fn control_wait_is_bounded_by_the_injected_monotonic_deadline() {
         let wifi = WifiChannels::new();
         let mut requests = wifi.requests_rx;
