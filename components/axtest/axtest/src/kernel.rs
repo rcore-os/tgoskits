@@ -37,8 +37,10 @@ pub fn run_kernel_tests(config: KernelTestConfig) -> ! {
 
     let summary = init().set_printer(config.printer).run_tests();
     if summary.failed == 0 {
-        dump_coverage();
         axtest_println!("AXTEST_SUITE_OK");
+        // Coverage waits for host extraction and may never return. Publish the
+        // completed suite first; the host requires both suite and profile.
+        dump_coverage();
         (config.shutdown)();
     }
 

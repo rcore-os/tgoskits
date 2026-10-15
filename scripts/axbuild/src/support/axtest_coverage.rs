@@ -139,10 +139,11 @@ fn remove_stale_profraw(path: &Path) -> io::Result<()> {
 /// The capture thread feeds this host-generated marker into the success
 /// verifier after `memsave` completes and asks QEMU to quit through its monitor.
 pub(crate) fn update_success_regex(qemu: &mut QemuConfig) {
-    super::qemu_success::replace_configured_success_regex(
-        qemu,
-        vec![format!("(?m)^{COVERAGE_DONE_MARKER}$")],
-    );
+    let patterns = super::qemu_success::configured_success_regex(qemu)
+        .into_iter()
+        .map(|pattern| format!("(?s:(?:{pattern}).*(?m:^{COVERAGE_DONE_MARKER}$))"))
+        .collect();
+    super::qemu_success::replace_configured_success_regex(qemu, patterns);
     let deferred_fail_regex = format!("(?m)^{DEFERRED_FAIL_MARKER}$");
     qemu.fail_regex
         .retain(|regex| regex != &deferred_fail_regex);
@@ -684,8 +685,8 @@ mod tests {
     use ostool::run::qemu::QemuConfig;
 
     use super::{
-        AxtestCoveragePaths, COVERAGE_DONE_MARKER, COVERAGE_ERROR_REGEX, COVERAGE_FEATURE, Cargo,
-        DEFERRED_FAIL_MARKER, STARRY_COVERAGE_FEATURE, prepare_starry_cargo, update_success_regex,
+        AxtestCoveragePaths, COVERAGE_ERROR_REGEX, COVERAGE_FEATURE, Cargo, DEFERRED_FAIL_MARKER,
+        STARRY_COVERAGE_FEATURE, prepare_starry_cargo, update_success_regex,
     };
 
     #[test]

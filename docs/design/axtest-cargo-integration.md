@@ -136,7 +136,9 @@ workspace QEMU 计划默认不选择 `board_only` target，因为没有任何 QE
 提前结束运行。QEMU 侧该条件成为最后一步 shell 检查的成功条件；板卡侧在没有可用步骤时
 追加一个被动检查步骤，已有被动步骤要求套件标记时在该条件前插入汇总门并去掉其它可选
 分支，避免等待一个只打印一次的标记。`panicked at`、`AXTEST_SUITE_FAIL` 与失败 case 在
-两种 runner 中都传播为失败；覆盖率运行继续以覆盖率最终标记替换同一完成条件。
+两种 runner 中都传播为失败。覆盖率运行保留上述条件，并额外要求宿主成功提取 profile
+后的 `AXTEST_COVERAGE_DONE`；只有 profile 或空 suite 都不能通过。`run_kernel_tests()`
+在进入覆盖率等待钩子前发布套件结果，避免等待导出时丢失已完成的套件结果。
 
 ## 架构矩阵
 
