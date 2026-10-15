@@ -7,13 +7,13 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Keep this as the final field of a prepared handoff so that rollback and
 /// buffer destruction finish before another producer can acquire ownership.
-pub(crate) struct Transaction;
+pub(crate) struct Transaction(());
 impl Transaction {
     pub(crate) fn begin() -> Result<Self, HandoffError> {
         ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| HandoffError::Busy)?;
-        Ok(Self)
+        Ok(Self(()))
     }
 }
 impl Drop for Transaction {
