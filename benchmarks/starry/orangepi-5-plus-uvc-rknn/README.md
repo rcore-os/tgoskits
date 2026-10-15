@@ -12,22 +12,24 @@ It intentionally does not modify `starry-contest/demo/yolov8`. The image runner
 under `rknn-yolov8-image/` is a copied and trimmed version of the RKNN YOLOv8
 demo with a streaming runner added for direct UVC capture.
 
-The board rootfs must contain:
+The benchmark board config runs the image runner from the persistent Linux
+rootfs directory `/guest/npu_demo/ci-v2`, so that directory must contain the
+complete install tree:
 
 - `/usr/bin/uvc-fps`
-- `/rknn_yolov8_image/rknn_yolov8_image`
-- `/rknn_yolov8_image/rknn_yolov8_stream`
-- `/rknn_yolov8_image/rknn_yolov8_bench`
-- `/rknn_yolov8_image/lib/librknnrt.so`
-- `/rknn_yolov8_image/lib/librga.so`
-- `/rknn_yolov8_image/model/yolov8.rknn`
-- `/rknn_yolov8_image/model/coco_80_labels_list.txt`
+- `/guest/npu_demo/ci-v2/rknn_yolov8_image`
+- `/guest/npu_demo/ci-v2/rknn_yolov8_stream`
+- `/guest/npu_demo/ci-v2/rknn_yolov8_bench`
+- `/guest/npu_demo/ci-v2/lib/librknnrt.so`
+- `/guest/npu_demo/ci-v2/lib/librga.so`
+- `/guest/npu_demo/ci-v2/model/yolov8.rknn`
+- `/guest/npu_demo/ci-v2/model/coco_80_labels_list.txt`
 
 The fixed-image benchmark board config also expects a validation asset set under
-`/rknn_yolov8_image/validation/`:
+`/guest/npu_demo/ci-v2/validation/`:
 
 - `images.txt`: list of the three validation image paths, relative to
-  `/rknn_yolov8_image`;
+  `/guest/npu_demo/ci-v2`;
 - `expected.txt`: committed source asset with the expected detections for those
   images;
 - `tennis-ball-close.jpg`;
@@ -67,6 +69,19 @@ executables, wrapper and runtime libraries unchanged so pre-merge jobs continue
 to work. Do not switch a shared symlink. Update all four `OrangePi-5-Plus`
 boards on the CI server before merging the new path. The historical
 `rknn_yolov8_demo`/`yolov8.sh` pair is not used by this configuration.
+The benchmark board config reads that tree in place from
+`/guest/npu_demo/ci-v2`, so the complete matching install tree must be
+predeployed there: `rknn_yolov8_image`, `rknn_yolov8_stream` and
+`rknn_yolov8_bench`, the runtime libraries under `lib/`, the model and labels
+under `model/`, and the validation images, `images.txt`, `expected.txt` and the
+expected assets under `validation/`. Provision all four `OrangePi-5-Plus` CI
+boards with the same directory before enabling this benchmark so any board can
+run it. `init.sh` selects the image tree in a fixed order: an explicit
+`UVC_RKNN_IMAGE_DIR` is used as given, otherwise the case's session-file deploy
+archive URL is downloaded, and only when that download fails does it fall back
+to the persistent Linux rootfs above. The board network is not guaranteed while
+the download retries run, so the predeployed tree must still be complete and
+rootfs provisioning cannot be skipped.
 The batch runner requires at least one image, stops on an image/inference error,
 and prints detection summaries and `UVC_RKNN_IMAGE_PASS images=3` only after all
 three inferences and model cleanup succeed. A successful inference with no
@@ -95,6 +110,11 @@ ssh orangepi@${BOARD_IP} '
   sync
 '
 ```
+
+The rsync/ssh flow above and the Linux-side commands below are the manual
+deployment into the legacy `/rknn_yolov8_image` tree. The StarryOS benchmark
+board config does not use that path; it reads `/guest/npu_demo/ci-v2` as
+described above.
 
 Linux-side finite smoke test on the board:
 

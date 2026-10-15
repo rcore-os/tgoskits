@@ -17,7 +17,7 @@ use crate::{
     context::{
         ResolvedStarryRequest, STARRY_PACKAGE, WorkspaceContext, starry_arch_for_target_checked,
     },
-    support::process::ProcessExt,
+    support::process::{ProcessExt, find_optional_host_binary},
 };
 
 const STARRY_MMU_FEATURE: &str = "ax-std/paging";
@@ -347,6 +347,10 @@ fn generate_uimage_from_its(
     cleanup?;
     stage.done();
     Ok(())
+}
+
+fn command_available(name: &str) -> bool {
+    find_optional_host_binary(name).is_some()
 }
 
 fn refresh_bin(kernel_elf: &Path, bin: &Path) -> anyhow::Result<()> {
