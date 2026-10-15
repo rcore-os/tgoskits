@@ -1,0 +1,41 @@
+# Single passthrough Linux guest for the OrangePi-5-Plus board checks.
+#
+# The guest kernel and initramfs live on the board rootfs under /guest/axvisor/,
+# a namespace this app owns, and are put there by hand. This checkout neither
+# builds nor installs them. See ../README.md for the pre-run verification
+# commands.
+
+[base]
+id = 1
+name = "linux"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+[kernel]
+entry_point = 0x2_4008_0000
+kernel_load_addr = 0x2_4008_0000
+# Guest kernel on the AxVisor host filesystem; the path is maintained manually.
+# The other OrangePi-5-Plus cases read /guest/linux/ instead; this app keeps its
+# own copy under /guest/axvisor/ so it does not share assets with them.
+kernel_path = "/guest/axvisor/linux/orangepi-5-plus-6.1.99"
+dtb_load_addr = 0x2_4000_0000
+ramdisk_path = "/guest/axvisor/linux/initramfs.cpio"
+ramdisk_load_addr = 0xc000_0000
+# The root device matches the other OrangePi-5-Plus Linux guests. Boards whose
+# Linux root is /dev/mmcblk1p2 (the single-client USB robot board) need that
+# device here instead, as in
+# apps/axvisor/normal/board-orangepi-5-plus/robot-real-linux/linux-smp1-emmc.toml.
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
+memory_regions = [
+  [0xb000_0000, 0x1000_0000, 0x7, 2],
+  [0xc000_0000, 0x3000_0000, 0x7, 2],
+  [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+[devices]
+# Empty lists pass the host devices through, which is what puts the RK3588 NPU
+# in front of the guest. This is not an NPU-only allowlist, and it is not the
+# minimal device set either.
+passthrough = []
+disabled = []
