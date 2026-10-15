@@ -227,6 +227,10 @@ runner = "ubuntu-axvisor-lvz"
 cache_key = ""
 timeout_minutes = 90
 command = '''
+if ! command -v mmd >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y --no-install-recommends mtools
+fi
 python3 bootloader/axloader/scripts/loong-qemu-smoke.py
 '''
 
