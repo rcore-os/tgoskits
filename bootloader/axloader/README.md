@@ -223,7 +223,8 @@ python3 bootloader/axloader/scripts/loong-qemu-smoke.py --output-dir /tmp/loong-
 
 该脚本先通过 `cargo xtask arceos qemu` 运行只启用 `boot-resources` 的独立资源应用，
 检查对齐、互不重叠、释放回退和容量拒绝。随后构建 loader、独立的
-`arceos-helloworld` EFI ELF 和打包的 `test-suit/host-initramfs`，在私有 FAT、QMP
+`arceos-helloworld` EFI ELF 和打包的 `test-suit/host-initramfs`。loader 构建配置声明
+`to_bin = true`，确保 `arceos build` 在准备 FAT 前生成 EFI `.bin`。在私有 FAT、QMP
 socket 与空闲宿主端口中调用 `loong-http-smoke.py`。写满场景验证合法上传返回
 `409 ota_storage_failed` 且状态不变；正常场景验证 manifest 幂等、串口门禁、坏
 ELF/OTA 拒绝、真实 trial、QMP 复位后的 rollback、旧确认拒绝、再次 trial/confirm。
