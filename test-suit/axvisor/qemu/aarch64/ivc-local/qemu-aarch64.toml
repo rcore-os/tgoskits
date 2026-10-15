@@ -22,6 +22,7 @@ fail_regex = [
     "(?i)unhandled page fault",
     "(?i)page fault",
     "ivc publish failed",
+    "VM\\[\\d+\\] boot failed",
     "(?m)^linux ivc demo failed\\s*$",
 ]
 to_bin = true
