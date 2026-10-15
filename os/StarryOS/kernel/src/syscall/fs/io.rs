@@ -532,6 +532,25 @@ pub fn sys_fadvise64(
     Ok(0)
 }
 
+/// Provide Linux's advisory `readahead(2)` contract for regular files.
+///
+/// The page cache already performs demand paging and its own bounded
+/// readahead, so there is no separate synchronous operation to perform here.
+/// Validating the descriptor while treating the hint as a no-op prevents
+/// applications such as Firefox from repeatedly falling through the generic
+/// ENOSYS path.
+pub fn sys_readahead(fd: c_int, offset: i64, count: usize) -> StarryResult<isize> {
+    debug!("sys_readahead <= {fd}, offset={offset}, count={count}");
+    let file = get_file_like(fd)?;
+    if file.downcast_ref::<File>().is_none() {
+        return Err(StarryError::from(Errno::EINVAL));
+    }
+    if offset < 0 {
+        return Err(StarryError::from(Errno::EINVAL));
+    }
+    Ok(0)
+}
+
 pub fn sys_pread64(
     current: &UserTaskRef,
     fd: c_int,

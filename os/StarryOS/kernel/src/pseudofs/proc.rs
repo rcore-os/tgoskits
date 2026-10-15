@@ -1718,19 +1718,24 @@ impl SimpleDirOps for ThreadDir {
                             cred.euid = orig;
                             cred.suid = orig;
                             cred.fsuid = orig;
-                            if orig == 0 || was_namespace_root {
-                                // A task that was root in the newly-created
-                                // user namespace keeps that namespace's
-                                // capabilities after its map is installed.
-                                // The simplified credential model stores the
-                                // mapped numeric ID directly, so retain the
-                                // capability sets here to preserve the
-                                // namespace-root semantics needed by mount
-                                // and UTS operations during sandbox setup.
+                            if orig == 0 {
                                 let mask = Cred::cap_mask();
                                 cred.cap_permitted = mask;
                                 cred.cap_effective = mask;
                                 cred.cap_bounding = mask;
+                            } else if was_namespace_root {
+                                // Keep only the capabilities required to
+                                // finish sandbox namespace setup.  The
+                                // simplified credential model stores the
+                                // mapped numeric ID directly and does not yet
+                                // scope capabilities to UserNamespace, so a
+                                // non-zero mapping must not retain the full
+                                // host capability mask.
+                                let mask = Cred::user_namespace_setup_cap_mask();
+                                cred.cap_permitted = mask;
+                                cred.cap_effective = mask;
+                                cred.cap_bounding &= mask;
+                                cred.cap_ambient = 0;
                             } else {
                                 cred.cap_permitted = 0;
                                 cred.cap_effective = 0;
