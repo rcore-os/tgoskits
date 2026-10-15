@@ -3,16 +3,19 @@
 extern crate alloc;
 
 use alloc::{rc::Rc, string::String};
-use core::{cell::RefCell, ptr::NonNull};
+use core::cell::RefCell;
 
 pub use axloader::boot_job::FileKind;
 use axloader::{boot_job::BootJobStore, target::X86_64};
 use httpboot_protocol::{
     DeviceBootJob, LoaderHardwareInfo, MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress,
 };
-use uefi::boot;
+use someboot::{
+    boot_resources::PhysicalRange,
+    handoff::{HandoffSpec, PreparedHandoff},
+};
 
-use super::{elf_loader, entry, payload};
+use super::elf_loader;
 
 pub struct BootServer {
     epoch: String,
@@ -25,8 +28,7 @@ pub struct BootServer {
 
 pub struct BootExecution {
     pub elf: elf_loader::LoadedElf,
-    pub payload: payload::PublishedPayload,
-    pub load_options: entry::PreparedLoadOptions,
+    pub handoff: PreparedHandoff,
 }
 
 impl BootServer {
@@ -124,40 +126,21 @@ impl BootServer {
                 return Err("kernel_load_failed");
             }
         };
-        let load_options = entry::PreparedLoadOptions::new(job.manifest.cmdline.as_deref());
-        let payload = payload::prepare_uploaded(job.initramfs.as_deref())
-            .and_then(payload::PreparedPayload::publish);
-        let load_options = match load_options {
-            Ok(load_options) => load_options,
+        let handoff = match PreparedHandoff::prepare(
+            HandoffSpec {
+                image: PhysicalRange::new(elf.load_addr, elf.load_end - elf.load_addr),
+                cmdline: job.manifest.cmdline.as_deref(),
+                initramfs: job.initramfs.as_deref(),
+                metadata: None,
+            },
+            None,
+        ) {
+            Ok(handoff) => handoff,
             Err(_) => {
-                free_loaded_elf(&elf);
                 self.jobs.clear();
                 return Err("host_payload_failed");
             }
         };
-        let payload = match payload {
-            Ok(payload) => payload,
-            Err(_) => {
-                free_loaded_elf(&elf);
-                self.jobs.clear();
-                return Err("host_payload_failed");
-            }
-        };
-        Ok(BootExecution {
-            elf,
-            payload,
-            load_options,
-        })
+        Ok(BootExecution { elf, handoff })
     }
-}
-
-pub(super) fn free_loaded_elf(elf: &elf_loader::LoadedElf) {
-    // SAFETY: this ELF region has not been handed to the kernel.
-    unsafe {
-        boot::free_pages(
-            NonNull::new(elf.load_addr as *mut u8).expect("allocated ELF address"),
-            elf.page_count,
-        )
-    }
-    .expect("failed to free ELF pages");
 }

@@ -209,7 +209,7 @@ cases = ["smoke-vmx", "direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx", "pc
 
 [[check]]
 id = "test-axloader-http-smoke"
-impact_packages = ["axloader"]
+impact_packages = ["axloader", "someboot"]
 name = "UEFI x86_64 · AxLoader HTTP boot"
 runner = "kvm-intel"
 # Cold runners may spend most of the original 45-minute budget on checkout and builds.
@@ -221,84 +221,13 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 
 [[check]]
 id = "test-axloader-loongarch64-efi"
-impact_packages = ["axloader"]
+impact_packages = ["axloader", "someboot"]
 name = "UEFI loongarch64 · AxLoader HTTP boot"
 runner = "ubuntu-axvisor-lvz"
 cache_key = ""
 timeout_minutes = 90
 command = '''
-set -euo pipefail
-cargo test -p axloader --lib
-cargo xtask image pack-initramfs test-suit/host-initramfs \
-  target/axbuild/host-initramfs/loong-host.cpio
-cargo xtask arceos build \
-  --package arceos-helloworld \
-  --config bootloader/axloader/build-loongarch64-helloworld-efi.toml
-cargo xtask arceos build \
-  --package axloader \
-  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml
-python3 - <<'PY'
-from pathlib import Path
-
-Path("target/axbuild/rootfs/arceos-loongarch64-fat32.img").unlink(missing_ok=True)
-PY
-qemu_log="$(mktemp)"
-cargo xtask arceos qemu \
-  --package axloader \
-  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml \
-  --qemu-config bootloader/axloader/qemu-loongarch64-http.toml \
-  >"$qemu_log" 2>&1 &
-qemu_pid=$!
-cleanup_qemu() {
-  kill "$qemu_pid" 2>/dev/null || true
-  wait "$qemu_pid" 2>/dev/null || true
-}
-on_exit() {
-  status=$?
-  cleanup_qemu
-  if [ "$status" -ne 0 ]; then
-    echo "==> LoongArch axloader QEMU log tail"
-    tail -200 "$qemu_log" || true
-  fi
-  exit "$status"
-}
-trap on_exit EXIT
-python3 bootloader/axloader/scripts/loong-http-smoke.py \
-  --image target/loongarch64-unknown-linux-musl/release/axloader.bin \
-  --elf-image target/loongarch64-unknown-linux-musl/release/arceos-helloworld \
-  --initramfs target/axbuild/host-initramfs/loong-host.cpio
-python3 - "$qemu_log" <<'PY'
-from pathlib import Path
-import re
-import sys
-import time
-
-path = Path(sys.argv[1])
-deadline = time.monotonic() + 90
-while time.monotonic() < deadline:
-    log = path.read_text(errors="replace")
-    required = [
-        "elf_loaded: load=0x200000",
-        "ready_to_handoff",
-        "HOST_CMDLINE: axloader-positive=1",
-        "HOST_INITRAMFS_PASSED",
-        "Hello, world!",
-    ]
-    if all(
-        marker in log for marker in required
-    ):
-        break
-    time.sleep(1)
-else:
-    raise SystemExit(
-        "LoongArch valid ELF handoff markers missing:\n"
-        f"{log[-8000:]}"
-    )
-if re.search(r"\bpanic(?:ked)?\b", log, re.IGNORECASE):
-    raise SystemExit(f"LoongArch axloader QEMU panic detected:\n{log[-4000:]}")
-PY
-cleanup_qemu
-trap - EXIT
+python3 bootloader/axloader/scripts/loong-qemu-smoke.py
 '''
 
 [[check]]

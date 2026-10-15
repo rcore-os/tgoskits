@@ -22,7 +22,7 @@ uefi-launcher = []
 arceos = ["dep:ax-std", "dep:ax-net", "ax-std/arceos", "ax-std/net"]
 arceos-efi = [
     "arceos",
-    "ax-std/efi-loader",
+    "ax-std/efi-handoff",
     "ax-std/fs",
     "ax-std/fatfs",
     "ax-std/nvme",
@@ -42,11 +42,12 @@ object = "0.38"
 [target.'cfg(target_os = "uefi")'.dependencies]
 uefi = { workspace = true, features = ["alloc", "global_allocator"] }
 uefi-raw.workspace = true
+someboot = { workspace = true, features = ["efi-handoff"] }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
 ax-net = { workspace = true, optional = true }
-someboot = { workspace = true, optional = true, features = ["efi-loader"] }
+someboot = { workspace = true, optional = true, features = ["efi-handoff"] }
 uefi = { workspace = true, features = ["alloc"] }
 
 [[package.metadata.clippy.configurations]]

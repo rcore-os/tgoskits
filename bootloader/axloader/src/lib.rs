@@ -10,7 +10,6 @@ pub mod efi_image;
 pub mod http_control;
 pub mod integrity;
 pub mod ota;
-pub mod platform;
 pub mod serial_path;
 pub mod smbios;
 pub mod target;

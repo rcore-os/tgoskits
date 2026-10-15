@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import socket
+import struct
 import time
 from pathlib import Path
 
@@ -65,6 +66,41 @@ def expect(actual, expected, description, value=None):
         raise RuntimeError(f"{description}: expected {expected}, got {actual}: {value!r}")
 
 
+def reset_qemu(path):
+    """Reset the real VM without invoking the loader's OTA commit path."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.settimeout(10)
+        stream.connect(str(path))
+        with stream.makefile("rwb", buffering=0) as channel:
+            greeting = json.loads(channel.readline(65536))
+            if "QMP" not in greeting:
+                raise RuntimeError(f"invalid QMP greeting: {greeting!r}")
+            for command in ("qmp_capabilities", "system_reset"):
+                channel.write(json.dumps({"execute": command, "id": command}).encode() + b"\n")
+                while True:
+                    response = json.loads(channel.readline(65536))
+                    if response.get("id") == command:
+                        if "error" in response:
+                            raise RuntimeError(f"QMP {command}: {response['error']!r}")
+                        break
+
+
+def stage_trial(args, epoch, image, digest):
+    response = request(
+        args.host, args.port, "PUT", "/api/v1/ota/image", image,
+        {"X-Boot-Epoch": epoch, "X-Image-Sha256": digest},
+        allow_empty=True,
+    )
+    if response[0] not in (0, 202):
+        raise RuntimeError(f"valid OTA image staged: expected 202 or reset EOF, got {response}")
+    update_id = response[1].get("update_id") if response[1] else None
+    return wait_status(
+        args.host, args.port,
+        lambda value: value.get("ota", {}).get("trial")
+        and (update_id is None or value.get("ota", {}).get("pending_update_id") == update_id),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -72,6 +108,9 @@ def main():
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--elf-image", type=Path, required=True)
     parser.add_argument("--initramfs", type=Path, required=True)
+    parser.add_argument("--qmp-socket", type=Path, required=True)
+    parser.add_argument("--storage-full", action="store_true",
+                        help="expect a valid upload to fail on a pre-filled FAT volume")
     args = parser.parse_args()
 
     # Build both images before starting QEMU. This timeout covers firmware and
@@ -167,27 +206,48 @@ def main():
     )
     expect(response[0], 422, "invalid OTA image rejected", response[1])
 
-    image = args.image.read_bytes()
+    image = bytearray(args.image.read_bytes())
+    # Give the trial a distinct file identity without changing executable code.
+    # Otherwise identical A/B images legitimately continue in the firmware-loaded
+    # copy and the test would never exercise the inherited slot entry.
+    pe_offset = struct.unpack_from("<I", image, 0x3c)[0]
+    struct.pack_into("<I", image, pe_offset + 8, 1)
+    image = bytes(image)
     image_digest = hashlib.sha256(image).hexdigest()
+    if args.storage_full:
+        response = request(
+            args.host, args.port, "PUT", "/api/v1/ota/image", image,
+            {"X-Boot-Epoch": epoch, "X-Image-Sha256": image_digest},
+        )
+        expect(response[0], 409, "full FAT storage failure", response[1])
+        expect(response[1], {"error": "ota_storage_failed"}, "storage failure reason")
+        unchanged = wait_status(args.host, args.port, lambda value: value["boot_epoch"] == epoch)
+        expect(unchanged["ota"], status["ota"], "failed upload preserves OTA state")
+        print("loong axloader full FAT: storage failure is 409 and stable state is preserved")
+        return
+
+    trial = stage_trial(args, epoch, image, image_digest)
+    failed_update_id = trial["ota"]["pending_update_id"]
+    trial_epoch = trial["boot_epoch"]
+    reset_qemu(args.qmp_socket)
+    rolled_back = wait_status(
+        args.host, args.port,
+        lambda value: value["boot_epoch"] != trial_epoch
+        and not value.get("ota", {}).get("trial")
+        and value.get("ota", {}).get("pending_update_id") is None
+        and value.get("ota", {}).get("last_outcome") == "rolled_back",
+        timeout=300,
+    )
+    expect(rolled_back["ota"]["running_sha256"], status["ota"]["active_sha256"],
+           "unconfirmed trial returns to stable slot")
     response = request(
-        args.host,
-        args.port,
-        "PUT",
-        "/api/v1/ota/image",
-        image,
-        {"X-Boot-Epoch": epoch, "X-Image-Sha256": image_digest},
-        allow_empty=True,
+        args.host, args.port, "POST", "/api/v1/ota/confirm",
+        json.dumps({"update_id": failed_update_id}, separators=(",", ":")).encode(),
+        {"X-Boot-Epoch": rolled_back["boot_epoch"], "Content-Type": "application/json"},
     )
-    if response[0] not in (0, 202):
-        raise RuntimeError(f"valid OTA image staged: expected 202 or reset EOF, got {response}")
-    update_id = response[1].get("update_id") if response[1] else None
-    trial = wait_status(
-        args.host,
-        args.port,
-        lambda value: value.get("ota", {}).get("trial")
-        and (update_id is None or value.get("ota", {}).get("pending_update_id") == update_id),
-    )
-    update_id = update_id or trial["ota"]["pending_update_id"]
+    expect(response[0], 409, "rolled-back trial cannot be confirmed", response[1])
+    trial = stage_trial(args, rolled_back["boot_epoch"], image, image_digest)
+    update_id = trial["ota"]["pending_update_id"]
     response = request(
         args.host,
         args.port,
@@ -284,7 +344,7 @@ def main():
     expect(response[0], 202, "valid Loong ELF handoff accepted", response[1])
     print(
         "loong axloader HTTP/OTA/ELF smoke: status, idempotent boot, serial gate, "
-        "ELF rejection, valid ELF handoff, stage, reset, confirm passed"
+        "ELF rejection, valid ELF handoff, stage, reset, rollback, confirm passed"
     )
 
 

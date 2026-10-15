@@ -15,3 +15,5 @@ mod runtime;
 pub use disk::{InactiveWriter, MAX_IMAGE_BYTES, OtaDisk, load_slot};
 #[cfg(target_os = "uefi")]
 pub use runtime::OtaController;
+
+pub mod handoff;

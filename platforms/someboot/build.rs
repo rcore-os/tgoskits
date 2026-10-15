@@ -19,6 +19,15 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(uspace)");
     println!("cargo::rustc-check-cfg=cfg(hv)");
 
+    // Native UEFI applications consume library capabilities only. Target mode,
+    // unlike additive Cargo features, cannot enable a second kernel entry.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("uefi") {
+        if std::env::var_os("CARGO_FEATURE_EFI").is_some() {
+            println!("cargo::rustc-cfg=efi");
+        }
+        return;
+    }
+
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     println!("cargo:rustc-link-search={}", out_dir.display());
 
