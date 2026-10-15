@@ -93,17 +93,23 @@ fn build_aarch64_efi_archive(target_directory: &Path) -> PathBuf {
         "compile someboot for AArch64 EFI",
     );
 
-    let dependency_directory = target_directory.join(TARGET).join("debug").join("deps");
-    let mut archives = fs::read_dir(&dependency_directory)
-        .expect("AArch64 dependency directory must be readable")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
+    let mut directories = vec![target_directory.to_path_buf()];
+    let mut archives = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).expect("read isolated AArch64 build directory") {
+            let entry = entry.expect("read an AArch64 archive directory entry");
+            let path = entry.path();
+            if entry.file_type().expect("read archive file type").is_dir() {
+                directories.push(path);
+            } else if path
+                .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with("libsomeboot-") && name.ends_with(".rlib"))
-        })
-        .collect::<Vec<_>>();
+            {
+                archives.push(path);
+            }
+        }
+    }
     assert_eq!(
         archives.len(),
         1,

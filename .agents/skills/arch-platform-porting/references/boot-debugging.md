@@ -367,6 +367,19 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 
 #### LoongArch ArceOS EFI
 
+- `someboot::boot_payload` 的通用 initramfs 发布和一次性领取保留在
+  `platforms/someboot/src/boot_payload/mod.rs`；LoongArch v2 ABI、校验和继承内存图位于
+  同目录的 `loongarch64.rs`，模块仅由 `all(efi, target_arch = "loongarch64")` 装入。
+  普通 EFI 目标始终可以消费继承表，不能把这条路径绑到 `efi-loader`。
+- `someboot::efi_stub` 在单一 `cfg_select!` 装配私有 `platform`：LoongArch 使用
+  `efi_stub/loongarch64/mod.rs`，x86_64 和 AArch64 共用 `efi_stub/firmware.rs`。
+  共享模块保留入口、固件读取和退出启动服务的编排；LoongArch 模块负责表存储指针
+  归一化、继承交接、运行时表地址和 reset，固件函数指针保持原值。
+  `mem::early_init` 经 `efi_stub::init_boot_memory_map` 选择继承内存图或 FDT 初始化。
+  池分配、payload 构造与发布、槽位及 `loader_*` 位于
+  `efi_stub/loongarch64/loader.rs`，仅在 LoongArch 父模块内按 `efi-loader` 启用；
+  软件包根通过精确重导出保留原接口。构建仍遵循 `build.rs` 派生的 `cfg(efi)`，
+  不能用 `feature = "efi"` 替换该边界。
 - LoongArch axstd 前端只接受 little-endian ELF64、`e_machine = EM_LOONGARCH`（258）和
   `efi_pe_entry` 符号；EFI PE 入口固定为 `efi_pe_entry(image_handle, system_table)`。
   目标镜像装入固定的 `0x200000` image pool，段之间的空洞先清零并在交接前刷新
@@ -379,10 +392,14 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   不再次清零或重新分配启动池，也不重复调用 `ExitBootServices`；只有首个 loader
   仍在固件应用阶段获取内存图并在关闭网络服务后退出启动服务。进入继承路径前必须
   校验 v2 magic、版本、大小、池范围、槽位和目标镜像不重叠。
-- axstd 控制面没有可绑定的 UART，QEMU/服务端测试必须显式使用 `direct` serial
-  continue。启动阶段应观察 `network_ready: arch=loongarch64`、`ready_to_handoff`；
+- axstd 的 UART 身份来自已激活的 runtime console；无活动 UART 或无需串口隧道的
+  QEMU/服务端测试显式使用 `direct` serial continue。启动阶段应观察
+  `network_ready: arch=loongarch64`、`ready_to_handoff`；
   装载或 EFI 跳转失败观察 `jump_error`，A/B 槽校验、提交或回滚失败观察
   `ota_slot_failed`。
+- `axstd_loader::run()` 仅在启动及每次连接处理后发送 UDP 公告，阻塞等待连接期间
+  不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或启动广播丢失时，
+  使用已知设备 IP 直接访问 HTTP 接口。
 - LoongArch 没有可信 UEFI/FDT 启动熵时，loader 先把持久化 OTA 代次提交到
   `STATE0.BIN`/`STATE1.BIN`，再用代次和当前镜像摘要派生 `boot_epoch`/`serial_id`；
   继承 EFI 入口复用父 loader 已提交的代次。不能退回到进程计数器、秒级时间或栈地址。

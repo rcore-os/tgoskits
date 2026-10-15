@@ -9,8 +9,6 @@ use core::{
 };
 
 pub use uefi::Status;
-#[cfg(target_arch = "loongarch64")]
-pub use uefi::runtime::ResetType;
 use uefi::{
     Guid, Result,
     boot::{self, AllocateType, MemoryDescriptor, MemoryType},
@@ -37,6 +35,24 @@ use crate::{
     mem::{__io, __va},
 };
 
+cfg_select! {
+    target_arch = "loongarch64" => {
+        mod loongarch64;
+        use loongarch64 as platform;
+        #[cfg(feature = "efi-loader")]
+        pub use loongarch64::loader::{
+            inherited_loader_slot, loader_allocate_image, loader_allocate_slot, loader_efi_context,
+            loader_flush_icache, loader_image_range, loader_release_image, loader_release_slot,
+            loader_set_payload_with_image, loader_set_slot,
+        };
+        pub use loongarch64::{ResetType, reset};
+    }
+    any(target_arch = "x86_64", target_arch = "aarch64") => {
+        mod firmware;
+        use firmware as platform;
+    }
+}
+
 const EFI_IMAGE_HANDLE_UNSET: usize = usize::MAX;
 const EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE: usize = 128 * 1024;
 const EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY: usize = 1024;
@@ -46,17 +62,6 @@ const LINUX_EFI_INITRD_MEDIA_GUID: Guid = guid!("5568e427-68fc-4f3d-ac74-ca55523
 const LINUX_INITRD_DEVICE_PATH_SIZE: usize = 24;
 const MAX_UEFI_INITRAMFS_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_CMDLINE: usize = 4095;
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-const LOADER_IMAGE_POOL_PAGES: usize =
-    (crate::boot_payload::LOONG_IMAGE_POOL_BYTES as usize) / 4096;
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-const LOADER_ARCHIVE_POOL_PAGES: usize =
-    (crate::boot_payload::LOONG_ARCHIVE_POOL_BYTES as usize) / 4096;
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-const LOADER_SLOT_POOL_PAGES: usize = (crate::boot_payload::LOONG_SLOT_POOL_BYTES as usize) / 4096;
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-const LOADER_IMAGE_POOL_BASE: u64 = 0x20_0000;
 
 const _: () =
     assert!(size_of::<LoadFile2>() == size_of::<uefi_raw::protocol::media::LoadFile2Protocol>());
@@ -72,43 +77,11 @@ static mut EXIT_BOOT_MEMORY_MAP_DESCRIPTORS: [MaybeUninit<MemoryDescriptor>;
     EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY] =
     [const { MaybeUninit::uninit() }; EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY];
 static EFI_IMAGE_HANDLE: AtomicUsize = AtomicUsize::new(EFI_IMAGE_HANDLE_UNSET);
-static INHERITED_EFI_HANDOFF: AtomicBool = AtomicBool::new(false);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_IMAGE_POOL: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_ARCHIVE_POOL: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_SLOT_POOL: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_IMAGE_CURSOR: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_SLOT_CURSOR: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_PAYLOAD_TABLE: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_IMAGE_START: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_IMAGE_END: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_BASE_IMAGE_START: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static LOADER_BASE_IMAGE_END: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-static EFI_SYSTEM_TABLE: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn setup_service(system_table: *const ::core::ffi::c_void) {
-    let system_table = normalize_system_table(system_table);
+    let system_table = platform::normalize_system_table(system_table);
     unsafe { table::set_system_table(system_table.cast()) };
-    let inherited_handoff = inherited_handoff_available();
-    #[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-    {
-        EFI_SYSTEM_TABLE.store(system_table as usize, Ordering::Release);
-        if inherited_handoff {
-            restore_inherited_loader_context();
-        } else {
-            initialize_loader_pool();
-        }
-    }
+    let inherited_handoff = platform::prepare_service_context(system_table);
     if let Some(image_handle) = saved_image_handle() {
         unsafe { boot::set_image_handle(image_handle) };
     }
@@ -118,450 +91,6 @@ pub(crate) fn setup_service(system_table: *const ::core::ffi::c_void) {
     }
     find_fdt();
     find_acpi_rsdp();
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-fn initialize_loader_pool() {
-    if LOADER_IMAGE_POOL.load(Ordering::Acquire) != 0 {
-        return;
-    }
-    let image_handle = boot::image_handle();
-    let loaded_image = boot::open_protocol_exclusive::<LoadedImage>(image_handle)
-        .expect("failed to inspect the LoongArch loader image");
-    let (image_base, image_size) = loaded_image.info();
-    let image_start = physical_alias(image_base as usize)
-        .expect("LoongArch loader image address is not a physical alias");
-    let image_size = usize::try_from(image_size).expect("LoongArch loader image size overflows");
-    let image_end = image_start
-        .checked_add(image_size)
-        .expect("LoongArch loader image range overflows");
-    drop(loaded_image);
-    let image_pool_bytes = LOADER_IMAGE_POOL_PAGES
-        .checked_mul(4096)
-        .expect("LoongArch EFI image pool size overflows");
-    let image_pool_start = usize::try_from(LOADER_IMAGE_POOL_BASE)
-        .expect("LoongArch EFI image pool base overflows usize");
-    let image_pool_end = image_pool_start
-        .checked_add(image_pool_bytes)
-        .expect("LoongArch EFI image pool range overflows");
-    if image_start < image_pool_end && image_pool_start < image_end {
-        panic!("LoongArch EFI image pool overlaps the running loader");
-    }
-    let image_pages = boot::allocate_pages(
-        AllocateType::Address(LOADER_IMAGE_POOL_BASE),
-        MemoryType::LOADER_DATA,
-        LOADER_IMAGE_POOL_PAGES,
-    )
-    .expect("failed to reserve the LoongArch EFI image pool");
-    let archive = boot::allocate_pages(
-        AllocateType::AnyPages,
-        MemoryType::LOADER_DATA,
-        LOADER_ARCHIVE_POOL_PAGES,
-    )
-    .expect("failed to reserve the LoongArch EFI archive pool");
-    let slot = boot::allocate_pages(
-        AllocateType::AnyPages,
-        MemoryType::LOADER_DATA,
-        LOADER_SLOT_POOL_PAGES,
-    )
-    .expect("failed to reserve the LoongArch EFI slot pool");
-    let table = boot::allocate_pool(
-        MemoryType::RUNTIME_SERVICES_DATA,
-        size_of::<crate::boot_payload::LoongBootPayload>(),
-    )
-    .expect("failed to reserve the LoongArch EFI payload table");
-    let image_pages_start = physical_alias(image_pages.as_ptr() as usize)
-        .expect("LoongArch EFI image pool address is not a physical alias");
-    let archive_start = physical_alias(archive.as_ptr() as usize)
-        .expect("LoongArch EFI archive pool address is not a physical alias");
-    let slot_start = physical_alias(slot.as_ptr() as usize)
-        .expect("LoongArch EFI slot pool address is not a physical alias");
-    let table_start = physical_alias(table.as_ptr() as usize)
-        .expect("LoongArch EFI payload table address is not a physical alias");
-    let overlaps_image = |start: usize, pages: usize| {
-        let end = start
-            .checked_add(pages.checked_mul(4096).expect("EFI pool size overflows"))
-            .expect("EFI pool range overflows");
-        start < image_end && image_start < end
-    };
-    if overlaps_image(archive_start, LOADER_ARCHIVE_POOL_PAGES)
-        || overlaps_image(slot_start, LOADER_SLOT_POOL_PAGES)
-    {
-        panic!("LoongArch EFI pool overlaps the running loader");
-    }
-    // SAFETY: all ranges are owned by this loader and remain reserved until reset.
-    unsafe {
-        let table_virt = if Arch::is_mmu_enabled() {
-            Arch::_va(table_start)
-        } else {
-            table_start as *mut u8
-        };
-        table_virt
-            .cast::<crate::boot_payload::LoongBootPayload>()
-            .write(crate::boot_payload::LoongBootPayload::empty());
-        boot::install_configuration_table(
-            &crate::boot_payload::LOONG_BOOT_PAYLOAD_GUID,
-            table_start as *mut c_void,
-        )
-        .expect("failed to install the LoongArch EFI payload table");
-    }
-    LOADER_IMAGE_POOL.store(image_pages_start, Ordering::Release);
-    LOADER_ARCHIVE_POOL.store(archive_start, Ordering::Release);
-    LOADER_SLOT_POOL.store(slot_start, Ordering::Release);
-    LOADER_IMAGE_CURSOR.store(image_pages_start, Ordering::Release);
-    LOADER_SLOT_CURSOR.store(slot_start, Ordering::Release);
-    LOADER_PAYLOAD_TABLE.store(table_start, Ordering::Release);
-    LOADER_IMAGE_START.store(image_start, Ordering::Release);
-    LOADER_IMAGE_END.store(image_end, Ordering::Release);
-    LOADER_BASE_IMAGE_START.store(image_start, Ordering::Release);
-    LOADER_BASE_IMAGE_END.store(image_end, Ordering::Release);
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-fn restore_inherited_loader_context() {
-    let payload = crate::boot_payload::inherited_payload()
-        .expect("missing inherited LoongArch loader payload");
-    payload
-        .validate()
-        .expect("invalid inherited LoongArch loader context");
-    let physical_table = if Arch::is_mmu_enabled() {
-        Arch::virt_to_phys(payload as *const _ as *const u8)
-    } else {
-        payload as *const _ as usize
-    };
-    let to_usize = |value: u64, name: &str| {
-        usize::try_from(value).unwrap_or_else(|_| panic!("inherited {name} overflows usize"))
-    };
-    LOADER_IMAGE_POOL.store(
-        to_usize(payload.image_pool_start, "image pool"),
-        Ordering::Release,
-    );
-    LOADER_ARCHIVE_POOL.store(
-        to_usize(payload.archive_pool_start, "archive pool"),
-        Ordering::Release,
-    );
-    LOADER_SLOT_POOL.store(
-        to_usize(payload.slot_pool_start, "slot pool"),
-        Ordering::Release,
-    );
-    LOADER_IMAGE_CURSOR.store(
-        to_usize(payload.image_pool_cursor, "image cursor"),
-        Ordering::Release,
-    );
-    LOADER_SLOT_CURSOR.store(
-        to_usize(payload.slot_pool_cursor, "slot cursor"),
-        Ordering::Release,
-    );
-    LOADER_IMAGE_START.store(
-        to_usize(payload.current_image_start, "current image"),
-        Ordering::Release,
-    );
-    LOADER_IMAGE_END.store(
-        to_usize(
-            payload
-                .current_image_start
-                .checked_add(payload.current_image_len)
-                .expect("inherited current image range overflows"),
-            "current image end",
-        ),
-        Ordering::Release,
-    );
-    LOADER_BASE_IMAGE_START.store(
-        to_usize(payload.current_image_start, "current image"),
-        Ordering::Release,
-    );
-    LOADER_BASE_IMAGE_END.store(
-        to_usize(
-            payload
-                .current_image_start
-                .checked_add(payload.current_image_len)
-                .expect("inherited current image range overflows"),
-            "current image end",
-        ),
-        Ordering::Release,
-    );
-    LOADER_PAYLOAD_TABLE.store(physical_table, Ordering::Release);
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_allocate_image(pages: usize) -> Option<usize> {
-    allocate_from_pool(
-        &LOADER_IMAGE_CURSOR,
-        LOADER_IMAGE_POOL.load(Ordering::Acquire),
-        LOADER_IMAGE_POOL_PAGES,
-        pages,
-    )
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_allocate_slot(pages: usize) -> Option<usize> {
-    allocate_from_pool(
-        &LOADER_SLOT_CURSOR,
-        LOADER_SLOT_POOL.load(Ordering::Acquire),
-        LOADER_SLOT_POOL_PAGES,
-        pages,
-    )
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_release_image(start: usize, pages: usize) -> bool {
-    release_from_pool(
-        &LOADER_IMAGE_CURSOR,
-        LOADER_IMAGE_POOL.load(Ordering::Acquire),
-        pages,
-        start,
-    )
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_release_slot(start: usize, pages: usize) -> bool {
-    release_from_pool(
-        &LOADER_SLOT_CURSOR,
-        LOADER_SLOT_POOL.load(Ordering::Acquire),
-        pages,
-        start,
-    )
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-fn allocate_from_pool(
-    cursor: &AtomicUsize,
-    pool_start: usize,
-    pool_pages: usize,
-    pages: usize,
-) -> Option<usize> {
-    if pool_start == 0 || pages == 0 || pages > pool_pages {
-        return None;
-    }
-    let bytes = pages.checked_mul(4096)?;
-    let pool_end = pool_start.checked_add(pool_pages.checked_mul(4096)?)?;
-    let mut current = cursor.load(Ordering::Acquire);
-    loop {
-        let end = current.checked_add(bytes)?;
-        if current < pool_start || end > pool_end {
-            return None;
-        }
-        match cursor.compare_exchange(current, end, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return Some(current),
-            Err(next) => current = next,
-        }
-    }
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-fn release_from_pool(cursor: &AtomicUsize, pool_start: usize, pages: usize, start: usize) -> bool {
-    let bytes = match pages.checked_mul(4096) {
-        Some(bytes) if start >= pool_start => bytes,
-        _ => return false,
-    };
-    let end = match start.checked_add(bytes) {
-        Some(end) => end,
-        None => return false,
-    };
-    cursor
-        .compare_exchange(end, start, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_image_range() -> Option<(usize, usize)> {
-    let start = LOADER_IMAGE_START.load(Ordering::Acquire);
-    let end = LOADER_IMAGE_END.load(Ordering::Acquire);
-    (start < end).then_some((start, end))
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_set_slot(slot: Option<u8>) -> core::result::Result<(), &'static str> {
-    let table = LOADER_PAYLOAD_TABLE.load(Ordering::Acquire);
-    if table == 0 || !matches!(slot, None | Some(0 | 1)) {
-        return Err("EFI loader payload table is unavailable");
-    }
-    let table = if Arch::is_mmu_enabled() {
-        Arch::_va(table) as usize
-    } else {
-        table
-    };
-    // SAFETY: the table was allocated by initialize_loader_pool and remains live
-    // until the inherited target returns.
-    unsafe {
-        (*((table) as *mut crate::boot_payload::LoongBootPayload)).loader_slot =
-            slot.unwrap_or(u8::MAX);
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_flush_icache() {
-    ax_cpu::cache::flush_icache_all();
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_set_payload_with_image(
-    cmdline: Option<&str>,
-    archive: Option<&[u8]>,
-    target_image: Option<(usize, usize)>,
-) -> core::result::Result<(), &'static str> {
-    let table = LOADER_PAYLOAD_TABLE.load(Ordering::Acquire);
-    let image_pool = LOADER_IMAGE_POOL.load(Ordering::Acquire);
-    let archive_pool = LOADER_ARCHIVE_POOL.load(Ordering::Acquire);
-    let slot_pool = LOADER_SLOT_POOL.load(Ordering::Acquire);
-    if table == 0 || image_pool == 0 || archive_pool == 0 || slot_pool == 0 {
-        return Err("EFI loader pool is unavailable");
-    }
-    if cmdline.is_none() && archive.is_none() && target_image.is_none() {
-        let table = if Arch::is_mmu_enabled() {
-            Arch::_va(table) as usize
-        } else {
-            table
-        };
-        // SAFETY: the table was allocated by initialize_loader_pool and remains live
-        // until the loader reset or the inherited target returns.
-        unsafe {
-            *(table as *mut crate::boot_payload::LoongBootPayload) =
-                crate::boot_payload::LoongBootPayload::empty();
-        }
-        LOADER_IMAGE_START.store(
-            LOADER_BASE_IMAGE_START.load(Ordering::Acquire),
-            Ordering::Release,
-        );
-        LOADER_IMAGE_END.store(
-            LOADER_BASE_IMAGE_END.load(Ordering::Acquire),
-            Ordering::Release,
-        );
-        return Ok(());
-    }
-    let (loader_start, loader_end) =
-        loader_image_range().ok_or("current loader image range is unavailable")?;
-    let memory_map = crate::mem::memory_map();
-    if memory_map.len() > 128 {
-        return Err("host memory map is too large");
-    }
-
-    let (current_image_start, current_image_end) = if let Some((start, end)) = target_image {
-        if start >= end {
-            return Err("invalid target image range");
-        }
-        if start < loader_end && loader_start < end {
-            return Err("target image overlaps the loader");
-        }
-        let image_pool_end = image_pool
-            .checked_add(LOADER_IMAGE_POOL_PAGES.checked_mul(4096).unwrap())
-            .ok_or("EFI image pool range overflows")?;
-        let slot_pool_end = slot_pool
-            .checked_add(LOADER_SLOT_POOL_PAGES.checked_mul(4096).unwrap())
-            .ok_or("EFI slot pool range overflows")?;
-        let in_image_pool =
-            start >= image_pool && end <= image_pool_end && start < end && start % 4096 == 0;
-        let in_slot_pool =
-            start >= slot_pool && end <= slot_pool_end && start < end && start % 4096 == 0;
-        if !in_image_pool && !in_slot_pool {
-            return Err("target image is outside the EFI pools");
-        }
-        (start, end)
-    } else {
-        (loader_start, loader_end)
-    };
-    if let Some(archive) = archive
-        && archive.len() > LOADER_ARCHIVE_POOL_PAGES * 4096
-    {
-        return Err("host archive is too large");
-    }
-
-    let mut next = crate::boot_payload::LoongBootPayload::empty();
-    next.image_pool_start = image_pool as u64;
-    next.image_pool_len = (LOADER_IMAGE_POOL_PAGES * 4096) as u64;
-    next.image_pool_cursor = LOADER_IMAGE_CURSOR.load(Ordering::Acquire) as u64;
-    next.archive_pool_start = archive_pool as u64;
-    next.archive_pool_len = (LOADER_ARCHIVE_POOL_PAGES * 4096) as u64;
-    next.slot_pool_start = slot_pool as u64;
-    next.slot_pool_len = (LOADER_SLOT_POOL_PAGES * 4096) as u64;
-    next.slot_pool_cursor = LOADER_SLOT_CURSOR.load(Ordering::Acquire) as u64;
-    next.current_image_start = current_image_start as u64;
-    next.current_image_len = (current_image_end - current_image_start) as u64;
-    if let Some(cmdline) = cmdline {
-        next.set_cmdline(cmdline)?;
-    }
-    if let Some(archive) = archive {
-        let destination = if Arch::is_mmu_enabled() {
-            Arch::_va(archive_pool)
-        } else {
-            archive_pool as *mut u8
-        };
-        // SAFETY: the archive pool is reserved before ExitBootServices and the
-        // checked length stays inside that pool.
-        unsafe { core::ptr::copy_nonoverlapping(archive.as_ptr(), destination, archive.len()) };
-        next.archive_start = archive_pool as u64;
-        next.archive_len = archive.len() as u64;
-    }
-    if let Some((start, end)) = target_image {
-        next.target_image_start = start as u64;
-        next.target_image_len = (end - start) as u64;
-    }
-    for (index, region) in memory_map.iter().enumerate() {
-        next.memory_map[index] = crate::boot_payload::LoongBootMemoryRegion {
-            physical_start: region.physical_start as u64,
-            size_in_bytes: region.size_in_bytes as u64,
-            memory_type: match region.memory_type {
-                crate::mem::MemoryType::Free => 0,
-                crate::mem::MemoryType::Ram => 1,
-                crate::mem::MemoryType::KImage => 2,
-                crate::mem::MemoryType::Reserved => 3,
-                crate::mem::MemoryType::Mmio => 4,
-                crate::mem::MemoryType::PerCpuData => 5,
-            },
-            reserved: 0,
-        };
-    }
-    next.memory_map_len = memory_map.len() as u32;
-    next.validate()?;
-
-    let table = if Arch::is_mmu_enabled() {
-        Arch::_va(table) as usize
-    } else {
-        table
-    };
-    // SAFETY: the table was allocated by initialize_loader_pool and remains live
-    // until the loader reset or the inherited target returns.
-    let payload = unsafe { &mut *(table as *mut crate::boot_payload::LoongBootPayload) };
-    *payload = next;
-    if target_image.is_some() {
-        LOADER_IMAGE_START.store(current_image_start, Ordering::Release);
-        LOADER_IMAGE_END.store(current_image_end, Ordering::Release);
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-pub fn loader_efi_context() -> Option<(Handle, *const c_void)> {
-    let image = saved_image_handle()?;
-    let table = EFI_SYSTEM_TABLE.load(Ordering::Acquire);
-    (table != 0).then(|| (image, normalize_system_table(table as *const c_void)))
-}
-
-#[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-fn reserve_loader_pool() {
-    let reserve = |start: usize, pages: usize| {
-        let descriptor = crate::mem::MemoryDescriptor::new_aligned(
-            start,
-            pages * 4096,
-            crate::mem::MemoryType::Reserved,
-            4096,
-        );
-        crate::mem::add_memory_descriptor(descriptor)
-            .unwrap_or_else(|error| panic!("failed to reserve EFI loader pool: {error:?}"));
-    };
-    reserve(
-        LOADER_IMAGE_POOL.load(Ordering::Acquire),
-        LOADER_IMAGE_POOL_PAGES,
-    );
-    reserve(
-        LOADER_ARCHIVE_POOL.load(Ordering::Acquire),
-        LOADER_ARCHIVE_POOL_PAGES,
-    );
-    reserve(
-        LOADER_SLOT_POOL.load(Ordering::Acquire),
-        LOADER_SLOT_POOL_PAGES,
-    );
 }
 
 pub(crate) mod memmap;
@@ -596,19 +125,7 @@ unsafe extern "C" fn efi_pe_entry_main(
         save_image_handle(image_handle);
         boot::set_image_handle(image_handle);
         table::set_system_table(system_table.cast());
-        let inherited_handoff = inherited_handoff_available();
-        INHERITED_EFI_HANDOFF.store(inherited_handoff, Ordering::Release);
-        if !inherited_handoff {
-            setup_console();
-            println!("UEFI application started.");
-            load_efi_cmdline(image_handle);
-            load_efi_payload();
-        } else {
-            #[cfg(target_arch = "loongarch64")]
-            load_host_boot_payload();
-            #[cfg(not(target_arch = "loongarch64"))]
-            unreachable!("inherited EFI handoff is only supported on LoongArch");
-        }
+        platform::prepare_entry_payload(image_handle);
         // Safety: `system_table` comes from the EFI firmware entry path and
         // matches the contract documented on `ArchTrait::efi_enter_kernel`.
         if Arch::efi_enter_kernel(system_table) {
@@ -616,73 +133,6 @@ unsafe extern "C" fn efi_pe_entry_main(
         } else {
             unreachable!()
         }
-    }
-}
-
-/// Converts firmware table pointers to the LoongArch direct-map addresses used
-/// after the first ArceOS EFI image has enabled its MMU.
-fn normalize_system_table(system_table: *const c_void) -> *const c_void {
-    #[cfg(target_arch = "loongarch64")]
-    {
-        if Arch::is_mmu_enabled()
-            && let Some(physical) = physical_alias(system_table as usize)
-        {
-            let mapped = Arch::_va(physical).cast_const().cast::<c_void>();
-            // SAFETY: `mapped` is the direct-map address of the firmware table
-            // supplied by the EFI caller.
-            unsafe { table::set_system_table(mapped.cast()) };
-            let raw = table::system_table_raw()
-                .expect("normalized EFI system table is unavailable")
-                .as_ptr();
-            // SAFETY: table storage pointers use the same firmware physical alias;
-            // function pointers remain firmware addresses and are untouched.
-            unsafe {
-                (*raw).firmware_vendor = normalize_const_pointer((*raw).firmware_vendor);
-                (*raw).stdin = normalize_mut_pointer((*raw).stdin);
-                (*raw).stdout = normalize_mut_pointer((*raw).stdout);
-                (*raw).stderr = normalize_mut_pointer((*raw).stderr);
-                (*raw).runtime_services = normalize_mut_pointer((*raw).runtime_services);
-                (*raw).boot_services = normalize_mut_pointer((*raw).boot_services);
-                (*raw).configuration_table = normalize_mut_pointer((*raw).configuration_table);
-            }
-            return mapped;
-        }
-    }
-    system_table
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn normalize_mut_pointer<T>(pointer: *mut T) -> *mut T {
-    if Arch::is_mmu_enabled()
-        && let Some(physical) = physical_alias(pointer as usize)
-    {
-        Arch::_va(physical).cast()
-    } else {
-        pointer
-    }
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn normalize_const_pointer<T>(pointer: *const T) -> *const T {
-    normalize_mut_pointer(pointer.cast_mut()).cast_const()
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn physical_alias(address: usize) -> Option<usize> {
-    const PHYSICAL_ADDRESS_LIMIT: usize = 1 << 48;
-    const PHYSICAL_MASK: usize = PHYSICAL_ADDRESS_LIMIT - 1;
-    const ALIAS_BASES: [usize; 4] = [
-        0x2000_0000_0000_0000,
-        0x8000_0000_0000_0000,
-        0x9000_0000_0000_0000,
-        0xa000_0000_0000_0000,
-    ];
-    if address < PHYSICAL_ADDRESS_LIMIT {
-        Some(address)
-    } else if ALIAS_BASES.contains(&(address & !PHYSICAL_MASK)) {
-        Some(address & PHYSICAL_MASK)
-    } else {
-        None
     }
 }
 
@@ -700,7 +150,7 @@ pub unsafe extern "efiapi" fn efi_pe_entry(
 }
 
 pub(crate) fn exit_boot_services() {
-    if INHERITED_EFI_HANDOFF.load(Ordering::Acquire) {
+    if platform::inherited_handoff() {
         return;
     }
     println!("Exiting UEFI boot services...");
@@ -746,80 +196,26 @@ pub(crate) fn exit_boot_services() {
 
     unsafe {
         if let Some(st) = uefi::table::system_table_raw() {
-            #[cfg(target_arch = "loongarch64")]
-            let virtual_system_table = st.as_ptr();
-            #[cfg(not(target_arch = "loongarch64"))]
-            let virtual_system_table = __va(st.as_ptr() as _) as _;
+            let virtual_system_table = platform::runtime_system_table(st.as_ptr());
             set_virtual_address_map(&mut new_map, virtual_system_table)
                 .expect("Failed to set virtual address map");
         }
     }
 
     memmap::setup_memory_map(mem_map.entries());
-    #[cfg(all(feature = "efi-loader", target_arch = "loongarch64"))]
-    reserve_loader_pool();
+    platform::reserve_boot_memory();
     crate::boot_payload::reserve_staged_uefi();
 }
 
-#[cfg(target_arch = "loongarch64")]
-pub(crate) fn inherited_handoff() -> bool {
-    INHERITED_EFI_HANDOFF.load(Ordering::Acquire)
+fn load_firmware_entry_payload(image_handle: Handle) {
+    setup_console();
+    println!("UEFI application started.");
+    load_efi_cmdline(image_handle);
+    load_efi_payload();
 }
 
-#[cfg(not(target_arch = "loongarch64"))]
-pub(crate) fn inherited_handoff() -> bool {
-    false
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn inherited_handoff_available() -> bool {
-    with_config_table(|tables| {
-        tables.iter().any(|entry| {
-            entry.guid == crate::boot_payload::LOONG_BOOT_PAYLOAD_GUID && !entry.address.is_null()
-        })
-    })
-}
-
-#[cfg(not(target_arch = "loongarch64"))]
-fn inherited_handoff_available() -> bool {
-    false
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn load_host_boot_payload() {
-    let installed = with_config_table(|tables| {
-        tables
-            .iter()
-            .find(|entry| entry.guid == crate::boot_payload::LOONG_BOOT_PAYLOAD_GUID)
-            .map(|entry| entry.address)
-    });
-    let Some(address) = installed else {
-        panic!("missing LoongArch inherited EFI payload");
-    };
-    assert!(!address.is_null(), "null LoongArch EFI payload table");
-    let physical = physical_alias(address as usize).expect("invalid EFI payload address");
-    let address = if Arch::is_mmu_enabled() {
-        Arch::_va(physical).cast_const().cast::<c_void>()
-    } else {
-        address
-    };
-    // SAFETY: the first loader owns this runtime configuration-table allocation.
-    let payload = unsafe { &*address.cast::<crate::boot_payload::LoongBootPayload>() };
-    crate::boot_payload::remember_inherited_payload(payload);
-    if payload.cmdline_len != 0 && !crate::cmdline::has_handoff_cmdline() {
-        crate::cmdline::set_cmdline(payload.cmdline());
-    }
-    if payload.archive_len != 0 {
-        let start = usize::try_from(payload.archive_start).expect("archive address overflows");
-        let end = usize::try_from(
-            payload
-                .archive_start
-                .checked_add(payload.archive_len)
-                .expect("archive range overflows"),
-        )
-        .expect("archive end overflows");
-        crate::boot_payload::publish(start, end, false);
-    }
+pub(crate) fn init_boot_memory_map() {
+    platform::init_boot_memory_map();
 }
 
 fn load_efi_payload() {
@@ -1043,7 +439,7 @@ pub(crate) fn boot_entropy() -> Option<[u8; 32]> {
     // exited boot services. Firmware protocol calls (including RNG discovery)
     // are no longer valid on that path; the target may still use a trusted FDT
     // seed or explicitly report that no firmware entropy is available.
-    if INHERITED_EFI_HANDOFF.load(Ordering::Acquire) || !is_uefi_available() {
+    if platform::inherited_handoff() || !is_uefi_available() {
         return None;
     }
 
@@ -1335,49 +731,4 @@ mod tests {
 
 pub fn is_uefi_available() -> bool {
     uefi::table::system_table_raw().is_some()
-}
-
-#[cfg(target_arch = "loongarch64")]
-pub fn reset(reset_type: ResetType, status: Status, data: Option<&[u8]>) -> ! {
-    info!("Resetting system via UEFI...");
-    let system_table_address = uefi::table::system_table_raw()
-        .map(|table| table.as_ptr() as usize)
-        .unwrap_or_else(|| panic!("UEFI system table is unavailable during reset"));
-    let system_table_address = if Arch::is_mmu_enabled()
-        && let Some(physical) = physical_alias(system_table_address)
-    {
-        Arch::_va(physical) as usize
-    } else {
-        system_table_address
-    };
-    // The firmware may leave the runtime-services table at a physical or
-    // firmware alias address after `SetVirtualAddressMap`; normalize that
-    // storage pointer before reading its function entries.
-    let runtime_services_address = unsafe {
-        (*(system_table_address as *const uefi_raw::table::system::SystemTable)).runtime_services
-            as usize
-    };
-    let runtime_services_address = if Arch::is_mmu_enabled()
-        && let Some(physical) = physical_alias(runtime_services_address)
-    {
-        Arch::_va(physical) as usize
-    } else {
-        runtime_services_address
-    };
-    // SAFETY: the normalized pointer comes from the EFI system table and the
-    // runtime-services table remains live after ExitBootServices.
-    let runtime_services = unsafe {
-        (runtime_services_address as *const uefi_raw::table::runtime::RuntimeServices)
-            .as_ref()
-            .unwrap_or_else(|| panic!("UEFI runtime services are unavailable during reset"))
-    };
-    let (data_size, data_ptr) =
-        data.map_or((0, core::ptr::null()), |data| (data.len(), data.as_ptr()));
-    // LoongArch keeps EFI function pointers in the firmware's active address
-    // space. The table pointer was normalized above, but the entry point is
-    // deliberately called unchanged; converting it without a firmware ABI
-    // guarantee can jump into a different alias.
-    // SAFETY: the runtime-services table owns this entry point and the data
-    // slice stays alive for the duration of this non-returning call.
-    unsafe { (runtime_services.reset_system)(reset_type, status, data_size, data_ptr) }
 }

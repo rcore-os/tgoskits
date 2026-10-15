@@ -74,9 +74,8 @@ def main():
     parser.add_argument("--initramfs", type=Path, required=True)
     args = parser.parse_args()
 
-    # The first response includes the cold ArceOS build on self-hosted CI
-    # runners, so allow that build to finish before treating a refused socket
-    # as a failed control-plane boot.
+    # Build both images before starting QEMU. This timeout covers firmware and
+    # loader startup; cold compilation has its own CI command and failure.
     status = wait_status(
         args.host,
         args.port,
