@@ -81,6 +81,7 @@ pub enum HandoffError {
 
 cfg_select! {
     all(feature = "efi-handoff", target_os = "uefi") => {
+        mod uefi_protocol;
         mod firmware;
         pub(crate) mod transaction;
         pub use firmware::PreparedHandoff;
@@ -95,8 +96,7 @@ cfg_select! {
         not(target_os = "uefi"),
         feature = "boot-resources"
     ) => {
-        mod firmware;
-        pub(crate) mod transaction;
+        mod uefi_protocol;
     }
     _ => {}
 }

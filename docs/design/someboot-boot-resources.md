@@ -30,7 +30,7 @@ v2 与 v3 不兼容。LoongArch 遇到旧 GUID 明确拒绝；生产者、目标
 
 ### 2.2 固件路径
 
-x86 的 [`handoff/firmware`](../../platforms/someboot/src/handoff/firmware/mod.rs) 保留 LoadedImage LoadOptions、Linux LoadFile2 的查询和复制语义，元数据另以 v3 配置表发布；OTA 仍由 axloader 的 LoadImage/StartImage 路径拥有。目标返回且固件服务仍活动时恢复原 LoadOptions 和原配置表、卸载 initrd 提供者并释放分配；若目标已经退出服务，守卫保留这些页，不再调用 Boot Services。配置表或协议撤销失败时也不能释放仍被固件引用的内存。
+x86 的 [`handoff/firmware`](../../platforms/someboot/src/handoff/firmware/mod.rs) 保留 LoadedImage LoadOptions、Linux LoadFile2 的查询和复制语义，元数据另以 v3 配置表发布；OTA 仍由 axloader 的 LoadImage/StartImage 路径拥有。私有 [`uefi_protocol`](../../platforms/someboot/src/handoff/uefi_protocol/mod.rs) 承载不调用固件的 UCS-2 编码、设备路径和 LoadFile2 回调，宿主测试只编译这一层；安装、撤销和事务守卫仅由原生 UEFI 后端装配。目标返回且固件服务仍活动时恢复原 LoadOptions 和原配置表、卸载 initrd 提供者并释放分配；若目标已经退出服务，守卫保留这些页，不再调用 Boot Services。配置表或协议撤销失败时也不能释放仍被固件引用的内存。
 
 LoongArch 的 [`efi_stub/loongarch64/handoff.rs`](../../platforms/someboot/src/efi_stub/loongarch64/handoff.rs) 在首次退出前安装配置表，之后只操作预留资源、复制 cmdline/归档/元数据、发布快照并刷新指令缓存。事务守卫排除重复发布，失败或目标返回时撤销记录并回退本事务拥有的归档分配。`someboot::efi_stub::setup_service` 和 `someboot::boot_payload::publish` 路径保持不变；initramfs 继续一次领取，预留区中的归档不作为独立固件页回收。
 

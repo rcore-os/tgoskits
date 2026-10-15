@@ -367,6 +367,8 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 - 原生 `target_os = "uefi"` 的 someboot 仅装配公共模块和固件适配；Cargo 依赖和
   `build.rs` 同时排除内核入口、分页、SMP 与内核链接配置。其他目标保持原有根模块
   及符号路径。不能用反向 feature 控制模式，避免 Cargo feature 合并改变构建。
+  `handoff/uefi_protocol` 只持有编码、设备路径和 LoadFile2 回调；宿主测试在这里
+  验证真实协议逻辑，不装配 `handoff/firmware` 的服务调用、发布守卫和事务上下文。
 - `someboot::efi_stub` 在单一 `cfg_select!` 装配私有 `platform`：LoongArch 使用
   `efi_stub/loongarch64/mod.rs`，普通固件使用 `efi_stub/firmware.rs`。前者拥有表地址
   归一化、reset 和继承恢复；固件函数指针保持原值。生产事务位于
