@@ -71,7 +71,7 @@ QEMU 的目标架构不等于 runner 的宿主架构。例如 AArch64 测试可�
 | `ubuntu-base` | 6 | 5 | 0 | 0 | sync-lint、ArceOS AArch64 应用套件、Starry 四架构套件；应用 smoke/完整 Clippy |
 | `ubuntu-host` | 0 | 1 | 0 | 0 | Starry NixOS x86_64 Stage-2 |
 | `ubuntu-axvisor-lvz` | 2 | 0 | 0 | 0 | ArceOS/AxVisor LoongArch QEMU 套件 |
-| `kvm-intel` | 3 | 0 | 0 | 0 | VMX、ACPI/MP/OVMF 和 AxLoader UEFI HTTP 启动 |
+| `kvm-intel` | 3 | 0 | 0 | 0 | VMX、ACPI/MP/OVMF、Web UI 和 AxLoader UEFI HTTP 启动 |
 | `kvm-amd` | 1 | 0 | 0 | 0 | SVM smoke、direct/OVMF ACPI、PCI 枚举和 PCI block RW/RO |
 | `board` | 9 | 0 | 3 | 8 | 主 CI、AxVisor nightly 和性能清单中的板卡场景 |
 
@@ -96,7 +96,7 @@ Intel 和 AMD 使用不同标签，测试命令也分别选择 VMX 或 SVM 场�
 
 | Profile | Check ID | 主要内容 |
 | --- | --- | --- |
-| `kvm-intel` | `test-axvisor-self-hosted-x86-64-vmx` | VMX smoke、direct/MP/OVMF ACPI、通用 PCI 枚举、PCI block RW/RO；一次构建运行七用例 |
+| `kvm-intel` | `test-axvisor-self-hosted-x86-64-vmx` | VMX smoke、direct/MP/OVMF ACPI、通用 PCI 枚举、PCI block RW/RO、Web UI；八用例按两种 Cargo 身份分别构建 |
 | `kvm-intel` | `test-axloader-http-smoke` | AxLoader 的 x86_64 UEFI HTTP 启动 |
 | `kvm-amd` | `test-axvisor-self-hosted-x86-64-svm` | SVM smoke、direct ACPI、OVMF ACPI、PCI 枚举、PCI block RW/RO；一次构建运行六用例 |
 

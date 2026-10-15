@@ -179,12 +179,15 @@ Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和�
 
 ## 6. VMX 合并任务
 
-七个 VMX 用例的 build TOML 保持同一 Cargo 编译身份：smoke 使用共享的 `normal/qemu/build-x86_64-unknown-none-vmx.toml`，ACPI、PCI 枚举和 PCI block 六个用例各自目录内的 build TOML 同样启用 `ax-driver/nvme` 与 `web-ui`。`prepare_case_build_groups()` 按 Cargo 身份合并 build group，因此这七个用例只编译一次 AxVisor，后续启动复用同一个内核；`vm_configs` 只作为每个用例的运行时输入，这些 feature 只让内核具备相应能力，不改变任一用例的客户机配置。smoke 原本额外承担「在无向量 x86_64 目标上编译并启动 web + NVMe 栈」的编译守卫，现在由这七个 build 共同承担，因此不能从其中任何一个 build TOML 单独删除这两个 feature。CI 使用一个 `kvm-intel` runner，先构建一次 AxVisor，再依次运行 smoke、ACPI、PCI 枚举和 PCI block 用例：
+CI 使用一个 `kvm-intel` runner 运行八个 VMX 用例。原有 smoke、ACPI、PCI 枚举和 PCI block 七个用例统一启用 `vpci-test-device`，其 build TOML 的 Cargo 编译身份保持一致；`vm_configs` 只作为每个用例的运行时输入。新增的 `web-ui-vmx` 使用独立的默认网页构建配置，因此运行器按两种 Cargo 身份分别构建，再执行各自的用例：
+CI 使用一个 `kvm-intel` runner 运行八个 VMX 用例。原有 smoke、ACPI、PCI 枚举和 PCI block 七个用例保持同一 Cargo 编译身份，统一启用 `ax-driver/nvme` 与 `web-ui`；`vm_configs` 只作为每个用例的运行时输入。新增的 `web-ui-vmx` 使用独立的默认网页构建配置并额外启用 `ax-driver/intel-net`，因此运行器按两种 Cargo 身份分别构建，再执行各自的用例。`prepare_case_build_groups()` 会按 Cargo 身份合并前七个用例，确保 Web UI 与 NVMe 栈在无向量 x86_64 目标上的编译守卫只构建一次：
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \
-  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx
+  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx,web-ui-vmx
 ```
+
+`web-ui-vmx` 从空客户机登记表开始，通过 e1000 转发访问网页与 defaults 接口，复用原始镜像里的 Linux 内核和 Alpine 根盘。`default_guest_probe.py` 在 90 秒门限内验证真实 shell 算术及系统信息，再验证重连、停止删除与自动 ID 重用；成功标记为 `AXVISOR_DEFAULT_GUEST_WEB_UI_PASSED`。真实浏览器交互的操作步骤见[默认客户机运行流程](./runtime.md#16-x86_64-默认客户机)。
 
 ## 7. SVM 合并任务
 
