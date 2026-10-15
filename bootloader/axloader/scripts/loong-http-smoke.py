@@ -60,9 +60,9 @@ def wait_status(host, port, predicate, timeout=180):
     raise RuntimeError(f"LoongArch loader status timeout: {last_error}")
 
 
-def expect(status, expected, description, value=None):
-    if status != expected:
-        raise RuntimeError(f"{description}: expected {expected}, got {status}: {value!r}")
+def expect(actual, expected, description, value=None):
+    if actual != expected:
+        raise RuntimeError(f"{description}: expected {expected}, got {actual}: {value!r}")
 
 
 def main():
@@ -121,6 +121,7 @@ def main():
         headers={"X-Boot-Epoch": epoch},
     )
     expect(response[0], 409, "unbound start rejected", response[1])
+    expect(response[1], {"error": "serial_binding_required"}, "unbound start reason")
     binding = {
         "serial_id": epoch,
         "binding_id": "0" * 32,
@@ -143,6 +144,7 @@ def main():
         headers={**headers, "X-Serial-Binding": binding["binding_id"]},
     )
     expect(response[0], 409, "invalid ELF handoff rejected", response[1])
+    expect(response[1], {"error": "kernel_load_failed"}, "invalid ELF handoff reason")
     response = request(
         args.host,
         args.port,
