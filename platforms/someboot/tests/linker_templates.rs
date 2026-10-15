@@ -20,6 +20,11 @@ fn assert_common_contract(script: &str) {
         ".head.text must stay before the main text section"
     );
     assert!(script.contains("__kernel_load_end = .;"));
+    assert!(script.contains("KEEP(*(.someboot.resources))"));
+    assert!(
+        script.find("__someboot_resources_start = .;").unwrap()
+            < script.find("__someboot_resources_end = .;").unwrap()
+    );
     assert!(script.contains("__bss_start"));
     assert!(script.contains("__bss_stop = .;"));
     assert!(script.contains("__cpu0_stack_top = .;"));
@@ -82,7 +87,7 @@ fn preserves_arch_specific_linker_contracts() {
     let loongarch64 = render_linker_script(LinkerArch::Loongarch64, CONFIG);
     assert!(loongarch64.contains("OUTPUT_ARCH(loongarch)"));
     assert!(loongarch64.contains("ENTRY(kernel_entry)"));
-    assert!(loongarch64.contains(". = ALIGN(0x10000);"));
+    assert!(loongarch64.contains("KEEP(*(.vectors))"));
     assert!(
         loongarch64
             .contains("_kernel_entry = ABSOLUTE(KERNEL_LOAD_ADDRESS + (kernel_entry - _head));")

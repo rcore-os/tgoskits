@@ -28,13 +28,14 @@ target = "loongarch64-unknown-none-softfloat"
 features = ["efi"]
 
 [[package.metadata.clippy.configurations]]
-name = "loongarch64-efi-loader"
+name = "loongarch64-efi-handoff"
 target = "loongarch64-unknown-none-softfloat"
-features = ["efi-loader"]
+features = ["efi-handoff"]
 
 [features]
 efi = []
-efi-loader = ["efi"]
+boot-resources = []
+efi-handoff = ["efi", "boot-resources"]
 hv = []
 mmu = []
 thead-mae = ["ax-cpu/riscv-thead-mae"]
@@ -47,6 +48,10 @@ uspace = ["mmu"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(axtest_coverage)'] }
 
 [dependencies]
+thiserror.workspace = true
+log = "0.4"
+
+[target.'cfg(not(target_os = "uefi"))'.dependencies]
 ax-cpu.workspace = true
 trait-ffi.workspace = true
 acpi = "6.0.1"
@@ -57,36 +62,47 @@ byte-unit = { workspace = true }
 byteorder = { version = "1", default-features = false }
 fdt-edit.workspace = true
 fdt-raw.workspace = true
-thiserror.workspace = true
 heapless = "0.9"
 kernutil = { workspace = true }
-log = "0.4"
 num-align = "0.1"
 page-table-generic = { workspace = true }
 ranges-ext = { workspace = true }
 some-serial.workspace = true
 somehal-macros = { workspace = true }
 tock-registers.workspace = true
-uguid = "2.2.1"
 
-[target.'cfg(target_arch = "loongarch64")'.dependencies]
+[target.'cfg(all(target_arch = "loongarch64", not(target_os = "uefi")))'.dependencies]
 loongArch64 = "0.2"
 uefi.workspace = true
 uefi-raw.workspace = true
 
-[target.'cfg(target_arch = "aarch64")'.dependencies]
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "uefi")))'.dependencies]
 aarch64-cpu = "11"
 smccc = "0.2"
 uefi.workspace = true
 uefi-raw.workspace = true
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
+[target.'cfg(all(target_arch = "x86_64", not(target_os = "uefi")))'.dependencies]
 uefi.workspace = true
 uefi-raw.workspace = true
 x86 = "0.52"
 
-[target.'cfg(target_arch = "riscv64")'.dependencies]
+[target.'cfg(all(target_arch = "riscv64", not(target_os = "uefi")))'.dependencies]
 sbi-rt = { workspace = true, features = ["legacy"] }
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi.workspace = true
+uefi-raw.workspace = true
+
+[[package.metadata.clippy.configurations]]
+name = "x86_64-uefi-library"
+target = "x86_64-unknown-uefi"
+features = ["efi-handoff"]
+
+[[package.metadata.clippy.configurations]]
+name = "loongarch64-resources"
+target = "loongarch64-unknown-none-softfloat"
+features = ["boot-resources"]
 
 [build-dependencies]
 prettyplease = { workspace = true }

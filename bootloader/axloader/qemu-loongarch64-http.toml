@@ -9,6 +9,7 @@ args = [
   "-device", "virtio-net-pci,netdev=net0",
   "-netdev", "user,id=net0,hostfwd=tcp::3999-:2999",
   "-serial", "mon:stdio",
+  "-qmp", "unix:${workspace}/target/axbuild/loong-axloader-qmp.sock,server=on,wait=off",
 ]
 uefi = true
 to_bin = true

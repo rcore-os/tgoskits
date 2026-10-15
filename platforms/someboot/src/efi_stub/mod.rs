@@ -37,14 +37,8 @@ use crate::{
 
 cfg_select! {
     target_arch = "loongarch64" => {
-        mod loongarch64;
+        pub(crate) mod loongarch64;
         use loongarch64 as platform;
-        #[cfg(feature = "efi-loader")]
-        pub use loongarch64::loader::{
-            inherited_loader_slot, loader_allocate_image, loader_allocate_slot, loader_efi_context,
-            loader_flush_icache, loader_image_range, loader_release_image, loader_release_slot,
-            loader_set_payload_with_image, loader_set_slot,
-        };
         pub use loongarch64::{ResetType, reset};
     }
     any(target_arch = "x86_64", target_arch = "aarch64") => {
@@ -204,6 +198,19 @@ pub(crate) fn exit_boot_services() {
 
     memmap::setup_memory_map(mem_map.entries());
     platform::reserve_boot_memory();
+    #[cfg(feature = "boot-resources")]
+    for resource in crate::boot_resources::snapshots()
+        .iter()
+        .filter(|r| r.id != 0)
+    {
+        crate::mem::add_memory_descriptor(crate::mem::MemoryDescriptor::new_aligned(
+            resource.range.start as usize,
+            resource.range.len as usize,
+            crate::mem::MemoryType::Reserved,
+            4096,
+        ))
+        .expect("failed to reserve boot resource");
+    }
     crate::boot_payload::reserve_staged_uefi();
 }
 
@@ -708,7 +715,7 @@ mod tests {
         );
         assert_eq!(decode_efi_cmdline(&[], &mut bytes).unwrap(), "");
         assert_eq!(
-            decode_efi_cmdline(&[b'a' as u16, b' ', b'=' as u16], &mut bytes).unwrap(),
+            decode_efi_cmdline(&[b'a' as u16, b' ' as u16, b'=' as u16], &mut bytes).unwrap(),
             "a ="
         );
     }

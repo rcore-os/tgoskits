@@ -83,6 +83,12 @@ pub struct PublishedPayload {
 
 impl Drop for PublishedPayload {
     fn drop(&mut self) {
+        if !super::boot_services_active() {
+            if let Some(provider) = self.provider.take() {
+                Box::leak(provider);
+            }
+            return;
+        }
         let Some(provider) = self.provider.as_mut() else {
             return;
         };
@@ -97,7 +103,7 @@ impl Drop for PublishedPayload {
         if unsafe { boot::uninstall_protocol_interface(handle, &LoadFile2Protocol::GUID, protocol) }
             .is_err()
         {
-            crate::logln!("linux_initrd_provider_error: failed to revoke LoadFile2");
+            log::info!("linux_initrd_provider_error: failed to revoke LoadFile2");
             revoked = false;
         }
         // SAFETY: the device-path interface was installed on the same handle.
@@ -106,7 +112,7 @@ impl Drop for PublishedPayload {
         }
         .is_err()
         {
-            crate::logln!("linux_initrd_provider_error: failed to revoke device path");
+            log::info!("linux_initrd_provider_error: failed to revoke device path");
             revoked = false;
         }
         if !revoked {
@@ -162,7 +168,7 @@ impl PreparedPayload {
             return Err(PayloadError::Install(error.status()));
         }
         provider.handle = Some(handle);
-        crate::logln!(
+        log::info!(
             "linux_initrd_provider_ready: archive_bytes={}",
             provider.bytes.len()
         );

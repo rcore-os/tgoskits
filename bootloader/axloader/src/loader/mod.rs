@@ -2,10 +2,8 @@ pub mod boot_server;
 pub mod console;
 pub mod direct;
 pub mod elf_loader;
-pub mod entry;
 pub mod network;
-pub mod payload;
-mod serial;
+pub mod serial;
 pub mod smbios;
 
 use alloc::{format, string::String};
@@ -93,11 +91,7 @@ fn efi_main() -> Status {
                     uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::SUCCESS, None);
                 }
                 direct::Action::Boot(execution) => {
-                    let boot_server::BootExecution {
-                        elf,
-                        payload,
-                        load_options,
-                    } = *execution;
+                    let boot_server::BootExecution { elf, handoff } = *execution;
                     logln!(
                         "elf_loaded: load={:#x} end={:#x} entry={:#x}",
                         elf.load_addr,
@@ -108,9 +102,11 @@ fn efi_main() -> Status {
                     drop(listener);
                     drop(announcer);
                     drop(beacon);
-                    let result = entry::jump_to_uefi_entry(elf.entry_point, load_options);
-                    drop(payload);
-                    boot_server::free_loaded_elf(&elf);
+                    // SAFETY: ELF validation found the EFI entry in the live image;
+                    // networking has been closed and the guard retains payloads.
+                    let result = unsafe { handoff.enter(elf.entry_point) };
+                    drop(handoff);
+                    drop(elf);
                     logln!("jump_error: {result:?}");
                     return Status::LOAD_ERROR;
                 }

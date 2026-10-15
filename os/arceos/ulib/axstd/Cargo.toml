@@ -25,7 +25,7 @@ default = ["alloc", "tls", "fd"]
 # through their own `arceos` feature instead of axbuild completing it at runtime.
 arceos = ["paging", "std-compat", "smp"]
 efi = ["ax-runtime/efi"]
-efi-loader = ["ax-runtime/efi-loader"]
+efi-handoff = ["ax-runtime/efi-handoff"]
 
 # Host-side implementations for OS-specific ArceOS capabilities.
 host-test = [

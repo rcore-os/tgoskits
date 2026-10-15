@@ -359,63 +359,63 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 
 #### LoongArch ArceOS EFI
 
-- `someboot::boot_payload` 的通用 initramfs 发布和一次性领取保留在
-  `platforms/someboot/src/boot_payload/mod.rs`；LoongArch v2 ABI、校验和继承内存图位于
-  同目录的 `loongarch64.rs`，模块仅由 `all(efi, target_arch = "loongarch64")` 装入。
-  普通 EFI 目标始终可以消费继承表，不能把这条路径绑到 `efi-loader`。
+- 公共启动资源位于 `someboot::boot_resources`，交接描述、v3 协议和应用元数据位于
+  `someboot::handoff`。`boot-resources` 可独立于交接、网络和 OTA 使用；
+  `efi-handoff = ["efi", "boot-resources"]` 只开启交接生产。普通 EFI 消费随构建脚本
+  派生的 `cfg(efi)`，不能替换成 `feature = "efi"` 或依赖生产端。旧 `efi-loader`、
+  `loader_*`、`inherited_loader_slot` 已删除，无兼容别名。
+- 原生 `target_os = "uefi"` 的 someboot 仅装配公共模块和固件适配；Cargo 依赖和
+  `build.rs` 同时排除内核入口、分页、SMP 与内核链接配置。其他目标保持原有根模块
+  及符号路径。不能用反向 feature 控制模式，避免 Cargo feature 合并改变构建。
 - `someboot::efi_stub` 在单一 `cfg_select!` 装配私有 `platform`：LoongArch 使用
-  `efi_stub/loongarch64/mod.rs`，x86_64 和 AArch64 共用 `efi_stub/firmware.rs`。
-  共享模块保留入口、固件读取和退出启动服务的编排；LoongArch 模块负责表存储指针
-  归一化、继承交接、运行时表地址和 reset，固件函数指针保持原值。
-  `mem::early_init` 经 `efi_stub::init_boot_memory_map` 选择继承内存图或 FDT 初始化。
-  池分配、payload 构造与发布、槽位及 `loader_*` 位于
-  `efi_stub/loongarch64/loader.rs`，仅在 LoongArch 父模块内按 `efi-loader` 启用；
-  软件包根通过精确重导出保留原接口。构建仍遵循 `build.rs` 派生的 `cfg(efi)`，
-  不能用 `feature = "efi"` 替换该边界。
-- LoongArch axstd 前端只接受 little-endian ELF64、`e_machine = EM_LOONGARCH`（258）和
-  `efi_pe_entry` 符号；EFI PE 入口固定为 `efi_pe_entry(image_handle, system_table)`。
-  目标镜像装入固定的 `0x200000` image pool，段之间的空洞先清零并在交接前刷新
-  指令缓存，任何无法证明不覆盖当前 loader 的地址都必须拒绝启动。
-- 首次 EFI loader 安装 `LoongBootPayload` v2 配置表。它使用独立 GUID
-  `5d34b5d2-9a5b-4d0f-8e3c-6bb3dfc6a1fe`，不兼容已经移除的 host-boot-abi v1；表中
-  固定保留 image、archive 和 slot 三个池（分别为 32 MiB、256 MiB 和 32 MiB），并把
-  cmdline、initramfs、目标镜像范围、内存图和当前 loader 槽位交给下一次 EFI 入口。
-- 目标继承表后走 `inherited_handoff` 路径：复用上一 loader 发布的内存图和池游标，
-  不再次清零或重新分配启动池，也不重复调用 `ExitBootServices`；只有首个 loader
-  仍在固件应用阶段获取内存图并在关闭网络服务后退出启动服务。进入继承路径前必须
-  校验 v2 magic、版本、大小、池范围、槽位和目标镜像不重叠。
-- axstd 的 UART 身份来自已激活的 runtime console；无活动 UART 或无需串口隧道的
-  QEMU/服务端测试显式使用 `direct` serial continue。启动阶段应观察
-  `network_ready: arch=loongarch64`、`ready_to_handoff`；
-  装载或 EFI 跳转失败观察 `jump_error`，A/B 槽校验、提交或回滚失败观察
-  `ota_slot_failed`。
-- `axstd_loader::run()` 仅在启动及每次连接处理后发送 UDP 公告，阻塞等待连接期间
-  不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或启动广播丢失时，
-  使用已知设备 IP 直接访问 HTTP 接口。
-- LoongArch 没有可信 UEFI/FDT 启动熵时，loader 先把持久化 OTA 代次提交到
-  `STATE0.BIN`/`STATE1.BIN`，再用代次和当前镜像摘要派生 `boot_epoch`/`serial_id`；
-  继承 EFI 入口复用父 loader 已提交的代次。不能退回到进程计数器、秒级时间或栈地址。
-- 持久 FAT 卷使用 `axloader/A.EFI`、`axloader/B.EFI`、`axloader/STATE0.BIN` 和
-  `axloader/STATE1.BIN`。进入 pending 槽前先持久化 attempt 计数，目标通过
-  `/api/v1/ota/confirm` 确认匹配的更新 ID 和来源后再提交稳定槽；未确认或校验失败
-  时启动下一次先回滚到已验证的稳定槽。
-- 真实 EFI QEMU 验证使用：
-
-  ```bash
-  cargo xtask arceos qemu \
-    --package axloader \
-    --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml \
-    --qemu-config bootloader/axloader/qemu-loongarch64.toml
-  ```
-
-  这条 CI/QEMU 门禁以 `network_ready: arch=loongarch64` 作为初始正向标记，证明自身
-  A.EFI bootstrap、网络接口选择和 HTTP listener 已到达；随后宿主
-  `scripts/loong-http-smoke.py` 上传独立的 `arceos-helloworld` EFI ELF 和打包的
-  `test-suit/host-initramfs`，并检查 `elf_loaded`、`ready_to_handoff`、目标输出的
+  `efi_stub/loongarch64/mod.rs`，普通固件使用 `efi_stub/firmware.rs`。前者拥有表地址
+  归一化、reset 和继承恢复；固件函数指针保持原值。生产事务位于
+  `efi_stub/loongarch64/handoff.rs`，按 `efi-handoff` 启用。通用 initramfs 发布和
+  一次领取仍在 `boot_payload/mod.rs`，保留 `boot_payload::publish` 与
+  `efi_stub::setup_service` 契约路径。
+- `declare_boot_resources!` 写入保留的无指针计划，退出服务前校验并预留；无声明时
+  不分配应用池，部分失败逆序释放。`Allocation` 独占分配，逆序释放以 CAS 回退，
+  非逆序释放保留空间直到复位。`ResourceSnapshot` 记录 ID、范围、不可变前缀和
+  水位，要求 `initialized <= used <= capacity`；继承目标静态计划必须由已有快照
+  满足，资源恢复仅依赖 `boot-resources`，不能被生产端 feature 关闭。
+- axloader 自己声明镜像区 32 MiB（`0x200000`）、归档区 256 MiB、EFI 槽执行区
+  32 MiB 和固件原文件区 32 MiB。`InitialContents::FirmwareBootImage` 在退出服务前
+  读取最初的 EFI 文件；继承阶段仍保留同一来源文件，不能当作当前子镜像。该 loader
+  配置要求最初从可读 EFI 文件系统启动，源文件不超过容量；失败时停止必需计划。
+  固件文件读取使用固件分配的单页缓冲，再 CPU 复制至内核直接映射；不要把内核
+  虚拟地址交给固件 DMA。首个 A.EFI 必须保存原始文件，不能保存已修改的运行数据段，
+  否则失败 trial 回滚时稳定槽可能无法重新执行。
+- `handoff::protocol::HandoffRecord` v3 GUID 为
+  `7b9fa931-a25b-d043-b13c-63435428c473`，不包含固定池或 OTA 槽字段。固件活动模式
+  不替换内存图；继承模式要求全部资源由 Reserved/KImage 内存完整覆盖，目标及
+  initramfs 位于分配水位内且不覆盖不可变前缀。v2 旧 GUID 被明确拒绝，生产者、
+  目标与 A/B 槽必须一起重建。`boot_payload/loongarch64.rs` 将完整记录和元数据复制
+  到本镜像私有存储后再允许复用共享表，避免继承引用被下一次事务改写。
+- LoongArch 只接受 little-endian ELF64、`EM_LOONGARCH`（258）和 `efi_pe_entry`；
+  EFI ABI 为 `efi_pe_entry(image_handle, system_table)`。段间空洞先清零、复制后刷新
+  指令缓存，装载区域与当前镜像重叠时拒绝。固定地址属于 axloader 策略，当前目标
+  已占该区时不能猜测 load bias 再覆盖。继承入口恢复内存图并跳过第二次
+  ExitBootServices，退出后只能操作预留内存和运行时服务。
+- x86 ELF 也使用 `ResourceRequest`/`reserve()` 和 `HandoffSpec`/`PreparedHandoff`，
+  保留 LoadOptions、Linux LoadFile2 以及 OTA LoadImage/StartImage。返回且固件活动
+  时撤销事务、恢复旧表和参数；服务已退出或撤销失败时保留被引用的分配，不再调用
+  Boot Services。EFI 服务、地址转换、缓存和继承实现保持具体平台模块，不增加 trait。
+- axstd UART 身份来自已激活的 runtime console；无活动 UART 或不需要隧道时显式
+  `direct` continue。`run()` 在启动和连接处理后发送 UDP，阻塞接受连接期间不周期
+  重发，服务端后上线可按已知 IP 直连。没有可信启动熵时先提交持久 OTA 代次，再以
+  代次和运行槽摘要派生身份；继承入口复用父代次，不能退回时间或进程计数。
+- FAT 文件为 `axloader/A.EFI`、`B.EFI`、`STATE0.BIN`、`STATE1.BIN`。进入 pending
+  前提交 attempted，`ota/handoff.rs` 编解码应用自有槽位与代次，确认要求匹配 ID 和
+  来源；未确认复位先回滚。继承槽缺失有效持久状态时拒绝从祖先文件重新建档。
+  无效镜像返回 `422 image_digest_or_efi_validation_failed`；实际存储失败返回
+  `409 ota_storage_failed`，不得把写满或 Flush 失败报告为镜像格式问题。
+- 完整验证使用 `python3 bootloader/axloader/scripts/loong-qemu-smoke.py`：先运行无
+  网络、OTA 和交接生产端的资源应用，再通过同一 QEMU 模板创建独占 FAT、QMP 与
+  空闲端口。覆盖写满状态保持、HTTP 幂等与拒绝、真实 trial、QMP 复位回滚、旧确认
+  拒绝和再次确认；上传独立 helloworld ELF 与宿主归档后，必须观察目标
   `HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。
-  因而该门禁同时证明 HTTP body 长度/SHA、Loong ELF/`efi_pe_entry` 交接及
-  cmdline/initramfs 正向路径；失败 trial 的跨重启 rollback 仍需要独立 QEMU 场景，
-  `ready_to_handoff` 单独出现时仍只表示 loader 准备交接。
+  `ready_to_handoff` 单独出现只表示准备交接，`qemu-loongarch64.toml` 仅证明网络
+  服务启动。AArch64 EFI 镜像生成、LoongArch 非 EFI 和 UHI handoff 不在该门禁范围。
 
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。
 - 加入 `-d int,cpu_reset,guest_errors` 记录陷阱、复位和无效客户机访问。

@@ -408,6 +408,7 @@ dependencies = [
  "ax-fs-ng",
  "ax-hal",
  "ax-std",
+ "someboot",
 ]
 
 [[package]]
@@ -7944,7 +7945,6 @@ dependencies = [
  "trait-ffi",
  "uefi",
  "uefi-raw",
- "uguid",
  "x86",
 ]
 
