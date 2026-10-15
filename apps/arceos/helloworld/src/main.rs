@@ -1,7 +1,12 @@
 #[cfg(feature = "arceos")]
 use ax_std as _;
 
+#[cfg(feature = "boot-resources-smoke")]
+mod resources;
+
 fn main() {
+    #[cfg(feature = "boot-resources-smoke")]
+    resources::exercise();
     #[cfg(any(feature = "cmdline-smoke", feature = "initramfs-smoke"))]
     println!("HOST_CMDLINE: {}", ax_hal::boot::bootargs().unwrap_or(""));
     #[cfg(feature = "initramfs-smoke")]

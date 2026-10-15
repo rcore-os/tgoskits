@@ -44,14 +44,20 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 
 LoongArch 目标使用 `loongarch64-unknown-none-softfloat` 和 `arceos-efi`，由
 `bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml` 选择
-axstd、FAT/NVMe 和 EFI loader 特性，再由
+axstd、FAT/NVMe 和 `efi-handoff` 能力，再由
 `bootloader/axloader/qemu-loongarch64.toml` 配置 `virt`、virtio-net、NVMe/FAT
 磁盘、`uefi = true` 和 `to_bin = true`。`axstd_loader::run()` 负责单任务轮询
-发现和 HTTP 路由；`TargetSpec` 的 `LOONGARCH64_EFI` 固定 ELF machine
-`EM_LOONGARCH` 与 `efi_pe_entry`，someboot 的 `LoongBootPayload` 交接目标镜像、
-cmdline、initramfs 和内存图。该结构是 LoongArch 专用 v2 EFI 配置表，使用独立
-GUID，不复用最新 dev 已移除的 `host-boot-abi` v1；x86_64 继续使用最新 dev 的
-Linux EFI `LoadFile2` initrd 协议。
+发现和 HTTP 路由；`TargetSpec::LOONGARCH64_EFI` 固定 ELF machine
+`EM_LOONGARCH` 与 `efi_pe_entry`。someboot 公共 `boot_resources` 管理类型化资源，
+`handoff::HandoffSpec` 和 `PreparedHandoff` 管理两条平台路径的交接事务；x86_64
+继续使用 EFI LoadOptions 与 Linux EFI LoadFile2。
+
+`boot-resources` 可以独立使用；`efi-handoff = ["efi", "boot-resources"]` 开启生产端，
+普通 EFI 消费始终跟随构建脚本的 `cfg(efi)`。原生 UEFI target 只编译 someboot
+公共能力与固件适配，不带入内核入口、分页或 SMP。LoongArch 的 v3 配置表承载资源
+快照、镜像、cmdline/initramfs 和应用元数据，不包含固定三池或 OTA 槽位字段；
+GUID 为 `7b9fa931-a25b-d043-b13c-63435428c473`。v2 已拒绝，迁移须同时重建
+生产者、目标与 A/B 槽。完整边界见[设计文档](../../design/someboot-boot-resources.md)。
 
 `axstd_loader::run()` 在启动及每次连接处理后发送 UDP 公告，阻塞等待连接期间
 不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或启动广播丢失时，
@@ -82,21 +88,32 @@ cargo xtask arceos build \
 `target/loongarch64-unknown-linux-musl/release/arceos-helloworld`。目标应用的
 输出用于确认 EFI 入口已经完成 cmdline 和宿主 initramfs 交接。
 
-CI 的控制面 smoke 改用 `qemu-loongarch64-http.toml`，并在后台运行同一 ArceOS
-镜像后执行 `python3 bootloader/axloader/scripts/loong-http-smoke.py`。该配置不以
-串口成功标记提前停止 QEMU，而是保留 `hostfwd`，让脚本完成状态、启动事务和
-OTA trial/confirm 后再关闭实例。
+完整 LoongArch 回归由以下入口统一构建并运行，不需要手动保留后台 QEMU：
+
+```bash
+python3 bootloader/axloader/scripts/loong-qemu-smoke.py
+```
+
+脚本先执行 `boot-resources` 独立资源应用，再根据 `qemu-loongarch64-http.toml`
+创建独占 FAT、QMP socket 和空闲宿主端口，运行正常 HTTP/OTA/ELF 与 FAT 写满两组
+场景，失败时输出 QEMU 日志并停止自己创建的进程组。可加
+`--output-dir /tmp/loong-efi` 保留本次运行证据。需要 QEMU LoongArch、dosfstools、
+mtools 和 `python3`。
 
 LoongArch 的持久文件位于 FAT 卷的 `axloader/` 目录：`A.EFI`、`B.EFI`、
 `STATE0.BIN` 和 `STATE1.BIN`。`LaOta::prepare_bootstrap()` 在进入待试槽前提交
-`attempted`，`loader_slot` 随 EFI 配置表传给下一份 axstd loader，确认请求由
-`LaOta::confirm()` 按升级 ID 和来源提交。没有可信 UEFI/FDT 启动熵时，loader
-会先提交持久化启动代次，再用代次和当前镜像摘要派生 `boot_epoch`；继承入口复用
-父 loader 已提交的代次。非 EFI LoongArch 启动和 UHI FDT handoff 暂不属于此阶段。
+`attempted`；`ota::handoff` 编解码应用自己的槽位和代次，someboot 仅传递有界
+元数据。确认由 `LaOta::confirm()` 按升级 ID 和来源提交。没有可信启动熵时先提交
+持久代次，再派生 `boot_epoch`；继承入口复用父 loader 已提交的代次。
 
-首次启动时，loader 会校验并 Flush 自身的 someboot LoongArch PE 到
-`A.EFI`，然后创建 `STATE0.BIN`。该引导种子只接受 `ImageBase = 0` 且没有
-base relocation directory 的 someboot 产物；其他 PE 会在写入稳定槽前拒绝。
+axloader 的静态计划声明 32 MiB 镜像区（`0x200000`）、256 MiB 归档区、32 MiB
+EFI 槽执行区和 32 MiB 原文件区。首次启动在退出服务前通过
+`InitialContents::FirmwareBootImage` 保存最初固件启动文件，再校验、Flush 并读回
+`A.EFI`，最后创建状态记录；不使用已修改的运行镜像字节。该配置要求最初从可读的
+EFI 文件系统启动，源文件不超过 32 MiB，来源不可用或必需资源申请失败时停止。
+仅接受 `ImageBase = 0`、无 base relocation directory 的 someboot LoongArch PE。
+继承阶段保留同一份固件来源文件，当前槽身份以持久状态为准，缺失状态时拒绝建档。
+非 EFI LoongArch、UHI FDT handoff 和 AArch64 EFI 镜像生成不在本阶段。
 
 ## 2. 设备控制
 
@@ -135,12 +152,12 @@ sequenceDiagram
 | `DELETE /api/v1/boot/jobs/{id}` | 取消尚未执行的事务 |
 | `POST /api/v1/boot/jobs/{id}/start` | 完成 ELF 与载荷检查，核对 `X-Serial-Binding`，回复 `202`，关闭网络对象后交接 |
 
-v6 只接受 `__x86_64_efi_pe_entry`。cmdline 经 `entry::PreparedLoadOptions` 编码为带 NUL 的 UCS-2 EFI LoadOptions；initramfs 存在时由 `payload::PreparedPayload` 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。上传、状态查询和 OTA 不受串口门禁限制；没有隧道需求的调用方必须显式使用 `direct` continue。
+x86_64 v6 只接受 `__x86_64_efi_pe_entry`。`someboot::handoff::PreparedHandoff` 在内部将 cmdline 编码为带 NUL 的 UCS-2 EFI LoadOptions，并为可选 initramfs 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。上传、状态查询和 OTA 不受串口门禁限制；没有隧道需求的调用方必须显式使用 `direct` continue。
 
 LoongArch 请求使用 `BootArch::Loongarch64`、`ImageFormat::Elf64` 和
 `efi_pe_entry`。`axstd_loader::LoadedElf` 拒绝错误 machine、入口、重叠
 `PT_LOAD` 或与当前 loader 重叠的装载区域；`PublishedPayload` 通过
-`someboot::loader_set_payload_with_image()` 交接 cmdline/initramfs。目标 EFI
+共同的 `HandoffSpec`/`PreparedHandoff` 交接 cmdline/initramfs。目标 EFI
 镜像由 `LoadedPe` 校验 LoongArch PE/COFF machine 并从独立槽位内存池装载。
 
 v6 设备必须与支持 `POST /api/v1/serial/continue`、`X-Serial-Binding` 的 ostool-server
@@ -209,19 +226,19 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 
 QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
 
-当前 LoongArch CI/QEMU 门禁使用 `qemu-loongarch64-http.toml` 和
-`scripts/loong-http-smoke.py`，通过 host `3999` 到 guest `2999` 的转发执行真实
-HTTP 请求。它覆盖状态读取、manifest 幂等、serial continue、坏 ELF/OTA 拒绝、有效
-PE 槽位写入、重启 trial 和 confirm；随后构建独立的 `arceos-helloworld` EFI ELF，
-将 `test-suit/host-initramfs` 作为 HTTP 上传的目标归档，并检查
-`elf_loaded`、`ready_to_handoff`、`HOST_CMDLINE: axloader-positive=1`、
-`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。普通 `qemu-loongarch64.toml` 的启动
-配置则以跨行正则同时等待 `network_ready: arch=loongarch64` 和
-`loader_server: port=2999`。失败 trial 的跨重启 rollback 仍需要后续独立 QEMU
-场景；其中 `ready_to_handoff` 单独出现时只表示 loader 已准备交接。LoongArch axstd 前端在活动 runtime UART
-未绑定时通过 axstd console 输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧，并在状态/UDP
-公告中报告 runtime 波特率和 8N1 参数；没有活动 UART 时报告 `ready=false`，客户端使用
-显式 `direct` continue。绑定后暂停身份帧，撤销绑定后恢复输出。
+LoongArch CI 使用 `scripts/loong-qemu-smoke.py`。资源用例不启用网络、OTA 或
+交接生产端，以 `BOOT_RESOURCES_PASSED` 和 `Hello, world!` 作为实际执行证据。
+HTTP 用例验证 manifest 幂等、serial continue、坏 ELF/OTA 拒绝、有效 PE 槽位写入，
+未确认 trial 经 QMP 复位回滚到原稳定摘要、旧确认拒绝，以及再次 trial/confirm。
+独立 `arceos-helloworld` EFI ELF 与宿主归档通过 HTTP 上传，目标必须输出
+`HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。
+写满的独占 FAT 则验证 `409 ota_storage_failed` 且稳定状态未提交；错误镜像仍为
+`422 image_digest_or_efi_validation_failed`。`ready_to_handoff` 单独出现只表示准备交接。
+
+普通 `qemu-loongarch64.toml` 仅等待 `network_ready: arch=loongarch64` 和
+`loader_server: port=2999`。LoongArch 在活动 runtime UART 未绑定时输出身份帧，
+状态与 UDP 公告报告实际波特率和 8N1 参数；无活动 UART 时报告 `ready=false`，
+客户端须显式 `direct` continue。绑定后暂停身份帧，撤销绑定后恢复。
 
 ## 4. 故障定位
 

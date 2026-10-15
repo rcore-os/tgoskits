@@ -1,6 +1,6 @@
 //! LoongArch ArceOS EFI loader frontend.
 
-use core::{ffi::c_void, mem, ptr::NonNull};
+use core::{mem, ptr::NonNull};
 use std::{
     format,
     fs::{self, File, OpenOptions},
@@ -20,7 +20,6 @@ use axloader::{
     },
     integrity,
     ota::{self, Outcome, Slot, State},
-    platform::{BootTransport, EfiHandoff, ImageMemory, OtaStorage},
     target::LOONGARCH64_EFI,
 };
 use httpboot_protocol::{
@@ -29,21 +28,36 @@ use httpboot_protocol::{
     MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress, OtaOutcome, OtaSource, SerialParameters,
 };
 use sha2::{Digest, Sha256};
-use uefi::Status;
+use someboot::{
+    boot_resources::{self, Allocation, PhysicalRange, Placement, ResourceId, ResourceRequest},
+    handoff::{ApplicationMetadata, HandoffSpec, PreparedHandoff},
+};
+
+const IMAGE_RESOURCE: ResourceId = ResourceId(1);
+const ARCHIVE_RESOURCE: ResourceId = ResourceId(2);
+const FIRMWARE_RESOURCE: ResourceId = ResourceId(4);
+const SLOT_RESOURCE: ResourceId = ResourceId(3);
+const OTA_METADATA_ID: [u8; 16] = *b"AXLOADER-OTA-V1!";
+someboot::declare_boot_resources! {
+    ResourceRequest::new(IMAGE_RESOURCE, 32 * 1024 * 1024, 4096, Placement::At(0x20_0000)),
+    ResourceRequest::new(ARCHIVE_RESOURCE, 256 * 1024 * 1024, 4096, Placement::Anywhere),
+    ResourceRequest::new(SLOT_RESOURCE, 32 * 1024 * 1024, 4096, Placement::Anywhere),
+    ResourceRequest::new(FIRMWARE_RESOURCE, MAX_IMAGE_BYTES as u64, 4096, Placement::Anywhere)
+        .with_initial_contents(someboot::boot_resources::InitialContents::FirmwareBootImage),
+}
 
 const HTTP_PORT: u16 = 2999;
 const DISCOVERY_PORT: u16 = 2998;
 const OTA_ROOT: &str = "axloader";
-const PE32_PLUS_MAGIC: u16 = 0x20b;
-const PE32_PLUS_OPTIONAL_HEADER_SIZE: usize = 112;
 const ELF_PF_X: u32 = 1;
 pub fn run() {
     println!("axloader: LoongArch ArceOS EFI frontend");
-    let current_image = current_loader_image()
+    let current_image = firmware_boot_image()
         .unwrap_or_else(|| panic!("ota_bootstrap: current loader image unavailable"));
-    let current_digest: [u8; 32] = Sha256::digest(&current_image).into();
+    let mut current_digest: [u8; 32] = Sha256::digest(&current_image).into();
     let mut ota = LaOta::open(&current_image);
-    let inherited_slot = someboot::inherited_loader_slot();
+    let inherited_slot =
+        inherited_ota_slot(&ota.state).unwrap_or_else(|error| panic!("ota_handoff: {error}"));
     // The parent commits the generation immediately before entering an
     // inherited loader. Treat that handoff as the same boot attempt instead
     // of advancing the durable identity a second time in the child.
@@ -51,6 +65,7 @@ pub fn run() {
     if let Some(slot) = inherited_slot {
         ota.set_running_slot(slot)
             .unwrap_or_else(|error| panic!("ota_slot: {error}"));
+        current_digest = *ota.state.digest(ota.slot);
     } else if let Some(slot) = ota
         .prepare_bootstrap(current_digest)
         .unwrap_or_else(|error| panic!("ota_bootstrap: {error}"))
@@ -114,7 +129,7 @@ pub fn run() {
                     execution.elf.load_addr,
                     execution.elf.load_end,
                     execution.elf.entry_point,
-                    execution.elf.page_count
+                    (execution.elf.load_end - execution.elf.load_addr) / 4096
                 );
                 println!("ready_to_handoff");
                 // No background task owns the axstd sockets, so dropping the
@@ -143,7 +158,7 @@ struct Interface {
     current_mac: MacAddress,
 }
 
-impl BootTransport for Interface {
+impl Interface {
     fn mac_address(&self) -> MacAddress {
         self.mac
     }
@@ -500,15 +515,19 @@ fn route(
                 .ok_or_else(|| "invalid OTA update id".to_string())?,
             OtaSource::Direct => ota.next_direct_id(&expected),
         };
-        if ota
-            .stage_image(&request.body, expected, update_id, version, source)
-            .is_err()
-        {
-            return Ok(Response::json(
-                "422 Unprocessable Content",
-                br#"{"error":"image_digest_or_efi_validation_failed"}"#,
-                Action::None,
-            ));
+        if let Err(error) = ota.stage_image(&request.body, expected, update_id, version, source) {
+            let (status, body): (_, &[u8]) = match error {
+                OtaStageError::InvalidImage => (
+                    "422 Unprocessable Content",
+                    br#"{"error":"image_digest_or_efi_validation_failed"}"#,
+                ),
+                OtaStageError::Conflict => ("409 Conflict", br#"{"error":"ota_state_conflict"}"#),
+                OtaStageError::Storage(reason) => {
+                    println!("ota_stage_storage_failed: {reason}");
+                    ("409 Conflict", br#"{"error":"ota_storage_failed"}"#)
+                }
+            };
+            return Ok(Response::json(status, body, Action::None));
         }
         let body = serde_json::to_vec(&serde_json::json!({
             "update_id": core::str::from_utf8(&update_id).unwrap_or("")
@@ -731,7 +750,7 @@ struct LoadedElf {
     entry_point: u64,
     load_addr: u64,
     load_end: u64,
-    page_count: usize,
+    _allocation: Allocation,
 }
 
 #[derive(Debug)]
@@ -844,25 +863,22 @@ impl LoadedElf {
         let entry = find_symbol(image, &header, spec.entry_symbol)
             .and_then(|value| virtual_to_executable_physical(value, &segments))
             .ok_or(ElfError::InvalidEntry)?;
-        let target_phys = LoaderImageMemory
-            .allocate_image(page_count)
-            .map_err(|_| ElfError::AddressConflict)?;
+        let allocation =
+            reserve_image(IMAGE_RESOURCE, page_count).map_err(|_| ElfError::AddressConflict)?;
+        let target_phys = allocation.range().start as usize;
         let target_end = match target_phys.checked_add(load_end as usize - link_addr as usize) {
             Some(end) => end,
             None => {
-                someboot::loader_release_image(target_phys, page_count);
                 return Err(ElfError::AddressConflict);
             }
         };
-        let (loader_start, loader_end) = match someboot::loader_image_range() {
-            Some(range) => range,
+        let (loader_start, loader_end) = match someboot::handoff::current_image() {
+            Some(range) => (range.start as usize, range.end().unwrap() as usize),
             None => {
-                someboot::loader_release_image(target_phys, page_count);
                 return Err(ElfError::AddressConflict);
             }
         };
         if target_phys < loader_end && loader_start < target_end {
-            someboot::loader_release_image(target_phys, page_count);
             return Err(ElfError::AddressConflict);
         }
         if spec
@@ -872,20 +888,17 @@ impl LoadedElf {
                 .load_address
                 .is_some_and(|expected| expected != target_phys as u64)
         {
-            someboot::loader_release_image(target_phys, page_count);
             return Err(ElfError::AddressConflict);
         }
         let target = match NonNull::new(someboot::mem::phys_to_virt(target_phys)) {
             Some(target) => target,
             None => {
-                someboot::loader_release_image(target_phys, page_count);
                 return Err(ElfError::Allocation);
             }
         };
         let allocation_bytes = match page_count.checked_mul(4096) {
             Some(bytes) => bytes,
             None => {
-                someboot::loader_release_image(target_phys, page_count);
                 return Err(ElfError::Invalid);
             }
         };
@@ -897,23 +910,16 @@ impl LoadedElf {
         // page count keeps the write within that allocation.
         unsafe { core::ptr::write_bytes(target.as_ptr(), 0, allocation_bytes) };
         if copy_segments(image, &segments, link_addr, target).is_err() {
-            someboot::loader_release_image(target_phys, page_count);
             return Err(ElfError::Invalid);
         }
-        someboot::loader_flush_icache();
+        someboot::handoff::flush_instruction_cache();
         Ok(Self {
             entry_point: someboot::mem::phys_to_virt(target_phys + (entry - link_addr) as usize)
                 as u64,
             load_addr: target_phys as u64,
             load_end: target_end as u64,
-            page_count,
+            _allocation: allocation,
         })
-    }
-}
-
-impl Drop for LoadedElf {
-    fn drop(&mut self) {
-        let _ = someboot::loader_release_image(self.load_addr as usize, self.page_count);
     }
 }
 
@@ -922,53 +928,10 @@ struct LoadedPe {
     entry_point: u64,
     load_addr: usize,
     load_end: usize,
-    page_count: usize,
+    _allocation: Allocation,
 }
 
 impl LoadedPe {
-    /// Returns the PE32+ ImageBase field offset after checking its fixed header.
-    fn image_base_offset(image: &[u8]) -> Result<usize, &'static str> {
-        if image.len() < 0x40 || &image[..2] != b"MZ" {
-            return Err("invalid EFI image signature");
-        }
-        let pe_offset = read_u32(image, 0x3c)
-            .and_then(|value| usize::try_from(value).ok())
-            .ok_or("invalid EFI PE offset")?;
-        let optional = pe_offset.checked_add(24).ok_or("EFI PE offset overflows")?;
-        let optional_size = usize::from(
-            read_u16(
-                image,
-                pe_offset.checked_add(20).ok_or("EFI PE offset overflows")?,
-            )
-            .ok_or("missing EFI PE optional header size")?,
-        );
-        if pe_offset
-            .checked_add(24)
-            .and_then(|offset| offset.checked_add(optional_size))
-            .is_none_or(|end| end > image.len())
-            || read_u32(image, pe_offset) != Some(u32::from_le_bytes(*b"PE\0\0"))
-            || read_u16(image, optional) != Some(PE32_PLUS_MAGIC)
-            || optional_size < PE32_PLUS_OPTIONAL_HEADER_SIZE
-        {
-            return Err("unsupported EFI PE optional header");
-        }
-        optional
-            .checked_add(24)
-            .ok_or("EFI PE image base offset overflows")
-    }
-
-    /// Canonicalizes a firmware-loaded image before it becomes an OTA slot.
-    ///
-    /// Some UEFI PE loaders rewrite the in-memory ImageBase field with the
-    /// address selected for the image. The on-disk someboot image deliberately
-    /// uses ImageBase = 0, so clear only this firmware-owned header field while
-    /// preserving the already loaded sections and relocation table.
-    fn canonicalize_loaded_image(image: &mut [u8]) -> Result<(), &'static str> {
-        let image_base = Self::image_base_offset(image)?;
-        image[image_base..image_base + 8].fill(0);
-        Ok(())
-    }
-
     fn validate(image: &[u8]) -> Result<(), &'static str> {
         let layout = efi_image::layout(image)?;
         layout.validate(image.len())
@@ -978,8 +941,8 @@ impl LoadedPe {
         let layout = efi_image::layout(image)?;
         layout.validate(image.len())?;
         let page_count = layout.image_size.div_ceil(4096);
-        let load_addr = someboot::loader_allocate_slot(page_count)
-            .ok_or("EFI slot image pool is unavailable")?;
+        let allocation = reserve_image(SLOT_RESOURCE, page_count)?;
+        let load_addr = allocation.range().start as usize;
         let target = someboot::mem::phys_to_virt(load_addr);
         // SAFETY: the slot pool is reserved by someboot and `image_size` stays
         // inside the fixed allocation returned above.
@@ -1004,32 +967,14 @@ impl LoadedPe {
                 }
             }
         }
-        someboot::loader_flush_icache();
+        someboot::handoff::flush_instruction_cache();
         Ok(Self {
             entry_point: someboot::mem::phys_to_virt(load_addr + layout.entry) as u64,
             load_addr,
             load_end: load_addr + page_count * 4096,
-            page_count,
+            _allocation: allocation,
         })
     }
-}
-
-impl Drop for LoadedPe {
-    fn drop(&mut self) {
-        let _ = someboot::loader_release_slot(self.load_addr, self.page_count);
-    }
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    bytes
-        .get(offset..offset.checked_add(2)?)
-        .map(|value| u16::from_le_bytes(value.try_into().unwrap()))
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    bytes
-        .get(offset..offset.checked_add(4)?)
-        .map(|value| u32::from_le_bytes(value.try_into().unwrap()))
 }
 
 fn load_segments(image: &[u8], header: &Elf64Header) -> Result<Vec<LoadSegment>, ElfError> {
@@ -1188,37 +1133,49 @@ fn align_up(value: u64, align: u64) -> Option<u64> {
         .map(|value| align_down(value, align))
 }
 
-struct PublishedPayload;
-
-struct LoaderImageMemory;
-
-impl ImageMemory for LoaderImageMemory {
-    type Error = &'static str;
-
-    fn allocate_image(&self, pages: usize) -> Result<usize, Self::Error> {
-        someboot::loader_allocate_image(pages).ok_or("EFI image pool is unavailable")
-    }
+fn reserve_image(id: ResourceId, pages: usize) -> Result<Allocation, &'static str> {
+    let bytes = pages
+        .checked_mul(4096)
+        .and_then(|bytes| bytes.checked_add(0x1f_ffff))
+        .map(|bytes| bytes & !0x1f_ffff)
+        .ok_or("image reservation overflows")?;
+    boot_resources::allocate(id, bytes as u64, 0x20_0000).map_err(|_| "image resource unavailable")
 }
 
+struct PublishedPayload(PreparedHandoff);
 impl PublishedPayload {
     fn new(
         initramfs: Option<&[u8]>,
         cmdline: Option<&str>,
         target_image: Option<(usize, usize)>,
     ) -> Result<Self, &'static str> {
-        if let Some(cmdline) = cmdline
-            && !httpboot_protocol::valid_host_cmdline(cmdline)
-        {
-            return Err("invalid command line");
-        }
-        someboot::loader_set_payload_with_image(cmdline, initramfs, target_image)?;
-        Ok(Self)
+        Self::with_metadata(initramfs, cmdline, target_image, None)
     }
-}
-
-impl Drop for PublishedPayload {
-    fn drop(&mut self) {
-        let _ = someboot::loader_set_payload_with_image(None, None, None);
+    fn with_metadata(
+        initramfs: Option<&[u8]>,
+        cmdline: Option<&str>,
+        target_image: Option<(usize, usize)>,
+        metadata: Option<ApplicationMetadata<'_>>,
+    ) -> Result<Self, &'static str> {
+        let (start, end) = target_image.ok_or("missing target image")?;
+        let archive = initramfs
+            .filter(|bytes| !bytes.is_empty())
+            .map(|bytes| {
+                boot_resources::allocate(ARCHIVE_RESOURCE, bytes.len() as u64, 4096)
+                    .map_err(|_| "archive resource unavailable")
+            })
+            .transpose()?;
+        PreparedHandoff::prepare(
+            HandoffSpec {
+                image: PhysicalRange::new(start as u64, (end - start) as u64),
+                cmdline,
+                initramfs,
+                metadata,
+            },
+            archive,
+        )
+        .map(Self)
+        .map_err(|_| "EFI handoff preparation failed")
     }
 }
 
@@ -1226,44 +1183,36 @@ struct BootExecution {
     elf: LoadedElf,
     payload: PublishedPayload,
 }
-
-struct LoaderEfiHandoff;
-
-impl EfiHandoff for LoaderEfiHandoff {
-    type Error = Status;
-
-    fn handoff(&self, entry_point: u64) -> Result<(), Self::Error> {
-        let (handle, system_table) = someboot::loader_efi_context().ok_or(Status::NOT_FOUND)?;
-        let status = unsafe { call_efi_entry(entry_point, handle, system_table) }?;
-        (status == Status::SUCCESS).then_some(()).ok_or(status)
-    }
-}
-
 impl BootExecution {
-    fn handoff(self) -> Result<(), Status> {
-        let result = LoaderEfiHandoff.handoff(self.elf.entry_point);
-        drop(self.payload);
-        result
+    fn handoff(self) -> Result<(), someboot::handoff::HandoffError> {
+        // SAFETY: the loader validated the EFI symbol and executable segment;
+        // the image and payload owners stay live and network services are closed.
+        unsafe { self.payload.0.enter(self.elf.entry_point) }
     }
 }
 
-/// Calls a validated LoongArch EFI image entry point.
-///
-/// # Safety
-/// `entry_point` must be the `efi_pe_entry` address found by `LoadedElf` or
-/// `LoadedPe` inside an executable, validated image range. The target image
-/// allocation must remain live and unmoved for the duration of the call, and
-/// `image_handle`/`system_table` must be the current firmware EFI context.
-unsafe fn call_efi_entry(
-    entry_point: u64,
-    image_handle: uefi::Handle,
-    system_table: *const c_void,
-) -> Result<Status, Status> {
-    let entry: extern "efiapi" fn(uefi::Handle, *const c_void) -> Status =
-        // SAFETY: LoadedElf found the exported efi_pe_entry symbol inside an executable PT_LOAD
-        // range, and this LoongArch someboot symbol has the EFI ABI above.
-        unsafe { mem::transmute(entry_point as usize) };
-    Ok(entry(image_handle, system_table))
+fn inherited_ota_slot(state: &State) -> Result<Option<u8>, &'static str> {
+    let Some(metadata) = someboot::handoff::inherited_metadata() else {
+        return Ok(None);
+    };
+    if metadata.id != OTA_METADATA_ID {
+        return Ok(None);
+    }
+    if metadata.version != 1 {
+        return Err("unsupported OTA metadata version");
+    }
+    let metadata = ota::handoff::OtaHandoff::decode(metadata.bytes)?;
+    if metadata.generation != state.generation {
+        return Err("inherited OTA generation mismatch");
+    }
+    Ok(Some(metadata.slot as u8))
+}
+
+#[derive(Debug)]
+enum OtaStageError {
+    InvalidImage,
+    Conflict,
+    Storage(&'static str),
 }
 
 struct LaOta {
@@ -1278,10 +1227,12 @@ impl LaOta {
         fs::create_dir_all(OTA_ROOT)
             .unwrap_or_else(|_| panic!("ota_bootstrap: failed to access OTA directory"));
         Self::cleanup_temporary_slots();
+        let inherited = someboot::handoff::inherited_metadata().is_some();
         let (state, index) =
             match Self::load_state().unwrap_or_else(|error| panic!("ota_bootstrap: {error}")) {
                 Some(state) => state,
                 None => {
+                    assert!(!inherited, "inherited OTA state is missing");
                     let path = Self::slot_path(Slot::A);
                     let digest = match Self::read_file_if_present(&path)
                         .unwrap_or_else(|error| panic!("ota_bootstrap: {error}"))
@@ -1427,21 +1378,24 @@ impl LaOta {
             return Err("OTA slot digest mismatch");
         }
         let loaded = LoadedPe::load(&image)?;
-        let _payload = PublishedPayload::new(
+        let bytes = ota::handoff::OtaHandoff {
+            slot,
+            generation: self.state.generation,
+        }
+        .encode();
+        let payload = PublishedPayload::with_metadata(
             None,
             someboot::cmdline(),
             Some((loaded.load_addr, loaded.load_end)),
+            Some(ApplicationMetadata {
+                id: OTA_METADATA_ID,
+                version: 1,
+                bytes: &bytes,
+            }),
         )?;
-        someboot::loader_set_slot(Some(slot as u8))?;
-        let (handle, system_table) =
-            someboot::loader_efi_context().ok_or("EFI context is unavailable")?;
-        let status = unsafe { call_efi_entry(loaded.entry_point, handle, system_table) }
-            .map_err(|_| "OTA slot EFI entry failed")?;
-        if status == Status::SUCCESS {
-            Err("OTA slot returned successfully")
-        } else {
-            Err("OTA slot EFI entry failed")
-        }
+        // SAFETY: validated EFI PE entry, with both owners retained for the call.
+        unsafe { payload.0.enter(loaded.entry_point) }.map_err(|_| "OTA slot EFI entry failed")?;
+        Err("OTA slot returned successfully")
     }
 
     fn load_state() -> Result<Option<(State, usize)>, &'static str> {
@@ -1493,10 +1447,6 @@ impl LaOta {
     }
 
     fn commit(&mut self, state: &State) -> Result<(), &'static str> {
-        <Self as OtaStorage>::commit_state(self, state)
-    }
-
-    fn commit_inner(&mut self, state: &State) -> Result<(), &'static str> {
         self.index = Self::write_state(self.index, state)?;
         self.state = state.clone();
         Ok(())
@@ -1542,13 +1492,16 @@ impl LaOta {
         update_id: [u8; 36],
         version: Option<&str>,
         source: OtaSource,
-    ) -> Result<(), &'static str> {
-        if Sha256::digest(image).as_slice() != digest || self.state.pending.is_some() {
-            return Err("invalid OTA image");
+    ) -> Result<(), OtaStageError> {
+        if self.state.pending.is_some() {
+            return Err(OtaStageError::Conflict);
+        }
+        if Sha256::digest(image).as_slice() != digest {
+            return Err(OtaStageError::InvalidImage);
         }
         // Validate the image before replacing the inactive slot. A failed
         // upload must not leave an unbootable candidate behind.
-        LoadedPe::validate(image).map_err(|_| "invalid LoongArch EFI image")?;
+        LoadedPe::validate(image).map_err(|_| OtaStageError::InvalidImage)?;
         let target = self.state.active.other();
         let path = Self::slot_path(target);
         let temporary = Self::slot_temporary_path(target);
@@ -1557,26 +1510,29 @@ impl LaOta {
             .create(true)
             .truncate(true)
             .open(&temporary)
-            .map_err(|_| "OTA image create failed")?;
+            .map_err(|_| OtaStageError::Storage("OTA image create failed"))?;
         file.write_all(image)
-            .map_err(|_| "OTA image write failed")?;
-        file.flush().map_err(|_| "OTA image flush failed")?;
+            .map_err(|_| OtaStageError::Storage("OTA image write failed"))?;
+        file.flush()
+            .map_err(|_| OtaStageError::Storage("OTA image flush failed"))?;
         drop(file);
         // Keep the replacement name within FAT's short-name format. The state is
         // committed only after readback validation, so an interrupted replacement
         // remains a rejected inactive candidate on the next boot.
         let _ = fs::remove_file(&path);
-        fs::rename(&temporary, &path).map_err(|_| "OTA image commit failed")?;
-        let readback = fs::read(&path).map_err(|_| "OTA image readback failed")?;
+        fs::rename(&temporary, &path)
+            .map_err(|_| OtaStageError::Storage("OTA image commit failed"))?;
+        let readback =
+            fs::read(&path).map_err(|_| OtaStageError::Storage("OTA image readback failed"))?;
         if Sha256::digest(&readback).as_slice() != digest || LoadedPe::validate(&readback).is_err()
         {
-            return Err("OTA image readback mismatch");
+            return Err(OtaStageError::Storage("OTA image readback mismatch"));
         }
         let next = self
             .state
             .stage_named(digest, update_id, source, version)
-            .map_err(|_| "invalid OTA state")?;
-        self.commit(&next)
+            .map_err(|_| OtaStageError::Conflict)?;
+        self.commit(&next).map_err(OtaStageError::Storage)
     }
 
     fn confirm(&mut self, update_id: &str, source: OtaSource) -> Result<(), &'static str> {
@@ -1643,26 +1599,12 @@ impl LaOta {
     }
 }
 
-fn current_loader_image() -> Option<Vec<u8>> {
-    let (start, end) = someboot::loader_image_range()?;
-    let len = end.checked_sub(start)?;
-    if len == 0 || len > MAX_IMAGE_BYTES {
-        return None;
-    }
-    let pointer = someboot::mem::phys_to_virt(start);
-    // SAFETY: someboot records the firmware-owned image range before handing
-    // control to axstd, and the allocation remains reserved for this loader.
-    let mut image = unsafe { core::slice::from_raw_parts(pointer.cast_const(), len) }.to_vec();
-    LoadedPe::canonicalize_loaded_image(&mut image).ok()?;
-    Some(image)
-}
-
-impl OtaStorage for LaOta {
-    type Error = &'static str;
-
-    fn commit_state(&mut self, state: &State) -> Result<(), Self::Error> {
-        self.commit_inner(state)
-    }
+fn firmware_boot_image() -> Option<Vec<u8>> {
+    // Preserve the original file before EBS. Runtime data and relocated pointers
+    // cannot be used to reconstruct a restartable EFI application.
+    let image = someboot::boot_resources::initial_contents(FIRMWARE_RESOURCE)?;
+    LoadedPe::validate(image).ok()?;
+    Some(image.to_vec())
 }
 
 fn slot_text(slot: Slot) -> &'static str {

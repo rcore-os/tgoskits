@@ -16,7 +16,7 @@ features = ["uspace"]
 
 [features]
 efi = ["someboot/efi"]
-efi-loader = ["someboot/efi-loader"]
+efi-handoff = ["someboot/efi-handoff"]
 hv = ["mmu", "someboot/hv"]
 mmu = ["someboot/mmu"]
 thead-mae = ["someboot/thead-mae"]

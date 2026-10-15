@@ -15,15 +15,26 @@ use crate::{
     boot_payload::{self, loongarch64 as payload},
 };
 
-#[cfg(feature = "efi-loader")]
-pub(super) mod loader;
+#[cfg(feature = "efi-handoff")]
+pub(crate) mod handoff;
 
 static INHERITED_EFI_HANDOFF: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn prepare_service_context(_system_table: *const c_void) -> bool {
     let inherited_handoff = inherited_handoff_available();
-    #[cfg(feature = "efi-loader")]
-    loader::prepare_service_context(_system_table, inherited_handoff);
+    #[cfg(feature = "boot-resources")]
+    if inherited_handoff {
+        let record = payload::inherited_payload().expect("missing inherited resources");
+        // SAFETY: boot CPU only, before any allocation or secondary CPU starts.
+        unsafe {
+            crate::boot_resources::prepare_inherited_plan(record.resource_slice().unwrap())
+                .expect("inherited resource plan is not satisfied");
+        }
+    } else {
+        crate::boot_resources::prepare_static_plan();
+    }
+    #[cfg(feature = "efi-handoff")]
+    handoff::prepare_context(_system_table, inherited_handoff);
     inherited_handoff
 }
 
@@ -41,10 +52,7 @@ pub(super) fn runtime_system_table(system_table: *mut SystemTable) -> *mut Syste
     system_table
 }
 
-pub(super) fn reserve_boot_memory() {
-    #[cfg(feature = "efi-loader")]
-    loader::reserve_loader_pool();
-}
+pub(super) fn reserve_boot_memory() {}
 
 pub(super) fn init_boot_memory_map() {
     payload::restore_inherited_memory_map();
@@ -96,7 +104,7 @@ fn normalize_const_pointer<T>(pointer: *const T) -> *const T {
     normalize_mut_pointer(pointer.cast_mut()).cast_const()
 }
 
-fn physical_alias(address: usize) -> Option<usize> {
+pub(crate) fn physical_alias(address: usize) -> Option<usize> {
     const PHYSICAL_ADDRESS_LIMIT: usize = 1 << 48;
     const PHYSICAL_MASK: usize = PHYSICAL_ADDRESS_LIMIT - 1;
     const ALIAS_BASES: [usize; 4] = [
@@ -120,9 +128,15 @@ pub(super) fn inherited_handoff() -> bool {
 
 fn inherited_handoff_available() -> bool {
     with_config_table(|tables| {
+        assert!(
+            !tables
+                .iter()
+                .any(|entry| entry.guid == payload::RETIRED_HANDOFF_GUID),
+            "unsupported retired EFI handoff ABI"
+        );
         tables
             .iter()
-            .any(|entry| entry.guid == payload::LOONG_BOOT_PAYLOAD_GUID && !entry.address.is_null())
+            .any(|entry| entry.guid == payload::HANDOFF_GUID && !entry.address.is_null())
     })
 }
 
@@ -130,7 +144,7 @@ fn load_host_boot_payload() {
     let installed = with_config_table(|tables| {
         tables
             .iter()
-            .find(|entry| entry.guid == payload::LOONG_BOOT_PAYLOAD_GUID)
+            .find(|entry| entry.guid == payload::HANDOFF_GUID)
             .map(|entry| entry.address)
     });
     let Some(address) = installed else {
@@ -144,17 +158,23 @@ fn load_host_boot_payload() {
         address
     };
     // SAFETY: the first loader owns this runtime configuration-table allocation.
-    let payload = unsafe { &*address.cast::<payload::LoongBootPayload>() };
-    payload::remember_inherited_payload(payload);
-    if payload.cmdline_len != 0 && !crate::cmdline::has_handoff_cmdline() {
-        crate::cmdline::set_cmdline(payload.cmdline());
+    // Validate the header before borrowing any variable content.
+    let payload = unsafe { crate::handoff::protocol::HandoffRecord::from_ptr(address.cast()) }
+        .expect("invalid inherited EFI handoff");
+    // SAFETY: early boot CPU, before any producer or SMP.
+    unsafe {
+        payload::remember_inherited_payload(payload);
     }
-    if payload.archive_len != 0 {
-        let start = usize::try_from(payload.archive_start).expect("archive address overflows");
+    if payload.cmdline_len != 0 && !crate::cmdline::has_handoff_cmdline() {
+        crate::cmdline::set_cmdline(payload.cmdline().expect("validated cmdline"));
+    }
+    if payload.archive.len != 0 {
+        let start = usize::try_from(payload.archive.start).expect("archive address overflows");
         let end = usize::try_from(
             payload
-                .archive_start
-                .checked_add(payload.archive_len)
+                .archive
+                .start
+                .checked_add(payload.archive.len)
                 .expect("archive range overflows"),
         )
         .expect("archive end overflows");
