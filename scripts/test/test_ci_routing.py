@@ -136,7 +136,7 @@ class RunnerTrustTests(unittest.TestCase):
         condition = mapping_block(job.replace("if: >-", "if:"), "if", 4)
         self.assertIn("github.event_name == 'pull_request'", condition)
 
-    def test_fork_pr_matrix_is_forced_onto_github_hosted_runner(self) -> None:
+    def test_fork_pr_matrix_allows_only_upstream_secret_free_board_opt_in(self) -> None:
         workflow = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
         job = mapping_block(workflow, "run", 2)
 
@@ -149,6 +149,15 @@ class RunnerTrustTests(unittest.TestCase):
             job,
         )
         self.assertIn("'ubuntu-latest' || matrix.runs_on", job)
+        for fragment in (
+            "!(github.repository == 'rcore-os/tgoskits' &&",
+            "github.event.pull_request.head.repo.full_name &&",
+            "matrix.allow_fork_pull_request &&",
+            "contains(matrix.runs_on, 'self-hosted') &&",
+            "contains(matrix.runs_on, 'board') &&",
+            "!matrix.wifi_secrets)",
+        ):
+            self.assertIn(fragment, job)
 
     def test_fork_push_keeps_its_own_workflow_entry(self) -> None:
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")

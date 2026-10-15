@@ -157,13 +157,13 @@ def main() -> int:
             runner_trust_step,
         ),
         (
-            'if [ "$EVENT_NAME" = "pull_request" ]',
-            "runner trust evidence must evaluate pull requests explicitly",
+            'checkout_sha="$(git rev-parse HEAD)"',
+            "runner trust evidence must record the actual checkout revision",
             runner_trust_step,
         ),
         (
-            '[ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]',
-            "runner trust evidence must reject cross-repository heads",
+            "Runner allocation and exclusions are recorded by the CI planner below.",
+            "runner trust evidence must defer allocation decisions to the planner",
             runner_trust_step,
         ),
     ):
@@ -524,7 +524,31 @@ def main() -> int:
         ),
         (
             "'ubuntu-latest' || matrix.runs_on",
-            "fork pull requests must allocate only a GitHub-hosted runner",
+            "fork pull requests must default to a GitHub-hosted runner",
+        ),
+        (
+            "!(github.repository == 'rcore-os/tgoskits' &&",
+            "fork self-hosted allocation must be restricted to the upstream repository",
+        ),
+        (
+            "github.event.pull_request.head.repo.full_name &&",
+            "fork self-hosted allocation must require a known head repository",
+        ),
+        (
+            "matrix.allow_fork_pull_request &&",
+            "fork self-hosted allocation must require a profile opt-in",
+        ),
+        (
+            "contains(matrix.runs_on, 'self-hosted') &&",
+            "fork self-hosted allocation must identify the self-hosted runner",
+        ),
+        (
+            "contains(matrix.runs_on, 'board') &&",
+            "fork self-hosted allocation must be restricted to board runners",
+        ),
+        (
+            "!matrix.wifi_secrets)",
+            "fork self-hosted allocation must exclude secret-dependent checks",
         ),
     ):
         require_contains(errors, reusable_run, fragment, message)

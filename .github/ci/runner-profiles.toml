@@ -22,6 +22,7 @@ fallback_environment = "base"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
+allow_fork_pull_request = true
 
 [profile.kvm-intel]
 runs_on = ["self-hosted", "linux", "intel", "kvm"]

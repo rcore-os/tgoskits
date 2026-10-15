@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -15,6 +18,7 @@ SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci_plan)
+import ci_runner_profiles
 
 # Keep matrix assertions tied to the planner's registered capabilities.  A new
 # test group therefore does not require updating this test's fixture list.
@@ -1233,7 +1237,7 @@ command = "true"
         self.assertTrue(any(row["container_image"].startswith("ghcr.io/contributor/") for row in static_rows.values()))
         self.assertTrue(any(row["download_xtask_bin_artifact"] for row in test_rows.values()))
 
-    def test_fork_pull_request_never_allocates_self_hosted_runners(self) -> None:
+    def test_fork_pull_request_keeps_only_secret_free_board_runners(self) -> None:
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
@@ -1247,18 +1251,23 @@ command = "true"
             plan["static_matrix"]["include"] + main_test_rows(plan)
         )
 
-        self.assertTrue(rows)
-        self.assertTrue(
-            all("self-hosted" not in row["runs_on"] for row in rows.values())
-        )
         catalog = ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
-        self_hosted_only_ids = {
+        expected_board_ids = {
             check["id"]
             for check in catalog
-            if "self-hosted" in check["runs_on"]
-            and "fallback_environment" not in check
+            if check["runner"] == "board" and not check.get("wifi_secrets", False)
         }
-        self.assertTrue(self_hosted_only_ids.isdisjoint(rows))
+        self_hosted_rows = {
+            check_id: row
+            for check_id, row in rows.items()
+            if "self-hosted" in row["runs_on"]
+        }
+        self.assertTrue(expected_board_ids)
+        self.assertEqual(set(self_hosted_rows), expected_board_ids)
+        self.assertTrue(
+            all(row["allow_fork_pull_request"] for row in self_hosted_rows.values())
+        )
+        self.assertTrue(all(not row["wifi_secrets"] for row in rows.values()))
         self.assertTrue(
             any(row["runs_on"] == ["ubuntu-latest"] for row in rows.values())
         )
@@ -1271,8 +1280,16 @@ command = "true"
         ):
             relative = candidate.relative_to(workspace_root).as_posix()
             try:
-                ci_plan.resolve_suite_selections(workspace_root, catalog, [relative])
+                selections = ci_plan.resolve_suite_selections(
+                    workspace_root, catalog, [relative]
+                )
             except ci_plan.SuiteRouteError:
+                continue
+            if any(
+                check.get("wifi_secrets", False)
+                for check in catalog
+                if check["id"] in {selection.template_id for selection in selections}
+            ):
                 continue
             board_path = relative
             break
@@ -1293,7 +1310,7 @@ command = "true"
         )
         self.assertTrue(board_rows)
         self.assertTrue(
-            all("self-hosted" not in row["runs_on"] for row in board_rows)
+            all("board" in row["runs_on"] for row in board_rows)
         )
 
     def test_same_repository_pull_request_keeps_self_hosted_runners(self) -> None:
@@ -1303,6 +1320,200 @@ command = "true"
         )
 
         self.assertTrue(any("self-hosted" in row["runs_on"] for row in rows.values()))
+
+    def test_runner_policy_preserves_fork_and_profile_boundaries(self) -> None:
+        common = {
+            "name": "Synthetic check",
+            "group": "Workspace",
+            "command": "true",
+            "environment": "host",
+            "source": "fixture.toml",
+        }
+        checks = [
+            dict(common, id="static", phase="static", runs_on=["ubuntu-latest"]),
+            dict(common, id="hosted", phase="test", runs_on=["ubuntu-latest"]),
+        ]
+        board = dict(
+            common,
+            phase="test",
+            runs_on=["self-hosted", "linux", "board"],
+            required_owner="rcore-os",
+        )
+        checks.extend(
+            (
+                dict(board, id="board-opt-in", allow_fork_pull_request=True),
+                dict(board, id="board-default"),
+                dict(
+                    board,
+                    id="board-wifi",
+                    allow_fork_pull_request=True,
+                    wifi_secrets=True,
+                ),
+                dict(
+                    common,
+                    id="qcs-fallback",
+                    phase="test",
+                    runs_on=["self-hosted", "linux", "qcs"],
+                    self_hosted_owner="rcore-os",
+                    fallback_environment="base",
+                ),
+                dict(
+                    board,
+                    id="kvm",
+                    runs_on=["self-hosted", "linux", "kvm"],
+                ),
+            )
+        )
+        fork_pr = ci_plan.replace(
+            self.upstream, head_repository="contributor/tgoskits"
+        )
+        all_self_hosted = {
+            "board-opt-in", "board-default", "board-wifi", "qcs-fallback", "kvm"
+        }
+        for context, expected in (
+            (self.upstream, all_self_hosted),
+            (fork_pr, {"board-opt-in"}),
+            (ci_plan.replace(fork_pr, head_repository=""), set()),
+            (
+                ci_plan.replace(fork_pr, repository="rcore-os/another-project"),
+                set(),
+            ),
+            (
+                ci_plan.replace(fork_pr, repository_owner="contributor"),
+                set(),
+            ),
+            (
+                ci_plan.replace(
+                    fork_pr,
+                    repository="contributor/tgoskits",
+                    repository_owner="contributor",
+                ),
+                set(),
+            ),
+            (
+                ci_plan.replace(
+                    fork_pr,
+                    repository="contributor/tgoskits",
+                    repository_owner="contributor",
+                    event_name="push",
+                ),
+                set(),
+            ),
+        ):
+            with self.subTest(context=context):
+                rows = main_test_rows(ci_plan._build_main_plan(checks, context))
+                self.assertEqual(
+                    {row["id"] for row in rows if "self-hosted" in row["runs_on"]},
+                    expected,
+                )
+                self.assertTrue(any(row["id"] == "hosted" for row in rows))
+                if not expected or context == fork_pr:
+                    fallback = next(row for row in rows if row["id"] == "qcs-fallback")
+                    self.assertEqual(fallback["runs_on"], ["ubuntu-latest"])
+                    self.assertTrue(fallback["download_xtask_bin_artifact"])
+
+        disabled = [dict(check, allow_fork_pull_request=False) for check in checks]
+        rows = main_test_rows(ci_plan._build_main_plan(disabled, fork_pr))
+        self.assertTrue(all("self-hosted" not in row["runs_on"] for row in rows))
+
+    def test_fork_pr_secret_exclusion_also_applies_to_exact_suites(self) -> None:
+        path = "test-suit/starryos/board-aka-00-sg2002/boot/board-aka-00-sg2002.toml"
+        context = ci_plan.replace(
+            self.upstream,
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=(path,),
+                test_suite_paths=(path,),
+                exclusive=True,
+            ),
+        )
+        trusted_rows = main_test_rows(ci_plan.build_main_plan(context))
+        self.assertTrue(trusted_rows)
+        self.assertTrue(all(row["wifi_secrets"] for row in trusted_rows))
+        for repository, owner, head in (
+            ("rcore-os/tgoskits", "rcore-os", "contributor/tgoskits"),
+            ("contributor/tgoskits", "contributor", "contributor/tgoskits"),
+        ):
+            with self.subTest(repository=repository):
+                plan = ci_plan.build_main_plan(
+                    ci_plan.replace(
+                        context,
+                        repository=repository,
+                        repository_owner=owner,
+                        head_repository=head,
+                    )
+                )
+                self.assertEqual(main_test_rows(plan), [])
+                self.assertTrue(plan["static_required"])
+
+    def test_cli_reports_actual_runner_allocation_and_secret_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summary_file = Path(temp_dir) / "summary.md"
+            outputs_file = Path(temp_dir) / "outputs"
+            inherited_output = Path(temp_dir) / "inherited-output"
+            result = subprocess.run(
+                [
+                    sys.executable, str(MODULE_PATH), "--mode", "main",
+                    "--repository", "rcore-os/tgoskits",
+                    "--repository-owner", "rcore-os",
+                    "--event-name", "pull_request",
+                    "--head-repository", "contributor/tgoskits",
+                    "--base-ref", "dev", "--since-ref", "invalid-fixture-ref",
+                    "--summary-file", str(summary_file),
+                    "--output-file", str(outputs_file),
+                ],
+                env={**os.environ, "GITHUB_OUTPUT": str(inherited_output)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = dict(
+                (name, json.loads(value))
+                for line in outputs_file.read_text(encoding="utf-8").splitlines()
+                for name, _, value in (line.partition("="),)
+            )
+            self.assertFalse(inherited_output.exists())
+            rows = main_test_rows(outputs)
+            self_hosted_rows = [row for row in rows if "self-hosted" in row["runs_on"]]
+            self.assertTrue(self_hosted_rows)
+            summary = summary_file.read_text(encoding="utf-8")
+            self.assertIn(f"Self-hosted checks selected: {len(self_hosted_rows)}", summary)
+            for row in self_hosted_rows:
+                self.assertIn(f"`{row['id']}`: `self-hosted, linux, board`", summary)
+            for check in ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS):
+                if check.get("wifi_secrets", False):
+                    self.assertIn(
+                        f"`{check['id']}`: Wi-Fi repository secrets are unavailable",
+                        summary,
+                    )
+
+    def test_runner_profile_fork_opt_in_requires_board_and_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest = Path(temp_dir) / "runners.toml"
+            for flag, labels, owner, error in (
+                ("true", ["self-hosted", "linux", "board"], "rcore-os", None),
+                ('"true"', ["self-hosted", "board"], "rcore-os", "must be boolean"),
+                ("true", ["ubuntu-latest", "board"], "rcore-os", "requires a self-hosted board"),
+                ("true", ["self-hosted", "qcs"], "rcore-os", "requires a self-hosted board"),
+                ("true", ["self-hosted", "board"], None, "required_owner"),
+            ):
+                with self.subTest(flag=flag, labels=labels, owner=owner):
+                    owner_line = f'required_owner = "{owner}"' if owner else ""
+                    manifest.write_text(
+                        'schema_version = 3\n'
+                        '[profile.ubuntu-base]\nruns_on = ["ubuntu-latest"]\nenvironment = "base"\n'
+                        '[profile.fixture]\n'
+                        f'runs_on = {json.dumps(labels)}\nenvironment = "host"\n'
+                        f'{owner_line}\nallow_fork_pull_request = {flag}\n',
+                        encoding="utf-8",
+                    )
+                    if error:
+                        with self.assertRaisesRegex(ci_runner_profiles.RunnerProfileError, error):
+                            ci_runner_profiles.load_runner_profiles(manifest)
+                    else:
+                        ci_runner_profiles.load_runner_profiles(manifest)
 
     def test_board_checks_declare_a_resource_group_and_qemu_does_not(self) -> None:
         context = ci_plan.PlanContext(

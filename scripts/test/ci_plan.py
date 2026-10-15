@@ -32,6 +32,7 @@ from ci_suite import (
 )
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+UPSTREAM_REPOSITORY = "rcore-os/tgoskits"
 CHECKS_ROOT = WORKSPACE_ROOT / ".github" / "ci" / "checks"
 MAIN_MANIFESTS = (
     CHECKS_ROOT / "static.toml",
@@ -682,7 +683,7 @@ def _plan_suite_rows(
         if template.get("nightly_only", False) and not context.include_nightly:
             continue
         if not _is_enabled(template, context):
-            if not _runner_is_available(template, context):
+            if _unavailability_reason(template, context):
                 continue
             raise PlanError(
                 f"test suite path `{selection.source_path}` requires unavailable "
@@ -719,10 +720,7 @@ def _normalize_suite_selection(
 def _is_enabled(check: dict[str, Any], context: PlanContext) -> bool:
     if check.get("nightly_only", False) and not context.include_nightly:
         return False
-    if not _runner_is_available(check, context):
-        return False
-    required_owner = check.get("required_owner")
-    if required_owner and context.repository_owner != required_owner:
+    if _unavailability_reason(check, context):
         return False
 
     required_base = check.get("required_base_branch")
@@ -742,20 +740,45 @@ def _is_enabled(check: dict[str, Any], context: PlanContext) -> bool:
     return True
 
 
+def _unavailability_reason(check: dict[str, Any], context: PlanContext) -> str:
+    required_owner = check.get("required_owner")
+    if required_owner and context.repository_owner != required_owner:
+        return f"requires workflow repository owner '{required_owner}'"
+    if _is_fork_pull_request(context) and check.get("wifi_secrets", False):
+        return "Wi-Fi repository secrets are unavailable to fork pull requests"
+    if not _runner_is_available(check, context):
+        return "self-hosted runner is not allowed for this pull request"
+    return ""
+
+
+def _is_fork_pull_request(context: PlanContext) -> bool:
+    return context.event_name == "pull_request" and (
+        context.head_repository.casefold() != context.repository.casefold()
+    )
+
+
 def _runner_is_available(check: dict[str, Any], context: PlanContext) -> bool:
     if (
         "self-hosted" not in check.get("runs_on", ())
-        or _allows_self_hosted(context)
+        or _allows_self_hosted(check, context)
     ):
         return True
     return "fallback_environment" in check
 
 
-def _allows_self_hosted(context: PlanContext) -> bool:
+def _allows_self_hosted(check: dict[str, Any], context: PlanContext) -> bool:
     if context.event_name != "pull_request":
         return True
-    return bool(context.head_repository) and (
-        context.head_repository.casefold() == context.repository.casefold()
+    if not context.head_repository:
+        return False
+    if not _is_fork_pull_request(context):
+        return True
+    return bool(
+        context.repository.casefold() == UPSTREAM_REPOSITORY
+        and context.repository_owner == "rcore-os"
+        and check.get("required_owner") == "rcore-os"
+        and check.get("allow_fork_pull_request", False)
+        and {"self-hosted", "board"}.issubset(check.get("runs_on", ()))
     )
 
 
@@ -827,7 +850,7 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         check.get("self_hosted_owner")
         and (
             context.repository_owner != check["self_hosted_owner"]
-            or not _allows_self_hosted(context)
+            or not _allows_self_hosted(check, context)
         )
     )
     if fallback:
@@ -857,6 +880,7 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         "name": check["name"],
         "group": check["group"],
         "runs_on": runs_on,
+        "allow_fork_pull_request": check.get("allow_fork_pull_request", False),
         "container_image": container_image,
         "container_preflight": preflight,
         "command": command.strip(),
@@ -899,6 +923,31 @@ def _matrix_rows(outputs: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(value, dict) and isinstance(value.get("include"), list)
         for row in value["include"]
     ]
+
+
+def render_runner_summary(
+    checks: list[dict[str, Any]], context: PlanContext, outputs: dict[str, Any]
+) -> str:
+    rows = _matrix_rows(outputs)
+    self_hosted_rows = [row for row in rows if "self-hosted" in row["runs_on"]]
+    lines = [
+        "### Runner allocation",
+        "",
+        f"- Self-hosted checks selected: {len(self_hosted_rows)}",
+        f"- GitHub-hosted checks selected: {len(rows) - len(self_hosted_rows)}",
+    ]
+    for row in self_hosted_rows:
+        lines.append(f"- `{row['id']}`: `{', '.join(row['runs_on'])}`")
+    excluded = [
+        (check["id"], reason)
+        for check in checks
+        if not check.get("nightly_only", False) or context.include_nightly
+        if (reason := _unavailability_reason(check, context))
+    ]
+    if excluded:
+        lines.extend(("", "Ineligible checks before impact filtering:", ""))
+        lines.extend(f"- `{check_id}`: {reason}" for check_id, reason in excluded)
+    return "\n".join(lines) + "\n\n"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -972,6 +1021,7 @@ def main() -> int:
     for name, value in outputs.items():
         if isinstance(value, dict) and isinstance(value.get("include"), list):
             print(f"{name}: {len(value['include'])} checks", file=sys.stderr)
+    summaries = []
     if impact is not None:
         rows = _matrix_rows(outputs)
         selected_ids = [row["id"] for row in rows]
@@ -988,7 +1038,11 @@ def main() -> int:
             for check_id in eligible_ids
             if check_id not in selected_template_ids
         ]
-        summary = render_summary(impact, selected_ids, skipped_ids)
+        summaries.append(render_summary(impact, selected_ids, skipped_ids))
+    if args.mode == "main":
+        summaries.append(render_runner_summary(checks, context, outputs))
+    if summaries:
+        summary = "\n".join(summaries)
         print(summary, file=sys.stderr)
         if args.summary_file is not None:
             with args.summary_file.open("a", encoding="utf-8") as summary_file:

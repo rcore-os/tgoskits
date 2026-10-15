@@ -70,6 +70,12 @@ jobs:
     runs-on: >-
       ${{ github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name != github.repository &&
+          !(github.repository == 'rcore-os/tgoskits' &&
+            github.event.pull_request.head.repo.full_name &&
+            matrix.allow_fork_pull_request &&
+            contains(matrix.runs_on, 'self-hosted') &&
+            contains(matrix.runs_on, 'board') &&
+            !matrix.wifi_secrets) &&
           'ubuntu-latest' || matrix.runs_on }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     container:

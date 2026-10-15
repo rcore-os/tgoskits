@@ -370,20 +370,19 @@ jobs:
           SINCE_REF: ${{ steps.since.outputs.since_ref }}
         run: |
           set -euo pipefail
-          self_hosted_eligible=true
-          if [ "$EVENT_NAME" = "pull_request" ] \
-            && [ "$HEAD_REPOSITORY" != "$GITHUB_REPOSITORY" ]; then
-            self_hosted_eligible=false
-          fi
+          checkout_sha="$(git rev-parse HEAD)"
           {
             echo "## Runner trust"
             echo ""
             echo "- Event: \`${EVENT_NAME}\`"
             echo "- Actor: \`${ACTOR}\`"
+            echo "- Workflow repository: \`${GITHUB_REPOSITORY}\`"
+            echo "- Workflow repository owner: \`${REPOSITORY_OWNER}\`"
+            echo "- Base reference: \`${BASE_REF}\`"
             echo "- Head repository: \`${HEAD_REPOSITORY:-$GITHUB_REPOSITORY}\`"
             echo "- Head revision: \`${HEAD_SHA}\`"
-            echo "- Self-hosted eligible: \`${self_hosted_eligible}\`"
-            echo "- Eligibility rule: non-PR event or PR head repository equals \`${GITHUB_REPOSITORY}\`"
+            echo "- Checkout revision: \`${checkout_sha}\`"
+            echo "- Runner allocation and exclusions are recorded by the CI planner below."
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Plan check matrices

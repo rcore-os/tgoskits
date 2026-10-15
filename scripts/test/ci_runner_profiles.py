@@ -17,6 +17,7 @@ PROFILE_FIELDS = {
     "fallback_environment",
     "required_owner",
     "require_kvm",
+    "allow_fork_pull_request",
 }
 REQUIRED_PROFILE_FIELDS = {"runs_on", "environment"}
 
@@ -106,3 +107,16 @@ def validate_runner_profile(profile: dict[str, Any], location: str) -> None:
     require_kvm = profile.get("require_kvm")
     if require_kvm is not None and not isinstance(require_kvm, bool):
         raise RunnerProfileError(f"{location} field 'require_kvm' must be boolean")
+    allow_fork = profile.get("allow_fork_pull_request", False)
+    if not isinstance(allow_fork, bool):
+        raise RunnerProfileError(
+            f"{location} field 'allow_fork_pull_request' must be boolean"
+        )
+    if allow_fork and (
+        not {"self-hosted", "board"}.issubset(runs_on)
+        or not profile.get("required_owner")
+    ):
+        raise RunnerProfileError(
+            f"{location} allow_fork_pull_request requires a self-hosted board "
+            "runner and required_owner"
+        )
