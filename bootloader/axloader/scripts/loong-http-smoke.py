@@ -211,7 +211,8 @@ def main():
     # Otherwise identical A/B images legitimately continue in the firmware-loaded
     # copy and the test would never exercise the inherited slot entry.
     pe_offset = struct.unpack_from("<I", image, 0x3c)[0]
-    struct.pack_into("<I", image, pe_offset + 8, 1)
+    timestamp = struct.unpack_from("<I", image, pe_offset + 8)[0]
+    struct.pack_into("<I", image, pe_offset + 8, timestamp ^ 1)
     image = bytes(image)
     image_digest = hashlib.sha256(image).hexdigest()
     if args.storage_full:
@@ -257,11 +258,23 @@ def main():
         {"X-Boot-Epoch": trial["boot_epoch"], "Content-Type": "application/json"},
     )
     expect(response[0], 200, "OTA trial confirmation", response[1])
-    wait_status(
+    confirmed = wait_status(
         args.host,
         args.port,
         lambda value: not value.get("ota", {}).get("trial")
         and value.get("ota", {}).get("pending_update_id") is None,
+    )
+    expect(confirmed["ota"]["active_sha256"], image_digest, "confirmed stable digest")
+    reset_qemu(args.qmp_socket)
+    wait_status(
+        args.host, args.port,
+        lambda value: value["boot_epoch"] != confirmed["boot_epoch"]
+        and not value.get("ota", {}).get("trial")
+        and value.get("ota", {}).get("pending_update_id") is None
+        and value.get("ota", {}).get("active_sha256") == image_digest
+        and value.get("ota", {}).get("running_sha256") == image_digest
+        and value.get("ota", {}).get("last_outcome") == "confirmed",
+        timeout=300,
     )
 
     # The target must be an independent ArceOS EFI application. Reusing the
@@ -344,7 +357,7 @@ def main():
     expect(response[0], 202, "valid Loong ELF handoff accepted", response[1])
     print(
         "loong axloader HTTP/OTA/ELF smoke: status, idempotent boot, serial gate, "
-        "ELF rejection, valid ELF handoff, stage, reset, rollback, confirm passed"
+        "ELF rejection, valid ELF handoff, stage, reset, rollback, confirm persistence passed"
     )
 
 

@@ -60,4 +60,4 @@ LoongArch 的 [`efi_stub/loongarch64/handoff.rs`](../../platforms/someboot/src/e
 
 someboot 宿主 profile `boot-resources` 验证计划校验、部分申请回退、继承水位和协议拒绝；原生 UEFI 产物契约检查实际 rlib、依赖与构建脚本输出，确认没有内核入口。Clippy 配置覆盖 x86 裸机、原生 x86 UEFI、AArch64 EFI 编译、RISC-V 非 EFI、LoongArch 普通 EFI、资源及交接生产组合。
 
-`python3 bootloader/axloader/scripts/loong-qemu-smoke.py` 先执行脱离网络、OTA 和交接生产端的资源应用，再在独占 FAT、QMP socket 和宿主端口中验证写满返回 `409 ota_storage_failed` 且状态不变，以及 HTTP 独立 ELF、cmdline/initramfs、未确认 trial 复位回滚、旧确认拒绝及新 trial 确认。x86 使用 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 的既有可选 payload 和真实 FAT OTA 回归。宿主模型不能代替这些固件和持久存储证据。AArch64 EFI 镜像生成与 LoongArch 非 EFI 启动不在本轮范围。
+`python3 bootloader/axloader/scripts/loong-qemu-smoke.py` 先执行脱离网络、OTA 和交接生产端的资源应用，再在独占 FAT、QMP socket 和宿主端口中验证写满返回 `409 ota_storage_failed` 且状态不变，以及 HTTP 独立 ELF、cmdline/initramfs、未确认 trial 复位回滚、旧确认拒绝、新 trial 确认及再次复位后的稳定摘要。x86 使用 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 的既有可选 payload 和真实 FAT OTA 回归。宿主模型不能代替这些固件和持久存储证据。AArch64 EFI 镜像生成与 LoongArch 非 EFI 启动不在本轮范围。
