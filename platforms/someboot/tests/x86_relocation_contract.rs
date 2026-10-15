@@ -312,21 +312,32 @@ fn run_output(command: &mut Command, operation: &str) -> String {
 }
 
 fn find_someboot_archive() -> PathBuf {
-    let deps = std::env::current_exe()
-        .expect("test executable path must be available")
-        .parent()
-        .expect("test executable must live in a dependency directory")
-        .to_path_buf();
-    let mut candidates = fs::read_dir(&deps)
-        .expect("dependency directory must be readable")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
+    let executable = std::env::current_exe().expect("test executable path must be available");
+    let deps = executable
+        .ancestors()
+        .find(|path| {
             path.file_name()
+                .is_some_and(|name| name == "debug" || name == "release")
+        })
+        .expect("test executable must live in a Cargo profile directory");
+    // Cargo may put each crate in build/<package>/<hash>/out instead of deps.
+    let mut directories = vec![deps.to_path_buf()];
+    let mut candidates = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).expect("read Cargo artifact directory") {
+            let entry = entry.expect("read Cargo artifact entry");
+            let path = entry.path();
+            if entry.file_type().expect("read artifact type").is_dir() {
+                directories.push(path);
+            } else if path
+                .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with("libsomeboot-") && name.ends_with(".rlib"))
-        })
-        .collect::<Vec<_>>();
+            {
+                candidates.push(path);
+            }
+        }
+    }
     candidates.sort_by_key(|path| {
         path.metadata()
             .and_then(|metadata| metadata.modified())

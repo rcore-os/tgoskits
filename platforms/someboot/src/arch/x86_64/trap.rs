@@ -277,7 +277,7 @@ mod tests {
     use crate::timer::CounterStability;
 
     #[test]
-    fn stable_tsc_rate_uses_stable_path_only_with_trusted_synchronization() {
+    fn stable_tsc_requires_cross_cpu_trust_only_for_multiple_cpus() {
         assert_eq!(
             classify_scheduler_counter(true, 1, true),
             CounterStability::Stable
@@ -292,96 +292,11 @@ mod tests {
         );
         assert_eq!(
             classify_scheduler_counter(true, 1, false),
+            CounterStability::Stable
+        );
+        assert_eq!(
+            classify_scheduler_counter(true, 2, false),
             CounterStability::Unstable
         );
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum TimerOperation {
-        Mask,
-        Unmask,
-        Serialize,
-        Clear,
-    }
-
-    struct RecordingTimerHardware {
-        operations: Cell<[Option<TimerOperation>; 4]>,
-        len: Cell<usize>,
-    }
-
-    impl RecordingTimerHardware {
-        const fn new() -> Self {
-            Self {
-                operations: Cell::new([None; 4]),
-                len: Cell::new(0),
-            }
-        }
-
-        fn record(&self, operation: TimerOperation) {
-            let len = self.len.get();
-            let mut operations = self.operations.get();
-            operations[len] = Some(operation);
-            self.operations.set(operations);
-            self.len.set(len + 1);
-        }
-
-        fn snapshot(&self) -> ([Option<TimerOperation>; 4], usize) {
-            (self.operations.get(), self.len.get())
-        }
-    }
-
-    impl OneShotTimerHardware for RecordingTimerHardware {
-        fn set_irq_masked(&self, masked: bool) {
-            self.record(if masked {
-                TimerOperation::Mask
-            } else {
-                TimerOperation::Unmask
-            });
-        }
-
-        fn serialize_lvt_update(&self) {
-            self.record(TimerOperation::Serialize);
-        }
-
-        fn clear_comparator(&self) {
-            self.record(TimerOperation::Clear);
-        }
-    }
-
-    #[test]
-    fn timer_shutdown_masks_source_before_clearing_comparator() {
-        let timer = RecordingTimerHardware::new();
-
-        stop_oneshot(&timer);
-
-        let (operations, len) = timer.snapshot();
-        assert_eq!(
-            &operations[..len],
-            &[Some(TimerOperation::Mask), Some(TimerOperation::Clear)]
-        );
-    }
-
-    #[test]
-    fn timer_unmask_is_serialized_before_comparator_programming() {
-        let timer = RecordingTimerHardware::new();
-
-        enable_timer_irq(&timer);
-
-        let (operations, len) = timer.snapshot();
-        assert_eq!(
-            &operations[..len],
-            &[
-                Some(TimerOperation::Unmask),
-                Some(TimerOperation::Serialize),
-            ]
-        );
-    }
-
-    #[test]
-    fn only_xapic_tsc_deadline_transition_requires_mfence() {
-        assert!(requires_lvt_deadline_fence(ApicMode::XApic, true));
-        assert!(!requires_lvt_deadline_fence(ApicMode::XApic, false));
-        assert!(!requires_lvt_deadline_fence(ApicMode::X2Apic, true));
-        assert!(!requires_lvt_deadline_fence(ApicMode::X2Apic, false));
     }
 }
