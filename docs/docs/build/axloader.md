@@ -229,7 +229,7 @@ QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶�
 LoongArch CI 使用 `scripts/loong-qemu-smoke.py`。资源用例不启用网络、OTA 或
 交接生产端，以 `BOOT_RESOURCES_PASSED` 和 `Hello, world!` 作为实际执行证据。
 HTTP 用例验证 manifest 幂等、serial continue、坏 ELF/OTA 拒绝、有效 PE 槽位写入，
-未确认 trial 经 QMP 复位回滚到原稳定摘要、旧确认拒绝，以及再次 trial/confirm。
+未确认 trial 经 QMP 复位回滚到原稳定摘要、旧确认拒绝，以及再次 trial/confirm 和再次复位后的稳定摘要。
 独立 `arceos-helloworld` EFI ELF 与宿主归档通过 HTTP 上传，目标必须输出
 `HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。
 写满的独占 FAT 则验证 `409 ota_storage_failed` 且稳定状态未提交；错误镜像仍为
