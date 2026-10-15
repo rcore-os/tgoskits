@@ -36,8 +36,8 @@ fn aarch64_percpu_alias_is_normal_shareable_memory() {
         .next()
         .unwrap();
 
-    assert!(normal.contains("PTE::SHAREABLE::INNER"));
-    assert!(!normal.contains("PTE::SHAREABLE::NON"));
+    assert!(normal.contains("DescriptorFlags::SH_INNER"));
+    assert!(!normal.contains("DescriptorFlags::SH_OUTER"));
 }
 
 #[test]
