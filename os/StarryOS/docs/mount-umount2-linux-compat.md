@@ -787,9 +787,11 @@ loop 挂载持有者（mount holder）落地后，有三处行为与 Linux v6.12
   capability 绑定到对应的 user namespace。
 - Linux v6.12：`ns_capable()` 和 `capable_wrt_inode_uidgid()` 会同时检查 capability
   所属的 user namespace，子命名空间的 root 不能直接获得初始命名空间资源的权限。
-- 影响范围：当前兼容路径可能出现“非 root 数字 ID + namespace-root 能力”的组合；需要在
-  初始命名空间中执行的 `setns` 等路径仍额外检查 namespace 身份。更细粒度的 capability
-  作用域需要在凭据结构中保存 user namespace，并统一替换当前的全局 capability 查询。
+- 影响范围：当前兼容路径仍可能出现“非 root 数字 ID + 少量 namespace-setup 能力”的组合；
+  这些能力只为安装映射和准备 sandbox 的 mount/UTS 状态保留，`CAP_SYS_RAWIO`、
+  `CAP_SYS_MODULE`、`CAP_SYS_PTRACE` 等无关能力不会随映射继承。需要在初始命名空间中执行的
+  `setns` 等路径仍额外检查 namespace 身份。更细粒度的 capability 作用域仍需要在凭据结构中
+  保存 user namespace，并统一替换当前的全局 capability 查询。
 
 ## 10. 参考
 

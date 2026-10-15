@@ -25,7 +25,7 @@
 
 use alloc::{vec, vec::Vec};
 
-use ax_sync::Mutex;
+use ax_sync::{Mutex, RawSpinLock};
 use hashbrown::HashMap;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
@@ -51,7 +51,10 @@ pub(crate) struct SocketSetWrapper<'a> {
     /// The shared smoltcp socket set.
     pub inner: Mutex<SocketSet<'a>>,
     /// UDP bind ownership tracked with Linux-style wildcard/reuseport conflicts.
-    udp_binds: Mutex<HashMap<u16, Vec<UdpBoundEntry>>>,
+    // This table is a short critical section on a small in-memory map.  It is
+    // also queried from the socket bind path while the network service may
+    // have preemption disabled, so a sleeping PI mutex is not valid here.
+    udp_binds: RawSpinLock<HashMap<u16, Vec<UdpBoundEntry>>>,
 }
 
 impl<'a> SocketSetWrapper<'a> {
@@ -59,7 +62,7 @@ impl<'a> SocketSetWrapper<'a> {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(SocketSet::new(vec![])),
-            udp_binds: Mutex::new(HashMap::new()),
+            udp_binds: RawSpinLock::new(HashMap::new()),
         }
     }
 
