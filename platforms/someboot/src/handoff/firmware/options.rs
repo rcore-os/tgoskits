@@ -1,39 +1,10 @@
+//! LoadedImage pointer installation and rollback.
 use alloc::vec::Vec;
 use core::{mem, ptr};
 
-use uefi::{Status, boot, proto::loaded_image::LoadedImage};
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum JumpError {
-    LoadOptionsAllocateFailed,
-    InvalidLoadOptions,
-    LoadedImageProtocol(Status),
-}
+use uefi::{boot, proto::loaded_image::LoadedImage};
 
-#[derive(Debug)]
-pub(super) struct PreparedLoadOptions {
-    words: Option<Vec<u16>>,
-}
-
-impl PreparedLoadOptions {
-    pub fn new(cmdline: Option<&str>) -> Result<Self, JumpError> {
-        let words = cmdline
-            .filter(|cmdline| !cmdline.is_empty())
-            .map(|cmdline| {
-                if super::super::validate_cmdline(cmdline).is_err() {
-                    return Err(JumpError::InvalidLoadOptions);
-                }
-                let mut words = Vec::new();
-                words
-                    .try_reserve_exact(cmdline.len() + 1)
-                    .map_err(|_| JumpError::LoadOptionsAllocateFailed)?;
-                words.extend(cmdline.bytes().map(u16::from));
-                words.push(0);
-                Ok(words)
-            })
-            .transpose()?;
-        Ok(Self { words })
-    }
-}
+use crate::handoff::{HandoffError, uefi_protocol::options::PreparedLoadOptions};
 
 pub(super) struct InstalledLoadOptions {
     words: Option<Vec<u16>>,
@@ -42,9 +13,9 @@ pub(super) struct InstalledLoadOptions {
 }
 
 impl InstalledLoadOptions {
-    pub(super) fn install(prepared: PreparedLoadOptions) -> Result<Self, JumpError> {
+    pub(super) fn install(prepared: PreparedLoadOptions) -> Result<Self, HandoffError> {
         let mut image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle())
-            .map_err(|error| JumpError::LoadedImageProtocol(error.status()))?;
+            .map_err(|error| HandoffError::Firmware(error.status().0))?;
         let (previous_ptr, previous_size) = image
             .load_options_as_bytes()
             .map(|bytes| {
@@ -73,7 +44,7 @@ impl InstalledLoadOptions {
         })
     }
 
-    pub(super) fn restore(mut self) -> Result<(), JumpError> {
+    pub(super) fn restore(mut self) -> Result<(), HandoffError> {
         if !super::boot_services_active() {
             if let Some(words) = self.words.take() {
                 mem::forget(words);
@@ -88,7 +59,7 @@ impl InstalledLoadOptions {
                 if let Some(words) = self.words.take() {
                     mem::forget(words);
                 }
-                return Err(JumpError::LoadedImageProtocol(error.status()));
+                return Err(HandoffError::Firmware(error.status().0));
             }
         };
         // SAFETY: the previous pointer and size were copied from this same
@@ -96,41 +67,5 @@ impl InstalledLoadOptions {
         // responsible for that allocation throughout the child invocation.
         unsafe { image.set_load_options(self.previous_ptr, self.previous_size) };
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use alloc::vec::Vec;
-
-    use super::{JumpError, PreparedLoadOptions};
-
-    #[test]
-    fn prepares_optional_nul_terminated_ucs2_load_options() {
-        assert!(PreparedLoadOptions::new(None).unwrap().words.is_none());
-        assert_eq!(
-            PreparedLoadOptions::new(Some("console=ttyS0"))
-                .unwrap()
-                .words
-                .unwrap(),
-            "console=ttyS0"
-                .bytes()
-                .map(u16::from)
-                .chain([0])
-                .collect::<Vec<_>>()
-        );
-        assert!(PreparedLoadOptions::new(Some("")).unwrap().words.is_none());
-    }
-
-    #[test]
-    fn rejects_invalid_load_options_before_installing_protocol_pointer() {
-        assert_eq!(
-            PreparedLoadOptions::new(Some("console=ttyS0\nreset")).unwrap_err(),
-            JumpError::InvalidLoadOptions
-        );
-        assert_eq!(
-            PreparedLoadOptions::new(Some(&"x".repeat(4096))).unwrap_err(),
-            JumpError::InvalidLoadOptions
-        );
     }
 }
