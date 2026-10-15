@@ -731,9 +731,13 @@ mod tests {
 
     #[test]
     fn coverage_waits_for_host_profile_completion() {
+        use crate::support::qemu_success::{
+            QemuSuccessOutput, configured_success_regex, verify_qemu_success_contract,
+        };
+
         let mut qemu = QemuConfig {
             shell_check_steps: vec![ostool::run::ShellCheckStep {
-                success_regex: Some(vec!["guest-suite-ok".to_string()]),
+                success_regex: Some(vec!["(?m)^guest-suite-ok$".to_string()]),
                 ..Default::default()
             }],
             ..QemuConfig::default()
@@ -741,10 +745,20 @@ mod tests {
 
         update_success_regex(&mut qemu);
 
-        assert_eq!(
-            qemu.shell_check_steps[0].success_regex,
-            Some(vec![format!("(?m)^{COVERAGE_DONE_MARKER}$")])
-        );
+        let patterns = configured_success_regex(&qemu);
+        for (transcript, expected) in [
+            ("AXTEST_COVERAGE_DONE\n", false),
+            ("guest-suite-ok\n", false),
+            ("guest-suite-ok\nAXTEST_COVERAGE_DONE\n", true),
+        ] {
+            let output = QemuSuccessOutput::new(&patterns);
+            output.append(transcript.as_bytes());
+            assert_eq!(
+                verify_qemu_success_contract(Ok(()), Some(&output)).is_ok(),
+                expected,
+                "suite and profile completion must both succeed: {transcript:?}"
+            );
+        }
         let error_regex = qemu
             .fail_regex
             .iter()
