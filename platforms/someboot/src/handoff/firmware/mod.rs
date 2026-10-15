@@ -5,7 +5,10 @@ use uefi::{Handle, Status, boot};
 
 use crate::{
     boot_resources::{Allocation, PhysicalRange},
-    handoff::{HandoffError, HandoffSpec, transaction::Transaction},
+    handoff::{
+        HandoffError, HandoffSpec, transaction::Transaction,
+        uefi_protocol::options::PreparedLoadOptions,
+    },
 };
 mod metadata;
 mod options;
@@ -30,7 +33,7 @@ impl PreparedHandoff {
             return Err(HandoffError::Unavailable);
         }
         let transaction = Transaction::begin()?;
-        let options = options::PreparedLoadOptions::new(spec.cmdline).map_err(option_error)?;
+        let options = PreparedLoadOptions::new(spec.cmdline)?;
         let payload = payload::prepare_uploaded(spec.initramfs)
             .and_then(payload::PreparedPayload::publish)
             .map_err(payload_error)?;
@@ -38,7 +41,7 @@ impl PreparedHandoff {
             .metadata
             .map(|_| metadata::Publication::install(spec))
             .transpose()?;
-        let options = options::InstalledLoadOptions::install(options).map_err(option_error)?;
+        let options = options::InstalledLoadOptions::install(options)?;
         Ok(Self {
             image: spec.image,
             options: Some(options),
@@ -76,15 +79,6 @@ impl Drop for PreparedHandoff {
         if let Some(options) = self.options.take() {
             let _ = options.restore();
         }
-    }
-}
-fn option_error(error: options::JumpError) -> HandoffError {
-    match error {
-        options::JumpError::InvalidLoadOptions => HandoffError::InvalidCommandLine,
-        options::JumpError::LoadOptionsAllocateFailed => {
-            HandoffError::Resource(crate::boot_resources::ResourceError::Capacity)
-        }
-        options::JumpError::LoadedImageProtocol(status) => HandoffError::Firmware(status.0),
     }
 }
 fn payload_error(error: payload::PayloadError) -> HandoffError {
