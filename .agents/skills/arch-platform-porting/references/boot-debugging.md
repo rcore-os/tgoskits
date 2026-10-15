@@ -411,7 +411,9 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   `409 ota_storage_failed`，不得把写满或 Flush 失败报告为镜像格式问题。
 - 完整验证使用 `python3 bootloader/axloader/scripts/loong-qemu-smoke.py`：先运行无
   网络、OTA 和交接生产端的资源应用，再通过同一 QEMU 模板创建独占 FAT、QMP 与
-  空闲端口。覆盖写满状态保持、HTTP 幂等与拒绝、真实 trial、QMP 复位回滚、旧确认
+  空闲端口。loader 的构建配置声明 `to_bin = true`，让 `arceos build` 在准备 FAT 前
+  通过既有转换生成 EFI `.bin`，验证时应移走旧 `.bin` 核对冷构建。
+  覆盖写满状态保持、HTTP 幂等与拒绝、真实 trial、QMP 复位回滚、旧确认
   拒绝、再次确认及复位后稳定摘要持久化；上传独立 helloworld ELF 与宿主归档后，必须观察目标
   `HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。
   `ready_to_handoff` 单独出现只表示准备交接，`qemu-loongarch64.toml` 仅证明网络

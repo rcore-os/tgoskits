@@ -96,7 +96,8 @@ python3 bootloader/axloader/scripts/loong-qemu-smoke.py
 
 脚本先执行 `boot-resources` 独立资源应用，再根据 `qemu-loongarch64-http.toml`
 创建独占 FAT、QMP socket 和空闲宿主端口，运行正常 HTTP/OTA/ELF 与 FAT 写满两组
-场景，失败时输出 QEMU 日志并停止自己创建的进程组。可加
+场景。loader 构建配置中的 `to_bin = true` 让 `arceos build` 在准备 FAT 前生成
+EFI `.bin`。失败时输出 QEMU 日志并停止自己创建的进程组。可加
 `--output-dir /tmp/loong-efi` 保留本次运行证据。需要 QEMU LoongArch、dosfstools、
 mtools 和 `python3`。
 
