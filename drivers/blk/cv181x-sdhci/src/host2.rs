@@ -163,7 +163,10 @@ impl sdmmc_host::SdMmcHost for Cv181xSdhci {
             sdmmc_host::BusOp::SetBusWidth(width) if !self.config.supports_bus_width(width) => {
                 Err(sdmmc_host::Error::Unsupported)
             }
-            sdmmc_host::BusOp::SetSignalVoltage(SignalVoltage::V180) if self.config.no_1v8 => {
+            sdmmc_host::BusOp::SetSignalVoltage(SignalVoltage::V180)
+            | sdmmc_host::BusOp::SwitchSdVoltage
+                if self.config.no_1v8 =>
+            {
                 Err(sdmmc_host::Error::Unsupported)
             }
             sdmmc_host::BusOp::SetSignalVoltage(SignalVoltage::V330) => {

@@ -324,9 +324,8 @@ fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
     let _info =
         poll_init_to_completion(&mut driver).expect("init succeeds even when HS200 tuning fails");
 
-    // We *did* attempt HS200 — voltage switched to 1.8 V, tuning called,
-    // then the rollback reverted voltage to 3.3 V so the controller's
-    // 1.8 V sampling reference doesn't bleed into the HS@52 retry.
+    // Timing fallback retains the successfully selected 1.8 V signal.
+    // A fixed-rail eMMC board cannot switch its VCCQ to 3.3 V.
     let voltage_switches: Vec<SignalVoltage> = driver
         .host()
         .events
@@ -336,17 +335,9 @@ fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
             _ => None,
         })
         .collect();
-    // Voltage events look like: [V330 (init defensive reset), V180
-    // (HS200 attempt), V330 (HS200 rollback)]. The leading V330 is the
-    // abort_init cleanup that `submit_init` runs upfront to guarantee a
-    // known controller state.
     assert_eq!(
         voltage_switches,
-        std::vec![
-            SignalVoltage::V330,
-            SignalVoltage::V180,
-            SignalVoltage::V330
-        ]
+        std::vec![SignalVoltage::V330, SignalVoltage::V180]
     );
     assert_eq!(
         driver.host().last_tuning,

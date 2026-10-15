@@ -212,6 +212,7 @@ axvm = { version = "0.8", path = "virtualization/axvm", default-features = false
 axvm-types = { version = "0.7", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8", path = "virtualization/axvmconfig", default-features = false }
 ahci-driver = { version = "0.2", path = "drivers/blk/ahci-driver" }
+cqhci-host = { version = "0.1", path = "drivers/blk/cqhci-host" }
 
 define-simple-traits = { version = "0.3", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3", path = "components/crate_interface/test_crates/define-weak-traits" }
@@ -330,6 +331,7 @@ subtle = { version = "2.6.1", default-features = false }
 toml = { version = "1", default-features = false }
 dma-api = { version = "0.10", path = "memory/dma-api" }
 mmio-api = { version = "0.3", path = "memory/mmio-api" }
+mbarrier = "0.1"
 cvi-vdec-uapi = { version = "0.1", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
 spinning_top = { version = "0.3", default-features = false }

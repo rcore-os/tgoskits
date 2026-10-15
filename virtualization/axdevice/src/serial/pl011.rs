@@ -5,7 +5,11 @@ use alloc::sync::Arc;
 use ax_sync::{Mutex, MutexGuard};
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
-use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
+use super::{
+    SerialBackend, SerialEndpoint,
+    endpoint::RX_POLL_BUFFER_SIZE,
+    fifo::{ByteFifo, RxFifo},
+};
 
 const REG_DR: usize = 0x000;
 const REG_RSR_ECR: usize = 0x004;
@@ -41,7 +45,7 @@ const RX_FIFO_CAPACITY: usize = 256;
 const TX_FIFO_CAPACITY: usize = 16;
 
 struct Pl011State {
-    rx_fifo: ByteFifo<RX_FIFO_CAPACITY>,
+    rx_fifo: RxFifo<RX_FIFO_CAPACITY>,
     tx_fifo: ByteFifo<TX_FIFO_CAPACITY>,
     tx_drain_active: bool,
     integer_baud_rate: u32,
@@ -58,7 +62,7 @@ struct Pl011State {
 impl Pl011State {
     const fn new() -> Self {
         Self {
-            rx_fifo: ByteFifo::new(),
+            rx_fifo: RxFifo::new(),
             tx_fifo: ByteFifo::new(),
             tx_drain_active: false,
             integer_baud_rate: 1,
@@ -76,12 +80,6 @@ impl Pl011State {
     /// The transmitter is enabled only while both `UARTEN` and `TXE` are set.
     fn transmit_enabled(&self) -> bool {
         self.control & (CR_UART_ENABLE | CR_TX_ENABLE) == (CR_UART_ENABLE | CR_TX_ENABLE)
-    }
-
-    fn push_rx(&mut self, byte: u8) {
-        if !self.rx_fifo.push(byte) {
-            self.receive_error |= 1 << 3;
-        }
     }
 
     fn flags(&self) -> u32 {
@@ -147,61 +145,73 @@ impl Pl011 {
 
     fn drain_tx(&self) -> DeviceResult {
         let mut bytes = [0; TX_FIFO_CAPACITY];
-        let (count, asserted) = {
+        let count = {
             let mut state = self.state();
             if state.tx_drain_active {
-                (0, state.irq_asserted())
+                0
             } else if !state.transmit_enabled() {
                 // A disabled transmitter keeps its retained bytes in the FIFO
                 // and must not reach the backend until `UARTEN` and `TXE` are
                 // set again.
-                (0, state.irq_asserted())
+                0
             } else {
                 let count = state.tx_fifo.copy_to(&mut bytes);
                 if count == 0 {
-                    (0, state.irq_asserted())
+                    0
                 } else {
                     state.tx_drain_active = true;
-                    (count, state.irq_asserted())
+                    count
                 }
             }
         };
         // The register guard is released here: an idle drain publishes the IRQ
         // level only after the sleepable state lock is dropped.
         if count == 0 {
-            return self.endpoint.set_irq_level(asserted);
+            return self.refresh_irq();
         }
 
         let accepted = self.endpoint.try_write(&bytes[..count]);
-        let asserted = {
+        {
             let mut state = self.state();
             state.tx_fifo.discard(accepted);
             state.tx_drain_active = false;
             if accepted != 0 {
                 state.tx_interrupt_pending = true;
             }
-            state.irq_asserted()
-        };
-        self.endpoint.set_irq_level(asserted)
+        }
+        self.refresh_irq()
     }
 
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.
+    ///
+    /// Concurrent polls wait for the active backend read. A backend may access
+    /// registers, but must not recursively poll the UART from its read callback.
     pub fn poll(&self) -> DeviceResult {
         self.drain_tx()?;
-        self.endpoint.poll_rx(|bytes| {
-            let mut state = self.state();
-            for &byte in bytes {
-                state.push_rx(byte);
-            }
-            state.irq_asserted()
-        })
+        self.fill_rx(self.endpoint.lock_rx())
+    }
+
+    fn fill_rx(&self, _read: MutexGuard<'_, ()>) -> DeviceResult {
+        let capacity = self.state().rx_fifo.begin_read(RX_POLL_BUFFER_SIZE);
+        let Some(capacity) = capacity else {
+            return self.refresh_irq();
+        };
+        self.endpoint.poll_rx(
+            capacity,
+            |bytes| self.state().rx_fifo.finish_read(bytes),
+            || self.state().irq_asserted(),
+        )
+    }
+
+    fn refresh_irq(&self) -> DeviceResult {
+        self.endpoint.refresh_irq(|| self.state().irq_asserted())
     }
 
     /// Reads one PL011 register.
     pub fn read(&self, offset: usize, width: AccessWidth) -> DeviceResult<u64> {
         validate_width(width)?;
         self.drain_tx()?;
-        let (value, asserted) = {
+        let (value, refill) = {
             let mut state = self.state();
             let value = match offset {
                 REG_DR => state.rx_fifo.pop().unwrap_or(0) as u32 | state.receive_error,
@@ -224,9 +234,13 @@ impl Pl011 {
                     });
                 }
             };
-            (value, state.irq_asserted())
+            (value, offset == REG_DR && state.rx_fifo.is_empty())
         };
-        self.endpoint.set_irq_level(asserted)?;
+        if refill && let Some(read) = self.endpoint.try_lock_rx() {
+            self.fill_rx(read)?;
+        } else {
+            self.refresh_irq()?;
+        }
         Ok(value as u64)
     }
 
@@ -234,7 +248,7 @@ impl Pl011 {
     pub fn write(&self, offset: usize, width: AccessWidth, value: u64) -> DeviceResult {
         validate_width(width)?;
         let value = value as u32;
-        let (drain_tx, tx_reenable, asserted) = {
+        let (drain_tx, tx_reenable) = {
             let mut state = self.state();
             let mut drain_tx = false;
             let mut tx_reenable = false;
@@ -278,10 +292,10 @@ impl Pl011 {
                     });
                 }
             }
-            (drain_tx, tx_reenable, state.irq_asserted())
+            (drain_tx, tx_reenable)
         };
 
-        self.endpoint.set_irq_level(asserted)?;
+        self.refresh_irq()?;
         // A DR write and a disabled-to-enabled control write both resume the
         // retained FIFO through the same locked-out drain.
         if drain_tx || tx_reenable {

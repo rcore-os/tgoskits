@@ -65,7 +65,9 @@ impl FileBackend {
                         .map_err(io_error_to_vfs_error)
                     {
                         Ok(read) => read,
-                        Err(VfsError::WouldBlock) if total > 0 => break,
+                        // Completed reads may already have consumed device data.
+                        // Report that progress before any later read/copy error.
+                        Err(_) if total > 0 => break,
                         Err(err) => return Err(err),
                     };
                     if read == 0 {

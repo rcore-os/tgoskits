@@ -209,6 +209,7 @@ pub struct SdMmcInitRequest<H: SdMmcIrqHost + 'static> {
     pub(super) current_access_mode: Option<SdAccessMode>,
     pub(super) sd_access_index: usize,
     pub(super) mmc_hs200_attempted: bool,
+    pub(super) mmc_signal_1v8: bool,
 }
 
 /// Runtime condition required before an initialization request may advance.
@@ -253,6 +254,7 @@ impl<H: SdMmcIrqHost + 'static> SdMmcInitRequest<H> {
             current_access_mode: None,
             sd_access_index: 0,
             mmc_hs200_attempted: false,
+            mmc_signal_1v8: false,
         }
     }
 

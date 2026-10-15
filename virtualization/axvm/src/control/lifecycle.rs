@@ -95,7 +95,11 @@ impl Owner {
             let generation = next_generation(&mut self.run_generation, "VM run")?;
             let id = RunId::new(self.shared.key(), generation);
             let signals = RunSignals::new(id, self.vm.config().phys_cpu_ls.cpu_num())?;
-            let ports = DevicePorts::new(signals.clone(), Arc::downgrade(&self.shared));
+            let ports = DevicePorts::new(
+                signals.clone(),
+                Arc::downgrade(&self.shared),
+                self.cpu_freq_backend.clone(),
+            );
             if let Err(error) = self.prepare_run(id, signals, ports) {
                 self.record_failure(error.clone());
                 return Err(error);
@@ -233,7 +237,17 @@ impl Owner {
         Ok(())
     }
 
+    pub(super) fn require_stop_supported(&self) -> AxVmResult {
+        if !self.vm.config().pass_through_devices().is_empty()
+            && let Some(run) = &self.run
+        {
+            self.shared.ivc.require_no_endpoints(run.id)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn stop(&mut self, operation: OperationId) -> AxVmResult {
+        self.require_stop_supported()?;
         let result = self.stop_run(operation);
         if let Err(error) = &result {
             self.record_failure(error.clone());
@@ -260,6 +274,16 @@ impl Owner {
             self.state = VmStatus::Stopped;
             return Ok(());
         }
+        // Retire the exact run generation before teardown. If a later teardown
+        // step fails, this retired run must still be unable to influence host
+        // CPU-frequency policy. The binding is released from `close()` once
+        // every vCPU has stopped, so guest reads of the current performance
+        // keep being served while the guest is still running.
+        self.run
+            .as_ref()
+            .expect("stopping run")
+            .ports
+            .retire_cpu_freq_hints();
         self.state = VmStatus::Stopping;
         self.publish();
         let run = self.run.as_mut().expect("stopping run");
@@ -332,6 +356,7 @@ impl Owner {
         self.shared.publish_run_services(None);
         // Device routes, decode views and workers are now quiet. New starts
         // prepare fresh controllers and fresh ports for another RunId.
+        self.run.as_ref().expect("close stopped run").ports.close();
         self.run = None;
         self.state = VmStatus::Stopped;
         Ok(())

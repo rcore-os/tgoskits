@@ -221,6 +221,8 @@ pub const CMD8_MMC: Command = Command::new(8, 0, ResponseType::R1);
 /// EXT_CSD byte offsets the driver currently consumes. Full register is
 /// 512 bytes; only document the ones we read.
 pub mod ext_csd {
+    /// Enable the eMMC command queue mode after host and card negotiation.
+    pub const CMDQ_MODE_EN: usize = 15;
     /// Trigger a flush of the enabled volatile write cache.
     pub const FLUSH_CACHE: usize = 32;
     /// Volatile write-cache enable control.
@@ -240,6 +242,10 @@ pub mod ext_csd {
     pub const SEC_COUNT: usize = 212;
     /// Volatile write-cache size in KiB (LE u32, eMMC 4.5+).
     pub const CACHE_SIZE: usize = 249;
+    /// Zero-based maximum command queue task index.
+    pub const CMDQ_DEPTH: usize = 307;
+    /// Command queue capability bitmap.
+    pub const CMDQ_SUPPORT: usize = 308;
 
     pub mod device_type {
         /// Supports HS @ 26 MHz.

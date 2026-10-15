@@ -924,7 +924,7 @@ impl Gic {
             !id.is_private(),
             "Cannot set target CPU for private interrupt (SGI/PPI): {id:?}"
         );
-        self.gicd().set_interrupt_route(id.to_u32(), affinity);
+        let _ = self.gicd().set_interrupt_route(id.to_u32(), affinity);
     }
 
     pub fn get_target_cpu(&self, id: IntId) -> Option<Affinity> {

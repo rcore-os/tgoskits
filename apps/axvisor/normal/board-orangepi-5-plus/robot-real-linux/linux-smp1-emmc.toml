@@ -3,7 +3,9 @@ id = 1
 name = "linux"
 guest_type = "passthrough"
 cpu_num = 1
-phys_cpu_ids = [0x00]
+# Bind the Linux USB/vision workload to the RK3588 A76 core at /cpus/cpu@400
+# (MPIDR 0x400), separate from Starry's /cpus/cpu@0 affinity.
+phys_cpu_ids = [0x400]
 
 [kernel]
 entry_point = 0x2_4008_0000

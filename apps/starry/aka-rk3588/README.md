@@ -25,13 +25,13 @@ USB 控制器仍可能在系统中呈现 USB 串口节点。VM 配置也不注�
 
 ## 2. CI 矩阵
 
-本目录相关的最终矩阵把同一块板上的 Starry 原生、AxVisor Linux 和 AxVisor
-Starry guest 合并到同一个 runner；real robot 仍由普通 CI 与 AxVisor Nightly
-分别覆盖：
+本目录相关的最终矩阵把同一块板上的 Starry 原生 board suite 注册到普通 CI；
+AxVisor Linux 和 AxVisor Starry guest 由三客户机功能检查、机器人 guest 链路与
+AxVisor Nightly 覆盖，普通 CI 的 Starry 检查不再重复运行单客户机 AxVisor smoke：
 
 | check id | 调度 | board selector | board_type | 入口 |
 | --- | --- | --- | --- | --- |
-| `test-axvisor-self-hosted-board-orangepi-5-plus-linux-starry` | 普通 CI | `orangepi-5-plus`、`orangepi-5-plus-linux`、`orangepi-5-plus-starry` | `OrangePi-5-Plus` | 同一 runner 先运行 Starry board suites，再运行 AxVisor Linux 和 Starry guest |
+| `test-starry-self-hosted-board-orangepi-5-plus` | 普通 CI | `orangepi-5-plus` | `OrangePi-5-Plus` | 运行原生 StarryOS board suites；不再重复执行单客户机 AxVisor Linux 和 Starry smoke |
 | `test-orangepi-5-plus-robot-axvisor-guests` | 普通 CI | `orangepi-5-plus-robot`、`orangepi-5-plus-robot-starry`、`orangepi-5-plus-robot-linux` | `OrangePi-5-Plus` | 同一 runner 先运行 virtual Starry suites，再用共享 AxVisor 构建运行 Linux 和 StarryOS guest |
 | `test-orangepi-5-plus-robot-real-suite` | AxVisor Nightly | `orangepi-5-plus-robot-real`、`orangepi-5-plus-robot-real-starry`、`orangepi-5-plus-robot-real-linux` | `OrangePi-5-Plus-robot` | 同一 runner 先运行 native StarryOS，再复用一个 AxVisor 构建运行 StarryOS 和 Linux guest；均执行 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0` |
 

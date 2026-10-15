@@ -941,6 +941,7 @@ dependencies = [
  "ax-sync",
  "axklib",
  "bitflags 2.13.2",
+ "cqhci-host",
  "crab-usb",
  "cv181x-clock",
  "cv181x-sdhci",
@@ -2523,6 +2524,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "cqhci-host"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "log",
+ "mbarrier",
+ "rdif-block",
+ "sdmmc-protocol",
 ]
 
 [[package]]

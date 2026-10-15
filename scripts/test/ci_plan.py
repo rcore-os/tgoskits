@@ -698,11 +698,16 @@ def _normalize_suite_selection(
     context: PlanContext,
 ) -> dict[str, Any]:
     row = _normalize_check(template, context)
+    # An incremental pull request runs the check's complete
+    # `pull_request_command` instead of the exact suite command. Both commands
+    # already contain their own prerequisites, so the normalized command is kept
+    # as-is instead of being replaced or concatenated with the selection.
+    if not _pull_request_command_override(template, context):
+        row["command"] = selection.command
     row.update(
         {
             "id": selection.row_id,
             "name": selection.leaf_name,
-            "command": selection.command,
             "template_id": selection.template_id,
             "upload_xtask_bin_artifact": False,
             "download_xtask_bin_artifact": False,
@@ -798,6 +803,23 @@ def _suite_path_os(path: str) -> str | None:
     return None
 
 
+def _pull_request_command_override(
+    check: dict[str, Any], context: PlanContext
+) -> str | None:
+    """Returns a check's incremental pull-request command, if it applies.
+
+    The declared value is a complete replacement for the check's regular
+    `command`, not a prefix to be combined with another command.
+    """
+    if (
+        context.event_name != "pull_request"
+        or context.impact is None
+        or context.impact.full
+    ):
+        return None
+    return check.get("pull_request_command")
+
+
 def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, Any]:
     runs_on = list(check["runs_on"])
     environment = check["environment"]
@@ -826,13 +848,9 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
         download_xtask = True
 
     command = check["command"]
-    if (
-        context.event_name == "pull_request"
-        and context.impact is not None
-        and not context.impact.full
-        and check.get("pull_request_command")
-    ):
-        command = check["pull_request_command"]
+    pull_request_command = _pull_request_command_override(check, context)
+    if pull_request_command:
+        command = pull_request_command
 
     return {
         "id": check["id"],

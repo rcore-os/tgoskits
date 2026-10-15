@@ -117,6 +117,9 @@ impl DwMmc {
                 Ok(_) => Ok(BusRequestState::SetSignalVoltage(voltage)),
                 Err(err) => Err(map_protocol_error(err)),
             },
+            sdmmc_host::BusOp::SwitchSdVoltage => {
+                Ok(BusRequestState::SetSignalVoltage(SignalVoltage::V180))
+            }
             sdmmc_host::BusOp::ExecuteTuning { .. } => Err(sdmmc_host::Error::Unsupported),
             _ => Err(sdmmc_host::Error::Unsupported),
         }

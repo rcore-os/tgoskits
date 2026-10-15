@@ -48,6 +48,30 @@ pub trait WorkAccessPort: Send + Sync {
     fn notify_work(&self, device_id: DeviceId) -> DeviceManagerResult;
 }
 
+/// Run-scoped capability for normalized guest CPU-frequency hints.
+///
+/// Implementations must enqueue or merge the request without calling a host
+/// clock, regulator, or firmware driver from the MMIO access path. The
+/// execution owner supplies the VM/run identity through the port instance.
+pub trait GuestCpuFreqPort: Send + Sync {
+    /// Publishes one vCPU's normalized performance request.
+    fn set_performance(
+        &self,
+        device_id: DeviceId,
+        vcpu_id: DeviceVcpuId,
+        domain: u32,
+        performance: u32,
+    ) -> DeviceManagerResult;
+
+    /// Returns the last host-confirmed normalized performance value.
+    fn current_performance(
+        &self,
+        device_id: DeviceId,
+        vcpu_id: DeviceVcpuId,
+        domain: u32,
+    ) -> DeviceManagerResult<u32>;
+}
+
 /// VM runtime capabilities injected into one sealed [`DeviceRuntime`].
 #[derive(Clone, Default)]
 pub struct RuntimeAccessPorts {
@@ -55,6 +79,7 @@ pub struct RuntimeAccessPorts {
     wake: Option<Arc<dyn WakeAccessPort>>,
     stop: Option<Arc<dyn StopAccessPort>>,
     work: Option<Arc<dyn WorkAccessPort>>,
+    cpufreq: Option<Arc<dyn GuestCpuFreqPort>>,
 }
 
 impl RuntimeAccessPorts {
@@ -65,6 +90,7 @@ impl RuntimeAccessPorts {
             wake: None,
             stop: None,
             work: None,
+            cpufreq: None,
         }
     }
 
@@ -92,9 +118,20 @@ impl RuntimeAccessPorts {
         self
     }
 
+    /// Adds a run-scoped guest CPU-frequency hint port.
+    pub fn with_cpufreq(mut self, cpufreq: Arc<dyn GuestCpuFreqPort>) -> Self {
+        self.cpufreq = Some(cpufreq);
+        self
+    }
+
     /// Returns the deferred-work notification port, if one is attached.
     pub fn work(&self) -> Option<Arc<dyn WorkAccessPort>> {
         self.work.clone()
+    }
+
+    /// Returns the run-scoped guest CPU-frequency hint port, if attached.
+    pub fn cpufreq(&self) -> Option<Arc<dyn GuestCpuFreqPort>> {
+        self.cpufreq.clone()
     }
 }
 
@@ -342,6 +379,39 @@ impl RuntimeDeviceContext<'_, '_> {
 impl DeviceContext for RuntimeDeviceContext<'_, '_> {
     fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    fn set_cpu_freq_hint(
+        &mut self,
+        vcpu_id: DeviceVcpuId,
+        domain: u32,
+        performance: u32,
+    ) -> DeviceResult {
+        let port = self
+            .access_ports
+            .cpufreq()
+            .ok_or_else(|| DeviceError::Unsupported {
+                operation: "set guest CPU frequency hint",
+                detail: "no CPU frequency port is attached to this VM runtime".into(),
+            })?;
+        port.set_performance(self.device_id, vcpu_id, domain, performance)
+            .map_err(DeviceError::from)
+    }
+
+    fn current_cpu_freq_performance(
+        &mut self,
+        vcpu_id: DeviceVcpuId,
+        domain: u32,
+    ) -> DeviceResult<u32> {
+        let port = self
+            .access_ports
+            .cpufreq()
+            .ok_or_else(|| DeviceError::Unsupported {
+                operation: "read guest CPU frequency performance",
+                detail: "no CPU frequency port is attached to this VM runtime".into(),
+            })?;
+        port.current_performance(self.device_id, vcpu_id, domain)
+            .map_err(DeviceError::from)
     }
 
     fn with_routed_device(

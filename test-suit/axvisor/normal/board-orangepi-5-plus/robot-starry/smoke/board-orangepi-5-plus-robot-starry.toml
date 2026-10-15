@@ -18,8 +18,10 @@ fail_regex = [
   # below builds this literal from a variable so the echoed command line cannot
   # match it, and uses no quote characters at all: a dropped byte inside a
   # quote leaves the shell waiting for the closing one and swallows the next
-  # step. Keep it quote-free; do not fold the marker back into one word.
-  '(?m)^(?:\x1b\[[0-9;]*m)*USB_DIR_MISSING(?:\x1b\[[0-9;]*m)*[ \t\r]*$',
+  # step. It also prints the path it checked, so the marker only fails the run
+  # when the check really ran against the deploy directory: a command cut by a
+  # lost byte prints an empty path and is left to the steps below.
+  '(?m)^(?:\x1b\[[0-9;]*m)*USB_DIR_MISSING d=/home/orangepi/robot-ci/aka-rk3588-virtual(?:\x1b\[[0-9;]*m)*[ \t\r]*$',
 ]
 
 [[shell_check_steps]]
@@ -27,8 +29,22 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
-shell_prefix = "HOSTNAME=starry"
-shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-virtual; [ -x $d/run_vision_usb_ci_once.sh ] && b=OK || b=MISSING; echo USB_DIR_$b'
+# The guest console drops bytes while the guest is still printing its boot log,
+# and every byte on the wire is another chance to lose the command. This first
+# command after the guest shell comes up carries only a fixed delay: losing it
+# is harmless, and landing it moves the steps below out of the boot burst.
+shell_prefix = "root@starry:~#"
+shell_cmd = "sleep 3"
+
+[[shell_check_steps]]
+# Wait for the shell prompt, not `HOSTNAME=starry`: that string also appears in
+# the guest command line at boot, so waiting for it sent this command into the
+# boot log burst, which is exactly where the console is most likely to lose
+# bytes. The command keeps the deploy directory check and prints the path it
+# saw, so a command cut by a lost byte no longer looks like a missing
+# directory.
+shell_prefix = "root@starry:~#"
+shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-virtual; [ -x $d/run_vision_usb_ci_once.sh ] && b=OK || b=MISSING; echo USB_DIR_$b d=$d'
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:~#"
@@ -52,3 +68,7 @@ shell_cmd = 'cd "$d" && FTDI_TRANSPORT=usb ./run_vision_usb_ci_once.sh 28.0'
 # Only the exact final producer verdict counts. The optional trailing kernel
 # timestamp only tolerates the guest console relay appending to the marker line.
 success_regex = ['(?m)^(?:\x1b\[[0-9;]*m)*\[VISION_USB_CI\] RESULT=PASS attempts=1(?:[ \t\r]*$|\[\s*\d+\.\d+\].*$)']
+# Bound the wait for the application verdict: the prefix wait itself has no
+# timeout of its own, so without this a hung or lost run costs the whole case
+# budget instead of a few minutes.
+timeout = 300

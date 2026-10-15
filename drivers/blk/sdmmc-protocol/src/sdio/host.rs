@@ -188,6 +188,7 @@ pub enum SdMmcBusOp {
     SetBusWidth(BusWidth),
     SetClock(ClockSpeed),
     SwitchVoltage(SignalVoltage),
+    SwitchSdVoltage,
     ExecuteTuning {
         cmd_index: u8,
         block_size: NonZeroU16,
@@ -203,6 +204,7 @@ impl SdMmcBusOp {
             Self::SetBusWidth(width) => sdmmc_host::BusOp::SetBusWidth(width),
             Self::SetClock(speed) => sdmmc_host::BusOp::SetClock(speed),
             Self::SwitchVoltage(voltage) => sdmmc_host::BusOp::SetSignalVoltage(voltage),
+            Self::SwitchSdVoltage => sdmmc_host::BusOp::SwitchSdVoltage,
             Self::ExecuteTuning {
                 cmd_index,
                 block_size,

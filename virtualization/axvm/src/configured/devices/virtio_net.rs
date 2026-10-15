@@ -24,6 +24,7 @@ use axvirtio_net::{
 use axvm_types::GuestPhysAddr;
 use axvmconfig::VirtualDeviceRequest;
 
+use super::EMULATED_MMIO_PLACEMENT_ALIGNMENT;
 use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 
 const MMIO_SLOT: &str = "mmio";
@@ -324,7 +325,7 @@ impl DeviceModel for VirtioNetModel {
             .with_mmio(
                 ResourceSlot::new(MMIO_SLOT)?,
                 MMIO_SIZE,
-                MMIO_SIZE,
+                EMULATED_MMIO_PLACEMENT_ALIGNMENT,
                 ResourceRequest::Auto,
             )?
             .with_wired_irq(

@@ -1,0 +1,27 @@
+# AxVisor host build group for the Orange Pi 5 Plus three-guest functional test
+# (`linux` + `starry` + `zephyr-triple-guest-functional`).
+#
+# Guest identities `linux` and `starry` stay generic; only `zephyr-triple-guest-functional`
+# is a dedicated image. The host uses the default AxVisor network path, and
+# `ax-driver/realtek-rtl8125` compiles the physical RTL8125 NIC driver that carries
+# the Linux and Starry guest network checks.
+#
+# Precondition: the StarryOS guest kernel is produced by this checkout and packaged
+# into the host initramfs as a builtin resource (`/guest/builtin/images`). Build it
+# before `cargo xtask axvisor test board`:
+#   cargo xtask starry build \
+#     --config test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/starry-guest-build.toml \
+#     --smp 1
+features = [
+  "ax-driver/rk3588-cpufreq",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/linux-virtio-blk.toml",
+  "test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/starry-virtio-blk.toml",
+  "test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/zephyr-triple-guest-functional.toml",
+]

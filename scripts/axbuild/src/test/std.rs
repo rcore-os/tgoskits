@@ -43,6 +43,11 @@ const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         no_default_features: false,
         features: &["host-test", "rk3588-cpufreq"],
     },
+    PackageFeatureProfile {
+        name: "host-test+rockchip-sdhci",
+        no_default_features: false,
+        features: &["host-test", "rockchip-sdhci"],
+    },
 ];
 
 // Exercise the rdif implementation under its real feature profile.

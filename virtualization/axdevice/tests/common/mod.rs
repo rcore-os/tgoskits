@@ -37,7 +37,7 @@ use core::{
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Condvar, Mutex, OnceLock},
+    sync::{Arc, Condvar, Mutex, OnceLock, mpsc::Sender},
 };
 
 use ax_sync::interface::{AcquireResult, ContextState, LockMetadata, MutexStorage};
@@ -62,6 +62,11 @@ impl HostSleepMutex {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         while *held {
+            NEXT_MUTEX_WAIT.with(|slot| {
+                if let Some(sender) = slot.borrow_mut().take() {
+                    let _ = sender.send(true);
+                }
+            });
             held = self
                 .released
                 .wait(held)
@@ -120,6 +125,9 @@ fn existing_companion(lock_addr: usize) -> Option<Arc<HostSleepMutex>> {
 
 std::thread_local! {
     static OWNED: RefCell<BTreeSet<usize>> = const { RefCell::new(BTreeSet::new()) };
+    // Unit tests may observe one real wait on this thread. Sending an event
+    // does not call test code under the companion mutex or change its wakeup.
+    pub(crate) static NEXT_MUTEX_WAIT: RefCell<Option<Sender<bool>>> = const { RefCell::new(None) };
 }
 
 fn set_owned(lock_addr: usize, owned: bool) {

@@ -23,7 +23,7 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 | `network_console` | 在运行期登记与释放客户机通道（管理通道加 8 条客户机通道）、维护独占网页会话和 Axvisor 网页行编辑；不提供 raw TCP listener | `web` 功能启用时 |
 | `shell/mod.rs` | 作为输入事件循环的唯一 owner，消费 `ConsoleInputEvent`，调用 `activate()`，每轮 reconcile VM 状态 | 管理 shell |
 | `shell/command/vm.rs` | `vm start --console`、`vm console` 以及 start/stop/reset/resume/delete 的 mux lifecycle 调用 | 管理命令 |
-| `AxvmManager` 接入 | 提供 VM registry/status；输入入队后、以及 ordered record 被消费释放容量后唤醒对应 VM；实际设备 poll 由 vCPU0 执行 | VM lifecycle 与运行期 |
+| `AxvmManager` 接入 | 提供 VM registry/status；输入入队后、以及 ordered record 被消费释放容量后唤醒对应 VM；后台设备 poll 由指定 poll owner 执行 | VM lifecycle 与运行期 |
 
 `GuestConsoleMux` 持有一个共享的 `ConsoleCore`。`ConsoleCore` 有两把任务上下文可睡眠的
 `std::sync::Mutex`：`state` 保护以上全部可变状态以及 `backend_generation`/`backend_identity`，
@@ -53,7 +53,7 @@ flowchart LR
     Shell["ShellByte / ShellSequence<br/>命令行编辑器"]
     Queue["GuestState.input<br/>4096-byte queue"]
     Notify["锁外 AxvmManager::notify_vm"]
-    Poll["vCPU0 poll virtual devices"]
+    Poll["指定 poll owner 轮询虚拟设备"]
     Backend["GuestSerialBackend::read"]
 
     UART --> Reader --> Route
@@ -96,6 +96,8 @@ backlog，返回管理 shell 后再回放。底层 64 条 record 队列对宿主
 每个 `GuestState.input` 最多保存 4096 字节。一次路由只写剩余容量，超出部分从本次输入尾部丢弃；已有队列内容不会被淘汰，调用者不阻塞，也不会把溢出字节改投给 shell。第一次溢出发布一条完整宿主 warning，guest 读出至少一个字节后才允许报告下一次溢出，避免静默丢失和 warning flood。backend 的 `read()` 按调用方 buffer 大小从队首取出字节。
 
 `route_host_byte()` 在持有 mux 锁时只完成状态修改和入队，把待唤醒的 VM ID 放进 `RoutedInput`。公共入口释放 `state` 和 `output_lock` 后才调用 `AxvmManager::notify_vm()`；唤醒失败只记录 warning，已入队字节仍保留。这个锁外调用避免 mux 锁跨入 VM manager 和 scheduler。
+
+通知只设置可合并的 device-work 标志，不为每个字节保留一次 poll。虚拟 UART 首次接收至多 64 字节，此后由 RBR/DR 消费释放空间继续接收；FIFO 满时余量留在 `GuestState.input`，不靠重复通知填满或排空队列。后台 poll 与寄存器续读共享同一接收读锁，后台 poll 会等待在途读完成，因而不会吞掉在途空读期间新输入的唯一通知；这个锁不跨越 UART 状态锁调用 mux，详见[串口完整路径](./device-runtime.md#5-串口完整路径)。
 
 `route_network_input(vm_id, bytes)` 复用同一有界队列和锁外唤醒，但它先要求目标
 VM 仍在 running 集合且存在当前 backend generation。该入口按 VM ID 直接路由，
@@ -314,7 +316,7 @@ active admission/stable identity 语义一致。
 | 宿主日志 | 唯一 `ConsoleLogSubscription` 按完整 record 投递；guest raw output 以 `(VMId, generation)` tag 进入同一 ordered queue；编辑行清除后重画，guest 前台期间有界缓存 | guest 提交遇到满队列时返回 `WouldBlock`，由 PL011 retained TX FIFO 重试且不计 host-log drop；释放容量后的 retry 唤醒只在 record 被消费时按 `retained_tx` 发布；只有 runtime 实际丢弃的记录才报告摘要，panic/emergency 不保证重画 |
 | mux 锁 | 双锁路径固定 `output_lock` → `state`；卸载硬件后的 vCPU 任务通过 `std::sync::Mutex` 调用 mux | hard IRQ 不进入 mux；新增路径必须保持同一锁顺序 |
 | VM notify | 输入入队后、以及任何 ordered record 被消费后按 `retained_tx`，都在锁外 notify，不把 mux 锁带进 manager/scheduler | notify 失败只告警，字节等后续 poll；唤醒只针对被阻塞且 generation 仍有效的 VM |
-| 虚拟设备 poll | `RunSignals::poll_owner()` 指定一个在线 vCPU；其退出时 control owner 转交给其他在线 vCPU | 非指定 vCPU 不消费串口输入 |
+| 虚拟设备 poll | `RunSignals::poll_owner()` 指定一个在线 vCPU；其退出时 control owner 转交给其他在线 vCPU | 后台 poll 只有一个 owner；任意 vCPU 的 RBR/DR 消费也可触发有界续读，UART 接收读锁串行化 backend 读取 |
 | 单 vCPU guest | `notify_vm()` 设置 Release 发布的 pending device-poll flag 并唤醒；指定 poll owner 用 Acquire/AcqRel 消费 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
 | SMP guest | 与单 vCPU guest 一样先发布 pending device-poll flag，再通过线程世代绑定的 capability 定向 kick 当前 poll owner | flag 只表达“需要 poll”，不计数；队列才保存字节 |
 | 输出并发 | `output_lock` 覆盖 active admission、record 入队、`retained_tx` 记/清与 retry drain；ordered record queue 保持 guest 写入顺序，固定 64 KiB transport 保持直接 replay 的事务边界，只有 output worker 等待 UART | guest record queue 满时 `try_write()` 返回 0 且不丢弃已排队记录，由 PL011 重试，并由 pop 路径锁外 `notify_vm()` 唤醒；直接 host transport 事务满时整事务回滚并报告摘要；per-guest ring 淘汰最旧字节；这些路径不等待 UART；任务 mutex 竞争可以睡眠 |

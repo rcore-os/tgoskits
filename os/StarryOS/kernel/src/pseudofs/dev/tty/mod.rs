@@ -38,7 +38,10 @@ use crate::{
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceOps},
     sync::{Mutex, RawSpinLock},
-    task::{PgidNumber, PidView, Process, current_user_task, send_signal_to_process_group},
+    task::{
+        PgidNumber, PidView, Process, current_user_task, send_signal_to_process_group,
+        send_signal_to_process_group_ref,
+    },
 };
 
 const TCIFLUSH: usize = 0;
@@ -123,19 +126,23 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         if pg.session().sid().pid_number() != proc.pid().pid_number() {
             return Err(StarryError::OperationNotPermitted);
         }
-        if !pg.session().try_set_terminal_with(|| {
+        let binding: Arc<dyn Any + Send + Sync> = Arc::new(BoundTty {
+            tty: self.clone(),
+            location,
+        });
+        let session = pg.session();
+        if !session.try_set_terminal_with(|| {
             self.terminal.job_control.set_session(&pg.session())?;
-            let binding: Arc<dyn Any + Send + Sync> = Arc::new(BoundTty {
-                tty: self.clone(),
-                location,
-            });
             *self.binding.lock_irqsave() = Some(Arc::downgrade(&binding));
-            Ok::<_, StarryError>(binding)
+            Ok::<_, StarryError>(binding.clone())
         })? {
             return Err(StarryError::ResourceBusy);
         }
 
         self.terminal.job_control.set_foreground(&pg).unwrap();
+        if let Some(proc_data) = proc.identity().live_data() {
+            proc_data.set_controlling_terminal(binding);
+        }
         Ok(())
     }
 
@@ -363,30 +370,41 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         .bind_to(&current.as_thread().proc_data.proc)?;
                 }
                 TIOCNOTTY => {
-                    let session = current.as_thread().proc_data.proc.group().session();
-                    let this: Arc<dyn Any + Send + Sync> = self.this.upgrade().unwrap();
-                    let binding = self
-                        .binding
-                        .lock_irqsave()
-                        .as_ref()
-                        .and_then(Weak::upgrade)
-                        .unwrap_or(this);
-                    if current
-                        .as_thread()
-                        .proc_data
-                        .proc
-                        .group()
-                        .session()
-                        .unset_terminal(&binding)
-                    {
-                        *self.binding.lock_irqsave() = None;
-                        self.terminal.job_control.clear_session(&session);
-                        // TODO: If the process was session leader, send SIGHUP and
-                        // SIGCONT to the foreground process group and all processes
-                        // in the current session lose their
-                        // controlling terminal.
-                    } else {
-                        warn!("Failed to unset terminal");
+                    let proc_data = &current.as_thread().proc_data;
+                    let binding = proc_data
+                        .controlling_terminal()
+                        .ok_or(StarryError::NotATty)?;
+                    let this = self.this.upgrade().ok_or(StarryError::BadState)?;
+                    let Some(bound) = binding.downcast_ref::<BoundTty<R, W>>() else {
+                        return Err(StarryError::NotATty);
+                    };
+                    if !Arc::ptr_eq(&bound.tty, &this) {
+                        return Err(StarryError::NotATty);
+                    }
+                    if !proc_data.clear_controlling_terminal_if(&binding) {
+                        return Err(StarryError::NotATty);
+                    }
+
+                    let proc = proc_data.proc.clone();
+                    let session = proc.group().session();
+                    let is_session_leader =
+                        session.sid().pid_number() == proc.pid().pid_number();
+                    if is_session_leader {
+                        if let Some(foreground) = self.terminal.job_control.foreground() {
+                            let _ = send_signal_to_process_group_ref(
+                                &foreground,
+                                Some(SignalInfo::new_kernel(Signo::SIGHUP)),
+                            );
+                            let _ = send_signal_to_process_group_ref(
+                                &foreground,
+                                Some(SignalInfo::new_kernel(Signo::SIGCONT)),
+                            );
+                        }
+                        session.clear_terminal_from_processes(&binding);
+                        if session.unset_terminal(&binding) {
+                            *self.binding.lock_irqsave() = None;
+                            self.terminal.job_control.clear_session(&session);
+                        }
                     }
                 }
                 _ => return Err(StarryError::NotATty),

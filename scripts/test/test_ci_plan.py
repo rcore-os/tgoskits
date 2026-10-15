@@ -201,14 +201,15 @@ class CiPlanTests(unittest.TestCase):
                 self.assertNotIn("ivc-benchmark", commands)
                 self.assertNotIn("orangepi-5-plus-vcpu-perf", commands)
                 self.assertNotIn("--test-case ping", commands)
-                self.assertIn(
-                    "--board orangepi-5-plus-linux,orangepi-5-plus-starry --test-case smoke",
+                self.assertNotIn(
+                    "--board orangepi-5-plus-linux,orangepi-5-plus-starry",
                     commands,
                 )
-                self.assertNotIn("--board orangepi-5-plus-linux\n", commands)
                 self.assertIn("--test-case qemu-ivc", commands)
+                # The ordinary CI check keeps the native StarryOS board suite but no
+                # longer registers the single-guest AxVisor smokes.
                 self.assertIn(
-                    "--board orangepi-5-plus-linux,orangepi-5-plus-starry",
+                    "cargo xtask starry test board --board orangepi-5-plus",
                     commands,
                 )
 
@@ -1434,6 +1435,64 @@ node_version = "latest"
                     enabled_boolean_inputs=enabled,
                 )
                 self.assertEqual(ci_plan._is_enabled(check, context), expected)
+
+    def test_suite_selection_uses_the_complete_pull_request_override(self) -> None:
+        suite_command = "cargo xtask example test board --test-case synthetic-case"
+        override = f"build-synthetic-guest --config synthetic-guest-build.toml && {suite_command}"
+        template = {
+            "id": "synthetic-board-check",
+            "name": "Synthetic board check",
+            "group": "AxVisor",
+            "phase": "test",
+            "runs_on": ["self-hosted", "linux", "board"],
+            "environment": "host",
+            "command": "run-synthetic-board-suite",
+            "pull_request_command": override,
+            "source": "synthetic.toml",
+        }
+        selection = ci_plan.SuiteSelection(
+            template_id="synthetic-board-check",
+            row_id="suite-synthetic-board-check-synthetic-case",
+            leaf_name="Board · synthetic-case",
+            command=suite_command,
+            source_path="test-suit/axvisor/normal/synthetic/board-synthetic.toml",
+        )
+        incremental = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            head_repository="rcore-os/tgoskits",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False, reason="fixture", changed_paths=(selection.source_path,)
+            ),
+        )
+
+        # The override replaces the row command completely: prerequisite and
+        # board run are both intact, and the board run is not repeated.
+        row = ci_plan._normalize_suite_selection(template, selection, incremental)
+        self.assertEqual(row["command"], override)
+        self.assertEqual(row["command"].count(suite_command), 1)
+
+        # Anywhere the override does not apply the exact selection still runs.
+        del template["pull_request_command"]
+        for context in (
+            ci_plan.replace(incremental, event_name="push"),
+            ci_plan.replace(
+                incremental,
+                impact=ci_plan.CiImpact(
+                    full=True, reason="fixture", changed_paths=(selection.source_path,)
+                ),
+            ),
+            incremental,
+        ):
+            with self.subTest(event=context.event_name, full=context.impact.full):
+                self.assertEqual(
+                    ci_plan._normalize_suite_selection(template, selection, context)[
+                        "command"
+                    ],
+                    selection.command,
+                )
 
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]

@@ -34,6 +34,7 @@ mod config;
 #[cfg(feature = "web")]
 mod control;
 mod guest_console;
+mod guest_cpufreq;
 mod guest_images;
 mod manager;
 mod net_uplink;

@@ -8,6 +8,7 @@ use rdif_block::{
 
 use crate::{
     rdif::{
+        accelerator::CommandQueueAccelerator,
         config::{BlockConfig, device_info},
         irq::BlockIrqHandler,
         queue::BlockQueue,
@@ -87,6 +88,7 @@ where
     diagnostic_identity: Option<String>,
     started: bool,
     stopped: bool,
+    accelerator: Option<Box<dyn CommandQueueAccelerator>>,
 }
 
 impl<H> BlockDevice<H>
@@ -111,6 +113,7 @@ where
             diagnostic_identity,
             started: false,
             stopped: false,
+            accelerator: None,
         }
     }
 
@@ -137,6 +140,29 @@ where
             diagnostic_identity,
             started: false,
             stopped: false,
+            accelerator: None,
+        }
+    }
+
+    /// Creates an initializing controller with an optional eMMC command queue.
+    pub fn new_initializing_accelerated(
+        card: SdMmcCard<H>,
+        irq_handler: Box<dyn HardIrqHandler>,
+        config: BlockConfig,
+        preference: CardInitPreference,
+        accelerator: Box<dyn CommandQueueAccelerator>,
+    ) -> Self {
+        let diagnostic_identity = card.diagnostic_identity().map(String::from);
+        Self {
+            card: Some(card),
+            config,
+            irq_handler: Some(irq_handler),
+            init_preference: Some(preference),
+            init_status: Arc::new(BlockInitStatus::initializing()),
+            diagnostic_identity,
+            started: false,
+            stopped: false,
+            accelerator: Some(accelerator),
         }
     }
 
@@ -151,12 +177,13 @@ where
         let card = self.card.take().ok_or(BlkError::InvalidRequest)?;
         let handler = self.irq_handler.take().ok_or(BlkError::InvalidRequest)?;
         let queue: Box<dyn HardwareQueue> = if let Some(preference) = self.init_preference {
-            Box::new(BlockQueue::new_initializing(
+            Box::new(BlockQueue::new_initializing_with_accelerator(
                 card,
                 self.config,
                 0,
                 preference,
                 Arc::clone(&self.init_status),
+                self.accelerator.take(),
             )?)
         } else {
             Box::new(BlockQueue::new(card, self.config, 0))

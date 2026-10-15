@@ -41,7 +41,12 @@ impl Sdhci {
                 }))
             }
             sdmmc_host::BusOp::SetBusWidth(width) => Ok(BusRequestState::SetBusWidth(width)),
-            sdmmc_host::BusOp::SetSignalVoltage(voltage) => self.prepare_host2_voltage(voltage),
+            sdmmc_host::BusOp::SetSignalVoltage(voltage) => {
+                self.prepare_host2_voltage(voltage, VoltageProtocol::Direct)
+            }
+            sdmmc_host::BusOp::SwitchSdVoltage => {
+                self.prepare_host2_voltage(SignalVoltage::V180, VoltageProtocol::SdCmd11)
+            }
             sdmmc_host::BusOp::ExecuteTuning {
                 command,
                 block_size,
@@ -78,6 +83,7 @@ impl Sdhci {
     fn prepare_host2_voltage(
         &self,
         voltage: SignalVoltage,
+        protocol: VoltageProtocol,
     ) -> Result<BusRequestState, sdmmc_host::Error> {
         if matches!(voltage, SignalVoltage::V180) && !self.support_1v8 {
             return Err(sdmmc_host::Error::Unsupported);
@@ -88,6 +94,7 @@ impl Sdhci {
         match voltage {
             SignalVoltage::V330 | SignalVoltage::V180 => Ok(BusRequestState::SetSignalVoltage(
                 SdhciVoltageState::DisableClock(voltage),
+                protocol,
             )),
             SignalVoltage::V120 => Err(sdmmc_host::Error::Unsupported),
             _ => Err(sdmmc_host::Error::Unsupported),
@@ -99,6 +106,9 @@ impl Sdhci {
         command: sdmmc_host::Command,
         block_size: core::num::NonZeroU16,
     ) -> Result<BusRequestState, sdmmc_host::Error> {
+        if self.timer.is_none() || !self.completion_irq_enabled() {
+            return Err(sdmmc_host::Error::Unsupported);
+        }
         if command.index != 19 && command.index != 21 {
             return Err(sdmmc_host::Error::InvalidArgument);
         }
@@ -128,9 +138,6 @@ impl Sdhci {
                 retry_after: SDHCI_REGISTER_RETRY_DELAY,
             });
         }
-        if !register_only && cause == sdmmc_host::ProgressCause::RegisterRetry {
-            return Ok(sdmmc_host::RequestProgress::WaitingForIrq);
-        }
         let progress = match state {
             BusRequestState::Reset {
                 mask,
@@ -152,8 +159,10 @@ impl Sdhci {
                 self.apply_bus_width(*width).map_err(map_protocol_error)?;
                 Ok(sdmmc_host::RequestProgress::Complete(Ok(())))
             }
-            BusRequestState::SetSignalVoltage(voltage) => self.advance_host2_voltage(voltage),
-            BusRequestState::ExecuteTuning(tuning) => self.advance_host2_tuning(tuning),
+            BusRequestState::SetSignalVoltage(voltage, protocol) => {
+                self.advance_host2_voltage(voltage, *protocol)
+            }
+            BusRequestState::ExecuteTuning(tuning) => self.advance_host2_tuning(tuning, cause),
         }?;
         if register_only && matches!(progress, sdmmc_host::RequestProgress::WaitingForIrq) {
             Ok(sdmmc_host::RequestProgress::RegisterPending {
@@ -207,6 +216,10 @@ impl Sdhci {
                 uhs_mode,
                 high_speed,
             } => {
+                if target_hz == 0 {
+                    self.write_u16(REG_CLOCK_CONTROL, 0);
+                    return Ok(sdmmc_host::RequestProgress::Complete(Ok(())));
+                }
                 if let Some(mode) = uhs_mode {
                     let ctrl2 =
                         (self.read_u16(REG_HOST_CONTROL2) & !HOST_CTRL2_UHS_MODE_MASK) | mode;
@@ -239,7 +252,7 @@ impl Sdhci {
                     .ok_or(sdmmc_host::Error::Controller)?;
                 let effective_hz = clock.effective_clock_hz(target_hz);
                 clock.set_clock(effective_hz).map_err(map_protocol_error)?;
-                *state = SdhciClockState::ExternalPrepareHost {
+                *state = SdhciClockState::ExternalStart {
                     target_hz: effective_hz,
                 };
                 Ok(sdmmc_host::RequestProgress::WaitingForIrq)
@@ -249,18 +262,35 @@ impl Sdhci {
                 let result = clock.prepare_host_clock(self, target_hz);
                 self.ext_clock = Some(clock);
                 result.map_err(map_protocol_error)?;
-                *state = SdhciClockState::ExternalStart { target_hz };
-                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
+                let clock = self.read_u16(REG_CLOCK_CONTROL);
+                self.write_u16(REG_CLOCK_CONTROL, clock | CLOCK_SD_ENABLE);
+                Ok(sdmmc_host::RequestProgress::Complete(Ok(())))
             }
             SdhciClockState::ExternalStart { target_hz } => {
                 self.start_passthrough_clock(target_hz);
-                *state = SdhciClockState::ExternalEnable {
+                *state = SdhciClockState::ExternalWaitStable {
+                    target_hz,
                     deadline_ns: self.clock_stable_deadline_ns()?,
                 };
                 Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
-            SdhciClockState::ExternalEnable { deadline_ns }
-            | SdhciClockState::InternalWaitStable { deadline_ns } => {
+            SdhciClockState::ExternalWaitStable {
+                target_hz,
+                deadline_ns,
+            } => {
+                if self.read_u16(REG_CLOCK_CONTROL) & CLOCK_INTERNAL_STABLE != 0 {
+                    *state = SdhciClockState::ExternalPrepareHost { target_hz };
+                } else if self
+                    .timer
+                    .map(HostTimer::now_ns)
+                    .ok_or(sdmmc_host::Error::Controller)?
+                    >= deadline_ns
+                {
+                    return Err(sdmmc_host::Error::Timeout);
+                }
+                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
+            }
+            SdhciClockState::InternalWaitStable { deadline_ns } => {
                 self.advance_clock_stable(deadline_ns)
             }
         }
@@ -315,15 +345,16 @@ impl Sdhci {
     fn advance_host2_voltage(
         &mut self,
         state: &mut SdhciVoltageState,
+        protocol: VoltageProtocol,
     ) -> Result<sdmmc_host::RequestProgress<()>, sdmmc_host::Error> {
         match *state {
             SdhciVoltageState::DisableClock(voltage) => {
                 self.disable_sd_clock();
-                *state = SdhciVoltageState::SwitchControllerAndRail(voltage);
+                *state = SdhciVoltageState::SelectSignaling(voltage);
                 Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
-            SdhciVoltageState::SwitchControllerAndRail(voltage) => {
-                if matches!(voltage, SignalVoltage::V180) && !self.dat_3_0_lines_low() {
+            SdhciVoltageState::SelectSignaling(voltage) => {
+                if protocol == VoltageProtocol::SdCmd11 && !self.dat_3_0_lines_low() {
                     self.rollback_host2_voltage();
                     return Ok(sdmmc_host::RequestProgress::Complete(Err(
                         sdmmc_host::Error::Controller,
@@ -333,11 +364,9 @@ impl Sdhci {
                 match voltage {
                     SignalVoltage::V330 => {
                         ctrl2 &= !HOST_CTRL2_1V8_SIGNALING;
-                        self.set_power(POWER_330);
                     }
                     SignalVoltage::V180 => {
                         ctrl2 |= HOST_CTRL2_1V8_SIGNALING;
-                        self.set_power(POWER_180);
                     }
                     SignalVoltage::V120 => return Err(sdmmc_host::Error::Unsupported),
                     _ => return Err(sdmmc_host::Error::Unsupported),
@@ -368,67 +397,39 @@ impl Sdhci {
             SdhciVoltageState::EnableClock(voltage) => {
                 let cur = self.read_u16(REG_CLOCK_CONTROL);
                 self.write_u16(REG_CLOCK_CONTROL, cur | CLOCK_SD_ENABLE);
-                *state = SdhciVoltageState::VerifyDatLines(voltage);
+                *state = SdhciVoltageState::VerifyDatLines {
+                    voltage,
+                    deadline_ms: self
+                        .timer
+                        .map(HostTimer::now_ms)
+                        .unwrap_or(0)
+                        .saturating_add(1),
+                };
                 Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
-            SdhciVoltageState::VerifyDatLines(voltage) => {
-                if matches!(voltage, SignalVoltage::V180) && !self.dat_3_0_lines_high() {
+            SdhciVoltageState::VerifyDatLines {
+                voltage,
+                deadline_ms,
+            } => {
+                if self
+                    .timer
+                    .map(HostTimer::now_ms)
+                    .is_some_and(|now| now < deadline_ms)
+                {
+                    return Ok(sdmmc_host::RequestProgress::WaitingForIrq);
+                }
+                let selected_1v8 = self.read_u16(REG_HOST_CONTROL2) & HOST_CTRL2_1V8_SIGNALING != 0;
+                if selected_1v8 != matches!(voltage, SignalVoltage::V180) {
+                    self.rollback_host2_voltage();
+                    return Err(sdmmc_host::Error::Controller);
+                }
+                if protocol == VoltageProtocol::SdCmd11 && !self.dat_3_0_lines_high() {
                     self.rollback_host2_voltage();
                     return Ok(sdmmc_host::RequestProgress::Complete(Err(
                         sdmmc_host::Error::Controller,
                     )));
                 }
                 Ok(sdmmc_host::RequestProgress::Complete(Ok(())))
-            }
-        }
-    }
-
-    fn advance_host2_tuning(
-        &mut self,
-        state: &mut SdhciTuningState,
-    ) -> Result<sdmmc_host::RequestProgress<()>, sdmmc_host::Error> {
-        match *state {
-            SdhciTuningState::Start {
-                cmd_index,
-                block_size,
-            } => {
-                self.write_u16(REG_BLOCK_SIZE, block_size & 0x0FFF);
-                self.write_u16(REG_BLOCK_COUNT, 1);
-                self.write_u8(REG_TIMEOUT_CONTROL, 0x0E);
-                self.write_u16(
-                    REG_TRANSFER_MODE,
-                    XFER_MODE_BLOCK_COUNT_ENABLE | XFER_MODE_READ,
-                );
-                let ctrl2 = self.read_u16(REG_HOST_CONTROL2) | HOST_CTRL2_EXECUTE_TUNING;
-                self.write_u16(REG_HOST_CONTROL2, ctrl2);
-                *state = SdhciTuningState::Wait {
-                    cmd_index,
-                    polls: 0,
-                };
-                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
-            }
-            SdhciTuningState::Wait {
-                cmd_index,
-                ref mut polls,
-            } => {
-                let status = self.read_u16(REG_HOST_CONTROL2);
-                if status & HOST_CTRL2_EXECUTE_TUNING == 0 {
-                    if status & HOST_CTRL2_SAMPLING_CLOCK_SELECT != 0 {
-                        return Ok(sdmmc_host::RequestProgress::Complete(Ok(())));
-                    }
-                    return Err(map_protocol_error(Error::BadResponse(
-                        ErrorContext::for_cmd(Phase::Init, cmd_index),
-                    )));
-                }
-                if *polls >= SDHCI_TUNING_POLLS {
-                    self.write_u16(REG_HOST_CONTROL2, status & !HOST_CTRL2_EXECUTE_TUNING);
-                    return Err(map_protocol_error(Error::Timeout(ErrorContext::for_cmd(
-                        Phase::Init,
-                        cmd_index,
-                    ))));
-                }
-                *polls += 1;
-                Ok(sdmmc_host::RequestProgress::WaitingForIrq)
             }
         }
     }
@@ -443,31 +444,19 @@ impl Sdhci {
                     return Err(sdmmc_host::Error::Timeout);
                 }
             }
-            BusRequestState::SetClock(_) => self.reset_controller_for_host2_abort()?,
-            BusRequestState::SetSignalVoltage(_) => self.rollback_host2_voltage(),
-            BusRequestState::ExecuteTuning(SdhciTuningState::Wait { .. }) => {
-                let ctrl2 = self.read_u16(REG_HOST_CONTROL2) & !HOST_CTRL2_EXECUTE_TUNING;
+            BusRequestState::SetClock(_) => self.write_u16(REG_CLOCK_CONTROL, 0),
+            BusRequestState::SetSignalVoltage(..) => self.rollback_host2_voltage(),
+            BusRequestState::ExecuteTuning(_) => {
+                let ctrl2 = self.read_u16(REG_HOST_CONTROL2)
+                    & !(HOST_CTRL2_EXECUTE_TUNING | HOST_CTRL2_SAMPLING_CLOCK_SELECT);
                 self.write_u16(REG_HOST_CONTROL2, ctrl2);
-                self.reset_controller_for_host2_abort()?;
+                self.clear_cached_irq_status();
+                // Preserve the negotiated voltage, clock and bus width.
+                self.reset_cmd().map_err(map_protocol_error)?;
+                self.reset_dat().map_err(map_protocol_error)?;
             }
             _ => {}
         }
-        Ok(())
-    }
-
-    fn reset_controller_for_host2_abort(&mut self) -> Result<(), sdmmc_host::Error> {
-        let was_irq_enabled = self.completion_irq_enabled();
-        self.call_before_reset_all_hook()
-            .map_err(map_protocol_error)?;
-        self.write_u8(REG_SOFTWARE_RESET, RESET_ALL);
-        if !self.reset_with_mask_best_effort(RESET_ALL) {
-            return Err(sdmmc_host::Error::Timeout);
-        }
-        self.call_after_reset_hook().map_err(map_protocol_error)?;
-        self.write_interrupt_status(NORMAL_INT_CLEAR_ALL, ERROR_INT_CLEAR_ALL);
-        self.clear_cached_irq_status();
-        self.restore_completion_irq_after_reset(was_irq_enabled);
-        self.command_state = command::CommandState::Idle;
         Ok(())
     }
 
@@ -482,7 +471,6 @@ impl Sdhci {
         self.disable_sd_clock();
         let ctrl2 = self.read_u16(REG_HOST_CONTROL2) & !HOST_CTRL2_1V8_SIGNALING;
         self.write_u16(REG_HOST_CONTROL2, ctrl2);
-        self.set_power(POWER_330);
         let clock = self.read_u16(REG_CLOCK_CONTROL);
         self.write_u16(REG_CLOCK_CONTROL, clock | CLOCK_SD_ENABLE);
     }

@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+extern crate alloc;
+
+use alloc::sync::Arc;
+
 #[cfg(all(any(
     target_arch = "aarch64",
     target_arch = "x86_64",
@@ -41,10 +45,14 @@ pub fn init_guest_vms() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
+pub(crate) fn prepare_guest_vm(
+    raw_cfg: &str,
+    backend: Arc<dyn axvm::GuestCpuFreqBackend>,
+) -> Result<VmCreatePlan> {
     let image_provider = AxvisorBootImageProvider;
-    let vm_create_config =
+    let mut vm_create_config =
         GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
+    materialize_guest_cpufreq_tables(&mut vm_create_config, backend.as_ref())?;
     let configured_vm_id = vm_create_config.base.id;
 
     if let Some(path) = crate::guest_images::missing_guest_image(&vm_create_config) {
@@ -59,6 +67,7 @@ pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
     }
 
     let mut vm_config = build_axvm_config(&vm_create_config)?;
+    validate_guest_cpufreq_placement(&vm_config, backend.as_ref())?;
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
@@ -81,7 +90,75 @@ pub(crate) fn prepare_guest_vm(raw_cfg: &str) -> Result<VmCreatePlan> {
                 axvm::SchedulePolicy::default()
             }
         },
+        cpu_freq_backend: Some(backend),
     })
+}
+
+fn materialize_guest_cpufreq_tables(
+    config: &mut GuestConfig,
+    backend: &dyn axvm::GuestCpuFreqBackend,
+) -> Result<()> {
+    for request in config
+        .devices
+        .virtual_devices
+        .iter_mut()
+        .filter(|request| request.model == axvm::VIRTUAL_CPUFREQ_MODEL)
+    {
+        let options = axvm::VirtualCpuFreqOptions::from_request(request)
+            .map_err(|error| anyhow::anyhow!("parse virtual-cpufreq options: {error}"))?;
+        let domain = options.domain;
+        let table = backend
+            .performance_table(domain)
+            .map_err(|error| anyhow::anyhow!("materialize virtual-cpufreq OPP table: {error}"))?;
+        axvm::VirtualCpuFreqOptions::replace_performance_table(request, table)
+            .map_err(|error| anyhow::anyhow!("materialize virtual-cpufreq OPP table: {error}"))?;
+    }
+    Ok(())
+}
+
+fn validate_guest_cpufreq_placement(
+    vm_config: &AxVMConfig,
+    backend: &dyn axvm::GuestCpuFreqBackend,
+) -> Result<()> {
+    let requests = vm_config
+        .virtual_device_requests()
+        .iter()
+        .filter(|request| request.model == axvm::VIRTUAL_CPUFREQ_MODEL)
+        .collect::<Vec<_>>();
+    if requests.is_empty() {
+        return Ok(());
+    }
+    if requests.len() != 1 {
+        bail!(
+            "virtual-cpufreq permits exactly one device per VM, found {}",
+            requests.len()
+        );
+    }
+    let request = requests[0];
+    let options = axvm::VirtualCpuFreqOptions::from_request(request)
+        .map_err(|error| anyhow::anyhow!("parse virtual-cpufreq options: {error}"))?;
+    let domain = options.domain;
+    let vcpu_count = usize::try_from(options.vcpu_count).expect("validated vcpu_count");
+    let placements = vm_config.phys_cpu_ls().get_vcpu_affinities_pcpu_ids();
+    if vcpu_count != placements.len() || vcpu_count != vm_config.phys_cpu_ls().cpu_num() {
+        bail!("virtual-cpufreq vcpu_count={vcpu_count} must cover every configured vCPU");
+    }
+    let mut host_cpus = Vec::with_capacity(placements.len());
+    for (vcpu, affinity, _) in placements {
+        let mask = affinity.ok_or_else(|| {
+            anyhow::anyhow!(
+                "virtual-cpufreq requires an explicit single-CPU affinity for vCPU {vcpu}"
+            )
+        })?;
+        if mask == 0 || !mask.is_power_of_two() {
+            bail!("virtual-cpufreq vCPU {vcpu} affinity {mask:#x} crosses CPU frequency domains");
+        }
+        host_cpus.push(mask.trailing_zeros() as usize);
+    }
+    backend
+        .validate_placement(domain, &host_cpus)
+        .map_err(|error| anyhow::anyhow!("validate virtual-cpufreq host placement: {error}"))?;
+    Ok(())
 }
 
 pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
@@ -89,15 +166,6 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         .context("parse VM TOML configuration")?
         .base
         .id;
-
-    #[cfg(all(any(
-        target_arch = "aarch64",
-        target_arch = "x86_64",
-        target_arch = "loongarch64"
-    )))]
-    let release_host_filesystem = vm_config_needs_host_filesystem_release(
-        &GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?,
-    );
 
     crate::manager::manager()
         .create_vm_from_toml_and_wait(raw_cfg)
@@ -108,8 +176,20 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         target_arch = "x86_64",
         target_arch = "loongarch64"
     )))]
-    if release_host_filesystem {
-        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
+    {
+        let config = GuestConfig::from_toml(raw_cfg).context("parse VM TOML configuration")?;
+        let legacy_release = vm_config_needs_host_filesystem_release(&config);
+        let snapshot = crate::manager::manager().require_vm(vm_id)?.snapshot();
+        let release_host_filesystem =
+            if ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block) {
+                axvm::host::storage::guest_uses_host_block_controller(&snapshot.description)
+                    .unwrap_or(legacy_release)
+            } else {
+                legacy_release
+            };
+        if release_host_filesystem {
+            HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
+        }
     }
 
     Ok(vm_id)

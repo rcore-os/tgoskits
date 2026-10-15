@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::{ptr::NonNull, time::Duration};
 
 use log::{info, warn};
@@ -27,6 +27,7 @@ use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
+    rdif::BlkError,
     sdio::{SdMmcIrqHost, native::SdMmcCard},
 };
 
@@ -38,66 +39,156 @@ use crate::{block::ProbeFdtBlock, mmio::iomap, sdhci_runtime::install_host_timer
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: hard IRQ only
 // acknowledges and caches status; the bound hctx advances command/data state.
 const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
+const DWCMSHC_P_VENDOR_AREA2: usize = 0xea;
 const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
+const DWCMSHC_CQHCI_REGISTER_BYTES: usize = 0x60;
 const DWCMSHC_HOST_CTRL3: usize = 0x08;
 const DWCMSHC_HOST_CTRL3_CMD_CONFLICT: u32 = 1 << 0;
 const DWCMSHC_HOST_CTRL3_CLK_GATE_DISABLE: u32 = 1 << 4;
 const DWCMSHC_EMMC_CONTROL: usize = 0x2c;
 const DWCMSHC_CARD_IS_EMMC: u16 = 1 << 0;
+const DWCMSHC_ENHANCED_STROBE: u16 = 1 << 8;
 const DWCMSHC_EMMC_DLL_CTRL: usize = 0x800;
 const DWCMSHC_EMMC_DLL_RXCLK: usize = 0x804;
 const DWCMSHC_EMMC_DLL_TXCLK: usize = 0x808;
 const DWCMSHC_EMMC_DLL_STRBIN: usize = 0x80c;
 const DWCMSHC_EMMC_DLL_CMDOUT: usize = 0x810;
 const DWCMSHC_EMMC_MISC_CON: usize = 0x81c;
+const DWCMSHC_EMMC_DLL_STATUS0: usize = 0x840;
+const DWCMSHC_VENDOR_AREA1_BYTES: usize = 0x44;
+const DWCMSHC_EMMC_ATCTRL: usize = 0x40;
+const DLL_LOCKED: u32 = 1 << 8;
+const DLL_TIMEOUT: u32 = 1 << 9;
+const DLL_TAPNUM_FROM_SW: u32 = 1 << 24;
+const DLL_TXCLK_NO_INVERTER: u32 = 1 << 29;
 const DWCMSHC_EMMC_DLL_BYPASS: u32 = 1 << 24;
 const DWCMSHC_EMMC_DLL_START: u32 = 1 << 0;
 const DWCMSHC_EMMC_DLL_DLYENA: u32 = 1 << 27;
 const DLL_RXCLK_ORI_GATE: u32 = 1 << 31;
 const DLL_STRBIN_DELAY_NUM_SEL: u32 = 1 << 26;
-const DLL_STRBIN_DELAY_NUM_DEFAULT: u32 = 16;
+const DLL_STRBIN_DELAY_NUM_DEFAULT: u32 = 0x16;
 const DLL_STRBIN_DELAY_NUM_OFFSET: u32 = 16;
 const MISC_INTCLK_EN: u32 = 1 << 1;
 
-const DWC_MSHC_PTR_PHY_R: usize = 0x300;
-const PHY_CNFG_R: usize = DWC_MSHC_PTR_PHY_R;
-const PHY_CMDPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x04;
-const PHY_DATAPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x06;
-const PHY_CLKPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x08;
-const PHY_STBPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x0a;
-const PHY_RSTNPAD_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x0c;
-const PHY_SDCLKDL_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x1d;
-const PHY_SDCLKDL_DC_R: usize = DWC_MSHC_PTR_PHY_R + 0x1e;
-const PHY_SMPLDL_CNFG_R: usize = DWC_MSHC_PTR_PHY_R + 0x20;
-const PHY_DLL_CTRL_R: usize = DWC_MSHC_PTR_PHY_R + 0x24;
-const PHY_DLL_CNFG2_R: usize = DWC_MSHC_PTR_PHY_R + 0x26;
-const PHY_CNFG_RSTN_DEASSERT: u32 = 1 << 0;
-const PHY_CNFG_PAD_SP: u32 = 0x0c;
-const PHY_CNFG_PAD_SN: u32 = 0x0c;
-const PHY_PAD_RXSEL_3V3: u16 = 0x2;
-const PHY_PAD_WEAKPULL_PULLUP: u16 = 0x1;
-const PHY_PAD_WEAKPULL_PULLDOWN: u16 = 0x2;
-const PHY_PAD_TXSLEW_CTRL_P: u16 = 0x3;
-const PHY_PAD_TXSLEW_CTRL_N: u16 = 0x3;
-const PHY_SDCLKDL_CNFG_UPDATE: u8 = 1 << 4;
-const PHY_SDCLKDL_DC_DEFAULT: u8 = 0x32;
-const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
-const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
-const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
+const SDHCI_BLOCK_SIZE: usize = 0x04;
+const SDHCI_TRANSFER_MODE: usize = 0x0c;
+const SDHCI_BUFFER: usize = 0x20;
+const SDHCI_PRESENT_STATE: usize = 0x24;
+const SDHCI_HOST_CONTROL: usize = 0x28;
+const SDHCI_TIMEOUT_CONTROL: usize = 0x2e;
+const SDHCI_INT_STATUS: usize = 0x30;
+const SDHCI_INT_ENABLE: usize = 0x34;
+const SDHCI_SIGNAL_ENABLE: usize = 0x38;
+const SDHCI_DATA_AVAILABLE: u32 = 1 << 11;
+const SDHCI_INT_RESPONSE: u32 = 1;
+const SDHCI_DMA_SELECT_MASK: u8 = 0b11 << 3;
+const SDHCI_DMA_SELECT_ADMA32: u8 = 0b10 << 3;
+const SDHCI_BLOCK_SIZE_MASK: u16 = 0x0fff;
+const SDHCI_CQE_BLOCK_SIZE: u16 = 512;
+const SDHCI_INT_ERROR_SUMMARY: u32 = 1 << 15;
+const SDHCI_INT_CQE: u32 = 1 << 14;
+const SDHCI_CQE_ERROR_MASK: u32 = 0x027f_0000;
+const SDHCI_CQE_INTERRUPT_MASK: u32 =
+    SDHCI_CQE_ERROR_MASK | SDHCI_INT_CQE | SDHCI_INT_ERROR_SUMMARY;
+const DWCMSHC_SDHCI_CQE_TRANSFER_MODE: u16 = (1 << 5) | (1 << 1) | 1;
+const CQHCI_SSC1: usize = 0x40;
+const CQHCI_SSC1_CIT_MASK: u32 = 0xffff;
+const CQHCI_SSC1_CIT_RK35XX: u32 = 0x0100;
+const CQHCI_DATA_DRAIN_LIMIT: usize = 4096;
 
 struct RockchipSdhciClock {
     clock: ClockLine,
+    max_hz: u32,
+    txclk_tap: u8,
 }
 struct RockchipSdhciResetHook {
     resets: Vec<ResetLine>,
 }
 
+struct Rk3588CqhciPlatform {
+    sdhci_base: NonNull<u8>,
+    legacy_interrupt_masks: Option<(u32, u32)>,
+}
+
+// SAFETY: the platform object owns no CPU-local state. Its MMIO capability is
+// moved with the single hardware-queue owner and never accessed concurrently
+// outside the IRQ endpoint's disjoint status registers.
+unsafe impl Send for Rk3588CqhciPlatform {}
+
+impl cqhci_host::CqhciPlatform for Rk3588CqhciPlatform {
+    fn now_ns(&self) -> u64 {
+        axklib::time::monotonic_nanos()
+    }
+
+    fn prepare(&mut self, cqhci_base: usize) -> Result<(), BlkError> {
+        let cqhci_base = NonNull::new(cqhci_base as *mut u8).ok_or(BlkError::InvalidRequest)?;
+        let ssc1 = read_u32(cqhci_base, CQHCI_SSC1);
+        write_u32(
+            cqhci_base,
+            CQHCI_SSC1,
+            (ssc1 & !CQHCI_SSC1_CIT_MASK) | CQHCI_SSC1_CIT_RK35XX,
+        );
+        Ok(())
+    }
+
+    fn enable_data_path(&mut self) -> Result<(), BlkError> {
+        for _ in 0..CQHCI_DATA_DRAIN_LIMIT {
+            if read_u32(self.sdhci_base, SDHCI_PRESENT_STATE) & SDHCI_DATA_AVAILABLE == 0 {
+                write_u16(
+                    self.sdhci_base,
+                    SDHCI_TRANSFER_MODE,
+                    DWCMSHC_SDHCI_CQE_TRANSFER_MODE,
+                );
+                let host_control = read_u8(self.sdhci_base, SDHCI_HOST_CONTROL);
+                write_u8(
+                    self.sdhci_base,
+                    SDHCI_HOST_CONTROL,
+                    (host_control & !SDHCI_DMA_SELECT_MASK) | SDHCI_DMA_SELECT_ADMA32,
+                );
+                let block_size = read_u16(self.sdhci_base, SDHCI_BLOCK_SIZE);
+                write_u16(
+                    self.sdhci_base,
+                    SDHCI_BLOCK_SIZE,
+                    (block_size & !SDHCI_BLOCK_SIZE_MASK) | SDHCI_CQE_BLOCK_SIZE,
+                );
+                write_u8(self.sdhci_base, SDHCI_TIMEOUT_CONTROL, 0x0e);
+                if self.legacy_interrupt_masks.is_none() {
+                    self.legacy_interrupt_masks = Some((
+                        read_u32(self.sdhci_base, SDHCI_INT_ENABLE),
+                        read_u32(self.sdhci_base, SDHCI_SIGNAL_ENABLE),
+                    ));
+                }
+                write_u32(self.sdhci_base, SDHCI_INT_ENABLE, SDHCI_CQE_INTERRUPT_MASK);
+                write_u32(
+                    self.sdhci_base,
+                    SDHCI_SIGNAL_ENABLE,
+                    SDHCI_CQE_INTERRUPT_MASK,
+                );
+                return Ok(());
+            }
+            let _ = read_u32(self.sdhci_base, SDHCI_BUFFER);
+        }
+        Err(BlkError::Io)
+    }
+
+    fn disable_data_path(&mut self) -> Result<(), BlkError> {
+        write_u32(self.sdhci_base, SDHCI_INT_STATUS, SDHCI_INT_RESPONSE);
+        if let Some((status_enable, signal_enable)) = self.legacy_interrupt_masks.take() {
+            write_u32(self.sdhci_base, SDHCI_INT_ENABLE, status_enable);
+            write_u32(self.sdhci_base, SDHCI_SIGNAL_ENABLE, signal_enable);
+        }
+        Ok(())
+    }
+}
+
 impl HostClock for RockchipSdhciClock {
     fn effective_clock_hz(&self, target_hz: u32) -> u32 {
-        if target_hz <= 400_000 {
+        if target_hz == 0 {
+            0
+        } else if target_hz <= 400_000 {
             375_000
         } else {
-            target_hz
+            target_hz.min(self.max_hz)
         }
     }
 
@@ -115,7 +206,7 @@ impl HostClock for RockchipSdhciClock {
     }
 
     fn prepare_host_clock(&self, host: &mut Sdhci, target_hz: u32) -> Result<(), Error> {
-        configure_rk3588_dwcmshc_clock(host, target_hz)
+        configure_rk3588_dwcmshc_clock(host, target_hz, self.txclk_tap)
     }
 }
 
@@ -171,8 +262,30 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         base_reg.address as usize,
         mmio_size
     );
-    let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
+    let mmio_size = usize::try_from(mmio_size)
+        .map_err(|_| OnProbeError::other("SDHCI mapping size exceeds address space"))?;
+    if mmio_size < DWCMSHC_EMMC_DLL_STATUS0 + 4 {
+        return Err(OnProbeError::other(
+            "SDHCI mapping does not cover the Rockchip DLL",
+        ));
+    }
+    let mmio_base = iomap(base_reg.address as usize, mmio_size)?;
+    let area1 = dwcmshc_vendor_area1(mmio_base);
+    if area1 < 0x100
+        || area1 & 3 != 0
+        || area1 + DWCMSHC_VENDOR_AREA1_BYTES > mmio_size
+        || ranges_overlap(
+            area1,
+            DWCMSHC_VENDOR_AREA1_BYTES,
+            DWCMSHC_EMMC_DLL_CTRL,
+            DWCMSHC_EMMC_DLL_STATUS0 + 4 - DWCMSHC_EMMC_DLL_CTRL,
+        )
+    {
+        return Err(OnProbeError::other("invalid SDHCI vendor register window"));
+    }
 
+    // SAFETY: iomap retains the aligned controller mapping for the device's
+    // lifetime; the standard, vendor and DLL windows have been bounded above.
     let mut host = unsafe { Sdhci::new(mmio_base) };
     // A previous owner (for example the hypervisor host) may leave completion
     // IRQ signaling enabled. Keep signal delivery masked until the runtime
@@ -181,7 +294,36 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     host.disable_completion_irq();
     if let Some(clock) = sdhci_core_clock(info)? {
         info!("rockchip-sdhci: using external CRU clock");
-        host.set_external_clock(RockchipSdhciClock { clock });
+        let node = info.node.as_node();
+        let max_hz = node
+            .get_property("max-frequency")
+            .and_then(|prop| prop.get_u32())
+            .unwrap_or(200_000_000)
+            .min(200_000_000);
+        let txclk_tap = match node.get_property("rockchip,txclk-tapnum") {
+            None => 0x10,
+            Some(prop) => match prop.data.as_slice() {
+                [tap] => *tap,
+                _ => prop
+                    .get_u32()
+                    .and_then(|value| u8::try_from(value).ok())
+                    .ok_or(OnProbeError::other("invalid eMMC TX clock tap"))?,
+            },
+        };
+        // These board properties describe a wired 1.8 V eMMC bus. Do not
+        // enable signaling solely because the controller advertises it.
+        let fixed_emmc_1v8 = node.get_property("non-removable").is_some()
+            && node.get_property("no-1-8-v").is_none()
+            && (node.get_property("mmc-hs200-1_8v").is_some()
+                || node.get_property("mmc-hs400-1_8v").is_some());
+        if fixed_emmc_1v8 && fixed_1v8_supply(info) && max_hz > 52_000_000 {
+            host.enable_1v8_signaling();
+        }
+        host.set_external_clock(RockchipSdhciClock {
+            clock,
+            max_hz,
+            txclk_tap,
+        });
     } else {
         warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
@@ -193,7 +335,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         dma_api::DmaConstraints::new(u32::MAX as u64),
     ));
     let config = rockchip_sdhci_rdif_config(0, &dma);
-    host.configure_dma(dma).map_err(|err| {
+    host.configure_dma(dma.clone()).map_err(|err| {
         OnProbeError::other(alloc::format!(
             "rockchip-sdhci ADMA2 configuration failed: {err:?}"
         ))
@@ -207,10 +349,59 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         media_name(preference),
         preference
     );
+    let supports_cqe = info.node.as_node().get_property("supports-cqe").is_some();
+    let cqhci_base = if supports_cqe {
+        match dwcmshc_cqhci_base(mmio_base, mmio_size) {
+            Ok(base) => Some(base),
+            Err(error) => {
+                warn!("rockchip-sdhci: invalid CQHCI vendor area ({error:?}); using legacy SDHCI");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let parts = host.into_parts();
     let mut card = SdMmcCard::new(parts.bus);
     card.set_diagnostic_identity(identity);
-    let dev = sdhci_rdif::BlockDevice::new_initializing(card, parts.irq, config, preference);
+    let dev = if let Some(cqhci_base) = cqhci_base {
+        let platform = Rk3588CqhciPlatform {
+            sdhci_base: mmio_base,
+            legacy_interrupt_masks: None,
+        };
+        // SAFETY: iomap retains this controller mapping for the device's
+        // lifetime. Both endpoints share its registered owner-CPU IRQ; the
+        // validated vendor window is disjoint from the legacy status words.
+        match unsafe { cqhci_host::queue_and_irq(cqhci_base, dma, Box::new(platform), parts.irq) } {
+            Ok((queue, irq)) => {
+                info!(
+                    "rockchip-sdhci: CQHCI available at offset={:#x}",
+                    cqhci_base.as_ptr() as usize - mmio_base.as_ptr() as usize
+                );
+                sdhci_rdif::BlockDevice::new_initializing_accelerated(
+                    card,
+                    irq,
+                    config,
+                    preference,
+                    Box::new(queue),
+                )
+            }
+            Err(failure) => {
+                warn!(
+                    "rockchip-sdhci: CQHCI allocation failed ({:?}); using legacy SDHCI",
+                    failure.error
+                );
+                sdhci_rdif::BlockDevice::new_initializing(
+                    card,
+                    failure.legacy_irq,
+                    config,
+                    preference,
+                )
+            }
+        }
+    } else {
+        sdhci_rdif::BlockDevice::new_initializing(card, parts.irq, config, preference)
+    };
     let irq = probe.register_block(dev)?;
     info!("rockchip-sdhci block device registered irq={:?}", irq);
     Ok(())
@@ -251,18 +442,25 @@ fn init_rk3588_dwcmshc_after_reset(host: &mut Sdhci) -> Result<(), Error> {
     write_u16(
         base,
         area1 + DWCMSHC_EMMC_CONTROL,
-        read_u16(base, area1 + DWCMSHC_EMMC_CONTROL) | DWCMSHC_CARD_IS_EMMC,
+        (read_u16(base, area1 + DWCMSHC_EMMC_CONTROL) & !DWCMSHC_ENHANCED_STROBE)
+            | DWCMSHC_CARD_IS_EMMC,
     );
     configure_rk3588_dwcmshc_clock_regs(base, area1, 400_000);
-    init_rk3588_dwcmshc_phy_3v3(base);
     info!("rockchip-sdhci: RK3588 DWCMSHC vendor reset area1={area1:#x}");
     Ok(())
 }
 
-fn configure_rk3588_dwcmshc_clock(host: &mut Sdhci, target_hz: u32) -> Result<(), Error> {
+fn configure_rk3588_dwcmshc_clock(
+    host: &mut Sdhci,
+    target_hz: u32,
+    txclk_tap: u8,
+) -> Result<(), Error> {
     let base = NonNull::new(host.mmio_base() as *mut u8).ok_or(Error::InvalidArgument)?;
     let area1 = dwcmshc_vendor_area1(base);
     configure_rk3588_dwcmshc_clock_regs(base, area1, target_hz);
+    if target_hz > 52_000_000 {
+        configure_high_speed_dll(base, area1, txclk_tap)?;
+    }
     Ok(())
 }
 
@@ -297,32 +495,75 @@ fn configure_rk3588_dwcmshc_clock_regs(base: NonNull<u8>, area1: usize, target_h
     }
 }
 
-fn init_rk3588_dwcmshc_phy_3v3(base: NonNull<u8>) {
-    let phy_cfg = PHY_CNFG_RSTN_DEASSERT | (PHY_CNFG_PAD_SP << 16) | (PHY_CNFG_PAD_SN << 20);
-    write_u32(base, PHY_CNFG_R, phy_cfg);
-    write_u8(base, PHY_SDCLKDL_CNFG_R, PHY_SDCLKDL_CNFG_UPDATE);
-    write_u8(base, PHY_SDCLKDL_DC_R, PHY_SDCLKDL_DC_DEFAULT);
-    write_u8(base, PHY_DLL_CNFG2_R, PHY_DLL_CNFG2_JUMPSTEP);
-    write_u8(base, PHY_SDCLKDL_CNFG_R, 0);
+fn configure_high_speed_dll(base: NonNull<u8>, area1: usize, txclk_tap: u8) -> Result<(), Error> {
+    // RK3588 uses the Rockchip DLL at 0x800, not the generic Synopsys PHY
+    // pad controls at 0x300 used by other DWCMSHC integrations.
+    write_u32(base, DWCMSHC_EMMC_DLL_CTRL, 1 << 1);
+    axklib::time::busy_wait(Duration::from_micros(1));
+    write_u32(base, DWCMSHC_EMMC_DLL_CTRL, 0);
+    write_u32(base, DWCMSHC_EMMC_DLL_RXCLK, DWCMSHC_EMMC_DLL_DLYENA);
+    write_u32(
+        base,
+        DWCMSHC_EMMC_DLL_CTRL,
+        (5 << 16) | (2 << 8) | DWCMSHC_EMMC_DLL_START,
+    );
+    let deadline = axklib::time::monotonic_nanos().saturating_add(500_000_000);
+    loop {
+        let status = read_u32(base, DWCMSHC_EMMC_DLL_STATUS0);
+        if status & (DLL_LOCKED | DLL_TIMEOUT) == DLL_LOCKED {
+            break;
+        }
+        if status & DLL_TIMEOUT != 0 || axklib::time::monotonic_nanos() >= deadline {
+            write_u32(base, DWCMSHC_EMMC_DLL_CTRL, 0);
+            return Err(Error::Timeout(ErrorContext::new(Phase::Init)));
+        }
+        core::hint::spin_loop();
+    }
+    write_u32(
+        base,
+        area1 + DWCMSHC_EMMC_ATCTRL,
+        (1 << 16) | (3 << 17) | (3 << 19),
+    );
+    write_u32(base, DWCMSHC_EMMC_DLL_CMDOUT, 0);
+    write_u32(
+        base,
+        DWCMSHC_EMMC_DLL_TXCLK,
+        DWCMSHC_EMMC_DLL_DLYENA | DLL_TAPNUM_FROM_SW | DLL_TXCLK_NO_INVERTER | u32::from(txclk_tap),
+    );
+    write_u32(
+        base,
+        DWCMSHC_EMMC_DLL_STRBIN,
+        DWCMSHC_EMMC_DLL_DLYENA | DLL_TAPNUM_FROM_SW | 4,
+    );
+    Ok(())
+}
 
-    let pad_pullup = PHY_PAD_RXSEL_3V3
-        | (PHY_PAD_WEAKPULL_PULLUP << 3)
-        | (PHY_PAD_TXSLEW_CTRL_P << 5)
-        | (PHY_PAD_TXSLEW_CTRL_N << 9);
-    write_u16(base, PHY_CMDPAD_CNFG_R, pad_pullup);
-    write_u16(base, PHY_DATAPAD_CNFG_R, pad_pullup);
-    write_u16(base, PHY_RSTNPAD_CNFG_R, pad_pullup);
+fn fixed_1v8_supply(info: &FdtInfo<'_>) -> bool {
+    let Some(supply) = info.node.as_node().get_property("vqmmc-supply") else {
+        // No controllable rail is described: the board's explicit HS200/400
+        // 1.8 V property is the firmware contract for its fixed wiring.
+        return true;
+    };
+    let Some(regulator) = supply
+        .get_u32()
+        .and_then(|phandle| info.get_by_phandle(phandle.into()))
+    else {
+        return false;
+    };
+    let regulator = regulator.as_node();
+    regulator.get_property("regulator-always-on").is_some()
+        && regulator
+            .get_property("regulator-min-microvolt")
+            .and_then(|p| p.get_u32())
+            == Some(1_800_000)
+        && regulator
+            .get_property("regulator-max-microvolt")
+            .and_then(|p| p.get_u32())
+            == Some(1_800_000)
+}
 
-    let clk_pad = (PHY_PAD_TXSLEW_CTRL_P << 5) | (PHY_PAD_TXSLEW_CTRL_N << 9);
-    write_u16(base, PHY_CLKPAD_CNFG_R, clk_pad);
-
-    let strobe_pad = PHY_PAD_RXSEL_3V3
-        | (PHY_PAD_WEAKPULL_PULLDOWN << 3)
-        | (PHY_PAD_TXSLEW_CTRL_P << 5)
-        | (PHY_PAD_TXSLEW_CTRL_N << 9);
-    write_u16(base, PHY_STBPAD_CNFG_R, strobe_pad);
-    write_u8(base, PHY_SMPLDL_CNFG_R, PHY_SMPLDL_CNFG_BYPASS_EN);
-    write_u8(base, PHY_DLL_CTRL_R, PHY_DLL_CTRL_ENABLE);
+fn ranges_overlap(start: usize, len: usize, other: usize, other_len: usize) -> bool {
+    start < other.saturating_add(other_len) && other < start.saturating_add(len)
 }
 
 fn reset_error() -> Error {
@@ -333,11 +574,38 @@ fn dwcmshc_vendor_area1(base: NonNull<u8>) -> usize {
     (read_u16(base, DWCMSHC_P_VENDOR_AREA1) & DWCMSHC_AREA1_MASK) as usize
 }
 
+fn dwcmshc_cqhci_base(base: NonNull<u8>, mmio_size: usize) -> Result<NonNull<u8>, BlkError> {
+    let area2 = usize::from(read_u16(base, DWCMSHC_P_VENDOR_AREA2));
+    let area1 = dwcmshc_vendor_area1(base);
+    if area2 < 0x100
+        || area2 & 3 != 0
+        || ranges_overlap(
+            area2,
+            DWCMSHC_CQHCI_REGISTER_BYTES,
+            area1,
+            DWCMSHC_VENDOR_AREA1_BYTES,
+        )
+        || ranges_overlap(
+            area2,
+            DWCMSHC_CQHCI_REGISTER_BYTES,
+            DWCMSHC_EMMC_DLL_CTRL,
+            DWCMSHC_EMMC_DLL_STATUS0 + 4 - DWCMSHC_EMMC_DLL_CTRL,
+        )
+        || area2
+            .checked_add(DWCMSHC_CQHCI_REGISTER_BYTES)
+            .is_none_or(|end| end > mmio_size)
+    {
+        return Err(BlkError::InvalidRequest);
+    }
+    // SAFETY: area2 is aligned, fully mapped, and disjoint from both vendor
+    // clock registers and the standard SDHCI register file.
+    NonNull::new(unsafe { base.as_ptr().add(area2) }).ok_or(BlkError::InvalidRequest)
+}
+
 fn read_u32(base: NonNull<u8>, off: usize) -> u32 {
     unsafe { core::ptr::read_volatile(base.as_ptr().add(off) as *const u32) }
 }
 
-#[cfg(test)]
 fn read_u8(base: NonNull<u8>, off: usize) -> u8 {
     unsafe { core::ptr::read_volatile(base.as_ptr().add(off)) }
 }
@@ -407,22 +675,78 @@ mod tests {
 
     #[test]
     fn dwcmshc_vendor_area_masks_pointer_register() {
-        let mut mmio = [0u8; 0x1000];
-        let base = NonNull::new(mmio.as_mut_ptr()).unwrap();
-        unsafe {
-            core::ptr::write_volatile(
-                mmio.as_mut_ptr().add(DWCMSHC_P_VENDOR_AREA1) as *mut u16,
-                0xfabc,
-            );
-        }
+        let mut mmio = [0u32; 0x400];
+        let base = NonNull::new(mmio.as_mut_ptr().cast::<u8>()).unwrap();
+        write_u16(base, DWCMSHC_P_VENDOR_AREA1, 0xfabc);
 
         assert_eq!(dwcmshc_vendor_area1(base), 0x0abc);
     }
 
     #[test]
-    fn rk3588_dwcmshc_after_reset_programs_low_speed_vendor_and_phy_defaults() {
-        let mut mmio = [0xff_u8; 0x1000];
-        let base = NonNull::new(mmio.as_mut_ptr()).unwrap();
+    fn dwcmshc_cqhci_pointer_must_cover_the_complete_register_window() {
+        let mut mmio = [0u32; 0x400];
+        let base = NonNull::new(mmio.as_mut_ptr().cast::<u8>()).unwrap();
+        write_u16(base, DWCMSHC_P_VENDOR_AREA1, 0x0500);
+        write_u16(base, DWCMSHC_P_VENDOR_AREA2, 0x0400);
+
+        let cqhci = dwcmshc_cqhci_base(base, core::mem::size_of_val(&mmio)).unwrap();
+        assert_eq!(cqhci.as_ptr() as usize - base.as_ptr() as usize, 0x0400);
+
+        write_u16(base, DWCMSHC_P_VENDOR_AREA2, 0x0fc0);
+        assert_eq!(
+            dwcmshc_cqhci_base(base, core::mem::size_of_val(&mmio)),
+            Err(BlkError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn rk3588_cqhci_platform_programs_linux_compatible_data_path() {
+        let mut mmio = [0u32; 0x400];
+        let base = NonNull::new(mmio.as_mut_ptr().cast::<u8>()).unwrap();
+        // SAFETY: offset 0x400 remains within the live test MMIO array.
+        let cqhci = unsafe { NonNull::new_unchecked(base.as_ptr().add(0x400)) };
+        write_u32(cqhci, CQHCI_SSC1, u32::MAX);
+        write_u32(base, SDHCI_INT_ENABLE, 0x1234_5678);
+        write_u32(base, SDHCI_SIGNAL_ENABLE, 0x8765_4321);
+        let mut platform = Rk3588CqhciPlatform {
+            sdhci_base: base,
+            legacy_interrupt_masks: None,
+        };
+
+        cqhci_host::CqhciPlatform::prepare(&mut platform, cqhci.as_ptr() as usize).unwrap();
+        cqhci_host::CqhciPlatform::enable_data_path(&mut platform).unwrap();
+
+        assert_eq!(
+            read_u32(cqhci, CQHCI_SSC1) & CQHCI_SSC1_CIT_MASK,
+            CQHCI_SSC1_CIT_RK35XX
+        );
+        assert_eq!(
+            read_u16(base, SDHCI_TRANSFER_MODE),
+            DWCMSHC_SDHCI_CQE_TRANSFER_MODE
+        );
+        assert_eq!(
+            read_u8(base, SDHCI_HOST_CONTROL) & SDHCI_DMA_SELECT_MASK,
+            SDHCI_DMA_SELECT_ADMA32
+        );
+        assert_eq!(
+            read_u16(base, SDHCI_BLOCK_SIZE) & SDHCI_BLOCK_SIZE_MASK,
+            SDHCI_CQE_BLOCK_SIZE
+        );
+        assert_eq!(read_u32(base, SDHCI_INT_ENABLE), SDHCI_CQE_INTERRUPT_MASK);
+        assert_eq!(
+            read_u32(base, SDHCI_SIGNAL_ENABLE),
+            SDHCI_CQE_INTERRUPT_MASK
+        );
+
+        cqhci_host::CqhciPlatform::disable_data_path(&mut platform).unwrap();
+        assert_eq!(read_u32(base, SDHCI_INT_ENABLE), 0x1234_5678);
+        assert_eq!(read_u32(base, SDHCI_SIGNAL_ENABLE), 0x8765_4321);
+    }
+
+    #[test]
+    fn rk3588_dwcmshc_after_reset_programs_low_speed_vendor_defaults() {
+        let mut mmio = [u32::MAX; 0x400];
+        let base = NonNull::new(mmio.as_mut_ptr().cast::<u8>()).unwrap();
         write_u16(base, DWCMSHC_P_VENDOR_AREA1, 0x0500);
         write_u32(base, DWCMSHC_EMMC_MISC_CON, 0);
         write_u16(base, 0x0500 + DWCMSHC_EMMC_CONTROL, 0);
@@ -463,37 +787,12 @@ mod tests {
                 | DLL_STRBIN_DELAY_NUM_SEL
                 | (DLL_STRBIN_DELAY_NUM_DEFAULT << DLL_STRBIN_DELAY_NUM_OFFSET)
         );
-
-        let phy_cfg = PHY_CNFG_RSTN_DEASSERT | (PHY_CNFG_PAD_SP << 16) | (PHY_CNFG_PAD_SN << 20);
-        assert_eq!(read_u32(base, PHY_CNFG_R), phy_cfg);
-        assert_eq!(read_u8(base, PHY_SDCLKDL_CNFG_R), 0);
-        assert_eq!(read_u8(base, PHY_SDCLKDL_DC_R), PHY_SDCLKDL_DC_DEFAULT);
-        assert_eq!(read_u8(base, PHY_DLL_CNFG2_R), PHY_DLL_CNFG2_JUMPSTEP);
-        assert_eq!(read_u8(base, PHY_SMPLDL_CNFG_R), PHY_SMPLDL_CNFG_BYPASS_EN);
-        assert_eq!(read_u8(base, PHY_DLL_CTRL_R), PHY_DLL_CTRL_ENABLE);
-
-        let pad_pullup = PHY_PAD_RXSEL_3V3
-            | (PHY_PAD_WEAKPULL_PULLUP << 3)
-            | (PHY_PAD_TXSLEW_CTRL_P << 5)
-            | (PHY_PAD_TXSLEW_CTRL_N << 9);
-        assert_eq!(read_u16(base, PHY_CMDPAD_CNFG_R), pad_pullup);
-        assert_eq!(read_u16(base, PHY_DATAPAD_CNFG_R), pad_pullup);
-        assert_eq!(read_u16(base, PHY_RSTNPAD_CNFG_R), pad_pullup);
-
-        let clk_pad = (PHY_PAD_TXSLEW_CTRL_P << 5) | (PHY_PAD_TXSLEW_CTRL_N << 9);
-        assert_eq!(read_u16(base, PHY_CLKPAD_CNFG_R), clk_pad);
-
-        let strobe_pad = PHY_PAD_RXSEL_3V3
-            | (PHY_PAD_WEAKPULL_PULLDOWN << 3)
-            | (PHY_PAD_TXSLEW_CTRL_P << 5)
-            | (PHY_PAD_TXSLEW_CTRL_N << 9);
-        assert_eq!(read_u16(base, PHY_STBPAD_CNFG_R), strobe_pad);
     }
 
     #[test]
     fn rk3588_dwcmshc_clock_stage_programs_low_speed_dll_bypass() {
-        let mut mmio = [0xff_u8; 0x1000];
-        let base = NonNull::new(mmio.as_mut_ptr()).unwrap();
+        let mut mmio = [u32::MAX; 0x400];
+        let base = NonNull::new(mmio.as_mut_ptr().cast::<u8>()).unwrap();
         write_u16(base, DWCMSHC_P_VENDOR_AREA1, 0x0500);
         write_u32(base, 0x0500 + DWCMSHC_HOST_CTRL3, u32::MAX);
         write_u32(base, DWCMSHC_EMMC_DLL_CTRL, u32::MAX);
@@ -503,7 +802,7 @@ mod tests {
         write_u32(base, DWCMSHC_EMMC_DLL_STRBIN, u32::MAX);
 
         let mut host = unsafe { Sdhci::new(base) };
-        configure_rk3588_dwcmshc_clock(&mut host, 400_000).unwrap();
+        configure_rk3588_dwcmshc_clock(&mut host, 400_000, 0x10).unwrap();
 
         let host_ctrl3 = read_u32(base, 0x0500 + DWCMSHC_HOST_CTRL3);
         assert_eq!(host_ctrl3 & DWCMSHC_HOST_CTRL3_CMD_CONFLICT, 0);

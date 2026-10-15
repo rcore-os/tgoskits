@@ -1,6 +1,7 @@
 use super::{block_path::adma2_shape_supported, *};
 
 mod bus;
+mod tuning;
 
 mod transaction;
 

@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use log::{info, warn};
@@ -12,6 +12,7 @@ use sdmmc_host::ProgressCause;
 use crate::{
     BlockProgress, BlockRequestId, OperationProgress,
     rdif::{
+        accelerator::{CommandQueueAccelerator, CommandQueueActivation},
         config::{block_addr_for_card, device_info, map_dev_err_to_blk_err, queue_limits},
         device::BlockInitStatus,
         host::{
@@ -28,6 +29,7 @@ use crate::{
 };
 
 const MMC_SWITCH_WRITE_BYTE: u8 = 0b11;
+const MMC_COMMAND_QUEUE_ENABLE: u8 = 1;
 const MMC_FLUSH_CACHE_TRIGGER: u8 = 1;
 const INIT_REGISTER_RETRY_DELAY: Duration = Duration::from_micros(100);
 const INIT_POWER_UP_RETRY_DELAY: Duration = Duration::from_millis(10);
@@ -35,6 +37,13 @@ const INIT_POWER_UP_RETRY_DELAY: Duration = Duration::from_millis(10);
 enum FlushRequest {
     Cache(MmcSwitchRequest),
     Status(SdMmcStatusRequest),
+}
+
+struct CommandQueueEnable {
+    request: MmcSwitchRequest,
+    activation: CommandQueueActivation,
+    capacity_blocks: u64,
+    rolling_back: bool,
 }
 
 /// Queue state exclusively owned by one block runtime maintenance task.
@@ -46,6 +55,7 @@ where
 {
     card: SdMmcCard<H>,
     config: super::config::BlockConfig,
+    legacy_limits: rdif_block::QueueLimits,
     id: usize,
     slot: ProtocolBlockSlot,
     pending: Option<ProtocolBlockRequest<H>>,
@@ -58,6 +68,8 @@ where
     register_retry_after: Option<Duration>,
     supports_flush: bool,
     cache_enabled: bool,
+    accelerator: Option<Box<dyn CommandQueueAccelerator>>,
+    command_queue_enable: Option<CommandQueueEnable>,
 }
 
 impl<H> BlockQueue<H>
@@ -68,9 +80,11 @@ where
 {
     pub(super) fn new(card: SdMmcCard<H>, config: super::config::BlockConfig, id: usize) -> Self {
         let supports_flush = queue_supports_flush(card.kind(), None);
+        let legacy_limits = config.limits;
         Self {
             card,
             config,
+            legacy_limits,
             id,
             slot: ProtocolBlockSlot::default(),
             pending: None,
@@ -83,17 +97,29 @@ where
             register_retry_after: None,
             supports_flush,
             cache_enabled: false,
+            accelerator: None,
+            command_queue_enable: None,
         }
     }
 
-    pub(super) fn new_initializing(
+    pub(super) fn new_initializing_with_accelerator(
         card: SdMmcCard<H>,
         config: super::config::BlockConfig,
         id: usize,
         preference: CardInitPreference,
         init_status: Arc<BlockInitStatus>,
+        accelerator: Option<Box<dyn CommandQueueAccelerator>>,
     ) -> Result<Self, BlkError> {
         let mut queue = Self::new(card, config, id);
+        if let Some(accelerator) = accelerator {
+            let provisioned_depth = accelerator.provisioned_depth();
+            if provisioned_depth == 0 {
+                return Err(BlkError::InvalidRequest);
+            }
+            queue.config.limits.max_inflight = provisioned_depth;
+            queue.config.limits.max_submit_batch = provisioned_depth;
+            queue.accelerator = Some(accelerator);
+        }
         queue.supports_flush = queue_supports_flush(queue.card.kind(), Some(preference));
         queue.init_status = Some(init_status);
         queue.ensure_completion_irq()?;
@@ -136,6 +162,9 @@ where
     /// request. Command and data continuation remains dormant until
     /// `drain_completions` consumes an acknowledged IRQ.
     fn advance_initialization(&mut self, cause: ProgressCause) -> Result<bool, BlkError> {
+        if self.command_queue_enable.is_some() {
+            return self.advance_command_queue_enable(cause);
+        }
         let Some(mut request) = self.init_request.take() else {
             return Ok(true);
         };
@@ -167,13 +196,115 @@ where
                     .ext_csd
                     .as_ref()
                     .is_some_and(crate::ext_csd::ExtCsd::cache_enabled);
-                if let Some(status) = &self.init_status {
-                    status.mark_ready(capacity_blocks);
+                if let Some(ext_csd) = info.ext_csd.as_ref()
+                    && ext_csd.command_queue_supported()
+                    && self.accelerator.is_some()
+                {
+                    let activation = CommandQueueActivation {
+                        rca: info.rca,
+                        card_depth: ext_csd.command_queue_depth(),
+                        cache_enabled: self.cache_enabled,
+                    };
+                    let request = self
+                        .card
+                        .submit_mmc_switch(
+                            MMC_SWITCH_WRITE_BYTE,
+                            crate::cmd::ext_csd::CMDQ_MODE_EN as u8,
+                            MMC_COMMAND_QUEUE_ENABLE,
+                        )
+                        .map_err(map_dev_err_to_blk_err)?;
+                    self.command_queue_enable = Some(CommandQueueEnable {
+                        request,
+                        activation,
+                        capacity_blocks,
+                        rolling_back: false,
+                    });
+                    self.sync_protocol_register_retry();
+                    info!(
+                        "sdmmc: enabling eMMC command queue rca={} card_depth={}",
+                        activation.rca, activation.card_depth
+                    );
+                    return Ok(false);
                 }
+                self.restore_legacy_limits();
+                self.publish_ready(capacity_blocks);
+                Ok(true)
+            }
+            Err(error) => {
+                self.register_retry_after = None;
+                if let Some(status) = &self.init_status {
+                    status.mark_failed();
+                }
+                Err(map_dev_err_to_blk_err(error))
+            }
+        }
+    }
+
+    fn advance_command_queue_enable(&mut self, cause: ProgressCause) -> Result<bool, BlkError> {
+        let Some(mut enabling) = self.command_queue_enable.take() else {
+            return Ok(true);
+        };
+        match self
+            .card
+            .advance_mmc_switch_request(&mut enabling.request, cause)
+        {
+            Ok(OperationProgress::Pending) => {
+                self.command_queue_enable = Some(enabling);
+                self.sync_protocol_register_retry();
+                Ok(false)
+            }
+            Ok(OperationProgress::Complete(())) => {
+                if enabling.rolling_back {
+                    self.register_retry_after = None;
+                    self.restore_legacy_limits();
+                    self.publish_ready(enabling.capacity_blocks);
+                    return Ok(true);
+                }
+                let accelerator = self.accelerator.as_mut().ok_or(BlkError::InvalidRequest)?;
+                if let Err(error) = accelerator.activate(enabling.activation, &mut self.config) {
+                    warn!(
+                        "sdmmc: CQHCI activation failed ({error:?}); disabling card CMDQ before \
+                         legacy fallback"
+                    );
+                    // No block requests have been accepted before readiness.
+                    // A failed quiesce cannot fall back to a competing owner.
+                    struct NoRequests;
+                    impl CompletionSink for NoRequests {
+                        fn complete(&mut self, _request: CompletedRequest) {
+                            unreachable!("CQHCI activation accepted no requests");
+                        }
+                    }
+                    if let Err(stop_error) = accelerator.shutdown(&mut NoRequests) {
+                        if let Some(status) = &self.init_status {
+                            status.mark_failed();
+                        }
+                        return Err(stop_error);
+                    }
+                    match self.card.submit_mmc_switch(
+                        MMC_SWITCH_WRITE_BYTE,
+                        crate::cmd::ext_csd::CMDQ_MODE_EN as u8,
+                        0,
+                    ) {
+                        Ok(request) => {
+                            enabling.request = request;
+                            enabling.rolling_back = true;
+                            self.command_queue_enable = Some(enabling);
+                            self.sync_protocol_register_retry();
+                            return Ok(false);
+                        }
+                        Err(error) => {
+                            if let Some(status) = &self.init_status {
+                                status.mark_failed();
+                            }
+                            return Err(map_dev_err_to_blk_err(error));
+                        }
+                    }
+                }
+                self.register_retry_after = None;
+                self.publish_ready(enabling.capacity_blocks);
                 info!(
-                    "sdmmc block init complete: kind={:?} high_capacity={} rca={} \
-                     capacity_blocks={} cache_enabled={}",
-                    info.kind, info.high_capacity, info.rca, capacity_blocks, self.cache_enabled
+                    "sdmmc block init complete with command queue: rca={} depth={}",
+                    enabling.activation.rca, self.config.limits.max_inflight
                 );
                 Ok(true)
             }
@@ -185,6 +316,31 @@ where
                 Err(map_dev_err_to_blk_err(error))
             }
         }
+    }
+
+    fn publish_ready(&self, capacity_blocks: u64) {
+        if let Some(status) = &self.init_status {
+            status.mark_ready(capacity_blocks);
+        }
+        info!(
+            "sdmmc block init complete: kind={:?} high_capacity={} rca={} capacity_blocks={} \
+             cache_enabled={}",
+            self.card.kind(),
+            self.card.is_high_capacity(),
+            self.card.rca(),
+            capacity_blocks,
+            self.cache_enabled
+        );
+    }
+
+    fn restore_legacy_limits(&mut self) {
+        if self.accelerator.is_some() {
+            self.config.limits = self.legacy_limits;
+        }
+    }
+
+    fn initialization_pending(&self) -> bool {
+        self.init_request.is_some() || self.command_queue_enable.is_some()
     }
 
     fn submit_data(&mut self, mut request: OwnedRequest) -> Result<RequestId, SubmitError> {
@@ -273,7 +429,7 @@ where
     }
 
     fn submit_one(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
-        if self.init_request.is_some() {
+        if self.initialization_pending() {
             return Err(SubmitError::new(BlkError::Retry, request));
         }
         if let Err(error) = validate_owned_request(self.queue_info(), &request) {
@@ -423,6 +579,11 @@ where
         requests: &mut OwnedRequestBatch,
         sink: &mut dyn SubmissionSink,
     ) -> BatchSubmitResult {
+        if let Some(accelerator) = self.accelerator.as_mut()
+            && accelerator.is_active()
+        {
+            return accelerator.submit_batch_owned(requests, sink);
+        }
         let Some(request) = requests.pop_front() else {
             return BatchSubmitResult::new(0, BatchSubmitDisposition::Continue);
         };
@@ -444,16 +605,26 @@ where
     }
 
     fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        if let Some(accelerator) = self.accelerator.as_mut()
+            && accelerator.is_active()
+        {
+            return accelerator.commit_submissions();
+        }
         // DWCMSHC owns only one in-flight request and the host submit primitive
         // starts it immediately, so there is no separate doorbell to publish.
         Ok(())
     }
 
     fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        if self.init_request.is_some() {
+        if self.initialization_pending() {
             self.register_retry_after = None;
             self.advance_initialization(ProgressCause::AcknowledgedIrq)?;
             return Ok(());
+        }
+        if let Some(accelerator) = self.accelerator.as_mut()
+            && accelerator.is_active()
+        {
+            return accelerator.drain_completions(sink);
         }
         self.advance_data(ProgressCause::AcknowledgedIrq, sink);
         self.advance_flush(ProgressCause::AcknowledgedIrq, sink);
@@ -469,7 +640,7 @@ where
         if self.register_retry_after.take().is_none() {
             return Err(BlkError::InvalidRequest);
         }
-        if self.init_request.is_some() {
+        if self.initialization_pending() {
             return self
                 .advance_initialization(ProgressCause::RegisterRetry)
                 .map(|_| ());
@@ -494,6 +665,11 @@ where
                 first_error = Some(error);
             }
         };
+        if let Some(accelerator) = self.accelerator.as_mut()
+            && accelerator.is_active()
+        {
+            remember(accelerator.shutdown(sink));
+        }
         if self.completion_irq_enabled {
             remember(
                 SdMmcIrqHost::disable_completion_irq(self.card.host_mut())
@@ -505,6 +681,16 @@ where
             remember(
                 self.card
                     .abort_init_request(&mut request)
+                    .map_err(map_dev_err_to_blk_err),
+            );
+            if let Some(status) = &self.init_status {
+                status.mark_failed();
+            }
+        }
+        if let Some(mut enabling) = self.command_queue_enable.take() {
+            remember(
+                self.card
+                    .abort_mmc_switch_request(&mut enabling.request)
                     .map_err(map_dev_err_to_blk_err),
             );
             if let Some(status) = &self.init_status {

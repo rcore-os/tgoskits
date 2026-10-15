@@ -34,11 +34,8 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm start 2"
 success_regex = ["VM\\[2\\] started successfully"]
 
-[[shell_check_steps]]
-shell_prefix = "axvisor:/$"
-shell_cmd = "vm resume 1"
-success_regex = ["VM\\[1\\] resumed successfully"]
-
+# IVC mapping transactions restore execution and publish Running.
+# The publisher is already running; collect its full-duplex result directly.
 [[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"

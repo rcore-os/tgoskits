@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use ax_sync::{Mutex, MutexGuard};
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
-use super::{SerialBackend, SerialEndpoint, fifo::ByteFifo};
+use super::{SerialBackend, SerialEndpoint, endpoint::RX_POLL_BUFFER_SIZE, fifo::RxFifo};
 
 const REG_RBR_THR_DLL: usize = 0;
 const REG_IER_DLM: usize = 1;
@@ -51,7 +51,7 @@ struct Uart16550State {
     dlm: u8,
     overrun: bool,
     tx_interrupt_pending: bool,
-    rx_fifo: ByteFifo<FIFO_CAPACITY>,
+    rx_fifo: RxFifo<FIFO_CAPACITY>,
 }
 
 impl Uart16550State {
@@ -66,7 +66,7 @@ impl Uart16550State {
             dlm: 0,
             overrun: false,
             tx_interrupt_pending: true,
-            rx_fifo: ByteFifo::new(),
+            rx_fifo: RxFifo::new(),
         }
     }
 
@@ -139,14 +139,27 @@ impl Uart16550 {
     }
 
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.
+    ///
+    /// Concurrent polls wait for the active backend read. A backend may access
+    /// registers, but must not recursively poll the UART from its read callback.
     pub fn poll(&self) -> DeviceResult {
-        self.endpoint.poll_rx(|bytes| {
-            let mut state = self.state();
-            for &byte in bytes {
-                state.push_rx(byte);
-            }
-            state.irq_asserted()
-        })
+        self.fill_rx(self.endpoint.lock_rx())
+    }
+
+    fn fill_rx(&self, _read: MutexGuard<'_, ()>) -> DeviceResult {
+        let capacity = self.state().rx_fifo.begin_read(RX_POLL_BUFFER_SIZE);
+        let Some(capacity) = capacity else {
+            return self.refresh_irq();
+        };
+        self.endpoint.poll_rx(
+            capacity,
+            |bytes| self.state().rx_fifo.finish_read(bytes),
+            || self.state().irq_asserted(),
+        )
+    }
+
+    fn refresh_irq(&self) -> DeviceResult {
+        self.endpoint.refresh_irq(|| self.state().irq_asserted())
     }
 
     /// Reads one UART register.
@@ -158,8 +171,9 @@ impl Uart16550 {
             });
         }
 
-        let (value, asserted) = {
+        let (value, refill) = {
             let mut state = self.state();
+            let receive = register == REG_RBR_THR_DLL && !state.dlab();
             let value = match register {
                 REG_RBR_THR_DLL if state.dlab() => state.dll,
                 REG_RBR_THR_DLL => state.rx_fifo.pop().unwrap_or(0),
@@ -179,9 +193,15 @@ impl Uart16550 {
                 REG_SCR => state.scr,
                 _ => 0,
             };
-            (value, state.irq_asserted())
+            (value, receive && state.rx_fifo.is_empty())
         };
-        self.endpoint.set_irq_level(asserted)?;
+        if refill && let Some(read) = self.endpoint.try_lock_rx() {
+            // Consuming the last byte makes room for the next bounded batch.
+            // Progress must not depend on another coalesced device-work wake.
+            self.fill_rx(read)?;
+        } else {
+            self.refresh_irq()?;
+        }
         Ok(value as u64)
     }
 
@@ -195,7 +215,7 @@ impl Uart16550 {
         }
 
         let byte = value as u8;
-        let (output, completes_tx, asserted) = {
+        let (output, completes_tx) = {
             let mut state = self.state();
             let mut output = None;
             let mut completes_tx = false;
@@ -234,14 +254,22 @@ impl Uart16550 {
                 REG_SCR => state.scr = byte,
                 _ => {}
             }
-            (output, completes_tx, state.irq_asserted())
+            (output, completes_tx)
         };
 
-        let consumed_result = self.endpoint.set_irq_level(asserted);
+        let consumed_result = self.refresh_irq();
         if let Some(byte) = output {
             self.endpoint.write(core::slice::from_ref(&byte));
         }
         if !completes_tx {
+            if register == REG_IIR_FCR
+                && byte & FCR_CLEAR_RX != 0
+                && let Some(read) = self.endpoint.try_lock_rx()
+            {
+                // Reset also releases RX capacity. Bytes still in the backend
+                // are subsequent arrivals, not part of the discarded FIFO.
+                return consumed_result.and(self.fill_rx(read));
+            }
             return consumed_result;
         }
 
@@ -251,12 +279,8 @@ impl Uart16550 {
         // between the two phases: an edge-configured IOAPIC must observe THRE being
         // consumed before it can deliver the next empty interrupt. Deferring this phase
         // to DeviceRuntime::poll would make TX progress depend on unrelated RX polling.
-        let completed_asserted = {
-            let mut state = self.state();
-            state.tx_interrupt_pending = true;
-            state.irq_asserted()
-        };
-        let completed_result = self.endpoint.set_irq_level(completed_asserted);
+        self.state().tx_interrupt_pending = true;
+        let completed_result = self.refresh_irq();
         consumed_result.and(completed_result)
     }
 }

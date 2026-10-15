@@ -9,17 +9,17 @@ use std::{
 };
 
 use axdevice::{
-    DeviceManagerError, DeviceManagerResult, DeviceRuntime, RuntimeAccessPorts, StopAccessPort,
-    TimerAccessPort, WakeAccessPort, WorkAccessPort,
+    DeviceManagerError, DeviceManagerResult, DeviceRuntime, GuestCpuFreqPort, RuntimeAccessPorts,
+    StopAccessPort, TimerAccessPort, WakeAccessPort, WorkAccessPort,
 };
-use axdevice_base::{DeviceAccess, DeviceId};
+use axdevice_base::{DeviceAccess, DeviceId, DeviceVcpuId};
 
 use crate::{
     AxVmError, AxVmResult, RunId, StopReason,
     guest_memory::GuestMemoryPort,
     host::{HostTime, HostTimer, default_host},
     irq::model::SourceEvent,
-    manager::ControlShared,
+    manager::{ControlShared, GuestCpuFreqBackend, GuestCpuFreqError},
     sync::MutexExt,
 };
 
@@ -393,15 +393,26 @@ pub(crate) struct DevicePorts {
     control: Weak<ControlShared>,
     signals: Arc<RunSignals>,
     timers: Arc<DeviceTimers>,
+    cpu_freq: Option<Arc<dyn GuestCpuFreqBackend>>,
 }
 
 impl DevicePorts {
-    pub(crate) fn new(signals: Arc<RunSignals>, control: Weak<ControlShared>) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(
+        signals: Arc<RunSignals>,
+        control: Weak<ControlShared>,
+        cpu_freq: Option<Arc<dyn GuestCpuFreqBackend>>,
+    ) -> Arc<Self> {
+        let run = signals.run_id();
+        let ports = Arc::new(Self {
             timers: DeviceTimers::new(signals.clone()),
             signals,
             control,
-        })
+            cpu_freq,
+        });
+        if let Some(backend) = &ports.cpu_freq {
+            backend.bind(run.vm().vm_id(), run.generation());
+        }
+        ports
     }
 
     pub(crate) fn access_ports(self: &Arc<Self>) -> RuntimeAccessPorts {
@@ -410,18 +421,108 @@ impl DevicePorts {
             .with_wake(self.clone())
             .with_stop(self.clone())
             .with_work(self.clone())
+            .with_cpufreq(self.clone())
     }
 
     pub(crate) fn close(&self) {
+        self.retire_cpu_freq_hints();
+        self.release_cpu_freq_binding();
         self.signals.close_interrupts();
     }
 
+    /// Retires this run's host CPU-frequency hints without closing device
+    /// signals. Stop uses this before teardown so a failed cleanup cannot leave
+    /// a retired run raising the host CPU-frequency floor.
+    ///
+    /// The binding is deliberately kept: the guest may still read the current
+    /// performance while its vCPUs are stopping, and an error on that read is
+    /// reported as a vCPU fault.
+    pub(crate) fn retire_cpu_freq_hints(&self) {
+        let run = self.signals.run_id();
+        if let Some(backend) = &self.cpu_freq {
+            backend.retire(run.vm().vm_id(), run.generation());
+        }
+    }
+
+    /// Releases this run's host CPU-frequency binding. Only valid once every
+    /// vCPU of the run has returned and retired, so no device access can
+    /// observe the missing binding.
+    pub(crate) fn release_cpu_freq_binding(&self) {
+        let run = self.signals.run_id();
+        if let Some(backend) = &self.cpu_freq {
+            backend.unbind(run.vm().vm_id(), run.generation());
+        }
+    }
+
     pub(crate) fn suspend(&self) -> AxVmResult {
-        self.timers.suspend()
+        // Publish the host-side exclusion even when a timer worker reports a
+        // suspend failure. A partially quiesced VM must never keep raising its
+        // CPU-frequency floor while lifecycle rollback is in progress.
+        let timer_result = self.timers.suspend();
+        if let Some(backend) = &self.cpu_freq {
+            let run = self.signals.run_id();
+            backend.suspend(run.vm().vm_id(), run.generation());
+        }
+        timer_result
     }
 
     pub(crate) fn resume(&self) -> AxVmResult {
-        self.timers.resume()
+        self.timers.resume()?;
+        if let Some(backend) = &self.cpu_freq {
+            let run = self.signals.run_id();
+            backend.resume(run.vm().vm_id(), run.generation());
+        }
+        Ok(())
+    }
+}
+
+impl GuestCpuFreqPort for DevicePorts {
+    fn set_performance(
+        &self,
+        _device: DeviceId,
+        vcpu_id: DeviceVcpuId,
+        domain: u32,
+        performance: u32,
+    ) -> DeviceManagerResult {
+        let backend = self.cpu_freq.as_ref().ok_or_else(|| {
+            cpu_freq_port_error(
+                "set guest CPU frequency hint",
+                GuestCpuFreqError::Unavailable("no host CPU frequency backend"),
+            )
+        })?;
+        let run = self.signals.run_id();
+        backend
+            .set_hint(
+                run.vm().vm_id(),
+                run.generation(),
+                vcpu_id.as_usize(),
+                domain,
+                performance,
+            )
+            .map_err(|error| cpu_freq_port_error("set guest CPU frequency hint", error))
+    }
+
+    fn current_performance(
+        &self,
+        _device: DeviceId,
+        vcpu_id: DeviceVcpuId,
+        domain: u32,
+    ) -> DeviceManagerResult<u32> {
+        let backend = self.cpu_freq.as_ref().ok_or_else(|| {
+            cpu_freq_port_error(
+                "read guest CPU frequency performance",
+                GuestCpuFreqError::Unavailable("no host CPU frequency backend"),
+            )
+        })?;
+        let run = self.signals.run_id();
+        backend
+            .current_performance(
+                run.vm().vm_id(),
+                run.generation(),
+                vcpu_id.as_usize(),
+                domain,
+            )
+            .map_err(|error| cpu_freq_port_error("read guest CPU frequency performance", error))
     }
 }
 
@@ -471,5 +572,214 @@ fn port_error(operation: &'static str, error: impl std::fmt::Debug) -> DeviceMan
     DeviceManagerError::InvalidState {
         operation,
         detail: format!("{error:?}"),
+    }
+}
+
+fn cpu_freq_port_error(operation: &'static str, error: GuestCpuFreqError) -> DeviceManagerError {
+    let detail = error.to_string();
+    match error {
+        GuestCpuFreqError::InvalidRequest(_) => {
+            DeviceManagerError::InvalidInput { operation, detail }
+        }
+        GuestCpuFreqError::Unavailable(_) | GuestCpuFreqError::HardwareFailure(_) => {
+            DeviceManagerError::InvalidState { operation, detail }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod cpu_freq_port_tests {
+    use std::sync::{Arc, Mutex, Weak};
+
+    use axdevice::DeviceManagerError;
+    use axdevice_base::{DeviceId, DeviceVcpuId};
+
+    use super::*;
+    use crate::{GuestCpuFreqBackend, GuestCpuFreqError, RunId, VMId, VmKey};
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl RecordingBackend {
+        fn events(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+
+        fn push(&self, event: impl Into<String>) {
+            self.events.lock().unwrap().push(event.into());
+        }
+    }
+
+    impl GuestCpuFreqBackend for RecordingBackend {
+        fn bind(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("bind {vm_id} {run_generation}"));
+        }
+
+        fn set_hint(
+            &self,
+            vm_id: VMId,
+            run_generation: u64,
+            vcpu_id: usize,
+            domain: u32,
+            performance: u32,
+        ) -> Result<(), GuestCpuFreqError> {
+            self.push(format!(
+                "set {vm_id} {run_generation} {vcpu_id} {domain} {performance}"
+            ));
+            Ok(())
+        }
+
+        fn current_performance(
+            &self,
+            vm_id: VMId,
+            run_generation: u64,
+            vcpu_id: usize,
+            domain: u32,
+        ) -> Result<u32, GuestCpuFreqError> {
+            self.push(format!(
+                "current {vm_id} {run_generation} {vcpu_id} {domain}"
+            ));
+            Ok(512)
+        }
+
+        fn retire(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("retire {vm_id} {run_generation}"));
+        }
+
+        fn unbind(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("unbind {vm_id} {run_generation}"));
+        }
+
+        fn suspend(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("suspend {vm_id} {run_generation}"));
+        }
+
+        fn resume(&self, vm_id: VMId, run_generation: u64) {
+            self.push(format!("resume {vm_id} {run_generation}"));
+        }
+    }
+
+    struct RejectingBackend;
+
+    impl GuestCpuFreqBackend for RejectingBackend {
+        fn set_hint(
+            &self,
+            _vm_id: VMId,
+            _run_generation: u64,
+            _vcpu_id: usize,
+            _domain: u32,
+            _performance: u32,
+        ) -> Result<(), GuestCpuFreqError> {
+            Err(GuestCpuFreqError::InvalidRequest(
+                "guest CPU frequency domain is invalid",
+            ))
+        }
+
+        fn current_performance(
+            &self,
+            _vm_id: VMId,
+            _run_generation: u64,
+            _vcpu_id: usize,
+            _domain: u32,
+        ) -> Result<u32, GuestCpuFreqError> {
+            Err(GuestCpuFreqError::Unavailable(
+                "host CPU frequency worker is not ready",
+            ))
+        }
+
+        fn retire(&self, _vm_id: VMId, _run_generation: u64) {}
+
+        fn unbind(&self, _vm_id: VMId, _run_generation: u64) {}
+
+        fn suspend(&self, _vm_id: VMId, _run_generation: u64) {}
+
+        fn resume(&self, _vm_id: VMId, _run_generation: u64) {}
+    }
+
+    fn ports(generation: u64, backend: Option<Arc<dyn GuestCpuFreqBackend>>) -> Arc<DevicePorts> {
+        let signals = RunSignals::new(RunId::new(VmKey::new(1, 1), generation), 1)
+            .expect("valid run signals");
+        DevicePorts::new(signals, Weak::new(), backend)
+    }
+
+    #[test]
+    fn device_ports_bind_retire_suspend_and_resume_one_run_generation() {
+        let backend = Arc::new(RecordingBackend::default());
+        let ports = ports(7, Some(backend.clone()));
+        ports
+            .set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 3, 900)
+            .unwrap();
+        assert_eq!(
+            ports.current_performance(DeviceId::new(1), DeviceVcpuId::new(0), 3),
+            Ok(512)
+        );
+        ports.retire_cpu_freq_hints();
+        ports.retire_cpu_freq_hints();
+        ports.suspend().unwrap();
+        ports.resume().unwrap();
+        ports.close();
+        assert_eq!(
+            backend.events(),
+            [
+                "bind 1 7",
+                "set 1 7 0 3 900",
+                "current 1 7 0 3",
+                "retire 1 7",
+                "retire 1 7",
+                "suspend 1 7",
+                "resume 1 7",
+                "retire 1 7",
+                "unbind 1 7",
+            ]
+        );
+    }
+
+    /// Stop retires the generation while its vCPUs may still be running guest
+    /// code, so the binding must survive until `close()`.
+    #[test]
+    fn retiring_one_run_generation_keeps_its_binding_until_close() {
+        let backend = Arc::new(RecordingBackend::default());
+        let first = ports(1, Some(backend.clone()));
+        first
+            .set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 1, 256)
+            .unwrap();
+        first.retire_cpu_freq_hints();
+        let second = ports(2, Some(backend.clone()));
+        second
+            .set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 1, 1024)
+            .unwrap();
+        second.close();
+        first.close();
+        assert_eq!(
+            backend.events(),
+            [
+                "bind 1 1",
+                "set 1 1 0 1 256",
+                "retire 1 1",
+                "bind 1 2",
+                "set 1 2 0 1 1024",
+                "retire 1 2",
+                "unbind 1 2",
+                "retire 1 1",
+                "unbind 1 1",
+            ]
+        );
+    }
+
+    #[test]
+    fn cpu_freq_port_maps_typed_backend_errors() {
+        let ports = ports(1, Some(Arc::new(RejectingBackend)));
+        assert!(matches!(
+            ports.set_performance(DeviceId::new(1), DeviceVcpuId::new(0), 0, 256),
+            Err(DeviceManagerError::InvalidInput { operation, .. })
+                if operation == "set guest CPU frequency hint"
+        ));
+        assert!(matches!(
+            ports.current_performance(DeviceId::new(1), DeviceVcpuId::new(0), 0),
+            Err(DeviceManagerError::InvalidState { operation, .. })
+                if operation == "read guest CPU frequency performance"
+        ));
     }
 }

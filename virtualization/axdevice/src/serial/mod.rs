@@ -17,9 +17,14 @@ pub use uart16550::Uart16550;
 
 #[cfg(test)]
 mod tests {
-    use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+    use alloc::{
+        collections::VecDeque,
+        sync::{Arc, Weak},
+        vec,
+        vec::Vec,
+    };
     use core::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Barrier, Mutex, mpsc};
 
     use axdevice_base::{
         AccessWidth, ControllerInputId, InterruptControllerId, InterruptTriggerMode, IrqLine,
@@ -27,6 +32,7 @@ mod tests {
     };
 
     use super::{Pl011, SerialBackend, Uart16550};
+    use crate::host_lock_provider::NEXT_MUTEX_WAIT;
 
     #[derive(Debug, Default)]
     struct TestBackend {
@@ -117,6 +123,30 @@ mod tests {
 
         uart.write(0, AccessWidth::Byte, b'Z' as u64).unwrap();
         assert_eq!(backend.output.lock().unwrap().as_slice(), b"Z");
+
+        for (length, polls) in [(73, 1), (529, 9)] {
+            let input: Vec<_> = (0..length).map(|index| (index % 251) as u8).collect();
+            backend.push_input(&input);
+            // Extra work notifications must leave bytes in the backend once
+            // the FIFO is full, even if the guest has not consumed anything.
+            for _ in 0..polls {
+                uart.poll().unwrap();
+            }
+            let mut received = Vec::new();
+            for _ in 0..=length {
+                let status = uart.read(5, AccessWidth::Byte).unwrap();
+                assert_eq!(status & 2, 0, "backend input must not overrun the FIFO");
+                if status & 1 == 0 {
+                    break;
+                }
+                received.push(uart.read(0, AccessWidth::Byte).unwrap() as u8);
+            }
+            assert_eq!(
+                received, input,
+                "RX must progress without another device poll"
+            );
+            assert_eq!(sink.levels.lock().unwrap().last(), Some(&false));
+        }
     }
 
     #[test]
@@ -137,6 +167,26 @@ mod tests {
         uart.write(2, AccessWidth::Byte, 1 << 1).unwrap();
         assert_eq!(sink.levels.lock().unwrap().last(), Some(&false));
         assert_eq!(sink.levels.lock().unwrap().as_slice(), [true, false]);
+
+        let input: Vec<_> = (0..529).map(|index| (index % 251) as u8).collect();
+        backend.push_input(&input);
+        for _ in 0..9 {
+            uart.poll().unwrap();
+        }
+        uart.write(2, AccessWidth::Byte, 1 << 1).unwrap();
+        let mut received = Vec::new();
+        for _ in 0..=input.len() {
+            if uart.read(5, AccessWidth::Byte).unwrap() & 1 == 0 {
+                break;
+            }
+            received.push(uart.read(0, AccessWidth::Byte).unwrap() as u8);
+        }
+        assert_eq!(
+            received,
+            input[256..],
+            "reset discards only committed FIFO bytes"
+        );
+        assert_eq!(sink.levels.lock().unwrap().last(), Some(&false));
     }
 
     #[test]
@@ -183,6 +233,200 @@ mod tests {
 
         uart.write(0x000, AccessWidth::Dword, b'P' as u64).unwrap();
         assert_eq!(backend.output.lock().unwrap().as_slice(), b"P");
+
+        for (length, polls) in [(73, 1), (529, 9)] {
+            let input: Vec<_> = (0..length).map(|index| (index % 251) as u8).collect();
+            backend.push_input(&input);
+            for _ in 0..polls {
+                uart.poll().unwrap();
+            }
+            let mut received = Vec::new();
+            for _ in 0..=length {
+                if uart.read(0x018, AccessWidth::Dword).unwrap() & (1 << 4) != 0 {
+                    break;
+                }
+                let value = uart.read(0x000, AccessWidth::Dword).unwrap();
+                assert_eq!(value & !0xff, 0, "backend input must not overrun the FIFO");
+                received.push(value as u8);
+            }
+            assert_eq!(
+                received, input,
+                "RX must progress without another device poll"
+            );
+            assert_eq!(sink.levels.lock().unwrap().last(), Some(&false));
+        }
+    }
+
+    #[derive(Debug)]
+    struct PausedReadBackend {
+        bytes: TestBackend,
+        pause_next: AtomicBool,
+        panic_next: AtomicBool,
+        entered: Barrier,
+        release: Barrier,
+        reset_and_loopback: Mutex<Option<Weak<Uart16550>>>,
+    }
+
+    impl PausedReadBackend {
+        fn new() -> Self {
+            Self {
+                bytes: TestBackend::default(),
+                pause_next: AtomicBool::new(false),
+                panic_next: AtomicBool::new(false),
+                entered: Barrier::new(2),
+                release: Barrier::new(2),
+                reset_and_loopback: Mutex::new(None),
+            }
+        }
+    }
+
+    impl SerialBackend for PausedReadBackend {
+        fn write(&self, bytes: &[u8]) {
+            self.bytes.write(bytes);
+        }
+
+        fn read(&self, buffer: &mut [u8]) -> usize {
+            assert!(
+                !self.panic_next.swap(false, Ordering::AcqRel),
+                "injected RX unwind"
+            );
+            let count = self.bytes.read(buffer);
+            let callback = self.reset_and_loopback.lock().unwrap().take();
+            if let Some(uart) = callback.and_then(|uart| uart.upgrade()) {
+                uart.write(2, AccessWidth::Byte, 1 << 1).unwrap();
+                uart.write(4, AccessWidth::Byte, 1 << 4).unwrap();
+                uart.write(0, AccessWidth::Byte, b'C' as u64).unwrap();
+                // Emptying the FIFO reenters refill while this backend read
+                // owns the RX gate. It must return without waiting on itself.
+                assert_eq!(uart.read(0, AccessWidth::Byte).unwrap(), b'C' as u64);
+            }
+            if self.pause_next.swap(false, Ordering::AcqRel) {
+                self.entered.wait();
+                self.release.wait();
+            }
+            count
+        }
+    }
+
+    struct MutexWaitObserver;
+
+    impl MutexWaitObserver {
+        fn new(events: mpsc::Sender<bool>) -> Self {
+            NEXT_MUTEX_WAIT.with(|slot| assert!(slot.borrow_mut().replace(events).is_none()));
+            Self
+        }
+    }
+
+    impl Drop for MutexWaitObserver {
+        fn drop(&mut self) {
+            NEXT_MUTEX_WAIT.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    #[test]
+    fn uart16550_poll_preserves_work_arriving_during_an_empty_read() {
+        let backend = Arc::new(PausedReadBackend::new());
+        let sink = Arc::new(TestIrqSink::default());
+        let uart = Uart16550::new(backend.clone(), level_irq(sink.clone(), 4));
+        uart.write(1, AccessWidth::Byte, 1).unwrap();
+        backend.pause_next.store(true, Ordering::Release);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| uart.poll());
+            // The first read already observed an empty backend, but has not
+            // committed. New input and its sole poll now overlap that read.
+            backend.entered.wait();
+            backend.bytes.push_input(b"n");
+            let (events, received) = mpsc::channel();
+            let uart = &uart;
+            let second = scope.spawn(move || {
+                let _observer = MutexWaitObserver::new(events.clone());
+                let result = uart.poll();
+                events.send(false).unwrap();
+                result
+            });
+            let waited = received.recv().unwrap();
+            backend.release.wait();
+            first.join().unwrap().unwrap();
+            second.join().unwrap().unwrap();
+            assert!(
+                waited,
+                "a notified poll must wait instead of skipping an in-flight read"
+            );
+        });
+        assert_eq!(sink.levels.lock().unwrap().as_slice(), [true]);
+        assert_eq!(uart.read(0, AccessWidth::Byte).unwrap(), b'n' as u64);
+        assert_eq!(uart.read(5, AccessWidth::Byte).unwrap() & 3, 0);
+        assert_eq!(sink.levels.lock().unwrap().as_slice(), [true, false]);
+    }
+
+    #[test]
+    fn uart16550_preserves_inflight_rx_capacity_across_reset_and_loopback() {
+        let backend = Arc::new(PausedReadBackend::new());
+        let uart = Arc::new(Uart16550::new(
+            backend.clone(),
+            level_irq(Arc::new(TestIrqSink::default()), 4),
+        ));
+        backend.bytes.push_input(&[b'o'; 192]);
+        for _ in 0..3 {
+            uart.poll().unwrap();
+        }
+        let pending: Vec<_> = (0..64).collect();
+        backend.bytes.push_input(&pending);
+        backend.pause_next.store(true, Ordering::Release);
+        std::thread::scope(|scope| {
+            let poller = scope.spawn(|| uart.poll());
+            backend.entered.wait();
+            // Register accesses do not wait for the backend. FIFO reset
+            // keeps the first read's reservation, including its capacity.
+            uart.write(4, AccessWidth::Byte, 1 << 4).unwrap();
+            uart.write(0, AccessWidth::Byte, b'x' as u64).unwrap();
+            let full_overrun = uart.read(5, AccessWidth::Byte).unwrap() & 2;
+            uart.write(2, AccessWidth::Byte, 1 << 1).unwrap();
+            for _ in 0..192 {
+                uart.write(0, AccessWidth::Byte, b'L' as u64).unwrap();
+            }
+            uart.write(0, AccessWidth::Byte, b'x' as u64).unwrap();
+            let reset_overrun = uart.read(5, AccessWidth::Byte).unwrap() & 2;
+            uart.write(2, AccessWidth::Byte, 1 << 1).unwrap();
+            uart.write(0, AccessWidth::Byte, b'A' as u64).unwrap();
+            uart.write(0, AccessWidth::Byte, b'B' as u64).unwrap();
+            let first = uart.read(0, AccessWidth::Byte).unwrap();
+            backend.release.wait();
+            poller.join().unwrap().unwrap();
+            assert_eq!(full_overrun, 2, "loopback cannot consume reserved RX space");
+            assert_eq!(
+                reset_overrun, 2,
+                "FIFO clear must preserve in-flight capacity"
+            );
+            assert_eq!(first, b'A' as u64);
+        });
+        uart.write(4, AccessWidth::Byte, 0).unwrap();
+        let mut received = Vec::new();
+        for _ in 0..66 {
+            if uart.read(5, AccessWidth::Byte).unwrap() & 1 == 0 {
+                break;
+            }
+            received.push(uart.read(0, AccessWidth::Byte).unwrap() as u8);
+        }
+        let mut expected = vec![b'B'];
+        expected.extend_from_slice(&pending);
+        assert_eq!(
+            received, expected,
+            "reset removes old bytes, not the in-flight arrival"
+        );
+
+        backend.bytes.push_input(b"s");
+        *backend.reset_and_loopback.lock().unwrap() = Some(Arc::downgrade(&uart));
+        uart.poll().unwrap();
+        uart.write(4, AccessWidth::Byte, 0).unwrap();
+        assert_eq!(uart.read(0, AccessWidth::Byte).unwrap(), b's' as u64);
+
+        backend.bytes.push_input(b"r");
+        backend.panic_next.store(true, Ordering::Release);
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| uart.poll())).is_err());
+        uart.poll().unwrap();
+        assert_eq!(uart.read(0, AccessWidth::Byte).unwrap(), b'r' as u64);
+        assert_eq!(uart.read(5, AccessWidth::Byte).unwrap() & 3, 0);
     }
 
     #[test]

@@ -298,6 +298,103 @@ mod tests {
     }
 
     #[test]
+    fn configured_emulated_devices_never_share_a_guest_page() {
+        // Board regression: a VM publishing a virtio-blk disk together with a
+        // virtio-net NIC failed device preparation with `emulated device range
+        // [...] conflicts with emulated device range [...]`, because both
+        // 0x200-byte windows were packed into one 4 KiB guest page. The layout
+        // owns an emulated device by page, so the two windows must be planned
+        // onto distinct pages.
+        let config = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_catalog: registered_catalog(),
+            virtual_device_requests: vec![
+                // The console publishes an explicit page-aligned address, as the
+                // board guest configuration does.
+                VirtualDeviceRequest {
+                    id: "console0".into(),
+                    model: "pl011-mmio".into(),
+                    options: [("address".into(), toml::Value::Integer(0x0900_0000))]
+                        .into_iter()
+                        .collect(),
+                },
+                VirtualDeviceRequest {
+                    id: "disk0".into(),
+                    model: "virtio-blk".into(),
+                    options: [
+                        ("backend".into(), toml::Value::String("ramdisk".into())),
+                        ("capacity".into(), toml::Value::String("1MiB".into())),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+                VirtualDeviceRequest {
+                    id: "nic0".into(),
+                    model: "virtio-net".into(),
+                    options: [(
+                        "guest_mac".into(),
+                        toml::Value::Array(
+                            [0x52, 0x54, 0x00, 0x54, 0x02, 0x01]
+                                .into_iter()
+                                .map(toml::Value::Integer)
+                                .collect(),
+                        ),
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+            ],
+            ..Default::default()
+        });
+        let controller = DeviceNodeId::new("controller").unwrap();
+        let mut nodes = vec![DeviceNodeSpec::firmware_only(controller.clone())];
+        append_configured_devices(
+            &config,
+            &mut nodes,
+            &controller,
+            InterruptControllerId::new(0),
+            None,
+        )
+        .unwrap();
+
+        let mut builder = DeviceGraphBuilder::new();
+        for node in nodes {
+            builder.add(node).unwrap();
+        }
+        let mut pools = ResourcePools::new();
+        pools.add_auto_mmio(0x0b00_0000..0x1000_0000).unwrap();
+        pools.allow_fixed_mmio(0x0900_0000..0x0900_1000).unwrap();
+        pools
+            .add_auto_controller_inputs(
+                InterruptControllerId::new(0),
+                ControllerInputId::new(32)..ControllerInputId::new(36),
+            )
+            .unwrap();
+        let graph = builder.declare().unwrap().resolve(pools).unwrap();
+
+        let page = ax_memory_addr::PAGE_SIZE_4K as u64;
+        let registers = ResourceSlot::new("mmio").unwrap();
+        let mut pages = vec![];
+        for id in ["disk0", "nic0"] {
+            let resources = graph
+                .resources_for(&DeviceNodeId::new(id).unwrap())
+                .unwrap();
+            let (base, size) = resources.mmio(&registers).unwrap();
+            assert!(
+                base % page + size <= page,
+                "{id} emulated window {base:#x}+{size:#x} crosses a guest page boundary"
+            );
+            pages.push(base & !(page - 1));
+        }
+        assert_ne!(
+            pages[0], pages[1],
+            "two emulated device windows share guest page {:#x}",
+            pages[0]
+        );
+    }
+
+    #[test]
     fn host_selected_console_keeps_identity_and_irq_until_address_is_overridden() {
         use crate::machine::{
             GuestSerialFdtIdentity, GuestSerialModel, GuestSerialProfile, GuestSerialTransport,

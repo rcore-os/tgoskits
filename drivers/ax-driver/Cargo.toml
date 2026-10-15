@@ -72,6 +72,7 @@ rockchip-sdhci = [
     "rockchip-pm",
     "rockchip-soc",
     "dep:ax-sync",
+    "dep:cqhci-host",
     "dep:rdif-clk",
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
@@ -171,6 +172,7 @@ ax-sync = { workspace = true, optional = true }
 axklib.workspace = true
 bitflags = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
+cqhci-host = { workspace = true, optional = true }
 cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
 dwmmc-host = { workspace = true, optional = true }

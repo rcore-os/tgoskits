@@ -102,6 +102,9 @@ impl PhytiumMci {
                     PhytiumVoltageState::Start(voltage),
                 ))
             }
+            sdmmc_host::BusOp::SwitchSdVoltage => Ok(BusRequestState::SetSignalVoltage(
+                PhytiumVoltageState::Start(SignalVoltage::V180),
+            )),
             sdmmc_host::BusOp::ExecuteTuning { .. } => Err(sdmmc_host::Error::Unsupported),
             _ => Err(sdmmc_host::Error::Unsupported),
         }

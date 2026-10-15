@@ -144,6 +144,7 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                 match self.advance_init_bus_op(request, cause) {
                     Ok(OperationProgress::Pending) => Ok(OperationProgress::Pending),
                     Ok(OperationProgress::Complete(())) => {
+                        request.mmc_signal_1v8 = true;
                         let switch_request = self.submit_mmc_switch(
                             0b11,
                             crate::cmd::ext_csd::HS_TIMING as u8,
@@ -270,10 +271,7 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                     Ok(OperationProgress::Complete(())) => {
                         self.prepare_mmc_hs52_or_complete(request)
                     }
-                    Err(err) => {
-                        debug!("sdio: MMC HS200 clock rollback failed ({err:?})");
-                        self.prepare_mmc_hs52_or_complete(request)
-                    }
+                    Err(err) => Err(err),
                 }
             }
             SdMmcInitState::PollMmcHs52Switch => {
@@ -417,6 +415,11 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
         &mut self,
         request: &mut SdMmcInitRequest<H>,
     ) -> Result<OperationProgress<CardInfo>, Error> {
+        // eMMC high-speed SDR is valid at 1.8 V too. A timing fallback
+        // must not invent a 3.3 V rail on a fixed-1.8 V board.
+        if request.mmc_signal_1v8 {
+            return self.begin_mmc_hs200_fallback_clock(request);
+        }
         let op = SdMmcBusOp::SwitchVoltage(SignalVoltage::V330);
         match self.host.submit_bus_op(op) {
             Ok(bus_request) => {
@@ -444,10 +447,7 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                 request.state = SdMmcInitState::PollMmcHs200RollbackClock;
                 Ok(OperationProgress::Pending)
             }
-            Err(err) => {
-                debug!("sdio: cannot start MMC HS200 clock rollback ({err:?})");
-                self.prepare_mmc_hs52_or_complete(request)
-            }
+            Err(err) => Err(err),
         }
     }
 }

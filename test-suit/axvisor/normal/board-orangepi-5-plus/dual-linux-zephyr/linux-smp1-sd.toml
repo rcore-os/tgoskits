@@ -3,7 +3,10 @@ id = 1
 name = "linux"
 guest_type = "passthrough"
 cpu_num = 1
-phys_cpu_ids = [0x00]
+# Expose a stable guest MPIDR while pinning Linux to RK3588 A76 big0 CPU4.
+# Zephyr remains on CPU2 in dual-starry-zephyr/zephyr-smp1.toml.
+phys_cpu_ids = [0x400]
+phys_cpu_sets = [0x10]
 
 [kernel]
 entry_point = 0x2_4008_0000

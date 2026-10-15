@@ -1,6 +1,6 @@
 # Orange Pi 5 Plus Linux 与 Zephyr 双客户机场景
 
-该场景在 SD 版 Orange Pi 5 Plus 上通过 Axvisor 同时运行 Linux 感知客户机和 Zephyr 控制客户机。Linux 使用 USB 摄像头和 RKNPU 生成感知结果，通过 `robot-ivc` 发送给 Zephyr；Zephyr 独占 UART6，负责底盘、机械臂和输入看门狗。仓库只保留已验证的 SD 配置；eMMC 迁移要求见第6节。
+该场景在 SD 版 Orange Pi 5 Plus 上通过 Axvisor 同时运行 Linux 感知客户机和 Zephyr 控制客户机。Linux 使用 USB 摄像头和 RKNPU 生成感知结果，通过 `robot-ivc` 发送给 Zephyr；Zephyr 独占 UART6，负责底盘、机械臂和输入看门狗。仓库只保留已有实机验收记录的 SD 配置；本次 PR 同步调整的 CPU4/CPU2 亲和性尚未在本次硬件窗口重新运行，不能把 perf30 单客户机结果当作双客户机绑定验证。eMMC 迁移要求见第6节。
 
 ## 1. 工作负载与资产
 
@@ -8,7 +8,7 @@
 
 ### 1.1 客户机职责
 
-两个客户机通过同名 `robot-ivc` 虚拟设备建立通道，通道身份和大小由 IVC 模型统一管理。客户机名称来自各自 TOML 的 `base.name`，也用于网页窗格标题。
+两个客户机通过同名 `robot-ivc` 虚拟设备建立通道，通道身份和大小由 IVC 模型统一管理。客户机名称来自各自 TOML 的 `base.name`，也用于网页窗格标题。机器人 profile 将 Linux 固定到 A76 big0 CPU4（`phys_cpu_ids=[0x400]`、`phys_cpu_sets=[0x10]`），Zephyr 固定到 A55 CPU2（`phys_cpu_ids=[0x200]`、`phys_cpu_sets=[0x4]`）。
 
 | 客户机 | 主要职责 | 关键设备 |
 | --- | --- | --- |
@@ -16,7 +16,7 @@
 | Zephyr | 接收感知结果、控制底盘和机械臂 | UART6 `/serial@feb90000`、`robot-ivc` |
 | Axvisor | VM 管理、物理串口、可选网页控制台 | RTL8125、宿主 PCIe 路径 |
 
-Linux 配置保留 `clk_ignore_unused` 和 `pd_ignore_unused`，防止启动末尾的通用清理关闭其他系统仍在使用的资源。这两个参数不能阻止已绑定驱动主动复位设备或关闭时钟，因此不能代替第 2 节的设备所有权隔离。
+Linux 配置保留 `clk_ignore_unused` 和 `pd_ignore_unused`，防止启动末尾的通用清理关闭其他系统仍在使用的资源；CPU OPP 仍由 Axvisor/`ax-runtime` 所有。这两个 Linux 参数不能阻止已绑定驱动主动复位设备或关闭时钟，因此不能代替第 2 节的设备所有权隔离。
 
 ### 1.2 客户机镜像
 

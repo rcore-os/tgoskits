@@ -646,7 +646,8 @@ pub trait HostClock: Send {
     }
 
     /// Configure host-controller side clock glue after the platform input
-    /// clock has been retuned and while SD clock output is still gated off.
+    /// clock has been retuned, the internal clock is stable, and SD clock
+    /// output is still gated off. A failed callback leaves SD output disabled.
     ///
     /// DWCMSHC-style integrations use this for vendor DLL/bypass registers.
     /// Plain SDHCI hosts can rely on the default no-op implementation.

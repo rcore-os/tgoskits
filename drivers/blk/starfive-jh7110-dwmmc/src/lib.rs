@@ -97,6 +97,7 @@ impl Jh7110DwMmcConfig {
                 Err(Host2Error::Unsupported)
             }
             BusOp::SetSignalVoltage(SignalVoltage::V180 | SignalVoltage::V120)
+            | BusOp::SwitchSdVoltage
                 if !self.supports_1v8 =>
             {
                 Err(Host2Error::Unsupported)

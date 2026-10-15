@@ -144,9 +144,13 @@ impl Owner {
         operation: OperationId,
         update: MemoryUpdate,
     ) -> AxVmResult<MemoryRevision> {
-        // Physical DMA needs a separate driver/IOMMU revocation capability. No
-        // observation timeout or guest CPU stop is a proof that it ended.
-        if !self.vm.config().pass_through_devices().is_empty() {
+        // Adding a nonoverlapping lease preserves every existing translation
+        // and backing owner. Physical DMA can keep using those addresses while
+        // the CPU owners install the new root. Revocation still needs a driver
+        // or IOMMU quiescence capability; CPU stop is not evidence of DMA stop.
+        if matches!(&update, MemoryUpdate::Unmap(_))
+            && !self.vm.config().pass_through_devices().is_empty()
+        {
             return Err(AxVmError::unsupported(
                 "update guest memory",
                 "assigned host devices do not provide DMA quiescence",
@@ -161,6 +165,9 @@ impl Owner {
         if let Some(run) = &mut self.run {
             run.memory_operation = None;
         }
+        // Confirmation events can publish Paused while installing a root.
+        // Refresh the observation after restoring execution, before replying.
+        self.publish();
         result
     }
 

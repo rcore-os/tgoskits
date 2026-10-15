@@ -1,11 +1,21 @@
 //! AxVM-owned configurable virtual-device models.
 
+mod guest_cpufreq;
 mod ivc;
 mod virtio_blk;
 pub(crate) mod virtio_net;
 pub(crate) mod virtio_pci;
 #[cfg(feature = "vpci-test-device")]
 mod vpci_test;
+
+/// Placement granularity of one AxVisor-emulated MMIO window.
+///
+/// The guest layout owns an emulated device by the guest page containing its
+/// window (`VmRegionKind::EmulatedDevice`), so two emulated devices must never
+/// share a page. A model declares its real register-block `size` but requests
+/// this page alignment, so the shared MMIO allocator hands the next device a
+/// different page.
+pub(super) const EMULATED_MMIO_PLACEMENT_ALIGNMENT: u64 = ax_memory_addr::PAGE_SIZE_4K as u64;
 
 #[cfg(test)]
 pub(super) use ivc::IVC_CHANNEL_SHARED_RANGE_SIZE;
@@ -14,12 +24,17 @@ pub(super) fn register_devices(
     catalog: &mut crate::ConfiguredDeviceCatalog,
 ) -> Result<(), crate::ConfiguredDeviceError> {
     ivc::register(catalog)?;
+    guest_cpufreq::register(catalog)?;
     virtio_blk::register(catalog)?;
     virtio_net::register(catalog)?;
     #[cfg(feature = "vpci-test-device")]
     vpci_test::register(catalog)?;
     Ok(())
 }
+
+pub use guest_cpufreq::{
+    VIRTUAL_CPUFREQ_MAX_PERFORMANCE, VIRTUAL_CPUFREQ_MODEL, VirtualCpuFreqOptions,
+};
 
 #[cfg(test)]
 mod gated_visibility_tests {
@@ -52,6 +67,15 @@ mod gated_visibility_tests {
             Ok(_) => panic!("model {model} must stay unknown"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    fn virtual_cpufreq_model_registers() {
+        assert!(probe_model_is_known("virtual-cpufreq"));
+        assert!(matches!(
+            unknown_model_error("not-a-model"),
+            crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. }
+        ));
     }
 
     #[cfg(feature = "vpci-test-device")]

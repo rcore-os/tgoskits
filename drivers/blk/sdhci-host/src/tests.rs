@@ -463,7 +463,7 @@ fn host2_v180_rejects_partial_high_dat_lines_before_switch() {
     let mut request = unsafe {
         <Sdhci as sdmmc_host::SdMmcHost>::submit_bus_op(
             &mut host,
-            sdmmc_host::BusOp::SetSignalVoltage(sdmmc_host::SignalVoltage::V180),
+            sdmmc_host::BusOp::SwitchSdVoltage,
         )
     }
     .unwrap();
@@ -580,6 +580,7 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         fn prepare_host_clock(&self, host: &mut Sdhci, target_hz: u32) -> Result<(), Error> {
             assert_eq!(target_hz, 400_000);
             assert_eq!(host.read_u16(REG_CLOCK_CONTROL) & CLOCK_SD_ENABLE, 0);
+            assert_ne!(host.read_u16(REG_CLOCK_CONTROL) & CLOCK_INTERNAL_STABLE, 0);
             host.write_u32(REG_CAPABILITIES_HIGH, 0x5d17);
             Ok(())
         }
@@ -639,6 +640,16 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         REG_CLOCK_CONTROL,
         host.read_u16(REG_CLOCK_CONTROL) | CLOCK_INTERNAL_STABLE,
     );
+    assert!(matches!(
+        <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::RegisterPending { .. })
+    ));
+    assert_eq!(host.read_u16(REG_CLOCK_CONTROL) & CLOCK_SD_ENABLE, 0);
+    assert_eq!(host.read_u32(REG_CAPABILITIES_HIGH), 0);
     assert!(matches!(
         <Sdhci as sdmmc_host::SdMmcHost>::advance_bus_op(
             &mut host,
@@ -726,4 +737,107 @@ fn status_enabled_completion_is_not_lost_when_only_card_signal_is_unmasked() {
         NORMAL_INT_CMD_COMPLETE,
         "status-enable controls completion capture; signal-enable only gates the IRQ pin"
     );
+}
+
+#[test]
+fn emmc_voltage_selection_preserves_vcc_without_sd_dat_handshake() {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use sdmmc_host::SdMmcHost;
+
+    struct Timer(AtomicU64);
+    impl HostTimer for Timer {
+        fn now_ms(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+    let timer = alloc::boxed::Box::leak(alloc::boxed::Box::new(Timer(AtomicU64::new(0))));
+    let mut registers = [0u32; 64];
+    let base = NonNull::new(registers.as_mut_ptr().cast::<u8>()).unwrap();
+    // SAFETY: the aligned register array remains live until the host is dropped.
+    let mut host = unsafe { Sdhci::new(base) };
+    host.set_timer(timer);
+    host.enable_1v8_signaling();
+    host.write_u8(REG_POWER_CONTROL, POWER_330 | POWER_ON);
+    host.write_u32(REG_PRESENT_STATE, 0xf << 20);
+    host.write_u16(
+        REG_CLOCK_CONTROL,
+        CLOCK_INTERNAL_ENABLE | CLOCK_INTERNAL_STABLE | CLOCK_SD_ENABLE,
+    );
+    // SAFETY: no other transaction owns the bus and the request is advanced
+    // to completion before the host or register array is dropped.
+    let mut request =
+        unsafe { host.submit_bus_op(sdmmc_host::BusOp::SetSignalVoltage(SignalVoltage::V180)) }
+            .unwrap();
+    let mut finished = false;
+    for _ in 0..8 {
+        timer.0.fetch_add(5, Ordering::Relaxed);
+        match host
+            .advance_bus_op(&mut request, ProgressCause::RegisterRetry)
+            .unwrap()
+        {
+            RequestProgress::Complete(result) => {
+                result.unwrap();
+                finished = true;
+                break;
+            }
+            RequestProgress::RegisterPending { .. } => {}
+            other => panic!("unexpected voltage progress: {other:?}"),
+        }
+    }
+    assert!(finished);
+    assert_ne!(
+        host.read_u16(REG_HOST_CONTROL2) & HOST_CTRL2_1V8_SIGNALING,
+        0
+    );
+    assert_eq!(
+        host.read_u8(REG_POWER_CONTROL),
+        POWER_330 | POWER_ON,
+        "changing VCCQ signaling must not change the eMMC VCC supply"
+    );
+}
+
+#[test]
+fn tuning_sends_a_real_pattern_command_and_requires_acknowledged_buffer_irq() {
+    use sdmmc_host::SdMmcHost;
+
+    let mut registers = [0u32; 64];
+    let base = NonNull::new(registers.as_mut_ptr().cast::<u8>()).unwrap();
+    // SAFETY: live aligned MMIO storage, accessed by this test only.
+    let mut host = unsafe { Sdhci::new(base) };
+    host.set_timer(&STATIC_TIMER);
+    host.write_u8(REG_HOST_CONTROL1, HOST_CTRL1_8BIT);
+    host.enable_completion_irq();
+    // SAFETY: the tuning request exclusively owns the otherwise idle host.
+    let mut request = unsafe {
+        host.submit_bus_op(sdmmc_host::BusOp::ExecuteTuning {
+            command: sdmmc_host::Command::new(21, 0, ResponseType::R1),
+            block_size: NonZeroU16::new(128).unwrap(),
+        })
+    }
+    .unwrap();
+    assert!(matches!(
+        host.advance_bus_op(&mut request, ProgressCause::Submitted),
+        Ok(RequestProgress::RegisterPending { .. })
+    ));
+    assert_eq!(host.read_u16(REG_COMMAND) >> 8, 21);
+    assert_ne!(host.read_u16(REG_COMMAND) & CMD_DATA_PRESENT, 0);
+    assert_eq!(host.read_u16(REG_BLOCK_SIZE), 128);
+    assert_eq!(host.read_u16(REG_TRANSFER_MODE), XFER_MODE_READ);
+    host.write_u16(REG_HOST_CONTROL2, HOST_CTRL2_SAMPLING_CLOCK_SELECT);
+    assert!(
+        matches!(
+            host.advance_bus_op(&mut request, ProgressCause::RegisterRetry),
+            Ok(RequestProgress::RegisterPending { .. })
+        ),
+        "a sampled register alone cannot complete an unacknowledged command"
+    );
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_BUFFER_READ_READY);
+    host.write_u16(REG_ERROR_INT_STATUS, 0);
+    let mut irq = host.irq_endpoint();
+    sdmmc_protocol::sdio::SdMmcIrqHandle::handle_irq(&mut irq);
+    assert!(matches!(
+        host.advance_bus_op(&mut request, ProgressCause::AcknowledgedIrq),
+        Ok(RequestProgress::Complete(Ok(())))
+    ));
 }

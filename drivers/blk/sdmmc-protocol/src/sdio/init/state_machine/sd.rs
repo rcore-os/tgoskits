@@ -47,10 +47,7 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                     Ok(CommandResponseProgress::Pending) => Ok(OperationProgress::Pending),
                     Ok(CommandResponseProgress::Complete(_)) => {
                         request.command_request = None;
-                        match self
-                            .host
-                            .submit_bus_op(SdMmcBusOp::SwitchVoltage(SignalVoltage::V180))
-                        {
+                        match self.host.submit_bus_op(SdMmcBusOp::SwitchSdVoltage) {
                             Ok(bus_request) => {
                                 request.bus_request = Some(bus_request);
                                 request.state = SdMmcInitState::PollSdSignalVoltage;

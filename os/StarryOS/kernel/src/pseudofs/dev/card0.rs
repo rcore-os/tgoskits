@@ -52,6 +52,7 @@ use ax_gpu::rdif_gpu::{
 };
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::time::monotonic_time_nanos;
+use ax_std::os::arceos::task::sync::WaitQueue;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
@@ -211,6 +212,7 @@ use crate::{
     task::{
         UserTaskRef, current_user_task,
         future::{block_on, block_on_user, poll_io, timeout_at},
+        kernel_thread_builder, sleep,
     },
 };
 
@@ -615,19 +617,63 @@ impl Drop for GpuResource {
     }
 }
 
-/// Releases a GPU buffer and waits, outside the device control lock, until
-/// the host finished with its backing: the fenced UNREF submission returns a
-/// completion token, and observing it outside the lock is the proof (the
-/// used ring is FIFO, so the fenced pop implies every earlier command's pop
-/// — the same ordering submits rely on, so concurrent producers cannot
-/// starve the wait the way a whole-queue drain outside the lock would).
-/// On a timeout the release itself stays submitted and the caller proceeds
-/// with its teardown: the host is unrecoverably stalled at that point — the
-/// same accepted tradeoff the driver documents for its bounded waits.
+/// Releases a GPU buffer without stalling the caller on the host: the fenced
+/// UNREF is submitted here and its completion token is handed to a background
+/// reaper ([`release_reaper_loop`]) that observes it outside the device lock.
+/// The previous inline wait bounded every teardown caller at the 5 s
+/// completion timeout — a merely slow host (cold Metal pipeline compiles on
+/// the darwin-venus renderer measured in whole seconds) then froze the
+/// compositor for the full bound each time a scanout buffer was retired, and
+/// the timeout branch additionally returned backing memory the host could
+/// still reference. The reaper retries the observation forever: nothing is
+/// freed on this path, so a stalled host costs retries and a warn line, never
+/// a visible freeze or a premature free.
 fn release_gpu_buffer_and_drain(handle: BufferHandle) -> Result<(), GpuError> {
     let completion = ax_gpu::with_gpu_for_cleanup(|device| device.release_buffer(handle))
         .and_then(core::convert::identity)?;
-    wait_completion_outside_lock(completion)
+    DEFERRED_RELEASES.lock().push(completion);    ensure_release_reaper();
+    DEFERRED_RELEASE_WAKE.notify_one();
+    Ok(())
+}
+
+/// Completion tokens whose fenced UNREF was submitted and is still unobserved.
+static DEFERRED_RELEASES: Mutex<Vec<Completion>> = Mutex::new(Vec::new());
+static DEFERRED_RELEASE_WAKE: WaitQueue = WaitQueue::new();
+static DEFERRED_RELEASE_SPAWNED: AtomicBool = AtomicBool::new(false);
+
+fn ensure_release_reaper() {
+    if DEFERRED_RELEASE_SPAWNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    if let Err(error) =
+        kernel_thread_builder(String::from("gpu-release-reaper")).spawn(|| release_reaper_loop())
+    {
+        DEFERRED_RELEASE_SPAWNED.store(false, Ordering::Relaxed);
+        warn!("card0: failed to spawn gpu-release-reaper ({error:?}); releases stay queued");
+    }
+}
+
+fn release_reaper_loop() -> ! {
+    loop {
+        let entry = DEFERRED_RELEASES.lock().pop();
+        let Some(completion) = entry else {
+            DEFERRED_RELEASE_WAKE
+                .wait_until(|| !DEFERRED_RELEASES.lock().is_empty());
+            continue;
+        };
+        while let Err(error) = ax_gpu::wait_completion(completion, ax_gpu::GPU_WAIT_TIMEOUT) {
+            if error != GpuError::TimedOut {
+                // The device is gone (lost/reset): nothing left to observe.
+                warn!("gpu-release-reaper: dropped observation ({error:?})");
+                break;
+            }
+            warn!(
+                "gpu-release-reaper: host has not finished an unref in 5s; retrying (no memory is \
+                 freed on this path)"
+            );
+            sleep(Duration::from_secs(1));
+        }
+    }
 }
 
 /// Observes a driver completion token outside the device control lock,
@@ -636,9 +682,10 @@ fn release_gpu_buffer_and_drain(handle: BufferHandle) -> Result<(), GpuError> {
 /// Observes a driver completion token outside the device control lock,
 /// sleeping until its fence fires (or the bounded wait expires). A
 /// `Complete` token needs no wait. Capability-independent: the fenced
-/// command completes on the control queue of any device, so this is also
-/// the release proof for 2D dumb buffers on a non-virgl virtio-gpu —
-/// `GpuResource::drop` serves both kinds.
+/// command completes on the control queue of any device. Callers that must
+/// not return before the host's effects are visible (e.g. reading back
+/// transferred bytes) use this directly; teardown paths use the deferred
+/// [`release_gpu_buffer_and_drain`] instead.
 fn wait_completion_outside_lock(completion: Completion) -> Result<(), GpuError> {
     ax_gpu::wait_completion(completion, ax_gpu::GPU_WAIT_TIMEOUT)
 }

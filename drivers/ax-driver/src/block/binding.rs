@@ -410,3 +410,31 @@ pub fn take_rdif_block_groups() -> Vec<RdifBlockGroup> {
         })
         .collect()
 }
+
+/// Returns registered block controllers' stable firmware paths.
+///
+/// `None` entries denote controllers whose firmware identity is unavailable.
+/// Consumers must not infer device ownership from a diagnostic driver name.
+/// The registry remains authoritative after its controller is taken by the
+/// filesystem runtime; this snapshot neither transfers nor releases resources.
+pub fn registered_block_controller_paths() -> Vec<Option<String>> {
+    rdrive::get_list::<PlatformBlockDevice>()
+        .into_iter()
+        .map(|device| {
+            device
+                .descriptor()
+                .fdt_node()
+                .map(|node| node.path().to_string())
+        })
+        .chain(
+            rdrive::get_list::<PlatformBlockGroup>()
+                .into_iter()
+                .map(|device| {
+                    device
+                        .descriptor()
+                        .fdt_node()
+                        .map(|node| node.path().to_string())
+                }),
+        )
+        .collect()
+}

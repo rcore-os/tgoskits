@@ -23,6 +23,10 @@ pub trait SerialBackend: Send + Sync + Debug {
     }
 
     /// Reads host-provided bytes into `buffer` without blocking.
+    ///
+    /// UART models hold their receive gate, but not their register-state lock,
+    /// during this callback. Implementations may access UART registers, but must
+    /// remain non-blocking and must not recursively call the same UART's `poll()`.
     fn read(&self, buffer: &mut [u8]) -> usize;
 }
 

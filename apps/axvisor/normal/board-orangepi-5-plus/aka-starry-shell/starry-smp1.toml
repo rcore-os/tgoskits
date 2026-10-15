@@ -1,0 +1,53 @@
+[base]
+id = 1
+name = "starry"
+guest_type = "passthrough"
+cpu_num = 1
+# Use a Cortex-A76 CPU for the perception workload.
+phys_cpu_ids = [0x400]
+
+[kernel]
+cmdline = 'earlycon=uart8250,mmio32,0xfeb50000 rw init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+entry_point = 0x4008_0000
+kernel_load_addr = 0x4008_0000
+kernel_path = "/guest/ivc-test/starry/orangepi-5-plus"
+# DTB GPA is selected automatically from the prepared guest memory layout.
+
+memory_regions = [
+  [0x4000_0000, 0x4000_0000, 0x7, 2],
+  [0x1_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+[devices]
+passthrough = []
+# AxVisor owns the PCIe controllers and RTL8125 NICs used by the browser console.
+disabled = [
+  # Storage belongs to AxVisor; the guest uses its private virtio ext4 root.
+  { path = "/mmc@fe2e0000" },
+  { path = "/mmc@fe2c0000" },
+  { path = "/serial@feb90000" },
+  { path = "/pcie@fe150000" },
+  { path = "/pcie@fe160000" },
+  { path = "/pcie@fe170000" },
+  { path = "/pcie@fe180000" },
+  { path = "/pcie@fe190000" },
+  { path = "/phy@fee00000" },
+  { path = "/phy@fee10000" },
+  { path = "/phy@fee20000" },
+  { path = "/phy@fee80000" },
+  # Keep USB0 disabled; its PHY also serves DisplayPort and Type-C graph
+  # endpoints, so retain that provider. The robot camera uses USB1.
+  { path = "/usbdrd3_0" },
+  # Disable only the graph port linked to USB0; keep Type-C DP routing.
+  { path = "/i2c@fec80000/fusb302@22/ports/port@0" },
+]
+
+[[devices.virtual]]
+id = "robot-ivc"
+model = "ivc-channel"
+
+[[devices.virtual]]
+id = "starry-rootfs"
+model = "virtio-blk"
+path = "/guest/ivc-test/rootfs/rootfs-aarch64-orangepi-jammy.img"
+filesystem = "ext4"

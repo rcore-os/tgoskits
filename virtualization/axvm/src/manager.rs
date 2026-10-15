@@ -44,6 +44,98 @@ use std::{
 
 use axvm_types::VMId;
 
+/// Failure from a host CPU-frequency adapter.
+///
+/// Callers retry [`Self::Unavailable`], reject configuration on
+/// [`Self::InvalidRequest`], and treat [`Self::HardwareFailure`] as a
+/// confirmed host transition error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum GuestCpuFreqError {
+    /// The host worker, domain, or adapter is temporarily missing.
+    #[error("{0}")]
+    Unavailable(&'static str),
+    /// The request, domain mapping, or table cannot be accepted.
+    #[error("{0}")]
+    InvalidRequest(&'static str),
+    /// The host hardware transition or confirmation failed.
+    #[error("{0}")]
+    HardwareFailure(&'static str),
+}
+
+/// Host-owned adapter for run-scoped guest CPU-frequency hints.
+///
+/// The adapter is deliberately expressed in normalized performance units and
+/// domain ordinals. It must merge requests without doing a synchronous
+/// hardware transition from the guest MMIO path; the host cpufreq worker owns
+/// OPP, thermal, DSU and regulator constraints.
+pub trait GuestCpuFreqBackend: Send + Sync {
+    /// Binds one run generation before any guest MMIO access is admitted.
+    fn bind(&self, _vm_id: VMId, _run_generation: u64) {}
+
+    /// Returns the current safe OPP set as normalized guest performance values.
+    ///
+    /// The table is materialized while a VM is prepared, after the host has
+    /// applied thermal and board-specific limits. A backend that cannot prove
+    /// a safe table must return an error instead of inventing frequencies.
+    fn performance_table(&self, _domain: u32) -> Result<Vec<u32>, GuestCpuFreqError> {
+        Err(GuestCpuFreqError::Unavailable(
+            "host CPU frequency performance table is unavailable",
+        ))
+    }
+
+    /// Verifies that every host CPU selected for the guest belongs to the
+    /// requested hardware domain. A backend must reject an ambiguous domain
+    /// mapping instead of relying on a platform-specific CPU-number table.
+    fn validate_placement(
+        &self,
+        _domain: u32,
+        _host_cpus: &[usize],
+    ) -> Result<(), GuestCpuFreqError> {
+        Err(GuestCpuFreqError::Unavailable(
+            "host CPU frequency domain placement is unavailable",
+        ))
+    }
+
+    /// Publishes one vCPU hint for an exact VM execution generation.
+    fn set_hint(
+        &self,
+        vm_id: VMId,
+        run_generation: u64,
+        vcpu_id: usize,
+        domain: u32,
+        performance: u32,
+    ) -> Result<(), GuestCpuFreqError>;
+
+    /// Returns the last host-confirmed normalized value for this request.
+    fn current_performance(
+        &self,
+        vm_id: VMId,
+        run_generation: u64,
+        vcpu_id: usize,
+        domain: u32,
+    ) -> Result<u32, GuestCpuFreqError>;
+
+    /// Retires one exact execution generation.
+    ///
+    /// Its hints stop contributing to host policy immediately, while the
+    /// binding stays so a guest read of the current performance keeps being
+    /// served until the run is unbound.
+    fn retire(&self, vm_id: VMId, run_generation: u64);
+
+    /// Releases one exact execution generation's binding.
+    ///
+    /// Callers must only use this once no vCPU of that run can access the
+    /// device again.
+    fn unbind(&self, vm_id: VMId, run_generation: u64);
+
+    /// Temporarily removes a paused run from host aggregation while retaining
+    /// its desired values for a subsequent resume.
+    fn suspend(&self, vm_id: VMId, run_generation: u64);
+
+    /// Re-enables a paused run's retained requests.
+    fn resume(&self, vm_id: VMId, run_generation: u64);
+}
+
 use crate::{
     AxVmError, AxVmResult, GuestPhysAddr, HostPhysAddr, OperationId, RunId, StopReason,
     ThreadHandle, VmKey, VmOperation, VmStatus,
@@ -82,6 +174,8 @@ pub struct VmCreatePlan {
     pub images: Arc<dyn BootImageProvider + Send + Sync>,
     /// Immutable host scheduling policy applied to every vCPU owner task.
     pub vcpu_schedule_policy: crate::SchedulePolicy,
+    /// Host adapter for the optional `qemu,virtual-cpufreq` device.
+    pub cpu_freq_backend: Option<Arc<dyn GuestCpuFreqBackend>>,
 }
 
 /// Owned observation of the static VM configuration.

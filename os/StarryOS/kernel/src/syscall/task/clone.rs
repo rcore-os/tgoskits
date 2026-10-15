@@ -427,7 +427,8 @@ impl CloneArgs {
                 exit_signal,
                 curr_thread.tid_number(),
             )
-            .with_cgroup(child_cgroup.clone());
+            .with_cgroup(child_cgroup.clone())
+            .with_controlling_terminal(old_proc_data);
             if flags.contains(CloneFlags::VM) {
                 process_init = process_init.with_shared_memory(old_proc_data);
             }

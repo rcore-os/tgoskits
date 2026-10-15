@@ -60,9 +60,10 @@ pub use axvm_types::{
 pub use configured::{
     ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
     ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
-    FixedDeviceBindings, FixedWiredBinding, PhysicalUplink, PhysicalUplinkError, VirtioPciFunction,
-    install_physical_uplink, physical_uplink_installed, reserve_host_mac, switch_from_physical_rx,
-    virtio_capabilities,
+    FixedDeviceBindings, FixedWiredBinding, PhysicalUplink, PhysicalUplinkError,
+    VIRTUAL_CPUFREQ_MAX_PERFORMANCE, VIRTUAL_CPUFREQ_MODEL, VirtioPciFunction,
+    VirtualCpuFreqOptions, install_physical_uplink, physical_uplink_installed, reserve_host_mac,
+    switch_from_physical_rx, virtio_capabilities,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
@@ -78,8 +79,8 @@ pub use irq::model::{
 };
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
-    CpuObservation, DeviceObservation, MemoryObservation, VmConfigSnapshot, VmCreatePlan, VmHandle,
-    VmManager, VmSnapshot,
+    CpuObservation, DeviceObservation, GuestCpuFreqBackend, GuestCpuFreqError, MemoryObservation,
+    VmConfigSnapshot, VmCreatePlan, VmHandle, VmManager, VmSnapshot,
 };
 pub use operation::VmOperation;
 pub use runtime::queue::SignalError;

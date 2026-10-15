@@ -680,6 +680,35 @@ pub trait DeviceContext {
         None
     }
 
+    /// Publishes a normalized guest CPU-frequency performance hint.
+    ///
+    /// The runtime owns the host policy and may aggregate or defer this
+    /// request. A device must never reach a physical clock, regulator, or
+    /// firmware interface through this capability.
+    fn set_cpu_freq_hint(
+        &mut self,
+        _vcpu_id: DeviceVcpuId,
+        _domain: u32,
+        _performance: u32,
+    ) -> DeviceResult {
+        Err(DeviceError::Unsupported {
+            operation: "set guest CPU frequency hint",
+            detail: "this device runtime has no CPU frequency port".into(),
+        })
+    }
+
+    /// Reads the last host-confirmed normalized performance value.
+    fn current_cpu_freq_performance(
+        &mut self,
+        _vcpu_id: DeviceVcpuId,
+        _domain: u32,
+    ) -> DeviceResult<u32> {
+        Err(DeviceError::Unsupported {
+            operation: "read guest CPU frequency performance",
+            detail: "this device runtime has no CPU frequency port".into(),
+        })
+    }
+
     /// Reads guest memory on behalf of the currently dispatched device.
     ///
     /// This capability is valid only for this access and is denied by default.

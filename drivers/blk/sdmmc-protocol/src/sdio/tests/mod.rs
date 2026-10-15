@@ -324,6 +324,13 @@ impl sdmmc_host::SdMmcHost for MockHost {
                     return Err(protocol_error_to_host(error));
                 }
             }
+            sdmmc_host::BusOp::SwitchSdVoltage => {
+                self.last_voltage = Some(SignalVoltage::V180);
+                self.events.push(MockEvent::Voltage(SignalVoltage::V180));
+                if let Some(error) = self.voltage_switch_result {
+                    return Err(protocol_error_to_host(error));
+                }
+            }
             sdmmc_host::BusOp::ExecuteTuning {
                 command,
                 block_size,

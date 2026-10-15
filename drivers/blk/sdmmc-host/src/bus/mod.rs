@@ -54,7 +54,12 @@ pub enum BusOp {
     SetClock(ClockSpeed),
     SetClockHz(ClockHz),
     SetBusWidth(BusWidth),
+    /// Changes the signaling rail/controller without the SD CMD11 handshake.
+    /// MMC HS200 uses this operation; VCC (card power) must remain unchanged.
     SetSignalVoltage(SignalVoltage),
+    /// Completes an SD CMD11 switch to 1.8 V, including DAT[3:0] low/high checks.
+    /// The protocol owner must have completed CMD11 before submitting this.
+    SwitchSdVoltage,
     ExecuteTuning {
         command: Command,
         block_size: NonZeroU16,
