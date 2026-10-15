@@ -196,12 +196,8 @@ pub(crate) fn _fixmap_io(paddr: usize) -> *mut u8 {
 }
 
 pub(crate) fn early_init() {
-    #[cfg(all(efi, target_arch = "loongarch64"))]
-    crate::boot_payload::restore_inherited_memory_map();
     #[cfg(efi)]
-    if !crate::efi_stub::inherited_handoff() {
-        crate::fdt::init_memory_map();
-    }
+    crate::efi_stub::init_boot_memory_map();
     #[cfg(not(efi))]
     crate::fdt::init_memory_map();
 

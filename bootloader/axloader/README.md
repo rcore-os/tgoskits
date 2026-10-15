@@ -163,6 +163,10 @@ selects `loongarch64-unknown-none-softfloat`, `arceos-efi`, one CPU and the
 EFI binary conversion; the QEMU config supplies the NVMe/FAT volume, virtio
 network and port forwarding from host port `3999` to guest port `2999`.
 
+LoongArch 的 `axstd_loader::run()` 在启动及每次连接处理后发送 UDP 公告，
+阻塞等待连接期间不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或
+启动广播丢失时，使用已知设备 IP 直接访问 HTTP 接口。
+
 ```bash
 cargo xtask arceos build \
   --package axloader \

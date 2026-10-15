@@ -9,6 +9,29 @@ name = "someboot"
 repository.workspace = true
 version = "0.7.2"
 
+[[package.metadata.clippy.configurations]]
+name = "x86_64-bare"
+target = "x86_64-unknown-none"
+
+[[package.metadata.clippy.configurations]]
+name = "aarch64-efi"
+target = "aarch64-unknown-none-softfloat"
+features = ["efi"]
+
+[[package.metadata.clippy.configurations]]
+name = "riscv64-bare"
+target = "riscv64gc-unknown-none-elf"
+
+[[package.metadata.clippy.configurations]]
+name = "loongarch64-efi"
+target = "loongarch64-unknown-none-softfloat"
+features = ["efi"]
+
+[[package.metadata.clippy.configurations]]
+name = "loongarch64-efi-loader"
+target = "loongarch64-unknown-none-softfloat"
+features = ["efi-loader"]
+
 [features]
 efi = []
 efi-loader = ["efi"]
