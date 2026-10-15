@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import os
 import re
+import tomllib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +10,11 @@ from typing import Any
 
 from ci_impact import ARCH_TARGETS
 
+KTEST_QEMU_KIND = "ktest-qemu"
+KTEST_BOARD_KIND = "ktest-board"
+KTEST_SUITE_KINDS = frozenset({KTEST_QEMU_KIND, KTEST_BOARD_KIND})
+# Manifest directories that never declare a workspace package.
+IGNORED_MANIFEST_DIRS = frozenset({".git", "node_modules", "target"})
 SUPPORTED_SUITE_KINDS = {
     "arceos-qemu",
     "arceos-board",
@@ -17,8 +24,23 @@ SUPPORTED_SUITE_KINDS = {
     "starry-app-board",
     "axvisor-qemu",
     "axvisor-board",
+    KTEST_QEMU_KIND,
+    KTEST_BOARD_KIND,
 }
-SUITE_FIELDS = {"kind", "arch", "board", "cases", "group"}
+# The ktest fields describe one `cargo xtask ktest` execution unit: the package
+# and `harness = false` test target plus the config files the runner consumes.
+SUITE_FIELDS = {
+    "kind",
+    "arch",
+    "board",
+    "cases",
+    "group",
+    "package",
+    "test",
+    "config",
+    "qemu_config",
+    "board_config",
+}
 ARCEOS_GENERIC_QEMU_GROUPS = {"cpu", "drivers"}
 SUITE_ROOTS = {
     "arceos": Path("test-suit/arceos"),
@@ -144,6 +166,9 @@ def validate_suite_catalog(
         kind = registration["kind"]
         if kind in STARRY_APP_SUITE_KINDS:
             continue
+        if kind in KTEST_SUITE_KINDS:
+            _validate_ktest_registration(workspace_root, check, registration)
+            continue
         if kind == "arceos-qemu":
             arch = registration["arch"]
             group = registration.get("group")
@@ -248,6 +273,9 @@ def _selections_for_path(
     registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
     path: Path,
 ) -> list[SuiteSelection]:
+    ktest = _ktest_selections(registrations, path)
+    if ktest:
+        return ktest
     if _is_prefix(path, SUITE_ROOTS["arceos"]):
         relative = path.relative_to(SUITE_ROOTS["arceos"])
         if relative.parts and relative.parts[0] in ARCEOS_GENERIC_QEMU_GROUPS:
@@ -415,7 +443,8 @@ def _suite_roots(os_name: str) -> tuple[Path, ...]:
 
 
 def _discover_os_runtime_cases(
-    workspace_root: Path, os_name: str
+    workspace_root: Path,
+    os_name: str,
 ) -> list[_RuntimeCase]:
     cases: list[_RuntimeCase] = []
     for root in _suite_roots(os_name):
@@ -746,6 +775,167 @@ def _validate_starry_app_registrations(
                     f"check '{check['id']}' registers missing Starry app case "
                     f"`{case}` under {STARRY_APP_SUITE_ROOT}"
                 )
+
+
+def _ktest_config_fields(kind: str) -> tuple[str, ...]:
+    """Config files one ktest execution unit declares besides package and test."""
+    if kind == KTEST_QEMU_KIND:
+        return ("config", "qemu_config")
+    return ("config", "board_config")
+
+
+def _ktest_declared_paths(registration: dict[str, Any]) -> tuple[Path, ...]:
+    return tuple(
+        Path(value)
+        for value in (
+            registration.get(field)
+            for field in _ktest_config_fields(registration["kind"])
+        )
+        if isinstance(value, str) and value
+    )
+
+
+def _ktest_selections(
+    registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
+    path: Path,
+) -> list[SuiteSelection]:
+    """Route a changed path to the ktest execution unit that owns it.
+
+    A registration owns its declared config files and the directories holding
+    them, which is where the generated guest resources, the board run config and
+    the adjacent `guest-builds.toml` live. This branch runs before the runtime
+    discovery, so a migrated case that still keeps its `board-*.toml` layout is
+    routed here instead of being reported as a legacy `*-board` case. The routed
+    run reuses the owning check's command, so an incremental pull request
+    executes exactly the job CI already runs.
+    """
+    selections = []
+    for check, registration in registrations:
+        if registration["kind"] not in KTEST_SUITE_KINDS:
+            continue
+        declared = _ktest_declared_paths(registration)
+        if not any(
+            path == config or _is_prefix(path, config.parent) for config in declared
+        ):
+            continue
+        test = registration["test"]
+        selections.append(
+            SuiteSelection(
+                template_id=check["id"],
+                row_id=_slugify(f"suite-{check['id']}-{test}"),
+                leaf_name=f"{_platform_label(check)} · {test}",
+                command=check["command"].strip(),
+                source_path=path.as_posix(),
+            )
+        )
+    return selections
+
+
+def _validate_ktest_registration(
+    workspace_root: Path,
+    check: dict[str, Any],
+    registration: dict[str, Any],
+) -> None:
+    """Validate one ktest execution unit against the framework contract.
+
+    `cargo xtask ktest` only accepts a workspace package that declares a
+    `harness = false` `[[test]]` target of the given name together with explicit
+    config files, so the catalog checks those facts instead of trusting the
+    registration.
+    """
+    kind = registration["kind"]
+    package = _require_ktest_string(check, registration, "package")
+    test = _require_ktest_string(check, registration, "test")
+    manifest = _package_manifest(workspace_root, package)
+    if manifest is None:
+        raise SuiteRouteError(
+            f"check '{check['id']}' registers unknown workspace package `{package}`"
+        )
+    if not _declares_harness_false_test(manifest, test):
+        raise SuiteRouteError(
+            f"check '{check['id']}' registers ktest target `{test}`, but "
+            f"{manifest.relative_to(workspace_root).as_posix()} declares no "
+            f"harness=false [[test]] target with that name"
+        )
+    for field in _ktest_config_fields(kind):
+        rendered = _require_ktest_string(check, registration, field)
+        if not (workspace_root / rendered).is_file():
+            raise SuiteRouteError(
+                f"check '{check['id']}' registers missing ktest {field} `{rendered}`"
+            )
+    if kind == KTEST_QEMU_KIND:
+        _validate_ktest_qemu_target(workspace_root, check, registration)
+
+
+def _validate_ktest_qemu_target(
+    workspace_root: Path,
+    check: dict[str, Any],
+    registration: dict[str, Any],
+) -> None:
+    """Require the qemu registration arch to match its build config target."""
+    rendered = registration["config"]
+    target = _toml_document(workspace_root / rendered).get("target")
+    expected = ARCH_TARGETS.get(registration.get("arch"))
+    if target != expected:
+        raise SuiteRouteError(
+            f"check '{check['id']}' registers arch `{registration.get('arch')}` "
+            f"but {rendered} builds target `{target}`"
+        )
+
+
+def _require_ktest_string(
+    check: dict[str, Any],
+    registration: dict[str, Any],
+    field: str,
+) -> str:
+    value = registration.get(field)
+    if not isinstance(value, str) or not value:
+        raise SuiteRouteError(
+            f"check '{check['id']}' {registration['kind']} registration must "
+            f"declare a non-empty `{field}`"
+        )
+    return value
+
+
+def _package_manifest(workspace_root: Path, package: str) -> Path | None:
+    """Find the workspace manifest that declares `package`."""
+    for manifest in _workspace_manifests(workspace_root):
+        table = _toml_document(manifest).get("package")
+        if isinstance(table, dict) and table.get("name") == package:
+            return manifest
+    return None
+
+
+def _workspace_manifests(workspace_root: Path) -> list[Path]:
+    """Every `Cargo.toml` in the workspace, skipping build and vendor trees."""
+    manifests = []
+    for directory, subdirectories, files in os.walk(workspace_root):
+        subdirectories[:] = sorted(
+            name for name in subdirectories if name not in IGNORED_MANIFEST_DIRS
+        )
+        if "Cargo.toml" in files:
+            manifests.append(Path(directory) / "Cargo.toml")
+    return manifests
+
+
+def _declares_harness_false_test(manifest: Path, test: str) -> bool:
+    """Report whether `manifest` declares `test` as a `harness = false` target."""
+    entries = _toml_document(manifest).get("test")
+    if not isinstance(entries, list):
+        return False
+    return any(
+        isinstance(entry, dict)
+        and entry.get("name") == test
+        and entry.get("harness") is False
+        for entry in entries
+    )
+
+
+def _toml_document(path: Path) -> dict[str, Any]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise SuiteRouteError(f"cannot read {path.as_posix()}: {error}") from error
 
 
 def _selection(

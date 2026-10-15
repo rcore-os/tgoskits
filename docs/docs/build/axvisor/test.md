@@ -179,7 +179,7 @@ Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和�
 
 ## 6. VMX 合并任务
 
-七个 VMX 用例统一启用 `vpci-test-device`，其 build TOML 的 Cargo 编译身份保持一致；`vm_configs` 只作为每个用例的运行时输入。CI 使用一个 `kvm-intel` runner，先构建一次 AxVisor，再依次运行 smoke、ACPI、PCI 枚举和 PCI block 用例：
+七个 VMX 用例的 build TOML 保持同一 Cargo 编译身份：smoke 使用共享的 `normal/qemu/build-x86_64-unknown-none-vmx.toml`，ACPI、PCI 枚举和 PCI block 六个用例各自目录内的 build TOML 同样启用 `ax-driver/nvme` 与 `web-ui`。`prepare_case_build_groups()` 按 Cargo 身份合并 build group，因此这七个用例只编译一次 AxVisor，后续启动复用同一个内核；`vm_configs` 只作为每个用例的运行时输入，这些 feature 只让内核具备相应能力，不改变任一用例的客户机配置。smoke 原本额外承担「在无向量 x86_64 目标上编译并启动 web + NVMe 栈」的编译守卫，现在由这七个 build 共同承担，因此不能从其中任何一个 build TOML 单独删除这两个 feature。CI 使用一个 `kvm-intel` runner，先构建一次 AxVisor，再依次运行 smoke、ACPI、PCI 枚举和 PCI block 用例：
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \
@@ -188,7 +188,7 @@ cargo xtask axvisor test qemu --arch x86_64 \
 
 ## 7. SVM 合并任务
 
-六个 SVM 用例共用 `normal/qemu-svm/build-x86_64-unknown-none.toml`，包含 NVMe 和 `vpci-test-device`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按构建配置路径复用内核；各次启动打印相同内核哈希和各自的归档哈希。
+六个 SVM 用例共用 `normal/qemu-svm/build-x86_64-unknown-none.toml`，启用 `ax-driver/nvme`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按 Cargo 身份合并 build group 并复用内核，每个用例再恢复自己的 build TOML 路径读取运行时输入；各次启动打印相同内核哈希和各自的归档哈希。
 
 ### 6.1 连续运行
 

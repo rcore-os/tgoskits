@@ -1,5 +1,13 @@
+# Board run config for the Rust-Shyper task-switch case.
+#
+# The case now runs through `cargo xtask ktest board -p axvm --test task_switch`.
+# The axtest target on the host kernel creates the guest, attaches its console
+# and asserts the guest's aggregated switch summary, so the board runner no
+# longer issues shell commands: one passive check waits for the final
+# `AXTEST_SUITE_OK` of the kernel suite. The guest still prints its own failure
+# markers first, so they stay in `fail_regex` and abort the run early.
 board_type = "OrangePi-5-Plus"
-cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4"
 # Historically, the original Rust-Shyper run on this board finished in 3799.7 s:
 # 100 rounds of 100,000,000 yields at roughly 35 s per round, plus bring-up. The
 # current case measures 30 rounds of 10,000,000 task switches. The harness
@@ -16,17 +24,9 @@ fail_regex = [
   # The guest prints this and stops before `Bencher end` when a PMU/timer round
   # reads or converts to a zero or otherwise invalid value.
   "(?m)^(?:\\[VM 1\\] )?BENCHER_MEASUREMENT_FAILED reason=[a-z0-9-]+(?: round=[0-9]+)?\\s*$",
+  "AXTEST_SUITE_FAIL",
+  "AXTEST_CASE status=fail",
 ]
 
 [[shell_check_steps]]
-shell_prefix = "axvisor:/$"
-shell_cmd = "vm console 1"
-# The success evidence is split across two steps because the runner treats the
-# `success_regex` entries of one step as alternates, not as conditions that must
-# all match. Step one requires the aggregated non-zero measurement summary; a
-# boot-only, zero-PMU, or conversion-failed run never prints it. Step two then
-# requires the original completion line, so a truncated run cannot pass either.
-success_regex = ["(?m)^(?:\\[VM 1\\] )?TASK_SWITCH_SUMMARY rounds=30 samples_per_round=10000000 avg_ns=[1-9][0-9]* avg_cycles=[1-9][0-9]*\\s*$"]
-
-[[shell_check_steps]]
-success_regex = ["(?m)^(?:\\[VM 1\\] )?Bencher end\\s*$"]
+success_regex = ["(?m)^AXTEST_SUITE_OK\\s*$"]

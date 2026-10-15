@@ -29,11 +29,11 @@ pub(super) fn resolve_vmconfigs(
     configured_paths
         .iter()
         .map(|path| {
-            let source = if path.is_absolute() {
-                path.clone()
-            } else {
-                workspace_root.join(path)
-            };
+            let source = crate::context::resolve_axbuild_artifact_path(
+                &workspace_root,
+                workspace.target_dir(),
+                &workspace_root.join(path),
+            );
             resolve_vmconfig(
                 &source,
                 &scope,
@@ -146,13 +146,17 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::context::WorkspaceContext;
 
     #[test]
     fn resolves_all_image_paths_from_one_variable_scope() {
         let root = tempdir().unwrap();
         let workspace = root.path();
         let package = workspace.join("os/axvisor");
-        let source_dir = workspace.join("configs/vms");
+        fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        let custom_target = workspace.join("custom-target");
+        let context = WorkspaceContext::from_root(workspace, Some(&custom_target)).unwrap();
+        let source_dir = custom_target.join("axbuild/guests");
         fs::create_dir_all(&package).unwrap();
         fs::create_dir_all(&source_dir).unwrap();
         let source = source_dir.join("guest.toml");
@@ -168,20 +172,25 @@ ramdisk_path = "../images/initramfs.cpio"
 "#,
         )
         .unwrap();
-        let scope = VariableScope::new(
-            workspace.to_path_buf(),
-            package.clone(),
-            std::env::temp_dir(),
-        );
-
-        let output = resolve_vmconfig(
-            &source,
-            &scope,
-            &workspace.join("custom-target/axbuild/axvisor/resolved-vm-configs"),
-            workspace,
-            &workspace.join("custom-target"),
+        let request = ResolvedAxvisorRequest {
+            package: "axvisor".into(),
+            axvisor_dir: package.clone(),
+            arch: "aarch64".into(),
+            target: "aarch64-unknown-none-softfloat".into(),
+            smp: None,
+            debug: false,
+            build_info_path: workspace.join("build.toml"),
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: vec![],
+        };
+        let outputs = resolve_vmconfigs(
+            &request,
+            &[PathBuf::from("target/axbuild/guests/guest.toml")],
+            &context,
         )
         .unwrap();
+        let output = &outputs[0];
         let resolved = fs::read_to_string(output)
             .unwrap()
             .parse::<toml::Table>()

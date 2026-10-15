@@ -5,8 +5,6 @@ mod ivc;
 mod virtio_blk;
 pub(crate) mod virtio_net;
 pub(crate) mod virtio_pci;
-#[cfg(feature = "vpci-test-device")]
-mod vpci_test;
 
 /// Placement granularity of one AxVisor-emulated MMIO window.
 ///
@@ -27,8 +25,6 @@ pub(super) fn register_devices(
     guest_cpufreq::register(catalog)?;
     virtio_blk::register(catalog)?;
     virtio_net::register(catalog)?;
-    #[cfg(feature = "vpci-test-device")]
-    vpci_test::register(catalog)?;
     Ok(())
 }
 
@@ -74,26 +70,6 @@ mod gated_visibility_tests {
         assert!(probe_model_is_known("virtual-cpufreq"));
         assert!(matches!(
             unknown_model_error("not-a-model"),
-            crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. }
-        ));
-    }
-
-    #[cfg(feature = "vpci-test-device")]
-    #[test]
-    fn vpci_test_model_registers_under_its_feature() {
-        assert!(probe_model_is_known("vpci-test"));
-        assert!(matches!(
-            unknown_model_error("not-a-model"),
-            crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. }
-        ));
-    }
-
-    #[cfg(not(feature = "vpci-test-device"))]
-    #[test]
-    fn vpci_test_model_stays_unknown_without_its_feature() {
-        assert!(!probe_model_is_known("vpci-test"));
-        assert!(matches!(
-            unknown_model_error("vpci-test"),
             crate::ConfiguredDeviceError::UnknownVirtualDeviceModel { .. }
         ));
     }

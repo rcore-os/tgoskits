@@ -1,6 +1,6 @@
-features = [
-    "vpci-test-device",
-]
+# Same Cargo identity as normal/qemu/build-x86_64-unknown-none-vmx.toml so
+# every VMX case reuses one kernel.
+features = ["ax-driver/nvme", "web-ui"]
 log = "Info"
 target = "x86_64-unknown-none"
 vm_configs = [

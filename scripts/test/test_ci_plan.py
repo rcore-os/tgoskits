@@ -234,10 +234,21 @@ class CiPlanTests(unittest.TestCase):
             selections[0].template_id,
             "test-axvisor-self-hosted-board-orangepi-5-plus-vcpu-perf",
         )
-        self.assertEqual(
+        # The benchmark now runs as an `axvm` axtest target on the board, so the
+        # routed command is the registered ktest execution unit.
+        self.assertIn(
+            "cargo xtask ktest board -p axvm --test vcpu_perf",
             selections[0].command,
-            "cargo xtask axvisor test board --test-group normal "
-            "--test-case performance --board orangepi-5-plus-vcpu-perf",
+        )
+        self.assertIn(
+            "--config benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/"
+            "build-aarch64-unknown-none-softfloat.toml",
+            selections[0].command,
+        )
+        self.assertIn(
+            "--board-config benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/"
+            "performance/board-orangepi-5-plus-vcpu-perf.toml",
+            selections[0].command,
         )
 
     def test_migrated_axvisor_suite_path_resolves_to_nightly_check(self) -> None:

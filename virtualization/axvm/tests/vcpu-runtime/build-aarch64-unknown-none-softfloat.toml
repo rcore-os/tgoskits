@@ -1,0 +1,10 @@
+# Build config of the `axvm` `vcpu_runtime` ktest case.
+#
+# The case boots a two-vCPU Zephyr guest and needs one host CPU per vCPU, so
+# the build keeps two CPUs available. It enables no product feature: the test
+# target's own `required-features` and the ktest runner decide the build, and
+# the guest resources are produced by the adjacent `guest-builds.toml`.
+features = []
+log = "Info"
+max_cpu_num = 2
+target = "aarch64-unknown-none-softfloat"

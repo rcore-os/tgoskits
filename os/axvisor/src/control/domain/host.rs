@@ -105,7 +105,6 @@ fn features() -> Vec<&'static str> {
     for (on, name) in [
         (cfg!(feature = "web"), "web"),
         (cfg!(feature = "web-ui"), "web-ui"),
-        (cfg!(feature = "vcpu-perf-load"), "vcpu-perf-load"),
     ] {
         if on {
             enabled.push(name)

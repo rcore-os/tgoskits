@@ -38,12 +38,20 @@ cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 15
 command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-vcpu-perf
+cargo xtask ktest board -p axvm --test vcpu_perf -b orangepi-5-plus \
+  --config benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/build-aarch64-unknown-none-softfloat.toml \
+  --board-config benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml
 '''
 
 [[check.suite]]
-kind = "axvisor-board"
-board = "orangepi-5-plus-vcpu-perf"
+# The case runs as an `axvm` axtest target on the board, so the registration
+# describes the ktest execution unit: package, target, board and both configs.
+kind = "ktest-board"
+package = "axvm"
+test = "vcpu_perf"
+board = "orangepi-5-plus"
+config = "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/build-aarch64-unknown-none-softfloat.toml"
+board_config = "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml"
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-task-switch"
@@ -56,12 +64,18 @@ resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
 echo "==> axvisor OrangePi 5 Plus task switch"
-cargo xtask axvisor test board --board orangepi-5-plus-task-switch
+cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
+  --config benchmarks/axvisor/board-orangepi-5-plus/task-switch/build-aarch64-unknown-none-softfloat.toml \
+  --board-config benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml
 '''
 
 [[check.suite]]
-kind = "axvisor-board"
-board = "orangepi-5-plus-task-switch"
+kind = "ktest-board"
+package = "axvm"
+test = "task_switch"
+board = "orangepi-5-plus"
+config = "benchmarks/axvisor/board-orangepi-5-plus/task-switch/build-aarch64-unknown-none-softfloat.toml"
+board_config = "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml"
 
 # ---------------------------------------------------------------------------
 # Starry Apps performance checks (group = "Starry Apps")

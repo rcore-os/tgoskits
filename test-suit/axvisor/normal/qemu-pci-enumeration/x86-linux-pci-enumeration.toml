@@ -1,8 +1,12 @@
 # Backend-neutral Linux guest baseline for the generic vPCI enumeration case.
-# The runner generates a BusyBox initramfs from the managed rootfs (see
-# AXVISOR_TEST_BUSYBOX_INITRAMFS); its /init consumes kernel-published sysfs
-# PCI state to assert the enumeration postconditions and prints the case
-# markers itself.
+# The endpoint is the ordinary configured VirtIO block PCI model: the generic
+# enumeration path is what the case asserts, so it needs a real function with a
+# real BAR and capability chain rather than a purpose-built fixture. The guest
+# command line blacklists `virtio_pci_driver_init`, which keeps the function
+# enumerated but unbound. The runner generates a BusyBox initramfs from the
+# managed rootfs (see AXVISOR_TEST_BUSYBOX_INITRAMFS); its /init consumes
+# kernel-published sysfs PCI state to assert the enumeration postconditions and
+# prints the case markers itself.
 [base]
 id = 1
 name = "linux-x86-pci-enumeration"
@@ -28,5 +32,9 @@ passthrough = []
 disabled = []
 
 [[devices.virtual]]
-id = "vpci-test0"
-model = "vpci-test"
+id = "pci-enumeration-blk"
+model = "virtio-blk"
+transport = "pci"
+backend = "ramdisk"
+capacity = "2MiB"
+read_only = true

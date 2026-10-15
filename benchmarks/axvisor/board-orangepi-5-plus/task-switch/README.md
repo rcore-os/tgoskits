@@ -44,7 +44,7 @@ flowchart TD
 
 ### 2.2 成功与失败标记
 
-板卡用例在 `board-orangepi-5-plus-task-switch.toml` 中把成功条件拆成两个 `shell_check_steps`，因为 runner 将同一 `success_regex` 数组内的模式视为“任一命中即完成”，而不是“全部必须命中”。第一步要求汇总行 `TASK_SWITCH_SUMMARY rounds=30 samples_per_round=10000000 avg_ns=<非零> avg_cycles=<非零>`，第二步要求原始完成行 `Bencher end`，从而同时约束“确实测量到非零值”与“完整工作量跑完”。
+板卡用例现在由 `axvm` 的 `task_switch` axtest 目标驱动：目标按自己的计划创建客户机、连接客户机控制台并断言汇总行，客户机标记是否出现由测试目标判定，板卡运行配置只用一个没有 `shell_cmd` 的被动 `shell_check_steps` 等待内核套件的 `AXTEST_SUITE_OK`。这样既不再需要 `vm console` 之类的人工 shell 步骤，也保留了原来的判定强度：测例要求聚合后的非零结果，缺少汇总行或提前中断都不会出现套件成功标记。
 
 失败条件由顶层 `fail_regex` 提供，除 panic、客户机初始化失败等通用标记外，额外匹配客户机主动输出的 `BENCHER_GPIO_FAILED reason=...` 与 `BENCHER_MEASUREMENT_FAILED reason=...`。下表列出客户机侧标记与它们对应的触发位置。
 
@@ -56,9 +56,9 @@ flowchart TD
 | `TASK_SWITCH_SUMMARY ...` | `main()` 聚合完成 | 30 轮均得到非零均值 |
 | `Bencher end` | `main()` 末尾 | 基准正常结束 |
 
-表中前三项是客户机的过程输出，后两项是成功证据；`fail_regex` 与两段 `success_regex` 共同保证测量恒为零或换算异常时用例无法通过。整次板卡执行仍受 `timeout = 3600` 约束，该超时只是基础设施上限，不是性能门槛。
+表中前三项是客户机的过程输出，后两项是测试目标据以判定的证据；`fail_regex` 中的客户机失败标记与被动成功条件共同保证测量恒为零或换算异常时用例无法通过。整次板卡执行仍受 `timeout = 3600` 约束，该超时只是基础设施上限，不是性能门槛。
 
-每个有效轮次结束后，客户机额外打印一行 `AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=<n> samples_per_direction=<n> avg_cycles=<n> min_cycles=<n> max_cycles=<n>`：`index` 是轮次编号，`samples_per_direction` 是单向切换次数（`SWITCHES_PER_ROUND / 2`），`avg_cycles` 是该轮每次切换的平均 PMU 周期数，`min_cycles`/`max_cycles` 是该轮每次切换的最小与最大周期数。这是原 Rust-Shyper 客户机沿用的性能报告标记格式，`scripts/test/ci_perf_report.py` 的 `task-switch/avg_cycles/index-<n>` 指标取自该行，因此前缀与字段名保持不变；该行只在有效（非零）轮次后打印，不改变由 `TASK_SWITCH_SUMMARY` 与 `Bencher end` 两步承担的成功门禁强度。
+每个有效轮次结束后，客户机额外打印一行 `AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=<n> samples_per_direction=<n> avg_cycles=<n> min_cycles=<n> max_cycles=<n>`：`index` 是轮次编号，`samples_per_direction` 是单向切换次数（`SWITCHES_PER_ROUND / 2`），`avg_cycles` 是该轮每次切换的平均 PMU 周期数，`min_cycles`/`max_cycles` 是该轮每次切换的最小与最大周期数。这是原 Rust-Shyper 客户机沿用的性能报告标记格式，`scripts/test/ci_perf_report.py` 的 `task-switch/avg_cycles/index-<n>` 指标取自该行，因此字段名与客户机输出保持原样；该行只在有效（非零）轮次后打印，不改变测试目标承担的成功门禁强度。
 
 ## 3. 配置与运行入口
 
@@ -66,13 +66,19 @@ flowchart TD
 
 ### 3.1 构建配置
 
-客户机构建、AxVisor 宿主构建与虚拟机描述分别放在同一目录的三个配置文件中。`guest-build.toml` 描述客户机包名、目标与能力：`package = "task-switch"`、`target = "aarch64-unknown-none-softfloat"`、`features = ["bench-fifo-policy"]` 与 `max_cpu_num = 1`；`guest-builds.toml` 通过 `arceos_build_configs = ["guest-build.toml"]` 让宿主构建前先构建客户机。`build-aarch64-unknown-none-softfloat.toml` 启用宿主侧的基准专用特性与 `vm_configs`，`task-switch.toml` 则固定 `guest_type = "passthrough"`、`cpu_num = 1` 与 `phys_cpu_ids = [0x400]`。
+客户机构建、AxVisor 宿主构建与虚拟机描述分别放在同一目录的三个配置文件中。`guest-build.toml` 描述客户机包名、目标与能力：`package = "task-switch"`、`target = "aarch64-unknown-none-softfloat"`、`features = ["bench-fifo-policy"]` 与 `max_cpu_num = 1`；`guest-builds.toml` 通过 `arceos_build_configs = ["guest-build.toml"]` 让宿主构建前先构建客户机。`build-aarch64-unknown-none-softfloat.toml` 只保留宿主运行确实需要的 `ax-driver/rockchip-sdhci` 与 `fs`，并继续声明 `vm_configs`；`task-switch.toml` 则固定 `guest_type = "passthrough"`、`cpu_num = 1` 与 `phys_cpu_ids = [0x400]`。
 
-客户机的 FIFO 作用域由 `bench-fifo-policy` 控制：`main()` 在 `rdtsc`/`spawn` 之后调用 `configure_current_task_for_switch_bench()` 把主任务移入 FIFO(80)，`spawn_switch_peer()` 以同一策略创建 peer，运行时全局默认策略保持 Fair。宿主侧 vCPU 宿主任务的策略由 AxVisor 的每虚拟机调度策略承担：`axvm::AxVM::new_with_vcpu_schedule_policy(config, policy)` 接收一个 `axvm::SchedulePolicy`，普通 `axvm::AxVM::new` 保持 Fair；该策略按 VM 固定，供 vCPU 宿主任务的 prepare、start、restart 复用。`os/axvisor/src/config.rs` 的 `create_guest_vm` 在本用例启用的本地 `bench-fifo-vcpu-policy` feature 下，用 `axvm::RtPriority` 构造优先级 80 的 FIFO 策略传入；`virtualization/axvm` 不再为该基准保留专用 feature，公共类型只有 `axvm::{SchedulePolicy, RtPriority}`。
+客户机的 FIFO 作用域由 `bench-fifo-policy` 控制：`main()` 在 `rdtsc`/`spawn` 之后调用 `configure_current_task_for_switch_bench()` 把主任务移入 FIFO(80)，`spawn_switch_peer()` 以同一策略创建 peer，运行时全局默认策略保持 Fair。宿主侧 vCPU 宿主任务的策略不再靠宿主 feature 选择，而是随 `axvm::VmCreatePlan` 一起提交：`axvm::VmManager::create()` 接收整份计划，控制任务用其中的 `vcpu_schedule_policy` 为每个 vCPU 宿主任务安装同一策略，`VmHandle::start()` 与 `VmHandle::reset()` 产生的每次运行都复用该策略；`axvm::SchedulePolicy` 与 `axvm::RtPriority` 仍是公共类型，本用例不再需要 `bench-fifo-vcpu-policy` 这类基准专用特性。
 
 ### 3.2 标准命令
 
-本地与持续集成共用标准入口：只构建客户机时执行 `cargo xtask arceos build --config benchmarks/axvisor/board-orangepi-5-plus/task-switch/guest-build.toml`，只构建宿主时执行 `cargo xtask axvisor build --config benchmarks/axvisor/board-orangepi-5-plus/task-switch/build-aarch64-unknown-none-softfloat.toml`。需要实体板卡与已配置板卡服务时执行 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch`。
+本地与持续集成共用标准入口：只构建客户机时执行 `cargo xtask arceos build --config benchmarks/axvisor/board-orangepi-5-plus/task-switch/guest-build.toml`，只构建宿主时执行 `cargo xtask axvisor build --config benchmarks/axvisor/board-orangepi-5-plus/task-switch/build-aarch64-unknown-none-softfloat.toml`。需要实体板卡与已配置板卡服务时执行：
+
+```bash
+cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
+  --config benchmarks/axvisor/board-orangepi-5-plus/task-switch/build-aarch64-unknown-none-softfloat.toml \
+  --board-config benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml
+```
 
 纯算术换算（`convert::ticks_to_nanos()`、`convert::cpu_freq_hz()`、`convert::div_round()`）可以从对应单元测试确定性验证，不需要读取硬件寄存器：
 
@@ -80,7 +86,7 @@ flowchart TD
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 ```
 
-该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `std tests` 检查在持续集成中以同一命令运行它。板卡运行入口只接受 `TASK_SWITCH_SUMMARY` 与 `Bencher end` 同时出现，纯算术测试通过并不代表板卡测量通过。
+该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `std tests` 检查在持续集成中以同一命令运行它。板卡运行入口只接受内核套件最后的 `AXTEST_SUITE_OK`，纯算术测试通过并不代表板卡测量通过。
 
 ## 4. 目录布局与用例发现
 
@@ -89,13 +95,13 @@ cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 ```text
 benchmarks/axvisor/board-orangepi-5-plus/task-switch/
 ├── README.md
-├── board-orangepi-5-plus-task-switch.toml     # 板卡运行与成功/失败判定
+├── board-orangepi-5-plus-task-switch.toml     # 板卡运行配置与失败护栏
 ├── build-aarch64-unknown-none-softfloat.toml  # AxVisor 宿主构建
 ├── guest-build.toml                           # 客户机构建
 ├── guest-builds.toml                          # 板卡运行前先构建客户机
 └── task-switch.toml                           # AxVisor 客户机描述
 ```
 
-`normal` 组同时搜索 `test-suit/axvisor/normal`、`apps/axvisor/normal` 与 `benchmarks/axvisor`，因此 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch` 直接按 `board-orangepi-5-plus-task-switch.toml` 推导出的板卡名 `orangepi-5-plus-task-switch` 选中本用例，无需额外的目录注册或用例路由。旧 `task-switch-overhead` 用例已由本 PR 删除并替换为本用例；nightly 与性能报告语义由 `benchmarks.toml` 清单统一提供，检查项本身不再写 `nightly_only`/`performance_report`。
+`normal` 组同时搜索 `test-suit/axvisor/normal`、`apps/axvisor/normal` 与 `benchmarks/axvisor`，因此 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch` 仍能按 `board-orangepi-5-plus-task-switch.toml` 推导出的板卡名选中本用例；CI 与本地基准则改用上面的 `cargo xtask ktest board` 入口，并在 `.github/ci/checks/benchmarks.toml` 中以 `ktest-board` 登记 `package`、`test`、`board` 与两个配置文件路径，规划器据此校验配置并把改动路由到同一作业。旧 `task-switch-overhead` 用例已由本 PR 删除并替换为本用例；nightly 与性能报告语义由 `benchmarks.toml` 清单统一提供，检查项本身不再写 `nightly_only`/`performance_report`。
 
 与 QEMU `scheduler-latency-bench` 的分工见 1.1：两者测量同类切换开销，本用例提供实体 RK3588 板卡上的 PMU/CNTVCT 计数与 GPIO 引脚证据，QEMU 用例提供宿主时钟下的快速回归，二者互补而不互为替代。

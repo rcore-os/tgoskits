@@ -7,7 +7,10 @@ default_runner = "qcs"
 id = "test-axvisor-aarch64-qemu-smoke-axtest"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · Smoke + virtio-blk guest + axtest"
-timeout_minutes = 30
+# The shared build and the axtest runs are joined by the two-vCPU AxVM runtime
+# case, whose QEMU budget alone is 900 s, so the job keeps a wider bound than
+# the build-only stages used to need.
+timeout_minutes = 45
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
@@ -21,6 +24,12 @@ echo "==> axvisor aarch64 axtest"
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 \
   --config os/axvisor/tests/build-memory-root-aarch64.toml \
   --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml
+echo "==> axvm aarch64 two-vCPU guest runtime axtest"
+# The guest and its resources are prepared by the adjacent `guest-builds.toml`
+# `host_prepare` entry; the case needs no host root disk.
+cargo xtask ktest qemu -p axvm --test vcpu_runtime --arch aarch64 \
+  --config virtualization/axvm/tests/vcpu-runtime/build-aarch64-unknown-none-softfloat.toml \
+  --qemu-config virtualization/axvm/tests/vcpu-runtime/qemu-aarch64.toml
 echo "==> axvm aarch64 provided-DTB CPU map regression"
 run_axvm_cross_test() {
   local output
@@ -48,6 +57,18 @@ run_axvm_cross_test --arch riscv64 --package axvm \
 kind = "axvisor-qemu"
 arch = "aarch64"
 cases = ["smoke", "qemu-host-initramfs"]
+
+[[check.suite]]
+# The two-vCPU runtime case is a ktest execution unit of its own: the AxVM
+# `vcpu_runtime` test target owns the guest resources instead of the AxVisor
+# `test qemu` case tree, so it registers the package, target, arch and configs
+# that `cargo xtask ktest qemu` actually consumes.
+kind = "ktest-qemu"
+package = "axvm"
+test = "vcpu_runtime"
+arch = "aarch64"
+config = "virtualization/axvm/tests/vcpu-runtime/build-aarch64-unknown-none-softfloat.toml"
+qemu_config = "virtualization/axvm/tests/vcpu-runtime/qemu-aarch64.toml"
 
 [[check]]
 id = "test-axvisor-web-ui-assets"

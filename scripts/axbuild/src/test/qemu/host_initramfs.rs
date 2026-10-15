@@ -1,6 +1,7 @@
 use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, ensure};
+use ostool::BootPayloadConfig;
 use serde::Deserialize;
 use walkdir::WalkDir;
 
@@ -13,13 +14,17 @@ struct HostInitramfsFixture {
     init_source: Option<String>,
 }
 
-/// Builds a test archive before its QEMU configuration is handed to ostool.
-pub(crate) fn prepare_host_initramfs(
+/// Builds a test archive before its boot payload is handed to a runner.
+///
+/// QEMU direct boot, U-Boot FIT and the board runners all carry the host
+/// archive through ostool's [`BootPayloadConfig`], so the case fixture is
+/// packed against that payload instead of one runner's configuration type.
+pub(crate) fn prepare_host_initramfs_payload(
     workspace_root: &Path,
     target_dir: &Path,
     case_dir: &Path,
     arch: &str,
-    qemu: &mut QemuConfig,
+    boot: &mut BootPayloadConfig,
 ) -> anyhow::Result<bool> {
     let manifest = case_dir.join("host-initramfs.toml");
     if !manifest.is_file() {
@@ -35,11 +40,18 @@ pub(crate) fn prepare_host_initramfs(
         return Ok(false);
     };
     ensure!(
-        qemu.boot.initramfs.is_none(),
-        "{} must not also set initramfs in qemu config",
+        boot.initramfs.is_none(),
+        "{} must not also set an initramfs in the run configuration",
         manifest.display()
     );
-    let source = workspace_root.join(source_path);
+    // Fixtures may live in the build target directory, which a caller can move
+    // with `--target-dir`; the shared resolution keeps the declared
+    // `${workspace}/target/axbuild` paths pointing at the real target dir.
+    let source = crate::context::resolve_axbuild_artifact_path(
+        workspace_root,
+        target_dir,
+        &workspace_root.join(source_path),
+    );
     ensure!(
         source.is_dir(),
         "missing initramfs source {}",
@@ -74,8 +86,22 @@ pub(crate) fn prepare_host_initramfs(
     }
 
     crate::image::pack_initramfs_dir(staging.path(), &output)?;
-    qemu.boot.initramfs = Some(output.to_string_lossy().into_owned());
+    boot.initramfs = Some(output.to_string_lossy().into_owned());
     Ok(true)
+}
+
+/// Builds the host archive fixture of one QEMU case.
+///
+/// Kept as the QEMU entry for the existing QEMU and StarryOS test runners, so
+/// they keep mutating the QEMU configuration they already own.
+pub(crate) fn prepare_host_initramfs(
+    workspace_root: &Path,
+    target_dir: &Path,
+    case_dir: &Path,
+    arch: &str,
+    qemu: &mut QemuConfig,
+) -> anyhow::Result<bool> {
+    prepare_host_initramfs_payload(workspace_root, target_dir, case_dir, arch, &mut qemu.boot)
 }
 
 /// Appends the map generated for the final target ELF to a prepared host

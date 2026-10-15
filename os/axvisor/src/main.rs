@@ -38,13 +38,9 @@ mod guest_cpufreq;
 mod guest_images;
 mod manager;
 mod net_uplink;
-#[cfg(feature = "vcpu-perf-load")]
-mod perf_load;
 mod shell;
 mod startup;
 mod sync;
-#[cfg(feature = "test-virq-delivery")]
-mod virq_regression;
 mod vm_pool;
 
 /// Axvisor kernel entry point.
@@ -92,8 +88,6 @@ fn main() {
     // Pool indexing is observational. It never creates a VM; each selected
     // builtin is created and started only after all selector validation passes.
     vm_pool::log_startup_state(manager.builtin_catalog());
-    #[cfg(feature = "vcpu-perf-load")]
-    let _performance_load = perf_load::start();
 
     // The registry watcher behind `/ws/events` is started before HTTP so the
     // first subscriber cannot miss a change.
@@ -127,9 +121,6 @@ fn main() {
 
     #[cfg(feature = "web")]
     control::network_status::start();
-
-    #[cfg(feature = "test-virq-delivery")]
-    virq_regression::start();
 
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 
