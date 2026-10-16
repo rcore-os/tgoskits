@@ -502,13 +502,14 @@ impl GuestType {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhysicalDeviceRef {
-    /// Absolute device-tree path identifying the physical device.
+    /// Absolute device-tree path identifying the physical device, or `/` for
+    /// the root baseline every passthrough guest already starts from.
     pub path: String,
 }
 
 impl PhysicalDeviceRef {
     fn validate(&self) -> AxVmConfigResult {
-        if !self.path.starts_with('/') || self.path == "/" {
+        if !self.path.starts_with('/') {
             return Err(AxVmConfigError::InvalidPhysicalDevicePath {
                 path: self.path.clone(),
             });

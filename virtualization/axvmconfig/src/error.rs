@@ -44,8 +44,8 @@ pub enum AxVmConfigError {
         /// The boot protocol requiring a firmware load address.
         protocol: VMBootProtocol,
     },
-    /// A physical-device selector is not an absolute, concrete device-tree path.
-    #[error("physical device path must be absolute and must not select the root: {path}")]
+    /// A physical-device selector is not an absolute device-tree path.
+    #[error("physical device path must be an absolute device-tree path: {path}")]
     InvalidPhysicalDevicePath {
         /// The invalid path.
         path: String,

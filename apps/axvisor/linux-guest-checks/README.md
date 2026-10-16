@@ -2,7 +2,7 @@
 
 ## 测试用途
 
-在捡球机器人板（OrangePi-5-Plus 硬件，板卡类型 `BallPick-Robot`）上通过 AxVisor 启动**单个直通 Linux 客户机**，由测试者进入客户机后手工执行命令，检查客户机启动、RK3588 NPU 驱动绑定、NPU 信息查询和 YOLOv8 图片推理是否可用。
+在捡球机器人板（OrangePi-5-Plus 硬件，板卡类型 `BallPick-Robot`）上通过 AxVisor 启动**单个直通 Linux 客户机**，由测试者进入客户机后手工执行命令，检查客户机启动、RK3588 NPU 驱动绑定、NPU 信息查询、YOLOv8 图片推理，以及 ssh / CPU 信息 / 网络 ping / 文件读写 / 软件包安装等 Linux 基础功能是否可用。
 
 本应用**不含自动化**：没有启动器、没有自动命令注入、没有通过/失败判定。仓库只提供启动配置和本文档，命令与现象由测试者自行执行和判断。
 
@@ -10,10 +10,11 @@
 
 ## 边界
 
-- 只验证链路可用：客户机启动、NPU 驱动绑定、信息/频点/负载可查询、NPU 能跑通一次 YOLOv8 图片推理。
+- 只验证链路可用：客户机启动、NPU 驱动绑定、信息/频点/负载可查询、NPU 能跑通一次 YOLOv8 图片推理、Linux 基础功能（ssh / cpuinfo / ping / 读写 / apt）可用。
 - 不验证识别准确率，不与预设答案比对；未检测到目标时输出 `Detections: 0` 也算推理正常完成。
 - 不修改 NPU 频率、不复位 NPU。
-- 客户机为 `guest_type = "passthrough"` 单客户机，宿主设备**全量直通**，不是最小设备白名单。
+- 客户机为 `guest_type = "passthrough"` 单客户机，宿主设备在根基线之上**直通**（见 `configs/linux.toml` 中 `passthrough` 列表的语义说明），不是最小设备白名单。
+- 功能检查的网络项依赖板卡所连网络：DHCP 可用、网关与外部 apt 镜像（repo.huaweicloud.com）可达。换网络环境时以现场实际为准。
 
 ## 运行前确认
 
@@ -284,6 +285,81 @@ success
 
 包内细节（编译选项、sysroot、产物清单、源码构成）见 [rknn-yolov8-image/README.md](rknn-yolov8-image/README.md)。
 
+## 场景 3：Linux 功能检查
+
+进入客户机（`vm console 1`）后逐项执行。**网络三项依赖 `configs/linux.toml` cmdline 里的 `pci=nomsi`**：AxVM 宿主后端未接入物理 PCI MSI/ITS 分配，直通网卡必须走 PCIe 控制器的 INTx 级联；缺该参数时 r8125 收不到链路变化中断，接口永远是 `NO-CARRIER`，表现为 ping 报 `Network is unreachable`（实为无地址）。
+
+网络在客户机里由 NetworkManager 自动配置（和板卡原生 Linux 相同）：启动约 1 分钟内 `r8125: enP3p49s0: link up`、DHCP 完成。若等了一段时间仍无地址，可手动触发（密码为该板公开开发密码）：
+
+```bash
+printf '%s\n' <板卡密码> | sudo -S -p '' nmcli -w 45 device connect enP3p49s0
+```
+
+### 功能项 ：ping 测试网络
+
+```bash
+ip -br a                 # 期望 enP3p49s0 UP 且有 10.x.x.x/24 地址
+cat /sys/class/net/enP3p49s0/carrier   # 期望 1
+gw=$(ip r | awk '/default/{print $3}'); ping -c 3 "$gw"
+```
+
+通过条件：接口有地址、carrier 为 1、ping 网关 0% 丢包（2026-10-16 实测：10.3.10.254，3 发 3 收，~0.9 ms；另 ping 板卡服务 10.3.10.60 同样 3/3）。
+
+### 功能项 ：CPU 信息
+
+```bash
+cat /proc/cpuinfo
+```
+
+通过条件：能列出处理器信息；`processor` 条目数与配置的 `cpu_num` 一致（本配置为 1）。
+
+### 功能项 ：文件读写
+
+```bash
+echo axvisor-guest-rw > /tmp/rw-check.txt
+cat /tmp/rw-check.txt
+```
+
+通过条件：`cat` 原样返回写入内容。
+
+### 功能项 ：ssh 连接 Ubuntu 客户机
+
+客户机起来后（板卡 IP **仅在 ostool 会话持有期间可达**，见「首次准备」的说明），在工作站另开终端：
+
+```bash
+ssh orangepi@<客户机 IP>     # 客户机 IP 用场景 3 功能项 9 的 ip -br a 查
+uname -r                     # 期望 6.1.99-rockchip-rk3588
+```
+
+通过条件：能登录并在客户机内执行命令（2026-10-16 实测：ssh 10.3.10.225 登录成功，与板卡原生 Linux 同 IP——同网卡同 MAC，DHCP 按现有分配）。
+
+登录后建议先确认身份：客户机和板卡原生 Linux 用同一张网卡、同一个 IP，光看提示符分不出来。客户机是单核（`cpu_num = 1`），`grep -c '^processor' /proc/cpuinfo` 返回 `1`；板卡原生 Linux 是 8 核，返回 `8`。`uname -r` 两者相同（都是 `6.1.99-rockchip-rk3588`），不能用来区分。
+
+### 功能项 ：apt 软件包安装
+
+```bash
+sudo apt-get update
+sudo apt-get install -y sl && sl
+```
+
+通过条件（最小判定）：`apt-get update` 返回 0 并能拉到索引（2026-10-16 实测：repo.huaweicloud.com，34.8 MB / 11 s；原生同网络 4 s）。安装示例包成功并运行可再确认安装链路；不需要时可 `sudo apt-get remove -y sl` 清掉。
+
+### 判定
+
+五项独立判定，任一项失败不影响其他项的结论。网络三项失败时先核对 `pci=nomsi` 在不在 `configs/linux.toml` 的 cmdline 里，再看板卡所连网络（DHCP / 网关 / 镜像源）是否正常——用板卡原生 Linux（`cargo xtask board connect` 进去跑同样命令）做对照，可以把"用例配置问题"和"环境问题"分开。
+
+五项一次跑通的完整记录（2026-10-16，同一会话内）：
+
+| # | 实测 |
+| --- | --- |
+| 8 | `CPUs=1`，`processor : 0` |
+| 9 | `enP3p49s0 UP 10.3.10.225/24`，`carrier=1`，ping 网关 3 发 3 收，avg 0.938 ms |
+| 10 | 写入 `axvisor-guest-rw`，`cat` 原样返回 |
+| 7 | 从工作站 `ssh orangepi@10.3.10.225` 登录成功 |
+| 11 | `apt-get update` 返回 0，拉到 `repo.huaweicloud.com` 索引 |
+
+网络就绪时间也可复现：客户机内核日志 `[60.744276] r8125: enP3p49s0: link up`，即启动约 1 分钟。
+
 ## 结束
 
 先在客户机内正常关机：
@@ -297,6 +373,6 @@ sudo poweroff
 
 ## 判定边界
 
-本页通过只说明**客户机能启动，且 NPU 被 Linux 驱动识别并暴露信息节点**（场景 1），以及 RKNN 运行时、模型与驱动能在这一镜像上协同完成一次前向推理（场景 2）。
+本页通过只说明**客户机能启动，且 NPU 被 Linux 驱动识别并暴露信息节点**（场景 1）、RKNN 运行时 / 模型与驱动能在这一镜像上协同完成一次前向推理（场景 2），以及**直通环境下 Linux 基础功能可用**（场景 3：ssh 可登录、CPU 信息可查、物理网卡有载波可 ping 通网关、根文件系统可读写、apt 可拉取安装软件包）。
 
-它**不代表**识别准确率达标、DMA 长稳、性能达标，也不代表宿主侧虚拟化路径已被充分覆盖。
+它**不代表**识别准确率达标、DMA 长稳、性能达标，也不代表宿主侧虚拟化路径已被充分覆盖。场景 3 的网络项在 INTx（`pci=nomsi`）模式下验证；AxVM 将来接入物理 PCI MSI/ITS 分配后，可在去掉该参数的配置下另行复测。

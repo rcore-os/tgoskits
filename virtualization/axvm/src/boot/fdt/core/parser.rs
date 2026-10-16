@@ -53,37 +53,57 @@ pub fn setup_guest_fdt_from_vmm(
     let fdt = Fdt::from_bytes(fdt_bytes)
         .map_err(|e| ax_err_type!(InvalidData, format!("Failed to parse host FDT: {e:#?}")))?;
 
-    // The runtime configuration may contain an implicit root selector to
-    // establish the passthrough address-space policy. Keep its non-PCI
-    // devices (for example the guest-owned virtio-blk endpoint), but remove
-    // PCI host bridges unless the guest explicitly claims one.
+    // A passthrough guest starts from the root baseline: every guest-assignable
+    // device, minus the PCI host bridges the baseline always strips. An empty
+    // list takes that baseline implicitly. Writing an explicit "/" names the
+    // same baseline, and any path written next to it is appended on top, so a
+    // host bridge named there survives the strip. A list with no "/" stays an
+    // exact selection with no baseline at all.
     let explicit_device_names = crate_config
         .devices
         .passthrough
         .iter()
         .map(|device| device.path.clone())
         .collect::<Vec<_>>();
-    let implicit_root_passthrough = explicit_device_names.is_empty()
-        && vm_cfg
-            .pass_through_devices()
-            .iter()
-            .any(|device| device.name == "/");
-    let selected_device_names = if implicit_root_passthrough {
-        vm_cfg
+    let appended_device_names = explicit_device_names
+        .iter()
+        .filter(|name| name.as_str() != "/")
+        .cloned()
+        .collect::<Vec<_>>();
+    let base_is_root =
+        explicit_device_names.is_empty() || explicit_device_names.iter().any(|name| name == "/");
+
+    if base_is_root {
+        for node_id in fdt.iter_node_ids() {
+            if !fdt.node(node_id).is_some_and(Node::is_pci) {
+                continue;
+            }
+            let path = fdt.path_of(node_id);
+            // A host bridge named next to "/" overrides the baseline strip.
+            if appended_device_names
+                .iter()
+                .any(|selector| super::device::selector_includes_path(selector, &path))
+            {
+                continue;
+            }
+            vm_cfg.exclude_device_path(path);
+        }
+    }
+
+    let mut selected_device_names = if base_is_root {
+        let mut names = vm_cfg
             .pass_through_devices()
             .iter()
             .map(|device| device.name.clone())
-            .collect::<Vec<_>>()
-    } else {
-        explicit_device_names
-    };
-    if implicit_root_passthrough {
-        for node_id in fdt.iter_node_ids() {
-            if fdt.node(node_id).is_some_and(Node::is_pci) {
-                vm_cfg.exclude_device_path(fdt.path_of(node_id));
-            }
+            .collect::<Vec<_>>();
+        if !names.iter().any(|name| name == "/") {
+            names.push("/".to_string());
         }
-    }
+        names
+    } else {
+        Vec::new()
+    };
+    selected_device_names.extend(appended_device_names);
     reserve_excluded_device_ranges(vm_cfg, crate_config, fdt_bytes)?;
     let excluded_device_paths = vm_cfg
         .excluded_devices()
@@ -302,14 +322,20 @@ fn protect_machine_owned_firmware_devices(
     crate_cfg: &GuestConfig,
     fdt: &Fdt,
 ) -> AxVmResult {
-    let selected_paths = crate_cfg
+    // The root baseline is not a concrete claim: an empty list already takes it,
+    // and the machine-owned paths are excluded from it further down either way.
+    let claimed = crate_cfg
         .devices
         .passthrough
         .iter()
+        .filter(|device| device.path != "/")
+        .collect::<Vec<_>>();
+    let selected_paths = claimed
+        .iter()
         .map(|device| device.path.as_str())
         .collect::<Vec<_>>();
-    let console_paths = super::serial::host_owned_serial_paths(fdt)?;
-    if let Some(selected) = crate_cfg.devices.passthrough.iter().find(|selected| {
+    let console_paths = super::serial::host_owned_serial_paths(fdt);
+    if let Some(selected) = claimed.iter().find(|selected| {
         console_paths
             .iter()
             .any(|console_path| super::device::selector_includes_path(&selected.path, console_path))
@@ -318,7 +344,7 @@ fn protect_machine_owned_firmware_devices(
             path: selected.path.clone(),
         });
     }
-    let mut host_owned_paths = super::serial::physical_serial_paths(fdt)?;
+    let mut host_owned_paths = super::serial::physical_serial_paths(fdt);
     host_owned_paths.retain(|path| {
         console_paths.contains(path)
             || !selected_paths
@@ -333,9 +359,7 @@ fn protect_machine_owned_firmware_devices(
     }));
     host_owned_paths.sort();
     host_owned_paths.dedup();
-    if let Some(selected) = crate_cfg
-        .devices
-        .passthrough
+    if let Some(selected) = claimed
         .iter()
         .find(|selected| host_owned_paths.iter().any(|path| path == &selected.path))
     {
@@ -724,7 +748,7 @@ pub fn parse_vm_interrupt(
         .into_iter()
         .collect::<BTreeSet<_>>();
     let excluded_paths = excluded_device_paths(vm_cfg, crate_cfg);
-    let host_owned_serial_paths = super::serial::host_owned_serial_paths(&fdt)?;
+    let host_owned_serial_paths = super::serial::host_owned_serial_paths(&fdt);
     let mut passthrough_interrupts = Vec::new();
 
     for node_id in fdt.iter_node_ids() {
