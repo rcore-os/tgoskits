@@ -194,14 +194,21 @@ fail_regex = ['STARRY_SYNC_FAIL']
 timeout = 120
 
 [[shell_check_steps]]
-# Attach VM[1] and drive its first command in one burst, like the VM[3] token
-# below. The console switch can emit the Linux prompt before the
-# `Attached VM[1] console` marker, so a follow-up step that waits for `# ` can
-# stall behind a prompt this step already consumed and burn the whole 1800s
-# budget. Sending `pwd` in the same burst makes its newline-terminated output the
-# success marker, which proves the attach, the guest shell boundary and the
-# command itself. The empty lines leave the guest shell with fresh prompts.
-shell_cmd = "\u0018hvm console 1\n\n\npwd"
+# Attach VM[1] and wait for the Linux guest to reach its rootfs. The console
+# switch can emit the prompt before the `Attached VM[1] console` marker, so the
+# attach cannot key off that marker. Waiting for the kernel's `VFS: Mounted
+# root` line instead proves the guest booted far enough that the following
+# `shell_prefix = "# "` step cannot race the shell startup.
+shell_cmd = "\u0018hvm console 1"
+success_regex = ['VFS: Mounted root']
+timeout = 30
+
+[[shell_check_steps]]
+# First Linux command. This step waits for the `# ` prompt before writing, so it
+# cannot race the shell startup, and the newline-terminated `pwd` output is the
+# success marker, so a command the guest shell did not accept cannot pass.
+shell_prefix = "# "
+shell_cmd = "pwd"
 success_regex = ['(?m)^/\s*$']
 timeout = 30
 
