@@ -95,7 +95,7 @@ fn creation_schema_fields() -> Value {
             {"name": "id", "label": "客户机 ID", "type": "integer", "required": false, "default": null, "advanced": true,
              "description": "留空由服务端在创建时分配，也可指定未占用的 ID。"},
             {"name": "rootfs_read_only", "label": "只读客户机磁盘", "type": "boolean", "required": false, "default": true, "advanced": true,
-             "description": "保留原始镜像，允许多个客户机安全复用；需要写入时请先选择独立磁盘。"},
+             "description": "默认只读以保留原始镜像；省略该字段时保持旧 API 的可写语义，需要写入时请先选择独立磁盘。"},
             {"name": "guest_type", "label": "客户机模式", "type": "enum", "required": false, "default": "virtualized", "options": ["virtualized", "passthrough"], "advanced": true,
              "description": "默认虚拟化模式保留宿主文件系统与网页管理台；直通模式需要专用设备配置。"},
             {"name": "entry_point", "label": "入口地址", "type": "address", "required": true, "default": FORM_ENTRY_POINT, "advanced": true},
@@ -144,7 +144,11 @@ fn form_params(fields: &Value) -> Result<FormParams, String> {
         usize::try_from(cpu_num)
             .map_err(|_| "`cpu_num` exceeds the target address space".to_string())
     })?;
-    let host_cpu_count = axvm::host::cpu::count().min(usize::BITS as usize);
+    let host_cpu_count = if cfg!(target_arch = "x86_64") {
+        x86_cpu_affinity_host_count()?
+    } else {
+        axvm::host::cpu::count().min(usize::BITS as usize)
+    };
     if !(1..=host_cpu_count).contains(&cpu_num) {
         return Err(format!("`cpu_num` must be between 1 and {host_cpu_count}"));
     }
@@ -213,7 +217,25 @@ fn form_params(fields: &Value) -> Result<FormParams, String> {
     })
 }
 
-fn form_config(params: FormParams, rootfs_path: Option<&str>) -> GuestConfig {
+fn form_config(params: FormParams, rootfs_path: Option<&str>) -> Result<GuestConfig, String> {
+    let phys_cpu_sets = if cfg!(target_arch = "x86_64") {
+        let host_cpu_count = x86_cpu_affinity_host_count()?;
+        Some(
+            (0..params.cpu_num)
+                .map(|id| {
+                    let shift = ((id + 1) % host_cpu_count) as u32;
+                    1usize.checked_shl(shift).ok_or_else(|| {
+                        format!(
+                            "cannot represent x86 CPU affinity bit {shift} in a {}-bit mask",
+                            usize::BITS
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    } else {
+        None
+    };
     let mut config = GuestConfig {
         base: axvmconfig::VMBaseConfig {
             // The manager replaces this placeholder while holding its
@@ -227,12 +249,7 @@ fn form_config(params: FormParams, rootfs_path: Option<&str>) -> GuestConfig {
             // other than the bootstrap CPU, with a single-core host naturally
             // falling back to that CPU. Allocation remains fallible if resources
             // change after the form's availability check.
-            phys_cpu_sets: cfg!(target_arch = "x86_64").then(|| {
-                let host_cpu_count = axvm::host::cpu::count();
-                (0..params.cpu_num)
-                    .map(|id| 1 << ((id + 1) % host_cpu_count))
-                    .collect()
-            }),
+            phys_cpu_sets,
         },
         kernel: axvmconfig::VMKernelConfig {
             entry_point: params.entry_point,
@@ -270,7 +287,21 @@ fn form_config(params: FormParams, rootfs_path: Option<&str>) -> GuestConfig {
                 options,
             });
     }
-    config
+    Ok(config)
+}
+
+fn x86_cpu_affinity_host_count() -> Result<usize, String> {
+    let host_cpu_count = axvm::host::cpu::count();
+    if host_cpu_count == 0 {
+        return Err("host reports no CPUs for x86 CPU affinity".to_string());
+    }
+    if host_cpu_count > usize::BITS as usize {
+        return Err(format!(
+            "host exposes {host_cpu_count} CPUs, but x86 CPU affinity masks support at most {}",
+            usize::BITS
+        ));
+    }
+    Ok(host_cpu_count)
 }
 
 fn usize_field(fields: &Value, name: &str, missing: &str) -> Result<usize, String> {
@@ -325,7 +356,13 @@ pub async fn vm_create(Json(payload): Json<Value>) -> Response {
             .get("rootfs_path")
             .and_then(Value::as_str)
             .map(str::trim);
-        match toml::to_string(&form_config(params, rootfs)) {
+        let config = match form_config(params, rootfs) {
+            Ok(config) => config,
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            }
+        };
+        match toml::to_string(&config) {
             Ok(raw) => raw,
             Err(error) => {
                 return (

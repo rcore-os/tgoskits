@@ -179,7 +179,6 @@ Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和�
 
 ## 6. VMX 合并任务
 
-CI 使用一个 `kvm-intel` runner 运行八个 VMX 用例。原有 smoke、ACPI、PCI 枚举和 PCI block 七个用例统一启用 `vpci-test-device`，其 build TOML 的 Cargo 编译身份保持一致；`vm_configs` 只作为每个用例的运行时输入。新增的 `web-ui-vmx` 使用独立的默认网页构建配置，因此运行器按两种 Cargo 身份分别构建，再执行各自的用例：
 CI 使用一个 `kvm-intel` runner 运行八个 VMX 用例。原有 smoke、ACPI、PCI 枚举和 PCI block 七个用例保持同一 Cargo 编译身份，统一启用 `ax-driver/nvme` 与 `web-ui`；`vm_configs` 只作为每个用例的运行时输入。新增的 `web-ui-vmx` 使用独立的默认网页构建配置并额外启用 `ax-driver/intel-net`，因此运行器按两种 Cargo 身份分别构建，再执行各自的用例。`prepare_case_build_groups()` 会按 Cargo 身份合并前七个用例，确保 Web UI 与 NVMe 栈在无向量 x86_64 目标上的编译守卫只构建一次：
 
 ```bash
