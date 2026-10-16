@@ -123,6 +123,38 @@ class PerformanceReportTests(unittest.TestCase):
             ],
         )
 
+    def test_block_rw_non_default_profile_is_part_of_metric_names(self):
+        log_text = "\n".join(
+            [
+                "block-rw-bench: io_model=buffered-file write_scope=write-syscalls "
+                "fsync=false request_bytes=512 max_transfer_bytes=512 "
+                "boundary_coverage=partial drop_caches=false "
+                "boundary=full-file-stack-not-raw-request-latency",
+                "block-rw-bench: case=sector write_mib_s=12.5 read_mib_s=8.5 elapsed_ms=100",
+            ]
+        )
+
+        self.assertEqual(
+            ci_perf_report.render_benchmarks(log_text),
+            [
+                {
+                    "name": "block-rw/sector/fsync-false-boundary-partial-request-512-max-transfer-512/write_mib_s",
+                    "unit": "MiB/s",
+                    "value": 12.5,
+                },
+                {
+                    "name": "block-rw/sector/fsync-false-boundary-partial-request-512-max-transfer-512/read_mib_s",
+                    "unit": "MiB/s",
+                    "value": 8.5,
+                },
+                {
+                    "name": "block-rw/sector/fsync-false-boundary-partial-request-512-max-transfer-512/elapsed",
+                    "unit": "ms",
+                    "value": 100.0,
+                },
+            ],
+        )
+
     def test_performance_report_renders_task_switch_groups(self):
         lines = ["AXVISOR_TASK_SWITCH_BENCH_BEGIN groups=10"]
         for index in range(10):

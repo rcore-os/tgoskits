@@ -12,9 +12,11 @@ cargo xtask starry app board -t benchmark/block-rw-bench \
 
 Axbuild cross-compiles the static helper from `rust/`, uploads it as an ostool
 session file, and expands `${sessionFile:usr/bin/block-rw-bench}` to the
-board-visible HTTP URL. A networked Starry guest retries that actual transfer
-directly; it does not call `ip` to guess readiness. Download or execution
-failure is terminal and cannot produce the benchmark success marker.
+board-visible HTTP URL. A networked Starry guest tries that current session
+helper first and falls back to the staged Linux helper only when the transfer
+is unavailable. It does not call `ip` to guess readiness. If neither helper
+can execute successfully, the wrapper emits only the failure marker and
+cannot produce the benchmark success marker.
 
 For a board whose Starry image has no network driver, build the same helper and
 connect to the board's default Linux without first booting Starry:
@@ -125,6 +127,14 @@ measurement boundary as `boundary=full-file-stack-not-raw-request-latency`.
 When saving an individual `case=` or `result case=` line for a Linux/Starry
 comparison, preserve that startup line with the case output so the latency
 boundary remains explicit.
+
+The CI report keeps the historical metric names for the default profile
+(`fsync=true`, full boundary coverage, and no per-request cap). A run with a
+non-default profile appends `fsync`, boundary coverage, request size, and
+maximum transfer values to each `block-rw` metric name. This keeps the
+OrangePi profile with disabled per-file fsync and skipped boundary cases out
+of the comparable default series while retaining its measurements in the
+dashboard.
 
 The latencies are **not** raw block-request latencies under any
 configuration, and the numbers must not be read as a sync-versus-async block

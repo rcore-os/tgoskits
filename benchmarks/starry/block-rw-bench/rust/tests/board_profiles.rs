@@ -92,7 +92,7 @@ cp() {
             ("BLOCK_RW_BENCH_WORKDIR", &workdir),
             ("BLOCK_RW_BENCH_IP_PROBE", &ip_probe),
             ("BLOCK_RW_BENCH_COPY_PROBE", &copy_probe),
-            ("BLOCK_RW_BENCH_NETWORK_WAIT_SECONDS", Path::new("1")),
+            ("BLOCK_RW_BENCH_DOWNLOAD_ATTEMPTS", Path::new("0")),
             (
                 "BLOCK_RW_BENCH_SUCCESS_MARKER",
                 Path::new("TEST_BLOCK_RW_BENCH_PASSED"),
@@ -124,7 +124,7 @@ cp() {
 #[test]
 fn session_http_retries_are_bounded_and_do_not_probe_with_ip() {
     let dir = TestDir::new();
-    let staged = dir.path().join("missing-staged-helper");
+    let staged = dir.path().join("staged-helper");
     let helper = dir.path().join("session-helper");
     let program = dir.path().join("program");
     let workdir = dir.path().join("work");
@@ -135,6 +135,8 @@ fn session_http_retries_are_bounded_and_do_not_probe_with_ip() {
         "#!/bin/sh\nprintf '%s\\n' \"$BLOCK_RW_BENCH_SUCCESS_MARKER\"\n",
     )
     .unwrap();
+    fs::write(&staged, "#!/bin/sh\nprintf '%s\\n' STAGED_HELPER\n").unwrap();
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = run_init_script(
         r#"

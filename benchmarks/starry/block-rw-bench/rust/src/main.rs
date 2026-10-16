@@ -196,10 +196,22 @@ fn run() -> io::Result<()> {
     let dir = config.workdir.as_path();
     fs::create_dir_all(dir)?;
     let diskstats = verify_root_device(&config)?;
+    let request_bytes = config
+        .request_bytes
+        .map_or_else(|| "none".to_owned(), |bytes| bytes.to_string());
+    let boundary_coverage = if config.skip_boundary_cases {
+        "partial"
+    } else {
+        "full"
+    };
     println!(
         "block-rw-bench: io_model=buffered-file write_scope=write-syscalls fsync={} \
+         request_bytes={} max_transfer_bytes={} boundary_coverage={} \
          drop_caches={} boundary=full-file-stack-not-raw-request-latency",
         config.fsync,
+        request_bytes,
+        config.max_transfer_bytes,
+        boundary_coverage,
         env::var_os(DROP_CACHES_ENV).is_some()
     );
     let sequential_cases = config.sequential_cases()?;

@@ -8,6 +8,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts.test.check_ci_routing import (
     check_mirrored_payload_consistency,
@@ -226,25 +227,57 @@ class ConcurrencyRoutingTests(unittest.TestCase):
         )
         self.assertIn("queue: max", concurrency)
 
-    def test_matrix_entries_use_distinct_concurrency_groups(self) -> None:
+    def test_board_jobs_only_share_groups_on_protected_or_manual_runs(self) -> None:
         workflow = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
         job = mapping_block(mapping_block(workflow, "jobs", 0), "run", 2)
         concurrency = mapping_block(job, "concurrency", 4)
-        self.assertIn(
-            "group: ci-resource-${{ format('run-{0}-{1}', github.run_id, matrix.id) }}",
-            concurrency,
+        match = re.search(
+            r"group:\s*(?:>-\s*)?ci-resource-\${{(.*?)}}", concurrency, re.S
         )
-        self.assertNotIn("matrix.resource_group", concurrency)
+        self.assertIsNotNone(match)
+        expression = " ".join(match.group(1).split())
+        expression = expression.replace("&&", " and ").replace("||", " or ")
 
         def group(
+            event: str,
+            ref: str,
             run_id: int,
+            resource: str = "board",
             check_id: str = "check",
         ) -> str:
-            return f"ci-resource-run-{run_id}-{check_id}"
+            # GitHub's &&/|| and format() use the same truthy short-circuit
+            # behavior as Python's and/or and str.format for this expression.
+            context = {
+                "github": SimpleNamespace(event_name=event, ref=ref, run_id=run_id),
+                "matrix": SimpleNamespace(id=check_id, resource_group=resource),
+                "format": lambda template, *args: template.format(*args),
+            }
+            return "ci-resource-" + eval(expression, {"__builtins__": {}}, context)
 
-        for run_id in (1, 2):
-            self.assertEqual(group(run_id), f"ci-resource-run-{run_id}-check")
-        self.assertNotEqual(group(1), group(1, check_id="other"))
+        for event, ref in (
+            ("push", "refs/heads/dev"),
+            ("push", "refs/heads/main"),
+            ("schedule", "refs/heads/dev"),
+            ("workflow_dispatch", "refs/heads/topic"),
+        ):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(group(event, ref, 1), "ci-resource-board")
+                self.assertEqual(group(event, ref, 2), "ci-resource-board")
+
+        for event, ref in (
+            ("push", "refs/heads/topic"),
+            ("pull_request", "refs/pull/123/merge"),
+        ):
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(group(event, ref, 1), "ci-resource-run-1-check")
+                self.assertEqual(group(event, ref, 2), "ci-resource-run-2-check")
+                self.assertEqual(
+                    group(event, ref, 1, check_id="other"), "ci-resource-run-1-other"
+                )
+
+        self.assertEqual(
+            group("push", "refs/heads/dev", 1, ""), "ci-resource-run-1-check"
+        )
         self.assertIn("queue: max", concurrency)
         self.assertIn("cancel-in-progress: false", concurrency)
 
@@ -390,7 +423,7 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", triggers)
         self.assertIn("mode: benchmarks", plan_step)
         # Scheduled runs measure the latest dev, while a manual dispatch
-        # measures the dispatched commit.
+        # measures the dispatched commit without publishing history.
         self.assertIn(
             "ref: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}",
             plan,
@@ -416,7 +449,11 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
                 )
 
         board_job = mapping_block(jobs, "starry_board_performance", 2)
-        self.assertNotIn("max_parallel:", board_job)
+        self.assertIn("max_parallel: 1", board_job)
+        self.assertIn(
+            "revision-label: ${{ github.event_name == 'schedule' && 'dev revision' || 'tested revision' }}",
+            workflow,
+        )
 
         self.assertNotIn("perf-data", workflow)
         self.assertNotIn("perf-history-axvisor", workflow)
@@ -433,6 +470,7 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
             "if",
             4,
         )
+        self.assertIn("github.event_name == 'schedule'", benchmark_updates_condition)
         self.assertIn("axvisor-nightly-performance-*", benchmark_updates)
         self.assertIn("continue-on-error: true", benchmark_updates)
         self.assertIn("starry-apps-nightly-performance-*", benchmark_updates)
