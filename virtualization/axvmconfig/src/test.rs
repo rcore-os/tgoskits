@@ -248,17 +248,16 @@ passthrough = [{ path = "soc/net@1000" }]
         }
     );
 
+    // "/" is the root baseline a passthrough guest already starts from, so it is
+    // a valid selector rather than a rejected one.
     let root = GuestConfig::from_toml(
         r#"
 [devices]
 passthrough = [{ path = "/" }]
 "#,
     )
-    .unwrap_err();
-    assert_eq!(
-        root,
-        AxVmConfigError::InvalidPhysicalDevicePath { path: "/".into() }
-    );
+    .unwrap();
+    assert_eq!(root.devices.passthrough[0].path, "/");
 
     let conflict = GuestConfig::from_toml(
         r#"

@@ -26,7 +26,11 @@ ramdisk_load_addr = 0xc000_0000
 # Linux root is /dev/mmcblk1p2 (the single-client USB robot board) need that
 # device here instead, as in
 # apps/axvisor/normal/board-orangepi-5-plus/robot-real-linux/linux-smp1-emmc.toml.
-cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
+# pci=nomsi: physical PCI MSI/ITS assignment is not wired into the AxVM host
+# backend, so the passed-through RTL8125 NICs must use the controller's INTx
+# cascade (the device tree carries a legacy-interrupt-controller child).
+# Without it the NIC misses link-change interrupts and stays NO-CARRIER.
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M pci=nomsi"
 memory_regions = [
   [0xb000_0000, 0x1000_0000, 0x7, 2],
   [0xc000_0000, 0x3000_0000, 0x7, 2],
@@ -34,8 +38,16 @@ memory_regions = [
 ]
 
 [devices]
-# Empty lists pass the host devices through, which is what puts the RK3588 NPU
-# in front of the guest. This is not an NPU-only allowlist, and it is not the
-# minimal device set either.
-passthrough = []
+# "/" names the root baseline explicitly: every guest-assignable device (the
+# RK3588 NPU among them), minus the PCI host bridges the baseline always strips.
+# Writing it is the same as leaving the list empty. The paths next to it are
+# appended on top, so naming the two PCIe host bridges and their PHYs hands the
+# RTL8125 NICs to the guest as well.
+passthrough = [
+    { path = "/" },
+    { path = "/pcie@fe180000" },
+    { path = "/pcie@fe190000" },
+    { path = "/phy@fee00000" },
+    { path = "/phy@fee20000" },
+]
 disabled = []
