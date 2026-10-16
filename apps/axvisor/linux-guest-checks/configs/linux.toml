@@ -42,7 +42,9 @@ memory_regions = [
 # RK3588 NPU among them), minus the PCI host bridges the baseline always strips.
 # Writing it is the same as leaving the list empty. The paths next to it are
 # appended on top, so naming the two PCIe host bridges and their PHYs hands the
-# RTL8125 NICs to the guest as well.
+# RTL8125 NICs to the guest as well. The bridges must be named explicitly: a
+# selector that only names an endpoint below a stripped bridge is rejected,
+# because keeping that endpoint would also expose the bridge's other endpoints.
 passthrough = [
     { path = "/" },
     { path = "/pcie@fe180000" },
@@ -50,4 +52,7 @@ passthrough = [
     { path = "/phy@fee00000" },
     { path = "/phy@fee20000" },
 ]
+# "/" is not valid here. An empty passthrough list still keeps the baseline, so
+# a guest that keeps no physical devices needs guest_type = "virtualized"; every
+# disabled entry must name a concrete device.
 disabled = []
