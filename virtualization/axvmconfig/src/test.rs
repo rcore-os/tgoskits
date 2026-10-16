@@ -249,9 +249,12 @@ passthrough = [{ path = "soc/net@1000" }]
     );
 
     // "/" is the root baseline a passthrough guest already starts from, so it is
-    // a valid selector rather than a rejected one.
+    // a valid selector in a passthrough guest's passthrough list.
     let root = GuestConfig::from_toml(
         r#"
+[base]
+guest_type = "passthrough"
+
 [devices]
 passthrough = [{ path = "/" }]
 "#,
@@ -273,6 +276,60 @@ disabled = [{ path = "/soc/net@1000" }]
             path: "/soc/net@1000".into(),
         }
     );
+}
+
+#[test]
+fn root_baseline_selector_requires_a_passthrough_guest() {
+    // A virtualized guest has no root baseline, so "/" must be refused rather
+    // than silently promoted into one. The default guest type is virtualized.
+    let virtualized = GuestConfig::from_toml(
+        r#"
+[base]
+guest_type = "virtualized"
+
+[devices]
+passthrough = [{ path = "/" }]
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        virtualized,
+        AxVmConfigError::RootBaselineSelectorNotAllowed {
+            guest_type: GuestType::Virtualized,
+        }
+    );
+
+    let default_guest_type = GuestConfig::from_toml(
+        r#"
+[devices]
+passthrough = [{ path = "/" }]
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        default_guest_type,
+        AxVmConfigError::RootBaselineSelectorNotAllowed {
+            guest_type: GuestType::Virtualized,
+        }
+    );
+}
+
+#[test]
+fn disabled_root_selector_is_rejected() {
+    // "/" names the root baseline, so it is not a device that can be disabled.
+    // An empty passthrough list still keeps the baseline, so a guest that keeps
+    // no physical devices needs guest_type = "virtualized".
+    let error = GuestConfig::from_toml(
+        r#"
+[base]
+guest_type = "passthrough"
+
+[devices]
+disabled = [{ path = "/" }]
+"#,
+    )
+    .unwrap_err();
+    assert_eq!(error, AxVmConfigError::RootSelectorNotDisableable);
 }
 
 #[test]

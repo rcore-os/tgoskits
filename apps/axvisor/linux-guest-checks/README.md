@@ -132,6 +132,10 @@ cat /proc/cmdline                          # 确认 root= 与本配置一致
 
 `configs/linux.toml` 默认 `root=/dev/mmcblk0p2`，与 [os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml](../../../os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml) 一致。若本板 Linux 根在 `/dev/mmcblk1p2`（单客户端 USB 机器人板），按 [robot-real-linux/linux-smp1-emmc.toml](../normal/board-orangepi-5-plus/robot-real-linux/linux-smp1-emmc.toml) 改 `cmdline`，并把 `kernel_path` 换成该板实际使用的镜像名。
 
+`configs/linux.toml` 的 `devices.passthrough` 决定直通范围，改之前先分清 `guest_type` 与选择器的关系。`guest_type = "passthrough"` 时，空 `passthrough` 列表与写 `/` 等价，都启用“宿主可直通设备减去基线始终剥掉的 PCI 主桥”这根基线，写在 `/` 旁边的具体路径叠加在基线上；列表只有具体路径、不含 `/` 时退化为精确选择、不含基线；`guest_type = "virtualized"` 则从无物理设备起步，`passthrough` 只接受具体路径。
+
+选择器边界由 `axvmconfig` 的 `GuestDevices::validate` 与 `axvm` 的 `setup_guest_fdt_from_vmm` 共同约束。在含 `/` 的根基线模式下，只点名某个 PCI 主桥下的端点、却不点名该主桥会被拒绝，因为客户机只能通过主桥的配置空间枚举端点，整桥保留会连带暴露它的其他端点，报错会指出具体选择器和要补点名的主桥；列表不含 `/` 的纯具体路径精确模式保持原有语义，不受这条限制。`virtualized` 客户机在 `passthrough` 写 `/`，以及任何 `guest_type` 在 `disabled` 写 `/`，都会被拒绝；`disabled` 需点名具体设备。要从无物理设备起步，用 `guest_type = "virtualized"` 加空 `passthrough`，而不是在 `passthrough` 里删掉 `/`。
+
 `configs/board-shell.toml` 不含 `server`/`port` —— 板卡服务地址属于运行环境配置，不写进仓库。按 [板卡管理](../../../docs/docs/build/board.md) 用 `cargo xtask board config` 一次性配置，或在命令行用 `--server`/`--port` 传入。
 
 **本页所有板卡命令都显式写上 `--server`/`--port`**，不要依赖本机默认值：同一环境里可能存在多台板卡服务，各自挂的板卡不同，本地预置资产也不同，省掉参数就可能连到另一台上，跑出与你预期不符的结果。缺省时 `--server`/`--port` 会依次回落到 ostool 全局配置和内置默认地址，见 [板卡管理](../../../docs/docs/build/board.md)。

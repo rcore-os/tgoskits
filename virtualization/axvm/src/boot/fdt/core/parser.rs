@@ -22,7 +22,8 @@ use std::{
 };
 
 use axvmconfig::{
-    GuestConfig, HostDeviceAssignment, ReservedAddressConfig, VmMemConfig, VmMemMappingType,
+    GuestConfig, GuestType, HostDeviceAssignment, ReservedAddressConfig, VmMemConfig,
+    VmMemMappingType,
 };
 use fdt_edit::{Fdt, Node, NodeType, PciRange, PciSpace};
 
@@ -57,14 +58,18 @@ pub fn setup_guest_fdt_from_vmm(
     // device, minus the PCI host bridges the baseline always strips. An empty
     // list takes that baseline implicitly. Writing an explicit "/" names the
     // same baseline, and any path written next to it is appended on top, so a
-    // host bridge named there survives the strip. A list with no "/" stays an
-    // exact selection with no baseline at all.
+    // host bridge named there survives the strip. An endpoint named under a
+    // host bridge that the baseline strips must have that bridge named too: the
+    // guest finds PCI endpoints by probing the bridge's config space, so a
+    // silent exemption for the bridge would also hand over its other endpoints.
+    // A list with no "/" stays an exact selection with no baseline at all.
     //
     // The baseline needs the passthrough guest type next to the runtime root
     // selector: the host installs that selector for a passthrough guest (the
-    // machine default for an empty list, the guest's own "/" otherwise), but an
-    // explicit "/" is a valid selector for any guest type, so the selector alone
-    // would hand a virtualized guest every non-PCI device.
+    // machine default for an empty list, the guest's own "/" otherwise). The
+    // axvmconfig TOML validation rejects "/" for a virtualized guest, but a
+    // directly constructed GuestConfig bypasses that check, so the parser still
+    // gates on guest_type and never hands a virtualized guest the baseline.
     let explicit_device_names = crate_config
         .devices
         .passthrough
@@ -76,27 +81,49 @@ pub fn setup_guest_fdt_from_vmm(
         .filter(|name| name.as_str() != "/")
         .cloned()
         .collect::<Vec<_>>();
-    let base_is_root = vm_cfg
-        .pass_through_devices()
-        .iter()
-        .any(|device| device.name == "/");
+    let base_is_root = crate_config.base.guest_type == GuestType::Passthrough
+        && vm_cfg
+            .pass_through_devices()
+            .iter()
+            .any(|device| device.name == "/");
 
     if base_is_root {
+        // Decide which host bridges the guest did not name before touching
+        // `vm_cfg`. A selector that only names an endpoint under an unnamed
+        // bridge is rejected, and that rejection must not leave the
+        // configuration with a partially stripped bridge set.
+        let mut bridges_to_strip = Vec::new();
         for node_id in fdt.iter_node_ids() {
             if !fdt.node(node_id).is_some_and(Node::is_pci) {
                 continue;
             }
             let path = fdt.path_of(node_id);
-            // A host bridge named next to "/" overrides the baseline strip, and
-            // so does a device named below it: PCI endpoints are found by
-            // probing config space, so a bridge the guest has to reach survives
-            // as the node that carries their ranges.
+            // A host bridge named next to "/" overrides the baseline strip.
             if appended_device_names
                 .iter()
                 .any(|selector| super::device::selector_includes_path(selector, &path))
             {
                 continue;
             }
+            // Keeping a bridge for a selector that only names one of its
+            // endpoints would silently hand over the bridge's other endpoints,
+            // so require the bridge to be named explicitly.
+            if let Some(selector) = appended_device_names
+                .iter()
+                .find(|selector| super::device::selector_includes_path(&path, selector))
+            {
+                return Err(ax_err_type!(
+                    InvalidData,
+                    format!(
+                        "passthrough selector {selector} is below PCI host bridge {path}, which \
+                         the root baseline strips: list {path} explicitly so the endpoint and its \
+                         bridge stay assigned, or drop the selector"
+                    )
+                ));
+            }
+            bridges_to_strip.push(path);
+        }
+        for path in bridges_to_strip {
             vm_cfg.exclude_device_path(path);
         }
     }
@@ -1018,16 +1045,25 @@ mod tests {
         fdt.node_mut(nvme)
             .unwrap()
             .set_property(prop_u32_list("interrupts", &[11]));
-        // A second host bridge without an endpoint: the baseline strip has to
-        // remove every bridge the guest does not name, not only the one that
-        // carries a selected endpoint.
-        let second = fdt.add_node(soc, Node::new("pci@40000000"));
+        // A second host bridge on a window that does not touch the first one:
+        // the baseline strip has to remove every bridge the guest does not name,
+        // and touching windows would merge into a single reserved range. Its
+        // endpoint lets a test reject a selector under a bridge that is
+        // enumerated after another strippable bridge.
+        let second = fdt.add_node(soc, Node::new("pci@60000000"));
         fdt.node_mut(second)
             .unwrap()
             .set_property(super::super::tree::prop_string("device_type", "pci"));
         fdt.view_typed_mut(second)
             .unwrap()
-            .set_regs(&[RegInfo::new(0x4000_0000, Some(0x1000_0000))]);
+            .set_regs(&[RegInfo::new(0x6000_0000, Some(0x1000_0000))]);
+        let ethernet = fdt.add_node(second, Node::new("ethernet@0"));
+        fdt.node_mut(ethernet)
+            .unwrap()
+            .set_property(prop_u32("interrupt-parent", 1));
+        fdt.node_mut(ethernet)
+            .unwrap()
+            .set_property(prop_u32_list("interrupts", &[12]));
         let virtio = fdt.add_node(soc, Node::new("virtio_mmio@10001000"));
         fdt.node_mut(virtio)
             .unwrap()
@@ -1467,51 +1503,69 @@ mod tests {
     #[test]
     fn root_passthrough_keeps_named_pci_host_bridge_and_strips_the_others() {
         let dtb = fdt_with_pci_hosts_and_endpoint();
-        let selectors = ["/", "/soc/pci@30000000"];
-        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
-            id: 0,
-            name: "test".to_string(),
-            phys_cpu_ls: PhysCpuList::new(1, Some(vec![0]), None),
-            pass_through_devices: selectors
-                .iter()
-                .map(|name| HostDeviceAssignment {
-                    name: (*name).to_string(),
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        });
-        let crate_cfg = GuestConfig {
-            base: axvmconfig::VMBaseConfig {
-                phys_cpu_ids: Some(vec![0]),
-                guest_type: GuestType::Passthrough,
-                ..Default::default()
-            },
-            devices: GuestDevices {
-                passthrough: selectors
+        // Naming the bridge alone already includes its endpoint; naming the
+        // bridge together with one of its endpoints must be accepted the same
+        // way, keeping the bridge and endpoint while the unnamed bridge stays
+        // stripped.
+        let bridge_only: &[&str] = &["/", "/soc/pci@30000000"];
+        let bridge_with_endpoint: &[&str] = &["/", "/soc/pci@30000000", "/soc/pci@30000000/nvme@0"];
+        for selectors in [bridge_only, bridge_with_endpoint] {
+            let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+                id: 0,
+                name: "test".to_string(),
+                phys_cpu_ls: PhysCpuList::new(1, Some(vec![0]), None),
+                pass_through_devices: selectors
                     .iter()
-                    .map(|path| PhysicalDeviceRef {
-                        path: (*path).to_string(),
+                    .map(|name| HostDeviceAssignment {
+                        name: (*name).to_string(),
+                        ..Default::default()
                     })
                     .collect(),
                 ..Default::default()
-            },
-            ..Default::default()
-        };
+            });
+            let crate_cfg = GuestConfig {
+                base: axvmconfig::VMBaseConfig {
+                    phys_cpu_ids: Some(vec![0]),
+                    guest_type: GuestType::Passthrough,
+                    ..Default::default()
+                },
+                devices: GuestDevices {
+                    passthrough: selectors
+                        .iter()
+                        .map(|path| PhysicalDeviceRef {
+                            path: (*path).to_string(),
+                        })
+                        .collect(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
 
-        let guest_dtb = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap();
-        let guest = Fdt::from_bytes(&guest_dtb).unwrap();
+            let guest_dtb = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap();
+            let guest = Fdt::from_bytes(&guest_dtb).unwrap();
 
-        assert!(guest.get_by_path_id("/soc/pci@30000000").is_some());
-        assert!(guest.get_by_path_id("/soc/pci@30000000/nvme@0").is_some());
-        assert!(guest.get_by_path_id("/soc/virtio_mmio@10001000").is_some());
-        assert!(guest.get_by_path_id("/soc/pci@40000000").is_none());
+            assert!(
+                guest.get_by_path_id("/soc/pci@30000000").is_some(),
+                "selectors {selectors:?} dropped the named bridge"
+            );
+            assert!(
+                guest.get_by_path_id("/soc/pci@30000000/nvme@0").is_some(),
+                "selectors {selectors:?} dropped the endpoint of the named bridge"
+            );
+            assert!(guest.get_by_path_id("/soc/virtio_mmio@10001000").is_some());
+            assert!(
+                guest.get_by_path_id("/soc/pci@60000000").is_none(),
+                "selectors {selectors:?} kept an unnamed bridge"
+            );
+        }
     }
 
     #[test]
-    fn root_passthrough_keeps_host_bridge_of_named_pci_endpoint() {
+    fn root_passthrough_rejects_endpoint_below_an_unnamed_pci_host_bridge() {
         let dtb = fdt_with_pci_hosts_and_endpoint();
-        let selectors = ["/", "/soc/pci@30000000/nvme@0"];
+        // The selector is under the second bridge so the first bridge is queued
+        // for stripping before the rejection fires.
+        let selectors = ["/", "/soc/pci@60000000/ethernet@0"];
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 0,
             name: "test".to_string(),
@@ -1543,13 +1597,28 @@ mod tests {
             ..Default::default()
         };
 
-        let guest_dtb = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap();
-        let guest = Fdt::from_bytes(&guest_dtb).unwrap();
-
-        // The endpoint hangs from a host bridge the baseline strips: the bridge
-        // has to survive as its container, or the guest never sees the device.
-        assert!(guest.get_by_path_id("/soc/pci@30000000").is_some());
-        assert!(guest.get_by_path_id("/soc/pci@30000000/nvme@0").is_some());
+        // An endpoint selector under a host bridge the baseline strips is
+        // ambiguous: the guest could only reach it by keeping the whole bridge,
+        // which would also expose the bridge's other endpoints. The config has
+        // to name the bridge explicitly, so reject the selector instead of
+        // silently widening the passthrough set.
+        let endpoint = "/soc/pci@60000000/ethernet@0";
+        let bridge = "/soc/pci@60000000";
+        let exclusions_before = vm_cfg.excluded_devices().to_vec();
+        let error = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap_err();
+        assert_eq!(
+            error,
+            crate::AxVmError::InvalidConfig {
+                detail: format!(
+                    "passthrough selector {endpoint} is below PCI host bridge {bridge}, which the \
+                     root baseline strips: list {bridge} explicitly so the endpoint and its \
+                     bridge stay assigned, or drop the selector"
+                ),
+            }
+        );
+        // The rejected configuration must not leave the first bridge stripped
+        // behind: the failure happens before any exclusion is applied.
+        assert_eq!(vm_cfg.excluded_devices(), exclusions_before.as_slice());
     }
 
     #[test]
@@ -1562,9 +1631,10 @@ mod tests {
         };
 
         // A virtualized guest starts from no physical devices, so neither an
-        // empty selector list nor an explicit "/" may hand it any: only a
-        // passthrough guest carries the root baseline, and an explicit "/" is a
-        // valid selector for every guest type.
+        // empty selector list nor a runtime root selector may widen it. The
+        // axvmconfig boundary rejects "/" for a virtualized guest in TOML, but
+        // GuestConfig can also be built directly, so the parser keeps its own
+        // guard: only a passthrough guest carries the root baseline.
         for selectors in [
             Vec::new(),
             vec![PhysicalDeviceRef {
@@ -2051,5 +2121,72 @@ mod tests {
                 .iter()
                 .any(|interrupt| interrupt.source == 13)
         );
+    }
+
+    #[test]
+    fn root_baseline_matches_an_empty_passthrough_list() {
+        let dtb = fdt_with_pci_hosts_and_endpoint();
+
+        // An empty passthrough list takes the baseline implicitly, and the host
+        // resolves that to the same runtime root selector "/" it installs for an
+        // explicit "/". Both spellings therefore reach the parser with the root
+        // selector already on the AxVM config, and must produce the same guest
+        // tree.
+        let empty_cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(vec![0]),
+                guest_type: GuestType::Passthrough,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let root_cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(vec![0]),
+                guest_type: GuestType::Passthrough,
+                ..Default::default()
+            },
+            devices: GuestDevices {
+                passthrough: vec![PhysicalDeviceRef {
+                    path: "/".to_string(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut empty_vm = AxVMConfig::new(AxVMConfigParams {
+            id: 0,
+            name: "empty".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, Some(vec![0]), None),
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/".to_string(),
+                ..Default::default()
+            }],
+            address_space_policy: AddressSpacePolicy::Passthrough,
+            ..Default::default()
+        });
+        let mut root_vm = AxVMConfig::new(AxVMConfigParams {
+            id: 0,
+            name: "root".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, Some(vec![0]), None),
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/".to_string(),
+                ..Default::default()
+            }],
+            address_space_policy: AddressSpacePolicy::Passthrough,
+            ..Default::default()
+        });
+
+        let empty_dtb = setup_guest_fdt_from_vmm(&dtb, &mut empty_vm, &empty_cfg).unwrap();
+        let root_dtb = setup_guest_fdt_from_vmm(&dtb, &mut root_vm, &root_cfg).unwrap();
+        assert_eq!(empty_dtb, root_dtb);
+
+        let guest = Fdt::from_bytes(&root_dtb).unwrap();
+        // Both spellings keep the guest-assignable devices and strip the PCI
+        // host bridges the baseline never keeps.
+        assert!(guest.get_by_path_id("/soc/virtio_mmio@10001000").is_some());
+        assert!(guest.get_by_path_id("/soc/pci@30000000").is_none());
+        assert!(guest.get_by_path_id("/soc/pci@60000000").is_none());
     }
 }
