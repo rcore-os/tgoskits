@@ -32,3 +32,18 @@ cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 cargo test -p qperf --test reg
 python3 tools/qperf/tests/prebuild.py
 '''
+
+[[check]]
+id = "test-orangepi5plus-selfbuild-scripts"
+name = "Orange Pi 5 Plus · Self-build script contracts"
+runner = "ubuntu-base"
+container_preflight = "none"
+timeout_minutes = 20
+command = '''
+apt-get update
+apt-get install -y --no-install-recommends picocom python3-serial
+cargo fetch --locked
+command -v picocom
+python3 -c 'import serial'
+bash apps/starry/orangepi-5-plus-selfbuild/tests/script_smoke.sh
+'''
