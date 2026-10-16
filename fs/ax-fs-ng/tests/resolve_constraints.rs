@@ -23,8 +23,8 @@ use std::{any::Any, collections::BTreeMap, sync::Arc, time::Duration};
 use ax_fs_ng::vfs::{FsContext, ResolveConstraints};
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, Filesystem,
-    FilesystemOps, Location, Metadata, MetadataUpdate, NodeFlags, NodePermission, NodeType,
-    Reference, RenameOptions, VfsError, VfsResult, WeakDirEntry,
+    FilesystemOps, Location, Metadata, MetadataUpdate, MutationCredentials, NodeFlags,
+    NodePermission, NodeType, Reference, RenameOptions, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::IoEvents;
 
@@ -50,7 +50,36 @@ fn fixture_tree() -> Tree {
     Tree::dir(&[(
         "a",
         Tree::dir(&[
-            ("b", Tree::dir(&[("f", Tree::Dir(BTreeMap::new()))])),
+            (
+                "b",
+                Tree::dir(&[
+                    ("f", Tree::Dir(BTreeMap::new())),
+                    (
+                        "sub",
+                        Tree::dir(&[(
+                            "l1",
+                            Tree::Symlink {
+                                target: "../l2".into(),
+                                magic: false,
+                            },
+                        )]),
+                    ),
+                    (
+                        "l2",
+                        Tree::Symlink {
+                            target: "l3".into(),
+                            magic: false,
+                        },
+                    ),
+                    (
+                        "l3",
+                        Tree::Symlink {
+                            target: "../above".into(),
+                            magic: false,
+                        },
+                    ),
+                ]),
+            ),
             (
                 "rel",
                 Tree::Symlink {
@@ -639,6 +668,41 @@ mod chroot_root {
     }
 
     #[test]
+    fn nested_dangling_create_keeps_the_beneath_boundary() {
+        let context = fixture();
+        // D = /a/b with the chain `sub/l1 -> ../l2`, `l2 -> l3`,
+        // `l3 -> ../above`, where `above` does not exist above D. Each
+        // O_CREAT re-entry must resume the BENEATH depth at the re-entered
+        // parent's true depth; an inflated counter would walk `..` above D
+        // looking for `above` instead of failing EXDEV at the dirfd.
+        let b = resolve(&context, "a/b", &ResolveConstraints::new()).unwrap();
+        let open_context = context.with_current_dir(b).expect("cwd to /a/b");
+        let mut options = ax_fs_ng::vfs::OpenOptions::new();
+        options
+            .write(true)
+            .create(true)
+            .resolve(ResolveConstraints::new().beneath());
+        struct PrintLogger;
+        impl log::Log for PrintLogger {
+            fn enabled(&self, metadata: &log::Metadata) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record) {
+                std::eprintln!("[{}] {}", record.level(), record.args());
+            }
+            fn flush(&self) {}
+        }
+        let _ = log::set_logger(&PrintLogger);
+        log::set_max_level(log::LevelFilter::Trace);
+
+        let error = options
+            .open_with_credentials(&open_context, "sub/l1", &MutationCredentials::root())
+            .err()
+            .expect("the escaping chain must fail");
+        assert_eq!(error, VfsError::CrossesDevices);
+    }
+
+    #[test]
     fn repeated_dot_dot_stays_inside_the_jail() {
         let (context, a, fs_root) = chrooted_at_a();
         let constraints = ResolveConstraints::new().no_xdev();
@@ -729,8 +793,9 @@ mod cached {
 mod host_locks {
     use core::{
         panic::Location,
-        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+        sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     };
+    use std::collections::{BTreeMap, BTreeSet};
 
     use ax_sync::interface::{AcquireResult, ContextState, LOCK_MODE_READ, LockMetadata};
 
@@ -797,6 +862,170 @@ mod host_locks {
                 (readers < WRITER - 1).then(|| readers + 1)
             })
             .is_ok()
+    }
+
+    static NEXT_MUTEX_ID: AtomicU64 = AtomicU64::new(1);
+    static SLEEP_MUTEXES: std::sync::OnceLock<
+        std::sync::Mutex<BTreeMap<u64, std::sync::Arc<SleepCompanion>>>,
+    > = std::sync::OnceLock::new();
+
+    fn sleep_mutexes() -> &'static std::sync::Mutex<BTreeMap<u64, std::sync::Arc<SleepCompanion>>> {
+        SLEEP_MUTEXES.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+    }
+
+    std::thread_local! {
+        static SLEEP_OWNED: std::cell::RefCell<BTreeSet<u64>> =
+            const { std::cell::RefCell::new(BTreeSet::new()) };
+    }
+
+    /// std-backed blocking companion for one sleepable mutex storage: host
+    /// tests run on real threads, so blocking waits use the OS directly.
+    struct SleepCompanion {
+        held: std::sync::Mutex<bool>,
+        available: std::sync::Condvar,
+    }
+
+    impl SleepCompanion {
+        fn new() -> Self {
+            Self {
+                held: std::sync::Mutex::new(false),
+                available: std::sync::Condvar::new(),
+            }
+        }
+
+        fn acquire(&self) {
+            let mut held = self.held.lock().unwrap_or_else(|error| error.into_inner());
+            while *held {
+                held = self
+                    .available
+                    .wait(held)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+            *held = true;
+        }
+
+        fn try_acquire(&self) -> bool {
+            let mut held = self.held.lock().unwrap_or_else(|error| error.into_inner());
+            if *held {
+                return false;
+            }
+            *held = true;
+            true
+        }
+
+        fn release(&self) {
+            *self.held.lock().unwrap_or_else(|error| error.into_inner()) = false;
+            self.available.notify_one();
+        }
+    }
+
+    fn sleep_companion(
+        storage: &ax_sync::interface::MutexStorage,
+    ) -> (u64, std::sync::Arc<SleepCompanion>) {
+        let mut table = sleep_mutexes()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut id = storage.generation().load(Ordering::Acquire);
+        if id == 0 {
+            id = NEXT_MUTEX_ID
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+                .expect("host sleep-mutex identity space exhausted");
+            storage.generation().store(id, Ordering::Release);
+        }
+        let companion = table
+            .entry(id)
+            .or_insert_with(|| std::sync::Arc::new(SleepCompanion::new()))
+            .clone();
+        (id, companion)
+    }
+
+    fn sleep_acquired(storage: &ax_sync::interface::MutexStorage, id: u64) {
+        SLEEP_OWNED.with(|owned| {
+            assert!(
+                owned.borrow_mut().insert(id),
+                "host sleep mutex recursive acquisition"
+            )
+        });
+        storage.owner_word().store(id, Ordering::Release);
+        storage.wait_state().store(1, Ordering::Release);
+    }
+
+    fn sleep_release(storage: &ax_sync::interface::MutexStorage) {
+        let id = storage.generation().load(Ordering::Acquire);
+        let companion = sleep_mutexes()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&id)
+            .cloned()
+            .expect("host sleep mutex release requires a live companion");
+        SLEEP_OWNED.with(|owned| {
+            assert!(
+                owned.borrow_mut().remove(&id),
+                "host sleep mutex released by a non-owner"
+            )
+        });
+        storage.owner_word().store(0, Ordering::Release);
+        storage.wait_state().store(0, Ordering::Release);
+        companion.release();
+    }
+
+    #[ax_crate_interface::impl_interface]
+    impl ax_sync::interface::MutexOps for HostLocks {
+        fn acquire(
+            storage: &ax_sync::interface::MutexStorage,
+            _next_waiter_sequence: &core::sync::atomic::AtomicU64,
+            _metadata: &ax_sync::interface::LockMetadata,
+            _lock_addr: usize,
+            _subclass: u32,
+            _caller: &'static core::panic::Location<'static>,
+        ) {
+            let (id, companion) = sleep_companion(storage);
+            sleep_acquired(storage, id);
+            companion.acquire();
+        }
+
+        fn try_acquire(
+            storage: &ax_sync::interface::MutexStorage,
+            _next_waiter_sequence: &core::sync::atomic::AtomicU64,
+            _metadata: &ax_sync::interface::LockMetadata,
+            _lock_addr: usize,
+            _subclass: u32,
+            _caller: &'static core::panic::Location<'static>,
+        ) -> bool {
+            let (id, companion) = sleep_companion(storage);
+            if !companion.try_acquire() {
+                return false;
+            }
+            sleep_acquired(storage, id);
+            true
+        }
+
+        fn release(storage: &ax_sync::interface::MutexStorage, _lock_addr: usize) {
+            sleep_release(storage);
+        }
+
+        fn force_release(storage: &ax_sync::interface::MutexStorage, _lock_addr: usize) {
+            sleep_release(storage);
+        }
+
+        fn is_owned_by_current(storage: &ax_sync::interface::MutexStorage) -> bool {
+            let id = storage.generation().load(Ordering::Acquire);
+            id != 0 && SLEEP_OWNED.with(|owned| owned.borrow().contains(&id))
+        }
+
+        fn is_locked(storage: &ax_sync::interface::MutexStorage) -> bool {
+            storage.wait_state().load(Ordering::Acquire) != 0
+        }
+
+        fn destroy(storage: &mut ax_sync::interface::MutexStorage) {
+            let id = storage.generation().load(Ordering::Acquire);
+            let removed = sleep_mutexes()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&id);
+            drop(removed);
+            storage.generation().store(0, Ordering::Release);
+        }
     }
 
     #[ax_crate_interface::impl_interface]
