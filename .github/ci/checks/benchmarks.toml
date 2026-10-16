@@ -8,25 +8,26 @@ default_runner = "qcs"
 # AxVisor performance checks (group = "AxVisor")
 # ---------------------------------------------------------------------------
 
-[[check]]
-id = "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark"
-group = "AxVisor"
-impact_targets = ["axvisor:aarch64", "starry:aarch64"]
-name = "Board OrangePi 5 Plus · AXIVC Zephyr-Starry benchmark"
-runner = "board"
-cache_key = ""
-resource_group = "orangepi-5-plus"
-timeout_minutes = 90
-command = '''
-echo "==> build the StarryOS guest from this checkout"
-cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml --smp 1
-echo "==> axvisor OrangePi 5 Plus AXIVC Zephyr-Starry benchmark"
-cargo xtask axvisor test board --board orangepi-5-plus-ivc-benchmark
-'''
-
-[[check.suite]]
-kind = "axvisor-board"
-board = "orangepi-5-plus-ivc-benchmark"
+# Temporarily disabled in CI; the benchmark remains available for manual runs.
+# [[check]]
+# id = "test-axvisor-self-hosted-board-orangepi-5-plus-ivc-benchmark"
+# group = "AxVisor"
+# impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+# name = "Board OrangePi 5 Plus · AXIVC Zephyr-Starry benchmark"
+# runner = "board"
+# cache_key = ""
+# resource_group = "orangepi-5-plus"
+# timeout_minutes = 90
+# command = '''
+# echo "==> build the StarryOS guest from this checkout"
+# cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml --smp 1
+# echo "==> axvisor OrangePi 5 Plus AXIVC Zephyr-Starry benchmark"
+# cargo xtask axvisor test board --board orangepi-5-plus-ivc-benchmark
+# '''
+#
+# [[check.suite]]
+# kind = "axvisor-board"
+# board = "orangepi-5-plus-ivc-benchmark"
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-vcpu-perf"

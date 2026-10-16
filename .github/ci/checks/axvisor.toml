@@ -105,19 +105,22 @@ cases = ["web-ui", "web-ui-diskless"]
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane-browser-console-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · HTTP control-plane + VM pool + browser console + ArceOS IVC"
+name = "QEMU aarch64 · HTTP control-plane + VM pool + browser console + IVC"
 timeout_minutes = 30
 node_version = "24"
 command = '''
-echo "==> axvisor aarch64 HTTP control-plane, VM pool, browser console and ArceOS IVC"
+# Use matching v0.0.15 rootfs and guest image bundles throughout this check.
+mkdir -p tmp/axbuild
+printf 'registry = "%s"\ndownload_dir = "%s/tgosimages"\n' \
+  'https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.15.toml' \
+  "${TMPDIR:-/tmp}" > tmp/axbuild/.image.toml
+echo "==> axvisor aarch64 HTTP control-plane, VM pool, browser console and IVC"
 # Keep all cases in one axbuild invocation. The QEMU runner groups cases by
 # Cargo identity before building, so equal AxVisor kernels are compiled once
 # and their per-case initramfs/runtime inputs are still prepared independently.
+# Build ArceOS guests from this checkout rather than using prebuilt binaries.
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal \
-  --test-case http-control-plane,qemu-vm-pool,qemu-vm-pool-http,browser-console,qemu-ivc-arceos
-# Disabled until the Linux IVC guest image matches the v2 publisher protocol.
-# echo "==> axvisor aarch64 IVC"
-# cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
+  --test-case http-control-plane,qemu-vm-pool,qemu-vm-pool-http,browser-console,qemu-ivc-local,qemu-ivc-arceos
 '''
 
 [[check.suite]]
@@ -128,8 +131,9 @@ cases = [
   "qemu-vm-pool",
   "qemu-vm-pool-http",
   "browser-console",
+  "qemu-ivc-local",
   "qemu-ivc-arceos",
-  # "qemu-ivc", # Linux guest image uses IVC v3; ArceOS publisher uses v2.
+  # "qemu-ivc", # Prebuilt guest images must match the publisher protocol.
 ]
 
 [[check]]

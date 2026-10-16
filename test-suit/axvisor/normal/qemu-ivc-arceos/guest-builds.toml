@@ -1,0 +1,1 @@
+arceos_build_configs = ["../qemu-ivc-local/guest-build.toml", "guest-build.toml"]
