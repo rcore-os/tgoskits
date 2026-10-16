@@ -220,6 +220,15 @@ impl AxvmManager {
             return Ok(vm);
         }
 
+        // Creating a guest loads its assets through the host filesystem. Once
+        // that filesystem is released for guest passthrough, its block device
+        // serves no host I/O anymore, so report the release instead of
+        // blocking forever on an unavailable device.
+        if *self.host_filesystem_released.lock_unpoisoned() {
+            return Err(anyhow!(VmCandidateNotFound { vm_id })
+                .context("host filesystem was released; VM assets are unavailable"));
+        }
+
         if let Some(entry) = self.builtin_catalog().get(vm_id) {
             let (operation, release_host_filesystem) = self
                 .create_vm_from_toml_locked(entry.toml())
@@ -229,10 +238,6 @@ impl AxvmManager {
                 .with_context(|| format!("initialize builtin VM[{vm_id}]"));
         }
 
-        if *self.host_filesystem_released.lock_unpoisoned() {
-            return Err(anyhow!(VmCandidateNotFound { vm_id })
-                .context("host filesystem was released; dynamic VM assets are unavailable"));
-        }
         let pool = crate::vm_pool::scan_with_builtin(self.builtin_catalog());
         let Some(entry) = pool.entries().iter().find(|entry| entry.id() == vm_id) else {
             crate::vm_pool::log_issues(&pool);
@@ -250,12 +255,18 @@ impl AxvmManager {
             })
     }
 
-    /// Creates and starts the selected builtin guests in command-line order.
-    /// Every ID is validated before the first VM is created. Any guest created
-    /// by this selector is destroyed when a later operation fails.
-    pub fn start_selected_vms(&self, ids: &[VMId]) -> Result<()> {
+    /// Creates the selected builtin guests in command-line order and starts
+    /// only `start_ids`.
+    ///
+    /// `prepare_ids` are created before the host filesystem may be released
+    /// for guest passthrough, so their assets load while the host still owns
+    /// its storage; they stay ready until a later `vm start` runs without any
+    /// host file access. Every ID is validated before the first VM is created.
+    /// Any guest created by this selector is destroyed when a later operation
+    /// fails.
+    pub fn start_selected_vms(&self, start_ids: &[VMId], prepare_ids: &[VMId]) -> Result<()> {
         let _lifecycle = self.lifecycle.lock_unpoisoned();
-        for &vm_id in ids {
+        for &vm_id in start_ids.iter().chain(prepare_ids) {
             if self.builtin_catalog().get(vm_id).is_none() {
                 bail!("VM[{vm_id}] selected by the host selector is not builtin");
             }
@@ -264,7 +275,7 @@ impl AxvmManager {
         let mut created = Vec::new();
         let mut release_host_filesystem = false;
         let result = (|| {
-            for &vm_id in ids {
+            for &vm_id in start_ids.iter().chain(prepare_ids) {
                 if self.get(vm_id).is_some() {
                     bail!("VM[{vm_id}] is already registered");
                 }
@@ -286,7 +297,7 @@ impl AxvmManager {
             if release_host_filesystem {
                 self.release_host_filesystem_for_guest_passthrough_locked()?;
             }
-            for &vm_id in ids {
+            for &vm_id in start_ids {
                 self.require_vm(vm_id)?
                     .start()?
                     .wait()

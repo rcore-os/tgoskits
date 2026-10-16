@@ -186,10 +186,12 @@ Linux 登录 Shell 出现 `orangepi@orangepi5plus:~` 提示符后，由本目录
 sudo -n /home/orangepi/robot-ci/aka-rk3588-dual/run_dual_pick_ci_once.sh --min-fps 28
 ```
 
-宿主 cmdline 以 `axvisor.vm_start=1` 只创建并启动 Linux，原校验脚本放到后台并把
+宿主 cmdline 以 `axvisor.vm_start=1` 启动 Linux、以 `axvisor.vm_prepare=2` 在开机时
+完成 Zephyr 的创建但不启动（直通 Linux 会接管宿主存储，延迟启动的 guest 必须先
+完成镜像加载，之后的 `vm start` 不再需要宿主文件 I/O）。原校验脚本放到后台并把
 输出记入临时文件。当日志出现 `ROBOT_CONFIG_WAIT type=1` 时，发布端已经完成 IVC
-发布及共享区初始化，board runner 才切回宿主按需 `vm start 2` 启动 Zephyr，再返回
-Linux 等待原校验脚本退出。就绪标记的轮询
+发布及共享区初始化，board runner 才切回宿主用 `vm start 2` 启动已就绪的 Zephyr，
+再返回 Linux 等待原校验脚本退出。就绪标记的轮询
 预算为 300×0.1 秒；轮询期间进程提前退出或预算内未见标记都判失败，失败收尾仍会等待
 校验脚本自身结束（其 BEGIN ACK 时限为 90 秒），更长时间由板级 `timeout` 兜底。
 这建立明确的初始化依赖，避免 Zephyr 的非阻塞首次订阅在共享区尚未就绪时失败，随后

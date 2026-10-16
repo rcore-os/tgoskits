@@ -194,17 +194,21 @@ fail_regex = ['STARRY_SYNC_FAIL']
 timeout = 120
 
 [[shell_check_steps]]
-shell_cmd = "\u0018hvm console 1"
-success_regex = ['Attached VM\[1\] console']
-timeout = 30
-
-[[shell_check_steps]]
-shell_prefix = "# "
-shell_cmd = "pwd"
+# Attach VM[1] and drive its first command in one burst, like the VM[3] token
+# below. The console switch can emit the Linux prompt before the
+# `Attached VM[1] console` marker, so a follow-up step that waits for `# ` can
+# stall behind a prompt this step already consumed and burn the whole 1800s
+# budget. Sending `pwd` in the same burst makes its newline-terminated output the
+# success marker, which proves the attach, the guest shell boundary and the
+# command itself. The empty lines leave the guest shell with fresh prompts.
+shell_cmd = "\u0018hvm console 1\n\n\npwd"
 success_regex = ['(?m)^/\s*$']
 timeout = 30
 
 [[shell_check_steps]]
+# Prefix: the Linux prompt printed after `pwd` above. It restores the `# `
+# boundary the remaining Linux checks inherit.
+shell_prefix = "# "
 shell_cmd = "p=LINUX; [ -r /proc/cpuinfo ] || mount -t proc proc /proc; grep -qs ' /sys sysfs ' /proc/mounts || mount -t sysfs sysfs /sys; [ -r /proc/cpuinfo ] && grep -qs ' /sys sysfs ' /proc/mounts && echo ${p}_MOUNTS_PASS || echo ${p}_MOUNTS_FAIL"
 success_regex = ['(?m)^LINUX_MOUNTS_PASS\s*$']
 fail_regex = ['(?m)^LINUX_MOUNTS_FAIL\s*$']

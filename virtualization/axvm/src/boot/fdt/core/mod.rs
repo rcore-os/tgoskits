@@ -245,6 +245,29 @@ fn resolve_machine_resources_from_host(
         )
     })?;
     let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
+    // An explicit `console0` device declares the console geometry itself, so the
+    // strict console resolver below intentionally leaves the machine profile
+    // untouched for it. Adopt the host-selected UART as that baseline first: the
+    // request inherits the register shift/width, clock and IRQ it does not spell
+    // out, and the plan needs the host firmware identity to replace the physical
+    // UART. Guests without `console0` keep the documented priority, where the
+    // strict resolver alone applies the supplied guest DTB and then host firmware.
+    if has_explicit_console(vm_config) {
+        let current = vm_config.serial_profile();
+        if let Some(interrupt_encoding) = machine.serial_fdt_interrupt
+            && let Some(resolved) =
+                serial::host_selected_serial(&host_fdt, current, interrupt_encoding)?
+        {
+            if resolved.profile != current {
+                info!(
+                    "VM[{}] virtual UART follows the host-selected UART: {:?}",
+                    vm_config.id(),
+                    resolved.profile
+                );
+            }
+            vm_config.replace_machine_serial(resolved.profile, Some(resolved.identity))?;
+        }
+    }
     if let Some(gic) = interrupt::host_gic_profile(&host_fdt)? {
         info!(
             "VM[{}] virtual GIC follows host firmware resources: {:?}",
