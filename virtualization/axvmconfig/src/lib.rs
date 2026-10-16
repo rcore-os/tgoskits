@@ -537,6 +537,8 @@ pub struct GuestDevices {
     /// Physical devices explicitly assigned to the guest.
     pub passthrough: Vec<PhysicalDeviceRef>,
     /// Physical devices removed from a passthrough guest's default assignment.
+    /// `/` removes that whole baseline, which leaves the guest without physical
+    /// devices.
     pub disabled: Vec<PhysicalDeviceRef>,
     /// Virtual devices instantiated through the code-registered model catalog.
     #[serde(rename = "virtual")]

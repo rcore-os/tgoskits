@@ -295,7 +295,7 @@ success
 printf '%s\n' <板卡密码> | sudo -S -p '' nmcli -w 45 device connect enP3p49s0
 ```
 
-### 功能项 ：ping 测试网络
+### 功能项 1：ping 测试网络
 
 ```bash
 ip -br a                 # 期望 enP3p49s0 UP 且有 10.x.x.x/24 地址
@@ -305,7 +305,7 @@ gw=$(ip r | awk '/default/{print $3}'); ping -c 3 "$gw"
 
 通过条件：接口有地址、carrier 为 1、ping 网关 0% 丢包（2026-10-16 实测：10.3.10.254，3 发 3 收，~0.9 ms；另 ping 板卡服务 10.3.10.60 同样 3/3）。
 
-### 功能项 ：CPU 信息
+### 功能项 2：CPU 信息
 
 ```bash
 cat /proc/cpuinfo
@@ -313,7 +313,7 @@ cat /proc/cpuinfo
 
 通过条件：能列出处理器信息；`processor` 条目数与配置的 `cpu_num` 一致（本配置为 1）。
 
-### 功能项 ：文件读写
+### 功能项 3：文件读写
 
 ```bash
 echo axvisor-guest-rw > /tmp/rw-check.txt
@@ -322,12 +322,12 @@ cat /tmp/rw-check.txt
 
 通过条件：`cat` 原样返回写入内容。
 
-### 功能项 ：ssh 连接 Ubuntu 客户机
+### 功能项 4：ssh 连接 Ubuntu 客户机
 
 客户机起来后（板卡 IP **仅在 ostool 会话持有期间可达**，见「首次准备」的说明），在工作站另开终端：
 
 ```bash
-ssh orangepi@<客户机 IP>     # 客户机 IP 用场景 3 功能项 9 的 ip -br a 查
+ssh orangepi@<客户机 IP>     # 客户机 IP 用场景 3 功能项 1 的 ip -br a 查
 uname -r                     # 期望 6.1.99-rockchip-rk3588
 ```
 
@@ -335,7 +335,7 @@ uname -r                     # 期望 6.1.99-rockchip-rk3588
 
 登录后建议先确认身份：客户机和板卡原生 Linux 用同一张网卡、同一个 IP，光看提示符分不出来。客户机是单核（`cpu_num = 1`），`grep -c '^processor' /proc/cpuinfo` 返回 `1`；板卡原生 Linux 是 8 核，返回 `8`。`uname -r` 两者相同（都是 `6.1.99-rockchip-rk3588`），不能用来区分。
 
-### 功能项 ：apt 软件包安装
+### 功能项 5：apt 软件包安装
 
 ```bash
 sudo apt-get update
@@ -346,7 +346,7 @@ sudo apt-get install -y sl && sl
 
 ### 判定
 
-五项独立判定，任一项失败不影响其他项的结论。网络三项失败时先核对 `pci=nomsi` 在不在 `configs/linux.toml` 的 cmdline 里，再看板卡所连网络（DHCP / 网关 / 镜像源）是否正常——用板卡原生 Linux（`cargo xtask board connect` 进去跑同样命令）做对照，可以把"用例配置问题"和"环境问题"分开。
+功能项 1–5 独立判定，任一项失败不影响其他项的结论。网络三项失败时先核对 `pci=nomsi` 在不在 `configs/linux.toml` 的 cmdline 里，再看板卡所连网络（DHCP / 网关 / 镜像源）是否正常——用板卡原生 Linux（`cargo xtask board connect` 进去跑同样命令）做对照，可以把"用例配置问题"和"环境问题"分开。
 
 五项一次跑通的完整记录（2026-10-16，同一会话内）：
 
