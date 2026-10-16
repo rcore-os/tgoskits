@@ -1,5 +1,5 @@
 cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 splash=verbose consoleblank=0 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 loglevel=8 usb-storage.quirks= cma=128M cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1 axvisor.vm_start=1,2,3'
-board_type = "OrangePi-5-Plus"
+board_type = "BallPick-Robot-Rk3588"
 timeout = 300
 
 [[shell_check_steps]]
@@ -7,17 +7,17 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
-shell_prefix = "~ #"
-shell_cmd = "mkdir -p /tmp && insmod /root/axvisor.ko && echo IVC_LINUX_READY"
+shell_prefix = "root@linux-ivc:~#"
+shell_cmd = "mkdir -p /proc /sys /tmp && (mount -t proc proc /proc 2>/dev/null || grep -q ' /proc proc ' /proc/mounts) && (test -d /sys/class/net || mount -t sysfs sysfs /sys) && awk '$2 == \"/\" && $3 == \"ext4\" {found=1} END {exit !found}' /proc/mounts && modprobe axvisor && test -c /dev/axivc && test -x /usr/bin/ivc-roundtrip && echo IVC_LINUX_READY"
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Failed to start VM", "(?m)^IVC_ROUNDTRIP_FAILED\\b", "(?m)^ORANGEPI_ZEPHYR_.*_FAILED\\b", "(?m)^IVC_LINK_FAILED\\s*$"]
 success_regex = ["(?m)^IVC_LINUX_READY\\s*$"]
 
 [[shell_check_steps]]
-shell_prefix = "~ #"
-shell_cmd = "( /root/ivc-roundtrip publish 0x100 linux-to-zephyr zephyr-to-linux || echo IVC_LINK_FAILED ) >/tmp/linux-zephyr.log 2>&1 </dev/null &"
+shell_prefix = "root@linux-ivc:~#"
+shell_cmd = "( /usr/bin/ivc-roundtrip publish 0x100 linux-to-zephyr zephyr-to-linux || echo IVC_LINK_FAILED ) >/tmp/linux-zephyr.log 2>&1 </dev/null &"
 
 [[shell_check_steps]]
-shell_prefix = "~ #"
+shell_prefix = "root@linux-ivc:~#"
 shell_cmd = "\u0018hvm console 3"
 
 [[shell_check_steps]]
@@ -37,11 +37,11 @@ fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Faile
 success_regex = ["(?m)^IVC_ROUNDTRIP_PASSED role=publish key=0x100 count=5\\s*$"]
 
 [[shell_check_steps]]
-shell_prefix = "~ #"
-shell_cmd = "( /root/ivc-roundtrip publish 0x101 linux-to-starry starry-to-linux || echo IVC_LINK_FAILED ) >/tmp/linux-starry.log 2>&1 </dev/null &"
+shell_prefix = "root@linux-ivc:~#"
+shell_cmd = "( /usr/bin/ivc-roundtrip publish 0x101 linux-to-starry starry-to-linux || echo IVC_LINK_FAILED ) >/tmp/linux-starry.log 2>&1 </dev/null &"
 
 [[shell_check_steps]]
-shell_prefix = "~ #"
+shell_prefix = "root@linux-ivc:~#"
 shell_cmd = "\u0018hvm console 2"
 
 [[shell_check_steps]]
@@ -61,7 +61,7 @@ fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "Failed to initialize guest VM", "Faile
 success_regex = ["(?m)^IVC_ROUNDTRIP_PASSED role=publish key=0x101 count=5\\s*$"]
 
 [[shell_check_steps]]
-shell_prefix = "~ #"
+shell_prefix = "root@linux-ivc:~#"
 shell_cmd = "\u0018hvm console 3"
 
 [[shell_check_steps]]

@@ -3,24 +3,21 @@ id = 1
 name = "linux-pci-network"
 guest_type = "passthrough"
 cpu_num = 1
-phys_cpu_ids = [0]
+phys_cpu_ids = [0x400]
 
 [kernel]
 entry_point = 0x2_4008_0000
 kernel_load_addr = 0x2_4008_0000
-# Use the board-staged Linux 6.1.99 image and matching initramfs from the
-# shared /guest assets; the older /guest/linux/orangepi-5-plus (6.1.43) image
-# hits PCIe link-training failures on this device tree.
-kernel_path = "${env:AXVISOR_GUEST_ASSETS}/linux/orangepi-5-plus-6.1.99"
+# Requires the Rockchip BSP release 6.1.99-rockchip-rk3588 and matching guest modules.
+# The ping case checks uname -r before probing PCIe; see README.md for deployment.
+kernel_path = "/guest/linux/orangepi-5-plus"
 dtb_load_addr = 0x2_4000_0000
-ramdisk_path = "${env:AXVISOR_GUEST_ASSETS}/linux/initramfs.cpio"
-ramdisk_load_addr = 0xc000_0000
 # Physical PCI MSI/ITS assignment is not wired into the AxVM host backend.
 # This case exercises the PCIe controller's physical INTx cascade instead.
-cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 cma=128M pci=nomsi"
+cmdline = 'root=/dev/vda rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 devtmpfs.mount=1 clk_ignore_unused pci=nomsi init=/bin/sh HOME=/root USER=root HOSTNAME=ubuntu -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+# MapIdentical allocates RAM owned by this VM and preserves physical DMA
+# addresses. Do not reuse old fixed MapReserved ranges from another host.
 memory_regions = [
-    [0xb000_0000, 0x1000_0000, 0x7, 2],
-    [0xc000_0000, 0x3000_0000, 0x7, 2],
     [0x2_4000_0000, 0x8000_0000, 0x7, 1],
 ]
 
@@ -43,8 +40,6 @@ passthrough = [
     { path = "/syscon@fd5bc000" },
     { path = "/syscon@fd5c4000" },
     { path = "/vcc3v3-pcie-eth" },
-    { path = "/mmc@fe2c0000" },
-    { path = "/mmc@fe2e0000" },
     { path = "/spi@feb20000" },
     { path = "/i2c@fd880000" },
     { path = "/pcie@fe180000" },
@@ -52,4 +47,11 @@ passthrough = [
     { path = "/phy@fee00000" },
     { path = "/phy@fee20000" },
 ]
-disabled = []
+# Physical storage remains owned by AxVisor; the guest uses its own ext4.
+disabled = [{ path = "/mmc@fe2c0000" }, { path = "/mmc@fe2e0000" }]
+
+[[devices.virtual]]
+id = "rootfs"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-orangepi-jammy-0.img"
+filesystem = "ext4"

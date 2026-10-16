@@ -44,7 +44,7 @@ impl<'a> WritebackPages<'a> {
                 .try_reserve_exact(count)
                 .map_err(|_| VfsError::NoMemory)?;
             let mut cache = shared.page_cache.lock();
-            for (&number, page) in cache.iter_mut() {
+            for (&number, mut page) in cache.iter_mut() {
                 if page.dirty && selected(number) {
                     let paddr = page.paddr()?;
                     let pins = page.pins.checked_add(1).ok_or(VfsError::ValueOverflow)?;
@@ -104,7 +104,7 @@ impl Drop for WritebackPages<'_> {
     fn drop(&mut self) {
         let mut cache = self.shared.page_cache.lock();
         for tracked in &self.pages {
-            if let Some(page) = cache.peek_mut(&tracked.number)
+            if let Some(mut page) = cache.peek_mut(&tracked.number)
                 && page.paddr() == Ok(tracked.paddr)
                 && page.pins != 0
             {
