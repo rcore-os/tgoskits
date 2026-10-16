@@ -1,6 +1,6 @@
 # Orange Pi 5 Plus Linux 与 Zephyr 双客户机场景
 
-该场景在 SD 版 Orange Pi 5 Plus 上通过 Axvisor 同时运行 Linux 感知客户机和 Zephyr 控制客户机。Linux 使用 USB 摄像头和 RKNPU 生成感知结果，通过 `robot-ivc` 发送给 Zephyr；Zephyr 独占 UART6，负责底盘、机械臂和输入看门狗。仓库只保留已有实机验收记录的 SD 配置；本次 PR 同步调整的 CPU4/CPU2 亲和性尚未在本次硬件窗口重新运行，不能把 perf30 单客户机结果当作双客户机绑定验证。eMMC 迁移要求见第6节。
+该场景在 SD 版 Orange Pi 5 Plus 上通过 Axvisor 同时运行 Linux 感知客户机和 Zephyr 控制客户机。Linux 使用 USB 摄像头和 RKNPU 生成感知结果，通过 `robot-ivc` 发送给 Zephyr；Zephyr 独占 UART6，负责底盘、机械臂和输入看门狗。仓库只保留已验证的 SD 配置；eMMC 迁移要求见第6节。
 
 ## 1. 工作负载与资产
 
@@ -8,7 +8,7 @@
 
 ### 1.1 客户机职责
 
-两个客户机通过同名 `robot-ivc` 虚拟设备建立通道，通道身份和大小由 IVC 模型统一管理。客户机名称来自各自 TOML 的 `base.name`，也用于网页窗格标题。机器人 profile 将 Linux 固定到 A76 big0 CPU4（`phys_cpu_ids=[0x400]`、`phys_cpu_sets=[0x10]`），Zephyr 固定到 A55 CPU2（`phys_cpu_ids=[0x200]`、`phys_cpu_sets=[0x4]`）。
+两个客户机通过同名 `robot-ivc` 虚拟设备建立通道，通道身份和大小由 IVC 模型统一管理。客户机名称来自各自 TOML 的 `base.name`，也用于网页窗格标题。
 
 | 客户机 | 主要职责 | 关键设备 |
 | --- | --- | --- |
@@ -16,18 +16,26 @@
 | Zephyr | 接收感知结果、控制底盘和机械臂 | UART6 `/serial@feb90000`、`robot-ivc` |
 | Axvisor | VM 管理、物理串口、可选网页控制台 | RTL8125、宿主 PCIe 路径 |
 
-Linux 配置保留 `clk_ignore_unused` 和 `pd_ignore_unused`，防止启动末尾的通用清理关闭其他系统仍在使用的资源；CPU OPP 仍由 Axvisor/`ax-runtime` 所有。这两个 Linux 参数不能阻止已绑定驱动主动复位设备或关闭时钟，因此不能代替第 2 节的设备所有权隔离。
+两个客户机都使用 A55。Linux 的一个 vCPU 固定在 CPU0：`phys_cpu_ids = [0x00]`
+是客户机 MPIDR（宿主 A55-0 身份）；Zephyr 固定在 CPU2，`phys_cpu_ids = [0x200]`
+是宿主 A55-2 身份。未配置 `phys_cpu_sets` 时，FDT 路径会按该身份从宿主 CPU 节点
+解析出单核宿主亲和位图，因此不需要显式 `phys_cpu_sets`。性能门槛为 28 FPS，
+不能以迁移 A76 代替性能修复。
+
+Linux 配置保留 `clk_ignore_unused` 和 `pd_ignore_unused`，防止启动末尾的通用清理关闭其他系统仍在使用的资源。这两个参数不能阻止已绑定驱动主动复位设备或关闭时钟，因此不能代替第 2 节的设备所有权隔离。
 
 ### 1.2 客户机镜像
 
-Axvisor 从宿主文件系统加载 Linux 内核、initramfs 和 Zephyr 镜像。`prepare_guest_payload()` 将构建机上的启动资源加入宿主 initramfs，并通过 FIT 或 HTTP Boot 交接。运行前设置 `AXVISOR_GUEST_ASSETS` 指向本地资产目录，确认文件存在且非空。
+Axvisor 从宿主文件系统加载 Linux 内核、initramfs 和 Zephyr 镜像。`prepare_guest_payload()` 在构建机本地存在对应文件时把启动资源复制进宿主 initramfs；板端已提供的绝对路径保留原值，由 CI 与板端宿主环境在宿主文件系统上在位提供。本目录的三个 VM 配置统一引用板端 `/guest` 路径：
 
 ```text
-${AXVISOR_GUEST_ASSETS}/linux/orangepi-5-plus-6.1.99-axivc
-${AXVISOR_GUEST_ASSETS}/linux/initramfs.cpio
-${AXVISOR_GUEST_ASSETS}/zephyr/orangepi-robot-control-sdk
-${AXVISOR_GUEST_ASSETS}/zephyr/orangepi-robot-control-sdk.dtb
+/guest/linux/orangepi-5-plus-6.1.99-axivc
+/guest/linux/initramfs.cpio
+/guest/zephyr/orangepi-robot-control-sdk
+/guest/zephyr/orangepi-robot-control-sdk.dtb
 ```
+
+这些文件由板端 CI 或板卡制作环境放置在宿主 `/guest` 下；文件缺失或为空会在启动对应客户机时失败。
 
 Zephyr 控制镜像通过 `tgosimages` 的机器人应用入口构建，不从某个开发者的 AKA 工作目录
 直接产出：
@@ -105,7 +113,7 @@ Linux 使用 `guest_type = "passthrough"` 且 `passthrough = []`，因此从整�
 
 ## 3. 构建与启动流程
 
-启动前确认机器人活动范围安全、SD CI 板卡空闲，并确认第 1.2 节列出的客户机启动资源已放到构建机的 `AXVISOR_GUEST_ASSETS` 目录。
+启动前确认机器人活动范围安全、SD CI 板卡空闲，并确认第 1.2 节列出的客户机启动资源已在板端宿主 `/guest` 提供（或构建机同名绝对路径存在）。
 
 ### 3.1 SD 构建
 
@@ -175,8 +183,18 @@ Axvisor: exit
 Linux 登录 Shell 出现 `orangepi@orangepi5plus:~` 提示符后，由本目录的 board 配置运行：
 
 ```sh
-sudo -n /home/orangepi/robot/aka-rk3588/run_dual_pick_ci_once.sh --min-fps 28
+sudo -n /home/orangepi/robot-ci/aka-rk3588-dual/run_dual_pick_ci_once.sh --min-fps 28
 ```
+
+宿主 cmdline 以 `axvisor.vm_start=1` 只创建并启动 Linux，原校验脚本放到后台并把
+输出记入临时文件。当日志出现 `ROBOT_CONFIG_WAIT type=1` 时，发布端已经完成 IVC
+发布及共享区初始化，board runner 才切回宿主按需 `vm start 2` 启动 Zephyr，再返回
+Linux 等待原校验脚本退出。就绪标记的轮询
+预算为 300×0.1 秒；轮询期间进程提前退出或预算内未见标记都判失败，失败收尾仍会等待
+校验脚本自身结束（其 BEGIN ACK 时限为 90 秒），更长时间由板级 `timeout` 兜底。
+这建立明确的初始化依赖，避免 Zephyr 的非阻塞首次订阅在共享区尚未就绪时失败，随后
+因直通 VM 的关闭映射被保留而无法再次取得订阅槽。启动顺序不代替配置交换和完整动作验收。
+感知阶段不实时回放串口日志，防止串口反压耗尽控制器输入期限；结束后回放并保留原退出码。
 
 消息和失败处理按以下顺序进行；IVC 通道 key 为 `0x49564301`：
 
@@ -207,9 +225,11 @@ NPU 调用错误、IVC 发送失败或丢帧、执行器读写/反馈错误都�
 受控执行器反馈；预设场景允许模拟夹持成功，不能证明识别准确率、真实抓球入桶、
 地面行驶、长期稳定性或硬件急停。
 
-本 SD 场景使用板卡类型 `OrangePi-5-Plus-DualGuest-robot`，与 StarryOS + Zephyr 场景顺序
+本 SD 场景使用板卡类型 `OrangePi-5-Plus-Robot-UART6`，与 StarryOS + Zephyr 场景顺序
 共用同一块板。感知程序、Zephyr 镜像和 CI 脚本须配套更新。Linux 还需为上述
 固定命令配置限定的免密 sudo。board 入口以 `shell_check_steps` 逐步注入短命令。
+双客户机运行目录 `/home/orangepi/robot-ci/aka-rk3588-dual` 独立于单客户机
+`/home/orangepi/robot-ci/aka-rk3588` 与通用 `/home/orangepi/robot/aka-rk3588`。
 
 ## 6. 如需迁移到 eMMC
 
