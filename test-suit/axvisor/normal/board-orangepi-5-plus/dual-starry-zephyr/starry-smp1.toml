@@ -9,6 +9,10 @@ phys_cpu_ids = [0x00]
 entry_point = 0x4008_0000
 kernel_load_addr = 0x4008_0000
 kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+# AxVM replaces host bootargs with this value, so repeat the SD-root and RK3588
+# console semantics needed by this guest. The explicit shell is the test PID 1,
+# not the board's normal system init.
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 cma=128M init=/bin/sh HOME=/root USER=root HOSTNAME=starry TERM=linux PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PS1=\"root@starry:# \""
 # DTB GPA is selected automatically from the prepared guest memory layout.
 
 memory_regions = [
@@ -34,6 +38,24 @@ disabled = [
   # StarryOS still owns the robot camera on USB1.
   { path = "/usbdrd3_0" },
   { path = "/phy@fed80000" },
+  # The FUSB302 connector's remote-endpoint refers to the disabled USB0 PHY
+  # above, which AxVisor keeps for the host; the guest must not parse it.
+  { path = "/i2c@fec80000/fusb302@22" },
+  # The guest does not use this DisplayPort node, so keep it out to avoid its
+  # references to the AxVisor-owned /phy@fed80000/dp-port.
+  { path = "/dp@fde50000" },
+  # The guest does not use the VOP display pipeline, so keep it out to avoid
+  # its references to the AxVisor-owned DisplayPort provider above.
+  { path = "/vop@fdd90000" },
+  # The guest does not use this HDMI output node, so keep it out to avoid its
+  # references to the AxVisor-owned VOP provider above.
+  { path = "/hdmi@fdea0000" },
+  # The guest does not use this HDMI output node, so keep it out to avoid its
+  # references to the AxVisor-owned VOP provider above.
+  { path = "/hdmi@fde80000" },
+  # The guest does not use the host IOMMU, so keep it out to avoid the
+  # passthrough sharing an AxVisor-owned interrupt source.
+  { path = "/iommu@fdd97e00" },
 ]
 
 [[devices.virtual]]
