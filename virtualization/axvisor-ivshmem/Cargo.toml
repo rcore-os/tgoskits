@@ -8,3 +8,6 @@ repository.workspace = true
 description = "Allocation-free peer-to-peer message transport over AxVisor ivshmem output sections"
 keywords = ["ivshmem", "virtualization", "no-std"]
 categories = ["virtualization", "no-std"]
+
+[dependencies]
+thiserror.workspace = true

@@ -6,7 +6,6 @@
 //! guest adapter supplies the State Table and contiguous output sections, and
 //! publishes READY only after [`Peer::initialize`] succeeds. A single owner
 //! drives each peer's sender and receiver; other peers only read its section.
-//! The [`message`] module streams Message V1 frames across these slots.
 //! Guest PCI/device integration remains in the OS adapter.
 
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -14,6 +13,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(test)]
 extern crate std;
 
+/// Message V2 wire codec, independent of the ring's current section version.
 pub mod message;
 
 /// Bytes in one output section (one BAR2 page).
@@ -337,18 +337,6 @@ impl<'a> Peer<'a> {
             }
         }
         Ok(())
-    }
-
-    fn peer_count(&self) -> usize {
-        self.sections.len()
-    }
-
-    fn id(&self) -> usize {
-        self.id
-    }
-
-    fn is_peer_ready(&self, peer: usize) -> bool {
-        self.is_ready(peer)
     }
 
     fn is_ready(&self, peer: usize) -> bool {
