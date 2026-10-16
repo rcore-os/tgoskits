@@ -59,6 +59,12 @@ pub fn setup_guest_fdt_from_vmm(
     // same baseline, and any path written next to it is appended on top, so a
     // host bridge named there survives the strip. A list with no "/" stays an
     // exact selection with no baseline at all.
+    //
+    // The root selector is the passthrough marker: the host only installs it for
+    // a passthrough guest (an empty list gets the machine default, an explicit
+    // "/" comes from the guest configuration). A virtualized guest never has it,
+    // so keying the baseline on the runtime selector rather than on the crate
+    // list keeps virtualized guests at zero physical devices.
     let explicit_device_names = crate_config
         .devices
         .passthrough
@@ -70,8 +76,10 @@ pub fn setup_guest_fdt_from_vmm(
         .filter(|name| name.as_str() != "/")
         .cloned()
         .collect::<Vec<_>>();
-    let base_is_root =
-        explicit_device_names.is_empty() || explicit_device_names.iter().any(|name| name == "/");
+    let base_is_root = vm_cfg
+        .pass_through_devices()
+        .iter()
+        .any(|device| device.name == "/");
 
     if base_is_root {
         for node_id in fdt.iter_node_ids() {
@@ -91,15 +99,11 @@ pub fn setup_guest_fdt_from_vmm(
     }
 
     let mut selected_device_names = if base_is_root {
-        let mut names = vm_cfg
+        vm_cfg
             .pass_through_devices()
             .iter()
             .map(|device| device.name.clone())
-            .collect::<Vec<_>>();
-        if !names.iter().any(|name| name == "/") {
-            names.push("/".to_string());
-        }
-        names
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
@@ -1445,6 +1449,35 @@ mod tests {
                     .to_string(),
             }
         );
+    }
+
+    #[test]
+    fn virtualized_guest_without_selectors_maps_no_physical_device() {
+        let dtb = fdt_with_pci_host_and_endpoint();
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 0,
+            name: "test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, Some(vec![0]), None),
+            ..Default::default()
+        });
+        let crate_cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(vec![0]),
+                guest_type: GuestType::Virtualized,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let guest_dtb = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap();
+        let guest = Fdt::from_bytes(&guest_dtb).unwrap();
+
+        // A virtualized guest starts from no physical devices, so an empty
+        // selector list must stay empty. Only a passthrough guest carries the
+        // runtime root selector, and reading the empty list as "take the root
+        // baseline" would hand this guest every non-PCI device instead.
+        assert!(guest.get_by_path_id("/soc/virtio_mmio@10001000").is_none());
+        assert!(guest.get_by_path_id("/soc/pci@30000000").is_none());
     }
 
     #[test]
