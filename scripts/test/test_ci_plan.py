@@ -14,6 +14,8 @@ from typing import Any
 
 MODULE_PATH = Path(__file__).with_name("ci_plan.py")
 sys.path.insert(0, str(MODULE_PATH.parent))
+
+from ci_suite import SUITE_ROOTS
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -32,6 +34,16 @@ def main_test_rows(plan: dict) -> list[dict]:
         for prefix in MAIN_TEST_PREFIXES
         for row in plan[f"{prefix}_matrix"]["include"]
     ]
+
+
+def board_type_by_board_name() -> dict[str, str]:
+    """Map registered board routes to their physical board_type declarations."""
+    board_types: dict[str, str] = {}
+    for suite_root in SUITE_ROOTS.values():
+        for config in (ci_plan.WORKSPACE_ROOT / suite_root).rglob("board-*.toml"):
+            name = config.stem.removeprefix("board-")
+            board_types.setdefault(name, tomllib.loads(config.read_text()).get("board_type", ""))
+    return board_types
 
 
 class CiPlanTests(unittest.TestCase):
@@ -1001,11 +1013,15 @@ command = "true"
         self.assertIn(board_check["id"], rows)
         self.assertTrue(qemu_ids.isdisjoint(rows))
 
-    def test_dualguest_robot_board_is_not_scheduled(self) -> None:
+    def test_dualguest_robot_board_is_scheduled_in_main_only(self) -> None:
         rows = self.assert_unique_ids(
             ci_plan.build_main_plan(self.upstream)["axvisor_matrix"]["include"]
         )
-        self.assertNotIn("test-orangepi-5-plus-dualguest-robot", rows)
+        self.assertIn("test-orangepi-5-plus-dualguest-robot", rows)
+        self.assertEqual(
+            rows["test-orangepi-5-plus-dualguest-robot"]["resource_group"],
+            "orangepi-5-plus-robot-uart6",
+        )
         nightly_rows = self.assert_unique_ids(
             ci_plan.build_axvisor_nightly_plan(
                 ci_plan.replace(self.upstream, event_name="schedule")
@@ -1042,7 +1058,7 @@ command = "true"
             with self.subTest(config=path):
                 config = tomllib.loads(path.read_text())
                 self.assertEqual(
-                    config["board_type"], "OrangePi-5-Plus-DualGuest-robot"
+                    config["board_type"], "OrangePi-5-Plus-Robot-UART6"
                 )
                 step = config["shell_check_steps"][-1]
                 for pattern in step["success_regex"] + step["fail_regex"]:
@@ -1551,6 +1567,7 @@ command = "true"
             for check in catalog.values()
             if check.get("resource_group")
         }
+        board_types = board_type_by_board_name()
         board_groups: dict[str, set[str]] = {}
         for row in (*main_rows, *nightly_rows, *benchmark_rows):
             check = catalog[row["id"]]
@@ -1570,7 +1587,10 @@ command = "true"
                         {
                             group
                             for group in declared_groups
-                            if board == group or board.startswith(f"{group}-")
+                            if board_types.get(board, board).lower() == group.lower()
+                            or board_types.get(board, board).lower().startswith(
+                                f"{group.lower()}-"
+                            )
                         }
                         for board in boards
                     )
