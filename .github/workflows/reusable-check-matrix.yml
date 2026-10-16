@@ -52,19 +52,11 @@ jobs:
       fail-fast: ${{ inputs.fail_fast }}
       max-parallel: ${{ inputs.max_parallel }}
       matrix: ${{ fromJSON(inputs.matrix_json) }}
-    # Protected and manually triggered runs retain the physical-board queue.
-    # PR and branch jobs rely on ostool-server sessions for board exclusivity.
+    # Give every matrix entry its own concurrency group. The board runner pool
+    # can therefore dispatch entries with the same resource_group to different
+    # idle physical boards.
     concurrency:
-      group: >-
-        ci-resource-${{
-          (github.event_name == 'pull_request' ||
-           (github.event_name == 'push' &&
-            github.ref != 'refs/heads/main' &&
-            github.ref != 'refs/heads/dev')) &&
-          format('run-{0}-{1}', github.run_id, matrix.id) ||
-          matrix.resource_group ||
-          format('run-{0}-{1}', github.run_id, matrix.id)
-        }}
+      group: ci-resource-${{ format('run-{0}-{1}', github.run_id, matrix.id) }}
       queue: max
       cancel-in-progress: false
     runs-on: >-
