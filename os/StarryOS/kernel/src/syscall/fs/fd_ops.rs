@@ -885,12 +885,15 @@ pub fn sys_openat2(
 
     // RESOLVE_CACHED cannot be honored: this kernel has no dcache-only
     // lookup fast path, so EVERY open carrying the flag fails with EAGAIN —
-    // even when the entry would be cacheable. The contract for callers is
-    // the documented openat2(2) retry: drop RESOLVE_CACHED and call again.
-    // This is a deliberate, recorded simplification (see
-    // docs/design/docker-startup.md), not a caller-facing error-code bug;
-    // widening it later requires implementing Linux's `try_to_unlazy()`
-    // dcache-hit fast path plus a cache-hit-success / miss-EAGAIN regression.
+    // including scenarios Linux would serve from the dcache. Linux itself
+    // returns EAGAIN directly only for the O_TRUNC|O_CREAT|O_TMPFILE
+    // combinations; other CACHED opens set LOOKUP_CACHED and succeed on a
+    // dentry hit. The contract for callers is the documented openat2(2)
+    // retry: drop RESOLVE_CACHED and call again. This is a deliberate,
+    // recorded simplification (see docs/design/docker-startup.md), not a
+    // caller-facing error-code bug; widening it later requires implementing
+    // Linux's `try_to_unlazy()` dcache-hit fast path plus a
+    // cache-hit-success / miss-EAGAIN regression.
     if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
         return Err(StarryError::WouldBlock);
     }
