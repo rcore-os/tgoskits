@@ -1,0 +1,23 @@
+[package]
+name = "drm-kapi"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT"
+description = "Portable Linux DRM kernel-service shims for TGOSKits"
+repository.workspace = true
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "riscv64gc-unknown-none-elf",
+    "loongarch64-unknown-none-softfloat",
+]
+
+[features]
+default = []
+
+[dependencies]
+log.workspace = true
+printf-compat.workspace = true
+spin.workspace = true

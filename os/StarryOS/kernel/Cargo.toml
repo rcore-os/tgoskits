@@ -60,6 +60,9 @@ axtest = { workspace = true, optional = true }
 ax-alloc = { workspace = true }
 ax-display.workspace = true
 ax-gpu.workspace = true
+ax-drm.workspace = true
+kdrm-core.workspace = true
+drm-kapi.workspace = true
 ax-fs-ng = { workspace = true, features = ["vfs"] }
 ax-cpu = { workspace = true, features = ["fp-simd", "exception-table"] }
 ax-hal = { workspace = true, features = ["fp-simd", "uspace"] }

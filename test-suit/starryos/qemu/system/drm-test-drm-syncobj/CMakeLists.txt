@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-drm-syncobj C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-drm-syncobj src/main.c)
+target_compile_options(test-drm-syncobj PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-drm-syncobj RUNTIME DESTINATION usr/bin/starry-test-suit)

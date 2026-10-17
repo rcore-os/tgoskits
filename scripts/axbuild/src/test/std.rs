@@ -359,6 +359,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "scope-local"
         | "ax-sync"
         | "ax-display"
+        | "ax-drm"
         | "ax-input"
         | "ax-ipi"
         | "ax-log"

@@ -33,6 +33,8 @@ members = [
     "components/axpoll-set",
     "components/axsched",
     "components/cpumask",
+    "components/kdrm-core",
+    "components/drm-kapi",
     "components/crate_interface",
     "components/trait-ffi/trait-ffi",
     "components/trait-ffi/trait-ffi-macros",
@@ -99,6 +101,7 @@ members = [
     "os/StarryOS/vm",
     "os/arceos/api/*",
     "os/arceos/modules/axdisplay",
+    "os/arceos/modules/axdrm",
     "os/arceos/modules/axgpu",
     "os/arceos/modules/axhal",
     "os/arceos/modules/axinput",
@@ -162,6 +165,9 @@ ax-ctor-bare = { version = "0.4", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.7", path = "os/arceos/modules/axdisplay" }
 ax-gpu = { version = "0.1", path = "os/arceos/modules/axgpu" }
+ax-drm = { version = "0.1", path = "os/arceos/modules/axdrm" }
+kdrm-core = { version = "0.1", path = "components/kdrm-core" }
+drm-kapi = { version = "0.1", path = "components/drm-kapi" }
 ax-driver = { version = "0.18", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 virtio-gpu = { version = "0.1", path = "drivers/gpu/virtio-gpu" }
@@ -334,6 +340,8 @@ mmio-api = { version = "0.3", path = "memory/mmio-api" }
 mbarrier = "0.1"
 cvi-vdec-uapi = { version = "0.1", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once", "lazy"] }
+printf-compat = { version = "0.4", default-features = false }
 spinning_top = { version = "0.3", default-features = false }
 log = "0.4"
 loom = "0.7.2"

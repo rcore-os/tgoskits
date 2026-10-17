@@ -1,0 +1,25 @@
+[package]
+name = "ax-drm"
+version = "0.1.0"
+repository = "https://github.com/rcore-os/tgoskits"
+edition.workspace = true
+license.workspace = true
+description = "DRM device integration for ArceOS and StarryOS"
+
+[features]
+host-test = ["ax-gpu/host-test", "ax-task/host-test"]
+
+[dependencies]
+ax-gpu.workspace = true
+ax-hal.workspace = true
+ax-lazyinit.workspace = true
+ax-memory-addr.workspace = true
+ax-mm.workspace = true
+ax-percpu.workspace = true
+ax-task.workspace = true
+kdrm-core.workspace = true
+drm-kapi.workspace = true
+log.workspace = true
+rdif-display.workspace = true
+rdif-gpu.workspace = true
+spin.workspace = true

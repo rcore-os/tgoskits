@@ -2472,6 +2472,16 @@ impl AddrSpace {
         self.vma_root.lookup(vaddr)
     }
 
+    /// Returns the physical 4 KiB page base and effective flags for a
+    /// materialized mapping at vaddr.
+    ///
+    /// This narrow query is used by the LinuxKPI current-mm adapter. It does
+    /// not fault the address in and does not expose the page-table owner.
+    pub fn query_mapping(&self, vaddr: VirtAddr) -> Option<(usize, MappingFlags)> {
+        let (physical, flags, _) = self.pt.query(vaddr).ok()?;
+        Some((physical.as_usize() & !0xfff, flags))
+    }
+
     /// Publishes an immutable VMA index snapshot for procfs and fault readers.
     pub fn vma_map_snapshot(&self) -> Arc<VmaMap> {
         self.vma_root.clone()
