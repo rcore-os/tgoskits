@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.11.2...ax-fs-ng-v0.12.0) - 2026-10-17
+
+### Added
+
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+- *(net)* implement TUN/TAP virtual network devices ([#1566](https://github.com/rcore-os/tgoskits/pull/1566))
+
+### Fixed
+
+- *(axvisor)* stabilize Orange Pi IVC and AKA guests ([#2632](https://github.com/rcore-os/tgoskits/pull/2632))
+
+### Other
+
+- *(ax-fs-ng)* overlap file readahead and account device IO lifetimes ([#2635](https://github.com/rcore-os/tgoskits/pull/2635))
+- *(ax-fs-ng)* connect owned ext4 IO and writeback lifecycles ([#2526](https://github.com/rcore-os/tgoskits/pull/2526))
+- *(ax-fs-ng)* move cache IO outside locks and share private file pages ([#2524](https://github.com/rcore-os/tgoskits/pull/2524))
+- *(ci)* unify board builds and initramfs staging ([#2590](https://github.com/rcore-os/tgoskits/pull/2590))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(starry)* extend async block runtime performance coverage ([#2515](https://github.com/rcore-os/tgoskits/pull/2515))
+- *(ax-fs-ng)* batch contiguous dirty folio writeback ([#2492](https://github.com/rcore-os/tgoskits/pull/2492))
+
 ## [0.11.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.11.1...ax-fs-ng-v0.11.2) - 2026-09-22
 
 ### Added

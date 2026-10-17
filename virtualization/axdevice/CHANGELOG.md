@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.5...axdevice-v0.9.0) - 2026-10-17
+
+### Added
+
+- *(axvisor)* add RK3588 guest cpufreq perf30 profile ([#2619](https://github.com/rcore-os/tgoskits/pull/2619))
+- *(axvm)* expose Q35 ECAM for x86 UEFI guests ([#2501](https://github.com/rcore-os/tgoskits/pull/2501))
+
+### Fixed
+
+- *(axdevice)* resume virtual UART receive after FIFO consumption ([#2639](https://github.com/rcore-os/tgoskits/pull/2639))
+
+### Other
+
+- *(ax-fs-ng)* overlap file readahead and account device IO lifetimes ([#2635](https://github.com/rcore-os/tgoskits/pull/2635))
+- *(axvm)* migrate feature-driven tests into axtest ([#2644](https://github.com/rcore-os/tgoskits/pull/2644))
+- *(axvm)* connect local and shared interrupt ownership ([#2594](https://github.com/rcore-os/tgoskits/pull/2594))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(virtualization)* remove obsolete axci integration ([#2542](https://github.com/rcore-os/tgoskits/pull/2542))
+
 ## [0.8.5](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.8.4...axdevice-v0.8.5) - 2026-09-22
 
 ### Fixed
