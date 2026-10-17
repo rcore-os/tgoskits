@@ -1031,19 +1031,27 @@ impl FsContext {
             return Err(VfsError::NotFound);
         }
         let target = PathBuf::from(target);
+        // A symlink target's final component may be a plain file: the target
+        // walk must not require directories, unlike the parent walk which
+        // keeps requiring them for its own components.
+        let saved_final_may_be_file = walk.final_may_be_file;
+        walk.final_may_be_file = true;
         if target.as_str().starts_with('/') {
             if let Some(root) = constraints.root() {
                 // Absolute targets resolve inside the constraint root.
                 let resolved = self.walk_constrained(target.components(), root, walk)?;
                 walk.depth = 0;
+                walk.final_may_be_file = saved_final_may_be_file;
                 return Self::finish_checked_path(&target, resolved, search);
             }
             if constraints.is_beneath() {
+                walk.final_may_be_file = saved_final_may_be_file;
                 return Err(VfsError::CrossesDevices);
             }
             walk.depth = 0;
         }
         let resolved = self.walk_constrained(target.components(), parent_dir, walk)?;
+        walk.final_may_be_file = saved_final_may_be_file;
         Self::finish_checked_path(&target, resolved, search)
     }
 
