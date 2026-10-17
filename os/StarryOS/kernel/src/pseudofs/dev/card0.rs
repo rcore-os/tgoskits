@@ -3839,12 +3839,25 @@ impl Card0 {
             return Err(VfsError::InvalidInput);
         }
 
+        // Bound the user-supplied counts before they reach an unchecked
+        // `Vec::with_capacity`: this card exposes one CRTC with a handful of
+        // planes and properties, so any request beyond the object cap cannot
+        // be honoured and a huge count would otherwise let an unprivileged
+        // caller abort the kernel in the allocator.
+        const MAX_ATOMIC_OBJECTS: usize = 1024;
+        const MAX_ATOMIC_PROPS: usize = 8 * 1024;
         let n = a.count_objs as usize;
+        if n > MAX_ATOMIC_OBJECTS {
+            return Err(VfsError::InvalidInput);
+        }
         let objs: Vec<u32> =
             vm_load(current, a.objs_ptr as *const u32, n).map_err(|_| VfsError::BadAddress)?;
         let counts: Vec<u32> = vm_load(current, a.count_props_ptr as *const u32, n)
             .map_err(|_| VfsError::BadAddress)?;
         let total_props: usize = counts.iter().map(|c| *c as usize).sum();
+        if total_props > MAX_ATOMIC_PROPS {
+            return Err(VfsError::InvalidInput);
+        }
         let props: Vec<u32> = vm_load(current, a.props_ptr as *const u32, total_props)
             .map_err(|_| VfsError::BadAddress)?;
         let values: Vec<u64> = vm_load(current, a.prop_values_ptr as *const u64, total_props)
