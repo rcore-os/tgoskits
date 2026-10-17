@@ -602,11 +602,6 @@ impl OpenOptions {
         let effective_create = self.create && (!must_be_dir || existing);
         let effective_create_new = self.create_new && (!must_be_dir || existing);
         if (effective_create || effective_create_new) && !existing {
-            #[cfg(feature = "host-test")]
-            log::warn!(
-                "CREATE-AT parent={:?} depth={parent_depth}",
-                parent.absolute_path()
-            );
             // The constrained walker already search-checked every directory
             // it entered; only the parent's own mutation permission remains.
             context.check_mutation_parent_with_search(&parent, &[], credentials)?;
@@ -657,14 +652,6 @@ impl OpenOptions {
                     // either the original path or the link target keeps
                     // demanding a directory, so a slash-demanding dangling
                     // link never creates a plain file (Linux EISDIR).
-                    #[cfg(feature = "host-test")]
-                    log::warn!(
-                        "RE-ENTER path={:?} depth0={} parent_depth={} parent={:?}",
-                        target.as_str(),
-                        depth0,
-                        parent_depth,
-                        parent.absolute_path()
-                    );
                     return self.open_constrained(
                         &context.with_current_dir(parent.clone())?,
                         Path::new(&target),

@@ -682,19 +682,6 @@ mod chroot_root {
             .write(true)
             .create(true)
             .resolve(ResolveConstraints::new().beneath());
-        struct PrintLogger;
-        impl log::Log for PrintLogger {
-            fn enabled(&self, metadata: &log::Metadata) -> bool {
-                true
-            }
-            fn log(&self, record: &log::Record) {
-                std::eprintln!("[{}] {}", record.level(), record.args());
-            }
-            fn flush(&self) {}
-        }
-        let _ = log::set_logger(&PrintLogger);
-        log::set_max_level(log::LevelFilter::Trace);
-
         let error = options
             .open_with_credentials(&open_context, "sub/l1", &MutationCredentials::root())
             .err()
