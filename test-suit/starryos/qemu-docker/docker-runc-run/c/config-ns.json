@@ -1,0 +1,73 @@
+{
+  "ociVersion": "1.0.2",
+  "hostname": "runc-ns",
+  "root": {
+    "path": "rootfs",
+    "readonly": false
+  },
+  "process": {
+    "terminal": false,
+    "user": {
+      "uid": 0,
+      "gid": 0,
+      "additionalGids": []
+    },
+    "args": [
+      "/busybox",
+      "sh",
+      "/check.sh"
+    ],
+    "env": [
+      "PATH=/bin:/usr/bin",
+      "OCI_SMOKE=1"
+    ],
+    "cwd": "/",
+    "noNewPrivileges": true,
+    "capabilities": {
+      "bounding": [],
+      "effective": [],
+      "inheritable": [],
+      "permitted": [],
+      "ambient": []
+    }
+  },
+  "rootfsPropagation": "private",
+  "linux": {
+    "namespaces": [
+      {
+        "type": "pid"
+      },
+      {
+        "type": "mount"
+      },
+      {
+        "type": "uts"
+      },
+      {
+        "type": "ipc"
+      }
+    ],
+    "maskedPaths": [],
+    "readonlyPaths": [],
+    "resources": {
+      "devices": [
+        {
+          "allow": true,
+          "access": "rwm"
+        }
+      ]
+    }
+  },
+  "mounts": [
+    {
+      "destination": "/proc",
+      "type": "proc",
+      "source": "proc",
+      "options": [
+        "nosuid",
+        "noexec",
+        "nodev"
+      ]
+    }
+  ]
+}
