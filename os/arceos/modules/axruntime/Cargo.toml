@@ -31,6 +31,8 @@ qperf-metrics = ["ax-task/qperf-metrics"]
 fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
+efi = ["ax-hal/efi"]
+efi-handoff = ["ax-hal/efi-handoff"]
 smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
 # Enable userspace support without kernel TLS, including when `tls` is enabled.
 # User-space TLS remains available through the userspace context APIs.

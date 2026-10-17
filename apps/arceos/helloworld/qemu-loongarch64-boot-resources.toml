@@ -1,0 +1,8 @@
+args = ["-machine", "virt", "-cpu", "la464", "-m", "512M", "-smp", "1", "-nographic", "-serial", "mon:stdio"]
+uefi = true
+to_bin = true
+timeout = 45
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+
+[[shell_check_steps]]
+success_regex = ["BOOT_RESOURCES_PASSED", "Hello, world!"]

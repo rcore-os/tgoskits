@@ -1,0 +1,16 @@
+args = [
+  "-machine", "virt",
+  "-cpu", "la464",
+  "-m", "2G",
+  "-smp", "1",
+  "-nographic",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/arceos-loongarch64-fat32.img",
+  "-device", "virtio-net-pci,netdev=net0",
+  "-netdev", "user,id=net0,hostfwd=tcp::3999-:2999",
+  "-serial", "mon:stdio",
+  "-qmp", "unix:${workspace}/target/axbuild/loong-axloader-qmp.sock,server=on,wait=off",
+]
+uefi = true
+to_bin = true
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

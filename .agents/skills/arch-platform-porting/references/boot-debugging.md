@@ -359,17 +359,86 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 
 - axloader v6 控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `TCP4 Service Binding` 必须来自同一个 UEFI 控制器；广播、MAC 和 HTTP 监听分别来自不同网卡不算可用实现。
 - `ConOut` 输出诊断；实际控制台对应的唯一 `SerialIo` 以受控非独占短借用输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧并上报生效线参数。单个线参数无法读取时使用 UEFI 常见的 115200/8N1、无硬件流控并记录诊断；无法唯一选择 UART 仍失败。不能从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或启动命令。借用限定 `TPL_CALLBACK`，写入有界且恢复原超时，guard 先于 TPL guard 释放。目标映像接管后，串口作为交互终端。
-- 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。每次上电还生成新的 `serial_id`；UART 匹配后网络 continue 才允许带 `X-Serial-Binding` 启动，直连须显式 direct continue。缺少 RNG 时使用平台单调计数，不能仅用秒级 RTC 和栈地址生成身份。
+- x86_64 UEFI 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。每次上电还生成新的 `serial_id`；UART 匹配后网络 continue 才允许带 `X-Serial-Binding` 启动，直连须显式 direct continue。缺少 RNG 时使用平台单调计数，不能仅用秒级 RTC 和栈地址生成身份。LoongArch axstd EFI 的无熵回退见下方专节，并使用持久化 OTA 代次。
 - QEMU smoke 使用真实 UEFI TCP4 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。ostool 的隔离服务端联调用私有 PTY 原样转发 OVMF UART，从真实 HTTP 状态取得启动身份，再构造公告调用同一设备协调入口；测试地址仅在夹具内映射到 `hostfwd`。该夹具不证明生产 UDP 路由或虚拟板卡 netns 路径，仍须独立联调。
 - UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。v6 只接受 `__x86_64_efi_pe_entry`；cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 Linux EFI `LoadFile2` 提供者交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，命令行来源优先级是 EFI LoadOptions、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
 - `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 必须上传真实 ArceOS UEFI ELF，跨同一 FAT 镜像的独立启动验证无附加字段、仅 cmdline、仅 initramfs、两者都有以及 ESP initramfs 回退；成功证据来自内核的 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED`，不能只停在 `ready_to_handoff`。
 - 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
+
+#### LoongArch ArceOS EFI
+
+- 公共启动资源位于 `someboot::boot_resources`，交接描述、v3 协议和应用元数据位于
+  `someboot::handoff`。`boot-resources` 可独立于交接、网络和 OTA 使用；
+  `efi-handoff = ["efi", "boot-resources"]` 只开启交接生产。普通 EFI 消费随构建脚本
+  派生的 `cfg(efi)`，不能替换成 `feature = "efi"` 或依赖生产端。旧 `efi-loader`、
+  `loader_*`、`inherited_loader_slot` 已删除，无兼容别名。
+- 原生 `target_os = "uefi"` 的 someboot 仅装配公共模块和固件适配；Cargo 依赖和
+  `build.rs` 同时排除内核入口、分页、SMP 与内核链接配置。其他目标保持原有根模块
+  及符号路径。不能用反向 feature 控制模式，避免 Cargo feature 合并改变构建。
+  `handoff/uefi_protocol` 只持有编码、设备路径和 LoadFile2 回调；宿主测试在这里
+  验证真实协议逻辑，不装配 `handoff/firmware` 的服务调用、发布守卫和事务上下文。
+- `someboot::efi_stub` 在单一 `cfg_select!` 装配私有 `platform`：LoongArch 使用
+  `efi_stub/loongarch64/mod.rs`，普通固件使用 `efi_stub/firmware.rs`。前者拥有表地址
+  归一化、reset 和继承恢复；固件函数指针保持原值。生产事务位于
+  `efi_stub/loongarch64/handoff.rs`，按 `efi-handoff` 启用。通用 initramfs 发布和
+  一次领取仍在 `boot_payload/mod.rs`，保留 `boot_payload::publish` 与
+  `efi_stub::setup_service` 契约路径。
+- `declare_boot_resources!` 写入保留的无指针计划，退出服务前校验并预留；无声明时
+  不分配应用池，部分失败逆序释放。`Allocation` 独占分配，逆序释放以 CAS 回退，
+  非逆序释放保留空间直到复位。`ResourceSnapshot` 记录 ID、范围、不可变前缀和
+  水位，要求 `initialized <= used <= capacity`；继承目标静态计划必须由已有快照
+  满足，资源恢复仅依赖 `boot-resources`，不能被生产端 feature 关闭。
+- axloader 自己声明镜像区 32 MiB（`0x200000`）、归档区 256 MiB、EFI 槽执行区
+  32 MiB 和固件原文件区 32 MiB。`InitialContents::FirmwareBootImage` 在退出服务前
+  读取最初的 EFI 文件；继承阶段仍保留同一来源文件，不能当作当前子镜像。该 loader
+  配置要求最初从可读 EFI 文件系统启动，源文件不超过容量；失败时停止必需计划。
+  固件文件读取使用固件分配的单页缓冲，再 CPU 复制至内核直接映射；不要把内核
+  虚拟地址交给固件 DMA。首个 A.EFI 必须保存原始文件，不能保存已修改的运行数据段，
+  否则失败 trial 回滚时稳定槽可能无法重新执行。
+- `handoff::protocol::HandoffRecord` v3 GUID 为
+  `7b9fa931-a25b-d043-b13c-63435428c473`，不包含固定池或 OTA 槽字段。固件活动模式
+  不替换内存图；继承模式要求全部资源由 Reserved/KImage 内存完整覆盖，目标及
+  initramfs 位于分配水位内且不覆盖不可变前缀。v2 旧 GUID 被明确拒绝，生产者、
+  目标与 A/B 槽必须一起重建。`boot_payload/loongarch64.rs` 将完整记录和元数据复制
+  到本镜像私有存储后再允许复用共享表，避免继承引用被下一次事务改写。
+- LoongArch 只接受 little-endian ELF64、`EM_LOONGARCH`（258）和 `efi_pe_entry`；
+  EFI ABI 为 `efi_pe_entry(image_handle, system_table)`。段间空洞先清零、复制后刷新
+  指令缓存，装载区域与当前镜像重叠时拒绝。固定地址属于 axloader 策略，当前目标
+  已占该区时不能猜测 load bias 再覆盖。继承入口恢复内存图并跳过第二次
+  ExitBootServices，退出后只能操作预留内存和运行时服务。
+- x86 ELF 也使用 `ResourceRequest`/`reserve()` 和 `HandoffSpec`/`PreparedHandoff`，
+  保留 LoadOptions、Linux LoadFile2 以及 OTA LoadImage/StartImage。返回且固件活动
+  时撤销事务、恢复旧表和参数；服务已退出或撤销失败时保留被引用的分配，不再调用
+  Boot Services。EFI 服务、地址转换、缓存和继承实现保持具体平台模块，不增加 trait。
+- axstd UART 身份来自已激活的 runtime console；无活动 UART 或不需要隧道时显式
+  `direct` continue。`run()` 在启动和连接处理后发送 UDP，阻塞接受连接期间不周期
+  重发，服务端后上线可按已知 IP 直连。没有可信启动熵时先提交持久 OTA 代次，再以
+  代次和运行槽摘要派生身份；继承入口复用父代次，不能退回时间或进程计数。
+- FAT 文件为 `axloader/A.EFI`、`B.EFI`、`STATE0.BIN`、`STATE1.BIN`。进入 pending
+  前提交 attempted，`ota/handoff.rs` 编解码应用自有槽位与代次，确认要求匹配 ID 和
+  来源；未确认复位先回滚。继承槽缺失有效持久状态时拒绝从祖先文件重新建档。
+  无效镜像返回 `422 image_digest_or_efi_validation_failed`；实际存储失败返回
+  `409 ota_storage_failed`，不得把写满或 Flush 失败报告为镜像格式问题。
+- 完整验证使用 `python3 bootloader/axloader/scripts/loong-qemu-smoke.py`：先运行无
+  网络、OTA 和交接生产端的资源应用，再通过同一 QEMU 模板创建独占 FAT、QMP 与
+  空闲端口。loader 的构建配置声明 `to_bin = true`，让 `arceos build` 在准备 FAT 前
+  通过既有转换生成 EFI `.bin`，验证时应移走旧 `.bin` 核对冷构建。
+  覆盖写满状态保持、HTTP 幂等与拒绝、真实 trial、QMP 复位回滚、旧确认
+  拒绝、再次确认及复位后稳定摘要持久化；上传独立 helloworld ELF 与宿主归档后，必须观察目标
+  `HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。
+  `ready_to_handoff` 单独出现只表示准备交接，`qemu-loongarch64.toml` 仅证明网络
+  服务启动。AArch64 EFI 镜像生成、LoongArch 非 EFI 和 UHI handoff 不在该门禁范围。
 
 - 首条可靠输出前失败时加入 `-S -s`，在复位处停止并连接 GDB。
 - 加入 `-d int,cpu_reset,guest_errors` 记录陷阱、复位和无效客户机访问。
 - 用短串口标记隔离阶段，例如 `E` 表示固件入口，`M` 表示内存映射，`X` 表示退出启动服务前，`x` 表示退出后，`P` 和 `p` 表示分页前后，`T` 表示陷阱向量后，`S` 表示释放次处理器前。
 - 最终提交前删除标记，除非它们成为长期诊断接口。
 - QEMU 由 `ostool` 启动时，临时修改本地 ostool 或 `xtask` 包装，不要手工拼接不同命令。复现命令必须忠于失败路径。
+
+Intel HDA 的 PCM QEMU 契约要求在 80 ms 内再次轮询；共享宿主长暂停可导致合法的
+`Device` 拒绝。该作业使用 `ubuntu-base` 独立虚拟机和标准容器，保留全部波形校验，
+不要放宽驱动门限。本地 QEMU 11.1.1 的 x86 启动链在 `icount` 下触发了
+`Bad icount read`，不为此用例启用该选项。
 
 ## 症状分类
 

@@ -1,7 +1,8 @@
-use alloc::{boxed::Box, vec::Vec};
-use core::{ffi::c_void, fmt, mem, ptr};
+//! Linux LoadFile2 device path and bounded initramfs reads.
+use alloc::boxed::Box;
+use core::{ffi::c_void, mem, ptr};
 
-use uefi::{Guid, boot};
+use uefi::Guid;
 use uefi_raw::{
     Boolean,
     protocol::{
@@ -21,7 +22,7 @@ struct LinuxInitrdVendorPath {
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-struct LinuxInitrdDevicePath {
+pub(in crate::handoff) struct LinuxInitrdDevicePath {
     vendor: LinuxInitrdVendorPath,
     end: DevicePathProtocol,
 }
@@ -47,128 +48,21 @@ impl LinuxInitrdDevicePath {
 }
 
 #[repr(C)]
-struct InitrdProvider {
-    protocol: LoadFile2Protocol,
-    device_path: LinuxInitrdDevicePath,
+pub(in crate::handoff) struct InitrdProvider {
+    pub(in crate::handoff) protocol: LoadFile2Protocol,
+    pub(in crate::handoff) device_path: LinuxInitrdDevicePath,
     bytes: Box<[u8]>,
-    handle: Option<uefi::Handle>,
 }
 
-#[derive(Debug)]
-pub enum PayloadError {
-    Allocation(uefi::Status),
-    Install(uefi::Status),
-}
-
-impl fmt::Display for PayloadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Allocation(status) => {
-                write!(f, "Linux initrd provider allocation failed: {status:?}")
-            }
-            Self::Install(status) => {
-                write!(f, "Linux initrd provider installation failed: {status:?}")
-            }
-        }
-    }
-}
-
-pub struct PreparedPayload {
-    bytes: Option<Box<[u8]>>,
-}
-
-pub struct PublishedPayload {
-    provider: Option<Box<InitrdProvider>>,
-}
-
-impl Drop for PublishedPayload {
-    fn drop(&mut self) {
-        let Some(provider) = self.provider.as_mut() else {
-            return;
-        };
-        let Some(handle) = provider.handle.take() else {
-            return;
-        };
-        let protocol = ptr::from_mut(&mut provider.protocol).cast::<c_void>();
-        let device_path = ptr::from_ref(&provider.device_path).cast::<c_void>();
-        let mut revoked = true;
-        // SAFETY: both interfaces were installed by this provider and no child
-        // invocation is active once the execution guard is dropped.
-        if unsafe { boot::uninstall_protocol_interface(handle, &LoadFile2Protocol::GUID, protocol) }
-            .is_err()
-        {
-            crate::logln!("linux_initrd_provider_error: failed to revoke LoadFile2");
-            revoked = false;
-        }
-        // SAFETY: the device-path interface was installed on the same handle.
-        if unsafe {
-            boot::uninstall_protocol_interface(handle, &DevicePathProtocol::GUID, device_path)
-        }
-        .is_err()
-        {
-            crate::logln!("linux_initrd_provider_error: failed to revoke device path");
-            revoked = false;
-        }
-        if !revoked {
-            // Keep the installed interface backing memory alive if firmware
-            // refused to revoke one of the protocols.
-            let provider = self.provider.take().expect("provider is present");
-            core::mem::forget(provider);
-        }
-    }
-}
-
-pub fn prepare_uploaded(initramfs: Option<&[u8]>) -> Result<PreparedPayload, PayloadError> {
-    let bytes = initramfs
-        .map(|source| {
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(source.len())
-                .map_err(|_| PayloadError::Allocation(uefi::Status::OUT_OF_RESOURCES))?;
-            bytes.extend_from_slice(source);
-            Ok(bytes.into_boxed_slice())
-        })
-        .transpose()?;
-    Ok(PreparedPayload { bytes })
-}
-
-impl PreparedPayload {
-    pub fn publish(self) -> Result<PublishedPayload, PayloadError> {
-        let Some(bytes) = self.bytes else {
-            return Ok(PublishedPayload { provider: None });
-        };
-        let mut provider = Box::new(InitrdProvider {
+impl InitrdProvider {
+    pub(in crate::handoff) fn new(bytes: Box<[u8]>) -> Self {
+        Self {
             protocol: LoadFile2Protocol {
                 load_file: load_file2,
             },
             device_path: LinuxInitrdDevicePath::new(),
             bytes,
-            handle: None,
-        });
-        let device_path = ptr::from_ref(&provider.device_path).cast::<c_void>();
-        let handle = unsafe {
-            boot::install_protocol_interface(None, &DevicePathProtocol::GUID, device_path)
         }
-        .map_err(|error| PayloadError::Install(error.status()))?;
-        let protocol = ptr::from_mut(&mut provider.protocol).cast::<c_void>();
-        if let Err(error) = unsafe {
-            boot::install_protocol_interface(Some(handle), &LoadFile2Protocol::GUID, protocol)
-        } {
-            // SAFETY: only the device-path interface was installed on failure.
-            unsafe {
-                boot::uninstall_protocol_interface(handle, &DevicePathProtocol::GUID, device_path)
-            }
-            .expect("failed to revoke Linux initrd device path");
-            return Err(PayloadError::Install(error.status()));
-        }
-        provider.handle = Some(handle);
-        crate::logln!(
-            "linux_initrd_provider_ready: archive_bytes={}",
-            provider.bytes.len()
-        );
-        Ok(PublishedPayload {
-            provider: Some(provider),
-        })
     }
 }
 
@@ -225,19 +119,13 @@ mod tests {
     }
 
     fn provider(bytes: &[u8]) -> Box<InitrdProvider> {
-        Box::new(InitrdProvider {
-            protocol: LoadFile2Protocol {
-                load_file: load_file2,
-            },
-            device_path: LinuxInitrdDevicePath::new(),
-            bytes: bytes.to_vec().into_boxed_slice(),
-            handle: None,
-        })
+        Box::new(InitrdProvider::new(bytes.to_vec().into_boxed_slice()))
     }
 
     #[test]
     fn linux_initrd_device_path_uses_media_vendor_guid() {
-        let path = LinuxInitrdDevicePath::new();
+        let provider = provider(b"initrd");
+        let path = &provider.device_path;
         let guid = unsafe { ptr::read_unaligned(ptr::addr_of!(path.vendor.vendor_guid)) };
         assert_eq!(mem::size_of::<LinuxInitrdDevicePath>(), 24);
         assert_eq!(guid, LINUX_EFI_INITRD_MEDIA_GUID);

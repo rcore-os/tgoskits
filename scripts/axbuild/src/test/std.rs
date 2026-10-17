@@ -118,6 +118,12 @@ const AXBUILD_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfi
     no_default_features: false,
     features: &[],
 }];
+
+const SOMEBOOT_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "boot-resources",
+    no_default_features: false,
+    features: &["boot-resources"],
+}];
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct CargoTestInvocation {
     package: String,
@@ -378,6 +384,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "sdmmc-protocol" => Some(SDMMC_RDIF_FEATURE_PROFILES),
         "aic8800" => Some(AIC8800_FEATURE_PROFILES),
         "axbuild" => Some(AXBUILD_FEATURE_PROFILES),
+        "someboot" => Some(SOMEBOOT_FEATURE_PROFILES),
         "virtio-gpu" => Some(VIRTIO_GPU_FEATURE_PROFILES),
         _ => None,
     }

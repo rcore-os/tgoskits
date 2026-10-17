@@ -1,7 +1,12 @@
+//! Shared initramfs publication and ownership transfer.
+
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(efi)]
 use crate::mem::{MemoryDescriptor, MemoryType, add_memory_descriptor};
+
+#[cfg(all(efi, target_arch = "loongarch64"))]
+pub(crate) mod loongarch64;
 
 static PUBLISHED: AtomicBool = AtomicBool::new(false);
 static START: AtomicUsize = AtomicUsize::new(0);

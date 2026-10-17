@@ -92,3 +92,9 @@ ArceOS Rust/generic 音频用例可在 QEMU 配置中声明 `[host_pcm_waveform]
 客体 marker 通过后仍须检查全部预期样本连续匹配、前后仅静音；缺失、重复、改写、错误格式或截断使外层命令失败。
 QEMU 被 marker 停止时 WAV data 长度可能仍为零占位，校验器检查已写入文件的实际样本，而不将未完成的 header 当作零音频成功。
 这只能证明 QEMU 输出，不证明物理可听声音。
+
+Intel HDA 的 `poll_stream_position()` 在轮询间隔达到 80 ms 时拒绝继续跟踪 DMA 环。
+该 QEMU 作业使用 `ubuntu-base` 独立虚拟机及标准容器，避免共享宿主的长停顿侵入客体
+轮询契约，并输出实际 QEMU 版本。宿主暂停后的 `Device` 是有效失败，不能提高门限或
+放宽波形断言。本地 QEMU 11.1.1 的 x86 启动链在 `icount` 下触发了
+`Bad icount read`，不为此用例启用该选项。

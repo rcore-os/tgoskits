@@ -45,6 +45,7 @@ sg200x-pwm
 some-serial
 virtio-gpu
 ax-arm-pl031
+someboot
 ranges-ext
 arm-gic-driver
 x86-apic-driver

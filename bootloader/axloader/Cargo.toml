@@ -14,9 +14,25 @@ path = "src/main.rs"
 [[bin]]
 name = "axloader-launcher"
 path = "src/launcher.rs"
+required-features = ["uefi-launcher"]
+
+[features]
+default = []
+uefi-launcher = []
+arceos = ["dep:ax-std", "dep:ax-net", "ax-std/arceos", "ax-std/net"]
+arceos-efi = [
+    "arceos",
+    "ax-std/efi-handoff",
+    "ax-std/fs",
+    "ax-std/fatfs",
+    "ax-std/nvme",
+    "dep:someboot",
+]
 
 [dependencies]
 httpboot-protocol = { workspace = true }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 
 [target.'cfg(any(windows, unix))'.dependencies]
@@ -24,11 +40,21 @@ anyhow = { workspace = true }
 object = "0.38"
 
 [target.'cfg(target_os = "uefi")'.dependencies]
-serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
-serde_json = { version = "1", default-features = false, features = ["alloc"] }
 uefi = { workspace = true, features = ["alloc", "global_allocator"] }
 uefi-raw.workspace = true
+someboot = { workspace = true, features = ["efi-handoff"] }
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+ax-std = { workspace = true, optional = true, features = ["default"] }
+ax-net = { workspace = true, optional = true }
+someboot = { workspace = true, optional = true, features = ["efi-handoff"] }
+uefi = { workspace = true, features = ["alloc"] }
 
 [[package.metadata.clippy.configurations]]
 name = "uefi"
 target = "x86_64-unknown-uefi"
+
+[[package.metadata.clippy.configurations]]
+name = "arceos-efi-loongarch64"
+target = "loongarch64-unknown-linux-musl"
+features = ["arceos-efi"]

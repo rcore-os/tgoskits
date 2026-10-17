@@ -9,8 +9,6 @@ use core::{
 };
 
 pub use uefi::Status;
-#[cfg(target_arch = "loongarch64")]
-pub use uefi::runtime::ResetType;
 use uefi::{
     Guid, Result,
     boot::{self, AllocateType, MemoryDescriptor, MemoryType},
@@ -36,6 +34,18 @@ use crate::{
     arch::{Arch, relocate},
     mem::{__io, __va},
 };
+
+cfg_select! {
+    target_arch = "loongarch64" => {
+        pub(crate) mod loongarch64;
+        use loongarch64 as platform;
+        pub use loongarch64::{ResetType, reset};
+    }
+    any(target_arch = "x86_64", target_arch = "aarch64") => {
+        mod firmware;
+        use firmware as platform;
+    }
+}
 
 const EFI_IMAGE_HANDLE_UNSET: usize = usize::MAX;
 const EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE: usize = 128 * 1024;
@@ -63,12 +73,16 @@ static mut EXIT_BOOT_MEMORY_MAP_DESCRIPTORS: [MaybeUninit<MemoryDescriptor>;
 static EFI_IMAGE_HANDLE: AtomicUsize = AtomicUsize::new(EFI_IMAGE_HANDLE_UNSET);
 
 pub(crate) fn setup_service(system_table: *const ::core::ffi::c_void) {
+    let system_table = platform::normalize_system_table(system_table);
     unsafe { table::set_system_table(system_table.cast()) };
+    let inherited_handoff = platform::prepare_service_context(system_table);
     if let Some(image_handle) = saved_image_handle() {
         unsafe { boot::set_image_handle(image_handle) };
     }
-    setup_console();
-    println!("UEFI console ok.");
+    if !inherited_handoff {
+        setup_console();
+        println!("UEFI console ok.");
+    }
     find_fdt();
     find_acpi_rsdp();
 }
@@ -105,10 +119,7 @@ unsafe extern "C" fn efi_pe_entry_main(
         save_image_handle(image_handle);
         boot::set_image_handle(image_handle);
         table::set_system_table(system_table.cast());
-        setup_console();
-        println!("UEFI application started.");
-        load_efi_cmdline(image_handle);
-        load_efi_payload();
+        platform::prepare_entry_payload(image_handle);
         // Safety: `system_table` comes from the EFI firmware entry path and
         // matches the contract documented on `ArchTrait::efi_enter_kernel`.
         if Arch::efi_enter_kernel(system_table) {
@@ -133,6 +144,9 @@ pub unsafe extern "efiapi" fn efi_pe_entry(
 }
 
 pub(crate) fn exit_boot_services() {
+    if platform::inherited_handoff() {
+        return;
+    }
     println!("Exiting UEFI boot services...");
     UEFI_SERVICE_EXIT.store(true, core::sync::atomic::Ordering::Relaxed);
     let mem_map = unsafe { exit_boot_services_no_alloc() };
@@ -176,13 +190,39 @@ pub(crate) fn exit_boot_services() {
 
     unsafe {
         if let Some(st) = uefi::table::system_table_raw() {
-            set_virtual_address_map(&mut new_map, __va(st.as_ptr() as _) as _)
+            let virtual_system_table = platform::runtime_system_table(st.as_ptr());
+            set_virtual_address_map(&mut new_map, virtual_system_table)
                 .expect("Failed to set virtual address map");
         }
     }
 
     memmap::setup_memory_map(mem_map.entries());
+    platform::reserve_boot_memory();
+    #[cfg(feature = "boot-resources")]
+    for resource in crate::boot_resources::snapshots()
+        .iter()
+        .filter(|r| r.id != 0)
+    {
+        crate::mem::add_memory_descriptor(crate::mem::MemoryDescriptor::new_aligned(
+            resource.range.start as usize,
+            resource.range.len as usize,
+            crate::mem::MemoryType::Reserved,
+            4096,
+        ))
+        .expect("failed to reserve boot resource");
+    }
     crate::boot_payload::reserve_staged_uefi();
+}
+
+fn load_firmware_entry_payload(image_handle: Handle) {
+    setup_console();
+    println!("UEFI application started.");
+    load_efi_cmdline(image_handle);
+    load_efi_payload();
+}
+
+pub(crate) fn init_boot_memory_map() {
+    platform::init_boot_memory_map();
 }
 
 fn load_efi_payload() {
@@ -402,7 +442,11 @@ fn read_exact_file(file: &mut RegularFile, bytes: &mut [u8]) {
 }
 
 pub(crate) fn boot_entropy() -> Option<[u8; 32]> {
-    if !is_uefi_available() {
+    // An inherited LoongArch target is entered after the first loader has
+    // exited boot services. Firmware protocol calls (including RNG discovery)
+    // are no longer valid on that path; the target may still use a trusted FDT
+    // seed or explicitly report that no firmware entropy is available.
+    if platform::inherited_handoff() || !is_uefi_available() {
         return None;
     }
 
@@ -464,6 +508,10 @@ unsafe fn exit_boot_services_no_alloc() -> ExitBootMemoryMap {
             reset_on_exit_boot_services_failure(status);
         }
 
+        // LoongArch firmware publishes callable service entry points in its
+        // current EFI address space. Translate only the service-table storage
+        // above; rewriting these function pointers to a guessed direct-map
+        // alias breaks firmware-owned tables.
         status = unsafe { (boot_services.exit_boot_services)(image_handle.as_ptr(), map_key) };
         if status == Status::SUCCESS {
             let entries =
@@ -622,7 +670,9 @@ fn find_acpi_rsdp() {
 
         if !addr.is_null() {
             println!("Using ACPI {} RSDP at address: {:p}", version, addr);
-            set_rsdp(addr);
+            let rsdp = <crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(addr as usize)
+                as *const c_void;
+            set_rsdp(rsdp);
         } else {
             println!("No ACPI RSDP found in UEFI config tables.");
         }
@@ -665,7 +715,7 @@ mod tests {
         );
         assert_eq!(decode_efi_cmdline(&[], &mut bytes).unwrap(), "");
         assert_eq!(
-            decode_efi_cmdline(&[b'a' as u16, b' ', b'=' as u16], &mut bytes).unwrap(),
+            decode_efi_cmdline(&[b'a' as u16, b' ' as u16, b'=' as u16], &mut bytes).unwrap(),
             "a ="
         );
     }
@@ -688,10 +738,4 @@ mod tests {
 
 pub fn is_uefi_available() -> bool {
     uefi::table::system_table_raw().is_some()
-}
-
-#[cfg(target_arch = "loongarch64")]
-pub fn reset(reset_type: ResetType, status: Status, data: Option<&[u8]>) -> ! {
-    info!("Resetting system via UEFI...");
-    uefi::runtime::reset(reset_type, status, data)
 }

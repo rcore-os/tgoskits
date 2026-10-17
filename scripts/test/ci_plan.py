@@ -82,7 +82,7 @@ SUPPORTED_IMPACT_TARGETS = {
     for os_name in ("arceos", "starry", "axvisor")
     for arch in ("aarch64", "x86_64", "riscv64", "loongarch64")
 }
-SUPPORTED_IMPACT_PACKAGES = {"axloader"}
+SUPPORTED_IMPACT_PACKAGES = {"axloader", "someboot"}
 CHECK_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 TOP_LEVEL_FIELDS = {
     "schema_version",

@@ -209,7 +209,7 @@ cases = ["smoke-vmx", "direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx", "pc
 
 [[check]]
 id = "test-axloader-http-smoke"
-impact_packages = ["axloader"]
+impact_packages = ["axloader", "someboot"]
 name = "UEFI x86_64 · AxLoader HTTP boot"
 runner = "kvm-intel"
 # Cold runners may spend most of the original 45-minute budget on checkout and builds.
@@ -217,6 +217,21 @@ timeout_minutes = 90
 command = '''
 rustup target add x86_64-unknown-uefi
 cargo xtask axloader test qemu --target x86_64-unknown-uefi
+'''
+
+[[check]]
+id = "test-axloader-loongarch64-efi"
+impact_packages = ["axloader", "someboot"]
+name = "UEFI loongarch64 · AxLoader HTTP boot"
+runner = "ubuntu-axvisor-lvz"
+cache_key = ""
+timeout_minutes = 90
+command = '''
+if ! command -v mmd >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y --no-install-recommends mtools
+fi
+python3 bootloader/axloader/scripts/loong-qemu-smoke.py
 '''
 
 [[check]]

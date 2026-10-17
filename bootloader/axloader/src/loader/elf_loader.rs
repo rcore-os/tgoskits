@@ -3,16 +3,13 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::{mem, ptr::NonNull};
 
-use uefi::{
-    boot::{self, AllocateType},
-    mem::memory_map::MemoryType,
-};
+use axloader::target::{X86_64, ranges_overlap};
+use someboot::boot_resources::{self, Allocation, Placement, ResourceId, ResourceRequest};
 
 const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
 const ELF_CLASS_64: u8 = 2;
 const ELF_DATA_LSB: u8 = 1;
 const ELF_VERSION_CURRENT: u8 = 1;
-const ELF_MACHINE_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
 const UEFI_PAGE_SIZE: u64 = 4096;
 pub const EFI_ENTRY_SYMBOL: &str = "__x86_64_efi_pe_entry";
@@ -42,7 +39,7 @@ pub struct LoadedElf {
     pub entry_point: u64,
     pub load_addr: u64,
     pub load_end: u64,
-    pub page_count: usize,
+    _allocation: Allocation,
 }
 
 #[repr(C)]
@@ -125,14 +122,11 @@ pub(super) fn load_elf(
     let entry = find_symbol(image, &header, EFI_ENTRY_SYMBOL)
         .and_then(|symbol| virtual_to_physical(symbol, &segments))
         .ok_or(ElfLoadError::EntryNotInLoadSegment)?;
-    let (target, actual_load_addr) = allocate_load_region(load_addr, page_count)?;
+    let allocation = allocate_load_region(load_addr, page_count)?;
+    let actual_load_addr = allocation.range().start;
+    let target = NonNull::new(actual_load_addr as *mut u8).ok_or(ElfLoadError::AllocateFailed)?;
 
-    if let Err(err) = copy_segments(image, &segments, load_addr, target) {
-        unsafe {
-            let _ = boot::free_pages(target, page_count);
-        }
-        return Err(err);
-    }
+    copy_segments(image, &segments, load_addr, target)?;
 
     let location = biased_addr(entry, load_addr, actual_load_addr).and_then(|entry| {
         actual_load_addr
@@ -140,20 +134,13 @@ pub(super) fn load_elf(
             .map(|end| (entry, end))
             .ok_or(ElfLoadError::SegmentAddressOverflow)
     });
-    let (entry, actual_load_end) = match location {
-        Ok(location) => location,
-        Err(error) => {
-            // SAFETY: handoff has not started and the allocated ELF region is unique.
-            unsafe { boot::free_pages(target, page_count) }.expect("failed to free ELF pages");
-            return Err(error);
-        }
-    };
+    let (entry, actual_load_end) = location?;
 
     Ok(LoadedElf {
         entry_point: entry,
         load_addr: actual_load_addr,
         load_end: actual_load_end,
-        page_count,
+        _allocation: allocation,
     })
 }
 
@@ -168,30 +155,22 @@ fn biased_addr(addr: u64, original_base: u64, actual_base: u64) -> Result<u64, E
 fn allocate_load_region(
     preferred_load_addr: u64,
     page_count: usize,
-) -> Result<(NonNull<u8>, u64), ElfLoadError> {
-    match boot::allocate_pages(
-        AllocateType::Address(preferred_load_addr),
-        MemoryType::LOADER_DATA,
-        page_count,
-    ) {
-        Ok(target) => Ok((target, preferred_load_addr)),
+) -> Result<Allocation, ElfLoadError> {
+    let bytes = (page_count as u64)
+        .checked_mul(UEFI_PAGE_SIZE)
+        .ok_or(ElfLoadError::SegmentAddressOverflow)?;
+    let request = |placement| ResourceRequest::new(ResourceId(1), bytes, UEFI_PAGE_SIZE, placement);
+    match boot_resources::reserve(request(Placement::At(preferred_load_addr))) {
+        Ok(allocation) => Ok(allocation),
         Err(_) => {
-            // This is only a load-bias fallback: axloader moves PT_LOAD segments as a
-            // whole and adjusts the handoff entry point, but it does not process ELF
-            // relocation records or rewrite absolute references embedded in the image.
-            // It is therefore valid only for images that are already known to tolerate
-            // this placement model, such as the current AxVisor UEFI stub. A generic
-            // non-PIE ET_EXEC kernel may still dereference its original physical
-            // addresses and fail early after being loaded at AnyPages.
+            // Preserve the existing x86 load-bias contract for EFI PIE images.
             crate::logln!(
                 "elf_load_relocate: preferred={:#x} pages={}",
                 preferred_load_addr,
                 page_count
             );
-            let target =
-                boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, page_count)
-                    .map_err(|_| ElfLoadError::AllocateFailed)?;
-            Ok((target, target.as_ptr() as u64))
+            boot_resources::reserve(request(Placement::Anywhere))
+                .map_err(|_| ElfLoadError::AllocateFailed)
         }
     }
 }
@@ -209,7 +188,7 @@ fn validate_header(header: &Elf64Header) -> Result<(), ElfLoadError> {
     if header.ident[6] != ELF_VERSION_CURRENT || header.e_version != 1 {
         return Err(ElfLoadError::UnsupportedVersion);
     }
-    if header.e_machine != ELF_MACHINE_X86_64 {
+    if !X86_64.matches_machine(header.e_machine) {
         return Err(ElfLoadError::UnsupportedMachine);
     }
     Ok(())
@@ -266,6 +245,12 @@ fn load_segments(image: &[u8], header: &Elf64Header) -> Result<Vec<LoadSegment>,
     }
 
     segments.sort_by_key(|segment| segment.paddr);
+    if segments
+        .windows(2)
+        .any(|pair| ranges_overlap(pair[0].paddr, pair[0].memsz, pair[1].paddr))
+    {
+        return Err(ElfLoadError::SegmentRange);
+    }
     Ok(segments)
 }
 

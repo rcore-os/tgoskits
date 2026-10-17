@@ -218,6 +218,15 @@ impl State {
         Ok(next)
     }
 
+    /// Advances the durable boot generation without changing the OTA decision.
+    ///
+    /// The LoongArch frontend commits this record before publishing a control
+    /// plane epoch, so a firmware boot without trusted entropy still gets a
+    /// non-replayable identity.
+    pub fn advance_boot(&self) -> Result<Self, StateError> {
+        self.next()
+    }
+
     pub fn encode(&self) -> [u8; RECORD_SIZE] {
         let mut bytes = [0; RECORD_SIZE];
         bytes[..8].copy_from_slice(MAGIC);
@@ -295,8 +304,8 @@ impl State {
     }
 }
 
-#[cfg(any(target_os = "uefi", test))]
-pub(super) fn newest(first: &[u8], second: &[u8]) -> Result<(State, usize), StateError> {
+#[cfg(any(target_os = "uefi", target_arch = "loongarch64", test))]
+pub fn newest(first: &[u8], second: &[u8]) -> Result<(State, usize), StateError> {
     match (State::decode(first), State::decode(second)) {
         (Ok(a), Ok(b)) if b.generation > a.generation => Ok((b, 1)),
         (Ok(a), _) => Ok((a, 0)),
@@ -370,5 +379,19 @@ mod tests {
         torn[20] ^= 0x80;
         assert_eq!(newest(&old, &torn).unwrap().0.active, Slot::A);
         assert!(newest(&torn, &torn).is_err());
+    }
+
+    #[test]
+    fn boot_generation_advances_without_changing_running_decision() {
+        let state = State::initial([1; 32]).unwrap();
+        let id = *b"01234567-89ab-cdef-0123-456789abcdef";
+        let staged = state.stage([2; 32], id, OtaSource::Direct).unwrap();
+        let attempting = staged.mark_attempt().unwrap();
+        let next = attempting.advance_boot().unwrap();
+        assert_eq!(next.generation, attempting.generation + 1);
+        assert_eq!(next.active, Slot::A);
+        assert_eq!(next.pending, Some(Slot::B));
+        assert!(next.attempted);
+        assert_eq!(next.update_id, id);
     }
 }

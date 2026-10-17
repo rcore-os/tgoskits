@@ -1,0 +1,5 @@
+target = "loongarch64-unknown-none-softfloat"
+to_bin = true
+features = ["arceos-efi"]
+log = "Info"
+max_cpu_num = 1

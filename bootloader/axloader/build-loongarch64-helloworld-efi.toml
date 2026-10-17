@@ -1,0 +1,4 @@
+target = "loongarch64-unknown-none-softfloat"
+features = ["loong-efi-smoke"]
+log = "Info"
+max_cpu_num = 1

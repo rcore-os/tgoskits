@@ -196,6 +196,9 @@ pub(crate) fn _fixmap_io(paddr: usize) -> *mut u8 {
 }
 
 pub(crate) fn early_init() {
+    #[cfg(efi)]
+    crate::efi_stub::init_boot_memory_map();
+    #[cfg(not(efi))]
     crate::fdt::init_memory_map();
 
     let kernel_range = kimage_range();
