@@ -20,7 +20,7 @@ const SECBIT_NO_SETUID_FIXUP: u32 = 1 << 2;
 const SECBIT_KEEP_CAPS: u32 = 1 << 4;
 
 /// Return the bit mask for a single Linux capability number.
-fn cap_bit(cap: u32) -> u64 {
+const fn cap_bit(cap: u32) -> u64 {
     if cap <= CAP_LAST_CAP { 1u64 << cap } else { 0 }
 }
 
@@ -69,6 +69,23 @@ impl Cred {
     /// Return the mask of all Linux capabilities known to this kernel.
     pub const fn cap_mask() -> u64 {
         CAP_MASK
+    }
+
+    /// Capabilities needed while a freshly-created user namespace installs
+    /// its UID/GID map and prepares its private mount/UTS state.
+    ///
+    /// Capability checks are not namespace-aware yet, so retaining the full
+    /// host capability mask for a non-zero mapped UID would make the
+    /// simplified model look like an unprivileged task while still granting
+    /// unrelated host privileges. Keep this transitional set deliberately
+    /// small until capability ownership is attached to `UserNamespace`.
+    pub const fn user_namespace_setup_cap_mask() -> u64 {
+        cap_bit(CAP_CHOWN)
+            | cap_bit(CAP_DAC_OVERRIDE)
+            | cap_bit(CAP_FOWNER)
+            | cap_bit(CAP_SETUID)
+            | cap_bit(CAP_SETGID)
+            | cap_bit(CAP_SYS_ADMIN)
     }
 
     /// Create root credentials with all permitted/effective capabilities.
@@ -460,5 +477,14 @@ mod tests {
     #[test]
     fn credential_capability_rules_hold() {
         assert!(super::credential_capability_rules_hold_for_test());
+    }
+
+    #[test]
+    fn user_namespace_setup_capabilities_are_limited() {
+        let setup = Cred::user_namespace_setup_cap_mask();
+        assert_ne!(setup, Cred::cap_mask());
+        assert_eq!(setup & (1u64 << linux_raw_sys::general::CAP_SYS_ADMIN),
+            1u64 << linux_raw_sys::general::CAP_SYS_ADMIN);
+        assert_eq!(setup & (1u64 << linux_raw_sys::general::CAP_SYS_PTRACE), 0);
     }
 }

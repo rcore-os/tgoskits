@@ -1364,18 +1364,45 @@ impl Location {
     ///
     /// The original attachments and complete propagation set must still match
     /// admission. Unrelated namespace mutations do not invalidate the plan.
+    ///
+    /// A failed flush does not retain the mount. The unmount was already
+    /// admitted as not busy, so it is detached and its lifetime guard (a loop
+    /// mount holder, for example) is released, and the flush error is reported
+    /// to the caller afterwards. Only a rejected commit keeps the mount.
+    ///
+    /// Linux v6.12 never reports this error: the equivalent writeback happens
+    /// inside `generic_shutdown_super()`, which is `void` when `ksys_umount()`
+    /// deactivates the superblock. Retaining the mount to report it instead
+    /// would hold the lifetime guard for an unbounded time, so this lower layer
+    /// releases the mount and lets the caller report the first failure.
     pub fn commit_unmount(&self, plan: UnmountPlan) -> VfsResult<()> {
+        self.commit_unmount_with_status(plan).0
+    }
+
+    /// Commits an admitted normal unmount and reports topology commit status
+    /// separately from a filesystem flush error.
+    ///
+    /// A successful commit may still return a flush error. Callers that
+    /// publish namespace changes must use the boolean status because the mount
+    /// and its lifetime guard are already gone in that case.
+    pub fn commit_unmount_with_status(&self, plan: UnmountPlan) -> (VfsResult<()>, bool) {
         if !self.is_root_of_mount()
             || !plan
                 .targets()
                 .any(|mountpoint| Arc::ptr_eq(mountpoint, &self.mountpoint))
         {
-            return Err(VfsError::InvalidInput);
+            return (Err(VfsError::InvalidInput), false);
         }
-        self.filesystem().flush()?;
-        self.mountpoint.commit_normal_after_flush(plan)?;
+        // The unmount was admitted before callbacks ran. Preserve that
+        // decision even when filesystem writeback fails: the mount must be
+        // detached so its lifetime resources can be released, while the
+        // callback error is returned to userspace afterwards.
+        let flush = self.filesystem().flush();
+        if let Err(error) = self.mountpoint.commit_normal_after_flush(plan) {
+            return (Err(error), false);
+        }
         self.finish_unmount();
-        Ok(())
+        (flush, true)
     }
 
     fn finish_unmount(&self) {

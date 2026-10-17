@@ -91,13 +91,23 @@ async fn prepare_default_qemu_app_rootfs(
     };
     if app.prebuild_path.is_none() {
         if let Some(configured) = configured_rootfs {
-            crate::image::storage::ensure_optional_managed_rootfs(
-                workspace_root,
-                target_dir,
-                arch,
-                Some(configured),
-            )
-            .await?;
+            if is_default_managed_rootfs(workspace_root, target_dir, arch, configured) {
+                // A QEMU config that spells out the default managed Alpine image
+                // still needs the Starry OpenRC preparation. Without it the image
+                // keeps Alpine's own `/etc/inittab` gettys, which loop on the
+                // missing /dev/tty1..tty6 consoles.
+                rootfs::ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, target).await?;
+            } else {
+                // Custom images keep their own boot setup; only existence and the
+                // APK region are ensured.
+                crate::image::storage::ensure_optional_managed_rootfs(
+                    workspace_root,
+                    target_dir,
+                    arch,
+                    Some(configured),
+                )
+                .await?;
+            }
             rootfs::ensure_apk_region_in_rootfs(configured)?;
             return Ok(PreparedAppRootfs::borrowed(configured.to_path_buf()));
         }
@@ -112,6 +122,11 @@ async fn prepare_default_qemu_app_rootfs(
     inject::set_directory_owner_and_mode(&run.rootfs_path, "/root", 0, 0, 0o700)?;
 
     let prepare_result = (|| -> anyhow::Result<()> {
+        // App prebuilds run against a copied rootfs, so the generic test asset
+        // preparation hook does not get a chance to select the CI mirror. Keep
+        // the guest repository aligned with STARRY_APK_REGION before a
+        // prebuild extracts the image and installs its packages.
+        rootfs::ensure_apk_region_in_rootfs(&run.rootfs_path)?;
         reset_dir(&run.staging_root)?;
         reset_dir(&run.overlay_dir)?;
 
@@ -136,6 +151,24 @@ async fn prepare_default_qemu_app_rootfs(
     })();
     prepare_result?;
     Ok(run.finish())
+}
+
+/// Returns whether a configured rootfs is the default managed image of `arch`.
+///
+/// A file-name comparison alone would also accept a same-named image stored
+/// outside the managed rootfs directory, including one a user prepared
+/// themselves, and would skip the Starry preparation that image does not have.
+/// The default image is the exact path the image storage resolves for `arch`,
+/// which fixes both the managed directory and `rootfs-<arch>-<distro>.img`
+/// naming that [`rootfs::ensure_rootfs_in_tmp_dir`] prepares.
+fn is_default_managed_rootfs(
+    workspace_root: &Path,
+    target_dir: &Path,
+    arch: &str,
+    configured_rootfs: &Path,
+) -> bool {
+    crate::image::storage::default_rootfs_path(workspace_root, target_dir, arch)
+        .is_ok_and(|default_rootfs| default_rootfs == configured_rootfs)
 }
 
 fn create_default_app_rootfs_run(
@@ -236,6 +269,46 @@ fn reset_dir(path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_default_managed_image_uses_the_starry_rootfs_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_root = workspace.path();
+        let target_dir = workspace_root.join("custom-target");
+        let default_rootfs =
+            crate::image::storage::default_rootfs_path(workspace_root, &target_dir, "x86_64")
+                .unwrap();
+        let managed_dir = workspace_root.join("custom-target/axbuild/rootfs");
+        assert_eq!(default_rootfs, managed_dir.join("rootfs-x86_64-alpine.img"));
+
+        assert!(is_default_managed_rootfs(
+            workspace_root,
+            &target_dir,
+            "x86_64",
+            &default_rootfs
+        ));
+        // Another flavour of the managed image is not the default one.
+        assert!(!is_default_managed_rootfs(
+            workspace_root,
+            &target_dir,
+            "x86_64",
+            &managed_dir.join("rootfs-x86_64-dropbear.img")
+        ));
+        // A same-named image outside the managed rootfs directory is not the
+        // managed default either.
+        assert!(!is_default_managed_rootfs(
+            workspace_root,
+            &target_dir,
+            "x86_64",
+            &workspace_root.join("elsewhere/rootfs-x86_64-alpine.img")
+        ));
+        assert!(!is_default_managed_rootfs(
+            workspace_root,
+            &target_dir,
+            "unknown-arch",
+            &default_rootfs
+        ));
+    }
 
     #[test]
     fn default_prebuild_runs_use_fresh_rootfs_copies() {

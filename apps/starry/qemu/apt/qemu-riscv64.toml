@@ -12,6 +12,8 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
+    "-append",
+    "init=/bin/sh",
 ]
 uefi = false
 to_bin = true
@@ -19,7 +21,7 @@ fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', "(?m)^APT_HE
 timeout = 1200
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:"
+shell_prefix = "# "
 shell_cmd = '''
 rm -f /etc/apt/sources.list.d/*.sources && \
 apt_hello_test() { \

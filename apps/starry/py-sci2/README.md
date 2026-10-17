@@ -27,30 +27,52 @@ StarryOS 通过随附的 Debian glibc 闭包运行这份 glibc Miniforge Python�
 
 | 模块 | 库 | 栈 | 覆盖维度 | 断言 | 标记 |
 |:--|:--|:--|:--|:--:|:--|
-| scipy | SciPy | musl | linalg（LU·Cholesky·SVD·QR·eigvalsh·expm·pinv·lstsq·norm）/ optimize（minimize·brentq·newton·fsolve·least_squares·curve_fit·linprog）/ integrate（quad·dblquad·simpson·solve_ivp）/ interpolate（interp1d·CubicSpline·splrep·Pchip·barycentric）/ fft（fft·rfft·dct·Parseval）/ signal（convolve·correlate·fftconvolve）/ sparse（csr·csc·coo·kron·spsolve）/ stats（norm·binom·poisson·linregress·spearmanr·ttest）/ special（gamma·erf·comb·beta·expit） | 76 | `SCIPY_DONE` |
-| sympy | SymPy | musl | simplify·trigsimp / expand·factor·apart·cancel / solve（多项式·方程组·复数·非线性）/ diff·偏导·高阶 / integrate·limit·series / 有理数 / Matrix（det·inv·eigenvals·eigenvects·rref·nullspace·LU）/ 求和连乘闭式 / dsolve（一二阶 ODE）/ 数论（isprime·factorint·gcd·totient）/ 集合逻辑 / nsimplify·lambdify / 带重数根·Poly / 高精度 evalf | 68 | `SYMPY_DONE` |
-| numba | Numba | conda | @njit 标量·数组归约·控制流·跨函数·递归·元组返回·numpy 内建 / 显式签名 / `prange` 并行归约 / `@vectorize` ufunc / `@guvectorize` / typed `List` / structured dtype / Mandelbrot 逃逸计数 / fastmath / MCJIT 稳态加速比 | 55 | `NUMBA_DONE` |
-| pandas | pandas | conda | Series/DataFrame 构造·索引（loc/iloc/at/boolean）/ groupby·agg·transform / merge·join·concat / pivot·melt·stack / 时间序列（date_range·resample·rolling·shift）/ MultiIndex / apply·map / 缺失值 / 排序·rank / 分类 dtype / IO 往返（csv/json 内存缓冲） | 103 | `PANDAS_DONE` |
-| scikit-learn | scikit-learn | conda | 全分类器（LogReg·SVC·RandomForest·GBDT·KNN·NaiveBayes·DecisionTree·MLP·LDA·QDA·Ridge·SGD）/ 回归器 / 聚类（KMeans·DBSCAN·Agglomerative）/ 降维（PCA·TruncatedSVD·NMF）/ 预处理（StandardScaler·MinMax·OneHot·Label·Poly）/ 管道·ColumnTransformer / 度量·交叉验证·GridSearch / 全数据集（iris·wine·digits·breast_cancer·make_classification）种子固定确定预测 | 133 | `SKLEARN_DONE` |
-| matplotlib | matplotlib | conda | Agg 无头后端；line/scatter/bar/hist/pie/step/stem/errorbar/fill_between / imshow·pcolormesh·contour·contourf / 子图·GridSpec·twinx / 颜色映射·归一化 / 文本·注释·图例 / 变换·刻度定位器 / 渲染成 PNG 缓冲并断言尺寸/非空/像素不变量 | 79 | `MATPLOTLIB_DONE` |
-| networkx | networkx | conda | 图构造（Graph·DiGraph·MultiGraph）/ 遍历（BFS·DFS）/ 最短路（dijkstra·bellman_ford·floyd_warshall·A*）/ 连通性·强连通 / 中心性（degree·betweenness·closeness·eigenvector·pagerank）/ MST（kruskal·prim）/ 匹配·流（max_flow·min_cut）/ 环·拓扑排序·着色 / 经典图生成器 | 74 | `NETWORKX_DONE` |
-| statsmodels | statsmodels | conda | OLS·WLS·GLS / GLM（Binomial·Poisson·Gamma）/ Logit·Probit / ANOVA / 时间序列（AR·ARIMA·SARIMAX·acf·pacf）/ 描述统计·假设检验（t·适合度·Ljung-Box）/ 稳健回归 / 设计矩阵 - 全部对闭式或种子固定不变量 | 65 | `STATSMODELS_DONE` |
-| conda-cli | conda | conda | conda 命令面地毯（见下方"conda 彩蛋"）| 102 | `CONDACLI_DONE` |
+| scipy | SciPy | musl | linalg（LU·Cholesky·SVD·QR·eigvalsh·expm·pinv·lstsq·norm）/ optimize（minimize·brentq·newton·fsolve·least_squares·curve_fit·linprog）/ integrate（quad·dblquad·simpson·solve_ivp）/ interpolate（interp1d·CubicSpline·splrep·Pchip·barycentric）/ fft（fft·rfft·dct·Parseval）/ signal（convolve·correlate·fftconvolve）/ sparse（csr·csc·coo·kron·spsolve）/ stats（norm·binom·poisson·linregress·spearmanr·ttest）/ special（gamma·erf·comb·beta·expit） | 231 | `SCIPY_DONE` |
+| sympy | SymPy | musl | simplify·trigsimp / expand·factor·apart·cancel / solve（多项式·方程组·复数·非线性）/ diff·偏导·高阶 / integrate·limit·series / 有理数 / Matrix（det·inv·eigenvals·eigenvects·rref·nullspace·LU）/ 求和连乘闭式 / dsolve（一二阶 ODE）/ 数论（isprime·factorint·gcd·totient）/ 集合逻辑 / nsimplify·lambdify / 带重数根·Poly / 高精度 evalf | 208 | `SYMPY_DONE` |
+| numba | Numba | conda | @njit 标量·数组归约·控制流·跨函数·递归·元组返回·numpy 内建 / 显式签名 / `prange` 并行归约 / `@vectorize` ufunc / `@guvectorize` / typed `List` / structured dtype / Mandelbrot 逃逸计数 / fastmath / MCJIT 稳态加速比 | 162 | `NUMBA_DONE` |
+| pandas | pandas | conda | Series/DataFrame 构造·索引（loc/iloc/at/boolean）/ groupby·agg·transform / merge·join·concat / pivot·melt·stack / 时间序列（date_range·resample·rolling·shift）/ MultiIndex / apply·map / 缺失值 / 排序·rank / 分类 dtype / IO 往返（csv/json 内存缓冲） | 310 | `PANDAS_DONE` |
+| scikit-learn | scikit-learn | conda | 全分类器（LogReg·SVC·RandomForest·GBDT·KNN·NaiveBayes·DecisionTree·MLP·LDA·QDA·Ridge·SGD）/ 回归器 / 聚类（KMeans·DBSCAN·Agglomerative）/ 降维（PCA·TruncatedSVD·NMF）/ 预处理（StandardScaler·MinMax·OneHot·Label·Poly）/ 管道·ColumnTransformer / 度量·交叉验证·GridSearch / 全数据集（iris·wine·digits·breast_cancer·make_classification）种子固定确定预测 | 263 | `SKLEARN_DONE` |
+| matplotlib | matplotlib | conda | Agg 无头后端；line/scatter/bar/hist/pie/step/stem/errorbar/fill_between / imshow·pcolormesh·contour·contourf / 子图·GridSpec·twinx / 颜色映射·归一化 / 文本·注释·图例 / 变换·刻度定位器 / 渲染成 PNG 缓冲并断言尺寸/非空/像素不变量 | 259 | `MATPLOTLIB_DONE` |
+| networkx | networkx | conda | 图构造（Graph·DiGraph·MultiGraph）/ 遍历（BFS·DFS）/ 最短路（dijkstra·bellman_ford·floyd_warshall·A*）/ 连通性·强连通 / 中心性（degree·betweenness·closeness·eigenvector·pagerank）/ MST（kruskal·prim）/ 匹配·流（max_flow·min_cut）/ 环·拓扑排序·着色 / 经典图生成器 | 246 | `NETWORKX_DONE` |
+| statsmodels | statsmodels | conda | OLS·WLS·GLS / GLM（Binomial·Poisson·Gamma）/ Logit·Probit / ANOVA / 时间序列（AR·ARIMA·SARIMAX·acf·pacf）/ 描述统计·假设检验（t·适合度·Ljung-Box）/ 稳健回归 / 设计矩阵 - 全部对闭式或种子固定不变量 | 165 | `STATSMODELS_DONE` |
+| conda-cli | conda | conda | conda 命令面地毯（见下方"conda 彩蛋"）| 173 | `CONDACLI_DONE` |
 
 每个模块都是自包含地毯（独立 ok/fail 计数器，内部 fail 为 0 时才打印 `*_DONE` 标记）。
 `run_pysci2.py` 先跑 musl 栈（scipy + sympy），再在 `/opt/miniconda/bin/python` 存在时跑 conda 栈（其余
 七个）。仅当**当前架构上所有存在的地毯全部通过**时才打印 `PYSCI2_OK=<P>/<T>` 与 `TEST PASSED`
 （不允许跳过）：conda 架构（x86_64 / aarch64）为 **9/9**，musl-only 架构（riscv64 / loongarch64）为 **2/2**。
 
-## conda 彩蛋 - conda 命令面全 `--help` / `-h` 地毯
+Statsmodels 地毯的 Logit 混淆表优先真调 `pred_table()`；conda-forge 的 aarch64 numpy 2.5.3 在
+`np.histogram2d` 内部用坏的 `np.ravel_multi_index` 拒绝这个 2x2 直方图（x86_64 同版本正常），此时地毯从
+同一已拟合模型的 `endog`/`predict` 构造完全相同的 2x2 表继续断言形状与对角线，其他异常照常失败。
 
-`CondaCliCarpet.py` 以 `conda --help` 自己的子命令树为 ground truth，逐条覆盖 conda 的整个命令面：
-`clean / compare / config / create / info / init / install / list / notices / package / remove / rename /
-run / search / update / env / export / doctor / repoquery / activate / deactivate` 每一个的 `--help` **与**
-`-h` 都必须打印其 `usage: conda <sub>` 横幅并退出 0；再加上信息类命令返回真实、结构良好的输出
-（`--version` 解析成 N.N.N、`info` / `info --json` 报版本与平台、`list` / `list numba` 列已装包、
-`config --show` / `--show-sources` / `--describe`、`env list`、`run --help`、`doctor --help`）。共 102 条断言，
-证明在 StarryOS 上跑起来的 conda 是一个功能完整、可自省的包管理器 - 而不仅仅是能 import 的 Python 库。
+## conda 彩蛋 - conda 命令行面地毯
+
+`CondaCliCarpet.py` 以 conda 自己的子命令树为 ground truth，但按代表性抽样而不是逐条枚举。顶层帮助仍按
+`conda help` → `conda --help` → `conda -h` 的顺序取第一个退出 0 且带 usage 横幅的等价入口，并断言核心
+子命令 `install` / `create` / `list` 出现在列表中。子命令帮助只抽查 `info` / `config` / `install` /
+`env` / `run` / `search` / `package` / `repoquery`，让每个代表一种不同的 CLI 形态（信息转储、配置键、
+求解变更、环境管理、命令执行、索引查询、包归属查询、插件查询），并逐个断言 `usage: conda <sub>` 横幅、
+退出 0，以及 `--freeze-installed` / `--no-capture-output` / `--which` 这类只有该命令才有的关键字。未被抽查
+的子命令由后续真实功能与错误路径检查覆盖：`create` / `remove` 走 solve 的 `--dry-run --offline --json`，
+`clean` 走 `--all --dry-run --json`，`env` / `run` / `compare` / `search` / `notices` / `doctor` /
+`package` / `repoquery` 各自真调一次，`conda frobnicate` 与未知参数这类 argparse 错误路径也单独验证退出码。
+信息类命令的断言全部保留：`--version` 解析成 N.N.N、`info --json` 报版本与平台、`list --json` 与正则
+过滤列出已装包、`config --show --json` 逐键核对并做 `--set` / `--get` / `--remove-key` 往返、
+`env export` / `env list --json`、`install` / `create` / `clean` 的机器可读 JSON，证明在 StarryOS 上
+跑起来的 conda 是一个功能完整、可自省的包管理器 - 而不仅仅是能 import 的 Python 库。
+
+抽样是因为在目标架构上每条 conda 调用都要付一次沉重的 Python 启动代价。脚本因此在当前解释器就是 conda
+解释器时直接调用 `conda.cli.main.main(*args)`（`main_subshell` 每次重建 context 与日志配置），用重定向
+捕获 stdout/stderr，只在无法导入该入口时退回子进程调用；顶层帮助的等价拼写探测也复用同一个入口。因此每条
+命令仍然是独立一次调用、独立检查返回值与输出，只是不再重复付出启动开销。
+
+抽样边界是有意固定的：只抽查帮助文本中最能区分命令形态的 `info`、`config`、`install`、`env`、`run`、
+`search`、`package`、`repoquery`，未抽查的顶层命令仍通过 `create/remove/clean/env/run/compare/search/notices/
+doctor/package/repoquery` 的真实调用覆盖。该集合覆盖帮助解析、配置往返、求解预览、环境管理、命令执行、
+索引查询和插件查询；它不声称逐一验证 conda 的全部插件或网络上传命令。aarch64 的
+`numpy.ravel_multi_index` 兼容回退也只处理 Matplotlib `GridSpec` 实际传入的整数坐标、正维度、C-order、
+`mode="raise"` 组合，其他参数保持调用原生实现并继续失败，这样不会把回退扩大成通用 NumPy 替代品。
 
 ## glibc-on-StarryOS 机制
 
@@ -91,7 +113,7 @@ glibc 缓存、把 BLAS/OpenMP 线程固定为 1，然后执行 `run_pysci2.py`�
 ## 宿主验证
 
 在 x86_64 原生 Alpine v3.23 chroot（`apk add python3 py3-scipy py3-sympy`）中解析到 python 3.12 /
-scipy 1.16.3 / sympy 1.14.0，scipy 76/76、sympy 68/68。conda 栈在 conda-forge 环境（python 3.13 /
+scipy 1.16.3 / sympy 1.14.0，scipy 231/231、sympy 208/208。conda 栈在 conda-forge 环境（python 3.13 /
 numpy 2.4 / numba 0.65.1 / scikit-learn）中，七个地毯逐一 fail=0。StarryOS 四架构运行验证在 qemu 阶段进行。
 
 ## 架构说明
