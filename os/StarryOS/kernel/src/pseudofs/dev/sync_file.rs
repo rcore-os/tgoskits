@@ -229,7 +229,7 @@ impl SyncFile {
     /// Task context only: [`PollSet::wake`] must not run in hard IRQ. The
     /// readiness flag is published by the `swap` before any woken thread
     /// reloads it.
-    fn mark_signaled(&self) {
+    pub fn mark_signaled(&self) {
         if !self.signaled.swap(true, Ordering::Release) {
             // SAFETY: task context; readiness was published by the `swap`
             // above before any woken thread reloads it.

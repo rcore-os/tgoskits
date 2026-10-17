@@ -20,7 +20,8 @@ use rdif_display::{
 use rdif_gpu::{
     Backing, BlobDescriptor, BufferDescriptor, BufferHandle, BusIdentity, CapsetInfo, Completion,
     CompletionStatus, ContextHandle, DmaDomainId, DriverVersion, GpuCapabilities, GpuDevice,
-    GpuError, GpuIdentity, GpuIrqEndpoint, PixelFormat, Resource3d, Transfer3d, VirglOps,
+    GpuError, GpuIdentity, GpuIrqEndpoint, HostMemoryRegion, PixelFormat, Resource3d, Transfer3d,
+    VirglOps,
 };
 use virtio_drivers::{Hal, transport::Transport};
 
@@ -1115,6 +1116,45 @@ impl<H: Hal, T: Transport> VirglOps for VirtIoGpuDevice<H, T> {
     fn capset(&mut self, id: u32, version: u32, size: u32) -> Result<Vec<u8>, GpuError> {
         self.ensure_ready()?;
         self.raw.get_capset(id, version, size).map_err(map_error)
+    }
+
+    fn submit_ring(
+        &mut self,
+        context: ContextHandle,
+        commands: &[u8],
+        ring_idx: u8,
+    ) -> Result<Completion, GpuError> {
+        self.ensure_ready()?;
+        let ctx_id = self.context_id(context)?;
+        let fence = self
+            .raw
+            .submit_3d_ring(ctx_id, commands, ring_idx)
+            .map_err(map_error)?;
+        let fence = NonZeroU64::new(fence).expect("fence ids start at 1 and only increase");
+        Ok(Completion::Pending(fence))
+    }
+
+    fn map_blob(&mut self, resource: BufferHandle, offset: u64) -> Result<u32, GpuError> {
+        self.ensure_ready()?;
+        let resource_id = self.resource_id(resource)?;
+        self.raw.map_blob(resource_id, offset).map_err(map_error)
+    }
+
+    fn unmap_blob(&mut self, resource: BufferHandle) -> Result<(), GpuError> {
+        self.ensure_ready()?;
+        let resource_id = self.resource_id(resource)?;
+        self.raw.unmap_blob(resource_id).map_err(map_error)
+    }
+
+    fn host_memory_region(&self) -> Option<HostMemoryRegion> {
+        self.raw.hostmem().map(|region| HostMemoryRegion {
+            base: region.phys_base,
+            length: region.length,
+        })
+    }
+
+    fn blob_alignment(&self) -> Option<u32> {
+        self.raw.blob_alignment()
     }
 }
 

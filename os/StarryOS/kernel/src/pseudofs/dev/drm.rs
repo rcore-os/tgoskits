@@ -195,7 +195,15 @@ pub const DRM_CAP_CRTC_IN_VBLANK_EVENT: u64 = 0x12;
 /// `modifier[]` array and validates every entry against the set we
 /// advertise in the plane's `IN_FORMATS` blob.
 pub const DRM_CAP_ADDFB2_MODIFIERS: u64 = 0x10;
-
+/// Syncobj objects are supported (`DRM_IOCTL_SYNCOBJ_*` family served).
+pub const DRM_CAP_SYNCOBJ: u64 = 0x13;
+/// Timeline syncobjs are supported (points on every wait/query/signal).
+///
+/// The value must match the UAPI headers the guest userspace was compiled
+/// against: mesa's DRM sync provider selects the kernel syncobj path from
+/// this cap, and a stale value makes it silently fall back to the sync-file
+/// path, which the venus face does not honour.
+pub const DRM_CAP_SYNCOBJ_TIMELINE: u64 = 0x14;
 /// `DRM_MODE_FB_MODIFIERS` — caller is providing `modifier[]` entries.
 /// Without this flag the `modifier[]` array in `drm_mode_fb_cmd2` is
 /// ignored and assumed implicit-linear.
@@ -242,6 +250,9 @@ pub const DRM_IOCTL_MODE_DESTROY_DUMB: u32 = iowr::<DrmModeDestroyDumb>(DRM_TYPE
 pub const DRM_IOCTL_MODE_GETPLANERESOURCES: u32 = iowr::<DrmModeGetPlaneRes>(DRM_TYPE, 0xB5);
 pub const DRM_IOCTL_MODE_GETPLANE: u32 = iowr::<DrmModeGetPlane>(DRM_TYPE, 0xB6);
 pub const DRM_IOCTL_MODE_ADDFB2: u32 = iowr::<DrmModeFbCmd2>(DRM_TYPE, 0xB8);
+/// Legacy `ADDFB` (28-byte `drm_mode_fb_cmd`). GBM userspaces issue it for
+/// plain buffers; the card0 handler synthesizes the `ADDFB2` core from it.
+pub const DRM_IOCTL_MODE_ADDFB: u32 = iowr::<DrmModeFbCmd>(DRM_TYPE, 0xAE);
 pub const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: u32 = iowr::<DrmModeObjGetProperties>(DRM_TYPE, 0xB9);
 pub const DRM_IOCTL_MODE_ATOMIC: u32 = iowr::<DrmModeAtomic>(DRM_TYPE, 0xBC);
 pub const DRM_IOCTL_MODE_CREATEPROPBLOB: u32 = iowr::<DrmModeCreateBlob>(DRM_TYPE, 0xBD);
@@ -360,6 +371,23 @@ pub const DRM_MODE_ENCODER_DAC: u32 = 1;
 pub const DRM_MODE_ENCODER_TMDS: u32 = 2;
 pub const DRM_MODE_ENCODER_LVDS: u32 = 3;
 pub const DRM_MODE_ENCODER_VIRTUAL: u32 = 5;
+
+/// Legacy framebuffer addition request.
+/// Linux: `struct drm_mode_fb_cmd` (28 bytes).
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmModeFbCmd {
+    /// Output: framebuffer id.
+    pub fb_id: u32,
+    pub width: u32,
+    pub height: u32,
+    /// `DRM_FORMAT_HEADER` depth (bpp/depth pair packed by userspace).
+    pub pitch: u32,
+    pub bpp: u32,
+    pub depth: u32,
+    /// Input: GEM handle of the single plane.
+    pub handle: u32,
+}
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
@@ -703,6 +731,169 @@ pub struct DrmModeGetBlob {
     pub data: u64,
 }
 
+// ---- Generic-DRM syncobj family (core ioctls 0xBF..0xCF) ----
+//
+// Mesa's venus ICD tracks GPU completion through timeline syncobjs
+// (util_sync_provider_drm selects the kernel path when DRM_CAP_SYNCOBJ_TIMELINE
+// is reported), so card0 serves the family alongside the VIRTGPU_* ioctls.
+// The MODE_* ioctl nrs stop at 0xBE, so nothing collides.
+
+/// Creates a syncobj. Linux: `struct drm_syncobj_create` (8 bytes)
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmSyncobjCreate {
+    /// Output: syncobj handle.
+    pub handle: u32,
+    /// Input: `DRM_SYNCOBJ_CREATE_*` flags.
+    pub flags: u32,
+}
+
+/// Destroys a syncobj. Linux: `struct drm_syncobj_destroy` (8 bytes)
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmSyncobjDestroy {
+    /// Input: syncobj handle.
+    pub handle: u32,
+    pub pad: u32,
+}
+
+/// Exports/imports a syncobj as a sync_file fd.
+/// `struct drm_syncobj_handle` as the userspace headers define it for this
+/// stack: 24 bytes, with a trailing timeline point (the new-style
+/// handle-to-fd export carries the point to export at; 0 means the binary
+/// view of the syncobj).
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmSyncobjHandle {
+    pub handle: u32,
+    pub flags: u32,
+    pub fd: i32,
+    pub pad: u32,
+    pub point: u64,
+}
+
+/// Waits on binary syncobjs. Linux: `struct drm_syncobj_wait` (40 bytes:
+/// handles, timeout_nsec, count_handles, flags, first_signaled, pad,
+/// deadline_nsec).
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmSyncobjWait {
+    /// Pointer to a __u32 handle array.
+    pub handles: u64,
+    /// Absolute CLOCK_MONOTONIC deadline in nanoseconds; a value that
+    /// already lapsed degenerates to a single poll (Linux
+    /// `drm_timeout_abs_to_jiffies`).
+    pub timeout_nsec: i64,
+    /// Number of handles in the array.
+    pub count_handles: u32,
+    /// `DRM_SYNCOBJ_WAIT_FLAGS_*`.
+    pub flags: u32,
+    /// Output: index of the first signaled handle (valid on a successful
+    /// non-WAIT_ALL return only).
+    pub first_signaled: u32,
+    pub pad: u32,
+    /// Optional per-wait deadline hint forwarded to the fences when
+    /// WAIT_DEADLINE is set (Linux master, post-v7.1); accepted and unused.
+    pub deadline_nsec: u64,
+}
+
+/// Resets/signals binary syncobjs. Linux: `struct drm_syncobj_array` (16 bytes)
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmSyncobjArray {
+    pub handles: u64,
+    pub count_handles: u32,
+    pub flags: u32,
+}
+
+/// Queries/signals timeline syncobjs.
+/// Linux: `struct drm_syncobj_timeline_array` (24 bytes)
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmSyncobjTimelineArray {
+    pub handles: u64,
+    /// Pointer to a __u64 point array.
+    pub points: u64,
+    pub count_handles: u32,
+    pub flags: u32,
+}
+
+/// Waits on timeline syncobjs. Linux: `struct drm_syncobj_timeline_wait`
+/// (48 bytes).
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmSyncobjTimelineWait {
+    pub handles: u64,
+    pub points: u64,
+    /// Absolute CLOCK_MONOTONIC deadline (`__s64` in Linux: negative values
+    /// read as already lapsed).
+    pub timeout_nsec: i64,
+    pub count_handles: u32,
+    pub flags: u32,
+    /// Output: index of the first signaled handle (valid on a successful
+    /// non-WAIT_ALL return only).
+    pub first_signaled: u32,
+    pub pad: u32,
+    /// Optional per-wait deadline hint forwarded to the fences when
+    /// WAIT_DEADLINE is set (Linux master, post-v7.1); accepted and unused.
+    pub deadline_nsec: u64,
+}
+
+/// Registers an eventfd to be signalled when a syncobj point completes.
+/// Linux: `struct drm_syncobj_eventfd` (24 bytes, v6.7 UAPI).
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
+pub struct DrmSyncobjEventfd {
+    pub handle: u32,
+    /// `DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE` waits for a fence to become
+    /// available rather than for the point to signal.
+    pub flags: u32,
+    /// Timeline point (0 for binary syncobjs).
+    pub point: u64,
+    /// Existing eventfd to signal.
+    pub fd: i32,
+    pub pad: u32,
+}
+
+pub const DRM_IOCTL_SYNCOBJ_CREATE: u32 = iowr::<DrmSyncobjCreate>(DRM_TYPE, 0xBF);
+pub const DRM_IOCTL_SYNCOBJ_DESTROY: u32 = iowr::<DrmSyncobjDestroy>(DRM_TYPE, 0xC0);
+pub const DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD: u32 = iowr::<DrmSyncobjHandle>(DRM_TYPE, 0xC1);
+pub const DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE: u32 = iowr::<DrmSyncobjHandle>(DRM_TYPE, 0xC2);
+pub const DRM_IOCTL_SYNCOBJ_WAIT: u32 = iowr::<DrmSyncobjWait>(DRM_TYPE, 0xC3);
+pub const DRM_IOCTL_SYNCOBJ_RESET: u32 = iowr::<DrmSyncobjArray>(DRM_TYPE, 0xC4);
+pub const DRM_IOCTL_SYNCOBJ_SIGNAL: u32 = iowr::<DrmSyncobjArray>(DRM_TYPE, 0xC5);
+pub const DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT: u32 = iowr::<DrmSyncobjTimelineWait>(DRM_TYPE, 0xCA);
+pub const DRM_IOCTL_SYNCOBJ_QUERY: u32 = iowr::<DrmSyncobjTimelineArray>(DRM_TYPE, 0xCB);
+pub const DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL: u32 =
+    iowr::<DrmSyncobjTimelineArray>(DRM_TYPE, 0xCD);
+pub const DRM_IOCTL_SYNCOBJ_EVENTFD: u32 = iowr::<DrmSyncobjEventfd>(DRM_TYPE, 0xCF);
+
+/// `DRM_SYNCOBJ_CREATE_SIGNALED`: create the syncobj in the signaled state.
+pub const DRM_SYNCOBJ_CREATE_SIGNALED: u32 = 1 << 0;
+/// `DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL`: wait for every handle, not any one.
+pub const DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL: u32 = 1 << 0;
+/// `DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT`: allow waiting on a future point.
+pub const DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT: u32 = 1 << 1;
+/// `DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE`: wait for a fence to become
+/// available at the point rather than for the point to signal.
+pub const DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE: u32 = 1 << 2;
+/// `DRM_SYNCOBJ_WAIT_FLAGS_WAIT_DEADLINE`: pass `deadline_nsec` as a
+/// scheduling hint to the fences (v6.11+). Accepted and ignored here — it
+/// never changes the wait predicate.
+pub const DRM_SYNCOBJ_WAIT_FLAGS_WAIT_DEADLINE: u32 = 1 << 3;
+
+/// `DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE`: export a sync file
+/// fd instead of a syncobj fd.
+pub const DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE: u32 = 1 << 0;
+/// `DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_TIMELINE`: export the sync file at
+/// `point` (v6.16+); without it `point` must be zero.
+pub const DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_TIMELINE: u32 = 1 << 1;
+/// `DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE`: import a sync file fd.
+pub const DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE: u32 = 1 << 0;
+/// `DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_TIMELINE`: import the fence at `point`
+/// (v6.16+); without it `point` must be zero.
+pub const DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_TIMELINE: u32 = 1 << 1;
+
 #[cfg(all(test, not(axtest), feature = "rknpu"))]
 mod tests {
     use super::*;
@@ -715,6 +906,42 @@ mod tests {
         assert_eq!(ioctl_nr(DRM_IOCTL_GET_UNIQUE), 0x01);
         assert_eq!(ioctl_nr(DRM_IOCTL_PRIME_HANDLE_TO_FD), 0x2d);
         assert_eq!(ioctl_nr(DRM_IOCTL_MODE_GETRESOURCES), 0xA0);
+    }
+
+    #[test]
+    fn legacy_addfb_matches_linux_command_word() {
+        // GBM userspaces issue the legacy ADDFB with the 28-byte
+        // `drm_mode_fb_cmd`; the packed command must be the exact word
+        // observed on real clients, or the dispatch never sees it.
+        assert_eq!(DRM_IOCTL_MODE_ADDFB, 0xc01c_64ae);
+        assert_eq!(
+            io_size(DRM_IOCTL_MODE_ADDFB),
+            core::mem::size_of::<DrmModeFbCmd>() as u32
+        );
+        assert_eq!(core::mem::size_of::<DrmModeFbCmd>(), 28);
+    }
+
+    #[test]
+    fn syncobj_handle_to_fd_matches_userspace_command_word() {
+        // Mesa's EGL native-fence path exports syncobjs with the 24-byte
+        // (point-carrying) `drm_syncobj_handle`; the size is part of the
+        // command word, so a 16-byte struct silently misses the dispatch.
+        assert_eq!(DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, 0xc018_64c1);
+        assert_eq!(core::mem::size_of::<DrmSyncobjHandle>(), 24);
+    }
+
+    #[test]
+    fn syncobj_wait_structs_match_linux_command_words() {
+        // libdrm compiles `struct drm_syncobj_wait` from the Linux UAPI
+        // header as 40 bytes — timeout_nsec sits before count_handles and
+        // the trailing deadline_nsec hint rides along — and
+        // `drm_syncobj_timeline_wait` as 48 bytes. The packed size is part
+        // of the command word, so any layout drift silently misses the
+        // dispatch (`drmSyncobjWait` gets ENOTTY from the default arm).
+        assert_eq!(DRM_IOCTL_SYNCOBJ_WAIT, 0xc028_64c3);
+        assert_eq!(core::mem::size_of::<DrmSyncobjWait>(), 40);
+        assert_eq!(DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, 0xc030_64ca);
+        assert_eq!(core::mem::size_of::<DrmSyncobjTimelineWait>(), 48);
     }
 
     #[test]

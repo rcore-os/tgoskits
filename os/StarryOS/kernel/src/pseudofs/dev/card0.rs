@@ -50,7 +50,7 @@ use ax_gpu::rdif_gpu::{
     Backing, BufferDescriptor, BufferHandle, Completion, CompletionStatus, ContextHandle, DmaAddr,
     DmaDomainId, DmaSegment, GpuError, PixelFormat,
 };
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange};
 use ax_runtime::hal::time::monotonic_time_nanos;
 use ax_std::os::arceos::task::sync::WaitQueue;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
@@ -60,6 +60,7 @@ use bytemuck::bytes_of;
 use event_listener::{Event, listener};
 use linux_raw_sys::general::O_CLOEXEC;
 
+mod syncobj;
 mod virtgpu;
 mod virtgpu_uapi;
 
@@ -70,6 +71,8 @@ use super::drm::{
     DRM_CAP_CRTC_IN_VBLANK_EVENT,
     DRM_CAP_DUMB_BUFFER,
     DRM_CAP_PRIME,
+    DRM_CAP_SYNCOBJ,
+    DRM_CAP_SYNCOBJ_TIMELINE,
     DRM_CAP_TIMESTAMP_MONOTONIC,
     DRM_CRTC_SEQUENCE_NEXT_ON_MISS,
     DRM_CRTC_SEQUENCE_RELATIVE,
@@ -200,6 +203,21 @@ use super::vblank::{
     widen_32_to_64,
 };
 use super::sync_file::{SyncFile, kick_refresher};
+use super::drm::{
+    DrmModeFbCmd,
+    DRM_IOCTL_MODE_ADDFB,
+    DRM_IOCTL_SYNCOBJ_CREATE,
+    DRM_IOCTL_SYNCOBJ_DESTROY,
+    DRM_IOCTL_SYNCOBJ_EVENTFD,
+    DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE,
+    DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD,
+    DRM_IOCTL_SYNCOBJ_QUERY,
+    DRM_IOCTL_SYNCOBJ_RESET,
+    DRM_IOCTL_SYNCOBJ_SIGNAL,
+    DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL,
+    DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT,
+    DRM_IOCTL_SYNCOBJ_WAIT,
+};
 use crate::{
     StarryError, StarryResult,
     file::{
@@ -233,6 +251,18 @@ const FIRST_VIRGL_CTX_ID: u32 = 1;
 /// framebuffer and hands no ids to userspace, so this namespace starts low and
 /// advances monotonically.
 const FIRST_GPU_RESOURCE_ID: u32 = 1;
+
+/// mmap offset keys for host-visible blob mappings start here so they can
+/// never collide with the dumb-buffer offset keys (an 8 MiB stride counter
+/// would need ~131k live allocations to reach this range). Keys are handed
+/// out page-strided: the mmap file offset must be page-aligned, and the key
+/// *is* the file offset for blob mappings.
+const BLOB_MMAP_KEY_BASE: u64 = 1 << 40;
+/// Guest-visible granularity of the venus hostmem BAR. Slots are aligned to
+/// this: macOS hosts back QEMU with 16 KiB pages, and a sub-16K-aligned
+/// hostmem subsection makes the hvf memory listener skip the EPT mapping
+/// (stalling the guest on the first BAR access).
+pub(super) const BAR_SLOT_ALIGN: u64 = 0x4000;
 
 /// Which protocol a freshly created virgl context uses.
 ///
@@ -394,7 +424,9 @@ enum FbBacking {
     /// CPU-mappable backing used directly by the display or awaiting image
     /// layout from `ADDFB2`.
     Dumb { mapping: Arc<GpuMapping> },
-    /// Device buffer retained across GEM handle close and scanout.
+    /// Device buffer retained across GEM handle close and scanout. Venus
+    /// blob resources land here too: the host displays their backing
+    /// memory in place, with no guest RAM copy.
     Gpu3d { resource: Arc<GpuResource> },
 }
 
@@ -607,10 +639,58 @@ struct GpuResource {
     /// fence (the object was never submitted or the driver completed
     /// synchronously). `VIRTGPU_WAIT` waits or probes exactly this fence.
     last_fence: AtomicU64,
+    /// Hostmem BAR mapping of a host-visible blob (venus face), set at
+    /// `RESOURCE_CREATE_BLOB` time and torn down before the UNREF in
+    /// [`Drop::drop`]. PRIME exports and mmap lookups read it through the
+    /// shared `Arc`, so import clones see the same window.
+    mapped_blob: Mutex<Option<MappedBlobBar>>,
+}
+
+/// A host-3D blob's mapping inside the shared-memory window.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct MappedBlobBar {
+    /// Guest-physical start (hostmem base + bar offset).
+    pub(super) phys: u64,
+    /// Userspace-visible size (the requested size, not the padded slot).
+    pub(super) size: u64,
+    /// Window offset of the slot (hostmem-relative), for recycling.
+    pub(super) bar_offset: u64,
+    /// Slot length in the window (the padded, granularity-rounded size).
+    pub(super) slot_len: u64,
+    /// Synthetic mmap offset handed back by `VIRTGPU_MAP`.
+    pub(super) mmap_key: u64,
+    /// Host cache hint (`virtio_gpu_resp_map_info.map_info`).
+    pub(super) map_info: u32,
 }
 
 impl Drop for GpuResource {
     fn drop(&mut self) {
+        // Tear the hostmem BAR mapping down before the UNREF: after the
+        // resource is gone the host no longer accepts an UNMAP_BLOB for it.
+        if let Some(map) = self.mapped_blob.lock().take() {
+            let result = ax_gpu::with_gpu_for_cleanup(|device| {
+                let virgl = device.virgl().ok_or(GpuError::Unsupported)?;
+                let result = virgl.unmap_blob(self.device_handle);
+                // The unmap is fire-and-forget; one boundary notify delivers
+                // it ahead of the fenced UNREF below (strict ctrl FIFO).
+                virgl.ctrl_notify();
+                result
+            })
+            .and_then(core::convert::identity);
+            if let Err(error) = result {
+                warn!(
+                    "failed to unmap blob resource {:?}: {error}",
+                    self.device_handle
+                );
+            }
+            // Recycle the window slot either way. Reuse is safe because the
+            // control queue is a strict FIFO: once the UNMAP above is
+            // enqueued, any later MAP_BLOB for the same offset executes
+            // after it; if the enqueue failed the device is broken and the
+            // window state no longer matters. The fenced UNREF observation
+            // stays with the reaper and does not gate slot reuse.
+            release_bar_slot(map.bar_offset, map.slot_len);
+        }
         if let Err(error) = release_gpu_buffer_and_drain(self.device_handle) {
             warn!("failed to release GPU buffer {:?}: {error}", self.device_handle);
         }
@@ -721,12 +801,34 @@ impl FileLike for HostResourceDmaBuf {
         "anon_inode:dmabuf".into()
     }
 
-    fn device_mmap(&self, _offset: u64, _length: u64) -> StarryResult<DeviceMmap> {
-        // The host resource is not guest-mappable without RESOURCE_MAP_BLOB
-        // (not needed by the present path — virgl reuses the host texture
-        // zero-copy). Rejecting mmap is safer than mapping the guest shadow
-        // pages, which do not hold the rendered content.
-        Err(StarryError::Unsupported)
+    fn device_mmap(&self, offset: u64, length: u64) -> StarryResult<DeviceMmap> {
+        // A host-visible venus blob exports its hostmem BAR window: the
+        // exported fd mmap resolves to the same physical range the creator
+        // mapped (gbm's CPU path and deniald's background writes go through
+        // it). A virgl host resource without a BAR mapping stays
+        // unmappable — its rendered content lives in the host texture, not
+        // in any guest-visible memory.
+        let map = (*self.resource.mapped_blob.lock()).ok_or(StarryError::Unsupported)?;
+        // Sub-range mappings honor the caller's offset (Linux
+        // `drm_gem_mmap` resolves the offset within the object); anything
+        // past the window is EINVAL rather than a silent truncation.
+        let end = offset
+            .checked_add(length)
+            .ok_or(StarryError::InvalidInput)?;
+        if end > map.size {
+            return Err(StarryError::InvalidInput);
+        }
+        let start = (map.phys + offset) as usize;
+        let range = PhysAddrRange::from_start_size(PhysAddr::from(start), length as usize);
+        let cached = map.map_info & VIRTGPU_MAP_CACHE_MASK == VIRTGPU_MAP_CACHE_CACHED;
+        // Pin the host resource for the VMA's lifetime; the exported fd
+        // already holds one Arc, so borrow it as the retainer.
+        let retain: Arc<dyn Any + Send + Sync> = Arc::new(self.resource.clone());
+        Ok(if cached {
+            DeviceMmap::PhysicalCachedResolved(range, Some(retain))
+        } else {
+            DeviceMmap::PhysicalResolved(range, Some(retain))
+        })
     }
 }
 
@@ -756,9 +858,9 @@ struct ImportedBlob {
 
 /// Per-open virgl context state.
 struct PerFdCtx {
-    /// CONTEXT_INIT parameters. Kept for per-fd semantics (a future
-    /// context-info query may report them); not read today.
-    #[allow(dead_code)]
+    /// CONTEXT_INIT parameters. `capset_id` routes cleanup: a venus (4)
+    /// context is owned by the 3D face, everything else by the axdisplay
+    /// virgl path.
     capset_id: u32,
     #[allow(dead_code)]
     num_rings: u32,
@@ -864,6 +966,20 @@ pub struct Card0 {
     /// Cached capset data keyed by (capset_id, version). GET_CAPS results
     /// are cached here so repeated queries don't round-trip to the host.
     capset_cache: Mutex<BTreeMap<(u32, u32), Vec<u8>>>,
+    /// Per-fd syncobj tables, `(file_id, handle)` keyed. Served for the
+    /// venus face's timeline fences (and binary users on top of them).
+    syncobjs: syncobj::SyncobjTable,
+    /// Out-syncobjs of fenced venus submissions awaiting their host retire
+    /// response. Linux signals a venus out-syncobj only when the fenced
+    /// `SUBMIT_3D` response lands (the host consumed the submission);
+    /// signalling at submit time would let the guest lap the venus ring and
+    /// corrupt the host command stream.
+    pending_retires: Mutex<VecDeque<syncobj::PendingRetire>>,
+    /// Monotonic mmap-key allocator for host-visible blob mappings. Keys
+    /// start far above the dumb-buffer offset range so the two never
+    /// collide (an 8 MiB-stride dumb counter would need ~131k live
+    /// allocations to reach the blob range).
+    next_blob_mmap_key: AtomicU64,
 }
 
 #[derive(Default)]
@@ -1159,12 +1275,18 @@ impl Card0 {
     }
 
     pub fn new() -> Arc<Self> {
-        // The GPU IRQ worker calls this after pumping completions, so a
-        // poll-blocked out-fence waiter is woken in µs instead of waiting out
-        // the fence refresher's 250 µs active tick. Runs once per boot (this
+        // The GPU IRQ worker calls this after pumping completions: it kicks
+        // both the out-fence refresher (µs-scale wake for poll-blocked
+        // waiters) and the syncobj retire pump (eventfd waiters observing
+        // retires without issuing further ioctls). Runs once per boot (this
         // constructor is the single Card0 instantiation).
-        ax_gpu::set_completion_notifier(super::sync_file::on_gpu_completion);
-        Arc::new_cyclic(|weak| Self {
+        ax_gpu::set_completion_notifier(syncobj::on_gpu_completion);
+        Arc::new_cyclic(|weak| {
+            // The retire pump advances syncobj watermarks on completions;
+            // it holds only this weak reference, so it never keeps the
+            // device alive.
+            syncobj::register_retire_pump_target(weak.clone());
+            Self {
             self_weak: weak.clone(),
             vblank: VblankClock::new(monotonic_time_nanos()),
             vblank_event: Arc::new(Event::new()),
@@ -1195,6 +1317,10 @@ impl Card0 {
             open_files: Mutex::new(0),
             vblank_files: Mutex::new(Vec::new()),
             capset_cache: Mutex::new(BTreeMap::new()),
+            syncobjs: Mutex::new(BTreeMap::new()),
+            pending_retires: Mutex::new(VecDeque::new()),
+            next_blob_mmap_key: AtomicU64::new(BLOB_MMAP_KEY_BASE),
+        }
         })
     }
 
@@ -1689,10 +1815,16 @@ impl Card0File {
             DRM_IOCTL_GET_MAGIC => handle_get_magic(current, arg),
             DRM_IOCTL_AUTH_MAGIC => handle_auth_magic(current, arg),
             DRM_IOCTL_MODE_DIRTYFB => card.handle_dirty_fb(self, current, arg),
+            DRM_IOCTL_MODE_ADDFB => card.handle_addfb(self, current, arg),
             DRM_IOCTL_PRIME_HANDLE_TO_FD => card.handle_prime_handle_to_fd(self, current, arg),
             DRM_IOCTL_PRIME_FD_TO_HANDLE => card.handle_prime_fd_to_handle(self, current, arg),
 
             // ---- virtgpu 3D ioctls ----
+            //
+            // One handler layer serves both context protocols: the virgl
+            // capsets keep their exact dev semantics, and a venus (capset 4)
+            // context branches inside the handlers that differ (blob
+            // creation, EXECBUFFER, MAP).
             DRM_IOCTL_VIRTGPU_GETPARAM => card.handle_virtgpu_getparam(current, arg),
             DRM_IOCTL_VIRTGPU_CONTEXT_INIT => card.handle_virtgpu_context_init(self, current, arg),
             DRM_IOCTL_VIRTGPU_GET_CAPS => card.handle_virtgpu_get_caps(current, arg),
@@ -1716,6 +1848,27 @@ impl Card0File {
             DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB => {
                 card.handle_virtgpu_resource_create_blob(self, current, arg)
             }
+
+            // ---- generic-DRM syncobj family (venus timeline fences) ----
+            DRM_IOCTL_SYNCOBJ_CREATE => card.handle_syncobj_create(self.file_id, current, arg),
+            DRM_IOCTL_SYNCOBJ_DESTROY => card.handle_syncobj_destroy(self.file_id, current, arg),
+            DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD => {
+                card.handle_syncobj_handle_to_fd(self.file_id, current, arg)
+            }
+            DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE => {
+                card.handle_syncobj_fd_to_handle(self.file_id, current, arg)
+            }
+            DRM_IOCTL_SYNCOBJ_WAIT => card.handle_syncobj_wait(self.file_id, current, arg),
+            DRM_IOCTL_SYNCOBJ_RESET => card.handle_syncobj_reset(self.file_id, current, arg),
+            DRM_IOCTL_SYNCOBJ_SIGNAL => card.handle_syncobj_signal(self.file_id, current, arg),
+            DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT => {
+                card.handle_syncobj_timeline_wait(self.file_id, current, arg)
+            }
+            DRM_IOCTL_SYNCOBJ_QUERY => card.handle_syncobj_query(self.file_id, current, arg),
+            DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL => {
+                card.handle_syncobj_timeline_signal(self.file_id, current, arg)
+            }
+            DRM_IOCTL_SYNCOBJ_EVENTFD => card.handle_syncobj_eventfd(self.file_id, current, arg),
 
             _ => {
                 warn!("[card0] unsupported ioctl cmd=0x{:08x}", cmd);
@@ -1746,6 +1899,17 @@ fn render_node_allows_ioctl(cmd: u32) -> bool {
             | DRM_IOCTL_VIRTGPU_GET_CAPS
             | DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB
             | DRM_IOCTL_VIRTGPU_CONTEXT_INIT
+            | DRM_IOCTL_SYNCOBJ_CREATE
+            | DRM_IOCTL_SYNCOBJ_DESTROY
+            | DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD
+            | DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE
+            | DRM_IOCTL_SYNCOBJ_WAIT
+            | DRM_IOCTL_SYNCOBJ_RESET
+            | DRM_IOCTL_SYNCOBJ_SIGNAL
+            | DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT
+            | DRM_IOCTL_SYNCOBJ_QUERY
+            | DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL
+            | DRM_IOCTL_SYNCOBJ_EVENTFD
     )
 }
 
@@ -1844,6 +2008,28 @@ impl FileLike for Card0File {
 
     fn device_mmap(&self, offset: u64, length: u64) -> StarryResult<DeviceMmap> {
         let _operation = self.operation.lock();
+        // Host-visible blob mmap keys live far above the dumb-offset range.
+        // The key is a selector, not a byte offset, so the resolved variants
+        // keep the generic path from adding it again; cached or not follows
+        // the host's map_info (venus hostmem is normal RAM — userspace runs
+        // atomics on its ring buffers).
+        if offset >= BLOB_MMAP_KEY_BASE {
+            let resolved = self.card.blob_mmap_target(offset, self.file_id);
+            let (resource, map) = resolved.ok_or(StarryError::InvalidInput)?;
+            let range = PhysAddrRange::from_start_size(
+                PhysAddr::from(map.phys as usize),
+                map.size as usize,
+            );
+            let cached = map.map_info & VIRTGPU_MAP_CACHE_MASK == VIRTGPU_MAP_CACHE_CACHED;
+            // Pin the resource for the VMA's lifetime so the host cannot
+            // release the blob while userspace still maps it.
+            let retain: Arc<dyn Any + Send + Sync> = Arc::new(resource);
+            return Ok(if cached {
+                DeviceMmap::PhysicalCachedResolved(range, Some(retain))
+            } else {
+                DeviceMmap::PhysicalResolved(range, Some(retain))
+            });
+        }
         let dumbs = self.card.dumbs.lock();
         let buffer = dumbs
             .values()
@@ -1886,6 +2072,9 @@ impl Drop for Card0File {
         events.pending.clear();
         drop(events);
         self.card.vblank_event.notify(usize::MAX);
+        // Linux `drm_release` reaps the fd's syncobj table unconditionally —
+        // syncobjs belong to the file description, not to any context.
+        self.card.close_syncobjs(self.file_id);
 
         if let Some(context) = self.context.lock().take()
             && let Err(error) = ax_gpu::with_gpu_for_cleanup(|device| {
@@ -2244,6 +2433,7 @@ impl Card0 {
                 blob_flags: 0,
                 is_dumb_2d: true,
                 last_fence: AtomicU64::new(0),
+                mapped_blob: Mutex::new(None),
             }))
         } else {
             None
@@ -2499,6 +2689,106 @@ fn handle_set_version(current: &crate::task::UserTaskRef, arg: usize) -> VfsResu
     Ok(0)
 }
 
+/// Hostmem BAR slots in use (offset → padded length). The window belongs to
+/// the one GPU device, and the table must outlive any `GpuResource` so
+/// teardown can recycle the slot from [`Drop::drop`].
+static BAR_SLOTS: Mutex<BTreeMap<u64, u64>> = Mutex::new(BTreeMap::new());
+
+/// Reserves a slot of `size` bytes in the `region_len`-byte hostmem window,
+/// first-fit at `granularity` alignment (floored at [`BAR_SLOT_ALIGN`]).
+/// Slots are recycled on unmap, so create/destroy cycles cannot exhaust the
+/// window; exhaustion surfaces as `ENOSPC` (`VfsError::StorageFull`).
+pub(super) fn reserve_bar_slot(
+    region_len: u64,
+    size: u64,
+    granularity: u64,
+) -> VfsResult<(u64, u64)> {
+    let granularity = granularity.max(BAR_SLOT_ALIGN);
+    let want = size.max(1).div_ceil(granularity) * granularity;
+    let mut slots = BAR_SLOTS.lock();
+    let mut cursor = 0u64;
+    for (&offset, &len) in slots.iter() {
+        let aligned = cursor.div_ceil(granularity) * granularity;
+        if offset > aligned && offset - aligned >= want {
+            break;
+        }
+        cursor = cursor.max(offset + len);
+    }
+    let start = cursor.div_ceil(granularity) * granularity;
+    if start
+        .checked_add(want)
+        .filter(|end| *end <= region_len)
+        .is_none()
+    {
+        return Err(VfsError::StorageFull);
+    }
+    slots.insert(start, want);
+    Ok((start, want))
+}
+
+/// Returns a [`reserve_bar_slot`] slot to the window.
+fn release_bar_slot(offset: u64, len: u64) {
+    let mut slots = BAR_SLOTS.lock();
+    match slots.get(&offset) {
+        Some(&recorded) if recorded == len => {
+            slots.remove(&offset);
+        }
+        _ => warn!("card0: bar slot release mismatch (offset {offset:#x}, len {len:#x})"),
+    }
+}
+
+impl Card0 {
+    /// Hands out the next page-strided blob mmap key.
+    pub(super) fn alloc_blob_mmap_key(&self) -> u64 {
+        self.next_blob_mmap_key
+            .fetch_add(PAGE_SIZE_4K as u64, Ordering::Relaxed)
+    }
+
+    /// Resolves a blob mmap key to its host resource and BAR mapping, for
+    /// the mmap hook. The key is only honoured for the fd that owns the
+    /// resource (creator or a PRIME-import alias) — a guessed key must not
+    /// map another client's blob.
+    fn blob_mmap_target(
+        &self,
+        offset: u64,
+        file_id: u64,
+    ) -> Option<(Arc<GpuResource>, MappedBlobBar)> {
+        let candidate = {
+            let resources = self.gpu_resources.lock();
+            resources.values().find_map(|resource| {
+                let map = *resource.mapped_blob.lock().as_ref()?;
+                (map.mmap_key == offset).then(|| (resource.clone(), map))
+            })
+        };
+        let (resource, map) = candidate?;
+        if resource.owner == file_id {
+            return Some((resource, map));
+        }
+        // A PRIME import clone: the importing fd holds its own Arc to the
+        // same host resource under `blob_aliases`.
+        let aliases = self.blob_aliases.lock();
+        aliases
+            .values()
+            .any(|alias| alias.owner == file_id && Arc::ptr_eq(&alias.resource, &resource))
+            .then_some((resource, map))
+    }
+}
+
+/// Whether the venus (capset 4) face is usable: a 3D virtio-gpu whose bus
+/// exposed the hostmem shared-memory window (PCI `SHARED_MEMORY_CFG`). The
+/// virgl-only devices never have one, so this also gates the syncobj-cap
+/// advertisement.
+fn venus_available() -> bool {
+    ax_gpu::with_gpu(|device| {
+        device
+            .virgl()
+            .map(|virgl| virgl.host_memory_region().is_some())
+    })
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+
 fn handle_get_cap(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<usize> {
     let ptr = arg as *mut DrmGetCap;
     let mut cap: DrmGetCap = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
@@ -2509,6 +2799,11 @@ fn handle_get_cap(current: &crate::task::UserTaskRef, arg: usize) -> VfsResult<u
         DRM_CAP_CRTC_IN_VBLANK_EVENT => u64::from(kms_available()),
         DRM_CAP_ADDFB2_MODIFIERS => u64::from(kms_available()),
         DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
+        // The syncobj family (incl. the timeline form venus fences on) is
+        // implemented for venus contexts; reporting the caps is what makes
+        // Mesa's sync provider pick the kernel path instead of emulating.
+        DRM_CAP_SYNCOBJ => 1,
+        DRM_CAP_SYNCOBJ_TIMELINE => 1,
         _ => 0,
     };
     ptr.vm_write(current, cap)
@@ -2963,6 +3258,49 @@ impl Card0 {
     ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmModeFbCmd2;
         let mut f: DrmModeFbCmd2 = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
+        self.add_fb2_core(file, &mut f)?;
+        ptr.vm_write(current, f).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
+    }
+
+    /// Legacy `ADDFB` (0xAE, 28-byte `drm_mode_fb_cmd`): GBM userspaces
+    /// issue it for plain buffers. Linux routes both entries through the
+    /// same core, so this synthesizes the `ADDFB2` request from the
+    /// bpp/depth pair (unknown combos fail with `EINVAL` like Linux).
+    fn handle_addfb(
+        &self,
+        file: &Card0File,
+        current: &UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
+        let ptr = arg as *mut DrmModeFbCmd;
+        let mut legacy: DrmModeFbCmd = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
+        let pixel_format = bpp_depth_to_format(legacy.bpp, legacy.depth).ok_or_else(|| {
+            warn!(
+                "ADDFB(legacy): unmapped bpp {} depth {}",
+                legacy.bpp, legacy.depth
+            );
+            VfsError::InvalidInput
+        })?;
+        let mut f = DrmModeFbCmd2 {
+            fb_id: 0,
+            width: legacy.width,
+            height: legacy.height,
+            pixel_format,
+            flags: 0,
+            handles: [legacy.handle, 0, 0, 0],
+            pitches: [legacy.pitch, 0, 0, 0],
+            offsets: [0; 4],
+            _padding: 0,
+            modifier: [0; 4],
+        };
+        self.add_fb2_core(file, &mut f)?;
+        legacy.fb_id = f.fb_id;
+        ptr.vm_write(current, legacy).map_err(|_| VfsError::BadAddress)?;
+        Ok(0)
+    }
+
+    fn add_fb2_core(&self, file: &Card0File, f: &mut DrmModeFbCmd2) -> VfsResult<()> {
         let handle = f.handles[0];
         // Resolve the backing kind + capacity under the resource/dumb
         // locks so a concurrent DESTROY_DUMB can't race the fb's
@@ -3091,6 +3429,7 @@ impl Card0 {
                     blob_flags: 0,
                     is_dumb_2d: true,
                     last_fence: AtomicU64::new(0),
+                    mapped_blob: Mutex::new(None),
                 }),
             };
         }
@@ -3115,9 +3454,8 @@ impl Card0 {
             kind,
         };
         f.fb_id = fb_id;
-        ptr.vm_write(current, f).map_err(|_| VfsError::BadAddress)?;
         self.fbs.lock().insert(fb_id, framebuffer);
-        Ok(0)
+        Ok(())
     }
 
     fn handle_rmfb(&self, file: &Card0File, current: &UserTaskRef, arg: usize) -> VfsResult<usize> {
@@ -3148,6 +3486,17 @@ impl Card0 {
         self.notify_vblank_change(completed);
         drop(removed);
         Ok(0)
+    }
+}
+
+/// The bpp/depth pairs card0 accepts: legacy ADDFB callers speak bpp+depth
+/// instead of a fourcc, so unknown combos fail with `EINVAL` just like
+/// Linux.
+fn bpp_depth_to_format(bpp: u32, depth: u32) -> Option<u32> {
+    match (bpp, depth) {
+        (32, 24) => Some(DRM_FORMAT_XRGB8888),
+        (32, 32) => Some(DRM_FORMAT_ARGB8888),
+        _ => None,
     }
 }
 

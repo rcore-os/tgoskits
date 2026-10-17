@@ -1,16 +1,20 @@
-//! Focused VirtIO GPU protocol core for the TGOSKits display and virgl paths.
+//! Focused VirtIO GPU protocol core for the TGOSKits display, virgl and venus
+//! paths.
 //!
-//! The crate implements only the part of the virtio-gpu control protocol that
-//! the current display stack drives:
+//! The crate implements the part of the virtio-gpu control protocol that the
+//! current display stack drives:
 //!
 //! * the 2D display path: `GET_DISPLAY_INFO`, `RESOURCE_CREATE_2D`,
 //!   `RESOURCE_ATTACH_BACKING` / `RESOURCE_DETACH_BACKING`, `SET_SCANOUT`,
-//!   `SET_SCANOUT_BLOB`, `TRANSFER_TO_HOST_2D`, `RESOURCE_FLUSH` and
-//!   `RESOURCE_UNREF`, and
+//!   `SET_SCANOUT_BLOB`, `RESOURCE_MAP_BLOB` / `RESOURCE_UNMAP_BLOB`,
+//!   `TRANSFER_TO_HOST_2D`, `RESOURCE_FLUSH` and `RESOURCE_UNREF`,
 //! * the virgl 3D path: `GET_CAPSET_INFO`, `GET_CAPSET`, `CTX_CREATE` /
 //!   `CTX_DESTROY` / `CTX_ATTACH_RESOURCE` / `CTX_DETACH_RESOURCE`,
 //!   `RESOURCE_CREATE_3D`, `TRANSFER_TO_HOST_3D`, `TRANSFER_FROM_HOST_3D`,
-//!   `SUBMIT_3D` and `RESOURCE_CREATE_BLOB`.
+//!   `SUBMIT_3D` and `RESOURCE_CREATE_BLOB`, and
+//! * the venus 3D surface: `RESOURCE_MAP_BLOB` / `RESOURCE_UNMAP_BLOB` against
+//!   the host-visible shared memory BAR, `SET_SCANOUT_BLOB`, and fenced
+//!   submissions whose responses the host defers until the fence retires.
 //!
 //! Everything else the upstream GPU driver carries — EDID, the cursor queue
 //! and its shapes, multi-scanout helpers — is deliberately absent: nothing in
@@ -23,6 +27,14 @@
 //! [`virtio_drivers::queue::VirtQueue`], the config-space macros and
 //! [`virtio_drivers::Error`]); this crate adds the virtio-gpu domain types, the
 //! wire encoding and the response validation on top of it.
+//!
+//! # Two faces, one device
+//!
+//! OS kernels drive the 2D/virgl commands through their display adapter and
+//! the venus commands through the rdif `VirglOps` face. Both reach the same
+//! control queue: a second driver on the same device would keep private
+//! avail/used indices and corrupt the queue, so the crate owns one transport
+//! and serializes on it.
 //!
 //! The crate is `#![no_std]` and only needs `alloc`. It has no dependency on
 //! `rdrive`, StarryOS, ArceOS or the Linux DRM UAPI. The optional `rdif`
@@ -61,7 +73,7 @@ mod rdif;
 mod rdif_test;
 mod wire;
 
-pub use device::VirtIoGpu;
+pub use device::{HostMemRegion, VirtIoGpu};
 pub use error::Error;
 #[cfg(feature = "rdif")]
 pub use rdif::VirtIoGpuDevice;
@@ -75,6 +87,20 @@ pub struct OutputInfo {
     /// Whether the output is connected and enabled.
     pub enabled: bool,
 }
+
+// --- Scanout formats and map cache hints (`VIRTIO_GPU_FORMAT_*`,
+// `VIRTIO_GPU_MAP_CACHE_*`) ---
+
+/// `VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM`: the memory-order match for DRM's
+/// little-endian `ARGB8888`.
+pub const FORMAT_B8G8R8A8_UNORM: u32 = 0x1;
+/// `VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM`: the memory-order match for DRM's
+/// little-endian `XRGB8888`.
+pub const FORMAT_B8G8R8X8_UNORM: u32 = 0x2;
+/// `VIRTIO_GPU_MAP_CACHE_MASK`: the cache bits of a `RESOURCE_MAP_BLOB` reply.
+pub const MAP_CACHE_MASK: u32 = 0x0f;
+/// `VIRTIO_GPU_MAP_CACHE_CACHED`: the mapping may be mapped cacheable.
+pub const MAP_CACHE_CACHED: u32 = 0x1;
 
 // --- Blob resource protocol values (`VIRTIO_GPU_BLOB_MEM_*`) ---
 

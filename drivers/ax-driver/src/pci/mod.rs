@@ -1418,3 +1418,129 @@ impl ConfigurationAccess for EndpointConfigAccess {
         }
     }
 }
+
+/// A virtio device shared-memory region (e.g. the virtio-gpu hostmem
+/// BAR backing mappable blob resources), resolved from the PCI
+/// `SHARED_MEMORY_CFG` vendor capability.
+#[cfg(virtio_dev)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtioShmRegion {
+    /// Guest-physical base address (BAR value + capability offset).
+    pub phys: u64,
+    pub length: u64,
+}
+
+/// PCI vendor-capability subtype carrying a shared memory region.
+#[cfg(virtio_dev)]
+const VIRTIO_PCI_CAP_SHARED_MEMORY_CFG: u8 = 8;
+/// Legacy PCI capability list id for vendor-specific capabilities.
+#[cfg(virtio_dev)]
+const PCI_CAP_ID_VNDR: u8 = 0x09;
+/// Config-space offset of the first PCI BAR.
+#[cfg(virtio_dev)]
+const PCI_BAR_OFFSET: u8 = 0x10;
+
+/// Like [`take_virtio_transport_masked`], but also walks the virtio
+/// vendor capabilities and resolves the shared memory region with the
+/// requested `shm_id` (e.g. `VIRTIO_GPU_SHM_ID_HOST_VISIBLE = 1`).
+#[cfg(virtio_dev)]
+pub fn take_virtio_transport_masked_with_shm(
+    endpoint: &mut EndpointRc,
+    expected: DeviceType,
+    shm_id: u8,
+) -> Result<(PciTransport, Option<VirtioShmRegion>), OnProbeError> {
+    let (transport, shm) =
+        take_virtio_transport_with_intx_policy_and_shm(endpoint, expected, true, shm_id)?;
+    Ok((transport, shm))
+}
+
+#[cfg(virtio_dev)]
+fn take_virtio_transport_with_intx_policy_and_shm(
+    endpoint: &mut EndpointRc,
+    expected: DeviceType,
+    mask_intx_after_match: bool,
+    shm_id: u8,
+) -> Result<(PciTransport, Option<VirtioShmRegion>), OnProbeError> {
+    let (transport, config_access) =
+        take_virtio_transport_with_intx_policy(endpoint, expected, mask_intx_after_match)?;
+    // Parse the shared-memory capability from the retained config access.
+    // QEMU exposes the virtio-gpu hostmem BAR this way; the capability
+    // walk only needs config space, which the retained access keeps.
+    let shm = parse_virtio_shm_cap(&config_access, config_access.bdf, shm_id);
+    Ok((transport, shm))
+}
+
+/// Walks the PCI capability list looking for a virtio vendor capability
+/// of subtype `SHARED_MEMORY_CFG` with the given shm id, and resolves it
+/// to a guest-physical address range.
+#[cfg(virtio_dev)]
+fn parse_virtio_shm_cap(
+    access: &EndpointConfigAccess,
+    bdf: DeviceFunction,
+    want_shm_id: u8,
+) -> Option<VirtioShmRegion> {
+    // Capability pointer lives at config offset 0x34, lower two bits
+    // reserved-zero.
+    let mut next = Some((access.read_word(bdf, 0x34) as u8) & 0xfc);
+    while let Some(off) = next {
+        let header = access.read_word(bdf, off);
+        let cap_id = header as u8;
+        let next_off = (header >> 8) as u8;
+        let cap_len = (header >> 16) as u8;
+        let cfg_type = (header >> 24) as u8;
+
+        if cap_id == PCI_CAP_ID_VNDR && cfg_type == VIRTIO_PCI_CAP_SHARED_MEMORY_CFG {
+            // virtio_pci_cap: bar@4, id@5, offset@8, length@12; the
+            // cap64 extension appends offset_hi@16, length_hi@20.
+            let bar_and_id = access.read_word(bdf, off + 4);
+            let bar_index = bar_and_id as u8;
+            let shm_id = (bar_and_id >> 8) as u8;
+            let mut offset = access.read_word(bdf, off + 8) as u64;
+            let mut length = access.read_word(bdf, off + 12) as u64;
+            if cap_len >= 20 {
+                offset |= (access.read_word(bdf, off + 16) as u64) << 32;
+                length |= (access.read_word(bdf, off + 20) as u64) << 32;
+            }
+            if shm_id == want_shm_id
+                && bar_index < 6
+                && length > 0
+                && let Some(phys) = bar_physical_address(access, bdf, bar_index)
+            {
+                return Some(VirtioShmRegion {
+                    phys: phys + offset,
+                    length,
+                });
+            }
+        }
+
+        next = match next_off {
+            0 => None,
+            value if value >= 0x40 && value < off => Some(value),
+            _ => {
+                log::warn!("pci: malformed capability list at offset {off:#x}");
+                None
+            }
+        };
+    }
+    None
+}
+
+/// Reads the assigned base address of a memory BAR from config space,
+/// reconstructing 64-bit bars from their two registers.
+#[cfg(virtio_dev)]
+fn bar_physical_address(
+    access: &EndpointConfigAccess,
+    bdf: DeviceFunction,
+    bar_index: u8,
+) -> Option<u64> {
+    let low = access.read_word(bdf, PCI_BAR_OFFSET + 4 * bar_index);
+    if low & 0x1 == 1 {
+        return None; // I/O port BAR, not usable as a shared memory region.
+    }
+    if low & 0x6 == 0x4 {
+        // 64-bit memory BAR: the upper half lives in the next register.
+        let high = access.read_word(bdf, PCI_BAR_OFFSET + 4 * bar_index + 4);
+        return Some((((high as u64) << 32) | (low & 0xFFFF_FFF0) as u64) & !0xF);
+    }
+    Some((low & 0xFFFF_FFF0) as u64)
+}

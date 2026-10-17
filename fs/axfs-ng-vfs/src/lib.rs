@@ -85,6 +85,11 @@ pub enum VfsError {
     TextFileBusy,
     #[error("filesystem operation timed out")]
     TimedOut,
+    /// Deadline-based wait expired — maps to Linux `ETIME` (used by DRM
+    /// syncobj waits whose UAPI passes an absolute monotonic deadline and
+    /// reports expiry with `ETIME`, not `ETIMEDOUT`).
+    #[error("deadline expired")]
+    TimerExpired,
     #[error("filesystem object has too many links")]
     TooManyLinks,
     #[error("filesystem operation is not implemented")]

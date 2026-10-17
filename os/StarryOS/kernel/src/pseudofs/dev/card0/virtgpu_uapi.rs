@@ -53,8 +53,7 @@ pub const VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
 /// User-space debug naming (v6.12+).
 #[allow(dead_code)]
 pub const VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME: u64 = 8;
-/// Blob alignment requirement (v6.15+).
-#[allow(dead_code)]
+/// Blob alignment requirement (linux master, post-v7.1).
 pub const VIRTGPU_PARAM_BLOB_ALIGNMENT: u64 = 9;
 
 // ---- EXECBUFFER flags (VIRTGPU_EXECBUF_*) ----
@@ -66,9 +65,11 @@ pub const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
 /// Use ring_idx field.
 #[allow(dead_code)]
 pub const VIRTGPU_EXECBUF_RING_IDX: u32 = 0x04;
-/// syncobj reset (v6.6+).
-#[allow(dead_code)]
-pub const VIRTGPU_EXECBUF_SYNCOBJ_RESET: u32 = 0x01;
+
+/// ---- `drm_virtgpu_execbuffer_syncobj` entry flags ----
+/// Linux `VIRTGPU_EXECBUF_SYNCOBJ_FLAGS`: the only legal per-entry flag is
+/// RESET — the kernel resets those in-syncobjs after the submit completes.
+pub const VIRTGPU_EXECBUF_SYNCOBJ_FLAGS_RESET: u32 = 0x01;
 
 // ---- WAIT flags ----
 
@@ -89,11 +90,11 @@ pub const VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK: u64 = 0x0003;
 pub const VIRTGPU_CONTEXT_PARAM_DEBUG_NAME: u64 = 0x0004;
 
 // ---- CAPSET IDs (VIRTGPU_DRM_CAPSET_*) ----
+//
+// Virgl capsets are 1 (v1) and 2 (v2, Mesa's preference); CONTEXT_INIT
+// accepts whatever the host's capset list contains, so the named constants
+// the virgl handlers used to check against are not needed here.
 
-/// Virgl capset v1.
-pub const VIRTGPU_DRM_CAPSET_VIRGL: u32 = 1;
-/// Virgl capset v2 (Mesa prefers this).
-pub const VIRTGPU_DRM_CAPSET_VIRGL2: u32 = 2;
 /// gfxstream Vulkan capset.
 #[allow(dead_code)]
 pub const VIRTGPU_DRM_CAPSET_GFXSTREAM_VULKAN: u32 = 3;
@@ -119,7 +120,6 @@ pub const VIRTGPU_BLOB_MEM_HOST3D_GUEST: u32 = 0x0003;
 // ---- BLOB flags (VIRTGPU_BLOB_FLAG_*) ----
 
 /// Blob can be mmap'd (Mesa uses this).
-#[allow(dead_code)]
 pub const VIRTGPU_BLOB_FLAG_USE_MAPPABLE: u32 = 0x0001;
 /// Blob can be shared.
 #[allow(dead_code)]
@@ -130,6 +130,13 @@ pub const VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE: u32 = 0x0004;
 /// Hint: defer mapping.
 #[allow(dead_code)]
 pub const DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING: u32 = 0x0001;
+
+// ---- MAP_BLOB cache hints (`VIRTIO_GPU_MAP_CACHE_*`) ----
+
+/// Mask of the cache bits in a blob mapping's host-reported `map_info`.
+pub const VIRTGPU_MAP_CACHE_MASK: u32 = 0x0f;
+/// `VIRTIO_GPU_MAP_CACHE_CACHED`: the mapping may be mapped cacheable.
+pub const VIRTGPU_MAP_CACHE_CACHED: u32 = 0x1;
 
 // ---- Event codes ----
 
@@ -335,10 +342,16 @@ pub struct DrmVirtgpuGetCaps {
 }
 
 /// Creates a blob resource for coherent memory sharing.
-/// Linux: `struct drm_virtgpu_resource_create_blob` (48 bytes)
+/// Linux: `struct drm_virtgpu_resource_create_blob` (56 bytes; the
+/// `blob_hints` tail is linux master, post-v7.1).
 ///
 /// Mesa virgl calls this when `supports_coherent=true` (i.e. both
-/// RESOURCE_BLOB and HOST_VISIBLE are reported as supported).
+/// RESOURCE_BLOB and HOST_VISIBLE are reported as supported); Mesa venus
+/// calls it for every host-visible memory allocation. The `blob_hints` tail
+/// was added on linux master (absent from every tagged release through
+/// v7.1): the ioctl number encodes the struct size, so the 48-byte
+/// pre-hints layout would make current Mesa's command word land in the
+/// dispatch's reject arm and the whole BLOB ioctl would be unreachable.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmVirtgpuResourceCreateBlob {
@@ -352,6 +365,7 @@ pub struct DrmVirtgpuResourceCreateBlob {
     pub res_handle: u32,
     /// Blob size in bytes.
     pub size: u64,
+    /// Must be zero for anything but `HOST3D_GUEST` (Linux `verify_blob`).
     pub pad: u32,
     /// VIRGL command size in bytes.
     pub cmd_size: u32,
@@ -359,6 +373,9 @@ pub struct DrmVirtgpuResourceCreateBlob {
     pub cmd: u64,
     /// Blob unique identifier.
     pub blob_id: u64,
+    /// `DRM_VIRTGPU_BLOB_FLAG_*` hints (linux master, post-v7.1).
+    pub blob_hints: u32,
+    pub pad2: u32,
 }
 
 /// Initializes a rendering context on this file descriptor.

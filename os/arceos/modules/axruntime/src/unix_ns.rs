@@ -86,6 +86,9 @@ fn namespace_vfs_error(error: axfs_ng_vfs::VfsError) -> ax_net::NetError {
         VfsError::StorageFull => NetError::StorageFull,
         VfsError::TextFileBusy => NetError::ResourceBusy,
         VfsError::TimedOut => NetError::TimedOut,
+        // Unix socket path operations never surface the deadline flavor
+        // (DRM-only); fold it into the plain timeout at this edge.
+        VfsError::TimerExpired => NetError::TimedOut,
         VfsError::TooManyLinks => NetError::OperationNotSupported,
         VfsError::Unsupported => NetError::Unsupported,
         VfsError::ValueOverflow => NetError::InvalidInput,
