@@ -2,7 +2,7 @@
 
 use alloc::string::{String, ToString};
 
-use crate::VMBootProtocol;
+use crate::{GuestType, VMBootProtocol};
 
 /// Result type returned by AxVM configuration operations.
 pub type AxVmConfigResult<T = ()> = Result<T, AxVmConfigError>;
@@ -44,12 +44,27 @@ pub enum AxVmConfigError {
         /// The boot protocol requiring a firmware load address.
         protocol: VMBootProtocol,
     },
-    /// A physical-device selector is not an absolute, concrete device-tree path.
-    #[error("physical device path must be absolute and must not select the root: {path}")]
+    /// A physical-device selector is not an absolute device-tree path.
+    #[error("physical device path must be an absolute device-tree path: {path}")]
     InvalidPhysicalDevicePath {
         /// The invalid path.
         path: String,
     },
+    /// The root selector was written for a guest that has no root baseline.
+    #[error(
+        "physical device path \"/\" names the passthrough root baseline, which a {guest_type:?} \
+         guest does not have; list concrete device paths instead of \"/\""
+    )]
+    RootBaselineSelectorNotAllowed {
+        /// The guest type that rejected the root selector.
+        guest_type: GuestType,
+    },
+    /// The root selector was written into the disabled list.
+    #[error(
+        "physical device path \"/\" cannot be disabled: to start a guest with no physical devices \
+         use guest_type = \"virtualized\" with an empty passthrough list"
+    )]
+    RootSelectorNotDisableable,
     /// The same physical device was both assigned and disabled.
     #[error("physical device is present in both passthrough and disabled lists: {path}")]
     ConflictingPhysicalDeviceSelection {

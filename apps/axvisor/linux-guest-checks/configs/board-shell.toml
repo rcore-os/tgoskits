@@ -1,0 +1,15 @@
+# Remote board run config for the manual Linux guest checks.
+#
+# This app deliberately carries no automation: empty check steps and no failure
+# patterns hand the serial terminal over to the tester, who runs the commands
+# documented in ../README.md and judges the results.
+#
+# No server/port here. Board service addresses belong to the run environment and
+# come from `cargo xtask board config` or the --server/--port flags.
+#
+# The value must match a board type registered on the board service; the
+# ball-picking robot board is registered under this name.
+board_type = "BallPick-Robot"
+
+shell_check_steps = []
+fail_regex = []

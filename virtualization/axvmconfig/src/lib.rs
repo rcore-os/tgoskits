@@ -502,13 +502,15 @@ impl GuestType {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhysicalDeviceRef {
-    /// Absolute device-tree path identifying the physical device.
+    /// Absolute device-tree path identifying the physical device, or `/` for
+    /// the root baseline a `passthrough` guest already starts from. `/` is only
+    /// valid in the `passthrough` list of a passthrough guest.
     pub path: String,
 }
 
 impl PhysicalDeviceRef {
     fn validate(&self) -> AxVmConfigResult {
-        if !self.path.starts_with('/') || self.path == "/" {
+        if !self.path.starts_with('/') {
             return Err(AxVmConfigError::InvalidPhysicalDevicePath {
                 path: self.path.clone(),
             });
@@ -536,6 +538,10 @@ pub struct GuestDevices {
     /// Physical devices explicitly assigned to the guest.
     pub passthrough: Vec<PhysicalDeviceRef>,
     /// Physical devices removed from a passthrough guest's default assignment.
+    ///
+    /// The root baseline selector `/` is not valid here. An empty `passthrough`
+    /// list still keeps the baseline; starting from no physical devices requires
+    /// `guest_type = "virtualized"`.
     pub disabled: Vec<PhysicalDeviceRef>,
     /// Virtual devices instantiated through the code-registered model catalog.
     #[serde(rename = "virtual")]
@@ -547,9 +553,25 @@ pub struct GuestDevices {
 }
 
 impl GuestDevices {
-    fn validate(&self) -> AxVmConfigResult {
+    fn validate(&self, guest_type: GuestType) -> AxVmConfigResult {
+        // The root selector `/` names the passthrough root baseline, which a
+        // virtualized guest does not have. Reject it here with a targeted error
+        // instead of relying on the parser's runtime root-selector guard.
+        if guest_type != GuestType::Passthrough
+            && self.passthrough.iter().any(|device| device.path == "/")
+        {
+            return Err(AxVmConfigError::RootBaselineSelectorNotAllowed { guest_type });
+        }
+
         for device in self.passthrough.iter().chain(&self.disabled) {
             device.validate()?;
+        }
+
+        // `/` names the root baseline, so it is not a per-device exclusion. An
+        // empty passthrough list still keeps the baseline; keeping no physical
+        // devices requires the virtualized guest type.
+        if self.disabled.iter().any(|device| device.path == "/") {
+            return Err(AxVmConfigError::RootSelectorNotDisableable);
         }
 
         if let Some(device) = self
@@ -711,7 +733,7 @@ impl GuestConfig {
     pub fn from_toml(raw_cfg_str: &str) -> AxVmConfigResult<Self> {
         let mut config: Self = toml::from_str(raw_cfg_str)?;
         config.kernel.validate_boot_config()?;
-        config.devices.validate()?;
+        config.devices.validate(config.base.guest_type)?;
         config.kernel.configured_memory_region_count = config.kernel.memory_regions.len();
         Ok(config)
     }
