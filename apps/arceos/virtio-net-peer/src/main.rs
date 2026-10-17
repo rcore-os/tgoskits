@@ -1,6 +1,6 @@
 //! Persistent TCP heartbeat test for AxVisor's internal VirtIO-net switch.
 //!
-//! Every guest configures `eth0` from the compile-time environment and then runs
+//! Every guest configures `eth0` from its MAC or compile-time identity, then runs
 //! both roles at the same time: the server in its own thread, the client in the
 //! main thread. Both stay alive forever:
 //!
@@ -21,6 +21,7 @@ use core::time::Duration;
 use std::{
     io::{Read, Write},
     net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -36,6 +37,34 @@ const LOCAL_IP: &str = match option_env!("AXVIRTIO_LOCAL_IP") {
     Some(value) => value,
     None => "10.0.2.15",
 };
+#[cfg(feature = "arceos")]
+struct PeerIdentity {
+    tag: String,
+    local_ip: String,
+}
+
+#[cfg(feature = "arceos")]
+impl PeerIdentity {
+    fn for_mac(mac: Option<[u8; 6]>) -> std::io::Result<Self> {
+        if option_env!("AXVIRTIO_IDENTITY_FROM_MAC") != Some("1") {
+            return Ok(Self {
+                tag: VM_TAG.into(),
+                local_ip: LOCAL_IP.into(),
+            });
+        }
+        let mac = mac.ok_or_else(|| std::io::Error::other("eth0 has no MAC address"))?;
+        if mac[..5] != [0x52, 0x54, 0x00, 0x20, 0x01] || !(1..=240).contains(&mac[5]) {
+            return Err(std::io::Error::other(
+                "expected peer MAC 52:54:00:20:01:01..f0",
+            ));
+        }
+        Ok(Self {
+            tag: format!("VM{}", mac[5]),
+            local_ip: format!("10.0.2.{}", 14 + mac[5]),
+        })
+    }
+}
+
 /// Heartbeat period in milliseconds (compile-time override).
 const HEARTBEAT_PERIOD_MS: &str = match option_env!("AXVIRTIO_HEARTBEAT_PERIOD_MS") {
     Some(value) => value,
@@ -99,38 +128,53 @@ fn main() {}
 fn run() -> std::io::Result<()> {
     let interface = ax_net::interface_by_name("eth0")
         .ok_or_else(|| std::io::Error::other("eth0 was not discovered"))?;
-    let local_ip: Ipv4Addr = LOCAL_IP
+    let identity = Arc::new(PeerIdentity::for_mac(interface.mac.map(|mac| mac.0))?);
+    let vm_tag = &identity.tag;
+    let local_ip_str = &identity.local_ip;
+    let local_ip: Ipv4Addr = local_ip_str
         .parse()
         .map_err(|_| std::io::Error::other("invalid local IPv4 address"))?;
     let peer_ip = peer_ip_of(local_ip)?;
+    // A physical uplink can finish DHCP before the app starts. Replace that
+    // lease with the test address instead of treating it as a duplicate.
+    if let Some(current) = ax_net::ipv4_config("eth0") {
+        ax_net::remove_interface_ipv4(
+            interface.id,
+            Ipv4Addr::from(current.address.address().octets()),
+            current.address.prefix_len(),
+        )
+        .map_err(|error| std::io::Error::other(format!("clear eth0 address: {error}")))?;
+    }
     ax_net::set_interface_ipv4(interface.id, local_ip, IPV4_PREFIX_LEN)
         .map_err(|error| std::io::Error::other(format!("configure eth0: {error}")))?;
     let guest_cpus = thread::available_parallelism()
         .map_err(|error| std::io::Error::other(format!("guest CPU count: {error}")))?;
 
     println!(
-        "{VM_TAG}_VIRTIO_NET_READY roles=server+client local={local_ip}/{IPV4_PREFIX_LEN} \
+        "{vm_tag}_VIRTIO_NET_READY roles=server+client local={local_ip}/{IPV4_PREFIX_LEN} \
          peer={peer_ip}:{TEST_PORT} period_ms={} cpus={guest_cpus} mac={:?}",
         heartbeat_period().as_millis(),
         interface.mac
     );
-    println!("{VM_TAG}_VIRTIO_NET_IFACES {}", interface_report());
+    println!("{vm_tag}_VIRTIO_NET_IFACES {}", interface_report());
 
     // The server owns a thread of its own so that both roles run at the same
     // time; the client keeps the main thread busy for the rest of the guest's
     // life, which also keeps the process alive.
+    let server_identity = Arc::clone(&identity);
     thread::Builder::new()
         .name(String::from("virtio-net-server"))
-        .spawn(|| {
-            if let Err(error) = run_server() {
+        .spawn(move || {
+            let vm_tag = &server_identity.tag;
+            if let Err(error) = run_server(&server_identity) {
                 // The test runner stops at the FAIL marker; emit the cause
                 // first so the diagnostic survives an immediate stop.
-                println!("{VM_TAG}_VIRTIO_NET_SERVER_ERROR role=server error={error}");
-                println!("{VM_TAG}_VIRTIO_NET_FAIL role=server error={error}");
+                println!("{vm_tag}_VIRTIO_NET_SERVER_ERROR role=server error={error}");
+                println!("{vm_tag}_VIRTIO_NET_FAIL role=server error={error}");
             }
         })
         .map_err(|error| std::io::Error::other(format!("spawn server thread: {error}")))?;
-    run_client(peer_ip)
+    run_client(peer_ip, &identity)
 }
 
 /// Derives the peer address from the local address: `10.0.2.15` -> `10.0.2.16`.
@@ -146,9 +190,11 @@ fn peer_ip_of(local_ip: Ipv4Addr) -> std::io::Result<Ipv4Addr> {
 /// Accepts sessions forever and answers every heartbeat with an acknowledgement
 /// that repeats the client's sequence number.
 #[cfg(feature = "arceos")]
-fn run_server() -> std::io::Result<()> {
+fn run_server(identity: &PeerIdentity) -> std::io::Result<()> {
+    let vm_tag = &identity.tag;
+    let local_ip_str = &identity.local_ip;
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, TEST_PORT))?;
-    println!("{VM_TAG}_VIRTIO_NET_LISTEN addr=0.0.0.0:{TEST_PORT} local={LOCAL_IP}");
+    println!("{vm_tag}_VIRTIO_NET_LISTEN addr=0.0.0.0:{TEST_PORT} local={local_ip_str}");
     let mut sessions = 0u64;
     let mut pass_reported = false;
 
@@ -156,13 +202,13 @@ fn run_server() -> std::io::Result<()> {
         let (mut stream, peer) = match listener.accept() {
             Ok(accepted) => accepted,
             Err(error) => {
-                println!("{VM_TAG}_VIRTIO_NET_ACCEPT_RETRY error={error}");
+                println!("{vm_tag}_VIRTIO_NET_ACCEPT_RETRY error={error}");
                 thread::sleep(retry_delay());
                 continue;
             }
         };
         sessions += 1;
-        println!("{VM_TAG}_VIRTIO_NET_ACCEPT session={sessions} peer={peer} local={LOCAL_IP}");
+        println!("{vm_tag}_VIRTIO_NET_ACCEPT session={sessions} peer={peer} local={local_ip_str}");
         let mut heartbeats = 0u64;
         let mut reason = String::from("peer closed the session");
 
@@ -178,14 +224,14 @@ fn run_server() -> std::io::Result<()> {
             let sequence = field(&line, "seq=").unwrap_or("?");
             heartbeats += 1;
             if let Err(error) =
-                stream.write_all(format!("ACK {VM_TAG} seq={sequence}\n").as_bytes())
+                stream.write_all(format!("ACK {vm_tag} seq={sequence}\n").as_bytes())
             {
                 reason = format!("send ack: {error}");
                 break;
             }
             println!(
-                "{VM_TAG}_VIRTIO_NET_HB_RX session={sessions} count={heartbeats} seq={sequence} \
-                 local={LOCAL_IP} peer={peer} payload=\"{line}\""
+                "{vm_tag}_VIRTIO_NET_HB_RX session={sessions} count={heartbeats} seq={sequence} \
+                 local={local_ip_str} peer={peer} payload=\"{line}\""
             );
             // Report the first pass immediately, then repeat it on the status
             // cadence so a console attached after the pass still sees it.
@@ -193,12 +239,12 @@ fn run_server() -> std::io::Result<()> {
                 && (!pass_reported || heartbeats.is_multiple_of(STATUS_EVERY_HEARTBEATS))
             {
                 pass_reported = true;
-                println!("{VM_TAG}_VIRTIO_NET_PASS role=server heartbeats={heartbeats}");
+                println!("{vm_tag}_VIRTIO_NET_PASS role=server heartbeats={heartbeats}");
             }
             if heartbeats.is_multiple_of(STATUS_EVERY_HEARTBEATS) {
                 println!(
-                    "{VM_TAG}_VIRTIO_NET_STATUS role=server session={sessions} \
-                     heartbeats={heartbeats} local={LOCAL_IP} peer={peer} ifaces={}",
+                    "{vm_tag}_VIRTIO_NET_STATUS role=server session={sessions} \
+                     heartbeats={heartbeats} local={local_ip_str} peer={peer} ifaces={}",
                     interface_report()
                 );
             }
@@ -206,7 +252,7 @@ fn run_server() -> std::io::Result<()> {
 
         let _ = stream.shutdown(Shutdown::Both);
         println!(
-            "{VM_TAG}_VIRTIO_NET_SESSION_END role=server session={sessions} \
+            "{vm_tag}_VIRTIO_NET_SESSION_END role=server session={sessions} \
              heartbeats={heartbeats} reason={reason} (waiting for the next session)"
         );
     }
@@ -215,7 +261,9 @@ fn run_server() -> std::io::Result<()> {
 /// Keeps reconnecting forever: one session, one heartbeat every four seconds,
 /// and a session restart as soon as anything about it fails.
 #[cfg(feature = "arceos")]
-fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
+fn run_client(peer_ip: Ipv4Addr, identity: &PeerIdentity) -> std::io::Result<()> {
+    let vm_tag = &identity.tag;
+    let local_ip_str = &identity.local_ip;
     let target = (peer_ip, TEST_PORT);
     let started = Instant::now();
     let mut sessions = 0u64;
@@ -229,10 +277,10 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
     thread::sleep(connect_start_delay());
 
     loop {
-        let mut stream = connect_forever(target, &mut failed_sessions);
+        let mut stream = connect_forever(target, &mut failed_sessions, identity);
         sessions += 1;
         println!(
-            "{VM_TAG}_VIRTIO_NET_CONNECTED session={sessions} local={LOCAL_IP}/{} \
+            "{vm_tag}_VIRTIO_NET_CONNECTED session={sessions} local={local_ip_str}/{} \
              peer={peer_ip}:{TEST_PORT} stream={:?}->{:?} failed_sessions={failed_sessions}",
             IPV4_PREFIX_LEN,
             stream
@@ -251,7 +299,7 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
             sequence += 1;
             let uptime = started.elapsed().as_secs();
             let heartbeat = format!(
-                "HB {VM_TAG} seq={sequence} local={LOCAL_IP} peer={peer_ip} uptime={uptime}s\n"
+                "HB {vm_tag} seq={sequence} local={local_ip_str} peer={peer_ip} uptime={uptime}s\n"
             );
             if let Err(error) = stream.write_all(heartbeat.as_bytes()) {
                 reason = format!("send heartbeat: {error}");
@@ -274,8 +322,9 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
                 break;
             }
             println!(
-                "{VM_TAG}_VIRTIO_NET_HB_TX session={sessions} count={sequence} local={LOCAL_IP} \
-                 peer={peer_ip}:{TEST_PORT} uptime={uptime}s ack=\"{acknowledgement}\""
+                "{vm_tag}_VIRTIO_NET_HB_TX session={sessions} count={sequence} \
+                 local={local_ip_str} peer={peer_ip}:{TEST_PORT} uptime={uptime}s \
+                 ack=\"{acknowledgement}\""
             );
             // A later console attach must still observe successful traffic.
             // Repeat the pass only after a fresh matching acknowledgement.
@@ -284,14 +333,14 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
             {
                 pass_reported = true;
                 println!(
-                    "{VM_TAG}_VIRTIO_NET_PASS role=client heartbeats={sequence} \
+                    "{vm_tag}_VIRTIO_NET_PASS role=client heartbeats={sequence} \
                      sessions={sessions}"
                 );
             }
             if sequence.is_multiple_of(STATUS_EVERY_HEARTBEATS) {
                 println!(
-                    "{VM_TAG}_VIRTIO_NET_STATUS role=client session={sessions} \
-                     heartbeats={sequence} uptime={uptime}s local={LOCAL_IP} peer={peer_ip} \
+                    "{vm_tag}_VIRTIO_NET_STATUS role=client session={sessions} \
+                     heartbeats={sequence} uptime={uptime}s local={local_ip_str} peer={peer_ip} \
                      failed_sessions={failed_sessions} ifaces={}",
                     interface_report()
                 );
@@ -302,7 +351,7 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
         failed_sessions += 1;
         let _ = stream.shutdown(Shutdown::Both);
         println!(
-            "{VM_TAG}_VIRTIO_NET_SESSION_END session={sessions} heartbeats={sequence} \
+            "{vm_tag}_VIRTIO_NET_SESSION_END session={sessions} heartbeats={sequence} \
              reason={reason} (reconnecting in {}ms)",
             RETRY_DELAY_MS
         );
@@ -318,7 +367,13 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
 /// caller invokes this fresh. The first few attempts are logged, later ones only
 /// every tenth attempt.
 #[cfg(feature = "arceos")]
-fn connect_forever(target: (Ipv4Addr, u16), attempts: &mut u64) -> TcpStream {
+fn connect_forever(
+    target: (Ipv4Addr, u16),
+    attempts: &mut u64,
+    identity: &PeerIdentity,
+) -> TcpStream {
+    let vm_tag = &identity.tag;
+    let local_ip_str = &identity.local_ip;
     let (peer_ip, port) = target;
     let address = SocketAddr::from((peer_ip, port));
     let mut failures = 0u64;
@@ -329,8 +384,8 @@ fn connect_forever(target: (Ipv4Addr, u16), attempts: &mut u64) -> TcpStream {
                 *attempts += 1;
                 if *attempts <= CONNECT_RETRY_LOG_BURST || (*attempts).is_multiple_of(10) {
                     println!(
-                        "{VM_TAG}_VIRTIO_NET_CONNECT_RETRY attempt={} target={peer_ip}:{port} \
-                         local={LOCAL_IP} error={error}",
+                        "{vm_tag}_VIRTIO_NET_CONNECT_RETRY attempt={} target={peer_ip}:{port} \
+                         local={local_ip_str} error={error}",
                         *attempts
                     );
                 }

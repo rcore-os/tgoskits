@@ -596,10 +596,16 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             continue
         wrapper_dir = build_config.parent
         relative_case = runtime_config.parent.relative_to(wrapper_dir)
+        # AxVisor selectors are relative to the selected test group when the
+        # runtime and build configurations share a directory, as in axbuild.
+        # Benchmarks already use the suite root as their normal group root.
+        case_root = root
+        if os_name == "axvisor" and root.parent.name != "benchmarks":
+            case_root = root / runtime_config.relative_to(root).parts[0]
         case = (
             relative_case.as_posix()
             if relative_case.parts
-            else wrapper_dir.relative_to(root).as_posix()
+            else wrapper_dir.relative_to(case_root).as_posix()
         )
         if os_name == "arceos":
             case = runtime_config.parent.name

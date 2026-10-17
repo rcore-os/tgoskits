@@ -1,0 +1,87 @@
+board_type = "BallPick-Robot-Rk3588"
+timeout = 3600
+uboot_cmd = ["setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"]
+fail_regex = ["exited with a fault", "panicked at", "Kernel panic - not syncing", "Failed to initialize guest VM", "Failed to start VM", "(?m)^CASE_FAILED\\b", "(?m)^KERNEL_TYPES_SETUP_FAILED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = '''
+vm console 1
+'''
+timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "root@ubuntu:~#"
+shell_cmd = '''
+{
+mkdir -p /proc /sys /dev /tmp &&
+(mount -t proc proc /proc 2>/dev/null || grep -q ' /proc proc ' /proc/mounts) &&
+{ [ -d /sys/class/net ] || mount -t sysfs sysfs /sys; } &&
+ip link set lo up &&
+setup=KERNEL_TYPES_SETUP &&
+printf '\n%s_READY\n' "$setup" || printf '\n%s_FAILED\n' "$setup"
+}
+'''
+success_regex = ["(?m)^KERNEL_TYPES_SETUP_READY\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@ubuntu:~#"
+shell_cmd = '''
+sh -s -- linux-iozone 512 <<'GUEST_CASE'
+#!/bin/sh
+# Run inside the selected guest. Exit status and result data both gate success.
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+case_name=${1:?Missing case name}
+mkdir -p /var/tmp/kernel-types
+# A board reset can interrupt cleanup; remove only this workload's data files.
+for leftover in /var/tmp/kernel-types/linux-iozone.*/iozone.tmp; do
+    if [ -f "$leftover" ]; then rm -f -- "$leftover"; fi
+done
+results=$(mktemp -d "/var/tmp/kernel-types/$case_name.XXXXXX")
+cleanup() {
+    rm -f "$results/iozone.tmp"
+    sync
+}
+on_exit() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    cleanup || status=1
+    if [ "$status" -ne 0 ]; then
+        for logfile in "$results"/*.log; do
+            if [ -f "$logfile" ]; then
+                printf "LOG %s\n" "$logfile"
+                timeout -k 2 5 tail -n 30 "$logfile" || printf "Log unavailable: %s\n" "$logfile"
+            fi
+        done
+        printf '\nCASE_%s case=%s exit=%s results=%s\n' FAILED "$case_name" "$status" "$results"
+    fi
+    exit "$status"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+
+# Write to the guest ext4, never a tmpfs or the host block device.
+iozone_mib=${2:-512}
+case "$iozone_mib" in ''|*[!0-9]*) exit 2 ;; esac
+test "$iozone_mib" -gt 0 && test "$iozone_mib" -le 1024
+required_kib=$((iozone_mib * 1024 + 65536))
+available=$(df -Pk "$results" | awk 'END {print $4}')
+printf "IOZONE_SPACE size_mib=%s available_kib=%s required_kib=%s\n" "$iozone_mib" "$available" "$required_kib"
+test "$available" -ge "$required_kib"
+timeout 1800 /guest-tests/iozone/iozone -a -n "${iozone_mib}m" -g "${iozone_mib}m" -i 0 -i 1 -i 2 \
+    -f "$results/iozone.tmp" -Rb "$results/test.xls" >"$results/iozone.log" 2>&1
+test -s "$results/test.xls"
+grep -qi 'iozone test complete' "$results/iozone.log"
+cat "$results/iozone.log"
+cleanup
+trap - EXIT HUP INT TERM
+printf '\nCASE_%s case=%s results=%s\n' PASSED "$case_name" "$results"
+
+GUEST_CASE
+'''
+success_regex = ["(?m)^CASE_PASSED case=linux-iozone results="]
+timeout = 2400

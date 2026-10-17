@@ -88,7 +88,7 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 ## Axvisor 板卡资源与磁盘根
 
-`prepare_guest_payload()` 将构建机存在的镜像复制进宿主 initramfs；板卡磁盘提供的绝对路径保留到 `install_builtin()`，在准备好的磁盘根中校验后才发布配置、提交切根。准备阶段包含附加分区，提交时递归绑定整个已校验的挂载树。OrangePi 普通 Linux CI 使用 `AXVISOR_GUEST_ASSETS=/guest`；ROC 使用 `AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest`，镜像位于单独的 `/userdata` 分区。缺失的环境变量会展开为空字符串，不能让它把板卡路径变成 `/linux/...`。定制 BSP 打包仍可把该变量指向构建机资源目录。
+`prepare_guest_payload()` 将构建机存在的镜像复制进宿主 initramfs；板卡磁盘提供的绝对路径保留到 `install_builtin()`，在准备好的磁盘根中校验后才发布配置、提交切根。准备阶段包含附加分区，提交时递归绑定整个已校验的挂载树。OrangePi 普通 Linux CI 直接使用板端绝对路径 `/guest/linux/orangepi-5-plus` 与 `/guest/rootfs-aarch64-orangepi-jammy-0.img`，不需要 `AXVISOR_GUEST_ASSETS`；ROC 使用 `AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest`，镜像位于单独的 `/userdata` 分区。缺失的环境变量会展开为空字符串，不能让它把板卡路径变成 `/linux/...`。定制 BSP 打包仍可把该变量指向构建机资源目录。
 
 ROC 部署固件会在交接时追加自身控制 DTB 的参数，控制 DTB 中的 `ro` 会覆盖普通 `bootargs` 中较早的 `rw`；只修改 FIT 内 DTB 不能消除该参数。用例通过 `BootPayloadConfig.cmdline` 显式指定磁盘根及 `rw`，并在本次启动的 U-Boot 命令中执行 `fdt addr ${fdtcontroladdr}`、`fdt set /chosen bootargs rw`，覆盖内存中的控制 DTB 参数。该流程使用发布版 ostool `0.30.3`。不要保存环境变量或写入固件，也不要改变内核对最后一个 `ro` 或 `rw` 生效的规则；磁盘根确实只读时必须拒绝安装和切根。
 

@@ -4,6 +4,7 @@ target = "aarch64-unknown-none-softfloat"
 features = [
   "ax-driver/list-pci-devices",
   "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
   "ax-driver/rk3588-pcie",
   "ax-driver/realtek-rtl8125",
   "ax-driver/rockchip-soc",
@@ -14,5 +15,5 @@ features = [
   "ax-driver/rk3588-cpufreq",
   "rknpu",
 ]
-log = "Warn"
+log = "Error"
 max_cpu_num = 1

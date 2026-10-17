@@ -63,7 +63,7 @@ impl CachedFileShared {
         if end <= source.start {
             return Some(0);
         }
-        let page = cache.get_mut(&page_number)?;
+        let mut page = cache.get_mut(&page_number)?;
         // The cache lock pins the page and serializes content access. If a
         // writer publishes after our check, it cannot mutate until this copy
         // ends. Otherwise the update flag hides its tentative changes, even

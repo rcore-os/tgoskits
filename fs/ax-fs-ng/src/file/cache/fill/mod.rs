@@ -170,10 +170,10 @@ impl CachedFile {
                 if cache.len() <= cache.cap().get() {
                     return;
                 }
-                match cache.peek_mut(&number) {
-                    Some(page) if !page.dirty && page.pins == 0 => cache.pop(&number),
-                    _ => None,
-                }
+                let removable = cache
+                    .peek_mut(&number)
+                    .is_some_and(|page| !page.dirty && page.pins == 0);
+                if removable { cache.pop(&number) } else { None }
             };
             drop(io);
             let Some(page) = candidate else {

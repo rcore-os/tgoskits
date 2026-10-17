@@ -1,0 +1,5 @@
+features = ["net", "ax-driver/virtio-net"]
+log = "Error"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 1
+to_bin = true

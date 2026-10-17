@@ -258,7 +258,7 @@ impl CachedPagePin {
 impl Drop for CachedPagePin {
     fn drop(&mut self) {
         let mut cache = self.shared.page_cache.lock();
-        let Some(page) = cache.get_mut(&self.page_number) else {
+        let Some(mut page) = cache.get_mut(&self.page_number) else {
             // Reclaim/truncate must reject pinned entries, so disappearance is
             // an ownership protocol violation.  The underlying frame cannot be
             // repaired here because its cache owner is already unknown.
@@ -569,7 +569,7 @@ impl Drop for CachedFileShared {
         if !self.unlinked.load(Ordering::Acquire) {
             return;
         }
-        for (_, page) in self.page_cache.lock().iter_mut() {
+        for (_, mut page) in self.page_cache.lock().iter_mut() {
             page.dirty = false;
         }
     }
@@ -821,6 +821,7 @@ impl CachedFile {
                 if page.dirty || page.pins != 0 {
                     busy = true;
                 } else {
+                    drop(page);
                     let page = cache.pop(&pn).ok_or(VfsError::BadState)?;
                     pending.push((pn, page));
                 }
@@ -958,16 +959,16 @@ impl CachedFile {
         {
             let mut cache = self.shared.page_cache.lock();
             if cache.contains(&pn) {
-                let page = cache.get_mut(&pn).ok_or(VfsError::BadState)?;
-                return Ok(update.take().ok_or(VfsError::BadState)?(page, false));
+                let mut page = cache.get_mut(&pn).ok_or(VfsError::BadState)?;
+                return Ok(update.take().ok_or(VfsError::BadState)?(&mut page, false));
             }
         }
 
         let mut prepared = self.prepare_cache_page(file, pn, read_backing)?;
         let (result, retired) = {
             let mut cache = self.shared.page_cache.lock();
-            if let Some(page) = cache.get_mut(&pn) {
-                let result = update.take().ok_or(VfsError::BadState)?(page, false);
+            if let Some(mut page) = cache.get_mut(&pn) {
+                let result = update.take().ok_or(VfsError::BadState)?(&mut page, false);
                 (result, Some(prepared))
             } else {
                 let retired = self.shared.detach_clean_capacity_victim(&mut cache);
@@ -1095,7 +1096,7 @@ impl CachedFile {
     /// not a request to fault the page back in while holding MM metadata.
     pub fn pin_cached_page(&self, pn: u32) -> VfsResult<CachedPagePin> {
         let mut cache = self.shared.page_cache.lock();
-        let page = cache.get_mut(&pn).ok_or(VfsError::BadState)?;
+        let mut page = cache.get_mut(&pn).ok_or(VfsError::BadState)?;
         let paddr = page.paddr()?;
         page.pins = page.pins.checked_add(1).ok_or(VfsError::ValueOverflow)?;
         Ok(CachedPagePin {
@@ -1108,7 +1109,7 @@ impl CachedFile {
 
     fn pin_cached_page_if_present(&self, pn: u32) -> VfsResult<Option<CachedPagePin>> {
         let mut cache = self.shared.page_cache.lock();
-        let Some(page) = cache.get_mut(&pn) else {
+        let Some(mut page) = cache.get_mut(&pn) else {
             return Ok(None);
         };
         let paddr = page.paddr()?;
@@ -1263,7 +1264,7 @@ impl CachedFile {
         let _io = self.shared.io_lock.lock();
         let mut guard = self.shared.page_cache.lock();
         for pn in pns {
-            if let Some(page) = guard.get_mut(pn) {
+            if let Some(mut page) = guard.get_mut(pn) {
                 page.dirty = false;
                 page.dirty_generation = page.dirty_generation.wrapping_add(1);
             }

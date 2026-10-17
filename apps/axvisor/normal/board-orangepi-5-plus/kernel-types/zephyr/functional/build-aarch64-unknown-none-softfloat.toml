@@ -1,0 +1,4 @@
+features = ["ax-driver/rk3588-pcie", "ax-driver/realtek-rtl8125", "ax-driver/rockchip-sdhci"]
+log = "Error"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["apps/axvisor/normal/board-orangepi-5-plus/kernel-types/zephyr.toml"]

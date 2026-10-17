@@ -110,5 +110,4 @@ Existing commands remain available for local test execution, for example:
 
 ```sh
 cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
-cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
 ```

@@ -12,22 +12,6 @@ default_runner = "qcs"
 # them by `--board`/`--test-case` name, so no command embeds the path.
 
 [[check]]
-id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · Inter-VM virtio-net"
-runner = "board"
-cache_key = ""
-resource_group = "orangepi-5-plus"
-timeout_minutes = 90
-command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
-'''
-
-[[check.suite]]
-kind = "axvisor-board"
-board = "orangepi-5-plus-virtio-net-peer"
-
-[[check]]
 id = "test-axvisor-aarch64-qemu-timer-stress"
 impact_targets = ["axvisor:aarch64"]
 name = "QEMU aarch64 · GICv2 + GICv3 timer stress"
@@ -45,6 +29,29 @@ arch = "aarch64"
 cases = ["gicv2-timer-stress", "gicv3-timer-stress"]
 
 [[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-arceos-net"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · 64 ArceOS peers and Linux observer"
+runner = "board"
+cache_key = ""
+resource_group = "orangepi-5-plus"
+timeout_minutes = 90
+command = '''
+app=apps/axvisor/normal/board-orangepi-5-plus/virtio-net-peer
+# Build this checkout with one MAC-derived identity binary for all peers.
+AXVIRTIO_IDENTITY_FROM_MAC=1 cargo xtask arceos build -p arceos-virtio-net-peer -c "$app/arceos-guest-build.toml"
+mkdir -p target/axvisor-arceos-net-images
+cp target/aarch64-unknown-linux-musl/release/arceos-virtio-net-peer.bin target/axvisor-arceos-net-images/orangepi-5-plus
+bash "$app/vcpus/orangepi-arceos-virtio-net-test.sh" gen --with-removal --images-dir target/axvisor-arceos-net-images
+cargo xtask axvisor test board -g normal --board orangepi-5-plus-arceos-net -c smoke --board-type BallPick-Robot-Rk3588
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-arceos-net"
+cases = ["smoke"]
+
+[[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-ping"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Linux PCI network ping"
@@ -53,13 +60,14 @@ cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-AXVISOR_GUEST_ASSETS=/guest cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case ping
+# --board selects the case; --board-type selects the registered physical board.
+cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case board-orangepi-5-plus/pci-network/ping --board-type BallPick-Robot-Rk3588
 '''
 
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-linux"
-cases = ["ping"]
+cases = ["board-orangepi-5-plus/pci-network/ping"]
 
 [[check]]
 id = "test-orangepi-5-plus-robot-real-suite"
