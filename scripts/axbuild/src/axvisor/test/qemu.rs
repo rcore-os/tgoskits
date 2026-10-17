@@ -211,6 +211,9 @@ impl Axvisor {
 
             let case_started = Instant::now();
             let result = async {
+                super::guest_build::prepare(&mut self.app, &case.case.case.qemu_config_path)
+                    .await?;
+                // Guest builds replace the active artifact; restore the host before bundling or booting.
                 self.app
                     .prepare_elf_artifact(
                         case_artifact.build_artifact.to_path_buf(),

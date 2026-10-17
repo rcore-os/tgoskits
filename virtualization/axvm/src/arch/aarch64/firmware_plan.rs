@@ -11,6 +11,7 @@ pub(super) struct Aarch64FirmwarePlan {
     serial_identity: Option<GuestSerialFdtIdentity>,
     devices: std::vec::Vec<crate::boot::fdt::device::ResolvedFdtDevice>,
     timer: GuestTimerProfile,
+    pci: Option<super::pci_plan::Aarch64PciPlan>,
 }
 
 impl Aarch64FirmwarePlan {
@@ -27,7 +28,8 @@ impl Aarch64FirmwarePlan {
             AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
         })?;
         let serials = resolved_serial_devices(graph)?;
-        let firmware = crate::boot::fdt::device::resolve_fdt_firmware(graph)?;
+        let mut firmware = crate::boot::fdt::device::resolve_fdt_firmware(graph)?;
+        let pci = super::pci_plan::Aarch64PciPlan::resolve(config, graph, &mut firmware.specials)?;
         apply_gic_contribution(&firmware.specials, &serials, vgic, &mut gic)?;
         let console = serials
             .iter()
@@ -49,7 +51,14 @@ impl Aarch64FirmwarePlan {
             serial_identity,
             devices: firmware.devices,
             timer,
+            pci,
         })
+    }
+
+    pub(super) fn pci(&self) -> Option<crate::boot::fdt::core::pci::GuestPciHost> {
+        self.pci
+            .as_ref()
+            .map(super::pci_plan::Aarch64PciPlan::firmware)
     }
 
     pub(super) const fn gic(&self) -> &GuestGicProfile {
