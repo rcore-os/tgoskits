@@ -189,8 +189,9 @@ static void test_openat2_min(void)
     expect_openat2_success("openat2 ordinary path succeeds", dirfd, "basic", O_RDWR, 0);
     /* The kernel enforces all five restricted-RESOLVE sets on this path;
      * these plain in-base opens satisfy every restriction, so assert the
-     * observable success. RESOLVE_CACHED is covered separately below (the
-     * kernel has no dcache-only lookup and fails it with EAGAIN). */
+     * observable success. RESOLVE_CACHED is covered separately below (this
+     * kernel fails every CACHED open with EAGAIN, including cases Linux
+     * would serve from the dcache). */
     expect_openat2_success("openat2 RESOLVE_NO_XDEV resolves",
                            dirfd, "resolve-xdev",
                            O_RDWR | O_CREAT, RESOLVE_NO_XDEV);

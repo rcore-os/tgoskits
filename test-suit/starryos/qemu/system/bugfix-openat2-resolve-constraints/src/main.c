@@ -281,8 +281,10 @@ int main(void)
                  O_RDONLY | O_CLOEXEC, ENOENT);
 
     /* RESOLVE_CACHED requires a dcache-only lookup this kernel cannot
-     * provide; Linux fails such opens with EAGAIN (retry without the flag).
-     * Creation with CACHED is rejected before any side effect. */
+     * provide, so every CACHED open fails EAGAIN here. On Linux only the
+     * O_TRUNC|O_CREAT|O_TMPFILE combinations fail EAGAIN directly in
+     * build_open_flags(); other cached hits succeed. Creation with CACHED
+     * is rejected before any side effect. */
     expect_errno("CACHED with O_CREAT -> EAGAIN without side effects", rootfd,
                  "cached.txt", RESOLVE_CACHED,
                  O_CREAT | O_RDWR | O_CLOEXEC, EAGAIN);
@@ -406,6 +408,11 @@ int main(void)
     unlink(rel);
     unlink(abs);
     unlink(link_file);
+    unlink(sub_link_in);
+    unlink(sub_link_out);
+    unlink(sub_link_slash);
+    unlink(sub_link_bare);
+    unlink(created_in);
     unlink("/tmp/o2c/beneath.txt");
     unlink("/tmp/o2c/combo.txt");
     rmdir(sub);
