@@ -118,7 +118,6 @@ int main(void)
 
     unlink(rel);
     unlink(abs);
-    unlink(link_file);
     unlink(sub_link_in);
     unlink(sub_link_out);
     unlink(created_in);
@@ -406,6 +405,7 @@ int main(void)
     close(fsrootfd);
     unlink(rel);
     unlink(abs);
+    unlink(link_file);
     unlink("/tmp/o2c/beneath.txt");
     unlink("/tmp/o2c/combo.txt");
     rmdir(sub);

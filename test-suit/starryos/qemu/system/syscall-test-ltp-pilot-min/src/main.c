@@ -187,11 +187,10 @@ static void test_openat2_min(void)
     expect_openat2_padded_e2big();
 
     expect_openat2_success("openat2 ordinary path succeeds", dirfd, "basic", O_RDWR, 0);
-    /* The kernel now accepts restricted-RESOLVE requests and resolves them
-     * like plain openat (only BENEATH|NO_SYMLINKS keeps its sandbox
-     * enforcement); runc's cgroupv2 reader depends on RESOLVE_NO_XDEV
-     * succeeding. Assert the observable success instead of the stale
-     * EOPNOTSUPP deviations. */
+    /* The kernel enforces all five restricted-RESOLVE sets on this path;
+     * these plain in-base opens satisfy every restriction, so assert the
+     * observable success. RESOLVE_CACHED is covered separately below (the
+     * kernel has no dcache-only lookup and fails it with EAGAIN). */
     expect_openat2_success("openat2 RESOLVE_NO_XDEV resolves",
                            dirfd, "resolve-xdev",
                            O_RDWR | O_CREAT, RESOLVE_NO_XDEV);
