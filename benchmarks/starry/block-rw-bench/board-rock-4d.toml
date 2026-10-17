@@ -2,7 +2,7 @@ board_type = "Rock-4D"
 dtb_file = "os/StarryOS/configs/board/rock-4d.dtb"
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
-  '(?m)^ROCK4D_BLOCK_RW_BENCH_SESSION_FAILED$',
+  '(?m)^ROCK4D_BLOCK_RW_BENCH_SESSION_FAILED\s*$',
   '(?m)^block-rw-bench: error: .*$',
   '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
   '(?i)(block-rw-bench|sh): .*not found',
@@ -20,5 +20,5 @@ export BLOCK_RW_BENCH_SUCCESS_MARKER='ROCK4D_BLOCK_RW_BENCH_PASSED'
 export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1048064'
 """
 success_regex = [
-  '(?m)^ROCK4D_BLOCK_RW_BENCH_PASSED$',
+  '(?m)^ROCK4D_BLOCK_RW_BENCH_PASSED\s*$',
 ]

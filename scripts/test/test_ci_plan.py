@@ -189,6 +189,74 @@ class CiPlanTests(unittest.TestCase):
             self.assertTrue(check["nightly_only"])
             self.assertFalse(check.get("performance_report", False))
 
+    def test_requires_mkimage_reaches_the_board_matrix_row(self):
+        # The disabled AKA-00 tennis YOLO benchmark was the only check that
+        # needed `mkimage`, so the manifest-to-matrix plumbing is covered with a
+        # fixture instead of a live registration.
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="schedule",
+        )
+
+        check = ci_plan._validate_check(
+            {
+                "id": "board-check",
+                "name": "Board check",
+                "group": "Starry Apps",
+                "command": "true",
+                "requires_mkimage": True,
+            },
+            "fixture:1",
+        )
+        # `load_catalog` attaches the owning manifest after validation, so the
+        # fixture check sets the same field before it is normalized into a row.
+        check["source"] = str(
+            ci_plan.BENCHMARK_MANIFEST.relative_to(ci_plan.WORKSPACE_ROOT)
+        )
+
+        row = ci_plan._normalize_check(check, context)
+
+        self.assertTrue(row["requires_mkimage"])
+
+    def test_disabled_tennis_yolo_benchmark_stays_out_of_the_plan(self):
+        disabled_id = "starry-performance-tennis-yolo-aka-00-sg2002"
+        checks = ci_plan.load_catalog((ci_plan.BENCHMARK_MANIFEST,))
+
+        self.assertNotIn(disabled_id, {check["id"] for check in checks})
+        self.assertNotIn(
+            "aka00-tennis-yolo",
+            {
+                case
+                for check in checks
+                for registration in check.get("suite", ())
+                for case in registration.get("cases", ())
+            },
+        )
+
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="schedule",
+        )
+        plan = ci_plan.build_benchmarks_plan(context)
+        board_rows = plan["starry_board_performance_matrix"]["include"]
+
+        self.assertTrue(board_rows)
+        self.assertNotIn(disabled_id, {row["id"] for row in board_rows})
+
+    def test_check_manifest_rejects_non_boolean_requires_mkimage(self):
+        with self.assertRaisesRegex(ci_plan.PlanError, "requires_mkimage"):
+            ci_plan._validate_check(
+                {
+                    "id": "board-check",
+                    "name": "Board check",
+                    "command": "true",
+                    "requires_mkimage": "true",
+                },
+                "fixture:1",
+            )
+
     def test_check_manifests_do_not_declare_removed_booleans(self):
         for manifest in sorted(ci_plan.CHECKS_ROOT.rglob("*.toml")):
             with self.subTest(manifest=manifest.name):
@@ -1085,11 +1153,15 @@ command = "true"
 
         benchmark = "/usr/bin/ivc-starry-bench"
         cmdline = vm_config["kernel"]["cmdline"]
-        # The board route waits for the default Starry init shell prompt, and
-        # StarryOS panics when init exits, so the VM must keep that shell as
-        # init and run the benchmark as its child.
+        # Avoid the rootfs systemd init: it cannot finish booting without
+        # kernel uevent netlink on this board.  Keep an interactive /bin/sh as
+        # PID 1 and run the benchmark from the guest shell as its child.
         self.assertNotIn(benchmark, cmdline)
-        self.assertNotIn("init=", cmdline)
+        self.assertIn("init=/bin/sh", cmdline)
+        self.assertIn(
+            '-- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"',
+            cmdline,
+        )
 
         steps = board_config["shell_check_steps"]
         attach_indices = [

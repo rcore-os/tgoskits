@@ -24,9 +24,14 @@ while [ "$attempt" -le 30 ]; do
 done
 
 if [ -z "$server_ip" ] || [ "$ready" != "1" ]; then
-    echo STARRY_IPERF3_BENCH_FAILED
+    printf '\n%s\n' STARRY_IPERF3_BENCH_FAILED
 elif "$script" "$server_ip"; then
     sync
+    # iperf-bench.sh prints STARRY_IPERF3_BENCH_PASSED as its last summary line
+    # and only exits zero after the whole matrix ran; every failure path exits
+    # non-zero. Repeat that verdict so the board session ends on an explicit
+    # line from this wrapper too, without inventing a pass of its own.
+    printf '\n%s\n' STARRY_IPERF3_BENCH_PASSED
 else
-    echo STARRY_IPERF3_BENCH_FAILED
+    printf '\n%s\n' STARRY_IPERF3_BENCH_FAILED
 fi

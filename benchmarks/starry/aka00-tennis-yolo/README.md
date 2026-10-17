@@ -11,6 +11,7 @@
 4. 对 YOLOv8 输出做后处理和 NMS。
 5. 将检测类别、分数和 bbox 与预置 expected 文件比较。
 6. 打印每张图片的耗时，用于后续性能观察。
+7. 在多轮测量全部通过 golden 校验后，输出一轮跨图片的分阶段耗时汇总。
 
 ## 目录结构
 
@@ -22,9 +23,10 @@
 - `validation/expected.txt`：SG2002 Linux 上生成并确认可用的预期检测结果。
 - `thirdparty/tpu-sdk-sg200x/`：`scripts/setup.sh` 下载生成的 CVI runtime SDK 目录，仓库不直接保存其二进制内容。
 - `scripts/`：Xuantie musl 工具链、TPU SDK 准备和 linker 包装脚本。
-- `build-validator.sh`：构建用户态程序，并生成可部署目录。
-- `init.sh`：测试入口，假定板端部署路径为 `/akars_tennis`。
-- `board-aka-00-sg2002.toml`：后续接入 Starry board test 的配置入口。
+- `build-validator.sh`：构建用户态程序，生成可部署目录和自包含部署归档。
+- `init.sh`：板端 benchmark 入口，下载本轮构建的部署归档并在临时目录运行。
+- `board-aka-00-sg2002.toml`：StarryOS benchmark 配置入口，声明部署归档的
+  `session_files` 交付和终止判定标记。
 - `SHA256SUMS`：模型和图片的哈希记录；工具链和 TPU SDK 压缩包哈希记录在 `scripts/env.sh` 中。
 
 ## 构建
@@ -71,6 +73,16 @@ benchmarks/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis/
 `install/` 是生成物，已被 `.gitignore` 忽略。需要部署时重新运行
 `build-validator.sh` 生成。
 
+`build-validator.sh` 还会把整个部署目录打包成一个自包含归档：
+
+```text
+benchmarks/starry/aka00-tennis-yolo/install/sg2002_riscv64_musl/akars_tennis-deploy.tar
+```
+
+该归档同时用于两条交付路径：板端 StarryOS benchmark 通过板卡会话的
+HTTP 端点下载它，手动部署到 Linux 根文件系统时也可以直接解包，从而保证
+validator、模型、验证图片和 TPU runtime 动态库始终来自同一次构建。
+
 ## 部署内容
 
 板端部署目录固定为：
@@ -105,6 +117,32 @@ akars_tennis/
 - `validation/` 包含固定图片、图片清单和预期结果。
 
 部署方式可以按当前板卡环境选择，例如通过串口辅助、SSH、SCP、rsync、挂载根文件系统等方式完成。核心要求是板端最终存在完整的 `/akars_tennis` 目录，并在写入后执行 `sync`，确保内容落盘。
+
+## StarryOS benchmark 交付
+
+`board-aka-00-sg2002.toml` 声明了 `session_files`，因此板端 benchmark 不需要
+预先安装 `/akars_tennis`，也不会执行 rootfs 里预装的旧 validator：
+
+1. 先运行 `scripts/setup.sh` 准备 Xuantie musl 工具链与 TPU SDK；
+2. 再运行 `build-validator.sh` 编译当前源码的 validator 并生成
+   `akars_tennis-deploy.tar`；
+3. `cargo xtask starry app board` 会把这个归档上传到会话 HTTP 端点，并在
+   `shell_cmd` 里把 `${sessionFile:...}` 展开成板子可访问的 URL；
+4. `init.sh` 下载并解包归档到临时目录，用
+   `--warmup 1 --repeat 5` 运行 validator，然后按验证标记和汇总标记给出
+   最终判定。
+
+板端会话需要网络才能下载归档，因此该 benchmark 使用 `wifi_secrets`
+复用仓库中的 WiFi 凭据。缺少归档、下载失败、解包失败、验证标记缺失或
+汇总标记缺失都会输出失败标记，而不是退回到预装二进制继续跑。
+
+CI 中一次完整的构建与板端运行是：
+
+```bash
+benchmarks/starry/aka00-tennis-yolo/scripts/setup.sh
+benchmarks/starry/aka00-tennis-yolo/build-validator.sh
+cargo xtask starry app board -t benchmark/aka00-tennis-yolo -b AKA-00-SG2002
+```
 
 ## 板端运行
 
@@ -156,7 +194,23 @@ cd /akars_tennis
 
 ## 结果判定
 
-测试通过时会打印：
+板端 StarryOS benchmark 通过时会打印：
+
+```text
+AKARS_TENNIS_VALIDATE_PASS images=3
+AKARS_TENNIS_BENCH_RESULT pipeline=software measured_runs=5 images=3 samples=15 ...
+STARRY_AKA00_TENNIS_BENCH_PASSED
+```
+
+`STARRY_AKA00_TENNIS_BENCH_PASSED` 是唯一的终止判定：`init.sh` 只在固定三张
+图片的 `AKARS_TENNIS_VALIDATE_PASS images=3`、`--warmup 1 --repeat 5` 的
+`AKARS_TENNIS_BENCH_RESULT` 汇总（`measured_runs=5 images=3 samples=15`）
+都已匹配，并且 validator 退出码为 0 时才输出它。任一失败路径输出
+`STARRY_AKA00_TENNIS_BENCH_FAILED reason=...`，由板端 `fail_regex` 直接判失败。
+只有逐图 `AKARS_TENNIS_TIMING` 而没有汇总行的旧预装二进制不会被当作
+benchmark 通过。
+
+Linux 侧手动运行并使用 `run.sh` 时仍然打印：
 
 ```text
 AKARS_TENNIS_VALIDATE_PASS images=3

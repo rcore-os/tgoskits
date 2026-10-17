@@ -13,7 +13,7 @@ TGOSKits 的三条日常验证入口分别承担应用 smoke、AxVisor 功能 ni
 
 ### 1.1 三条入口
 
-三条入口都使用 `cron` 和 `workflow_dispatch`，但各自维护独立的并发组和 `dev` revision。下表说明工作流边界，具体命令仍以检查清单为准。
+三条入口都使用 `cron` 和 `workflow_dispatch`，并各自维护独立的并发组。定时运行固定读取 `dev`，手动运行则测试派发时选择的 revision；只有定时运行会把结果发布到 `dev` 性能历史。下表说明工作流边界，具体命令仍以检查清单为准。
 
 | 工作流 | 负责内容 | 规划入口 |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ TGOSKits 的三条日常验证入口分别承担应用 smoke、AxVisor 功能 ni
 | `axvisor-nightly.yml` | `phase = "nightly"` 的 AxVisor 功能场景 | `build_axvisor_nightly_plan()` |
 | `benchmarks.yml` | `benchmarks.toml` 中全部 AxVisor 与 Starry 性能 check | `build_benchmarks_plan()` |
 
-`benchmarks.yml` 的 `plan` job 读取 `dev` 后固定 revision，并把 `prepare_matrix`、`axvisor_performance_matrix`、`starry_performance_matrix` 和 `starry_board_performance_matrix` 传给后续 caller。`prepare_matrix` 只构建 Starry 性能行消费的 `tg-xtask` artifact，AxVisor 性能行不被这个 artifact 门禁耦合。
+`benchmarks.yml` 的 `plan` job 在定时运行读取 `dev`，手动运行固定触发该次派发的 revision，并把 `prepare_matrix`、`axvisor_performance_matrix`、`starry_performance_matrix` 和 `starry_board_performance_matrix` 传给后续 caller。手动运行只验证指定 revision，不进入性能历史发布链路；定时运行才以 `dev revision` 标签整理并发布历史。`prepare_matrix` 只构建 Starry 性能行消费的 `tg-xtask` artifact，AxVisor 性能行不被这个 artifact 门禁耦合。
 
 ### 1.2 基准调度
 
@@ -43,7 +43,7 @@ TGOSKits 的三条日常验证入口分别承担应用 smoke、AxVisor 功能 ni
 | `Starry Apps` | `starry_performance_matrix` | QCS 自托管 profile | `starry-apps-nightly-performance` |
 | `Starry Apps` | `starry_board_performance_matrix` | 板卡 profile | `starry-apps-nightly-performance` |
 
-Starry 板卡矩阵在 `benchmarks.yml` 中设置 `max_parallel: 1`，避免同一入口同时占用多个实体板卡；这只是矩阵内的并行上限，不是板卡行串行的唯一机制。运行在同一块 OrangePi 5 Plus 上的基准板卡行（三条 AxVisor 性能行与四条 Starry 板卡行）都在清单里声明 `resource_group = "orangepi-5-plus"`，复用矩阵据此把受保护的 `schedule` 与 `workflow_dispatch` 运行放进共享的 `ci-resource-orangepi-5-plus` concurrency group，使它们与其它工作流中同样使用该资源组的 OrangePi 检查串行，避免跨工作流同时占用同一块实体板卡。QEMU 矩阵保持并行；AxVisor 性能矩阵保持原有 `fail_fast: false`，一个板卡场景失败不会取消其他性能用例。
+Starry 板卡矩阵不设置额外的 `max_parallel` 限制，每个矩阵项使用独立的 concurrency group。`resource_group` 继续记录板卡资源类型，但不把同组矩阵项合并到同一个 GitHub 锁中；拥有多个相同标签的空闲板卡时，runner 池可以同时分发同组任务。板卡会话服务负责每个会话的资源分配和隔离。QEMU 矩阵保持并行；AxVisor 性能矩阵保持原有 `fail_fast: false`，一个板卡场景失败不会取消其他性能用例。
 
 AxVisor 板卡性能用例位于 `benchmarks/axvisor`；`board_test_group_roots()` 将该目录纳入默认 `normal` 组，因此 `--board` 和 `--test-case` 仍通过原入口选择用例。`vm_configs` 是宿主 initramfs 的打包输入，客户机启动资源由 `prepare_guest_payload()` 放到 `/guest/builtin`，不再嵌入宿主内核。无宿主块设备的 VCPU 用例直接保留内存根。
 
@@ -69,7 +69,7 @@ flowchart TD
     artifact --> docs[docs.yml]
 ```
 
-`benchmark-updates` 只在 `plan`、`axvisor_performance`、`starry_performance` 与 `starry_board_performance` 全部成功时运行。任一性能矩阵失败时，该 job 不收集报告，也不上传 `benchmark-updates` artifact 或 dispatch `docs.yml`。
+`benchmark-updates` 只在定时运行且 `plan`、`axvisor_performance`、`starry_performance` 与 `starry_board_performance` 全部成功时运行。手动派发的性能检查不会写入 dev 历史，也不会触发 docs 发布。任一性能矩阵失败时，该 job 不收集报告，也不上传 `benchmark-updates` artifact 或 dispatch `docs.yml`。
 
 ## 3. 报告与历史
 

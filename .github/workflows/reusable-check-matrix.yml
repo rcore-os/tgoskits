@@ -52,19 +52,11 @@ jobs:
       fail-fast: ${{ inputs.fail_fast }}
       max-parallel: ${{ inputs.max_parallel }}
       matrix: ${{ fromJSON(inputs.matrix_json) }}
-    # Protected and manually triggered runs retain the physical-board queue.
-    # PR and branch jobs rely on ostool-server sessions for board exclusivity.
+    # Give every matrix entry its own concurrency group. The board runner pool
+    # can therefore dispatch entries with the same resource_group to different
+    # idle physical boards.
     concurrency:
-      group: >-
-        ci-resource-${{
-          (github.event_name == 'pull_request' ||
-           (github.event_name == 'push' &&
-            github.ref != 'refs/heads/main' &&
-            github.ref != 'refs/heads/dev')) &&
-          format('run-{0}-{1}', github.run_id, matrix.id) ||
-          matrix.resource_group ||
-          format('run-{0}-{1}', github.run_id, matrix.id)
-        }}
+      group: ci-resource-${{ format('run-{0}-{1}', github.run_id, matrix.id) }}
       queue: max
       cancel-in-progress: false
     runs-on: >-
@@ -108,6 +100,44 @@ jobs:
           if [ "${REQUIRE_KVM}" = "true" ]; then
             test -r /dev/kvm && test -w /dev/kvm
           fi
+
+      # Some Starry board builds pack a uImage from a companion `.its` file.
+      # Those checks set `requires_mkimage`; FIT conversion also needs `dtc`.
+      # Check both tools here so a missing host dependency fails before the
+      # board build with an actionable message.
+      - name: Preflight mkimage
+        if: matrix.requires_mkimage
+        run: |
+          set -euo pipefail
+          if command -v mkimage >/dev/null 2>&1 && command -v dtc >/dev/null 2>&1; then
+            echo "mkimage: $(command -v mkimage)"
+            echo "dtc: $(command -v dtc)"
+            exit 0
+          fi
+
+          distro_ids=""
+          if [ -r /etc/os-release ]; then
+            distro_ids="$(. /etc/os-release && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")"
+          fi
+          if ! command -v apt-get >/dev/null 2>&1 ||
+            ! printf '%s' "${distro_ids}" | grep -Eqi '(^| )(debian|ubuntu)( |$)'; then
+            echo "::error::mkimage (u-boot-tools) and dtc (device-tree-compiler) are required by this check, but this runner does not look like a Debian or Ubuntu host" >&2
+            echo "install u-boot-tools and device-tree-compiler on the runner or move this check to a runner that provides both tools" >&2
+            exit 1
+          fi
+
+          apt_get=(apt-get)
+          if [ "$(id -u)" != "0" ]; then
+            if ! command -v sudo >/dev/null 2>&1; then
+              echo "::error::mkimage or dtc is missing and sudo is unavailable to install u-boot-tools and device-tree-compiler" >&2
+              exit 1
+            fi
+            apt_get=(sudo apt-get)
+          fi
+          "${apt_get[@]}" update
+          DEBIAN_FRONTEND=noninteractive "${apt_get[@]}" install -y --no-install-recommends u-boot-tools device-tree-compiler
+          command -v mkimage
+          command -v dtc
 
       - name: Preflight container
         if: matrix.container_preflight != 'none'

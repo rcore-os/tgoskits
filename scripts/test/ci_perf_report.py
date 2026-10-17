@@ -26,6 +26,12 @@ STARRY_BLOCK_IO_PATTERN = re.compile(
 STARRY_BLOCK_RW_PATTERN = re.compile(
     r"block-rw-bench:\s+case=(?P<case>\S+)(?P<fields>.*)"
 )
+STARRY_BLOCK_RW_CONFIG_PATTERN = re.compile(
+    r"block-rw-bench:\s+io_model=\S+\s+write_scope=\S+\s+"
+    r"fsync=(?P<fsync>\S+)\s+request_bytes=(?P<request_bytes>\S+)\s+"
+    r"max_transfer_bytes=(?P<max_transfer_bytes>\S+)\s+"
+    r"boundary_coverage=(?P<boundary_coverage>\S+)\s+"
+)
 STARRY_COMPILE_PATTERN = re.compile(
     r"COMPILE_SIM_RESULT\s+jobs=(?P<jobs>\d+).*?median_us=(?P<value>\d+)"
 )
@@ -263,6 +269,25 @@ def _append_metric(
     metrics.append({"name": name, "unit": unit, "value": number})
 
 
+def _block_rw_profile(line: str) -> str | None:
+    match = STARRY_BLOCK_RW_CONFIG_PATTERN.search(line)
+    if match is None:
+        return None
+    values = match.groupdict()
+    if (
+        values["fsync"] == "true"
+        and values["request_bytes"] == "none"
+        and values["boundary_coverage"] == "full"
+    ):
+        return None
+    return (
+        f"fsync-{values['fsync']}-"
+        f"boundary-{values['boundary_coverage']}-"
+        f"request-{values['request_bytes']}-"
+        f"max-transfer-{values['max_transfer_bytes']}"
+    )
+
+
 def render_starry_benchmarks(log_text: str) -> list[dict[str, object]]:
     """Extract stable result lines emitted by Starry performance apps.
 
@@ -270,8 +295,12 @@ def render_starry_benchmarks(log_text: str) -> list[dict[str, object]]:
     CI layer only maps their numeric fields into the common dashboard format.
     """
     metrics: list[dict[str, object]] = []
+    block_rw_profile: str | None = None
     for raw_line in log_text.splitlines():
         line = strip_line_prefixes(raw_line)
+
+        if profile := _block_rw_profile(line):
+            block_rw_profile = profile
 
         if match := STARRY_SYSBENCH_PATTERN.search(line):
             _append_metric(metrics, f"sysbench/{match['case']}", "events/s", match["value"])
@@ -282,11 +311,14 @@ def render_starry_benchmarks(log_text: str) -> list[dict[str, object]]:
         if match := STARRY_BLOCK_RW_PATTERN.search(line):
             fields = parse_fields(match["fields"])
             case = match["case"]
+            metric_prefix = f"block-rw/{case}"
+            if block_rw_profile is not None:
+                metric_prefix = f"{metric_prefix}/{block_rw_profile}"
             for field, unit in (("write_mib_s", "MiB/s"), ("read_mib_s", "MiB/s")):
                 if field in fields:
-                    _append_metric(metrics, f"block-rw/{case}/{field}", unit, fields[field])
+                    _append_metric(metrics, f"{metric_prefix}/{field}", unit, fields[field])
             if "elapsed_ms" in fields:
-                _append_metric(metrics, f"block-rw/{case}/elapsed", "ms", fields["elapsed_ms"])
+                _append_metric(metrics, f"{metric_prefix}/elapsed", "ms", fields["elapsed_ms"])
 
         if match := STARRY_COMPILE_PATTERN.search(line):
             _append_metric(metrics, f"compile-sim/jobs-{match['jobs']}", "us", match["value"])

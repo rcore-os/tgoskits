@@ -3,23 +3,40 @@ dtb_file = "os/StarryOS/configs/board/aka-00-sg2002.dtb"
 kernel_load_addr = "0x80200000"
 fit_load_addr = "0x82200000"
 bootm_addr = "0x82200000"
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS0,115200 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+# The current-source validator, model, validation images and TPU runtime
+# libraries travel as one deploy archive built by `build-validator.sh`. A
+# board session must never fall back to whatever binary happens to be
+# preinstalled in the persistent rootfs: that deployment produced only
+# per-image timing lines instead of the warmup/repeat benchmark summary.
+session_files = [
+  "install/sg2002_riscv64_musl/akars_tennis-deploy.tar",
+]
 fail_regex = [
+  "(?m)^STARRY_AKA00_TENNIS_BENCH_FAILED .*$",
   "(?m)^AKARS_TENNIS_VALIDATE_FAIL .*$",
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)segmentation fault",
   "(?i)error while loading shared libraries",
   "(?i)CVI_NN_RegisterModel failed",
   "(?i)CVI_NN_Forward failed",
-  "(?i)(akars-tennis-validator|run.sh|sh): .*not found",
+  "(?i)(akars-tennis-validator|wget|curl|tar|grep|chmod|sh): .*not found",
 ]
-timeout = 600
+# Boot, the bounded deploy-archive download, and a warmup plus five measured
+# passes over the three fixed images must all fit in one board session.
+timeout = 900
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
 shell_cmd = '''
-cd /akars_tennis && ./run.sh
+export AKARS_TENNIS_DEPLOY_URL='${sessionFile:install/sg2002_riscv64_musl/akars_tennis-deploy.tar}'
+export AKARS_TENNIS_WARMUP='1'
+export AKARS_TENNIS_REPEAT='5'
 '''
+# `init.sh` runs the downloaded validator itself and prints this single
+# terminal verdict only after the fixed-image validation marker and the
+# warmup/repeat `AKARS_TENNIS_BENCH_RESULT` aggregation both matched, and
+# prints `STARRY_AKA00_TENNIS_BENCH_FAILED` on every failure path.
 success_regex = [
-  "(?m)^AKARS_TENNIS_VALIDATE_PASS images=3$",
-  "(?m)^STARRY_AKA00_TENNIS_DETECT_OK$",
+  "(?m)^STARRY_AKA00_TENNIS_BENCH_PASSED\\s*$",
 ]

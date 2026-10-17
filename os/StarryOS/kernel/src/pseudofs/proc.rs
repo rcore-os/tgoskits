@@ -88,7 +88,11 @@ impl KernelSymbols {
         let mut output = String::new();
         for &index in &self.by_address {
             let entry = &self.by_name[index];
-            let _ = writeln!(output, "{:016x} {} {}", entry.address, entry.kind, entry.name);
+            let _ = writeln!(
+                output,
+                "{:016x} {} {}",
+                entry.address, entry.kind, entry.name
+            );
         }
         output
     }
@@ -115,7 +119,10 @@ fn read_kallsyms() -> KernelSymbols {
         // Keep a useful text-only fallback for older bundles.  New bundles
         // carry AXKS so data/BSS/rodata symbols retain their Linux type.
         warn!("Target AXKS map is not installed; /proc/kallsyms is text-only");
-        info!("Read target AXBT map as kallsyms fallback, functions={}", map.len());
+        info!(
+            "Read target AXBT map as kallsyms fallback, functions={}",
+            map.len()
+        );
         for index in 0..map.len() {
             if let Some((start, _, symbol)) = map.symbol_at(index) {
                 entries.push(KernelEntry {
@@ -1995,6 +2002,70 @@ fn dump_starry_test_coverage() {
     axtest::dump_coverage();
 }
 
+#[derive(Clone, Copy)]
+enum UtsNameField {
+    Hostname,
+    Domainname,
+}
+
+/// /proc/sys/kernel/{hostname,domainname} backed by the caller's UTS
+/// namespace. systemd's service mount-namespace setup chases both paths for
+/// ProtectHostname units; ENOENT there aborts every such service start (e.g.
+/// systemd-udevd crash-loops and stalls boot).
+fn uts_name_proc_file(fs: &Arc<SimpleFs>, field: UtsNameField) -> Arc<SimpleFile> {
+    SimpleFile::new_regular(
+        fs.clone(),
+        RwFile::new(move |req| match req {
+            SimpleFileOperation::Read => {
+                let name = {
+                    let task = current_user_task();
+                    let nsproxy = task.as_thread().proc_data.namespace_snapshot();
+                    let uts_namespace = nsproxy.uts_ns.lock_irqsave();
+                    match field {
+                        UtsNameField::Hostname => uts_namespace.nodename,
+                        UtsNameField::Domainname => uts_namespace.domainname,
+                    }
+                };
+                let name_len = name
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .unwrap_or(name.len());
+                let mut output = Vec::with_capacity(name_len + 1);
+                output.extend(name[..name_len].iter().map(|byte| byte.to_ne_bytes()[0]));
+                output.push(b'\n');
+                Ok(Some(output))
+            }
+            SimpleFileOperation::Write(data) => {
+                if data.is_empty() {
+                    return Ok(None);
+                }
+                let name = data.strip_suffix(b"\n").unwrap_or(data);
+                if name.len() > 64 || name.iter().any(|byte| matches!(byte, 0 | b'\n')) {
+                    return Err(VfsError::InvalidInput);
+                }
+
+                if current_user_task().as_thread().cred().euid != 0 {
+                    return Err(VfsError::OperationNotPermitted);
+                }
+
+                let mut padded = [0; 65];
+                for (slot, byte) in padded.iter_mut().zip(name) {
+                    *slot = *byte as _;
+                }
+                let task = current_user_task();
+                let update = task.as_thread().proc_data.namespace_update();
+                let snapshot = update.snapshot();
+                let mut uts_namespace = snapshot.uts_ns.lock_irqsave();
+                match field {
+                    UtsNameField::Hostname => uts_namespace.nodename = padded,
+                    UtsNameField::Domainname => uts_namespace.domainname = padded,
+                }
+                Ok(None)
+            }
+        }),
+    )
+}
+
 fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     let mut root = DirMapping::new();
     // Test-only control plane for serializing LLVM coverage into guest memory.
@@ -2012,6 +2083,16 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                 }
             }),
         ),
+    );
+    // /proc/cmdline — the kernel command line plus one trailing newline.
+    // systemd's PID 1 environment fixup reads it unconditionally and freezes
+    // with "Failed to fix up PID 1 environment" when it is missing.
+    root.add(
+        "cmdline",
+        SimpleFile::new_regular(fs.clone(), || {
+            let cmdline = ax_runtime::hal::boot::bootargs().unwrap_or("");
+            Ok(format!("{cmdline}\n"))
+        }),
     );
     root.add(
         "mounts",
@@ -2125,57 +2206,10 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                 "ostype",
                 SimpleFile::new_regular(fs.clone(), || Ok("Linux\n")),
             );
+            kernel.add("hostname", uts_name_proc_file(&fs, UtsNameField::Hostname));
             kernel.add(
-                "hostname",
-                SimpleFile::new_regular(
-                    fs.clone(),
-                    RwFile::new(move |req| match req {
-                        SimpleFileOperation::Read => {
-                            let nodename = {
-                                let task = current_user_task();
-                                let nsproxy = task.as_thread().proc_data.namespace_snapshot();
-                                let uts_namespace = nsproxy.uts_ns.lock_irqsave();
-                                uts_namespace.nodename
-                            };
-                            let name_len = nodename
-                                .iter()
-                                .position(|&byte| byte == 0)
-                                .unwrap_or(nodename.len());
-                            let mut output = Vec::with_capacity(name_len + 1);
-                            output.extend(
-                                nodename[..name_len]
-                                    .iter()
-                                    .map(|byte| byte.to_ne_bytes()[0]),
-                            );
-                            output.push(b'\n');
-                            Ok(Some(output))
-                        }
-                        SimpleFileOperation::Write(data) => {
-                            if data.is_empty() {
-                                return Ok(None);
-                            }
-                            let hostname = data.strip_suffix(b"\n").unwrap_or(data);
-                            if hostname.len() > 64
-                                || hostname.iter().any(|byte| matches!(byte, 0 | b'\n'))
-                            {
-                                return Err(VfsError::InvalidInput);
-                            }
-
-                            if current_user_task().as_thread().cred().euid != 0 {
-                                return Err(VfsError::OperationNotPermitted);
-                            }
-
-                            let mut nodename = [0; 65];
-                            for (slot, byte) in nodename.iter_mut().zip(hostname) {
-                                *slot = *byte as _;
-                            }
-                            let task = current_user_task();
-                            let update = task.as_thread().proc_data.namespace_update();
-                            update.snapshot().uts_ns.lock_irqsave().nodename = nodename;
-                            Ok(None)
-                        }
-                    }),
-                ),
+                "domainname",
+                uts_name_proc_file(&fs, UtsNameField::Domainname),
             );
             kernel.add("random", {
                 let mut random = DirMapping::new();

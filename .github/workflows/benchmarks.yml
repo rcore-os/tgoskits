@@ -29,12 +29,13 @@ jobs:
       starry_performance_matrix: ${{ steps.matrix.outputs.starry_performance_matrix }}
       starry_board_performance_matrix: ${{ steps.matrix.outputs.starry_board_performance_matrix }}
     steps:
-      - name: Checkout code
+      - name: Checkout benchmarked revision
         uses: actions/checkout@v6
         with:
-          ref: dev
+          # Scheduled runs benchmark the latest dev, manual runs benchmark the dispatched commit.
+          ref: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}
 
-      - name: Pin dev revision
+      - name: Resolve benchmarked revision
         id: revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -97,7 +98,6 @@ jobs:
       checkout_ref: ${{ needs.plan.outputs.revision }}
       matrix_json: ${{ needs.plan.outputs.starry_board_performance_matrix }}
       fail_fast: false
-      max_parallel: 1
       save_cache: ${{ github.event_name == 'schedule' }}
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
@@ -160,7 +160,7 @@ jobs:
         with:
           title: Benchmarks
           revision: ${{ needs.plan.outputs.revision }}
-          revision-label: dev revision
+          revision-label: ${{ github.event_name == 'schedule' && 'dev revision' || 'tested revision' }}
           stages: |
             Plan=${{ needs.plan.result }}
             Prepare=${{ needs.prepare.result }}
@@ -179,6 +179,7 @@ jobs:
     if: >-
       always() &&
       github.repository == 'rcore-os/tgoskits' &&
+      github.event_name == 'schedule' &&
       needs.plan.result == 'success' &&
       needs.axvisor_performance.result == 'success' &&
       needs.starry_performance.result == 'success' &&

@@ -17,10 +17,11 @@
 //!
 //! # Overflow Policy
 //!
-//! The pool has a hard capacity guard, but it does not blindly kill active
-//! TIME-WAIT/FIN sockets just because the pool is full. Closed or expired
-//! entries are reaped first; still-tearing-down entries are preserved so normal
-//! TCP semantics win over aggressive cleanup.
+//! Closed or expired entries are reaped first. Beyond that the pool is memory
+//! bounded: TIME-WAIT entries have a dedicated bucket budget (oldest entries
+//! are dropped past it, like Linux `tcp_max_tw_buckets`), and the hard socket
+//! cap evicts oldest entries of any state so pooled buffers cannot exhaust the
+//! heap under connect/close churn.
 
 use alloc::vec::Vec;
 
@@ -69,6 +70,15 @@ static ORPHAN_SOCKETS: LazyLock<Mutex<Vec<OrphanSocket>>> =
 const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
 const ORPHAN_MAX_SOCKETS: usize = 1024;
 
+/// Pooled TIME-WAIT orphan budget, mirroring Linux `tcp_max_tw_buckets`.
+///
+/// Every pooled orphan keeps its full RX/TX buffers (512 KiB per TCP socket),
+/// so churn-heavy workloads that close connections faster than TIME-WAIT
+/// expires would otherwise pin unbounded memory and starve the heap. Dropping
+/// the oldest TIME-WAIT entries beyond this budget trades rare duplicate
+/// segment retransmission handling for a bounded footprint.
+const ORPHAN_TIMEWAIT_BUCKETS: usize = 128;
+
 /// Move a TCP socket to the orphan pool.
 ///
 /// Called from TcpSocket::drop() after shutdown and endpoint cleanup.
@@ -93,12 +103,14 @@ pub(crate) fn add_orphan(handle: SocketHandle, timestamp: Instant) {
 ///
 /// # Overflow Protection
 ///
-/// If the orphan pool exceeds 1024 sockets, closed or max-linger-expired entries
-/// are removed first. Connections still inside the linger window are preserved
-/// so normal FIN/TIME_WAIT teardown can complete.
+/// TIME-WAIT orphans beyond [`ORPHAN_TIMEWAIT_BUCKETS`] are dropped oldest
+/// first, mirroring Linux's bounded tw buckets; this keeps churn-heavy
+/// workloads from pinning the full socket buffers of every lingering
+/// connection. Past [`ORPHAN_MAX_SOCKETS`] total entries the oldest orphans of
+/// any state are evicted so the pool cannot exhaust the heap.
 pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
     let mut removed = Vec::new();
-    let remaining_overflow = {
+    {
         let mut orphans = ORPHAN_SOCKETS.lock();
         orphans.retain(|orphan| {
             let socket = sockets.get_mut::<tcp::Socket>(orphan.handle);
@@ -146,21 +158,52 @@ pub(crate) fn reap_orphans(timestamp: Instant, sockets: &mut SocketSet<'_>) {
                 true
             }
         });
-        orphans.len().saturating_sub(ORPHAN_MAX_SOCKETS)
+
+        // Enforce the pool budgets. Entries are push-ordered, so scanning from
+        // the front evicts the oldest orphans first. Past the hard cap any
+        // state is evicted; below it only TIME-WAIT entries beyond their
+        // dedicated budget are dropped, leaving FIN teardown untouched.
+        let hard_overflow = orphans.len().saturating_sub(ORPHAN_MAX_SOCKETS);
+        let mut eviction_budget = hard_overflow;
+        let mut timewait_only = false;
+        if eviction_budget == 0 {
+            let timewait = orphans
+                .iter()
+                .filter(|orphan| {
+                    sockets.get_mut::<tcp::Socket>(orphan.handle).state() == tcp::State::TimeWait
+                })
+                .count();
+            eviction_budget = timewait.saturating_sub(ORPHAN_TIMEWAIT_BUCKETS);
+            timewait_only = true;
+        }
+        let mut evicted = 0;
+        let mut index = 0;
+        while index < orphans.len() && eviction_budget > 0 {
+            let state = sockets
+                .get_mut::<tcp::Socket>(orphans[index].handle)
+                .state();
+            if timewait_only && state != tcp::State::TimeWait {
+                index += 1;
+                continue;
+            }
+            let orphan = orphans.remove(index);
+            removed.push((orphan.handle, ReapReason::Expired));
+            eviction_budget -= 1;
+            evicted += 1;
+        }
+        if hard_overflow > 0 {
+            warn!(
+                "Orphan socket pool exceeded {ORPHAN_MAX_SOCKETS} sockets; evicted the oldest \
+                 {evicted} entries"
+            );
+        }
     };
 
     for (handle, reason) in removed {
         sockets.remove(handle);
         match reason {
             ReapReason::Closed => debug!("Reaped closed orphan socket {}", handle),
-            ReapReason::Expired => warn!("Reaped expired orphan socket {}", handle),
+            ReapReason::Expired => debug!("Reaped expired orphan socket {}", handle),
         }
-    }
-
-    if remaining_overflow > 0 {
-        warn!(
-            "Orphan socket pool exceeds limit by {remaining_overflow}; keeping sockets that are \
-             still tearing down"
-        );
     }
 }

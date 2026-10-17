@@ -1,3 +1,8 @@
+# The sysbench case rootfs boots the distribution init by default, which never
+# exposes the interactive `root@starry:` prompt the shell check waits for.
+# Select the test shell explicitly, matching the board configs, so
+# `shell_check_steps` can inject the measurement script.
+cmdline = 'init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 args = [
     "-nographic",
     "-cpu", "cortex-a53",
