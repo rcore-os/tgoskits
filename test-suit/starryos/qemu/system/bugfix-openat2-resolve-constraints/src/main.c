@@ -97,6 +97,7 @@ int main(void)
 {
     const char *root = "/tmp/o2c";
     char sub[64];
+    char link_file[64];
     char rel[64];
     char abs[64];
     char pid_stat[64];
@@ -117,6 +118,7 @@ int main(void)
 
     unlink(rel);
     unlink(abs);
+    unlink(link_file);
     unlink(sub_link_in);
     unlink(sub_link_out);
     unlink(created_in);
@@ -140,6 +142,16 @@ int main(void)
     /* RESOLVE_BENEATH: relative opens work, everything above fails. */
     expect_open("BENEATH creates a relative file", rootfd, "beneath.txt",
                 RESOLVE_BENEATH, O_CREAT | O_RDWR | O_CLOEXEC);
+    /* A symlink to a plain file resolves to that file: the final component
+     * of a symlink target is not required to be a directory. */
+    snprintf(link_file, sizeof(link_file), "%s/link-file", root);
+    CHECK(symlink("beneath.txt", link_file) == 0,
+          "create plain-file symlink fixture");
+    expect_open("BENEATH follows a symlink to a plain file", rootfd,
+                "link-file", RESOLVE_BENEATH, O_RDONLY | O_CLOEXEC);
+    expect_errno("path below a plain-file symlink is ENOTDIR", rootfd,
+                 "link-file/x", RESOLVE_BENEATH, O_RDONLY | O_CLOEXEC,
+                 ENOTDIR);
     expect_errno("BENEATH rejects an absolute path", rootfd, "/tmp/o2c/sub",
                  RESOLVE_BENEATH, O_RDONLY | O_CLOEXEC, EXDEV);
     expect_errno("BENEATH rejects a parent escape", rootfd,
