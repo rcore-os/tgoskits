@@ -865,6 +865,15 @@ pub(crate) fn send_signal_to_process_group_ref(
     Ok(())
 }
 
+/// Linux `force_fatal_sig()`: the current thread takes `signo` with its
+/// default action, whatever handler the process installed.
+pub fn force_fatal_sig(signo: Signo, uctx: &UserContext) -> crate::StarryResult<()> {
+    let curr = current_user_task();
+    curr.as_thread().proc_data.signal.actions().lock()[signo] =
+        starry_signal::SignalAction::default();
+    raise_signal_fatal(SignalInfo::new_kernel(signo), uctx)
+}
+
 /// Deliver a fatal signal raised by a synchronous exception (page
 /// fault, illegal instruction, divide-by-zero, etc.) on the current
 /// thread. Linux's `force_sig_info` semantics: the signal is bound to
