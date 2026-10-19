@@ -118,8 +118,7 @@ fn retains_firmware_storage(memory: &MemoryDescriptor) -> bool {
             // already validates its header before EBS. Keep its entire extent,
             // even if firmware splits its backing into multiple descriptors.
             unsafe { fdt_raw::Header::from_ptr(pointer) }
-                .expect("invalid retained EFI FDT")
-                .totalsize as usize
+                .map_or(1, |header| header.totalsize as usize)
         } else if entry.vendor_guid == crate::handoff::protocol::HANDOFF_GUID {
             core::mem::size_of::<crate::handoff::protocol::HandoffRecord>()
         } else {
