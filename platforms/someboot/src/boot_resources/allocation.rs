@@ -102,18 +102,24 @@ static ARENAS: ArenaState = ArenaState {
 #[cfg(not(target_os = "uefi"))]
 fn with_arenas<R>(f: impl FnOnce(&mut Arenas) -> R) -> R {
     struct Guard {
+        #[cfg(not(test))]
         enabled: bool,
     }
     impl Drop for Guard {
         fn drop(&mut self) {
             ARENAS.locked.store(false, Ordering::Release);
+            #[cfg(not(test))]
             if self.enabled {
                 ax_cpu::interrupt::enable_irqs();
             }
         }
     }
-    let enabled = ax_cpu::interrupt::irqs_enabled();
-    ax_cpu::interrupt::disable_irqs();
+    #[cfg(not(test))]
+    let enabled = {
+        let enabled = ax_cpu::interrupt::irqs_enabled();
+        ax_cpu::interrupt::disable_irqs();
+        enabled
+    };
     while ARENAS
         .locked
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -121,7 +127,10 @@ fn with_arenas<R>(f: impl FnOnce(&mut Arenas) -> R) -> R {
     {
         core::hint::spin_loop();
     }
-    let _guard = Guard { enabled };
+    let _guard = Guard {
+        #[cfg(not(test))]
+        enabled,
+    };
     // SAFETY: IRQ-off lock excludes every other access, including Drop.
     f(unsafe { &mut *ARENAS.state.get() })
 }
