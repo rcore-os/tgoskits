@@ -1076,6 +1076,9 @@ fn real_worker_scans_registry_and_writes_to_low_watermark() {
             // Keep the last batch unacknowledged while its backing call
             // returns. Backing I/O completion precedes the round's cleanup.
             acknowledge.wait();
+        }
+        {
+            let _writeback = cached.shared.writeback_lock.lock();
             assert_eq!(cached.shared.dirty_page_count(), DIRTY_PAGE_LOW_WATERMARK);
             assert_eq!(
                 backing.write_lengths().iter().sum::<usize>(),
