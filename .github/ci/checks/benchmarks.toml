@@ -211,22 +211,25 @@ board = "orangepi-5-plus"
 cases = ["block-rw-bench"]
 
 [[check]]
-id = "starry-performance-iperf3-orangepi-5-plus"
+id = "starry-performance-network-throughput-orangepi-5-plus"
 group = "Starry Apps"
-name = "Starry performance · OrangePi iperf3"
+name = "Starry performance · OrangePi HTTP network throughput"
 runner = "board"
 cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 60
 download_xtask_bin_artifact = true
 command = '''
-target/debug/tg-xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
+target/debug/tg-xtask starry app board \
+  -t benchmark/network-throughput \
+  --board-config board-orangepi-5-plus.toml \
+  -b OrangePi-5-Plus
 '''
 
 [[check.suite]]
 kind = "starry-app-board"
 board = "orangepi-5-plus"
-cases = ["iperf3"]
+cases = ["network-throughput"]
 
 [[check]]
 id = "starry-performance-uvc-orangepi-5-plus"

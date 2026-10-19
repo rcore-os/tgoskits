@@ -50,8 +50,8 @@ STARRY_UVC_PATTERN = re.compile(
 STARRY_TENNIS_PATTERN = re.compile(
     r"AKARS_TENNIS_BENCH_RESULT\s+(?P<fields>.*)"
 )
-STARRY_IPERF_PATTERN = re.compile(
-    r"STARRY_IPERF3_BENCH_RESULT\s+case=(?P<case>\S+)\s+direction=(?P<direction>\S+)\s+median_mbps=(?P<value>[-+]?\d+(?:\.\d+)?)"
+STARRY_NETWORK_PATTERN = re.compile(
+    r"STARRY_NETWORK_BENCH_RESULT\s+case=(?P<case>\S+)\s+direction=(?P<direction>\S+)\s+median_mbps=(?P<value>[-+]?\d+(?:\.\d+)?)"
 )
 STARRY_UVC_FPS_PATTERN = re.compile(r"uvc-fps:\s+done\s+(?P<fields>.*)")
 FIELD_PATTERN = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>\[[^\]]*\]|\S+)")
@@ -341,10 +341,10 @@ def render_starry_benchmarks(log_text: str) -> list[dict[str, object]]:
                 if field in fields:
                     _append_metric(metrics, f"tennis-yolo/{field}", "us", fields[field])
 
-        if match := STARRY_IPERF_PATTERN.search(line):
+        if match := STARRY_NETWORK_PATTERN.search(line):
             _append_metric(
                 metrics,
-                f"iperf3/{match['case']}/{match['direction']}",
+                f"network-throughput/{match['case']}/{match['direction']}",
                 "Mbps",
                 match["value"],
             )

@@ -45,6 +45,7 @@ CHART_DESCRIPTIONS = {
         "netstress": "StarryOS 回环 TCP/UDP 请求响应耗时。",
         "wakeup": "futex、timer 和调度 yield 的唤醒延迟分布。",
         "iperf3": "OrangePi 上 StarryOS 真实网络链路的 TCP 吞吐量。",
+        "network-throughput": "OrangePi 上 StarryOS 到 ostool-server 的 HTTP 流式吞吐量。",
         "uvc": "StarryOS UVC 摄像头采集帧率和数据吞吐量。",
         "uvc-rknn": "UVC 采集与 RKNN 推理流水线的帧率、吞吐量和延迟。",
         "tennis-yolo": "StarryOS TPU/YOLO 固定图片推理的分阶段耗时。",

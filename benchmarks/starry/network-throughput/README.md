@@ -1,6 +1,6 @@
 # StarryOS 网络吞吐基准
 
-`network-throughput` 在 Orange Pi 5 Plus 或 AKA-00-SG2002 上测量到 ostool-server 的 HTTP 流式吞吐。它使用专用 TCP 3000 端口，不依赖 iperf 客户端或服务端；管理 API 继续使用 2999。
+`benchmark/network-throughput` 在 Orange Pi 5 Plus 或 AKA-00-SG2002 上测量到 ostool-server 的 HTTP 流式吞吐。它使用专用 TCP 3000 端口，不依赖 iperf 客户端或服务端；管理 API 继续使用 2999。每日性能任务通过 `.github/ci/checks/benchmarks.toml` 选择 OrangePi 配置。
 
 ## 1. 传输模型
 
@@ -23,11 +23,11 @@ T01–T07 依次覆盖单流 TX、单流 RX、单流双向、2/4/8 流 TX 和 4 
 OrangePi 可以直接运行；AKA 构建还需要 Wi-Fi 凭据，以便启动后取得地址。两者均由 `cargo xtask` 负责构建、会话文件上传、串口运行和失败标记检查。
 
 ```bash
-cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus \
+cargo xtask starry app board -t benchmark/network-throughput -b OrangePi-5-Plus \
   --board-config board-orangepi-5-plus.toml
 
 STARRY_WIFI_SSID='<ssid>' STARRY_WIFI_PASSWORD='<password>' \
-  cargo xtask starry app board -t network-throughput -b AKA-00-SG2002 \
+  cargo xtask starry app board -t benchmark/network-throughput -b AKA-00-SG2002 \
   --board-config board-aka-00-sg2002.toml
 ```
 
@@ -35,4 +35,6 @@ STARRY_WIFI_SSID='<ssid>' STARRY_WIFI_PASSWORD='<password>' \
 
 默认每场景运行三轮，每轮 10 秒，每轮后冷却 15 秒；打印三个样本及中位数，不设与机器绑定的吞吐门槛。终态快照、逐流速率和汇总保存在 `${TMPDIR:-/tmp}/starry-network-bench/`。可通过 `STARRY_NETWORK_BENCH_DURATION` 和 `STARRY_NETWORK_BENCH_COOLDOWN` 临时缩短诊断运行；正式结果使用默认值。
 
-本应用测量真实网络链路的 HTTP 流式吞吐。[LTP netstress 手动应用](../qemu/ltp-netstress/README.md)测量请求响应和短连接性能，两个指标不能互换。
+`network-bench.sh` 输出 `STARRY_NETWORK_BENCH_RESULT`；`scripts/test/ci_perf_report.py` 将各场景、方向的中位数保存为 `network-throughput/<case>/<direction>`，单位为 Mbps。HTTP 的测量协议和计时范围与旧 iperf3 不同，因此报告使用独立指标名，保留旧历史，不把两者拼成同一条性能曲线。
+
+本应用测量真实网络链路的 HTTP 流式吞吐。[LTP netstress 手动应用](../../../apps/starry/qemu/ltp-netstress/README.md)测量请求响应和短连接性能，两个指标不能互换。
