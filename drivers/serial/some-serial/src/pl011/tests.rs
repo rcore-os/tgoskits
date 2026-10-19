@@ -261,13 +261,31 @@ fn tx_irq_endpoint_acknowledges_tx_interrupt() {
 }
 
 #[test]
-fn set_config_preserves_enabled_tx_and_rx_paths() {
-    let (regs, mut uart) = pl011_with_registers();
+fn set_config_waits_for_enabled_tx_drain_before_disabling_uart() {
+    let (mut regs, mut uart) = pl011_with_registers();
     regs.uartcr
         .write(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
+    write_test_reg(
+        &mut regs,
+        0x018,
+        UARTFR::BUSY::SET.value | UARTFR::TXFF::SET.value,
+    );
+    let mut observed_drain = false;
 
-    uart.set_config(&Config::new()).unwrap();
+    uart.set_config_with_wait_step(&Config::new(), || {
+        if observed_drain {
+            return;
+        }
+        observed_drain = true;
+        assert!(
+            regs.uartcr.is_set(UARTCR::UARTEN),
+            "configuration must keep UARTEN set while waiting for retained TX data"
+        );
+        write_test_reg(&mut regs, 0x018, UARTFR::TXFE::SET.value);
+    })
+    .unwrap();
 
+    assert!(observed_drain);
     let cr = regs.uartcr.extract();
     assert!(cr.is_set(UARTCR::UARTEN));
     assert!(cr.is_set(UARTCR::TXE));
@@ -313,6 +331,38 @@ fn early_console_open_has_a_bounded_busy_failure() {
         original_cr,
         "a failed early-console takeover must restore the previous control state"
     );
+}
+
+#[test]
+fn open_waits_for_enabled_tx_drain_before_disabling_uart() {
+    let (mut regs, mut uart) = pl011_with_registers();
+    regs.uartcr
+        .write(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
+    write_test_reg(
+        &mut regs,
+        0x018,
+        UARTFR::BUSY::SET.value | UARTFR::TXFF::SET.value,
+    );
+    let mut observed_drain = false;
+
+    uart.open_with_wait_step(|| {
+        if observed_drain {
+            return;
+        }
+        observed_drain = true;
+        assert!(
+            regs.uartcr.is_set(UARTCR::UARTEN),
+            "open must keep UARTEN set while waiting for retained TX data"
+        );
+        write_test_reg(&mut regs, 0x018, UARTFR::TXFE::SET.value);
+    })
+    .unwrap();
+
+    assert!(observed_drain);
+    let cr = regs.uartcr.extract();
+    assert!(cr.is_set(UARTCR::UARTEN));
+    assert!(cr.is_set(UARTCR::TXE));
+    assert!(cr.is_set(UARTCR::RXE));
 }
 
 #[test]

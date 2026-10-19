@@ -96,8 +96,14 @@ impl Pl011 {
         Ok(())
     }
 
-    pub(super) fn wait_until_not_busy(&self) -> Result<(), ConfigError> {
+    pub(super) fn wait_until_not_busy_with(
+        &self,
+        mut before_busy_poll: impl FnMut(),
+    ) -> Result<(), ConfigError> {
         for _ in 0..BUSY_POLL_BUDGET {
+            // Production callers pass a no-op. Tests use this step to model
+            // FIFO progress without concurrent volatile register access.
+            before_busy_poll();
             if !self.registers().uartfr.is_set(UARTFR::BUSY) {
                 return Ok(());
             }
@@ -164,13 +170,20 @@ impl Pl011 {
 
     /// 初始化 PL011 UART
     pub fn open(&mut self) -> Result<(), ConfigError> {
+        self.open_with_wait_step(|| {})
+    }
+
+    pub(super) fn open_with_wait_step(
+        &mut self,
+        wait_step: impl FnMut(),
+    ) -> Result<(), ConfigError> {
         let original_cr = self.registers().uartcr.get();
 
         // 禁用 UART
         self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
 
         // 等待当前传输完成
-        if let Err(error) = self.wait_until_not_busy() {
+        if let Err(error) = self.wait_until_not_busy_with(wait_step) {
             self.registers().uartcr.set(original_cr);
             return Err(error);
         }

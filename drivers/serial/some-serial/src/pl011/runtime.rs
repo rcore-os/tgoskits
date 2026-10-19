@@ -57,33 +57,7 @@ impl UartPort for Pl011 {
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
-        let result = (|| {
-            self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
-            self.wait_until_not_busy()?;
-
-            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
-            if let Some(baudrate) = config.baudrate {
-                self.set_baudrate_internal(baudrate)?;
-            }
-            if let Some(data_bits) = config.data_bits {
-                self.set_data_bits_internal(data_bits)?;
-            }
-            if let Some(stop_bits) = config.stop_bits {
-                self.set_stop_bits_internal(stop_bits)?;
-            }
-            if let Some(parity) = config.parity {
-                self.set_parity_internal(parity)?;
-            }
-            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
-            self.registers().uartcr.set(snapshot.cr);
-            Ok(())
-        })();
-
-        if result.is_err() {
-            snapshot.restore(self.registers());
-        }
-        result
+        self.set_config_with_wait_step(config, || {})
     }
 
     fn read_rx(&mut self) -> Option<RxSample> {
@@ -164,6 +138,42 @@ impl UartPort for Pl011 {
                 .set(enabled & !imsc_for_events(ready));
         }
         ready
+    }
+}
+
+impl Pl011 {
+    pub(super) fn set_config_with_wait_step(
+        &mut self,
+        config: &Config,
+        wait_step: impl FnMut(),
+    ) -> Result<(), ConfigError> {
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
+        let result = (|| {
+            self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
+            self.wait_until_not_busy_with(wait_step)?;
+
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
+            if let Some(baudrate) = config.baudrate {
+                self.set_baudrate_internal(baudrate)?;
+            }
+            if let Some(data_bits) = config.data_bits {
+                self.set_data_bits_internal(data_bits)?;
+            }
+            if let Some(stop_bits) = config.stop_bits {
+                self.set_stop_bits_internal(stop_bits)?;
+            }
+            if let Some(parity) = config.parity {
+                self.set_parity_internal(parity)?;
+            }
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
+            self.registers().uartcr.set(snapshot.cr);
+            Ok(())
+        })();
+
+        if result.is_err() {
+            snapshot.restore(self.registers());
+        }
+        result
     }
 }
 
