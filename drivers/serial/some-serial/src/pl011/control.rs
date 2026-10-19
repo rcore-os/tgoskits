@@ -177,16 +177,15 @@ impl Pl011 {
         &mut self,
         wait_step: impl FnMut(),
     ) -> Result<(), ConfigError> {
-        let original_cr = self.registers().uartcr.get();
+        // Keep UARTEN set while the retained FIFO drains. Clearing it first
+        // stops FIFO progress, so BUSY would remain asserted until this bound
+        // expires. This wait is the only fallible step and happens before any
+        // register write, leaving a timeout side-effect free.
+        self.wait_until_not_busy_with(wait_step)?;
 
-        // 禁用 UART
+        // The split control endpoint has exclusive ownership for this operation,
+        // so no new TX bytes can be queued after the idle sample.
         self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
-
-        // 等待当前传输完成
-        if let Err(error) = self.wait_until_not_busy_with(wait_step) {
-            self.registers().uartcr.set(original_cr);
-            return Err(error);
-        }
 
         // 清除发送 FIFO
         self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
