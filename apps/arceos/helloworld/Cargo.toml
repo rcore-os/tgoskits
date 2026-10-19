@@ -22,3 +22,8 @@ ax-fs-ng = { workspace = true, optional = true }
 someboot = { workspace = true, optional = true, features = ["boot-resources"] }
 
 ax-alloc = { workspace = true, optional = true }
+
+[[package.metadata.clippy.configurations]]
+name = "loongarch64-efi-reclaim"
+target = "loongarch64-unknown-linux-musl"
+features = ["loong-efi-smoke"]
