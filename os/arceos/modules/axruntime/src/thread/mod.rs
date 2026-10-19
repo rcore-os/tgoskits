@@ -159,6 +159,21 @@ pub fn replace_current_user_fp_state(
 ) -> Result<(), TaskError> {
     context::replace_current_user_fp_state(state)
 }
+
+/// Captures the current AArch64 task's live user FPSIMD image.
+#[cfg(all(target_arch = "aarch64", feature = "fp-simd", feature = "uspace"))]
+pub fn capture_current_user_fp_state() -> Result<ax_hal::cpu::registers::FpState, TaskError> {
+    context::capture_current_user_fp_state()
+}
+
+/// Replaces the current AArch64 task's user FPSIMD image and hardware registers.
+#[cfg(all(target_arch = "aarch64", feature = "fp-simd", feature = "uspace"))]
+pub fn replace_current_user_fp_state(
+    state: ax_hal::cpu::registers::FpState,
+) -> Result<(), TaskError> {
+    context::replace_current_user_fp_state(state)
+}
+
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
 pub(crate) use scheduler_events::{record_scheduler_ipi_consume, record_scheduler_ipi_send};
 pub use spawn::{UserContextOptions, builder, exit_current, prepare_user_thread};

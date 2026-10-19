@@ -24,40 +24,9 @@ timeout = 900
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_cmd = '''
-fail() {
-    echo 'AHCI_DUAL_NCQ_RW_20M_FAILED'
-    exit 1
-}
-
-attempt=0
-while [ ! -d /partition ] && [ "$attempt" -lt 5 ]; do
-    sleep 1
-    attempt=$((attempt + 1))
-done
-[ -d /partition ] || fail
-
-exercise_disk() {
-    path=$1
-    source="$path/source.bin"
-    copy="$path/copy.bin"
-    mkdir -p "$path" || return 1
-    dd if=/dev/zero of="$source" bs=1048576 count=20 || return 1
-    sync || return 1
-    dd if="$source" of="$copy" bs=1048576 || return 1
-    sync || return 1
-    [ "$(wc -c < "$copy" | tr -d ' ')" = "20971520" ] || return 1
-    [ "$(sha256sum "$source" | awk '{print $1}')" = "$(sha256sum "$copy" | awk '{print $1}')" ]
-}
-
-exercise_disk /root/ahci-port0 &
-port0_pid=$!
-exercise_disk /partition/ahci-port1 &
-port1_pid=$!
-wait "$port0_pid" || fail
-wait "$port1_pid" || fail
-echo 'AHCI_DUAL_NCQ_RW_20M_PASSED'
-'''
+# Body staged by prebuild.sh; one short line avoids injecting a multi-line command
+# that interleaves with the shell's own console output.
+shell_cmd = "sh /usr/local/bin/ahci-dual-ncq-rw-20m.sh"
 success_regex = [
   "(?m)^AHCI_DUAL_NCQ_RW_20M_PASSED\\s*$",
 ]

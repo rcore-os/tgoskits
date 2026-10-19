@@ -391,14 +391,14 @@ pub(crate) fn check_signals_with_outcome(
             }
         },
         || {
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             {
                 let state = ax_runtime::thread::capture_current_user_fp_state().expect(
                     "signal delivery must capture FPU state from ordinary current task context",
                 );
                 starry_signal::arch::SignalFpState::new(state)
             }
-            #[cfg(not(target_arch = "x86_64"))]
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             {
                 starry_signal::arch::SignalFpState
             }
