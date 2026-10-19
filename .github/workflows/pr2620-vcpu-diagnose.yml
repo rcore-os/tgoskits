@@ -1,0 +1,80 @@
+{
+  "name": "PR2620 vCPU snapshots",
+  "on": {
+    "push": {
+      "branches": [
+        "codex/pr2620-vcpu-ci-diagnose"
+      ]
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "capture": {
+      "name": "vCPU capture ${{ matrix.variant.name }}",
+      "runs-on": [
+        "self-hosted",
+        "linux",
+        "qcs"
+      ],
+      "timeout-minutes": 45,
+      "strategy": {
+        "fail-fast": false,
+        "matrix": {
+          "variant": [
+            {
+              "name": "head",
+              "sha": "dd45084e1b8fbbccf9877d1a16e8d90ed8b05828"
+            },
+            {
+              "name": "base",
+              "sha": "053c20875b9574ba70e376acb3b81ce13e70c947"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@v6",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "fetch-depth": 1
+          }
+        },
+        {
+          "name": "Preserve capture helper and select exact source",
+          "env": {
+            "SOURCE_SHA": "${{ matrix.variant.sha }}"
+          },
+          "run": "set -euo pipefail\ncp scripts/test/pr2620_vcpu_snapshot.py \"$RUNNER_TEMP/pr2620_vcpu_snapshot.py\"\ngit fetch --depth=1 origin \"$SOURCE_SHA\"\ngit checkout --detach \"$SOURCE_SHA\"\ngit rev-parse HEAD\nrustc -vV\nqemu-system-aarch64 --version\n"
+        },
+        {
+          "uses": "actions/setup-node@v6",
+          "with": {
+            "node-version": "24"
+          }
+        },
+        {
+          "name": "Run original prefix and capture stalled vCPUs",
+          "run": "python3 \"$RUNNER_TEMP/pr2620_vcpu_snapshot.py\" \"$RUNNER_TEMP/pr2620-capture\" --prefix"
+        },
+        {
+          "name": "Verify source was unchanged",
+          "if": "always()",
+          "run": "git diff --exit-code"
+        },
+        {
+          "uses": "actions/upload-artifact@v7",
+          "if": "always()",
+          "with": {
+            "name": "pr2620-vcpu-${{ matrix.variant.name }}",
+            "path": "${{ runner.temp }}/pr2620-capture",
+            "if-no-files-found": "error",
+            "retention-days": 7
+          }
+        }
+      ]
+    }
+  }
+}

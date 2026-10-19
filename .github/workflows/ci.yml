@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches-ignore: [codex/pr2620-vcpu-ci-diagnose]
     paths-ignore:
       - "**/*.md"
       - "**/*.rst"
