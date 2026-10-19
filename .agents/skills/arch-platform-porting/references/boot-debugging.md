@@ -441,6 +441,9 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   可重用原堆。任一步失败或目标返回都复位，不恢复已经退出的运行时。
   `runtime_handoff_devices_stopped` 是设备停稳后的同步控制台记录，真实目标的
   cmdline/initramfs 与执行输出仍是必需后置条件。
+  `ProtocolPollRuntime` 的等待谓词必须包含持久的 stop 状态，不能只依赖可被
+  `finish_cycle()` 清除的 scheduled 位。返回式 EFI 目标须保留调用方栈、MMU、
+  处理器局部状态和中断屏蔽；最小返回 ELF 的真实 smoke 必须观察复位后的新 epoch。
 - x86 ELF 也使用 `ResourceRequest`/`reserve()` 和 `HandoffSpec`/`PreparedHandoff`，
   保留 LoadOptions、Linux LoadFile2 以及 OTA LoadImage/StartImage。返回且固件活动
   时撤销事务、恢复旧表和参数；服务已退出或撤销失败时保留被引用的分配，不再调用

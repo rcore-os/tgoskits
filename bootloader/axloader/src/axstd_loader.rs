@@ -1,6 +1,6 @@
 //! LoongArch ArceOS EFI loader frontend.
 
-use core::{mem, ptr::NonNull};
+use core::ptr::NonNull;
 use std::{
     format,
     fs::{self, File, OpenOptions},
@@ -14,9 +14,10 @@ use std::{
 use axloader::{
     boot_job::{BootJobStore, FileKind},
     efi_image,
+    elf::ElfImage,
     http_control::{
-        MAX_HEADER_BYTES, MAX_IMAGE_BYTES, error_status, parse_head, parse_update_id,
-        valid_image_version, validate_body_length,
+        MAX_HEADER_BYTES, MAX_IMAGE_BYTES, RequestHead, Route, error_status, parse_head,
+        parse_update_id, route as control_route, validate_body_length,
     },
     integrity,
     ota::{self, Outcome, Slot, State},
@@ -49,7 +50,6 @@ someboot::declare_boot_resources! {
 const HTTP_PORT: u16 = 2999;
 const DISCOVERY_PORT: u16 = 2998;
 const OTA_ROOT: &str = "axloader";
-const ELF_PF_X: u32 = 1;
 pub fn run() {
     println!("axloader: LoongArch ArceOS EFI frontend");
     let current_image = firmware_boot_image()
@@ -254,18 +254,13 @@ enum Action {
 
 #[derive(Debug)]
 struct HttpRequest {
-    method: String,
-    path: String,
-    headers: Vec<(String, String)>,
+    head: RequestHead,
     body: Vec<u8>,
 }
 
 impl HttpRequest {
     fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
+        self.head.header(name)
     }
 }
 
@@ -349,12 +344,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         }
         body.extend_from_slice(&chunk[..count]);
     }
-    Ok(HttpRequest {
-        method: method.into(),
-        path: path.into(),
-        headers: head.headers,
-        body,
-    })
+    Ok(HttpRequest { head, body })
 }
 
 struct Response {
@@ -389,8 +379,13 @@ fn route(
     ota: &mut LaOta,
     server: &mut BootServer,
 ) -> Result<Response, String> {
-    let epoch = request.header("x-boot-epoch");
-    if request.method == "GET" && request.path == "/api/v1/status" {
+    let selected_route = control_route(&request.head.method, &request.head.path);
+    if let Err(error) =
+        selected_route.check_admission(request.header("x-boot-epoch"), &server.epoch, ota.trial())
+    {
+        return Ok(Response::json(error.status(), error.body(), Action::None));
+    }
+    if selected_route == Route::DeviceStatus {
         let body = serde_json::to_vec(&LoaderDeviceStatus {
             protocol_version: DEVICE_PROTOCOL_VERSION,
             boot_epoch: server.epoch.clone(),
@@ -406,14 +401,7 @@ fn route(
         .map_err(|error| error.to_string())?;
         return Ok(Response::json("200 OK", body, Action::None));
     }
-    if epoch != Some(server.epoch.as_str()) {
-        return Ok(Response::json(
-            "409 Conflict",
-            br#"{"error":"stale_boot_epoch"}"#,
-            Action::None,
-        ));
-    }
-    if request.method == "POST" && request.path == "/api/v1/serial/continue" {
+    if selected_route == Route::SerialContinue {
         let binding: httpboot_protocol::SerialBinding = serde_json::from_slice(&request.body)
             .map_err(|_| "invalid serial binding".to_string())?;
         let result = server.serial.grant(binding);
@@ -427,9 +415,7 @@ fn route(
             Action::None,
         ));
     }
-    if request.method == "DELETE"
-        && let Some(binding_id) = request.path.strip_prefix("/api/v1/serial/bindings/")
-    {
+    if let Route::SerialBindingRevoke { id: binding_id } = selected_route {
         let result = server.serial.revoke(binding_id);
         return Ok(Response::empty(if result.is_ok() {
             "200 OK"
@@ -437,14 +423,14 @@ fn route(
             "409 Conflict"
         }));
     }
-    if request.method == "GET" && request.path == "/api/v1/ota/status" {
+    if selected_route == Route::OtaStatus {
         return Ok(Response::json(
             "200 OK",
             serde_json::to_vec(&ota.status_json()).map_err(|error| error.to_string())?,
             Action::None,
         ));
     }
-    if request.method == "POST" && request.path == "/api/v1/ota/confirm" {
+    if selected_route == Route::OtaConfirm {
         let value: serde_json::Value = serde_json::from_slice(&request.body)
             .map_err(|_| "invalid OTA confirmation".to_string())?;
         let update_id = value
@@ -454,11 +440,7 @@ fn route(
         if parse_update_id(update_id).is_none() {
             return Err("invalid OTA update id".to_string());
         }
-        let source = match request.header("x-update-source") {
-            Some("server") => OtaSource::Server,
-            Some(_) => return Err("invalid OTA update source".to_string()),
-            _ => OtaSource::Direct,
-        };
+        let source = request.head.ota_source()?;
         if ota.confirm(update_id, source).is_err() {
             return Ok(Response::json("409 Conflict", b"{}", Action::None));
         }
@@ -468,7 +450,7 @@ fn route(
             Action::None,
         ));
     }
-    if request.method == "PUT" && request.path == "/api/v1/ota/image" {
+    if selected_route == Route::OtaImage {
         if ota.state.pending.is_some() {
             return Ok(Response::json(
                 "409 Conflict",
@@ -483,28 +465,18 @@ fn route(
                 Action::None,
             ));
         }
-        let Some(expected) = request
-            .header("x-image-sha256")
-            .and_then(integrity::decode_sha256)
-        else {
+        let Some(expected) = request.head.ota_image_sha256() else {
             return Ok(Response::json("400 Bad Request", b"{}", Action::None));
         };
         if request.body.is_empty() || request.body.len() > MAX_IMAGE_BYTES {
             return Ok(Response::json("413 Payload Too Large", b"{}", Action::None));
         }
-        let source = match request.header("x-update-source") {
-            Some("server") => OtaSource::Server,
-            Some(_) => return Err("invalid OTA update source".to_string()),
-            _ => OtaSource::Direct,
-        };
-        let version = request.header("x-image-version");
-        if version.is_some_and(|value| !valid_image_version(value)) {
-            return Err("invalid OTA image version".to_string());
-        }
+        let source = request.head.ota_source()?;
+        let version = request.head.ota_image_version()?;
         let update_id = match source {
             OtaSource::Server => request
-                .header("x-update-id")
-                .and_then(parse_update_id)
+                .head
+                .ota_update_id()
                 .ok_or_else(|| "invalid OTA update id".to_string())?,
             OtaSource::Direct => ota.next_direct_id(&expected),
         };
@@ -528,14 +500,7 @@ fn route(
         .map_err(|error| error.to_string())?;
         return Ok(Response::json("202 Accepted", body, Action::Reset));
     }
-    if ota.trial() {
-        return Ok(Response::json(
-            "409 Conflict",
-            br#"{"error":"ota_trial_requires_confirmation"}"#,
-            Action::None,
-        ));
-    }
-    if request.method == "POST" && request.path == "/api/v1/boot/jobs" {
+    if selected_route == Route::BootJobCreate {
         let manifest: DeviceBootJob = serde_json::from_slice(&request.body)
             .map_err(|_| "invalid boot manifest".to_string())?;
         let status = match server.create(manifest) {
@@ -549,71 +514,60 @@ fn route(
             Action::None,
         ));
     }
-    if let Some(tail) = request.path.strip_prefix("/api/v1/boot/jobs/") {
-        let (id, operation) = tail.split_once('/').unwrap_or((tail, ""));
-        if request.method == "GET" && operation.is_empty() {
-            return Ok(Response::json(
-                if server.descriptor(id, FileKind::Kernel).is_ok() {
-                    "200 OK"
-                } else {
-                    "404 Not Found"
-                },
-                serde_json::to_vec(&server.status()).map_err(|error| error.to_string())?,
-                Action::None,
-            ));
-        }
-        if request.method == "DELETE" && operation.is_empty() {
-            let status = if server.cancel(id).is_ok() {
-                "204 No Content"
+    if let Route::BootJobStatus { id } = selected_route {
+        return Ok(Response::json(
+            if server.descriptor(id, FileKind::Kernel).is_ok() {
+                "200 OK"
             } else {
                 "404 Not Found"
-            };
-            return Ok(Response::empty(status));
+            },
+            serde_json::to_vec(&server.status()).map_err(|error| error.to_string())?,
+            Action::None,
+        ));
+    }
+    if let Route::BootJobCancel { id } = selected_route {
+        let status = if server.cancel(id).is_ok() {
+            "204 No Content"
+        } else {
+            "404 Not Found"
+        };
+        return Ok(Response::empty(status));
+    }
+    if let Route::BootJobUpload { id, kind } = selected_route {
+        let descriptor = server
+            .descriptor(id, kind)
+            .map_err(|error| error.to_string())?;
+        if descriptor.size as usize != request.body.len()
+            || request.head.ota_image_sha256() != integrity::decode_sha256(&descriptor.sha256)
+        {
+            let _ = server.cancel(id);
+            return Ok(Response::json("400 Bad Request", b"{}", Action::None));
         }
-        if request.method == "PUT" && matches!(operation, "kernel" | "initramfs") {
-            let kind = if operation == "kernel" {
-                FileKind::Kernel
+        let result = server.upload(id, kind, request.body);
+        return Ok(Response::json(
+            if result.is_ok() {
+                "200 OK"
             } else {
-                FileKind::Initramfs
-            };
-            let descriptor = server
-                .descriptor(id, kind)
-                .map_err(|error| error.to_string())?;
-            if descriptor.size as usize != request.body.len()
-                || request
-                    .header("x-image-sha256")
-                    .and_then(integrity::decode_sha256)
-                    != integrity::decode_sha256(&descriptor.sha256)
-            {
-                let _ = server.cancel(id);
-                return Ok(Response::json("400 Bad Request", b"{}", Action::None));
-            }
-            let result = server.upload(id, kind, request.body);
-            return Ok(Response::json(
-                if result.is_ok() {
-                    "200 OK"
-                } else {
-                    "422 Unprocessable Content"
-                },
-                serde_json::to_vec(&server.status()).map_err(|error| error.to_string())?,
+                "422 Unprocessable Content"
+            },
+            serde_json::to_vec(&server.status()).map_err(|error| error.to_string())?,
+            Action::None,
+        ));
+    }
+    if let Route::BootJobStart { id } = selected_route {
+        return match server.prepare(id, request.header("x-serial-binding")) {
+            Ok(execution) => Ok(Response::json(
+                "202 Accepted",
+                br#"{"phase":"ready_to_handoff"}"#,
+                Action::Boot(execution),
+            )),
+            Err(error) => Ok(Response::json(
+                "409 Conflict",
+                serde_json::to_vec(&serde_json::json!({"error": error}))
+                    .map_err(|error| error.to_string())?,
                 Action::None,
-            ));
-        }
-        if request.method == "POST" && operation == "start" {
-            return match server.prepare(id, request.header("x-serial-binding")) {
-                Ok(execution) => Ok(Response::json(
-                    "202 Accepted",
-                    br#"{"phase":"ready_to_handoff"}"#,
-                    Action::Boot(execution),
-                )),
-                Err(error) => Ok(Response::json(
-                    "409 Conflict",
-                    serde_json::to_vec(&serde_json::json!({"error": error}))
-                        .map_err(|error| error.to_string())?,
-                    Action::None,
-                )),
-            };
-        }
+            )),
+        };
     }
     Ok(Response::json("404 Not Found", b"{}", Action::None))
 }
@@ -713,7 +667,12 @@ impl BootServer {
         {
             return Err("kernel_digest_mismatch");
         }
-        let elf = LoadedElf::load(kernel, LOONGARCH64_EFI).map_err(|_| "kernel_load_failed")?;
+        let elf = LoadedElf::load(
+            kernel,
+            LOONGARCH64_EFI,
+            job.manifest.entry_symbol.as_deref(),
+        )
+        .map_err(|_| "kernel_load_failed")?;
         let payload = PublishedPayload::new(
             job.initramfs.as_deref(),
             job.manifest.cmdline.as_deref(),
@@ -746,125 +705,54 @@ struct LoadedElf {
     _allocation: Allocation,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum ElfError {
-    Invalid,
-    UnsupportedMachine,
-    InvalidEntry,
+    #[error(transparent)]
+    Elf(axloader::elf::ElfError),
+    #[error("ELF image conflicts with reserved memory")]
     AddressConflict,
+    #[error("ELF load memory is unavailable")]
     Allocation,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64Header {
-    ident: [u8; 16],
-    e_type: u16,
-    e_machine: u16,
-    e_version: u32,
-    e_entry: u64,
-    e_phoff: u64,
-    e_shoff: u64,
-    e_flags: u32,
-    e_ehsize: u16,
-    e_phentsize: u16,
-    e_phnum: u16,
-    e_shentsize: u16,
-    e_shnum: u16,
-    e_shstrndx: u16,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64ProgramHeader {
-    p_type: u32,
-    p_flags: u32,
-    p_offset: u64,
-    p_vaddr: u64,
-    p_paddr: u64,
-    p_filesz: u64,
-    p_memsz: u64,
-    p_align: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64SectionHeader {
-    sh_name: u32,
-    sh_type: u32,
-    sh_flags: u64,
-    sh_addr: u64,
-    sh_offset: u64,
-    sh_size: u64,
-    sh_link: u32,
-    sh_info: u32,
-    sh_addralign: u64,
-    sh_entsize: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64Symbol {
-    st_name: u32,
-    st_info: u8,
-    st_other: u8,
-    st_shndx: u16,
-    st_value: u64,
-    st_size: u64,
-}
-
-#[derive(Clone, Copy)]
-struct LoadSegment {
-    offset: u64,
-    vaddr: u64,
-    paddr: u64,
-    filesz: u64,
-    memsz: u64,
-    flags: u32,
+    #[error("ELF load address overflows")]
+    SegmentAddressOverflow,
+    #[error("ELF physical load segment is not page-aligned")]
+    SegmentNotPageAligned,
+    #[error("ELF link address does not match the fixed image plan")]
+    LinkAddressMismatch,
 }
 
 impl LoadedElf {
-    fn load(image: &[u8], spec: axloader::target::TargetSpec) -> Result<Self, ElfError> {
-        let header = read_struct::<Elf64Header>(image, 0).ok_or(ElfError::Invalid)?;
-        if &header.ident[..4] != b"\x7fELF"
-            || header.ident[4] != 2
-            || header.ident[5] != 1
-            || header.ident[6] != 1
-            || header.e_version != 1
+    fn load(
+        image: &[u8],
+        spec: axloader::target::TargetSpec,
+        entry_symbol: Option<&str>,
+    ) -> Result<Self, ElfError> {
+        let parsed = ElfImage::parse(image, spec, entry_symbol).map_err(ElfError::Elf)?;
+        let link_addr = parsed.link_load_address();
+        let entry = parsed.entry_point();
+        let page_count = parsed.page_count();
+        if parsed
+            .segments()
+            .iter()
+            .any(|segment| segment.physical_address % 4096 != 0)
         {
-            return Err(ElfError::Invalid);
+            return Err(ElfError::SegmentNotPageAligned);
         }
-        if !spec.matches_machine(header.e_machine) {
-            return Err(ElfError::UnsupportedMachine);
+        if spec
+            .link_address
+            .is_some_and(|expected| expected != link_addr)
+        {
+            return Err(ElfError::LinkAddressMismatch);
         }
-        let segments = load_segments(image, &header)?;
-        let link_addr = segments
-            .iter()
-            .map(|segment| segment.paddr)
-            .min()
-            .ok_or(ElfError::Invalid)?;
-        let load_end = segments
-            .iter()
-            .map(|segment| segment.paddr.checked_add(segment.memsz))
-            .collect::<Option<Vec<_>>>()
-            .and_then(|values| values.into_iter().max())
-            .ok_or(ElfError::Invalid)?;
-        let link_addr = align_down(link_addr, 4096);
-        let load_end = align_up(load_end, 4096).ok_or(ElfError::Invalid)?;
-        let page_count =
-            usize::try_from((load_end - link_addr) / 4096).map_err(|_| ElfError::Invalid)?;
-        let entry = find_symbol(image, &header, spec.entry_symbol)
-            .and_then(|value| virtual_to_executable_physical(value, &segments))
-            .ok_or(ElfError::InvalidEntry)?;
         let allocation =
             reserve_image(IMAGE_RESOURCE, page_count).map_err(|_| ElfError::AddressConflict)?;
         let target_phys = allocation.range().start as usize;
-        let target_end = match target_phys.checked_add(load_end as usize - link_addr as usize) {
-            Some(end) => end,
-            None => {
-                return Err(ElfError::AddressConflict);
-            }
-        };
+        let image_span = page_count
+            .checked_mul(4096)
+            .ok_or(ElfError::SegmentAddressOverflow)?;
+        let target_end = target_phys
+            .checked_add(image_span)
+            .ok_or(ElfError::AddressConflict)?;
         let (loader_start, loader_end) = match someboot::handoff::current_image() {
             Some(range) => (range.start as usize, range.end().unwrap() as usize),
             None => {
@@ -875,11 +763,8 @@ impl LoadedElf {
             return Err(ElfError::AddressConflict);
         }
         if spec
-            .link_address
-            .is_some_and(|expected| expected != link_addr)
-            || spec
-                .load_address
-                .is_some_and(|expected| expected != target_phys as u64)
+            .load_address
+            .is_some_and(|expected| expected != target_phys as u64)
         {
             return Err(ElfError::AddressConflict);
         }
@@ -889,12 +774,8 @@ impl LoadedElf {
                 return Err(ElfError::Allocation);
             }
         };
-        let allocation_bytes = match page_count.checked_mul(4096) {
-            Some(bytes) => bytes,
-            None => {
-                return Err(ElfError::Invalid);
-            }
-        };
+        let allocation_bytes = usize::try_from(allocation.range().len)
+            .map_err(|_| ElfError::SegmentAddressOverflow)?;
         // The fixed image pool may be reused after a failed handoff. Clear the
         // complete allocation so alignment gaps between PT_LOAD segments never
         // expose bytes left by an earlier image.
@@ -902,13 +783,15 @@ impl LoadedElf {
         // contiguous `allocation_bytes` image allocation, and the validated
         // page count keeps the write within that allocation.
         unsafe { core::ptr::write_bytes(target.as_ptr(), 0, allocation_bytes) };
-        if copy_segments(image, &segments, link_addr, target).is_err() {
-            return Err(ElfError::Invalid);
-        }
+        copy_segments(image, parsed.segments(), link_addr, target)
+            .map_err(|_| ElfError::SegmentAddressOverflow)?;
         someboot::handoff::flush_instruction_cache();
         Ok(Self {
-            entry_point: someboot::mem::phys_to_virt(target_phys + (entry - link_addr) as usize)
-                as u64,
+            entry_point: someboot::mem::phys_to_virt(
+                target_phys
+                    + usize::try_from(entry - link_addr)
+                        .map_err(|_| ElfError::SegmentAddressOverflow)?,
+            ) as u64,
             load_addr: target_phys as u64,
             load_end: target_end as u64,
             _allocation: allocation,
@@ -970,160 +853,56 @@ impl LoadedPe {
     }
 }
 
-fn load_segments(image: &[u8], header: &Elf64Header) -> Result<Vec<LoadSegment>, ElfError> {
-    if usize::from(header.e_phentsize) != mem::size_of::<Elf64ProgramHeader>() {
-        return Err(ElfError::Invalid);
-    }
-    let offset = usize::try_from(header.e_phoff).map_err(|_| ElfError::Invalid)?;
-    let size = usize::from(header.e_phnum)
-        .checked_mul(usize::from(header.e_phentsize))
-        .ok_or(ElfError::Invalid)?;
-    if offset.checked_add(size).ok_or(ElfError::Invalid)? > image.len() {
-        return Err(ElfError::Invalid);
-    }
-    let mut segments = Vec::new();
-    for index in 0..usize::from(header.e_phnum) {
-        let ph = read_struct::<Elf64ProgramHeader>(
-            image,
-            offset + index * usize::from(header.e_phentsize),
-        )
-        .ok_or(ElfError::Invalid)?;
-        if ph.p_type != 1 || ph.p_memsz == 0 {
-            continue;
-        }
-        if ph.p_filesz > ph.p_memsz || ph.p_paddr % 4096 != 0 {
-            return Err(ElfError::Invalid);
-        }
-        let file_start = usize::try_from(ph.p_offset).map_err(|_| ElfError::Invalid)?;
-        let file_size = usize::try_from(ph.p_filesz).map_err(|_| ElfError::Invalid)?;
-        if file_start.checked_add(file_size).ok_or(ElfError::Invalid)? > image.len() {
-            return Err(ElfError::Invalid);
-        }
-        segments.push(LoadSegment {
-            offset: ph.p_offset,
-            vaddr: ph.p_vaddr,
-            paddr: ph.p_paddr,
-            filesz: ph.p_filesz,
-            memsz: ph.p_memsz,
-            flags: ph.p_flags,
-        });
-    }
-    segments.sort_by_key(|segment| segment.paddr);
-    if segments
-        .windows(2)
-        .any(|pair| axloader::target::ranges_overlap(pair[0].paddr, pair[0].memsz, pair[1].paddr))
-    {
-        return Err(ElfError::Invalid);
-    }
-    Ok(segments)
-}
-
 fn copy_segments(
     image: &[u8],
-    segments: &[LoadSegment],
+    segments: &[axloader::elf::LoadSegment],
     load_addr: u64,
     target: NonNull<u8>,
 ) -> Result<(), ElfError> {
     for segment in segments {
-        let offset = usize::try_from(segment.paddr - load_addr).map_err(|_| ElfError::Invalid)?;
-        // SAFETY: `load_segments` rejects overlapping/out-of-range PT_LOAD
-        // ranges, and the image allocation covers the complete aligned range
-        // from `load_addr` through every segment end.
+        let offset = usize::try_from(
+            segment
+                .physical_address
+                .checked_sub(load_addr)
+                .ok_or(ElfError::SegmentAddressOverflow)?,
+        )
+        .map_err(|_| ElfError::SegmentAddressOverflow)?;
+        // SAFETY: `ElfImage::parse` proved this offset lies in the validated
+        // PT_LOAD span, and the fixed image allocation covers that span.
         let destination = unsafe { target.as_ptr().add(offset) };
-        let source = usize::try_from(segment.offset).map_err(|_| ElfError::Invalid)?;
-        let filesz = usize::try_from(segment.filesz).map_err(|_| ElfError::Invalid)?;
-        let memsz = usize::try_from(segment.memsz).map_err(|_| ElfError::Invalid)?;
+        let source =
+            usize::try_from(segment.file_offset).map_err(|_| ElfError::SegmentAddressOverflow)?;
+        let filesz =
+            usize::try_from(segment.file_size).map_err(|_| ElfError::SegmentAddressOverflow)?;
+        let memsz =
+            usize::try_from(segment.memory_size).map_err(|_| ElfError::SegmentAddressOverflow)?;
         if filesz != 0 {
-            // SAFETY: load_segments checked the source range and the allocated target covers all
-            // PT_LOAD ranges.
+            // SAFETY: the source range was validated against the uploaded
+            // image, while the destination remains inside the unique image
+            // allocation.
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    image[source..source + filesz].as_ptr(),
+                    image
+                        .get(
+                            source
+                                ..source
+                                    .checked_add(filesz)
+                                    .ok_or(ElfError::SegmentAddressOverflow)?,
+                        )
+                        .ok_or(ElfError::SegmentAddressOverflow)?
+                        .as_ptr(),
                     destination,
                     filesz,
                 );
             }
         }
         if memsz > filesz {
-            // SAFETY: `filesz <= memsz` and the validated PT_LOAD range keeps
-            // both the start and the zeroed tail within the allocation.
+            // SAFETY: `filesz <= memsz` and the validated PT_LOAD span keeps
+            // both the copied prefix and zeroed tail within the allocation.
             unsafe { core::ptr::write_bytes(destination.add(filesz), 0, memsz - filesz) };
         }
     }
     Ok(())
-}
-
-fn virtual_to_executable_physical(value: u64, segments: &[LoadSegment]) -> Option<u64> {
-    segments.iter().find_map(|segment| {
-        let end = segment.vaddr.checked_add(segment.memsz)?;
-        (segment.flags & ELF_PF_X != 0 && value >= segment.vaddr && value < end)
-            .then(|| segment.paddr + (value - segment.vaddr))
-    })
-}
-
-fn find_symbol(image: &[u8], header: &Elf64Header, name: &str) -> Option<u64> {
-    let section_size = usize::from(header.e_shentsize);
-    let section_offset = usize::try_from(header.e_shoff).ok()?;
-    if section_size < mem::size_of::<Elf64SectionHeader>() {
-        return None;
-    }
-    for index in 0..usize::from(header.e_shnum) {
-        let section = read_struct::<Elf64SectionHeader>(
-            image,
-            section_offset.checked_add(index.checked_mul(section_size)?)?,
-        )?;
-        if section.sh_type != 2 && section.sh_type != 11 {
-            continue;
-        }
-        let strtab = read_struct::<Elf64SectionHeader>(
-            image,
-            section_offset.checked_add(
-                usize::try_from(section.sh_link)
-                    .ok()?
-                    .checked_mul(section_size)?,
-            )?,
-        )?;
-        let symbols = section_bytes(image, section.sh_offset, section.sh_size)?;
-        let strings = section_bytes(image, strtab.sh_offset, strtab.sh_size)?;
-        let entry_size = usize::try_from(section.sh_entsize)
-            .ok()?
-            .max(mem::size_of::<Elf64Symbol>());
-        for offset in (0..symbols.len()).step_by(entry_size) {
-            let symbol = read_struct::<Elf64Symbol>(symbols, offset)?;
-            let start = usize::try_from(symbol.st_name).ok()?;
-            let tail = strings.get(start..)?;
-            let end = tail.iter().position(|byte| *byte == 0)?;
-            if core::str::from_utf8(&tail[..end]).ok()? == name {
-                return Some(symbol.st_value);
-            }
-        }
-    }
-    None
-}
-
-fn section_bytes(image: &[u8], offset: u64, size: u64) -> Option<&[u8]> {
-    let start = usize::try_from(offset).ok()?;
-    let size = usize::try_from(size).ok()?;
-    image.get(start..start.checked_add(size)?)
-}
-
-fn read_struct<T: Copy>(image: &[u8], offset: usize) -> Option<T> {
-    let end = offset.checked_add(mem::size_of::<T>())?;
-    let bytes = image.get(offset..end)?;
-    // SAFETY: `bytes` has exactly `size_of::<T>()` bytes, its pointer is valid
-    // for reads, and `read_unaligned` does not require alignment. Every caller
-    // uses a `Copy` POD header whose bit patterns are valid values.
-    Some(unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast()) })
-}
-
-fn align_down(value: u64, align: u64) -> u64 {
-    value / align * align
-}
-
-fn align_up(value: u64, align: u64) -> Option<u64> {
-    value
-        .checked_add(align - 1)
-        .map(|value| align_down(value, align))
 }
 
 fn reserve_image(id: ResourceId, pages: usize) -> Result<Allocation, &'static str> {

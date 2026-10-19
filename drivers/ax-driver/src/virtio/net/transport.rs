@@ -22,7 +22,16 @@ impl<T: Transport> ResettableTransport<T> {
         transport.set_status(DeviceStatus::empty());
         // VirtIO 1.2 sections 2.4 and 4.1.4.3: status zero acknowledges reset;
         // the device no longer accesses queues until initialization restarts.
-        transport.get_status().is_empty()
+        let started = axklib::time::monotonic_nanos();
+        loop {
+            if transport.get_status().is_empty() {
+                return true;
+            }
+            if axklib::time::monotonic_nanos().wrapping_sub(started) >= 100_000_000 {
+                return false;
+            }
+            core::hint::spin_loop();
+        }
     }
 }
 

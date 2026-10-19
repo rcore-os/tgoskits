@@ -73,11 +73,15 @@ impl ProtocolPollRuntime {
 
     pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
-        self.schedule();
+        self.executor_wake.notify_one();
     }
 
     pub(crate) fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
+    }
+
+    fn ready(&self) -> bool {
+        self.stopped() || self.scheduled.load(Ordering::Acquire)
     }
 
     pub(crate) fn request(&self) -> PollGeneration {
@@ -101,13 +105,12 @@ impl ProtocolPollRuntime {
     }
 
     pub(crate) fn wait(&self) {
-        self.executor_wake
-            .wait_until(|| self.scheduled.load(Ordering::Acquire));
+        self.executor_wake.wait_until(|| self.ready());
     }
 
     pub(crate) fn wait_timeout(&self, duration: Duration) -> bool {
         self.executor_wake
-            .wait_timeout_until(duration, || self.scheduled.load(Ordering::Acquire))
+            .wait_timeout_until(duration, || self.ready())
     }
 
     pub(crate) fn complete(&self, generation: PollGeneration) {
@@ -220,6 +223,21 @@ mod tests {
         runtime.complete(claimed);
         assert!(runtime.finish_cycle(|| false));
         assert!(!runtime.has_completed(second));
+    }
+
+    #[test]
+    fn stopping_executor_remains_runnable_after_a_poll_cycle_finishes() {
+        let runtime = ProtocolPollRuntime::new();
+        let generation = runtime.request();
+        runtime.complete(generation);
+        // Stop can race the tail of a poll which clears the coalesced bit.
+        // Termination must remain a durable reason not to sleep before join.
+        runtime.stop();
+        assert!(!runtime.finish_cycle(|| false));
+        assert!(
+            runtime.ready(),
+            "the stopped worker must not sleep before join"
+        );
     }
 
     #[test]

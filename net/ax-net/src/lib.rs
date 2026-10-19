@@ -748,7 +748,7 @@ fn poll_protocol_until_idle(budget: &mut ProtocolPollBudget) {
             yield_network_thread();
             budget.reset(ax_hal::time::monotonic_time_nanos());
         }
-        if !more {
+        if !more || PROTOCOL_POLL.stopped() {
             return;
         }
     }
@@ -1047,14 +1047,14 @@ fn protocol_executor_main() {
         } else {
             PROTOCOL_POLL.wait();
         }
-        if PROTOCOL_POLL.stopped() {
-            return;
-        }
         drain_deferred_poll_wakes();
         let completed = PROTOCOL_POLL.requested_generation();
         poll_protocol_until_idle(&mut budget);
         PROTOCOL_POLL.complete(completed);
         drain_deferred_poll_wakes();
+        if PROTOCOL_POLL.stopped() {
+            return;
+        }
         if PROTOCOL_POLL.finish_cycle(|| DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)) {
             continue;
         }
@@ -1070,10 +1070,8 @@ pub fn shutdown_network() -> Result<(), NetworkRuntimeError> {
     if SHUTDOWN_STARTED.swap(true, Ordering::AcqRel) {
         return Err(NetworkRuntimeError::ShutdownAlreadyStarted);
     }
-    // Dispatch final sends and closes while the unique protocol owner is live.
-    if SERVICE.get().is_some() {
-        flush_egress();
-    }
+    // The protocol owner performs one final poll for pending sends/closes.
+    // Its stop state also bounds that drain under continuous external traffic.
     PROTOCOL_POLL.stop();
     let worker = PROTOCOL_EXECUTOR.lock().take();
     if let Some(worker) = worker {

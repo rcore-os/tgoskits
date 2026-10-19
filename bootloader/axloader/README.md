@@ -228,7 +228,7 @@ python3 bootloader/axloader/scripts/loong-qemu-smoke.py --output-dir /tmp/loong-
 socket 与空闲宿主端口中调用 `loong-http-smoke.py`。写满场景验证合法上传返回
 `409 ota_storage_failed` 且状态不变；正常场景验证 manifest 幂等、串口门禁、坏
 ELF/OTA 拒绝、真实 trial、QMP 复位后的 rollback、旧确认拒绝、再次 trial/confirm。
-确认后再次复位核对稳定摘要持久化。最后上传独立目标，检查 `elf_loaded`、`ready_to_handoff`、
+确认后再次复位核对稳定摘要持久化，再上传会返回的最小 EFI ELF，检查自动复位、新 epoch 和稳定 OTA 状态。最后上传独立目标，检查 `elf_loaded`、`ready_to_handoff`、`runtime_handoff_devices_stopped`、
 `HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。
 `ready_to_handoff` 单独出现只表示准备交接；`qemu-loongarch64.toml` 仅用于观察
 网络服务启动。

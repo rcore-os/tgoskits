@@ -101,6 +101,63 @@ def stage_trial(args, epoch, image, digest):
     )
 
 
+def returning_efi_image():
+    """A cooperative EFI entry which preserves the caller and returns SUCCESS."""
+    # Assembled and disassembled for LoongArch: ori $a0, $zero, 0; ret.
+    code = bytes.fromhex("040080032000004c")
+    address = 0xFFFFFFFF80000000
+    code_offset, symbols_offset, strings_offset, sections_offset = 120, 128, 176, 192
+    strings = b"\0efi_pe_entry\0"
+    image = bytearray(sections_offset + 4 * 64)
+    ident = b"\x7fELF\x02\x01\x01" + bytes(9)
+    struct.pack_into("<16sHHIQQQIHHHHHH", image, 0, ident, 2, 258, 1, address,
+                     64, sections_offset, 0, 64, 56, 1, 64, 4, 0)
+    struct.pack_into("<IIQQQQQQ", image, 64, 1, 5, code_offset, address, address,
+                     len(code), len(code), 1)
+    image[code_offset:code_offset + len(code)] = code
+    struct.pack_into("<IBBHQQ", image, symbols_offset + 24, 1, 0x12, 0, 1,
+                     address, len(code))
+    image[strings_offset:strings_offset + len(strings)] = strings
+    sections = [
+        (0, 1, 6, address, code_offset, len(code), 0, 0, 4, 0),
+        (0, 2, 0, 0, symbols_offset, 48, 3, 1, 8, 24),
+        (0, 3, 0, 0, strings_offset, len(strings), 0, 0, 1, 0),
+    ]
+    for index, section in enumerate(sections, 1):
+        struct.pack_into("<IIQQQQIIQQ", image, sections_offset + index * 64, *section)
+    return bytes(image)
+
+
+def exercise_returned_target(args, status):
+    epoch = status["boot_epoch"]
+    image = returning_efi_image()
+    digest = hashlib.sha256(image).hexdigest()
+    manifest = {
+        "boot_id": "loong-returning-efi", "arch": "loongarch64", "image_format": "elf64",
+        "kernel": {"size": len(image), "sha256": digest}, "entry_symbol": "efi_pe_entry",
+    }
+    headers = {"X-Boot-Epoch": epoch}
+    response = request(args.host, args.port, "POST", "/api/v1/boot/jobs",
+                       json.dumps(manifest).encode(), headers)
+    expect(response[0], 201, "returning target manifest", response[1])
+    path = "/api/v1/boot/jobs/loong-returning-efi"
+    response = request(args.host, args.port, "PUT", path + "/kernel", image,
+                       {**headers, "X-Image-Sha256": digest})
+    expect(response[0], 200, "returning target upload", response[1])
+    binding = {"serial_id": epoch, "binding_id": "1" * 32, "mode": "direct"}
+    response = request(args.host, args.port, "POST", "/api/v1/serial/continue",
+                       json.dumps(binding).encode(), headers)
+    expect(response[0], 200, "returning target serial continue", response[1])
+    response = request(args.host, args.port, "POST", path + "/start",
+                       headers={**headers, "X-Serial-Binding": binding["binding_id"]},
+                       allow_empty=True)
+    if response[0] not in (0, 202):
+        raise RuntimeError(f"returning EFI entry was rejected: {response!r}")
+    restarted = wait_status(args.host, args.port, lambda value: value["boot_epoch"] != epoch)
+    expect(restarted["ota"], status["ota"], "returning target reset preserves stable OTA state")
+    print("loong axloader: returning EFI target resets into a fresh loader epoch", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -277,7 +334,7 @@ def main():
     )
     expect(confirmed["ota"]["active_sha256"], image_digest, "confirmed stable digest")
     reset_qemu(args.qmp_socket)
-    wait_status(
+    stable = wait_status(
         args.host, args.port,
         lambda value: value["boot_epoch"] != confirmed["boot_epoch"]
         and not value.get("ota", {}).get("trial")
@@ -287,6 +344,7 @@ def main():
         and value.get("ota", {}).get("last_outcome") == "confirmed",
         timeout=300,
     )
+    exercise_returned_target(args, stable)
 
     # The target must be an independent ArceOS EFI application. Reusing the
     # loader ELF would make its inherited image range fail the loader's PE
