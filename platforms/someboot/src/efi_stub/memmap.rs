@@ -107,7 +107,27 @@ fn retains_firmware_storage(memory: &MemoryDescriptor) -> bool {
             system.number_of_configuration_table_entries,
         )
     };
-    entries
-        .iter()
-        .any(|entry| contains(entry.vendor_table as usize))
+    entries.iter().any(|entry| {
+        let address = entry.vendor_table as usize;
+        if address == 0 {
+            return false;
+        }
+        let bytes = if entry.vendor_guid == super::FDT_TABLE_GUID {
+            let pointer = crate::mem::phys_to_virt(normalize(address) as usize);
+            // SAFETY: EFI supplies the trusted FDT allocation; entry discovery
+            // already validates its header before EBS. Keep its entire extent,
+            // even if firmware splits its backing into multiple descriptors.
+            unsafe { fdt_raw::Header::from_ptr(pointer) }
+                .expect("invalid retained EFI FDT")
+                .totalsize as usize
+        } else if entry.vendor_guid == crate::handoff::protocol::HANDOFF_GUID {
+            core::mem::size_of::<crate::handoff::protocol::HandoffRecord>()
+        } else {
+            // Other table formats define their own persistent memory types.
+            // Runtime, ACPI and NVS descriptors remain reserved independently;
+            // additionally retain the descriptor containing every opaque root.
+            1
+        };
+        overlaps(address, bytes)
+    })
 }

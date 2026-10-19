@@ -162,7 +162,11 @@ impl Arenas {
     }
 
     pub fn retire(&mut self, range: PhysicalRange) -> Option<PhysicalRange> {
-        if let Some(slot) = self.slots.iter_mut().find(|s| s.allocation.range == range) {
+        if let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|s| s.allocation.resource_id != 0 && s.allocation.range == range)
+        {
             let resource_id = slot.allocation.resource_id;
             slot.allocation = AllocationSnapshot::default();
             self.resources

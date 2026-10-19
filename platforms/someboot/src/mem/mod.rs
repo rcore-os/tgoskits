@@ -313,6 +313,7 @@ pub fn virtual_address_space() -> Result<VirtualAddressSpaceLayout, VirtualAddre
 /// # Safety
 /// Boot CPU only, after installing its own stack, page tables, exception vectors
 /// and CPU-local area, before publishing platform RAM lists or starting SMP.
+/// No earlier `memory_map()` borrow may remain reachable across this mutation.
 #[cfg(all(efi, target_arch = "loongarch64"))]
 pub unsafe fn complete_boot_takeover() {
     crate::handoff::received::loongarch64::complete_takeover();
