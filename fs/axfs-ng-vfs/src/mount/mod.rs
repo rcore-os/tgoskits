@@ -1000,8 +1000,18 @@ impl Location {
         let mut components = Vec::new();
         let mut current = self.clone();
         while !current.ptr_eq(root) {
-            components.push(current.name().into_owned());
-            current = current.parent().ok_or(VfsError::InvalidInput)?;
+            if current.is_root_of_mount() {
+                // Check the covered location against the process root before
+                // walking to its parent; a mount can cover that root itself.
+                current = current
+                    .mountpoint
+                    .location()
+                    .ok_or(VfsError::InvalidInput)?;
+            } else {
+                components.push(current.entry.name().to_owned());
+                let parent = current.entry.parent().ok_or(VfsError::InvalidInput)?;
+                current = current.wrap(parent);
+            }
         }
         Ok(iter::once("/")
             .chain(components.iter().map(String::as_str).rev())

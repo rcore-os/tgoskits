@@ -1,0 +1,9 @@
+# Guest inputs found next to the run config of this case.
+#
+# `host_prepare` runs with the workspace as working directory and with
+# `AXBUILD_TARGET_DIR` exported, before the Axvisor host kernel is built and
+# run. It only compiles the pinned Zephyr guest and writes the VM description
+# plus the `/tests/vcpu-runtime.toml` fixture; it never starts the host itself.
+# `arceos_build_configs` stays empty because this case has no ArceOS guest.
+arceos_build_configs = []
+host_prepare = ["python3", "virtualization/axvm/tests/guests/virq/prepare.py"]

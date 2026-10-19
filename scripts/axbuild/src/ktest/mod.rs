@@ -10,11 +10,12 @@ use anyhow::{Context, anyhow, bail};
 use cargo_metadata::{Metadata, Package};
 use clap::{Args, Subcommand, ValueEnum};
 use ostool::{
-    board::RunBoardOptions,
+    board::{RunBoardOptions, config::BoardRunConfig},
     build::config::{Cargo, CargoBuildProfile},
     ovmf::Arch,
-    run::qemu::QemuConfig,
+    run::{ShellCheckStep, qemu::QemuConfig},
 };
+use serde::Deserialize;
 
 use self::plan::{
     DiscoveredKtestPackage, KtestExecutionUnit, KtestRuntime, PlanFailure, QemuPlanSelector,
@@ -34,8 +35,13 @@ pub(crate) const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg",
 const AXTEST_FEATURE: &str = "axtest";
 const AXTEST_SUITE_OK: &str = "AXTEST_SUITE_OK";
 const AXTEST_SUITE_FAIL: &str = "AXTEST_SUITE_FAIL";
-const AXTEST_CASE_FAIL: &str = "AXTEST_CASE .* status=fail";
+const AXTEST_CASE_FAIL: &str = r"AXTEST_CASE\b[^\r\n]*\bstatus=fail\b";
 const PANIC_FAIL: &str = "panicked at";
+/// A suite result with at least one passing case and no failures.
+///
+/// `axtest` prints `AXTEST_SUMMARY pass=<n> fail=<n> skip=<n> total=<n>` after
+/// the last case, so a suite that selected nothing must not look successful.
+const AXTEST_SUMMARY_GATE: &str = r"AXTEST_SUMMARY pass=[1-9][0-9]* fail=0(?-u:\b)";
 const COVERAGE_IGNORED_SOURCE_REGEX: &str = r"[/\\](\.(cargo|rustup)|target)[/\\]";
 
 #[derive(Args, Debug, Clone)]
@@ -188,6 +194,12 @@ pub(crate) struct KtestTarget {
     pub(crate) kind: KtestTargetKind,
     pub(crate) harness: bool,
     pub(crate) required_features: Vec<String>,
+    /// Declared through `[package.metadata.axtest.targets.<name>] board_only`.
+    ///
+    /// Board-only targets depend on hardware that no QEMU run can provide, so
+    /// the QEMU plan skips them unless the caller names them explicitly, and an
+    /// explicit QEMU selection then reports the board runner instead.
+    pub(crate) board_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +302,7 @@ async fn run_qemu_unit(
     let qemu_config = args.qemu_config.clone().unwrap_or_else(|| {
         default_qemu_run_config(app.workspace_root(), package_dir, unit.runtime, &unit.arch)
     });
+    let qemu_config = app.workspace_root().join(qemu_config).canonicalize()?;
     let mut cargo = load_runtime_cargo(
         unit.runtime,
         app.workspace_context(),
@@ -302,6 +315,11 @@ async fn run_qemu_unit(
     prepare_ktest_cargo(&mut cargo, target, unit.runtime, args.coverage);
     apply_qemu_cargo_options(&mut cargo, args);
     app.set_debug_mode(false)?;
+
+    // Opt-in resource sidecars next to the run configuration prepare guest
+    // sources and shared resources; their outputs must be complete before the
+    // kernel build and before anything reads the packed payload.
+    crate::axvisor::test::prepare_guest_builds(app, &qemu_config).await?;
 
     let report_session =
         maybe_start_starry_future_incompat_report(unit.runtime, app.target_dir(), &unit.arch)?;
@@ -319,19 +337,43 @@ async fn run_qemu_unit(
         &cargo,
         &output,
     )?;
-    let rootfs = ensure_runtime_qemu_assets(
-        unit.runtime,
-        app.workspace_root(),
-        app.target_dir(),
-        &unit.arch,
-        &unit.target,
-    )
-    .await?;
-
     let mut qemu = app
         .read_qemu_config_from_path_for_cargo(&cargo, &qemu_config)
         .await
         .with_context(|| format!("failed to read QEMU config {}", qemu_config.display()))?;
+    if unit.runtime == KtestRuntime::Axvisor {
+        prepare_axvisor_ktest_payload(
+            app,
+            &cargo,
+            &KtestUnitConfig {
+                package: &unit.package,
+                arch: &unit.arch,
+                target: &unit.target,
+                build_config: &build_config,
+                run_config: &qemu_config,
+            },
+            &mut qemu.boot,
+            false,
+        )
+        .await?;
+    }
+    // A packaged memory root with no host drive is an explicit diskless
+    // configuration. It must not acquire an unrelated managed disk/network.
+    let rootfs = if unit.runtime == KtestRuntime::Axvisor
+        && crate::rootfs::qemu::host_initramfs_without_rootfs_drive(&qemu)
+    {
+        None
+    } else {
+        ensure_runtime_qemu_assets(
+            unit.runtime,
+            app.workspace_root(),
+            app.target_dir(),
+            &unit.arch,
+            &unit.target,
+        )
+        .await?
+    };
+
     if let Some(rootfs) = rootfs {
         crate::rootfs::qemu::patch_rootfs(
             &mut qemu,
@@ -441,6 +483,62 @@ struct KtestBuildContext<'a> {
     build_config: &'a Path,
 }
 
+/// The build and run configuration owned by one axtest execution unit.
+#[derive(Debug, Clone, Copy)]
+struct KtestUnitConfig<'a> {
+    package: &'a str,
+    arch: &'a str,
+    target: &'a str,
+    build_config: &'a Path,
+    run_config: &'a Path,
+}
+
+/// Prepares the AxVisor guest resources one axtest unit boots.
+///
+/// The unit's run configuration decides which sidecars apply: a
+/// `host-initramfs.toml` next to it may contribute the host archive fixture,
+/// and it may select guest configurations of its own. Without that sidecar the
+/// build configuration's `vm_configs` are used, so a case that provides no
+/// sidecar still boots the guests declared by its build. Both entries are read
+/// here, after the resource-preparation command already wrote its outputs.
+async fn prepare_axvisor_ktest_payload(
+    app: &mut AppContext,
+    cargo: &Cargo,
+    unit: &KtestUnitConfig<'_>,
+    boot: &mut ostool::BootPayloadConfig,
+    allow_external_assets: bool,
+) -> anyhow::Result<()> {
+    let case_dir = unit.run_config.parent().ok_or_else(|| {
+        anyhow!(
+            "run configuration {} has no parent directory",
+            unit.run_config.display()
+        )
+    })?;
+    crate::test::qemu::prepare_host_initramfs_payload(
+        app.workspace_root(),
+        app.target_dir(),
+        case_dir,
+        unit.arch,
+        boot,
+    )?;
+    let mut request = axvisor_request(
+        app.workspace_root(),
+        unit.package,
+        unit.arch,
+        unit.target,
+        unit.build_config,
+    );
+    crate::axvisor::prepare_ktest_guest_payload(
+        app,
+        &mut request,
+        boot,
+        cargo,
+        case_dir,
+        allow_external_assets,
+    )
+    .await
+}
+
 async fn ensure_runtime_qemu_assets(
     runtime: KtestRuntime,
     workspace_root: &Path,
@@ -490,6 +588,10 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     let board_config_path = args.board_config.unwrap_or_else(|| {
         default_board_run_config(app.workspace_root(), package_dir, runtime, &board)
     });
+    let board_config_path = app
+        .workspace_root()
+        .join(board_config_path)
+        .canonicalize()?;
     let target_from_config =
         load_target_from_build_config(runtime, &build_config).with_context(|| {
             format!(
@@ -511,7 +613,9 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     )?;
     prepare_ktest_cargo(&mut cargo, target, runtime, false);
 
-    let board_config = app
+    crate::axvisor::test::prepare_guest_builds(&mut app, &board_config_path).await?;
+
+    let mut board_config = app
         .read_board_run_config_from_path_for_cargo(&cargo, &board_config_path)
         .await
         .with_context(|| {
@@ -520,6 +624,7 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
                 board_config_path.display()
             )
         })?;
+    apply_axtest_board_markers(&mut board_config);
     let report_session =
         maybe_start_starry_future_incompat_report(runtime, app.target_dir(), arch)?;
     let build_result = app.build(cargo.clone(), build_config.clone()).await;
@@ -536,6 +641,22 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
         &cargo,
         &output,
     )?;
+    if runtime == KtestRuntime::Axvisor {
+        prepare_axvisor_ktest_payload(
+            &mut app,
+            &cargo,
+            &KtestUnitConfig {
+                package: &args.package,
+                arch,
+                target: &triple,
+                build_config: &build_config,
+                run_config: &board_config_path,
+            },
+            &mut board_config.boot,
+            true,
+        )
+        .await?;
+    }
     app.board_prepared_elf(
         output.elf_path().to_path_buf(),
         cargo.to_bin,
@@ -586,44 +707,103 @@ fn discover_workspace_ktests(metadata: &Metadata) -> anyhow::Result<Vec<Discover
         let uses_workspace_axtest = package.dependencies.iter().any(|dependency| {
             dependency.name == AXTEST_FEATURE && dependency.path.as_deref() == Some(axtest_dir)
         });
-        let ktest_package = ktest_package_from_metadata(package)?;
+        let axtest = axtest_metadata(&package.name, &package.metadata)?;
+        let ktest_package = ktest_package_from_metadata(package, &axtest)?;
         packages.push(DiscoveredKtestPackage {
             name: ktest_package.name,
             manifest_path: package.manifest_path.as_std_path().to_path_buf(),
             uses_workspace_axtest,
-            runtime: runtime_from_package_metadata(package)?,
+            runtime: axtest.runtime.unwrap_or(KtestRuntime::Arceos),
             targets: ktest_package.targets,
-            docs_rs_targets: docs_rs_targets(package)?,
+            test_targets: axtest.test_targets,
         });
     }
     packages.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(packages)
 }
 
-fn runtime_from_package_metadata(package: &Package) -> anyhow::Result<KtestRuntime> {
-    let Some(runtime) = package
-        .metadata
-        .get("axtest")
-        .and_then(|axtest| axtest.get("runtime"))
-        .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(KtestRuntime::Arceos);
+#[derive(Deserialize)]
+struct AxtestTargetFlagsWire {
+    #[serde(default)]
+    board_only: bool,
+}
+
+#[derive(Deserialize)]
+struct AxtestMetadataWire {
+    #[serde(default)]
+    runtime: Option<String>,
+    #[serde(default)]
+    target_triples: Option<Vec<String>>,
+    #[serde(default)]
+    targets: BTreeMap<String, AxtestTargetFlagsWire>,
+}
+
+/// Typed, validated view of the metadata ktest owns for one package.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AxtestMetadata {
+    runtime: Option<KtestRuntime>,
+    /// Kernel-test target triples, including the docs.rs fallback.
+    test_targets: Option<Vec<String>>,
+    /// Per-target flags keyed by Cargo test target name.
+    board_only: BTreeMap<String, bool>,
+}
+
+/// Resolves `[package.metadata.axtest]` for one package.
+///
+/// `[package.metadata.axtest].target_triples` is the authoritative kernel-test target
+/// list. Without it the package's `[package.metadata.docs.rs].targets` list
+/// stays the fallback, because the host documentation targets of a crate are
+/// not the runtimes its kernel tests were verified on. Both keys are read from
+/// the same metadata value so one parse describes the whole package.
+fn axtest_metadata(package: &str, metadata: &serde_json::Value) -> anyhow::Result<AxtestMetadata> {
+    let wire: AxtestMetadataWire = match metadata.get("axtest") {
+        Some(axtest) => serde_json::from_value(axtest.clone()).with_context(|| {
+            format!("package `{package}` has an invalid [package.metadata.axtest] table")
+        })?,
+        None => AxtestMetadataWire {
+            runtime: None,
+            target_triples: None,
+            targets: BTreeMap::new(),
+        },
     };
+    let board_only = wire
+        .targets
+        .into_iter()
+        .map(|(name, flags)| (name, flags.board_only))
+        .collect();
+    let runtime = match wire.runtime.as_deref() {
+        Some(runtime) => Some(runtime_from_name(package, runtime)?),
+        None => None,
+    };
+    let test_targets = match wire.target_triples {
+        Some(targets) => Some(targets),
+        None => docs_rs_targets(package, metadata)?,
+    };
+    Ok(AxtestMetadata {
+        runtime,
+        test_targets,
+        board_only,
+    })
+}
+
+fn runtime_from_name(package: &str, runtime: &str) -> anyhow::Result<KtestRuntime> {
     match runtime {
         "arceos" => Ok(KtestRuntime::Arceos),
         "starry" => Ok(KtestRuntime::Starry),
         "axvisor" => Ok(KtestRuntime::Axvisor),
         "board" => Ok(KtestRuntime::Board),
         _ => bail!(
-            "package `{}` has unsupported [package.metadata.axtest] runtime `{runtime}`",
-            package.name
+            "package `{package}` has unsupported [package.metadata.axtest] runtime `{runtime}`"
         ),
     }
 }
 
-fn docs_rs_targets(package: &Package) -> anyhow::Result<Option<Vec<String>>> {
-    let Some(targets) = package
-        .metadata
+/// Reads the `[package.metadata.docs.rs].targets` fallback list.
+fn docs_rs_targets(
+    package: &str,
+    metadata: &serde_json::Value,
+) -> anyhow::Result<Option<Vec<String>>> {
+    let Some(targets) = metadata
         .get("docs")
         .and_then(|docs| docs.get("rs"))
         .and_then(|docs_rs| docs_rs.get("targets"))
@@ -631,23 +811,24 @@ fn docs_rs_targets(package: &Package) -> anyhow::Result<Option<Vec<String>>> {
         return Ok(None);
     };
     let targets = targets.as_array().ok_or_else(|| {
-        anyhow!(
-            "package `{}` must declare [package.metadata.docs.rs].targets as an array",
-            package.name
-        )
+        anyhow!("package `{package}` must declare [package.metadata.docs.rs].targets as an array")
     })?;
     targets
         .iter()
         .map(|target| {
-            target.as_str().map(str::to_string).ok_or_else(|| {
-                anyhow!("package `{}` has a non-string docs.rs target", package.name)
-            })
+            target
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!("package `{package}` has a non-string docs.rs target"))
         })
         .collect::<anyhow::Result<Vec<_>>>()
         .map(Some)
 }
 
-fn ktest_package_from_metadata(package: &Package) -> anyhow::Result<KtestPackage> {
+fn ktest_package_from_metadata(
+    package: &Package,
+    axtest: &AxtestMetadata,
+) -> anyhow::Result<KtestPackage> {
     let harness = test_harness_flags(package.manifest_path.as_std_path())?;
     let targets = package
         .targets
@@ -665,6 +846,11 @@ fn ktest_package_from_metadata(package: &Package) -> anyhow::Result<KtestPackage
                 kind,
                 harness: harness.get(&target.name).copied().unwrap_or(true),
                 required_features: target.required_features.clone(),
+                board_only: axtest
+                    .board_only
+                    .get(&target.name)
+                    .copied()
+                    .unwrap_or(false),
             }
         })
         .collect();
@@ -983,10 +1169,62 @@ fn remove_cargo_target_selector_args(args: &mut Vec<String>) {
 }
 
 fn apply_axtest_qemu_markers(qemu: &mut QemuConfig) {
-    crate::support::qemu_success::append_configured_success_regex(qemu, AXTEST_SUITE_OK);
     ensure_regex(&mut qemu.fail_regex, PANIC_FAIL);
     ensure_regex(&mut qemu.fail_regex, AXTEST_SUITE_FAIL);
     ensure_regex(&mut qemu.fail_regex, AXTEST_CASE_FAIL);
+    require_final_suite_gate(&mut qemu.shell_check_steps);
+}
+
+/// The completion condition that makes a suite result mandatory.
+///
+/// Both facts live in one ordered pattern because every runner treats a pattern
+/// array as alternatives: a separate entry for the summary and for the marker
+/// could complete the run on either of them alone.
+fn suite_gate_regex() -> String {
+    format!(r"(?s)AXTEST_CASE status=pass(?-u:\b).*{AXTEST_SUMMARY_GATE}.*{AXTEST_SUITE_OK}")
+}
+
+/// Makes [`suite_gate_regex`] the mandatory final completion condition.
+///
+/// A passive final step that already requires the suite marker is expanded in
+/// place: the marker condition now also requires the summary gate in front of
+/// it, and the step's other alternatives are dropped because any of them could
+/// complete the run before the suite ended. Appending another step instead
+/// would wait for a marker that is printed exactly once, and appending the
+/// marker to an existing alternative list would leave the run completable on a
+/// guest-level success marker.
+fn require_final_suite_gate(steps: &mut Vec<ShellCheckStep>) {
+    if let Some(last) = steps.last_mut()
+        && last.shell_cmd.is_none()
+        && let Some(patterns) = last.success_regex.as_mut()
+        && patterns
+            .iter()
+            .any(|pattern| pattern.contains(AXTEST_SUITE_OK))
+    {
+        let gate = suite_gate_regex();
+        for pattern in patterns.iter_mut() {
+            // The expansion is idempotent: a condition that already carries the
+            // gate only needs the other alternatives removed.
+            if !pattern.contains(AXTEST_SUMMARY_GATE) {
+                *pattern = pattern.replace(AXTEST_SUITE_OK, &gate);
+            }
+        }
+        patterns.retain(|pattern| pattern.contains(AXTEST_SUITE_OK));
+        return;
+    }
+    steps.push(ShellCheckStep {
+        success_regex: Some(vec![suite_gate_regex()]),
+        ..ShellCheckStep::default()
+    });
+}
+
+/// Makes the board run assert the same axtest suite contract as the QEMU
+/// runner.
+fn apply_axtest_board_markers(board: &mut BoardRunConfig) {
+    for pattern in [PANIC_FAIL, AXTEST_SUITE_FAIL, AXTEST_CASE_FAIL] {
+        ensure_regex(&mut board.fail_regex, pattern);
+    }
+    require_final_suite_gate(&mut board.shell_check_steps);
 }
 
 fn apply_ktest_timeout(qemu: &mut QemuConfig, runtime: KtestRuntime, coverage: bool) {

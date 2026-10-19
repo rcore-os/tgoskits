@@ -99,7 +99,8 @@ class PerformanceReportTests(unittest.TestCase):
                 "BLOCK_BENCH_RESULT op=read round=5 mib_s=123.4",
                 "LTP_NETSTRESS_RESULT case=tcp-rr median_ms=2",
                 'WAKEUP_LATENCY_RESULT {"case":"foo","policy":"other","p50_ns":9}',
-                "STARRY_IPERF3_BENCH_RESULT case=T01 direction=tx median_mbps=100.5",
+                "STARRY_NETWORK_BENCH_RESULT case=T01 direction=tx median_mbps=100.5",
+                "[test_output] STARRY_NETWORK_BENCH_RESULT case=T03 direction=rx median_mbps=90.25",
                 "uvc-fps: done avg_fps=30 avg_throughput_mib_s=4.5",
             ]
         )
@@ -117,7 +118,8 @@ class PerformanceReportTests(unittest.TestCase):
                 {"name": "block-io/read", "unit": "MiB/s", "value": 123.4},
                 {"name": "netstress/tcp-rr", "unit": "ms", "value": 2.0},
                 {"name": "wakeup/foo/other/p50", "unit": "ns", "value": 9.0},
-                {"name": "iperf3/T01/tx", "unit": "Mbps", "value": 100.5},
+                {"name": "network-throughput/T01/tx", "unit": "Mbps", "value": 100.5},
+                {"name": "network-throughput/T03/rx", "unit": "Mbps", "value": 90.25},
                 {"name": "uvc/avg_fps", "unit": "frames/s", "value": 30.0},
                 {"name": "uvc/avg_throughput_mib_s", "unit": "MiB/s", "value": 4.5},
             ],

@@ -1,13 +1,16 @@
 # StarryOS 自编译全过程
 
-> ## 当前 x86_64 入口
+> **历史文档，不可直接用于当前仓库。** 本文保留 riscv64 Debian 自举流程和当时的排障记录，
+> 不代表当前仍支持该流程。文中引用的 `scripts/prepare-selfhost-rootfs.sh`、
+> `scripts/self-compile.sh` 和 `scripts/filter-workspace.sh` 已经删除，相关命令、工具链、
+> Cargo feature 和产物路径均已失效。
 >
-> x86_64 自编译现在通过 `cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64`
-> 直接运行。它在联网 QEMU guest 中安装工具链和依赖，不需要 `self-compile.sh`、host
-> sudo 或 loop mount。该流程使用 32 GiB 的稀疏 rootfs，并把 Cargo target 保存在
-> `/opt/starry-selfhost-target`，避免 Starry 的 `/tmp` MemoryFs 承载完整编译缓存。推荐流程与产物启动方式见
-> [`docs/starryos-self-compilation.md`](../../../docs/starryos-self-compilation.md)。本文其余内容
-> 保留为 riscv64/Debian 旧流程和历史排障记录，不能作为 x86_64 的当前操作说明。
+> 本文只陈述当前维护的 x86_64 Starry app runner 入口：
+> `cargo xtask starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64`。正确说明见
+> [`docs/docs/build/starry/self-compilation.md`](../../../docs/docs/build/starry/self-compilation.md)。
+> 该 app case 虽保留 `qemu-riscv64.toml` 和 app 内 `sh/self-compile.sh`，但当前
+> `prebuild.sh` 拒绝非 x86_64，本文不据此声称完整 RISC-V 自编译仍可用。恢复或验证该能力
+> 需要按现役 `cargo xtask starry` 和 app runner 重新适配。
 
 在 riscv64 Debian Linux 上运行 StarryOS，并在 StarryOS 内部使用 cargo 编译 StarryOS 自身。前置依赖 PR
 

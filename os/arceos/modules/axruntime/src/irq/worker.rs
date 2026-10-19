@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use ax_lazyinit::OnceLock;
 use ax_task::{
     sync::irq::{IrqWaitCell, IrqWorkerWaiter},
@@ -30,15 +32,37 @@ impl FixedIrqWorkerSignal {
 
     /// Consumes one coalesced notification on the signal's fixed worker.
     pub fn wait(&self) -> Result<(), TaskError> {
+        self.current_waiter()?.irq.wait(&self.doorbell)
+    }
+
+    /// Rechecks worker-owned state after a local timer expiry even when a
+    /// producer cannot use the cross-CPU interrupt transport.
+    pub(crate) fn wait_timeout(&self, timeout: Duration) -> Result<bool, TaskError> {
+        self.current_waiter()?
+            .irq
+            .wait_timeout(&self.doorbell, timeout)
+    }
+
+    fn current_waiter(&self) -> Result<&FixedIrqWorkerWaiter, TaskError> {
         let current = current_thread_handle()?;
         let waiter = self.waiter.call_once(|| FixedIrqWorkerWaiter {
             owner: current.id(),
+            #[cfg(feature = "fault-injection")]
+            thread: current.clone(),
             irq: IrqWorkerWaiter::new(current.wake_handle()),
         });
         if waiter.owner != current.id() {
             return Err(TaskError::InvalidConfiguration);
         }
-        waiter.irq.wait(&self.doorbell)
+        Ok(waiter)
+    }
+
+    #[cfg(feature = "fault-injection")]
+    pub(crate) fn is_blocked_for_test(&self) -> bool {
+        self.waiter.get().is_some_and(|waiter| {
+            waiter.thread.state() == ax_task::thread::ThreadState::Blocked
+                && self.doorbell.has_waiter_for_test()
+        })
     }
 
     #[cfg(test)]
@@ -55,5 +79,7 @@ impl Default for FixedIrqWorkerSignal {
 
 struct FixedIrqWorkerWaiter {
     owner: ThreadId,
+    #[cfg(feature = "fault-injection")]
+    thread: ax_task::thread::ThreadHandle,
     irq: IrqWorkerWaiter,
 }

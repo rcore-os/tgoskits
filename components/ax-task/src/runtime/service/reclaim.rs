@@ -14,6 +14,26 @@ use crate::{
     thread::{TaskError, ThreadBuilder, current::current_thread_handle},
 };
 
+#[cfg(feature = "fault-injection")]
+static TASK_WORK_THREAD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Returns the shutdown-lifetime worker identity for isolated runtime probes.
+///
+/// Tests which exercise the final CPU-offline transaction must first move
+/// background workers out of the target CPU through normal affinity completion.
+/// This observer does not change worker placement or retain a management lease.
+#[cfg(feature = "fault-injection")]
+pub fn deferred_task_work_service_thread() -> Result<crate::thread::ThreadId, TaskError> {
+    let raw = TASK_WORK_THREAD.load(core::sync::atomic::Ordering::Acquire);
+    if raw == 0 {
+        return Err(TaskError::NotInitialized);
+    }
+    Ok(crate::thread::ThreadId::from_parts(
+        raw as u32,
+        (raw >> 32) as u32,
+    ))
+}
+
 pub(crate) fn publish_deferred_coroutine_reclaim(header: Pin<&'static CoroutineHeader>) {
     let system = runtime_task_system().unwrap_or_else(|_| {
         task_runtime::fatal_invariant(0x4558_0008, header.address());
@@ -52,6 +72,8 @@ pub fn start_deferred_task_work_service() -> Result<(), TaskError> {
                 return Err(error);
             }
         };
+    #[cfg(feature = "fault-injection")]
+    TASK_WORK_THREAD.store(worker.id().as_u64(), core::sync::atomic::Ordering::Release);
     worker.detach();
     Ok(())
 }

@@ -49,8 +49,14 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
             | (u32::from(class.sub_class) << 8)
             | u32::from(class.interface),
     });
-    let transport =
-        crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::GPU)?;
+    // The hostmem shared-memory region (VIRTIO_GPU_SHM_ID_HOST_VISIBLE) backs
+    // mappable blob resources; absent on plain 2D devices, in which case the
+    // 3D face degrades to "no mappable blobs".
+    let (transport, shm) = crate::pci::take_virtio_transport_masked_with_shm(
+        probe.endpoint_mut(),
+        DeviceType::GPU,
+        1,
+    )?;
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
     let coherency = if probe.info().dma_coherent {
         DmaCoherency::Coherent
@@ -60,6 +66,7 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
     register_transport_prepared(
         probe.into_platform_device(),
         transport,
+        shm,
         info,
         coherency,
         bus,
@@ -73,6 +80,7 @@ pub fn register_transport<T: Transport + Send + 'static>(
     register_transport_prepared(
         platform,
         transport,
+        None,
         BindingInfo::empty(),
         crate::binding_resolver::platform_default_dma_coherency(),
         BusIdentity::Platform {
@@ -91,6 +99,7 @@ pub fn register_transport_with_info<T: Transport + Send + 'static>(
     register_transport_prepared(
         platform,
         transport,
+        None,
         info,
         coherency,
         BusIdentity::Platform {
@@ -103,6 +112,7 @@ pub fn register_transport_with_info<T: Transport + Send + 'static>(
 fn register_transport_prepared<T: Transport + Send + 'static>(
     platform: PlatformDevice,
     transport: T,
+    shm: Option<crate::pci::VirtioShmRegion>,
     info: BindingInfo,
     coherency: DmaCoherency,
     bus: BusIdentity,
@@ -116,8 +126,19 @@ fn register_transport_prepared<T: Transport + Send + 'static>(
     // The monotonic clock bounds the driver's blocking waits (`wait_fence`,
     // teardown drains), so a stalled host unwedges the holder of the GPU lock
     // with a typed timeout instead of spinning forever.
-    let raw = VirtIoGpu::<VirtIoHalImpl, _>::new(transport, axklib::time::monotonic_nanos)
+    let mut raw = VirtIoGpu::<VirtIoHalImpl, _>::new(transport, axklib::time::monotonic_nanos)
         .map_err(|error| OnProbeError::other(format!("virtio-gpu init: {error:?}")))?;
+    if let Some(region) = shm {
+        log::info!(
+            "virtio-gpu: hostmem region phys={:#x} len={:#x}",
+            region.phys,
+            region.length
+        );
+        raw.attach_hostmem(virtio_gpu::HostMemRegion {
+            phys_base: region.phys,
+            length: region.length,
+        });
+    }
     let mut identity = VirtIoGpuDevice::<VirtIoHalImpl, SharedGpuTransport<T>>::virtual_identity();
     identity.bus = bus;
     identity.modalias = Some("platform:virtio-gpu".to_string());

@@ -63,8 +63,13 @@ shell_cmd = "vm console 2"
 [[shell_check_steps]]
 success_regex = ["VM2_VIRTIO_NET_READY"]
 
+# Consume the first client pass before detaching. The later attach must observe
+# fresh successful heartbeats rather than rely on replaying this one-time line.
 [[shell_check_steps]]
-shell_prefix = "VM2_VIRTIO_NET_IFACES"
+success_regex = ["VM2_VIRTIO_NET_PASS role=client"]
+
+[[shell_check_steps]]
+shell_prefix = "VM2_VIRTIO_NET_HB_TX"
 shell_cmd = "\u0018h"
 
 # VM1 is the head of the chain and was started last by the host selector; this

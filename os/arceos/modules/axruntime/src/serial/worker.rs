@@ -34,6 +34,8 @@ pub(super) struct SerialWorker {
     pending_rearm: SerialEventSet,
     immediate_events: SerialEventSet,
     latched_rx_errors: RxErrorFlags,
+    #[cfg(feature = "fault-injection")]
+    last_wait_timed_out: bool,
 }
 
 impl SerialWorker {
@@ -58,6 +60,8 @@ impl SerialWorker {
             pending_rearm: SerialEventSet::empty(),
             immediate_events: SerialEventSet::empty(),
             latched_rx_errors: RxErrorFlags::empty(),
+            #[cfg(feature = "fault-injection")]
+            last_wait_timed_out: false,
         }
     }
 
@@ -175,7 +179,22 @@ impl SerialWorker {
             } else if self.shared.polling {
                 crate::task::thread::current::sleep(Duration::from_millis(1));
             } else {
-                self.shared.bridge.wait();
+                let diagnostic_fallback = cfg!(any(
+                    feature = "fault-injection",
+                    all(
+                        feature = "uspace",
+                        any(feature = "ipi", feature = "wake-ipi")
+                    )
+                )) && super::ACTIVE_CONSOLE
+                    .load(core::sync::atomic::Ordering::Acquire)
+                    == self.shared.index;
+                let timed_out = self.shared.bridge.wait(diagnostic_fallback);
+                #[cfg(feature = "fault-injection")]
+                {
+                    self.last_wait_timed_out = timed_out;
+                }
+                #[cfg(not(feature = "fault-injection"))]
+                let _ = timed_out;
             }
         }
     }
@@ -364,7 +383,16 @@ impl SerialWorker {
             } else {
                 let next = match path {
                     RxPath::Irq => self.irq_rx.pop(),
-                    RxPath::Port => self.shared.with_port(|port| port.read_rx()).flatten(),
+                    RxPath::Port => self
+                        .shared
+                        .with_port(|port| {
+                            // An IRQ may have consumed an older prefix after
+                            // this path was selected. Check its queue under the
+                            // same register gate as the hardware read so that
+                            // no IRQ can insert an older sample between them.
+                            self.irq_rx.pop().or_else(|| port.read_rx())
+                        })
+                        .flatten(),
                 };
                 let Some(sample) = next else {
                     source_drained = true;
@@ -553,6 +581,23 @@ impl SerialWorker {
         let Some(consumed) = self.log_reader.take(self.shared.index) else {
             return false;
         };
+        #[cfg(feature = "fault-injection")]
+        if consumed.record.kind() == LogRecordKind::Log
+            && !consumed.record.is_truncated()
+            && consumed
+                .record
+                .bytes()
+                .ends_with(super::DEFERRED_TEST_RECORD.as_bytes())
+        {
+            // Structured logs prepend runtime metadata. The unique test body
+            // has no newline, so its exact suffix survives formatting intact.
+            // Observe the real wait result without changing extraction. An
+            // unrelated IRQ consuming the marker must fail the regression.
+            self.shared.deferred_test_consumed.store(
+                if self.last_wait_timed_out { 2 } else { 1 },
+                core::sync::atomic::Ordering::Release,
+            );
+        }
         self.shared
             .stats
             .add_log_sequence_gaps(consumed.sequence_gap);

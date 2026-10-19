@@ -49,6 +49,15 @@ pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
     unsafe { current_needs_reschedule_pinned() }
 }
 
+/// Re-arms owner scheduler work for the real-runtime fault-injection probe.
+#[cfg(feature = "fault-injection")]
+pub fn rearm_scheduler_work_for_fault_injection() -> Result<(), TaskError> {
+    let _pin = PreemptScope::enter();
+    let remote = current_cpu_remote().ok_or(TaskError::NotInitialized)?;
+    remote.defer_scheduler_work();
+    Ok(())
+}
+
 /// Observes only the immediate preemption bit in real-runtime regression tests.
 /// Owner maintenance and lazy preemption remain separate scheduler requests.
 #[cfg(feature = "fault-injection")]

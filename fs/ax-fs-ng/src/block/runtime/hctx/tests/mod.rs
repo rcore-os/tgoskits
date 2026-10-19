@@ -38,7 +38,7 @@ struct TestObserver {
 }
 
 impl HctxObserver for TestObserver {
-    fn request_completed(&self, _op: RequestOp, _block_count: u32, _result: Result<(), BlkError>) {
+    fn request_completed(&self, _op: RequestOp) {
         self.completed.fetch_add(1, Ordering::AcqRel);
     }
 

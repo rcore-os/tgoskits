@@ -17,6 +17,25 @@ ArceOS was inspired a lot by [Unikraft](https://github.com/unikraft/unikraft).
 
 Working in progress.
 
+> **TGOSKits workspace note:** this is the upstream ArceOS README retained in
+> the `os/arceos` subtree. In this repository the supported build and run entry
+> point for Rust applications is the root `cargo xtask arceos` command. The
+> `make` recipes remain a compatibility path for C applications.
+
+## TGOSKits workspace entry points
+
+Run these commands from the TGOSKits workspace root. The Rust application is a
+workspace package, so the root `xtask` entry point resolves its build config,
+target, and QEMU configuration without the legacy ArceOS Make variables.
+
+```bash
+cargo xtask arceos build --package arceos-helloworld --arch aarch64
+cargo xtask arceos qemu --package arceos-helloworld --arch aarch64
+```
+
+Applications live under [`apps/arceos`](../../apps/arceos) in this workspace.
+Use `cargo xtask arceos --help` for the current command and option set.
+
 ## Features & TODOs
 
 * [x] Architecture: x86_64, riscv64, aarch64, loongarch64
@@ -38,10 +57,11 @@ Working in progress.
 
 Install [Docker](https://www.docker.com/) in your system.
 
-Then build all dependencies through provided dockerfile:
+Then, from the workspace root, build all dependencies through the provided
+dockerfile:
 
 ```bash
-docker build -t arceos -f Dockerfile .
+docker build -t arceos -f os/arceos/Dockerfile .
 ```
 
 Create a container and build/run app:
@@ -50,7 +70,8 @@ Create a container and build/run app:
 docker run -it -v $(pwd):/arceos -w /arceos arceos bash
 
 # Now build/run app in the container
-make A=examples/helloworld ARCH=aarch64 run
+cargo xtask arceos build --package arceos-helloworld --arch aarch64
+cargo xtask arceos qemu --package arceos-helloworld --arch aarch64
 ```
 
 ### Manually Build and Run
@@ -102,56 +123,83 @@ Other systems and arch please refer to [Qemu Download](https://www.qemu.org/down
 #### 2. Build & Run
 
 ```bash
-# build app in arceos directory
-make A=path/to/app ARCH=<arch> LOG=<log>
+# build and run the workspace application through xtask
+cargo xtask arceos build --package arceos-helloworld --arch aarch64
+cargo xtask arceos qemu --package arceos-helloworld --arch aarch64
 ```
 
-Where `path/to/app` is the relative path to the application. Examples applications can be found in the [examples](examples/) directory or the [arceos-apps](https://github.com/arceos-org/arceos-apps) repository.
+The current example package is `arceos-helloworld`, located under
+`apps/arceos/helloworld`. More examples can be found in
+[`apps/arceos`](../../apps/arceos) or the
+[arceos-apps](https://github.com/arceos-org/arceos-apps) repository.
 
 `<arch>` should be one of `riscv64`, `aarch64`, `x86_64`, `loongarch64`.
 
-`<log>` should be one of `off`, `error`, `warn`, `info`, `debug`, `trace`.
+The root `xtask` resolves the application package and its build configuration.
+If the generated default is unsuitable, pass an explicit build config with
+`--config <path>`; that file selects the logical target, features, log level,
+and SMP build settings. Use `cargo xtask arceos --help` for the current command
+and option set.
 
-More arguments and targets can be found in [Makefile](Makefile).
-
-For example, to run the [httpserver](examples/httpserver/) on `qemu-system-aarch64` with 4 cores and log level `info`:
+For example, to run the [httpserver](../../apps/arceos/httpserver) on
+`qemu-system-aarch64` with 4 cores:
 
 ```bash
-make A=examples/httpserver ARCH=aarch64 LOG=info SMP=4 run NET=y
+cargo xtask arceos qemu \
+  --package arceos-httpserver \
+  --arch aarch64 \
+  --smp 4 \
+  --qemu-config apps/arceos/httpserver/qemu-aarch64.toml
 ```
 
-Note that the `NET=y` argument is required to enable the network device in QEMU. These arguments (`BLK`, `GRAPHIC`, etc.) only take effect at runtime not build time.
+The QEMU config, rather than the legacy `NET` or `BLK` Make variables, selects
+devices and boot arguments.
 
 ## How to write ArceOS apps
 
-You can write and build your custom applications outside the ArceOS source tree.
-Examples are given below and in the [app-helloworld](https://github.com/arceos-org/app-helloworld) and [arceos-apps](https://github.com/arceos-org/arceos-apps) repositories.
+Rust applications selected by the root `xtask` are Cargo workspace packages.
+C applications may remain outside the workspace and use the compatibility Make
+flow. The current example is
+[`apps/arceos/helloworld`](../../apps/arceos/helloworld); the upstream
+[app-helloworld](https://github.com/arceos-org/app-helloworld) and
+[arceos-apps](https://github.com/arceos-org/arceos-apps) repositories provide
+additional references.
 
 ### Rust
 
-1. Create a new rust package with `no_std` and `no_main` environment.
-2. Add `ax-std` dependency and features to enable to `Cargo.toml`:
+1. Create a package under `apps/arceos` and add it to the root workspace
+   `members` list. Use a unique Cargo package name; commands select the
+   application with `--package`.
+2. Add `ax-std` and its application feature to `Cargo.toml`:
 
     ```toml
+    [package]
+    name = "my-arceos-app"
+    version = "0.1.0"
+    edition.workspace = true
+
+    [features]
+    default = ["arceos"]
+    arceos = ["dep:ax-std", "ax-std/arceos"]
+
     [dependencies]
-    ax-std = { path = "/path/to/arceos/ulib/axstd", features = ["..."] }
-    # or use git repository:
-    # ax-std = { git = "https://github.com/arceos-org/arceos.git", features = ["..."] }
+    ax-std = { workspace = true, optional = true, features = ["default"] }
     ```
 
 3. Call library functions from `ax-std` in your code, just like the Rust [std](https://doc.rust-lang.org/std/) library.
 
-    Remember to annotate the `main` function with `#[unsafe(no_mangle)]` (see this [example](examples/helloworld/src/main.rs)).
+    Current applications use an ordinary `fn main()`. The `std` PIE build path
+    does not require `no_std`, `no_main`, or `#[unsafe(no_mangle)]`; see the
+    [hello-world entry point](../../apps/arceos/helloworld/src/main.rs).
 
-4. Build your application with ArceOS, by running the `make` command in the application directory:
+4. Build and run the package through the root `xtask`. Add `--config <path>`
+   when a custom build config is needed, and `--qemu-config <path>` to select
+   devices or boot arguments:
 
     ```bash
-    # in app directory
-    make -C /path/to/arceos A=$(pwd) ARCH=<arch> run
-    # more args: LOG=<log> SMP=<smp> NET=[y|n] ...
+    cargo xtask arceos build --package my-arceos-app --arch aarch64
+    cargo xtask arceos qemu --package my-arceos-app --arch aarch64
     ```
-
-    All arguments and targets are the same as above.
 
 ### C
 
@@ -165,7 +213,8 @@ Examples are given below and in the [app-helloworld](https://github.com/arceos-o
     └── features.txt    # optional, if only use default features
     ```
 
-2. Add build targets to `axbuild.mk`, add features to enable to `features.txt` (see this [example](examples/httpserver-c/)):
+2. Add build targets to `axbuild.mk` and features to enable to `features.txt`
+   using the C application layout expected by `scripts/make`:
 
     ```bash
     # in axbuild.mk
@@ -179,11 +228,12 @@ Examples are given below and in the [app-helloworld](https://github.com/arceos-o
     net
     ```
 
-3. Build your application with ArceOS, by running the `make` command in the application directory:
+3. Build the C application through the compatibility Make flow. This path
+   remains available for C apps and is not the Rust `std` PIE entry point:
 
     ```bash
     # in app directory
-    make -C /path/to/arceos A=$(pwd) ARCH=<arch> run
+    make -C /path/to/tgoskits/os/arceos A=$(pwd) ARCH=<arch> run
     # more args: LOG=<log> SMP=<smp> NET=[y|n] ...
     ```
 
@@ -204,7 +254,7 @@ You may need to select the corresponding device drivers by setting the
 # In Cargo.toml
  [dependencies]
 ax-alloc = { git = "https://github.com/arceos-org/arceos.git", tag = "v0.2.0" } # ax-alloc
-ax-hal = { git = "https://github.com/arceos-org/arceos.git", tag = "v0.2.0" } # modules/axhal
+ax-hal = { git = "https://github.com/arceos-org/arceos.git", tag = "v0.2.0" } # os/arceos/modules/axhal
 ```
 
 ## Design

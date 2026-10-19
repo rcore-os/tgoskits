@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 /*
  * test-aarch64-cpu-feat — 验证 EL0 可访问 CTR_EL0 / DC ZVA / IC IVAU
  *
@@ -15,6 +17,71 @@
 
 #include "test_framework.h"
 #include <stdint.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#if defined(__aarch64__)
+static int unaligned_ldp_after_mremap(void)
+{
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        return 0;
+    }
+
+    uint8_t *source = mmap(NULL, (size_t)page_size, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    uint8_t *target = mmap(NULL, (size_t)page_size, PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (source == MAP_FAILED || target == MAP_FAILED) {
+        if (source != MAP_FAILED) {
+            munmap(source, (size_t)page_size);
+        }
+        if (target != MAP_FAILED) {
+            munmap(target, (size_t)page_size);
+        }
+        return 0;
+    }
+
+    for (size_t index = 0; index < 64; ++index) {
+        source[index] = (uint8_t)index;
+    }
+    void *moved = (void *)syscall(SYS_mremap, source, (size_t)page_size,
+                                  (size_t)page_size,
+                                  MREMAP_MAYMOVE | MREMAP_FIXED, target);
+    if (moved == MAP_FAILED) {
+        munmap(source, (size_t)page_size);
+        munmap(target, (size_t)page_size);
+        return 0;
+    }
+    if (moved != target) {
+        munmap(moved, (size_t)page_size);
+        munmap(target, (size_t)page_size);
+        return 0;
+    }
+
+    _Alignas(16) uint8_t actual[32];
+    const uint8_t *unaligned_end = (const uint8_t *)moved + 65;
+    __asm__ volatile(
+        "ldp q0, q1, [%1, #-64]\n\t"
+        "stp q0, q1, [%0]"
+        :
+        : "r"(actual), "r"(unaligned_end)
+        : "v0", "v1", "memory");
+
+    int matches = 1;
+    for (size_t index = 0; index < sizeof(actual); ++index) {
+        if (actual[index] != (uint8_t)(index + 1)) {
+            matches = 0;
+            break;
+        }
+    }
+    if (munmap(moved, (size_t)page_size) != 0) {
+        matches = 0;
+    }
+    return matches;
+}
+#endif
 
 int main(void)
 {
@@ -28,6 +95,28 @@ int main(void)
     uint64_t ctr = 0;
     __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
     CHECK(ctr != 0, "MRS CTR_EL0 returned a non-zero value");
+
+    /* Linux-compatible EL0 permits ordinary unaligned accesses to Normal
+     * memory. Some firmware leaves SCTLR_EL1.A set, so this must be configured
+     * explicitly instead of inherited at boot. This checks observable EL0
+     * behavior only: it does not force A=1 before kernel entry, so a pass with
+     * QEMU's default firmware cannot prove that the kernel cleared A. */
+    _Alignas(uint64_t) const uint8_t bytes[] = {
+        0xa5, 0x78, 0x56, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00
+    };
+    const uint8_t *unaligned = bytes + 1;
+    uint64_t unaligned_value = 0;
+    __asm__ volatile("ldr %0, [%1]"
+                     : "=r"(unaligned_value)
+                     : "r"(unaligned)
+                     : "memory");
+    CHECK(unaligned_value == UINT64_C(0x12345678),
+          "ordinary unaligned LDR returned without an alignment fault");
+
+    /* mremap relocates populated PTEs using their queried flags. The relocated
+     * page must remain Normal memory so glibc-style vector copies stay legal. */
+    CHECK(unaligned_ldp_after_mremap(),
+          "unaligned LDP Q pair works after MREMAP_FIXED relocation");
 
     /* DC ZVA 块大小由 DCZID_EL0.BS 给出, 单位是 4 字节字。
      * DCZID_EL0.DZP 置位时, 用户态不应执行 DC ZVA。 */

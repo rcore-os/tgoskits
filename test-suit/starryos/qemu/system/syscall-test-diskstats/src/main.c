@@ -7,34 +7,37 @@
 /*
  * /proc/diskstats 块设备 I/O 计数回归测试。
  *
- * 触发背景 (为什么写这个测例):
- *   glances 的 DISK I/O 区块解析 /proc/diskstats 的每设备读写计数与扇区数。
- *   starry 此前没有 /proc/diskstats -> 该区块无法渲染。现内核在块 I/O 中心
- *   路径 (axfs-ng block runtime submit_io) 累计真实读写计数并导出该文件。
+ * 通过 ext4 根设备上的实际写入与 fsync 检查完成计数和 flush 接线。
+ * Linux v6.12 block/genhd.c: diskstats_show 的每行含设备标识三列及
+ * 17 个统计字段；扇区固定 512 字节，时间向下截断为毫秒。
  *
- * man 5 proc §/proc/diskstats:
- *   每行 14 列: "major minor name reads reads_merged sectors_read ms_read
- *   writes writes_merged sectors_written ms_write ios_in_progress ms_io
- *   weighted_ms"。扇区固定 512 字节。
- *
- * 断言:
- *   1. /proc/diskstats 存在, 含 nvme0n1 设备行, 字段数 >= 14。
- *   2. reads / sectors_read > 0: 启动挂载 ext4 已产生真实块读, 证明读计数已接线
- *      且非硬编码假值。
- *   3. 写文件 + fsync 强制回写后, writes / sectors_written 真增长; reads /
- *      sectors_read 单调不减。
+ * 本用例检查 20 列均可解析、当前未实现的 merge/discard 为零，以及实际
+ * 读写与 flush 计数。精确时间换算和字段顺序由生产 formatter 的 axtest
+ * 使用固定快照检查，不对 QEMU I/O 延迟设下限。
  */
 
 #define DISKSTATS_PATH "/proc/diskstats"
 
+enum {
+    READS = 3,
+    READS_MERGED = 4,
+    SECTORS_READ = 5,
+    WRITES = 7,
+    WRITES_MERGED = 8,
+    SECTORS_WRITTEN = 9,
+    DISCARDS = 14,
+    DISCARDS_MERGED = 15,
+    SECTORS_DISCARDED = 16,
+    DISCARD_MS = 17,
+    FLUSHES = 18,
+    DISKSTATS_FIELDS = 20,
+};
+
 /*
- * diskstats 令牌 0-based 下标 (Linux 14 列布局):
- *   name=2 reads=3 sectors_read=5 writes=7 sectors_written=9
- * 读取 nvme0n1 行, 返回该行令牌数; 令牌数 >= 14 时把
- * [reads, sectors_read, writes, sectors_written] 填入 out。
- * 无 nvme0n1 行返回 -1, 文件打不开返回 -2。
+ * 按原始列号保存数值，跳过设备名列。返回字段数；无设备行为 -1，
+ * 文件打不开为 -2，非十进制无符号数或溢出为 -3。
  */
-static int read_nvme(unsigned long long out[4])
+static int read_nvme(unsigned long long out[DISKSTATS_FIELDS])
 {
     FILE *f = fopen(DISKSTATS_PATH, "r");
     if (!f)
@@ -48,17 +51,31 @@ static int read_nvme(unsigned long long out[4])
             toks[n++] = p;
         if (n >= 3 && strcmp(toks[2], "nvme0n1") == 0) {
             nfields = n;
-            if (n >= 14) {
-                out[0] = strtoull(toks[3], NULL, 10);
-                out[1] = strtoull(toks[5], NULL, 10);
-                out[2] = strtoull(toks[7], NULL, 10);
-                out[3] = strtoull(toks[9], NULL, 10);
+            if (n == DISKSTATS_FIELDS) {
+                for (int i = 0; i < n; i++) {
+                    if (i == 2)
+                        continue;
+                    char *end;
+                    errno = 0;
+                    out[i] = strtoull(toks[i], &end, 10);
+                    if (toks[i][0] < '0' || toks[i][0] > '9' || *end != '\0' || errno != 0) {
+                        nfields = -3;
+                        break;
+                    }
+                }
             }
             break;
         }
     }
     fclose(f);
     return nfields;
+}
+
+static int unsupported_counters_are_zero(const unsigned long long stats[DISKSTATS_FIELDS])
+{
+    return stats[READS_MERGED] == 0 && stats[WRITES_MERGED] == 0 &&
+           stats[DISCARDS] == 0 && stats[DISCARDS_MERGED] == 0 &&
+           stats[SECTORS_DISCARDED] == 0 && stats[DISCARD_MS] == 0;
 }
 
 /* 在 ext4 根文件系统上写 bytes 字节并 fsync, 强制脏页回写到块设备。成功返回 0。*/
@@ -108,19 +125,20 @@ int main(void)
     TEST_START("/proc/diskstats block I/O accounting");
     char msg[192];
 
-    unsigned long long s0[4] = {0, 0, 0, 0};
+    unsigned long long s0[DISKSTATS_FIELDS] = {0};
     int nf = read_nvme(s0);
 
     CHECK(nf != -2, "/proc/diskstats 可打开");
-    CHECK(nf >= 0, "/proc/diskstats 含 nvme0n1 设备行");
-    snprintf(msg, sizeof msg, "nvme0n1 行字段数 >= 14 (实际 %d)", nf);
-    CHECK(nf >= 14, msg);
+    CHECK(nf != -1 && nf != -2, "/proc/diskstats 含 nvme0n1 设备行");
+    snprintf(msg, sizeof msg, "nvme0n1 行完整解析 20 列 (实际 %d)", nf);
+    CHECK(nf == DISKSTATS_FIELDS, msg);
+    CHECK(unsupported_counters_are_zero(s0), "未实现的 merge/discard 计数为零");
 
-    /* 启动挂载 ext4 必然产生块读 -> 证明 read 计数已接线且非造假。*/
-    snprintf(msg, sizeof msg, "nvme0n1 reads > 0 (启动块读, 实际 %llu)", s0[0]);
-    CHECK(s0[0] > 0, msg);
-    snprintf(msg, sizeof msg, "nvme0n1 sectors_read > 0 (实际 %llu)", s0[1]);
-    CHECK(s0[1] > 0, msg);
+    /* 此程序运行前，挂载 ext4 与读取程序文件已完成真实块读。*/
+    snprintf(msg, sizeof msg, "nvme0n1 reads > 0 (启动块读, 实际 %llu)", s0[READS]);
+    CHECK(s0[READS] > 0, msg);
+    snprintf(msg, sizeof msg, "nvme0n1 sectors_read > 0 (实际 %llu)", s0[SECTORS_READ]);
+    CHECK(s0[SECTORS_READ] > 0, msg);
 
     /* 写文件 + fsync 强制回写 -> writes / sectors_written 必须真增长。*/
     const char *path = pick_probe_path();
@@ -129,23 +147,27 @@ int main(void)
         int ok = 1;
         for (int i = 0; i < 3; i++)
             ok &= (write_and_sync(path, 512 * 1024) == 0);
-        sync();
         CHECK(ok, "写 3×512KiB 文件 + fsync 成功");
-        unlink(path);
 
-        unsigned long long s1[4] = {0, 0, 0, 0};
+        unsigned long long s1[DISKSTATS_FIELDS] = {0};
         int nf1 = read_nvme(s1);
-        CHECK(nf1 >= 14, "写后再读 /proc/diskstats nvme0n1 行完整");
+        CHECK(nf1 == DISKSTATS_FIELDS, "写后再读 nvme0n1 行完整解析 20 列");
+        CHECK(unsupported_counters_are_zero(s1), "写后 merge/discard 保留列仍为零");
 
-        snprintf(msg, sizeof msg, "写+fsync 后 writes 增长 (%llu -> %llu)", s0[2], s1[2]);
-        CHECK(s1[2] > s0[2], msg);
-        snprintf(msg, sizeof msg, "写+fsync 后 sectors_written 增长 (%llu -> %llu)", s0[3], s1[3]);
-        CHECK(s1[3] > s0[3], msg);
+        snprintf(msg, sizeof msg, "写+fsync 后 writes 增长 (%llu -> %llu)", s0[WRITES], s1[WRITES]);
+        CHECK(s1[WRITES] > s0[WRITES], msg);
+        snprintf(msg, sizeof msg, "写+fsync 后 sectors_written 增长 (%llu -> %llu)",
+                 s0[SECTORS_WRITTEN], s1[SECTORS_WRITTEN]);
+        CHECK(s1[SECTORS_WRITTEN] > s0[SECTORS_WRITTEN], msg);
+        snprintf(msg, sizeof msg, "写+fsync 后 flushes 增长 (%llu -> %llu)",
+                 s0[FLUSHES], s1[FLUSHES]);
+        CHECK(s1[FLUSHES] > s0[FLUSHES], msg);
 
-        CHECK(s1[0] >= s0[0], "reads 单调不减");
-        CHECK(s1[1] >= s0[1], "sectors_read 单调不减");
+        CHECK(s1[READS] >= s0[READS], "reads 单调不减");
+        CHECK(s1[SECTORS_READ] >= s0[SECTORS_READ], "sectors_read 单调不减");
+        unlink(path);
     }
 
-    // 12 = 本文件 CHECK 总数; 少跑(如探测路径不可写跳过写块) -> FAIL。
-    TEST_DONE(12);
+    // 15 = 本文件 CHECK 总数; 少跑(如探测路径不可写跳过写块) -> FAIL。
+    TEST_DONE(15);
 }

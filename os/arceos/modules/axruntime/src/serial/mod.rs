@@ -46,6 +46,8 @@ use crate::{
 };
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
+#[cfg(feature = "fault-injection")]
+const DEFERRED_TEST_RECORD: &str = "SERIAL_DEFERRED_MAILBOX_RECORD";
 const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 // A subscriber can be unable to run while all secondary CPUs publish their
@@ -155,10 +157,18 @@ impl RuntimeIrqBridge {
         self.register_retry.swap(false, Ordering::AcqRel)
     }
 
-    fn wait(&self) {
-        self.worker_signal
-            .wait()
-            .unwrap_or_else(|error| panic!("serial IRQ waiter could not quiesce: {error}"));
+    fn wait(&self, diagnostic_fallback: bool) -> bool {
+        // This timer is armed by the CPU-affine owner before sleeping. A
+        // producer cannot safely request it after an IPI transport failure.
+        // Only the active diagnostic console needs a one-second fallback;
+        // other ports keep their ordinary interrupt-only sleep.
+        let result = if diagnostic_fallback {
+            self.worker_signal
+                .wait_timeout(core::time::Duration::from_secs(1))
+        } else {
+            self.worker_signal.wait().map(|()| false)
+        };
+        result.unwrap_or_else(|error| panic!("serial IRQ waiter could not quiesce: {error}"))
     }
 }
 
@@ -217,6 +227,8 @@ struct RuntimeShared {
     index: usize,
     info: SerialDeviceInfo,
     owner_cpu: usize,
+    #[cfg(feature = "fault-injection")]
+    deferred_test_consumed: AtomicU8,
     polling: bool,
     port: RawSpinLock<Box<dyn rdif_serial::UartPort>>,
     register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>>,
@@ -376,6 +388,45 @@ pub struct SerialRuntimeHandle {
 impl SerialRuntimeHandle {
     pub fn info(&self) -> &SerialDeviceInfo {
         &self.shared.info
+    }
+
+    /// Injects a diagnostic only after the real worker is blocked with an
+    /// attached IRQ waiter. No normal log/doorbell wake is generated.
+    #[cfg(feature = "fault-injection")]
+    pub fn publish_deferred_when_blocked_for_test(&self) -> Option<bool> {
+        if ACTIVE_CONSOLE.load(Ordering::Acquire) != self.shared.index
+            || self.shared.log_subscription_active.load(Ordering::Acquire)
+            || !self.shared.bridge.worker_signal.is_blocked_for_test()
+        {
+            return None;
+        }
+        self.shared
+            .deferred_test_consumed
+            .store(0, Ordering::Release);
+        try_publish_deferred_record(
+            ax_log::RecordMeta::log(),
+            format_args!("{DEFERRED_TEST_RECORD}"),
+        )
+        .map(|status| matches!(status, ax_log::PublishStatus::Published))
+    }
+
+    /// Checks whether all already-published logs have left the mailbox. After
+    /// this becomes true, task_output().wait_idle() can drain the current log
+    /// and UART before the test enters its no-notification observation window.
+    #[cfg(feature = "fault-injection")]
+    pub fn log_mailbox_empty_for_test(&self) -> bool {
+        !self.shared.log_mailbox.has_pending_for(self.shared.index)
+    }
+
+    /// Reports the real mailbox consumer's wake source: None before extraction,
+    /// Some(true) after a timeout, or Some(false) after another wake source.
+    #[cfg(feature = "fault-injection")]
+    pub fn deferred_record_consumed_after_timeout_for_test(&self) -> Option<bool> {
+        match self.shared.deferred_test_consumed.load(Ordering::Acquire) {
+            0 => None,
+            1 => Some(false),
+            _ => Some(true),
+        }
     }
 
     /// Leases the only RX subscription.
@@ -939,6 +990,8 @@ fn build_runtime(
         index,
         info,
         owner_cpu: primary_cpu,
+        #[cfg(feature = "fault-injection")]
+        deferred_test_consumed: AtomicU8::new(0),
         polling,
         port: RawSpinLock::new(port),
         register_gate: register_gate.clone(),
@@ -1095,6 +1148,36 @@ pub(crate) fn try_publish_record(
     meta: ax_log::RecordMeta,
     args: fmt::Arguments<'_>,
 ) -> Option<ax_log::PublishStatus> {
+    publish_record(meta, args, true)
+}
+
+/// Queues a bounded diagnostic without waking the serial worker or sending IPI.
+///
+/// Used when notification transport itself has failed. The record is consumed
+/// by the active console's owner at its next local timeout, even with no other
+/// serial events. No console or a full mailbox may drop it.
+/// Unlike emergency output, this does not take permanent ownership of the UART.
+#[cfg(any(
+    test,
+    feature = "fault-injection",
+    all(
+        feature = "uspace",
+        not(feature = "host-test"),
+        any(feature = "ipi", feature = "wake-ipi")
+    )
+))]
+pub(crate) fn try_publish_deferred_record(
+    meta: ax_log::RecordMeta,
+    args: fmt::Arguments<'_>,
+) -> Option<ax_log::PublishStatus> {
+    publish_record(meta, args, false)
+}
+
+fn publish_record(
+    meta: ax_log::RecordMeta,
+    args: fmt::Arguments<'_>,
+    wake_worker: bool,
+) -> Option<ax_log::PublishStatus> {
     let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
     let runtime = runtimes().get(index)?;
     let guard = ax_task::sync::PreemptIrqSaveGuard::new();
@@ -1131,6 +1214,7 @@ pub(crate) fn try_publish_record(
         outcome.published(),
         ax_hal::irq::in_irq_context(),
         log_wake_ready,
+        wake_worker,
     ) {
         RecordWakeContext::Interrupt => {
             runtime.shared.bridge.notify();
@@ -1160,8 +1244,9 @@ const fn record_wake_context(
     published: bool,
     in_irq_context: bool,
     log_wake_ready: bool,
+    wake_worker: bool,
 ) -> RecordWakeContext {
-    if !published || !log_wake_ready {
+    if !wake_worker || !published || !log_wake_ready {
         RecordWakeContext::None
     } else if in_irq_context {
         RecordWakeContext::Interrupt
@@ -1568,19 +1653,19 @@ mod tests {
     #[test]
     fn early_secondary_log_does_not_wake_before_log_wake_ready() {
         assert_eq!(
-            record_wake_context(true, false, false),
+            record_wake_context(true, false, false, true),
             RecordWakeContext::None
         );
         assert_eq!(
-            record_wake_context(true, false, true),
+            record_wake_context(true, false, true, true),
             RecordWakeContext::Task
         );
         assert_eq!(
-            record_wake_context(true, true, false),
+            record_wake_context(true, true, false, true),
             RecordWakeContext::None
         );
         assert_eq!(
-            record_wake_context(true, true, true),
+            record_wake_context(true, true, true, true),
             RecordWakeContext::Interrupt
         );
     }
@@ -1598,7 +1683,7 @@ mod tests {
         );
         assert!(early.published());
         assert_eq!(
-            record_wake_context(early.published(), false, mailbox.wake_ready(1)),
+            record_wake_context(early.published(), false, mailbox.wake_ready(1), true),
             RecordWakeContext::None
         );
 
@@ -1610,9 +1695,27 @@ mod tests {
         );
         assert!(ready.published());
         assert_eq!(
-            record_wake_context(ready.published(), false, mailbox.wake_ready(1)),
+            record_wake_context(ready.published(), false, mailbox.wake_ready(1), true),
             RecordWakeContext::Task
         );
+
+        let deferred = mailbox.try_publish(
+            1,
+            LogRecordMeta::log(3, Some(8)),
+            format_args!("IPI delivery failed\n"),
+        );
+        assert!(deferred.published());
+        for in_irq_context in [false, true] {
+            assert_eq!(
+                record_wake_context(
+                    deferred.published(),
+                    in_irq_context,
+                    mailbox.wake_ready(1),
+                    false,
+                ),
+                RecordWakeContext::None,
+            );
+        }
 
         let mut reader = mailbox.reader();
         assert!(
@@ -1624,6 +1727,11 @@ mod tests {
             reader
                 .take(OWNER)
                 .is_some_and(|record| record.record.bytes().ends_with(b"secondary init OK\r\n"))
+        );
+        assert!(
+            reader
+                .take(OWNER)
+                .is_some_and(|record| record.record.bytes().ends_with(b"IPI delivery failed\r\n"))
         );
         assert!(reader.take(OWNER).is_none());
     }

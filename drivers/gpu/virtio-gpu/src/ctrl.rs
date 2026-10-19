@@ -31,7 +31,12 @@
 //!   so a host that drains slower than the guest produces cannot grow
 //!   guest-side buffering without bound.
 
-use alloc::{boxed::Box, collections::VecDeque, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeSet, VecDeque},
+    vec,
+    vec::Vec,
+};
 use core::{hint::spin_loop, mem::size_of};
 
 use virtio_drivers::{queue::VirtQueue, transport::Transport};
@@ -132,12 +137,36 @@ pub(crate) struct ControlQueue<H: virtio_drivers::Hal> {
     /// Highest fence id whose completion has been observed (implicit ordering:
     /// fence N done ⇒ all ≤ N done).
     ///
-    /// INVARIANT: only [`ControlQueue::pump_completions`] advances this
-    /// counter, when it pops a used entry that carries a fence id. Submits
-    /// are fire-and-forget (`enqueue` with a fence id); there is no blocking
-    /// fenced submission path, so a fence id the host never completes keeps
+    /// INVARIANT: only [`ControlQueue::pump_completions`] and
+    /// [`ControlQueue::cancel_fence`] advance this counter, both under the
+    /// same contiguous-prefix semantics (a never-enqueued id retired by
+    /// `cancel_fence` counts as completed: no host completion for it will
+    /// ever arrive). It is the *contiguous* completion watermark: every
+    /// fence id `<= completed_fence_id` has either popped on the used ring
+    /// or been canceled without reaching it. Submits are fire-and-forget
+    /// (`enqueue` with a fence id); there is no blocking fenced submission
+    /// path, so a fence id the host never completes keeps
     /// [`ControlQueue::wait_fence`] waiting until its timeout.
+    ///
+    /// Ring-based contexts (venus) complete their fenced batches
+    /// *out of submission order*: the host defers a render batch's response
+    /// until the renderer retires it, while later empty ring kicks complete
+    /// immediately. A single max-popped watermark would let a later id
+    /// subsume an earlier, still-running batch, so out-of-order pops are
+    /// recorded in [`ControlQueue::completed_fences`] instead and only fold
+    /// into the watermark once the hole ahead of them fills.
     completed_fence_id: u64,
+    /// Fence ids above [`ControlQueue::completed_fence_id`] whose used
+    /// entries already popped (out-of-order ring completions). Entries only
+    /// leave the set when the contiguous watermark folds them in
+    /// ([`ControlQueue::pump_completions`]); there is no independent
+    /// low-end pruning. A fence id the host enqueued but never retires is
+    /// therefore a permanent hole: the watermark stays below it and every
+    /// later pop retains one entry each, so in that wedged state the set
+    /// grows with the submit count (documented as a known limitation of the
+    /// design doc). Normal operation keeps it bounded by the deferred
+    /// batches' lag.
+    completed_fences: BTreeSet<u64>,
     /// Monotonic nanosecond clock injected at construction; bounds the
     /// blocking waits. See [`WAIT_TIMEOUT_NS`].
     clock: fn() -> u64,
@@ -179,6 +208,7 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
             pending_commands: VecDeque::new(),
             ctrl_pending: 0,
             completed_fence_id: 0,
+            completed_fences: BTreeSet::new(),
             clock,
             sync_token: None,
             broken: false,
@@ -216,6 +246,26 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
     ///
     /// Returns the queue token (`0..CTRL_QUEUE_SIZE`) for an enqueued command,
     /// or `None` if it was parked. Callers must not wait on a parked command.
+    /// Retires `fence_id` without a device round-trip: the caller allocated
+    /// the id but its command never reached the queue (an enqueue failure —
+    /// a full ring reports [`Error::Busy`] transiently). A fence the queue
+    /// never saw would otherwise pin the contiguous completion watermark at
+    /// `id - 1` forever and park every later completion in
+    /// [`ControlQueue::completed_fences`], leaking one entry per submit.
+    pub(crate) fn cancel_fence(&mut self, fence_id: u64) {
+        if fence_id == 0 || fence_id <= self.completed_fence_id {
+            return;
+        }
+        if fence_id == self.completed_fence_id + 1 {
+            self.completed_fence_id += 1;
+            while self.completed_fences.remove(&(self.completed_fence_id + 1)) {
+                self.completed_fence_id += 1;
+            }
+        } else {
+            self.completed_fences.insert(fence_id);
+        }
+    }
+
     pub(crate) fn enqueue<Req: zerocopy::IntoBytes + zerocopy::Immutable>(
         &mut self,
         transport: &mut impl Transport,
@@ -235,8 +285,12 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
             return Err(Error::InvalidParam);
         }
         // The payload box is moved into the `PendingSubmit`, not cloned — for
-        // SUBMIT_3D it can be hundreds of kilobytes.
-        let mut data: Option<Vec<u8>> = data.map(<[u8]>::to_vec);
+        // SUBMIT_3D it can be hundreds of kilobytes. An empty payload folds
+        // to `None`: virtio forbids zero-length buffers, so a size-0
+        // SUBMIT_3D (the venus ring kick) must go out header-only, exactly
+        // like Linux `virtio_gpu_queue_fenced_ctrl_buffer` with
+        // `data_size == 0`.
+        let mut data: Option<Vec<u8>> = data.filter(|data| !data.is_empty()).map(<[u8]>::to_vec);
 
         // Acquire a stable-address slot. Every path below that consumes an
         // entry (`pop_used` or this error return) gives its slot back, so
@@ -551,8 +605,19 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
                     return Err(self.mark_broken(err));
                 }
             }
-            if entry.fence_id > self.completed_fence_id {
-                self.completed_fence_id = entry.fence_id;
+            if entry.fence_id != 0 {
+                // Fold the popped fence into the contiguous watermark; an
+                // out-of-order completion (a ring batch whose response the
+                // host deferred past later kicks) parks in the set until the
+                // hole ahead of it fills.
+                if entry.fence_id == self.completed_fence_id + 1 {
+                    self.completed_fence_id += 1;
+                    while self.completed_fences.remove(&(self.completed_fence_id + 1)) {
+                        self.completed_fence_id += 1;
+                    }
+                } else {
+                    self.completed_fences.insert(entry.fence_id);
+                }
             }
             // Fire-and-forget: the response is dropped here (no waiter), but
             // surface device-side errors on the log.
@@ -678,13 +743,13 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
         fence_id: u64,
     ) -> Result<(), Error> {
         let deadline = (self.clock)().saturating_add(WAIT_TIMEOUT_NS);
-        while self.completed_fence_id < fence_id {
+        while !self.fence_completed(fence_id) {
             // Force a kick decision: the fenced entry may not have been
             // delivered to the host yet (the consumer's boundary notify may
             // from a full ring, `enqueue` performs no kick on its own).
             self.notify(transport);
             self.pump_completions(transport)?;
-            if self.completed_fence_id >= fence_id {
+            if self.fence_completed(fence_id) {
                 break;
             }
             if (self.clock)() >= deadline {
@@ -728,8 +793,12 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
         }
     }
 
-    /// Non-blocking fence query: has `fence_id` (and everything enqueued
-    /// before it) already been popped, i.e. has its virgl fence fired?
+    /// Non-blocking fence query: has `fence_id` already been popped, i.e.
+    /// has its virgl fence fired? True when the id is at or below the
+    /// contiguous completion watermark, or it popped out of order and
+    /// parks in the completion set — ring batches retire out of order, so
+    /// a lower id is NOT implicitly complete until its own pop folds the
+    /// watermark forward.
     ///
     /// Only reflects batches that have actually been delivered to the host; a
     /// consumer that only polls must ensure delivery itself (e.g.
@@ -740,7 +809,7 @@ impl<H: virtio_drivers::Hal> ControlQueue<H> {
     /// The counterpart of Linux `dma_resv_test_signaled` in the NOWAIT probe
     /// of `virtio_gpu_wait_ioctl` (virtgpu_ioctl.c).
     pub(crate) fn fence_completed(&self, fence_id: u64) -> bool {
-        self.completed_fence_id >= fence_id
+        fence_id <= self.completed_fence_id || self.completed_fences.contains(&fence_id)
     }
 }
 
@@ -1202,6 +1271,50 @@ mod tests {
     }
 
     #[test]
+    fn empty_payload_enqueues_header_only() {
+        // Virtio forbids zero-length buffers: a size-0 SUBMIT_3D (the venus
+        // ring kick) must not add a data descriptor, matching Linux
+        // `virtio_gpu_queue_fenced_ctrl_buffer` with `data_size == 0`. A real
+        // device rejects the whole chain otherwise and the submit is silently
+        // lost with its fence never retiring.
+        let (mut ctrl, state, mut transport) = make_ctrl();
+
+        ctrl.enqueue(&mut transport, &TestCmd { kind: 0, seq: 0 }, Some(&[]), 1)
+            .unwrap();
+        ctrl.notify(&mut transport);
+
+        let st = state.lock().unwrap();
+        let (desc_addr, driver_addr, device_addr) = {
+            let q = &st.queues[Q as usize];
+            (q.descriptors, q.driver_area, q.device_area)
+        };
+        // SAFETY: the queue areas were allocated and zeroed by `TestHal` and
+        // registered via `queue_set`; only this fn (under the lock) and the
+        // driver's atomically-ordered ring accesses touch them.
+        unsafe {
+            let avail = driver_addr as *const AvailRing;
+            let used = device_addr as *const UsedRing;
+            let descs = desc_addr as *const Desc;
+            let slot = (*used).idx.load(Ordering::Acquire) & (QSIZE as u16 - 1);
+            let head = *descs.add((*avail).ring[slot as usize] as usize);
+            // cmd + resp exceeds one buffer, so the chain rides an indirect
+            // table: the walk must inspect the table entries, where a
+            // zero-length payload descriptor would have landed.
+            assert_eq!(head.flags & DESC_INDIRECT, DESC_INDIRECT);
+            let table = core::slice::from_raw_parts(
+                head.addr as *const Desc,
+                head.len as usize / size_of::<Desc>(),
+            );
+            for d in table {
+                assert_ne!(d.len, 0, "zero-length descriptor in the chain");
+            }
+            // Exactly the command header and the response buffer — no data
+            // descriptor for the empty payload.
+            assert_eq!(table.len(), 2);
+        }
+    }
+
+    #[test]
     fn sync_request_roundtrip_is_zero_copy() {
         let (mut ctrl, state, mut transport) = make_ctrl();
 
@@ -1232,9 +1345,13 @@ mod tests {
     }
 
     #[test]
-    fn pump_advances_fence_high_water_with_implicit_ordering() {
+    fn pump_advances_fence_high_water_by_contiguous_prefix() {
         let (mut ctrl, state, mut transport) = make_ctrl();
 
+        // Ring batches retire out of order: fence 5 pops while 4 is still
+        // running, so 5 parks in the out-of-order set and the contiguous
+        // watermark stays put — a lower id must not read as implicitly
+        // complete before its own pop.
         ctrl.enqueue(&mut transport, &TestCmd { kind: 0, seq: 1 }, None, 5)
             .unwrap();
         assert!(!ctrl.fence_completed(5));
@@ -1242,9 +1359,16 @@ mod tests {
         assert!(complete_one(&state, ok_responder));
         ctrl.pump_completions(&mut transport).unwrap();
         assert!(ctrl.fence_completed(5));
-        // Implicit ordering: everything ≤ 5 is complete too.
+        assert!(!ctrl.fence_completed(4));
+
+        // Once the hole fills, the watermark folds the parked entries in
+        // and everything below reads complete again.
+        ctrl.enqueue(&mut transport, &TestCmd { kind: 0, seq: 2 }, None, 4)
+            .unwrap();
+        assert!(complete_one(&state, ok_responder));
+        ctrl.pump_completions(&mut transport).unwrap();
         assert!(ctrl.fence_completed(4));
-        assert_eq!(state.lock().unwrap().processed, vec![1]);
+        assert_eq!(state.lock().unwrap().processed, vec![1, 2]);
     }
 
     #[test]

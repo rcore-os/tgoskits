@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
-use ostool::run::{ShellCheckStep, qemu::QemuConfig};
+use ostool::run::qemu::QemuConfig;
 use regex_automata::{
     Input,
     dfa::{Automaton, dense},
@@ -199,22 +199,6 @@ pub(crate) fn configured_success_regex(qemu: &QemuConfig) -> Vec<String> {
 pub(crate) fn replace_configured_success_regex(qemu: &mut QemuConfig, patterns: Vec<String>) {
     if let Some(step) = qemu.shell_check_steps.last_mut() {
         step.success_regex = Some(patterns);
-    }
-}
-
-pub(crate) fn append_configured_success_regex(qemu: &mut QemuConfig, pattern: &str) {
-    if qemu.shell_check_steps.is_empty() {
-        qemu.shell_check_steps.push(ShellCheckStep {
-            success_regex: Some(vec![pattern.to_string()]),
-            ..Default::default()
-        });
-        return;
-    }
-    if let Some(step) = qemu.shell_check_steps.last_mut() {
-        let success_regex = step.success_regex.get_or_insert_with(Vec::new);
-        if !success_regex.iter().any(|regex| regex == pattern) {
-            success_regex.push(pattern.to_string());
-        }
     }
 }
 

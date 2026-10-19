@@ -16,6 +16,7 @@ use std::path::Path;
 
 pub(crate) use types::{AxvisorQemuCase, BoardTestGroup};
 
+pub(crate) use self::guest_build::prepare as prepare_guest_builds;
 use super::*;
 
 pub(crate) fn parse_target(

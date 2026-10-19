@@ -82,7 +82,7 @@ placement、PI 和 callback 校验，并关闭该线程新的 scheduler activity
 | 同一 `AddressSpaceCpuState` | 保留既有 active token/lease，不重复换账本 |
 | 不同 `AddressSpaceCpuState`、root 不同 | 发布 next footprint，安装 root，撤 previous footprint |
 | 不同 `AddressSpaceCpuState`、root 数值相同 | 仍按 `DifferentAddressSpace` 安装，禁止把 root 相等当 same-mm |
-| user → kernel thread | 保留 Linux 式 lazy active-mm lease，不因 trap 切页表 |
+| user → kernel thread | 通常保留 lazy active-mm lease；退休请求允许按下述安全顺序释放，不因普通 trap 切页表 |
 
 CPU footprint 的发布顺序是安全性的组成部分：进入 mm 时先发布 CPU bit，再安装 root；离开 mm
 时先安装 replacement/safe root，再清 CPU bit。前者保证并发 PTE 修改不会漏掉正要进入的 CPU，
@@ -120,6 +120,43 @@ AArch64 在用户线程暂时切到内核线程时走 `enter_lazy_kernel_address
 属于同一逻辑 mm，lazy 进入时安装的是保留 ASID 0，所有用户叶子为非全局，此后本 CPU 未运行过其它用户 mm，
 且 active 目标位持续发布以接收同步 shootdown。lease 只固定逻辑 mm 身份，不预留数值
 ASID，因此“持有 lease”本身不能让跨 mm 安装跳过失效。
+
+退休回收可显式结束这种借用。StarryOS 的 `MmInner::request_lazy_cpu_reclaim()` 在
+`Retiring` 且 `kernel_pins == 0` 时，于生命周期锁外置位永久的 `lazy_reclaim_requested` 并通知
+仍持引用的 CPU。已经处于 lazy 的 CPU 在 IPI 入口由 `reclaim_current_lazy_address_space()`
+处理；通知先于 lazy 进入时，`PreparedAddressSpaceSwitch::commit()` 的 `KernelLazy` 分支
+在 `enter_lazy_kernel_address_space()` 之后检查同一标志。两条路径均调用
+`release_active_address_space()`：安装安全 kernel root → 全量本地 TLB 失效 → 释放 scheduler
+activation → 清 active handle → 归还 runtime lease。Starry 的 authoritative CPU footprint
+在 activation 的 `release_activation_accounting()` 中撤销；runtime 自管的 footprint 则在清
+active handle 后由 `deactivate()` 撤销，两者均晚于全量失效。activation 回调已经可以把 Starry
+MM 加入 `RETIRE_QUEUE`；最后一个 runtime lease 释放所产生的 ax-task 资源回收通知才按上下文
+区分：IPI 路径直接发布，调度切换路径延迟到 switch tail。这里先完成全量失效，再结束借用。
+active handle 清零后，下次用户切换无法命中 same-mm
+保留根恢复分支，必须按不同地址空间重新安装，因此没有扩大上文省略 TLBI 的适用范围。
+
+该通知不是 shootdown 完成确认。`lazy_reclaim_requested` 只表达永久逻辑请求，不再禁止
+后续物理通知。`MmInner` 在首次通知前通过独立的 `lazy_reclaim_link` 将自己加入
+`LAZY_CPU_RECLAIM_QUEUE`；已有 sleepable reclaimer 每轮最多重试 16 个 MM，轮间休眠
+10 ms。只要仍是 `Retiring` 且没有 pin、仍有 active CPU，就重新排队。
+`MmInner::lazy_reclaim_retry` 的 IRQ-safe 锁串行化 `LazyReclaimRetry::claim()`：首次立即通知，
+后续间隔从 10 ms 倍增并封顶于 1 秒，只有到期才发送；重复生命周期回调也使用同一准入。
+每个 MM 独立计时，新退休 MM 不受其他故障 MM 的退避影响。通知在重试锁外执行，避免本地
+释放回调重入。退避不设置重试次数上限、不撤销 lease，也不阻止已完成 MM 出队和析构；
+永久故障仍不能保证回收完成，但不会对同一 MM 每 10 ms 持续发送。即使第一次
+发送失败，或返回 `Coalesced` 的原发送者随后失败，也不依赖外部再次释放 owner 或普通 IPI
+才能重新尝试。独立链允许 activation 回调同时加入退休队列，不能与 destruction/repair 共用链接。
+
+发送失败通过 `try_publish_deferred_record()` 向有界串口 mailbox 尽力写入诊断，不立即
+唤醒串口 worker，避免日志再次进入同一故障 IPI 通道；每个 MM/CPU 最多报告一次，重试不会刷屏。
+支持 lazy 驱逐的运行时仅为当前活动控制台保留一秒本地等待超时，由 CPU-affine worker
+睡前注册，超时后重新检查 mailbox。其他 IRQ 串口仍按普通通知休眠；轮询串口使用既有轮询路径。
+mailbox 满或没有 runtime console 时仍可丢弃，并沿既有丢弃统计报告。
+
+`CpuOffline` 沿既有 CPU offline 释放协议处理。重试成功也不减少 lease；必须等目标安装安全根、
+刷新 TLB 并归还引用后才回收。永久控制器故障或目标 CPU 永远不能执行时仍保留全部资源，
+不能承诺故障硬件下有限时间完成。这里与 Linux v7.1 `cleanup_lazy_tlbs()` 同样要求目标完成
+根切换后才能释放；Starry 使用有界后台重试承接可报告失败的 IPI 接口。
 
 ### 3.2 跨 mm 失效、FullFlush 与混合模式 ASID 0 卫生
 
@@ -524,3 +561,45 @@ TLB 缓存留存当作架构保证，或假定 AT 必然读取真实缓存。
 `since_sha=23a075fe88b1bebac5fc345ef2a7fb4602b2c943` 连续完成三次独立 CI）描述的是 §1 所列
 “PR #1775 之上通用性重构”的原始交付范围。该条款保留不变，本节新增的 AArch64 lazy/ASID 登记不改写它，
 也不代表该历史范围之外的地址空间优化已经满足这条门禁。
+
+### 9.3 退休驱逐和启动对齐的验证边界
+
+`qemu/system/mm-transition-safety` 的 `exited_file_mapping_sync()` 验证子进程带私有文件映射
+退出后，父进程 `fsync` 与内容读回正常。它不隔离其他用户进程，不观测该 mm 的 lazy 借用数或
+主动驱逐次数；旧实现也可能由普通调度归还引用后通过。因此它是退出后同步与内容的系统冒烟
+证据，不能证明主动驱逐路径已执行或在没有新用户任务的情况下及时回收。组件用例
+`lazy_reclaim_notification_failures_preserve_cpu_leases()` 通过实际通知遍历逻辑注入失败，验证
+失败不会急停或阻断剩余目标、请求仍有效、通知不会代替 CPU 释放 lease；它不证明硬件 IPI
+投递或真实调度时序。`lazy_reclaim_retries_failed_and_unacknowledged_kicks_until_lease_release()`
+进一步验证错误后仍可重试，未确认的成功通知不能提前释放 runtime lease，实际 lease 归还后
+产生回收通知。Starry 的 `last_user_owner_cannot_reclaim_an_active_address_space()` 验证未确认
+activation 的重试项跨 worker 批次保留、完成后清除及退休回收；其中 activation 为受控的逻辑
+租约，不作为硬件根切换证据。
+
+AArch64 内核 axtest `lazy_mm_failed_notification_retries_on_the_production_reclaimer()` 使用
+真实 `MmHandle::scheduler_address_space()` 与 user-context 任务实际安装页表，然后切换到
+同 CPU 的 kernel-lazy 任务。按 MM/CPU 限定的故障注入仅使首次 lazy 通知返回 `Timeout`，
+不改变普通调度和串口 IPI。目标用 250 ms 硬截止的 IRQ 关闭握手保留现场，恢复 IRQ 后的禁抢占观察最多 100 ms；
+正常路径观察到自主重试后立即解除握手，不用固定时长忙等作为成功条件。
+纯状态机用例 `notification_backoff_bounds_traffic_without_abandoning_retries()` 使用受控时间
+验证到期边界、倍增、封顶后持续重试及 MM 之间互不延迟。协调者不再次调用
+request/retry/reap，而由固定在另一 CPU、运行同一 `run_reclaimer()` 的可停止工作线程
+自主重试。解除握手后，测试观察真实 IPI consumer 完成 root/TLB/lease 释放、MM 进入 `Freed`
+和 backing 最终释放；失败分支也先解除握手并停止工作线程，再报告断言。该用例不进入 EL0，
+证明的是 user-context 安装与 kernel-lazy 生命周期，不是用户指令执行或硬件控制器故障本身。
+
+`serial-rx` 先等待旧日志离开 mailbox，再用既有 output drain 排空当前日志和 UART；
+在真实 IRQ worker 已进入 `Blocked` 且持有已登记 IRQ waiter 后，只发布 deferred 诊断。注入时禁止日志订阅，以免 `publish_log()` 直接转发绕过 mailbox；消费证明来自实际
+`LogReader::take()` 之后对唯一完整记录的观测。随后无 RX/TX/control 门铃，必须由本地超时
+让 worker 取得记录。该回归通过 `fault-injection` 暴露状态观察与故障日志入口，不改变普通
+发行构建的公共接口。
+
+`qemu/system/test-aarch64-cpu-feat` 的普通未对齐 LDR 及搬移后 LDP Q 检查验证 EL0 访存及内容。
+该用户态用例保留端到端访存检查；固件初值的判别由 ArceOS `cpu/paging` 的
+`alignment::run()` 补足。它在本 CPU 屏蔽 IRQ 后主动设置并读回 `SCTLR_EL1.A=1`，调用
+生产 `El1::enable_mmu_and_caches()`，检查 A 已清零、SPAN 已设置，并在该控制状态下实际
+执行 Normal memory 的非对齐 LDR、核对内容。恢复原寄存器后才断言，错误实现不会污染
+后续执行。删除生产入口清 A 的操作会使同一测试明确失败。该用例复用已经安装的合法页表、
+MAIR 和 TCR，证明的是启动入口对该寄存器初值的处理；不把它描述为某个实体固件的完整启动
+实验。主次核调用同一生产入口，仍保留 SMP 启动及 Starry EL0 访存的独立覆盖。
+该控制位语义依据 [Arm AArch64 memory attributes and properties：Alignment](https://support.arm.com/documentation/102376/latest/Alignment-and-endianness/Alignment)。

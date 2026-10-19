@@ -46,8 +46,66 @@ export function releaseLane(open: readonly string[], route: string): string[] {
 }
 
 /**
- * The lanes to keep connected: every opened tab's own lanes, plus the lanes
- * this page already holds.
+ * `visited` with `lanes` added, or the very same array when it already holds them.
+ *
+ * Returning the same reference when nothing is added is what lets an effect
+ * record "the tab in view has been seen" on every render without scheduling
+ * another one. What the list means is *what the operator has opened*, which is
+ * why it is not derived from the lane table: the table says which lanes exist,
+ * and existence alone must not open one.
+ */
+export function addLanes(visited: string[], lanes: readonly string[]): string[] {
+  const added = lanes.filter((lane) => !visited.includes(lane))
+  return added.length === 0 ? visited : [...visited, ...added]
+}
+
+/**
+ * `lanes` without the routes that no longer exist.
+ *
+ * A lane whose guest was deleted is gone, and so is everything remembered about
+ * it: a guest created again under the same id gets a *new* lane, which must not
+ * inherit "the operator closed this tab" or "another session took it" from the
+ * one before — that guest was never opened, and the operator has no way to tell
+ * why its terminal refuses to appear.
+ */
+export function pruneGoneLanes(lanes: readonly string[], routes: readonly string[]): string[] {
+  return lanes.filter((lane) => routes.includes(lane))
+}
+
+/** What one lane's pane shows. */
+export type LanePhase = 'connected' | 'released' | 'occupied' | 'idle'
+
+/**
+ * What one lane is showing, from the facts the panel holds about it.
+ *
+ * `open` is this page's own connections, `released` the lanes it explicitly gave
+ * back, `failed` the lanes it lost to another session, and `attached` the lane
+ * table's answer — which counts this page's own sessions too, and that is why a
+ * held lane is connected whatever the table says. Anything else the table
+ * reports as attached is somebody else's session (another page, or another
+ * terminal tab of this panel), and a lane nobody holds and this page never
+ * opened is simply not connected yet.
+ */
+export function lanePhase(
+  route: string,
+  state: {
+    open: readonly string[]
+    released: readonly string[]
+    failed: readonly string[]
+    attached: boolean
+  },
+): LanePhase {
+  if (state.open.includes(route)) return 'connected'
+  if (state.released.includes(route)) return 'released'
+  if (state.failed.includes(route) || state.attached) return 'occupied'
+  return 'idle'
+}
+
+/**
+ * The lanes to keep connected: the target's lanes, plus the lanes this page
+ * already holds. The caller's target is the lanes the operator has actually
+ * opened here — never "every lane this panel could connect", which is what would
+ * let a mounted-but-hidden panel hold a lane nobody asked for.
  *
  * A tab is the only thing that decides which lanes are connected, so a tab whose
  * lanes are all held opens nothing and the panel reports the tab as blocked.
@@ -81,28 +139,6 @@ export function lanesToOpen(
     (route) =>
       !unavailable.includes(route) && (held.includes(route) || free.has(route)),
   )
-}
-
-/**
- * Index of the first tab holding a lane this page can still connect, `-1` if
- * there is none.
- *
- * Used after losing a race for a lane: the operator must not be left staring at
- * the lane they lost, so the panel moves to a tab it can actually open. The
- * picker is still limited to tabs, which is why the move is a visible tab switch
- * rather than a hidden extra connection.
- */
-export function nextFreeTab(
-  groups: readonly (readonly string[]) [],
-  lanes: readonly LaneOccupancy[],
-  unavailable: readonly string[] = [],
-): number {
-  const free = new Set(
-    lanes
-      .filter((lane) => !lane.attached && !unavailable.includes(lane.route))
-      .map((lane) => lane.route),
-  )
-  return groups.findIndex((group) => group.some((route) => free.has(route)))
 }
 
 /**

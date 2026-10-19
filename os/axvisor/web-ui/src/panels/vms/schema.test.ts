@@ -48,6 +48,23 @@ const FILLED = {
   cmdline: '',
 }
 
+/**
+ * A synthetic declaration and the defaults the plane publishes for it.
+ *
+ * Field names and values are invented: the two conversions are what is under
+ * test, not one build's field set.
+ */
+const SYNTHETIC: VmSchema = {
+  fields: [
+    { name: 'id', type: 'integer', required: false },
+    { name: 'title', type: 'string', required: true },
+    { name: 'weight', type: 'integer', required: false, default: 2 },
+    { name: 'sticky', type: 'boolean', required: false, default: true },
+  ],
+}
+
+const SYNTHETIC_DEFAULTS = { id: null, title: 'sample', weight: 4, sticky: false }
+
 describe('initialValues', () => {
   it('opens with the defaults the template fills', () => {
     const values = initialValues(SCHEMA)
@@ -66,6 +83,18 @@ describe('initialValues', () => {
 })
 
 describe('creationBody', () => {
+  it('sends boolean controls as JSON booleans', () => {
+    const schema: VmSchema = {
+      fields: [{ name: 'protected_disk', type: 'boolean', required: false }],
+    }
+    expect(creationBody(schema, { protected_disk: 'true' })).toEqual({
+      ok: true, fields: { protected_disk: true },
+    })
+    expect(creationBody(schema, { protected_disk: 'false' })).toEqual({
+      ok: true, fields: { protected_disk: false },
+    })
+  })
+
   it('converts every declared field of a filled form', () => {
     const body = creationBody(SCHEMA, FILLED)
     expect(body).toEqual({
@@ -147,6 +176,45 @@ describe('creationBody', () => {
     }
     const smaller = creationBody(reduced, FILLED)
     expect(smaller.ok && 'cpu_num' in smaller.fields).toBe(false)
+  })
+
+  it('builds a request from the defaults the plane publishes', () => {
+    // Synthetic field names on purpose: what is under test is the conversion, and
+    // a fixture that mirrors one build's values would have to be edited whenever
+    // that build changed while proving nothing more.
+    const values = initialValues(SYNTHETIC, SYNTHETIC_DEFAULTS)
+    // A published value wins over the field's declared default (`weight` 4 over 2,
+    // `sticky` false over true); `null` is the empty control an id opens as.
+    expect(values).toEqual({ id: '', title: 'sample', weight: '4', sticky: 'false' })
+
+    // What the operator sees is what the request carries: the boolean is a JSON
+    // boolean, and the id left empty is omitted so the plane assigns one.
+    const assigned = creationBody(SYNTHETIC, values)
+    expect(assigned).toEqual({
+      ok: true,
+      fields: { title: 'sample', weight: 4, sticky: false },
+    })
+    expect(assigned.ok && typeof assigned.fields.sticky).toBe('boolean')
+
+    // Both spellings of the choice become the boolean they mean, a typed id is
+    // kept, and text that is not what a field means is refused before it costs a
+    // round trip.
+    expect(creationBody(SYNTHETIC, { ...values, sticky: 'true' })).toEqual({
+      ok: true,
+      fields: { title: 'sample', weight: 4, sticky: true },
+    })
+    expect(creationBody(SYNTHETIC, { ...values, id: '7' })).toEqual({
+      ok: true,
+      fields: { id: 7, title: 'sample', weight: 4, sticky: false },
+    })
+    expect(creationBody(SYNTHETIC, { ...values, weight: 'heavy' })).toEqual({
+      ok: false,
+      error: '「weight」要一个非负整数，收到「heavy」',
+    })
+    expect(creationBody(SYNTHETIC, { ...values, sticky: 'maybe' })).toEqual({
+      ok: false,
+      error: '「sticky」要选 是 或 否，收到「maybe」',
+    })
   })
 })
 

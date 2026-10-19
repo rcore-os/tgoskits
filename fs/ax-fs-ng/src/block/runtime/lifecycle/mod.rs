@@ -12,7 +12,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     time::Duration,
 };
 
@@ -67,21 +67,6 @@ const GROUP_STOPPING: u8 = 1;
 const GROUP_STOPPED: u8 = 2;
 
 static BLOCK_RUNTIME: OnceLock<Arc<BlockRuntime>> = OnceLock::new();
-static BLOCK_READS: AtomicU64 = AtomicU64::new(0);
-static BLOCK_SECTORS_READ: AtomicU64 = AtomicU64::new(0);
-static BLOCK_WRITES: AtomicU64 = AtomicU64::new(0);
-static BLOCK_SECTORS_WRITTEN: AtomicU64 = AtomicU64::new(0);
-
-/// Cumulative completed block I/O counters. Sector counters use 512-byte
-/// sectors to retain the Linux `/proc/diskstats` convention.
-pub fn block_io_stats() -> (u64, u64, u64, u64) {
-    (
-        BLOCK_READS.load(Ordering::Relaxed),
-        BLOCK_SECTORS_READ.load(Ordering::Relaxed),
-        BLOCK_WRITES.load(Ordering::Relaxed),
-        BLOCK_SECTORS_WRITTEN.load(Ordering::Relaxed),
-    )
-}
 
 /// One platform IRQ resolved before the portable controller enters runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -872,6 +857,7 @@ impl Drop for BlockDeviceHandle {
 
 struct DeviceInner {
     name: String,
+    io_metrics: Arc<super::io_stats::DeviceIoMetrics>,
     device_info: RawSpinLock<DeviceInfoEpoch>,
     max_io_queues: usize,
     irq_sources: Vec<BlockIrqSource>,
@@ -1047,6 +1033,7 @@ impl BlockDeviceHandle {
         });
         let inner = Arc::new(DeviceInner {
             name,
+            io_metrics: Arc::new(super::io_stats::DeviceIoMetrics::default()),
             device_info: RawSpinLock::new(DeviceInfoEpoch::new(info)),
             max_io_queues,
             irq_sources: irqs,
@@ -1121,6 +1108,11 @@ impl BlockDeviceHandle {
 
     pub fn device_info(&self) -> DeviceInfo {
         self.inner.published_device_info()
+    }
+
+    /// Snapshots this physical device's admission-to-completion counters.
+    pub fn io_stats(&self) -> super::io_stats::BlockIoStats {
+        self.inner.io_metrics.snapshot()
     }
 
     /// Returns the installed device list for the Starry kernel axtest target.
@@ -1392,9 +1384,14 @@ impl BlockDeviceHandle {
             return Err(BatchSubmitError::new(BlkError::NoMemory, requests));
         }
         for request in requests {
-            let completion = completions
+            let mut completion = completions
                 .pop_front()
                 .expect("completion sender count matches request batch");
+            completion.account(super::io_stats::RequestAccounting::new(
+                Arc::clone(&self.inner.io_metrics),
+                request.op,
+                sectors_for_blocks(info.device.logical_block_size, request.block_count),
+            ));
             submissions.push_back(Submission {
                 request,
                 completion,

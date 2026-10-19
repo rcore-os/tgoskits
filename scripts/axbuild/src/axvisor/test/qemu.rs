@@ -474,11 +474,11 @@ impl Axvisor {
             qemu.args.extend([
                 "-netdev".to_string(),
                 format!(
-                    "user,id=net0,hostfwd=tcp::{host_port}-:{}",
+                    "user,id=net0,hostfwd=tcp:127.0.0.1:{host_port}-:{}",
                     probe_config.guest_port
                 ),
                 "-device".to_string(),
-                "virtio-net-pci,netdev=net0".to_string(),
+                format!("{},netdev=net0", probe_config.nic_model),
                 "-qmp".to_string(),
                 format!("unix:{},server=on,wait=off", qmp_socket.to_string_lossy()),
             ]);

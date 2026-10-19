@@ -27,8 +27,14 @@ use super::{
 };
 use crate::sync::{Mutex, RawSpinLock};
 
+#[cfg(all(test, axtest, target_arch = "aarch64"))]
+mod lazy_reclaim_axtest;
+
 mod populate;
 pub(crate) use populate::PopulateAccess;
+
+mod retry;
+use retry::LazyReclaimRetry;
 
 mod work_queue;
 use work_queue::{MmWorkLink, MmWorkQueue};
@@ -354,6 +360,9 @@ struct MmInner {
     /// Allocated with the MM, like Linux's mm_struct::async_put_work. Token
     /// destruction never needs to allocate a separate deferred-work node.
     work_link: RawSpinLock<MmWorkLink>,
+    /// Independent of destruction: an IPI can complete while retry is queued.
+    lazy_reclaim_link: RawSpinLock<MmWorkLink>,
+    lazy_reclaim_retry: RawSpinLock<LazyReclaimRetry>,
     /// Reclaim publishes Freed/NeedsRepair before waking task-context cache
     /// invalidators. Waiting retains metadata, not a kernel pin or activation.
     reclaim_done: WaitQueue,
@@ -400,6 +409,30 @@ impl MmInner {
             && self.kernel_pins.load(Ordering::Relaxed) == 0
             && self.active_count.load(Ordering::Relaxed) == 0
             && self.active_mask.load(Ordering::Relaxed) == 0
+    }
+
+    fn request_lazy_cpu_reclaim(self: &Arc<Self>) {
+        // Retiring excludes new pins. Once established continuations drain,
+        // remaining lazy activations must not wait for unrelated user work.
+        // Run outside lifecycle_gate: a UP runtime can release locally.
+        if self.state() == MmState::Retiring
+            && self.kernel_pins.load(Ordering::Acquire) == 0
+            && self.active_mask.load(Ordering::Acquire) != 0
+        {
+            // Publish a retained retry owner before sending. A successful or
+            // coalesced send is not a completion; only activation release may
+            // retire the MM. This also covers a coalesced sender failing later.
+            enqueue_mm_work(&LAZY_CPU_RECLAIM_QUEUE, self.clone());
+            let send = self
+                .lazy_reclaim_retry
+                .lock_irqsave()
+                .claim(ax_hal::time::monotonic_time());
+            // Release the retry lock before local release callbacks or IPI.
+            // Queued ownership survives a deferred attempt or a failed send.
+            if send {
+                self.runtime_cpu_state.request_lazy_reclaim();
+            }
+        }
     }
 
     fn maybe_retire_locked(&self) {
@@ -669,7 +702,7 @@ pub(crate) fn pin_mm_for_rmap(id: AddressSpaceId) -> Result<MmPin, RmapMmLookupE
 /// Callers hold no MM, page graph, cached-I/O or IRQ lock. A Retiring MM may
 /// sleep only after its last kernel pin has drained: new pins require Live,
 /// so no fault continuation can need this cache layout update. Remaining CPU
-/// activations finish their scheduler handoff before reclaim can proceed.
+/// activations are actively evicted from lazy kernel CPUs before reclaim.
 pub(crate) fn pin_mm_for_cache_invalidation(
     id: AddressSpaceId,
 ) -> Result<Option<MmPin>, RmapMmLookupError> {
@@ -765,6 +798,8 @@ impl MmHandle {
                 active_per_cpu: core::array::from_fn(|_| AtomicUsize::new(0)),
                 retire_queued: AtomicBool::new(false),
                 work_link: RawSpinLock::new(MmWorkLink::default()),
+                lazy_reclaim_link: RawSpinLock::new(MmWorkLink::default()),
+                lazy_reclaim_retry: RawSpinLock::new(LazyReclaimRetry::default()),
                 reclaim_done: WaitQueue::new(),
             }),
             owner: AtomicBool::new(true),
@@ -876,6 +911,7 @@ impl MmHandle {
 
     /// Transitions the last user owner to `Retiring` without reclaiming data.
     pub fn retire_if_quiescent(&self) -> Option<RetirePermit> {
+        self.inner.request_lazy_cpu_reclaim();
         MmInner::take_retire_permit(&self.inner)
     }
 
@@ -1307,6 +1343,8 @@ pub struct RetirePermit(Option<Arc<MmInner>>);
 /// [`reap_retired`] from process context.  No page-table or backend cleanup is
 /// performed by `Drop` of a handle/pin/activation token.
 static RETIRE_QUEUE: RawSpinLock<MmWorkQueue> = RawSpinLock::new(MmWorkQueue::new());
+static LAZY_CPU_RECLAIM_QUEUE: RawSpinLock<MmWorkQueue> =
+    RawSpinLock::new(MmWorkQueue::lazy_cpu_reclaim());
 static REPAIR_QUEUE: RawSpinLock<MmWorkQueue> = RawSpinLock::new(MmWorkQueue::new());
 static RECLAIMER_STARTED: AtomicBool = AtomicBool::new(false);
 static REPAIR_RETRY_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -1362,6 +1400,7 @@ pub(super) fn lazy_free_reclaim_request_count_for_test() -> usize {
 }
 
 fn queue_if_retired(inner: &Arc<MmInner>) {
+    inner.request_lazy_cpu_reclaim();
     if let Some(permit) = MmInner::take_retire_permit(inner) {
         enqueue_retire(permit);
     }
@@ -1383,6 +1422,20 @@ fn enqueue_repair_candidate(inner: Arc<MmInner>) {
     enqueue_mm_work(&REPAIR_QUEUE, inner);
 }
 
+/// Retries at most one kick per selected MM in each reclaimer pass. The
+/// snapshot bound prevents requeued failures from forming a busy loop; the
+/// worker sleeps between passes. Retained entries are released only here, in
+/// sleepable context, independently of the destruction/repair queue link.
+fn retry_lazy_cpu_reclaim(limit: usize) {
+    let count = limit.min(LAZY_CPU_RECLAIM_QUEUE.lock_irqsave().len());
+    for _ in 0..count {
+        let Some(inner) = LAZY_CPU_RECLAIM_QUEUE.lock_irqsave().pop() else {
+            break;
+        };
+        queue_if_retired(&inner);
+    }
+}
+
 /// Reclaims up to `limit` retired address spaces.  This function is deliberately
 /// explicit so callers can schedule it on a sleepable kernel worker; it never
 /// holds the queue lock while taking the address-space mutex.
@@ -1390,6 +1443,7 @@ pub fn reap_retired(limit: usize) -> (usize, usize) {
     if limit == 0 {
         return (0, 0);
     }
+    retry_lazy_cpu_reclaim(limit);
     let count = {
         let queue = RETIRE_QUEUE.lock_irqsave();
         limit.min(queue.len())
@@ -1522,24 +1576,26 @@ pub fn spawn_reclaimer_task() {
     }
     ax_std::thread::Builder::new()
         .name("starry-mm-reclaimer".to_owned())
-        .spawn(|| {
-            loop {
-                let _ = ax_mm::retry_kernel_virtual_quarantines(16);
-                let _ = LAZY_FREE_RECLAIM.run_one_batch(16, reclaim_live_lazy_free_pages);
-                let _ = reap_retired(16);
-                if REPAIR_RETRY_REQUESTED.swap(false, Ordering::AcqRel) {
-                    // A repair coordinator explicitly requested this pass after
-                    // proving the failed precondition is fixed.  Without that
-                    // request the queue remains untouched and `NeedsRepair` is
-                    // never silently treated as success.
-                    for permit in take_repair_candidates(16) {
-                        let _ = permit.retry();
-                    }
-                }
-                ax_std::thread::sleep(core::time::Duration::from_millis(10));
-            }
-        })
+        .spawn(|| run_reclaimer(|| false))
         .expect("MM reclaimer thread must start before userspace");
+}
+
+// The bounded pass and sleep belong to one implementation. Runtime tests use
+// the same worker with a stop condition and fixed affinity for isolation.
+fn run_reclaimer(mut stop: impl FnMut() -> bool) {
+    while !stop() {
+        let _ = ax_mm::retry_kernel_virtual_quarantines(16);
+        let _ = LAZY_FREE_RECLAIM.run_one_batch(16, reclaim_live_lazy_free_pages);
+        let _ = reap_retired(16);
+        if REPAIR_RETRY_REQUESTED.swap(false, Ordering::AcqRel) {
+            // A coordinator explicitly requested this pass after proving the
+            // failed precondition is fixed. Never treat NeedsRepair as success.
+            for permit in take_repair_candidates(16) {
+                let _ = permit.retry();
+            }
+        }
+        ax_std::thread::sleep(core::time::Duration::from_millis(10));
+    }
 }
 
 impl RetirePermit {
@@ -2100,8 +2156,20 @@ mod tests {
         assert_eq!(handle.cpu_state().active_cpus, 1usize << 2);
         assert_ne!(aspace.lock().materialized_root().as_usize(), 0);
 
+        // No new owner release or unrelated scheduler event is needed to
+        // drive retries. The synthetic activation intentionally does not
+        // acknowledge IPIs, so each bounded worker pass must retain its work.
+        assert!(handle.inner.lazy_reclaim_link.lock_irqsave().queued);
+        retry_lazy_cpu_reclaim(usize::MAX);
+        assert!(handle.inner.lazy_reclaim_link.lock_irqsave().queued);
+        assert_eq!(handle.state(), MmState::Retiring);
+        assert_eq!(handle.active_cpu_mask(), 1 << 2);
+
         activation.release_after_kernel_switch();
         assert_eq!(handle.state(), MmState::Retired);
+        // Destruction can be queued while the independent retry link remains.
+        retry_lazy_cpu_reclaim(usize::MAX);
+        assert!(!handle.inner.lazy_reclaim_link.lock_irqsave().queued);
 
         let (reclaimed, failed) = reap_retired(usize::MAX);
         assert!(reclaimed >= 1);

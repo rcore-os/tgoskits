@@ -17,6 +17,29 @@ fn with_virgl<T>(
     .map_err(map_gpu_err)
 }
 
+/// Bitmask of the capset ids the host reported, or `None` when the device
+/// has no 3D face. `CONTEXT_INIT` accepts any listed capset, which is how
+/// the venus face (capset 4) is enabled on hosts that expose it.
+fn device_capset_mask() -> Option<u64> {
+    let mut mask = 0u64;
+    for index in 0..MAX_CAPSET_ENUM {
+        let Ok(info) = with_virgl(|virgl| virgl.capset_info(index)) else {
+            break;
+        };
+        if info.id < u64::BITS {
+            mask |= 1u64 << info.id;
+        }
+    }
+    (mask != 0).then_some(mask)
+}
+
+/// Upper bound for one venus EXECBUFFER command buffer (and the venus blob
+/// init stream). Real venus payloads are orders of magnitude smaller; the
+/// bound exists so an oversized user size is rejected with EINVAL *before*
+/// `vm_load` allocates the whole buffer — the loader itself has no
+/// per-request ceiling for fixed-size loads.
+const MAX_VENUS_COMMAND_BYTES: usize = 128 * 1024;
+
 fn virgl_capabilities() -> VfsResult<rdif_gpu::GpuCapabilities> {
     let identity = ax_gpu::identity().ok_or(VfsError::NotFound)?;
     if identity.driver_name != "virtio_gpu" {
@@ -52,7 +75,11 @@ impl Card0 {
     /// Mesa queries all parameters during initialization. Known parameters
     /// return their values; unknown parameters return `-EINVAL` (matching
     /// Linux kernel behavior — Mesa handles this gracefully).
-    pub(super) fn handle_virtgpu_getparam(&self, current: &UserTaskRef, arg: usize) -> VfsResult<usize> {
+    pub(super) fn handle_virtgpu_getparam(
+        &self,
+        current: &UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmVirtgpuGetparam;
         let g: DrmVirtgpuGetparam = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
@@ -75,17 +102,13 @@ impl Card0 {
                 // device doesn't support blobs and Mesa must use the classic
                 // resource path — reporting 1 here would make Mesa create
                 // blobs that fail.
-                if capabilities.supports_blob {
-                    1
-                } else {
-                    0
-                }
+                if capabilities.supports_blob { 1 } else { 0 }
             }
             VIRTGPU_PARAM_HOST_VISIBLE => {
-                // RESOURCE_BLOB alone does not make host memory mappable.
-                // Until RESOURCE_MAP_BLOB/BAR mapping exists, advertising
-                // HOST_VISIBLE would send Mesa down a path we cannot honor.
-                0
+                // Honest only when the bus exposed the hostmem window: mesa
+                // venus allocates every host-visible buffer through blobs
+                // mapped into it.
+                u64::from(super::venus_available())
             }
             VIRTGPU_PARAM_CROSS_DEVICE => {
                 // Cross-device sharing not supported yet.
@@ -96,7 +119,11 @@ impl Card0 {
                 // `has_context_init ? 1 : 0`). Must be 1 for Mesa to use the
                 // context-init protocol, but VIRGL alone does not imply it: a
                 // legacy device can support virgl without CONTEXT_INIT.
-                if capabilities.supports_context_init { 1 } else { 0 }
+                if capabilities.supports_context_init {
+                    1
+                } else {
+                    0
+                }
             }
             VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => {
                 let mut mask = 0u64;
@@ -112,6 +139,15 @@ impl Card0 {
                 }
                 mask
             }
+            VIRTGPU_PARAM_BLOB_ALIGNMENT => {
+                // Linux reports the negotiated alignment, or -ENOENT when
+                // the feature was not negotiated (Mesa then assumes no
+                // alignment requirement).
+                match with_virgl(|virgl| Ok(virgl.blob_alignment()))? {
+                    Some(alignment) => u64::from(alignment),
+                    None => return Err(VfsError::NotFound),
+                }
+            }
             _ => {
                 // Unknown parameter — match Linux kernel: return -EINVAL.
                 // Mesa handles this gracefully (value stays 0).
@@ -120,14 +156,19 @@ impl Card0 {
         };
 
         // Linux `virtio_gpu_getparam_ioctl`: `copy_to_user((void __user *)
-        // param->value, &value, sizeof(value))` — 结果写入用户指针指向的 u64,
-        // 而不是写回 struct 字段。之前 `g.value = value; vm_write(g)` 把值写进
-        // struct 的 value 字段(覆盖了指针),mesa 读的是指针指向的本地变量,
-        // 导致所有 GETPARAM 都读到 0 → 3D_FEATURES=0 → virgl winsys 创建失败。
+        // param->value, &value, sizeof(value))` — the result goes to the
+        // memory the `value` field points at, not back into the struct
+        // field (overwriting it would clobber the pointer, and Mesa reads
+        // the pointed-at local, so every GETPARAM used to return 0).
+        // `value` is an `int` in the UAPI, so exactly four bytes are
+        // written: a contract-faithful client passing `&int32` must not
+        // have the adjacent four bytes stomped.
         if g.value == 0 {
             return Err(VfsError::BadAddress);
         }
-        vm_write_slice(current, g.value as *mut u64, &[value]).map_err(|_| VfsError::BadAddress)?;
+        let narrow = value as u32;
+        vm_write_slice(current, g.value as *mut u32, &[narrow])
+            .map_err(|_| VfsError::BadAddress)?;
         Ok(0)
     }
 
@@ -191,10 +232,13 @@ impl Card0 {
                         }
                         // Linux: if ((vgdev->capset_id_mask & (1ULL << value)) == 0)
                         //           return -EINVAL;
-                        // 我们支持 VIRGL(1) 和 VIRGL2(2)
-                        if capset_id != VIRTGPU_DRM_CAPSET_VIRGL
-                            && capset_id != VIRTGPU_DRM_CAPSET_VIRGL2
-                        {
+                        // The mask is the host's own capset list, so a venus
+                        // (4) context is accepted exactly when the host
+                        // exposes the venus capset.
+                        let Some(mask) = device_capset_mask() else {
+                            return Err(VfsError::InvalidInput);
+                        };
+                        if mask & (1u64 << capset_id) == 0 {
                             warn!("[card0] CONTEXT_INIT: unsupported capset_id={capset_id}");
                             return Err(VfsError::InvalidInput);
                         }
@@ -242,7 +286,11 @@ impl Card0 {
     /// `min(size, host_caps_size)`, and the input struct is never written
     /// back. Mesa first tries cap_set_id=2 (VIRGL2), then falls back to 1
     /// (VIRGL).
-    pub(super) fn handle_virtgpu_get_caps(&self, current: &UserTaskRef, arg: usize) -> VfsResult<usize> {
+    pub(super) fn handle_virtgpu_get_caps(
+        &self,
+        current: &UserTaskRef,
+        arg: usize,
+    ) -> VfsResult<usize> {
         let ptr = arg as *mut DrmVirtgpuGetCaps;
         let g: DrmVirtgpuGetCaps = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
         // Linux never writes the request struct back, so the caller's `size`
@@ -292,7 +340,8 @@ impl Card0 {
             // smaller `size`) so the cache entry is never truncated; only the
             // later copy is clamped. Truncating the query would hand Mesa an
             // incomplete capset and make it enable unsupported GL features.
-            let data = with_virgl(|virgl| virgl.capset(g.cap_set_id, g.cap_set_ver, matched.max_size))?;
+            let data =
+                with_virgl(|virgl| virgl.capset(g.cap_set_id, g.cap_set_ver, matched.max_size))?;
             self.capset_cache.lock().insert(cache_key, data.clone());
             data
         };
@@ -355,18 +404,23 @@ impl Card0 {
             .fetch_add(DUMB_BUFFER_OFFSET_STRIDE, Ordering::Relaxed);
         let backing = mapping.backing();
 
-        let device_handle = with_virgl(|virgl| virgl.create_resource_3d(rdif_gpu::Resource3d {
-            target: r.target,
-            format: r.format,
-            bind: r.bind,
-            width: r.width,
-            height: r.height,
-            depth: r.depth,
-            array_size: r.array_size,
-            last_level: r.last_level,
-            samples: r.nr_samples,
-            flags: r.flags,
-        }, Some(backing)))?;
+        let device_handle = with_virgl(|virgl| {
+            virgl.create_resource_3d(
+                rdif_gpu::Resource3d {
+                    target: r.target,
+                    format: r.format,
+                    bind: r.bind,
+                    width: r.width,
+                    height: r.height,
+                    depth: r.depth,
+                    array_size: r.array_size,
+                    last_level: r.last_level,
+                    samples: r.nr_samples,
+                    flags: r.flags,
+                },
+                Some(backing),
+            )
+        })?;
         let res_handle = match with_virgl(|virgl| virgl.command_resource_id(device_handle)) {
             Ok(id) => id,
             Err(error) => {
@@ -388,6 +442,7 @@ impl Card0 {
             blob_flags: 0,
             is_dumb_2d: false,
             last_fence: AtomicU64::new(0),
+            mapped_blob: Mutex::new(None),
         });
         file.attach_resource(&resource)?;
 
@@ -456,12 +511,27 @@ impl Card0 {
         let mut m: DrmVirtgpuMap = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
 
         let dumbs = self.dumbs.lock();
-        let buf = dumbs
+        let dumb_offset = dumbs
             .get(&m.handle)
             .filter(|buffer| buffer.owner == file.file_id && buffer.mappable)
-            .ok_or(VfsError::InvalidInput)?;
-        m.offset = buf.offset;
+            .map(|buffer| buffer.offset);
         drop(dumbs);
+        if let Some(offset) = dumb_offset {
+            m.offset = offset;
+            ptr.vm_write(current, m).map_err(|_| VfsError::BadAddress)?;
+            return Ok(0);
+        }
+        // A host-visible venus blob maps through its hostmem mmap key, not
+        // the dumb-offset space. The mapping lives on the shared resource,
+        // so import clones resolve to the same window.
+        let resource = self
+            .resource_for_handle(file, m.handle)
+            .ok_or(VfsError::InvalidInput)?;
+        if resource.owner != file.file_id {
+            return Err(VfsError::InvalidInput);
+        }
+        let map = (*resource.mapped_blob.lock()).ok_or(VfsError::InvalidInput)?;
+        m.offset = map.mmap_key;
 
         ptr.vm_write(current, m).map_err(|_| VfsError::BadAddress)?;
         Ok(0)
@@ -500,6 +570,14 @@ impl Card0 {
         // Linux: if (vgdev->has_virgl_3d == false) return -ENOSYS;
         if !virgl_capabilities()?.supports_3d {
             return Err(StarryError::Unsupported);
+        }
+
+        // A venus (capset 4) context submits through the ring path with
+        // timeline syncobjs; everything below the branch is the virgl
+        // protocol, whose syncobj fields stay rejected.
+        let ctx_capset = file.context.lock().as_ref().map(|ctx| ctx.capset_id);
+        if ctx_capset == Some(VIRTGPU_DRM_CAPSET_VENUS) {
+            return self.handle_venus_execbuffer(file, current, arg);
         }
 
         // Only the fence-fd in/out flags are supported. `VIRTGPU_EXECBUF_RING_IDX`
@@ -624,8 +702,7 @@ impl Card0 {
         // `fence_fd` is written back only for `FENCE_FD_OUT`; an IN-only
         // request keeps its input fd untouched (Linux only updates the field
         // when it created an out-fence).
-        eb.fence_fd =
-            writeback_fence_fd(eb.fence_fd, out_fd.as_ref().map(|(_, p)| p.fd()));
+        eb.fence_fd = writeback_fence_fd(eb.fence_fd, out_fd.as_ref().map(|(_, p)| p.fd()));
         ptr.vm_write(current, eb)
             .map_err(|_| VfsError::BadAddress)?;
         if let Some((_, prepared)) = out_fd {
@@ -682,22 +759,24 @@ impl Card0 {
         // guest data that was already in memory before the submit, so the
         // direction is fire-and-forget (Linux does not fence it either);
         // the completion token carries no release proof to observe.
-        let _ = with_virgl(|virgl| virgl.transfer_to_host(rdif_gpu::Transfer3d {
-            context: ctx_id,
-            resource: resource.device_handle,
-            box_: rdif_gpu::TransferBox {
-                x: t.box_.x,
-                y: t.box_.y,
-                z: t.box_.z,
-                width: t.box_.w,
-                height: t.box_.h,
-                depth: t.box_.d,
-            },
-            offset: t.offset as u64,
-            level: t.level,
-            stride: t.stride,
-            layer_stride: t.layer_stride,
-        }))?;
+        let _ = with_virgl(|virgl| {
+            virgl.transfer_to_host(rdif_gpu::Transfer3d {
+                context: ctx_id,
+                resource: resource.device_handle,
+                box_: rdif_gpu::TransferBox {
+                    x: t.box_.x,
+                    y: t.box_.y,
+                    z: t.box_.z,
+                    width: t.box_.w,
+                    height: t.box_.h,
+                    depth: t.box_.d,
+                },
+                offset: t.offset as u64,
+                level: t.level,
+                stride: t.stride,
+                layer_stride: t.layer_stride,
+            })
+        })?;
         // Fire-and-forget (Linux does not fence this direction): the transfer
         // is ordered behind everything already submitted and ahead of every
         // later fence; deliver it at the ioctl boundary.
@@ -746,22 +825,24 @@ impl Card0 {
         // memory safety instead; our unref/backing release has no dma_resv
         // equivalent, so the fence observation remains the proof that the
         // host no longer touches the guest memory.
-        let completion = with_virgl(|virgl| virgl.transfer_from_host(rdif_gpu::Transfer3d {
-            context: ctx_id,
-            resource: resource.device_handle,
-            box_: rdif_gpu::TransferBox {
-                x: t.box_.x,
-                y: t.box_.y,
-                z: t.box_.z,
-                width: t.box_.w,
-                height: t.box_.h,
-                depth: t.box_.d,
-            },
-            offset: t.offset as u64,
-            level: t.level,
-            stride: t.stride,
-            layer_stride: t.layer_stride,
-        }))?;
+        let completion = with_virgl(|virgl| {
+            virgl.transfer_from_host(rdif_gpu::Transfer3d {
+                context: ctx_id,
+                resource: resource.device_handle,
+                box_: rdif_gpu::TransferBox {
+                    x: t.box_.x,
+                    y: t.box_.y,
+                    z: t.box_.z,
+                    width: t.box_.w,
+                    height: t.box_.h,
+                    depth: t.box_.d,
+                },
+                offset: t.offset as u64,
+                level: t.level,
+                stride: t.stride,
+                layer_stride: t.layer_stride,
+            })
+        })?;
         wait_completion_outside_lock(completion).map_err(map_gpu_err)?;
         // Only now — after the host write completed — make the bytes
         // CPU-visible. The sync used to run inside the device layer's inline
@@ -775,7 +856,9 @@ impl Card0 {
                 .and_then(core::convert::identity)
                 .map_err(map_gpu_err)?
         {
-            backing.sync_for_cpu(0..backing.len()).map_err(map_gpu_err)?;
+            backing
+                .sync_for_cpu(0..backing.len())
+                .map_err(map_gpu_err)?;
         }
 
         Ok(0)
@@ -908,6 +991,12 @@ impl Card0 {
             if !b.cmd_size.is_multiple_of(4) {
                 return Err(VfsError::InvalidInput);
             }
+            // A venus context's HOST3D blob lives in the hostmem window; the
+            // virgl flavour below keeps its guest shadow allocation.
+            let ctx_capset = file.context.lock().as_ref().map(|ctx| ctx.capset_id);
+            if ctx_capset == Some(VIRTGPU_DRM_CAPSET_VENUS) {
+                return self.handle_venus_resource_create_blob(file, current, arg, b);
+            }
         } else {
             // Linux: if (rc_blob->blob_id != 0) return -EINVAL;
             //        if (rc_blob->cmd_size != 0) return -EINVAL;
@@ -967,12 +1056,19 @@ impl Card0 {
         let offset = self
             .next_offset
             .fetch_add(DUMB_BUFFER_OFFSET_STRIDE, Ordering::Relaxed);
-        let device_handle = with_virgl(|virgl| virgl.create_blob(context, rdif_gpu::BlobDescriptor {
-            memory: b.blob_mem,
-            flags: b.blob_flags,
-            size: b.size,
-            id: b.blob_id,
-        }, backing, &cmd_buf))?;
+        let device_handle = with_virgl(|virgl| {
+            virgl.create_blob(
+                context,
+                rdif_gpu::BlobDescriptor {
+                    memory: b.blob_mem,
+                    flags: b.blob_flags,
+                    size: b.size,
+                    id: b.blob_id,
+                },
+                backing,
+                &cmd_buf,
+            )
+        })?;
         let res_handle = match with_virgl(|virgl| virgl.command_resource_id(device_handle)) {
             Ok(id) => id,
             Err(error) => {
@@ -994,6 +1090,7 @@ impl Card0 {
             blob_flags: b.blob_flags,
             is_dumb_2d: false,
             last_fence: AtomicU64::new(0),
+            mapped_blob: Mutex::new(None),
         });
         if host3d_blob {
             file.attach_resource(&resource)?;
@@ -1023,6 +1120,385 @@ impl Card0 {
         self.dumbs.lock().insert(bo_handle, buffer);
         self.gpu_resources.lock().insert(res_handle, resource);
 
+        Ok(0)
+    }
+
+    /// `VIRTGPU_RESOURCE_CREATE_BLOB` for a venus (`capset 4`) context.
+    ///
+    /// The blob's backing lives in the hostmem window: the resource is
+    /// created with no guest backing (`HOST3D`), sized up to the window
+    /// (no dumb-buffer cap — renderer memory pools are megabytes), and a
+    /// mappable blob is mapped into a 16 KiB-aligned BAR slot right away
+    /// unless the caller deferred mapping. The synthetic mmap key handed
+    /// back by `VIRTGPU_MAP` resolves to that slot's guest-physical range.
+    fn handle_venus_resource_create_blob(
+        &self,
+        file: &Card0File,
+        current: &UserTaskRef,
+        arg: usize,
+        mut b: DrmVirtgpuResourceCreateBlob,
+    ) -> VfsResult<usize> {
+        // Stricter than Linux `verify_blob()` (which forwards `pad` and
+        // `blob_hints` to the device untouched): a nonzero pad or an
+        // undefined hint bit is rejected here instead of reaching the host.
+        if b.pad != 0 || b.blob_hints & !DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING != 0 {
+            return Err(VfsError::InvalidInput);
+        }
+        let hostmem =
+            with_virgl(|virgl| Ok(virgl.host_memory_region()))?.ok_or(VfsError::InvalidInput)?;
+        if b.size == 0 || b.size > hostmem.length {
+            return Err(VfsError::InvalidInput);
+        }
+        // The context owns the blob; venus requires CONTEXT_INIT first.
+        let context = {
+            let guard = file.context.lock();
+            match guard.as_ref() {
+                Some(ctx) if ctx.capset_id == VIRTGPU_DRM_CAPSET_VENUS => ctx.ctx_id,
+                _ => return Err(VfsError::InvalidInput),
+            }
+        };
+
+        // Optional initialization command stream, submitted before the blob
+        // is created (the control queue is FIFO, so ordering holds).
+        // Bound the size before `vm_load` allocates the whole buffer: the
+        // u32 `cmd_size` would otherwise let one ioctl demand a multi-GiB
+        // kernel allocation, and a null `cmd` with a nonzero size is the
+        // same malformed request the virgl flavour rejects above.
+        if b.cmd_size as usize > MAX_VENUS_COMMAND_BYTES || (b.cmd_size > 0 && b.cmd == 0) {
+            return Err(VfsError::InvalidInput);
+        }
+        let init_cmd: Vec<u8> = if b.cmd_size > 0 {
+            vm_load(current, b.cmd as *const u8, b.cmd_size as usize)
+                .map_err(|_| VfsError::BadAddress)?
+        } else {
+            Vec::new()
+        };
+
+        // When the device negotiated a blob alignment requirement, Linux
+        // `verify_blob()` rejects unaligned sizes with EINVAL.
+        let negotiated_align = with_virgl(|virgl| Ok(virgl.blob_alignment()))?;
+        if negotiated_align.is_some_and(|align| !b.size.is_multiple_of(u64::from(align))) {
+            return Err(VfsError::InvalidInput);
+        }
+        // Slot granularity: the negotiated alignment floored at 16 KiB so
+        // the host-side subsection (and every EPT subsection the hvf
+        // listener derives from it) stays 16 KiB-aligned; see
+        // [`BAR_SLOT_ALIGN`]. The wire size is rounded up to it.
+        let slot_granularity = negotiated_align
+            .map(u64::from)
+            .map_or(BAR_SLOT_ALIGN, |align| align.max(BAR_SLOT_ALIGN));
+        let wire_size = b.size.div_ceil(slot_granularity) * slot_granularity;
+        let device_handle = with_virgl(|virgl| {
+            virgl.create_blob(
+                Some(context),
+                rdif_gpu::BlobDescriptor {
+                    memory: b.blob_mem,
+                    flags: b.blob_flags,
+                    size: wire_size,
+                    id: b.blob_id,
+                },
+                None,
+                &init_cmd,
+            )
+        })?;
+        let res_handle = match with_virgl(|virgl| virgl.command_resource_id(device_handle)) {
+            Ok(id) => id,
+            Err(error) => {
+                let _ = release_gpu_buffer_and_drain(device_handle);
+                return Err(error);
+            }
+        };
+
+        // Map every mappable blob into the hostmem window right away. The
+        // DEFER_MAPPING hint is a guest-side hostmem saving (Linux skips
+        // the eager vram map and maps on first mmap); this driver always
+        // maps eagerly — with slot recycling the window cost of blobs that
+        // are never mmapped is reclaimed at destroy, and there is no
+        // lazy-map path that would make a deferred blob mappable later.
+        let mut mapped = None;
+        if b.blob_flags & VIRTGPU_BLOB_FLAG_USE_MAPPABLE != 0 {
+            let (bar_offset, slot_len) =
+                reserve_bar_slot(hostmem.length, wire_size, slot_granularity)?;
+            let map_info = match with_virgl(|virgl| virgl.map_blob(device_handle, bar_offset)) {
+                Ok(info) => info,
+                Err(error) => {
+                    // Return the freshly reserved slot before failing.
+                    release_bar_slot(bar_offset, slot_len);
+                    let _ = release_gpu_buffer_and_drain(device_handle);
+                    return Err(error);
+                }
+            };
+            mapped = Some(MappedBlobBar {
+                phys: hostmem.base + bar_offset,
+                size: b.size,
+                bar_offset,
+                slot_len,
+                mmap_key: self.alloc_blob_mmap_key(),
+                map_info,
+            });
+        }
+
+        let bo_handle = self.next_dumb_handle.fetch_add(1, Ordering::Relaxed);
+        let resource = Arc::new(GpuResource {
+            owner: file.file_id,
+            res_handle,
+            device_handle,
+            bo_handle,
+            width: 0,
+            height: 0,
+            stride: 0,
+            format: None,
+            size: b.size,
+            blob_mem: b.blob_mem,
+            blob_flags: b.blob_flags,
+            is_dumb_2d: false,
+            last_fence: AtomicU64::new(0),
+            mapped_blob: Mutex::new(mapped),
+        });
+        // No CTX_ATTACH here: a venus blob is bound to its context by the
+        // create command itself, and the context teardown frees it.
+
+        b.bo_handle = bo_handle;
+        b.res_handle = res_handle;
+        let ptr = arg as *mut DrmVirtgpuResourceCreateBlob;
+        if ptr.vm_write(current, b).is_err() {
+            return Err(VfsError::BadAddress);
+        }
+        self.gpu_resources.lock().insert(res_handle, resource);
+
+        Ok(0)
+    }
+
+    /// `VIRTGPU_EXECBUFFER` for a venus (`capset 4`) context.
+    ///
+    /// Ring-based submission with timeline syncobjs: out-syncobjs advance
+    /// only when the host retired the submission's fence (`pending_retires`),
+    /// and in-syncobjs are resolved and waited on inline before the submit —
+    /// Linux `virtio_gpu_parse_deps` + `virtio_gpu_do_fence_wait`. The wait
+    /// is real, not an FIFO assumption: ring batches retire out of order, so
+    /// enqueue order alone does not order execution.
+    fn handle_venus_execbuffer(
+        &self,
+        file: &Card0File,
+        current: &UserTaskRef,
+        arg: usize,
+    ) -> StarryResult<usize> {
+        let ptr = arg as *mut DrmVirtgpuExecbuffer;
+        let eb: DrmVirtgpuExecbuffer = ptr.vm_read(current).map_err(|_| VfsError::BadAddress)?;
+        // sync_file fence fds are not modelled on the venus face (venus uses
+        // the syncobj path exclusively); ring selection is.
+        if eb.flags & !VIRTGPU_EXECBUF_RING_IDX != 0 {
+            return Err(StarryError::InvalidInput);
+        }
+        // size == 0 is legal for ring-based contexts: the commands live in
+        // the ring buffer and the EXECBUFFER only kicks the host (Linux
+        // passes the empty stream through to SUBMIT_3D verbatim).
+        if eb.size as usize > MAX_VENUS_COMMAND_BYTES {
+            return Err(StarryError::InvalidInput);
+        }
+
+        let (context, num_rings) = {
+            let guard = file.context.lock();
+            match guard.as_ref() {
+                Some(ctx) if ctx.capset_id == VIRTGPU_DRM_CAPSET_VENUS => {
+                    (ctx.ctx_id, ctx.num_rings)
+                }
+                _ => return Err(StarryError::InvalidInput),
+            }
+        };
+        let ring_idx = if eb.flags & VIRTGPU_EXECBUF_RING_IDX != 0 {
+            if eb.ring_idx >= num_rings {
+                return Err(StarryError::InvalidInput);
+            }
+            eb.ring_idx as u8
+        } else {
+            0
+        };
+
+        // Validate referenced bo handles (Linux uses them for reservations;
+        // venus blobs are context-owned since their CREATE_BLOB).
+        let mut resources = Vec::with_capacity(eb.num_bo_handles as usize);
+        if eb.num_bo_handles > 0 {
+            if eb.num_bo_handles > 256 || eb.bo_handles == 0 {
+                return Err(StarryError::InvalidInput);
+            }
+            let handles: Vec<u32> = vm_load(
+                current,
+                eb.bo_handles as *const u32,
+                eb.num_bo_handles as usize,
+            )
+            .map_err(|_| VfsError::BadAddress)?;
+            for handle in handles {
+                let resource = self
+                    .resource_for_handle(file, handle)
+                    .ok_or(VfsError::NotFound)?;
+                resources.push(resource);
+            }
+        }
+
+        // Read the out-syncobj list before submitting; their points get
+        // signalled once the fence retires. Linux `parse_post_deps` allows
+        // no per-entry flags on the out side.
+        const MAX_EXEC_SYNCOBJS: u32 = 1024;
+        let syncobj_stride = if eb.syncobj_stride == 0 {
+            core::mem::size_of::<DrmVirtgpuExecbufferSyncobj>()
+        } else {
+            eb.syncobj_stride as usize
+        };
+        if syncobj_stride < core::mem::size_of::<DrmVirtgpuExecbufferSyncobj>() {
+            return Err(StarryError::InvalidInput);
+        }
+        let mut out_syncobjs: Vec<(u32, u64)> = Vec::new();
+        if eb.num_out_syncobjs > 0 {
+            if eb.num_out_syncobjs > MAX_EXEC_SYNCOBJS || eb.out_syncobjs == 0 {
+                return Err(StarryError::InvalidInput);
+            }
+            for i in 0..eb.num_out_syncobjs as usize {
+                let addr = eb.out_syncobjs + (i * syncobj_stride) as u64;
+                let entry: DrmVirtgpuExecbufferSyncobj =
+                    vm_load(current, addr as *const DrmVirtgpuExecbufferSyncobj, 1)
+                        .map_err(|_| VfsError::BadAddress)?[0];
+                if entry.flags != 0 {
+                    return Err(StarryError::InvalidInput);
+                }
+                // Point 0 addresses the binary view (point 1): Linux
+                // `virtio_gpu_process_post_deps` replaces the fence of a
+                // point-0 out-syncobj at retire, so the raw 0 must never
+                // reach the completion paths, where it would compare as
+                // always-reached and never advance the watermark.
+                out_syncobjs.push((entry.handle, entry.point.max(1)));
+            }
+            // Validate the handles up front: a queued submit with a dangling
+            // handle would never signal anything once its retire response
+            // lands (Linux `parse_post_deps` failure is EINVAL).
+            let table = self.syncobjs.lock();
+            for (handle, _) in &out_syncobjs {
+                if !table.contains_key(&(file.file_id, *handle)) {
+                    return Err(StarryError::InvalidInput);
+                }
+            }
+        }
+
+        // In-syncobjs (dependencies): the only legal per-entry flag is RESET
+        // (Linux `VIRTGPU_EXECBUF_SYNCOBJ_FLAGS`); RESET entries are reset
+        // after the submit completes, like the Linux cleanup stage.
+        let mut in_syncobjs: Vec<(u32, u64)> = Vec::new();
+        let mut reset_syncobjs: Vec<u32> = Vec::new();
+        if eb.num_in_syncobjs > 0 {
+            if eb.num_in_syncobjs > MAX_EXEC_SYNCOBJS || eb.in_syncobjs == 0 {
+                return Err(StarryError::InvalidInput);
+            }
+            for i in 0..eb.num_in_syncobjs as usize {
+                let addr = eb.in_syncobjs + (i * syncobj_stride) as u64;
+                let entry: DrmVirtgpuExecbufferSyncobj =
+                    vm_load(current, addr as *const DrmVirtgpuExecbufferSyncobj, 1)
+                        .map_err(|_| VfsError::BadAddress)?[0];
+                if entry.flags & !VIRTGPU_EXECBUF_SYNCOBJ_FLAGS_RESET != 0 {
+                    return Err(StarryError::InvalidInput);
+                }
+                if entry.flags & VIRTGPU_EXECBUF_SYNCOBJ_FLAGS_RESET != 0 {
+                    reset_syncobjs.push(entry.handle);
+                }
+                in_syncobjs.push((entry.handle, entry.point));
+            }
+            // An unknown dependency handle is ENOENT (Linux `find_fence`).
+            let table = self.syncobjs.lock();
+            for (handle, _) in &in_syncobjs {
+                if !table.contains_key(&(file.file_id, *handle)) {
+                    return Err(VfsError::NotFound.into());
+                }
+            }
+        }
+
+        // Copy the command stream. Empty streams (ring kicks) skip this.
+        let cmd: Vec<u8> = if eb.size == 0 {
+            Vec::new()
+        } else if eb.command == 0 {
+            return Err(StarryError::InvalidInput);
+        } else {
+            vm_load(current, eb.command as *const u8, eb.size as usize)
+                .map_err(|_| VfsError::BadAddress)?
+        };
+
+        // Wait out the dependencies before the submit: each in-syncobj
+        // point must already be signalled (Linux blocks in the ioctl on the
+        // dependency fence; same-device fences could skip, but every venus
+        // fence here is a ring batch the host may not have consumed yet, so
+        // enqueue order does not order execution). A deliverable signal
+        // aborts the wait with EINTR (Linux -ERESTARTSYS) and an unbacked
+        // point fails with EINVAL before parking.
+        for &(handle, point) in &in_syncobjs {
+            self.wait_syncobj_dependency(file.file_id, current, handle, point)?;
+        }
+
+        // Linux fences every venus EXECBUFFER (the ring idx rides on the
+        // fence): the host defers the SUBMIT_3D response to fence retire
+        // regardless, so an unfenced submit would block forever on the
+        // synchronous round-trip.
+        let completion = with_virgl(|virgl| virgl.submit_ring(context, &cmd, ring_idx))?;
+        let fence_id = completion_fence(completion);
+        for resource in &resources {
+            resource.last_fence.store(fence_id, Ordering::Release);
+        }
+
+        // The out-syncobjs signal when the HOST's retire response for this
+        // fence lands (`pump_retired_fences`), not at submit time: the guest
+        // reads a retired fence as "the host consumed my submission", so an
+        // early signal lets it lap the venus ring and corrupt the host
+        // command stream. A synchronously-completed submit (fence id 0 —
+        // the driver answered without a pending retire) has no retire to
+        // wait for, so its out-syncobjs advance immediately (Linux
+        // `virtio_gpu_process_post_deps` attaches the fence unconditionally,
+        // whatever the submit mode was).
+        if !out_syncobjs.is_empty() && fence_id != 0 {
+            let mut woken = Vec::new();
+            self.pending_retires.lock().push_back(super::syncobj::PendingRetire::new(
+                fence_id,
+                file.file_id,
+                out_syncobjs.clone(),
+            ));
+            // Attaching the fences satisfies every WAIT_AVAILABLE entry on
+            // these points (Linux re-runs the eventfd entries from
+            // drm_syncobj_add_point); completion entries stay parked until
+            // the retire lands. Registering first closes the race: a
+            // concurrent EVENTFD ioctl either lands in the scan or sees the
+            // backing through `pending_fence_for` and fires itself.
+            self.fire_available_waiters(file.file_id, &out_syncobjs, &mut woken);
+            // Arm the completion-side pump: a client that parks in
+            // `poll(eventfd)` after this submit issues no further ioctls,
+            // so the pump task is what observes the retire for it.
+            super::syncobj::kick_retire_pump();
+            for eventfd in woken {
+                let _ = eventfd.signal_kernel(1);
+            }
+        } else if !out_syncobjs.is_empty() {
+            let mut woken = Vec::new();
+            for (handle, point) in out_syncobjs {
+                self.signal_syncobj_point(file.file_id, handle, point, &mut woken);
+            }
+            for eventfd in woken {
+                let _ = eventfd.signal_kernel(1);
+            }
+        }
+        // EXECBUFFER is a fire-and-forget transaction: one boundary notify
+        // delivers the submission — Linux `virtio_gpu_notify()` at the ioctl
+        // end, exactly like the virgl path above. Without it, a kick that
+        // carries no out-syncobj has no other delivery path: the retire pump
+        // only notifies while a pending retire exists, so the doorbell would
+        // stay in the avail ring with the host idle and every waiter on the
+        // batch's effects would sleep forever.
+        with_virgl(|virgl| {
+            virgl.ctrl_notify();
+            Ok(())
+        })?;
+        self.pump_retired_fences();
+        // RESET-flagged in-syncobjs are cleared after the submit (Linux
+        // `virtio_gpu_reset_syncobjs` in the cleanup stage).
+        for &handle in &reset_syncobjs {
+            if let Ok(states) = self.lookup_syncobjs(file.file_id, &[handle]) {
+                states[0].lock().signaled_point = 0;
+            }
+        }
         Ok(0)
     }
 }

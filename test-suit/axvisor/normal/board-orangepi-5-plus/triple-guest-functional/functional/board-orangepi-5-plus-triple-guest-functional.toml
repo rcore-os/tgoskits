@@ -194,17 +194,28 @@ fail_regex = ['STARRY_SYNC_FAIL']
 timeout = 120
 
 [[shell_check_steps]]
+# Attach VM[1] and wait for the Linux guest to reach its rootfs. The console
+# switch can emit the prompt before the `Attached VM[1] console` marker, so the
+# attach cannot key off that marker. Waiting for the kernel's `VFS: Mounted
+# root` line instead proves the guest booted far enough that the following
+# `shell_prefix = "# "` step cannot race the shell startup.
 shell_cmd = "\u0018hvm console 1"
-success_regex = ['Attached VM\[1\] console']
+success_regex = ['VFS: Mounted root']
 timeout = 30
 
 [[shell_check_steps]]
+# First Linux command. This step waits for the `# ` prompt before writing, so it
+# cannot race the shell startup, and the newline-terminated `pwd` output is the
+# success marker, so a command the guest shell did not accept cannot pass.
 shell_prefix = "# "
 shell_cmd = "pwd"
 success_regex = ['(?m)^/\s*$']
 timeout = 30
 
 [[shell_check_steps]]
+# Prefix: the Linux prompt printed after `pwd` above. It restores the `# `
+# boundary the remaining Linux checks inherit.
+shell_prefix = "# "
 shell_cmd = "p=LINUX; [ -r /proc/cpuinfo ] || mount -t proc proc /proc; grep -qs ' /sys sysfs ' /proc/mounts || mount -t sysfs sysfs /sys; [ -r /proc/cpuinfo ] && grep -qs ' /sys sysfs ' /proc/mounts && echo ${p}_MOUNTS_PASS || echo ${p}_MOUNTS_FAIL"
 success_regex = ['(?m)^LINUX_MOUNTS_PASS\s*$']
 fail_regex = ['(?m)^LINUX_MOUNTS_FAIL\s*$']

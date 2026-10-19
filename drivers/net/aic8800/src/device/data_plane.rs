@@ -319,7 +319,27 @@ impl AicDevice {
                         );
                         continue;
                     }
-                    let indication = parse_connect_indication(&payload)?;
+                    self.complete_connect_confirmation()?;
+                    let indication = match parse_connect_indication(&payload) {
+                        Ok(indication) => indication,
+                        Err(error @ AicError::FirmwareRejected { .. })
+                            if self.lifecycle.control.as_ref().is_some_and(|control| {
+                                matches!(&control.operation,
+                                    super::control::ControlOperation::Connect(connect)
+                                        if connect.phase == super::control::ConnectPhase::AwaitIndication)
+                            }) =>
+                        {
+                            // Association refusal ends this request, not the
+                            // SDIO device. Keep the owner available for the
+                            // next connection, as cfg80211 does in the BSP.
+                            self.lifecycle.control = None;
+                            self.data.link.clear_peer();
+                            self.data.clear_internal_tx();
+                            self.data.push_event(AicEvent::ControlFailed(error))?;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     log::info!(
                         "[wifi] association complete; learned firmware vif={} station={}",
                         indication.interface_index,
@@ -1024,35 +1044,86 @@ mod tests {
     }
 
     #[test]
-    fn active_connect_rejection_is_not_discarded_as_a_startup_indication() {
-        let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
-        let mut control = super::super::control::build(
-            ControlRequest::Connect {
-                ssid: b"network".to_vec(),
-                pmk: None,
-                entropy: None,
-            },
-            [2, 0, 0, 0, 0, 1],
-            Some(0),
-        )
-        .unwrap();
-        if let super::super::control::ControlOperation::Connect(connect) = &mut control.operation {
-            connect.phase = super::super::control::ConnectPhase::AwaitIndication;
+    fn active_connect_rejection_reports_failure_and_allows_another_connection() {
+        for coalesced_confirmation in [false, true] {
+            let mut device = ready_transmitter(ChipVariant::Aic8800DC, 60);
+            let mut control = super::super::control::build(
+                ControlRequest::Connect {
+                    ssid: b"network".to_vec(),
+                    pmk: None,
+                    entropy: None,
+                },
+                [2, 0, 0, 0, 0, 1],
+                Some(0),
+            )
+            .unwrap();
+            if let super::super::control::ControlOperation::Connect(connect) =
+                &mut control.operation
+            {
+                connect.phase = if coalesced_confirmation {
+                    super::super::control::ConnectPhase::AwaitConfirmation
+                } else {
+                    super::super::control::ConnectPhase::AwaitIndication
+                };
+            }
+            control.pop_command();
+            let mut fifo = Vec::new();
+            if coalesced_confirmation {
+                let command = control.commands.front().unwrap();
+                device.begin_lmac_mailbox(
+                    command.message_id,
+                    command.destination,
+                    &command.payload,
+                    command.expected_message_id,
+                    MonotonicTime::default(),
+                );
+                device
+                    .consume_mailbox_response(
+                        IoPurpose::MailboxWrite,
+                        SdioResponse::Unit,
+                        MonotonicTime::default(),
+                    )
+                    .unwrap();
+                fifo.extend(indication_fifo(crate::lmac::SM_CONNECT_CFM, &[0]));
+            } else {
+                control.pop_command();
+            }
+            device.lifecycle.control = Some(control);
+            let mut payload = vec![0; 11];
+            payload[0] = 1;
+            fifo.extend(indication_fifo(SM_CONNECT_IND, &payload));
+            device.io.pending = Some(PendingIo {
+                id: 7,
+                purpose: IoPurpose::ReceiveData(RxPath::Command),
+            });
+            assert_eq!(
+                device.advance(AicInput {
+                    now: MonotonicTime::default(),
+                    event: Some(AicInputEvent::Sdio(SdioCompletion {
+                        request_id: 7,
+                        result: Ok(SdioResponse::Data(fifo)),
+                    })),
+                }),
+                AicAction::Event(AicEvent::ControlFailed(AicError::FirmwareRejected {
+                    message_id: SM_CONNECT_IND,
+                    status: 1
+                }))
+            );
+            assert_eq!(device.state(), AicState::Ready);
+            assert!(device.data.link.peer().is_none());
+            assert!(matches!(
+                device.advance(AicInput {
+                    now: MonotonicTime::default(),
+                    event: Some(AicInputEvent::Control(ControlRequest::Connect {
+                        ssid: b"network".to_vec(),
+                        pmk: None,
+                        entropy: None,
+                    })),
+                }),
+                AicAction::SubmitSdio(_)
+            ));
+            assert_eq!(device.state(), AicState::Ready);
         }
-        control.commands.clear();
-        device.lifecycle.control = Some(control);
-        let mut payload = vec![0; 11];
-        payload[0] = 1;
-        assert_eq!(
-            device.consume_receive_data(
-                RxPath::Command,
-                SdioResponse::Data(indication_fifo(SM_CONNECT_IND, &payload)),
-            ),
-            Err(AicError::FirmwareRejected {
-                message_id: SM_CONNECT_IND,
-                status: 1
-            })
-        );
     }
 
     #[test]

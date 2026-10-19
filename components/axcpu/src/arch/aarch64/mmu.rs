@@ -154,8 +154,11 @@ impl El1 {
     pub unsafe fn enable_mmu_and_caches() {
         use aarch64_cpu::{asm::barrier, registers::*};
 
+        // Do not inherit firmware alignment traps for ordinary accesses to
+        // Normal memory: Linux-compatible EL0 code relies on unaligned loads.
         SCTLR_EL1.modify(
             SCTLR_EL1::M::Enable
+                + SCTLR_EL1::A::Disable
                 + SCTLR_EL1::C::Cacheable
                 + SCTLR_EL1::I::Cacheable
                 + SCTLR_EL1::UCT::DontTrap

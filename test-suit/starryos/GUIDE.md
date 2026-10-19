@@ -641,8 +641,8 @@ App 的 `board-<name>.toml` 默认复用
 ```bash
 cargo xtask starry test board --board orangepi-5-plus
 cargo xtask starry test board -c native-hardware-smoke --board orangepi-5-plus
-cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus --board-config board-orangepi-5-plus.toml
-cargo xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
+cargo xtask starry app board -t benchmark/network-throughput -b OrangePi-5-Plus \
+  --board-config board-orangepi-5-plus.toml
 ```
 
 `native-hardware-smoke` 在一次启动中依次验证启动、PCIe、USB2、PWM 和 NPU。
@@ -652,12 +652,12 @@ cargo xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
 `wget` 时，测试会从本次 session 下载包含 `curl` 及其 musl 依赖的归档，再运行
 `upload-source` 和双向传输；无需预装 iperf 或 curl。
 
-nightly 性能用例在 `benchmarks/starry/iperf3` 提供完整 TCP 吞吐测试，直接通过
-上面的 `-t benchmark/iperf3` 命令启动板测；ostool server 持续提供 iperf3
-服务，board 配置步骤内的 `shell_cmd` 通过活动 session 的 `${boardServerIp}` 和
-`${sessionFile:iperf-bench.sh}` 获取实际地址；app 的 `init.sh` 会按现有 xtask 流程追加
-到该步骤中，下载并启动测试脚本，不依赖固定网卡、固定 IP、固定网段或额外的板测
-启动脚本。
+nightly 性能用例在 `benchmarks/starry/network-throughput` 提供完整 HTTP 吞吐测试，
+通过上面的 `-t benchmark/network-throughput` 命令启动板测。应用同时提供 OrangePi
+与 AKA 配置，因此必须显式选择 `--board-config`。board 配置步骤内的 `shell_cmd`
+通过活动 session 的 `${boardServerIp}` 和 `${sessionFile:bootstrap.sh}` 提供地址；
+app 的 `init.sh` 追加到该步骤中，下载 bootstrap、测试脚本和辅助程序后运行，
+不依赖固定网卡、固定 IP、固定网段或额外的板测启动脚本。
 
 `board-common/network-test` 的 `upload-source.c` 以 128 KiB 固定块生成零数据，
 按单调时钟运行指定时长，不落盘；CMake 将其编译并把脚本安装到每次运行的 session
@@ -676,7 +676,7 @@ OrangePi 运行 4 秒、预热 1 秒；AKA Wi-Fi
 结果与测试 ID 同时输出，便于按服务端记录排查。专用端口默认最多允许 64 个
 活动测试；容量满时创建请求返回 429，smoke 会失败而不是误报通过。
 
-完整吞吐矩阵位于 `apps/starry/network-throughput`，通过上面的
+完整吞吐矩阵位于 `benchmarks/starry/network-throughput`，通过上面的
 `cargo xtask starry app board` 手工启动。它覆盖单流上传、单流下载、单流双向、
 2/4/8 流上传和 4 流下载，每场景三轮并取中位数。上传使用同一
 `upload-source`，下载由服务端流式生成。板端用 `curl` 与服务端的状态字节计数

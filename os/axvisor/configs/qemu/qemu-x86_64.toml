@@ -6,15 +6,19 @@ args = [
   "-machine",
   "q35",
   "-smp",
-  "1",
+  "2",
   "-accel",
   "kvm",
   "-device",
   "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
   "-drive",
   "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img",
+  "-netdev",
+  "user,id=net0,hostfwd=tcp:127.0.0.1:8080-:8080",
+  "-device",
+  "e1000,netdev=net0",
   "-m",
-  "512M",
+  "2G",
 ]
 fail_regex = []
 to_bin = true

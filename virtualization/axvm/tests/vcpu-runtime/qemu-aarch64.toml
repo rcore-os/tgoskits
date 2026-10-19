@@ -1,0 +1,19 @@
+# QEMU run config of the `axvm` `vcpu_runtime` ktest case.
+#
+# Two vCPUs on two host CPUs with GICv3 virtualization, matching the original
+# two-vCPU scenario. The config stays deliberately diskless: the host boots the
+# memory root from its initramfs and the guest is loaded from
+# `/guest/builtin/images`, so no host root drive and no `root=` are wired.
+#
+# The ktest runner appends `AXTEST_SUITE_OK` as the success marker and rejects
+# panic, suite failure and case failure output; this file only owns the
+# platform arguments and the timeout budget of the whole guest run.
+args = [
+  "-nographic", "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "2", "-m", "512M",
+]
+to_bin = true
+uefi = false
+timeout = 900
+fail_regex = ["VIRQ_TEST_FAILED", "SOFTWARE VIRQ FAIL", "panicked at"]

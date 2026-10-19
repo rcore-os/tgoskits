@@ -3,6 +3,164 @@ use core::{io::BorrowedBuf, mem::MaybeUninit};
 use super::*;
 
 #[test]
+fn sequential_cache_hits_schedule_the_next_window_without_backing_io() {
+    with_test_page_provider(true, |_| {
+        crate::os::task::install_test_runtime_ops();
+        let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 64]));
+        let cached = reopen_cached_file(backing.clone());
+        super::super::prefetch::tests::with_queue(|queue| {
+            // Installation may fail before the first sequential request.
+            assert_eq!(queue.start(), Err(crate::BlockError::NoMemory));
+            for page in 0..3 {
+                assert_eq!(
+                    read_bytes(&cached, (page * PAGE_SIZE) as u64, PAGE_SIZE),
+                    vec![0x5a; PAGE_SIZE]
+                );
+            }
+            // The cache-hit caller only queued work; it did not perform I/O.
+            assert_eq!(backing.state.lock().unwrap().read_calls, 1);
+            assert!(!cached.is_page_cached(4));
+            assert_eq!(queue.spawn_attempts(), 2);
+            queue.run_one();
+            assert!(cached.is_page_cached(4));
+            assert_eq!(backing.state.lock().unwrap().read_calls, 2);
+            for page in 3..=20 {
+                assert_eq!(
+                    read_bytes(&cached, (page * PAGE_SIZE) as u64, PAGE_SIZE),
+                    vec![0x5a; PAGE_SIZE]
+                );
+            }
+            // Later windows reuse the running worker and still defer I/O.
+            assert_eq!(queue.spawn_attempts(), 2);
+            assert_eq!(backing.state.lock().unwrap().read_calls, 2);
+            assert!(!cached.is_page_cached(36));
+            queue.run_one();
+            assert!(cached.is_page_cached(36));
+            assert_eq!(
+                read_bytes(&cached, 36 * PAGE_SIZE as u64, PAGE_SIZE),
+                vec![0x5a; PAGE_SIZE]
+            );
+            assert_eq!(backing.state.lock().unwrap().read_calls, 3);
+        });
+    });
+}
+
+#[test]
+fn speculative_admission_failures_retry_without_another_demand_miss() {
+    with_test_page_provider(true, |_| {
+        crate::os::task::install_test_runtime_ops();
+        super::super::prefetch::tests::with_queue(|queue| {
+            let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 64]));
+            let cached = reopen_cached_file(backing.clone());
+            for page in 0..3 {
+                read_bytes(&cached, (page * PAGE_SIZE) as u64, PAGE_SIZE);
+            }
+            assert_eq!(queue.queued_len(), 0, "first worker startup fails");
+            read_bytes(&cached, 3 * PAGE_SIZE as u64, 1);
+            assert_eq!(
+                queue.queued_len(),
+                1,
+                "the next resident hit must retry startup"
+            );
+            backing.fail_next_read.store(true, Ordering::Release);
+            queue.run_one();
+            assert!(!cached.is_page_cached(4));
+            // Repeated partial reads in the last resident page remain sequential.
+            read_bytes(&cached, 3 * PAGE_SIZE as u64 + 1, 1);
+            assert_eq!(
+                queue.queued_len(),
+                1,
+                "failed backing I/O must re-arm the window"
+            );
+            queue.run_one();
+            assert!(cached.is_page_cached(4));
+        });
+    });
+}
+
+#[test]
+fn full_speculative_queue_rearms_the_rejected_window() {
+    with_test_page_provider(true, |_| {
+        crate::os::task::install_test_runtime_ops();
+        super::super::prefetch::tests::with_queue(|queue| {
+            assert_eq!(queue.start(), Err(crate::BlockError::NoMemory));
+            queue.start().unwrap();
+            let mut files = Vec::new();
+            for _ in 0..17 {
+                let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 64]));
+                let cached = reopen_cached_file(backing);
+                for page in 0..3 {
+                    read_bytes(&cached, (page * PAGE_SIZE) as u64, PAGE_SIZE);
+                }
+                files.push(cached);
+            }
+            assert_eq!(queue.queued_len(), 16);
+            queue.run_one();
+            read_bytes(files.last().unwrap(), 3 * PAGE_SIZE as u64, PAGE_SIZE);
+            assert_eq!(
+                queue.queued_len(),
+                16,
+                "queue-full must not consume the rejected trigger"
+            );
+            while queue.queued_len() != 0 {
+                queue.run_one();
+            }
+            assert!(files.last().unwrap().is_page_cached(4));
+        });
+    });
+}
+
+#[test]
+fn speculative_fill_skips_resident_prefix_and_retries_mapping_contention() {
+    with_test_page_provider(true, |_| {
+        crate::os::task::install_test_runtime_ops();
+        super::super::prefetch::tests::with_queue(|queue| {
+            assert_eq!(queue.start(), Err(crate::BlockError::NoMemory));
+            let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 64]));
+            let cached = reopen_cached_file(backing.clone());
+            let other = CachedFile::get_or_create(cached.location().clone()).unwrap();
+            for page in 0..3 {
+                read_bytes(&cached, (page * PAGE_SIZE) as u64, PAGE_SIZE);
+            }
+            cached
+                .shared
+                .mapping_update_in_progress
+                .store(true, Ordering::Release);
+            queue.run_one();
+            assert!(!cached.is_page_cached(5));
+            cached
+                .shared
+                .mapping_update_in_progress
+                .store(false, Ordering::Release);
+            read_bytes(&cached, 3 * PAGE_SIZE as u64, 1);
+            assert_eq!(
+                queue.queued_len(),
+                1,
+                "mapping contention must preserve the trigger"
+            );
+            // Execute speculation while the other handle owns the first page's
+            // backing read. The worker must defer rather than wait or consume it.
+            let executor = *queue;
+            *backing.after_read.lock().unwrap() = Some(Box::new(move || executor.run_one()));
+            assert_eq!(read_bytes(&other, 4 * PAGE_SIZE as u64, 1), vec![0x5a]);
+            assert!(!cached.is_page_cached(5));
+            read_bytes(&cached, 3 * PAGE_SIZE as u64 + 1, 1);
+            assert_eq!(
+                queue.queued_len(),
+                1,
+                "fill contention must preserve the trigger"
+            );
+            queue.run_one();
+            assert!(
+                cached.is_page_cached(5),
+                "a resident prefix must not suppress the missing tail"
+            );
+            assert_eq!(backing.state.lock().unwrap().read_calls, 3);
+        });
+    });
+}
+
+#[test]
 fn missing_page_read_releases_both_owners_for_an_independent_miss() {
     with_test_page_provider(true, |_| {
         let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 12]));

@@ -34,7 +34,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 const QUEUE_REGISTER_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) trait HctxObserver: Send + Sync {
-    fn request_completed(&self, op: RequestOp, block_count: u32, result: Result<(), BlkError>);
+    fn request_completed(&self, op: RequestOp);
 
     fn hctx_failed(&self, hctx_id: usize, error: BlkError);
 }
@@ -139,7 +139,6 @@ impl HctxState {
 struct PendingRequest {
     completion: CompletionSender,
     op: RequestOp,
-    block_count: u32,
     deadline: Duration,
 }
 
@@ -720,12 +719,7 @@ fn run_hctx(
             Err(terminal_error),
             None,
         ));
-        notify_observer(
-            &observer,
-            request.op,
-            request.block_count,
-            Err(terminal_error),
-        );
+        notify_observer(&observer, request.op);
     }
     for request in protocol_failed {
         super::metrics::record_terminal_completion(true);
@@ -734,12 +728,7 @@ fn run_hctx(
             Err(terminal_error),
             None,
         ));
-        notify_observer(
-            &observer,
-            request.op,
-            request.block_count,
-            Err(terminal_error),
-        );
+        notify_observer(&observer, request.op);
     }
     if let Some(error) = queue_shutdown_error {
         warn!(
@@ -1028,18 +1017,13 @@ impl CompletionSink for HctxCompletionSink<'_> {
         let result = completed.result;
         super::metrics::record_terminal_completion(result.is_err());
         request.completion.complete(completed);
-        notify_observer(self.observer, request.op, request.block_count, result);
+        notify_observer(self.observer, request.op);
     }
 }
 
-fn notify_observer(
-    observer: &Weak<dyn HctxObserver>,
-    op: RequestOp,
-    block_count: u32,
-    result: Result<(), BlkError>,
-) {
+fn notify_observer(observer: &Weak<dyn HctxObserver>, op: RequestOp) {
     if let Some(observer) = observer.upgrade() {
-        observer.request_completed(op, block_count, result);
+        observer.request_completed(op);
     }
 }
 

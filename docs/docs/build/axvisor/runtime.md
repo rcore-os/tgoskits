@@ -149,23 +149,32 @@ cargo xtask axvisor qemu \
 
 不加 `--rootfs` 时 rootfs 按1.1 的顺序自动获取；已经有一份镜像时用 `--rootfs <path>` 跳过下载。
 
-### 1.6 x86_64 上的网页管理台（TODO）
+### 1.6 x86_64 默认客户机
 
-x86_64 的 Axvisor 本身能在这套流程下正常起来：OVFI 引导、两路 pflash、控制面监听、
-Web UI 五个面板、客户机创建与生命周期操作都可用。**缺的是能在可接受时间内启动的客户机。**
+在支持嵌套 VMX、可访问 `/dev/kvm` 的 Intel Linux 主机上，安装仓库固定的 Rust 工具链、QEMU x86_64、Node ≥ 24 和 npm ≥ 11，然后从未生成过 Axvisor 配置的检出执行：
 
-实测：同一份 Linux 内核与 initramfs，riscv64 走 Axvisor 约 4 秒进 shell，x86_64 要 140 秒
-以上仍在半途，而裸 QEMU 跑同一份只要 0.7 秒——所以不是环境或镜像的问题。
+```bash
+cargo axvisor defconfig qemu-x86_64
+cargo axvisor qemu
+```
 
-根因是 Axvisor 没有为 x86 客户提供 paravirt 时钟。x86 没有"读时间"这条指令，时间只能从设备
-寄存器读，每一次读都 trap 回 hypervisor；客户机因此退回到最慢的 `refined-jiffies` 时钟源，
-而它每次 `read()` 都要读一次定时器，于是启动过程的每次时钟读取都成了一次 VM 退出。RISC-V
-不受影响，因为它的 `time` CSR 用 `rdtime` 一条普通指令读，不 trap。
+`qemu-x86_64.toml` 默认启用 `web-ui`、`ax-driver/nvme` 和 `ax-driver/intel-net`，宿主使用 2 CPU、2 GiB 内存，`vm_configs = []` 保持初始客户机列表为空。构建器自动下载或校验缓存中的原始 rootfs、构建网页并打包；无需预先生成 `web-ui/dist`，也无需编辑解压后的磁盘。QEMU 显式接入 e1000，并将宿主 `127.0.0.1:8080` 转发至 Axvisor 的 8080；日志报告监听就绪后访问 [网页管理台](http://localhost:8080/)。
 
-待办的修法是实现 kvm-clock——KVM 既有的 paravirt 时钟接口，Linux 原生识别，不需要改客户机。
+在「虚拟机」中选择「填表创建」。`CreateForm` 从能力声明的 `schema` 和 `defaults` 操作加载初始值，核验已有镜像后即可点击「创建」，再点击「启动并打开终端」。默认客户机使用 1 vCPU、256 MiB 内存、虚拟化地址空间和 x86 direct boot；已有内核 `/guest/linux/linux-qemu` 与磁盘 `/guest/rootfs-x86_64-alpine-0.img` 均来自原始镜像，无需上传。地址、内核参数、ID 和磁盘写入选项收在高级设置中。
 
-在这一项完成之前，x86_64 上可以验证控制面、客户机注册表和前端，但**不要把客户机启动耗时
-当作 hypervisor 或本次改动的问题**。
+默认磁盘只读，多个客户机可以复用原始文件。`rootfs_read_only` 在网页提交中为 `true`；旧 API 请求省略该字段时仍使用原有可写语义。需要可写磁盘时先选择独立副本，再调整磁盘选项及内核参数。默认客户机的 host affinity 为 CPU1，CPU0 留给宿主引导与其他任务；创建接口拒绝超出当前物理核数或空闲内存的请求，实际分配失败仍由 VM 管理器回滚。
+
+进入 shell 后输入下面的命令。算术结果应为 `5891`，系统信息应来自客户机；终端已连接和 VM 状态为 running 本身不足以证明输入进入了 shell。
+
+```sh
+printf '%s\n' $((137 * 43))
+uname -m
+cat /etc/alpine-release
+```
+
+刷新页面后从左侧客户机名称重新打开终端即可继续输入。切换面板保留已经打开的终端；关闭终端标签只释放连接，「停止」结束客户机运行，「删除客户机」释放实例与通道且保留镜像文件。可再次使用默认值创建客户机，空 ID 由管理器自动分配。
+
+定向回归入口为 `cargo xtask axvisor test qemu --arch x86_64 --test-case web-ui-vmx`，使用 e1000 和相同默认资源，通过真实客户机 shell 证明创建、启动、算术、系统信息、重连与删除后重建。启动验收门限保持 90 秒。若 Linux 在 `virtqueue_add_split` 警告后停在根盘读取，核对 PCI block adapter 的 `seg_max` 是否为直接描述符队列预留请求头和状态两个槽；不应通过延长等待掩盖不可提交的请求。本流程本地只验证 x86_64 VMX，未将 AMD SVM 或其他架构视为已验证。
 
 ## 2. U-Boot 启动
 

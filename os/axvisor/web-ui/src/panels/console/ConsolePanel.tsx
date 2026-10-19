@@ -1,40 +1,23 @@
-//! Guest terminal panel: one tab per console, and tabs merge by dragging.
+//! Guest terminals connect only after selection and remain mounted while hidden.
 //!
-//! The lane table is *runtime state*: `GET /api/consoles` is derived from the VM
-//! registry, so a lane appears when a VM is created and disappears when it is
-//! closed. The panel therefore re-reads the table whenever the registry feed
-//! reports a change — that is the whole reason the shell injects the feed here —
-//! and drops the terminals whose lane is gone instead of retrying them forever.
-//!
-//! Every console is its own tab, and each tab connects its own lanes. Entering
-//! the panel opens the lanes of the tab the operator lands on — never a free
-//! lane belonging to some other tab, which is how a merged view nobody asked
-//! for used to appear. Dragging one tab onto another merges them: both lanes
-//! are then shown side by side in one tab, and each pane of a merged tab offers
-//! 「分离」 to go back to its own tab. This is the same gesture the demo uses, and
-//! the reason the split is not a separate mode: what is shown together is what
-//! was put together.
-//!
-//! Lanes are exclusive on the host, and every opened tab keeps its lanes
-//! connected while it is hidden too: a terminal that unmounted would lose its
-//! buffer, and switching tabs must not cost the operator the history they
-//! already read. The host side retains each lane's output up to its queue
-//! capacity, so a hidden terminal misses nothing and a re-entered one replays
-//! what the operator has not seen. A lane is given away only explicitly, via
-//! 「释放」, and a lane another session holds is shown as occupied rather than
-//! silently reconnected.
+//! The live lane table follows the VM registry. Deletion releases the socket and
+//! forgets per-lane state; closing a terminal tab releases its connection without
+//! stopping the VM. A failed attach stays on the selected guest for an explicit
+//! retry, rather than attaching another guest's lane.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
 import { TerminalView } from '@/components/Terminal'
 import { describeError, describeStatus, type ConsoleInfo, type PanelProps } from '@/api/types'
 import {
+  addLanes,
   guestRoute,
   laneRefused,
+  lanePhase,
   laneVmId,
   lanesToOpen,
   mergeGroups,
-  nextFreeTab,
+  pruneGoneLanes,
   releaseLane,
   sameSet,
   splitGroup,
@@ -42,10 +25,27 @@ import {
 } from '@/lib/lanes'
 import { cn } from '@/lib/utils'
 
-export default function ConsolePanel({ api, link, resources = [], focusVm = null }: PanelProps) {
+export default function ConsolePanel({
+  api,
+  link,
+  resources = [],
+  focusVm = null,
+  focusRequest = 0,
+  active: visible = true,
+}: PanelProps) {
   const [consoles, setConsoles] = useState<ConsoleInfo[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  /** Lanes this page holds, which is the active tab's lanes. */
+  /**
+   * Lanes the operator has actually opened here.
+   *
+   * Not the same as the lanes that exist: a panel that connected every lane it
+   * can see would hold all of them the moment it was mounted, and a second page
+   * (or the guest's own serial console) could then never attach to any. A lane
+   * joins this list when the tab holding it has been in view, and stays: that is
+   * what keeps a visited terminal's buffer alive across tab switches.
+   */
+  const [visited, setVisited] = useState<string[]>([])
+  /** Lanes this page holds, which is the lanes it has opened and kept. */
   const [open, setOpen] = useState<string[]>([])
   /** Lanes whose attach this page lost to another session, so it stops trying. */
   const [failed, setFailed] = useState<string[]>([])
@@ -63,6 +63,7 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
   const [dismissed, setDismissed] = useState<string[]>([])
   const [active, setActive] = useState(0)
   const [draggedTab, setDraggedTab] = useState<number | null>(null)
+  const [consumedFocus, setConsumedFocus] = useState<number | null>(null)
 
   const load = useCallback(() => {
     let cancelled = false
@@ -75,7 +76,6 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setConsoles([])
         setError(describeError(e))
       })
     return () => {
@@ -108,6 +108,7 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
     () => guestLanes.map((console) => ({ route: console.route, attached: console.attached })),
     [guestLanes],
   )
+  const routesKey = routes.join(',')
 
   // Each console is its own tab; merged tabs survive a table change as long as at
   // least one of their lanes is alive, and a new console arrives as its own tab.
@@ -115,15 +116,61 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
     setGroups((current) => syncGroups(current, liveRoutes))
   }, [liveRoutes])
 
+  // A lane whose guest is gone is forgotten along with everything decided about
+  // it. Deleting a guest removes its lane, and creating one again under the same
+  // id makes a *new* lane: it must be offered as a fresh tab rather than staying
+  // closed or released because of the guest that used to hold that id.
+  useEffect(() => {
+    setVisited((current) => pruneGoneLanes(current, routes))
+    setFailed((current) => pruneGoneLanes(current, routes))
+    setReleased((current) => pruneGoneLanes(current, routes))
+    setDismissed((current) => pruneGoneLanes(current, routes))
+  }, [routesKey])
+
   useEffect(() => {
     if (active < groups.length) return
     setActive(Math.max(0, groups.length - 1))
   }, [groups, active])
 
-  /** Lanes every opened tab holds, in tab order. */
+  // Consume navigation once. It may reopen a dismissed terminal, while later
+  // tab switches remain the operator's choice rather than following stale focus.
+  useEffect(() => {
+    if (!visible || focusVm === null || consumedFocus === focusRequest) return
+    const route = guestRoute(focusVm)
+    if (!routes.includes(route)) return
+    setDismissed((current) => current.includes(route) ? current.filter((lane) => lane !== route) : current)
+    const index = groups.findIndex((group) => group.includes(route))
+    if (index < 0) return
+    setConsumedFocus(focusRequest)
+    setReleased((current) => current.filter((lane) => lane !== route))
+    setFailed((current) => current.filter((lane) => lane !== route))
+    setVisited((current) => addLanes(current, [route]))
+    setActive(index)
+  }, [visible, focusVm, focusRequest, consumedFocus, routes, groups])
+
   const target = useMemo(
-    () => groups.flat().filter((route) => routes.includes(route)),
-    [groups, routes],
+    () => {
+      if (!visible) return []
+      if (focusVm !== null && consumedFocus !== focusRequest) {
+        const route = guestRoute(focusVm)
+        return routes.includes(route) ? [route] : []
+      }
+      return groups[active] ?? []
+    },
+    [visible, focusVm, focusRequest, consumedFocus, routes, groups, active],
+  )
+  const targetKey = target.join('+')
+
+  // Seeing a tab is what opens it. Only a panel that is on screen records this,
+  // which is the whole difference between a hidden panel and an unopened one.
+  useEffect(() => {
+    setVisited((current) => addLanes(current, target))
+  }, [targetKey])
+
+  /** Lanes the operator has opened here that still exist, in lane-table order. */
+  const connectable = useMemo(
+    () => routes.filter((route) => visited.includes(route)),
+    [routes, visited],
   )
 
   useEffect(() => {
@@ -131,41 +178,12 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
       // `current` is the held set: the lane table counts this page's own
       // sessions as attached, so held lanes must survive the recomputation
       // instead of being dropped and reconnected on every registry event.
-      const next = lanesToOpen(target, laneTable, [...failed, ...released], current)
+      const next = lanesToOpen(connectable, laneTable, [...failed, ...released], current)
       return sameSet(current, next) ? current : next
     })
-  }, [target, laneTable, failed, released])
+  }, [connectable, laneTable, failed, released])
 
-  /**
-   * After losing a race for a lane, move to a tab whose lane can be opened.
-   *
-   * The tab is the only thing that decides what is connected, so a lost race is
-   * answered by switching tabs instead of quietly connecting another lane: the
-   * operator sees where they ended up, and the tab they were on stays a tab.
-   * When there is nothing free to move to, nothing happens and the blocked
-   * banner reports it.
-   */
-  useEffect(() => {
-    if (failed.length === 0) return
-    const index = nextFreeTab(groups, laneTable, [...failed, ...released])
-    if (index >= 0) setActive(index)
-  }, [failed, groups, laneTable, released])
-
-  useEffect(() => {
-    if (focusVm === null) return
-    const route = guestRoute(focusVm)
-    const index = groups.findIndex((group) => group.includes(route))
-    if (index >= 0) setActive(index)
-  }, [focusVm, groups])
-
-  /**
-   * A lane whose socket closed without opening may have been lost to another
-   * page, and the table this panel holds is exactly the one that looked free
-   * when it chose the lane. So re-read the table and decide on *that*: a lane the
-   * new table reports as held is dropped from its tab and the picker moves on,
-   * while a lane that still looks free is left alone (the close was something
-   * else).
-   */
+  // Refresh occupancy after an attach failure without selecting another guest.
   const attempt = useCallback(
     (route: string) => {
       api
@@ -179,13 +197,6 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
           if (!laneRefused(table, route)) return
           setFailed((current) => (current.includes(route) ? current : [...current, route]))
           setOpen((current) => releaseLane(current, route))
-          // The lane is not this page's to keep: take it out of the tab so the
-          // operator sees the tab they can actually use.
-          setGroups((current) =>
-            current
-              .map((group) => group.filter((lane) => lane !== route))
-              .filter((group) => group.length > 0),
-          )
         })
         // The backend is unreachable: keep the lane and its state as they are,
         // the terminal itself already reports the lost connection.
@@ -212,9 +223,31 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
     load()
   }
 
+  /**
+   * Opens the lane of a tab the operator just asked for.
+   *
+   * Connecting is a deliberate act here, so this is where a lane nobody has
+   * looked at yet joins the opened set — and where a stale "another session has
+   * it" is cleared so the table is asked again rather than believed forever.
+   */
+  const connect = (route: string) => {
+    setVisited((current) => addLanes(current, [route]))
+    reconnect(route)
+  }
+
   const merge = (from: number, into: number) => {
+    // Merging is the operator putting two tabs together, so the merged tab is
+    // shown: both lanes are opened, exactly as if each had been visited.
+    setVisited((current) => addLanes(current, [...(groups[from] ?? []), ...(groups[into] ?? [])]))
     setGroups((current) => mergeGroups(current, from, into))
     setActive(into > from ? into - 1 : into)
+  }
+
+  /** Makes one tab the one in view, which is what opens its lanes. */
+  const activate = (index: number) => {
+    setActive(index)
+    const group = groups[index]
+    if (group !== undefined) setVisited((current) => addLanes(current, group))
   }
 
   const split = (route: string) => {
@@ -247,22 +280,52 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
 
   const activeGroup = groups[active] ?? []
   const activeOpen = activeGroup.filter((route) => open.includes(route))
+  /** Whether the lane table currently reports a session on this route. */
+  const occupancy = (route: string) =>
+    (consoles ?? []).find((item) => item.route === route)?.attached ?? false
+  // "Blocked" is a tab whose every lane is opened here and lost to somebody else:
+  // a tab that was never opened is not blocked, it is simply not connected yet,
+  // and its panes say so with a way to connect.
   const blocked =
     activeGroup.length > 0 &&
     activeOpen.length === 0 &&
-    activeGroup.some((route) => !released.includes(route))
+    activeGroup.every(
+      (route) =>
+        visited.includes(route) &&
+        lanePhase(route, {
+          open,
+          released,
+          failed,
+          attached: occupancy(route),
+        }) === 'occupied',
+    )
 
   /**
-   * One lane of the active tab. A connected WebSocket only means the lane is
-   * open: input still needs a running guest, and a stopped one drops it silently,
-   * so the pane says which of the two is missing instead of looking broken.
+   * One lane of one tab.
+   *
+   * What it shows comes from [`lanePhase`]: a lane this page holds is a
+   * terminal; one it released says so and offers 重新连接; one another session
+   * holds says that instead of reconnecting, because an exclusive lane would only
+   * be refused again; and one that has never been opened offers to connect, so a
+   * channel the operator has not asked for is left free for whoever does want it.
+   *
+   * A connected WebSocket only means the lane is open: input still needs a
+   * running guest, and a stopped one drops it silently, so a connected pane whose
+   * guest is not running says which of the two is missing instead of looking
+   * broken — and an unopened one says it before the operator wastes a click.
    */
   const pane = (route: string, groupPanes: number) => {
     const console = (consoles ?? []).find((item) => item.route === route)
     const vmId = laneVmId(route)
     const vm = vmId === null ? undefined : resources.find((item) => item.id === vmId)
-    const held = open.includes(route)
     const label = console?.name ?? route
+    const phase = lanePhase(route, {
+      open,
+      released,
+      failed,
+      attached: console?.attached ?? false,
+    })
+    const held = phase === 'connected'
     return (
       <div
         key={route}
@@ -270,7 +333,7 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
         aria-label={route}
         className="relative flex min-h-0 min-w-0 flex-1 flex-col gap-1"
       >
-        <div className="absolute right-1 top-1 z-10 flex items-center gap-1">
+        <div className="flex shrink-0 justify-end gap-1">
           {groupPanes > 1 && (
             <button
               type="button"
@@ -282,7 +345,7 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
               分离
             </button>
           )}
-          {held && (
+          {phase === 'connected' && (
             <button
               type="button"
               aria-label={`释放 ${label} 通道`}
@@ -294,7 +357,7 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
             </button>
           )}
         </div>
-        {vm !== undefined && vm.status !== 'running' && (
+        {held && vm !== undefined && vm.status !== 'running' && (
           <p
             role="status"
             className="shrink-0 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn"
@@ -314,7 +377,7 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
           />
         ) : (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 rounded-md border text-sm text-muted-foreground">
-            {released.includes(route) ? (
+            {phase === 'released' && (
               <>
                 <p>这条通道已由本页释放，当前没有连接。</p>
                 <button
@@ -325,8 +388,38 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
                   重新连接
                 </button>
               </>
-            ) : (
-              <p>这条通道已被另一个会话占用，本页没有连接它。</p>
+            )}
+            {phase === 'occupied' && (
+              <>
+                <p>
+                  这条通道已被另一个会话占用，本页没有连接它。通道是独占订阅：关掉占用它的
+                  那处（另一个浏览器页面，或本页另一个终端标签），再点「重试」。
+                </p>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-0.5 text-xs hover:bg-accent"
+                  onClick={() => reconnect(route)}
+                >
+                  重试
+                </button>
+              </>
+            )}
+            {phase === 'idle' && (
+              <>
+                <p>
+                  这条通道还没有打开，本页只在需要时才占用它。
+                  {vm !== undefined &&
+                    vm.status !== 'running' &&
+                    `客户机「${vm.name}」当前为${describeStatus(vm.status)}，先到「虚拟机」面板启动它，输入才会送达。`}
+                </p>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-0.5 text-xs hover:bg-accent"
+                  onClick={() => connect(route)}
+                >
+                  连接
+                </button>
+              </>
             )}
           </div>
         )}
@@ -400,7 +493,7 @@ export default function ConsolePanel({ api, link, resources = [], focusVm = null
                 >
                   <button
                     type="button"
-                    onClick={() => setActive(index)}
+                    onClick={() => activate(index)}
                     className="flex items-center gap-1.5 px-2.5 py-1"
                   >
                     <span

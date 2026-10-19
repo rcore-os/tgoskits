@@ -163,9 +163,14 @@ impl BlockDeviceHandle {
             Ok(pair) => pair,
             Err(error) => return Err(SubmitError::new(error, request)),
         };
-        let completion = senders
+        let mut completion = senders
             .pop_front()
             .expect("single-request completion group has one sender");
+        completion.account(super::super::io_stats::RequestAccounting::new(
+            Arc::clone(&self.inner.io_metrics),
+            request.op,
+            super::sectors_for_blocks(info.device.logical_block_size, request.block_count),
+        ));
         let mut submission = Some(Submission {
             request,
             completion,

@@ -400,6 +400,30 @@ impl FsContext {
             .try_resolve_symlink_using(loc, follow_count, search)
     }
 
+    /// Recognizes the saved process root even below covering mounts. A dirfd
+    /// only changes permission lookup and must not become a containment root.
+    fn is_process_root(&self, directory: &Location) -> bool {
+        if directory.ptr_eq(&self.root_dir) {
+            return true;
+        }
+        if !directory.is_root_of_mount() {
+            return false;
+        }
+        // parent() skips covered mount roots. Check each identity before the
+        // walk can leave the process root, including stacked covering mounts.
+        let mut covered = directory.mountpoint().location();
+        while let Some(location) = covered {
+            if location.ptr_eq(&self.root_dir) {
+                return true;
+            }
+            if !location.is_root_of_mount() {
+                break;
+            }
+            covered = location.mountpoint().location();
+        }
+        false
+    }
+
     fn resolve_components(
         &self,
         components: Components,
@@ -412,7 +436,7 @@ impl FsContext {
                 Component::CurDir => {}
                 Component::ParentDir => {
                     Self::check_search(&dir, search)?;
-                    if !dir.ptr_eq(&self.root_dir) {
+                    if !self.is_process_root(&dir) {
                         dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
                     }
                 }
@@ -533,7 +557,7 @@ impl FsContext {
                 Component::ParentDir => {
                     searched.push(dir.clone());
                     Self::check_search(&dir, search)?;
-                    if !dir.ptr_eq(&self.root_dir) {
+                    if !self.is_process_root(&dir) {
                         dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
                     }
                 }
@@ -633,7 +657,7 @@ impl FsContext {
             self.resolve_inner_with_trace(path, &mut 0, &mut searched, Some(&check_search))?;
         if let Some(name) = name {
             Ok((dir, Cow::Borrowed(name), searched))
-        } else if dir.ptr_eq(&self.root_dir) {
+        } else if self.is_process_root(&dir) {
             Err(VfsError::InvalidInput)
         } else if let Some(parent) = dir.parent() {
             // `parent` is only used to represent the resolved final `.`/`..`
@@ -814,7 +838,7 @@ impl FsContext {
         if let Some(name) = name {
             Ok((dir, Cow::Borrowed(name)))
         } else {
-            if dir.ptr_eq(&self.root_dir) {
+            if self.is_process_root(&dir) {
                 Err(VfsError::InvalidInput)
             } else if let Some(parent) = dir.parent() {
                 Ok((parent, dir.name().into_owned().into()))
@@ -932,13 +956,30 @@ impl FsContext {
         boundary: Option<&Location>,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<()> {
+        let is_boundary = |location: &Location| {
+            boundary.is_some_and(|boundary| location.ptr_eq(boundary))
+                || location.ptr_eq(&self.root_dir)
+        };
         let mut current = directory.clone();
         loop {
             Self::check_permission(&current, credentials, NodePermission::OTHER_EXEC)?;
-            if boundary.is_some_and(|boundary| current.ptr_eq(boundary))
-                || current.ptr_eq(&self.root_dir)
-            {
+            if is_boundary(&current) {
                 return Ok(());
+            }
+            if current.is_root_of_mount() {
+                // A mount can cover the saved process root or dirfd boundary.
+                // Check those identities before parent() skips past them, but
+                // do not require search permission on hidden covered inodes.
+                let mut covered = current.mountpoint().location();
+                while let Some(location) = covered {
+                    if is_boundary(&location) {
+                        return Ok(());
+                    }
+                    if !location.is_root_of_mount() {
+                        break;
+                    }
+                    covered = location.mountpoint().location();
+                }
             }
             current = current.parent().ok_or(VfsError::InvalidInput)?;
         }

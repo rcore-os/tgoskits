@@ -28,8 +28,8 @@ from SD card all along.
 Please bear with me until I find the time to write it all down here elaborately. For the time being,
 please see this tutorial as an enabler for a convenience feature that allows booting the following
 tutorials in a quick manner. _For those keen to get a deeper understanding, it could make sense to
-skip forward to [Chapter 15](../15_virtual_mem_part3_precomputed_tables) and read the first half of
-the README, where `Load Address != Link Address` is discussed_.
+skip forward to [Chapter 15 in the upstream `rust-raspberrypi-OS-tutorials`](https://github.com/rust-embedded/rust-raspberrypi-OS-tutorials)
+and read the first half of the README, where `Load Address != Link Address` is discussed_.
 
 [position independent code]: https://en.wikipedia.org/wiki/Position-independent_code
 
@@ -42,7 +42,7 @@ You can try it with this tutorial already:
 1. Copy `kernel8.img` to the SD card and put the SD card back into your RPi.
 1. Run `make chainboot` or `BSP=rpi4 make chainboot`.
 1. Connect the USB serial to your host PC.
-    - Wiring diagram at [top-level README](../README.md#-usb-serial-output).
+    - See the [ArceOS Raspberry Pi 4 guide](../../../doc/platform_raspi4.md) for the board bring-up context.
     - Make sure that you **DID NOT** connect the power pin of the USB serial. Only RX/TX and GND.
 1. Connect the RPi to the (USB) power cable.
 1. Observe the loader fetching a kernel over `UART`:

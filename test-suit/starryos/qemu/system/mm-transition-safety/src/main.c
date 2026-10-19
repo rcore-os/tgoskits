@@ -8,10 +8,12 @@
 // modifying the parent's frame on both CPUs.
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -360,6 +362,60 @@ static int private_discard_refault(void)
     return result;
 }
 
+// Keep the parent on one CPU while the child leaves file mappings on the other
+// CPUs. This is a synchronization/content smoke check after exit, not a
+// discriminating test of proactive lazy-MM eviction: unrelated userspace can
+// run on those CPUs and release the leases even without the notification.
+static int exited_file_mapping_sync(int controller_cpu, const cpu_set_t *allowed)
+{
+    char path[] = "/root/mm-exit-sync-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0)
+        return -1;
+    int result = -1;
+    if (ftruncate(fd, PAGE_SIZE) != 0 || pin_to_cpu(controller_cpu) != 0)
+        goto cleanup;
+
+    pid_t child = fork();
+    if (child == 0) {
+        if (pwrite(fd, "R", 1, 0) != 1)
+            _exit(11);
+        const volatile char *page = mmap(NULL, PAGE_SIZE, PROT_READ,
+                                        MAP_PRIVATE, fd, 0);
+        if (page == MAP_FAILED)
+            _exit(12);
+        for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+            if (cpu == controller_cpu || !CPU_ISSET(cpu, allowed))
+                continue;
+            if (pin_to_cpu(cpu) != 0)
+                _exit(10);
+            if (page[0] != 'R')
+                _exit(13);
+        }
+        // Leave the private file mapping alive until exit so synchronization
+        // also exercises teardown; the file was dirtied through pwrite above.
+        _exit(0);
+    }
+    if (child < 0)
+        goto cleanup;
+    int status;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0)
+        goto cleanup;
+    printf("SYNC: exited private file mapping on remote CPUs\n");
+    fflush(stdout);
+    if (fsync(fd) != 0)
+        goto cleanup;
+    char value = 0;
+    if (pread(fd, &value, 1, 0) == 1 && value == 'R')
+        result = 0;
+
+cleanup:
+    close(fd);
+    unlink(path);
+    return result;
+}
+
 int main(void)
 {
     cpu_set_t allowed;
@@ -383,6 +439,11 @@ int main(void)
     }
 
     printf("=== mm-transition-safety ===\n");
+    if (exited_file_mapping_sync(cpus[0], &allowed) != 0) {
+        perror("FAIL: exited file mapping synchronization");
+        return 1;
+    }
+    printf("PASS: exited file mapping synchronizes without another user MM\n");
     if (shared_mm_permission_transition(cpus[0], cpus[1]) != 0) {
         fprintf(stderr, "FAIL: shared-mm permission transition\n");
         return 1;

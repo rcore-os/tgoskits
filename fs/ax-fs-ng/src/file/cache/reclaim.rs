@@ -55,6 +55,14 @@ impl CachedFileRegistry {
     }
 
     fn prune_with(&self, after_scan: impl FnOnce()) {
+        self.prune_with_candidate_observer(after_scan, |_| {});
+    }
+
+    fn prune_with_candidate_observer(
+        &self,
+        after_scan: impl FnOnce(),
+        mut before_claim: impl FnMut(&Arc<CachedFileShared>),
+    ) {
         // Keep live entries visible to sync and writeback throughout pruning.
         // Examine only the entries present at the start, even if new files
         // register concurrently.
@@ -62,31 +70,47 @@ impl CachedFileRegistry {
         let mut position = 0;
         while remaining != 0 {
             let removed = {
-                // Weak-key upgrades take this lock. An opener either raises
-                // the count before the check or observes retirement afterward.
-                let _index = super::CACHED_FILE_BY_INODE.lock();
                 let mut registry = self.files.write();
-                if registry.get(position).is_none() {
-                    break;
-                }
-                remaining -= 1;
-                let closed_and_clean = registry.get(position).is_some_and(|cached| {
-                    Arc::strong_count(cached) == 1
+                let mut removed = None;
+                while remaining != 0 {
+                    let Some(cached) = registry.get(position) else {
+                        break;
+                    };
+                    remaining -= 1;
+                    let closed_and_clean = Arc::strong_count(cached) == 1
                         && cached
                             .page_cache
                             .try_lock()
-                            .is_some_and(|pages| !pages.iter().any(|(_, page)| page.dirty))
-                });
-                if closed_and_clean {
-                    registry[position].retired.store(true, Ordering::Release);
-                    Some(registry.swap_remove(position))
-                } else {
-                    None
+                            .is_some_and(|pages| !pages.iter().any(|(_, page)| page.dirty));
+                    if closed_and_clean {
+                        before_claim(cached);
+                        // Freeze production Weak upgrades only for a possible
+                        // victim. Never block on the index under the registry.
+                        let Some(_index) = super::CACHED_FILE_BY_INODE.try_lock() else {
+                            position += 1;
+                            continue;
+                        };
+                        // An opener may have written and closed between the
+                        // first check and index acquisition. Count alone cannot
+                        // detect that completed lifetime; recheck dirty pages.
+                        let still_closed_and_clean = Arc::strong_count(cached) == 1
+                            && cached
+                                .page_cache
+                                .try_lock()
+                                .is_some_and(|pages| !pages.iter().any(|(_, page)| page.dirty));
+                        if still_closed_and_clean {
+                            cached.retired.store(true, Ordering::Release);
+                            removed = Some(registry.swap_remove(position));
+                            break;
+                        }
+                    }
+                    position += 1;
                 }
+                removed
             };
             // The backing FileNode can reap an ext4 inode in Drop.
             if removed.is_none() {
-                position += 1;
+                break;
             }
             drop(removed);
         }
@@ -403,6 +427,66 @@ mod tests {
     #[test]
     fn allocator_pressure_reclaim_skips_mapped_pages_without_callbacks() {
         assert!(pressure_reclaim_is_allocation_free_and_skips_live_mappings_for_test());
+    }
+
+    #[test]
+    fn pruning_keeps_a_cache_reopened_during_ownership_claim() {
+        let registry = CachedFileRegistry::new();
+        let cached = Arc::new(CachedFileShared::new_unbounded(0));
+        let weak = Arc::downgrade(&cached);
+        registry.files.write().push(cached);
+        let mut reopened = None;
+        registry.prune_with_candidate_observer(|| {}, |_| reopened = weak.upgrade());
+        let reopened = reopened.expect("the reopen wins before ownership is claimed");
+        assert!(
+            registry
+                .files
+                .read()
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, &reopened)),
+            "a reopened cache must remain visible to writeback"
+        );
+        drop(reopened);
+        registry.prune();
+        assert!(
+            weak.upgrade().is_none(),
+            "a closed clean cache is reclaimable"
+        );
+    }
+
+    #[test]
+    fn pruning_keeps_dirty_pages_after_a_racing_open_and_close() {
+        let registry = CachedFileRegistry::new();
+        let cached = Arc::new(CachedFileShared::new_unbounded(4096));
+        let weak = Arc::downgrade(&cached);
+        registry.files.write().push(cached);
+        registry.prune_with_candidate_observer(
+            || {},
+            |_| {
+                let reopened = weak.upgrade().expect("cache remains registered");
+                let mut page = PageCache::detached_for_test();
+                page.dirty = true;
+                reopened.page_cache.lock().put(0, page);
+                // The transient owner is gone before pruning claims ownership.
+                drop(reopened);
+            },
+        );
+        let cached = weak.upgrade().expect("dirty cache must survive pruning");
+        assert!(
+            registry
+                .files
+                .read()
+                .iter()
+                .any(|file| Arc::ptr_eq(file, &cached))
+        );
+        assert!(cached.page_cache.lock().get(&0).unwrap().dirty);
+        cached.page_cache.lock().peek_mut(&0).unwrap().dirty = false;
+        drop(cached);
+        registry.prune();
+        assert!(
+            weak.upgrade().is_none(),
+            "clean closed cache is reclaimable"
+        );
     }
 
     #[cfg(feature = "ext4")]

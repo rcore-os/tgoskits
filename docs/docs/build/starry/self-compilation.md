@@ -70,7 +70,18 @@ scripts/run-selfbuilt-kernel.sh --arch x86_64
 脚本会重新从 rootfs 提取 ELF，转换为 EFI payload，通过 `cargo xtask ovmf --arch x86_64`
 取得与其他 QEMU 流程相同的 CODE/VARS 后启动。
 
-## 2. riscv64 旧流程
+## 2. 旧离线自举脚本状态
 
-riscv64 的离线 Debian selfhost 流程和 `scripts/self-compile.sh` 保持不变。它是与 x86_64
-app runner 独立的兼容路径；不要用该脚本准备或运行 x86_64 自编译。
+早期的 riscv64 Debian selfhost 流程依赖 `scripts/prepare-selfhost-rootfs.sh`、
+`scripts/self-compile.sh` 和 `scripts/filter-workspace.sh`。这三个脚本已经删除：它们仍使用
+已移除的 StarryOS `qemu` feature、旧 nightly 和旧的 bare-target 产物契约，无法按当前
+workspace 完成依赖准备、内核构建或产物定位。
+
+本文当前维护的入口是上文的 x86_64 Starry app runner，不提供可用的 riscv64 自编译命令。
+`selfhost-full-kernel` 仍保留 `qemu-riscv64.toml`、RISC-V build config 和 app 内的
+`sh/self-compile.sh`，但同一 case 的 `prebuild.sh` 会在 staging 前拒绝非 x86_64，因此这些
+资产不构成完整、已验证的 RISC-V 自编译路径；文件存在也不能证明该路径可运行。未来恢复或
+验证 RISC-V 能力时，需要基于现役 `cargo xtask starry` 和 app runner 重新适配工具链、构建
+特性、workspace 依赖和产物路径，不能复用已删除 host 脚本中的旧命令。
+`scripts/run-selfbuilt-kernel.sh` 仍保留，用于检查或启动 app runner 生成的 x86_64 selfhost
+产物。

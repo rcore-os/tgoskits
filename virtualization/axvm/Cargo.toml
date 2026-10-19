@@ -17,14 +17,38 @@ targets = [
     "x86_64-unknown-linux-musl",
 ]
 
+[package.metadata.axtest]
+runtime = "axvisor"
+target_triples = ["aarch64-unknown-none-softfloat"]
+
+[package.metadata.axtest.targets.vcpu_perf]
+board_only = true
+
+[package.metadata.axtest.targets.task_switch]
+board_only = true
+
+[[test]]
+name = "vcpu_runtime"
+harness = false
+required-features = ["axtest", "tls"]
+
+[[test]]
+name = "vcpu_perf"
+harness = false
+required-features = ["axtest", "tls"]
+
+[[test]]
+name = "task_switch"
+harness = false
+required-features = ["axtest", "tls"]
+
 [features]
 host-fs = ["dep:ax-driver"]
 host-test = [
     "ax-std/host-test",
     "axdevice/host-test",
-    "vpci-test-device",
 ]
-vpci-test-device = []
+axtest = ["ax-std/std-compat"]
 sstc = ["ax-cpu/riscv-sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
 
@@ -110,3 +134,10 @@ acpi_tables.workspace = true
 [dev-dependencies]
 acpi_tables.workspace = true
 rdif-clk = { path = "../../drivers/interface/rdif-clk" }
+
+axtest.workspace = true
+anyhow.workspace = true
+ax-hal.workspace = true
+ax-runtime = { workspace = true, features = ["deferred-rootfs"] }
+ax-driver.workspace = true
+ax-std = { workspace = true, features = ["alloc"] }

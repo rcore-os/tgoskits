@@ -1,10 +1,13 @@
+# AxVisor host build for the Rust-Shyper task-switch case.
+#
+# The case is driven by the `axvm` `task_switch` axtest target, which creates
+# the guest VM through a plan that carries the FIFO policy of the measured
+# vCPU host task, so the former `bench-fifo-vcpu-policy` feature is gone. The
+# SDHCI stays enabled for the existing physical device handoff; the guest
+# image and configuration are packed into the host initramfs.
 features = [
+  "host-fs",
   "ax-driver/rockchip-sdhci",
-  "fs",
-  # Benchmark-local: run this board case's vCPU host task in the FIFO class so
-  # the guest's FIFO task environment matches the original Rust-Shyper run.
-  # The guest side applies FIFO only to the measured task-switch workload.
-  "bench-fifo-vcpu-policy",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

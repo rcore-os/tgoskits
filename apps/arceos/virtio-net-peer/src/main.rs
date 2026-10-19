@@ -277,7 +277,11 @@ fn run_client(peer_ip: Ipv4Addr) -> std::io::Result<()> {
                 "{VM_TAG}_VIRTIO_NET_HB_TX session={sessions} count={sequence} local={LOCAL_IP} \
                  peer={peer_ip}:{TEST_PORT} uptime={uptime}s ack=\"{acknowledgement}\""
             );
-            if !pass_reported && sequence >= pass_after_heartbeats() {
+            // A later console attach must still observe successful traffic.
+            // Repeat the pass only after a fresh matching acknowledgement.
+            if sequence >= pass_after_heartbeats()
+                && (!pass_reported || sequence.is_multiple_of(STATUS_EVERY_HEARTBEATS))
+            {
                 pass_reported = true;
                 println!(
                     "{VM_TAG}_VIRTIO_NET_PASS role=client heartbeats={sequence} \

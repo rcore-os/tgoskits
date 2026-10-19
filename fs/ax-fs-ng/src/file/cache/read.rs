@@ -101,6 +101,7 @@ impl<'a> CachedRead<'a> {
                 if filled {
                     self.cached.trim_clean_pages_after_read();
                 }
+                self.cached.prefetch_after_read(page_number);
                 return Ok(copied);
             }
             match self

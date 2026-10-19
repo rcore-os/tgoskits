@@ -195,9 +195,9 @@ VM 配置定义每个 Guest 的资源分配与运行参数，包括 CPU 数量�
 
 ```mermaid
 flowchart TD
-    selectBoard["SelectBoard: cargo xtask defconfig qemu-aarch64"]
+    selectBoard["SelectBoard: cargo xtask axvisor defconfig qemu-aarch64"]
     buildToml["BuildToml: 生成 .build.toml"]
-    buildKernel["BuildKernel: cargo xtask build"]
+    buildKernel["BuildKernel: cargo xtask axvisor build"]
     selectCase["SelectCase: cargo xtask axvisor test qemu"]
     downloadImage["DownloadImage: 按测试配置准备 guest 镜像"]
     genVmconfig["GenVmconfig: 生成 tmp/vmconfigs/*.generated.toml"]

@@ -17,6 +17,8 @@ use crate::{
 };
 
 const QUEUE_SIZE_MAX: u16 = 128;
+// Direct chains also need one request header and one status descriptor.
+const MAX_DATA_SEGMENTS: u32 = QUEUE_SIZE_MAX as u32 - 2;
 const DEVICE_CONFIG_SIZE: usize = 16;
 
 /// VirtIO Block device core adapter for the common modern PCI transport.
@@ -31,7 +33,12 @@ pub struct VirtioBlockPciAdapter<B: BlockBackend> {
 
 impl<B: BlockBackend> VirtioBlockPciAdapter<B> {
     /// Creates a PCI block adapter from a backend and block policy.
-    pub const fn new(backend: B, config: VirtioBlockConfig) -> Self {
+    pub const fn new(backend: B, mut config: VirtioBlockConfig) -> Self {
+        // This transport does not offer indirect descriptors. Advertising more
+        // data segments would let a driver build a request that can never fit.
+        if config.seg_max > MAX_DATA_SEGMENTS {
+            config.seg_max = MAX_DATA_SEGMENTS;
+        }
         Self {
             core: VirtioBlockRequestCore::new(backend, config),
             pending_head: Mutex::new(None),
@@ -677,7 +684,23 @@ mod tests {
             adapter
                 .read_device_config(0x0c, AccessWidth::Dword)
                 .unwrap(),
-            0x1020_3040
+            // Without indirect descriptors, a request's data segments must
+            // leave room for its header and status in the direct chain.
+            u64::from(adapter.queue_size_max()) - 2
+        );
+        let smaller = VirtioBlockPciAdapter::new(
+            TestBackend::new(8),
+            VirtioBlockConfig {
+                seg_max: 8,
+                ..VirtioBlockConfig::default()
+            },
+        );
+        assert_eq!(
+            smaller
+                .read_device_config(0x0c, AccessWidth::Dword)
+                .unwrap(),
+            8,
+            "a smaller backend segment limit must be preserved"
         );
         assert!(matches!(
             adapter.read_device_config(0x0f, AccessWidth::Word),

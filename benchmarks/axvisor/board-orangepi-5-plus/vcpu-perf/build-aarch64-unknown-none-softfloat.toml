@@ -1,4 +1,11 @@
-features = ["vcpu-perf-load", "ax-driver/rk3588-cpufreq"]
+# AxVisor host build for the Orange Pi vCPU performance case.
+#
+# The case is driven by the `axvm` `vcpu_perf` axtest target, which creates the
+# guest VM, applies its own scheduling plan and runs the host load itself, so
+# the former `vcpu-perf-load` feature is no longer part of the build. The
+# `rk3588-cpufreq` driver stays enabled because the measured guest throughput
+# depends on the SoC frequency policy the baseline was calibrated with.
+features = ["ax-driver/rk3588-cpufreq"]
 log = "Warn"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = ["benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/vm.toml"]

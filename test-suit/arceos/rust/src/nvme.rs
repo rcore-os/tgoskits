@@ -17,7 +17,7 @@ fn verify_nvme_io() -> TestResult {
     let expected = (0..NVME_BYTES / 8)
         .flat_map(|index| (0xcafe_beef_0000_0000u64 | index as u64).to_le_bytes())
         .collect::<std::vec::Vec<_>>();
-    let io_before = ax_fs_ng::block_io_stats();
+    let io_before = nvme_io_stats()?;
 
     let _ = fs::remove_file(NVME_FILE);
     fs::write(NVME_FILE, &expected).map_err(|_| "NVMe namespace file write failed")?;
@@ -27,9 +27,14 @@ fn verify_nvme_io() -> TestResult {
     // The device fixture limits MDTS to 64 KiB, so each 128 KiB block-cache
     // writeback batch requires driver-side request splitting.
     ax_fs_ng::sync_all_block_caches().map_err(|_| "NVMe namespace writeback failed")?;
-    let io_after_write = ax_fs_ng::block_io_stats();
-    let write_sectors = io_after_write.3.saturating_sub(io_before.3);
-    if io_after_write.2 <= io_before.2 || write_sectors < (NVME_BYTES / 512) as u64 {
+    let io_after_write = nvme_io_stats()?;
+    let write_sectors = io_after_write
+        .sectors_written
+        .saturating_sub(io_before.sectors_written);
+    if io_after_write.writes <= io_before.writes
+        || write_sectors < (NVME_BYTES / 512) as u64
+        || io_after_write.failed_requests != io_before.failed_requests
+    {
         return Err("NVMe file writeback did not complete the expected device writes");
     }
 
@@ -39,22 +44,27 @@ fn verify_nvme_io() -> TestResult {
     if reclaimed < NVME_BYTES / 4096 {
         return Err("NVMe readback could not reclaim enough clean cached pages");
     }
-    let io_before_read = ax_fs_ng::block_io_stats();
+    let io_before_read = nvme_io_stats()?;
 
     let actual = fs::read(NVME_FILE).map_err(|_| "NVMe namespace file read failed")?;
-    let io_after_read = ax_fs_ng::block_io_stats();
+    let io_after_read = nvme_io_stats()?;
     if actual != expected {
         return Err("NVMe namespace readback differed from the written pattern");
     }
-    let read_sectors = io_after_read.1.saturating_sub(io_before_read.1);
-    if io_after_read.0 <= io_before_read.0 || read_sectors < (NVME_BYTES / 512) as u64 {
+    let read_sectors = io_after_read
+        .sectors_read
+        .saturating_sub(io_before_read.sectors_read);
+    if io_after_read.reads <= io_before_read.reads
+        || read_sectors < (NVME_BYTES / 512) as u64
+        || io_after_read.failed_requests != io_before_read.failed_requests
+    {
         return Err("NVMe file readback did not complete the expected device reads");
     }
     println!(
         "NVME_DEVICE_IO read_ios={} read_sectors={} write_ios={} write_sectors={}",
-        io_after_read.0.saturating_sub(io_before_read.0),
+        io_after_read.reads.saturating_sub(io_before_read.reads),
         read_sectors,
-        io_after_read.2.saturating_sub(io_before.2),
+        io_after_read.writes.saturating_sub(io_before.writes),
         write_sectors
     );
 
@@ -63,4 +73,13 @@ fn verify_nvme_io() -> TestResult {
         .map_err(|_| "NVMe namespace cleanup file-cache writeback failed")?;
     ax_fs_ng::sync_all_block_caches().map_err(|_| "NVMe namespace cleanup writeback failed")?;
     Ok(())
+}
+
+fn nvme_io_stats() -> Result<ax_fs_ng::BlockIoStats, &'static str> {
+    let (identity, stats) =
+        ax_fs_ng::root::root_block_stats().ok_or("NVMe test requires a mounted block root")?;
+    if identity.name != "nvme0n1" {
+        return Err("NVMe test root is not the fixture namespace");
+    }
+    Ok(stats)
 }

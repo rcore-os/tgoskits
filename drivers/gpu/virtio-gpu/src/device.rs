@@ -12,16 +12,17 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::{
     BLOB_FLAG_USE_CROSS_DEVICE, BLOB_FLAG_USE_MASK, BLOB_MEM_GUEST, BLOB_MEM_HOST3D,
-    BLOB_MEM_HOST3D_GUEST, BlobMemory, CapsetInfo, Error, IrqEvent, OutputInfo, Rect,
-    Resource2dFormat, ResourceCreate3d, ResourceCreateBlob, Transfer3d,
+    BLOB_MEM_HOST3D_GUEST, BlobMemory, CapsetInfo, Error, IrqEvent, MAP_CACHE_MASK, OutputInfo,
+    Rect, Resource2dFormat, ResourceCreate3d, ResourceCreateBlob, Transfer3d,
     ctrl::ControlQueue,
     dma::Dma,
     wire::{
         CmdCtxCreate, CmdCtxResource, CmdGetCapset, CmdGetCapsetInfo, CmdResourceCreate3D,
-        CmdResourceCreateBlob, CmdSubmit3D, CmdTransferHost3D, Command, Config, CtrlHeader,
-        Features, GPU_FLAG_FENCE, MemEntry, ResourceAttachBacking, ResourceCreate2D,
-        ResourceDetachBacking, ResourceFlush, ResourceUnref, RespCapsetInfo, RespDisplayInfo,
-        SUPPORTED_FEATURES, SetScanout, SetScanoutBlob, TransferToHost2D, VIRTIO_GPU_EVENT_DISPLAY,
+        CmdResourceCreateBlob, CmdResourceMapBlob, CmdResourceUnmapBlob, CmdSubmit3D,
+        CmdTransferHost3D, Command, Config, CtrlHeader, Features, GPU_FLAG_FENCE, MemEntry,
+        ResourceAttachBacking, ResourceCreate2D, ResourceDetachBacking, ResourceFlush,
+        ResourceUnref, RespCapsetInfo, RespDisplayInfo, RespMapInfo, SUPPORTED_FEATURES,
+        SetScanout, SetScanoutBlob, TransferToHost2D, VIRTIO_GPU_EVENT_DISPLAY,
     },
 };
 
@@ -40,6 +41,21 @@ const SCANOUT_ID: u32 = 0;
 
 /// Resource backing the default framebuffer.
 const FRAMEBUFFER_RESOURCE_ID: u32 = 0xbabe;
+
+/// A device shared-memory region backing mappable blob resources.
+///
+/// Resolved from the PCI `SHARED_MEMORY_CFG` vendor capability by the
+/// OS adapter (`VIRTIO_GPU_SHM_ID_HOST_VISIBLE`). Blob resources created with
+/// `VIRTGPU_BLOB_FLAG_USE_MAPPABLE` are mapped at caller-chosen offsets inside
+/// this window via [`VirtIoGpu::map_blob`], and userspace maps the same
+/// guest-physical range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMemRegion {
+    /// Guest-physical base address of the shared memory BAR.
+    pub phys_base: u64,
+    /// Size of the window in bytes.
+    pub length: u64,
+}
 
 /// A virtio-gpu device driven over any [`Transport`].
 ///
@@ -88,9 +104,15 @@ pub struct VirtIoGpu<H: Hal, T: Transport> {
     has_resource_blob: bool,
     /// Whether `VIRTIO_GPU_F_CONTEXT_INIT` was negotiated.
     has_context_init: bool,
+    /// The device-advertised blob alignment requirement, read from the
+    /// config only when `VIRTIO_GPU_F_BLOB_ALIGNMENT` was negotiated.
+    blob_alignment: Option<u32>,
     /// Device-advertised scanouts, capped to the protocol's sixteen entries.
     num_scanouts: u32,
     reset_done: bool,
+    /// Shared-memory region backing mappable blob resources, when the
+    /// OS adapter resolved one from the bus (PCI `SHARED_MEMORY_CFG`).
+    hostmem: Option<HostMemRegion>,
 }
 
 impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
@@ -126,9 +148,16 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         let has_virgl = negotiated.contains(Features::VIRGL);
         let has_resource_blob = negotiated.contains(Features::RESOURCE_BLOB);
         let has_context_init = negotiated.contains(Features::CONTEXT_INIT);
+        // The alignment register only exists once the feature was
+        // negotiated; reading it from a legacy device is undefined.
+        let blob_alignment = negotiated
+            .contains(Features::BLOB_ALIGNMENT)
+            .then(|| read_config!(transport, Config, blob_alignment))
+            .transpose()?;
         log::info!(
             "virtio-gpu features: negotiated={negotiated:?}, has_virgl={has_virgl}, \
-             has_resource_blob={has_resource_blob}, has_context_init={has_context_init}"
+             has_resource_blob={has_resource_blob}, has_context_init={has_context_init}, \
+             blob_alignment={blob_alignment:?}"
         );
 
         Ok(Self {
@@ -142,9 +171,32 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
             has_virgl,
             has_resource_blob,
             has_context_init,
+            blob_alignment,
             num_scanouts: num_scanouts.min(16),
             reset_done: false,
+            hostmem: None,
         })
+    }
+
+    /// Publishes the shared-memory region backing mappable blob resources.
+    ///
+    /// The OS adapter resolves the region from the bus capability before the
+    /// device is registered; mapping requests before this call fail with
+    /// [`Error::Unsupported`].
+    pub fn attach_hostmem(&mut self, region: HostMemRegion) {
+        self.hostmem = Some(region);
+    }
+
+    /// The shared-memory region backing mappable blob resources, if the bus
+    /// exposed one.
+    pub fn hostmem(&self) -> Option<HostMemRegion> {
+        self.hostmem
+    }
+
+    /// The device-advertised blob alignment requirement, when
+    /// `VIRTIO_GPU_F_BLOB_ALIGNMENT` was negotiated.
+    pub fn blob_alignment(&self) -> Option<u32> {
+        self.blob_alignment
     }
 
     /// Number of output slots exposed by this device.
@@ -647,20 +699,36 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// the proof drain explicitly via [`VirtIoGpu::wait_idle`].
     pub fn resource_unref(&mut self, resource_id: u32) -> Result<u64, Error> {
         let fence_id = self.alloc_fence()?;
-        self.ctrl
-            .enqueue(
-                &mut self.transport,
-                &ResourceUnref {
-                    header: CtrlHeader::with_fence(Command::RESOURCE_UNREF, 0, fence_id),
-                    resource_id,
-                    _padding: 0,
-                },
-                None,
-                fence_id,
-            )
-            .map(|_| ())?;
+        self.enqueue_fenced(
+            &ResourceUnref {
+                header: CtrlHeader::with_fence(Command::RESOURCE_UNREF, 0, fence_id),
+                resource_id,
+                _padding: 0,
+            },
+            None,
+            fence_id,
+        )?;
         self.ctrl_notify();
         Ok(fence_id)
+    }
+
+    /// Enqueues a fenced fire-and-forget command. On an enqueue failure the
+    /// pre-allocated fence id is retired immediately
+    /// ([`ControlQueue::cancel_fence`]): a fence the queue never saw would
+    /// otherwise pin the contiguous completion watermark forever.
+    fn enqueue_fenced<Req: zerocopy::IntoBytes + zerocopy::Immutable>(
+        &mut self,
+        req: &Req,
+        data: Option<&[u8]>,
+        fence_id: u64,
+    ) -> Result<(), Error> {
+        match self.ctrl.enqueue(&mut self.transport, req, data, fence_id) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                self.ctrl.cancel_fence(fence_id);
+                Err(error)
+            }
+        }
     }
 
     // --- 3D (virgl) commands ---
@@ -910,26 +978,23 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     pub fn transfer_from_host_3d(&mut self, params: Transfer3d) -> Result<u64, Error> {
         self.require_virgl()?;
         let fence_id = self.alloc_fence()?;
-        self.ctrl
-            .enqueue(
-                &mut self.transport,
-                &CmdTransferHost3D {
-                    header: CtrlHeader::with_fence(
-                        Command::TRANSFER_FROM_HOST_3D,
-                        params.ctx_id,
-                        fence_id,
-                    ),
-                    box_: params.box_,
-                    offset: params.offset,
-                    resource_id: params.resource_id,
-                    level: params.level,
-                    stride: params.stride,
-                    layer_stride: params.layer_stride,
-                },
-                None,
-                fence_id,
-            )
-            .map(|_| ())?;
+        self.enqueue_fenced(
+            &CmdTransferHost3D {
+                header: CtrlHeader::with_fence(
+                    Command::TRANSFER_FROM_HOST_3D,
+                    params.ctx_id,
+                    fence_id,
+                ),
+                box_: params.box_,
+                offset: params.offset,
+                resource_id: params.resource_id,
+                level: params.level,
+                stride: params.stride,
+                layer_stride: params.layer_stride,
+            },
+            None,
+            fence_id,
+        )?;
         self.ctrl_notify();
         Ok(fence_id)
     }
@@ -964,9 +1029,78 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         // Fire-and-forget: the popped response is dropped (the fence is the
         // completion signal), and the command stream is copied into a heap
         // box by the queue.
-        self.ctrl
-            .enqueue(&mut self.transport, &req, Some(cmds), fence_id)
+        self.enqueue_fenced(&req, Some(cmds), fence_id)
             .map(|_| fence_id)
+    }
+
+    /// Ring-aware variant of [`VirtIoGpu::submit_3d`] for contexts that
+    /// declare command rings (venus and other ring-based capsets).
+    ///
+    /// The header sets `VIRTIO_GPU_FLAG_INFO_RING_IDX` next to the fence flag
+    /// so the host retires `fence_id` on the named ring's timeline
+    /// (`virtio_gpu_fence_emit`). Semantics otherwise match
+    /// [`VirtIoGpu::submit_3d`].
+    pub fn submit_3d_ring(&mut self, ctx_id: u32, cmds: &[u8], ring_idx: u8) -> Result<u64, Error> {
+        self.require_virgl()?;
+        if !cmds.len().is_multiple_of(size_of::<u32>()) {
+            return Err(Error::InvalidParam);
+        }
+        let size = u32::try_from(cmds.len()).map_err(|_| Error::Overflow)?;
+        let fence_id = self.alloc_fence()?;
+        let req = CmdSubmit3D {
+            header: CtrlHeader::with_fence_ring(Command::SUBMIT_3D, ctx_id, fence_id, ring_idx),
+            size,
+            _padding: 0,
+        };
+        self.enqueue_fenced(&req, Some(cmds), fence_id)
+            .map(|_| fence_id)
+    }
+
+    /// Maps a host-3D blob resource into the shared-memory window at
+    /// `offset` (blocking, Linux `virtio_gpu_cmd_resource_map_blob`).
+    ///
+    /// The caller owns offset allocation inside the region published by
+    /// [`VirtIoGpu::attach_hostmem`] — the host does not choose it. Returns
+    /// the device-reported `map_info` (`VIRTIO_GPU_MAP_CACHE_*` bits), which
+    /// tells userspace whether the mapping may be cached.
+    pub fn map_blob(&mut self, resource_id: u32, offset: u64) -> Result<u32, Error> {
+        if !self.has_resource_blob || self.hostmem.is_none() {
+            return Err(Error::Unsupported);
+        }
+        let resp: RespMapInfo = self.request(CmdResourceMapBlob {
+            header: CtrlHeader::with_type(Command::RESOURCE_MAP_BLOB),
+            resource_id,
+            _padding: 0,
+            offset,
+        })?;
+        resp.header
+            .check_type(Command::OK_MAP_INFO)
+            .map_err(|_| Error::InvalidResponse)?;
+        Ok(resp.map_info & MAP_CACHE_MASK)
+    }
+
+    /// Unmaps a blob resource from the shared-memory window. Fire-and-forget
+    /// (Linux `virtio_gpu_cmd_resource_unmap_blob` waits, but the host may
+    /// suspend the unmap until its renderer releases the resource — a
+    /// teardown race that is normal at client exit — so waiting would stall
+    /// teardown behind the renderer for up to the bounded-wait timeout).
+    /// The completion pump logs device rejections.
+    pub fn unmap_blob(&mut self, resource_id: u32) -> Result<(), Error> {
+        if !self.has_resource_blob || self.hostmem.is_none() {
+            return Err(Error::Unsupported);
+        }
+        self.ctrl
+            .enqueue(
+                &mut self.transport,
+                &CmdResourceUnmapBlob {
+                    header: CtrlHeader::with_type(Command::RESOURCE_UNMAP_BLOB),
+                    resource_id,
+                    _padding: 0,
+                },
+                None,
+                0,
+            )
+            .map(|_| ())
     }
 
     /// Creates a blob resource such as host-visible memory or a dma-buf.

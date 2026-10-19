@@ -95,6 +95,7 @@ pub mod nvme;
         feature = "task-rt-policy",
         feature = "task-scheduler-irq-window",
         feature = "task-sleep",
+        feature = "task-scheduler-local-rearm",
         feature = "task-smp-online",
         feature = "task-stack-guard-page",
         feature = "task-tls",
@@ -193,6 +194,11 @@ test_runner!("task-executor", run_task_executor, task::executor::run);
 test_runner!("task-mutex", run_task_mutex, task::mutex::run);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
 test_runner!("task-pi-mutex", run_task_pi_mutex, task::pi_mutex::run);
+test_runner!(
+    "task-scheduler-local-rearm",
+    run_task_scheduler_local_rearm,
+    task::scheduler_local_rearm::run
+);
 test_runner!(
     "task-preempt-guard",
     run_task_preempt_guard,
@@ -389,6 +395,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "task-pi-mutex",
         "PI mutex late wake after waiter exit",
         run_task_pi_mutex,
+    ),
+    #[cfg(feature = "task-scheduler-local-rearm")]
+    TestCase::new(
+        "task-scheduler-local-rearm",
+        "local scheduler rearm without physical IPI",
+        run_task_scheduler_local_rearm,
     ),
     #[cfg(feature = "task-preempt-guard")]
     TestCase::new(

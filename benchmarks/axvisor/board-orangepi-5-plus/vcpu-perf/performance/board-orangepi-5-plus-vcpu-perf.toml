@@ -1,13 +1,18 @@
+# Board run config for the Orange Pi vCPU performance case.
+#
+# The case now runs through `cargo xtask ktest board -p axvm --test vcpu_perf`.
+# The axtest target on the host kernel creates the guest, attaches its console
+# and evaluates the guest's own performance verdict, so the board runner no
+# longer drives the AxVisor shell: one passive check waits for the final
+# `AXTEST_SUITE_OK` of the kernel suite and the top-level timeout bounds the
+# whole boot-and-measure run. The readiness and guest markers of the previous
+# shell steps are now asserted inside the test target, which fails the case
+# instead of leaving the runner waiting.
 board_type = "OrangePi-5-Plus"
-cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
+# The axtest target creates VM 1 through VmManager from the packaged config.
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4"
 timeout = 120
-fail_regex = ['VCPU_PERF_FAIL', '(?i)\bpanic(?:ked)?\b', 'Failed to initialize guest VM', 'VM\[1\] run VCpu\[0\] get error']
+fail_regex = ['VCPU_PERF_FAIL', '(?i)\bpanic(?:ked)?\b', 'Failed to initialize guest VM', 'VM\[1\] run VCpu\[0\] get error', 'AXTEST_SUITE_FAIL', 'AXTEST_CASE status=fail']
 
 [[shell_check_steps]]
-success_regex = ['(?m)^VCPU_PERF_LOAD_READY cpu=0\s*$']
-
-[[shell_check_steps]]
-# This diskless build uses the host initramfs and its filesystem shell prompt.
-shell_prefix = "axvisor:/$"
-shell_cmd = "vm console 1"
-success_regex = ['(?m)^(?:\[VM 1\] )?VCPU_PERF_PASS\s*$']
+success_regex = ['(?m)^AXTEST_SUITE_OK\s*$']

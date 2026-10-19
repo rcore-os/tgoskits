@@ -261,10 +261,6 @@ real hardware.
 | `dwmmc-host`       | RK3568 SD (dw_mshc)    | SD HS, DMA            |                                             |
 | `phytium-mci-host` | Phytium MCI            | SD HS, DMA            |                                             |
 
-See `drivers/blk/sdmmc-protocol/docs/REVIEW.md` for the remaining 1.0 roadmap
-(non_exhaustive enums, `Display` impls, time-base contract, fuzz coverage,
-SDIO IO-card support, etc.).
-
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+Licensed under the Apache License, Version 2.0. See the repository [LICENSE](../../../LICENSE).

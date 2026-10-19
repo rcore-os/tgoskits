@@ -122,6 +122,8 @@ export interface PanelProps {
   live?: boolean
   /** VM the navigation asked the panel to focus, set by clicking a resource entry. */
   focusVm?: number | null
+  /** Changes for every navigation request, including a repeated guest ID. */
+  focusRequest?: number
   /**
    * The machine the hypervisor runs on, `null` when this build declares no host
    * panel or the read failed.
@@ -138,6 +140,29 @@ export interface PanelProps {
    * observe one set of transfers without importing each other.
    */
   files?: FilesCapability | null
+  /**
+   * Whether the shell's active tab is the one showing this panel.
+   *
+   * Every open tab stays mounted, hidden ones included, so a panel that holds an
+   * exclusive resource keeps its session across a tab switch. That is what makes
+   * "hidden because the operator looked elsewhere" and "mounted but never opened"
+   * indistinguishable from inside a panel — and the difference matters to the
+   * console, whose lanes are exclusive: only a panel the operator has actually
+   * looked at may attach. `undefined` means the shell did not say, which a panel
+   * reads as visible.
+   */
+  active?: boolean
+  /**
+   * Opens `id`'s terminal, the same way clicking the guest in the navigation
+   * does.
+   *
+   * Injected rather than reached for: which panel kind is the terminal one is a
+   * registry fact (`PanelRegistry.terminalKind`) and opening a tab is a shell
+   * fact, so a guest panel that offers "start and open the terminal" asks the
+   * shell instead of naming a panel kind of its own. Absent when the build
+   * declares no terminal panel at all.
+   */
+  onOpenVm?: (id: number) => void
 }
 
 export type PanelComponent = ComponentType<PanelProps>
@@ -280,16 +305,17 @@ export interface ActionResult {
  * The set is the template's rather than this interface's: the hypervisor derives
  * it from the same parameters its own configuration tool builds a guest from, so
  * a form built from this cannot drift from what a creation request accepts.
- * `type` says what a value means (`integer`, `string`, `address` or `enum`),
- * `required` is the difference between a field a request must carry and one the
- * template fills, and `options` belongs to an `enum`.
+ * `type` says what a value means (`integer`, `string`, `address`, `boolean` or
+ * `enum`), `required` is the difference between a field a request must carry and
+ * one the template fills, and `options` belongs to an `enum`. A `boolean` field
+ * is sent as a JSON boolean, never as the text the control was entered with.
  */
 export interface VmSchemaField {
   name: string
   type: string
   required: boolean
   /** Value the template fills in when the request omits the field. */
-  default?: string | number | null
+  default?: string | number | boolean | null
   options?: string[]
   /** File extensions (with the dot) a file field accepts, e.g. [".img"]. */
   accept?: string[]
@@ -297,11 +323,41 @@ export interface VmSchemaField {
   description?: string
   /** A value the operator can copy instead of inventing one. */
   example?: string | number
+  /**
+   * Short human name for the field, in the plane's own language.
+   *
+   * Absent means the field has no name beyond its identifier, which is then what
+   * the form labels it with.
+   */
+  label?: string
+  /**
+   * Whether the field belongs in the form's folded-away section.
+   *
+   * Which values a first-time operator has to see is a property of the template,
+   * not of this form: the plane decides, so the same field can move between the
+   * two sections without a frontend change, and no field list is maintained here.
+   */
+  advanced?: boolean
 }
 
 /** `GET /api/vms/schema`: the fields a creation request may carry. */
 export interface VmSchema {
   fields: VmSchemaField[]
+}
+
+/**
+ * `GET /api/vms/defaults`: what this build starts a fresh guest as, by field.
+ *
+ * Typed values keyed by the schema's field names, not the text a control holds:
+ * what a guest of *this* build starts as is the plane's fact, and it can change
+ * between builds without the declaration changing. A `null` is a field the plane
+ * has no value for — an id it assigns itself, say — which is an empty control.
+ *
+ * The endpoint is optional: a build that declares no `defaults` link fills the
+ * form from the fields' own declared defaults instead.
+ */
+export interface VmDefaults {
+  fields: Record<string, string | number | boolean | null>
 }
 
 /** One element of `GET /api/vms/pool`'s `entries`. */

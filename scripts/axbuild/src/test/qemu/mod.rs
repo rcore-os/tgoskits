@@ -45,7 +45,7 @@ pub(crate) use grouping::group_cases_by_build_config;
 pub(crate) use grouping::{prepare_case_build_groups, preserve_build_artifact};
 pub(crate) use host_initramfs::{
     append_backtrace_map, append_backtrace_map_to_initramfs, append_target_backtrace_map,
-    host_initramfs_without_rootfs_drive, prepare_host_initramfs,
+    host_initramfs_without_rootfs_drive, prepare_host_initramfs, prepare_host_initramfs_payload,
 };
 pub(crate) use summary::QemuTestSummary;
 pub(crate) use target::parse_test_target;

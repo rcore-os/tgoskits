@@ -39,6 +39,7 @@ mod tests {
         input: Mutex<VecDeque<u8>>,
         output: Mutex<Vec<u8>>,
         blocked: AtomicBool,
+        write_pause: Mutex<Option<Arc<(Barrier, Barrier)>>>,
     }
 
     impl TestBackend {
@@ -53,14 +54,20 @@ mod tests {
 
     impl SerialBackend for TestBackend {
         fn write(&self, bytes: &[u8]) {
-            self.output.lock().unwrap().extend_from_slice(bytes);
+            let _ = self.try_write(bytes);
         }
 
         fn try_write(&self, bytes: &[u8]) -> usize {
-            if self.blocked.load(Ordering::Acquire) {
+            let blocked = self.blocked.load(Ordering::Acquire);
+            let pause = self.write_pause.lock().unwrap().take();
+            if let Some(pause) = pause {
+                pause.0.wait();
+                pause.1.wait();
+            }
+            if blocked {
                 return 0;
             }
-            self.write(bytes);
+            self.output.lock().unwrap().extend_from_slice(bytes);
             bytes.len()
         }
 
@@ -77,11 +84,17 @@ mod tests {
     #[derive(Default)]
     struct TestIrqSink {
         levels: Mutex<Vec<bool>>,
+        pause_next: Mutex<Option<Arc<(Barrier, Barrier)>>>,
     }
 
     impl WiredIrqSink for TestIrqSink {
         fn set_level(&self, _input: ControllerInputId, asserted: bool) -> IrqResult {
             self.levels.lock().unwrap().push(asserted);
+            let pause = self.pause_next.lock().unwrap().take();
+            if let Some(pause) = pause {
+                pause.0.wait();
+                pause.1.wait();
+            }
             Ok(())
         }
 
@@ -191,9 +204,11 @@ mod tests {
 
     #[test]
     fn uart16550_thr_write_rearms_empty_irq_after_tx_completion() {
+        const TX_EMPTY: u64 = (1 << 5) | (1 << 6);
+
         let backend = Arc::new(TestBackend::default());
         let sink = Arc::new(TestIrqSink::default());
-        let uart = Uart16550::new(backend.clone(), level_irq(sink.clone(), 4));
+        let uart = Arc::new(Uart16550::new(backend.clone(), level_irq(sink.clone(), 4)));
 
         uart.write(1, AccessWidth::Byte, 1 << 1).unwrap();
         assert_eq!(sink.levels.lock().unwrap().as_slice(), [true]);
@@ -213,6 +228,150 @@ mod tests {
             levels_after_completion,
             [true, false, true],
             "TX completion must not depend on an unrelated backend input poll"
+        );
+
+        backend.set_blocked(true);
+        uart.write(0, AccessWidth::Byte, b'Q' as u64).unwrap();
+        uart.poll().unwrap();
+        assert_eq!(backend.output.lock().unwrap().as_slice(), b"P");
+        let blocked_status = uart.read(5, AccessWidth::Byte).unwrap();
+        let blocked_interrupt = uart.read(2, AccessWidth::Byte).unwrap();
+        let blocked_level = sink.levels.lock().unwrap().last().copied();
+
+        backend.set_blocked(false);
+        uart.poll().unwrap();
+        assert_eq!(
+            backend.output.lock().unwrap().as_slice(),
+            b"PQ",
+            "a backend capacity notification must drain the retained byte"
+        );
+        assert_eq!(blocked_status & TX_EMPTY, 0);
+        assert_eq!(blocked_interrupt & 0x0f, 1);
+        assert_eq!(blocked_level, Some(false));
+        assert_eq!(
+            uart.read(5, AccessWidth::Byte).unwrap() & TX_EMPTY,
+            TX_EMPTY
+        );
+        assert_eq!(sink.levels.lock().unwrap().last(), Some(&true));
+        assert_eq!(uart.read(2, AccessWidth::Byte).unwrap() & 0x0f, 2);
+        assert_eq!(sink.levels.lock().unwrap().last(), Some(&false));
+
+        uart.poll().unwrap();
+        uart.write(0, AccessWidth::Byte, b'R' as u64).unwrap();
+        uart.poll().unwrap();
+        assert_eq!(backend.output.lock().unwrap().as_slice(), b"PQR");
+        assert_eq!(uart.read(2, AccessWidth::Byte).unwrap() & 0x0f, 2);
+
+        // Reset must not let an old completion remove a newly queued byte.
+        let pause = Arc::new((Barrier::new(2), Barrier::new(2)));
+        *backend.write_pause.lock().unwrap() = Some(pause.clone());
+        let writer = std::thread::spawn({
+            let uart = uart.clone();
+            move || uart.write(0, AccessWidth::Byte, b'S' as u64).unwrap()
+        });
+        pause.0.wait();
+        uart.write(2, AccessWidth::Byte, 1 << 2).unwrap();
+        uart.write(0, AccessWidth::Byte, b'T' as u64).unwrap();
+        pause.1.wait();
+        writer.join().unwrap();
+        assert_eq!(backend.output.lock().unwrap().as_slice(), b"PQRST");
+
+        // Capacity can be released while a rejected submission is returning.
+        backend.set_blocked(true);
+        let pause = Arc::new((Barrier::new(2), Barrier::new(2)));
+        *backend.write_pause.lock().unwrap() = Some(pause.clone());
+        let writer = std::thread::spawn({
+            let uart = uart.clone();
+            move || uart.write(0, AccessWidth::Byte, b'U' as u64).unwrap()
+        });
+        pause.0.wait();
+        backend.set_blocked(false);
+        uart.poll().unwrap();
+        pause.1.wait();
+        writer.join().unwrap();
+        assert_eq!(backend.output.lock().unwrap().as_slice(), b"PQRSTU");
+        assert_eq!(
+            uart.read(5, AccessWidth::Byte).unwrap() & TX_EMPTY,
+            TX_EMPTY
+        );
+        assert_eq!(uart.read(2, AccessWidth::Byte).unwrap() & 0x0f, 2);
+
+        backend.set_blocked(true);
+        uart.write(2, AccessWidth::Byte, 1).unwrap();
+        for &byte in b"0123456789abcdef" {
+            uart.write(0, AccessWidth::Byte, byte as u64).unwrap();
+        }
+        uart.write(1, AccessWidth::Byte, 0).unwrap();
+        uart.write(1, AccessWidth::Byte, 1 << 1).unwrap();
+        assert_eq!(uart.read(5, AccessWidth::Byte).unwrap() & TX_EMPTY, 0);
+        assert_eq!(uart.read(2, AccessWidth::Byte).unwrap() & 0x0f, 1);
+        backend.set_blocked(false);
+        uart.poll().unwrap();
+        assert_eq!(
+            backend.output.lock().unwrap().as_slice(),
+            b"PQRSTU0123456789abcdef"
+        );
+        assert_eq!(uart.read(2, AccessWidth::Byte).unwrap() & 0x0f, 2);
+
+        backend.set_blocked(true);
+        uart.write(0, AccessWidth::Byte, b'X' as u64).unwrap();
+        uart.write(2, AccessWidth::Byte, 1 << 2).unwrap();
+        uart.write(4, AccessWidth::Byte, 1 << 4).unwrap();
+        uart.write(0, AccessWidth::Byte, b'Y' as u64).unwrap();
+        assert_eq!(uart.read(0, AccessWidth::Byte).unwrap(), b'Y' as u64);
+        assert_eq!(
+            uart.read(5, AccessWidth::Byte).unwrap() & TX_EMPTY,
+            TX_EMPTY
+        );
+        backend.set_blocked(false);
+        uart.poll().unwrap();
+        assert_eq!(
+            backend.output.lock().unwrap().as_slice(),
+            b"PQRSTU0123456789abcdef"
+        );
+
+        // A notified poll must not finish TX before its consumed IRQ level
+        // reaches the controller, even when another IRQ publication is busy.
+        let backend = Arc::new(TestBackend::default());
+        let sink = Arc::new(TestIrqSink::default());
+        let uart = Uart16550::new(backend.clone(), level_irq(sink.clone(), 4));
+        let pause = Arc::new((Barrier::new(2), Barrier::new(2)));
+        *sink.pause_next.lock().unwrap() = Some(pause.clone());
+        std::thread::scope(|scope| {
+            let enable = scope.spawn(|| uart.write(1, AccessWidth::Byte, 1 << 1));
+            pause.0.wait();
+
+            let (writer_events, writer_received) = mpsc::channel();
+            let uart = &uart;
+            let writer = scope.spawn(move || {
+                let _observer = MutexWaitObserver::new(writer_events.clone());
+                let result = uart.write(0, AccessWidth::Byte, b'Z' as u64);
+                writer_events.send(false).unwrap();
+                result
+            });
+            let writer_waited = writer_received.recv().unwrap();
+
+            let (poll_events, poll_received) = mpsc::channel();
+            let poll = scope.spawn(move || {
+                let _observer = MutexWaitObserver::new(poll_events.clone());
+                let result = uart.poll();
+                poll_events.send(false).unwrap();
+                result
+            });
+            let poll_waited = poll_received.recv().unwrap();
+
+            pause.1.wait();
+            enable.join().unwrap().unwrap();
+            writer.join().unwrap().unwrap();
+            poll.join().unwrap().unwrap();
+            assert!(writer_waited && poll_waited);
+        });
+        assert_eq!(backend.output.lock().unwrap().as_slice(), b"Z");
+        let levels = sink.levels.lock().unwrap().clone();
+        assert_eq!(
+            levels,
+            [true, false, true],
+            "concurrent completion must preserve the consumed-to-empty IRQ transition"
         );
     }
 

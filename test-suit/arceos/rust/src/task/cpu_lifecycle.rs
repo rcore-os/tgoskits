@@ -2,20 +2,132 @@
 //! Run separately from `all`, which starts block and network queue services.
 //! Linux sched_cpu_wait_empty() follows smpboot/device hotplug teardown; this
 //! probe tests the final quiescent-owner transaction, not that orchestration.
+//! The reaper is deliberately kept on CPU 0: offlining a target with runnable
+//! background services remains outside this test's coverage.
 use std::{
     println,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
 };
 
 pub fn run() -> crate::TestResult {
+    assert!(
+        ax_hal::cpu_num() >= 3,
+        "CPU lifecycle requires at least three CPUs"
+    );
+    let _reaper_affinity = isolate_reaper_from_offline_targets();
     idle_polling_ends_before_task_execution();
     idle_cpu_reservation_round_trip();
     Ok(())
+}
+
+struct ReaperAffinity {
+    thread: ax_task::thread::ThreadHandle,
+    original: ax_task::sched::CpuSet,
+}
+
+impl Drop for ReaperAffinity {
+    fn drop(&mut self) {
+        self.thread
+            .set_affinity_and_wait(self.original.clone())
+            .unwrap();
+    }
+}
+
+struct ReaperMigrationProbe {
+    observed_cpu: AtomicUsize,
+    release: AtomicBool,
+    timed_out: AtomicBool,
+}
+
+struct ReaperMigrationCallback(Arc<ReaperMigrationProbe>);
+
+impl Drop for ReaperMigrationCallback {
+    fn drop(&mut self) {
+        let started = std::time::Instant::now();
+        // Cancelling an unpublished thread drops this capture on the real
+        // reaper. Keep the same callback alive across its affinity migration.
+        while !self.0.release.load(Ordering::Acquire) {
+            self.0
+                .observed_cpu
+                .store(ax_hal::percpu::this_cpu_id(), Ordering::Release);
+            if started.elapsed() >= Duration::from_secs(3) {
+                // Report through the probe instead of panicking inside the
+                // production reaper while it owns execution reclamation.
+                self.0.timed_out.store(true, Ordering::Release);
+                return;
+            }
+            thread::yield_now();
+        }
+    }
+}
+
+fn isolate_reaper_from_offline_targets() -> ReaperAffinity {
+    use ax_task::{
+        runtime::service::deferred_task_work_service_thread,
+        sched::{CpuId, CpuSet},
+        thread::ThreadHandle,
+    };
+
+    let reaper = ThreadHandle::lookup(deferred_task_work_service_thread().unwrap()).unwrap();
+    let saved = ReaperAffinity {
+        original: reaper.affinity().unwrap(),
+        thread: reaper,
+    };
+    let mut target = CpuSet::empty(ax_hal::cpu_num());
+    target.insert(CpuId::new(1));
+    saved.thread.set_affinity_and_wait(target).unwrap();
+    let probe = Arc::new(ReaperMigrationProbe {
+        observed_cpu: AtomicUsize::new(usize::MAX),
+        // Failed preparation may drop the capture on this caller. Arm its
+        // rendezvous only after the unpublished thread was created successfully.
+        release: AtomicBool::new(true),
+        timed_out: AtomicBool::new(false),
+    });
+    let callback = ReaperMigrationCallback(probe.clone());
+    let prepared = ax_runtime::thread::builder("reaper-offline-isolation".into())
+        .prepare(move || drop(callback))
+        .unwrap();
+    let cancelled = prepared.thread_handle();
+    probe.release.store(false, Ordering::Release);
+    drop(prepared);
+    wait_for_reaper_cpu(&probe, 1);
+
+    // Execution reclamation and join do not park the background service. Linux
+    // CPU hotplug moves workers before sched_cpu_wait_empty(); this final-owner
+    // probe likewise needs a persistent exclusion, not a transient idle sample.
+    let mut housekeeping = CpuSet::empty(ax_hal::cpu_num());
+    housekeeping.insert(CpuId::new(0));
+    saved.thread.set_affinity_and_wait(housekeeping).unwrap();
+    wait_for_reaper_cpu(&probe, 0);
+    probe.release.store(true, Ordering::Release);
+    cancelled.join().unwrap();
+    assert!(
+        !probe.timed_out.load(Ordering::Acquire),
+        "reaper migration callback timed out before release"
+    );
+    saved
+}
+
+fn wait_for_reaper_cpu(probe: &ReaperMigrationProbe, cpu: usize) {
+    let started = std::time::Instant::now();
+    while probe.observed_cpu.load(Ordering::Acquire) != cpu
+        && !probe.timed_out.load(Ordering::Acquire)
+    {
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "reaper migration callback did not run on CPU {cpu}"
+        );
+        thread::yield_now();
+    }
+    assert!(
+        !probe.timed_out.load(Ordering::Acquire),
+        "reaper migration callback timed out before reaching CPU {cpu}"
+    );
 }
 
 fn idle_polling_ends_before_task_execution() {
@@ -97,10 +209,6 @@ fn idle_cpu_reservation_round_trip() {
         sched::{CpuId, CpuSet},
         thread::current,
     };
-    assert!(
-        ax_hal::cpu_num() >= 3,
-        "CPU lifecycle requires at least three CPUs"
-    );
     let original = current::current_thread_handle()
         .unwrap()
         .affinity()

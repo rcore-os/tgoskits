@@ -193,6 +193,8 @@ pub struct VmConfigSnapshot {
     pub image: VMImageConfig,
     /// Guest physical address-space population policy.
     pub address_space_policy: AddressSpacePolicy,
+    /// Requested base policy applied to each vCPU host task, including CPU_ON and reset.
+    pub vcpu_schedule_policy: crate::SchedulePolicy,
     /// Per-vCPU physical-placement tuples `(vcpu_id, affinity_mask, phys_id)`.
     pub vcpu_affinities: Vec<(usize, Option<usize>, usize)>,
     /// Passthrough host devices.
@@ -1556,6 +1558,7 @@ mod tests {
                     ap_entry: GuestPhysAddr::from(0),
                     image: VMImageConfig::default(),
                     address_space_policy: AddressSpacePolicy::default(),
+                    vcpu_schedule_policy: crate::SchedulePolicy::default(),
                     vcpu_affinities: vec![],
                     passthrough_devices: vec![],
                     passthrough_addresses: vec![],

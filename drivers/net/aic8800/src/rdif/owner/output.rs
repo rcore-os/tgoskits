@@ -107,7 +107,7 @@ impl OwnerOutputs {
                 blocked
             }
             AicEvent::ControlFailed(error) => {
-                log::error!("[wifi] AIC control operation failed: {error}");
+                log::warn!("[wifi] control request rejected: {error}");
                 let blocked = !self.publish_wifi_progress(Err(error));
                 self.wifi_active = false;
                 blocked

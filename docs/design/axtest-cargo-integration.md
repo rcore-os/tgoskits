@@ -12,7 +12,7 @@ StarryOS/Axvisor 聚合测试三种发现方式。测试所有权、Cargo featur
 - 每个测试入口都是 `tests/` 下的 `[[test]]`，并设置 `harness = false`；
 - 一个 Cargo test bin 构建一次、启动一次 QEMU；
 - `cargo xtask ktest qemu` 负责 workspace 发现、筛选、构建、运行与汇总；
-- QEMU 支持矩阵来自 `[package.metadata.docs.rs].targets`，CI 按架构串行执行计划。
+- QEMU 支持矩阵优先来自 `[package.metadata.axtest].target_triples`，未声明时读取 `[package.metadata.docs.rs].targets`，CI 按架构串行执行计划。
 
 目标用户是维护通用 crate、ArceOS、StarryOS、Axvisor 与板卡测试的开发者。成功标准是
 Cargo 能识别每个测试 target，workspace 运行不会遗漏或重复，显式选择错误能尽早报告，
@@ -100,6 +100,46 @@ runner 读取已有 TOML 中的 `uefi`、`to_bin`、CPU、设备、rootfs、成�
 不按架构猜测或覆盖平台契约。package 目录中的 `build-<triple>.toml` 与
 `qemu-<arch>.toml` 优先；不存在时才回退到对应运行时的配置目录。
 
+单个 target 可以声明只能由真实板卡提供的能力：
+
+```toml
+[package.metadata.axtest.targets.vcpu_perf]
+board_only = true
+```
+
+workspace QEMU 计划默认不选择 `board_only` target，因为没有任何 QEMU 运行能提供它需要
+的硬件；显式 `--test` 选中它时报错并指向 `cargo xtask ktest board`，避免把板卡测例
+交给 QEMU 后得到一个无意义的失败。未声明该字段的 target 保持原有语义。
+
+## 客户机与资源准备
+
+运行配置所在目录可以放置两个可选 sidecar，两者都在构建和打包前处理，且只影响该执行
+单元的资源，不进入 Cargo 环境或 rustc 编译哈希：
+
+- `guest-builds.toml` 声明该用例需要先准备的输入。`arceos_build_configs`（可省略）
+  复用已有 ArceOS 客户机构建；`host_prepare = ["python3", "<script>"]` 是一个可选 argv，
+  在工作区根目录直接执行（不经过 shell），并把 `AXBUILD_TARGET_DIR` 设为绝对构建目标
+  目录。命令非零退出立即报错并终止，后续步骤不会读取半成品资源。
+- `host-initramfs.toml` 声明宿主归档与客户机资源。`source` 是宿主归档 fixture（相对
+  工作区；`${workspace}/target/axbuild` 前缀按 `--target-dir` 契约解析），由共享的
+  `BootPayloadConfig` 打包入口写进运行配置的 `initramfs`，QEMU 与板卡使用同一契约；
+  `vm_configs` 覆盖该单元从构建配置继承的客户机列表。
+
+`axvisor` runtime 复用 Axvisor 已有的客户机负载流程：按当前构建配置解析 `vm_configs`，
+在存在上述 sidecar 时改用其中的 `vm_configs`，因此没有 sidecar 的 benchmark 仍然从
+`build-*.toml` 读取客户机；随后沿用同一套 guest bundle 打包和宿主 initramfs 生成，
+不新建并行 runner。
+
+两种 runner 都必须到达最终套件标记，并证明确实产生了有效结果：runner 把
+`AXTEST_SUMMARY pass=[1-9][0-9]* fail=0` 与最终 `AXTEST_SUITE_OK` 组合成一个有序完成
+条件，因此空 suite、只有 skip 的 suite 或任何客户机级别的成功输出都不能算通过，也不能
+提前结束运行。QEMU 侧该条件成为最后一步 shell 检查的成功条件；板卡侧在没有可用步骤时
+追加一个被动检查步骤，已有被动步骤要求套件标记时在该条件前插入汇总门并去掉其它可选
+分支，避免等待一个只打印一次的标记。`panicked at`、`AXTEST_SUITE_FAIL` 与失败 case 在
+两种 runner 中都传播为失败。覆盖率运行保留上述条件，并额外要求宿主成功提取 profile
+后的 `AXTEST_COVERAGE_DONE`；只有 profile 或空 suite 都不能通过。`run_kernel_tests()`
+在进入覆盖率等待钩子前发布套件结果，避免等待导出时丢失已完成的套件结果。
+
 ## 架构矩阵
 
 QEMU 只识别以下 bare-metal target：
@@ -111,9 +151,19 @@ QEMU 只识别以下 bare-metal target：
 | `riscv64` | `riscv64gc-unknown-none-elf` |
 | `loongarch64` | `loongarch64-unknown-none-softfloat` |
 
-package 声明 `[package.metadata.docs.rs].targets` 时，runner 只展开其中可识别的
-bare-metal target；一个也没有则报 manifest 错误。未声明 targets 的通用 crate 只展开
-x86_64。只有经相应 QEMU 或板卡验证、确有架构绑定行为的 crate 才应增加额外 target。
+ktest 只展开可识别的 bare-metal target，列表来源有优先级：
+
+```toml
+[package.metadata.axtest]
+runtime = "axvisor"
+target_triples = ["aarch64-unknown-none-softfloat"]
+```
+
+`[package.metadata.axtest].target_triples` 是该 crate 运行时的实际测例目标集合，优先使用；
+未声明时才回退到 `[package.metadata.docs.rs].targets`，因为文档目标集合代表的是宿主编译
+支持面，不等于验证过内核测例的运行时集合。声明了列表却没有任何可识别 bare-metal target
+时按 manifest 错误处理；两个列表都未声明的通用 crate 只展开 x86_64。只有经相应 QEMU 或
+板卡验证、确有架构绑定行为的 crate 才应增加额外 target。
 
 `--arch` 与 `--target` 互斥。workspace 运行带 `--arch` 时，不支持该架构的 package 会被
 过滤；显式 `-p` 选择不支持该架构的 package 会报错。这样 CI 可以在一个同架构 job 中
@@ -123,7 +173,7 @@ x86_64。只有经相应 QEMU 或板卡验证、确有架构绑定行为的 crat
 
 runner 分为五层：
 
-1. 读取 Cargo metadata，发现 package、test target、runtime 与 docs.rs targets；
+1. 读取 Cargo metadata，发现 package、test target、runtime、目标三元组与目标级元数据；
 2. 应用 `--workspace`、`-p/--package`、`--exclude` 和 `--test` selector；
 3. 展开并稳定排序 `(package, test target, target triple)` 执行计划；
 4. 每个单元只选择对应 `--test` artifact，完成构建、平台后处理与一次 QEMU 运行；

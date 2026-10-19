@@ -207,6 +207,19 @@ impl AicDevice {
         Ok(())
     }
 
+    pub(super) fn complete_connect_confirmation(&mut self) -> Result<(), AicError> {
+        // The confirmation and its asynchronous result can share one FIFO
+        // transfer. Apply acceptance before consuming that result so it sees
+        // AwaitIndication and cannot leave a completed mailbox behind.
+        if self.lifecycle.mailbox.as_ref().is_some_and(|mailbox| {
+            mailbox.phase == MailboxPhase::Complete
+                && mailbox.expected_message_id == crate::lmac::SM_CONNECT_CFM
+        }) {
+            self.complete_mailbox()?;
+        }
+        Ok(())
+    }
+
     fn complete_mailbox(&mut self) -> Result<(), AicError> {
         let mut mailbox = self
             .lifecycle

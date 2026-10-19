@@ -172,11 +172,15 @@ logical request [block_id, block_id + blocks)
 
 ### 4.3 运行时统计
 
-`block_io_stats()` 按完成请求累计 read/write 次数和 512-byte sector 数，保持 `/proc/diskstats` 口径。`BlockBatchStats` 和 runtime metrics 记录 dispatch batch、commit、channel/backpressure 等内部事实，用于区分：
+`BlockDeviceHandle::io_stats()` 返回本设备的 `BlockIoStats`，`root_block_stats()` 通过已挂载根设备句柄提供同一份统计，供 `/proc/diskstats` 使用。请求通过参数校验与运行时准入后开始计时，覆盖软件通道等待、hctx 调度及硬件重试，终结完成被消费时结束。普通读写计入在途数与忙碌区间；加权时间是已完成读、写及硬件 flush 的延迟之和。512 字节扇区记录终结请求的字节数，错误终态也计完整请求长度，不表示介质成功传输量。入队前取消或返回原请求只撤销在途状态并结算已观察的忙碌区间，不增加完成次数、扇区、完成耗时、失败数或加权时间。接收端取消不影响已入队请求的终结统计。
+
+没有可导出的根块设备快照时，`root_block_stats()` 返回 `None`，StarryOS 的 `render_diskstats()` 输出空文件；这包括内存根、根设备记录尚不可用及 `Weak<BlockDeviceHandle>` 无法升级的情况。成功读取的空结果表示“无数据”，不能解释为零 I/O 活动、没有磁盘或读取错误。消费者应清除旧计数与速率基线，待设备行恢复后重新采样，不延续旧速率或猜测设备行。此处说明的是接口约定，不表示现有监控示例已经覆盖空结果及恢复后的速率计算。
+
+`BlockBatchStats` 和 runtime metrics 继续记录 dispatch batch、commit、channel/backpressure 等内部事实，用于区分：
 
 - 文件 cache 命中导致没有块请求；
 - 请求进入 software channel 但未 dispatch；
 - driver 接收但没有 IRQ completion；
 - completion 正常但 flush barrier 未解除。
 
-统计使用 Relaxed 原子，只用于观测，不承担 request 所有权或生命周期同步。运行时仍以 `BlockDeviceHandle` 作为文件系统唯一设备入口，以 owned request 保存 DMA 生命周期，以当前 `DeviceInfo` epoch 验证 queue limit，并让 IRQ 只执行 latch/notify。相关生命周期同时受[驱动 IRQ](../driver/irq.md)和[内存 DMA](../memory/dma.md)的能力契约约束。
+设备统计在 `DeviceIoMetrics` 的 IRQ-safe 叶子锁内更新和生成快照，快照只推进忙碌区间，不累加尚未完成请求的加权时间；批量指标仍使用 Relaxed 原子。两类统计都只用于观测，不承担 request 所有权或生命周期同步。运行时仍以 `BlockDeviceHandle` 作为文件系统唯一设备入口，以 owned request 保存 DMA 生命周期，以当前 `DeviceInfo` epoch 验证 queue limit，并让 IRQ 只执行 latch/notify。相关生命周期同时受[驱动 IRQ](../driver/irq.md)和[内存 DMA](../memory/dma.md)的能力契约约束。

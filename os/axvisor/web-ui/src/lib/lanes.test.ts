@@ -5,7 +5,6 @@ import {
   laneVmId,
   lanesToOpen,
   mergeGroups,
-  nextFreeTab,
   releaseLane,
   sameSet,
   splitGroup,
@@ -84,26 +83,6 @@ describe('open lanes', () => {
       { route: 'vm-3', attached: false },
     ]
     expect(lanesToOpen(['vm-1', 'vm-2', 'vm-3'], lanes, ['vm-2', 'vm-3'])).toEqual(['vm-1'])
-  })
-
-  it('moves to a tab that can still be opened after losing a race', () => {
-    const groups = [['vm-1'], ['vm-2'], ['vm-3']]
-    const lanes = [
-      { route: 'vm-1', attached: true },
-      { route: 'vm-2', attached: false },
-      { route: 'vm-3', attached: false },
-    ]
-    expect(nextFreeTab(groups, lanes)).toBe(1)
-  })
-
-  it('finds no tab to move to when every lane is held or already lost', () => {
-    const groups = [['vm-1'], ['vm-2'], ['vm-3']]
-    const lanes = [
-      { route: 'vm-1', attached: true },
-      { route: 'vm-2', attached: false },
-      { route: 'vm-3', attached: true },
-    ]
-    expect(nextFreeTab(groups, lanes, ['vm-2'])).toBe(-1)
   })
 
   it('tells a lost race apart from a backend that went away', () => {

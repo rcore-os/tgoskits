@@ -45,5 +45,58 @@ pub fn run() -> crate::TestResult {
         );
         println!("SERIAL_RX_COMPLETE_{phase}");
     }
+    deferred_diagnostic_without_serial_event(runtime);
     Ok(())
+}
+
+fn deferred_diagnostic_without_serial_event(runtime: &serial::SerialRuntimeHandle) {
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use ax_std::os::arceos::api::task::{AxCpuMask, ax_set_current_affinity};
+
+    // The QEMU console owner is CPU 0. Keep the observer on that CPU so its
+    // sleeps do not send an unrelated wake IPI to the sleeping serial worker.
+    ax_set_current_affinity(AxCpuMask::one_shot(0)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // Drain in two stages: wait_idle pauses new log extraction, so first let
+    // the real worker take every prior println from its mailbox. Its drain
+    // then covers the current record and the hardware FIFO. No more ordinary
+    // output is published before observing the deferred record's consumption.
+    while !runtime.log_mailbox_empty_for_test() {
+        assert!(
+            Instant::now() < deadline,
+            "prior serial logs did not leave the mailbox"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+    runtime
+        .task_output()
+        .wait_idle()
+        .expect("drain prior console output");
+    loop {
+        if let Some(status) = runtime.publish_deferred_when_blocked_for_test() {
+            assert!(status, "deferred diagnostic mailbox rejected the record");
+            break;
+        }
+        assert!(Instant::now() < deadline, "serial worker did not block");
+        thread::sleep(Duration::from_millis(1));
+    }
+    loop {
+        if let Some(timed_out) = runtime.deferred_record_consumed_after_timeout_for_test() {
+            assert!(
+                timed_out,
+                "deferred record was consumed by an unrelated wake instead of timeout"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "deferred record was not consumed without an IRQ wake"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+    println!("SERIAL_DEFERRED_DIAGNOSTIC_OK");
 }

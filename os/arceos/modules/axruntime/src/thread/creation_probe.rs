@@ -1,5 +1,7 @@
 //! Task-scoped fault injection into real resource providers for QEMU tests.
 
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+use core::sync::atomic::AtomicBool;
 use core::{
     marker::PhantomData,
     sync::atomic::{AtomicU8, AtomicU64, Ordering},
@@ -10,6 +12,23 @@ use ax_task::thread::{TaskError, current};
 static OWNER: AtomicU64 = AtomicU64::new(0);
 static FAILURE: AtomicU8 = AtomicU8::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+static SCHEDULER_IPI_DISABLED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+pub fn disable_scheduler_ipi_for_test() {
+    SCHEDULER_IPI_DISABLED.store(true, Ordering::Release);
+}
+
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+pub fn enable_scheduler_ipi_for_test() {
+    SCHEDULER_IPI_DISABLED.store(false, Ordering::Release);
+}
+
+#[cfg(any(feature = "ipi", feature = "wake-ipi"))]
+pub(super) fn scheduler_ipi_disabled() -> bool {
+    SCHEDULER_IPI_DISABLED.load(Ordering::Acquire)
+}
 
 /// Recoverable resource stages before a newly created task is published.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

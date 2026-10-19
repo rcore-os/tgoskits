@@ -75,8 +75,7 @@
 //! | `phytium-mci-host` | Phytium MCI             | SD HS, DMA            | OK     |
 //!
 //! UHS-I / HS200 / HS400 paths exist in the state machine but have not yet
-//! been signed off on a real card + IO regulator combination. See
-//! `drivers/blk/sdmmc-protocol/docs/REVIEW.md` for the remaining roadmap.
+//! been signed off on a real card + IO regulator combination.
 //!
 //! # MSRV
 //!

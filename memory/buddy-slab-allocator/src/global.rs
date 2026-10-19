@@ -220,6 +220,14 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
         self.buddy().allocated_bytes()
     }
 
+    /// Available backend bytes, observed under one buddy metadata lock.
+    pub fn available_bytes(&self) -> usize {
+        let buddy = self.buddy();
+        buddy
+            .managed_bytes()
+            .saturating_sub(buddy.allocated_bytes())
+    }
+
     /// Allocate contiguous pages. Returns the virtual start address.
     pub fn alloc_pages(&self, count: usize, align: usize) -> AllocResult<usize> {
         self.buddy().alloc_pages(count, align)

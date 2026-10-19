@@ -23,18 +23,35 @@ type FieldValue = { value: unknown } | { error: string }
 /**
  * What the form opens with.
  *
- * A declared default is filled in rather than left blank, so what the operator
- * sees is what the request carries: a field the template would have filled must
- * not differ from the one on screen. A `null` default means the template has
- * nothing to fill in, which is an empty control.
+ * A value the plane publishes for this build (`defaults`, from the endpoint of
+ * the same name) wins over the field's own declared default, which stays as the
+ * fallback for a build that serves no defaults. Either way a filled value is
+ * filled in rather than left blank, so what the operator sees is what the
+ * request carries. A `null` means the plane has no value here — an id it assigns
+ * itself, say — which is an empty control, and the operator may leave it that way.
  */
-export function initialValues(schema: VmSchema): FormValues {
+export function initialValues(
+  schema: VmSchema,
+  defaults?: Record<string, string | number | boolean | null> | null,
+): FormValues {
   const values: FormValues = {}
   for (const field of schema.fields) {
-    values[field.name] =
-      field.default === undefined || field.default === null ? '' : String(field.default)
+    const published = defaults?.[field.name]
+    values[field.name] = controlText(published === undefined ? field.default : published)
   }
   return values
+}
+
+/**
+ * One declared value as the text a control holds.
+ *
+ * A boolean reads as `true`/`false`, which is the spelling `fieldValue` turns
+ * back into a real JSON boolean, and `null`/`undefined` reads as the empty
+ * control that lets the plane decide — not as the words "null" or "undefined".
+ */
+function controlText(value: string | number | boolean | null | undefined): string {
+  if (value === undefined || value === null) return ''
+  return String(value)
 }
 
 /**
@@ -52,7 +69,7 @@ export function creationBody(schema: VmSchema, values: FormValues): CreationBody
   for (const field of schema.fields) {
     const text = (values[field.name] ?? '').trim()
     if (text.length === 0) {
-      if (field.required) return { ok: false, error: `「${field.name}」是必填项` }
+      if (field.required) return { ok: false, error: `「${fieldLabel(field)}」是必填项` }
       continue
     }
     const converted = fieldValue(field, text)
@@ -62,23 +79,102 @@ export function creationBody(schema: VmSchema, values: FormValues): CreationBody
   return { ok: true, fields }
 }
 
+/** The name a field is shown under: the plane's label when it declares one. */
+export function fieldLabel(field: VmSchemaField): string {
+  const label = field.label?.trim() ?? ''
+  return label.length > 0 ? label : field.name
+}
+
+/**
+ * The fields the form shows first, and the ones it folds away.
+ *
+ * The split is the declaration's to make: how much of a template a first-time
+ * operator has to read is a property of the template. Nothing here decides which
+ * fields those are, so a field that moves between the two sections — or one the
+ * plane adds later — needs no edit in this frontend.
+ */
+export function basicFields(schema: VmSchema): VmSchemaField[] {
+  return schema.fields.filter((field) => field.advanced !== true)
+}
+
+/** The fields the form keeps behind 「高级设置」 until the operator asks for them. */
+export function advancedFields(schema: VmSchema): VmSchemaField[] {
+  return schema.fields.filter((field) => field.advanced === true)
+}
+
+/**
+ * What a boolean field's text means, or `null` when it is not a boolean.
+ *
+ * Only the two spellings the form's own control writes are read: the value comes
+ * from a choice between 是 and 否, and accepting more spellings would invent a
+ * second way to say the same thing.
+ */
+export function booleanValue(text: string): boolean | null {
+  const value = text.trim().toLowerCase()
+  if (value === 'true') return true
+  if (value === 'false') return false
+  return null
+}
+
+/**
+ * The sample a field's empty control shows: the example the plane declares.
+ *
+ * A path or address the template expects is the template's fact, so the form
+ * shows the one the declaration carries. Spelling one out here would present a
+ * single build's answer as the only one, and it would go stale the moment the
+ * template changed.
+ */
+export function exampleHint(field: VmSchemaField): string {
+  return field.example === undefined ? '' : String(field.example)
+}
+
+/**
+ * The directory a transfer into this field would land in, `null` when the value
+ * names no place to put a file.
+ *
+ * A value the listing confirmed as an existing directory *is* the destination:
+ * the transfer keeps the file's own name and the field's value becomes the
+ * resulting path. Anything else is a path for a file, so its directory is where
+ * bytes go. An empty or relative value has no destination at all — inventing one
+ * would send the bytes somewhere the operator never named.
+ */
+export function transferDestination(
+  value: string,
+  isDirectory: boolean | undefined,
+): string | null {
+  const path = value.trim()
+  if (path.length === 0) return null
+  const parts = splitGuestPath(path)
+  if (parts === null) return null
+  return isDirectory === true ? path : parts.directory
+}
+
 /** One value as the field's type means it, or why the text cannot be it. */
 function fieldValue(field: VmSchemaField, text: string): FieldValue {
   switch (field.type) {
     case 'integer': {
       if (!/^\d+$/.test(text)) {
-        return { error: `「${field.name}」要一个非负整数，收到「${text}」` }
+        return { error: `「${fieldLabel(field)}」要一个非负整数，收到「${text}」` }
       }
       const value = Number(text)
       return Number.isSafeInteger(value)
         ? { value }
-        : { error: `「${field.name}」超出浏览器可精确表示的整数范围` }
+        : { error: `「${fieldLabel(field)}」超出浏览器可精确表示的整数范围` }
     }
     case 'address': {
       const address = addressValue(text)
       return address === null
-        ? { error: `「${field.name}」要一个地址（十进制或 0x 开头），收到「${text}」` }
+        ? { error: `「${fieldLabel(field)}」要一个地址（十进制或 0x 开头），收到「${text}」` }
         : { value: address }
+    }
+    case 'boolean': {
+      // A boolean is the one value whose text has to become a *different kind*
+      // of JSON value: the plane reads `true`, not `"true"`, so sending the
+      // text the control was entered with would be a different request.
+      const flag = booleanValue(text)
+      return flag === null
+        ? { error: `「${fieldLabel(field)}」要选 是 或 否，收到「${text}」` }
+        : { value: flag }
     }
     case 'enum': {
       const options = field.options ?? []
@@ -86,7 +182,7 @@ function fieldValue(field: VmSchemaField, text: string): FieldValue {
       // models exist, and refusing here would invent a set of its own.
       return options.length === 0 || options.includes(text)
         ? { value: text }
-        : { error: `「${field.name}」只能是 ${options.join(' / ')}，收到「${text}」` }
+        : { error: `「${fieldLabel(field)}」只能是 ${options.join(' / ')}，收到「${text}」` }
     }
     default:
       // Anything else is carried as the text it was typed as: a field type this

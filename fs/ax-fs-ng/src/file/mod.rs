@@ -11,6 +11,7 @@ pub(crate) use cache::BusyDirtyCachedFile;
 pub(crate) use cache::forget_cached_file_key;
 #[cfg(all(feature = "vfs", feature = "ext4"))]
 pub(crate) use cache::prune_cached_files;
+pub(crate) use cache::start_background_readahead;
 #[cfg(feature = "vfs")]
 pub(crate) use cache::start_background_writeback;
 pub use cache::{

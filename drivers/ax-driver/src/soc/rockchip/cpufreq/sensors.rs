@@ -15,8 +15,9 @@
 //! RK3588 OTP bin and firmware-configured TSADC CPU sensor access.
 //!
 //! OTP is read once during device probing. The TSADC path only reads an already
-//! running converter with an armed hardware shutdown channel. In particular it
-//! never resets the converter or changes its shutdown registers.
+//! running converter with an armed hardware shutdown channel. Runtime refresh
+//! may tighten its shutdown comparator to the host's validated ceiling, without
+//! resetting conversion or changing the shutdown route or polarity.
 
 use alloc::{format, vec::Vec};
 use core::{
@@ -25,7 +26,7 @@ use core::{
     time::Duration,
 };
 
-use log::info;
+use log::{info, warn};
 use rdrive::{probe::OnProbeError, register::FdtInfo};
 
 use crate::{mmio::iomap, register::ProbeFdt};
@@ -128,10 +129,14 @@ pub fn sku_serial() -> Result<u8, SensorError> {
 /// reading is returned only while conversion and the hardware shutdown route
 /// remain enabled.
 pub fn soc_temperature_millidegrees() -> Result<i32, SensorError> {
-    let channel = 0;
     // probe_tsadc publishes this permanent mapping after all clock and
     // shutdown checks. Acquire also makes the completed probe visible here.
     let mmio = NonNull::new(TSADC_MMIO.load(Ordering::Acquire)).ok_or(SensorError::NotReady)?;
+    read_tsadc_temperature(mmio)
+}
+
+fn check_tsadc_sampling(mmio: NonNull<u8>) -> Result<(), SensorError> {
+    let channel = 0;
     let auto_con = read32(mmio, TSADC_AUTO_CON);
     if auto_con & 1 == 0 || read32(mmio, TSADC_AUTO_SRC_CON) & (1 << channel) == 0 {
         return Err(SensorError::NotReady);
@@ -140,13 +145,45 @@ pub fn soc_temperature_millidegrees() -> Result<i32, SensorError> {
         return Err(SensorError::Unprotected);
     }
     let shut_mask = 1 << channel;
-    let shut_code = read32(mmio, TSADC_COMP_SHUT0 + 4 * channel);
-    if read32(mmio, TSADC_HSHUT_CRU_EN) & shut_mask == 0
-        || !(215..=TSADC_SHUT_CODE).contains(&shut_code)
-    {
+    if read32(mmio, TSADC_HSHUT_CRU_EN) & shut_mask == 0 {
         return Err(SensorError::Unprotected);
     }
-    code_to_millidegrees(read32(mmio, TSADC_DATA0 + 4 * channel)).ok_or(SensorError::InvalidReading)
+    Ok(())
+}
+
+fn read_tsadc_temperature(mmio: NonNull<u8>) -> Result<i32, SensorError> {
+    check_tsadc_sampling(mmio)?;
+    let shut_code = read32(mmio, TSADC_COMP_SHUT0);
+    if !(215..=TSADC_SHUT_CODE).contains(&shut_code) {
+        return Err(SensorError::Unprotected);
+    }
+    code_to_millidegrees(read32(mmio, TSADC_DATA0)).ok_or(SensorError::InvalidReading)
+}
+
+/// Refreshes the runtime temperature while maintaining the host shutdown ceiling.
+pub(super) fn refresh_soc_temperature_millidegrees() -> Result<i32, SensorError> {
+    let mmio = NonNull::new(TSADC_MMIO.load(Ordering::Acquire)).ok_or(SensorError::NotReady)?;
+    refresh_tsadc_temperature(mmio)
+}
+
+fn refresh_tsadc_temperature(mmio: NonNull<u8>) -> Result<i32, SensorError> {
+    check_tsadc_sampling(mmio)?;
+    let previous = read32(mmio, TSADC_COMP_SHUT0);
+    if !(215..=395).contains(&previous) {
+        return Err(SensorError::Unprotected);
+    }
+    if previous > TSADC_SHUT_CODE {
+        // A passthrough thermal driver can rewrite the shared comparator.
+        // Tighten only a characterized threshold, preserving stricter limits
+        // and every conversion/route/polarity bit. Never admit high OPPs using
+        // stale temperature or by accepting a weaker shutdown ceiling.
+        write32(mmio, TSADC_COMP_SHUT0, TSADC_SHUT_CODE);
+        if read32(mmio, TSADC_COMP_SHUT0) != TSADC_SHUT_CODE {
+            return Err(SensorError::Unprotected);
+        }
+        warn!("TSADC shutdown threshold tightened from {previous} to {TSADC_SHUT_CODE}");
+    }
+    read_tsadc_temperature(mmio)
 }
 
 fn probe_otp(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -469,7 +506,7 @@ fn write32(base: NonNull<u8>, offset: usize, value: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::code_to_millidegrees;
+    use super::*;
 
     #[test]
     fn rk3588_tsadc_thresholds_and_invalid_samples() {
@@ -478,5 +515,38 @@ mod tests {
         assert_eq!(code_to_millidegrees(299), Some(37_923));
         assert_eq!(code_to_millidegrees(0), None);
         assert_eq!(code_to_millidegrees(455), None);
+
+        // Exercise the production refresh against volatile register storage.
+        let mut registers = [0u32; TSADC_SIZE / 4];
+        registers[TSADC_AUTO_CON / 4] = 1;
+        registers[TSADC_AUTO_SRC_CON / 4] = 1;
+        registers[TSADC_HSHUT_CRU_EN / 4] = 1;
+        registers[TSADC_COMP_SHUT0 / 4] = 390;
+        registers[TSADC_DATA0 / 4] = 285;
+        let mmio = NonNull::new(registers.as_mut_ptr().cast()).unwrap();
+        assert_eq!(refresh_tsadc_temperature(mmio), Ok(25_000));
+        assert_eq!(registers[TSADC_COMP_SHUT0 / 4], TSADC_SHUT_CODE);
+        registers[TSADC_DATA0 / 4] = 350;
+        assert_eq!(refresh_tsadc_temperature(mmio), Ok(85_000));
+
+        // A stricter shutdown stays intact; missing protection and unknown
+        // thresholds must still reject high-OPP temperature admission.
+        registers[TSADC_COMP_SHUT0 / 4] = 350;
+        assert_eq!(refresh_tsadc_temperature(mmio), Ok(85_000));
+        assert_eq!(registers[TSADC_COMP_SHUT0 / 4], 350);
+        registers[TSADC_HSHUT_CRU_EN / 4] = 0;
+        registers[TSADC_COMP_SHUT0 / 4] = 390;
+        assert_eq!(
+            refresh_tsadc_temperature(mmio),
+            Err(SensorError::Unprotected)
+        );
+        assert_eq!(registers[TSADC_COMP_SHUT0 / 4], 390);
+        registers[TSADC_HSHUT_CRU_EN / 4] = 1;
+        registers[TSADC_COMP_SHUT0 / 4] = 511;
+        assert_eq!(
+            refresh_tsadc_temperature(mmio),
+            Err(SensorError::Unprotected)
+        );
+        assert_eq!(registers[TSADC_COMP_SHUT0 / 4], 511);
     }
 }

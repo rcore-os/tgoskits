@@ -14,6 +14,7 @@ impl Owner {
             ap_entry: self.vm.config().ap_entry(),
             image: self.vm.config().image_config().clone(),
             address_space_policy: self.vm.config().address_space_policy(),
+            vcpu_schedule_policy: self.vcpu_schedule_policy,
             vcpu_affinities: self.vm.get_vcpu_affinities_pcpu_ids(),
             passthrough_devices: self.vm.config().pass_through_devices().to_vec(),
             passthrough_addresses: self.vm.config().pass_through_addresses().to_vec(),
@@ -45,6 +46,7 @@ impl Owner {
                     } else {
                         VmVcpuState::Starting
                     },
+                    host_base_policy: Some(member.task.base_policy()),
                     phys_cpu_set: description
                         .vcpu_affinities
                         .iter()

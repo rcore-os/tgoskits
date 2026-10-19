@@ -38,13 +38,9 @@ mod guest_cpufreq;
 mod guest_images;
 mod manager;
 mod net_uplink;
-#[cfg(feature = "vcpu-perf-load")]
-mod perf_load;
 mod shell;
 mod startup;
 mod sync;
-#[cfg(feature = "test-virq-delivery")]
-mod virq_regression;
 mod vm_pool;
 
 /// Axvisor kernel entry point.
@@ -85,15 +81,14 @@ fn main() {
     manager
         .init_builtin_catalog()
         .unwrap_or_else(|error| panic!("failed to index builtin guest configs: {error:#}"));
-    let selected_vm_ids =
-        startup::selected_vm_ids(ax_hal::boot::bootargs(), manager.builtin_catalog())
-            .unwrap_or_else(|error| panic!("invalid host VM startup selector: {error:#}"));
+    let selection = startup::startup_selection(ax_hal::boot::bootargs(), |id| {
+        manager.builtin_catalog().get(id).is_some()
+    })
+    .unwrap_or_else(|error| panic!("invalid host VM startup selector: {error:#}"));
 
     // Pool indexing is observational. It never creates a VM; each selected
     // builtin is created and started only after all selector validation passes.
     vm_pool::log_startup_state(manager.builtin_catalog());
-    #[cfg(feature = "vcpu-perf-load")]
-    let _performance_load = perf_load::start();
 
     // The registry watcher behind `/ws/events` is started before HTTP so the
     // first subscriber cannot miss a change.
@@ -101,11 +96,12 @@ fn main() {
     control::domain::events::start();
 
     manager
-        .start_selected_vms(&selected_vm_ids)
+        .start_selected_vms(&selection.start, &selection.prepare)
         .unwrap_or_else(|error| panic!("failed to start selected builtin VMs: {error:#}"));
     info!(
-        "Builtin VM startup selector registered {} guest(s)",
-        selected_vm_ids.len()
+        "Builtin VM startup selector started {} guest(s) and prepared {} guest(s)",
+        selection.start.len(),
+        selection.prepare.len()
     );
 
     // The optional HTTP server accepts connections in a loop and needs its
@@ -127,9 +123,6 @@ fn main() {
 
     #[cfg(feature = "web")]
     control::network_status::start();
-
-    #[cfg(feature = "test-virq-delivery")]
-    virq_regression::start();
 
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 

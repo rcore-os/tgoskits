@@ -574,6 +574,13 @@ impl IrqWaitCell {
         )
     }
 
+    /// Observes an attached waiter without dereferencing its published owner.
+    #[cfg(feature = "fault-injection")]
+    pub fn has_waiter_for_test(&self) -> bool {
+        let waiter = self.waiter.load(Ordering::Acquire);
+        !waiter.is_null() && waiter != pending_waiter() && !is_notification_sentinel(waiter)
+    }
+
     fn wake_registration(registration: &IrqWaitNode) -> (u64, crate::thread::WakeResult) {
         let generation = registration.begin_notification();
         let result = registration.wake.wake();

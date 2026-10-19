@@ -551,15 +551,26 @@ fn render_proc_net_snmp() -> String {
 }
 
 fn render_diskstats() -> String {
-    // 14-field Linux /proc/diskstats layout, one line per block device. Only the
-    // selected root device is backed by the block runtime, so only its
-    // request/sector counters are real; timing and in-flight fields have no
-    // source and stay zero.
-    let identity = ax_fs_ng::root::root_block_identity();
-    let (reads, sectors_read, writes, sectors_written) = ax_fs_ng::block_io_stats();
+    // Linux diskstats columns, in milliseconds and 512-byte sectors. This row
+    // describes the selected physical root disk. Discard and merge are not
+    // implemented; flush and all supported I/O timing fields are measured.
+    let Some((identity, stats)) = ax_fs_ng::root::root_block_stats() else {
+        return String::new();
+    };
+    render_diskstats_row(&identity, &stats)
+}
+
+fn render_diskstats_row(
+    identity: &ax_fs_ng::root::RootBlockIdentity,
+    stats: &ax_fs_ng::BlockIoStats,
+) -> String {
     format!(
-        "{}       {} {} {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 0 0\n",
-        identity.major, identity.minor, identity.name
+        "{} {} {} {} 0 {} {} {} 0 {} {} {} {} {} 0 0 0 0 {} {}\n",
+        identity.major, identity.minor, identity.name,
+        stats.reads, stats.sectors_read, stats.read_ns / 1_000_000,
+        stats.writes, stats.sectors_written, stats.write_ns / 1_000_000,
+        stats.inflight, stats.busy_ns / 1_000_000, stats.weighted_ns / 1_000_000,
+        stats.flushes, stats.flush_ns / 1_000_000,
     )
 }
 
@@ -2520,6 +2531,36 @@ fn proc_mountinfo_lines_match_linux_layout() -> bool {
 
 #[cfg(all(test, axtest))]
 mod tests {
+    #[axtest::axtest]
+    fn diskstats_row_preserves_linux_columns_and_truncates_milliseconds() {
+        let identity = ax_fs_ng::root::RootBlockIdentity {
+            name: "sample0",
+            major: 253,
+            minor: 7,
+        };
+        let stats = ax_fs_ng::BlockIoStats {
+            reads: 11,
+            sectors_read: 17,
+            read_ns: 999_999,
+            writes: 23,
+            sectors_written: 29,
+            write_ns: 1_999_999,
+            flushes: 31,
+            flush_ns: 5_999_999,
+            failed_requests: 37,
+            inflight: 3,
+            busy_ns: 8_000_000,
+            weighted_ns: 13_999_999,
+        };
+        // Linux v6.12 block/genhd.c: diskstats_show. Keep identity, all 17
+        // counters, unsupported merge/discard slots, and the final newline.
+        // Distinct times include a sub-millisecond value and fractional parts.
+        assert_eq!(
+            super::render_diskstats_row(&identity, &stats),
+            "253 7 sample0 11 0 17 0 23 0 29 1 3 8 13 0 0 0 0 31 5\n"
+        );
+    }
+
     #[axtest::axtest]
     fn proc_mountinfo_lines_match_linux_layout() {
         assert!(super::proc_mountinfo_lines_match_linux_layout());

@@ -9,6 +9,8 @@
  *   - DRM_MODE_ATOMIC_TEST_ONLY 不应改状态
  *   - 真正一次原子提交（带 PAGE_FLIP_EVENT），应改状态、并产生 vblank 事件
  *   - 故意构造无效 prop id 的提交必须 EINVAL 拒绝且不动状态
+ *   - 对象数/属性总数超过上限（1024/8192）必须先于任何分配被 EINVAL，
+ *     且上限边界值本身仍被接受
  *   - DESTROY_PROPBLOB 之后 GET_PROPBLOB 必须 ENOENT
  *
  * 这条路径是 weston / mutter atomic backend 的核心路径，缺一会卡住合成器。
@@ -547,6 +549,69 @@ int main(void)
               "bad prop id rejected with EINVAL");
     CHECK(obj_prop_value(fd, crtcs[0], DRM_MODE_OBJECT_CRTC, P_CRTC_ACTIVE) == 1,
           "rejected commit left state intact");
+
+    /* --- 对象数/属性总数超上限必须先于任何分配被 EINVAL --- */
+    {
+        /* On the unbounded baseline these over-bound requests return 0
+         * (TEST_ONLY, no side effects), so the EINVAL assertions below
+         * are the discriminating regression for the handle_atomic caps:
+         * vm_load allocates straight from the user counts and a hostile
+         * count kills the kernel allocator. */
+        enum { BOUND_OBJS = 1024, BOUND_PROPS = 8 * 1024 };
+        static uint32_t over_objs[BOUND_OBJS + 1];
+        static uint32_t over_counts[BOUND_OBJS + 1];
+        for (int i = 0; i <= BOUND_OBJS; i++) {
+            over_objs[i] = crtcs[0];
+            over_counts[i] = 0;
+        }
+        struct drm_mode_atomic over = {
+            .flags = DRM_MODE_ATOMIC_TEST_ONLY,
+            .count_objs = BOUND_OBJS + 1,
+            .objs_ptr = (uint64_t)(uintptr_t)over_objs,
+            .count_props_ptr = (uint64_t)(uintptr_t)over_counts,
+            .props_ptr = (uint64_t)(uintptr_t)bad_props,
+            .prop_values_ptr = (uint64_t)(uintptr_t)bad_values,
+        };
+        CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over), EINVAL,
+                  "count_objs over the bound rejected with EINVAL");
+        CHECK(obj_prop_value(fd, crtcs[0], DRM_MODE_OBJECT_CRTC, P_CRTC_ACTIVE) == 1,
+              "over-bound objs commit left state intact");
+
+        static uint32_t over_prop_ids[BOUND_PROPS + 1];
+        static uint64_t over_prop_vals[BOUND_PROPS + 1];
+        for (int i = 0; i <= BOUND_PROPS; i++) {
+            over_prop_ids[i] = P_CRTC_ACTIVE;
+            over_prop_vals[i] = 1;
+        }
+        uint32_t one_obj[1] = { crtcs[0] };
+        uint32_t huge_count[1] = { BOUND_PROPS + 1 };
+        struct drm_mode_atomic over_props = {
+            .flags = DRM_MODE_ATOMIC_TEST_ONLY,
+            .count_objs = 1,
+            .objs_ptr = (uint64_t)(uintptr_t)one_obj,
+            .count_props_ptr = (uint64_t)(uintptr_t)huge_count,
+            .props_ptr = (uint64_t)(uintptr_t)over_prop_ids,
+            .prop_values_ptr = (uint64_t)(uintptr_t)over_prop_vals,
+        };
+        CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over_props), EINVAL,
+                  "total_props over the bound rejected with EINVAL");
+        CHECK(obj_prop_value(fd, crtcs[0], DRM_MODE_OBJECT_CRTC, P_CRTC_ACTIVE) == 1,
+              "over-bound props commit left state intact");
+
+        /* Boundary values themselves stay legal; this catches a cap
+         * weakened into an off-by-one (`>` written as `>=`). */
+        over.count_objs = BOUND_OBJS;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over), 0,
+                  "count_objs at the bound still accepted");
+        huge_count[0] = BOUND_PROPS;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over_props), 0,
+                  "total_props at the bound still accepted");
+
+        /* The raw DoS shape must be rejected before vm_load. */
+        over.count_objs = UINT32_MAX;
+        CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over), EINVAL,
+                  "count_objs == UINT32_MAX rejected with EINVAL");
+    }
 
     /* --- destroy-after-commit blob lifecycle ---
      * Linux DRM keeps a kernel reference on a `MODE_ID` blob from the

@@ -1,0 +1,8 @@
+features = ["web-ui", "ax-driver/nvme", "ax-driver/intel-net"]
+log = "Info"
+target = "x86_64-unknown-none"
+max_cpu_num = 2
+vm_configs = []
+
+[env]
+AXVM_HTTP_BIND = "0.0.0.0:8080"

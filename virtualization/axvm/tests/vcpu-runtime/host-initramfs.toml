@@ -1,0 +1,9 @@
+# Host memory-root fixture of the `axvm` `vcpu_runtime` ktest case.
+#
+# `prepare.py` writes the generated resources below the axbuild target
+# directory, so `source` and `vm_configs` are resolved against the workspace
+# root: the resource directory becomes the initramfs fixture (the axtest target
+# reads `/tests/vcpu-runtime.toml`), and the generated `vm.toml` is installed
+# into `/guest/builtin/configs/vm-2.toml` together with its guest image.
+source = "target/axbuild/axvm/vcpu-runtime/resources"
+vm_configs = ["target/axbuild/axvm/vcpu-runtime/vm.toml"]

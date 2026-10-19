@@ -35,6 +35,8 @@ fn local_scheduler_work_pending() -> bool {
 #[cfg(feature = "ipi")]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
+    #[cfg(feature = "uspace")]
+    crate::thread::reclaim_current_lazy_address_space();
     dispatch_scheduler_doorbell(local_scheduler_work_pending, || {
         let _self_serviced = crate::guard::publish_local_scheduler_work();
     });
@@ -46,6 +48,8 @@ pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqRetu
 #[cfg(all(feature = "wake-ipi", not(feature = "ipi")))]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
+    #[cfg(feature = "uspace")]
+    crate::thread::reclaim_current_lazy_address_space();
     dispatch_scheduler_doorbell(local_scheduler_work_pending, || {
         let _self_serviced = crate::guard::publish_local_scheduler_work();
     });

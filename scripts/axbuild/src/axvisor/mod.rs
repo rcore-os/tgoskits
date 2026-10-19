@@ -442,28 +442,75 @@ impl Axvisor {
         allow_external_assets: bool,
     ) -> anyhow::Result<()> {
         request.vmconfigs = build::load_vmconfigs(request, self.app.workspace_context())?;
-        rootfs::ensure_guest_image_bundles(
+        attach_guest_payload(
+            &mut self.app,
             request,
-            self.app.workspace_root(),
-            self.app.target_dir(),
-        )
-        .await?;
-        let web_ui_dist =
-            web_ui::build_dist(&cargo.features, &request.axvisor_dir, self.app.target_dir())?;
-        let output = self
-            .app
-            .target_dir()
-            .join("axbuild/axvisor/host-initramfs")
-            .join(format!("{}.cpio", request.arch));
-        bundle::attach_with_external_assets(
-            &request.vmconfigs,
+            boot,
+            cargo,
             false,
-            web_ui_dist.as_deref(),
-            &output,
-            &mut boot.initramfs,
             allow_external_assets,
         )
+        .await
     }
+}
+
+/// Prepares the AxVisor guest payload for one explicit axtest execution unit.
+///
+/// The ktest runner owns its Cargo target selection, so it cannot reuse the
+/// [`Axvisor`] command object. The resource pipeline stays the same: an optional
+/// `host-initramfs.toml` sidecar next to the run configuration may select guest
+/// configurations and publishes the package even when the build configuration
+/// lists none; without that sidecar the build configuration's `vm_configs` are
+/// used, so a case that owns no sidecar still boots the guests its build
+/// declares.
+pub(crate) async fn prepare_ktest_guest_payload(
+    app: &mut AppContext,
+    request: &mut ResolvedAxvisorRequest,
+    boot: &mut ostool::BootPayloadConfig,
+    cargo: &Cargo,
+    sidecar_dir: &Path,
+    allow_external_assets: bool,
+) -> anyhow::Result<()> {
+    let inputs = bundle::case_inputs(sidecar_dir)?;
+    request.vmconfigs = match &inputs.vm_configs {
+        Some(configs) => build::resolve_vmconfigs(request, configs, app.workspace_context())?,
+        None => build::load_vmconfigs(request, app.workspace_context())?,
+    };
+    attach_guest_payload(
+        app,
+        request,
+        boot,
+        cargo,
+        inputs.vm_configs.is_some(),
+        allow_external_assets,
+    )
+    .await
+}
+
+/// Packs the selected guest configurations and their boot images into the host
+/// archive already carried by `boot`.
+async fn attach_guest_payload(
+    app: &mut AppContext,
+    request: &ResolvedAxvisorRequest,
+    boot: &mut ostool::BootPayloadConfig,
+    cargo: &Cargo,
+    empty_package: bool,
+    allow_external_assets: bool,
+) -> anyhow::Result<()> {
+    rootfs::ensure_guest_image_bundles(request, app.workspace_root(), app.target_dir()).await?;
+    let web_ui_dist = web_ui::build_dist(&cargo.features, &request.axvisor_dir, app.target_dir())?;
+    let output = app
+        .target_dir()
+        .join("axbuild/axvisor/host-initramfs")
+        .join(format!("{}.cpio", request.arch));
+    bundle::attach_with_external_assets(
+        &request.vmconfigs,
+        empty_package,
+        web_ui_dist.as_deref(),
+        &output,
+        &mut boot.initramfs,
+        allow_external_assets,
+    )
 }
 
 fn default_qemu_config_template_path(axvisor_dir: &Path, arch: &str) -> PathBuf {

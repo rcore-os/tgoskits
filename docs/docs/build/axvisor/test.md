@@ -179,16 +179,18 @@ Axvisor 测试构建日志会输出本次实际使用的 Ostool CODE、VARS 和�
 
 ## 6. VMX 合并任务
 
-七个 VMX 用例统一启用 `vpci-test-device`，其 build TOML 的 Cargo 编译身份保持一致；`vm_configs` 只作为每个用例的运行时输入。CI 使用一个 `kvm-intel` runner，先构建一次 AxVisor，再依次运行 smoke、ACPI、PCI 枚举和 PCI block 用例：
+CI 使用一个 `kvm-intel` runner 运行八个 VMX 用例。原有 smoke、ACPI、PCI 枚举和 PCI block 七个用例保持同一 Cargo 编译身份，统一启用 `ax-driver/nvme` 与 `web-ui`；`vm_configs` 只作为每个用例的运行时输入。新增的 `web-ui-vmx` 使用独立的默认网页构建配置并额外启用 `ax-driver/intel-net`，因此运行器按两种 Cargo 身份分别构建，再执行各自的用例。`prepare_case_build_groups()` 会按 Cargo 身份合并前七个用例，确保 Web UI 与 NVMe 栈在无向量 x86_64 目标上的编译守卫只构建一次：
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \
-  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx
+  --test-case smoke-vmx,direct-acpi-vmx,mp-fallback-vmx,ovmf-acpi-vmx,pci-enumeration-vmx,pci-block-rw-vmx,pci-block-ro-vmx,web-ui-vmx
 ```
+
+`web-ui-vmx` 从空客户机登记表开始，通过 e1000 转发访问网页与 defaults 接口，复用原始镜像里的 Linux 内核和 Alpine 根盘。`default_guest_probe.py` 在 90 秒门限内验证真实 shell 算术及系统信息，再验证重连、停止删除与自动 ID 重用；成功标记为 `AXVISOR_DEFAULT_GUEST_WEB_UI_PASSED`。真实浏览器交互的操作步骤见[默认客户机运行流程](./runtime.md#16-x86_64-默认客户机)。
 
 ## 7. SVM 合并任务
 
-六个 SVM 用例共用 `normal/qemu-svm/build-x86_64-unknown-none.toml`，包含 NVMe 和 `vpci-test-device`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按构建配置路径复用内核；各次启动打印相同内核哈希和各自的归档哈希。
+六个 SVM 用例共用 `normal/qemu-svm/build-x86_64-unknown-none.toml`，启用 `ax-driver/nvme`。`host-initramfs.toml` 分别声明 VM 配置、BusyBox 和 OVMF 输入。`test_qemu()` 按 Cargo 身份合并 build group 并复用内核，每个用例再恢复自己的 build TOML 路径读取运行时输入；各次启动打印相同内核哈希和各自的归档哈希。
 
 ### 6.1 连续运行
 

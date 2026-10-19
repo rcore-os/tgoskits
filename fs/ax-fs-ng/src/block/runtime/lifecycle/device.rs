@@ -637,7 +637,7 @@ pub(super) fn create_cpu_channels(
 }
 
 impl HctxObserver for DeviceInner {
-    fn request_completed(&self, op: RequestOp, block_count: u32, result: Result<(), BlkError>) {
+    fn request_completed(&self, op: RequestOp) {
         let (notify_data, notify_flush) = {
             let mut gate = self.lifecycle_gate.lock_irqsave();
             match op {
@@ -651,33 +651,6 @@ impl HctxObserver for DeviceInner {
                 }
             }
         };
-        match op {
-            RequestOp::Read => {
-                if result.is_ok() {
-                    BLOCK_READS.fetch_add(1, Ordering::Relaxed);
-                    BLOCK_SECTORS_READ.fetch_add(
-                        sectors_for_blocks(
-                            self.published_device_info().logical_block_size,
-                            block_count,
-                        ),
-                        Ordering::Relaxed,
-                    );
-                }
-            }
-            RequestOp::Write => {
-                if result.is_ok() {
-                    BLOCK_WRITES.fetch_add(1, Ordering::Relaxed);
-                    BLOCK_SECTORS_WRITTEN.fetch_add(
-                        sectors_for_blocks(
-                            self.published_device_info().logical_block_size,
-                            block_count,
-                        ),
-                        Ordering::Relaxed,
-                    );
-                }
-            }
-            RequestOp::Flush => {}
-        }
         if notify_data {
             self.data_drain_waiters.notify_all();
             self.admission_async_waiters.notify_all();

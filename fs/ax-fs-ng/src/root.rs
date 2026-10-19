@@ -1,7 +1,7 @@
 use alloc::{
     format,
     string::{String, ToString},
-    sync::Arc,
+    sync::{Arc, Weak},
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -25,7 +25,7 @@ use crate::{
 };
 
 const VOLUME_METADATA_READ_RETRIES: usize = 3;
-static ROOT_BLOCK_IDENTITY: crate::os::sync::RawSpinLock<Option<RootBlockIdentity>> =
+static ROOT_BLOCK_IDENTITY: crate::os::sync::RawSpinLock<Option<RootBlockDevice>> =
     crate::os::sync::RawSpinLock::new(None);
 static ROOT_KIND: AtomicU8 = AtomicU8::new(0);
 #[cfg(axtest)]
@@ -61,6 +61,11 @@ pub struct RootBlockIdentity {
     pub minor: u32,
 }
 
+struct RootBlockDevice {
+    identity: RootBlockIdentity,
+    handle: Weak<BlockDeviceHandle>,
+}
+
 const DEFAULT_ROOT_BLOCK_IDENTITY: RootBlockIdentity = RootBlockIdentity {
     name: "blk0",
     major: 0,
@@ -69,7 +74,25 @@ const DEFAULT_ROOT_BLOCK_IDENTITY: RootBlockIdentity = RootBlockIdentity {
 
 /// Returns the identity selected while mounting the root filesystem.
 pub fn root_block_identity() -> RootBlockIdentity {
-    (*ROOT_BLOCK_IDENTITY.lock_irqsave()).unwrap_or(DEFAULT_ROOT_BLOCK_IDENTITY)
+    ROOT_BLOCK_IDENTITY
+        .lock_irqsave()
+        .as_ref()
+        .map_or(DEFAULT_ROOT_BLOCK_IDENTITY, |root| root.identity)
+}
+
+/// Returns the selected physical root device and its own I/O counters.
+/// An in-memory root has no physical disk row. Unrelated disks are not charged
+/// to the root device, including during partition discovery.
+pub fn root_block_stats() -> Option<(RootBlockIdentity, crate::BlockIoStats)> {
+    if root_kind() != Some(RootKind::Block) {
+        return None;
+    }
+    let (identity, handle) = {
+        let root = ROOT_BLOCK_IDENTITY.lock_irqsave();
+        let root = root.as_ref()?;
+        (root.identity, root.handle.upgrade()?)
+    };
+    Some((identity, handle.io_stats()))
 }
 
 /// Root filesystem selector parsed from boot arguments.
@@ -273,10 +296,10 @@ impl PreparedRoot {
         );
         old_root.detach_mount()?;
         crate::register_mounted_filesystem(self.filesystem.clone());
-        *ROOT_BLOCK_IDENTITY.lock_irqsave() = Some(block_identity(
-            self.selected.handle.device_info(),
-            self.selected.disk_index,
-        ));
+        *ROOT_BLOCK_IDENTITY.lock_irqsave() = Some(RootBlockDevice {
+            identity: block_identity(self.selected.handle.device_info(), self.selected.disk_index),
+            handle: Arc::downgrade(&self.selected.handle),
+        });
         ROOT_KIND.store(2, Ordering::Release);
         #[cfg(axtest)]
         {

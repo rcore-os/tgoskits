@@ -124,17 +124,20 @@ run_pci_enumeration_check() {
     vendor=$(/bin/busybox cat "$dev/vendor")
     device=$(/bin/busybox cat "$dev/device")
     class=$(/bin/busybox cat "$dev/class")
-    if [ "$vendor" = "0x1af4" ] && [ "$device" = "0x1110" ] && [ "$class" = "0x050000" ]; then
+    if [ "$vendor" = "0x1af4" ] && [ "$device" = "0x1042" ] && [ "$class" = "0x018000" ]; then
       bdf=${dev##*/}
       count=$((count + 1))
     fi
   done
   echo "guest kernel: $(/bin/busybox uname -r)"
   if [ "$count" -ne 1 ]; then
-    echo "expected exactly one 0500:1af4:1110 function, found $count"
+    echo "expected exactly one 0180:1af4:1042 function, found $count"
     failed=1
   else
     endpoint=/sys/bus/pci/devices/$bdf
+    # `virtio_pci_driver_init` is blacklisted on this command line, so a
+    # bound driver means the guest reached the endpoint through a path the
+    # case does not describe.
     if [ -L "$endpoint/driver" ]; then
       echo "vPCI endpoint unexpectedly bound to a driver"
       failed=1
@@ -142,15 +145,21 @@ run_pci_enumeration_check() {
     # The kernel publishes `resource` entries as bare hex columns; tolerate an
     # optional 0x prefix and turn malformed input into an explicit failure so
     # the case reports FAILED instead of dying inside arithmetic.
-    resource_line=$(/bin/busybox sed -n '3p' "$endpoint/resource")
-    if ! validate_pci_bar_resource "$resource_line" __AXVISOR_PCI_MEMORY_APERTURE_START__ __AXVISOR_PCI_MEMORY_APERTURE_END__ 65536; then
+    resource_line=$(/bin/busybox sed -n '1p' "$endpoint/resource")
+    if ! validate_pci_bar_resource "$resource_line" __AXVISOR_PCI_MEMORY_APERTURE_START__ __AXVISOR_PCI_MEMORY_APERTURE_END__ 4096; then
       failed=1
-      echo "BAR2 is not a valid 64 KiB memory resource"
+      echo "BAR0 is not a valid 4 KiB memory resource"
+    fi
+    # `validate_pci_capabilities` tolerates a function that advertises no
+    # capability list; this case requires the real, non-empty chain first and
+    # then validates its contents.
+    if ! require_pci_capability_chain "$endpoint/config"; then
+      failed=1
     fi
     if ! validate_pci_capabilities "$endpoint/config"; then
       failed=1
     fi
-    fi
+  fi
   if [ "$failed" -ne 0 ]; then
     echo AXVISOR_X86_VPCI_ENUMERATION_FAILED
   else
@@ -412,7 +421,7 @@ const PCI_BAR_VALIDATOR: &str = r#"validate_pci_bar_resource() {
   bar_start=$((0x$v1))
   bar_end=$((0x$v2))
   bar_flags=$((0x$v3))
-  echo "vPCI endpoint BAR2 [$bar_start-$bar_end] flags $bar_flags"
+  echo "PCI BAR [$bar_start-$bar_end] flags $bar_flags"
   if [ "$bar_end" -lt "$bar_start" ]; then
     echo "PCI BAR resource range is inverted"
     return 1
@@ -424,7 +433,7 @@ const PCI_BAR_VALIDATOR: &str = r#"validate_pci_bar_resource() {
   aperture_start=$((0x$aperture_start))
   aperture_end=$((0x$aperture_end))
   if [ "$bar_start" -lt "$aperture_start" ] || [ "$bar_end" -ge "$aperture_end" ]; then
-    echo "BAR2 is outside the PCI memory aperture"
+    echo "PCI BAR is outside the PCI memory aperture"
     return 1
   fi
   bar_size=$((bar_end - bar_start + 1))
@@ -452,7 +461,29 @@ const PCI_BAR_VALIDATOR: &str = r#"validate_pci_bar_resource() {
 }
 "#;
 
-const PCI_CAPABILITY_VALIDATOR: &str = r#"validate_pci_capabilities() {
+const PCI_CAPABILITY_VALIDATOR: &str = r#"require_pci_capability_chain() {
+  config_path=$1
+  status_low=$(read_config_byte "$config_path" 6) || {
+    echo "PCI status register is unreadable"
+    return 1
+  }
+  if [ $((0x$status_low & 0x10)) -eq 0 ]; then
+    echo "PCI endpoint does not advertise a capability list"
+    return 1
+  fi
+  pointer_hex=$(read_config_byte "$config_path" 52) || {
+    echo "PCI capability pointer is unreadable"
+    return 1
+  }
+  pointer=$((0x$pointer_hex))
+  if [ "$pointer" -eq 0 ]; then
+    echo "PCI capability chain is empty"
+    return 1
+  fi
+  return 0
+}
+
+validate_pci_capabilities() {
   config_path=$1
   if [ ! -r "$config_path" ]; then
     echo "PCI configuration space is missing or unreadable"
@@ -463,6 +494,9 @@ const PCI_CAPABILITY_VALIDATOR: &str = r#"validate_pci_capabilities() {
     echo "PCI status register is unreadable"
     return 1
   }
+  # A function that advertises no capability list has nothing to walk here.
+  # Cases that depend on a real chain call `require_pci_capability_chain`
+  # first, so this validator stays usable for functions without capabilities.
   if [ $((0x$status_low & 0x10)) -eq 0 ]; then
     return 0
   fi
@@ -906,16 +940,56 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn pci_capability_gate_requires_a_real_non_empty_chain() {
+        // The enumeration case runs the gate and the shared validator on the
+        // endpoint's configuration space, so one real chain must satisfy both.
+        let accepted = run_pci_config_check(
+            &modern_virtio_pci_config(),
+            "require_pci_capability_chain \"$1\" && validate_pci_capabilities \"$1\"",
+        );
+        assert!(
+            accepted.status.success(),
+            "a device with a real capability chain must be accepted: stdout={} stderr={}",
+            String::from_utf8_lossy(&accepted.stdout),
+            String::from_utf8_lossy(&accepted.stderr)
+        );
+
+        let mut without_list = modern_virtio_pci_config();
+        without_list[0x06] &= !0x10;
+        let rejected = run_pci_config_check(&without_list, "require_pci_capability_chain \"$1\"");
+        assert!(
+            !rejected.status.success(),
+            "a device without a capability list must not satisfy the enumeration gate"
+        );
+
+        let mut empty_chain = modern_virtio_pci_config();
+        empty_chain[0x34] = 0;
+        let rejected = run_pci_config_check(&empty_chain, "require_pci_capability_chain \"$1\"");
+        assert!(
+            !rejected.status.success(),
+            "an advertised but empty capability chain must not satisfy the enumeration gate"
+        );
+    }
+
+    #[cfg(unix)]
     fn run_virtio_capability_validator(config: &[u8]) -> std::process::Output {
+        run_pci_config_check(config, "validate_virtio_capabilities \"$1\"")
+    }
+
+    /// Runs one PCI config-space shell command from the init script against a
+    /// synthetic 256-byte configuration image passed as `$1`.
+    #[cfg(unix)]
+    fn run_pci_config_check(config: &[u8], command: &str) -> std::process::Output {
         let directory = tempdir().unwrap();
         let config_path = directory.path().join("config");
         fs::write(&config_path, config).unwrap();
         Command::new("sh")
             .arg("-c")
             .arg(format!(
-                "{PCI_CONFIG_READERS}\nvalidate_virtio_capabilities \"$1\""
+                "{PCI_CONFIG_READERS}\n{PCI_CAPABILITY_VALIDATOR}\n{command}"
             ))
-            .arg("virtio-capability-test")
+            .arg("pci-config-check-test")
             .arg(config_path)
             .output()
             .unwrap()

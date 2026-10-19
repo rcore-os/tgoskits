@@ -30,6 +30,8 @@ use ax_task::{
 };
 
 mod address_space;
+#[cfg(all(feature = "uspace", any(feature = "ipi", feature = "wake-ipi")))]
+pub(crate) use address_space::reclaim_current_lazy_address_space;
 mod mm_activation;
 pub use mm_activation::{
     AddressSpaceSwitchProof, SchedulerAddressSpaceActivation, SchedulerAddressSpaceOwner,

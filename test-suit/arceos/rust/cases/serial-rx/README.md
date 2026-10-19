@@ -14,6 +14,19 @@
 
 客户机逐字节比较第一批全部 64 字节和 UART 错误标志，排除多余数据后才打印 `SERIAL_RX_READY_2`。宿主随后独立发送第二批 30 字节，客户机再次验证完整内容。宿主还要求最终 `ArceOS test suite run OK!`；内容错误、panic、连接中断与超时均向外层返回失败。
 
+### 1.3 无中断通知的诊断
+
+两批接收后，客户机保持日志订阅关闭，先等待已发布日志离开 mailbox，再通过现有
+`task_output().wait_idle()` 排空当前日志和 UART，避免前条输出的 TX IRQ 干扰。随后等待真实
+串口 worker 处于 `Blocked` 且 IRQ waiter 已登记，再经 `publish_deferred_when_blocked_for_test()` 只写入一条 deferred 记录。
+此后不发布普通日志、串口输入或控制命令；本地等待超时必须让 worker 进入真实
+`LogReader::take()` 并取得完整唯一记录。五秒截止前检查消费端的 FI 观测标志，不能用
+发布端入队或日志订阅的直接转发冒充 worker 消费。消费同轮还必须观察到真实
+`wait_timeout()` 返回超时；如果是残留 TX IRQ 等其他唤醒抢先消费，测试立即失败。
+
+用例启用 `fault-injection`，观察接口仅在该 feature 下编译；普通 IRQ 串口通知路径不变。
+成功时打印 `SERIAL_DEFERRED_DIAGNOSTIC_OK`。
+
 ## 2. 执行条件
 
 用例通过 Rust suite 的 feature、runner 和 axbuild 发现器接入，独立于 `all` 内核运行，仅列入 aarch64 矩阵。复用 suite 的 aarch64 build 配置，并通过本目录 `qemu-aarch64.toml` 选择 PL011 virt 机器。宿主目前需要 Linux，以便 QEMU chardev 的 `/dev/stdout` 日志沿现有成功、失败匹配链路传播；无需安装 GDB 客户端。
@@ -30,3 +43,5 @@ cargo xtask arceos test qemu --test-group rust --test-case serial-rx --arch aarc
 ### 2.2 缺陷敏感度
 
 将 `Pl011Irq::handle()` 恢复为基准分支的排空后 `uarticr.set(active)`，同一用例会在已确认 `RXMIS` 置位的注入之后超时，外层返回非零。修复实现排除 RX/RT 的显式清除，两批接收均通过。将第二批预期首字节改错，会在 `serial phase 2, byte 0` 断言失败，外层同样返回非零；验证后必须恢复预期内容。
+
+将 `SerialWorker::run()` 的 diagnostic fallback 临时禁用，同一 deferred 检查应在截止时失败，不能把普通日志或无关 RX 当作进展来源。恢复实现后再运行同一用例。

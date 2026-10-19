@@ -1,6 +1,7 @@
 //! Deterministic handoff checks using the real worker and a backpressured UART.
 
 use core::sync::atomic::AtomicUsize;
+use std::collections::VecDeque;
 
 use super::{
     super::{log_mailbox::LogRecordMeta, *},
@@ -11,6 +12,7 @@ use super::{
 struct Wire {
     room: AtomicUsize,
     bytes: std::sync::Mutex<Vec<u8>>,
+    rx: std::sync::Mutex<VecDeque<RxSample>>,
 }
 
 struct Port(Arc<Wire>);
@@ -23,7 +25,7 @@ impl rdif_serial::UartPort for Port {
         Ok(())
     }
     fn read_rx(&mut self) -> Option<RxSample> {
-        None
+        self.0.rx.lock().unwrap().pop_front()
     }
     fn discard_rx(&mut self) {}
     fn write_tx(&mut self, bytes: &[u8]) -> usize {
@@ -43,6 +45,52 @@ impl rdif_serial::UartPort for Port {
     fn rearm(&mut self, _: SerialEventSet) -> SerialEventSet {
         SerialEventSet::empty()
     }
+}
+
+#[test]
+fn queued_irq_input_precedes_direct_port_input_across_backpressure() {
+    let (runtime, mut worker, wire) = fixture();
+    let mut input = runtime
+        .shared
+        .rx_subscription
+        .lock_irqsave()
+        .take()
+        .unwrap();
+    let (producer, consumer) = spsc::channel(4);
+    worker.irq_rx = consumer;
+    let mut irq = RuntimeIrqPublisher {
+        producer,
+        bridge: runtime.shared.bridge.clone(),
+        stats: runtime.shared.stats.clone(),
+    };
+    let sample = |byte| RxSample {
+        byte: Some(byte),
+        ..RxSample::default()
+    };
+    let mut report = rdif_serial::SerialIrqReport::default();
+    report.rx.try_push(sample(b'v')).unwrap();
+    irq.publish(report);
+    wire.rx.lock().unwrap().extend(b"irtual".map(sample));
+
+    // A port-read decision can precede an IRQ which consumes the first byte.
+    // The actual worker must merge that older IRQ prefix before direct reads,
+    // retaining the same order when the subscriber's ring fills mid-stream.
+    let mut received = Vec::new();
+    for _ in 0..2 {
+        worker.service_rx(RxPath::Port);
+        let mut chunk = [RxItem::default(); 4];
+        let count = input.drain(&mut chunk);
+        for item in &chunk[..count] {
+            match item {
+                RxItem::Byte { byte, .. } => received.push(*byte),
+                RxItem::Overrun => panic!("the bounded input must not overrun"),
+            }
+        }
+    }
+    assert_eq!(received, b"virtual");
+    assert!(worker.pending_rx.is_none());
+    assert!(worker.irq_rx.is_empty());
+    assert!(wire.rx.lock().unwrap().is_empty());
 }
 struct Emergency;
 impl rdif_serial::UartEmergencyTx for Emergency {
@@ -72,6 +120,8 @@ fn fixture() -> (SerialRuntimeHandle, SerialWorker, Arc<Wire>) {
             irq: None,
         },
         owner_cpu: 0,
+        #[cfg(feature = "fault-injection")]
+        deferred_test_consumed: AtomicU8::new(0),
         polling: false,
         port: RawSpinLock::new(Box::new(Port(wire.clone()))),
         register_gate: Arc::new(UartRegisterGate::new(Emergency)),

@@ -49,6 +49,8 @@ AxVisor 板卡性能用例位于 `benchmarks/axvisor`；`board_test_group_roots(
 
 OrangePi IVC 用例的 Starry 内核由同一检出的 `cargo xtask starry build` 生成并打入归档；Zephyr 启动镜像由 `ensure_guest_image_bundles()` 取得，板卡 Linux rootfs 仍需提供匹配的 Starry 用户态 IVC 工作负载。自带镜像和用户态工作负载有各自的来源，不能使用旧 `/guest/starry` 内核替代当前构建产物。
 
+OrangePi 网络吞吐检查选择 `benchmark/network-throughput` 并显式传入 `--board-config board-orangepi-5-plus.toml`，避免应用同时提供 OrangePi 与 AKA 配置时无法确定配置文件。`benchmarks/starry/network-throughput/network-bench.sh` 使用 ostool-server 专用 3000 端口的 HTTP 上传、下载和终态查询接口；每条流只有在 `completed` 且客户端与服务端字节数一致时才计入结果。`STARRY_NETWORK_BENCH_RESULT` 经报告器保存为 `network-throughput/<case>/<direction>`，与原 iperf3 指标分别保留历史。
+
 ### 2.2 数据流
 
 下图说明从统一清单到 Pages 历史更新的数据流。矩阵仍按自己的成功条件选择数据，最后的桥接 job 只把本次增量交给唯一 Pages publisher，不承担累计历史。

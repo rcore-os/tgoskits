@@ -1,132 +1,96 @@
-<h1 align="center">StarryOS</h1>
-
-<p align="center">An experimental monolithic OS based on ArceOS</p>
-
-<div align="center">
-
-[![GitHub Stars](https://img.shields.io/github/stars/Starry-OS/StarryOS?style=for-the-badge)](https://github.com/Starry-OS/StarryOS/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/Starry-OS/StarryOS?style=for-the-badge)](https://github.com/Starry-OS/StarryOS/network)
-[![GitHub License](https://img.shields.io/github/license/Starry-OS/StarryOS?style=for-the-badge)](https://github.com/Starry-OS/StarryOS/blob/main/LICENSE)
-[![Build status](https://img.shields.io/github/check-runs/Starry-OS/StarryOS/main?style=for-the-badge)](https://github.com/Starry-OS/StarryOS/actions)
-
-</div>
+# StarryOS
 
 English | [中文](README_CN.md)
 
-## Supported Architectures
+StarryOS is the Linux-compatible kernel integrated under `os/StarryOS` in the TGOSKits Cargo workspace. The repository root owns the workspace and the `cargo xtask` entry point, so build, run, and test commands in this guide are executed from the root of a TGOSKits checkout.
 
-- [x] RISC-V 64
-- [x] LoongArch64
-- [x] AArch64
-- [ ] x86_64 (work in progress)
+## 1. Workspace Role
 
-## Features
+StarryOS combines shared ArceOS runtime capabilities with Linux-oriented process, memory, signal, filesystem, and syscall layers. Its kernel and domain packages participate in the root workspace rather than forming a standalone workspace inside `os/StarryOS`.
 
-TODO
+### 1.1 Packages
 
-## Quick Start
+The subsystem contains the workspace packages listed below. The kernel package provides the main Linux-compatible kernel implementation, the `starryos` package supplies the bootable target, and the signal and virtual-memory packages expose reusable domain abstractions to the kernel.
 
-### 1. Clone repo
+| Package | Directory | Role |
+| --- | --- | --- |
+| `starry-kernel` | `kernel/` | Linux-compatible kernel implementation |
+| `starryos` | `starryos/` | Bootable StarryOS target |
+| `starry-signal` | `signal/` | Signal-management abstraction |
+| `starry-vm` | `vm/` | Virtual-memory abstraction |
 
-```bash
-git clone --recursive https://github.com/Starry-OS/StarryOS.git
-cd StarryOS
-```
+### 1.2 Source Layout
 
-Or if you have already cloned it without `--recursive` option:
+Target definitions live in `configs/board/`. The checked-in QEMU configurations cover `qemu-aarch64`, `qemu-loongarch64`, `qemu-riscv64`, and `qemu-x86_64`; physical-board configurations are maintained alongside them. The `lkm/` directory contains loadable kernel modules, `docs/` stores subsystem notes, and `scripts/` contains StarryOS-specific helper scripts.
 
-```bash
-cd StarryOS
-git submodule update --init --recursive
-```
+The repository-level `apps/starry/` tree contains applications and scenarios that run on top of the kernel. ArceOS-derived runtime, driver, filesystem, and network crates remain in their workspace directories and are selected through Cargo features.
 
-### 2. Install Prerequisites
+## 2. Quick Start
 
-#### A. Using Docker
+The integrated workflow starts from a TGOSKits checkout. The root container image already provides the Rust toolchain, QEMU, and common cross-compilation dependencies used by CI.
 
-We provide a prebuilt Docker image with all dependencies installed.
+### 2.1 Environment
 
-For users in mainland China, you can use the following image which includes optimizations like Debian packages mirrors and crates.io mirrors:
+Clone the integrated repository and enter its root:
 
 ```bash
-docker pull docker.cnb.cool/starry-os/arceos-build
-docker run -it --rm -v $(pwd):/workspace -w /workspace docker.cnb.cool/starry-os/arceos-build
+git clone https://github.com/rcore-os/tgoskits.git
+cd tgoskits
 ```
 
-For other users, you can use the image hosted on GitHub Container Registry:
+To use the project container, mount the checkout at `/workspace` and keep the repository root as the working directory:
 
 ```bash
-docker pull ghcr.io/arceos-org/arceos-build
-docker run -it --rm -v $(pwd):/workspace -w /workspace ghcr.io/arceos-org/arceos-build
+docker pull ghcr.io/rcore-os/tgoskits-container:latest
+docker run -it --rm \
+  -v "$(pwd)":/workspace \
+  -w /workspace \
+  ghcr.io/rcore-os/tgoskits-container:latest
 ```
 
-**Note:** The `--rm` flag will destroy the container instance upon exit. Any changes made inside the container (outside of the mounted `/workspace` volume) will be lost. Please refer to the [Docker documentation](https://docs.docker.com/) for more advanced usage.
+For a manual environment, follow the repository-level prerequisites in the root `README.md`. A QEMU run also requires the `qemu-system-<arch>` binary for the selected target.
 
-#### B. Manual Setup
+### 2.2 Prepare and Run
 
-##### i. Install System Dependencies
-
-This step may vary depending on your operating system. Here is an example based on Debian:
+Select a board configuration when the default target is not the one you need, prepare the managed rootfs, and start QEMU. The following example uses x86_64:
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential cmake clang qemu-system
+cargo xtask starry defconfig qemu-x86_64
+cargo xtask starry rootfs --arch x86_64
+cargo xtask starry qemu --arch x86_64
 ```
 
-**Note:** Running on LoongArch64 requires QEMU 10. If the QEMU version in your Linux distribution is too old (e.g. Ubuntu), consider building QEMU from [source](https://www.qemu.org/download/).
-
-##### ii. Install Musl Toolchain
-
-1. Download files from [setup-musl releases](https://github.com/arceos-org/setup-musl/releases/tag/prebuilt)
-2. Extract to some path, for example `/opt/riscv64-linux-musl-cross`
-3. Add bin folder to `PATH`, for example:
-
-   ```bash
-   export PATH=/opt/riscv64-linux-musl-cross/bin:$PATH
-   ```
-
-##### iii. Setup Rust toolchain
+The same workflow applies to the other QEMU configurations:
 
 ```bash
-# Install rustup from https://rustup.rs or using your system package manager
-
-# Automatically download components via rustup
-cd StarryOS
-cargo -V
+cargo xtask starry defconfig qemu-aarch64
+cargo xtask starry rootfs --arch aarch64
+cargo xtask starry qemu --arch aarch64
 ```
 
-### 3. Prepare rootfs
+`cargo xtask starry qemu` rebuilds when required. Use `--rootfs <IMAGE>` to select an explicit managed-image alias or path, and `--rootfs-write-policy persist` when changes to the guest disk need to survive a run.
+
+### 2.3 Validation
+
+Use the root task tool for validation rather than a native workspace-wide `cargo test` or `cargo clippy` invocation:
 
 ```bash
-cargo xtask starry rootfs --arch riscv64
-cargo xtask starry rootfs --arch loongarch64
+cargo xtask clippy --package starry-kernel
+cargo xtask test
+cargo xtask starry test qemu --arch x86_64
 ```
 
-This will download rootfs image from [Starry-OS/rootfs](https://github.com/Starry-OS/rootfs/releases) and set up the disk file for running on QEMU.
+`cargo xtask test` runs the packages currently registered in the standard-library test whitelist. For committed changes, `cargo xtask test --since <REF>` narrows that selection to affected packages. QEMU tests exercise the selected runtime path, while package tests and static checks cover their own established boundaries.
 
-### 4. Build and run on QEMU
+## 3. Documentation
 
-```bash
-cargo xtask starry build --arch riscv64
-cargo xtask starry build --arch loongarch64
+The integrated quick start and build references are maintained in the documentation site. Subsystem-specific notes, including OpenRC startup behavior, live under `docs/`.
 
-# Run on QEMU (also rebuilds if necessary)
-cargo xtask starry qemu --arch riscv64
-cargo xtask starry qemu --arch loongarch64
-```
+- [StarryOS quick start](../../docs/docs/quickstart/starryos.md)
+- [StarryOS build overview](../../docs/docs/build/starry/overview.md)
+- [OpenRC startup notes](./docs/openrc.md)
+- [Upstream project](https://github.com/Starry-OS/StarryOS)
 
-Note:
+## 4. License
 
-1. Binary dependencies will be automatically built during `cargo xtask starry build`.
-2. You don't have to rerun `build` every time. `qemu` automatically rebuilds if necessary.
-3. The disk file will **not** be reset between each run. As a result, if you want to switch to another architecture, you must run `cargo xtask starry rootfs --arch <arch>` with the new architecture before `cargo xtask starry qemu --arch <arch>`.
-
-## What next?
-
-Explore the board configs under [`configs/board`](./configs/board), or run `cargo xtask starry --help` for the full command list.
-
-If you're interested in contributing to the project, please see our [Contributing Guide](./CONTRIBUTING.md).
-
-## License
-
-This project is now released under the Apache License 2.0. All modifications and new contributions in our project are distributed under the same license. See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) files for details.
+StarryOS is released under the Apache License 2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).

@@ -2,6 +2,7 @@ mod backing;
 mod fill;
 mod mapping;
 mod pages;
+mod prefetch;
 mod read;
 mod readahead;
 #[cfg(feature = "vfs")]
@@ -24,6 +25,7 @@ use core::{
 use ax_io::prelude::*;
 use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
 use pages::CachedPages;
+pub(crate) use prefetch::start_background_readahead;
 use readahead::ReadAheadState;
 #[cfg(all(feature = "vfs", feature = "ext4"))]
 pub(crate) use reclaim::prune_cached_files;

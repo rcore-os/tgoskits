@@ -6,13 +6,14 @@ use super::{
     },
     *,
 };
+use crate::support::qemu_success::{QemuSuccessOutput, verify_qemu_success_contract};
 
 fn discovered_package(
     name: &str,
     uses_workspace_axtest: bool,
     runtime: KtestRuntime,
     targets: &[(&str, bool)],
-    docs_rs_targets: Option<&[&str]>,
+    test_targets: Option<&[&str]>,
 ) -> DiscoveredKtestPackage {
     DiscoveredKtestPackage {
         name: name.into(),
@@ -26,9 +27,10 @@ fn discovered_package(
                 kind: KtestTargetKind::Test,
                 harness: *harness,
                 required_features: Vec::new(),
+                board_only: false,
             })
             .collect(),
-        docs_rs_targets: docs_rs_targets
+        test_targets: test_targets
             .map(|targets| targets.iter().map(|target| (*target).to_string()).collect()),
     }
 }
@@ -138,7 +140,7 @@ fn workspace_plan_expands_multiple_test_bins_and_docs_rs_arches_in_stable_order(
 }
 
 #[test]
-fn docs_rs_targets_without_supported_bare_metal_target_are_rejected() {
+fn test_targets_without_a_supported_bare_metal_target_are_rejected() {
     let packages = [discovered_package(
         "host-only",
         true,
@@ -257,12 +259,14 @@ fn selects_only_harness_false_test_target() {
                 kind: KtestTargetKind::Lib,
                 harness: true,
                 required_features: Vec::new(),
+                board_only: false,
             },
             KtestTarget {
                 name: "kernel".into(),
                 kind: KtestTargetKind::Test,
                 harness: false,
                 required_features: Vec::new(),
+                board_only: false,
             },
         ],
     };
@@ -282,12 +286,14 @@ fn rejects_ambiguous_harness_false_test_targets_without_explicit_name() {
                 kind: KtestTargetKind::Test,
                 harness: false,
                 required_features: Vec::new(),
+                board_only: false,
             },
             KtestTarget {
                 name: "second".into(),
                 kind: KtestTargetKind::Test,
                 harness: false,
                 required_features: Vec::new(),
+                board_only: false,
             },
         ],
     };
@@ -308,6 +314,7 @@ fn explicit_target_must_be_harness_false_test() {
             kind: KtestTargetKind::Test,
             harness: true,
             required_features: Vec::new(),
+            board_only: false,
         }],
     };
 
@@ -335,6 +342,7 @@ fn prepare_ktest_cargo_replaces_bin_selector_with_test_target() {
         kind: KtestTargetKind::Test,
         harness: false,
         required_features: vec!["extra".into()],
+        board_only: false,
     };
 
     prepare_ktest_cargo(&mut cargo, &target, KtestRuntime::Arceos, false);
@@ -386,6 +394,7 @@ fn prepare_ktest_cargo_preserves_inline_target_rustflags() {
         kind: KtestTargetKind::Test,
         harness: false,
         required_features: Vec::new(),
+        board_only: false,
     };
 
     prepare_ktest_cargo(&mut cargo, &target, KtestRuntime::Arceos, true);
@@ -434,5 +443,263 @@ fn coverage_paths_are_isolated_by_package_test_and_target() {
             .unwrap()
             .to_string_lossy()
             .contains("demo-first-x86_64-unknown-none")
+    );
+}
+
+#[test]
+fn declared_ktest_targets_win_over_the_docs_rs_fallback() {
+    let metadata = serde_json::json!({
+        "axtest": { "runtime": "axvisor", "target_triples": [AARCH64_TARGET], "targets": { "remote": { "board_only": true } } },
+        "docs": { "rs": { "targets": ["x86_64-unknown-linux-gnu"] } },
+    });
+
+    let axtest = axtest_metadata("declared", &metadata).unwrap();
+
+    assert_eq!(axtest.runtime, Some(KtestRuntime::Axvisor));
+    assert_eq!(axtest.board_only.get("remote"), Some(&true));
+    assert_eq!(
+        axtest.test_targets.as_deref(),
+        Some(&[AARCH64_TARGET.to_string()][..])
+    );
+
+    // Without a declared list the host-doc targets stay the fallback, and the
+    // per-target flag table does not declare a target list of its own.
+    let metadata = serde_json::json!({
+        "axtest": { "targets": { "remote": { "board_only": true } } },
+        "docs": { "rs": { "targets": [AARCH64_TARGET] } },
+    });
+
+    let axtest = axtest_metadata("fallback", &metadata).unwrap();
+
+    assert_eq!(axtest.runtime, None);
+    assert_eq!(
+        axtest.test_targets.as_deref(),
+        Some(&[AARCH64_TARGET.to_string()][..])
+    );
+    assert_eq!(axtest.board_only.get("remote"), Some(&true));
+    assert_eq!(axtest.board_only.get("local"), None);
+
+    // A package that declares neither list runs on the default architecture.
+    assert_eq!(
+        axtest_metadata("generic", &serde_json::json!({})).unwrap(),
+        AxtestMetadata::default()
+    );
+}
+
+#[test]
+fn malformed_axtest_metadata_is_rejected_instead_of_guessed() {
+    for metadata in [
+        serde_json::json!({ "axtest": { "targets": AARCH64_TARGET } }),
+        serde_json::json!({ "axtest": { "target_triples": [1] } }),
+        serde_json::json!({ "axtest": { "targets": { "remote": { "board_only": "yes" } } } }),
+        serde_json::json!({ "axtest": { "runtime": "kernel" } }),
+        serde_json::json!({ "docs": { "rs": { "targets": "x86_64-unknown-none" } } }),
+    ] {
+        let error = axtest_metadata("broken", &metadata).unwrap_err();
+
+        assert!(
+            error.to_string().contains("broken"),
+            "unexpected error for {metadata}: {error}"
+        );
+    }
+}
+
+/// Synthetic metadata for one package with a QEMU target and a board-only
+/// target; the names are placeholders for the discovery rules under test.
+fn mixed_runtime_package() -> DiscoveredKtestPackage {
+    let mut package = discovered_package(
+        "mixed",
+        true,
+        KtestRuntime::Axvisor,
+        &[("local", false), ("remote", false)],
+        Some(&[X86_64_TARGET]),
+    );
+    package.targets[1].board_only = true;
+    package
+}
+
+/// Asserts that one completion condition accepts a finished suite and rejects
+/// an unfinished or empty one.
+fn assert_suite_gate(patterns: &[String]) {
+    assert_eq!(
+        patterns.len(),
+        1,
+        "the suite gate must be the only success condition"
+    );
+    let gate = regex::Regex::new(&patterns[0]).unwrap();
+
+    assert!(gate.is_match(
+        "AXTEST_CASE status=pass module=demo name=case\nAXTEST_SUMMARY pass=2 fail=0 skip=0 \
+         total=2\nAXTEST_SUITE_OK\n"
+    ));
+    // Use the runner's streaming DFA as well as the test regex engine. Some
+    // regex features accepted by `regex` cannot compile into that DFA.
+    let output = QemuSuccessOutput::new(patterns);
+    output.append(b"AXTEST_CASE status=pass module=demo name=case\n");
+    output.append(b"AXTEST_SUMMARY pass=1 fail=0 skip=0 total=1\n");
+    output.append(b"AXTEST_SUITE_OK\n");
+    verify_qemu_success_contract(Ok(()), Some(&output)).unwrap();
+    assert!(
+        !gate.is_match("GUEST_PASS\n"),
+        "a guest success is not a suite result"
+    );
+    assert!(
+        !gate.is_match("AXTEST_SUMMARY pass=0 fail=0 skip=1 total=1\nAXTEST_SUITE_OK\n"),
+        "a suite without a passing case is not a result"
+    );
+    assert!(
+        !gate.is_match("AXTEST_SUMMARY pass=1 fail=0 skip=0 total=1\nAXTEST_SUITE_OK\n"),
+        "a summary cannot replace an executed passing case"
+    );
+    assert!(
+        !gate.is_match("AXTEST_SUITE_OK\nAXTEST_SUMMARY pass=1 fail=0 skip=0 total=1\n"),
+        "the summary must be verified before the final marker"
+    );
+}
+
+#[test]
+fn board_only_targets_are_never_implicit_qemu_work() {
+    let plan = build_qemu_plan(&[mixed_runtime_package()], &QemuPlanSelector::default()).unwrap();
+
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].test, "local");
+
+    let mut board_package = discovered_package(
+        "remote-only",
+        true,
+        KtestRuntime::Axvisor,
+        &[("remote", false)],
+        Some(&[X86_64_TARGET]),
+    );
+    board_package.targets[0].board_only = true;
+
+    let plan = build_qemu_plan(&[board_package], &QemuPlanSelector::default()).unwrap();
+
+    assert!(
+        plan.is_empty(),
+        "a package that only owns board-only targets is not a manifest error"
+    );
+}
+
+#[test]
+fn explicit_test_selection_rejects_board_only_targets_and_keeps_others() {
+    let packages = [mixed_runtime_package()];
+    let selector = QemuPlanSelector {
+        packages: vec!["mixed".into()],
+        tests: vec!["remote".into()],
+        ..QemuPlanSelector::default()
+    };
+
+    let error = build_qemu_plan(&packages, &selector).unwrap_err();
+
+    assert!(error.to_string().contains("board-only"));
+    assert!(error.to_string().contains("ktest board"));
+    assert!(error.to_string().contains("remote"));
+
+    let selector = QemuPlanSelector {
+        tests: vec!["local".into()],
+        ..QemuPlanSelector::default()
+    };
+    let plan = build_qemu_plan(&packages, &selector).unwrap();
+
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].test, "local");
+}
+
+#[test]
+fn qemu_markers_make_the_suite_gate_the_only_success_condition() {
+    let mut qemu = QemuConfig {
+        shell_check_steps: vec![ShellCheckStep {
+            success_regex: Some(vec!["GUEST_PASS".into(), AXTEST_SUITE_OK.into()]),
+            ..ShellCheckStep::default()
+        }],
+        ..QemuConfig::default()
+    };
+
+    apply_axtest_qemu_markers(&mut qemu);
+
+    assert_eq!(qemu.shell_check_steps.len(), 1);
+    let patterns = qemu.shell_check_steps[0].success_regex.clone().unwrap();
+    assert_suite_gate(&patterns);
+    for pattern in [PANIC_FAIL, AXTEST_SUITE_FAIL, AXTEST_CASE_FAIL] {
+        assert!(qemu.fail_regex.iter().any(|candidate| candidate == pattern));
+    }
+}
+
+#[test]
+fn board_markers_keep_boot_steps_and_add_a_mandatory_suite_gate() {
+    let mut board = BoardRunConfig {
+        shell_check_steps: vec![ShellCheckStep {
+            shell_prefix: Some("root@board:~#".into()),
+            shell_cmd: Some("run-guest".into()),
+            success_regex: Some(vec!["GUEST_PASS".into()]),
+            fail_regex: Some(vec!["GUEST_FAIL".into()]),
+            ..ShellCheckStep::default()
+        }],
+        fail_regex: vec!["custom".into()],
+        ..BoardRunConfig::default()
+    };
+
+    apply_axtest_board_markers(&mut board);
+
+    assert_eq!(board.shell_check_steps.len(), 2);
+    let boot_step = &board.shell_check_steps[0];
+    assert_eq!(boot_step.shell_cmd.as_deref(), Some("run-guest"));
+    assert_eq!(
+        boot_step.success_regex.as_deref(),
+        Some(&["GUEST_PASS".to_string()][..])
+    );
+    let gate_step = &board.shell_check_steps[1];
+    assert!(gate_step.shell_cmd.is_none());
+    let patterns = gate_step.success_regex.clone().unwrap();
+    assert_suite_gate(&patterns);
+    for pattern in [PANIC_FAIL, AXTEST_SUITE_FAIL, AXTEST_CASE_FAIL, "custom"] {
+        assert!(
+            board
+                .fail_regex
+                .iter()
+                .any(|candidate| candidate == pattern)
+        );
+    }
+    assert_eq!(
+        boot_step.fail_regex.as_deref(),
+        Some(&["GUEST_FAIL".to_string()][..])
+    );
+}
+
+#[tokio::test]
+async fn plan_failures_aggregate_unit_and_resource_preparation_errors() {
+    let units = ["first", "middle", "last"]
+        .into_iter()
+        .map(|test| KtestExecutionUnit {
+            package: "mixed".into(),
+            test: test.into(),
+            runtime: KtestRuntime::Axvisor,
+            arch: "x86_64".into(),
+            target: X86_64_TARGET.into(),
+        })
+        .collect::<Vec<_>>();
+
+    let failures = run_plan_units(units, true, |unit| async move {
+        anyhow::ensure!(
+            unit.test != "middle",
+            "host_prepare `prepare.py` failed with status exit status: 3"
+        );
+        Ok(())
+    })
+    .await;
+
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].unit.test, "middle");
+    assert!(
+        failures[0].error.to_string().contains("host_prepare"),
+        "the outermost summary must carry the preparation failure"
+    );
+    assert!(finish_qemu_plan(Vec::new()).is_ok());
+    let error = finish_qemu_plan(failures).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("1 axtest QEMU execution unit(s) failed")
     );
 }

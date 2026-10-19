@@ -26,7 +26,10 @@ pub(super) struct DiscoveredKtestPackage {
     pub(super) uses_workspace_axtest: bool,
     pub(super) runtime: KtestRuntime,
     pub(super) targets: Vec<KtestTarget>,
-    pub(super) docs_rs_targets: Option<Vec<String>>,
+    /// Kernel-test target triples: the declared `[package.metadata.axtest]`
+    /// list, or the `[package.metadata.docs.rs].targets` fallback. `None` means
+    /// neither was declared, and a generic crate then runs on x86_64 only.
+    pub(super) test_targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -181,30 +184,51 @@ fn selected_test_targets<'a>(
     package: &'a DiscoveredKtestPackage,
     requested: &[String],
 ) -> anyhow::Result<Vec<&'a KtestTarget>> {
-    let mut targets = package
+    let harness_false = package
         .targets
         .iter()
         .filter(|target| super::is_harness_false_test(target))
         .collect::<Vec<_>>();
-    if targets.is_empty() {
+    if harness_false.is_empty() {
         bail!(
             "package `{}` declares workspace axtest but has no harness=false [[test]] target in {}",
             package.name,
             package.manifest_path.display()
         );
     }
-    if !requested.is_empty() {
-        targets.retain(|target| requested.contains(&target.name));
-    }
+    let mut targets = if requested.is_empty() {
+        // Targets marked `board_only` need the board runner, so the workspace
+        // QEMU plan never selects them implicitly.
+        harness_false
+            .into_iter()
+            .filter(|target| !target.board_only)
+            .collect::<Vec<_>>()
+    } else {
+        let selected = harness_false
+            .into_iter()
+            .filter(|target| requested.contains(&target.name))
+            .collect::<Vec<_>>();
+        if let Some(target) = selected.iter().find(|target| target.board_only) {
+            bail!(
+                "test target `{}` in package `{}` is board-only; run it with `cargo xtask ktest \
+                 board -p {} --test {} -b <BOARD>`",
+                target.name,
+                package.name,
+                package.name,
+                target.name
+            );
+        }
+        selected
+    };
     targets.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(targets)
 }
 
 fn supported_targets(package: &DiscoveredKtestPackage) -> anyhow::Result<Vec<String>> {
-    let Some(docs_targets) = package.docs_rs_targets.as_ref() else {
+    let Some(declared_targets) = package.test_targets.as_ref() else {
         return Ok(vec![X86_64_TARGET.to_string()]);
     };
-    let mut targets = docs_targets
+    let mut targets = declared_targets
         .iter()
         .filter(|target| arch_for_target(target).is_ok())
         .cloned()
@@ -213,8 +237,7 @@ fn supported_targets(package: &DiscoveredKtestPackage) -> anyhow::Result<Vec<Str
     targets.dedup();
     if targets.is_empty() {
         bail!(
-            "package `{}` has [package.metadata.docs.rs].targets but no supported bare-metal \
-             target",
+            "package `{}` declares ktest targets but no supported bare-metal target",
             package.name
         );
     }

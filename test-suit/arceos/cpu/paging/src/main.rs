@@ -2,6 +2,8 @@
 #![no_main]
 extern crate ax_std as std;
 
+#[cfg(all(target_arch = "aarch64", not(feature = "hv")))]
+mod alignment;
 mod cache;
 
 #[cfg(target_arch = "x86_64")]
@@ -100,6 +102,8 @@ fn main() {
     check_boot_read_permission();
     #[cfg(all(target_arch = "loongarch64", feature = "boot-trap"))]
     check_boot_trap();
+    #[cfg(all(target_arch = "aarch64", not(feature = "hv")))]
+    alignment::run();
     cache::run();
     std::println!("CPU_PAGING_OK");
     std::process::exit(0);

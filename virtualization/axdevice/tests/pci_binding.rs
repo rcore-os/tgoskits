@@ -615,27 +615,66 @@ fn legacy_register_bundle_rejects_pci_carrying_bundles() {
     assert!(error.to_string().contains("require resolved graph-node"));
 }
 
-/// Two endpoints behind one host route through their own functions and BAR
-/// indexes; dispatch never crosses objects.
-/// Read log shared between a tagged endpoint and its assertions.
-type SharedReadLog = Arc<Mutex<Vec<(u64, PciBarAccess)>>>;
+/// One BAR access as a routed endpoint received it, with the BAR metadata the
+/// binding resolved for it and the payload of a write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InterceptedAccess {
+    bdf: PciBdf,
+    bar: PciBarIndex,
+    offset: u64,
+    width: AccessWidth,
+    written: Option<u64>,
+}
 
+/// Access log shared between a tagged endpoint and its assertions.
+type SharedAccessLog = Arc<Mutex<Vec<InterceptedAccess>>>;
+
+/// Builds the expectation for one access routed to `function`.
+fn expected_access(
+    function: &ResolvedPciFunction,
+    bar: u8,
+    offset: u64,
+    width: AccessWidth,
+    written: Option<u64>,
+) -> InterceptedAccess {
+    InterceptedAccess {
+        bdf: function.bdf(),
+        bar: PciBarIndex::new(bar).unwrap(),
+        offset,
+        width,
+        written,
+    }
+}
+
+/// Two endpoints behind one host route through their own functions and BAR
+/// indexes; reads and writes dispatch with the routed endpoint, BAR, offset,
+/// width and payload, and never cross objects.
 #[test]
 fn two_endpoints_route_through_their_own_functions_and_bar_indexes() {
     struct Tagged {
         tag: u64,
-        reads: SharedReadLog,
+        intercepted: SharedAccessLog,
     }
     impl Tagged {
-        fn new(tag: u64) -> (Arc<Self>, SharedReadLog) {
-            let reads = Arc::new(Mutex::new(Vec::new()));
+        fn new(tag: u64) -> (Arc<Self>, SharedAccessLog) {
+            let intercepted = Arc::new(Mutex::new(Vec::new()));
             (
                 Arc::new(Self {
                     tag,
-                    reads: Arc::clone(&reads),
+                    intercepted: Arc::clone(&intercepted),
                 }),
-                reads,
+                intercepted,
             )
+        }
+        /// Records one routed BAR access with its payload.
+        fn intercept(&self, access: PciBarAccess, written: Option<u64>) {
+            self.intercepted.lock().unwrap().push(InterceptedAccess {
+                bdf: access.bdf(),
+                bar: access.bar(),
+                offset: access.offset(),
+                width: access.width(),
+                written,
+            });
         }
     }
     impl Device for Tagged {
@@ -667,15 +706,16 @@ fn two_endpoints_route_through_their_own_functions_and_bar_indexes() {
             access: PciBarAccess,
             _context: &mut dyn PciEndpointContext,
         ) -> DeviceResult<u64> {
-            self.reads.lock().unwrap().push((self.tag, access));
+            self.intercept(access, None);
             Ok(self.tag << 16 | access.offset())
         }
         fn write_bar(
             &self,
-            _access: PciBarAccess,
-            _value: u64,
+            access: PciBarAccess,
+            value: u64,
             _context: &mut dyn PciEndpointContext,
         ) -> DeviceResult {
+            self.intercept(access, Some(value));
             Ok(())
         }
     }
@@ -711,8 +751,8 @@ fn two_endpoints_route_through_their_own_functions_and_bar_indexes() {
         }
     }
 
-    let (alpha, alpha_reads) = Tagged::new(1);
-    let (beta, beta_reads) = Tagged::new(2);
+    let (alpha, alpha_intercepted) = Tagged::new(1);
+    let (beta, beta_intercepted) = Tagged::new(2);
 
     let mut graph = DeviceGraphBuilder::new();
     let root_slot: RootSlot = Arc::new(Mutex::new(None));
@@ -769,39 +809,52 @@ fn two_endpoints_route_through_their_own_functions_and_bar_indexes() {
         .unwrap();
     }
 
+    // The read payload encodes the serving endpoint tag and the routed offset.
     assert_eq!(
-        binding
-            .read_bar(alpha_bar.address() + 4, AccessWidth::Dword)
-            .unwrap()
-            >> 16,
-        1
+        binding.read_bar(alpha_bar.address() + 4, AccessWidth::Dword),
+        Ok((1 << 16) | 4)
     );
     assert_eq!(
-        binding
-            .read_bar(beta_bar2.address() + 8, AccessWidth::Dword)
-            .unwrap()
-            >> 16,
-        2
+        binding.read_bar(beta_bar2.address() + 8, AccessWidth::Dword),
+        Ok((2 << 16) | 8)
     );
     assert_eq!(
-        binding.write_bar(beta_bar4.address(), AccessWidth::Byte, 0),
+        binding.write_bar(alpha_bar.address() + 0x10, AccessWidth::Word, 0x1234),
+        Ok(())
+    );
+    assert_eq!(
+        binding.write_bar(beta_bar2.address() + 0x24, AccessWidth::Dword, 0xdead_beef),
+        Ok(())
+    );
+    assert_eq!(
+        binding.write_bar(beta_bar4.address() + 0x0c, AccessWidth::Byte, 0x5a),
         Ok(())
     );
 
-    assert_eq!(alpha_reads.lock().unwrap().len(), 1);
+    // Each endpoint owns only its own BARs: an access routed to the sibling
+    // endpoint or carrying the wrong BAR, offset, width, or payload fails here.
     assert_eq!(
-        alpha_reads.lock().unwrap()[0].1.bar(),
-        PciBarIndex::new(0).unwrap()
+        *alpha_intercepted.lock().unwrap(),
+        vec![
+            expected_access(alpha_fn, 0, 4, AccessWidth::Dword, None),
+            expected_access(alpha_fn, 0, 0x10, AccessWidth::Word, Some(0x1234)),
+        ]
     );
-    // The BAR4 access above is a write; Tagged only records reads.
-    assert_eq!(beta_reads.lock().unwrap().len(), 1);
     assert_eq!(
-        beta_reads.lock().unwrap()[0].1.bar(),
-        PciBarIndex::new(2).unwrap()
+        *beta_intercepted.lock().unwrap(),
+        vec![
+            expected_access(beta_fn, 2, 8, AccessWidth::Dword, None),
+            expected_access(beta_fn, 2, 0x24, AccessWidth::Dword, Some(0xdead_beef)),
+            expected_access(beta_fn, 4, 0x0c, AccessWidth::Byte, Some(0x5a)),
+        ]
     );
     drop(runtime);
     assert_eq!(
         binding.read_bar(alpha_bar.address(), AccessWidth::Byte),
+        Err(DeviceError::NotFound)
+    );
+    assert_eq!(
+        binding.write_bar(beta_bar4.address(), AccessWidth::Byte, 0x7f),
         Err(DeviceError::NotFound)
     );
 }

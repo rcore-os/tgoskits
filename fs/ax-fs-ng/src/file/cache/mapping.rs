@@ -34,12 +34,15 @@ impl CachedFile {
                 if let Some(page) = cache.get_mut(&number) {
                     let paddr = page.paddr()?;
                     page.pins = page.pins.checked_add(1).ok_or(VfsError::ValueOverflow)?;
-                    return Ok(Some(CachedPagePin {
+                    let pin = CachedPagePin {
                         shared: self.shared.clone(),
                         page_number: number,
                         paddr,
                         backing: page.backing(),
-                    }));
+                    };
+                    drop(cache);
+                    self.prefetch_after_read(number);
+                    return Ok(Some(pin));
                 }
             }
             self.populate_page_window(file, number, window)?;

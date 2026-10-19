@@ -109,7 +109,6 @@ members = [
     "os/arceos/modules/axruntime",
     "os/arceos/modules/axsync",
     "os/arceos/tools/bwbench_client",
-    "os/arceos/tools/deptool",
     "os/arceos/tools/raspi4/chainloader",
     "os/arceos/ulib/*",
     "os/axvisor",

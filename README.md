@@ -25,14 +25,24 @@ TGOSKits brings multiple standalone subprojects into the root repository through
 
 ```text
 tgoskits/
+├── apps/                      # ArceOS and StarryOS application packages
+├── benchmarks/                # benchmark suites and reports
+├── bootloader/                # UEFI and platform bootloaders
 ├── components/                # reusable component crates
+├── container/                 # CI and development container images
+├── drivers/                   # reusable drivers and driver subsystems
+├── fs/                        # filesystem crates
+├── memory/                    # memory-management crates
+├── net/                       # networking crates
 ├── os/
 │   ├── arceos/                # ArceOS modular kernel
 │   ├── StarryOS/              # StarryOS Linux-compatible OS
 │   └── axvisor/               # Axvisor Type-I Hypervisor
-├── platform/                  # platform and board support crates
-├── drivers/                   # reusable drivers and driver subsystems
+├── platforms/                 # platform and board support crates
+├── nixos-tests/               # NixOS integration tests
 ├── test-suit/                 # system-level test cases
+├── tools/                     # repository and development tools
+├── virtualization/            # virtualization support crates
 ├── xtask/                     # unified root command entry
 ├── scripts/                   # repository maintenance, test, and sync scripts
 └── docs/                      # Docusaurus documentation site
@@ -94,7 +104,7 @@ cargo xtask starry qemu --arch aarch64
 cargo xtask axvisor qemu --arch aarch64
 ```
 
-If you only want the shortest path to a successful run, start with the default ArceOS Hello World app. Pass `--package arceos-shell` when you specifically need the interactive Shell. For more systems, architecture combinations, and QEMU options, see the [quick start overview](https://rcore-os.cn/tgoskits/docs/quickstart/overview) and [run and QEMU](https://rcore-os.cn/tgoskits/docs/build/run).
+If you only want the shortest path to a successful run, start with the default ArceOS Hello World app. Pass `--package arceos-shell` when you specifically need the interactive Shell. For more systems, architecture combinations, and QEMU options, see the [quick start overview](https://rcore-os.cn/tgoskits/docs/quickstart/overview) and the [command reference](https://rcore-os.cn/tgoskits/docs/build/commands).
 
 ## 4. Contributing
 

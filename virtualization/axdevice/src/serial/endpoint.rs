@@ -65,10 +65,6 @@ impl SerialEndpoint {
         self.refresh_irq(irq_level)
     }
 
-    pub(super) fn write(&self, bytes: &[u8]) {
-        self.backend.write(bytes);
-    }
-
     pub(super) fn try_write(&self, bytes: &[u8]) -> usize {
         self.backend.try_write(bytes).min(bytes.len())
     }

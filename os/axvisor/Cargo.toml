@@ -59,15 +59,7 @@ targets = ["aarch64-unknown-none-softfloat"]
 default = ["ax-std/net"]
 host-xtask = []
 axtest = []
-vpci-test-device = ["axvm/vpci-test-device"]
 sstc = ["axvm/sstc"]
-test-virq-delivery = []
-vcpu-perf-load = []
-# Benchmark-local FIFO policy for the vCPU host task. Only the dedicated
-# Rust-Shyper task-switch benchmark board build enables it; it selects an
-# explicit FIFO policy at VM creation time, and default AxVisor builds keep the
-# Fair vCPU host task policy.
-bench-fifo-vcpu-policy = []
 # Web control plane: HTTP API, browser console, and the optional dashboard.
 web = [
   "ax-std/net",

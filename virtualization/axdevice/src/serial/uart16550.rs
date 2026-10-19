@@ -5,7 +5,11 @@ use alloc::sync::Arc;
 use ax_sync::{Mutex, MutexGuard};
 use axdevice_base::{AccessWidth, DeviceError, DeviceResult, IrqLine};
 
-use super::{SerialBackend, SerialEndpoint, endpoint::RX_POLL_BUFFER_SIZE, fifo::RxFifo};
+use super::{
+    SerialBackend, SerialEndpoint,
+    endpoint::RX_POLL_BUFFER_SIZE,
+    fifo::{ByteFifo, RxFifo},
+};
 
 const REG_RBR_THR_DLL: usize = 0;
 const REG_IER_DLM: usize = 1;
@@ -40,6 +44,7 @@ const MSR_DSR: u8 = 1 << 5;
 const MSR_CTS: u8 = 1 << 4;
 
 const FIFO_CAPACITY: usize = 256;
+const TX_FIFO_CAPACITY: usize = 16;
 
 struct Uart16550State {
     ier: u8,
@@ -51,6 +56,10 @@ struct Uart16550State {
     dlm: u8,
     overrun: bool,
     tx_interrupt_pending: bool,
+    tx_fifo: ByteFifo<TX_FIFO_CAPACITY>,
+    tx_drain_active: bool,
+    tx_drain_requested: bool,
+    tx_reset_during_drain: bool,
     rx_fifo: RxFifo<FIFO_CAPACITY>,
 }
 
@@ -66,6 +75,10 @@ impl Uart16550State {
             dlm: 0,
             overrun: false,
             tx_interrupt_pending: true,
+            tx_fifo: ByteFifo::new(),
+            tx_drain_active: false,
+            tx_drain_requested: false,
+            tx_reset_during_drain: false,
             rx_fifo: RxFifo::new(),
         }
     }
@@ -81,7 +94,10 @@ impl Uart16550State {
     }
 
     fn line_status(&mut self) -> u8 {
-        let mut status = LSR_THR_EMPTY | LSR_TRANSMITTER_EMPTY;
+        let mut status = 0;
+        if self.tx_empty() {
+            status |= LSR_THR_EMPTY | LSR_TRANSMITTER_EMPTY;
+        }
         if !self.rx_fifo.is_empty() {
             status |= LSR_DATA_READY;
         }
@@ -89,6 +105,10 @@ impl Uart16550State {
             status |= LSR_OVERRUN_ERROR;
         }
         status
+    }
+
+    const fn tx_empty(&self) -> bool {
+        self.tx_fifo.is_empty() && !self.tx_drain_active
     }
 
     const fn fifo_interrupt_bits(&self) -> u8 {
@@ -102,7 +122,7 @@ impl Uart16550State {
     const fn pending_interrupt(&self) -> u8 {
         if self.ier & IER_RX_AVAILABLE != 0 && !self.rx_fifo.is_empty() {
             IIR_RX_AVAILABLE
-        } else if self.ier & IER_THR_EMPTY != 0 && self.tx_interrupt_pending {
+        } else if self.ier & IER_THR_EMPTY != 0 && self.tx_interrupt_pending && self.tx_empty() {
             IIR_THR_EMPTY
         } else {
             IIR_NO_INTERRUPT
@@ -138,11 +158,58 @@ impl Uart16550 {
         self.state.lock()
     }
 
+    fn drain_tx(&self) -> DeviceResult {
+        {
+            let mut state = self.state();
+            if state.tx_drain_active {
+                // A poll may carry the only capacity-release notification.
+                // Its request belongs to the active drainer until completion.
+                state.tx_drain_requested = true;
+                return Ok(());
+            }
+            if state.tx_fifo.is_empty() {
+                return Ok(());
+            }
+            state.tx_drain_active = true;
+        }
+
+        loop {
+            let mut byte = [0];
+            {
+                let mut state = self.state();
+                if state.tx_fifo.copy_to(&mut byte) == 0 {
+                    state.tx_drain_active = false;
+                    state.tx_drain_requested = false;
+                    state.tx_interrupt_pending = true;
+                    drop(state);
+                    return self.refresh_irq();
+                }
+                state.tx_reset_during_drain = false;
+            }
+
+            // Only one byte is in flight, like a shift register. FCR may clear
+            // queued bytes during this callback, but cannot retract this byte.
+            let accepted = self.endpoint.try_write(&byte);
+            let mut state = self.state();
+            let reset = core::mem::take(&mut state.tx_reset_during_drain);
+            if !reset {
+                state.tx_fifo.discard(accepted);
+            }
+            let requested = core::mem::take(&mut state.tx_drain_requested);
+            if accepted == 0 && !reset && !requested {
+                state.tx_drain_active = false;
+                drop(state);
+                return self.refresh_irq();
+            }
+        }
+    }
+
     /// Polls backend input into the receive FIFO and refreshes the level IRQ.
     ///
     /// Concurrent polls wait for the active backend read. A backend may access
     /// registers, but must not recursively poll the UART from its read callback.
     pub fn poll(&self) -> DeviceResult {
+        self.drain_tx()?;
         self.fill_rx(self.endpoint.lock_rx())
     }
 
@@ -215,19 +282,29 @@ impl Uart16550 {
         }
 
         let byte = value as u8;
-        let (output, completes_tx) = {
+        let mut drain_tx = false;
+        let mut completes_loopback = false;
+        // Publish the consumed level before a concurrent drainer can publish
+        // completion, so an edge-triggered controller can rearm THRE.
+        let consumed_result = self.endpoint.refresh_irq(|| {
             let mut state = self.state();
-            let mut output = None;
-            let mut completes_tx = false;
             match register {
                 REG_RBR_THR_DLL if state.dlab() => state.dll = byte,
                 REG_RBR_THR_DLL => {
                     state.tx_interrupt_pending = false;
-                    completes_tx = true;
                     if state.mcr & MCR_LOOPBACK != 0 {
                         state.push_rx(byte);
+                        completes_loopback = true;
                     } else {
-                        output = Some(byte);
+                        // This model retains at most 16 queued TX bytes and,
+                        // with FIFOs disabled, admits a byte only when empty.
+                        // Excess writes discard the newest byte, preserving
+                        // queued output. Guests must honor THRE and FIFO depth;
+                        // host backpressure does not create unbounded storage.
+                        if state.fcr & FCR_ENABLE_FIFO != 0 || state.tx_fifo.is_empty() {
+                            state.tx_fifo.push(byte);
+                        }
+                        drain_tx = true;
                     }
                 }
                 REG_IER_DLM if state.dlab() => state.dlm = byte,
@@ -235,7 +312,8 @@ impl Uart16550 {
                     let old = state.ier;
                     state.ier = byte & 0x0f;
                     if (old ^ state.ier) & IER_THR_EMPTY != 0 {
-                        state.tx_interrupt_pending = state.ier & IER_THR_EMPTY != 0;
+                        state.tx_interrupt_pending =
+                            state.ier & IER_THR_EMPTY != 0 && state.tx_empty();
                     }
                 }
                 REG_IIR_FCR => {
@@ -245,6 +323,8 @@ impl Uart16550 {
                         state.overrun = false;
                     }
                     if byte & FCR_CLEAR_TX != 0 {
+                        state.tx_fifo.clear();
+                        state.tx_reset_during_drain = state.tx_drain_active;
                         state.tx_interrupt_pending = true;
                     }
                 }
@@ -254,14 +334,12 @@ impl Uart16550 {
                 REG_SCR => state.scr = byte,
                 _ => {}
             }
-            (output, completes_tx)
-        };
-
-        let consumed_result = self.refresh_irq();
-        if let Some(byte) = output {
-            self.endpoint.write(core::slice::from_ref(&byte));
+            state.irq_asserted()
+        });
+        if drain_tx {
+            return consumed_result.and(self.drain_tx());
         }
-        if !completes_tx {
+        if !completes_loopback {
             if register == REG_IIR_FCR
                 && byte & FCR_CLEAR_RX != 0
                 && let Some(read) = self.endpoint.try_lock_rx()
@@ -273,8 +351,7 @@ impl Uart16550 {
             return consumed_result;
         }
 
-        // SerialBackend::write is synchronous and has no completion callback. Treat its
-        // return (or the loopback enqueue above) as the transmit-complete boundary. The
+        // Loopback completes when the byte reaches the receive FIFO. The
         // explicit low/high sequence is required even though no guest instruction runs
         // between the two phases: an edge-configured IOAPIC must observe THRE being
         // consumed before it can deliver the next empty interrupt. Deferring this phase

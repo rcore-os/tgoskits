@@ -272,6 +272,7 @@ mod tests {
 
     fn test_config(probe_script: PathBuf) -> AxvisorHttpProbeConfig {
         AxvisorHttpProbeConfig {
+            nic_model: "virtio-net-pci".to_string(),
             guest_port: 8080,
             connect_timeout_secs: 120,
             request_timeout_secs: 5,

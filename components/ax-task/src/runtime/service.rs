@@ -25,4 +25,7 @@ pub(crate) mod ktimer;
 
 pub(crate) mod reclaim;
 
+#[cfg(feature = "fault-injection")]
+pub use reclaim::deferred_task_work_service_thread;
+
 pub use crate::sched::system::{DeferredTaskWorkBatch, OwnedThreadReapError};

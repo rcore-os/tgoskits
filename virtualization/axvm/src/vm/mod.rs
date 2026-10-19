@@ -39,6 +39,8 @@ pub struct VcpuSnapshot {
     pub id: usize,
     pub state: VmVcpuState,
     pub phys_cpu_set: Option<usize>,
+    /// Base policy sampled from the active host task; `None` without an owner task.
+    pub host_base_policy: Option<crate::SchedulePolicy>,
 }
 
 pub(crate) fn width_mask(width: AccessWidth) -> usize {
@@ -253,6 +255,7 @@ impl AxVM {
                 id: cpu.id(),
                 state: cpu.state(),
                 phys_cpu_set: cpu.phys_cpu_set(),
+                host_base_policy: None,
             })
             .collect()
     }

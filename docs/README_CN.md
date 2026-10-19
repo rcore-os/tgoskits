@@ -33,7 +33,7 @@
 
 推荐环境：
 
-1. Node.js 18 或更高版本
+1. Node.js 20 或更高版本（`package.json` 与 Docusaurus 依赖声明的最低版本；CI 使用 Node.js 24）
 2. 执行 `corepack enable`，或自行安装全局 `yarn`
 3. 本地克隆 `https://github.com/rcore-os/tgoskits`
 
@@ -106,7 +106,7 @@ OSs 菜单进入 `/oss`，由 `src/pages/oss.js` 按 ArceOS、AxVisor、Starry �
 
 当前文档站点发布到 GitHub Pages：
 
-- 站点地址：`https://rcore-os.github.io/tgoskits/`
+- 站点地址：`https://rcore-os.cn/tgoskits/`
 
 仓库已经配置 GitHub Actions 自动部署文档。Pages 工作流会在 `docs/` 目录中构建 Docusaurus 站点，并将生成的 `docs/build` 发布到 GitHub Pages。
 

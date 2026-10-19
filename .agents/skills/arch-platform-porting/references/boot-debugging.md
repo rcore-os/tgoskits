@@ -78,6 +78,14 @@ AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步
 
 替换显式 `dtb_path` 的 UART 节点时，保留客户机 DTB 中的中断类型、编号及三单元或四单元宽度，但把 GIC trigger flags 统一写成 level-high（`4`），使输出描述与虚拟 UART 的电平线行为一致。宿主只用中断类型和编号建立虚拟设备资源，不根据输入 DTB 的 trigger flags 改变虚拟线语义。最终 GIC 保留客户机已有的 `#interrupt-cells`；四单元 binding 的末单元继续使用客户机已有的优先级，输入只有三单元而目标要求四单元时填默认值 `0`。
 
+## Axvisor x86 默认网页流程
+
+在 Intel/VMX Linux 构建机上确认 `/dev/kvm` 可访问，Node ≥ 24、npm ≥ 11 与仓库 Rust 工具链位于 `PATH`，然后在无旧 Axvisor 配置的检出执行 `cargo axvisor defconfig qemu-x86_64`、`cargo axvisor qemu`。默认 build 开启 `web-ui`、NVMe 和 `ax-driver/intel-net`，自动构建并打包网页；QEMU 使用 2 CPU、2 GiB、e1000，并把宿主 `127.0.0.1:8080` 转发到 Axvisor 8080。浏览器入口为 `http://localhost:8080/`，初始 VM 列表为空。
+
+网页从 `GET /api/vms/defaults` 加载初始值，使用原始下载镜像已有的 `/guest/linux/linux-qemu` 和 `/guest/rootfs-x86_64-alpine-0.img`，无需上传。默认 1 vCPU、256 MiB、CPU1 affinity、virtualized direct boot 与只读 `virtio-blk` PCI 磁盘；空 ID 在管理器生命周期锁内分配。实际验收必须从浏览器创建、启动、执行有确定结果的算术命令及系统信息，并覆盖刷新重连、停止、删除、重新创建；只读 API 或 WebSocket 握手不能替代客户机输入证据。维护的定向入口是 `cargo xtask axvisor test qemu --arch x86_64 --test-case web-ui-vmx`，HTTP 探针通过 `nic_model = "e1000"` 选择网卡。此流程只在 x86_64 VMX 验证，SVM 与其他架构需独立证据。
+
+客户机在 90 秒内没有 shell 时保留完整输出并定位。Linux `virtqueue_add_split` 在根盘读请求上警告时，先核对 `VirtioBlockPciAdapter` 的 `seg_max`：未公告间接描述符的 128 槽队列只能接收至多 126 个数据段，另外两个槽用于请求头和状态。超额公告会让 ELF 缺页读盘无法入队，延长等待或修改前端内存参数都不能修复这个契约错误。运行步骤与错误处理见[Axvisor 运行文档](../../../../docs/docs/build/axvisor/runtime.md#16-x86_64-默认客户机)。
+
 ## Axvisor 板卡资源与磁盘根
 
 `prepare_guest_payload()` 将构建机存在的镜像复制进宿主 initramfs；板卡磁盘提供的绝对路径保留到 `install_builtin()`，在准备好的磁盘根中校验后才发布配置、提交切根。准备阶段包含附加分区，提交时递归绑定整个已校验的挂载树。OrangePi 普通 Linux CI 使用 `AXVISOR_GUEST_ASSETS=/guest`；ROC 使用 `AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest`，镜像位于单独的 `/userdata` 分区。缺失的环境变量会展开为空字符串，不能让它把板卡路径变成 `/linux/...`。定制 BSP 打包仍可把该变量指向构建机资源目录。

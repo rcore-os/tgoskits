@@ -410,4 +410,53 @@ pub trait VirglOps {
     fn ctrl_notify(&mut self);
     fn capset_info(&mut self, index: u32) -> Result<CapsetInfo, GpuError>;
     fn capset(&mut self, id: u32, version: u32, size: u32) -> Result<Vec<u8>, GpuError>;
+    /// Submits a command stream on a named command ring (venus-style
+    /// ring-based contexts). Semantics match [`VirglOps::submit`]; the fence
+    /// retires on the named ring's timeline. The default ignores the ring
+    /// index and delegates to [`VirglOps::submit`], which fits devices whose
+    /// host retires every fence in submission order.
+    fn submit_ring(
+        &mut self,
+        context: ContextHandle,
+        commands: &[u8],
+        ring_idx: u8,
+    ) -> Result<Completion, GpuError> {
+        let _ = ring_idx;
+        self.submit(context, commands)
+    }
+    /// Maps a host-3D blob resource into the device shared-memory window at
+    /// caller-chosen `offset` (Linux `virtio_gpu_cmd_resource_map_blob`).
+    /// Returns the device-reported cache hint (`VIRTIO_GPU_MAP_CACHE_*`).
+    /// Only available when the device negotiated blob resources and the OS
+    /// adapter resolved a shared-memory region.
+    fn map_blob(&mut self, resource: BufferHandle, offset: u64) -> Result<u32, GpuError> {
+        let _ = (resource, offset);
+        Err(GpuError::Unsupported)
+    }
+    /// Unmaps a blob resource previously mapped by [`VirglOps::map_blob`].
+    fn unmap_blob(&mut self, resource: BufferHandle) -> Result<(), GpuError> {
+        let _ = resource;
+        Err(GpuError::Unsupported)
+    }
+    /// The shared-memory window backing mappable blob resources, if the bus
+    /// exposed one. `base` is the guest-physical address userspace maps.
+    fn host_memory_region(&self) -> Option<HostMemoryRegion> {
+        None
+    }
+    /// The device-advertised blob alignment requirement, when the device
+    /// offered and the driver negotiated `VIRTIO_GPU_F_BLOB_ALIGNMENT`.
+    /// Blob sizes and `RESOURCE_MAP_BLOB` offsets must be multiples of it.
+    fn blob_alignment(&self) -> Option<u32> {
+        None
+    }
+}
+
+/// A device shared-memory region backing mappable blob resources
+/// (virtio-gpu `SHARED_MEMORY_CFG` / `VIRTIO_GPU_SHM_ID_HOST_VISIBLE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMemoryRegion {
+    /// Guest-physical base address userspace maps.
+    pub base: u64,
+    /// Size of the window in bytes.
+    pub length: u64,
 }

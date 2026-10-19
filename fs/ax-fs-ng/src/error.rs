@@ -117,6 +117,10 @@ pub(crate) fn vfs_error_to_io_error(error: VfsError) -> IoError {
         VfsError::StorageFull => IoError::StorageFull,
         VfsError::TextFileBusy => IoError::ResourceBusy,
         VfsError::TimedOut => IoError::TimedOut,
+        // The ETIME/ETIMEDOUT split only matters to direct VFS consumers
+        // (DRM syncobj waits); `ax-io` has no separate category, so the
+        // deadline flavor folds into the plain timeout here.
+        VfsError::TimerExpired => IoError::TimedOut,
         VfsError::TooManyLinks => IoError::Io,
         VfsError::Unsupported => IoError::Unsupported,
         VfsError::ValueOverflow => IoError::OutOfRange,

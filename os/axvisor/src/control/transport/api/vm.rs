@@ -21,7 +21,7 @@ use crate::manager::{VmCandidateNotFound, manager};
 const GUEST_RAM_FLAGS: usize = 0x7;
 
 struct FormParams {
-    id: usize,
+    id: Option<usize>,
     name: String,
     guest_type: GuestType,
     cpu_num: usize,
@@ -31,6 +31,7 @@ struct FormParams {
     cmdline: Option<String>,
     memory_base: usize,
     memory_bytes: usize,
+    rootfs_read_only: bool,
 }
 
 /// `GET /api/vms` — list the manager's owned VM snapshots.
@@ -55,26 +56,60 @@ pub async fn vm_detail(Path(id): Path<String>) -> Result<Json<Value>, StatusCode
 
 /// `GET /api/vms/schema` — fields understood by the dashboard form.
 pub async fn vm_schema() -> Json<Value> {
-    Json(json!({
-        "fields": [
-            {"name": "id", "type": "integer", "required": true},
-            {"name": "name", "type": "string", "required": true},
-            {"name": "kernel_path", "type": "file", "required": true},
-            {"name": "rootfs_path", "type": "file", "required": false},
-            {"name": "entry_point", "type": "address", "required": true, "default": FORM_ENTRY_POINT},
-            {"name": "kernel_load_addr", "type": "address", "required": true, "default": FORM_KERNEL_LOAD_ADDR},
-            {"name": "memory_base", "type": "address", "required": true, "default": FORM_MEMORY_BASE},
-            {"name": "memory_mb", "type": "integer", "required": true},
-            {"name": "guest_type", "type": "enum", "required": false, "default": "virtualized", "options": ["virtualized", "passthrough"]},
-            {"name": "cpu_num", "type": "integer", "required": false, "default": 1},
-            {"name": "cmdline", "type": "string", "required": false, "default": FORM_CMDLINE_DEFAULT},
-        ],
-    }))
+    Json(json!({"fields": creation_schema_fields()}))
+}
+
+/// `GET /api/vms/defaults` — a ready-to-submit form, with server-assigned ID.
+pub async fn vm_defaults() -> Json<Value> {
+    let fields = creation_schema_fields()
+        .as_array()
+        .expect("creation schema is a field array")
+        .iter()
+        .filter_map(|field| {
+            field.get("default").map(|value| {
+                (
+                    field["name"]
+                        .as_str()
+                        .expect("schema field name")
+                        .to_string(),
+                    value.clone(),
+                )
+            })
+        })
+        .collect::<serde_json::Map<_, _>>();
+    Json(json!({"fields": fields}))
+}
+
+fn creation_schema_fields() -> Value {
+    json!([
+            {"name": "name", "label": "客户机名称", "type": "string", "required": true, "default": "Alpine Linux"},
+            {"name": "memory_mb", "label": "内存 (MiB)", "type": "integer", "required": true, "default": 256},
+            {"name": "cpu_num", "label": "虚拟 CPU 数量", "type": "integer", "required": false, "default": 1,
+             "description": format!("宿主共有 {} 个 CPU；默认使用 1 个，保留管理台响应能力。", axvm::host::cpu::count())},
+            {"name": "kernel_path", "label": "内核镜像", "type": "file", "required": true,
+             "default": cfg!(target_arch = "x86_64").then_some("/guest/linux/linux-qemu"),
+             "description": "使用宿主文件系统中已有的客户机内核；默认镜像无需上传。"},
+            {"name": "rootfs_path", "label": "客户机磁盘", "type": "file", "required": false,
+             "default": cfg!(target_arch = "x86_64").then_some("/guest/rootfs-x86_64-alpine-0.img"),
+             "description": "宿主中已有的客户机根文件系统镜像，与宿主根盘独立。"},
+            {"name": "id", "label": "客户机 ID", "type": "integer", "required": false, "default": null, "advanced": true,
+             "description": "留空由服务端在创建时分配，也可指定未占用的 ID。"},
+            {"name": "rootfs_read_only", "label": "只读客户机磁盘", "type": "boolean", "required": false, "default": true, "advanced": true,
+             "description": "默认只读以保留原始镜像；省略该字段时保持旧 API 的可写语义，需要写入时请先选择独立磁盘。"},
+            {"name": "guest_type", "label": "客户机模式", "type": "enum", "required": false, "default": "virtualized", "options": ["virtualized", "passthrough"], "advanced": true,
+             "description": "默认虚拟化模式保留宿主文件系统与网页管理台；直通模式需要专用设备配置。"},
+            {"name": "entry_point", "label": "入口地址", "type": "address", "required": true, "default": FORM_ENTRY_POINT, "advanced": true},
+            {"name": "kernel_load_addr", "label": "内核加载地址", "type": "address", "required": true, "default": FORM_KERNEL_LOAD_ADDR, "advanced": true},
+            {"name": "memory_base", "label": "客户机内存起始地址", "type": "address", "required": true, "default": FORM_MEMORY_BASE, "advanced": true},
+            {"name": "cmdline", "label": "内核启动参数", "type": "string", "required": false, "default": FORM_CMDLINE_DEFAULT, "advanced": true},
+    ])
 }
 
 #[cfg(target_arch = "aarch64")]
 const FORM_CMDLINE_DEFAULT: &str = "root=/dev/vda ro rootwait console=ttyAMA0 init=/bin/sh";
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(target_arch = "x86_64")]
+const FORM_CMDLINE_DEFAULT: &str = "console=ttyS0 root=/dev/vda ro rootwait devtmpfs.mount=1 init=/sbin/getty pci=conf1 pci=nomsi irqpoll nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0";
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 const FORM_CMDLINE_DEFAULT: &str = "root=/dev/vda ro rootwait console=ttyS0 init=/bin/sh";
 #[cfg(target_arch = "aarch64")]
 const FORM_ENTRY_POINT: &str = "0x8020_0000";
@@ -109,8 +144,13 @@ fn form_params(fields: &Value) -> Result<FormParams, String> {
         usize::try_from(cpu_num)
             .map_err(|_| "`cpu_num` exceeds the target address space".to_string())
     })?;
-    if !(1..=usize::BITS as usize).contains(&cpu_num) {
-        return Err(format!("`cpu_num` must be between 1 and {}", usize::BITS));
+    let host_cpu_count = if cfg!(target_arch = "x86_64") {
+        x86_cpu_affinity_host_count()?
+    } else {
+        axvm::host::cpu::count().min(usize::BITS as usize)
+    };
+    if !(1..=host_cpu_count).contains(&cpu_num) {
+        return Err(format!("`cpu_num` must be between 1 and {host_cpu_count}"));
     }
 
     let memory_mb = fields
@@ -124,9 +164,25 @@ fn form_params(fields: &Value) -> Result<FormParams, String> {
         .ok()
         .and_then(|memory_mb| memory_mb.checked_mul(1024 * 1024))
         .ok_or_else(|| "`memory_mb` is too large".to_string())?;
+    let available_bytes = ax_api::modules::ax_alloc::global_allocator()
+        .available_pages()
+        .saturating_mul(ax_hal::mem::PAGE_SIZE_4K);
+    if memory_bytes > available_bytes {
+        return Err(format!(
+            "requested {memory_mb} MiB, but the host currently has only {} MiB of free memory",
+            available_bytes / (1024 * 1024)
+        ));
+    }
 
     Ok(FormParams {
-        id: usize_field(fields, "id", "`id` is required")?,
+        id: match fields.get("id") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(usize_field(
+                fields,
+                "id",
+                "`id` must be a non-negative integer",
+            )?),
+        },
         name: text_field(fields, "name")?,
         guest_type: match fields.get("guest_type").and_then(Value::as_str) {
             None | Some("virtualized") => GuestType::Virtualized,
@@ -148,18 +204,52 @@ fn form_params(fields: &Value) -> Result<FormParams, String> {
         ),
         memory_base: address_field(fields, "memory_base")?,
         memory_bytes,
+        // Omitted by older API clients: keep their writable-disk behavior.
+        rootfs_read_only: fields
+            .get("rootfs_read_only")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| "`rootfs_read_only` must be a boolean".to_string())
+            })
+            .transpose()?
+            .unwrap_or(false),
     })
 }
 
-fn form_config(params: FormParams, rootfs_path: Option<&str>) -> GuestConfig {
+fn form_config(params: FormParams, rootfs_path: Option<&str>) -> Result<GuestConfig, String> {
+    let phys_cpu_sets = if cfg!(target_arch = "x86_64") {
+        let host_cpu_count = x86_cpu_affinity_host_count()?;
+        Some(
+            (0..params.cpu_num)
+                .map(|id| {
+                    let shift = ((id + 1) % host_cpu_count) as u32;
+                    1usize.checked_shl(shift).ok_or_else(|| {
+                        format!(
+                            "cannot represent x86 CPU affinity bit {shift} in a {}-bit mask",
+                            usize::BITS
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    } else {
+        None
+    };
     let mut config = GuestConfig {
         base: axvmconfig::VMBaseConfig {
-            id: params.id,
+            // The manager replaces this placeholder while holding its
+            // lifecycle lock when the request did not specify an ID.
+            id: params.id.unwrap_or(0),
             name: params.name,
             guest_type: params.guest_type,
             cpu_num: params.cpu_num,
             phys_cpu_ids: Some((0..params.cpu_num).collect()),
-            phys_cpu_sets: None,
+            // Keep guest CPU IDs distinct from host affinity. Prefer a CPU
+            // other than the bootstrap CPU, with a single-core host naturally
+            // falling back to that CPU. Allocation remains fallible if resources
+            // change after the form's availability check.
+            phys_cpu_sets,
         },
         kernel: axvmconfig::VMKernelConfig {
             entry_point: params.entry_point,
@@ -181,6 +271,13 @@ fn form_config(params: FormParams, rootfs_path: Option<&str>) -> GuestConfig {
         let mut options = toml::Table::new();
         options.insert("path".into(), toml::Value::String(path.into()));
         options.insert("filesystem".into(), toml::Value::String("ext4".into()));
+        options.insert(
+            "read_only".into(),
+            toml::Value::Boolean(params.rootfs_read_only),
+        );
+        if cfg!(target_arch = "x86_64") {
+            options.insert("transport".into(), toml::Value::String("pci".into()));
+        }
         config
             .devices
             .virtual_devices
@@ -190,7 +287,21 @@ fn form_config(params: FormParams, rootfs_path: Option<&str>) -> GuestConfig {
                 options,
             });
     }
-    config
+    Ok(config)
+}
+
+fn x86_cpu_affinity_host_count() -> Result<usize, String> {
+    let host_cpu_count = axvm::host::cpu::count();
+    if host_cpu_count == 0 {
+        return Err("host reports no CPUs for x86 CPU affinity".to_string());
+    }
+    if host_cpu_count > usize::BITS as usize {
+        return Err(format!(
+            "host exposes {host_cpu_count} CPUs, but x86 CPU affinity masks support at most {}",
+            usize::BITS
+        ));
+    }
+    Ok(host_cpu_count)
 }
 
 fn usize_field(fields: &Value, name: &str, missing: &str) -> Result<usize, String> {
@@ -232,6 +343,7 @@ fn address_field(fields: &Value, name: &str) -> Result<usize, String> {
 
 /// `POST /api/vms/create` — create a VM from TOML or dashboard fields.
 pub async fn vm_create(Json(payload): Json<Value>) -> Response {
+    let mut auto_id = false;
     let raw = if let Some(fields) = payload.get("fields") {
         let params = match form_params(fields) {
             Ok(params) => params,
@@ -239,11 +351,18 @@ pub async fn vm_create(Json(payload): Json<Value>) -> Response {
                 return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
             }
         };
+        auto_id = params.id.is_none();
         let rootfs = fields
             .get("rootfs_path")
             .and_then(Value::as_str)
             .map(str::trim);
-        match toml::to_string(&form_config(params, rootfs)) {
+        let config = match form_config(params, rootfs) {
+            Ok(config) => config,
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            }
+        };
+        match toml::to_string(&config) {
             Ok(raw) => raw,
             Err(error) => {
                 return (
@@ -281,7 +400,7 @@ pub async fn vm_create(Json(payload): Json<Value>) -> Response {
         }
     };
     let id = config.base.id;
-    if manager().get(id).is_some() {
+    if !auto_id && manager().get(id).is_some() {
         return StatusCode::CONFLICT.into_response();
     }
     if let Some(path) = crate::guest_images::missing_guest_image(&config) {
@@ -291,8 +410,14 @@ pub async fn vm_create(Json(payload): Json<Value>) -> Response {
         )
             .into_response();
     }
-    match manager().create_vm_from_toml_and_wait(&raw) {
+    let created = if auto_id {
+        manager().create_vm_with_auto_id_and_wait(config)
+    } else {
+        manager().create_vm_from_toml_and_wait(&raw)
+    };
+    match created {
         Ok(vm) => {
+            let id = vm.vm_id();
             info!("HTTP: VM[{id}] created via control API");
             Json(json!({"id": vm.vm_id()})).into_response()
         }

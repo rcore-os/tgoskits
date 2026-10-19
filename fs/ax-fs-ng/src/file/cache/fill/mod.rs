@@ -17,6 +17,38 @@ impl CachedFile {
         pn: u32,
         window_pages: usize,
     ) -> VfsResult<()> {
+        self.fill_page_window(file, pn, window_pages, FillPurpose::Demand)
+            .map(|_| ())
+    }
+
+    pub(super) fn prefetch_page_window(&self, pn: u32, window_pages: usize) -> VfsResult<bool> {
+        let file = self.inner.entry().as_file()?;
+        let end = (u64::from(pn) + window_pages.min(super::readahead::MAX_READAHEAD_PAGES) as u64)
+            .min(self.shared.len().div_ceil(PAGE_SIZE as u64))
+            .min(u64::from(u32::MAX) + 1);
+        // Another handle may have populated any prefix or interior page.
+        // Walk the bounded window instead of treating its first cache hit as
+        // successful prefetch of every remaining page.
+        for number in u64::from(pn)..end {
+            if !self.fill_page_window(
+                file,
+                number as u32,
+                (end - number) as usize,
+                FillPurpose::Prefetch,
+            )? {
+                return Ok(false);
+            }
+        }
+        Ok(end > u64::from(pn))
+    }
+
+    fn fill_page_window(
+        &self,
+        file: &FileNode,
+        pn: u32,
+        window_pages: usize,
+        purpose: FillPurpose,
+    ) -> VfsResult<bool> {
         let admission = {
             let _io = self.shared.io_lock.lock();
             self.shared.ensure_writeback_owner_active()?;
@@ -28,11 +60,11 @@ impl CachedFile {
                 return Err(VfsError::ResourceBusy);
             }
             if self.shared.page_cache.lock().contains(&pn) {
-                return Ok(());
+                return Ok(true);
             }
             if self.in_memory {
                 self.ensure_page_locked(file, pn, false)?;
-                return Ok(());
+                return Ok(true);
             }
             let file_len = self.shared.len();
             if u64::from(pn) >= file_len.div_ceil(PAGE_SIZE as u64) {
@@ -47,9 +79,15 @@ impl CachedFile {
                 .admit(pn, end, file_len, &self.shared.page_cache.lock())?
         };
         match admission {
-            FillAdmission::Wait(fill) => fill.wait(),
-            FillAdmission::Capacity => self.shared.pending_fills.wait_for_capacity(),
+            FillAdmission::Wait(_) | FillAdmission::Capacity
+                if purpose == FillPurpose::Prefetch =>
+            {
+                Ok(false)
+            }
+            FillAdmission::Wait(fill) => fill.wait().map(|_| false),
+            FillAdmission::Capacity => self.shared.pending_fills.wait_for_capacity().map(|_| false),
             FillAdmission::Load(owner) => {
+                let range = owner.range();
                 let prepared = owner.prepare(file);
                 let io = self.shared.io_lock.lock();
                 // Content updates invalidate the owner before modifying
@@ -58,7 +96,7 @@ impl CachedFile {
                 if !owner.is_valid() {
                     drop(io);
                     drop(prepared);
-                    return owner.finish(Ok(()));
+                    return owner.finish(Ok(())).map(|_| false);
                 }
                 let result = prepared.and_then(|mut pages| {
                     // Publish the demand page last so a small retention target
@@ -70,7 +108,17 @@ impl CachedFile {
                     Ok(())
                 });
                 drop(io);
-                owner.finish(result)
+                if result.is_ok() && purpose == FillPurpose::Demand {
+                    self.readahead.lock().loaded(range);
+                }
+                if purpose == FillPurpose::Prefetch {
+                    // A demand that joined speculative I/O retries on failure.
+                    // It must not inherit the speculative owner's transient error.
+                    owner.finish(Ok(()))?;
+                    result.map(|_| true)
+                } else {
+                    owner.finish(result).map(|_| true)
+                }
             }
         }
     }
@@ -156,6 +204,12 @@ impl CachedFile {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FillPurpose {
+    Demand,
+    Prefetch,
 }
 
 impl FillOwner<'_> {

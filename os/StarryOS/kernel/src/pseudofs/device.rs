@@ -33,6 +33,12 @@ pub enum DeviceMmap {
     /// This is for file descriptors whose mmap offset is a selector rather than
     /// a byte offset into a linear device, such as io_uring ring offsets.
     PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Cacheable counterpart of [`Self::PhysicalResolved`]: the mmap offset is
+    /// a selector (the range is already resolved), but the backing is normal
+    /// memory the CPU may cache. GPU host-visible shared memory (e.g. the
+    /// virtio-gpu hostmem BAR) lands here — userspace runs atomic RMW on ring
+    /// buffers in it, which device-memory mappings would not support.
+    PhysicalCachedResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to an already offset-resolved physical GEM range whose backing
     /// allocation is fully initialized only through complete pages.
     ///

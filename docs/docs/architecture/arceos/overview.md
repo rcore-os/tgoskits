@@ -28,8 +28,8 @@ ArceOS 的 crate 按职责组织成一条从底层平台到上层应用的能力
 flowchart LR
     reusableCrates["ReusableCrates: components/*"]
     platformLayer["PlatformLayer: axplat-* + platforms/*"]
-    requiredModules["RequiredModules: ax-runtime ax-hal ax-log"]
-    optionalModules["OptionalModules: ax-alloc ax-mm ax-task ax-sync ax-driver ax-fs ax-net ..."]
+    requiredModules["RuntimeBaseline: ax-runtime ax-hal ax-log ax-task ax-sync ax-alloc + ax-driver/serial"]
+    optionalModules["OptionalFeatures: ax-mm ax-gpu ax-fs-ng ax-net ax-input ax-ipi"]
     publicApi["PublicApi: ax-runtime ax-api ax-posix-api"]
     userLib["UserLib: ax-std ax-libc"]
     appsAndTests["AppsAndTests: apps/arceos/* + test-suit/arceos/*"]
@@ -48,72 +48,63 @@ flowchart LR
     optionalModules --> upperSystems
 ```
 
-应用最终经由 `user lib -> API -> modules -> HAL/platform` 链路获取能力。StarryOS 和 Axvisor 直接复用底层模块，因此 `ax-hal`、`ax-task`、`ax-driver` 等模块的改动可能同时影响多个系统。
+应用最终经由 `user lib -> API -> runtime modules/shared crates -> HAL/platform` 链路获取能力。StarryOS 和 Axvisor 直接复用底层 crate，因此 `ax-hal`、`ax-task`、`ax-driver` 等共享能力的改动可能同时影响多个系统。
 
 ## 分层职责
 
-ArceOS 从底部硬件平台到顶部应用，依次经过六层。每一层只依赖比自己更低的层，且尽量通过 Cargo feature 控制是否参与编译，而非在运行时做条件判断。
+ArceOS 从底部硬件平台到顶部应用形成逐层依赖，且尽量通过 Cargo feature 控制是否参与编译，而非在运行时做条件判断。
 
 | 层次 | 主要目录 | 关注点 |
 | --- | --- | --- |
 | 可复用 crate 层 | `components/*` | 算法、同步、容器、地址空间、设备抽象等可被多个系统复用的基础构件 |
 | 平台与 HAL 层 | `platforms/*`、`os/arceos/modules/axhal` | 架构相关启动、时钟、中断、内存映射、设备访问 |
-| 内核服务模块层 | `os/arceos/modules/*` | 内存分配、页表、任务调度、驱动、文件系统、网络、图形等 OS 能力 |
+| 内核服务模块层 | `os/arceos/modules/*` 与共享领域 crate | 内建运行时模块，以及分配器、任务、驱动、文件系统、网络和图形能力 |
 | API 聚合层 | `os/arceos/api/*` | feature 选择、稳定 API 封装、POSIX 兼容接口 |
 | 用户库层 | `os/arceos/ulib/*` | `ax-std`、`ax-libc` 等高层开发接口 |
-| 应用与测试层 | `apps/arceos/*`（9 个）、`test-suit/arceos/*` | 场景化验证与系统回归 |
+| 应用与测试层 | `apps/arceos/*`、`test-suit/arceos/*` | 场景化验证与系统回归 |
 
 ## 模块体系
 
-ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小可运行骨架，其余可选模块通过 Cargo feature 按需启用。这种"必选 + 可选"的结构使得最终镜像可以非常精简——一个 Hello World 示例只需四个必选模块加 `ax-alloc` 即可运行。
+ArceOS 的内建运行时模块位于 `os/arceos/modules/`，而分配器、任务、驱动、文件系统和网络等共享 crate 位于根工作区的其他目录。两者的目录边界和 feature 依赖不同，不能把 `os/arceos/modules/` 当作 ArceOS 全部能力的清单。
 
-### 必选模块
+### 运行时基线
 
-无论应用选择哪些 feature，以下模块始终参与编译。它们构成 ArceOS 的基础运行时：能启动、处理中断和定时器、调度任务、同步并输出日志。
+`axruntime/Cargo.toml` 把 `ax-hal`、`ax-log`、`ax-task`、`ax-sync`、`ax-alloc` 和带串口能力的 `ax-driver` 作为运行时基线依赖。`ax-runtime` 负责启动、初始化顺序和多核协同，`ax-hal` 提供平台抽象，`ax-log` 输出日志，`ax-task` 与 `ax-sync` 提供任务和同步能力，`ax-alloc` 提供全局分配器。
 
 - `ax-runtime`：启动与初始化总控。
 - `ax-hal`：统一硬件抽象层。
 - `ax-task`：任务、调度、等待队列与 timer。
 - `ax-sync`：任务态同步原语。
 - `ax-log`：日志输出与格式化。
+- `ax-alloc`：全局内存分配器。
+- `ax-driver`：串口等基础设备驱动。
 
-### 可选模块
+### 内建模块与共享 crate
 
-其余模块按 feature 启用：
+`os/arceos/modules/` 中的模块直接参与 ArceOS 运行时装配，其中 `ax-mm`、`ax-gpu`、`ax-display`、`ax-input` 和 `ax-ipi` 由 feature 或上层 crate 选择；`ax-hal`、`ax-log`、`ax-runtime` 和 `ax-sync` 构成固定的运行时结构。共享 crate 则由 `ax-runtime` 按 feature 引入，并可被其他系统直接依赖。
 
-| 模块 | 典型 feature | 作用 |
-| --- | --- | --- |
-| `ax-alloc` | `alloc` | 全局内存分配器（支持 TLSF、buddy-slab 等策略） |
-| `ax-mm` | `paging` | 地址空间与页表管理 |
-| `ax-driver` | `ax-driver` | 设备探测与驱动初始化（virtio、AHCI、SDMMC 等） |
-| `ax-fs` | `fs` | 文件系统（FAT、ramfs、ext4） |
-| `ax-fs-ng` | `fs-ng` | 下一代文件系统（FAT、ext4，带 LRU 缓存） |
-| `ax-net` | `net` | 统一网络栈（TCP/UDP/raw/Unix/vsock/DNS/DHCP，基于 smoltcp） |
-| `ax-display` | `display` | 图形显示（帧缓冲） |
-| `ax-input` | `input` | 输入设备管理 |
-| `ax-ipi` | `ipi` | 处理器间中断管理 |
-
-### 模块总览
-
-以下表格汇总了 ArceOS 全部 17 个模块的目录位置、职责及常见联动对象，可作为查阅各模块职责的快速参考。
-
-| 组件 | 目录 | 关键职责 | 常见联动对象 |
+| 内建模块 | 目录 | feature 边界 | 作用 |
 | --- | --- | --- | --- |
-| `ax-runtime` | `modules/axruntime` | 系统主入口、初始化顺序、主核/从核协同 | `ax-hal`、`ax-log`、`ax-alloc`、`ax-mm`、`ax-task`、`ax-driver` |
-| `ax-hal` | `modules/axhal` | CPU、内存、时间、中断、页表、TLS、DTB 等硬件抽象 | 平台 crate、`ax-runtime` |
-| `ax-alloc` | `memory/ax-alloc` | 全局堆分配、DMA 相关地址转换 | `ax-runtime`、`ax-mm` |
-| `ax-mm` | `modules/axmm` | 地址空间、页表、映射后端 | `ax-runtime`、上层内存管理逻辑 |
-| `ax-task` | `components/ax-task` | OS 无关调度、线程句柄、等待队列、timer/PI/task-work | `ax-runtime`、`ax-sync`、`ax-net` |
-| `ax-runtime::task` | `modules/axruntime/src/task.rs` | 栈、TLS、上下文、地址空间、CPU-local 与调度入口 | `ax-task`、`ax-hal` |
-| `ax-sync` | `modules/axsync` | mutex 等同步原语 | `ax-task`、任意并发模块 |
-| `ax-driver` | `modules/axdriver` | 设备探测与驱动初始化 | `ax-fs`、`ax-net`、`ax-display` |
-| `ax-fs` | `modules/axfs` | 文件系统挂载、文件/目录 API | `ax-driver` |
-| `ax-net` | `net/ax-net` | 统一网络栈、socket 抽象 | `rd-net`、`rdif-vsock`、`smoltcp` |
-| `ax-log` | `modules/axlog` | 多级日志与格式化输出 | 所有模块 |
-| `ax-fs-ng` | `fs/ax-fs-ng` | 下一代文件系统 | `ax-driver` |
-| `ax-ipi` | `modules/axipi` | 处理器间中断管理 | `ax-hal` |
-| `ax-input` | `modules/axinput` | 输入设备管理与事件分发 | `ax-driver` |
-| `ax-display` | `modules/axdisplay` | 图形显示（帧缓冲） | `ax-driver` |
+| `ax-runtime` | `modules/axruntime` | 运行时入口 | 启动、初始化顺序、线程与多核协同 |
+| `ax-hal` | `modules/axhal` | 运行时基线 | CPU、内存、时间、中断、页表、TLS、DTB 等硬件抽象 |
+| `ax-log` | `modules/axlog` | 运行时基线 | 多级日志与格式化输出 |
+| `ax-sync` | `modules/axsync` | 运行时基线 | mutex 等同步原语 |
+| `ax-mm` | `modules/axmm` | `paging` | 地址空间、页表与映射后端 |
+| `ax-gpu` | `modules/axgpu` | `display`（运行时） | GPU 设备与资源运行时 |
+| `ax-display` | `modules/axdisplay` | `display`（API 层） | 基于 `ax-gpu` 的显示访问 |
+| `ax-input` | `modules/axinput` | `input` | 输入设备管理与事件分发 |
+| `ax-ipi` | `modules/axipi` | `ipi` / `wake-ipi` | 处理器间中断管理 |
+
+共享 crate 的路径和典型 feature 映射如下。`ax-runtime` 的 feature 会继续向这些 crate 传递能力开关，因此修改 feature 时要以 `axruntime/Cargo.toml` 为准。
+
+| 共享 crate | 目录 | 典型 feature | 关键职责 |
+| --- | --- | --- | --- |
+| `ax-alloc` | `memory/ax-alloc` | 运行时基线 | 全局堆分配与 DMA 相关地址转换 |
+| `ax-task` | `components/ax-task` | 运行时基线；`smp` | OS 无关调度、线程句柄、等待队列、timer/PI/task-work |
+| `ax-driver` | `drivers/ax-driver` | `serial` 基线；`block`、`gpu`、`net`、`input`、`rtc`、`vsock` | 设备探测与驱动初始化 |
+| `ax-fs-ng` | `fs/ax-fs-ng` | `fs`；`ext4fs` / `fatfs` | 文件系统、页缓存与块设备运行时 |
+| `axfs-ng-vfs` | `fs/axfs-ng-vfs` | `fs` | VFS 节点、目录项与挂载拓扑 |
+| `ax-net` | `net/ax-net` | `net`；`vsock` | 统一网络栈与 socket 抽象 |
 
 ## 核心设计机制
 
@@ -128,9 +119,9 @@ flowchart TD
     appRequest["AppRequest: 应用 Cargo.toml 申请 feature"]
     axstdAxfeat["ax-std or ax-runtime: 暴露统一 feature 开关"]
     runtimeGate["ax-runtime: 根据 feature 选择模块"]
-    memPath["MemoryPath: alloc paging -> ax-alloc ax-mm"]
+    memPath["MemoryPath: paging -> ax-mm; ax-alloc is runtime baseline"]
     taskPath["TaskPath: baseline task/sync; optional smp and scheduler policy"]
-    ioPath["IoPath: fs net display -> ax-driver + ax-fs ax-net ax-display"]
+    ioPath["IoPath: fs net display input -> ax-driver + ax-fs-ng ax-net ax-gpu ax-input"]
     platformInit["PlatformInit: ax-hal init_early/init_later"]
     finalImage["FinalImage: 编译得到目标镜像"]
 
@@ -151,7 +142,8 @@ flowchart TD
 ```toml
 [features]
 paging = ["ax-hal/paging", "dep:ax-mm"]
-smp = ["ax-hal/smp", "ax-task/smp"]
+smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
+ipi = ["dep:ax-ipi", "ax-hal/ipi"]
 fs = [
   "paging",
   "dep:ax-fs-ng",
@@ -161,12 +153,16 @@ fs = [
   "ax-driver/block",
 ]
 net = ["paging", "dep:ax-net", "dep:rd-net", "ax-driver/net"]
-display = ["paging", "dep:ax-display", "ax-driver/display"]
+display = ["paging", "dep:ax-gpu", "ax-driver/gpu"]
+input = ["paging", "dep:ax-input", "ax-driver/input"]
+ext4fs = ["fs", "ax-fs-ng/ext4"]
+fatfs = ["fs", "ax-fs-ng/fat"]
+vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 ```
 
-IRQ 与多任务不在映射表中：平台 IRQ framework、公共 dispatcher、per-CPU timer、
-任务调度和同步能力都是固定依赖。`smp`、`preempt`、调度算法、`ipi` 等仍保留
-各自独立的配置语义。
+平台 IRQ framework、公共 dispatcher、per-CPU timer、任务调度和同步能力都是
+固定依赖。`smp` 负责多核启动，`ipi` 与 `wake-ipi` 负责处理器间中断扩展；
+`preempt` 和调度算法等策略仍保留各自独立的配置语义。
 
 DMA 是必编译基础能力：`dma-api` 提供 owned DMA 类型和约束检查，`axklib`
 提供平台 allocator/cache glue。设备驱动仍由各自 feature 选择；未启用
@@ -194,7 +190,7 @@ sequenceDiagram
 
     App->>Axstd: 调用 println open spawn connect 等高层接口
     alt 通过 mini-std 直接使用模块
-        Axstd->>Modules: 直接调用 ax-task ax-fs ax-net 等能力
+        Axstd->>Modules: 直接调用 ax-task ax-fs-ng ax-net 等能力
     else 通过公共 API 封装
         App->>ArceosApi: 调用 ax_* API
         ArceosApi->>Modules: 转发到具体模块
@@ -261,11 +257,10 @@ flowchart TD
     appMain --> shutdown
 ```
 
-启动流程中的基础契约固定，只有独立子系统按 feature 选择：
+启动流程中的基础契约固定，分配器在早期启动阶段初始化，其余独立子系统按 feature 选择：
 
-- 没有 `alloc` → 不初始化全局堆
 - 没有 `paging` → 不进入 `ax-mm::init_memory_management()`
-- 没有 `fs`、`net`、`display` → 相应子系统不会初始化
+- 没有 `fs`、`net`、`display`、`input` → 相应子系统不会初始化
 
 平台 boot IRQ probe、调度器、公共 IRQ dispatcher、per-CPU timer 注册和本地 IRQ
 enable 始终先于设备 probe；console handoff 始终先于 SMP。任何基础阶段失败都保持
@@ -275,7 +270,7 @@ enable 始终先于设备 probe；console handoff 始终先于 SMP。任何基�
 
 ArceOS 的模块间交互可归纳为四条主线：
 
-1. **启动主线**：`ax-runtime → ax-hal → ax-alloc/ax-mm → ax-task → ax-driver → ax-fs/ax-net`
-2. **API 主线**：`ax-std/arceos_api → ax-task/ax-fs/ax-net/... → ax-hal`
+1. **启动主线**：`ax-runtime → ax-hal → ax-alloc/ax-mm → ax-task → ax-driver → ax-fs-ng/ax-net`
+2. **API 主线**：`ax-std/arceos_api → ax-task/ax-fs-ng/ax-net/... → ax-hal`
 3. **平台主线**：`axplat-* / platforms/* → ax-hal → ax-runtime`
-4. **测试主线**：`examples/* / test-suit/* → ax-std or ax-api → modules/*`
+4. **测试主线**：`apps/arceos/* / test-suit/* → ax-std or ax-api → modules/shared crates`

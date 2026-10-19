@@ -36,6 +36,7 @@ const ARCEOS_RUST_CPU_LIFECYCLE_FEATURE: &str = "task-cpu-lifecycle";
 const ARCEOS_RUST_STANDALONE_FEATURES: &[&str] = &[
     ARCEOS_RUST_TASK_IRQ_FEATURE,
     ARCEOS_RUST_CPU_LIFECYCLE_FEATURE,
+    "task-scheduler-local-rearm",
     "iommu-dma",
     "intel-itco-qemu",
     "nvme-qemu",
@@ -79,6 +80,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "task-mutex",
     "task-parallel",
     "task-pi-mutex",
+    "task-scheduler-local-rearm",
     "task-preempt-guard",
     "task-priority",
     "task-rt-policy",

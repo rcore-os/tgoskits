@@ -412,12 +412,13 @@ impl CpuRemote {
             .is_none_or(|publication| self.deliver_scheduler_work_owned(publication))
     }
 
-    /// Rearms the physical doorbell after an owner-side bounded drain.
+    /// Rearms the current owner's scheduler work after a bounded drain.
     ///
-    /// Unlike producer delivery, this must not suppress a local notification:
-    /// the current scheduler safe point has already consumed its delivery
-    /// edge and is about to return. A remaining batch therefore needs a fresh
-    /// interrupt even when the owner itself is the current CPU.
+    /// The caller must pass the owner-local endpoint for the current CPU. The
+    /// owner-side safe point has already consumed its delivery edge and is
+    /// about to return, so a remaining batch is republished through the local
+    /// scheduler state. Remote delivery uses
+    /// [`Self::deliver_scheduler_work_owned`] instead.
     pub(crate) fn defer_scheduler_work(&self) {
         let Some(_publication) = self.begin_owner_delivery() else {
             task_runtime::fatal_invariant(
@@ -429,7 +430,11 @@ impl CpuRemote {
         self.scheduler_request
             .request
             .fetch_or(REQUEST_OWNER_WORK, Ordering::Release);
-        self.ring_scheduler_doorbell();
+        // The only caller passes the current CPU's owner-local endpoint after
+        // `ensure_owner_cpu_context` has succeeded. A false result only means
+        // this nested IRQ scope cannot claim the scheduler baton; the outer
+        // RuntimeIrqGuard still rechecks the sticky owner-work bit at exit.
+        let _self_serviced = task_runtime::publish_local_scheduler_work();
     }
 
     pub(super) fn deliver_scheduler_work_owned(

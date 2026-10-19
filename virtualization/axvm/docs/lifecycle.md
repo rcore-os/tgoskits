@@ -111,6 +111,12 @@ owner 通过 `Pausing`、`Stopping` 表达尚未收齐参与者确认的操作�
 `park_count` 记录参与者完成卸载／暂停。它们是 VM 级进展信号，不能替代逐参与者确认与设备
 静默契约；停止后退休该运行观察集合，重新启动从新运行计数开始。
 
+`VmCreatePlan::vcpu_schedule_policy` 按 VM 指定宿主 vCPU 任务的基础策略，默认使用 Fair；
+启动、客户机 CPU_ON 与 reset 创建的任务均继承该计划。`VmConfigSnapshot::vcpu_schedule_policy`
+记录请求策略；`VcpuSnapshot::host_base_policy` 由 owner 从实际宿主任务读取，未创建或已退休
+任务返回 `None`。策略观察始终可用，不依赖测试 feature。`park_count` 只统计生命周期暂停，
+客户机 PSCI suspend 的投递隔离由客户机应答和自身挂起次数验证。
+
 ## 4. 控制面适配
 
 Axvisor 在 `os/axvisor/src/manager.rs` 持有实例化 `VmManager`，将 TOML 和镜像来源转换为

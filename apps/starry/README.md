@@ -40,28 +40,16 @@ cargo xtask starry app board -t benchmark/orangepi-5-plus-uvc
 
 ## Network throughput
 
-The `network-throughput` board app runs a repeatable HTTP streaming throughput
-matrix against the ostool-server network test port (3000). It prints three
-samples plus a median for each scenario:
+网络吞吐基准位于 `benchmarks/starry/network-throughput`，通过 ostool-server 的
+网络测试端口 3000 测量 HTTP 流式吞吐。它覆盖单流、双向和多流，每场景打印三轮样本和中位数：
 
 ```bash
-cargo xtask starry app board -t network-throughput -b OrangePi-5-Plus --board-config board-orangepi-5-plus.toml
+cargo xtask starry app board -t benchmark/network-throughput -b OrangePi-5-Plus \
+  --board-config board-orangepi-5-plus.toml
 ```
 
-See `network-throughput/README.md` for the fixed T01--T07 profile.
-
-## iperf3
-
-The `iperf3` board app moved to `benchmarks/starry/iperf3` as a nightly
-performance case. It provides a repeatable Orange Pi 5 Plus TCP performance
-matrix; the board session supplies the address of the persistent iperf3 server,
-and the app prints three samples plus a median for each scenario:
-
-```bash
-cargo xtask starry app board -t benchmark/iperf3 -b OrangePi-5-Plus
-```
-
-See `../../benchmarks/starry/iperf3/README.md` for the fixed T01--T07 profile.
+固定 T01--T07 档位及板卡配置见
+[`network-throughput/README.md`](../../benchmarks/starry/network-throughput/README.md)。
 
 ## AArch64 Linux perf
 

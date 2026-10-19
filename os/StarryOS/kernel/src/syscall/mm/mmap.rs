@@ -323,7 +323,8 @@ pub fn sys_mmap(
                 match device {
                     Ok(DeviceMmap::PhysicalCached(..)) => false,
                     Ok(DeviceMmap::Physical(..))
-                    | Ok(DeviceMmap::PhysicalResolved(..)) => false,
+                    | Ok(DeviceMmap::PhysicalResolved(..))
+                    | Ok(DeviceMmap::PhysicalCachedResolved(..)) => false,
                     #[cfg(feature = "rknpu")]
                     Ok(DeviceMmap::PhysicalResolvedPageCapped(..))
                     | Ok(DeviceMmap::PhysicalCachedResolvedPageCapped(..)) => false,
@@ -544,6 +545,21 @@ pub fn sys_mmap(
                             None => MappingOperation::new_linear(start, range.start, true),
                         }
                     }
+                    Ok(DeviceMmap::PhysicalCachedResolved(range, retain)) => {
+                        if range.is_empty() {
+                            return Err(StarryError::InvalidInput);
+                        }
+                        length = device_map_len(length, range.size(), page_size)?;
+                        match retain {
+                            Some(retain) => MappingOperation::new_linear_anchored(
+                                start,
+                                range.start,
+                                true,
+                                retain,
+                            ),
+                            None => MappingOperation::new_linear(start, range.start, true),
+                        }
+                    }
                     Ok(DeviceMmap::PhysicalPages(pages, retain)) => {
                         length = length.min(pages.len() * PAGE_SIZE_4K);
                         MappingOperation::new_shared(
@@ -618,6 +634,26 @@ pub fn sys_mmap(
                                     }
                                     DeviceMmap::PhysicalResolved(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
+                                        if range.is_empty() {
+                                            return Err(StarryError::InvalidInput);
+                                        }
+                                        length =
+                                            device_map_len(length, range.size(), page_size)?;
+                                        match retain {
+                                            Some(retain) => MappingOperation::new_linear_anchored(
+                                                start,
+                                                range.start,
+                                                true,
+                                                retain,
+                                            ),
+                                            None => MappingOperation::new_linear(
+                                                start,
+                                                range.start,
+                                                true,
+                                            ),
+                                        }
+                                    }
+                                    DeviceMmap::PhysicalCachedResolved(range, retain) => {
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }

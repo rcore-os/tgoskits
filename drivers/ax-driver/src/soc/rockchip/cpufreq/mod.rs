@@ -490,7 +490,7 @@ pub fn refresh_limits() -> Result<(), FrequencyError> {
     initialize_post_boot();
     let mut first_error = None;
     let mut previous = [soc_cpufreq::ThermalState::default(); 3];
-    let temperature = sensors::soc_temperature_millidegrees().ok();
+    let temperature = sensors::refresh_soc_temperature_millidegrees().ok();
     for domain in [
         FrequencyDomain::Big0,
         FrequencyDomain::Big1,

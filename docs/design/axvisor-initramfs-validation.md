@@ -84,7 +84,7 @@ Axvisor HTTP 日志分别记录切根后 `releasing decoded ramfs filesystem (53
 
 ### 3.2 SVM 单次构建
 
-六个用例共享 `test-suit/axvisor/normal/qemu-svm/build-x86_64-unknown-none.toml`，配置包含 `vpci-test-device`；每个用例独立准备宿主归档。日志 `/tmp/axvisor-dev2-svm.log` 中只有一次 Axvisor 构建开始和一次 `Compiling axvisor`，六次启动的内核 SHA-256 全部为 `c30ab4772de7db35a10cd09811ef22ede88391331a08f635c0e7cf3688e46fb8`。
+六个用例共享 `test-suit/axvisor/normal/qemu-svm/build-x86_64-unknown-none.toml`；每个用例独立准备宿主归档。日志 `/tmp/axvisor-dev2-svm.log` 中只有一次 Axvisor 构建开始和一次 `Compiling axvisor`，六次启动的内核 SHA-256 全部为 `c30ab4772de7db35a10cd09811ef22ede88391331a08f635c0e7cf3688e46fb8`。
 
 ```bash
 cargo xtask axvisor test qemu --arch x86_64 \
