@@ -370,7 +370,7 @@ impl ThreadSignalManager {
                 fpstate,
             )
         };
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         let _ = fpstate;
         #[cfg(not(target_arch = "x86_64"))]
         let aligned_sp = {
@@ -380,9 +380,9 @@ impl ThreadSignalManager {
             frame_address & !(layout.align() - 1)
         };
 
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         let mut ucontext = UContext::new(uctx, prepared.restore_blocked);
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         let ucontext = UContext::new(uctx, prepared.restore_blocked);
         #[cfg(target_arch = "x86_64")]
         {
@@ -391,6 +391,8 @@ impl ThreadSignalManager {
                 return SignalOSAction::CoreDump;
             }
         }
+        #[cfg(target_arch = "aarch64")]
+        ucontext.set_fpstate(&fpstate);
         let frame_ptr = aligned_sp as *mut SignalFrame;
         if frame_ptr
             .vm_write(
@@ -551,6 +553,8 @@ impl ThreadSignalManager {
 
         #[cfg(target_arch = "x86_64")]
         let restored_fpstate = crate::arch::SignalFpState::restore(vm, frame.ucontext.fpstate())?;
+        #[cfg(target_arch = "aarch64")]
+        let restored_fpstate = frame.ucontext.fpstate()?;
 
         *uctx = frame.uctx;
         frame.ucontext.mcontext.restore(uctx);
@@ -560,9 +564,9 @@ impl ThreadSignalManager {
             self.leave_stack();
         }
         self.possibly_has_signal.store(true, Ordering::Release);
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         return Ok(restored_fpstate);
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         Ok(())
     }
 
