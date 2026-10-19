@@ -17,10 +17,8 @@ use crate::{
     arch::Arch,
     boot_resources::{self, Allocation, PhysicalRange},
     handoff::{
-        HandoffError, HandoffSpec,
-        protocol::{HandoffRecord, MAX_REGIONS, MemoryRegion},
-        received::loongarch64 as inherited,
-        transaction::Transaction,
+        ExecutionSnapshot, HandoffError, HandoffSpec, memory::RECLAIMABLE, protocol::HandoffRecord,
+        received::loongarch64 as inherited, transaction::Transaction,
     },
 };
 
@@ -99,7 +97,8 @@ pub fn flush_instruction_cache() {
 /// Owns a published transaction and the optional archive reservation. The caller
 /// separately retains the target image allocation until the invocation completes.
 pub struct PreparedHandoff {
-    image: PhysicalRange,
+    record: alloc::boxed::Box<HandoffRecord>,
+    published: bool,
     _archive: Option<Allocation>,
     _transaction: Transaction,
 }
@@ -122,15 +121,39 @@ impl PreparedHandoff {
         // before relinquishing exclusive publication ownership.
         let archive = archive;
         let next = Self::build_record(spec, archive.as_ref())?;
-        // SAFETY: the transaction grants exclusive producer ownership; no target runs yet.
-        unsafe {
-            map(table).cast::<HandoffRecord>().write(next);
-        }
         Ok(Self {
-            image: spec.image,
+            record: allocate_record(next)?,
+            published: false,
             _archive: archive,
             _transaction: transaction,
         })
+    }
+
+    /// Publishes the final snapshot after all runtime producers have stopped.
+    /// Does not allocate or call firmware services.
+    ///
+    /// # Safety
+    /// The caller must stop all other CPUs, DMA, tasks and IRQs. `context` must
+    /// cover every table frame and stack/TLS backing still reachable by entry.
+    /// Only the target's irreversible context takeover permits their release.
+    pub unsafe fn seal(
+        mut self,
+        context: &ExecutionSnapshot,
+    ) -> Result<SealedHandoff, HandoffError> {
+        let mut map = inherited::export_map()?;
+        for range in context.ranges() {
+            map.assign(*range, RECLAIMABLE)?;
+        }
+        self.record.memory_map = map.regions;
+        self.record.memory_map_len = map.len as u32;
+        self.record.validate()?;
+        // SAFETY: the unique transaction and terminal runtime exclusion prevent
+        // concurrent access. The receiver copies this before reclaiming anything.
+        unsafe {
+            map_table().write(*self.record);
+        }
+        self.published = true;
+        Ok(SealedHandoff(self))
     }
     fn build_record(
         spec: HandoffSpec<'_>,
@@ -138,6 +161,7 @@ impl PreparedHandoff {
     ) -> Result<HandoffRecord, HandoffError> {
         let mut next = HandoffRecord::empty();
         next.image = spec.image;
+        next.caller_image = current_image().ok_or(HandoffError::Unavailable)?;
         if let Some(cmdline) = spec.cmdline {
             next.set_cmdline(cmdline)?;
         }
@@ -149,12 +173,6 @@ impl PreparedHandoff {
         if let Some(bytes) = spec.initramfs.filter(|bytes| !bytes.is_empty()) {
             let range = archive.ok_or(HandoffError::Unavailable)?.range();
             if range.len < bytes.len() as u64 || range.overlaps(spec.image) {
-                return Err(HandoffError::InvalidTarget);
-            }
-            let owned = next.resources[..next.resource_count as usize]
-                .iter()
-                .any(|r| PhysicalRange::new(r.range.start, r.used).contains(range));
-            if !owned {
                 return Err(HandoffError::InvalidTarget);
             }
             let source =
@@ -173,29 +191,32 @@ impl PreparedHandoff {
             }
             next.archive = PhysicalRange::new(range.start, bytes.len() as u64);
         }
-        let regions = crate::mem::memory_map();
-        if regions.len() > MAX_REGIONS {
-            return Err(HandoffError::InvalidProtocol);
+        let live = boot_resources::live_snapshots();
+        for range in core::iter::once(next.image)
+            .chain((next.archive.len != 0).then_some(next.archive))
+            .chain(spec.preserve.iter().copied())
+        {
+            let allocation = *live
+                .iter()
+                .find(|a| a.resource_id != 0 && a.range.contains(range))
+                .ok_or(HandoffError::InvalidTarget)?;
+            if !next.allocations[..next.allocation_count as usize].contains(&allocation) {
+                let index = next.allocation_count as usize;
+                if index == next.allocations.len() {
+                    return Err(HandoffError::InvalidProtocol);
+                }
+                // The full allocation, including target alignment padding, stays live.
+                next.allocations[index] = allocation;
+                next.allocation_count += 1;
+            }
         }
-        for (i, r) in regions.iter().enumerate() {
-            next.memory_map[i] = MemoryRegion {
-                range: PhysicalRange::new(r.physical_start as u64, r.size_in_bytes as u64),
-                kind: match r.memory_type {
-                    crate::mem::MemoryType::Free => 0,
-                    crate::mem::MemoryType::Ram => 1,
-                    crate::mem::MemoryType::KImage => 2,
-                    crate::mem::MemoryType::Reserved => 3,
-                    crate::mem::MemoryType::Mmio => 4,
-                    crate::mem::MemoryType::PerCpuData => 5,
-                },
-                reserved: 0,
-            };
-        }
-        next.memory_map_len = regions.len() as u32;
-        next.validate()?;
         Ok(next)
     }
+}
 
+/// A published transaction which can enter the validated target.
+pub struct SealedHandoff(PreparedHandoff);
+impl SealedHandoff {
     /// Calls the target's EFI entry with the inherited firmware context.
     ///
     /// # Safety
@@ -209,7 +230,12 @@ impl PreparedHandoff {
     pub unsafe fn enter(&self, entry: u64) -> Result<(), HandoffError> {
         let address = usize::try_from(entry).map_err(|_| HandoffError::InvalidTarget)?;
         let physical = physical_alias(address).ok_or(HandoffError::InvalidTarget)? as u64;
-        if !self.image.contains(PhysicalRange::new(physical, 1)) {
+        if !self
+            .0
+            .record
+            .image
+            .contains(PhysicalRange::new(physical, 1))
+        {
             return Err(HandoffError::InvalidTarget);
         }
         let handle = super::super::saved_image_handle().ok_or(HandoffError::Unavailable)?;
@@ -231,11 +257,33 @@ impl PreparedHandoff {
 }
 impl Drop for PreparedHandoff {
     fn drop(&mut self) {
-        // SAFETY: the target has returned; the transaction still owns the table.
-        unsafe {
-            map(TABLE.load(Ordering::Acquire))
-                .cast::<HandoffRecord>()
-                .write(HandoffRecord::empty());
+        if self.published {
+            // SAFETY: the returning entry retained the caller's context. The
+            // transaction still owns the table and no receiver runs concurrently.
+            unsafe {
+                map_table().write(HandoffRecord::empty());
+            }
         }
+    }
+}
+
+fn map_table() -> *mut HandoffRecord {
+    map(TABLE.load(Ordering::Acquire)).cast()
+}
+
+fn allocate_record(
+    record: HandoffRecord,
+) -> Result<alloc::boxed::Box<HandoffRecord>, HandoffError> {
+    let layout = core::alloc::Layout::new::<HandoffRecord>();
+    // SAFETY: nonzero layout for one record. Null is checked before writing;
+    // Box receives the same allocation/layout and owns its eventual release.
+    let pointer = unsafe { alloc::alloc::alloc(layout) }.cast::<HandoffRecord>();
+    if pointer.is_null() {
+        return Err(crate::boot_resources::ResourceError::Capacity.into());
+    }
+    // SAFETY: the allocation is exclusive, suitably aligned and large enough.
+    unsafe {
+        pointer.write(record);
+        Ok(alloc::boxed::Box::from_raw(pointer))
     }
 }

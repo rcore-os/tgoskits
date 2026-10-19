@@ -349,3 +349,12 @@ pub struct UserContextRequest {
     /// Optional TLS allocation.
     pub tls: TlsHandle,
 }
+
+/// Inspects the current task's stack/TLS owners without copying their handles.
+/// The callback must not block, allocate, or reenter the task system.
+pub fn with_current_resources<R>(
+    inspect: impl FnOnce(&ThreadResources) -> R,
+) -> Result<R, TaskError> {
+    let current = current_thread_id()?;
+    runtime_task_system()?.with_thread_resources(current, inspect)
+}

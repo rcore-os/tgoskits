@@ -128,6 +128,7 @@ impl BootServer {
         };
         let handoff = match PreparedHandoff::prepare(
             HandoffSpec {
+                preserve: &[],
                 image: PhysicalRange::new(elf.load_addr, elf.load_end - elf.load_addr),
                 cmdline: job.manifest.cmdline.as_deref(),
                 initramfs: job.initramfs.as_deref(),

@@ -54,9 +54,9 @@ axstd、FAT/NVMe 和 `efi-handoff` 能力，再由
 
 `boot-resources` 可以独立使用；`efi-handoff = ["efi", "boot-resources"]` 开启生产端，
 普通 EFI 消费始终跟随构建脚本的 `cfg(efi)`。原生 UEFI target 只编译 someboot
-公共能力与固件适配，不带入内核入口、分页或 SMP。LoongArch 的 v3 配置表承载资源
+公共能力与固件适配，不带入内核入口、分页或 SMP。LoongArch 的 v4 配置表承载资源
 快照、镜像、cmdline/initramfs 和应用元数据，不包含固定三池或 OTA 槽位字段；
-GUID 为 `7b9fa931-a25b-d043-b13c-63435428c473`。v2 已拒绝，迁移须同时重建
+GUID 为 `7b9fa931-a25b-d043-b13c-63435428c473`。v2/v3 已拒绝，迁移须同时重建
 生产者、目标与 A/B 槽。完整边界见[设计文档](../../design/someboot-boot-resources.md)。
 
 `axstd_loader::run()` 在启动及每次连接处理后发送 UDP 公告，阻塞等待连接期间
@@ -280,3 +280,11 @@ HTTP 用例验证 manifest 幂等、serial continue、坏 ELF/OTA 拒绝、有�
 | 两份状态均无效 | 停止自动启动，使用备份的原装载器和外部介质恢复 |
 
 当前 OTA 只用 SHA-256 检查传输一致性，适用于可信隔离实验网。MAC 绑定不构成认证；以后引入内核验签时，应先让两槽执行同一验签策略并验证拒绝路径。
+
+
+LoongArch 交接的资源容量与存活对象分开管理。等待下载的 axloader 继续保有声明容量；
+普通目标没有资源计划时，只保留当前镜像、未消费归档及显式存活分配。旧镜像、栈、
+页表和逐核区在目标安装自身执行环境并绑定 CPU-local 后才回收，随后才初始化普通分配器。
+`PreparedHandoff::seal` 在运行时停稳后的无分配窗口发布最终快照，生成可进入的 `SealedHandoff`。
+initramfs 解包借用结束后通过唯一所有者归还完整页；冻结的平台 map 不再修改。
+机制、内存分类与失败边界见[启动内存回收设计](../../design/someboot-boot-resources.md#4-启动内存回收)。

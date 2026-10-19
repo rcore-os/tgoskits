@@ -1129,6 +1129,28 @@ fn global_add_compact_region_reclaims_small_unaligned_region() {
     assert_eq!(allocator.managed_bytes(), before + managed);
     assert_eq!(allocator.managed_section_count(), 2);
 
+    let reclaimed = allocator.managed_section(1).unwrap();
+    let mut pages = Vec::new();
+    let mut reused = false;
+    while let Ok(address) = allocator.alloc_pages(1, PAGE_SIZE) {
+        pages.push(address);
+        if reclaimed.start <= address && address < reclaimed.start + reclaimed.size {
+            // SAFETY: the ordinary page allocator exclusively owns this page.
+            let page = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, PAGE_SIZE) };
+            page.fill(0xa5);
+            assert!(page.iter().all(|byte| *byte == 0xa5));
+            reused = true;
+            break;
+        }
+    }
+    assert!(reused, "compact memory must serve ordinary pages");
+    for address in pages {
+        allocator.dealloc_pages(address, 1);
+    }
+    // Duplicate insertion cannot publish overlapping allocator ownership.
+    let duplicate = unsafe { second.subslice(PAGE_SIZE, ALIGN_2M / 2) };
+    assert!(unsafe { allocator.add_compact_region(duplicate) }.is_err());
+
     let skipped = unsafe { allocator.add_compact_region(tiny.as_mut_slice()).unwrap() };
     assert_eq!(skipped, 0);
     assert_eq!(allocator.managed_section_count(), 2);

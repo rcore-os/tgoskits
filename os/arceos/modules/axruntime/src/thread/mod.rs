@@ -203,3 +203,5 @@ pub const fn default_task_stack_size() -> usize {
 mod tests;
 
 mod allocation;
+
+pub(crate) use resources::snapshot_current_execution;

@@ -117,3 +117,42 @@ fn sv48x4_drop_releases_tables_from_high_root_quadrant() {
     }
     assert!(!allocator.has_leaks());
 }
+
+#[test]
+fn frame_visitor_covers_concatenated_root_and_directories_without_leaf_data() {
+    let allocator = TrackedFram4k::new();
+    let mut table = PageTable::<Sv48x4Meta, _>::new(allocator).unwrap();
+    for quadrant in 0..4 {
+        map_one(
+            &mut table,
+            quadrant * (1 << 48),
+            0x4000_0000 + quadrant * 4096,
+        );
+    }
+    table
+        .map_page(
+            (1 << 30).into(),
+            0x8000_0000.into(),
+            1 << 30,
+            PteImpl::kernel_mode_config(),
+        )
+        .unwrap();
+    let mut reported = std::collections::HashSet::new();
+    table
+        .visit_table_frames(|start, bytes| {
+            for offset in (0..bytes).step_by(4096) {
+                assert!(reported.insert(start.as_usize() + offset));
+            }
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    let owned: std::collections::HashSet<_> = allocator.allocated_frames().into_iter().collect();
+    assert_eq!(reported, owned);
+    assert!(!reported.contains(&0x8000_0000));
+    assert!(!reported.contains(&0x4000_0000));
+    // Fallible sinks must be able to enforce their own fixed snapshot capacity.
+    assert_eq!(
+        table.visit_table_frames(|_, _| Err::<(), _>("full")),
+        Err("full")
+    );
+}

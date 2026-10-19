@@ -315,18 +315,7 @@ pub(super) fn init(bootargs: Option<&str>) {
     );
     let archive = ax_hal::boot::take_initramfs_range();
     let memory = (archive.is_some() || !BUILTIN_INITRAMFS.is_empty()).then(|| {
-        let external = archive.map(|range| {
-            let address = ax_hal::mem::phys_to_virt(ax_hal::mem::PhysAddr::from(range.start));
-            // SAFETY: someboot validates this FDT range against RAM and reserves
-            // it before the allocator is initialized. It stays reserved until
-            // unpack returns and contains exactly end - start readable bytes.
-            unsafe {
-                core::slice::from_raw_parts(
-                    address.as_usize() as *const u8,
-                    range.end - range.start,
-                )
-            }
-        });
+        let external = archive.as_ref().map(|owner| owner.bytes());
         let (fs, report) =
             ax_fs_ng::initramfs::unpack_sources(&[BUILTIN_INITRAMFS, external.unwrap_or(&[])])
                 .unwrap_or_else(|error| panic!("host initramfs unpack failed: {error:?}"));
@@ -390,27 +379,25 @@ pub(super) fn init(bootargs: Option<&str>) {
     info!("host root selected: {kind:?}");
 }
 
-fn release_archive_pages(range: ax_hal::boot::InitramfsRange) {
-    if !range.reclaimable {
+fn release_archive_pages(archive: ax_hal::boot::Initramfs) {
+    let Some(reclaim) = archive.finish() else {
         return;
+    };
+    let range = reclaim.range();
+    let address = ax_hal::mem::phys_to_virt(ax_hal::mem::PhysAddr::from(range.start as usize));
+    // SAFETY: finish consumed the unique archive owner; all byte borrows have
+    // ended and these complete pages were excluded from boot allocator regions.
+    let managed =
+        unsafe { ax_alloc::global_add_memory_compact(address.as_usize(), range.len as usize) }
+            .expect("failed to reclaim host initramfs pages");
+    if managed != 0 {
+        // SAFETY: the complete range was transferred successfully above.
+        unsafe { reclaim.complete() };
     }
-    const PAGE_SIZE: usize = ax_fs_ng::os::memory::PAGE_SIZE;
-    // Only pages wholly contained in the archive are returned. The boundary
-    // pages can contain firmware data outside the initramfs allocation.
-    let start = range.start.saturating_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let end = range.end & !(PAGE_SIZE - 1);
-    if start < end {
-        let address = ax_hal::mem::phys_to_virt(ax_hal::mem::PhysAddr::from(start));
-        // SAFETY: the boot memory map excludes these complete archive-owned
-        // pages from every allocator region, and the direct map remains valid.
-        let managed =
-            unsafe { ax_alloc::global_add_memory_compact(address.as_usize(), end - start) }
-                .expect("failed to reclaim host initramfs pages");
-        info!(
-            "host initramfs reclaimed {managed} of {} complete archive bytes",
-            end - start
-        );
-    }
+    info!(
+        "host initramfs reclaimed {managed} of {} complete archive bytes",
+        range.len
+    );
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]

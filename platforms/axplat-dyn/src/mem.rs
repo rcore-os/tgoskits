@@ -137,7 +137,11 @@ impl MemIf for MemIfImpl {
             for r in somehal::mem::memory_map() {
                 if matches!(
                     r.memory_type,
-                    MemoryType::Reserved | MemoryType::KImage | MemoryType::PerCpuData
+                    MemoryType::Reserved
+                        | MemoryType::KImage
+                        | MemoryType::PerCpuData
+                        | MemoryType::BootData
+                        | MemoryType::BootReclaimable
                 ) {
                     push_non_overlapping(&mut list, (r.physical_start, r.size_in_bytes));
                 }
@@ -147,8 +151,10 @@ impl MemIf for MemIfImpl {
                 push_non_overlapping(&mut list, range);
             }
             #[cfg(target_arch = "loongarch64")]
-            for &range in LOONGARCH_RESERVED_RAM_RANGES {
-                push_non_overlapping(&mut list, range);
+            if !someboot::handoff::takeover_completed() {
+                for &range in LOONGARCH_RESERVED_RAM_RANGES {
+                    push_non_overlapping(&mut list, range);
+                }
             }
             list
         })

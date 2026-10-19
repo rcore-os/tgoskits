@@ -1,11 +1,12 @@
 //! Typed boot-time reservations, independent of image loading and networking.
 //!
 //! Static plans are executed before firmware services end. Allocations from the
-//! resulting arenas remain reserved across handoff; dropping the most recent
-//! allocation rewinds its arena. Out-of-order drops retain space until reset.
+//! resulting arenas use bounded live intervals. Dropping any allocation makes
+//! its interval reusable; only explicitly transferred objects survive handoff.
 
 pub const PAGE_SIZE: u64 = 4096;
 pub const MAX_RESOURCES: usize = 8;
+pub const MAX_ALLOCATIONS: usize = 128;
 const PLAN_MAGIC: u64 = 0x5342_5253_504c_414e;
 
 /// Application-defined identity. Zero is reserved for an unused wire record.
@@ -133,8 +134,6 @@ impl PhysicalRange {
 pub struct ResourceSnapshot {
     pub id: u64,
     pub range: PhysicalRange,
-    /// Bytes owned by this and earlier stages; never reused by an inheritor.
-    pub used: u64,
     /// Immutable prefix populated before firmware services end.
     pub initialized: u64,
 }
@@ -145,8 +144,7 @@ impl ResourceSnapshot {
             || !self.range.valid()
             || !self.range.start.is_multiple_of(PAGE_SIZE)
             || !self.range.len.is_multiple_of(PAGE_SIZE)
-            || self.used > self.range.len
-            || self.initialized > self.used
+            || self.initialized > self.range.len
         {
             return Err(ResourceError::InvalidSnapshot);
         }
@@ -158,7 +156,7 @@ impl ResourceSnapshot {
 pub enum ResourceError {
     #[error("invalid boot resource capacity, alignment, placement, or identity")]
     InvalidRequest,
-    #[error("invalid boot resource range or allocation watermark")]
+    #[error("invalid boot resource range or live allocation")]
     InvalidSnapshot,
     #[error("duplicate boot resource identity")]
     DuplicateId,
@@ -192,7 +190,7 @@ impl<const N: usize> StaticPlan<N> {
 
 /// Declares the application's boot reservations. Invoke once at module scope.
 /// Inherited EFI boot requires matching pre-reserved resources; it validates
-/// this plan and preserves the inherited watermarks without firmware calls.
+/// this plan and restores explicitly live allocations without firmware calls.
 /// No application callback runs during early boot, and enabling the feature
 /// without a declaration does not allocate any application memory.
 #[macro_export]
@@ -209,12 +207,21 @@ macro_rules! declare_boot_resources {
 
 #[cfg(feature = "boot-resources")]
 mod allocation;
+#[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
+mod intervals;
 #[cfg(feature = "boot-resources")]
 pub use allocation::Allocation;
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub use allocation::allocate;
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub use allocation::initial_contents;
+#[cfg(all(
+    feature = "efi-handoff",
+    efi,
+    target_arch = "loongarch64",
+    not(target_os = "uefi")
+))]
+pub(crate) use allocation::live_snapshots;
 #[cfg(all(
     feature = "boot-resources",
     efi,
@@ -226,5 +233,20 @@ pub(crate) use allocation::prepare_inherited_plan;
 pub(crate) use allocation::prepare_static_plan;
 #[cfg(all(feature = "boot-resources", target_os = "uefi"))]
 pub use allocation::reserve;
+#[cfg(all(
+    feature = "boot-resources",
+    efi,
+    target_arch = "loongarch64",
+    not(target_os = "uefi")
+))]
+pub(crate) use allocation::retained_resources;
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
-pub(crate) use allocation::snapshots;
+pub(crate) use allocation::{retire_transferred, snapshots};
+
+/// A live object transferred into the next stage; addresses are physical.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct AllocationSnapshot {
+    pub resource_id: u64,
+    pub range: PhysicalRange,
+}

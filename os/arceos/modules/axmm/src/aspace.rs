@@ -107,6 +107,13 @@ impl AddrSpace {
             .map_err(|_| MmError::BadAddress)
     }
 
+    pub(crate) fn visit_table_frames<E>(
+        &self,
+        visit: impl FnMut(PhysAddr, usize) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.pt.visit_table_frames(visit)
+    }
+
     pub(crate) const fn page_table_mut(&mut self) -> &mut PageTable {
         &mut self.pt
     }
@@ -522,7 +529,7 @@ impl AddrSpace {
             .map_err(Into::into)
     }
 
-    fn exact_kernel_virtual_allocation(
+    pub(crate) fn exact_kernel_virtual_allocation(
         &self,
         id: KernelVirtualAllocationId,
         start: VirtAddr,

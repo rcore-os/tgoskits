@@ -57,6 +57,10 @@ pub enum MemoryType {
     Reserved,
     Mmio,
     PerCpuData,
+    /// Memory owned by this boot stage, distinct from firmware reservations.
+    BootData,
+    /// Previous execution context, unavailable until the receiver takes over.
+    BootReclaimable,
 }
 
 impl Display for MemoryType {
@@ -68,6 +72,8 @@ impl Display for MemoryType {
             MemoryType::Reserved => "Rsv   ",
             MemoryType::Mmio => "MMIO  ",
             MemoryType::PerCpuData => "PerCPU",
+            MemoryType::BootData => "Boot  ",
+            MemoryType::BootReclaimable => "Retire",
         };
         write!(f, "{}", s)
     }

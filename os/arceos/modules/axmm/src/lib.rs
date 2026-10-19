@@ -249,3 +249,16 @@ fn iomap_generic(addr: PhysAddr, size: usize, mem_flags: MappingFlags) -> MmResu
 
     Ok(mapped + offset)
 }
+
+/// Visits the active kernel table's physical frames under its IRQ-safe lock.
+/// Returns `BadState` if hardware has switched to a different root. The callback
+/// must not allocate, sleep, or acquire the kernel address-space lock again.
+pub fn visit_active_table_frames<E>(
+    visit: impl FnMut(PhysAddr, usize) -> Result<(), E>,
+) -> Result<Result<(), E>, MmError> {
+    let aspace = kernel_aspace().lock_irqsave();
+    if aspace.page_table_root() != ax_hal::KernelMmu::read_kernel_page_table() {
+        return Err(MmError::BadState("active kernel page-table root differs"));
+    }
+    Ok(aspace.visit_table_frames(visit))
+}

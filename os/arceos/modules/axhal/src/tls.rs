@@ -97,6 +97,12 @@ impl Drop for TlsArea {
 }
 
 impl TlsArea {
+    /// Returns the complete allocation backing this live TLS area, including TCB.
+    pub fn backing_range(&self) -> core::ops::Range<usize> {
+        let start = self.base.as_ptr() as usize;
+        start..start + self.layout.size()
+    }
+
     /// Returns the pointer to the TLS static area.
     ///
     /// One should set the hardware thread pointer register to this value.

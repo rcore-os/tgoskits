@@ -1,6 +1,11 @@
 #[cfg(not(target_os = "uefi"))]
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
+#[cfg(not(target_os = "uefi"))]
+use super::intervals::Arenas;
 use super::*;
 pub(crate) fn validate_requests(requests: &[ResourceRequest]) -> Result<(), ResourceError> {
     if requests.len() > MAX_RESOURCES {
@@ -63,7 +68,6 @@ pub(super) fn provision<A: PageAllocator>(
                 records[index] = ResourceSnapshot {
                     id: request.id.0,
                     range,
-                    used: 0,
                     initialized: 0,
                 }
             }
@@ -82,39 +86,45 @@ pub(super) fn provision<A: PageAllocator>(
 }
 
 #[cfg(not(target_os = "uefi"))]
-#[derive(Debug)]
-struct Arena {
-    id: AtomicU64,
-    start: AtomicU64,
-    len: AtomicU64,
-    used: AtomicU64,
-    initialized: AtomicU64,
+struct ArenaState {
+    locked: AtomicBool,
+    state: UnsafeCell<Arenas>,
 }
+// SAFETY: all accesses mask local IRQs and hold the bounded global spin lock.
+// The critical sections do not allocate, sleep or call application code.
 #[cfg(not(target_os = "uefi"))]
-impl Arena {
-    const fn new() -> Self {
-        Self {
-            id: AtomicU64::new(0),
-            start: AtomicU64::new(0),
-            len: AtomicU64::new(0),
-            used: AtomicU64::new(0),
-            initialized: AtomicU64::new(0),
+unsafe impl Sync for ArenaState {}
+#[cfg(not(target_os = "uefi"))]
+static ARENAS: ArenaState = ArenaState {
+    locked: AtomicBool::new(false),
+    state: UnsafeCell::new(Arenas::new()),
+};
+#[cfg(not(target_os = "uefi"))]
+fn with_arenas<R>(f: impl FnOnce(&mut Arenas) -> R) -> R {
+    struct Guard {
+        enabled: bool,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            ARENAS.locked.store(false, Ordering::Release);
+            if self.enabled {
+                ax_cpu::interrupt::enable_irqs();
+            }
         }
     }
-    fn snapshot(&self) -> ResourceSnapshot {
-        ResourceSnapshot {
-            id: self.id.load(Ordering::Acquire),
-            range: PhysicalRange::new(
-                self.start.load(Ordering::Relaxed),
-                self.len.load(Ordering::Relaxed),
-            ),
-            used: self.used.load(Ordering::Acquire),
-            initialized: self.initialized.load(Ordering::Relaxed),
-        }
+    let enabled = ax_cpu::interrupt::irqs_enabled();
+    ax_cpu::interrupt::disable_irqs();
+    while ARENAS
+        .locked
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
     }
+    let _guard = Guard { enabled };
+    // SAFETY: IRQ-off lock excludes every other access, including Drop.
+    f(unsafe { &mut *ARENAS.state.get() })
 }
-#[cfg(not(target_os = "uefi"))]
-static ARENAS: [Arena; MAX_RESOURCES] = [const { Arena::new() }; MAX_RESOURCES];
 
 /// Owns a contiguous reservation. The address is physical; mapping and access
 /// require the platform's normal memory-safety contract. This value is not Clone.
@@ -128,11 +138,7 @@ pub struct Allocation {
 #[derive(Debug)]
 enum AllocationOwner {
     #[cfg(not(target_os = "uefi"))]
-    Arena {
-        index: usize,
-        previous: u64,
-        end: u64,
-    },
+    Arena { index: usize, generation: u64 },
     #[cfg(target_os = "uefi")]
     Firmware,
 }
@@ -153,17 +159,12 @@ impl Drop for Allocation {
     fn drop(&mut self) {
         match self.owner {
             #[cfg(not(target_os = "uefi"))]
-            AllocationOwner::Arena {
-                index,
-                previous,
-                end,
-            } => {
-                let _ = ARENAS[index].used.compare_exchange(
-                    end,
-                    previous,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
+            AllocationOwner::Arena { index, generation } => {
+                with_arenas(|arenas| {
+                    arenas
+                        .release(index, generation)
+                        .expect("live resource allocation owner");
+                });
             }
             #[cfg(target_os = "uefi")]
             AllocationOwner::Firmware => {
@@ -176,85 +177,44 @@ impl Drop for Allocation {
     }
 }
 
-/// Allocates from an application-declared arena, without firmware calls.
+/// Allocates exclusive complete pages from an application-declared arena.
+/// Capacity and alignment are rounded up to at least one page; no firmware call occurs.
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub fn allocate(id: ResourceId, bytes: u64, alignment: u64) -> Result<Allocation, ResourceError> {
-    if id.0 == 0 || bytes == 0 || !alignment.is_power_of_two() {
-        return Err(ResourceError::InvalidRequest);
-    }
-    let (index, arena) = ARENAS
-        .iter()
-        .enumerate()
-        .find(|(_, arena)| arena.id.load(Ordering::Acquire) == id.0)
-        .ok_or(ResourceError::Unavailable)?;
-    let start = arena.start.load(Ordering::Relaxed);
-    let capacity = arena.len.load(Ordering::Relaxed);
-    let mut previous = arena.used.load(Ordering::Acquire);
-    loop {
-        let address = start
-            .checked_add(previous)
-            .and_then(|v| v.checked_add(alignment - 1))
-            .map(|v| v & !(alignment - 1))
-            .ok_or(ResourceError::Capacity)?;
-        let end = address
-            .checked_sub(start)
-            .and_then(|v| v.checked_add(bytes))
-            .filter(|end| *end <= capacity)
-            .ok_or(ResourceError::Capacity)?;
-        match arena
-            .used
-            .compare_exchange(previous, end, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => {
-                return Ok(Allocation {
-                    range: PhysicalRange::new(address, bytes),
-                    owner: AllocationOwner::Arena {
-                        index,
-                        previous,
-                        end,
-                    },
-                });
-            }
-            Err(next) => previous = next,
-        }
-    }
+    with_arenas(|arenas| {
+        let (range, index, generation) = arenas.allocate(id, bytes, alignment)?;
+        Ok(Allocation {
+            range,
+            owner: AllocationOwner::Arena { index, generation },
+        })
+    })
 }
 
 #[cfg(not(target_os = "uefi"))]
 pub(crate) fn snapshots() -> [ResourceSnapshot; MAX_RESOURCES] {
-    core::array::from_fn(|i| ARENAS[i].snapshot())
+    with_arenas(|arenas| arenas.resources)
 }
-
-/// # Safety
-/// Boot CPU only, before allocations or other CPUs can observe this state. The
-/// ranges must remain reserved and exclusively owned across the boot stages.
+#[cfg(all(
+    efi,
+    target_arch = "loongarch64",
+    feature = "efi-handoff",
+    not(target_os = "uefi")
+))]
+pub(crate) fn live_snapshots() -> [AllocationSnapshot; MAX_ALLOCATIONS] {
+    with_arenas(|arenas| arenas.live())
+}
 #[cfg(not(target_os = "uefi"))]
-pub(crate) unsafe fn restore(records: &[ResourceSnapshot]) -> Result<(), ResourceError> {
-    if records.len() > MAX_RESOURCES {
-        return Err(ResourceError::Capacity);
-    }
-    for (i, record) in records.iter().enumerate() {
-        record.validate()?;
-        if records[..i].iter().any(|other| other.id == record.id) {
-            return Err(ResourceError::DuplicateId);
-        }
-        if records[..i]
-            .iter()
-            .any(|other| other.range.overlaps(record.range))
-        {
-            return Err(ResourceError::Overlap);
-        }
-    }
-    for (arena, record) in ARENAS.iter().zip(records) {
-        arena.start.store(record.range.start, Ordering::Relaxed);
-        arena.len.store(record.range.len, Ordering::Relaxed);
-        arena.used.store(record.used, Ordering::Relaxed);
-        arena
-            .initialized
-            .store(record.initialized, Ordering::Relaxed);
-        arena.id.store(record.id, Ordering::Release);
-    }
-    Ok(())
+pub(crate) fn retire_transferred(range: PhysicalRange) -> Option<PhysicalRange> {
+    with_arenas(|arenas| arenas.retire(range))
+}
+/// # Safety
+/// Boot CPU only, before allocations or SMP; ranges are exclusively reserved.
+#[cfg(not(target_os = "uefi"))]
+pub(crate) unsafe fn restore(
+    records: &[ResourceSnapshot],
+    live: &[AllocationSnapshot],
+) -> Result<(), ResourceError> {
+    with_arenas(|arenas| arenas.restore(records, live))
 }
 
 #[cfg(any(target_os = "uefi", all(efi, feature = "boot-resources")))]
@@ -282,7 +242,7 @@ pub(crate) fn prepare_static_plan() {
         .expect("failed to initialize boot resources");
     // SAFETY: this is the only early-boot initialization, before EBS and SMP.
     unsafe {
-        restore(&records[..requests.len()]).expect("invalid provisioned resources");
+        restore(&records[..requests.len()], &[]).expect("invalid provisioned resources");
     }
 }
 
@@ -325,10 +285,38 @@ fn static_requests() -> &'static [ResourceRequest] {
 #[cfg(all(efi, target_arch = "loongarch64", not(target_os = "uefi")))]
 pub(crate) unsafe fn prepare_inherited_plan(
     records: &[ResourceSnapshot],
+    live: &[AllocationSnapshot],
 ) -> Result<(), ResourceError> {
-    validate_inherited_requests(static_requests(), records)?;
-    // SAFETY: forwarded from the one-time boot ownership contract.
-    unsafe { restore(records) }
+    let retained = retained_resources(records)?;
+    let count = retained.iter().take_while(|r| r.id != 0).count();
+    // SAFETY: boot CPU initializes only the receiver's requested capacity.
+    unsafe { restore(&retained[..count], live) }
+}
+
+#[cfg(all(efi, target_arch = "loongarch64", not(target_os = "uefi")))]
+pub(crate) fn retained_resources(
+    records: &[ResourceSnapshot],
+) -> Result<[ResourceSnapshot; MAX_RESOURCES], ResourceError> {
+    let requests = static_requests();
+    validate_inherited_requests(requests, records)?;
+    let mut retained = [ResourceSnapshot::default(); MAX_RESOURCES];
+    for (i, request) in requests.iter().enumerate() {
+        let record = records
+            .iter()
+            .find(|r| r.id == request.id.0)
+            .ok_or(ResourceError::Unavailable)?;
+        retained[i] = ResourceSnapshot {
+            range: PhysicalRange::new(record.range.start, request.capacity),
+            initialized: if request.initial_contents() == InitialContents::Empty {
+                0
+            } else {
+                record.initialized
+            },
+            ..*record
+        };
+        retained[i].validate()?;
+    }
+    Ok(retained)
 }
 
 #[cfg(any(test, all(efi, target_arch = "loongarch64", not(target_os = "uefi"))))]
@@ -357,14 +345,14 @@ fn validate_inherited_requests(
 
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub fn initial_contents(id: ResourceId) -> Option<&'static [u8]> {
-    let arena = ARENAS
-        .iter()
-        .find(|arena| arena.id.load(Ordering::Acquire) == id.0 && id.0 != 0)?;
-    let len = arena.initialized.load(Ordering::Relaxed);
+    let resource = snapshots()
+        .into_iter()
+        .find(|r| r.id == id.0 && id.0 != 0)?;
+    let len = resource.initialized;
     if len == 0 {
         return None;
     }
-    let address = arena.start.load(Ordering::Relaxed);
+    let address = resource.range.start;
     let pointer = crate::mem::phys_to_virt(address as usize);
     // SAFETY: the initialized prefix is immutable and permanently reserved.
     // Allocation starts after this prefix; restoration occurs only before SMP.
@@ -386,7 +374,6 @@ fn initialize_reservations<A: PageAllocator>(
             match unsafe { firmware::initialize_image(record.range) } {
                 Ok(len) => {
                     record.initialized = len;
-                    record.used = len;
                 }
                 Err(error) => {
                     for record in records[..requests.len()].iter().rev() {
@@ -448,7 +435,7 @@ mod tests {
         assert!(provision(&[], &mut pages).is_ok());
     }
     #[test]
-    fn rejects_bad_layout_and_watermarks() {
+    fn rejects_bad_layout_and_inherited_capacity() {
         assert_eq!(
             ResourceRequest::new(ResourceId(1), 4096, 3, Placement::Anywhere).validate(),
             Err(ResourceError::InvalidRequest)
@@ -461,7 +448,6 @@ mod tests {
         let record = ResourceSnapshot {
             id: 1,
             range: PhysicalRange::new(0x1000, 4096),
-            used: 128,
             initialized: 0,
         };
         assert!(validate_inherited_requests(&[request(1)], &[record]).is_ok());
@@ -471,7 +457,7 @@ mod tests {
         );
         assert_eq!(
             ResourceSnapshot {
-                initialized: record.used + 1,
+                initialized: record.range.len + 1,
                 ..record
             }
             .validate(),
@@ -481,8 +467,7 @@ mod tests {
             ResourceSnapshot {
                 id: 1,
                 range: PhysicalRange::new(4096, 4096),
-                initialized: 0,
-                used: 4097
+                initialized: 4097
             }
             .validate(),
             Err(ResourceError::InvalidSnapshot)

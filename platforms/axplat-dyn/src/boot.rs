@@ -15,6 +15,10 @@ fn main() -> ! {
     validate_frozen_percpu_layout();
     bind_current_cpu(cpu_index(cpu_idx))
         .unwrap_or_else(|error| panic!("failed to bind the primary CPU-local area: {error}"));
+    // SAFETY: final someboot entry already installed this image's stack,
+    // exception vectors and page tables; binding above replaced CPU-local state.
+    // No platform memory cache or runtime allocator has been initialized yet.
+    unsafe { somehal::mem::complete_boot_takeover() };
     ax_plat::call_main(cpu_idx, args)
 }
 
@@ -76,14 +80,14 @@ pub fn bootargs() -> Option<&'static str> {
     somehal::bootargs()
 }
 
-pub use somehal::InitramfsRange;
+pub use somehal::{Initramfs, InitramfsRange, InitramfsReclaim};
 
 pub fn initramfs_range() -> Option<InitramfsRange> {
     somehal::initramfs_range()
 }
 
 /// Claims the host archive exactly once, after allocator reservations are installed.
-pub fn take_initramfs_range() -> Option<InitramfsRange> {
+pub fn take_initramfs_range() -> Option<Initramfs> {
     somehal::take_initramfs_range()
 }
 

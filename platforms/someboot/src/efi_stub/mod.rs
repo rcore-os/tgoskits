@@ -206,7 +206,7 @@ pub(crate) fn exit_boot_services() {
         crate::mem::add_memory_descriptor(crate::mem::MemoryDescriptor::new_aligned(
             resource.range.start as usize,
             resource.range.len as usize,
-            crate::mem::MemoryType::Reserved,
+            crate::mem::MemoryType::BootData,
             4096,
         ))
         .expect("failed to reserve boot resource");

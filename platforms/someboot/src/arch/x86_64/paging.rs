@@ -131,6 +131,8 @@ fn setup_page_table() -> anyhow::Result<()> {
             crate::mem::MemoryType::Mmio => "Mmio",
             crate::mem::MemoryType::KImage => "KImage",
             crate::mem::MemoryType::PerCpuData => "PerCpu",
+            crate::mem::MemoryType::BootData => "BootData",
+            crate::mem::MemoryType::BootReclaimable => "BootReclaimable",
         };
 
         let pte = PteConfig {

@@ -23,8 +23,11 @@ pub(super) fn prepare_service_context(_system_table: *const c_void) -> bool {
         let record = payload::inherited_payload().expect("missing inherited resources");
         // SAFETY: boot CPU only, before any allocation or secondary CPU starts.
         unsafe {
-            crate::boot_resources::prepare_inherited_plan(record.resource_slice().unwrap())
-                .expect("inherited resource plan is not satisfied");
+            crate::boot_resources::prepare_inherited_plan(
+                record.resource_slice().unwrap(),
+                record.allocation_slice().unwrap(),
+            )
+            .expect("inherited resource plan is not satisfied");
         }
     } else {
         crate::boot_resources::prepare_static_plan();
@@ -174,7 +177,14 @@ fn load_host_boot_payload() {
                 .expect("archive range overflows"),
         )
         .expect("archive end overflows");
-        boot_payload::publish(start, end, false);
+        let allocation = payload
+            .allocation_slice()
+            .unwrap()
+            .iter()
+            .find(|a| a.range.contains(payload.archive))
+            .expect("validated archive allocation")
+            .range;
+        boot_payload::publish_inherited(start, end, allocation);
     }
 }
 

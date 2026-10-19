@@ -392,7 +392,7 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 
 #### LoongArch ArceOS EFI
 
-- 公共启动资源位于 `someboot::boot_resources`，交接描述、v3 协议和应用元数据位于
+- 公共启动资源位于 `someboot::boot_resources`，交接描述、v4 协议和应用元数据位于
   `someboot::handoff`。`boot-resources` 可独立于交接、网络和 OTA 使用；
   `efi-handoff = ["efi", "boot-resources"]` 只开启交接生产。普通 EFI 消费随构建脚本
   派生的 `cfg(efi)`，不能替换成 `feature = "efi"` 或依赖生产端。旧 `efi-loader`、
@@ -408,11 +408,12 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   `efi_stub/loongarch64/handoff.rs`，按 `efi-handoff` 启用。通用 initramfs 发布和
   一次领取仍在 `boot_payload/mod.rs`，保留 `boot_payload::publish` 与
   `efi_stub::setup_service` 契约路径。
-- `declare_boot_resources!` 写入保留的无指针计划，退出服务前校验并预留；无声明时
-  不分配应用池，部分失败逆序释放。`Allocation` 独占分配，逆序释放以 CAS 回退，
-  非逆序释放保留空间直到复位。`ResourceSnapshot` 记录 ID、范围、不可变前缀和
-  水位，要求 `initialized <= used <= capacity`；继承目标静态计划必须由已有快照
-  满足，资源恢复仅依赖 `boot-resources`，不能被生产端 feature 关闭。
+- `declare_boot_resources!` 写入 `.someboot.resources` 的无指针静态计划，退出服务前校验并预留；
+  `__someboot_resources_start/end` 只界定计划元数据，不是实际资源池。无声明时不分配应用池，
+  部分失败逆序释放。`Allocation` 是唯一所有者，所有池合计最多 128 个存活区间，
+  支持任意顺序释放并用代际拒绝陈旧释放。`ResourceSnapshot` 保存 ID、范围和不可变前缀；
+  没有历史水位。继承仅保留接收方静态计划需要的容量，`image`、归档及 `preserve` 显式选择
+  存活对象，死亡分配可在继承池内复用；未请求池和多余容量扣除存活对象后回收。
 - axloader 自己声明镜像区 32 MiB（`0x200000`）、归档区 256 MiB、EFI 槽执行区
   32 MiB 和固件原文件区 32 MiB。`InitialContents::FirmwareBootImage` 在退出服务前
   读取最初的 EFI 文件；继承阶段仍保留同一来源文件，不能当作当前子镜像。该 loader
@@ -420,10 +421,11 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   固件文件读取使用固件分配的单页缓冲，再 CPU 复制至内核直接映射；不要把内核
   虚拟地址交给固件 DMA。首个 A.EFI 必须保存原始文件，不能保存已修改的运行数据段，
   否则失败 trial 回滚时稳定槽可能无法重新执行。
-- `handoff::protocol::HandoffRecord` v3 GUID 为
+- `handoff::protocol::HandoffRecord` v4 沿用 GUID
   `7b9fa931-a25b-d043-b13c-63435428c473`，不包含固定池或 OTA 槽字段。固件活动模式
-  不替换内存图；继承模式要求全部资源由 Reserved/KImage 内存完整覆盖，目标及
-  initramfs 位于分配水位内且不覆盖不可变前缀。v2 旧 GUID 被明确拒绝，生产者、
+  不替换内存图；继承模式要求资源由保留的启动内存覆盖，目标及
+  initramfs 位于显式存活分配内且不覆盖不可变前缀。v3 通过版本和大小拒绝，v2 旧 GUID
+  继续明确拒绝。生产者、
   目标与 A/B 槽必须一起重建。`handoff/received/loongarch64.rs` 将完整记录复制，
   并由 `handoff/received` 保存元数据；内存图恢复属于交接消费，`boot_payload` 仅管理 initramfs。
   消费端在复用共享表前将记录复制
@@ -434,7 +436,7 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   已占该区时不能猜测 load bias 再覆盖。继承入口恢复内存图并跳过第二次
   ExitBootServices，退出后只能操作预留内存和运行时服务。
 - axstd 镜像和 A/B 槽统一通过 `ax-runtime::handoff::enter()` 退出运行时再交接。
-  当前只支持一个运行处理器；应用先完成自己的 I/O 和 OTA 提交。运行时依次封存
+  当前只支持一个运行处理器且不支持用户地址空间交接；应用先完成自己的 I/O 和 OTA 提交。运行时依次封存
   文件系统、停止块控制器并同步 IRQ、join 网络协议及队列任务并确认 DMA 停稳、
   排空并屏蔽串口，最后关闭本核 IRQ、抢占和 clockevent。VirtIO 网卡必须完成
   状态零的 reset 读回；仅关闭 socket、屏蔽中断或隔离旧 backing 都不能证明目标
@@ -444,6 +446,18 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   `ProtocolPollRuntime` 的等待谓词必须包含持久的 stop 状态，不能只依赖可被
   `finish_cycle()` 清除的 scheduled 位。返回式 EFI 目标须保留调用方栈、MMU、
   处理器局部状态和中断屏蔽；最小返回 ELF 的真实 smoke 必须观察复位后的新 epoch。
+- LoongArch `PreparedHandoff` 不发布最终 map；设备停稳、IRQ/抢占关闭后，
+  `ExecutionSnapshot` 由 ax-mm 的只读表帧遍历、栈与 TLS 所有者形成。`seal` 无分配地发布
+  v4 map 并返回 `SealedHandoff`；根表跨度及全部中间表帧必须包含，叶数据页不能冒充表帧。
+  `BootData` 是本阶段启动占用，`BootReclaimable` 是旧上下文待回收内存，均不能供 early allocator 使用。
+  目标在 `axplat-dyn::boot::main` 绑定 CPU-local 后、`call_main` 前调用 `complete_boot_takeover`，
+  然后才冻结平台内存列表并初始化分配器。原生 UEFI 的返回式生命周期不经过这个回收点。
+  固件 Runtime、系统表及仍可达配置表、ACPI、MMIO、当前镜像及未消费载荷继续保留。
+  EFI 配置表仍指向共享记录，不能因接收方已经复制就释放它。
+- `take_initramfs_range` 返回不可复制的 `Initramfs`，`bytes()` 借用结束后才能 `finish`。
+  消费后退役资源池内区间，普通完整页通过 `global_add_memory_compact` 返回，成功后一次性提交。
+  平台 map 冻结后不变；下一次交接从冻结 map 加已完成归还状态派生。验收必须实际从旧镜像、
+  资源池和已消费归档取得普通页并写读；分别记录原始回收字节和扣除 allocator 元数据后的管理量。
 - x86 ELF 也使用 `ResourceRequest`/`reserve()` 和 `HandoffSpec`/`PreparedHandoff`，
   保留 LoadOptions、Linux LoadFile2 以及 OTA LoadImage/StartImage。返回且固件活动
   时撤销事务、恢复旧表和参数；服务已退出或撤销失败时保留被引用的分配，不再调用
@@ -463,7 +477,8 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   通过既有转换生成 EFI `.bin`，验证时应移走旧 `.bin` 核对冷构建。
   覆盖写满状态保持、HTTP 幂等与拒绝、真实 trial、QMP 复位回滚、旧确认
   拒绝、再次确认及复位后稳定摘要持久化；上传独立 helloworld ELF 与宿主归档后，必须观察目标
-  `HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。
+  `HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED`、`HANDOFF_MEMORY_RECLAIM_PASSED`、
+  `HANDOFF_INITRAMFS_RECLAIM_PASSED` 和 `Hello, world!`。
   `ready_to_handoff` 单独出现只表示准备交接，`qemu-loongarch64.toml` 仅证明网络
   服务启动。AArch64 EFI 镜像生成、LoongArch 非 EFI 和 UHI handoff 不在该门禁范围。
 

@@ -7,7 +7,7 @@ use crate::{
 
 pub fn setup_memory_map<'a>(mems: impl Iterator<Item = &'a MemoryDescriptor>) {
     for memory in mems {
-        let desc = match memory.ty {
+        let mut desc = match memory.ty {
             MemoryType::CONVENTIONAL
             | MemoryType::BOOT_SERVICES_CODE
             | MemoryType::BOOT_SERVICES_DATA
@@ -32,6 +32,82 @@ pub fn setup_memory_map<'a>(mems: impl Iterator<Item = &'a MemoryDescriptor>) {
                 PAGE_SIZE,
             ),
         };
+        // Config entries have no common payload size. Preserve their containing
+        // firmware descriptors, including boot-services allocations, rather
+        // than guessing a header length and freeing reachable trailing bytes.
+        if desc.memory_type == crate::mem::MemoryType::Free && retains_firmware_storage(memory) {
+            desc.memory_type = crate::mem::MemoryType::Reserved;
+        }
         add_memory_descriptor(desc).unwrap();
     }
+}
+
+fn retains_firmware_storage(memory: &MemoryDescriptor) -> bool {
+    let Some(system) = uefi::table::system_table_raw() else {
+        return false;
+    };
+    let normalize = |address: usize| crate::mem::virt_to_phys(address as *const u8) as u64;
+    let overlaps = |address: usize, bytes: usize| {
+        let physical = normalize(address);
+        let end = physical
+            .checked_add(bytes as u64)
+            .expect("EFI table range overflows");
+        let memory_end = memory
+            .phys_start
+            .checked_add(
+                memory
+                    .page_count
+                    .checked_mul(4096)
+                    .expect("EFI map length overflows"),
+            )
+            .expect("EFI descriptor overflows");
+        address != 0 && physical < memory_end && memory.phys_start < end
+    };
+    let contains = |address: usize| overlaps(address, 1);
+    if overlaps(
+        system.as_ptr() as usize,
+        core::mem::size_of::<uefi_raw::table::system::SystemTable>(),
+    ) {
+        return true;
+    }
+    // SAFETY: this is the installed firmware table, retained after EBS; only
+    // storage pointers are inspected and no firmware function is called.
+    let system = unsafe { system.as_ref() };
+    if [
+        system.firmware_vendor as usize,
+        system.runtime_services as usize,
+        system.configuration_table as usize,
+    ]
+    .into_iter()
+    .any(contains)
+    {
+        return true;
+    }
+    let table_bytes = system
+        .number_of_configuration_table_entries
+        .checked_mul(core::mem::size_of::<
+            uefi_raw::table::configuration::ConfigurationTable,
+        >())
+        .expect("EFI configuration array overflows");
+    if overlaps(system.configuration_table as usize, table_bytes) {
+        return true;
+    }
+    // SAFETY: EFI owns this table array. Its full backing is retained above and
+    // it remains readable while this final firmware map is copied.
+    if system.number_of_configuration_table_entries == 0 {
+        return false;
+    }
+    assert!(
+        !system.configuration_table.is_null(),
+        "invalid EFI configuration table"
+    );
+    let entries = unsafe {
+        core::slice::from_raw_parts(
+            system.configuration_table,
+            system.number_of_configuration_table_entries,
+        )
+    };
+    entries
+        .iter()
+        .any(|entry| contains(entry.vendor_table as usize))
 }

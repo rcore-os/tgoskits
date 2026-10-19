@@ -3,6 +3,19 @@
 use super::*;
 
 impl TaskSystem {
+    /// Borrows the current execution resources while their thread is running.
+    /// The callback runs under the registry lock and must not block or reenter
+    /// the task system. No resource ownership escapes this scope.
+    pub fn with_thread_resources<R>(
+        &self,
+        thread: ThreadId,
+        inspect: impl FnOnce(&ThreadResources) -> R,
+    ) -> Result<R, TaskError> {
+        let state = self.state.lock();
+        let record = state.thread_record(thread)?;
+        Ok(inspect(&record.resources))
+    }
+
     /// Returns the current state of a live registry entry.
     pub fn thread_state(&self, thread: ThreadId) -> Result<ThreadState, TaskError> {
         Ok(self

@@ -386,3 +386,52 @@ fn map_alloc_status(error: ax_alloc::AllocError) -> RuntimeStatus {
         _ => RuntimeStatus::Platform,
     }
 }
+
+/// The scheduler retains these owners while the current task is running.
+/// Report backing from owners rather than deriving sizes from SP or TP.
+pub(crate) fn snapshot_current_execution(
+    snapshot: &mut ax_hal::boot::ExecutionSnapshot,
+) -> Result<(), ax_hal::boot::HandoffError> {
+    use ax_hal::boot::{HandoffError, PhysicalRange};
+    let protect_linear =
+        |snapshot: &mut ax_hal::boot::ExecutionSnapshot, start: usize, bytes: usize| {
+            if bytes == 0 {
+                return Ok(());
+            }
+            let physical = ax_hal::mem::virt_to_phys(ax_memory_addr::VirtAddr::from(start));
+            snapshot.protect(PhysicalRange::new(physical.as_usize() as u64, bytes as u64))
+        };
+    ax_task::runtime::resource::with_current_resources(|resources| {
+        let handle = resources.stack();
+        if handle.is_none() {
+            let (base, len) = ax_hal::mem::boot_stack_bounds(ax_hal::percpu::this_cpu_id());
+            protect_linear(snapshot, base.as_usize(), len)?;
+        } else {
+            // SAFETY: the current running record retains its stack owner for
+            // this callback and cannot be reaped while executing on this CPU.
+            let stack =
+                unsafe { &*ptr::with_exposed_provenance::<RuntimeStack>(handle.into_raw()) };
+            match &stack.backing {
+                StackBacking::Heap { pointer, layout } => {
+                    protect_linear(snapshot, pointer.as_ptr() as usize, layout.size())?
+                }
+                #[cfg(feature = "paging")]
+                StackBacking::VirtualPages { allocation, .. } => allocation
+                    .visit_backing_frames(|frame, len| {
+                        snapshot.protect(PhysicalRange::new(frame.as_usize() as u64, len as u64))
+                    })
+                    .map_err(|_| HandoffError::Unavailable)??,
+            }
+        }
+        #[cfg(kernel_tls)]
+        if !resources.tls().is_none() {
+            // SAFETY: the same running record retains this unique TLS owner.
+            let tls =
+                unsafe { &*ptr::with_exposed_provenance::<RuntimeTls>(resources.tls().into_raw()) };
+            let range = tls.area.backing_range();
+            protect_linear(snapshot, range.start, range.len())?;
+        }
+        Ok(())
+    })
+    .map_err(|_| HandoffError::Unavailable)?
+}

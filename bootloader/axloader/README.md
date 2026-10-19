@@ -190,9 +190,9 @@ pending 槽前提交，`ota::handoff` 将应用自有的槽位和代次编码为
 `/api/v1/ota/confirm` 按更新 ID 和来源提交稳定槽。没有可信 UEFI/FDT 熵时，先提交
 持久代次再派生控制面身份；继承阶段复用父 loader 已提交的代次。
 
-someboot 的 v3 `HandoffRecord` 使用 GUID `7b9fa931-a25b-d043-b13c-63435428c473`，
+someboot 的 v4 `HandoffRecord` 使用 GUID `7b9fa931-a25b-d043-b13c-63435428c473`，
 承载目标范围、cmdline、initramfs、资源快照、内存图和有界应用元数据，不包含固定池
-或 OTA 槽位字段。继承内核复制记录后跳过第二次 ExitBootServices。v2 不兼容，
+或 OTA 槽位字段。继承内核复制记录后跳过第二次 ExitBootServices。v2/v3 不兼容，
 生产者、目标和 A/B 槽必须一起重建；不提供旧协议或旧接口别名。非 EFI LoongArch、
 UHI FDT handoff 和 AArch64 EFI 镜像生成不在本阶段。
 
@@ -318,3 +318,11 @@ FAT 映像跨多次启动，检查 `hostfwd` 上的直连、错误摘要、短�
 `loader_broadcast_error` 仅影响自动发现；有设备 IP 的直连调用仍可用。
 返回 `409 stale_boot_epoch` 时重新 GET 状态，使用新的启动代次发起请求。
 `ready_to_handoff` 后出现交接错误，应核对 ELF/归档入口和 UEFI 退出路径。
+
+
+LoongArch 交接的资源容量与存活对象分开管理。等待下载的 axloader 继续保有声明容量；
+普通目标没有资源计划时，只保留当前镜像、未消费归档及显式存活分配。旧镜像、栈、
+页表和逐核区在目标安装自身执行环境并绑定 CPU-local 后才回收，随后才初始化普通分配器。
+`PreparedHandoff::seal` 在运行时停稳后的无分配窗口发布最终快照，生成可进入的 `SealedHandoff`。
+initramfs 解包借用结束后通过唯一所有者归还完整页；冻结的平台 map 不再修改。
+机制、内存分类与失败边界见[启动内存回收设计](../../docs/design/someboot-boot-resources.md#4-启动内存回收)。

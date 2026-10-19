@@ -2215,6 +2215,26 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         PageTableWalker::new(self, config)
     }
 
+    /// Visits physical storage of the root and every reachable table frame.
+    /// Does not allocate, mutate PTEs, or report leaf data/huge-page frames.
+    /// The borrow must exclude concurrent software mutation of the hierarchy.
+    /// A concatenated root is reported as one span containing all root frames.
+    pub fn visit_table_frames<E>(
+        &self,
+        mut visit: impl FnMut(PhysAddr, usize) -> Result<(), E>,
+    ) -> Result<(), E> {
+        visit(self.root.paddr, T::PAGE_SIZE * Frame::<T, A>::ROOT_FRAMES)?;
+        for info in self.walk_all(WalkConfig {
+            start_vaddr: 0.into(),
+            end_vaddr: usize::MAX.into(),
+        }) {
+            if info.pte.present() && !info.is_final_mapping {
+                visit(info.pte.paddr(true), T::PAGE_SIZE)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn walk(
         &self,
         start_vaddr: VirtAddr,

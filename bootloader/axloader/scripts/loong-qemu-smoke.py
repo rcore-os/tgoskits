@@ -33,7 +33,14 @@ def build():
     run("cargo", "xtask", "arceos", "qemu", "--package", "arceos-helloworld",
         "--config", "apps/arceos/helloworld/build-loongarch64-boot-resources.toml",
         "--qemu-config", "apps/arceos/helloworld/qemu-loongarch64-boot-resources.toml")
-    run("cargo", "xtask", "image", "pack-initramfs", "test-suit/host-initramfs", INITRAMFS)
+    # A full-page archive is required to prove allocator reuse after unpack.
+    # Keep the large fixture out of the repository and ordinary initramfs cases.
+    import shutil
+    with tempfile.TemporaryDirectory(prefix="axloader-reclaim-archive-") as temporary:
+        fixture = Path(temporary) / "root"
+        shutil.copytree(WORKSPACE / "test-suit/host-initramfs", fixture)
+        (fixture / "etc/reclaim-filler").write_bytes(bytes(1024 * 1024))
+        run("cargo", "xtask", "image", "pack-initramfs", fixture, INITRAMFS)
     run("cargo", "xtask", "arceos", "build", "--package", "arceos-helloworld",
         "--config", AXLOADER / "build-loongarch64-helloworld-efi.toml")
     run("cargo", "xtask", "arceos", "build", "--package", "axloader", "--config", BUILD)
@@ -157,7 +164,8 @@ def run_case(root, storage_full):
             markers = ["network_ready: arch=loongarch64"] if storage_full else [
                 "elf_loaded: load=0x200000", "ready_to_handoff",
                 "runtime_handoff_devices_stopped",
-                "HOST_CMDLINE: axloader-positive=1", "HOST_INITRAMFS_PASSED", "Hello, world!",
+                "HOST_CMDLINE: axloader-positive=1", "HOST_INITRAMFS_PASSED", "HANDOFF_MEMORY_RECLAIM_PASSED",
+                "HANDOFF_INITRAMFS_RECLAIM_PASSED", "Hello, world!",
             ]
             check_log(log, qemu, markers)
         print(f"LoongArch EFI {name}: passed", flush=True)

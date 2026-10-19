@@ -38,20 +38,17 @@ pub fn initramfs_range() -> Option<InitramfsRange> {
 }
 
 /// Claims the reserved external archive for unpacking and eventual reclamation.
-pub fn take_initramfs_range() -> Option<InitramfsRange> {
+pub fn take_initramfs_range() -> Option<Initramfs> {
     #[cfg(not(any(test, feature = "host-test")))]
     {
-        axplat_dyn::take_initramfs_range().map(|range| InitramfsRange {
-            start: range.start,
-            end: range.end,
-            reclaimable: range.reclaimable,
-        })
+        axplat_dyn::take_initramfs_range()
     }
     #[cfg(any(test, feature = "host-test"))]
     {
         None
     }
 }
+pub use axplat_dyn::{Initramfs, InitramfsReclaim};
 
 /// Returns the trusted firmware seed captured during early boot.
 pub fn boot_entropy() -> Option<[u8; 32]> {
@@ -65,3 +62,5 @@ pub fn boot_entropy() -> Option<[u8; 32]> {
         None
     }
 }
+
+pub use axplat_dyn::{ExecutionSnapshot, HandoffError, PhysicalRange};

@@ -19,12 +19,13 @@
 /// A returning entry must preserve the caller's stack, MMU mappings, CPU-local
 /// state and interrupt mask, as required by its calling convention. A kernel
 /// that has replaced that execution context must not return to this caller.
-pub unsafe fn enter(enter: impl FnOnce()) -> ! {
+pub unsafe fn enter(enter: impl FnOnce(ax_hal::boot::ExecutionSnapshot)) -> ! {
     if crate::hal::cpu_num() != 1
         || cfg!(any(
             feature = "display",
             feature = "input",
-            feature = "vsock"
+            feature = "vsock",
+            feature = "uspace"
         ))
     {
         reset_with_error("unsupported runtime handoff configuration");
@@ -65,7 +66,21 @@ pub unsafe fn enter(enter: impl FnOnce()) -> ! {
     // Keep this guard alive through entry and the terminal reset on return.
     let _guard = crate::task::sync::PreemptIrqSaveGuard::new();
     crate::clock_event_runtime::take_current_clock_event_offline();
-    enter();
+    let mut context = ax_hal::boot::ExecutionSnapshot::new();
+    if let Err(error) = crate::thread::snapshot_current_execution(&mut context) {
+        reset_with_error(error);
+    }
+    #[cfg(feature = "paging")]
+    match ax_mm::visit_active_table_frames(|frame, bytes| {
+        context.protect(ax_hal::boot::PhysicalRange::new(
+            frame.as_usize() as u64,
+            bytes as u64,
+        ))
+    }) {
+        Ok(Ok(())) => {}
+        _ => reset_with_error("cannot snapshot active table frames"),
+    }
+    enter(context);
     crate::hal::power::system_reset()
 }
 

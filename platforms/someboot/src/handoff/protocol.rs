@@ -1,14 +1,16 @@
-//! Version 3, pointer-free EFI configuration-table wire format.
-//! Producers and consumers must be rebuilt together. Version 2 is rejected.
+//! Version 4, pointer-free EFI configuration-table wire format.
+//! Producers and consumers must be rebuilt together. Earlier versions are rejected.
 use core::mem::size_of;
 
 use super::{ApplicationMetadata, HandoffError, MAX_CMDLINE, MAX_METADATA, validate_cmdline};
-use crate::boot_resources::{MAX_RESOURCES, PhysicalRange, ResourceSnapshot};
+use crate::boot_resources::{
+    AllocationSnapshot, MAX_ALLOCATIONS, MAX_RESOURCES, PhysicalRange, ResourceSnapshot,
+};
 
 #[cfg(any(target_os = "uefi", efi))]
 pub(crate) const HANDOFF_GUID: uefi::Guid = uefi::guid!("7b9fa931-a25b-d043-b13c-63435428c473");
 const MAGIC: u64 = 0x5342_4841_4e44_4f46;
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 pub const MAX_REGIONS: usize = 128;
 
 #[repr(C)]
@@ -34,11 +36,15 @@ pub struct HandoffRecord {
     // 0: firmware services are active; 1: inherited post-EBS reservations.
     boot_services_exited: u64,
     pub image: PhysicalRange,
+    /// Caller image retired only after the receiver installs its own context.
+    pub caller_image: PhysicalRange,
     pub archive: PhysicalRange,
     pub cmdline_len: u32,
     pub cmdline_bytes: [u8; MAX_CMDLINE + 1],
     pub resource_count: u32,
     pub resources: [ResourceSnapshot; MAX_RESOURCES],
+    pub allocation_count: u32,
+    pub allocations: [AllocationSnapshot; MAX_ALLOCATIONS],
     pub metadata_id: [u8; 16],
     pub metadata_version: u32,
     pub metadata_len: u32,
@@ -61,6 +67,7 @@ impl HandoffRecord {
             },
             boot_services_exited: 1,
             image: PhysicalRange::new(0, 0),
+            caller_image: PhysicalRange::new(0, 0),
             archive: PhysicalRange::new(0, 0),
             cmdline_len: 0,
             cmdline_bytes: [0; MAX_CMDLINE + 1],
@@ -68,9 +75,13 @@ impl HandoffRecord {
             resources: [ResourceSnapshot {
                 id: 0,
                 range: PhysicalRange::new(0, 0),
-                used: 0,
                 initialized: 0,
             }; MAX_RESOURCES],
+            allocation_count: 0,
+            allocations: [AllocationSnapshot {
+                resource_id: 0,
+                range: PhysicalRange::new(0, 0),
+            }; MAX_ALLOCATIONS],
             metadata_id: [0; 16],
             metadata_version: 0,
             metadata_len: 0,
@@ -87,6 +98,9 @@ impl HandoffRecord {
     /// Boot Services; this record does not replace the firmware memory map.
     pub fn for_firmware(spec: super::HandoffSpec<'_>) -> Result<Self, HandoffError> {
         spec.validate()?;
+        if !spec.preserve.is_empty() {
+            return Err(HandoffError::InvalidTarget);
+        }
         let mut record = Self::empty();
         record.boot_services_exited = 0;
         record.image = spec.image;
@@ -143,6 +157,11 @@ impl HandoffRecord {
             .get(..self.resource_count as usize)
             .ok_or(HandoffError::InvalidProtocol)
     }
+    pub fn allocation_slice(&self) -> Result<&[AllocationSnapshot], HandoffError> {
+        self.allocations
+            .get(..self.allocation_count as usize)
+            .ok_or(HandoffError::InvalidProtocol)
+    }
     pub fn validate(&self) -> Result<(), HandoffError> {
         validate_header(self.header)?;
         self.cmdline()?;
@@ -163,6 +182,7 @@ impl HandoffRecord {
         }
         if self.boot_services_exited == 0 {
             return if self.resource_count == 0
+                && self.allocation_count == 0
                 && self.memory_map_len == 0
                 && self.archive == PhysicalRange::default()
             {
@@ -174,6 +194,9 @@ impl HandoffRecord {
         if self.boot_services_exited != 1 {
             return Err(HandoffError::InvalidProtocol);
         }
+        if !self.caller_image.valid() || self.caller_image.overlaps(self.image) {
+            return Err(HandoffError::InvalidTarget);
+        }
         let resources = self.resource_slice()?;
         for (i, r) in resources.iter().enumerate() {
             r.validate()?;
@@ -184,19 +207,34 @@ impl HandoffRecord {
                 return Err(HandoffError::InvalidProtocol);
             }
         }
-        // In an inherited handoff all owned image/archive bytes must be below
-        // the published allocation watermarks, not merely inside reservations.
-        let allocated = |range: PhysicalRange| {
-            resources.iter().any(|r| {
-                PhysicalRange::new(r.range.start + r.initialized, r.used - r.initialized)
-                    .contains(range)
-            })
-        };
+        let allocations = self.allocation_slice()?;
+        for (i, allocation) in allocations.iter().enumerate() {
+            if allocation.resource_id == 0
+                || !allocation.range.valid()
+                || !allocation.range.start.is_multiple_of(4096)
+                || !allocation.range.len.is_multiple_of(4096)
+                || allocations[..i]
+                    .iter()
+                    .any(|a| a.range.overlaps(allocation.range))
+            {
+                return Err(HandoffError::InvalidProtocol);
+            }
+            if let Some(resource) = resources.iter().find(|r| r.id == allocation.resource_id)
+                && resource.range.overlaps(allocation.range)
+                && allocation.range.start < resource.range.start + resource.initialized
+            {
+                return Err(HandoffError::InvalidProtocol);
+            }
+        }
+        let allocated = |range: PhysicalRange| allocations.iter().any(|a| a.range.contains(range));
         if !allocated(self.image) {
             return Err(HandoffError::InvalidTarget);
         }
         if self.archive != PhysicalRange::default()
-            && (!allocated(self.archive) || self.archive.overlaps(self.image))
+            && (!allocated(self.archive)
+                || allocations
+                    .iter()
+                    .any(|a| a.range.contains(self.archive) && a.range.overlaps(self.image)))
         {
             return Err(HandoffError::InvalidProtocol);
         }
@@ -213,7 +251,7 @@ impl HandoffRecord {
                 || region.range.end().is_none()
                 || !region.range.start.is_multiple_of(4096)
                 || !region.range.len.is_multiple_of(4096)
-                || region.kind > 5
+                || region.kind > 7
                 || region.reserved != 0
             {
                 return Err(HandoffError::InvalidProtocol);
@@ -229,15 +267,19 @@ impl HandoffRecord {
         // Every reserved byte, including unallocated arena capacity, must stay
         // outside the inheritor's general allocator. Current code may occupy
         // part of an arena; both KImage and Reserved are retained memory.
-        for resource in resources {
-            let mut cursor = resource.range.start;
-            let end = resource.range.end().unwrap();
+        for range in resources
+            .iter()
+            .map(|r| r.range)
+            .chain(allocations.iter().map(|a| a.range))
+        {
+            let mut cursor = range.start;
+            let end = range.end().unwrap();
             while cursor < end {
                 let region = regions
                     .iter()
                     .find(|r| r.range.start <= cursor && cursor < r.range.end().unwrap())
                     .ok_or(HandoffError::InvalidProtocol)?;
-                if !matches!(region.kind, 2 | 3) {
+                if !matches!(region.kind, 2 | 6 | 7) {
                     return Err(HandoffError::InvalidProtocol);
                 }
                 cursor = end.min(region.range.end().unwrap());
@@ -249,7 +291,39 @@ impl HandoffRecord {
         {
             return Err(HandoffError::InvalidTarget);
         }
+        // Every receiver plan is a set of prefixes of these capacities. Each
+        // prefix introduces at most two boundaries. Reserve that space before
+        // publishing so a valid target plan cannot overflow during restoration.
+        let receiver = self.receiver_map(&[])?;
+        if receiver.len + 2 * resources.len() > MAX_REGIONS {
+            return Err(HandoffError::InvalidProtocol);
+        }
         Ok(())
+    }
+
+    pub(crate) fn receiver_map(
+        &self,
+        retained: &[ResourceSnapshot],
+    ) -> Result<super::memory::BootMap, HandoffError> {
+        use super::memory::{BOOT_DATA, BootMap, RECLAIMABLE};
+        let mut map = BootMap::from_regions(
+            self.memory_map
+                .get(..self.memory_map_len as usize)
+                .ok_or(HandoffError::InvalidProtocol)?,
+        )?;
+        for region in &mut map.regions[..map.len] {
+            if matches!(region.kind, 2 | 5 | BOOT_DATA) {
+                region.kind = RECLAIMABLE;
+            }
+        }
+        map.coalesce();
+        for resource in retained.iter().filter(|r| r.id != 0) {
+            map.assign(resource.range, BOOT_DATA)?;
+        }
+        for allocation in self.allocation_slice()? {
+            map.assign(allocation.range, BOOT_DATA)?;
+        }
+        Ok(map)
     }
 
     /// Checks the fixed-size header before borrowing the complete record.
@@ -287,17 +361,22 @@ mod tests {
     fn record() -> HandoffRecord {
         let mut r = HandoffRecord::empty();
         r.image = PhysicalRange::new(0x200000, 4096);
+        r.caller_image = PhysicalRange::new(0x300000, 4096);
         r.resource_count = 1;
         r.resources[0] = ResourceSnapshot {
             id: 42,
             range: PhysicalRange::new(0x200000, 8192),
-            used: 4096,
             initialized: 0,
+        };
+        r.allocation_count = 1;
+        r.allocations[0] = AllocationSnapshot {
+            resource_id: 42,
+            range: r.image,
         };
         r.memory_map_len = 1;
         r.memory_map[0] = MemoryRegion {
             range: PhysicalRange::new(0x200000, 8192),
-            kind: 3,
+            kind: 6,
             reserved: 0,
         };
         r
@@ -306,27 +385,30 @@ mod tests {
     fn validates_protocol_and_rejects_unknown_versions_and_unowned_bytes() {
         let mut r = record();
         assert!(r.validate().is_ok());
+        r.memory_map[0].kind = 3;
+        assert_eq!(r.validate(), Err(HandoffError::InvalidProtocol));
         r.memory_map[0].kind = 0;
         assert_eq!(r.validate(), Err(HandoffError::InvalidProtocol));
-        r.memory_map[0].kind = 3;
+        r.memory_map[0].kind = 6;
         r.memory_map[0].range.len = 4096;
         assert_eq!(r.validate(), Err(HandoffError::InvalidProtocol));
         r.memory_map[0].range.len = 8192;
-        r.header.version = 2;
+        r.header.version = 3;
         assert_eq!(r.validate(), Err(HandoffError::UnsupportedVersion));
         r.header.version = VERSION;
         r.image.len = 8192;
         assert_eq!(r.validate(), Err(HandoffError::InvalidTarget));
         r.image.len = 4096;
         r.resources[0].initialized = 4096;
-        assert_eq!(r.validate(), Err(HandoffError::InvalidTarget));
+        assert_eq!(r.validate(), Err(HandoffError::InvalidProtocol));
         r.image.start += 4096;
-        r.resources[0].used = 8192;
+        r.allocations[0].range.start = r.image.start;
         assert!(r.validate().is_ok());
         r.resource_count = 9;
         assert_eq!(r.validate(), Err(HandoffError::InvalidProtocol));
 
         let mut firmware = HandoffRecord::for_firmware(super::super::HandoffSpec {
+            preserve: &[],
             image: PhysicalRange::new(0x200000, 4096),
             cmdline: Some("boot=firmware"),
             initramfs: None,

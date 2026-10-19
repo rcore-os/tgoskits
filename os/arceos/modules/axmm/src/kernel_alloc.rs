@@ -195,6 +195,29 @@ impl KernelVirtualAllocation {
         Ok(token)
     }
 
+    /// Visits actual physical backing, excluding guards, without allocation.
+    /// The callback runs under the address-space lock and must not reenter it.
+    pub fn visit_backing_frames<E>(
+        &self,
+        mut visit: impl FnMut(ax_memory_addr::PhysAddr, usize) -> Result<(), E>,
+    ) -> Result<Result<(), E>, MmError> {
+        let aspace = kernel_aspace().lock_irqsave();
+        let allocation = aspace.exact_kernel_virtual_allocation(
+            self.id,
+            self.reservation.start,
+            self.reservation.size(),
+        )?;
+        for index in 0..allocation.frame_count() {
+            let frame = allocation
+                .expected_frame(index)
+                .ok_or(MmError::BadState("missing owned backing frame"))?;
+            if let Err(error) = visit(frame, PAGE_SIZE_4K) {
+                return Ok(Err(error));
+            }
+        }
+        Ok(Ok(()))
+    }
+
     /// Returns the usable range, excluding guard pages.
     pub const fn usable_range(&self) -> VirtAddrRange {
         self.usable

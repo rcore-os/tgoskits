@@ -56,7 +56,9 @@ cfg_select! {
         pub mod timer;
 
         pub use acpi::rsdp_addr_phys;
-        pub use boot_payload::{InitramfsRange, initramfs_range, take_initramfs_range};
+        pub use boot_payload::{
+            Initramfs, InitramfsRange, InitramfsReclaim, initramfs_range, take_initramfs_range,
+        };
         pub use cmdline::cmdline;
         pub use entropy::boot_entropy;
         pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};

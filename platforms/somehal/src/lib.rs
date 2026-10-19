@@ -30,7 +30,10 @@ pub use page_table_generic::{PagingError, PagingResult};
 pub use platform::platform_name;
 pub use setup::KernelOp;
 pub use someboot::{
-    InitramfsRange, boot_entropy, bootargs, console, entry, fdt_addr, fdt_addr_phys,
+    Initramfs, InitramfsRange, InitramfsReclaim, boot_entropy,
+    boot_resources::PhysicalRange,
+    bootargs, console, entry, fdt_addr, fdt_addr_phys,
+    handoff::{ExecutionSnapshot, HandoffError},
     initramfs_range, mem, power, rsdp_addr_phys, smp, take_initramfs_range,
 };
 pub use somehal_macros::somehal_secondary_entry as secondary_entry;

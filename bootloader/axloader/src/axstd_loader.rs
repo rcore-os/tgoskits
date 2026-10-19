@@ -921,11 +921,14 @@ fn enter_prepared<I>(payload: PublishedPayload, entry: u64, image: I) -> ! {
     // state. The runtime stops its own services before this closure; the target
     // EFI entry and reserved allocations were validated during preparation.
     unsafe {
-        ax_std::os::arceos::api::modules::ax_runtime::handoff::enter(move || {
+        ax_std::os::arceos::api::modules::ax_runtime::handoff::enter(move |context| {
             let _image = image;
             // SAFETY: the runtime has quiesced tasks, IRQs and DMA; the owned
             // payload and caller's loaded image remain live throughout entry.
-            let _ = payload.0.enter(entry);
+            let _ = payload
+                .0
+                .seal(&context)
+                .and_then(|sealed| sealed.enter(entry));
         })
     }
 }
@@ -949,12 +952,19 @@ impl PublishedPayload {
         let archive = initramfs
             .filter(|bytes| !bytes.is_empty())
             .map(|bytes| {
-                boot_resources::allocate(ARCHIVE_RESOURCE, bytes.len() as u64, 4096)
-                    .map_err(|_| "archive resource unavailable")
+                boot_resources::allocate(
+                    ARCHIVE_RESOURCE,
+                    (bytes.len() as u64)
+                        .checked_next_multiple_of(4096)
+                        .ok_or("archive size overflows")?,
+                    4096,
+                )
+                .map_err(|_| "archive resource unavailable")
             })
             .transpose()?;
         PreparedHandoff::prepare(
             HandoffSpec {
+                preserve: &[],
                 image: PhysicalRange::new(start as u64, (end - start) as u64),
                 cmdline,
                 initramfs,
