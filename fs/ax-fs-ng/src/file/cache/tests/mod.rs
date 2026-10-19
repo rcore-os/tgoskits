@@ -1038,9 +1038,11 @@ fn real_worker_scans_registry_and_writes_to_low_watermark() {
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
         let completed = Arc::new(Barrier::new(2));
+        let acknowledge = Arc::new(Barrier::new(2));
         let observed_entered = Arc::clone(&entered);
         let observed_release = Arc::clone(&release);
         let observed_completed = Arc::clone(&completed);
+        let observed_acknowledge = Arc::clone(&acknowledge);
         let observed_backing = Arc::clone(&backing);
         let first_write = Arc::new(AtomicBool::new(true));
         let observed_first = Arc::clone(&first_write);
@@ -1054,6 +1056,7 @@ fn real_worker_scans_registry_and_writes_to_low_watermark() {
                     == WRITEBACK_PAGES * PAGE_SIZE
             {
                 observed_completed.wait();
+                observed_acknowledge.wait();
             }
         })));
 
@@ -1070,6 +1073,9 @@ fn real_worker_scans_registry_and_writes_to_low_watermark() {
         completed.wait();
         {
             let _io = cached.shared.io_lock.lock();
+            // Keep the last batch unacknowledged while its backing call
+            // returns. Backing I/O completion precedes the round's cleanup.
+            acknowledge.wait();
             assert_eq!(cached.shared.dirty_page_count(), DIRTY_PAGE_LOW_WATERMARK);
             assert_eq!(
                 backing.write_lengths().iter().sum::<usize>(),
