@@ -86,7 +86,10 @@ ls install/rknn-yolov8-image/
 
 `/guest/` 归 root 所有，`orangepi` 用户写不进去，所以先落到 `/tmp` 再由 root 移动：
 
+在刚才编译推理包的工作站终端中，先返回仓库根目录，再打包和传输：
+
 ```bash
+cd ../../../..
 tar czf /tmp/rknn-yolov8-image.tar.gz -C apps/axvisor/linux-guest-checks/rknn-yolov8-image/install rknn-yolov8-image
 
 BOARD_IP=<板卡 IP>
@@ -153,13 +156,16 @@ cargo xtask axvisor board \
   --server <服务地址> --port <端口>
 ```
 
-程序完整显示 AxVisor 与 Linux 启动日志。客户机启动完成后，在 AxVisor 控制台执行：
+`vm_configs` 负责打包 Linux 配置，不会自动启动客户机。主机启动参数中保持
+`axvisor.vm_start` 未设置。看到 `axvisor:/$` 后，在 AxVisor 控制台手工创建并启动
+builtin 清单中 ID 为 `1` 的 Linux 客户机，同时接入控制台：
 
 ```text
-vm console 1
+vm start --console 1
 ```
 
-回车即出现 Linux 提示符，随后按下面各节手工执行命令。
+等待 Linux 启动完成，登录后按下面各节手工执行命令。若客户机已在运行，使用
+`vm console 1` 接入；该命令只连接控制台，不创建或启动客户机。
 
 按键约定：`Ctrl+X` 后再按 `h` 返回 AxVisor 控制台；会话结束时按 `Ctrl+A` 后再按 `x` 释放串口。
 
