@@ -393,6 +393,9 @@ fn release_archive_pages(archive: ax_hal::boot::Initramfs) {
         // SAFETY: the complete range was transferred successfully above.
         unsafe { reclaim.complete() };
     }
+    if managed == 0 {
+        warn!("host initramfs pages retained: compact allocator metadata does not fit");
+    }
     info!(
         "host initramfs reclaimed {managed} of {} complete archive bytes",
         range.size()

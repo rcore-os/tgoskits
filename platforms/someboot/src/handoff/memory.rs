@@ -47,6 +47,8 @@ impl<const N: usize> BootMap<N> {
         Ok(())
     }
     /// Reclassifies covered RAM only. Firmware and MMIO are never overridable.
+    /// Only the first/last overlapping regions can split: a contiguous overlay
+    /// adds at most two boundaries, even when it spans many existing regions.
     /// Build a candidate first: overflow or a protected overlap leaves self intact.
     pub fn assign(&mut self, range: PhysicalRange, kind: u32) -> Result<(), HandoffError> {
         if !range.valid() || !range.start.is_multiple_of(4096) || !range.len.is_multiple_of(4096) {

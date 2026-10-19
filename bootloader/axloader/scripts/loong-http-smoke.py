@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import re
 import socket
 import struct
 import time
@@ -166,6 +167,7 @@ def main():
     parser.add_argument("--elf-image", type=Path, required=True)
     parser.add_argument("--initramfs", type=Path, required=True)
     parser.add_argument("--qmp-socket", type=Path, required=True)
+    parser.add_argument("--qemu-log", type=Path, help="verify every loader image in this firmware boot")
     parser.add_argument("--storage-full", action="store_true",
                         help="expect a valid upload to fail on a pre-filled FAT volume")
     args = parser.parse_args()
@@ -358,6 +360,17 @@ def main():
         args.port,
         lambda value: not value.get("ota", {}).get("trial"),
     )["boot_epoch"]
+    positive_cmdline = "axloader-positive=1"
+    if args.qemu_log:
+        # A machine reset starts a new firmware lifetime. Earlier boots' image
+        # addresses can now belong to firmware, so use only the current boot.
+        text = args.qemu_log.read_text(errors="replace").rsplit("UEFI application started.", 1)[-1]
+        images = sorted({(int(start, 16), int(end, 16)) for start, end in
+                         re.findall(r"\bKImg\s+(0x[0-9a-fA-F]+)\s+-\s+(0x[0-9a-fA-F]+)", text)})
+        if len(images) < 2:
+            raise RuntimeError(f"missing firmware-loader and OTA-loader memory evidence: {images}")
+        positive_cmdline += "".join(f" reclaim-image={start:x}:{end - start:x}" for start, end in images)
+        print(f"loong axloader: require ordinary page reuse from {len(images)} loader images", flush=True)
     positive_manifest = {
         "boot_id": "loong-valid-elf",
         "arch": "loongarch64",
@@ -370,7 +383,7 @@ def main():
             "size": len(initramfs),
             "sha256": hashlib.sha256(initramfs).hexdigest(),
         },
-        "cmdline": "axloader-positive=1",
+        "cmdline": positive_cmdline,
         "entry_symbol": "efi_pe_entry",
     }
     positive_headers = {

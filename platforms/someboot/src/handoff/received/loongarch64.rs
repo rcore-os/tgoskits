@@ -151,7 +151,11 @@ pub(crate) fn complete_takeover() {
                     hi.saturating_sub(lo)
                 })
                 .sum();
-            reclaimed[reclaimed_count] = crate::handoff::ReclaimedMemory {
+            // New boot allocations only replace Free, so cannot split these
+            // old pending ranges. Keep an explicit bound if that rule changes.
+            *reclaimed
+                .get_mut(reclaimed_count)
+                .expect("too many pending boot ranges") = crate::handoff::ReclaimedMemory {
                 range,
                 resource_bytes: pool_bytes,
             };

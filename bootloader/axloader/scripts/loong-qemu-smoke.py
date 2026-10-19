@@ -151,7 +151,8 @@ def run_case(root, storage_full):
             )
             args = [sys.executable, "-u", str(AXLOADER / "scripts/loong-http-smoke.py"),
                     "--port", str(port), "--image", str(IMAGE), "--elf-image", str(ELF),
-                    "--initramfs", str(INITRAMFS), "--qmp-socket", str(qmp)]
+                    "--initramfs", str(INITRAMFS), "--qmp-socket", str(qmp),
+                    "--qemu-log", str(log)]
             if storage_full:
                 args.append("--storage-full")
             client = subprocess.Popen(args, cwd=WORKSPACE)

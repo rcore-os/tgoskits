@@ -15,6 +15,22 @@ pub fn exercise() {
         .collect();
     required.push(archive);
     required.push(previous_image);
+    // The host records both firmware-loader and OTA-loader locations from the
+    // current machine boot. This also checks ancestors already marked Free in
+    // the immediate caller's map, rather than testing only its latest image.
+    for argument in ax_hal::boot::bootargs().unwrap_or("").split_whitespace() {
+        if let Some(value) = argument.strip_prefix("reclaim-image=") {
+            let (start, len) = value.split_once(':').expect("image range argument");
+            let range = PhysicalRange::new(
+                u64::from_str_radix(start, 16).unwrap(),
+                u64::from_str_radix(len, 16).unwrap(),
+            );
+            assert!(range.valid());
+            if !required.contains(&range) {
+                required.push(range);
+            }
+        }
+    }
     let mut hit = vec![false; required.len()];
     // Preallocate all bookkeeping before applying memory pressure. Large blocks
     // drain the bulk of RAM quickly; single pages then reach small sections.
