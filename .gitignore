@@ -4,6 +4,10 @@
 # PyBuilder
 /target/
 
+# Local ArceOS VM test artifacts
+/apps/axvisor/arceos-vm-test/target/
+/apps/axvisor/arceos-vm-test/install/
+
 # Jupyter Notebook
 /.ipynb_checkpoints
 

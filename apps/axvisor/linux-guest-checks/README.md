@@ -10,7 +10,7 @@
 
 ## 边界
 
-本目录是手工应用，不是 `cargo xtask axvisor test` 的自动用例。当前组枚举会把 `apps/axvisor/` 的子目录都列为组名，因此能看到 `linux-guest-checks`，但它没有自动测试布局；选择该组不能执行本页检查，也不能以零用例结果判定通过。请使用下文的 `cargo xtask axvisor board` 入口。
+本目录是手工应用，通过下文的 `cargo xtask axvisor board` 显式加载 `configs/uboot-shell.toml`。`discover_board_runtime_configs()` 会递归匹配 `board-*.toml`，因此手工配置特意避开这个命名前缀，防止进入自动测试发现流程。通用组名枚举仍可能包含 `linux-guest-checks`，但 `cargo xtask axvisor test board --list` 不会列出本目录的用例；显式指定 `-g linux-guest-checks` 会报告没有板卡测试用例，不能据此判定手工检查通过。
 
 - 只验证链路可用：客户机启动、NPU 驱动绑定、信息/频点/负载可查询、NPU 能跑通一次 YOLOv8 图片推理、Linux 基础功能（ssh / cpuinfo / ping / 读写 / apt）可用。
 - 不验证识别准确率，不与预设答案比对；未检测到目标时输出 `Detections: 0` 也算推理正常完成。
@@ -141,7 +141,7 @@ cat /proc/cmdline                          # 确认 root= 与本配置一致
 
 选择器边界由 `axvmconfig` 的 `GuestDevices::validate` 与 `axvm` 的 `setup_guest_fdt_from_vmm` 共同约束。在含 `/` 的根基线模式下，只点名某个 PCI 主桥下的端点、却不点名该主桥会被拒绝，因为客户机只能通过主桥的配置空间枚举端点，整桥保留会连带暴露它的其他端点，报错会指出具体选择器和要补点名的主桥；列表不含 `/` 的纯具体路径精确模式保持原有语义，不受这条限制。`virtualized` 客户机在 `passthrough` 写 `/`，以及任何 `guest_type` 在 `disabled` 写 `/`，都会被拒绝；`disabled` 需点名具体设备。要从无物理设备起步，用 `guest_type = "virtualized"` 加空 `passthrough`，而不是在 `passthrough` 里删掉 `/`。
 
-`configs/board-shell.toml` 不含 `server`/`port` —— 板卡服务地址属于运行环境配置，不写进仓库。按 [板卡管理](../../../docs/docs/build/board.md) 用 `cargo xtask board config` 一次性配置，或在命令行用 `--server`/`--port` 传入。
+`configs/uboot-shell.toml` 不含 `server`/`port` —— 板卡服务地址属于运行环境配置，不写进仓库。按 [板卡管理](../../../docs/docs/build/board.md) 用 `cargo xtask board config` 一次性配置，或在命令行用 `--server`/`--port` 传入。
 
 **本页所有板卡命令都显式写上 `--server`/`--port`**，不要依赖本机默认值：同一环境里可能存在多台板卡服务，各自挂的板卡不同，本地预置资产也不同，省掉参数就可能连到另一台上，跑出与你预期不符的结果。缺省时 `--server`/`--port` 会依次回落到 ostool 全局配置和内置默认地址，见 [板卡管理](../../../docs/docs/build/board.md)。
 
@@ -152,7 +152,7 @@ cat /proc/cmdline                          # 确认 root= 与本配置一致
 ```bash
 cargo xtask axvisor board \
   -c apps/axvisor/linux-guest-checks/configs/build.toml \
-  --board-config apps/axvisor/linux-guest-checks/configs/board-shell.toml \
+  --board-config apps/axvisor/linux-guest-checks/configs/uboot-shell.toml \
   --server <服务地址> --port <端口>
 ```
 
@@ -169,7 +169,7 @@ vm start --console 1
 
 按键约定：`Ctrl+X` 后再按 `h` 返回 AxVisor 控制台；会话结束时按 `Ctrl+A` 后再按 `x` 释放串口。
 
-`board-shell.toml` 的 `shell_check_steps = []` 使该版本的 `UbootConfig::shell_check_matcher()` 不创建自动检查器；启动后，`AsyncTerminal` 继续转发串口输入输出。`fail_regex = []` 也不检测失败标记。配置未设置 `timeout`，该版本不会为启动后的终端阶段设置超时；U-Boot 连接和准备阶段仍有独立的超时与错误处理。因此命令停留在终端等待人工操作是预期行为，不会因没有检查步骤而自动报告功能通过。
+`uboot-shell.toml` 的 `shell_check_steps = []` 使该版本的 `UbootConfig::shell_check_matcher()` 不创建自动检查器；启动后，`AsyncTerminal` 继续转发串口输入输出。`fail_regex = []` 也不检测失败标记。配置未设置 `timeout`，该版本不会为启动后的终端阶段设置超时；U-Boot 连接和准备阶段仍有独立的超时与错误处理。因此命令停留在终端等待人工操作是预期行为，不会因没有检查步骤而自动报告功能通过。
 
 `Ctrl+X` 后按 `h` 只切回 AxVisor 控制台，会话仍占用板卡。`Ctrl+A` 后按 `x` 结束工作站终端，运行器随后通过 `finalize_session()` 请求释放板卡会话。正常退出且释放成功时命令返回 0；启动、传输、终端或释放报错时返回非零。**退出码 0 只表示运行会话正常结束，不表示任何手工功能项通过**；每项结果仍须依据本页的命令输出记录。升级 `ostool` 时应复核空步骤、终端退出与会话释放行为，再用本板卡入口确认；这些约定不能直接套用到会拒绝空步骤的其他应用入口。
 
@@ -366,13 +366,13 @@ sudo apt-get install -y sl && sl
 
 五项一次跑通的完整记录（2026-10-16，同一会话内）：
 
-| # | 实测 |
+| 功能项 | 实测 |
 | --- | --- |
-| 8 | `CPUs=1`，`processor : 0` |
-| 9 | `enP3p49s0 UP 10.3.10.225/24`，`carrier=1`，ping 网关 3 发 3 收，avg 0.938 ms |
-| 10 | 写入 `axvisor-guest-rw`，`cat` 原样返回 |
-| 7 | 从工作站 `ssh orangepi@10.3.10.225` 登录成功 |
-| 11 | `apt-get update` 返回 0，拉到 `repo.huaweicloud.com` 索引 |
+| 1：ping 测试网络 | `enP3p49s0 UP 10.3.10.225/24`，`carrier=1`，ping 网关 3 发 3 收，avg 0.938 ms |
+| 2：CPU 信息 | `CPUs=1`，`processor : 0` |
+| 3：文件读写 | 写入 `axvisor-guest-rw`，`cat` 原样返回 |
+| 4：ssh 连接 Ubuntu 客户机 | 从工作站 `ssh orangepi@10.3.10.225` 登录成功 |
+| 5：apt 软件包安装 | `apt-get update` 返回 0，拉到 `repo.huaweicloud.com` 索引 |
 
 网络就绪时间也可复现：客户机内核日志 `[60.744276] r8125: enP3p49s0: link up`，即启动约 1 分钟。
 
