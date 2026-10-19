@@ -156,6 +156,34 @@ mod tests {
     }
 
     #[test]
+    fn request_head_rejects_duplicate_control_headers_case_insensitively() {
+        for header in [
+            "x-boot-epoch",
+            "x-serial-binding",
+            "x-image-sha256",
+            "x-image-version",
+            "x-update-id",
+            "x-update-source",
+        ] {
+            let request = format!(
+                "GET /api/v1/status HTTP/1.1\r\n{header}: first\r\n{}: second\r\n\r\n",
+                header.to_ascii_uppercase()
+            );
+            assert_eq!(
+                parse_head(request.as_bytes()).map(|_| ()),
+                Err("duplicate request header")
+            );
+        }
+
+        let repeatable =
+            b"GET /api/v1/status HTTP/1.1\r\nx-trace-id: first\r\nX-TRACE-ID: second\r\n\r\n";
+        let (head, _) = parse_head(repeatable).unwrap();
+        assert_eq!(head.headers.len(), 2);
+        assert_eq!(head.headers[0].0, "x-trace-id");
+        assert_eq!(head.headers[0].1, "first");
+    }
+
+    #[test]
     fn route_limits_and_pre_read_bytes_share_the_same_contract() {
         assert_eq!(
             body_limit("POST", "/api/v1/serial/continue", INITRAMFS_LIMIT),
