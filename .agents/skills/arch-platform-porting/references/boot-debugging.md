@@ -97,6 +97,8 @@ Axvisor x86 嵌套 OVMF 用例按下列顺序调试：
 
 AArch64 宿主替换中，把不可变固件计划中的每个 GICR 区域和步长，与传给运行时的 `ArmVgicConfig` 比较。不得通过向下转换已注册 GIC 前端推断配置。宿主 GIC 内存映射区域保持陷入，客户机写入不能改变宿主 GICD 或 GICR。 `virtualized` 客户机通过 `dtb_path` 或静态镜像提供 DTB 时，在保留 MMIO 区间与创建设备计划前，从该 DTB 选择 GIC 配置；缺失或无效的 GIC 描述使启动失败。未提供 DTB、直通地址空间客户机及 UEFI 路径继续采用原有宿主／机器配置。运行时用选定配置同时生成虚拟 GIC 和修补客户机 DTB，不能只改设备树中的地址。UART 和定时器的 `interrupt-parent` 必须引用最终客户机控制器，不能直接沿用宿主 phandle；回归需覆盖宿主与客户机 phandle 不同的情况。虚拟 UART 的资源图使用电平线语义，但显式 DTB 中的 GIC trigger flags 是客户机固件描述，不参与宿主虚拟线建立，因此 UART 解析不因 edge 描述拒绝启动。UART 仍必须直接引用选定的主 GIC 或 PLIC，避免按错误的控制器格式解码 specifier。替换 UART、定时器节点时优先保留客户机已有 phandle，使原引用保持有效；宿主编号仅可在未占用时复用，发生冲突时为新节点分配唯一编号。Zephyr 编译时固定硬件地址，需同时核对生成头文件、配套 DTB 和虚拟设备布局；此规则不意味着任意板卡 DTB 中的全部设备都能自动虚拟化。
 
+显式客户机 DTB 的控制台选择顺序为 `stdout-path`（含 `linux,stdout-path`）、Zephyr chosen 属性、`earlycon`。`zephyr_console_selection()` 对 `/chosen/zephyr,console` 和 `zephyr,shell-uart` 同时接受绝对节点路径字符串与 phandle；所选 UART 的地址、中断和节点身份随后进入设备图。遇到固件访问编译期 UART 地址而发生二阶段缺页时，先检查解析是否选中原始 DTB 的串口，不能通过修改输入 DTB 添加 `stdout-path` 掩盖解析不兼容。
+
 替换显式 `dtb_path` 的 UART 节点时，保留客户机 DTB 中的中断类型、编号及三单元或四单元宽度，但把 GIC trigger flags 统一写成 level-high（`4`），使输出描述与虚拟 UART 的电平线行为一致。宿主只用中断类型和编号建立虚拟设备资源，不根据输入 DTB 的 trigger flags 改变虚拟线语义。最终 GIC 保留客户机已有的 `#interrupt-cells`；四单元 binding 的末单元继续使用客户机已有的优先级，输入只有三单元而目标要求四单元时填默认值 `0`。
 
 ## Axvisor x86 默认网页流程

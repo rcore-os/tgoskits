@@ -1,0 +1,5 @@
+# Package the guest configuration without selecting an automatic guest start.
+features = ["ax-driver/rk3588-cpufreq", "ax-driver/rockchip-sdhci"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["apps/axvisor/zephyr-vm-test/configs/zephyr.toml"]
