@@ -58,8 +58,17 @@ def qmp_snapshot(socket_path, destination):
     try:
         replies.append(json.loads(stream.readline()))
         command("qmp_capabilities")
-        command("stop")
         cpus = command("query-cpus-fast")
+        live_threads = {"load": os.getloadavg(), "threads": {}}
+        for cpu in cpus:
+            thread = Path("/proc") / str(cpu["thread-id"])
+            live_threads["threads"][cpu["cpu-index"]] = {
+                name: (thread / name).read_text()
+                for name in ("stat", "wchan", "schedstat")
+                if (thread / name).exists()
+            }
+        replies.append({"live_threads_before_stop": live_threads})
+        command("stop")
         command("human-monitor-command", {"command-line": "info registers -a"})
         for cpu in cpus:
             command("human-monitor-command", {"command-line": f"cpu {cpu['cpu-index']}"})
@@ -142,6 +151,7 @@ def run(output, prefix):
                 last_snapshot = time.monotonic()
         time.sleep(1)
     copier.join()
+    qmp.unlink(missing_ok=True)
     (output / "result.json").write_text(json.dumps({"status": process.returncode, "snapshots": index}))
     return process.returncode
 
