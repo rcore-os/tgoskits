@@ -16,11 +16,11 @@ cfg_if::cfg_if! {
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[derive(Default)]
 pub struct SignalFpState;
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub type SignalFpRestore = ();
 
 pub fn signal_trampoline_address() -> usize {
