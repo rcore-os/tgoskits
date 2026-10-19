@@ -21,7 +21,7 @@ apps/starry/picoclaw-cli/prepare_picoclaw_rootfs.sh
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
+  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64.toml \
   --rootfs target/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 

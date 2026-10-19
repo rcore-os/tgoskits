@@ -31,5 +31,7 @@ cargo xtask starry app qemu -t nginx --arch x86_64 \
 
 ## 详细设计
 
-完整设计（目录结构、统一入口 marker 规则、all 模式阶段隔离契约、TOML 整合规则、
-迁移步骤）见 [`www/nginx-ci-refactor-proposal.md`](../../../www/nginx-ci-refactor-proposal.md)。
+测试目录按用途拆分：根目录 `qemu-<arch>.toml` 对应 CI smoke，`qemu/all/`、`qemu/phase/`
+和 `qemu/debug/` 分别保存手工全量、单阶段与调试图配置。阶段脚本的覆盖规则见
+[`phase/README.md`](./phase/README.md)，压测现状见 [`stress/README.md`](./stress/README.md)，
+单问题复现方法见 [`debug/README.md`](./debug/README.md)。

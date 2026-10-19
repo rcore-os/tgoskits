@@ -1,436 +1,114 @@
-# SomeHAL - 平台硬件抽象层实现
+# SomeHAL 运行时硬件抽象层
 
-SomeHAL (Sparreal Hardware Abstraction Layer) 是 Sparreal OS 的平台硬件抽象层实现，提供统一的跨平台硬件接口，位于内核核心 (`sparreal-kernel`) 和底层架构支持 (`someboot`) 之间。
+`platforms/somehal` 是 TGOSKits 中连接 `someboot` 与 `axplat-dyn` 的多架构运行时硬件抽象层。SomeHAL 源自 Sparreal OS 的同名组件；在 TGOSKits 中，它作为工作区共享软件包维护，版本、功能开关和依赖以 `platforms/somehal/Cargo.toml` 为准。
 
-## 📋 目录
+该组件向操作系统无关的平台适配层提供固件设备发现、运行时中断控制器、定时器、控制台设备选择、CPU-local 绑定和 MMIO 后端。固件入口、早期页表、重定位和次核唤醒仍由 `someboot` 负责，ArceOS 运行时接口则由 `axplat-dyn` 适配。
 
-- [概述](#概述)
-- [架构支持](#架构支持)
-- [主要特性](#主要特性)
-- [目录结构](#目录结构)
-- [快速开始](#快速开始)
-- [平台接口](#平台接口)
-- [特性标志](#特性标志)
-- [依赖说明](#依赖说明)
-- [开发指南](#开发指南)
+## 1. 组件边界
 
-## 概述
+`somehal` 不直接实现某个操作系统。它把四类体系结构后端整理成共享运行时接口，再交给直接使用方 `axplat-dyn`；后者实现 `ax-plat` 契约并服务 ArceOS、StarryOS 与 Axvisor。这个边界避免设备发现和中断控制器代码进入单个操作系统。
 
-SomeHAL 负责将通用的内核接口与具体的硬件平台连接起来，提供：
+| 层 | 主要责任 | 代码入口 |
+| --- | --- | --- |
+| 固件与早期启动 | 固件入口、内存映射、页表、重定位、SMP 唤醒和早期控制台 | `../someboot` |
+| 运行时硬件抽象 | FDT/ACPI 设备发现、中断域、定时器、控制台选择和架构后端 | `platforms/somehal/src/lib.rs` |
+| 操作系统平台适配 | 实现 `KernelOp`，接入 CPU-local 和内核 MMIO，并导出 `ax-plat` 接口 | `platforms/axplat-dyn/src/boot.rs`、`platforms/axplat-dyn/src/init.rs` |
 
-- **统一平台接口**: 通过 `PlatOp` trait 定义平台操作抽象
-- **多架构支持**: AArch64 (ARMv8) 和 LoongArch64
-- **中断管理**: GICv2/GICv3 支持，运行时版本检测
-- **驱动集成**: 通过 `rdrive` 驱动框架管理硬件设备
-- **内存抽象**: 统一的 I/O 内存重映射接口
+集成时不要绕过 `axplat-dyn` 复制平台初始化流程。现有 `InitIfImpl` 已规定 `somehal::timer::enable()`、调度时钟初始化以及分页后 `somehal::post_paging()` 的调用位置。
 
-### 设计原则
+### 1.1 公共接口
 
-1. **分层设计**: `sparreal-rt` → `somehal` → `someboot`
-2. **平台无关**: 内核核心不需要知道底层硬件细节
-3. **驱动优先**: 硬件初始化通过驱动系统自动完成
-4. **类型安全**: 充分利用 Rust 的类型系统确保安全性
+`lib.rs` 公开运行时所需的最小表面，并重新导出部分 `someboot` 能力。公开模块和 crate 根导出如下，内部中断路由和架构辅助逻辑保持私有或仅由 `arch` 后端使用。
 
-## 架构支持
+| 模块或导出 | 用途 |
+| --- | --- |
+| `setup::KernelOp` | 提供 CPU-local 绑定、当前 CPU 查询和 MMIO 映射回调 |
+| `irq` | 中断域登记、路由解析、使能、亲和性、IPI 和 `ActiveIrq` 事务 |
+| `arch` | 按目标架构选择 GIC、PLIC、LoongArch 中断控制器或 x86 APIC 后端 |
+| `platform` | 从固件信息导出运行时平台名 |
+| `cpu` | 优先读取内核 CPU-local 状态，并在早期回退到 `someboot` |
+| `console_device_id`、`ConsoleDeviceIdError` | 从 crate 根导出控制台解析结果：解析 `console=`、ACPI SPCR 和 FDT `stdout-path` 后返回控制台 `DeviceId` |
+| `cache`、`rtc`、`timer` | 暴露 DMA 缓存维护、固件时钟和体系结构定时能力 |
 
-### AArch64 (ARMv8)
+`irq::begin_irq(raw)` 返回的 `ActiveIrq` 必须在中断分发期间保持存活；其析构负责架构相关的结束操作。调用方不应自行复制控制器 EOI 或重新推导固件中断号。
 
-**支持的中断控制器**:
-- ✅ GICv2 (ARM Cortex-A15 GIC, GIC-400)
-- ✅ GICv3 (现代 ARMv8 处理器)
-- 🔧 运行时版本自动检测
+### 1.2 支持范围
 
-**定时器支持**:
-- ARM Generic Timer (EL1/EL2)
+当前后端覆盖 AArch64、LoongArch64、RISC-V 64 和 x86_64。选择后端由目标架构的条件编译完成，调用方继续使用统一的 `somehal::irq`、`timer` 和 `arch` 接口。
 
-**虚拟化扩展**:
-- GICv2: GICH/GICV 虚拟接口支持
-- GICv3: 完整的虚拟化支持
+| 目标架构 | 运行时控制器与定时能力 |
+| --- | --- |
+| AArch64 | GICv2/GICv3 运行时识别、ARM Generic Timer、ITS/MSI 路由 |
+| LoongArch64 | EIOINTC、PCH-PIC、LIOINTC 和体系结构定时器 |
+| RISC-V 64 | PLIC、本地定时器与软件 IPI |
+| x86_64 | Local APIC、I/O APIC、MSI 和 Local APIC timer |
 
-### LoongArch64
+后端差异留在 `src/arch/<arch>/`。在组件内新增架构时实现 `common::PlatOp`，再在 `lib.rs` 中增加目标架构的 `arch` 路径；公共调用方不需要按控制器类型分支。
 
-- 基础架构支持
-- 平台特定的中断控制器
+## 2. 集成契约
 
-## 主要特性
+直接使用 `somehal` 的平台运行时必须提供一个长期存活的 `KernelOp` 实现。`somehal::init()` 会把该实现安装为 MMIO 后端，因此在任何驱动调用 `mmio_api::ioremap()` 之前必须完成初始化。
 
-### 🔄 多版本 GIC 支持
+### 2.1 KernelOp 回调
+
+`KernelOp` 继承 `MmioOp`，并只增加 CPU-local 绑定和当前 CPU 查询。两个方法都有默认“不支持”行为；启用 SMP 的运行时必须覆盖 `bind_current_cpu()`，需要在内核初始化后查询当前 CPU 时还应覆盖 `current_cpu_idx()`。
 
 ```rust
-// 运行时自动检测 GIC 版本
-pub fn init_current_cpu() {
-    if v3::is_v3() {
-        v3::init_cpu();
-    } else {
-        v2::init_cpu();
+pub trait KernelOp: MmioOp {
+    fn bind_current_cpu(&self, cpu_index: CpuIndex) -> Result<(), CpuBindError> {
+        Err(CpuBindError::Unsupported)
+    }
+
+    fn current_cpu_idx(&self) -> Option<usize> {
+        None
     }
 }
 ```
 
-### 🎯 驱动系统集成就绪
+`MmioOp` 负责 `ioremap()` 与 `iounmap()`。TGOSKits 的 `axplat-dyn` 实现将绑定委托给 `ax_percpu` 和 `cpu_local`，并把 MMIO 操作转发给 `axklib::mmio::op()`；新增平台适配应复用这些既有所有权边界，而不是让驱动直接访问物理地址。
 
-- 通过设备树 (FDT) 自动探测硬件
-- 支持动态设备注册
-- 统一的探测优先级管理
+### 2.2 主核与次核入口
 
-### 🔌 中断事务统一接口
+主核入口使用 `#[somehal::entry(Kernel)]`。宏会在函数体前插入 `somehal::init(&Kernel)`，因此集成代码只定义类型并声明入口，不应再次手工安装 `KernelOp`。完整示例见 `platforms/axplat-dyn/src/boot.rs`。
 
-```rust
-// 上层在分发期间持有 ActiveIrq，drop 时完成 EOI/complete。
-fn handle_platform_irq(raw: usize) {
-    let Some(active) = somehal::irq::begin_irq(raw) else {
-        return;
-    };
-    let irq = active.id();
-    dispatch_irq(irq.raw());
-}
+启用 SMP 时，内核侧通过 `#[somehal::secondary_entry]` 声明次核继续执行点。`somehal` 自身的 `secondary_entry()` 负责绑定已发布的 CPU-local 区域、切换内核页表并初始化次核中断，然后调用该继续执行点；平台适配层无需复制这些步骤。
+
+### 2.3 分页后初始化
+
+页表可用后调用 `somehal::post_paging()`。该入口执行 `someboot::post_allocator()`，再根据已有 FDT 或 ACPI RSDP 初始化 `rdrive`；没有固件描述时只记录警告并跳过设备探测。
+
+`axplat-dyn` 已在 `InitIfImpl::init_later()` 中调用 `somehal::post_paging()`。设备驱动和运行时适配应依赖这一统一时机，避免在平台入口或单核早期路径提前探测运行期控制器。
+
+## 3. 功能开关
+
+功能开关主要转发给 `someboot`，使最终镜像保持同一套页表、TLS 和虚拟化契约。消费方应只启用目标运行时实际支持的组合。
+
+| 功能 | 行为 |
+| --- | --- |
+| `efi` | 启用 `someboot/efi` 的 UEFI 启动支持 |
+| `mmu` | 启用 `someboot/mmu` 的分页能力 |
+| `uspace` | 启用用户空间支持，并隐含 `mmu` |
+| `hv` | 启用虚拟化支持，并隐含 `mmu` |
+| `tls` | 请求内核 TLS；与 `uspace` 同时启用时由 `uspace` 取得寄存器所有权 |
+| `thead-mae` | 启用 `someboot/thead-mae` 的 T-Head MAE 支持 |
+
+`somehal` 的 AArch64 运行时 Clippy 配置使用 `aarch64-unknown-none-softfloat` 目标与 `uspace` 功能。修改功能组合后，应同时检查直接消费方 `axplat-dyn` 的目标配置。
+
+## 4. 验证与排错
+
+从仓库根使用项目任务入口检查受影响软件包，不直接运行原生 Cargo 静态检查：
+
+```bash
+cargo xtask clippy --package somehal
+cargo xtask clippy --package axplat-dyn
 ```
 
-## 目录结构
+运行时行为应通过使用 `axplat-dyn` 的现有 ArceOS、StarryOS 或 Axvisor 定向 QEMU/板卡用例验证。若启动在中断、定时器或设备探测处失败，先确认 `KernelOp` 已在 `mmio_api` 使用前安装、`post_paging()` 在分页后调用，再按目标架构检查对应 `src/arch` 后端。
 
-```
-somehal/
-├── src/
-│   ├── arch/                 # 架构特定实现
-│   │   ├── aarch64/         # AArch64 架构
-│   │   │   ├── gic/         # 通用中断控制器
-│   │   │   │   ├── mod.rs   # GIC 统一接口
-│   │   │   │   ├── v2.rs    # GICv2 实现
-│   │   │   │   └── v3.rs    # GICv3 实现
-│   │   │   ├── systick.rs   # 系统定时器
-│   │   │   └── mod.rs       # AArch64 平台实现
-│   │   └── loongarch64/     # LoongArch64 架构
-│   ├── common.rs            # 平台通用定义
-│   ├── driver.rs            # 驱动管理
-│   ├── irq.rs               # 中断接口
-│   ├── lib.rs               # 库入口
-│   └── setup.rs             # 初始化设置
-├── Cargo.toml               # 项目配置
-└── README.md                # 本文档
-```
+## 5. 来源、文档与许可
 
-## 快速开始
+SomeHAL 最初服务于 Sparreal OS，现以 TGOSKits 工作区组件的形式维护。TGOSKits 的版本不再提供 Sparreal 独立仓库路径或 `sparreal_kernel` 示例，集成应使用本仓库的 `axplat-dyn` 和 `cargo xtask` 入口。
 
-### 使用 Entry 宏
+进一步资料包括[运行时 HAL 架构说明](../../docs/docs/architecture/platform/somehal.md)、[someboot 组件](../someboot)和[axplat-dyn 适配层](../axplat-dyn)。
 
-SomeHAL 提供了 `#[somehal::entry]` 宏来自动化初始化流程：
-
-```rust
-use somehal::{KernelOp, PagingResult};
-use sparreal_kernel::os::mem;
-
-// 1. 定义内核类型并实现 KernelOp trait
-pub struct Kernel;
-
-impl KernelOp for Kernel {
-    fn ioremap(&self, paddr: usize, size: usize) -> PagingResult<*mut u8> {
-        // 提供内存重映射接口
-        mem::ioremap(paddr.into(), size)
-            .map(|addr| addr.raw() as *mut u8)
-    }
-}
-
-// 2. 使用 entry 宏自动初始化
-#[somehal::entry(Kernel)]
-fn main() -> ! {
-    // somehal::init(&Kernel) 已由宏自动调用
-
-    // ... 内存初始化 ...
-
-    // 3. 分页后启动驱动系统
-    somehal::post_paging();
-
-    // ... 继续启动 ...
-}
-```
-
-**宏的参数要求**：
-- **必需参数**: 必须指定实现 `KernelOp` trait 的类型（如 `Kernel`）
-- **自动行为**: 宏会在函数开头自动插入 `somehal::init(&<type>)` 调用
-- **错误提示**: 无参数时会显示清晰的编译错误
-
-### KernelOp Trait
-
-所有使用 SomeHAL 的平台必须实现 `KernelOp` trait：
-
-```rust
-use somehal::KernelOp;
-
-pub trait KernelOp {
-    /// 内存重映射接口
-    ///
-    /// 将物理地址映射到内核虚拟地址空间
-    ///
-    /// # 参数
-    /// - `paddr`: 物理地址
-    /// - `size`: 映射大小（字节）
-    ///
-    /// # 返回
-    /// 映射后的虚拟地址指针
-    fn ioremap(&self, paddr: usize, size: usize) -> PagingResult<*mut u8>;
-}
-```
-
-### 初始化流程
-
-1. **自动初始化** (`#[somehal::entry(Kernel)]`)
-   - 宏自动调用 `somehal::init(&Kernel)`
-   - 设置内核操作回调接口
-
-2. **驱动系统启动** (`somehal::post_paging()`)
-   - 在分页系统初始化后调用
-   - 通过设备树自动探测硬件
-   - 初始化中断控制器和定时器
-
-### 中断处理
-
-```rust
-use somehal::irq::*;
-
-// 使能中断
-irq_set_enable(irq_id, true);
-
-// 禁用中断
-irq_set_enable(irq_id, false);
-
-// 获取系统定时器 IRQ
-let timer_irq = systick_irq();
-```
-
-### 平台操作
-
-SomeHAL 通过 `KernelOp` trait 提供平台特定功能：
-
-```rust
-use somehal::KernelOp;
-
-// 在平台运行时中实现
-pub struct Kernel;
-
-impl KernelOp for Kernel {
-    fn ioremap(&self, paddr: usize, size: usize) -> PagingResult<*mut u8> {
-        // 调用内核的内存管理接口
-        sparreal_kernel::os::mem::ioremap(paddr.into(), size)
-            .map(|addr| addr.raw() as *mut u8)
-    }
-}
-```
-
-## 平台接口
-
-### 核心接口
-
-SomeHAL 提供两个核心接口：
-
-#### 1. `KernelOp` Trait
-
-内核操作接口，由平台运行时实现：
-
-```rust
-pub trait KernelOp {
-    /// 内存重映射接口
-    fn ioremap(&self, paddr: usize, size: usize) -> PagingResult<*mut u8>;
-}
-```
-
-#### 2. `PlatOp` Trait
-
-平台操作接口，由架构实现提供：
-
-```rust
-pub trait PlatOp {
-    type ActiveIrq;
-
-    /// 设置 IRQ 使能状态
-    fn irq_set_enable(irq: IrqId, enable: bool);
-
-    /// 开启一次中断事务，claim/ack 后返回 guard
-    fn begin_irq(raw: usize) -> Option<Self::ActiveIrq>;
-
-    /// 获取当前中断事务对应的 IRQ ID
-    fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;
-
-    /// 获取系统定时器 IRQ ID
-    fn systick_irq() -> IrqId;
-}
-```
-
-### 初始化函数
-
-| 函数 | 调用时机 | 说明 |
-|------|---------|------|
-| `init(kernel)` | entry 宏自动调用 | 设置内核操作回调 |
-| `post_paging()` | 分页系统初始化后 | 启动驱动系统，初始化硬件设备 |
-
-### I/O 内存映射
-
-通过 `KernelOp::ioremap` 进行内存映射：
-
-```rust
-// 在内核代码中
-let virt_addr = somehal::ioremap(0x0800_0000, 0x1000)?;
-```
-
-## 特性标志
-
-| 特性 | 描述 | 默认 |
-|------|------|------|
-| `efi` | UEFI 固件支持 | No |
-| `hv` | 虚拟化支持 (Hypervisor) | No |
-| `mmu` | MMU/分页支持 | No |
-| `uspace` | 用户空间支持 | No |
-
-### 使用示例
-
-```toml
-[dependencies]
-somehal = { version = "0.5", features = ["hv", "uspace"] }
-```
-
-## 依赖说明
-
-### 核心依赖
-
-- **`someboot`**: 底层架构抽象和引导支持
-- **`rdrive`**: 统一驱动框架
-- **`rdif-intc`**: 中断控制器驱动接口
-- **`page-table-generic`**: 通用页表管理
-- **`kernutil`**: 内核工具库（StaticCell 等）
-
-### AArch64 特定依赖
-
-- **`aarch64-cpu`**: AArch64 寄存器访问
-- **`arm-gic-driver`**: ARM GIC 驱动实现
-- **`tock-registers`**: 寄存器操作接口
-
-### 构建依赖
-
-- **`somehal-macros`**: 平台宏（entry 等）
-
-## 开发指南
-
-### 创建新平台
-
-使用 SomeHAL 创建新平台运行时的步骤：
-
-#### 1. 定义内核类型
-
-```rust
-// platforms/my-platforms/src/lib.rs
-use somehal::KernelOp;
-
-pub struct Kernel;
-
-impl KernelOp for Kernel {
-    fn ioremap(&self, paddr: usize, size: usize) -> PagingResult<*mut u8> {
-        // 实现内存映射逻辑
-        // 通常调用 sparreal_kernel::os::mem::ioremap
-    }
-}
-```
-
-#### 2. 使用 entry 宏
-
-```rust
-#[somehal::entry(Kernel)]
-fn main() -> ! {
-    // somehal::init(&Kernel) 已自动调用
-
-    // 初始化内存管理
-    sparreal_kernel::os::mem::paging::init();
-
-    // 启动驱动系统
-    somehal::post_paging();
-
-    // 运行内核
-    sparreal_kernel::run_kernel()
-}
-```
-
-#### 3. 实现平台特定接口
-
-在 `hal_impl.rs` 中实现内核的 HAL trait：
-
-```rust
-use sparreal_kernel::hal::al;
-
-pub struct PlatformImpl;
-
-#[sparreal_macros::api_impl]
-impl Platform for PlatformImpl {
-    unsafe fn wait_for_interrupt() {
-        // 平台特定的 WFI 实现
-    }
-
-    fn shutdown() -> ! {
-        // 平台特定的关机实现
-        loop {}
-    }
-}
-```
-
-### 添加新架构支持
-
-1. 在 `src/arch/` 下创建新目录
-2. 实现 `PlatOp` trait
-3. 提供中断控制器支持（如果需要）
-4. 实现定时器接口
-5. 更新 `src/lib.rs` 添加条件编译路径
-
-### 添加新的中断控制器
-
-参考 GICv2/v3 实现模式：
-
-1. 创建独立的模块文件
-2. 实现统一的接口函数：
-   - `init_cpu()`: CPU 接口初始化
-   - `begin_irq()`: claim/ack 并返回 `ActiveIrq`
-   - `irq_set_enable()`: IRQ 使能控制
-3. 在 `ActiveIrq::drop()` 中完成 EOI/complete
-4. 使用 `StaticCell` 管理全局状态
-
-### 宏使用最佳实践
-
-**entry 宏** (`#[somehal::entry]`)：
-- ✅ **必须提供参数**: 指定实现 `KernelOp` 的类型
-- ✅ **每个项目仅一次**: 整个依赖图只能有一个入口点
-- ✅ **函数签名**: `fn main() -> !` 或 `unsafe fn main() -> !`
-- ❌ **不要手动调用**: `somehal::init()` 由宏自动处理
-
-**IRQ 生命周期**：
-- `someboot` 只负责早期 trap/vector 和底层架构能力，不作为运行期 IRQ 分发者。
-- `somehal::irq::begin_irq(raw)` 在 claim/ack 后返回 `ActiveIrq`。
-- 上层分发 IRQ 时必须在同一作用域内持有 `ActiveIrq`。
-- `ActiveIrq::drop()` 执行架构相关的 EOI/complete，随后运行时才允许 IRQ-exit 调度。
-
-### 代码风格
-
-- 使用 `#![no_std]` 环境
-- 遵循 Rust 2024 Edition 规范
-- 使用 `log` crate 进行日志输出
-- 错误处理使用 `thiserror` 和 `anyhow`
-
-## 相关文档
-
-- [Sparreal OS CLAUDE.md](../../CLAUDE.md) - 项目总览
-- [someboot 源码](../someboot) - 底层架构抽象
-- [sparreal-kernel 文档](../../crates/sparreal-kernel/CLAUDE.md) - 内核核心
-
-## 许可证
-
-本项目采用与 Sparreal OS 相同的开源许可证。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-在提交代码前，请确保：
-
-1. 代码通过 `cargo fmt` 格式化
-2. 使用 `cargo xtask clippy --package somehal` 检查受影响的软件包
-3. 影响目标运行时行为时，通过相关的 QEMU 或板卡用例验证
-4. 更新相关文档
-
----
-
-**最后更新**: 2026-01-21
+本组件通过 `license.workspace = true` 采用 Apache-2.0；完整许可条款见仓库根目录的 [`LICENSE`](../../LICENSE)。

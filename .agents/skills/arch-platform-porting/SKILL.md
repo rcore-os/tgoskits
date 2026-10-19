@@ -209,6 +209,8 @@ cargo xtask clippy --package someboot
 7. RISC-V 平台级中断控制器平台在启用 `sie.SEXT` 前取得全部监管者上下文所有权：清除固件或启动加载器遗留来源启用位、初始化阈值，并维护软件“来源已启用”状态，不从非零优先级推断。中断框架可以在动作禁用时设置亲和性，但亲和性变化不得提前启用来源。
 8. 可行时把根因转化为回归测试或定向 QEMU 用例。
 
+当前 `.vscode` 的 AArch64 调试路径按 axbuild 后端区分：ArceOS 与 Axvisor 的 `std` PIE ELF 位于 `target/aarch64-unknown-linux-musl/debug/`，StarryOS 的 bare ELF 位于 `target/aarch64-unknown-none-softfloat/debug/starryos`。Axvisor 调试固定使用 `os/axvisor/configs/board/qemu-aarch64.toml`（`vm_configs = []`）和 `os/axvisor/configs/qemu/qemu-aarch64.toml`，不依赖可变的 `.build.toml`。
+
 ## 常见失败信号
 
 - 停在 `Exiting UEFI boot services...`：检查陈旧内存映射键、退出后仍调用启动服务、退出后控制台、错误交接地址、内存管理单元切换或陷阱向量有效前异常。

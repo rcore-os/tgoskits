@@ -170,10 +170,14 @@ def _tcp_connectable() -> bool:
 def _wait_for_qemu_ready(
     pgid: int,
     proc: subprocess.Popen,
-    timeout: float = 20.0,
+    timeout: float = 120.0,
     interval: float = 0.1,
 ) -> bool:
-    """Poll until QEMU is running and its GDB port accepts connections."""
+    """Poll until QEMU is running and its GDB port accepts connections.
+
+    The budget starts with the launcher process and therefore includes the
+    xtask build, image/initramfs preparation, QEMU startup, and gdbstub bind.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:

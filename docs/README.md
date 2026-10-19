@@ -33,7 +33,7 @@ The documentation site is a Node.js application. The current project uses `yarn`
 
 Recommended environment:
 
-1. Node.js 18 or newer
+1. Node.js 20 or newer (the minimum declared by `package.json` and Docusaurus; CI uses Node.js 24)
 2. `corepack enable` or a globally installed `yarn`
 3. A local clone of `https://github.com/rcore-os/tgoskits`
 
@@ -83,7 +83,7 @@ Important directories and files:
 
 The documentation site is published to GitHub Pages:
 
-- Site URL: `https://rcore-os.github.io/tgoskits/`
+- Site URL: `https://rcore-os.cn/tgoskits/`
 
 The repository is configured to deploy the site through GitHub Actions. The Pages workflow builds the Docusaurus site from the `docs/` directory and publishes the generated `docs/build` output.
 

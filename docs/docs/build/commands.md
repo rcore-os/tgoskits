@@ -39,6 +39,7 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 |------|------|----------|
 | **代码质量检查** | | |
 | `cargo xtask test` | workspace std 白名单测试 | [Std 白名单测试](./test) |
+| `cargo xtask cross-test` | 通过 qemu-user 运行静态链接的 workspace crate 测试 | 本节 |
 | `cargo xtask ktest` | 在 QEMU 或板卡运行 harness=false 内核 axtest | [内核测试](./ktest) |
 | `cargo xtask clippy` | workspace clippy（feature × target 矩阵） | [Clippy 检查](./clippy) |
 | `cargo xtask sync-lint` | 可疑 `Relaxed` 原子序检查 | [Sync Lint](./sync_lint) |
@@ -62,7 +63,7 @@ cargo arceos qemu --package arceos-httpserver   # 同上
 
 ### 3.1 标准测试
 
-对 `scripts/test/std_crates.csv` 白名单中的每个 crate 执行 `cargo test -p <package>`。无参数。
+对 `scripts/test/std_crates.csv` 白名单中的每个 crate 执行 `cargo test -p <package>`。无参数时运行完整白名单；`--since <REF>` 只选择相对该 git 引用已提交差异影响的包。
 
 ```bash
 cargo xtask test
@@ -116,6 +117,27 @@ cargo xtask sync-lint --since origin/dev  # 增量（CI 使用）
 ```
 
 详见 [Sync Lint](./sync_lint)。
+
+### 3.5 跨架构 crate 测试
+
+`cross-test` 为目标架构安装对应的 Rust musl target，用 `rust-lld` 静态链接测试二进制，并通过 qemu-user 运行。命令要求显式指定 `--arch` 和至少一个 `--package`，适合验证不依赖内核启动、但必须在目标用户态执行的组件逻辑。
+
+| 参数 | 说明 |
+|------|------|
+| `--arch <ARCH>` | 目标架构，支持 `aarch64`、`x86_64`、`riscv64`、`loongarch64` |
+| `-p/--package <PACKAGE>`（可重复） | 要测试的 workspace 包，必需 |
+| `--features <FEATURES>` | 传给 Cargo 的 feature 列表，可用逗号分隔 |
+| `--no-default-features` | 禁用包的默认 feature |
+| `--lib` | 只运行包的库测试 |
+| `<NAME_FILTER>` | 可选的 Cargo 测试名过滤参数 |
+
+以下命令在 RISC-V qemu-user 中运行 `axvm` 的 `host-test` 库测试：
+
+```bash
+cargo xtask cross-test --arch riscv64 --package axvm --features host-test --lib
+```
+
+该入口不替代 QEMU 系统启动或板卡测试。组件测试证明目标用户态下的库逻辑，真实运行路径仍需由对应系统测试覆盖。
 
 ## 4. 工程工具
 

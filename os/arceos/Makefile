@@ -43,7 +43,7 @@ TARGET_DIR ?= $(PWD)/target
 UIMAGE ?= n
 
 # App options
-A ?= examples/helloworld
+A ?= $(TGOSKITS_ROOT)/apps/arceos/helloworld
 APP ?= $(A)
 FEATURES ?=
 APP_FEATURES ?=

@@ -12,7 +12,7 @@ TGOSKits 的文档站点基于 [Docusaurus 3](https://docusaurus.io/) 构建，�
 | [MDX](https://mdxjs.com/) | 3.0 | Markdown + JSX（支持在文档中使用组件） |
 | [Mermaid](https://mermaid.js.org/) | — | 流程图 / 架构图渲染（`@docusaurus/theme-mermaid`） |
 | [prism-react-renderer](https://github.com/FormidableLabs/prism-react-renderer) | 2.x | 代码高亮 |
-| Node.js | ≥ 18 | 运行时 |
+| Node.js | ≥ 20（CI 使用 24） | 运行时 |
 | Yarn | — | 包管理（Corepack） |
 
 ## 2. 目录结构
@@ -57,7 +57,7 @@ docs/
 ```js
 // 站点基础信息
 title: 'TGOSKits'
-url: 'https://rcore-os.github.io'
+url: 'https://rcore-os.cn'
 baseUrl: '/tgoskits/'
 organizationName: 'rcore-os'
 projectName: 'tgoskits'
@@ -278,7 +278,7 @@ title: "自定义标题"
 push to main (docs/ changed)
   → Job: build
     → Checkout 代码
-    → 设置 Node.js 20
+    → 设置 Node.js 24
     → yarn install
     → yarn build（构建静态站点）
     → 上传 build/ 为 Pages artifact
@@ -287,7 +287,7 @@ push to main (docs/ changed)
 ```
 
 **部署结果**：
-- URL：`https://rcore-os.github.io/tgoskits/`
+- URL：`https://rcore-os.cn/tgoskits/`
 
 ### 6.3 手动部署
 

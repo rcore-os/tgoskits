@@ -314,7 +314,7 @@ mv "$tmp_rootfs" "$rootfs"
 echo "PicoClaw rootfs ready: ${rootfs}"
 echo
 echo "Offline smoke:"
-echo "  cargo xtask starry qemu --arch x86_64 --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml --rootfs ${rootfs#${workspace}/}"
+echo "  cargo xtask starry qemu --arch x86_64 --qemu-config apps/starry/picoclaw-cli/qemu-x86_64.toml --rootfs ${rootfs#${workspace}/}"
 if [[ -n "$api_key" || -n "$config_json" || -n "$security_yml" ]]; then
     echo
     echo "Online agent smoke:"

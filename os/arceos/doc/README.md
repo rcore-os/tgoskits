@@ -12,23 +12,23 @@ See [arceos-crates](https://github.com/arceos-org/arceos-crates) for crates used
 
 Modules are **OS-related** components that are tightly bound to the design principles of a specific OS and have relatively poor reusability. It may need to be redesigned when it is ported to another OS.
 
-Most of the modules are optional, depending on the features enabled by the application. A few modules are required by all applications, as shown below:
+ArceOS separates its in-tree runtime modules in `modules/` from shared domain crates that live elsewhere in the TGOSKits workspace. The runtime entry in `modules/axruntime` selects optional capabilities through Cargo features; shared allocator, task, driver, filesystem, and network crates remain in their own workspace directories.
 
 * [ax-runtime](../modules/axruntime/): Bootstrapping from the bare-metal environment, and initialization.
 * [ax-hal](../modules/axhal/): Hardware abstraction layer, provides unified APIs for cross-platform.
 * [ax-log](../modules/axlog/): Multi-level formatted logging.
 
-Other optional modules and their corresponding features are as follows:
+The following shared crates and runtime modules are selected by `axruntime/Cargo.toml`:
 
-| Modules | Dependent features | Description |
+| Modules | Feature integration | Description |
 |-|-|-|
-| [ax-alloc](../../../memory/ax-alloc) | alloc | ArceOS global memory allocator. |
-| [ax-display](../modules/axdisplay) | display | ArceOS graphics module. |
-| [ax-fs-ng](../../../fs/ax-fs-ng) | fs | ArceOS filesystem module. |
-| [ax-net](../modules/ax-net) | net | ArceOS network module. |
-| [axdriver](../modules/axdriver) | driver-*, fs, net, display | ArceOS device drivers. |
-| [ax-task](../../../components/ax-task) | multitask | OS-independent task scheduling core; ArceOS integration lives in `ax-runtime::task`. |
-| [axsync](../modules/axsync) | multitask | ArceOS synchronization primitives. |
+| [ax-alloc](../../../memory/ax-alloc) | Runtime dependency | ArceOS global memory allocator. |
+| [ax-display](../modules/axdisplay) | `display` (API layer) | Display facade over the shared GPU runtime. |
+| [ax-fs-ng](../../../fs/ax-fs-ng) | `fs`, `ext4fs`, `fatfs` | Filesystem implementation. |
+| [ax-net](../../../net/ax-net) | `net`, `vsock` | Network stack. |
+| [ax-driver](../../../drivers/ax-driver) | `serial` baseline; `block`, `gpu`, `net`, `input`, `rtc`, `vsock` | Device drivers. |
+| [ax-task](../../../components/ax-task) | Runtime dependency; `smp` | OS-independent task scheduling core; ArceOS integration lives in `ax-runtime::task`. |
+| [ax-sync](../modules/axsync) | Runtime dependency | ArceOS synchronization primitives. |
 
 See [arceos-apps](https://github.com/arceos-org/arceos-apps) for example applications and their required modules and features.
 

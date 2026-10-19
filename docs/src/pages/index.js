@@ -6,10 +6,6 @@ import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import layout from '../components/layout/page.module.css';
 import './index.css';
 
-// Verified against Cargo metadata and scripts/repo/repos.csv on 2026-09-17.
-// Workspace members include applications, tests and build tools, unlike the component catalog.
-const workspaceFacts = { packages: 193, subtreeMappings: 41, existingSubtreeTargets: 39 };
-
 /* ── Scroll Reveal Hook ──────────────────────────────────── */
 function useScrollReveal() {
   useEffect(() => {
@@ -101,14 +97,14 @@ function ComponentWorkspaceDiagram() {
   ];
 
   const hubItems = [
-    { title: '外部仓库汇聚', desc: [`${workspaceFacts.subtreeMappings} 条映射记录`, `${workspaceFacts.existingSubtreeTargets} 个目标目录存在`] },
+    { title: '外部仓库汇聚', desc: ['登记上游来源与目标目录', '按领域分类维护组件映射'] },
     { title: 'Subtree 同步工具', desc: ['repo.py list / pull / push', '集成验证后同步回上游'] },
     { title: '来源边界清晰', desc: ['repos.csv · target_dir · category'] },
   ];
 
   return (
     <div className="workspace-diagram" aria-label="Git Subtree component workspace workflow">
-      <div className="workspace-diagram__title">{workspaceFacts.subtreeMappings} 条 Git Subtree 映射记录：外部仓库 ↔ 统一工作区 ↔ 上游</div>
+      <div className="workspace-diagram__title">Git Subtree 映射：外部仓库 ↔ 统一工作区 ↔ 上游</div>
       <div className="workspace-diagram__flow">
         <div className="workspace-diagram__repos workspace-diagram__repos--source">
           {repos.map((repo) => (
@@ -231,7 +227,7 @@ function staggerClass(index) {
 function HeroBanner() {
   const heroStats = [
     { label: '核心系统', value: '3' },
-    { label: '工作区成员', value: workspaceFacts.packages },
+    { label: '工作区组织', value: 'Cargo' },
     { label: '目标架构', value: '4' },
     { label: '统一命令入口', value: 'xtask' },
   ];
@@ -266,7 +262,7 @@ function HeroBanner() {
           <p className={`eyebrow ${layout.eyebrow}`}>Operating Systems and Virtualization Workspace</p>
           <h1><span>TGOSKits</span><em>面向系统软件研发的一体化工作区</em></h1>
           <p className="lead">
-            ArceOS、StarryOS、Axvisor 三套系统与它们共享的组件、内存、驱动、虚拟化和平台实现，位于同一个包含 {workspaceFacts.packages} 个成员的 Cargo workspace 中。
+            ArceOS、StarryOS、Axvisor 三套系统与它们共享的组件、内存、驱动、虚拟化和平台实现，位于同一个 Cargo workspace 中。
             cargo xtask 统一承担配置解析、构建、镜像生成、QEMU 与板卡运行以及分层验证，使同一处组件改动可以在多个系统与目标架构上直接复现，而不需要为每套系统维护独立的构建脚本。
           </p>
           <div className={`hero-actions ${layout.actions}`}>
@@ -647,7 +643,7 @@ function ComponentWorkspaceSection() {
       className="section-shell--component-workspace"
       eyebrow="Component Workspace"
       title="Git Subtree 组件同步工作流"
-      description={`scripts/repo/repos.csv 登记 ${workspaceFacts.subtreeMappings} 条组件来源映射，每条记录包含上游地址、分支、目标目录与分类；其中 ${workspaceFacts.existingSubtreeTargets} 个目标目录当前存在，另有 ${workspaceFacts.subtreeMappings - workspaceFacts.existingSubtreeTargets} 条记录指向已移除的目录，同步前需要先清理。同步动作由维护者通过 repo.py 显式执行，组件改动不会自动写回上游仓库。`}
+      description="scripts/repo/repos.csv 登记组件来源映射，每条记录包含上游地址、分支、目标目录与分类；同步前应先确认目标目录有效。同步动作由维护者通过 repo.py 显式执行，组件改动不会自动写回上游仓库。"
     >
       <ComponentWorkspaceDiagram />
     </SectionShell>

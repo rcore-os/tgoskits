@@ -11,7 +11,7 @@ Command:
 ```bash
 cargo xtask starry qemu \
   --arch x86_64 \
-  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml \
+  --qemu-config apps/starry/picoclaw-cli/qemu-x86_64.toml \
   --rootfs target/axbuild/rootfs/rootfs-x86_64-alpine.img
 ```
 
@@ -73,10 +73,11 @@ STARRY_PICOCLAW_OFFLINE_PASSED
   - Injects PicoClaw binaries into `/usr/local/bin/`.
   - Supports optional online config, `.security.yml`, proxy env file, and CA bundle injection.
 
-- `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-offline.toml`
-  - Runs the offline smoke commands.
-  - Checks local PicoClaw config/workspace state.
-  - Emits `STARRY_PICOCLAW_OFFLINE_PASSED`.
+- `apps/starry/picoclaw-cli/qemu-x86_64.toml`
+  - Carries the offline smoke commands that were first drafted in the
+    now-removed offline-only configuration.
+  - Checks local PicoClaw config/workspace state and emits
+    `STARRY_PICOCLAW_OFFLINE_PASSED`.
 
 - `apps/starry/picoclaw-cli/qemu-x86_64-picoclaw-agent.toml`
   - Prepared for Phase 2 online agent validation.

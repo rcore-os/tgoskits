@@ -95,10 +95,20 @@ sidebar_label: "平台实现"
 
 ```json
 "targetCreateCommands": [
-  "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor",
-  "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor --slide 0"
+  "target create ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/axvisor",
+  "target modules load --file ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/axvisor --slide 0"
 ]
 ```
+
+三个 AArch64 会话不共享同一个 Cargo target 目录。ArceOS 应用和 Axvisor 虽然使用逻辑 board target `aarch64-unknown-none-softfloat`，axbuild 会把它们的 `std` PIE 构建映射到 `aarch64-unknown-linux-musl` 产物目录；StarryOS 使用 `no_std` bare 构建，因此保留 `aarch64-unknown-none-softfloat` 目录。调试器必须按实际构建后端选择 ELF，不能只根据配置里的逻辑 target 名拼接路径。
+
+| 调试会话 | `launch.json` 加载的 ELF |
+|---------|--------------------------|
+| ArceOS | `target/aarch64-unknown-linux-musl/debug/arceos-helloworld` |
+| Axvisor | `target/aarch64-unknown-linux-musl/debug/axvisor` |
+| StarryOS | `target/aarch64-unknown-none-softfloat/debug/starryos` |
+
+Axvisor 的 `Build` 与 `Start` 任务都显式使用 `os/axvisor/configs/board/qemu-aarch64.toml`，QEMU 命令同时固定 `os/axvisor/configs/qemu/qemu-aarch64.toml`。该 board 配置包含 `target = "aarch64-unknown-none-softfloat"` 与 `vm_configs = []`，因此调试入口不会继承可变默认 `.build.toml` 中的 x86_64 target 或旧设备配置。
 
 随后通过：
 
@@ -140,10 +150,10 @@ sidebar_label: "平台实现"
 
 #### StarryOS 硬件断点
 
-StarryOS Main 配置使用 `--hardware true`，具体文件和断点行以 `launch.json` 中的对应配置为准：
+StarryOS Main 与 Boot 对 `#[unsafe(no_mangle)] extern "C" fn main()` 入口使用硬件符号断点，具体位置以 `launch.json` 中的对应配置为准：
 
 ```json
-"breakpoint set --hardware true --file ... --line <line>"
+"breakpoint set --hardware true --name main"
 ```
 
 这是因为 StarryOS 在早期引导阶段可能运行在内存权限受限的页面布局上，软件断点（通过写入 `0xCC` / `0xE7FFFFFF` trap 指令实现）不一定能成功写入目标代码页。硬件断点使用 CPU 的调试寄存器（DR0-DR3 on x86, HWBP on AArch64），不需要修改代码内存，因此在任何内存布局下都能可靠命中。ArceOS 和 Axvisor 当前未启用硬件断点——它们的引导阶段内存布局允许软件断点正常工作。
@@ -172,7 +182,7 @@ StarryOS Main 配置使用 `--hardware true`，具体文件和断点行以 `laun
 ```json
 {
   "label": "TGOS: Start ArceOS QEMU debug",
-  "command": "python",
+  "command": "python3",
   "args": ["${workspaceFolder}/.vscode/session.py", "start"]
 }
 ```
@@ -240,7 +250,7 @@ StarryOS Main 配置使用 `--hardware true`，具体文件和断点行以 `laun
 
 当 `session.py` 输出包含 `QEMU_DEBUG_FAILED` 时，VS Code 会将其作为任务错误捕获并在 Problems 面板中展示。注意：此正则**只匹配失败状态**——`QEMU_DEBUG_STARTING` 和 `QEMU_GDB_READY` 的识别完全由 `background` 子段处理，两者职责分离。
 
-如果 `endsPattern`（即 `QEMU_GDB_READY`）在超时内始终未出现（默认 20 秒，由 `session.py` 控制），VS Code 会将后台任务标记为超时完成，但 `launch.json` 的附加步骤仍会尝试执行并很可能因连接失败而报错。此时应检查 `target/qemu-debug/*.log` 确认 QEMU 是否正常启动。
+如果 `endsPattern`（即 `QEMU_GDB_READY`）在超时内始终未出现（默认 120 秒，由 `session.py` 控制），VS Code 会将后台任务标记为超时完成，但 `launch.json` 的附加步骤仍会尝试执行并很可能因连接失败而报错。该预算从 `session.py` 启动 `TGOS_DEBUG_COMMAND` 时开始计算，包含 xtask 构建以及镜像、AXKS 和 initramfs 准备，而不只是 QEMU 启动后的等待；超时仍会输出 `QEMU_DEBUG_FAILED` 并返回失败。此时应检查 `target/qemu-debug/*.log` 定位停在哪一准备阶段。
 
 ### 任务可见性与面板行为
 
@@ -291,7 +301,7 @@ StarryOS Main 配置使用 `--hardware true`，具体文件和断点行以 `laun
 
 ```json
 "env": {
-  "TGOS_DEBUG_COMMAND": "cargo xtask axvisor qemu --debug --config os/axvisor/.build.toml",
+  "TGOS_DEBUG_COMMAND": "cargo xtask axvisor qemu --debug --config os/axvisor/configs/board/qemu-aarch64.toml --qemu-config os/axvisor/configs/qemu/qemu-aarch64.toml",
   "TGOS_DEBUG_PORT": "1234",
   "TGOS_DEBUG_SESSION": "axvisor",
   "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"
@@ -420,14 +430,14 @@ def _belongs_to_session(pid: int) -> bool:
 
 | 参数 | 默认值 | 位置 | 说明 |
 |------|--------|------|------|
-| QEMU 启动超时 | **20 秒** | `_wait_for_qemu_ready()` | 从 QEMU 启动到 GDB stub 可连接的最大等待时间 |
+| 调试启动预算 | **120 秒** | `_wait_for_qemu_ready()` | 从启动 `TGOS_DEBUG_COMMAND` 到 GDB stub 可连接的最大等待时间，包含 xtask 构建及镜像、AXKS、initramfs 准备 |
 | 轮询间隔 | **0.1 秒** | `_wait_for_qemu_ready()` | 每次 TCP 探测之间的间隔，平衡响应速度与 CPU 开销 |
 | Socket 连接超时 | **0.2 秒** | `_tcp_connectable()` | 单次 TCP connect 的阻塞上限 |
 | 孤儿进程清理宽限 | **2 秒** | `_kill_orphans()` | SIGTERM 后等待 graceful exit 的时间 |
 | tee 线程 join 超时 | **2 秒** | `_cmd_start()` | QEMU 退出后等待 tee 线程结束的时间 |
 | stdin 线程 join 超时 | **0.2 秒** | `_cmd_start()` | 等待 stdin 转发线程退出的时间 |
 
-如果 QEMU 在 20 秒内未能使 GDB stub 就绪，`session.py` 会输出 `QEMU_DEBUG_FAILED` 并打印日志最后 80 行作为诊断信息，然后以退出码 1 退出。
+如果启动 `TGOS_DEBUG_COMMAND` 后 120 秒内未能使 GDB stub 就绪，`session.py` 会输出 `QEMU_DEBUG_FAILED` 并打印日志最后 80 行作为诊断信息，然后以退出码 1 退出。
 
 ### 信号处理与 stdin 转发
 
@@ -466,7 +476,7 @@ Windows 平台不使用孤儿扫描机制——Windows 下仅依赖 `taskkill /T
 | 退出码 | 含义 | 触发条件 |
 |--------|------|---------|
 | **0** | 成功 | QEMU 正常退出，调试会话完整结束 |
-| **1** | 失败 | QEMU 启动超时、GDB stub 未就绪、或收到 SIGINT/SIGTERM |
+| **1** | 失败 | 调试启动预算超时、GDB stub 未就绪、或收到 SIGINT/SIGTERM |
 | **2** | 参数错误 | 缺少必需的环境变量（`TGOS_DEBUG_STATE_DIR`、`TGOS_DEBUG_SESSION`、`TGOS_DEBUG_COMMAND`） |
 
 ### 会话清理

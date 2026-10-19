@@ -25,14 +25,24 @@ TGOSKits 仓库通过 Git Subtree 汇入多个独立子项目，并在根目录�
 
 ```text
 tgoskits/
+├── apps/                      # ArceOS 与 StarryOS 应用包
+├── benchmarks/                # 基准测试与报告
+├── bootloader/                # UEFI 与平台引导程序
 ├── components/                # 可复用组件 crate
+├── container/                 # CI 与开发容器镜像
+├── drivers/                   # 可复用驱动与驱动子系统
+├── fs/                        # 文件系统 crate
+├── memory/                    # 内存管理 crate
+├── net/                       # 网络 crate
 ├── os/
 │   ├── arceos/                # ArceOS 模块化内核
 │   ├── StarryOS/              # StarryOS Linux 兼容 OS
 │   └── axvisor/               # Axvisor Type-I Hypervisor
-├── platform/                  # 平台与板卡适配 crate
-├── drivers/                   # 可复用驱动与驱动子系统
+├── platforms/                 # 平台与板卡适配 crate
+├── nixos-tests/               # NixOS 集成测试
 ├── test-suit/                 # 系统级测试用例
+├── tools/                     # 仓库与开发工具
+├── virtualization/            # 虚拟化支持 crate
 ├── xtask/                     # 根目录统一命令入口
 ├── scripts/                   # 仓库维护、测试和同步脚本
 └── docs/                      # Docusaurus 文档站点
@@ -94,7 +104,7 @@ cargo xtask starry qemu --arch aarch64
 cargo xtask axvisor qemu --arch aarch64
 ```
 
-如果只想先跑通一个最短路径，建议从 ArceOS Hello World 开始。更多系统、架构组合和 QEMU 参数说明见 [快速开始总览](https://rcore-os.cn/tgoskits/docs/quickstart/overview) 和 [运行与 QEMU](https://rcore-os.cn/tgoskits/docs/build/run)。
+如果只想先跑通一个最短路径，建议从 ArceOS Hello World 开始。更多系统、架构组合和 QEMU 参数说明见 [快速开始总览](https://rcore-os.cn/tgoskits/docs/quickstart/overview) 和 [命令索引](https://rcore-os.cn/tgoskits/docs/build/commands)。
 
 ## 4. 贡献
 

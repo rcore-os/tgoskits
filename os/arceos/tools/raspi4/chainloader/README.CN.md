@@ -22,7 +22,7 @@
 最后，它跳转到`0x8_0000`，新加载的二进制文件会透明地执行，就好像它一直从SD卡加载一样。
 
 在我有时间详细写下这些内容之前，请耐心等待。目前，请将这个教程视为一种便利功能的启用程序，它允许快速启动以下教程。
-_对于那些渴望深入了解的人，可以直接跳到第[15章](../15_virtual_mem_part3_precomputed_tables)，阅读README的前半部分，
+_对于那些渴望深入了解的人，可以直接跳到上游 [`rust-raspberrypi-OS-tutorials`](https://github.com/rust-embedded/rust-raspberrypi-OS-tutorials) 的第 15 章，阅读 README 的前半部分，
 其中讨论了`Load Address != Link Address`的问题_。
 
 [position independent code]: https://en.wikipedia.org/wiki/Position-independent_code
@@ -36,7 +36,7 @@ _对于那些渴望深入了解的人，可以直接跳到第[15章](../15_virtu
 1. 将`kernel8.img`复制到SD卡中，并将SD卡重新插入您的RPi。
 1. 运行命令`make chainboot`或`BSP=rpi4 make chainboot`。
 1. 将USB串口连接到您的主机PC上。
-    - 请参考[top-level README](../README.md#-usb-serial-output)中的接线图。
+    - 请参考 [ArceOS Raspberry Pi 4 指南](../../../doc/platform_raspi4.md) 了解板卡启动背景。
     - 确保您**没有**连接USB串口的电源引脚，只连接RX/TX和GND。
 1. 将RPi连接到（USB）电源线。
 1. 观察加载程序通过`UART`获取内核：

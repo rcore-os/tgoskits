@@ -11,14 +11,14 @@
       "preLaunchTask": "TGOS: Prepare ArceOS QEMU debug",
       "postDebugTask": "TGOS: Stop ArceOS QEMU debug",
       "targetCreateCommands": [
-        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld",
-        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld --slide 0"
+        "target create ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/arceos-helloworld",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/arceos-helloworld --slide 0"
       ],
       "processCreateCommands": [
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        "breakpoint set --file ${workspaceFolder}/os/arceos/examples/helloworld/src/main.rs --line 8",
+        "breakpoint set --file ${workspaceFolder}/apps/arceos/helloworld/src/main.rs --line 30",
         "continue"
       ],
       "sourceLanguages": [
@@ -35,8 +35,8 @@
       "preLaunchTask": "TGOS: Prepare ArceOS QEMU debug",
       "postDebugTask": "TGOS: Stop ArceOS QEMU debug",
       "targetCreateCommands": [
-        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld",
-        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/ax-helloworld --slide 0"
+        "target create ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/arceos-helloworld",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/arceos-helloworld --slide 0"
       ],
       "processCreateCommands": [
         "gdb-remote 127.0.0.1:1234"
@@ -45,7 +45,7 @@
         // "breakpoint set --file ${workspaceFolder}/platforms/axplat-dyn/src/boot.rs --line 8",
         "breakpoint set --name ax_plat::call_main",
         "breakpoint set --file ${workspaceFolder}/os/arceos/modules/axruntime/src/lib.rs --line 141",
-        "breakpoint set --file ${workspaceFolder}/os/arceos/examples/helloworld/src/main.rs --line 8"
+        "breakpoint set --file ${workspaceFolder}/apps/arceos/helloworld/src/main.rs --line 30"
       ],
       "sourceLanguages": [
         "rust"
@@ -62,14 +62,14 @@
       "preLaunchTask": "TGOS: Prepare Axvisor QEMU debug",
       "postDebugTask": "TGOS: Stop Axvisor QEMU debug",
       "targetCreateCommands": [
-        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor",
-        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor --slide 0"
+        "target create ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/axvisor",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/axvisor --slide 0"
       ],
       "processCreateCommands": [
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        "breakpoint set --file ${workspaceFolder}/os/axvisor/src/main.rs --line 42",
+        "breakpoint set --file ${workspaceFolder}/os/axvisor/src/main.rs --line 65",
         "continue"
       ],
       "sourceLanguages": [
@@ -87,15 +87,15 @@
       "preLaunchTask": "TGOS: Prepare Axvisor QEMU debug",
       "postDebugTask": "TGOS: Stop Axvisor QEMU debug",
       "targetCreateCommands": [
-        "target create ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor",
-        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-none-softfloat/debug/axvisor --slide 0"
+        "target create ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/axvisor",
+        "target modules load --file ${workspaceFolder}/target/aarch64-unknown-linux-musl/debug/axvisor --slide 0"
       ],
       "processCreateCommands": [
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
         "breakpoint set --file ${workspaceFolder}/platforms/axplat-dyn/src/boot.rs --line 8",
-        "breakpoint set --file ${workspaceFolder}/os/axvisor/src/main.rs --line 42"
+        "breakpoint set --file ${workspaceFolder}/os/axvisor/src/main.rs --line 65"
       ],
       "sourceLanguages": [
         "rust"
@@ -118,7 +118,7 @@
         "gdb-remote 127.0.0.1:1234"
       ],
       "postRunCommands": [
-        "breakpoint set --hardware true --file ${workspaceFolder}/os/StarryOS/starryos/src/main.rs --line 12",
+        "breakpoint set --hardware true --name main",
         "continue"
       ],
       "sourceLanguages": [
@@ -146,7 +146,7 @@
         "breakpoint set --name ax_plat::call_main",
         "breakpoint set --file ${workspaceFolder}/os/arceos/modules/axruntime/src/lib.rs --line 141",
         "breakpoint set --name starry_kernel::entry::init",
-        "breakpoint set --file ${workspaceFolder}/os/StarryOS/starryos/src/main.rs --line 12"
+        "breakpoint set --hardware true --name main"
       ],
       "sourceLanguages": [
         "rust"
