@@ -157,9 +157,20 @@ Machine 负责选择固定串口、中断控制器与地址池，规划器负责
 | `disabled` | `PhysicalDeviceRef` 数组 | 空数组 | 从 passthrough 基线移除的宿主物理设备 |
 | `virtual` | `VirtualDeviceRequest` 数组 | 空数组 | 交给代码注册 catalog 的虚拟设备请求 |
 
-当前 `PhysicalDeviceRef` 只有一个字段：`path`。用户值必须是以 `/` 开头、但不能等于 `/` 的具体设备树路径。`passthrough` 和 `disabled` 不能出现相同 path。PCI BDF、原始 MMIO 地址、端口和 IRQ 都不是当前用户 selector。
+当前 `PhysicalDeviceRef` 只有一个字段：`path`，值必须以 `/` 开头。具体设备使用完整的设备树节点路径；字面 `/` 只在 `guest_type = "passthrough"` 的 `passthrough` 列表中合法，表示根基线。`GuestDevices::validate(guest_type)` 拒绝非直通客户机在 `passthrough` 写 `/`，也拒绝任何客户机在 `disabled` 写 `/`。两张列表不能出现相同 path；PCI BDF、原始 MMIO 地址、端口和 IRQ 都不是当前用户 selector。
 
-Machine 的默认 selector 不经过 `PhysicalDeviceRef` 反序列化，因此可以使用内部发现根 `/`。这不放宽用户 schema：在 TOML 中写 `{ path = "/" }` 仍会由 `InvalidPhysicalDevicePath` 拒绝。只有 `guest_type = "passthrough"` 且用户 `passthrough` 为空时，应用层才可能采用 Machine 默认值；用户提供任何具体 path 后就不会注入该默认 selector。
+在从宿主 FDT 生成客户机设备树的路径上，`setup_guest_fdt_from_vmm()` 按下表解释 `passthrough`。根基线包含可分配的非 PCI 设备，未显式选择的 PCI 主桥会被剪除；宿主占用资源和 `disabled` 仍优先排除。
+
+| 客户机类型 | `passthrough` 写法 | 设备选择语义 |
+| --- | --- | --- |
+| `passthrough` | `[]` 或 `[{ path = "/" }]` | 根基线；在 Machine 默认发现根为 `/` 时，两种写法等价 |
+| `passthrough` | `[{ path = "/" }, { path = "/pcie@fe180000" }]` | 根基线加具体路径；被显式选择的主桥及其端点保留，其他主桥仍被剪除 |
+| 任一类型 | 非空列表，只有具体路径、不含 `/` | 精确选择及其固件依赖闭包，不隐式增加根基线 |
+| `virtualized` | `[]` | 不选择物理设备；仍可另行声明虚拟设备 |
+
+Machine 的默认 selector 仅在 `guest_type = "passthrough"` 且用户 `passthrough` 为空时由应用层注入；非空列表使用用户提供的路径。解析器还要求客户机类型为 `Passthrough` 且运行时 selector 含 `/` 才启用根基线，避免直接构造 `GuestConfig` 的调用方绕过 TOML 校验后扩大设备范围。空列表在直通客户机上仍启用基线；要从无物理设备起步，应使用 `guest_type = "virtualized"` 和空 `passthrough`。
+
+根基线模式下，若只选择 PCI 主桥下的端点，却没有显式选择覆盖该主桥的路径，解析器会在修改排除列表之前返回 `AxVmError::InvalidConfig`，并指出端点与所需主桥。应显式选择主桥，再按需列端点；自动放行父桥会连带暴露同桥其他端点。纯具体路径的精确模式保持既有语义，不增加这项基线检查。
 
 实体板卡使用 `web` 时，`disabled` 还必须覆盖 Axvisor 实体网卡的完整宿主资源闭包。PCIe Host Bridge 被隐式过滤不代表独立 PHY、USB/DP Combo PHY、共享复位和时钟不会进入客户机；Orange Pi 5 Plus 的精确节点、失联现象和验证配置见[客户机控制台的实体板卡网络资源](./guest-console.md#8-实体板卡网络资源)。
 
@@ -244,7 +255,10 @@ model = "ivc-channel"
 | --- | --- | --- | --- |
 | TOML 括号、类型、表层次错误，或固定形状结构出现未知字段 | Serde parse | `AxVmConfigError::TomlParse`，内部为 `toml::de::Error` | 原始 TOML 行列、字段拼写、字段类型；不要在物理 selector 中加入额外键 |
 | `enable_bios` 与协议冲突、架构不支持协议、UEFI 缺路径或加载地址 | boot validation | `BootProtocolConflict`、`UnsupportedBootProtocol`、`MissingFirmwarePath`、`MissingFirmwareLoadAddress` | 对照 `BOOT_PROTOCOL_MATRIX`，确认目标架构和固件字段 |
-| path 不是绝对具体路径，或同一路径同时出现在 `passthrough` 与 `disabled` | device validation | `InvalidPhysicalDevicePath`、`ConflictingPhysicalDeviceSelection` | 使用 host DT 中的完整节点路径；从两张列表中移除冲突项 |
+| path 不是绝对路径，或同一路径同时出现在 `passthrough` 与 `disabled` | device validation | `InvalidPhysicalDevicePath`、`ConflictingPhysicalDeviceSelection` | 使用 host DT 中的完整节点路径；从两张列表中移除冲突项 |
+| 非直通客户机在 `passthrough` 写 `/` | device validation | `RootBaselineSelectorNotAllowed` | 核对 `guest_type`；虚拟化客户机只选择具体设备路径，空列表表示不选择物理设备 |
+| 任一客户机在 `disabled` 写 `/` | device validation | `RootSelectorNotDisableable` | `disabled` 只列具体设备；若无需物理设备，使用 `virtualized` 加空 `passthrough` |
+| 根基线模式只选择被剪 PCI 主桥下的端点 | boot prepare，生成客户机 FDT | `AxVmError::InvalidConfig` | 按错误中的路径显式选择主桥，或删除端点选择器；拒绝之前不会留下部分主桥排除状态 |
 | 两个虚拟设备使用相同 `id` | device validation | `DuplicateVirtualDeviceId` | ID 是 VM 内稳定图节点标识，必须唯一 |
 | options 出现框架资源键 | device validation | `ForbiddenVirtualDeviceResourceOption` | 只检查 3.5 节列出的精确键；删除地址/IRQ/MSI/LPI 输入，让规划器分配 |
 | model 名格式合法但未注册 | device prepare 的请求转换 | `ConfiguredDeviceError::UnknownVirtualDeviceModel`，随后映射成 `AxVmError::InvalidConfig` | 核对 model 拼写，并确认 AxVM/Axvisor catalog 装配点确实注册了该 model |

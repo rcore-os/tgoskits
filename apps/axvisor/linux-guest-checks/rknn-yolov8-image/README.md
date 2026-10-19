@@ -132,6 +132,8 @@ install/rknn-yolov8-image/
 
 ## 源码与依赖
 
+本包以仓库 `benchmarks/starry/orangepi-5-plus-uvc-rknn/rknn-yolov8-image/` 中的第三方资源和公共工具代码为基础，按 Linux 客户机图片推理用途裁剪适配，保留独立的构建与部署目录。两份代码已有用途差异；更新通用错误修复、第三方库或模型时，提交者需检查并同步另一副本的适用部分，不能直接覆盖整个目录。来源对照提交、上游版本记录边界与同步责任见源码目录的 `THIRD_PARTY_NOTICES.md`；安装后的文件位于运行包 `licenses/THIRD_PARTY_NOTICES.md`。
+
 | 内容 | 作用 |
 | --- | --- |
 | `src/main.cc` | 图片遍历、模型生命周期、逐图调用、英文结果和汇总 |

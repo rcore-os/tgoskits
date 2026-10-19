@@ -10,6 +10,8 @@
 
 ## 边界
 
+本目录是手工应用，不是 `cargo xtask axvisor test` 的自动用例。当前组枚举会把 `apps/axvisor/` 的子目录都列为组名，因此能看到 `linux-guest-checks`，但它没有自动测试布局；选择该组不能执行本页检查，也不能以零用例结果判定通过。请使用下文的 `cargo xtask axvisor board` 入口。
+
 - 只验证链路可用：客户机启动、NPU 驱动绑定、信息/频点/负载可查询、NPU 能跑通一次 YOLOv8 图片推理、Linux 基础功能（ssh / cpuinfo / ping / 读写 / apt）可用。
 - 不验证识别准确率，不与预设答案比对；未检测到目标时输出 `Detections: 0` 也算推理正常完成。
 - 不修改 NPU 频率、不复位 NPU。
@@ -142,7 +144,7 @@ cat /proc/cmdline                          # 确认 root= 与本配置一致
 
 ## 启动
 
-在仓库根目录执行：
+本启动流程依赖仓库 `Cargo.lock` 当前解析的 **`ostool 0.30.3`**，通过 `cargo xtask axvisor board` 调用其 U-Boot 板卡运行器。在工作站的交互终端中，从仓库根目录执行：
 
 ```bash
 cargo xtask axvisor board \
@@ -160,6 +162,10 @@ vm console 1
 回车即出现 Linux 提示符，随后按下面各节手工执行命令。
 
 按键约定：`Ctrl+X` 后再按 `h` 返回 AxVisor 控制台；会话结束时按 `Ctrl+A` 后再按 `x` 释放串口。
+
+`board-shell.toml` 的 `shell_check_steps = []` 使该版本的 `UbootConfig::shell_check_matcher()` 不创建自动检查器；启动后，`AsyncTerminal` 继续转发串口输入输出。`fail_regex = []` 也不检测失败标记。配置未设置 `timeout`，该版本不会为启动后的终端阶段设置超时；U-Boot 连接和准备阶段仍有独立的超时与错误处理。因此命令停留在终端等待人工操作是预期行为，不会因没有检查步骤而自动报告功能通过。
+
+`Ctrl+X` 后按 `h` 只切回 AxVisor 控制台，会话仍占用板卡。`Ctrl+A` 后按 `x` 结束工作站终端，运行器随后通过 `finalize_session()` 请求释放板卡会话。正常退出且释放成功时命令返回 0；启动、传输、终端或释放报错时返回非零。**退出码 0 只表示运行会话正常结束，不表示任何手工功能项通过**；每项结果仍须依据本页的命令输出记录。升级 `ostool` 时应复核空步骤、终端退出与会话释放行为，再用本板卡入口确认；这些约定不能直接套用到会拒绝空步骤的其他应用入口。
 
 ## 场景 1：NPU 可用性检查
 
