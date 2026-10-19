@@ -86,6 +86,10 @@ AxVisor 管理 Shell 使用 `shlex` 的 POSIX 风格规则拆分命令行。单�
 
 串口管理 Shell 的 `shell::console_init` 支持方向键浏览历史和移动光标、Delete 删除光标处字符、Home/End 或 Ctrl+A/E 移到行首/行尾。Ctrl+W 删除前一个词，Ctrl+U 清空当前行，Ctrl+K 删除光标到行尾，Ctrl+C 取消尚未执行的输入。SGR 鼠标报告等未支持的 CSI 序列会完整消费，不会混入命令。
 
+串口管理 Shell 的 `history` 内建命令由 `handle_builtin_commands` 分派，并操作 `CommandHistory` 保存的当前会话记录。列表按保留窗口从 1 开始编号，并显示 `history` 自身；`history -c` 清空包括自身在内的全部记录，之后方向键不会带回旧命令。`history -N` 显示最后 N 条，N 为正十进制整数，计数包含当前命令自身，输出沿用完整历史中的原始编号。
+
+`history | grep PATTERN` 对命令文本做区分大小写的字面子串匹配（不是正则），PATTERN 必须恰好一个；`history -N | grep PATTERN` 先取最后 N 条再过滤。只接受单个 `grep PATTERN` 过滤阶段，其他管道组合、grep 选项和多余参数都会报错且不会清空已有记录；非法命令自身仍按既有规则加入历史。历史仅存在于当前串口管理 Shell 会话，不持久化；浏览器 network shell 不保留历史，执行 `history` 会明确提示不可用。
+
 Tab 通过 `shell::completion::complete_line` 补全命令和子命令；启用文件系统支持时还补全路径。唯一候选会补齐，目录追加 `/`；多个候选先补公共前缀，再按 Tab 列出候选。补全只在词尾处理未加引号、未转义的输入，文件名限 ASCII 字母、数字、`_`、`-` 和 `.`。这些按键针对串口管理 Shell；客户机控制台仍由客户机处理输入，Ctrl+X 后按 h 返回管理 Shell。
 
 使用 QEMU `-nographic` 时，连续按两次 Ctrl+A 才会向管理 Shell 发送一个 Ctrl+A；Ctrl+A 后按 x 由 QEMU 自身处理并退出模拟器。维护中的 Linux smoke 镜像以 `sh` 作为 PID 1，关机使用 `poweroff -f`；AxVisor 收到 PSCI 关机请求后停止客户机并返回管理 Shell，再执行 `exit` 关闭宿主。

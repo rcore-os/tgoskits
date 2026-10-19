@@ -21,7 +21,8 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::string::{String, ToString};
 
-use crate::shell::command::{CommandNode, FlagDef, ParsedCommand};
+use super::HISTORY_USAGE;
+use crate::shell::command::{CommandNode, FlagDef, OptionDef, ParsedCommand};
 use axvisor::shell_fs::{
     CopyMode, RemoveOptions, collect_directory_entry_names, copy_operands, copy_path,
     move_file_or_dir, path_basename, remove_path, touch_file,
@@ -602,6 +603,23 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
         CommandNode::new("Exit the shell")
             .with_handler(do_exit)
             .with_usage("exit [EXIT_CODE]"),
+    );
+
+    // The handler lives in the built-in dispatcher because it needs mutable
+    // access to the console-local command history.
+    tree.insert(
+        "history".to_string(),
+        CommandNode::new("Show command history")
+            .with_usage(HISTORY_USAGE)
+            .with_flag(FlagDef::new("clear", "Clear command history").with_short('c'))
+            .with_option(OptionDef::new(
+                "-N",
+                "Show only the last N entries; N is a positive decimal integer",
+            ))
+            .with_option(OptionDef::new(
+                "| grep PATTERN",
+                "Filter entries by a case-sensitive literal substring",
+            )),
     );
 
     // log Command

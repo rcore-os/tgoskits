@@ -125,7 +125,9 @@ pub(crate) fn run_network_command(input: &str) -> bool {
 
     NETWORK_OUTPUT_SELECTED.with(|selected| {
         let previous = selected.replace(true);
-        if !command.is_empty() && !handle_builtin_commands(command) {
+        // The browser shell has no retained command history, so it cannot
+        // serve the stateful `history` built-in.
+        if !command.is_empty() && !handle_builtin_commands(command, None) {
             run_cmd_bytes(command.as_bytes());
         }
         selected.set(previous);
@@ -316,7 +318,7 @@ pub fn console_init() {
                             history.add_command(cmd_str.to_string());
 
                             // Execute command
-                            if !handle_builtin_commands(cmd_str) {
+                            if !handle_builtin_commands(cmd_str, Some(&mut history)) {
                                 run_cmd_bytes(&buf[..line_len]);
                             }
 

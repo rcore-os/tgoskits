@@ -17,7 +17,7 @@ mod history;
 mod vm;
 
 pub use base::*;
-pub use history::*;
+pub use history::{CommandHistory, redraw_line};
 pub use vm::*;
 
 use std::string::String;
@@ -30,6 +30,8 @@ use std::{
 
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);
+
+const HISTORY_USAGE: &str = "history [-N] [| grep PATTERN], or history -c";
 
 pub(super) fn shutdown(exit_code: i32) -> ! {
     if let Err(error) = axvm::host::shutdown_filesystems() {
@@ -528,12 +530,19 @@ pub(super) fn command_completions(context: &str, prefix: &str) -> Vec<String> {
 }
 
 // Built-in command handler
-pub fn handle_builtin_commands(input: &str) -> bool {
+pub fn handle_builtin_commands(input: &str, history: Option<&mut CommandHistory>) -> bool {
     let Ok(tokens) = CommandParser::tokenize(input) else {
         return false;
     };
 
     match tokens.as_slice() {
+        [command, ..] if command == "history" => {
+            match history {
+                Some(history) => history::handle_history_command(&tokens, history),
+                None => println!("history: not available in the network shell"),
+            }
+            true
+        }
         [command] if command == "help" => {
             show_available_commands();
             true

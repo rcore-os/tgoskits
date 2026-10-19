@@ -62,6 +62,171 @@ shell_cmd = "bad-command\u001b[\u0003echo SHELL_CANCEL_OK"
 success_regex = ['(?m)^SHELL_CANCEL_OK\s*$']
 
 [[shell_check_steps]]
+# Start with a known history before checking numbering, rejection, and clearing.
+shell_prefix = "axvisor:/$"
+shell_cmd = "history -c"
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_HISTORY_FIRST"
+success_regex = ['(?m)^AXVISOR_HISTORY_FIRST\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_HISTORY_SECOND"
+success_regex = ['(?m)^AXVISOR_HISTORY_SECOND\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "history"
+success_regex = ['(?m)^\s*1\s+echo AXVISOR_HISTORY_FIRST[ \t\r]*$\r?\n^\s*2\s+echo AXVISOR_HISTORY_SECOND[ \t\r]*$\r?\n^\s*3\s+history[ \t\r]*$']
+
+[[shell_check_steps]]
+shell_cmd = "history -c extra"
+success_regex = ['(?m)^history: unsupported option or argument[ \t\r]*$\r?\n^Usage: history \[-N\] \[\| grep PATTERN\], or history -c[ \t\r]*$']
+
+[[shell_check_steps]]
+shell_cmd = "history"
+success_regex = ['(?m)^\s*1\s+echo AXVISOR_HISTORY_FIRST[ \t\r]*$\r?\n^\s*2\s+echo AXVISOR_HISTORY_SECOND[ \t\r]*$\r?\n^\s*3\s+history[ \t\r]*$\r?\n^\s*4\s+history -c extra[ \t\r]*$\r?\n^\s*5\s+history[ \t\r]*$']
+
+[[shell_check_steps]]
+shell_cmd = "help"
+success_regex = ['(?m)^\s+history\s+Show command history[ \t\r]*$']
+
+[[shell_check_steps]]
+shell_cmd = "help history"
+success_regex = ['(?m)^Command: history[ \t\r]*$\r?\n^Description: Show command history[ \t\r]*$\r?\n^Usage: history \[-N\] \[\| grep PATTERN\], or history -c[ \t\r]*$\r?\n\r?\n^Options:[ \t\r]*$\r?\n^  -N\s+Show only the last N entries; N is a positive decimal integer[ \t\r]*$\r?\n^  \| grep PATTERN\s+Filter entries by a case-sensitive literal substring[ \t\r]*$\r?\n\r?\n^Flags:[ \t\r]*$\r?\n^  -c\s+Clear command history[ \t\r]*$']
+
+[[shell_check_steps]]
+shell_cmd = "history -c"
+
+[[shell_check_steps]]
+shell_cmd = "\u001b[Ahis\t"
+success_regex = ['(?m)^\s*1\s+history[ \t\r]*$']
+fail_regex = ['(?m)^\s*2\s+']
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_HISTORY_REMEMBERED"
+success_regex = ['(?m)^AXVISOR_HISTORY_REMEMBERED\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "\u001b[A"
+success_regex = ['(?m)^AXVISOR_HISTORY_REMEMBERED\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "history"
+success_regex = ['(?m)^\s*1\s+history[ \t\r]*$\r?\n^\s*2\s+echo AXVISOR_HISTORY_REMEMBERED[ \t\r]*$\r?\n^\s*3\s+history[ \t\r]*$']
+fail_regex = ['(?m)^\s*4\s+']
+
+[[shell_check_steps]]
+# Exercise bounded listing and the single supported grep filter stage.
+shell_prefix = "axvisor:/$"
+shell_cmd = "history -c"
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_HISTORY_VM_ALPHA"
+success_regex = ['(?m)^AXVISOR_HISTORY_VM_ALPHA\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "echo AXVISOR_HISTORY_VM_BETA"
+success_regex = ['(?m)^AXVISOR_HISTORY_VM_BETA\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "echo axvisor_history_vm_lower"
+success_regex = ['(?m)^axvisor_history_vm_lower\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "echo 'AXVISOR HISTORY QUOTED TERM'"
+success_regex = ['(?m)^AXVISOR HISTORY QUOTED TERM\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "history -1"
+success_regex = ['(?m)^ {2,4}5  history -1[ \t\r]*$']
+fail_regex = ['(?m)^ {2,4}(?:1|2|3|4|6)[ \t]{2}']
+
+[[shell_check_steps]]
+shell_cmd = "history -3"
+success_regex = ['''(?m)^ {2,4}4  echo 'AXVISOR HISTORY QUOTED TERM'[ \t\r]*$\r?\n^ {2,4}5  history -1[ \t\r]*$\r?\n^ {2,4}6  history -3[ \t\r]*$''']
+fail_regex = ['(?m)^ {2,4}(?:1|2|3|7)[ \t]{2}']
+
+[[shell_check_steps]]
+shell_cmd = "history -100"
+success_regex = ['''(?m)^ {2,4}1  echo AXVISOR_HISTORY_VM_ALPHA[ \t\r]*$\r?\n^ {2,4}2  echo AXVISOR_HISTORY_VM_BETA[ \t\r]*$\r?\n^ {2,4}3  echo axvisor_history_vm_lower[ \t\r]*$\r?\n^ {2,4}4  echo 'AXVISOR HISTORY QUOTED TERM'[ \t\r]*$\r?\n^ {2,4}5  history -1[ \t\r]*$\r?\n^ {2,4}6  history -3[ \t\r]*$\r?\n^ {2,4}7  history -100[ \t\r]*$''']
+fail_regex = ['(?m)^ {2,4}8[ \t]{2}']
+
+[[shell_check_steps]]
+shell_cmd = "history |grep AXVISOR_HISTORY_VM"
+success_regex = ['(?m)^ {2,4}1  echo AXVISOR_HISTORY_VM_ALPHA[ \t\r]*$\r?\n^ {2,4}2  echo AXVISOR_HISTORY_VM_BETA[ \t\r]*$\r?\n^ {2,4}8  history \|grep AXVISOR_HISTORY_VM[ \t\r]*$']
+fail_regex = ['(?m)^ {2,4}3[ \t]{2}']
+
+[[shell_check_steps]]
+shell_cmd = "history | grep AXVISOR_HISTORY_VM"
+success_regex = ['(?m)^ {2,4}1  echo AXVISOR_HISTORY_VM_ALPHA[ \t\r]*$\r?\n^ {2,4}2  echo AXVISOR_HISTORY_VM_BETA[ \t\r]*$\r?\n^ {2,4}8  history \|grep AXVISOR_HISTORY_VM[ \t\r]*$\r?\n^ {2,4}9  history \| grep AXVISOR_HISTORY_VM[ \t\r]*$']
+fail_regex = ['(?m)^ {2,4}3[ \t]{2}']
+
+[[shell_check_steps]]
+shell_cmd = "history | grep 'AXVISOR HISTORY QUOTED'"
+success_regex = ['''(?m)^ {2,4}4  echo 'AXVISOR HISTORY QUOTED TERM'[ \t\r]*$\r?\n^ {2,4}10  history \| grep 'AXVISOR HISTORY QUOTED'[ \t\r]*$''']
+fail_regex = ['(?m)^ {2,4}(?:1|2|3|5|6|7|8|9)[ \t]{2}']
+
+[[shell_check_steps]]
+# Adjacent quoted segments tokenize to the pattern without putting that
+# contiguous text in the raw command, so this filter must print no rows. The
+# echo supplies the success condition required alongside fail_regex.
+shell_cmd = "history | grep 'AXVISOR''_HISTORY_ABSENT'\necho AXVISOR_HISTORY_EMPTY_FILTER_OK"
+success_regex = ['(?m)^AXVISOR_HISTORY_EMPTY_FILTER_OK\s*$']
+fail_regex = ['(?m)^(?: {2,4}[0-9]{1,2}[ \t]{2}(?:echo|history)|history:)']
+
+[[shell_check_steps]]
+# Taking the last three entries before filtering must leave only this command.
+shell_cmd = "history -3 | grep AXVISOR_HISTORY_VM"
+success_regex = ['(?m)^ {2,4}13  history -3 \| grep AXVISOR_HISTORY_VM[ \t\r]*$']
+fail_regex = ['(?m)^ {2,4}(?:1|2|8|9|10|11|12)[ \t]{2}']
+
+[[shell_check_steps]]
+shell_cmd = "history -0"
+success_regex = ['''(?m)^history: invalid count '-0'; expected a positive decimal integer[ \t\r]*$''']
+
+[[shell_check_steps]]
+shell_cmd = "history -999999999999999999999"
+success_regex = ['''(?m)^history: invalid count '-999999999999999999999'; expected a positive decimal integer[ \t\r]*$''']
+
+[[shell_check_steps]]
+shell_cmd = "history | grep"
+success_regex = ['''(?m)^history: grep requires exactly one pattern; additional arguments or pipelines are not supported[ \t\r]*$''']
+
+[[shell_check_steps]]
+shell_cmd = "history | grep a b"
+success_regex = ['''(?m)^history: grep requires exactly one pattern; additional arguments or pipelines are not supported[ \t\r]*$''']
+
+[[shell_check_steps]]
+shell_cmd = "history | grep -i AXVISOR"
+success_regex = ['''(?m)^history: grep options are not supported: '-i'[ \t\r]*$''']
+
+[[shell_check_steps]]
+shell_cmd = "history | foo bar"
+success_regex = ['''(?m)^history: unsupported filter command 'foo'; only grep is supported[ \t\r]*$''']
+
+[[shell_check_steps]]
+shell_cmd = "history | grep a | grep b"
+success_regex = ['''(?m)^history: grep requires exactly one pattern; additional arguments or pipelines are not supported[ \t\r]*$''']
+
+[[shell_check_steps]]
+shell_cmd = "history -c | grep AXVISOR"
+success_regex = ['''(?m)^history: cannot combine -c with a grep filter[ \t\r]*$''']
+
+[[shell_check_steps]]
+shell_cmd = "history -1"
+success_regex = ['(?m)^ {2,4}22  history -1[ \t\r]*$']
+fail_regex = ['(?m)^ {2,4}(?:[1-9]|1[0-9]|2[0-1])[ \t]{2}']
+
+[[shell_check_steps]]
+shell_cmd = "echo 'AXVISOR HISTORY PIPE | TERM'"
+success_regex = ['(?m)^AXVISOR HISTORY PIPE \| TERM\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "history | grep 'PIPE | TERM'"
+success_regex = ['''(?m)^ {2,4}23  echo 'AXVISOR HISTORY PIPE \| TERM'[ \t\r]*$\r?\n^ {2,4}24  history \| grep 'PIPE \| TERM'[ \t\r]*$''']
+fail_regex = ['(?m)^ {2,4}(?:[1-9]|1[0-9]|2[0-2])[ \t]{2}']
+
+[[shell_check_steps]]
 shell_prefix = "axvisor:/$"
 shell_cmd = """echo 'AXVISOR SHLEX' "" EMPTY"""
 success_regex = ['(?m)^AXVISOR SHLEX  EMPTY\s*$']
