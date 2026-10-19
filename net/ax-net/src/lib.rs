@@ -153,10 +153,12 @@ static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::
 
 static SERVICE: OnceLock<Mutex<Service>> = OnceLock::new();
 static NET_CONTROL: OnceLock<Arc<NetControl>> = OnceLock::new();
-static QUEUE_RUNTIME: OnceLock<Mutex<NetworkQueueRuntime>> = OnceLock::new();
+static QUEUE_RUNTIME: OnceLock<Mutex<Option<NetworkQueueRuntime>>> = OnceLock::new();
 static WIFI_INTERFACES: OnceLock<Vec<WifiInterfaceControl>> = OnceLock::new();
 static WIFI_ENTROPY: OnceLock<Mutex<WifiEntropy>> = OnceLock::new();
 static PROTOCOL_POLL: ProtocolPollRuntime = ProtocolPollRuntime::new();
+static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
+static PROTOCOL_EXECUTOR: Mutex<Option<ax_task::thread::ThreadHandle>> = Mutex::new(None);
 static PROTOCOL_AFFINITY_STATUS: AtomicU8 = AtomicU8::new(0);
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
@@ -571,7 +573,7 @@ pub fn init_network(
     NET_CONTROL.call_once(|| control);
     SERVICE.call_once(|| Mutex::new(service));
     WIFI_INTERFACES.call_once(|| wifi_interfaces);
-    QUEUE_RUNTIME.call_once(|| Mutex::new(queue_runtime));
+    QUEUE_RUNTIME.call_once(|| Mutex::new(Some(queue_runtime)));
     start_protocol_executor(protocol_owner_cpu);
     if dhcp_enabled {
         wait_for_dhcp_bootstrap();
@@ -720,6 +722,8 @@ pub fn init_vsock(
         .get()
         .expect("vsock initialization requires the network queue runtime")
         .lock()
+        .as_ref()
+        .ok_or(VsockRuntimeError::InvalidTopology)?
         .protocol_owner_cpu();
     if !active_cpus.contains(ax_task::sched::CpuId::new(owner_cpu as u32)) {
         return Err(VsockRuntimeError::InvalidTopology);
@@ -825,9 +829,12 @@ pub fn net_dev_stats() -> Vec<NetDevStats> {
 /// configuration, or initialization that has not finished), so an empty list
 /// means "nothing to report", not "no queues exist".
 pub fn net_queue_snapshots() -> Vec<NetQueueSnapshot> {
-    QUEUE_RUNTIME
-        .get()
-        .map_or_else(Vec::new, |runtime| runtime.lock().queue_snapshots())
+    QUEUE_RUNTIME.get().map_or_else(Vec::new, |runtime| {
+        runtime
+            .lock()
+            .as_ref()
+            .map_or_else(Vec::new, NetworkQueueRuntime::queue_snapshots)
+    })
 }
 
 /// Returns a snapshot of all configured network interfaces.
@@ -856,6 +863,8 @@ pub fn set_interface_rx_mode(id: InterfaceId, mode: NetRxMode) -> NetResult {
     let runtime = QUEUE_RUNTIME.get().ok_or(NetError::NoSuchDevice)?;
     runtime
         .lock()
+        .as_mut()
+        .ok_or(NetError::NoSuchDevice)?
         .set_interface_rx_mode(id, mode)
         .map_err(map_driver_net_error)
 }
@@ -1019,7 +1028,7 @@ fn start_protocol_executor(owner_cpu: usize) {
             protocol_executor_main();
         })
         .unwrap_or_else(|error| panic!("failed to spawn network protocol executor: {error}"));
-    worker.detach();
+    *PROTOCOL_EXECUTOR.lock() = Some(worker);
     while PROTOCOL_AFFINITY_STATUS.load(Ordering::Acquire) == 0 {
         yield_network_thread();
     }
@@ -1038,6 +1047,9 @@ fn protocol_executor_main() {
         } else {
             PROTOCOL_POLL.wait();
         }
+        if PROTOCOL_POLL.stopped() {
+            return;
+        }
         drain_deferred_poll_wakes();
         let completed = PROTOCOL_POLL.requested_generation();
         poll_protocol_until_idle(&mut budget);
@@ -1047,6 +1059,35 @@ fn protocol_executor_main() {
             continue;
         }
     }
+}
+
+/// Permanently stops the protocol and device executors for a kernel handoff.
+///
+/// The application must first close sockets and stop all network users. This
+/// terminal operation cannot resume networking, including when it returns an
+/// error. IRQ synchronization, worker join and DMA failures remain observable.
+pub fn shutdown_network() -> Result<(), NetworkRuntimeError> {
+    if SHUTDOWN_STARTED.swap(true, Ordering::AcqRel) {
+        return Err(NetworkRuntimeError::ShutdownAlreadyStarted);
+    }
+    // Dispatch final sends and closes while the unique protocol owner is live.
+    if SERVICE.get().is_some() {
+        flush_egress();
+    }
+    PROTOCOL_POLL.stop();
+    let worker = PROTOCOL_EXECUTOR.lock().take();
+    if let Some(worker) = worker {
+        worker.join().map_err(NetworkRuntimeError::WorkerJoin)?;
+    }
+    let runtime = QUEUE_RUNTIME
+        .get()
+        .and_then(|runtime| runtime.lock().take());
+    if let Some(mut runtime) = runtime {
+        // Never join a worker while holding a mutex it could reach through
+        // diagnostics or an installed queue observer.
+        runtime.shutdown()?;
+    }
+    Ok(())
 }
 
 /// Returns the list of configured DNS servers.

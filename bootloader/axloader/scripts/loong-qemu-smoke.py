@@ -156,6 +156,7 @@ def run_case(root, storage_full):
                 raise RuntimeError(f"LoongArch HTTP regression failed: {name}")
             markers = ["network_ready: arch=loongarch64"] if storage_full else [
                 "elf_loaded: load=0x200000", "ready_to_handoff",
+                "runtime_handoff_devices_stopped",
                 "HOST_CMDLINE: axloader-positive=1", "HOST_INITRAMFS_PASSED", "Hello, world!",
             ]
             check_log(log, qemu, markers)

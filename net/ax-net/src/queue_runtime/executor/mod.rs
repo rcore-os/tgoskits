@@ -857,6 +857,7 @@ pub(super) struct ExecutorControl {
     pub(super) command: AtomicU8,
     pub(super) affinity_status: AtomicU8,
     pub(super) startup_status: AtomicU8,
+    pub(super) shutdown_status: AtomicU8,
     pub(super) prune_status: AtomicU8,
     pub(super) publication_status: AtomicU8,
     pub(super) startup_error: RawSpinLock<Option<NetError>>,
@@ -876,6 +877,16 @@ impl ExecutorLease {
                 self.control.owner_cpu
             );
         }
+    }
+
+    pub(super) fn join_stopped(self) -> Result<(), super::NetworkRuntimeError> {
+        self.task
+            .join()
+            .map_err(super::NetworkRuntimeError::WorkerJoin)?;
+        if self.control.shutdown_status.load(Ordering::Acquire) != STATUS_READY {
+            return Err(super::NetworkRuntimeError::DmaShutdownUnconfirmed);
+        }
+        Ok(())
     }
 
     pub(super) fn stop(&self, irq_synchronized: bool) {
@@ -918,7 +929,7 @@ pub(super) fn queue_executor_main(
     if let Some(irq_synchronized) =
         requested_irq_synchronization(control.command.load(Ordering::Acquire))
     {
-        release_executor_resources(groups, wifi, irq_synchronized);
+        release_executor_resources(groups, wifi, irq_synchronized, &control);
         return;
     }
 
@@ -939,14 +950,14 @@ pub(super) fn queue_executor_main(
     control.notify.notify();
     if control.startup_error.lock_irqsave().is_some() {
         let irq_synchronized = wait_for_cleanup_command(&control, &waiter);
-        release_executor_resources(groups, wifi, irq_synchronized);
+        release_executor_resources(groups, wifi, irq_synchronized, &control);
         return;
     }
 
     loop {
         let command = control.command.load(Ordering::Acquire);
         if let Some(irq_synchronized) = requested_irq_synchronization(command) {
-            release_executor_resources(groups, wifi, irq_synchronized);
+            release_executor_resources(groups, wifi, irq_synchronized, &control);
             return;
         }
         if command == COMMAND_PRUNE
@@ -960,7 +971,7 @@ pub(super) fn queue_executor_main(
                 control.prune_status.store(STATUS_FAILED, Ordering::Release);
                 control.notify.notify();
                 let irq_synchronized = wait_for_cleanup_command(&control, &waiter);
-                release_executor_resources(groups, wifi, irq_synchronized);
+                release_executor_resources(groups, wifi, irq_synchronized, &control);
                 return;
             }
             control.prune_status.store(STATUS_READY, Ordering::Release);
@@ -981,7 +992,7 @@ pub(super) fn queue_executor_main(
         if let Some(irq_synchronized) =
             requested_irq_synchronization(control.command.load(Ordering::Acquire))
         {
-            release_executor_resources(groups, wifi, irq_synchronized);
+            release_executor_resources(groups, wifi, irq_synchronized, &control);
             return;
         }
 
@@ -1099,19 +1110,26 @@ fn release_executor_resources(
     groups: Vec<QueueGroupExecutor>,
     mut wifi: Vec<WifiExecutorSlot>,
     irq_synchronized: bool,
+    control: &ExecutorControl,
 ) {
-    if irq_synchronized {
+    let stopped = if irq_synchronized {
         for slot in &mut wifi {
             slot.cancel_active();
         }
         drop(wifi);
-        shutdown_queue_groups(groups, true);
+        shutdown_queue_groups(groups, true)
     } else {
         quarantine_executor_resources(groups, wifi);
-    }
+        false
+    };
+    // Release publishes the device stop proof before the joining owner reads it.
+    control.shutdown_status.store(
+        if stopped { STATUS_READY } else { STATUS_FAILED },
+        Ordering::Release,
+    );
 }
 
-fn shutdown_queue_groups(mut groups: Vec<QueueGroupExecutor>, irq_synchronized: bool) {
+fn shutdown_queue_groups(mut groups: Vec<QueueGroupExecutor>, irq_synchronized: bool) -> bool {
     debug_assert!(irq_synchronized);
     let mut dma_stopped = true;
     for group in &mut groups {
@@ -1136,6 +1154,7 @@ fn shutdown_queue_groups(mut groups: Vec<QueueGroupExecutor>, irq_synchronized: 
         groups,
         backing_can_be_released(irq_synchronized, dma_stopped),
     );
+    dma_stopped
 }
 
 fn quarantine_executor_resources(groups: Vec<QueueGroupExecutor>, wifi: Vec<WifiExecutorSlot>) {

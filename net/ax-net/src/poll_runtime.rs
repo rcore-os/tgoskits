@@ -54,6 +54,7 @@ pub(crate) struct ProtocolPollRuntime {
     requested: AtomicU64,
     completed: AtomicU64,
     scheduled: AtomicBool,
+    stopped: AtomicBool,
     executor_wake: WaitQueue,
     completion: WaitQueue,
 }
@@ -64,9 +65,19 @@ impl ProtocolPollRuntime {
             requested: AtomicU64::new(0),
             completed: AtomicU64::new(0),
             scheduled: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
             executor_wake: WaitQueue::new(),
             completion: WaitQueue::new(),
         }
+    }
+
+    pub(crate) fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.schedule();
+    }
+
+    pub(crate) fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
     }
 
     pub(crate) fn request(&self) -> PollGeneration {

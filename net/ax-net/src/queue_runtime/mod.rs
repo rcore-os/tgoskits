@@ -179,6 +179,14 @@ impl WifiRuntimeHandle {
 /// Runtime initialization or lifecycle error.
 #[derive(Debug, thiserror::Error)]
 pub enum NetworkRuntimeError {
+    #[error("network shutdown has already started")]
+    ShutdownAlreadyStarted,
+    #[error("network worker could not be joined: {0}")]
+    WorkerJoin(ax_task::thread::TaskError),
+    #[error("network IRQ callbacks could not be synchronized")]
+    IrqShutdownUnconfirmed,
+    #[error("network device DMA shutdown was not confirmed")]
+    DmaShutdownUnconfirmed,
     #[error("network device parts are inconsistent with their IRQ bindings")]
     InvalidTopology,
     #[error("network queue executor could not be pinned to CPU {0}")]
@@ -310,6 +318,7 @@ pub struct NetQueueSnapshot {
 
 /// Live queue runtime.  Dropping it masks IRQs before stopping executors.
 pub struct NetworkQueueRuntime {
+    shutdown_started: bool,
     registrations: Vec<Box<dyn PinnedNetIrqRegistration>>,
     executors: Vec<ExecutorLease>,
     group_states: Vec<Arc<PollGroupState>>,
@@ -417,21 +426,45 @@ impl NetworkQueueRuntime {
     }
 }
 
-impl Drop for NetworkQueueRuntime {
-    fn drop(&mut self) {
+impl NetworkQueueRuntime {
+    /// Permanently stops IRQ delivery, joins queue workers and confirms DMA stop.
+    /// On failure, backing remains quarantined. The runtime cannot be restarted;
+    /// callers transferring memory to another kernel must reject that transfer.
+    pub fn shutdown(&mut self) -> Result<(), NetworkRuntimeError> {
+        if core::mem::replace(&mut self.shutdown_started, true) {
+            return Err(NetworkRuntimeError::ShutdownAlreadyStarted);
+        }
         for handle in self.wifi_handles.iter().rev() {
             handle.queue.stop();
             handle.notify.notify();
         }
-        let registrations = core::mem::take(&mut self.registrations);
-        let irq_synchronized = release_registrations(registrations);
+        let irq_synchronized = release_registrations(core::mem::take(&mut self.registrations));
         let runtime_side_resources = (
             core::mem::take(&mut self.group_states),
             core::mem::take(&mut self._controls),
             core::mem::take(&mut self.wifi_handles),
         );
-        stop_executors(&mut self.executors, irq_synchronized);
-        release_runtime_side_resources(runtime_side_resources, irq_synchronized);
+        for executor in self.executors.iter().rev() {
+            executor.stop(irq_synchronized);
+        }
+        let mut result = if irq_synchronized {
+            Ok(())
+        } else {
+            Err(NetworkRuntimeError::IrqShutdownUnconfirmed)
+        };
+        while let Some(executor) = self.executors.pop() {
+            if let Err(error) = executor.join_stopped() {
+                result = result.and(Err(error));
+            }
+        }
+        release_runtime_side_resources(runtime_side_resources, result.is_ok());
+        result
+    }
+}
+
+impl Drop for NetworkQueueRuntime {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 
@@ -641,6 +674,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 command: AtomicU8::new(COMMAND_WAIT),
                 affinity_status: AtomicU8::new(STATUS_PENDING),
                 startup_status: AtomicU8::new(STATUS_PENDING),
+                shutdown_status: AtomicU8::new(STATUS_PENDING),
                 prune_status: AtomicU8::new(STATUS_PENDING),
                 publication_status: AtomicU8::new(STATUS_PENDING),
                 startup_error: RawSpinLock::new(None),
@@ -871,6 +905,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
             .collect::<Vec<_>>();
         let protocol_owner_cpu = select_protocol_owner(&active_group_owners, &active_cpus);
         let mut runtime = NetworkQueueRuntime {
+            shutdown_started: false,
             registrations,
             executors,
             group_states,

@@ -132,18 +132,11 @@ pub fn run() {
                     (execution.elf.load_end - execution.elf.load_addr) / 4096
                 );
                 println!("ready_to_handoff");
-                // No background task owns the axstd sockets, so dropping the
-                // listener is the complete transport shutdown for this
-                // single-task frontend. The target receives the EFI context
-                // only after the control connection is closed.
+                // Close application sockets before the runtime joins network
+                // workers and confirms that device DMA has stopped.
                 drop(stream);
                 drop(listener);
-                if let Err(error) = execution.handoff() {
-                    println!("jump_error: {error:?}");
-                    ota.last_failure = Some("handoff_failed");
-                    let _ = ota.rollback(Outcome::LoadFailed);
-                }
-                return;
+                execution.handoff();
             }
             Err(error) => {
                 println!("loader_http_error: {error}");
@@ -1142,6 +1135,22 @@ fn reserve_image(id: ResourceId, pages: usize) -> Result<Allocation, &'static st
     boot_resources::allocate(id, bytes as u64, 0x20_0000).map_err(|_| "image resource unavailable")
 }
 
+/// The application has one control task and no outstanding storage operation.
+/// Keep image and payload owners on this stack until the target takes over.
+fn enter_prepared<I>(payload: PublishedPayload, entry: u64, image: I) -> ! {
+    // SAFETY: both call sites have stopped application I/O and committed OTA
+    // state. The runtime stops its own services before this closure; the target
+    // EFI entry and reserved allocations were validated during preparation.
+    unsafe {
+        ax_std::os::arceos::api::modules::ax_runtime::handoff::enter(move || {
+            let _image = image;
+            // SAFETY: the runtime has quiesced tasks, IRQs and DMA; the owned
+            // payload and caller's loaded image remain live throughout entry.
+            let _ = payload.0.enter(entry);
+        })
+    }
+}
+
 struct PublishedPayload(PreparedHandoff);
 impl PublishedPayload {
     fn new(
@@ -1184,10 +1193,8 @@ struct BootExecution {
     payload: PublishedPayload,
 }
 impl BootExecution {
-    fn handoff(self) -> Result<(), someboot::handoff::HandoffError> {
-        // SAFETY: the loader validated the EFI symbol and executable segment;
-        // the image and payload owners stay live and network services are closed.
-        unsafe { self.payload.0.enter(self.elf.entry_point) }
+    fn handoff(self) -> ! {
+        enter_prepared(self.payload, self.elf.entry_point, self.elf)
     }
 }
 
@@ -1393,9 +1400,7 @@ impl LaOta {
                 bytes: &bytes,
             }),
         )?;
-        // SAFETY: validated EFI PE entry, with both owners retained for the call.
-        unsafe { payload.0.enter(loaded.entry_point) }.map_err(|_| "OTA slot EFI entry failed")?;
-        Err("OTA slot returned successfully")
+        enter_prepared(payload, loaded.entry_point, loaded)
     }
 
     fn load_state() -> Result<Option<(State, usize)>, &'static str> {

@@ -424,13 +424,23 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   `7b9fa931-a25b-d043-b13c-63435428c473`，不包含固定池或 OTA 槽字段。固件活动模式
   不替换内存图；继承模式要求全部资源由 Reserved/KImage 内存完整覆盖，目标及
   initramfs 位于分配水位内且不覆盖不可变前缀。v2 旧 GUID 被明确拒绝，生产者、
-  目标与 A/B 槽必须一起重建。`boot_payload/loongarch64.rs` 将完整记录和元数据复制
+  目标与 A/B 槽必须一起重建。`handoff/received/loongarch64.rs` 将完整记录复制，
+  并由 `handoff/received` 保存元数据；内存图恢复属于交接消费，`boot_payload` 仅管理 initramfs。
+  消费端在复用共享表前将记录复制
   到本镜像私有存储后再允许复用共享表，避免继承引用被下一次事务改写。
 - LoongArch 只接受 little-endian ELF64、`EM_LOONGARCH`（258）和 `efi_pe_entry`；
   EFI ABI 为 `efi_pe_entry(image_handle, system_table)`。段间空洞先清零、复制后刷新
   指令缓存，装载区域与当前镜像重叠时拒绝。固定地址属于 axloader 策略，当前目标
   已占该区时不能猜测 load bias 再覆盖。继承入口恢复内存图并跳过第二次
   ExitBootServices，退出后只能操作预留内存和运行时服务。
+- axstd 镜像和 A/B 槽统一通过 `ax-runtime::handoff::enter()` 退出运行时再交接。
+  当前只支持一个运行处理器；应用先完成自己的 I/O 和 OTA 提交。运行时依次封存
+  文件系统、停止块控制器并同步 IRQ、join 网络协议及队列任务并确认 DMA 停稳、
+  排空并屏蔽串口，最后关闭本核 IRQ、抢占和 clockevent。VirtIO 网卡必须完成
+  状态零的 reset 读回；仅关闭 socket、屏蔽中断或隔离旧 backing 都不能证明目标
+  可重用原堆。任一步失败或目标返回都复位，不恢复已经退出的运行时。
+  `runtime_handoff_devices_stopped` 是设备停稳后的同步控制台记录，真实目标的
+  cmdline/initramfs 与执行输出仍是必需后置条件。
 - x86 ELF 也使用 `ResourceRequest`/`reserve()` 和 `HandoffSpec`/`PreparedHandoff`，
   保留 LoadOptions、Linux LoadFile2 以及 OTA LoadImage/StartImage。返回且固件活动
   时撤销事务、恢复旧表和参数；服务已退出或撤销失败时保留被引用的分配，不再调用

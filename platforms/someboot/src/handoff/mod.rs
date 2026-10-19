@@ -4,6 +4,7 @@
 //! `efi-handoff`; no loader or OTA policy is encoded in this module.
 use crate::boot_resources::{PhysicalRange, ResourceError};
 
+pub(crate) mod cmdline;
 pub mod protocol;
 #[cfg(all(efi, not(target_os = "uefi")))]
 pub(crate) mod received;
@@ -50,12 +51,7 @@ impl HandoffSpec<'_> {
         Ok(())
     }
 }
-pub(crate) fn validate_cmdline(cmdline: &str) -> Result<(), HandoffError> {
-    if cmdline.len() > MAX_CMDLINE || !cmdline.bytes().all(|b| b == b' ' || b.is_ascii_graphic()) {
-        return Err(HandoffError::InvalidCommandLine);
-    }
-    Ok(())
-}
+pub(crate) use cmdline::validate as validate_cmdline;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HandoffError {

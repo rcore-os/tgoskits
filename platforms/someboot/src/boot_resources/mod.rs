@@ -209,6 +209,10 @@ macro_rules! declare_boot_resources {
 
 #[cfg(feature = "boot-resources")]
 mod allocation;
+#[cfg(feature = "boot-resources")]
+pub use allocation::Allocation;
+#[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
+pub use allocation::allocate;
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub use allocation::initial_contents;
 #[cfg(all(
@@ -224,5 +228,3 @@ pub(crate) use allocation::prepare_static_plan;
 pub use allocation::reserve;
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub(crate) use allocation::snapshots;
-#[cfg(feature = "boot-resources")]
-pub use allocation::{Allocation, allocate};

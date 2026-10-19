@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "uefi"))]
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
@@ -80,15 +81,16 @@ pub(super) fn provision<A: PageAllocator>(
     Ok(records)
 }
 
+#[cfg(not(target_os = "uefi"))]
 #[derive(Debug)]
 struct Arena {
     id: AtomicU64,
     start: AtomicU64,
     len: AtomicU64,
     used: AtomicU64,
-    #[cfg(not(target_os = "uefi"))]
     initialized: AtomicU64,
 }
+#[cfg(not(target_os = "uefi"))]
 impl Arena {
     const fn new() -> Self {
         Self {
@@ -96,11 +98,9 @@ impl Arena {
             start: AtomicU64::new(0),
             len: AtomicU64::new(0),
             used: AtomicU64::new(0),
-            #[cfg(not(target_os = "uefi"))]
             initialized: AtomicU64::new(0),
         }
     }
-    #[cfg(not(target_os = "uefi"))]
     fn snapshot(&self) -> ResourceSnapshot {
         ResourceSnapshot {
             id: self.id.load(Ordering::Acquire),
@@ -113,6 +113,7 @@ impl Arena {
         }
     }
 }
+#[cfg(not(target_os = "uefi"))]
 static ARENAS: [Arena; MAX_RESOURCES] = [const { Arena::new() }; MAX_RESOURCES];
 
 /// Owns a contiguous reservation. The address is physical; mapping and access
@@ -126,6 +127,7 @@ pub struct Allocation {
 }
 #[derive(Debug)]
 enum AllocationOwner {
+    #[cfg(not(target_os = "uefi"))]
     Arena {
         index: usize,
         previous: u64,
@@ -150,6 +152,7 @@ impl Allocation {
 impl Drop for Allocation {
     fn drop(&mut self) {
         match self.owner {
+            #[cfg(not(target_os = "uefi"))]
             AllocationOwner::Arena {
                 index,
                 previous,
@@ -174,7 +177,7 @@ impl Drop for Allocation {
 }
 
 /// Allocates from an application-declared arena, without firmware calls.
-#[cfg(feature = "boot-resources")]
+#[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub fn allocate(id: ResourceId, bytes: u64, alignment: u64) -> Result<Allocation, ResourceError> {
     if id.0 == 0 || bytes == 0 || !alignment.is_power_of_two() {
         return Err(ResourceError::InvalidRequest);
@@ -205,8 +208,6 @@ pub fn allocate(id: ResourceId, bytes: u64, alignment: u64) -> Result<Allocation
             Ok(_) => {
                 return Ok(Allocation {
                     range: PhysicalRange::new(address, bytes),
-                    #[cfg(target_os = "uefi")]
-                    initialized: 0,
                     owner: AllocationOwner::Arena {
                         index,
                         previous,
