@@ -1,0 +1,4 @@
+/install/
+/target/
+/tmp/
+__pycache__/

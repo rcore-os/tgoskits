@@ -568,6 +568,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-vm-shell"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
 name = "arm-gic-driver"
 version = "0.18.1"
 dependencies = [

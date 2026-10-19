@@ -1,0 +1,18 @@
+[base]
+id = 1
+name = "arceos-vm-test"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x200]
+
+[kernel]
+entry_point = 0x8020_0000
+kernel_load_addr = 0x8020_0000
+# Guest image on the AxVisor host filesystem, installed manually before boot.
+kernel_path = "/guest/axvisor/arceos/arceos.bin"
+dtb_load_addr = 0x8000_0000
+memory_regions = [[0x8000_0000, 0x0800_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []

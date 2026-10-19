@@ -128,6 +128,7 @@ members = [
     "test-suit/arceos/drivers/intel-hda",
     "test-suit/arceos/drivers/acpica-interpreter",
     "apps/arceos/*",
+    "apps/axvisor/arceos-vm-test/guest",
     "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/guest",
     "apps/starry/qemu/rust-hello/rust",
     "tools/qperf",

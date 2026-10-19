@@ -1,0 +1,10 @@
+# Package the guest configuration; start it manually with `vm start --console 1`.
+# Leave the host `axvisor.vm_start` selector unset to boot only the AxVisor shell.
+features = [
+    "ax-driver/rk3588-cpufreq", 
+    "ax-driver/rockchip-sdhci", 
+    "fs"
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["apps/axvisor/arceos-vm-test/configs/arceos.toml"]

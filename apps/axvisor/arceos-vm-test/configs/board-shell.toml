@@ -1,0 +1,7 @@
+# Required by the board config loader; --board-type can override this value.
+# The server and port are supplied at runtime.
+board_type = "BallPick-Robot"
+
+shell_check_steps = []
+fail_regex = []
+timeout = 0
