@@ -710,8 +710,8 @@ mod tests {
     fn decodes_valid_ascii_efi_command_lines() {
         let mut bytes = [0_u8; MAX_CMDLINE];
         assert_eq!(
-            decode_efi_cmdline(&[b'a' as u16; MAX_CMDLINE - 1], &mut bytes).unwrap(),
-            "a".repeat(MAX_CMDLINE - 1)
+            decode_efi_cmdline(&[b'a' as u16; MAX_CMDLINE], &mut bytes).unwrap(),
+            "a".repeat(MAX_CMDLINE)
         );
         assert_eq!(decode_efi_cmdline(&[], &mut bytes).unwrap(), "");
         assert_eq!(
@@ -724,7 +724,7 @@ mod tests {
     fn rejects_unsupported_efi_command_lines() {
         let mut bytes = [0_u8; MAX_CMDLINE];
         assert_eq!(
-            decode_efi_cmdline(&vec![b'a' as u16; MAX_CMDLINE], &mut bytes),
+            decode_efi_cmdline(&vec![b'a' as u16; MAX_CMDLINE + 1], &mut bytes),
             Err(EfiCmdlineError::TooLong)
         );
         for words in [&[0x100_u16][..], &[b'\t' as u16][..], &[b'\n' as u16][..]] {
