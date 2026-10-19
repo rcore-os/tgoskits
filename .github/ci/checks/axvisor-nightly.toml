@@ -9,23 +9,7 @@ default_runner = "qcs"
 # add a `nightly_only = true` field.
 #
 # The case files for these checks live under `apps/axvisor/`; commands select
-# them by `--board`/`--test-case` name, so no command embeds the path.
-
-[[check]]
-id = "test-axvisor-self-hosted-board-orangepi-5-plus-virtio-net-peer"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · Inter-VM virtio-net"
-runner = "board"
-cache_key = ""
-resource_group = "orangepi-5-plus"
-timeout_minutes = 90
-command = '''
-cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
-'''
-
-[[check.suite]]
-kind = "axvisor-board"
-board = "orangepi-5-plus-virtio-net-peer"
+# them through `axvisor app` using paths relative to apps/axvisor/normal.
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-timer-stress"
@@ -34,15 +18,32 @@ name = "QEMU aarch64 · GICv2 + GICv3 timer stress"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 gicv2 timer stress"
-cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
+cargo xtask axvisor app qemu --arch aarch64 -t qemu-timer-stress-v2/gicv2-timer-stress
 echo "==> axvisor aarch64 gicv3 timer stress"
-cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
+cargo xtask axvisor app qemu --arch aarch64 -t qemu-timer-stress/gicv3-timer-stress
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["gicv2-timer-stress", "gicv3-timer-stress"]
+cases = ["qemu-timer-stress-v2/gicv2-timer-stress", "qemu-timer-stress/gicv3-timer-stress"]
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-arceos-net"
+impact_targets = ["axvisor:aarch64"]
+name = "Board OrangePi 5 Plus · 64 ArceOS peers and Linux observer"
+runner = "board"
+cache_key = ""
+resource_group = "orangepi-5-plus"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor app board -t board-orangepi-5-plus/virtio-net-peer/vcpus --board-type BallPick-Robot-Rk3588
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-arceos-net"
+cases = ["board-orangepi-5-plus/virtio-net-peer/vcpus/smoke"]
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-ping"
@@ -53,13 +54,14 @@ cache_key = ""
 resource_group = "orangepi-5-plus"
 timeout_minutes = 90
 command = '''
-AXVISOR_GUEST_ASSETS=/guest cargo xtask axvisor test board --board orangepi-5-plus-linux --test-case ping
+# --board selects the case; --board-type selects the registered physical board.
+cargo xtask axvisor app board --board orangepi-5-plus-linux -t board-orangepi-5-plus/pci-network/ping --board-type BallPick-Robot-Rk3588
 '''
 
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-linux"
-cases = ["ping"]
+cases = ["board-orangepi-5-plus/pci-network/ping"]
 
 [[check]]
 id = "test-orangepi-5-plus-robot-real-suite"
@@ -71,7 +73,8 @@ resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask starry test board --board orangepi-5-plus-robot-real
-cargo xtask axvisor test board \
+cargo xtask axvisor app board \
+  -t board-orangepi-5-plus/robot-real-starry,board-orangepi-5-plus/robot-real-linux \
   --board orangepi-5-plus-robot-real-starry,orangepi-5-plus-robot-real-linux
 '''
 

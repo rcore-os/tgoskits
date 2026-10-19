@@ -80,7 +80,7 @@ pub use irq::model::{
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     CpuObservation, DeviceObservation, GuestCpuFreqBackend, GuestCpuFreqError, MemoryObservation,
-    VmConfigSnapshot, VmCreatePlan, VmHandle, VmManager, VmSnapshot,
+    VmConfigSnapshot, VmCreatePlan, VmHandle, VmLifecycleSubscription, VmManager, VmSnapshot,
 };
 pub use operation::VmOperation;
 pub use runtime::queue::SignalError;

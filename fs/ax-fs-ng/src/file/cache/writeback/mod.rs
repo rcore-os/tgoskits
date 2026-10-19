@@ -99,11 +99,7 @@ impl CachedFileShared {
     }
 
     pub(super) fn dirty_page_count(&self) -> usize {
-        self.page_cache
-            .lock()
-            .iter()
-            .filter(|(_, page)| page.dirty)
-            .count()
+        self.page_cache.lock().dirty_count()
     }
 
     fn oldest_dirty_pages(&self, count: usize) -> VfsResult<Vec<u32>> {

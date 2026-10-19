@@ -22,9 +22,8 @@ pub(crate) fn discover_group_names(
 
 /// List the group directories directly under a suite root.
 ///
-/// Callers that scan more than one suite root (for example the AxVisor
-/// discovery, which merges `test-suit/axvisor` with the migrated
-/// `apps/axvisor` tree) share this listing instead of re-deriving it.
+/// Callers select their application or test namespace before using this
+/// listing; it does not combine namespaces.
 pub(crate) fn discover_group_names_in_root(root: &Path) -> anyhow::Result<Vec<String>> {
     let mut groups = Vec::new();
     if root.is_dir() {

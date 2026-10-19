@@ -49,7 +49,7 @@ impl WritebackPages<'_> {
             let current = cache
                 .get_mut(&tracked.number)
                 .filter(|page| page.paddr() == Ok(tracked.paddr) && page.dirty);
-            let Some(page) = current else {
+            let Some(mut page) = current else {
                 if batch.bytes.is_empty() {
                     *cursor += 1;
                     continue;
@@ -80,7 +80,7 @@ impl WritebackPages<'_> {
         let mut cache = self.shared.page_cache.lock();
         for version in &batch.versions {
             let tracked = &self.pages[version.selection_index];
-            if let Some(page) = cache.get_mut(&tracked.number)
+            if let Some(mut page) = cache.get_mut(&tracked.number)
                 && page.paddr() == Ok(tracked.paddr)
             {
                 page.complete_writeback(version.generation);

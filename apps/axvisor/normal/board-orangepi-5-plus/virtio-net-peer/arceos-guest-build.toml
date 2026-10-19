@@ -1,0 +1,9 @@
+package = "arceos-virtio-net-peer"
+features = ["net", "ax-driver/virtio-net"]
+log = "Error"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 1
+to_bin = true
+
+[env]
+AXVIRTIO_IDENTITY_FROM_MAC = "1"

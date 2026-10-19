@@ -838,10 +838,9 @@ pub(crate) fn replay_guest_output(tag: u128, bytes: &[u8]) {
     GUEST_CONSOLE_MUX
         .core
         .replay_guest_output_with_origin(vm_id, generation, bytes, true);
-    notify_retained_tx_retries();
 }
 
-/// Drains the retry targets collected by the two pop entry points.
+/// Drains the retry targets collected during an output service batch.
 ///
 /// Kept separate from those entry points so both of them release every mux lock
 /// before the device-poll requests are published.
@@ -852,13 +851,13 @@ fn take_retained_tx_retry_vms() -> Vec<VMId> {
 /// Asks every backend whose ordered-queue submission hit `WouldBlock` to poll
 /// its devices again.
 ///
-/// Consuming one ordered record releases capacity that any blocked producer can
+/// Consuming ordered records releases capacity that any blocked producer can
 /// use, so the request is published to the blocked VMs themselves instead of the
 /// consumed record's tag. The mux drains the pending set under `output_lock` and
 /// `state` and drops both before the manager call, and a retry request published
 /// before the vCPU parks keeps a guest from sleeping with bytes still retained
 /// in its TX FIFO.
-fn notify_retained_tx_retries() {
+pub(crate) fn notify_retained_tx_retries() {
     for vm_id in take_retained_tx_retry_vms() {
         if let Err(error) = crate::manager::manager().notify_vm(vm_id) {
             warn!("failed to wake VM[{vm_id}] for retained console output: {error:#}");
@@ -930,9 +929,7 @@ pub fn route_host_log(
     dropped_records: usize,
     dropped_bytes: usize,
 ) -> Option<Vec<u8>> {
-    let output = GUEST_CONSOLE_MUX.route_host_log(record, dropped_records, dropped_bytes);
-    notify_retained_tx_retries();
-    output
+    GUEST_CONSOLE_MUX.route_host_log(record, dropped_records, dropped_bytes)
 }
 
 /// Opens a running VM interactively or replays a stopped VM's buffered output.

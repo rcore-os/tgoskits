@@ -1,36 +1,261 @@
-# Orange Pi 三客户机 IVC 验证
+# Linux、StarryOS 与 Zephyr IVC 通信
 
-一次启动 AxVisor，加载 Linux（VM 1）、StarryOS（VM 2）、Zephyr shell（VM 3），按顺序验证三条链路。期间不重启、不重建客户机。
+## 1. 用途
 
-| 链路 | 发布者 | 订阅者 | 通道 | 判定 |
-| --- | --- | --- | --- | --- |
-| Linux ↔ Zephyr | Linux 1 | Zephyr 3 | 0x100 | 五轮请求及对应回复，两端通过 |
-| Linux ↔ StarryOS | Linux 1 | StarryOS 2 | 0x101 | 五轮请求及对应回复，两端通过 |
-| Zephyr ↔ StarryOS | Zephyr 3 | StarryOS 2 | 0x100 | 原 demo 批量发送五条请求，逐条校验五条回复，两端通过 |
+一次启动三个客户机，分别验证 Linux ↔ Zephyr、Linux ↔ StarryOS、Zephyr ↔ StarryOS 的请求与回复。三条链路保持在同一次 AxVisor 启动中完成。
 
-通道由发布客户机编号和 key 共同标识。不同链路验证序号与完整消息内容，客户端失败或超时必须使外层板卡测例失败。普通客户端校验后关闭端点，Zephyr 的订阅映射保留到板级复位；本测例不证明物理退休或无复位重跑。
+IVC（inter-VM communication）是 AxVisor 提供的客户机间通信机制：每个通道由一块双方共享的内存区和通知中断构成，客户机分别以发布者和订阅者端点收发消息。Linux 经 `axvisor` 内核模块的 `/dev/axivc` 使用端点，StarryOS 以普通流式读写访问，Zephyr 使用 `ivc` shell 命令。两端的测试程序都来自 ivc-sdk：Linux 和 StarryOS 运行用户态 `ivc-roundtrip`，Zephyr 的 `ivc` 命令集（`subscriber`、`ivc_demo`、`latency` 等）编译在 orangepi-shell 镜像内。
 
-客户机镜像及 `ivc-roundtrip` 统一在 `tgosimages` 的 `./build.sh platform orangepi-5-plus all` 流水线中 构建。Linux 使用自身 initramfs 与独立 virtio-blk 的 `rootfs-aarch64-busybox.img`；StarryOS 使用原有 `rootfs-aarch64-orangepi-jammy.img`，由 virtio-blk 提供，用户程序安装在客户机 `/usr/bin`。所有临时部署文件位于板端 `/guest/ivc-test`。
+`ivc` 命令同步等待测试完成才返回 shell，结束时打印 `state=passed/failed/canceled result=...`；默认总超时 30000 毫秒，可用毫秒参数指定，等待期间按 Ctrl+C 主动取消。
 
-```sh
-cargo xtask axvisor test board -g normal -c board-orangepi-5-plus/ivc --board orangepi-5-plus-ivc \
-  -b OrangePi-5-Plus-robot-emmc --server http://10.3.10.60:2999
+| VM | 客户机 | 本例使用的程序 |
+| --- | --- | --- |
+| 1 | Linux Ubuntu shell | `/usr/bin/ivc-roundtrip` 和 `axvisor` 模块 |
+| 2 | StarryOS | `/usr/bin/ivc-roundtrip` |
+| 3 | Zephyr shell | `ivc subscriber`、`ivc ivc_demo` |
+
+每条链路由一端发布通道、另一端订阅，校验5条请求及对应回复。通道由发布者 VM ID 和 key 共同标识，因此 VM1 的 `0x100` 与 VM3 的 `0x100` 是不同通道。
+
+## 2. 准备镜像
+
+在 tgosimages 仓库执行：
+
+```bash
+./build.sh platform orangepi-5-plus all
 ```
 
-应用位于 `apps/axvisor/normal/board-orangepi-5-plus/ivc`，运行器从 apps 目录发现并选择本目录的一份构建配置和板卡配置。本应用整合三条通信链路，供手动板测使用；既有 `test-suit` 用例及其 CI 计划仍保留。
+将同一轮构建的镜像和两份独立客户机 ext4 部署到板卡原生 Linux：
 
-映射事务完成后必须发布恢复后的状态快照，否则运行中的客户机会被控制台误判为 Paused。该修复只在 TGOSKits 核心维护。
+```text
+/guest/
+├── linux/
+│   └── orangepi-5-plus
+├── starry/orangepi-5-plus
+├── zephyr/
+│   ├── orangepi-5-plus
+│   └── orangepi-5-plus.dtb
+├── rootfs-aarch64-orangepi-jammy-0.img
+└── rootfs-aarch64-orangepi-jammy-1.img
+```
 
-StarryOS 的 IVC 通道保留普通流式读写，不启用 `NodeFlags::PACKET`。一次读取可能返回多条消息，`ivc-roundtrip` 按换行符解析并保留未消费内容。VFS 已完成部分读取后遇到后续错误，应返回已读字节数；首条读取失败仍返回原错误。该修复位于 `fs/ax-fs-ng/src/file/handle/backend.rs`，tgosimages 负责构建镜像和用户程序。
+Linux 以 `-0.img` 为根文件系统，StarryOS 以 `-1.img` 为根文件系统，两台客户机都从独立 ext4 中运行 `/usr/bin/ivc-roundtrip`。Linux 的匹配内核模块位于 `/lib/modules/$(uname -r)/extra/axvisor.ko`，由 `modprobe axvisor` 加载。tgosimages 的 IVC 构建将驱动和索引发布到正式模块树，再写入客户机 ext4。Zephyr 不挂磁盘。
 
-StarryOS 控制台由生成设备树的 `stdout-path` 选择，不硬编码 `console=ttyS0`，也不重定向 shell 标准输入输出。runtime 分配的 ttyS 编号不代表设备树存在同编号的 serial 别名。
+Linux 提示符为 `root@linux-ivc:~#`。Linux 从 `/dev/vda` 挂载 ext4，不加载旧 IVC cpio。Zephyr 二进制与 DTB 必须配套。
 
-最后的 `vm list` 检查三个客户机均为 `running`、VCPU 编号为 0、状态为 `Rdy:1`；VCPU 列是编号，不是数量。
+## 3. 使用 Cargo 启动 AxVisor
 
-普通 Zephyr IVC 命令同步等待完成，默认超时 30000 毫秒，也可传入 `ivc subscriber 1000`。Linux 先启动发布者。Zephyr–StarryOS 链路先确认 Zephyr 已发布通道，再通过 AxVisor 切换控制台启动 StarryOS 对端，回到 Zephyr 收集最终状态；不再执行 `ivc wait`。
+先在构建机设置板卡服务地址，将主机和端口占位符替换为自己的环境值：
 
-在通信验证后，检查无对端时订阅返回 ETIMEDOUT（目标错误码 -116），耗时 1000 至 1999 毫秒；再启动 30 秒订阅并发送 Ctrl+C，要求提前结束且返回 canceled（-140）。随后普通 latency 命令必须通过，证明工作线程恢复。
+```bash
+export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
+```
 
-Zephyr 提示符为 `zephyr:~$ `。中断测量功能可在控制台手动执行 `irq latency`，不参与本通信测例的自动验收。
+以下命令在构建机 TGOSKits 仓库根目录执行：
 
-带直通设备且仍持有 IVC 端点（含已逻辑关闭端点）的客户机，停止、重置和删除请求会在拆除运行资源前明确返回不支持，保持原运行状态；需要板级复位回收。停止 vCPU 或生命周期设备不能单独证明物理 DMA 已停稳。
+```bash
+export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
+ostool board ls --server "$BOARD_SERVER"
+
+app=apps/axvisor/normal/board-orangepi-5-plus/ivc
+# 去掉自动输入步骤和自动测试总超时，生成交互版板卡配置
+sed '/^\[\[shell_check_steps\]\]/,$d' \
+  "$app/board-orangepi-5-plus-ivc.toml" \
+  | sed '/^timeout[[:space:]]*=/d' > /tmp/ivc-manual.toml
+
+cargo xtask axvisor board \
+  --config "$app/build-aarch64-unknown-none-softfloat.toml" \
+  --board-config /tmp/ivc-manual.toml \
+  -b BallPick-Robot-Rk3588 --server "$BOARD_SERVER"
+```
+
+交互配置保留 `axvisor.vm_start=1,2,3`，启动三台客户机，移除自动输入。看到 `axvisor:/$` 后执行 `vm list`，确认三个客户机已启动。
+
+从客户机返回 AxVisor，按 Ctrl+X，松开后按 h；再用 `vm console ID` 进入另一个客户机。下面每段标明输入位置。
+
+## 4. 手动验证三条链路
+
+### 4.1 Linux ↔ Zephyr
+
+在 AxVisor 输入：
+
+```text
+vm console 1
+```
+
+在 Linux 的 `root@linux-ivc:~#` 下执行：
+
+```bash
+# PID 1 是交互 shell，需要手工挂载 proc 和 sysfs
+mkdir -p /proc /sys /tmp
+mount -t proc proc /proc 2>/dev/null || grep ' /proc proc ' /proc/mounts
+test -d /sys/class/net || mount -t sysfs sysfs /sys
+# 根文件系统应为 /dev/vda 上的 ext4，而不是旧的 IVC cpio
+findmnt -n -o SOURCE,FSTYPE /
+# IVC 内核模块已由 tgosimages 发布到客户机模块树
+modprobe axvisor
+echo MODPROBE_EXIT=$?
+# 字符设备就绪后用户态才能创建通道
+test -c /dev/axivc
+echo DEVICE_EXIT=$?
+# 发布端在后台运行，期间可以把控制台切到订阅端
+( /usr/bin/ivc-roundtrip publish 0x100 linux-to-zephyr zephyr-to-linux \
+  || echo IVC_LINK_FAILED ) >/tmp/linux-zephyr.log 2>&1 </dev/null &
+```
+
+根文件系统应为 `/dev/vda` 的 ext4，`MODPROBE_EXIT` 和 `DEVICE_EXIT` 均为0。`ivc-roundtrip` 的两个参数是请求和回复方向的消息前缀：发布端发送5条以 `linux-to-zephyr` 开头的请求，逐条等待并校验 `zephyr-to-linux` 开头的回复。发布端在后台运行，控制台可以切走。
+
+返回 AxVisor，执行 `vm console 3`。Zephyr 的 `ivc subscriber` 充当该通道的订阅端，收到请求即回复，5条校验完成后返回，在 `zephyr:~$` 下执行：
+
+```text
+ivc subscriber
+```
+
+预期输出 `state=passed result=0`。随后返回 Linux，查看：
+
+```bash
+cat /tmp/linux-zephyr.log
+```
+
+必须看到：
+
+```text
+IVC_ROUNDTRIP_PASSED role=publish key=0x100 count=5
+```
+
+### 4.2 Linux ↔ StarryOS
+
+继续在 Linux 中启动第二个发布端：
+
+```bash
+( /usr/bin/ivc-roundtrip publish 0x101 linux-to-starry starry-to-linux \
+  || echo IVC_LINK_FAILED ) >/tmp/linux-starry.log 2>&1 </dev/null &
+```
+
+返回 AxVisor，执行 `vm console 2`，在 StarryOS shell 中执行：
+
+```bash
+mkdir -p /tmp
+# 参数依次为：对端 VM ID、通道 key、两个方向的消息前缀
+/usr/bin/ivc-roundtrip subscribe 1 0x101 linux-to-starry starry-to-linux
+echo SUBSCRIBE_EXIT=$?
+```
+
+订阅端连接 VM1 发布的 `0x101` 通道，每收到一条请求回复一条，完成5条后通过。预期返回 0，并打印：
+
+```text
+IVC_ROUNDTRIP_PASSED role=subscribe key=0x101 count=5
+```
+
+返回 Linux，执行：
+
+```bash
+cat /tmp/linux-starry.log
+```
+
+Linux 也必须打印 `IVC_ROUNDTRIP_PASSED role=publish key=0x101 count=5`。
+
+### 4.3 Zephyr ↔ StarryOS
+
+进入 Zephyr，执行 `ivc ivc_demo`。该命令让 Zephyr 充当发布端，发布通道后批量发送5条请求并等待订阅端接入：
+
+```text
+ivc ivc_demo
+```
+
+看到 `ORANGEPI_ZEPHYR_IVC_DEMO_WAITING` 后，表示发布端已就绪。此时按 Ctrl+X、h 返回 AxVisor，进入 VM2，在 StarryOS 执行：
+
+```bash
+mkdir -p /tmp
+# 订阅端在后台运行，结果最终从日志检查
+( /usr/bin/ivc-roundtrip subscribe 3 0x100 zephyr-to-starry starry-to-zephyr \
+  || echo IVC_LINK_FAILED ) >/tmp/starry-zephyr.log 2>&1 </dev/null &
+```
+
+返回 Zephyr 后执行顶层 `status` 命令，查询 `ivc_demo` 的进度：
+
+```text
+status
+```
+
+等待 `state=passed result=0`。再进入 StarryOS 查看：
+
+```bash
+cat /tmp/starry-zephyr.log
+```
+
+必须包含 `IVC_ROUNDTRIP_PASSED role=subscribe key=0x100 count=5`。
+
+## 5. 检查超时和主动停止
+
+通信通过后，在 Zephyr 侧依次验证无发布者超时、Ctrl+C 主动取消和取消后的恢复。
+
+### 5.1 无发布者超时
+
+完成三条链路后，在 Zephyr 中执行；参数是超时毫秒数，省略时默认 30000：
+
+```text
+ivc subscriber 1000
+```
+
+此时 Linux 发布端已经结束。本项预期等待1000～1999 ms 后返回：
+
+```text
+elapsed_ms=... timeout_ms=1000
+state=failed result=-116
+```
+
+这是明确无发布者时的超时检查；正常通信阶段出现该结果仍属于失败。
+
+### 5.2 主动取消与恢复
+
+再执行：
+
+```text
+ivc subscriber 30000
+```
+
+看到 `TEST_RUNNING timeout_ms=30000` 后按 Ctrl+C。预期在5秒内结束，打印 `state=canceled result=-140`。最后执行：
+
+```text
+ivc latency
+```
+
+要求 `state=passed result=0`，确认取消后工作线程仍可使用。`irq latency` 是独立的中断测量功能，不属于本通信验收。
+
+## 6. 查看结果与结束测试
+
+通信通过需要三条链路两端的结果都通过，不能只看 shell 提示符或一端的输出。缺少回复、内容不匹配、通信阶段超时，或出现 `IVC_ROUNDTRIP_FAILED` / `IVC_LINK_FAILED`，都判失败。
+
+在 AxVisor 执行：
+
+```text
+vm list
+```
+
+三台客户机应仍为 running。自动用例还检查 Zephyr 持有直通设备及 IVC 端点时，stop、reset 和强制 delete 被拒绝，客户机仍能执行 `ivc latency`。这验证的是拒绝不安全的设备回收；重新运行本例使用板级复位。
+
+完成后在 Linux、StarryOS 中执行 `sync`，返回 AxVisor，再按 Ctrl+A、x 退出板卡会话。
+
+## 7. 自动执行
+
+在构建机仓库根目录执行：
+
+```bash
+cargo xtask axvisor app board -g normal \
+  -t board-orangepi-5-plus/ivc \
+  -b BallPick-Robot-Rk3588 --server "$BOARD_SERVER"
+```
+
+运行器自动执行三条通信链路、超时、Ctrl+C 取消、恢复及设备回收拒绝检查。全部检查完成且 Cargo 返回 0 才通过。
+
+## 8. 配置文件
+
+本目录的配置覆盖宿主构建、板级自动测试和三台客户机，手动流程从同一份板卡配置裁剪而来：
+
+| 文件 | 作用 |
+| --- | --- |
+| [build-aarch64-unknown-none-softfloat.toml](build-aarch64-unknown-none-softfloat.toml) | AxVisor 构建参数及三台客户机列表 |
+| [board-orangepi-5-plus-ivc.toml](board-orangepi-5-plus-ivc.toml) | 启动参数、自动输入和通过条件 |
+| [linux-smp1.toml](linux-smp1.toml) | Linux 内核和作为根文件系统的第0份 ext4 |
+| [starry-smp1.toml](starry-smp1.toml) | StarryOS 和第1份 ext4 |
+| [zephyr-smp1.toml](zephyr-smp1.toml) | Zephyr、配套 DTB、UART6 和虚拟控制台 |

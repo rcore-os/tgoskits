@@ -12,10 +12,11 @@ pub(crate) mod spsc;
 mod state;
 mod worker;
 
-use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, task::Wake, vec::Vec};
 use core::{
     fmt::{self, Write},
     sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+    task::Waker,
 };
 
 use ax_driver::serial::SerialDevice;
@@ -251,6 +252,18 @@ struct RuntimeShared {
     log_barriers: AtomicUsize,
     lifecycle: RuntimeLifecycle,
     irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
+}
+
+struct ConsoleWake(Arc<RuntimeShared>);
+
+impl Wake for ConsoleWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.console_progress.notify_all();
+    }
 }
 
 impl RuntimeShared {
@@ -702,6 +715,25 @@ pub(crate) struct SerialLogSubscription {
 }
 
 impl SerialLogSubscription {
+    pub(crate) fn event_waker(&self) -> Waker {
+        Waker::from(Arc::new(ConsoleWake(self.shared.clone())))
+    }
+
+    pub(crate) fn wait_readable_until(&self, ready: impl Fn() -> bool) -> RuntimeResult {
+        self.shared.ensure_started()?;
+        self.shared.console_progress.wait_until(|| {
+            ready()
+                || self.has_pending()
+                || !self.shared.log_subscription_active.load(Ordering::Acquire)
+                || !self.shared.started()
+        });
+        self.shared.ensure_started()?;
+        if !self.shared.log_subscription_active.load(Ordering::Acquire) {
+            return Err(RuntimeError::SerialNotStarted);
+        }
+        Ok(())
+    }
+
     pub(crate) fn try_read(&self) -> Option<LogRecord> {
         self.shared.log_subscription_gate.lock_irqsave().pop()
     }
@@ -842,6 +874,28 @@ impl SerialTaskOutput {
 }
 
 impl SerialRxSubscription {
+    pub(crate) fn event_waker(&self) -> Waker {
+        Waker::from(Arc::new(ConsoleWake(self.shared.clone())))
+    }
+
+    pub(crate) fn wait_console_event_until(
+        &self,
+        logs: Option<&SerialLogSubscription>,
+        ready: impl Fn() -> bool,
+    ) -> RuntimeResult {
+        if logs.is_some_and(|logs| !Arc::ptr_eq(&self.shared, &logs.shared)) {
+            return Err(RuntimeError::OperationNotSupported);
+        }
+        self.shared.ensure_started()?;
+        self.shared.console_progress.wait_until(|| {
+            ready()
+                || self.has_pending()
+                || logs.is_some_and(SerialLogSubscription::has_pending)
+                || !self.shared.started()
+        });
+        self.shared.ensure_started()
+    }
+
     pub fn drain(&self, out: &mut [RxItem]) -> usize {
         let count = self
             .consumer

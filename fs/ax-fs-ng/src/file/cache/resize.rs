@@ -202,7 +202,7 @@ impl CachedFile {
             file.operate_range(offset, len, operation)?;
             let mut guard = self.shared.page_cache.lock();
             for page_number in affected_pages {
-                let Some(page) = guard.get_mut(&page_number) else {
+                let Some(mut page) = guard.get_mut(&page_number) else {
                     continue;
                 };
                 let page_start = u64::from(page_number) * PAGE_SIZE as u64;
@@ -483,7 +483,7 @@ impl CachedFile {
             return;
         }
         let mut guard = self.shared.page_cache.lock();
-        if let Some(page) = guard.get_mut(&prepared.page_number)
+        if let Some(mut page) = guard.get_mut(&prepared.page_number)
             && page.dirty
             && page.dirty_generation == prepared.generation
         {
@@ -493,7 +493,7 @@ impl CachedFile {
 
     fn restore_prepared_cache(&self, prepared: &PreparedPageWrite, backing_restored: bool) {
         let mut guard = self.shared.page_cache.lock();
-        if let Some(page) = guard.get_mut(&prepared.page_number)
+        if let Some(mut page) = guard.get_mut(&prepared.page_number)
             && page.dirty_generation == prepared.generation
         {
             let end = prepared.page_offset + prepared.original_data.len();

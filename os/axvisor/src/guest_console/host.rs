@@ -1,7 +1,8 @@
 //! Physical host-console ownership.
 
-use alloc::format;
+use alloc::{format, sync::Arc, task::Wake};
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::task::Waker;
 
 use anyhow::{Context, Result, anyhow, bail};
 use ax_std::os::arceos::modules::ax_runtime::console::{
@@ -18,7 +19,9 @@ use {
     ax_std::os::arceos::modules::ax_runtime::irq::FixedIrqWorkerSignal,
 };
 
+use ax_std::os::arceos::modules::ax_task::sync::WaitQueue;
 use axvisor::console_mux::HostOutputQueue;
+use axvm::VmLifecycleSubscription;
 
 use super::terminal::TerminalNewlineNormalizer;
 
@@ -45,6 +48,15 @@ struct HostOutputBatch {
 static HOST_CONSOLE: OnceLock<HostConsole> = OnceLock::new();
 static HOST_CONSOLE_CONFIGURE: Mutex<()> = Mutex::new(());
 static HOST_OUTPUT: HostOutput = HostOutput::new();
+static LIFECYCLE_PROGRESS: WaitQueue = WaitQueue::new();
+
+struct LifecycleWake;
+
+impl Wake for LifecycleWake {
+    fn wake(self: Arc<Self>) {
+        LIFECYCLE_PROGRESS.notify_all();
+    }
+}
 
 /// Takes the sole task-context input and log subscription before any vCPU starts.
 ///
@@ -123,18 +135,39 @@ fn host_log_subscription() -> Option<&'static ConsoleLogSubscription> {
     host_console()?.logs.as_ref()
 }
 
-/// Sleeps until physical input or a host log record is published.
-///
-pub(crate) fn wait_for_host_event() {
+/// Subscribes lifecycle invalidations to the queue used by this host console.
+pub(crate) fn subscribe_lifecycle() -> VmLifecycleSubscription {
+    let waker = host_console()
+        .and_then(|console| {
+            console
+                .input
+                .as_ref()
+                .map(TaskConsoleInput::event_waker)
+                .or_else(|| {
+                    console
+                        .logs
+                        .as_ref()
+                        .map(ConsoleLogSubscription::event_waker)
+                })
+        })
+        .unwrap_or_else(|| Waker::from(Arc::new(LifecycleWake)));
+    crate::manager::manager().subscribe_lifecycle(waker)
+}
+
+/// Sleeps until input/output or a durable lifecycle invalidation is published.
+pub(crate) fn wait_for_host_event(lifecycle: &VmLifecycleSubscription) {
     let Some(console) = host_console() else {
-        park_console_task();
+        LIFECYCLE_PROGRESS.wait_until(|| lifecycle.has_changed());
+        return;
     };
     let logs = host_log_subscription();
     let result = match (&console.input, logs) {
-        (Some(input), Some(logs)) => input.wait_event(logs),
-        (Some(input), None) => input.wait_readable(),
-        (None, Some(logs)) => logs.wait_readable(),
-        (None, None) => park_console_task(),
+        (Some(input), logs) => input.wait_event_until(logs, || lifecycle.has_changed()),
+        (None, Some(logs)) => logs.wait_readable_until(|| lifecycle.has_changed()),
+        (None, None) => {
+            LIFECYCLE_PROGRESS.wait_until(|| lifecycle.has_changed());
+            Ok(())
+        }
     };
     if let Err(err) = result {
         log::error!("runtime console stopped while Axvisor was running: {err}");

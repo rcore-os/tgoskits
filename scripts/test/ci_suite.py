@@ -452,6 +452,13 @@ def _discover_os_runtime_cases(
     return cases
 
 
+def _axvisor_app_case(runtime_case: _RuntimeCase) -> bool:
+    return runtime_case.kind.startswith("axvisor-") and any(
+        parent.name == "axvisor" and parent.parent.name == "apps"
+        for parent in runtime_case.runtime_config.parents
+    )
+
+
 def _runtime_selections(
     registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
     path: Path,
@@ -466,6 +473,9 @@ def _runtime_selections(
     ] = {}
     for runtime_case in cases:
         selector = selector_override or runtime_case.case
+        app_case = _axvisor_app_case(runtime_case)
+        entry = "app" if app_case else "test"
+        selector_option = "--app" if app_case else "--test-case"
         template = _registered_template(
             registrations,
             kind=runtime_case.kind,
@@ -500,8 +510,8 @@ def _runtime_selections(
                 else f"QEMU {runtime_case.arch}"
             )
             command = (
-                f"cargo xtask axvisor test qemu --arch {runtime_case.arch} "
-                f"--test-group normal --test-case {selector}"
+                f"cargo xtask axvisor {entry} qemu --arch {runtime_case.arch} "
+                f"{'--group' if app_case else '--test-group'} normal {selector_option} {selector}"
             )
         else:
             platform = _platform_label(template)
@@ -526,14 +536,17 @@ def _runtime_selections(
         selector_list = ",".join(selectors)
         platform = _platform_label(template)
         os_cli = _kind_os(runtime_case.kind)
-        group_option = " --test-group normal" if runtime_case.kind == "axvisor-board" else ""
+        app_case = _axvisor_app_case(runtime_case)
+        entry = "app" if app_case else "test"
+        selector_option = "--app" if app_case else "--test-case"
+        group_option = (" --group normal" if app_case else " --test-group normal") if runtime_case.kind == "axvisor-board" else ""
         command = (
-            f"cargo xtask {os_cli} test board{group_option} "
-            f"--test-case {selector_list} --board {runtime_case.board}"
+            f"cargo xtask {os_cli} {entry} board{group_option} "
+            f"{selector_option} {selector_list} --board {runtime_case.board}"
         )
         batch_command = (
-            f"cargo xtask {os_cli} test board{group_option} "
-            f"--test-case {{cases}} --board {runtime_case.board}"
+            f"cargo xtask {os_cli} {entry} board{group_option} "
+            f"{selector_option} {{cases}} --board {runtime_case.board}"
         )
         selections.append(
             _selection(
@@ -577,6 +590,9 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
                 else runtime_config.parent.name
             )
             case = f"{base_case}-{variant}" if variant else base_case
+        if os_name == "axvisor" and root.parent.name == "apps":
+            group_root = root / runtime_config.relative_to(root).parts[0]
+            case = runtime_config.parent.relative_to(group_root).as_posix()
         cases.append(
             _RuntimeCase(
                 kind=qemu_kind,
@@ -596,11 +612,19 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             continue
         wrapper_dir = build_config.parent
         relative_case = runtime_config.parent.relative_to(wrapper_dir)
+        # AxVisor selectors are relative to the selected test group when the
+        # runtime and build configurations share a directory, as in axbuild.
+        # Benchmarks already use the suite root as their normal group root.
+        case_root = root
+        if os_name == "axvisor" and root.parent.name != "benchmarks":
+            case_root = root / runtime_config.relative_to(root).parts[0]
         case = (
             relative_case.as_posix()
             if relative_case.parts
-            else wrapper_dir.relative_to(root).as_posix()
+            else wrapper_dir.relative_to(case_root).as_posix()
         )
+        if os_name == "axvisor" and root.parent.name == "apps":
+            case = runtime_config.parent.relative_to(case_root).as_posix()
         if os_name == "arceos":
             case = runtime_config.parent.name
         cases.append(

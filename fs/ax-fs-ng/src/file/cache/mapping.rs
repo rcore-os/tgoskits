@@ -18,7 +18,7 @@ impl CachedFile {
         let file = self.inner.entry().as_file()?;
         let window = self.readahead.lock().plan(start, end).window_pages;
         loop {
-            {
+            let pin = {
                 let mut cache = self.shared.page_cache.lock();
                 if self.shared.updating.load(Ordering::Acquire)
                     || self
@@ -31,19 +31,24 @@ impl CachedFile {
                 if end > self.shared.len() {
                     return Ok(None);
                 }
-                if let Some(page) = cache.get_mut(&number) {
-                    let paddr = page.paddr()?;
-                    page.pins = page.pins.checked_add(1).ok_or(VfsError::ValueOverflow)?;
-                    let pin = CachedPagePin {
-                        shared: self.shared.clone(),
-                        page_number: number,
-                        paddr,
-                        backing: page.backing(),
-                    };
-                    drop(cache);
-                    self.prefetch_after_read(number);
-                    return Ok(Some(pin));
+                match cache.get_mut(&number) {
+                    Some(mut page) => {
+                        let paddr = page.paddr()?;
+                        page.pins = page.pins.checked_add(1).ok_or(VfsError::ValueOverflow)?;
+                        Some(CachedPagePin {
+                            shared: self.shared.clone(),
+                            page_number: number,
+                            paddr,
+                            backing: page.backing(),
+                        })
+                    }
+                    None => None,
                 }
+            };
+            if let Some(pin) = pin {
+                // Page bookkeeping and the cache lock must finish before speculative I/O.
+                self.prefetch_after_read(number);
+                return Ok(Some(pin));
             }
             self.populate_page_window(file, number, window)?;
         }

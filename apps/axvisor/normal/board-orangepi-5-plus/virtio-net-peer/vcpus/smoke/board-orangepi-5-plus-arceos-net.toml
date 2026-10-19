@@ -1,0 +1,2101 @@
+board_type = "BallPick-Robot-Rk3588"
+timeout = 3600
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=65"
+fail_regex = ['(?i)\bpanic(?:ked)?\b', 'failed to initialize default VMs', '(?m)^SCALE_[A-Z_]*FAILED\r?$', 'Failed to stop VM', 'Failed to remove VM', 'VM[0-9]*_VIRTIO_NET_FAIL']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 65\n:"
+success_regex = ['Attached VM\[65\] console']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "root@linux-observer:~#"
+shell_cmd = '''
+if sh -s <<'LINUX_PREPARE'
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mkdir -p /proc /sys /dev
+mount -t proc proc /proc 2>/dev/null || grep -q ' /proc proc ' /proc/mounts
+test -d /sys/class/net || mount -t sysfs sysfs /sys
+ip link set lo up
+ip link set eth0 up
+ip addr replace 10.0.2.2/24 dev eth0
+ip addr replace 10.0.2.79/24 dev eth0
+ip -4 -o addr show dev eth0
+test "$(cat /sys/class/net/eth0/carrier)" = 1
+LINUX_PREPARE
+then printf '\nSCALE_OBSERVER_%s\n' READY
+else printf '\nSCALE_OBSERVER_%s\n' FAILED
+fi
+'''
+success_regex = ['(?m)^SCALE_OBSERVER_READY[[:space:]]*$']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "root@linux-observer:~#"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 64"
+success_regex = ['VM\[64\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 63"
+success_regex = ['VM\[63\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 62"
+success_regex = ['VM\[62\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 61"
+success_regex = ['VM\[61\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 60"
+success_regex = ['VM\[60\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 59"
+success_regex = ['VM\[59\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 58"
+success_regex = ['VM\[58\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 57"
+success_regex = ['VM\[57\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 56"
+success_regex = ['VM\[56\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 55"
+success_regex = ['VM\[55\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 54"
+success_regex = ['VM\[54\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 53"
+success_regex = ['VM\[53\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 52"
+success_regex = ['VM\[52\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 51"
+success_regex = ['VM\[51\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 50"
+success_regex = ['VM\[50\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 49"
+success_regex = ['VM\[49\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 48"
+success_regex = ['VM\[48\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 47"
+success_regex = ['VM\[47\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 46"
+success_regex = ['VM\[46\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 45"
+success_regex = ['VM\[45\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 44"
+success_regex = ['VM\[44\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 43"
+success_regex = ['VM\[43\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 42"
+success_regex = ['VM\[42\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 41"
+success_regex = ['VM\[41\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 40"
+success_regex = ['VM\[40\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 39"
+success_regex = ['VM\[39\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 38"
+success_regex = ['VM\[38\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 37"
+success_regex = ['VM\[37\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 36"
+success_regex = ['VM\[36\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 35"
+success_regex = ['VM\[35\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 34"
+success_regex = ['VM\[34\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 33"
+success_regex = ['VM\[33\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 32"
+success_regex = ['VM\[32\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 31"
+success_regex = ['VM\[31\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 30"
+success_regex = ['VM\[30\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 29"
+success_regex = ['VM\[29\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 28"
+success_regex = ['VM\[28\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 27"
+success_regex = ['VM\[27\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 26"
+success_regex = ['VM\[26\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 25"
+success_regex = ['VM\[25\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 24"
+success_regex = ['VM\[24\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 23"
+success_regex = ['VM\[23\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 22"
+success_regex = ['VM\[22\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 21"
+success_regex = ['VM\[21\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 20"
+success_regex = ['VM\[20\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 19"
+success_regex = ['VM\[19\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 18"
+success_regex = ['VM\[18\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 17"
+success_regex = ['VM\[17\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 16"
+success_regex = ['VM\[16\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 15"
+success_regex = ['VM\[15\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 14"
+success_regex = ['VM\[14\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 13"
+success_regex = ['VM\[13\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 12"
+success_regex = ['VM\[12\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 11"
+success_regex = ['VM\[11\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 10"
+success_regex = ['VM\[10\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 9"
+success_regex = ['VM\[9\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 8"
+success_regex = ['VM\[8\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 7"
+success_regex = ['VM\[7\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 6"
+success_regex = ['VM\[6\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 5"
+success_regex = ['VM\[5\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 4"
+success_regex = ['VM\[4\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 3"
+success_regex = ['VM\[3\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 2"
+success_regex = ['VM\[2\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm start 1"
+success_regex = ['VM\[1\] started successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+success_regex = ['VM1_VIRTIO_NET_HB_TX.*ack="ACK VM2 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM1_VIRTIO_NET_HB_TX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 2"
+success_regex = ['VM2_VIRTIO_NET_HB_RX.*payload="HB VM1 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM2_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 3"
+success_regex = ['VM3_VIRTIO_NET_HB_RX.*payload="HB VM2 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM3_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 4"
+success_regex = ['VM4_VIRTIO_NET_HB_RX.*payload="HB VM3 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM4_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 5"
+success_regex = ['VM5_VIRTIO_NET_HB_RX.*payload="HB VM4 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM5_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 6"
+success_regex = ['VM6_VIRTIO_NET_HB_RX.*payload="HB VM5 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM6_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 7"
+success_regex = ['VM7_VIRTIO_NET_HB_RX.*payload="HB VM6 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM7_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 8"
+success_regex = ['VM8_VIRTIO_NET_HB_RX.*payload="HB VM7 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM8_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 9"
+success_regex = ['VM9_VIRTIO_NET_HB_RX.*payload="HB VM8 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM9_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 10"
+success_regex = ['VM10_VIRTIO_NET_HB_RX.*payload="HB VM9 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM10_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 11"
+success_regex = ['VM11_VIRTIO_NET_HB_RX.*payload="HB VM10 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM11_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 12"
+success_regex = ['VM12_VIRTIO_NET_HB_RX.*payload="HB VM11 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM12_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 13"
+success_regex = ['VM13_VIRTIO_NET_HB_RX.*payload="HB VM12 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM13_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 14"
+success_regex = ['VM14_VIRTIO_NET_HB_RX.*payload="HB VM13 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM14_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 15"
+success_regex = ['VM15_VIRTIO_NET_HB_RX.*payload="HB VM14 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM15_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 16"
+success_regex = ['VM16_VIRTIO_NET_HB_RX.*payload="HB VM15 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM16_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 17"
+success_regex = ['VM17_VIRTIO_NET_HB_RX.*payload="HB VM16 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM17_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 18"
+success_regex = ['VM18_VIRTIO_NET_HB_RX.*payload="HB VM17 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM18_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 19"
+success_regex = ['VM19_VIRTIO_NET_HB_RX.*payload="HB VM18 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM19_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 20"
+success_regex = ['VM20_VIRTIO_NET_HB_RX.*payload="HB VM19 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM20_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 21"
+success_regex = ['VM21_VIRTIO_NET_HB_RX.*payload="HB VM20 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM21_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 22"
+success_regex = ['VM22_VIRTIO_NET_HB_RX.*payload="HB VM21 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM22_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 23"
+success_regex = ['VM23_VIRTIO_NET_HB_RX.*payload="HB VM22 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM23_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 24"
+success_regex = ['VM24_VIRTIO_NET_HB_RX.*payload="HB VM23 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM24_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 25"
+success_regex = ['VM25_VIRTIO_NET_HB_RX.*payload="HB VM24 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM25_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 26"
+success_regex = ['VM26_VIRTIO_NET_HB_RX.*payload="HB VM25 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM26_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 27"
+success_regex = ['VM27_VIRTIO_NET_HB_RX.*payload="HB VM26 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM27_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 28"
+success_regex = ['VM28_VIRTIO_NET_HB_RX.*payload="HB VM27 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM28_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 29"
+success_regex = ['VM29_VIRTIO_NET_HB_RX.*payload="HB VM28 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM29_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 30"
+success_regex = ['VM30_VIRTIO_NET_HB_RX.*payload="HB VM29 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM30_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 31"
+success_regex = ['VM31_VIRTIO_NET_HB_RX.*payload="HB VM30 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM31_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 32"
+success_regex = ['VM32_VIRTIO_NET_HB_RX.*payload="HB VM31 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM32_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 33"
+success_regex = ['VM33_VIRTIO_NET_HB_RX.*payload="HB VM32 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM33_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 34"
+success_regex = ['VM34_VIRTIO_NET_HB_RX.*payload="HB VM33 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM34_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 35"
+success_regex = ['VM35_VIRTIO_NET_HB_RX.*payload="HB VM34 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM35_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 36"
+success_regex = ['VM36_VIRTIO_NET_HB_RX.*payload="HB VM35 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM36_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 37"
+success_regex = ['VM37_VIRTIO_NET_HB_RX.*payload="HB VM36 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM37_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 38"
+success_regex = ['VM38_VIRTIO_NET_HB_RX.*payload="HB VM37 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM38_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 39"
+success_regex = ['VM39_VIRTIO_NET_HB_RX.*payload="HB VM38 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM39_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 40"
+success_regex = ['VM40_VIRTIO_NET_HB_RX.*payload="HB VM39 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM40_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 41"
+success_regex = ['VM41_VIRTIO_NET_HB_RX.*payload="HB VM40 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM41_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 42"
+success_regex = ['VM42_VIRTIO_NET_HB_RX.*payload="HB VM41 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM42_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 43"
+success_regex = ['VM43_VIRTIO_NET_HB_RX.*payload="HB VM42 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM43_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 44"
+success_regex = ['VM44_VIRTIO_NET_HB_RX.*payload="HB VM43 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM44_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 45"
+success_regex = ['VM45_VIRTIO_NET_HB_RX.*payload="HB VM44 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM45_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 46"
+success_regex = ['VM46_VIRTIO_NET_HB_RX.*payload="HB VM45 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM46_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 47"
+success_regex = ['VM47_VIRTIO_NET_HB_RX.*payload="HB VM46 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM47_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 48"
+success_regex = ['VM48_VIRTIO_NET_HB_RX.*payload="HB VM47 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM48_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 49"
+success_regex = ['VM49_VIRTIO_NET_HB_RX.*payload="HB VM48 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM49_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 50"
+success_regex = ['VM50_VIRTIO_NET_HB_RX.*payload="HB VM49 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM50_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 51"
+success_regex = ['VM51_VIRTIO_NET_HB_RX.*payload="HB VM50 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM51_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 52"
+success_regex = ['VM52_VIRTIO_NET_HB_RX.*payload="HB VM51 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM52_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 53"
+success_regex = ['VM53_VIRTIO_NET_HB_RX.*payload="HB VM52 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM53_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 54"
+success_regex = ['VM54_VIRTIO_NET_HB_RX.*payload="HB VM53 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM54_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 55"
+success_regex = ['VM55_VIRTIO_NET_HB_RX.*payload="HB VM54 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM55_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 56"
+success_regex = ['VM56_VIRTIO_NET_HB_RX.*payload="HB VM55 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM56_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 57"
+success_regex = ['VM57_VIRTIO_NET_HB_RX.*payload="HB VM56 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM57_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 58"
+success_regex = ['VM58_VIRTIO_NET_HB_RX.*payload="HB VM57 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM58_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 59"
+success_regex = ['VM59_VIRTIO_NET_HB_RX.*payload="HB VM58 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM59_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 60"
+success_regex = ['VM60_VIRTIO_NET_HB_RX.*payload="HB VM59 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM60_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 61"
+success_regex = ['VM61_VIRTIO_NET_HB_RX.*payload="HB VM60 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM61_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 62"
+success_regex = ['VM62_VIRTIO_NET_HB_RX.*payload="HB VM61 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM62_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 63"
+success_regex = ['VM63_VIRTIO_NET_HB_RX.*payload="HB VM62 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM63_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 64"
+success_regex = ['VM64_VIRTIO_NET_HB_RX.*payload="HB VM63 seq=']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "VM64_VIRTIO_NET_HB_RX"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 65\n:"
+success_regex = ['Attached VM\[65\] console']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "root@linux-observer:~#"
+shell_cmd = '''
+{
+if sh -s -- before 64 <<'LINUX_CHECK'
+set -eu
+phase=$1
+count=$2
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mkdir -p /proc /sys /dev
+mount -t proc proc /proc 2>/dev/null || grep -q ' /proc proc ' /proc/mounts
+test -d /sys/class/net || mount -t sysfs sysfs /sys
+ip link set lo up
+ip link set eth0 up
+ip addr replace 10.0.2.2/24 dev eth0
+# Own the tail peer address so its retries do not target an unanswered ARP entry.
+ip addr replace "10.0.2.$((15 + count))/24" dev eth0
+ip -4 -o addr show dev eth0
+command -v ping >/dev/null
+test "$(cat /sys/class/net/eth0/carrier)" = 1
+n=1
+while [ "$n" -le "$count" ]; do
+    ip="10.0.2.$((14 + n))"
+    expected=down
+    if [ "$phase" = before ] || { [ "$phase" = partial ] && [ "$n" -eq "$count" ]; }; then
+        expected=up
+    fi
+    if ping -n -c 2 -W 1 "$ip" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+    if [ "$expected" = up ]; then
+        [ "$rc" -eq 0 ]
+        mac=$(printf '52:54:00:20:01:%02x' "$n")
+        ip neigh show "$ip" dev eth0 | grep -qi "lladdr $mac "
+    else
+        # iputils exit 1 means no replies; exit 2 is an execution/network error.
+        [ "$rc" -eq 1 ]
+    fi
+    printf 'SCALE_TARGET phase=%s vm=%s ip=%s expected=%s ping_exit=%s\n' "$phase" "$n" "$ip" "$expected" "$rc"
+    n=$((n + 1))
+done
+test "$(cat /sys/class/net/eth0/carrier)" = 1
+sync
+LINUX_CHECK
+then
+    printf '\nSCALE_%s_PASS\n' $(printf %s before | tr a-z A-Z)
+else
+    printf '\nSCALE_%s_FAILED\n' $(printf %s before | tr a-z A-Z)
+fi
+}
+'''
+success_regex = ['(?m)^SCALE_BEFORE_PASS[[:space:]]*$']
+timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@linux-observer:~#"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 1"
+success_regex = ['VM\[1\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 1"
+success_regex = ['VM\[1\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 2"
+success_regex = ['VM\[2\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 2"
+success_regex = ['VM\[2\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 3"
+success_regex = ['VM\[3\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 3"
+success_regex = ['VM\[3\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 4"
+success_regex = ['VM\[4\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 4"
+success_regex = ['VM\[4\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 5"
+success_regex = ['VM\[5\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 5"
+success_regex = ['VM\[5\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 6"
+success_regex = ['VM\[6\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 6"
+success_regex = ['VM\[6\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 7"
+success_regex = ['VM\[7\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 7"
+success_regex = ['VM\[7\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 8"
+success_regex = ['VM\[8\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 8"
+success_regex = ['VM\[8\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 9"
+success_regex = ['VM\[9\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 9"
+success_regex = ['VM\[9\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 10"
+success_regex = ['VM\[10\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 10"
+success_regex = ['VM\[10\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 11"
+success_regex = ['VM\[11\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 11"
+success_regex = ['VM\[11\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 12"
+success_regex = ['VM\[12\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 12"
+success_regex = ['VM\[12\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 13"
+success_regex = ['VM\[13\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 13"
+success_regex = ['VM\[13\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 14"
+success_regex = ['VM\[14\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 14"
+success_regex = ['VM\[14\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 15"
+success_regex = ['VM\[15\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 15"
+success_regex = ['VM\[15\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 16"
+success_regex = ['VM\[16\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 16"
+success_regex = ['VM\[16\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 17"
+success_regex = ['VM\[17\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 17"
+success_regex = ['VM\[17\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 18"
+success_regex = ['VM\[18\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 18"
+success_regex = ['VM\[18\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 19"
+success_regex = ['VM\[19\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 19"
+success_regex = ['VM\[19\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 20"
+success_regex = ['VM\[20\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 20"
+success_regex = ['VM\[20\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 21"
+success_regex = ['VM\[21\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 21"
+success_regex = ['VM\[21\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 22"
+success_regex = ['VM\[22\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 22"
+success_regex = ['VM\[22\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 23"
+success_regex = ['VM\[23\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 23"
+success_regex = ['VM\[23\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 24"
+success_regex = ['VM\[24\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 24"
+success_regex = ['VM\[24\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 25"
+success_regex = ['VM\[25\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 25"
+success_regex = ['VM\[25\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 26"
+success_regex = ['VM\[26\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 26"
+success_regex = ['VM\[26\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 27"
+success_regex = ['VM\[27\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 27"
+success_regex = ['VM\[27\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 28"
+success_regex = ['VM\[28\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 28"
+success_regex = ['VM\[28\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 29"
+success_regex = ['VM\[29\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 29"
+success_regex = ['VM\[29\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 30"
+success_regex = ['VM\[30\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 30"
+success_regex = ['VM\[30\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 31"
+success_regex = ['VM\[31\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 31"
+success_regex = ['VM\[31\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 32"
+success_regex = ['VM\[32\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 32"
+success_regex = ['VM\[32\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 33"
+success_regex = ['VM\[33\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 33"
+success_regex = ['VM\[33\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 34"
+success_regex = ['VM\[34\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 34"
+success_regex = ['VM\[34\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 35"
+success_regex = ['VM\[35\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 35"
+success_regex = ['VM\[35\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 36"
+success_regex = ['VM\[36\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 36"
+success_regex = ['VM\[36\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 37"
+success_regex = ['VM\[37\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 37"
+success_regex = ['VM\[37\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 38"
+success_regex = ['VM\[38\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 38"
+success_regex = ['VM\[38\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 39"
+success_regex = ['VM\[39\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 39"
+success_regex = ['VM\[39\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 40"
+success_regex = ['VM\[40\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 40"
+success_regex = ['VM\[40\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 41"
+success_regex = ['VM\[41\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 41"
+success_regex = ['VM\[41\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 42"
+success_regex = ['VM\[42\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 42"
+success_regex = ['VM\[42\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 43"
+success_regex = ['VM\[43\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 43"
+success_regex = ['VM\[43\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 44"
+success_regex = ['VM\[44\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 44"
+success_regex = ['VM\[44\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 45"
+success_regex = ['VM\[45\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 45"
+success_regex = ['VM\[45\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 46"
+success_regex = ['VM\[46\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 46"
+success_regex = ['VM\[46\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 47"
+success_regex = ['VM\[47\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 47"
+success_regex = ['VM\[47\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 48"
+success_regex = ['VM\[48\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 48"
+success_regex = ['VM\[48\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 49"
+success_regex = ['VM\[49\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 49"
+success_regex = ['VM\[49\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 50"
+success_regex = ['VM\[50\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 50"
+success_regex = ['VM\[50\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 51"
+success_regex = ['VM\[51\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 51"
+success_regex = ['VM\[51\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 52"
+success_regex = ['VM\[52\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 52"
+success_regex = ['VM\[52\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 53"
+success_regex = ['VM\[53\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 53"
+success_regex = ['VM\[53\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 54"
+success_regex = ['VM\[54\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 54"
+success_regex = ['VM\[54\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 55"
+success_regex = ['VM\[55\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 55"
+success_regex = ['VM\[55\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 56"
+success_regex = ['VM\[56\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 56"
+success_regex = ['VM\[56\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 57"
+success_regex = ['VM\[57\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 57"
+success_regex = ['VM\[57\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 58"
+success_regex = ['VM\[58\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 58"
+success_regex = ['VM\[58\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 59"
+success_regex = ['VM\[59\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 59"
+success_regex = ['VM\[59\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 60"
+success_regex = ['VM\[60\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 60"
+success_regex = ['VM\[60\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 61"
+success_regex = ['VM\[61\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 61"
+success_regex = ['VM\[61\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 62"
+success_regex = ['VM\[62\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 62"
+success_regex = ['VM\[62\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 63"
+success_regex = ['VM\[63\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 63"
+success_regex = ['VM\[63\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 65\n:"
+success_regex = ['Attached VM\[65\] console']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "root@linux-observer:~#"
+shell_cmd = '''
+{
+if sh -s -- partial 64 <<'LINUX_CHECK'
+set -eu
+phase=$1
+count=$2
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mkdir -p /proc /sys /dev
+mount -t proc proc /proc 2>/dev/null || grep -q ' /proc proc ' /proc/mounts
+test -d /sys/class/net || mount -t sysfs sysfs /sys
+ip link set lo up
+ip link set eth0 up
+ip addr replace 10.0.2.2/24 dev eth0
+# Own the tail peer address so its retries do not target an unanswered ARP entry.
+ip addr replace "10.0.2.$((15 + count))/24" dev eth0
+ip -4 -o addr show dev eth0
+command -v ping >/dev/null
+test "$(cat /sys/class/net/eth0/carrier)" = 1
+n=1
+while [ "$n" -le "$count" ]; do
+    ip="10.0.2.$((14 + n))"
+    expected=down
+    if [ "$phase" = before ] || { [ "$phase" = partial ] && [ "$n" -eq "$count" ]; }; then
+        expected=up
+    fi
+    if ping -n -c 2 -W 1 "$ip" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+    if [ "$expected" = up ]; then
+        [ "$rc" -eq 0 ]
+        mac=$(printf '52:54:00:20:01:%02x' "$n")
+        ip neigh show "$ip" dev eth0 | grep -qi "lladdr $mac "
+    else
+        # iputils exit 1 means no replies; exit 2 is an execution/network error.
+        [ "$rc" -eq 1 ]
+    fi
+    printf 'SCALE_TARGET phase=%s vm=%s ip=%s expected=%s ping_exit=%s\n' "$phase" "$n" "$ip" "$expected" "$rc"
+    n=$((n + 1))
+done
+test "$(cat /sys/class/net/eth0/carrier)" = 1
+sync
+LINUX_CHECK
+then
+    printf '\nSCALE_%s_PASS\n' $(printf %s partial | tr a-z A-Z)
+else
+    printf '\nSCALE_%s_FAILED\n' $(printf %s partial | tr a-z A-Z)
+fi
+}
+'''
+success_regex = ['(?m)^SCALE_PARTIAL_PASS[[:space:]]*$']
+timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@linux-observer:~#"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 64"
+success_regex = ['VM\[64\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 64"
+success_regex = ['VM\[64\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 65\n:"
+success_regex = ['Attached VM\[65\] console']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "root@linux-observer:~#"
+shell_cmd = '''
+{
+if sh -s -- after 64 <<'LINUX_CHECK'
+set -eu
+phase=$1
+count=$2
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mkdir -p /proc /sys /dev
+mount -t proc proc /proc 2>/dev/null || grep -q ' /proc proc ' /proc/mounts
+test -d /sys/class/net || mount -t sysfs sysfs /sys
+ip link set lo up
+ip link set eth0 up
+ip addr replace 10.0.2.2/24 dev eth0
+# Own the tail peer address so its retries do not target an unanswered ARP entry.
+ip addr replace "10.0.2.$((15 + count))/24" dev eth0
+ip -4 -o addr show dev eth0
+command -v ping >/dev/null
+test "$(cat /sys/class/net/eth0/carrier)" = 1
+n=1
+while [ "$n" -le "$count" ]; do
+    ip="10.0.2.$((14 + n))"
+    expected=down
+    if [ "$phase" = before ] || { [ "$phase" = partial ] && [ "$n" -eq "$count" ]; }; then
+        expected=up
+    fi
+    if ping -n -c 2 -W 1 "$ip" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+    if [ "$expected" = up ]; then
+        [ "$rc" -eq 0 ]
+        mac=$(printf '52:54:00:20:01:%02x' "$n")
+        ip neigh show "$ip" dev eth0 | grep -qi "lladdr $mac "
+    else
+        # iputils exit 1 means no replies; exit 2 is an execution/network error.
+        [ "$rc" -eq 1 ]
+    fi
+    printf 'SCALE_TARGET phase=%s vm=%s ip=%s expected=%s ping_exit=%s\n' "$phase" "$n" "$ip" "$expected" "$rc"
+    n=$((n + 1))
+done
+test "$(cat /sys/class/net/eth0/carrier)" = 1
+sync
+LINUX_CHECK
+then
+    printf '\nSCALE_%s_PASS\n' $(printf %s after | tr a-z A-Z)
+else
+    printf '\nSCALE_%s_FAILED\n' $(printf %s after | tr a-z A-Z)
+fi
+}
+'''
+success_regex = ['(?m)^SCALE_AFTER_PASS[[:space:]]*$']
+timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@linux-observer:~#"
+shell_cmd = "\u0018h"
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop 65"
+success_regex = ['VM\[65\] stopped successfully']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete 65"
+success_regex = ['VM\[65\] removed from VM list']
+timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm list"
+success_regex = ['No virtual machines found\.']
+timeout = 180

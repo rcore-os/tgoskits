@@ -26,16 +26,24 @@ workflow. Performance checks live in `.github/ci/checks/benchmarks.toml` and
 run through `.github/workflows/benchmarks.yml`. This is not a claim that every
 AxVisor feature or every test-suit directory has a corresponding nightly test.
 
-Nightly-only case files live under `apps/axvisor/` with the same
-`<group>/<build-group>/<case>` layout as `test-suit/axvisor/`. QEMU and board
-case discovery scans both trees (`test-suit/axvisor` and `apps/axvisor`), and
-board discovery for the default `normal` group also scans the
-`benchmarks/axvisor` tree, so the manifest selects each case by
-`--board`/`--test-case` name and never embeds a tree path. Add a new nightly
-scenario by placing its directory under `apps/axvisor/<group>/...` and
-registering the matching `[[check]]` in `axvisor-nightly.toml`; ordinary
-functional scenarios stay under `test-suit/axvisor/`. Do not duplicate a
-scenario's shell commands in the nightly workflow.
+Nightly applications live under `apps/axvisor/<group>/...` and run through
+`cargo xtask axvisor app`. Use `app list` to list board and QEMU applications.
+`app board -t board-orangepi-5-plus/ivc` selects a directory relative to
+`apps/axvisor/normal`; a parent directory selects all descendant configurations.
+`app qemu --arch aarch64 -t qemu-timer-stress/gicv3-timer-stress` uses the same
+selection rules.
+
+Application and test discovery are separate. `axvisor test` scans
+`test-suit/axvisor`; board discovery for the default `normal` group also retains
+`benchmarks/axvisor` compatibility. Both commands share the build and execution
+runners. Applications that build guests or generate resources declare their
+preparation steps in `guest-builds.toml` alongside the run configuration.
+Preparation completes before the host build configuration is loaded.
+
+Add a nightly application under `apps/axvisor/<group>/...` and register its
+command and directory selector in `axvisor-nightly.toml`. Keep ordinary
+functional tests under `test-suit/axvisor`. Do not duplicate an application's
+shell commands in the nightly workflow.
 
 ## Default CI Versus Nightly
 
@@ -110,5 +118,4 @@ Existing commands remain available for local test execution, for example:
 
 ```sh
 cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
-cargo xtask axvisor test board --board orangepi-5-plus-virtio-net-peer
 ```

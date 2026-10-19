@@ -1,7 +1,10 @@
 //! IRQ-backed task input for a HAL-owned console without a runtime UART.
 
-use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+use alloc::{sync::Arc, task::Wake};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    task::Waker,
+};
 
 use ax_lazyinit::OnceLock;
 use axpoll::IoEvents;
@@ -31,6 +34,18 @@ struct RawInputRuntime {
     poll_source: Arc<PollSet>,
     worker_signal: FixedIrqWorkerSignal,
     irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
+}
+
+struct InputWake(Arc<RawInputRuntime>);
+
+impl Wake for InputWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.progress.notify_all();
+    }
 }
 
 /// Unique task-side consumer for the HAL console's IRQ-backed RX queue.
@@ -207,6 +222,16 @@ fn publish_rx_item(
 }
 
 impl RawConsoleInput {
+    pub(crate) fn event_waker(&self) -> Waker {
+        Waker::from(Arc::new(InputWake(self.runtime.clone())))
+    }
+
+    pub(crate) fn wait_readable_until(&self, ready: impl Fn() -> bool) {
+        self.runtime
+            .progress
+            .wait_until(|| ready() || self.has_pending());
+    }
+
     pub(crate) fn try_read(&self, out: &mut [RxItem]) -> usize {
         if out.is_empty() {
             return 0;

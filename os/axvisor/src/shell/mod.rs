@@ -176,9 +176,104 @@ fn route_pending_host_log(
     true
 }
 
+enum ServiceInput {
+    Shell(u8),
+    Physical(u8),
+}
+
+struct ShellConsole<'a> {
+    buf: &'a [u8],
+    cursor: usize,
+    line_len: usize,
+    shell_announced: &'a mut bool,
+    pending_shell_byte: &'a mut Option<u8>,
+    lifecycle: &'a mut axvm::VmLifecycleSubscription,
+}
+
+impl axvisor::console_mux::ConsoleService for ShellConsole<'_> {
+    type Input = ServiceInput;
+
+    fn take_state_change(&mut self) -> bool {
+        self.lifecycle.take_changed()
+    }
+
+    fn reconcile(&mut self) {
+        if let Some(vm_id) = crate::guest_console::reconcile_vm_states() {
+            println!();
+            println!("[Axvisor] VM[{vm_id}] stopped; returning to the management shell");
+            if !*self.shell_announced {
+                print_shell_intro();
+                *self.shell_announced = true;
+            }
+            let current_content = std::str::from_utf8(&self.buf[..self.line_len]).unwrap_or("");
+            redraw_shell_line(&prompt_string(), current_content, self.cursor);
+        }
+    }
+
+    fn try_output(&mut self) -> bool {
+        let dropped = crate::guest_console::take_host_log_drops();
+        if let Some(record) = crate::guest_console::read_host_log() {
+            // Preserve ordered replay and backend-generation checks. The pump
+            // publishes retained-TX retries once after releasing the batch.
+            if let Some(tag) = record.output_tag() {
+                if dropped.records != 0 {
+                    route_pending_host_log(
+                        &[],
+                        self.buf,
+                        self.cursor,
+                        self.line_len,
+                        dropped.records,
+                        dropped.source_bytes,
+                    );
+                }
+                crate::guest_console::replay_guest_output(tag, record.bytes());
+                return true;
+            }
+            route_pending_host_log(
+                record.bytes(),
+                self.buf,
+                self.cursor,
+                self.line_len,
+                dropped.records,
+                dropped.source_bytes,
+            );
+            return true;
+        }
+        if dropped.records != 0 {
+            route_pending_host_log(
+                &[],
+                self.buf,
+                self.cursor,
+                self.line_len,
+                dropped.records,
+                dropped.source_bytes,
+            );
+            return true;
+        }
+        false
+    }
+
+    fn flush_output_retries(&mut self) {
+        crate::guest_console::notify_retained_tx_retries();
+    }
+
+    fn try_input(&mut self) -> Option<ServiceInput> {
+        self.pending_shell_byte
+            .take()
+            .map(ServiceInput::Shell)
+            .or_else(|| crate::guest_console::read_host_byte().map(ServiceInput::Physical))
+    }
+
+    fn wait_event(&mut self) {
+        crate::guest_console::wait_for_host_event(self.lifecycle);
+    }
+}
+
 // Initialize the console shell.
 pub fn console_init() {
     let mut history = CommandHistory::new(100);
+    let mut pump = axvisor::console_mux::ConsolePump;
+    let mut lifecycle = crate::guest_console::subscribe_lifecycle();
 
     let mut buf = [0; MAX_LINE_LEN];
     let mut cursor = 0; // cursor position in buffer
@@ -195,67 +290,19 @@ pub fn console_init() {
     }
 
     loop {
-        if let Some(vm_id) = crate::guest_console::reconcile_vm_states() {
-            println!();
-            println!("[Axvisor] VM[{vm_id}] stopped; returning to the management shell");
-            if !shell_announced {
-                print_shell_intro();
-                shell_announced = true;
-            }
-            let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-            redraw_shell_line(&prompt_string(), current_content, cursor);
-        }
-
-        let dropped = crate::guest_console::take_host_log_drops();
-        if let Some(record) = crate::guest_console::read_host_log() {
-            // Both branches route the consumed record back through the mux, which
-            // publishes a device-poll request for every backend whose ordered
-            // submission was rejected with `WouldBlock`. Keep them on the mux
-            // entry points so releasing one record's capacity always wakes the
-            // blocked VM, which is not necessarily the record's owner.
-            if let Some(tag) = record.output_tag() {
-                if dropped.records != 0 {
-                    route_pending_host_log(
-                        &[],
-                        &buf,
-                        cursor,
-                        line_len,
-                        dropped.records,
-                        dropped.source_bytes,
-                    );
-                }
-                crate::guest_console::replay_guest_output(tag, record.bytes());
-                continue;
-            }
-            route_pending_host_log(
-                record.bytes(),
-                &buf,
-                cursor,
-                line_len,
-                dropped.records,
-                dropped.source_bytes,
-            );
+        let Some(input) = pump.turn(&mut ShellConsole {
+            buf: &buf,
+            cursor,
+            line_len,
+            shell_announced: &mut shell_announced,
+            pending_shell_byte: &mut pending_shell_byte,
+            lifecycle: &mut lifecycle,
+        }) else {
             continue;
-        }
-        if dropped.records != 0 {
-            route_pending_host_log(
-                &[],
-                &buf,
-                cursor,
-                line_len,
-                dropped.records,
-                dropped.source_bytes,
-            );
-            continue;
-        }
-        let ch = match pending_shell_byte.take() {
-            Some(ch) => ch,
-            None => {
-                let Some(host_byte) = crate::guest_console::read_host_byte() else {
-                    crate::guest_console::wait_for_host_event();
-                    continue;
-                };
-
+        };
+        let ch = match input {
+            ServiceInput::Shell(ch) => ch,
+            ServiceInput::Physical(host_byte) => {
                 match crate::guest_console::route_host_byte(host_byte) {
                     ConsoleInputEvent::ShellByte(ch) => ch,
                     ConsoleInputEvent::ShellSequence(first, second) => {

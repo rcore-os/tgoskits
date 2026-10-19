@@ -44,6 +44,10 @@ use std::{
 
 use axvm_types::VMId;
 
+mod notifications;
+use notifications::LifecycleEvents;
+pub use notifications::VmLifecycleSubscription;
+
 /// Failure from a host CPU-frequency adapter.
 ///
 /// Callers retry [`Self::Unavailable`], reject configuration on
@@ -580,6 +584,7 @@ pub struct VmManager {
     /// One std sleepable mutex guards the whole registry domain state.
     registry: Arc<std::sync::Mutex<RegistryState>>,
     ivc: Arc<crate::runtime::ivc::IvcManager>,
+    lifecycle: Arc<LifecycleEvents>,
 }
 
 // Identifiers must also distinguish independently instantiated managers, because
@@ -606,6 +611,7 @@ impl VmManager {
             .get_or_init(|| host.enable_virtualization_on_all_cpus())
             .clone()?;
         Ok(Self {
+            lifecycle: Arc::new(LifecycleEvents::default()),
             ivc: Arc::new(crate::runtime::ivc::IvcManager::new()),
             registry: Arc::new(std::sync::Mutex::new(RegistryState {
                 entries: BTreeMap::new(),
@@ -613,6 +619,16 @@ impl VmManager {
                 closed: false,
             })),
         })
+    }
+
+    /// Subscribes a task-context waker to lifecycle and registry invalidations.
+    ///
+    /// The subscription initially requires reconciliation. Consume its pending
+    /// flag before reading snapshots, and include `has_changed()` in the wait
+    /// predicate associated with `waker`. Changes are published before waking,
+    /// outside AxVM locks. Dropping the subscription cancels future selection.
+    pub fn subscribe_lifecycle(&self, waker: std::task::Waker) -> VmLifecycleSubscription {
+        self.lifecycle.subscribe(waker)
     }
 
     /// Creates a VM instance and returns an operation that resolves to a
@@ -663,7 +679,11 @@ impl VmManager {
                 + 1;
             registry.generations.insert(vm_id, generation);
             let key = VmKey::new(vm_id, generation);
-            let exit = Arc::new(ControlExit::new(key, Arc::downgrade(&self.registry)));
+            let exit = Arc::new(ControlExit::new(
+                key,
+                Arc::downgrade(&self.registry),
+                self.lifecycle.clone(),
+            ));
             let shared = ControlShared::new(key, exit, self.ivc.clone());
             let (operation, completion) = shared.new_operation()?;
             registry.entries.insert(
@@ -1074,11 +1094,21 @@ impl ControlShared {
 
     /// Publishes the owner's latest observation snapshot.
     pub(crate) fn publish(&self, snapshot: VmSnapshot, progress: Vec<Arc<VcpuProgress>>) {
-        let retired = self.snapshot.lock_unpoisoned().replace(PublishedSnapshot {
-            value: snapshot,
-            progress,
-        });
+        let (retired, changed) = {
+            let mut published = self.snapshot.lock_unpoisoned();
+            let changed = published.as_ref().is_none_or(|previous| {
+                previous.value.state != snapshot.state || previous.value.run != snapshot.run
+            });
+            let retired = published.replace(PublishedSnapshot {
+                value: snapshot,
+                progress,
+            });
+            (retired, changed)
+        };
         drop(retired);
+        if changed {
+            self.exit.lifecycle.notify();
+        }
     }
 
     /// Returns a handle to this instance.
@@ -1311,6 +1341,7 @@ pub(crate) struct ControlExit {
     key: VmKey,
     registry: Weak<std::sync::Mutex<RegistryState>>,
     state: Mutex<ExitState>,
+    lifecycle: Arc<LifecycleEvents>,
 }
 
 struct ExitState {
@@ -1320,10 +1351,15 @@ struct ExitState {
 }
 
 impl ControlExit {
-    fn new(key: VmKey, registry: Weak<std::sync::Mutex<RegistryState>>) -> Self {
+    fn new(
+        key: VmKey,
+        registry: Weak<std::sync::Mutex<RegistryState>>,
+        lifecycle: Arc<LifecycleEvents>,
+    ) -> Self {
         Self {
             key,
             registry,
+            lifecycle,
             state: Mutex::new(ExitState {
                 pending: Vec::new(),
                 outcome: None,
@@ -1419,6 +1455,9 @@ impl ControlExit {
         };
         let removed_any = removed.is_some();
         drop(removed);
+        if removed_any {
+            self.lifecycle.notify();
+        }
         removed_any
     }
 }
@@ -1477,7 +1516,11 @@ mod tests {
             closed: false,
         }));
         let key = VmKey::new(7, 1);
-        let exit = Arc::new(ControlExit::new(key, Arc::downgrade(&registry)));
+        let exit = Arc::new(ControlExit::new(
+            key,
+            Arc::downgrade(&registry),
+            Arc::new(LifecycleEvents::default()),
+        ));
         let shared = ControlShared::new(
             key,
             exit.clone(),
@@ -1493,8 +1536,129 @@ mod tests {
         (registry, shared, exit)
     }
 
+    fn observation(shared: &ControlShared, state: VmStatus, run: Option<RunId>) -> VmSnapshot {
+        VmSnapshot {
+            key: shared.key(),
+            vm_id: shared.key().vm_id(),
+            name: "test instance".into(),
+            state,
+            run,
+            current_operation: None,
+            last_failure: None,
+            last_stop_reason: None,
+            cpu: CpuObservation {
+                vcpu_num: 0,
+                running_vcpu_count: 0,
+            },
+            memory: MemoryObservation {
+                nested_page_table_root: None,
+                total_bytes: 0,
+                regions: vec![],
+            },
+            device: DeviceObservation { device_count: 0 },
+            vcpu: vec![],
+            description: VmConfigSnapshot {
+                bsp_entry: GuestPhysAddr::from(0),
+                ap_entry: GuestPhysAddr::from(0),
+                image: VMImageConfig::default(),
+                address_space_policy: AddressSpacePolicy::default(),
+                vcpu_schedule_policy: crate::SchedulePolicy::default(),
+                vcpu_affinities: vec![],
+                passthrough_devices: vec![],
+                passthrough_addresses: vec![],
+                passthrough_irqs: vec![],
+            },
+            entry_count: 0,
+            park_count: 0,
+        }
+    }
+
     fn staging_failure() -> AxVmError {
         AxVmError::resource_unavailable("prepare VM control task", "staging failed")
+    }
+
+    #[test]
+    fn lifecycle_subscription_observes_published_state_and_cancels_on_drop() {
+        use std::task::{Wake, Waker};
+
+        struct ObservePublication {
+            shared: Weak<ControlShared>,
+            observed: Mutex<Vec<(VmStatus, Option<RunId>)>>,
+        }
+        impl Wake for ObservePublication {
+            fn wake(self: Arc<Self>) {
+                let shared = self.shared.upgrade().unwrap();
+                // Wakers can immediately re-enter AxVM. Both the snapshot and
+                // registry must already be observable without their locks held.
+                let published = shared.snapshot.try_lock().unwrap();
+                let snapshot = &published
+                    .as_ref()
+                    .expect("state is published before waking")
+                    .value;
+                self.observed
+                    .lock_unpoisoned()
+                    .push((snapshot.state, snapshot.run));
+                drop(published);
+                assert!(shared.exit.registry.upgrade().unwrap().try_lock().is_ok());
+            }
+        }
+
+        let (registry, shared, exit) = scenario();
+        let observer = Arc::new(ObservePublication {
+            shared: Arc::downgrade(&shared),
+            observed: Mutex::new(Vec::new()),
+        });
+        let mut subscription = exit.lifecycle.subscribe(Waker::from(observer.clone()));
+        assert!(
+            subscription.take_changed(),
+            "registration requires initial reconciliation"
+        );
+        let run = Some(RunId::new(shared.key(), 1));
+        shared.publish(observation(&shared, VmStatus::Running, run), vec![]);
+        assert!(subscription.take_changed());
+        assert_eq!(shared.handle().snapshot().state, VmStatus::Running);
+        assert_eq!(
+            *observer.observed.lock_unpoisoned(),
+            [(VmStatus::Running, run)]
+        );
+
+        // Progress-only snapshot publications do not schedule reconciliation.
+        let mut progress = observation(&shared, VmStatus::Running, run);
+        progress.entry_count = 100;
+        shared.publish(progress, vec![]);
+        assert!(!subscription.has_changed());
+        assert_eq!(observer.observed.lock_unpoisoned().len(), 1);
+
+        // Several owner transitions can share one wake; the consumer reads the
+        // current snapshot, rather than replaying a stale intermediate state.
+        shared.publish(observation(&shared, VmStatus::Stopping, run), vec![]);
+        shared.publish(observation(&shared, VmStatus::Stopped, run), vec![]);
+        assert_eq!(
+            *observer.observed.lock_unpoisoned(),
+            [(VmStatus::Running, run), (VmStatus::Stopping, run)]
+        );
+        assert!(subscription.take_changed());
+        assert_eq!(shared.handle().snapshot().state, VmStatus::Stopped);
+        assert!(!subscription.take_changed());
+
+        // A new run with an unchanged status still invalidates the observation.
+        let next_run = Some(RunId::new(shared.key(), 2));
+        shared.publish(observation(&shared, VmStatus::Stopped, next_run), vec![]);
+        assert!(subscription.take_changed());
+        assert_eq!(shared.handle().snapshot().run, next_run);
+        exit.on_task_exit();
+        assert!(subscription.take_changed());
+        assert!(registry.lock_unpoisoned().entries.is_empty());
+
+        let calls = observer.observed.lock_unpoisoned().len();
+        drop(subscription);
+        shared.publish(observation(&shared, VmStatus::Destroyed, next_run), vec![]);
+        assert_eq!(observer.observed.lock_unpoisoned().len(), calls);
+        let mut late = exit.lifecycle.subscribe(Waker::from(observer));
+        assert!(
+            late.take_changed(),
+            "late subscribers observe existing state"
+        );
     }
 
     #[test]
@@ -1532,43 +1696,7 @@ mod tests {
         // must merge, not observe `EntryClosed`.
         // The owner publishes its final state before the exit callback. That
         // observation cannot prove resource release or finish another destroy.
-        shared.publish(
-            VmSnapshot {
-                key: shared.key(),
-                vm_id: shared.key().vm_id(),
-                name: "test instance".into(),
-                state: VmStatus::Destroyed,
-                run: None,
-                current_operation: None,
-                last_failure: None,
-                last_stop_reason: None,
-                cpu: CpuObservation {
-                    vcpu_num: 0,
-                    running_vcpu_count: 0,
-                },
-                memory: MemoryObservation {
-                    nested_page_table_root: None,
-                    total_bytes: 0,
-                    regions: vec![],
-                },
-                device: DeviceObservation { device_count: 0 },
-                vcpu: vec![],
-                description: VmConfigSnapshot {
-                    bsp_entry: GuestPhysAddr::from(0),
-                    ap_entry: GuestPhysAddr::from(0),
-                    image: VMImageConfig::default(),
-                    address_space_policy: AddressSpacePolicy::default(),
-                    vcpu_schedule_policy: crate::SchedulePolicy::default(),
-                    vcpu_affinities: vec![],
-                    passthrough_devices: vec![],
-                    passthrough_addresses: vec![],
-                    passthrough_irqs: vec![],
-                },
-                entry_count: 0,
-                park_count: 0,
-            },
-            Vec::new(),
-        );
+        shared.publish(observation(&shared, VmStatus::Destroyed, None), Vec::new());
         let mut operation = shared.handle().destroy().unwrap();
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(
@@ -1683,7 +1811,11 @@ mod tests {
 
         // A newer generation reuses the numeric VM identifier.
         let new_key = VmKey::new(7, 2);
-        let new_exit = Arc::new(ControlExit::new(new_key, Arc::downgrade(&registry)));
+        let new_exit = Arc::new(ControlExit::new(
+            new_key,
+            Arc::downgrade(&registry),
+            Arc::new(LifecycleEvents::default()),
+        ));
         let new_shared = ControlShared::new(
             new_key,
             new_exit,
@@ -1699,7 +1831,11 @@ mod tests {
 
         // A stale exit from generation 1 must not touch the newer instance.
         let stale_key = VmKey::new(7, 1);
-        let stale_exit = ControlExit::new(stale_key, Arc::downgrade(&registry));
+        let stale_exit = ControlExit::new(
+            stale_key,
+            Arc::downgrade(&registry),
+            Arc::new(LifecycleEvents::default()),
+        );
         let (operation, completion) = VmOperation::<()>::new(OperationId::new(stale_key, 1));
         stale_exit.handoff(completion);
         stale_exit.on_task_exit();

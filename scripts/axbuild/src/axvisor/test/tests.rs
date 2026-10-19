@@ -5,11 +5,9 @@ use std::{
 
 use tempfile::tempdir;
 
-use super::*;
+use super::{discovery::CaseSource, *};
 
-/// Suite roots, mirroring the split used in production: regular functional
-/// cases under `test-suit/axvisor`, migrated nightly cases under
-/// `apps/axvisor`.
+/// Applications and functional tests have independent configuration namespaces.
 const TEST_SUIT_ROOT: &str = "test-suit/axvisor";
 const MIGRATED_SUITE_ROOT: &str = "apps/axvisor";
 
@@ -679,7 +677,7 @@ fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
 }
 
 #[test]
-fn merges_migrated_suite_root_into_qemu_discovery() {
+fn test_qemu_discovery_excludes_apps() {
     let root = tempdir().unwrap();
     let regular_build = write_qemu_build_config(
         root.path(),
@@ -728,7 +726,7 @@ fn merges_migrated_suite_root_into_qemu_discovery() {
             .iter()
             .map(|case| case.case.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["smoke", "gicv3-timer-stress"]
+        vec!["smoke"]
     );
     let regular = cases
         .iter()
@@ -736,16 +734,33 @@ fn merges_migrated_suite_root_into_qemu_discovery() {
         .expect("functional case under test-suit must stay discoverable");
     assert_eq!(regular.build_config_path, regular_build);
     assert_eq!(regular.case.qemu_config_path, regular_config);
-    let migrated = cases
-        .iter()
-        .find(|case| case.case.name == "gicv3-timer-stress")
-        .expect("nightly case under apps must be discoverable");
-    assert_eq!(migrated.build_config_path, migrated_build);
-    assert_eq!(migrated.case.qemu_config_path, migrated_config);
+    assert!(
+        cases
+            .iter()
+            .all(|case| case.case.qemu_config_path != migrated_config)
+    );
+    assert!(
+        cases
+            .iter()
+            .all(|case| case.build_config_path != migrated_build)
+    );
+    let apps = discovery::discover_qemu_cases(
+        CaseSource::Apps,
+        root.path(),
+        "normal",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        Some("qemu-timer-stress"),
+    )
+    .unwrap();
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].case.name, "qemu-timer-stress/gicv3-timer-stress");
+    assert_eq!(apps[0].build_config_path, migrated_build);
+    assert_eq!(apps[0].case.qemu_config_path, migrated_config);
 }
 
 #[test]
-fn selects_migrated_case_absent_from_test_suit() {
+fn selects_app_by_its_full_directory() {
     let root = tempdir().unwrap();
     write_qemu_build_config(
         root.path(),
@@ -780,17 +795,32 @@ fn selects_migrated_case_absent_from_test_suit() {
          }]\nsuccess_regex = [\"AXVISOR_GICV2_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
     );
 
-    let cases = discover_qemu_cases(
+    let cases = discovery::discover_qemu_cases(
+        CaseSource::Apps,
         root.path(),
         "normal",
         "aarch64",
         "aarch64-unknown-none-softfloat",
-        Some("gicv2-timer-stress"),
+        Some("qemu-timer-stress-v2/gicv2-timer-stress"),
     )
     .unwrap();
 
     assert_eq!(cases.len(), 1);
-    assert_eq!(cases[0].case.name, "gicv2-timer-stress");
+    assert_eq!(
+        cases[0].case.name,
+        "qemu-timer-stress-v2/gicv2-timer-stress"
+    );
+    assert!(
+        discovery::discover_qemu_cases(
+            CaseSource::Apps,
+            root.path(),
+            "normal",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some("qemu-timer-stress")
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -817,12 +847,12 @@ fn rejects_group_absent_from_every_suite_root() {
         err.to_string()
             .contains("unsupported Axvisor test group `unknown`")
     );
-    assert!(err.to_string().contains("nightly"));
+    assert!(!err.to_string().contains("nightly"));
     assert!(err.to_string().contains("normal"));
 }
 
 #[test]
-fn merges_migrated_suite_root_into_board_discovery() {
+fn board_discovery_isolates_apps_and_selects_descendants() {
     let root = tempdir().unwrap();
     let regular_build = write_board_build_config(root.path(), "default");
     let regular_board = write_board_config(
@@ -847,14 +877,16 @@ fn merges_migrated_suite_root_into_board_discovery() {
     let migrated_board = migrated_case.join("board-orangepi-5-plus-robot-real-starry.toml");
     fs::write(&migrated_board, "board_type = \"OrangePi-5-Plus-robot\"\n").unwrap();
 
+    let second_case = migrated_wrapper.join("ping");
+    fs::create_dir_all(&second_case).unwrap();
+    fs::write(
+        second_case.join("board-orangepi-5-plus-robot-real-starry.toml"),
+        r#"board_type = "OrangePi-5-Plus-robot""#,
+    )
+    .unwrap();
+
     let groups = discover_board_test_groups(root.path(), "normal", &[], &[]).unwrap();
-    let migrated = groups
-        .iter()
-        .find(|group| group.board_name == "orangepi-5-plus-robot-real-starry")
-        .expect("nightly board case under apps must be discoverable");
-    assert_eq!(migrated.name, "smoke");
-    assert_eq!(migrated.build_config, migrated_build);
-    assert_eq!(migrated.board_test_config_path, migrated_board);
+    assert_eq!(groups.len(), 1);
     let regular = groups
         .iter()
         .find(|group| group.board_name == "orangepi-5-plus-linux")
@@ -863,26 +895,73 @@ fn merges_migrated_suite_root_into_board_discovery() {
     assert_eq!(regular.build_config, regular_build);
     assert_eq!(regular.board_test_config_path, regular_board);
 
-    let selected = discover_board_test_groups(
+    let selected = discovery::discover_board_test_groups(
+        CaseSource::Apps,
         root.path(),
         "normal",
+        &["board-orangepi-5-plus/robot-real-starry".to_string()],
         &[],
-        &["orangepi-5-plus-robot-real-starry".to_string()],
     )
     .unwrap();
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].name, "smoke");
+    assert_eq!(
+        selected
+            .iter()
+            .map(|case| case.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "board-orangepi-5-plus/robot-real-starry/ping",
+            "board-orangepi-5-plus/robot-real-starry/smoke"
+        ]
+    );
+    let selected = selected
+        .iter()
+        .find(|case| case.board_test_config_path == migrated_board)
+        .unwrap();
+    assert_eq!(
+        selected.name,
+        "board-orangepi-5-plus/robot-real-starry/smoke"
+    );
+    assert_eq!(selected.build_config, migrated_build);
+    assert_eq!(selected.board_test_config_path, migrated_board);
+    assert!(
+        discovery::discover_board_test_groups(
+            CaseSource::Apps,
+            root.path(),
+            "normal",
+            &["board-orangepi-5-plus/robot-real".to_string()],
+            &[]
+        )
+        .is_err()
+    );
 }
 
 #[test]
-fn merges_group_names_from_every_suite_root() {
+fn group_names_are_isolated_by_source() {
     let root = tempdir().unwrap();
     fs::create_dir_all(root.path().join(TEST_SUIT_ROOT).join("normal")).unwrap();
     fs::create_dir_all(root.path().join(MIGRATED_SUITE_ROOT).join("nightly")).unwrap();
 
-    let groups = discovery::discover_test_group_names(root.path()).unwrap();
+    let groups = discovery::discover_test_group_names(CaseSource::Tests, root.path()).unwrap();
 
-    assert_eq!(groups, vec!["nightly".to_string(), "normal".to_string()]);
+    assert_eq!(groups, vec!["normal".to_string()]);
+    assert_eq!(
+        discovery::discover_test_group_names(CaseSource::Apps, root.path()).unwrap(),
+        vec!["nightly".to_string()]
+    );
+    assert!(
+        discovery::discover_board_test_groups(
+            CaseSource::Apps,
+            root.path(),
+            "../../test-suit/axvisor/normal",
+            &[],
+            &[]
+        )
+        .is_err()
+    );
+    assert!(
+        discovery::group_dirs(CaseSource::Tests, root.path(), "../../apps/axvisor/nightly")
+            .is_err()
+    );
 }
 
 fn write_healthy_aarch64_qemu_case(root: &Path) {
@@ -909,7 +988,7 @@ fn unexpected_root_error_is_not_swallowed_by_a_healthy_root() {
     // The migrated root ships a legacy `build-<arch>.toml` instead of the
     // required `build-<target>.toml`, so scanning it is an unexpected config
     // error rather than an empty selection.
-    let faulty_wrapper = root.path().join(MIGRATED_SUITE_ROOT).join("normal/legacy");
+    let faulty_wrapper = root.path().join(TEST_SUIT_ROOT).join("normal/legacy");
     fs::create_dir_all(&faulty_wrapper).unwrap();
     fs::write(
         faulty_wrapper.join("build-aarch64.toml"),
@@ -991,10 +1070,9 @@ fn selected_case_missing_from_every_suite_root_is_reported() {
     assert!(err.to_string().contains("ghost"), "{err}");
 }
 
-/// Listing merges the functional and nightly roots and tolerates the root that
-/// lacks the selected case.
+/// Application listing uses full directory paths and excludes functional tests.
 #[test]
-fn lists_qemu_cases_from_every_suite_root_and_tolerates_missing_selection() {
+fn lists_qemu_cases_in_the_selected_namespace() {
     let root = tempdir().unwrap();
     write_healthy_aarch64_qemu_case(root.path());
     write_qemu_build_config_in_suite_root(
@@ -1015,17 +1093,26 @@ fn lists_qemu_cases_from_every_suite_root_and_tolerates_missing_selection() {
          }]\nsuccess_regex = [\"AXVISOR_GICV3_TIMER_STRESS_PASSED\"]\nfail_regex = []\n",
     );
 
-    let listed = discovery::list_all_qemu_cases(root.path(), "normal", None).unwrap();
-    assert_eq!(
-        listed,
-        vec!["smoke".to_string(), "gicv3-timer-stress".to_string()]
-    );
+    let listed =
+        discovery::list_all_qemu_cases(CaseSource::Tests, root.path(), "normal", None).unwrap();
+    assert_eq!(listed, vec!["smoke".to_string()]);
 
-    // The functional root lacks the nightly case; that per-root miss stays
-    // ignorable while the migrated root provides it.
-    let selected =
-        discovery::list_all_qemu_cases(root.path(), "normal", Some("gicv3-timer-stress")).unwrap();
-    assert_eq!(selected, vec!["gicv3-timer-stress".to_string()]);
+    // A parent application directory selects its child runtime configuration.
+    let selected = discovery::list_all_qemu_cases(
+        CaseSource::Apps,
+        root.path(),
+        "normal",
+        Some("qemu-timer-stress"),
+    )
+    .unwrap();
+    assert_eq!(
+        selected,
+        vec!["qemu-timer-stress/gicv3-timer-stress".to_string()]
+    );
+    assert!(
+        discovery::list_all_qemu_cases(CaseSource::Apps, root.path(), "normal", Some("ghost"))
+            .is_err()
+    );
 }
 
 /// Only a missing group or a missing selected case is ignorable per root; an

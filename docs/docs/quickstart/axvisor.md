@@ -79,8 +79,9 @@ cargo xtask axvisor test uboot --board roc-rk3568-pc --guest linux
 ## 3. Board 测试
 
 `test board` 依赖已有板级环境或 self-hosted runner。这里的命令按
-test-suit 中的板卡名选择平台；指定 `--board` 后，会依次运行所有匹配该开发板的
-`board-*.toml` 测例。
+test-suit 中的板卡名选择平台；指定 `--board` 后，会依次运行测试命名空间中匹配的
+`board-*.toml` 测例。`test board` 不再扫描 `apps/axvisor/`，因此下面的 OrangePi
+命令只运行测试套件中的匹配用例，不包含 PCIe 网卡直通应用。
 
 当前 `test board` 使用板卡名：
 
@@ -88,6 +89,20 @@ test-suit 中的板卡名选择平台；指定 `--board` 后，会依次运行�
 cargo xtask axvisor test board --board orangepi-5-plus-linux
 cargo xtask axvisor test board --board rock-4d-linux
 ```
+
+应用使用独立的 `app` 入口。先列出应用，再运行 PCIe 网卡直通；`-t` 相对
+`apps/axvisor/normal/`，`-b` 是板卡服务登记的物理类型。运行前按
+[PCIe 网卡应用说明](https://github.com/rcore-os/tgoskits/blob/dev/apps/axvisor/normal/board-orangepi-5-plus/pci-network/README.md)
+准备内核、匹配模块和独立根盘，并按环境添加 `--server`、`--port`。
+
+```bash
+cargo xtask axvisor app list
+cargo xtask axvisor app board -g normal \
+  -t board-orangepi-5-plus/pci-network/ping \
+  --board orangepi-5-plus-linux -b BallPick-Robot-Rk3588
+```
+
+应用目录前缀选择、QEMU 入口和客户机构建准备规则见[测试与应用入口](../build/axvisor/test#8-应用入口)。
 
 > Board 测试通常需要 self-hosted runner、串口服务器或物理板环境，本地普通开发机通常无法直接复现。
 >

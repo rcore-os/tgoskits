@@ -102,6 +102,6 @@ benchmarks/axvisor/board-orangepi-5-plus/task-switch/
 └── task-switch.toml                           # AxVisor 客户机描述
 ```
 
-`normal` 组同时搜索 `test-suit/axvisor/normal`、`apps/axvisor/normal` 与 `benchmarks/axvisor`，因此 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch` 仍能按 `board-orangepi-5-plus-task-switch.toml` 推导出的板卡名选中本用例；CI 与本地基准则改用上面的 `cargo xtask ktest board` 入口，并在 `.github/ci/checks/benchmarks.toml` 中以 `ktest-board` 登记 `package`、`test`、`board` 与两个配置文件路径，规划器据此校验配置并把改动路由到同一作业。旧 `task-switch-overhead` 用例已由本 PR 删除并替换为本用例；nightly 与性能报告语义由 `benchmarks.toml` 清单统一提供，检查项本身不再写 `nightly_only`/`performance_report`。
+`test board` 的 `normal` 组搜索 `test-suit/axvisor/normal` 与 `benchmarks/axvisor`，因此 `cargo xtask axvisor test board --board orangepi-5-plus-task-switch` 仍能按 `board-orangepi-5-plus-task-switch.toml` 推导出的板卡名选中本用例。`discovery.rs::CaseSource` 将应用与测试分开，`apps/axvisor/` 下的应用通过 `cargo xtask axvisor app board -t <目录>` 运行，目录相对 `apps/axvisor/normal/`；CI 与本地基准则改用上面的 `cargo xtask ktest board` 入口，并在 `.github/ci/checks/benchmarks.toml` 中以 `ktest-board` 登记 `package`、`test`、`board` 与两个配置文件路径，规划器据此校验配置并把改动路由到同一作业。旧 `task-switch-overhead` 用例已由本 PR 删除并替换为本用例；nightly 与性能报告语义由 `benchmarks.toml` 清单统一提供，检查项本身不再写 `nightly_only`/`performance_report`。
 
 与 QEMU `scheduler-latency-bench` 的分工见 1.1：两者测量同类切换开销，本用例提供实体 RK3588 板卡上的 PMU/CNTVCT 计数与 GPIO 引脚证据，QEMU 用例提供宿主时钟下的快速回归，二者互补而不互为替代。

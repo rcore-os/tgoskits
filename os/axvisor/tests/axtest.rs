@@ -90,6 +90,91 @@ mod tests {
     use axvisor::builtin::{install_builtin, load_catalog};
 
     #[test]
+    fn console_event_wait_observes_published_records() {
+        use ax_std::os::arceos::modules::ax_runtime::console;
+        use std::{sync::Arc, thread};
+
+        let input = console::take_input().unwrap();
+        let logs = Arc::new(console::subscribe_logs().unwrap());
+        while logs.try_read().is_some() {}
+        logs.dropped();
+        // Unrelated records may arrive between draining the queue and waiting.
+        logs.write_output(72, b"background").unwrap();
+        // The QEMU runner bounds hangs; exercise the production wait without a timer.
+        let wait_for_record = |tag| loop {
+            input.wait_event_until(Some(&logs), || false).unwrap();
+            while let Some(record) = logs.try_read() {
+                if record.output_tag() == Some(tag) {
+                    return record;
+                }
+            }
+            logs.dropped();
+        };
+
+        // Publication before registration must be visible without a new edge.
+        logs.write_output(73, b"ready").unwrap();
+        logs.wait_readable_until(|| false).unwrap();
+        let record = wait_for_record(73);
+        ax_assert_eq!(record.bytes(), b"ready");
+
+        // With one CPU the producer runs only once this task yields in wait.
+        let producer_logs = Arc::clone(&logs);
+        let producer = thread::spawn(move || producer_logs.write_output(74, b"wake").unwrap());
+        let record = wait_for_record(74);
+        producer.join().unwrap();
+        ax_assert_eq!(record.bytes(), b"wake");
+
+        // The same console queue also carries external readiness. No timer is
+        // used: a producer must publish durable state and wake the actual queue.
+        use core::sync::atomic::{AtomicBool, Ordering};
+        let pending = Arc::new(AtomicBool::new(false));
+        let waker = input.event_waker();
+        while logs.try_read().is_some() {}
+        logs.dropped();
+
+        // Force publication after the predicate sampled false, but before the
+        // queue can insert the waiter. A bare edge-only wake would be lost.
+        let checked = AtomicBool::new(false);
+        loop {
+            input
+                .wait_event_until(Some(&logs), || {
+                    if !checked.swap(true, Ordering::AcqRel) {
+                        pending.store(true, Ordering::Release);
+                        waker.wake_by_ref();
+                        false
+                    } else {
+                        pending.load(Ordering::Acquire)
+                    }
+                })
+                .unwrap();
+            if pending.load(Ordering::Acquire) {
+                break;
+            }
+            while logs.try_read().is_some() {}
+            logs.dropped();
+        }
+        ax_assert!(checked.load(Ordering::Acquire));
+
+        pending.store(false, Ordering::Release);
+        while logs.try_read().is_some() {}
+        logs.dropped();
+        let published = pending.clone();
+        let producer = thread::spawn(move || {
+            published.store(true, Ordering::Release);
+            waker.wake();
+        });
+        while !pending.load(Ordering::Acquire) {
+            input
+                .wait_event_until(Some(&logs), || pending.load(Ordering::Acquire))
+                .unwrap();
+            while logs.try_read().is_some() {}
+            logs.dropped();
+        }
+        producer.join().unwrap();
+        ax_assert!(pending.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn placed_file_can_be_reopened_idempotently() {
         let directory = "/tmp/file-transfer-reopen";
         let id = "placed-reopen";
@@ -388,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn ordered_queue_pop_notifies_the_blocked_vm_through_the_mux() {
+    fn output_batch_notifies_blocked_vm_after_releasing_another_vms_record() {
         use crate::{
             guest_console_harness::{host, mux},
             manager, network_console,
@@ -415,9 +500,11 @@ mod tests {
         let popped = host::pop_ordered_record().expect("queued record is retained");
         ax_assert_eq!((popped >> 64) as usize, 2);
 
-        // Driving the production pop handler must wake the blocked VM even
-        // though the popped record belongs to another VM.
+        // Replay preserves ordering; only the service batch boundary wakes
+        // blocked producers, even when they did not own the consumed record.
         mux::replay_guest_output(popped, b"vm2\n");
+        ax_assert!(manager::take_notified_vms().is_empty());
+        mux::notify_retained_tx_retries();
         ax_assert_eq!(manager::take_notified_vms(), alloc::vec![1]);
 
         // The retry now fits the released slot and reaches the network console.
@@ -430,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn host_log_pop_notifies_the_blocked_vm_through_the_mux() {
+    fn host_log_batch_notifies_the_blocked_vm_through_the_mux() {
         use crate::{
             guest_console_harness::{host, mux},
             manager,
@@ -455,9 +542,10 @@ mod tests {
         let record = host::pop_ordered_host_record().expect("queued host log is retained");
         ax_assert!(manager::take_notified_vms().is_empty());
 
-        // Only routing the popped bytes through the production host-log handler
-        // publishes the device-poll request for the blocked VM.
+        // Routing releases capacity; the batch boundary publishes the retry.
         let _output = mux::route_host_log(&record, 0, 0);
+        ax_assert!(manager::take_notified_vms().is_empty());
+        mux::notify_retained_tx_retries();
         ax_assert_eq!(manager::take_notified_vms(), alloc::vec![1]);
 
         remove_guest_console(1);
@@ -486,6 +574,7 @@ mod tests {
         ax_assert_eq!(backend.try_write(prefix), 0);
         let filler = host::pop_ordered_host_record().expect("filler must be queued");
         let _ = mux::route_host_log(&filler, 0, 0);
+        mux::notify_retained_tx_retries();
         ax_assert_eq!(manager::take_notified_vms(), alloc::vec![1]);
         ax_assert_eq!(backend.try_write(prefix), prefix.len());
         let tag = host::pop_ordered_record().expect("accepted prefix must be queued");
@@ -511,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn pop_notifies_only_blocked_backends_that_are_still_current() {
+    fn batch_notifies_only_blocked_backends_that_are_still_current() {
         use crate::{
             guest_console_harness::{host, mux},
             manager,
@@ -544,6 +633,8 @@ mod tests {
 
         let popped = host::pop_ordered_record().expect("queued record is retained");
         mux::replay_guest_output(popped, b"filler");
+        ax_assert!(manager::take_notified_vms().is_empty());
+        mux::notify_retained_tx_retries();
 
         // Only the still-live blocked VM may be woken; the stopped incarnation
         // and the replaced generation must not leak into the pop notification.

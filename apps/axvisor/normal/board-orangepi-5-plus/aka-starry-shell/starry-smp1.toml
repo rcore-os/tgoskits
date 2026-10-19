@@ -10,7 +10,7 @@ phys_cpu_ids = [0x400]
 cmdline = 'earlycon=uart8250,mmio32,0xfeb50000 rw init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 entry_point = 0x4008_0000
 kernel_load_addr = 0x4008_0000
-kernel_path = "/guest/ivc-test/starry/orangepi-5-plus"
+kernel_path = "/guest/starry/orangepi-5-plus"
 # DTB GPA is selected automatically from the prepared guest memory layout.
 
 memory_regions = [
@@ -49,5 +49,5 @@ model = "ivc-channel"
 [[devices.virtual]]
 id = "starry-rootfs"
 model = "virtio-blk"
-path = "/guest/ivc-test/rootfs/rootfs-aarch64-orangepi-jammy.img"
+path = "/guest/rootfs-aarch64-orangepi-jammy-1.img"
 filesystem = "ext4"

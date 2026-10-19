@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -347,14 +348,14 @@ class CiPlanTests(unittest.TestCase):
             selections[0].template_id,
             "test-axvisor-aarch64-qemu-timer-stress",
         )
-        self.assertIn("--test-case gicv3-timer-stress", selections[0].command)
+        self.assertIn("axvisor app qemu", selections[0].command)
+        self.assertIn("--app qemu-timer-stress/gicv3-timer-stress", selections[0].command)
 
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
         for path in (
             "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
             "apps/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
-            "apps/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/smoke/board-orangepi-5-plus-virtio-net-peer.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml",
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",
@@ -746,35 +747,53 @@ class CiPlanTests(unittest.TestCase):
         )
 
     def test_axvisor_board_build_change_groups_cases_by_build_config(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            suite_root = root / "test-suit/axvisor/normal/board-demo"
-            (suite_root / "smoke").mkdir(parents=True)
-            (suite_root / "ping").mkdir(parents=True)
-            build_config = suite_root / "build-aarch64-unknown-none-softfloat.toml"
-            build_config.write_text("target = 'aarch64-unknown-none-softfloat'\n")
-            (suite_root / "smoke/board-demo.toml").write_text("\n")
-            (suite_root / "ping/board-demo.toml").write_text("\n")
-            checks = [
-                {
-                    "id": "axvisor-board-demo",
-                    "name": "Board Demo · Suites",
-                    "suite": [{"kind": "axvisor-board", "board": "demo"}],
-                }
-            ]
-
-            selections = ci_plan.resolve_suite_selections(
-                root,
-                checks,
-                [build_config.relative_to(root).as_posix()],
-            )
-
-        self.assertEqual(len(selections), 1)
-        self.assertEqual(
-            selections[0].command,
-            "cargo xtask axvisor test board --test-group normal "
-            "--test-case ping,smoke --board demo",
+        suite_trees = (
+            "apps/axvisor/normal",
+            "test-suit/axvisor/normal",
+            "benchmarks/axvisor",
         )
+        for suite_tree, independent in itertools.product(suite_trees, (False, True)):
+            with (
+                self.subTest(suite_tree=suite_tree, independent=independent),
+                tempfile.TemporaryDirectory() as temp_dir,
+            ):
+                root = Path(temp_dir)
+                suite_root = root / suite_tree / "board-demo"
+                (suite_root / "smoke").mkdir(parents=True)
+                (suite_root / "ping").mkdir(parents=True)
+                build_dir = suite_root / "ping" if independent else suite_root
+                build_config = build_dir / "build-aarch64-unknown-none-softfloat.toml"
+                build_config.write_text("target = 'aarch64-unknown-none-softfloat'\n")
+                (suite_root / "smoke/board-demo.toml").write_text("\n")
+                (suite_root / "ping/board-demo.toml").write_text("\n")
+                app_case = suite_tree.startswith("apps/")
+                selector = ("board-demo/ping" if independent else "board-demo/ping,board-demo/smoke") if app_case else ("board-demo/ping" if independent else "ping,smoke")
+                checks = [
+                    {
+                        "id": "axvisor-board-demo",
+                        "name": "Board Demo · Suites",
+                        "suite": [{
+                            "kind": "axvisor-board",
+                            "board": "demo",
+                            "cases": selector.split(","),
+                        }],
+                    }
+                ]
+
+                ci_plan.validate_suite_catalog(root, checks)
+                selections = ci_plan.resolve_suite_selections(
+                    root,
+                    checks,
+                    [build_config.relative_to(root).as_posix()],
+                )
+
+                self.assertEqual(len(selections), 1)
+                self.assertEqual(
+                    selections[0].command,
+                    ("cargo xtask axvisor app board --group normal --app " if app_case else
+                     "cargo xtask axvisor test board --test-group normal --test-case ")
+                    + f"{selector} --board demo",
+                )
 
     def test_generic_driver_suite_routes_source_and_rejects_missing_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

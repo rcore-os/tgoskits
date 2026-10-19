@@ -10,6 +10,7 @@ use crate::context::{
     AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest, SnapshotPersistence,
 };
 
+pub mod app;
 pub mod board;
 pub mod build;
 mod bundle;
@@ -27,6 +28,8 @@ pub enum Command {
     Qemu(ArgsQemu),
     /// Build and run Axvisor on a remote board
     Board(ArgsBoard),
+    /// List, build and run AxVisor applications
+    App(app::ArgsApp),
     /// Run Axvisor test suites
     Test(ArgsTest),
     /// Build and run Axvisor with U-Boot
@@ -256,6 +259,7 @@ impl Axvisor {
             Command::Defconfig(args) => self.defconfig(args),
             Command::Config(args) => self.config(args).await,
             Command::Test(args) => self.test(args).await,
+            Command::App(args) => self.app_command(args).await,
         }
     }
 

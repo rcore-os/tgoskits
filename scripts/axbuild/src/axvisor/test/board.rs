@@ -8,8 +8,11 @@ use anyhow::Context;
 use ostool::{board::RunBoardOptions, build::config::Cargo, run::uboot::UbootConfig};
 
 use super::{
-    AXVISOR_NORMAL_GROUP, BoardTestGroup, discover_board_test_groups,
-    discovery::{discover_test_group_names, discover_uboot_test_group, suite_roots_label},
+    AXVISOR_NORMAL_GROUP, BoardTestGroup,
+    discovery::{
+        CaseSource, discover_board_test_groups, discover_test_group_names,
+        discover_uboot_test_group, suite_roots_label,
+    },
 };
 use crate::{
     axvisor::{ArgsTestBoard, ArgsTestUboot, Axvisor, build},
@@ -90,11 +93,20 @@ impl Axvisor {
     }
 
     pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
+        self.run_board_cases(args, CaseSource::Tests).await
+    }
+
+    pub(crate) async fn run_board_cases(
+        &mut self,
+        args: ArgsTestBoard,
+        source: CaseSource,
+    ) -> anyhow::Result<()> {
         if args.list && args.test_group.is_none() {
-            let groups = discover_test_group_names(self.app.workspace_root())?
+            let groups = discover_test_group_names(source, self.app.workspace_root())?
                 .into_iter()
                 .filter_map(|group| {
                     match discover_board_test_groups(
+                        source,
                         self.app.workspace_root(),
                         &group,
                         &args.test_case,
@@ -116,18 +128,19 @@ impl Axvisor {
             if groups.is_empty() {
                 anyhow::bail!(
                     "no Axvisor board test groups found under {}",
-                    suite_roots_label(self.app.workspace_root())
+                    suite_roots_label(source, self.app.workspace_root())
                 );
             }
             println!(
                 "{}",
-                test_qemu::render_labeled_case_forest("axvisor", groups)
+                test_qemu::render_labeled_case_forest(source.label(), groups)
             );
             return Ok(());
         }
 
         let test_group = args.test_group.as_deref().unwrap_or(AXVISOR_NORMAL_GROUP);
         let groups = discover_board_test_groups(
+            source,
             self.app.workspace_root(),
             test_group,
             &args.test_case,
@@ -137,12 +150,12 @@ impl Axvisor {
             let case_names = board_test::labeled_board_cases(groups);
             println!(
                 "{}",
-                test_qemu::render_labeled_case_forest("axvisor", [(test_group, case_names)])
+                test_qemu::render_labeled_case_forest(source.label(), [(test_group, case_names)])
             );
             return Ok(());
         }
 
-        let mut run_state = board_test::BoardTestRunState::new("axvisor", groups.len());
+        let mut run_state = board_test::BoardTestRunState::new(source.label(), groups.len());
         let mut runnable = Vec::new();
         for (index, group) in groups.into_iter().enumerate() {
             let group_label = run_state.start_group(index, &group);
@@ -156,6 +169,11 @@ impl Axvisor {
                 continue;
             }
 
+            if let Err(error) = super::guest_build::prepare(&mut self.app, &board_test_config).await
+            {
+                run_state.fail_group(group_label, error);
+                continue;
+            }
             runnable.push((group_label, group));
         }
 
@@ -294,7 +312,6 @@ impl Axvisor {
             let mut transport_retries = 0;
             let result = loop {
                 let result = async {
-                    super::guest_build::prepare(&mut self.app, &board_test_config).await?;
                     let mut request = prepared.request.clone();
                     // Cargo identity is shared, but each board case keeps its own
                     // build metadata and guest resource selection.

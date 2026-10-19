@@ -72,6 +72,11 @@ fn guest_took_host_storage(vm: &VmHandle, configured: bool) -> bool {
 }
 
 impl AxvmManager {
+    /// Subscribes to authoritative AxVM lifecycle changes, including guest stops.
+    pub fn subscribe_lifecycle(&self, waker: core::task::Waker) -> axvm::VmLifecycleSubscription {
+        self.runtime.subscribe_lifecycle(waker)
+    }
+
     pub fn new() -> Result<Arc<Self>> {
         let manager = Arc::new(Self {
             runtime: VmManager::new().context("initialize AxVM runtime")?,

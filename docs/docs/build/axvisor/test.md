@@ -32,7 +32,7 @@ test-suit/axvisor/
 
 与 StarryOS 的平铺结构不同，Axvisor 用 `normal` 测试组目录组织用例。发现算法统一通过 `build-{target}.toml` 定位构建组、`qemu-{arch}.toml` 定位用例。
 
-普通功能用例位于 `test-suit/axvisor/`；只由 AxVisor Nightly 运行的用例已迁移到 `apps/axvisor/`，目录布局与 `test-suit/axvisor/` 一致。`discover_qemu_cases()`、板卡发现和 `discover_test_group_names()` 会同时扫描两棵目录树，因此两类用例共用同一套筛选参数。
+普通功能用例位于 `test-suit/axvisor/`，应用及部分 Nightly 场景位于 `apps/axvisor/`。`axvisor/test/discovery.rs::CaseSource` 将两者分开：`test qemu` 和 `test board` 使用 `Tests`，`app qemu` 和 `app board` 使用 `Apps`，不会跨命名空间扫描。板卡测试的 `normal` 组另保留 `benchmarks/axvisor/` 的兼容入口。应用入口与选择规则见第 8 节。
 
 ## 3. 运行模式
 
@@ -75,7 +75,7 @@ flowchart TD
 
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
-| 用例发现 | `discovery.rs::discover_qemu_cases()` | 扫描 `test-suit/axvisor/<group>/` 与 `apps/axvisor/<group>/`，默认 group 为 `normal` |
+| 用例发现 | `discovery.rs::discover_qemu_cases()` | 按 `CaseSource` 扫描 `test-suit/axvisor/<group>/` 或 `apps/axvisor/<group>/`，默认 group 为 `normal` |
 | VM 配置 | `qemu_group_build_context()` | 从用例 `host-initramfs.toml` 读取 VM 打包输入，缺省时使用构建配置的列表；只产生 builtin catalog |
 | rootfs 准备 | `rootfs::ensure_qemu_rootfs_ready()` | 根据每个用例的宿主根盘接线准备磁盘；纯 initramfs 用例不下载宿主根盘 |
 | 分组命令校验 | `discovery.rs::load_qemu_case()` | 在构建前拒绝非空 `test_commands`，提示改用 `shell_check_steps` |
@@ -204,3 +204,40 @@ cargo xtask axvisor test qemu --arch x86_64 \
 ### 6.2 持续集成
 
 `.github/ci/checks/axvisor.toml` 只生成一个 `kvm-amd` SVM 作业，`cache_key = ""`，上限 120 分钟。Smoke 使用 `root=/dev/nvme0n1 rw`，同时检查宿主磁盘读写和双 VM 磁盘隔离；其他用例从内存根加载对应归档。不同构建组保留各自产物。
+
+## 8. 应用入口
+
+`cargo xtask axvisor app` 运行 `apps/axvisor/` 下的应用，包含板卡场景与 QEMU 场景。`axvisor/app.rs::app_command()` 用 `CaseSource::Apps` 调用共享的 `run_board_cases()` 和 `run_qemu_cases()`，复用构建、部署与结果判定流程；`test` 入口不再包含这些应用。升级后，原有 `test board --board orangepi-5-plus-linux` 仍可能成功运行测试套件的 smoke，但不会执行应用目录中的 PCIe 网卡直通。
+
+### 8.1 列表与目录选择
+
+`app list` 列出可用的板卡和 QEMU 应用。运行时通过 `-g/--group` 选择组，默认 `normal`；`-t/--app` 是运行配置所在目录相对 `apps/axvisor/<group>/` 的路径，不含 `normal/` 前缀，也不是配置文件名。
+
+```bash
+cargo xtask axvisor app list
+cargo xtask axvisor app board -g normal \
+  -t board-orangepi-5-plus/pci-network/ping --list
+cargo xtask axvisor app board -g normal \
+  -t board-orangepi-5-plus/kernel-types --list
+```
+
+`discovery.rs::app_matches()` 匹配精确目录及其后代，所以上例的 `kernel-types` 会选中其下多个子场景。可用逗号指定多个应用；未匹配的选择器报错。`--list` 只列出配置，不准备资源、不构建或占用板卡。实际运行必须提供 `-t`，避免无选择地运行所有应用。
+
+### 8.2 板卡与 QEMU 运行
+
+板卡应用的 `--board` 过滤 `board-<name>.toml` 的逻辑名称，`-b/--board-type` 覆盖向板卡服务申请的物理类型，两者不能互换。未提供 `-b` 时使用配置中的 `board_type`；物理类型须与目标服务的 `ostool board ls` 输出一致。以下命令使用配置的默认服务连接设置，其他环境应补充 `--server` 和 `--port`。
+
+```bash
+cargo xtask axvisor app board -g normal \
+  -t board-orangepi-5-plus/pci-network/ping \
+  --board orangepi-5-plus-linux -b BallPick-Robot-Rk3588
+```
+
+执行前按[PCIe 网卡应用说明](https://github.com/rcore-os/tgoskits/blob/dev/apps/axvisor/normal/board-orangepi-5-plus/pci-network/README.md)准备板端镜像和网络。QEMU 应用使用相同的目录选择方式，并通过 `--arch` 或 `--target` 指定构建目标，例如：
+
+```bash
+cargo xtask axvisor app qemu --arch aarch64 \
+  -t qemu-timer-stress/gicv3-timer-stress
+```
+
+两类运行器都在宿主构建前调用 `axvisor/test/guest_build.rs::prepare()`，读取运行配置同目录下可选的 `guest-builds.toml`。其中 `host_prepare` 先准备共享资源，`arceos_build_configs` 再依次构建源码客户机；准备失败会阻止后续宿主构建与运行。没有该文件的应用继续使用自身配置和预先部署的镜像，运行前仍需满足各应用 README 的资源要求。

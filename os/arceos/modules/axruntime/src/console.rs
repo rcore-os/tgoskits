@@ -5,7 +5,10 @@
 //! policy remain in the consuming OS.
 
 use alloc::{boxed::Box, sync::Arc};
-use core::fmt::{self, Write};
+use core::{
+    fmt::{self, Write},
+    task::Waker,
+};
 
 use ax_lazyinit::OnceLock;
 use ax_sync::Mutex;
@@ -343,6 +346,44 @@ impl TaskConsoleInput {
             }
         }
     }
+
+    /// Returns a waker for task-context publishers of external readiness.
+    ///
+    /// Publish the condition before waking, and include that condition in
+    /// [`Self::wait_event_until`]. Waking alone does not make the wait complete.
+    /// The waker keeps its console runtime alive, without retaining this RX lease.
+    pub fn event_waker(&self) -> Waker {
+        match &self.inner {
+            TaskConsoleInputInner::Runtime(inner) => inner.event_waker(),
+            TaskConsoleInputInner::RawHal(inner) => inner.event_waker(),
+        }
+    }
+
+    /// Waits without a timer for RX, optional logs, or external readiness.
+    ///
+    /// `ready` runs in task context without the wait-queue lock. It must observe
+    /// durable state published before calling [`Self::event_waker`]'s waker.
+    /// The queue's registration protocol prevents a lost wake between checking
+    /// that state and parking. The predicate must not consume the readiness.
+    /// Runtime shutdown remains an error; raw-HAL input rejects log subscriptions.
+    pub fn wait_event_until(
+        &self,
+        logs: Option<&ConsoleLogSubscription>,
+        ready: impl Fn() -> bool,
+    ) -> RuntimeResult {
+        match &self.inner {
+            TaskConsoleInputInner::Runtime(inner) => {
+                inner.wait_console_event_until(logs.map(|logs| &logs.inner), ready)
+            }
+            TaskConsoleInputInner::RawHal(inner) => {
+                if logs.is_some() {
+                    return Err(RuntimeError::OperationNotSupported);
+                }
+                inner.wait_readable_until(ready);
+                Ok(())
+            }
+        }
+    }
 }
 
 fn raw_output_source() -> Arc<PollSet> {
@@ -528,6 +569,21 @@ pub struct ConsoleLogSubscription {
 }
 
 impl ConsoleLogSubscription {
+    /// Returns the task-context waker paired with [`Self::wait_readable_until`].
+    /// Publish external readiness before waking; the waker retains the runtime,
+    /// but does not keep this log subscription active.
+    pub fn event_waker(&self) -> Waker {
+        self.inner.event_waker()
+    }
+
+    /// Waits without a timer for a record, drop report, or external readiness.
+    ///
+    /// `ready` follows the non-consuming publish-before-wake contract of
+    /// [`TaskConsoleInput::wait_event_until`]. Shutdown remains an error.
+    pub fn wait_readable_until(&self, ready: impl Fn() -> bool) -> RuntimeResult {
+        self.inner.wait_readable_until(ready)
+    }
+
     /// Enqueues raw bytes alongside kernel records in publication order.
     ///
     /// `tag` is opaque to the runtime and identifies the application stream and

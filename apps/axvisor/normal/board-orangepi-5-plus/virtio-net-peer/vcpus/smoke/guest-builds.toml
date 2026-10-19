@@ -1,0 +1,2 @@
+host_prepare = ["bash", "apps/axvisor/normal/board-orangepi-5-plus/virtio-net-peer/vcpus/orangepi-arceos-virtio-net-test.sh", "gen"]
+arceos_build_configs = ["../../arceos-guest-build.toml"]

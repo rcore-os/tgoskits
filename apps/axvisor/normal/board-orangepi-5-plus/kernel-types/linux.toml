@@ -1,0 +1,35 @@
+# Existing board-staged kernel; the host retains physical storage and NICs.
+[base]
+id = 1
+name = "ubuntu"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x400]
+
+[kernel]
+entry_point = 0x4008_0000
+kernel_load_addr = 0x4008_0000
+kernel_path = "/guest/linux/orangepi-5-plus"
+dtb_load_addr = 0x4000_0000
+cmdline = 'root=/dev/vda rw console=ttyS0,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 devtmpfs.mount=1 init=/bin/sh HOME=/root USER=root HOSTNAME=ubuntu -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+memory_regions = [[0x4000_0000, 0x4000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "console0"
+model = "uart16550-mmio"
+address = 0xfeb50000
+
+[[devices.virtual]]
+id = "rootfs"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-orangepi-jammy-0.img"
+filesystem = "ext4"
+
+[[devices.virtual]]
+id = "net0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x21, 0x00, 0x01]

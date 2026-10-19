@@ -211,3 +211,25 @@ fn pending_log_precedes_new_output_after_subscription_handoff() {
         );
     }
 }
+
+#[test]
+fn console_event_wait_rejects_stopped_and_foreign_subscriptions() {
+    let (runtime, _worker, _wire) = fixture();
+    let input = runtime.take_rx_subscription().unwrap();
+    let logs = runtime.take_log_subscription().unwrap();
+    let (other, _other_worker, _other_wire) = fixture();
+    let foreign_logs = other.take_log_subscription().unwrap();
+    assert_eq!(
+        input.wait_console_event_until(Some(&foreign_logs), || false),
+        Err(RuntimeError::OperationNotSupported),
+    );
+    runtime.shared.set_started(false);
+    assert_eq!(
+        input.wait_console_event_until(Some(&logs), || false),
+        Err(RuntimeError::SerialNotStarted),
+    );
+    assert_eq!(
+        logs.wait_readable_until(|| false),
+        Err(RuntimeError::SerialNotStarted),
+    );
+}

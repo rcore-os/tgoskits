@@ -14,10 +14,9 @@ use sha2::Digest;
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
     assets::axvisor_case_asset_config,
-    discover_qemu_cases,
     discovery::{
-        discover_test_group_names, list_all_qemu_cases, list_all_qemu_cases_with_archs,
-        suite_roots_label,
+        CaseSource, discover_qemu_cases, discover_test_group_names, list_all_qemu_cases,
+        list_all_qemu_cases_with_archs, suite_roots_label,
     },
     host_probe,
     initramfs::prepare_configured_busybox_initramfs,
@@ -34,6 +33,14 @@ const VCPU_RUNTIME_ERROR: &str = r"VM\[\d+\] run VCpu\[\d+\] get error";
 
 impl Axvisor {
     pub(super) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        self.run_qemu_cases(args, CaseSource::Tests).await
+    }
+
+    pub(crate) async fn run_qemu_cases(
+        &mut self,
+        args: ArgsTestQemu,
+        source: CaseSource,
+    ) -> anyhow::Result<()> {
         let selectors: Vec<Option<&str>> = if args.test_case.is_empty() {
             vec![None]
         } else {
@@ -46,8 +53,9 @@ impl Axvisor {
             let mut groups = Vec::new();
             for selector in &selectors {
                 let mut selected_groups = Vec::new();
-                for group in discover_test_group_names(self.app.workspace_root())? {
+                for group in discover_test_group_names(source, self.app.workspace_root())? {
                     let case_names = list_all_qemu_cases_with_archs(
+                        source,
                         self.app.workspace_root(),
                         &group,
                         *selector,
@@ -64,10 +72,13 @@ impl Axvisor {
             if groups.is_empty() {
                 anyhow::bail!(
                     "no Axvisor qemu test cases found under {}",
-                    suite_roots_label(self.app.workspace_root())
+                    suite_roots_label(source, self.app.workspace_root())
                 );
             }
-            println!("{}", test_qemu::render_qemu_case_forest("axvisor", groups));
+            println!(
+                "{}",
+                test_qemu::render_qemu_case_forest(source.label(), groups)
+            );
             return Ok(());
         }
 
@@ -76,6 +87,7 @@ impl Axvisor {
             let mut case_names = std::collections::BTreeSet::new();
             for selector in &selectors {
                 case_names.extend(list_all_qemu_cases(
+                    source,
                     self.app.workspace_root(),
                     test_group,
                     *selector,
@@ -89,6 +101,7 @@ impl Axvisor {
         let mut cases = Vec::new();
         for selected in selectors {
             for case in discover_qemu_cases(
+                source,
                 self.app.workspace_root(),
                 test_group,
                 &arch,
@@ -110,12 +123,16 @@ impl Axvisor {
         }
 
         println!(
-            "running axvisor qemu tests for arch: {} (target: {}, cases: {})",
+            "running {} qemu cases for arch: {} (target: {}, cases: {})",
+            source.label(),
             arch,
             target,
             cases.len()
         );
 
+        for case in &cases {
+            super::guest_build::prepare(&mut self.app, &case.case.qemu_config_path).await?;
+        }
         let request = self.prepare_request(
             axvisor_qemu_test_build_args(&arch, None),
             None,
@@ -290,7 +307,7 @@ impl Axvisor {
         }
 
         let total_duration = format!("{:.2?}", suite_started.elapsed());
-        summary.finish_with_total_detail("axvisor", "case", Some(total_duration.as_str()))
+        summary.finish_with_total_detail(source.label(), "case", Some(total_duration.as_str()))
     }
 
     async fn prepare_qemu_cases(
