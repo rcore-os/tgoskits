@@ -18,6 +18,8 @@ T01–T07 依次覆盖单流 TX、单流 RX、单流双向、2/4/8 流 TX 和 4 
 
 `init.sh` 只从本次会话下载并执行 `bootstrap.sh`，避免把完整下载逻辑塞进串口命令。后者下载 `network-bench.sh` 与静态链接的 `upload-source`；若板端没有 curl，则先用 wget 下载本次会话打包的 curl 和 musl 依赖。板卡配置通过 `${boardServerIp}` 提供当前服务端地址，因此不需要固定板卡 IP。两个板卡配置都存在，运行时必须显式选择 `--board-config`。
 
+OrangePi 配置通过 `cmdline` 设置 `init=/bin/sh` 并建立 `root@starry:` 提示符，使基准直接进入应用 shell，不依赖板卡默认 systemd 的启动结果。
+
 ### 2.1 启动命令
 
 OrangePi 可以直接运行；AKA 构建还需要 Wi-Fi 凭据，以便启动后取得地址。两者均由 `cargo xtask` 负责构建、会话文件上传、串口运行和失败标记检查。

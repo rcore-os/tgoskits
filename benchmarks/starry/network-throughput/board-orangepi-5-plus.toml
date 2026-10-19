@@ -1,4 +1,6 @@
 board_type = "OrangePi-5-Plus"
+# Start the benchmark shell directly instead of inheriting the board's Linux init.
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
 session_files = [
   "network-bench.sh",
   "bootstrap.sh",
