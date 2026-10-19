@@ -122,6 +122,13 @@ def main():
         timeout=300,
     )
     epoch = status["boot_epoch"]
+    response = request(args.host, args.port, "GET", "/api/v1/ota/status")
+    expect(response[0], 200, "read-only OTA status needs no epoch", response[1])
+    response = request(
+        args.host, args.port, "GET", "/api/v1/status",
+        headers={"X-Boot-Epoch": epoch, "x-boot-epoch": epoch},
+    )
+    expect(response[0], 400, "ambiguous control headers rejected", response[1])
     headers = {"X-Boot-Epoch": epoch, "Content-Type": "application/json"}
     bad_kernel = b"\x07"
     manifest = {
@@ -137,6 +144,8 @@ def main():
     encoded = json.dumps(manifest, separators=(",", ":")).encode()
     response = request(args.host, args.port, "POST", "/api/v1/boot/jobs", encoded, headers)
     expect(response[0], 201, "Loong manifest create", response[1])
+    response = request(args.host, args.port, "GET", "/api/v1/boot/jobs/loong-http-smoke")
+    expect(response[0], 200, "read-only job status needs no epoch", response[1])
     response = request(args.host, args.port, "POST", "/api/v1/boot/jobs", encoded, headers)
     expect(response[0], 200, "identical manifest retry", response[1])
     upload_headers = {
@@ -229,6 +238,8 @@ def main():
 
     trial = stage_trial(args, epoch, image, image_digest)
     failed_update_id = trial["ota"]["pending_update_id"]
+    response = request(args.host, args.port, "GET", "/api/v1/ota/status")
+    expect(response[0], 200, "trial status remains readable without epoch", response[1])
     trial_epoch = trial["boot_epoch"]
     reset_qemu(args.qmp_socket)
     rolled_back = wait_status(

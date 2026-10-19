@@ -87,6 +87,8 @@ fn native_uefi_capabilities_do_not_compile_kernel_startup() {
         "someboot::arch::",
         "someboot::smp::",
         "someboot::prime_entry",
+        "someboot::boot_resources::allocation::allocate",
+        "someboot::boot_resources::allocation::ARENAS",
         "efi_pe_entry",
         "kernel_entry",
         "__someboot_main",

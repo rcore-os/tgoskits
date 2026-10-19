@@ -31,6 +31,9 @@ use crate::{
     virtio::{self, VirtIoHalImpl, VirtIoTransport},
 };
 
+mod transport;
+use transport::ResettableTransport;
+
 const QUEUE_SIZE: usize = 64;
 const BUFFER_SIZE: usize = 2048;
 const QUEUE_ID0: NetQueueId = NetQueueId::new(0);
@@ -53,10 +56,11 @@ struct VirtIoNetDevice<T: VirtIoTransport> {
 
 impl<T: VirtIoTransport> VirtIoNetDevice<T> {
     fn new(transport: T) -> Result<Self, VirtIoError> {
-        let mut raw = VirtIONetRaw::new(transport)?;
+        let transport = ResettableTransport::new(transport);
+        let mut raw = VirtIONetRaw::new(transport.clone())?;
         raw.disable_interrupts();
         Ok(Self {
-            inner: Arc::new(VirtioNetInnerCell::new(NetInner::new(raw))),
+            inner: Arc::new(VirtioNetInnerCell::new(NetInner::new(raw, transport))),
         })
     }
 }
@@ -215,11 +219,16 @@ impl<T: VirtIoTransport + 'static> NetPollIrqControl for VirtioNetIrqControl<T> 
     }
 
     fn shutdown(&mut self) -> Result<(), NetError> {
-        self.inner.with_task(|inner| inner.raw.disable_interrupts());
-        // The pinned virtio-drivers API only unsets queues from Raw::drop.
-        // Quarantine the shared state until an explicit transport reset can
-        // prove that its inflight DMA tokens are unreachable.
-        Err(NetError::DmaShutdownUnconfirmed)
+        self.inner.with_task(|inner| {
+            inner.raw.disable_interrupts();
+            if inner.transport.reset() {
+                Ok(())
+            } else {
+                // IRQ masking is insufficient. Keep all DMA backing alive if
+                // the device has not acknowledged reset before this returns.
+                Err(NetError::DmaShutdownUnconfirmed)
+            }
+        })
     }
 
     fn rearm_and_check(&mut self, _now_nanos: u64) -> Result<NetRearmResult, NetError> {
@@ -247,7 +256,8 @@ impl Drop for VirtioNetAccessGuard<'_> {
 }
 
 struct NetInner<T: VirtIoTransport> {
-    raw: VirtIONetRaw<VirtIoHalImpl, T, QUEUE_SIZE>,
+    raw: VirtIONetRaw<VirtIoHalImpl, ResettableTransport<T>, QUEUE_SIZE>,
+    transport: ResettableTransport<T>,
     tx_inflight: BTreeMap<u16, TxInflight>,
     rx_inflight: BTreeMap<u16, RxInflight>,
 }
@@ -255,9 +265,13 @@ struct NetInner<T: VirtIoTransport> {
 unsafe impl<T: VirtIoTransport> Send for NetInner<T> {}
 
 impl<T: VirtIoTransport> NetInner<T> {
-    fn new(raw: VirtIONetRaw<VirtIoHalImpl, T, QUEUE_SIZE>) -> Self {
+    fn new(
+        raw: VirtIONetRaw<VirtIoHalImpl, ResettableTransport<T>, QUEUE_SIZE>,
+        transport: ResettableTransport<T>,
+    ) -> Self {
         Self {
             raw,
+            transport,
             tx_inflight: BTreeMap::new(),
             rx_inflight: BTreeMap::new(),
         }

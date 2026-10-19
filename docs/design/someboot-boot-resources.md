@@ -24,7 +24,7 @@ someboot 同时服务内核启动和原生 UEFI 应用。`boot_resources` 管理
 
 [`protocol::HandoffRecord`](../../platforms/someboot/src/handoff/protocol.rs) 使用 v3 和 GUID `7b9fa931-a25b-d043-b13c-63435428c473`，采用 `repr(C)`、固定宽度整数及有界数组：最多 8 个资源、128 个内存区、4095 字节 ASCII cmdline、512 字节应用元数据。它不保存 OTA 槽位或固定池。`boot_services_exited` 区分固件活动与继承阶段：前者不替代固件内存图，也不携带资源或归档；后者必须验证全部资源范围由 Reserved/KImage 内存完整覆盖，镜像与归档位于已分配且不属于不可变前缀的范围内，并验证区间、版本和边界。
 
-LoongArch 的 [`boot_payload/loongarch64.rs`](../../platforms/someboot/src/boot_payload/loongarch64.rs) 在复用固件配置表之前，将记录和元数据复制到本镜像的私有存储；`handoff::inherited_metadata()` 不返回可被下一次生产事务改写的共享表引用。`efi_stub/loongarch64/mod.rs` 只转换固件表存储地址，函数指针保持原值；目标恢复内存图并跳过第二次 ExitBootServices。普通 EFI 消费端始终随 `cfg(efi)` 编译，资源恢复仅要求 `boot-resources`，与生产端 `efi-handoff` 独立。
+LoongArch 的 [`handoff/received/loongarch64.rs`](../../platforms/someboot/src/handoff/received/loongarch64.rs) 在复用固件配置表之前，将完整记录复制到本镜像的私有存储，并负责继承资源及内存图的恢复；通用元数据副本属于 `handoff/received`，`handoff::inherited_metadata()` 不返回可被下一次生产事务改写的共享表引用。`boot_payload` 只负责 initramfs 的发布、领取及回收。`efi_stub/loongarch64/mod.rs` 只转换固件表存储地址，函数指针保持原值；目标恢复内存图并跳过第二次 ExitBootServices。普通 EFI 消费端始终随 `cfg(efi)` 编译，资源恢复仅要求 `boot-resources`，与生产端 `efi-handoff` 独立。
 
 v2 与 v3 不兼容。LoongArch 遇到旧 GUID 明确拒绝；生产者、目标和 A/B 槽必须在本次迁移中一起重建，不承诺旧二进制槽与新协议互相交接。持久 `State` 记录格式不变，但不能靠回滚至旧协议 loader 绕过这个重建要求。
 
@@ -39,6 +39,14 @@ LoongArch 的 [`efi_stub/loongarch64/handoff.rs`](../../platforms/someboot/src/e
 [`axstd_loader`](../../bootloader/axloader/src/axstd_loader.rs) 显式声明 4 项资源：32 MiB 镜像区固定在 `0x200000`，256 MiB 归档区、32 MiB EFI 槽执行区，以及 32 MiB 固件原文件区。原文件区用于初次验证、Flush 并读回 `A.EFI`，不保存运行时已修改的数据段，因此未确认 trial 复位后能重新执行稳定槽。该配置要求最初 loader 由可读的 EFI 文件系统启动，文件不得超过声明容量。继承槽必须已有有效持久状态；状态缺失时拒绝把祖先文件冒充当前槽重新建档。
 
 [`ota/handoff.rs`](../../bootloader/axloader/src/ota/handoff.rs) 编解码 axloader 自己的元数据 ID、版本、槽位和持久代次；someboot 只承载有界字节。固定镜像地址属于应用策略：若当前镜像已经占有相同执行区，则拒绝再次覆盖该区，不猜测 load bias。原生 x86 ELF 路径也使用共同 `ResourceRequest`/`reserve()` 和 `HandoffSpec`/`PreparedHandoff`，仍由固件决定实际页申请与 EFI 生命周期。
+
+### 2.4 运行时退出
+
+LoongArch 的目标会重用继承内存图中的空闲页；关闭 HTTP socket 不能证明旧网络设备已停止 DMA。退出由 `ax-runtime` 编排，someboot 不依赖网络、文件系统或任务：应用完成 OTA 状态提交、释放连接并准备好交接事务后，调用终结性的运行时交接入口。当前入口只接受一个运行处理器，应用必须先停止自己创建的任务及 I/O；多处理器退出不在本阶段能力内。
+
+退出顺序为文件系统同步与封存、块控制器停止及 IRQ 同步、网络协议任务退出并 join、网络 IRQ 同步及队列任务停止并 join、控制台排空和串口屏蔽，最后关闭本核 IRQ、抢占与 clockevent，再调用目标。块设备复用 `release_block_irqs_for_passthrough()` 已有的完整停稳契约。网络需要把 IRQ 同步、任务 join 与 DMA 停稳结果逐层返回；任何隔离保留只能保护当前内核，不能作为交接成功的证据。VirtIO 网络写入设备状态零后读取状态零，按 VirtIO 1.2 §2.4 确认设备不再访问旧队列，才允许释放队列 backing。
+
+不采用只丢弃 socket 或禁用 CPU IRQ 的方案，因为设备仍可能异步写旧内存。也不在继承内存图中永久保留全部运行时堆来掩盖设备未退出的问题。退出一旦开始不恢复 HTTP 服务；任一步失败、处理器数量不符或目标返回都复位机器，由已经持久化的 OTA 状态处理回滚，不能返回已经停运的运行时。目标入口、地址转换和缓存维护继续归 someboot 平台适配层。
 
 ## 3. 迁移与验证
 

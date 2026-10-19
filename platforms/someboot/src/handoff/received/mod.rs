@@ -6,6 +6,9 @@ use core::{
 
 use super::{ApplicationMetadata, MAX_METADATA};
 
+#[cfg(target_arch = "loongarch64")]
+pub(crate) mod loongarch64;
+
 struct Metadata {
     id: [u8; 16],
     version: u32,

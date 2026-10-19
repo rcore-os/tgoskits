@@ -15,11 +15,11 @@ use super::{normalize_system_table, physical_alias};
 use crate::{
     ArchTrait,
     arch::Arch,
-    boot_payload::loongarch64 as inherited,
     boot_resources::{self, Allocation, PhysicalRange},
     handoff::{
         HandoffError, HandoffSpec,
         protocol::{HandoffRecord, MAX_REGIONS, MemoryRegion},
+        received::loongarch64 as inherited,
         transaction::Transaction,
     },
 };

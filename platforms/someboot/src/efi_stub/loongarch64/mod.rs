@@ -9,11 +9,7 @@ pub use uefi::runtime::ResetType;
 use uefi::{Handle, Status, system::with_config_table, table};
 use uefi_raw::table::system::SystemTable;
 
-use crate::{
-    ArchTrait,
-    arch::Arch,
-    boot_payload::{self, loongarch64 as payload},
-};
+use crate::{ArchTrait, arch::Arch, boot_payload, handoff::received::loongarch64 as payload};
 
 #[cfg(feature = "efi-handoff")]
 pub(crate) mod handoff;

@@ -612,6 +612,12 @@ struct PruneIrq {
     fail_shutdown: bool,
 }
 
+impl Drop for PruneIrq {
+    fn drop(&mut self) {
+        self.trace.lock().unwrap().push("drop");
+    }
+}
+
 impl NetPollIrqControl for PruneIrq {
     fn quiesce(&mut self) -> Result<(), NetError> {
         self.trace.lock().unwrap().push("quiesce");
@@ -629,6 +635,30 @@ impl NetPollIrqControl for PruneIrq {
 
     fn rearm_and_check(&mut self, _now_nanos: u64) -> Result<NetRearmResult, NetError> {
         Ok(NetRearmResult::Idle)
+    }
+}
+
+#[test]
+fn terminal_shutdown_reports_dma_failure_and_retains_device_backing() {
+    for fail_shutdown in [false, true] {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let mut group = startup_executor(false, Arc::new(Mutex::new(Vec::new())));
+        group
+            .initialize(|| panic!("startup must not wait"))
+            .unwrap();
+        group.group.irq_control = Box::new(PruneIrq {
+            trace: Arc::clone(&trace),
+            fail_shutdown,
+        });
+        assert_eq!(shutdown_queue_groups(vec![group], true), !fail_shutdown);
+        assert_eq!(
+            *trace.lock().unwrap(),
+            if fail_shutdown {
+                vec!["quiesce", "shutdown"]
+            } else {
+                vec!["quiesce", "shutdown", "drop"]
+            }
+        );
     }
 }
 

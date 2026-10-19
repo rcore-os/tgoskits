@@ -293,6 +293,7 @@ fn absent_ports_preserve_discovery_order_for_interface_configuration() {
             .collect();
         let (ports, device_index_map) = retain_started_ports(ports);
         let runtime = NetworkQueueRuntime {
+            shutdown_started: false,
             registrations: Vec::new(),
             executors: Vec::new(),
             group_states: Vec::new(),
@@ -1051,6 +1052,7 @@ fn queue_snapshots_pair_group_identity_with_its_published_interface() {
         },
     );
     let mut runtime = NetworkQueueRuntime {
+        shutdown_started: false,
         registrations: Vec::new(),
         executors: Vec::new(),
         group_states: vec![
@@ -1145,6 +1147,7 @@ fn filter_routing_runtime(
     published_interfaces: Vec<InterfaceId>,
 ) -> NetworkQueueRuntime {
     let mut runtime = NetworkQueueRuntime {
+        shutdown_started: false,
         registrations: Vec::new(),
         executors: Vec::new(),
         group_states: Vec::new(),
