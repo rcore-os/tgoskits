@@ -242,5 +242,6 @@ mod tests {
         );
         arenas.retire(b);
         assert!(!arenas.live().contains(&survivor));
+        assert!(arenas.retire(PhysicalRange::default()).is_none());
     }
 }
