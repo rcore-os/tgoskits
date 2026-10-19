@@ -471,6 +471,9 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   来源；未确认复位先回滚。继承槽缺失有效持久状态时拒绝从祖先文件重新建档。
   无效镜像返回 `422 image_digest_or_efi_validation_failed`；实际存储失败返回
   `409 ota_storage_failed`，不得把写满或 Flush 失败报告为镜像格式问题。
+- 旧镜像范围由运行时控制台的 `axloader_memory inherited=0/1 start=... bytes=...` 报告，
+  只使用最后一次冷启动记录及其后的继承记录。早期 `KImg` 内存图可能不被 CI 捕获，
+  不能用它确定验收地址；仍须验证两级 loader 实际镜像页都能重新分配并写读。
 - 完整验证使用 `python3 bootloader/axloader/scripts/loong-qemu-smoke.py`：先运行无
   网络、OTA 和交接生产端的资源应用，再通过同一 QEMU 模板创建独占 FAT、QMP 与
   空闲端口。loader 的构建配置声明 `to_bin = true`，让 `arceos build` 在准备 FAT 前

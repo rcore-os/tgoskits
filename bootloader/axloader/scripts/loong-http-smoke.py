@@ -364,9 +364,15 @@ def main():
     if args.qemu_log:
         # A machine reset starts a new firmware lifetime. Earlier boots' image
         # addresses can now belong to firmware, so use only the current boot.
-        text = args.qemu_log.read_text(errors="replace").rsplit("UEFI application started.", 1)[-1]
-        images = sorted({(int(start, 16), int(end, 16)) for start, end in
-                         re.findall(r"\bKImg\s+(0x[0-9a-fA-F]+)\s+-\s+(0x[0-9a-fA-F]+)", text)})
+        text = args.qemu_log.read_text(errors="replace")
+        records = re.findall(
+            r"\baxloader_memory inherited=([01]) "
+            r"start=(0x[0-9a-fA-F]+) bytes=(0x[0-9a-fA-F]+)", text)
+        cold = [index for index, record in enumerate(records) if record[0] == "0"]
+        if not cold:
+            raise RuntimeError("missing runtime memory report for the current firmware boot")
+        images = sorted({(int(start, 16), int(start, 16) + int(size, 16))
+                         for _, start, size in records[cold[-1]:]})
         if len(images) < 2:
             raise RuntimeError(f"missing firmware-loader and OTA-loader memory evidence: {images}")
         positive_cmdline += "".join(f" reclaim-image={start:x}:{end - start:x}" for start, end in images)

@@ -119,4 +119,4 @@ sequenceDiagram
 
 平台启动内存列表完成后保持不可变。后期归还由 someboot 的唯一所有权状态记录，下一次 `export_map` 从冻结 map 加上已完成的归还派生，避免修改已发布的静态切片。紧凑插入会扣除 buddy 元数据，不足以形成可管理区间时返回零字节；日志分别报告原始回收量与 allocator 管理量。
 
-现有 LoongArch smoke 临时生成 1 MiB 归档夹具，独立 helloworld 目标使用普通 `alloc_pages` 从回收的旧镜像、资源池和消费完成的归档中取得页面，写满一页并读回，输出 `HANDOFF_MEMORY_RECLAIM_PASSED` 与 `HANDOFF_INITRAMFS_RECLAIM_PASSED`。组件验证覆盖任意顺序释放、容量失败、代际拒绝、版本拒绝、页边界与区间裁剪；页表验证包含四帧根表和巨大叶映射。A/B 文件与目标必须一起重建至 v4，持久 OTA 状态格式不变。
+现有 LoongArch smoke 从运行时 `axloader_memory` 记录取得两级 loader 的 EFI 实际镜像范围，以最后一次冷启动记录划分生命周期，不依赖早期内存图打印。它临时生成 1 MiB 归档夹具，独立 helloworld 目标使用普通 `alloc_pages` 从回收的旧镜像、资源池和消费完成的归档中取得页面，写满一页并读回，输出 `HANDOFF_MEMORY_RECLAIM_PASSED` 与 `HANDOFF_INITRAMFS_RECLAIM_PASSED`。组件验证覆盖任意顺序释放、容量失败、代际拒绝、版本拒绝、页边界与区间裁剪；页表验证包含四帧根表和巨大叶映射。A/B 文件与目标必须一起重建至 v4，持久 OTA 状态格式不变。

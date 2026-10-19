@@ -52,6 +52,7 @@ const DISCOVERY_PORT: u16 = 2998;
 const OTA_ROOT: &str = "axloader";
 pub fn run() {
     println!("axloader: LoongArch ArceOS EFI frontend");
+    report_memory_image();
     let current_image = firmware_boot_image()
         .unwrap_or_else(|| panic!("ota_bootstrap: current loader image unavailable"));
     let mut current_digest: [u8; 32] = Sha256::digest(&current_image).into();
@@ -165,6 +166,27 @@ impl Interface {
     fn announce(&self, epoch: &str, serial_ready: bool) {
         announce(self.mac_address(), epoch, serial_ready);
     }
+}
+
+/// Report after the runtime console is active: firmware/early-map diagnostics
+/// can be absent from CI serial capture. A cold record starts a new lifetime.
+fn report_memory_image() {
+    let image = someboot::handoff::current_image().expect("EFI loader image context");
+    let inherited = someboot::handoff::previous_image().is_some();
+    let record = format!(
+        "axloader_memory inherited={} start={:#x} bytes={:#x}\n",
+        u8::from(inherited),
+        image.start,
+        image.len
+    );
+    let output = ax_std::os::arceos::api::modules::ax_runtime::console::output()
+        .unwrap_or_else(|error| panic!("loader memory console unavailable: {error}"));
+    output
+        .write_text_all(record.as_bytes())
+        .unwrap_or_else(|error| panic!("loader memory report failed: {error}"));
+    output
+        .drain()
+        .unwrap_or_else(|error| panic!("loader memory report drain failed: {error}"));
 }
 
 fn select_interface() -> Result<Interface, &'static str> {
