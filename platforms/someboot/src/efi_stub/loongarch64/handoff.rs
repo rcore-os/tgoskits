@@ -203,6 +203,9 @@ impl PreparedHandoff {
     /// target image. Its allocation must remain live throughout this call. The
     /// caller must quiesce other CPUs, resource allocations and network/device
     /// services, and finish persistent writes before transferring execution.
+    /// A returning entry must preserve the caller's stack, MMU mappings,
+    /// CPU-local state and interrupt mask. A kernel which has replaced that
+    /// execution context must not return through this EFI call frame.
     pub unsafe fn enter(&self, entry: u64) -> Result<(), HandoffError> {
         let address = usize::try_from(entry).map_err(|_| HandoffError::InvalidTarget)?;
         let physical = physical_alias(address).ok_or(HandoffError::InvalidTarget)? as u64;

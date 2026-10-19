@@ -63,6 +63,13 @@ GUID 为 `7b9fa931-a25b-d043-b13c-63435428c473`。v2 已拒绝，迁移须同时
 不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或启动广播丢失时，
 使用已知设备 IP 直接访问 HTTP 接口。
 
+两前端使用 `http_control::Route` 共享 epoch/trial 准入，三种 GET 状态查询无需
+epoch，单值控制头重复时返回 `400`。`elf::ElfImage` 统一解析和校验可执行 EFI
+入口，具体装载地址、内存申请和缓存维护由后端负责。LoongArch 在最终跳转前
+通过 `ax-runtime::handoff::enter()` 同步文件系统、停止块设备与网络 DMA、join
+网络任务、关闭串口及本核中断；当前限定一个运行处理器。停稳失败或保持调用方
+执行上下文的 EFI 目标返回时复位；已接管栈、MMU 或处理器状态的内核不得返回。
+
 ```bash
 cargo xtask arceos build \
   --package axloader \

@@ -1,37 +1,24 @@
-extern crate alloc;
+use core::ptr::NonNull;
 
-use alloc::vec::Vec;
-use core::{mem, ptr::NonNull};
-
-use axloader::target::{X86_64, ranges_overlap};
+use axloader::{
+    elf::{ElfError, ElfImage, LoadSegment},
+    target::X86_64,
+};
 use someboot::boot_resources::{self, Allocation, Placement, ResourceId, ResourceRequest};
 
-const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
-const ELF_CLASS_64: u8 = 2;
-const ELF_DATA_LSB: u8 = 1;
-const ELF_VERSION_CURRENT: u8 = 1;
-const PT_LOAD: u32 = 1;
-const UEFI_PAGE_SIZE: u64 = 4096;
-pub const EFI_ENTRY_SYMBOL: &str = "__x86_64_efi_pe_entry";
+const UEFI_PAGE_SIZE: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElfLoadError {
-    TooSmall,
-    BadMagic,
-    UnsupportedClass,
-    UnsupportedEndian,
-    UnsupportedVersion,
-    UnsupportedMachine,
-    HeaderRange,
-    ProgramHeaderRange,
-    LoadSegmentMissing,
-    SegmentRange,
-    SegmentAddressOverflow,
-    SegmentNotPageAligned,
+    Elf(ElfError),
     AllocateFailed,
-    EntryNotInLoadSegment,
-    UnsupportedEntrySymbol,
-    HashMismatch,
+    SegmentAddressOverflow,
+}
+
+impl From<ElfError> for ElfLoadError {
+    fn from(error: ElfError) -> Self {
+        Self::Elf(error)
+    }
 }
 
 #[derive(Debug)]
@@ -42,99 +29,29 @@ pub struct LoadedElf {
     _allocation: Allocation,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64Header {
-    ident: [u8; 16],
-    e_type: u16,
-    e_machine: u16,
-    e_version: u32,
-    e_entry: u64,
-    e_phoff: u64,
-    e_shoff: u64,
-    e_flags: u32,
-    e_ehsize: u16,
-    e_phentsize: u16,
-    e_phnum: u16,
-    e_shentsize: u16,
-    e_shnum: u16,
-    e_shstrndx: u16,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64ProgramHeader {
-    p_type: u32,
-    p_flags: u32,
-    p_offset: u64,
-    p_vaddr: u64,
-    p_paddr: u64,
-    p_filesz: u64,
-    p_memsz: u64,
-    p_align: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct LoadSegment {
-    offset: u64,
-    vaddr: u64,
-    paddr: u64,
-    filesz: u64,
-    memsz: u64,
-}
-
 pub(super) fn load_elf(
     image: &[u8],
     entry_symbol: Option<&str>,
 ) -> Result<LoadedElf, ElfLoadError> {
-    let header = read_struct::<Elf64Header>(image, 0).ok_or(ElfLoadError::TooSmall)?;
-    validate_header(&header)?;
-    let segments = load_segments(image, &header)?;
-    if segments.is_empty() {
-        return Err(ElfLoadError::LoadSegmentMissing);
-    }
-
-    let load_addr = align_down(
-        segments
-            .iter()
-            .map(|segment| segment.paddr)
-            .min()
-            .ok_or(ElfLoadError::LoadSegmentMissing)?,
-        UEFI_PAGE_SIZE,
-    );
-    let load_end = align_up(
-        segments
-            .iter()
-            .map(|segment| segment.paddr.checked_add(segment.memsz))
-            .collect::<Option<Vec<_>>>()
-            .ok_or(ElfLoadError::SegmentAddressOverflow)?
-            .into_iter()
-            .max()
-            .ok_or(ElfLoadError::LoadSegmentMissing)?,
-        UEFI_PAGE_SIZE,
-    )
-    .ok_or(ElfLoadError::SegmentAddressOverflow)?;
-    let page_count = usize::try_from((load_end - load_addr) / UEFI_PAGE_SIZE)
-        .map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
-    if entry_symbol != Some(EFI_ENTRY_SYMBOL) {
-        return Err(ElfLoadError::UnsupportedEntrySymbol);
-    }
-    let entry = find_symbol(image, &header, EFI_ENTRY_SYMBOL)
-        .and_then(|symbol| virtual_to_physical(symbol, &segments))
-        .ok_or(ElfLoadError::EntryNotInLoadSegment)?;
-    let allocation = allocate_load_region(load_addr, page_count)?;
+    let parsed = ElfImage::parse(image, X86_64, entry_symbol)?;
+    let link_load_address = parsed.link_load_address();
+    let entry = parsed.entry_point();
+    let page_count = parsed.page_count();
+    let allocation = allocate_load_region(link_load_address, page_count)?;
     let actual_load_addr = allocation.range().start;
     let target = NonNull::new(actual_load_addr as *mut u8).ok_or(ElfLoadError::AllocateFailed)?;
 
-    copy_segments(image, &segments, load_addr, target)?;
+    copy_segments(image, parsed.segments(), link_load_address, target)?;
 
-    let location = biased_addr(entry, load_addr, actual_load_addr).and_then(|entry| {
-        actual_load_addr
-            .checked_add(page_count as u64 * UEFI_PAGE_SIZE)
-            .map(|end| (entry, end))
-            .ok_or(ElfLoadError::SegmentAddressOverflow)
-    });
-    let (entry, actual_load_end) = location?;
+    let actual_load_end = actual_load_addr
+        .checked_add(
+            page_count
+                .checked_mul(UEFI_PAGE_SIZE)
+                .ok_or(ElfLoadError::SegmentAddressOverflow)? as u64,
+        )
+        .ok_or(ElfLoadError::SegmentAddressOverflow)?;
+    let entry = biased_addr(entry, link_load_address, actual_load_addr)
+        .ok_or(ElfLoadError::SegmentAddressOverflow)?;
 
     Ok(LoadedElf {
         entry_point: entry,
@@ -144,12 +61,9 @@ pub(super) fn load_elf(
     })
 }
 
-fn biased_addr(addr: u64, original_base: u64, actual_base: u64) -> Result<u64, ElfLoadError> {
+fn biased_addr(addr: u64, original_base: u64, actual_base: u64) -> Option<u64> {
     let addr = addr as i128 + actual_base as i128 - original_base as i128;
-    if !(0..=u64::MAX as i128).contains(&addr) {
-        return Err(ElfLoadError::SegmentAddressOverflow);
-    }
-    Ok(addr as u64)
+    u64::try_from(addr).ok()
 }
 
 fn allocate_load_region(
@@ -157,9 +71,10 @@ fn allocate_load_region(
     page_count: usize,
 ) -> Result<Allocation, ElfLoadError> {
     let bytes = (page_count as u64)
-        .checked_mul(UEFI_PAGE_SIZE)
+        .checked_mul(UEFI_PAGE_SIZE as u64)
         .ok_or(ElfLoadError::SegmentAddressOverflow)?;
-    let request = |placement| ResourceRequest::new(ResourceId(1), bytes, UEFI_PAGE_SIZE, placement);
+    let request =
+        |placement| ResourceRequest::new(ResourceId(1), bytes, UEFI_PAGE_SIZE as u64, placement);
     match boot_resources::reserve(request(Placement::At(preferred_load_addr))) {
         Ok(allocation) => Ok(allocation),
         Err(_) => {
@@ -175,85 +90,6 @@ fn allocate_load_region(
     }
 }
 
-fn validate_header(header: &Elf64Header) -> Result<(), ElfLoadError> {
-    if &header.ident[..4] != ELF_MAGIC {
-        return Err(ElfLoadError::BadMagic);
-    }
-    if header.ident[4] != ELF_CLASS_64 {
-        return Err(ElfLoadError::UnsupportedClass);
-    }
-    if header.ident[5] != ELF_DATA_LSB {
-        return Err(ElfLoadError::UnsupportedEndian);
-    }
-    if header.ident[6] != ELF_VERSION_CURRENT || header.e_version != 1 {
-        return Err(ElfLoadError::UnsupportedVersion);
-    }
-    if !X86_64.matches_machine(header.e_machine) {
-        return Err(ElfLoadError::UnsupportedMachine);
-    }
-    Ok(())
-}
-
-fn load_segments(image: &[u8], header: &Elf64Header) -> Result<Vec<LoadSegment>, ElfLoadError> {
-    if usize::from(header.e_phentsize) != mem::size_of::<Elf64ProgramHeader>() {
-        return Err(ElfLoadError::ProgramHeaderRange);
-    }
-    let phoff = usize::try_from(header.e_phoff).map_err(|_| ElfLoadError::HeaderRange)?;
-    let phnum = usize::from(header.e_phnum);
-    let phentsize = usize::from(header.e_phentsize);
-    let ph_size = phnum
-        .checked_mul(phentsize)
-        .ok_or(ElfLoadError::ProgramHeaderRange)?;
-    if phoff
-        .checked_add(ph_size)
-        .ok_or(ElfLoadError::ProgramHeaderRange)?
-        > image.len()
-    {
-        return Err(ElfLoadError::ProgramHeaderRange);
-    }
-
-    let mut segments = Vec::new();
-    for index in 0..phnum {
-        let offset = phoff + index * phentsize;
-        let ph = read_struct::<Elf64ProgramHeader>(image, offset)
-            .ok_or(ElfLoadError::ProgramHeaderRange)?;
-        if ph.p_type != PT_LOAD || ph.p_memsz == 0 {
-            continue;
-        }
-        if ph.p_filesz > ph.p_memsz {
-            return Err(ElfLoadError::SegmentRange);
-        }
-        if ph.p_paddr % UEFI_PAGE_SIZE != 0 {
-            return Err(ElfLoadError::SegmentNotPageAligned);
-        }
-        let file_start = usize::try_from(ph.p_offset).map_err(|_| ElfLoadError::SegmentRange)?;
-        let file_size = usize::try_from(ph.p_filesz).map_err(|_| ElfLoadError::SegmentRange)?;
-        if file_start
-            .checked_add(file_size)
-            .ok_or(ElfLoadError::SegmentRange)?
-            > image.len()
-        {
-            return Err(ElfLoadError::SegmentRange);
-        }
-        segments.push(LoadSegment {
-            offset: ph.p_offset,
-            vaddr: ph.p_vaddr,
-            paddr: ph.p_paddr,
-            filesz: ph.p_filesz,
-            memsz: ph.p_memsz,
-        });
-    }
-
-    segments.sort_by_key(|segment| segment.paddr);
-    if segments
-        .windows(2)
-        .any(|pair| ranges_overlap(pair[0].paddr, pair[0].memsz, pair[1].paddr))
-    {
-        return Err(ElfLoadError::SegmentRange);
-    }
-    Ok(segments)
-}
-
 fn copy_segments(
     image: &[u8],
     segments: &[LoadSegment],
@@ -262,145 +98,41 @@ fn copy_segments(
 ) -> Result<(), ElfLoadError> {
     let base = target.as_ptr();
     for segment in segments {
-        let dst_offset = usize::try_from(
+        let destination_offset = usize::try_from(
             segment
-                .paddr
+                .physical_address
                 .checked_sub(load_addr)
                 .ok_or(ElfLoadError::SegmentAddressOverflow)?,
         )
         .map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
-        let dst = unsafe { base.add(dst_offset) };
-        let file_start = usize::try_from(segment.offset).map_err(|_| ElfLoadError::SegmentRange)?;
-        let file_size = usize::try_from(segment.filesz).map_err(|_| ElfLoadError::SegmentRange)?;
-        if file_size != 0 {
-            let file_end = file_start
-                .checked_add(file_size)
-                .ok_or(ElfLoadError::SegmentRange)?;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    image[file_start..file_end].as_ptr(),
-                    dst,
-                    file_size,
-                );
-            }
+        let file_start = usize::try_from(segment.file_offset)
+            .map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
+        let file_size =
+            usize::try_from(segment.file_size).map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
+        let file_end = file_start
+            .checked_add(file_size)
+            .ok_or(ElfLoadError::SegmentAddressOverflow)?;
+        let source = image
+            .get(file_start..file_end)
+            .ok_or(ElfLoadError::SegmentAddressOverflow)?;
+        // SAFETY: `ElfImage::parse` proved this destination lies between the
+        // minimum PT_LOAD address and the page-aligned image end, and the
+        // reservation returned a contiguous allocation covering that span.
+        let destination = unsafe { base.add(destination_offset) };
+        if !source.is_empty() {
+            // SAFETY: `source` is a checked slice of the uploaded image, and
+            // the destination is inside the unique load reservation.
+            unsafe { core::ptr::copy_nonoverlapping(source.as_ptr(), destination, file_size) };
         }
-        let mem_size = usize::try_from(segment.memsz).map_err(|_| ElfLoadError::SegmentRange)?;
-        if mem_size > file_size {
+        let memory_size = usize::try_from(segment.memory_size)
+            .map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
+        if memory_size > file_size {
+            // SAFETY: `ElfImage::parse` proved `filesz <= memsz`, and both
+            // offsets remain inside the reserved image span.
             unsafe {
-                core::ptr::write_bytes(dst.add(file_size), 0, mem_size - file_size);
-            }
+                core::ptr::write_bytes(destination.add(file_size), 0, memory_size - file_size)
+            };
         }
     }
     Ok(())
-}
-
-fn virtual_to_physical(vaddr: u64, segments: &[LoadSegment]) -> Option<u64> {
-    for segment in segments {
-        let end = segment.vaddr.checked_add(segment.memsz)?;
-        if vaddr >= segment.vaddr && vaddr < end {
-            return segment.paddr.checked_add(vaddr.checked_sub(segment.vaddr)?);
-        }
-    }
-    None
-}
-
-fn find_symbol(image: &[u8], header: &Elf64Header, name: &str) -> Option<u64> {
-    let section_count = usize::from(header.e_shnum);
-    let section_size = usize::from(header.e_shentsize);
-    if section_size == 0 || section_size < 64 {
-        return None;
-    }
-    let section_offset = usize::try_from(header.e_shoff).ok()?;
-    let total = section_count.checked_mul(section_size)?;
-    if section_offset.checked_add(total)? > image.len() {
-        return None;
-    }
-
-    for index in 0..section_count {
-        let section = read_section_header(image, section_offset + index * section_size)?;
-        if section.sh_type != 2 && section.sh_type != 11 {
-            continue;
-        }
-        let strtab = read_section_header(
-            image,
-            section_offset + usize::try_from(section.sh_link).ok()? * section_size,
-        )?;
-        let symbols = section_bytes(image, section.sh_offset, section.sh_size)?;
-        let strings = section_bytes(image, strtab.sh_offset, strtab.sh_size)?;
-        let entry_size = if section.sh_entsize == 0 {
-            24
-        } else {
-            section.sh_entsize
-        };
-        for symbol_offset in (0..symbols.len()).step_by(usize::try_from(entry_size).ok()?) {
-            let symbol = read_symbol(symbols, symbol_offset)?;
-            let symbol_name = cstr_at(strings, usize::try_from(symbol.st_name).ok()?)?;
-            if symbol_name == name {
-                return Some(symbol.st_value);
-            }
-        }
-    }
-    None
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64SectionHeader {
-    sh_name: u32,
-    sh_type: u32,
-    sh_flags: u64,
-    sh_addr: u64,
-    sh_offset: u64,
-    sh_size: u64,
-    sh_link: u32,
-    sh_info: u32,
-    sh_addralign: u64,
-    sh_entsize: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64Symbol {
-    st_name: u32,
-    st_info: u8,
-    st_other: u8,
-    st_shndx: u16,
-    st_value: u64,
-    st_size: u64,
-}
-
-fn read_section_header(image: &[u8], offset: usize) -> Option<Elf64SectionHeader> {
-    read_struct::<Elf64SectionHeader>(image, offset)
-}
-
-fn read_symbol(image: &[u8], offset: usize) -> Option<Elf64Symbol> {
-    read_struct::<Elf64Symbol>(image, offset)
-}
-
-fn section_bytes(image: &[u8], offset: u64, size: u64) -> Option<&[u8]> {
-    let start = usize::try_from(offset).ok()?;
-    let len = usize::try_from(size).ok()?;
-    image.get(start..start.checked_add(len)?)
-}
-
-fn cstr_at(bytes: &[u8], offset: usize) -> Option<&str> {
-    let tail = bytes.get(offset..)?;
-    let len = tail.iter().position(|byte| *byte == 0)?;
-    core::str::from_utf8(&tail[..len]).ok()
-}
-
-fn read_struct<T: Copy>(image: &[u8], offset: usize) -> Option<T> {
-    let end = offset.checked_add(mem::size_of::<T>())?;
-    let bytes = image.get(offset..end)?;
-    Some(unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<T>()) })
-}
-
-fn align_down(value: u64, align: u64) -> u64 {
-    value / align * align
-}
-
-fn align_up(value: u64, align: u64) -> Option<u64> {
-    value
-        .checked_add(align - 1)
-        .map(|value| align_down(value, align))
 }

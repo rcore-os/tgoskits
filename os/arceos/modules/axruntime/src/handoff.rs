@@ -15,7 +15,10 @@
 /// network handles and committed persistent state. `enter` must only transfer
 /// control to an independently owned image; it must not sleep, allocate or use
 /// runtime services. That image must install its own exception/CPU-local state
-/// before enabling interrupts or freeing inherited runtime memory.
+/// and stack before enabling interrupts or freeing inherited runtime memory.
+/// A returning entry must preserve the caller's stack, MMU mappings, CPU-local
+/// state and interrupt mask, as required by its calling convention. A kernel
+/// that has replaced that execution context must not return to this caller.
 pub unsafe fn enter(enter: impl FnOnce()) -> ! {
     if crate::hal::cpu_num() != 1
         || cfg!(any(

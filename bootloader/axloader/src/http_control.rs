@@ -4,6 +4,11 @@ extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
 
+use httpboot_protocol::OtaSource;
+use thiserror::Error;
+
+use crate::{boot_job::FileKind, integrity::decode_sha256};
+
 pub const MAX_HEADER_BYTES: usize = 4 * 1024;
 pub const MAX_SERIAL_BINDING_BYTES: usize = 1024;
 pub const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
@@ -18,11 +23,174 @@ pub struct RequestHead {
     pub content_length: usize,
 }
 
+/// The control-plane operation selected by a request method and path.
+///
+/// Dynamic path components borrow from the request path so classification
+/// does not allocate or move ownership into the transport adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route<'a> {
+    DeviceStatus,
+    OtaStatus,
+    BootJobStatus { id: &'a str },
+    SerialContinue,
+    SerialBindingRevoke { id: &'a str },
+    OtaConfirm,
+    OtaImage,
+    BootJobCreate,
+    BootJobCancel { id: &'a str },
+    BootJobUpload { id: &'a str, kind: FileKind },
+    BootJobStart { id: &'a str },
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum AdmissionError {
+    #[error("stale boot epoch")]
+    StaleBootEpoch,
+    #[error("OTA trial requires confirmation")]
+    OtaTrialRequiresConfirmation,
+}
+
+impl AdmissionError {
+    pub fn status(self) -> &'static str {
+        match self {
+            Self::StaleBootEpoch | Self::OtaTrialRequiresConfirmation => "409 Conflict",
+        }
+    }
+
+    pub fn body(self) -> &'static [u8] {
+        match self {
+            Self::StaleBootEpoch => br#"{"error":"stale_boot_epoch"}"#,
+            Self::OtaTrialRequiresConfirmation => br#"{"error":"ota_trial_requires_confirmation"}"#,
+        }
+    }
+}
+
+/// Classify a request into the control-plane operation its backend must run.
+pub fn route<'a>(method: &str, path: &'a str) -> Route<'a> {
+    const BOOT_JOBS: &str = "/api/v1/boot/jobs/";
+
+    match (method, path) {
+        ("GET", "/api/v1/status") => Route::DeviceStatus,
+        ("GET", "/api/v1/ota/status") => Route::OtaStatus,
+        ("GET", _) => path
+            .strip_prefix(BOOT_JOBS)
+            .and_then(job_status_id)
+            .map_or(Route::Unknown, |id| Route::BootJobStatus { id }),
+        ("POST", "/api/v1/serial/continue") => Route::SerialContinue,
+        ("POST", "/api/v1/boot/jobs") => Route::BootJobCreate,
+        ("POST", "/api/v1/ota/confirm") => Route::OtaConfirm,
+        ("POST", _) => path
+            .strip_prefix(BOOT_JOBS)
+            .and_then(|tail| tail.split_once('/'))
+            .filter(|(_, operation)| *operation == "start")
+            .map_or(Route::Unknown, |(id, _)| Route::BootJobStart { id }),
+        ("DELETE", _) => {
+            if let Some(id) = path.strip_prefix("/api/v1/serial/bindings/") {
+                return Route::SerialBindingRevoke { id };
+            }
+            if let Some(tail) = path.strip_prefix(BOOT_JOBS) {
+                match tail.split_once('/') {
+                    Some((id, "")) => return Route::BootJobCancel { id },
+                    None => return Route::BootJobCancel { id: tail },
+                    _ => {}
+                }
+            }
+            Route::Unknown
+        }
+        ("PUT", "/api/v1/ota/image") => Route::OtaImage,
+        ("PUT", _) => path
+            .strip_prefix(BOOT_JOBS)
+            .and_then(|tail| tail.split_once('/'))
+            .and_then(|(id, operation)| match operation {
+                "kernel" => Some((id, FileKind::Kernel)),
+                "initramfs" => Some((id, FileKind::Initramfs)),
+                _ => None,
+            })
+            .map_or(Route::Unknown, |(id, kind)| Route::BootJobUpload {
+                id,
+                kind,
+            }),
+        _ => Route::Unknown,
+    }
+}
+
+fn job_status_id(tail: &str) -> Option<&str> {
+    (!tail.is_empty() && !tail.contains('/')).then_some(tail)
+}
+
+impl Route<'_> {
+    /// Apply the epoch and OTA-trial rules shared by both HTTP backends.
+    pub fn check_admission(
+        &self,
+        request_epoch: Option<&str>,
+        current_epoch: &str,
+        ota_trial: bool,
+    ) -> Result<(), AdmissionError> {
+        if matches!(
+            self,
+            Route::DeviceStatus | Route::OtaStatus | Route::BootJobStatus { .. }
+        ) {
+            return Ok(());
+        }
+        if request_epoch != Some(current_epoch) {
+            return Err(AdmissionError::StaleBootEpoch);
+        }
+        if ota_trial
+            && !matches!(
+                self,
+                Route::SerialContinue
+                    | Route::SerialBindingRevoke { .. }
+                    | Route::OtaConfirm
+                    | Route::OtaImage
+            )
+        {
+            return Err(AdmissionError::OtaTrialRequiresConfirmation);
+        }
+        Ok(())
+    }
+}
+
+impl RequestHead {
+    /// Return the first value of a request header, ignoring ASCII case.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    pub fn ota_source(&self) -> Result<OtaSource, &'static str> {
+        match self.header("x-update-source") {
+            Some("server") => Ok(OtaSource::Server),
+            Some(_) => Err("invalid OTA update source"),
+            None => Ok(OtaSource::Direct),
+        }
+    }
+
+    pub fn ota_image_version(&self) -> Result<Option<&str>, &'static str> {
+        let version = self.header("x-image-version");
+        if version.is_some_and(|value| !valid_image_version(value)) {
+            return Err("invalid OTA image version");
+        }
+        Ok(version)
+    }
+
+    pub fn ota_image_sha256(&self) -> Option<[u8; 32]> {
+        self.header("x-image-sha256").and_then(decode_sha256)
+    }
+
+    pub fn ota_update_id(&self) -> Option<[u8; 36]> {
+        self.header("x-update-id").and_then(parse_update_id)
+    }
+}
+
 /// Parse one HTTP/1.x header block and return the first byte of its body.
 ///
-/// The parser deliberately accepts neither duplicate `Content-Length` nor
-/// `Transfer-Encoding`; the two frontends therefore share the same framing
-/// contract instead of making different choices about an ambiguous request.
+/// The parser deliberately accepts neither duplicate single-value control
+/// headers nor `Transfer-Encoding`; the two frontends therefore share the same
+/// framing contract instead of making different choices about an ambiguous
+/// request.
 pub fn parse_head(bytes: &[u8]) -> Result<(RequestHead, usize), &'static str> {
     let header_end = bytes
         .windows(4)
@@ -45,14 +213,24 @@ pub fn parse_head(bytes: &[u8]) -> Result<(RequestHead, usize), &'static str> {
 
     let mut headers = Vec::new();
     let mut content_length = None;
+    let mut single_value_headers = [false; SINGLE_VALUE_HEADERS.len()];
     for line in lines.take_while(|line| !line.is_empty()) {
         let (key, value) = line.split_once(':').ok_or("invalid HTTP header")?;
         let key = key.trim();
         let value = value.trim();
-        if key.eq_ignore_ascii_case("content-length") {
-            if content_length.is_some() {
-                return Err("duplicate content length");
+        if let Some(slot) = single_value_header_slot(key) {
+            if single_value_headers[slot] {
+                return Err(
+                    if SINGLE_VALUE_HEADERS[slot].eq_ignore_ascii_case("content-length") {
+                        "duplicate content length"
+                    } else {
+                        "duplicate request header"
+                    },
+                );
             }
+            single_value_headers[slot] = true;
+        }
+        if key.eq_ignore_ascii_case("content-length") {
             content_length = Some(
                 value
                     .parse::<usize>()
@@ -74,14 +252,28 @@ pub fn parse_head(bytes: &[u8]) -> Result<(RequestHead, usize), &'static str> {
     ))
 }
 
+const SINGLE_VALUE_HEADERS: [&str; 7] = [
+    "content-length",
+    "x-boot-epoch",
+    "x-serial-binding",
+    "x-image-sha256",
+    "x-image-version",
+    "x-update-id",
+    "x-update-source",
+];
+
+fn single_value_header_slot(key: &str) -> Option<usize> {
+    SINGLE_VALUE_HEADERS
+        .iter()
+        .position(|header| key.eq_ignore_ascii_case(header))
+}
+
 /// Return the maximum body accepted by one route.
 pub fn body_limit(method: &str, path: &str, initramfs_limit: usize) -> usize {
-    match (method, path) {
-        ("POST", "/api/v1/serial/continue") | ("POST", "/api/v1/ota/confirm") => {
-            MAX_SERIAL_BINDING_BYTES
-        }
-        ("POST", "/api/v1/boot/jobs") => MAX_HEADER_BYTES,
-        ("PUT", "/api/v1/ota/image") => MAX_IMAGE_BYTES,
+    match route(method, path) {
+        Route::SerialContinue | Route::OtaConfirm => MAX_SERIAL_BINDING_BYTES,
+        Route::BootJobCreate => MAX_HEADER_BYTES,
+        Route::OtaImage => MAX_IMAGE_BYTES,
         _ => MAX_IMAGE_BYTES.max(initramfs_limit),
     }
 }
@@ -95,10 +287,10 @@ pub fn validate_body_length(
     initramfs_limit: usize,
 ) -> Result<(), &'static str> {
     if declared > body_limit(method, path, initramfs_limit) {
-        return Err(match (method, path) {
-            ("POST", "/api/v1/serial/continue")
-            | ("POST", "/api/v1/ota/confirm")
-            | ("POST", "/api/v1/boot/jobs") => "request body too large",
+        return Err(match route(method, path) {
+            Route::SerialContinue | Route::OtaConfirm | Route::BootJobCreate => {
+                "request body too large"
+            }
             _ => "body too large",
         });
     }
@@ -175,12 +367,101 @@ mod tests {
             );
         }
 
+        let server_ota = b"GET /api/v1/status HTTP/1.1\r\nX-Update-ID: \
+                           01234567-89ab-cdef-0123-456789abcdef\r\nX-Update-Source: server\r\n\r\n";
+        let (head, _) = parse_head(server_ota).unwrap();
+        assert_eq!(head.ota_source(), Ok(OtaSource::Server));
+        assert!(head.ota_update_id().is_some());
+
         let repeatable =
             b"GET /api/v1/status HTTP/1.1\r\nx-trace-id: first\r\nX-TRACE-ID: second\r\n\r\n";
         let (head, _) = parse_head(repeatable).unwrap();
-        assert_eq!(head.headers.len(), 2);
-        assert_eq!(head.headers[0].0, "x-trace-id");
-        assert_eq!(head.headers[0].1, "first");
+        assert_eq!(head.header("X-trace-id"), Some("first"));
+    }
+
+    #[test]
+    fn route_classifies_backend_operations_and_unknown_requests() {
+        assert_eq!(route("GET", "/api/v1/status"), Route::DeviceStatus);
+        assert_eq!(route("GET", "/api/v1/ota/status"), Route::OtaStatus);
+        assert_eq!(
+            route("GET", "/api/v1/boot/jobs/job-1"),
+            Route::BootJobStatus { id: "job-1" }
+        );
+        assert_eq!(route("GET", "/api/v1/boot/jobs/"), Route::Unknown);
+        assert_eq!(route("GET", "/api/v1/boot/jobs/job/extra"), Route::Unknown);
+        assert_eq!(
+            route("DELETE", "/api/v1/serial/bindings/binding-1"),
+            Route::SerialBindingRevoke { id: "binding-1" }
+        );
+        assert_eq!(
+            route("DELETE", "/api/v1/boot/jobs/job-1"),
+            Route::BootJobCancel { id: "job-1" }
+        );
+        assert_eq!(
+            route("PUT", "/api/v1/boot/jobs/job-1/kernel"),
+            Route::BootJobUpload {
+                id: "job-1",
+                kind: FileKind::Kernel
+            }
+        );
+        assert_eq!(
+            route("PUT", "/api/v1/boot/jobs/job-1/initramfs"),
+            Route::BootJobUpload {
+                id: "job-1",
+                kind: FileKind::Initramfs
+            }
+        );
+        assert_eq!(
+            route("POST", "/api/v1/boot/jobs/job-1/start"),
+            Route::BootJobStart { id: "job-1" }
+        );
+        assert_eq!(
+            route("POST", "/api/v1/boot/jobs/job-1/unknown"),
+            Route::Unknown
+        );
+        assert_eq!(route("GET", "/api/v1/unknown"), Route::Unknown);
+        assert_eq!(route("POST", "/api/v1/status"), Route::Unknown);
+    }
+
+    #[test]
+    fn route_admission_shares_epoch_and_trial_rules() {
+        for selected_route in [
+            Route::DeviceStatus,
+            Route::OtaStatus,
+            Route::BootJobStatus { id: "job-1" },
+        ] {
+            assert_eq!(
+                selected_route.check_admission(Some("stale"), "current", true),
+                Ok(())
+            );
+        }
+
+        for selected_route in [
+            Route::SerialContinue,
+            Route::SerialBindingRevoke { id: "binding-1" },
+            Route::OtaConfirm,
+            Route::OtaImage,
+        ] {
+            assert_eq!(
+                selected_route.check_admission(None, "current", false),
+                Err(AdmissionError::StaleBootEpoch)
+            );
+            assert_eq!(
+                selected_route.check_admission(Some("current"), "current", true),
+                Ok(())
+            );
+        }
+
+        for selected_route in [Route::BootJobCreate, Route::Unknown] {
+            assert_eq!(
+                selected_route.check_admission(None, "current", false),
+                Err(AdmissionError::StaleBootEpoch)
+            );
+            assert_eq!(
+                selected_route.check_admission(Some("current"), "current", true),
+                Err(AdmissionError::OtaTrialRequiresConfirmation)
+            );
+        }
     }
 
     #[test]

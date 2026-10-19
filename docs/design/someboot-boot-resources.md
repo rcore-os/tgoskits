@@ -40,13 +40,17 @@ LoongArch 的 [`efi_stub/loongarch64/handoff.rs`](../../platforms/someboot/src/e
 
 [`ota/handoff.rs`](../../bootloader/axloader/src/ota/handoff.rs) 编解码 axloader 自己的元数据 ID、版本、槽位和持久代次；someboot 只承载有界字节。固定镜像地址属于应用策略：若当前镜像已经占有相同执行区，则拒绝再次覆盖该区，不猜测 load bias。原生 x86 ELF 路径也使用共同 `ResourceRequest`/`reserve()` 和 `HandoffSpec`/`PreparedHandoff`，仍由固件决定实际页申请与 EFI 生命周期。
 
+axloader 的 [`http_control`](../../bootloader/axloader/src/http_control.rs) 统一路由分类、单值控制头、epoch 和 trial 准入；状态查询不要求 epoch，修改请求仍核对当前代次。两前端仅保留传输与平台动作。共同 [`elf::ElfImage`](../../bootloader/axloader/src/elf.rs) 校验 ELF64、machine、段范围及可执行入口；x86 保留未对齐段与固件 load bias，LoongArch 后端拥有页对齐、固定地址和缓存策略。someboot 的 `handoff::cmdline` 同时约束生产与消费，4095 字节 ASCII 上限不再各自实现。
+
 ### 2.4 运行时退出
 
-LoongArch 的目标会重用继承内存图中的空闲页；关闭 HTTP socket 不能证明旧网络设备已停止 DMA。退出由 `ax-runtime` 编排，someboot 不依赖网络、文件系统或任务：应用完成 OTA 状态提交、释放连接并准备好交接事务后，调用终结性的运行时交接入口。当前入口只接受一个运行处理器，应用必须先停止自己创建的任务及 I/O；多处理器退出不在本阶段能力内。
+LoongArch 的目标会重用继承内存图中的空闲页；关闭 HTTP socket 不能证明旧网络设备已停止 DMA。退出由 [`ax-runtime::handoff::enter`](../../os/arceos/modules/axruntime/src/handoff.rs) 编排，someboot 不依赖网络、文件系统或任务：应用完成 OTA 状态提交、释放连接并准备好交接事务后，调用终结性的运行时交接入口。当前入口只接受一个运行处理器，应用必须先停止自己创建的任务及 I/O；多处理器退出不在本阶段能力内。
 
 退出顺序为文件系统同步与封存、块控制器停止及 IRQ 同步、网络协议任务退出并 join、网络 IRQ 同步及队列任务停止并 join、控制台排空和串口屏蔽，最后关闭本核 IRQ、抢占与 clockevent，再调用目标。块设备复用 `release_block_irqs_for_passthrough()` 已有的完整停稳契约。网络需要把 IRQ 同步、任务 join 与 DMA 停稳结果逐层返回；任何隔离保留只能保护当前内核，不能作为交接成功的证据。VirtIO 网络写入设备状态零后读取状态零，按 VirtIO 1.2 §2.4 确认设备不再访问旧队列，才允许释放队列 backing。
 
 不采用只丢弃 socket 或禁用 CPU IRQ 的方案，因为设备仍可能异步写旧内存。也不在继承内存图中永久保留全部运行时堆来掩盖设备未退出的问题。退出一旦开始不恢复 HTTP 服务；任一步失败、处理器数量不符或目标返回都复位机器，由已经持久化的 OTA 状态处理回滚，不能返回已经停运的运行时。目标入口、地址转换和缓存维护继续归 someboot 平台适配层。
+
+目标在开启中断、接管异常或复用祖先运行时内存前，先安装自己的异常入口、处理器局部状态和栈。返回式 EFI 程序必须保持调用方的栈、MMU 映射、处理器局部状态和中断屏蔽；已经替换这些执行上下文的内核不得返回旧 EFI 调用帧。LoongArch smoke 上传仅执行 `ori $a0, $zero, 0; ret` 的独立 ELF，要求入口返回后机器复位，重新提供具有新 epoch 的 HTTP 服务，并保持稳定 OTA 状态；它与正常内核交接分别验证返回和不返回两条路径。
 
 ## 3. 迁移与验证
 
