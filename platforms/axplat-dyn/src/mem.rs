@@ -8,9 +8,12 @@ use heapless::Vec;
 use someboot::ArchTrait;
 use somehal::mem::MemoryType;
 
-static RAM_LIST: OnceLock<Vec<RawRange, 33>> = OnceLock::new();
-static RESERVED_LIST: OnceLock<Vec<RawRange, 32>> = OnceLock::new();
-static MMIO_LIST: OnceLock<Vec<RawRange, 16>> = OnceLock::new();
+// Resource/live-object clipping can create more fragments than a firmware-only
+// map. Every platform list must accept the complete inherited map budget.
+const MAX_BOOT_REGIONS: usize = someboot::handoff::protocol::MAX_REGIONS;
+static RAM_LIST: OnceLock<Vec<RawRange, MAX_BOOT_REGIONS>> = OnceLock::new();
+static RESERVED_LIST: OnceLock<Vec<RawRange, MAX_BOOT_REGIONS>> = OnceLock::new();
+static MMIO_LIST: OnceLock<Vec<RawRange, MAX_BOOT_REGIONS>> = OnceLock::new();
 static VIRTUAL_ADDRESS_SPACE: OnceLock<
     Result<VirtualAddressSpaceLayout, VirtualAddressSpaceError>,
 > = OnceLock::new();

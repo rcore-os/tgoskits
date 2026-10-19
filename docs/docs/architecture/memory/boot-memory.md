@@ -242,7 +242,7 @@ boot 页表引擎不依赖 `ax-alloc`，从而避免“建立运行时页表之�
 
 ### 5.1 平台内存区规范化
 
-`platforms/axplat-dyn/src/mem.rs` 将 `someboot` 的描述符转换为平台 `MemRegion`，其内部固定容量分别为 free 32、reserved 32、MMIO 16。`os/arceos/modules/axhal/src/mem.rs` 再从 RAM 中扣除 reserved，并执行 4 KiB 对齐。
+`platforms/axplat-dyn/src/mem.rs` 将 `someboot` 的描述符转换为平台 `MemRegion`，三个内部列表统一使用 `someboot::handoff::protocol::MAX_REGIONS` 的 128 段容量，避免存活对象裁剪后的合法碎片图在平台层被较小容量拒绝。`os/arceos/modules/axhal/src/mem.rs` 再从 RAM 中扣除 reserved，并执行 4 KiB 对齐。
 
 | 阶段 | 输入 | 输出 |
 | --- | --- | --- |
@@ -302,9 +302,9 @@ MemoryDescriptor[]
 | --- | --- | --- |
 | someboot memory map | 512 descriptors | 大量 split 后可能 capacity failure |
 | 扁平设备树 `memories()` 临时结果 | 128 ranges | 超出时 `push(...).ok()` 静默丢弃，不报错 |
-| axplat dynamic free list | 32 ranges | 超出平台容量不能完整交接 |
-| axplat dynamic reserved list | 32 ranges | 复杂保留图需要显式处理 |
-| axplat dynamic MMIO list | 16 ranges | 设备窗口数量受限 |
+| axplat dynamic free list | 128 ranges | 与交接内存图预算一致，超出时拒绝 |
+| axplat dynamic reserved list | 128 ranges | 支持存活对象裁剪产生的保留碎片 |
+| axplat dynamic MMIO list | 128 ranges | 与交接内存图预算一致 |
 | early bump arena | 排序后第一个大于 8 MiB 的 `Free` 段 | 不跨物理 hole；无候选时 `expect("No free memory")` 启动失败 |
 | Buddy contiguous allocation | 单 section 内完成 | 不能跨物理 hole 拼接连续页 |
 
