@@ -15,7 +15,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use axfs_ng_vfs::VfsResult;
 use heapless::Vec as InlineVec;
 
-use super::{CachedFileShared, PageCache};
+use super::{CachedFileShared, InodeCacheIndex, PageCache};
+use crate::os::sync::Mutex;
 
 const MAX_RECLAIM_BATCH: usize = 256;
 
@@ -50,16 +51,17 @@ impl CachedFileRegistry {
         drop(removed);
     }
 
-    fn prune(&self) {
-        self.prune_with(|| {});
+    fn prune(&self, inode_index: &Mutex<InodeCacheIndex>) {
+        self.prune_with(inode_index, || {});
     }
 
-    fn prune_with(&self, after_scan: impl FnOnce()) {
-        self.prune_with_candidate_observer(after_scan, |_| {});
+    fn prune_with(&self, inode_index: &Mutex<InodeCacheIndex>, after_scan: impl FnOnce()) {
+        self.prune_with_candidate_observer(inode_index, after_scan, |_| {});
     }
 
     fn prune_with_candidate_observer(
         &self,
+        inode_index: &Mutex<InodeCacheIndex>,
         after_scan: impl FnOnce(),
         mut before_claim: impl FnMut(&Arc<CachedFileShared>),
     ) {
@@ -86,7 +88,7 @@ impl CachedFileRegistry {
                         before_claim(cached);
                         // Freeze production Weak upgrades only for a possible
                         // victim. Never block on the index under the registry.
-                        let Some(_index) = super::CACHED_FILE_BY_INODE.try_lock() else {
+                        let Some(_index) = inode_index.try_lock() else {
                             position += 1;
                             continue;
                         };
@@ -257,7 +259,7 @@ pub fn sync_filesystem_cached_files(filesystem: &dyn axfs_ng_vfs::FilesystemOps)
 }
 
 pub(crate) fn prune_cached_files() {
-    GLOBAL_CACHED_FILES.prune();
+    GLOBAL_CACHED_FILES.prune(&super::CACHED_FILE_BY_INODE);
 }
 
 impl CachedFileShared {
@@ -431,12 +433,15 @@ mod tests {
 
     #[test]
     fn pruning_keeps_a_cache_reopened_during_ownership_claim() {
+        // Unrelated inode publication must not affect this registry's lifetime checks.
+        let _unrelated_index = super::super::CACHED_FILE_BY_INODE.lock();
+        let inode_index = Mutex::new(InodeCacheIndex::new());
         let registry = CachedFileRegistry::new();
         let cached = Arc::new(CachedFileShared::new_unbounded(0));
         let weak = Arc::downgrade(&cached);
         registry.files.write().push(cached);
         let mut reopened = None;
-        registry.prune_with_candidate_observer(|| {}, |_| reopened = weak.upgrade());
+        registry.prune_with_candidate_observer(&inode_index, || {}, |_| reopened = weak.upgrade());
         let reopened = reopened.expect("the reopen wins before ownership is claimed");
         assert!(
             registry
@@ -447,7 +452,16 @@ mod tests {
             "a reopened cache must remain visible to writeback"
         );
         drop(reopened);
-        registry.prune();
+        {
+            let _busy_index = inode_index.lock();
+            registry.prune(&inode_index);
+            assert!(
+                weak.upgrade()
+                    .is_some_and(|cached| !cached.retired.load(Ordering::Acquire)),
+                "a busy inode index must defer ownership retirement"
+            );
+        }
+        registry.prune(&inode_index);
         assert!(
             weak.upgrade().is_none(),
             "a closed clean cache is reclaimable"
@@ -456,11 +470,13 @@ mod tests {
 
     #[test]
     fn pruning_keeps_dirty_pages_after_a_racing_open_and_close() {
+        let inode_index = Mutex::new(InodeCacheIndex::new());
         let registry = CachedFileRegistry::new();
         let cached = Arc::new(CachedFileShared::new_unbounded(4096));
         let weak = Arc::downgrade(&cached);
         registry.files.write().push(cached);
         registry.prune_with_candidate_observer(
+            &inode_index,
             || {},
             |_| {
                 let reopened = weak.upgrade().expect("cache remains registered");
@@ -482,7 +498,7 @@ mod tests {
         assert!(cached.page_cache.lock().get(&0).unwrap().dirty);
         cached.page_cache.lock().peek_mut(&0).unwrap().dirty = false;
         drop(cached);
-        registry.prune();
+        registry.prune(&inode_index);
         assert!(
             weak.upgrade().is_none(),
             "clean closed cache is reclaimable"
@@ -494,11 +510,12 @@ mod tests {
     fn registry_does_not_restore_retired_cache_owners_after_pruning() {
         // Retire cached owners after a scan while checking registry visibility.
         for unlinked in [true, false] {
+            let inode_index = Mutex::new(InodeCacheIndex::new());
             let registry = CachedFileRegistry::new();
             let cached = Arc::new(CachedFileShared::new_unbounded(0));
             let lifetime = Arc::downgrade(&cached);
             registry.files.write().push(cached.clone());
-            registry.prune_with(|| {
+            registry.prune_with(&inode_index, || {
                 assert!(
                     registry
                         .files
