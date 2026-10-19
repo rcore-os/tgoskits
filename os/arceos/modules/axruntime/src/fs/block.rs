@@ -384,19 +384,18 @@ fn release_archive_pages(archive: ax_hal::boot::Initramfs) {
         return;
     };
     let range = reclaim.range();
-    let address = ax_hal::mem::phys_to_virt(ax_hal::mem::PhysAddr::from(range.start as usize));
+    let address = ax_hal::mem::phys_to_virt(ax_hal::mem::PhysAddr::from(range.start.as_usize()));
     // SAFETY: finish consumed the unique archive owner; all byte borrows have
     // ended and these complete pages were excluded from boot allocator regions.
-    let managed =
-        unsafe { ax_alloc::global_add_memory_compact(address.as_usize(), range.len as usize) }
-            .expect("failed to reclaim host initramfs pages");
+    let managed = unsafe { ax_alloc::global_add_memory_compact(address.as_usize(), range.size()) }
+        .expect("failed to reclaim host initramfs pages");
     if managed != 0 {
         // SAFETY: the complete range was transferred successfully above.
         unsafe { reclaim.complete() };
     }
     info!(
         "host initramfs reclaimed {managed} of {} complete archive bytes",
-        range.len
+        range.size()
     );
 }
 

@@ -41,14 +41,68 @@ pub fn initramfs_range() -> Option<InitramfsRange> {
 pub fn take_initramfs_range() -> Option<Initramfs> {
     #[cfg(not(any(test, feature = "host-test")))]
     {
-        axplat_dyn::take_initramfs_range()
+        axplat_dyn::take_initramfs_range().map(|inner| Initramfs { inner })
     }
     #[cfg(any(test, feature = "host-test"))]
     {
         None
     }
 }
-pub use axplat_dyn::{Initramfs, InitramfsReclaim};
+/// Unique archive ownership, with the platform lifetime kept inside the HAL.
+#[derive(Debug)]
+pub struct Initramfs {
+    #[cfg(not(any(test, feature = "host-test")))]
+    inner: axplat_dyn::Initramfs,
+    #[cfg(any(test, feature = "host-test"))]
+    unavailable: core::convert::Infallible,
+}
+impl Initramfs {
+    pub fn bytes(&self) -> &[u8] {
+        cfg_select! {
+            any(test, feature = "host-test") => match self.unavailable {},
+            _ => self.inner.bytes(),
+        }
+    }
+    pub fn finish(self) -> Option<InitramfsReclaim> {
+        cfg_select! {
+            any(test, feature = "host-test") => match self.unavailable {},
+            _ => self.inner.finish().map(|inner| InitramfsReclaim { inner }),
+        }
+    }
+}
+/// One-shot transfer of complete archive pages to the general allocator.
+#[derive(Debug)]
+pub struct InitramfsReclaim {
+    #[cfg(not(any(test, feature = "host-test")))]
+    inner: axplat_dyn::InitramfsReclaim,
+    #[cfg(any(test, feature = "host-test"))]
+    unavailable: core::convert::Infallible,
+}
+impl InitramfsReclaim {
+    pub fn range(&self) -> ax_memory_addr::PhysAddrRange {
+        cfg_select! {
+            any(test, feature = "host-test") => match self.unavailable {},
+            _ => {
+                let range = self.inner.range();
+                ax_memory_addr::PhysAddrRange::from_start_size(
+                    (range.start as usize).into(),
+                    range.len as usize,
+                )
+            }
+        }
+    }
+    /// # Safety
+    /// The complete range must have been successfully transferred to the allocator.
+    pub unsafe fn complete(self) {
+        cfg_select! {
+            any(test, feature = "host-test") => match self.unavailable {},
+            _ => {
+                // SAFETY: forwarded from the caller's successful transfer proof.
+                unsafe { self.inner.complete() };
+            }
+        }
+    }
+}
 
 /// Returns the trusted firmware seed captured during early boot.
 pub fn boot_entropy() -> Option<[u8; 32]> {
@@ -63,4 +117,5 @@ pub fn boot_entropy() -> Option<[u8; 32]> {
     }
 }
 
+#[cfg(not(any(test, feature = "host-test")))]
 pub use axplat_dyn::{ExecutionSnapshot, HandoffError, PhysicalRange};

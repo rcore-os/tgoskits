@@ -389,6 +389,7 @@ fn map_alloc_status(error: ax_alloc::AllocError) -> RuntimeStatus {
 
 /// The scheduler retains these owners while the current task is running.
 /// Report backing from owners rather than deriving sizes from SP or TP.
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) fn snapshot_current_execution(
     snapshot: &mut ax_hal::boot::ExecutionSnapshot,
 ) -> Result<(), ax_hal::boot::HandoffError> {

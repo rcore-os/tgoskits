@@ -204,4 +204,5 @@ mod tests;
 
 mod allocation;
 
+#[cfg(not(any(test, feature = "host-test")))]
 pub(crate) use resources::snapshot_current_execution;

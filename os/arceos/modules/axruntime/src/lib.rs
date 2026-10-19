@@ -82,6 +82,7 @@ mod error;
 mod fs;
 #[cfg(feature = "display")]
 mod gpu_irq_work;
+#[cfg(not(any(test, feature = "host-test")))]
 pub mod handoff;
 mod interrupt_bootstrap;
 #[cfg(any(feature = "ipi", feature = "wake-ipi", test))]
