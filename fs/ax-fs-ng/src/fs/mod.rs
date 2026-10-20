@@ -57,9 +57,10 @@ pub fn new_from_handle(dev: Arc<BlockDeviceHandle>, region: BlockRegion) -> VfsR
 
 /// Creates an ext4 filesystem using on-demand file I/O.
 ///
-/// The filesystem owns `lease` until its final references are released. Device
-/// callers must provide an open lease that keeps the source binding stable;
-/// detaching a mount must not release that lease while files remain open.
+/// The filesystem and its image device share `lease`. When the final mount
+/// lease retires, the filesystem drains and shuts down before releasing it;
+/// dropping the last filesystem owner remains the RAII fallback. A live mount,
+/// bind alias, namespace copy or open location keeps the lease unreleased.
 /// I/O and flush errors propagate through the filesystem's block-I/O boundary.
 #[cfg(all(feature = "ext4", feature = "vfs"))]
 pub fn new_from_file<L: Send + 'static>(
@@ -67,9 +68,13 @@ pub fn new_from_file<L: Send + 'static>(
     read_only: bool,
     lease: L,
 ) -> VfsResult<Filesystem> {
-    let device = crate::block::file_image::FileImageDevice::new(backend, read_only, lease)?;
+    use crate::block::file_image::{FileBackingLease, SharedFileBacking};
+
+    let lease: Arc<dyn FileBackingLease> = Arc::new(SharedFileBacking::new(lease));
+    let device =
+        crate::block::file_image::FileImageDevice::new(backend, read_only, Arc::clone(&lease))?;
     let region = BlockRegion::from_num_blocks(device.num_blocks());
-    new_ext4(Box::new(device), region)
+    ext4::Ext4Filesystem::new_from_boxed_with_backing(Box::new(device), region, lease)
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
