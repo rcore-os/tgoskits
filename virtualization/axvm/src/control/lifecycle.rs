@@ -37,6 +37,17 @@ impl Owner {
             .clone()
             .load_images(memory.main_memory().clone(), &mut self.vm, &*self.images)?;
         self.vm.prepare()?;
+        // Image and device preparation may cache data beyond the loaded images,
+        // including BSS and early stacks. Retire those aliases before the next
+        // guest writes with caches off. The old run and all RAM access ports
+        // are retired; reserved/shared RAM is outside this ownership boundary.
+        for region in memory
+            .regions()
+            .iter()
+            .filter(|region| region.needs_dealloc)
+        {
+            current::make_guest_memory_visible(region.hva, region.size());
+        }
         let revision = MemoryRevision {
             run: id,
             sequence: 1,

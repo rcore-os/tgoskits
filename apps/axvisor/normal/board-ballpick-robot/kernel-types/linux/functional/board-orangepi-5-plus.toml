@@ -1,0 +1,134 @@
+board_type = "BallPick-Robot"
+timeout = 3600
+uboot_cmd = ["setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"]
+fail_regex = ["exited with a fault", "panicked at", "Kernel panic - not syncing", "Failed to initialize guest VM", "Failed to start VM", "(?m)^CASE_FAILED\\b", "(?m)^KERNEL_TYPES_SETUP_FAILED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = '''
+vm console 1
+'''
+timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "root@ubuntu:~#"
+shell_cmd = '''
+{
+mkdir -p /proc /sys /dev /tmp &&
+(mount -t proc proc /proc 2>/dev/null || grep -q ' /proc proc ' /proc/mounts) &&
+{ [ -d /sys/class/net ] || mount -t sysfs sysfs /sys; } &&
+ip link set lo up &&
+setup=KERNEL_TYPES_SETUP &&
+printf '\n%s_READY\n' "$setup" || printf '\n%s_FAILED\n' "$setup"
+}
+'''
+success_regex = ["(?m)^KERNEL_TYPES_SETUP_READY\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@ubuntu:~#"
+shell_cmd = '''
+sh -s -- linux-functional 10.3.10.60 <<'GUEST_CASE'
+#!/bin/sh
+# Run inside the selected guest. Exit status and result data both gate success.
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+case_name=${1:?Missing case name}
+ping_target=${2:-}
+mkdir -p /var/tmp/kernel-types
+results=$(mktemp -d "/var/tmp/kernel-types/$case_name.XXXXXX")
+temporary_hello=0
+cleanup() {
+    if [ "$temporary_hello" = 1 ]; then
+        if dpkg-query -W hello >/dev/null 2>&1; then
+            timeout -k 5 180 apt-get -y purge hello >"$results/apt-cleanup.log" 2>&1 || return 1
+        fi
+        temporary_hello=0
+    fi
+    rm -rf "$results/apt/lists" "$results/apt/archives"
+    sync
+}
+on_exit() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    cleanup || status=1
+    if [ "$status" -ne 0 ]; then
+        for logfile in "$results"/*.log; do
+            if [ -f "$logfile" ]; then
+                printf "LOG %s\n" "$logfile"
+                timeout -k 2 5 tail -n 30 "$logfile" || printf "Log unavailable: %s\n" "$logfile"
+            fi
+        done
+        printf '\nCASE_%s case=%s exit=%s results=%s\n' FAILED "$case_name" "$status" "$results"
+    fi
+    exit "$status"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+
+functional() {
+    test -n "$ping_target"
+    uname -a
+    cat /proc/cpuinfo
+    grep -q '^processor' /proc/cpuinfo
+    printf '%s\n' AXVISOR_GUEST_FILESYSTEM_RW >"$results/file.txt"
+    test "$(cat "$results/file.txt")" = AXVISOR_GUEST_FILESYSTEM_RW
+    sync
+    if [ "$case_name" = linux-functional ]; then
+        n=$(ls /sys/class/net | grep -v '^lo$' | head -n 1)
+        test -n "$n"
+        ip link set "$n" up
+        if ! ip -4 -o addr show dev "$n" scope global | grep -q ' inet '; then
+            timeout 45 /sbin/dhclient -1 "$n" >"$results/dhcp.log" 2>&1
+        fi
+    fi
+    ip -brief address
+    ip route
+    ping -n -c 5 -W 2 -w 15 "$ping_target" >"$results/ping.log" 2>&1
+    cat "$results/ping.log"
+    grep -Eq '(^|[ ,])0% packet loss' "$results/ping.log"
+}
+
+        functional
+        grep -q '^ID=ubuntu$' /etc/os-release
+        cat /etc/os-release
+        # Calibrate the guest clock without requiring host environment setup.
+curl -fsSI --connect-timeout 5 --max-time 20 \
+    http://10.3.10.60:2999/ >"$results/apt-server-headers.log"
+wall_time=$(sed -n 's/^date: *//Ip' "$results/apt-server-headers.log" | tr -d '\r' | head -n 1)
+test -n "$wall_time"
+date -u -s "$wall_time"
+        mkdir -p "$results/apt/lists/partial" "$results/apt/archives/partial"
+        chmod 755 "$results"
+        chown _apt:root "$results/apt/lists/partial" "$results/apt/archives/partial"
+        printf '%s\n' 'deb [arch=arm64] http://repo.huaweicloud.com/ubuntu-ports jammy main' >"$results/apt/sources.list"
+        export APT_CONFIG="$results/apt/apt.conf"
+        cat >"$APT_CONFIG" <<EOF
+Dir::Etc::sourcelist "$results/apt/sources.list";
+Dir::Etc::sourceparts "-";
+Dir::State::lists "$results/apt/lists";
+Dir::Cache::archives "$results/apt/archives";
+Dir::Cache::pkgcache "";
+Dir::Cache::srcpkgcache "";
+Acquire::Languages "none";
+EOF
+        hello_was_installed=0
+        if dpkg-query -W -f='${Status}\n' hello 2>/dev/null | grep -qx 'install ok installed'; then
+            hello_was_installed=1
+        fi
+        timeout -k 5 180 apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=20 update >"$results/apt-update.log" 2>&1
+        if [ "$hello_was_installed" = 0 ]; then temporary_hello=1; fi
+        timeout -k 5 180 apt-get -y --reinstall install hello >"$results/apt-install.log" 2>&1
+        hello >"$results/hello.log"
+        grep -qx 'Hello, world!' "$results/hello.log"
+        cat "$results/hello.log"
+cleanup
+trap - EXIT HUP INT TERM
+printf '\nCASE_%s case=%s results=%s\n' PASSED "$case_name" "$results"
+
+GUEST_CASE
+'''
+success_regex = ["(?m)^CASE_PASSED case=linux-functional results="]
+timeout = 1200

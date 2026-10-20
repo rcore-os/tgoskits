@@ -15,10 +15,21 @@ self-hosted runners provide the required virtualization hosts and boards.
 ## Coverage
 
 The source of truth is `.github/ci/checks/axvisor-nightly.toml`. Nightly runs
-every enabled check in that manifest without changed-file filtering, including:
+every enabled check in that manifest without changed-file filtering. The
+currently enabled checks cover:
 
-- AArch64 GICv2/GICv3 timer stress and the OrangePi Linux PCI network ping.
-- The OrangePi virtio-net peer scenario.
+- AArch64 GICv2/GICv3 timer stress.
+- Robot USB tests on native StarryOS and AxVisor StarryOS and Linux guests.
+
+The Linux PCI network ping and the 64 ArceOS peers with a Linux observer
+checks, including their `[[check.suite]]` registrations, are temporarily
+commented out because board resources are insufficient. They are excluded
+from both scheduled and manually triggered nightly runs. Until they are
+restored, run the corresponding applications manually on an available board
+and record success markers and exit codes. Restore both checks and their
+suites once the runner can reliably reserve the target board exclusively,
+and update this coverage section at the same time. Track resource allocation
+and restoration in [issue #2676](https://github.com/rcore-os/tgoskits/issues/2676).
 
 Only that manifest feeds the nightly matrix; the default `axvisor.toml` checks
 do not run at night, and performance measurements are not part of this
@@ -28,7 +39,7 @@ AxVisor feature or every test-suit directory has a corresponding nightly test.
 
 Nightly applications live under `apps/axvisor/<group>/...` and run through
 `cargo xtask axvisor app`. Use `app list` to list board and QEMU applications.
-`app board -t board-orangepi-5-plus/ivc` selects a directory relative to
+`app board -t board-ballpick-robot/ivc` selects a directory relative to
 `apps/axvisor/normal`; a parent directory selects all descendant configurations.
 `app qemu --arch aarch64 -t qemu-timer-stress/gicv3-timer-stress` uses the same
 selection rules.
@@ -49,12 +60,14 @@ shell commands in the nightly workflow.
 
 Default CI runs the functional `axvisor.toml` checks. The GICv2/GICv3 timer
 stress, OrangePi Linux PCI network ping and OrangePi virtio-net peer were split
-into `axvisor-nightly.toml`. The manifest file name is the only authority for
-automatic nightly semantics, so individual checks no longer declare
-`nightly_only`. Ordinary CI excludes the nightly manifest for PRs, pushes and
-manual runs, even if the change precisely selects the nightly case files; a PR
-changing only nightly test scenarios still receives static checks. The default
-OrangePi Linux check explicitly selects only the `smoke` case.
+into `axvisor-nightly.toml`. The latter two checks are temporarily disabled;
+actual coverage follows the enabled checks in the manifest. The manifest file
+name is the only authority for automatic nightly semantics, so individual
+checks no longer declare `nightly_only`. Ordinary CI excludes the nightly
+manifest for PRs, pushes and manual runs, even if the change precisely selects
+the nightly case files; a PR changing only nightly test scenarios still
+receives static checks. The default OrangePi Linux check explicitly selects
+only the `smoke` case.
 
 `apps/axvisor/**` is a registered AxVisor suite in the CI impact routing
 (`scripts/test/ci_impact.py`, `scripts/test/ci_suite.py` and

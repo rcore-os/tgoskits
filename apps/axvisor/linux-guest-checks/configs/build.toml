@@ -1,9 +1,0 @@
-# AxVisor host build for the OrangePi-5-Plus Linux passthrough guest checks.
-features = [
-  "ax-driver/rk3588-cpufreq",
-  "ax-driver/rockchip-dwmmc",
-  "ax-driver/rockchip-sdhci",
-]
-log = "Warn"
-target = "aarch64-unknown-none-softfloat"
-vm_configs = ["apps/axvisor/linux-guest-checks/configs/linux.toml"]

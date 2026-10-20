@@ -1,0 +1,8 @@
+# Interactive session; boot fields match the automated board configuration.
+# Guest commands and result checks are entered manually.
+# Server and port come from the run environment.
+board_type = "BallPick-Robot"
+uboot_cmd = ["setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"]
+
+shell_check_steps = []
+fail_regex = []

@@ -77,6 +77,10 @@ impl MemoryBacking {
                 operation: "allocate guest backing",
             });
         }
+        // Zeroing also leaves host cache lines outside the loaded image.
+        // A guest can write its early heap with translation and caches off,
+        // so release every byte before any guest can access this backing.
+        crate::arch::current::make_guest_memory_visible((address as usize).into(), layout.size());
         Ok(Arc::new(Self {
             virtual_start: address as usize,
             length: layout.size(),

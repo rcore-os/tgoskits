@@ -91,15 +91,15 @@ cargo xtask axvisor test board --board rock-4d-linux
 ```
 
 应用使用独立的 `app` 入口。先列出应用，再运行 PCIe 网卡直通；`-t` 相对
-`apps/axvisor/normal/`，`-b` 是板卡服务登记的物理类型。运行前按
-[PCIe 网卡应用说明](https://github.com/rcore-os/tgoskits/blob/dev/apps/axvisor/normal/board-orangepi-5-plus/pci-network/README.md)
+`apps/axvisor/normal/`，实体板卡使用运行配置中的 `board_type`。运行前按
+[PCIe 网卡应用说明](https://github.com/rcore-os/tgoskits/blob/dev/apps/axvisor/normal/board-ballpick-robot/pci-network/README.md)
 准备内核、匹配模块和独立根盘，并按环境添加 `--server`、`--port`。
 
 ```bash
 cargo xtask axvisor app list
 cargo xtask axvisor app board -g normal \
-  -t board-orangepi-5-plus/pci-network/ping \
-  --board orangepi-5-plus-linux -b BallPick-Robot-Rk3588
+  -t board-ballpick-robot/pci-network/ping \
+  --board orangepi-5-plus-linux
 ```
 
 应用目录前缀选择、QEMU 入口和客户机构建准备规则见[测试与应用入口](../build/axvisor/test#8-应用入口)。

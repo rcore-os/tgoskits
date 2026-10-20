@@ -1,0 +1,11 @@
+# Guest build input for the axbuild board guest flow.
+package = "task-switch"
+target = "aarch64-unknown-none-softfloat"
+# Benchmark-local: let the guest put the task-switch workload into the FIFO
+# class at priority 80 so the measured environment matches the original
+# Rust-Shyper run. Boot, `rdtsc`, and `spawn` keep the runtime Fair default,
+# and ordinary task-switch builds do not enable this feature.
+features = ["bench-fifo-policy"]
+log = "Info"
+max_cpu_num = 1
+to_bin = true

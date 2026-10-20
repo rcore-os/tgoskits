@@ -28,40 +28,45 @@ kind = "axvisor-qemu"
 arch = "aarch64"
 cases = ["qemu-timer-stress-v2/gicv2-timer-stress", "qemu-timer-stress/gicv3-timer-stress"]
 
-[[check]]
-id = "test-axvisor-self-hosted-board-orangepi-5-plus-arceos-net"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · 64 ArceOS peers and Linux observer"
-runner = "board"
-cache_key = ""
-resource_group = "orangepi-5-plus"
-timeout_minutes = 90
-command = '''
-cargo xtask axvisor app board -t board-orangepi-5-plus/virtio-net-peer/vcpus --board-type BallPick-Robot-Rk3588
-'''
-
-[[check.suite]]
-kind = "axvisor-board"
-board = "orangepi-5-plus-arceos-net"
-cases = ["board-orangepi-5-plus/virtio-net-peer/vcpus/smoke"]
-
-[[check]]
-id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-ping"
-impact_targets = ["axvisor:aarch64"]
-name = "Board OrangePi 5 Plus · Linux PCI network ping"
-runner = "board"
-cache_key = ""
-resource_group = "orangepi-5-plus"
-timeout_minutes = 90
-command = '''
-# --board selects the case; --board-type selects the registered physical board.
-cargo xtask axvisor app board --board orangepi-5-plus-linux -t board-orangepi-5-plus/pci-network/ping --board-type BallPick-Robot-Rk3588
-'''
-
-[[check.suite]]
-kind = "axvisor-board"
-board = "orangepi-5-plus-linux"
-cases = ["board-orangepi-5-plus/pci-network/ping"]
+# 暂时禁用：当前自托管 nightly 缺少可分配的板卡资源。
+# 恢复条件：运行器能够稳定独占目标板卡后，同时恢复以下两项 check 及其 suite。
+# 替代验证：在可用板卡上手动执行下列命令，并记录成功标记和退出码；
+# 2026-10-21 两项应用完整手动复测通过，成功标记及退出码见 PR #2675。
+# 跟踪：https://github.com/rcore-os/tgoskits/issues/2676
+# [[check]]
+# id = "test-axvisor-self-hosted-board-orangepi-5-plus-arceos-net"
+# impact_targets = ["axvisor:aarch64"]
+# name = "Board OrangePi 5 Plus · 64 ArceOS peers and Linux observer"
+# runner = "board"
+# cache_key = ""
+# resource_group = "orangepi-5-plus"
+# timeout_minutes = 90
+# command = '''
+# cargo xtask axvisor app board -t board-ballpick-robot/virtio-net-peer/vcpus --board-type BallPick-Robot
+# '''
+#
+# [[check.suite]]
+# kind = "axvisor-board"
+# board = "orangepi-5-plus-arceos-net"
+# cases = ["board-ballpick-robot/virtio-net-peer/vcpus/smoke"]
+#
+# [[check]]
+# id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux-ping"
+# impact_targets = ["axvisor:aarch64"]
+# name = "Board OrangePi 5 Plus · Linux PCI network ping"
+# runner = "board"
+# cache_key = ""
+# resource_group = "orangepi-5-plus"
+# timeout_minutes = 90
+# command = '''
+# # --board selects the case; --board-type selects the registered physical board.
+# cargo xtask axvisor app board --board orangepi-5-plus-linux -t board-ballpick-robot/pci-network/ping --board-type BallPick-Robot
+# '''
+#
+# [[check.suite]]
+# kind = "axvisor-board"
+# board = "orangepi-5-plus-linux"
+# cases = ["board-ballpick-robot/pci-network/ping"]
 
 [[check]]
 id = "test-orangepi-5-plus-robot-real-suite"

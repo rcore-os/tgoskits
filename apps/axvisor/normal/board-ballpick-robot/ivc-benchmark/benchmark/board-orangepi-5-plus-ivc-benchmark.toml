@@ -1,0 +1,73 @@
+board_type = "BallPick-Robot"
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1,2"
+# Use the published Starry kernel, unified Zephyr shell and matching DTB
+# under /guest. The independent Starry guest rootfs must contain
+# /usr/bin/ivc-starry-bench and its matching IVC userspace library.
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "Failed to initialize guest VM",
+  "Failed to start VM",
+  "AXIVC Starry benchmark peer ready failed",
+  "AXIVC Starry benchmark send failed",
+  "AXIVC Starry benchmark recv failed",
+  "AXIVC Zephyr-Starry benchmark publish failed",
+  "AXIVC Zephyr-Starry benchmark ready send failed",
+  "AXIVC Zephyr-Starry benchmark failed",
+  "(?m)^ORANGEPI_ZEPHYR_IVC_BENCHMARK_(?:FAILED|CANCELED)\\s*$",
+  "(?m)^IVC_BENCH_SETUP_FAILED\\s*$",
+  "(?m)^IVC_BENCH_EXIT=(?:[1-9][0-9]*|missing)\\s*$",
+]
+timeout = 300
+
+# Keep the subscriber in the background while starting the Zephyr publisher.
+# A fresh result directory prevents an earlier run from satisfying the checks.
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = '''
+if ivc_results=$(mktemp -d /tmp/ivc-benchmark.XXXXXX); then
+    (
+        /usr/bin/ivc-starry-bench
+        printf '%s\n' "$?" >"$ivc_results/status"
+    ) >"$ivc_results/benchmark.log" 2>&1 </dev/null &
+else
+    printf 'IVC_BENCH_%s\n' SETUP_FAILED
+fi
+'''
+
+[[shell_check_steps]]
+shell_prefix = "# "
+shell_cmd = "\u0018hvm console 2"
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "ivc ivc_benchmark 240000"
+success_regex = ["(?m)^ORANGEPI_ZEPHYR_IVC_BENCHMARK_PASSED\\s*$"]
+timeout = 250
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = "\u0018hvm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "Attached VM[1] console"
+shell_cmd = '''
+i=0
+while [ ! -f "$ivc_results/status" ] && [ "$i" -lt 30 ]; do
+    sleep 1
+    i=$((i + 1))
+done
+cat "$ivc_results/benchmark.log"
+ivc_status=$(cat "$ivc_results/status") || ivc_status=missing
+printf '\nIVC_BENCH_EXIT=%s\n' "$ivc_status"
+sync
+'''
+success_regex = [
+  "(?m)^(?:\\[VM 1\\] )?AXVISOR_IVC_BENCH_RESULT=PASS cases=4 testTime=100 bytes=1232076800 chunks=400\\s*$",
+  "(?m)^IVC_BENCH_EXIT=0\\s*$",
+]
+timeout = 45

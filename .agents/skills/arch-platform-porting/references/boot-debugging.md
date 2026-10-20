@@ -115,22 +115,22 @@ ROC 部署固件会在交接时追加自身控制 DTB 的参数，控制 DTB 中
 
 ## OrangePi-5-Plus Linux 网卡直通
 
-物理网卡用例位于 `apps/axvisor/normal/board-orangepi-5-plus/pci-network`。
-`linux.toml` 使用板卡已部署的 `/guest/linux/orangepi-5-plus` 内核，要求 Rockchip BSP
+物理网卡用例位于 `apps/axvisor/normal/board-ballpick-robot/pci-network`。
+`configs/linux.toml` 使用板卡已部署的 `/guest/linux/orangepi-5-plus` 内核，要求 Rockchip BSP
 版本 `6.1.99-rockchip-rk3588`；无版本号的路径不代表可以使用任意内核。
 客户机通过 virtio-blk 挂载独立的 `/guest/rootfs-aarch64-orangepi-jammy-0.img`
 作为 ext4 根盘，不再使用 `linux/initramfs.cpio`。根盘中的 `r8125` 模块必须与内核
 版本一致，构建、部署及 SHA256 核对步骤见
-[PCIe 网卡应用说明](../../../../apps/axvisor/normal/board-orangepi-5-plus/pci-network/README.md)。
+[PCIe 网卡应用说明](../../../../apps/axvisor/normal/board-ballpick-robot/pci-network/README.md)。
 网线连接直通 RTL8125，用例按 PCI ID `10ec:8125` 和 carrier 选择接口，不依赖固定接口名，
-目标为板卡网络中的 `192.168.1.2`。用例显式选择 PCIe 控制器，并保留 `aliases`、
+目标为板卡网络中的 `10.3.10.60`。用例显式选择 PCIe 控制器，并保留 `aliases`、
 GPIO、SCMI、IOC、PHP GRF 和 PHY GRF 依赖。`pci=nomsi` 明确验证物理 INTx 级联；
 这条证据不代表物理 MSI/ITS 直通已经实现。
 
-通过 `cargo xtask axvisor app board -g normal -t board-orangepi-5-plus/pci-network/ping --board orangepi-5-plus-linux -b BallPick-Robot-Rk3588`
-运行该用例，并按环境添加 `--server`、`--port`。`--board` 选择运行配置，`-b` 指定
-板卡服务登记的物理类型，可通过 `ostool board ls` 核对。测试先校验
-`uname -r` 为 `6.1.99-rockchip-rk3588`，再核验 PCI 身份 `10ec:8125`，通过该接口向 `192.168.1.2`
+通过 `cargo xtask axvisor app board -g normal -t board-ballpick-robot/pci-network/ping --board orangepi-5-plus-linux`
+运行该用例，并按环境添加 `--server`、`--port`。`--board` 选择运行配置，实体板卡
+取自配置中的 `board_type`；换板时用 `--board-type` 覆盖，并通过 `ostool board ls` 核对。测试先校验
+`uname -r` 为 `6.1.99-rockchip-rk3588`，再核验 PCI 身份 `10ec:8125`，通过该接口向 `10.3.10.60`
 发送五个 ICMP 请求，只有在截止时间内收到全部回复才报告成功。
 
 `boot::fdt::core::enrich_guest_config` 必须先执行 `parse_vm_interrupt`，再执行
@@ -177,9 +177,15 @@ RISC-V H 扩展的异常探测由 `ax_cpu::capability::has_hypervisor_extension`
 - 确认运行时报告 `EL: 2`，检查 `ax-hal::KernelMmu`、页表元数据与向量安装均选择 EL2，并在插桩驱动前验证 `ioremap` 后的设备访问。
 - Axvisor QEMU 和板卡用例独占处理器数量契约。测试请求必须丢弃交互快照中的 `smp`，否则陈旧 `tmp/axbuild/.axvisor.toml` 会静默缩小宿主。Phytium 客户机分配逻辑处理器 2 时会退回处理器 0，并可能停在第一次虚拟定时中断，即使虚拟处理器切换本身正确。
 
-## AArch64 客户机镜像缓存发布
+## AArch64 客户机启动内存缓存发布
 
-AxVM 的 `BootImagePlatform::make_guest_memory_visible()` 在客户机执行前发布宿主写入的镜像。宿主通过可缓存别名复制数据，而客户机可能先在 MMU/缓存关闭时修改重定位数据，随后才开启缓存；仅 Clean 会保留干净但陈旧的宿主缓存副本。因此加载器在独占镜像目标范围时使用 CleanAndInvalidate，并完成相应屏障。该操作只解决启动镜像发布，不替代运行期客户机缓存切换、共享内存或 DMA 的一致性协议。Linux KVM 对无 Stage-2 FWB 时非缓存写入与缓存旧副本的风险也有说明：[arm64 KVM 缓存维护](https://github.com/torvalds/linux/blob/master/arch/arm64/kvm/mmu.c)。
+AxVM 的 `BootImagePlatform::make_guest_memory_visible()` 在客户机执行前发布宿主写入的镜像。宿主通过可缓存别名复制数据，而客户机可能先在 MMU/缓存关闭时修改重定位数据，随后才开启缓存；仅 Clean 会保留干净但陈旧的宿主缓存副本。因此加载器在独占镜像目标范围时使用 CleanAndInvalidate，并完成相应屏障。该操作负责启动内存的缓存交接，不替代运行期客户机缓存切换、共享内存或 DMA 的一致性协议。Linux KVM 对无 Stage-2 FWB 时非缓存写入与缓存旧副本的风险也有说明：[arm64 KVM 缓存维护](https://github.com/torvalds/linux/blob/master/arch/arm64/kvm/mmu.c)。
+
+`MemoryBacking::allocate()` 对完整的零初始化 RAM 同样调用缓存发布钩子，且在 backing 发布给映射或客户机前完成。只清理镜像覆盖的页会遗漏客户机早期堆；客户机关闭缓存时复制到堆中的 DTB 可能被干净的旧零缓存遮蔽，启用 MMU 后 CPU 列表解析失败并回退到 CPU 0。不得等客户机已经运行或存在 DMA 写入时再对整个 backing 执行失效。
+
+VM reset 和 stop/start 复用 RAM，分配时的发布不能覆盖上一轮运行留下的缓存。`Owner::prepare_run()` 在旧运行的 vCPU、设备生产者和 RAM 访问端口完全退休，且下一轮镜像与设备准备完成后，对 `PreparedMemoryLayout` 中 `needs_dealloc` 的私有 RAM 再次调用同一缓存交接钩子。必须把完整 RAM 交接放在准备流程末尾，避免后续准备访问重新填充缓存。该范围包括镜像文件之外的 BSS、早期堆和栈；不清零 RAM，不覆盖保留或共享区域，也不绕过直通设备的停止限制。已有 Starry 实板故障停在 MMU 入口最后一条日志，暂停后保存的 PC 实际位于早期 panic 的 WFI；panic 位置指向 `someboot::smp::initialize_percpu_layout()` 的初始化状态断言。复位验证必须确认新客户机 shell 及网络、文件读写恢复，不能只看宿主的 reset 成功提示。
+
+早期启动停在 `Memory Map` 后时，先通过宿主暂停客户机并读取保存的 PC，区分 UART 轮询、异常和停机等待。运行时 CPU 本地状态尚未绑定时，panic 路径本身可能提前停机，串口没有 panic 文本不能证明未发生 panic。对照当前 MPIDR、CPU 元数据和保存的 DTB；在唯一客户机 CPU 已静默、DTB 不再写入且没有 DMA 写入时，比较失效缓存前后的 DTB 副本，以区分实际数据损坏与陈旧缓存。诊断插桩和缓存预读只能用于定位，正式测试前必须移除。
 
 遇到仅虚拟机启动不稳定、早期低地址 MMIO 错误或首次分配器初始化异常时，先核对镜像缓存发布以及实际进入阶段。对照必须保持客户机镜像与负载一致，不把带插桩或缺少宿主竞争负载的成功运行计入性能基准。
 

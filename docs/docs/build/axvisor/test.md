@@ -216,9 +216,9 @@ cargo xtask axvisor test qemu --arch x86_64 \
 ```bash
 cargo xtask axvisor app list
 cargo xtask axvisor app board -g normal \
-  -t board-orangepi-5-plus/pci-network/ping --list
+  -t board-ballpick-robot/pci-network/ping --list
 cargo xtask axvisor app board -g normal \
-  -t board-orangepi-5-plus/kernel-types --list
+  -t board-ballpick-robot/kernel-types --list
 ```
 
 `discovery.rs::app_matches()` 匹配精确目录及其后代，所以上例的 `kernel-types` 会选中其下多个子场景。可用逗号指定多个应用；未匹配的选择器报错。`--list` 只列出配置，不准备资源、不构建或占用板卡。实际运行必须提供 `-t`，避免无选择地运行所有应用。
@@ -229,11 +229,11 @@ cargo xtask axvisor app board -g normal \
 
 ```bash
 cargo xtask axvisor app board -g normal \
-  -t board-orangepi-5-plus/pci-network/ping \
-  --board orangepi-5-plus-linux -b BallPick-Robot-Rk3588
+  -t board-ballpick-robot/pci-network/ping \
+  --board orangepi-5-plus-linux
 ```
 
-执行前按[PCIe 网卡应用说明](https://github.com/rcore-os/tgoskits/blob/dev/apps/axvisor/normal/board-orangepi-5-plus/pci-network/README.md)准备板端镜像和网络。QEMU 应用使用相同的目录选择方式，并通过 `--arch` 或 `--target` 指定构建目标，例如：
+执行前按[PCIe 网卡应用说明](https://github.com/rcore-os/tgoskits/blob/dev/apps/axvisor/normal/board-ballpick-robot/pci-network/README.md)准备板端镜像和网络。QEMU 应用使用相同的目录选择方式，并通过 `--arch` 或 `--target` 指定构建目标，例如：
 
 ```bash
 cargo xtask axvisor app qemu --arch aarch64 \

@@ -352,10 +352,10 @@ class CiPlanTests(unittest.TestCase):
         self.assertIn("--app qemu-timer-stress/gicv3-timer-stress", selections[0].command)
 
     def test_nightly_only_suite_changes_keep_static_checks_without_running_board(self):
+        # Only registered nightly suites route here; disabled suites fail planning.
         for path in (
             "apps/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark/benchmark/board-orangepi-5-plus-ivc-benchmark.toml",
-            "apps/axvisor/normal/board-orangepi-5-plus/pci-network/ping/board-orangepi-5-plus-linux.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/performance/board-orangepi-5-plus-vcpu-perf.toml",
             "benchmarks/axvisor/board-orangepi-5-plus/task-switch/board-orangepi-5-plus-task-switch.toml",
             "benchmarks/starry/block-rw-bench/board-orangepi-5-plus.toml",

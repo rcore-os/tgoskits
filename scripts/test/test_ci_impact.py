@@ -208,7 +208,7 @@ class CiImpactTests(unittest.TestCase):
         self,
     ) -> None:
         path = Path(
-            "apps/axvisor/normal/board-orangepi-5-plus/pci-network/ping/"
+            "apps/axvisor/normal/board-ballpick-robot/pci-network/ping/"
             "board-orangepi-5-plus-linux.toml"
         )
 

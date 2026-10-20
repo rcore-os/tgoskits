@@ -1,0 +1,111 @@
+board_type = "BallPick-Robot"
+timeout = 3600
+uboot_cmd = ["setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"]
+fail_regex = ["exited with a fault", "panicked at", "Kernel panic - not syncing", "Failed to initialize guest VM", "Failed to start VM", "(?m)^CASE_FAILED\\b", "(?m)^KERNEL_TYPES_SETUP_FAILED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = '''
+vm console 1
+'''
+timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "root@ubuntu:~#"
+shell_cmd = '''
+{
+mkdir -p /proc /sys /dev /tmp &&
+(mount -t proc proc /proc 2>/dev/null || grep -q ' /proc proc ' /proc/mounts) &&
+{ [ -d /sys/class/net ] || mount -t sysfs sysfs /sys; } &&
+ip link set lo up &&
+setup=KERNEL_TYPES_SETUP &&
+printf '\n%s_READY\n' "$setup" || printf '\n%s_FAILED\n' "$setup"
+}
+'''
+success_regex = ["(?m)^KERNEL_TYPES_SETUP_READY\\s*$"]
+timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@ubuntu:~#"
+shell_cmd = '''
+sh -s -- linux-lmbench <<'GUEST_CASE'
+#!/bin/sh
+# Run inside the selected guest. Exit status and result data both gate success.
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+case_name=${1:?Missing case name}
+mkdir -p /var/tmp/kernel-types
+results=$(mktemp -d "/var/tmp/kernel-types/$case_name.XXXXXX")
+tcp_server=
+cleanup() {
+    if [ -n "$tcp_server" ]; then
+        timeout 10 "$tcp_server" -S 127.0.0.1 >/dev/null 2>&1 || return 1
+        tcp_server=
+    fi
+    rm -rf "$results/lat-fs"
+    sync
+}
+on_exit() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    cleanup || status=1
+    if [ "$status" -ne 0 ]; then
+        for logfile in "$results"/*.log; do
+            if [ -f "$logfile" ]; then
+                printf "LOG %s\n" "$logfile"
+                timeout -k 2 5 tail -n 30 "$logfile" || printf "Log unavailable: %s\n" "$logfile"
+            fi
+        done
+        printf '\nCASE_%s case=%s exit=%s results=%s\n' FAILED "$case_name" "$status" "$results"
+    fi
+    exit "$status"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+
+# Fixed representatives of all six categories in the source plan.
+# This is a category profile, not upstream's complete make-results suite.
+lm=/guest-tests/lmbench/bin/Linux
+df -Pk "$results"
+df -Pi "$results"
+run_metric() {
+    metric=$1
+    shift
+    printf "METRIC_START %s\n" "$metric"
+    deadline=180
+    if [ "$metric" = filesystem ]; then deadline=600; fi
+    started=$(date +%s)
+    timeout -k 5 "$deadline" "$@" >"$results/$metric.log" 2>&1
+    printf 'METRIC_ELAPSED %s seconds=%s\n' "$metric" "$(($(date +%s) - started))"
+    test -s "$results/$metric.log"
+    case "$metric" in
+        cpu) pattern='^integer add: [0-9]+[.][0-9]+' ;;
+        memory) pattern='^[0-9]+[.][0-9]+[[:space:]]+[0-9]+[.][0-9]+' ;;
+        context-switch) pattern='^2[[:space:]]+[0-9]+[.][0-9]+' ;;
+        ipc) pattern='^Pipe latency: [0-9]+[.][0-9]+' ;;
+        filesystem) pattern='^[0-9]+k[[:space:]]+[1-9][0-9]*[[:space:]]+[0-9]+[[:space:]]+[0-9]+' ;;
+        network) pattern='^TCP latency using .*: [0-9]+[.][0-9]+' ;;
+    esac
+    grep -Eq "$pattern" "$results/$metric.log"
+    printf 'METRIC %s\n' "$metric"
+    cat "$results/$metric.log"
+}
+run_metric cpu "$lm/lat_ops" -N 5
+run_metric memory "$lm/bw_mem" -N 5 8m rd
+run_metric context-switch "$lm/lat_ctx" -N 5 -s 0 2
+run_metric ipc "$lm/lat_pipe" -N 5
+mkdir "$results/lat-fs"
+run_metric filesystem "$lm/lat_fs" -N 5 "$results/lat-fs"
+tcp_server=$lm/lat_tcp
+"$tcp_server" -s
+run_metric network "$tcp_server" -N 5 127.0.0.1
+cleanup
+trap - EXIT HUP INT TERM
+printf '\nCASE_%s case=%s results=%s\n' PASSED "$case_name" "$results"
+
+GUEST_CASE
+'''
+success_regex = ["(?m)^CASE_PASSED case=linux-lmbench results="]
+timeout = 1200

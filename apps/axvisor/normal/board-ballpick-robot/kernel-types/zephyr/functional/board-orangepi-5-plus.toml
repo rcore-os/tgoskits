@@ -1,0 +1,35 @@
+board_type = "BallPick-Robot"
+timeout = 3600
+uboot_cmd = ["setenv bootargs root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=3"]
+fail_regex = ["exited with a fault", "panicked at", "Kernel panic - not syncing", "Failed to initialize guest VM", "Failed to start VM", "(?m)^CASE_FAILED\\b", "(?m)^KERNEL_TYPES_SETUP_FAILED\\s*$"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = '''
+vm console 3
+'''
+timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = '''
+kernel version
+'''
+success_regex = ["Zephyr version [0-9]+\\.[0-9]+\\.[0-9]+"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = '''
+kernel thread list
+'''
+success_regex = ["shell_uart", "idle"]
+timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "zephyr:~$"
+shell_cmd = '''
+device list
+'''
+success_regex = ["\\(READY\\)"]
+timeout = 60

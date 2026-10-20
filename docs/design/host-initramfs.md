@@ -164,7 +164,7 @@ Axvisor HTTP 用例显式切到 NVMe 根，删除、重建并再次启动 VM，�
 
 ### 7.1 发布镜像
 
-`ensure_guest_image_bundles()` 识别 `${workspace}/target/axbuild/images/<image-name>/...`，复用镜像 registry、SHA-256 校验和解包缓存。kernel、DTB、BIOS、UEFI firmware 和客户机 initrd 均检查对应文件。OrangePi IVC benchmark 使用 `orangepi/ivc/guest/zephyr/zephyr-ivc-benchmark.bin`；virtio-net-peer 使用 `qemu-aarch64` 和 `initramfs-aarch64-busybox.cpio.gz`；Phytium Pi 使用 `phytiumpi`。构建目录改名时通过 `resolve_axbuild_artifact_path()` 转到实际 target 目录。
+`ensure_guest_image_bundles()` 识别 `${workspace}/target/axbuild/images/<image-name>/...`，复用镜像 registry、SHA-256 校验和解包缓存。kernel、DTB、BIOS、UEFI firmware 和客户机 initrd 均检查对应文件。virtio-net-peer 使用 `qemu-aarch64` 和 `initramfs-aarch64-busybox.cpio.gz`；Phytium Pi 使用 `phytiumpi`。OrangePi IVC 应用改用板卡 `/guest/starry`、`/guest/zephyr` 中的发布内核、统一 shell 和配套 DTB，StarryOS 的可写根盘保持独立部署，不再引用旧的 `orangepi/ivc/guest/zephyr/zephyr-ivc-benchmark.bin`。构建目录改名时通过 `resolve_axbuild_artifact_path()` 转到实际 target 目录。
 
 ### 7.2 定制镜像
 
