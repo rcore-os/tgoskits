@@ -25,7 +25,10 @@ const STACK_TOP: usize = STACK + 4096;
 const DATA: usize = STACK_TOP;
 const ORIGINAL_WORD: usize = 0x1234_5678;
 const REPLACEMENT_WORD: usize = 0x8765_4321;
+const CYCLE_OVERFLOW: u64 = 1 << 31;
+const SAMPLE_PERIOD: u64 = 100_000;
 static USER_IRQ_PC: AtomicUsize = AtomicUsize::new(0);
+static KERNEL_IRQS: AtomicUsize = AtomicUsize::new(0);
 static PARK_READY: AtomicBool = AtomicBool::new(false);
 static RESUME: AtomicBool = AtomicBool::new(false);
 static PARK: AxWaitQueueHandle = AxWaitQueueHandle::new();
@@ -78,12 +81,25 @@ fn handle(_: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     // SAFETY: the affine test owns this PMU, and its user-entry register
     // session ended before IRQs could be taken. Native IRQ entry excludes reentry.
     let mut pmu = unsafe { Pmu::current() }.unwrap();
-    if pmu.overflow_status() & (1 << 31) == 0 {
+    if pmu.overflow_status() & CYCLE_OVERFLOW == 0 {
         return ax_hal::irq::IrqReturn::Unhandled;
     }
     pmu.disable(CounterId::CYCLE).unwrap();
     pmu.disable_overflow_irq(CounterId::CYCLE).unwrap();
-    let snapshot = ax_hal::irq::interrupted_context().expect("user IRQ snapshot");
+    let snapshot = ax_hal::irq::interrupted_context().expect("PMU IRQ snapshot");
+    if snapshot.privilege == ax_cpu::trap::InterruptedPrivilege::Kernel {
+        let kernel = ax_hal::mem::virtual_address_space().unwrap().kernel();
+        assert!(kernel.contains(snapshot.pc.into()));
+        assert!(kernel.contains(snapshot.sp.into()));
+        // EL0-only counting does not guarantee EL0 IRQ delivery. The stopped
+        // counter and cleared overflow can be rearmed here: it cannot advance
+        // again until EL0 resumes. A kernel snapshot never completes the test.
+        pmu.preload(CounterId::CYCLE, SAMPLE_PERIOD).unwrap();
+        pmu.enable_overflow_irq(CounterId::CYCLE).unwrap();
+        pmu.enable(CounterId::CYCLE).unwrap();
+        KERNEL_IRQS.fetch_add(1, Ordering::Release);
+        return ax_hal::irq::IrqReturn::Handled;
+    }
     assert_eq!(snapshot.privilege, ax_cpu::trap::InterruptedPrivilege::User);
     assert_eq!(snapshot.sp, STACK_TOP);
     assert_eq!(snapshot.fp, STACK_TOP);
@@ -161,8 +177,8 @@ fn user_thread(program: UserProgram, cpu: usize, root: ax_cpu::PhysAddr) {
     )
     .unwrap();
     ax_cpu::interrupt::disable_irqs();
-    // SAFETY: only EL0 execution increments this cycle counter. The session
-    // ends before the prepared user entry unmasks IRQs; no PMU alias escapes.
+    // SAFETY: this affine task owns the local PMU. IRQs stay masked through
+    // configuration and software overflow; the session ends before unmasking.
     unsafe {
         let mut pmu = Pmu::current().unwrap();
         pmu.configure(
@@ -175,12 +191,30 @@ fn user_thread(program: UserProgram, cpu: usize, root: ax_cpu::PhysAddr) {
             },
         )
         .unwrap();
-        pmu.preload(CounterId::CYCLE, 100_000).unwrap();
+        pmu.preload(CounterId::CYCLE, SAMPLE_PERIOD).unwrap();
         pmu.enable_overflow_irq(CounterId::CYCLE).unwrap();
         pmu.enable(CounterId::CYCLE).unwrap();
         pmu.start();
+        // Force a real overflow IRQ in EL1 before testing the EL0 snapshot.
+        // This task owns the local PMU and IRQs stay masked until the session ends.
+        core::arch::asm!(
+            "msr PMOVSSET_EL0, {mask}",
+            "isb",
+            mask = in(reg) CYCLE_OVERFLOW,
+            options(nostack, preserves_flags),
+        );
     }
     ax_cpu::interrupt::enable_irqs();
+    let kernel_irq_started = std::time::Instant::now();
+    while KERNEL_IRQS.load(Ordering::Acquire) == 0 {
+        assert!(
+            kernel_irq_started.elapsed() < std::time::Duration::from_secs(5),
+            "forced EL1 PMU overflow IRQ was not delivered"
+        );
+        core::hint::spin_loop();
+    }
+    assert_eq!(USER_IRQ_PC.load(Ordering::Acquire), 0);
+    std::println!("CPU_PMU_KERNEL_CORE cpu={cpu}");
     context.set_ip(program.interrupt_loop);
     while USER_IRQ_PC.load(Ordering::Acquire) == 0 {
         assert!(matches!(context.enter().unwrap(), ReturnReason::Interrupt));
@@ -193,6 +227,7 @@ fn user_thread(program: UserProgram, cpu: usize, root: ax_cpu::PhysAddr) {
 fn run_cpu(cpu: usize, hardware_tag: u16) {
     super::pin_to(cpu);
     USER_IRQ_PC.store(0, Ordering::Release);
+    KERNEL_IRQS.store(0, Ordering::Release);
     PARK_READY.store(false, Ordering::Release);
     RESUME.store(false, Ordering::Release);
     let mut code = ax_alloc::GlobalPage::alloc_contiguous(1, 4096).unwrap();

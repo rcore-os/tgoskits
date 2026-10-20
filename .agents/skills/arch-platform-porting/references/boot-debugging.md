@@ -568,6 +568,8 @@ EL1/EL2 页表分别使用 `El1Pte`、`El2Pte`，启动 feature 只选择消费�
 
 ArceOS 的用户态 CPU 集成镜像使用 `freestanding = true` 构建配置，经共享 `BareKernelLinkMode::Pie` 选择裸机 JSON、core/alloc 和真实内核链接脚本。普通 RustStd 镜像仍为默认值。不要用内核 TLS 存储绕过 `uspace` 的寄存器所有权契约，也不要用缺少 `-Tlinker.x` 的普通裸机链接替代完整启动映像。
 
+AArch64 的 PMU `exclude_kernel` 只过滤计数事件；[IRQ 是异步异常](https://developer.arm.com/-/media/Arm%20Developer%20Community/PDF/Learn%20the%20Architecture/Exception%20model.pdf)，不能据此要求溢出 IRQ 一定打断 EL0。[用户入口用例](../../../../test-suit/arceos/cpu/user-entry/src/aarch64.rs)用 `PMOVSSET_EL0` 先触发真实 EL1 IRQ，检查内核 PC/SP 后清除并重装计数器，再要求真实 EL0 IRQ 满足原 PC/SP/FP 契约。Kernel 快照不得写入用户成功状态；缺少真实 User 快照仍必须失败。注入时保持本地 IRQ 关闭并结束 PMU 独占借用后才开放 IRQ，保留原 60 秒 QEMU 截止时间。
+
 异常修复表保留链接时原位记录，不能在每核初始化时排序。AArch64、x86 和 LoongArch 的字段相对偏移会在原样移动表项后指向错误位置；RISC-V 当前格式以 section 起点为基址。CPU 使用只读查找，无需初始化锁或堆分配。`cpu/user-entry/src/fixup.rs` 用逆序记录和实际缺页验证这一契约，不能用源码字符串断言替代。
 
 
