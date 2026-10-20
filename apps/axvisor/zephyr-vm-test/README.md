@@ -27,7 +27,8 @@ findmnt -T /guest/axvisor/zephyr
 ### 配置说明
 
 - `configs/zephyr.toml`：客户机 ID 为 `1`，绑定物理 CPU2，入口为 `0x4000100c`，镜像和 DTB
-  位于 `/guest/axvisor/zephyr/`。`console0` 使用 DTB 指定的 PL011 地址与中断，接到调试串口。
+  位于 `/guest/axvisor/zephyr/`。配置不显式声明 `console0`，由 AxVisor 从原 DTB 取得
+  PL011 地址 `0x09000000` 和中断号 33，接到调试串口。
   固件还初始化 UART6，本用例为它提供 `null` 后端的虚拟串口，不直通物理 UART6。
 - `configs/build.toml`：通过 `vm_configs` 自动打包客户机配置；不需要手工复制 TOML 到板端。
 - `configs/board-shell.toml`：提供板卡类型默认值，服务端地址与端口由命令行传入；没有自动检查步骤。

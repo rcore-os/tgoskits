@@ -17,12 +17,7 @@ memory_regions = [[0x4000_0000, 0x0800_0000, 0x7, 0]]
 passthrough = []
 disabled = []
 
-# Inherit the explicit guest DTB's PL011 address, IRQ, and firmware identity.
-[[devices.virtual]]
-id = "console0"
-model = "pl011-mmio"
-clock_hz = 24000000
-backend = { type = "host-console" }
+# Omit console0 so the supplied guest DTB owns the console address and IRQ.
 
 # This firmware initializes UART6 too. Keep it virtual with no physical output.
 [[devices.virtual]]
