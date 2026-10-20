@@ -201,6 +201,33 @@ mod tests {
 
     #[test]
     fn cross_wrappers_select_tools_and_preserve_process_contract() {
+        const CHILD_ENV: &str = "AXBUILD_TEST_CROSS_WRAPPER_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Other parallel tests can fork while these scripts are being
+            // written and retain their writable descriptors until exec.
+            // Create and execute the fixtures in an isolated test process.
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "test::build::toolchain::tests::cross_wrappers_select_tools_and_preserve_process_contract",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated wrapper test failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+                "isolated wrapper test was not selected: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let layout = case_assets::case_asset_layout(
             &root.path().join("target"),
