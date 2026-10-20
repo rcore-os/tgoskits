@@ -1,0 +1,35 @@
+[base]
+id = 1
+name = "linux"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x100]
+
+[kernel]
+# Use a virtualized kernel with 16550, VirtIO block/net and ext4 support.
+entry_point = 0x8020_0000
+kernel_load_addr = 0x8020_0000
+kernel_path = "/guest/linux/orangepi-5-plus"
+cmdline = "root=/dev/vda rw console=ttyS0 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 devtmpfs.mount=1 init=/bin/sh ignore_loglevel loglevel=8"
+dtb_load_addr = 0x8000_0000
+memory_regions = [[0x8000_0000, 0x4000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "console0"
+model = "uart16550-mmio"
+address = 0xfeb50000
+
+[[devices.virtual]]
+id = "guest-rootfs"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-orangepi-jammy-0.img"
+filesystem = "ext4"
+
+[[devices.virtual]]
+id = "guest-net"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x54, 0x01, 0x01]

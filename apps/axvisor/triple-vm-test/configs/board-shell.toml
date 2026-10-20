@@ -1,0 +1,4 @@
+# Supply server/port at runtime; --board-type may override this default.
+board_type = "BallPick-Robot"
+shell_check_steps = []
+fail_regex = []

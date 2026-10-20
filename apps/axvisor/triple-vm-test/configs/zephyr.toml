@@ -1,0 +1,35 @@
+[base]
+id = 3
+name = "zephyr"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x200]
+
+[kernel]
+# Use the shell image and its unchanged DTB from the same build.
+entry_point = 0x4000_100c
+kernel_load_addr = 0x4000_0000
+kernel_path = "/guest/axvisor/zephyr/zephyr.bin"
+dtb_path = "/guest/axvisor/zephyr/zephyr.dtb"
+memory_regions = [[0x4000_0000, 0x0800_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []
+
+# Inherit the explicit guest DTB's PL011 address, IRQ, and firmware identity.
+[[devices.virtual]]
+id = "console0"
+model = "pl011-mmio"
+clock_hz = 24000000
+backend = { type = "host-console" }
+
+# This firmware initializes UART6 too. Keep it virtual with no physical output.
+[[devices.virtual]]
+id = "uart6"
+model = "uart16550-mmio"
+address = 0xfeb90000
+clock_hz = 16000000
+register_shift = 2
+register_width = 4
+backend = { type = "null" }

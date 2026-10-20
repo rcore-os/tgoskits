@@ -1,0 +1,4 @@
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-driver/virtio-blk", "ax-driver/virtio-net"]
+log = "Warn"
+max_cpu_num = 1

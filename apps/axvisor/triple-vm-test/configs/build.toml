@@ -1,0 +1,14 @@
+# Package all three configurations; start each VM from the AxVisor shell.
+features = [
+  "ax-driver/rk3588-cpufreq",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "apps/axvisor/triple-vm-test/configs/linux.toml",
+  "apps/axvisor/triple-vm-test/configs/starry.toml",
+  "apps/axvisor/triple-vm-test/configs/zephyr.toml",
+]
