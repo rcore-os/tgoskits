@@ -24,6 +24,7 @@ class QemuConfig(NamedTuple):
     args: list[str]
     uefi: bool
     to_bin: bool
+    cmdline: str | None
 
 
 class LaunchPlan(NamedTuple):
@@ -44,7 +45,10 @@ def load_qemu_config(path: Path) -> QemuConfig:
     to_bin = data.get("to_bin")
     if uefi is not True or to_bin is not True:
         raise ValueError(f"{path} must keep `uefi = true` and `to_bin = true`")
-    return QemuConfig(args=list(args), uefi=uefi, to_bin=to_bin)
+    cmdline = data.get("cmdline")
+    if cmdline is not None and not isinstance(cmdline, str):
+        raise ValueError(f"{path} must define `cmdline` as a string when present")
+    return QemuConfig(args=list(args), uefi=uefi, to_bin=to_bin, cmdline=cmdline)
 
 
 def replace_managed_rootfs(
@@ -110,6 +114,7 @@ def prepare_launch_plan(
     args: argparse.Namespace,
     driver_args: Sequence[str],
 ) -> LaunchPlan:
+    config = load_qemu_config(args.qemu_config)
     for path, label in [
         (args.qemu, "QEMU executable"),
         (args.qemu_img, "qemu-img executable"),
@@ -147,8 +152,9 @@ def prepare_launch_plan(
     boot_dir = esp / "EFI" / "BOOT"
     boot_dir.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(args.kernel, boot_dir / "BOOTX64.EFI")
+    if config.cmdline is not None:
+        (boot_dir / "cmdline.txt").write_text(config.cmdline, encoding="utf-8")
 
-    config = load_qemu_config(args.qemu_config)
     base_args = replace_managed_rootfs(config.args, overlay)
     boot_args = [
         "-drive",

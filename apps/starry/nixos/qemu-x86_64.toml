@@ -1,3 +1,4 @@
+cmdline = "init=/init"
 args = [
     "-machine",
     "q35",

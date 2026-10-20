@@ -1,5 +1,26 @@
 # 启动调试参考
 
+## StarryNixOS 块根初始化入口
+
+`apps/starry/nixos/flake.nix` 的 `mkRootfs` 生成 `/init` 链接；块根默认候选
+不包含该路径，NixOS 的 `qemu-x86_64.toml` 必须通过 `cmdline = "init=/init"`
+显式选择它。普通应用由 `ostool` 在 ESP 写入 `EFI/BOOT/cmdline.txt`，
+独立 `nixos-tests/starryos/launch-vm.py::prepare_launch_plan()` 也从共享配置
+读取该字段并写入自己的 ESP；`someboot::efi_stub::load_efi_payload()` 在没有
+UEFI load options 时读取该文件。排查候选入口 panic 时先检查实际 ESP
+及 `init_options()` 收到的参数，不给所有块根添加 NixOS 专用默认路径。
+验收仍须获得 pid1、activation、systemd、marker 与
+`STARRY_NIXOS_SYSTEM_PASSED` 的完整有序证据；ESP 准备测试不能替代真实启动。
+
+宿主没有 Nix 时，先检查 `.github/ci/checks/starry-apps.toml` 中
+`starry-nixos-x86-64-qemu` 的容器入口。该检查通过 `nixos/nix:2.33.1`
+与 `nix develop --accept-flake-config -c` 提供固定开发环境，运行
+`cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix`；
+不要仅因宿主缺少 Nix 就认定无法执行验收。
+复用已有工作区时，为容器指定独立的 `CARGO_TARGET_DIR`。宿主构建脚本
+可能依赖 `/lib64/ld-linux-x86-64.so.2`；在 Nix 容器中复用这些产物会报
+文件存在却无法执行的 `No such file or directory`。
+
 ## axloader x86_64 UEFI OTA 与恢复
 
 迁移后的可移动介质启动路径固定是 `EFI/BOOT/BOOTX64.EFI` 小型启动器；
