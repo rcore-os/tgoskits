@@ -133,13 +133,18 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    fn write_script(directory: &Path, name: &str, body: &str) -> PathBuf {
+    fn write_script(directory: &Path, name: &str, body: &str) -> (PathBuf, fs::File) {
         use std::os::unix::fs::PermissionsExt;
 
         let path = directory.join(name);
         fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        path
+        // Model a writer retained by another child between fork and exec.
+        // Executing this fresh inode directly then deterministically hits
+        // ETXTBSY on Linux, even though its contents are already complete. Use
+        // the existing shell as the executable and keep the fixture as data.
+        let writer = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        (path, writer)
     }
 
     #[test]
@@ -163,7 +168,7 @@ mod tests {
         let target_dir = root.path().join("workspace/target");
         fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(&target_dir).unwrap();
-        let script = write_script(
+        let (script, _writer) = write_script(
             &workspace,
             "prepare.sh",
             concat!(
@@ -175,7 +180,10 @@ mod tests {
         // Declaring only `host_prepare` keeps the other sidecar field optional.
         fs::write(
             workspace.join(GUEST_BUILDS_FILE),
-            format!("host_prepare = [\"{}\", \"extra\"]\n", script.display()),
+            format!(
+                "host_prepare = [\"/bin/sh\", \"{}\", \"extra\"]\n",
+                script.display()
+            ),
         )
         .unwrap();
         let run_config = workspace.join("qemu-aarch64.toml");
@@ -206,14 +214,14 @@ mod tests {
         let root = tempdir().unwrap();
         let workspace = root.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
-        let script = write_script(
+        let (script, _writer) = write_script(
             &workspace,
             "prepare.sh",
             "printf 'partial' > resources.bin\nexit 3\n",
         );
         fs::write(
             workspace.join(GUEST_BUILDS_FILE),
-            format!("host_prepare = [\"{}\"]\n", script.display()),
+            format!("host_prepare = [\"/bin/sh\", \"{}\"]\n", script.display()),
         )
         .unwrap();
         let run_config = workspace.join("qemu-aarch64.toml");
@@ -226,7 +234,11 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("prepare.sh"));
-        assert!(error.to_string().contains("3"));
+        assert!(error.to_string().contains("/bin/sh"));
+        assert!(error.to_string().contains("exit status: 3"));
+        assert_eq!(
+            fs::read(workspace.join("resources.bin")).unwrap(),
+            b"partial"
+        );
     }
 }
