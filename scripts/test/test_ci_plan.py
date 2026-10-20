@@ -468,39 +468,60 @@ class CiPlanTests(unittest.TestCase):
     def test_pull_request_crate_impact_selects_every_check_for_matching_os(
         self,
     ) -> None:
-        context = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
-            repository_owner="rcore-os",
-            event_name="pull_request",
-            head_repository="rcore-os/tgoskits",
-            base_ref="dev",
+        common = {
+            "name": "Synthetic check",
+            "group": "Workspace",
+            "phase": "test",
+            "command": "true",
+            "environment": "host",
+            "runs_on": ["ubuntu-latest"],
+            "source": "fixture.toml",
+        }
+        checks = [
+            dict(common, id="static", phase="static"),
+            dict(common, id="shared"),
+            dict(
+                common,
+                id="local",
+                group="ArceOS",
+                impact_targets=["arceos:x86_64"],
+            ),
+            # Display groups do not own OS impact. An OS-wide change also
+            # selects a dependent check hosted by another group/architecture.
+            dict(
+                common,
+                id="cross-group",
+                group="AxVisor",
+                impact_targets=["arceos:riscv64"],
+            ),
+            dict(
+                common,
+                id="unrelated",
+                group="Starry",
+                impact_targets=["starry:x86_64"],
+            ),
+        ]
+        context = ci_plan.replace(
+            self.upstream,
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
-                changed_paths=("os/arceos/modules/axhal/src/lib.rs",),
-                changed_packages=("ax-hal",),
-                affected_packages=("ax-hal",),
+                changed_paths=("components/shared-hal/src/lib.rs",),
+                changed_packages=("shared-hal",),
+                affected_packages=("shared-hal",),
                 affected_oses=("arceos",),
-                targets=tuple(
-                    f"arceos:{arch}"
-                    for arch in ci_plan.ARCH_TARGETS
-                ),
+                targets=("arceos:x86_64",),
             ),
         )
 
-        plan = ci_plan.build_main_plan(context)
+        plan = ci_plan._build_main_plan(checks, context)
         rows = self.assert_unique_ids(main_test_rows(plan))
 
-        self.assert_selects_full_group(rows, "Workspace")
-        self.assert_selects_full_group(rows, "ArceOS")
-        self.assertEqual(
-            {row["group"] for row in rows.values()},
-            {"Workspace", "ArceOS"},
-        )
+        self.assertEqual(set(rows), {"shared", "local", "cross-group"})
         self.assertTrue(plan["workspace_required"])
         self.assertTrue(plan["arceos_required"])
         self.assertFalse(plan["starry_required"])
-        self.assertFalse(plan["axvisor_required"])
+        self.assertTrue(plan["axvisor_required"])
 
     def test_pull_request_impact_package_selects_standalone_check(self) -> None:
         context = ci_plan.PlanContext(

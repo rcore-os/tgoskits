@@ -209,7 +209,8 @@ cases = ["smoke-vmx", "direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx", "pc
 
 [[check]]
 id = "test-axloader-http-smoke"
-impact_packages = ["axloader", "someboot", "arceos-helloworld", "starryos", "axvisor"]
+impact_packages = ["axloader", "someboot"]
+impact_targets = ["arceos:x86_64", "starry:x86_64", "axvisor:x86_64"]
 name = "UEFI x86_64 · AxLoader 3OS HTTP boot"
 runner = "kvm-intel"
 cache_key = ""
