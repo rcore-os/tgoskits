@@ -1,16 +1,19 @@
 /*
- * test_file_io_edge.c -- ftruncate/pwrite64/lseek 负值参数测试
+ * test_file_io_edge.c -- file I/O edge cases
  *
- * 验证：
- *   1. ftruncate: 负 length 应返回 EINVAL
- *   2. pwrite64: 负 offset 应返回 EINVAL
- *   3. lseek SEEK_SET: 负 offset 应返回 EINVAL
+ * Verify:
+ *   1. ftruncate: negative length returns EINVAL
+ *   2. pwrite64: negative offset returns EINVAL
+ *   3. lseek SEEK_SET: negative offset returns EINVAL
+ *   4. readahead: descriptor access, object type, and count validation
  */
 
 #include "test_framework.h"
 #include <fcntl.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
 #include <string.h>
 #include <errno.h>
 
@@ -28,9 +31,140 @@ static int create_test_file(void)
     return fd;
 }
 
+static void test_readahead(void)
+{
+    int fd;
+    int pipefd[2] = {-1, -1};
+
+    /*
+     * Linux v6.12 (adc218676eef) ksys_readahead() accepts a readable
+     * regular file and leaves the shared file offset unchanged.
+     */
+    fd = create_test_file();
+    CHECK(fd >= 0, "readahead regular file: create file");
+    if (fd >= 0) {
+        close(fd);
+        fd = open(TEST_FILE, O_RDONLY);
+        CHECK(fd >= 0, "readahead regular file: open O_RDONLY");
+    }
+    if (fd >= 0) {
+        CHECK_RET(lseek(fd, 3, SEEK_SET), 3,
+                  "readahead regular file: set offset 3");
+        CHECK_RET(syscall(SYS_readahead, fd, (long)0, (size_t)4096), 0,
+                  "readahead(readable regular file) returns 0");
+        CHECK_RET(lseek(fd, 0, SEEK_CUR), 3,
+                  "readahead leaves the file offset unchanged");
+
+        /*
+         * v6.12 does not reject a negative offset in ksys_readahead() or
+         * generic_fadvise(). The forced readahead starts past EOF and is a
+         * no-op, so the syscall still returns 0.
+         */
+        CHECK_RET(syscall(SYS_readahead, fd, (long)-1, (size_t)4096), 0,
+                  "readahead negative offset is a no-op on Linux v6.12");
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)0,
+                          (size_t)INT64_MAX + 1),
+                  EINVAL,
+                  "readahead count above signed loff_t returns EINVAL");
+        close(fd);
+    }
+    unlink(TEST_FILE);
+
+    /* The read-mode check precedes type and count validation. */
+    fd = create_test_file();
+    CHECK(fd >= 0, "readahead write-only fd: create file");
+    if (fd >= 0) {
+        close(fd);
+        fd = open(TEST_FILE, O_WRONLY);
+        CHECK(fd >= 0, "readahead write-only fd: open O_WRONLY");
+    }
+    if (fd >= 0) {
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)0, (size_t)4096), EBADF,
+                  "readahead(O_WRONLY fd) returns EBADF");
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)-1, (size_t)4096), EBADF,
+                  "readahead(O_WRONLY fd, negative offset) returns EBADF");
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)0,
+                          (size_t)INT64_MAX + 1),
+                  EBADF,
+                  "readahead(O_WRONLY fd, oversized count) returns EBADF");
+        close(fd);
+    }
+    unlink(TEST_FILE);
+
+    /* O_PATH descriptors have no read mode and are rejected with EBADF. */
+    fd = create_test_file();
+    CHECK(fd >= 0, "readahead O_PATH fd: create file");
+    if (fd >= 0) {
+        close(fd);
+        fd = open(TEST_FILE, O_PATH | O_CLOEXEC);
+        CHECK(fd >= 0, "readahead O_PATH fd: open O_PATH");
+    }
+    if (fd >= 0) {
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)0, (size_t)4096), EBADF,
+                  "readahead(O_PATH fd) returns EBADF");
+        close(fd);
+    }
+    unlink(TEST_FILE);
+
+    /* A memfd is backed by a regular file and supports readahead. */
+    fd = (int)syscall(SYS_memfd_create, "readahead", 0);
+    CHECK(fd >= 0, "readahead memfd: create");
+    if (fd >= 0) {
+        CHECK_RET(syscall(SYS_readahead, fd, (long)0, (size_t)4096), 0,
+                  "readahead(memfd) returns 0");
+        close(fd);
+    }
+
+    /* Pipes and directories are not readahead-capable file types. */
+    CHECK_RET(pipe(pipefd), 0, "readahead pipe: create pipe");
+    if (pipefd[0] >= 0 && pipefd[1] >= 0) {
+        CHECK_ERR(syscall(SYS_readahead, pipefd[0], (long)0, (size_t)4096),
+                  EINVAL, "readahead(read end of pipe) returns EINVAL");
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
+
+    fd = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(fd >= 0, "readahead directory: open directory");
+    if (fd >= 0) {
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)0, (size_t)4096), EINVAL,
+                  "readahead(directory fd) returns EINVAL");
+        close(fd);
+    }
+
+    /* A File wrapper is not sufficient: character devices are unsupported. */
+    fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    CHECK(fd >= 0, "readahead character device: open /dev/null");
+    if (fd >= 0) {
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)0, (size_t)4096), EINVAL,
+                  "readahead(character device) returns EINVAL");
+        close(fd);
+    }
+
+    fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    CHECK(fd >= 0, "readahead write-only character device: open /dev/null");
+    if (fd >= 0) {
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)0, (size_t)4096), EBADF,
+                  "readahead(write-only character device) returns EBADF");
+        close(fd);
+    }
+
+    /* Closed and invalid descriptors take precedence over type checks. */
+    fd = create_test_file();
+    CHECK(fd >= 0, "readahead closed fd: create file");
+    if (fd >= 0) {
+        close(fd);
+        CHECK_ERR(syscall(SYS_readahead, fd, (long)0, (size_t)4096), EBADF,
+                  "readahead(closed fd) returns EBADF");
+    }
+    CHECK_ERR(syscall(SYS_readahead, -1, (long)0, (size_t)4096), EBADF,
+              "readahead(invalid fd) returns EBADF");
+    unlink(TEST_FILE);
+}
+
 int main(void)
 {
-    TEST_START("file_io_edge: ftruncate/pwrite64/lseek 负值参数测试");
+    TEST_START("file_io_edge: ftruncate/pwrite64/lseek/readahead edge cases");
 
     /* ftruncate 正常截断 */
     int fd = create_test_file();
@@ -121,6 +255,8 @@ int main(void)
         close(fd);
     }
     unlink(TEST_FILE);
+
+    test_readahead();
 
     TEST_DONE();
 }

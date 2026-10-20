@@ -9,7 +9,7 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     __kernel_off_t, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_KEEP_SIZE,
-    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_APPEND,
+    FALLOC_FL_PUNCH_HOLE, FALLOC_FL_ZERO_RANGE, O_ACCMODE, O_APPEND, O_PATH, O_WRONLY,
 };
 use syscalls::Sysno;
 
@@ -532,20 +532,49 @@ pub fn sys_fadvise64(
     Ok(0)
 }
 
-/// Provide Linux's advisory `readahead(2)` contract for regular files.
+/// Provide Linux's advisory `readahead(2)` contract.
 ///
 /// The page cache already performs demand paging and its own bounded
 /// readahead, so there is no separate synchronous operation to perform here.
 /// Validating the descriptor while treating the hint as a no-op prevents
 /// applications such as Firefox from repeatedly falling through the generic
-/// ENOSYS path.
+/// ENOSYS path. As in Linux v6.12, a negative offset is not an error: the
+/// forced readahead starts past EOF and has no visible effect.
 pub fn sys_readahead(fd: c_int, offset: i64, count: usize) -> StarryResult<isize> {
     debug!("sys_readahead <= {fd}, offset={offset}, count={count}");
-    let file = get_file_like(fd)?;
-    if file.downcast_ref::<File>().is_none() {
+    let file_like = get_file_like(fd)?;
+    let open_flags = file_like.open_flags();
+    // Linux checks FMODE_READ before deciding whether the object type can
+    // execute readahead. O_PATH has no read mode even though Starry's backing
+    // handle keeps traversal access.
+    if open_flags & O_PATH != 0 || open_flags & O_ACCMODE == O_WRONLY {
+        return Err(StarryError::BadFileDescriptor);
+    }
+
+    // These wrappers share the backing File's open file description. Inspect
+    // the backing inode instead of treating every File wrapper as a regular
+    // file, which would accept character devices.
+    let file = if let Some(file) = file_like.downcast_ref::<File>() {
+        file
+    } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
+        memfd.inner().as_ref()
+    } else if let Some(mount_table) = file_like.downcast_ref::<MountTableFile>() {
+        mount_table.inner().as_ref()
+    } else {
+        return Err(StarryError::from(Errno::EINVAL));
+    };
+
+    if !matches!(
+        file.inner().location().node_type(),
+        NodeType::RegularFile | NodeType::BlockDevice
+    ) {
         return Err(StarryError::from(Errno::EINVAL));
     }
-    if offset < 0 {
+
+    // Linux v6.12 converts the syscall's size_t count to signed loff_t before
+    // generic_fadvise() checks it, so values above i64::MAX become negative
+    // and return EINVAL.
+    if count as u64 > i64::MAX as u64 {
         return Err(StarryError::from(Errno::EINVAL));
     }
     Ok(0)
