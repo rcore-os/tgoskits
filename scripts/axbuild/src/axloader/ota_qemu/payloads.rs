@@ -4,19 +4,18 @@ use std::{
     fs,
     io::Write,
     path::Path,
+    process::Stdio,
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, bail};
+use anyhow::{Context, bail, ensure};
 
 use super::{
     BootScenario, QemuChild, STATUS_TIMEOUT, boot_smoke, start_qemu_with_resources, status,
 };
 use crate::{
-    axvisor::{self, Axvisor},
-    context::WorkspaceContext,
+    context::{AXVISOR_SNAPSHOT_FILE, STARRY_SNAPSHOT_FILE, WorkspaceContext, axbuild_tmp_dir},
     image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
-    starry::{self, Starry},
     support::ovmf::OvmfFirmware,
 };
 
@@ -29,6 +28,12 @@ pub(super) struct OsPayloads {
 
 impl OsPayloads {
     pub(super) async fn build(workspace: &WorkspaceContext) -> anyhow::Result<Self> {
+        let snapshot_paths = [STARRY_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE]
+            .map(|name| axbuild_tmp_dir(workspace.root()).join(name));
+        let snapshots = snapshot_paths
+            .iter()
+            .map(|path| read_snapshot(path))
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let fixtures = workspace.root().join("bootloader/axloader/test-payloads");
         let payloads = workspace.axbuild_artifact_dir().join("axloader/payloads");
         fs::create_dir_all(&payloads)?;
@@ -54,15 +59,12 @@ impl OsPayloads {
         drop(output);
         let userspace = fs::read(userspace_path)?;
 
-        Starry::new()?
-            .execute(starry::Command::Build(starry::ArgsBuild {
-                config: Some(fixtures.join("build-starry-x86_64.toml")),
-                arch: None,
-                target: None,
-                smp: None,
-                debug: false,
-            }))
-            .await?;
+        build_os(
+            workspace,
+            "starry",
+            &fixtures.join("build-starry-x86_64.toml"),
+        )
+        .await?;
         let starry = fs::read(
             workspace
                 .target_dir()
@@ -70,16 +72,12 @@ impl OsPayloads {
         )
         .context("read StarryOS EFI-entry ELF")?;
 
-        Axvisor::new()?
-            .execute(axvisor::Command::Build(axvisor::ArgsBuild {
-                config: Some(fixtures.join("build-axvisor-x86_64.toml")),
-                arch: None,
-                target: None,
-                smp: None,
-                debug: false,
-                vmconfigs: Vec::new(),
-            }))
-            .await?;
+        build_os(
+            workspace,
+            "axvisor",
+            &fixtures.join("build-axvisor-x86_64.toml"),
+        )
+        .await?;
         let axvisor = fs::read(
             workspace
                 .target_dir()
@@ -92,6 +90,14 @@ impl OsPayloads {
                 .join("axvisor/host-initramfs/x86_64.cpio"),
         )
         .context("read AxVisor builtin guest archive")?;
+        for (path, before) in snapshot_paths.iter().zip(snapshots) {
+            ensure!(
+                read_snapshot(path)? == before,
+                "test build changed saved OS command snapshot {}",
+                path.display()
+            );
+        }
+        println!("axloader QEMU: saved OS command snapshots preserved");
         Ok(Self {
             starry,
             userspace,
@@ -148,6 +154,34 @@ impl OsPayloads {
             drop(qemu);
         }
         Ok(())
+    }
+}
+
+async fn build_os(workspace: &WorkspaceContext, os: &str, config: &Path) -> anyhow::Result<()> {
+    // Keep the shared OS build pipeline while isolating its command history
+    // policy in a child environment; the parent Tokio runtime may be threaded.
+    let status = tokio::process::Command::new("cargo")
+        .args(["xtask", os, "build", "--config"])
+        .arg(config)
+        .current_dir(workspace.root())
+        .env("CARGO_TARGET_DIR", workspace.target_dir())
+        .env("AXBUILD_NO_SNAPSHOT", "1")
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .status()
+        .await
+        .with_context(|| format!("build {os} payload using {}", config.display()))?;
+    ensure!(status.success(), "{os} payload build failed: {status}");
+    Ok(())
+}
+
+fn read_snapshot(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).with_context(|| format!("read OS command snapshot {}", path.display()))
+        }
     }
 }
 

@@ -211,7 +211,9 @@ initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出�
 并覆盖 SHA-256、OTA 待试槽确认和回滚。
 同一入口还通过 HTTP 上传 StarryOS ELF 与 BusyBox 归档，以及 AxVisor ELF 与
 包含 Linux 客体的宿主归档。`ota_qemu::payloads::OsPayloads` 复用各 OS 的构建和
-归档流水线；`test-payloads/root/axloader-smoke.sh` 检查启动参数并实际写读内存根，
+归档流水线，通过带 `AXBUILD_NO_SNAPSHOT=1` 的子进程调用 `cargo xtask`，并检查
+构建前后命令快照不变，保留用户后续命令的默认选择。
+`test-payloads/root/axloader-smoke.sh` 检查启动参数并实际写读内存根，
 分别输出完整行 `STARRY_AXLOADER_USERSPACE_PASSED` 和
 `AXVISOR_GUEST_AXLOADER_USERSPACE_PASSED`。AxVisor 使用 2 GiB、2 vCPU 和嵌套
 KVM；测试等待管理 shell 后执行 `vm console 1` 取得客体输出。宿主必须提供
