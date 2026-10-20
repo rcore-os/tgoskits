@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.4...ax-task-v0.9.0) - 2026-10-20
+
+### Fixed
+
+- *(ax-task)* rearm local scheduler work without IPI ([#2611](https://github.com/rcore-os/tgoskits/pull/2611))
+- *(starry-kernel)* preserve futex park publication ordering ([#2595](https://github.com/rcore-os/tgoskits/pull/2595))
+
+### Other
+
+- *(memory)* separate page allocation and retire idle address-space leases ([#2634](https://github.com/rcore-os/tgoskits/pull/2634))
+- *(ax-fs-ng)* connect owned ext4 IO and writeback lifecycles ([#2526](https://github.com/rcore-os/tgoskits/pull/2526))
+- *(axvm)* connect local and shared interrupt ownership ([#2594](https://github.com/rcore-os/tgoskits/pull/2594))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(ax-task)* inline rq-owned yield dispatch ([#2582](https://github.com/rcore-os/tgoskits/pull/2582))
+- *(axvm)* reduce GICv3 virtual CPU interface switch overhead ([#2503](https://github.com/rcore-os/tgoskits/pull/2503))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.3...ax-task-v0.8.4) - 2026-09-22
 
 ### Other

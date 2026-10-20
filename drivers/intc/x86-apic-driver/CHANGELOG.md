@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/x86-apic-driver-v0.2.0...x86-apic-driver-v0.2.1) - 2026-10-20
+
+### Fixed
+
+- *(x86-apic-driver)* serialize xAPIC ICR sends ([#2607](https://github.com/rcore-os/tgoskits/pull/2607))
+- *(x86-apic-driver)* wait for idle before xAPIC IPI writes ([#2606](https://github.com/rcore-os/tgoskits/pull/2606))
+
+### Other
+
+- *(x86-apic-driver)* send IPIs without rebuilding the APIC handle. ([#2432](https://github.com/rcore-os/tgoskits/pull/2432))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/x86-apic-driver-v0.1.0...x86-apic-driver-v0.2.0) - 2026-09-09
 
 ### Other

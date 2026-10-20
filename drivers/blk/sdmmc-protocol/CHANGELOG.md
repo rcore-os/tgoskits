@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.5.4...sdmmc-protocol-v0.6.0) - 2026-10-20
+
+### Added
+
+- *(sdhci-host)* enable RK3588 HS200 and owned CQHCI queues ([#2636](https://github.com/rcore-os/tgoskits/pull/2636))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+
+### Fixed
+
+- Remove obsolete scripts and update repository references ([#2655](https://github.com/rcore-os/tgoskits/pull/2655))
+- *(sdhci-host)* preserve enabled errors without summary enable ([#2638](https://github.com/rcore-os/tgoskits/pull/2638))
+- *(sdmmc)* reset host before MMC fallback ([#2616](https://github.com/rcore-os/tgoskits/pull/2616))
+
 ## [0.5.4](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.5.3...sdmmc-protocol-v0.5.4) - 2026-09-18
 
 ### Other

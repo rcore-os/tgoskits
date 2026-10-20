@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.18.1...arm-gic-driver-v0.18.2) - 2026-10-20
+
+### Fixed
+
+- *(gic)* stabilize assigned SPI routing for Orange Pi Linux guest ([#2631](https://github.com/rcore-os/tgoskits/pull/2631))
+
 ## [0.18.1](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.18.0...arm-gic-driver-v0.18.1) - 2026-09-09
 
 ### Fixed

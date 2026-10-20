@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.8.2...axvisor-v0.9.0) - 2026-10-20
+
+### Added
+
+- *(axvisor)* add OrangePi application runners and fair console service ([#2646](https://github.com/rcore-os/tgoskits/pull/2646))
+- *(history)* implement command history management with filtering and clearing options ([#2668](https://github.com/rcore-os/tgoskits/pull/2668))
+- *(axvisor)* boot default x86 guests through the web UI ([#2642](https://github.com/rcore-os/tgoskits/pull/2642))
+- *(axvisor)* make guest startup command-line driven ([#2618](https://github.com/rcore-os/tgoskits/pull/2618))
+- *(axvisor)* add RK3588 guest cpufreq perf30 profile ([#2619](https://github.com/rcore-os/tgoskits/pull/2619))
+- *(virtio-net)* make guest MAC optional with validation when present ([#2621](https://github.com/rcore-os/tgoskits/pull/2621))
+- *(axvisor)* serve a web control plane for guest lifecycle and file transfer ([#2514](https://github.com/rcore-os/tgoskits/pull/2514))
+- *(ax-runtime)* bind stack hardening to paging ([#2605](https://github.com/rcore-os/tgoskits/pull/2605))
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(axvisor)* generalize physical uplink and reuse QEMU builds ([#2588](https://github.com/rcore-os/tgoskits/pull/2588))
+- *(axvisor)* bridge virtual NICs to the host uplink ([#2544](https://github.com/rcore-os/tgoskits/pull/2544))
+- *(axvisor)* support board guests and preserve firmware identities ([#2502](https://github.com/rcore-os/tgoskits/pull/2502))
+
+### Fixed
+
+- *(axvisor)* stabilize Orange Pi IVC and AKA guests ([#2632](https://github.com/rcore-os/tgoskits/pull/2632))
+- *(axvisor)* keep the web feature compiling on the no-vector x86_64 target ([#2617](https://github.com/rcore-os/tgoskits/pull/2617))
+- *(virtio-net)* stabilize AArch64 QEMU guest connections ([#2612](https://github.com/rcore-os/tgoskits/pull/2612))
+
+### Other
+
+- *(ax-fs-ng)* overlap file readahead and account device IO lifetimes ([#2635](https://github.com/rcore-os/tgoskits/pull/2635))
+- *(axvisor)* add the dual-guest robot board CI on OrangePi 5 Plus ([#2648](https://github.com/rcore-os/tgoskits/pull/2648))
+- *(axvm)* migrate feature-driven tests into axtest ([#2644](https://github.com/rcore-os/tgoskits/pull/2644))
+- *(axvisor)* serve the web dashboard from the host initramfs ([#2610](https://github.com/rcore-os/tgoskits/pull/2610))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* run 24 virtio-net peers across OrangePi cores ([#2498](https://github.com/rcore-os/tgoskits/pull/2498))
+- *(axvisor)* replace OrangePi 5 Plus task switch benchmark ([#2549](https://github.com/rcore-os/tgoskits/pull/2549))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.8.1...axvisor-v0.8.2) - 2026-09-22
 
 ### Fixed
