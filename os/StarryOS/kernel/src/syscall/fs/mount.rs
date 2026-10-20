@@ -818,11 +818,14 @@ fn mount_source(source: &str) -> &str {
 
 /// Holder token for a loop device backing an ext4 mount.
 ///
-/// The mount's filesystem owns the only copy of this lease, so the holder is
-/// released exactly when the filesystem itself is dropped: not before, and
-/// never twice. The lease is deliberately neither `Clone` nor guarded by a
-/// release flag - a second copy dropped early would hand the backing store to
-/// a new mount while the detached filesystem still holds dirty data for it.
+/// `LoopMountLease` is not `Clone`. `new_from_file` moves it into the private
+/// `SharedFileBacking<L>` cell shared by `FileImageDevice` and
+/// `Ext4Filesystem`. The final `Ext4MountLease`, which represents all mounts,
+/// bind/namespace copies and open locations, retires the file-backed
+/// filesystem: it retires caches, drains and shuts down, then takes and drops
+/// the shared `L` outside the cell lock. Internal cache or inode owners cannot
+/// delay that release. A failed retirement keeps `L` in the cell, and dropping
+/// the final `Ext4Filesystem` remains the fallback.
 #[cfg(feature = "ext4")]
 struct LoopMountLease {
     device: Arc<dyn crate::pseudofs::DeviceOps>,
@@ -905,6 +908,9 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         // reused filesystem already owns its lease.
         loop_device.acquire_mount_holder()?;
         let lease = LoopMountLease::new(device.inner().clone());
+        // `new_from_file` moves the lease into the shared file-backing cell.
+        // Final retirement takes and drops it only after cache drain/shutdown;
+        // a failed retirement keeps it for the final-filesystem-drop fallback.
         new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)
     })?;
     let mount = target_location.mount_with_source(&fs, source)?;

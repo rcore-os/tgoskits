@@ -18,6 +18,14 @@ to_bin = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^LUA_LUAROCKS_TEST_FAILED\\s*$"]
 timeout = 600
 
+# The inspect source archive is served from the host at 10.0.2.2:18391 over
+# QEMU SLIRP. `prebuild.sh` creates and verifies this directory before the
+# harness starts the server; the guest still performs a real LuaRocks download.
+[host_http_server]
+bind = "127.0.0.1"
+port = 18391
+dir = "target/lua-luarocks-assets"
+
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
 shell_cmd = "/usr/bin/lua-luarocks-tests.sh"
