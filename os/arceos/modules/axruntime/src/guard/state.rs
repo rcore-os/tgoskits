@@ -139,7 +139,12 @@ impl RuntimeGuardState {
 
     #[cfg(any(test, not(feature = "host-test")))]
     pub(super) const fn local_scheduler_work_is_self_serviced(self, preempt_depth: u32) -> bool {
-        !self.irq.is_clear() && (self.irq.outer_irqs_enabled || preempt_depth != 0)
+        // An active scheduler frame also consumes sticky owner work before
+        // returning, even when its nested IRQ guard began with IRQs disabled.
+        !self.irq.is_clear()
+            && (self.irq.outer_irqs_enabled
+                || preempt_depth != 0
+                || self.preempt.has_active_scheduler_baton())
     }
     pub(super) const fn owns_cpu_context(self) -> bool {
         !self.irq.is_clear() || self.preempt.has_one_scheduler_frame()

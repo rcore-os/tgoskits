@@ -35,6 +35,13 @@ fn final_task_irq_guard_converts_directly_into_scheduler_baton() {
     assert!(state.irq.is_clear());
     assert!(state.preempt.has_active_scheduler_baton());
 
+    state.enter_irq(false);
+    assert!(
+        state.local_scheduler_work_is_self_serviced(0),
+        "the active scheduler frame must consume nested owner work without a self-IPI"
+    );
+    assert!(!state.exit_irq("test scheduler publication"));
+
     state.exit_scheduler_preempt("test scheduler frame");
     assert!(state.preempt.is_clear());
 }
@@ -144,6 +151,12 @@ fn scheduler_baton_is_exactly_one_cpu_local_frame() {
         state.preempt.scheduler_baton,
         SchedulerBatonState::Transferred
     );
+    state.enter_irq(false);
+    assert!(
+        !state.local_scheduler_work_is_self_serviced(0),
+        "a transferred scheduler baton cannot promise local service"
+    );
+    assert!(!state.exit_irq("test transferred scheduler publication"));
 
     state.exit_scheduler_preempt("test scheduler frame");
     assert!(state.preempt.is_clear());
