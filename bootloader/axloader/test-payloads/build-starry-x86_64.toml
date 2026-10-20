@@ -1,0 +1,4 @@
+target = "x86_64-unknown-none"
+log = "Warn"
+features = []
+max_cpu_num = 1

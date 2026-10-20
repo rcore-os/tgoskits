@@ -388,6 +388,7 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 - QEMU smoke 使用真实 UEFI TCP4 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。ostool 的隔离服务端联调用私有 PTY 原样转发 OVMF UART，从真实 HTTP 状态取得启动身份，再构造公告调用同一设备协调入口；测试地址仅在夹具内映射到 `hostfwd`。该夹具不证明生产 UDP 路由或虚拟板卡 netns 路径，仍须独立联调。
 - UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。v6 只接受 `__x86_64_efi_pe_entry`；cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 Linux EFI `LoadFile2` 提供者交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，命令行来源优先级是 EFI LoadOptions、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
 - `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 必须上传真实 ArceOS UEFI ELF，跨同一 FAT 镜像的独立启动验证无附加字段、仅 cmdline、仅 initramfs、两者都有以及 ESP initramfs 回退；成功证据来自内核的 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED`，不能只停在 `ready_to_handoff`。
+- 同一入口的 `ota_qemu::payloads::OsPayloads` 构建 StarryOS 和 AxVisor，再复用 HTTP 事务上传真实 ELF 与归档。StarryOS 用户态和 AxVisor Linux 客体须在内存根运行 `axloader-smoke.sh`、检查参数及文件写读，输出各自完整成功行；不能把 cmdline 回显、host banner 或 VM 创建日志当作客体执行证据。AxVisor 用例等待管理 shell 后执行 `vm console 1`，要求嵌套 KVM（VMX/SVM）、2 vCPU、2 GiB、`host,-la57`；不改为 TCG 或跳过客体来掩盖缺失能力。证据保存在 `target/axbuild/axloader/qemu/x86-*` 的独立 ESP、VARS、串口和 stderr。
 - 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
 
 #### LoongArch ArceOS EFI

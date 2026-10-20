@@ -208,8 +208,16 @@ UHI FDT handoff 和 AArch64 EFI 镜像生成不在本阶段。
 跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅
 initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出的 `HOST_CMDLINE`、
 `HOST_INITRAMFS_PASSED` 为成功证据。测试先核对真实 UART 身份及上报参数，再验证 bound/direct 放行、错误绑定令牌拒绝，
-并覆盖 SHA-256、OTA 待试槽确认和
-回滚。服务端协议测试另见 ostool 的
+并覆盖 SHA-256、OTA 待试槽确认和回滚。
+同一入口还通过 HTTP 上传 StarryOS ELF 与 BusyBox 归档，以及 AxVisor ELF 与
+包含 Linux 客体的宿主归档。`ota_qemu::payloads::OsPayloads` 复用各 OS 的构建和
+归档流水线；`test-payloads/root/axloader-smoke.sh` 检查启动参数并实际写读内存根，
+分别输出完整行 `STARRY_AXLOADER_USERSPACE_PASSED` 和
+`AXVISOR_GUEST_AXLOADER_USERSPACE_PASSED`。AxVisor 使用 2 GiB、2 vCPU 和嵌套
+KVM；测试等待管理 shell 后执行 `vm console 1` 取得客体输出。宿主必须提供
+VMX/SVM，不能只凭宿主启动日志判定客体通过。
+每次运行在 `target/axbuild/axloader/qemu/x86-*` 保留独立 ESP、VARS、各次串口及
+QEMU stderr 日志。服务端协议测试另见 ostool 的
 `docs/axloader-network-control.md`。
 
 LoongArch 使用独立的完整 EFI 回归入口，所需宿主工具为 QEMU LoongArch、

@@ -209,9 +209,10 @@ cases = ["smoke-vmx", "direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx", "pc
 
 [[check]]
 id = "test-axloader-http-smoke"
-impact_packages = ["axloader", "someboot"]
-name = "UEFI x86_64 · AxLoader HTTP boot"
+impact_packages = ["axloader", "someboot", "arceos-helloworld", "starryos", "axvisor"]
+name = "UEFI x86_64 · AxLoader 3OS HTTP boot"
 runner = "kvm-intel"
+cache_key = ""
 # Cold runners may spend most of the original 45-minute budget on checkout and builds.
 timeout_minutes = 90
 command = '''

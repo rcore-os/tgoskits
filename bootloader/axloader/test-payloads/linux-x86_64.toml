@@ -1,0 +1,21 @@
+[base]
+id = 1
+name = "axloader-linux-x86_64"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0x8000
+kernel_path = "${workspace}/target/axbuild/images/qemu-x86_64/linux/linux-qemu"
+kernel_load_addr = 0x20_0000
+ramdisk_path = "${workspace}/target/axbuild/axloader/payloads/userspace.cpio"
+ramdisk_load_addr = 0x0800_0000
+enable_bios = false
+boot_protocol = "direct"
+cmdline = "console=ttyS0 rdinit=/bin/sh nox2apic no_timer_check ibt=off initcall_blacklist=ahci_pci_driver_init -- /axloader-smoke.sh x86-handoff AXVISOR_GUEST"
+memory_regions = [[0x0000_0000, 0x2000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []

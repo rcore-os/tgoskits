@@ -215,12 +215,13 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 
 1. 执行 `cargo test -p axloader --all-targets`。
 2. 检查 `axloader` 的 `x86_64-unknown-uefi` 目标。
-3. release 构建启动器、装载器和真实 ArceOS UEFI ELF。
+3. release 构建启动器、装载器及 ArceOS、StarryOS、AxVisor 的真实 EFI 入口 ELF；由现有镜像存储和 AxVisor 归档流水线准备 BusyBox、Linux 及客体配置。
 4. 把启动器、A/B 槽和双状态记录写入真实 FAT 镜像。
 5. 用 `hostfwd` 调用客户机 TCP `2999`，先读取状态并完成 `bound/direct` continue，再覆盖直连启动、OTA、重启确认和回滚。
 6. 在五种可选载荷组合中观察启动后的内核输出。
+7. 上传 StarryOS 和 AxVisor 的 ELF 与归档，分别运行 StarryOS 用户态及 AxVisor 的 Linux 客体用户态。
 
-该流程不会安装 systemd 服务，不会修改 runner、板卡配置或实体设备。宿主需要 `qemu-system-x86_64`、KVM、`mkfs.vfat`、`mcopy`、`mmd` 和 `python3`。
+该流程不会安装 systemd 服务，不会修改 runner、板卡配置或实体设备。宿主需要 `qemu-system-x86_64`、KVM、`mkfs.vfat`、`mcopy`、`mmd` 和 `python3`。AxVisor 用例使用 2 GiB、2 vCPU 和 `host,-la57`，要求宿主暴露嵌套 VMX/SVM。
 
 ### 3.2 成功判据
 
@@ -230,9 +231,11 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 - cmdline 场景输出精确的 `HOST_CMDLINE`。
 - initramfs 场景输出 `HOST_INITRAMFS_PASSED`。
 - initramfs 回退场景验证 ESP 上的 Linux EFI initrd provider。
+- StarryOS 必须运行归档中的 shell 脚本，检查 cmdline 参数并完成文件写读，输出完整行 `STARRY_AXLOADER_USERSPACE_PASSED`。
+- AxVisor 必须消费宿主归档中的 builtin 配置和 Linux 镜像，按宿主参数 `axvisor.vm_start=1` 启动客体；测试等待管理 shell 后执行 `vm console 1`，客体脚本完成同样检查后输出完整行 `AXVISOR_GUEST_AXLOADER_USERSPACE_PASSED`。
 - OTA 场景跨 QEMU 启动验证坏摘要、短请求、未确认复位回滚、确认持久化和再次启动。
 
-QEMU 提前退出或超时时保留 transcript。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
+`ota_qemu::payloads::OsPayloads` 只负责准备 OS 载荷，复用 `boot_smoke()` 的真实 HTTP 上传、校验和串口门禁。成功行不出现在 cmdline 原文中，命令行回显不能替代实际执行。每次运行在 `target/axbuild/axloader/qemu/x86-*` 保留 ESP、VARS、历次串口和 stderr；提前退出或超时也保留。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
 
 LoongArch CI 使用 `scripts/loong-qemu-smoke.py`。资源用例不启用网络、OTA 或
 交接生产端，以 `BOOT_RESOURCES_PASSED` 和 `Hello, world!` 作为实际执行证据。

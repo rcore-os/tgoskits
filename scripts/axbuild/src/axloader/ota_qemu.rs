@@ -23,6 +23,8 @@ use crate::{
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(75);
 
+mod payloads;
+
 struct QemuChild(Child);
 
 impl Drop for QemuChild {
@@ -33,14 +35,55 @@ impl Drop for QemuChild {
 }
 
 fn start_qemu(firmware: &OvmfFirmware, root: &Path, port: u16) -> anyhow::Result<QemuChild> {
+    start_qemu_with_resources(firmware, root, port, "256M", "1")
+}
+
+fn start_qemu_with_resources(
+    firmware: &OvmfFirmware,
+    root: &Path,
+    port: u16,
+    memory: &str,
+    cpus: &str,
+) -> anyhow::Result<QemuChild> {
+    // Preserve each completed boot; the live serial path is shared by HTTP waiters.
+    if root.join("ota-qemu.log").exists() {
+        let index = (1..)
+            .find(|index| !root.join(format!("qemu-{index}.log")).exists())
+            .context("QEMU log index exhausted")?;
+        fs::rename(
+            root.join("ota-qemu.log"),
+            root.join(format!("qemu-{index}.log")),
+        )?;
+        fs::rename(
+            root.join("qemu-stderr.log"),
+            root.join(format!("qemu-{index}.stderr")),
+        )?;
+    }
     let serial = fs::File::create(root.join("ota-qemu.log"))?;
+    let stderr = fs::File::create(root.join("qemu-stderr.log"))?;
     let vars = root.join("vars.fd");
     let disk = root.join("esp.img");
     let mut command = Command::new("qemu-system-x86_64");
     let netdev = format!("user,id=user0,hostfwd=tcp:127.0.0.1:{port}-:2999");
     command.args([
-        "-m", "256M", "-smp", "1", "-machine", "q35", "-accel", "kvm", "-cpu", "host", "-display",
-        "none", "-monitor", "none", "-serial", "stdio", "-netdev", &netdev,
+        "-m",
+        memory,
+        "-smp",
+        cpus,
+        "-machine",
+        "q35",
+        "-accel",
+        "kvm",
+        "-cpu",
+        "host,-la57",
+        "-display",
+        "none",
+        "-monitor",
+        "none",
+        "-serial",
+        "stdio",
+        "-netdev",
+        &netdev,
     ]);
     command.args([
         "-device",
@@ -56,9 +99,9 @@ fn start_qemu(firmware: &OvmfFirmware, root: &Path, port: u16) -> anyhow::Result
         &format!("format=raw,if=ide,file={}", disk.display()),
     ]);
     let child = command
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::from(serial))
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr))
         .spawn()
         .context("failed to start OTA OVMF guest")?;
     Ok(QemuChild(child))
@@ -189,10 +232,22 @@ pub(super) async fn test_direct_ota(
     } else {
         Some(build_boot_kernels(workspace).await?)
     };
+    let os_payloads = if server_only {
+        None
+    } else {
+        Some(payloads::OsPayloads::build(workspace).await?)
+    };
     let workspace_root = workspace.root();
     let target_dir = workspace.target_dir();
-    let root = tempfile::tempdir().context("failed to create OTA FAT image directory")?;
-    let root = root.path();
+    let artifacts = workspace.axbuild_artifact_dir().join("axloader/qemu");
+    fs::create_dir_all(&artifacts)?;
+    let root = tempfile::Builder::new()
+        .prefix("x86-")
+        .tempdir_in(artifacts)
+        .context("failed to create OTA FAT image directory")?
+        .keep();
+    println!("axloader QEMU artifacts: {}", root.display());
+    let root = root.as_path();
     let host_initramfs_path = root.join("host-initramfs.cpio");
     if !server_only {
         crate::image::pack_initramfs_dir(
@@ -345,6 +400,9 @@ pub(super) async fn test_direct_ota(
     )
     .await?;
     drop(qemu);
+    if let Some(payloads) = os_payloads {
+        payloads.test(&client, &firmware, root, port).await?;
+    }
     qemu = start_qemu(&firmware, root, port)?;
     status(&client, port, root, |value| value["running_slot"] == "b").await?;
     println!("axloader OTA QEMU: checking failed uploads on stable B");
