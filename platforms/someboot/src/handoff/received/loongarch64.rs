@@ -6,7 +6,7 @@ use core::{
 
 pub(crate) use crate::handoff::protocol::HANDOFF_GUID;
 use crate::{
-    handoff::protocol::HandoffRecord,
+    handoff::protocol::{HandoffRecord, memory_kind},
     mem::{KIMAGE_MAP_ALIGN, MemoryDescriptor, MemoryType, add_memory_descriptor},
 };
 pub(crate) const RETIRED_HANDOFF_GUID: uefi::Guid =
@@ -95,26 +95,26 @@ pub(crate) fn restore_inherited_memory_map() {
 
 pub(crate) fn encode_kind(kind: MemoryType) -> u32 {
     match kind {
-        MemoryType::Free => 0,
-        MemoryType::Ram => 1,
-        MemoryType::KImage => 2,
-        MemoryType::Reserved => 3,
-        MemoryType::Mmio => 4,
-        MemoryType::PerCpuData => 5,
-        MemoryType::BootData => 6,
-        MemoryType::BootReclaimable => 7,
+        MemoryType::Free => memory_kind::FREE,
+        MemoryType::Ram => memory_kind::RAM,
+        MemoryType::KImage => memory_kind::KIMAGE,
+        MemoryType::Reserved => memory_kind::RESERVED,
+        MemoryType::Mmio => memory_kind::MMIO,
+        MemoryType::PerCpuData => memory_kind::PER_CPU,
+        MemoryType::BootData => memory_kind::BOOT_DATA,
+        MemoryType::BootReclaimable => memory_kind::RECLAIMABLE,
     }
 }
 fn decode_kind(kind: u32) -> MemoryType {
     match kind {
-        0 => MemoryType::Free,
-        1 => MemoryType::Ram,
-        2 => MemoryType::KImage,
-        3 => MemoryType::Reserved,
-        4 => MemoryType::Mmio,
-        5 => MemoryType::PerCpuData,
-        6 => MemoryType::BootData,
-        7 => MemoryType::BootReclaimable,
+        memory_kind::FREE => MemoryType::Free,
+        memory_kind::RAM => MemoryType::Ram,
+        memory_kind::KIMAGE => MemoryType::KImage,
+        memory_kind::RESERVED => MemoryType::Reserved,
+        memory_kind::MMIO => MemoryType::Mmio,
+        memory_kind::PER_CPU => MemoryType::PerCpuData,
+        memory_kind::BOOT_DATA => MemoryType::BootData,
+        memory_kind::RECLAIMABLE => MemoryType::BootReclaimable,
         _ => unreachable!("validated boot memory kind"),
     }
 }
@@ -210,7 +210,7 @@ pub(crate) fn export_map() -> Result<crate::handoff::memory::BootMap, crate::han
 {
     let mut map = current_map()?;
     if let Some(range) = crate::boot_payload::returned_pages() {
-        map.assign(range, crate::handoff::memory::FREE)?;
+        map.assign(range, memory_kind::FREE)?;
     }
     Ok(map)
 }

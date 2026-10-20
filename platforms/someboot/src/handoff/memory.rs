@@ -1,15 +1,11 @@
 //! Allocation-free, transactional interval reconciliation for boot ownership.
+use memory_kind::{FREE, MMIO, RAM, RESERVED};
+
 use super::{
     HandoffError,
-    protocol::{MAX_REGIONS, MemoryRegion},
+    protocol::{MAX_REGIONS, MemoryRegion, memory_kind},
 };
 use crate::boot_resources::PhysicalRange;
-
-#[cfg(any(test, all(efi, target_arch = "loongarch64", not(target_os = "uefi"))))]
-pub(crate) const FREE: u32 = 0;
-pub(crate) const RESERVED: u32 = 3;
-pub(crate) const BOOT_DATA: u32 = 6;
-pub(crate) const RECLAIMABLE: u32 = 7;
 
 #[derive(Clone)]
 pub(crate) struct BootMap<const N: usize = MAX_REGIONS> {
@@ -21,7 +17,7 @@ impl<const N: usize> BootMap<N> {
         Self {
             regions: [MemoryRegion {
                 range: PhysicalRange::new(0, 0),
-                kind: 0,
+                kind: FREE,
                 reserved: 0,
             }; N],
             len: 0,
@@ -46,7 +42,9 @@ impl<const N: usize> BootMap<N> {
         self.len += 1;
         Ok(())
     }
-    /// Reclassifies covered RAM only. Firmware and MMIO are never overridable.
+    /// Reclassifies covered stage-owned RAM only. Firmware Reserved, MMIO and
+    /// the Ram address-space envelope are not owned allocations, so an overlay
+    /// cannot turn them into reclaimable boot memory or claim them for a target.
     /// Only the first/last overlapping regions can split: a contiguous overlay
     /// adds at most two boundaries, even when it spans many existing regions.
     /// Build a candidate first: overflow or a protected overlap leaves self intact.
@@ -64,7 +62,7 @@ impl<const N: usize> BootMap<N> {
                 next.push(*region)?;
                 continue;
             }
-            if matches!(region.kind, RESERVED | 4 | 1) {
+            if matches!(region.kind, RESERVED | MMIO | RAM) {
                 return Err(HandoffError::InvalidProtocol);
             }
             let lo = a.max(range.start);
@@ -111,7 +109,7 @@ impl<const N: usize> BootMap<N> {
     pub fn complete_takeover(&mut self) -> u64 {
         let mut bytes = 0;
         for region in &mut self.regions[..self.len] {
-            if region.kind == RECLAIMABLE {
+            if region.kind == memory_kind::RECLAIMABLE {
                 bytes += region.range.len;
                 region.kind = FREE;
             }
@@ -123,6 +121,8 @@ impl<const N: usize> BootMap<N> {
 
 #[cfg(test)]
 mod tests {
+    use memory_kind::{BOOT_DATA, RECLAIMABLE};
+
     use super::*;
     #[test]
     fn takeover_excludes_survivors_and_firmware_and_is_transactional() {

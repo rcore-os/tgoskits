@@ -38,7 +38,7 @@ LoongArch 的 [`efi_stub/loongarch64/handoff.rs`](../../platforms/someboot/src/e
 
 ### 2.3 应用策略
 
-[`axstd_loader`](../../bootloader/axloader/src/axstd_loader.rs) 显式声明 4 项资源：32 MiB 镜像区固定在 `0x200000`，256 MiB 归档区、32 MiB EFI 槽执行区，以及 32 MiB 固件原文件区。原文件区用于初次验证、Flush 并读回 `A.EFI`，不保存运行时已修改的数据段，因此未确认 trial 复位后能重新执行稳定槽。该配置要求最初 loader 由可读的 EFI 文件系统启动，文件不得超过声明容量。继承槽必须已有有效持久状态；状态缺失时拒绝把祖先文件冒充当前槽重新建档。
+[`axstd_loader`](../../bootloader/axloader/src/axstd_loader/mod.rs) 显式声明 4 项资源：32 MiB 镜像区固定在 `0x200000`，256 MiB 归档区、32 MiB EFI 槽执行区，以及 32 MiB 固件原文件区。控制循环与 HTTP 路由保留在模块入口；[`image`](../../bootloader/axloader/src/axstd_loader/image.rs) 拥有装载分配、载荷和终结性交接，[`ota`](../../bootloader/axloader/src/axstd_loader/ota.rs) 拥有 FAT 槽文件、状态提交和继承代次。原文件区用于初次验证、Flush 并读回 `A.EFI`，不保存运行时已修改的数据段，因此未确认 trial 复位后能重新执行稳定槽。该配置要求最初 loader 由可读的 EFI 文件系统启动，文件不得超过声明容量。继承槽必须已有有效持久状态；状态缺失时拒绝把祖先文件冒充当前槽重新建档。
 
 [`ota/handoff.rs`](../../bootloader/axloader/src/ota/handoff.rs) 编解码 axloader 自己的元数据 ID、版本、槽位和持久代次；someboot 只承载有界字节。固定镜像地址属于应用策略：若当前镜像已经占有相同执行区，则拒绝再次覆盖该区，不猜测 load bias。原生 x86 ELF 路径也使用共同 `ResourceRequest`/`reserve()` 和 `HandoffSpec`/`PreparedHandoff`，仍由固件决定实际页申请与 EFI 生命周期。
 

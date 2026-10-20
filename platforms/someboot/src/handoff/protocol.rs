@@ -13,11 +13,25 @@ const MAGIC: u64 = 0x5342_4841_4e44_4f46;
 const VERSION: u32 = 4;
 pub const MAX_REGIONS: usize = 128;
 
+/// Stable wire discriminants; shared by validation and platform conversion.
+pub(crate) mod memory_kind {
+    pub const FREE: u32 = 0;
+    pub const RAM: u32 = 1;
+    pub const KIMAGE: u32 = 2;
+    pub const RESERVED: u32 = 3;
+    pub const MMIO: u32 = 4;
+    pub const PER_CPU: u32 = 5;
+    pub const BOOT_DATA: u32 = 6;
+    pub const RECLAIMABLE: u32 = 7;
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MemoryRegion {
     pub range: PhysicalRange,
-    /// 0: Free, 1: Ram, 2: KImage, 3: Reserved, 4: MMIO, 5: PerCpuData.
+    /// 0: Free, 1: Ram, 2: KImage, 3: Reserved, 4: MMIO, 5: PerCpuData,
+    /// 6: BootData (current stage), 7: BootReclaimable (pending target takeover).
+    /// The wire values are defined once in `memory_kind`.
     pub kind: u32,
     pub reserved: u32,
 }
@@ -89,7 +103,7 @@ impl HandoffRecord {
             memory_map_len: 0,
             memory_map: [MemoryRegion {
                 range: PhysicalRange::new(0, 0),
-                kind: 0,
+                kind: memory_kind::FREE,
                 reserved: 0,
             }; MAX_REGIONS],
         }
@@ -251,7 +265,7 @@ impl HandoffRecord {
                 || region.range.end().is_none()
                 || !region.range.start.is_multiple_of(4096)
                 || !region.range.len.is_multiple_of(4096)
-                || region.kind > 7
+                || region.kind > memory_kind::RECLAIMABLE
                 || region.reserved != 0
             {
                 return Err(HandoffError::InvalidProtocol);
@@ -266,7 +280,7 @@ impl HandoffRecord {
         }
         // Every reserved byte, including unallocated arena capacity, must stay
         // outside the inheritor's general allocator. Current code may occupy
-        // part of an arena; both KImage and Reserved are retained memory.
+        // part of an arena. Firmware Reserved is not stage-owned memory.
         for range in resources
             .iter()
             .map(|r| r.range)
@@ -279,7 +293,10 @@ impl HandoffRecord {
                     .iter()
                     .find(|r| r.range.start <= cursor && cursor < r.range.end().unwrap())
                     .ok_or(HandoffError::InvalidProtocol)?;
-                if !matches!(region.kind, 2 | 6 | 7) {
+                if !matches!(
+                    region.kind,
+                    memory_kind::KIMAGE | memory_kind::BOOT_DATA | memory_kind::RECLAIMABLE
+                ) {
                     return Err(HandoffError::InvalidProtocol);
                 }
                 cursor = end.min(region.range.end().unwrap());
@@ -305,14 +322,16 @@ impl HandoffRecord {
         &self,
         retained: &[ResourceSnapshot],
     ) -> Result<super::memory::BootMap, HandoffError> {
-        use super::memory::{BOOT_DATA, BootMap, RECLAIMABLE};
+        use memory_kind::{BOOT_DATA, KIMAGE, PER_CPU, RECLAIMABLE};
+
+        use super::memory::BootMap;
         let mut map = BootMap::from_regions(
             self.memory_map
                 .get(..self.memory_map_len as usize)
                 .ok_or(HandoffError::InvalidProtocol)?,
         )?;
         for region in &mut map.regions[..map.len] {
-            if matches!(region.kind, 2 | 5 | BOOT_DATA) {
+            if matches!(region.kind, KIMAGE | PER_CPU | BOOT_DATA) {
                 region.kind = RECLAIMABLE;
             }
         }

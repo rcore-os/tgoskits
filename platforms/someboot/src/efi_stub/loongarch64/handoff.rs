@@ -17,8 +17,10 @@ use crate::{
     arch::Arch,
     boot_resources::{self, Allocation, PhysicalRange},
     handoff::{
-        ExecutionSnapshot, HandoffError, HandoffSpec, memory::RECLAIMABLE, protocol::HandoffRecord,
-        received::loongarch64 as inherited, transaction::Transaction,
+        ExecutionSnapshot, HandoffError, HandoffSpec,
+        protocol::{HandoffRecord, memory_kind::RECLAIMABLE},
+        received::loongarch64 as inherited,
+        transaction::Transaction,
     },
 };
 

@@ -436,6 +436,9 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   已占该区时不能猜测 load bias 再覆盖。继承入口恢复内存图并跳过第二次
   ExitBootServices，退出后只能操作预留内存和运行时服务。
 - axstd 镜像和 A/B 槽统一通过 `ax-runtime::handoff::enter()` 退出运行时再交接。
+  前端入口及 HTTP 路由在 `bootloader/axloader/src/axstd_loader/mod.rs`，镜像装载、
+  载荷所有者和最终进入在 `image.rs`，FAT 槽与状态持久化在 `ota.rs`；不能把
+  设备停稳挪入文件存储层，或在交接闭包前释放镜像所有者。
   当前只支持一个运行处理器且不支持用户地址空间交接；应用先完成自己的 I/O 和 OTA 提交。运行时依次封存
   文件系统、停止块控制器并同步 IRQ、join 网络协议及队列任务并确认 DMA 停稳、
   排空并屏蔽串口，最后关闭本核 IRQ、抢占和 clockevent。VirtIO 网卡必须完成
