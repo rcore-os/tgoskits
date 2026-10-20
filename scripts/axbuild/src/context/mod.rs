@@ -22,6 +22,7 @@ use ostool::{
 };
 
 mod arch;
+mod board_elf;
 mod resolve;
 mod snapshot;
 #[cfg(test)]
@@ -472,15 +473,18 @@ impl AppContext {
             elf_path.display(),
             to_bin
         ));
+        let runtime_elf =
+            board_elf::BoardElf::prepare(&elf_path, &self.workspace.axbuild_artifact_dir())?;
         ostool_build::prepare_runtime_artifact(
             &mut self.invocation,
-            RuntimeArtifactInput::new(elf_path, to_bin),
+            RuntimeArtifactInput::new(runtime_elf.path(), to_bin),
         )?;
         prepare_stage.done();
 
         let run_stage = StageLog::start("board run prepared artifact");
         let result =
             ostool_board::run_prepared_board(&mut self.invocation, &board_config, options).await;
+        drop(runtime_elf);
         if result.is_ok() {
             run_stage.done();
         }
@@ -500,9 +504,11 @@ impl AppContext {
             elf_path.display(),
             to_bin
         ));
+        let runtime_elf =
+            board_elf::BoardElf::prepare(&elf_path, &self.workspace.axbuild_artifact_dir())?;
         ostool_build::prepare_runtime_artifact(
             &mut self.invocation,
-            RuntimeArtifactInput::new(elf_path, to_bin),
+            RuntimeArtifactInput::new(runtime_elf.path(), to_bin),
         )?;
         prepare_stage.done();
 
@@ -510,6 +516,7 @@ impl AppContext {
         let result =
             ostool_board::run_prepared_board_with_request(&mut self.invocation, board_request)
                 .await;
+        drop(runtime_elf);
         if result.is_ok() {
             run_stage.done();
         }
