@@ -10,6 +10,8 @@ use rsext4::{
 use super::*;
 use crate::{BlockError, BlockResult};
 
+#[cfg(feature = "vfs")]
+mod backing_lifetime;
 mod inode_io;
 mod inode_load;
 mod inode_writeback;
@@ -198,7 +200,10 @@ fn mount_test_storage(
             admission: Admission::new(),
             cached_writes: Admission::new(),
             root_dir: Mutex::new(None),
-            mount_lease: Mutex::new(Weak::new()),
+            mount_lease: Mutex::new(MountLeaseState::default()),
+            shutdown_state: Mutex::new(ShutdownState::default()),
+            #[cfg(feature = "vfs")]
+            backing_lease: None,
         },
         flushes,
     )

@@ -379,11 +379,13 @@ int main(void)
 
     /* 23. Cleanup: umount + detach after persistence test */
     {
-        run("umount /tmp/ul-mnt 2>&1");
+        rc = run("umount /tmp/ul-mnt 2>&1");
+        check(rc == 0, "umount cleanup after persistence test");
         if (loopdev[0]) {
             char cmd[256];
             snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-            run(cmd);
+            rc = run(cmd);
+            check(rc == 0, "losetup detach cleanup after persistence test");
         }
     }
 
@@ -457,11 +459,13 @@ int main(void)
 
     /* 31. Cleanup: umount + detach */
     {
-        run("umount /tmp/ul-mnt 2>&1");
+        rc = run("umount /tmp/ul-mnt 2>&1");
+        check(rc == 0, "umount cleanup after no-detach test");
         if (loopdev[0]) {
             char cmd[256];
             snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-            run(cmd);
+            rc = run(cmd);
+            check(rc == 0, "losetup detach after no-detach test");
         }
     }
 

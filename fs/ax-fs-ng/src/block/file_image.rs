@@ -1,25 +1,62 @@
 //! Filesystem images served through an owned file backend.
 
-use alloc::string::{String, ToString};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+};
 
 use axfs_ng_vfs::{VfsError, VfsResult};
 
 use super::FsBlockDevice;
-use crate::{BlockError, BlockResult, file::FileBackend};
+use crate::{BlockError, BlockResult, file::FileBackend, os::sync::Mutex};
 
 const SECTOR_SIZE: usize = 512;
 
-pub(crate) struct FileImageDevice<L> {
+/// Private release hook shared by the image device and its ext4 filesystem.
+///
+/// Implementations must release the source binding at most once. The final
+/// lease retirement calls this after shutdown; dropping the last shared owner
+/// remains the RAII fallback when shutdown never completes.
+pub(crate) trait FileBackingLease: Send + Sync {
+    fn release(&self);
+}
+
+pub(crate) struct SharedFileBacking<L> {
+    lease: Mutex<Option<L>>,
+}
+
+impl<L> SharedFileBacking<L> {
+    pub(crate) fn new(lease: L) -> Self {
+        Self {
+            lease: Mutex::new(Some(lease)),
+        }
+    }
+}
+
+impl<L: Send> FileBackingLease for SharedFileBacking<L> {
+    fn release(&self) {
+        // Taking the lease out while holding the cell lock would run the
+        // caller's Drop (potentially doing I/O) under that lock.
+        let lease = self.lease.lock().take();
+        drop(lease);
+    }
+}
+
+pub(crate) struct FileImageDevice {
     backend: FileBackend,
     name: String,
     num_blocks: u64,
     read_only: bool,
     // Keep the source binding alive even after a lazy mount detach.
-    _lease: L,
+    _lease: Arc<dyn FileBackingLease>,
 }
 
-impl<L> FileImageDevice<L> {
-    pub(crate) fn new(backend: FileBackend, read_only: bool, lease: L) -> VfsResult<Self> {
+impl FileImageDevice {
+    pub(crate) fn new(
+        backend: FileBackend,
+        read_only: bool,
+        lease: Arc<dyn FileBackingLease>,
+    ) -> VfsResult<Self> {
         let num_blocks = backend.len()? / SECTOR_SIZE as u64;
         if num_blocks == 0 {
             return Err(VfsError::InvalidInput);
@@ -51,7 +88,7 @@ impl<L> FileImageDevice<L> {
     }
 }
 
-impl<L: Send> FsBlockDevice for FileImageDevice<L> {
+impl FsBlockDevice for FileImageDevice {
     fn name(&self) -> &str {
         &self.name
     }

@@ -594,9 +594,85 @@ struct PageFaultPlan {
     map_plans: Option<PageFaultMapPlans>,
 }
 
+/// Copyable facts needed to decide whether a prepared fault plan still
+/// describes the live VMA and PTE.  Backends consume the full plan during
+/// prepare, so the caller retains this token instead of cloning it.
+#[derive(Clone, Copy)]
+struct PageFaultFreshness {
+    base_epoch: VmEpoch,
+    vaddr: VirtAddr,
+    range: VirtAddrRange,
+    vma_flags: MappingFlags,
+    mapping_id: MappingId,
+    preimage: FaultPteSnapshot,
+}
+
+impl PageFaultPlan {
+    fn freshness(&self) -> PageFaultFreshness {
+        PageFaultFreshness {
+            base_epoch: self.base_epoch,
+            vaddr: self.vaddr,
+            range: self.range,
+            vma_flags: self.vma_flags,
+            mapping_id: self.operation.mapping_id(),
+            preimage: self.preimage,
+        }
+    }
+}
+
 struct PageFaultMapPlans {
     preferred: PageTableMapPlan,
     fallback: Option<PageTableMapPlan>,
+}
+
+/// A backend materialization failure keeps its diagnostic until the caller
+/// has rechecked the plan under the MM lock.  A stale snapshot is a normal
+/// retry, not a user address error or signal.
+struct PrepareFaultDiagnostic {
+    vaddr: VirtAddr,
+    vma_flags: MappingFlags,
+    error: StarryError,
+}
+
+impl PrepareFaultDiagnostic {
+    fn report(self) {
+        let Self {
+            vaddr,
+            vma_flags,
+            error,
+        } = self;
+        warn!("failed to prepare page fault for {vaddr:?} ({vma_flags:?}): {error}");
+    }
+}
+
+struct PreparePageFaultFailure {
+    result: FaultResult,
+    diagnostic: Option<PrepareFaultDiagnostic>,
+}
+
+impl PreparePageFaultFailure {
+    fn with_diagnostic(result: FaultResult, diagnostic: PrepareFaultDiagnostic) -> Self {
+        Self {
+            result,
+            diagnostic: Some(diagnostic),
+        }
+    }
+
+    fn report(self) -> FaultResult {
+        if let Some(diagnostic) = self.diagnostic {
+            diagnostic.report();
+        }
+        self.result
+    }
+}
+
+impl From<FaultResult> for PreparePageFaultFailure {
+    fn from(result: FaultResult) -> Self {
+        Self {
+            result,
+            diagnostic: None,
+        }
+    }
 }
 
 fn prepare_mapping_publication_mutation(
@@ -6130,7 +6206,7 @@ impl AddrSpace {
         })
     }
 
-    fn classify_fault_error(file_backed: bool, error: StarryError) -> FaultResult {
+    fn classify_fault_error(file_backed: bool, error: &StarryError) -> FaultResult {
         if matches!(
             error,
             StarryError::NoMemory
@@ -6158,7 +6234,7 @@ impl AddrSpace {
     fn prepare_fault_materialization(
         plan: &PageFaultPlan,
         request: PopulateRequest,
-    ) -> Result<FaultMaterialization, FaultResult> {
+    ) -> Result<FaultMaterialization, PreparePageFaultFailure> {
         match plan.operation.prepare_fault(
             plan.space_id,
             request,
@@ -6168,13 +6244,14 @@ impl AddrSpace {
         ) {
             Ok(materialization) => Ok(materialization),
             Err(error) => {
-                warn!(
-                    "failed to prepare page fault for {:?} ({:?}): {error}",
-                    plan.vaddr, plan.vma_flags
-                );
-                Err(Self::classify_fault_error(
-                    plan.operation.is_file_backed(),
-                    error,
+                let result = Self::classify_fault_error(plan.operation.is_file_backed(), &error);
+                Err(PreparePageFaultFailure::with_diagnostic(
+                    result,
+                    PrepareFaultDiagnostic {
+                        vaddr: plan.vaddr,
+                        vma_flags: plan.vma_flags,
+                        error,
+                    },
                 ))
             }
         }
@@ -6195,7 +6272,9 @@ impl AddrSpace {
             })
     }
 
-    fn prepare_page_fault(mut plan: PageFaultPlan) -> Result<PreparedPageFault, FaultResult> {
+    fn prepare_page_fault(
+        mut plan: PageFaultPlan,
+    ) -> Result<PreparedPageFault, PreparePageFaultFailure> {
         let mut materialization = Self::prepare_fault_materialization(&plan, plan.request)?;
         let installed_owner = materialization.owner().and_then(|owner| {
             (owner.transition == PteOwnerTransition::Installed).then_some((
@@ -6207,7 +6286,7 @@ impl AddrSpace {
         let map_deposit = if let Some((owner_va, owner_paddr, owner_page_size)) = installed_owner {
             let Some(plans) = plan.map_plans.take() else {
                 Self::cancel_fault_materialization(&plan, materialization)?;
-                return Err(FaultResult::Retry);
+                return Err(FaultResult::Retry.into());
             };
             let PageFaultMapPlans {
                 preferred,
@@ -6220,32 +6299,33 @@ impl AddrSpace {
             });
             if !preferred_selected && !fallback_selected {
                 Self::cancel_fault_materialization(&plan, materialization)?;
-                return Err(FaultResult::Retry);
+                return Err(FaultResult::Retry.into());
             }
             let Some(flags) = materialization.pte_flags() else {
                 Self::cancel_fault_materialization(&plan, materialization)?;
-                return Err(FaultResult::Retry);
+                return Err(FaultResult::Retry.into());
             };
 
             if fallback_selected {
                 let Some(fallback_request) = plan.request.into_base_page_fallback() else {
                     Self::cancel_fault_materialization(&plan, materialization)?;
-                    return Err(FaultResult::Retry);
+                    return Err(FaultResult::Retry.into());
                 };
                 plan.request = fallback_request;
                 plan.range = fallback_request.range();
                 let Some(fallback) = fallback.take() else {
                     Self::cancel_fault_materialization(&plan, materialization)?;
-                    return Err(FaultResult::Retry);
+                    return Err(FaultResult::Retry.into());
                 };
                 match fallback.prepare(owner_paddr, flags) {
                     Ok(deposit) => Some(deposit),
                     Err(error) => {
+                        let error = StarryError::from(error);
                         warn!(
                             "could not prepare fallback page-table path for {owner_va:?}: {error}"
                         );
                         Self::cancel_fault_materialization(&plan, materialization)?;
-                        return Err(Self::classify_fault_error(false, error.into()));
+                        return Err(Self::classify_fault_error(false, &error).into());
                     }
                 }
             } else {
@@ -6258,7 +6338,7 @@ impl AddrSpace {
                         // and retry boundary without allocating under the PTL.
                         Self::cancel_fault_materialization(&plan, materialization)?;
                         let Some(fallback_request) = plan.request.into_base_page_fallback() else {
-                            return Err(FaultResult::Retry);
+                            return Err(FaultResult::Retry.into());
                         };
                         plan.request = fallback_request;
                         plan.range = fallback_request.range();
@@ -6266,39 +6346,41 @@ impl AddrSpace {
                             Self::prepare_fault_materialization(&plan, fallback_request)?;
                         let Some(owner) = materialization.owner() else {
                             Self::cancel_fault_materialization(&plan, materialization)?;
-                            return Err(FaultResult::Retry);
+                            return Err(FaultResult::Retry.into());
                         };
                         let Some(fallback) = fallback.take() else {
                             Self::cancel_fault_materialization(&plan, materialization)?;
-                            return Err(FaultResult::Retry);
+                            return Err(FaultResult::Retry.into());
                         };
                         if owner.transition != PteOwnerTransition::Installed
                             || owner.va != fallback.vaddr()
                             || owner.page_size != fallback.page_size()
                         {
                             Self::cancel_fault_materialization(&plan, materialization)?;
-                            return Err(FaultResult::Retry);
+                            return Err(FaultResult::Retry.into());
                         }
                         let Some(flags) = materialization.pte_flags() else {
                             Self::cancel_fault_materialization(&plan, materialization)?;
-                            return Err(FaultResult::Retry);
+                            return Err(FaultResult::Retry.into());
                         };
                         match fallback.prepare(owner.paddr, flags) {
                             Ok(deposit) => Some(deposit),
                             Err(error) => {
+                                let error = StarryError::from(error);
                                 warn!(
                                     "could not prepare base-page table path for {:?}: {error}",
                                     owner.va
                                 );
                                 Self::cancel_fault_materialization(&plan, materialization)?;
-                                return Err(Self::classify_fault_error(false, error.into()));
+                                return Err(Self::classify_fault_error(false, &error).into());
                             }
                         }
                     }
                     Err(error) => {
+                        let error = StarryError::from(error);
                         warn!("could not prepare page-table path for {owner_va:?}: {error}");
                         Self::cancel_fault_materialization(&plan, materialization)?;
-                        return Err(Self::classify_fault_error(false, error.into()));
+                        return Err(Self::classify_fault_error(false, &error).into());
                     }
                 }
             }
@@ -6312,16 +6394,23 @@ impl AddrSpace {
         })
     }
 
-    fn page_fault_plan_is_current(&self, plan: &PageFaultPlan) -> bool {
-        if self.vm_epoch() != plan.base_epoch || !plan.preimage.matches(plan.range.start, &self.pt)
+    fn page_fault_freshness_is_current(&self, freshness: &PageFaultFreshness) -> bool {
+        if self.vm_epoch() != freshness.base_epoch
+            || !freshness.preimage.matches(freshness.range.start, &self.pt)
         {
             return false;
         }
-        self.vma_root.lookup_entry(plan.vaddr).is_some_and(|entry| {
-            entry.snapshot().rights == plan.vma_flags
-                && entry.snapshot().range.contains_range(plan.range)
-                && entry.operation().mapping_id() == plan.operation.mapping_id()
-        })
+        self.vma_root
+            .lookup_entry(freshness.vaddr)
+            .is_some_and(|entry| {
+                entry.snapshot().rights == freshness.vma_flags
+                    && entry.snapshot().range.contains_range(freshness.range)
+                    && entry.operation().mapping_id() == freshness.mapping_id
+            })
+    }
+
+    fn page_fault_plan_is_current(&self, plan: &PageFaultPlan) -> bool {
+        self.page_fault_freshness_is_current(&plan.freshness())
     }
 
     fn apply_prepared_page_fault(
@@ -6623,7 +6712,7 @@ impl AddrSpace {
             };
         let prepared = match Self::prepare_page_fault(plan) {
             Ok(prepared) => prepared,
-            Err(result) => return result,
+            Err(failure) => return failure.report(),
         };
         let mut attempt = prepared.into_apply_attempt();
         let result = match self.apply_prepared_page_fault(&mut attempt) {

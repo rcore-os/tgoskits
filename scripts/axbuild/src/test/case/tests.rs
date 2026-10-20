@@ -165,6 +165,38 @@ fn grouped_cache_key_tracks_effective_execution_inputs() {
 }
 
 #[test]
+fn python_cache_key_tracks_prebuild_script_contents() {
+    let root = tempdir().unwrap();
+    let shared_img = root.path().join("rootfs.img");
+    fs::write(&shared_img, b"rootfs").unwrap();
+    let case = fake_case(root.path(), "python");
+    let python_dir = case.case_dir.join("python");
+    fs::create_dir_all(&python_dir).unwrap();
+    fs::write(python_dir.join("client.py"), b"print('client')\n").unwrap();
+    let config = fake_config();
+    let cache_key = || {
+        case_asset_cache_key(
+            "x86_64",
+            "x86_64-unknown-none",
+            CasePipeline::Python,
+            &case,
+            &shared_img,
+            &config,
+        )
+        .unwrap()
+    };
+
+    let without_prebuild = cache_key();
+    fs::write(python_dir.join("prebuild.sh"), b"#!/bin/sh\nexit 0\n").unwrap();
+    let with_prebuild = cache_key();
+    assert_ne!(without_prebuild, with_prebuild);
+
+    fs::write(python_dir.join("prebuild.sh"), b"#!/bin/sh\nexit 1\n").unwrap();
+    let changed_prebuild = cache_key();
+    assert_ne!(with_prebuild, changed_prebuild);
+}
+
+#[test]
 fn save_rootfs_cache_image_respects_ci_isolation() {
     let _lock = ENV_LOCK.lock().unwrap();
     let _ci = TempEnvVar::set("CI", "1");

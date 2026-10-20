@@ -17,7 +17,9 @@ retry() {
 retry apk update || fail
 retry apk add lua5.4 luarocks5.4 || fail
 
-retry luarocks-5.4 install inspect || fail
+luarocks-5.4 install /usr/share/lua-luarocks/inspect-3.1.3-0.rockspec || fail
 test -f /usr/local/share/lua/5.4/inspect.lua || fail
+inspect_show=$(luarocks-5.4 show inspect 2>/dev/null) || fail
+printf '%s\n' "$inspect_show" | grep -F '3.1.3-0' >/dev/null || fail
 
 lua5.4 /usr/bin/lua-luarocks-main.lua || fail

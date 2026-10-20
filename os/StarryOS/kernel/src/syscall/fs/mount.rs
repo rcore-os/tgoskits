@@ -813,11 +813,14 @@ fn mount_source(source: &str) -> &str {
 
 /// Holder token for a loop device backing an ext4 mount.
 ///
-/// The mount's filesystem owns the only copy of this lease, so the holder is
-/// released exactly when the filesystem itself is dropped: not before, and
-/// never twice. The lease is deliberately neither `Clone` nor guarded by a
-/// release flag - a second copy dropped early would hand the backing store to
-/// a new mount while the detached filesystem still holds dirty data for it.
+/// `LoopMountLease` is not `Clone`. `new_from_file` moves it into the private
+/// `SharedFileBacking<L>` cell shared by `FileImageDevice` and
+/// `Ext4Filesystem`. The final `Ext4MountLease`, which represents all mounts,
+/// bind/namespace copies and open locations, retires the file-backed
+/// filesystem: it retires caches, drains and shuts down, then takes and drops
+/// the shared `L` outside the cell lock. Internal cache or inode owners cannot
+/// delay that release. A failed retirement keeps `L` in the cell, and dropping
+/// the final `Ext4Filesystem` remains the fallback.
 #[cfg(feature = "ext4")]
 struct LoopMountLease {
     device: Arc<dyn crate::pseudofs::DeviceOps>,
@@ -887,20 +890,24 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         .as_any()
         .downcast_ref::<LoopDevice>()
         .ok_or(StarryError::NoSuchDevice)?;
-    // Mounting claims a dedicated holder for the lifetime of the filesystem,
-    // matching Linux: without it a second mount of the same loop device would
-    // silently start a second filesystem instance over one backing store. The
-    // holder does not disturb the ordinary open path, so the device can still
-    // be opened for ioctls while the mount is active.
+    // Mounting claims a dedicated holder for this backing store. The project
+    // rejects a second filesystem instance over the same loop binding instead
+    // of allowing two independent mounts to overwrite one image. The holder
+    // does not disturb the ordinary open path, so the device can still be
+    // opened for ioctls while the mount is active.
     loop_device.acquire_mount_holder()?;
     let lease = LoopMountLease::new(device.inner().clone());
     if !readonly && loop_device.is_read_only()? {
         return Err(StarryError::ReadOnlyFilesystem);
     }
-    // The filesystem is the lease's sole owner, so the loop holder is released
-    // only when the filesystem itself - including a lazily detached one with
-    // open files - is dropped. No filesystem-context lock is held during
-    // superblock or backing-file I/O.
+    // `new_from_file` moves this lease into the private `SharedFileBacking`
+    // cell used by both `FileImageDevice` and `Ext4Filesystem`. The final
+    // `Ext4MountLease` retires the file-backed filesystem before releasing it:
+    // cache retirement, drain and `shutdown_filesystem` must succeed first,
+    // then the shared lease is taken and dropped outside its lock. Cached
+    // inode owners cannot delay that release; a failed retirement keeps the
+    // lease for the final filesystem-drop fallback. No filesystem-context lock
+    // is held during superblock or backing-file I/O.
     let fs = new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)?;
     let mount = target_location.mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly());

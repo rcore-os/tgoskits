@@ -985,9 +985,24 @@ impl MmPin {
         // Allocation, file I/O and page-cache reservation happen with no
         // address-space metadata lock held. The apply phase below rechecks the
         // exact VMA epoch and PTE preimage before publishing anything.
+        let freshness = plan.freshness();
         let prepared = match AddrSpace::prepare_page_fault(plan) {
             Ok(prepared) => prepared,
-            Err(result) => return result,
+            Err(failure) => {
+                // Prepare consumed the plan and has released every candidate
+                // owner. Recheck the same VMA/PTE facts as the successful
+                // apply path before deciding whether this is a retry or a real
+                // fault. A stale snapshot is not a user address error or a
+                // real signal, so it must stay silent.
+                let stale = {
+                    let aspace = self.0.aspace.lock();
+                    !aspace.page_fault_freshness_is_current(&freshness)
+                };
+                if stale {
+                    return FaultResult::Retry;
+                }
+                return failure.report();
+            }
         };
         let mut attempt = prepared.into_apply_attempt();
         let outcome = {
@@ -1769,7 +1784,7 @@ mod tests {
         );
         assert!(!pin.handle_page_fault(start, PageFaultFlags::EXECUTE));
         assert!(!pin.handle_page_fault(start + 0x1000, PageFaultFlags::WRITE));
-        let exhausted = AddrSpace::classify_fault_error(false, crate::StarryError::NoMemory);
+        let exhausted = AddrSpace::classify_fault_error(false, &crate::StarryError::NoMemory);
         pin.lock().mutation_gate.mark_needs_repair();
         let quarantined = pin.handle_page_fault_result(start, PageFaultFlags::WRITE);
         // This test did not damage any PTE; release its synthetic quarantine.
@@ -2055,6 +2070,211 @@ mod tests {
         let permit = handle
             .release_user_ref()
             .expect("the quiescent MM must become reclaimable after the fault");
+        permit.reclaim().unwrap();
+    }
+
+    fn pin_with_write_protected_anon_page(
+        start: VirtAddr,
+    ) -> (MmHandle, MmPin, Arc<super::super::PageObject>) {
+        use ax_runtime::hal::paging::MappingFlags;
+
+        let page_size = ax_memory_addr::PAGE_SIZE_4K;
+        let access = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+        let aspace = Arc::new(Mutex::new(AddrSpace::new_empty(start, page_size).unwrap()));
+        let handle = MmHandle::from_arc(aspace).unwrap();
+        let pin = handle.pin().unwrap();
+        {
+            let mut aspace = pin.lock();
+            aspace
+                .map(
+                    start,
+                    page_size,
+                    access,
+                    true,
+                    MappingOperation::new_alloc(start, page_size, "[stale-prepare]"),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            pin.handle_page_fault_result(start, PageFaultFlags::WRITE | PageFaultFlags::USER,),
+            FaultResult::Handled
+        );
+
+        let epoch_before_protect = pin.lock().vm_epoch();
+        {
+            let mut aspace = pin.lock();
+            aspace.protect(start, page_size, access).unwrap();
+        }
+        let page = {
+            let aspace = pin.lock();
+            assert_ne!(
+                aspace.vm_epoch(),
+                epoch_before_protect,
+                "mprotect must publish a new VMA/PTE epoch"
+            );
+            let (_, pte_flags, pte_size) = aspace
+                .pt
+                .query(start)
+                .expect("the materialized page must remain mapped after mprotect");
+            assert_eq!(pte_size, page_size);
+            assert!(
+                pte_flags.contains(MappingFlags::READ | MappingFlags::USER)
+                    && !pte_flags.contains(MappingFlags::WRITE),
+                "a private writable VMA must keep its resident PTE read-only after mprotect: \
+                 {pte_flags:?}"
+            );
+            let slots = aspace.resident_mapping_slots();
+            let slot = slots
+                .iter()
+                .find(|slot| slot.va == start)
+                .expect("the resident page must retain its mapping slot");
+            assert_eq!(slot.page.mapping_refs(), 1);
+            slot.page.clone()
+        };
+        (handle, pin, page)
+    }
+
+    fn assert_no_fault_cleanup(pin: &MmPin, phase: &str) {
+        let aspace = pin.lock();
+        assert!(
+            !aspace.mutation_gate.needs_repair(),
+            "{phase}: the fault must not quarantine the MM"
+        );
+        assert!(
+            aspace.pending_tlb_requests().unwrap().is_empty(),
+            "{phase}: the fault must not leave a pending TLB request"
+        );
+        assert_eq!(
+            aspace.pending_tlb_obligations(),
+            0,
+            "{phase}: the fault must not leave a pending TLB obligation"
+        );
+    }
+
+    #[axtest::axtest]
+    fn mm_pin_prepare_error_on_stale_plan_retries_before_reporting_user_fault() {
+        let access = PageFaultFlags::WRITE | PageFaultFlags::USER;
+        let page_size = ax_memory_addr::PAGE_SIZE_4K;
+
+        // discard_range removes the resident PTE but keeps the VMA.  Holding
+        // the old PageObject keeps the COW index entry resolvable while its
+        // mapping_refs drops to zero, which is the prepare-time BadState seen
+        // when another thread discards between plan and prepare.
+        let start = VirtAddr::from(0x7700_0000);
+        let (handle, pin, discarded_page) = pin_with_write_protected_anon_page(start);
+        let epoch_before_discard = pin.lock().vm_epoch();
+        let plan = pin
+            .lock()
+            .plan_page_fault(start, access, TransparentHugePageMode::default())
+            .expect("the writable private VMA must produce a fault plan");
+        {
+            let mut aspace = pin.lock();
+            aspace.discard_range(start, page_size).unwrap();
+            assert_ne!(
+                aspace.vm_epoch(),
+                epoch_before_discard,
+                "discard_range must publish a new VMA/PTE epoch"
+            );
+            assert!(
+                aspace.find_area_snapshot(start).is_some(),
+                "discard_range must keep the VMA valid"
+            );
+            assert!(matches!(
+                aspace.pt.query(start),
+                Err(ax_runtime::hal::paging::PagingError::NotMapped)
+            ));
+        }
+        assert_eq!(discarded_page.mapping_refs(), 0);
+        assert_eq!(
+            pin.resolve_page_fault_plan(plan, start),
+            FaultResult::Retry,
+            "a prepare error for a plan invalidated by discard must be re-planned"
+        );
+        assert_eq!(discarded_page.mapping_refs(), 0);
+        assert_no_fault_cleanup(&pin, "after stale discard prepare");
+
+        assert_eq!(
+            pin.handle_page_fault_result(start, access),
+            FaultResult::Handled,
+            "a fresh fault must repopulate the still-valid VMA"
+        );
+        {
+            let aspace = pin.lock();
+            let (paddr, pte_flags, pte_size) = aspace
+                .pt
+                .query(start)
+                .expect("the retried fault must install a PTE");
+            assert_eq!(pte_size, page_size);
+            assert!(pte_flags.contains(
+                ax_runtime::hal::paging::MappingFlags::READ
+                    | ax_runtime::hal::paging::MappingFlags::WRITE
+                    | ax_runtime::hal::paging::MappingFlags::USER
+            ));
+            assert_eq!(aspace.resident_page_counts().anon, 1);
+            let slots = aspace.resident_mapping_slots();
+            let slot = slots
+                .iter()
+                .find(|slot| slot.va == start)
+                .expect("the retried fault must publish one mapping owner");
+            assert_eq!(slot.mapped_paddr(), Some(paddr));
+            assert_eq!(slot.page.mapping_refs(), 1);
+            assert!(
+                !Arc::ptr_eq(&slot.page, &discarded_page),
+                "the discarded page must not be reused without an owner"
+            );
+        }
+        assert_no_fault_cleanup(&pin, "after stale discard retry");
+        drop(discarded_page);
+        drop(pin);
+        let permit = handle.release_user_ref().unwrap();
+        drop(handle);
+        permit.reclaim().unwrap();
+
+        // Removing the VMA must still make the stale plan retry once, then
+        // make the fresh fault a real Unmapped result instead of retrying
+        // forever or fabricating a resident owner.
+        let start = VirtAddr::from(0x7800_0000);
+        let (handle, pin, unmapped_page) = pin_with_write_protected_anon_page(start);
+        let epoch_before_unmap = pin.lock().vm_epoch();
+        let plan = pin
+            .lock()
+            .plan_page_fault(start, access, TransparentHugePageMode::default())
+            .expect("the writable private VMA must produce a fault plan");
+        {
+            let mut aspace = pin.lock();
+            aspace.unmap(start, page_size).unwrap();
+            assert_ne!(
+                aspace.vm_epoch(),
+                epoch_before_unmap,
+                "unmap must publish a new VMA/PTE epoch"
+            );
+            assert!(
+                aspace.find_area_snapshot(start).is_none(),
+                "unmap must remove the VMA"
+            );
+            assert!(matches!(
+                aspace.pt.query(start),
+                Err(ax_runtime::hal::paging::PagingError::NotMapped)
+            ));
+        }
+        assert_eq!(unmapped_page.mapping_refs(), 0);
+        assert_eq!(
+            pin.resolve_page_fault_plan(plan, start),
+            FaultResult::Retry,
+            "a prepare error for a plan invalidated by munmap must be re-planned"
+        );
+        assert_eq!(unmapped_page.mapping_refs(), 0);
+        assert_no_fault_cleanup(&pin, "after stale unmap prepare");
+        assert_eq!(
+            pin.handle_page_fault_result(start, access),
+            FaultResult::Unmapped,
+            "a fresh fault after munmap must report the address as unmapped"
+        );
+        assert_no_fault_cleanup(&pin, "after stale unmap retry");
+        drop(unmapped_page);
+        drop(pin);
+        let permit = handle.release_user_ref().unwrap();
+        drop(handle);
         permit.reclaim().unwrap();
     }
 
