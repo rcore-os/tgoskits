@@ -448,9 +448,16 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   可重用原堆。任一步失败或目标返回都复位，不恢复已经退出的运行时。
   `runtime_handoff_devices_stopped` 是设备停稳后的同步控制台记录，真实目标的
   cmdline/initramfs 与执行输出仍是必需后置条件。
+  封存被拒输出 `efi_handoff_seal_failed`，目标返回非 SUCCESS 输出
+  `efi_handoff_entry_failed`，协作目标成功返回输出 `efi_handoff_entry_returned: SUCCESS`。
+  三者均使用停运后仍可用的同步 emergency console，随后复位，不恢复旧运行时。
+  退出时先停其他串口；本核 IRQ/抢占关闭后，选中控制台通过既有终态寄存器所有权
+  屏蔽 IRQ 并封闭普通访问，保留 emergency 目的地及 TX 配置。不能先普通 shutdown
+  再输出：该操作会撤销运行时路由，早期路径也已关闭，诊断将被丢弃。
   `ProtocolPollRuntime` 的等待谓词必须包含持久的 stop 状态，不能只依赖可被
   `finish_cycle()` 清除的 scheduled 位。返回式 EFI 目标须保留调用方栈、MMU、
-  处理器局部状态和中断屏蔽；最小返回 ELF 的真实 smoke 必须观察复位后的新 epoch。
+  处理器局部状态和中断屏蔽；最小返回 ELF 的真实 smoke 验证零和非零 EFI 状态，
+  要求先出现相应返回诊断，再观察复位后的新 epoch 和未改变的稳定 OTA 状态。
 - LoongArch `PreparedHandoff` 不发布最终 map；设备停稳、IRQ/抢占关闭后，
   `ExecutionSnapshot` 由 ax-mm 的只读表帧遍历、栈与 TLS 所有者形成。`seal` 无分配地发布
   v4 map 并返回 `SealedHandoff`；根表跨度及全部中间表帧必须包含，叶数据页不能冒充表帧。

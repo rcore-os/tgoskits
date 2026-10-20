@@ -120,3 +120,50 @@ sequenceDiagram
 平台启动内存列表完成后保持不可变。后期归还由 someboot 的唯一所有权状态记录，下一次 `export_map` 从冻结 map 加上已完成的归还派生，避免修改已发布的静态切片。紧凑插入会扣除 buddy 元数据，不足以形成可管理区间时返回零字节；日志分别报告原始回收量与 allocator 管理量。
 
 现有 LoongArch smoke 从运行时 `axloader_memory` 记录取得两级 loader 的 EFI 实际镜像范围，以最后一次冷启动记录划分生命周期，不依赖早期内存图打印。它临时生成 1 MiB 归档夹具，独立 helloworld 目标使用普通 `alloc_pages` 从回收的旧镜像、资源池和消费完成的归档中取得页面，写满一页并读回，输出 `HANDOFF_MEMORY_RECLAIM_PASSED` 与 `HANDOFF_INITRAMFS_RECLAIM_PASSED`。组件验证覆盖任意顺序释放、容量失败、代际拒绝、版本拒绝、页边界与区间裁剪；页表验证包含四帧根表和巨大叶映射。A/B 文件与目标必须一起重建至 v4，持久 OTA 状态格式不变。
+
+### 4.4 交接前后的内存分布
+
+LoongArch 在线 axloader 持有完整资源容量，实际对象只占其中一部分。[`receiver_map`](../../platforms/someboot/src/handoff/received/loongarch64.rs) 根据接收方的计划和存活对象重新划分用途；同一模块的 `complete_takeover()` 完成后才允许普通分配器使用旧阶段的页面。图按用途分组，不按地址比例绘制；只有 IMAGE 起点 `0x200000` 固定，其他物理地址由本次固件分配决定。
+
+```mermaid
+flowchart LR
+    subgraph L[axloader 已准备目标]
+        direction TB
+        LI["IMAGE 32 MiB<br/>0x200000 起：目标镜像及空闲容量"]
+        LA["ARCHIVE 256 MiB<br/>待消费 initramfs 及空闲容量"]
+        LS["SLOT 32 MiB + FIRMWARE 32 MiB<br/>OTA loader 镜像、固件原文件及剩余容量"]
+        LE["旧执行环境<br/>代码、栈、页表、TLS、CPU-local"]
+        LF["固件保留、Runtime、ACPI、MMIO<br/>系统表、仍可达配置表和共享交接记录"]
+    end
+    subgraph T[普通目标完成接管]
+        direction TB
+        TI["目标自身镜像：KImage<br/>当前栈、表页、CPU-local：保持占用"]
+        TA["未消费 initramfs：BootData<br/>解包借用结束前保持占用"]
+        TF["合格完整页：Free<br/>资源剩余容量及旧上下文进入普通分配器"]
+        TP["固件与共享表：继续保留"]
+    end
+    LI --> TI
+    LI --> TF
+    LA --> TA
+    LA --> TF
+    LS --> TF
+    LE -->|接管完成后| TF
+    LF --> TP
+    TA -->|finish 后实际插入分配器| R["后期归还归档页<br/>扣除 allocator 元数据"]
+```
+
+旧固件 loader 的镜像可以在 loader → OTA loader 时先转成普通 RAM；OTA loader 的镜像位于保留的 SLOT 容量内，要等普通目标不再声明这个池时才转成普通 RAM。两者可能处于不同回收阶段，因此 `reclaimed::exercise()` 同时核对最新交接报告和宿主从日志取得的两级镜像范围。测试在每个要求范围内实际取得至少一个完整普通页、写满并读回，不宣称逐页覆写了整个容量。
+
+原生 x86 UEFI 使用另一条生命周期。[`handoff/firmware`](../../platforms/someboot/src/handoff/firmware/mod.rs) 保留仍可能返回的调用帧和缓冲区，接收内核自己执行 ExitBootServices；[`efi_stub::memmap`](../../platforms/someboot/src/efi_stub/memmap.rs) 此后把符合条件的 Loader/Boot Services 描述符转成 `Free`，再排除目标、归档和固件仍引用的存储。它不使用 LoongArch 的 352 MiB 静态池或继承内存图。
+
+```mermaid
+flowchart LR
+    X["x86 axloader<br/>EFI 镜像、下载缓冲和固件栈仍有所有者"]
+    X --> E["目标 EFI 入口<br/>Boot Services 仍有效"]
+    E -->|目标返回，服务仍有效| C["撤销协议、恢复参数<br/>由 EFI 释放本事务分配"]
+    E -->|内核执行 ExitBootServices| M["复制最终固件内存图<br/>保护目标、归档、固件表及 Runtime"]
+    M --> F["符合条件的 Loader/Boot Services 页成为 Free<br/>目标建立自身上下文和普通分配器"]
+    F --> A["归档消费结束<br/>完整页后期归还"]
+```
+
+x86 三系统 smoke 的用户态执行与文件写读证明启动链连通；它们本身不能证明某个旧 loader 物理页已经被再次分配。验收报告必须分别注明这类运行证据、归档实际插入分配器的数量，以及 LoongArch 逐指定范围取得普通页并写读的证据。

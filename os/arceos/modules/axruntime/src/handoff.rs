@@ -55,7 +55,11 @@ pub unsafe fn enter(enter: impl FnOnce(ax_hal::boot::ExecutionSnapshot)) -> ! {
             reset_with_error(error);
         }
     }
+    let console = crate::serial::active_console();
     for runtime in crate::serial::runtimes() {
+        if console.is_some_and(|console| core::ptr::eq(console, runtime)) {
+            continue;
+        }
         if let Err(error) = runtime.shutdown() {
             reset_with_error(error);
         }
@@ -65,6 +69,13 @@ pub unsafe fn enter(enter: impl FnOnce(ax_hal::boot::ExecutionSnapshot)) -> ! {
     // task and IRQ from accessing pages the target's allocator may reuse.
     // Keep this guard alive through entry and the terminal reset on return.
     let _guard = crate::task::sync::PreemptIrqSaveGuard::new();
+    if let Some(console) = console {
+        // Keep the selected UART configured for the final diagnostic. The
+        // existing terminal transition masks its IRQs and permanently excludes
+        // normal register access; ordinary shutdown would remove this route.
+        // One CPU with IRQs/preemption disabled cannot hold a competing gate.
+        console.fail_console_closed();
+    }
     crate::clock_event_runtime::take_current_clock_event_offline();
     let mut context = ax_hal::boot::ExecutionSnapshot::new();
     if let Err(error) = crate::thread::snapshot_current_execution(&mut context) {

@@ -546,7 +546,8 @@ impl SerialRuntimeHandle {
     }
 
     /// Permanently rejects task, IRQ-consumer, and per-port use after a
-    /// selected console handoff becomes untrustworthy.
+    /// selected console handoff becomes untrustworthy or terminal boot handoff
+    /// reserves its emergency endpoint before entering the next kernel.
     pub(crate) fn fail_console_closed(&self) {
         self.shared.fail_closed();
     }

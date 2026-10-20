@@ -229,18 +229,37 @@ fn reserve_image(id: ResourceId, pages: usize) -> Result<Allocation, &'static st
 /// The application has one control task and no outstanding storage operation.
 /// Keep image and payload owners on this stack until the target takes over.
 pub(super) fn enter_prepared<I>(payload: PublishedPayload, entry: u64, image: I) -> ! {
+    use ax_std::os::arceos::api::modules::ax_runtime::{emergency_console, handoff};
+
     // SAFETY: both call sites have stopped application I/O and committed OTA
     // state. The runtime stops its own services before this closure; the target
     // EFI entry and reserved allocations were validated during preparation.
     unsafe {
-        ax_std::os::arceos::api::modules::ax_runtime::handoff::enter(move |context| {
+        handoff::enter(move |context| {
             let _image = image;
+            let sealed = match payload.0.seal(&context) {
+                Ok(sealed) => sealed,
+                Err(error) => {
+                    emergency_console::write_fmt(format_args!(
+                        "efi_handoff_seal_failed: {error}\n"
+                    ));
+                    return;
+                }
+            };
             // SAFETY: the runtime has quiesced tasks, IRQs and DMA; the owned
             // payload and caller's loaded image remain live throughout entry.
-            let _ = payload
-                .0
-                .seal(&context)
-                .and_then(|sealed| sealed.enter(entry));
+            match sealed.enter(entry) {
+                Ok(()) => {
+                    emergency_console::write_fmt(format_args!(
+                        "efi_handoff_entry_returned: SUCCESS\n"
+                    ));
+                }
+                Err(error) => {
+                    emergency_console::write_fmt(format_args!(
+                        "efi_handoff_entry_failed: {error}\n"
+                    ));
+                }
+            }
         })
     }
 }

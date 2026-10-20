@@ -102,10 +102,12 @@ def stage_trial(args, epoch, image, digest):
     )
 
 
-def returning_efi_image():
-    """A cooperative EFI entry which preserves the caller and returns SUCCESS."""
-    # Assembled and disassembled for LoongArch: ori $a0, $zero, 0; ret.
-    code = bytes.fromhex("040080032000004c")
+def returning_efi_image(efi_status):
+    """A cooperative EFI entry which preserves the caller and returns a status."""
+    # Assembled and disassembled for LoongArch: ori $a0, $zero, imm12; ret.
+    if not 0 <= efi_status <= 0xFFF:
+        raise ValueError("EFI test status does not fit ori")
+    code = struct.pack("<II", 0x03800004 | (efi_status << 10), 0x4C000020)
     address = 0xFFFFFFFF80000000
     code_offset, symbols_offset, strings_offset, sections_offset = 120, 128, 176, 192
     strings = b"\0efi_pe_entry\0"
@@ -129,9 +131,9 @@ def returning_efi_image():
     return bytes(image)
 
 
-def exercise_returned_target(args, status):
+def exercise_returned_target(args, status, efi_status):
     epoch = status["boot_epoch"]
-    image = returning_efi_image()
+    image = returning_efi_image(efi_status)
     digest = hashlib.sha256(image).hexdigest()
     manifest = {
         "boot_id": "loong-returning-efi", "arch": "loongarch64", "image_format": "elf64",
@@ -149,6 +151,7 @@ def exercise_returned_target(args, status):
     response = request(args.host, args.port, "POST", "/api/v1/serial/continue",
                        json.dumps(binding).encode(), headers)
     expect(response[0], 200, "returning target serial continue", response[1])
+    log_offset = len(args.qemu_log.read_text(errors="replace")) if args.qemu_log else 0
     response = request(args.host, args.port, "POST", path + "/start",
                        headers={**headers, "X-Serial-Binding": binding["binding_id"]},
                        allow_empty=True)
@@ -156,7 +159,15 @@ def exercise_returned_target(args, status):
         raise RuntimeError(f"returning EFI entry was rejected: {response!r}")
     restarted = wait_status(args.host, args.port, lambda value: value["boot_epoch"] != epoch)
     expect(restarted["ota"], status["ota"], "returning target reset preserves stable OTA state")
-    print("loong axloader: returning EFI target resets into a fresh loader epoch", flush=True)
+    if args.qemu_log:
+        marker = ("efi_handoff_entry_returned: SUCCESS" if efi_status == 0 else
+                  f"efi_handoff_entry_failed: EFI handoff failed (EFI status {efi_status:#x})")
+        if marker not in args.qemu_log.read_text(errors="replace")[log_offset:]:
+            raise RuntimeError(f"returning EFI target reset without its diagnostic: {marker}")
+    outcome = ("is reported before reset" if args.qemu_log else
+               "resets with unchanged stable OTA state")
+    print(f"loong axloader: returning EFI status {efi_status:#x} {outcome}", flush=True)
+    return restarted
 
 
 def main():
@@ -346,7 +357,8 @@ def main():
         and value.get("ota", {}).get("last_outcome") == "confirmed",
         timeout=300,
     )
-    exercise_returned_target(args, stable)
+    for efi_status in (0, 1):
+        stable = exercise_returned_target(args, stable, efi_status)
 
     # The target must be an independent ArceOS EFI application. Reusing the
     # loader ELF would make its inherited image range fail the loader's PE
