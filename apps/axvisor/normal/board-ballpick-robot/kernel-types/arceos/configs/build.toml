@@ -7,4 +7,4 @@ features = [
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
-vm_configs = ["apps/axvisor/arceos-vm-test/configs/arceos.toml"]
+vm_configs = ["apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/arceos.toml"]

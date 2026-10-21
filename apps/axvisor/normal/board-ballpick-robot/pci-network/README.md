@@ -187,7 +187,7 @@ sync
 
 预期 PCI ID 为 `10ec:8125`，驱动已绑定，接口具有 IPv4 地址。ping 必须从选中的接口发出，返回0、收到5个回复且丢包率为0%。
 
-更换目标时，手动执行修改 `PING_TARGET`，自动测例修改 [板卡配置](ping/board-orangepi-5-plus-linux.toml) 中的地址；`BOARD_SERVER` 只用于连接板卡服务。
+更换目标时，手动执行修改 `PING_TARGET`，自动测例修改 [板卡配置](ping/board-ballpick-robot-linux.toml) 中的地址；`BOARD_SERVER` 只用于连接板卡服务。
 
 ## 判定
 
@@ -224,7 +224,7 @@ cargo xtask axvisor app board -g normal \
 | [configs/uboot-shell.toml](configs/uboot-shell.toml) | 交互启动，不注入命令或自动判定 |
 | [configs/linux.toml](configs/linux.toml) | 客户机内核、独立磁盘、内存及 PCIe 设备分配 |
 | [ping/build-aarch64-unknown-none-softfloat.toml](ping/build-aarch64-unknown-none-softfloat.toml) | 构建 AxVisor 并注册 Linux 客户机 |
-| [ping/board-orangepi-5-plus-linux.toml](ping/board-orangepi-5-plus-linux.toml) | 启动参数、客户机检查和通过条件 |
+| [ping/board-ballpick-robot-linux.toml](ping/board-ballpick-robot-linux.toml) | 启动参数、客户机检查和通过条件 |
 
 ## 实板验证记录
 
@@ -234,7 +234,7 @@ cargo xtask axvisor app board -g normal \
 ostool board ls --server "$BOARD_SERVER"
 ```
 
-当时查询结果为 AVAILABLE=1、TOTAL=1。实体板卡类型由运行配置的 `board_type` 决定；`--board orangepi-5-plus-linux` 选择测例逻辑名称。
+当时查询结果为 AVAILABLE=1、TOTAL=1。实体板卡类型由运行配置的 `board_type` 决定；`--board ballpick-robot-linux` 选择测例逻辑名称。
 
 同轮 PCI ping 复测实际 release 为 6.1.99-rockchip-rk3588。以下为日志摘录，时间戳是构建机接收到串口输出的 UTC 时间：
 

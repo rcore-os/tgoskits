@@ -99,7 +99,7 @@ cargo xtask axvisor test board --board rock-4d-linux
 cargo xtask axvisor app list
 cargo xtask axvisor app board -g normal \
   -t board-ballpick-robot/pci-network/ping \
-  --board orangepi-5-plus-linux
+  --board ballpick-robot-linux
 ```
 
 应用目录前缀选择、QEMU 入口和客户机构建准备规则见[测试与应用入口](../build/axvisor/test#8-应用入口)。

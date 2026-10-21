@@ -1113,12 +1113,13 @@ fn global_add_region_after_init_expands_capacity() {
 }
 
 #[test]
-fn global_add_compact_region_reclaims_small_unaligned_region() {
+fn global_add_compact_region_expands_page_and_aligned_capacity() {
     let _ctx;
     const ALIGN_2M: usize = 2 * 1024 * 1024;
     let mut first = HostRegion::new(4 * 1024 * 1024, PAGE_SIZE * 4);
     let mut second = HostRegion::new(ALIGN_2M + PAGE_SIZE, ALIGN_2M);
     let mut tiny = HostRegion::new(PAGE_SIZE, PAGE_SIZE);
+    let mut large = HostRegion::new(8 * 1024 * 1024 + PAGE_SIZE, ALIGN_2M);
     let allocator = GlobalAllocator::<PAGE_SIZE>::new();
     _ctx = init_global(&allocator, &mut first, 1);
 
@@ -1154,6 +1155,32 @@ fn global_add_compact_region_reclaims_small_unaligned_region() {
     let skipped = unsafe { allocator.add_compact_region(tiny.as_mut_slice()).unwrap() };
     assert_eq!(skipped, 0);
     assert_eq!(allocator.managed_section_count(), 2);
+
+    // Exhaust aligned allocations from the original regions before hot-add.
+    let mut held = Vec::new();
+    while let Ok(address) = allocator.alloc_pages(ALIGN_2M / PAGE_SIZE, ALIGN_2M) {
+        held.push(address);
+    }
+    // SAFETY: this disjoint host allocation outlives the allocator, including
+    // the page-offset slice and its in-region metadata.
+    let added = unsafe { large.subslice(PAGE_SIZE, 8 * 1024 * 1024) };
+    let added_start = added.as_ptr() as usize;
+    let added_end = added_start + added.len();
+    // SAFETY: the region is writable, disjoint, and retained until teardown.
+    unsafe { allocator.add_compact_region(added).unwrap() };
+    let address = allocator
+        .alloc_pages(ALIGN_2M / PAGE_SIZE, ALIGN_2M)
+        .expect("hot-added RAM must support aligned contiguous allocations");
+    assert!(address.is_multiple_of(ALIGN_2M));
+    assert!(added_start <= address && address + ALIGN_2M <= added_end);
+    // SAFETY: these pages are exclusively owned by this live allocation.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, ALIGN_2M) };
+    bytes.fill(0x5a);
+    assert!(bytes.iter().all(|byte| *byte == 0x5a));
+    allocator.dealloc_pages(address, ALIGN_2M / PAGE_SIZE);
+    for address in held {
+        allocator.dealloc_pages(address, ALIGN_2M / PAGE_SIZE);
+    }
 }
 
 #[test]

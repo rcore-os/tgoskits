@@ -2,7 +2,7 @@
 
 ## 测试用途
 
-在 Orange Pi 5 Plus 上通过 AxVisor 启动单个 ArceOS 客户机，由测试者手工输入命令，
+在板卡上通过 AxVisor 启动单个 ArceOS 客户机，由测试者手工输入命令，
 检查客户机能否启动、Shell 能否列出命令、查询版本并正常退出。
 
 仓库提供客户机源码、构建配置和本文档。按下文依次编译、放置文件、启动和检查，结果由测试者记录。
@@ -34,14 +34,14 @@
 ```bash
 cargo xtask arceos build -p arceos-vm-shell \
   --target aarch64-unknown-none-softfloat \
-  --config apps/axvisor/arceos-vm-test/configs/guest-build.toml
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/guest-build.toml
 ```
 
 确认镜像和配置文件存在，且大小非零：
 
 ```bash
 ls -lh target/aarch64-unknown-linux-musl/release/arceos-vm-shell.bin \
-  apps/axvisor/arceos-vm-test/configs/arceos.toml
+  apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/arceos.toml
 ```
 
 #### 2. 连接板卡原生 Linux
@@ -109,8 +109,8 @@ findmnt -T /guest/axvisor/arceos
 
 - `configs/guest-build.toml`：单 CPU 客户机构建，生成 bin 镜像。
 - `configs/arceos.toml`：1 个 vCPU、128 MiB 内存，镜像路径为 `/guest/axvisor/arceos/arceos-vm-shell.bin`。
-- `configs/build.toml`：通过 `vm_configs = ["apps/axvisor/arceos-vm-test/configs/arceos.toml"]` 打包客户机配置，进入 AxVisor 后手工启动。
-- `configs/board-shell.toml`：空自动检查步骤，保留人工串口会话。
+- `configs/build.toml`：通过 `vm_configs = ["apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/arceos.toml"]` 打包客户机配置，进入 AxVisor 后手工启动。
+- `configs/uboot-shell.toml`：空自动检查步骤，保留人工串口会话。
 
 修改客户机配置后，重新执行下文的 AxVisor 启动命令即可重新打包配置，无需手工传输 TOML。
 更换登录用户名时，替换 SSH/SCP 命令中的 `orangepi`，板端镜像路径保持不变。
@@ -122,8 +122,8 @@ findmnt -T /guest/axvisor/arceos
 
 ```bash
 cargo xtask axvisor board \
-  --config apps/axvisor/arceos-vm-test/configs/build.toml \
-  --board-config apps/axvisor/arceos-vm-test/configs/board-shell.toml \
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/build.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/uboot-shell.toml \
   --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 

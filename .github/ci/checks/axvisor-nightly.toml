@@ -47,7 +47,7 @@ cases = ["qemu-timer-stress-v2/gicv2-timer-stress", "qemu-timer-stress/gicv3-tim
 #
 # [[check.suite]]
 # kind = "axvisor-board"
-# board = "orangepi-5-plus-arceos-net"
+# board = "ballpick-robot-arceos-net"
 # cases = ["board-ballpick-robot/virtio-net-peer/vcpus/smoke"]
 #
 # [[check]]
@@ -60,12 +60,12 @@ cases = ["qemu-timer-stress-v2/gicv2-timer-stress", "qemu-timer-stress/gicv3-tim
 # timeout_minutes = 90
 # command = '''
 # # --board selects the case; --board-type selects the registered physical board.
-# cargo xtask axvisor app board --board orangepi-5-plus-linux -t board-ballpick-robot/pci-network/ping --board-type BallPick-Robot
+# cargo xtask axvisor app board --board ballpick-robot-linux -t board-ballpick-robot/pci-network/ping --board-type BallPick-Robot
 # '''
 #
 # [[check.suite]]
 # kind = "axvisor-board"
-# board = "orangepi-5-plus-linux"
+# board = "ballpick-robot-linux"
 # cases = ["board-ballpick-robot/pci-network/ping"]
 
 [[check]]

@@ -230,7 +230,7 @@ cargo xtask axvisor app board -g normal \
 ```bash
 cargo xtask axvisor app board -g normal \
   -t board-ballpick-robot/pci-network/ping \
-  --board orangepi-5-plus-linux
+  --board ballpick-robot-linux
 ```
 
 执行前按[PCIe 网卡应用说明](https://github.com/rcore-os/tgoskits/blob/dev/apps/axvisor/normal/board-ballpick-robot/pci-network/README.md)准备板端镜像和网络。QEMU 应用使用相同的目录选择方式，并通过 `--arch` 或 `--target` 指定构建目标，例如：

@@ -1,4 +1,0 @@
-# Required board type; --board-type may override it. Supply server/port at runtime.
-board_type = "BallPick-Robot"
-shell_check_steps = []
-fail_regex = []

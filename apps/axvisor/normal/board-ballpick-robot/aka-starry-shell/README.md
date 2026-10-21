@@ -185,7 +185,7 @@ cargo xtask axvisor app board -g normal \
 | ------------------------------------------------------------------------------------- | ---------------------------------------- |
 | [build-aarch64-unknown-none-softfloat.toml](build-aarch64-unknown-none-softfloat.toml) | 构建 AxVisor，注册两个客户机             |
 | [configs/uboot-shell.toml](configs/uboot-shell.toml) | 交互启动，不注入客户机命令或自动判定 |
-| [board-orangepi-5-plus-aka-shell.toml](board-orangepi-5-plus-aka-shell.toml)           | 板级初始化、启动参数、自动命令和结果判定 |
+| [board-ballpick-robot-aka-shell.toml](board-ballpick-robot-aka-shell.toml)           | 板级初始化、启动参数、自动命令和结果判定 |
 | [configs/starry-smp1.toml](configs/starry-smp1.toml)                                                   | StarryOS 镜像、磁盘及设备分配            |
 | [configs/zephyr-smp1.toml](configs/zephyr-smp1.toml)                                                   | Zephyr 镜像、DTB、虚拟控制台和 UART6     |
 | [configs/starry-guest-build.toml](configs/starry-guest-build.toml)                                     | tgosimages 构建 StarryOS 时使用的配置    |

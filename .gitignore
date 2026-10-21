@@ -5,8 +5,8 @@
 /target/
 
 # Local ArceOS VM test artifacts
-/apps/axvisor/arceos-vm-test/target/
-/apps/axvisor/arceos-vm-test/install/
+/apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/target/
+/apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/install/
 
 # Jupyter Notebook
 /.ipynb_checkpoints

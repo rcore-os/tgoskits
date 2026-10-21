@@ -49,7 +49,7 @@ ostool board ls --server "$BOARD_SERVER"
 app="$APP_DIR"
 cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
   --config "$app/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/board-orangepi-5-plus-task-switch.toml" \
+  --board-config "$app/board-ballpick-robot-task-switch.toml" \
   --server "$BOARD_SERVER"
 ```
 
@@ -96,4 +96,4 @@ AXTEST_SUITE_OK
 | [guest-builds.toml](guest-builds.toml) | 宿主之前的客户机构建声明 |
 | [build-aarch64-unknown-none-softfloat.toml](build-aarch64-unknown-none-softfloat.toml) | AxVisor 宿主构建和打包输入 |
 | [configs/task-switch.toml](configs/task-switch.toml) | 单 vCPU、镜像、内存和直通资源 |
-| [board-orangepi-5-plus-task-switch.toml](board-orangepi-5-plus-task-switch.toml) | 启动环境、超时及成功与失败匹配 |
+| [board-ballpick-robot-task-switch.toml](board-ballpick-robot-task-switch.toml) | 启动环境、超时及成功与失败匹配 |

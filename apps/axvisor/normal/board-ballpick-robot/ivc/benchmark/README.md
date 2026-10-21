@@ -2,7 +2,7 @@
 
 ## 测试用途
 
-本应用通过 `ivc-channel` 连接 Zephyr 统一 shell 与 StarryOS，完成四组各 100 次传输。它验证两端协议和完整传输计数，同时输出性能数据；普通 IVC 功能检查见 [ivc](../ivc/README.md)。
+本应用通过 `ivc-channel` 连接 Zephyr 统一 shell 与 StarryOS，完成四组各 100 次传输。它验证两端协议和完整传输计数，同时输出性能数据；普通 IVC 功能检查见 [IVC 功能检查](../functional/README.md)。
 
 ## 边界
 
@@ -62,6 +62,7 @@ cargo xtask axvisor board \
 
 ```sh
 ivc_results=$(mktemp -d /tmp/ivc-benchmark.XXXXXX)
+printf 'IVC_RESULTS=%s\n' "$ivc_results"
 (
   /usr/bin/ivc-starry-bench
   printf '%s\n' "$?" > "$ivc_results/status"
@@ -105,7 +106,7 @@ sync
 
 ### 正式命令
 
-[benchmark/board-orangepi-5-plus-ivc-benchmark.toml](benchmark/board-orangepi-5-plus-ivc-benchmark.toml) 定义自动步骤和失败匹配，总超时为 300 秒。
+[board-ballpick-robot-ivc-benchmark.toml](board-ballpick-robot-ivc-benchmark.toml) 定义自动步骤和失败匹配，总超时为 300 秒。
 
 ```bash
 cargo xtask axvisor app board -g normal \
@@ -115,4 +116,4 @@ cargo xtask axvisor app board -g normal \
 
 除两端成功标记外，自动入口还要求 `IVC_BENCH_EXIT=0`，并且外层命令返回 0。CI 继续在 benchmark 阶段采集性能报告；目录位于 `apps` 不改变性能检查的归属。
 
-原 [benchmarks 副本](../../../../../benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark) 保留现有 CI 性能入口；本目录面向当前应用板卡，并增加统一 shell 的自动检查。修改 IVC 协议、四组传输工作量或客户机资源时，修改者须同步核对两份配置；板卡类型、相对资源路径和 shell 匹配按各自场景维护。
+原 [benchmarks 副本](../../../../../../benchmarks/axvisor/board-orangepi-5-plus/ivc-benchmark) 保留现有 CI 性能入口；本目录面向当前应用板卡，并增加统一 shell 的自动检查。修改 IVC 协议、四组传输工作量或客户机资源时，修改者须同步核对两份配置；板卡类型、相对资源路径和 shell 匹配按各自场景维护。

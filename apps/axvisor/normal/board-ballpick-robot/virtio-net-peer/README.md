@@ -302,4 +302,4 @@ bash "$app/orangepi-arceos-virtio-net-test.sh" run --server "$BOARD_SERVER"
 | [configs/uboot-shell.toml](configs/uboot-shell.toml) | 交互启动 Linux 观察端，客户机检查由人工执行 |
 | [configs/linux-observer.toml](configs/linux-observer.toml)                                                   | Linux 观察客户机、独立 ext4 和虚拟网卡              |
 | [configs/arceos-guest-build.toml](configs/arceos-guest-build.toml)                                           | ArceOS 网络程序的构建配置                           |
-| [board-orangepi-5-plus-arceos-net.toml](vcpus/smoke/board-orangepi-5-plus-arceos-net.toml)   | 默认64台 ArceOS 加 Linux 的板卡启动、通信和移除验证 |
+| [board-ballpick-robot-arceos-net.toml](vcpus/smoke/board-ballpick-robot-arceos-net.toml)   | 默认64台 ArceOS 加 Linux 的板卡启动、通信和移除验证 |

@@ -8,7 +8,7 @@ features = [
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
-  "apps/axvisor/triple-vm-test/configs/linux.toml",
-  "apps/axvisor/triple-vm-test/configs/starry.toml",
-  "apps/axvisor/triple-vm-test/configs/zephyr.toml",
+  "apps/axvisor/normal/board-ballpick-robot/triple-vm-test/configs/linux.toml",
+  "apps/axvisor/normal/board-ballpick-robot/triple-vm-test/configs/starry.toml",
+  "apps/axvisor/normal/board-ballpick-robot/triple-vm-test/configs/zephyr.toml",
 ]

@@ -190,7 +190,9 @@ impl GlobalAllocator {
         unsafe { self.inner.add_region(region) }.map_err(Into::into)
     }
 
-    /// Adds a small region with page-aligned heap storage and reports usable bytes.
+    /// Adds a region and reports allocator-visible bytes after metadata and padding.
+    /// Small fragments use page alignment; regions that can hold a 2 MiB heap
+    /// use 2 MiB heap alignment. Alignment padding consumes a prefix of the region.
     ///
     /// # Safety
     /// The address range must be writable, uniquely owned, and remain mapped
@@ -438,7 +440,9 @@ pub fn global_add_memory(start_vaddr: usize, size: usize) -> AllocResult {
     GLOBAL_ALLOCATOR.add_memory(start_vaddr, size)
 }
 
-/// Adds page-aligned reclaimable memory and reports allocator-visible bytes.
+/// Adds reclaimable memory and reports allocator-visible bytes after metadata and padding.
+/// Small fragments use page alignment; regions that can hold a 2 MiB heap
+/// use 2 MiB heap alignment. Alignment padding consumes a prefix of the region.
 ///
 /// # Safety
 /// The address range must be writable, uniquely owned, and remain mapped for

@@ -209,7 +209,7 @@ class CiImpactTests(unittest.TestCase):
     ) -> None:
         path = Path(
             "apps/axvisor/normal/board-ballpick-robot/pci-network/ping/"
-            "board-orangepi-5-plus-linux.toml"
+            "board-ballpick-robot-linux.toml"
         )
 
         impact = ci_impact.analyze_changed_paths(

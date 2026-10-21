@@ -140,15 +140,32 @@ impl<const PAGE_SIZE: usize> GlobalAllocator<PAGE_SIZE> {
         unsafe { self.add_region_with_heap_align(region, REGION_GRANULE) }.map(|_| ())
     }
 
-    /// Adds a region using page alignment and returns allocator-visible bytes.
-    /// The section header and page metadata consume space within `region`.
+    /// Adds a region and returns allocator-visible bytes after metadata and padding.
+    /// Small fragments use page alignment; regions that can hold a 2 MiB heap
+    /// use the same heap alignment as [`Self::init`] and [`Self::add_region`].
     /// Returns zero if the region cannot hold even one managed page.
     ///
     /// # Safety
     /// - `region` must be writable and remain valid for the lifetime of this allocator.
     /// - The region must not overlap any already managed region.
     pub unsafe fn add_compact_region(&self, region: &mut [u8]) -> AllocResult<usize> {
-        unsafe { self.add_region_with_heap_align(region, PAGE_SIZE) }
+        // Buddy orders are relative to the section heap start. Large sections
+        // need aligned starts to serve huge-page-aligned guest RAM allocations.
+        // Keep page precision when the aligned layout cannot hold one granule.
+        let heap_align = if BuddySection::compute_region_layout_with_heap_align::<PAGE_SIZE>(
+            region.as_ptr() as usize,
+            region.len(),
+            REGION_GRANULE,
+        )
+        .is_some_and(|layout| layout.managed_heap_size >= REGION_GRANULE)
+        {
+            REGION_GRANULE
+        } else {
+            PAGE_SIZE
+        };
+        // SAFETY: the caller retains the same writable, disjoint region for
+        // the allocator lifetime; layout selection does not publish ownership.
+        unsafe { self.add_region_with_heap_align(region, heap_align) }
     }
 
     /// # Safety

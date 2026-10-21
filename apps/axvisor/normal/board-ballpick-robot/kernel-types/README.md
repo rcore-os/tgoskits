@@ -1,4 +1,4 @@
-# StarryOS、Linux 与 Zephyr 客户机功能检查
+# ArceOS、StarryOS、Linux 与 Zephyr 客户机功能检查
 
 ## 测试用途
 
@@ -12,6 +12,8 @@
 | `linux/lmbench`     | Ubuntu，VM1   | 六类固定 LMBench 子项                |
 | `linux/iozone`      | Ubuntu，VM1   | 512 MiB 文件的顺序及随机读写         |
 | `zephyr/functional` | Zephyr，VM3   | 版本、线程、设备列表                 |
+
+ArceOS Shell 检查位于 [arceos](arceos/README.md)，提供 `help`、`uname` 和 `exit` 的手工验证，包含客户机源码及独立构建配置。下文六个子测例的统一启动命令不适用于该手工用例。
 
 cyclictest、LMBench 和 IOZone 记录实际结果，不设置性能数值门槛。
 
@@ -115,8 +117,13 @@ cargo xtask axvisor board \
 mkdir -p /proc /sys /var/tmp
 mount -t proc proc /proc 2>/dev/null || grep ' /proc proc ' /proc/mounts
 test -d /sys/class/net || mount -t sysfs sysfs /sys
-ip link set lo up
+if ! ip -brief address | grep -Eq '^lo[[:space:]]+(UP|UNKNOWN)[[:space:]]'; then
+  ip link set lo up
+fi
+ip -brief address | grep -Eq '^lo[[:space:]]+(UP|UNKNOWN)[[:space:]]+127[.]0[.]0[.]1/8'
 ```
+
+Linux 回环接口的运行状态可能显示为 `UNKNOWN`，StarryOS 则显示为 `UP`；准备命令同时接受这两种带 `127.0.0.1/8` 的状态，仅在必要时启用接口，避免对已启用的 StarryOS 接口重复执行当前尚不能正常返回的设置操作。后续网络或回环 TCP 仍须实际执行成功。
 
 交互配置不设置终端总超时，空的 `shell_check_steps` 和 `fail_regex` 将输入与结果判定交给测试者。`Ctrl+X` 后按 `h` 返回 AxVisor；`Ctrl+A` 后按 `x` 释放板卡。外层命令返回 0 仅表示会话正常结束，不替代后续功能判定。
 
@@ -505,6 +512,6 @@ CASE_PASSED case=starry-functional results=...
 [configs/linux.toml](configs/linux.toml)、[configs/starry.toml](configs/starry.toml)、[configs/zephyr.toml](configs/zephyr.toml) 定义客户机镜像、磁盘和设备。`configs/linux-uboot-shell.toml`、`configs/starry-uboot-shell.toml` 和 `configs/zephyr-uboot-shell.toml` 提供对应客户机的交互启动参数。每个子测例目录另包含：
 
 - `build-aarch64-unknown-none-softfloat.toml`：构建 AxVisor，注册该客户机。
-- `board-orangepi-5-plus.toml`：启动参数、客户机命令及结果判定。
+- `board-ballpick-robot.toml`：启动参数、客户机命令及结果判定。
 
 客户机镜像和工具由 tgosimages 构建；这里的 Cargo 命令负责构建 AxVisor 并运行选定客户机。

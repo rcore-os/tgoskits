@@ -129,7 +129,7 @@ ROC 部署固件会在交接时追加自身控制 DTB 的参数，控制 DTB 中
 GPIO、SCMI、IOC、PHP GRF 和 PHY GRF 依赖。`pci=nomsi` 明确验证物理 INTx 级联；
 这条证据不代表物理 MSI/ITS 直通已经实现。
 
-通过 `cargo xtask axvisor app board -g normal -t board-ballpick-robot/pci-network/ping --board orangepi-5-plus-linux`
+通过 `cargo xtask axvisor app board -g normal -t board-ballpick-robot/pci-network/ping --board ballpick-robot-linux`
 运行该用例，并按环境添加 `--server`、`--port`。`--board` 选择运行配置，实体板卡
 取自配置中的 `board_type`；换板时用 `--board-type` 覆盖，并通过 `ostool board ls` 核对。测试先校验
 `uname -r` 为 `6.1.99-rockchip-rk3588`，再核验 PCI 身份 `10ec:8125`，通过该接口向 `10.3.10.60`

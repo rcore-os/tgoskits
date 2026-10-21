@@ -12,14 +12,15 @@
 
 | 场景 | 验证内容 | 操作说明 |
 | --- | --- | --- |
-| `kernel-types` | Linux、StarryOS、Zephyr 功能及 cyclictest、LMBench、IOZone | [客户机检查](kernel-types/README.md) |
-| `ivc` | 三种客户机之间的消息通信、超时、取消与恢复 | [IVC 通信](ivc/README.md) |
+| `kernel-types` | ArceOS、Linux、StarryOS、Zephyr 功能及 cyclictest、LMBench、IOZone | [客户机检查](kernel-types/README.md) |
+| `ivc` | 三种客户机之间的消息通信、超时、取消、恢复及传输基准 | [IVC 通信](ivc/README.md) |
 | `pci-network` | Linux 直通 PCIe 网卡、驱动、DHCP 和 ping | [物理网络](pci-network/README.md) |
 | `virtio-net-peer` | 64 台 ArceOS 的虚拟网络及同次启动下的移除验证 | [虚拟网络](virtio-net-peer/README.md) |
 | `aka-starry-shell` | StarryOS 感知与 Zephyr 控制端协作 | [AKA 联调](aka-starry-shell/README.md) |
 | `linux-guest-checks` | 单个直通 Linux 的 NPU、图片推理及基础功能 | [Linux 交互检查](linux-guest-checks/README.md) |
+| `triple-vm-test` | Linux、StarryOS、Zephyr 同次启动下的功能和性能检查 | [三客户机交互检查](triple-vm-test/README.md) |
 
-`linux-guest-checks` 只提供手工检查，不通过自动用例发现和判定。AKA 还要求相机、控制设备和真实校准文件；其他场景通过不代表机器人业务可用。
+`linux-guest-checks`、`kernel-types/arceos` 和 `triple-vm-test` 只提供手工检查，不通过自动用例发现和判定。AKA 还要求相机、控制设备和真实校准文件；其他场景通过不代表机器人业务可用。
 
 ### 基准测量
 
@@ -27,7 +28,7 @@
 
 | 场景 | 工作量 | 正式入口 |
 | --- | --- | --- |
-| [ivc-benchmark](ivc-benchmark/README.md) | 四组各 100 次传输，核对字节数、块数和两端结果 | `cargo xtask axvisor app board` |
+| [ivc/benchmark](ivc/benchmark/README.md) | 四组各 100 次传输，核对字节数、块数和两端结果 | `cargo xtask axvisor app board` |
 | [task-switch](task-switch/README.md) | 30 轮，每轮 1,000 万次任务切换 | `cargo xtask ktest board -p axvm --test task_switch` |
 
 `task-switch` 依赖 ktest 安装宿主 vCPU 的 FIFO 策略；运行时使用该应用 README 的完整命令。

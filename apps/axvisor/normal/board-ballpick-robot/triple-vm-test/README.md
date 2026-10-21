@@ -53,7 +53,7 @@ Zephyr DTB、两份 ext4 根盘，以及根盘内的 cyclictest 和 IOZone，无
 Zephyr 的 BIN、DTB 均使用板端原文件，保留 PL011 控制台和无物理输出的虚拟 UART6。
 `configs/zephyr.toml` 不声明 `console0`，由原 DTB 提供 PL011 的地址 `0x09000000`、
 中断号 33 和节点身份。当前 AxVisor 中显式 `console0` 优先于客户机 DTB，不能仅指定型号后依赖 DTB 补全资源。
-`configs/board-shell.toml` 的自动检查步骤为空，进入 AxVisor 后由人启动客户机。
+`configs/uboot-shell.toml` 的自动检查步骤为空，进入 AxVisor 后由人启动客户机。
 
 ## 启动三个客户机
 
@@ -72,8 +72,8 @@ script -q -f target/axvisor/triple-vm-test/serial.log
 
 ```bash
 cargo xtask axvisor board \
-  --config apps/axvisor/triple-vm-test/configs/build.toml \
-  --board-config apps/axvisor/triple-vm-test/configs/board-shell.toml \
+  --config apps/axvisor/normal/board-ballpick-robot/triple-vm-test/configs/build.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/triple-vm-test/configs/uboot-shell.toml \
   --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
@@ -442,7 +442,7 @@ exit
 
 ## 配置维护
 
-本目录直接验证标准镜像中的客户机；[三客户机 CI 配置](../../../test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/build-aarch64-unknown-none-softfloat.toml)
+本目录直接验证标准镜像中的客户机；[三客户机 CI 配置](../../../../../test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/build-aarch64-unknown-none-softfloat.toml)
 验证工作区构建的 StarryOS，并使用独立的 Linux、Zephyr 固件路径，因此保留两套配置。
 修改公共资源时同步核对 VM ID、CPU 绑定、内存范围、两份根盘和网卡 MAC；
 Zephyr 的控制台型号、UART6 后端及 BIN/DTB 必须按各自固件匹配，不能直接互换。
