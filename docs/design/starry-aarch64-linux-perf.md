@@ -135,6 +135,8 @@ per-task sampling group 由 `PerTaskCounter` 统一调度并预构建 `PERF_SAMP
 
 AArch64 kernel IRQ 和 user IRQ 入口按值构造 `InterruptedContext { pc, sp, fp, lr, privilege }`。用户 SP 必须来自进入汇编保存的 `UserContext.sp`，不能读取 Rust dispatch 时已恢复为线程头指针的 `SP_EL0`。LR 来自保存的 `x[30]`，用于 upstream perf 的 AArch64 FP unwinder 请求；只有用户 IRQ 且事件选择 LR 时才编码 ABI_64 和 LR，其他情况输出 ABI_NONE，不伪造用户寄存器。per-CPU snapshot 仅在一次 `dispatch_irq()` 动态作用域内可见，RAII guard 在返回和 unwind 路径清除旧值。
 
+硬件计数过滤与样本许可是不同边界。即使事件只计 EL0，IRQ 仍可能在 EL1 交付；采样路径应对实际中断现场应用 `exclude_kernel/exclude_user`，被过滤的溢出仍正常结算和续接周期，不输出 record，也不改标现场。Linux 对照及 #2673 的确定性回归要求见[用户采样边界](../../design/starry-perf-user-sampling.md)。
+
 `perf::unwind::{kernel_callchain,user_callchain}` 调用 `axbacktrace::walk_fp()` 并注入 reader：内核栈使用 `nofault::read_kernel_word()`，用户栈使用 `nofault::read_user_word()`。walker 检查 8 字节对齐、地址单调递增、地址范围、checked arithmetic、合理 frame gap 与输出容量，且不在遍历过程中分配。
 
 ### 3.2 ring 与 LOST
