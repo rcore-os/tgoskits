@@ -219,6 +219,27 @@ StarryOS 的 x86_64 裸机产物是位置无关可执行映像，不带 QEMU 直
 11. 启动参数与页表对其他处理器可见后才释放次处理器。
 12. 体系结构钩子只负责唤醒传输。someboot 公共所有者在调用前发布逐处理器 `KICKED`，等待次处理器在公共入口报告 `ALIVE`，再把该处理器释放为 `SHOULD_ONLINE`。握手不进入不可变跳板元数据，并与稍后的调度器、中断和定时器在线发布分离。详见 `docs/design/someboot-secondary-cpu-startup.md`。
 
+### PL011 的重定位地址重绑
+
+`primary_init_early()` 与重定位后的 `prime_entry()` 都会建立 early console 绑定。
+已经成功初始化的同一物理 PL011 在第二次绑定时只更新软件寄存器地址，
+不再次 `open()`、等待 TX 排空、清 FIFO 或改变 UART 配置；stdout-path 与
+`earlycon=pl011` 必须走同一所有权判断。首次初始化失败不能被当作已接管，
+更换物理串口也不能复用前一个设备的成功状态。具体契约见
+[启动前进性设计](../../../../design/axvisor-aarch64-boot-progress.md)。
+
+Axvisor 中最后可见的 `Setting up table registers...` 或部分 `MMU Entry point...`
+不证明 guest 停在 MMU 指令。虚拟 UART 可能保留尚未输出的字节，guest 却已进入
+post-MMU 的重复控制台 setup。停顿时同时采样 saved guest PC、调用者、
+vCPU entry/exit 增量和 FR/CR：若 PC 在重定位后的 `Pl011::open()`，FR 含
+BUSY/TXFF，且 entry/exit 仍增长，先核对重复初始化及发送使能状态。
+旧驱动若先清 UARTEN 再等 BUSY，会让保留 FIFO 失去前进条件；有界轮询的
+每次 FR 读取又会产生一次 MMIO 退出，固定循环预算并不意味着启动延迟很短。
+
+真正的初始化或线路重配置仍遵守 drain-before-disable；该修复不等于允许
+地址重绑重新初始化硬件。不要通过增加 timeout、丢弃输出或降低 vCPU 负载
+处理这一所有权错误，也不要在 SCTLR.M 开启到重定位之间新增串口探针。
+
 ## GICv3 ITS 挂起表
 
 `somehal::arch::gic::its::GicItsProvider::new` 必须为每个 redistributor 分配独立且按 64 KiB 对齐的 LPI pending table。`GICR_PENDBASER` 只保存物理地址位 `[51:16]`；即使 16 位 INTID 只需要 8 KiB 位图，也不能采用 8 KiB 步长。只对齐整个分配会让多个 CPU 的挂起表地址被截断为同一地址。按 [Linux v7.1 的 `LPI_PENDBASE_SZ`](https://github.com/torvalds/linux/blob/v7.1/drivers/irqchip/irq-gic-v3-its.c) 将每张表向上对齐，并检查总分配长度的乘法溢出。

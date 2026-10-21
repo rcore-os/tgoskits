@@ -1,6 +1,6 @@
 use core::ptr::NonNull;
 
-use some_serial::{ns16550, pl011};
+use some_serial::ns16550;
 
 use crate::{
     console::{DEBUG_BASE, DEBUG_IS_MMIO, EarlySerial, EarlySerialRaw},
@@ -51,11 +51,7 @@ fn set_by_stdout() -> Option<()> {
     for com in node.compatibles() {
         match com {
             "arm,pl011" | "arm,primecell" => {
-                let mut serial = pl011::Pl011::new(addr, clock);
-                serial.open().ok()?;
-                crate::console::set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Pl011(
-                    serial,
-                )));
+                crate::console::bind_earlycon_pl011(address, clock).ok()?;
                 installed = true;
                 break;
             }

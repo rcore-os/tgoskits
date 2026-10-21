@@ -311,6 +311,61 @@ pub fn set_earlycon_serial(serial: EarlySerial) {
     unsafe { set_out(&EARLYCON) };
 }
 
+/// Failure when binding the early console to a PL011 register block.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Pl011BindError {
+    /// The register window of the device could not be resolved.
+    InvalidAddress,
+    /// The device stayed busy until the driver's polling budget expired.
+    Busy,
+    /// The device rejected the early console configuration.
+    Config,
+}
+
+impl From<ConfigError> for Pl011BindError {
+    fn from(error: ConfigError) -> Self {
+        match error {
+            ConfigError::Timeout => Self::Busy,
+            ConfigError::InvalidBaudrate
+            | ConfigError::UnsupportedDataBits
+            | ConfigError::UnsupportedStopBits
+            | ConfigError::UnsupportedParity
+            | ConfigError::RegisterError => Self::Config,
+        }
+    }
+}
+
+impl Pl011BindError {
+    /// Message describing the failure on the `earlycon=` command line path.
+    fn message(self) -> &'static str {
+        match self {
+            Self::InvalidAddress => "Invalid base address for pl011 earlycon",
+            Self::Busy => "PL011 earlycon remained busy until the polling timeout",
+            Self::Config => "Failed to initialize PL011 earlycon",
+        }
+    }
+}
+
+/// Binds the early console to the PL011 register block of physical device `paddr`.
+///
+/// The first successful binding of a physical device initializes it and
+/// propagates failure. Selecting the same device again after an MMU or
+/// relocation change only moves the software register window: the UART keeps
+/// running, so pending TX bytes are neither drained nor discarded.
+pub(crate) fn bind_earlycon_pl011(paddr: usize, clock: u32) -> Result<(), Pl011BindError> {
+    let registers = NonNull::new(_fixmap_io(paddr)).ok_or(Pl011BindError::InvalidAddress)?;
+    let Some(_access) = handoff::try_enter_early() else {
+        // A console that handed ownership to the runtime owner ignores new
+        // bindings, matching `set_earlycon_serial`.
+        return Ok(());
+    };
+    EARLYCON.bind_pl011(paddr, registers, clock)?;
+    // SAFETY: `EARLYCON` has a `'static` lifetime and owns the serial that backs
+    // this early console, so the published `Con` reference outlives it.
+    unsafe { set_out(&EARLYCON) };
+    Ok(())
+}
+
 pub fn read_byte() -> Option<u8> {
     let _access = handoff::try_enter_early()?;
     if let Some(byte) = <crate::arch::Arch as crate::ArchTrait>::Console::read_byte() {
@@ -339,7 +394,7 @@ pub fn handle_irq() -> u32 {
     <crate::arch::Arch as crate::ArchTrait>::Console::handle_irq()
 }
 
-static EARLYCON: EarlyconCell = EarlyconCell(EarlyconMutex::new(None));
+static EARLYCON: EarlyconCell = EarlyconCell(EarlyconMutex::new(EarlyconState::new()));
 
 struct EarlyconMutex<T> {
     locked: AtomicBool,
@@ -391,16 +446,74 @@ impl<T> EarlyconMutex<T> {
     }
 }
 
-struct EarlyconCell(EarlyconMutex<Option<EarlySerial>>);
+/// Early console state owned by this boot owner.
+struct EarlyconState {
+    serial: Option<EarlySerial>,
+    /// Physical base of the PL011 whose hardware initialization succeeded.
+    ///
+    /// Only this device may be rebound without initializing it again. A device
+    /// whose initialization failed has no entry here, so a later selection of
+    /// the same device still initializes the UART.
+    initialized_pl011_paddr: Option<usize>,
+}
+
+impl EarlyconState {
+    const fn new() -> Self {
+        Self {
+            serial: None,
+            initialized_pl011_paddr: None,
+        }
+    }
+
+    /// Binds the early console to the PL011 register block at `registers`.
+    ///
+    /// `paddr` identifies the physical device, while `registers` is the
+    /// software window that is valid for the current address translation. The
+    /// first binding of a device initializes the hardware; binding the same
+    /// device again only republishes the window, because `open()` on a running
+    /// UART waits for TX to drain, disables the UART and clears its FIFO, which
+    /// discards output the host has not consumed yet.
+    fn bind_pl011(
+        &mut self,
+        paddr: usize,
+        registers: NonNull<u8>,
+        clock: u32,
+    ) -> Result<(), Pl011BindError> {
+        let mut serial = pl011::Pl011::new(registers, clock);
+        if self.initialized_pl011_paddr != Some(paddr) {
+            serial.open()?;
+            self.initialized_pl011_paddr = Some(paddr);
+        }
+        self.serial = Some(EarlySerial::new(EarlySerialRaw::Pl011(serial)));
+        Ok(())
+    }
+}
+
+struct EarlyconCell(EarlyconMutex<EarlyconState>);
 
 impl EarlyconCell {
     fn set_serial(&self, serial: EarlySerial) {
-        self.0.with_lock(|earlycon| *earlycon = Some(serial));
+        self.0.with_lock(|earlycon| earlycon.serial = Some(serial));
+    }
+
+    /// Initializes or rebinds the PL011 and publishes the result.
+    ///
+    /// The identity check and the installation share one critical section, so
+    /// no other console user observes a half-bound console and the bounded
+    /// `open()` wait only runs for a device that is not bound yet.
+    fn bind_pl011(
+        &self,
+        paddr: usize,
+        registers: NonNull<u8>,
+        clock: u32,
+    ) -> Result<(), Pl011BindError> {
+        self.0
+            .with_lock(|earlycon| earlycon.bind_pl011(paddr, registers, clock))
     }
 
     fn read_byte(&self) -> Option<u8> {
         self.0.with_lock(|earlycon| {
-            let serial = earlycon.as_mut()?;
+            let serial = earlycon.serial.as_mut()?;
 
             let mut byte = [0];
             match serial.try_read(&mut byte) {
@@ -412,8 +525,12 @@ impl EarlyconCell {
     }
 
     fn try_write(&self, bytes: &[u8]) -> Option<usize> {
-        self.0
-            .with_lock(|earlycon| earlycon.as_mut().map(|serial| serial.try_write(bytes)))
+        self.0.with_lock(|earlycon| {
+            earlycon
+                .serial
+                .as_mut()
+                .map(|serial| serial.try_write(bytes))
+        })
     }
 }
 
@@ -624,17 +741,7 @@ pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
 
 fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
     let base_addr = earlycon_base_addr(config, "No base address specified for pl011 earlycon")?;
-    let base_addr =
-        NonNull::new(_fixmap_io(base_addr)).ok_or("Invalid base address for pl011 earlycon")?;
-
-    let mut serial = pl011::Pl011::new(base_addr, 0);
-    serial.open().map_err(|error| match error {
-        ConfigError::Timeout => "PL011 earlycon remained busy until the polling timeout",
-        _ => "Failed to initialize PL011 earlycon",
-    })?;
-    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Pl011(serial)));
-
-    Ok(())
+    bind_earlycon_pl011(base_addr, 0).map_err(Pl011BindError::message)
 }
 
 fn set_16550_mmio(config: &EarlyconConfig) -> Result<(), &'static str> {
@@ -663,4 +770,194 @@ fn earlycon_base_addr(
     Ok(<crate::arch::Arch as crate::ArchTrait>::canonicalize_paddr(
         addr,
     ))
+}
+
+#[cfg(test)]
+mod pl011_binding_tests {
+    extern crate std;
+
+    use core::{cell::UnsafeCell, ptr};
+    use std::boxed::Box;
+
+    use super::*;
+
+    // The fixture is programmed through the same volatile register accesses as
+    // the production driver, so these tests observe real PL011 driver behaviour
+    // instead of a mock. MMIO is replaced by ordinary memory here; the MMU and
+    // page-table path that produces the window is covered by the boot runtime
+    // tests, not by this rule.
+    const WINDOW_SIZE: usize = 0x1000;
+    const WINDOW_WORDS: usize = WINDOW_SIZE / 4;
+
+    const DR: usize = 0x00;
+    const FR: usize = 0x18;
+    const IBRD: usize = 0x24;
+    const FBRD: usize = 0x28;
+    const LCR_H: usize = 0x2c;
+    const CR: usize = 0x30;
+    const IMSC: usize = 0x38;
+
+    const FR_CTS: u32 = 1 << 0;
+    const FR_BUSY: u32 = 1 << 3;
+    const FR_RXFE: u32 = 1 << 4;
+    const FR_TXFF: u32 = 1 << 5;
+    const FR_TXFE: u32 = 1 << 7;
+
+    const CR_UARTEN: u32 = 1 << 0;
+    const CR_TXE: u32 = 1 << 8;
+    const CR_RXE: u32 = 1 << 9;
+    const CR_TRANSCEIVE: u32 = CR_UARTEN | CR_TXE | CR_RXE;
+
+    /// Eight-bit words with FIFOs still disabled.
+    const LCR_H_EIGHT_BIT: u32 = 0x60;
+    const LCR_H_FEN: u32 = 1 << 4;
+
+    const PL011_PADDR: usize = 0x0900_0000;
+    const OTHER_PL011_PADDR: usize = 0x0900_1000;
+    const RETRY_PL011_PADDR: usize = 0x0900_2000;
+    const CLOCK: u32 = 24_000_000;
+
+    #[repr(align(4096))]
+    struct Pl011Window {
+        registers: UnsafeCell<[u8; WINDOW_SIZE]>,
+    }
+
+    impl Pl011Window {
+        fn new() -> Box<Self> {
+            Box::new(Self {
+                registers: UnsafeCell::new([0; WINDOW_SIZE]),
+            })
+        }
+
+        fn registers(&self) -> NonNull<u8> {
+            NonNull::new(self.registers.get().cast::<u8>())
+                .expect("the fixture window is always addressable")
+        }
+
+        fn write(&self, offset: usize, value: u32) {
+            // SAFETY: `offset` is one of the 32-bit register offsets declared in
+            // this module and the fixture owns `WINDOW_SIZE` bytes, so the access
+            // stays inside the fixture. Volatile accesses keep the driver's
+            // register writes and these observations in program order.
+            unsafe {
+                ptr::write_volatile(self.registers.get().cast::<u8>().add(offset).cast(), value)
+            }
+        }
+
+        fn read(&self, offset: usize) -> u32 {
+            // SAFETY: see `write`.
+            unsafe { ptr::read_volatile(self.registers.get().cast::<u8>().add(offset).cast()) }
+        }
+
+        /// Returns the whole register block so any register write becomes visible.
+        fn image(&self) -> [u32; WINDOW_WORDS] {
+            let mut image = [0; WINDOW_WORDS];
+            for (index, word) in image.iter_mut().enumerate() {
+                *word = self.read(index * 4);
+            }
+            image
+        }
+
+        fn assert_image_unchanged(&self, before: &[u32; WINDOW_WORDS]) {
+            for (index, expected) in before.iter().enumerate() {
+                assert_eq!(
+                    self.read(index * 4),
+                    *expected,
+                    "register at {:#x} changed",
+                    index * 4
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rebinding_initialized_pl011_keeps_the_running_device() {
+        let mut state = EarlyconState::new();
+        let device = Pl011Window::new();
+        device.write(IBRD, 13);
+        device.write(FBRD, 2);
+        device.write(LCR_H, LCR_H_EIGHT_BIT);
+        device.write(FR, FR_TXFE | FR_RXFE);
+
+        state
+            .bind_pl011(PL011_PADDR, device.registers(), CLOCK)
+            .expect("the first binding initializes the PL011");
+        assert_eq!(device.read(CR), CR_TRANSCEIVE);
+        assert_eq!(device.read(LCR_H), LCR_H_EIGHT_BIT | LCR_H_FEN);
+        assert_eq!(device.read(IMSC), 0);
+        assert_eq!(device.read(IBRD), 13);
+        assert_eq!(device.read(FBRD), 2);
+        let initialized = device.image();
+
+        // After the MMU is enabled the same device is reached through another
+        // software window while the host has not drained the FIFO yet. This is
+        // the BUSY/TXFF/RXFE/CTS state recorded for the #2672 stall.
+        let remapped = Pl011Window::new();
+        remapped.write(IBRD, 13);
+        remapped.write(FBRD, 2);
+        remapped.write(LCR_H, LCR_H_EIGHT_BIT | LCR_H_FEN);
+        remapped.write(CR, CR_TRANSCEIVE);
+        remapped.write(FR, FR_BUSY | FR_TXFF | FR_RXFE | FR_CTS);
+        let running = remapped.image();
+
+        state
+            .bind_pl011(PL011_PADDR, remapped.registers(), CLOCK)
+            .expect("rebinding a running PL011 must not wait for TX to drain");
+        remapped.assert_image_unchanged(&running);
+
+        // The rebound console keeps working through the new window, and the
+        // device left behind is not touched again.
+        remapped.write(FR, FR_TXFE | FR_RXFE);
+        let serial = state
+            .serial
+            .as_mut()
+            .expect("the rebind publishes the early serial");
+        assert_eq!(serial.try_write(b"ok"), 2);
+        assert_eq!(remapped.read(DR), u32::from(b'k'));
+        device.assert_image_unchanged(&initialized);
+    }
+
+    #[test]
+    fn unbound_pl011_still_requires_initialization() {
+        let mut state = EarlyconState::new();
+        let first = Pl011Window::new();
+        first.write(FR, FR_TXFE | FR_RXFE);
+        state
+            .bind_pl011(PL011_PADDR, first.registers(), CLOCK)
+            .expect("the first binding initializes the PL011");
+
+        // A different physical PL011 is a different device, so the successful
+        // binding of another UART cannot authorize skipping its initialization.
+        let second = Pl011Window::new();
+        second.write(FR, FR_TXFE | FR_RXFE);
+        state
+            .bind_pl011(OTHER_PL011_PADDR, second.registers(), CLOCK)
+            .expect("a newly selected PL011 is initialized");
+        assert_eq!(second.read(CR), CR_TRANSCEIVE);
+
+        // A device that cannot become idle reports the bounded wait failure,
+        // without writing any register and without being recorded as initialized.
+        let stuck = Pl011Window::new();
+        stuck.write(FR, FR_BUSY);
+        let untouched = stuck.image();
+        assert_eq!(
+            state.bind_pl011(RETRY_PL011_PADDR, stuck.registers(), CLOCK),
+            Err(Pl011BindError::Busy)
+        );
+        stuck.assert_image_unchanged(&untouched);
+
+        let serial = state
+            .serial
+            .as_mut()
+            .expect("the failed binding keeps the previous console");
+        assert_eq!(serial.try_write(b"y"), 1);
+        assert_eq!(second.read(DR), u32::from(b'y'));
+
+        // The failed device was not remembered, so selecting it again initializes it.
+        stuck.write(FR, FR_TXFE | FR_RXFE);
+        state
+            .bind_pl011(RETRY_PL011_PADDR, stuck.registers(), CLOCK)
+            .expect("a device that failed once is initialized on the next binding");
+        assert_eq!(stuck.read(CR), CR_TRANSCEIVE);
+    }
 }
