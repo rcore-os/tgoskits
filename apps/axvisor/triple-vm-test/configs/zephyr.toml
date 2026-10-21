@@ -9,8 +9,8 @@ phys_cpu_ids = [0x200]
 # Use the shell image and its unchanged DTB from the same build.
 entry_point = 0x4000_100c
 kernel_load_addr = 0x4000_0000
-kernel_path = "/guest/axvisor/zephyr/zephyr.bin"
-dtb_path = "/guest/axvisor/zephyr/zephyr.dtb"
+kernel_path = "/guest/zephyr/orangepi-5-plus"
+dtb_path = "/guest/zephyr/orangepi-5-plus.dtb"
 memory_regions = [[0x4000_0000, 0x0800_0000, 0x7, 0]]
 
 [devices]

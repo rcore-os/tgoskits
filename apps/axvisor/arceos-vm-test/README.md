@@ -15,10 +15,14 @@
 
 ## 运行前确认
 
-先按仓库开发环境说明准备 Rust 和 AArch64 交叉编译工具链。
+先按仓库开发环境说明准备 Rust；PATH 中需要能找到
+`aarch64-linux-musl-cc` 和 `aarch64-linux-musl-ar`。
 本页工作站命令均从 TGOSKits 仓库根目录执行；所有板卡连接使用同一组板卡类型、服务地址和端口。
 
-板端只需手工部署客户机镜像 `/guest/axvisor/arceos/arceos.bin`。
+板卡根文件系统使用标准镜像 `orangepi-5-plus.img.tar.xz`。其中的
+`/guest/arceos/orangepi-5-plus` 是网络程序，不提供本用例的 Shell 命令。
+本用例需额外编译下面的 Shell 固件，不覆盖标准 ArceOS 文件。
+板端只需手工部署客户机镜像 `/guest/axvisor/arceos/arceos-vm-shell.bin`。
 客户机配置由 `vm_configs` 自动打包到 `/guest/builtin/configs/`，无需另行复制 TOML 到板端。
 
 ### 首次准备
@@ -67,17 +71,17 @@ scp target/aarch64-unknown-linux-musl/release/arceos-vm-shell.bin "orangepi@$boa
 ssh "orangepi@$board_ip"
 ```
 
-进入板卡 SSH 后执行。先前传入 `/tmp/` 的镜像在安装时命名为 `arceos.bin`：
+进入板卡 SSH 后执行。先前传入 `/tmp/` 的镜像按原文件名安装：
 
 ```bash
 sudo install -d -m 755 /guest/axvisor/arceos
-sudo install -m 644 /tmp/arceos-vm-shell.bin /guest/axvisor/arceos/arceos.bin
+sudo install -m 644 /tmp/arceos-vm-shell.bin /guest/axvisor/arceos/arceos-vm-shell.bin
 sync
 ls -lh /guest/axvisor/arceos/
 exit
 ```
 
-确认目录中有非空的 `arceos.bin`。`exit` 退出 SSH，返回工作站；
+确认目录中有非空的 `arceos-vm-shell.bin`。`exit` 退出 SSH，返回工作站；
 终端 A 仍持有板卡，可以继续下面的启动前核对。
 
 ### 启动前核对
@@ -92,7 +96,7 @@ cargo xtask board connect -b <板卡类型> --server <服务地址> --port <端�
 进入板卡 Linux 后执行：
 
 ```bash
-ls -lh /guest/axvisor/arceos/arceos.bin
+ls -lh /guest/axvisor/arceos/arceos-vm-shell.bin
 findmnt -T /guest/axvisor/arceos
 ```
 
@@ -104,7 +108,7 @@ findmnt -T /guest/axvisor/arceos
 ### 配置说明
 
 - `configs/guest-build.toml`：单 CPU 客户机构建，生成 bin 镜像。
-- `configs/arceos.toml`：1 个 vCPU、128 MiB 内存，镜像路径为 `/guest/axvisor/arceos/arceos.bin`。
+- `configs/arceos.toml`：1 个 vCPU、128 MiB 内存，镜像路径为 `/guest/axvisor/arceos/arceos-vm-shell.bin`。
 - `configs/build.toml`：通过 `vm_configs = ["apps/axvisor/arceos-vm-test/configs/arceos.toml"]` 打包客户机配置，进入 AxVisor 后手工启动。
 - `configs/board-shell.toml`：空自动检查步骤，保留人工串口会话。
 

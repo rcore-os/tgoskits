@@ -20,55 +20,19 @@
 
 ## 运行前确认
 
-本用例的板端输入全部放在板卡 rootfs 的 `/guest/axvisor/` 下，自己维护一份，**不与仓库里其他用例共用**板卡上已有的目录。这些资产仓库不生产也不搬运，**每块板第一次使用前放一次**，之后重复运行不需要再动。
-
-| 路径                                            | 内容             | 用于             |
-| ----------------------------------------------- | ---------------- | ---------------- |
-| `/guest/axvisor/linux/orangepi-5-plus-6.1.99` | 客户机内核       | 启动客户机，必需 |
-| `/guest/axvisor/linux/initramfs.cpio`         | 客户机初始内存盘 | 启动客户机，必需 |
-| `/guest/axvisor/npu/rknn-yolov8-image/`       | YOLOv8 推理包    | 场景 2           |
+板卡根文件系统使用标准镜像 `orangepi-5-plus.img.tar.xz`，镜像中已提供
+`/guest/linux/orangepi-5-plus`，直接复用，不复制、不改名。
+本用例直接挂载板卡 Ubuntu 根分区，不加载初始内存盘；标准 `initramfs.cpio` 会进入独立的 BusyBox Shell。
+Linux 版本为 `6.1.99-rockchip-rk3588`，支持本用例所需的 NPU 驱动与直通设备。
+YOLOv8 推理包不在标准镜像中，执行场景 2 前需要按下面步骤编译和放置。
 
 ### 首次准备
 
-下面两步的**目标位置都在板卡上**。第 1 步在板卡 Linux 里执行，进入方式：
+以下步骤只准备额外的 YOLOv8 软件，不重新准备客户机内核。
 
-```bash
-cargo xtask board connect -b '<板卡类型>' --server <服务地址> --port <端口>
-```
+#### YOLOv8 推理包
 
-第 2 步在工作站编译、再传上去。
-
-#### 1. 客户机内核与初始内存盘（必需）
-
-两块资产都在板卡上现成，就地复制到新路径：
-
-```bash
-sudo mkdir -p /guest/axvisor/linux
-
-cd /guest/linux
-sudo cp -a orangepi-5-plus-6.1.99 /guest/axvisor/linux/
-
-cd /boot
-sudo cp -a initrd.img-6.1.99-rockchip-rk3588 /guest/axvisor/linux/initramfs.cpio
-
-sudo chmod -R a+rX /guest/axvisor
-sync
-```
-
-放置结果，两个文件都应存在且非空（内核约 41 MB，初始内存盘约 8.7 MB）：
-
-```bash
-ls -l /guest/axvisor/linux/
-```
-
-两点注意：
-
-- 内核还在被 `pci-network`、`robot-real-linux`、`test-suit/axvisor/` 等用例引用着，所以这里是**复制**，不要挪走原路径。
-- 初始内存盘**不在 `/guest/` 下，而在 `/boot/`**，文件名随内核版本变化。上面写的是当前 6.1.99 内核对应的名字；换内核时要先在 `/boot/` 里确认新名字，不要沿用旧的。
-
-#### 2. YOLOv8 推理包（场景 2）
-
-在工作站仓库根目录编译，再把产物整个目录放到板卡的 `/guest/axvisor/npu/` 下。
+在工作站仓库根目录执行以下命令编译，再把产物整个目录放到板卡的 `/guest/axvisor/npu/` 下。
 
 ```bash
 cd apps/axvisor/normal/board-ballpick-robot/linux-guest-checks/rknn-yolov8-image
@@ -82,7 +46,14 @@ ls install/rknn-yolov8-image/
 # 期望：README.md  images  lib  licenses  model  rknn_yolov8_images  yolov8_demo.sh
 ```
 
-传到板卡。板卡 IP 通常**只在 ostool 会话持有期间可达**（会话一释放，板卡重启、IP 消失），先另开一个 `cargo xtask board connect` 会话把板卡拿住，传完释放；会话是排他的，别和 `axvisor board` 同时跑。
+传输时先在另一个工作站终端连接板卡原生 Linux，并保持会话：
+
+```bash
+cargo xtask board connect -b <板卡类型> --server <服务地址> --port <端口>
+```
+
+在板卡 Shell 执行 `ip -br addr` 查看 IP。会话释放会给板卡断电，传输期间不要退出，
+也不要同时运行 `axvisor board` 申请同一块板卡。
 
 `/guest/` 归 root 所有，`orangepi` 用户写不进去，所以先落到 `/tmp` 再由 root 移动：
 
@@ -94,26 +65,21 @@ tar czf /tmp/rknn-yolov8-image.tar.gz -C apps/axvisor/normal/board-ballpick-robo
 
 BOARD_IP=<板卡 IP>
 cat /tmp/rknn-yolov8-image.tar.gz | ssh orangepi@${BOARD_IP} 'cat > /tmp/rknn-yolov8-image.tar.gz'
-ssh orangepi@${BOARD_IP} '
-  printf "%s\n" orangepi | sudo -S -p "" sh -c "
-    mkdir -p /guest/axvisor/npu
-    rm -rf /guest/axvisor/npu/rknn-yolov8-image
-    tar xzf /tmp/rknn-yolov8-image.tar.gz -C /guest/axvisor/npu
-    chmod -R a+rX /guest/axvisor/npu
-    rm -f /tmp/rknn-yolov8-image.tar.gz
-    sync
-  "
-'
 ```
 
-放置结果：
+在持有板卡原生 Linux 连接的终端中执行，`sudo` 按提示输入板卡密码：
 
-```bash
-ssh orangepi@${BOARD_IP} 'ls /guest/axvisor/npu/rknn-yolov8-image/'
-# 期望与上面 install/ 的清单一致
+```sh
+sudo mkdir -p /guest/axvisor/npu
+sudo tar xzf /tmp/rknn-yolov8-image.tar.gz -C /guest/axvisor/npu
+sudo chmod -R a+rX /guest/axvisor/npu/rknn-yolov8-image
+ls /guest/axvisor/npu/rknn-yolov8-image/
+rm /tmp/rknn-yolov8-image.tar.gz
+sync
 ```
 
-（`orangepi` 是该板 Linux 的公开开发密码，与 [benchmarks 部署做法](../../../../../benchmarks/starry/orangepi-5-plus-uvc-rknn/README.md)一致；换板就换成该板密码。）
+确认包含 `images`、`lib`、`model`、`rknn_yolov8_images` 和 `yolov8_demo.sh`。
+更新推理包前先保存已有包，再解压覆盖；标准客户机文件保持原位置。
 
 ### 启动前核对
 
@@ -126,8 +92,7 @@ cargo xtask board connect -b '<板卡类型>' --server <服务地址> --port <�
 进入板卡 Linux 后执行：
 
 ```bash
-ls -l /guest/axvisor/linux/orangepi-5-plus-6.1.99
-ls -l /guest/axvisor/linux/initramfs.cpio
+ls -l /guest/linux/orangepi-5-plus
 ls /guest/axvisor/npu/rknn-yolov8-image/   # 场景 2 用
 lsblk -o NAME,FSTYPE,SIZE                  # 确认 Linux 根分区设备名
 cat /proc/cmdline                          # 确认 root= 与本配置一致
@@ -135,7 +100,7 @@ cat /proc/cmdline                          # 确认 root= 与本配置一致
 
 ### 配置说明
 
-`configs/linux.toml` 默认 `root=/dev/mmcblk0p2`，与 [os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml](../../../../../os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml) 一致。若本板 Linux 根在 `/dev/mmcblk1p2`（单客户端 USB 机器人板），按 [robot-real-linux/linux-smp1-emmc.toml](../../board-orangepi-5-plus/robot-real-linux/linux-smp1-emmc.toml) 改 `cmdline`，并把 `kernel_path` 换成该板实际使用的镜像名。
+`configs/linux.toml` 默认 `root=/dev/mmcblk0p2`，与 [os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml](../../../../../os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml) 一致。若本板 Linux 根在 `/dev/mmcblk1p2`（单客户端 USB 机器人板），按 [robot-real-linux/linux-smp1-emmc.toml](../../board-orangepi-5-plus/robot-real-linux/linux-smp1-emmc.toml) 改 `cmdline`，内核仍使用标准路径 `/guest/linux/orangepi-5-plus`。
 
 `configs/linux.toml` 的 `devices.passthrough` 决定直通范围，改之前先分清 `guest_type` 与选择器的关系。`guest_type = "passthrough"` 时，空 `passthrough` 列表与写 `/` 等价，都启用“宿主可直通设备减去基线始终剥掉的 PCI 主桥”这根基线，写在 `/` 旁边的具体路径叠加在基线上；列表只有具体路径、不含 `/` 时退化为精确选择、不含基线；`guest_type = "virtualized"` 则从无物理设备起步，`passthrough` 只接受具体路径。
 
@@ -255,7 +220,7 @@ sudo mount -t debugfs debugfs /sys/kernel/debug
 
 ## 场景 2：推理检查
 
-在客户机里手动执行本应用自带的 YOLOv8 推理包（编译与放置见「首次准备」第 2 节），确认 RKNN 运行时、模型和驱动能在这一镜像上协同完成一次前向推理。
+在客户机里手动执行本应用自带的 YOLOv8 推理包（编译与放置见「首次准备」），确认 RKNN 运行时、模型和驱动能在这一镜像上协同完成一次前向推理。
 
 ```bash
 cd /guest/axvisor/npu/rknn-yolov8-image
@@ -305,10 +270,10 @@ success
 
 进入客户机（`vm console 1`）后逐项执行。**网络三项依赖 `configs/linux.toml` cmdline 里的 `pci=nomsi`**：AxVM 宿主后端未接入物理 PCI MSI/ITS 分配，直通网卡必须走 PCIe 控制器的 INTx 级联；缺该参数时 r8125 收不到链路变化中断，接口永远是 `NO-CARRIER`，表现为 ping 报 `Network is unreachable`（实为无地址）。
 
-网络在客户机里由 NetworkManager 自动配置（和板卡原生 Linux 相同）：启动约 1 分钟内 `r8125: enP3p49s0: link up`、DHCP 完成。若等了一段时间仍无地址，可手动触发（密码为该板公开开发密码）：
+网络在客户机里由 NetworkManager 自动配置（和板卡原生 Linux 相同）：启动约 1 分钟内 `r8125: enP3p49s0: link up`、DHCP 完成。若等了一段时间仍无地址，可手动触发，`sudo` 按提示输入板卡密码：
 
 ```bash
-printf '%s\n' <板卡密码> | sudo -S -p '' nmcli -w 45 device connect enP3p49s0
+sudo nmcli -w 45 device connect enP3p49s0
 ```
 
 ### 功能项 1：ping 测试网络
@@ -319,7 +284,7 @@ cat /sys/class/net/enP3p49s0/carrier   # 期望 1
 gw=$(ip r | awk '/default/{print $3}'); ping -c 3 "$gw"
 ```
 
-通过条件：接口有地址、carrier 为 1、ping 网关 0% 丢包（2026-10-16 实测：10.3.10.254，3 发 3 收，~0.9 ms；另 ping 板卡服务 10.3.10.60 同样 3/3）。
+通过条件：接口有地址、carrier 为 1、ping 网关 0% 丢包。
 
 ### 功能项 2：CPU 信息
 
@@ -336,7 +301,7 @@ echo axvisor-guest-rw > /tmp/rw-check.txt
 cat /tmp/rw-check.txt
 ```
 
-通过条件：`cat` 原样返回写入内容。
+通过条件：`cat` 原样返回写入内容。完成后执行 `rm /tmp/rw-check.txt` 清理本次文件。
 
 ### 功能项 4：ssh 连接 Ubuntu 客户机
 
@@ -347,34 +312,32 @@ ssh orangepi@<客户机 IP>     # 客户机 IP 用场景 3 功能项 1 的 ip -b
 uname -r                     # 期望 6.1.99-rockchip-rk3588
 ```
 
-通过条件：能登录并在客户机内执行命令（2026-10-16 实测：ssh 10.3.10.225 登录成功，与板卡原生 Linux 同 IP——同网卡同 MAC，DHCP 按现有分配）。
+通过条件：能登录并在客户机内执行命令。
 
 登录后建议先确认身份：客户机和板卡原生 Linux 用同一张网卡、同一个 IP，光看提示符分不出来。客户机是单核（`cpu_num = 1`），`grep -c '^processor' /proc/cpuinfo` 返回 `1`；板卡原生 Linux 是 8 核，返回 `8`。`uname -r` 两者相同（都是 `6.1.99-rockchip-rk3588`），不能用来区分。
 
 ### 功能项 5：apt 软件包安装
 
-```bash
-sudo apt-get update
-sudo apt-get install -y sl && sl
+先查看 `hello` 是否已安装并记录结果，便于测试后恢复原状态：
+
+```sh
+dpkg-query -W -f='${Status}\n' hello
 ```
 
-通过条件（最小判定）：`apt-get update` 返回 0 并能拉到索引（2026-10-16 实测：repo.huaweicloud.com，34.8 MB / 11 s；原生同网络 4 s）。安装示例包成功并运行可再确认安装链路；不需要时可 `sudo apt-get remove -y sl` 清掉。
+更新在线索引，重新安装并运行示例包，逐条等待命令完成：
+
+```sh
+sudo apt-get update
+sudo apt-get install -y --reinstall hello
+hello
+```
+
+通过条件：索引更新和安装均成功，`hello` 输出 `Hello, world!`。
+测试前未安装时，执行 `sudo apt-get purge -y hello` 清理本次安装；原本已安装时保留。
 
 ### 判定
 
 功能项 1–5 独立判定，任一项失败不影响其他项的结论。网络三项失败时先核对 `pci=nomsi` 在不在 `configs/linux.toml` 的 cmdline 里，再看板卡所连网络（DHCP / 网关 / 镜像源）是否正常——用板卡原生 Linux（`cargo xtask board connect` 进去跑同样命令）做对照，可以把"用例配置问题"和"环境问题"分开。
-
-五项一次跑通的完整记录（2026-10-16，同一会话内）：
-
-| 功能项                    | 实测                                                                              |
-| ------------------------- | --------------------------------------------------------------------------------- |
-| 1：ping 测试网络          | `enP3p49s0 UP 10.3.10.225/24`，`carrier=1`，ping 网关 3 发 3 收，avg 0.938 ms |
-| 2：CPU 信息               | `CPUs=1`，`processor : 0`                                                     |
-| 3：文件读写               | 写入 `axvisor-guest-rw`，`cat` 原样返回                                       |
-| 4：ssh 连接 Ubuntu 客户机 | 从工作站 `ssh orangepi@10.3.10.225` 登录成功                                    |
-| 5：apt 软件包安装         | `apt-get update` 返回 0，拉到 `repo.huaweicloud.com` 索引                     |
-
-网络就绪时间也可复现：客户机内核日志 `[60.744276] r8125: enP3p49s0: link up`，即启动约 1 分钟。
 
 ## 结束
 

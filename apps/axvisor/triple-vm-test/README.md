@@ -22,46 +22,25 @@ Zephyr 的三个普通查询命令在本轮中断测量结束、返回 Shell 后
 工作站命令均在 TGOSKits 仓库根目录执行，需要 AArch64 构建环境和可用的
 Orange Pi 5 Plus。将 `<板卡类型>`、`<服务地址>`、`<端口>` 替换为实际值。
 
-### 1. 构建 StarryOS
+### 1. 标准镜像
 
-在工作站执行：
+板卡根文件系统使用标准镜像 `orangepi-5-plus.img.tar.xz`。镜像中已有客户机内核、
+Zephyr DTB、两份 ext4 根盘，以及根盘内的 cyclictest 和 IOZone，无需另外编译或传输这些文件。
+配置直接读取以下路径，不复制、不重命名：
 
-```bash
-cargo xtask starry build \
-  --config apps/axvisor/triple-vm-test/configs/starry-build.toml \
-  --smp 1
-ls -lh target/aarch64-unknown-none-softfloat/release/starryos.bin
-```
+| 资源 | 板端路径 |
+| --- | --- |
+| Linux 6.1.99-rockchip-rk3588 | `/guest/linux/orangepi-5-plus` |
+| StarryOS | `/guest/starry/orangepi-5-plus` |
+| Zephyr 4.4.99 Shell | `/guest/zephyr/orangepi-5-plus` |
+| Zephyr DTB | `/guest/zephyr/orangepi-5-plus.dtb` |
+| Linux 根盘 | `/guest/rootfs-aarch64-orangepi-jammy-0.img` |
+| StarryOS 根盘 | `/guest/rootfs-aarch64-orangepi-jammy-1.img` |
 
-`ls` 确认生成的内核镜像。下文的 AxVisor 启动命令会将该产物随启动包传输到板卡，
-无需手工复制。修改 StarryOS 源码后，先重新执行此构建命令。
+两份根盘不能同时被原生 Linux 挂载或其他客户机使用。Linux 使用 VirtIO 块设备、网络和
+8250/16550 控制台。Zephyr 使用 PL011 控制台，提供三个查询命令和 `irq latency`。
 
-### 2. 确认板端文件
-
-从工作站连接板卡原生 Linux：
-
-```bash
-cargo xtask board connect -b <板卡类型> --server <服务地址> --port <端口>
-```
-
-在板卡原生 Linux Shell 中查看已有文件：
-
-```sh
-ls -lh /guest/linux/orangepi-5-plus \
-  /guest/axvisor/zephyr/zephyr.bin /guest/axvisor/zephyr/zephyr.dtb \
-  /guest/rootfs-aarch64-orangepi-jammy-0.img /guest/rootfs-aarch64-orangepi-jammy-1.img
-```
-
-上述文件均应存在且非空，功能与性能检查均直接复用这些原路径。
-两份根盘应为可写的 ext4 文件系统，且未被原生 Linux 挂载或其他客户机使用。
-
-Linux 内核版本为 `6.1.99-rockchip-rk3588`，支持 VirtIO-MMIO、VirtIO 块设备、
-ext4 和 8250/16550 控制台。Zephyr 复用单客户机测试的 Shell 镜像及配套原始 DTB，
-使用 PL011 控制台 `0x09000000`，提供三个 Shell 查询命令及 `irq latency` 定时器中断测量命令。
-
-按 **Ctrl+A** 再按 **x**，等待连接命令退出、板卡释放后再启动 AxVisor。
-
-### 3. 确认配置
+### 2. 客户机资源
 
 | ID | 客户机 | 物理 CPU | 内存 | 根盘 |
 | --- | --- | --- | --- | --- |
@@ -70,7 +49,7 @@ ext4 和 8250/16550 控制台。Zephyr 复用单客户机测试的 Shell 镜像�
 | 3 | Zephyr | CPU2，MPIDR `0x200` | 128 MiB | 无磁盘 |
 
 `configs/build.toml` 的 `vm_configs` 打包三份客户机配置，无需手工传输 TOML 或执行
-`vm create`。StarryOS 内核一起打包；Linux 镜像和两份根盘从板端上述路径读取。
+`vm create`。三个内核、Zephyr DTB 和两份根盘均从标准镜像的上述路径读取。
 Zephyr 的 BIN、DTB 均使用板端原文件，保留 PL011 控制台和无物理输出的虚拟 UART6。
 `configs/zephyr.toml` 不声明 `console0`，由原 DTB 提供 PL011 的地址 `0x09000000`、
 中断号 33 和节点身份。当前 AxVisor 中显式 `console0` 优先于客户机 DTB，不能仅指定型号后依赖 DTB 补全资源。
@@ -188,6 +167,7 @@ mount
 mount -t proc proc /proc
 ```
 
+首次执行 `mount` 若报告无法读取 mtab，也先执行上述 proc 挂载，再查看挂载列表。
 该命令使 `/proc/cpuinfo` 等内核信息文件可用。StarryOS 已提供相应文件系统，无需此步骤。
 
 ### 功能项 1：文件读写
@@ -298,11 +278,11 @@ df -Pk /root
 ```
 
 512 MiB 工作文件需要 `Available` 至少为 `589824` KiB，包含 64 MiB 余量。
-空间不足时先清理或扩容 Linux 根盘。然后在 Linux 中启动测试：
+空间不足时先清理本次测试遗留的工作文件；仍不足则扩容根盘，达到门槛后再继续，不缩小测试文件。然后在 Linux 中启动测试：
 
 ```sh
 /guest-tests/iozone/iozone \
-  -a -n 32m -g 32m -i 0 -i 1 -i 2 \
+  -a -n 512m -g 512m -i 0 -i 1 -i 2 \
   -f /root/iozone.tmp -Rb /root/test.xls \
   2>&1 | tee /root/iozone-live.log &
 ```
@@ -349,7 +329,8 @@ tail -n 20 /root/iozone-live.log
 ls -lh /root/test.xls
 ```
 
-检查末尾出现 `iozone test complete`，顺序及随机读写有实际数值，且 `test.xls` 非空。
+检查末尾出现 `iozone test complete`，数据行文件大小为 `524288` KiB，实际测试的顺序及随机读写有数值，且 `test.xls` 非空。
+IOZone 自动模式可能跳过部分记录大小；`Error writing block`、`interrupted` 或只有零值的报告表示本轮未完成。
 这些结果包含客户机页缓存和文件后端开销。保存日志和报告后，删除本次工作文件：
 
 ```sh
@@ -360,13 +341,17 @@ sync
 ### 5. StarryOS 保存 cyclictest 结果
 
 按 Ctrl+X、h 返回 AxVisor，执行 `vm console 2` 进入 StarryOS。
-cyclictest 已自行结束时，直接执行后面的保存命令；仍在运行且需要结束时，先查看其进程号：
+等待 cyclictest 达到 `-D 600` 指定的时长并自行结束，再保存结果。
+需要提前结束时，先使用 Shell 内置命令查看本终端启动的后台任务：
 
 ```sh
-ps -C cyclictest -o pid,comm
+jobs -l
 ```
 
-将 `<PID>` 替换为上面输出中 cyclictest 的进程号，发送 SIGINT，使工具正常收尾：
+将 `<PID>` 替换为 cyclictest 进程的编号，向它发送 SIGINT；不要结束同一管道中的 `tee`：
+
+本页管道的前一个进程是 cyclictest，后一个是 tee。`jobs -l` 没有显示程序名时，
+按这个顺序识别两个进程号。
 
 ```sh
 kill -INT <PID>
@@ -395,7 +380,7 @@ sync
 | Linux 客户机 | `/root/test.xls` | IOZone 报告 |
 | 工作站 | `target/axvisor/triple-vm-test/serial.log` | 串口录制，含 Zephyr 时延输出 |
 
-工具缺失时先补齐相应客户机的测试工具。cyclictest 报不支持选项或 NUMA 错误时，
+工具缺失时检查是否使用标准镜像及正确根盘。cyclictest 报不支持选项或 NUMA 错误时，
 执行 `/guest-tests/cyclictest/cyclictest --help` 核对版本和参数支持，再使用本页的测试参数。
 
 需要提前取消 IOZone 时，在 Linux 中执行 `ps -C iozone -o pid,comm` 查看进程号，
@@ -454,3 +439,10 @@ exit
 | 并发情况 | 各负载开始/结束顺序、每轮实际重叠范围、功能检查执行时机 | 待记录 |
 
 并发性能测量应包含实际重叠的三个负载、有效统计及对应结果文件，性能数值原样记录。
+
+## 配置维护
+
+本目录直接验证标准镜像中的客户机；[三客户机 CI 配置](../../../test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/build-aarch64-unknown-none-softfloat.toml)
+验证工作区构建的 StarryOS，并使用独立的 Linux、Zephyr 固件路径，因此保留两套配置。
+修改公共资源时同步核对 VM ID、CPU 绑定、内存范围、两份根盘和网卡 MAC；
+Zephyr 的控制台型号、UART6 后端及 BIN/DTB 必须按各自固件匹配，不能直接互换。
