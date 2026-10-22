@@ -51,11 +51,11 @@ PMU 寄存器、IRQ PPI 和计数器槽天然属于 CPU。task event 的 fd 只�
 
 寄存器操作通过 `hw_owner::on_pmu/on_counter` 进入 HAL 的局部排他会话并使用 `ax_cpu::pmu::Pmu`，不保留旧自由函数。Linux event/cache 编码和 cluster 选择归 `event_map`；硬件 `PmuInfo` 保留 MIDR 与完整 PMCEID。
 
-首次初始化 reset 后选择 32 位 programmable overflow，保持 `SamplingCount` 和 `CounterExtender` 的算术契约，cycle 保持 64 位。`Pmu::disable_overflow_irq()` 同时清除 pending 标志，因此 counting 停止顺序为停表、结算 pending wrap、禁用 IRQ、注销。`system_flex::tests::stop_is_not_published_before_hardware_commit` 通过真实 PMU 溢出验证该顺序和停止状态的发布边界。
+首次初始化 reset 后选择 32 位 programmable overflow，`CounterExtender` 保持对应算术契约；cycle 保持 64 位，`SamplingCount` 按实际计数器宽度结算 delta。原生周期采样复用现有 `CounterId::CYCLE` 和 bit 31 overflow，不将原始值截成 u32。`Pmu::disable_overflow_irq()` 同时清除 pending 标志，因此 counting 停止顺序为停表、结算 pending wrap、禁用 IRQ、注销。`system_flex::tests::stop_is_not_published_before_hardware_commit` 通过真实 PMU 溢出验证该顺序和停止状态的发布边界。
 
 ### 2.1 每核状态
 
-`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `RawSpinLock` 内维护可迁移 task cycle 的全局保留状态，以及 system sampling 与 flexible slice 共用的每 CPU programmable bitmap。programmable counting 不在 open 时保留固定槽；generic/named cycles 优先申请专用 cycle，耗尽时也进入 flexible 队列。system cycle counter 也逐 CPU 保留；全局 task cycle 保留与任何本核 cycle 保留互斥。system event 的分配、失败回滚与关闭都携带同一个 `PerfCpuId`，并从目标 CPU 的能力缓存校验事件，不再读取 opener CPU 的 PMU 能力。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
+`percpu::CPU_STATES` 按 CPU 缓存 `PmuInfo` 和复用游标；`PmuInfo` 包含 `MIDR_EL1`、counter 数量与宽度以及 `PMCEID0/1_EL0`。`hw_allocation::HwAlloc` 在同一个 `RawSpinLock` 内维护可迁移 task cycle 的全局保留状态，以及 system sampling 与 flexible slice 共用的每 CPU programmable bitmap。programmable counting 不在 open 时保留固定槽；generic、RAW 和 named 事件在归一化为 `CPU_CYCLES` 后均优先申请专用 cycle，计数和采样采用同一偏好。task 冲突回退到 programmable flexible，system counting 冲突回退到 flexible，system sampling 则在 open 时保留普通物理槽。system cycle counter 也逐 CPU 保留；全局 task cycle 保留与任何本核 cycle 保留互斥。system event 的分配、失败回滚与关闭都携带同一个 `PerfCpuId`，并从目标 CPU 的能力缓存校验事件，不再读取 opener CPU 的 PMU 能力。分配数量使用本次已验证目标的参数，不通过可被另一 opener 覆盖的全局数量传递。sysfs 从同一探测结果发布 event source 与 CPU mask。
 
 `perf-hw-cpu-slots` 在四个 CPU 上各启用两个 system event，分别测试 sampling 与 counting。总数超过 QEMU 单核六个 programmable slot，但每核需求仍有余量。所有事件同时存在时读取非零计数，关闭后重复整个流程，验证独立容量与槽回收；旧全局 bitmap 在第七次 open 返回 `EBUSY`。
 
@@ -70,7 +70,7 @@ flowchart LR
 
 task event 用 `PmuRunState` 和携带 owner CPU、counter、registration 的 `PmuRunLease` 约束当前硬件代。RESET 先禁止重新调入并完成当前代停表，再清值和恢复原启用意图。disable、close 和线程退出先在 owner CPU 撤下 counter 与 `SampleSlot`，再释放保存 ring 生命周期的锚点，避免旧事件清除已经复用的槽或让 IRQ 看到失效指针。
 
-`hw_open::perf_event_open_hw()` 只对需要 programmable overflow 的路径要求 PMU IRQ；无 IRQ 描述的平台仍可使用 64 位专用 cycle 做非继承计数。sampling、programmable counting、cycle 回退和 task inherit 在缺少 IRQ 时返回 `ENODEV`，检查在创建 worker 前完成，已保留的专用槽在失败时回收。Linux v7.1 的 [`arm_pmu_platform.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmu_platform.c) 也保留无 IRQ 的 PMU，但仅对 sampling 返回 `EOPNOTSUPP`；Starry 的 programmable 软件扩展依赖 overflow，故这部分支持范围和错误码仍有明确差异。
+`hw_open::perf_event_open_hw()` 对全部 sampling 和需要 programmable overflow 的计数路径要求 PMU IRQ；原生周期采样不能绕过该准入。无 IRQ 描述的平台仍可使用 64 位专用 cycle 做非继承计数。sampling、programmable counting、cycle 回退和 task inherit 在缺少 IRQ 时返回 `ENODEV`，检查在创建 worker 前完成，已保留的专用槽在失败时回收。Linux v7.1 的 [`arm_pmu_platform.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/perf/arm_pmu_platform.c) 也保留无 IRQ 的 PMU，但仅对 sampling 返回 `EOPNOTSUPP`；Starry 的 programmable 软件扩展依赖 overflow，故这部分支持范围和错误码仍有明确差异。
 
 ### 2.2 调度与复用
 
@@ -135,7 +135,7 @@ per-task sampling group 由 `PerTaskCounter` 统一调度并预构建 `PERF_SAMP
 
 AArch64 kernel IRQ 和 user IRQ 入口按值构造 `InterruptedContext { pc, sp, fp, lr, privilege }`。用户 SP 必须来自进入汇编保存的 `UserContext.sp`，不能读取 Rust dispatch 时已恢复为线程头指针的 `SP_EL0`。LR 来自保存的 `x[30]`，用于 upstream perf 的 AArch64 FP unwinder 请求；只有用户 IRQ 且事件选择 LR 时才编码 ABI_64 和 LR，其他情况输出 ABI_NONE，不伪造用户寄存器。per-CPU snapshot 仅在一次 `dispatch_irq()` 动态作用域内可见，RAII guard 在返回和 unwind 路径清除旧值。
 
-硬件计数过滤与样本许可是不同边界。即使事件只计 EL0，IRQ 仍可能在 EL1 交付；采样路径应对实际中断现场应用 `exclude_kernel/exclude_user`，被过滤的溢出仍正常结算和续接周期，不输出 record，也不改标现场。Linux 对照及 #2673 的确定性回归要求见[用户采样边界](../../design/starry-perf-user-sampling.md)。
+硬件计数过滤与样本许可是不同边界。即使事件只计 EL0，IRQ 仍可能在 EL1 交付。Linux 在 `exclude_kernel` 下拒绝这类内核样本；Starry 当前尚未补齐该发布过滤，本次原生周期采样修复不以丢弃 EL1 样本替代真实用户链证明，也不改变 IRQ 现场标记。Linux 对照、资源策略和 #2673 的确定性回归要求见[原生周期采样](../../design/starry-perf-user-sampling.md)。
 
 `perf::unwind::{kernel_callchain,user_callchain}` 调用 `axbacktrace::walk_fp()` 并注入 reader：内核栈使用 `nofault::read_kernel_word()`，用户栈使用 `nofault::read_user_word()`。walker 检查 8 字节对齐、地址单调递增、地址范围、checked arithmetic、合理 frame gap 与输出容量，且不在遍历过程中分配。
 
