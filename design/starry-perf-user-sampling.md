@@ -59,3 +59,5 @@ Linux 的 [`armv8pmu_can_use_pmccntr()` 与 `armv8pmu_get_event_idx()`](https://
 使用当前已安装的 QEMU 和原 profile，不修改或替换运行环境。原负载保持 `400000` 次、`sample_period=100000`，超时及成功匹配不变；资源准备不能通过增加用户负载、主动反复读 PMU 或插入补偿性系统调用制造样本。
 
 算术边界由 `SamplingCount` 所属模块的既有测试证明 32/64 位模差、超过 u32 的真实计数范围及部分周期超期续接；相邻 period 用例证明真实切片续接，原用户用例证明 PMCCNTR overflow、四帧和 LR。各层证据不得互相冒充，不因补边界测试改变原用户负载。
+
+Starry 通过 `include!("root.rs")` 关联生产模块，常规 `cargo fmt` 不一定遍历其中的源文件，格式验收还须由固定工具链的 Rustfmt 直接覆盖实际变更文件。`axtest` feature 的 Clippy 检查不等于启用 `cfg(test)`；上述模块内测试必须由 `cargo xtask ktest qemu -p starry-kernel --arch aarch64 --config test-suit/starryos/qemu/build-aarch64-unknown-none-softfloat.toml` 实际编译和执行。
