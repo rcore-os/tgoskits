@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/axvirtio-blk-v0.4.2...axvirtio-blk-v0.4.3) - 2026-10-22
+
+### Added
+
+- *(axvisor)* boot default x86 guests through the web UI ([#2642](https://github.com/rcore-os/tgoskits/pull/2642))
+
+### Fixed
+
+- *(axvirtio-blk)* honor negotiated request limits ([#2510](https://github.com/rcore-os/tgoskits/pull/2510))
+
+### Other
+
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/axvirtio-blk-v0.4.1...axvirtio-blk-v0.4.2) - 2026-09-22
 
 ### Other

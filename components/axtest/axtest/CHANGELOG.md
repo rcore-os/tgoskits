@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/axtest-v0.5.16...axtest-v0.5.17) - 2026-10-22
+
+### Added
+
+- *(axbuild)* support external Starry QEMU runs ([#2509](https://github.com/rcore-os/tgoskits/pull/2509))
+
+### Other
+
+- *(axvm)* migrate feature-driven tests into axtest ([#2644](https://github.com/rcore-os/tgoskits/pull/2644))
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/axtest-v0.5.11...axtest-v0.5.12) - 2026-07-02
 
 ### Added
