@@ -8,8 +8,8 @@ phys_cpu_ids = [0x200]
 [kernel]
 entry_point = 0x8020_0000
 kernel_load_addr = 0x8020_0000
-# Guest image on the AxVisor host filesystem, installed manually before boot.
-kernel_path = "/guest/axvisor/arceos/arceos-vm-shell.bin"
+# Workstation build output rooted at the workspace; bundled by axbuild.
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-vm-shell.bin"
 dtb_load_addr = 0x8000_0000
 memory_regions = [[0x8000_0000, 0x0800_0000, 0x7, 0]]
 

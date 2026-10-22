@@ -5,7 +5,7 @@
 在板卡上通过 AxVisor 启动单个 ArceOS 客户机，由测试者手工输入命令，
 检查客户机能否启动、Shell 能否列出命令、查询版本并正常退出。
 
-仓库提供客户机源码、构建配置和本文档。按下文依次编译、放置文件、启动和检查，结果由测试者记录。
+仓库提供客户机源码、构建配置和本文档。按下文依次编译客户机、启动和检查，结果由测试者记录。
 
 ## 边界
 
@@ -21,13 +21,12 @@
 
 板卡根文件系统使用标准镜像 `orangepi-5-plus.img.tar.xz`。其中的
 `/guest/arceos/orangepi-5-plus` 是网络程序，不提供本用例的 Shell 命令。
-本用例需额外编译下面的 Shell 固件，不覆盖标准 ArceOS 文件。
-板端只需手工部署客户机镜像 `/guest/axvisor/arceos/arceos-vm-shell.bin`。
-客户机配置由 `vm_configs` 自动打包到 `/guest/builtin/configs/`，无需另行复制 TOML 到板端。
+本用例需额外编译下面的 Shell 固件。`configs/arceos.toml` 使用 `${workspace}` 引用工作站编译产物，
+构建 AxVisor 时将 BIN 和客户机配置一起打包，无需向板端复制文件。
 
 ### 首次准备
 
-每块板首次使用前完成以下步骤；之后修改了客户机源码，重新编译并更新板端镜像。
+启动前先在工作站编译 Shell 固件；修改客户机源码后，重新编译并重新启动 AxVisor。
 
 #### 1. 编译客户机并确认产物
 
@@ -44,76 +43,26 @@ ls -lh target/aarch64-unknown-linux-musl/release/arceos-vm-shell.bin \
   apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/arceos.toml
 ```
 
-#### 2. 连接板卡原生 Linux
+#### 2. 确认镜像打包方式
 
-替换下面的占位值，连接并持有板卡：
+`configs/arceos.toml` 使用 `${workspace}` 表示仓库根目录：
 
-```bash
-cargo xtask board connect -b <板卡类型> --server <服务地址> --port <端口>
+```toml
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-vm-shell.bin"
 ```
 
-登录板卡原生 Linux 后查询 IP：
-
-```bash
-ip -4 -br address
-```
-
-记下工作站能够访问的板卡 IP。保持终端 A 的连接，接着在另一个终端传输文件。
-板卡 IP 通常只在 ostool 会话持有期间可达；不要同时运行 `board connect` 和 `axvisor board`。
-
-#### 3. 传输并放置文件
-
-以下以板端用户 `orangepi` 为例。终端 B 在仓库根目录执行，替换实际板卡 IP：
-
-```bash
-board_ip=<板卡IP>
-scp target/aarch64-unknown-linux-musl/release/arceos-vm-shell.bin "orangepi@$board_ip:/tmp/"
-ssh "orangepi@$board_ip"
-```
-
-进入板卡 SSH 后执行。先前传入 `/tmp/` 的镜像按原文件名安装：
-
-```bash
-sudo install -d -m 755 /guest/axvisor/arceos
-sudo install -m 644 /tmp/arceos-vm-shell.bin /guest/axvisor/arceos/arceos-vm-shell.bin
-sync
-ls -lh /guest/axvisor/arceos/
-exit
-```
-
-确认目录中有非空的 `arceos-vm-shell.bin`。`exit` 退出 SSH，返回工作站；
-终端 A 仍持有板卡，可以继续下面的启动前核对。
-
-### 启动前核对
-
-每次启动 AxVisor 前，在板卡原生 Linux 中执行以下命令。
-若准备时的连接已经退出，先在工作站重新连接：
-
-```bash
-cargo xtask board connect -b <板卡类型> --server <服务地址> --port <端口>
-```
-
-进入板卡 Linux 后执行：
-
-```bash
-ls -lh /guest/axvisor/arceos/arceos-vm-shell.bin
-findmnt -T /guest/axvisor/arceos
-```
-
-确认镜像大小非零，且位于 AxVisor 能挂载的板卡 eMMC 文件系统中。
-
-核对完成后，在 `board connect` 终端按 **Ctrl+A**，再按 **x**，等待命令退出并释放板卡，
-再执行下文的 AxVisor 启动命令。
+该路径指向工作站编译产物，不随配置文件的目录层级改变。
+先确认上一步的 BIN 已生成，再执行下文的 AxVisor 启动命令。
+构建工具会将 BIN 打包到 `/guest/builtin/images/`，并改写打包配置中的镜像路径。
 
 ### 配置说明
 
 - `configs/guest-build.toml`：单 CPU 客户机构建，生成 bin 镜像。
-- `configs/arceos.toml`：1 个 vCPU、128 MiB 内存，镜像路径为 `/guest/axvisor/arceos/arceos-vm-shell.bin`。
-- `configs/build.toml`：通过 `vm_configs = ["apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/arceos.toml"]` 打包客户机配置，进入 AxVisor 后手工启动。
+- `configs/arceos.toml`：1 个 vCPU、128 MiB 内存，通过 `${workspace}/target/...` 引用工作站编译的 Shell BIN。
+- `configs/build.toml`：通过 `vm_configs` 选择上述配置并打包其引用的 BIN，进入 AxVisor 后手工启动。
 - `configs/uboot-shell.toml`：空自动检查步骤，保留人工串口会话。
 
-修改客户机配置后，重新执行下文的 AxVisor 启动命令即可重新打包配置，无需手工传输 TOML。
-更换登录用户名时，替换 SSH/SCP 命令中的 `orangepi`，板端镜像路径保持不变。
+修改客户机配置或重新编译 BIN 后，重新执行下文的 AxVisor 启动命令，将配置与镜像一起重新打包。
 主机启动参数中应保持 `axvisor.vm_start` 未设置，避免客户机开机自动启动。
 
 ## 启动
