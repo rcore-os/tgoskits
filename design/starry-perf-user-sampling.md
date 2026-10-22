@@ -36,6 +36,8 @@ Linux 的 [`armv8pmu_can_use_pmccntr()` 与 `armv8pmu_get_event_idx()`](https://
 
 原生周期采样仍需可用的 PMU IRQ。准入失败必须在发布 worker、registry 和启用硬件前完成，已保留资源回滚；无 IRQ 环境仅保留原有非继承纯计数能力。disable、RESET、切出和 close 先停表并结算，再撤销准确的一代登记，最后释放槽与引用；后续重新启用或打开新事件不能继承旧 pending 状态。
 
+统一 RAW 周期选择后，原本使用 flexible 控制路径的纯计数事件也可能进入原生周期路径。其有限寄存器事务必须与现有 flexible 控制保持相同的进展保证：本核直接执行，远端 read、启停和 RESET 通过同步 owner-CPU rendezvous 完成，不能等待会被 FIFO 负载饿死的普通 worker。涉及采样登记或输出引用迁移的操作仍须遵守任务上下文准备与回收边界；不得把最后一个 `Arc` 的析构、分配或可睡眠操作移入 IPI。范围内的纯计数控制应复用已有 `run_on_cpu_sync()`，不新增调度器、忙轮询或后台控制队列。
+
 ## 3. 回归边界
 
 `perf-hw-callchain-user` 是真实 PMU、IRQ、用户帧链与 mmap ring 的系统级功能证明。修复应增强它的诊断和可控边界，而不是用宿主伪实现代替真实采样。

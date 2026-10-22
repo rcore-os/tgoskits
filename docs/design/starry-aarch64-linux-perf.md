@@ -97,6 +97,8 @@ stateDiagram-v2
 
 `SystemFlexCounter::control_on_owner()` 对照 Linux v7.1 的 `event_function_call()` → `cpu_function_call()` → `smp_call_function_single(..., wait=1)`，通过同步 `run_on_cpu_sync()` 完成固定 CPU 事件的控制。本核直接执行，远端由 IPI 执行，不等待普通优先级的 `perf-flex` 或 `perf-cpu` worker，避免 FIFO 调用者或 owner CPU 上的 FIFO 负载阻止停表。调用方只禁止迁移，不屏蔽远端等待期间的本核 IPI，也不持 callback 所需的锁。
 
+上述进展保证也适用于归一化周期事件获选原生计数器后的纯计数寄存器事务，不能因 RAW 表达方式进入另一条依赖普通 worker 的 read、启停或 RESET 路径。任务上下文拥有请求及结果，远端回调只执行 owner-local 的有限事务；采样登记、输出更替及最后引用的回收不能未经生命周期审计直接移入 IPI。
+
 `SystemFlexCounter::finish_slice_observed()` 将 active 锁保持到停表、注销、累计值提交和槽释放全部完成，不能在取出 slice 时提前发布完成。`sampling::detach_counting()` 只撤销登记并转移引用；IPI 把取下的 `Arc` 写入调用方栈上的 `ControlRequest`，同步返回后由 task context 释放。传输失败沿 ioctl 调用链返回，不伪造完成。`reset_on_owner()` 在原槽上清零计数、溢出状态与扩展值，然后恢复该槽，保留 enabled 状态与累计 enabled/running 时间，对齐 Linux `_perf_event_reset()` 清值但不关闭事件的语义。
 
 `ControlOperation::Read` 与 disable/reset 共用同步 IPI 传输，把 `read_on_owner()` 的标量快照写入调用方栈上的 `ControlRequest::snapshot`，不再排入普通 CPU worker。它保留活动切片，不释放计数器或等待下一次调度；对应 Linux `perf_event_read()` 的同步跨核读取。
