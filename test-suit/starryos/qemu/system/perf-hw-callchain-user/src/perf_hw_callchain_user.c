@@ -40,6 +40,7 @@
 #define SYS_PERF_EVENT_OPEN 241
 #define RING_BYTES (9u * 4096u)
 
+#if defined(__aarch64__)
 /* Architectural CPU_CYCLES and INST_RETIRED event numbers. */
 #define ARM_PMU_EVT_CPU_CYCLES 0x11ull
 #define ARM_PMU_EVT_INST_RETIRED 0x08ull
@@ -61,6 +62,7 @@ static const uint64_t occupier_events[] = {
 #define TARGET_CPU 0
 /* PMUv3 implements at most 31 programmable counters per CPU. */
 #define MAX_SLOT_OCCUPIERS 31
+#endif
 
 struct perf_event_attr_v3 {
     uint32_t type, size;
