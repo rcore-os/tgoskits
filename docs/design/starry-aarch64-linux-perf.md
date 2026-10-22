@@ -157,7 +157,7 @@ ring 无空间或 producer gate 竞争时增加 event 的 pending lost 数。下
 
 `SampleReadEntry::owned()` 强持有回调对象，直到注册代被撤销。system sampling 独立分配 `Arc<SamplingReadState>`，IRQ 只访问其中的计数与原子时间，不从 callback 裸指针借用正在控制锁下修改的 `HwPerfEventState`。task 的回调同样保留强引用。`ThreadPerfContext::attach()` 保留仍被 sampling slot 引用的已关闭 counter，使 scheduler 撤销 slot 时不会执行 counter 的最后析构；后续 task-context attach 或线程释放完成回收。非 GROUP 采样只读取 source；GROUP 采样保持 leader-first 顺序。各 event 的 `SamplingCount` 独立累计 raw delta，回调只读取累计快照，不通过数组位置推断 overflow 归属。
 
-`SamplingCountState::remaining` 跟踪逻辑周期剩余事件数，每次 raw 更新扣除已观察的 delta。单次硬件装载由 `hardware_period()` 限制为 `u32::MAX >> 1`，为中断延迟留出余量。中间片段 IRQ 只重装计数器；仅 `period_complete()` 为真时输出样本，`PERF_SAMPLE_PERIOD` 仍是请求的逻辑周期。`rearm()` 保留溢出后的超额计数，避免丢失整个 32 位回绕或提前产生样本。
+`SamplingCountState::remaining` 跟踪逻辑周期剩余事件数，每次 raw 更新扣除已观察的 delta。`hardware_period()` 按计数器活动位宽限制单次装载范围，为中断延迟留出余量：普通计数器保持 32 位分段，原生周期计数器使用 64 位装载范围，但逻辑周期上限仍为 u32。中间片段 IRQ 只重装计数器；仅 `period_complete()` 为真时输出样本，`PERF_SAMPLE_PERIOD` 仍是请求的逻辑周期。`rearm()` 保留溢出后的超额计数，避免截断回绕增量或提前产生样本。
 
 `SamplingCountState::period` 记录当前逻辑周期，首次 arm 才初始化 `remaining`。task 切片结束后只把该片段的 total 折叠到累计值；下次切入清零片段 total，但保留 remaining 与已调整的 period。system event 的 DISABLE/ENABLE 同样续接周期，RESET 只清事件值，不丢弃 `period_left`，对应 Linux `_perf_event_reset()` 与 `armpmu_event_set_period()`。`perf-hw-sliced-period` 强制同 CPU 管道往返或 system event 启停，并检查每段增量小于一个周期、总增量超过三个周期时仍输出样本。
 
@@ -208,7 +208,7 @@ system sideband 的 `SystemSidebandSource::observer` 捕获 opener 的 PID names
 
 ### 5.1 QEMU TCG
 
-AArch64 system suite 的 `perf-*` 子用例通过 `grouped_qemu_profiles` 独立运行，配置在 `perf-aarch64.toml`；它与 linux-perf app 显式使用 `-cpu cortex-a53,pmu=on -smp 4 -icount shift=auto,align=off,sleep=on`。其他 system 子用例保留默认 MTTCG 配置，不受 perf 模拟时钟影响。`qemu_profiles::expand()` 在已有选择结果上做互斥分组，未匹配项仍执行，原有定向入口不变。TCG 可验证 `perf_event_open`、计数器生命周期、溢出控制、mmap ring、group、LOST、callchain 编码和 upstream perf 控制流；cycle 是虚拟时间，多数 cache/branch/stall 事件不实现或为零。
+AArch64 system suite 的 `perf-*` 子用例通过 `grouped_qemu_profiles` 独立运行，配置在 `perf-aarch64.toml`，使用 `-cpu cortex-a53,pmu=on -smp 4 -icount shift=0,align=off,sleep=on`；本次修复保持该既有 profile 不变，不调整 linux-perf app 的配置。其他 system 子用例保留默认 MTTCG 配置，不受 perf 模拟时钟影响。`qemu_profiles::expand()` 在已有选择结果上做互斥分组，未匹配项仍执行，原有定向入口不变。TCG 可验证 `perf_event_open`、计数器生命周期、溢出控制、mmap ring、group、LOST、callchain 编码和 upstream perf 控制流；cycle 是虚拟时间，多数 cache/branch/stall 事件不实现或为零。
 
 CI run `34438510466` 证明不能将 icount 扩展到整个 system suite：四个 perf 固定大循环超时 120 秒，`poll`/`timerfd` 时间断言失败，最后套件超时 1800 秒。采样测试改为等到记录发布，LOST 测试先通过 read 确认累计丢样再释放环空间并核对 LOST 精确值；exec 子进程运行一秒 guest 时间的采样负载。保留原有超时与计数断言，不把宿主执行速度当作测试目标。
 
