@@ -370,7 +370,7 @@ mod tests {
         let cpu = PerfCpuId::new(1);
         let mut state = PmuRunState::new();
         let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
-        let registration = SampleRegistration::new(cpu, 3, 17);
+        let registration = SampleRegistration::new(cpu, Counter::Programmable(3), 17);
         state.publish_registration(arm, registration);
 
         let PmuCloseAction::Stop(lease) = state.begin_close() else {
@@ -386,7 +386,7 @@ mod tests {
         let cpu = PerfCpuId::new(2);
         let mut state = PmuRunState::new();
         let arm = state.begin_arm(cpu, TEST_COUNTER).unwrap();
-        let registration = SampleRegistration::new(cpu, 4, 23);
+        let registration = SampleRegistration::new(cpu, Counter::Programmable(4), 23);
         state.publish_registration(arm, registration);
         state.finish_arm(arm);
 
@@ -395,7 +395,7 @@ mod tests {
         };
         let observed = lease.registration().unwrap();
         assert_eq!(observed.owner(), cpu);
-        assert_eq!(observed.counter(), 4);
+        assert_eq!(observed.counter(), Counter::Programmable(4));
         assert_eq!(observed.generation(), 23);
     }
 
