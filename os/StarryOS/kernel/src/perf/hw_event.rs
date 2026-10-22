@@ -10,8 +10,9 @@
 //! `ioctl(ENABLE/DISABLE/RESET)`, and serves `read(perf_fd)` with the timing
 //! fields `perf stat` expects.
 //!
-//! A *sampling* event (`attr.sample_period > 0`) always takes a programmable
-//! counter (even for CPU_CYCLES → ARM event `0x11`) and additionally owns an
+//! A *sampling* event (`attr.sample_period > 0`) uses the same counter
+//! selection as a counting event — CPU_CYCLES prefers the native 64-bit cycle
+//! counter, every other event a programmable slot — and additionally owns an
 //! mmap ring buffer plus a deferred poll worker. `mmap(perf_fd)` allocates the
 //! ring (mirroring [`super::bpf`]); `enable()` preloads the counter to overflow
 //! after `period` events, registers a [`super::sampling::SampleSlot`] for the
@@ -94,14 +95,14 @@ fn system_sampling_snapshot(sampling: &SamplingReadState, now: u64) -> SampleRea
 #[cfg(target_arch = "aarch64")]
 unsafe fn system_sample_read_irq(
     context: *const (),
-    source_slot: usize,
+    source_counter: Counter,
     now: u64,
 ) -> SampleReadValue {
     // SAFETY: the registry entry owns this independently allocated SamplingReadState
     // through an Arc. Control only shares it, and the fields read by this IRQ
     // callback use atomics or the owner-CPU SamplingCount lock.
     let sampling = unsafe { &*context.cast::<SamplingReadState>() };
-    sampling.sample_count.update(source_slot);
+    sampling.sample_count.update(source_counter);
     system_sampling_snapshot(sampling, now)
 }
 
@@ -352,9 +353,6 @@ impl HwPerfEventState {
         }
         let owner = self.system_owner.ok_or(crate::StarryError::BadState)?;
         let sampling = if let Some(sampling) = &self.sampling {
-            let Counter::Programmable(_) = self.counter else {
-                return Err(crate::StarryError::BadState);
-            };
             let period = sampling.period;
             let mut read_entries = [const { SampleReadEntry::EMPTY }; MAX_SAMPLE_READ_EVENTS];
             read_entries[0] = self.system_sample_read_entry();
@@ -372,6 +370,7 @@ impl HwPerfEventState {
                 SampleSlot::new(
                     SampleOutput::new(ring, notify, Arc::clone(&sampling.read.loss)),
                     SampleSlotConfig {
+                        counter: self.counter,
                         count: Arc::clone(&sampling.read.sample_count),
                         period,
                         sample_type: sampling.sample_type,

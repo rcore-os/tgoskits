@@ -155,14 +155,13 @@ fn prepare_counter(
         return false;
     };
     if let Some(output) = sample_output {
-        let n = counter
-            .programmable_index()
-            .expect("sampling events require a programmable PMU slot");
         let (read_entries, read_len) = ptc.sample_read_entries();
         if let Err(error) = sampling::enable_local_pmu_irq() {
             run_state.cancel_arm(ticket);
             if ptc.flexible {
-                super::super::percpu::free_current_programmable(n);
+                super::super::percpu::free_current_programmable(
+                    counter.programmable_index().expect("flexible PMU slot"),
+                );
             }
             warn!(
                 "perf: failed to enable the PMU IRQ on CPU {}: {error:?}",
@@ -182,12 +181,13 @@ fn prepare_counter(
         // The old slice's total was folded into accumulated at sched-out.
         // Logical period progress survives both migration and multiplexing.
         ptc.sampling_count.reset_value();
-        ptc.sampling_count.preload(n, ptc.sample_period);
+        ptc.sampling_count.preload(counter, ptc.sample_period);
         let registration = match sampling::register(
-            n,
+            counter,
             SampleSlot::new(
                 output,
                 SampleSlotConfig {
+                    counter,
                     count: Arc::clone(&ptc.sampling_count),
                     period: ptc.sample_period,
                     sample_type: ptc.sample_type,
@@ -212,11 +212,13 @@ fn prepare_counter(
             Err(error) => {
                 run_state.cancel_arm(ticket);
                 if ptc.flexible {
-                    super::super::percpu::free_current_programmable(n);
+                    super::super::percpu::free_current_programmable(
+                        counter.programmable_index().expect("flexible PMU slot"),
+                    );
                 }
                 warn!(
                     "perf: failed to register counter {} on CPU {}: {error:?}",
-                    n,
+                    counter.sample_slot(),
                     current_cpu.as_usize()
                 );
                 return false;
@@ -224,7 +226,7 @@ fn prepare_counter(
         };
         run_state.publish_registration(ticket, registration);
         // Arm the per-counter overflow interrupt, then start counting.
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable_overflow_irq(id));
+        counter.enable_overflow_irq();
     } else {
         // Counting: configure() programs event + EL filter AND resets to 0.
         counter
@@ -356,17 +358,14 @@ fn stop_hardware_on_owner(
     if ptc.is_sampling {
         let registration = lease.registration().ok_or(crate::StarryError::BadState)?;
         let counter = lease.counter();
-        let n = counter
-            .programmable_index()
-            .ok_or(crate::StarryError::BadState)?;
-        if registration.counter() != n {
+        if registration.counter() != counter {
             return Err(crate::StarryError::BadState);
         }
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable_overflow_irq(id));
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable(id));
-        let delta = ptc.sampling_count.update(n);
+        counter.disable_overflow_irq();
+        counter.disable();
+        let delta = ptc.sampling_count.update(counter);
         ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
-        crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << n));
+        crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << counter.sample_slot()));
         sampling::unregister(registration).map_err(|_| crate::StarryError::BadState)?;
     } else {
         // Freeze the physical slice before sampling its terminal value. Reading

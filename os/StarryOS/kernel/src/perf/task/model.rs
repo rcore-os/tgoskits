@@ -756,7 +756,7 @@ impl PerTaskCounter {
 
 unsafe fn per_task_sample_read_irq(
     context: *const (),
-    _source_slot: usize,
+    _source_counter: Counter,
     now: u64,
 ) -> SampleReadValue {
     // SAFETY: task context ownership keeps the counter alive until its sampling
@@ -773,9 +773,7 @@ unsafe fn per_task_sample_read_irq(
     {
         let physical = lease.counter();
         let live = if counter.is_sampling {
-            counter
-                .sampling_count
-                .update(physical.programmable_index().expect("sampling slot"))
+            counter.sampling_count.update(physical)
         } else {
             counter.read_counting_slice(physical)
         };

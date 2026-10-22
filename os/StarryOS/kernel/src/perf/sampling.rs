@@ -2,12 +2,13 @@
 //!
 //! This is the IRQ half of hardware-PMU sampling. A sampling perf event
 //! ([`super::hw::HwPerfEvent`] with `sample_period > 0`) preloads a programmable
-//! counter so it overflows after `period` events; the overflow raises the PMUv3
-//! interrupt (PPI 7 / INTID 23). [`pmu_overflow_handler`] runs in hard-IRQ
-//! context, reads the interrupted PC, builds one `PERF_RECORD_SAMPLE` per
-//! overflowed counter, writes it into that event's mmap ring buffer, re-arms the
-//! counter, and wakes a deferred worker (via [`crate::task::future::IrqNotify`]) that
-//! delivers `POLLIN` to userspace pollers.
+//! counter — a programmable slot or the 64-bit architectural cycle counter — so
+//! it overflows after `period` events; the overflow raises the PMUv3 interrupt
+//! (PPI 7 / INTID 23). [`pmu_overflow_handler`] runs in hard-IRQ context, reads
+//! the interrupted PC, builds one `PERF_RECORD_SAMPLE` per overflowed counter,
+//! writes it into that event's mmap ring buffer, re-arms the counter, and wakes
+//! a deferred worker (via [`crate::task::future::IrqNotify`]) that delivers
+//! `POLLIN` to userspace pollers.
 //!
 //! The record emitted honours the event's `attr.sample_type`: [`build_sample`]
 //! lays out every requested scalar field in the canonical `man perf_event_open`
@@ -26,7 +27,9 @@
 //!
 //! The handler must locate the ring buffer for an overflowed counter `n` without
 //! allocating or taking a lock. [`REGISTRY`] is one fixed generation-bearing
-//! registry per CPU (index = programmable counter index). Each [`SampleSlot`]
+//! registry per CPU (index = programmable counter index, or 31 for the cycle
+//! counter). Each [`SampleSlot`] owns its [`Counter`] identity so the IRQ path
+//! never re-derives it, and
 //! owns strong output and notification references rather than borrowing raw
 //! callback storage. `register` / `unregister` mutate the current CPU's registry
 //! under a local-IRQ-off critical section ([`PreemptIrqSaveGuard`]) so removal is
@@ -41,7 +44,7 @@ use kbpf_basic::linux_bpf::perf_event_mmap_page;
 use super::{
     counting::CounterExtender,
     output::PerfRingOutput,
-    sampling_lifecycle::SampleRegistration,
+    sampling_lifecycle::{CYCLE_COUNTER_SLOT, Counter, SampleRegistration},
     sampling_registry::{RegisterError, SamplingRegistry, UnregisterError},
     target::PerfCpuId,
 };
@@ -58,6 +61,12 @@ fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
 /// [`ax_cpu::pmu::Pmu`]); the registry is sized one past this for indexing.
 const MAX_COUNTER: usize = 30;
 
+/// Highest sampling-registry slot the overflow handler services.
+///
+/// Programmable counters occupy `0..=30`; the architectural cycle counter is
+/// bit [`CYCLE_COUNTER_SLOT`] of `PMOVSCLR_EL0` and of the registry.
+const MAX_SAMPLE_SLOT: usize = CYCLE_COUNTER_SLOT;
+
 /// Counts sampling events independently of overflow delivery and period reloads.
 /// Owner-CPU callers hold their PMU lease; the IRQ-safe lock serializes live
 /// reads with overflow service. No registry lookup is needed by group callbacks.
@@ -66,27 +75,41 @@ pub(crate) struct SamplingCount(RawSpinLock<SamplingCountState>);
 
 #[derive(Debug, Default)]
 struct SamplingCountState {
-    previous: u32,
+    /// Raw value the last accounted delta started from, truncated to the
+    /// counter's active width.
+    previous: u64,
     total: u64,
-    remaining: i64,
+    /// Events left in the current logical period. The signed domain holds a
+    /// complete u64 delta plus its negative overshoot.
+    remaining: i128,
     /// Zero until first arm; otherwise the current logical sampling period.
     period: u32,
 }
 
 impl SamplingCountState {
-    fn update(&mut self, raw: u32) -> u64 {
-        let delta = raw.wrapping_sub(self.previous);
-        self.total = self.total.saturating_add(u64::from(delta));
-        self.remaining = self.remaining.saturating_sub(i64::from(delta));
+    fn update(&mut self, raw: u64, width: u8) -> u64 {
+        let mask = counter_mask(width);
+        let raw = raw & mask;
+        // Modular subtraction in the counter's own width: a 32-bit slot wraps
+        // at 2^32 while the cycle counter wraps at 2^64.
+        let delta = raw.wrapping_sub(self.previous) & mask;
+        self.total = self.total.saturating_add(delta);
+        self.remaining = self.remaining.saturating_sub(i128::from(delta));
         self.previous = raw;
         self.total
     }
 
-    fn hardware_period(&self) -> u32 {
+    fn hardware_period(&self, width: u8) -> u64 {
         // Like armpmu_event_set_period(), leave half the counter range for
         // interrupt delivery latency before modular subtraction becomes ambiguous.
-        self.remaining.clamp(1, i64::from(u32::MAX >> 1)) as u32
+        self.remaining
+            .clamp(1, i128::from(counter_mask(width) >> 1)) as u64
     }
+}
+
+/// Mask of the low `width` bits of a counter.
+const fn counter_mask(width: u8) -> u64 {
+    u64::MAX >> (64 - width)
 }
 
 impl SamplingCount {
@@ -109,20 +132,20 @@ impl SamplingCount {
     }
 
     /// Accounts the current raw value, including a wrap from the preload.
-    pub(crate) fn update(&self, index: usize) -> u64 {
+    pub(crate) fn update(&self, counter: Counter) -> u64 {
         let mut state = self.0.lock_irqsave();
-        let raw = crate::perf::hw_owner::on_counter(index, |pmu, id| pmu.read(id)) as u32;
-        state.update(raw)
+        let raw = counter.read();
+        state.update(raw, counter.width())
     }
 
     /// Reloads a stopped counter without charging the preload as events.
-    pub(crate) fn preload(&self, index: usize, period: u32) {
+    pub(crate) fn preload(&self, counter: Counter, period: u32) {
         let mut state = self.0.lock_irqsave();
         if state.period == 0 {
             state.period = period;
-            state.remaining = i64::from(period);
+            state.remaining = i128::from(period);
         }
-        Self::program_chunk(index, &mut state);
+        Self::program_chunk(counter, &mut state);
     }
 
     fn period_complete(&self) -> bool {
@@ -130,24 +153,25 @@ impl SamplingCount {
     }
 
     /// Reloads a hardware chunk, retaining progress and interrupt overshoot.
-    fn rearm(&self, index: usize, period: u32) {
+    fn rearm(&self, counter: Counter, period: u32) {
         let mut state = self.0.lock_irqsave();
         state.period = period;
         if state.remaining <= 0 {
-            let period = i64::from(period);
+            let period = i128::from(period);
             state.remaining = if state.remaining <= -period {
                 period
             } else {
                 state.remaining + period
             };
         }
-        Self::program_chunk(index, &mut state);
+        Self::program_chunk(counter, &mut state);
     }
 
-    fn program_chunk(index: usize, state: &mut SamplingCountState) {
-        let chunk = state.hardware_period();
-        crate::perf::hw_owner::on_counter(index, |pmu, id| pmu.preload(id, u64::from(chunk)));
-        state.previous = 0u32.wrapping_sub(chunk);
+    fn program_chunk(counter: Counter, state: &mut SamplingCountState) {
+        let width = counter.width();
+        let chunk = state.hardware_period(width);
+        counter.preload(chunk);
+        state.previous = 0u64.wrapping_sub(chunk) & counter_mask(width);
     }
 }
 
@@ -292,7 +316,7 @@ pub struct SampleReadValue {
     pub lost: u64,
 }
 
-type SampleReadCallback = unsafe fn(*const (), usize, u64) -> SampleReadValue;
+type SampleReadCallback = unsafe fn(*const (), Counter, u64) -> SampleReadValue;
 
 #[derive(Clone)]
 pub struct SampleReadEntry {
@@ -330,12 +354,12 @@ impl SampleReadEntry {
         }
     }
 
-    fn read(&self, slot: usize, now: u64) -> SampleReadValue {
+    fn read(&self, counter: Counter, now: u64) -> SampleReadValue {
         self.callback
             .map_or_else(SampleReadValue::default, |callback| {
                 // SAFETY: the slot owner retains the callback context until
                 // generation-checked unregister completes.
-                unsafe { callback(self.context, slot, now) }
+                unsafe { callback(self.context, counter, now) }
             })
     }
 }
@@ -380,6 +404,9 @@ impl SampleOutput {
 /// [`SampleOutput`] remain live until generation-checked unregister completes
 /// with local IRQs excluded.
 pub struct SampleSlot {
+    /// Hardware counter backing this generation, including its overflow-mask
+    /// bit and active width.
+    pub counter: Counter,
     pub(crate) count: Arc<SamplingCount>,
     output: SampleOutput,
     /// Sampling period: the counter is re-armed to overflow after this many
@@ -420,6 +447,7 @@ pub struct SampleSlot {
 
 /// Immutable attributes copied into one owner-CPU sampling slot.
 pub struct SampleSlotConfig {
+    pub counter: Counter,
     pub(crate) count: Arc<SamplingCount>,
     pub period: u32,
     pub sample_type: u64,
@@ -443,6 +471,7 @@ impl SampleSlot {
     pub fn new(output: SampleOutput, config: SampleSlotConfig) -> Self {
         let period = config.count.period_or(config.period);
         Self {
+            counter: config.counter,
             count: config.count,
             output,
             period,
@@ -523,15 +552,16 @@ unsafe fn with_counting_registry_mut<R>(
     .unwrap_or_else(|error| panic!("perf counting CPU-local state is invalid: {error}"))
 }
 
-/// Registers `slot` for programmable counter `n` on the current CPU.
+/// Registers `slot` for its own counter identity on the current CPU.
 ///
 /// Runs on the event's owner CPU. The mutation is performed under
 /// [`PreemptIrqSaveGuard`] so the overflow handler — which reads the same per-CPU
 /// array — can never observe a half-written entry.
-pub fn register(n: usize, slot: SampleSlot) -> Result<SampleRegistration, RegisterError> {
-    if n > MAX_COUNTER {
+pub fn register(counter: Counter, slot: SampleSlot) -> Result<SampleRegistration, RegisterError> {
+    if slot.counter != counter || counter.sample_slot() > MAX_SAMPLE_SLOT {
         return Err(RegisterError::InvalidCounter);
     }
+    let n = counter.sample_slot();
     let owner = PerfCpuId::new(ax_hal::percpu::this_cpu_id());
     let generation = NEXT_REGISTRATION_GENERATION
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
@@ -541,7 +571,7 @@ pub fn register(n: usize, slot: SampleSlot) -> Result<SampleRegistration, Regist
     let _guard = PreemptIrqSaveGuard::new();
     // SAFETY: the guard prevents migration and local IRQ reentry.
     unsafe { with_registry_mut(|registry| registry.register(n, generation, slot)) }?;
-    Ok(SampleRegistration::new(owner, n, generation))
+    Ok(SampleRegistration::new(owner, counter, generation))
 }
 
 /// Registers one counting event's wrap state on the current owner CPU.
@@ -560,7 +590,11 @@ pub(super) fn register_counting(
         .expect("PMU counting registration generation exhausted");
     let _guard = PreemptIrqSaveGuard::new();
     unsafe { with_counting_registry_mut(|registry| registry.register(n, generation, state)) }?;
-    Ok(SampleRegistration::new(owner, n, generation))
+    Ok(SampleRegistration::new(
+        owner,
+        Counter::Programmable(n),
+        generation,
+    ))
 }
 
 /// Clears one exact counting generation on its owner CPU.
@@ -583,7 +617,7 @@ pub(super) fn detach_counting(
         let _guard = PreemptIrqSaveGuard::new();
         unsafe {
             with_counting_registry_mut(|registry| {
-                registry.unregister(registration.counter(), registration.generation())
+                registry.unregister(registration.slot(), registration.generation())
             })
         }
         .map_err(SamplingUnregisterError::Registry)?
@@ -614,7 +648,7 @@ pub fn unregister(registration: SampleRegistration) -> Result<(), SamplingUnregi
         unsafe {
             with_registry_mut(|registry| {
                 let removed =
-                    registry.unregister(registration.counter(), registration.generation())?;
+                    registry.unregister(registration.slot(), registration.generation())?;
                 // Every unregister caller has stopped this generation's
                 // hardware. Preserve the final partial period before release.
                 removed.count.update(registration.counter());
@@ -645,9 +679,10 @@ pub fn replace_output(
         unsafe {
             with_registry_mut(|registry| {
                 let slot = registry
-                    .get_mut(registration.counter())
+                    .get_mut(registration.slot())
                     .ok_or(UnregisterError::Stale)?;
                 let config = SampleSlotConfig {
+                    counter: slot.counter,
                     count: Arc::clone(&slot.count),
                     period: slot.period,
                     sample_type: slot.sample_type,
@@ -665,7 +700,7 @@ pub fn replace_output(
                     last_time: slot.last_time,
                 };
                 registry.replace(
-                    registration.counter(),
+                    registration.slot(),
                     registration.generation(),
                     SampleSlot::new(output, config),
                 )
@@ -721,7 +756,7 @@ fn service_overflowed_slots(
     // sets a fresh status bit that remains pending after this IRQ returns.
     let mut handled = 0;
 
-    for n in 0..=MAX_COUNTER {
+    for n in 0..=MAX_SAMPLE_SLOT {
         if overflow & (1 << n) == 0 {
             continue;
         }
@@ -730,19 +765,20 @@ fn service_overflowed_slots(
         let Some(slot) = registry.get_mut(n) else {
             continue;
         };
+        let counter = slot.counter;
         let sample_type = slot.sample_type;
         let id = slot.id;
         let cur_period = slot.period;
 
         // Freeze before accounting, then reload only after every reader has
         // observed the terminal raw value. This includes IRQ delivery latency.
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable(id));
-        slot.count.update(n);
+        counter.disable();
+        slot.count.update(counter);
         if !slot.count.period_complete() {
             // This IRQ completed only a hardware chunk of the logical period.
             // Do not emit a premature sample or update frequency timestamps.
-            slot.count.rearm(n, cur_period);
-            crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable(id));
+            slot.count.rearm(counter, cur_period);
+            counter.enable();
             continue;
         }
 
@@ -752,7 +788,7 @@ fn service_overflowed_slots(
         let mut read_values = [SampleReadValue::default(); MAX_SAMPLE_READ_EVENTS];
         for (entry, value) in slot.read_entries[..read_len].iter().zip(&mut read_values) {
             if sample_type & PERF_SAMPLE_READ != 0 {
-                *value = entry.read(n, time);
+                *value = entry.read(counter, time);
             }
         }
         let (pid, tid) = slot.owner_ids.map_or_else(
@@ -817,8 +853,8 @@ fn service_overflowed_slots(
             cur_period
         };
 
-        slot.count.rearm(n, next_period);
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable(id));
+        slot.count.rearm(counter, next_period);
+        counter.enable();
 
         if let Some(notify) = &slot.output.notify {
             notify.notify_irq();
@@ -831,10 +867,11 @@ fn service_overflowed_slots(
 /// PMU overflow IRQ handler (hard-IRQ context).
 ///
 /// Reads the interrupted PC and EL *first*, then services every overflowed
-/// programmable counter that has a registered sampling slot: builds a
-/// `PERF_RECORD_SAMPLE`, writes it into the event's ring, re-arms the counter,
-/// and wakes the event's deferred worker. Clears only the overflow bits it
-/// actually serviced (write-1-to-clear) at the end.
+/// counter that has a registered sampling slot — programmable slots and the
+/// native cycle counter at bit 31 — building a `PERF_RECORD_SAMPLE`, writing it
+/// into the event's ring, re-arming the counter, and waking the event's
+/// deferred worker. Clears only the overflow bits it actually serviced
+/// (write-1-to-clear) at the end.
 ///
 /// Returns [`IrqReturn::Handled`] if any counter overflowed (whether or not a
 /// slot was registered for it), else [`IrqReturn::Unhandled`].
@@ -1234,55 +1271,135 @@ mod tests {
         let _guard = crate::sync::PreemptIrqSaveGuard::new();
         super::super::percpu::ensure_current_cpu_initialized().unwrap();
         let slot = super::super::percpu::alloc_current_programmable().unwrap();
-        crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.disable(id));
-        count.preload(slot, u32::MAX);
-        let raw = crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.read(id)) as u32;
+        let counter = super::Counter::Programmable(slot);
+        counter.disable();
+        count.preload(counter, u32::MAX);
+        let raw = counter.read() as u32;
         crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.write(id, 10));
-        count.update(slot);
+        count.update(counter);
         assert!(
             !count.period_complete(),
             "first hardware chunk is not a full logical sample"
         );
-        count.rearm(slot, u32::MAX);
+        count.rearm(counter, u32::MAX);
         crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.write(id, 9));
-        count.update(slot);
+        count.update(counter);
         assert!(count.period_complete());
         assert_eq!(
             count.value(),
             u64::from(u32::MAX) + 9,
             "IRQ latency must survive the logical period boundary"
         );
-        count.rearm(slot, u32::MAX);
+        count.rearm(counter, u32::MAX);
         assert!(!count.period_complete());
-        super::super::percpu::free_current_programmable(slot);
         assert_eq!(
             raw,
             0u32.wrapping_sub(u32::MAX >> 1),
             "hardware chunk must leave overflow latency headroom"
         );
+
+        // Rearm policy on a small logical period: a partial overshoot continues
+        // the unfinished part, while overshoot reaching a whole period restarts
+        // from the complete period. Each preload is read back from the counter.
+        let restart = super::SamplingCount::new();
+        restart.preload(counter, 100);
+        assert_eq!(counter.read(), u64::from(0u32.wrapping_sub(100)));
+        crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.write(id, 50));
+        restart.update(counter);
+        assert_eq!(restart.value(), 150);
+        assert!(restart.period_complete());
+        restart.rearm(counter, 100);
+        assert!(
+            !restart.period_complete(),
+            "a partial overshoot must continue the remaining period"
+        );
+        assert_eq!(
+            counter.read(),
+            u64::from(0u32.wrapping_sub(50)),
+            "continuation must preload only the unfinished part"
+        );
+        crate::perf::hw_owner::on_counter(slot, |pmu, id| pmu.write(id, 150));
+        restart.update(counter);
+        assert!(restart.period_complete());
+        restart.rearm(counter, 100);
+        assert!(
+            !restart.period_complete(),
+            "a complete-period overshoot must restart the full period"
+        );
+        assert_eq!(
+            counter.read(),
+            u64::from(0u32.wrapping_sub(100)),
+            "restart must preload one complete logical period"
+        );
+        super::super::percpu::free_current_programmable(slot);
     }
 
     #[axtest::axtest]
     fn sampling_delta_counts_partial_wrap_and_reload() {
         let mut state = super::SamplingCountState {
-            previous: 0u32.wrapping_sub(100),
+            previous: 0u32.wrapping_sub(100).into(),
             total: 0,
             remaining: 100,
             period: 100,
         };
-        assert_eq!(state.update(0u32.wrapping_sub(60)), 40);
-        assert_eq!(state.update(7), 107);
-        assert_eq!(state.update(7), 107);
+        assert_eq!(state.update(0u32.wrapping_sub(60).into(), 32), 40);
+        assert_eq!(state.update(7, 32), 107);
+        assert_eq!(state.update(7, 32), 107);
         // Reloading changes the baseline, never the already-accounted count.
-        state.previous = 0u32.wrapping_sub(200);
-        assert_eq!(state.update(0u32.wrapping_sub(170)), 137);
+        state.previous = 0u32.wrapping_sub(200).into();
+        assert_eq!(state.update(0u32.wrapping_sub(170).into(), 32), 137);
+    }
+
+    /// The logical period arithmetic keeps a complete 64-bit delta exact.
+    #[axtest::axtest]
+    fn sampling_delta_keeps_full_width_overshoot() {
+        let mut state = super::SamplingCountState {
+            previous: u64::MAX - 99,
+            total: 0,
+            remaining: 100,
+            period: 100,
+        };
+        // A 64-bit cycle counter crossing its wrap contributes 100 events.
+        assert_eq!(state.update(0, 64), 100);
+        assert_eq!(state.remaining, 0);
+        assert!(state.remaining <= 0);
+
+        // One 64-bit delta larger than `i64::MAX` must stay a full positive u64
+        // count with an exactly negative remainder: truncating it to `i64`
+        // would turn the overshoot positive, and saturating it at zero would
+        // lose the overrun.
+        let raw = u64::MAX;
+        let mut state = super::SamplingCountState {
+            previous: 0,
+            total: 0,
+            remaining: 1000,
+            period: 1000,
+        };
+        assert_eq!(state.update(raw, 64), raw);
+        assert_eq!(state.remaining, i128::from(1000u32) - i128::from(raw));
+        assert!(state.remaining < 0);
+        assert!(state.remaining <= 0);
+
+        // Continuing past the period keeps the exact partial overshoot.
+        let mut state = super::SamplingCountState {
+            previous: 0,
+            total: 0,
+            remaining: 10,
+            period: 10,
+        };
+        assert_eq!(state.update(12, 64), 12);
+        assert_eq!(state.remaining, -2);
     }
 
     #[axtest::axtest]
     fn read_snapshot_retains_callback_until_registry_removal() {
         use super::*;
 
-        unsafe fn read_value(context: *const (), _slot: usize, _now: u64) -> SampleReadValue {
+        unsafe fn read_value(
+            context: *const (),
+            _counter: super::Counter,
+            _now: u64,
+        ) -> SampleReadValue {
             // SAFETY: the entry owns the AtomicU64 used as callback context.
             let value = unsafe { &*context.cast::<AtomicU64>() }.load(Ordering::Acquire);
             SampleReadValue {
@@ -1301,7 +1418,14 @@ mod tests {
             weak.upgrade().is_some(),
             "closing the fd must retain IRQ callback state"
         );
-        assert_eq!(registry.get_mut(0).unwrap().read(0, 0).value, 17);
+        assert_eq!(
+            registry
+                .get_mut(0)
+                .unwrap()
+                .read(super::Counter::Programmable(0), 0)
+                .value,
+            17
+        );
         drop(registry.unregister(0, 1).unwrap());
         assert!(
             weak.upgrade().is_none(),

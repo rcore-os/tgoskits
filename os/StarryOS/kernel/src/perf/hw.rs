@@ -17,11 +17,12 @@ use super::{
 /// Counter resource selected by side-effect-free hardware validation.
 #[cfg(target_arch = "aarch64")]
 pub(super) enum ValidatedHwCounter {
-    /// System-wide cycle event that prefers the dedicated counter.
+    /// System-wide `CPU_CYCLES` event that prefers the dedicated counter;
+    /// sampling falls back to a real programmable slot when it is occupied.
     SystemPreferredCycle(u16),
     /// System-wide programmable counter with its ARM event number.
     SystemProgrammable(u16),
-    /// Task-bound cycle event that prefers the dedicated counter.
+    /// Task-bound `CPU_CYCLES` event that prefers the dedicated counter.
     TaskPreferredCycle(u16),
     /// Task-bound programmable counter with its ARM event number.
     TaskProgrammable(u16),

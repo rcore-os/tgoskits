@@ -2,24 +2,51 @@
 
 use super::cpu_id::PerfCpuId;
 
+/// Architectural index of the 64-bit cycle counter in the PMU overflow mask.
+///
+/// The sampling registry and `PMOVSCLR_EL0` share this identity, so a native
+/// cycle sampling generation is tracked exactly like a programmable slot.
+pub(super) const CYCLE_COUNTER_SLOT: usize = 31;
+
 /// Hardware counter selected for one PMU event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Counter {
+pub enum Counter {
     Cycle,
     Programmable(usize),
+}
+
+impl Counter {
+    /// Returns this counter's registry index, also its overflow-mask bit.
+    pub(super) const fn sample_slot(self) -> usize {
+        match self {
+            Self::Cycle => CYCLE_COUNTER_SLOT,
+            Self::Programmable(slot) => slot,
+        }
+    }
+
+    /// Returns the active overflow width of the backing counter.
+    ///
+    /// Per-CPU initialization selects 32-bit programmable counters; the
+    /// architectural cycle counter is always 64-bit.
+    pub(super) const fn width(self) -> u8 {
+        match self {
+            Self::Cycle => 64,
+            Self::Programmable(_) => 32,
+        }
+    }
 }
 
 /// Identity returned by the per-CPU sampling registry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SampleRegistration {
     owner: PerfCpuId,
-    counter: usize,
+    counter: Counter,
     generation: u64,
 }
 
 impl SampleRegistration {
     /// Creates a registry identity after one slot has been published.
-    pub(crate) const fn new(owner: PerfCpuId, counter: usize, generation: u64) -> Self {
+    pub(crate) const fn new(owner: PerfCpuId, counter: Counter, generation: u64) -> Self {
         Self {
             owner,
             counter,
@@ -32,9 +59,14 @@ impl SampleRegistration {
         self.owner
     }
 
-    /// Returns the programmable PMU counter index.
-    pub(crate) const fn counter(self) -> usize {
+    /// Returns the hardware counter identity owning this generation.
+    pub(crate) const fn counter(self) -> Counter {
         self.counter
+    }
+
+    /// Returns the registry index of that counter.
+    pub(crate) const fn slot(self) -> usize {
+        self.counter.sample_slot()
     }
 
     /// Returns the globally unique slot generation.

@@ -177,7 +177,7 @@ impl SystemFlexCounter {
             active.counter.disable();
             active.counter.reset();
             crate::perf::hw_owner::on_pmu(|pmu| {
-                pmu.clear_overflow(1u64 << active.registration.counter())
+                pmu.clear_overflow(1u64 << active.registration.slot())
             });
         }
         self.accumulated.store(0, Ordering::Release);

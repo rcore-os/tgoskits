@@ -90,13 +90,15 @@ pub(super) fn validate_perf_event_open_hw(
     if !super::percpu::event_supported_for_target(target_cpu, required_cluster, event) {
         return Err(crate::StarryError::NotFound);
     }
-    let prefer_cycle = !is_sampling
-        && (is_generic_hw || is_named_pmu)
-        && super::percpu::generic_event_for_target(
-            target_cpu,
-            required_cluster,
-            perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32,
-        ) == Some(event);
+    // ARM PMUv3 counter selection follows the normalized event encoding, as in
+    // Linux `armv8pmu_can_use_pmccntr()`/`armv8pmu_get_event_idx()`: RAW,
+    // generic, named and sampling spellings of CPU_CYCLES all prefer the
+    // architectural cycle counter.
+    let prefer_cycle = super::percpu::generic_event_for_target(
+        target_cpu,
+        required_cluster,
+        perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32,
+    ) == Some(event);
     let counter = match (target_kind, prefer_cycle) {
         (PerfTargetKind::Cpu, true) => ValidatedHwCounter::SystemPreferredCycle(event),
         (PerfTargetKind::Cpu, false) => ValidatedHwCounter::SystemProgrammable(event),
@@ -119,8 +121,8 @@ pub(super) fn validate_perf_event_open_hw(
 ///
 /// Supports `PERF_TYPE_HARDWARE` (cycles via the dedicated counter, every
 /// other mapped `perf_hw_id` via a programmable counter) and `PERF_TYPE_RAW`
-/// (the low 16 bits of `config` as the raw ARM event number on a programmable
-/// counter).
+/// (the low 16 bits of `config` as the raw ARM event number, preferring the
+/// dedicated counter for `CPU_CYCLES`).
 pub(super) fn perf_event_open_hw(
     attr: &perf_event_attr,
     target: AuthorizedPerfTarget,
@@ -136,7 +138,22 @@ pub(super) fn perf_event_open_hw(
     let exclude_kernel = attr.exclude_kernel() != 0;
 
     let (counter, event) = match validated.counter {
-        ValidatedHwCounter::SystemPreferredCycle(event) => (alloc_system_cycle(owner_cpu), event),
+        ValidatedHwCounter::SystemPreferredCycle(event) => match alloc_system_cycle(owner_cpu) {
+            Some(counter) => (Some(counter), event),
+            // A sampling event needs a real ordinary slot: the flexible
+            // alternative only accumulates during multiplexed slices and can
+            // never deliver an overflow.
+            None if validated.is_sampling => (
+                Some(alloc_system(
+                    owner_cpu,
+                    event,
+                    false,
+                    validated.num_counters,
+                )?),
+                event,
+            ),
+            None => (None, event),
+        },
         ValidatedHwCounter::SystemProgrammable(event) if !validated.is_sampling => (None, event),
         ValidatedHwCounter::SystemProgrammable(event) => (
             Some(alloc_system(
@@ -151,10 +168,12 @@ pub(super) fn perf_event_open_hw(
             return Err(crate::StarryError::BadState);
         }
     };
-    // All programmable counting events are logical, including cycle fallbacks.
-    // Check before constructing a worker; only a native 64-bit counter can run
-    // without overflow delivery. Sampling's fixed reservation rolls back here.
-    if counter.is_none_or(|counter| counter.programmable_index().is_some())
+    // Every sampling event needs overflow delivery; a counting event needs it
+    // only when it owns a programmable slot, including the flexible fallback.
+    // Check before constructing a worker. A refused open rolls its fixed
+    // reservation back, so native sampling cannot bypass IRQ admission.
+    if (validated.is_sampling
+        || counter.is_none_or(|counter| counter.programmable_index().is_some()))
         && sampling::ensure_pmu_irq_registered().is_err()
     {
         if let Some(counter) = counter {
@@ -259,9 +278,10 @@ fn perf_event_open_hw_per_task(
     };
 
     // Logical flexible events own no slot yet. Inherited copies are flexible
-    // even when the root owns the native cycle counter; release that fixed
-    // reservation if inheritance requires an unavailable overflow IRQ.
-    if (counter.programmable_index().is_some() || attr.inherit() != 0)
+    // even when the root owns the native cycle counter, and a sampling event
+    // always needs overflow delivery; release that fixed reservation if the
+    // overflow IRQ is unavailable.
+    if (validated.is_sampling || counter.programmable_index().is_some() || attr.inherit() != 0)
         && sampling::ensure_pmu_irq_registered().is_err()
     {
         if !flexible {

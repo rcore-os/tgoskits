@@ -35,8 +35,7 @@ pub(crate) fn read_task_on_owner(ptc: &PerTaskCounter) -> crate::StarryResult<(u
         // local owner-CPU snapshot; remote reads are routed through the CPU
         // worker in the complete PMU ownership path.
         let live = if ptc.is_sampling {
-            ptc.sampling_count
-                .update(lease.counter().programmable_index().expect("sampling slot"))
+            ptc.sampling_count.update(lease.counter())
         } else {
             ptc.read_counting_slice(lease.counter())
         };

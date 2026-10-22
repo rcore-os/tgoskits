@@ -43,24 +43,54 @@ impl Counter {
         }
     }
 
+    /// Runs one bounded register operation on this reservation's identity.
+    ///
+    /// This is the single place that translates a `Counter` reservation into
+    /// the architectural `CounterId`, including the 64-bit cycle counter that
+    /// `Pmu::counter(index)` cannot name.
+    fn with_id<R>(
+        self,
+        operation: impl FnOnce(
+            &mut ax_cpu::pmu::Pmu,
+            ax_cpu::pmu::CounterId,
+        ) -> Result<R, ax_cpu::pmu::PmuError>,
+    ) -> R {
+        on_pmu(|pmu| {
+            let id = self.id(pmu).expect("owner reserved a valid PMU counter");
+            operation(pmu, id).expect("operation on reserved PMU counter")
+        })
+    }
+
     pub(super) fn enable(self) {
-        on_pmu(|pmu| pmu.enable(self.id(pmu).expect("reserved counter")))
-            .expect("enable reserved PMU counter");
+        self.with_id(|pmu, id| pmu.enable(id));
     }
 
     pub(super) fn disable(self) {
-        on_pmu(|pmu| pmu.disable(self.id(pmu).expect("reserved counter")))
-            .expect("disable reserved PMU counter");
+        self.with_id(|pmu, id| pmu.disable(id));
     }
 
     pub(super) fn reset(self) {
-        on_pmu(|pmu| pmu.write(self.id(pmu).expect("reserved counter"), 0))
-            .expect("reset reserved PMU counter");
+        self.with_id(|pmu, id| pmu.write(id, 0));
     }
 
     pub(super) fn read(self) -> u64 {
-        on_pmu(|pmu| pmu.read(self.id(pmu).expect("reserved counter")))
-            .expect("read reserved PMU counter")
+        self.with_id(|pmu, id| pmu.read(id))
+    }
+
+    /// Preloads one sampling chunk with this counter's own overflow width.
+    ///
+    /// `Pmu::preload` encodes the negative preload in the counter's active
+    /// width, so a 32-bit slot and the 64-bit cycle counter cannot be confused.
+    pub(super) fn preload(self, period: u64) {
+        self.with_id(|pmu, id| pmu.preload(id, period));
+    }
+
+    pub(super) fn enable_overflow_irq(self) {
+        self.with_id(|pmu, id| pmu.enable_overflow_irq(id));
+    }
+
+    pub(super) fn disable_overflow_irq(self) {
+        self.with_id(|pmu, id| pmu.disable_overflow_irq(id));
     }
 
     pub(super) const fn programmable_index(self) -> Option<usize> {
@@ -74,8 +104,8 @@ impl Counter {
         match self {
             // Linux publishes `event->hw.idx + 1`; the architectural cycle
             // counter is index 31.
-            Self::Cycle => (32, 64),
-            Self::Programmable(n) => (n as u32 + 1, 32),
+            Self::Cycle => (32, self.width() as u16),
+            Self::Programmable(n) => (n as u32 + 1, self.width() as u16),
         }
     }
 }
@@ -148,15 +178,13 @@ pub(super) fn enable_system_on_owner(
     request: SystemPmuEnable,
 ) -> crate::StarryResult<SystemPmuEnableResult> {
     let registration = if let Some((period, slot)) = request.sampling {
-        let Counter::Programmable(n) = request.counter else {
-            return Err(crate::StarryError::BadState);
-        };
+        let counter = request.counter;
         sampling::enable_local_pmu_irq().map_err(|_| crate::StarryError::NoSuchDevice)?;
-        slot.count.preload(n, period);
+        slot.count.preload(counter, period);
         let registration =
-            sampling::register(n, slot).map_err(|_| crate::StarryError::ResourceBusy)?;
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable_overflow_irq(id));
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.enable(id));
+            sampling::register(counter, slot).map_err(|_| crate::StarryError::ResourceBusy)?;
+        counter.enable_overflow_irq();
+        counter.enable();
         Some(registration)
     } else {
         request.counter.enable();
@@ -173,15 +201,13 @@ pub(super) fn disable_system_on_owner(
     request: SystemPmuDisable,
 ) -> crate::StarryResult<SystemPmuDisableResult> {
     if let Some(registration) = request.registration {
-        let Counter::Programmable(n) = request.counter else {
-            return Err(crate::StarryError::BadState);
-        };
-        if registration.counter() != n {
+        let counter = request.counter;
+        if registration.counter() != counter {
             return Err(crate::StarryError::BadState);
         }
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable_overflow_irq(id));
-        crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.disable(id));
-        crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << n));
+        counter.disable_overflow_irq();
+        counter.disable();
+        crate::perf::hw_owner::on_pmu(|pmu| pmu.clear_overflow(1u64 << counter.sample_slot()));
         sampling::unregister(registration).map_err(|_| crate::StarryError::BadState)?;
     } else {
         request.counter.disable();
@@ -198,12 +224,7 @@ pub(super) fn read_system_on_owner(
 ) -> crate::StarryResult<SystemPmuReadResult> {
     Ok(SystemPmuReadResult {
         value: if let Some(sampling) = request.sampling {
-            sampling.update(
-                request
-                    .counter
-                    .programmable_index()
-                    .ok_or(crate::StarryError::BadState)?,
-            )
+            sampling.update(request.counter)
         } else {
             request.counter.read()
         },
@@ -214,11 +235,10 @@ pub(super) fn read_system_on_owner(
 /// Resets one system-wide event on the current owner CPU.
 pub(super) fn reset_system_on_owner(request: SystemPmuReset) -> crate::StarryResult<()> {
     match (request.counter, request.sampling_period) {
-        (Counter::Programmable(n), Some(period)) => {
-            crate::perf::hw_owner::on_counter(n, |pmu, id| pmu.preload(id, u64::from(period)));
-        }
+        // A sampling event restarts its logical period through disable/enable;
+        // reloading here keeps the counter's own overflow width.
+        (counter, Some(period)) => counter.preload(u64::from(period)),
         (counter, None) => counter.reset(),
-        (Counter::Cycle, Some(_)) => return Err(crate::StarryError::BadState),
     }
     Ok(())
 }
@@ -253,6 +273,10 @@ pub(in crate::perf) fn on_pmu<R>(operation: impl FnOnce(&mut ax_cpu::pmu::Pmu) -
         .expect("reserved PMU must remain available on its owner CPU")
 }
 
+/// Runs one bounded operation on an already-reserved programmable slot.
+///
+/// Callers holding a `Counter` identity use its own methods instead, so the
+/// native cycle counter never has to be expressed as a numeric index here.
 pub(in crate::perf) fn on_counter<R>(
     index: usize,
     operation: impl FnOnce(
@@ -260,12 +284,7 @@ pub(in crate::perf) fn on_counter<R>(
         ax_cpu::pmu::CounterId,
     ) -> Result<R, ax_cpu::pmu::PmuError>,
 ) -> R {
-    on_pmu(|pmu| {
-        let counter = pmu
-            .counter(index)
-            .expect("owner reserved a valid PMU counter");
-        operation(pmu, counter).expect("operation on reserved PMU counter")
-    })
+    Counter::Programmable(index).with_id(operation)
 }
 
 /// A whole-domain snapshot whose callbacks use separate bounded PMU sessions.
