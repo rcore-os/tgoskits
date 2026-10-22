@@ -5,7 +5,9 @@ use super::cpu_id::PerfCpuId;
 /// Architectural index of the 64-bit cycle counter in the PMU overflow mask.
 ///
 /// The sampling registry and `PMOVSCLR_EL0` share this identity, so a native
-/// cycle sampling generation is tracked exactly like a programmable slot.
+/// cycle sampling generation is tracked exactly like a programmable slot. Only
+/// the AArch64 PMU backend maps counters to that hardware identity.
+#[cfg(target_arch = "aarch64")]
 pub(super) const CYCLE_COUNTER_SLOT: usize = 31;
 
 /// Hardware counter selected for one PMU event.
@@ -15,6 +17,8 @@ pub enum Counter {
     Programmable(usize),
 }
 
+/// Hardware identity of a reservation; the AArch64 PMU backend owns it.
+#[cfg(target_arch = "aarch64")]
 impl Counter {
     /// Returns this counter's registry index, also its overflow-mask bit.
     pub(super) const fn sample_slot(self) -> usize {
@@ -65,6 +69,7 @@ impl SampleRegistration {
     }
 
     /// Returns the registry index of that counter.
+    #[cfg(target_arch = "aarch64")]
     pub(crate) const fn slot(self) -> usize {
         self.counter.sample_slot()
     }
