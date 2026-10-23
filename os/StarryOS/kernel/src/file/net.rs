@@ -8,7 +8,7 @@ use core::{
     ffi::c_int,
     mem::offset_of,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicI32, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
 };
 
 use ax_io::{Cursor, IoBuf, IoBufMut, Read, Write};
@@ -78,15 +78,26 @@ pub struct Socket {
     ip_domain: u32,
     async_mode: AtomicBool,
     owner: AtomicI32,
+    /// Socket inode metadata (`Socket::stat`), updated by `fchmod`/`fchown`
+    /// like Linux's `sockfs` inode.
+    inode_mode: AtomicU32,
+    inode_uid: AtomicU32,
+    inode_gid: AtomicU32,
 }
 
 impl Socket {
-    pub fn new(inner: SocketInner, ip_domain: u32) -> Self {
+    /// Creates a socket file-like. `uid`/`gid` are the creating task's
+    /// fsuid/fsgid, mirroring how Linux `sock_alloc` initializes the sockfs
+    /// inode owner.
+    pub fn new(inner: SocketInner, ip_domain: u32, uid: u32, gid: u32) -> Self {
         Self {
             inner,
             ip_domain,
             async_mode: AtomicBool::new(false),
             owner: AtomicI32::new(0),
+            inode_mode: AtomicU32::new(S_IFSOCK | 0o777),
+            inode_uid: AtomicU32::new(uid),
+            inode_gid: AtomicU32::new(gid),
         }
     }
 
@@ -272,7 +283,12 @@ fn allocate_socket_staging(len: usize) -> StarryResult<Vec<u8>> {
 pub(super) fn in_root_net_ns() -> bool {
     let current = current_user_task();
     let namespace = current.as_thread().proc_data.namespace_snapshot();
-    namespace.net_ns.lock_irqsave().ns_id == 0
+    // Identity by Arc pointer, mirroring Linux net_eq(): lock-free, and
+    // immune to the numeric ns id assignment order (this kernel starts ns
+    // ids at 1 so NsFd st_ino identities stay nonzero). A stale literal here
+    // would make every AF_PACKET socket creation fail with EACCES for
+    // processes in the root namespace.
+    Arc::ptr_eq(&namespace.net_ns, &*crate::namespace::ROOT_NET_NS)
 }
 
 pub(super) fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
@@ -819,10 +835,54 @@ impl FileLike for Socket {
 
     fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat {
-            mode: S_IFSOCK | 0o777u32,
+            mode: self.inode_mode.load(Ordering::Acquire),
+            uid: self.inode_uid.load(Ordering::Acquire),
+            gid: self.inode_gid.load(Ordering::Acquire),
             blksize: 4096,
             ..Default::default()
         })
+    }
+
+    fn set_inode_metadata(
+        &self,
+        mode: Option<u32>,
+        owner: Option<(Option<u32>, Option<u32>)>,
+    ) -> StarryResult<()> {
+        if let Some(mode) = mode {
+            self.inode_mode
+                .store(S_IFSOCK | (mode & 0o7777), Ordering::Release);
+        }
+        // `chown_common()` clears SUID unconditionally and SGID when the
+        // group-execute bit is set — even for `fchown(-1, -1)`, which names
+        // no owner field. Only `fchmod` carries a mode here, and chmod sets
+        // its bits absolutely instead of clearing privileged ones. Apply the
+        // clear on the *current* mode with one atomic read-modify-write so a
+        // concurrent `fchmod` is not lost.
+        if mode.is_none() {
+            let _ = self.inode_mode.try_update(
+                Ordering::AcqRel,
+                Ordering::Acquire,
+                |current| {
+                    let mut perm = current & 0o7777;
+                    perm &= !0o4000;
+                    if perm & 0o0010 != 0 {
+                        perm &= !0o2000;
+                    }
+                    Some(S_IFSOCK | perm)
+                },
+            );
+        }
+        if let Some((uid, gid)) = owner {
+            // Commit only the named fields: a partial `fchown` must not
+            // resurrect the other field from a stale snapshot.
+            if let Some(uid) = uid {
+                self.inode_uid.store(uid, Ordering::Release);
+            }
+            if let Some(gid) = gid {
+                self.inode_gid.store(gid, Ordering::Release);
+            }
+        }
+        Ok(())
     }
 
     fn nonblocking(&self) -> bool {

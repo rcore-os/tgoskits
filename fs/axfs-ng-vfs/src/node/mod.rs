@@ -59,6 +59,16 @@ bitflags! {
         /// The direct backend then calls the node once per request instead
         /// of filling or draining the caller's buffer across records.
         const PACKET = 0x0010;
+
+        /// Indicates that this symlink is a procfs-style magic link.
+        ///
+        /// A magic link's target is a kernel object handle displayed as a path
+        /// (for example `/proc/<pid>/exe` or `/proc/<pid>/fd/<n>`), so it
+        /// jumps directly to its backing object instead of naming a real
+        /// pathname. Path-walk constraints such as openat2's
+        /// `RESOLVE_NO_MAGICLINKS` use this distinction to reject magic links
+        /// while still following ordinary symlinks.
+        const MAGIC_LINK = 0x0020;
     }
 }
 
