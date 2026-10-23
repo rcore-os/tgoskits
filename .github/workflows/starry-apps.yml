@@ -34,9 +34,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: dev
+          ref: >-
+            ${{ github.event_name == 'schedule' && 'dev' || github.ref }}
 
-      - name: Pin dev revision
+      - name: Pin tested revision
         id: revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -74,7 +75,7 @@ jobs:
         with:
           title: Starry Apps Nightly
           revision: ${{ needs.plan.outputs.revision }}
-          revision-label: dev revision
+          revision-label: tested revision
           stages: |
             Plan=${{ needs.plan.result }}
             Apps=${{ needs.checks.result }}

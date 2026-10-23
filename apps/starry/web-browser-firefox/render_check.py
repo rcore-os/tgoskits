@@ -4,11 +4,19 @@
 The guest asks the host's QEMU VNC server - reachable as 10.0.2.2 through
 SLIRP - for a raw framebuffer and counts distinct colours on a 4-pixel grid.
 On StarryOS and Linux alike the bare Weston desktop shows about 33 colours and
-Firefox's window before the page paints 63 to 93, while a painted 4399 page
-shows thousands. Navigation and cache entries only show the document was
-fetched; this shows it was drawn.
+Firefox's window before the page paints 63 to 93. A remote page's count is
+whatever its current markup rasterizes to - one real 4399 load painted 711 -
+so the count alone is only a diagnostic for pages this repository does not
+ship. Navigation and cache entries only show the document was fetched; a probe
+colour drawn by a bundled page shows it was drawn.
 
-Usage: render-check.py HOST PORT [MIN_COLOURS]
+Usage: render-check.py HOST PORT [MIN_COLOURS [PROBE_RGB [MIN_PROBE_PIXELS]]]
+
+PROBE_RGB is a literal `R,G,B` triple. When it is given, the probe pixels
+within a small tolerance of that colour are counted as well, and both gates
+must pass. A page-specific colour is the stable half of the check: the colour
+count of a remote page depends on what that site currently serves, while the
+probe pixel count only depends on a page this repository ships.
 """
 
 import socket
@@ -80,15 +88,54 @@ def raw_frame(sock, width, height):
             raise ValueError(f"unexpected server message type {kind}")
 
 
+def parse_probe(text):
+    parts = [int(part) for part in text.split(",")]
+    if len(parts) != 3 or any(part < 0 or part > 255 for part in parts):
+        raise ValueError(f"probe colour must be R,G,B in 0..255, not {text!r}")
+    return tuple(parts)
+
+
+def count_probe_pixels(frame, probe, tolerance=4):
+    """Counts pixels within `tolerance` of the probe colour.
+
+    The frame is 32bpp little-endian true colour, so every pixel is stored as
+    B, G, R, padding. The tolerance absorbs a round trip through the VNC server
+    without letting an unrelated window colour be mistaken for the probe.
+    """
+    red, green, blue = probe
+    count = 0
+    for offset in range(0, len(frame), 4):
+        if (
+            abs(frame[offset + 2] - red) <= tolerance
+            and abs(frame[offset + 1] - green) <= tolerance
+            and abs(frame[offset] - blue) <= tolerance
+        ):
+            count += 1
+    return count
+
+
 def main():
     host, port = sys.argv[1], int(sys.argv[2])
     minimum = int(sys.argv[3]) if len(sys.argv) > 3 else 1000
+    probe = parse_probe(sys.argv[4]) if len(sys.argv) > 4 else None
+    minimum_probe = int(sys.argv[5]) if len(sys.argv) > 5 else 0
     with socket.create_connection((host, port), timeout=60) as sock:
         width, height = handshake(sock)
         frame = raw_frame(sock, width, height)
     colours = {bytes(frame[i:i + 3]) for i in range(0, len(frame), 16)}
-    print(f"WEB_BROWSER_RENDER scanout={width}x{height} colours={len(colours)} minimum={minimum}", flush=True)
-    return 0 if len(colours) >= minimum else 1
+    verdict = (
+        f"WEB_BROWSER_RENDER scanout={width}x{height} colours={len(colours)} minimum={minimum}"
+    )
+    passed = len(colours) >= minimum
+    if probe is not None:
+        pixels = count_probe_pixels(frame, probe)
+        verdict += (
+            f" probe={probe[0]},{probe[1]},{probe[2]} probe_pixels={pixels}"
+            f" minimum_probe={minimum_probe}"
+        )
+        passed = passed and pixels >= minimum_probe
+    print(verdict, flush=True)
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

@@ -347,7 +347,7 @@ axbuild 在运行前用 clang/lld 编译 `/init`、构建 `newc` 归档，再交
 | `plain` | 无 `test_commands`，且无 `c/`、`sh/`、`python/` | 直接启动共享 rootfs，由 rootfs patcher 仅对主 rootfs drive 设置 `snapshot=on` |
 | `c` | case 目录下存在 `c/` | 使用 CMake 交叉编译，安装产物到 rootfs overlay |
 | `sh` | case 目录下存在 `sh/` | 将 shell 脚本注入 `/usr/bin/` |
-| `python` | case 目录下存在 `python/` | 在 staging rootfs 中安装 `python3`，并注入 `.py` 文件 |
+| `python` | case 目录下存在 `python/` | 在 staging rootfs 中安装 `python3`，执行可选的 `python/prebuild.sh`，再注入 `.py` 文件 |
 | `grouped` | `qemu-<arch>.toml` 中存在 `test_commands` | 构建子目录资产，注入 grouped runner 需要的 guest 程序 |
 
 Pipeline case 会创建每个 case 独立的 rootfs 副本，并把注入后的 rootfs 缓存在：
@@ -370,8 +370,10 @@ Pipeline 创建的副本只负责资产注入，不承担 QEMU 运行期写隔�
 C、分组 C 和 Rust 资产通过 `write_cross_bin_wrappers()` 统一选择 binutils：优先使用
 qemu-user 执行 staging root 内的工具，否则使用宿主原生 `<gnu_tool_prefix>-<tool>`
 交叉工具。原生模式仍需要目标 sysroot；缺少任一所需工具会在构建前失败。
-`prebuild.sh` 始终在目标 Alpine 环境执行：优先使用 qemu-user，缺少时使用目标
-`qemu-system-*` 和 9P 挂载执行同一脚本；失败必须传播，不得跳过脚本或测试。
+C case 的 `c/prebuild.sh` 始终在目标 Alpine 环境执行：优先使用 qemu-user，
+缺少时使用目标 `qemu-system-*` 和 9P 挂载执行同一脚本；失败必须传播，不得跳过
+脚本或测试。Python pipeline 在安装 `python3` 前就要求 qemu-user，因此
+`python/prebuild.sh` 当前只在 qemu-user 路径下执行，不提供 qemu-system fallback。
 
 ## QEMU TOML
 
@@ -546,9 +548,13 @@ Python case 使用 `python/`：
   qemu-<arch>.toml
   python/
     test_hello.py
+    prebuild.sh        # 可选
 ```
 
-Python pipeline 会自动在 staging rootfs 中安装 `python3`，再把 `.py` 文件复制到 `/usr/bin/`。
+`prepare_python_case_assets_sync()` 会先在 staging rootfs 中安装 `python3`，再在
+同一 rootfs 内执行可选的 `python/prebuild.sh`，最后生成 overlay 并注入镜像。
+准备脚本可以安装该用例额外需要的 Alpine 包，且不会被复制到客户机；只有
+`python/` 目录顶层的 `.py` 文件会复制到 `/usr/bin/`。
 
 ## Board 用例
 

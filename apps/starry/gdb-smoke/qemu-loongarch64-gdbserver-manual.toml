@@ -8,6 +8,6 @@ args = [
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0,hostfwd=tcp::1234-:1234",
 ]
-uefi = false
+uefi = true
 to_bin = true
 timeout = 0

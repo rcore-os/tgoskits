@@ -16,7 +16,10 @@ args = [
 uefi = false
 to_bin = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 15
+# The riscv64 run prints FINDUTILS TEST PASSED about 16s after boot, so the
+# previous 15s budget ended the run just as the test succeeded. 60s keeps a
+# stable margin without hiding a hang.
+timeout = 60
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"

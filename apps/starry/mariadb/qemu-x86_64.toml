@@ -13,8 +13,8 @@ args = [
     "-append",
     "root=/dev/nvme0n1",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     "(?m)^MARIADB_TEST_FAILED(?:[: ].*)?$",
