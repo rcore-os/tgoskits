@@ -1,0 +1,1 @@
+arceos_build_configs = ["guest-build.toml"]
