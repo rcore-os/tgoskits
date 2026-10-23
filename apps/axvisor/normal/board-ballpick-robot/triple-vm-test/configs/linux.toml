@@ -6,7 +6,7 @@ cpu_num = 1
 phys_cpu_ids = [0x100]
 
 [kernel]
-# Use a virtualized kernel with 16550, VirtIO block/net and ext4 support.
+# Use a virtualized kernel with 16550, VirtIO block and ext4 support.
 entry_point = 0x8020_0000
 kernel_load_addr = 0x8020_0000
 kernel_path = "/guest/linux/orangepi-5-plus"
@@ -29,7 +29,3 @@ model = "virtio-blk"
 path = "/guest/rootfs-aarch64-orangepi-jammy-0.img"
 filesystem = "ext4"
 
-[[devices.virtual]]
-id = "guest-net"
-model = "virtio-net"
-guest_mac = [0x52, 0x54, 0x00, 0x54, 0x01, 0x01]

@@ -5,7 +5,7 @@ features = [
   "ax-driver/rk3588-pcie",
   "ax-driver/realtek-rtl8125",
 ]
-log = "Info"
+log = "Error"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
   "apps/axvisor/normal/board-ballpick-robot/triple-vm-test/configs/linux.toml",

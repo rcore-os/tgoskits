@@ -37,7 +37,7 @@ Zephyr DTB、两份 ext4 根盘，以及根盘内的 cyclictest 和 IOZone，无
 | Linux 根盘 | `/guest/rootfs-aarch64-orangepi-jammy-0.img` |
 | StarryOS 根盘 | `/guest/rootfs-aarch64-orangepi-jammy-1.img` |
 
-两份根盘不能同时被原生 Linux 挂载或其他客户机使用。Linux 使用 VirtIO 块设备、网络和
+两份根盘不能同时被原生 Linux 挂载或其他客户机使用。Linux 使用 VirtIO 块设备和
 8250/16550 控制台。Zephyr 使用 PL011 控制台，提供三个查询命令和 `irq latency`。
 
 ### 2. 客户机资源
@@ -444,5 +444,5 @@ exit
 
 本目录直接验证标准镜像中的客户机；[三客户机 CI 配置](../../../../../test-suit/axvisor/normal/board-orangepi-5-plus/triple-guest-functional/build-aarch64-unknown-none-softfloat.toml)
 验证工作区构建的 StarryOS，并使用独立的 Linux、Zephyr 固件路径，因此保留两套配置。
-修改公共资源时同步核对 VM ID、CPU 绑定、内存范围、两份根盘和网卡 MAC；
+修改公共资源时同步核对 VM ID、CPU 绑定、内存范围、两份根盘；
 Zephyr 的控制台型号、UART6 后端及 BIN/DTB 必须按各自固件匹配，不能直接互换。

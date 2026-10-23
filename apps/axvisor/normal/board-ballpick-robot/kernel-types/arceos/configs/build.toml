@@ -5,6 +5,6 @@ features = [
     "ax-driver/rockchip-sdhci", 
     "fs"
 ]
-log = "Info"
+log = "Error"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = ["apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/configs/arceos.toml"]

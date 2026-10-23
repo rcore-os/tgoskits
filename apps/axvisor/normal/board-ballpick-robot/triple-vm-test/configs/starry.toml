@@ -23,8 +23,3 @@ id = "starry-rootfs"
 model = "virtio-blk"
 path = "/guest/rootfs-aarch64-orangepi-jammy-1.img"
 filesystem = "ext4"
-
-[[devices.virtual]]
-id = "starry-net"
-model = "virtio-net"
-guest_mac = [0x52, 0x54, 0x00, 0x54, 0x01, 0x02]
