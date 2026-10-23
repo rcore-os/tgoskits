@@ -13,7 +13,7 @@ use futures::task::AtomicWaker;
 use mbarrier::mb;
 use usb_if::{
     descriptor::{self, EndpointDescriptor},
-    endpoint::{RequestId, TransferCompletion, TransferRequest},
+    endpoint::{IsoPacketResult, RequestId, TransferCompletion, TransferRequest, TransferStatus},
     err::TransferError,
     transfer::{BmRequestType, Direction},
 };
@@ -316,7 +316,7 @@ impl Endpoint {
                 )));
             }
 
-            let mut actual_lengths = Vec::with_capacity(packets.len());
+            let mut results = Vec::with_capacity(packets.len());
             for (index, packet) in packets.iter().copied().enumerate() {
                 let requested = packet_lengths[index];
                 let actual = match packet.actual {
@@ -324,11 +324,18 @@ impl Endpoint {
                     None if packet.trb == event_trb => iso_packet_actual_length(requested, event)?,
                     None => 0,
                 };
-                actual_lengths.push(actual);
+                results.push(IsoPacketResult {
+                    requested_length: requested,
+                    actual_length: actual,
+                    status: match packet.event {
+                        Some(event) => iso_packet_status(event),
+                        None => TransferStatus::MissedService,
+                    },
+                });
             }
 
-            let transfer_len = actual_lengths.iter().sum();
-            transfer.iso_packet_actual_lengths = actual_lengths;
+            let transfer_len = results.iter().map(|packet| packet.actual_length).sum();
+            transfer.iso_packets = results;
             if transfer_len > 0 && matches!(transfer.direction, Direction::In) {
                 transfer.complete_for_cpu();
             }
@@ -990,13 +997,13 @@ fn iso_packet_actual_length(
             xhci::ring::trb::event::CompletionCode::ShortPacket
             | xhci::ring::trb::event::CompletionCode::BabbleDetectedError
             | xhci::ring::trb::event::CompletionCode::IsochBufferOverrun
-            | xhci::ring::trb::event::CompletionCode::MissedServiceError
             | xhci::ring::trb::event::CompletionCode::UsbTransactionError
             | xhci::ring::trb::event::CompletionCode::Stopped => {
                 Ok(requested.saturating_sub(remaining))
             }
             xhci::ring::trb::event::CompletionCode::StoppedShortPacket => Ok(remaining),
-            xhci::ring::trb::event::CompletionCode::StoppedLengthInvalid => Ok(0),
+            xhci::ring::trb::event::CompletionCode::StoppedLengthInvalid
+            | xhci::ring::trb::event::CompletionCode::MissedServiceError => Ok(0),
             code => {
                 code.to_result()?;
                 Ok(requested.saturating_sub(remaining))
@@ -1005,6 +1012,23 @@ fn iso_packet_actual_length(
         Err(e) => Err(TransferError::Other(anyhow!(
             "unknown XHCI ISO completion code: {e:?}"
         ))),
+    }
+}
+
+fn iso_packet_status(event: TransferEvent) -> TransferStatus {
+    match event.completion_code() {
+        Ok(CompletionCode::Success | CompletionCode::ShortPacket) => TransferStatus::Completed,
+        Ok(CompletionCode::MissedServiceError) => TransferStatus::MissedService,
+        Ok(CompletionCode::BabbleDetectedError | CompletionCode::IsochBufferOverrun) => {
+            TransferStatus::Overflow
+        }
+        Ok(CompletionCode::UsbTransactionError) => TransferStatus::ProtocolError,
+        Ok(
+            CompletionCode::Stopped
+            | CompletionCode::StoppedShortPacket
+            | CompletionCode::StoppedLengthInvalid,
+        ) => TransferStatus::Cancelled,
+        _ => TransferStatus::Error,
     }
 }
 
@@ -1051,6 +1075,7 @@ impl EndpointDescriptorExt for EndpointDescriptor {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use alloc::{
         alloc::{alloc_zeroed, dealloc},
         sync::Arc,
@@ -1075,6 +1100,7 @@ mod tests {
     struct TestKernel;
 
     static TEST_DMA_ADDR: AtomicU64 = AtomicU64::new(0x1000);
+    static TEST_ENDPOINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static ACTIVE_STREAMING_MAPPINGS: AtomicUsize = AtomicUsize::new(0);
 
     impl DmaOp for TestKernel {
@@ -1187,7 +1213,63 @@ mod tests {
     }
 
     #[test]
+    fn iso_completion_preserves_packet_errors_and_short_lengths() {
+        let _guard = TEST_ENDPOINT_LOCK.lock().unwrap();
+        let (_mmio, mut endpoint) = test_endpoint();
+        let payload = [0u8; 384];
+        let id = endpoint
+            .submit_request(TransferRequest::iso_out(&payload, &[64; 6]))
+            .unwrap();
+        let private_id = Endpoint::private_request_id(id);
+        let trbs = match &endpoint.inflight[&private_id].kind {
+            SubmittedTdKind::Iso { packets } => packets.iter().map(|p| p.trb).collect::<Vec<_>>(),
+            _ => panic!("expected ISO TDs"),
+        };
+        // Inject controller completion records, not hardware or IRQ execution.
+        // The first packet has no event: reaching the final TD skips it.
+        for (index, code, remaining) in [
+            (1, CompletionCode::UsbTransactionError, 32),
+            (2, CompletionCode::MissedServiceError, 0),
+            (3, CompletionCode::BabbleDetectedError, 0),
+            (4, CompletionCode::ShortPacket, 16),
+            (5, CompletionCode::Success, 0),
+        ] {
+            let event =
+                TransferEvent::try_from([0, 0, ((code as u32) << 24) | remaining, 32 << 10])
+                    .unwrap();
+            assert!(
+                endpoint
+                    .ring
+                    .finished_handle()
+                    .try_set_finished(trbs[index].0, event)
+            );
+        }
+        let completed = endpoint.reclaim_request(id).unwrap().unwrap();
+        assert_eq!(completed.actual_length, 32 + 64 + 48 + 64);
+        assert_eq!(completed.iso_packets[0].actual_length, 0);
+        assert_ne!(
+            completed.iso_packets[0].status,
+            usb_if::endpoint::TransferStatus::Completed
+        );
+        assert_ne!(
+            completed.iso_packets[1].status,
+            usb_if::endpoint::TransferStatus::Completed
+        );
+        assert_eq!(completed.iso_packets[2].actual_length, 0);
+        assert_eq!(
+            completed.iso_packets[2].status,
+            TransferStatus::MissedService
+        );
+        assert_eq!(completed.iso_packets[3].status, TransferStatus::Overflow);
+        assert_eq!(completed.iso_packets[4].actual_length, 48);
+        assert_eq!(completed.iso_packets[4].status, TransferStatus::Completed);
+        assert_eq!(completed.iso_packets[5].status, TransferStatus::Completed);
+        assert!(endpoint.reclaim_request(id).is_none());
+    }
+
+    #[test]
     fn stopped_iso_request_publishes_cancelled_exactly_once() {
+        let _guard = TEST_ENDPOINT_LOCK.lock().unwrap();
         let (_mmio, mut endpoint) = test_endpoint();
         let payload = [0u8; 128];
         let request_id = endpoint

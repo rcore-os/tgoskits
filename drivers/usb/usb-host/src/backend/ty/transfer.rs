@@ -14,5 +14,5 @@ pub struct Transfer {
     #[cfg(umod)]
     pub buffer: Option<(std::ptr::NonNull<u8>, usize)>,
     pub transfer_len: usize,
-    pub iso_packet_actual_lengths: Vec<usize>,
+    pub iso_packets: Vec<usb_if::endpoint::IsoPacketResult>,
 }

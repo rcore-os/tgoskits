@@ -12,7 +12,7 @@ use libusb1_sys::{
 };
 use log::trace;
 use usb_if::{
-    endpoint::{RequestId, TransferCompletion, TransferRequest},
+    endpoint::{IsoPacketResult, RequestId, TransferCompletion, TransferRequest, TransferStatus},
     err::TransferError,
     transfer::{BmRequestType, Direction},
 };
@@ -199,7 +199,7 @@ impl EndpointOp for EndpointImpl {
             direction,
             buffer: buffer.map(|buffer| (buffer.ptr, buffer.len)),
             transfer_len: 0,
-            iso_packet_actual_lengths: Vec::new(),
+            iso_packets: Vec::new(),
         };
         let trans = self.make_transfer(transfer)?;
         let id = trans.id();
@@ -307,11 +307,24 @@ impl TransferHandleRaw {
         let mut out = self.origin.clone();
         out.transfer_len = trans_raw.actual_length as usize;
         if let TransferKind::Isochronous { packet_lengths } = &self.origin.kind {
-            out.iso_packet_actual_lengths = Vec::with_capacity(packet_lengths.len());
+            out.iso_packets = Vec::with_capacity(packet_lengths.len());
             for i in 0..trans_raw.num_iso_packets as usize {
+                // SAFETY: make_transfer allocated this descriptor array with
+                // num_iso_packets entries; libusb has completed the transfer,
+                // and self retains its allocation throughout this read.
                 let packet = unsafe { &*trans_raw.iso_packet_desc.as_ptr().add(i) };
-                out.iso_packet_actual_lengths
-                    .push(packet.actual_length as usize);
+                let status = match packet.status {
+                    libusb1_sys::constants::LIBUSB_TRANSFER_COMPLETED => TransferStatus::Completed,
+                    libusb1_sys::constants::LIBUSB_TRANSFER_CANCELLED => TransferStatus::Cancelled,
+                    libusb1_sys::constants::LIBUSB_TRANSFER_STALL => TransferStatus::Stalled,
+                    libusb1_sys::constants::LIBUSB_TRANSFER_OVERFLOW => TransferStatus::Overflow,
+                    _ => TransferStatus::Error,
+                };
+                out.iso_packets.push(IsoPacketResult {
+                    requested_length: packet.length as usize,
+                    actual_length: packet.actual_length as usize,
+                    status,
+                });
             }
         }
         Ok(out)

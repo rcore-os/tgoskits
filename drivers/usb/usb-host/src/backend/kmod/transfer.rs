@@ -40,7 +40,7 @@ impl Transfer {
             direction,
             mapping,
             transfer_len: 0,
-            iso_packet_actual_lengths: Vec::new(),
+            iso_packets: Vec::new(),
         })
     }
 

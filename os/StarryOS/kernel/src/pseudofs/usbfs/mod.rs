@@ -25,7 +25,9 @@ use ax_std::os::arceos::task::{executor::LocalExecutor, thread::current::current
 use axfs_ng_vfs::Filesystem;
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
-use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
+use crab_usb::usb_if::endpoint::{
+    IsoPacketResult, TransferCompletion, TransferRequest, TransferStatus,
+};
 #[cfg(feature = "uvc")]
 pub(crate) use manager::{SubmittedTransfer, SubmittedTransferInner};
 
@@ -360,8 +362,8 @@ struct UrbTransferResult {
     data: Vec<u8>,
     data_offset: usize,
     actual_length: usize,
-    packet_lengths: Vec<usize>,
-    packet_actual_lengths: Vec<usize>,
+    iso_packet_count: usize,
+    iso_packets: Vec<IsoPacketResult>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,30 +744,13 @@ impl UsbDeviceFile {
         &self,
         current: &crate::task::UserTaskRef,
         urb_ptr: usize,
-        packet_lengths: &[usize],
-        actual_total: usize,
-        packet_actual_lengths: &[usize],
-    ) -> crate::StarryResult<()> {
-        let mut packet_descs = read_iso_packet_descs(current, urb_ptr, packet_lengths.len())?;
-        if !packet_actual_lengths.is_empty() {
-            if packet_actual_lengths.len() != packet_lengths.len() {
-                return Err(StarryError::InvalidData);
-            }
-            for (packet_desc, packet_actual) in packet_descs.iter_mut().zip(packet_actual_lengths) {
-                packet_desc.actual_length = (*packet_actual).min(u32::MAX as usize) as u32;
-                packet_desc.status = 0;
-            }
-            return write_iso_packet_descs(current, urb_ptr, &packet_descs);
-        }
-
-        let mut remaining = actual_total;
-        for (packet_desc, packet_length) in packet_descs.iter_mut().zip(packet_lengths.iter()) {
-            let packet_actual = remaining.min(*packet_length);
-            packet_desc.actual_length = packet_actual as u32;
-            packet_desc.status = 0;
-            remaining -= packet_actual;
-        }
-        write_iso_packet_descs(current, urb_ptr, &packet_descs)
+        packet_count: usize,
+        packets: &[IsoPacketResult],
+    ) -> crate::StarryResult<i32> {
+        let mut packet_descs = read_iso_packet_descs(current, urb_ptr, packet_count)?;
+        let error_count = set_iso_packet_results(&mut packet_descs, packets)?;
+        write_iso_packet_descs(current, urb_ptr, &packet_descs)?;
+        Ok(error_count)
     }
 
     fn write_completed_urb(
@@ -796,25 +781,25 @@ impl UsbDeviceFile {
                         as *mut u8;
                     vm_write_slice(current, buffer_ptr, &result.data[..copy_len])?;
                 }
-                if !result.packet_lengths.is_empty() {
+                urb.error_count = if result.iso_packet_count == 0 {
+                    0
+                } else {
                     self.write_iso_packet_results(
                         current,
                         user_urb_ptr,
-                        &result.packet_lengths,
-                        result.actual_length,
-                        &result.packet_actual_lengths,
-                    )?;
-                }
+                        result.iso_packet_count,
+                        &result.iso_packets,
+                    )?
+                };
                 urb.status = 0;
                 urb.actual_length = result.actual_length as i32;
-                urb.error_count = 0;
                 (user_urb_ptr as *mut descriptor::UsbdevfsUrb).vm_write(current, urb)?;
                 if log {
                     debug!(
                         "usbfs: reap urb ptr={:#x} status=0 actual={} packets={}",
                         user_urb_ptr,
                         result.actual_length,
-                        result.packet_lengths.len()
+                        result.iso_packets.len()
                     );
                 }
             }
@@ -864,15 +849,12 @@ impl UsbDeviceFile {
             Vec::new()
         };
 
-        let packet_actual_lengths =
-            iso_packet_actual_lengths(&submitted.packet_lengths, submitted.is_in, &completion);
-
         UrbTransferResult {
             data,
             data_offset: submitted.data_offset,
             actual_length: completion.actual_length,
-            packet_lengths: submitted.packet_lengths,
-            packet_actual_lengths,
+            iso_packet_count: submitted.packet_lengths.len(),
+            iso_packets: completion.iso_packets,
         }
     }
 
@@ -1807,24 +1789,33 @@ fn iso_copy_len(
     copy_len
 }
 
-fn iso_packet_actual_lengths(
-    packet_lengths: &[usize],
-    is_in: bool,
-    completion: &TransferCompletion,
-) -> Vec<usize> {
-    if packet_lengths.is_empty() {
-        return Vec::new();
+fn set_iso_packet_results(
+    descs: &mut [descriptor::UsbdevfsIsoPacketDesc],
+    packets: &[IsoPacketResult],
+) -> StarryResult<i32> {
+    if descs.len() != packets.len() {
+        return Err(StarryError::InvalidData);
     }
-
-    if !is_in && completion.iso_packets.len() == packet_lengths.len() {
-        return packet_lengths.to_vec();
+    let mut error_count = 0;
+    for (desc, packet) in descs.iter_mut().zip(packets) {
+        desc.actual_length = packet
+            .actual_length
+            .min(packet.requested_length)
+            .min(u32::MAX as usize) as u32;
+        desc.status = match packet.status {
+            TransferStatus::Completed => 0,
+            TransferStatus::Stalled => -Errno::EPIPE.into_raw(),
+            TransferStatus::Cancelled => -Errno::ECONNRESET.into_raw(),
+            TransferStatus::MissedService => -Errno::EXDEV.into_raw(),
+            TransferStatus::Overflow => -Errno::EOVERFLOW.into_raw(),
+            TransferStatus::ProtocolError => -Errno::EPROTO.into_raw(),
+            TransferStatus::Error => -Errno::EIO.into_raw(),
+        } as u32;
+        if desc.status != 0 {
+            error_count += 1;
+        }
     }
-
-    completion
-        .iso_packets
-        .iter()
-        .map(|packet| packet.actual_length)
-        .collect()
+    Ok(error_count)
 }
 
 fn iso_packet_descs_ptr(urb_ptr: usize) -> StarryResult<*mut descriptor::UsbdevfsIsoPacketDesc> {
@@ -1951,6 +1942,44 @@ mod tests {
                 iso_packets: Vec::new(),
             }))
         }
+    }
+
+    #[test]
+    fn iso_output_completion_does_not_invent_successful_packet_bytes() {
+        use crab_usb::usb_if::endpoint::IsoPacketResult;
+
+        let completion = TransferCompletion {
+            request_id: RequestId::new(1),
+            status: TransferStatus::Completed,
+            actual_length: 12,
+            iso_packets: vec![
+                IsoPacketResult {
+                    requested_length: 64,
+                    actual_length: 0,
+                    status: TransferStatus::Error,
+                },
+                IsoPacketResult {
+                    requested_length: 64,
+                    actual_length: 12,
+                    status: TransferStatus::Completed,
+                },
+            ],
+        };
+        let adapter = TestUsbfsAdapter::new();
+        let mut submitted = adapter.submit_async_urb(1);
+        submitted.packet_lengths = vec![64, 64];
+        let result = UsbDeviceFile::transfer_completion_to_result(submitted, completion);
+        let mut descs = vec![descriptor::UsbdevfsIsoPacketDesc::default(); 2];
+        assert_eq!(
+            set_iso_packet_results(&mut descs, &result.iso_packets).unwrap(),
+            1
+        );
+        assert_eq!(result.actual_length, 12);
+        assert!(set_iso_packet_results(&mut descs[..1], &result.iso_packets).is_err());
+        assert_eq!(descs[0].actual_length, 0);
+        assert_eq!(descs[0].status as i32, -Errno::EIO.into_raw());
+        assert_eq!(descs[1].actual_length, 12);
+        assert_eq!(descs[1].status, 0);
     }
 
     #[test]

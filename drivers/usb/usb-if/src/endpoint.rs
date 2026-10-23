@@ -310,6 +310,12 @@ pub enum TransferStatus {
     Stalled,
     Cancelled,
     Error,
+    /// The periodic service opportunity was missed; no packet data is valid.
+    MissedService,
+    /// The device or controller overran the packet buffer.
+    Overflow,
+    /// The USB transaction did not complete successfully.
+    ProtocolError,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

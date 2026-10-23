@@ -39,4 +39,5 @@ xhci = "0.9"
 libusb1-sys = {version = "0.7", optional = true}
 
 [dev-dependencies]
+ax-crate-interface.workspace = true
 ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
