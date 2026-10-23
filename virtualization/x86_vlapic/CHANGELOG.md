@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.5.4...x86_vlapic-v0.6.0) - 2026-10-22
+
+### Fixed
+
+- *(axvm)* preserve legacy PIC interrupt delivery ([#2518](https://github.com/rcore-os/tgoskits/pull/2518))
+
+### Other
+
+- *(axvm)* connect local and shared interrupt ownership ([#2594](https://github.com/rcore-os/tgoskits/pull/2594))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.5.4](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.5.3...x86_vlapic-v0.5.4) - 2026-09-09
 
 ### Other

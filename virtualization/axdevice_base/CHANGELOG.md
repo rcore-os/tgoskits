@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.7.2...axdevice_base-v0.8.0) - 2026-10-22
+
+### Added
+
+- *(axvisor)* add RK3588 guest cpufreq perf30 profile ([#2619](https://github.com/rcore-os/tgoskits/pull/2619))
+
+### Other
+
+- *(axdevice-base)* adopt stable Rust and prune dependencies ([#2608](https://github.com/rcore-os/tgoskits/pull/2608))
+- *(axvm)* connect local and shared interrupt ownership ([#2594](https://github.com/rcore-os/tgoskits/pull/2594))
+- *(virtualization)* remove obsolete axci integration ([#2542](https://github.com/rcore-os/tgoskits/pull/2542))
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.7.1...axdevice_base-v0.7.2) - 2026-09-11
 
 ### Added

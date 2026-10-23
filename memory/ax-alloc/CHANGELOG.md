@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.9.2...ax-alloc-v0.9.3) - 2026-10-22
+
+### Added
+
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+
+### Fixed
+
+- *(axvisor)* consolidate board apps and align guest RAM ([#2678](https://github.com/rcore-os/tgoskits/pull/2678))
+
+### Other
+
+- *(memory)* separate page allocation and retire idle address-space leases ([#2634](https://github.com/rcore-os/tgoskits/pull/2634))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.9.2](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.9.1...ax-alloc-v0.9.2) - 2026-09-13
 
 ### Other
