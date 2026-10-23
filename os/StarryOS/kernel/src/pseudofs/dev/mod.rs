@@ -7,7 +7,7 @@ pub(crate) mod card1;
 // The coherent dma-heap is shared by GPUs and other DMA devices.
 mod dmaheap;
 mod drm;
-mod vblank;
+mod drm_kapi;
 pub mod event;
 mod fb;
 #[cfg(feature = "sg2002")]
@@ -30,7 +30,6 @@ pub(super) mod pwm;
 #[cfg(feature = "rga")]
 pub(crate) mod rga;
 mod rtc;
-mod sync_file;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
 pub mod tty;
@@ -118,6 +117,13 @@ pub(crate) fn new_devfs(root_mount_device: u64) -> Filesystem {
     SimpleFs::new_with("devfs".into(), 0x01021994, move |fs| {
         builder(fs, root_mount_device)
     })
+}
+
+pub(crate) fn init_drm_kapi() {
+    drm_kapi::init();
+    if let Err(error) = ax_drm::init() {
+        warn!("failed to initialize RDIF DRM device: {error}");
+    }
 }
 
 pub(crate) fn new_devptsfs(mount: tty::DevPtsMount) -> Filesystem {
@@ -739,26 +745,49 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     }
 
     let mut dri_dir = DirMapping::new();
-    if ax_gpu::has_gpu() {
-        let dri_card0 = card0::Card0::new();
-        dri_dir.add(
-            "card0",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(226, 0),
-                dri_card0.clone(),
-            ),
-        );
-        dri_dir.add(
-            "renderD128",
-            Device::new(
-                fs.clone(),
-                NodeType::CharacterDevice,
-                DeviceId::new(226, 128),
-                dri_card0,
-            ),
-        );
+    if let Some(drm) = ax_drm::device() {
+        let dri_card0 = Arc::new(card0::Card0::new(drm.clone()));
+        if let Some(index) = drm.primary_minor_index() {
+            // The RKNPU companion retains its pre-existing /dev/dri/card1
+            // identity (226:1); never shadow it if a future core allocation
+            // happens to choose that same minor.
+            #[cfg(feature = "rknpu")]
+            let conflicts_with_rknpu = index == card1::CARD1_SYSTEM_DEVICE_ID.minor();
+            #[cfg(not(feature = "rknpu"))]
+            let conflicts_with_rknpu = false;
+            if conflicts_with_rknpu {
+                warn!("shared DRM primary minor {index} conflicts with RKNPU card1; node omitted");
+            } else {
+                dri_dir.add(
+                    format!("card{index}"),
+                    Device::new(
+                        fs.clone(),
+                        NodeType::CharacterDevice,
+                        DeviceId::new(226, index),
+                        dri_card0.clone(),
+                    ),
+                );
+            }
+        }
+        if let Some(index) = drm.render_minor_index() {
+            #[cfg(feature = "rknpu")]
+            let conflicts_with_rknpu = index == card1::CARD1_SYSTEM_DEVICE_ID.minor();
+            #[cfg(not(feature = "rknpu"))]
+            let conflicts_with_rknpu = false;
+            if conflicts_with_rknpu {
+                warn!("shared DRM render minor {index} conflicts with RKNPU card1; node omitted");
+            } else {
+                dri_dir.add(
+                    format!("renderD{index}"),
+                    Device::new(
+                        fs.clone(),
+                        NodeType::CharacterDevice,
+                        DeviceId::new(226, index),
+                        dri_card0,
+                    ),
+                );
+            }
+        }
     }
 
     #[cfg(feature = "rga")]

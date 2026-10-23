@@ -11,7 +11,7 @@
  *   - WAIT_VBLANK 序列号单调递增
  *
  * 这些是 weston / mutter / Xorg-modesetting 启动时探测显卡 capabilities
- * 必走的 ioctl，覆盖到这里就能保证 simpledrm 节点对 KMS userspace 可用。
+ * 必走的 ioctl，覆盖到这里可验证 virtio-gpu 节点的 KMS userspace 接口。
  */
 
 #define _GNU_SOURCE
@@ -90,6 +90,10 @@ struct drm_mode_crtc_page_flip {
     uint32_t crtc_id; uint32_t fb_id; uint32_t flags; uint32_t reserved;
     uint64_t user_data;
 };
+struct drm_set_client_cap {
+    uint64_t capability;
+    uint64_t value;
+};
 struct drm_mode_atomic {
     uint32_t flags, count_objs;
     uint64_t objs_ptr, count_props_ptr, props_ptr, prop_values_ptr;
@@ -121,6 +125,7 @@ struct drm_event_vblank {
 #define DRM_IOCTL_MODE_GETPLANE          _IOWR('d', 0xB6, struct drm_mode_get_plane)
 #define DRM_IOCTL_MODE_ADDFB2            _IOWR('d', 0xB8, struct drm_mode_fb_cmd2)
 #define DRM_IOCTL_MODE_ATOMIC            _IOWR('d', 0xBC, struct drm_mode_atomic)
+#define DRM_IOCTL_SET_CLIENT_CAP         _IOW('d', 0x0d, struct drm_set_client_cap)
 #define DRM_IOCTL_MODE_CREATEPROPBLOB    _IOWR('d', 0xBD, struct drm_mode_create_blob)
 #define DRM_IOCTL_MODE_OBJ_GETPROPERTIES _IOWR('d', 0xB9, struct drm_mode_obj_get_properties)
 #define DRM_IOCTL_WAIT_VBLANK            _IOWR('d', 0x3A, union drm_wait_vblank)
@@ -129,8 +134,12 @@ struct drm_event_vblank {
 
 #define DRM_MODE_OBJECT_PLANE       0xeeeeeeee
 #define DRM_MODE_OBJECT_CRTC        0xcccccccc
+#define DRM_MODE_OBJECT_CONNECTOR   0xc0c0c0c0
 #define DRM_PLANE_TYPE_PRIMARY      1
+#define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
+#define DRM_CLIENT_CAP_ATOMIC        3
 #define DRM_MODE_PAGE_FLIP_EVENT    0x01
+#define DRM_MODE_ATOMIC_ALLOW_MODESET 0x0400
 #define DRM_MODE_PROP_ENUM          (1 << 3)
 #define DRM_EVENT_FLIP_COMPLETE     0x02
 #define DRM_FORMAT_XRGB8888         0x34325258
@@ -165,7 +174,72 @@ static void check_binding(int fd, uint32_t plane, uint32_t crtc, uint32_t fb)
     CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_GETCRTC, &c), 0, "GETCRTC binding");
     CHECK(p.fb_id == fb && c.fb_id == fb, "plane and CRTC report committed framebuffer");
     CHECK(p.crtc_id == (fb ? crtc : 0), "plane reports committed CRTC binding");
-    CHECK(c.mode_valid == (fb ? 1u : 0u), "CRTC mode validity follows enable/disable");
+}
+
+static uint32_t find_object_property(int fd, uint32_t obj_id, uint32_t obj_type,
+                                     const char *name)
+{
+    uint32_t ids[32] = {0};
+    uint64_t values[32] = {0};
+    struct drm_mode_obj_get_properties props = {
+        .props_ptr = (uint64_t)(uintptr_t)ids,
+        .prop_values_ptr = (uint64_t)(uintptr_t)values,
+        .count_props = 32,
+        .obj_id = obj_id,
+        .obj_type = obj_type,
+    };
+    if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &props) != 0)
+        return 0;
+
+    for (uint32_t i = 0; i < props.count_props && i < 32; i++) {
+        struct drm_mode_get_property property = { .prop_id = ids[i] };
+        if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &property) == 0 &&
+            strcmp(property.name, name) == 0)
+            return ids[i];
+    }
+    return 0;
+}
+
+static uint64_t object_property_value(int fd, uint32_t obj_id,
+                                      uint32_t obj_type, uint32_t prop_id)
+{
+    uint32_t ids[32] = {0};
+    uint64_t values[32] = {0};
+    struct drm_mode_obj_get_properties props = {
+        .props_ptr = (uint64_t)(uintptr_t)ids,
+        .prop_values_ptr = (uint64_t)(uintptr_t)values,
+        .count_props = 32,
+        .obj_id = obj_id,
+        .obj_type = obj_type,
+    };
+    if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &props) != 0)
+        return ~0ULL;
+    for (uint32_t i = 0; i < props.count_props && i < 32; i++)
+        if (ids[i] == prop_id)
+            return values[i];
+    return ~0ULL;
+}
+
+static int is_primary_plane(int fd, uint32_t plane_id)
+{
+    uint32_t ids[32] = {0};
+    uint64_t values[32] = {0};
+    struct drm_mode_obj_get_properties props = {
+        .props_ptr = (uint64_t)(uintptr_t)ids,
+        .prop_values_ptr = (uint64_t)(uintptr_t)values,
+        .count_props = 32,
+        .obj_id = plane_id,
+        .obj_type = DRM_MODE_OBJECT_PLANE,
+    };
+    if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &props) != 0)
+        return 0;
+    for (uint32_t i = 0; i < props.count_props; i++) {
+        struct drm_mode_get_property property = { .prop_id = ids[i] };
+        if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &property) == 0 &&
+            strcmp(property.name, "type") == 0)
+            return values[i] == DRM_PLANE_TYPE_PRIMARY;
+    }
+    return 0;
 }
 
 static volatile sig_atomic_t vblank_signal_seen;
@@ -220,15 +294,19 @@ static int interrupted_vblank_child(int fd, int ready_fd)
     wait.req.type = _DRM_VBLANK_RELATIVE;
     wait.req.sequence = 180;
     wait.req.signal = 0x12345678;
+    wait.req.pad = 0x87654321;
     if (write(ready_fd, "R", 1) != 1)
         return 1;
     close(ready_fd);
 
     errno = 0;
     long result = syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, &wait);
+    /* WAIT_VBLANK converts RELATIVE requests to ABSOLUTE and rewrites the
+     * sequence before sleeping, even when a signal later interrupts it. The
+     * signal/pad words overlap the reply timestamps, so they must stay intact
+     * when EINTR prevents drm_wait_vblank_reply() from running. */
     if (result != -1 || errno != EINTR || !vblank_signal_seen ||
-        wait.req.type != _DRM_VBLANK_RELATIVE || wait.req.sequence != 180 ||
-        wait.req.signal != 0x12345678) {
+        wait.req.signal != 0x12345678 || wait.req.pad != 0x87654321) {
         fprintf(stderr, "FAIL: interrupted WAIT_VBLANK result=%ld errno=%d signal=%d\n",
                 result, errno, (int)vblank_signal_seen);
         return 1;
@@ -284,8 +362,12 @@ static int timed_vblank_child(int fd)
     clock_gettime(CLOCK_MONOTONIC, &end);
     long elapsed_ms = (end.tv_sec - start.tv_sec) * 1000
                       + (end.tv_nsec - start.tv_nsec) / 1000000;
-    return result == -1 && err == EBUSY && elapsed_ms >= 2500 && elapsed_ms < 5500
-           ? 0 : 1;
+    if (result == -1 && err == EBUSY && elapsed_ms >= 2500 && elapsed_ms < 5500)
+        return 0;
+    printf("  INFO | timed WAIT_VBLANK result=%ld errno=%d elapsed_ms=%ld\n",
+           result, err, elapsed_ms);
+    fflush(stdout);
+    return 1;
 }
 
 static void check_vblank_timeout(int fd)
@@ -301,7 +383,7 @@ static void check_vblank_timeout(int fd)
           WEXITSTATUS(status) == 0, "WAIT_VBLANK has a 3-second EBUSY deadline");
 }
 
-static int disabled_vblank_child(int fd, int ready_fd)
+static int vblank_wait_child(int fd, int ready_fd, int expect_disable_wake)
 {
     union drm_wait_vblank wait = {0};
     wait.req.type = _DRM_VBLANK_RELATIVE;
@@ -312,7 +394,9 @@ static int disabled_vblank_child(int fd, int ready_fd)
     alarm(5);
     long result = syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, &wait);
     alarm(0);
-    return result == 0 && wait.reply.sequence < 100000 ? 0 : 1;
+    if (expect_disable_wake)
+        return result == 0 && wait.reply.sequence < 100000 ? 0 : 1;
+    return result < 0 && errno == EBUSY ? 0 : 1;
 }
 
 static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
@@ -352,7 +436,7 @@ static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
     }
     if (waiter == 0) {
         close(ready_pipe[0]);
-        _exit(disabled_vblank_child(fd, ready_pipe[1]));
+        _exit(vblank_wait_child(fd, ready_pipe[1], 0));
     }
     close(ready_pipe[1]);
     char ready;
@@ -397,7 +481,7 @@ static void check_vblank_disable_reenable(int fd, uint32_t crtc_id,
     int status;
     CHECK(waitpid(waiter, &status, 0) == waiter && blocked &&
           WIFEXITED(status) && WEXITSTATUS(status) == 0,
-          "disable completes blocked WAIT_VBLANK despite immediate re-enable");
+          "WAIT_VBLANK remains pending after an unobserved disable/re-enable");
     CHECK(sched_setaffinity(0, sizeof(saved_affinity), &saved_affinity) == 0,
           "restore affinity after quick re-enable test");
 }
@@ -412,28 +496,54 @@ int main(void)
         TEST_DONE();
     }
 
+    struct drm_set_client_cap client_cap = {
+        .capability = DRM_CLIENT_CAP_UNIVERSAL_PLANES,
+        .value = 1,
+    };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &client_cap), 0,
+              "SET_CLIENT_CAP UNIVERSAL_PLANES before plane enumeration");
+    client_cap.capability = DRM_CLIENT_CAP_ATOMIC;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &client_cap), 0,
+              "SET_CLIENT_CAP ATOMIC before atomic KMS use");
+
     /* --- plane enumeration --- */
     struct drm_mode_get_plane_res pres = {0};
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres), 0,
               "GETPLANERESOURCES probe");
-    /* F+G+H+I 范围内 simpledrm 只暴露 1 个 primary plane；为了兼容后续
-     * cursor 平面落地，接受 [1, 2] 区间。 */
+    /* This virtio-gpu configuration has a primary plane, and may add a cursor
+     * plane; don't assume IDs or enumeration order are stable. */
     CHECK(pres.count_planes >= 1 && pres.count_planes <= 2,
           "plane count in [1, 2]");
     uint32_t plane_ids[2] = {0};
     pres.plane_id_ptr = (uint64_t)(uintptr_t)plane_ids;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres), 0,
               "GETPLANERESOURCES fetch");
+    uint32_t primary_plane_id = 0;
+    for (uint32_t i = 0; i < pres.count_planes && i < 2; i++) {
+        if (is_primary_plane(fd, plane_ids[i])) {
+            primary_plane_id = plane_ids[i];
+            break;
+        }
+    }
+    CHECK(primary_plane_id != 0, "find primary plane by its KMS type property");
+    plane_ids[0] = primary_plane_id;
 
-    uint32_t formats[4] = {0};
+    uint32_t formats[64] = {0};
     struct drm_mode_get_plane pl = {0};
     pl.plane_id = plane_ids[0];
-    pl.count_format_types = 4;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &pl), 0,
+              "GETPLANE primary format probe");
+    CHECK(pl.count_format_types >= 1 && pl.count_format_types <= 64,
+          "primary plane reports a bounded format list");
+    pl.count_format_types = 64;
     pl.format_type_ptr = (uint64_t)(uintptr_t)formats;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &pl), 0, "GETPLANE primary");
     CHECK(pl.possible_crtcs == 1, "primary plane possible_crtcs == 0b1");
-    CHECK(pl.count_format_types >= 1 && formats[0] == DRM_FORMAT_XRGB8888,
-          "primary plane reports XRGB8888");
+    int has_xrgb8888 = 0;
+    for (uint32_t i = 0; i < pl.count_format_types && i < 64; i++)
+        if (formats[i] == DRM_FORMAT_XRGB8888)
+            has_xrgb8888 = 1;
+    CHECK(has_xrgb8888, "primary plane reports XRGB8888");
 
     /* --- plane properties --- */
     uint32_t prop_ids[32] = {0};
@@ -449,7 +559,8 @@ int main(void)
     CHECK(props.count_props >= 1, "plane reports >=1 prop");
 
     /* 找 type 属性，校验值是 PRIMARY。prop id 不在 stable uapi 中，靠名字匹配。 */
-    uint32_t type_prop_id = 0, fb_prop_id = 0, src_x_prop_id = 0;
+    uint32_t type_prop_id = 0, fb_prop_id = 0, plane_crtc_id_prop = 0;
+    uint32_t src_x_prop_id = 0;
     for (uint32_t i = 0; i < props.count_props && i < 32; i++) {
         struct drm_mode_get_property probe = {0};
         probe.prop_id = prop_ids[i];
@@ -461,12 +572,15 @@ int main(void)
                   "plane type value == PRIMARY");
         } else if (strcmp(probe.name, "FB_ID") == 0) {
             fb_prop_id = prop_ids[i];
+        } else if (strcmp(probe.name, "CRTC_ID") == 0) {
+            plane_crtc_id_prop = prop_ids[i];
         } else if (strcmp(probe.name, "SRC_X") == 0) {
             src_x_prop_id = prop_ids[i];
         }
     }
     CHECK(type_prop_id != 0, "plane has 'type' property");
     CHECK(fb_prop_id != 0, "plane has 'FB_ID' property");
+    CHECK(plane_crtc_id_prop != 0, "plane has 'CRTC_ID' property");
     CHECK(src_x_prop_id != 0, "plane has 'SRC_X' property");
 
     /* 描述 plane 的 type property。 */
@@ -484,20 +598,36 @@ int main(void)
 
     /* --- prep a scanout fb so PAGE_FLIP has a target --- */
     struct drm_mode_card_res res = {0};
-    (void)ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res);
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res), 0,
+              "GETRESOURCES probe");
+    /* Counts are input capacities on each call, not just probe results. */
+    res.count_fbs = 0;
+    res.count_encoders = 0;
+    res.count_crtcs = 1;
+    res.count_connectors = 1;
     uint32_t crtc_ids[1] = {0}, conn_ids[1] = {0};
     res.crtc_id_ptr = (uint64_t)(uintptr_t)crtc_ids;
     res.connector_id_ptr = (uint64_t)(uintptr_t)conn_ids;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res), 0,
               "GETRESOURCES");
 
-    struct drm_mode_mode_info modes[1] = {0};
+    struct drm_mode_mode_info modes[64] = {0};
     struct drm_mode_get_connector conn = {0};
     conn.connector_id = conn_ids[0];
-    conn.count_modes = 1;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn), 0,
+              "GETCONNECTOR probe");
+    CHECK(conn.count_modes > 0 && conn.count_modes <= 64,
+          "connector reports a bounded mode list");
+    conn.count_props = 0;
+    conn.count_encoders = 0;
+    conn.count_modes = 64;
     conn.modes_ptr = (uint64_t)(uintptr_t)modes;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn), 0,
               "GETCONNECTOR");
+    uint32_t connector_crtc_id_prop = find_object_property(
+        fd, conn_ids[0], DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
+    CHECK(connector_crtc_id_prop != 0,
+          "connector exposes CRTC_ID property for state readback");
     uint64_t period_ns = modes[0].clock != 0
         ? (uint64_t)modes[0].htotal * modes[0].vtotal * 1000000ULL / modes[0].clock
         : 1000000000ULL / (modes[0].vrefresh ? modes[0].vrefresh : 60);
@@ -780,21 +910,28 @@ int main(void)
     /* --- 队列再次清空 --- */
     CHECK_ERR(read(fd, buf, sizeof(buf)), EAGAIN, "event queue drained");
 
-    /* An active CRTC keeps vblanking when its primary plane has no FB. */
-    uint32_t plane_obj = plane_ids[0], plane_prop_count = 1;
-    uint64_t plane_fb_value = 0;
+    /* Keep the CRTC active while disabling its primary plane. Linux requires
+     * the plane CRTC_ID and FB_ID to be cleared together. */
+    uint32_t plane_obj = plane_ids[0], plane_prop_count = 2;
+    uint32_t plane_state_props[2] = { fb_prop_id, plane_crtc_id_prop };
+    uint64_t plane_state_values[2] = { 0, 0 };
     struct drm_mode_atomic detach_fb = {
         .count_objs = 1,
         .objs_ptr = (uint64_t)(uintptr_t)&plane_obj,
         .count_props_ptr = (uint64_t)(uintptr_t)&plane_prop_count,
-        .props_ptr = (uint64_t)(uintptr_t)&fb_prop_id,
-        .prop_values_ptr = (uint64_t)(uintptr_t)&plane_fb_value,
+        .props_ptr = (uint64_t)(uintptr_t)plane_state_props,
+        .prop_values_ptr = (uint64_t)(uintptr_t)plane_state_values,
     };
     CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &detach_fb), 0,
-              "atomic detach primary FB while CRTC stays active");
+              "atomic disable primary plane while CRTC stays active");
+    struct drm_mode_get_plane disabled_plane = { .plane_id = plane_ids[0] };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &disabled_plane), 0,
+              "GETPLANE after primary plane disable");
+    CHECK(disabled_plane.fb_id == 0 && disabled_plane.crtc_id == 0,
+          "primary plane reports no framebuffer or CRTC binding");
     struct drm_mode_crtc unbound_crtc = { .crtc_id = crtc_ids[0] };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &unbound_crtc), 0,
-              "GETCRTC after primary FB detach");
+              "GETCRTC after primary plane disable");
     CHECK(unbound_crtc.fb_id == 0 && unbound_crtc.mode_valid == 1,
           "CRTC mode remains enabled without primary FB");
     struct drm_crtc_get_sequence unbound_seq = { .crtc_id = crtc_ids[0] };
@@ -818,28 +955,25 @@ int main(void)
     n = read(fd, &seq_ev, sizeof(seq_ev));
     CHECK(n == (ssize_t)sizeof(seq_ev) && seq_ev.user_data == 0xfeed0001,
           "unbound CRTC sequence event is readable");
-    plane_fb_value = next_fb.fb_id;
+    plane_state_values[0] = next_fb.fb_id;
+    plane_state_values[1] = crtc_ids[0];
     CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &detach_fb), 0,
               "atomic restore primary FB");
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);
 
-    /* --- legacy GETCRTC readback matches the SETCRTC we ran above --- */
-    uint32_t readback_conns[4] = {0};
-    struct drm_mode_crtc getc = {
-        .crtc_id = crtc_ids[0],
-        .set_connectors_ptr = (uint64_t)(uintptr_t)readback_conns,
-        .count_connectors = 4,
-    };
+    /* GETCRTC returns CRTC mode/framebuffer only. Connector attachment is
+     * reported by the connector's atomic CRTC_ID property. */
+    struct drm_mode_crtc getc = { .crtc_id = crtc_ids[0] };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &getc), 0, "GETCRTC readback");
     CHECK(getc.fb_id == next_fb.fb_id, "GETCRTC fb_id follows PAGE_FLIP");
-    CHECK(getc.count_connectors == 1, "GETCRTC count_connectors == 1");
-    CHECK(readback_conns[0] == conn_ids[0],
-          "GETCRTC reports the connector we set");
+    CHECK(object_property_value(fd, conn_ids[0], DRM_MODE_OBJECT_CONNECTOR,
+                                connector_crtc_id_prop) == crtc_ids[0],
+          "connector CRTC_ID property matches SETCRTC attachment");
     CHECK(getc.mode_valid == 1, "GETCRTC mode_valid == 1");
     CHECK(getc.mode.hdisplay == modes[0].hdisplay,
           "GETCRTC mode.hdisplay matches");
 
-    /* --- SETCRTC with an unknown connector id must fail with EINVAL --- */
+    /* Linux cannot look up this connector ID, so SETCRTC returns ENOENT. */
     uint32_t bogus_conn = 0xdeadbeef;
     struct drm_mode_crtc bad_conn = {
         .crtc_id = crtc_ids[0], .fb_id = fb.fb_id,
@@ -847,16 +981,17 @@ int main(void)
         .set_connectors_ptr = (uint64_t)(uintptr_t)&bogus_conn,
         .count_connectors = 1,
     };
-    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_conn), EINVAL,
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_conn), ENOENT,
               "SETCRTC rejects unknown connector");
 
-    /* GETCRTC should still report the previous good binding. */
-    memset(readback_conns, 0, sizeof(readback_conns));
-    getc.count_connectors = 4;
+    /* A rejected SETCRTC must leave the actual connector property unchanged. */
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &getc), 0,
               "GETCRTC after failed SETCRTC");
     CHECK(getc.fb_id == next_fb.fb_id,
           "GETCRTC fb_id unchanged after failed SETCRTC");
+    CHECK(object_property_value(fd, conn_ids[0], DRM_MODE_OBJECT_CONNECTOR,
+                                connector_crtc_id_prop) == crtc_ids[0],
+          "failed SETCRTC leaves connector CRTC_ID unchanged");
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);
 
     /* Linux rejects a disable request that still names connectors and leaves
@@ -894,7 +1029,7 @@ int main(void)
     CHECK(waiter >= 0, "fork waiter for concurrent CRTC disable");
     if (waiter == 0) {
         close(ready_pipe[0]);
-        _exit(disabled_vblank_child(fd, ready_pipe[1]));
+        _exit(vblank_wait_child(fd, ready_pipe[1], 1));
     }
     close(ready_pipe[1]);
     char ready;
@@ -909,6 +1044,11 @@ int main(void)
           WEXITSTATUS(wait_status) == 0,
           "concurrent disable completes WAIT_VBLANK with frozen sequence");
     check_binding(fd, plane_ids[0], crtc_ids[0], 0);
+    struct drm_mode_crtc disabled_crtc = { .crtc_id = crtc_ids[0] };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &disabled_crtc), 0,
+              "GETCRTC after explicit disable");
+    CHECK(disabled_crtc.mode_valid == 0,
+          "explicit disable clears the CRTC mode");
     struct pollfd suspended_pfd = { .fd = fd, .events = POLLIN };
     CHECK(poll(&suspended_pfd, 1, 1000) == 1,
           "queued vblank completes when CRTC is disabled");
@@ -973,23 +1113,26 @@ int main(void)
     check_vblank_disable_reenable(fd, crtc_ids[0], &setcrtc);
     check_binding(fd, plane_ids[0], crtc_ids[0], next_fb.fb_id);
 
-    /* --- SETCRTC referencing a removed fb must fail with EINVAL --- */
+    /* --- RMFB detaches the removed FB while the active CRTC remains enabled --- */
     uint32_t old_fb_id = next_fb.fb_id;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_RMFB, &old_fb_id), 0, "RMFB");
-    /* The legacy binding pointed at this fb; GETCRTC must reflect the
-     * unbinding so userspace doesn't keep seeing a dangling fb_id. */
-    getc.count_connectors = 4;
+    /* Linux atomic_remove_fb first detaches planes; this backend accepts an
+     * active CRTC without a primary FB, so removal need not disable the CRTC
+     * or detach its connector. */
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &getc), 0,
               "GETCRTC after RMFB");
-    CHECK(getc.fb_id == 0, "GETCRTC fb_id == 0 after RMFB clears binding");
-    CHECK(getc.count_connectors == 0,
-          "GETCRTC count_connectors == 0 after RMFB");
+    CHECK(getc.fb_id == 0 && getc.mode_valid == 1,
+          "RMFB detaches the FB but preserves the active CRTC mode");
     check_binding(fd, plane_ids[0], crtc_ids[0], 0);
+    CHECK(object_property_value(fd, conn_ids[0], DRM_MODE_OBJECT_CONNECTOR,
+                                connector_crtc_id_prop) == crtc_ids[0],
+          "RMFB leaves the active connector attached to the CRTC");
 
-    /* CRTC 失活后 vblank 时钟应拒绝服务（Linux drm_vblank_get 失败 → EINVAL）。 */
-    struct drm_crtc_get_sequence gseq_off = { .crtc_id = crtc_ids[0] };
-    CHECK_ERR(ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &gseq_off), EINVAL,
-              "GET_SEQUENCE rejects inactive CRTC");
+    struct drm_crtc_get_sequence gseq_unbound = { .crtc_id = crtc_ids[0] };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &gseq_unbound), 0,
+              "GET_SEQUENCE accepts active CRTC after RMFB");
+    CHECK(gseq_unbound.active == 1,
+          "RMFB preserves active vblank on an unbound CRTC");
 
     struct drm_mode_crtc bad_fb = {
         .crtc_id = crtc_ids[0], .fb_id = old_fb_id,
@@ -997,10 +1140,11 @@ int main(void)
         .set_connectors_ptr = (uint64_t)(uintptr_t)conn_ids,
         .count_connectors = 1,
     };
-    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_fb), EINVAL,
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &bad_fb), ENOENT,
               "SETCRTC rejects nonexistent fb_id");
 
-    /* A committed mode without an FB must not survive the final close. */
+    /* Linux lastclose restores an in-kernel DRM client when one exists, but
+     * does not promise to reset user KMS state on drivers without such a client. */
     struct drm_mode_create_blob mode_blob = {
         .data = (uint64_t)(uintptr_t)&modes[0],
         .length = sizeof(modes[0]),
@@ -1028,6 +1172,7 @@ int main(void)
     uint32_t crtc_obj = crtc_ids[0], crtc_count = 1;
     uint64_t mode_value = mode_blob.blob_id;
     struct drm_mode_atomic unbound_mode = {
+        .flags = DRM_MODE_ATOMIC_ALLOW_MODESET,
         .count_objs = 1,
         .objs_ptr = (uint64_t)(uintptr_t)&crtc_obj,
         .count_props_ptr = (uint64_t)(uintptr_t)&crtc_count,
@@ -1042,16 +1187,15 @@ int main(void)
     CHECK(before_close.mode_valid == 1 && before_close.fb_id == 0,
           "unbound mode is committed before close");
     int render = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
-    CHECK(render >= 0, "render node stays open during final card0 close");
-    close(fd);
-    fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC | O_NONBLOCK);
-    CHECK(fd >= 0, "reopen card0 after final close");
-    struct drm_mode_crtc after_close = { .crtc_id = crtc_ids[0] };
-    CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_GETCRTC, &after_close), 0,
-              "GETCRTC after final close");
-    CHECK(after_close.mode_valid == 0 && after_close.fb_id == 0,
-          "reopen does not inherit the prior client's KMS state");
+    CHECK(render >= 0, "render node opens for device-wide lastclose test");
     close(fd);
     close(render);
+    fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC | O_NONBLOCK);
+    CHECK(fd >= 0, "reopen card0 after device lastclose");
+    struct drm_mode_crtc after_close = { .crtc_id = crtc_ids[0] };
+    CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_GETCRTC, &after_close), 0,
+              "GETCRTC after device lastclose");
+    check_binding(fd, plane_ids[0], crtc_ids[0], after_close.fb_id);
+    close(fd);
     TEST_DONE();
 }

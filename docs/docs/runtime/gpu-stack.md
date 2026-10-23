@@ -1,70 +1,68 @@
 # GPU 与屏幕输出栈
 
-## 1. 设备能力
+## 1. 分层与唯一所有者
 
-GPU 负责资源、渲染上下文与命令完成，显示控制器负责把缓冲区提交到输出端。`rdif-gpu` 和 `rdif-display` 分别描述这两个操作系统无关的能力；同一块 VirtIO GPU 只注册一次设备，并由一个所有者协调共享的传输与资源。StarryOS 只从已探测的通用 GPU 能力建立 DRM 节点，不按 VirtIO 类型选择 GEM、PRIME 或 KMS 实现；VirtIO 控制命令留在 `virtio-gpu` 驱动内。
+`rdif-gpu` 描述资源、上下文、命令与完成能力，`rdif-display` 描述显示输出；
+同一块 VirtIO GPU 只注册一次设备。`ax-gpu` 独占设备和传输，`ax-drm` 将其接入
+共享 `kdrm-core`。Starry 的 `card0` 只适配 Linux 文件操作、用户内存、poll 与 VMA，
+不再维护另一套 GEM、syncobj、master 或 atomic 状态。详细契约见
+[共享 DRM 核心接入](../../design/shared-drm.md)。
 
-### 1.1 Linux 语义基线
+`kdrm-core` 拥有 DRM 对象与 UAPI 状态，`drm-kapi` 通过显式 provider 接入任务、
+时间、等待和内存；进程凭据、用户地址空间和描述符表仍由 Starry 拥有。服务表只发布
+不可变且满足 `Sync` 的对象。复制 fd 共享同一打开文件描述及其原子的 client-capability
+偏好；master 检查和更新由设备锁保护。
 
-本设计对照本地 Linux v7.1，提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。`struct drm_gem_object` 管理缓冲区大小和引用，`struct drm_framebuffer` 把格式、步长与缓冲区关联；`drm_mode_config_funcs.atomic_check` 先验证完整显示状态，`atomic_commit` 才把状态交给硬件。`virtio_gpu_plane_atomic_update` 在设备内部完成必要的 2D 传输、scanout 绑定和 flush，通用显示接口不暴露这些线协议命令。
+## 2. 资源与完成
 
-### 1.2 接口边界
+GEM handle、framebuffer、PRIME、VMA、在途命令和 scanout 分别持有必要引用。VMA
+查找经过公共 VMA offset manager 与文件权限检查，并保留 GEM 租约；关闭最后一个
+handle 不使仍存活的 VMA 失效。VirtGPU 对每个文件、对象独立计数 handle；最后一个
+本地 handle 关闭后解除上下文附着，不将附着引用积累到整个 DRM 文件关闭。
 
-`rdif-gpu::GpuDevice` 的调用者只持有设备作用域内的资源、上下文和完成标识。资源创建接收带所有权的 backing，驱动在硬件解除引用得到确认前保留它。`rdif-gpu::VirglOps` 是可选的渲染扩展，承载 capset、blob 和命令流；未协商能力返回明确的不支持错误。`rdif-display::DisplayController` 报告输出、格式和模式，检查并提交 framebuffer、damage 与 scanout 状态。显示控制器可以作为 GPU 设备的一项能力；无输出的 GPU 不宣称 modeset 能力。
-
-通用资源与显示操作只表达缓冲区所有权和可观察效果。物理地址、Linux ioctl 编号、内核锁、任务和中断注册均不进入这些 trait。VirtIO resource ID 不作为通用缓冲区句柄；只有可选的 `VirglOps` 命令流扩展会把设备作用域内的句柄转换为 virgl 协议要求的 ID。`ax-driver` 探测设备并注册一次，`axgpu` 运行时拥有注册对象，`axdisplay` 只从同一对象获取屏幕输出能力。运行时通过 `device_identities` 枚举已探测设备，目前只激活第一台；其他设备对象和 DMA 映射保留至协调卸载，避免提前销毁仍被硬件引用的队列。默认 scanout 优先选择 XRGB8888，随后按输出公布的格式尝试；不支持设备图像资源时仍检查显示控制器是否接受直接 backing。
-
-| 所有者 | 关键接口或对象 | Linux 对照 |
-| --- | --- | --- |
-| [`rdif-gpu`](../../../drivers/interface/rdif-gpu/src/lib.rs) | `Backing`、`GpuDevice`、`VirglOps` | `include/drm/drm_gem.h`、`drivers/gpu/drm/virtio/virtgpu_drv.h` |
-| [`rdif-display`](../../../drivers/interface/rdif-display/src/interface.rs) | `DisplayController::check`、`commit`、`poll_event` | `include/drm/drm_mode_config.h`、`include/drm/drm_framebuffer.h` |
-| [`virtio-gpu`](../../../drivers/gpu/virtio-gpu/src/rdif.rs) | `VirtIoGpuDevice` | `drivers/gpu/drm/virtio/virtgpu_plane.c` |
-| [`axgpu`](../../../os/arceos/modules/axgpu/src/lib.rs) | `with_gpu`、`with_display`、`MappableBacking` | 操作系统的 DRM device、GEM 与 DMA 所有权层 |
-| [Starry DRM](../../../os/StarryOS/kernel/src/pseudofs/dev/card0.rs) | `GpuResource`、`Framebuffer`、`GpuMappingLease` | `drm_gem_object`、`drm_framebuffer`、PRIME dma-buf |
-
-## 2. 资源生命周期
-
-创建缓冲区时，运行时先取得 backing 并验证尺寸、格式、步长及 DMA 可见性，再交给驱动创建硬件资源。提交到显示端会再持有资源引用；每个 VMA 保活对象持有 backing，映射建立时已有 GPU 资源的也同时持有该资源，PRIME fd 与导入对象持有相同引用。用户关闭 GEM handle、解除 mmap 或 PRIME 导入时，只减少相应引用。设备确认旧 scanout 不再使用且全部引用释放后，运行时才允许驱动解除 backing、释放硬件资源，最后释放页。失败或设备复位期间若不能确认停止 DMA，则保留 backing 直至复位完成。
-
-同设备 PRIME 导入可能遇到资源已附着到当前渲染上下文的情况。导入 ioctl 的用户缓冲区回写失败时，只撤销此次新建的上下文附着；既有附着属于先前成功操作，必须保留。关闭文件描述符时，先从资源表移出其引用，释放模式设置锁后再析构可能触发驱动资源回收的对象。
-
-文件关闭时由设备驱动执行一次 `CTX_DESTROY`，成功后移除该上下文的全部资源附着；不逐个执行可能失败的 `CTX_DETACH_RESOURCE`。如果销毁响应不能证明设备已完成操作，驱动先复位并读回设备停止状态，再清理附着及 backing。[VirtIO 1.2 GPU 控制队列规范](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html)允许设备在处理完成前交还响应，设置 `VIRTIO_GPU_FLAG_FENCE` 后则要求完成操作再返回，并回显 fence 标志和编号。协议核心统一请求并核对该完成 fence。
+普通 guest-backed 分配使用实际 DMA backing，host-visible blob 使用实际 BAR
+映射。后者按设备对齐分配可回收区间，保留缓存属性，并在 UNMAP 与资源释放确认后才
+归还区间。同设备 PRIME 别名共享对象；其他设备不能将 host-only BAR 当成 guest 页
+导入。不支持的 DMA 域和映射路径明确拒绝，不制造物理地址或成功返回桩。
 
 ### 2.1 显示提交
 
-`DisplayController` 对一次提交先检查输出、模式、framebuffer、damage 和资源归属。`TEST_ONLY` 在检查后直接返回，不改变 scanout 或引用；正式提交先保留新资源，再由驱动执行硬件命令，成功后发布新状态并释放旧引用。中途失败仍保留旧 scanout，回滚尚未发布的新资源。同步完成令牌明确表示何时能释放旧 backing，不能以 ioctl 返回或固定延时推断 DMA 已结束。
+`TEST_ONLY` 只验证，不发布 scanout 或事件。阻塞 atomic 提交在软件状态交换前执行
+可失败的 RDIF 提交；失败保留原状态。非阻塞提交由工作任务等待输入 fence，再提交
+设备；异步失败通过错误 fence、取消事件和设备不可用状态结束依赖。
 
-### 2.2 并发与中断
+RDIF 完成只证明旧缓冲区的设备访问结束，不能代替显示边沿。活动 CRTC 的翻页事件与
+out-fence 在下一次 vblank 上共享序号和时间戳；停用或无 vblank 时才立即完成。
+当前 vblank 使用运行时定时器，不是物理显示器扫描中断的精度承诺。输入 fence 的
+可中断等待使用 Starry 的真实待处理信号规则，不可中断等待不会被普通信号完成。
 
-`axgpu` 是 GPU 控制状态的单一任务上下文所有者。设备操作和资源表按固定顺序加锁，用户内存复制与可能阻塞的提交不在不可睡眠锁内进行。硬中断端点只确认来源并发布配置变化或队列完成事件，再唤醒 `axruntime` 的 GPU 工作任务；任务取得设备锁后推进控制队列和事件。IRQ 的申请、启用和工作任务由 `axruntime` 管理，不由 Starry 设备节点的构造时机决定。如果任务正在访问 VirtIO transport，中断端点只登记延迟确认，并在共享中断线上返回未确认来源，不能冒充其他设备的中断。注销时先禁止新请求，停用并同步中断，复位或排空在途命令，再释放 DMA backing 与设备对象。
+### 2.2 并发与失败清理
 
-VirtIO 的失败清理与正常析构写入设备状态 `0` 后，都必须读回 `0` 才把复位视为完成；随后解除队列，再放弃资源表中的 backing。这与本地 Linux PCI transport 的复位确认顺序一致。
+硬中断只确认来源并发布状态，运行时任务推进控制队列，释放 GPU 锁后再运行 DRM
+回调。文件状态短锁不得跨越可能睡眠的 RDIF 调用。关闭、析构与失败回滚使用清理入口；
+超时本身不构成设备停止证明，仍保留设备可能访问的引用。VirtIO 复位须读回状态 0，
+之后才能解除队列并释放 backing。
 
-`GpuTransportCell` 只接受可跨处理器移动的 transport，并在 IRQ 端点确认时把状态锁存给任务端；任务端读取锁存状态后推进显示事件。`VirtIoGpuDevice::service_pending()` 在输出查询失败时保留显示变化标记，`gpu_irq_work` 对暂时性失败作有限次延迟重试。设备树探测的 DMA 一致性由 `dma_coherency_from_fdt()` 决定；没有设备树属性的静态设备使用平台默认值。当前运行时只为首台激活的 GPU 解析并注册 IRQ，其余已探测设备保留所有权但不启用中断。
+ERR/HUP 是终端事件，即使观察者没有请求普通可读事件，也必须唤醒已经睡眠的 epoll。
+Starry 两个文件适配器都保留 Linux waitqueue 实际传入的事件 key，不将其统一改成 IN。
 
-普通 `axgpu::with_gpu`、`with_display` 和默认 scanout 恢复在访问前推进待处理事件，并向调用方返回失败。文件关闭、失败回滚和析构路径使用 `with_gpu_for_cleanup`，即使事件查询失败也能尝试解绑、销毁上下文和释放资源；新命令仍走普通入口。Starry 仅在停用旧 scanout 和查询旧提交完成状态时使用 `with_display_for_cleanup`，避免根据过时的输出信息提交新画面。待处理位留给工作任务重试，`service_irq_work` 向运行时返回错误。
+## 3. 用户态能力与迁移
 
-VirtIO 显示提交同步返回 `Completion::Complete`，因此 `VirtIoGpuDevice::commit()` 不再为它另存一个待轮询的完成事件。`service_pending()` 对每个输出最多保留一个 `OutputChanged` 通知；后续变化更新输出状态，调用者通过 `poll_event()` 收到通知后重新查询最新状态。当前运行时尚未把显示变化事件转发给 Starry 的热插拔路径，这个有界队列不会因持续刷新 framebuffer 而增长。
+VirtGPU 私有 ioctl 在 `ax-drm::backend::virtgpu` 转译到 RDIF；公共对象仍使用共享
+DRM 文件、GEM、PRIME、syncobj 和 sync_file。2D、经典 VirGL 和 Venus 按实际协商能力
+开放；context-init 支持最多 64 个 ring 及 poll-ring mask，提交保留 ring 选择。Venus
+capset 使用版本 0 查询，`HOST_VISIBLE` 还要求实际 hostmem BAR，不根据 render 节点
+存在与否猜测能力。
 
-Starry 的调用顺序为文件描述符的 `operation` 锁、必要时的 `modeset_operation` 锁、短时读取状态或资源表、释放表锁、最后进入 `axgpu` 设备锁。提交路径可在 `modeset_operation` 下进入设备锁，以串行化同一输出的检查与提交；资源表锁不得跨设备调用。硬中断不取得上述任一锁。删除 GEM、framebuffer 或 PRIME 别名时，先从表中移出 `Arc`，退出表锁后才让析构调用驱动的 `release_buffer`。合成 vblank 时钟只在成功提交后随 CRTC 状态和模式周期更新；待发事件在停用时按冻结的边沿完成。事件唤醒和可能释放最后一个文件引用的操作在 `modeset_operation` 锁外执行。
+旧 `card0/virtgpu` 和私有同步实现已删除；迁移不改变持久格式，不增加运行时新旧实现
+选择。回滚是代码级回滚，不是在错误时静默改走旧路径。
 
-`Card0File::ioctl` 用 Linux `DRM_RENDER_ALLOW` 表限制 `renderD128`：它可以管理 GPU 资源和 PRIME 引用，但不能查询或改变 KMS 状态，也不能创建 dumb framebuffer。`Card0::handle_dirty_fb` 只重提交流水线当前正在扫描的 framebuffer；后备缓冲区要等正式翻页提交，停用的 CRTC 不会因 dirty 通知重新点亮。这使 `ModesetState::plane_fb_id` 与设备 scanout 保持一致。
+普通 DRM 系统用例验证实际 ioctl、fd、atomic、mmap 与同步对象。
+`apps/starry/venus-regression` 在具备 `virgl` 主机能力时运行有界的重复 GEM/VMA 生命周期
+及 Vulkan 命令、fence 和内存回读；它强制选择 virtio ICD，不允许软件渲染回退。
+`virgl-test` 仍用于人工桌面与画面验收。QEMU、宿主渲染栈和真实显示器/板卡证据必须区分。
 
-Starry 的 KMS 门禁以显示控制器存在为准，不要求 GPU 实现 2D 图像资源。只有显示控制器的设备可把 dumb buffer 和 PRIME 导入 backing 直接交给 `DisplayController::check`、`commit`；支持图像资源的设备仍按原有资源创建路径处理，包括拒绝不支持的格式。当前 scanout 和待完成的旧 scanout 都保留 `FbBacking` 引用。异步提交返回 `Pending` 时，Card0 在任务上下文启动单个回收任务，每 20 ms 查询 `commit_status`；确认完成后才释放旧引用。回收任务进入设备锁前先放开 Card0 的引用表锁，因此 `GpuResource::drop` 可以安全地重新进入设备锁。没有 GPU IRQ 的显示设备只要能通过 `commit_status` 查询完成状态，也可走这条回收路径。
-
-## 3. 操作系统接入
-
-ArceOS 的 `axruntime` 把 `ax-driver` 注册对象交给 `axgpu`，`axdisplay` 通过同一实例访问显示端。StarryOS 的 DRM 核心维护 GEM handle、framebuffer、PRIME 与 modeset 状态；Linux 标准的 `DRM_IOCTL_VIRTGPU_*` 只在 VirtIO 兼容模块中转译到可选 `VirglOps`，不向通用 RDIF 泄漏 Linux UAPI，也不增加 Starry 专属 ioctl。同设备 PRIME 别名共享资源引用；外部 dma-heap 连续缓冲区只在 GPU 使用 Direct DMA 域时作为 backing 导入，其他 DMA 域须先提供映射能力。设备身份和 sysfs 信息来自已绑定驱动，VirtIO PCI 数值属性从探测到的 endpoint 读取；sysfs 父路径暂保留供现有 libdrm 使用的 platform 兼容层。没有 GPU 时不发布 DRM 节点，没有可映射 scanout 时不发布 `/dev/fb0`。无输出 GPU 的 dumb ioctl 仍按其图像资源能力工作，但 KMS ioctl 不发布显示能力。
-
-当前 Starry DRM 向用户态只暴露一组 CRTC、connector 和 primary plane，首次提交选取第一个已连接输出；`rdif-display` 仍保留完整的输出枚举能力。后续提交由 `select_output_for_present` 保持原输出绑定；原输出断开时先拒绝新提交，避免切换到另一输出后提前释放旧 backing。`Card0::clear_scanout` 根据 `DisplayController::current_state` 找到实际持有 framebuffer 的输出，即使该输出已断开，也向它提交禁用状态并等待完成后释放旧 backing。多个输出同时运行和无停用阶段的热插拔切换不在本轮实现范围内。
-
-### 3.1 迁移与回滚
-
-迁移按 RDIF 契约、VirtIO 适配、运行时、StarryOS 用户态边界的顺序完成，并在同一变更中删除旧的 `rdif-display` virgl 方法和 `axdisplay` GPU 转发函数。Rust 调用方必须同步更新；`/dev/fb0`、DRM 和 VirtGPU 用户态 ABI 保持可用。变更不写入持久格式，回滚仅需恢复旧代码和原有配置。
-
-### 3.2 验收证据
-
-验收需要证明缓冲区创建失败可回滚、`TEST_ONLY` 无副作用、提交失败仍显示旧缓冲区、mmap 与 PRIME 引用保持 backing 存活，并覆盖设备缺席。项目入口运行 ArceOS 显示用例、StarryOS 各架构 DRM 用例；`virgl-test` 还需报告真实 `GL_RENDERER=virgl` 并检查输出画面。构建或节点存在本身不足以证明图形链路成功。
+以下保留迁移前各日期的历史验证记录，不代表当前提交已经重跑对应目标。
 
 ## 4. 本轮验证记录
 

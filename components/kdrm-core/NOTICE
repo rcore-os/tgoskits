@@ -1,0 +1,25 @@
+kdrm-core: shared DRM core following Linux v7.2.3 DRM semantics
+================================================================
+
+Layer: reusable component. Kernel operations are supplied by drm-kapi.
+
+License: every file in this component is MIT-licensed (see LICENSE-MIT).
+The copyright lines in LICENSE-MIT are retained from the MIT/X11-licensed
+Linux DRM sources whose behavior these modules follow.
+
+Correspondence with Linux:
+
+- Function modules (`*_upstream.rs`) are named after the Linux DRM source
+  file whose behavior they implement. `// upstream:` comments name the
+  corresponding Linux function so that semantics can be reviewed against
+  Linux v7.2.3.
+- Type modules (`*_types.rs`) define C-layout structures that match the
+  Linux v7.2.3 x86_64 definitions. Compile-time assertions pin the internal
+  sizes and offsets the core relies on for the supported 64-bit
+  little-endian targets. They are not user-ABI or hardware validation.
+
+Not part of this component: firmware framebuffer and fbdev, Intel display
+and GT drivers, DRM bridge, and DP MST.
+
+Test fixtures: every EDID used by the host tests is built in code
+(`drm_edid_upstream.rs`, `tests` module). No Linux test data is copied.

@@ -78,3 +78,6 @@ axbuild
 intel-itco-watchdog
 intel-hda
 acpica-interpreter
+drm-kapi
+kdrm-core
+ax-drm

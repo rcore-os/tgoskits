@@ -1015,6 +1015,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-drm"
+version = "0.1.0"
+dependencies = [
+ "ax-gpu",
+ "ax-hal",
+ "ax-lazyinit",
+ "ax-memory-addr",
+ "ax-mm",
+ "ax-percpu",
+ "ax-task",
+ "drm-kapi",
+ "kdrm-core",
+ "log",
+ "rdif-display",
+ "rdif-gpu",
+ "spin",
+]
+
+[[package]]
 name = "ax-errno"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3224,6 +3243,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "drm-kapi"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "printf-compat",
+ "spin",
+]
+
+[[package]]
 name = "dtor"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4854,6 +4882,14 @@ dependencies = [
  "log",
  "lru 0.18.5",
  "printf-compat",
+]
+
+[[package]]
+name = "kdrm-core"
+version = "0.1.0"
+dependencies = [
+ "drm-kapi",
+ "spin",
 ]
 
 [[package]]
@@ -7992,6 +8028,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+
+[[package]]
 name = "spinning_top"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8050,6 +8092,7 @@ dependencies = [
  "ax-cpu",
  "ax-display",
  "ax-driver",
+ "ax-drm",
  "ax-fs-ng",
  "ax-gpu",
  "ax-hal",
@@ -8086,6 +8129,7 @@ dependencies = [
  "ddebug",
  "dma-api",
  "downcast-rs",
+ "drm-kapi",
  "event-listener",
  "flatten_objects",
  "hashbrown 0.16.1",
@@ -8094,6 +8138,7 @@ dependencies = [
  "inherit-methods-macro",
  "k230-kpu",
  "kbpf-basic",
+ "kdrm-core",
  "kernel-elf-parser",
  "kmod-loader",
  "kmod-tools",

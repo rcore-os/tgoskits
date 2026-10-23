@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 struct drm_mode_create_dumb {
@@ -35,6 +36,10 @@ struct drm_mode_map_dumb {
 };
 struct drm_mode_destroy_dumb {
     uint32_t handle;
+};
+struct drm_set_client_cap {
+    uint64_t capability;
+    uint64_t value;
 };
 struct drm_prime_handle {
     uint32_t handle, flags;
@@ -63,6 +68,15 @@ struct drm_mode_card_res {
     uint64_t fb_id_ptr, crtc_id_ptr, connector_id_ptr, encoder_id_ptr;
     uint32_t count_fbs, count_crtcs, count_connectors, count_encoders;
     uint32_t min_width, max_width, min_height, max_height;
+};
+struct drm_mode_get_plane_res {
+    uint64_t plane_id_ptr;
+    uint32_t count_planes;
+};
+struct drm_mode_get_plane {
+    uint32_t plane_id, crtc_id, fb_id, possible_crtcs, gamma_size;
+    uint32_t count_format_types;
+    uint64_t format_type_ptr;
 };
 struct drm_mode_get_connector {
     uint64_t encoders_ptr, modes_ptr, props_ptr, prop_values_ptr;
@@ -97,6 +111,8 @@ struct dma_heap_allocation_data {
 
 #define DMA_HEAP_IOCTL_ALLOC            _IOWR('H', 0, struct dma_heap_allocation_data)
 #define DRM_IOCTL_MODE_GETRESOURCES      _IOWR('d', 0xA0, struct drm_mode_card_res)
+#define DRM_IOCTL_MODE_GETPLANERESOURCES _IOWR('d', 0xB5, struct drm_mode_get_plane_res)
+#define DRM_IOCTL_MODE_GETPLANE          _IOWR('d', 0xB6, struct drm_mode_get_plane)
 #define DRM_IOCTL_PRIME_HANDLE_TO_FD     _IOWR('d', 0x2D, struct drm_prime_handle)
 #define DRM_IOCTL_PRIME_FD_TO_HANDLE     _IOWR('d', 0x2E, struct drm_prime_handle)
 #define DRM_IOCTL_MODE_GETCONNECTOR      _IOWR('d', 0xA7, struct drm_mode_get_connector)
@@ -110,10 +126,15 @@ struct dma_heap_allocation_data {
 #define DRM_IOCTL_MODE_OBJ_GETPROPERTIES _IOWR('d', 0xB9, struct drm_mode_obj_get_properties)
 #define DRM_IOCTL_MODE_ATOMIC            _IOWR('d', 0xBC, struct drm_mode_atomic)
 #define DRM_IOCTL_MODE_CREATEPROPBLOB    _IOWR('d', 0xBD, struct drm_mode_create_blob)
+#define DRM_IOCTL_SET_CLIENT_CAP         _IOW('d', 0x0d, struct drm_set_client_cap)
 
 #define DRM_MODE_OBJECT_CRTC      0xcccccccc
 #define DRM_MODE_OBJECT_CONNECTOR 0xc0c0c0c0
 #define DRM_MODE_OBJECT_PLANE     0xeeeeeeee
+#define DRM_PLANE_TYPE_PRIMARY    1
+#define DRM_MODE_ATOMIC_ALLOW_MODESET 0x0400
+#define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
+#define DRM_CLIENT_CAP_ATOMIC    3
 #define DRM_FORMAT_XRGB8888       0x34325258
 
 static uint32_t find_prop(int fd, uint32_t obj, uint32_t ty, const char *name) {
@@ -129,11 +150,50 @@ static uint32_t find_prop(int fd, uint32_t obj, uint32_t ty, const char *name) {
     if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &q) != 0) {
         return 0;
     }
-    for (uint32_t i = 0; i < q.count_props; i++) {
+    for (uint32_t i = 0; i < q.count_props && i < 32; i++) {
         struct drm_mode_get_property p = { .prop_id = ids[i] };
         if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &p) == 0
             && strcmp(p.name, name) == 0) {
             return ids[i];
+        }
+    }
+    return 0;
+}
+
+static uint32_t find_primary_plane(int fd) {
+    uint32_t plane_ids[8] = {0};
+    struct drm_mode_get_plane_res resources = {
+        .plane_id_ptr = (uint64_t)(uintptr_t)plane_ids,
+        .count_planes = 8,
+    };
+    if (ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &resources) != 0)
+        return 0;
+
+    for (uint32_t i = 0; i < resources.count_planes && i < 8; i++) {
+        struct drm_mode_get_plane plane = { .plane_id = plane_ids[i] };
+        if (ioctl(fd, DRM_IOCTL_MODE_GETPLANE, &plane) != 0)
+            continue;
+
+        uint32_t property_ids[32] = {0};
+        uint64_t property_values[32] = {0};
+        struct drm_mode_obj_get_properties properties = {
+            .props_ptr = (uint64_t)(uintptr_t)property_ids,
+            .prop_values_ptr = (uint64_t)(uintptr_t)property_values,
+            .count_props = 32,
+            .obj_id = plane_ids[i],
+            .obj_type = DRM_MODE_OBJECT_PLANE,
+        };
+        if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &properties) != 0)
+            continue;
+
+        for (uint32_t j = 0; j < properties.count_props && j < 32; j++) {
+            struct drm_mode_get_property property = {
+                .prop_id = property_ids[j],
+            };
+            if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &property) == 0 &&
+                strcmp(property.name, "type") == 0 &&
+                property_values[j] == DRM_PLANE_TYPE_PRIMARY)
+                return plane_ids[i];
         }
     }
     return 0;
@@ -148,6 +208,16 @@ int main(void) {
         TEST_DONE();
     }
 
+    struct drm_set_client_cap client_cap = {
+        .capability = DRM_CLIENT_CAP_UNIVERSAL_PLANES,
+        .value = 1,
+    };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &client_cap), 0,
+              "SET_CLIENT_CAP UNIVERSAL_PLANES before plane enumeration");
+    client_cap.capability = DRM_CLIENT_CAP_ATOMIC;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &client_cap), 0,
+              "SET_CLIENT_CAP ATOMIC before atomic KMS use");
+
     /* --- 枚举 connector / crtc，拿到屏幕分辨率 --- */
     uint32_t crtcs[4] = {0}, conns[4] = {0};
     struct drm_mode_card_res res = {
@@ -160,13 +230,20 @@ int main(void) {
     CHECK(res.count_crtcs >= 1 && res.count_connectors >= 1, "at least one crtc + connector");
     uint32_t crtc = crtcs[0], conn = conns[0];
 
-    struct drm_mode_mode_info mode = {0};
+    struct drm_mode_mode_info modes[64] = {0};
     struct drm_mode_get_connector c = {
         .connector_id = conn,
-        .count_modes = 1,
-        .modes_ptr = (uint64_t)(uintptr_t)&mode,
+
     };
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &c), 0, "GETCONNECTOR probe");
+    CHECK(c.count_modes > 0 && c.count_modes <= 64,
+          "connector reports a bounded mode list");
+    c.count_props = 0;
+    c.count_encoders = 0;
+    c.count_modes = 64;
+    c.modes_ptr = (uint64_t)(uintptr_t)modes;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &c), 0, "GETCONNECTOR");
+    struct drm_mode_mode_info mode = modes[0];
     uint32_t w = mode.hdisplay, h = mode.vdisplay;
     CHECK(w > 0 && h > 0, "mode reports nonzero resolution");
 
@@ -210,7 +287,7 @@ int main(void) {
         struct drm_mode_map_dumb foreign = { .handle = d1.handle };
         errno = 0;
         CHECK(ioctl(other_fd, DRM_IOCTL_MODE_MAP_DUMB, &foreign) == -1
-              && errno == EINVAL,
+              && errno == ENOENT,
               "GEM handle is private to one open file description");
     }
 
@@ -242,10 +319,31 @@ int main(void) {
         int export_ret = ioctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &exported);
         CHECK_RET(export_ret, 0, "PRIME_HANDLE_TO_FD dumb");
         if (export_ret == 0) {
+            struct stat export_stat;
+            int stat_ret = fstat(exported.fd, &export_stat);
+            CHECK_RET(stat_ret, 0, "fstat PRIME DMA-BUF");
+            if (stat_ret == 0) {
+                CHECK((export_stat.st_mode & S_IFMT) == 0,
+                      "PRIME DMA-BUF has anonymous-inode mode");
+                CHECK((export_stat.st_mode & 0777) == 0600,
+                      "PRIME DMA-BUF mode is owner read/write");
+                CHECK(export_stat.st_size == (off_t)d1.size,
+                      "PRIME DMA-BUF stat size matches dumb buffer");
+            }
+            CHECK(lseek(exported.fd, 0, SEEK_END) == (off_t)d1.size,
+                  "PRIME DMA-BUF SEEK_END reports size");
+            CHECK(lseek(exported.fd, 0, SEEK_SET) == 0,
+                  "PRIME DMA-BUF SEEK_SET zero succeeds");
+            errno = 0;
+            CHECK(lseek(exported.fd, 1, SEEK_SET) == -1 && errno == EINVAL,
+                  "PRIME DMA-BUF rejects nonzero SEEK_SET");
+
             struct drm_prime_handle imported = { .fd = exported.fd };
             int import_ret = ioctl(other_fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &imported);
             CHECK_RET(import_ret, 0, "PRIME_FD_TO_HANDLE dumb on second open");
+            uint32_t imported_handle = 0;
             if (import_ret == 0) {
+                imported_handle = imported.handle;
                 struct drm_mode_map_dumb imported_map = { .handle = imported.handle };
                 int map_ret = ioctl(other_fd, DRM_IOCTL_MODE_MAP_DUMB, &imported_map);
                 CHECK_RET(map_ret, 0, "MAP_DUMB imported PRIME handle");
@@ -274,19 +372,44 @@ int main(void) {
                               "RMFB imported PRIME dumb");
                 }
 
-                struct drm_mode_destroy_dumb imported_destroy = {
-                    .handle = imported.handle,
+            }
+            CHECK_RET(close(exported.fd), 0, "close exported PRIME dma-buf fd");
+            if (imported_handle) {
+                /* The imported GEM handle owns its dma-buf reference. Closing
+                 * the exported fd must not invalidate later mappings. */
+                struct drm_mode_map_dumb retained_map = {
+                    .handle = imported_handle,
                 };
-                CHECK_RET(ioctl(other_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &imported_destroy), 0,
+                int retained_map_ret = ioctl(other_fd, DRM_IOCTL_MODE_MAP_DUMB,
+                                             &retained_map);
+                CHECK_RET(retained_map_ret, 0,
+                          "MAP_DUMB imported handle after exported fd close");
+                if (retained_map_ret == 0) {
+                    uint8_t *retained = mmap(NULL, d1.size, PROT_READ | PROT_WRITE,
+                                             MAP_SHARED, other_fd, retained_map.offset);
+                    CHECK(retained != MAP_FAILED,
+                          "mmap imported backing after exported fd close");
+                    if (retained != MAP_FAILED) {
+                        retained[3] = 0xA7;
+                        CHECK(p1[3] == 0xA7,
+                              "imported handle retains shared backing after fd close");
+                        munmap(retained, d1.size);
+                    }
+                }
+                struct drm_mode_destroy_dumb imported_destroy = {
+                    .handle = imported_handle,
+                };
+                CHECK_RET(ioctl(other_fd, DRM_IOCTL_MODE_DESTROY_DUMB,
+                                &imported_destroy), 0,
                           "DESTROY_DUMB imported PRIME handle");
             }
-            close(exported.fd);
         }
         close(other_fd);
     }
 
-    /* Import a dma-heap fd through the standard PRIME path, then create a
-     * framebuffer from its device-visible backing. */
+    /* Import an external dma-heap fd through PRIME. Linux's generic
+     * drm_gem_dumb_map_offset rejects imported GEM objects; userspace maps the
+     * dma-buf fd itself, while the imported GEM handle remains usable for KMS. */
     int heap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
     CHECK(heap_fd >= 0, "open dma-heap for external PRIME import");
     if (heap_fd >= 0) {
@@ -300,35 +423,45 @@ int main(void) {
             struct drm_prime_handle imported = { .fd = (int)heap.fd };
             int import_ret = ioctl(fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &imported);
             CHECK_RET(import_ret, 0, "PRIME_FD_TO_HANDLE dma-heap buffer");
+            uint8_t *heap_map = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                                     MAP_SHARED, (int)heap.fd, 0);
+            CHECK(heap_map != MAP_FAILED, "mmap external dma-heap fd");
+            if (heap_map != MAP_FAILED) {
+                heap_map[0] = 0x5a;
+                CHECK(heap_map[0] == 0x5a, "external dma-heap mapping is writable");
+            }
             if (import_ret == 0) {
                 struct drm_mode_map_dumb mapped = { .handle = imported.handle };
-                CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mapped), 0,
-                          "MAP_DUMB imported dma-heap buffer");
+                errno = 0;
+                CHECK(ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mapped) == -1 &&
+                      errno == EINVAL,
+                      "MAP_DUMB rejects imported GEM object with EINVAL");
+            }
+            CHECK_RET(close((int)heap.fd), 0, "close source dma-heap fd");
+            if (heap_map != MAP_FAILED) {
+                heap_map[1] = 0xa5;
+                CHECK(heap_map[1] == 0xa5,
+                      "dma-heap mapping remains valid after source fd close");
+                munmap(heap_map, 4096);
+            }
+            if (import_ret == 0) {
                 struct drm_mode_fb_cmd2 heap_fb = {
-                    .width = 16, .height = 16, .pixel_format = DRM_FORMAT_XRGB8888,
-                    .handles = { imported.handle }, .pitches = { 64 },
+                    .width = 32, .height = 32, .pixel_format = DRM_FORMAT_XRGB8888,
+                    .handles = { imported.handle }, .pitches = { 128 },
                 };
                 int addfb_ret = ioctl(fd, DRM_IOCTL_MODE_ADDFB2, &heap_fb);
-                CHECK_RET(addfb_ret, 0, "ADDFB2 imported dma-heap buffer");
+                if (addfb_ret < 0)
+                    fprintf(stderr, "  imported framebuffer errno=%d (%s)\n",
+                            errno, strerror(errno));
+                CHECK_RET(addfb_ret, 0,
+                          "ADDFB2 imported dma-heap handle after source fd close");
                 if (addfb_ret == 0) {
                     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_RMFB, &heap_fb.fb_id), 0,
                               "RMFB imported dma-heap buffer");
                 }
-                close((int)heap.fd);
-                uint8_t *import_map = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
-                                           MAP_SHARED, fd, mapped.offset);
-                CHECK(import_map != MAP_FAILED,
-                      "imported dma-heap backing survives source fd close");
-                if (import_map != MAP_FAILED) {
-                    import_map[0] = 0x5a;
-                    CHECK(import_map[0] == 0x5a, "imported dma-heap mmap is writable");
-                    munmap(import_map, 4096);
-                }
                 struct drm_mode_destroy_dumb destroy = { .handle = imported.handle };
                 CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy), 0,
                           "DESTROY_DUMB imported dma-heap buffer");
-            } else {
-                close((int)heap.fd);
             }
         }
         close(heap_fd);
@@ -364,7 +497,8 @@ int main(void) {
     };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &cb), 0, "CREATEPROPBLOB");
 
-    uint32_t plane = 0x40;  /* fixed primary plane id */
+    uint32_t plane = find_primary_plane(fd);
+    CHECK(plane != 0, "find primary plane from KMS resources");
     uint32_t P_CRTC_MODE   = find_prop(fd, crtc, DRM_MODE_OBJECT_CRTC, "MODE_ID");
     uint32_t P_CRTC_ACTIVE = find_prop(fd, crtc, DRM_MODE_OBJECT_CRTC, "ACTIVE");
     uint32_t P_CONN_CRTC   = find_prop(fd, conn, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
@@ -398,6 +532,7 @@ int main(void) {
         0, 0, w, h,
     };
     struct drm_mode_atomic atom = {
+        .flags = DRM_MODE_ATOMIC_ALLOW_MODESET,
         .count_objs = 3,
         .objs_ptr = (uint64_t)(uintptr_t)objs,
         .count_props_ptr = (uint64_t)(uintptr_t)counts,
