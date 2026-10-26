@@ -4,13 +4,6 @@
 
 <div align="center">
 
-[![Build & Test](https://github.com/rcore-os/tgoskits/actions/workflows/ci.yml/badge.svg)](https://github.com/rcore-os/tgoskits/actions/workflows/ci.yml)
-[![Nightly Benchmarks](https://img.shields.io/badge/nightly-benchmarks-blueviolet.svg)](https://rcore-os.cn/tgoskits/benchmark/)
-[![Rust](https://img.shields.io/badge/edition-2024-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
-
-</div>
-
 English | [中文](README_CN.md)
 
 ## 1. Introduction
@@ -112,7 +105,7 @@ Contributions through issues and pull requests should follow these rules:
 
 1. Claim an issue in the approved quarterly plan and select its owner in `Assignees`.
 2. Develop from `dev` and link each PR to one implementation issue. PRs without a linked issue will not be processed.
-3. Include “当前问题” (current problem), “修改方案” (proposed changes), and “测试验证” (validation) in the PR body. The current problem may quote relevant issue content.
+3. Include "current problem", "proposed changes", and "validation" in the PR body. The current problem may quote relevant issue content.
 4. Run the checks needed for the change and record actual results and any unverified scope in the PR.
 
 See the [contribution guide](./docs/community/contributing.md) for quarterly planning, issue decomposition, validation commands, and stable release requirements.
