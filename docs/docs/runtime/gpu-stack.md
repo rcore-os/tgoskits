@@ -6,7 +6,7 @@
 同一块 VirtIO GPU 只注册一次设备。`ax-gpu` 独占设备和传输，`ax-drm` 将其接入
 共享 `kdrm-core`。Starry 的 `card0` 只适配 Linux 文件操作、用户内存、poll 与 VMA，
 不再维护另一套 GEM、syncobj、master 或 atomic 状态。详细契约见
-[共享 DRM 核心接入](../../design/shared-drm.md)。
+[共享 DRM 核心接入](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/shared-drm.md)。
 
 `kdrm-core` 拥有 DRM 对象与 UAPI 状态，`drm-kapi` 通过显式 provider 接入任务、
 时间、等待和内存；进程凭据、用户地址空间和描述符表仍由 Starry 拥有。服务表只发布

@@ -37,7 +37,8 @@ docs/
 │           └── introducing-tgoskits.md
 ├── community/             # 社区文档（独立 sidebar）
 │   ├── introduction.md
-│   ├── resources.md
+│   ├── team.md
+│   ├── contributing.md
 │   └── support.md
 ├── src/                   # 自定义 React 组件和样式
 │   ├── css/
