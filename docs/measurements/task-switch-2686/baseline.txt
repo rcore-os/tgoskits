@@ -1,0 +1,427 @@
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: 268cdabb938df464de665f4abb61404fd642adbad990e194a4c2a2c6d9649292
+ANSI escapes and repeated blank lines removed; measurement values unchanged.
+
+Bencher start ...
+
+[  3.567612 0:4294967296 ax_runtime::bootstrap:201] runtime console active: serial0, ttyS2
+Enable User Access PMU @ CPU 4
+
+[  3.567629 0:4294967296 ax_runtime::bootstrap:238] Primary CPU 0 init OK.
+
+Benchmark: rdtsc
+  Iterations: 100000000
+  Benchmark total duration: 4 s
+  Average timer nanoseconds: 48 ns
+
+Benchmark: spawn
+  Iterations: 500000
+  Benchmark total duration: 977 s
+  Average timer nanoseconds: 1954773 ns
+
+CPU Freq = 672611702Hz, CPU Cycle Counter = 674239100733 from 127 to 674239100860, In 1002s, 1002419521833ns
+
+Bencher: task switch ...
+AARCH64 Generic Timer Registers: CNTFRQ_EL0=24000000, CNTVCT_EL0=24143694582
+CPU4 cycle=674239118388, timer cnt=24143694715
+PMUSERENR_EL0=0xf, PMCNTENSET_EL0=0x80000000, PMCR_EL0=0x410b3051
+Read GPIO_VER_ID=0x101157c
+Read GPIO_EXT_PORT=0xd38208f
+After every 10 million task switches, a GPIO UART signal will be output
+
+---------
+Bencher: 0 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2750 ns
+  Average CPU cycles: 2063
+
+  CPU Freq: 750028827 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=0 samples_per_direction=5000000 avg_cycles=2063 min_cycles=1998 max_cycles=9738
+
+---------
+Bencher: 1 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2752 ns
+  Average CPU cycles: 2063
+
+  CPU Freq: 749626187 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=1 samples_per_direction=5000000 avg_cycles=2063 min_cycles=2019 max_cycles=7454
+
+---------
+Bencher: 2 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2748 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 750011610 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=2 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1994 max_cycles=7197
+
+---------
+Bencher: 3 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2750 ns
+  Average CPU cycles: 2062
+
+  CPU Freq: 749617189 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=3 samples_per_direction=5000000 avg_cycles=2062 min_cycles=1978 max_cycles=6927
+
+---------
+Bencher: 4 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2752 ns
+  Average CPU cycles: 2063
+
+  CPU Freq: 749600950 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=4 samples_per_direction=5000000 avg_cycles=2063 min_cycles=1984 max_cycles=6940
+
+---------
+Bencher: 5 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2750 ns
+  Average CPU cycles: 2062
+
+  CPU Freq: 749639947 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=5 samples_per_direction=5000000 avg_cycles=2062 min_cycles=1981 max_cycles=7095
+
+---------
+Bencher: 6 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749565224 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=6 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1984 max_cycles=7222
+
+---------
+Bencher: 7 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2750 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749640552 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=7 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1975 max_cycles=6900
+
+---------
+Bencher: 8 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2060
+
+  CPU Freq: 749967432 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=8 samples_per_direction=5000000 avg_cycles=2060 min_cycles=1984 max_cycles=7224
+
+---------
+Bencher: 9 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2060
+
+  CPU Freq: 749992051 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=9 samples_per_direction=5000000 avg_cycles=2060 min_cycles=1971 max_cycles=6899
+
+---------
+Bencher: 10 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2746 ns
+  Average CPU cycles: 2059
+
+  CPU Freq: 749539386 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=10 samples_per_direction=5000000 avg_cycles=2059 min_cycles=1993 max_cycles=6984
+
+---------
+Bencher: 11 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2059
+
+  CPU Freq: 749569125 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=11 samples_per_direction=5000000 avg_cycles=2059 min_cycles=1991 max_cycles=6993
+
+---------
+Bencher: 12 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2059
+
+  CPU Freq: 749504051 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=12 samples_per_direction=5000000 avg_cycles=2059 min_cycles=1987 max_cycles=7196
+
+---------
+Bencher: 13 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2059
+
+  CPU Freq: 749542833 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=13 samples_per_direction=5000000 avg_cycles=2059 min_cycles=1999 max_cycles=7202
+
+---------
+Bencher: 14 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2748 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 750027334 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=14 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1985 max_cycles=7362
+
+---------
+Bencher: 15 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749607140 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=15 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1981 max_cycles=6917
+
+---------
+Bencher: 16 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749622593 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=16 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1992 max_cycles=7147
+
+---------
+Bencher: 17 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2748 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749995704 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=17 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1977 max_cycles=6938
+
+---------
+Bencher: 18 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2059
+
+  CPU Freq: 749533762 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=18 samples_per_direction=5000000 avg_cycles=2059 min_cycles=1985 max_cycles=6906
+
+---------
+Bencher: 19 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2059
+
+  CPU Freq: 749505072 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=19 samples_per_direction=5000000 avg_cycles=2059 min_cycles=1979 max_cycles=7174
+
+---------
+Bencher: 20 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2060
+
+  CPU Freq: 750005090 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=20 samples_per_direction=5000000 avg_cycles=2060 min_cycles=1991 max_cycles=7217
+
+---------
+Bencher: 21 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749640811 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=21 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1967 max_cycles=7133
+
+---------
+Bencher: 22 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749587045 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=22 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1977 max_cycles=7172
+
+---------
+Bencher: 23 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749605219 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=23 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1980 max_cycles=6911
+
+---------
+Bencher: 24 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749542908 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=24 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1990 max_cycles=7193
+
+---------
+Bencher: 25 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749565996 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=25 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1981 max_cycles=6902
+
+---------
+Bencher: 26 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2749 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749606664 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=26 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1970 max_cycles=6927
+
+---------
+Bencher: 27 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2747 ns
+  Average CPU cycles: 2059
+
+  CPU Freq: 749558611 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=27 samples_per_direction=5000000 avg_cycles=2059 min_cycles=1983 max_cycles=7064
+
+---------
+Bencher: 28 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2750 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749584065 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=28 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1971 max_cycles=7089
+
+---------
+Bencher: 29 task switch count = 10000000
+2 THREADS switching GPIO3_C6 output between low and high
+
+Benchmark: switch
+  Iterations: 10000000
+  Benchmark total duration: 27 s
+  Average timer nanoseconds: 2750 ns
+  Average CPU cycles: 2061
+
+  CPU Freq: 749634266 Hz (0.750 GHz)
+AXVISOR_TASK_SWITCH_GROUP_SUMMARY index=29 samples_per_direction=5000000 avg_cycles=2061 min_cycles=1981 max_cycles=7006
+TASK_SWITCH_SUMMARY rounds=30 samples_per_round=10000000 avg_ns=2748 avg_cycles=2060
+
+Bencher end
+ok 1 task_switch::tests::fifo_guest_task_switch_measurement
+AXTEST_CASE status=pass module=task_switch::tests name=fifo_guest_task_switch_measurement
+AXTEST_SUMMARY pass=1 fail=0 skip=0 total=1
+AXTEST_SUITE_OK

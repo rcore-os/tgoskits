@@ -1,0 +1,201 @@
+Temporary attribution probes, not formal benchmark passes. All exited without the formal workload summary; the unchanged harness rejected them.
+
+old-generic
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: 6696553330c523aaa3bbf2642a2903b2c88280fa18fd2e9173feb2e379c36bf3
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=48573164 sum_ticks=2809632 divisor=100000 avg_cycles=485 avg_ticks=28
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=48561956 sum_ticks=2804018 divisor=100000 avg_cycles=485 avg_ticks=28
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3100134 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=165
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=48567035 sum_ticks=2811851 divisor=100000 avg_cycles=485 avg_ticks=28
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=373661313 sum_ticks=12044508 divisor=200000 avg_cycles_per_switch=1868 avg_ticks_per_switch=60
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=309592649 sum_ticks=9479456 divisor=200000 avg_cycles_per_switch=1547 avg_ticks_per_switch=47
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=373671744 sum_ticks=12046902 divisor=200000 avg_cycles_per_switch=1868 avg_ticks_per_switch=60
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=309817339 sum_ticks=9483887 divisor=200000 avg_cycles_per_switch=1549 avg_ticks_per_switch=47
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=373228208 sum_ticks=12026665 divisor=200000 avg_cycles_per_switch=1866 avg_ticks_per_switch=60
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=309817773 sum_ticks=9486974 divisor=200000 avg_cycles_per_switch=1549 avg_ticks_per_switch=47
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+old-lto
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: 1c43507e1e9e3984c46ade0ec61da1e26d6a046d3766e90dea309b0187bad1c2
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3109386 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=9417
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=48692853 sum_ticks=2808764 divisor=100000 avg_cycles=486 avg_ticks=28
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3103670 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=3701
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=48684384 sum_ticks=2808281 divisor=100000 avg_cycles=486 avg_ticks=28
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3103851 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=3882
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=48682884 sum_ticks=2811522 divisor=100000 avg_cycles=486 avg_ticks=28
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=389239910 sum_ticks=12502812 divisor=200000 avg_cycles_per_switch=1946 avg_ticks_per_switch=62
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=322088734 sum_ticks=9850323 divisor=200000 avg_cycles_per_switch=1610 avg_ticks_per_switch=49
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=389356931 sum_ticks=12507803 divisor=200000 avg_cycles_per_switch=1946 avg_ticks_per_switch=62
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=322412462 sum_ticks=9861950 divisor=200000 avg_cycles_per_switch=1612 avg_ticks_per_switch=49
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=389582455 sum_ticks=12503162 divisor=200000 avg_cycles_per_switch=1947 avg_ticks_per_switch=62
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=322743508 sum_ticks=9874697 divisor=200000 avg_cycles_per_switch=1613 avg_ticks_per_switch=49
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+old-inline16
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: 5208ac4114147d9a9e75a97d11f47014bceea77eca91da28ab1c2a3ab04e64de
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=48197757 sum_ticks=2792272 divisor=100000 avg_cycles=481 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=48225526 sum_ticks=2793252 divisor=100000 avg_cycles=482 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3100134 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=165
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=48224411 sum_ticks=2796514 divisor=100000 avg_cycles=482 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=228626619 sum_ticks=7670516 divisor=200000 avg_cycles_per_switch=1143 avg_ticks_per_switch=38
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=165456260 sum_ticks=5146736 divisor=200000 avg_cycles_per_switch=827 avg_ticks_per_switch=25
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=228580797 sum_ticks=7665154 divisor=200000 avg_cycles_per_switch=1142 avg_ticks_per_switch=38
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=165493467 sum_ticks=5151097 divisor=200000 avg_cycles_per_switch=827 avg_ticks_per_switch=25
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=228121475 sum_ticks=7656481 divisor=200000 avg_cycles_per_switch=1140 avg_ticks_per_switch=38
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=165369003 sum_ticks=5147653 divisor=200000 avg_cycles_per_switch=826 avg_ticks_per_switch=25
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+memcpy-generic
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: 0e3c63d12532318c5382d3f26652f8dfef4c279f7cf032942f76cd24331c824b
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=48339371 sum_ticks=2758665 divisor=100000 avg_cycles=483 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3104985 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=5016
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=48347706 sum_ticks=2758196 divisor=100000 avg_cycles=483 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=48330783 sum_ticks=2758287 divisor=100000 avg_cycles=483 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=256902753 sum_ticks=8428882 divisor=200000 avg_cycles_per_switch=1284 avg_ticks_per_switch=42
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=194043358 sum_ticks=5930750 divisor=200000 avg_cycles_per_switch=970 avg_ticks_per_switch=29
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=256984640 sum_ticks=8428532 divisor=200000 avg_cycles_per_switch=1284 avg_ticks_per_switch=42
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=194327781 sum_ticks=5940718 divisor=200000 avg_cycles_per_switch=971 avg_ticks_per_switch=29
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=256866526 sum_ticks=8420188 divisor=200000 avg_cycles_per_switch=1284 avg_ticks_per_switch=42
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=194126411 sum_ticks=5931527 divisor=200000 avg_cycles_per_switch=970 avg_ticks_per_switch=29
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+memcpy-inline16
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: a0eff0cb2f870aa731be1bc96a8d39d38494095141c5d92b55f24c8f24d4be7f
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3100134 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=165
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=48225660 sum_ticks=2759498 divisor=100000 avg_cycles=482 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=48229007 sum_ticks=2758441 divisor=100000 avg_cycles=482 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3100134 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=165
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=48235528 sum_ticks=2759344 divisor=100000 avg_cycles=482 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=227287173 sum_ticks=7537012 divisor=200000 avg_cycles_per_switch=1136 avg_ticks_per_switch=37
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=164447683 sum_ticks=5050430 divisor=200000 avg_cycles_per_switch=822 avg_ticks_per_switch=25
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=227348028 sum_ticks=7539763 divisor=200000 avg_cycles_per_switch=1136 avg_ticks_per_switch=37
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=164424757 sum_ticks=5051606 divisor=200000 avg_cycles_per_switch=822 avg_ticks_per_switch=25
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=227749436 sum_ticks=7543788 divisor=200000 avg_cycles_per_switch=1138 avg_ticks_per_switch=37
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=164378568 sum_ticks=5051137 divisor=200000 avg_cycles_per_switch=821 avg_ticks_per_switch=25
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+memcpy-lse
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: 5d5d51bd47effcb314f029d9014faaca47da1297f2063434de3c61b181b5b4cd
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=48426333 sum_ticks=2757111 divisor=100000 avg_cycles=484 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=48445783 sum_ticks=2757475 divisor=100000 avg_cycles=484 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3107329 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=7360
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=48434965 sum_ticks=2758175 divisor=100000 avg_cycles=484 avg_ticks=27
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=248403343 sum_ticks=8175342 divisor=200000 avg_cycles_per_switch=1242 avg_ticks_per_switch=40
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=187536848 sum_ticks=5736934 divisor=200000 avg_cycles_per_switch=937 avg_ticks_per_switch=28
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=247935542 sum_ticks=8163085 divisor=200000 avg_cycles_per_switch=1239 avg_ticks_per_switch=40
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=187212614 sum_ticks=5725202 divisor=200000 avg_cycles_per_switch=936 avg_ticks_per_switch=28
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=248385952 sum_ticks=8168041 divisor=200000 avg_cycles_per_switch=1241 avg_ticks_per_switch=40
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=187037873 sum_ticks=5722969 divisor=200000 avg_cycles_per_switch=935 avg_ticks_per_switch=28
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+memcpy-gpio-generic
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: 76b98d09a5a7a904d2f413c3c4908ecab3181d38232d27d4cc249bad52706244
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3107117 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=7014
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=3605533 sum_ticks=278117 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=3600282 sum_ticks=274127 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3105014 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=4911
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=3600728 sum_ticks=294168 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=220207366 sum_ticks=6711831 divisor=200000 avg_cycles_per_switch=1101 avg_ticks_per_switch=33
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=188849289 sum_ticks=5778577 divisor=200000 avg_cycles_per_switch=944 avg_ticks_per_switch=28
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=220032601 sum_ticks=6704992 divisor=200000 avg_cycles_per_switch=1100 avg_ticks_per_switch=33
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=188864475 sum_ticks=5779564 divisor=200000 avg_cycles_per_switch=944 avg_ticks_per_switch=28
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=219992173 sum_ticks=6705384 divisor=200000 avg_cycles_per_switch=1099 avg_ticks_per_switch=33
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=188981067 sum_ticks=5781223 divisor=200000 avg_cycles_per_switch=944 avg_ticks_per_switch=28
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+memcpy-gpio-cgu1-inline16
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: b16a375176325db54833117f177cd82764831b9d58ee72af77df59e2f8672eb9
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3106047 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=5944
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=3700756 sum_ticks=293202 divisor=100000 avg_cycles=37 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=3700581 sum_ticks=293888 divisor=100000 avg_cycles=37 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3104016 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=4047
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=3700298 sum_ticks=291718 divisor=100000 avg_cycles=37 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=204587181 sum_ticks=6243251 divisor=200000 avg_cycles_per_switch=1022 avg_ticks_per_switch=31
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=173337579 sum_ticks=5315800 divisor=200000 avg_cycles_per_switch=866 avg_ticks_per_switch=26
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=204588970 sum_ticks=6242558 divisor=200000 avg_cycles_per_switch=1022 avg_ticks_per_switch=31
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=173358596 sum_ticks=5316451 divisor=200000 avg_cycles_per_switch=866 avg_ticks_per_switch=26
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=204493406 sum_ticks=6239268 divisor=200000 avg_cycles_per_switch=1022 avg_ticks_per_switch=31
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=173486558 sum_ticks=5321239 divisor=200000 avg_cycles_per_switch=867 avg_ticks_per_switch=26
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+fixed-a76
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: e9a92327d7fa4fde85d89a1fc1848bf3d91b60789e4beebcdf7d0fc84e988181
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3107149 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=7180
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=3609168 sum_ticks=285971 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3104275 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=4306
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=3607379 sum_ticks=260995 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3100000 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=31
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=3600281 sum_ticks=293181 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=158932273 sum_ticks=4888443 divisor=200000 avg_cycles_per_switch=794 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=155927342 sum_ticks=4801433 divisor=200000 avg_cycles_per_switch=779 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=158984237 sum_ticks=4891663 divisor=200000 avg_cycles_per_switch=794 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=155943697 sum_ticks=4798255 divisor=200000 avg_cycles_per_switch=779 avg_ticks_per_switch=23
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=158767552 sum_ticks=4885349 divisor=200000 avg_cycles_per_switch=793 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=154998561 sum_ticks=4772985 divisor=200000 avg_cycles_per_switch=774 avg_ticks_per_switch=23
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1
+
+old-host-fixed-a76-guest
+Board: OrangePi-5-Plus-robot-1
+Raw log SHA-256: 21669b7e8c5eace04ae76538f7768b5fa733c2e73ef3a9a1532b6ceb8c95069e
+TASK_SWITCH_DIAGNOSTIC mode=temporary samples=attribution-only
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=1 samples=100000 sum_cycles=3111828 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=11857
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=1 samples=100000 sum_cycles=3600481 sum_ticks=252322 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=2 samples=100000 sum_cycles=3104324 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=4353
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=2 samples=100000 sum_cycles=3600483 sum_ticks=295344 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_PMU_READ round=3 samples=100000 sum_cycles=3104308 divisor=100000 avg_cycles=31 min_cycles=31 max_cycles=4339
+TASK_SWITCH_DIAGNOSTIC_GPIO_LOW round=3 samples=100000 sum_cycles=3600566 sum_ticks=292838 divisor=100000 avg_cycles=36 avg_ticks=2
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=1 switches=200000 sum_cycles=159052416 sum_ticks=4958079 divisor=200000 avg_cycles_per_switch=795 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=1 switches=200000 sum_cycles=155412412 sum_ticks=4849901 divisor=200000 avg_cycles_per_switch=777 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=2 switches=200000 sum_cycles=158954993 sum_ticks=4948559 divisor=200000 avg_cycles_per_switch=794 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=2 switches=200000 sum_cycles=155462655 sum_ticks=4848907 divisor=200000 avg_cycles_per_switch=777 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=gpio round=3 switches=200000 sum_cycles=158912335 sum_ticks=4953963 divisor=200000 avg_cycles_per_switch=794 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_HANDOFF mode=no-gpio round=3 switches=200000 sum_cycles=155367624 sum_ticks=4847115 divisor=200000 avg_cycles_per_switch=776 avg_ticks_per_switch=24
+TASK_SWITCH_DIAGNOSTIC_DONE
+AXVM_TEST_FAILED guest stopped before its completion condition
+AXTEST_SUITE_FAIL failed=1

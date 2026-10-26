@@ -1,6 +1,6 @@
 # Orange Pi task-switch 调度切换基准
 
-本用例在 Orange Pi 5 Plus 上以单个 vCPU 运行 `apps/arceos/task-switch` ArceOS 客户机，测量同优先级 FIFO(80) 两个任务之间 `yield` 往返的调度切换开销，并在每个计时间隔内驱动 GPIO3_C6 引脚，供示波器核对。客户机的任务运行在 EL1，自己完成测量、换算与判定，板卡 runner 只等待既定的成功与失败标记。
+本用例在 Orange Pi 5 Plus 上以单个 vCPU 运行 `apps/arceos/task-switch` ArceOS 客户机，测量同优先级 FIFO(80) 两个任务之间 `yield` 往返的调度切换开销，并在每个计时间隔内驱动 GPIO3_C6 引脚，供示波器核对。客户机的任务运行在 EL1，自己完成测量、换算与判定，板卡 runner 只等待既定的成功与失败标记。本用例的客户机配置只适用于固定在 RK3588 `cpu@400`（Cortex-A76）的部署，不能迁移到 Cortex-A55 或当作一般 ARMv8 CPU 配置；AxVisor 宿主保持通用目标，不接收客户机专属 flags。
 
 ## 1. 定位与分工
 
@@ -66,7 +66,7 @@ flowchart TD
 
 ### 3.1 构建配置
 
-客户机构建、AxVisor 宿主构建与虚拟机描述分别放在同一目录的三个配置文件中。`guest-build.toml` 描述客户机包名、目标与能力：`package = "task-switch"`、`target = "aarch64-unknown-none-softfloat"`、`features = ["bench-fifo-policy"]` 与 `max_cpu_num = 1`；`guest-builds.toml` 通过 `arceos_build_configs = ["guest-build.toml"]` 让宿主构建前先构建客户机。`build-aarch64-unknown-none-softfloat.toml` 只保留宿主运行确实需要的 `ax-driver/rockchip-sdhci` 与 `fs`，并继续声明 `vm_configs`；`task-switch.toml` 则固定 `guest_type = "passthrough"`、`cpu_num = 1` 与 `phys_cpu_ids = [0x400]`。
+客户机构建、AxVisor 宿主构建与虚拟机描述分别放在同一目录的三个配置文件中。`guest-build.toml` 描述客户机包名、目标与能力：`package = "task-switch"`、`target = "aarch64-unknown-none-softfloat"`、`features = ["bench-fifo-policy"]` 与 `max_cpu_num = 1`；同一 `[env] RUSTFLAGS` 固定使用 stack protector、`target-cpu=cortex-a76`、禁用 NEON 和 `--max-store-memcpy=16`。soft-float ABI 与 `-neon` 保留，严格对齐由共享 AArch64 目标 JSON 提供，不重复传入会触发 unstable warning 的 `+strict-align`。短复制内联策略遵循[短复制内联设计](../../../../docs/design/aarch64-inline-copy.md)，在此仅作为该 A76 客户机的专属配置，不修改全局默认值。`guest-builds.toml` 通过 `arceos_build_configs = ["guest-build.toml"]` 让宿主构建前先构建客户机。`build-aarch64-unknown-none-softfloat.toml` 只保留宿主运行确实需要的 `ax-driver/rockchip-sdhci` 与 `fs`，并继续声明 `vm_configs`；`task-switch.toml` 则固定 `guest_type = "passthrough"`、`cpu_num = 1` 与 `phys_cpu_ids = [0x400]`。
 
 客户机的 FIFO 作用域由 `bench-fifo-policy` 控制：`main()` 在 `rdtsc`/`spawn` 之后调用 `configure_current_task_for_switch_bench()` 把主任务移入 FIFO(80)，`spawn_switch_peer()` 以同一策略创建 peer，运行时全局默认策略保持 Fair。宿主侧 vCPU 宿主任务的策略不再靠宿主 feature 选择，而是随 `axvm::VmCreatePlan` 一起提交：`axvm::VmManager::create()` 接收整份计划，控制任务用其中的 `vcpu_schedule_policy` 为每个 vCPU 宿主任务安装同一策略，`VmHandle::start()` 与 `VmHandle::reset()` 产生的每次运行都复用该策略；`axvm::SchedulePolicy` 与 `axvm::RtPriority` 仍是公共类型，本用例不再需要 `bench-fifo-vcpu-policy` 这类基准专用特性。
 
@@ -86,7 +86,7 @@ cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 ```
 
-该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `std tests` 检查在持续集成中以同一命令运行它。板卡运行入口只接受内核套件最后的 `AXTEST_SUITE_OK`，纯算术测试通过并不代表板卡测量通过。
+该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `std tests` 检查在持续集成中以同一命令运行它。板卡运行入口要求内核套件最后出现 `AXTEST_SUITE_OK`，该标记只证明完整有效测量完成，不代表性能达标。性能目标是聚合 `avg_cycles < 800`；每轮 `max_cycles` 仍须单独报告，平均目标不承诺最大时延小于 800 周期。完整测量与验证记录见[任务切换测量结果](../../../../docs/measurements/task-switch-2686/README.md)。GPIO 信号必须保留；单引脚 GPIO 优化的仪器成本变化与通用 `memcpy` 成本变化分别归因，不得通过删信号或扣除 GPIO 成本改写正式值。
 
 ## 4. 目录布局与用例发现
 

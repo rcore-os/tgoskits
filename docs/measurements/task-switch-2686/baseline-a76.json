@@ -1,0 +1,13 @@
+{
+  "name": "baseline-a76",
+  "board": "OrangePi-5-Plus-robot-1",
+  "raw_log_sha256": "d044a3d5e3a498d4241428ea13474f5dad9d9928098b18965ce7eef2d0a34828",
+  "rounds": 30,
+  "samples_per_round": 10000000,
+  "avg_ns": 1335,
+  "avg_cycles": 930,
+  "round_avg_min": 929,
+  "round_avg_max": 931,
+  "min_cycles": 888,
+  "max_cycles": 5781
+}

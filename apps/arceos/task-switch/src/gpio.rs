@@ -146,23 +146,17 @@ mod rk3588 {
         GPIO3_WINDOW.load(Ordering::Relaxed)
     }
 
-    /// Sets or clears one GPIO3 pin while preserving the other pins.
+    /// Sets or clears one GPIO3 pin through the V2 per-bit write mask.
     #[inline]
     fn set_gpio_bit(pin: u32, value: bool) {
-        let base = window();
-        let mut current = read_gpio_pair(base);
-        if value {
-            current |= 1 << pin;
+        let pin_in_half = pin % 16;
+        let (register, write_enable) = if pin < 16 {
+            (SWPORT_DR_L, 1_u32 << (pin_in_half + 16))
         } else {
-            current &= !(1 << pin);
-        }
-        write_gpio_pair(base, current);
-    }
-
-    #[inline]
-    fn read_gpio_pair(base: usize) -> u32 {
-        (mmio_read32(base + SWPORT_DR_L) & 0xffff)
-            | ((mmio_read32(base + SWPORT_DR_H) & 0xffff) << 16)
+            (SWPORT_DR_H, 1_u32 << (pin_in_half + 16))
+        };
+        let data = u32::from(value) << pin_in_half;
+        mmio_write32(window() + register, write_enable | data);
     }
 
     /// Writes both GPIO data halves; RK3588 uses bits[31:16] as write enable.

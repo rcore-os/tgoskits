@@ -4,7 +4,7 @@ use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
     ffi::{c_char, c_int, c_long, c_uint, c_void},
-    mem::{align_of, size_of},
+    mem::{MaybeUninit, align_of, size_of},
     ptr::{self, NonNull},
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     time::Duration,
@@ -475,15 +475,52 @@ pub unsafe extern "C" fn free(ptr: *mut c_void) {
     }
 }
 
+/// Copies `n` bytes of normal memory and returns `dst`.
+///
 /// # Safety
 ///
-/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+/// For nonzero `n`, `src` and `dst` must designate valid, nonoverlapping ranges
+/// of `n` bytes in live allocations, readable and writable respectively. Access
+/// must obey Rust's aliasing and data-race rules. No alignment beyond byte
+/// alignment is required, and source storage may contain uninitialized bytes.
+/// This is not an MMIO operation. Zero length does not access either pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memcpy(dst: *mut c_void, src: *const c_void, n: SizeT) -> *mut c_void {
-    let dst_u8 = dst.cast::<u8>();
-    let src_u8 = src.cast::<u8>();
-    for i in 0..n {
-        unsafe { *dst_u8.add(i) = *src_u8.add(i) };
+    let dst_bytes = dst.cast::<MaybeUninit<u8>>();
+    let src_bytes = src.cast::<MaybeUninit<u8>>();
+    let word_size = size_of::<usize>();
+    let word_mask = word_size - 1;
+    let mut copied = 0;
+
+    // Equal alignment residues allow a byte prefix to align both pointers.
+    // Keep all other copies bytewise: early boot may forbid unaligned words.
+    if (dst.addr() ^ src.addr()) & word_mask == 0 {
+        let prefix = dst.addr().wrapping_neg() & word_mask;
+        while copied < n.min(prefix) {
+            // SAFETY: copied < n keeps both byte accesses inside the caller's
+            // separate ranges. MaybeUninit transports storage, including padding,
+            // without requiring initialized bytes or creating references.
+            unsafe { dst_bytes.add(copied).write(src_bytes.add(copied).read()) };
+            copied += 1;
+        }
+        while n - copied >= word_size {
+            // SAFETY: The prefix aligned both pointers, and word-sized steps
+            // preserve alignment. The length check bounds the entire word within
+            // each range. MaybeUninit permits uninitialized storage; no reference
+            // or initialized integer is formed, and the ranges do not overlap.
+            unsafe {
+                let src_word = src_bytes.add(copied).cast::<MaybeUninit<usize>>();
+                let dst_word = dst_bytes.add(copied).cast::<MaybeUninit<usize>>();
+                dst_word.write(src_word.read());
+            }
+            copied += word_size;
+        }
+    }
+    while copied < n {
+        // SAFETY: Both byte accesses stay within the caller's separate ranges,
+        // with byte alignment and no initialization requirement on the storage.
+        unsafe { dst_bytes.add(copied).write(src_bytes.add(copied).read()) };
+        copied += 1;
     }
     dst
 }
