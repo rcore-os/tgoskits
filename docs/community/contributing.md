@@ -69,6 +69,10 @@ sidebar_label: "贡献指南"
 
 讨论通过后，维护者同步更新季度任务清单、Issue 范围、负责人、标签和 Milestone，并保留原决定与本次变更的链接。结论形成前不启动新增范围的开发和 PR 审查；未通过的任务继续作为候选项保留。
 
+### 2.5 月度计划
+
+每个月初，维护者在 [Roadmap 讨论区](https://github.com/rcore-os/tgoskits/discussions/categories/roadmap)创建对应月份的开发计划，列出当月计划推进的 Issue、负责人和预期交付。月度计划细化已确定的季度任务；涉及新增任务或范围调整时，仍按[特殊变更](#24-特殊变更)流程重新讨论。
+
 ## 3. Issue 管理
 
 Issue 应描述一个边界清楚、能够验证的交付结果。所有开发 Issue 使用“当前问题、修改方案、测试验证”三个主体部分，仓库提供[开发任务模板](https://github.com/rcore-os/tgoskits/blob/dev/.github/ISSUE_TEMPLATE/development.md)。Bug、普通任务、总 Issue 和子 Issue 均在同一结构下填写。
@@ -293,3 +297,7 @@ flowchart TD
 ### 6.3 季度复盘
 
 发布后，维护者整理计划完成情况、范围变更、延期原因和发布中发现的问题，作为下一季度规划输入。复盘提出的改进也应登记为候选 Issue，经下一周期讨论后再安排实施。
+
+### 6.4 开发月报
+
+每个月末，社区在[博客](https://rcore-os.cn/tgoskits/blog)中发布当月开发月报，对照月初开发计划总结已完成的工作、关联的 Issue 与 PR、验证结果，以及未完成任务的进展和原因。月报作为后续月度安排和季度复盘的依据。
