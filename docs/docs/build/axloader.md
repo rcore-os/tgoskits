@@ -57,7 +57,7 @@ axstd、FAT/NVMe 和 `efi-handoff` 能力，再由
 公共能力与固件适配，不带入内核入口、分页或 SMP。LoongArch 的 v4 配置表承载资源
 快照、镜像、cmdline/initramfs 和应用元数据，不包含固定三池或 OTA 槽位字段；
 GUID 为 `7b9fa931-a25b-d043-b13c-63435428c473`。v2/v3 已拒绝，迁移须同时重建
-生产者、目标与 A/B 槽。完整边界见[设计文档](../../design/someboot-boot-resources.md)。
+生产者、目标与 A/B 槽。完整边界见[设计文档](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/someboot-boot-resources.md)。
 
 `axstd_loader::run()` 在启动及每次连接处理后发送 UDP 公告，阻塞等待连接期间
 不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或启动广播丢失时，
@@ -290,4 +290,4 @@ LoongArch 交接的资源容量与存活对象分开管理。等待下载的 axl
 页表和逐核区在目标安装自身执行环境并绑定 CPU-local 后才回收，随后才初始化普通分配器。
 `PreparedHandoff::seal` 在运行时停稳后的无分配窗口发布最终快照，生成可进入的 `SealedHandoff`。
 initramfs 解包借用结束后通过唯一所有者归还完整页；冻结的平台 map 不再修改。
-机制、内存分类与失败边界见[启动内存回收设计](../../design/someboot-boot-resources.md#4-启动内存回收)。
+机制、内存分类与失败边界见[启动内存回收设计](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/someboot-boot-resources.md#4-启动内存回收)。

@@ -108,14 +108,14 @@ If you only want the shortest path to a successful run, start with the default A
 
 ## 4. Contributing
 
-Issues and pull requests are welcome. A typical workflow is:
+Contributions through issues and pull requests should follow these rules:
 
-1. Read [repository structure and collaboration](https://rcore-os.cn/tgoskits/docs/contributing/repo).
-2. Create a feature branch from `dev`.
-3. Run the relevant `cargo xtask` build, test, or clippy checks after making changes.
-4. Open a PR and describe the change scope, validation, and impact.
+1. Claim an issue in the approved quarterly plan and select its owner in `Assignees`.
+2. Develop from `dev` and link each PR to one implementation issue. PRs without a linked issue will not be processed.
+3. Include “当前问题” (current problem), “修改方案” (proposed changes), and “测试验证” (validation) in the PR body. The current problem may quote relevant issue content.
+4. Run the checks needed for the change and record actual results and any unverified scope in the PR.
 
-For a full development example, documentation contribution, and rootfs maintenance notes, see the [contribution docs](https://rcore-os.cn/tgoskits/docs/contributing/demo). Use [GitHub Issues](https://github.com/rcore-os/tgoskits/issues) for feedback and [GitHub Pull Requests](https://github.com/rcore-os/tgoskits/pulls) for patches.
+See the [contribution guide](./docs/community/contributing.md) for quarterly planning, issue decomposition, validation commands, and stable release requirements.
 
 ## 5. License
 

@@ -108,14 +108,14 @@ cargo xtask axvisor qemu --arch aarch64
 
 ## 4. 贡献
 
-欢迎通过 Issue 和 Pull Request 参与 TGOSKits。推荐流程：
+欢迎通过 Issue 和 Pull Request 参与 TGOSKits，贡献时请遵循以下规则：
 
-1. 阅读 [仓库结构与协作方式](https://rcore-os.cn/tgoskits/docs/contributing/repo)。
-2. 基于 `dev` 创建功能分支。
-3. 完成开发后运行相关 `cargo xtask` 构建、测试或 clippy 检查。
-4. 提交 PR，并在描述中说明变更范围、验证方式和影响面。
+1. 认领已纳入当季计划的 Issue，并在 `Assignees` 中设置实际负责人。
+2. 基于 `dev` 开发，每个 PR 关联一个执行 Issue；未关联 Issue 的 PR 不予处理。
+3. PR 正文包含“当前问题、修改方案、测试验证”，当前问题可以适当引用 Issue 内容。
+4. 按改动范围完成必要验证，在 PR 中记录实际结果和未验证范围。
 
-完整开发示例、文档贡献和 rootfs 维护说明见 [贡献文档](https://rcore-os.cn/tgoskits/docs/contributing/demo)。问题反馈和补丁提交请使用 [GitHub Issues](https://github.com/rcore-os/tgoskits/issues) 与 [GitHub Pull Requests](https://github.com/rcore-os/tgoskits/pulls)。
+季度规划、Issue 拆分、检查命令和稳定版本发布的完整要求见[贡献指南](./docs/community/contributing.md)。
 
 ## 5. 许可证
 
