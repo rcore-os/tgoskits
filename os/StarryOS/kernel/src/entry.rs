@@ -41,6 +41,10 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
     crate::perf::perf_event_init();
     crate::kmod::init_kmod();
 
+    // DRM uses the same Starry task, fd, user-memory and eventfd services
+    // regardless of which GPU backend owns the device.
+    crate::pseudofs::dev::init_drm_kapi();
+
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     crate::file::epoll::start_epoll_notify_worker();
     spawn_alarm_task();

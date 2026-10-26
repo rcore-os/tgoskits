@@ -9,8 +9,7 @@
  *   - DRM_MODE_ATOMIC_TEST_ONLY 不应改状态
  *   - 真正一次原子提交（带 PAGE_FLIP_EVENT），应改状态、并产生 vblank 事件
  *   - 故意构造无效 prop id 的提交必须 EINVAL 拒绝且不动状态
- *   - 对象数/属性总数超过上限（1024/8192）必须先于任何分配被 EINVAL，
- *     且上限边界值本身仍被接受
+ *   - 非法用户数组必须 EFAULT，且不能发布部分状态
  *   - DESTROY_PROPBLOB 之后 GET_PROPBLOB 必须 ENOENT
  *
  * 这条路径是 weston / mutter atomic backend 的核心路径，缺一会卡住合成器。
@@ -97,6 +96,15 @@ struct drm_event_vblank {
     uint64_t user_data; uint32_t tv_sec; uint32_t tv_usec;
     uint32_t sequence; uint32_t crtc_id;
 };
+struct sync_fence_info {
+    char obj_name[32], driver_name[32];
+    int32_t status; uint32_t flags; uint64_t timestamp_ns;
+};
+struct sync_file_info {
+    char name[32]; int32_t status; uint32_t flags, num_fences, pad;
+    uint64_t sync_fence_info;
+};
+#define SYNC_IOC_FILE_INFO _IOWR('>', 4, struct sync_file_info)
 
 #define DRM_IOCTL_MODE_GETRESOURCES       _IOWR('d', 0xA0, struct drm_mode_card_res)
 #define DRM_IOCTL_MODE_GETCONNECTOR       _IOWR('d', 0xA7, struct drm_mode_get_connector)
@@ -115,7 +123,10 @@ struct drm_event_vblank {
 #define DRM_MODE_OBJECT_FB          0xfbfbfbfb
 #define DRM_MODE_OBJECT_CONNECTOR   0xc0c0c0c0
 #define DRM_MODE_OBJECT_PLANE       0xeeeeeeee
+#define DRM_PLANE_TYPE_PRIMARY      1
 #define DRM_MODE_ATOMIC_TEST_ONLY   0x0100
+#define DRM_MODE_ATOMIC_NONBLOCK    0x0200
+#define DRM_MODE_ATOMIC_ALLOW_MODESET 0x0400
 #define DRM_MODE_PAGE_FLIP_EVENT    0x01
 #define DRM_MODE_PROP_SIGNED_RANGE  (1u << 7)
 #define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
@@ -189,22 +200,49 @@ int main(void)
     /* Enumerate objects. */
     uint32_t crtcs[1] = {0}, conns[1] = {0};
     struct drm_mode_card_res res = {0};
-    (void)ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res);
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res), 0,
+              "GETRESOURCES probe");
+    /* Counts are input capacities on each call, not just probe results. */
+    res.count_fbs = 0;
+    res.count_encoders = 0;
+    res.count_crtcs = 1;
+    res.count_connectors = 1;
     res.crtc_id_ptr = (uint64_t)(uintptr_t)crtcs;
     res.connector_id_ptr = (uint64_t)(uintptr_t)conns;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res), 0, "GETRESOURCES");
 
-    uint32_t planes[1] = {0};
+    uint32_t planes[8] = {0};
     struct drm_mode_get_plane_res pres = {0};
-    pres.plane_id_ptr = (uint64_t)(uintptr_t)planes;
-    pres.count_planes = 1;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres), 0,
-              "GETPLANERESOURCES");
+              "GETPLANERESOURCES probe");
+    CHECK(pres.count_planes >= 1 && pres.count_planes <= 8,
+          "plane resources include a bounded set");
+    pres.plane_id_ptr = (uint64_t)(uintptr_t)planes;
+    pres.count_planes = 8;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &pres), 0,
+              "GETPLANERESOURCES fetch");
+    uint32_t primary_plane = 0;
+    for (uint32_t i = 0; i < pres.count_planes && i < 8; i++) {
+        uint32_t type_prop = find_prop(fd, planes[i], DRM_MODE_OBJECT_PLANE, "type");
+        if (type_prop && obj_prop_value(fd, planes[i], DRM_MODE_OBJECT_PLANE,
+                                        type_prop) == DRM_PLANE_TYPE_PRIMARY) {
+            primary_plane = planes[i];
+            break;
+        }
+    }
+    CHECK(primary_plane != 0, "find primary plane by KMS type property");
+    planes[0] = primary_plane;
 
-    struct drm_mode_mode_info modes[1] = {0};
+    struct drm_mode_mode_info modes[64] = {0};
     struct drm_mode_get_connector conn = {0};
     conn.connector_id = conns[0];
-    conn.count_modes = 1;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn), 0,
+              "GETCONNECTOR probe");
+    CHECK(conn.count_modes > 0 && conn.count_modes <= 64,
+          "connector reports a bounded mode list");
+    conn.count_props = 0;
+    conn.count_encoders = 0;
+    conn.count_modes = 64;
     conn.modes_ptr = (uint64_t)(uintptr_t)modes;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn), 0, "GETCONNECTOR");
     uint32_t w = modes[0].hdisplay, h = modes[0].vdisplay;
@@ -219,6 +257,9 @@ int main(void)
         .pitches = { cd.pitch, 0, 0, 0 },
     };
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ADDFB2, &fb), 0, "ADDFB2");
+    struct drm_mode_fb_cmd2 fb2 = fb;
+    fb2.fb_id = 0;
+    CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ADDFB2, &fb2), 0, "ADDFB2 second framebuffer");
 
     /* --- 按名字找属性 id --- */
     uint32_t P_CONN_CRTC_ID  = find_prop(fd, conns[0], DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
@@ -233,13 +274,15 @@ int main(void)
     uint32_t P_PLANE_CRTC_X  = find_prop(fd, planes[0], DRM_MODE_OBJECT_PLANE, "CRTC_X");
     uint32_t P_PLANE_CRTC_Y  = find_prop(fd, planes[0], DRM_MODE_OBJECT_PLANE, "CRTC_Y");
     uint32_t P_PLANE_CRTC_W  = find_prop(fd, planes[0], DRM_MODE_OBJECT_PLANE, "CRTC_W");
+    uint32_t P_PLANE_CRTC_H  = find_prop(fd, planes[0], DRM_MODE_OBJECT_PLANE, "CRTC_H");
     CHECK(P_CONN_CRTC_ID && P_CRTC_ACTIVE && P_CRTC_MODE_ID,
           "connector/crtc props found");
     CHECK(P_PLANE_FB_ID && P_PLANE_CRTC_ID,
           "plane FB_ID/CRTC_ID props found");
     CHECK(P_PLANE_SRC_X && P_PLANE_SRC_Y && P_PLANE_SRC_W && P_PLANE_SRC_H,
           "plane SRC_* props found");
-    CHECK(P_PLANE_CRTC_X && P_PLANE_CRTC_Y && P_PLANE_CRTC_W,
+    CHECK(P_PLANE_CRTC_X && P_PLANE_CRTC_Y && P_PLANE_CRTC_W &&
+          P_PLANE_CRTC_H,
           "plane CRTC_* props found");
 
     /* CRTC.ACTIVE 必须是 RANGE [0, 1]，weston 会拒绝其他形态。 */
@@ -359,24 +402,24 @@ int main(void)
 
     /* --- 构造原子提交 --- */
     uint32_t obj_ids[3] = { conns[0], crtcs[0], planes[0] };
-    uint32_t obj_count[3] = { 1, 2, 9 };
-    uint32_t props[12] = {
+    uint32_t obj_count[3] = { 1, 2, 10 };
+    uint32_t props[13] = {
         P_CONN_CRTC_ID,
         P_CRTC_ACTIVE, P_CRTC_MODE_ID,
         P_PLANE_FB_ID, P_PLANE_CRTC_ID,
         P_PLANE_SRC_X, P_PLANE_SRC_Y, P_PLANE_SRC_W, P_PLANE_SRC_H,
-        P_PLANE_CRTC_X, P_PLANE_CRTC_Y, P_PLANE_CRTC_W,
+        P_PLANE_CRTC_X, P_PLANE_CRTC_Y, P_PLANE_CRTC_W, P_PLANE_CRTC_H,
     };
-    uint64_t values[12] = {
+    uint64_t values[13] = {
         crtcs[0],
         1, cb.blob_id,
         fb.fb_id, crtcs[0],
         0, 0, (uint64_t)w << 16, (uint64_t)h << 16,
-        0, 0, w,
+        0, 0, w, h,
     };
 
     struct drm_mode_atomic atom = {
-        .flags = DRM_MODE_ATOMIC_TEST_ONLY,
+        .flags = DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET,
         .count_objs = 3,
         .objs_ptr = (uint64_t)(uintptr_t)obj_ids,
         .count_props_ptr = (uint64_t)(uintptr_t)obj_count,
@@ -392,7 +435,7 @@ int main(void)
           "TEST_ONLY left ACTIVE == 0");
 
     /* 真正一次提交，带 page-flip event。 */
-    atom.flags = DRM_MODE_PAGE_FLIP_EVENT;
+    atom.flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_ALLOW_MODESET;
     CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &atom), 0, "ATOMIC commit");
 
     /* 状态应反映 commit。 */
@@ -407,6 +450,16 @@ int main(void)
     CHECK(obj_prop_value(fd, conns[0], DRM_MODE_OBJECT_CONNECTOR, P_CONN_CRTC_ID)
               == crtcs[0],
           "commit set connector.CRTC_ID");
+
+    /* page flip event 应可读。 */
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    CHECK(poll(&pfd, 1, 2000) == 1, "poll POLLIN after atomic");
+    struct drm_event_vblank ev;
+    ssize_t n = read(fd, &ev, sizeof(ev));
+    CHECK(n == (ssize_t)sizeof(ev), "read flip event size");
+    CHECK(ev.base.type == DRM_EVENT_FLIP_COMPLETE, "event is FLIP_COMPLETE");
+    CHECK(ev.user_data == 0xA70BADBADBADC0DEULL, "event user_data round-trip");
+
 
     /* GETPLANE（legacy 结构体）也必须回读 atomic 提交后的实时状态。
      * deniald 的初始扫描验证提交后用 GETPLANE 检查 primary plane 是否
@@ -433,18 +486,25 @@ int main(void)
                   "GETCRTC after atomic commit");
         CHECK(crtc.fb_id == fb.fb_id && crtc.mode_valid == 1 &&
               crtc.mode.hdisplay == modes[0].hdisplay, "GETCRTC observes atomic binding and mode");
-        struct drm_mode_fb_cmd2 next_fb = fb;
-        next_fb.fb_id = 0;
-        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ADDFB2, &next_fb), 0, "mixed API flip target");
-        struct drm_mode_crtc_page_flip flip = { .crtc_id = crtcs[0], .fb_id = next_fb.fb_id };
+        struct drm_mode_crtc_page_flip flip = { .crtc_id = crtcs[0], .fb_id = fb2.fb_id,
+                                                .flags = DRM_MODE_PAGE_FLIP_EVENT,
+                                                .user_data = 0x1e9ac9ULL };
         CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip), 0,
                   "legacy flip after atomic modeset");
         CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_GETPLANE, &gp2), 0, "GETPLANE after mixed flip");
         CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_GETCRTC, &crtc), 0, "GETCRTC after mixed flip");
-        CHECK(gp2.fb_id == next_fb.fb_id && crtc.fb_id == next_fb.fb_id &&
-              obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_FB_ID) == next_fb.fb_id,
+        CHECK(gp2.fb_id == fb2.fb_id && crtc.fb_id == fb2.fb_id &&
+              obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_FB_ID) == fb2.fb_id,
               "legacy flip updates both queries and atomic FB_ID");
+        struct drm_event_vblank mixed = {0};
+        pfd.revents = 0;
+        CHECK(poll(&pfd, 1, 2000) == 1 && (pfd.revents & POLLIN),
+              "wait for the mixed legacy flip before submitting another");
+        CHECK(read(fd, &mixed, sizeof(mixed)) == (ssize_t)sizeof(mixed)
+              && mixed.user_data == flip.user_data && mixed.sequence > ev.sequence,
+              "mixed flip completes on a later vblank");
         flip.fb_id = fb.fb_id;
+        flip.flags = 0;
         CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip), 0, "restore original framebuffer");
     }
 
@@ -483,9 +543,12 @@ int main(void)
                   "nonseekable socket retains ESPIPE");
         uint32_t t_objs[] = { planes[0] };
         uint32_t t_counts[] = { 2 };
-        uint32_t t_props[] = { P_PLANE_CRTC_X, P_PLANE_IN_FENCE_FD };
-        uint64_t old_x = obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_CRTC_X);
-        uint64_t t_values[] = { old_x + 1, (uint64_t)-1 };
+        uint32_t t_props[] = { P_PLANE_FB_ID, P_PLANE_IN_FENCE_FD };
+        uint64_t old_fb = obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_FB_ID);
+        uint64_t new_fb = old_fb == fb.fb_id ? fb2.fb_id : fb.fb_id;
+        /* Both FBs have identical format/full-screen geometry; changing only FB_ID
+         * isolates the IN_FENCE_FD sentinel without invalidating SIMPLE_KMS bounds. */
+        uint64_t t_values[] = { new_fb, (uint64_t)-1 };
         struct drm_mode_atomic t = {
             .count_objs = 1,
             .objs_ptr = (uint64_t)(uintptr_t)t_objs,
@@ -502,7 +565,7 @@ int main(void)
                 t_values[1] = invalid[i];
                 CHECK_ERR(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &t), EINVAL,
                           "invalid fence rejected before atomic publication");
-                CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_CRTC_X) == old_x,
+                CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_FB_ID) == old_fb,
                       "invalid fence leaves earlier properties unchanged");
                 CHECK(fcntl(probe, F_GETFD) >= 0 && fcntl(sock, F_GETFD) >= 0 &&
                       fcntl(card, F_GETFD) >= 0, "invalid fence preserves caller descriptors");
@@ -510,27 +573,66 @@ int main(void)
         }
         t_values[1] = (uint64_t)-1;
         CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &t), 0,
-                  "TEST_ONLY without fence accepted");
-        CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_CRTC_X) == old_x,
+                  "TEST_ONLY FB_ID with no fence accepted");
+        CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_FB_ID) == old_fb,
               "TEST_ONLY without fence preserves state");
         t.flags = 0;
         CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &t), 0,
-                  "real commit without fence accepted");
-        CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_CRTC_X) == old_x + 1,
-              "real commit without fence publishes state");
+                  "real FB_ID commit with no fence accepted");
+        CHECK(obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE, P_PLANE_FB_ID) == new_fb,
+              "real no-fence commit publishes framebuffer");
         close(probe);
         close(sock);
         close(card);
     }
 
-    /* page flip event 应可读。 */
-    struct pollfd pfd = { .fd = fd, .events = POLLIN };
-    CHECK(poll(&pfd, 1, 2000) == 1, "poll POLLIN after atomic");
-    struct drm_event_vblank ev;
-    ssize_t n = read(fd, &ev, sizeof(ev));
-    CHECK(n == (ssize_t)sizeof(ev), "read flip event size");
-    CHECK(ev.base.type == DRM_EVENT_FLIP_COMPLETE, "event is FLIP_COMPLETE");
-    CHECK(ev.user_data == 0xA70BADBADBADC0DEULL, "event user_data round-trip");
+    /* Command completion must not masquerade as presentation. The controlled
+     * edge test in ax-drm checks the pending interval; this userspace path
+     * checks the installed sync_file and flip event share a vblank timestamp. */
+    uint32_t out_property = find_prop(fd, crtcs[0], DRM_MODE_OBJECT_CRTC,
+                                      "OUT_FENCE_PTR");
+    CHECK(out_property != 0, "CRTC OUT_FENCE_PTR is exposed");
+    int32_t out_fd = -1;
+    uint32_t flip_objects[] = {crtcs[0], planes[0]};
+    uint32_t flip_counts[] = {1, 1};
+    uint32_t flip_properties[] = {out_property, P_PLANE_FB_ID};
+    uint64_t current_fb = obj_prop_value(fd, planes[0], DRM_MODE_OBJECT_PLANE,
+                                         P_PLANE_FB_ID);
+    uint64_t flip_values[] = {(uint64_t)(uintptr_t)&out_fd,
+                             current_fb == fb.fb_id ? fb2.fb_id : fb.fb_id};
+    struct drm_mode_atomic flip = {
+        .flags = DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
+        .count_objs = 2,
+        .objs_ptr = (uint64_t)(uintptr_t)flip_objects,
+        .count_props_ptr = (uint64_t)(uintptr_t)flip_counts,
+        .props_ptr = (uint64_t)(uintptr_t)flip_properties,
+        .prop_values_ptr = (uint64_t)(uintptr_t)flip_values,
+        .user_data = 0xF3CEULL,
+    };
+    CHECK_RET(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &flip), 0,
+              "NONBLOCK atomic flip exports an out-fence");
+    CHECK(out_fd >= 0, "OUT_FENCE_PTR installs a real descriptor");
+    struct pollfd fence_poll = {.fd = out_fd, .events = POLLIN};
+    CHECK(poll(&fence_poll, 1, 2000) == 1 && (fence_poll.revents & POLLIN),
+          "display out-fence becomes readable");
+    pfd.revents = 0;
+    CHECK(poll(&pfd, 1, 2000) == 1 && (pfd.revents & POLLIN),
+          "out-fence completion also makes the flip event readable");
+    struct drm_event_vblank presented = {0};
+    CHECK(read(fd, &presented, sizeof(presented)) == (ssize_t)sizeof(presented),
+          "read out-fence flip event");
+    CHECK(presented.user_data == flip.user_data && presented.sequence > ev.sequence,
+          "nonblocking flip is presented on a later vblank");
+    struct sync_fence_info member = {0};
+    struct sync_file_info sync = {.num_fences = 1,
+                                  .sync_fence_info = (uint64_t)(uintptr_t)&member};
+    CHECK_RET(syscall(SYS_ioctl, out_fd, SYNC_IOC_FILE_INFO, &sync), 0,
+              "query display out-fence completion");
+    CHECK(sync.status == 1 && member.status == 1, "out-fence reports success");
+    CHECK(member.timestamp_ns / 1000 == (uint64_t)presented.tv_sec * 1000000
+                                        + presented.tv_usec,
+          "out-fence and flip event have the same presentation timestamp");
+    close(out_fd);
 
     /* --- 无效 prop id 必须 EINVAL，且不动状态 --- */
     uint32_t bad_props[1] = { 0xDEADBEEF };
@@ -545,72 +647,27 @@ int main(void)
         .props_ptr = (uint64_t)(uintptr_t)bad_props,
         .prop_values_ptr = (uint64_t)(uintptr_t)bad_values,
     };
-    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &bad), EINVAL,
-              "bad prop id rejected with EINVAL");
+    CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &bad), ENOENT,
+              "unknown property rejected with ENOENT");
     CHECK(obj_prop_value(fd, crtcs[0], DRM_MODE_OBJECT_CRTC, P_CRTC_ACTIVE) == 1,
           "rejected commit left state intact");
 
-    /* --- 对象数/属性总数超上限必须先于任何分配被 EINVAL --- */
+    /* The shared Linux ioctl walks user arrays; it does not retain the old
+     * private implementation's arbitrary 1024/8192 batch caps. Bad user
+     * arrays must still fail transactionally, without allocating from an
+     * untrusted aggregate count or publishing partial object state. */
     {
-        /* On the unbounded baseline these over-bound requests return 0
-         * (TEST_ONLY, no side effects), so the EINVAL assertions below
-         * are the discriminating regression for the handle_atomic caps:
-         * vm_load allocates straight from the user counts and a hostile
-         * count kills the kernel allocator. */
-        enum { BOUND_OBJS = 1024, BOUND_PROPS = 8 * 1024 };
-        static uint32_t over_objs[BOUND_OBJS + 1];
-        static uint32_t over_counts[BOUND_OBJS + 1];
-        for (int i = 0; i <= BOUND_OBJS; i++) {
-            over_objs[i] = crtcs[0];
-            over_counts[i] = 0;
-        }
-        struct drm_mode_atomic over = {
-            .flags = DRM_MODE_ATOMIC_TEST_ONLY,
-            .count_objs = BOUND_OBJS + 1,
-            .objs_ptr = (uint64_t)(uintptr_t)over_objs,
-            .count_props_ptr = (uint64_t)(uintptr_t)over_counts,
-            .props_ptr = (uint64_t)(uintptr_t)bad_props,
-            .prop_values_ptr = (uint64_t)(uintptr_t)bad_values,
-        };
-        CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over), EINVAL,
-                  "count_objs over the bound rejected with EINVAL");
+        struct drm_mode_atomic malformed = bad;
+        malformed.flags = DRM_MODE_ATOMIC_TEST_ONLY;
+        malformed.objs_ptr = 0;
+        CHECK_ERR(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &malformed), EFAULT,
+                  "invalid object array rejected with EFAULT");
+        malformed.objs_ptr = (uint64_t)(uintptr_t)bad_objs;
+        malformed.props_ptr = 0;
+        CHECK_ERR(syscall(SYS_ioctl, fd, DRM_IOCTL_MODE_ATOMIC, &malformed), EFAULT,
+                  "invalid property array rejected with EFAULT");
         CHECK(obj_prop_value(fd, crtcs[0], DRM_MODE_OBJECT_CRTC, P_CRTC_ACTIVE) == 1,
-              "over-bound objs commit left state intact");
-
-        static uint32_t over_prop_ids[BOUND_PROPS + 1];
-        static uint64_t over_prop_vals[BOUND_PROPS + 1];
-        for (int i = 0; i <= BOUND_PROPS; i++) {
-            over_prop_ids[i] = P_CRTC_ACTIVE;
-            over_prop_vals[i] = 1;
-        }
-        uint32_t one_obj[1] = { crtcs[0] };
-        uint32_t huge_count[1] = { BOUND_PROPS + 1 };
-        struct drm_mode_atomic over_props = {
-            .flags = DRM_MODE_ATOMIC_TEST_ONLY,
-            .count_objs = 1,
-            .objs_ptr = (uint64_t)(uintptr_t)one_obj,
-            .count_props_ptr = (uint64_t)(uintptr_t)huge_count,
-            .props_ptr = (uint64_t)(uintptr_t)over_prop_ids,
-            .prop_values_ptr = (uint64_t)(uintptr_t)over_prop_vals,
-        };
-        CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over_props), EINVAL,
-                  "total_props over the bound rejected with EINVAL");
-        CHECK(obj_prop_value(fd, crtcs[0], DRM_MODE_OBJECT_CRTC, P_CRTC_ACTIVE) == 1,
-              "over-bound props commit left state intact");
-
-        /* Boundary values themselves stay legal; this catches a cap
-         * weakened into an off-by-one (`>` written as `>=`). */
-        over.count_objs = BOUND_OBJS;
-        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over), 0,
-                  "count_objs at the bound still accepted");
-        huge_count[0] = BOUND_PROPS;
-        CHECK_RET(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over_props), 0,
-                  "total_props at the bound still accepted");
-
-        /* The raw DoS shape must be rejected before vm_load. */
-        over.count_objs = UINT32_MAX;
-        CHECK_ERR(ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &over), EINVAL,
-                  "count_objs == UINT32_MAX rejected with EINVAL");
+              "invalid user arrays leave CRTC state intact");
     }
 
     /* --- destroy-after-commit blob lifecycle ---

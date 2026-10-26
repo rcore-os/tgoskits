@@ -987,6 +987,14 @@ impl MmPin {
         self.0.id
     }
 
+    /// Returns the lifecycle state of the pinned process address space.
+    ///
+    /// LinuxKPI's current-mm adapter uses this to stop user copies as soon as
+    /// the last process owner begins retiring the address space.
+    pub fn state(&self) -> MmState {
+        self.0.state()
+    }
+
     /// Returns the process policy attached to the pinned MM identity.
     pub fn transparent_huge_page_mode(&self) -> TransparentHugePageMode {
         self.0.transparent_huge_page_mode()

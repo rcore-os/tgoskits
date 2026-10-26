@@ -34,6 +34,30 @@ impl EventFd {
         })
     }
 
+    /// Publishes a completion using Linux eventfd_signal semantics.
+    ///
+    /// Unlike checked additions, a kernel completion may reach `u64::MAX`.
+    /// That saturated state reports POLLERR until userspace consumes it; the
+    /// completion must not be discarded merely because userspace filled the
+    /// counter. Call only from task/deferred context for poll fan-out.
+    pub(crate) fn signal_kernel_saturating(&self, value: u64) {
+        if value == 0 {
+            return;
+        }
+        let previous = self
+            .count
+            .try_update(Ordering::Release, Ordering::Relaxed, |count| {
+                Some(count.saturating_add(value))
+            })
+            .expect("saturating eventfd update always has a new value");
+        let mut events = IoEvents::IN;
+        events.set(IoEvents::ERR, previous.saturating_add(value) == u64::MAX);
+        // SAFETY: Completion providers invoke this in task or deferred context.
+        // The counter update was published via atomic try_update with Release ordering,
+        // and no locks that the registered wakers may re-enter are held by the caller.
+        unsafe { self.poll_rx.wake(events) };
+    }
+
     /// Adds to the counter from a kernel producer without user-task signal semantics.
     ///
     /// This path never waits for counter space. It is intended for completion
@@ -49,7 +73,8 @@ impl EventFd {
                     (u64::MAX - count > value).then_some(count + value)
                 })
                 .map_err(|_| crate::StarryError::WouldBlock)?;
-            // Counter publication precedes task-context poll fan-out.
+            // SAFETY: Invoked in task or deferred context. The counter was published
+            // with Release ordering before waking observers, and no re-entrant locks are held.
             unsafe { self.poll_rx.wake(IoEvents::IN) };
         }
         Ok(())
@@ -91,7 +116,8 @@ impl FileLike for EventFd {
                     Ok(count) => {
                         let value = if self.semaphore { 1 } else { count };
                         dst.write(&value.to_ne_bytes())?;
-                        // Counter space is visible before waking writers.
+                        // SAFETY: Invoked in task context after successfully decrementing the counter
+                        // with Release ordering. Space is published before waking, and no re-entrant locks are held.
                         unsafe { self.poll_tx.wake(IoEvents::OUT) };
                         Ok(size_of::<u64>())
                     }
@@ -143,32 +169,51 @@ impl Pollable for EventFd {
         let mut events = IoEvents::empty();
         let count = self.count.load(Ordering::Acquire);
         events.set(IoEvents::IN, count > 0);
+        events.set(IoEvents::ERR, count == u64::MAX);
         events.set(IoEvents::OUT, u64::MAX - 1 > count);
         events
     }
 
+    /// # Safety
+    ///
+    /// Must be called in task or deferred context only. The caller must guarantee that
+    /// `&self` remains valid for the duration of the registration on `sink`.
     unsafe fn register_shared(
         &self,
         sink: &mut dyn axpoll::SharedRegistrationSink,
         events: IoEvents,
     ) {
-        if events.contains(IoEvents::IN) {
-            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
+        if events.intersects(IoEvents::IN | IoEvents::ERR) {
+            // SAFETY: Invoked in task/deferred context per caller contract. `self.poll_rx`
+            // is pinned by `self` and implements `PollSource` which remains live for the registration.
+            unsafe { sink.register_shared(&self.poll_rx, events & (IoEvents::IN | IoEvents::ERR)) };
         }
         if events.contains(IoEvents::OUT) {
+            // SAFETY: Invoked in task/deferred context per caller contract. `self.poll_tx`
+            // is pinned by `self` and implements `PollSource` which remains live for the registration.
             unsafe { sink.register_shared(&self.poll_tx, IoEvents::OUT) };
         }
     }
 
+    /// # Safety
+    ///
+    /// Must be called in task or deferred context only. The caller must guarantee that
+    /// `&self` remains valid for the duration of the registration on `sink`.
     unsafe fn register_exclusive(
         &self,
         sink: &mut dyn axpoll::ExclusiveRegistrationSink,
         events: IoEvents,
     ) {
-        if events.contains(IoEvents::IN) {
-            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
+        if events.intersects(IoEvents::IN | IoEvents::ERR) {
+            // SAFETY: Invoked in task/deferred context per caller contract. `self.poll_rx`
+            // is pinned by `self` and implements `PollSource` which remains live for the registration.
+            unsafe {
+                sink.register_exclusive(&self.poll_rx, events & (IoEvents::IN | IoEvents::ERR))
+            };
         }
         if events.contains(IoEvents::OUT) {
+            // SAFETY: Invoked in task/deferred context per caller contract. `self.poll_tx`
+            // is pinned by `self` and implements `PollSource` which remains live for the registration.
             unsafe { sink.register_exclusive(&self.poll_tx, IoEvents::OUT) };
         }
     }

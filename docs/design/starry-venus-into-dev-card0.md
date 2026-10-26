@@ -1,5 +1,10 @@
 # Venus face on the portable GPU stack (`card0`)
 
+> 实现状态：本设计最初对应旧 `card0`。同步 Venus 主线后，设备相关实现已迁至
+> `os/arceos/modules/axdrm/src/backend/{virtgpu,host_blob,gem}.rs`，公共同步与映射分别
+> 归共享 DRM 核心和 Starry 文件/VMA 适配。旧路径不再并存；当前所有权契约见
+> [共享 DRM 核心接入](shared-drm.md)。下文的旧文件定位作为原始设计背景保留。
+
 The venus (capset 4) 3D face as implemented on this branch. This file
 replaces the 2026-10-07 edition, which described a first porting round
 against symbols that no longer exist (`pseudofs/dev/vgpu.rs`,

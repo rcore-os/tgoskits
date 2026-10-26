@@ -16,8 +16,8 @@
  *     无 IMPORT flag 的 sync-file fd 是 EINVAL（Linux 只认 syncobj fd）、
  *     未提交点位导出 EINVAL（不得假信号）、
  *     同点位双导出后关闭其一，另一 fd 仍可读
- *   - RESET / SIGNAL 水位清零与置一
- *   - 各数组承载 ioctl 的 count_handles 超上限（1024 + 1）→ EINVAL
+ *   - RESET / SIGNAL 的 binary fence 状态与 timeline QUERY 区分
+ *   - 各数组承载 ioctl 的 count_handles 超本项目上限（65536 + 1）→ EINVAL
  *     （在任何内核分配与用户内存访问之前拒绝）
  *   - EVENTFD：未背书点注册成功并在 TIMELINE_SIGNAL 后唤醒（Linux 语义：
  *     条目等 fence 挂上）、已到达点注册即触发、WAIT_AVAILABLE 注册、
@@ -36,7 +36,8 @@
 #include <unistd.h>
 
 /* ---- drm syncobj UAPI ----
- * 独立转写自 Linux include/uapi/drm/drm.h（linux master，v7.2 窗口），
+ * 独立转写自 Linux v7.2.3 include/uapi/drm/drm.h；行为对照
+ * https://github.com/gregkh/linux/blob/v7.2.3/drivers/gpu/drm/drm_syncobj.c。
  * 不参照内核侧 drm.rs —— 本套件的价值在于独立性：内核侧布局漂移会
  * 直接表现为命令字不匹配（ENOTTY）或字段错位，而不是两边一致地错。 */
 
@@ -357,20 +358,39 @@ int main(void) {
         CHECK_ERR(ioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &h), EINVAL,
                   "unknown export flag rejected");
 
-        /* flags=0 在 Linux 是导出 syncobj fd 本身；本驱动不发放 syncobj fd，
-         * 与 FD_TO_HANDLE 无 flag 方向同样 EINVAL。 */
+        /* With no export flag Linux shares the syncobj itself, rather than
+         * a snapshot of its current fence. Import it and verify its timeline. */
         h.flags = 0;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &h), 0,
+                  "export syncobj fd without EXPORT_SYNC_FILE");
+        struct drm_syncobj_handle shared = { .fd = h.fd };
+        CHECK_RET(ioctl(fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &shared), 0,
+                  "import syncobj fd without IMPORT_SYNC_FILE");
+        CHECK(shared.handle != 0 && query_point(fd, shared.handle) == 5,
+              "syncobj fd preserves the shared timeline");
+        struct drm_syncobj_destroy shared_destroy = { .handle = shared.handle };
+        CHECK_RET(ioctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &shared_destroy), 0,
+                  "destroy imported syncobj handle");
+        CHECK_RET(close(h.fd), 0, "close syncobj fd");
+        h.point = 3;
         CHECK_ERR(ioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &h), EINVAL,
-                  "export without EXPORT_SYNC_FILE rejected");
+                  "syncobj-fd export rejects a nonzero point");
+        h.point = 0;
         h.flags = DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE;
         h.pad = 1;
         CHECK_ERR(ioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &h), EINVAL,
                   "nonzero pad rejected");
         h.pad = 0;
 
-        h.point = 3; /* without TIMELINE a nonzero point is invalid */
-        CHECK_ERR(ioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &h), EINVAL,
-                  "nonzero point without TIMELINE rejected");
+        /* EXPORT_SYNC_FILE ignores point unless TIMELINE is set. */
+        h.point = 3;
+        CHECK_RET(ioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &h), 0,
+                  "sync-file export ignores point without TIMELINE");
+        struct pollfd ignored_point = { .fd = h.fd, .events = POLLIN };
+        CHECK(poll(&ignored_point, 1, 0) == 1 &&
+              (ignored_point.revents & POLLIN) != 0,
+              "ignored-point export retains the signaled binary view");
+        CHECK_RET(close(h.fd), 0, "close ignored-point export fd");
         h.point = 0;
 
         h.handle = 0xDEAD;
@@ -399,8 +419,19 @@ int main(void) {
                   "import round trip");
         CHECK(import.handle == imp_tgt,
               "import writes back no new handle");
-        CHECK(query_point(fd, imp_tgt) == 1,
-              "binary import signals the target at point 1");
+        /* Import without TIMELINE retains the source fence itself. Here
+         * that fence is a chain from the source's already-signaled point 5. */
+        CHECK(query_point(fd, imp_tgt) == 5,
+              "binary import preserves the source fence chain sequence");
+        struct drm_syncobj_wait imported_wait = {
+            .handles = (uint64_t)(uintptr_t)&imp_tgt,
+            .count_handles = 1,
+        };
+        CHECK_RET(ioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &imported_wait), 0,
+                  "binary import retains a completed fence");
+        struct drm_syncobj_handle fresh = { .fd = h.fd };
+        CHECK_ERR(ioctl(fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &fresh), EINVAL,
+                  "sync-file fd is not a syncobj fd without IMPORT_SYNC_FILE");
         CHECK_RET(close(h.fd), 0, "close export fd");
 
         /* TIMELINE 点位导出/导入（v6.16 语义）：目标点由导入方指定，
@@ -438,12 +469,6 @@ int main(void) {
         CHECK_ERR(ioctl(fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &unknown), ENOENT,
                   "import into an unknown handle is ENOENT");
         CHECK_RET(close(texp.fd), 0, "close timeline export fd");
-
-        /* 无 IMPORT flag：Linux 只接受 syncobj fd（fops 检查）；sync-file
-         * fd 在该方向上就是 EINVAL。 */
-        struct drm_syncobj_handle fresh = {0};
-        CHECK_ERR(ioctl(fd, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &fresh), EINVAL,
-                  "FD_TO_HANDLE without IMPORT_SYNC_FILE is EINVAL (no syncobj fds exist)");
 
         struct drm_syncobj_handle badfd = {
             .fd = open("/dev/null", O_RDONLY),
@@ -529,15 +554,21 @@ int main(void) {
         CHECK(query_point(fd, signaled) == 0, "reset clears the waterline");
 
         CHECK_RET(ioctl(fd, DRM_IOCTL_SYNCOBJ_SIGNAL, &arr), 0, "SIGNAL");
-        CHECK(query_point(fd, signaled) == 1, "binary signal reaches point 1");
+        CHECK(query_point(fd, signaled) == 0,
+              "binary SIGNAL does not create a timeline sequence number");
+        struct drm_syncobj_wait signaled_wait = {
+            .handles = (uint64_t)(uintptr_t)&signaled,
+            .count_handles = 1,
+        };
+        CHECK_RET(ioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &signaled_wait), 0,
+                  "binary SIGNAL makes the fence immediately waitable");
     }
 
-    /* --- count_handles 限幅：超上限必须在分配前 EINVAL ---
-     * 上限 1024，与 venus EXECBUFFER 的 syncobj 数组上限一致；填 1025 个
-     * 未知句柄让未限幅实现可判定地停在句柄查找（ENOENT），而限幅实现
-     * 在触碰用户内存、分配内核缓冲之前就返回 EINVAL。 */
+    /* The shared core bounds arrays at 65536 entries (a project resource
+     * policy, not a Linux UAPI limit). Cross that bound with valid storage:
+     * missing validation would reach unknown-handle lookup and return ENOENT. */
     {
-        enum { CAP = 1024 };
+        enum { CAP = 65536 };
         static uint32_t many[CAP + 1];
         static uint64_t many_points[CAP + 1];
         for (int i = 0; i < CAP + 1; i++) {

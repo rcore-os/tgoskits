@@ -1,0 +1,18 @@
+args = [
+    "-machine", "q35", "-accel", "kvm,honor-guest-pat=on", "-cpu", "host", "-smp", "4", "-m", "2G",
+    "-device", "virtio-vga-gl,blob=on,venus=on,hostmem=256M",
+    "-display", "egl-headless,gl=on", "-vga", "none",
+    "-serial", "mon:stdio", "-monitor", "none", "-no-reboot",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = true
+to_bin = true
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^VENUS_REGRESSION_FAILED(?:\s|$)']
+timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = 'VK_DRIVER_FILES=$(find /usr/share/vulkan/icd.d -name "virtio_icd*.json" | head -1); export VK_DRIVER_FILES; /usr/bin/venus-regression || printf "VENUS_REGRESSION_%s\n" FAILED'
+success_regex = ['(?m)^VENUS_REGRESSION_PASSED\s*$']
