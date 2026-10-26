@@ -12,6 +12,8 @@
 
 ## 运行前确认
 
+客户机 CPU 与短复制参数由 `configs/guest-build.toml` 的根级 `rustflags` 数组追加；栈保护由 axbuild 自动计算，不在配置中重复。需要调试信息时可在 `[env]` 中设置 `DWARF = "y"`，只需要帧指针时设置 `BACKTRACE = "y"`。不要再设置会覆盖生成参数的 `[env] RUSTFLAGS`，详见 [构建参数追加契约](../../../../../design/axbuild-rustflags.md)。
+
 从 TGOSKits 仓库根目录执行，使用仓库固定工具链及 AArch64 musl 交叉工具链。客户机由本次源码构建，随宿主打包，不需要预装板端 task-switch BIN。
 
 ### 构建输入

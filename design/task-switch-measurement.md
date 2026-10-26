@@ -50,7 +50,9 @@ Linux v7.1 的 `lib/string.c` 定义正常内存复制契约，`arch/arm64/lib/m
 
 此场景的单 vCPU 固定在 RK3588 的 `cpu@400`，实板设备树将其标识为 Cortex-A76。显式选择 `target-cpu=cortex-a76` 可以让编译器使用该 CPU 的指令能力和代价模型；该镜像不能再当作可迁移到任意 ARMv8-A CPU 的通用产物。此选择只属于客户机构建配置，不传递给在其他物理核上启动的 AxVisor 宿主，也不改变工作区的通用 AArch64 目标 JSON。
 
-候选性能模式保留 `-Zstack-protector=strong`、`-Ctarget-feature=-neon`、共享目标 JSON 中的 `+strict-align` 和既有 soft-float ABI，并采用裸机路径已经使用的 `-Cllvm-args=--max-store-memcpy=16` 短复制代价策略。后者不改变访问对齐是否合法，也不新增运行期分支，相关约束见 [短复制内联设计](../docs/design/aarch64-inline-copy.md)。不在命令行重复传递会触发不稳定特性警告的 `+strict-align`；移除该冗余参数后已核实客户机 BIN 与 `.text` 摘要相同。LTO 与单独减少 codegen units 的对照未显示收益，不作为本模式要求。
+性能模式保留 `-Zstack-protector=strong`、`-Ctarget-feature=-neon`、共享目标 JSON 中的 `+strict-align` 和既有 soft-float ABI，并采用裸机路径已经使用的 `-Cllvm-args=--max-store-memcpy=16` 短复制代价策略。后者不改变访问对齐是否合法，也不新增运行期分支，相关约束见 [短复制内联设计](../docs/design/aarch64-inline-copy.md)。不在命令行重复传递会触发不稳定特性警告的 `+strict-align`；移除该冗余参数后已核实客户机 BIN 与 `.text` 摘要相同。LTO 与单独减少 codegen units 的对照未显示收益，不作为本模式要求。
+
+两份客户机构建配置通过根级 `BuildInfo.rustflags` 数组追加 CPU、NEON 与短复制参数，不使用 `[env] RUSTFLAGS` 替换 axbuild 生成的 target 参数。栈保护由 `toolchain_rustflags_for_mmu()` 提供，`DWARF=y` 的调试信息和帧指针、`BACKTRACE=y` 的帧指针保持生效；显式环境覆盖仍遵守 Cargo 的既有优先级。共享接口及兼容边界见 [构建参数追加契约](axbuild-rustflags.md)。
 
 该模式必须经过清除全部探针后的完整工作量验证，并与旧代码在同一模式下的数据比较。编译器可能改变原子操作的指令选择，但 Rust 原子内存序、调度策略、rq 所有权与 IRQ 协议不作源代码调整；不能把编译器针对 CPU 的降低规则表述为重写了 Linux 调度算法。
 

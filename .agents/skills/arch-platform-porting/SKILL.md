@@ -201,6 +201,8 @@ cargo xtask clippy --package someboot
 
 ## 调试流程
 
+Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项时，使用根级 `BuildInfo.rustflags` 数组，不通过 `[env] RUSTFLAGS` 整体替换来源；后者会遮蔽自动栈保护及 `DWARF`/`BACKTRACE` 参数。核对真实 rustc argv 与 ELF，而不只检查生成的 TOML。提取 ELF section 时为 `llvm-objcopy --dump-section` 显式指定独立输出 ELF，并核对输入摘要不变，避免取证过程重写原产物。
+
 1. 定位最后一个可靠输出或机器状态转移：统一可扩展固件接口入口、内存映射、`ExitBootServices`、重定位、启用内存管理单元、安装陷阱向量、释放次处理器、第一条内核输出。
 2. 在转移前后加入临时单字节串口或设备映射标记，找到根因后删除。
 3. `xtask` 能传递或可临时改造时，使用 QEMU `-d int,cpu_reset,guest_errors` 或 `-S -s`。

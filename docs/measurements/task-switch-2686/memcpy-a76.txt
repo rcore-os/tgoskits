@@ -1,0 +1,87 @@
+Formal fixed-2 guest; nightly-2026-09-04
+Command: llvm-objdump -d --disassemble-symbols=memcpy task-switch.elf
+task-switch.elf SHA-256: 303ab35d1d20f988dec56ce1b49eb615670b5748244d9447edb3d238816bad98
+task-switch.bin SHA-256: 564dfd8a8bfd1eb8df96391882095afc1e2efad73f56ee83b0aadbc24694c00e
+
+task-switch.elf:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+ffffffff80005c40 <memcpy>:
+ffffffff80005c40: 4a000028     	eor	w8, w1, w0
+ffffffff80005c44: f240091f     	tst	x8, #0x7
+ffffffff80005c48: 54000060     	b.eq	0xffffffff80005c54 <memcpy+0x14>
+ffffffff80005c4c: aa1f03e8     	mov	x8, xzr
+ffffffff80005c50: 1400002a     	b	0xffffffff80005cf8 <memcpy+0xb8>
+ffffffff80005c54: 4b0003e8     	neg	w8, w0
+ffffffff80005c58: 92400908     	and	x8, x8, #0x7
+ffffffff80005c5c: eb08005f     	cmp	x2, x8
+ffffffff80005c60: 9a883048     	csel	x8, x2, x8, lo
+ffffffff80005c64: b4000368     	cbz	x8, 0xffffffff80005cd0 <memcpy+0x90>
+ffffffff80005c68: 39400029     	ldrb	w9, [x1]
+ffffffff80005c6c: 39000009     	strb	w9, [x0]
+ffffffff80005c70: f100051f     	cmp	x8, #0x1
+ffffffff80005c74: 540002e0     	b.eq	0xffffffff80005cd0 <memcpy+0x90>
+ffffffff80005c78: 39400429     	ldrb	w9, [x1, #0x1]
+ffffffff80005c7c: 39000409     	strb	w9, [x0, #0x1]
+ffffffff80005c80: f100091f     	cmp	x8, #0x2
+ffffffff80005c84: 54000260     	b.eq	0xffffffff80005cd0 <memcpy+0x90>
+ffffffff80005c88: 39400829     	ldrb	w9, [x1, #0x2]
+ffffffff80005c8c: 39000809     	strb	w9, [x0, #0x2]
+ffffffff80005c90: f1000d1f     	cmp	x8, #0x3
+ffffffff80005c94: 540001e0     	b.eq	0xffffffff80005cd0 <memcpy+0x90>
+ffffffff80005c98: 39400c29     	ldrb	w9, [x1, #0x3]
+ffffffff80005c9c: 39000c09     	strb	w9, [x0, #0x3]
+ffffffff80005ca0: f100111f     	cmp	x8, #0x4
+ffffffff80005ca4: 54000160     	b.eq	0xffffffff80005cd0 <memcpy+0x90>
+ffffffff80005ca8: 39401029     	ldrb	w9, [x1, #0x4]
+ffffffff80005cac: 39001009     	strb	w9, [x0, #0x4]
+ffffffff80005cb0: f100151f     	cmp	x8, #0x5
+ffffffff80005cb4: 540000e0     	b.eq	0xffffffff80005cd0 <memcpy+0x90>
+ffffffff80005cb8: 39401429     	ldrb	w9, [x1, #0x5]
+ffffffff80005cbc: 39001409     	strb	w9, [x0, #0x5]
+ffffffff80005cc0: f100191f     	cmp	x8, #0x6
+ffffffff80005cc4: 54000060     	b.eq	0xffffffff80005cd0 <memcpy+0x90>
+ffffffff80005cc8: 39401829     	ldrb	w9, [x1, #0x6]
+ffffffff80005ccc: 39001809     	strb	w9, [x0, #0x6]
+ffffffff80005cd0: cb080049     	sub	x9, x2, x8
+ffffffff80005cd4: f100213f     	cmp	x9, #0x8
+ffffffff80005cd8: 54000103     	b.lo	0xffffffff80005cf8 <memcpy+0xb8>
+ffffffff80005cdc: d503201f     	nop
+ffffffff80005ce0: f868682a     	ldr	x10, [x1, x8]
+ffffffff80005ce4: f828680a     	str	x10, [x0, x8]
+ffffffff80005ce8: 91002108     	add	x8, x8, #0x8
+ffffffff80005cec: d1002129     	sub	x9, x9, #0x8
+ffffffff80005cf0: f1001d3f     	cmp	x9, #0x7
+ffffffff80005cf4: 54ffff68     	b.hi	0xffffffff80005ce0 <memcpy+0xa0>
+ffffffff80005cf8: eb020109     	subs	x9, x8, x2
+ffffffff80005cfc: 54000382     	b.hs	0xffffffff80005d6c <memcpy+0x12c>
+ffffffff80005d00: 4b08004a     	sub	w10, w2, w8
+ffffffff80005d04: f240054a     	ands	x10, x10, #0x3
+ffffffff80005d08: 540000c0     	b.eq	0xffffffff80005d20 <memcpy+0xe0>
+ffffffff80005d0c: 3868682b     	ldrb	w11, [x1, x8]
+ffffffff80005d10: 3828680b     	strb	w11, [x0, x8]
+ffffffff80005d14: 91000508     	add	x8, x8, #0x1
+ffffffff80005d18: f100054a     	subs	x10, x10, #0x1
+ffffffff80005d1c: 54ffff81     	b.ne	0xffffffff80005d0c <memcpy+0xcc>
+ffffffff80005d20: b100113f     	cmn	x9, #0x4
+ffffffff80005d24: 54000248     	b.hi	0xffffffff80005d6c <memcpy+0x12c>
+ffffffff80005d28: cb080049     	sub	x9, x2, x8
+ffffffff80005d2c: 8b01010a     	add	x10, x8, x1
+ffffffff80005d30: 9100054a     	add	x10, x10, #0x1
+ffffffff80005d34: 8b000108     	add	x8, x8, x0
+ffffffff80005d38: 91000d08     	add	x8, x8, #0x3
+ffffffff80005d3c: d503201f     	nop
+ffffffff80005d40: 385ff14b     	ldurb	w11, [x10, #-0x1]
+ffffffff80005d44: 381fd10b     	sturb	w11, [x8, #-0x3]
+ffffffff80005d48: 3940014b     	ldrb	w11, [x10]
+ffffffff80005d4c: 381fe10b     	sturb	w11, [x8, #-0x2]
+ffffffff80005d50: 3940054b     	ldrb	w11, [x10, #0x1]
+ffffffff80005d54: 381ff10b     	sturb	w11, [x8, #-0x1]
+ffffffff80005d58: 3940094b     	ldrb	w11, [x10, #0x2]
+ffffffff80005d5c: 3800450b     	strb	w11, [x8], #0x4
+ffffffff80005d60: f1001129     	subs	x9, x9, #0x4
+ffffffff80005d64: 9100114a     	add	x10, x10, #0x4
+ffffffff80005d68: 54fffec1     	b.ne	0xffffffff80005d40 <memcpy+0x100>
+ffffffff80005d6c: d65f03c0     	ret
+		...

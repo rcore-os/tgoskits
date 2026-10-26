@@ -50,6 +50,8 @@ Linux 对照固定为 v7.1、`8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 的 `lib
 
 ## 3. 完整工作量结果
 
+本节四组数据来自 PR 首版提交 `4af1cff1eb84615408c895728ec2c339113351bc` 及其基线对照。当时 A76 模式以 `[env] RUSTFLAGS` 提供完整参数；审查确认它会遮蔽 axbuild 的可选调试参数，因此后续配置迁移为根级 `BuildInfo.rustflags` 追加项。历史数值及日志不改写为新运行；第 5 节记录迁移后的独立构建与产物身份核对。
+
 原配置、旧代码新配置和修复版均使用相同工作量、物理板、CPU 绑定与计数方法。配置与代码收益分别列出，不用不同条件的最好轮次拼接结论。
 
 ### 3.1 正式对比
@@ -105,3 +107,34 @@ cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
 | AArch64 `--test-case task-yield`、`task-rt-policy` | 各 1/1 通过 |
 
 源码、GPIO、配置和诊断清理分别完成了独立审查；测试通过不能代替 `MaybeUninit`、对齐、范围和指针来源的 unsafe 证明。最终跨任务验收同时核对了设计、真实产物和板卡数据。
+
+## 5. 构建参数审查返修
+
+PR 的 [参数来源审查](https://github.com/rcore-os/tgoskits/pull/2690#discussion_r4376118474) 指出 `[env] RUSTFLAGS` 会覆盖 axbuild 生成的 target rustflags。根级 `BuildInfo.rustflags` 通过既有 `append_cargo_rustflags()` 追加客户机参数，让工具链继续拥有栈保护与调试参数；完整接口见 [构建参数追加契约](../../../design/axbuild-rustflags.md)。此次返修不修改客户机源码、GPIO、调度器或计时边界。
+
+### 5.1 调试能力红绿证明
+
+旧、新配置都通过 `cargo xtask arceos build --config <实验配置>` 构建真实 `task-switch` 客户机。实验配置分别由对应版本的正式 guest-build 配置增加 `[env] DWARF = "y"` 或 `BACKTRACE = "y"` 得到。编译 wrapper 仅记录并原样传递 rustc argv；产物通过 `readelf -SW <客户机ELF>` 检查，不能只用生成配置文件中的参数证明生效。去除本机路径与编译元数据后的参数及产物摘要保存在 [rustflags-review.json](rustflags-review.json)。
+
+| 配置 | 构建退出码 | 实际调试参数 | ELF `.debug_info` | 验收 |
+| --- | ---: | --- | --- | --- |
+| 旧配置加 `DWARF=y` | 0 | 无 debuginfo、strip=none 或 frame-pointers | 无 | 同一检查器退出 1，符合预期失败 |
+| 新配置加 `DWARF=y` | 0 | `-Cdebuginfo=2 -Cstrip=none -Cforce-frame-pointers=yes` | 有 | 检查器退出 0 |
+| 新配置加 `BACKTRACE=y` | 0 | 仅增加 `-Cforce-frame-pointers=yes`，不要求 DWARF | 不作为此模式的要求 | 检查器退出 0 |
+| 新配置不启用调试 | 0 | 保留栈保护、A76、禁用 NEON、短复制参数 | 不作为此模式的要求 | 检查器退出 0 |
+
+旧配置的失败是构建成功但所需参数被遮蔽，并非构建器报错。`BACKTRACE` 只启用帧指针，与 `DWARF` 的语义不同；新配置没有通过为所有模式强制开启调试来绕过问题。三个绿色构建均核验自动栈保护和客户机专属参数共存。
+
+返修实现通过 `cargo fmt`、`cargo xtask clippy --package axbuild`（1/1）、独立局部审查及最终差异检查。提交后使用 `cargo xtask test --since 4af1cff1eb84615408c895728ec2c339113351bc`，实际选择 axbuild，485 个测试全部通过，包括新增的 std/no_std builder 默认参数共存与显式环境来源测试；没有用 Clippy 代替单元测试执行。
+
+### 5.2 性能证据复用
+
+完成调试构建后，再直接使用仓库的正式 guest-build 配置、不带编译 wrapper 构建客户机。`cmp` 确认新 BIN 与原第二次正式运行的 BIN 逐字节相同；ELF 与 `.text` 的 SHA-256 也分别相同，因此复用原两次完整 794 周期测量，不将本轮构建检查冒称为新的板卡运行。
+
+| 产物 | 返修前后相同的 SHA-256 |
+| --- | --- |
+| 客户机 BIN | `564dfd8a8bfd1eb8df96391882095afc1e2efad73f56ee83b0aadbc24694c00e` |
+| 客户机 ELF | `303ab35d1d20f988dec56ce1b49eb615670b5748244d9447edb3d238816bad98` |
+| ELF `.text` | `5451f22cc59da044dd9036ed4ecb992fa26d906530e4cb8a2d8e9fce6ad7d6e3` |
+
+DWARF 与 BACKTRACE 构建的 BIN 不同，只用于调试功能证明，不套用正式性能结论。相同正式 ELF 的 [memcpy 反汇编](memcpy-a76.txt) 记录了 `llvm-objdump -d --disassemble-symbols=memcpy task-switch.elf` 输出和镜像摘要：对齐路径采用 `ldr/str`，字节路径采用 `ldrb/strb`，没有递归调用或 SIMD。该证据限定于记录的工具链与镜像，编译器升级后仍需重新核对。
