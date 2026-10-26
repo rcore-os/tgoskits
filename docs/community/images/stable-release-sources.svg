@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="410" viewBox="0 0 920 410" role="img" aria-labelledby="title description">
+  <title id="title">季度稳定版本的四个源码压缩包</title>
+  <desc id="description">一个季度稳定版本包含 tgoskits-vxx.xx.xx、axvisor-vxx.xx.xx、starry-vxx.xx.xx 和 arceos-vxx.xx.xx 四个源码压缩包，分别交付工作区、Axvisor、StarryOS 和 ArceOS 源码。版本号和文件扩展名按实际发布填写。</desc>
+  <rect width="920" height="410" rx="20" fill="#f8fafc"/>
+  <rect x="24" y="24" width="872" height="336" rx="18" fill="#fff" stroke="#0f766e" stroke-width="2"/>
+  <g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif" fill="#173b46">
+    <text x="48" y="68" font-size="28" font-weight="700">季度稳定版本</text>
+    <text x="872" y="68" font-size="19" text-anchor="end" fill="#0f766e">四个源码压缩包共同交付</text>
+    <g fill="#f8fafc" stroke="#cbd5e1">
+      <rect x="48" y="100" width="400" height="100" rx="12"/>
+      <rect x="472" y="100" width="400" height="100" rx="12"/>
+      <rect x="48" y="224" width="400" height="100" rx="12"/>
+      <rect x="472" y="224" width="400" height="100" rx="12"/>
+    </g>
+    <g font-family="DejaVu Sans Mono, monospace" font-size="23" font-weight="700">
+      <text x="72" y="141">tgoskits-vxx.xx.xx</text>
+      <text x="496" y="141">axvisor-vxx.xx.xx</text>
+      <text x="72" y="265">starry-vxx.xx.xx</text>
+      <text x="496" y="265">arceos-vxx.xx.xx</text>
+    </g>
+    <g font-size="19" fill="#526875">
+      <text x="72" y="178">TGOSKits 工作区源码</text>
+      <text x="496" y="178">Axvisor 源码</text>
+      <text x="72" y="302">StarryOS 源码</text>
+      <text x="496" y="302">ArceOS 源码</text>
+    </g>
+    <text x="460" y="392" text-anchor="middle" font-size="18" fill="#526875">vxx.xx.xx 替换为实际版本号，文件扩展名按压缩格式添加。</text>
+  </g>
+</svg>

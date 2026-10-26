@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="650" viewBox="0 0 920 650" role="img" aria-labelledby="title description">
+  <title id="title">Issue 正文与四项必填配置</title>
+  <desc id="description">左侧正文包含当前问题、修改方案、测试验证。右侧必须选择 Assignees、Labels、Type 和 Milestone。示例使用负责人 owner、documentation 和 q4 标签、Task 类型及 2026Q4 里程碑；标签不能代替独立的 Type 字段。</desc>
+  <rect width="920" height="650" rx="20" fill="#f8fafc"/>
+  <g font-family="Noto Sans CJK SC, Microsoft YaHei, sans-serif" fill="#173b46">
+    <text x="28" y="46" font-size="28" font-weight="700">一份完整的 Issue</text>
+    <text x="28" y="80" font-size="19" fill="#526875">正文说明交付内容，侧栏记录任务归属与季度安排。</text>
+
+    <rect x="28" y="112" width="532" height="428" rx="16" fill="#fff" stroke="#cbd5e1"/>
+    <path d="M28 165H560" stroke="#cbd5e1"/>
+    <text x="52" y="147" font-size="21" font-weight="700">正文 · 三个主体部分</text>
+    <text x="52" y="210" font-size="22" font-weight="700">当前问题</text>
+    <text x="52" y="245" font-size="19" fill="#526875">现状、期望结果、影响与复现材料</text>
+    <path d="M52 274H536" stroke="#e2e8f0"/>
+    <text x="52" y="317" font-size="22" font-weight="700">修改方案</text>
+    <text x="52" y="352" font-size="19" fill="#526875">交付范围、实现思路与方案理由</text>
+    <path d="M52 381H536" stroke="#e2e8f0"/>
+    <text x="52" y="424" font-size="22" font-weight="700">测试验证</text>
+    <text x="52" y="459" font-size="19" fill="#526875">验收方法、预期结果及执行证据</text>
+    <text x="52" y="514" font-size="17" fill="#526875">正文中的文字不能代替右侧字段配置。</text>
+
+    <g fill="#fff" stroke="#0f766e" stroke-width="1.5">
+      <rect x="588" y="112" width="304" height="92" rx="14"/>
+      <rect x="588" y="224" width="304" height="92" rx="14"/>
+      <rect x="588" y="336" width="304" height="92" rx="14"/>
+      <rect x="588" y="448" width="304" height="92" rx="14"/>
+    </g>
+    <g font-size="20" font-weight="700">
+      <text x="610" y="143">Assignees</text>
+      <text x="610" y="255">Labels</text>
+      <text x="610" y="367">Type</text>
+      <text x="610" y="479">Milestone</text>
+    </g>
+    <text x="610" y="181" font-size="22">@owner</text>
+    <rect x="610" y="270" width="176" height="32" rx="16" fill="#e7f0ff"/>
+    <text x="698" y="293" font-size="17" text-anchor="middle" fill="#254b87">documentation</text>
+    <rect x="798" y="270" width="68" height="32" rx="16" fill="#fef3c7"/>
+    <text x="832" y="293" font-size="18" text-anchor="middle" fill="#73510d">q4</text>
+    <rect x="610" y="382" width="76" height="32" rx="16" fill="#fef3c7"/>
+    <text x="648" y="405" font-size="18" text-anchor="middle" fill="#73510d">Task</text>
+    <text x="610" y="519" font-size="22">2026Q4</text>
+
+    <rect x="28" y="564" width="864" height="60" rx="12" fill="#e5f4ef"/>
+    <text x="48" y="602" font-size="19" fill="#0b5e56">四项字段均需选择；Type 是独立字段，Milestone 与季度标签对应。</text>
+  </g>
+</svg>
