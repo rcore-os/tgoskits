@@ -217,7 +217,7 @@ elf_path = "target/riscv64gc-unknown-none-elf/release/starryos"
 to_bin = true
 ```
 
-将以下内容保存为 `tmp/starry-bananapi-board.toml`。该配置申请 `BananaPi` 类型的板卡，并在 StarryOS shell 就绪后发送命令，通过完整的启动标记判断成功。
+将以下内容保存为 `tmp/starry-bananapi-board.toml`。该配置申请 `BananaPi` 类型的板卡，并在 StarryOS shell 就绪后发送命令，通过完整的启动标记判断成功。镜像传输参数和板卡 DTB 由服务端的板卡配置提供，本地不需要另行下载 DTB。
 
 ```toml
 board_type = "BananaPi"
@@ -233,13 +233,35 @@ fail_regex = [
 ]
 timeout = 600
 
+# Initialize Ethernet before net list.
+# Reuse the board-provided MAC instead of assigning a test MAC.
+uboot_cmd = [
+  'test -n "$ethaddr" || setenv ethaddr $eth1addr',
+  'setexpr.l sm10_dline *0xd4282bf0',
+  'setexpr sm10_dline $sm10_dline "|" 0x10001',
+  'mw.l 0xd4282bf0 $sm10_dline 1',
+  'setenv netretry no && setenv autoload no && dhcp && setenv autoload yes',
+]
+
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
 shell_cmd = "echo STARRY_BPI_SM10_BOOT_OK"
-success_regex = ["(?m)^(?:\\x1b\\[[0-9;]*m)*STARRY_BPI_SM10_BOOT_OK\\s*$"]
+success_regex = ['(?m)^(?:\x1b\[[0-9;]*m)*STARRY_BPI_SM10_BOOT_OK[ \t]*\r?$']
 ```
 
-成功正则允许标记前出现 ANSI 颜色控制序列，例如日志中的 `ESC[mSTARRY_BPI_SM10_BOOT_OK`。`ShellCheckMatcher` 对串口文本进行正则匹配，不会先删除这些控制序列；只使用 `^STARRY_BPI_SM10_BOOT_OK` 会漏掉带颜色重置前缀的输出。这里仍要求独立一行的完整标记，避免把命令回显当作执行成功。
+`uboot_cmd` 在进入 U-Boot shell 后、客户端执行 `net list` 前运行，用于初始化这块板卡的以太网，不替代后续的镜像上传和 `bootm`。这组命令对应已验证的 BPI-SM10 固件，含义如下。
+
+| 命令 | 作用 |
+| --- | --- |
+| `ethaddr` 检查与回退命令 | `ethaddr` 未设置时，复用板卡已有的 `eth1addr`；需要板卡提供有效 MAC |
+| 三条 `setexpr` / `mw.l` 命令 | 读取 `0xd4282bf0`，按位或 `0x10001` 后写回，保留寄存器原有位；这是该板卡固件的网卡初始化变通措施 |
+| `setenv netretry no` | 网络操作失败后不反复重启整个操作 |
+| `setenv autoload no && dhcp` | 初始化网卡并通过 DHCP 获取网络参数，避免 DHCP 顺带下载默认启动文件 |
+| `setenv autoload yes` | DHCP 成功后恢复自动加载设置 |
+
+在已验证的固件上，直接设置静态 IP 后执行 `net list` 曾出现异常或挂起，因此示例保留 DHCP 初始化步骤。设置 `ipaddr` 只改变网络参数，不会完成网卡硬件初始化；即使服务端随后指定静态 IP，也不能据此省略这一步。上面的命令不执行 `saveenv`，每次会话启动时重新设置。
+
+成功正则允许标记前出现 ANSI 颜色控制序列，例如日志中的 `ESC[mSTARRY_BPI_SM10_BOOT_OK`。`ShellCheckMatcher` 对串口文本进行正则匹配，不会先删除这些控制序列；只使用 `^STARRY_BPI_SM10_BOOT_OK` 会漏掉带颜色重置前缀的输出。正则末尾同时允许空格、制表符和串口的 CRLF 换行；仍要求独立一行的完整标记，避免把命令回显当作执行成功。
 
 两份配置分别控制本地产物和远程启动，不能互换。
 
@@ -270,7 +292,7 @@ success_regex = ["(?m)^(?:\\x1b\\[[0-9;]*m)*STARRY_BPI_SM10_BOOT_OK\\s*$"]
 | `fit_load_addr` | 否 | U-Boot 把 FIT 镜像加载到内存的地址 |
 | `bootm_addr` | 否 | `bootm` 命令使用的 FIT 镜像地址，通常与 `fit_load_addr` 一致 |
 | `fail_regex` | 否 | 在串口输出中立即判定失败的正则表达式列表，可用于识别 panic、段错误或启动错误 |
-| `uboot_cmd` | 否 | 覆盖默认 U-Boot 启动流程的命令列表；只在板卡需要特殊命令时设置 |
+| `uboot_cmd` | 否 | 进入 U-Boot shell 后执行的准备命令列表；在网络枚举和镜像上传之前运行 |
 | `shell_check_steps` | 否 | 按顺序等待 shell 提示符、发送命令并检查输出的步骤列表 |
 | `timeout` | 否 | 等待启动和运行结果的最长时间，单位为秒 |
 | `auth_mode` | 否 | 覆盖全局认证模式，`disabled` 不携带凭据，`required` 要求 HTTPS 和有效凭据 |
@@ -314,6 +336,21 @@ ostool board run \
 `BoardRunArgs` 先加载 `--config` 指定的构建配置，准备其中的 ELF；随后加载 `--board-config`，按 `board_type` 向服务端申请板卡。该命令没有再传 `--server`、`--port` 和 `--board-type`，因为服务地址来自 `~/.ostool/config.toml`，板卡类型来自 `starry-bananapi-board.toml`。申请成功后，客户端上传启动产物、执行板卡启动流程，然后进入串口终端并按配置检查输出。
 
 如果命令在申请会话前失败，优先检查两份 TOML 的路径和 `elf_path`。如果报租赁或板卡类型错误，使用 `ostool board ls` 确认服务地址、凭据和 `board_type`。已进入 U-Boot 但内核未启动时，则检查板卡配置中的加载地址、启动命令和服务端文件传输网络。
+
+看到 `root@starry:` 提示符，并收到独立一行的 `STARRY_BPI_SM10_BOOT_OK`，即可确认本示例已进入 StarryOS shell。TFTP 下载完成或出现 `Starting kernel ...` 只表示启动流程走到了对应阶段。
+
+#### DHCP 与 TFTP 的区别
+
+DHCP 决定板卡如何获取 IP、掩码等网络参数，TFTP 负责传输 FIT 镜像。服务端可以为不同的 `board_id` 配置 DHCP 或静态 IP：DHCP 模式保留获取的板卡地址，静态模式则由客户端在上述初始化命令后设置服务端指定的地址。使用 DHCP 时，同样需要服务端提供可用的 TFTP 传输配置。
+
+| 日志或状态 | 含义与检查方向 |
+| --- | --- |
+| `EQOS_DMA_MODE_SWR stuck` | 网卡 DMA 软件复位未完成，发生在网络初始化阶段；不能据此判断 DHCP 服务器是否正常。若命令重试后能完成 TFTP 下载，说明后续尝试已恢复 |
+| `Board network ok` | 客户端完成了网络设备枚举，尚不能证明板卡可以下载镜像 |
+| `No TFTP config, using loady to upload FIT image...` | 客户端未取得可用的 TFTP 配置，改用串口 YMODEM；这条日志本身不表示 DHCP 失败 |
+| `Bytes transferred = ...`，随后 FIT 校验通过 | 镜像已传输到板卡，并通过对应校验；继续观察 StarryOS shell 检查结果 |
+
+出现串口回退时，管理员应检查服务端返回的 TFTP `available`、`server_ip` 及启动配置中的网络参数。仅启用 TFTP 服务还不够：服务端选择的网络接口必须实际存在，并能连接板卡所在网段。例如板卡位于 `192.168.1.0/24` 时，应选择服务端连到该网段的接口及其地址。网卡名称以运行 `ostool-server` 的主机为准。若 TFTP 进程正常但 `server_ip` 为空，应先检查服务端网卡选择和地址解析。服务端检查入口见[管理端使用说明](admin-guide.md)。
 
 ### 5.4 通过任务工具启动
 
