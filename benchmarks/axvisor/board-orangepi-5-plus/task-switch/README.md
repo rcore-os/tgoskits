@@ -88,7 +88,7 @@ cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 ```
 
-该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `std tests` 检查在持续集成中以同一命令运行它。板卡运行入口要求内核套件最后出现 `AXTEST_SUITE_OK`，该标记只证明完整有效测量完成，不代表性能达标。性能目标是聚合 `avg_cycles < 800`；每轮 `max_cycles` 仍须单独报告，平均目标不承诺最大时延小于 800 周期。完整测量与验证记录见[任务切换测量结果](../../../../docs/measurements/task-switch-2686/README.md)。GPIO 信号必须保留；单引脚 GPIO 优化的仪器成本变化与通用 `memcpy` 成本变化分别归因，不得通过删信号或扣除 GPIO 成本改写正式值。
+该命令在 AArch64 musl 目标下只编译 `convert` 模块与其单元测试，不构建板卡客户机 `main`；`.github/ci/checks/workspace.toml` 的 `std tests` 检查在持续集成中以同一命令运行它。板卡运行入口要求内核套件最后出现 `AXTEST_SUITE_OK`，该标记只证明完整有效测量完成，不代表性能达标。性能目标是聚合 `avg_cycles < 800`；每轮 `max_cycles` 仍须单独报告，平均目标不承诺最大时延小于 800 周期。测量边界与设计约束见[任务切换测量契约](../../../../design/task-switch-measurement.md)。GPIO 信号必须保留；单引脚 GPIO 优化的仪器成本变化与通用 `memcpy` 成本变化分别归因，不得通过删信号或扣除 GPIO 成本改写正式值。
 
 ## 4. 目录布局与用例发现
 

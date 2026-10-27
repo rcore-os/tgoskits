@@ -1,8 +1,8 @@
 # ax-task Linux v7.1 PREEMPT_RT 系统审计
 
-## RK3588 任务切换性能调查约束
+## RK3588 任务切换约束
 
-议题 #2686 的当前测量与验收契约见 [RK3588 客户机任务切换测量契约](../../design/task-switch-measurement.md)。该调查沿用本文的 rq、current、switch-tail、RT 带宽和 RR quantum 所有权，不以双任务同优先级基准为理由削弱通用调度语义。Linux `yield_task_rt()` 的链内轮转不替代之后的全局最高 RT 优先级选择；复用链首必须满足相同选择规则。历史性能检查点不代表当前提交已复现或已达到实体板卡周期目标。
+RK3588 客户机的测量边界见 [任务切换测量契约](../../design/task-switch-measurement.md)。该场景沿用本文的 rq、current、switch-tail、RT 带宽和 RR quantum 所有权，不以双任务同优先级基准为理由削弱通用调度语义。Linux `yield_task_rt()` 的链内轮转不替代之后的全局最高 RT 优先级选择；复用链首必须满足相同选择规则。
 
 ## 文档状态与范围
 

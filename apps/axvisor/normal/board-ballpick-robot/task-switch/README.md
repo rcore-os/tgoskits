@@ -61,7 +61,7 @@ cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
 
 ### 等待任务创建阶段
 
-`bench_spawn()` 可能长时间不打印输出；此前实测约16分钟，完整运行约半小时。`rdtsc` 结果之后静默不一定是挂起。整次执行仍受板卡配置的3600秒超时约束，超过上限应保留日志并判定本轮未完成。
+`bench_spawn()` 可能长时间不打印输出，`rdtsc` 结果之后静默不一定是挂起。整次执行仍受板卡配置的3600秒超时约束，超过上限应保留日志并判定本轮未完成。
 
 ### 核对逐轮结果
 
@@ -78,7 +78,7 @@ AXTEST_SUITE_OK
 
 ## 判定
 
-30轮全部完成、汇总值非零、出现 `AXTEST_SUITE_OK` 且外层命令返回0才表示取得完整有效测量；这不是性能达标结论。性能目标是聚合 `avg_cycles < 800`，并同时报告逐轮最大值及其他统计量。完整测量与验证记录见[任务切换测量结果](../../../../../docs/measurements/task-switch-2686/README.md)。`BENCHER_GPIO_FAILED`、`BENCHER_MEASUREMENT_FAILED`、panic、提前退出或超时均不通过。
+30轮全部完成、汇总值非零、出现 `AXTEST_SUITE_OK` 且外层命令返回0才表示取得完整有效测量；这不是性能达标结论。性能目标是聚合 `avg_cycles < 800`，并同时报告逐轮最大值及其他统计量。测量边界与设计约束见[任务切换测量契约](../../../../../design/task-switch-measurement.md)。`BENCHER_GPIO_FAILED`、`BENCHER_MEASUREMENT_FAILED`、panic、提前退出或超时均不通过。
 
 测量区间中的 GPIO 信号必须保留；GPIO 单引脚访问优化只减少仪器成本，通用 `memcpy` 的变化属于客户机通用运行成本，两类收益须与调度收益分开归因。不得以删除信号或扣除观测开销改写正式测量结果。
 
