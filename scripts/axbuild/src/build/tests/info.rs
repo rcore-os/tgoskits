@@ -4,6 +4,160 @@ use crate::build::info::{
     toolchain_rustflags, toolchain_rustflags_for_mmu,
 };
 
+fn prepare_rustflags_cargo(
+    info: BuildInfo,
+    std_build: bool,
+    metadata: &cargo_metadata::Metadata,
+    axbuild_dir: &std::path::Path,
+) -> Cargo {
+    if std_build {
+        info.into_prepared_std_cargo_config_with_metadata(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            metadata,
+            axbuild_dir,
+        )
+    } else {
+        info.into_prepared_no_std_cargo_config_with_metadata(
+            "arceos-helloworld",
+            "aarch64-unknown-none-softfloat",
+            metadata,
+            BareKernelLinkMode::Pie,
+        )
+    }
+    .unwrap()
+}
+
+// Decode only the command-line layer, not a second implementation of Cargo's
+// configuration merging. The std builder's file layer is checked separately.
+fn inline_target_rustflags(cargo: &Cargo) -> Vec<String> {
+    let target = std::path::Path::new(&cargo.target)
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap();
+    cargo
+        .args
+        .windows(2)
+        .filter(|pair| pair[0] == "--config")
+        .find_map(|pair| {
+            let table: toml::Table = toml::from_str(&pair[1]).unwrap();
+            table
+                .get("target")?
+                .get(target)?
+                .get("rustflags")
+                .map(|flags| {
+                    flags
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|flag| flag.as_str().unwrap().to_string())
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn build_config_rustflags_extend_std_and_no_std_defaults() {
+    let metadata = repo_metadata();
+    let root = tempfile::tempdir().unwrap();
+    let legacy = "features = []\nlog = 'Warn'\n[env]\nDWARF = '1'\n";
+    let appended = concat!(
+        "features = []\nlog = 'Warn'\n",
+        "rustflags = ['--cfg', 'label=\"hello world\"', '-Ctarget-cpu=cortex-a76']\n",
+        "[env]\nDWARF = '1'\n",
+    );
+
+    for std_build in [false, true] {
+        for (source, expected) in [
+            (legacy, vec![]),
+            (
+                appended,
+                vec!["--cfg", "label=\"hello world\"", "-Ctarget-cpu=cortex-a76"],
+            ),
+        ] {
+            let config: crate::arceos::build::ArceosBuildConfig = toml::from_str(source).unwrap();
+            let cargo =
+                prepare_rustflags_cargo(config.build_info, std_build, &metadata, root.path());
+            let inline = inline_target_rustflags(&cargo);
+            let defaults = if std_build {
+                let source = fs::read_to_string(cargo.extra_config.as_ref().unwrap()).unwrap();
+                let config: toml::Table = toml::from_str(&source).unwrap();
+                let target = &config["target"]["aarch64-unknown-linux-musl"];
+                assert!(target["linker"].as_str().unwrap().ends_with(".sh"));
+                // Cargo merges this file array with the command-line array.
+                assert_eq!(inline, expected);
+                target["rustflags"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|flag| flag.as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            } else {
+                assert!(
+                    inline
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .ends_with(&expected)
+                );
+                assert!(inline.contains(&"-Crelocation-model=pic".to_string()));
+                assert!(inline.contains(&"-Clink-args=-Tlinker.x".to_string()));
+                assert!(inline.contains(&"-Cllvm-args=--max-store-memcpy=16".to_string()));
+                inline
+            };
+            for flag in [
+                "-Zstack-protector=strong",
+                "-Cdebuginfo=2",
+                "-Cstrip=none",
+                "-Cforce-frame-pointers=yes",
+            ] {
+                assert!(defaults.iter().any(|value| value == flag), "missing {flag}");
+            }
+            assert!(!cargo.env.contains_key("RUSTFLAGS"));
+            assert!(!cargo.env.contains_key("CARGO_ENCODED_RUSTFLAGS"));
+            assert!(cargo.features.is_empty());
+        }
+    }
+}
+
+#[test]
+fn build_config_rustflags_extend_only_the_active_environment_source() {
+    let metadata = repo_metadata();
+    let root = tempfile::tempdir().unwrap();
+    for std_build in [false, true] {
+        for encoded in [false, true] {
+            let mut info: BuildInfo = toml::from_str(concat!(
+                "features = []\nlog = 'Warn'\n",
+                "rustflags = ['--cfg', 'label=\"hello world\"']\n",
+                "[env]\nRUSTFLAGS = '-Copt-level=1'\nDWARF = '1'\n",
+            ))
+            .unwrap();
+            if encoded {
+                info.env
+                    .insert("CARGO_ENCODED_RUSTFLAGS".into(), "--cfg\x1fexisting".into());
+            }
+            let cargo = prepare_rustflags_cargo(info, std_build, &metadata, root.path());
+            let expected = if encoded {
+                "--cfg\x1fexisting"
+            } else {
+                "-Copt-level=1"
+            };
+            assert_eq!(
+                cargo.env.get("CARGO_ENCODED_RUSTFLAGS").unwrap(),
+                &format!("{expected}\x1f--cfg\x1flabel=\"hello world\"")
+            );
+            assert_eq!(cargo.env.contains_key("RUSTFLAGS"), encoded);
+            assert!(
+                !inline_target_rustflags(&cargo)
+                    .iter()
+                    .any(|flag| flag == "--cfg")
+            );
+        }
+    }
+}
+
 #[test]
 fn duplicate_mmu_capabilities_add_only_one_stack_protector_rustflag() {
     let flags = toolchain_rustflags_for_mmu(&HashMap::new(), true);

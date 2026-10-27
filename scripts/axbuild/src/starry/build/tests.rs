@@ -40,6 +40,7 @@ fn patch_starry_cargo_config_sets_environment() {
     );
     let build_info = StarryBuildInfo {
         env: HashMap::from([(String::from("CUSTOM"), String::from("1"))]),
+        rustflags: Vec::new(),
         features: vec!["net".to_string()],
         log: LogLevel::Info,
         max_cpu_num: None,
@@ -102,6 +103,7 @@ fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
     );
     request.build_info_override = Some(StarryBuildInfo {
         env: HashMap::new(),
+        rustflags: Vec::new(),
         features: vec![
             "common".to_string(),
             "plat-dyn".to_string(),

@@ -2,15 +2,17 @@
 
 ## 测试用途
 
-通过 AxVisor 在 RK3588 上启动一个 ArceOS 客户机，测量两个同优先级 FIFO(80) 任务的 `yield` 往返开销。客户机运行30轮，每轮1,000万次切换，记录纳秒、PMU 周期和 GPIO3_C6 时序。
+通过 AxVisor 在 RK3588 上启动一个 ArceOS 客户机，测量两个同优先级 FIFO(80) 任务的 `yield` 往返开销。客户机运行30轮，每轮1,000万次切换，记录纳秒、PMU 周期和 GPIO3_C6 时序。本用例的构建配置只适用于固定在 `cpu@400`（实板 Cortex-A76）的客户机，不可迁移到 Cortex-A55 或笼统视为任意 ARMv8 CPU；AxVisor 宿主仍使用通用目标配置，不继承这些客户机专属 flags。
 
 ## 边界
 
 这个场景由 `axvm` 的 `task_switch` 内核测试目标驱动。它用 `VmCreatePlan` 为宿主 vCPU 任务安装 FIFO 策略，并检查客户机汇总结果，因此正式测量使用 `cargo xtask ktest board`。手动启动一个普通 VM 不能替代这份调度策略和判定。
 
-客户机在 EL1 读取 `CNTVCT_EL0`、`CNTFRQ_EL0`、`PMCCNTR_EL0`。固件须允许对应 PMU 访问，`configs/task-switch.toml` 须正确分配 GPIO3_C6 的物理窗口。GPIO 或计时器初始化失败时，应停止测量，不能接受零值结果。
+客户机在 EL1 读取 `CNTVCT_EL0`、`CNTFRQ_EL0`、`PMCCNTR_EL0`。固件须允许对应 PMU 访问，`configs/task-switch.toml` 须正确分配 GPIO3_C6 的物理窗口。GPIO 或计时器初始化失败时，应停止测量，不能接受零值结果。客户机构建保留 soft-float ABI 与 `-neon`，并启用 stack protector；严格对齐来自共享 AArch64 目标 JSON，不在命令行重复传递 `+strict-align`。短复制内联参数 `--max-store-memcpy=16` 遵循[短复制内联设计](../../../../../docs/design/aarch64-inline-copy.md)，但此处仅是固定 Cortex-A76 客户机的专属配置，不改变 axbuild 或全局目标默认值。
 
 ## 运行前确认
+
+客户机 CPU 与短复制参数由 `configs/guest-build.toml` 的根级 `rustflags` 数组追加；栈保护由 axbuild 自动计算，不在配置中重复。需要调试信息时可在 `[env]` 中设置 `DWARF = "y"`，只需要帧指针时设置 `BACKTRACE = "y"`。不要再设置会覆盖生成参数的 `[env] RUSTFLAGS`，详见 [构建参数追加契约](../../../../../design/axbuild-rustflags.md)。
 
 从 TGOSKits 仓库根目录执行，使用仓库固定工具链及 AArch64 musl 交叉工具链。客户机由本次源码构建，随宿主打包，不需要预装板端 task-switch BIN。
 
@@ -59,7 +61,7 @@ cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
 
 ### 等待任务创建阶段
 
-`bench_spawn()` 可能长时间不打印输出；此前实测约16分钟，完整运行约半小时。`rdtsc` 结果之后静默不一定是挂起。整次执行仍受板卡配置的3600秒超时约束，超过上限应保留日志并判定本轮未完成。
+`bench_spawn()` 可能长时间不打印输出，`rdtsc` 结果之后静默不一定是挂起。整次执行仍受板卡配置的3600秒超时约束，超过上限应保留日志并判定本轮未完成。
 
 ### 核对逐轮结果
 
@@ -72,11 +74,13 @@ TASK_SWITCH_SUMMARY rounds=30 samples_per_round=10000000 avg_ns=... avg_cycles=.
 AXTEST_SUITE_OK
 ```
 
-这里的省略号是输出格式示意，实际日志必须包含非零数值。`convert::ticks_to_nanos()` 等函数负责单位换算，往返包含两次上下文切换，不能把每次与每往返的开销混为一谈。
+这里的省略号是输出格式示意，实际日志必须包含非零数值。`convert::ticks_to_nanos()` 等函数负责单位换算，往返包含两次上下文切换，不能把每次与每往返的开销混为一谈。`AXTEST_SUITE_OK` 只证明完整有效测量完成，不表示性能达标；`avg_cycles` 的每次切换平均值以小于 800 周期为目标，最大值仍须单独报告，不能把平均目标解释为最大时延保证。
 
 ## 判定
 
-30轮全部完成、汇总值非零、出现 `AXTEST_SUITE_OK` 且外层命令返回0才通过。`BENCHER_GPIO_FAILED`、`BENCHER_MEASUREMENT_FAILED`、panic、提前退出或超时均不通过。某次实测均值不是本例的固定性能门槛。
+30轮全部完成、汇总值非零、出现 `AXTEST_SUITE_OK` 且外层命令返回0才表示取得完整有效测量；这不是性能达标结论。性能目标是聚合 `avg_cycles < 800`，并同时报告逐轮最大值及其他统计量。测量边界与设计约束见[任务切换测量契约](../../../../../design/task-switch-measurement.md)。`BENCHER_GPIO_FAILED`、`BENCHER_MEASUREMENT_FAILED`、panic、提前退出或超时均不通过。
+
+测量区间中的 GPIO 信号必须保留；GPIO 单引脚访问优化只减少仪器成本，通用 `memcpy` 的变化属于客户机通用运行成本，两类收益须与调度收益分开归因。不得以删除信号或扣除观测开销改写正式测量结果。
 
 纯算术换算可以另用 `cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features` 检查，但不能代替板卡上的调度、PMU 和 GPIO 测量。
 
@@ -92,7 +96,7 @@ AXTEST_SUITE_OK
 
 | 文件 | 作用 |
 | --- | --- |
-| [configs/guest-build.toml](configs/guest-build.toml) | 客户机软件包、目标和 FIFO 功能 |
+| [configs/guest-build.toml](configs/guest-build.toml) | 客户机软件包、目标、FIFO 功能及固定 Cortex-A76 专属 flags |
 | [guest-builds.toml](guest-builds.toml) | 宿主之前的客户机构建声明 |
 | [build-aarch64-unknown-none-softfloat.toml](build-aarch64-unknown-none-softfloat.toml) | AxVisor 宿主构建和打包输入 |
 | [configs/task-switch.toml](configs/task-switch.toml) | 单 vCPU、镜像、内存和直通资源 |

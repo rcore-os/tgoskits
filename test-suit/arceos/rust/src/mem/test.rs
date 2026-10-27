@@ -1,5 +1,8 @@
 use core::{
     alloc::Layout,
+    ffi::c_void,
+    hint::black_box,
+    mem::{MaybeUninit, size_of},
     ptr::{self, NonNull},
     slice,
 };
@@ -130,6 +133,69 @@ fn verify_block(block: &Allocation) {
 
 unsafe fn free_block(block: Allocation) {
     unsafe { dealloc_raw(block.as_non_null(), block.layout()) };
+}
+
+fn test_memcpy() {
+    let copy = black_box(
+        ax_std::os::libc_compat::memcpy
+            as unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
+    );
+    const WORD: usize = size_of::<usize>();
+    const CAPACITY: usize = 513 + 3 * WORD;
+    const CANARY: u8 = 0xa5;
+    let source: [u8; CAPACITY] = core::array::from_fn(|i| (i as u8).wrapping_mul(37));
+    for len in (0..=2 * WORD + 1).chain([40, 64, 80, 257, 513]) {
+        for src_offset in WORD..2 * WORD {
+            for dst_offset in WORD..2 * WORD {
+                let mut destination = [CANARY; CAPACITY];
+                // SAFETY: Both ranges are within separate live arrays. All
+                // source bytes are initialized and the destination is writable.
+                let (dst, returned) = unsafe {
+                    let dst = destination.as_mut_ptr().add(dst_offset).cast();
+                    let src = source.as_ptr().add(src_offset).cast();
+                    (dst, copy(dst, src, black_box(len)))
+                };
+                assert_eq!(returned, dst, "memcpy must return its destination");
+                assert_eq!(
+                    &destination[dst_offset..dst_offset + len],
+                    &source[src_offset..src_offset + len],
+                    "memcpy payload mismatch: len={len} src={src_offset} dst={dst_offset}"
+                );
+                assert!(destination[..dst_offset].iter().all(|&b| b == CANARY));
+                assert!(destination[dst_offset + len..].iter().all(|&b| b == CANARY));
+                for (i, &byte) in source.iter().enumerate() {
+                    assert_eq!(byte, (i as u8).wrapping_mul(37), "source modified");
+                }
+            }
+        }
+    }
+
+    #[repr(C)]
+    struct Padded {
+        first: u8,
+        middle: usize,
+        last: u8,
+    }
+    let mut source = MaybeUninit::<Padded>::uninit();
+    let mut destination = MaybeUninit::<Padded>::uninit();
+    let src = source.as_mut_ptr();
+    let dst = destination.as_mut_ptr();
+    // SAFETY: Only the fields are initialized, leaving padding uninitialized.
+    // memcpy copies the complete storage between distinct live allocations;
+    // afterwards only initialized fields are read, never the padding.
+    unsafe {
+        ptr::addr_of_mut!((*src).first).write(0x12);
+        ptr::addr_of_mut!((*src).middle).write(0x3456);
+        ptr::addr_of_mut!((*src).last).write(0x78);
+        assert_eq!(
+            copy(dst.cast(), src.cast(), black_box(size_of::<Padded>())),
+            dst.cast()
+        );
+        assert_eq!(ptr::addr_of!((*dst).first).read(), 0x12);
+        assert_eq!(ptr::addr_of!((*dst).middle).read(), 0x3456);
+        assert_eq!(ptr::addr_of!((*dst).last).read(), 0x78);
+    }
+    println!("memtest: memcpy OK");
 }
 
 fn test_vec(rng: &mut impl RngCore) {
@@ -308,6 +374,7 @@ fn test_kernel_page_table_window_excludes_direct_map() {
 }
 
 pub fn run() -> crate::TestResult {
+    test_memcpy();
     #[cfg(target_arch = "loongarch64")]
     test_kernel_page_table_window_excludes_direct_map();
     // A fallible standard-library request must report allocation failure to

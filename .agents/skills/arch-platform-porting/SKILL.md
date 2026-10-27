@@ -52,6 +52,7 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 
 - **目标与工具链**：检查 `scripts/targets` 目标规格、目标三元组、内核恐慌策略、重定位与代码模型、二进制接口、软浮点、musl 或标准库支持、链接器、目标文件复制工具和 `rust-src`。四架构裸机构建和 Clippy 必须通过共享 `CargoBuildTarget` 统一解析 `scripts/targets/bare/<逻辑目标名>.json`，不得为单一架构退回内置目标或另加命令行 target feature；逻辑目标名、`AX_TARGET` 和产物目录仍使用原目标三元组，JSON 路径只作为 Cargo `--target` 输入。各 JSON 精确保持固定 nightly 对应内置目标的二进制接口和指令集基线；LoongArch 目标额外保持 `lp64s` soft-float，并在 target specification 的 `features` 中声明 `-ual`，不得恢复会产生 unstable target feature 警报的命令行 `-Ctarget-feature=-ual`。由 Clang 构建 RISC-V Linux/musl 客户机 C 程序时，`CrossCompileSpec::clang_target_flags` 必须向编译和链接同时传递 `-march=rv64gc` 与 `-mabi=lp64d`，不得依赖可能启用根文件系统、QEMU CPU 或用户上下文尚未支持扩展的 Clang 默认指令集；C 与 grouped 用例的缓存散列同时包含这些标志和 CMake 工具链模板。改动 LoongArch 规格后同时运行 ArceOS `unaligned-fixup` 与 Starry `c-regression-test-loongarch-unaligned-cross-page` 回归，确认未对齐异常修复、跨页访问和 `SIGBUS` 语义。
 - **AArch64 短复制内联**：裸机目标通过 `CargoBuildTarget.rustflags` 统一提供 `--max-store-memcpy=16` 的 LLVM 代价参数，构建与 Clippy 共用，仍保留严格对齐、soft-float 与禁用 NEON 的目标契约。涉及复制性能或调整该参数时，读取[短复制内联设计](../../../docs/design/aarch64-inline-copy.md)，核对实际机器码和原生结果；不得以关闭严格对齐、开启内核 SIMD 或 QEMU 指令计数代替原生性能证明。
+- **标准库内核的调度性能归因**：`use ax_std as _` 只接入运行时，不会把 Rust `std` 重命名为 mini-std；先核对最终 ELF 的 `sched_yield`、`memcpy` 等实际符号及生成的 Cargo 配置，再分析调度器。小型调度状态的 Rust 移动可能降低为 libc 复制调用，不能只统计源码中的锁、原子操作或显式 clone；裸机目标的短复制参数也不自动作用于 musl 标准库目标。复制必须允许未初始化 padding，并保持早期启动严格对齐，不能用可能递归到自身的 intrinsic 直接实现同名 libc 符号。固定 CPU 的代码生成配置须说明硬件能力和亲和性约束，只作用于相应客户机，不泄漏到异构宿主或全局目标。GPIO、计数器和 qperf 插桩成本分别归因，最终以清除探针后的完整负载验证，保留旧代码同配置对照；不要用插桩值、扣除仪器开销或单次最好结果宣称达标。
 - **AArch64 用户态普通未对齐访问**：EL1 MMU 初始化显式清除 `SCTLR_EL1.A`，不能继承固件的对齐陷阱设置；Normal memory 上的普通 EL0 装载与向量复制按 Linux 语义允许未对齐。该硬件控制不改变裸机编译目标的严格对齐、内核 SIMD 或 Device memory 契约。通过既有 `qemu/system/test-aarch64-cpu-feat` 验证普通装载和 `mremap` 后的向量装载；默认固件本来已清零时，单次通过不能证明旧实现一定失败。ArceOS `cpu/paging` 的 `alignment::run()` 主动写入并读回 `SCTLR_EL1.A=1`，调用生产 `El1::enable_mmu_and_caches()`，检查清 A、SPAN 和实际未对齐 LDR 内容；撤掉清 A 操作时必须失败。该夹具复用已安装的合法页表，证明入口的寄存器策略，不能冒充实体固件全启动实验。
 - **内核运行模式**：明确最终映像契约。Starry 是以 `build-std=core,alloc` 构建的独立 `no_std`、`no_main` 位置无关可执行文件，始终保留对称多处理能力且不得含内核线程局部存储。Axvisor 保持标准库与 musl 位置无关可执行文件，并显式启用线程局部存储。ArceOS 默认启用线程局部存储；`uspace + tls` 按 `uspace` 选择寄存器所有权，内部 `kernel_tls` cfg 关闭。
 - **处理器局部执行上下文二进制接口**：`cpu-local` 独占当前来源选择、上下文绑定、切换事务和体系结构选定的抢占状态；`ax-percpu` 只负责类型化布局与存储。不得创建第二个逐处理器当前上下文指针。最终映像模式决定寄存器分配；精确初始化后的 `CpuAreaRef` 地址就是区域身份，不增加映像内二进制接口版本、代数、标记、提供者特征外部函数接口或原始线程指针访问。
@@ -199,6 +200,8 @@ cargo xtask clippy --package someboot
 软件包列表按实际差异调整。
 
 ## 调试流程
+
+Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项时，使用根级 `BuildInfo.rustflags` 数组，不通过 `[env] RUSTFLAGS` 整体替换来源；后者会遮蔽自动栈保护及 `DWARF`/`BACKTRACE` 参数。核对真实 rustc argv 与 ELF，而不只检查生成的 TOML。提取 ELF section 时为 `llvm-objcopy --dump-section` 显式指定独立输出 ELF，并核对输入摘要不变，避免取证过程重写原产物。
 
 1. 定位最后一个可靠输出或机器状态转移：统一可扩展固件接口入口、内存映射、`ExitBootServices`、重定位、启用内存管理单元、安装陷阱向量、释放次处理器、第一条内核输出。
 2. 在转移前后加入临时单字节串口或设备映射标记，找到根因后删除。

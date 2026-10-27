@@ -633,6 +633,10 @@ pub struct BuildInfo {
     /// Environment variables to set during the build.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
+    /// Complete rustc arguments appended in order to Cargo's active source.
+    /// Elements are not shell-expanded or split on whitespace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rustflags: Vec<String>,
     /// Cargo features to enable.
     pub features: Vec<String>,
     /// Log level feature to automatically enable.
@@ -753,6 +757,7 @@ impl BuildInfo {
         let std_target = std_build_target_for(target)?;
         let fake_lib_dir = std_fake_lib_dir(axbuild_dir, &std_target.target_name)?;
         let wrapper = std_linker_wrapper_path(axbuild_dir, &std_target.target_name, &fake_lib_dir)?;
+        let extra_rustflags = std::mem::take(&mut self.rustflags);
         let mut cargo = self.into_base_cargo_config_with_log(
             package.to_string(),
             std_target.target.clone(),
@@ -782,6 +787,13 @@ impl BuildInfo {
             std_cargo_config_path(axbuild_dir, &std_target.target_name, &wrapper, &rustflags)?
                 .display()
                 .to_string(),
+        );
+        append_cargo_rustflags(
+            &mut cargo,
+            &extra_rustflags
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
         );
         Ok(cargo)
     }
@@ -847,6 +859,7 @@ impl BuildInfo {
         rustflags.extend(link_mode.rustflags(target));
         let bare_target = freestanding_build_target_for(target);
         let args = Self::build_cargo_args(target, &rustflags);
+        let extra_rustflags = std::mem::take(&mut self.rustflags);
         let mut cargo =
             self.into_base_cargo_config_with_log(package.to_string(), bare_target.target, args);
         cargo.env.extend(bare_target.env);
@@ -854,6 +867,13 @@ impl BuildInfo {
             .env
             .insert("AX_TARGET".to_string(), target.to_string());
         cargo.to_bin = bare_target_requires_bin(target);
+        append_cargo_rustflags(
+            &mut cargo,
+            &extra_rustflags
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
         Ok(cargo)
     }
 
@@ -1023,6 +1043,7 @@ impl Default for BuildInfo {
     fn default() -> Self {
         Self {
             env: HashMap::new(),
+            rustflags: Vec::new(),
             log: LogLevel::Warn,
             features: Vec::new(),
             max_cpu_num: None,

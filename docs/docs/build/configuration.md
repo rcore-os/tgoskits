@@ -87,12 +87,13 @@ qemu_config = "os/arceos/configs/qemu/qemu-aarch64.toml"
 
 ## 3. 构建配置
 
-共享的 `BuildInfo` 结构只有四个字段：
+共享的 `BuildInfo` 保存能力、日志、CPU 容量、环境及追加 rustc 参数。根级 `rustflags` 保留 axbuild 的默认参数来源，不同于直接设置 `RUSTFLAGS` 环境变量：
 
 ```toml
 features = ["fs", "net", "ax-driver/nvme"]
 log = "Warn"
 max_cpu_num = 4
+rustflags = ["-Cforce-frame-pointers=yes"]
 
 [env]
 BACKTRACE = "y"
@@ -104,7 +105,10 @@ DWARF = "y"
 | `features` | `[]` | 显式 Cargo 能力列表；排序、去重并按 `ax-std` 的公开 feature 边界转发 |
 | `log` | `Warn` | 转成 `AX_LOG=<小写级别>` |
 | `max_cpu_num` | 无 | 写入 `SMP`；大于 1 时显式增加 `smp` 能力；0 非法 |
+| `rustflags` | `[]` | 每项为一个完整 rustc 参数；在 std/no_std Cargo 配置生成后，追加到当前有效来源，不做 shell 展开 |
 | `[env]` | 空表 | 原样加入 Cargo 环境；部分键会驱动工具链选项 |
+
+根级 `rustflags` 复用 `append_cargo_rustflags()`：没有显式环境覆盖时保留 target 配置中的栈保护、调试和链接参数。显式 `CARGO_ENCODED_RUSTFLAGS` 或 `RUSTFLAGS` 仍按 Cargo 的原优先级覆盖配置来源，追加项进入该有效来源，不会自动恢复被遮蔽的默认值。需要在默认参数之上扩展时使用根级数组；完整契约见 [axbuild 构建参数追加](../../../design/axbuild-rustflags.md)。
 
 默认路径由 `default_build_info_path_in_workspace()` 生成：
 
@@ -132,7 +136,7 @@ tmp/axbuild/config/<package>/build-<logical-target>.toml
 
 - `axstd` 与 `axstd/<feature>` 不属于有效 feature 名称；配置应使用 package 实际声明的 Cargo feature。
 - `dyn-plat`、`plat-dyn`、`axplat-dyn`、`ax-hal/plat-dyn`、`ax-std/plat-dyn`、`axvm/plat-dyn`、`ax-driver/plat-dyn` 不属于有效 BuildInfo feature。
-- Build Config 根字段只接受 `env`、`features`、`log`、`max_cpu_num` 和系统专属字段；`std`、`plat_dyn` 会在 TOML 读取时报告结构错误。
+- Build Config 共享根字段为 `env`、`features`、`log`、`max_cpu_num`、`rustflags`，另有系统专属字段；`std`、`plat_dyn` 会在 TOML 读取时报告结构错误。
 - `app-c` 只由 ArceOS 的 C app 路径消费；StarryOS 和 Axvisor 的配置读取器会拒绝该字段。
 - Axvisor 的 `reject_unsupported_nested_platform_features()` 额外检查 `axplat-dyn/*`、`ax-std/<platform>` 和裸平台名。
 

@@ -9,3 +9,8 @@ features = ["bench-fifo-policy"]
 log = "Info"
 max_cpu_num = 1
 to_bin = true
+rustflags = [
+    "-Ctarget-cpu=cortex-a76",
+    "-Ctarget-feature=-neon",
+    "-Cllvm-args=--max-store-memcpy=16",
+]
