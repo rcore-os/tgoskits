@@ -1,6 +1,6 @@
 # node-lib loongarch64 — less/stylus/scss/babel/terser/eslint library carpet on Node.js v22.22.2.
 # Platform: dynamic (axplat-dyn), same as aarch64/riscv64. The build config carries no old
-# platform selector; uefi=true / to_bin=true supplies the PIE/host-initramfs UEFI handoff. The rootfs
+# platform selector; uefi=false / to_bin=true is the dynamic platform's raw-binary boot path. The rootfs
 # is the per-app rootfs-loongarch64-alpine.img which prebuild.sh grows to 2 GiB. Full V8 JIT.
 args = [
     "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "2048M", "-smp", "1",
@@ -8,7 +8,7 @@ args = [
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-loongarch64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
 ]
-uefi = true
+uefi = false
 to_bin = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 18000

@@ -15,7 +15,7 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = true
+uefi = false
 to_bin = true
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',

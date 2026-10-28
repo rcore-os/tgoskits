@@ -327,25 +327,30 @@ provision_conda() {
 
 # Stage the Debian trixie libc6 closure so StarryOS can run the glibc Miniforge Python.
 stage_conda_glibc() {
-    local a ma deb deb_sha binbdeb binbdeb_sha
+    local a ma deb deb_sha deb_id binbdeb binbdeb_sha binbdeb_id
     case "$arch" in
         x86_64)
             a=amd64; ma=x86_64-linux-gnu
             deb=libc6_2.41-12+deb13u3_amd64.deb
             deb_sha=8ffd13165b9ee3f067e2ee670df718e48c1bdaa18676ac93d1de761dbbb3913c
+            deb_id=11449623c6859d9164dff8aedbcf023edaddc513
             binbdeb=libc-bin_2.41-12+deb13u3_amd64.deb
             binbdeb_sha=0105bbe1f317d8992bd73217ea9f3dd63e7f1195841f6aca346c570566628fb8
+            binbdeb_id=9da59a3267c04db2c92a34345818c2cf320299ed
             ;;
         aarch64)
             a=arm64; ma=aarch64-linux-gnu
             deb=libc6_2.41-12+deb13u3_arm64.deb
             deb_sha=ff529924782d3286181188fc265a6a92e7fe28975fb3a925dc0e05c0ca66e52f
+            deb_id=8dd0cfbe0f5bd2c3923c8252c00c868bc6ac945e
             binbdeb=libc-bin_2.41-12+deb13u3_arm64.deb
             binbdeb_sha=02f366115bea79b87fe26c7dec4dc444f9fdcc76440905d88cc26dbef075511b
+            binbdeb_id=2f97c88e63e698b86775350598dea8efb421df45
             ;;
         *) return 0 ;;
     esac
-    # Download with HTTPS and verify SHA256 before accepting into cache.
+    # Snapshot content IDs retain pinned revisions removed from Debian mirrors.
+    # Keep the independent SHA256 check before accepting a download into cache.
     deb_fetch() {
         local file="$1" expected="$2" url="$3"
         local cache="$CONDA_DL/glibc/$file"
@@ -356,7 +361,7 @@ stage_conda_glibc() {
             rm -f "$cache"
         fi
         local tmp; tmp="$(mktemp "$CONDA_DL/glibc/${file}.XXXXXX")"
-        curl -fsSL -o "$tmp" "https://deb.debian.org/debian/pool/main/g/glibc/$url" || { rm -f "$tmp"; return 1; }
+        curl -fsSL --retry 3 --connect-timeout 20 -o "$tmp" "https://snapshot.debian.org/file/$url" || { rm -f "$tmp"; return 1; }
         local got; got="$(sha256sum "$tmp" | cut -d' ' -f1)"
         if [[ "$got" != "$expected" ]]; then
             echo "prebuild: SHA256 mismatch for $file: expected $expected got $got" >&2
@@ -365,7 +370,7 @@ stage_conda_glibc() {
         mv "$tmp" "$cache"
     }
     mkdir -p "$CONDA_DL/glibc"
-    deb_fetch "$deb" "$deb_sha" "$deb" || { echo "prebuild: failed to fetch $deb" >&2; return 1; }
+    deb_fetch "$deb" "$deb_sha" "$deb_id" || { echo "prebuild: failed to fetch $deb" >&2; return 1; }
     local dp="$CONDA_DL/glibc/$deb"
     local t; t="$(mktemp -d)"
     ( cd "$t" && ar x "$dp" && tar xf data.tar.* )
@@ -396,7 +401,7 @@ stage_conda_glibc() {
     rm -rf "$t"
     # ldconfig (from libc-bin) is needed by ctypes.util.find_library inside StarryOS.
     # libc-bin runs in the guest, so its SHA256 must be verified just like libc6.
-    deb_fetch "$binbdeb" "$binbdeb_sha" "$binbdeb" || { echo "prebuild: failed to fetch/verify $binbdeb" >&2; return 1; }
+    deb_fetch "$binbdeb" "$binbdeb_sha" "$binbdeb_id" || { echo "prebuild: failed to fetch/verify $binbdeb" >&2; return 1; }
     local t2; t2="$(mktemp -d)"
     ( cd "$t2" && ar x "$CONDA_DL/glibc/$binbdeb" && tar xf data.tar.* )
     real="$(find "$t2" -name ldconfig -type f 2>/dev/null | head -1)"

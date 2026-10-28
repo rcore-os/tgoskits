@@ -31,4 +31,4 @@ export NUMEXPR_NUM_THREADS=1
 [ -x /usr/bin/run-conda-smoke.sh ] && sh /usr/bin/run-conda-smoke.sh 2>&1
 
 cd /root/pysci2 || exit 1
-exec python3 run_pysci2.py
+exec python3 run_pysci2.py "$@"

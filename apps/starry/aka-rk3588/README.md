@@ -92,16 +92,6 @@ awk 输出，不能避免输入缓冲造成的集中打印。其他 awk 继续�
 记录 `launcher_sha256`。此修正不需要重新构建 `tennis`。板卡 CI 使用预部署目录，
 本地改动或重新打包不会自动更新板上脚本；部署修正版后才能验证实际板端日志时序。
 
-宿主侧回归不访问设备、不运行机械动作：
-
-```bash
-python3 -B apps/starry/aka-rk3588/tests/test_robot_launcher.py
-```
-
-该检查使用真实启动器与临时应用替身，验证应用退出前日志可读、错误不会被转为通过，
-并验证打包确实携带本地启动器。它不替代实体机器人验收，也不单独证明历史的
-900 秒超时已经解决。
-
 两个入口的 FPS 门槛都写在对应 board TOML 中，不能靠宿主环境变量覆盖。成功正则只
 匹配最终生产者标记，命令回显中没有任何成功标记。
 
@@ -174,7 +164,6 @@ real 检查需要现场满足机械臂活动空间、车体架空或安全停靠
 | --- | --- |
 | `prepare-package.sh` | 组装 real 机器人包 |
 | `run_robot_ci_once.sh` | real 启动器：流式日志、应用结果及进程状态校验、失败恢复与重试 |
-| `tests/test_robot_launcher.py` | 无设备的 real 启动器和打包回归 |
 | `prepare-vision-usb-source.sh` | 解析 virtual 提交并准备源码 |
 | `prepare-vision-usb-package.sh` | 从源码和本次构建输出组装 virtual 包 |
 | `board-orangepi-5-plus.toml` | `cargo xtask starry app board -t aka-rk3588` 的 real 板卡入口 |

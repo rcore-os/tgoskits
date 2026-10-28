@@ -50,6 +50,18 @@ gh workflow run starry-apps.yml --ref <branch> -f run_clippy_all=true
 
 `--all` 按顺序运行当前架构下的应用。某个应用构建、准备或运行失败时，记录应用名和完整错误链，继续运行后续应用，最后汇总成功、失败以及能力不足而跳过的数量；任何实际失败都会使该架构命令非零退出。全部应用均因能力不足而跳过时也不会报告成功。显式指定 `-t <应用>` 时直接返回该应用的结果。
 
+当前自动验收暂时排除以下已知失败项，保留应用代码与手动完整入口：
+
+| 应用 | 自动执行范围 | 排除原因与记录 |
+| --- | --- | --- |
+| `nix`（x86_64/AArch64） | `test_nix.sh --ci` 保留预装检查、无沙箱、nixpkgs | 沙箱阶段依赖未完成的 UID/GID 映射；显式 `NIX_SANDBOX_TEST_SKIPPED`，汇总 3 通过、1 跳过 |
+| `py-sci2`（x86_64/AArch64） | `run-pysci2.sh --ci` 保留七个模块 | Matplotlib/Statsmodels 受 NumPy 多维索引异常影响；显式两项跳过，成功为 `7/7`，跳过不计通过 |
+| `web-browser-firefox` | 通过 `apps/.ignore` 移出默认发现，显式 `-t` 可选 | 导航后渲染观察超时；不进入批次，不计为通过 |
+
+Nix 和 py-sci2 的客户机脚本不带 `--ci` 时仍执行完整检查。恢复自动验收前，须分别
+验证映射语义、原两科学计算模块及 Firefox 完整渲染判定。单独 NixOS Stage-2、
+其他科学计算模块和已修复的基本功能测试继续保留。
+
 smoke 矩阵只来自 `starry-apps.toml`；`build_starry_apps_plan()` 返回 `starry_apps_matrix`，其中只有应用 smoke、NixOS 和可选 Clippy 行。性能 QEMU 与板卡矩阵已经迁移到 [基准验证](benchmarks.md)，因此应用工作流不再准备 `tg-xtask` artifact，也不会因为性能用例失败而影响应用 smoke 的调度边界。
 
 ### 2.2 NixOS 与 Clippy

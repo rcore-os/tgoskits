@@ -10,12 +10,6 @@ OrangePi 5 Plus 共用同一组 workload、锁定依赖和验收脚本；板卡�
 同一 gzip 流确定性拆成两个分片，guest 在 `/tmp` 拼回后解包；仓库不保存 APK、
 rootfs、runtime archive 或 `perf.data`。
 
-更新锁文件时，使用 Alpine 的 `apk fetch --recursive` 解析同一 `perf` 版本的完整
-依赖闭包，再记录每个 APK 的 URL 和 SHA256。跨架构解析须使用目标架构的官方
-签名密钥；例如 Alpine 3.23 容器中使用 `--arch aarch64` 和
-`--keys-dir /usr/share/apk/keys/aarch64`。不能只替换首个 404 包，也不能关闭签名或散列校验。
-Alpine 仓库会清理旧修订版，更新后需重新执行真实预构建和目标运行验证。
-
 QEMU TCG 只用于验证 `perf_event_open`、计数、overflow、mmap ring 以及
 `perf stat/record/report` 控制流。其 cycles 是虚拟计时，cache、branch 和 stall
 事件没有可靠的微架构含义；这些硬件事件只在 OrangePi 5 Plus 上验收。

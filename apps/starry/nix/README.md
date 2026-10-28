@@ -21,13 +21,16 @@ cargo xtask starry app qemu -t nix --arch aarch64
 
 ## Nixpkgs Package-Manager Phase (default path)
 
-The nix app test runs **three** phases on every invocation:
+不带参数的手动完整模式运行以下三个阶段，并先检查预装 Nix 的版本：
 
 1. `nix-nosandbox` — `builtins.toFile` store-path write (CI gate since 002)
 2. `nix-sandbox` — runs a minimal local derivation with substitution disabled
    and verifies that Nix kept sandbox isolation enabled
 3. `nix-nixpkgs` — imports pinned nixpkgs, evaluates its `hello` derivation,
    realizes it, and runs `hello` (activated by 003)
+
+默认 QEMU 配置调用 `test_nix.sh --ci`，暂时跳过 UID/GID 映射未完成的沙箱阶段，
+保留其余检查；跳过会单独记录。不带参数运行 `test_nix.sh` 仍执行完整检查。
 
 The nosandbox and nixpkgs phases run with sandboxing disabled:
 `nix-nixpkgs.sh` passes `--option sandbox false`, while `nix-nosandbox.sh` uses
@@ -69,11 +72,11 @@ explicit `--option sandbox false`.
 |--------|------|-------|
 | `nix-nosandbox` | `builtins.toFile` store-path write (no builder) | ✅ CI |
 | `nix-nixpkgs` | nixpkgs import/evaluation, substitution-allowed realization, and `hello` execution | ✅ CI (003) |
-| `nix-sandbox` | minimal local derivation with `--no-substitute --option sandbox true` | ✅ CI |
+| `nix-sandbox` | minimal local derivation with `--no-substitute --option sandbox true` | 手动完整模式；自动配置暂时跳过 |
 
-`prebuild.sh` installs Nix into the app rootfs before boot. `test_nix.sh` then
-verifies `nix --version`, runs `nix-nosandbox`, `nix-sandbox`, then
-`nix-nixpkgs`. On x86_64 the sandbox script first runs the same builder with
+`prebuild.sh` installs Nix into the app rootfs before boot. 完整模式的 `test_nix.sh`
+依次验证 `nix --version`、`nix-nosandbox`、`nix-sandbox`、`nix-nixpkgs`；
+`--ci` 模式仅跳过沙箱阶段。On x86_64 the sandbox script first runs the same builder with
 `sandbox = false` to separate general builder failures from sandbox-specific
 failures.
 

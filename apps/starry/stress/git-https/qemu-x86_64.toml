@@ -11,8 +11,8 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = true
-to_bin = true
+uefi = false
+to_bin = false
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^\S+_HAS_FAILURES\s*$']
 timeout = 900
 

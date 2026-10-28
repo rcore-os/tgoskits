@@ -6,6 +6,8 @@ use core::{
 
 use ax_fs_ng::vfs::FileBackend;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
+#[cfg(feature = "ext4")]
+use axfs_ng_vfs::{Filesystem, WeakFilesystem};
 use linux_raw_sys::{
     general::{O_ACCMODE, O_RDONLY},
     ioctl::{
@@ -40,6 +42,10 @@ pub struct LoopDevice {
     dev_id: DeviceId,
     // Binding publication and open/close transitions share one lock.
     state: Mutex<LoopState>,
+    // This sleeping lock serializes superblock creation, outside the binding
+    // lock. A weak reference cannot keep a detached mount or its lease alive.
+    #[cfg(feature = "ext4")]
+    filesystem: Mutex<Option<WeakFilesystem>>,
     ra: AtomicU32,
 }
 
@@ -79,12 +85,32 @@ impl LoopDevice {
             number,
             dev_id,
             state: Mutex::new(LoopState::default()),
+            #[cfg(feature = "ext4")]
+            filesystem: Mutex::new(None),
             ra: AtomicU32::new(512),
         }
     }
 
     pub(crate) fn is_read_only(&self) -> VfsResult<bool> {
         Ok(self.state.lock().binding()?.flags & LO_FLAGS_READ_ONLY as u32 != 0)
+    }
+
+    #[cfg(feature = "ext4")]
+    pub(crate) fn mounted_filesystem(
+        &self,
+        read_only: bool,
+        create: impl FnOnce() -> VfsResult<Filesystem>,
+    ) -> VfsResult<Filesystem> {
+        let mut mounted = self.filesystem.lock();
+        if let Some(filesystem) = mounted.as_ref().and_then(WeakFilesystem::upgrade) {
+            if filesystem.is_readonly() != read_only {
+                return Err(VfsError::ResourceBusy);
+            }
+            return Ok(filesystem);
+        }
+        let filesystem = create()?;
+        *mounted = Some(filesystem.downgrade());
+        Ok(filesystem)
     }
 
     fn bind(&self, file: &crate::file::File, name: [u8; 64], mut flags: u32) -> VfsResult<()> {
