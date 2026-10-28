@@ -346,7 +346,7 @@ class CiPlanTests(unittest.TestCase):
         self.assertEqual(len(selections), 1)
         self.assertEqual(
             selections[0].template_id,
-            "test-axvisor-aarch64-qemu-timer-stress",
+            "test-axvisor-aarch64-qemu-gicv3-timer-stress",
         )
         self.assertIn("axvisor app qemu", selections[0].command)
         self.assertIn("--app qemu-timer-stress/gicv3-timer-stress", selections[0].command)
@@ -1296,16 +1296,25 @@ command = "true"
             )["axvisor_matrix"]["include"]
         )
 
-        self.assertNotIn("test-orangepi-5-plus-robot-real-native-starryos", starry_rows)
-        self.assertNotIn("test-orangepi-5-plus-robot-real-suite", axvisor_rows)
-        real_suite_id = "test-orangepi-5-plus-robot-real-suite"
-        self.assertIn(real_suite_id, nightly_rows)
-        real_suite_command = nightly_rows[real_suite_id]["command"]
-        self.assertIn("cargo xtask starry test board --board orangepi-5-plus-robot-real", real_suite_command)
-        self.assertIn(
-            "--board orangepi-5-plus-robot-real-starry,orangepi-5-plus-robot-real-linux",
-            real_suite_command,
+        # Each physical configuration has its own execution boundary: an
+        # earlier failed boot must not prevent another guest from being tried.
+        selections = ci_plan.resolve_suite_selections(
+            root,
+            ci_plan.load_catalog(ci_plan.MAIN_PLAN_MANIFESTS),
+            [str(path.relative_to(root)) for path in (
+                real_starry, real_axvisor_starry, real_axvisor_linux
+            )],
         )
+        owner_ids = {selection.template_id for selection in selections}
+        self.assertEqual(len(owner_ids), len(selections))
+        self.assertEqual(len(selections), 3)
+        for selection in selections:
+            self.assertNotIn(selection.template_id, starry_rows)
+            self.assertNotIn(selection.template_id, axvisor_rows)
+            self.assertIn(selection.template_id, nightly_rows)
+            command = nightly_rows[selection.template_id]["command"]
+            self.assertEqual(command.count("cargo xtask"), 1)
+            self.assertEqual(command.count("--board "), 1)
 
         catalog = {
             check["id"]: check

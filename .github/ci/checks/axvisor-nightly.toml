@@ -10,23 +10,37 @@ default_runner = "qcs"
 #
 # The case files for these checks live under `apps/axvisor/`; commands select
 # them through `axvisor app` using paths relative to apps/axvisor/normal.
+# Independent boots have separate matrix jobs and timeout budgets. The nightly
+# caller disables matrix fail-fast so one failure cannot hide another result.
 
 [[check]]
-id = "test-axvisor-aarch64-qemu-timer-stress"
+id = "test-axvisor-aarch64-qemu-gicv2-timer-stress"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · GICv2 + GICv3 timer stress"
+name = "QEMU aarch64 · GICv2 timer stress"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 gicv2 timer stress"
 cargo xtask axvisor app qemu --arch aarch64 -t qemu-timer-stress-v2/gicv2-timer-stress
-echo "==> axvisor aarch64 gicv3 timer stress"
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["qemu-timer-stress-v2/gicv2-timer-stress"]
+
+[[check]]
+id = "test-axvisor-aarch64-qemu-gicv3-timer-stress"
+impact_targets = ["axvisor:aarch64"]
+name = "QEMU aarch64 · GICv3 timer stress"
+timeout_minutes = 30
+command = '''
 cargo xtask axvisor app qemu --arch aarch64 -t qemu-timer-stress/gicv3-timer-stress
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["qemu-timer-stress-v2/gicv2-timer-stress", "qemu-timer-stress/gicv3-timer-stress"]
+cases = ["qemu-timer-stress/gicv3-timer-stress"]
 
 # 暂时禁用：当前自托管 nightly 缺少可分配的板卡资源。
 # 恢复条件：运行器能够稳定独占目标板卡后，同时恢复以下两项 check 及其 suite。
@@ -69,27 +83,52 @@ cases = ["qemu-timer-stress-v2/gicv2-timer-stress", "qemu-timer-stress/gicv3-tim
 # cases = ["board-ballpick-robot/pci-network/ping"]
 
 [[check]]
-id = "test-orangepi-5-plus-robot-real-suite"
+id = "test-orangepi-5-plus-robot-real-native-starryos"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
-name = "Board OrangePi 5 Plus robot USB · native, AxVisor StarryOS and Linux guests"
+name = "Board OrangePi 5 Plus robot USB · native StarryOS"
 runner = "board"
 cache_key = ""
 resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask starry test board --board orangepi-5-plus-robot-real
-cargo xtask axvisor app board \
-  -t board-orangepi-5-plus/robot-real-starry,board-orangepi-5-plus/robot-real-linux \
-  --board orangepi-5-plus-robot-real-starry,orangepi-5-plus-robot-real-linux
 '''
 
 [[check.suite]]
 kind = "starry-board"
 board = "orangepi-5-plus-robot-real"
 
+[[check]]
+id = "test-orangepi-5-plus-robot-real-axvisor-starryos"
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+name = "Board OrangePi 5 Plus robot USB · AxVisor StarryOS guest"
+runner = "board"
+cache_key = ""
+resource_group = "orangepi-5-plus-robot"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor app board \
+  -t board-orangepi-5-plus/robot-real-starry \
+  --board orangepi-5-plus-robot-real-starry
+'''
+
 [[check.suite]]
 kind = "axvisor-board"
 board = "orangepi-5-plus-robot-real-starry"
+
+[[check]]
+id = "test-orangepi-5-plus-robot-real-axvisor-linux"
+impact_targets = ["axvisor:aarch64", "starry:aarch64"]
+name = "Board OrangePi 5 Plus robot USB · AxVisor Linux guest"
+runner = "board"
+cache_key = ""
+resource_group = "orangepi-5-plus-robot"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor app board \
+  -t board-orangepi-5-plus/robot-real-linux \
+  --board orangepi-5-plus-robot-real-linux
+'''
 
 [[check.suite]]
 kind = "axvisor-board"

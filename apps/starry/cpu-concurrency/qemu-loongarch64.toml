@@ -1,13 +1,13 @@
 # LoongArch dynamic (axplat-dyn) platform: build-loongarch64*.toml carries ax-driver/serial and
 # does not opt out of dynamic mode, since the retired static LoongArch path has no serial console
-# binding. uefi=false / to_bin=true is the dynamic platform's raw-binary boot path.
+# binding. The current PIE kernel and host-initramfs handoff require UEFI.
 args = [
     "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "1024M", "-smp", "1",
     "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-loongarch64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
 ]
-uefi = false
+uefi = true
 to_bin = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^CPU_CONCURRENCY_FAILED\s*$']
 timeout = 1800

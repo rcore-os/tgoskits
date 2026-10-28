@@ -202,29 +202,11 @@ impl Starry {
             })
             .await;
         }
-        let apps = app::selected_apps(self.app.workspace_root(), &args, app::StarryAppKind::Qemu)?;
-        let app_count = apps.len();
-        for (index, app) in apps.into_iter().enumerate() {
-            let missing = app::missing_caps(&app, &args.caps);
-            if !missing.is_empty() {
-                if args.test_case.is_some() {
-                    anyhow::bail!(
-                        "Starry app `{}` is missing required capabilities: {}",
-                        app.name,
-                        missing.join(", ")
-                    );
-                }
-                println!("SKIP\t{}\tmissing {}", app.name, missing.join(","));
-                continue;
-            }
-
-            println!(
-                "{}",
-                format_app_run_progress(index + 1, app_count, &app.name, args.arch.as_deref())
-            );
-            self.app_qemu(&app, &args).await?;
-        }
-        Ok(())
+        let workspace = self.app.workspace_root().to_path_buf();
+        app::run_qemu_apps(&workspace, &args, async |app| {
+            self.app_qemu(app, &args).await
+        })
+        .await
     }
 
     async fn app_qemu(

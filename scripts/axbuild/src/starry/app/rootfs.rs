@@ -90,20 +90,24 @@ async fn prepare_default_qemu_app_rootfs(
         None => crate::image::storage::default_rootfs_path(workspace_root, target_dir, arch)?,
     };
     if app.prebuild_path.is_none() {
-        if let Some(configured) = configured_rootfs {
-            crate::image::storage::ensure_optional_managed_rootfs(
-                workspace_root,
-                target_dir,
-                arch,
-                Some(configured),
-            )
-            .await?;
-            rootfs::ensure_apk_region_in_rootfs(configured)?;
-            return Ok(PreparedAppRootfs::borrowed(configured.to_path_buf()));
+        let default_rootfs =
+            crate::image::storage::default_rootfs_path(workspace_root, target_dir, arch)?;
+        if rootfs_path == default_rootfs {
+            // An explicit reference to the default image still needs Starry's
+            // init and console overlay before case assets are copied from it.
+            return rootfs::ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, target)
+                .await
+                .map(PreparedAppRootfs::borrowed);
         }
-        return rootfs::ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, target)
-            .await
-            .map(PreparedAppRootfs::borrowed);
+        crate::image::storage::ensure_optional_managed_rootfs(
+            workspace_root,
+            target_dir,
+            arch,
+            Some(&rootfs_path),
+        )
+        .await?;
+        rootfs::ensure_apk_region_in_rootfs(&rootfs_path)?;
+        return Ok(PreparedAppRootfs::borrowed(rootfs_path));
     }
 
     let default_rootfs =

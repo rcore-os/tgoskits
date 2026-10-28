@@ -246,21 +246,41 @@ class ConcurrencyRoutingTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", concurrency)
 
 
-class AxvisorNightlyWorkflowTests(unittest.TestCase):
+class NightlyWorkflowRevisionTests(unittest.TestCase):
     def test_manual_dispatch_uses_the_selected_revision(self) -> None:
-        workflow = AXVISOR_NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
-        plan = mapping_block(workflow, "plan", 2)
-        concurrency = mapping_block(workflow, "concurrency", 0)
+        for path, group in (
+            (AXVISOR_NIGHTLY_WORKFLOW, "axvisor-nightly"),
+            (STARRY_APPS_WORKFLOW, "starry-apps"),
+        ):
+            with self.subTest(workflow=path.name):
+                workflow = path.read_text(encoding="utf-8")
+                jobs = mapping_block(workflow, "jobs", 0)
+                plan = mapping_block(jobs, "plan", 2)
+                checks = mapping_block(jobs, "checks", 2)
+                result = mapping_block(jobs, "result", 2)
+                concurrency = mapping_block(workflow, "concurrency", 0)
 
-        self.assertNotIn("ref: dev", plan)
-        self.assertIn("- name: Pin triggering revision", plan)
-        self.assertIn('echo "sha=$(git rev-parse HEAD)"', plan)
-        self.assertIn("axvisor-nightly-${{ github.ref }}", concurrency)
-        self.assertIn("revision-label: tested revision", workflow)
-        # Performance history moved to the benchmarks workflow, which pins the
-        # dev revision; a nightly dispatch from any branch must stay a pure
-        # check run and never publish history.
-        self.assertNotIn("perf-history", workflow)
+                self.assertNotIn("ref: dev", plan)
+                self.assertIn("- name: Pin triggering revision", plan)
+                self.assertIn('echo "sha=$(git rev-parse HEAD)"', plan)
+                self.assertIn(group + "-${{ github.ref }}", concurrency)
+                self.assertIn(
+                    "checkout_ref: ${{ needs.plan.outputs.revision }}", checks
+                )
+                self.assertIn("revision: ${{ needs.plan.outputs.revision }}", result)
+                if path == STARRY_APPS_WORKFLOW:
+                    self.assertIn(
+                        "ref: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}",
+                        plan,
+                    )
+                    self.assertIn(
+                        "revision-label: ${{ github.event_name == 'schedule' && 'dev revision' || 'tested revision' }}",
+                        result,
+                    )
+                else:
+                    self.assertIn("revision-label: tested revision", result)
+                # Manual check runs must not publish benchmark history.
+                self.assertNotIn("perf-history", workflow)
 
 
 class NightlyResultPropagationTests(unittest.TestCase):
@@ -582,6 +602,13 @@ class ScheduledWorkflowOwnershipTests(unittest.TestCase):
             self.assertNotIn("--source axvisor", workflow)
             self.assertNotIn("--source starry", workflow)
             self.assertNotIn("perf-data-publish", workflow)
+            # A failing independent nightly job must neither cancel siblings
+            # nor prevent the final result from reporting its failure.
+            jobs = mapping_block(workflow, "jobs", 0)
+            checks = mapping_block(jobs, "checks", 2)
+            self.assertIn("fail_fast: false", checks)
+            result = mapping_block(jobs, "result", 2)
+            self.assertIn("always()", result)
 
 
 class WifiSecretRoutingTests(unittest.TestCase):

@@ -15,6 +15,8 @@ sidebar_label: "应用验证"
 
 cron 表达式为 `0 18 * * *`，按 UTC 每日 18:00 调度，对应北京时间次日 02:00。`build_starry_apps_plan()` 选择四架构应用 smoke、NixOS 场景和完整 Clippy；实际启动时间仍受 GitHub 调度及执行资源影响。
 
+定时运行检出 `dev`，规划时固定其提交 SHA；后续矩阵和结果汇总使用同一版本。
+
 定时任务设置 `save_cache=true`，允许声明了 `cache_key` 的矩阵行保存 Rust cache。这里的缓存配置与主 CI 的分支条件相互独立。
 
 ### 1.2 手动运行
@@ -22,6 +24,12 @@ cron 表达式为 `0 18 * * *`，按 UTC 每日 18:00 调度，对应北京时�
 `run_clippy_all` 默认关闭。启用时，规划步骤向 `ci_plan.py` 传入 `--boolean-input run_clippy_all`；`_is_enabled()` 将事件匹配和布尔输入匹配作为可替代的选中条件。
 
 无论是否启用 Clippy，四架构 smoke 和 NixOS 检查仍保留。手动运行设置 `save_cache=false`，但不因此禁用已配置的缓存恢复。
+
+手动运行检出所选分支在触发时的提交 `github.sha`，再把实际 SHA 传给全部矩阵行；结果中的 `tested revision` 是本次测试的源码版本。在 Actions 页面选择 **Starry Apps → Run workflow**，选择功能分支并按需启用 `run_clippy_all`。也可以执行：
+
+```bash
+gh workflow run starry-apps.yml --ref <branch> -f run_clippy_all=true
+```
 
 ## 2. 检查内容
 
@@ -40,13 +48,15 @@ cron 表达式为 `0 18 * * *`，按 UTC 每日 18:00 调度，对应北京时�
 
 这些行设置 `apk_region=us` 和 `container_preflight=qemu-user`。应用检查的结果不能替代主 CI 的系统套件、板卡测试或软件包发布结果。
 
+`--all` 按顺序运行当前架构下的应用。某个应用构建、准备或运行失败时，记录应用名和完整错误链，继续运行后续应用，最后汇总成功、失败以及能力不足而跳过的数量；任何实际失败都会使该架构命令非零退出。全部应用均因能力不足而跳过时也不会报告成功。显式指定 `-t <应用>` 时直接返回该应用的结果。
+
 smoke 矩阵只来自 `starry-apps.toml`；`build_starry_apps_plan()` 返回 `starry_apps_matrix`，其中只有应用 smoke、NixOS 和可选 Clippy 行。性能 QEMU 与板卡矩阵已经迁移到 [基准验证](benchmarks.md)，因此应用工作流不再准备 `tg-xtask` artifact，也不会因为性能用例失败而影响应用 smoke 的调度边界。
 
 ### 2.2 NixOS 与 Clippy
 
 NixOS 行使用 `ubuntu-host`，命令在宿主上启动 `docker.io/nixos/nix:2.33.1` 容器，挂载工作区后进入 `nix develop`，执行 `cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix`。该行的 `timeout_minutes=45` 限制整个 job，包括容器与开发环境准备。
 
-完整 Clippy 行执行 `cargo xtask clippy --all`。虽然手动输入的描述提到在应用检查前审计，实际 `checks` job 没有为这一行建立单独的 `needs` 门禁；它与应用行处于同一个矩阵，可以并行执行。
+完整 Clippy 行执行 `cargo xtask clippy --all`，与应用行处于同一个矩阵，可以并行执行；它没有单独的 `needs` 门禁，不会阻止应用行启动。
 
 ## 3. 调度与结果
 
@@ -56,7 +66,7 @@ NixOS 行使用 `ubuntu-host`，命令在宿主上启动 `docker.io/nixos/nix:2.
 
 workflow 使用 `starry-apps-${{ github.ref }}` 作为 concurrency group，设置 `cancel-in-progress=false`。这避免新事件主动取消同组正在运行的任务，但没有声明主 CI 的 `queue: max` 保留策略，不能据此承诺每次待执行事件都完整排队。
 
-矩阵设置 `fail_fast=false`。一个应用或架构失败，不会通过矩阵 fail-fast 取消其他行；其余行仍可产生独立结果。
+矩阵设置 `fail_fast=false`，一个架构失败不会取消其他行；每行内的 `--all` 同样继续执行其他独立应用。任务整体超时、执行环境故障或人为取消仍可能阻止完整运行，须结合逐项 `RUN` 和最终汇总确认实际覆盖范围。
 
 ### 3.2 权限与失败
 
