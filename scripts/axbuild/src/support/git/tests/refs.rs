@@ -27,7 +27,7 @@ fn since_tag_resolves_to_commit() {
 #[test]
 fn since_ref_that_is_not_head_ancestor_resolves_to_merge_base() {
     let root = tempfile::tempdir().unwrap();
-    run_git(root.path(), &["init"]);
+    run_git(root.path(), &["init", "--initial-branch=base"]);
     run_git(root.path(), &["config", "user.email", "test@example.com"]);
     run_git(root.path(), &["config", "user.name", "Test User"]);
     std::fs::write(root.path().join("file.txt"), "base\n").unwrap();
