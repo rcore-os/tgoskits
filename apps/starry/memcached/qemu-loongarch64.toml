@@ -22,5 +22,5 @@ timeout = 600
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_cmd = "(apk add memcached python3 && python3 /usr/bin/memcached-test.py) || printf 'MEMCACHED_TEST_%s\\n' FAILED"
+shell_cmd = "python3 /usr/bin/memcached-test.py || printf 'MEMCACHED_TEST_%s\\n' FAILED"
 success_regex = ['(?m)^MEMCACHED_TEST_PASSED\s*$']

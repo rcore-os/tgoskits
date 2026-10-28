@@ -10,6 +10,12 @@
  *
  * Determinism notes established against ffmpeg 6.1.1 on the golden host:
  *   - `ffmpeg -i F -f rawvideo -pix_fmt rgb24`         reproduces golden sha256(rgb24) byte-exact.
+ *   - non-first real-media frames are selected by input-side accurate seek (`-copyts -ss T -i`), so
+ *     MP4/MKV/WebM timestamp-base or decoder-delay differences do not change which semantic time is
+ *     sampled.
+ *   - byte-exact rgb24 is not a cross-version contract for real yuv420p transcodes: FFmpeg
+ *     builds/architectures can round decoder and swscale output differently.  Real clips use an
+ *     on-target ffv1 lossless reference plus PSNR/SSIM/silhouette bounds for the non-first frame.
  *   - `scale=8:8:flags=bicubic,format=gray`            reproduces golden luma8x8_hex byte-exact.
  *   - rawvideo rgb24 -> ffv1 -> rawvideo rgb24         is byte-identical (lossless round-trip).
  *   - lavfi smptebars rgb24 is bit-reproducible run to run (closed-form bar colors at known cols).
@@ -135,9 +141,8 @@ static int sh(const char *cmd) {
     return rc == -1 ? -1 : rc;
 }
 
-/* Decode one rgb24 frame of an input at an optional seek (ss<0 => none, else -ss before -i) and an
- * optional frame index sel (sel<0 => first output frame). Writes raw rgb24 of size w*h*3 to out.
- * Returns 0 ok. */
+/* Decode one rgb24 frame of an input at an optional seek (ss<0 => none, else -ss before -i) with an
+ * optional video filter `vf`. Writes raw rgb24 of size w*h*3 to out. Returns 0 ok. */
 static int ffmpeg_frame_rgb24(const char *in, double ss, const char *vf, const char *out) {
     char cmd[2048], sbuf[64] = "", fbuf[256] = "";
     if (ss >= 0) snprintf(sbuf, sizeof sbuf, "-ss %.6f ", ss);
@@ -146,6 +151,32 @@ static int ffmpeg_frame_rgb24(const char *in, double ss, const char *vf, const c
         "ffmpeg -v error -y %s-i '%s' %s-vframes 1 -f rawvideo -pix_fmt rgb24 '%s'",
         sbuf, in, fbuf, out);
     return sh(cmd);
+}
+
+/* Decode the first frame at/after target seconds using input-side accurate seek, the same semantic
+ * selection used to derive the host t2 golden.  `-copyts` keeps the container timestamp domain, so
+ * the selected frame is not an MP4/MKV/WebM decoded-frame ordinal whose offset can differ.  The
+ * showinfo line is captured only to report the selected pts_time for target-side diagnostics. */
+static int ffmpeg_frame_rgb24_at(const char *in, double target, const char *out, double *out_pts) {
+    char cmd[2048];
+    snprintf(cmd, sizeof cmd,
+        "ffmpeg -hide_banner -v info -y -copyts -ss %.6f -accurate_seek -i '%s' -vf showinfo "
+        "-an -vframes 1 -f rawvideo -pix_fmt rgb24 '%s' 2>&1",
+        target, in, out);
+    FILE *p = popen(cmd, "r");
+    if (!p) return -1;
+    char line[4096];
+    double pts = -1.0;
+    while (fgets(line, sizeof line, p)) {
+        const char *q = strstr(line, "pts_time:");
+        if (q) {
+            double v;
+            if (pts < 0.0 && sscanf(q + 9, "%lf", &v) == 1) pts = v;
+        }
+    }
+    int rc = pclose(p);
+    if (out_pts) *out_pts = pts;
+    return rc == -1 ? -1 : rc;
 }
 
 /* The golden 8x8 luma signature: scale to 8x8 bicubic, gray, one frame. Writes 64 raw gray bytes. */

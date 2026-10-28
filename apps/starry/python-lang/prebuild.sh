@@ -74,6 +74,90 @@ python_version_dir() {
     done | grep -E '^python3\.[0-9]+$' | sort -V | tail -1
 }
 
+apk_failure_is_transient() {
+    local log="$1"
+    grep -Eiq \
+        'DNS:|transient|temporar|try again later|could not resolve|name or service not known|network (is )?unreachable|connection (refused|reset|timed out)|operation timed out|i/o error' \
+        "$log"
+}
+
+apk_failure_is_resolution_error() {
+    local log="$1"
+    grep -Eiq 'no such package|unable to select packages|unsatisfiable constraints|required by:' "$log"
+}
+
+run_apk_stage() {
+    local stage="$1"
+    local max_attempts=4
+    shift
+
+    local attempt log status
+    local -a pipe_status
+    local apk_status tee_status
+    log="$staging_root/.apk-${stage}.log"
+    for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+        : > "$log"
+        echo "prebuild: stage=${stage} attempt ${attempt}/${max_attempts}" >&2
+        if QEMU_LD_PREFIX="$staging_root" \
+           LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
+               "$qemu_runner" -L "$staging_root" \
+                   "$staging_root/sbin/apk" "$@" 2>&1 | tee -a "$log"; then
+            pipe_status=("${PIPESTATUS[@]}")
+        else
+            pipe_status=("${PIPESTATUS[@]}")
+        fi
+        apk_status="${pipe_status[0]:-1}"
+        tee_status="${pipe_status[1]:-0}"
+        if [[ "$apk_status" -ne 0 ]]; then
+            # Preserve the command's own failure value over a log-write failure.
+            status="$apk_status"
+        elif [[ "$tee_status" -ne 0 ]]; then
+            status="$tee_status"
+        else
+            status=0
+        fi
+
+        if [[ "$apk_status" -eq 0 && "$tee_status" -ne 0 ]]; then
+            echo "prebuild: stage=${stage} could not write its diagnostic log (tee status=${tee_status}); aborting" >&2
+            return "$status"
+        fi
+
+        if [[ "$status" -eq 0 ]]; then
+            if [[ "$stage" == "index-update" ]] && apk_failure_is_transient "$log"; then
+                echo "prebuild: stage=index-update reported a transient network/DNS warning; treating the index as incomplete" >&2
+                status=1
+            else
+                return 0
+            fi
+        fi
+
+        if apk_failure_is_resolution_error "$log" || ! apk_failure_is_transient "$log"; then
+            if [[ "$stage" == "package-install" ]]; then
+                echo "prebuild: stage=package-install failed with a package/dependency resolution error; not retrying (status=${status})" >&2
+            else
+                echo "prebuild: stage=index-update failed with a non-transient repository error; not retrying (status=${status})" >&2
+            fi
+            return "$status"
+        fi
+
+        if [[ "$attempt" -eq "$max_attempts" ]]; then
+            if [[ "$stage" == "package-install" ]]; then
+                echo "prebuild: stage=package-install failed after ${max_attempts} attempts (transient package download error)" >&2
+            else
+                echo "prebuild: stage=index-update failed after ${max_attempts} attempts (transient network/DNS error)" >&2
+            fi
+            return "$status"
+        fi
+
+        if [[ "$stage" == "package-install" ]]; then
+            echo "prebuild: stage=package-install hit a transient package download error; retrying in $((attempt * 3))s" >&2
+        else
+            echo "prebuild: stage=index-update hit a transient network/DNS error; retrying in $((attempt * 3))s" >&2
+        fi
+        sleep $((attempt * 3))
+    done
+}
+
 install_python() {
     # apk can resolve hostnames inside qemu-user with the host's DNS config.
     [[ -f /etc/resolv.conf ]] && cp -f /etc/resolv.conf "$staging_root/etc/resolv.conf" || true
@@ -82,16 +166,37 @@ install_python() {
     # pulls its matching musl/openssl/... closure (copied into the overlay below).
     local edge="https://dl-cdn.alpinelinux.org/alpine"
     printf '%s/edge/main\n%s/edge/community\n' "$edge" "$edge" > "$staging_root/etc/apk/repositories"
-    echo "prebuild: apk add python3 (CPython 3.14, pure language + stdlib) from Alpine edge via $qemu_runner..."
-    QEMU_LD_PREFIX="$staging_root" \
-    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
-        "$qemu_runner" -L "$staging_root" \
-            "$staging_root/sbin/apk" \
-            --root "$staging_root" \
-            --repositories-file "$staging_root/etc/apk/repositories" \
-            --keys-dir "$staging_root/etc/apk/keys" \
-            --update-cache --no-progress --no-scripts \
-            add python3
+
+    local apk_cache="$staging_root/var/cache/apk"
+    mkdir -p "$apk_cache"
+    local apk_common=(
+        --root "$staging_root"
+        --repositories-file "$staging_root/etc/apk/repositories"
+        --keys-dir "$staging_root/etc/apk/keys"
+        --cache-dir "$apk_cache"
+        --timeout 60
+        --no-interactive
+        --force-no-chroot
+        --no-progress
+    )
+
+    # Update the index explicitly so a DNS/network failure is reported as an
+    # index-stage failure. Retry only transient errors; an authenticated but
+    # incomplete/invalid repository is a real failure.
+    echo "prebuild: updating APK index (Alpine edge main+community) via $qemu_runner..."
+    if ! run_apk_stage index-update "${apk_common[@]}" update; then
+        exit 5
+    fi
+    echo "prebuild: APK index update succeeded"
+
+    # The explicit update above populated the cache. Do not pass --update-cache
+    # here: it would make `apk add` fetch the index again and blur the stage
+    # boundary. A missing package after a successful update is a real failure.
+    # --no-scripts is an add/del option; apk 3.0.8 rejects it for `update`.
+    echo "prebuild: apk add python3 (CPython 3.14, pure language + stdlib) from the updated edge index via $qemu_runner..."
+    if ! run_apk_stage package-install "${apk_common[@]}" --no-scripts add python3; then
+        exit 6
+    fi
     # Hard version gate: the carpet must run on a real 3.14 interpreter, not an
     # older python that would merely skip the 3.14-gated checks.
     local pyver

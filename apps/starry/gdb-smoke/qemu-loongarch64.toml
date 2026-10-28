@@ -8,7 +8,7 @@ args = [
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
 ]
-uefi = false
+uefi = true
 to_bin = true
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',

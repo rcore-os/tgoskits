@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <sys/mount.h>
 #include <time.h>
+#include <stdint.h>
 
 static int pass = 0, fail = 0;
 
@@ -378,11 +379,13 @@ int main(void)
 
     /* 23. Cleanup: umount + detach after persistence test */
     {
-        run("umount /tmp/ul-mnt 2>&1");
+        rc = run("umount /tmp/ul-mnt 2>&1");
+        check(rc == 0, "umount cleanup after persistence test");
         if (loopdev[0]) {
             char cmd[256];
             snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-            run(cmd);
+            rc = run(cmd);
+            check(rc == 0, "losetup detach cleanup after persistence test");
         }
     }
 
@@ -456,11 +459,13 @@ int main(void)
 
     /* 31. Cleanup: umount + detach */
     {
-        run("umount /tmp/ul-mnt 2>&1");
+        rc = run("umount /tmp/ul-mnt 2>&1");
+        check(rc == 0, "umount cleanup after no-detach test");
         if (loopdev[0]) {
             char cmd[256];
             snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-            run(cmd);
+            rc = run(cmd);
+            check(rc == 0, "losetup detach after no-detach test");
         }
     }
 
@@ -750,7 +755,24 @@ int main(void)
     if (loopdev[0]) {
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-        run(cmd);
+        rc = run(cmd);
+        if (rc != 0) {
+            /* A failed writeback intentionally keeps the detached filesystem's
+             * loop lease alive until its dirty cache is retired. Keep this
+             * result visible and require a fresh device before continuing the
+             * independent busy-cwd coverage. */
+            printf("WB_DETACH_DEFERRED rc=%d dev=%s\n", rc, loopdev);
+            char next_loopdev[64] = "";
+            int next_rc = capture("losetup -f 2>&1", next_loopdev, sizeof(next_loopdev));
+            int fresh_loopdev = next_rc == 0 && next_loopdev[0] &&
+                                strcmp(next_loopdev, loopdev) != 0;
+            check(fresh_loopdev, "fresh loop device after deferred detach");
+            if (fresh_loopdev) {
+                snprintf(loopdev, sizeof(loopdev), "%s", next_loopdev);
+            }
+        } else {
+            printf("WB_DETACH_OK dev=%s\n", loopdev);
+        }
     }
 
     /* ================================================================

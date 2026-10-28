@@ -9,9 +9,10 @@ pub(crate) fn case_python_source_dir(case: &TestQemuCase) -> PathBuf {
 /// This pipeline reuses the same staging rootfs and prebuild infrastructure as
 /// the C pipeline, but instead of running CMake it:
 /// 1. Installs `python3` via `apk add` inside the staging rootfs
-/// 2. Copies `.py` files from the test's `python/` directory into `/usr/bin/`
-/// 3. Builds an overlay from the Python installation and test scripts
-/// 4. Injects the overlay into the rootfs image
+/// 2. Runs the optional `python/prebuild.sh` in the same staging rootfs
+/// 3. Copies `.py` files from the test's `python/` directory into `/usr/bin/`
+/// 4. Builds an overlay from the Python installation and test scripts
+/// 5. Injects the overlay into the rootfs image
 pub(crate) fn prepare_python_case_assets_sync(
     arch: &str,
     case: &TestQemuCase,
@@ -42,11 +43,36 @@ pub(crate) fn prepare_python_case_assets_sync(
 
     let qemu_runner = find_host_binary_candidates(qemu_user_binary_names(arch)?)?;
     write_guest_command_wrappers(layout, &qemu_runner)?;
+    let prebuild_script = python_dir.join(CASE_PREBUILD_SCRIPT_NAME);
+    let prebuild_script = prebuild_script.is_file().then_some(prebuild_script);
 
-    // Build the prebuild command: run "apk add python3" inside the staging rootfs
+    install_python3(layout, &qemu_runner, &extra_script_envs)?;
+    if let Some(script) = prebuild_script {
+        run_guest_prebuild(GuestPrebuildRequest {
+            arch,
+            case,
+            case_rootfs,
+            script: &script,
+            work_dir: &python_dir,
+            layout,
+            extra_envs: &extra_script_envs,
+            config,
+        })
+        .context("failed to run Python case prebuild.sh")?;
+    }
+
+    inject_python_case_overlay(&python_dir, case_rootfs, layout)
+}
+
+fn install_python3(
+    layout: &case_assets::CaseAssetLayout,
+    qemu_runner: &Path,
+    extra_script_envs: &[(String, String)],
+) -> anyhow::Result<()> {
+    // Run "apk add python3" inside the staging rootfs.
     let guest_busybox = layout.staging_root.join("bin/busybox");
     let guest_shell = layout.staging_root.join("bin/sh");
-    let mut prebuild_cmd = Command::new(&qemu_runner);
+    let mut prebuild_cmd = Command::new(qemu_runner);
     prebuild_cmd.arg("-L").arg(&layout.staging_root);
     if guest_busybox.is_file() {
         prebuild_cmd.arg(&guest_busybox).arg("sh");
@@ -76,8 +102,14 @@ pub(crate) fn prepare_python_case_assets_sync(
 
     prebuild_cmd
         .exec()
-        .context("failed to install python3 via apk in staging rootfs")?;
+        .context("failed to install python3 via apk in staging rootfs")
+}
 
+fn inject_python_case_overlay(
+    python_dir: &Path,
+    case_rootfs: &Path,
+    layout: &case_assets::CaseAssetLayout,
+) -> anyhow::Result<()> {
     // Build overlay: copy Python installation from staging into overlay
     let python_dirs_to_copy: &[&str] = &["usr/bin", "usr/lib", "lib"];
 
@@ -95,12 +127,20 @@ pub(crate) fn prepare_python_case_assets_sync(
     fs::create_dir_all(&dest_bin)
         .with_context(|| format!("failed to create {}", dest_bin.display()))?;
 
-    for entry in fs::read_dir(&python_dir)
+    copy_python_test_scripts(python_dir, &dest_bin)?;
+
+    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+pub(super) fn copy_python_test_scripts(python_dir: &Path, dest_bin: &Path) -> anyhow::Result<()> {
+    for entry in fs::read_dir(python_dir)
         .with_context(|| format!("failed to read {}", python_dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() {
+        if !path.is_file()
+            || path.extension().and_then(|extension| extension.to_str()) != Some("py")
+        {
             continue;
         }
         let dest = dest_bin.join(entry.file_name());
@@ -118,7 +158,7 @@ pub(crate) fn prepare_python_case_assets_sync(
         }
     }
 
-    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+    Ok(())
 }
 
 /// Writes a musl loader search-path file into the staging root so that the

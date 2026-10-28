@@ -21,7 +21,7 @@ pub(super) const CASE_SH_DIR_NAME: &str = "sh";
 pub(super) const CASE_ROOTFS_COPY_NAME: &str = "case-rootfs.img";
 pub(super) const GROUPED_RUNNER_SCRIPT_FORMAT_VERSION: &str =
     "grouped-runner-safe-command-label-v2";
-pub(super) const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-apk-lib-closure-v2";
+pub(super) const PYTHON_PIPELINE_CACHE_VERSION: &str = "python-prebuild-v3";
 pub(super) const RUST_PIPELINE_CACHE_VERSION: &str = "rust-cross-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 use tempfile::tempdir;
 
-use super::{grouped_c::*, toolchain::*, *};
+use super::{grouped_c::*, python::copy_python_test_scripts, toolchain::*, *};
 
 fn fake_case(root: &Path, name: &str) -> TestQemuCase {
     let case_dir = root.join("test-suite/example/default").join(name);
@@ -68,6 +68,26 @@ fn write_musl_loader_search_path_only_when_guest_loader_exists() {
 
     assert!(!staging_root.join("etc/ld-musl-aarch64.path").exists());
     assert!(staging_root.join("etc/ld-musl-riscv64.path").exists());
+}
+
+#[test]
+fn python_overlay_copies_only_py_test_files() {
+    let root = tempdir().unwrap();
+    let python_dir = root.path().join("python");
+    let dest_bin = root.path().join("overlay/usr/bin");
+    fs::create_dir_all(python_dir.join("nested")).unwrap();
+    fs::create_dir_all(&dest_bin).unwrap();
+    fs::write(python_dir.join("client.py"), b"print('client')\n").unwrap();
+    fs::write(python_dir.join("prebuild.sh"), b"#!/bin/sh\n").unwrap();
+    fs::write(python_dir.join("notes.txt"), b"notes\n").unwrap();
+    fs::write(python_dir.join("nested/helper.py"), b"").unwrap();
+
+    copy_python_test_scripts(&python_dir, &dest_bin).unwrap();
+
+    assert!(dest_bin.join("client.py").is_file());
+    assert!(!dest_bin.join("prebuild.sh").exists());
+    assert!(!dest_bin.join("notes.txt").exists());
+    assert!(!dest_bin.join("nested").exists());
 }
 
 #[test]

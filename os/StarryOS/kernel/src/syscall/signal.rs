@@ -7,6 +7,8 @@ use linux_raw_sys::general::{
     SS_ONSTACK, kernel_sigaction, siginfo, timespec,
 };
 use starry_signal::{SignalInfo, SignalSet, SignalStack, Signo};
+#[cfg(target_arch = "aarch64")]
+use starry_signal::{SEGV_ACCERR, SEGV_MAPERR};
 
 use crate::{
     Errno, StarryError, StarryResult,
@@ -19,6 +21,8 @@ use crate::{
     },
     time::TimeValueLike,
 };
+#[cfg(target_arch = "aarch64")]
+use crate::task::raise_signal_fatal;
 
 pub(crate) fn check_sigset_size(size: usize) -> StarryResult<()> {
     // Align with Linux raw syscall semantics (for ABI param 'sigmask'): when sigsetsize is checked,
@@ -401,12 +405,73 @@ pub fn sys_rt_sigreturn(
             None => ax_runtime::thread::reset_current_user_fp_state()?,
         }
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Linux validates the frame stack pointer before reading the frame and
+        // treats every unusable frame the same way, so the read only happens
+        // for an aligned pointer.
+        let restored = if uctx.sp().is_multiple_of(SIGFRAME_ALIGNMENT) {
+            Some(current.as_thread().signal().restore(&mut user_memory, uctx))
+        } else {
+            None
+        };
+        match restored {
+            Some(Ok(state)) => ax_runtime::thread::replace_current_user_fp_state(state)?,
+            _ => return sigreturn_badframe(current, uctx),
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     current
         .as_thread()
         .signal()
         .restore(&mut user_memory, uctx)?;
     Ok(uctx.retval() as isize)
+}
+
+/// Linux arm64 places a signal frame on a 128-bit boundary.
+#[cfg(target_arch = "aarch64")]
+const SIGFRAME_ALIGNMENT: usize = 16;
+
+/// Reports the SIGSEGV Linux injects for a rejected `rt_sigreturn` frame.
+///
+/// Linux `badframe` never turns a rejected frame into a syscall error: it
+/// reports SIGSEGV at the frame stack pointer and returns 0. Delivery must
+/// happen before userspace resumes, so the restart guard armed by
+/// `block_next_signal` is consumed first.
+///
+/// The interrupted FP state stays live. Linux only invalidates the CPU
+/// ownership of the saved state (`fpsimd_save_and_flush_current_state` ->
+/// `fpsimd_flush_task_state`), which never clears register contents, and this
+/// kernel's eager switching has no lazy owner to invalidate either.
+#[cfg(target_arch = "aarch64")]
+fn sigreturn_badframe(
+    current: &crate::task::UserTaskRef,
+    uctx: &mut UserContext,
+) -> crate::StarryResult<isize> {
+    let _ = current.as_thread().unblock_next_signal_check();
+    let fault_address = uctx.sp();
+    let code = frame_fault_code(current, fault_address);
+    raise_signal_fatal(
+        SignalInfo::new_fault(Signo::SIGSEGV, code, fault_address),
+        uctx,
+    )?;
+    Ok(0)
+}
+
+/// Classifies a rejected signal frame the way Linux `arm64_notify_segfault` does.
+///
+/// The reported address is the frame's stack pointer, and Linux distinguishes a
+/// present mapping (`SEGV_ACCERR`) from an unmapped address (`SEGV_MAPERR`).
+#[cfg(target_arch = "aarch64")]
+fn frame_fault_code(current: &crate::task::UserTaskRef, fault_address: usize) -> i32 {
+    let Ok(aspace) = current.as_thread().proc_data.pin_aspace() else {
+        return SEGV_MAPERR;
+    };
+    let mapped = aspace
+        .lock()
+        .find_area_snapshot(ax_memory_addr::VirtAddr::from_usize(fault_address))
+        .is_some();
+    if mapped { SEGV_ACCERR } else { SEGV_MAPERR }
 }
 
 pub fn sys_rt_sigtimedwait(
