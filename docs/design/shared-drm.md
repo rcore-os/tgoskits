@@ -79,6 +79,8 @@ sync-file 的回调注册只由原子标志选举，不在 fence 锁外读取回
 当前 `hrtimer` 使用真实单调时钟和异步 timer worker，但调度截止时间向上取整到
 `CONFIG_HZ=100` 的 jiffy，精度为 10 ms 加任务调度延迟；它不是 Linux 原生高精度定时器，
 不能据此声称具备同等 vblank 时间精度。周期重启、取消和截止时间由同一 timer 队列维护。
+`WAIT_VBLANK` 的成功等待以序列及对应边沿时间戳验收，不按固定周期倍数限制调用者的
+返回时延；具体约定见 [DRM vblank 等待验证契约](../../design/drm-vblank-wait.md)。
 `FileOperations.poll` 和 `unlocked_ioctl` 使用类型化 C 回调；sync_file 的 ioctl 和 poll
 经过同一张操作表，不能因未注册回调而把未完成 fence 报成始终可读。
 

@@ -712,7 +712,6 @@ int main(void)
     CHECK(wv2.reply.sequence >= seq1, "vblank seq >= flip seq");
 
     /* --- CRTC_GET_SEQUENCE：active 报告 + 序列号推进率 --- */
-    struct timespec ts1, ts2;
     struct drm_crtc_get_sequence gseq1 = { .crtc_id = crtc_ids[0] };
     CHECK_RET(ioctl(fd, DRM_IOCTL_CRTC_GET_SEQUENCE, &gseq1), 0,
               "CRTC_GET_SEQUENCE works");
@@ -890,20 +889,96 @@ int main(void)
     union drm_wait_vblank wblock = {0};
     wblock.req.type = _DRM_VBLANK_RELATIVE;
     wblock.req.sequence = 2;
-    clock_gettime(CLOCK_MONOTONIC, &ts1);
-    CHECK_RET(ioctl(fd, DRM_IOCTL_WAIT_VBLANK, &wblock), 0,
-              "WAIT_VBLANK relative 2 blocks");
-    clock_gettime(CLOCK_MONOTONIC, &ts2);
-    int64_t elapsed_ns = (ts2.tv_sec - ts1.tv_sec) * 1000000000LL
-                         + (ts2.tv_nsec - ts1.tv_nsec);
-    /* 相对等待语义与真实 DRM 一致：从当前时刻数 N 个边沿。若调用发生在
-     * 边沿刚过后，第 N 个边沿不足 N 个整周期（最短 ≈(N-1) 周期），
-     * 因此接受 [1, 3.5] 个周期的时间窗。 */
-    CHECK(elapsed_ns >= (int64_t)(period_ns * 3 / 4) &&
-          elapsed_ns <= (int64_t)(period_ns * 7 / 2),
-          "relative wait 2 spans 1-2 vblank periods");
-    CHECK(wblock.reply.sequence > wev.reply.sequence,
-          "blocking wait advanced the counter");
+    struct drm_crtc_get_sequence wait_before = { .crtc_id = crtc_ids[0] };
+    struct drm_crtc_get_sequence wait_after = { .crtc_id = crtc_ids[0] };
+    errno = 0;
+    long wait_before_result = syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_GET_SEQUENCE,
+                                      &wait_before);
+    int wait_before_errno = errno;
+    struct timespec wait_started = {0}, wait_finished = {0};
+    errno = 0;
+    int wait_start_clock_result = clock_gettime(CLOCK_MONOTONIC, &wait_started);
+    int wait_start_clock_errno = errno;
+    errno = 0;
+    long wait_result = syscall(SYS_ioctl, fd, DRM_IOCTL_WAIT_VBLANK, &wblock);
+    int wait_errno = errno;
+    errno = 0;
+    int wait_end_clock_result = clock_gettime(CLOCK_MONOTONIC, &wait_finished);
+    int wait_end_clock_errno = errno;
+    errno = 0;
+    long wait_after_result = syscall(SYS_ioctl, fd, DRM_IOCTL_CRTC_GET_SEQUENCE,
+                                     &wait_after);
+    int wait_after_errno = errno;
+
+    int64_t elapsed_ns = -1;
+    if (wait_start_clock_result == 0 && wait_end_clock_result == 0 &&
+        wait_started.tv_sec >= 0 &&
+        wait_finished.tv_sec >= wait_started.tv_sec) {
+        int64_t seconds = (int64_t)wait_finished.tv_sec - (int64_t)wait_started.tv_sec;
+        int64_t nanoseconds = (int64_t)wait_finished.tv_nsec - (int64_t)wait_started.tv_nsec;
+        if (seconds <= INT64_MAX / 1000000000LL) {
+            int64_t base_ns = seconds * 1000000000LL;
+            if (nanoseconds <= INT64_MAX - base_ns)
+                elapsed_ns = base_ns + nanoseconds;
+        }
+    }
+    printf("  INFO | WAIT_VBLANK relative 2 ret=%ld errno=%d elapsed_ns=%lld "
+           "period_ns=%llu before=(ret=%ld errno=%d active=%u seq=%llu ns=%lld) "
+           "reply=(seq=%u sec=%lld usec=%lld) after=(ret=%ld errno=%d active=%u seq=%llu ns=%lld)\n",
+           wait_result, wait_errno, (long long)elapsed_ns,
+           (unsigned long long)period_ns,
+           wait_before_result, wait_before_errno, wait_before.active,
+           (unsigned long long)wait_before.sequence, (long long)wait_before.sequence_ns,
+           wblock.reply.sequence, (long long)wblock.reply.tv_sec,
+           (long long)wblock.reply.tv_usec,
+           wait_after_result, wait_after_errno, wait_after.active,
+           (unsigned long long)wait_after.sequence, (long long)wait_after.sequence_ns);
+
+    CHECK(wait_start_clock_result == 0,
+          "CLOCK_MONOTONIC starts relative WAIT_VBLANK measurement");
+    if (wait_start_clock_result != 0)
+        printf("  INFO | WAIT_VBLANK start clock errno=%d\n", wait_start_clock_errno);
+    CHECK(wait_end_clock_result == 0,
+          "CLOCK_MONOTONIC ends relative WAIT_VBLANK measurement");
+    if (wait_end_clock_result != 0)
+        printf("  INFO | WAIT_VBLANK end clock errno=%d\n", wait_end_clock_errno);
+    CHECK(wait_before_result == 0,
+          "GET_SEQUENCE before relative WAIT_VBLANK succeeds");
+    CHECK(wait_after_result == 0,
+          "GET_SEQUENCE after relative WAIT_VBLANK succeeds");
+    CHECK_RET(wait_result, 0, "WAIT_VBLANK relative 2 blocks");
+    CHECK(wait_before.active == 1 && wait_after.active == 1,
+          "relative WAIT_VBLANK snapshots show the CRTC active");
+
+    int sequence_range_valid = wait_before.sequence <= wait_after.sequence &&
+        wait_after.sequence - wait_before.sequence <= UINT32_MAX;
+    uint32_t reply_delta = wblock.reply.sequence - (uint32_t)wait_before.sequence;
+    int reply_sequence_valid = sequence_range_valid && reply_delta >= 2 &&
+        (uint64_t)reply_delta <= wait_after.sequence - wait_before.sequence &&
+        wait_before.sequence <= UINT64_MAX - reply_delta;
+    CHECK(reply_sequence_valid,
+          "relative WAIT_VBLANK reply advances at least two sequences within snapshots");
+
+    int reply_timestamp_valid = wblock.reply.tv_sec >= 0 &&
+        wblock.reply.tv_usec >= 0 && wblock.reply.tv_usec < 1000000 &&
+        wblock.reply.tv_sec <= (INT64_MAX - wblock.reply.tv_usec * 1000) / 1000000000LL;
+    int edge_matches_sequence = 0;
+    if (reply_sequence_valid && reply_timestamp_valid && period_ns <= INT64_MAX) {
+        uint64_t after_reply_delta = wait_after.sequence -
+            (wait_before.sequence + reply_delta);
+        if (period_ns == 0 || after_reply_delta <= (uint64_t)INT64_MAX / period_ns) {
+            int64_t edge_offset_ns = (int64_t)(after_reply_delta * period_ns);
+            int64_t reply_edge_ns = wblock.reply.tv_sec * 1000000000LL +
+                                    wblock.reply.tv_usec * 1000;
+            if (wait_after.sequence_ns >= edge_offset_ns) {
+                int64_t expected_edge_ns = wait_after.sequence_ns - edge_offset_ns;
+                edge_matches_sequence = expected_edge_ns >= reply_edge_ns &&
+                    expected_edge_ns - reply_edge_ns < 1000;
+            }
+        }
+    }
+    CHECK(reply_timestamp_valid && edge_matches_sequence,
+          "relative WAIT_VBLANK reply timestamp matches its sequence edge");
 
     check_vblank_signal_interrupt(fd);
 
