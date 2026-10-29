@@ -23,7 +23,7 @@ cron 表达式为 `0 18 * * *`，按 UTC 每日 18:00 调度，对应北京时�
 
 `run_clippy_all` 默认关闭。启用时，规划步骤向 `ci_plan.py` 传入 `--boolean-input run_clippy_all`；`_is_enabled()` 将事件匹配和布尔输入匹配作为可替代的选中条件。
 
-无论是否启用 Clippy，四架构 smoke 和 NixOS 检查仍保留。手动运行设置 `save_cache=false`，但不因此禁用已配置的缓存恢复。
+未指定测试项时，四架构 smoke 和 NixOS 检查全部保留；指定 `apps` 或 `arches` 时只规划所选范围。`run_clippy_all` 仍是独立开关。手动运行设置 `save_cache=false`，但不因此禁用已配置的缓存恢复。
 
 手动运行检出所选分支在触发时的提交 `github.sha`，再把实际 SHA 传给全部矩阵行；结果中的 `tested revision` 是本次测试的源码版本。在 Actions 页面选择 **Starry Apps → Run workflow**，选择功能分支并按需启用 `run_clippy_all`。也可以执行：
 
@@ -70,54 +70,44 @@ NixOS 行使用 `ubuntu-host`，命令在宿主上启动 `docker.io/nixos/nix:2.
 
 完整 Clippy 行执行 `cargo xtask clippy --all`，与应用行处于同一个矩阵，可以并行执行；它没有单独的 `needs` 门禁，不会阻止应用行启动。
 
-### 2.3 失败项定向复验
+### 2.3 手动指定应用和架构
 
-本地使用 `scripts/test/starry_apps_focused.py` 复验运行 `40800597490` 暴露的六个
-架构/应用组合。它逐项调用现有 `cargo xtask starry app qemu -t ... --arch ...`，
-不执行其他应用、NixOS 或完整 Clippy，也不改变定时夜测的选择。
+在 **Starry Apps → Run workflow** 选择分支，使用两个可选输入：
 
-GitHub 使用已有 **Starry Apps → Run workflow**，选择提交所在分支并勾选 `focused`。
-`focused_cases` 留空运行全部六项，或填写下表的选择名，以逗号分隔：
+- `apps`：逗号分隔的应用名，与 `cargo xtask starry app qemu -t` 一致，
+  例如 `cpu-video-test`、`go-lang`、`qemu/findutils`。
+- `arches`：逗号分隔的架构名，可选 `x86_64`、`aarch64`、`riscv64`、`loongarch64`。
 
-```bash
-gh workflow run starry-apps.yml --ref <branch> -f focused=true
-gh workflow run starry-apps.yml --ref <branch> -f focused=true \
-  -f focused_cases=video-aarch64,video-riscv64
-```
-
-定向模式为每个组合创建独立 job，复用正常 Apps 规划得到的容器、运行器、缓存、
-网络区域和预检查，固定本次触发提交。单项失败不取消其他项，最终结果保留失败；
-输出见各 job 的 `Run command` 日志。定向模式不执行 NixOS、Clippy，也不接受
-原清单之外的任意命令；`run_clippy_all` 在此模式不增加检查。未勾选 `focused`
-以及定时触发继续执行原完整矩阵。
+两个输入留空时执行原完整矩阵。只填 `apps` 时，为所选应用自动选择它提供标准
+`qemu-<arch>.toml` 的架构；只有预构建脚本、使用默认 QEMU 配置的应用按全部架构
+规划。只填 `arches` 时执行这些架构的默认应用批次，选择包含 x86_64 时保留独立
+NixOS 检查。两者都填时，每个应用必须支持指定的每个架构，否则规划失败。
 
 ```bash
-# 查看清单和实际命令，不执行测试。
-python3 scripts/test/starry_apps_focused.py --list
-python3 scripts/test/starry_apps_focused.py --dry-run
+# 在指定分支上跑完整 Apps。
+gh workflow run starry-apps.yml --ref <branch>
 
-# 执行全部六项，或者只执行选中的项。
-python3 scripts/test/starry_apps_focused.py
-python3 scripts/test/starry_apps_focused.py --case video-aarch64 --case video-riscv64
+# 只测试两个架构上的视频应用。
+gh workflow run starry-apps.yml --ref <branch> \
+  -f apps=cpu-video-test -f arches=aarch64,riscv64
+
+# 只跑 AArch64 的 Go 和 top。
+gh workflow run starry-apps.yml --ref <branch> \
+  -f apps=go-lang,top -f arches=aarch64
+
+# 只测试 RISC-V 默认应用批次。
+gh workflow run starry-apps.yml --ref <branch> -f arches=riscv64
 ```
 
-| 选择名 | 原应用 | 架构 |
-| --- | --- | --- |
-| `video-aarch64` | `cpu-video-test` | aarch64 |
-| `video-riscv64` | `cpu-video-test` | riscv64 |
-| `ahci-x86_64` | `qemu/ahci/ahci-dual-ncq-rw-20m` | x86_64 |
-| `go-aarch64` | `go-lang` | aarch64 |
-| `top-aarch64` | `top` | aarch64 |
-| `findutils-riscv64` | `qemu/findutils` | riscv64 |
+每个明确指定的应用/架构组合使用独立 job，复用正常 Apps 的容器、运行器、缓存、
+网络区域及预检查，直接调用原应用命令；失败不取消其他 job，最终仍汇总失败。
+`apps=nixos` 使用原 NixOS 容器流程，只支持 x86_64；显式选择会执行原入口，即使
+应用在默认 `apps/.ignore` 中。需要特殊能力或非标准 QEMU 配置的应用仍受原运行器
+约束，不能据此保证任意应用在所有架构上运行。
 
-默认顺序执行，单项失败仍继续；任一项失败则最终返回非零。输出实时显示，每项日志
-与含退出码、耗时、状态的 `summary.json` 保存在
-`target/axbuild/starry-apps-focused/run-*`；也可用 `--output-dir <新目录>` 指定位置。
-Ctrl-C 停止当前命令及同组进程，后续项标记为 `NOT_RUN`。
-
-每项复用原应用的完整准备、运行和判定，因此视频仍执行五组检查，Go 仍执行完整
-应用；此前因失败没有到达的内部阶段，需要修复前置问题后才能验证。此入口不提高
-原超时、不自动重试、不把未执行部分计为通过。它用于局部修复复验，最终仍需完整夜测验收。
+不存在的应用、无效架构或不支持的组合会明确报错。`run_clippy_all=true` 可额外
+运行完整 Clippy。定时触发不接受应用/架构筛选，始终检出 `dev` 并执行完整矩阵；
+手动触发固定所选分支在触发时的实际提交。输出见各 job 的 `Run command` 日志。
 
 ## 3. 调度与结果
 

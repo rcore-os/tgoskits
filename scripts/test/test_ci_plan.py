@@ -10,6 +10,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,85 @@ def board_type_by_board_name() -> dict[str, str]:
 
 
 class CiPlanTests(unittest.TestCase):
+    def test_manual_starry_app_selection_preserves_execution_and_rejects_missing_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = root / "apps.toml"
+            manifest.write_text('''schema_version = 3
+phase = "starry_apps"
+group = "Starry Apps"
+
+[[check]]
+id = "smoke-x"
+name = "X smoke"
+cache_key = "fixture-x"
+command = "cargo xtask starry app qemu --all --arch x86_64"
+
+[[check]]
+id = "smoke-a"
+name = "A smoke"
+cache_key = "fixture-a"
+command = "cargo xtask starry app qemu --all --arch aarch64"
+
+[[check]]
+id = "nix-host"
+name = "Nix host"
+runner = "ubuntu-host"
+command = "cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix"
+
+[[check]]
+id = "full-lint"
+name = "Full lint"
+events = ["schedule"]
+enable_boolean_input = "run_clippy_all"
+command = "cargo xtask clippy --all"
+''')
+            for app, arches in (("alpha", ("x86_64", "aarch64")), ("tools/beta", ("x86_64",))):
+                case = root / "apps/starry" / app
+                case.mkdir(parents=True)
+                for arch in arches:
+                    (case / f"qemu-{arch}.toml").write_text("args = []\n")
+            manual = ci_plan.PlanContext(
+                repository="example/project", repository_owner="example",
+                event_name="workflow_dispatch",
+            )
+            scheduled = ci_plan.replace(manual, event_name="schedule")
+            with patch.object(ci_plan, "WORKSPACE_ROOT", root), patch.object(ci_plan, "STARRY_APPS_MANIFEST", manifest):
+                def rows(context=manual, apps=(), arches=()):
+                    return ci_plan.build_starry_apps_plan(context, apps, arches)["starry_apps_matrix"]["include"]
+
+                original = rows()
+                self.assertEqual(len(original), 3)
+                self.assertEqual(len(rows(scheduled)), 4)
+                selected = rows(apps=("alpha", "alpha"))
+                self.assertEqual(len(selected), 2)
+                self.assertEqual(len({row["id"] for row in selected}), 2)
+                for row, template in zip(selected, original[:2]):
+                    arch = template["command"].split()[-1]
+                    self.assertEqual(row["command"], f"cargo xtask starry app qemu -t alpha --arch {arch}")
+                    self.assertEqual(
+                        {k: v for k, v in row.items() if k not in {"id", "name", "command"}},
+                        {k: v for k, v in template.items() if k not in {"id", "name", "command"}},
+                    )
+                self.assertEqual(rows(arches=("aarch64",)), [original[1]])
+                self.assertEqual(rows(arches=("x86_64",)), [original[0], original[2]])
+                self.assertEqual(rows(apps=("nixos",)), [original[2]])
+                self.assertEqual(len(rows(apps=("tools/beta",))), 1)
+                self.assertEqual(len(rows(apps=("alpha",), arches=("aarch64",))), 1)
+                lint = ci_plan.replace(manual, enabled_boolean_inputs=frozenset({"run_clippy_all"}))
+                self.assertEqual(rows(lint, apps=("alpha",))[-1]["command"], "cargo xtask clippy --all")
+                for apps, arches in (
+                    (("missing",), ()), (("../alpha",), ()), (("alpha;true",), ()),
+                    (("tools",), ()), (("tools/beta",), ("aarch64",)),
+                    (("alpha",), ("unknown",)), (("nixos",), ("aarch64",)),
+                ):
+                    with self.subTest(apps=apps, arches=arches), self.assertRaises(ci_plan.PlanError):
+                        rows(apps=apps, arches=arches)
+                with self.assertRaises(ci_plan.PlanError):
+                    rows(scheduled, apps=("alpha",))
+                with self.assertRaises(ci_plan.PlanError):
+                    rows(scheduled, arches=("aarch64",))
+
     def test_starry_apps_plan_excludes_performance_checks(self):
         benchmark_ids = {
             check["id"]
