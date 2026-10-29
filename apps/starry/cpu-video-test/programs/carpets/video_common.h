@@ -141,7 +141,10 @@ static int sh(const char *cmd) {
 static int ffmpeg_frame_rgb24(const char *in, double ss, const char *vf, const char *out) {
     char cmd[2048], sbuf[64] = "", fbuf[256] = "";
     if (ss >= 0) snprintf(sbuf, sizeof sbuf, "-ss %.6f ", ss);
-    if (vf && *vf) snprintf(fbuf, sizeof fbuf, "-vf \"%s\" ", vf);
+    /* RGB goldens use the same rounding on scalar and SIMD conversion paths. */
+    snprintf(fbuf, sizeof fbuf,
+        "-vf \"%s%sscale=iw:ih:flags=bicubic+bitexact+accurate_rnd\" ",
+        vf && *vf ? vf : "", vf && *vf ? "," : "");
     snprintf(cmd, sizeof cmd,
         "ffmpeg -v error -y %s-i '%s' %s-vframes 1 -f rawvideo -pix_fmt rgb24 '%s'",
         sbuf, in, fbuf, out);
