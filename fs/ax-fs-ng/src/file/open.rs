@@ -9,7 +9,7 @@ use super::{
     WriteAccess,
     handle::{File, FileBackend},
 };
-use crate::fs_core::{FsContext, ResolveConstraints};
+use crate::fs_core::{FsContext, ResolveConstraints, WalkCounters};
 
 bitflags::bitflags! {
     /// Flags describing the access mode of an opened file.
@@ -375,7 +375,10 @@ impl OpenOptions {
                 &constraints,
                 must_be_dir,
                 credentials,
-                0,
+                WalkCounters {
+                    depth: 0,
+                    follow_count: 0,
+                },
             );
         }
 
@@ -527,7 +530,7 @@ impl OpenOptions {
         constraints: &ResolveConstraints,
         must_be_dir: bool,
         credentials: &MutationCredentials<'_>,
-        depth0: usize,
+        counters: WalkCounters,
     ) -> VfsResult<OpenResult> {
         let check_search = |directory: &Location| {
             context.check_search_path(directory, context.permission_boundary(), credentials)
@@ -538,8 +541,13 @@ impl OpenOptions {
         // apply. O_EXCL on an existing target fails with EEXIST, mirroring
         // the unconstrained create-at-existing-entry behavior.
         if path.file_name().is_none() {
-            let loc =
-                context.resolve_with_constraints(path, constraints, true, check_search, depth0)?;
+            let loc = context.resolve_with_constraints(
+                path,
+                constraints,
+                true,
+                check_search,
+                counters.depth,
+            )?;
             if self.create_new {
                 return Err(VfsError::AlreadyExists);
             }
@@ -549,8 +557,8 @@ impl OpenOptions {
             return self._open(loc, credentials, false);
         }
 
-        let (parent, name, parent_depth) =
-            context.resolve_parent_with_constraints(path, constraints, check_search, depth0)?;
+        let (parent, name, parent_counters) =
+            context.resolve_parent_with_constraints(path, constraints, check_search, counters)?;
 
         let existing = match parent.lookup_no_follow(&name) {
             Ok(_) => true,
@@ -635,11 +643,11 @@ impl OpenOptions {
             } else {
                 None
             };
-            let mut depth = parent_depth;
+            let mut counters = parent_counters;
             match context.try_resolve_symlink_constrained_follow(
                 loc,
                 &parent,
-                &mut depth,
+                &mut counters,
                 constraints,
                 check_search,
             ) {
@@ -658,13 +666,12 @@ impl OpenOptions {
                         constraints,
                         must_be_dir || Path::new(target.as_str()).has_trailing_slash(),
                         credentials,
-                        // `parent_depth` is already absolute for the whole
-                        // resolution (it accumulated from `depth0` inside the
-                        // parent walk); re-adding `depth0` would inflate the
-                        // BENEATH boundary by one level per re-entry and let
-                        // a nested dangling-link chain escape above the
-                        // dirfd.
-                        parent_depth,
+                        // `parent_counters` is already absolute for the whole
+                        // resolution (both budgets accumulated from the seeds
+                        // inside the parent walk); re-adding the entry seeds
+                        // would inflate the BENEATH boundary and restore the
+                        // symlink budget per re-entry.
+                        parent_counters,
                     );
                 }
                 Err(error) => return Err(error),

@@ -203,6 +203,15 @@ struct ConstrainedWalk<'a> {
     follow_count: usize,
 }
 
+/// The two running counters of one constrained resolution, carried across
+/// the parent walk, the final-component follow, and dangling-target
+/// re-entries so both budgets span the entire open.
+#[derive(Debug, Clone, Copy)]
+pub struct WalkCounters {
+    pub depth: usize,
+    pub follow_count: usize,
+}
+
 impl FsContext {
     /// Publishes a shared context to mount-busy and pivot-root tracking.
     ///
@@ -793,7 +802,10 @@ impl FsContext {
             follow_final,
             constraints,
             Some(&check_search),
-            depth0,
+            WalkCounters {
+                depth: depth0,
+                follow_count: 0,
+            },
         )
     }
 
@@ -803,21 +815,24 @@ impl FsContext {
     /// into the final component). The depth is absolute for the whole
     /// resolution — a caller resuming the walk must seed the next walk with
     /// this value as-is, never add it to the previous starting depth. The
-    /// final component itself is not looked up.
+    /// final component itself is not looked up. The returned follow count is
+    /// likewise absolute for the whole resolution: a caller that continues
+    /// into the final component must seed that walk with both values so the
+    /// symlink budget spans the entire open.
     pub fn resolve_parent_with_constraints<'a>(
         &self,
         path: &'a Path,
         constraints: &ResolveConstraints,
         check_search: impl Fn(&Location) -> VfsResult<()>,
-        depth0: usize,
-    ) -> VfsResult<(Location, Cow<'a, str>, usize)> {
+        counters: WalkCounters,
+    ) -> VfsResult<(Location, Cow<'a, str>, WalkCounters)> {
         let entry_name = path.file_name().ok_or(VfsError::InvalidInput)?;
         let mut walk = ConstrainedWalk {
             constraints,
             search: Some(&check_search),
             final_may_be_file: false,
-            depth: depth0,
-            follow_count: 0,
+            depth: counters.depth,
+            follow_count: counters.follow_count,
         };
         let mut components = path.components();
         components.next_back();
@@ -836,7 +851,14 @@ impl FsContext {
         // check; an unsearchable parent must fail the resolution here, before
         // the caller's final lookup reports ENOENT.
         Self::check_search(&dir, Some(&check_search))?;
-        Ok((dir, Cow::Borrowed(entry_name), walk.depth))
+        Ok((
+            dir,
+            Cow::Borrowed(entry_name),
+            WalkCounters {
+                depth: walk.depth,
+                follow_count: walk.follow_count,
+            },
+        ))
     }
 
     fn resolve_using_constrained(
@@ -845,7 +867,7 @@ impl FsContext {
         follow_final: bool,
         constraints: &ResolveConstraints,
         search: SearchCheck<'_>,
-        depth0: usize,
+        counters: WalkCounters,
     ) -> VfsResult<Location> {
         // See `resolve_parent_with_constraints`: absolute pathnames start at
         // the process root rather than the cwd/dirfd.
@@ -862,8 +884,8 @@ impl FsContext {
                     constraints,
                     search,
                     final_may_be_file: false,
-                    depth: depth0,
-                    follow_count: 0,
+                    depth: counters.depth,
+                    follow_count: counters.follow_count,
                 };
                 let dir = self.walk_constrained(components, &start, &mut walk)?;
                 let resolved = self.lookup_constrained(&mut walk, &dir, name, follow_final)?;
@@ -876,8 +898,8 @@ impl FsContext {
                     constraints,
                     search,
                     final_may_be_file: false,
-                    depth: depth0,
-                    follow_count: 0,
+                    depth: counters.depth,
+                    follow_count: counters.follow_count,
                 };
                 let dir = self.walk_constrained(path.components(), &start, &mut walk)?;
                 dir.check_is_dir()?;
@@ -1080,14 +1102,15 @@ impl FsContext {
     }
 
     /// Follows a final-component symlink under constraints on behalf of the
-    /// constrained open path, resuming `depth` at the parent's own depth. The
-    /// symlink budget restarts here, mirroring how the plain open path
-    /// re-resolves the final component with a fresh counter.
+    /// constrained open path, resuming both `depth` and `follow_count` at the
+    /// parent walk's values: Linux bounds symlink expansions by one
+    /// `total_link_count` for the whole resolution, so the budget the parent
+    /// walk consumed is not restored.
     pub(crate) fn try_resolve_symlink_constrained_follow(
         &self,
         loc: Location,
         parent_dir: &Location,
-        depth: &mut usize,
+        counters: &mut WalkCounters,
         constraints: &ResolveConstraints,
         check_search: impl Fn(&Location) -> VfsResult<()>,
     ) -> VfsResult<Location> {
@@ -1095,11 +1118,12 @@ impl FsContext {
             constraints,
             search: Some(&check_search),
             final_may_be_file: false,
-            depth: *depth,
-            follow_count: 0,
+            depth: counters.depth,
+            follow_count: counters.follow_count,
         };
         let resolved = self.try_resolve_symlink_constrained(&mut walk, loc, parent_dir)?;
-        *depth = walk.depth;
+        counters.depth = walk.depth;
+        counters.follow_count = walk.follow_count;
         Ok(resolved)
     }
 
