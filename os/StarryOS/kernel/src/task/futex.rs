@@ -1686,6 +1686,7 @@ fn futex_publication_guard_is_transactional_for_test() -> bool {
         ProcessDataInit::new(
             ProcessImage::new(
                 String::new(),
+                None,
                 Arc::new(Vec::new()),
                 Arc::new(Vec::new()),
                 Vec::new(),
