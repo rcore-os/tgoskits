@@ -15,6 +15,7 @@ cargo xtask clippy --since "$SINCE_REF"
 [[check]]
 id = "test-with-std"
 name = "std tests"
+timeout_minutes = 60
 # command and pull_request_command are identical after the first line, which
 # only differs by the incremental `--since` entry point. Change trailing
 # commands in both fields together.
