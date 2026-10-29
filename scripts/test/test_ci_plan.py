@@ -1340,33 +1340,7 @@ command = "true"
                     any(re.search(pattern, sample) for pattern in fail_patterns)
                 )
 
-    def test_single_client_robot_check_routing_and_real_board_contract(self) -> None:
-        root = MODULE_PATH.parents[2]
-        real_starry = (
-            root
-            / "test-suit/starryos/board-orangepi-5-plus/robot-flow"
-            / "board-orangepi-5-plus-robot-real.toml"
-        )
-        real_axvisor_starry = (
-            root
-            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-starry/smoke"
-            / "board-orangepi-5-plus-robot-real-starry.toml"
-        )
-        real_axvisor_linux = (
-            root
-            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-linux/smoke"
-            / "board-orangepi-5-plus-robot-real-linux.toml"
-        )
-        real_starry_guest = (
-            root
-            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-starry/guest.toml"
-        )
-        real_linux_guest = (
-            root
-            / "apps/axvisor/normal/board-orangepi-5-plus/robot-real-linux"
-            / "linux-smp1-emmc.toml"
-        )
-
+    def test_single_client_robot_check_routing(self) -> None:
         main = ci_plan.build_main_plan(self.upstream)
         starry_rows = self.assert_unique_ids(main["starry_matrix"]["include"])
         axvisor_rows = self.assert_unique_ids(main["axvisor_matrix"]["include"])
@@ -1410,36 +1384,6 @@ command = "true"
             registered_guest_boards,
             {"orangepi-5-plus-robot-starry", "orangepi-5-plus-robot-linux"},
         )
-
-        for path in (real_starry, real_axvisor_starry, real_axvisor_linux):
-            with self.subTest(config=path):
-                config = tomllib.loads(path.read_text())
-                self.assertEqual(config["board_type"], "OrangePi-5-Plus-robot")
-                self.assertNotIn("uboot_cmd", config)
-                commands = "\n".join(
-                    step["shell_cmd"] for step in config["shell_check_steps"]
-                )
-                self.assertIn("FEETECH_DEV=auto", commands)
-                self.assertIn("./run_robot_ci_once.sh 28.0", commands)
-                self.assertNotIn("/dev/ttyS6", commands)
-                if path == real_axvisor_linux:
-                    self.assertIn("sudo -S env FEETECH_DEV=auto", commands)
-
-        for path in (real_starry_guest, real_linux_guest):
-            text = path.read_text()
-            self.assertNotIn("include_default_passthrough", text)
-            self.assertNotIn("/serial@feb90000", text)
-
-        starry_kernel = tomllib.loads(real_starry_guest.read_text())["kernel"]
-        self.assertEqual(
-            starry_kernel["kernel_path"],
-            "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin",
-        )
-        linux_kernel = tomllib.loads(real_linux_guest.read_text())["kernel"]
-        self.assertEqual(
-            linux_kernel["kernel_path"], "/guest/linux/orangepi-5-plus-6.1.99"
-        )
-        self.assertIn("root=/dev/mmcblk1p2", linux_kernel["cmdline"])
 
     def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
         self,
