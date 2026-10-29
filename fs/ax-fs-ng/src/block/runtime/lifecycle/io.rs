@@ -13,7 +13,7 @@ use super::{super::dma::prepare_read, BlockDeviceHandle, block_io_error, request
 use crate::{BlockError, BlockResult};
 
 const MAX_RUNTIME_TRANSFER_BYTES: usize = 4 * 1024 * 1024;
-const SOFTWARE_PIPELINE_WINDOWS: usize = 2;
+pub(super) const SOFTWARE_PIPELINE_WINDOWS: usize = 2;
 
 struct ReadWindow {
     chunks: Vec<TransferChunk>,
@@ -165,32 +165,40 @@ fn transfer_plan(
     byte_len: usize,
     op: RequestOp,
 ) -> Result<TransferPlan, BlockError> {
-    let boundary_cap = info
-        .limits
-        .dma
-        .constraints()
-        .boundary
-        .unwrap_or(MAX_RUNTIME_TRANSFER_BYTES);
-    let planner = TransferPlanner::new(
-        info.device,
-        info.limits,
-        TransferRuntimeCaps::new(MAX_RUNTIME_TRANSFER_BYTES.min(boundary_cap), 1),
-    )
-    .map_err(|error| block_io_error("create transfer plan", op, block_id, error))?;
+    let planner = transfer_planner(info, MAX_RUNTIME_TRANSFER_BYTES)
+        .map_err(|error| block_io_error("create transfer plan", op, block_id, error))?;
     planner
         .plan(block_id, byte_len)
         .map_err(|error| block_io_error("plan transfer", op, block_id, error))
 }
 
-fn submission_window_limit(info: QueueInfo) -> usize {
+/// Applies the same DMA boundary and device limits to ordinary and zero writes.
+pub(super) fn transfer_planner(
+    info: QueueInfo,
+    maximum_bytes: usize,
+) -> Result<TransferPlanner, BlkError> {
+    let boundary_cap = info
+        .limits
+        .dma
+        .constraints()
+        .boundary
+        .unwrap_or(maximum_bytes);
+    TransferPlanner::new(
+        info.device,
+        info.limits,
+        TransferRuntimeCaps::new(maximum_bytes.min(boundary_cap), 1),
+    )
+}
+
+pub(super) fn submission_window_limit(info: QueueInfo) -> usize {
     info.limits
         .max_inflight
         .min(info.limits.max_submit_batch)
         .max(1)
 }
 
-fn take_window(
-    plan: &mut Peekable<TransferPlan>,
+pub(super) fn take_window(
+    plan: &mut Peekable<impl Iterator<Item = TransferChunk>>,
     limit: usize,
 ) -> Result<Vec<TransferChunk>, BlockError> {
     let mut chunks = Vec::new();
@@ -336,7 +344,7 @@ fn complete_write_window(
     }
 }
 
-fn ensure_sleepable() -> BlockResult {
+pub(super) fn ensure_sleepable() -> BlockResult {
     if request_cannot_block() {
         Err(BlockError::WouldBlock)
     } else {

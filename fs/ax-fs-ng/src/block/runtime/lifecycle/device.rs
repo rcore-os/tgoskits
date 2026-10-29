@@ -247,7 +247,7 @@ impl DeviceInner {
         {
             let mut gate = self.lifecycle_gate.lock_irqsave();
             match op {
-                RequestOp::Read | RequestOp::Write => {
+                RequestOp::Read | RequestOp::Write | RequestOp::WriteZeroes => {
                     gate.active_data = gate.active_data.saturating_sub(count);
                     notify_data = gate.active_data == 0 && gate.flush_active;
                 }
@@ -641,7 +641,7 @@ impl HctxObserver for DeviceInner {
         let (notify_data, notify_flush) = {
             let mut gate = self.lifecycle_gate.lock_irqsave();
             match op {
-                RequestOp::Read | RequestOp::Write => {
+                RequestOp::Read | RequestOp::Write | RequestOp::WriteZeroes => {
                     gate.active_data = gate.active_data.saturating_sub(1);
                     (gate.active_data == 0 && gate.flush_active, false)
                 }

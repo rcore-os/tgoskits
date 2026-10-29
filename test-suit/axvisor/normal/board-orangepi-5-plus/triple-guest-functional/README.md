@@ -31,7 +31,7 @@ Linux 与 StarryOS 的 `virtio-net` 接在 AxVisor 内部二层交换机上，�
 
 Linux 客户机身份名 `linux` 保持不变，外部内核路径改用板卡已部署的 6.1.99 虚拟客体内核 `/guest/linux/orangepi-5-plus-6.1.99-virtualized`，为全虚拟化 VirtIO 客体准备，并显式声明一个 16550（`uart16550-mmio`）虚拟控制台，guest 侧以 `console=ttyS0` 使用 `0xfeb50000` 窗口，不复制任何板卡 BSP 内核，也没有任何物理直通。该镜像是 6.1.99 的虚拟客体变体，控制台走 8250/ttyS0；复用该内核路径不等于已验证运行兼容，只有板卡运行走到约定标记才能证明，驱动缺失时客户机直接启动失败，不会退回物理直通。
 
-StarryOS 不识别 Linux 的 `/dev/vd*` 名称：它的 `root=` 只接受 `PARTUUID=`、`PARTLABEL=`、`/dev/sd*`、`/dev/nvme*n1` 与 `/dev/mmcblk*`（见 `fs/ax-fs-ng/src/root.rs`），其它取值会直接 panic，所以 StarryOS 客户机用整盘 `/dev/sda` 选择它唯一的那个文件后端根盘。
+StarryOS 不识别 Linux 的 `/dev/vd*` 名称：它的 `root=` 接受 `UUID=`、`PARTUUID=`、`PARTLABEL=`、`/dev/sd*`、`/dev/nvme*n1` 与 `/dev/mmcblk*`（见 `fs/ax-fs-ng/src/root/mod.rs`），其它取值会直接 panic。这里的 StarryOS 客户机用整盘 `/dev/sda` 选择它唯一的那个文件后端根盘，也可以显式使用该文件系统的 UUID。
 
 ## 3. 板上文件需求与放置路径
 

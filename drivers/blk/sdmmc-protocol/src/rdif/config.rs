@@ -40,6 +40,7 @@ impl BlockConfig {
                 max_segments: 1,
                 supported_flags: RequestFlags::NONE,
                 supports_flush: false,
+                max_write_zeroes_blocks: 0,
             },
         }
     }

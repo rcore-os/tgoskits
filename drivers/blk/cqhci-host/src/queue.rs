@@ -10,10 +10,17 @@ use rdif_block::{
     OwnedRequest, OwnedRequestBatch, QueueInfo, RequestFlags, RequestId, RequestOp, SubmissionSink,
     validate_owned_request,
 };
-use sdmmc_protocol::rdif::{BlockConfig, CommandQueueAccelerator, CommandQueueActivation};
+use sdmmc_protocol::rdif::{
+    BlockConfig, CommandQueueAccelerator, CommandQueueActivation, MmcTrimRequest,
+};
 
 use crate::{
-    CqhciPlatform, descriptor::DescriptorTables, irq::IrqState, read_u32, regs::*, write_u32,
+    CqhciPlatform,
+    descriptor::{DescriptorTables, DirectResponse},
+    irq::IrqState,
+    read_u32,
+    regs::*,
+    write_u32,
 };
 
 const TRANSITION_TIMEOUT_NS: u64 = 20_000_000;
@@ -23,9 +30,48 @@ struct RequestSlot {
     dma: Option<InFlightDma>,
 }
 
-struct FlushSlot {
+/// Owns slot 31 for a complete maintenance sequence, not just one command.
+struct DirectSlot {
+    /// The runtime request is completed only after the entire operation ends.
     request_id: RequestId,
-    needs_status: bool,
+    /// Protocol state remains private while later data submissions are blocked.
+    operation: DirectOperation,
+}
+
+/// Only one maintenance operation can own the physical command/data path.
+enum DirectOperation {
+    /// Preserve the existing flush followed by final card-status verification.
+    Flush {
+        /// Whether CMD6 must still precede the final CMD13 verification.
+        needs_status: bool,
+    },
+    /// TRIM sequencing and its read-zero guarantee belong to the MMC protocol.
+    Trim(MmcTrimRequest),
+}
+
+impl DirectOperation {
+    /// Describes the next command without transferring operation ownership.
+    fn command(
+        &self,
+        activation: CommandQueueActivation,
+    ) -> (sdmmc_protocol::Command, DirectResponse) {
+        match self {
+            Self::Flush { needs_status } => {
+                let command = if *needs_status {
+                    activation.flush_command()
+                } else {
+                    activation.status_command()
+                };
+                let response = if command.response == sdmmc_protocol::response::ResponseType::R1b {
+                    DirectResponse::R1b
+                } else {
+                    DirectResponse::R1
+                };
+                (command, response)
+            }
+            Self::Trim(request) => (request.command(), DirectResponse::R1),
+        }
+    }
 }
 
 /// One CQHCI hardware queue with a single task-context owner.
@@ -37,14 +83,14 @@ pub struct CqhciQueue {
     descriptors: Option<DescriptorTables>,
     slots: Vec<RequestSlot>,
     free_tags: Vec<usize>,
-    flush: Option<FlushSlot>,
+    direct: Option<DirectSlot>,
     staged: u32,
     active: bool,
     engine_armed: bool,
     data_path_restore_pending: bool,
     poisoned: bool,
     depth: usize,
-    next_flush_id: usize,
+    next_direct_id: usize,
     activation: Option<CommandQueueActivation>,
     info: Option<QueueInfo>,
 }
@@ -83,14 +129,14 @@ impl CqhciQueue {
             descriptors: Some(descriptors),
             slots,
             free_tags,
-            flush: None,
+            direct: None,
             staged: 0,
             active: false,
             engine_armed: false,
             data_path_restore_pending: false,
             poisoned: false,
             depth: 0,
-            next_flush_id: usize::MAX / 2,
+            next_direct_id: usize::MAX / 2,
             activation: None,
             info: None,
         };
@@ -150,10 +196,10 @@ impl CqhciQueue {
             requests.push_front(request);
             return Err(BlkError::InvalidRequest);
         }
-        if request.op == RequestOp::Flush {
-            return self.stage_flush(requests, request);
+        if matches!(request.op, RequestOp::Flush | RequestOp::WriteZeroes) {
+            return self.stage_direct(requests, request);
         }
-        if self.flush.is_some() {
+        if self.direct.is_some() {
             requests.push_front(request);
             return Err(BlkError::Retry);
         }
@@ -190,34 +236,56 @@ impl CqhciQueue {
         Ok(id)
     }
 
-    fn stage_flush(
+    /// Drains data before reserving slot 31 and keeps it exclusive until the
+    /// full protocol operation terminates. A QBR on each command alone would
+    /// allow intervening data tasks to invalidate an MMC erase sequence.
+    fn stage_direct(
         &mut self,
         requests: &mut OwnedRequestBatch,
         request: OwnedRequest,
     ) -> Result<RequestId, BlkError> {
         if self.staged != 0
-            || self.flush.is_some()
+            || self.direct.is_some()
             || self.slots.iter().any(|slot| slot.request_id.is_some())
         {
             requests.push_front(request);
             return Err(BlkError::Retry);
         }
-        let (Some(activation), Some(descriptors)) = (self.activation, self.descriptors.as_mut())
-        else {
+        let Some(activation) = self.activation else {
             requests.push_front(request);
             return Err(BlkError::InvalidRequest);
         };
-        let id = RequestId::new(self.next_flush_id);
-        self.next_flush_id = self.next_flush_id.wrapping_add(1).max(DATA_SLOTS);
-        let command = activation.flush_command();
-        descriptors.prepare_direct_command(
-            command.index,
-            command.argument,
-            command.response == sdmmc_protocol::response::ResponseType::R1b,
-        );
-        self.flush = Some(FlushSlot {
+        let operation = match request.op {
+            RequestOp::Flush => Ok(DirectOperation::Flush {
+                needs_status: activation.cache_enabled,
+            }),
+            RequestOp::WriteZeroes => activation
+                .trim
+                .ok_or(BlkError::NotSupported)
+                .and_then(|support| {
+                    support.request(request.lba, request.block_count, activation.rca)
+                })
+                .map(DirectOperation::Trim),
+            RequestOp::Read | RequestOp::Write => Err(BlkError::InvalidRequest),
+        };
+        let operation = match operation {
+            Ok(operation) => operation,
+            Err(error) => {
+                requests.push_front(request);
+                return Err(error);
+            }
+        };
+        let Some(descriptors) = self.descriptors.as_mut() else {
+            requests.push_front(request);
+            return Err(BlkError::InvalidRequest);
+        };
+        let id = RequestId::new(self.next_direct_id);
+        self.next_direct_id = self.next_direct_id.wrapping_add(1).max(DATA_SLOTS);
+        let (command, response) = operation.command(activation);
+        descriptors.prepare_direct_command(command.index, command.argument, response);
+        self.direct = Some(DirectSlot {
             request_id: id,
-            needs_status: activation.cache_enabled,
+            operation,
         });
         self.staged |= 1 << DIRECT_COMMAND_SLOT;
         Ok(id)
@@ -230,11 +298,11 @@ impl CqhciQueue {
         sink: &mut dyn CompletionSink,
     ) -> Result<(), BlkError> {
         if tag == DIRECT_COMMAND_SLOT {
-            let flush = self.flush.take().ok_or(BlkError::Io)?;
+            let direct = self.direct.take().ok_or(BlkError::Io)?;
             if let Some(descriptors) = self.descriptors.as_mut() {
                 descriptors.clear_task(tag);
             }
-            sink.complete(CompletedRequest::new(flush.request_id, result, None));
+            sink.complete(CompletedRequest::new(direct.request_id, result, None));
             return Ok(());
         }
         let slot = self.slots.get_mut(tag).ok_or(BlkError::Io)?;
@@ -311,21 +379,55 @@ impl CqhciQueue {
     }
 
     fn complete_direct_command(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        let flush = self.flush.as_mut().ok_or(BlkError::Io)?;
-        let result =
-            CommandQueueActivation::check_response(read_u32(self.base, CRDCT), !flush.needs_status);
-        if result.is_ok() && flush.needs_status {
-            let command = self.activation.ok_or(BlkError::Io)?.status_command();
+        let activation = self.activation.ok_or(BlkError::Io)?;
+        let raw = read_u32(self.base, CRDCT);
+        let (result, is_trim) = {
+            let direct = self.direct.as_mut().ok_or(BlkError::Io)?;
+            match &mut direct.operation {
+                DirectOperation::Flush { needs_status } => {
+                    let result = CommandQueueActivation::check_response(raw, !*needs_status);
+                    let finished = !*needs_status;
+                    if result.is_ok() {
+                        *needs_status = false;
+                    }
+                    (result.map(|()| finished), false)
+                }
+                DirectOperation::Trim(request) => {
+                    (request.advance(raw, self.platform.now_ns()), true)
+                }
+            }
+        };
+        if result == Ok(false) {
+            let (command, response) = self
+                .direct
+                .as_ref()
+                .ok_or(BlkError::Io)?
+                .operation
+                .command(activation);
             self.descriptors
                 .as_mut()
                 .ok_or(BlkError::Io)?
-                .prepare_direct_command(command.index, command.argument, false);
-            flush.needs_status = false;
+                .prepare_direct_command(command.index, command.argument, response);
             wmb();
             write_u32(self.base, TDBR, 1 << DIRECT_COMMAND_SLOT);
             return Ok(());
         }
-        self.complete_tag(DIRECT_COMMAND_SLOT, result, sink)
+        if let Err(error) = result
+            && is_trim
+        {
+            // An incomplete erase sequence or busy timeout cannot be followed
+            // by new data commands. HALT stops the host, not an internal card
+            // TRIM; this card session therefore remains permanently poisoned.
+            self.poisoned = true;
+            if self.quiesce() {
+                self.complete_tag(DIRECT_COMMAND_SLOT, Err(error), sink)?;
+                self.complete_all_after_quiesce(sink);
+            } else {
+                self.quarantine_all(sink);
+            }
+            return Err(error);
+        }
+        self.complete_tag(DIRECT_COMMAND_SLOT, result.map(|_| ()), sink)
     }
 
     fn complete_all_after_quiesce(&mut self, sink: &mut dyn CompletionSink) {
@@ -334,7 +436,7 @@ impl CqhciQueue {
                 let _ = self.complete_tag(tag, Err(BlkError::Io), sink);
             }
         }
-        if self.flush.is_some() {
+        if self.direct.is_some() {
             let _ = self.complete_tag(DIRECT_COMMAND_SLOT, Err(BlkError::Io), sink);
         }
     }
@@ -354,9 +456,9 @@ impl CqhciQueue {
             }
             sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
         }
-        if let Some(flush) = self.flush.take() {
+        if let Some(direct) = self.direct.take() {
             sink.complete(CompletedRequest::new(
-                flush.request_id,
+                direct.request_id,
                 Err(BlkError::Io),
                 None,
             ));
@@ -451,6 +553,8 @@ impl CommandQueueAccelerator for CqhciQueue {
             ..constraints
         });
         config.limits.supports_flush = true;
+        config.limits.max_write_zeroes_blocks =
+            activation.trim.map_or(0, |support| support.max_blocks());
         // FUA and PREFLUSH require hardware/task semantics not encoded here.
         // The runtime consumes NOWAIT independently of this capability mask.
         config.limits.supported_flags = RequestFlags::NONE;
@@ -465,7 +569,7 @@ impl CommandQueueAccelerator for CqhciQueue {
             read_u32(self.base, VER),
             read_u32(self.base, CAP),
             depth,
-            task_list
+            task_list,
         );
         Ok(())
     }
@@ -604,9 +708,173 @@ mod tests {
         DmaDirection, DmaDomainId, DmaError, DmaMapHandle, DmaOp,
     };
     use rdif_block::{BatchSubmitDisposition, CompletedRequest, RequestFlags, SubmissionSink};
-    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, SdMmcIrqHandle};
+    use sdmmc_protocol::{
+        ext_csd::ExtCsd,
+        rdif::MmcTrimSupport,
+        response::CidResponse,
+        sdio::host::{HostEvent, HostEventKind, SdMmcIrqHandle},
+    };
 
     use super::*;
+
+    #[test]
+    fn native_zero_owns_the_direct_slot_until_ready_or_terminal_failure() {
+        for fail_trim in [false, true] {
+            let mut registers = [0u32; 32];
+            let base = NonNull::new(registers.as_mut_ptr().cast::<u8>()).unwrap();
+            let address = base.as_ptr() as usize;
+            let dma = test_dma();
+            // SAFETY: the register model owns the aligned mapping for the
+            // lifetime of both endpoints; DMA and IRQ refer to this host only.
+            let (mut queue, mut irq) = unsafe {
+                crate::queue_and_irq(
+                    base,
+                    dma.clone(),
+                    Box::new(TestPlatform::new(true)),
+                    TestLegacyIrq::default(),
+                )
+            }
+            .unwrap();
+            let mut config = BlockConfig::dma("cqhci-zero-test", 1_000_000, &dma)
+                .with_max_blocks_per_request(2047);
+            let activation = CommandQueueActivation {
+                rca: 1,
+                card_depth: 2,
+                cache_enabled: true,
+                trim: Some(trim_support()),
+            };
+            queue.activate(activation, &mut config).unwrap();
+            let mut submitted = SubmittedIds::default();
+            let mut completed = CompletedRequests::default();
+            let mut reads = [read_request(&dma, 0)].into_iter().collect();
+            assert_eq!(
+                queue
+                    .submit_batch_owned(&mut reads, &mut submitted)
+                    .accepted(),
+                1
+            );
+            queue.commit_submissions().unwrap();
+            let mut zeroes = [OwnedRequest {
+                op: RequestOp::WriteZeroes,
+                lba: 1023,
+                block_count: 5000,
+                data: None,
+                flags: RequestFlags::NONE,
+            }]
+            .into_iter()
+            .collect::<OwnedRequestBatch>();
+            assert!(5000 > config.limits.max_blocks_per_request);
+            let blocked = queue.submit_batch_owned(&mut zeroes, &mut submitted);
+            assert_eq!(blocked.accepted(), 0);
+            assert_eq!(blocked.disposition(), BatchSubmitDisposition::QueueFull);
+            write_u32(address, IS, IS_TASK_COMPLETE);
+            write_u32(address, TCN, 1);
+            let _ = irq.ack();
+            write_u32(address, IS, 0);
+            write_u32(address, TCN, 0);
+            write_u32(address, TDBR, 0);
+            queue.drain_completions(&mut completed).unwrap();
+            assert_eq!(completed.0.len(), 1);
+            assert_eq!(
+                queue
+                    .submit_batch_owned(&mut zeroes, &mut submitted)
+                    .accepted(),
+                1
+            );
+            queue.commit_submissions().unwrap();
+            let mut later = [read_request(&dma, 7)]
+                .into_iter()
+                .collect::<OwnedRequestBatch>();
+            let ready = (4 << 9) | (1 << 8);
+            let steps = [
+                (13u8, 1u32 << 16, 1u64, ready),
+                (35, 1023, 1, ready),
+                (36, 6022, 1, ready),
+                (38, 1, 1, if fail_trim { 1 << 15 } else { 7 << 9 }),
+                (13, 1 << 16, 1, 7 << 9),
+                (13, 1 << 16, 1, ready),
+            ];
+            for (index, argument, timing, response) in steps {
+                let image = queue.descriptors.as_ref().unwrap().direct_task_image();
+                assert_eq!(image >> DCMD_COMMAND_SHIFT & 0x3f, u64::from(index));
+                assert_eq!(image >> DESCRIPTOR_ADDRESS_SHIFT, u64::from(argument));
+                assert_eq!(
+                    image >> DCMD_RESPONSE_SHIFT & 3,
+                    2,
+                    "TRIM must use software busy checks"
+                );
+                assert_eq!(image >> DCMD_TIMING_SHIFT & 1, timing);
+                assert_ne!(image & TASK_QUEUE_BARRIER, 0);
+                assert_eq!(read_u32(address, TDBR), 1 << DIRECT_COMMAND_SLOT);
+                let blocked = queue.submit_batch_owned(&mut later, &mut submitted);
+                assert_eq!(
+                    blocked.accepted(),
+                    0,
+                    "data must not interrupt a TRIM sequence"
+                );
+                assert_eq!(blocked.disposition(), BatchSubmitDisposition::QueueFull);
+                assert_eq!(
+                    completed.0.len(),
+                    1,
+                    "CMD38 response alone cannot complete zeroing"
+                );
+                write_u32(address, CRDCT, response);
+                write_u32(address, IS, IS_TASK_COMPLETE);
+                write_u32(address, TCN, 1 << DIRECT_COMMAND_SLOT);
+                let _ = irq.ack();
+                write_u32(address, IS, 0);
+                write_u32(address, TCN, 0);
+                write_u32(address, TDBR, 0);
+                let result = queue.drain_completions(&mut completed);
+                if fail_trim && index == 38 {
+                    assert_eq!(result, Err(BlkError::Io));
+                    assert_eq!(queue.descriptors.as_ref().unwrap().direct_task_image(), 0);
+                    break;
+                }
+                result.unwrap();
+            }
+            assert_eq!(completed.0.len(), 2);
+            assert!(completed.0[1].data.is_none());
+            if fail_trim {
+                assert_eq!(completed.0[1].result, Err(BlkError::Io));
+                let rejected = queue.submit_batch_owned(&mut later, &mut submitted);
+                assert_eq!(rejected.accepted(), 0);
+                assert_eq!(
+                    rejected.disposition(),
+                    BatchSubmitDisposition::Fatal(BlkError::Io)
+                );
+            } else {
+                assert_eq!(completed.0[1].result, Ok(()));
+                assert_eq!(
+                    queue
+                        .submit_batch_owned(&mut later, &mut submitted)
+                        .accepted(),
+                    1
+                );
+                queue.commit_submissions().unwrap();
+            }
+            queue.shutdown(&mut completed).unwrap();
+        }
+    }
+
+    /// Advertises standard sector-addressed, read-zero TRIM in the card model.
+    fn trim_support() -> MmcTrimSupport {
+        let mut ext = [0; 512];
+        ext[192] = 8;
+        ext[308] = 1;
+        ext[307] = 30;
+        ext[175] = 1;
+        ext[224] = 1;
+        ext[231] = 0x10;
+        ext[232] = 1;
+        ext[212..216].copy_from_slice(&1_000_000u32.to_le_bytes());
+        let mut cid = [0; 16];
+        cid[0] = 0x15;
+        cid[1..3].copy_from_slice(&0x0100u16.to_be_bytes());
+        cid[3..9].copy_from_slice(b"ABCDEF");
+        MmcTrimSupport::for_card(&ExtCsd::from_bytes(ext), &CidResponse::from_raw(cid), true)
+            .unwrap()
+    }
 
     #[test]
     fn batch_doorbell_and_out_of_order_completion_preserve_dma_ownership() {
@@ -631,6 +899,7 @@ mod tests {
             rca: 1,
             card_depth: 2,
             cache_enabled: true,
+            trim: None,
         };
         let mut foreign_config = config;
         foreign_config.limits.dma = DmaDeviceInfo::new(
@@ -853,6 +1122,7 @@ mod tests {
                             rca: 1,
                             card_depth: 2,
                             cache_enabled: false,
+                            trim: None,
                         },
                         &mut BlockConfig::dma("drop-lifecycle", 1024, &dma),
                     ),
@@ -928,6 +1198,7 @@ mod tests {
                         rca: 1,
                         card_depth: 2,
                         cache_enabled: false,
+                        trim: None,
                     },
                     &mut BlockConfig::dma("quarantine", 1024, &dma),
                 )

@@ -563,7 +563,13 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// Rejects mutation before it can alter caches, allocator state or data.
     /// The adapter waits outside filesystem exclusion while checkpoint owns
     /// admission. MMP refresh uses a separate, reserved on-disk block.
+    /// Recovery preview returns Busy because its visible images are validation
+    /// inputs, not a writable mounted state; aborted or paused journals retain
+    /// their existing error/progress results.
     pub(crate) fn ensure_mutation_admitted(&self) -> Ext4Result<()> {
+        if self.replay_preview.is_some() {
+            return Err(Ext4Error::busy().with_operation("jbd2:read_only_replay_preview"));
+        }
         // Keep the established mutation error contract. The receipt and
         // ticket query retain the original I/O error for synchronization.
         self.ensure_not_aborted("jbd2:mutation_after_abort")?;

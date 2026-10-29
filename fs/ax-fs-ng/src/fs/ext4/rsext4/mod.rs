@@ -79,6 +79,33 @@ impl Ext4Disk {
 }
 
 impl BlockIo for Ext4Disk {
+    /// Preserves one batch across partition/cache adapters; the device owns
+    /// bounded transfer splitting, completion waits and zero-DMA recycling.
+    fn write_zeroes(&mut self, ranges: &[rsext4::SectorRange]) -> Ext4Result<()> {
+        let mut regions = alloc::vec::Vec::new();
+        regions
+            .try_reserve_exact(ranges.len())
+            .map_err(|_| Ext4Error::no_memory())?;
+        for range in ranges {
+            regions.push(BlockRegion {
+                start_lba: range.start.raw(),
+                end_lba: range
+                    .start
+                    .raw()
+                    .checked_add(u64::from(range.count))
+                    .ok_or_else(Ext4Error::overflow)?,
+            });
+        }
+        self.device
+            .write_zeroes(&regions)
+            .map_err(|error| match error {
+                crate::BlockError::NoMemory => Ext4Error::no_memory(),
+                crate::BlockError::Unsupported => Ext4Error::unsupported(),
+                crate::BlockError::InvalidRequest => Ext4Error::invalid_input(),
+                _ => Ext4Error::io(),
+            })
+    }
+
     fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
         if self.device.is_read_only() {
             return Err(Ext4Error::read_only());
@@ -188,6 +215,52 @@ impl rsext4::ForkBlockIo for Ext4Disk {
             geometry: self.geometry,
         })
     }
+}
+
+/// Probes the complete filesystem target before committing a partition change.
+/// Mounting may replay an existing journal; only the subsequent capacity check
+/// avoids growth writes. Always unmount before the caller changes region bounds.
+/// Takes ownership of `device` and mounts only its current `region` (device
+/// blocks). `target_bytes` is the proposed partition capacity; the returned byte
+/// count is the usable ext4 capacity. Read-only fallback is unsupported, and
+/// recovery, validation or unmount errors prevent the partition update.
+pub(crate) fn check_root_growth(
+    device: Box<dyn FsBlockDevice>,
+    region: BlockRegion,
+    target_bytes: u64,
+) -> Ext4Result<u64> {
+    let identity = fs::mmp_identity_for_region(device.name(), region);
+    let disk = Ext4Disk::new(device, region)?;
+    let services = rsext4::MountServices::new(Ext4Clock, Ext4Entropy, Ext4Observer)
+        .with_mmp(Ext4Delay, identity);
+    let mut mount = rsext4::Ext4::mount_with_readonly_fallback(disk, services)?;
+    let result = if mount.options().readonly {
+        Err(Ext4Error::unsupported().with_operation("grow:readonly_fallback"))
+    } else {
+        mount.growth_capacity(target_bytes)
+    };
+    // A failed flush/unmount makes the probe's durable state uncertain even
+    // when capacity was accepted, so it takes precedence over that result.
+    mount.unmount()?;
+    result
+}
+
+/// Reopens the committed partition view, grows it, and releases all ext4 state
+/// before the normal root mount is constructed and published.
+/// Takes ownership of the whole `device` and restricts it to the final `region`
+/// in device blocks. Success includes a clean temporary unmount; any growth or
+/// unmount failure is returned instead of publishing a partly prepared root.
+pub(crate) fn grow_root_filesystem(
+    device: Box<dyn FsBlockDevice>,
+    region: BlockRegion,
+) -> Ext4Result<()> {
+    let identity = fs::mmp_identity_for_region(device.name(), region);
+    let disk = Ext4Disk::new(device, region)?;
+    let services = rsext4::MountServices::new(Ext4Clock, Ext4Entropy, Ext4Observer)
+        .with_mmp(Ext4Delay, identity);
+    let mut mount =
+        rsext4::Ext4::mount_growing(disk, services, rsext4::MountOptions::read_write())?;
+    mount.unmount()
 }
 
 #[cfg(test)]

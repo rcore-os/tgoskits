@@ -37,6 +37,12 @@ mod teardown;
 
 struct TestDmaOp;
 
+std::thread_local! {
+    /// Counts fresh backing in the requesting thread, independently of other
+    /// parallel tests and of allocator address reuse after deallocation.
+    static DMA_ALLOCATIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
 impl DmaOp for TestDmaOp {
     fn page_size(&self) -> usize {
         4096
@@ -48,6 +54,7 @@ impl DmaOp for TestDmaOp {
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
         let cpu_addr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+        DMA_ALLOCATIONS.set(DMA_ALLOCATIONS.get() + 1);
         Some(unsafe {
             DmaAllocHandle::new(
                 cpu_addr,
@@ -192,10 +199,17 @@ impl SharedHardIrqHandler for SharedSpuriousHandler {
 #[derive(Default)]
 struct BatchingQueueCounters {
     submitted: AtomicUsize,
+    completed: AtomicUsize,
     fua_submitted: AtomicUsize,
     commits: AtomicUsize,
     largest_batch: AtomicUsize,
     peak_pending: AtomicUsize,
+    /// Logical addresses accepted by the fake hardware queue.
+    writes: std::sync::Mutex<Vec<u64>>,
+    /// Exact payload-free range mutations accepted from the production runtime.
+    native_zeroes: std::sync::Mutex<Vec<(u64, u32)>>,
+    /// Completed write requests whose actual owned DMA payload contains zeros.
+    zero_payloads: AtomicUsize,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -248,6 +262,17 @@ impl HardwareQueue for BatchingReadQueue {
             };
             if request.flags.contains(RequestFlags::FUA) {
                 self.counters.fua_submitted.fetch_add(1, Ordering::AcqRel);
+            }
+            if request.op == RequestOp::Write {
+                self.counters.writes.lock().unwrap().push(request.lba);
+            }
+            if request.op == RequestOp::WriteZeroes {
+                assert!(request.data.is_none(), "native zeroing must not carry DMA");
+                self.counters
+                    .native_zeroes
+                    .lock()
+                    .unwrap()
+                    .push((request.lba, request.block_count));
             }
             self.next_id += 1;
             let id = RequestId::new(self.next_id);
@@ -302,6 +327,16 @@ impl HardwareQueue for BatchingReadQueue {
         };
         for (id, data) in self.pending.drain(..) {
             let data = data.map(|in_flight| unsafe { in_flight.complete_after_quiesce() });
+            if let Some(data) = &data
+                && data.direction() == DmaDirection::ToDevice
+            {
+                let mut bytes = vec![0xff; data.len().get()];
+                data.copy_to_slice_cpu(&mut bytes);
+                if bytes.iter().all(|byte| *byte == 0) {
+                    self.counters.zero_payloads.fetch_add(1, Ordering::AcqRel);
+                }
+            }
+            self.counters.completed.fetch_add(1, Ordering::AcqRel);
             sink.complete(CompletedRequest::new(id, result, data));
         }
         if let Some(probe) = &self.probe {

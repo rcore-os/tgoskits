@@ -9,6 +9,12 @@ pub(super) fn prepare_read(limits: QueueLimits, len: usize) -> Result<PreparedDm
     allocate(limits, len, DmaDirection::FromDevice).map(CpuDmaBuffer::prepare_for_device)
 }
 
+/// Creates an owned zero payload without copying from a second CPU buffer.
+#[cfg(feature = "ext4")]
+pub(super) fn prepare_zero(limits: QueueLimits, len: usize) -> Result<PreparedDma, BlkError> {
+    allocate(limits, len, DmaDirection::ToDevice).map(CpuDmaBuffer::prepare_for_device)
+}
+
 #[cfg(any(feature = "ext4", feature = "fat", axtest))]
 pub(super) fn prepare_write(limits: QueueLimits, source: &[u8]) -> Result<PreparedDma, BlkError> {
     let mut buffer = allocate(limits, source.len(), DmaDirection::ToDevice)?;

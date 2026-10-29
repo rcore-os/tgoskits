@@ -170,6 +170,11 @@ impl<T: FsBlockDevice> BufferedBlockDevice<T> {
 
 impl<T: FsBlockDevice> FsBlockDevice for BufferedBlockDevice<T> {
     #[cfg(feature = "ext4")]
+    fn write_zeroes(&mut self, ranges: &[crate::block::BlockRegion]) -> BlockResult<()> {
+        self.shared.state.write_zeroes(&mut self.inner, ranges)
+    }
+
+    #[cfg(feature = "ext4")]
     fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
         let inner = self.inner.fork_io()?;
         self.shared.acquire_consumer()?;

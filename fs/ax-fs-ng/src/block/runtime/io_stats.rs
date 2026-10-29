@@ -13,9 +13,10 @@ use crate::os::{monotonic_time, sync::RawSpinLock};
 /// bytes in 512-byte units, including bytes completed with an I/O error. They
 /// are not a measure of successful hardware transfers. Accounting begins after
 /// runtime admission and includes software channel and hardware retry waits.
-/// In-flight and busy time cover read/write requests. `Flush` is the separate
-/// hardware flush command, like Linux's internal `flush_rq`, not its containing
-/// write/PREFLUSH request. Weighted time sums completed read/write/flush latency;
+/// In-flight and busy time cover reads, writes and zero-range mutations. Zeroing
+/// contributes to the write counters. `Flush` is the separate hardware flush
+/// command, like Linux's internal `flush_rq`, not its containing write/PREFLUSH
+/// request. Weighted time sums completed read/write/zero/flush latency;
 /// snapshots never charge unfinished request latency to that field. A cancelled
 /// pre-enqueue admission releases in-flight state without completing an I/O.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -99,7 +100,7 @@ impl IoState {
                 self.counters.sectors_read = self.counters.sectors_read.saturating_add(sectors);
                 self.counters.read_ns = self.counters.read_ns.saturating_add(elapsed);
             }
-            RequestOp::Write => {
+            RequestOp::Write | RequestOp::WriteZeroes => {
                 self.counters.writes += 1;
                 self.counters.sectors_written =
                     self.counters.sectors_written.saturating_add(sectors);
@@ -170,51 +171,53 @@ mod tests {
 
     #[test]
     fn queued_rw_and_hardware_flush_account_completed_latency_and_retired_bytes() {
-        let ms = Duration::from_millis;
-        let mut state = IoState::default();
-        state.begin(ms(10), RequestOp::Read);
-        state.begin(ms(20), RequestOp::Write);
-        state.begin(ms(22), RequestOp::Flush);
-        assert_eq!(state.counters.inflight, 2);
-        state.advance(ms(25));
-        assert_eq!(state.counters.busy_ns, 15_000_000);
-        assert_eq!(
-            state.counters.weighted_ns, 0,
-            "unfinished latency must not enter weighted time"
-        );
-        state.complete(ms(30), ms(10), RequestOp::Read, 8, false);
-        assert_eq!(state.counters.weighted_ns, 20_000_000);
-        state.complete(ms(40), ms(20), RequestOp::Write, 16, true);
-        state.complete(ms(50), ms(22), RequestOp::Flush, 0, false);
-        state.advance(ms(100));
-        assert_eq!(state.counters.busy_ns, 30_000_000);
-        assert_eq!(state.counters.weighted_ns, 68_000_000);
-        assert_eq!(state.counters.flush_ns, 28_000_000);
-        assert_eq!(state.counters.inflight, 0);
-        assert_eq!(state.counters.read_ns, 20_000_000);
-        assert_eq!(state.counters.write_ns, 20_000_000);
-        assert_eq!(state.counters.sectors_read, 8);
-        assert_eq!(
-            state.counters.sectors_written, 16,
-            "failed retirement still accounts request bytes"
-        );
-        assert_eq!(state.counters.failed_requests, 1);
-        let completed = state.counters;
-        state.begin(ms(110), RequestOp::Read);
-        state.begin(ms(120), RequestOp::Write);
-        state.begin(ms(125), RequestOp::Flush);
-        state.cancel(ms(130), RequestOp::Write);
-        assert_eq!(state.counters.inflight, 1);
-        state.cancel(ms(140), RequestOp::Read);
-        state.cancel(ms(150), RequestOp::Flush);
-        state.advance(ms(200));
-        assert_eq!(
-            state.counters,
-            BlockIoStats {
-                busy_ns: completed.busy_ns + 30_000_000,
-                ..completed
-            },
-            "pre-enqueue cancellation only closes the observed busy interval"
-        );
+        for write_op in [RequestOp::Write, RequestOp::WriteZeroes] {
+            let ms = Duration::from_millis;
+            let mut state = IoState::default();
+            state.begin(ms(10), RequestOp::Read);
+            state.begin(ms(20), write_op);
+            state.begin(ms(22), RequestOp::Flush);
+            assert_eq!(state.counters.inflight, 2);
+            state.advance(ms(25));
+            assert_eq!(state.counters.busy_ns, 15_000_000);
+            assert_eq!(
+                state.counters.weighted_ns, 0,
+                "unfinished latency must not enter weighted time"
+            );
+            state.complete(ms(30), ms(10), RequestOp::Read, 8, false);
+            assert_eq!(state.counters.weighted_ns, 20_000_000);
+            state.complete(ms(40), ms(20), write_op, 16, true);
+            state.complete(ms(50), ms(22), RequestOp::Flush, 0, false);
+            state.advance(ms(100));
+            assert_eq!(state.counters.busy_ns, 30_000_000);
+            assert_eq!(state.counters.weighted_ns, 68_000_000);
+            assert_eq!(state.counters.flush_ns, 28_000_000);
+            assert_eq!(state.counters.inflight, 0);
+            assert_eq!(state.counters.read_ns, 20_000_000);
+            assert_eq!(state.counters.write_ns, 20_000_000);
+            assert_eq!(state.counters.sectors_read, 8);
+            assert_eq!(
+                state.counters.sectors_written, 16,
+                "failed retirement still accounts request bytes"
+            );
+            assert_eq!(state.counters.failed_requests, 1);
+            let completed = state.counters;
+            state.begin(ms(110), RequestOp::Read);
+            state.begin(ms(120), write_op);
+            state.begin(ms(125), RequestOp::Flush);
+            state.cancel(ms(130), write_op);
+            assert_eq!(state.counters.inflight, 1);
+            state.cancel(ms(140), RequestOp::Read);
+            state.cancel(ms(150), RequestOp::Flush);
+            state.advance(ms(200));
+            assert_eq!(
+                state.counters,
+                BlockIoStats {
+                    busy_ns: completed.busy_ns + 30_000_000,
+                    ..completed
+                },
+                "pre-enqueue cancellation only closes the observed busy interval"
+            );
+        }
     }
 }

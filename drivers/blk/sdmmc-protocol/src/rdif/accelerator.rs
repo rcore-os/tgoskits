@@ -2,7 +2,7 @@
 
 use rdif_block::{BatchSubmitResult, BlkError, CompletionSink, OwnedRequestBatch, SubmissionSink};
 
-use super::config::BlockConfig;
+use super::{MmcTrimSupport, config::BlockConfig};
 
 /// Card-side facts required to activate a hardware command queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,6 +13,8 @@ pub struct CommandQueueActivation {
     pub card_depth: usize,
     /// Whether the eMMC volatile write cache needs an explicit flush command.
     pub cache_enabled: bool,
+    /// Checked standard TRIM capability, published only by a supporting host.
+    pub trim: Option<MmcTrimSupport>,
 }
 
 impl CommandQueueActivation {

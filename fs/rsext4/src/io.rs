@@ -42,6 +42,15 @@ pub struct DeviceGeometry {
     pub block_count: u64,
 }
 
+/// One zero-filled extent in the device's logical-sector units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SectorRange {
+    /// First logical sector; no partition-relative translation is implicit.
+    pub start: SectorId,
+    /// Number of sectors; zero denotes an empty extent.
+    pub count: u32,
+}
+
 impl DeviceGeometry {
     pub const fn new(logical_block_size: u32, block_count: u64) -> Self {
         Self {
@@ -93,6 +102,59 @@ pub trait BlockIo {
 
     /// Reads exactly `count * geometry().logical_block_size` bytes.
     fn read(&mut self, buffer: &mut [u8], sector: SectorId, count: u32) -> Ext4Result<()>;
+
+    /// Writes zeros to every extent, preserving gaps and validating all bounds
+    /// before the first write. Success means all I/O has completed, not that it
+    /// is durable: callers still own flush/commit ordering. Errors may leave a
+    /// partially zeroed medium, but no writes may remain in flight on return.
+    /// The default uses bounded ordinary writes; optimized backends may batch
+    /// ranges or use a guaranteed-zero operation, never discard alone.
+    fn write_zeroes(&mut self, ranges: &[SectorRange]) -> Ext4Result<()> {
+        let geometry = self.geometry();
+        let block_size = geometry.logical_block_size as usize;
+        if block_size == 0 {
+            return Err(Ext4Error::invalid_input());
+        }
+        for range in ranges {
+            if range
+                .start
+                .raw()
+                .checked_add(u64::from(range.count))
+                .is_none_or(|end| end > geometry.block_count)
+            {
+                return Err(Ext4Error::invalid_input());
+            }
+        }
+        let maximum = ranges.iter().map(|range| range.count).max().unwrap_or(0);
+        if maximum == 0 {
+            return Ok(());
+        }
+        if self.capabilities().read_only {
+            return Err(Ext4Error::read_only());
+        }
+        let buffered = (2 * 1024 * 1024 / block_size).max(1).min(maximum as usize);
+        let bytes = buffered
+            .checked_mul(block_size)
+            .ok_or_else(Ext4Error::overflow)?;
+        let mut zeroes = alloc::vec::Vec::new();
+        zeroes
+            .try_reserve_exact(bytes)
+            .map_err(|_| Ext4Error::no_memory())?;
+        zeroes.resize(bytes, 0);
+        for range in ranges {
+            let mut offset = 0;
+            while offset < range.count {
+                let count = (range.count - offset).min(buffered as u32);
+                self.write(
+                    &zeroes[..count as usize * block_size],
+                    range.start.checked_add(offset)?,
+                    count,
+                )?;
+                offset += count;
+            }
+        }
+        Ok(())
+    }
 
     /// Writes with an explicit durability requirement.
     ///
@@ -170,6 +232,46 @@ mod tests {
 
         fn flush(&mut self) -> Ext4Result<()> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn zero_ranges_validate_before_writing_and_preserve_gaps() {
+        let mut io = MemoryIo {
+            data: alloc::vec![0xa5; 8 * 512],
+        };
+        let ranges = [
+            SectorRange {
+                start: SectorId::new(1),
+                count: 2,
+            },
+            SectorRange {
+                start: SectorId::new(6),
+                count: 2,
+            },
+        ];
+        assert!(
+            io.write_zeroes(&[
+                ranges[0],
+                SectorRange {
+                    start: SectorId::new(8),
+                    count: 1
+                }
+            ])
+            .is_err()
+        );
+        assert!(
+            io.data.iter().all(|&byte| byte == 0xa5),
+            "invalid suffix must not write its valid prefix"
+        );
+        io.write_zeroes(&ranges).unwrap();
+        for (block, bytes) in io.data.as_chunks::<512>().0.iter().enumerate() {
+            let expected = if (1..3).contains(&block) || block >= 6 {
+                0
+            } else {
+                0xa5
+            };
+            assert!(bytes.iter().all(|&byte| byte == expected));
         }
     }
 

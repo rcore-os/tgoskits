@@ -316,17 +316,28 @@ fn second_flush_cancel_and_nowait_preserve_gate_owner() {
 }
 
 #[test]
-fn nowait_admission_returns_retry_without_pending() {
-    crate::os::task::install_test_runtime_ops();
-    let inner = barrier_test_inner();
-    inner.lifecycle_gate.lock_irqsave().flush_active = true;
+fn nowait_and_cancelled_mutation_admission_preserve_gate_count() {
+    for op in [RequestOp::Write, RequestOp::WriteZeroes] {
+        crate::os::task::install_test_runtime_ops();
+        let inner = barrier_test_inner();
+        inner.lifecycle_gate.lock_irqsave().flush_active = true;
 
-    let mut future = Box::pin(inner.acquire_data_async(RequestOp::Write, 1, true));
-    assert!(matches!(
-        poll_once(future.as_mut()),
-        Poll::Ready(Err(BlkError::Retry))
-    ));
-    assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
+        let mut future = Box::pin(inner.acquire_data_async(op, 1, true));
+        assert!(matches!(
+            poll_once(future.as_mut()),
+            Poll::Ready(Err(BlkError::Retry))
+        ));
+        assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
+        drop(future);
+        inner.lifecycle_gate.lock_irqsave().flush_active = false;
+        let mut admitted = Box::pin(inner.acquire_data_async(op, 1, false));
+        let Poll::Ready(Ok(permit)) = poll_once(admitted.as_mut()) else {
+            panic!("unblocked mutation must acquire admission");
+        };
+        assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 1);
+        drop(permit);
+        assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
+    }
 }
 
 #[test]

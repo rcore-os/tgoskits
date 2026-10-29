@@ -90,6 +90,22 @@ fn write_protective_gpt_header(
     header[72..80].copy_from_slice(&entries_start_lba.to_le_bytes());
     header[80..84].copy_from_slice(&entry_count.to_le_bytes());
     header[84..88].copy_from_slice(&128u32.to_le_bytes());
+    seal_primary_gpt(reader);
+}
+
+/// Recomputes the entry-array and header CRCs in `reader` after fixture edits;
+/// uses the primary header's encoded entry span and the fixed 92-byte core.
+fn seal_primary_gpt(reader: &mut MemReader) {
+    let header = reader.block_mut(1);
+    let start = u64::from_le_bytes(header[72..80].try_into().unwrap()) as usize * BLOCK_SIZE;
+    let count = u32::from_le_bytes(header[80..84].try_into().unwrap()) as usize;
+    let size = u32::from_le_bytes(header[84..88].try_into().unwrap()) as usize;
+    let checksum = super::gpt::crc32(&reader.data[start..start + count * size]);
+    let header = reader.block_mut(1);
+    header[88..92].copy_from_slice(&checksum.to_le_bytes());
+    header[16..20].fill(0);
+    let checksum = super::gpt::crc32(&header[..92]);
+    header[16..20].copy_from_slice(&checksum.to_le_bytes());
 }
 
 #[test]
@@ -204,42 +220,49 @@ fn scans_mbr_logical_partitions_without_exposing_extended_container() {
 
 #[test]
 fn scans_gpt_single_partition() {
-    let mut reader = MemReader::new(128);
-    write_protective_gpt_header(&mut reader, 127, 34, 125, 2, 4);
+    // A flashed image keeps its original GPT layout on a larger device.
+    for disk_blocks in [128, 256] {
+        let mut reader = MemReader::new(disk_blocks);
+        write_protective_gpt_header(&mut reader, 127, 34, 125, 2, 4);
 
-    let entry = &mut reader.block_mut(2)[0..128];
-    entry[0] = 0xaf;
-    entry[16..32].copy_from_slice(&[
-        0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd,
-        0xef,
-    ]);
-    entry[32..40].copy_from_slice(&40u64.to_le_bytes());
-    entry[40..48].copy_from_slice(&63u64.to_le_bytes());
-    let name = "root";
-    for (idx, unit) in name.encode_utf16().enumerate() {
-        entry[56 + idx * 2..58 + idx * 2].copy_from_slice(&unit.to_le_bytes());
+        let entry = &mut reader.block_mut(2)[0..128];
+        entry[0] = 0xaf;
+        entry[16..32].copy_from_slice(&[
+            0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
+        ]);
+        entry[32..40].copy_from_slice(&40u64.to_le_bytes());
+        entry[40..48].copy_from_slice(&63u64.to_le_bytes());
+        let name = "root";
+        for (idx, unit) in name.encode_utf16().enumerate() {
+            entry[56 + idx * 2..58 + idx * 2].copy_from_slice(&unit.to_le_bytes());
+        }
+
+        seal_primary_gpt(&mut reader);
+        let scan = scan_volumes(&mut reader, DiskId(3)).unwrap();
+        let volumes = &scan.volumes;
+
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].disk_id, DiskId(3));
+        assert_eq!(volumes[0].partition_id, PartitionId(1));
+        assert_eq!(volumes[0].table_kind, PartitionTableKind::Gpt);
+        assert_eq!(volumes[0].region, BlockRegion::new(40, 24));
+        assert_eq!(
+            volumes[0].partuuid.as_ref().map(|uuid| uuid.0.as_str()),
+            Some("76543210-ba98-fedc-0123-456789abcdef")
+        );
+        assert_eq!(
+            volumes[0].partlabel.as_ref().map(|label| label.0.as_str()),
+            Some("root")
+        );
+        assert_eq!(
+            scan.table_metadata,
+            vec![
+                BlockRegion::new(0, 34),
+                BlockRegion::new(126, disk_blocks as u64 - 126)
+            ]
+        );
     }
-
-    let scan = scan_volumes(&mut reader, DiskId(3)).unwrap();
-    let volumes = &scan.volumes;
-
-    assert_eq!(volumes.len(), 1);
-    assert_eq!(volumes[0].disk_id, DiskId(3));
-    assert_eq!(volumes[0].partition_id, PartitionId(1));
-    assert_eq!(volumes[0].table_kind, PartitionTableKind::Gpt);
-    assert_eq!(volumes[0].region, BlockRegion::new(40, 24));
-    assert_eq!(
-        volumes[0].partuuid.as_ref().map(|uuid| uuid.0.as_str()),
-        Some("76543210-ba98-fedc-0123-456789abcdef")
-    );
-    assert_eq!(
-        volumes[0].partlabel.as_ref().map(|label| label.0.as_str()),
-        Some("root")
-    );
-    assert_eq!(
-        scan.table_metadata,
-        vec![BlockRegion::new(0, 34), BlockRegion::new(126, 2)]
-    );
 }
 
 #[test]
@@ -287,4 +310,18 @@ fn gpt_entry_array_must_fit_disk() {
     let err = scan_volumes(&mut reader, DiskId(4)).unwrap_err();
 
     assert_eq!(err, Error::InvalidPartitionTable);
+}
+
+/// Rejects a corrupted primary CRC instead of exposing protective-MBR contents
+/// or unvalidated partition entries as usable volumes.
+#[test]
+fn gpt_corruption_is_not_published_as_partitions() {
+    let mut reader = MemReader::new(128);
+    write_protective_gpt_header(&mut reader, 127, 34, 125, 2, 4);
+    reader.block_mut(1)[16] ^= 1;
+    // A protective MBR must not publish a partition view with invalid CRCs.
+    assert_eq!(
+        scan_volumes(&mut reader, DiskId(12)),
+        Err(Error::InvalidPartitionTable)
+    );
 }

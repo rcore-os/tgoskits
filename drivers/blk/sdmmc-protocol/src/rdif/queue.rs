@@ -78,8 +78,14 @@ where
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {
-    pub(super) fn new(card: SdMmcCard<H>, config: super::config::BlockConfig, id: usize) -> Self {
+    pub(super) fn new(
+        card: SdMmcCard<H>,
+        mut config: super::config::BlockConfig,
+        id: usize,
+    ) -> Self {
         let supports_flush = queue_supports_flush(card.kind(), None);
+        // Only a successfully activated accelerator can publish native TRIM.
+        config.limits.max_write_zeroes_blocks = 0;
         let legacy_limits = config.limits;
         Self {
             card,
@@ -204,7 +210,31 @@ where
                         rca: info.rca,
                         card_depth: ext_csd.command_queue_depth(),
                         cache_enabled: self.cache_enabled,
+                        trim: info.cid.as_ref().and_then(|cid| {
+                            super::MmcTrimSupport::for_card(ext_csd, cid, info.high_capacity)
+                        }),
                     };
+                    if activation.trim.is_none() {
+                        // Preserve the rejected card facts before queue
+                        // activation collapses unsupported native zeroes to
+                        // a zero limit. CID prefix excludes the serial number.
+                        let registers = ext_csd.as_bytes();
+                        log::debug!(
+                            "sdmmc: native zero unavailable: device={} high_capacity={} \
+                             ext_csd_rev={} sec_features={:#04x} erased_mem_cont={:#04x} \
+                             erase_group_def={:#04x} hc_erase_grp_size={} trim_mult={} \
+                             cid_prefix={:02x?}",
+                            self.config.name(),
+                            info.high_capacity,
+                            ext_csd.revision(),
+                            registers[crate::cmd::ext_csd::SEC_FEATURE_SUPPORT],
+                            registers[crate::cmd::ext_csd::ERASED_MEM_CONT],
+                            registers[crate::cmd::ext_csd::ERASE_GROUP_DEF],
+                            registers[crate::cmd::ext_csd::HC_ERASE_GRP_SIZE],
+                            registers[crate::cmd::ext_csd::TRIM_MULT],
+                            info.cid.as_ref().map(|cid| &cid.raw[..9]),
+                        );
+                    }
                     let request = self
                         .card
                         .submit_mmc_switch(
@@ -337,6 +367,7 @@ where
         if self.accelerator.is_some() {
             self.config.limits = self.legacy_limits;
         }
+        self.config.limits.max_write_zeroes_blocks = 0;
     }
 
     fn initialization_pending(&self) -> bool {
@@ -444,6 +475,7 @@ where
         match request.op {
             RequestOp::Read | RequestOp::Write => self.submit_data(request),
             RequestOp::Flush => self.submit_flush(request),
+            RequestOp::WriteZeroes => Err(SubmitError::new(BlkError::NotSupported, request)),
         }
     }
 

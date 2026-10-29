@@ -1,3 +1,8 @@
+//! Root-device selection, preparation and publication for the embedding OS.
+//! The growth submodule completes eligible disk changes before a root is shared.
+
+mod grow;
+
 use alloc::{
     format,
     string::{String, ToString},
@@ -9,6 +14,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 #[cfg(axtest)]
 use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{Location, NodePermission, NodeType, VfsError};
+#[cfg(feature = "ext4")]
+use rsext4::{endian::DiskFormat, superblock::Ext4Superblock};
 
 use crate::{
     BlockDeviceHandle, BlockRegion, FilesystemKind,
@@ -98,10 +105,16 @@ pub fn root_block_stats() -> Option<(RootBlockIdentity, crate::BlockIoStats)> {
 /// Root filesystem selector parsed from boot arguments.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RootSpec {
+    /// Zero-based discovered disk index selected by a Linux-style device path.
     pub disk_index: Option<usize>,
+    /// Zero-based partition index, or None for an explicitly selected raw disk.
     pub partition_index: Option<usize>,
+    /// Partition-table identity from PARTUUID=, distinct from a filesystem UUID.
     pub partuuid: Option<String>,
+    /// Exact partition-table name from PARTLABEL=.
     pub partlabel: Option<String>,
+    /// Filesystem identity from UUID=, compared without ASCII case differences.
+    pub uuid: Option<String>,
 }
 
 impl RootSpec {
@@ -114,7 +127,16 @@ impl RootSpec {
         Self::parse(&root)
     }
 
+    /// Parses one root value without the root= prefix. Unknown forms leave no
+    /// selector; the boot entry rejects them instead of choosing a fallback.
     pub fn parse(root: &str) -> Self {
+        if let Some(uuid) = root.strip_prefix("UUID=") {
+            return Self {
+                uuid: Some(uuid.to_string()),
+                ..Self::default()
+            };
+        }
+
         if let Some(partuuid) = root.strip_prefix("PARTUUID=") {
             return Self {
                 partuuid: Some(partuuid.to_string()),
@@ -143,14 +165,24 @@ impl RootSpec {
         Self::default()
     }
 
+    /// Reports whether this specification authorizes an explicit disk-root
+    /// lookup, including an identity whose matching device has not been found.
     pub fn has_explicit_selector(&self) -> bool {
-        self.disk_index.is_some() || self.partuuid.is_some() || self.partlabel.is_some()
+        self.disk_index.is_some()
+            || self.partuuid.is_some()
+            || self.partlabel.is_some()
+            || self.uuid.is_some()
     }
 }
 
+/// One root candidate from the existing disk/partition discovery sequence.
 struct RootCandidate {
+    /// Index of the physical disk in the installed block-device enumeration.
     pub disk_index: usize,
+    /// Detected partition, or None for a whole-device filesystem.
     pub partition: Option<DetectedPartition>,
+    /// On-disk filesystem identity, read only for a UUID root request.
+    filesystem_uuid: Option<String>,
 }
 
 struct DiscoveredDisk {
@@ -327,7 +359,11 @@ impl PreparedRoot {
     }
 }
 
-/// Prepares a disk root using already registered block devices.
+/// Prepares a disk root using already registered block devices, growing an
+/// explicitly selected writable last GPT/ext4 partition before publication.
+/// `bootargs` supplies root selection and ro/rw policy before `--`. Returns an
+/// unpublished root context; missing devices, invalid metadata and failed growth
+/// propagate as errors rather than exposing an incompletely prepared filesystem.
 pub fn prepare_block_root(bootargs: Option<&str>) -> axfs_ng_vfs::VfsResult<PreparedRoot> {
     let devices = BlockRuntime::installed_devices().ok_or(VfsError::NoSuchDevice)?;
     prepare_root(devices.iter().cloned(), bootargs)
@@ -376,6 +412,10 @@ pub fn block_device_nodes() -> axfs_ng_vfs::VfsResult<Vec<BlockDeviceNode>> {
     Ok(nodes)
 }
 
+/// Selects the root from `block_devs` using `bootargs`, completes eligible growth,
+/// then constructs its unpublished filesystem/context from refreshed geometry.
+/// Selection and selected-root I/O errors abort before the root context is
+/// handed to an OS. Unreadable unrelated discovery candidates are skipped.
 fn prepare_root(
     block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
     bootargs: Option<&str>,
@@ -385,14 +425,15 @@ fn prepare_root(
         return Err(VfsError::InvalidInput);
     }
     let mut disks = collect_disks(block_devs).map_err(crate::error::block_error_to_vfs_error)?;
-    let candidates = collect_root_candidates(&disks);
+    let candidates = collect_root_candidates(&disks, &root_spec)?;
     let (selected_disk_index, selected_partition) =
         select_root_candidate(&candidates, &root_spec).ok_or(VfsError::NoSuchDevice)?;
     let selected_disk_pos = disks
         .iter()
         .position(|disk| disk.disk_index == selected_disk_index)
         .ok_or(VfsError::NoSuchDevice)?;
-    let selected = disks.swap_remove(selected_disk_pos);
+    let mut selected = disks.swap_remove(selected_disk_pos);
+    grow::grow_selected_root(&mut selected, selected_partition, &root_spec, bootargs)?;
     let partition = selected_partition
         .and_then(|index| selected.partitions.iter().find(|p| p.info.index == index));
     info!(
@@ -429,17 +470,7 @@ fn prepare_root(
         axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source)
             .root_location(),
     );
-    if bootargs
-        .and_then(|args| {
-            crate::bootargs::tokens(args)
-                .into_iter()
-                .take_while(|word| word != "--")
-                .filter(|word| matches!(word.as_str(), "ro" | "rw"))
-                .last()
-        })
-        .as_deref()
-        == Some("ro")
-    {
+    if root_is_readonly(bootargs) {
         context.root_dir().mountpoint().set_readonly(true);
     }
     mount_additional_partitions(context.root_dir(), &selected, selected_partition);
@@ -751,6 +782,9 @@ pub fn init_root_from_rdif_sources_with_policy(
     )
 }
 
+/// Discovers volumes and filesystem kinds on `block_devs`. An unusable disk or
+/// filesystem probe does not prevent selection on another device; allocation
+/// failures still abort discovery rather than masquerading as a missing root.
 fn collect_disks(
     block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
 ) -> crate::BlockResult<Vec<DiscoveredDisk>> {
@@ -763,49 +797,64 @@ fn collect_disks(
         let mut dev = match boxed_native_handle_block_device(dev) {
             Ok(device) => device,
             Err(error) => {
+                if error == crate::BlockError::NoMemory {
+                    return Err(error);
+                }
                 warn!("failed to attach block cache to disk {disk_index}: {error:?}");
                 continue;
             }
         };
-        let device_name = dev.name().to_string();
-        let mut reader = VolumeReader::new(&mut *dev);
-        match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
-            Ok(scan) => {
-                let (raw_filesystem, _raw_filesystem_region, _filesystem_probe_unknown, partitions) =
-                    collect_partitions(&mut *dev, scan.volumes);
-                log_disk(disk_index, &device_name, &partitions);
-                #[cfg(axtest)]
-                {
-                    let protected = axtest_protected_regions(
-                        &partitions,
-                        _raw_filesystem_region,
-                        _filesystem_probe_unknown,
-                        &scan.table_metadata,
-                    );
-                    axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, protected));
-                }
-                disks.push(DiscoveredDisk {
-                    disk_index,
-                    handle,
-                    raw_filesystem,
-                    partitions,
-                });
-            }
-            Err(err) => {
-                warn!(
-                    "  failed to scan partitions on block device {} ({}): {err:?}",
-                    disk_index, device_name
-                );
-                #[cfg(axtest)]
-                axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, None));
-            }
+        let Some(scan) = scan_device_volumes(&mut *dev, disk_index)? else {
+            #[cfg(axtest)]
+            axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, None));
+            continue;
+        };
+        let (raw_filesystem, _raw_filesystem_region, _filesystem_probe_unknown, partitions) =
+            collect_partitions(&mut *dev, scan.volumes);
+        log_disk(disk_index, dev.name(), &partitions);
+        #[cfg(axtest)]
+        {
+            let protected = axtest_protected_regions(
+                &partitions,
+                _raw_filesystem_region,
+                _filesystem_probe_unknown,
+                &scan.table_metadata,
+            );
+            axtest_disk_regions.push((Arc::as_ptr(&handle) as usize, protected));
         }
+        disks.push(DiscoveredDisk {
+            disk_index,
+            handle,
+            raw_filesystem,
+            partitions,
+        });
     }
 
     #[cfg(axtest)]
     AXTEST_DISK_PROTECTED_REGIONS.call_once(|| axtest_disk_regions);
 
     Ok(disks)
+}
+
+/// Scans one whole `device`, labeling diagnostics and volumes with `disk_index`.
+/// Unreadable or malformed media return None so another disk can supply the
+/// requested root. Metadata-allocation failures remain fatal to discovery.
+fn scan_device_volumes(
+    device: &mut dyn FsBlockDevice,
+    disk_index: usize,
+) -> crate::BlockResult<Option<crate::volume::VolumeScan>> {
+    match scan_volumes(&mut VolumeReader::new(device), DiskId(disk_index as u64)) {
+        Ok(scan) => Ok(Some(scan)),
+        Err(VolumeError::NoMemory) => Err(crate::BlockError::NoMemory),
+        Err(error) => {
+            warn!(
+                "  failed to scan partitions on block device {} ({}): {error:?}",
+                disk_index,
+                device.name()
+            );
+            Ok(None)
+        }
+    }
 }
 
 fn collect_partitions(
@@ -950,27 +999,195 @@ fn table_kind_from_volume(kind: VolumeTableKind) -> PartitionTableKind {
     }
 }
 
-fn collect_root_candidates(disks: &[DiscoveredDisk]) -> Vec<RootCandidate> {
+/// Reads the identity of an already detected `kind` within device-block `region`.
+/// Existing identities are never created or changed. ext4 uses its checksummed
+/// superblock UUID; FAT uses the Linux volume-serial spelling. Unidentified
+/// filesystems and absent identities return None. Bounds, malformed metadata
+/// and I/O errors are returned to the caller, which decides whether this
+/// filesystem remains a usable discovery candidate.
+fn read_filesystem_uuid(
+    device: &mut dyn FsBlockDevice,
+    region: BlockRegion,
+    kind: Option<FilesystemKind>,
+) -> axfs_ng_vfs::VfsResult<Option<String>> {
+    #[cfg(not(any(feature = "ext4", feature = "fat")))]
+    let _ = (device, region);
+    match kind {
+        #[cfg(feature = "ext4")]
+        Some(FilesystemKind::Ext4) => {
+            let bytes = read_filesystem_bytes(device, region, 1024, rsext4::SUPERBLOCK_SIZE)?;
+            let superblock = Ext4Superblock::from_disk_bytes(&bytes);
+            if superblock.s_magic != rsext4::EXT4_SUPER_MAGIC {
+                return Err(VfsError::InvalidData);
+            }
+            superblock
+                .verify_superblock()
+                .map_err(|_| VfsError::InvalidData)?;
+            let uuid = u128::from_be_bytes(superblock.s_uuid);
+            if uuid == 0 {
+                return Ok(None);
+            }
+            Ok(Some(format!(
+                "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+                (uuid >> 96) as u32,
+                (uuid >> 80) as u16,
+                (uuid >> 64) as u16,
+                (uuid >> 48) as u16,
+                uuid & 0xffff_ffff_ffff,
+            )))
+        }
+        #[cfg(feature = "fat")]
+        Some(FilesystemKind::Fat) => {
+            let boot = read_filesystem_bytes(device, region, 0, 512)?;
+            if boot[510..512] != [0x55, 0xaa] {
+                return Err(VfsError::InvalidData);
+            }
+            let offset = if &boot[82..87] == b"FAT32" {
+                67
+            } else if &boot[54..59] == b"FAT16" {
+                if !matches!(boot[38], 0x28 | 0x29) {
+                    return Ok(None);
+                }
+                39
+            } else {
+                return Err(VfsError::InvalidData);
+            };
+            let serial = u32::from_le_bytes(
+                boot[offset..offset + 4]
+                    .try_into()
+                    .map_err(|_| VfsError::InvalidData)?,
+            );
+            Ok((serial != 0).then(|| format!("{:04X}-{:04X}", serial >> 16, serial & 0xffff)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Reads `length` bytes at filesystem-relative `offset`, rounding the device
+/// request to full logical sectors. All arithmetic and `region` bounds are
+/// checked before I/O; the returned buffer contains exactly the requested bytes.
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn read_filesystem_bytes(
+    device: &mut dyn FsBlockDevice,
+    region: BlockRegion,
+    offset: usize,
+    length: usize,
+) -> axfs_ng_vfs::VfsResult<Vec<u8>> {
+    let block_size = device.block_size();
+    if block_size < 512 || region.end_lba > device.num_blocks() {
+        return Err(VfsError::InvalidInput);
+    }
+    let end = offset.checked_add(length).ok_or(VfsError::InvalidInput)?;
+    let first = offset / block_size;
+    let last = end.div_ceil(block_size);
+    if last as u64 > region.num_blocks() {
+        return Err(VfsError::InvalidInput);
+    }
+    let start = region
+        .start_lba
+        .checked_add(first as u64)
+        .ok_or(VfsError::InvalidInput)?;
+    let size = (last - first)
+        .checked_mul(block_size)
+        .ok_or(VfsError::InvalidInput)?;
+    let mut bytes = alloc::vec![0; size];
+    device
+        .read_block(start, &mut bytes)
+        .map_err(crate::block_error_to_vfs_error)?;
+    let within = offset % block_size;
+    bytes.copy_within(within..within + length, 0);
+    bytes.truncate(length);
+    Ok(bytes)
+}
+
+/// Collects candidates from `disks`, probing identities only when `spec` asks
+/// for UUID selection. Unreadable or invalid identities exclude only that
+/// candidate; missing and duplicate readable identities are rejected by the
+/// selector. Allocation failures abort instead of hiding an incomplete lookup.
+fn collect_root_candidates(
+    disks: &[DiscoveredDisk],
+    spec: &RootSpec,
+) -> axfs_ng_vfs::VfsResult<Vec<RootCandidate>> {
     let mut candidates = Vec::new();
 
     for disk in disks {
-        if disk.partitions.is_empty() {
-            candidates.push(RootCandidate {
-                disk_index: disk.disk_index,
-                partition: None,
-            });
-            continue;
-        }
+        let device = match spec
+            .uuid
+            .as_ref()
+            .map(|_| boxed_native_handle_block_device(disk.handle.clone()))
+            .transpose()
+        {
+            Ok(device) => device,
+            Err(crate::BlockError::NoMemory) => return Err(VfsError::NoMemory),
+            Err(error) => {
+                warn!(
+                    "failed to attach UUID probe to disk {}: {error:?}",
+                    disk.disk_index
+                );
+                continue;
+            }
+        };
+        candidates.extend(collect_device_root_candidates(
+            device,
+            disk.disk_index,
+            disk.raw_filesystem,
+            &disk.partitions,
+        )?);
+    }
+    Ok(candidates)
+}
 
-        for partition in &disk.partitions {
-            candidates.push(RootCandidate {
-                disk_index: disk.disk_index,
-                partition: Some(partition.clone()),
-            });
+/// Builds candidates for one disk's discovered `partitions` or raw filesystem.
+/// `device` supplies read-only identity access only for UUID lookup; None keeps
+/// the other selectors free of additional reads. `disk_index` preserves device
+/// numbering across skipped disks. Invalid/unreadable identities exclude only
+/// their candidate, while allocation failures abort the lookup.
+fn collect_device_root_candidates(
+    mut device: Option<alloc::boxed::Box<dyn FsBlockDevice>>,
+    disk_index: usize,
+    raw_filesystem: Option<FilesystemKind>,
+    partitions: &[DetectedPartition],
+) -> axfs_ng_vfs::VfsResult<Vec<RootCandidate>> {
+    let mut candidates = Vec::new();
+    let mut add_candidate = |partition: Option<DetectedPartition>| {
+        let mut candidate = RootCandidate {
+            disk_index,
+            partition,
+            filesystem_uuid: None,
+        };
+        if let Some(device) = device.as_deref_mut() {
+            let (region, filesystem) = candidate.partition.as_ref().map_or_else(
+                || {
+                    (
+                        BlockRegion::from_num_blocks(device.num_blocks()),
+                        raw_filesystem,
+                    )
+                },
+                |partition| (partition.info.region, partition.filesystem),
+            );
+            candidate.filesystem_uuid = match read_filesystem_uuid(device, region, filesystem) {
+                Ok(identity) => identity,
+                Err(VfsError::NoMemory) => return Err(VfsError::NoMemory),
+                Err(error) => {
+                    warn!(
+                        "skipping UUID probe for {}: {error:?}",
+                        candidate.description()
+                    );
+                    return Ok(());
+                }
+            };
+        }
+        candidates.push(candidate);
+        Ok(())
+    };
+    if partitions.is_empty() {
+        add_candidate(None)?;
+    } else {
+        for partition in partitions {
+            add_candidate(Some(partition.clone()))?;
         }
     }
-
-    candidates
+    Ok(candidates)
 }
 
 fn select_root_candidate(
@@ -988,6 +1205,30 @@ fn select_explicit_root(
     candidates: &[RootCandidate],
     spec: &RootSpec,
 ) -> Option<(usize, Option<usize>)> {
+    if let Some(uuid) = &spec.uuid {
+        let mut matches = candidates.iter().filter(|candidate| {
+            candidate
+                .filesystem_uuid
+                .as_ref()
+                .is_some_and(|identity| identity.eq_ignore_ascii_case(uuid))
+        });
+        let Some(candidate) = matches.next() else {
+            warn!("configured root filesystem UUID was not found");
+            return None;
+        };
+        if matches.next().is_some() {
+            warn!("configured root filesystem UUID matches multiple devices");
+            return None;
+        }
+        info!("  matched root by UUID on {}", candidate.description());
+        return Some((
+            candidate.disk_index,
+            candidate
+                .partition
+                .as_ref()
+                .map(|partition| partition.info.index),
+        ));
+    }
     for candidate in candidates {
         if let Some(partition) = candidate.partition.as_ref() {
             if let Some(partuuid) = &spec.partuuid
@@ -1281,6 +1522,17 @@ const fn filesystem_name(fs: FilesystemKind) -> &'static str {
     }
 }
 
+/// Shares the last ro/rw token before `--` between mounting and growth policy.
+/// Missing options retain the default writable policy.
+fn root_is_readonly(bootargs: Option<&str>) -> bool {
+    crate::bootargs::tokens(bootargs.unwrap_or(""))
+        .into_iter()
+        .take_while(|word| word != "--")
+        .filter(|word| matches!(word.as_str(), "ro" | "rw"))
+        .last()
+        .is_some_and(|word| word == "ro")
+}
+
 fn root_value(bootargs: &str) -> Option<String> {
     crate::bootargs::tokens(bootargs)
         .into_iter()
@@ -1348,19 +1600,16 @@ fn parse_usize(text: &str) -> Option<usize> {
         .flatten()
 }
 
-#[allow(dead_code)]
-pub(crate) fn split_root_candidates<'a>(root: &'a str, out: &mut Vec<&'a str>) {
-    out.extend(root.split(',').filter(|candidate| !candidate.is_empty()));
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
     fn missing_requested_root_returns_an_error_without_publishing() {
-        assert!(matches!(
-            super::prepare_root(core::iter::empty(), Some("root=/dev/sda")),
-            Err(axfs_ng_vfs::VfsError::NoSuchDevice)
-        ));
+        for bootargs in ["root=/dev/sda", "root=UUID=missing"] {
+            assert!(matches!(
+                super::prepare_root(core::iter::empty(), Some(bootargs)),
+                Err(axfs_ng_vfs::VfsError::NoSuchDevice)
+            ));
+        }
     }
 
     use core::{any::Any, time::Duration};
@@ -1453,6 +1702,7 @@ mod tests {
         ));
     }
 
+    #[derive(Clone)]
     struct FlakyMetadataDevice {
         remaining_failures: usize,
         raw_probe_failures: usize,
@@ -1823,7 +2073,7 @@ mod tests {
             }
 
             let start = block_id as usize * self.block_size();
-            let end = start + self.block_size();
+            let end = start + buf.len();
             let block = self
                 .data
                 .get(start..end)
@@ -1867,6 +2117,7 @@ mod tests {
     ) -> RootCandidate {
         RootCandidate {
             disk_index: 0,
+            filesystem_uuid: None,
             partition: Some(DetectedPartition {
                 info: PartitionInfo {
                     index,
@@ -1889,6 +2140,161 @@ mod tests {
             name: Some(name.to_string()),
             part_uuid: None,
             bootable: false,
+        }
+    }
+
+    /// Resolves identities through production discovery and candidate building,
+    /// isolates bad media/partition reads, and rejects missing/duplicate roots.
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    #[test]
+    fn uuid_root_lookup_uses_filesystem_identity_and_rejects_ambiguity() {
+        for (kind, serial_offset, expected) in [
+            #[cfg(feature = "ext4")]
+            (
+                FilesystemKind::Ext4,
+                0,
+                "00010203-0405-0607-0809-0a0b0c0d0e0f",
+            ),
+            #[cfg(feature = "fat")]
+            (FilesystemKind::Fat, 39, "DEAD-BEEF"),
+            #[cfg(feature = "fat")]
+            (FilesystemKind::Fat, 67, "DEAD-BEEF"),
+        ] {
+            let mut device = FlakyMetadataDevice::new(0);
+            let region = BlockRegion::new(3, 10);
+            let base = region.start_lba as usize * 512;
+            match kind {
+                FilesystemKind::Ext4 => {
+                    device.data[base + 1024 + 0x38..base + 1024 + 0x3a]
+                        .copy_from_slice(&0xef53u16.to_le_bytes());
+                    for index in 0..16 {
+                        device.data[base + 1024 + 0x68 + index] = index as u8;
+                    }
+                }
+                FilesystemKind::Fat => {
+                    device.data[base + 510..base + 512].copy_from_slice(&[0x55, 0xaa]);
+                    let magic = if serial_offset == 67 { 82 } else { 54 };
+                    let name = if serial_offset == 67 {
+                        b"FAT32"
+                    } else {
+                        b"FAT16"
+                    };
+                    device.data[base + magic..base + magic + 5].copy_from_slice(name);
+                    device.data[base + serial_offset - 1] = 0x29;
+                    device.data[base + serial_offset..base + serial_offset + 4]
+                        .copy_from_slice(&0xdead_beefu32.to_le_bytes());
+                }
+            }
+            let identity = read_filesystem_uuid(&mut device, region, Some(kind)).unwrap();
+            assert_eq!(identity.as_deref(), Some(expected));
+            let spec =
+                RootSpec::parse_bootargs(Some(&format!("root=UUID={}", expected.to_uppercase())));
+
+            // A real MBR makes the identity probe use the discovered bounds,
+            // rather than a candidate assembled by the test itself.
+            device.data[450] = 0x83;
+            device.data[454..458].copy_from_slice(&(region.start_lba as u32).to_le_bytes());
+            device.data[458..462].copy_from_slice(&(region.num_blocks() as u32).to_le_bytes());
+            let mut broken_gpt = FlakyMetadataDevice::new(0);
+            broken_gpt.data[450] = 0xee;
+            broken_gpt.data[454..458].copy_from_slice(&1u32.to_le_bytes());
+            broken_gpt.data[458..462].copy_from_slice(&15u32.to_le_bytes());
+            let mut candidates = Vec::new();
+            for (disk_index, mut source, fail_identity_read) in [
+                (0, broken_gpt, false),
+                (1, device.clone(), true),
+                (7, device.clone(), false),
+            ] {
+                let Some(scan) = scan_device_volumes(&mut source, disk_index).unwrap() else {
+                    continue;
+                };
+                let (raw, _, _, partitions) = collect_partitions(&mut source, scan.volumes);
+                if fail_identity_read {
+                    source.remaining_failures = 1;
+                }
+                candidates.extend(
+                    collect_device_root_candidates(
+                        Some(alloc::boxed::Box::new(source)),
+                        disk_index,
+                        raw,
+                        &partitions,
+                    )
+                    .unwrap(),
+                );
+            }
+            assert_eq!(
+                select_root_candidate(&candidates, &spec),
+                Some((7, Some(0)))
+            );
+
+            // A failed identity read on one partition must not exclude a
+            // readable matching sibling on that same physical device.
+            let mut siblings = device.clone();
+            siblings.data.resize(32 * 512, 0);
+            siblings.data[19 * 512..29 * 512].copy_from_slice(&device.data[base..base + 10 * 512]);
+            siblings.data[466] = 0x83;
+            siblings.data[470..474].copy_from_slice(&19u32.to_le_bytes());
+            siblings.data[474..478].copy_from_slice(&10u32.to_le_bytes());
+            let scan = scan_device_volumes(&mut siblings, 9).unwrap().unwrap();
+            let (raw, _, _, partitions) = collect_partitions(&mut siblings, scan.volumes);
+            siblings.remaining_failures = 1;
+            let sibling_candidates = collect_device_root_candidates(
+                Some(alloc::boxed::Box::new(siblings)),
+                9,
+                raw,
+                &partitions,
+            )
+            .unwrap();
+            assert_eq!(
+                select_root_candidate(&sibling_candidates, &spec),
+                Some((9, Some(1)))
+            );
+
+            candidates[0].disk_index = 3;
+            assert_eq!(
+                select_root_candidate(&candidates, &spec),
+                Some((3, Some(0)))
+            );
+            candidates[0].partition = None;
+            assert_eq!(select_root_candidate(&candidates, &spec), Some((3, None)));
+            let mut duplicate = mbr_partition(1, Some(kind), true);
+            duplicate.filesystem_uuid = Some(expected.to_string());
+            candidates.push(duplicate);
+            assert_eq!(select_root_candidate(&candidates, &spec), None);
+            candidates[0].filesystem_uuid = None;
+            candidates[1].filesystem_uuid = None;
+            assert_eq!(select_root_candidate(&candidates, &spec), None);
+            device.remaining_failures = 1;
+            assert_eq!(
+                read_filesystem_uuid(&mut device, region, Some(kind)),
+                Err(VfsError::Io)
+            );
+            assert_eq!(
+                read_filesystem_uuid(
+                    &mut device,
+                    BlockRegion::new(region.start_lba, 0),
+                    Some(kind)
+                ),
+                Err(VfsError::InvalidInput)
+            );
+            let (offset, length) = match kind {
+                FilesystemKind::Ext4 => (1024 + 0x68, 16),
+                FilesystemKind::Fat => (serial_offset, 4),
+            };
+            device.data[base + offset..base + offset + length].fill(0);
+            assert_eq!(
+                read_filesystem_uuid(&mut device, region, Some(kind)).unwrap(),
+                None
+            );
+            let magic = match kind {
+                FilesystemKind::Ext4 => 1024 + 0x38,
+                FilesystemKind::Fat => 510,
+            };
+            device.data[base + magic] = 0;
+            assert_eq!(
+                read_filesystem_uuid(&mut device, region, Some(kind)),
+                Err(VfsError::InvalidData)
+            );
         }
     }
 
@@ -2117,6 +2523,7 @@ mod tests {
         let candidates = [RootCandidate {
             disk_index: 0,
             partition: None,
+            filesystem_uuid: None,
         }];
         let (disk_index, partition_index) =
             select_default_root(&candidates).expect("raw root should be selected");

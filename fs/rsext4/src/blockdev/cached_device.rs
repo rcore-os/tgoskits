@@ -44,6 +44,29 @@ pub(super) struct BlockDev<B: BlockIo> {
 }
 
 impl<B: BlockIo> BlockDev<B> {
+    /// Clears unpublished filesystem extents together. All sector translations
+    /// are checked before submission; a held mutable edit cannot be discarded.
+    /// The held clean alias is invalidated even on partial device failure.
+    pub(super) fn write_zeroes(&mut self, ranges: &[(AbsoluteBN, u64)]) -> Ext4Result<()> {
+        if self.held.dirty {
+            return Err(Ext4Error::busy().with_operation("device:zero_with_unpublished_edit"));
+        }
+        if self.capabilities.read_only {
+            return Err(Ext4Error::read_only());
+        }
+        let mut sectors = alloc::vec::Vec::new();
+        sectors
+            .try_reserve_exact(ranges.len())
+            .map_err(|_| Ext4Error::no_memory())?;
+        for &(block, count) in ranges {
+            let count = u32::try_from(count).map_err(|_| Ext4Error::overflow())?;
+            let (start, count, _) = self.filesystem_io(block, count)?;
+            sectors.push(crate::io::SectorRange { start, count });
+        }
+        self.held.block_id = None;
+        self.dev.write_zeroes(&sectors)
+    }
+
     /// Creates a new cached block device wrapper.
     pub fn new(dev: B) -> Self {
         let geometry = dev.geometry();

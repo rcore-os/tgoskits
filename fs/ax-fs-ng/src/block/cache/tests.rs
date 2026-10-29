@@ -554,6 +554,67 @@ fn failed_direct_write_invalidates_partially_updated_folios() {
     );
 }
 
+#[cfg(feature = "ext4")]
+#[test]
+fn zero_ranges_preserve_dirty_neighbors_and_invalidate_partial_results() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    state.lock().unwrap().storage.fill(0xa5);
+    let cached = buffered(KEY_A + 30, device);
+    // Partition-relative extents must be translated before reaching the cache.
+    let mut partition = RegionBlockDevice::new(cached, BlockRegion::new(8, 24));
+    let ranges = [BlockRegion::new(2, 2), BlockRegion::new(10, 2)];
+    let mut block = [0u8; 512];
+    partition.read_block(2, &mut block).unwrap();
+    partition.read_block(10, &mut block).unwrap();
+    partition.write_block(1, &[0x77; 512]).unwrap();
+    let writes_before = count_ops(&state, |op| matches!(op, IoOp::Write { .. }));
+    assert!(
+        partition
+            .write_zeroes(&[ranges[0], BlockRegion::new(24, 1)])
+            .is_err()
+    );
+    assert_eq!(
+        count_ops(&state, |op| matches!(op, IoOp::Write { .. })),
+        writes_before
+    );
+
+    // A failed pre-writeback must keep the dirty neighbor authoritative.
+    state.lock().unwrap().fail_writes = true;
+    assert_eq!(partition.write_zeroes(&ranges), Err(BlockError::Io));
+    state.lock().unwrap().fail_writes = false;
+    partition.read_block(1, &mut block).unwrap();
+    assert_eq!(block, [0x77; 512]);
+    partition.flush().unwrap();
+
+    // The first extent is partly written before failure. Every covered cache
+    // folio must be invalidated, including the second unattempted extent.
+    state.lock().unwrap().partially_commit_blocks = Some(1);
+    let reads_before = count_ops(&state, IoOp::is_read);
+    assert_eq!(partition.write_zeroes(&ranges), Err(BlockError::Io));
+    partition.read_block(2, &mut block).unwrap();
+    assert_eq!(block, [0; 512]);
+    partition.read_block(3, &mut block).unwrap();
+    assert_eq!(block, [0xa5; 512]);
+    partition.read_block(10, &mut block).unwrap();
+    assert_eq!(block, [0xa5; 512]);
+    assert!(count_ops(&state, IoOp::is_read) >= reads_before + 2);
+
+    partition.write_zeroes(&ranges).unwrap();
+    for relative in 0..24 {
+        partition.read_block(relative, &mut block).unwrap();
+        let expected = match relative {
+            1 => 0x77,
+            2 | 3 | 10 | 11 => 0,
+            _ => 0xa5,
+        };
+        assert_eq!(block, [expected; 512], "relative block {relative}");
+    }
+    let state = state.lock().unwrap();
+    assert!(state.storage[..8 * 512].iter().all(|&byte| byte == 0xa5));
+    assert!(state.storage[32 * 512..].iter().all(|&byte| byte == 0xa5));
+}
+
 #[test]
 fn direct_read_observes_deferred_dirty_data() {
     let _registry_test = REGISTRY_TEST.lock().unwrap();

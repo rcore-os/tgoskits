@@ -1,6 +1,7 @@
 //! Journal-visible block reads, metadata images and direct data I/O.
 
 use super::*;
+use crate::blockdev::FilesystemBlockIo;
 
 impl<B: BlockIo> Jbd2Dev<B> {
     /// Writes the current internal block buffer.
@@ -114,7 +115,20 @@ impl<B: BlockIo> Jbd2Dev<B> {
     }
 
     /// Reads one block through the cached inner device.
+    /// `block_id` is an absolute filesystem block number. During recovery
+    /// validation its preview image takes precedence over ordinary journal and
+    /// home images; read errors propagate before a buffer is made available.
     pub fn read_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
+        if let Some(preview) = &mut self.replay_preview
+            && let Some((source, escaped)) = preview.index.get(block_id)
+        {
+            self.inner.read(&mut preview.buffer, source, 1)?;
+            if escaped {
+                preview.buffer[..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+            }
+            self.inner.cache_clean_block(block_id, &preview.buffer)?;
+            return Ok(());
+        }
         if self.journal_use
             && let Some(system) = self.system.as_ref()
             && let Some(update) = system
@@ -191,6 +205,8 @@ impl<B: BlockIo> Jbd2Dev<B> {
     /// Borrows the newest journal-owned image without issuing device I/O.
     /// Revoke visibility is shared with normal reads; callers must snapshot
     /// the bytes before releasing the mounted owner's exclusion.
+    /// `block` is an absolute filesystem block number. Recovery locations are
+    /// loaded through read_block instead of exposing borrowed payload images.
     pub(crate) fn visible_block_image(&self, block: AbsoluteBN) -> Option<&[u8]> {
         if !self.journal_use {
             return None;
@@ -205,13 +221,29 @@ impl<B: BlockIo> Jbd2Dev<B> {
             .map(|update| &update.1[..])
     }
 
-    /// Reads multiple blocks directly.
+    /// Reads `count` filesystem blocks at absolute `block_id` into `buf`.
+    /// Requires room for the full span, leaves any oversized-buffer tail alone,
+    /// and overlays visible journal/recovery images when journaling is active.
+    /// Bounds and I/O failures propagate; a failed read may leave partial output.
     pub fn read_blocks(
         &mut self,
         buf: &mut [u8],
         block_id: AbsoluteBN,
         count: u32,
     ) -> Ext4Result<()> {
+        if self.replay_preview.is_some() {
+            self.inner.read_window(buf.len(), block_id, count)?;
+            let size = self.inner.block_size() as usize;
+            let required = checked_block_bytes(size, count)?;
+            if buf.len() < required {
+                return Err(Ext4Error::buffer_too_small(buf.len(), required));
+            }
+            for (index, output) in buf[..required].chunks_exact_mut(size).enumerate() {
+                self.read_block(block_id.checked_add_usize(index)?)?;
+                output.copy_from_slice(self.buffer());
+            }
+            return Ok(());
+        }
         if !self.journal_use || count == 0 {
             return self.inner.read_blocks(buf, block_id, count);
         }

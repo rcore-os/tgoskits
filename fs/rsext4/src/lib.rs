@@ -50,7 +50,7 @@ pub use file::{
     read_file, read_inode_data_into, reap_unlinked_inode, rename, truncate, truncate_inode, unlink,
     write_file, write_inode_data, zero_range_inode,
 };
-pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
+pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, SectorRange, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
 pub use runtime::{
     Clock, Delay, EntropySource, Event, MmpIdentity, MountServices, MountedServices, NoopObserver,

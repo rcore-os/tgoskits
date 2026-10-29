@@ -136,3 +136,29 @@ fn new_fat(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesy
 fn new_fat(_dev: Box<dyn FsBlockDevice>, _region: BlockRegion) -> VfsResult<Filesystem> {
     Err(axfs_ng_vfs::VfsError::Unsupported)
 }
+
+/// Holds the existing mount registry across a pre-publication disk operation.
+/// Any live mount of this physical device prevents geometry changes.
+/// The closure may sleep for I/O but must not reenter mount registration: the
+/// registry lock remains held through preflight, growth and temporary unmount.
+/// `device` is the physical handle whose registered mounts are checked;
+/// `operation` runs only when none remain alive, and its result is forwarded.
+/// A live mount on any region returns `ResourceBusy` without calling it.
+#[cfg(feature = "ext4")]
+pub(crate) fn with_unmounted_device<T>(
+    device: &Arc<BlockDeviceHandle>,
+    operation: impl FnOnce() -> VfsResult<T>,
+) -> VfsResult<T> {
+    let mut registry = NATIVE_FILESYSTEMS.lock();
+    registry.retain(|entry| entry.filesystem.is_alive());
+    if registry
+        .iter()
+        .any(|entry| entry.device.ptr_eq(&Arc::downgrade(device)))
+    {
+        return Err(axfs_ng_vfs::VfsError::ResourceBusy);
+    }
+    operation()
+}
+
+#[cfg(feature = "ext4")]
+pub(crate) use ext4::{check_root_growth, grow_root_filesystem};

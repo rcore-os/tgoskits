@@ -165,6 +165,62 @@ impl ExtCsd {
         self.raw[ext_csd::CMDQ_MODE_EN] & 1 != 0
     }
 
+    /// Whether standard insecure TRIM is declared by SEC_GB_CL_EN.
+    pub fn supports_trim(&self) -> bool {
+        self.revision() >= 4 && self.raw[ext_csd::SEC_FEATURE_SUPPORT] & (1 << 4) != 0
+    }
+
+    /// Explicitly erased byte value; reserved encodings remain unknown.
+    pub fn erased_byte(&self) -> Option<u8> {
+        match self.raw[ext_csd::ERASED_MEM_CONT] {
+            0 => Some(0),
+            1 => Some(0xff),
+            _ => None,
+        }
+    }
+
+    /// Active HC erase-group size in 512-byte blocks. Legacy CSD geometry
+    /// and a zero HC size are deliberately unsupported by this accessor.
+    pub fn hc_erase_group_blocks(&self) -> Option<u32> {
+        let size = self.raw[ext_csd::HC_ERASE_GRP_SIZE];
+        if self.raw[ext_csd::ERASE_GROUP_DEF] & 1 == 0 || size == 0 {
+            return None;
+        }
+        Some(u32::from(size) * 1024)
+    }
+
+    /// Busy budget for restoring the volatile HC erase definition, if needed.
+    /// Old cards, missing HC geometry, and already selected geometry are left
+    /// unchanged. Undefined CMD6 timing uses Linux's conservative 500 ms default.
+    #[cfg(feature = "sdio")]
+    pub(crate) fn hc_erase_group_switch_timeout_ms(&self) -> Option<u64> {
+        if self.revision() < 3
+            || self.raw[ext_csd::HC_ERASE_GRP_SIZE] == 0
+            || self.raw[ext_csd::ERASE_GROUP_DEF] & 1 != 0
+        {
+            return None;
+        }
+        let multiplier = self.raw[ext_csd::GENERIC_CMD6_TIME];
+        Some(if self.revision() >= 6 && multiplier != 0 {
+            u64::from(multiplier) * 10
+        } else {
+            500
+        })
+    }
+
+    /// Records ERASE_GROUP_DEF=1 only after CMD6 and ready-state confirmation.
+    #[cfg(feature = "sdio")]
+    pub(crate) fn set_hc_erase_group_enabled(&mut self) {
+        self.raw[ext_csd::ERASE_GROUP_DEF] = 1;
+    }
+
+    /// Maximum standard TRIM busy time per affected erase group in ms.
+    /// Zero is unspecified and must not be used as an immediate deadline.
+    pub fn trim_timeout_ms(&self) -> Option<u32> {
+        let multiplier = self.raw[ext_csd::TRIM_MULT];
+        (self.revision() >= 4 && multiplier != 0).then_some(u32::from(multiplier) * 300)
+    }
+
     #[cfg(any(feature = "sdio", test))]
     pub(crate) fn set_cache_enabled(&mut self, enabled: bool) {
         if enabled {
