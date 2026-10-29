@@ -6,6 +6,16 @@ on:
     - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
+      focused:
+        description: Run only the six selected failure-reproduction pairs.
+        required: false
+        default: false
+        type: boolean
+      focused_cases:
+        description: Comma-separated focused case names; empty selects all six.
+        required: false
+        default: ""
+        type: string
       run_clippy_all:
         description: Include the full workspace Clippy audit in this run.
         required: false
@@ -29,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       revision: ${{ steps.revision.outputs.sha }}
-      matrix: ${{ steps.matrix.outputs.starry_apps_matrix }}
+      matrix: ${{ steps.focused.outputs.matrix || steps.matrix.outputs.starry_apps_matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -50,6 +60,25 @@ jobs:
           repository-owner: ${{ github.repository_owner }}
           event-name: ${{ github.event_name }}
           boolean-inputs: ${{ inputs.run_clippy_all && 'run_clippy_all' || '' }}
+
+      - name: Select focused application matrix
+        id: focused
+        if: github.event_name == 'workflow_dispatch' && inputs.focused
+        env:
+          BASE_MATRIX: ${{ steps.matrix.outputs.starry_apps_matrix }}
+          FOCUSED_CASES: ${{ inputs.focused_cases }}
+        run: |
+          set -euo pipefail
+          args=(--ci-matrix --base-matrix "$BASE_MATRIX")
+          if [[ -n "$FOCUSED_CASES" ]]; then
+            IFS=',' read -ra selected <<< "$FOCUSED_CASES"
+            for case_name in "${selected[@]}"; do
+              args+=(--case "$case_name")
+            done
+          fi
+          matrix=$(python3 scripts/test/starry_apps_focused.py "${args[@]}")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo '### Focused Apps: one independent job per selected pair' >> "$GITHUB_STEP_SUMMARY"
 
   checks:
     name: Starry Apps

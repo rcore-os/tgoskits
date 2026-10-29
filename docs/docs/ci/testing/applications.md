@@ -70,6 +70,55 @@ NixOS 行使用 `ubuntu-host`，命令在宿主上启动 `docker.io/nixos/nix:2.
 
 完整 Clippy 行执行 `cargo xtask clippy --all`，与应用行处于同一个矩阵，可以并行执行；它没有单独的 `needs` 门禁，不会阻止应用行启动。
 
+### 2.3 失败项定向复验
+
+本地使用 `scripts/test/starry_apps_focused.py` 复验运行 `40800597490` 暴露的六个
+架构/应用组合。它逐项调用现有 `cargo xtask starry app qemu -t ... --arch ...`，
+不执行其他应用、NixOS 或完整 Clippy，也不改变定时夜测的选择。
+
+GitHub 使用已有 **Starry Apps → Run workflow**，选择提交所在分支并勾选 `focused`。
+`focused_cases` 留空运行全部六项，或填写下表的选择名，以逗号分隔：
+
+```bash
+gh workflow run starry-apps.yml --ref <branch> -f focused=true
+gh workflow run starry-apps.yml --ref <branch> -f focused=true \
+  -f focused_cases=video-aarch64,video-riscv64
+```
+
+定向模式为每个组合创建独立 job，复用正常 Apps 规划得到的容器、运行器、缓存、
+网络区域和预检查，固定本次触发提交。单项失败不取消其他项，最终结果保留失败；
+输出见各 job 的 `Run command` 日志。定向模式不执行 NixOS、Clippy，也不接受
+原清单之外的任意命令；`run_clippy_all` 在此模式不增加检查。未勾选 `focused`
+以及定时触发继续执行原完整矩阵。
+
+```bash
+# 查看清单和实际命令，不执行测试。
+python3 scripts/test/starry_apps_focused.py --list
+python3 scripts/test/starry_apps_focused.py --dry-run
+
+# 执行全部六项，或者只执行选中的项。
+python3 scripts/test/starry_apps_focused.py
+python3 scripts/test/starry_apps_focused.py --case video-aarch64 --case video-riscv64
+```
+
+| 选择名 | 原应用 | 架构 |
+| --- | --- | --- |
+| `video-aarch64` | `cpu-video-test` | aarch64 |
+| `video-riscv64` | `cpu-video-test` | riscv64 |
+| `ahci-x86_64` | `qemu/ahci/ahci-dual-ncq-rw-20m` | x86_64 |
+| `go-aarch64` | `go-lang` | aarch64 |
+| `top-aarch64` | `top` | aarch64 |
+| `findutils-riscv64` | `qemu/findutils` | riscv64 |
+
+默认顺序执行，单项失败仍继续；任一项失败则最终返回非零。输出实时显示，每项日志
+与含退出码、耗时、状态的 `summary.json` 保存在
+`target/axbuild/starry-apps-focused/run-*`；也可用 `--output-dir <新目录>` 指定位置。
+Ctrl-C 停止当前命令及同组进程，后续项标记为 `NOT_RUN`。
+
+每项复用原应用的完整准备、运行和判定，因此视频仍执行五组检查，Go 仍执行完整
+应用；此前因失败没有到达的内部阶段，需要修复前置问题后才能验证。此入口不提高
+原超时、不自动重试、不把未执行部分计为通过。它用于局部修复复验，最终仍需完整夜测验收。
+
 ## 3. 调度与结果
 
 `plan` 在一个 GitHub-hosted runner 上完成 checkout 和规划，`checks` 等待规划成功后调用 `reusable-check-matrix.yml`。应用矩阵不下载主 CI 的 `tg-xtask-bin` artifact，直接使用各行声明的命令。
