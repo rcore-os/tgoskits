@@ -1341,6 +1341,23 @@ command = "true"
                 )
 
     def test_single_client_robot_check_routing(self) -> None:
+        root = MODULE_PATH.parents[2]
+        real_starry = (
+            root
+            / "test-suit/starryos/board-orangepi-5-plus/robot-flow"
+            / "board-orangepi-5-plus-robot-real.toml"
+        )
+        real_axvisor_starry = (
+            root
+            / "apps/axvisor/normal/board-ballpick-robot/robot-real-starry/smoke"
+            / "board-orangepi-5-plus-robot-real-starry.toml"
+        )
+        real_axvisor_linux = (
+            root
+            / "apps/axvisor/normal/board-ballpick-robot/robot-real-linux/smoke"
+            / "board-orangepi-5-plus-robot-real-linux.toml"
+        )
+
         main = ci_plan.build_main_plan(self.upstream)
         starry_rows = self.assert_unique_ids(main["starry_matrix"]["include"])
         axvisor_rows = self.assert_unique_ids(main["axvisor_matrix"]["include"])
