@@ -112,15 +112,48 @@ int main(void)
     char sub_link_in[64];
     char sub_link_out[64];
     char created_in[64];
+    char sub_link_slash[64];
+    char sub_link_bare[64];
+    char created_slash[64];
+    char created_bare[64];
     snprintf(sub_link_in, sizeof(sub_link_in), "%s/sub/link-in", root);
     snprintf(sub_link_out, sizeof(sub_link_out), "%s/sub/link-out", root);
     snprintf(created_in, sizeof(created_in), "%s/dangling-in", root);
+    snprintf(sub_link_slash, sizeof(sub_link_slash), "%s/sub/link-slash", root);
+    snprintf(sub_link_bare, sizeof(sub_link_bare), "%s/sub/link-bare", root);
+    snprintf(created_slash, sizeof(created_slash), "%s/dangling-slash", root);
+    snprintf(created_bare, sizeof(created_bare), "%s/dangling-bare", root);
+    char beneath_txt[64];
+    char combo_txt[64];
+    snprintf(link_file, sizeof(link_file), "%s/link-file", root);
+    snprintf(beneath_txt, sizeof(beneath_txt), "%s/beneath.txt", root);
+    snprintf(combo_txt, sizeof(combo_txt), "%s/combo.txt", root);
+    /* Budget-chain fixtures: q-chain carries 40 expansions in the parent
+     * walk (one past the shared limit once the leaf follow is added);
+     * p-chain carries 39 so the leaf follow lands exactly on it. */
+    char p_from[64];
+    char p_to[64];
+    char q_from[64];
+    char q_to[64];
+    char sub_leaf[64];
 
-    unlink(rel);
-    unlink(abs);
-    unlink(sub_link_in);
-    unlink(sub_link_out);
-    unlink(created_in);
+    /* Pre-run cleanup covers every name the case may create, so a previous
+     * aborted run cannot turn leftover state into a bogus fixture failure. */
+    const char *pre_clean[] = { rel,      abs,       link_file,   beneath_txt,
+                                combo_txt, sub_link_in, sub_link_out, created_in,
+                                sub_link_slash, sub_link_bare,
+                                created_slash, created_bare };
+    for (size_t i = 0; i < sizeof(pre_clean) / sizeof(pre_clean[0]); i++) {
+        unlink(pre_clean[i]);
+    }
+    for (int i = 1; i <= 40; i++) {
+        snprintf(p_from, sizeof(p_from), "%s/p%02d", root, i);
+        snprintf(q_from, sizeof(q_from), "%s/q%02d", root, i);
+        unlink(p_from);
+        unlink(q_from);
+    }
+    snprintf(sub_leaf, sizeof(sub_leaf), "%s/sub/leaf", root);
+    unlink(sub_leaf);
     rmdir(sub);
     rmdir(root);
 
@@ -178,10 +211,6 @@ int main(void)
     /* A dangling link whose target carries a trailing slash demands a
      * directory: O_CREAT must fail EISDIR and leave no created file behind
      * (Linux lookup_fast_for_open), on either side of the slash. */
-    char sub_link_slash[64];
-    char sub_link_bare[64];
-    char created_slash[64];
-    char created_bare[64];
     snprintf(sub_link_slash, sizeof(sub_link_slash), "%s/sub/link-slash", root);
     snprintf(sub_link_bare, sizeof(sub_link_bare), "%s/sub/link-bare", root);
     snprintf(created_slash, sizeof(created_slash), "%s/dangling-slash", root);
@@ -226,6 +255,34 @@ int main(void)
     expect_errno("openat2 O_CREAT|O_EXCL on . reports EEXIST", rootfd, ".",
                  RESOLVE_BENEATH,
                  O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, EEXIST);
+
+    /* The symlink budget spans the parent walk and the final follow: a
+     * 39-link parent chain plus the leaf link lands exactly on the limit
+     * and opens; a 40-link parent chain pushes the leaf follow one past it
+     * and fails ELOOP (Linux total_link_count covers the whole open). */
+    for (int i = 1; i <= 40; i++) {
+        snprintf(p_from, sizeof(p_from), "%s/p%02d", root, i);
+        snprintf(q_from, sizeof(q_from), "%s/q%02d", root, i);
+        if (i < 39) {
+            snprintf(p_to, sizeof(p_to), "p%02d", i + 1);
+        } else {
+            snprintf(p_to, sizeof(p_to), "sub");
+        }
+        if (i < 40) {
+            snprintf(q_to, sizeof(q_to), "q%02d", i + 1);
+        } else {
+            snprintf(q_to, sizeof(q_to), "sub");
+        }
+        CHECK(symlink(p_to, p_from) == 0, "create 39-link chain fixture");
+        CHECK(symlink(q_to, q_from) == 0, "create 40-link chain fixture");
+    }
+    snprintf(sub_leaf, sizeof(sub_leaf), "%s/sub/leaf", root);
+    CHECK(symlink("../beneath.txt", sub_leaf) == 0,
+          "create leaf symlink fixture");
+    expect_open("39 parent links plus the leaf stay within the budget",
+                rootfd, "p01/leaf", RESOLVE_BENEATH, O_RDONLY | O_CLOEXEC);
+    expect_errno("one past the shared symlink budget is ELOOP", rootfd,
+                 "q01/leaf", RESOLVE_BENEATH, O_RDONLY | O_CLOEXEC, ELOOP);
 
     /* RESOLVE_IN_ROOT: the dirfd acts as a chroot root. */
     expect_open("IN_ROOT resolves an absolute path inside the root", rootfd,
