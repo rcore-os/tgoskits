@@ -146,10 +146,19 @@ stage_assets() {
     #    as LFS pointers - init + sparse-pull only the subdirs this carpet reads.
     if [[ -z "$src" && -d "$app_dir/assets" ]]; then
         if [[ ! -f "$app_dir/assets/golden/badapple_clips_firstframe.tsv" ]] && command -v git >/dev/null 2>&1; then
-            git -C "$app_dir" submodule update --init assets >/dev/null 2>&1 || true
+            # CI containers may run as a different user from checkout/cache owners.
+            # Trust only these paths for this command, without changing Git config.
+            local repository_root
+            repository_root="$(cd "$app_dir/../../.." && pwd)"
+            GIT_LFS_SKIP_SMUDGE=1 git -c safe.directory="$repository_root" \
+                -c safe.directory="$app_dir/assets" -C "$app_dir" \
+                submodule update --init assets || {
+                echo "prebuild: failed to initialize video assets submodule" >&2
+                return 1
+            }
         fi
-        if command -v git >/dev/null 2>&1 && git -C "$app_dir/assets" lfs env >/dev/null 2>&1; then
-            git -C "$app_dir/assets" \
+        if [[ -e "$app_dir/assets/.git" ]] && command -v git-lfs >/dev/null 2>&1; then
+            git -c safe.directory="$app_dir/assets" -C "$app_dir/assets" \
                 -c filter.lfs.clean='git-lfs clean -- %f' \
                 -c filter.lfs.smudge='git-lfs smudge -- %f' \
                 -c filter.lfs.process='git-lfs filter-process' \
