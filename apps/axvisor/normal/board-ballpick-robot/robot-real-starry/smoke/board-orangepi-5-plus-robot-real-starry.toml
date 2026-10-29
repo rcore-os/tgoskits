@@ -2,9 +2,22 @@
 #
 # The current-checkout StarryOS guest runs the robot application from the
 # fixed directory /home/orangepi/robot/aka-rk3588-single. The launcher uses the USB
-# camera 0ac8:0346 and Feetech USB controller 1a86:55d3 through FEETECH_DEV=auto.
+# camera 0ac8:0346 and the UART6 actuator bus through /dev/ttyS6.
 board_type = "BallPick-Robot"
 cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
+
+uboot_cmd = [
+  "mw.l 0xfd7c03cc 0x7e000000",
+  "mw.l 0xfd7c03d0 0x00080129",
+  "mw.l 0xfd7c03d4 0x00030001",
+  "mw.l 0xfd7c0830 0x00800000",
+  "mw.l 0xfd7c0834 0x10000000",
+  "mw.l 0xfd5f8020 0x00ff00aa",
+  "mw.l 0xfd5f9110 0x000f000f",
+  "mw.l 0xfd5f9020 0x00ff0066",
+]
+
+dtb_file = "apps/axvisor/normal/board-ballpick-robot/configs/ballpick-robot-uart6.dtb"
 
 timeout = 900
 fail_regex = [
@@ -30,7 +43,7 @@ shell_cmd = 'd=/home/orangepi/robot/aka-rk3588-single'
 [[shell_check_steps]]
 shell_prefix = "root@starry:~#"
 # Fixed by this test configuration; change this argument to revise the FPS gate.
-shell_cmd = 'cd "$d" && FEETECH_DEV=auto ./run_single_pick_ci_once.sh 28.0'
+shell_cmd = 'cd "$d" && FEETECH_DEV=/dev/ttyS6 ./run_single_pick_ci_once.sh 28.0'
 # Only the final launcher verdict counts. A non-zero exit fails the step
 # directly, without an echo-based fallback marker.
 success_regex = ['(?m)^(?:\x1b\[[0-9;]*m)*\[ROBOT_CI\] RESULT=PASS attempts=[12](?:[ \t\r]*$|\[\s*\d+\.\d+\].*$)']

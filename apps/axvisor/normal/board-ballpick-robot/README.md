@@ -17,6 +17,7 @@
 | `pci-network` | Linux 直通 PCIe 网卡、驱动、DHCP 和 ping | [物理网络](pci-network/README.md) |
 | `virtio-net-peer` | 64 台 ArceOS 的虚拟网络及同次启动下的移除验证 | [虚拟网络](virtio-net-peer/README.md) |
 | `aka-starry-shell` | StarryOS 感知与 Zephyr 控制端协作 | [AKA 联调](aka-starry-shell/README.md) |
+| `robot-real-linux`、`robot-real-starry` | 单个客户机运行摄像头、NPU 与执行器有限流程；StarryOS 使用 UART6 控制执行器 | [单客户机机器人检查](../../../starry/aka-rk3588/README.md)、[StarryOS 串口配置](configs/README.md) |
 | `linux-guest-checks` | 单个直通 Linux 的 NPU、图片推理及基础功能 | [Linux 交互检查](linux-guest-checks/README.md) |
 | `triple-vm-test` | Linux、StarryOS、Zephyr 同次启动下的功能和性能检查 | [三客户机交互检查](triple-vm-test/README.md) |
 
