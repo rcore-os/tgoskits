@@ -41,6 +41,11 @@
 
 Zephyr 二进制和 DTB 使用同一次构建的产物。StarryOS 使用支持 VirtIO 块设备的 Error 日志镜像；本目录的 [configs/starry-guest-build.toml](configs/starry-guest-build.toml) 是其应用构建配置。
 
+StarryOS 独立根盘内部还需提供 `/usr/bin/setsid`，并支持 `--fork`、`--wait`、`--ctty`。
+[configs/starry-smp1.toml](configs/starry-smp1.toml) 使用它建立带控制终端的交互 Shell，
+使 Ctrl+C 能向前台感知程序发送 SIGINT；`--wait` 保持 PID 1 等待子会话。
+该工具必须位于客户机根盘中，不能用板卡原生 Linux 上的同名文件代替。
+
 宿主 AxVisor 保留物理存储和网络；StarryOS 使用独立 VirtIO 磁盘，访问相机和 NPU；Zephyr 使用 UART6 控制设备。资源及设备分配以 [configs/starry-smp1.toml](configs/starry-smp1.toml) 和 [configs/zephyr-smp1.toml](configs/zephyr-smp1.toml) 为准。两者各使用一个 vCPU，分别选择 MPIDR `0x400` 和 `0x200`。
 
 ## 启动

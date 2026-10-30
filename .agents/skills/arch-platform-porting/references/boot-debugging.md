@@ -132,6 +132,17 @@ USB 控制器可能呈现 USB 串口节点，但不使用 SoC UART6 `/dev/ttyS6`
 交互配置保留自动用例的 `cmdline`，不注入客户机命令、不设置会话总超时或结果匹配；
 自动入口仍由 `smoke/board-*.toml` 执行，并由 AxVisor Nightly 注册。
 
+StarryOS 单客户机交互启动通过 `/usr/bin/setsid --fork --wait --ctty /bin/sh -i`
+建立控制终端：`--fork` 创建会话首进程，`--ctty` 取得继承的 console，`--wait`
+保持 PID 1 等待子会话。只从 `init=/bin/sh` 继承 `/dev/console` 不会自动建立终端
+前台进程组；回显 `^C` 不证明应用收到 SIGINT。验证退出时应实际发送 Ctrl+C，
+确认前台进程退出并返回可交互 Shell，再执行 `sync`。
+
+双客户机 `aka-starry-shell/configs/starry-smp1.toml` 也通过相同的 `setsid` 参数建立
+StarryOS 控制终端。其 `/usr/bin/setsid` 必须位于独立客户机根盘内部；
+宿主或原生 Linux 上的工具不能代替该依赖。此调整只涉及 StarryOS Shell 启动，
+Zephyr 的 UART6 执行器分配和 IVC 配置保持各自原有契约。
+
 两个应用默认 `board_type = "BallPick-Robot"`，宿主与客户机配置均使用
 `/dev/mmcblk0p2`。更换板卡时先从原生 Linux 核对根设备与资源文件。
 Linux 内核使用板端 `/guest/linux/orangepi-5-plus`，直接挂载 ext4 根，不加载

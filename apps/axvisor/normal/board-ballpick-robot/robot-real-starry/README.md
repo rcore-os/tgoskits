@@ -42,7 +42,7 @@ initramfs，无需覆盖板端 `/guest/starry/`。修改客户机源码后，重
 ### 2.2 机器人运行包
 
 板端 `/home/orangepi/robot/aka-rk3588-single` 应包含 `bin/tennis`、`lib/`、`models/`、
-`config/` 和 `run_single_pick.sh`。`config/` 使用这台机器的标定与控制参数，
+`config/` 和 `run_single_pick.sh`。根文件系统还需提供 `/usr/bin/setsid`（支持 `--fork`、`--wait`、`--ctty`）。`config/` 使用这台机器的标定与控制参数，
 运行沿用现有文件；缺少资源时先报告缺项，不通过覆盖标定或替换系统库绕过错误。
 
 在原生 Linux 中只读核对资源：
@@ -77,6 +77,8 @@ cargo xtask axvisor board \
 ```
 
 `vm_configs` 打包 VM1 的配置，`axvisor.vm_start=1` 自动创建并启动它。
+客户机通过 `/usr/bin/setsid --fork --wait --ctty /bin/sh -i` 创建带控制终端的交互会话，
+使 Ctrl+C 能向前台应用发送 SIGINT；`--wait` 让 PID 1 等待该会话，避免其提前退出。
 客户机资源为1 vCPU，MPIDR `0x00`，256 MiB 低地址内存及 2 GiB 高地址内存，设备树采用宿主基线，不附加 UART6 专用设备树或初始化命令。
 
 ### 3.2 进入客户机
@@ -129,6 +131,8 @@ cd /home/orangepi/robot/aka-rk3588-single
 ## 6. 结束
 
 需要结束时在客户机控制台按 `Ctrl+C`，等待程序退出并确认车轮停止，再执行 `sync`。
+应返回 `root@starry:~#` 并能继续执行命令；若启动提示 `job control turned off`，
+先核对是否使用了本目录更新后的 `guest.toml`，以及根文件系统中 `setsid` 是否可用。
 随后按 `Ctrl+X`、`h` 返回 AxVisor，
 按 `Ctrl+A`、`x` 结束串口并等待运行器释放租约。包含物理设备直通的客户机应按板级
 复位流程重新运行，不用 `vm stop/reset/delete` 代替 USB、DMA 和设备状态回收。

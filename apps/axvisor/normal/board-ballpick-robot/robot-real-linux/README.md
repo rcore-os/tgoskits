@@ -80,7 +80,8 @@ vm list
 vm console 1
 ```
 
-等待 `orangepi@orangepi5plus:~$` 后再输入业务命令。`Ctrl+X` 后按 `h` 返回宿主，`Ctrl+A` 后按 `x`
+等待 `orangepi@orangepi5plus:~$` 后再输入业务命令。Ubuntu 登录会话负责建立控制终端，
+完整程序在该终端前台运行；通过 `sudo` 启动时保留前台信号链路。`Ctrl+X` 后按 `h` 返回宿主，`Ctrl+A` 后按 `x`
 结束工作站串口会话；外层交互命令返回 0 只表示会话正常结束。
 
 ## 4. 运行捡球程序
