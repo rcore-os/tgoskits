@@ -431,7 +431,12 @@ impl OpenOptions {
                             user: self.user,
                         },
                     )?;
-                    if !self.no_follow {
+                    // A trailing slash sets LOOKUP_FOLLOW|LOOKUP_DIRECTORY in
+                    // Linux (`open_last_lookups`), so it overrides O_NOFOLLOW
+                    // for the final component: `link/` dereferences the link
+                    // and then demands a directory (`link -> dir` succeeds,
+                    // `link -> file` is ENOTDIR).
+                    if !self.no_follow || must_be_dir {
                         // Save the symlink-target path before resolving, so we can
                         // recurse into create-at-target if the target is dangling.
                         let was_symlink = loc.node_type() == NodeType::Symlink;
@@ -470,21 +475,12 @@ impl OpenOptions {
                             Err(e) => return Err(e),
                         }
                     } else if loc.node_type() == NodeType::Symlink && !self.path {
-                        // O_NOFOLLOW + basename is a symlink + not O_PATH:
-                        // man "If the trailing component (i.e., basename) of
-                        // pathname is a symbolic link, then the open fails,
-                        // with the error ELOOP."
-                        //
-                        // Precedence: a trailing slash on the original path
-                        // forces the resolved entry to be a directory; a
-                        // symlink itself is not a directory, so ENOTDIR
-                        // takes priority over ELOOP (Linux behavior verified
-                        // via host gcc: `open("/tmp/sym/", O_NOFOLLOW)` →
-                        // ENOTDIR, not ELOOP). Without this check, starry
-                        // returns ELOOP and diverges from Linux.
-                        if must_be_dir {
-                            return Err(VfsError::NotADirectory);
-                        }
+                        // O_NOFOLLOW without a trailing slash + basename is a
+                        // symlink + not O_PATH: man "If the trailing component
+                        // (i.e., basename) of pathname is a symbolic link,
+                        // then the open fails, with the error ELOOP." A
+                        // trailing slash never reaches this branch — it
+                        // forces the final link to be followed above.
                         // Fixes bug-open-nofollow-sym.
                         return Err(VfsError::FilesystemLoop);
                     }
@@ -541,7 +537,7 @@ impl OpenOptions {
         // apply. O_EXCL on an existing target fails with EEXIST, mirroring
         // the unconstrained create-at-existing-entry behavior.
         if path.file_name().is_none() {
-            let loc = context.resolve_with_constraints(
+            let loc = context.resolve_with_constraints_from(
                 path,
                 constraints,
                 true,
@@ -580,20 +576,22 @@ impl OpenOptions {
         // NO_SYMLINKS/NO_MAGICLINKS. The exception: with O_PATH|O_NOFOLLOW a
         // final symlink (or magic link) is returned as a path-only handle to
         // the link itself even under those restrictions (man 2 openat2).
-        let final_link_handle = self.path && self.no_follow;
+        //
+        // A trailing slash sets LOOKUP_FOLLOW|LOOKUP_DIRECTORY in Linux
+        // (`open_last_lookups`), so it overrides O_NOFOLLOW for the final
+        // component exactly as it does on the unconstrained path: the link is
+        // dereferenced and the directory requirement is checked on the
+        // target. NO_SYMLINKS/NO_MAGICLINKS still reject the follow.
+        let follow_final = !self.no_follow || must_be_dir;
+        let final_link_handle = self.path && self.no_follow && !must_be_dir;
         if let Ok(probe) = parent.lookup_no_follow(&name)
             && probe.node_type() == NodeType::Symlink
+            && !final_link_handle
+            && (constraints.is_no_symlinks()
+                || (constraints.is_no_magiclinks() && probe.is_magic_link())
+                || (self.no_follow && !self.path && !must_be_dir))
         {
-            if must_be_dir && self.no_follow {
-                return Err(VfsError::NotADirectory);
-            }
-            if !final_link_handle
-                && (constraints.is_no_symlinks()
-                    || (constraints.is_no_magiclinks() && probe.is_magic_link())
-                    || (self.no_follow && !self.path))
-            {
-                return Err(VfsError::FilesystemLoop);
-            }
+            return Err(VfsError::FilesystemLoop);
         }
 
         // Linux `lookup_fast_for_open`: a trailing slash demands a directory,
@@ -631,7 +629,7 @@ impl OpenOptions {
             return Err(VfsError::CrossesDevices);
         }
 
-        if !self.no_follow {
+        if follow_final {
             // Follow the final symlink under the same constraints, resuming
             // the depth count at the parent's own depth so RESOLVE_BENEATH
             // stays intact across the jump. A dangling target with O_CREAT is
@@ -679,11 +677,9 @@ impl OpenOptions {
                 Err(error) => return Err(error),
             }
         } else if loc.node_type() == NodeType::Symlink && !self.path {
-            // O_NOFOLLOW + basename is a symlink + not O_PATH: ELOOP, unless a
-            // trailing slash makes ENOTDIR take priority (Linux behavior).
-            if must_be_dir {
-                return Err(VfsError::NotADirectory);
-            }
+            // O_NOFOLLOW without a trailing slash + basename is a symlink +
+            // not O_PATH: ELOOP. A trailing slash never reaches this branch
+            // (it forces the follow above).
             return Err(VfsError::FilesystemLoop);
         }
 
