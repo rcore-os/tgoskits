@@ -362,7 +362,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
         let result = run_guest_prebuild(GuestPrebuildRequest {
             arch,
             case,
-            case_rootfs,
+            prebuild_rootfs: case_rootfs,
             script: &root_prebuild_script,
             work_dir: &case.case_dir,
             layout,
@@ -406,7 +406,7 @@ pub(super) fn prepare_grouped_c_subcases_sync(
                 let result = run_guest_prebuild(GuestPrebuildRequest {
                     arch,
                     case: &subcase_case,
-                    case_rootfs,
+                    prebuild_rootfs: case_rootfs,
                     script: &prebuild_script,
                     work_dir: &source_dir,
                     layout: &subcase_layout,
