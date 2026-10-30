@@ -203,9 +203,10 @@ impl Starry {
             .await;
         }
         let apps = app::selected_apps(self.app.workspace_root(), &args, app::StarryAppKind::Qemu)?;
-        let app_count = apps.len();
-        for (index, app) in apps.into_iter().enumerate() {
-            let missing = app::missing_caps(&app, &args.caps);
+        let mut summary = crate::test::qemu::QemuTestSummary::default();
+        let mut skipped = 0;
+        for (index, app) in apps.iter().enumerate() {
+            let missing = app::missing_caps(app, &args.caps);
             if !missing.is_empty() {
                 if args.test_case.is_some() {
                     anyhow::bail!(
@@ -215,16 +216,36 @@ impl Starry {
                     );
                 }
                 println!("SKIP\t{}\tmissing {}", app.name, missing.join(","));
+                skipped += 1;
                 continue;
             }
-
             println!(
                 "{}",
-                format_app_run_progress(index + 1, app_count, &app.name, args.arch.as_deref())
+                format_app_run_progress(index + 1, apps.len(), &app.name, args.arch.as_deref())
             );
-            self.app_qemu(&app, &args).await?;
+            let result = self.app_qemu(app, &args).await;
+            if !args.all {
+                return result;
+            }
+            match result {
+                Ok(()) => summary.pass_with_detail(
+                    &app.name,
+                    args.arch
+                        .as_deref()
+                        .unwrap_or(crate::context::DEFAULT_STARRY_ARCH),
+                ),
+                Err(error) => {
+                    eprintln!("failed: {}: {error:#}", app.name);
+                    summary.fail_with_detail(&app.name, format!("{error:#}"));
+                }
+            }
         }
-        Ok(())
+        anyhow::ensure!(apps.len() > skipped, "no Starry QEMU apps ran");
+        summary.finish_with_total_detail(
+            "Starry apps",
+            "app",
+            Some(&format!("selected={} skipped={skipped}", apps.len())),
+        )
     }
 
     async fn app_qemu(

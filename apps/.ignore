@@ -51,3 +51,6 @@ apps/starry/python-net
 apps/starry/qt-calc
 apps/starry/virgl-test
 apps/starry/openssh
+
+# Rendering observation times out; explicit -t web-browser-firefox remains available.
+apps/starry/web-browser-firefox

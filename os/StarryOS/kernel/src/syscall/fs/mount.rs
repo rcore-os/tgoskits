@@ -868,7 +868,9 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     }
     // The filesystem owns the lease, including across lazy detach and open files.
     // No filesystem-context lock is held during superblock or backing-file I/O.
-    let fs = new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)?;
+    let fs = loop_device.mounted_filesystem(readonly, || {
+        new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)
+    })?;
     let mount = target_location.mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly());
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);

@@ -30,6 +30,14 @@ inputs:
     description: Newline or comma separated enabled boolean input names.
     required: false
     default: ''
+  starry-apps:
+    description: Comma-separated Starry application names for manual app checks.
+    required: false
+    default: ''
+  starry-arches:
+    description: Comma-separated architectures for manual Starry app checks.
+    required: false
+    default: ''
 
 outputs:
   static_matrix:
@@ -98,6 +106,8 @@ runs:
         BASE_REF: ${{ inputs.base-ref }}
         SINCE_REF: ${{ inputs.since-ref }}
         BOOLEAN_INPUTS: ${{ inputs.boolean-inputs }}
+        STARRY_APPS: ${{ inputs.starry-apps }}
+        STARRY_ARCHES: ${{ inputs.starry-arches }}
       run: |
         set -euo pipefail
         args=(
@@ -115,6 +125,12 @@ runs:
         fi
         if [[ -n "$SINCE_REF" ]]; then
           args+=(--since-ref "$SINCE_REF")
+        fi
+        if [[ -n "$STARRY_APPS" ]]; then
+          args+=(--apps "$STARRY_APPS")
+        fi
+        if [[ -n "$STARRY_ARCHES" ]]; then
+          args+=(--arches "$STARRY_ARCHES")
         fi
         while IFS= read -r boolean_input; do
           [[ -z "$boolean_input" ]] && continue

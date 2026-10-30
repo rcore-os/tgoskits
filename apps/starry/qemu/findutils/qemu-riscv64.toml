@@ -16,7 +16,8 @@ args = [
 uefi = false
 to_bin = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
-timeout = 15
+# The budget includes OpenRC startup, which exceeds 15 seconds on CI TCG.
+timeout = 60
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"

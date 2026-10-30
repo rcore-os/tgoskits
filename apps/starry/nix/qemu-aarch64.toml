@@ -28,5 +28,5 @@ timeout = 1200
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_cmd = "/usr/bin/test_nix.sh"
+shell_cmd = "/usr/bin/test_nix.sh --ci"
 success_regex = ["(?m)^NIX_APP_TESTS_PASSED\\s*$"]

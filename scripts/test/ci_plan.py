@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -256,16 +257,77 @@ def _build_test_group_outputs(
 
 def build_starry_apps_plan(
     context: PlanContext,
+    apps: tuple[str, ...] = (),
+    arches: tuple[str, ...] = (),
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
     # Starry Apps owns application smoke, NixOS and optional Clippy coverage.
     # Performance checks are owned by the separate Benchmarks workflow.
     checks = load_catalog((STARRY_APPS_MANIFEST,))
     app_rows = _plan_phase(checks, "starry_apps", context)
+    if apps or arches:
+        if context.event_name != "workflow_dispatch":
+            raise PlanError("Starry app selection is only allowed for manual runs")
+        app_rows = _select_starry_apps(app_rows, apps, arches)
     if not app_rows:
         raise PlanError("Starry Apps must resolve to a non-empty matrix")
     return {
         "starry_apps_matrix": {"include": app_rows},
     }
+
+
+def _select_starry_apps(
+    rows: list[dict[str, Any]], apps: tuple[str, ...], arches: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    templates = {}
+    for row in rows:
+        command = shlex.split(row["command"])
+        if command[:5] == ["cargo", "xtask", "starry", "app", "qemu"] and "--all" in command:
+            templates[command[command.index("--arch") + 1]] = row
+    unknown = set(arches) - templates.keys()
+    if unknown:
+        raise PlanError(f"Unknown Starry app architectures: {sorted(unknown)}")
+    selected_arches = arches or tuple(templates)
+    nixos_rows = [row for row in rows if "starry app qemu -t nixos " in row["command"]]
+    if not apps:
+        return [
+            row for row in rows
+            if (row not in templates.values() or row in [templates[arch] for arch in selected_arches])
+            and (row not in nixos_rows or "x86_64" in selected_arches)
+        ]
+
+    selected = []
+    app_root = WORKSPACE_ROOT / "apps/starry"
+    for index, app in enumerate(dict.fromkeys(apps)):
+        if app == "nixos":
+            if not nixos_rows or "x86_64" not in selected_arches or (arches and set(arches) != {"x86_64"}):
+                raise PlanError("The NixOS application requires x86_64")
+            selected.extend(nixos_rows)
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", app) or any(
+            part in {".", ".."} for part in app.split("/")
+        ):
+            raise PlanError(f"Invalid Starry app name: {app!r}")
+        case = app_root / app
+        if not case.is_dir() or not case.resolve().is_relative_to(app_root.resolve()):
+            raise PlanError(f"Unknown Starry app: {app}")
+        configs = list(case.glob("qemu-*.toml"))
+        default_config = (case / "prebuild.sh").is_file() and not configs and not (
+            (case / "init.sh").is_file() and list(case.glob("board-*.toml"))
+        )
+        supported = [arch for arch in selected_arches if default_config or (case / f"qemu-{arch}.toml").is_file()]
+        if not supported or (arches and len(supported) != len(selected_arches)):
+            raise PlanError(f"Starry app {app!r} does not support the selected architectures: {list(selected_arches)}")
+        for arch in supported:
+            row = dict(templates[arch])
+            row.update(
+                id=f"{row['id']}-app-{index}",
+                name=f"QEMU {arch} · {app}",
+                command=shlex.join(["cargo", "xtask", "starry", "app", "qemu", "-t", app, "--arch", arch]),
+            )
+            selected.append(row)
+    # Full Clippy remains an explicit, independent manual option.
+    selected.extend(row for row in rows if row not in templates.values() and row not in nixos_rows)
+    return selected
 
 
 def build_axvisor_nightly_plan(context: PlanContext) -> dict[str, Any]:
@@ -967,6 +1029,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--base-ref", default="")
     parser.add_argument("--since-ref", default="")
     parser.add_argument("--boolean-input", action="append", default=[])
+    parser.add_argument("--apps", default="", help="Comma-separated Starry app names (manual starry-apps mode only)")
+    parser.add_argument("--arches", default="", help="Comma-separated architectures (manual starry-apps mode only)")
     parser.add_argument(
         "--output-file",
         type=Path,
@@ -983,7 +1047,17 @@ def _parse_args() -> argparse.Namespace:
             else None
         ),
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.mode != "starry-apps" and (args.apps or args.arches):
+        parser.error("--apps and --arches require --mode starry-apps")
+    return args
+
+
+def _selection_names(raw: str) -> tuple[str, ...]:
+    names = tuple(dict.fromkeys(name.strip() for name in raw.split(",") if name.strip()))
+    if raw.strip() and not names:
+        raise PlanError("A non-empty selection must contain a name")
+    return names
 
 
 def main() -> int:
@@ -1011,7 +1085,7 @@ def main() -> int:
         elif args.mode == "axvisor-nightly":
             outputs = build_axvisor_nightly_plan(context)
         else:
-            outputs = build_starry_apps_plan(context)
+            outputs = build_starry_apps_plan(context, _selection_names(args.apps), _selection_names(args.arches))
     except (OSError, PlanError, tomllib.TOMLDecodeError) as error:
         print(f"CI planning failed: {error}", file=sys.stderr)
         return 1

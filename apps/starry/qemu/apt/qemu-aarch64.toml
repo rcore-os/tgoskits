@@ -19,7 +19,9 @@ fail_regex = ['(?m)^(?:\x1b\[[0-9;]*[A-Za-z])*panicked at(?:\s|$)', "(?m)^APT_HE
 timeout = 1200
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:"
+# The Debian image starts a login dash shell, whose root prompt is "# ".
+# Keep the Alpine prompt contract confined to Alpine-based applications.
+shell_prefix = "# "
 shell_cmd = '''
 rm -f /etc/apt/sources.list.d/*.sources && \
 apt_hello_test() { \

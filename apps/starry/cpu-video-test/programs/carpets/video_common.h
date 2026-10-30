@@ -141,19 +141,23 @@ static int sh(const char *cmd) {
 static int ffmpeg_frame_rgb24(const char *in, double ss, const char *vf, const char *out) {
     char cmd[2048], sbuf[64] = "", fbuf[256] = "";
     if (ss >= 0) snprintf(sbuf, sizeof sbuf, "-ss %.6f ", ss);
-    if (vf && *vf) snprintf(fbuf, sizeof fbuf, "-vf \"%s\" ", vf);
+    /* RGB goldens use the same rounding on scalar and SIMD conversion paths. */
+    snprintf(fbuf, sizeof fbuf,
+        "-vf \"%s%sscale=iw:ih:flags=bicubic+bitexact+accurate_rnd\" ",
+        vf && *vf ? vf : "", vf && *vf ? "," : "");
     snprintf(cmd, sizeof cmd,
         "ffmpeg -v error -y %s-i '%s' %s-vframes 1 -f rawvideo -pix_fmt rgb24 '%s'",
         sbuf, in, fbuf, out);
     return sh(cmd);
 }
 
-/* The golden 8x8 luma signature: scale to 8x8 bicubic, gray, one frame. Writes 64 raw gray bytes. */
+/* Scalar, bit-exact bicubic matches the independent Linux FFmpeg 8.1.2 reference.
+ * CPU-specific SIMD scaling otherwise changes rounding across architectures. */
 static int ffmpeg_luma8x8(const char *in, double ss, const char *out) {
     char cmd[2048], sbuf[64] = "";
     if (ss >= 0) snprintf(sbuf, sizeof sbuf, "-ss %.6f ", ss);
     snprintf(cmd, sizeof cmd,
-        "ffmpeg -v error -y %s-i '%s' -vframes 1 -vf \"scale=8:8:flags=bicubic,format=gray\" "
+        "ffmpeg -cpuflags 0 -v error -y %s-i '%s' -vframes 1 -vf \"scale=8:8:flags=bicubic+bitexact+accurate_rnd,format=gray\" "
         "-f rawvideo -pix_fmt gray '%s'", sbuf, in, out);
     return sh(cmd);
 }

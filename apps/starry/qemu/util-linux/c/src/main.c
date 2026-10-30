@@ -521,236 +521,67 @@ int main(void)
         run(cmd);
     }
 
-    /* ================================================================
-     *  Tier 4e: Double mount EBUSY regression
-     *
-     *  Mounting the same loop device to a second mount point while the
-     *  first mount is still active must fail with EBUSY.  Without this
-     *  guard, as_dyn_block_device() would silently replace the cache,
-     *  causing the first mount's ext4 writes to be lost on umount and
-     *  allowing LOOP_CLR_FD to clear the mounted flag while the old
-     *  adapter is still active.
-     * ================================================================ */
-
-    printf("[time %.2fs] Tier 4e: double mount EBUSY\n", elapsed());
-    /* Attach ext4 image (fresh) */
-    if (loopdev[0]) {
+    /* Linux reuses the ext4 superblock for a second compatible mount of the
+     * same device. Both paths must observe the same inode/cache state. */
+    printf("[time %.2fs] Tier 4e: shared loop superblock\n", elapsed());
+    {
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "losetup %s " PREBUILT_IMG " 2>&1", loopdev);
-        rc = run(cmd);
-        check(rc == 0, "losetup attach for double-mount test");
-    } else {
-        check(0, "losetup attach for double-mount test");
-    }
-
-    /* First mount — should succeed */
-    {
+        check(loopdev[0] && run(cmd) == 0, "losetup attach for shared-mount test");
         run("mkdir -p /tmp/ul-mnt2 2>/dev/null");
-        char cmd[256];
-        if (loopdev[0]) {
-            snprintf(cmd, sizeof(cmd), "mount -t ext4 %s /tmp/ul-mnt 2>&1", loopdev);
-            rc = run(cmd);
-            check(rc == 0, "first mount succeeds (double-mount test)");
-        } else {
-            check(0, "first mount succeeds (double-mount test)");
-        }
-    }
-
-    /* Second mount of same loop device — must fail with EBUSY */
-    {
-        if (loopdev[0]) {
-            errno = 0;
-            rc = mount(loopdev, "/tmp/ul-mnt2", "ext4", 0, NULL);
-            check(rc != 0 && errno == EBUSY,
-                  "second mount of same loop device rejected (EBUSY)");
-        } else {
-            check(0, "second mount of same loop device rejected (EBUSY)");
-        }
-    }
-
-    /* Umount first mount */
-    {
-        rc = run("umount /tmp/ul-mnt 2>&1");
-        check(rc == 0, "umount first mount (double-mount test)");
-    }
-
-    /* After umount, mount at second point should now succeed */
-    {
-        char cmd[256];
-        if (loopdev[0]) {
-            snprintf(cmd, sizeof(cmd), "mount -t ext4 %s /tmp/ul-mnt2 2>&1", loopdev);
-            rc = run(cmd);
-            check(rc == 0, "mount at second point succeeds after first umount");
-        } else {
-            check(0, "mount at second point succeeds after first umount");
-        }
-    }
-
-    /* Cleanup: umount + detach */
-    {
-        run("umount /tmp/ul-mnt2 2>&1");
-        if (loopdev[0]) {
-            char cmd[256];
-            snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-            run(cmd);
-        }
-    }
-
-    /* ================================================================
-     *  Tier 4f: Writeback failure propagation via BLKROSET
-     *
-     *  Verify that writeback errors propagate to callers when the
-     *  loop device is set read-only via BLKROSET.  A read-only
-     *  device must not write dirty cache back to the backing file;
-     *  both BLKFLSBUF and umount(2) should return EIO.
-     *
-     *  This is a regression test for the writeback error propagation
-     *  fix: without it, flush_cache_to_file and BLKFLSBUF swallowed
-     *  errors and always returned success, hiding data-loss risk
-     *  from userspace.
-     * ================================================================ */
-
-    /* --- BLKFLSBUF error propagation --- */
-
-    /* Attach ext4 image (fresh) */
-    if (loopdev[0]) {
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "losetup %s " PREBUILT_IMG " 2>&1", loopdev);
-        rc = run(cmd);
-        check(rc == 0, "losetup attach for writeback-fail test");
-    } else {
-        check(0, "losetup attach for writeback-fail test");
-    }
-
-    /* Mount ext4 */
-    if (loopdev[0]) {
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "mount -t ext4 %s /tmp/ul-mnt 2>&1", loopdev);
-        rc = run(cmd);
-        check(rc == 0, "mount for writeback-fail test");
-    } else {
-        check(0, "mount for writeback-fail test");
-    }
-
-    /* Write data to dirty the block cache */
-    {
-        rc = write_file("/tmp/ul-mnt/wb-fail.txt", "writeback-fail-test\n");
-        check(rc == 0, "write wb-fail.txt for writeback-fail test");
-    }
-
-    /* Open loop device for ioctl */
-    {
-        if (loopdev[0]) {
-            int fd = open(loopdev, O_RDWR);
-            if (fd >= 0) {
-                uint32_t ro;
-
-                /* Set read-only — writeback must now fail */
-                ro = 1;
-                rc = ioctl(fd, 0x125D /* BLKROSET */, &ro);
-                check(rc == 0, "BLKROSET set read-only (BLKFLSBUF test)");
-
-                /* BLKFLSBUF should fail with EIO on read-only device */
-                errno = 0;
-                rc = ioctl(fd, 0x1261 /* BLKFLSBUF */);
-                check(rc == -1 && errno == EIO,
-                      "BLKFLSBUF returns EIO on read-only device (dirty cache)");
-
-                /* Clear read-only — writeback should succeed */
-                ro = 0;
-                rc = ioctl(fd, 0x125D /* BLKROSET */, &ro);
-                check(rc == 0, "BLKROSET clear read-only (BLKFLSBUF test)");
-
-                /* BLKFLSBUF should now succeed */
-                rc = ioctl(fd, 0x1261 /* BLKFLSBUF */);
-                check(rc == 0, "BLKFLSBUF succeeds after clearing read-only");
-
-                close(fd);
-            } else {
-                check(0, "open loop device for writeback-fail test");
-            }
-        } else {
-            check(0, "BLKROSET set read-only (BLKFLSBUF test)");
-            check(0, "BLKFLSBUF returns EIO on read-only device (dirty cache)");
-            check(0, "BLKROSET clear read-only (BLKFLSBUF test)");
-            check(0, "BLKFLSBUF succeeds after clearing read-only");
-        }
-    }
-
-    /* Cleanup: umount + detach */
-    {
-        run("umount /tmp/ul-mnt 2>&1");
-        if (loopdev[0]) {
-            char cmd[256];
-            snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-            run(cmd);
-        }
-    }
-
-    /* --- umount error propagation --- */
-
-    /* Attach ext4 image (fresh) */
-    if (loopdev[0]) {
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "losetup %s " PREBUILT_IMG " 2>&1", loopdev);
-        rc = run(cmd);
-        check(rc == 0, "losetup attach for umount-fail test");
-    } else {
-        check(0, "losetup attach for umount-fail test");
-    }
-
-    /* Mount ext4 */
-    if (loopdev[0]) {
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "mount -t ext4 %s /tmp/ul-mnt 2>&1", loopdev);
-        rc = run(cmd);
-        check(rc == 0, "mount for umount-fail test");
-    } else {
-        check(0, "mount for umount-fail test");
-    }
-
-    /* Write data to dirty the block cache */
-    {
-        rc = write_file("/tmp/ul-mnt/umount-fail.txt", "umount-fail-test\n");
-        check(rc == 0, "write umount-fail.txt");
-    }
-
-    /* Set read-only, then umount should fail with EIO */
-    {
-        if (loopdev[0]) {
-            /* Set read-only via ioctl */
-            int fd = open(loopdev, O_RDWR);
-            if (fd >= 0) {
-                uint32_t ro = 1;
-                ioctl(fd, 0x125D /* BLKROSET */, &ro);
-                close(fd);
-            }
-
-            /* umount via syscall to check errno */
-            errno = 0;
-            rc = umount("/tmp/ul-mnt");
-            check(rc != 0 && errno == EIO,
-                  "umount returns EIO when writeback fails (read-only device)");
-
-            /* Filesystem is unmounted despite the error; clear ro
-             * and flush the dirty cache left behind. */
-            fd = open(loopdev, O_RDWR);
-            if (fd >= 0) {
-                uint32_t ro = 0;
-                ioctl(fd, 0x125D /* BLKROSET */, &ro);
-                ioctl(fd, 0x1261 /* BLKFLSBUF */);
-                close(fd);
-            }
-        } else {
-            check(0, "umount returns EIO when writeback fails (read-only device)");
-        }
-    }
-
-    /* Detach */
-    if (loopdev[0]) {
-        char cmd[256];
+        check(mount(loopdev, "/tmp/ul-mnt", "ext4", 0, NULL) == 0,
+              "first mount succeeds (shared-mount test)");
+        int second = mount(loopdev, "/tmp/ul-mnt2", "ext4", 0, NULL);
+        check(second == 0, "second compatible mount shares the filesystem");
+        check(write_file("/tmp/ul-mnt/shared-state.txt", "first-view\n") == 0,
+              "write through first mount");
+        char shared[64];
+        check(read_first_line("/tmp/ul-mnt2/shared-state.txt", shared, sizeof(shared)) >= 0 &&
+              strcmp(shared, "first-view") == 0, "second mount sees new file and data");
+        errno = 0;
+        check(mount(loopdev, "/tmp/ul-mnt2", "ext4", MS_RDONLY, NULL) == -1 && errno == EBUSY,
+              "incompatible superblock read-only mode is rejected");
+        check(umount("/tmp/ul-mnt") == 0, "unmount first shared view");
+        check(write_file("/tmp/ul-mnt2/shared-state.txt", "remaining-view\n") == 0,
+              "remaining mount stays writable");
+        check(umount("/tmp/ul-mnt2") == 0, "unmount last shared view");
+        if (second != 0)
+            cleanup_umount_all("/tmp/ul-mnt2");
         snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-        run(cmd);
+        check(run(cmd) == 0, "detach after both views are released");
+    }
+
+    /* BLKFLSBUF returns zero after sync/invalidation in Linux; it does not
+     * promise to return EIO merely because BLKROSET changed the device flag.
+     * Verify flag transitions and durable data instead of injecting an
+     * assumed failure into an unrelated successful unmount. */
+    printf("[time %.2fs] Tier 4f: block read-only flags and flush\n", elapsed());
+    {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "losetup %s " PREBUILT_IMG " 2>&1", loopdev);
+        check(loopdev[0] && run(cmd) == 0, "losetup attach for read-only flag test");
+        check(mount(loopdev, "/tmp/ul-mnt", "ext4", 0, NULL) == 0,
+              "mount for read-only flag test");
+        check(read_first_line("/tmp/ul-mnt/shared-state.txt", buf, sizeof(buf)) >= 0 &&
+              strcmp(buf, "remaining-view") == 0, "shared-mount data survives a fresh mount");
+        check(umount("/tmp/ul-mnt") == 0, "unmount before block read-only transition");
+        int fd = open(loopdev, O_RDWR);
+        check(fd >= 0, "open block device for flag and flush operations");
+        if (fd >= 0) {
+            uint32_t ro = 1, observed = 0;
+            check(ioctl(fd, 0x125D /* BLKROSET */, &ro) == 0, "set block device read-only");
+            check(ioctl(fd, 0x125E /* BLKROGET */, &observed) == 0 && observed == 1,
+                  "read-only state is observable");
+            check(ioctl(fd, 0x1261 /* BLKFLSBUF */) == 0,
+                  "flush on read-only device completes");
+            ro = 0;
+            check(ioctl(fd, 0x125D /* BLKROSET */, &ro) == 0, "clear block device read-only");
+            check(ioctl(fd, 0x125E /* BLKROGET */, &observed) == 0 && observed == 0,
+                  "read-write state is observable");
+            close(fd);
+        }
+        snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
+        check(run(cmd) == 0, "detach after read-only flag test");
     }
 
     /* ================================================================
@@ -2142,65 +1973,44 @@ int main(void)
         cleanup_umount_all(mount_point);
     }
 
-    /* ================================================================
-     *  Tier 4l: LOOP_CLR_FD EBUSY when mount has open fds
-     *
-     *  Verify that LOOP_CLR_FD (losetup -d) returns EBUSY while the
-     *  loop device still has an active mount with open files.  This
-     *  ensures that the mounted flag is not prematurely cleared,
-     *  which would allow detach while the block device is still in use.
-     * ================================================================ */
-
-    printf("[time %.2fs] Tier 4l: LOOP_CLR_FD EBUSY\n", elapsed());
-    /* Attach ext4 image */
-    if (loopdev[0]) {
+    /* Linux LOOP_CLR_FD defers removal with AUTOCLEAR when the device is
+     * busy. It must keep the binding usable and reject rebinding until the
+     * last mount/file/device reference is released. */
+    printf("[time %.2fs] Tier 4l: deferred loop detach\n", elapsed());
+    {
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "losetup %s " PREBUILT_IMG " 2>&1", loopdev);
-        rc = run(cmd);
-        check(rc == 0, "losetup attach for detach-busy test");
-    } else {
-        check(0, "losetup attach for detach-busy test");
-    }
-
-    /* Mount ext4 */
-    if (loopdev[0]) {
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "mount -t ext4 %s /tmp/ul-mnt 2>&1", loopdev);
-        rc = run(cmd);
-        check(rc == 0, "mount for detach-busy test");
-    } else {
-        check(0, "mount for detach-busy test");
-    }
-
-    /* Open a file, then try losetup -d — must fail with EBUSY */
-    {
-        int mnt_fd = open("/tmp/ul-mnt/test.txt", O_RDONLY);
-        if (mnt_fd >= 0) {
-            /* losetup -d while fd is open: should fail */
-            if (loopdev[0]) {
-                char cmd[256];
-                snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-                rc = run(cmd);
-                /* busybox losetup -d returns non-zero on EBUSY */
-                check(rc != 0, "losetup -d EBUSY while mount has open fd");
-            } else {
-                check(0, "losetup -d EBUSY while mount has open fd");
-            }
-
-            close(mnt_fd);
+        check(loopdev[0] && run(cmd) == 0, "attach for deferred loop detach");
+        check(mount(loopdev, "/tmp/ul-mnt", "ext4", 0, NULL) == 0,
+              "mount for deferred loop detach");
+        int mnt_fd = open("/tmp/ul-mnt/test.txt", O_RDWR);
+        int device_fd = open(loopdev, O_RDWR);
+        int image_fd = open(PREBUILT_IMG, O_RDWR);
+        check(mnt_fd >= 0 && device_fd >= 0 && image_fd >= 0,
+              "open mounted file, device and backing image");
+        if (mnt_fd >= 0 && device_fd >= 0 && image_fd >= 0) {
+            check(ioctl(device_fd, 0x4c01 /* LOOP_CLR_FD */) == 0,
+                  "busy LOOP_CLR_FD succeeds with deferred removal");
+            check(pwrite(mnt_fd, "deferred", 8, 0) == 8 && fsync(mnt_fd) == 0,
+                  "mounted file remains writable after deferred removal");
+            errno = 0;
+            check(ioctl(device_fd, 0x4c00 /* LOOP_SET_FD */, image_fd) == -1 && errno == EBUSY,
+                  "deferred loop binding cannot be replaced");
+        }
+        if (mnt_fd >= 0) close(mnt_fd);
+        check(umount("/tmp/ul-mnt") == 0, "unmount after deferred removal");
+        if (device_fd >= 0) close(device_fd);
+        device_fd = open(loopdev, O_RDWR);
+        if (device_fd >= 0 && image_fd >= 0) {
+            check(ioctl(device_fd, 0x4c00 /* LOOP_SET_FD */, image_fd) == 0,
+                  "final close releases the deferred binding");
+            check(ioctl(device_fd, 0x4c01 /* LOOP_CLR_FD */) == 0,
+                  "clear the verification binding");
         } else {
-            check(0, "losetup -d EBUSY while mount has open fd");
+            check(0, "final close releases the deferred binding");
         }
-    }
-
-    /* Cleanup: umount then detach */
-    {
-        run("umount /tmp/ul-mnt 2>&1");
-        if (loopdev[0]) {
-            char cmd[256];
-            snprintf(cmd, sizeof(cmd), "losetup -d %s 2>&1", loopdev);
-            run(cmd);
-        }
+        if (device_fd >= 0) close(device_fd);
+        if (image_fd >= 0) close(image_fd);
     }
 
     /* ================================================================

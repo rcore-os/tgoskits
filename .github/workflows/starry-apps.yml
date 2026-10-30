@@ -6,8 +6,18 @@ on:
     - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
+      apps:
+        description: Comma-separated app names (for example cpu-video-test,go-lang); empty runs all.
+        required: false
+        default: ""
+        type: string
+      arches:
+        description: Comma-separated architectures (x86_64,aarch64,riscv64,loongarch64); empty selects supported architectures.
+        required: false
+        default: ""
+        type: string
       run_clippy_all:
-        description: Run the full workspace clippy audit before Starry app smoke.
+        description: Include the full workspace Clippy audit in this run.
         required: false
         default: false
         type: boolean
@@ -34,9 +44,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: dev
+          # Scheduled checks follow dev; manual checks test the dispatched commit.
+          ref: ${{ github.event_name == 'schedule' && 'dev' || github.sha }}
 
-      - name: Pin dev revision
+      - name: Pin triggering revision
         id: revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -49,6 +60,8 @@ jobs:
           repository-owner: ${{ github.repository_owner }}
           event-name: ${{ github.event_name }}
           boolean-inputs: ${{ inputs.run_clippy_all && 'run_clippy_all' || '' }}
+          starry-apps: ${{ inputs.apps }}
+          starry-arches: ${{ inputs.arches }}
 
   checks:
     name: Starry Apps
@@ -74,7 +87,7 @@ jobs:
         with:
           title: Starry Apps Nightly
           revision: ${{ needs.plan.outputs.revision }}
-          revision-label: dev revision
+          revision-label: ${{ github.event_name == 'schedule' && 'dev revision' || 'tested revision' }}
           stages: |
             Plan=${{ needs.plan.result }}
             Apps=${{ needs.checks.result }}

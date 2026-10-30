@@ -45,18 +45,24 @@ cp "$source_dir/3rd/rknpu2/Linux/aarch64/librknnrt.so" \
     "$package_dir/lib/librknnrt.so"
 cp -a "$source_dir/config" "$source_dir/models" "$package_dir/"
 for script in run_bucket_place_demo.sh run_lekiwi_full.sh run_lekiwi_loop.sh \
-    run_lekiwi_test.sh run_robot_ci_once.sh run_vision_once.sh; do
+    run_lekiwi_test.sh run_vision_once.sh; do
     cp "$source_dir/$script" "$package_dir/$script"
 done
+# The local launcher carries runtime compatibility fixes independently of the
+# pinned upstream application binary and source archive.
+cp "$app_dir/run_robot_ci_once.sh" "$package_dir/run_robot_ci_once.sh"
 chmod +x "$package_dir/build/tennis" "$package_dir"/*.sh
 printf '%s  %s\n' "$AKA_RK3588_BINARY_SHA256" \
     "$package_dir/build/tennis" | sha256sum -c -
 
+launcher_sha256="$(sha256sum "$package_dir/run_robot_ci_once.sh")"
+launcher_sha256="${launcher_sha256%% *}"
 cat >"$package_dir/SOURCE" <<EOF
 repository=$AKA_RK3588_REPOSITORY
 commit=$AKA_RK3588_COMMIT
 source_sha256=$AKA_RK3588_SOURCE_SHA256
 binary_sha256=$AKA_RK3588_BINARY_SHA256
+launcher_sha256=$launcher_sha256
 EOF
 
 tar -czf "$package_archive" -C "$work_dir" aka-rk3588

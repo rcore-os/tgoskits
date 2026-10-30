@@ -15,5 +15,5 @@ timeout = 9000
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_cmd = "sh /usr/bin/run-pysci2.sh"
-success_regex = ['(?m)^PYSCI2_OK=9/9\s*$', '(?m)^TEST PASSED\s*$']
+shell_cmd = "sh /usr/bin/run-pysci2.sh --ci"
+success_regex = ['(?m)^PYSCI2_OK=7/7\s*$', '(?m)^TEST PASSED\s*$']

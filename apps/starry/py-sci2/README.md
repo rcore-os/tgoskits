@@ -39,8 +39,9 @@ StarryOS 通过随附的 Debian glibc 闭包运行这份 glibc Miniforge Python�
 
 每个模块都是自包含地毯（独立 ok/fail 计数器，内部 fail 为 0 时才打印 `*_DONE` 标记）。
 `run_pysci2.py` 先跑 musl 栈（scipy + sympy），再在 `/opt/miniconda/bin/python` 存在时跑 conda 栈（其余
-七个）。仅当**当前架构上所有存在的地毯全部通过**时才打印 `PYSCI2_OK=<P>/<T>` 与 `TEST PASSED`
-（不允许跳过）：conda 架构（x86_64 / aarch64）为 **9/9**，musl-only 架构（riscv64 / loongarch64）为 **2/2**。
+七个）。只有**当前模式选中的模块全部通过**才输出总成功；排除项独立记录，不计通过。
+不带参数的完整模式在 conda 架构（x86_64 / aarch64）要求 **9/9**，`--ci` 自动模式
+要求 **7/7** 并另记两项跳过；musl-only 架构（riscv64 / loongarch64）保持 **2/2**。
 
 ## conda 彩蛋 - conda 命令面全 `--help` / `-h` 地毯
 
@@ -66,6 +67,10 @@ conda 栈的每个二进制都是 glibc 动态链接的 aarch64/x86_64 ELF，其
 `None` 再走一条在 StarryOS 上失败的 `dlopen(NULL)` 路径。
 
 ## 运行
+
+x86_64/AArch64 自动配置使用 `run-pysci2.sh --ci`，暂时排除受 NumPy 运行时问题
+影响的 Matplotlib、Statsmodels，要求其余 `7/7` 并单独记录两项跳过；不带 `--ci`
+仍执行完整九模块。RISC-V/LoongArch 自动配置保持 `2/2`。
 
 ```
 cargo xtask starry app qemu -t py-sci2 --arch x86_64

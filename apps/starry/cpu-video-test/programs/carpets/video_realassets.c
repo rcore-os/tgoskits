@@ -2,7 +2,8 @@
  *
  * The extracted real clips + golden stats live under $ASSET_DIR: video/badapple_clips/<clip> and
  * golden/badapple_clips_firstframe.tsv (clip, codec, sha256_rgb24_firstframe, luma8x8_hex) plus
- * golden/badapple_clips_t2.tsv (sha256_rgb24 at t=2.0). On-target these ride a git submodule.
+ * Bit-exact RGB references at t=2.0 are pinned below; the asset TSV predates
+ * explicit conversion rounding and describes the x86 SIMD fast path.
  *
  * For each of the four transcodes {h264, hevc, vp9, ffv1}:
  *   - assert codec_name, width==640, height==480, r_frame_rate==30/1 via ffprobe (vs golden),
@@ -54,12 +55,22 @@ static double probe_duration(const char *file) {
 /* Parse a firstframe tsv row: clip \t codec \t sha \t luma8x8. Return 0 ok. */
 struct row { char clip[128], codec[32], sha[80], luma[160]; };
 
+/* Independently generated on native Linux with FFmpeg 6.1.1 and 8.1.2 from
+ * media commit 3fbb179fc776f8de607b3c7b1736c9e057e9fc1b, using -ss 2.000000
+ * and -vf scale=iw:ih:flags=bicubic+bitexact+accurate_rnd -pix_fmt rgb24.
+ * Both CPU-dispatched and scalar paths produce these exact hashes. */
+static const struct { const char *clip, *sha; } t2[] = {
+    {"badapple_ffv1.mkv", "305728126d6a883a8a74394dd20bbe4b78b6a88a6f40f17e0d5ccd4e1056b415"},
+    {"badapple_h264.mp4", "81b368859575358f24192658dade2cb0df2bee019317e810094b63d428e5be00"},
+    {"badapple_h265.mp4", "f72e8717c91f6e0b9a8a8ec9bc7045ba79001677478e85c18dd53b2d9cdaff53"},
+    {"badapple_vp9.webm", "4d5cb1b8acf9c928b646de80b2e3ee5440773772a3597286293d48f2ab5fe4dd"},
+};
+
 int main(void) {
     gate g; gate_init(&g, "VIDEO_REALASSETS");
     const char *AD = asset_dir();
-    char ff_tsv[512], t2_tsv[512];
+    char ff_tsv[512];
     snprintf(ff_tsv, sizeof ff_tsv, "%s/golden/badapple_clips_firstframe.tsv", AD);
-    snprintf(t2_tsv, sizeof t2_tsv, "%s/golden/badapple_clips_t2.tsv", AD);
 
     if (!file_exists(ff_tsv)) {
         fprintf(stderr, "  (assets absent: %s not found - real-clip checks honest-skipped)\n", ff_tsv);
@@ -69,22 +80,6 @@ int main(void) {
     }
 
     char cmd[256]; snprintf(cmd, sizeof cmd, "mkdir -p %s", TMP); sh(cmd);
-
-    /* load t2 golden into a small map (clip -> sha) */
-    struct { char clip[128], sha[80]; } t2[8]; int nt2 = 0;
-    FILE *t = fopen(t2_tsv, "r");
-    if (t) {
-        char line[512];
-        while (fgets(line, sizeof line, t) && nt2 < 8) {
-            char clip[128], codec[32], sha[80];
-            if (sscanf(line, "%127s\t%31s\t%79s", clip, codec, sha) == 3 && strcmp(clip, "clip") != 0) {
-                strncpy(t2[nt2].clip, clip, sizeof t2[nt2].clip - 1);
-                strncpy(t2[nt2].sha, sha, sizeof t2[nt2].sha - 1);
-                nt2++;
-            }
-        }
-        fclose(t);
-    }
 
     FILE *f = fopen(ff_tsv, "r");
     if (!f) { gate_check(&g, 0, "firstframe tsv open"); return gate_finish(&g); }
@@ -136,7 +131,8 @@ int main(void) {
 
         /* t=2.0 frame sha, per-codec discriminating (diverges across codecs) */
         const char *want_t2 = NULL;
-        for (int k = 0; k < nt2; k++) if (strcmp(t2[k].clip, r.clip) == 0) { want_t2 = t2[k].sha; break; }
+        for (size_t k = 0; k < sizeof(t2) / sizeof(t2[0]); k++)
+            if (strcmp(t2[k].clip, r.clip) == 0) { want_t2 = t2[k].sha; break; }
         if (want_t2) {
             char t2rgb[512]; snprintf(t2rgb, sizeof t2rgb, "%s/t2.rgb", TMP);
             if (ffmpeg_frame_rgb24(clippath, 2.0, "", t2rgb) == 0) {
@@ -144,7 +140,7 @@ int main(void) {
                 gate_check(&g, sha256_file(t2rgb, sh2) == 0 && strcmp(sh2, want_t2) == 0,
                            "realclip: t=2.0 frame rgb24 sha != golden");
             } else gate_check(&g, 0, "realclip: t2.0 decode");
-        }
+        } else gate_check(&g, 0, "realclip: no bit-exact t2 reference");
         rows++;
     }
     fclose(f);

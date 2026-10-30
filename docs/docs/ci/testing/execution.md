@@ -50,6 +50,17 @@ identity。该行随后使用同一份 `test-suit/starryos/qemu/build-aarch64-un
 
 已取消的兄弟行没有完成验证，不能和 success 一起计为通过。工作流级队列及取消旧 run 的机制见[事件与调度](events.md)，它们与这里的组内 fail-fast 是不同层次。
 
+AxVisor 功能夜测关闭矩阵 fail-fast，GICv2、GICv3 压力测试以及原生 StarryOS、
+AxVisor+StarryOS、AxVisor+Linux 真机器人场景各使用独立矩阵行。每行有自己的
+超时、日志和结果；一个场景失败或超时不会取消其他场景。板卡服务按租约分配实体板，
+资源不足时等待可用资源，不代表必须并行操作同一块板。最终 Nightly Result 仍要求
+全部检查成功，失败不会被转为通过。
+
+矩阵 fail-fast 只控制不同 job。单行命令仍由 `bash -e -o pipefail` 执行，因此独立
+夜测场景应拆成不同 check；同一场景中的构建、准备和运行保持失败即停，避免使用
+失败后的产物继续执行。取消整个 workflow、共享前置阶段失败或缺少可用资源仍可能
+使场景无法执行，需要按实际原因报告。
+
 ## 2. 单行执行
 
 执行器只有一个 matrix job。它在 job 级来源检查通过后，才按 `matrix.runs_on`、`matrix.container_image` 和 `matrix.timeout_minutes` 准备执行环境。

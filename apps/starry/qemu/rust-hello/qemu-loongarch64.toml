@@ -5,7 +5,7 @@ args = [
     "la464",
     "-nographic",
     "-m",
-    "128M",
+    "512M",
     "-device",
     "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     "-drive",
@@ -15,7 +15,7 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
+uefi = true
 to_bin = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 60

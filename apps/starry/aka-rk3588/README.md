@@ -1,8 +1,8 @@
 # aka-rk3588 板卡检查
 
 本目录描述 Orange Pi 5 Plus 上运行的两套 `aka-rk3588` 程序和本仓库为它们注册的
-板卡检查。应用源码在外部仓库 `bullhh/aka-rk3588` 中维护；本仓库只保存打包脚本，
-以及真实机器人程序使用的预编译 `prebuilt/aarch64/build/tennis`。
+板卡检查。应用源码在外部仓库 `bullhh/aka-rk3588` 中维护；本仓库保存打包脚本、
+真实机器人启动器 `run_robot_ci_once.sh`，以及预编译 `prebuilt/aarch64/build/tennis`。
 
 应用和客户机内核是两件事：客户机内核由板卡检查的 VM 配置决定，`tennis` 程序始终
 来自板上共享根文件系统中的固定部署目录。CI 不下载、编译或部署应用。
@@ -33,7 +33,13 @@ AxVisor Nightly 覆盖，普通 CI 的 Starry 检查不再重复运行单客户�
 | --- | --- | --- | --- | --- |
 | `test-starry-self-hosted-board-orangepi-5-plus` | 普通 CI | `orangepi-5-plus` | `OrangePi-5-Plus` | 运行原生 StarryOS board suites；不再重复执行单客户机 AxVisor Linux 和 Starry smoke |
 | `test-orangepi-5-plus-robot-axvisor-guests` | 普通 CI | `orangepi-5-plus-robot`、`orangepi-5-plus-robot-starry`、`orangepi-5-plus-robot-linux` | `OrangePi-5-Plus` | 同一 runner 先运行 virtual Starry suites，再用共享 AxVisor 构建运行 Linux 和 StarryOS guest |
-| `test-orangepi-5-plus-robot-real-suite` | AxVisor Nightly | `orangepi-5-plus-robot-real`、`orangepi-5-plus-robot-real-starry`、`orangepi-5-plus-robot-real-linux` | `OrangePi-5-Plus-robot` | 同一 runner 先运行 native StarryOS，再复用一个 AxVisor 构建运行 StarryOS 和 Linux guest；均执行 `FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0` |
+| `test-orangepi-5-plus-robot-real-native-starryos` | AxVisor Nightly | `orangepi-5-plus-robot-real` | `OrangePi-5-Plus-robot` | 原生 StarryOS 完整机器人流程 |
+| `test-orangepi-5-plus-robot-real-axvisor-starryos` | AxVisor Nightly | `orangepi-5-plus-robot-real-starry` | `OrangePi-5-Plus-robot` | 单 StarryOS guest 完整机器人流程 |
+| `test-orangepi-5-plus-robot-real-axvisor-linux` | AxVisor Nightly | `orangepi-5-plus-robot-real-linux` | `OrangePi-5-Plus-robot` | 单 Linux guest 完整机器人流程 |
+
+三条 real 夜测分别使用独立 job、超时和日志，均执行
+`FEETECH_DEV=auto ./run_robot_ci_once.sh 28.0`。矩阵关闭 fail-fast，单场景失败不取消
+其他场景；最终汇总仍要求全部成功。
 
 三条 virtual 检查使用普通 `OrangePi-5-Plus` 板卡类型。部署前需确认候选板带 UVC
 摄像头和 `0403:6001` FT232 回环接线。
@@ -76,6 +82,15 @@ AxVisor Linux guest 从文件加载内核
 - real：`run_robot_ci_once.sh 28.0` 只有在应用完整判定和零退出码后，才输出
   `[ROBOT_CI] RESULT=PASS attempts=1` 或 `attempts=2`。board 命令不再使用
   `|| echo` 吞掉退出码，因此非零退出直接让步骤失败；成功标记仍由最终启动器输出。
+
+本地 real 启动器以 `source.env` 固定版本的协议为基础维护。它先识别 awk 实现，
+仅为 mawk 加 `-W interactive`，使管道输入逐行处理；单独调用 `fflush()` 只能刷新
+awk 输出，不能避免输入缓冲造成的集中打印。其他 awk 继续使用通用参数，原有
+`APPLICATION_PASS` 字段、性能门槛、进程退出码及失败后恢复/重试判定保持不变。
+
+`prepare-package.sh` 始终使用本目录的启动器覆盖上游归档入口，并在包内 `SOURCE`
+记录 `launcher_sha256`。此修正不需要重新构建 `tennis`。板卡 CI 使用预部署目录，
+本地改动或重新打包不会自动更新板上脚本；部署修正版后才能验证实际板端日志时序。
 
 两个入口的 FPS 门槛都写在对应 board TOML 中，不能靠宿主环境变量覆盖。成功正则只
 匹配最终生产者标记，命令回显中没有任何成功标记。
@@ -148,6 +163,7 @@ real 检查需要现场满足机械臂活动空间、车体架空或安全停靠
 | 文件 | 用途 |
 | --- | --- |
 | `prepare-package.sh` | 组装 real 机器人包 |
+| `run_robot_ci_once.sh` | real 启动器：流式日志、应用结果及进程状态校验、失败恢复与重试 |
 | `prepare-vision-usb-source.sh` | 解析 virtual 提交并准备源码 |
 | `prepare-vision-usb-package.sh` | 从源码和本次构建输出组装 virtual 包 |
 | `board-orangepi-5-plus.toml` | `cargo xtask starry app board -t aka-rk3588` 的 real 板卡入口 |

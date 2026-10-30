@@ -68,6 +68,7 @@ ensure_host_tools() {
     local missing=()
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v "$qemu_runner" >/dev/null 2>&1 || missing+=(qemu-user-static)
+    command -v git-lfs >/dev/null 2>&1 || missing+=(git-lfs)
     if [[ ${#missing[@]} -gt 0 ]]; then
         command -v apt-get >/dev/null 2>&1 && apt-get update && apt-get install -y --no-install-recommends "${missing[@]}" \
             || { echo "prebuild: missing host tools: ${missing[*]}" >&2; exit 1; }
@@ -128,7 +129,7 @@ compile_cells() {
     local cell
     for cell in "${CELLS[@]}"; do
         echo "prebuild: host cross-compile $cell for $arch ($triple; self-written PSNR/SSIM/FFT/SHA-256, ffmpeg CLI decode)"
-        "${HOST_CC[@]}" -O2 -std=c11 -I"$CAR" "$CAR/$cell.c" -o "$bin/$cell" -lm
+        "${HOST_CC[@]}" -O2 -std=c11 -static -no-pie -I"$CAR" "$CAR/$cell.c" -o "$bin/$cell" -lm
         [[ -x "$bin/$cell" ]] || { echo "prebuild: $cell failed to compile" >&2; exit 4; }
     done
 }
@@ -145,10 +146,27 @@ stage_assets() {
     #    as LFS pointers - init + sparse-pull only the subdirs this carpet reads.
     if [[ -z "$src" && -d "$app_dir/assets" ]]; then
         if [[ ! -f "$app_dir/assets/golden/badapple_clips_firstframe.tsv" ]] && command -v git >/dev/null 2>&1; then
-            git -C "$app_dir" submodule update --init assets >/dev/null 2>&1 || true
+            # CI containers may run as a different user from checkout/cache owners.
+            # Trust only these paths for this command, without changing Git config.
+            local repository_root
+            repository_root="$(cd "$app_dir/../../.." && pwd)"
+            GIT_LFS_SKIP_SMUDGE=1 git -c safe.directory="$repository_root" \
+                -c safe.directory="$app_dir/assets" -C "$app_dir" \
+                submodule update --init assets || {
+                echo "prebuild: failed to initialize video assets submodule" >&2
+                return 1
+            }
         fi
-        if command -v git >/dev/null 2>&1 && git -C "$app_dir/assets" lfs env >/dev/null 2>&1; then
-            git -C "$app_dir/assets" lfs pull --include="video/*,golden/*" >/dev/null 2>&1 || true
+        if [[ -e "$app_dir/assets/.git" ]] && command -v git-lfs >/dev/null 2>&1; then
+            git -c safe.directory="$app_dir/assets" -C "$app_dir/assets" \
+                -c filter.lfs.clean='git-lfs clean -- %f' \
+                -c filter.lfs.smudge='git-lfs smudge -- %f' \
+                -c filter.lfs.process='git-lfs filter-process' \
+                -c filter.lfs.required=true lfs pull \
+                --include="video/badapple_frames/**,video/badapple_clips/**,golden/*.tsv" || {
+                echo "prebuild: failed to fetch video Git LFS payloads" >&2
+                return 1
+            }
         fi
         [[ -f "$app_dir/assets/golden/badapple_clips_firstframe.tsv" ]] && src="$app_dir/assets"
     fi
@@ -161,6 +179,17 @@ stage_assets() {
         done
     fi
     if [[ -n "$src" && -f "$src/golden/badapple_clips_firstframe.tsv" ]]; then
+        local asset directory
+        local payload_directories=()
+        for directory in video/badapple_frames video/badapple_clips golden; do
+            [[ ! -d "$src/$directory" ]] || payload_directories+=("$src/$directory")
+        done
+        while IFS= read -r -d '' asset; do
+            if head -c 128 "$asset" | grep -q '^version https://git-lfs.github.com/spec/v1'; then
+                echo "prebuild: unresolved Git LFS pointer: $asset" >&2
+                return 1
+            fi
+        done < <(find "${payload_directories[@]}" -type f -print0)
         echo "prebuild: staging real-media assets from $src -> /opt/cpu-video-test/assets"
         mkdir -p "$bin/assets/video" "$bin/assets/golden"
         [[ -d "$src/video/badapple_frames" ]] && cp -a "$src/video/badapple_frames" "$bin/assets/video/" || true

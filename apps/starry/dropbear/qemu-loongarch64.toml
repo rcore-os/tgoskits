@@ -1,6 +1,6 @@
 # dropbear loongarch64 - SSH suite carpet. Platform: dynamic (axplat-dyn), same as
 # aarch64/riscv64 - build-loongarch64*.toml carries no ax-hal/plat-static / plat_dyn=false;
-# uefi=false / to_bin=true is the dynamic platform's raw-binary boot path, and the build
+# uefi=true / to_bin=true supplies the PIE/host-initramfs UEFI handoff, and the build
 # pulls ax-driver/serial so the console works. The gate provisions the dropbear suite
 # on-target with `apk add` (v3.23 ships loongarch64 packages) then drives every SSH session
 # single-node over 127.0.0.1.
@@ -10,7 +10,7 @@ args = [
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-loongarch64-alpine.img",
     "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
 ]
-uefi = false
+uefi = true
 to_bin = true
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 7200
