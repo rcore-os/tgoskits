@@ -279,6 +279,26 @@ impl AnonInodeMeta {
             }
         }
     }
+
+    /// Authorizes and then applies one `fchmod`/`fchown` request.
+    ///
+    /// `authorize` sees the metadata this request is about to replace; an
+    /// error aborts the update with the metadata untouched. Callers hold
+    /// their lock on `self` for both steps, so the permission decision cannot
+    /// be made against a state another shared fd already changed — the same
+    /// serialization Linux gets from `inode_lock` covering `setattr_prepare`
+    /// and `notify_change` in `chown_common()`.
+    pub(crate) fn update_authorized(
+        &mut self,
+        authorize: &dyn Fn(u32, u32, u32) -> StarryResult<()>,
+        type_bits: u32,
+        mode: Option<u32>,
+        owner: Option<(Option<u32>, Option<u32>)>,
+    ) -> StarryResult<()> {
+        authorize(self.mode, self.uid, self.gid)?;
+        self.apply(type_bits, mode, owner);
+        Ok(())
+    }
 }
 
 pub trait FileLike: Pollable + DowncastSync {
@@ -337,12 +357,19 @@ pub trait FileLike: Pollable + DowncastSync {
     /// `None` inside the tuple leaves that field unchanged — so a partial
     /// update never overwrites a concurrent update of the other field.
     ///
+    /// `authorize` runs inside the same critical section as the commit and
+    /// receives the object's current `(mode, uid, gid)`. Returning an error
+    /// leaves the metadata unchanged. The caller's permission decision is
+    /// therefore taken against the state the commit replaces, never against a
+    /// snapshot another shared descriptor may have superseded.
+    ///
     /// File kinds that cannot persist the change must return an error so
     /// `fchmod`/`fchown` do not report success they did not honor.
-    fn set_inode_metadata(
+    fn update_inode_metadata(
         &self,
         _mode: Option<u32>,
         _owner: Option<(Option<u32>, Option<u32>)>,
+        _authorize: &dyn Fn(u32, u32, u32) -> StarryResult<()>,
     ) -> StarryResult<()> {
         Err(StarryError::OperationNotSupported)
     }
@@ -1366,6 +1393,48 @@ mod tests {
         assert_eq!(meta.mode() & 0o1000, 0o1000, "sticky survives chown");
         meta.apply(0o010000, Some(0o4644), None);
         assert_eq!(meta.mode(), 0o014644, "chmod sets bits absolutely");
+    }
+
+    /// Authorization observes the metadata the commit replaces, and a denied
+    /// request leaves it untouched. The production entry (`update_authorized`)
+    /// runs both steps under the caller's single lock, so the owner a check was
+    /// granted against cannot change before the update lands.
+    #[axtest::axtest]
+    fn anon_inode_authorization_precedes_commit() {
+        use super::*;
+
+        let mut meta = AnonInodeMeta::new(0o010600, 1000, 2000);
+        let denied = meta.update_authorized(
+            &|_, uid, gid| {
+                assert_eq!((uid, gid), (1000, 2000), "authorize sees current owner");
+                Err(StarryError::OperationNotPermitted)
+            },
+            0o010600,
+            Some(0o4644),
+            Some((Some(0), Some(0))),
+        );
+        assert!(matches!(denied, Err(StarryError::OperationNotPermitted)));
+        assert_eq!(
+            (meta.mode(), meta.uid(), meta.gid()),
+            (0o010600, 1000, 2000),
+            "a denied request must not modify metadata"
+        );
+
+        let granted = meta.update_authorized(
+            &|_, uid, gid| {
+                assert_eq!((uid, gid), (1000, 2000), "authorize sees current owner");
+                Ok(())
+            },
+            0o010600,
+            None,
+            Some((Some(3000), None)),
+        );
+        assert!(granted.is_ok());
+        assert_eq!(
+            (meta.mode(), meta.uid(), meta.gid()),
+            (0o010600, 3000, 2000),
+            "an authorized partial request commits only the named field"
+        );
     }
 
     #[axtest::axtest]

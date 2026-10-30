@@ -842,17 +842,19 @@ impl FileLike for Socket {
         })
     }
 
-    fn set_inode_metadata(
+    fn update_inode_metadata(
         &self,
         mode: Option<u32>,
         owner: Option<(Option<u32>, Option<u32>)>,
+        authorize: &dyn Fn(u32, u32, u32) -> StarryResult<()>,
     ) -> StarryResult<()> {
-        // One lock spans the whole request: concurrent complete `fchown`
-        // calls can only end with one call's owner pair, and a concurrent
-        // `fchmod` cannot be lost between the mode update and the owner
-        // commit.
-        self.inode_meta.lock().apply(S_IFSOCK, mode, owner);
-        Ok(())
+        // One lock spans authorization and the whole request: the permission
+        // decision is taken against the metadata this commit replaces, so a
+        // concurrent owner change through another shared fd cannot authorize a
+        // stale request, and a concurrent `fchmod` cannot be lost between the
+        // mode update and the owner commit.
+        let mut meta = self.inode_meta.lock();
+        meta.update_authorized(authorize, S_IFSOCK, mode, owner)
     }
 
     fn nonblocking(&self) -> bool {
