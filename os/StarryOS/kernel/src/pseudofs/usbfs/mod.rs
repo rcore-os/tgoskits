@@ -25,7 +25,9 @@ use ax_std::os::arceos::task::{executor::LocalExecutor, thread::current::current
 use axfs_ng_vfs::Filesystem;
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use axpoll_set::PollSet;
-use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
+use crab_usb::usb_if::endpoint::{
+    IsoPacketResult, TransferCompletion, TransferRequest, TransferStatus,
+};
 #[cfg(feature = "uvc")]
 pub(crate) use manager::{SubmittedTransfer, SubmittedTransferInner};
 
@@ -312,6 +314,8 @@ struct SubmittedUrb {
 
 enum SubmittedUrbTransfer {
     Live(manager::SubmittedTransfer),
+    #[cfg(all(test, axtest))]
+    Injected(Mutex<Option<TransferCompletion>>),
     #[cfg(all(test, not(axtest)))]
     Test(tests::TestSubmittedTransfer),
 }
@@ -320,6 +324,8 @@ impl SubmittedUrb {
     fn queue_key(&self) -> Option<manager::SubmittedTransferQueue> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => Some(transfer.queue_key()),
+            #[cfg(all(test, axtest))]
+            SubmittedUrbTransfer::Injected(_) => None,
             #[cfg(all(test, not(axtest)))]
             SubmittedUrbTransfer::Test(_) => None,
         }
@@ -328,6 +334,8 @@ impl SubmittedUrb {
     fn try_reclaim(&self) -> StarryResult<Option<TransferCompletion>> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.try_reclaim(),
+            #[cfg(all(test, axtest))]
+            SubmittedUrbTransfer::Injected(completion) => Ok(completion.lock().take()),
             #[cfg(all(test, not(axtest)))]
             SubmittedUrbTransfer::Test(transfer) => transfer.try_reclaim(),
         }
@@ -336,6 +344,11 @@ impl SubmittedUrb {
     fn poll_reclaim(&self, cx: &mut Context<'_>) -> Poll<StarryResult<TransferCompletion>> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.poll_reclaim(cx),
+            #[cfg(all(test, axtest))]
+            SubmittedUrbTransfer::Injected(completion) => completion
+                .lock()
+                .take()
+                .map_or(Poll::Pending, |value| Poll::Ready(Ok(value))),
             #[cfg(all(test, not(axtest)))]
             SubmittedUrbTransfer::Test(_) => Poll::Pending,
         }
@@ -344,6 +357,8 @@ impl SubmittedUrb {
     fn cancel(&self) -> StarryResult<()> {
         match &self.transfer {
             SubmittedUrbTransfer::Live(transfer) => transfer.cancel(),
+            #[cfg(all(test, axtest))]
+            SubmittedUrbTransfer::Injected(_) => Ok(()),
             #[cfg(all(test, not(axtest)))]
             SubmittedUrbTransfer::Test(_) => Ok(()),
         }
@@ -360,8 +375,8 @@ struct UrbTransferResult {
     data: Vec<u8>,
     data_offset: usize,
     actual_length: usize,
-    packet_lengths: Vec<usize>,
-    packet_actual_lengths: Vec<usize>,
+    iso_packet_count: usize,
+    iso_packets: Vec<IsoPacketResult>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,30 +757,13 @@ impl UsbDeviceFile {
         &self,
         current: &crate::task::UserTaskRef,
         urb_ptr: usize,
-        packet_lengths: &[usize],
-        actual_total: usize,
-        packet_actual_lengths: &[usize],
-    ) -> crate::StarryResult<()> {
-        let mut packet_descs = read_iso_packet_descs(current, urb_ptr, packet_lengths.len())?;
-        if !packet_actual_lengths.is_empty() {
-            if packet_actual_lengths.len() != packet_lengths.len() {
-                return Err(StarryError::InvalidData);
-            }
-            for (packet_desc, packet_actual) in packet_descs.iter_mut().zip(packet_actual_lengths) {
-                packet_desc.actual_length = (*packet_actual).min(u32::MAX as usize) as u32;
-                packet_desc.status = 0;
-            }
-            return write_iso_packet_descs(current, urb_ptr, &packet_descs);
-        }
-
-        let mut remaining = actual_total;
-        for (packet_desc, packet_length) in packet_descs.iter_mut().zip(packet_lengths.iter()) {
-            let packet_actual = remaining.min(*packet_length);
-            packet_desc.actual_length = packet_actual as u32;
-            packet_desc.status = 0;
-            remaining -= packet_actual;
-        }
-        write_iso_packet_descs(current, urb_ptr, &packet_descs)
+        packet_count: usize,
+        packets: &[IsoPacketResult],
+    ) -> crate::StarryResult<i32> {
+        let mut packet_descs = read_iso_packet_descs(current, urb_ptr, packet_count)?;
+        let error_count = set_iso_packet_results(&mut packet_descs, packets)?;
+        write_iso_packet_descs(current, urb_ptr, &packet_descs)?;
+        Ok(error_count)
     }
 
     fn write_completed_urb(
@@ -796,25 +794,25 @@ impl UsbDeviceFile {
                         as *mut u8;
                     vm_write_slice(current, buffer_ptr, &result.data[..copy_len])?;
                 }
-                if !result.packet_lengths.is_empty() {
+                urb.error_count = if result.iso_packet_count == 0 {
+                    0
+                } else {
                     self.write_iso_packet_results(
                         current,
                         user_urb_ptr,
-                        &result.packet_lengths,
-                        result.actual_length,
-                        &result.packet_actual_lengths,
-                    )?;
-                }
+                        result.iso_packet_count,
+                        &result.iso_packets,
+                    )?
+                };
                 urb.status = 0;
                 urb.actual_length = result.actual_length as i32;
-                urb.error_count = 0;
                 (user_urb_ptr as *mut descriptor::UsbdevfsUrb).vm_write(current, urb)?;
                 if log {
                     debug!(
                         "usbfs: reap urb ptr={:#x} status=0 actual={} packets={}",
                         user_urb_ptr,
                         result.actual_length,
-                        result.packet_lengths.len()
+                        result.iso_packets.len()
                     );
                 }
             }
@@ -849,31 +847,32 @@ impl UsbDeviceFile {
     fn transfer_completion_to_result(
         mut submitted: SubmittedUrb,
         completion: TransferCompletion,
-    ) -> UrbTransferResult {
+    ) -> StarryResult<UrbTransferResult> {
+        if completion.iso_packets.len() != submitted.packet_lengths.len() {
+            // Queue a terminal URB error instead of discovering a malformed
+            // completion only after REAPURB has removed it from the queue.
+            return Err(StarryError::InvalidData);
+        }
         let data = if submitted.is_in {
-            let actual =
-                if submitted.packet_lengths.is_empty() || completion.iso_packets.is_empty() {
-                    completion.actual_length
-                } else {
-                    iso_copy_len(&submitted.packet_lengths, &completion.iso_packets)
-                }
-                .min(submitted.buffer.len());
+            let actual = if submitted.packet_lengths.is_empty() {
+                completion.actual_length
+            } else {
+                iso_copy_len(&submitted.packet_lengths, &completion.iso_packets)
+            }
+            .min(submitted.buffer.len());
             submitted.buffer.truncate(actual);
             submitted.buffer
         } else {
             Vec::new()
         };
 
-        let packet_actual_lengths =
-            iso_packet_actual_lengths(&submitted.packet_lengths, submitted.is_in, &completion);
-
-        UrbTransferResult {
+        Ok(UrbTransferResult {
             data,
             data_offset: submitted.data_offset,
             actual_length: completion.actual_length,
-            packet_lengths: submitted.packet_lengths,
-            packet_actual_lengths,
-        }
+            iso_packet_count: submitted.packet_lengths.len(),
+            iso_packets: completion.iso_packets,
+        })
     }
 
     fn complete_submitted_urb(
@@ -1621,8 +1620,9 @@ fn completed_urb_from_result(
 ) -> CompletedUrb {
     CompletedUrb {
         user_urb_ptr,
-        result: result
-            .map(|completion| UsbDeviceFile::transfer_completion_to_result(submitted, completion)),
+        result: result.and_then(|completion| {
+            UsbDeviceFile::transfer_completion_to_result(submitted, completion)
+        }),
         log,
     }
 }
@@ -1791,10 +1791,6 @@ fn iso_copy_len(
     packet_lengths: &[usize],
     packet_results: &[crab_usb::usb_if::endpoint::IsoPacketResult],
 ) -> usize {
-    if packet_results.len() != packet_lengths.len() {
-        return packet_lengths.iter().sum();
-    }
-
     let mut offset = 0usize;
     let mut copy_len = 0usize;
     for (requested, packet) in packet_lengths.iter().copied().zip(packet_results.iter()) {
@@ -1807,24 +1803,33 @@ fn iso_copy_len(
     copy_len
 }
 
-fn iso_packet_actual_lengths(
-    packet_lengths: &[usize],
-    is_in: bool,
-    completion: &TransferCompletion,
-) -> Vec<usize> {
-    if packet_lengths.is_empty() {
-        return Vec::new();
+fn set_iso_packet_results(
+    descs: &mut [descriptor::UsbdevfsIsoPacketDesc],
+    packets: &[IsoPacketResult],
+) -> StarryResult<i32> {
+    if descs.len() != packets.len() {
+        return Err(StarryError::InvalidData);
     }
-
-    if !is_in && completion.iso_packets.len() == packet_lengths.len() {
-        return packet_lengths.to_vec();
+    let mut error_count = 0;
+    for (desc, packet) in descs.iter_mut().zip(packets) {
+        desc.actual_length = packet
+            .actual_length
+            .min(packet.requested_length)
+            .min(u32::MAX as usize) as u32;
+        desc.status = match packet.status {
+            TransferStatus::Completed => 0,
+            TransferStatus::Stalled => -Errno::EPIPE.into_raw(),
+            TransferStatus::Cancelled => -Errno::ECONNRESET.into_raw(),
+            TransferStatus::MissedService => -Errno::EXDEV.into_raw(),
+            TransferStatus::Overflow => -Errno::EOVERFLOW.into_raw(),
+            TransferStatus::ProtocolError => -Errno::EPROTO.into_raw(),
+            TransferStatus::Error => -Errno::EIO.into_raw(),
+        } as u32;
+        if desc.status != 0 {
+            error_count += 1;
+        }
     }
-
-    completion
-        .iso_packets
-        .iter()
-        .map(|packet| packet.actual_length)
-        .collect()
+    Ok(error_count)
 }
 
 fn iso_packet_descs_ptr(urb_ptr: usize) -> StarryResult<*mut descriptor::UsbdevfsIsoPacketDesc> {
@@ -1950,6 +1955,70 @@ mod tests {
                 actual_length: 0,
                 iso_packets: Vec::new(),
             }))
+        }
+    }
+
+    #[test]
+    fn iso_output_completion_does_not_invent_successful_packet_bytes() {
+        use crab_usb::usb_if::endpoint::IsoPacketResult;
+
+        let completion = TransferCompletion {
+            request_id: RequestId::new(1),
+            status: TransferStatus::Completed,
+            actual_length: 12,
+            iso_packets: vec![
+                IsoPacketResult {
+                    requested_length: 64,
+                    actual_length: 0,
+                    status: TransferStatus::Error,
+                },
+                IsoPacketResult {
+                    requested_length: 64,
+                    actual_length: 12,
+                    status: TransferStatus::Completed,
+                },
+            ],
+        };
+        let adapter = TestUsbfsAdapter::new();
+        let mut submitted = adapter.submit_async_urb(1);
+        submitted.packet_lengths = vec![64, 64];
+        let result = UsbDeviceFile::transfer_completion_to_result(submitted, completion).unwrap();
+        let mut descs = vec![descriptor::UsbdevfsIsoPacketDesc::default(); 2];
+        assert_eq!(
+            set_iso_packet_results(&mut descs, &result.iso_packets).unwrap(),
+            1
+        );
+        assert_eq!(result.actual_length, 12);
+        assert!(set_iso_packet_results(&mut descs[..1], &result.iso_packets).is_err());
+        assert_eq!(descs[0].actual_length, 0);
+        assert_eq!(descs[0].status as i32, -Errno::EIO.into_raw());
+        assert_eq!(descs[1].actual_length, 12);
+        assert_eq!(descs[1].status, 0);
+    }
+
+    #[test]
+    fn malformed_iso_completion_keeps_a_terminal_urb_error() {
+        let adapter = TestUsbfsAdapter::new();
+        for returned_packets in [1, 3] {
+            let mut submitted = adapter.submit_async_urb(1);
+            submitted.packet_lengths = vec![64, 64];
+            let completion = TransferCompletion {
+                request_id: RequestId::new(1),
+                status: TransferStatus::Completed,
+                actual_length: 0,
+                iso_packets: vec![
+                    IsoPacketResult {
+                        requested_length: 64,
+                        actual_length: 0,
+                        status: TransferStatus::MissedService,
+                    };
+                    returned_packets
+                ],
+            };
+            let user_urb_ptr = submitted.user_urb_ptr;
+            let completed = terminal_completed_urb(submitted, Ok(completion)).unwrap();
+            assert_eq!(completed.user_urb_ptr, user_urb_ptr);
+            assert!(matches!(completed.result, Err(StarryError::InvalidData)));
         }
     }
 
@@ -2084,5 +2153,256 @@ mod wait_tests {
 
         current.set_policy(original_policy).unwrap();
         current::set_current_thread_affinity(original_affinity).unwrap();
+    }
+}
+
+#[cfg(all(test, axtest))]
+mod reap_tests {
+    use alloc::{sync::Arc, vec};
+
+    use ax_fs_ng::vfs::FsContext;
+    use axfs_ng_vfs::Mountpoint;
+    use crab_usb::usb_if::{endpoint::RequestId, host::hub::Speed};
+    use linux_raw_sys::general::{
+        MAP_ANONYMOUS, MAP_FIXED, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE,
+    };
+
+    use super::*;
+    use crate::{
+        file::{FD_TABLE, FileTable, add_file_like, new_file_table_scope},
+        sync::RawSpinRwLock,
+        syscall::{sys_close, sys_ioctl, sys_mmap, sys_munmap},
+        task::{
+            self, PidReservation, PidReservationKind, Process, ProcessData, ProcessDataInit,
+            ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadOptions,
+        },
+    };
+
+    // Only the controller result is synthetic. The file, fd table, user MM,
+    // completion collection, ioctl dispatch and user copies are real.
+    fn device_file() -> Arc<UsbDeviceFile> {
+        let manager = Arc::new(UsbFsManager::new(vec![manager::UsbHostState {
+            device_id: rdrive::DeviceId::from(0),
+            bus_num: 1,
+            root_hub_speed: Speed::High,
+            refresh: Default::default(),
+            next_device_num: 2,
+            stable_id_to_device_num: Default::default(),
+        }]));
+        let fs = create_filesystem(manager.clone());
+        let context = FsContext::new(Mountpoint::new_root(&fs).root_location());
+        let base = KernelFile::new(
+            ax_fs_ng::File::open(&context, "/001/001").unwrap(),
+            O_RDONLY,
+        );
+        let (snapshot, generation) = manager.device_snapshot_with_generation(1, 1).unwrap();
+        Arc::new(UsbDeviceFile {
+            base,
+            manager,
+            bus_num: 1,
+            device_num: 1,
+            generation,
+            snapshot,
+            lease: Mutex::new(None),
+            lifecycle_lock: Mutex::new(()),
+            claimed_interfaces: RawSpinLock::new(Default::default()),
+            submitted_urbs: Arc::new(Mutex::new(VecDeque::new())),
+            pending_urbs: Arc::new(RawSpinLock::new(VecDeque::new())),
+            poll_urbs: Arc::new(PollSet::new()),
+            urb_worker: Arc::new(UrbWorker::new()),
+        })
+    }
+
+    fn check_reap_writeback() {
+        use descriptor::{
+            USBDEVFS_REAPURB, USBDEVFS_REAPURBNDELAY, UsbdevfsIsoPacketDesc, UsbdevfsUrb,
+        };
+
+        let current = task::current_user_task();
+        let memory = sys_mmap(
+            &current,
+            0x10000,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+            -1,
+            0,
+        )
+        .unwrap() as usize;
+        let urb_ptr = memory as *mut UsbdevfsUrb;
+        let returned_ptr = (memory + 256) as *mut usize;
+        let buffer = (memory + 512) as *mut u8;
+        let file = device_file();
+        let fd = add_file_like(file.clone(), false).unwrap();
+
+        for cmd in [USBDEVFS_REAPURB, USBDEVFS_REAPURBNDELAY] {
+            for is_in in [false, true] {
+                // Too few and too many packets must both yield one terminal
+                // error, not an ioctl failure that loses the original URB.
+                for packet_count in [3, 2, 4] {
+                    let urb = UsbdevfsUrb {
+                        type_: descriptor::USBDEVFS_URB_TYPE_ISO,
+                        endpoint: if is_in { 0x81 } else { 1 },
+                        buffer,
+                        buffer_length: 96,
+                        number_of_packets: 3,
+                        status: -999,
+                        actual_length: -999,
+                        error_count: -999,
+                        usercontext: (memory + 1024) as *mut u8,
+                        ..Default::default()
+                    };
+                    urb_ptr.vm_write(&current, urb).unwrap();
+                    write_iso_packet_descs(
+                        &current,
+                        memory,
+                        &[UsbdevfsIsoPacketDesc {
+                            length: 32,
+                            actual_length: u32::MAX,
+                            status: u32::MAX,
+                        }; 3],
+                    )
+                    .unwrap();
+                    returned_ptr.vm_write(&current, 0).unwrap();
+                    vm_write_slice(&current, buffer, &[0xa5u8; 96]).unwrap();
+                    let mut packets = vec![
+                        IsoPacketResult {
+                            requested_length: 32,
+                            actual_length: 12,
+                            status: TransferStatus::Completed,
+                        },
+                        IsoPacketResult {
+                            requested_length: 32,
+                            actual_length: 8,
+                            status: TransferStatus::MissedService,
+                        },
+                        IsoPacketResult {
+                            requested_length: 32,
+                            actual_length: 0,
+                            status: TransferStatus::Overflow,
+                        },
+                    ];
+                    packets.resize(packet_count, packets[2]);
+                    let completion = TransferCompletion {
+                        request_id: RequestId::new(1),
+                        status: TransferStatus::Completed,
+                        actual_length: 20,
+                        iso_packets: packets,
+                    };
+                    let mut payload = vec![0x31; 32];
+                    payload.extend_from_slice(&[0x52; 32]);
+                    payload.extend_from_slice(&[0x73; 32]);
+                    file.submitted_urbs.lock().push_back(SubmittedUrb {
+                        user_urb_ptr: memory,
+                        transfer: SubmittedUrbTransfer::Injected(Mutex::new(Some(completion))),
+                        interface: None,
+                        discarded: false,
+                        buffer: payload,
+                        is_in,
+                        data_offset: 0,
+                        packet_lengths: vec![32; 3],
+                        log: false,
+                    });
+
+                    assert_eq!(
+                        sys_ioctl(&current, fd, cmd, returned_ptr as usize).unwrap(),
+                        0
+                    );
+                    assert_eq!(returned_ptr.vm_read(&current).unwrap(), memory);
+                    let actual = urb_ptr.vm_read(&current).unwrap();
+                    assert_eq!(actual.usercontext, urb.usercontext);
+                    assert_eq!(actual.number_of_packets, 3);
+                    let descs = read_iso_packet_descs(&current, memory, 3).unwrap();
+                    let bytes = read_user_bytes(&current, buffer, 96).unwrap();
+                    if packet_count == 3 {
+                        assert_eq!(actual.status, 0);
+                        assert_eq!(actual.actual_length, 20);
+                        assert_eq!(actual.error_count, 2, "REAPURB lost the error count");
+                        for (desc, (length, status)) in descs.iter().zip([
+                            (12, 0),
+                            (8, -Errno::EXDEV.into_raw()),
+                            (0, -Errno::EOVERFLOW.into_raw()),
+                        ]) {
+                            assert_eq!(desc.length, 32);
+                            assert_eq!(desc.actual_length, length);
+                            assert_eq!(desc.status as i32, status);
+                        }
+                        if is_in {
+                            assert_eq!(&bytes[..12], &[0x31; 12]);
+                            assert_eq!(&bytes[32..40], &[0x52; 8]);
+                            assert_eq!(&bytes[40..], &[0xa5; 56]);
+                        } else {
+                            assert_eq!(bytes, [0xa5; 96]);
+                        }
+                    } else {
+                        assert_eq!(actual.status, -Errno::EINVAL.into_raw());
+                        assert_eq!(actual.actual_length, 0);
+                        assert_eq!(actual.error_count, 1);
+                        assert_eq!(bytes, [0xa5; 96]);
+                    }
+                    // Neither a successful nor a malformed completion may be
+                    // returned twice. An empty nonblocking reap leaves its output alone.
+                    returned_ptr.vm_write(&current, usize::MAX).unwrap();
+                    assert_eq!(
+                        sys_ioctl(&current, fd, USBDEVFS_REAPURBNDELAY, returned_ptr as usize)
+                            .unwrap_err()
+                            .linux_errno(),
+                        Errno::EAGAIN
+                    );
+                    assert_eq!(returned_ptr.vm_read(&current).unwrap(), usize::MAX);
+                }
+            }
+        }
+        sys_close(fd).unwrap();
+        drop(file);
+        sys_munmap(&current, memory, 4096).unwrap();
+    }
+
+    #[axtest::axtest]
+    fn iso_reap_writes_packet_results_to_user_memory_once() {
+        let reservation =
+            PidReservation::reserve(&task::ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
+        let identity = reservation.identity();
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let mut aspace = crate::mm::new_user_aspace_empty().unwrap();
+        // This thread actually installs its MM, unlike metadata-only host tests.
+        crate::mm::copy_from_kernel(&mut aspace).unwrap();
+        let mm = crate::mm::MmHandle::from_arc(Arc::new(Mutex::new(aspace))).unwrap();
+        let process = ProcessData::new(
+            Process::new_for_axtest(identity.clone()),
+            identity.clone(),
+            tgid,
+            ProcessDataInit::new(
+                ProcessImage::new(
+                    Default::default(),
+                    Arc::default(),
+                    Arc::default(),
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                ),
+                mm,
+                Arc::default(),
+                crate::namespace::NsProxy::new_root(),
+                None,
+                TidNumber::from(identity.root_number()),
+            ),
+        );
+        let mut scope = scope_local::Scope::new();
+        FD_TABLE
+            .scope_mut(&mut scope)
+            .clone_from(&new_file_table_scope(Arc::new(RawSpinRwLock::new(
+                FileTable::new(),
+            ))));
+        let thread = Thread::new(identity, tid, process, None, Default::default(), scope).unwrap();
+        let prepared = task::prepare_user_thread(
+            check_reap_writeback,
+            thread,
+            UserThreadOptions::new("usbfs-reap-writeback").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(prepared.stage().unwrap().activate().join(), 0);
+        drop(reservation);
     }
 }

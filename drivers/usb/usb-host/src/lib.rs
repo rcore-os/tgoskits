@@ -1,5 +1,7 @@
 #![cfg_attr(not(feature = "umod"), no_std)]
 extern crate alloc;
+#[cfg(test)]
+mod test_support;
 #[macro_use]
 extern crate log;
 #[macro_use]

@@ -101,6 +101,19 @@ const NVME_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile 
     features: &[],
 }];
 
+const CRAB_USB_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "kmod",
+        no_default_features: false,
+        features: &[],
+    },
+    PackageFeatureProfile {
+        name: "libusb",
+        no_default_features: false,
+        features: &["libusb"],
+    },
+];
+
 const SDMMC_RDIF_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "rdif",
     no_default_features: true,
@@ -381,6 +394,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
         "nvme-driver" => Some(NVME_FEATURE_PROFILES),
+        "crab-usb" => Some(CRAB_USB_FEATURE_PROFILES),
         "acpica-interpreter" => Some(ACPICA_FEATURE_PROFILES),
         "sdmmc-protocol" => Some(SDMMC_RDIF_FEATURE_PROFILES),
         "aic8800" => Some(AIC8800_FEATURE_PROFILES),

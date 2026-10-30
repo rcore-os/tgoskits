@@ -240,6 +240,12 @@ impl Dwc2ChannelCompletions {
         self.connected.load(Ordering::Acquire)
     }
 
+    /// Keep IRQ mask updates ordered with disconnect and reconnection.
+    pub(crate) fn with_connection_state(&self, configure_irqs: impl FnOnce(bool)) {
+        let _guard = self.lifecycle_gate.lock_irqsave();
+        configure_irqs(self.is_connected());
+    }
+
     pub(crate) fn mark_connected(&self, configure_irqs: impl FnOnce()) {
         let _guard = self.lifecycle_gate.lock_irqsave();
         configure_irqs();

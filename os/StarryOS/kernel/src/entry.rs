@@ -183,5 +183,5 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
     // Userspace owns normal shutdown through reboot(2); the bootstrap thread
     // must neither return nor poll a second process-lifecycle state here.
     let _exit_code = task.join();
-    match crate::task::future::block_on(core::future::pending::<core::convert::Infallible>()) {}
+    crate::task::future::block_on(core::future::pending::<()>());
 }

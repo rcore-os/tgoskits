@@ -310,6 +310,12 @@ pub enum TransferStatus {
     Stalled,
     Cancelled,
     Error,
+    /// The packet was not fully serviced; actual_length may include partial data.
+    MissedService,
+    /// The device or controller overran the packet buffer.
+    Overflow,
+    /// The USB transaction did not complete successfully.
+    ProtocolError,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

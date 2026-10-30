@@ -1,5 +1,3 @@
-#[cfg(any(kmod, umod))]
-use alloc::vec::Vec;
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     any::Any,
@@ -10,7 +8,7 @@ use core::{
 
 use ax_sync::RawSpinLock;
 #[cfg(any(kmod, umod))]
-use usb_if::endpoint::{IsoPacketResult, TransferStatus};
+use usb_if::endpoint::TransferStatus;
 use usb_if::{
     descriptor::EndpointType,
     endpoint::{EndpointInfo, RequestId, TransferCompletion, TransferRequest},
@@ -182,24 +180,10 @@ impl Future for EndpointRequestFuture<'_> {
 
 #[cfg(any(kmod, umod))]
 pub(crate) fn transfer_to_completion(id: RequestId, transfer: Transfer) -> TransferCompletion {
-    let iso_packets = match &transfer.kind {
-        usb_if::endpoint::TransferKind::Isochronous { packet_lengths } => packet_lengths
-            .iter()
-            .copied()
-            .zip(transfer.iso_packet_actual_lengths.iter().copied())
-            .map(|(requested_length, actual_length)| IsoPacketResult {
-                requested_length,
-                actual_length,
-                status: TransferStatus::Completed,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-
     TransferCompletion {
         request_id: id,
         status: TransferStatus::Completed,
         actual_length: transfer.transfer_len,
-        iso_packets,
+        iso_packets: transfer.iso_packets,
     }
 }

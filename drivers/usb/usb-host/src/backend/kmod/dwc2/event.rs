@@ -116,11 +116,17 @@ impl EventHandlerOp for Dwc2EventHandler {
     fn rearm_irq(&self) {
         let masked = self.masked_irqs.swap(0, Ordering::AcqRel);
         if masked != 0 {
-            self.irq_state.apply_enabled(|enabled| {
-                self.regs
-                    .regs()
-                    .gintmsk
-                    .set(if enabled { DWC2_RUNTIME_GINTMSK } else { 0 });
+            // Serialize with connection transitions before taking IRQ control.
+            // Port events must remain armed after unplug.
+            self.channel_completions.with_connection_state(|connected| {
+                let mask = if connected {
+                    DWC2_RUNTIME_GINTMSK
+                } else {
+                    DWC2_RUNTIME_GINTMSK & !GINTSTS_HCHINT
+                };
+                self.irq_state.apply_enabled(|enabled| {
+                    self.regs.regs().gintmsk.set(if enabled { mask } else { 0 });
+                });
             });
         }
     }
@@ -392,5 +398,16 @@ mod tests {
         assert_eq!(completions.take(3), Some(DWC2_COMPLETION_DISCONNECTED));
         assert_eq!(regs.regs().haintmsk.get(), 0);
         assert_eq!(regs.regs().gintmsk.get() & GINTSTS_HCHINT, 0);
+        assert_ne!(regs.regs().gintmsk.get() & GINTSTS_PRTINT, 0);
+        assert!(completions.take(3).is_none());
+
+        completions.end_request(3);
+        completions.mark_connected(|| regs.regs().haintmsk.set(1 << 3));
+        regs.regs().gintsts.set(GINTSTS_PRTINT);
+        assert!(matches!(
+            handler.handle_event(),
+            Event::PortChange { port: 1 }
+        ));
+        assert_ne!(regs.regs().gintmsk.get() & GINTSTS_HCHINT, 0);
     }
 }
