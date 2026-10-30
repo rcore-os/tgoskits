@@ -2,6 +2,7 @@
 
 mod guest_cpufreq;
 mod ivc;
+mod ivshmem_pci;
 mod virtio_blk;
 pub(crate) mod virtio_net;
 pub(crate) mod virtio_pci;
@@ -23,6 +24,7 @@ pub(super) fn register_devices(
 ) -> Result<(), crate::ConfiguredDeviceError> {
     ivc::register(catalog)?;
     guest_cpufreq::register(catalog)?;
+    ivshmem_pci::register(catalog)?;
     virtio_blk::register(catalog)?;
     virtio_net::register(catalog)?;
     Ok(())

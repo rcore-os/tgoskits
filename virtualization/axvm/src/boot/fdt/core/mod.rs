@@ -23,6 +23,8 @@ mod disabled;
 mod import;
 pub(crate) mod interrupt;
 mod parser;
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) mod pci;
 mod policy;
 mod print;
 mod references;
