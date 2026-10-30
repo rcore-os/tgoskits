@@ -211,6 +211,96 @@ pub(crate) fn dma_buf_seek(size: u64, pos: ax_io::SeekFrom) -> StarryResult<u64>
 }
 
 #[allow(dead_code)]
+/// Mode and owner of an anonymous in-kernel inode (pipe or socket).
+///
+/// Linux protects these fields with the inode lock, so one `chmod`/`chown`
+/// request commits mode and owner together. Keeping them in one mutex-guarded
+/// value gives this kernel the same commit boundary: concurrent `fchown`
+/// calls can only end with the owner pair of one complete request, never a
+/// mix of two.
+pub(crate) struct AnonInodeMeta {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+
+impl AnonInodeMeta {
+    pub(crate) const fn new(mode: u32, uid: u32, gid: u32) -> Self {
+        Self { mode, uid, gid }
+    }
+
+    pub(crate) const fn mode(&self) -> u32 {
+        self.mode
+    }
+
+    pub(crate) const fn uid(&self) -> u32 {
+        self.uid
+    }
+
+    pub(crate) const fn gid(&self) -> u32 {
+        self.gid
+    }
+
+    /// Rewrites the owner fields (creation identity of an anonymous inode).
+    pub(crate) fn set_owner(&mut self, uid: u32, gid: u32) {
+        self.uid = uid;
+        self.gid = gid;
+    }
+
+    /// Applies one `fchmod`/`fchown` request in a single commit.
+    ///
+    /// `type_bits` are the inode's file-type bits (for example `S_IFIFO`).
+    /// A request carrying `mode` sets the permission bits absolutely;
+    /// a `fchown`-only request (`mode == None`) clears SUID unconditionally
+    /// and SGID when the group-execute bit is set, mirroring
+    /// `chown_common()`'s privileged-bit rules.
+    pub(crate) fn apply(
+        &mut self,
+        type_bits: u32,
+        mode: Option<u32>,
+        owner: Option<(Option<u32>, Option<u32>)>,
+    ) {
+        if let Some(mode) = mode {
+            self.mode = type_bits | (mode & 0o7777);
+        } else {
+            let mut perm = self.mode & 0o7777;
+            perm &= !0o4000;
+            if perm & 0o0010 != 0 {
+                perm &= !0o2000;
+            }
+            self.mode = type_bits | perm;
+        }
+        if let Some((uid, gid)) = owner {
+            if let Some(uid) = uid {
+                self.uid = uid;
+            }
+            if let Some(gid) = gid {
+                self.gid = gid;
+            }
+        }
+    }
+
+    /// Authorizes and then applies one `fchmod`/`fchown` request.
+    ///
+    /// `authorize` sees the metadata this request is about to replace; an
+    /// error aborts the update with the metadata untouched. Callers hold
+    /// their lock on `self` for both steps, so the permission decision cannot
+    /// be made against a state another shared fd already changed — the same
+    /// serialization Linux gets from `inode_lock` covering `setattr_prepare`
+    /// and `notify_change` in `chown_common()`.
+    pub(crate) fn update_authorized(
+        &mut self,
+        authorize: &dyn Fn(u32, u32, u32) -> StarryResult<()>,
+        type_bits: u32,
+        mode: Option<u32>,
+        owner: Option<(Option<u32>, Option<u32>)>,
+    ) -> StarryResult<()> {
+        authorize(self.mode, self.uid, self.gid)?;
+        self.apply(type_bits, mode, owner);
+        Ok(())
+    }
+}
+
 pub trait FileLike: Pollable + DowncastSync {
     /// Seek a special file using its own offset rules.
     ///
@@ -256,6 +346,32 @@ pub trait FileLike: Pollable + DowncastSync {
 
     fn stat(&self) -> StarryResult<Kstat> {
         Ok(Kstat::default())
+    }
+
+    /// Updates mode bits and/or owner for a file-like whose backing object is
+    /// an in-kernel inode rather than a filesystem location (an anonymous pipe
+    /// or socket). `mode` carries the permission bits only; implementations
+    /// keep their own file-type bits. `mode == None` marks a `fchown`-style
+    /// call, whose `chown_common()` contract clears privileged mode bits even
+    /// when no owner field is named; `owner` names the fields to commit —
+    /// `None` inside the tuple leaves that field unchanged — so a partial
+    /// update never overwrites a concurrent update of the other field.
+    ///
+    /// `authorize` runs inside the same critical section as the commit and
+    /// receives the object's current `(mode, uid, gid)`. Returning an error
+    /// leaves the metadata unchanged. The caller's permission decision is
+    /// therefore taken against the state the commit replaces, never against a
+    /// snapshot another shared descriptor may have superseded.
+    ///
+    /// File kinds that cannot persist the change must return an error so
+    /// `fchmod`/`fchown` do not report success they did not honor.
+    fn update_inode_metadata(
+        &self,
+        _mode: Option<u32>,
+        _owner: Option<(Option<u32>, Option<u32>)>,
+        _authorize: &dyn Fn(u32, u32, u32) -> StarryResult<()>,
+    ) -> StarryResult<()> {
+        Err(StarryError::OperationNotSupported)
     }
 
     fn path(&self) -> Cow<'_, str>;
@@ -1234,6 +1350,93 @@ fn cloned_table_scope_invalidates_after_fd_reuse_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 mod tests {
+    /// The anonymous-inode metadata commit is exhaustive over serial orders:
+    /// any sequence of partial `fchown` requests keeps the fields that were
+    /// not named, and any sequence of complete requests ends on exactly one
+    /// of them — never a mix. The value type has a single mutating entry
+    /// (`apply`), which is also the production commit path, so the model and
+    /// the implementation cannot drift apart.
+    #[axtest::axtest]
+    fn anon_inode_owner_commits_are_whole() {
+        use super::AnonInodeMeta;
+
+        let partial = [(Some(2000), None), (None, Some(3000))];
+        for order in [[0usize, 1], [1, 0]] {
+            let mut meta = AnonInodeMeta::new(0o010600, 1000, 1000);
+            for index in order {
+                meta.apply(0o010600, None, Some(partial[index]));
+            }
+            assert_eq!(
+                (meta.uid(), meta.gid()),
+                (2000, 3000),
+                "partial requests must preserve the unnamed field"
+            );
+        }
+
+        let complete = [(Some(2000), Some(2000)), (Some(3000), Some(3000))];
+        for order in [[0usize, 1], [1, 0]] {
+            let mut meta = AnonInodeMeta::new(0o010600, 1000, 1000);
+            for index in order {
+                meta.apply(0o010600, None, Some(complete[index]));
+            }
+            assert!(
+                matches!((meta.uid(), meta.gid()), (2000, 2000) | (3000, 3000)),
+                "complete requests must end on one whole owner pair"
+            );
+        }
+
+        // A chown-only request clears privileged bits even with no named
+        // owner field, and a chmod request sets its bits absolutely.
+        let mut meta = AnonInodeMeta::new(0o017777, 0, 0);
+        meta.apply(0o010000, None, Some((None, None)));
+        assert_eq!(meta.mode() & 0o6000, 0, "chown clears SUID/SGID");
+        assert_eq!(meta.mode() & 0o1000, 0o1000, "sticky survives chown");
+        meta.apply(0o010000, Some(0o4644), None);
+        assert_eq!(meta.mode(), 0o014644, "chmod sets bits absolutely");
+    }
+
+    /// Authorization observes the metadata the commit replaces, and a denied
+    /// request leaves it untouched. The production entry (`update_authorized`)
+    /// runs both steps under the caller's single lock, so the owner a check was
+    /// granted against cannot change before the update lands.
+    #[axtest::axtest]
+    fn anon_inode_authorization_precedes_commit() {
+        use super::*;
+
+        let mut meta = AnonInodeMeta::new(0o010600, 1000, 2000);
+        let denied = meta.update_authorized(
+            &|_, uid, gid| {
+                assert_eq!((uid, gid), (1000, 2000), "authorize sees current owner");
+                Err(StarryError::OperationNotPermitted)
+            },
+            0o010600,
+            Some(0o4644),
+            Some((Some(0), Some(0))),
+        );
+        assert!(matches!(denied, Err(StarryError::OperationNotPermitted)));
+        assert_eq!(
+            (meta.mode(), meta.uid(), meta.gid()),
+            (0o010600, 1000, 2000),
+            "a denied request must not modify metadata"
+        );
+
+        let granted = meta.update_authorized(
+            &|_, uid, gid| {
+                assert_eq!((uid, gid), (1000, 2000), "authorize sees current owner");
+                Ok(())
+            },
+            0o010600,
+            None,
+            Some((Some(3000), None)),
+        );
+        assert!(granted.is_ok());
+        assert_eq!(
+            (meta.mode(), meta.uid(), meta.gid()),
+            (0o010600, 3000, 2000),
+            "an authorized partial request commits only the named field"
+        );
+    }
+
     #[axtest::axtest]
     fn descriptor_reservation_precedes_fallible_file_creation() {
         use super::*;

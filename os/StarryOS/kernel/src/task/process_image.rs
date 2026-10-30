@@ -6,11 +6,17 @@ use core::mem;
 use kernel_elf_parser::AuxEntry;
 
 use super::ProcessData;
-use crate::sync::Mutex;
+use axfs_ng_vfs::Location;
+use crate::sync::{Mutex, MutexGuard};
 
 /// Metadata supplied when a process image is created.
 pub struct ProcessImage {
     exe_path: String,
+    /// Backing file of the executable image, when the image was created by
+    /// `execve`-style loading. `/proc/<pid>/exe` opens this file directly (a
+    /// magic link must not re-resolve the display path: a memfd-exec'd runc
+    /// reports `/memfd:... (deleted)`, which is not a resolvable path).
+    pub exe_location: Option<Location>,
     cmdline: Arc<Vec<String>>,
     envp: Arc<Vec<String>>,
     auxv: Vec<AuxEntry>,
@@ -21,6 +27,7 @@ pub struct ProcessImage {
 impl ProcessImage {
     pub fn new(
         exe_path: String,
+        exe_location: Option<Location>,
         cmdline: Arc<Vec<String>>,
         envp: Arc<Vec<String>>,
         auxv: Vec<AuxEntry>,
@@ -29,6 +36,7 @@ impl ProcessImage {
     ) -> Self {
         Self {
             exe_path,
+            exe_location,
             cmdline,
             envp,
             auxv,
@@ -40,7 +48,15 @@ impl ProcessImage {
 
 /// Independently synchronized image metadata shared by a thread group.
 pub(super) struct ProcessImageState {
+    /// Serializes the address-space commit with the executable metadata that
+    /// describes it. `execve` holds this lock from the MM publication through
+    /// `set_exe_location`; readers of [`ProcessData::exe_location`] take it
+    /// too, so `/proc/<pid>/exe` can only observe the old image with the old
+    /// executable or the new image with the new executable (Linux publishes
+    /// `bprm->file` under `exec_update_lock`).
+    publish_lock: Mutex<()>,
     exe_path: Mutex<Arc<String>>,
+    exe_location: Mutex<Option<Location>>,
     cmdline: Mutex<Arc<Vec<String>>>,
     envp: Mutex<Arc<Vec<String>>>,
     auxv: Mutex<Arc<Vec<AuxEntry>>>,
@@ -51,7 +67,9 @@ pub(super) struct ProcessImageState {
 impl ProcessImageState {
     pub(super) fn new(image: ProcessImage) -> Self {
         Self {
+            publish_lock: Mutex::new(()),
             exe_path: Mutex::new(Arc::new(image.exe_path)),
+            exe_location: Mutex::new(image.exe_location),
             cmdline: Mutex::new(image.cmdline),
             envp: Mutex::new(image.envp),
             auxv: Mutex::new(Arc::new(image.auxv)),
@@ -76,11 +94,39 @@ fn replace_snapshot<T>(slot: &Mutex<Arc<T>>, replacement: Arc<T>) {
 
 impl ProcessData {
     pub fn exe_path(&self) -> Arc<String> {
+        // Serialized with the exec publication: a reader must not pair the
+        // new address space with the previous display path.
+        let _publish = self.image.publish_lock.lock();
         snapshot(&self.image.exe_path)
     }
 
     pub fn set_exe_path(&self, path: String) {
         replace_snapshot(&self.image.exe_path, Arc::new(path));
+    }
+
+    /// Backing executable file of the current image; opened by
+    /// `/proc/<pid>/exe` (a magic link must not re-resolve the display path).
+    ///
+    /// Takes the publication lock so the clone is never taken from the middle
+    /// of an `execve` commit ([`ProcessData::image_publish_guard`]).
+    pub fn exe_location(&self) -> Option<Location> {
+        let _publish = self.image.publish_lock.lock();
+        self.image.exe_location.lock().clone()
+    }
+
+    pub fn set_exe_location(&self, location: Option<Location>) {
+        *self.image.exe_location.lock() = location;
+    }
+
+    /// Guard for the atomic publication of a new process image.
+    ///
+    /// `execve` holds it from the address-space handoff through the
+    /// executable metadata update. Readers that need the executable backing
+    /// of the current image ([`Self::exe_location`]) take the same lock, so
+    /// the pair (address space, executable) is only ever observed in one of
+    /// its two consistent states.
+    pub(crate) fn image_publish_guard(&self) -> MutexGuard<'_, ()> {
+        self.image.publish_lock.lock()
     }
 
     pub fn cmdline(&self) -> Arc<Vec<String>> {

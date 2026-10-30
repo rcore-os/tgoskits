@@ -55,7 +55,7 @@ pub(super) fn run_system_guest_prebuild(request: &GuestPrebuildRequest<'_>) -> a
         qemu,
         spec,
         &kernel,
-        request.case_rootfs,
+        request.prebuild_rootfs,
         request.case,
         request.layout,
         &init_path,
