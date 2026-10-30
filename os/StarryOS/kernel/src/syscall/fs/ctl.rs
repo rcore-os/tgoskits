@@ -859,30 +859,32 @@ pub fn sys_fchownat(
     // - Changing the file group (gid) without CAP_CHOWN is allowed only if
     //   the caller owns the file and the target group is one the caller
     //   belongs to.
-    let (owner_uid, owner_gid) = match (&meta, &anon) {
-        (Some(meta), _) => (meta.uid, meta.gid),
-        (None, Some(file_like)) => {
-            let stat = file_like.stat()?;
-            (stat.uid, stat.gid)
+    //
+    // The checks run against the metadata the commit replaces. For a
+    // filesystem inode that is the snapshot read above; for an anonymous
+    // inode this closure runs inside the locking update entry, so a shared fd
+    // that changes the owner between observation and commit cannot
+    // retroactively authorize the caller (Linux `chown_common` holds
+    // `inode_lock` across `setattr_prepare` and `notify_change`).
+    let authorize = |owner_uid: u32, owner_gid: u32| -> StarryResult<()> {
+        let changing_owner = uid != -1 && uid as u32 != owner_uid;
+        let changing_group = gid != -1 && gid as u32 != owner_gid;
+
+        if changing_owner && !cred.has_cap_chown() {
+            return Err(StarryError::OperationNotPermitted);
         }
-        (None, None) => unreachable!("resolution is either a file or a file-like"),
+
+        if changing_group && !cred.has_cap_chown() {
+            // Non-root: must own the file and target group must be in our groups.
+            if cred.fsuid != owner_uid {
+                return Err(StarryError::OperationNotPermitted);
+            }
+            if !cred.in_group(gid as u32) {
+                return Err(StarryError::OperationNotPermitted);
+            }
+        }
+        Ok(())
     };
-    let changing_owner = uid != -1 && uid as u32 != owner_uid;
-    let changing_group = gid != -1 && gid as u32 != owner_gid;
-
-    if changing_owner && !cred.has_cap_chown() {
-        return Err(StarryError::OperationNotPermitted);
-    }
-
-    if changing_group && !cred.has_cap_chown() {
-        // Non-root: must own the file and target group must be in our groups.
-        if cred.fsuid != owner_uid {
-            return Err(StarryError::OperationNotPermitted);
-        }
-        if !cred.in_group(gid as u32) {
-            return Err(StarryError::OperationNotPermitted);
-        }
-    }
 
     // `-1` means "leave this field unchanged" (Linux chown_common): keep the
     // request per-field so anonymous-inode metadata commits only the fields
@@ -896,9 +898,10 @@ pub fn sys_fchownat(
             (gid != -1).then_some(gid as u32),
         ))
     };
-    let uid = if uid == -1 { owner_uid } else { uid as _ };
-    let gid = if gid == -1 { owner_gid } else { gid as _ };
     if let (Some(loc), Some(meta)) = (&loc, &meta) {
+        authorize(meta.uid, meta.gid)?;
+        let uid = if uid == -1 { meta.uid } else { uid as _ };
+        let gid = if gid == -1 { meta.gid } else { gid as _ };
         let mut mode = meta.mode;
         // Linux chown_common() semantics for clearing setuid/setgid on
         // non-directory files:
@@ -925,8 +928,11 @@ pub fn sys_fchownat(
         // clears SUID/SGID on the *current* mode with one atomic
         // read-modify-write while committing the named owner fields only, so
         // a concurrent `fchmod` cannot be undone by a stale mode read and a
-        // concurrent partial `fchown` cannot overwrite a preserved field.
-        file_like.set_inode_metadata(None, requested_owner)?;
+        // concurrent partial `fchown` cannot overwrite a preserved field. The
+        // authorization above runs under that same lock.
+        file_like.update_inode_metadata(None, requested_owner, &|_, uid, gid| {
+            authorize(uid, gid)
+        })?;
     }
     Ok(0)
 }
@@ -995,25 +1001,27 @@ pub fn sys_fchmodat(
     };
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
+    // For an anonymous inode the check runs inside the locking update entry,
+    // so a concurrent owner change through a shared fd is observed instead of
+    // bypassed.
     let cred = current.as_thread().cred();
-    if !cred.has_cap_fowner() {
-        let owner_uid = match (&loc, &anon) {
-            (Some(loc), _) => loc.metadata()?.uid,
-            (None, Some(file_like)) => file_like.stat()?.uid,
-            (None, None) => unreachable!("resolution is either a file or a file-like"),
-        };
-        if cred.fsuid != owner_uid {
+    let authorize = |_mode: u32, owner_uid: u32, _owner_gid: u32| -> StarryResult<()> {
+        if !cred.has_cap_fowner() && cred.fsuid != owner_uid {
             return Err(StarryError::OperationNotPermitted);
         }
-    }
+        Ok(())
+    };
 
     if let Some(loc) = &loc {
+        if !cred.has_cap_fowner() && cred.fsuid != loc.metadata()?.uid {
+            return Err(StarryError::OperationNotPermitted);
+        }
         loc.update_metadata(MetadataUpdate {
             mode: Some(NodePermission::from_bits_truncate(mode as u16)),
             ..Default::default()
         })?;
     } else if let Some(file_like) = &anon {
-        file_like.set_inode_metadata(Some(mode & 0o7777), None)?;
+        file_like.update_inode_metadata(Some(mode & 0o7777), None, &authorize)?;
     }
     Ok(0)
 }
