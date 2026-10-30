@@ -12,8 +12,10 @@ entry_point = 0x2_4008_0000
 kernel_load_addr = 0x2_4008_0000
 # Guest kernel on the AxVisor host filesystem; the path is maintained manually.
 kernel_path = "/guest/linux/orangepi-5-plus"
-# The BallPick robot host and guest share the verified /dev/mmcblk0p2 root.
-cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
+# The host retains eMMC; the guest mounts its private ext4 image over VirtIO.
+# Keep clocks needed by the host eMMC backend enabled, as in the PCI guest.
+# Start a session leader on the console without depending on image autologin.
+cmdline = 'root=/dev/vda rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 devtmpfs.mount=1 ignore_loglevel loglevel=8 cma=128M clk_ignore_unused init=/bin/sh HOME=/root USER=root HOSTNAME=linux -- -c "mount -t proc proc /proc && mount -t sysfs sysfs /sys && cd /root && export PS1=$USER@$HOSTNAME:~# && exec /usr/bin/setsid --fork --wait --ctty /bin/sh -i"'
 dtb_load_addr = 0x2_4000_0000
 # Boot the ext4 root directly; the standard initramfs only starts a BusyBox shell.
 memory_regions = [
@@ -24,4 +26,11 @@ memory_regions = [
 
 [devices]
 passthrough = []
-disabled = []
+# Keep both physical MMC controllers out of the guest device tree and assignment.
+disabled = [{ path = "/mmc@fe2c0000" }, { path = "/mmc@fe2e0000" }]
+
+[[devices.virtual]]
+id = "rootfs"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-orangepi-jammy-0.img"
+filesystem = "ext4"

@@ -21,8 +21,9 @@ USB 控制器可能呈现 USB 串口节点，实际控制设备由运行包自�
 
 ## 2. 运行前确认
 
-宿主和客户机使用板卡已有的 `/dev/mmcblk0p2` 根文件系统。切换板卡前，在原生 Linux
-中核对根设备、内核和程序目录，避免把其他板卡的路径直接套用到本例。
+宿主继续使用板卡的 `/dev/mmcblk0p2`，客户机通过 VirtIO 块设备挂载
+`/guest/rootfs-aarch64-orangepi-jammy-1.img`，StarryOS 使用 `root=/dev/sda` 选择这块虚拟根盘。
+切换板卡前，在原生 Linux 中核对宿主根设备、内核、镜像和程序目录。
 
 ### 2.1 客户机内核
 
@@ -41,11 +42,11 @@ initramfs，无需覆盖板端 `/guest/starry/`。修改客户机源码后，重
 
 ### 2.2 机器人运行包
 
-板端 `/home/orangepi/robot/aka-rk3588-single` 应包含 `bin/tennis`、`lib/`、`models/`、
-`config/` 和 `run_single_pick.sh`。根文件系统还需提供 `/usr/bin/setsid`（支持 `--fork`、`--wait`、`--ctty`）。`config/` 使用这台机器的标定与控制参数，
+客户机镜像内 `/home/orangepi/robot/aka-rk3588-single` 应包含 `bin/tennis`、`lib/`、`models/`、
+`config/` 和 `run_single_pick.sh`。客户机镜像还需提供 `/usr/bin/setsid`（支持 `--fork`、`--wait`、`--ctty`）。`config/` 使用这台机器的标定与控制参数，
 运行沿用现有文件；缺少资源时先报告缺项，不通过覆盖标定或替换系统库绕过错误。
 
-在原生 Linux 中只读核对资源：
+在原生 Linux 中只读核对复制来源；镜像准备步骤见 2.3 节：
 
 ```bash
 findmnt -n -o SOURCE,FSTYPE /
@@ -58,6 +59,40 @@ ls /home/orangepi/robot/aka-rk3588-single/config
 
 程序、脚本、运行库、模型与标定均准备好后释放原生 Linux 会话，再运行 AxVisor。
 无需向板端复制宿主或客户机内核；运行器通过会话加载本地构建的宿主。
+
+### 2.3 根盘镜像
+
+宿主独占 eMMC 及其文件系统，客户机仅访问自己的 ext4 镜像。
+客户机配置的 `devices.disabled` 排除 `/mmc@fe2c0000` 和 `/mmc@fe2e0000`，
+`devices.virtual` 使用现有 `virtio-blk` 文件后端提供根盘，StarryOS 的 `RootSpec` 通过 `/dev/sda` 选择第一块设备。
+USB 摄像头、NPU 和 Feetech USB 控制器仍按原有配置直通。
+
+复用板端已有的客户机镜像，保留配套 Ubuntu 用户态、内核模块及 `/usr/bin/setsid`，
+仅向镜像部署本机机器人运行包。Linux 使用 `jammy-0.img`，StarryOS 使用 `jammy-1.img`。
+准备期间不得有客户机使用该镜像；在原生 Linux 中执行。运行包目录已存在时停止，
+先核对其中的标定与程序，避免覆盖已有部署：
+
+```sh
+sudo sh -eu <<'ROOTFS'
+image=/guest/rootfs-aarch64-orangepi-jammy-1.img
+test -s "$image"
+mount_dir=$(mktemp -d /tmp/ballpick-rootfs.XXXXXX)
+trap 'mountpoint -q "$mount_dir" && umount "$mount_dir"; rmdir "$mount_dir"' EXIT
+mount -o loop "$image" "$mount_dir"
+mkdir -p "$mount_dir/home/orangepi/robot"
+test ! -e "$mount_dir/home/orangepi/robot/aka-rk3588-single"
+cp -a /home/orangepi/robot/aka-rk3588-single "$mount_dir/home/orangepi/robot/"
+diff -qr /home/orangepi/robot/aka-rk3588-single "$mount_dir/home/orangepi/robot/aka-rk3588-single"
+test -x "$mount_dir/usr/bin/setsid"
+test -x "$mount_dir/home/orangepi/robot/aka-rk3588-single/bin/tennis"
+sync
+umount "$mount_dir"
+ROOTFS
+```
+
+准备完成后确认 loop 挂载已卸载，再释放租约并启动 AxVisor。同一镜像不能同时由
+原生 Linux loop 挂载和客户机写入，也不能提供给两个同时运行的客户机。
+宿主仍可访问 `/guest`，但不得把正在使用的镜像再次挂载或覆盖。
 
 ## 3. 启动
 
@@ -109,7 +144,7 @@ test -s /home/orangepi/robot/aka-rk3588-single/models/tennis.rknn
 ls /home/orangepi/robot/aka-rk3588-single/config
 ```
 
-任一检查失败时先核对根分区和部署目录。StarryOS 使用 root Shell，脚本从包内 `lib/` 加载运行库。
+任一检查失败时先核对客户机镜像和镜像内的部署目录。StarryOS 使用 root Shell，脚本从包内 `lib/` 加载运行库。
 
 ### 4.2 执行完整捡球程序
 
@@ -161,10 +196,10 @@ cargo xtask axvisor app board -g normal \
 | 文件 | 作用 |
 | --- | --- |
 | [build-aarch64-unknown-none-softfloat.toml](build-aarch64-unknown-none-softfloat.toml) | 构建 AxVisor 并打包 VM1 配置 |
-| [guest.toml](guest.toml) | 客户机内核、根分区、CPU、内存和设备分配 |
+| [guest.toml](guest.toml) | 客户机内核、独立根盘、CPU、内存和设备分配 |
 | [configs/starry-guest-build.toml](configs/starry-guest-build.toml) | 单 CPU StarryOS 客户机构建，Error 日志及机器人功能项 |
 | [configs/uboot-shell.toml](configs/uboot-shell.toml) | 保留人工串口会话，不注入业务命令 |
 | [smoke/board-orangepi-5-plus-robot-real-starry.toml](smoke/board-orangepi-5-plus-robot-real-starry.toml) | 板型、启动参数、自动业务命令与结果判定 |
 
-AxVisor Nightly 的 `test-orangepi-5-plus-robot-real-suite` 调用本应用，修改控制入口、
+AxVisor Nightly 的 `test-orangepi-5-plus-robot-real-axvisor-starryos` 调用本应用，修改控制入口、
 板端资源路径或通过条件时，需同步核对自动配置和本文档。

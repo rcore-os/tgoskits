@@ -120,7 +120,7 @@ ROC 部署固件会在交接时追加自身控制 DTB 的参数，控制 DTB 中
 单客户机应用位于 `apps/axvisor/normal/board-ballpick-robot/robot-real-linux` 和
 `apps/axvisor/normal/board-ballpick-robot/robot-real-starry`。两者由单个客户机通过 USB
 使用摄像头 `0ac8:0346` 和 Feetech 控制器 `1a86:55d3`，用
-`./run_single_pick.sh auto 0` 启动完整捡球程序，Linux 客户机通过 `sudo` 执行。
+`./run_single_pick.sh auto 0` 启动完整捡球程序，两种客户机均使用 root Shell。
 CI 另用 `FEETECH_DEV=auto ./run_single_pick_ci_once.sh 28.0` 执行有限测试流程。
 USB 控制器可能呈现 USB 串口节点，但不使用 SoC UART6 `/dev/ttyS6`。
 
@@ -132,7 +132,7 @@ USB 控制器可能呈现 USB 串口节点，但不使用 SoC UART6 `/dev/ttyS6`
 交互配置保留自动用例的 `cmdline`，不注入客户机命令、不设置会话总超时或结果匹配；
 自动入口仍由 `smoke/board-*.toml` 执行，并由 AxVisor Nightly 注册。
 
-StarryOS 单客户机交互启动通过 `/usr/bin/setsid --fork --wait --ctty /bin/sh -i`
+Linux 和 StarryOS 单客户机交互启动通过 `/usr/bin/setsid --fork --wait --ctty /bin/sh -i`
 建立控制终端：`--fork` 创建会话首进程，`--ctty` 取得继承的 console，`--wait`
 保持 PID 1 等待子会话。只从 `init=/bin/sh` 继承 `/dev/console` 不会自动建立终端
 前台进程组；回显 `^C` 不证明应用收到 SIGINT。验证退出时应实际发送 Ctrl+C，
@@ -143,9 +143,17 @@ StarryOS 控制终端。其 `/usr/bin/setsid` 必须位于独立客户机根盘�
 宿主或原生 Linux 上的工具不能代替该依赖。此调整只涉及 StarryOS Shell 启动，
 Zephyr 的 UART6 执行器分配和 IVC 配置保持各自原有契约。
 
-两个应用默认 `board_type = "BallPick-Robot"`，宿主与客户机配置均使用
-`/dev/mmcblk0p2`。更换板卡时先从原生 Linux 核对根设备与资源文件。
-Linux 内核使用板端 `/guest/linux/orangepi-5-plus`，直接挂载 ext4 根，不加载
+两个应用默认 `board_type = "BallPick-Robot"`，宿主使用 `/dev/mmcblk0p2`，
+客户机通过 `virtio-blk` 挂载自己的 ext4 镜像，Linux 根设备为 `/dev/vda`，
+StarryOS 的 `RootSpec` 使用 `root=/dev/sda` 选择第一块盘，不能直接套用 Linux VirtIO 设备名。
+Linux 和 StarryOS 分别复用 `/guest/rootfs-aarch64-orangepi-jammy-0.img` 与
+`/guest/rootfs-aarch64-orangepi-jammy-1.img`，运行包部署步骤见各应用 README。
+`devices.disabled` 必须排除 `/mmc@fe2c0000`、`/mmc@fe2e0000`，让物理存储继续归宿主所有；
+不能只改 `root=` 而继续直通根盘控制器，也不能同时 loop 挂载正在运行的客户机镜像。
+StarryOS 客户机构建需启用 `ax-driver/virtio-blk`，机器人程序、模型、标定和 `setsid`
+必须位于客户机镜像内，宿主同名文件不能替代。更换板卡时先核对根设备与资源文件。
+Linux 启动参数保留 `clk_ignore_unused`，避免关闭宿主 eMMC 镜像后端仍依赖的时钟。
+Linux 内核使用板端 `/guest/linux/orangepi-5-plus`，挂载独立 ext4 根，不加载
 只启动 BusyBox 的 initramfs。StarryOS 的 `guest.toml` 引用工作区生成的
 `target/aarch64-unknown-none-softfloat/release/starryos.bin`，须先执行：
 
@@ -155,7 +163,7 @@ cargo xtask starry build --config apps/axvisor/normal/board-ballpick-robot/robot
 
 USB 单客户机使用默认宿主设备树，不附加 UART6 叠加层、不执行 UART6 寄存器初始化。
 `guest_type = "passthrough"` 与空 `devices.passthrough` 选择默认设备基线，保留
-USB、存储、NPU 及其依赖；StarryOS 继续显式排除 PCI 主桥。物理串口和机器中断
+USB、NPU 及其依赖，再显式排除两个 MMC 控制器；StarryOS 继续显式排除 PCI 主桥。物理串口和机器中断
 provider 仍由宿主设备保护策略约束，不能为方便 USB 控制而显式分配宿主控制台。
 
 板端运行目录为 `/home/orangepi/robot/aka-rk3588-single`，使用 `bin/tennis`、
