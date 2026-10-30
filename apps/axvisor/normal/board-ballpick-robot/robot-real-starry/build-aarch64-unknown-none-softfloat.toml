@@ -3,6 +3,6 @@ features = [
   "ax-driver/rockchip-dwmmc",
   "ax-driver/rockchip-sdhci",
 ]
-log = "Warn"
+log = "Error"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = ["apps/axvisor/normal/board-ballpick-robot/robot-real-starry/guest.toml"]

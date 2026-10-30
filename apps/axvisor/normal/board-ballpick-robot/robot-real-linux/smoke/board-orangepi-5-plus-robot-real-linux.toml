@@ -39,3 +39,7 @@ shell_cmd = 'cd "$d" && printf "%s\n" orangepi | sudo -S env FEETECH_DEV=auto ./
 # Only the final launcher verdict counts. A non-zero exit fails the step
 # directly, without an echo-based fallback marker.
 success_regex = ['(?m)^\[ROBOT_CI\] RESULT=PASS attempts=[12](?:[ \t\r]*$|\[\s*\d+\.\d+\].*$)']
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "sync"

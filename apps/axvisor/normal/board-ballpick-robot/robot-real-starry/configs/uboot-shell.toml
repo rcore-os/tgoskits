@@ -5,16 +5,3 @@ cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32
 
 shell_check_steps = []
 fail_regex = []
-
-uboot_cmd = [
-  "mw.l 0xfd7c03cc 0x7e000000",
-  "mw.l 0xfd7c03d0 0x00080129",
-  "mw.l 0xfd7c03d4 0x00030001",
-  "mw.l 0xfd7c0830 0x00800000",
-  "mw.l 0xfd7c0834 0x10000000",
-  "mw.l 0xfd5f8020 0x00ff00aa",
-  "mw.l 0xfd5f9110 0x000f000f",
-  "mw.l 0xfd5f9020 0x00ff0066",
-]
-
-dtb_file = "apps/axvisor/normal/board-ballpick-robot/configs/ballpick-robot-uart6.dtb"

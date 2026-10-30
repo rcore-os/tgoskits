@@ -118,33 +118,43 @@ ROC 部署固件会在交接时追加自身控制 DTB 的参数，控制 DTB 中
 ## 机器人单客户机交互
 
 单客户机应用位于 `apps/axvisor/normal/board-ballpick-robot/robot-real-linux` 和
-`apps/axvisor/normal/board-ballpick-robot/robot-real-starry`。人工调试使用各应用的
-`configs/uboot-shell.toml`，通过 `cargo xtask axvisor board --config <应用目录>/build-aarch64-unknown-none-softfloat.toml --board-config <应用目录>/configs/uboot-shell.toml`
-启动，并按现场添加 `--server`、`--port`。交互配置保留自动用例的 `cmdline`，不注入客户机命令、不设置会话超时或结果匹配；自动检查仍由 `smoke/board-*.toml` 执行。
+`apps/axvisor/normal/board-ballpick-robot/robot-real-starry`。两者由单个客户机通过 USB
+使用摄像头 `0ac8:0346` 和 Feetech 控制器 `1a86:55d3`，用
+`./run_single_pick.sh auto 0` 启动完整捡球程序，Linux 客户机通过 `sudo` 执行。
+CI 另用 `FEETECH_DEV=auto ./run_single_pick_ci_once.sh 28.0` 执行有限测试流程。
+USB 控制器可能呈现 USB 串口节点，但不使用 SoC UART6 `/dev/ttyS6`。
 
-这两个场景使用 `board_type = "BallPick-Robot"`，板卡服务地址通过 `--server`、`--port`
-传入。实测宿主与客户机根设备均为 `/dev/mmcblk0p2`，Linux 客户机内核位于
-`/guest/linux/orangepi-5-plus`。Linux 直接挂载 ext4 根，不加载只启动 BusyBox 的
-`/guest/linux/initramfs.cpio`。StarryOS 单客户机使用
-`apps/axvisor/normal/board-ballpick-robot/configs/ballpick-robot-uart6.dtb`，
-宿主 `dtb_file` 与客户机 `kernel.dtb_path` 引用同一份设备树，U-Boot 配置准备
-UART6 时钟、复位和引脚。客户机显式分配 UART6、存储、USB、NPU 及其依赖，
-避免只保留 UART6 而丢失根盘中断；物理调试串口仍归宿主，不使用根路径 `/`
-选择器保留所有串口。应用通过 `FEETECH_DEV=/dev/ttyS6` 控制执行器。
-设备树源码、生成命令及验证边界见
-[串口设备树说明](../../../../apps/axvisor/normal/board-ballpick-robot/configs/README.md)。
-Linux 单客户机配置仍保留默认设备树和 `FEETECH_DEV=auto` USB 路径；
-2026-10-29 原生 Linux 对照中，USB 与 `/dev/ttyACM0` 均扫描不到电机，
-UART6 能扫描到 ID 1～9。仅枚举到 USB 控制器 `1a86:55d3` 不代表舵机能够响应。
-运行前用 `bin/tennis test-feetech /dev/ttyS6 scan` 核对 StarryOS 串口链路。
-自动检查前还须确认
-板端 `/home/orangepi/robot/aka-rk3588-single` 已部署完整单客户机程序与真实标定。
-`single-v0.1.0` 包使用 `bin/tennis`、`lib/` 和 `run_single_pick_ci_once.sh 28.0`；
-更新时保留本机 `config/`，先核对包内 `SHA256SUMS`，不能套用旧版 `build/tennis` 入口。
-StarryOS 单客户机的 `guest.toml` 引用当前工作区生成的
-`target/aarch64-unknown-none-softfloat/release/starryos.bin`，须先按
-`test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml`
-执行 `cargo xtask starry build --config <该配置> --smp 1`。交互会话正常退出不代表应用功能通过。
+人工入口分别见
+[Linux 机器人说明](../../../../apps/axvisor/normal/board-ballpick-robot/robot-real-linux/README.md) 和
+[StarryOS 机器人说明](../../../../apps/axvisor/normal/board-ballpick-robot/robot-real-starry/README.md)。
+从仓库根目录直接指定各应用的宿主构建配置和 `configs/uboot-shell.toml`，并显式传入
+`--board-type <板卡类型> --server <服务地址> --port <端口>`。
+交互配置保留自动用例的 `cmdline`，不注入客户机命令、不设置会话总超时或结果匹配；
+自动入口仍由 `smoke/board-*.toml` 执行，并由 AxVisor Nightly 注册。
+
+两个应用默认 `board_type = "BallPick-Robot"`，宿主与客户机配置均使用
+`/dev/mmcblk0p2`。更换板卡时先从原生 Linux 核对根设备与资源文件。
+Linux 内核使用板端 `/guest/linux/orangepi-5-plus`，直接挂载 ext4 根，不加载
+只启动 BusyBox 的 initramfs。StarryOS 的 `guest.toml` 引用工作区生成的
+`target/aarch64-unknown-none-softfloat/release/starryos.bin`，须先执行：
+
+```bash
+cargo xtask starry build --config apps/axvisor/normal/board-ballpick-robot/robot-real-starry/configs/starry-guest-build.toml --smp 1
+```
+
+USB 单客户机使用默认宿主设备树，不附加 UART6 叠加层、不执行 UART6 寄存器初始化。
+`guest_type = "passthrough"` 与空 `devices.passthrough` 选择默认设备基线，保留
+USB、存储、NPU 及其依赖；StarryOS 继续显式排除 PCI 主桥。物理串口和机器中断
+provider 仍由宿主设备保护策略约束，不能为方便 USB 控制而显式分配宿主控制台。
+
+板端运行目录为 `/home/orangepi/robot/aka-rk3588-single`，使用 `bin/tennis`、
+`lib/`、模型、`run_single_pick.sh` 和本机真实标定，自动测试另用 `run_single_pick_ci_once.sh`。优先复用现有程序，
+不要把旧 `build/tennis` 入口或 virtual 链路的 FT232 回环当作 real 机器人入口。
+控制器枚举不等于执行器可用，须由应用完成车轮双向反馈、机械臂流程和安全停止。
+自动测试要求最终 `[ROBOT_CI] RESULT=PASS attempts=1/2` 与外层退出码 0 同时满足，
+交互会话正常退出不代表应用通过。涉及设备直通时按板级复位流程重跑，不用 VM
+停止或重置代替设备回收。按用户指定的板端改动边界执行，复用已有程序与标定；测试自身
+产生的图片、日志等输出也应记录并在交付时说明。
 
 ## BallPick-Robot Linux 网卡直通
 
