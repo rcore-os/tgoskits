@@ -83,6 +83,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]: https://github.com/arceos-hypervisor/buddy-slab-allocator/compare/v0.2.0...HEAD
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.6.1...buddy-slab-allocator-v0.6.2) - 2026-10-30
+
+### Added
+
+- *(axloader)* add LoongArch EFI with shared someboot capabilities ([#2620](https://github.com/rcore-os/tgoskits/pull/2620))
+- *(acpica-interpreter)* add caller-owned AML execution backend ([#2562](https://github.com/rcore-os/tgoskits/pull/2562))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+
+### Fixed
+
+- *(axvisor)* consolidate board apps and align guest RAM ([#2678](https://github.com/rcore-os/tgoskits/pull/2678))
+
+### Other
+
+- *(memory)* separate page allocation and retire idle address-space leases ([#2634](https://github.com/rcore-os/tgoskits/pull/2634))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/buddy-slab-allocator-v0.6.0...buddy-slab-allocator-v0.6.1) - 2026-09-12
 
 ### Other

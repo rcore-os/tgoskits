@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.8...starfive-jh7110-dwmmc-v0.1.9) - 2026-10-30
+
+### Added
+
+- *(sdhci-host)* enable RK3588 HS200 and owned CQHCI queues ([#2636](https://github.com/rcore-os/tgoskits/pull/2636))
+
 ## [0.1.8](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.7...starfive-jh7110-dwmmc-v0.1.8) - 2026-09-09
 
 ### Added
