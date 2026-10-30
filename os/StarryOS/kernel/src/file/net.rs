@@ -8,7 +8,7 @@ use core::{
     ffi::c_int,
     mem::offset_of,
     ops::Deref,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
 };
 
 use ax_io::{Cursor, IoBuf, IoBufMut, Read, Write};
@@ -31,10 +31,11 @@ use linux_raw_sys::{
     net::{AF_INET, ifreq},
 };
 
-use super::{FileLike, Kstat};
+use super::{AnonInodeMeta, FileLike, Kstat};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
+    sync::Mutex,
     mm::{VmMutPtr, vm_read_slice, vm_write_slice},
     task::{
         UserTaskRef, current_pid_view, current_user_task,
@@ -78,11 +79,10 @@ pub struct Socket {
     ip_domain: u32,
     async_mode: AtomicBool,
     owner: AtomicI32,
-    /// Socket inode metadata (`Socket::stat`), updated by `fchmod`/`fchown`
-    /// like Linux's `sockfs` inode.
-    inode_mode: AtomicU32,
-    inode_uid: AtomicU32,
-    inode_gid: AtomicU32,
+    /// Socket inode metadata (`Socket::stat`), committed by
+    /// `fchmod`/`fchown` under one lock like Linux's `sockfs` inode under
+    /// the inode lock.
+    inode_meta: Mutex<AnonInodeMeta>,
 }
 
 impl Socket {
@@ -95,9 +95,7 @@ impl Socket {
             ip_domain,
             async_mode: AtomicBool::new(false),
             owner: AtomicI32::new(0),
-            inode_mode: AtomicU32::new(S_IFSOCK | 0o777),
-            inode_uid: AtomicU32::new(uid),
-            inode_gid: AtomicU32::new(gid),
+            inode_meta: Mutex::new(AnonInodeMeta::new(S_IFSOCK | 0o777, uid, gid)),
         }
     }
 
@@ -834,10 +832,11 @@ impl FileLike for Socket {
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
+        let meta = self.inode_meta.lock();
         Ok(Kstat {
-            mode: self.inode_mode.load(Ordering::Acquire),
-            uid: self.inode_uid.load(Ordering::Acquire),
-            gid: self.inode_gid.load(Ordering::Acquire),
+            mode: meta.mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
             blksize: 4096,
             ..Default::default()
         })
@@ -848,40 +847,11 @@ impl FileLike for Socket {
         mode: Option<u32>,
         owner: Option<(Option<u32>, Option<u32>)>,
     ) -> StarryResult<()> {
-        if let Some(mode) = mode {
-            self.inode_mode
-                .store(S_IFSOCK | (mode & 0o7777), Ordering::Release);
-        }
-        // `chown_common()` clears SUID unconditionally and SGID when the
-        // group-execute bit is set — even for `fchown(-1, -1)`, which names
-        // no owner field. Only `fchmod` carries a mode here, and chmod sets
-        // its bits absolutely instead of clearing privileged ones. Apply the
-        // clear on the *current* mode with one atomic read-modify-write so a
-        // concurrent `fchmod` is not lost.
-        if mode.is_none() {
-            let _ = self.inode_mode.try_update(
-                Ordering::AcqRel,
-                Ordering::Acquire,
-                |current| {
-                    let mut perm = current & 0o7777;
-                    perm &= !0o4000;
-                    if perm & 0o0010 != 0 {
-                        perm &= !0o2000;
-                    }
-                    Some(S_IFSOCK | perm)
-                },
-            );
-        }
-        if let Some((uid, gid)) = owner {
-            // Commit only the named fields: a partial `fchown` must not
-            // resurrect the other field from a stale snapshot.
-            if let Some(uid) = uid {
-                self.inode_uid.store(uid, Ordering::Release);
-            }
-            if let Some(gid) = gid {
-                self.inode_gid.store(gid, Ordering::Release);
-            }
-        }
+        // One lock spans the whole request: concurrent complete `fchown`
+        // calls can only end with one call's owner pair, and a concurrent
+        // `fchmod` cannot be lost between the mode update and the owner
+        // commit.
+        self.inode_meta.lock().apply(S_IFSOCK, mode, owner);
         Ok(())
     }
 

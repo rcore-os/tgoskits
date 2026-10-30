@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, boxed::Box, collections::VecDeque, format, sync::Arc};
 use core::{
     mem,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::Waker,
 };
 
@@ -24,7 +24,7 @@ use ringbuf::{
 };
 use starry_signal::{SignalInfo, Signo};
 
-use super::{FileLike, InodeKey, Kstat};
+use super::{AnonInodeMeta, FileLike, InodeKey, Kstat};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
@@ -546,10 +546,9 @@ struct Shared {
     poll_usage: AtomicBool,
     open_wait: WaitQueue,
     /// Anonymous-pipe inode metadata (`Pipe::stat`). Both ends share it and
-    /// `fchmod`/`fchown` update it, like Linux's pipe inode.
-    inode_mode: AtomicU32,
-    inode_uid: AtomicU32,
-    inode_gid: AtomicU32,
+    /// `fchmod`/`fchown` commit it under one lock, like Linux's pipe inode
+    /// under the inode lock.
+    inode_meta: Mutex<AnonInodeMeta>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -618,9 +617,7 @@ impl Shared {
             wait_tx: PipeWaitSet::new(),
             poll_usage: AtomicBool::new(false),
             open_wait: WaitQueue::new(),
-            inode_mode: AtomicU32::new(S_IFIFO | 0o600),
-            inode_uid: AtomicU32::new(0),
-            inode_gid: AtomicU32::new(0),
+            inode_meta: Mutex::new(AnonInodeMeta::new(S_IFIFO | 0o600, 0, 0)),
         }
     }
 
@@ -866,8 +863,7 @@ impl Pipe {
     /// the creating task's fsuid/fsgid; both ends share one `Shared`, so this
     /// identity is visible through `fstat` on either end.
     pub(crate) fn set_inode_owner(&self, uid: u32, gid: u32) {
-        self.shared.inode_uid.store(uid, Ordering::Release);
-        self.shared.inode_gid.store(gid, Ordering::Release);
+        self.shared.inode_meta.lock().set_owner(uid, gid);
     }
 
     pub fn new() -> (Pipe, Pipe) {
@@ -1382,10 +1378,11 @@ impl FileLike for Pipe {
         if let Some(file) = self.named_file() {
             return file.stat();
         }
+        let meta = self.shared.inode_meta.lock();
         Ok(Kstat {
-            mode: self.shared.inode_mode.load(Ordering::Acquire),
-            uid: self.shared.inode_uid.load(Ordering::Acquire),
-            gid: self.shared.inode_gid.load(Ordering::Acquire),
+            mode: meta.mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
             ..Default::default()
         })
     }
@@ -1400,42 +1397,14 @@ impl FileLike for Pipe {
         if self.named.is_some() {
             return Err(StarryError::OperationNotSupported);
         }
-        if let Some(mode) = mode {
-            // Keep the FIFO type bits; only the permission bits change.
-            self.shared
-                .inode_mode
-                .store(S_IFIFO | (mode & 0o7777), Ordering::Release);
-        }
-        // `chown_common()` clears SUID unconditionally and SGID when the
-        // group-execute bit is set — even for `fchown(-1, -1)`, which names
-        // no owner field. Only `fchmod` carries a mode here, and chmod sets
-        // its bits absolutely instead of clearing privileged ones. Apply the
-        // clear on the *current* mode with one atomic read-modify-write so a
-        // concurrent `fchmod` is not lost.
-        if mode.is_none() {
-            let _ = self.shared.inode_mode.try_update(
-                Ordering::AcqRel,
-                Ordering::Acquire,
-                |current| {
-                    let mut perm = current & 0o7777;
-                    perm &= !0o4000;
-                    if perm & 0o0010 != 0 {
-                        perm &= !0o2000;
-                    }
-                    Some(S_IFIFO | perm)
-                },
-            );
-        }
-        if let Some((uid, gid)) = owner {
-            // Commit only the named fields: a partial `fchown` must not
-            // resurrect the other field from a stale snapshot.
-            if let Some(uid) = uid {
-                self.shared.inode_uid.store(uid, Ordering::Release);
-            }
-            if let Some(gid) = gid {
-                self.shared.inode_gid.store(gid, Ordering::Release);
-            }
-        }
+        // One lock spans the whole request: a concurrent `fchown` can only
+        // leave the owner pair of one complete call, and a concurrent
+        // `fchmod` cannot be lost between the mode update and the owner
+        // commit.
+        self.shared
+            .inode_meta
+            .lock()
+            .apply(S_IFIFO, mode, owner);
         Ok(())
     }
 
