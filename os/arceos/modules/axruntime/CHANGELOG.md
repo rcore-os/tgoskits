@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.5...ax-runtime-v0.14.0) - 2026-10-30
+
+### Added
+
+- *(axloader)* add LoongArch EFI with shared someboot capabilities ([#2620](https://github.com/rcore-os/tgoskits/pull/2620))
+- *(axvisor)* add OrangePi application runners and fair console service ([#2646](https://github.com/rcore-os/tgoskits/pull/2646))
+- *(starry)* enable the venus 3D face on card0 ([#2630](https://github.com/rcore-os/tgoskits/pull/2630))
+- *(axvisor)* add RK3588 guest cpufreq perf30 profile ([#2619](https://github.com/rcore-os/tgoskits/pull/2619))
+- *(ax-runtime)* bind stack hardening to paging ([#2605](https://github.com/rcore-os/tgoskits/pull/2605))
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(cpufreq)* share RK3588 DVFS across three systems ([#2508](https://github.com/rcore-os/tgoskits/pull/2508))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+- *(axbuild)* support external Starry QEMU runs ([#2509](https://github.com/rcore-os/tgoskits/pull/2509))
+
+### Fixed
+
+- *(ax-task)* rearm local scheduler work without IPI ([#2611](https://github.com/rcore-os/tgoskits/pull/2611))
+- *(starry)* make fcntl14 pass without extending its timeout ([#2472](https://github.com/rcore-os/tgoskits/pull/2472))
+
+### Other
+
+- *(ax-fs-ng)* overlap file readahead and account device IO lifetimes ([#2635](https://github.com/rcore-os/tgoskits/pull/2635))
+- *(memory)* separate page allocation and retire idle address-space leases ([#2634](https://github.com/rcore-os/tgoskits/pull/2634))
+- *(ax-fs-ng)* connect owned ext4 IO and writeback lifecycles ([#2526](https://github.com/rcore-os/tgoskits/pull/2526))
+- *(ax-fs-ng)* move cache IO outside locks and share private file pages ([#2524](https://github.com/rcore-os/tgoskits/pull/2524))
+- *(ci)* unify board builds and initramfs staging ([#2590](https://github.com/rcore-os/tgoskits/pull/2590))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+
 ## [0.13.5](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.4...ax-runtime-v0.13.5) - 2026-09-22
 
 ### Fixed

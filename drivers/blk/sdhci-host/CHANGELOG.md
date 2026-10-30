@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.5.2...sdhci-host-v0.5.3) - 2026-10-30
+
+### Added
+
+- *(sdhci-host)* enable RK3588 HS200 and owned CQHCI queues ([#2636](https://github.com/rcore-os/tgoskits/pull/2636))
+- *(arm-smmu-v3)* support PCI DMA translation on ArceOS ([#2505](https://github.com/rcore-os/tgoskits/pull/2505))
+
+### Fixed
+
+- *(sdhci-host)* preserve enabled errors without summary enable ([#2638](https://github.com/rcore-os/tgoskits/pull/2638))
+
 ## [0.5.2](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.5.1...sdhci-host-v0.5.2) - 2026-09-09
 
 ### Added

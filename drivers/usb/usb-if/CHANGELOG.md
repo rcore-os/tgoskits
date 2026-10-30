@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/usb-if-v0.8.0...usb-if-v0.9.0) - 2026-10-30
+
+### Added
+
+- *(media)* support UVC through V4L2 and usbfs ([#2219](https://github.com/rcore-os/tgoskits/pull/2219))
+
+### Fixed
+
+- *(usb)* preserve ISO packet errors through usbfs ([#2684](https://github.com/rcore-os/tgoskits/pull/2684))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/usb-if-v0.7.5...usb-if-v0.8.0) - 2026-08-20
 
 ### Fixed

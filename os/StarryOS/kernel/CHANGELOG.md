@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.12.1...starry-kernel-v0.13.0) - 2026-10-30
+
+### Added
+
+- *(drm)* integrate shared DRM core with RDIF and StarryOS ([#2649](https://github.com/rcore-os/tgoskits/pull/2649))
+- *(starry)* enable the venus 3D face on card0 ([#2630](https://github.com/rcore-os/tgoskits/pull/2630))
+- *(starry-kernel)* support explicit madvise prefaulting ([#2614](https://github.com/rcore-os/tgoskits/pull/2614))
+- *(starry-kernel)* support wipe-on-fork memory advice ([#2613](https://github.com/rcore-os/tgoskits/pull/2613))
+- *(ax-runtime)* bind stack hardening to paging ([#2605](https://github.com/rcore-os/tgoskits/pull/2605))
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+- *(cpufreq)* share RK3588 DVFS across three systems ([#2508](https://github.com/rcore-os/tgoskits/pull/2508))
+- *(starry-kernel,ax-cpu)* keep a faulty eBPF probe from crashing the kernel ([#2558](https://github.com/rcore-os/tgoskits/pull/2558))
+- *(ax-net)* expose per-queue state and net:* tracepoint events ([#2559](https://github.com/rcore-os/tgoskits/pull/2559))
+- *(axloader)* serve HTTP boot with A/B OTA recovery ([#2535](https://github.com/rcore-os/tgoskits/pull/2535))
+- *(virtio-gpu)* async fire-and-forget submission with real fences ([#2536](https://github.com/rcore-os/tgoskits/pull/2536))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+- *(net)* implement TUN/TAP virtual network devices ([#1566](https://github.com/rcore-os/tgoskits/pull/1566))
+- *(media)* support UVC through V4L2 and usbfs ([#2219](https://github.com/rcore-os/tgoskits/pull/2219))
+- *(axbuild)* support external Starry QEMU runs ([#2509](https://github.com/rcore-os/tgoskits/pull/2509))
+- *(starry-kernel)* synthesize card0 vblank clock with CRTC sequence ioctls ([#2365](https://github.com/rcore-os/tgoskits/pull/2365))
+- *(starry)* enable OpenRC as the default Alpine init ([#2446](https://github.com/rcore-os/tgoskits/pull/2446))
+
+### Fixed
+
+- *(usb)* preserve ISO packet errors through usbfs ([#2684](https://github.com/rcore-os/tgoskits/pull/2684))
+- *(ci)* restore nightly validation and add selective Starry app runs ([#2707](https://github.com/rcore-os/tgoskits/pull/2707))
+- *(starry-kernel)* support native PMU cycle sampling ([#2679](https://github.com/rcore-os/tgoskits/pull/2679))
+- *(benchmarks)* stabilize Starry board performance checks ([#2645](https://github.com/rcore-os/tgoskits/pull/2645))
+- Remove obsolete scripts and update repository references ([#2655](https://github.com/rcore-os/tgoskits/pull/2655))
+- *(starry)* extend the virtgpu CREATE_BLOB UAPI struct with the blob_hints tail ([#2628](https://github.com/rcore-os/tgoskits/pull/2628))
+- *(starry)* bound MODE_ATOMIC object and property counts ([#2627](https://github.com/rcore-os/tgoskits/pull/2627))
+- *(starry)* observe fenced unrefs off the teardown path ([#2629](https://github.com/rcore-os/tgoskits/pull/2629))
+- *(starry)* align controlling terminal detachment with Linux ([#2625](https://github.com/rcore-os/tgoskits/pull/2625))
+- *(starry-kernel)* preserve futex park publication ordering ([#2595](https://github.com/rcore-os/tgoskits/pull/2595))
+- *(starry-kernel)* pad netlink messages to NLMSG_ALIGNTO. ([#2574](https://github.com/rcore-os/tgoskits/pull/2574))
+- *(starry-kernel)* align tty sessions and pty lifecycles with Linux. ([#2426](https://github.com/rcore-os/tgoskits/pull/2426))
+- *(starry)* complete sched priority range compatibility ([#2499](https://github.com/rcore-os/tgoskits/pull/2499))
+- *(starry)* make fcntl14 pass without extending its timeout ([#2472](https://github.com/rcore-os/tgoskits/pull/2472))
+- *(starry-kernel)* write recvmmsg remaining timeout after receiving ([#2489](https://github.com/rcore-os/tgoskits/pull/2489))
+
+### Other
+
+- *(ax-fs-ng)* overlap file readahead and account device IO lifetimes ([#2635](https://github.com/rcore-os/tgoskits/pull/2635))
+- *(memory)* separate page allocation and retire idle address-space leases ([#2634](https://github.com/rcore-os/tgoskits/pull/2634))
+- *(ax-fs-ng)* move cache IO outside locks and share private file pages ([#2524](https://github.com/rcore-os/tgoskits/pull/2524))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* replace OrangePi 5 Plus task switch benchmark ([#2549](https://github.com/rcore-os/tgoskits/pull/2549))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(gpu)* move all control-queue waits out of the device lock ([#2557](https://github.com/rcore-os/tgoskits/pull/2557))
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+- *(starry)* extend async block runtime performance coverage ([#2515](https://github.com/rcore-os/tgoskits/pull/2515))
+- *(starry-kernel)* isolate advisory lock state by inode ([#2491](https://github.com/rcore-os/tgoskits/pull/2491))
+- *(memory-set)* index free gaps for VMA placement ([#2520](https://github.com/rcore-os/tgoskits/pull/2520))
+- *(gpu)* add portable GPU and display driver stack ([#2506](https://github.com/rcore-os/tgoskits/pull/2506))
+- *(starry-kernel)* keep an epoll interest registered while its lease is armed. ([#2433](https://github.com/rcore-os/tgoskits/pull/2433))
+
 ## [0.12.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.12.0...starry-kernel-v0.12.1) - 2026-09-22
 
 ### Added

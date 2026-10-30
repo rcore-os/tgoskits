@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4](https://github.com/rcore-os/tgoskits/compare/somehal-v0.11.3...somehal-v0.11.4) - 2026-10-30
+
+### Added
+
+- *(axloader)* add LoongArch EFI with shared someboot capabilities ([#2620](https://github.com/rcore-os/tgoskits/pull/2620))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+
+### Fixed
+
+- Remove obsolete scripts and update repository references ([#2655](https://github.com/rcore-os/tgoskits/pull/2655))
+
+### Other
+
+- *(ax-fs-ng)* connect owned ext4 IO and writeback lifecycles ([#2526](https://github.com/rcore-os/tgoskits/pull/2526))
+- *(axvm)* enforce owner and lock boundaries ([#2579](https://github.com/rcore-os/tgoskits/pull/2579))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(repo)* scope pre-PR validation to affected targets ([#2534](https://github.com/rcore-os/tgoskits/pull/2534))
+
 ## [0.11.3](https://github.com/rcore-os/tgoskits/compare/somehal-v0.11.2...somehal-v0.11.3) - 2026-09-22
 
 ### Other

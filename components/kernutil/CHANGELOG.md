@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/kernutil-v0.3.1...kernutil-v0.4.0) - 2026-10-30
+
+### Added
+
+- *(axloader)* add LoongArch EFI with shared someboot capabilities ([#2620](https://github.com/rcore-os/tgoskits/pull/2620))
+
 ## [0.3.1](https://github.com/rcore-os/tgoskits/compare/kernutil-v0.3.0...kernutil-v0.3.1) - 2026-09-09
 
 ### Other
