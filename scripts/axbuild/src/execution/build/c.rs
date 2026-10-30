@@ -200,7 +200,11 @@ pub(crate) fn prepare_c_case_overlay_sync(
         let result = run_guest_prebuild(GuestPrebuildRequest {
             arch,
             case,
-            case_rootfs,
+            // The prebuild guest boots the selected build sysroot: when the
+            // case runs a different (for example Debian) image, that image
+            // has no Alpine package manager and no Linux guest kernel the
+            // system-QEMU fallback could use.
+            prebuild_rootfs: &staging_sysroot,
             script: &prebuild_script,
             work_dir: &source_dir,
             layout,

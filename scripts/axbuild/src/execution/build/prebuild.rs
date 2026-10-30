@@ -3,7 +3,11 @@ use super::*;
 pub(crate) struct GuestPrebuildRequest<'a> {
     pub(crate) arch: &'a str,
     pub(crate) case: &'a TestQemuCase,
-    pub(crate) case_rootfs: &'a Path,
+    /// Root filesystem image used to boot the system-QEMU fallback guest.
+    /// It is the selected C build sysroot, so its package manager and tools
+    /// match the environment the prebuild script expects (which may differ
+    /// from the case's runtime image).
+    pub(crate) prebuild_rootfs: &'a Path,
     pub(crate) script: &'a Path,
     pub(crate) work_dir: &'a Path,
     pub(crate) layout: &'a case_assets::CaseAssetLayout,
