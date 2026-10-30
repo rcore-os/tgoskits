@@ -138,13 +138,124 @@ impl SystemZoneMap {
                 }
             }
         }
-        for relative in valid_blocks..u64::from(superblock.s_blocks_per_group) {
+        // ext4 requires all bitmap padding to be marked allocated, including
+        // bits beyond blocks_per_group when a group is smaller than one bitmap.
+        for relative in valid_blocks..bitmap.len() as u64 * 8 {
             let relative = u32::try_from(relative).map_err(|_| Ext4Error::overflow())?;
             if !set_bit(bitmap, relative) {
                 return Err(Ext4Error::corrupted().with_operation("block_bitmap:uninit_tail"));
             }
         }
         Ok(())
+    }
+
+    /// Builds a conservative journal-only view while descriptor checkpointing
+    /// is incomplete. Unknown groups cannot supply journal data or tree nodes.
+    /// `superblock` is the validated home geometry; `descriptors` is indexed by
+    /// group, with None for records not yet trusted. Returns protected extents
+    /// covering known metadata and entire unknown groups, or an error for invalid
+    /// bounds/overlap among known metadata before conservative envelopes merge.
+    pub(crate) fn for_recovery(
+        superblock: &Ext4Superblock,
+        descriptors: &[Option<Ext4GroupDesc>],
+    ) -> Ext4Result<Self> {
+        let groups = superblock.checked_block_groups_count()?;
+        if descriptors.len() != groups as usize {
+            return Err(Ext4Error::corrupted().with_operation("system_zone:group_count"));
+        }
+        let table_blocks = inode_table_blocks(superblock)?;
+        let mut zones = Self::from_base_metadata(superblock)?.zones.to_vec();
+        let mut unknown = Vec::new();
+        for (group, descriptor) in descriptors.iter().enumerate() {
+            let group = u32::try_from(group).map_err(|_| Ext4Error::overflow())?;
+            let start = group_first_block(superblock, group)?;
+            match descriptor {
+                Some(descriptor) => {
+                    zones.push(SystemZone::new(descriptor.block_bitmap(), 1, None)?);
+                    zones.push(SystemZone::new(descriptor.inode_bitmap(), 1, None)?);
+                    zones.push(SystemZone::new(
+                        descriptor.inode_table(),
+                        table_blocks,
+                        None,
+                    )?);
+                }
+                None => {
+                    let blocks = (superblock.blocks_count() - start)
+                        .min(u64::from(superblock.s_blocks_per_group));
+                    unknown.push(SystemZone::new(start, blocks, None)?);
+                }
+            }
+        }
+        // Validate actual metadata first. Unknown groups are conservative
+        // envelopes and may legitimately contain another flex group's metadata.
+        let known = Self::finish(superblock.blocks_count(), zones)?;
+        unknown.extend_from_slice(&known.zones);
+        unknown.sort_unstable_by_key(|zone| zone.start);
+        let mut union: Vec<SystemZone> = Vec::new();
+        for zone in unknown {
+            if let Some(previous) = union.last_mut()
+                && zone.start <= previous.end
+            {
+                previous.end = previous.end.max(zone.end);
+                continue;
+            }
+            union.push(zone);
+        }
+        Self::finish(superblock.blocks_count(), union)
+    }
+
+    /// Builds protection for superblocks, active GDT blocks and GDT reserves
+    /// using only validated `superblock` geometry, without trusting descriptors.
+    /// Invalid fixed metadata bounds or overlaps prevent recovery bootstrap.
+    pub(super) fn from_base_metadata(superblock: &Ext4Superblock) -> Ext4Result<Self> {
+        let groups = superblock.checked_block_groups_count()?;
+        let mut zones = Vec::new();
+        for group in 0..groups {
+            let blocks = base_metadata_blocks(superblock, group, groups)?;
+            if blocks != 0 {
+                zones.push(SystemZone::new(
+                    group_first_block(superblock, group)?,
+                    blocks,
+                    None,
+                )?);
+            }
+        }
+        Self::finish(superblock.blocks_count(), zones)
+    }
+
+    /// Checks whether `descriptor` can supply metadata to recovery bootstrap.
+    /// `self` must contain only the fixed metadata from `from_base_metadata`;
+    /// `superblock` supplies device-relative bounds and inode-table length.
+    /// Rejects empty, out-of-range, mutually overlapping or fixed-metadata
+    /// aliases without treating uncheckpointed records as a recovered layout.
+    /// Other groups' ownership is checked when the complete map is constructed,
+    /// and the recovered journal view must still pass full layout validation.
+    pub(super) fn accepts_recovery_descriptor(
+        &self,
+        superblock: &Ext4Superblock,
+        descriptor: &Ext4GroupDesc,
+    ) -> Ext4Result<bool> {
+        let mut metadata = [
+            (descriptor.block_bitmap(), 1),
+            (descriptor.inode_bitmap(), 1),
+            (descriptor.inode_table(), inode_table_blocks(superblock)?),
+        ];
+        metadata.sort_unstable_by_key(|region| region.0);
+        let mut previous_end = u64::from(superblock.s_first_data_block).max(1);
+        for (start, blocks) in metadata {
+            let Some(end) = start.checked_add(blocks) else {
+                return Ok(false);
+            };
+            if start < previous_end || end > superblock.blocks_count() {
+                return Ok(false);
+            }
+            let index = self.zones.partition_point(|zone| zone.end <= start);
+            if self.zones.get(index).is_some_and(|zone| zone.start < end) {
+                return Ok(false);
+            }
+            previous_end = end;
+        }
+        Ok(true)
     }
 
     fn finish(filesystem_blocks: u64, mut zones: Vec<SystemZone>) -> Ext4Result<Self> {
@@ -171,7 +282,9 @@ impl SystemZoneMap {
     }
 }
 
-fn inode_table_blocks(superblock: &Ext4Superblock) -> Ext4Result<u64> {
+/// Computes filesystem blocks needed for one group's complete inode table using
+/// `superblock`'s inode count and record size; validates block size and overflow.
+pub(super) fn inode_table_blocks(superblock: &Ext4Superblock) -> Ext4Result<u64> {
     let inode_size = u64::from(if superblock.s_inode_size == 0 {
         crate::config::GOOD_OLD_INODE_SIZE
     } else {
@@ -183,7 +296,9 @@ fn inode_table_blocks(superblock: &Ext4Superblock) -> Ext4Result<u64> {
     Ok(bytes.div_ceil(u64::from(superblock.checked_block_size()?)))
 }
 
-fn group_first_block(superblock: &Ext4Superblock, group: u32) -> Ext4Result<u64> {
+/// Converts zero-based `group` to its absolute first filesystem block using
+/// `superblock`'s group stride and first data block, rejecting arithmetic overflow.
+pub(super) fn group_first_block(superblock: &Ext4Superblock, group: u32) -> Ext4Result<u64> {
     u64::from(group)
         .checked_mul(u64::from(superblock.s_blocks_per_group))
         .and_then(|offset| offset.checked_add(u64::from(superblock.s_first_data_block)))
@@ -228,7 +343,9 @@ fn base_metadata_blocks(
     Ok(blocks)
 }
 
-fn group_has_superblock(superblock: &Ext4Superblock, group: u32) -> bool {
+/// Reports whether zero-based `group` carries a superblock copy under the
+/// sparse-super feature rules recorded in `superblock`.
+pub(super) fn group_has_superblock(superblock: &Ext4Superblock, group: u32) -> bool {
     if group == 0 {
         return true;
     }

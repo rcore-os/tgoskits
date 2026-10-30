@@ -238,6 +238,18 @@ pub mod ext_csd {
     /// Selected bus width (0 = 1-bit, 1 = 4-bit, 2 = 8-bit;
     /// 5 = 4-bit DDR, 6 = 8-bit DDR).
     pub const BUS_WIDTH: usize = 183;
+    /// Read value after explicit erase or TRIM (0 = zero, 1 = ones).
+    pub const ERASED_MEM_CONT: usize = 181;
+    /// Select high-capacity erase-group geometry.
+    pub const ERASE_GROUP_DEF: usize = 175;
+    /// High-capacity erase-group size in 512 KiB units.
+    pub const HC_ERASE_GRP_SIZE: usize = 224;
+    /// Secure data management capability bitmap, including standard TRIM.
+    pub const SEC_FEATURE_SUPPORT: usize = 231;
+    /// TRIM timeout per erase group, in 300 ms units; zero is undefined.
+    pub const TRIM_MULT: usize = 232;
+    /// Generic CMD6 SWITCH timeout in 10 ms units (eMMC 4.5+).
+    pub const GENERIC_CMD6_TIME: usize = 248;
     /// Sector count (LE u32) — authoritative capacity for ≥2 GB cards.
     pub const SEC_COUNT: usize = 212;
     /// Volatile write-cache size in KiB (LE u32, eMMC 4.5+).

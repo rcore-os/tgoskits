@@ -24,6 +24,7 @@ use crate::{
 mod alloc;
 mod fs;
 mod geometry;
+mod grow;
 mod lookup;
 mod mkfs;
 mod mmp;

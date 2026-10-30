@@ -9,7 +9,7 @@ use sdmmc_host::ProgressCause;
 
 use super::{
     host::{BusWidth, SdMmcIrqHost},
-    init::{MmcSwitchRequest, MmcSwitchRequestState, mmc_switch_deadline_passed},
+    init::{MmcSwitchRequest, MmcSwitchRequestState, MmcSwitchTiming, mmc_switch_deadline_passed},
     nonzero_block_size,
     transport::{DmaSubmitError, ProtocolDataRequest, ProtocolHost},
 };
@@ -365,6 +365,23 @@ impl<H: SdMmcIrqHost + 'static> SdMmcCard<H> {
         index: u8,
         value: u8,
     ) -> Result<MmcSwitchRequest, Error> {
+        self.submit_mmc_switch_with_timeout(access, index, value, MmcSwitchTiming::TIMEOUT_MS)
+    }
+
+    /// Submits CMD6 with a fixed busy budget in ms, without polling inline.
+    /// A zero budget is invalid. The caller must retain the request until
+    /// ready+TRAN, terminal failure, or explicit abort; IRQ queries never
+    /// extend the deadline. Hosts without a clock retain a finite query bound.
+    pub fn submit_mmc_switch_with_timeout(
+        &mut self,
+        access: u8,
+        index: u8,
+        value: u8,
+        timeout_ms: u64,
+    ) -> Result<MmcSwitchRequest, Error> {
+        if timeout_ms == 0 {
+            return Err(Error::InvalidArgument);
+        }
         let cmd = crate::cmd::cmd6_mmc_switch(access, index, value);
         let started_ms = self.host.now_ms();
         self.host.submit_command(&cmd)?;
@@ -374,6 +391,9 @@ impl<H: SdMmcIrqHost + 'static> SdMmcCard<H> {
             value,
             polls: 0,
             started_ms,
+            timeout_ms,
+            rejection_seen: false,
+            rejection_confirmed: false,
             state: MmcSwitchRequestState::PollSwitch,
         })
     }
@@ -383,31 +403,64 @@ impl<H: SdMmcIrqHost + 'static> SdMmcCard<H> {
         request: &mut MmcSwitchRequest,
         cause: ProgressCause,
     ) -> Result<OperationProgress<()>, Error> {
+        let result = self.advance_mmc_switch_inner(request, cause);
+        if result.is_err() {
+            request.state = MmcSwitchRequestState::Terminal;
+        }
+        result
+    }
+
+    /// Advances one command stage while retaining the source of a refusal.
+    fn advance_mmc_switch_inner(
+        &mut self,
+        request: &mut MmcSwitchRequest,
+        cause: ProgressCause,
+    ) -> Result<OperationProgress<()>, Error> {
         match request.state {
             MmcSwitchRequestState::PollSwitch => {
-                match self.host.advance_command_response(cause)? {
-                    CommandResponseProgress::Pending => Ok(OperationProgress::Pending),
-                    CommandResponseProgress::Complete(_) => {
+                match self.host.advance_command_response(cause) {
+                    Ok(CommandResponseProgress::Pending) => Ok(OperationProgress::Pending),
+                    Ok(CommandResponseProgress::Complete(Response::R1(r1) | Response::R1b(r1))) => {
+                        request.rejection_seen |= r1.switch_error();
                         let cmd = crate::cmd::cmd13(request.rca);
                         self.host.submit_command(&cmd)?;
                         request.state = MmcSwitchRequestState::PollStatus;
                         Ok(OperationProgress::Pending)
                     }
+                    // An error in CMD6's own response explicitly rejects it.
+                    // The same error from CMD13 below must remain fatal and
+                    // must never confirm refusal of the preceding CMD6.
+                    Err(Error::CardError(crate::error::CardError::IllegalCommand)) => {
+                        request.rejection_seen = true;
+                        let cmd = crate::cmd::cmd13(request.rca);
+                        self.host.submit_command(&cmd)?;
+                        request.state = MmcSwitchRequestState::PollStatus;
+                        Ok(OperationProgress::Pending)
+                    }
+                    Ok(CommandResponseProgress::Complete(_)) => {
+                        Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Switch, 6)))
+                    }
+                    Err(error) => Err(error),
                 }
             }
             MmcSwitchRequestState::PollStatus => {
                 match self.host.advance_command_response(cause)? {
                     CommandResponseProgress::Pending => Ok(OperationProgress::Pending),
                     CommandResponseProgress::Complete(Response::R1(r1)) => {
-                        if r1.switch_error() {
-                            warn!(
-                                "sdio: SWITCH_ERROR after CMD6 idx={} val={}",
-                                request.index, request.value
-                            );
-                            return Err(Error::CardError(crate::error::CardError::IllegalCommand));
-                        }
+                        request.rejection_seen |= r1.switch_error();
                         if r1.ready_for_data() && matches!(r1.current_state(), CardState::Transfer)
                         {
+                            request.state = MmcSwitchRequestState::Terminal;
+                            if request.rejection_seen {
+                                request.rejection_confirmed = true;
+                                warn!(
+                                    "sdio: CMD6 refused idx={} val={} after ready status",
+                                    request.index, request.value
+                                );
+                                return Err(Error::CardError(
+                                    crate::error::CardError::IllegalCommand,
+                                ));
+                            }
                             return Ok(OperationProgress::Complete(()));
                         }
                         if mmc_switch_deadline_passed(self.host.inner(), request) {
@@ -419,16 +472,11 @@ impl<H: SdMmcIrqHost + 'static> SdMmcCard<H> {
                         Ok(OperationProgress::Pending)
                     }
                     CommandResponseProgress::Complete(_) => {
-                        if mmc_switch_deadline_passed(self.host.inner(), request) {
-                            return Err(Error::Timeout(ErrorContext::for_cmd(Phase::Init, 6)));
-                        }
-                        request.polls = request.polls.saturating_add(1);
-                        let cmd = crate::cmd::cmd13(request.rca);
-                        self.host.submit_command(&cmd)?;
-                        Ok(OperationProgress::Pending)
+                        Err(Error::BadResponse(ErrorContext::for_cmd(Phase::Switch, 13)))
                     }
                 }
             }
+            MmcSwitchRequestState::Terminal => Err(Error::InvalidArgument),
         }
     }
 

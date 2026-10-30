@@ -6,6 +6,7 @@ pub mod device;
 mod host;
 mod irq;
 pub mod queue;
+mod trim;
 
 pub use accelerator::{CommandQueueAccelerator, CommandQueueActivation};
 pub use config::{
@@ -19,3 +20,4 @@ pub use rdif_block::{
     ControllerUpdate, HardIrqHandler, HardwareQueue, OwnedRequest, QueueInfo, QueueLimits,
     RequestFlags, RequestId, RequestOp, SubmitError, dma_api,
 };
+pub use trim::{MmcTrimRequest, MmcTrimSupport};

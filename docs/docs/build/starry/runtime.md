@@ -40,6 +40,12 @@ QEMU 的 machine、CPU、UEFI、firmware 和 device 全部来自该文件。`--s
 
 `rootfs` patch 同时依据 QEMU drive 合同处理启动和网络所需参数。应用和测试用例可声明自己的 rootfs 与资产流程，因此其行为以各 case 的 TOML 为准。
 
+磁盘根初始化经 `ax-runtime::fs` 调用共享 `ax_fs_ng::root::prepare_root()`。显式选择可写 GPT 末尾 ext4 根时，先迁移备份 GPT、扩大根分区并原生增长 ext4，再迁移启动资源、发布根目录和启动 PID 1。原 GUID、UUID、分区起点及文件保持不变；增长中断后依据日志恢复，不另建完成标记。
+
+共享 `RootSpec` 也支持 `root=UUID=<文件系统 UUID>`，与 `PARTUUID` 分别选择文件系统和分区身份。ext4 的标准 UUID 以及 FAT16/FAT32 的 `XXXX-XXXX` 卷序列号均可用于分区或整盘根，忽略十六进制字母大小写；无关设备扫描或身份读取、校验失败仅跳过对应候选；目标未找到或已确认身份重复时仍失败，不回退其他根盘，内存不足则直接中止查找。原生扩容保留该身份，具体规则见 [AxVisor 根选择](../axvisor/runtime)。
+
+只读根、内存根、无显式根选择、非末尾或非 GPT/ext4、无可靠 flush 及不支持的 ext4 特征均跳过；无法证明安全的 GPT 规划、元数据或 I/O 预检错误，以及实际写入失败，均阻止发布磁盘根；扩容预检中的临时挂载可能执行日志恢复，不能把全部预检错误一律当作无写入而忽略。若 initramfs 中的 `/init` 或 `rdinit` 目标可用，启动会保留内存根；之后用户态自行 mount/pivot_root 不触发此启动扩容。完整持久化规则和支持范围与 [AxVisor 根扩容](../axvisor/runtime) 共用。
+
 ### 1.2 启动产物
 
 基础 Cargo 构建保留 ELF。QEMU TOML 的 `to_bin` 决定运行阶段是否生成 BIN；例如仓库的 aarch64/riscv64/x86_64 默认配置均明确设置该值。x86_64 与 loongarch64 默认配置启用 UEFI 且请求 BIN。

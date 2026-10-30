@@ -53,7 +53,10 @@ impl DeviceInner {
         count: usize,
         nowait: bool,
     ) -> Result<AdmissionPermit, BlkError> {
-        debug_assert!(matches!(op, RequestOp::Read | RequestOp::Write));
+        debug_assert!(matches!(
+            op,
+            RequestOp::Read | RequestOp::Write | RequestOp::WriteZeroes
+        ));
         loop {
             let listener = self.listen_for_admission();
             if self.lifecycle_gate.lock_irqsave().try_admit_data(count)? {

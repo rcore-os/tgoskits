@@ -83,6 +83,7 @@ pub enum Event {
     Recovery(RecoveryEvent),
     Integrity(IntegrityEvent),
     Repair(RepairEvent),
+    Growth(GrowthEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +141,23 @@ pub enum RepairEvent {
     RootRecreated,
     LostFoundRecreated,
     DirectoryIndexFallback,
+}
+
+/// Initial and durably committed geometry before the mount is published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrowthEvent {
+    /// Begins growth after the complete target has passed preflight.
+    Started {
+        /// Initial filesystem capacity, in bytes.
+        current_bytes: u64,
+        /// Preflighted final filesystem capacity, in bytes.
+        target_bytes: u64,
+    },
+    /// Reports a durable batch; runtime rebuild or mount publication may fail later.
+    Committed {
+        /// Currently committed filesystem capacity, in bytes.
+        current_bytes: u64,
+    },
 }
 
 pub trait Observer {

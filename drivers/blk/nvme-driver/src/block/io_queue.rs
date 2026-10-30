@@ -220,6 +220,7 @@ impl NvmeQueueState {
                 command: CommandSet::nvm_cmd_flush_with_cid(namespace.id, cid),
                 prp_list: None,
             }),
+            RequestOp::WriteZeroes => Err(BlkError::NotSupported),
         }
     }
 
@@ -469,6 +470,7 @@ pub(super) fn limits(
         max_inflight: max_inflight.max(1),
         max_submit_batch: max_inflight.max(1),
         max_blocks_per_request: max_blocks,
+        max_write_zeroes_blocks: 0,
         max_segments: 1,
         supported_flags: RequestFlags::NONE,
         supports_flush: true,

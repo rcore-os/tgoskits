@@ -101,6 +101,12 @@ impl CompletionSubscription {
                 "block completion receive requires a sleepable task",
             ));
         }
+        Ok(self.recv_admitted())
+    }
+
+    /// Waits without allocation or another fallible context check. The caller
+    /// must have admitted a synchronous operation in a sleepable task.
+    fn recv_admitted(self) -> CompletedRequest {
         loop {
             let result = {
                 let mut state = self.cell.state.lock_irqsave();
@@ -111,7 +117,7 @@ impl CompletionSubscription {
                 result
             };
             if let Some(result) = result {
-                return Ok(result);
+                return result;
             }
             self.cell.group.notification.wait();
         }
@@ -166,6 +172,19 @@ impl CompletionCell {
 }
 
 impl CompletionGroup {
+    /// Drains every accepted request using the group's existing notification.
+    ///
+    /// The caller must check that its task can block before submission and
+    /// remain in that context. The visitor must not panic or stop draining:
+    /// releasing range exclusion before completion could let an old write
+    /// overwrite a later operation. No allocation occurs while receiving.
+    #[cfg(feature = "ext4")]
+    pub(crate) fn drain_admitted(self, mut visit: impl FnMut(CompletedRequest)) {
+        for subscription in self.subscriptions {
+            visit(subscription.recv_admitted());
+        }
+    }
+
     pub(super) fn pairs(count: usize) -> Result<(Self, VecDeque<CompletionSender>), BlkError> {
         if count == 0 {
             return Err(BlkError::InvalidRequest);

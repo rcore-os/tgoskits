@@ -7,6 +7,15 @@ use crate::regs::*;
 
 const DESCRIPTOR_TABLE_ALIGNMENT: usize = 1024;
 
+/// Host response handling and the point at which a direct command may start.
+pub(crate) enum DirectResponse {
+    /// Non-busy response, allowed while DAT0 still reports card busy.
+    /// The operation's software status checks determine card readiness.
+    R1,
+    /// Hardware busy detection, used by the existing cache-flush command.
+    R1b,
+}
+
 pub(crate) struct DescriptorTables {
     task_list: CoherentArray<u64>,
     transfers: CoherentArray<u64>,
@@ -62,16 +71,22 @@ impl DescriptorTables {
         &mut self,
         command: u8,
         argument: u32,
-        busy_response: bool,
+        response: DirectResponse,
     ) {
         self.task_list.set_cpu(
             DIRECT_COMMAND_SLOT * 2,
-            direct_command_descriptor(command, argument, busy_response).to_le(),
+            direct_command_descriptor(command, argument, response).to_le(),
         );
     }
 
     pub(crate) fn clear_task(&mut self, tag: usize) {
         self.task_list.set_cpu(tag * 2, 0);
+    }
+
+    /// Exposes the actual DMA wire image to the register-model tests.
+    #[cfg(test)]
+    pub(crate) fn direct_task_image(&self) -> u64 {
+        u64::from_le(self.task_list.read_cpu(DIRECT_COMMAND_SLOT * 2).unwrap())
     }
 
     fn initialize_links(&mut self) -> Result<(), BlkError> {
@@ -171,9 +186,11 @@ fn transfer_descriptor(address: u32, encoded_length: u16, end: bool) -> u64 {
         | u64::from(address) << DESCRIPTOR_ADDRESS_SHIFT
 }
 
-fn direct_command_descriptor(command: u8, argument: u32, busy_response: bool) -> u64 {
-    let timing: u64 = if busy_response { 0 } else { 1 };
-    let response: u64 = if busy_response { 3 } else { 2 };
+fn direct_command_descriptor(command: u8, argument: u32, mode: DirectResponse) -> u64 {
+    let (timing, response): (u64, u64) = match mode {
+        DirectResponse::R1 => (1, 2),
+        DirectResponse::R1b => (0, 3),
+    };
     ATTR_VALID
         | ATTR_END
         | ATTR_INTERRUPT
@@ -217,13 +234,22 @@ mod tests {
         let argument = MMC_SWITCH_WRITE_BYTE_TEST << 24
             | MMC_FLUSH_CACHE_INDEX_TEST << 16
             | MMC_FLUSH_CACHE_TRIGGER_TEST << 8;
-        let descriptor = direct_command_descriptor(6, argument, true);
+        let descriptor = direct_command_descriptor(6, argument, DirectResponse::R1b);
 
         assert_eq!(descriptor & TASK_QUEUE_BARRIER, TASK_QUEUE_BARRIER);
         assert_eq!(descriptor >> DCMD_COMMAND_SHIFT & 0x3f, 6);
         assert_eq!(descriptor >> DCMD_TIMING_SHIFT & 1, 0);
         assert_eq!(descriptor >> DCMD_RESPONSE_SHIFT & 0x3, 3);
         assert_eq!(descriptor >> DESCRIPTOR_ADDRESS_SHIFT, u64::from(argument));
+        // TRIM receives CMD38's R1 without waiting on the hardware busy timer;
+        // CMD13 checks readiness before and after the exclusive sequence.
+        for command in [13, 35, 36, 38] {
+            let descriptor = direct_command_descriptor(command, 1, DirectResponse::R1);
+            assert_eq!(descriptor & TASK_QUEUE_BARRIER, TASK_QUEUE_BARRIER);
+            assert_eq!(descriptor >> DCMD_COMMAND_SHIFT & 0x3f, u64::from(command));
+            assert_eq!(descriptor >> DCMD_TIMING_SHIFT & 1, 1);
+            assert_eq!(descriptor >> DCMD_RESPONSE_SHIFT & 3, 2);
+        }
     }
 
     const MMC_SWITCH_WRITE_BYTE_TEST: u32 = 0b11;

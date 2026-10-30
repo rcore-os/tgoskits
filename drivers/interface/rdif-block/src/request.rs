@@ -28,6 +28,10 @@ impl From<RequestId> for usize {
 pub enum RequestOp {
     Read,
     Write,
+    /// Initializes an addressed range to zero without a DMA payload.
+    /// Successful completion guarantees that subsequent reads return zeroes.
+    /// This operation does not imply a cache flush or FUA durability.
+    WriteZeroes,
     Flush,
 }
 
@@ -88,7 +92,7 @@ impl Default for RequestFlags {
     }
 }
 
-/// Block request that transfers its DMA backing to one hardware queue.
+/// Block request whose operation and optional DMA backing move to one queue.
 pub struct OwnedRequest {
     pub op: RequestOp,
     pub lba: u64,
@@ -102,6 +106,8 @@ impl OwnedRequest {
         self.data.as_ref().map_or(0, |data| data.len().get())
     }
 
+    /// Whether this operation transfers a DMA payload (read or write).
+    /// Range mutations without DMA still participate in runtime flush ordering.
     pub fn is_data_op(&self) -> bool {
         matches!(self.op, RequestOp::Read | RequestOp::Write)
     }
@@ -321,6 +327,31 @@ pub fn validate_owned_request_shape(
             }
             if !limits.supports_flush {
                 return Err(BlkError::NotSupported);
+            }
+        }
+        RequestOp::WriteZeroes => {
+            if request.data.is_some() {
+                return Err(BlkError::InvalidRequest);
+            }
+            if info.read_only || limits.max_write_zeroes_blocks == 0 {
+                return Err(BlkError::NotSupported);
+            }
+            if !request
+                .flags
+                .unsupported_by(RequestFlags::NOWAIT)
+                .is_empty()
+            {
+                return Err(BlkError::NotSupported);
+            }
+            if request.block_count == 0
+                || request.block_count > limits.max_write_zeroes_blocks
+                || request.lba >= info.num_blocks
+                || request
+                    .lba
+                    .checked_add(u64::from(request.block_count))
+                    .is_none_or(|end| end > info.num_blocks)
+            {
+                return Err(BlkError::InvalidBlockIndex(request.lba));
             }
         }
     }
@@ -623,13 +654,30 @@ mod tests {
     }
 
     #[test]
-    fn request_shape_rejects_write_to_read_only_device() {
+    fn request_shape_rejects_invalid_write_and_zero_mutations() {
         let limits = queue_limits(dma_api::DmaCoherency::NonCoherent);
         let mut info = info_with(limits);
         info.device.read_only = true;
 
         assert_eq!(
             validate_owned_request_shape(info.device, limits, &request_with(0x1000, 512),),
+            Err(BlkError::NotSupported)
+        );
+
+        let limits = QueueLimits {
+            max_write_zeroes_blocks: 1,
+            ..limits
+        };
+        let mut zero = request_with(0x1000, 512);
+        zero.op = RequestOp::WriteZeroes;
+        assert_eq!(
+            validate_owned_request_shape(DeviceInfo::new(128, 512), limits, &zero),
+            Err(BlkError::InvalidRequest),
+            "zeroing must reject a DMA payload even when the range is valid"
+        );
+        zero.data = None;
+        assert_eq!(
+            validate_owned_request_shape(info.device, limits, &zero),
             Err(BlkError::NotSupported)
         );
     }

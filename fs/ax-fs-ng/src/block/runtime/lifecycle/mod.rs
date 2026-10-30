@@ -2,6 +2,8 @@ mod controller;
 mod device;
 mod io;
 mod submission;
+#[cfg(feature = "ext4")]
+mod zero;
 
 use alloc::{
     boxed::Box,
@@ -1251,7 +1253,7 @@ impl BlockDeviceHandle {
                 }
                 dma::prepare_write(info.limits, source)?
             }
-            RequestOp::Flush => return Err(BlockError::InvalidRequest),
+            RequestOp::Flush | RequestOp::WriteZeroes => return Err(BlockError::InvalidRequest),
         };
         Ok(OwnedRequest {
             op,
@@ -1429,6 +1431,12 @@ impl BlockDeviceHandle {
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> BlockResult {
         io::write_blocks(self, block_id, buf)
+    }
+
+    /// Synchronously zeros all ranges, draining accepted writes on error.
+    #[cfg(feature = "ext4")]
+    pub(crate) fn write_zeroes(&self, ranges: &[crate::block::BlockRegion]) -> BlockResult {
+        zero::write_zeroes(self, ranges)
     }
 
     #[cfg(feature = "ext4")]

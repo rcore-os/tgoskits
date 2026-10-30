@@ -189,6 +189,76 @@ impl ReplayStatus {
     }
 }
 
+/// Caps the additional recovery-view index independently of journal payload size.
+/// Payload bytes are read on demand; exhausting this budget is a recoverable
+/// NoMemory result before any replay write reaches the device.
+const MAX_REPLAY_INDEX_BYTES: usize = 4 * 1024 * 1024;
+
+/// One final-home candidate referring to immutable, checksum-validated log data.
+#[derive(Clone, Copy)]
+struct ReplayLocation {
+    /// Absolute destination filesystem block.
+    home: AbsoluteBN,
+    /// Absolute source journal block, resolved through the journal inode map.
+    journal: AbsoluteBN,
+    /// Replay order, used to retain the newest image after sorting by home.
+    order: usize,
+    /// Whether the first word must be restored to the JBD2 magic value.
+    escaped: bool,
+}
+
+/// Fallible, bounded index of replay locations; never owns payload images.
+#[derive(Default)]
+pub(crate) struct ReplayIndex {
+    /// During parsing entries are ordered by replay; after finish, by home.
+    locations: Vec<ReplayLocation>,
+}
+
+impl ReplayIndex {
+    /// Records a validated payload before a preview can become readable.
+    /// The fixed memory budget and allocation failures return NoMemory.
+    fn push(&mut self, home: AbsoluteBN, journal: AbsoluteBN, escaped: bool) -> Ext4Result<()> {
+        let maximum = MAX_REPLAY_INDEX_BYTES / core::mem::size_of::<ReplayLocation>();
+        if self.locations.len() >= maximum {
+            return Err(Ext4Error::no_memory().with_operation("jbd2:preview_index_budget"));
+        }
+        if self.locations.len() == self.locations.capacity() {
+            let additional = (maximum - self.locations.len()).min(256);
+            self.locations
+                .try_reserve_exact(additional)
+                .map_err(|_| Ext4Error::no_memory().with_operation("jbd2:preview_index"))?;
+        }
+        self.locations.push(ReplayLocation {
+            home,
+            journal,
+            order: self.locations.len(),
+            escaped,
+        });
+        Ok(())
+    }
+
+    /// Uses allocation-free sorting to keep the last eligible update per home.
+    pub(crate) fn finish(&mut self) {
+        self.locations
+            .sort_unstable_by_key(|entry| (entry.home, core::cmp::Reverse(entry.order)));
+        self.locations.dedup_by_key(|entry| entry.home);
+    }
+
+    /// Visits final destinations so the device can validate every home bound
+    /// before the recovered view is exposed, including blocks not read by it.
+    pub(crate) fn home_blocks(&self) -> impl Iterator<Item = AbsoluteBN> + '_ {
+        self.locations.iter().map(|entry| entry.home)
+    }
+
+    /// Resolves a home block to its final journal address and escape flag.
+    pub(crate) fn get(&self, home: AbsoluteBN) -> Option<(AbsoluteBN, bool)> {
+        self.locations
+            .binary_search_by_key(&home, |entry| entry.home)
+            .ok()
+            .map(|index| (self.locations[index].journal, self.locations[index].escaped))
+    }
+}
+
 #[derive(Debug)]
 struct ReplayTransaction {
     start_rel: u32,
@@ -1458,6 +1528,7 @@ impl JBD2DEVSYSTEM {
         ring: &ReplayRing<'_>,
         transaction: &ReplayTransaction,
         revoke_table: &BTreeMap<AbsoluteBN, u32>,
+        preview: Option<&mut ReplayIndex>,
     ) -> Result<(), ReplayFailure> {
         let block_size = block_dev.block_size();
         let replayable_payloads = transaction
@@ -1485,6 +1556,30 @@ impl JBD2DEVSYSTEM {
                 continue;
             }
             self.read_replay_payload(block_dev, ring, transaction, payload, &mut payload_data)?;
+        }
+
+        if let Some(index) = preview {
+            for payload in transaction.payloads.iter().copied() {
+                if Self::payload_is_revoked(revoke_table, payload.tag.block, transaction.sequence) {
+                    continue;
+                }
+                index
+                    .push(
+                        payload.tag.block,
+                        ring.phys(payload.journal_rel).map_err(|error| {
+                            ReplayFailure::at(
+                                JournalReplayPhase::Replay,
+                                error,
+                                transaction.start_rel,
+                            )
+                        })?,
+                        payload.tag.flags & u32::from(JOURNAL_ESCAPE) != 0,
+                    )
+                    .map_err(|error| {
+                        ReplayFailure::at(JournalReplayPhase::Replay, error, transaction.start_rel)
+                    })?;
+            }
+            return Ok(());
         }
 
         let buffered_blocks = core::cmp::min(replayable_payloads, MAX_BUFFERED_WRITE_BLOCKS);
@@ -1569,6 +1664,17 @@ impl JBD2DEVSYSTEM {
         block_dev: &mut D,
         journal_blocks: &[AbsoluteBN],
     ) -> ReplayStatus {
+        self.replay_with_preview(block_dev, journal_blocks, None)
+    }
+
+    /// Runs the same parser, payload checks and revoke ordering for both replay
+    /// and a bounded read-only index. Preview never persists parser progress.
+    pub(crate) fn replay_with_preview<D: FilesystemBlockIo>(
+        &mut self,
+        block_dev: &mut D,
+        journal_blocks: &[AbsoluteBN],
+        mut preview: Option<&mut ReplayIndex>,
+    ) -> ReplayStatus {
         let initial_rel = self.jbd2_super_block.s_start;
         if initial_rel == 0 {
             return ReplayStatus::Complete;
@@ -1640,9 +1746,13 @@ impl JBD2DEVSYSTEM {
             // Pass 3: apply payloads in transaction order, consulting the
             // sequence-aware global revoke table built from the whole log.
             for transaction in &transactions {
-                if let Err(failure) =
-                    self.replay_transaction(block_dev, &ring, transaction, &revoke_table)
-                {
+                if let Err(failure) = self.replay_transaction(
+                    block_dev,
+                    &ring,
+                    transaction,
+                    &revoke_table,
+                    preview.as_deref_mut(),
+                ) {
                     self.jbd2_super_block.s_start =
                         failure.restart_rel().unwrap_or(transaction.start_rel);
                     self.jbd2_super_block.s_sequence = transaction.sequence;
@@ -1662,6 +1772,9 @@ impl JBD2DEVSYSTEM {
             }
         };
 
+        if preview.is_some() {
+            return status;
+        }
         self.head = self.jbd2_super_block.s_first;
 
         // Preserve the replay cause if recording progress also fails. The
@@ -2307,13 +2420,14 @@ mod tests {
 
     #[test]
     fn replay_bounds_each_contiguous_home_block_write() {
-        const REPLAY_PAYLOADS: usize = MAX_BUFFERED_WRITE_BLOCKS + 1;
+        const REPLAY_PAYLOADS: usize = MAX_BUFFERED_WRITE_BLOCKS * 16 + 1;
+        const FIRST_HOME: u64 = 512;
         const JOURNAL_PAYLOAD_START: u64 = 64;
 
         let system = transaction_system(Jbd2RunningTransactionPhase::Running);
         let mut io = SmallReplayIo {
             block_size: BLOCK_SIZE,
-            blocks: vec![0; 128 * BLOCK_SIZE],
+            blocks: vec![0; 1024 * BLOCK_SIZE],
             writes: Vec::new(),
         };
         let mut payloads = Vec::new();
@@ -2324,7 +2438,7 @@ mod tests {
                 .fill(index as u8);
             payloads.push(ReplayPayload {
                 tag: ReplayTag {
-                    block: AbsoluteBN::new(HOME_BLOCK + index as u64),
+                    block: AbsoluteBN::new(FIRST_HOME + index as u64),
                     flags: 0,
                     checksum: None,
                 },
@@ -2343,19 +2457,72 @@ mod tests {
             blocks: &[],
             start_block: AbsoluteBN::new(JOURNAL_PAYLOAD_START),
             first_rel: 1,
-            last_rel: 63,
+            last_rel: REPLAY_PAYLOADS as u32 + 1,
         };
 
+        let before = io.blocks.clone();
+        let mut preview = ReplayIndex::default();
         system
-            .replay_transaction(&mut io, &ring, &transaction, &BTreeMap::new())
+            .replay_transaction(
+                &mut io,
+                &ring,
+                &transaction,
+                &BTreeMap::new(),
+                Some(&mut preview),
+            )
+            .expect("bounded preview of many payloads");
+        preview.finish();
+        assert!(io.writes.is_empty());
+        assert_eq!(io.blocks, before);
+        assert!(
+            preview.locations.capacity() * core::mem::size_of::<ReplayLocation>()
+                < REPLAY_PAYLOADS * BLOCK_SIZE / 4,
+            "index must not retain payload data"
+        );
+        for offset in 0..REPLAY_PAYLOADS {
+            assert_eq!(
+                preview.get(AbsoluteBN::new(FIRST_HOME + offset as u64)),
+                Some((
+                    AbsoluteBN::new(JOURNAL_PAYLOAD_START + offset as u64 + 1),
+                    false
+                ))
+            );
+        }
+        // Exhaust the bounded index through its real fallible insertion path,
+        // then verify that replay propagates NoMemory without a home write.
+        let maximum = MAX_REPLAY_INDEX_BYTES / core::mem::size_of::<ReplayLocation>();
+        while preview.locations.len() < maximum {
+            let number = preview.locations.len() as u64;
+            preview
+                .push(AbsoluteBN::new(number), AbsoluteBN::new(number), false)
+                .unwrap();
+        }
+        let failure = system
+            .replay_transaction(
+                &mut io,
+                &ring,
+                &transaction,
+                &BTreeMap::new(),
+                Some(&mut preview),
+            )
+            .expect_err("preview budget exhaustion must be recoverable");
+        assert_eq!(failure.cause().kind(), Ext4ErrorKind::NoMemory);
+        assert!(io.writes.is_empty());
+        assert_eq!(io.blocks, before);
+
+        system
+            .replay_transaction(&mut io, &ring, &transaction, &BTreeMap::new(), None)
             .expect("bounded replay");
 
         assert_eq!(
             io.writes,
-            [
-                (AbsoluteBN::new(HOME_BLOCK), 16),
-                (AbsoluteBN::new(HOME_BLOCK + 16), 1),
-            ]
+            (0..REPLAY_PAYLOADS)
+                .step_by(MAX_BUFFERED_WRITE_BLOCKS)
+                .map(|offset| (
+                    AbsoluteBN::new(FIRST_HOME + offset as u64),
+                    (REPLAY_PAYLOADS - offset).min(MAX_BUFFERED_WRITE_BLOCKS) as u32
+                ))
+                .collect::<Vec<_>>()
         );
     }
 

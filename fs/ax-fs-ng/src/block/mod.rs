@@ -47,6 +47,32 @@ impl BlockRegion {
     }
 }
 
+/// Validates the complete zeroing request before mutation and returns its
+/// conservative bounding span. Empty extents are permitted and ignored.
+#[cfg(feature = "ext4")]
+pub(crate) fn zero_range_bounds(
+    ranges: &[BlockRegion],
+    capacity: u64,
+) -> BlockResult<Option<BlockRegion>> {
+    let mut bounds: Option<BlockRegion> = None;
+    for range in ranges {
+        if range.end_lba < range.start_lba || range.end_lba > capacity {
+            return Err(BlockError::InvalidRequest);
+        }
+        if range.start_lba == range.end_lba {
+            continue;
+        }
+        match &mut bounds {
+            Some(bounds) => {
+                bounds.start_lba = bounds.start_lba.min(range.start_lba);
+                bounds.end_lba = bounds.end_lba.max(range.end_lba);
+            }
+            None => bounds = Some(*range),
+        }
+    }
+    Ok(bounds)
+}
+
 pub(crate) trait FsBlockDevice: Send {
     fn name(&self) -> &str;
     fn num_blocks(&self) -> u64;
@@ -75,6 +101,47 @@ pub(crate) trait FsBlockDevice: Send {
     }
     #[cfg(any(feature = "ext4", feature = "fat"))]
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult;
+    /// Initializes all validated logical-block ranges to zero.
+    /// Gaps remain untouched. Failure may be partial; no accepted I/O may remain
+    /// live on return. This does not flush or imply discard guarantees.
+    #[cfg(feature = "ext4")]
+    fn write_zeroes(&mut self, ranges: &[BlockRegion]) -> BlockResult {
+        if zero_range_bounds(ranges, self.num_blocks())?.is_none() {
+            return Ok(());
+        }
+        if self.is_read_only() {
+            return Err(BlockError::Unsupported);
+        }
+        let block_size = self.block_size();
+        if block_size == 0 {
+            return Err(BlockError::InvalidRequest);
+        }
+        let maximum = ranges
+            .iter()
+            .map(|range| range.num_blocks())
+            .max()
+            .unwrap_or(0);
+        let buffered = (2 * 1024 * 1024 / block_size)
+            .max(1)
+            .min(usize::try_from(maximum).unwrap_or(usize::MAX));
+        let size = buffered
+            .checked_mul(block_size)
+            .ok_or(BlockError::InvalidRequest)?;
+        let mut zeroes = alloc::vec::Vec::new();
+        zeroes
+            .try_reserve_exact(size)
+            .map_err(|_| BlockError::NoMemory)?;
+        zeroes.resize(size, 0);
+        for range in ranges {
+            let mut block = range.start_lba;
+            while block < range.end_lba {
+                let count = (range.end_lba - block).min(buffered as u64) as usize;
+                self.write_block(block, &zeroes[..count * block_size])?;
+                block += count as u64;
+            }
+        }
+        Ok(())
+    }
     #[cfg(feature = "ext4")]
     fn write_block_fua(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult {
         Err(BlockError::Unsupported)
@@ -84,6 +151,10 @@ pub(crate) trait FsBlockDevice: Send {
 }
 
 impl<T: FsBlockDevice + ?Sized> FsBlockDevice for Box<T> {
+    #[cfg(feature = "ext4")]
+    fn write_zeroes(&mut self, ranges: &[BlockRegion]) -> BlockResult {
+        (**self).write_zeroes(ranges)
+    }
     #[cfg(feature = "ext4")]
     fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
         (**self).fork_io()
@@ -188,6 +259,29 @@ impl<T: FsBlockDevice> RegionBlockDevice<T> {
 #[cfg(any(feature = "ext4", feature = "fat"))]
 impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
     #[cfg(feature = "ext4")]
+    fn write_zeroes(&mut self, ranges: &[BlockRegion]) -> BlockResult {
+        zero_range_bounds(ranges, self.num_blocks())?;
+        let mut physical = alloc::vec::Vec::new();
+        physical
+            .try_reserve_exact(ranges.len())
+            .map_err(|_| BlockError::NoMemory)?;
+        for range in ranges {
+            physical.push(BlockRegion {
+                start_lba: self
+                    .region
+                    .start_lba
+                    .checked_add(range.start_lba)
+                    .ok_or(BlockError::InvalidRequest)?,
+                end_lba: self
+                    .region
+                    .start_lba
+                    .checked_add(range.end_lba)
+                    .ok_or(BlockError::InvalidRequest)?,
+            });
+        }
+        self.inner.write_zeroes(&physical)
+    }
+    #[cfg(feature = "ext4")]
     fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
         Ok(Box::new(self.fork_region()?))
     }
@@ -262,6 +356,10 @@ impl<T: FsBlockDevice> FsBlockDevice for RegionBlockDevice<T> {
 }
 
 impl FsBlockDevice for NativeHandleBlockDevice {
+    #[cfg(feature = "ext4")]
+    fn write_zeroes(&mut self, ranges: &[BlockRegion]) -> BlockResult {
+        self.handle.write_zeroes(ranges)
+    }
     #[cfg(feature = "ext4")]
     fn fork_io(&self) -> BlockResult<Box<dyn FsBlockDevice>> {
         Ok(Box::new(Self::new(Arc::clone(&self.handle))))

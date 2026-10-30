@@ -25,7 +25,7 @@ use axfs_ng_vfs::{
 };
 pub(crate) use guard::Ext4Guard;
 pub(crate) use lifetime::{InodeLifetime, LocatedInode};
-use mmp::mmp_identity_for_region;
+pub(super) use mmp::mmp_identity_for_region;
 use namespace::Namespace;
 pub(crate) use namespace::NamespaceChange;
 use rsext4::{InodeNumber, MmpIdentity, MountServices};

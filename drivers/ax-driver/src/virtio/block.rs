@@ -164,6 +164,7 @@ impl<T: Transport> RawBlock<T> {
                 // the matching used-ring entry is reclaimed.
                 unsafe { self.queue.add(&[header], &mut [response])? }
             }
+            (RequestOp::WriteZeroes, _) => return Err(VirtIoError::Unsupported),
             _ => return Err(VirtIoError::InvalidParam),
         };
         Ok(token)
@@ -200,6 +201,7 @@ impl<T: Transport> RawBlock<T> {
                         &mut [&mut pending.response[..]],
                     )?;
                 }
+                RequestOp::WriteZeroes => return Err(VirtIoError::Unsupported),
             }
         }
         match pending.response[0] {
@@ -407,7 +409,7 @@ fn validate_request_direction(request: &rdif_block::OwnedRequest) -> Result<(), 
             data.direction(),
             DmaDirection::ToDevice | DmaDirection::Bidirectional
         ),
-        RequestOp::Flush => false,
+        RequestOp::Flush | RequestOp::WriteZeroes => false,
     };
     if matches_operation {
         Ok(())
@@ -463,6 +465,12 @@ impl<T: Transport + Send + 'static> HardwareQueue for VirtioBlockQueue<T> {
             RequestOp::Read => 0,
             RequestOp::Write => 1,
             RequestOp::Flush => 4,
+            RequestOp::WriteZeroes => {
+                return BatchSubmitResult::new(
+                    0,
+                    BatchSubmitDisposition::Fatal(BlkError::NotSupported),
+                );
+            }
         };
         header[..4].copy_from_slice(&request_type.to_le_bytes());
         // Flush addresses the whole device and requires sector zero.

@@ -93,3 +93,29 @@ pub fn ext4_update_inode_checksum(
     inode.i_checksum_hi = ((checksum >> 16) & 0xFFFF) as u16;
     Ok(())
 }
+
+/// Verifies the preserved inode record, including unmodeled extension bytes.
+/// `sb` supplies checksum features/seed, `number` is the inode's on-disk number,
+/// and `inode`/`raw` must describe that same complete record. Filesystems without
+/// metadata checksums need no comparison; malformed or mismatching records fail.
+pub(crate) fn verify_raw_inode_checksum(
+    sb: &Ext4Superblock,
+    number: InodeNumber,
+    inode: &Ext4Inode,
+    raw: &[u8],
+) -> Ext4Result<()> {
+    if !crate::crc32c::ext4_superblock_has_metadata_csum(sb) {
+        return Ok(());
+    }
+    let computed = inode_csum_from_raw(sb, number, inode.i_generation, inode, raw)?;
+    let size = u16::try_from(raw.len()).map_err(|_| Ext4Error::corrupted())?;
+    let matches = if inode.field_fits(size, Ext4Inode::FIELD_END_I_CHECKSUM_HI) {
+        computed == u32::from(inode.l_i_checksum_lo) | (u32::from(inode.i_checksum_hi) << 16)
+    } else {
+        computed as u16 == inode.l_i_checksum_lo
+    };
+    if !matches {
+        return Err(Ext4Error::checksum().with_operation("journal:inode_checksum"));
+    }
+    Ok(())
+}

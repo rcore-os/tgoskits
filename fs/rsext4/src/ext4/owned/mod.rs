@@ -98,6 +98,35 @@ where
         Self::mount_selecting_options(device, services, |_| Ok(options))
     }
 
+    /// Mounts and expands an exclusively owned device before publishing any
+    /// inode readers or asynchronous I/O capabilities. A failed growth consumes
+    /// the mount; callers must reopen the durable device for recovery.
+    /// Growth targets the supplied device's capacity and rejects read-only
+    /// options or unsupported resize metadata. Partition-table updates belong
+    /// to the embedding OS and must finish before supplying this device view.
+    /// Consumes `device` and runtime `services`; `options` controls the initial
+    /// mount and must permit writes. Returns the sole mounted owner on success,
+    /// or a mount/preflight/commit error without publishing inode capabilities.
+    /// The observer receives initial and durably committed growth capacities;
+    /// an already complete filesystem emits no growth progress events.
+    pub fn mount_growing<C>(
+        device: D,
+        services: MountServices<C, E, O, W>,
+        options: MountOptions,
+    ) -> Ext4Result<Self>
+    where
+        C: Clock + Send + 'static,
+    {
+        if options.readonly {
+            return Err(Ext4Error::read_only().with_operation("grow:readonly_mount"));
+        }
+        let mut mount = Self::mount(device, services, options)?;
+        mount
+            .filesystem
+            .grow_before_publish(&mut mount.device, &mut mount.services.observer)?;
+        Ok(mount)
+    }
+
     /// Selects read-only replay before mounting when the on-disk filesystem
     /// has recorded errors; otherwise performs one read-write mount attempt.
     ///
@@ -172,6 +201,20 @@ where
     O: Observer,
     W: crate::runtime::Delay,
 {
+    /// Preflights a future partition capacity in bytes without changing the
+    /// filesystem geometry. The embedding OS owns any partition-table update.
+    /// Returns the usable filesystem capacity in bytes, which may leave a tiny
+    /// final group unused; unsupported targets are reported as errors.
+    /// `target_bytes` may exceed the current device view. Requires a writable
+    /// mount, performs metadata reads only, and returns no new device or mount.
+    pub fn growth_capacity(&mut self, target_bytes: u64) -> Ext4Result<u64> {
+        if self.options.readonly {
+            return Err(Ext4Error::read_only().with_operation("grow:readonly_mount"));
+        }
+        self.filesystem
+            .growth_capacity(&mut self.device, target_bytes)
+    }
+
     pub const fn options(&self) -> MountOptions {
         self.options
     }

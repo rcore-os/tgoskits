@@ -136,6 +136,7 @@ pub(super) fn io_command(
             Ok(command_without_data(request.command_table_dma, fis))
         }
         RequestOp::Read | RequestOp::Write => data_command(request),
+        RequestOp::WriteZeroes => Err(BlkError::NotSupported),
     }
 }
 

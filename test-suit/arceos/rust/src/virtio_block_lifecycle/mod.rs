@@ -44,7 +44,9 @@ fn request(queue: &dyn HardwareQueue, op: RequestOp) -> OwnedRequest {
     let direction = match op {
         RequestOp::Read => DmaDirection::FromDevice,
         RequestOp::Write => DmaDirection::ToDevice,
-        RequestOp::Flush => return request_with_direction(queue, op, None),
+        RequestOp::Flush | RequestOp::WriteZeroes => {
+            return request_with_direction(queue, op, None);
+        }
     };
     request_with_direction(queue, op, Some(direction))
 }
@@ -68,7 +70,7 @@ fn request_with_direction(
         op,
         // Flush has no addressed blocks; the driver must ignore this LBA.
         lba: 7,
-        block_count: u32::from(data.is_some()),
+        block_count: u32::from(data.is_some() || op == RequestOp::WriteZeroes),
         data,
         flags: RequestFlags::NONE,
     }

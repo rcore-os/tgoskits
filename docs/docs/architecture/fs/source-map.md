@@ -58,7 +58,7 @@ sidebar_label: "源码结构"
 
 | 源码 | 负责的事实 | 主要入口 |
 | --- | --- | --- |
-| `fs/ax-fs-ng/src/root.rs` | root selector、设备命名、候选排序、附加分区挂载 | `RootSpec`、`init_root*()` |
+| `fs/ax-fs-ng/src/root/mod.rs` | root selector、ext4/FAT UUID 只读身份探测、设备命名、候选排序、附加分区挂载 | `RootSpec`、`read_filesystem_uuid()`、`init_root*()` |
 | `fs/ax-fs-ng/src/volume/` | GPT、MBR/EBR、raw volume 发现 | `scan_volumes()`、`BlockVolume` |
 | `fs/ax-fs-ng/src/block.rs` | 文件系统可见 block trait 和 region 裁剪 | `FsBlockDevice`、`BlockRegion`、`RegionBlockDevice` |
 | `fs/ax-fs-ng/src/fs/mod.rs` | 文件系统工厂和 feature 路由 | `new_from_handle()` |
@@ -78,6 +78,7 @@ IRQ 驱动块运行时消费 `rdif-block` 的 controller、hardware queue、IRQ 
 | `block/runtime/lifecycle/controller.rs` | controller command port 和 transition worker |
 | `block/runtime/lifecycle/device.rs` | hctx 发布、CPU channel、在线 CPU 扩容 |
 | `block/runtime/lifecycle/io.rs` | 文件系统同步 buffer 与 DMA-owned request 的转换 |
+| `block/runtime/lifecycle/zero.rs` | 原生 WriteZeroes 能力选择、精确区间拆分和普通 DMA 写零回退 |
 | `block/runtime/hctx/` | hardware-context event loop、批量 dispatch、commit、completion |
 | `block/runtime/channel.rs` | 有界 MPSC/SPSC 风格运行时 channel |
 | `block/runtime/irq.rs` | hard IRQ action、event latch、shared group fan-out |

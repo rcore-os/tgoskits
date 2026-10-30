@@ -48,46 +48,48 @@ pub(super) fn barrier_test_inner() -> Arc<DeviceInner> {
 
 #[test]
 fn flush_barrier_waits_for_prior_data_and_holds_later_data() {
-    crate::os::task::install_test_runtime_ops();
-    let inner = barrier_test_inner();
-    inner
-        .enter_data_submissions(1, SubmissionAdmission::Blocking)
-        .unwrap();
-
-    let flush_inner = Arc::clone(&inner);
-    let (flush_tx, flush_rx) = mpsc::channel();
-    let flush_thread = thread::spawn(move || {
-        flush_inner
-            .begin_flush_barrier(SubmissionAdmission::Blocking)
-            .unwrap();
-        flush_tx.send(()).unwrap();
-    });
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while !inner.lifecycle_gate.lock_irqsave().flush_active {
-        assert!(Instant::now() < deadline, "flush gate was not acquired");
-        thread::yield_now();
-    }
-
-    let later_inner = Arc::clone(&inner);
-    let (later_tx, later_rx) = mpsc::channel();
-    let later_thread = thread::spawn(move || {
-        later_inner
+    for prior_op in [RequestOp::Write, RequestOp::WriteZeroes] {
+        crate::os::task::install_test_runtime_ops();
+        let inner = barrier_test_inner();
+        inner
             .enter_data_submissions(1, SubmissionAdmission::Blocking)
             .unwrap();
-        later_tx.send(()).unwrap();
-    });
-    assert!(flush_rx.recv_timeout(Duration::from_millis(20)).is_err());
-    assert!(later_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
-    inner.request_completed(RequestOp::Write);
-    flush_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert!(later_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        let flush_inner = Arc::clone(&inner);
+        let (flush_tx, flush_rx) = mpsc::channel();
+        let flush_thread = thread::spawn(move || {
+            flush_inner
+                .begin_flush_barrier(SubmissionAdmission::Blocking)
+                .unwrap();
+            flush_tx.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !inner.lifecycle_gate.lock_irqsave().flush_active {
+            assert!(Instant::now() < deadline, "flush gate was not acquired");
+            thread::yield_now();
+        }
 
-    inner.request_completed(RequestOp::Flush);
-    later_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    inner.request_completed(RequestOp::Read);
-    flush_thread.join().unwrap();
-    later_thread.join().unwrap();
+        let later_inner = Arc::clone(&inner);
+        let (later_tx, later_rx) = mpsc::channel();
+        let later_thread = thread::spawn(move || {
+            later_inner
+                .enter_data_submissions(1, SubmissionAdmission::Blocking)
+                .unwrap();
+            later_tx.send(()).unwrap();
+        });
+        assert!(flush_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        assert!(later_rx.recv_timeout(Duration::from_millis(20)).is_err());
+
+        inner.request_completed(prior_op);
+        flush_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(later_rx.recv_timeout(Duration::from_millis(20)).is_err());
+
+        inner.request_completed(RequestOp::Flush);
+        later_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        inner.request_completed(RequestOp::Read);
+        flush_thread.join().unwrap();
+        later_thread.join().unwrap();
+    }
 }
 
 #[test]

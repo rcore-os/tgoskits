@@ -123,6 +123,70 @@ fn rdif_block_owned_request_validation_rejects_invalid_shapes_and_flags() {
         ),
         Err(BlkError::NotSupported)
     );
+
+    // Range mutation has its own limit and does not require DMA capacity.
+    let zero_limits = QueueLimits {
+        max_write_zeroes_blocks: 16,
+        max_blocks_per_request: 1,
+        max_segments: 0,
+        ..limits
+    };
+    let mut zero = OwnedRequest {
+        op: RequestOp::WriteZeroes,
+        lba: 48,
+        block_count: 16,
+        data: None,
+        flags: RequestFlags::NONE,
+    };
+    assert!(
+        !zero.is_data_op(),
+        "zeroing does not transfer a DMA payload"
+    );
+    assert_eq!(
+        validate_owned_request(queue_info_with(zero_limits), &zero),
+        Ok(())
+    );
+    zero.flags = RequestFlags::NOWAIT;
+    assert_eq!(
+        validate_owned_request(queue_info_with(zero_limits), &zero),
+        Ok(())
+    );
+    for flags in [RequestFlags::FUA, RequestFlags::PREFLUSH] {
+        zero.flags = flags;
+        assert_eq!(
+            validate_owned_request(queue_info_with(zero_limits), &zero),
+            Err(BlkError::NotSupported),
+            "global DMA-write flags must not grant zeroing durability semantics"
+        );
+    }
+    zero.flags = RequestFlags::NONE;
+    assert_eq!(
+        validate_owned_request(queue_info_with(limits), &zero),
+        Err(BlkError::NotSupported)
+    );
+    let mut read_only = queue_info_with(zero_limits);
+    read_only.device.read_only = true;
+    assert_eq!(
+        validate_owned_request(read_only, &zero),
+        Err(BlkError::NotSupported)
+    );
+    for (lba, blocks) in [(0, 0), (0, 17), (49, 16), (u64::MAX, 1)] {
+        zero.lba = lba;
+        zero.block_count = blocks;
+        assert_eq!(
+            validate_owned_request(queue_info_with(zero_limits), &zero),
+            Err(BlkError::InvalidBlockIndex(lba))
+        );
+    }
+    let mut huge_device = queue_info_with(zero_limits);
+    huge_device.device.num_blocks = u64::MAX;
+    zero.lba = u64::MAX - 7;
+    zero.block_count = 16;
+    assert_eq!(
+        validate_owned_request(huge_device, &zero),
+        Err(BlkError::InvalidBlockIndex(zero.lba)),
+        "range-end arithmetic must not wrap into the device"
+    );
 }
 
 #[test]

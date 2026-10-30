@@ -20,6 +20,7 @@ RUN apt-get update \
         dosfstools \
         e2fsprogs \
         fakeroot \
+        fdisk \
         git \
         libavcodec-dev \
         libavdevice-dev \

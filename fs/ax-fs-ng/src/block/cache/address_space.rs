@@ -320,6 +320,28 @@ impl BlockAddressSpace {
         }
     }
 
+    /// Excludes cache access across a batch, preserving dirty neighbors before
+    /// zeroing. A writeback error retains dirty authority; only an attempted
+    /// device zero operation invalidates cached bytes, including on failure.
+    #[cfg(feature = "ext4")]
+    pub(crate) fn write_zeroes<T: FsBlockDevice>(
+        &self,
+        dev: &mut T,
+        ranges: &[crate::block::BlockRegion],
+    ) -> BlockResult<()> {
+        let Some(bounds) = crate::block::zero_range_bounds(ranges, dev.num_blocks())? else {
+            return Ok(());
+        };
+        let (first, last) = self.frame_bounds(bounds.start_lba, bounds.num_blocks())?;
+        let _range = self.ranges.lock(first, last)?;
+        self.writeback_dirty(dev, Some((bounds.start_lba, bounds.num_blocks())))?;
+        let result = dev.write_zeroes(ranges);
+        for range in ranges.iter().filter(|range| range.num_blocks() != 0) {
+            self.invalidate_range(range.start_lba, range.num_blocks())?;
+        }
+        result
+    }
+
     fn frame_bounds(&self, first: u64, count: u64) -> BlockResult<(u64, u64)> {
         let last = count
             .checked_sub(1)

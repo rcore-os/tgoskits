@@ -54,7 +54,9 @@ impl Ext4FileSystem {
         if superblock.s_magic != EXT4_SUPER_MAGIC {
             return Err(Ext4Error::invalid_magic());
         }
-        superblock.verify_superblock()?;
+        superblock
+            .verify_superblock()
+            .map_err(|error| error.with_operation("mount:superblock_checksum"))?;
         superblock.validate_geometry()?;
         Ok(superblock.s_state & Ext4Superblock::EXT4_ERROR_FS != 0)
     }
@@ -92,7 +94,11 @@ impl Ext4FileSystem {
         }
     }
 
-    fn reset_runtime_from_superblock<B: BlockIo>(
+    /// Reloads descriptors from `block_dev` using this mount's current superblock
+    /// and replaces all geometry-dependent allocators/caches. `block_validity`
+    /// requests a rebuilt metadata protection map; callers must reapply journal
+    /// ownership afterward. Invalid descriptors or device reads abort the reset.
+    pub(super) fn reset_runtime_from_superblock<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         block_validity: bool,
@@ -115,6 +121,10 @@ impl Ext4FileSystem {
         Ok(())
     }
 
+    /// Reads and validates recovered geometry from `block_dev`, then rebuilds
+    /// runtime state. `read_only` controls feature admission and mount dirtiness;
+    /// `block_validity` controls metadata protection during the rebuild. Recovery
+    /// may change counts but cannot exceed the supplied partition capacity.
     fn reload_after_journal_replay<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -122,8 +132,13 @@ impl Ext4FileSystem {
         block_validity: bool,
     ) -> Ext4Result<()> {
         self.superblock = read_superblock(block_dev).map_err(|_| Ext4Error::io())?;
-        self.superblock.verify_superblock()?;
+        self.superblock
+            .verify_superblock()
+            .map_err(|error| error.with_operation("mount:superblock_checksum"))?;
         self.superblock.validate_geometry()?;
+        if self.superblock.blocks_count() > block_dev.total_blocks() {
+            return Err(Ext4Error::bad_superblock().with_operation("recovery:device_capacity"));
+        }
         self.superblock.check_features(read_only)?;
         Self::validate_journal_source(&self.superblock)?;
         Self::initialize_directory_hash_policy(&mut self.superblock, read_only);
@@ -224,6 +239,9 @@ impl Ext4FileSystem {
         Ok(inode.i_mode != 0 && inode.is_dir())
     }
 
+    /// Resolves every logical block of `journal_inode` on `block_dev`, identified
+    /// by `journal_inode_num`, into an ordered absolute-block mapping. Rejects
+    /// holes and duplicate destinations so replay cannot alias journal payloads.
     fn journal_blocks<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
@@ -234,18 +252,25 @@ impl Ext4FileSystem {
         let journal_block_map =
             resolve_inode_blocks(self, block_dev, journal_inode_num, journal_inode)?;
         let mut journal_blocks = Vec::new();
+        let mut physical_blocks = ::alloc::collections::BTreeSet::new();
         for logical in 0..journal_block_count {
             let logical = u32::try_from(logical).map_err(|_| Ext4Error::corrupted())?;
             let phys = journal_block_map
                 .get(&logical)
                 .copied()
                 .ok_or_else(Ext4Error::corrupted)?;
+            if !physical_blocks.insert(phys) {
+                return Err(Ext4Error::corrupted().with_operation("journal:duplicate_block"));
+            }
             journal_blocks.push(phys);
         }
         Ok(journal_blocks)
     }
 
-    fn protect_journal_blocks<B: BlockIo>(
+    /// Resolves `journal_inode_num` through `block_dev` and adds its blocks to an
+    /// enabled system-zone map as inode-owned extents. Returns the ordered journal
+    /// mapping; invalid resolution or conflicting metadata ownership is an error.
+    pub(super) fn protect_journal_blocks<B: BlockIo>(
         &mut self,
         block_dev: &mut Jbd2Dev<B>,
         journal_inode_num: InodeNumber,
@@ -347,6 +372,18 @@ impl Ext4FileSystem {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Mounts and grows an exclusively owned filesystem before publication.
+    /// On error, discard the journal wrapper and reopen the durable device
+    /// before retrying recovery; the failed mount is never reusable.
+    /// `block_dev` must exclusively own the final partition view; growth uses
+    /// its capacity and filesystem block size. Returns a mounted filesystem only
+    /// after all steps succeed; unsupported geometry and I/O errors propagate.
+    pub fn mount_growing<B: BlockIo>(block_dev: &mut Jbd2Dev<B>) -> Ext4Result<Self> {
+        let mut filesystem = Self::mount(block_dev)?;
+        filesystem.grow_before_publish(block_dev, &mut crate::runtime::NoopObserver)?;
+        Ok(filesystem)
     }
 
     /// Mounts an ext4 filesystem from the given block device.
@@ -486,7 +523,9 @@ impl Ext4FileSystem {
         if superblock.s_magic != EXT4_SUPER_MAGIC {
             return Err(Ext4Error::invalid_magic());
         }
-        superblock.verify_superblock()?;
+        superblock
+            .verify_superblock()
+            .map_err(|error| error.with_operation("mount:superblock_checksum"))?;
         superblock.validate_geometry()?;
         if superblock.blocks_count() > block_dev.total_blocks() {
             return Err(Ext4Error::bad_superblock().with_operation("superblock:device_capacity"));
@@ -503,11 +542,22 @@ impl Ext4FileSystem {
 
         let group_count = superblock.checked_block_groups_count()?;
 
-        let group_descs = Self::load_group_descriptors(block_dev, &superblock, group_count)?;
-        let system_zones = if options.block_validity {
-            SystemZoneMap::from_layout(&superblock, &group_descs)?
+        // An interrupted growth checkpoint may expose the new superblock before
+        // all new descriptors. Bootstrap only enough trusted layout to locate
+        // the unchanged journal, then validate its recovered view before writes.
+        let recovering = options.replay_journal
+            && superblock.has_journal()
+            && superblock.has_feature_incompat(Ext4Superblock::EXT4_FEATURE_INCOMPAT_RECOVER);
+        let (group_descs, system_zones) = if recovering {
+            Self::load_journal_bootstrap_layout(block_dev, &superblock, group_count)?
         } else {
-            SystemZoneMap::default()
+            let descriptors = Self::load_group_descriptors(block_dev, &superblock, group_count)?;
+            let zones = if options.block_validity {
+                SystemZoneMap::from_layout(&superblock, &descriptors)?
+            } else {
+                SystemZoneMap::default()
+            };
+            (descriptors, zones)
         };
 
         let block_allocator = BlockAllocator::new(&superblock);
@@ -566,7 +616,8 @@ impl Ext4FileSystem {
                         .map_err(|_| {
                             Ext4Error::corrupted().with_operation("journal:inode_number")
                         })?;
-                    let mut journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
+                    let (mut journal_inode, raw_journal_inode) =
+                        fs.get_inode_record(block_dev, journal_inode_num)?;
                     let journal_exists = journal_inode.i_mode != 0;
                     if !journal_exists {
                         if needs_recovery
@@ -583,6 +634,14 @@ impl Ext4FileSystem {
                         }
                         create_journal_entry(&mut fs, block_dev)?;
                         journal_inode = fs.get_inode_by_num(block_dev, journal_inode_num)?;
+                    }
+                    if journal_exists {
+                        verify_raw_inode_checksum(
+                            &fs.superblock,
+                            journal_inode_num,
+                            &journal_inode,
+                            &raw_journal_inode,
+                        )?;
                     }
                     if !journal_inode.is_file()
                         || journal_inode.i_links_count == 0
@@ -635,6 +694,43 @@ impl Ext4FileSystem {
                         if !original_journal_use {
                             block_dev.set_journal_use(true)?;
                         }
+                        // Validate the complete recovered layout through a read-only
+                        // overlay before replay is allowed to modify home blocks.
+                        // Growth changes counts, not the coordinate system or
+                        // journal ownership used to decode this very replay.
+                        let original_geometry = fs.superblock;
+                        block_dev.validate_replay(|device| {
+                            let mut raw = [0; SUPERBLOCK_SIZE];
+                            device.read_device_bytes(SUPERBLOCK_OFFSET, &mut raw)?;
+                            let recovered = Ext4Superblock::from_disk_bytes(&raw);
+                            if recovered.checked_block_size()?
+                                != original_geometry.checked_block_size()?
+                                || recovered.s_uuid != original_geometry.s_uuid
+                                || recovered.s_blocks_per_group
+                                    != original_geometry.s_blocks_per_group
+                                || recovered.s_inodes_per_group
+                                    != original_geometry.s_inodes_per_group
+                                || recovered.s_inode_size != original_geometry.s_inode_size
+                                || recovered.get_desc_size() != original_geometry.get_desc_size()
+                                || recovered.s_first_data_block
+                                    != original_geometry.s_first_data_block
+                            {
+                                return Err(Ext4Error::corrupted()
+                                    .with_operation("journal:geometry_changed_during_replay"));
+                            }
+                            fs.reload_after_journal_replay(device, true, true)?;
+                            Self::check_mount_features(&fs.superblock, options.readonly, observer)?;
+                            let recovered = InodeNumber::new(fs.superblock.s_journal_inum)?;
+                            let (inode, raw) = fs.get_inode_record(device, recovered)?;
+                            verify_raw_inode_checksum(&fs.superblock, recovered, &inode, &raw)?;
+                            let blocks = fs.protect_journal_blocks(device, recovered)?;
+                            validate_recovered_journal_mapping(
+                                *expected_journal_ino,
+                                journal_blocks,
+                                recovered,
+                                &blocks,
+                            )
+                        })?;
                         match block_dev.journal_replay_checked() {
                             ReplayStatus::Complete => {}
                             ReplayStatus::Incomplete(failure) => {
@@ -823,6 +919,60 @@ impl Ext4FileSystem {
         }
     }
 
+    /// Reads only validated metadata into the temporary journal view. Invalid
+    /// descriptor records remain inaccessible until replay has repaired them.
+    /// `device` is the unreplayed filesystem view; `superblock` supplies validated
+    /// home geometry and `groups` its group count. Returns placeholder records
+    /// for untrusted groups plus a conservative protection map. The journal's
+    /// own group must be valid so recovery never reads through unknown ownership.
+    fn load_journal_bootstrap_layout<B: BlockIo>(
+        device: &mut Jbd2Dev<B>,
+        superblock: &Ext4Superblock,
+        groups: u32,
+    ) -> Ext4Result<(Vec<Ext4GroupDesc>, SystemZoneMap)> {
+        let journal = InodeNumber::new(superblock.s_journal_inum)?;
+        let (journal_group, _) = journal.to_group(superblock.s_inodes_per_group)?;
+        let size = superblock.get_desc_size() as usize;
+        let block_size = u64::from(superblock.checked_block_size()?);
+        let base_zones = SystemZoneMap::from_base_metadata(superblock)?;
+        let mut valid = Vec::new();
+        for group in 0..groups {
+            let offset = superblock.primary_gdt_byte_offset()? + u64::from(group) * size as u64;
+            device.read_block(AbsoluteBN::new(offset / block_size))?;
+            let start = (offset % block_size) as usize;
+            let record = device
+                .buffer()
+                .get(start..start + size)
+                .ok_or_else(Ext4Error::corrupted)?;
+            let descriptor = Ext4GroupDesc::decode_checked(record)?;
+            let checked = descriptor.verify_checksum_in_bytes(superblock, group, record);
+            if group == journal_group.raw() {
+                checked
+                    .map_err(|error| error.with_operation("journal:group_descriptor_checksum"))?;
+                if descriptor.is_inode_bitmap_uninit() {
+                    return Err(
+                        Ext4Error::corrupted().with_operation("journal:uninitialized_group")
+                    );
+                }
+            }
+            // Legacy reserves contain nonzero inode-7 backup pointers, not just
+            // zero records. After the new superblock reaches home, such bytes
+            // must not masquerade as descriptors before journal replay repairs
+            // the consumed GDT block. Fixed metadata locations remain protected.
+            let initialized = checked.is_ok()
+                && base_zones.accepts_recovery_descriptor(superblock, &descriptor)?;
+            if group == journal_group.raw() && !initialized {
+                return Err(
+                    Ext4Error::corrupted().with_operation("journal:group_descriptor_layout")
+                );
+            }
+            valid.push(initialized.then_some(descriptor));
+        }
+        let zones = SystemZoneMap::for_recovery(superblock, &valid)?;
+        let descriptors = valid.into_iter().map(Option::unwrap_or_default).collect();
+        Ok((descriptors, zones))
+    }
+
     /// Loads all block-group descriptors in on-disk order.
     fn load_group_descriptors<B: BlockIo>(
         block_dev: &mut Jbd2Dev<B>,
@@ -859,7 +1009,8 @@ impl Ext4FileSystem {
 
             let raw_record = &buffer[in_block..end];
             let desc = Ext4GroupDesc::decode_checked(raw_record)?;
-            desc.verify_checksum_in_bytes(superblock, group_id, raw_record)?;
+            desc.verify_checksum_in_bytes(superblock, group_id, raw_record)
+                .map_err(|error| error.with_operation("mount:group_descriptor_checksum"))?;
             if group_id == 0 && (desc.is_block_bitmap_uninit() || desc.is_inode_bitmap_uninit()) {
                 return Err(Ext4Error::corrupted().with_operation("group_descriptor:group0_uninit"));
             }

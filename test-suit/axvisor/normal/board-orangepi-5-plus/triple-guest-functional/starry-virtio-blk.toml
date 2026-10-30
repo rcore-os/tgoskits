@@ -12,7 +12,7 @@
 # eMMC I/O path.
 #
 # Why `root=/dev/sda`: StarryOS parses `root=` with `RootSpec`
-# (`fs/ax-fs-ng/src/root.rs`), which only accepts `PARTUUID=`, `PARTLABEL=`,
+# (`fs/ax-fs-ng/src/root/mod.rs`), which accepts `UUID=`, `PARTUUID=`, `PARTLABEL=`,
 # `/dev/sd*`, `/dev/nvme*n1` and `/dev/mmcblk*`; `init_root` panics on any other
 # value, so the Linux virtio name `/dev/vd*` cannot be used here. The Jammy image is
 # a whole raw ext4 file system with no partition table (no PARTUUID/PARTLABEL to

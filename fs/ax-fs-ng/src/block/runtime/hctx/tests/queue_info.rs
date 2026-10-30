@@ -32,6 +32,7 @@ fn provisional_queue_info_accepts_compatible_discovery_updates() {
         info.device.name = Some("discovered-device");
         info.limits.max_inflight = 4;
         info.limits.max_submit_batch = 2;
+        info.limits.max_write_zeroes_blocks = 64;
     });
     let mut epoch = QueueInfoEpoch::new(baseline);
 
@@ -130,6 +131,7 @@ fn frozen_queue_info_rejects_every_admission_contract_change() {
             info.limits.max_blocks_per_request += 1;
         }),
         changed_queue_info(baseline, |info| info.limits.max_segments += 1),
+        changed_queue_info(baseline, |info| info.limits.max_write_zeroes_blocks = 64),
         changed_queue_info(baseline, |info| {
             info.limits.supported_flags = RequestFlags::FUA;
         }),
