@@ -435,7 +435,7 @@ fn resolve(
     path: &str,
     constraints: &ResolveConstraints,
 ) -> VfsResult<Location> {
-    context.resolve_with_constraints(path, constraints, true, no_checks, 0)
+    context.resolve_with_constraints(path, constraints, true, no_checks)
 }
 
 fn error_of(context: &FsContext, path: &str, constraints: &ResolveConstraints) -> VfsError {
