@@ -1387,25 +1387,24 @@ impl FileLike for Pipe {
         })
     }
 
-    fn set_inode_metadata(
+    fn update_inode_metadata(
         &self,
         mode: Option<u32>,
         owner: Option<(Option<u32>, Option<u32>)>,
+        authorize: &dyn Fn(u32, u32, u32) -> StarryResult<()>,
     ) -> StarryResult<()> {
         // Named FIFOs persist on their filesystem inode through the regular
         // location path; only anonymous pipes use the shared inode state.
         if self.named.is_some() {
             return Err(StarryError::OperationNotSupported);
         }
-        // One lock spans the whole request: a concurrent `fchown` can only
-        // leave the owner pair of one complete call, and a concurrent
-        // `fchmod` cannot be lost between the mode update and the owner
-        // commit.
-        self.shared
-            .inode_meta
-            .lock()
-            .apply(S_IFIFO, mode, owner);
-        Ok(())
+        // One lock spans authorization and the whole request: the permission
+        // decision is taken against the metadata this commit replaces, so a
+        // concurrent `fchown` through another shared fd cannot authorize a
+        // request against an owner it has already changed, and a concurrent
+        // `fchmod` cannot be lost between the mode update and the owner commit.
+        let mut meta = self.shared.inode_meta.lock();
+        meta.update_authorized(authorize, S_IFIFO, mode, owner)
     }
 
     fn inode_key(&self) -> Option<InodeKey> {
