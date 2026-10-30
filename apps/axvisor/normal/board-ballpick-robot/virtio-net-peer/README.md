@@ -49,17 +49,10 @@ ArceOS 客户机随宿主打包，Linux 观察端使用板端内核和独立磁�
 
 ### VM 配置准备
 
-正式 `app board` 入口会自动生成配置。仅查看配置时，可在构建机 TGOSKits 仓库根目录执行：
-
-首次执行下面这组命令前，在本文档所在目录打开构建机终端；代码会记录应用路径并返回仓库根目录。后续构建机命令沿用 `APP_DIR` 和 `APP_CASE`。
+正式 `app board` 入口会自动生成配置。仅查看配置时，从构建机的 TGOSKits 仓库根目录直接执行生成脚本：
 
 ```bash
-APP_DIR="$PWD"
-cd "$(git rev-parse --show-toplevel)"
-APP_CASE=$(realpath --relative-to=apps/axvisor/normal "$APP_DIR")
-
-app="$APP_DIR"/vcpus
-bash "$app/orangepi-arceos-virtio-net-test.sh" gen
+bash apps/axvisor/normal/board-ballpick-robot/virtio-net-peer/vcpus/orangepi-arceos-virtio-net-test.sh gen
 ```
 
 `gen_configs()` 固定生成64台 ArceOS 的配置，每台64 MiB，共用本轮自动构建的 ArceOS 镜像。输出文件为 `target/axvisor-arceos-net-scale/vm1.toml` 至 `vm64.toml`；宿主构建配置 `vcpus/build-aarch64-unknown-none-softfloat.toml` 引用这些文件及固定的 `configs/linux-observer.toml`。
@@ -69,16 +62,14 @@ bash "$app/orangepi-arceos-virtio-net-test.sh" gen
 在构建机 TGOSKits 仓库根目录执行以下命令。交互流程先显式构建 ArceOS、生成64份 VM 描述，再用仓库内的 [configs/uboot-shell.toml](configs/uboot-shell.toml) 启动 AxVisor；无需向板端部署 ArceOS BIN。
 
 ```bash
-export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
 export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
-app="$APP_DIR"
-ostool board ls --server "$BOARD_SERVER"
-cargo xtask arceos build --config "$app/configs/arceos-guest-build.toml"
-bash "$app/vcpus/orangepi-arceos-virtio-net-test.sh" gen
+cargo xtask board ls --server <服务地址> --port <端口>
+cargo xtask arceos build --config apps/axvisor/normal/board-ballpick-robot/virtio-net-peer/configs/arceos-guest-build.toml
+bash apps/axvisor/normal/board-ballpick-robot/virtio-net-peer/vcpus/orangepi-arceos-virtio-net-test.sh gen
 cargo xtask axvisor board \
-  --config "$app/vcpus/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/configs/uboot-shell.toml" \
-  --server "$BOARD_SERVER"
+  --config apps/axvisor/normal/board-ballpick-robot/virtio-net-peer/vcpus/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/virtio-net-peer/configs/uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 该配置只通过 `axvisor.vm_start=65` 自动启动 Linux 观察端，不注入检查命令、不设置终端总超时。看到 `axvisor:/$` 后先按「配置观察端并启动 ArceOS」节配置观察端，再启动 ArceOS。交互命令退出为0只表示会话结束，各功能项按后面的检查判定；需要自动准备和运行完整用例时使用「自动执行与判定（可选）」节命令。
@@ -259,12 +250,12 @@ vm list
 
 ### 执行完整用例
 
-在构建机仓库根目录执行，服务地址使用「启动」节的环境变量。CI 在 `.github/ci/checks/axvisor-nightly.toml` 中调用同一应用入口。
+在构建机仓库根目录执行，直接填写板卡类型、服务地址和端口。CI 在 `.github/ci/checks/axvisor-nightly.toml` 中调用同一应用入口。
 
 ```bash
 cargo xtask axvisor app board -g normal \
-  -t "$APP_CASE"/vcpus \
-  --server "$BOARD_SERVER"
+  -t board-ballpick-robot/virtio-net-peer/vcpus \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 运行器依次检查64台心跳、全部地址与 MAC 对应关系、移除前63台后的失联及 VM64 正对照、全部移除后的失联，以及移除 Linux 后的空列表。成功必须包含：
@@ -282,14 +273,7 @@ No virtual machines found.
 
 客户机尚未启动或网络未就绪时，先检查 Linux 观察端是否同时持有 `10.0.2.2/24`、`10.0.2.79/24`，以及客户机 BIN 是否由当前源码生成。ping 返回1才表示无回复，返回2是执行或网络错误，不能用作移除成功的证据。
 
-只出现部分心跳、停在早期内存映射输出或管理命令没有响应时，本轮未完成。保留卡住的 VM ID、最后一条控制台输出和镜像摘要，不通过跳过客户机或降低数量制造通过。历史上曾出现早期启动停滞，后续通过不能单独证明其根因已修复。
-
-也可用下面的包装脚本调用同一个自动入口。它把日志和退出状态写入 `target/axvisor-arceos-net-scale/board.log`、`result.json`；直接 Cargo 运行时自行保存终端输出。
-
-```bash
-app="$APP_DIR"/vcpus
-bash "$app/orangepi-arceos-virtio-net-test.sh" run --server "$BOARD_SERVER"
-```
+只出现部分心跳、停在早期内存映射输出或管理命令没有响应时，本轮未完成。保留卡住的 VM ID、最后一条控制台输出和镜像摘要，不通过跳过客户机或降低数量制造通过。使用上面的 Cargo 入口运行时，自行保存终端输出和退出码。
 
 ## 配置说明
 
@@ -297,7 +281,7 @@ bash "$app/orangepi-arceos-virtio-net-test.sh" run --server "$BOARD_SERVER"
 
 | 文件                                                                                        | 作用                                                |
 | ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| [orangepi-arceos-virtio-net-test.sh](vcpus/orangepi-arceos-virtio-net-test.sh)               | 生成配置、通过 Cargo 运行测试                      |
+| [orangepi-arceos-virtio-net-test.sh](vcpus/orangepi-arceos-virtio-net-test.sh)               | 使用 `gen` 生成64份客户机配置                      |
 | [build-aarch64-unknown-none-softfloat.toml](vcpus/build-aarch64-unknown-none-softfloat.toml) | 默认64台 ArceOS 加 Linux 的正式宿主构建配置         |
 | [configs/uboot-shell.toml](configs/uboot-shell.toml) | 交互启动 Linux 观察端，客户机检查由人工执行 |
 | [configs/linux-observer.toml](configs/linux-observer.toml)                                                   | Linux 观察客户机、独立 ext4 和虚拟网卡              |

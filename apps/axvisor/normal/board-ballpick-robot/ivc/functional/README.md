@@ -50,24 +50,18 @@ Linux 提示符为 `root@linux-ivc:~#`。Linux 从 `/dev/vda` 挂载 ext4，不�
 
 ## 启动
 
-先在构建机设置板卡服务地址，将主机和端口占位符替换为自己的环境值：
+将命令中的 `<板卡类型>`、`<服务地址>`、`<端口>` 替换为实际值。
+
+在构建机的 TGOSKits 仓库根目录执行以下命令，直接指定配置文件路径：
 
 ```bash
-export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
-```
-
-先在构建机打开本文档所在的 `ivc/functional` 应用目录，记录应用路径，再返回 TGOSKits 仓库根目录。后续构建机命令沿用同一终端中的 `app` 变量：
-
-```bash
-app="$PWD"
-cd "$(git rev-parse --show-toplevel)"
 export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
-ostool board ls --server "$BOARD_SERVER"
+cargo xtask board ls --server <服务地址> --port <端口>
 
 cargo xtask axvisor board \
-  --config "$app/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/configs/uboot-shell.toml" \
-  --server "$BOARD_SERVER"
+  --config apps/axvisor/normal/board-ballpick-robot/ivc/functional/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/ivc/functional/configs/uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 构建配置的 `vm_configs` 将三台客户机的定义打包进 AxVisor；交互配置不设置 `axvisor.vm_start`，不会自动启动客户机。看到 `axvisor:/$` 后，在 AxVisor 控制台逐条执行：
@@ -257,13 +251,12 @@ vm list
 
 ## 自动执行（可选）
 
-在前面记录了 `app` 的构建机终端中，从仓库根目录执行。`case_dir` 从应用实际位置计算自动测试选择路径：
+在构建机的 TGOSKits 仓库根目录执行，直接指定功能检查的子目录：
 
 ```bash
-case_dir=$(realpath --relative-to=apps/axvisor/normal "$app")
 cargo xtask axvisor app board -g normal \
-  -t "$case_dir" \
-  --server "$BOARD_SERVER"
+  -t board-ballpick-robot/ivc/functional \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 该入口使用 `board-ballpick-robot-ivc.toml`，由 `axvisor.vm_start=1,2,3` 自动启动客户机，并注入测试命令。运行器自动执行三条通信链路、超时、Ctrl+C 取消和恢复检查，还验证 Zephyr 持有直通设备及 IVC 端点时，停止、复位和强制删除操作被拒绝，客户机仍能执行 `ivc latency`。全部检查完成且 Cargo 返回 0 才通过。

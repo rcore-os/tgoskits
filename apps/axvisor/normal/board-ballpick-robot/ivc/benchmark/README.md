@@ -32,26 +32,20 @@ StarryOS 的独立 ext4 内必须有 `/usr/bin/ivc-starry-bench` 及其匹配的
 
 ## 启动与手工测量
 
-以下命令在构建机仓库根目录执行。服务地址包含主机和端口；实体板卡取自仓库内交互配置的 `board_type`。
+以下命令在构建机仓库根目录执行。板卡类型、服务地址和端口通过 `--board-type <板卡类型> --server <服务地址> --port <端口>` 显式指定。
 
 ### 启动宿主
 
 [configs/uboot-shell.toml](configs/uboot-shell.toml) 不注入命令、不自动判定，也不设置终端总超时，适合逐步观察两端结果。
 
-首次执行下面这组命令前，在本文档所在目录打开构建机终端；代码会记录应用路径并返回仓库根目录。后续构建机命令沿用 `APP_DIR` 和 `APP_CASE`。
+以下命令从 TGOSKits 仓库根目录执行，配置文件直接使用仓库内路径。
 
 ```bash
-APP_DIR="$PWD"
-cd "$(git rev-parse --show-toplevel)"
-APP_CASE=$(realpath --relative-to=apps/axvisor/normal "$APP_DIR")
-
-export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
 export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
-app="$APP_DIR"
 cargo xtask axvisor board \
-  --config "$app/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/configs/uboot-shell.toml" \
-  --server "$BOARD_SERVER"
+  --config apps/axvisor/normal/board-ballpick-robot/ivc/benchmark/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/ivc/benchmark/configs/uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 看到 `axvisor:/$` 后执行 `vm list`，再用 `vm console 1` 进入 StarryOS。`Ctrl+X` 后按 `h` 可返回宿主控制台。
@@ -110,8 +104,8 @@ sync
 
 ```bash
 cargo xtask axvisor app board -g normal \
-  -t "$APP_CASE" \
-  --server "$BOARD_SERVER"
+  -t board-ballpick-robot/ivc/benchmark \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 除两端成功标记外，自动入口还要求 `IVC_BENCH_EXIT=0`，并且外层命令返回 0。CI 继续在 benchmark 阶段采集性能报告；目录位于 `apps` 不改变性能检查的归属。

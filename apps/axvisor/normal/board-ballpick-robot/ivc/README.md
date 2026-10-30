@@ -16,13 +16,15 @@
 
 ## 2. 自动执行
 
-从 TGOSKits 仓库根目录运行所需子目录，板卡服务地址由环境变量提供：
+从 TGOSKits 仓库根目录运行所需子目录，直接填写板卡类型、服务地址和端口：
 
 ```bash
 cargo xtask axvisor app board -g normal \
-  -t board-ballpick-robot/ivc/functional --server "$BOARD_SERVER"
+  -t board-ballpick-robot/ivc/functional \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 cargo xtask axvisor app board -g normal \
-  -t board-ballpick-robot/ivc/benchmark --server "$BOARD_SERVER"
+  -t board-ballpick-robot/ivc/benchmark \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 两个入口均须完成各自的客户机结果检查，且外层命令返回 0。选择父目录 `board-ballpick-robot/ivc` 会执行两个场景。
