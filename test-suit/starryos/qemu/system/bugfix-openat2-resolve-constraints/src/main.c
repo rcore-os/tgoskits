@@ -194,6 +194,23 @@ int main(void)
     expect_open("BENEATH follows an in-base relative symlink", rootfd, "rel",
                 RESOLVE_BENEATH, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 
+    /* A trailing slash sets LOOKUP_FOLLOW|LOOKUP_DIRECTORY (Linux
+     * open_last_lookups), so the final link is dereferenced even under
+     * O_NOFOLLOW: a link to a directory opens, a link to a file is ENOTDIR,
+     * and NO_SYMLINKS still rejects the follow with ELOOP. */
+    expect_open("BENEATH trailing slash follows a final link to a directory",
+                rootfd, "rel/", RESOLVE_BENEATH,
+                O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    expect_open("BENEATH trailing slash overrides O_NOFOLLOW|O_DIRECTORY",
+                rootfd, "rel/", RESOLVE_BENEATH,
+                O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC);
+    expect_errno("a plain-file link with a trailing slash is ENOTDIR", rootfd,
+                 "link-file/", RESOLVE_BENEATH,
+                 O_RDONLY | O_NOFOLLOW | O_CLOEXEC, ENOTDIR);
+    expect_errno("trailing slash does not bypass NO_SYMLINKS", rootfd, "rel/",
+                 RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+                 O_RDONLY | O_NOFOLLOW | O_CLOEXEC, ELOOP);
+
     /* A dangling symlink whose target stays inside the base must be created
      * through under BENEATH|O_CREAT (`sub/link-in -> ../dangling-in`
      * resolves to base/dangling-in); one escaping the base stays EXDEV. */

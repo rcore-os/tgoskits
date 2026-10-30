@@ -206,8 +206,11 @@ struct ConstrainedWalk<'a> {
 /// The two running counters of one constrained resolution, carried across
 /// the parent walk, the final-component follow, and dangling-target
 /// re-entries so both budgets span the entire open.
+///
+/// Crate-private: only the constrained `open` continuation may seed a walk
+/// with counters from a previous one; the public entry always starts at zero.
 #[derive(Debug, Clone, Copy)]
-pub struct WalkCounters {
+pub(crate) struct WalkCounters {
     pub depth: usize,
     pub follow_count: usize,
 }
@@ -789,7 +792,26 @@ impl FsContext {
     /// Every directory entered during the walk — including directories reached
     /// through symlink targets — is passed to `check_search` before lookup.
     /// See [`ResolveConstraints`] for the per-flag semantics.
+    ///
+    /// The walk always starts at depth 0 below the constraint boundary:
+    /// `RESOLVE_BENEATH` must only admit paths below the caller's own starting
+    /// point, so the public entry never accepts a head start.
     pub fn resolve_with_constraints(
+        &self,
+        path: impl AsRef<Path>,
+        constraints: &ResolveConstraints,
+        follow_final: bool,
+        check_search: impl Fn(&Location) -> VfsResult<()>,
+    ) -> VfsResult<Location> {
+        self.resolve_with_constraints_from(path, constraints, follow_final, check_search, 0)
+    }
+
+    /// Continuation form of [`Self::resolve_with_constraints`] for the
+    /// constrained `open` path, which resumes a walk that already descended
+    /// `depth0` directories below its boundary. Crate-private on purpose: a
+    /// caller-supplied starting depth would let the walk step above a
+    /// `RESOLVE_BENEATH` boundary before its first component is checked.
+    pub(crate) fn resolve_with_constraints_from(
         &self,
         path: impl AsRef<Path>,
         constraints: &ResolveConstraints,
@@ -809,17 +831,19 @@ impl FsContext {
         )
     }
 
-    /// Resolves `path`'s parent under `constraints`, returning the parent
-    /// directory, the final component name, and the parent's depth below the
-    /// resolution's starting directory (for callers that continue the walk
-    /// into the final component). The depth is absolute for the whole
+    /// Continuation form of the constrained walk used by `open_constrained`:
+    /// resolves `path`'s parent, returning the parent directory, the final
+    /// component name, and the walk counters at that point (for callers that
+    /// continue into the final component). The depth is absolute for the whole
     /// resolution — a caller resuming the walk must seed the next walk with
     /// this value as-is, never add it to the previous starting depth. The
     /// final component itself is not looked up. The returned follow count is
     /// likewise absolute for the whole resolution: a caller that continues
     /// into the final component must seed that walk with both values so the
-    /// symlink budget spans the entire open.
-    pub fn resolve_parent_with_constraints<'a>(
+    /// symlink budget spans the entire open. Crate-private: the caller-supplied
+    /// counters are only meaningful to the constrained open, which owns the
+    /// resolution that produced them.
+    pub(crate) fn resolve_parent_with_constraints<'a>(
         &self,
         path: &'a Path,
         constraints: &ResolveConstraints,
