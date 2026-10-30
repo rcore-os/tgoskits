@@ -669,8 +669,10 @@ impl OpenOptions {
                         // `parent_counters` is already absolute for the whole
                         // resolution (both budgets accumulated from the seeds
                         // inside the parent walk); re-adding the entry seeds
-                        // would inflate the BENEATH boundary and restore the
-                        // symlink budget per re-entry.
+                        // would inflate the BENEATH boundary. The failed
+                        // follow above also charged its own expansion to the
+                        // shared budget, so the re-entry continues from the
+                        // combined count instead of restoring it.
                         parent_counters,
                     );
                 }

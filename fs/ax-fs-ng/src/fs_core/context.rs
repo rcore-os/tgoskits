@@ -1105,7 +1105,10 @@ impl FsContext {
     /// constrained open path, resuming both `depth` and `follow_count` at the
     /// parent walk's values: Linux bounds symlink expansions by one
     /// `total_link_count` for the whole resolution, so the budget the parent
-    /// walk consumed is not restored.
+    /// walk consumed is not restored. On failure only `follow_count` is
+    /// written back (the follow's own expansion is still charged) while
+    /// `depth` keeps the parent value, because a dangling-target re-entry
+    /// restarts from the link's parent directory.
     pub(crate) fn try_resolve_symlink_constrained_follow(
         &self,
         loc: Location,
@@ -1121,10 +1124,15 @@ impl FsContext {
             depth: counters.depth,
             follow_count: counters.follow_count,
         };
-        let resolved = self.try_resolve_symlink_constrained(&mut walk, loc, parent_dir)?;
-        counters.depth = walk.depth;
+        let resolved = self.try_resolve_symlink_constrained(&mut walk, loc, parent_dir);
+        if resolved.is_ok() {
+            counters.depth = walk.depth;
+        }
+        // The follow's own expansion and any target-walk expansions are
+        // charged to the caller even when the target is missing: a dangling
+        // re-entry resumes from this budget instead of restarting it.
         counters.follow_count = walk.follow_count;
-        Ok(resolved)
+        resolved
     }
 
     /// Taking current node as root directory, resolves a path starting from

@@ -211,6 +211,76 @@ pub(crate) fn dma_buf_seek(size: u64, pos: ax_io::SeekFrom) -> StarryResult<u64>
 }
 
 #[allow(dead_code)]
+/// Mode and owner of an anonymous in-kernel inode (pipe or socket).
+///
+/// Linux protects these fields with the inode lock, so one `chmod`/`chown`
+/// request commits mode and owner together. Keeping them in one mutex-guarded
+/// value gives this kernel the same commit boundary: concurrent `fchown`
+/// calls can only end with the owner pair of one complete request, never a
+/// mix of two.
+pub(crate) struct AnonInodeMeta {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+
+impl AnonInodeMeta {
+    pub(crate) const fn new(mode: u32, uid: u32, gid: u32) -> Self {
+        Self { mode, uid, gid }
+    }
+
+    pub(crate) const fn mode(&self) -> u32 {
+        self.mode
+    }
+
+    pub(crate) const fn uid(&self) -> u32 {
+        self.uid
+    }
+
+    pub(crate) const fn gid(&self) -> u32 {
+        self.gid
+    }
+
+    /// Rewrites the owner fields (creation identity of an anonymous inode).
+    pub(crate) fn set_owner(&mut self, uid: u32, gid: u32) {
+        self.uid = uid;
+        self.gid = gid;
+    }
+
+    /// Applies one `fchmod`/`fchown` request in a single commit.
+    ///
+    /// `type_bits` are the inode's file-type bits (for example `S_IFIFO`).
+    /// A request carrying `mode` sets the permission bits absolutely;
+    /// a `fchown`-only request (`mode == None`) clears SUID unconditionally
+    /// and SGID when the group-execute bit is set, mirroring
+    /// `chown_common()`'s privileged-bit rules.
+    pub(crate) fn apply(
+        &mut self,
+        type_bits: u32,
+        mode: Option<u32>,
+        owner: Option<(Option<u32>, Option<u32>)>,
+    ) {
+        if let Some(mode) = mode {
+            self.mode = type_bits | (mode & 0o7777);
+        } else {
+            let mut perm = self.mode & 0o7777;
+            perm &= !0o4000;
+            if perm & 0o0010 != 0 {
+                perm &= !0o2000;
+            }
+            self.mode = type_bits | perm;
+        }
+        if let Some((uid, gid)) = owner {
+            if let Some(uid) = uid {
+                self.uid = uid;
+            }
+            if let Some(gid) = gid {
+                self.gid = gid;
+            }
+        }
+    }
+}
+
 pub trait FileLike: Pollable + DowncastSync {
     /// Seek a special file using its own offset rules.
     ///
@@ -1253,6 +1323,51 @@ fn cloned_table_scope_invalidates_after_fd_reuse_for_test() -> bool {
 
 #[cfg(all(test, axtest))]
 mod tests {
+    /// The anonymous-inode metadata commit is exhaustive over serial orders:
+    /// any sequence of partial `fchown` requests keeps the fields that were
+    /// not named, and any sequence of complete requests ends on exactly one
+    /// of them — never a mix. The value type has a single mutating entry
+    /// (`apply`), which is also the production commit path, so the model and
+    /// the implementation cannot drift apart.
+    #[axtest::axtest]
+    fn anon_inode_owner_commits_are_whole() {
+        use super::AnonInodeMeta;
+
+        let partial = [(Some(2000), None), (None, Some(3000))];
+        for order in [[0usize, 1], [1, 0]] {
+            let mut meta = AnonInodeMeta::new(0o010600, 1000, 1000);
+            for index in order {
+                meta.apply(0o010600, None, Some(partial[index]));
+            }
+            assert_eq!(
+                (meta.uid(), meta.gid()),
+                (2000, 3000),
+                "partial requests must preserve the unnamed field"
+            );
+        }
+
+        let complete = [(Some(2000), Some(2000)), (Some(3000), Some(3000))];
+        for order in [[0usize, 1], [1, 0]] {
+            let mut meta = AnonInodeMeta::new(0o010600, 1000, 1000);
+            for index in order {
+                meta.apply(0o010600, None, Some(complete[index]));
+            }
+            assert!(
+                matches!((meta.uid(), meta.gid()), (2000, 2000) | (3000, 3000)),
+                "complete requests must end on one whole owner pair"
+            );
+        }
+
+        // A chown-only request clears privileged bits even with no named
+        // owner field, and a chmod request sets its bits absolutely.
+        let mut meta = AnonInodeMeta::new(0o017777, 0, 0);
+        meta.apply(0o010000, None, Some((None, None)));
+        assert_eq!(meta.mode() & 0o6000, 0, "chown clears SUID/SGID");
+        assert_eq!(meta.mode() & 0o1000, 0o1000, "sticky survives chown");
+        meta.apply(0o010000, Some(0o4644), None);
+        assert_eq!(meta.mode(), 0o014644, "chmod sets bits absolutely");
+    }
+
     #[axtest::axtest]
     fn descriptor_reservation_precedes_fallible_file_creation() {
         use super::*;

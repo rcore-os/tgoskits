@@ -512,8 +512,11 @@ static void check_pipe_fchown(void)
 
     /* Two partial fchowns must each commit only their named field: under any
      * serial order of `fchown(2000, -1)` and `fchown(-1, 3000)` the final
-     * owner is 2000:3000. A snapshot-substituting implementation stores both
-     * fields per call and loses one of the two updates. */
+     * owner is 2000:3000. This is assembly-level evidence over the real
+     * syscall path; the atomicity of one request's commit (uid, gid and the
+     * privileged-bit clear under a single inode lock) is asserted in the
+     * starry-kernel axtest, because a user-space test cannot force the
+     * pre-commit window of the kernel-side update. */
     if (fchown(p[0], 1000, 1000) != 0) {
         fail("reset pipe owner for the partial-update race");
         close(p[0]);
