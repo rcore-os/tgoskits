@@ -385,6 +385,13 @@ fn do_execve(
     // Shared robust locks must report owner death before that mapping is lost.
     crate::task::release_robust_futexes(curr);
 
+    // Publish the new address space and its executable as one step for
+    // observers: `/proc/<pid>/exe` reads both through the same lock, so it
+    // cannot pair the committed MM with the previous executable (Linux
+    // publishes `bprm->file` under `exec_update_lock`). This is the narrow
+    // commit lock, not `exec_lock`, which spans the whole exec.
+    let publish = proc_data.image_publish_guard();
+
     // Publish only this process's new MM. CLONE_VM peers keep their owner.
     commit_address_space_handoff(
         || proc_data.stage_memory_replacement(prepared_memory),
@@ -405,6 +412,7 @@ fn do_execve(
     curr.set_name(&new_name);
     proc_data.set_exe_path(new_exe_path);
     proc_data.set_exe_location(Some(exe_location));
+    drop(publish);
     proc_data.set_cmdline(new_cmdline);
     proc_data.set_envp(new_envp);
     let auxv_len = auxv.len();
