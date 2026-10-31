@@ -1,0 +1,7 @@
+# Interactive robot session; boot settings match the automated case.
+# Guest commands and result checks are entered manually.
+board_type = "BallPick-Robot"
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 axvisor.vm_start=1"
+
+shell_check_steps = []
+fail_regex = []

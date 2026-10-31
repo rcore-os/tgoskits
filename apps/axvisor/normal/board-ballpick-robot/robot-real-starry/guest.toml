@@ -1,0 +1,49 @@
+# Real-robot AxVisor + StarryOS guest. The guest kernel is built from this
+# checkout with:
+# cargo xtask starry build --config apps/axvisor/normal/board-ballpick-robot/robot-real-starry/configs/starry-guest-build.toml --smp 1
+
+[base]
+id = 1
+name = "starry"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+[kernel]
+entry_point = 0x4008_0000
+kernel_load_addr = 0x4008_0000
+kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+dtb_load_addr = 0x4000_0000
+# Without an explicit cmdline the guest inherits the board's stale Armbian
+# /chosen bootargs and starts systemd as PID 1, which StarryOS cannot bring up.
+# Keep PID 1 waiting while a new session leader acquires the console tty.
+# The interactive shell can then deliver Ctrl+C to foreground applications.
+# The host retains eMMC; the guest mounts its private ext4 image over VirtIO.
+cmdline = 'root=/dev/sda rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /usr/bin/setsid --fork --wait --ctty /bin/sh -i"'
+
+# Keep a fixed 256 MiB region below 4 GiB for the kernel and DMA32 devices,
+# while allowing ordinary allocations to use the 2 GiB high-memory region.
+memory_regions = [
+    [0x4000_0000, 0x1000_0000, 0x7, 2],
+    [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+# Use the single-guest USB baseline for camera, NPU and actuator USB.
+# The machine keeps physical serial ports and architectural IRQ providers.
+[devices]
+passthrough = []
+disabled = [
+    { path = "/mmc@fe2c0000" },
+    { path = "/mmc@fe2e0000" },
+    { path = "/pcie@fe150000" },
+    { path = "/pcie@fe160000" },
+    { path = "/pcie@fe170000" },
+    { path = "/pcie@fe180000" },
+    { path = "/pcie@fe190000" },
+]
+
+[[devices.virtual]]
+id = "rootfs"
+model = "virtio-blk"
+path = "/guest/rootfs-aarch64-orangepi-jammy-1.img"
+filesystem = "ext4"

@@ -17,6 +17,7 @@
 | `pci-network` | Linux 直通 PCIe 网卡、驱动、DHCP 和 ping | [物理网络](pci-network/README.md) |
 | `virtio-net-peer` | 64 台 ArceOS 的虚拟网络及同次启动下的移除验证 | [虚拟网络](virtio-net-peer/README.md) |
 | `aka-starry-shell` | StarryOS 感知与 Zephyr 控制端协作 | [AKA 联调](aka-starry-shell/README.md) |
+| `robot-real-linux`、`robot-real-starry` | 单个客户机通过 USB 运行摄像头、NPU 与完整捡球程序 | [Linux 机器人检查](robot-real-linux/README.md)、[StarryOS 机器人检查](robot-real-starry/README.md) |
 | `linux-guest-checks` | 单个直通 Linux 的 NPU、图片推理及基础功能 | [Linux 交互检查](linux-guest-checks/README.md) |
 | `triple-vm-test` | Linux、StarryOS、Zephyr 同次启动下的功能和性能检查 | [三客户机交互检查](triple-vm-test/README.md) |
 
@@ -49,23 +50,19 @@
 
 ## 运行环境
 
-命令从 TGOSKits 仓库根目录执行。实体板卡由运行配置中的 `board_type` 选择，服务地址由当前环境提供。
+命令从 TGOSKits 仓库根目录执行。启动和连接板卡时，显式传入 `--board-type <板卡类型> --server <服务地址> --port <端口>`，将占位符替换为实际值。
 
 ### 服务与工具链
 
-先设置服务地址并检查可用性。`BOARD_SERVER` 包含主机和端口，交叉工具链路径按本机安装位置调整。
+先查询服务中的板卡类型和可用性，交叉工具链路径按本机安装位置调整。`board ls` 查询整个服务的板卡列表，只传服务地址和端口；实际启动时再指定板卡类型。
 
-首次执行下面这组命令前，在本文档所在目录打开构建机终端；代码会记录应用路径并返回仓库根目录。后续构建机命令沿用 `APP_DIR` 和 `APP_CASE`。
+以下命令从 TGOSKits 仓库根目录执行，配置文件直接使用仓库内路径。
 
 ```bash
-APP_DIR="$PWD"
-cd "$(git rev-parse --show-toplevel)"
-APP_CASE=$(realpath --relative-to=apps/axvisor/normal "$APP_DIR")
-
-export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
 export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
-ostool board ls --server "$BOARD_SERVER"
-cargo xtask axvisor app board -g normal -t "$APP_CASE" --list
+cargo xtask board ls --server <服务地址> --port <端口>
+cargo xtask axvisor app board -g normal -t board-ballpick-robot --list \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 `--list` 只展示自动用例，不构建或占用板卡。交互配置使用 `configs/` 下不以 `board-` 开头的文件名，通过 `--board-config` 显式指定。
@@ -90,45 +87,15 @@ cargo xtask axvisor app board -g normal -t "$APP_CASE" --list
 
 记录源码版本、发布版本、内核与 DTB 摘要、磁盘来源、运行命令及日志。历史通过记录不能替代修改后的实测；启动停滞、退出失败和未完成的阶段应独立记录。
 
-## 缓存交接回归记录
-
-2026-10-20 在 RK3588 实板验证了 `MemoryBacking::allocate()` 的首次 RAM 发布，以及 `Owner::prepare_run()` 在镜像和设备准备完成后的整块私有 RAM 交接。下面记录故障判据、修复后的结果及复现入口；QEMU 不模拟这次实板故障所涉及的 D-Cache 状态，不能替代板卡验证。
-
-### 镜像与故障现场
-
-测试使用 tgosimages v0.0.16 的 StarryOS 镜像，板端路径为 `/guest/starry/orangepi-5-plus`，SHA256 为 `0bc7dfa92b029ad9111e79800198b86ea245b2e9da9b2e398ecb66a07adc20f7`。排查期间没有替换客户机内核或根盘，StarryOS 独立根盘为 `/guest/rootfs-aarch64-orangepi-jammy-1.img`。
-
-修复前，首次启动可进入 shell，但 VM reset 后最后输出停在 MMU 入口；暂停客户机后保存的 PC 为 `0xffffffff8049fd34`，对应早期 panic 的 WFI 停机循环。保存的 panic 位置指针 `0xffffffff808f6fe8` 结合这份镜像的重定位记录，可定位到 `platforms/someboot/src/smp/mod.rs:220:5` 的 CPU 本地数据初始化断言。自动检查等待重启后的 shell，120 秒后失败：
-
-```text
-MMU Entry point at physical address: 0x405219e0
-Error: shell_check_steps[5] timed out after 120s
-```
-
-这解释了为什么只看最后一条串口日志会把早期 panic 误判为 MMU 切换未完成。诊断用的寄存器输出已移除，正式运行不依赖诊断插桩。
-
-### 修复后结果
-
-提交 `616a4412a` 的实板运行先验证首次启动，再在同一宿主会话中连续 reset 三次；每次都重新等待客户机 shell，并执行 CPU 信息、文件写入回读与同步、五次网络 ping。只有每轮功能标记和外层退出码同时满足才通过。
-
-| 检查 | 实测结果 | 判据 |
-| --- | --- | --- |
-| 初次启动与三次重启后的 StarryOS 功能检查 | 4 次通过 | 4 个 `CASE_PASSED case=starry-functional`，每轮 ping 均为 0% 丢包 |
-| 连续 VM reset | 3 次通过 | `VM_RESET_AFTER_READY_1`、`_2`、`_3` 全部出现，外层退出码 0 |
-| cyclictest 冷启动 | 1,000,000 次采样通过 | `CYCLICTEST_SAMPLES 1000000`、`CASE_PASSED case=starry-cyclictest`，外层退出码 0 |
-
-同次 cyclictest 的最小、平均、最大延迟分别为 2、13、2528 微秒；它们是这次运行的结果，不是其他板卡的固定验收阈值。修复后的 `cargo xtask clippy --package axvm` 共 21 项检查通过。
-
 ### 板卡复核入口
 
-沿用上文的 `APP_DIR`、`BOARD_SERVER` 和工具链环境，从仓库根目录使用仓库内的 StarryOS 交互配置启动宿主。该配置启动 VM2，但不会注入客户机测试命令。
+从仓库根目录使用仓库内的 StarryOS 交互配置启动宿主，直接指定配置路径和板卡连接参数。该配置启动 VM2，但不会注入客户机测试命令。
 
 ```bash
-app="$APP_DIR/kernel-types"
 cargo xtask axvisor board \
-  --config "$app/starry/functional/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/configs/starry-uboot-shell.toml" \
-  --server "$BOARD_SERVER"
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/starry/functional/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/kernel-types/configs/starry-uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 在宿主执行 `vm console 2`，等待真正的 `root@starry:~#` 后，在客户机执行以下功能检查。命令在独立 shell 中运行，失败时不打印通过标记。
@@ -155,5 +122,5 @@ GUEST_CHECK
 ```bash
 cargo xtask axvisor app board -g normal \
   -t board-ballpick-robot/kernel-types/starry/cyclictest \
-  --server "$BOARD_SERVER"
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```

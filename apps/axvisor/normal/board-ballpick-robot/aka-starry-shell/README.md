@@ -41,15 +41,16 @@
 
 Zephyr 二进制和 DTB 使用同一次构建的产物。StarryOS 使用支持 VirtIO 块设备的 Error 日志镜像；本目录的 [configs/starry-guest-build.toml](configs/starry-guest-build.toml) 是其应用构建配置。
 
+StarryOS 独立根盘内部还需提供 `/usr/bin/setsid`，并支持 `--fork`、`--wait`、`--ctty`。
+[configs/starry-smp1.toml](configs/starry-smp1.toml) 使用它建立带控制终端的交互 Shell，
+使 Ctrl+C 能向前台感知程序发送 SIGINT；`--wait` 保持 PID 1 等待子会话。
+该工具必须位于客户机根盘中，不能用板卡原生 Linux 上的同名文件代替。
+
 宿主 AxVisor 保留物理存储和网络；StarryOS 使用独立 VirtIO 磁盘，访问相机和 NPU；Zephyr 使用 UART6 控制设备。资源及设备分配以 [configs/starry-smp1.toml](configs/starry-smp1.toml) 和 [configs/zephyr-smp1.toml](configs/zephyr-smp1.toml) 为准。两者各使用一个 vCPU，分别选择 MPIDR `0x400` 和 `0x200`。
 
 ## 启动
 
-先在构建机设置板卡服务地址，将主机和端口占位符替换为自己的环境值：
-
-```bash
-export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
-```
+将命令中的 `<板卡类型>`、`<服务地址>`、`<端口>` 替换为实际值。
 
 以下命令在构建机的 TGOSKits 仓库根目录执行。交叉编译器须位于 PATH，板卡服务中应有连接上述设备的机器人。
 
@@ -57,23 +58,18 @@ export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
 
 ```bash
 export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
-ostool board ls --server "$BOARD_SERVER"
+cargo xtask board ls --server <服务地址> --port <端口>
 ```
 
 手动测试直接使用仓库内的 [configs/uboot-shell.toml](configs/uboot-shell.toml)。它保留自动测试配置的 U-Boot 初始化和客户机启动参数；空的 `shell_check_steps`、`fail_regex` 和未设置的 `timeout` 让测试者在交互终端中自行输入命令、观察结果。服务地址通过命令行传入，配置中不写入环境地址。
 
-首次执行下面这组命令前，在本文档所在目录打开构建机终端；代码会记录应用路径并返回仓库根目录。后续构建机命令沿用 `APP_DIR` 和 `APP_CASE`。
+以下命令从 TGOSKits 仓库根目录执行，配置文件直接使用仓库内路径。
 
 ```bash
-APP_DIR="$PWD"
-cd "$(git rev-parse --show-toplevel)"
-APP_CASE=$(realpath --relative-to=apps/axvisor/normal "$APP_DIR")
-
-app="$APP_DIR"
 cargo xtask axvisor board \
-  --config "$app/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/configs/uboot-shell.toml" \
-  --server "$BOARD_SERVER"
+  --config apps/axvisor/normal/board-ballpick-robot/aka-starry-shell/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/aka-starry-shell/configs/uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 该命令构建并启动 AxVisor，客户机使用板端已部署的镜像。启动参数 `axvisor.vm_start=1,2` 同时启动：
@@ -171,8 +167,8 @@ AKA_RESULT exit=0
 
 ```bash
 cargo xtask axvisor app board -g normal \
-  -t "$APP_CASE" \
-  --server "$BOARD_SERVER"
+  -t board-ballpick-robot/aka-starry-shell \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 运行器完成与上面相同的控制端启动和 StarryOS 工作负载，最终要求独占行 `AKA_SHELL_CI_PASS`，且外层命令返回 0。
