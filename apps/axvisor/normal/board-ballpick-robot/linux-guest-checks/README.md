@@ -99,7 +99,11 @@ cat /proc/cmdline                          # 确认 root= 与本配置一致
 
 ### 配置说明
 
-`configs/linux.toml` 默认 `root=/dev/mmcblk0p2`，与 [robot-real-linux/linux-smp1-emmc.toml](../robot-real-linux/linux-smp1-emmc.toml) 一致，内核使用标准路径 `/guest/linux/orangepi-5-plus`。换板时先从原生 Linux 核对根设备，再调整 `cmdline`。
+本目录的 `configs/linux.toml` 通过物理存储直通，以 `root=/dev/mmcblk0p2` 挂载板卡 Ubuntu 根分区。
+[robot-real-linux/linux-smp1-emmc.toml](../robot-real-linux/linux-smp1-emmc.toml) 则通过 VirtIO 块设备挂载
+`/guest/rootfs-aarch64-orangepi-jammy-0.img`，客户机使用 `root=/dev/vda`，宿主仍使用 `/dev/mmcblk0p2`。
+两种场景的客户机根盘映射不同，不能互相照搬 `root=`。两者均使用标准内核路径
+`/guest/linux/orangepi-5-plus`；换板时先从原生 Linux 核对根设备，再调整相应配置的 `cmdline`。
 
 `configs/linux.toml` 的 `devices.passthrough` 决定直通范围，改之前先分清 `guest_type` 与选择器的关系。`guest_type = "passthrough"` 时，空 `passthrough` 列表与写 `/` 等价，都启用“宿主可直通设备减去基线始终剥掉的 PCI 主桥”这根基线，写在 `/` 旁边的具体路径叠加在基线上；列表只有具体路径、不含 `/` 时退化为精确选择、不含基线；`guest_type = "virtualized"` 则从无物理设备起步，`passthrough` 只接受具体路径。
 

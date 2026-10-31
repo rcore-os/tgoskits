@@ -16,8 +16,9 @@ kernel_load_addr = 0x2_4008_0000
 # Read the standard image kernel directly from the AxVisor host filesystem.
 kernel_path = "/guest/linux/orangepi-5-plus"
 dtb_load_addr = 0x2_4000_0000
-# The root device matches the verified BallPick robot host and Linux guest in
-# apps/axvisor/normal/board-ballpick-robot/robot-real-linux/linux-smp1-emmc.toml.
+# This manual check boots the physical board root through storage passthrough.
+# robot-real-linux instead boots its private VirtIO image with root=/dev/vda;
+# that application's host still uses /dev/mmcblk0p2.
 # Verify the native Linux root device before using this configuration on another board.
 # pci=nomsi: physical PCI MSI/ITS assignment is not wired into the AxVM host
 # backend, so the passed-through RTL8125 NICs must use the controller's INTx
