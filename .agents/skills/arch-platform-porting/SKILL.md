@@ -150,6 +150,14 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - LoongArch 的 someboot 和运行期通过 `ax_cpu::boot::tlb_refill_entry()` 引用唯一填充入口，不能从普通异常向量表加固定偏移推导 refill 地址。入口地址通过 PC-relative 方式取得，平台按自身映射转换为 TLBRENTRY 要求的物理地址。遇到零中间目录项立即停止并写入两个零 `TLBRELO`，使原始装载、存储或取指错误进入虚拟内存处理器。不得从物理地址零继续 `lddir` 或 `ldpte`，也不得把含错误虚拟页号的 `TLBREHI` 当作 EntryLo。以延迟 `mmap` 后第一次存储回归和分配器测试验证。
 - `ExitBootServices` 之后不得调用启动服务。退出前重试必须使用正确内存映射键序列。
 
+## Banana Pi BPI-SM10 的 Axvisor 启动
+
+K3 固件使用 APLIC/IMSIC。宿主由 `somehal::arch::plic` 注册 `RiscvAplic` 中断域；虚拟化 Linux 客户机可以使用独立的 PLIC、NS16550 和 virtio-mmio 设备树，不把宿主 APLIC 节点当作虚拟 PLIC。`spacemit,k1-uart`、`spacemit,k3-uart` 或 `intel,xscale-uart` 必须经 `Ns16550::new_xscale_mmio()` 保留 IER 的 UART Unit Enable 位。屏蔽中断和紧急输出不能清掉该位，DLAB 选择的 DLH 分频寄存器写入则不能强制置位。诊断串口接管后停止输出时，先核对这个寄存器契约，再检查中断与调度。
+
+2026-10-30 的 BananaPi-1 验证已通过单核宿主／单虚拟处理器和双核宿主／双虚拟处理器 Linux。128 MiB ext4 镜像由宿主 initramfs 中的文件经 virtio-blk 提供，客户机以 `root=/dev/vda rootfstype=ext4 rw` 启动。验收同时检查 `vda` 块设备、读写 ext4 根挂载以及写文件后的 `sync`，不能只匹配 Linux 启动横幅。镜像随宿主内存根加载时，客户机写入不会跨板级复位保存；需要持久化时必须另接实际存储后端。双核结果不证明物理存储直通或全部 16 核可用；16 核首次实板启动只留下被截断的紧急终止输出，随后远程断电上电未恢复 U-Boot 响应，原因仍待定位。
+
+显式 RISC-V 客户机设备树不会自动按配置投影 CPU 节点。`phys_cpu_ids`、进入客户机时的 hart ID、`/cpus/cpu@*/reg` 和 PLIC 的 `interrupts-extended` 上下文顺序必须一致。双核验证使用 hart 0、1，每个 hart 按机器上下文占位与监管者上下文排列；仅把单核客户机绑到宿主 CPU1，却保留只有 hart 0 的设备树，会导致客户机没有正常启动输出。
+
 ## CPU 启动容量
 
 容量发现与归一化由 someboot 的 `fdt::CpuCapacities` 完成，按启动层选中集合的硬件 ID 匹配节点，不以设备树顺序重建逻辑编号。容量与元数据填充必须复用同一个 `CpuIdIter` 的来源选择；仅 FDT 拓扑允许读取 FDT 容量，ACPI 拓扑在没有自身容量实现时统一使用 1024，不能因两个固件表中的数字 ID 相同而混用。完整容量随 `PerCpuMeta` 在最终高地址初始化并通过已有 Release/Acquire 发布；运行期经 `CpuTopologyIf::cpu_capacity()` 读取，不解析固件、不新建惰性容量表。参照 [CPU 启动容量设计](../../../docs/design/cpu-capacity-topology.md) 中固定 Linux 版本的整组缺失回退、等频假设和零容量语义。没有可信容量来源时全部为 1024，禁止按 A55/A76 型号猜权重；整数归一化可能为零，消费者须处理后才能除法。

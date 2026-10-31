@@ -32,7 +32,14 @@ model_register!(
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["snps,dw-apb-uart", "ns16550a", "ns16550"],
+            compatibles: &[
+                "snps,dw-apb-uart",
+                "spacemit,k1-uart",
+                "spacemit,k3-uart",
+                "intel,xscale-uart",
+                "ns16550a",
+                "ns16550",
+            ],
             on_probe: probe
         },
         ProbeKind::Acpi {
@@ -118,9 +125,22 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             break;
         }
 
-        if matches!(compatible, "ns16550a" | "ns16550") {
+        if matches!(
+            compatible,
+            "spacemit,k1-uart" | "spacemit,k3-uart" | "intel,xscale-uart" | "ns16550a" | "ns16550"
+        ) {
             let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(24_000_000);
-            let raw = serial_ns16550::Ns16550::new_mmio(mmio_base, clock_freq, ns16550_width);
+            let xscale = node.compatibles().any(|compatible| {
+                matches!(
+                    compatible,
+                    "spacemit,k1-uart" | "spacemit,k3-uart" | "intel,xscale-uart"
+                )
+            });
+            let raw = if xscale {
+                serial_ns16550::Ns16550::new_xscale_mmio(mmio_base, clock_freq, ns16550_width)
+            } else {
+                serial_ns16550::Ns16550::new_mmio(mmio_base, clock_freq, ns16550_width)
+            };
             serial = Some(erase_uart(raw));
             break;
         }

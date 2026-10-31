@@ -14,6 +14,11 @@ name = "aarch64-runtime"
 target = "aarch64-unknown-none-softfloat"
 features = ["uspace"]
 
+[[package.metadata.clippy.configurations]]
+name = "riscv64-hypervisor"
+target = "riscv64gc-unknown-none-elf"
+features = ["hv", "tls"]
+
 [features]
 efi = ["someboot/efi"]
 efi-handoff = ["someboot/efi-handoff"]
