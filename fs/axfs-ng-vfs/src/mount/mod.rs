@@ -876,6 +876,8 @@ impl Location {
 
     pub fn flags(&self) -> NodeFlags;
 
+    pub fn magic_link_target(&self) -> Option<Location>;
+
     pub fn user_data(&self) -> RawSpinLockGuard<'_, TypeMap>;
 
     pub fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>>;

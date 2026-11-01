@@ -50,6 +50,7 @@ use linux_raw_sys::general::{
 pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
 #[cfg(feature = "qperf-metrics")]
 pub(crate) use self::pipe::qperf_metrics_snapshot as pipe_qperf_metrics_snapshot;
+pub(crate) use self::fs::file_like_location;
 pub use self::{
     fs::{
         Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, resolve_at_checked,
