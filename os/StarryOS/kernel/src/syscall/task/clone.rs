@@ -388,16 +388,21 @@ impl CloneArgs {
             let proc = prepared.process().clone();
             prepared_fork = Some(prepared);
 
-            let aspace = if flags.contains(CloneFlags::VM) {
-                old_proc_data
-                    .clone_aspace_user_ref()
-                    .map_err(|_| StarryError::InvalidInput)?
-            } else {
-                let parent_mm = old_proc_data.pin_aspace()?;
-                let aspace = parent_mm.lock().try_clone()?;
-                copy_from_kernel(&mut aspace.lock())?;
-                MmHandle::from_arc(aspace).map_err(|_| StarryError::BadState)?
-            };
+            let (aspace, process_image) = old_proc_data.fork_image(
+                |process_image| -> StarryResult<(MmHandle, ProcessImage)> {
+                    let aspace = if flags.contains(CloneFlags::VM) {
+                        old_proc_data
+                            .clone_aspace_user_ref()
+                            .map_err(|_| StarryError::InvalidInput)?
+                    } else {
+                        let parent_mm = old_proc_data.pin_aspace()?;
+                        let aspace = parent_mm.lock().try_clone()?;
+                        copy_from_kernel(&mut aspace.lock())?;
+                        MmHandle::from_arc(aspace).map_err(|_| StarryError::BadState)?
+                    };
+                    Ok((aspace, process_image))
+                },
+            )?;
 
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
@@ -409,15 +414,6 @@ impl CloneArgs {
                 ))
             };
 
-            let process_image = ProcessImage::new(
-                old_proc_data.exe_path().as_ref().clone(),
-                old_proc_data.exe_location(),
-                old_proc_data.cmdline(),
-                old_proc_data.envp(),
-                old_proc_data.auxv().as_ref().clone(),
-                old_proc_data.root_path().as_ref().clone(),
-                old_proc_data.cwd_path().as_ref().clone(),
-            );
             let mut process_init = ProcessDataInit::new(
                 process_image,
                 aspace,

@@ -129,6 +129,28 @@ impl ProcessData {
         self.image.publish_lock.lock()
     }
 
+    /// Samples the image metadata for a forked child and runs `build` with it
+    /// while the image-publication lock is held.
+    ///
+    /// The callback must clone the address space. Holding the lock across
+    /// both steps ties the child's MM and its executable to one `execve`
+    /// generation: a sibling thread's commit publishes the new address space
+    /// and the new `exe_path`/`exe_location` under this same lock, so it
+    /// cannot land between the clone and the sample.
+    pub(crate) fn fork_image<R>(&self, build: impl FnOnce(ProcessImage) -> R) -> R {
+        let _publish = self.image.publish_lock.lock();
+        let image = ProcessImage::new(
+            snapshot(&self.image.exe_path).as_ref().clone(),
+            self.image.exe_location.lock().clone(),
+            snapshot(&self.image.cmdline),
+            snapshot(&self.image.envp),
+            snapshot(&self.image.auxv).as_ref().clone(),
+            snapshot(&self.image.root_path).as_ref().clone(),
+            snapshot(&self.image.cwd_path).as_ref().clone(),
+        );
+        build(image)
+    }
+
     pub fn cmdline(&self) -> Arc<Vec<String>> {
         snapshot(&self.image.cmdline)
     }
