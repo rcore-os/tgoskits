@@ -27,8 +27,11 @@ USB 控制器可能呈现 USB 串口节点，实际控制设备由运行包自�
 
 ### 2.1 客户机内核
 
-在工作站的 TGOSKits 仓库根目录使用本应用独立的 [configs/starry-guest-build.toml](configs/starry-guest-build.toml)
-编译 StarryOS 客户机。该配置保留机器人所需的功能项，设置 `log = "Error"`、`max_cpu_num = 1`：
+自动 `app board` 入口通过 [smoke/guest-builds.toml](smoke/guest-builds.toml) 的 `host_prepare`
+在构建宿主前编译当前源码的客户机，失败时停止该用例。人工使用交互配置前，需从
+工作站的 TGOSKits 仓库根目录使用独立的 [configs/starry-guest-build.toml](configs/starry-guest-build.toml)
+构建客户机。该配置保留机器人所需的功能项，启用 VirtIO 块驱动，并设置
+`log = "Error"`、`max_cpu_num = 1`：
 
 ```bash
 cargo xtask starry build \
@@ -38,7 +41,8 @@ cargo xtask starry build \
 
 [guest.toml](guest.toml) 直接引用工作站产物
 `target/aarch64-unknown-none-softfloat/release/starryos.bin`，宿主构建会将其打包进
-initramfs，无需覆盖板端 `/guest/starry/`。修改客户机源码后，重新执行上述构建和宿主启动。
+initramfs，无需覆盖板端 `/guest/starry/`。修改客户机源码后，交互流程重新执行上述构建
+和宿主启动；自动入口会先完成同一构建，不依赖其他 CI 任务残留的内核产物。
 
 ### 2.2 机器人运行包
 
@@ -186,8 +190,11 @@ cargo xtask axvisor app board -g normal \
   --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
-测试要求最终 `[ROBOT_CI] RESULT=PASS attempts=1/2` 且外层退出码为 0；有限流程通过
-不代表实际抓球成功。自动测试期间不要同时运行完整捡球程序。
+测试先匹配启动器最终的 `[ROBOT_CI] RESULT=PASS attempts=1/2`，再等待
+`ROBOT_CHECK_EXIT=0`。后者只在启动器正常返回且 `sync` 完成后输出；任一步非零退出
+都会输出非零状态并使检查失败，等待受配置中的 900 秒总超时约束。不能只凭发送了
+`sync` 命令就结束会话。上述标记和外层退出码为 0 同时满足才通过，仍不代表实际
+抓球成功。自动测试期间不要同时运行完整捡球程序。
 
 ## 8. 配置说明
 
@@ -199,6 +206,7 @@ cargo xtask axvisor app board -g normal \
 | [guest.toml](guest.toml) | 客户机内核、独立根盘、CPU、内存和设备分配 |
 | [configs/starry-guest-build.toml](configs/starry-guest-build.toml) | 单 CPU StarryOS 客户机构建，Error 日志及机器人功能项 |
 | [configs/uboot-shell.toml](configs/uboot-shell.toml) | 保留人工串口会话，不注入业务命令 |
+| [smoke/guest-builds.toml](smoke/guest-builds.toml) | 自动用例在宿主构建前准备专用 StarryOS 客户机内核 |
 | [smoke/board-orangepi-5-plus-robot-real-starry.toml](smoke/board-orangepi-5-plus-robot-real-starry.toml) | 板型、启动参数、自动业务命令与结果判定 |
 
 AxVisor Nightly 的 `test-orangepi-5-plus-robot-real-axvisor-starryos` 调用本应用，修改控制入口、

@@ -15,6 +15,7 @@ fail_regex = [
   'exit with code: 139',
   '(?m)^(?:\x1b\[[0-9;]*m)*\[ROBOT_CI\] RESULT=FAIL .*$',
   '(?m)^(?:\x1b\[[0-9;]*m)*\[ROBOT_CI\] HARNESS=FAIL .*$',
+  '(?m)^(?:\x1b\[[0-9;]*m)*ROBOT_CHECK_EXIT=[1-9][0-9]*[ \t\r]*$',
 ]
 
 [[shell_check_steps]]
@@ -30,11 +31,11 @@ shell_cmd = 'd=/home/orangepi/robot/aka-rk3588-single'
 [[shell_check_steps]]
 shell_prefix = "root@starry:~#"
 # Fixed by this test configuration; change this argument to revise the FPS gate.
-shell_cmd = 'cd "$d" && FEETECH_DEV=auto ./run_single_pick_ci_once.sh 28.0'
-# Only the final launcher verdict counts. A non-zero exit fails the step
-# directly, without an echo-based fallback marker.
+shell_cmd = '''cd "$d" && FEETECH_DEV=auto ./run_single_pick_ci_once.sh 28.0 && sync; rc=$?; printf '\nROBOT_CHECK_EXIT=%s\n' "$rc"'''
+# Require the launcher's verdict first, then the command's completion below.
 success_regex = ['(?m)^(?:\x1b\[[0-9;]*m)*\[ROBOT_CI\] RESULT=PASS attempts=[12](?:[ \t\r]*$|\[\s*\d+\.\d+\].*$)']
 
 [[shell_check_steps]]
-shell_prefix = "root@starry:~#"
-shell_cmd = "sync"
+# A passive step waits for sync to finish; flushing a command is not completion.
+success_regex = ['(?m)^(?:\x1b\[[0-9;]*m)*ROBOT_CHECK_EXIT=0[ \t\r]*$']
+fail_regex = ['(?m)^(?:\x1b\[[0-9;]*m)*ROBOT_CHECK_EXIT=[1-9][0-9]*[ \t\r]*$']

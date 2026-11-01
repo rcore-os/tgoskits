@@ -1,0 +1,6 @@
+# Build the kernel that guest.toml packages before the AxVisor host build.
+host_prepare = [
+  "cargo", "xtask", "starry", "build",
+  "--config", "apps/axvisor/normal/board-ballpick-robot/robot-real-starry/configs/starry-guest-build.toml",
+  "--smp", "1",
+]

@@ -179,8 +179,11 @@ cargo xtask axvisor app board -g normal \
   --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
-测试要求最终 `[ROBOT_CI] RESULT=PASS attempts=1/2` 且外层退出码为 0；有限流程通过
-不代表实际抓球成功。自动测试期间不要同时运行完整捡球程序。
+测试先匹配启动器最终的 `[ROBOT_CI] RESULT=PASS attempts=1/2`，再等待
+`ROBOT_CHECK_EXIT=0`。后者只在启动器正常返回且 `sync` 完成后输出；任一步非零退出
+都会输出非零状态并使检查失败，等待受配置中的 900 秒总超时约束。不能只凭发送了
+`sync` 命令就结束会话。上述标记和外层退出码为 0 同时满足才通过，仍不代表实际
+抓球成功。自动测试期间不要同时运行完整捡球程序。
 
 ## 8. 配置说明
 

@@ -161,6 +161,10 @@ Linux 内核使用板端 `/guest/linux/orangepi-5-plus`，挂载独立 ext4 根�
 cargo xtask starry build --config apps/axvisor/normal/board-ballpick-robot/robot-real-starry/configs/starry-guest-build.toml --smp 1
 ```
 
+上述构建是交互启动的前置步骤。自动 `app board` 入口由相邻的
+`smoke/guest-builds.toml` 通过 `host_prepare` 执行同一构建，失败时不得继续打包宿主，
+不能依赖其他 CI 任务留下的 `starryos.bin`。
+
 USB 单客户机使用默认宿主设备树，不附加 UART6 叠加层、不执行 UART6 寄存器初始化。
 `guest_type = "passthrough"` 与空 `devices.passthrough` 选择默认设备基线，保留
 USB、NPU 及其依赖，再显式排除两个 MMC 控制器；StarryOS 继续显式排除 PCI 主桥。物理串口和机器中断
@@ -170,8 +174,10 @@ provider 仍由宿主设备保护策略约束，不能为方便 USB 控制而显
 `lib/`、模型、`run_single_pick.sh` 和本机真实标定，自动测试另用 `run_single_pick_ci_once.sh`。优先复用现有程序，
 不要把旧 `build/tennis` 入口或 virtual 链路的 FT232 回环当作 real 机器人入口。
 控制器枚举不等于执行器可用，须由应用完成车轮双向反馈、机械臂流程和安全停止。
-自动测试要求最终 `[ROBOT_CI] RESULT=PASS attempts=1/2` 与外层退出码 0 同时满足，
-交互会话正常退出不代表应用通过。涉及设备直通时按板级复位流程重跑，不用 VM
+自动测试先匹配最终 `[ROBOT_CI] RESULT=PASS attempts=1/2`，再由无命令的结果步骤
+等待 `ROBOT_CHECK_EXIT=0`，确认启动器返回成功且 `sync` 完成。非零状态或总超时必须
+使检查失败；只有发送 `sync` 的步骤会在命令发送后提前结束，不能用它证明同步完成。
+全部标记与外层退出码 0 同时满足才通过，交互会话正常退出不代表应用通过。涉及设备直通时按板级复位流程重跑，不用 VM
 停止或重置代替设备回收。按用户指定的板端改动边界执行，复用已有程序与标定；测试自身
 产生的图片、日志等输出也应记录并在交付时说明。
 

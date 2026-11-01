@@ -96,8 +96,9 @@ StarryOS 的 `/dev/sda` 是当前 `RootSpec` 支持的第一块盘选择方式�
   `[VISION_USB_CI] RESULT=FAIL`。
 - real：原生 StarryOS 的 `run_robot_ci_once.sh 28.0` 和 AxVisor 客户机的
   `run_single_pick_ci_once.sh 28.0` 只有在应用完整判定和零退出码后，才输出
-  `[ROBOT_CI] RESULT=PASS attempts=1` 或 `attempts=2`。board 命令不再使用
-  `|| echo` 吞掉退出码，因此非零退出直接让步骤失败；成功标记仍由最终启动器输出。
+  `[ROBOT_CI] RESULT=PASS attempts=1` 或 `attempts=2`。两种 AxVisor 客户机还需等待
+  `ROBOT_CHECK_EXIT=0`，确认启动器返回成功且 `sync` 已完成；非零状态匹配失败规则。
+  原生 StarryOS 沿用自己的启动器和板卡判定，不套用客户机的完成标记。
 
 本目录的 `run_robot_ci_once.sh` 以 `source.env` 固定版本的协议为基础维护。它先识别 awk 实现，
 仅为 mawk 加 `-W interactive`，使管道输入逐行处理；单独调用 `fflush()` 只能刷新
@@ -108,8 +109,8 @@ awk 输出，不能避免输入缓冲造成的集中打印。其他 awk 继续�
 记录 `launcher_sha256`。此修正不需要重新构建 `tennis`。板卡 CI 使用预部署目录，
 本地改动或重新打包不会自动更新板上脚本；部署修正版后才能验证实际板端日志时序。
 
-各入口的 FPS 门槛都写在对应 board TOML 中，不能靠宿主环境变量覆盖。成功正则只
-匹配最终生产者标记，命令回显中没有任何成功标记。
+各入口的 FPS 门槛都写在对应 board TOML 中，不能靠宿主环境变量覆盖。成功正则
+匹配启动器的最终结果及适用的同步完成标记，不接受串口中的命令回显。
 
 ## 5. 覆盖边界
 
