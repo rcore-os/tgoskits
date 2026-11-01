@@ -65,32 +65,43 @@ impl ResolveAtResult {
     }
 }
 
-/// Resolves an actual file descriptor without interpreting AT_FDCWD.
-pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
-    let file_like = get_file_like(fd)?;
-    let f = file_like.clone();
-    Ok(if let Some(file) = f.downcast_ref::<File>() {
+/// VFS location backing `file_like`, when it names a filesystem object.
+///
+/// Pipes, sockets, eventfds and similar anonymous handles have no mount
+/// identity and yield `None`; callers treat those as non-location objects
+/// (mode/owner updates, or a magic-link jump that crosses mounts).
+pub(crate) fn file_like_location(file_like: &Arc<dyn FileLike>) -> Option<Location> {
+    if let Some(file) = file_like.downcast_ref::<File>() {
         // Use location() directly: backend() rejects PATH-only fds
         // (BadFileDescriptor) which would break fstat(O_PATH-fd).
         // man "O_PATH": fstat(2) is in the allowed-operations list.
         // Fixes bug-open-path-fstat-ebadf.
-        ResolveAtResult::File(file.inner().location().clone())
-    } else if let Some(file) = f
+        Some(file.inner().location().clone())
+    } else if let Some(file) = file_like
         .downcast_ref::<super::Pipe>()
         .and_then(super::Pipe::named_file)
     {
-        ResolveAtResult::File(file.inner().location().clone())
-    } else if let Some(dir) = f.downcast_ref::<Directory>() {
-        ResolveAtResult::File(dir.inner().clone())
-    } else if let Some(memfd) = f.downcast_ref::<crate::file::memfd::Memfd>() {
+        Some(file.inner().location().clone())
+    } else if let Some(dir) = file_like.downcast_ref::<Directory>() {
+        Some(dir.inner().clone())
+    } else {
         // A memfd is a regular file inode (Linux `shmem`/tmpfs) that this
         // kernel wraps; resolving it to its location lets fchmod/fchown/
         // utimensat/xattr operate on that inode instead of being treated as a
         // mode-less anonymous fd. `Memfd::stat` already delegates to the inner
         // file, and `sys_fstatfs` resolves it the same way.
-        ResolveAtResult::File(memfd.inner().inner().location().clone())
-    } else {
-        ResolveAtResult::Other(file_like)
+        file_like
+            .downcast_ref::<crate::file::memfd::Memfd>()
+            .map(|memfd| memfd.inner().inner().location().clone())
+    }
+}
+
+/// Resolves an actual file descriptor without interpreting AT_FDCWD.
+pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
+    let file_like = get_file_like(fd)?;
+    Ok(match file_like_location(&file_like) {
+        Some(location) => ResolveAtResult::File(location),
+        None => ResolveAtResult::Other(file_like),
     })
 }
 

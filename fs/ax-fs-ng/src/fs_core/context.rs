@@ -1080,17 +1080,33 @@ impl FsContext {
             return Err(VfsError::FilesystemLoop);
         }
         // A magic link jumps to a kernel object, not to a pathname. Linux
-        // refuses that jump whenever the lookup is spatially scoped:
-        // `nd_jump_link()` fails `LOOKUP_NO_XDEV` when the object lives on
-        // another mount and `LOOKUP_IS_SCOPED` (BENEATH/IN_ROOT) outright,
-        // both with EXDEV. This walker cannot re-enter at a kernel object, and
-        // re-reading the displayed target (`pipe:[inode]`, `uts:[id]`, ...)
-        // as a pathname would fabricate a wrong resolution. Refuse the jump
-        // under any spatial restriction instead.
-        if loc.is_magic_link()
-            && (constraints.is_beneath() || constraints.is_in_root() || constraints.is_no_xdev())
-        {
-            return Err(VfsError::CrossesDevices);
+        // refuses every such jump under `LOOKUP_IS_SCOPED` (BENEATH/IN_ROOT)
+        // and `nd_jump_link()` refuses a `NO_XDEV` jump only when the target
+        // lives on another mount. Jump to the recorded target when the file
+        // system exposes one; re-reading the displayed target
+        // (`pipe:[inode]`, `uts:[id]`, ...) as a pathname would fabricate a
+        // wrong resolution, so a target without a VFS location counts as
+        // crossing.
+        if loc.is_magic_link() {
+            if constraints.is_beneath() || constraints.is_in_root() {
+                return Err(VfsError::CrossesDevices);
+            }
+            match loc.magic_link_target() {
+                Some(target) => {
+                    if constraints.is_no_xdev()
+                        && !Arc::ptr_eq(loc.mountpoint(), target.mountpoint())
+                    {
+                        return Err(VfsError::CrossesDevices);
+                    }
+                    if walk.follow_count >= SYMLINKS_MAX {
+                        return Err(VfsError::FilesystemLoop);
+                    }
+                    walk.follow_count += 1;
+                    return Ok(target);
+                }
+                None if constraints.is_no_xdev() => return Err(VfsError::CrossesDevices),
+                None => {}
+            }
         }
         if walk.follow_count >= SYMLINKS_MAX {
             return Err(VfsError::FilesystemLoop);

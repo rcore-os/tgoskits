@@ -1084,14 +1084,20 @@ impl SimpleDirOps for ThreadFdDir {
         let task = require_proc_task(&self.task)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
         let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
-        let path = fd_table
-            .read()
-            .get(fd as _)
-            .ok_or(VfsError::NotFound)?
-            .inner
-            .path()
-            .into_owned();
-        Ok(SimpleFile::new_magic_link(fs, move || Ok(path.clone())).into())
+        // Resolve both the displayed path and the VFS target of the jump
+        // from the same descriptor: `RESOLVE_NO_XDEV` compares the target's
+        // mount with procfs, and a descriptor that names a procfs object must
+        // not be treated as crossing (Linux `proc_fd_link` jumps to the
+        // fd's `f_path`; anonymous handles have no mount identity).
+        let (path, target) = {
+            let table = fd_table.read();
+            let entry = table.get(fd as _).ok_or(VfsError::NotFound)?;
+            (
+                entry.inner.path().into_owned(),
+                crate::file::file_like_location(&entry.inner),
+            )
+        };
+        Ok(SimpleFile::new_magic_link_targeting(fs, move || Ok(path.clone()), target).into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1703,10 +1709,19 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "exe" => SimpleFile::new_magic_link(fs, move || {
-                Ok(task.as_thread().proc_data.exe_path().to_string())
-            })
-            .into(),
+            "exe" => {
+                let proc_data = task.as_thread().proc_data.clone();
+                // The jump target is the backing executable, so NO_XDEV can
+                // compare its mount with procfs instead of refusing every
+                // jump (`nd_jump_link` only refuses cross-mount jumps).
+                let target = proc_data.exe_location();
+                SimpleFile::new_magic_link_targeting(
+                    fs,
+                    move || Ok(proc_data.exe_path().to_string()),
+                    target,
+                )
+                .into()
+            }
             "environ" => SimpleFile::new_regular(fs, move || {
                 let envp = task.as_thread().proc_data.envp();
                 let mut buf = Vec::new();
