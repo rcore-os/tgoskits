@@ -409,9 +409,9 @@ int main(void)
 
     /* A magic link actually reached under a spatial constraint must not be
      * re-resolved from its displayed target text (`pipe:[inode]`); Linux
-     * refuses the scoped object jump with EXDEV (nd_jump_link IS_SCOPED and
-     * NO_XDEV). Use a procfs dirfd so the walk reaches the entry without
-     * crossing the mount first. */
+     * refuses the scoped object jump with EXDEV (`LOOKUP_IS_SCOPED`), and
+     * for NO_XDEV refuses it when the target mount differs. Use a procfs
+     * dirfd so the walk reaches the entry without crossing the mount first. */
     int scoped_procfd = open("/proc", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     int pipe_fds[2] = {-1, -1};
     if (scoped_procfd >= 0 && pipe(pipe_fds) == 0) {
@@ -429,6 +429,25 @@ int main(void)
         expect_errno("IN_ROOT rejects a reached exe magic link",
                      scoped_procfd, "self/exe", RESOLVE_IN_ROOT,
                      O_RDONLY | O_CLOEXEC, EXDEV);
+
+        /* A descriptor naming a procfs object jumps to an object on the
+         * same mount, so NO_XDEV allows it (Linux nd_jump_link only rejects
+         * a different mount); BENEATH still refuses every scoped jump. */
+        int proc_file_fd = open(pid_stat, O_RDONLY | O_CLOEXEC);
+        if (proc_file_fd >= 0) {
+            char proc_fd_link[64];
+            snprintf(proc_fd_link, sizeof(proc_fd_link), "self/fd/%d",
+                     proc_file_fd);
+            expect_open("NO_XDEV follows a proc fd that stays on procfs",
+                        scoped_procfd, proc_fd_link, RESOLVE_NO_XDEV,
+                        O_RDONLY | O_CLOEXEC);
+            expect_errno("BENEATH still rejects the same-mount proc fd jump",
+                         scoped_procfd, proc_fd_link, RESOLVE_BENEATH,
+                         O_RDONLY | O_CLOEXEC, EXDEV);
+            close(proc_file_fd);
+        } else {
+            CHECK(0, "open a procfs file for the same-mount fd case");
+        }
     } else {
         CHECK(0, "prepare a procfs dirfd and pipe for scoped magic-link cases");
     }
@@ -487,10 +506,23 @@ int main(void)
     unlink(sub_link_slash);
     unlink(sub_link_bare);
     unlink(created_in);
+    unlink(created_slash);
+    unlink(created_bare);
     unlink("/tmp/o2c/beneath.txt");
     unlink("/tmp/o2c/combo.txt");
-    rmdir(sub);
-    rmdir(root);
+    /* The budget chains and their shared leaf are still linked inside the
+     * fixture tree; remove them so both rmdir calls succeed. The pre-run
+     * cleanup stays in place to recover leftovers from an aborted run. */
+    for (int i = 1; i <= 40; i++) {
+        snprintf(p_from, sizeof(p_from), "%s/p%02d", root, i);
+        snprintf(q_from, sizeof(q_from), "%s/q%02d", root, i);
+        unlink(p_from);
+        unlink(q_from);
+    }
+    snprintf(sub_leaf, sizeof(sub_leaf), "%s/sub/leaf", root);
+    unlink(sub_leaf);
+    CHECK(rmdir(sub) == 0, "remove fixture subdirectory");
+    CHECK(rmdir(root) == 0, "remove fixture root");
 
     if (failures != 0) {
         printf("O2C_CONSTRAINTS_FAILED: %d failure(s)\n", failures);
