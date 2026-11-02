@@ -382,12 +382,9 @@ pub(crate) fn prepare_aspace_unmap_deltas(
         return Vec::new();
     };
     let mut deltas = Vec::new();
-    for area in aspace.shared_file_vmas() {
+    for area in aspace.shared_file_vmas_in(VirtAddrRange::new(ustart, uend)) {
         let a0 = area.range.start;
         let a1 = area.range.end;
-        if a1 <= ustart || a0 >= uend {
-            continue;
-        }
         let Some(memfd) = memfd_from_shared_writable_area(&area) else {
             continue;
         };
@@ -418,10 +415,7 @@ pub(crate) fn collect_metas_touching_mprotect_range(
         return Vec::new();
     };
     let mut memfds = Vec::new();
-    for area in aspace.shared_file_vmas() {
-        if area.range.end <= ustart || area.range.start >= uend {
-            continue;
-        }
+    for area in aspace.shared_file_vmas_in(VirtAddrRange::new(ustart, uend)) {
         let Some(memfd) = memfd_from_shared_file(&area.file) else {
             continue;
         };
@@ -486,10 +480,7 @@ pub(crate) fn prepare_aspace_replace_deltas(
     let Some(uend) = ustart.checked_add(ulen) else {
         return deltas;
     };
-    for old in aspace.shared_file_vmas() {
-        if old.range.end <= ustart || old.range.start >= uend {
-            continue;
-        }
+    for old in aspace.shared_file_vmas_in(VirtAddrRange::new(ustart, uend)) {
         if let Some(memfd) = memfd_from_shared_file(&old.file)
             && old.rights.contains(MappingFlags::WRITE)
         {

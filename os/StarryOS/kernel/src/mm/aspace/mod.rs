@@ -1147,12 +1147,21 @@ impl AddrSpace {
         &mut self,
         range: VirtAddrRange,
     ) -> StarryResult<Vec<AppliedHugeSplit>> {
-        let mut candidates = Vec::new();
-        candidates
-            .try_reserve(2)
-            .map_err(|_| StarryError::NoMemory)?;
-        for (key, slot) in self.mapping_slots_overlapping(range) {
-            if slot.page_order == PageOrder::BASE || !slot.overlaps(range) {
+        if range.start == range.end {
+            return Ok(Vec::new());
+        }
+        // Published slots do not overlap. Only the immediate predecessor of
+        // each boundary can straddle it; interior leaves need no split.
+        let mut candidates: [Option<(MappingSlotKey, Arc<MappingSlot>)>; 2] = [None, None];
+        for (index, boundary) in [range.start, range.end].into_iter().enumerate() {
+            let boundary_key = MappingSlotKey {
+                space_id: self.id,
+                va: boundary,
+            };
+            let Some((key, slot)) = self.mapping_slots.range(..boundary_key).next_back() else {
+                continue;
+            };
+            if key.space_id != self.id || slot.page_order == PageOrder::BASE {
                 continue;
             }
             let slot_size = PAGE_SIZE_4K
@@ -1162,20 +1171,25 @@ impl AddrSpace {
                 .va
                 .checked_add(slot_size)
                 .ok_or(StarryError::BadState)?;
-            if range.start <= slot.va && slot_end <= range.end {
+            if boundary >= slot_end {
                 continue;
             }
-            candidates
-                .try_reserve(1)
-                .map_err(|_| StarryError::NoMemory)?;
-            candidates.push((*key, slot.clone()));
+            // Both boundaries can lie inside the same leaf.
+            if index == 1
+                && candidates[0]
+                    .as_ref()
+                    .is_some_and(|(first, _)| first == key)
+            {
+                continue;
+            }
+            candidates[index] = Some((*key, slot.clone()));
         }
 
         let mut applied = Vec::new();
         applied
-            .try_reserve(candidates.len())
+            .try_reserve(candidates.iter().flatten().count())
             .map_err(|_| StarryError::NoMemory)?;
-        for (key, slot) in candidates {
+        for (key, slot) in candidates.into_iter().flatten() {
             match self.apply_one_partial_huge_split(key, slot) {
                 Ok(split) => applied.push(split),
                 Err(error) => {
@@ -2521,10 +2535,18 @@ impl AddrSpace {
         cursor: VirtAddr,
         end: VirtAddr,
     ) -> Option<VmaAdviceFragment> {
-        self.vma_root
-            .iter_entries()
-            .find(|entry| entry.end() > cursor && entry.start() < end)
-            .and_then(|entry| entry.advice_fragment(cursor, end))
+        if cursor >= end {
+            return None;
+        }
+        let mut fragment = None;
+        self.vma_root.for_each_overlapping_entry(
+            VirtAddrRange::new(cursor, end),
+            |entry| {
+                fragment = entry.advice_fragment(cursor, end);
+                false
+            },
+        );
+        fragment
     }
 
     pub(crate) fn validate_mprotect_mapping_capabilities(
@@ -2571,6 +2593,21 @@ impl AddrSpace {
         self.vma_root
             .lookup_entry(address)
             .and_then(|entry| entry.shared_file_record())
+    }
+
+    /// Collects only shared-file records intersecting a mutation range.
+    pub(crate) fn shared_file_vmas_in(
+        &self,
+        range: VirtAddrRange,
+    ) -> Vec<SharedFileVmaRecord> {
+        let mut records = Vec::new();
+        self.vma_root.for_each_overlapping_entry(range, |entry| {
+            if let Some(record) = entry.shared_file_record() {
+                records.push(record);
+            }
+            true
+        });
+        records
     }
 
     pub(crate) fn shared_file_vmas(&self) -> Vec<SharedFileVmaRecord> {
@@ -2998,9 +3035,7 @@ impl AddrSpace {
             )
             .ok_or(StarryError::BadState)?;
             let slot = match split_deposit {
-                Some(deposit) => slot
-                    .attach_huge_split_deposit(deposit)
-                    .map_err(|_| StarryError::BadState)?,
+                Some(deposit) => slot.attach_huge_split_deposit(deposit)?,
                 None => slot,
             };
             Some(Arc::new(slot))
@@ -3495,13 +3530,16 @@ impl AddrSpace {
                 operation.clone(),
             )
             .ok_or(StarryError::BadState)?;
-        let successor = self.vma_root.with_mapping_entry(entry, replace).ok_or(
-            if self.vma_root.overlaps(range) && !replace {
-                StarryError::AlreadyExists
-            } else {
-                StarryError::BadState
-            },
-        )?;
+        let successor = self
+            .vma_root
+            .with_mapping_entry(entry, replace)
+            .ok_or_else(|| {
+                if !replace && self.vma_root.overlaps(range) {
+                    StarryError::AlreadyExists
+                } else {
+                    StarryError::BadState
+                }
+            })?;
         Ok(successor)
     }
 
@@ -4722,18 +4760,14 @@ impl AddrSpace {
                 .map(|()| AddressSpaceMutationOutcome::Complete);
         };
 
-        // Compute the actual mapped bytes being removed (unmap is already O(n)).
-        let end = start.checked_add(size).ok_or(StarryError::InvalidInput)?;
-        let removed_pages: u64 = self
-            .vma_root
-            .iter_entries()
-            .filter(|entry| entry.start() < end && entry.end() > start)
-            .map(|entry| {
-                let lo = entry.start().max(start);
-                let hi = entry.end().min(end);
-                ((hi - lo) / PAGE_SIZE_4K) as u64
-            })
-            .sum();
+        // Account only the mapped intersections removed by this transaction.
+        let mut removed_pages = 0u64;
+        self.vma_root.for_each_overlapping_entry(range, |entry| {
+            let lo = entry.start().max(range.start);
+            let hi = entry.end().min(range.end);
+            removed_pages += ((hi - lo) / PAGE_SIZE_4K) as u64;
+            true
+        });
 
         if let Err(error) = self.apply_unmap_unpublished(range, &mut page_table_reclaims) {
             self.park_retired_mapping_owners(retire_epoch, retired_owners);
@@ -4883,8 +4917,7 @@ impl AddrSpace {
                         replacement
                     } else {
                         replacement
-                            .attach_huge_split_deposit(self.pt.prepare_huge_split(moved.dst_va)?)
-                            .map_err(|_| StarryError::BadState)?
+                            .attach_huge_split_deposit(self.pt.prepare_huge_split(moved.dst_va)?)?
                     };
                     prepared.push(PreparedMovedSlot::Relocate {
                         source_key,
@@ -5460,6 +5493,42 @@ impl AddrSpace {
                     error,
                 ),
         }
+    }
+
+    /// Appends a fresh, lazy private-anonymous mmap to a compatible left VMA.
+    /// The caller retains the MM lock and uses the normal map transaction when
+    /// this returns false. Existing mapping identities and resident owners are
+    /// preserved; this never combines two independently materialized sources.
+    pub(crate) fn try_append_anonymous_mapping(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        permissions: MappingPermissions,
+    ) -> StarryResult<bool> {
+        self.validate_region(start, size)?;
+        let Some(previous_address) = start.checked_sub(1) else {
+            return Ok(false);
+        };
+        let Some(previous) = self.vma_root.lookup_entry(previous_address) else {
+            return Ok(false);
+        };
+        let snapshot = previous.snapshot();
+        if previous.end() != start
+            || !previous.operation().is_unnamed_base_anonymous()
+            || snapshot.rights != permissions.current
+            || snapshot.reported_rights != permissions.reported
+            || snapshot.max_rights != permissions.maximum
+            || snapshot.huge_page_advice != HugePageAdvice::Default
+            || snapshot.lock_mode != VmaLockMode::Unlocked
+            || snapshot.advice_policy != VmaAdvicePolicy::DEFAULT
+        {
+            return Ok(false);
+        }
+        // extend_area owns the immutable-root preimage, overlap check,
+        // accounting, publication receipt and rollback for the new suffix.
+        // Anonymous map_range is lazy, so no PTE outside that suffix changes.
+        self.extend_area(previous_address, size)?;
+        Ok(true)
     }
 
     /// Grows the mapping containing `addr` by `additional_size` at its end.
@@ -6179,8 +6248,16 @@ impl AddrSpace {
             Ok(materialization) => Ok(materialization),
             Err(error) => {
                 warn!(
-                    "failed to prepare page fault for {:?} ({:?}): {error}",
-                    plan.vaddr, plan.vma_flags
+                    "failed to prepare page fault for {:?} ({:?}): {error}; access={:?}, \
+                     request={request:?}, preimage={:?}, descriptor={:?}, epoch={:?}, \
+                     allocator_available_bytes={}",
+                    plan.vaddr,
+                    plan.vma_flags,
+                    plan.access_flags,
+                    plan.preimage,
+                    plan.operation.vma_descriptor(plan.vaddr),
+                    plan.base_epoch,
+                    ax_alloc::global_allocator().available_bytes(),
                 );
                 Err(Self::classify_fault_error(
                     plan.operation.is_file_backed(),
@@ -6323,10 +6400,16 @@ impl AddrSpace {
     }
 
     fn page_fault_plan_is_current(&self, plan: &PageFaultPlan) -> bool {
-        if self.vm_epoch() != plan.base_epoch || !plan.preimage.matches(plan.range.start, &self.pt)
-        {
+        if self.vm_epoch() != plan.base_epoch {
             return false;
         }
+        if !plan.preimage.matches(plan.range.start, &self.pt) {
+            return false;
+        }
+        self.page_fault_vma_is_current(plan)
+    }
+
+    fn page_fault_vma_is_current(&self, plan: &PageFaultPlan) -> bool {
         self.vma_root.lookup_entry(plan.vaddr).is_some_and(|entry| {
             entry.snapshot().rights == plan.vma_flags
                 && entry.snapshot().range.contains_range(plan.range)

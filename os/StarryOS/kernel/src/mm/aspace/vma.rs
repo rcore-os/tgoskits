@@ -824,6 +824,8 @@ struct VmaNode {
     first_start: VirtAddr,
     last_end: VirtAddr,
     max_gap: usize,
+    locked_pages: Option<u64>,
+    max_mapping_id: MappingId,
 }
 
 impl VmaNode {
@@ -847,9 +849,27 @@ impl VmaNode {
             node.max_gap
                 .max(node.first_start.as_usize() - range.end.as_usize())
         });
+        let own_locked_pages = if entry.snapshot.lock_mode.is_locked() {
+            u64::try_from(range.size() / PAGE_SIZE_4K).ok()
+        } else {
+            Some(0)
+        };
+        let locked_pages = own_locked_pages.and_then(|pages| {
+            let left_pages = left.as_ref().map_or(Some(0), |node| node.locked_pages)?;
+            let right_pages = right.as_ref().map_or(Some(0), |node| node.locked_pages)?;
+            pages.checked_add(left_pages)?.checked_add(right_pages)
+        });
+        let max_mapping_id = left
+            .iter()
+            .chain(right.iter())
+            .fold(entry.snapshot.group.id, |maximum, child| {
+                maximum.max(child.max_mapping_id)
+            });
         Arc::new(Self {
             entry,
             height: 1 + node_height(&left).max(node_height(&right)),
+            locked_pages,
+            max_mapping_id,
             left,
             right,
             first_start,
@@ -1100,16 +1120,10 @@ impl VmaMap {
 
     /// Derives Linux `mm->locked_vm` from the immutable VMA root.
     ///
-    /// Keeping this as a read-side reduction avoids a second mutable charge
-    /// map that could diverge after split, merge, unmap, fork or mremap.
+    /// Each path-copied node derives its charge from its entry and children,
+    /// so split, merge, unmap and fork publish accounting with the same root.
     pub(crate) fn locked_pages(&self) -> Option<u64> {
-        self.iter().try_fold(0u64, |pages, vma| {
-            if !vma.lock_mode.is_locked() {
-                return Some(pages);
-            }
-            let vma_pages = u64::try_from(vma.range.size() / PAGE_SIZE_4K).ok()?;
-            pages.checked_add(vma_pages)
-        })
+        self.root.as_ref().map_or(Some(0), |root| root.locked_pages)
     }
 
     pub fn lookup(&self, address: VirtAddr) -> Option<Arc<VmaSnapshot>> {
@@ -1649,18 +1663,24 @@ impl VmaMap {
     }
 
     fn group_for_descriptor(&self, descriptor: VmaDescriptor) -> Arc<MappingGroup> {
-        self.iter()
-            .find(|candidate| same_mapping_group(candidate, descriptor))
-            .map_or_else(
-                || {
-                    MappingGroup::new(
-                        descriptor.mapping,
-                        descriptor.source,
-                        descriptor.page_policy,
-                    )
-                },
-                |candidate| candidate.group.clone(),
-            )
+        // Fresh mapping IDs normally exceed every ID in this immutable root.
+        // The bound is derived from actual entries, so skipping the walk is
+        // valid even when callers provide IDs out of allocation order.
+        if self
+            .root
+            .as_ref()
+            .is_some_and(|root| descriptor.mapping <= root.max_mapping_id)
+            && let Some(entry) = self
+                .entry_refs()
+                .find(|entry| same_mapping_group(&entry.snapshot, descriptor))
+        {
+            return entry.snapshot.group.clone();
+        }
+        MappingGroup::new(
+            descriptor.mapping,
+            descriptor.source,
+            descriptor.page_policy,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1777,46 +1797,41 @@ impl VmaMap {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Arc<VmaSnapshot>> {
-        let mut values = Vec::new();
-        let mut stack = Vec::new();
-        let mut node = self.root.clone();
-        while node.is_some() || !stack.is_empty() {
-            while let Some(current) = node {
-                node = current.left.clone();
-                stack.push(current);
-            }
-            let Some(current) = stack.pop() else {
-                break;
-            };
-            values.push(current.entry.snapshot.clone());
-            node = current.right.clone();
-        }
-        values.into_iter()
+        self.entry_refs().map(|entry| entry.snapshot.clone())
     }
 
     pub(super) fn iter_entries(&self) -> impl Iterator<Item = Arc<VmaEntry>> {
-        let mut values = Vec::new();
-        let mut stack = Vec::new();
-        let mut node = self.root.clone();
-        while node.is_some() || !stack.is_empty() {
+        self.entry_refs().cloned()
+    }
+
+    fn entry_refs(&self) -> impl Iterator<Item = &Arc<VmaEntry>> {
+        let height = self
+            .root
+            .as_ref()
+            .map_or(0, |root| usize::from(root.height));
+        let mut stack = Vec::with_capacity(height);
+        let mut node = self.root.as_deref();
+        core::iter::from_fn(move || {
             while let Some(current) = node {
-                node = current.left.clone();
+                node = current.left.as_deref();
                 stack.push(current);
             }
-            let Some(current) = stack.pop() else {
-                break;
-            };
-            values.push(current.entry.clone());
-            node = current.right.clone();
-        }
-        values.into_iter()
+            let current = stack.pop()?;
+            node = current.right.as_deref();
+            Some(&current.entry)
+        })
     }
 
     pub(super) fn overlaps(&self, range: VirtAddrRange) -> bool {
-        self.lookup_entry(range.start).is_some()
-            || self
-                .iter_entries()
-                .any(|entry| entry.start() >= range.start && entry.start() < range.end)
+        if self.lookup_entry(range.start).is_some() {
+            return true;
+        }
+        let mut found = false;
+        self.for_each_overlapping_entry(range, |_| {
+            found = true;
+            false
+        });
+        found
     }
 }
 
@@ -1879,6 +1894,67 @@ mod tests {
             map = insert(&map, 0x1000 + i * 0x2000, 0x1000).unwrap();
         }
         map
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn mapping_group_reuse_survives_path_copy_and_removal() {
+        let mut map = VmaMap::default();
+        let mut groups = Vec::new();
+        for index in 0..64 {
+            let (mut vma, operation) = snapshot(0x1000 + index * 0x2000, 0x1000);
+            let descriptor = operation.vma_descriptor(vma.range.start);
+            vma.group = MappingGroup::new(
+                descriptor.mapping,
+                descriptor.source,
+                descriptor.page_policy,
+            );
+            groups.push((vma.range.start, descriptor, vma.group.clone()));
+            map = map.insert_with_operation(vma, operation).unwrap();
+        }
+        let original = map.clone();
+        for index in [0, 31, 63] {
+            map = map.remove(groups[index].0).unwrap().0;
+        }
+        for (index, (_, descriptor, group)) in groups.iter().enumerate() {
+            assert!(Arc::ptr_eq(
+                &original.group_for_descriptor(*descriptor),
+                group
+            ));
+            assert_eq!(
+                Arc::ptr_eq(&map.group_for_descriptor(*descriptor), group),
+                ![0, 31, 63].contains(&index),
+            );
+        }
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn ordered_iteration_does_not_retain_unvisited_snapshots() {
+        let map = map_of(64);
+        let last = map.lookup(VirtAddr::from_usize(0x7f000)).unwrap();
+        let retained = Arc::strong_count(&last);
+        let mut entries = map.iter();
+        assert_eq!(
+            Arc::strong_count(&last),
+            retained,
+            "starting iteration must not clone every VMA snapshot",
+        );
+        assert_eq!(
+            entries.next().unwrap().range.start,
+            VirtAddr::from_usize(0x1000),
+        );
+        assert_eq!(Arc::strong_count(&last), retained);
+        let mut visited = 1;
+        for (index, entry) in entries.enumerate() {
+            visited += 1;
+            assert_eq!(
+                entry.range.start,
+                VirtAddr::from_usize(0x1000 + (index + 1) * 0x2000),
+            );
+        }
+        assert_eq!(visited, 64);
+        assert_eq!(Arc::strong_count(&last), retained);
     }
 
     #[cfg_attr(axtest, axtest::axtest)]
@@ -2062,6 +2138,11 @@ mod tests {
 
         assert_eq!(original.len(), 1);
         assert_eq!(locked.len(), 3);
+        assert_eq!(original.locked_pages(), Some(0));
+        assert_eq!(locked.locked_pages(), Some(1));
+        let removed = locked.without_range(middle).unwrap();
+        assert_eq!(removed.locked_pages(), Some(0));
+        assert_eq!(locked.locked_pages(), Some(1));
         assert_eq!(
             original
                 .lookup(VirtAddr::from_usize(0x2000))
@@ -2095,6 +2176,7 @@ mod tests {
             .with_lock_mode(middle, VmaLockMode::Unlocked)
             .unwrap();
         assert_eq!(unlocked.len(), 1);
+        assert_eq!(unlocked.locked_pages(), Some(0));
         assert_eq!(
             unlocked.lookup(VirtAddr::from_usize(0x2000)).unwrap().range,
             VirtAddrRange::from_start_size(VirtAddr::from_usize(0x1000), 0x3000)
