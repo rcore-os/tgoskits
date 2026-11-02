@@ -854,13 +854,26 @@ pub fn sys_openat2(
         return Err(StarryError::InvalidInput);
     }
 
+    // Linux `build_open_flags` answers `EAGAIN` for a `RESOLVE_CACHED`
+    // request that also asks for a create, truncate or tmpfile open, before
+    // `do_sys_openat2` copies the pathname or resolves the dirfd. Keep that
+    // precedence: a bad pathname pointer or dirfd must not turn the retry
+    // signal into EFAULT/EBADF.
+    let cached_create =
+        uflags & (O_CREAT | O_TRUNC) != 0 || uflags & O_TMPFILE == O_TMPFILE;
+    if how_value.resolve & RESOLVE_CACHED as u64 != 0 && cached_create {
+        return Err(StarryError::WouldBlock);
+    }
+
     let constraints = openat2_resolve_constraints(how_value.resolve);
     let Some(constraints) = constraints else {
         return sys_openat(current, dirfd, path, flags, mode);
     };
 
-    // Copy the pathname before the RESOLVE_CACHED short-circuit: an invalid
-    // user pointer is EFAULT, not a retryable cache miss.
+    // Copy the pathname after the create/truncate/tmpfile short-circuit:
+    // those requests always retry, while every other CACHED open reports the
+    // same fundamental errors (EFAULT for a bad pointer, EBADF for an invalid
+    // dirfd) that Linux reports before attempting the cached lookup.
     let path = vm_load_path_string(current, path)?;
     if path.is_empty() {
         return Err(StarryError::NotFound);
@@ -882,14 +895,14 @@ pub fn sys_openat2(
 
     // RESOLVE_CACHED cannot be honored: this kernel has no dcache-only
     // lookup fast path, so EVERY open carrying the flag fails with EAGAIN —
-    // including scenarios Linux would serve from the dcache. Linux itself
-    // returns EAGAIN directly only for the O_TRUNC|O_CREAT|O_TMPFILE
-    // combinations; other CACHED opens set LOOKUP_CACHED and succeed on a
-    // dentry hit. The contract for callers is the documented openat2(2)
-    // retry: drop RESOLVE_CACHED and call again. This is a deliberate,
-    // recorded simplification (see docs/design/docker-startup.md), not a
-    // caller-facing error-code bug; widening it later requires implementing
-    // Linux's `try_to_unlazy()` dcache-hit fast path plus a
+    // including scenarios Linux would serve from the dcache. The
+    // create/truncate/tmpfile combinations already returned above, matching
+    // Linux's own early EAGAIN; for the rest Linux sets LOOKUP_CACHED and
+    // succeeds on a dentry hit. The contract for callers is the documented
+    // openat2(2) retry: drop RESOLVE_CACHED and call again. This is a
+    // deliberate, recorded simplification (see docs/design/docker-startup.md),
+    // not a caller-facing error-code bug; widening it later requires
+    // implementing Linux's `try_to_unlazy()` dcache-hit fast path plus a
     // cache-hit-success / miss-EAGAIN regression.
     if how_value.resolve & RESOLVE_CACHED as u64 != 0 {
         return Err(StarryError::WouldBlock);

@@ -142,7 +142,8 @@ int main(void)
     const char *pre_clean[] = { rel,      abs,       link_file,   beneath_txt,
                                 combo_txt, sub_link_in, sub_link_out, created_in,
                                 sub_link_slash, sub_link_bare,
-                                created_slash, created_bare };
+                                created_slash, created_bare,
+                                "/tmp/o2c/cached-create.txt" };
     for (size_t i = 0; i < sizeof(pre_clean) / sizeof(pre_clean[0]); i++) {
         unlink(pre_clean[i]);
     }
@@ -384,6 +385,50 @@ int main(void)
               "CACHED keeps EFAULT for an invalid pathname");
     }
 
+    /* Create/truncate/tmpfile requests are the one CACHED combination Linux
+     * rejects straight from build_open_flags, before it copies the pathname
+     * or resolves the dirfd. EAGAIN therefore wins over EFAULT/EBADF. */
+    {
+        const struct open_how cached_create = {
+            .flags = O_CREAT | O_RDWR | O_CLOEXEC,
+            .mode = 0600,
+            .resolve = RESOLVE_CACHED,
+        };
+        errno = 0;
+        long bad = syscall(SYS_openat2, rootfd, (const char *)1,
+                           &cached_create, sizeof(cached_create));
+        CHECK(bad < 0 && errno == EAGAIN,
+              "CACHED|O_CREAT with an invalid pathname -> EAGAIN");
+        errno = 0;
+        long bad_fd = syscall(SYS_openat2, -1, "cached-create.txt",
+                              &cached_create, sizeof(cached_create));
+        CHECK(bad_fd < 0 && errno == EAGAIN,
+              "CACHED|O_CREAT with an invalid dirfd -> EAGAIN");
+        char cached_created[64];
+        snprintf(cached_created, sizeof(cached_created), "%s/cached-create.txt",
+                 root);
+        errno = 0;
+        if (stat(cached_created, &st) == 0 || errno != ENOENT) {
+            CHECK(0, "CACHED|O_CREAT leaves no file behind");
+        } else {
+            CHECK(1, "CACHED|O_CREAT leaves no file behind");
+        }
+    }
+    {
+        const struct open_how cached_trunc = {
+            .flags = O_TRUNC | O_RDWR | O_CLOEXEC,
+            .mode = 0,
+            .resolve = RESOLVE_CACHED,
+        };
+        errno = 0;
+        long bad = syscall(SYS_openat2, rootfd, (const char *)1,
+                           &cached_trunc, sizeof(cached_trunc));
+        CHECK(bad < 0 && errno == EAGAIN,
+              "CACHED|O_TRUNC with an invalid pathname -> EAGAIN");
+    }
+    expect_errno("CACHED|O_TMPFILE -> EAGAIN", rootfd, ".", RESOLVE_CACHED,
+                 O_TMPFILE | O_RDWR | O_CLOEXEC, EAGAIN);
+
     /* Linux ignores dirfd for absolute pathnames; only RESOLVE_IN_ROOT keeps
      * using it (as the resolution root) and requires it to be valid. */
     expect_open("absolute path ignores an invalid dirfd", -1, pid_stat,
@@ -510,6 +555,7 @@ int main(void)
     unlink(created_bare);
     unlink("/tmp/o2c/beneath.txt");
     unlink("/tmp/o2c/combo.txt");
+    unlink("/tmp/o2c/cached-create.txt");
     /* The budget chains and their shared leaf are still linked inside the
      * fixture tree; remove them so both rmdir calls succeed. The pre-run
      * cleanup stays in place to recover leftovers from an aborted run. */
