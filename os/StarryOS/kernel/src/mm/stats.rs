@@ -28,6 +28,8 @@ pub struct ProcessMemStats {
     pub shared_vss_pages: u64,
     /// Resident set size in pages (`statm resident`, `stat` field 24, VmRSS).
     pub resident_pages: u64,
+    /// Nonresident anonymous swap entries owned by this MM.
+    pub swapped_pages: u64,
     /// Virtual pages covered by `VM_LOCKED` or `VM_LOCKONFAULT` VMAs.
     pub locked_pages: u64,
     /// Peak virtual address space in pages (VmPeak). Sourced from the
@@ -161,6 +163,7 @@ impl ProcessMemStats {
         stats.rss_file_pages = resident.file;
         stats.rss_shmem_pages = resident.shmem;
         stats.resident_pages = resident.total();
+        stats.swapped_pages = aspace.swapped_page_count() as u64;
         stats.hiwater_rss_pages = aspace.resident_hiwater_pages();
         stats.peak_pages = aspace.vm_stat.peak_vss_pages().max(stats.vss_pages);
         Ok(stats)
@@ -200,6 +203,7 @@ impl ProcessMemStats {
         let hwm_kb = self.hiwater_rss_pages * page_kb;
         let resident_kb = self.resident_pages * page_kb;
         let locked_kb = self.locked_pages * page_kb;
+        let swap_kb = self.swapped_pages * page_kb;
         let anon_kb = self.rss_anon_pages * page_kb;
         let file_kb = self.rss_file_pages * page_kb;
         let shmem_kb = self.rss_shmem_pages * page_kb;
@@ -211,7 +215,7 @@ impl ProcessMemStats {
              kB\nVmHWM:\t{hwm_kb} kB\nVmRSS:\t{resident_kb} kB\nRssAnon:\t{anon_kb} \
              kB\nRssFile:\t{file_kb} kB\nRssShmem:\t{shmem_kb} kB\nVmData:\t{data_kb} \
              kB\nVmStk:\t{stack_kb} kB\nVmExe:\t{exe_kb} kB\nVmLib:\t0 kB\nVmPTE:\t0 \
-             kB\nVmSwap:\t0 kB\n"
+             kB\nVmSwap:\t{swap_kb} kB\n"
         )
     }
 }

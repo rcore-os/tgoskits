@@ -478,7 +478,7 @@ impl FilePageDomain {
                 let _ = lease.cancel();
                 return CacheMappingResult::Busy;
             };
-            match aspace.evict_file_mapping_slot(key, &page) {
+            match aspace.evict_mapping_slot(key, &page) {
                 Ok(EvictMappingOutcome::Complete) => {}
                 Ok(EvictMappingOutcome::PublishedPendingTlb) => {
                     drop(lease);
@@ -555,7 +555,7 @@ impl FilePageDomain {
                 let _ = lease.cancel();
                 return CacheMappingResult::Busy;
             };
-            if let Err(error) = aspace.protect_file_mapping_slot(key, &page) {
+            if let Err(error) = aspace.protect_mapping_slot(key, &page) {
                 let _ = lease.cancel();
                 return if matches!(
                     error,

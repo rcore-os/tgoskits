@@ -27,7 +27,6 @@ use crate::{
     sync::{LockdepMutexExt, Mutex, RawSpinLock, try_reserve_irq_vec},
 };
 
-#[cfg(test)]
 fn complete_page_fault_with(
     handled: bool,
     vaddr: VirtAddr,
@@ -40,13 +39,14 @@ fn complete_page_fault_with(
 }
 
 mod accounting;
+mod swap;
+pub(crate) use swap::swap_usage;
 mod advice;
 mod backend;
 pub(crate) mod domain;
 pub mod lifecycle;
 pub(crate) mod mutation;
 pub(crate) mod objects;
-pub(crate) mod reclaim;
 pub(crate) mod vma;
 
 pub(crate) use self::domain::PageTableDomain;
@@ -74,7 +74,6 @@ pub use self::{
         EvictionError, EvictionLease, FrameLease, MappingGraphError, MappingSlot, MappingSlotKey,
         PageId, PageObject, PageState, RmapSet, SlotState, WritebackError, WritebackLease,
     },
-    reclaim::*,
     vma::*,
 };
 
@@ -513,6 +512,7 @@ struct MappingPreimage {
     vma_root: Arc<VmaMap>,
     vm_stat: ProcessVmStatSnapshot,
     leaves: Vec<ResidentLeafPreimage>,
+    swapped: Vec<(VirtAddr, Arc<swap::SwapPage>)>,
 }
 
 struct AppliedHugeSplit {
@@ -542,10 +542,9 @@ struct RetiredMappingOwners {
     pages: Vec<Arc<PageObject>>,
     cache_pins: Vec<CachedPagePin>,
     page_tables: Vec<DeferredPageTableFrames>,
-    /// File pages whose eviction stopped after PTE publication but before
-    /// every target CPU acknowledged the receipt.  Releasing this owner marks
-    /// the existing EvictionLease resumable; it must never make the page
-    /// Present again.
+    /// File or anonymous eviction frames retained until TLB acknowledgement.
+    /// File pages additionally mark their EvictionLease resumable on release;
+    /// anonymous pages only need the retained allocation ownership.
     deferred_evictions: Vec<Arc<PageObject>>,
 }
 
@@ -592,6 +591,7 @@ struct PageFaultPlan {
     request: PopulateRequest,
     preimage: FaultPteSnapshot,
     map_plans: Option<PageFaultMapPlans>,
+    swapped: Option<Arc<swap::SwapPage>>,
 }
 
 struct PageFaultMapPlans {
@@ -783,6 +783,12 @@ pub struct AddrSpace {
     /// backends still perform the hardware write, then this index publishes
     /// the corresponding `MappingSlot`/rmap record in the same mutation path.
     mapping_slots: BTreeMap<MappingSlotKey, Arc<MappingSlot>>,
+    swapped_pages: BTreeMap<VirtAddr, Arc<swap::SwapPage>>,
+    swap_scan_cursor: Option<MappingSlotKey>,
+    #[cfg(all(test, axtest))]
+    fail_eviction_after_unmap: bool,
+    #[cfg(all(test, axtest))]
+    fail_restore_after_detach: bool,
     /// Mapping owners detached by published mutations.  A batch is removed
     /// only after the matching epoch's active-CPU shootdown completes.  An
     /// uncommitted mutation that entered NeedsRepair deliberately leaves its
@@ -1622,6 +1628,12 @@ impl AddrSpace {
             tlb_quarantine: TlbQuarantine::default(),
             tlb_targets: Arc::new(AtomicUsize::new(0)),
             mapping_slots: BTreeMap::new(),
+            swapped_pages: BTreeMap::new(),
+            swap_scan_cursor: None,
+            #[cfg(all(test, axtest))]
+            fail_eviction_after_unmap: false,
+            #[cfg(all(test, axtest))]
+            fail_restore_after_detach: false,
             retired_mapping_batches: RawSpinLock::new(Vec::new()),
         })
     }
@@ -1950,24 +1962,26 @@ impl AddrSpace {
         MappingMutationContext::for_published_mutation(capacity)
     }
 
-    /// Reserves the post-publication owner used by rmap-driven file eviction.
+    /// Reserves frame ownership for file eviction and anonymous swap.
     /// Both allocations happen before the PTE is detached, so an allocation
     /// failure is an ordinary retry with no visible state change.
-    fn prepare_deferred_eviction_owner(
+    fn prepare_deferred_eviction_owners(
         &self,
-        page: &Arc<PageObject>,
+        pages: &[(MappingSlotKey, Arc<PageObject>)],
     ) -> StarryResult<RetiredMappingOwners> {
         try_reserve_irq_vec(&self.retired_mapping_batches, 1).map_err(|_| StarryError::NoMemory)?;
         let mut owners = RetiredMappingOwners::default();
         owners
             .deferred_evictions
-            .try_reserve(1)
+            .try_reserve(pages.len())
             .map_err(|_| StarryError::NoMemory)?;
         owners
             .page_tables
-            .try_reserve(1)
+            .try_reserve(pages.len())
             .map_err(|_| StarryError::NoMemory)?;
-        owners.deferred_evictions.push(page.clone());
+        owners
+            .deferred_evictions
+            .extend(pages.iter().map(|(_, page)| page.clone()));
         Ok(owners)
     }
 
@@ -2194,10 +2208,18 @@ impl AddrSpace {
                 slot,
             });
         }
+        let mut swapped = Vec::new();
+        for range in ranges {
+            for (&address, page) in self.swapped_pages.range(range.start..range.end) {
+                swapped.try_reserve(1).map_err(|_| StarryError::NoMemory)?;
+                swapped.push((address, page.clone()));
+            }
+        }
         Ok(MappingPreimage {
             vma_root: self.vma_root.clone(),
             vm_stat: self.vm_stat.snapshot(),
             leaves,
+            swapped,
         })
     }
 
@@ -2232,19 +2254,17 @@ impl AddrSpace {
     /// The caller may cancel its EvictionLease only when this returns `Err`:
     /// `NeedsRepair` means restoration could not be proved and deliberately
     /// leaves the page pinned in Evicting.
-    fn abort_file_eviction_mutation(
+    fn abort_mapping_eviction_mutation(
         &mut self,
-        range: VirtAddrRange,
+        ranges: &[VirtAddrRange],
         preimage: MappingPreimage,
         parked_epoch: Option<VmEpoch>,
         original_error: StarryError,
     ) -> Result<EvictMappingOutcome, StarryError> {
-        match self.restore_mapping_preimage(range, preimage) {
+        match self.restore_mapping_preimage_ranges(ranges, preimage) {
             Ok(()) => {
                 if let Some(epoch) = parked_epoch
-                    && self
-                        .confirm_restored_mapping_owners(epoch, &[range])
-                        .is_err()
+                    && self.confirm_restored_mapping_owners(epoch, ranges).is_err()
                 {
                     self.mutation_gate.mark_needs_repair();
                     return Ok(EvictMappingOutcome::NeedsRepair);
@@ -2389,6 +2409,7 @@ impl AddrSpace {
             vma_root,
             vm_stat,
             leaves,
+            swapped,
         } = preimage;
         if self.detach_current_materialized_ranges(ranges).is_err() {
             self.mutation_gate.mark_needs_repair();
@@ -2397,6 +2418,14 @@ impl AddrSpace {
         for range in ranges {
             self.detach_mapping_slots(*range)?;
         }
+        #[cfg(all(test, axtest))]
+        if core::mem::take(&mut self.fail_restore_after_detach) {
+            return Err(StarryError::NoMemory);
+        }
+        for range in ranges {
+            self.forget_swap_range(*range);
+        }
+        self.swapped_pages.extend(swapped);
         self.vma_root = vma_root.clone();
         for leaf in leaves {
             if leaf
@@ -3119,82 +3148,134 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// Revokes one file-cache reverse mapping.  The PageObject and MappingSlot
-    /// identities are checked before the PTE is touched, then the remote TLB is
-    /// acknowledged before the backend's mapping reference is released.
-    pub(crate) fn evict_file_mapping_slot(
+    /// Validate identities and coalesce adjacent base-page retirement ranges.
+    fn mapping_slot_ranges(
+        &self,
+        pages: &[(MappingSlotKey, Arc<PageObject>)],
+    ) -> StarryResult<Vec<VirtAddrRange>> {
+        let mut ranges: Vec<VirtAddrRange> = Vec::new();
+        ranges
+            .try_reserve(pages.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        for (key, page) in pages {
+            let slot = self.mapping_slots.get(key).ok_or(StarryError::BadState)?;
+            if key.space_id != self.id
+                || slot.page_order != PageOrder::BASE
+                || !Arc::ptr_eq(&slot.page, page)
+            {
+                return Err(StarryError::BadState);
+            }
+            let range = VirtAddrRange::from_start_size(key.va, PAGE_SIZE_4K);
+            if let Some(last) = ranges.last_mut() {
+                if last.end > range.start {
+                    return Err(StarryError::InvalidInput);
+                }
+                if last.end == range.start {
+                    *last = VirtAddrRange::new(last.start, range.end);
+                    continue;
+                }
+            }
+            ranges.push(range);
+        }
+        Ok(ranges)
+    }
+
+    /// Single-page file eviction shares the same transaction as batched swap.
+    pub(crate) fn evict_mapping_slot(
         &mut self,
         key: MappingSlotKey,
         page: &Arc<PageObject>,
     ) -> Result<EvictMappingOutcome, StarryError> {
-        if key.space_id != self.id {
-            return Err(StarryError::BadState);
-        }
-        let slot = self
-            .mapping_slots
-            .get(&key)
-            .cloned()
-            .ok_or(StarryError::BadState)?;
-        if !Arc::ptr_eq(&slot.page, page) {
-            return Err(StarryError::BadState);
-        }
+        self.evict_mapping_slots(&[(key, page.clone())])
+    }
 
-        let range = VirtAddrRange::from_start_size(key.va, PAGE_SIZE_4K);
-        let preimage = self.capture_mapping_preimage(range)?;
-        let mut retired_owner = self.prepare_deferred_eviction_owner(page)?;
-        let mut mutation = self.prepare_mutation_range(key.va, PAGE_SIZE_4K);
+    /// Retain all frames until one receipt acknowledges the whole batch.
+    fn evict_mapping_slots(
+        &mut self,
+        pages: &[(MappingSlotKey, Arc<PageObject>)],
+    ) -> Result<EvictMappingOutcome, StarryError> {
+        if pages.is_empty() {
+            return Ok(EvictMappingOutcome::Complete);
+        }
+        let ranges = self.mapping_slot_ranges(pages)?;
+        let preimage = self.capture_mapping_preimage_ranges(&ranges)?;
+        let mut retired_owner = self.prepare_deferred_eviction_owners(pages)?;
+        let mut mutation = self.prepare_mutation();
+        for range in &ranges {
+            mutation.add_tlb_range(
+                TlbRange::new(range.start, range.size()).ok_or(StarryError::BadState)?,
+            );
+        }
         let retire_epoch = mutation
             .receipt()
             .base_epoch
             .checked_next()
             .ok_or(StarryError::BadState)?;
+        let mut resident_delta = ResidentDelta::default();
+        // Validate every leaf before changing the first one.
+        for (key, _) in pages {
+            let slot = self.mapping_slots.get(key).ok_or(StarryError::BadState)?;
+            let plan = self.pt.plan_unmap_page(key.va)?;
+            if slot.mapped_paddr() != Some(plan.paddr()) || plan.page_size() != PAGE_SIZE_4K {
+                return Err(StarryError::BadState);
+            }
+            resident_delta
+                .checked_add_assign(ResidentDelta::for_pages(slot.resident_kind(), -1))?;
+        }
         mutation.set_pte_delta(PteDelta {
-            unmapped: 1,
+            unmapped: u32::try_from(pages.len()).map_err(|_| StarryError::InvalidInput)?,
             ..PteDelta::default()
         });
         mutation.set_mapping_delta(MappingDelta {
-            detached: 1,
+            detached: u32::try_from(pages.len()).map_err(|_| StarryError::InvalidInput)?,
             ..MappingDelta::default()
         });
-        mutation.set_resident_delta(ResidentDelta::for_pages(slot.resident_kind(), -1));
-
-        let unmap_plan = self.pt.plan_unmap_page(key.va)?;
-        if slot.mapped_paddr() != Some(unmap_plan.paddr()) || unmap_plan.page_size() != PAGE_SIZE_4K
-        {
-            return Err(StarryError::BadState);
-        }
+        mutation.set_resident_delta(resident_delta);
         let apply_result = (|| -> StarryResult {
-            let unmapped = {
-                let pte_domain = &self.pte_domain;
-                let pt = &mut self.pt;
-                let range = VirtAddrRange::from_start_size(key.va, PAGE_SIZE_4K);
-                let _structure = pte_domain.lock_structure();
-                let _stripe = pte_domain.lock_range(range);
-                pt.unmap_page_deferred(key.va)?
-            };
-            if slot.mapped_paddr() != Some(unmapped.0) || unmapped.2 != PAGE_SIZE_4K {
-                return Err(StarryError::BadState);
-            }
-            if !unmapped.3.is_empty() {
-                retired_owner.page_tables.push(unmapped.3);
-            }
-            // `page` and the caller's EvictionLease keep the frame owned until
-            // this receipt is acknowledged.  No independent all-CPU flush is
-            // allowed here: the receipt is the sole retirement obligation.
-            let removed = self
-                .mapping_slots
-                .remove(&key)
-                .ok_or(StarryError::BadState)?;
-            if !Arc::ptr_eq(&removed, &slot) || !removed.detach() {
-                return Err(StarryError::BadState);
+            for (key, page) in pages {
+                let expected_paddr = self
+                    .mapping_slots
+                    .get(key)
+                    .ok_or(StarryError::BadState)?
+                    .mapped_paddr();
+                let unmapped = {
+                    let _structure = self.pte_domain.lock_structure();
+                    let _stripe = self
+                        .pte_domain
+                        .lock_range(VirtAddrRange::from_start_size(key.va, PAGE_SIZE_4K));
+                    self.pt.unmap_page_deferred(key.va)?
+                };
+                if !unmapped.3.is_empty() {
+                    retired_owner.page_tables.push(unmapped.3);
+                }
+                if Some(unmapped.0) != expected_paddr || unmapped.2 != PAGE_SIZE_4K {
+                    return Err(StarryError::BadState);
+                }
+                let removed = self
+                    .mapping_slots
+                    .remove(key)
+                    .ok_or(StarryError::BadState)?;
+                if !Arc::ptr_eq(&removed.page, page) || !removed.detach() {
+                    return Err(StarryError::BadState);
+                }
+                #[cfg(all(test, axtest))]
+                if core::mem::take(&mut self.fail_eviction_after_unmap) {
+                    return Err(StarryError::NoMemory);
+                }
             }
             Ok(())
         })();
-        if let Err(error) = apply_result {
-            return self.abort_file_eviction_mutation(range, preimage, None, error);
-        }
-
+        // A partial apply followed by a failed restore must retain the old
+        // frames and page tables just like a published, unacknowledged unmap.
         self.park_retired_mapping_owners(retire_epoch, retired_owner);
+        if let Err(error) = apply_result {
+            return self.abort_mapping_eviction_mutation(
+                &ranges,
+                preimage,
+                Some(retire_epoch),
+                error,
+            );
+        }
         match self.commit_mutation_classified(mutation) {
             Ok(()) => {
                 self.release_retired_mapping_owners(retire_epoch);
@@ -3204,61 +3285,99 @@ impl AddrSpace {
                 Ok(EvictMappingOutcome::PublishedPendingTlb)
             }
             Err(CommitMutationError::Unpublished(error)) => {
-                self.abort_file_eviction_mutation(range, preimage, Some(retire_epoch), error)
+                self.abort_mapping_eviction_mutation(&ranges, preimage, Some(retire_epoch), error)
             }
         }
     }
 
-    /// Write-protects one dirty file-cache reverse mapping for a writeback
-    /// generation.  No file/cache lock is held by this operation.
-    pub(crate) fn protect_file_mapping_slot(
+    /// Write-protect a file-cache page before its writeback snapshot.
+    pub(crate) fn protect_mapping_slot(
         &mut self,
         key: MappingSlotKey,
         page: &Arc<PageObject>,
     ) -> StarryResult {
-        if key.space_id != self.id {
-            return Err(StarryError::BadState);
-        }
-        let slot = self.mapping_slots.get(&key).ok_or(StarryError::BadState)?;
-        if !Arc::ptr_eq(&slot.page, page) {
-            return Err(StarryError::BadState);
-        }
+        self.protect_mapping_slots(&[(key, page.clone())])
+    }
 
-        let (pte, level) = self.pt.query_occupied(key.va)?;
-        let page_size = self
-            .pt
-            .mapping_size_for_level(level)
-            .ok_or(StarryError::BadState)?;
-        let paddr = pte.paddr(level > 1);
-        let flags = pte.config(level > 1);
-        if !key.va.is_aligned(page_size)
-            || slot.mapped_paddr() != Some(paddr)
-            || page_size != PAGE_SIZE_4K
-        {
-            return Err(StarryError::BadState);
+    /// One write-protection receipt freezes every selected page before any
+    /// compression begins. Preparation and rollback retain the original owners.
+    fn protect_mapping_slots(
+        &mut self,
+        pages: &[(MappingSlotKey, Arc<PageObject>)],
+    ) -> StarryResult {
+        let ranges = self.mapping_slot_ranges(pages)?;
+        let mut changes = Vec::new();
+        changes
+            .try_reserve(pages.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        for (key, _) in pages {
+            let slot = self.mapping_slots.get(key).ok_or(StarryError::BadState)?;
+            let (pte, level) = self.pt.query_occupied(key.va)?;
+            let paddr = pte.paddr(level > 1);
+            let flags = pte.config(level > 1);
+            if self.pt.mapping_size_for_level(level) != Some(PAGE_SIZE_4K)
+                || !key.va.is_aligned(PAGE_SIZE_4K)
+                || slot.mapped_paddr() != Some(paddr)
+            {
+                return Err(StarryError::BadState);
+            }
+            if flags.contains(MappingFlags::WRITE) {
+                changes.push((key.va, paddr, flags - MappingFlags::WRITE));
+            }
         }
-        if !flags.contains(MappingFlags::WRITE) {
+        if changes.is_empty() {
             return Ok(());
         }
-        let mut mutation = self.prepare_mutation_range(key.va, PAGE_SIZE_4K);
+        let preimage = self.capture_mapping_preimage_ranges(&ranges)?;
+        let retired_owner = self.prepare_deferred_eviction_owners(pages)?;
+        let mut mutation = self.prepare_mutation();
+        let retire_epoch = mutation
+            .receipt()
+            .base_epoch
+            .checked_next()
+            .ok_or(StarryError::BadState)?;
+        for range in &ranges {
+            mutation.add_tlb_range(
+                TlbRange::new(range.start, range.size()).ok_or(StarryError::BadState)?,
+            );
+        }
         mutation.set_pte_delta(PteDelta {
-            protected: 1,
+            protected: u32::try_from(changes.len()).map_err(|_| StarryError::InvalidInput)?,
             ..PteDelta::default()
         });
-        {
-            let pt = &mut self.pt;
-            let _stripe = self
-                .pte_domain
-                .lock_range(VirtAddrRange::from_start_size(key.va, PAGE_SIZE_4K));
-            // Disjoint field borrows retain stripe exclusion without aliasing
-            // the mutable page-table owner through a raw pointer.
-            pt.remap_page(key.va, paddr, flags - MappingFlags::WRITE)?;
+        let apply_result = (|| -> StarryResult {
+            for (address, paddr, flags) in changes {
+                let _stripe = self
+                    .pte_domain
+                    .lock_range(VirtAddrRange::from_start_size(address, PAGE_SIZE_4K));
+                self.pt.remap_page(address, paddr, flags)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = apply_result {
+            self.park_retired_mapping_owners(retire_epoch, retired_owner);
+            return self.abort_unpublished_parked_mapping_mutation_ranges(
+                &ranges,
+                preimage,
+                Some(retire_epoch),
+                error,
+            );
         }
-        // `commit_mutation` publishes the PTE delta and synchronously services
-        // its tagged TLB request.  The WritebackLease is completed only after
-        // this method returns, so dirty-page snapshotting cannot race ahead of
-        // the acknowledgement.
-        self.commit_mutation(mutation)
+        match self.commit_mutation_classified(mutation) {
+            Ok(()) => Ok(()),
+            Err(CommitMutationError::PublishedPendingTlb(error)) => Err(error),
+            Err(CommitMutationError::Unpublished(error)) => {
+                // Restoration detaches resident slots before reinstalling
+                // them. Its own failure cannot release old TLB-visible frames.
+                self.park_retired_mapping_owners(retire_epoch, retired_owner);
+                self.abort_unpublished_parked_mapping_mutation_ranges(
+                    &ranges,
+                    preimage,
+                    Some(retire_epoch),
+                    error,
+                )
+            }
+        }
     }
 
     pub fn resident_mapping_slots(&self) -> Vec<Arc<MappingSlot>> {
@@ -3528,6 +3647,9 @@ impl AddrSpace {
         {
             return Err(StarryError::BadState);
         }
+        if replace {
+            self.forget_swap_range(range);
+        }
         for (fragment, old) in &replaced {
             old.unmap_range(*fragment, context, &mut self.pt)?;
         }
@@ -3589,6 +3711,7 @@ impl AddrSpace {
         for (fragment, operation) in operations {
             operation.unmap_range(fragment, context, &mut self.pt)?;
         }
+        self.forget_swap_range(range);
         Ok(())
     }
 
@@ -4208,6 +4331,7 @@ impl AddrSpace {
         let range =
             VirtAddrRange::try_from_start_size(start, size).ok_or(StarryError::InvalidInput)?;
         self.validate_region(start, size)?;
+        self.restore_swapped_range(range)?;
         if (resident_leaf_size.is_some() || self.can_access_range(start, size, access_flags))
             && self.materialized_range_satisfies_access(range, access_flags)
         {
@@ -4377,6 +4501,7 @@ impl AddrSpace {
             );
         };
 
+        self.forget_swap_range(retired_range);
         for (range, backend) in frags {
             if let Err(error) = backend.unmap_range(range, &mut page_table_reclaims, &mut self.pt) {
                 self.park_retired_mapping_owners(retire_epoch, retired_owners);
@@ -5350,6 +5475,17 @@ impl AddrSpace {
             )?;
             self.vma_root = Arc::new(target_successor.clone());
 
+            // Move nonresident owners with the same transaction as PTEs.
+            // The captured preimage restores both ranges on any failure.
+            let mut moved_swap = Vec::new();
+            for (&address, page) in self.swapped_pages.range(src..src + move_size) {
+                moved_swap
+                    .try_reserve(1)
+                    .map_err(|_| StarryError::NoMemory)?;
+                moved_swap.push((target + (address - src), page.clone()));
+            }
+            self.forget_swap_range(moved_source_range);
+            self.swapped_pages.extend(moved_swap);
             let moved_pages = self.apply_move_pages(src, target, move_size)?;
             let prepared_moved_slots =
                 self.prepare_moved_slots(&moved_pages, target_backend.mapping_id())?;
@@ -5860,6 +5996,7 @@ impl AddrSpace {
             unsafe { slot.confirm_quiescent_huge_split_deposit() };
             slot.detach();
         }
+        self.swapped_pages.clear();
         self.resident_watermark.reset();
         self.vm_stat.on_clear();
         self.vma_root = Arc::new(VmaMap::default());
@@ -6068,6 +6205,19 @@ impl AddrSpace {
         else {
             return Err(FaultResult::Unmapped);
         };
+        // A huge zero-fill fault must never cover a nonresident swap entry.
+        let policy_range =
+            VirtAddrRange::from_start_size(vaddr.align_down(policy_size), policy_size);
+        let policy_size = if self
+            .swapped_pages
+            .range(policy_range.start..policy_range.end)
+            .next()
+            .is_some()
+        {
+            PAGE_SIZE_4K
+        } else {
+            policy_size
+        };
         let page_size = match self.fault_transaction_page_size(vaddr, vma.range, policy_size) {
             Ok(page_size) => page_size,
             Err(error) => {
@@ -6137,6 +6287,7 @@ impl AddrSpace {
             request,
             preimage,
             map_plans,
+            swapped: self.swapped_pages.get(&page_start).cloned(),
         })
     }
 
@@ -6169,6 +6320,12 @@ impl AddrSpace {
         plan: &PageFaultPlan,
         request: PopulateRequest,
     ) -> Result<FaultMaterialization, FaultResult> {
+        if let Some(page) = &plan.swapped {
+            return plan
+                .operation
+                .prepare_swap_fault(plan.range.start, plan.vma_flags, page)
+                .map_err(|error| Self::classify_fault_error(true, error));
+        }
         match plan.operation.prepare_fault(
             plan.space_id,
             request,
@@ -6548,6 +6705,7 @@ impl AddrSpace {
                 return PageFaultApplyOutcome::Cancel(FaultResult::Retry);
             }
         };
+        let was_swapped = attempt.prepared().plan.swapped.is_some();
         let PreparedPageFault {
             plan: _,
             materialization: _,
@@ -6572,10 +6730,16 @@ impl AddrSpace {
         }
         match self.publish_mutation_classified(mutation) {
             Ok(MutationPublication::Complete) => {
+                if was_swapped {
+                    self.finish_swap_in(owner_va);
+                }
                 self.release_retired_mapping_owners(retire_epoch);
                 PageFaultApplyOutcome::Complete(FaultResult::Handled)
             }
             Ok(MutationPublication::PendingTlb) => {
+                if was_swapped {
+                    self.finish_swap_in(owner_va);
+                }
                 let Some(request) = self.mutation_gate.pending_request(self.id, retire_epoch)
                 else {
                     self.mutation_gate.mark_needs_repair();
@@ -6618,9 +6782,8 @@ impl AddrSpace {
         }
     }
 
-    /// Test-only synchronous wrapper. Production faults are orchestrated by
-    /// `MmPin`, which drops the address-space mutex around prepare and TLB IPI.
-    #[cfg(all(test, axtest))]
+    /// Synchronous population wrapper. Ordinary faults use `MmPin` to prepare
+    /// and service TLB requests outside the address-space mutex.
     fn handle_page_fault_result(
         &mut self,
         vaddr: VirtAddr,
@@ -6927,6 +7090,17 @@ impl AddrSpace {
                     .ok_or(StarryError::BadState)?;
             }
 
+            for (&address, page) in &self.swapped_pages {
+                let entry = self
+                    .vma_root
+                    .lookup_entry(address)
+                    .ok_or(StarryError::BadState)?;
+                if !entry.snapshot().advice_policy.dont_fork()
+                    && !entry.snapshot().advice_policy.wipe_on_fork()
+                {
+                    guard.swapped_pages.insert(address, page.clone());
+                }
+            }
             // VM_DONTCOPY areas are absent from the child, so derive both
             // total_vm and hiwater_vm from the root that was actually built.
             guard.vm_stat.seed_clone(child_vss_pages);

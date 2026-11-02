@@ -328,8 +328,7 @@ pub fn sys_mmap(
                     #[cfg(feature = "rknpu")]
                     Ok(DeviceMmap::PhysicalResolvedPageCapped(..))
                     | Ok(DeviceMmap::PhysicalCachedResolvedPageCapped(..)) => false,
-                    Ok(DeviceMmap::PhysicalPages(..))
-                    | Ok(DeviceMmap::Cache(_)) => false,
+                    Ok(DeviceMmap::PhysicalPages(..)) | Ok(DeviceMmap::Cache(_)) => false,
                     Ok(DeviceMmap::None) => true,
                     Err(_) => false,
                 }
@@ -596,8 +595,7 @@ pub fn sys_mmap(
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }
-                                        length =
-                                            device_map_len(length, range.size(), page_size)?;
+                                        length = device_map_len(length, range.size(), page_size)?;
                                         match retain {
                                             Some(retain) => MappingOperation::new_linear_anchored(
                                                 start,
@@ -616,8 +614,7 @@ pub fn sys_mmap(
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }
-                                        length =
-                                            device_map_len(length, range.size(), page_size)?;
+                                        length = device_map_len(length, range.size(), page_size)?;
                                         match retain {
                                             Some(retain) => MappingOperation::new_linear_anchored(
                                                 start,
@@ -637,8 +634,7 @@ pub fn sys_mmap(
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }
-                                        length =
-                                            device_map_len(length, range.size(), page_size)?;
+                                        length = device_map_len(length, range.size(), page_size)?;
                                         match retain {
                                             Some(retain) => MappingOperation::new_linear_anchored(
                                                 start,
@@ -657,8 +653,7 @@ pub fn sys_mmap(
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }
-                                        length =
-                                            device_map_len(length, range.size(), page_size)?;
+                                        length = device_map_len(length, range.size(), page_size)?;
                                         match retain {
                                             Some(retain) => MappingOperation::new_linear_anchored(
                                                 start,
@@ -698,10 +693,7 @@ pub fn sys_mmap(
                                         }
                                     }
                                     #[cfg(feature = "rknpu")]
-                                    DeviceMmap::PhysicalCachedResolvedPageCapped(
-                                        range,
-                                        retain,
-                                    ) => {
+                                    DeviceMmap::PhysicalCachedResolvedPageCapped(range, retain) => {
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }
@@ -1496,21 +1488,24 @@ pub fn sys_madvise(
                 .ok_or(StarryError::InvalidInput)?;
         }
     } else if advice as u32 == MADV_PAGEOUT {
-        // Linux treats PAGEOUT as a best-effort LRU reclaim request.  Starry
-        // currently has a typed eviction path only for disk-backed file-cache
-        // PageObjects: it snapshots rmap, drops cache/aspace locks, clears each
-        // PTE through that address space's receipt, waits for TLB retirement,
-        // and only then releases the clean cache owner.  Anonymous/private and
-        // tmpfs mappings would require swap ownership; report that missing
-        // capability instead of discarding their contents or claiming a no-op
-        // success.
+        // Anonymous compressed swap uses the MM mutation lock. File-cache
+        // rmap eviction must instead run outside it because it pins this MM.
         while cursor < end {
-            let aspace = aspace_arc.lock();
+            let mut aspace = aspace_arc.lock();
             let Some(fragment) = aspace.next_advice_fragment(cursor, end) else {
                 saw_gap = true;
                 break;
             };
             saw_gap |= fragment.gap_before;
+            if fragment.is_locked() || fragment.is_special() {
+                return Err(StarryError::InvalidInput);
+            }
+            if fragment.is_private_anonymous() {
+                cursor = aspace.pageout_anonymous_batch(fragment.range)?;
+                drop(aspace);
+                crate::task::yield_now();
+                continue;
+            }
             let fragment_end = fragment.range.end;
             // Rmap-driven eviction pins and mutates the target address space,
             // so never enter it while holding the VMA publication lock.
@@ -1519,21 +1514,21 @@ pub fn sys_madvise(
             cursor = fragment_end;
         }
     } else if advice as u32 == MADV_WILLNEED {
-        // With CONFIG_SWAP disabled Linux returns EBADF for anonymous private
-        // VMAs. File and shmem prefetch require a backend reservation API that
-        // Starry does not yet expose, so keep that capability explicit instead
-        // of pretending that the hint was consumed.
-        let aspace = aspace_arc.lock();
-        let Some(fragment) = aspace.next_advice_fragment(cursor, end) else {
-            return Err(StarryError::NoMemory);
-        };
-        if fragment.gap_before {
-            return Err(StarryError::NoMemory);
+        // Compressed anonymous entries can be prefetched without disk I/O.
+        // An untouched zero-fill page need not be materialized by this hint.
+        let mut aspace = aspace_arc.lock();
+        while cursor < end {
+            let Some(fragment) = aspace.next_advice_fragment(cursor, end) else {
+                saw_gap = true;
+                break;
+            };
+            saw_gap |= fragment.gap_before;
+            if !fragment.is_private_anonymous() {
+                return Err(StarryError::OperationNotSupported);
+            }
+            aspace.restore_swapped_range(fragment.range)?;
+            cursor = fragment.range.end;
         }
-        if fragment.is_private_anonymous() {
-            return Err(StarryError::BadFileDescriptor);
-        }
-        return Err(StarryError::OperationNotSupported);
     } else if matches!(
         advice as u32,
         MADV_NORMAL
@@ -1782,9 +1777,9 @@ pub fn sys_mlock2(
     aspace.lock_vma_range(start, size, lock_mode, memlock_limit)?;
     if lock_mode == VmaLockMode::Locked {
         // Plain mlock (flags == 0): honor the "fault now" contract by faulting
-        // the whole range in, reporting ENOMEM on any unmapped page. On this
-        // no-swap kernel the faulted pages then stay resident, satisfying mlock's
-        // residency guarantee. `populate_area` is the MAP_POPULATE primitive.
+        // the whole range in, reporting ENOMEM on any unmapped page. Swap
+        // selection excludes locked VMAs, so the faulted pages stay resident.
+        // `populate_area` also restores existing anonymous swap entries.
         aspace.populate_area(start, size, MappingFlags::READ)?;
     }
     Ok(0)
@@ -1816,7 +1811,10 @@ fn mmap_device_map_len_rules_hold_for_test() -> bool {
     // KPU_CFG_SIZE is 0x800 on the K230. The VMA is page-granular, so the
     // ordinary MMIO contract must retain the containing 4 KiB page.
     let page_size = PAGE_SIZE_4K;
-    assert_eq!(device_map_len(PAGE_SIZE_4K, 0x800, PAGE_SIZE_4K).unwrap(), PAGE_SIZE_4K);
+    assert_eq!(
+        device_map_len(PAGE_SIZE_4K, 0x800, PAGE_SIZE_4K).unwrap(),
+        PAGE_SIZE_4K
+    );
     assert_eq!(device_map_len(0x800, 0x800, PAGE_SIZE_4K).unwrap(), 0x800);
 
     #[cfg(feature = "rknpu")]
@@ -1824,12 +1822,27 @@ fn mmap_device_map_len_rules_hold_for_test() -> bool {
         // Device GEMs expose only fully initialized pages; a partial final
         // page is not safe to publish because its allocation layout covers
         // only the requested bytes.
-        assert_eq!(page_capped_device_map_len(1000, 4096, page_size).unwrap(), 1000); // request < available
-        assert_eq!(page_capped_device_map_len(8192, 4096, page_size).unwrap(), 4096); // request > available
+        assert_eq!(
+            page_capped_device_map_len(1000, 4096, page_size).unwrap(),
+            1000
+        ); // request < available
+        assert_eq!(
+            page_capped_device_map_len(8192, 4096, page_size).unwrap(),
+            4096
+        ); // request > available
         assert_eq!(page_capped_device_map_len(0, 8192, page_size).unwrap(), 0); // zero request
-        assert_eq!(page_capped_device_map_len(5000, 4096, page_size).unwrap(), 4096); // request > available (aligned)
-        assert_eq!(page_capped_device_map_len(0x2_000, 0x1_001, page_size).unwrap(), 0x1_000);
-        assert_eq!(page_capped_device_map_len(0x10_000, 0x9_708, page_size).unwrap(), 0x9_000);
+        assert_eq!(
+            page_capped_device_map_len(5000, 4096, page_size).unwrap(),
+            4096
+        ); // request > available (aligned)
+        assert_eq!(
+            page_capped_device_map_len(0x2_000, 0x1_001, page_size).unwrap(),
+            0x1_000
+        );
+        assert_eq!(
+            page_capped_device_map_len(0x10_000, 0x9_708, page_size).unwrap(),
+            0x9_000
+        );
         assert!(page_capped_device_map_len(0x1000, 0x1001, 0).is_err());
     }
     assert!(checked_align_up(usize::MAX, page_size).is_err());

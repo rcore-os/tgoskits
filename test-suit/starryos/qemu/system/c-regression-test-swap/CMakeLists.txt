@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-swap C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_executable(test-swap src/main.c)
+target_compile_options(test-swap PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(test-swap PRIVATE pthread)
+install(TARGETS test-swap RUNTIME DESTINATION usr/bin/starry-test-suit)

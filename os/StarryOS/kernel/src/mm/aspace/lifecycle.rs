@@ -555,6 +555,7 @@ impl MmInner {
 type MmRegistry = BTreeMap<AddressSpaceId, Weak<MmInner>>;
 static MM_REGISTRY: Mutex<MmRegistry> = Mutex::new(BTreeMap::new());
 static LAZY_FREE_SCAN_CURSOR: AtomicU64 = AtomicU64::new(0);
+static SWAP_SCAN_CURSOR: AtomicU64 = AtomicU64::new(0);
 
 fn next_registry_id_after<V>(
     registry: &BTreeMap<AddressSpaceId, V>,
@@ -1014,8 +1015,34 @@ impl MmPin {
         vaddr: VirtAddr,
         access_flags: PageFaultFlags,
     ) -> FaultResult {
+        self.handle_page_fault_with_available_memory(
+            vaddr,
+            access_flags,
+            ax_alloc::global_allocator().available_bytes(),
+        )
+    }
+
+    fn handle_page_fault_with_available_memory(
+        &self,
+        vaddr: VirtAddr,
+        access_flags: PageFaultFlags,
+        available: usize,
+    ) -> FaultResult {
         let plan = {
-            let aspace = self.0.aspace.lock();
+            let mut aspace = self.0.aspace.lock();
+            if available < ax_runtime::hal::mem::total_ram_size() / 8 {
+                // Couple reclaim to allocation when the background worker
+                // cannot keep up. Scan only this MM and only one bounded
+                // anonymous batch: user-copy faults may already hold file
+                // locks, so invoking file-cache reclaim here could deadlock.
+                // Take the fault preimage after any swap epoch publication.
+                if let Err(error) = aspace.swap_out_batch(128) {
+                    debug!(
+                        "direct anonymous swap for MM {} deferred: {error}",
+                        self.id().get()
+                    );
+                }
+            }
             let mode = self.0.transparent_huge_page_mode();
             match aspace.plan_page_fault(vaddr, access_flags, mode) {
                 Ok(plan) => plan,
@@ -1591,6 +1618,8 @@ pub fn spawn_reclaimer_task() {
 // The bounded pass and sleep belong to one implementation. Runtime tests use
 // the same worker with a stop condition and fixed affinity for isolation.
 fn run_reclaimer(mut stop: impl FnMut() -> bool) {
+    let total = ax_runtime::hal::mem::total_ram_size();
+    let mut pressure = false;
     while !stop() {
         let _ = ax_mm::retry_kernel_virtual_quarantines(16);
         let _ = LAZY_FREE_RECLAIM.run_one_batch(16, reclaim_live_lazy_free_pages);
@@ -1600,6 +1629,44 @@ fn run_reclaimer(mut stop: impl FnMut() -> bool) {
             // failed precondition is fixed. Never treat NeedsRepair as success.
             for permit in take_repair_candidates(16) {
                 let _ = permit.retry();
+            }
+        }
+        let available = ax_alloc::global_allocator().available_bytes();
+        if available < total / 4 {
+            pressure = true;
+        } else if available >= total / 3 {
+            pressure = false;
+        }
+        if pressure {
+            // Clean cache is cheaper than compressing anonymous working sets.
+            let clean = ax_alloc::try_page_reclaim(256);
+            let swapped = reclaim_registered_items(
+                128,
+                8,
+                &SWAP_SCAN_CURSOR,
+                next_registered_mm_after,
+                |inner, remaining| {
+                    let Some(inner) = inner else {
+                        return 0;
+                    };
+                    let Ok(pin) = MmInner::try_pin(&inner) else {
+                        return 0;
+                    };
+                    let Some(mut aspace) = pin.try_lock() else {
+                        return 0;
+                    };
+                    match aspace.swap_out_batch(remaining) {
+                        Ok(pages) => pages,
+                        Err(error) => {
+                            debug!("anonymous swap for MM {} deferred: {error}", pin.id().get());
+                            0
+                        }
+                    }
+                },
+            );
+            if clean != 0 || swapped != 0 {
+                ax_std::thread::yield_now();
+                continue;
             }
         }
         ax_std::thread::sleep(core::time::Duration::from_millis(10));
@@ -1754,7 +1821,7 @@ mod tests {
         use super::super::{MutationError, TlbRange};
 
         let start = VirtAddr::from(0x7500_0000);
-        let aspace = Arc::new(Mutex::new(AddrSpace::new_empty(start, 0x1000).unwrap()));
+        let aspace = Arc::new(Mutex::new(AddrSpace::new_empty(start, 0x2000).unwrap()));
         let handle = MmHandle::from_arc(aspace).unwrap();
         let pin = handle.pin().unwrap();
         {
@@ -1786,6 +1853,41 @@ mod tests {
             pin.handle_page_fault_result(start, access),
             FaultResult::Handled
         ));
+
+        let write = PageFaultFlags::WRITE | PageFaultFlags::USER;
+        assert_eq!(pin.handle_page_fault_result(start, write), FaultResult::Handled);
+        {
+            let mut space = pin.lock();
+            space.write(start, &[0x5a; 4096]).unwrap();
+            space
+                .map(
+                    start + 4096,
+                    4096,
+                    MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+                    false,
+                    MappingOperation::new_alloc(start + 4096, 4096, "[direct-reclaim]"),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            pin.handle_page_fault_with_available_memory(start + 4096, write, 0),
+            FaultResult::Handled
+        );
+        {
+            let space = pin.lock();
+            assert!(
+                space.pt.query(start).is_err(),
+                "low-memory fault did not reclaim the old resident page"
+            );
+            assert_eq!(space.swapped_page_count(), 1);
+        }
+        assert_eq!(
+            pin.handle_page_fault_with_available_memory(start, access, usize::MAX),
+            FaultResult::Handled
+        );
+        let mut contents = [0; 4096];
+        pin.lock().read(start, &mut contents).unwrap();
+        assert_eq!(contents, [0x5a; 4096]);
         drop(pin);
         let permit = handle.release_user_ref().unwrap();
         drop(handle);

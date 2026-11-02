@@ -51,10 +51,10 @@ mod tracepoint;
 mod trap;
 mod uprobe;
 
-#[cfg(any(test, axtest))]
-mod block_scratch_policy;
 #[cfg(all(test, axtest))]
 mod block_runtime_axtest;
+#[cfg(any(test, axtest))]
+mod block_scratch_policy;
 #[cfg(all(test, axtest))]
 mod thread_lifecycle_axtest;
 
@@ -71,9 +71,8 @@ pub use mm::{
     MmState, MutationError, MutationGate, MutationReceipt, MutationState, PageId, PageObject,
     PageOffset, PageOrder, PageSizePolicy, PageState, PinError, PreparedMutation, PteDelta,
     PublishEvent, PublishedMutation, PublishedPendingTlb, QuarantineError, QuarantineFailure,
-    ReclaimError, RepairPermit, ResidentDelta, RetirePermit, RmapSet, SlotState, SwapError,
-    SwapProvider, SwapToken, TagMode, TlbQuarantine, TlbRange, TlbRequest, UnsupportedSwap, Vma,
-    VmaDelta, VmaId, VmaMap, VmaSnapshot, WritebackError, WritebackLease, allocate_vma_id,
-    request_repair_retry, take_repair_candidates,
+    ReclaimError, RepairPermit, ResidentDelta, RetirePermit, RmapSet, SlotState, TagMode,
+    TlbQuarantine, TlbRange, TlbRequest, Vma, VmaDelta, VmaId, VmaMap, VmaSnapshot, WritebackError,
+    WritebackLease, allocate_vma_id, request_repair_retry, take_repair_candidates,
 };
 pub use syscalls::Errno;
