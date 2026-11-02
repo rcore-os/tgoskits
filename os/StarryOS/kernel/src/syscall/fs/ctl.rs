@@ -847,9 +847,9 @@ pub fn sys_fchownat(
     // backing a pipe/socket. Kinds that cannot persist ownership (eventfd,
     // epoll, timerfd, signalfd, ...) report EOPNOTSUPP instead of silently
     // succeeding. runc fchowns its container stdio pipes.
-    let (loc, meta, anon) = match &resolved {
-        ResolveAtResult::File(loc) => (Some(loc.clone()), Some(loc.metadata()?), None),
-        ResolveAtResult::Other(file_like) => (None, None, Some(file_like.clone())),
+    let (loc, anon) = match &resolved {
+        ResolveAtResult::File(loc) => (Some(loc.clone()), None),
+        ResolveAtResult::Other(file_like) => (None, Some(file_like.clone())),
     };
 
     let cred = current.as_thread().cred();
@@ -861,11 +861,12 @@ pub fn sys_fchownat(
     //   belongs to.
     //
     // The checks run against the metadata the commit replaces. For a
-    // filesystem inode that is the snapshot read above; for an anonymous
-    // inode this closure runs inside the locking update entry, so a shared fd
-    // that changes the owner between observation and commit cannot
-    // retroactively authorize the caller (Linux `chown_common` holds
-    // `inode_lock` across `setattr_prepare` and `notify_change`).
+    // filesystem inode the plan closure below runs inside the inode's own
+    // update lock; for an anonymous inode this closure runs inside the
+    // locking update entry. Either way a shared fd that changes the owner
+    // between observation and commit cannot retroactively authorize the
+    // caller (Linux `chown_common` holds `inode_lock` across
+    // `setattr_prepare` and `notify_change`).
     let authorize = |owner_uid: u32, owner_gid: u32| -> StarryResult<()> {
         let changing_owner = uid != -1 && uid as u32 != owner_uid;
         let changing_group = gid != -1 && gid as u32 != owner_gid;
@@ -898,30 +899,40 @@ pub fn sys_fchownat(
             (gid != -1).then_some(gid as u32),
         ))
     };
-    if let (Some(loc), Some(meta)) = (&loc, &meta) {
-        authorize(meta.uid, meta.gid)?;
-        let uid = if uid == -1 { meta.uid } else { uid as _ };
-        let gid = if gid == -1 { meta.gid } else { gid as _ };
-        let mut mode = meta.mode;
-        // Linux chown_common() semantics for clearing setuid/setgid on
-        // non-directory files:
-        //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
-        //     regardless of whether uid/gid participates (i.e. even chown
-        //     with -1/-1 clears SUID).
-        //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
-        //     calls should_remove_sgid() which strips SGID on non-directory
-        //     files only when GROUP_EXEC (S_IXGRP) is set.
-        // Directories preserve SETGID (used for new-file group inheritance).
-        if meta.node_type != NodeType::Directory {
-            mode.remove(NodePermission::SET_UID);
-            if mode.contains(NodePermission::GROUP_EXEC) {
-                mode.remove(NodePermission::SET_GID);
+    if let Some(loc) = &loc {
+        // Plan and commit under the inode's own update lock: the permission
+        // decision, the `-1` "keep current" fields and the SUID/SGID clear
+        // all observe the attributes the commit replaces (Linux
+        // `chown_common` holds `inode_lock` across `setattr_prepare` and
+        // `notify_change`), so a concurrent `fchown`/`fchmod` cannot let a
+        // former owner write back a stale uid or group.
+        loc.update_metadata_checked(&|current| {
+            authorize(current.uid, current.gid)
+                .map_err(|_| VfsError::OperationNotPermitted)?;
+            let mut mode = current.mode;
+            // Linux chown_common() semantics for clearing setuid/setgid on
+            // non-directory files:
+            //   - ATTR_KILL_SUID is set unconditionally for all non-dir chown,
+            //     regardless of whether uid/gid participates (i.e. even chown
+            //     with -1/-1 clears SUID).
+            //   - After SUID clearing adds ATTR_MODE to ia_valid, notify_change()
+            //     calls should_remove_sgid() which strips SGID on non-directory
+            //     files only when GROUP_EXEC (S_IXGRP) is set.
+            // Directories preserve SETGID (used for new-file group inheritance).
+            if current.node_type != NodeType::Directory {
+                mode.remove(NodePermission::SET_UID);
+                if mode.contains(NodePermission::GROUP_EXEC) {
+                    mode.remove(NodePermission::SET_GID);
+                }
             }
-        }
-        loc.update_metadata(MetadataUpdate {
-            owner: Some((uid, gid)),
-            mode: Some(mode),
-            ..Default::default()
+            Ok(MetadataUpdate {
+                owner: Some((
+                    if uid == -1 { current.uid } else { uid as u32 },
+                    if gid == -1 { current.gid } else { gid as u32 },
+                )),
+                mode: Some(mode),
+                ..Default::default()
+            })
         })?;
     } else if let Some(file_like) = &anon {
         // Mirror `chown_common()` for an anonymous inode: the implementation
@@ -1001,9 +1012,9 @@ pub fn sys_fchmodat(
     };
 
     // Only the file owner or a process with CAP_FOWNER may change mode bits.
-    // For an anonymous inode the check runs inside the locking update entry,
-    // so a concurrent owner change through a shared fd is observed instead of
-    // bypassed.
+    // The check runs inside the locking update entry for both filesystem
+    // inodes and anonymous inodes, so a concurrent owner change through a
+    // shared fd is observed instead of bypassed.
     let cred = current.as_thread().cred();
     let authorize = |_mode: u32, owner_uid: u32, _owner_gid: u32| -> StarryResult<()> {
         if !cred.has_cap_fowner() && cred.fsuid != owner_uid {
@@ -1013,12 +1024,17 @@ pub fn sys_fchmodat(
     };
 
     if let Some(loc) = &loc {
-        if !cred.has_cap_fowner() && cred.fsuid != loc.metadata()?.uid {
-            return Err(StarryError::OperationNotPermitted);
-        }
-        loc.update_metadata(MetadataUpdate {
-            mode: Some(NodePermission::from_bits_truncate(mode as u16)),
-            ..Default::default()
+        // Re-check ownership inside the inode's update lock: a shared fd may
+        // have transferred it after an earlier read (Linux `chmod_common`
+        // holds `inode_lock` around `notify_change`).
+        loc.update_metadata_checked(&|current| {
+            if !cred.has_cap_fowner() && cred.fsuid != current.uid {
+                return Err(VfsError::OperationNotPermitted);
+            }
+            Ok(MetadataUpdate {
+                mode: Some(NodePermission::from_bits_truncate(mode as u16)),
+                ..Default::default()
+            })
         })?;
     } else if let Some(file_like) = &anon {
         file_like.update_inode_metadata(Some(mode & 0o7777), None, &authorize)?;

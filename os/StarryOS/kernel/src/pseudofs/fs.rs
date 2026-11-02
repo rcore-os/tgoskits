@@ -122,6 +122,24 @@ impl SimpleFsNode {
     }
 }
 
+/// Applies the named fields of one metadata update to a pseudo-filesystem
+/// inode.
+fn apply_metadata_update(metadata: &mut Metadata, update: MetadataUpdate) {
+    if let Some(mode) = update.mode {
+        metadata.mode = mode;
+    }
+    if let Some((uid, gid)) = update.owner {
+        metadata.uid = uid;
+        metadata.gid = gid;
+    }
+    if let Some(atime) = update.atime {
+        metadata.atime = atime;
+    }
+    if let Some(mtime) = update.mtime {
+        metadata.mtime = mtime;
+    }
+}
+
 impl Drop for SimpleFsNode {
     fn drop(&mut self) {
         self.fs.release_inode(self.ino);
@@ -151,19 +169,19 @@ impl NodeOps for SimpleFsNode {
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         let mut metadata = self.metadata.lock_irqsave();
-        if let Some(mode) = update.mode {
-            metadata.mode = mode;
-        }
-        if let Some((uid, gid)) = update.owner {
-            metadata.uid = uid;
-            metadata.gid = gid;
-        }
-        if let Some(atime) = update.atime {
-            metadata.atime = atime;
-        }
-        if let Some(mtime) = update.mtime {
-            metadata.mtime = mtime;
-        }
+        apply_metadata_update(&mut metadata, update);
+        Ok(())
+    }
+
+    fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        // One lock spans planning and commit, so a permission decision is
+        // taken against the attributes the commit replaces.
+        let mut metadata = self.metadata.lock_irqsave();
+        let update = plan(&metadata)?;
+        apply_metadata_update(&mut metadata, update);
         Ok(())
     }
 
