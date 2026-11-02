@@ -7,7 +7,9 @@ cpu_num = 1
 phys_cpu_ids = [0x400]
 
 [kernel]
-cmdline = 'earlycon=uart8250,mmio32,0xfeb50000 rw init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+# Keep PID 1 waiting while the interactive shell owns a new console session.
+# Foreground perception processes can then receive Ctrl+C as SIGINT.
+cmdline = 'earlycon=uart8250,mmio32,0xfeb50000 rw init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /usr/bin/setsid --fork --wait --ctty /bin/sh -i"'
 entry_point = 0x4008_0000
 kernel_load_addr = 0x4008_0000
 kernel_path = "/guest/starry/orangepi-5-plus"

@@ -49,7 +49,7 @@ ls install/rknn-yolov8-image/
 传输时先在另一个工作站终端连接板卡原生 Linux，并保持会话：
 
 ```bash
-cargo xtask board connect -b <板卡类型> --server <服务地址> --port <端口>
+cargo xtask board connect --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 在板卡 Shell 执行 `ip -br addr` 查看 IP。会话释放会给板卡断电，传输期间不要退出，
@@ -63,8 +63,7 @@ cargo xtask board connect -b <板卡类型> --server <服务地址> --port <端�
 cd "$(git rev-parse --show-toplevel)"
 tar czf /tmp/rknn-yolov8-image.tar.gz -C apps/axvisor/normal/board-ballpick-robot/linux-guest-checks/rknn-yolov8-image/install rknn-yolov8-image
 
-BOARD_IP=<板卡 IP>
-cat /tmp/rknn-yolov8-image.tar.gz | ssh orangepi@${BOARD_IP} 'cat > /tmp/rknn-yolov8-image.tar.gz'
+cat /tmp/rknn-yolov8-image.tar.gz | ssh orangepi@<板卡IP> 'cat > /tmp/rknn-yolov8-image.tar.gz'
 ```
 
 在持有板卡原生 Linux 连接的终端中执行，`sudo` 按提示输入板卡密码：
@@ -86,7 +85,7 @@ sync
 资产放好后，每次启动 AxVisor 前用板卡 Linux 确认它们在位：
 
 ```bash
-cargo xtask board connect -b '<板卡类型>' --server <服务地址> --port <端口>
+cargo xtask board connect --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 进入板卡 Linux 后执行：
@@ -100,15 +99,19 @@ cat /proc/cmdline                          # 确认 root= 与本配置一致
 
 ### 配置说明
 
-`configs/linux.toml` 默认 `root=/dev/mmcblk0p2`，与 [os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml](../../../../../os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml) 一致。若本板 Linux 根在 `/dev/mmcblk1p2`（单客户端 USB 机器人板），按 [robot-real-linux/linux-smp1-emmc.toml](../../board-orangepi-5-plus/robot-real-linux/linux-smp1-emmc.toml) 改 `cmdline`，内核仍使用标准路径 `/guest/linux/orangepi-5-plus`。
+本目录的 `configs/linux.toml` 通过物理存储直通，以 `root=/dev/mmcblk0p2` 挂载板卡 Ubuntu 根分区。
+[robot-real-linux/linux-smp1-emmc.toml](../robot-real-linux/linux-smp1-emmc.toml) 则通过 VirtIO 块设备挂载
+`/guest/rootfs-aarch64-orangepi-jammy-0.img`，客户机使用 `root=/dev/vda`，宿主仍使用 `/dev/mmcblk0p2`。
+两种场景的客户机根盘映射不同，不能互相照搬 `root=`。两者均使用标准内核路径
+`/guest/linux/orangepi-5-plus`；换板时先从原生 Linux 核对根设备，再调整相应配置的 `cmdline`。
 
 `configs/linux.toml` 的 `devices.passthrough` 决定直通范围，改之前先分清 `guest_type` 与选择器的关系。`guest_type = "passthrough"` 时，空 `passthrough` 列表与写 `/` 等价，都启用“宿主可直通设备减去基线始终剥掉的 PCI 主桥”这根基线，写在 `/` 旁边的具体路径叠加在基线上；列表只有具体路径、不含 `/` 时退化为精确选择、不含基线；`guest_type = "virtualized"` 则从无物理设备起步，`passthrough` 只接受具体路径。
 
 选择器边界由 `axvmconfig` 的 `GuestDevices::validate` 与 `axvm` 的 `setup_guest_fdt_from_vmm` 共同约束。在含 `/` 的根基线模式下，只点名某个 PCI 主桥下的端点、却不点名该主桥会被拒绝，因为客户机只能通过主桥的配置空间枚举端点，整桥保留会连带暴露它的其他端点，报错会指出具体选择器和要补点名的主桥；列表不含 `/` 的纯具体路径精确模式保持原有语义，不受这条限制。`virtualized` 客户机在 `passthrough` 写 `/`，以及任何 `guest_type` 在 `disabled` 写 `/`，都会被拒绝；`disabled` 需点名具体设备。要从无物理设备起步，用 `guest_type = "virtualized"` 加空 `passthrough`，而不是在 `passthrough` 里删掉 `/`。
 
-`configs/uboot-shell.toml` 不含 `server`/`port` —— 板卡服务地址属于运行环境配置，不写进仓库。按 [板卡管理](../../../../../docs/docs/build/board.md) 用 `cargo xtask board config` 一次性配置，或在命令行用 `--server`/`--port` 传入。
+`configs/uboot-shell.toml` 不含 `server`/`port`，板卡连接参数由每条启动或连接命令显式传入：`--board-type <板卡类型> --server <服务地址> --port <端口>`，不依赖全局默认配置。
 
-**本页所有板卡命令都显式写上 `--server`/`--port`**，不要依赖本机默认值：同一环境里可能存在多台板卡服务，各自挂的板卡不同，本地预置资产也不同，省掉参数就可能连到另一台上，跑出与你预期不符的结果。缺省时 `--server`/`--port` 会依次回落到 ostool 全局配置和内置默认地址，见 [板卡管理](../../../../../docs/docs/build/board.md)。
+本页所有启动和连接命令都显式指定板卡类型、服务地址和端口。同一环境里可能存在多台板卡服务，各自挂载的板卡和预置资源不同；使用同一组参数才能持续连接目标板卡，参数含义见 [板卡管理](../../../../../docs/docs/build/board.md)。
 
 ## 启动
 
@@ -118,7 +121,7 @@ cat /proc/cmdline                          # 确认 root= 与本配置一致
 cargo xtask axvisor board \
   -c apps/axvisor/normal/board-ballpick-robot/linux-guest-checks/configs/build.toml \
   --board-config apps/axvisor/normal/board-ballpick-robot/linux-guest-checks/configs/uboot-shell.toml \
-  --server <服务地址> --port <端口>
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 `vm_configs` 负责打包 Linux 配置，不会自动启动客户机。主机启动参数中保持

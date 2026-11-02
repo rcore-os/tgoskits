@@ -71,34 +71,56 @@ IOZone 的目标目录 `/var/tmp` 必须位于可写 ext4，至少有576 MiB空�
 
 ### 选择配置并启动
 
-先在构建机设置板卡服务地址，将主机和端口占位符替换为自己的环境值：
+将命令中的 `<板卡类型>`、`<服务地址>`、`<端口>` 替换为实际值。
+
+在构建机的 TGOSKits 仓库根目录准备工具链并查询板卡服务：
 
 ```bash
-export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
-```
-
-以下命令在构建机 TGOSKits 仓库根目录执行。用 `leaf` 选择上表中的一个子测例：
-
-首次执行下面这组命令前，在本文档所在目录打开构建机终端；代码会记录应用路径并返回仓库根目录。后续构建机命令沿用 `APP_DIR` 和 `APP_CASE`。
-
-```bash
-APP_DIR="$PWD"
-cd "$(git rev-parse --show-toplevel)"
-APP_CASE=$(realpath --relative-to=apps/axvisor/normal "$APP_DIR")
-
 export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
-ostool board ls --server "$BOARD_SERVER"
-
-app="$APP_DIR"
-leaf=starry/functional
-
-cargo xtask axvisor board \
-  --config "$app/$leaf/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/configs/${leaf%%/*}-uboot-shell.toml" \
-  --server "$BOARD_SERVER"
+cargo xtask board ls --server <服务地址> --port <端口>
 ```
 
-`leaf` 选择子测例的宿主构建配置，`${leaf%%/*}` 选择 `configs/` 中对应操作系统的交互配置。每换一个子测例，先结束前一次会话，再修改 `leaf` 并重新执行启动命令；同一操作系统的子测例共用一份交互配置。
+根据需要选择下面的一条启动命令，每次只执行一个子测例。各命令直接指定宿主构建配置和对应操作系统的交互配置：
+
+```bash
+# StarryOS 功能
+cargo xtask axvisor board \
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/starry/functional/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/kernel-types/configs/starry-uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
+
+# StarryOS cyclictest
+cargo xtask axvisor board \
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/starry/cyclictest/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/kernel-types/configs/starry-uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
+
+# Linux 功能
+cargo xtask axvisor board \
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/linux/functional/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/kernel-types/configs/linux-uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
+
+# Linux LMBench
+cargo xtask axvisor board \
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/linux/lmbench/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/kernel-types/configs/linux-uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
+
+# Linux IOZone
+cargo xtask axvisor board \
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/linux/iozone/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/kernel-types/configs/linux-uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
+
+# Zephyr 功能
+cargo xtask axvisor board \
+  --config apps/axvisor/normal/board-ballpick-robot/kernel-types/zephyr/functional/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/kernel-types/configs/zephyr-uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
+```
+
+每换一个子测例，先结束前一次会话，再执行相应命令；同一操作系统的子测例共用一份交互配置。
 
 ### 进入客户机并准备环境
 
@@ -129,7 +151,7 @@ Linux 回环接口的运行状态可能显示为 `UNKNOWN`，StarryOS 则显示�
 
 ## 场景 1：StarryOS 功能
 
-选择 `leaf=starry/functional`，启动后进入 VM2。依次检查系统信息、文件读写和局域网连通性。
+执行启动节的 `starry/functional` 命令，启动后进入 VM2。依次检查系统信息、文件读写和局域网连通性。
 
 ### 系统信息
 
@@ -174,7 +196,7 @@ ping返回0，5个回复、0%丢包才通过。如果接口尚未取得地址，
 
 ### 运行 cyclictest
 
-选择 `leaf=starry/cyclictest`，进入 VM2：
+执行启动节的 `starry/cyclictest` 命令，进入 VM2：
 
 ```bash
 # -S 单 vCPU 简单模式：唤醒间隔 10 us、优先级 90，共 100 万次唤醒
@@ -212,7 +234,7 @@ sync
 
 ## 场景 3：Linux 功能
 
-选择 `leaf=linux/functional`，进入 VM1。依次检查系统信息、文件读写和局域网连通性，再安装并运行 hello。
+执行启动节的 `linux/functional` 命令，进入 VM1。依次检查系统信息、文件读写和局域网连通性，再安装并运行 hello。
 
 ### 系统信息
 
@@ -287,9 +309,8 @@ echo PING_EXIT=$?
   trap on_exit EXIT
 
   # 从板卡服务的响应头取时间校准客户机时钟，避免软件源日期校验失败
-  BOARD_SERVER='http://<board-server-host>:<board-server-port>'
   curl -fsSI --connect-timeout 5 --max-time 20 \
-    "$BOARD_SERVER/" >"$results/headers.log"
+    'http://<服务地址>:<端口>/' >"$results/headers.log"
   wall_time=$(sed -n 's/^date: *//Ip' "$results/headers.log" | tr -d '\r' | head -n 1)
   test -n "$wall_time"
   date -u -s "$wall_time"
@@ -331,7 +352,7 @@ echo APT_EXIT=$?
 
 ## 场景 4：Linux LMBench
 
-选择 `leaf=linux/lmbench`，进入 VM1。六个子项依次执行，每项都必须返回0并有对应数值结果；任一子项失败时先停止本段启动的 TCP 服务、保留日志再处理，不能只用其余成功项判定整个 LMBench 通过。先准备结果目录：
+执行启动节的 `linux/lmbench` 命令，进入 VM1。六个子项依次执行，每项都必须返回0并有对应数值结果；任一子项失败时先停止本段启动的 TCP 服务、保留日志再处理，不能只用其余成功项判定整个 LMBench 通过。先准备结果目录：
 
 ```bash
 lm=/guest-tests/lmbench/bin/Linux
@@ -412,7 +433,7 @@ sync
 
 ### 检查磁盘空间
 
-选择 `leaf=linux/iozone`，进入 VM1。测试文件 512 MiB 加 64 MiB 余量：
+执行启动节的 `linux/iozone` 命令，进入 VM1。测试文件 512 MiB 加 64 MiB 余量：
 
 ```bash
 results=$(mktemp -d /var/tmp/linux-iozone.XXXXXX)
@@ -444,7 +465,7 @@ sync
 
 ## 场景 6：Zephyr 功能
 
-选择 `leaf=zephyr/functional`，进入 VM3。在 `zephyr:~$` 下依次执行：
+执行启动节的 `zephyr/functional` 命令，进入 VM3。在 `zephyr:~$` 下依次执行：
 
 ```text
 kernel version
@@ -471,28 +492,27 @@ device list
 在构建机 TGOSKits 仓库根目录执行需要的子测例，每个外层 Cargo 命令都必须返回0：
 
 ```bash
-case_dir="$APP_CASE"
 # StarryOS：CPU、文件读写和局域网 ping
-cargo xtask axvisor app board -g normal -t "$case_dir/starry/functional" \
-  --server "$BOARD_SERVER"
+cargo xtask axvisor app board -g normal -t board-ballpick-robot/kernel-types/starry/functional \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 # StarryOS：100 万次定时唤醒和时延直方图
-cargo xtask axvisor app board -g normal -t "$case_dir/starry/cyclictest" \
-  --server "$BOARD_SERVER"
+cargo xtask axvisor app board -g normal -t board-ballpick-robot/kernel-types/starry/cyclictest \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 # Ubuntu：CPU、文件、网络、APT 安装并运行 hello
-cargo xtask axvisor app board -g normal -t "$case_dir/linux/functional" \
-  --server "$BOARD_SERVER"
+cargo xtask axvisor app board -g normal -t board-ballpick-robot/kernel-types/linux/functional \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 # Ubuntu：六类 LMBench 子项
-cargo xtask axvisor app board -g normal -t "$case_dir/linux/lmbench" \
-  --server "$BOARD_SERVER"
+cargo xtask axvisor app board -g normal -t board-ballpick-robot/kernel-types/linux/lmbench \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 # Ubuntu：512 MiB 文件的顺序及随机读写
-cargo xtask axvisor app board -g normal -t "$case_dir/linux/iozone" \
-  --server "$BOARD_SERVER"
+cargo xtask axvisor app board -g normal -t board-ballpick-robot/kernel-types/linux/iozone \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 # Zephyr：版本、线程和设备列表
-cargo xtask axvisor app board -g normal -t "$case_dir/zephyr/functional" \
-  --server "$BOARD_SERVER"
+cargo xtask axvisor app board -g normal -t board-ballpick-robot/kernel-types/zephyr/functional \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
-自动测例的 ping 目标及 APT 校时服务地址写在对应板卡配置中，更换目标时修改对应子测例的配置，手动执行则修改命令中的地址；构建机的 BOARD_SERVER 只用于连接板卡服务，不会覆盖这些客户机命令。
+自动测例的 ping 目标及 APT 校时服务地址写在对应板卡配置中，更换目标时修改对应子测例的配置，手动执行则修改命令中的地址；构建机的 `--server` 和 `--port` 只用于连接板卡服务，不会覆盖这些客户机命令。
 
 ### 通过判定
 

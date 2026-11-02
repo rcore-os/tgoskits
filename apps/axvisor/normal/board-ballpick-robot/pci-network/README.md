@@ -38,7 +38,7 @@ sha256sum "$HOME/tgosimages/IMAGES/orangepi/linux/orangepi-5-plus"
 sha256sum /guest/linux/orangepi-5-plus
 ```
 
-两边 SHA256 应相同；不能用文件名相同代替部署核对。本轮实板日志及版本记录见下文，现有板端文件的原始构建提交未确认，不将其归属于新构建批次。
+两边 SHA256 应相同；不能用文件名相同代替部署核对。板端文件来源不明时，应重新部署可追溯的配套产物并核对摘要。
 
 Linux 内核和客户机 ext4 应来自同一轮构建。客户机文件系统内需要：
 
@@ -53,29 +53,18 @@ tgosimages 将对应内核的模块树安装到客户机 `/usr/lib/modules/`，J
 
 ## 启动
 
-先在构建机设置板卡服务地址，将主机和端口占位符替换为自己的环境值：
+将命令中的 `<板卡类型>`、`<服务地址>`、`<端口>` 替换为实际值。
+
+以下命令从 TGOSKits 仓库根目录执行，配置文件直接使用仓库内路径。
 
 ```bash
-export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
-```
-
-以下命令在构建机 TGOSKits 仓库根目录执行：
-
-首次执行下面这组命令前，在本文档所在目录打开构建机终端；代码会记录应用路径并返回仓库根目录。后续构建机命令沿用 `APP_DIR` 和 `APP_CASE`。
-
-```bash
-APP_DIR="$PWD"
-cd "$(git rev-parse --show-toplevel)"
-APP_CASE=$(realpath --relative-to=apps/axvisor/normal "$APP_DIR")
-
 export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
-ostool board ls --server "$BOARD_SERVER"
+cargo xtask board ls --server <服务地址> --port <端口>
 
-app="$APP_DIR"
 cargo xtask axvisor board \
-  --config "$app/ping/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/configs/uboot-shell.toml" \
-  --server "$BOARD_SERVER"
+  --config apps/axvisor/normal/board-ballpick-robot/pci-network/ping/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/pci-network/configs/uboot-shell.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 交互配置保留 `axvisor.vm_start=1`，不自动输入客户机命令。看到 `axvisor:/$` 后执行：
@@ -187,7 +176,7 @@ sync
 
 预期 PCI ID 为 `10ec:8125`，驱动已绑定，接口具有 IPv4 地址。ping 必须从选中的接口发出，返回0、收到5个回复且丢包率为0%。
 
-更换目标时，手动执行修改 `PING_TARGET`，自动测例修改 [板卡配置](ping/board-ballpick-robot-linux.toml) 中的地址；`BOARD_SERVER` 只用于连接板卡服务。
+更换目标时，手动执行修改 `PING_TARGET`，自动测例修改 [板卡配置](ping/board-ballpick-robot-linux.toml) 中的地址；构建机命令的 `--server` 和 `--port` 只用于连接板卡服务。
 
 ## 判定
 
@@ -201,7 +190,7 @@ sync
 
 ## 结束
 
-执行 `sync` 后按 Ctrl+X、h 返回 AxVisor，再按 Ctrl+A、x 退出板卡会话。在构建机用 `ostool board ls` 确认板卡重新可用。
+执行 `sync` 后按 Ctrl+X、h 返回 AxVisor，再按 Ctrl+A、x 退出板卡会话。在构建机执行 `cargo xtask board ls --server <服务地址> --port <端口>`，确认板卡重新可用。
 
 ## 自动执行（可选）
 
@@ -209,8 +198,8 @@ sync
 
 ```bash
 cargo xtask axvisor app board -g normal \
-  -t "$APP_CASE"/ping \
-  --server "$BOARD_SERVER"
+  -t board-ballpick-robot/pci-network/ping \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 自动执行相同的设备识别、驱动绑定、接线口选择、DHCP 和 ping。要求打印 `AXVISOR_PCI_NET_PING_PASSED`，且 Cargo 返回0。
@@ -225,24 +214,3 @@ cargo xtask axvisor app board -g normal \
 | [configs/linux.toml](configs/linux.toml) | 客户机内核、独立磁盘、内存及 PCIe 设备分配 |
 | [ping/build-aarch64-unknown-none-softfloat.toml](ping/build-aarch64-unknown-none-softfloat.toml) | 构建 AxVisor 并注册 Linux 客户机 |
 | [ping/board-ballpick-robot-linux.toml](ping/board-ballpick-robot-linux.toml) | 启动参数、客户机检查和通过条件 |
-
-## 实板验证记录
-
-2026-10-16 在本轮使用的板卡服务查询登记信息。服务地址按自己的环境填写：
-
-```bash
-ostool board ls --server "$BOARD_SERVER"
-```
-
-当时查询结果为 AVAILABLE=1、TOTAL=1。实体板卡类型由运行配置的 `board_type` 决定；`--board ballpick-robot-linux` 选择测例逻辑名称。
-
-同轮 PCI ping 复测实际 release 为 6.1.99-rockchip-rk3588。以下为日志摘录，时间戳是构建机接收到串口输出的 UTC 时间：
-
-```text
-[2026-10-16T08:18:18.537+00:00] root@ubuntu:~#root@ubuntu:~#PCI_NET_KERNEL_RELEASE=6.1.99-rockchip-rk3588 expected=6.1.99-rockchip-rk3588
-[2026-10-16T08:18:18.537+00:00] AXVISOR_PCI_NET_KERNEL_OK
-[2026-10-16T08:18:47.903+00:00] 5 packets transmitted, 5 received, 0% packet loss, time 4009ms
-[2026-10-16T08:18:47.935+00:00] AXVISOR_PCI_NET_PING_PASSED
-```
-
-Cargo 外层退出码为0。本轮证明该版本 BSP 在当前板卡上的设备识别、链路、DHCP 和 ping 均通过；板端文件的原始构建提交未确认，因此不宣称其对应某一轮 tgosimages 构建。后续部署按「运行前确认」节记录构建提交和 SHA256；用例还会在每次运行时校验实际内核版本。

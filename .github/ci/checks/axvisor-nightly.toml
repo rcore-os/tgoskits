@@ -108,7 +108,7 @@ resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor app board \
-  -t board-orangepi-5-plus/robot-real-starry \
+  -t board-ballpick-robot/robot-real-starry \
   --board orangepi-5-plus-robot-real-starry
 '''
 
@@ -126,7 +126,7 @@ resource_group = "orangepi-5-plus-robot"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor app board \
-  -t board-orangepi-5-plus/robot-real-linux \
+  -t board-ballpick-robot/robot-real-linux \
   --board orangepi-5-plus-robot-real-linux
 '''
 

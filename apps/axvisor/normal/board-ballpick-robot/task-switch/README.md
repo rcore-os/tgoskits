@@ -20,27 +20,21 @@
 
 [configs/guest-build.toml](configs/guest-build.toml) 选择 `task-switch` 软件包、`bench-fifo-policy` 和单 CPU；[guest-builds.toml](guest-builds.toml) 让正式入口在宿主之前构建客户机。需要单独检查构建时执行：
 
-首次执行下面这组命令前，在本文档所在目录打开构建机终端；代码会记录应用路径并返回仓库根目录。后续构建机命令沿用 `APP_DIR` 和 `APP_CASE`。
+以下命令从 TGOSKits 仓库根目录执行，配置文件直接使用仓库内路径。
 
 ```bash
-APP_DIR="$PWD"
-cd "$(git rev-parse --show-toplevel)"
-APP_CASE=$(realpath --relative-to=apps/axvisor/normal "$APP_DIR")
-
-app="$APP_DIR"
-cargo xtask arceos build --config "$app/configs/guest-build.toml"
+cargo xtask arceos build --config apps/axvisor/normal/board-ballpick-robot/task-switch/configs/guest-build.toml
 ```
 
 [build-aarch64-unknown-none-softfloat.toml](build-aarch64-unknown-none-softfloat.toml) 包含 `host-fs` 和存储驱动，宿主仍依赖板卡启动配置中的根分区。客户机固定单 vCPU、MPIDR `0x400`，两个测量任务在同一物理核上切换。
 
 ### 服务与设备
 
-服务地址按当前环境填写。运行配置的 `board_type` 选择实体板卡，ktest 的 `-b orangepi-5-plus` 选择逻辑板卡配置；需要外部时序旁证时，按 GPIO3_C6 的设备连接准备示波器。
+板卡类型、服务地址和端口按当前环境填写。`--board-type` 选择实体板卡，ktest 的 `-b orangepi-5-plus` 选择逻辑板卡配置；需要外部时序旁证时，按 GPIO3_C6 的设备连接准备示波器。
 
 ```bash
-export BOARD_SERVER='http://<board-server-host>:<board-server-port>'
 export PATH=/opt/aarch64-linux-musl-cross/bin:$PATH
-ostool board ls --server "$BOARD_SERVER"
+cargo xtask board ls --server <服务地址> --port <端口>
 ```
 
 ## 启动
@@ -48,11 +42,10 @@ ostool board ls --server "$BOARD_SERVER"
 正式入口自动准备客户机并创建 VM，不需要向管理控制台输入 `vm start` 或 `vm console`。在构建机执行：
 
 ```bash
-app="$APP_DIR"
 cargo xtask ktest board -p axvm --test task_switch -b orangepi-5-plus \
-  --config "$app/build-aarch64-unknown-none-softfloat.toml" \
-  --board-config "$app/board-ballpick-robot-task-switch.toml" \
-  --server "$BOARD_SERVER"
+  --config apps/axvisor/normal/board-ballpick-robot/task-switch/build-aarch64-unknown-none-softfloat.toml \
+  --board-config apps/axvisor/normal/board-ballpick-robot/task-switch/board-ballpick-robot-task-switch.toml \
+  --board-type <板卡类型> --server <服务地址> --port <端口>
 ```
 
 ## 场景：观察完整测量

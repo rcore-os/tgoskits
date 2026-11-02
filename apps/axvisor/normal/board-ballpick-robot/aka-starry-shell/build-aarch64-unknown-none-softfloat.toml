@@ -6,7 +6,7 @@ features = [
   "web",
 
 ]
-log = "Warn"
+log = "Error"
 target = "aarch64-unknown-none-softfloat"
 vm_configs = [
   "apps/axvisor/normal/board-ballpick-robot/aka-starry-shell/configs/starry-smp1.toml",
