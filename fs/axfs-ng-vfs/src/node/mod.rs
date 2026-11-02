@@ -84,6 +84,26 @@ pub trait NodeOps: Send + Sync + 'static {
     /// Updates the metadata of the node.
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
+    /// Plans and commits one metadata update across the implementation's
+    /// update serialization boundary.
+    ///
+    /// `plan` runs against the inode's current attributes and returns the
+    /// update to commit, or an error to abort with no change. Implementations
+    /// that serialize metadata updates must run the plan under the same lock,
+    /// so permission decisions and the commit observe one state (Linux
+    /// `inode_lock` covering `setattr_prepare` and `notify_change`). The
+    /// default observes the attributes and then commits through
+    /// [`Self::update_metadata`]; it keeps `plan` side-effect free on error but
+    /// cannot close a race the implementation does not serialize.
+    fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        let current = self.metadata()?;
+        let update = plan(&current)?;
+        self.update_metadata(update)
+    }
+
     /// Gets the filesystem
     fn filesystem(&self) -> &dyn FilesystemOps;
 
@@ -293,6 +313,11 @@ impl DirEntry {
     pub fn filesystem(&self) -> &dyn FilesystemOps;
 
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    pub fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()>;
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> VfsResult<u64>;

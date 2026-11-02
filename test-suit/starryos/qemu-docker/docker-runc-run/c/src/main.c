@@ -14,6 +14,8 @@
  *                   CVE-2019-5736 self-reexec execveat()s the memfd)
  *   memfd-exec      execveat(memfd, "", AT_EMPTY_PATH) keeps the
  *                   /memfd:<name> (deleted) exe display name
+ *   memfd-owner     a former owner cannot restore its uid or chmod a shared
+ *                   memfd after another descriptor holder transferred it
  *   pipe-fchown     fchown/fchmod succeed on pipe fds (runc adjusts its
  *                   container stdio pipes)
  *   stageb-gate     emits whether the bpf(2) cgroup-device stub is present,
@@ -40,6 +42,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -285,7 +288,147 @@ static void check_memfd_mode(void)
                (unsigned long)(st.st_mode & 07777));
         failures++;
     }
+
+    /* fchown commits only the fields the caller named: a `-1` field keeps
+     * the value current at commit time, including on the memfd's backing
+     * inode. */
+    struct stat owned;
+    if (fchown(fd, 1000, 1000) == 0 && fstat(fd, &owned) == 0 &&
+        owned.st_uid == 1000 && owned.st_gid == 1000) {
+        pass("fchown on a memfd persists to fstat");
+    } else {
+        fail("fchown on a memfd persists to fstat");
+    }
+    if (fchown(fd, 2000, -1) == 0 && fstat(fd, &owned) == 0 &&
+        owned.st_uid == 2000 && owned.st_gid == 1000) {
+        pass("partial fchown on a memfd keeps the unnamed owner field");
+    } else {
+        fail("partial fchown on a memfd keeps the unnamed owner field");
+    }
+    if (fchown(fd, -1, 3000) == 0 && fstat(fd, &owned) == 0 &&
+        owned.st_uid == 2000 && owned.st_gid == 3000) {
+        pass("partial fchown on a memfd commits only the named field");
+    } else {
+        fail("partial fchown on a memfd commits only the named field");
+    }
+    if (fchmod(fd, 04755) == 0 && fchown(fd, -1, -1) == 0 &&
+        fstat(fd, &owned) == 0 && (owned.st_mode & 06000) == 0) {
+        pass("fchown clears setuid/setgid on a memfd");
+    } else {
+        fail("fchown clears setuid/setgid on a memfd");
+    }
     close(fd);
+}
+
+/* A shared memfd's metadata can be reassigned through another descriptor.
+ * After a root holder transfers ownership, the former owner must fail both
+ * the partial fchown that would restore its uid and an fchmod: the
+ * permission decision runs inside the inode's commit boundary, so it sees
+ * the transferred owner instead of a pre-transfer snapshot. User space
+ * cannot force the pre-commit window itself; the memory-filesystem host test
+ * pins the plan-under-lock contract. */
+static void check_memfd_owner_transfer(void)
+{
+    section("memfd-owner");
+
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) {
+        fail("socketpair for memfd owner transfer");
+        return;
+    }
+    pid_t child = fork();
+    if (child == 0) {
+        close(sv[0]);
+        if (setgid(1000) != 0 || setuid(1000) != 0) {
+            _exit(1);
+        }
+        int m = (int)syscall(SYS_memfd_create, "shared-owner", 0);
+        if (m < 0 || fchmod(m, 0600) != 0) {
+            _exit(2);
+        }
+        struct msghdr msg;
+        struct iovec io;
+        char cbuf[CMSG_SPACE(sizeof(int))];
+        char byte = 'm';
+        memset(&msg, 0, sizeof(msg));
+        memset(cbuf, 0, sizeof(cbuf));
+        io.iov_base = &byte;
+        io.iov_len = 1;
+        msg.msg_iov = &io;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cbuf;
+        msg.msg_controllen = sizeof(cbuf);
+        struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        c->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(c), &m, sizeof(int));
+        if (sendmsg(sv[1], &msg, 0) != 1) {
+            _exit(3);
+        }
+        char ack;
+        if (recv(sv[1], &ack, 1, 0) != 1) {
+            _exit(4);
+        }
+        errno = 0;
+        if (fchown(m, 1000, -1) == 0 || errno != EPERM) {
+            _exit(5);
+        }
+        errno = 0;
+        if (fchmod(m, 0644) == 0 || errno != EPERM) {
+            _exit(6);
+        }
+        close(m);
+        _exit(0);
+    }
+    close(sv[1]);
+    if (child < 0) {
+        fail("fork memfd owner child");
+        close(sv[0]);
+        return;
+    }
+
+    int received = -1;
+    {
+        struct msghdr msg;
+        struct iovec io;
+        char cbuf[CMSG_SPACE(sizeof(int))];
+        char byte;
+        memset(&msg, 0, sizeof(msg));
+        io.iov_base = &byte;
+        io.iov_len = 1;
+        msg.msg_iov = &io;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cbuf;
+        msg.msg_controllen = sizeof(cbuf);
+        if (recvmsg(sv[0], &msg, 0) == 1) {
+            struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+            if (c && c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS &&
+                c->cmsg_len == CMSG_LEN(sizeof(int))) {
+                memcpy(&received, CMSG_DATA(c), sizeof(int));
+            }
+        }
+    }
+    int transferred = received >= 0 && fchown(received, 2000, 1000) == 0;
+    char ack = 'a';
+    (void)send(sv[0], &ack, 1, 0);
+    int status = 0;
+    int reaped = waitpid(child, &status, 0) == child;
+    if (received >= 0) {
+        close(received);
+    }
+    close(sv[0]);
+
+    if (!transferred) {
+        fail("root transfers a shared memfd's owner");
+    } else if (!(reaped && WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+        printf("  FAIL: former memfd owner cannot restore uid or change mode "
+               "(exit=%d)\n",
+               reaped && WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        failures++;
+    } else {
+        pass("former memfd owner cannot restore uid or change mode");
+    }
 }
 
 /* execveat(memfd, "", AT_EMPTY_PATH) must keep the anonymous display name:
@@ -862,6 +1005,7 @@ int main(int argc, char **argv)
     check_starttime();
     check_oom_nul_write();
     check_memfd_mode();
+    check_memfd_owner_transfer();
     check_memfd_exec();
     check_pipe_fchown();
     check_stageb_gate();
