@@ -917,6 +917,18 @@ impl Location {
         self.entry.update_metadata(update)
     }
 
+    /// Plans and commits one metadata update under the inode's update
+    /// serialization boundary; see [`NodeOps::update_metadata_checked`].
+    pub fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        if self.is_readonly() {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        self.entry.update_metadata_checked(plan)
+    }
+
     pub fn set_xattr(&self, name: &[u8], value: &[u8], mode: XattrSetMode) -> VfsResult<()> {
         if self.is_readonly() {
             return Err(VfsError::ReadOnlyFilesystem);

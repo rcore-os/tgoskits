@@ -11,6 +11,32 @@ use rsext4::{DeviceNumber, Ext4Timestamp, FilePermissions, InodeFlags, InodeMeta
 
 use super::{super::util::directory_entry_type_to_vfs, Inode, into_vfs_err};
 
+impl Inode {
+    /// Commits one metadata update; the caller holds the content access
+    /// write gate that serializes inode metadata changes.
+    fn update_metadata_locked(&self, update: MetadataUpdate) -> VfsResult<()> {
+        let metadata = InodeMetadataUpdate {
+            permissions: update
+                .mode
+                .map(|mode| FilePermissions::new(mode.bits()))
+                .transpose()
+                .map_err(into_vfs_err)?,
+            owner: update.owner,
+            device_number: update
+                .rdev
+                .map(|device| DeviceNumber::new(device.major(), device.minor()))
+                .transpose()
+                .map_err(into_vfs_err)?,
+            atime: update.atime.map(Self::timestamp).transpose()?,
+            mtime: update.mtime.map(Self::timestamp).transpose()?,
+            ..Default::default()
+        };
+        self.mutate(|ext4| ext4.update_inode_metadata(self.number(), metadata))
+            .map_err(into_vfs_err)?;
+        self.finish_metadata_change()
+    }
+}
+
 impl NodeOps for Inode {
     fn inode(&self) -> u64 {
         self.number().as_u64()
@@ -43,25 +69,20 @@ impl NodeOps for Inode {
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         let _inode = self.content_access().write()?;
-        let metadata = InodeMetadataUpdate {
-            permissions: update
-                .mode
-                .map(|mode| FilePermissions::new(mode.bits()))
-                .transpose()
-                .map_err(into_vfs_err)?,
-            owner: update.owner,
-            device_number: update
-                .rdev
-                .map(|device| DeviceNumber::new(device.major(), device.minor()))
-                .transpose()
-                .map_err(into_vfs_err)?,
-            atime: update.atime.map(Self::timestamp).transpose()?,
-            mtime: update.mtime.map(Self::timestamp).transpose()?,
-            ..Default::default()
-        };
-        self.mutate(|ext4| ext4.update_inode_metadata(self.number(), metadata))
-            .map_err(into_vfs_err)?;
-        self.finish_metadata_change()
+        self.update_metadata_locked(update)
+    }
+
+    fn update_metadata_checked(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        // The content write gate serializes every metadata update on this
+        // inode, so planning and committing under one acquisition mirrors
+        // Linux `inode_lock` around `setattr_prepare` and `notify_change`.
+        let _inode = self.content_access().write()?;
+        let current = self.metadata()?;
+        let update = plan(&current)?;
+        self.update_metadata_locked(update)
     }
 
     fn len(&self) -> VfsResult<u64> {
