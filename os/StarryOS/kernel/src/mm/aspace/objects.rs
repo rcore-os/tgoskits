@@ -99,7 +99,7 @@ impl FrameLease {
     pub(super) fn is_exclusive_base_allocation(&self) -> bool {
         self.bytes == PAGE_SIZE_4K
             && self.allocation.bytes == PAGE_SIZE_4K
-            && self.allocation.release.is_some()
+            && self.allocation.release_align.is_some()
             && self.allocation._anchor.is_none()
             && Arc::strong_count(&self.allocation) == 1
     }
