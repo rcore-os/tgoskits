@@ -1763,7 +1763,11 @@ impl VmaMap {
         if removed.snapshot.id != source.snapshot.id {
             return None;
         }
-        without_source.insert_entry(source.extended_right(additional_size)?)
+        let extended = source.extended_right(additional_size)?;
+        let grown = extended.snapshot.range;
+        without_source
+            .insert_entry(extended)?
+            .coalesce_compatible_near(grown)
     }
 
     pub(super) fn insert_with_operation(
@@ -1945,6 +1949,193 @@ mod tests {
         }
         assert_eq!(visited, 64);
         assert_eq!(Arc::strong_count(&last), retained);
+    }
+
+    fn walked_count(map: &VmaMap) -> usize {
+        let everything =
+            VirtAddrRange::new(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX));
+        let mut counted = 0;
+        map.for_each_overlapping_entry(everything, |_| {
+            counted += 1;
+            true
+        });
+        counted
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn the_vma_count_matches_a_walk_after_every_mutation() {
+        // The small mappings are one page each, so the carves and splits below
+        // work on a wider one placed past them.
+        let base = 0x1000 + 64 * 0x2000;
+        let map = insert(&map_of(64), base, 0x4000).unwrap();
+        assert_eq!(map.len(), 65);
+        assert_eq!(map.len(), walked_count(&map));
+
+        let (shrunk, _) = map
+            .remove_entry(VirtAddr::from_usize(0x1000 + 7 * 0x2000))
+            .unwrap();
+        assert_eq!(shrunk.len(), 64);
+        assert_eq!(shrunk.len(), walked_count(&shrunk));
+
+        let carved = shrunk
+            .without_range(VirtAddrRange::from_start_size(
+                VirtAddr::from_usize(base + 0x1000),
+                0x1000,
+            ))
+            .unwrap();
+        assert_eq!(carved.len(), 65);
+        assert_eq!(carved.len(), walked_count(&carved));
+
+        let split = carved
+            .with_permissions(
+                VirtAddrRange::from_start_size(VirtAddr::from_usize(base + 0x2000), 0x1000),
+                MappingFlags::READ | MappingFlags::WRITE,
+                MappingFlags::READ | MappingFlags::WRITE,
+            )
+            .unwrap();
+        assert_eq!(split.len(), carved.len() + 1);
+        assert_eq!(split.len(), walked_count(&split));
+
+        let merged = split
+            .with_permissions(
+                VirtAddrRange::from_start_size(VirtAddr::from_usize(base + 0x2000), 0x1000),
+                MappingFlags::READ,
+                MappingFlags::READ,
+            )
+            .unwrap();
+        assert_eq!(merged.len(), carved.len());
+        assert_eq!(merged.len(), walked_count(&merged));
+        assert_eq!(map.len(), 65);
+    }
+
+    fn assert_maximally_merged(map: &VmaMap, context: &str) {
+        let ordered: Vec<_> = map.iter().collect();
+        for pair in ordered.windows(2) {
+            assert!(
+                !pair[0].can_merge_with(pair[1].as_ref()),
+                "{context}: {:?} and {:?} are adjacent and mergeable",
+                pair[0].range,
+                pair[1].range
+            );
+        }
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn a_grown_vma_merges_with_the_fragment_it_reaches() {
+        let base = 0x1000 + 8 * 0x2000;
+        let map = insert(&map_of(8), base, 0x4000).unwrap();
+        let holed = map
+            .without_range(VirtAddrRange::from_start_size(
+                VirtAddr::from_usize(base + 0x1000),
+                0x1000,
+            ))
+            .unwrap();
+        assert_eq!(holed.len(), 10);
+
+        let grown = holed
+            .with_extended_right(VirtAddr::from_usize(base), 0x1000)
+            .unwrap();
+        assert_maximally_merged(&grown, "growing into the hole");
+        assert_eq!(grown.len(), 9);
+        assert_eq!(
+            grown.lookup(VirtAddr::from_usize(base)).unwrap().range,
+            VirtAddrRange::from_start_size(VirtAddr::from_usize(base), 0x4000)
+        );
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn a_windowed_merge_restores_every_fragment_it_split() {
+        let base = 0x1000 + 64 * 0x2000;
+        // Unrelated VMAs give a full scan something to walk; the merge must not
+        // depend on reaching them.
+        let map = insert(&map_of(64), base, 0x4000).unwrap();
+
+        // Left edge, right edge, middle, and the whole VMA.
+        for (offset, size) in [(0usize, 0x1000usize), (0x3000, 0x1000), (0x1000, 0x2000), (0, 0x4000)] {
+            let changed =
+                VirtAddrRange::from_start_size(VirtAddr::from_usize(base + offset), size);
+            let split = map.with_lock_mode(changed, VmaLockMode::LockOnFault).unwrap();
+            let restored = split.with_lock_mode(changed, VmaLockMode::Unlocked).unwrap();
+
+            assert_eq!(restored.len(), map.len(), "offset {offset:#x} size {size:#x}");
+            assert_eq!(
+                restored.lookup(VirtAddr::from_usize(base)).unwrap().range,
+                VirtAddrRange::from_start_size(VirtAddr::from_usize(base), 0x4000),
+                "offset {offset:#x} size {size:#x}"
+            );
+        }
+
+        // A neighbour from another mapping is adjacent but must stay separate.
+        let neighboured = insert(&map, base + 0x4000, 0x1000).unwrap();
+        let changed = VirtAddrRange::from_start_size(VirtAddr::from_usize(base + 0x3000), 0x1000);
+        let split = neighboured
+            .with_lock_mode(changed, VmaLockMode::LockOnFault)
+            .unwrap();
+        let restored = split.with_lock_mode(changed, VmaLockMode::Unlocked).unwrap();
+        assert_eq!(restored.len(), neighboured.len());
+        assert_eq!(
+            restored
+                .lookup(VirtAddr::from_usize(base + 0x4000))
+                .unwrap()
+                .range,
+            VirtAddrRange::from_start_size(VirtAddr::from_usize(base + 0x4000), 0x1000)
+        );
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn every_mutation_leaves_no_mergeable_neighbours() {
+        const PAGES: usize = 32;
+        let base = 0x1000 + 8 * 0x2000;
+        let mut map = insert(&map_of(8), base, PAGES * 0x1000).unwrap();
+        let rights = [MappingFlags::READ, MappingFlags::READ | MappingFlags::WRITE];
+        let locks = [
+            VmaLockMode::Unlocked,
+            VmaLockMode::Locked,
+            VmaLockMode::LockOnFault,
+        ];
+        let advice = [
+            HugePageAdvice::Default,
+            HugePageAdvice::Prefer,
+            HugePageAdvice::Avoid,
+        ];
+
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % bound as u64) as usize
+        };
+
+        let mut applied = 0;
+        for step in 0..2000 {
+            let first = next(PAGES);
+            let count = 1 + next(4.min(PAGES - first));
+            let start = VirtAddr::from_usize(base + first * 0x1000);
+            let range = VirtAddrRange::from_start_size(start, count * 0x1000);
+            let (kind, successor) = match next(8) {
+                0 | 1 => {
+                    let wanted = rights[next(2)];
+                    ("protect", map.with_permissions(range, wanted, wanted))
+                }
+                2 | 3 => ("lock", map.with_lock_mode(range, locks[next(3)])),
+                4 => ("advise", map.with_huge_page_advice(range, advice[next(3)])),
+                5 => ("unmap", map.without_range(range)),
+                6 => ("map", insert(&map, start.as_usize(), count * 0x1000)),
+                _ => ("grow", map.with_extended_right(start, 0x1000)),
+            };
+            let Some(successor) = successor else {
+                continue;
+            };
+            assert_maximally_merged(&successor, &alloc::format!("step {step} {kind} {range:?}"));
+            map = successor;
+            applied += 1;
+        }
+        assert!(applied > 500, "only {applied} mutations applied");
     }
 
     #[cfg_attr(axtest, axtest::axtest)]
