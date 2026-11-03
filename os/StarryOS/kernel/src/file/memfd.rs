@@ -27,7 +27,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use ax_fs_ng::vfs::FileFlags;
 use ax_io::{IoBuf, SeekFrom, prelude::*};
-use ax_memory_addr::{MemoryAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::MappingFlags;
 use axfs_ng_vfs::FileRangeOperation;
 use axpoll::{IoEvents, Pollable};
