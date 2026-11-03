@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +19,13 @@
 #ifndef MADV_POPULATE_READ
 #define MADV_POPULATE_READ 22
 #define MADV_POPULATE_WRITE 23
+#endif
+
+#ifndef MADV_DONTNEED_LOCKED
+#define MADV_DONTNEED_LOCKED 24
+#endif
+#ifndef MLOCK_ONFAULT
+#define MLOCK_ONFAULT 1
 #endif
 
 #define PAGE 4096
@@ -156,8 +164,41 @@ static void check_swapped_lifecycle(void) {
         REQUIRE(verify(0, 1, 31));
         REQUIRE(syscall(SYS_madvise, region, PAGE,
                         inheritance[i] == MADV_DONTFORK ? MADV_DOFORK : MADV_KEEPONFORK) == 0);
+        /* Resetting the policy must restore inheritance of nonresident data. */
+        swap_out_one();
+        parent_swap_kb = proc_value("/proc/self/status", "VmSwap:");
+        child = fork();
+        REQUIRE(child >= 0);
+        if (!child) {
+            REQUIRE(proc_value("/proc/self/status", "VmSwap:") == parent_swap_kb);
+            REQUIRE(verify(0, 1, 31));
+            fill(0, 1, 33);
+            REQUIRE(verify(0, 1, 33));
+            _exit(0);
+        }
+        REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        unsigned char residency;
+        REQUIRE(mincore(region, PAGE, &residency) == 0 && !(residency & 1));
+        REQUIRE(verify(0, 1, 31));
     }
     puts("SWAP_INHERITANCE_PASSED");
+
+    /* With no CLONE_VM and no new stack, raw clone returns like fork. */
+    swap_out_one();
+    pid_t child = syscall(SYS_clone, SIGCHLD, 0, 0, 0, 0);
+    REQUIRE(child >= 0);
+    if (!child) {
+        REQUIRE(verify(0, 1, 31));
+        fill(0, 1, 34);
+        REQUIRE(verify(0, 1, 34));
+        _exit(0);
+    }
+    int status;
+    REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    unsigned char clone_residency;
+    REQUIRE(mincore(region, PAGE, &clone_residency) == 0 && !(clone_residency & 1));
+    REQUIRE(verify(0, 1, 31));
+    puts("SWAP_CLONE_PRIVATE_PASSED");
 
     const int populate[] = {MADV_POPULATE_READ, MADV_POPULATE_WRITE};
     for (size_t i = 0; i < sizeof(populate) / sizeof(populate[0]); i++) {
@@ -175,6 +216,28 @@ static void check_swapped_lifecycle(void) {
     REQUIRE(verify(0, 1, 31));
     REQUIRE(munlock(region, PAGE) == 0);
     puts("SWAP_POPULATE_PASSED");
+
+    /* ONFAULT can lock a swapped VMA without restoring its page first. */
+    swap_out_one();
+    REQUIRE(syscall(SYS_mlock2, region, PAGE, MLOCK_ONFAULT) == 0);
+    REQUIRE(mincore(region, PAGE, &residency) == 0 && !(residency & 1));
+    struct swap_stats locked = swap_stats();
+    errno = 0;
+    REQUIRE(syscall(SYS_madvise, region, PAGE, MADV_DONTNEED) == -1 && errno == EINVAL);
+    REQUIRE(proc_value("/proc/self/status", "VmSwap:") * 1024 == locked.process);
+    REQUIRE(syscall(SYS_madvise, region, PAGE, MADV_DONTNEED_LOCKED) == 0);
+    struct swap_stats discarded = swap_stats();
+    REQUIRE(discarded.free == locked.free + PAGE && discarded.process + PAGE == locked.process);
+    /* SwapCompressed is rounded to KiB; this single payload can be smaller. */
+    REQUIRE(discarded.in == locked.in);
+    REQUIRE(mincore(region, PAGE, &residency) == 0 && !(residency & 1));
+    for (size_t j = 0; j < PAGE; j++) REQUIRE(region[j] == 0);
+    /* DONTNEED_LOCKED discards contents, not the VMA's lock policy. */
+    errno = 0;
+    REQUIRE(syscall(SYS_madvise, region, PAGE, MADV_PAGEOUT) == -1 && errno == EINVAL);
+    REQUIRE(munlock(region, PAGE) == 0);
+    fill(0, 1, 31);
+    puts("SWAP_LOCKED_DISCARD_PASSED");
 
     swap_out_one();
     unsigned char *source = region;
