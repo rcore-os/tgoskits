@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -10,8 +11,14 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/sysinfo.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22
+#define MADV_POPULATE_WRITE 23
+#endif
 
 #define PAGE 4096
 #define PAGES 128
@@ -27,20 +34,49 @@ static void pageout(void *address, size_t bytes) {
     REQUIRE(syscall(SYS_madvise, address, bytes, MADV_PAGEOUT) == 0);
 }
 
-static uint64_t proc_value(const char *path, const char *key) {
-    FILE *file = fopen(path, "r");
-    REQUIRE(file != NULL);
-    char line[256], name[64];
-    unsigned long long value;
-    while (fgets(line, sizeof(line), file)) {
-        if (sscanf(line, "%63s %llu", name, &value) == 2 && !strcmp(name, key)) {
-            REQUIRE(fclose(file) == 0);
-            return value;
+static uint64_t read_proc_value(const char *path, const char *key, int method) {
+    int fd = open(path, O_RDONLY);
+    REQUIRE(fd >= 0);
+    char buffer[8192], name[64];
+    size_t used = 0;
+    for (;;) {
+        size_t remaining = sizeof(buffer) - 1 - used;
+        REQUIRE(remaining > 0);
+        long count;
+        if (method == SYS_readv) {
+            size_t first = remaining < 17 ? remaining : 17;
+            struct iovec parts[] = {
+                {buffer + used, first}, {buffer + used + first, remaining - first},
+            };
+            count = syscall(SYS_readv, fd, parts, 2);
+        } else if (method == SYS_pread64) {
+            count = syscall(SYS_pread64, fd, buffer + used, remaining, (off_t)used);
+        } else {
+            count = syscall(SYS_read, fd, buffer + used, remaining);
         }
+        REQUIRE(count >= 0 && (size_t)count <= remaining);
+        if (!count) break;
+        used += count;
+    }
+    if (method == SYS_pread64) REQUIRE(lseek(fd, 0, SEEK_CUR) == 0);
+    REQUIRE(close(fd) == 0);
+    buffer[used] = '\0';
+    unsigned long long value;
+    for (char *line = buffer; line; ) {
+        if (sscanf(line, "%63s %llu", name, &value) == 2 && !strcmp(name, key)) return value;
+        char *end = strchr(line, '\n');
+        line = end ? end + 1 : NULL;
     }
     fprintf(stderr, "missing swap statistic %s in %s\n", key, path);
     REQUIRE(0);
     return 0;
+}
+
+static uint64_t proc_value(const char *path, const char *key) {
+    uint64_t value = read_proc_value(path, key, SYS_read);
+    REQUIRE(read_proc_value(path, key, SYS_readv) == value);
+    REQUIRE(read_proc_value(path, key, SYS_pread64) == value);
+    return value;
 }
 
 struct swap_stats {
@@ -82,6 +118,92 @@ static int verify(size_t first, size_t count, unsigned round) {
             if (words[i] != word(page, i, round)) return 0;
     }
     return 1;
+}
+
+static void swap_out_one(void) {
+    pageout(region, PAGE);
+    unsigned char residency;
+    REQUIRE(mincore(region, PAGE, &residency) == 0 && !(residency & 1));
+}
+
+static void check_swapped_lifecycle(void) {
+    region = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(region != MAP_FAILED);
+    fill(0, 1, 31);
+
+    const int inheritance[] = {MADV_DONTFORK, MADV_WIPEONFORK};
+    for (size_t i = 0; i < sizeof(inheritance) / sizeof(inheritance[0]); i++) {
+        REQUIRE(syscall(SYS_madvise, region, PAGE, inheritance[i]) == 0);
+        swap_out_one();
+        uint64_t parent_swap_kb = proc_value("/proc/self/status", "VmSwap:");
+        REQUIRE(parent_swap_kb >= PAGE / 1024);
+        pid_t child = fork();
+        REQUIRE(child >= 0);
+        if (!child) {
+            REQUIRE(proc_value("/proc/self/status", "VmSwap:") == parent_swap_kb - PAGE / 1024);
+            unsigned char residency;
+            if (inheritance[i] == MADV_DONTFORK) {
+                errno = 0;
+                REQUIRE(mincore(region, PAGE, &residency) == -1 && errno == ENOMEM);
+            } else {
+                for (size_t j = 0; j < PAGE; j++) REQUIRE(region[j] == 0);
+                fill(0, 1, 32);
+            }
+            _exit(0);
+        }
+        int status;
+        REQUIRE(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        REQUIRE(verify(0, 1, 31));
+        REQUIRE(syscall(SYS_madvise, region, PAGE,
+                        inheritance[i] == MADV_DONTFORK ? MADV_DOFORK : MADV_KEEPONFORK) == 0);
+    }
+    puts("SWAP_INHERITANCE_PASSED");
+
+    const int populate[] = {MADV_POPULATE_READ, MADV_POPULATE_WRITE};
+    for (size_t i = 0; i < sizeof(populate) / sizeof(populate[0]); i++) {
+        swap_out_one();
+        REQUIRE(syscall(SYS_madvise, region, PAGE, populate[i]) == 0);
+        unsigned char residency;
+        REQUIRE(mincore(region, PAGE, &residency) == 0 && (residency & 1));
+        REQUIRE(verify(0, 1, 31));
+        fill(0, 1, 31);
+    }
+    swap_out_one();
+    REQUIRE(syscall(SYS_mlock2, region, PAGE, 0) == 0);
+    unsigned char residency;
+    REQUIRE(mincore(region, PAGE, &residency) == 0 && (residency & 1));
+    REQUIRE(verify(0, 1, 31));
+    REQUIRE(munlock(region, PAGE) == 0);
+    puts("SWAP_POPULATE_PASSED");
+
+    swap_out_one();
+    unsigned char *source = region;
+    region = mremap(source, PAGE, PAGE, MREMAP_MAYMOVE | MREMAP_DONTUNMAP);
+    REQUIRE(region != MAP_FAILED && region != source);
+    REQUIRE(mincore(region, PAGE, &residency) == 0 && !(residency & 1));
+    REQUIRE(mincore(source, PAGE, &residency) == 0 && !(residency & 1));
+    REQUIRE(verify(0, 1, 31));
+    for (size_t j = 0; j < PAGE; j++) REQUIRE(source[j] == 0);
+    memset(source, 0x5a, PAGE);
+    REQUIRE(verify(0, 1, 31));
+    REQUIRE(munmap(source, PAGE) == 0);
+
+    struct swap_stats before = swap_stats();
+    swap_out_one();
+    struct swap_stats swapped = swap_stats();
+    REQUIRE(swapped.free + PAGE == before.free && swapped.process == before.process + PAGE);
+    REQUIRE(munmap(region, PAGE) == 0);
+    errno = 0;
+    REQUIRE(mincore(region, PAGE, &residency) == -1 && errno == ENOMEM);
+    struct swap_stats released = swap_stats();
+    REQUIRE(released.free == before.free && released.process == before.process);
+    REQUIRE(released.compressed == before.compressed);
+    REQUIRE(released.in == swapped.in);
+    REQUIRE(mmap(region, PAGE, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == region);
+    for (size_t j = 0; j < PAGE; j++) REQUIRE(region[j] == 0);
+    REQUIRE(munmap(region, PAGE) == 0);
+    puts("SWAP_MOVE_UNMAP_PASSED");
 }
 
 static void *writer(void *argument) {
@@ -190,6 +312,7 @@ int main(void) {
                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == region);
     for (size_t i = 0; i < PAGE * PAGES; i++) REQUIRE(region[i] == 0);
     REQUIRE(munmap(region, PAGE * PAGES) == 0);
+    check_swapped_lifecycle();
     puts("SWAP_TEST_PASSED");
     return 0;
 }
