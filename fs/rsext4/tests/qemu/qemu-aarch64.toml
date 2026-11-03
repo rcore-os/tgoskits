@@ -1,0 +1,16 @@
+args = [
+    "-machine", "virt,gic-version=3,its=on",
+    "-nographic", "-m", "512M", "-cpu", "cortex-a53", "-smp", "4",
+    "-append", 'root=/dev/nvme0n1 rw init=/bin/sh -- -c "export PS1=root@starry:; exec /bin/sh -i"',
+    "-drive", "id=root,if=none,format=raw,file=${workspace}/tmp/ext4-fragmented-writeback/rootfs.img",
+    "-device", "nvme,drive=root,serial=rootfs,max_ioqpairs=64,msix_qsize=65",
+]
+uefi = false
+to_bin = true
+timeout = 300
+fail_regex = ['(?i)\bpanic(?:ked)?\b', 'EXT4_FRAGMENTED_WRITEBACK_FAILED']
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/fragmented-writeback /fixture.img"
+success_regex = ['(?m)^EXT4_FRAGMENTED_WRITEBACK_PASSED\s*$']
