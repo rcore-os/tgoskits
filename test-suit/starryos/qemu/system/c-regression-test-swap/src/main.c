@@ -27,6 +27,43 @@ static void pageout(void *address, size_t bytes) {
     REQUIRE(syscall(SYS_madvise, address, bytes, MADV_PAGEOUT) == 0);
 }
 
+static uint64_t proc_value(const char *path, const char *key) {
+    FILE *file = fopen(path, "r");
+    REQUIRE(file != NULL);
+    char line[256], name[64];
+    unsigned long long value;
+    while (fgets(line, sizeof(line), file)) {
+        if (sscanf(line, "%63s %llu", name, &value) == 2 && !strcmp(name, key)) {
+            REQUIRE(fclose(file) == 0);
+            return value;
+        }
+    }
+    fprintf(stderr, "missing swap statistic %s in %s\n", key, path);
+    REQUIRE(0);
+    return 0;
+}
+
+struct swap_stats {
+    uint64_t total, free, compressed, process, in, out;
+};
+
+static struct swap_stats swap_stats(void) {
+    struct sysinfo info;
+    REQUIRE(syscall(SYS_sysinfo, &info) == 0 && info.mem_unit > 0);
+    struct swap_stats stats = {
+        .total = (uint64_t)info.totalswap * info.mem_unit,
+        .free = (uint64_t)info.freeswap * info.mem_unit,
+        .compressed = proc_value("/proc/meminfo", "SwapCompressed:") * 1024,
+        .process = proc_value("/proc/self/status", "VmSwap:") * 1024,
+        .in = proc_value("/proc/vmstat", "pswpin"),
+        .out = proc_value("/proc/vmstat", "pswpout"),
+    };
+    REQUIRE(stats.total > 0 && stats.free <= stats.total);
+    REQUIRE(proc_value("/proc/meminfo", "SwapTotal:") == stats.total / 1024);
+    REQUIRE(proc_value("/proc/meminfo", "SwapFree:") == stats.free / 1024);
+    return stats;
+}
+
 static uint64_t word(size_t page, size_t index, unsigned round) {
     return ((uint64_t)round << 32) ^ ((uint64_t)page << 16) ^ (index % 32);
 }
@@ -70,6 +107,8 @@ int main(void) {
                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     REQUIRE(region != MAP_FAILED);
     fill(0, PAGES, 17);
+    /* The isolated guest has no competing swap workload during this phase. */
+    struct swap_stats before = swap_stats();
     pageout(region, PAGE * PAGES);
     unsigned char residency[PAGES];
     REQUIRE(mincore(region, PAGE * PAGES, residency) == 0);
@@ -79,6 +118,22 @@ int main(void) {
     printf("SWAP_NONRESIDENT pages=%zu\n", evicted);
     fflush(stdout);
 
+    struct swap_stats swapped = swap_stats();
+    REQUIRE(swapped.total == before.total);
+    REQUIRE(before.free >= evicted * PAGE);
+    REQUIRE(swapped.free == before.free - evicted * PAGE);
+    REQUIRE(swapped.process == before.process + evicted * PAGE);
+    REQUIRE(swapped.compressed > before.compressed);
+    REQUIRE(swapped.out == before.out + evicted && swapped.in == before.in);
+    REQUIRE(verify(0, PAGES, 17));
+    struct swap_stats restored = swap_stats();
+    REQUIRE(restored.total == before.total && restored.free == before.free);
+    REQUIRE(restored.process == before.process && restored.compressed == before.compressed);
+    REQUIRE(restored.in == before.in + evicted && restored.out == swapped.out);
+    puts("SWAP_ACCOUNTING_PASSED");
+
+    /* Keep the fork check on nonresident content after the accounting round trip. */
+    pageout(region, PAGE * PAGES);
     pid_t child = fork();
     REQUIRE(child >= 0);
     if (child == 0) {
@@ -102,11 +157,17 @@ int main(void) {
     region = moved;
     REQUIRE(verify(0, PAGES, 17));
 
-    REQUIRE(mlock(region, PAGE) == 0);
+    pageout(region, PAGE);
+    REQUIRE(mincore(region, PAGE, residency) == 0 && !(residency[0] & 1));
+    REQUIRE(syscall(SYS_mlock, region, PAGE) == 0);
+    /* Check residency before reading: verify() itself would fault the page in. */
+    REQUIRE(mincore(region, PAGE, residency) == 0 && (residency[0] & 1));
+    REQUIRE(verify(0, 1, 17));
     errno = 0;
     REQUIRE(syscall(SYS_madvise, region, PAGE, MADV_PAGEOUT) == -1 && errno == EINVAL);
     REQUIRE(mincore(region, PAGE, residency) == 0 && (residency[0] & 1));
     REQUIRE(munlock(region, PAGE) == 0);
+    puts("SWAP_MLOCK_NONRESIDENT_PASSED");
 
     pthread_t threads[THREADS];
     for (uintptr_t i = 0; i < THREADS; i++)
