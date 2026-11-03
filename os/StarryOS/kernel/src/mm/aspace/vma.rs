@@ -824,6 +824,7 @@ struct VmaNode {
     first_start: VirtAddr,
     last_end: VirtAddr,
     max_gap: usize,
+    subtree_len: usize,
     locked_pages: Option<u64>,
     max_mapping_id: MappingId,
 }
@@ -849,6 +850,9 @@ impl VmaNode {
             node.max_gap
                 .max(node.first_start.as_usize() - range.end.as_usize())
         });
+        let subtree_len = 1
+            + left.as_ref().map_or(0, |node| node.subtree_len)
+            + right.as_ref().map_or(0, |node| node.subtree_len);
         let own_locked_pages = if entry.snapshot.lock_mode.is_locked() {
             u64::try_from(range.size() / PAGE_SIZE_4K).ok()
         } else {
@@ -868,13 +872,14 @@ impl VmaNode {
         Arc::new(Self {
             entry,
             height: 1 + node_height(&left).max(node_height(&right)),
-            locked_pages,
-            max_mapping_id,
             left,
             right,
             first_start,
             last_end,
             max_gap: left_gap.max(right_gap),
+            subtree_len,
+            locked_pages,
+            max_mapping_id,
         })
     }
 }
@@ -1111,7 +1116,7 @@ fn remove_node(
 
 impl VmaMap {
     pub fn len(&self) -> usize {
-        self.iter().count()
+        self.root.as_ref().map_or(0, |root| root.subtree_len)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1120,8 +1125,8 @@ impl VmaMap {
 
     /// Derives Linux `mm->locked_vm` from the immutable VMA root.
     ///
-    /// Each path-copied node derives its charge from its entry and children,
-    /// so split, merge, unmap and fork publish accounting with the same root.
+    /// Subtree totals are derived when path-copy nodes are constructed, so
+    /// old roots retain their own totals without a mutable charge ledger.
     pub(crate) fn locked_pages(&self) -> Option<u64> {
         self.root.as_ref().map_or(Some(0), |root| root.locked_pages)
     }
@@ -1315,10 +1320,11 @@ impl VmaMap {
             return Some(self.clone());
         }
 
-        let affected: Vec<_> = self
-            .iter_entries()
-            .filter(|entry| entry.snapshot.range.overlaps(range))
-            .collect();
+        let mut affected = Vec::new();
+        self.for_each_overlapping_entry(range, |entry| {
+            affected.push(entry.clone());
+            true
+        });
         let mut updated = self.clone();
         for source in affected {
             let (next, removed) = updated.remove_entry(source.snapshot.range.start)?;
@@ -1362,10 +1368,11 @@ impl VmaMap {
             return None;
         }
 
-        let affected: Vec<_> = self
-            .iter_entries()
-            .filter(|entry| entry.snapshot.range.overlaps(range))
-            .collect();
+        let mut affected = Vec::new();
+        self.for_each_overlapping_entry(range, |entry| {
+            affected.push(entry.clone());
+            true
+        });
         let mut updated = self.clone();
         for source in affected {
             let (next, removed) = updated.remove_entry(source.snapshot.range.start)?;
@@ -1407,7 +1414,7 @@ impl VmaMap {
                 updated = updated.insert_entry(tail)?;
             }
         }
-        updated.coalesce_compatible()
+        updated.coalesce_compatible_near(range)
     }
 
     /// Returns a successor root with Linux VMA locking policy applied to a
@@ -1423,10 +1430,11 @@ impl VmaMap {
             return None;
         }
 
-        let affected: Vec<_> = self
-            .iter_entries()
-            .filter(|entry| entry.snapshot.range.overlaps(range))
-            .collect();
+        let mut affected = Vec::new();
+        self.for_each_overlapping_entry(range, |entry| {
+            affected.push(entry.clone());
+            true
+        });
         let mut updated = self.clone();
         for source in affected {
             let (next, removed) = updated.remove_entry(source.snapshot.range.start)?;
@@ -1467,7 +1475,7 @@ impl VmaMap {
                 updated = updated.insert_entry(tail)?;
             }
         }
-        updated.coalesce_compatible()
+        updated.coalesce_compatible_near(range)
     }
 
     /// Returns a successor root with one Linux VMA advice policy update
@@ -1481,10 +1489,11 @@ impl VmaMap {
             return None;
         }
 
-        let affected: Vec<_> = self
-            .iter_entries()
-            .filter(|entry| entry.snapshot.range.overlaps(range))
-            .collect();
+        let mut affected = Vec::new();
+        self.for_each_overlapping_entry(range, |entry| {
+            affected.push(entry.clone());
+            true
+        });
         let mut updated = self.clone();
         for source in affected {
             let (next, removed) = updated.remove_entry(source.snapshot.range.start)?;
@@ -1525,15 +1534,43 @@ impl VmaMap {
                 updated = updated.insert_entry(tail)?;
             }
         }
-        updated.coalesce_compatible()
+        updated.coalesce_compatible_near(range)
     }
 
     /// Merges adjacent fragments only when the public mapping identity,
     /// permissions, policy, advice and source coordinates all agree.  The
     /// first fragment's operation starts at the merged range and therefore
     /// remains the executable owner for the combined VMA.
-    fn coalesce_compatible(&self) -> Option<Self> {
-        let ordered: Vec<_> = self.iter_entries().collect();
+    fn coalesce_compatible_near(&self, changed: VirtAddrRange) -> Option<Self> {
+        let mut first = self.lookup_entry(changed.start)?;
+        // Only compatible neighbors can join a run changed by this update.
+        // Look them up by address instead of scanning unrelated mappings.
+        while let Some(address) = first.start().checked_sub(1) {
+            let Some(previous) = self.lookup_entry(address) else {
+                break;
+            };
+            if !previous.snapshot.can_merge_with(&first.snapshot) {
+                break;
+            }
+            first = previous;
+        }
+        let mut ordered = Vec::new();
+        self.for_each_overlapping_entry(
+            VirtAddrRange::new(first.start(), changed.end),
+            |entry| {
+                ordered.push(entry.clone());
+                true
+            },
+        );
+        while let Some(last) = ordered.last() {
+            let Some(next) = self.lookup_entry(last.end()) else {
+                break;
+            };
+            if !last.snapshot.can_merge_with(&next.snapshot) {
+                break;
+            }
+            ordered.push(next);
+        }
         let mut updated = self.clone();
         let mut index = 0;
         while index < ordered.len() {
@@ -1564,56 +1601,6 @@ impl VmaMap {
         Some(updated)
     }
 
-    /// Coalesces only compatible runs that touch the updated interval.
-    ///
-    /// The ordered scan is read-only.  Actual changes still remove and insert
-    /// through path-copy operations, so unrelated subtrees remain shared with
-    /// the rollback root.  Requiring one `MappingGroup` and continuous source
-    /// offsets prevents an advice update from erasing a logical mapping
-    /// boundary.
-    fn coalesce_huge_page_advice_near(&self, changed: VirtAddrRange) -> Option<Self> {
-        let ordered: Vec<_> = self.iter_entries().collect();
-        let mut replacements = Vec::new();
-        let mut index = 0;
-        while index < ordered.len() {
-            let first = index;
-            while index + 1 < ordered.len()
-                && ordered[index]
-                    .snapshot
-                    .can_merge_with(ordered[index + 1].snapshot.as_ref())
-            {
-                index += 1;
-            }
-            if index > first
-                && ordered[index].snapshot.range.end >= changed.start
-                && ordered[first].snapshot.range.start <= changed.end
-            {
-                let mut starts = Vec::new();
-                starts.try_reserve(index - first + 1).ok()?;
-                starts.extend(
-                    ordered[first..=index]
-                        .iter()
-                        .map(|entry| entry.snapshot.range.start),
-                );
-                let merged = ordered[first]
-                    .snapshot
-                    .merge_through(ordered[index].snapshot.as_ref())?;
-                replacements.push((starts, merged, ordered[first].operation.clone()));
-            }
-            index += 1;
-        }
-
-        let mut updated = self.clone();
-        for (starts, merged, operation) in replacements {
-            for start in starts {
-                let (next, _) = updated.remove_entry(start)?;
-                updated = next;
-            }
-            updated = updated.insert_with_operation(merged, operation)?;
-        }
-        Some(updated)
-    }
-
     /// Returns a successor root with `advice` applied to a fully mapped range.
     ///
     /// Every affected interval is replaced through path-copy updates.  The
@@ -1627,10 +1614,11 @@ impl VmaMap {
         if range.is_empty() || !self.contains_range(range.start, range.size()) {
             return None;
         }
-        let affected: Vec<_> = self
-            .iter_entries()
-            .filter(|entry| entry.snapshot.range.overlaps(range))
-            .collect();
+        let mut affected = Vec::new();
+        self.for_each_overlapping_entry(range, |entry| {
+            affected.push(entry.clone());
+            true
+        });
         let mut updated = self.clone();
         for source in affected {
             let fragment = VirtAddrRange::new(
@@ -1639,7 +1627,7 @@ impl VmaMap {
             );
             updated = updated.update_one_huge_page_advice(&source, fragment, advice)?;
         }
-        updated.coalesce_huge_page_advice_near(range)
+        updated.coalesce_compatible_near(range)
     }
 
     /// Finds a free, aligned interval without exposing mutable tree nodes.
@@ -1804,6 +1792,8 @@ impl VmaMap {
         self.entry_refs().cloned()
     }
 
+    /// Borrows the immutable root for an ordered walk. Only the search stack
+    /// is allocated; callers clone metadata only when they retain an item.
     fn entry_refs(&self) -> impl Iterator<Item = &Arc<VmaEntry>> {
         let height = self
             .root
@@ -2128,7 +2118,8 @@ mod tests {
         assert!(third.lookup(VirtAddr::from_usize(0x5000)).is_some());
     }
 
-    #[test]
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn partial_lock_is_path_copied_and_unlock_coalesces_fragments() {
         let original = insert(&VmaMap::default(), 0x1000, 0x3000).unwrap();
         let middle = VirtAddrRange::from_start_size(VirtAddr::from_usize(0x2000), 0x1000);
@@ -2139,9 +2130,6 @@ mod tests {
         assert_eq!(original.len(), 1);
         assert_eq!(locked.len(), 3);
         assert_eq!(original.locked_pages(), Some(0));
-        assert_eq!(locked.locked_pages(), Some(1));
-        let removed = locked.without_range(middle).unwrap();
-        assert_eq!(removed.locked_pages(), Some(0));
         assert_eq!(locked.locked_pages(), Some(1));
         assert_eq!(
             original
@@ -2177,6 +2165,10 @@ mod tests {
             .unwrap();
         assert_eq!(unlocked.len(), 1);
         assert_eq!(unlocked.locked_pages(), Some(0));
+        assert_eq!(locked.locked_pages(), Some(1));
+        let removed = locked.without_range(middle).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert_eq!(removed.locked_pages(), Some(0));
         assert_eq!(
             unlocked.lookup(VirtAddr::from_usize(0x2000)).unwrap().range,
             VirtAddrRange::from_start_size(VirtAddr::from_usize(0x1000), 0x3000)
@@ -2210,7 +2202,8 @@ mod tests {
         assert!(successor.lookup(VirtAddr::from_usize(0x2000)).is_none());
     }
 
-    #[test]
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn protection_successor_changes_only_the_intersection() {
         let original = insert(&VmaMap::default(), 0x1000, 0x4000).unwrap();
         let successor = original
@@ -2241,6 +2234,19 @@ mod tests {
             MappingFlags::READ
         );
         assert_eq!(original.len(), 1);
+        let restored = successor
+            .with_permissions(
+                VirtAddrRange::from_start_size(VirtAddr::from_usize(0x2000), 0x1000),
+                MappingFlags::READ,
+                MappingFlags::READ,
+            )
+            .unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(successor.len(), 3);
+        assert_eq!(
+            restored.lookup(VirtAddr::from_usize(0x2000)).unwrap().range,
+            original.lookup(VirtAddr::from_usize(0x2000)).unwrap().range,
+        );
     }
 
     fn huge_page_advice_is_vma_local_and_path_copied_for_test() {

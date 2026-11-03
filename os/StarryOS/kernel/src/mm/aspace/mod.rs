@@ -3397,26 +3397,26 @@ impl AddrSpace {
         range: VirtAddrRange,
         require_full_coverage: bool,
     ) -> StarryResult<Vec<(VirtAddrRange, MappingOperation)>> {
+        let mut count = 0;
+        self.vma_root.for_each_overlapping_entry(range, |_| {
+            count += 1;
+            true
+        });
         let mut fragments = Vec::new();
         fragments
-            .try_reserve(self.vma_root.len())
+            .try_reserve(count)
             .map_err(|_| StarryError::NoMemory)?;
         let mut covered = range.start;
-        for entry in self.vma_root.iter_entries() {
-            if entry.start() >= range.end {
-                break;
-            }
-            if entry.end() <= range.start {
-                continue;
-            }
+        self.vma_root.for_each_overlapping_entry(range, |entry| {
             let fragment =
                 VirtAddrRange::new(entry.start().max(range.start), entry.end().min(range.end));
             if require_full_coverage && fragment.start > covered {
-                return Err(StarryError::NoMemory);
+                return false;
             }
             covered = covered.max(fragment.end);
             fragments.push((fragment, entry.operation_clone()));
-        }
+            true
+        });
         if require_full_coverage && covered < range.end {
             return Err(StarryError::NoMemory);
         }
