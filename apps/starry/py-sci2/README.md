@@ -56,12 +56,19 @@ Statsmodels 地毯的 Logit 混淆表优先真调 `pred_table()`；conda-forge �
 求解变更、环境管理、命令执行、索引查询、包归属查询、插件查询），并逐个断言 `usage: conda <sub>` 横幅、
 退出 0，以及 `--freeze-installed` / `--no-capture-output` / `--which` 这类只有该命令才有的关键字。未被抽查
 的子命令由后续真实功能与错误路径检查覆盖：`create` / `remove` 走 solve 的 `--dry-run --offline --json`，
-`clean` 走 `--all --dry-run --json`，`env` / `run` / `compare` / `search` / `notices` / `doctor` /
+`clean` 在临时独占 package cache 和专用 tempfiles 目录中走 `--all --dry-run --json`，`env` / `run` /
+`compare` / `search` / `notices` / `doctor` /
 `package` / `repoquery` 各自真调一次，`conda frobnicate` 与未知参数这类 argparse 错误路径也单独验证退出码。
 信息类命令的断言全部保留：`--version` 解析成 N.N.N、`info --json` 报版本与平台、`list --json` 与正则
 过滤列出已装包、`config --show --json` 逐键核对并做 `--set` / `--get` / `--remove-key` 往返、
 `env export` / `env list --json`、`install` / `create` / `clean` 的机器可读 JSON，证明在 StarryOS 上
 跑起来的 conda 是一个功能完整、可自省的包管理器 - 而不仅仅是能 import 的 Python 库。
+
+`CondaCliCarpet.py` 的 `_clean_fixture()` 为 tarball、带 `info` 的 package、index cache、tempfile 和
+logfile 创建小型真实候选，并通过 `temporary_env()` 把 `CONDA_PKGS_DIRS` 限定到该临时 package cache。
+它仍只调用一次 `clean --all --dry-run --json`，要求退出码 0、JSON `success` 为真、五类候选分别出现在对应
+JSON 字段中，并在调用后仍存在且内容未变。临时目录由 `TemporaryDirectory` 清理，环境变量在正常或异常退出时都会恢复；
+这避免扫描生产 prefix 中近十万个文件，同时保留 dry-run 契约和所有清理分类的实际识别路径。
 
 抽样是因为在目标架构上每条 conda 调用都要付一次沉重的 Python 启动代价。脚本因此在当前解释器就是 conda
 解释器时直接调用 `conda.cli.main.main(*args)`（`main_subshell` 每次重建 context 与日志配置），用重定向
@@ -71,7 +78,10 @@ Statsmodels 地毯的 Logit 混淆表优先真调 `pred_table()`；conda-forge �
 `conda notices` 用 `CONDA_OFFLINE=1` 强制单次离线调用。退出 0 可以接受；退出 1 只有在输出同时包含
 `EnforceUnusedAdapter called with url` 和 `This command is using a remote connection in offline mode.`
 时才视为预期离线结果。
-`INPROC ERROR`、Traceback、超时和其他非零退出都继续传播为失败。
+`INPROC ERROR`、Traceback、超时和其他非零退出都继续传播为失败。进程内调用触发 300 秒上限时会记录
+独立的 timeout 状态；即使 conda 自己捕获并吞掉超时异常，外层仍把本次调用报为 `rc=124`，只尝试一次且不重试。
+失败日志遇到 conda JSON 错误报告时会列出 `exception_name`、`error`、`traceback` 和 `command` 的定位信息；
+成功调用仍只打印紧凑首行。
 
 宿主回归入口：
 

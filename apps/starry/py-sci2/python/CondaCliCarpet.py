@@ -33,7 +33,6 @@
 # field keeps its assertion and no functional call is lost; only that count drops.
 import contextlib
 import io
-import json
 import os
 import re
 import signal
@@ -41,7 +40,13 @@ import subprocess
 import sys
 import tempfile
 
-from conda_notices import invoke_inproc, verify_notices
+from conda_notices import (
+    describe_output,
+    invoke_inproc,
+    loadjson,
+    temporary_env,
+    verify_notices,
+)
 
 ok = 0
 fail = 0
@@ -112,12 +117,21 @@ class _InprocTimeout(Exception):
     """Signals that one in-process conda call exceeded its cap."""
 
 
-def _on_alarm(signum, frame):
+class _InprocTimeoutState:
+    """Records a fired alarm even when conda catches the timeout exception."""
+
+    def __init__(self):
+        self.expired = False
+
+
+def _on_alarm(signum, frame, timeout_state=None):
+    if timeout_state is not None:
+        timeout_state.expired = True
     raise _InprocTimeout()
 
 
 @contextlib.contextmanager
-def _alarm(timeout):
+def _alarm(timeout, timeout_state=None):
     # A hung in-process call must fail its own check (rc 124, like the subprocess cap) instead of
     # stalling the carpet. Best effort: SIGALRM is unavailable off the main thread and on
     # platforms that lack it, where the call then runs uncapped.
@@ -125,7 +139,10 @@ def _alarm(timeout):
     old = None
     if timeout and timeout > 0 and hasattr(signal, "SIGALRM"):
         try:
-            old = signal.signal(signal.SIGALRM, _on_alarm)
+            old = signal.signal(
+                signal.SIGALRM,
+                lambda signum, frame: _on_alarm(signum, frame, timeout_state),
+            )
             signal.alarm(int(timeout))
             armed = True
         except (ValueError, OSError, TypeError):
@@ -254,15 +271,21 @@ def _run_inproc(args, timeout):
     # called without arguments, so keep both spellings consistent for the duration of the call.
     sys.argv = ["conda"] + list(args)
     fd_state = None
+    timeout_state = _InprocTimeoutState()
+    timeout_message = "TIMEOUT: conda %s exceeded %ds" % (" ".join(args), timeout)
     try:
         fd_state = _install_fd_capture()
-        with _alarm(timeout), contextlib.redirect_stdout(_CAPOUT), contextlib.redirect_stderr(_CAPERR):
+        with _alarm(timeout, timeout_state), contextlib.redirect_stdout(_CAPOUT), contextlib.redirect_stderr(_CAPERR):
             rc, extra_out, extra_err = invoke_inproc(
-                INPROC_MAIN, args, (_InprocTimeout,)
+                INPROC_MAIN,
+                args,
+                timeout_error=(_InprocTimeout,),
+                timeout_state=timeout_state,
+                timeout_message=timeout_message,
             )
     except _InprocTimeout:
         rc, extra_out = 124, ""
-        extra_err = "TIMEOUT: conda %s exceeded %ds" % (" ".join(args), timeout)
+        extra_err = timeout_message
     except Exception as exc:
         rc, extra_out = 1, ""
         extra_err = "INPROC ERROR: %s: %s" % (type(exc).__name__, exc)
@@ -318,28 +341,6 @@ def run_json(args, timeout=300):
     return rc, None, sout, serr
 
 
-def loadjson(text):
-    # conda --json output is a single JSON document; tolerate noise before it (warnings,
-    # activation chatter) and noise after it (trailing warnings) by decoding from the first
-    # `{`/`[` and stopping at the end of that document.
-    if not text:
-        return None
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    decoder = json.JSONDecoder()
-    for i, ch in enumerate(text):
-        if ch in "{[":
-            try:
-                doc, _ = decoder.raw_decode(text[i:])
-                return doc
-            except Exception:
-                continue
-    return None
-
-
 # A help banner names the program on a usage line. Older conda prints `usage: conda <sub>`,
 # newer builds may route it through a wrapper name, so match the banner case-insensitively and
 # keep the subcommand name check separate.
@@ -351,17 +352,8 @@ def _has_usage(text):
     return bool(text) and bool(_USAGE_RE.search(text))
 
 
-def _snippet(text, limit=140):
-    # First non-empty line of captured output, clipped, for assertion diagnostics.
-    for line in (text or "").splitlines():
-        line = " ".join(line.split())
-        if line:
-            return line[:limit]
-    return "<no output>"
-
-
 def _diag(rc, sout, serr):
-    return "rc=%s stdout=%r stderr=%r" % (rc, _snippet(sout), _snippet(serr))
+    return describe_output(rc, sout, serr)
 
 
 def _json_ok(doc, rc):
@@ -372,6 +364,117 @@ def _json_ok(doc, rc):
     if rc != 0 and isinstance(doc, dict):
         return any(k in doc for k in ("error", "success", "message", "actions", "dry_run"))
     return True
+
+
+def _clean_pkg_names(section, pkgs_dir):
+    """Return candidate names reported for the isolated package cache."""
+    if not isinstance(section, dict):
+        return set()
+    package_sizes = section.get("pkg_sizes")
+    if not isinstance(package_sizes, dict):
+        return set()
+    names = package_sizes.get(pkgs_dir)
+    return set(names) if isinstance(names, dict) else set()
+
+
+def _clean_fixture(run_json, check):
+    """Exercise every conda clean target through one isolated dry-run."""
+    package_name = "carpet-clean-fixture-1.0-0"
+    tarball_name = package_name + ".conda"
+
+    with tempfile.TemporaryDirectory(prefix="condacarpet-clean-") as root:
+        pkgs_dir = os.path.join(root, "pkgs")
+        tempfiles_dir = os.path.join(root, "tempfiles")
+        package_dir = os.path.join(pkgs_dir, package_name)
+        index_cache_dir = os.path.join(pkgs_dir, "cache")
+        tarball_path = os.path.join(pkgs_dir, tarball_name)
+        tempfile_path = os.path.join(tempfiles_dir, "fixture.c~")
+        logfile_path = os.path.join(pkgs_dir, ".logs", "fixture.log")
+        fixture_files = {
+            # PackageCacheData.writable_caches() requires this magic file.
+            "cache_magic": (os.path.join(pkgs_dir, "urls.txt"), b""),
+            "tarball": (tarball_path, b"fixture tarball\n"),
+            "package_info": (
+                os.path.join(package_dir, "info", "fixture.json"),
+                b'{"fixture": "package-info"}\n',
+            ),
+            "package_payload": (
+                os.path.join(package_dir, "payload.txt"),
+                b"fixture package payload\n",
+            ),
+            "index_cache": (
+                os.path.join(index_cache_dir, "fixture.json"),
+                b'{"fixture": "index-cache"}\n',
+            ),
+            "tempfile": (tempfile_path, b"fixture tempfile\n"),
+            "logfile": (logfile_path, b"fixture logfile\n"),
+        }
+        for path, content in fixture_files.values():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as handle:
+                handle.write(content)
+
+        with temporary_env("CONDA_PKGS_DIRS", pkgs_dir):
+            rc, doc, sout, serr = run_json(
+                [
+                    "clean",
+                    "--all",
+                    "--dry-run",
+                    "--json",
+                    "--tempfiles",
+                    tempfiles_dir,
+                ],
+                timeout=300,
+            )
+
+        result = doc if isinstance(doc, dict) else {}
+        index_cache = result.get("index_cache")
+        index_files = (
+            index_cache.get("files") if isinstance(index_cache, dict) else None
+        )
+        tempfiles = result.get("tempfiles")
+        logfiles = result.get("logfiles")
+
+        check(
+            rc == 0 and result.get("success") is True,
+            "conda clean --all --dry-run --json succeeds on isolated candidates %s"
+            % _diag(rc, sout, serr),
+        )
+
+        listed = {
+            "tarball": tarball_name
+            in _clean_pkg_names(result.get("tarballs"), pkgs_dir),
+            "package": package_name
+            in _clean_pkg_names(result.get("packages"), pkgs_dir),
+            "index_cache": isinstance(index_files, list)
+            and index_cache_dir in index_files,
+            "tempfile": isinstance(tempfiles, list)
+            and tempfile_path in tempfiles,
+            "logfile": isinstance(logfiles, list) and logfile_path in logfiles,
+        }
+        missing_candidates = [
+            name for name, present in listed.items() if not present
+        ]
+        check(
+            not missing_candidates,
+            "conda clean JSON lists isolated candidates missing=%s"
+            % missing_candidates,
+        )
+
+        missing_or_changed = []
+        for name, (path, expected) in fixture_files.items():
+            try:
+                with open(path, "rb") as handle:
+                    actual = handle.read()
+            except OSError:
+                actual = None
+            if actual != expected:
+                missing_or_changed.append(name)
+        check(
+            not missing_or_changed,
+            "conda clean dry-run preserves fixture files unchanged; changed=%s"
+            % missing_or_changed,
+        )
 
 
 def help_output(args, timeout=300):
@@ -475,7 +578,7 @@ SUBCOMMANDS = [s for s in HELP_PROBES if s in _expected]
 for sub in SUBCOMMANDS:
     rc, out = help_output([sub])
     _help_out[sub] = (rc, out)
-    chk(rc == 0, "conda %s --help exit 0 rc=%s first=%r" % (sub, rc, _snippet(out)))
+    chk(rc == 0, "conda %s --help exit 0 %s" % (sub, _diag(rc, out, "")))
     chk(("usage: conda %s" % sub) in out or (_has_usage(out) and sub in out),
         "conda %s --help usage banner" % sub)
     chk("-h" in out or "--help" in out, "conda %s --help advertises -h" % sub)
@@ -516,8 +619,8 @@ chk("--which" in _pkghelp or "--pack" in _pkghelp, "package --help advertises --
 # ============================================================================
 rc_h, out_h = run(["info", "-h"])
 _info_help = _help_out.get("info", (1, ""))[1]
-chk(rc_h == 0 and _has_usage(out_h), "conda info -h short form exit 0 rc=%s first=%r"
-    % (rc_h, _snippet(out_h)))
+chk(rc_h == 0 and _has_usage(out_h), "conda info -h short form exit 0 %s"
+    % _diag(rc_h, out_h, ""))
 chk(out_h.strip() != "" and out_h.strip() == _info_help.strip(),
     "conda info -h output equals --help (-h is alias)")
 
@@ -648,9 +751,7 @@ chk(_rmj is not None or "PackagesNotFound" in serr or "not installed" in (sout +
 # ============================================================================
 # 8. conda clean  --  offline dry-run (deletes nothing) (1 spawn)
 # ============================================================================
-rc, _clj, sout, serr = run_json(["clean", "--all", "--dry-run", "--json"])
-chk(rc == 0 and _clj is not None,
-    "conda clean --all --dry-run --json machine-readable dict %s" % _diag(rc, sout, serr))
+_clean_fixture(run_json, chk)
 
 # ============================================================================
 # 9. conda env  --  functional sub-subcommands (offline-safe) (~3 spawns)
