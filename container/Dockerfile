@@ -29,6 +29,7 @@ RUN apt-get update \
         libglib2.0-dev \
         libclang-19-dev \
         libpixman-1-dev \
+        libpulse-dev \
         libslirp-dev \
         libswresample-dev \
         libswscale-dev \
@@ -39,6 +40,7 @@ RUN apt-get update \
         nodejs \
         npm \
         pkg-config \
+        pulseaudio \
         python3 \
         python3-venv \
         qemu-user-static \
@@ -60,10 +62,22 @@ RUN set -eux; \
       --disable-gtk \
       --disable-sdl \
       --disable-vte \
-      --disable-werror; \
+      --disable-werror \
+      --enable-pa; \
     make -j"$(nproc)"; \
     make install; \
     rm -rf "/tmp/qemu-${QEMU_VERSION}" /tmp/qemu.tar.xz
+
+RUN set -eux; \
+    qemu-system-x86_64 -audiodev help > /tmp/qemu-audio-drivers.txt; \
+    cat /tmp/qemu-audio-drivers.txt; \
+    for driver in pa wav; do \
+      if ! grep -Eq "(^|[[:space:]])${driver}([[:space:]]|$)" /tmp/qemu-audio-drivers.txt; then \
+        echo "QEMU audio driver '${driver}' is missing from -audiodev help" >&2; \
+        exit 1; \
+      fi; \
+    done; \
+    rm -f /tmp/qemu-audio-drivers.txt
 
 RUN set -eux; \
     for arch in aarch64 riscv64 x86_64 loongarch64; do \

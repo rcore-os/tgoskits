@@ -112,6 +112,11 @@ test-suit/starryos/
       usb-storage/
         CMakeLists.txt
         src/
+  virtio-sound/
+    build-x86_64-unknown-none.toml
+    headless/
+    playback/
+    capture-duplex/
   board-orangepi-5-plus/
     build-aarch64-unknown-none-softfloat.toml
     native-hardware-smoke/
@@ -123,6 +128,68 @@ test-suit/starryos/
 
 `qemu/system` 是统一的 SMP4 聚合 QEMU case。`qemu/` 根目录只放四架构 build
 config，不放 `qemu-*.toml`。
+
+### VirtIO Sound 用例
+
+`virtio-sound/` 是根级独立 x86_64 build group，用未修改的
+`aplay`/`arecord` 和直接 ALSA UAPI 调用验收 `virtio-sound-pci`。首版分为三个
+互斥的 QEMU 后端 profile：
+
+```text
+virtio-sound/headless        -audiodev none，生命周期和直接 ioctl 检查
+virtio-sound/playback        host WAV 后端，aplay 后验 4096 帧计数器波形
+virtio-sound/capture-duplex  host PulseAudio 997 Hz 源，录音和双向并行
+```
+
+playback 与 capture profile 的 QEMU 参数只写
+`-device virtio-sound-pci,audiodev=pcm-capture,streams=2`，唯一的
+`-audiodev` 由 host fixture 注入；WAV 和 PA 后端不会出现在同一实例。用例从官方
+archive 构建固定 `alsa-lib`/`alsa-utils v1.2.13`，C 程序只通过 Linux ALSA UAPI
+和原版工具验收。三个 profile 可分别运行：
+
+```bash
+cargo xtask starry test qemu --arch x86_64 -c virtio-sound/headless
+cargo xtask starry test qemu --arch x86_64 -c virtio-sound/playback
+cargo xtask starry test qemu --arch x86_64 -c virtio-sound/capture-duplex
+```
+
+qemu-user prebuild 需要宿主的原生 `x86_64-linux-musl` cross toolchain；缺失时
+prebuild 明确失败。交叉构建使用该工具链自带的动态 musl libc，并只从 staging
+取 Linux UAPI/ALSA 头文件；full-system prebuild 继续使用 guest 的 Alpine gcc。
+host 音频依赖由固定 QEMU `11.1.1` 和私有 PulseAudio 提供：playback 使用 WAV
+后端，capture 需要 QEMU `pa` 后端和 `pulseaudio` daemon。私有实例使用四类
+模块：`module-null-sink` 两个实例分别提供播放用的 `virtio-test-sink` 与专用
+音调 sink `virtio-test-tone-sink`；`module-sine` 以 997 Hz/48 kHz 驱动音调
+sink；`module-remap-source` 将 tone sink 的 monitor 映射为采集源
+`virtio-test`；`module-native-protocol-unix` 最后加载供 QEMU 使用。音调源与
+播放 sink 相互独立，避免旧 `module-sine-source` 固定 2 秒延迟，也不会捕获
+QEMU 播放输出；fixture 不依赖 `pacat`/`parec`/`pactl`，而是自行启动私有
+daemon。`container/Dockerfile` 安装 `pulseaudio`/`libpulse-dev`，以
+`--enable-pa` 构建 QEMU，并在构建末尾验证 `-audiodev help` 同时包含 `pa` 与
+`wav`；未设置 `audio-drv-list`，保留既有音频后端和 `none`/HDA 路径。现有
+GHCR `latest` 镜像需要按原有 container 发布工作流重新构建后，CI 才能运行
+capture；PR 内修改 Dockerfile 不会自动更新 `latest`，测试不会因此 skip。
+SW_PARAMS 的 `boundary` 由内核按 HW_PARAMS 的 buffer 几何回填；测试要求
+输入 boundary（含 0）不改变 canonical 值，并用 `avail_min=0` 验证 EINVAL
+及状态/指针不变。非阻塞 `DRAIN` 在成功 `drain_init` 后一律返回 `EAGAIN`，
+状态可为 `DRAINING` 或已完成的 `SETUP`；playback 在重新 `PREPARE` 并写入
+一个 period 后验证 blocking DRAIN，capture 的 blocking 校验仅覆盖未读帧
+排空后的空 `SETUP` 边界。capture 生命周期还验证同一 open file description
+上的阻塞 `read`：清除 `O_NONBLOCK` 后执行 `PREPARE` 以锁存阻塞标志，子进程
+用大于 ring 的请求进入阻塞等待；该 read 在 `PREPARED` 上自动启动，父进程
+观察到 `RUNNING` 后从同一 OFD 提交 `DROP`，子进程的 `read` 必须返回
+`EBADFD`，流回到 `SETUP`。5 秒 watchdog 只把等待期持锁或 `STATUS` 挂死转成
+确定失败，不参与成功判定。
+
+headless 在同一入口的控制查询之后先执行上述 blocked read/`DROP` 生命周期，
+再运行 playback 和 capture，使旧 runtime 的锁死先于 playback 的 `OPEN` DRAIN
+失败被观测。playback 输入在 4096 帧计数载荷后追加 4096 帧零静音尾，仅用于让
+QEMU 的 WAV 后端在 runner 收到 guest marker 并终止 QEMU 前推进 stdio 缓冲；
+宿主仍要求完整的 4096 帧计数波形逐字节一致，波形之外的已写入 PCM 必须全零。
+playback 会话开头还验证 `TSTAMP` 是兼容 no-op（包括不可读的 arg 也返回 0），
+以及 `USER_PVERSION` 接受版本 0 和未来 major、坏指针返回 `EFAULT`；状态与
+指针必须保持不变，恢复 `SNDRV_PCM_VERSION` 后继续同一播放会话。不新增
+`TTSTAMP`/RAW 或 32-bit `SYNC_PTR` 变体断言。
 
 ### AArch64 CI 启动 smoke
 

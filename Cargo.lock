@@ -208,6 +208,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "alsa-pcm-uapi"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "zerocopy",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1001,6 +1009,7 @@ dependencies = [
  "tock-registers 0.10.1",
  "virtio-drivers",
  "virtio-gpu",
+ "virtio-sound",
  "x86",
  "zerocopy",
 ]
@@ -6646,6 +6655,7 @@ dependencies = [
 name = "rdif-audio"
 version = "0.1.0"
 dependencies = [
+ "dma-api",
  "rdif-base",
  "thiserror 2.0.21",
 ]
@@ -8043,6 +8053,7 @@ dependencies = [
 name = "starry-kernel"
 version = "0.12.1"
 dependencies = [
+ "alsa-pcm-uapi",
  "anyhow",
  "ax-alloc",
  "ax-cgroup",
@@ -8106,6 +8117,7 @@ dependencies = [
  "ouroboros",
  "rand 0.10.3",
  "rbpf",
+ "rdif-audio",
  "rdif-block",
  "rdif-gpu",
  "rdif-pinctrl",
@@ -9425,6 +9437,17 @@ dependencies = [
  "log",
  "rdif-display",
  "rdif-gpu",
+ "thiserror 2.0.21",
+ "virtio-drivers",
+ "zerocopy",
+]
+
+[[package]]
+name = "virtio-sound"
+version = "0.1.0"
+dependencies = [
+ "dma-api",
+ "rdif-audio",
  "thiserror 2.0.21",
  "virtio-drivers",
  "zerocopy",

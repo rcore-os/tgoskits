@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cargo_metadata::Package;
 use serde::Deserialize;
@@ -18,6 +18,7 @@ const CLIPPY_TARGET_ALIASES: &[(&str, &str)] = &[
 ];
 
 const AX_HAL_PLATFORM_FEATURE_TARGET_ARCHES: &[(&str, &[&str])] = &[];
+const CLIPPY_TARGET_ARCHES: &[&str] = &["aarch64", "loongarch64", "riscv64", "x86_64"];
 
 #[derive(Debug, Default, Deserialize)]
 struct PackageDocsMetadata {
@@ -37,6 +38,18 @@ struct NestedDocsMetadata {
 struct DocsRsMetadata {
     #[serde(default)]
     targets: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PackageFeatureTargetMetadata {
+    #[serde(default)]
+    clippy: ClippyFeatureTargetMetadata,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClippyFeatureTargetMetadata {
+    #[serde(default, rename = "feature-targets")]
+    feature_targets: BTreeMap<String, Vec<String>>,
 }
 
 pub(super) fn docs_rs_targets(package: &Package) -> Vec<String> {
@@ -116,13 +129,36 @@ fn ax_hal_platform_constraints<'a>(
     constraints
 }
 
+/// Reads `[package.metadata.clippy.feature-targets]`.
+///
+/// Invalid or empty entries deliberately fall back to an unconstrained check,
+/// so a metadata typo cannot silently remove a feature from the clippy matrix.
+fn metadata_feature_target_arches(
+    package: &Package,
+    feature: &str,
+) -> Option<BTreeSet<&'static str>> {
+    let metadata =
+        serde_json::from_value::<PackageFeatureTargetMetadata>(package.metadata.clone()).ok()?;
+    let configured_arches = metadata.clippy.feature_targets.get(feature)?;
+    let mut arches = BTreeSet::new();
+    for configured_arch in configured_arches {
+        let arch = CLIPPY_TARGET_ARCHES
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == configured_arch.as_str())?;
+        arches.insert(arch);
+    }
+    (!arches.is_empty()).then_some(arches)
+}
+
 pub(super) fn feature_supported_on_clippy_target(
     package: &Package,
     feature: &str,
     target: Option<&str>,
 ) -> bool {
     let constraints = ax_hal_platform_constraints(package, feature);
-    if constraints.is_empty() {
+    let metadata_arches = metadata_feature_target_arches(package, feature);
+    if constraints.is_empty() && metadata_arches.is_none() {
         return true;
     }
     let Some(target) = target else {
@@ -132,6 +168,9 @@ pub(super) fn feature_supported_on_clippy_target(
         constraints
             .iter()
             .all(|target_arches| target_arches.contains(&arch))
+            && metadata_arches
+                .as_ref()
+                .is_none_or(|arches| arches.contains(arch))
     })
 }
 

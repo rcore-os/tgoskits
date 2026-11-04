@@ -410,6 +410,64 @@ fn empty_docs_rs_targets_fall_back_to_host_clippy() {
 }
 
 #[test]
+fn feature_target_metadata_filters_only_declared_feature() {
+    let checks = expand(&[pkg_with_metadata(
+        "feature-target-fixture",
+        "feature-target-fixture 0.1.0 (path+file:///tmp/feature-target-fixture)",
+        &[("restricted", &[]), ("unrestricted", &[])],
+        serde_json::json!({
+            "docs.rs": {
+                "targets": [
+                    "aarch64-unknown-none-softfloat",
+                    "x86_64-unknown-none",
+                ],
+            },
+            "clippy": {
+                "feature-targets": {
+                    "restricted": ["x86_64"],
+                },
+            },
+        }),
+    )]);
+
+    let feature_targets = |feature: &str| {
+        checks
+            .iter()
+            .filter(|check| {
+                matches!(
+                    &check.kind,
+                    ClippyCheckKind::Feature(configured) if configured.as_str() == feature
+                )
+            })
+            .map(|check| check.target.as_deref())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        feature_targets("restricted"),
+        vec![Some("x86_64-unknown-none")]
+    );
+    assert_eq!(
+        feature_targets("unrestricted"),
+        vec![
+            Some("aarch64-unknown-none-softfloat"),
+            Some("x86_64-unknown-none"),
+        ]
+    );
+    assert_eq!(
+        checks
+            .iter()
+            .filter(|check| matches!(&check.kind, ClippyCheckKind::Base))
+            .map(|check| check.target.as_deref())
+            .collect::<Vec<_>>(),
+        vec![
+            Some("aarch64-unknown-none-softfloat"),
+            Some("x86_64-unknown-none"),
+        ]
+    );
+}
+
+#[test]
 fn package_clippy_configurations_expand_target_feature_sets() {
     let checks = expand(&[pkg_with_metadata(
         "arm-perf-fixture",

@@ -105,6 +105,14 @@ fn add_to_fd(
             // /dev/xx handling
             if let Ok(device) = file.location().entry().downcast::<Device>() {
                 let inner = device.inner().as_any();
+                #[cfg(feature = "audio")]
+                if crate::pseudofs::dev::audio::is_audio_device(inner) {
+                    let wrapped = crate::pseudofs::dev::audio::open_audio_file(inner, file, flags)?;
+                    if flags & O_NONBLOCK != 0 {
+                        wrapped.set_nonblocking(true)?;
+                    }
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
                 #[cfg(feature = "uvc")]
                 if crate::pseudofs::dev::video::is_video_device(inner) {
                     let wrapped = crate::pseudofs::dev::video::open_video_file(inner, file, flags)?;

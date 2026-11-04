@@ -11,6 +11,7 @@ use ax_sync::{RawSpinLock, RawSpinLockUnpinnedGuard};
     feature = "intel-net",
     feature = "nvme",
     feature = "intel-hda",
+    feature = "virtio-sound",
     feature = "realtek-rtl8125",
     feature = "xhci-pci",
     all(feature = "net", feature = "pci")
@@ -22,6 +23,7 @@ use dma_api::DeviceDma;
     feature = "intel-net",
     feature = "nvme",
     feature = "intel-hda",
+    feature = "virtio-sound",
     feature = "realtek-rtl8125",
     feature = "xhci-pci",
     all(feature = "net", feature = "pci")
@@ -87,6 +89,7 @@ const PCI_INTX_LINES: usize = 4;
     feature = "intel-net",
     feature = "nvme",
     feature = "intel-hda",
+    feature = "virtio-sound",
     feature = "realtek-rtl8125",
     feature = "xhci-pci",
     all(feature = "net", feature = "pci")
@@ -218,6 +221,7 @@ pub use testdev::iommu_testdev_endpoint;
     feature = "intel-net",
     feature = "nvme",
     feature = "intel-hda",
+    feature = "virtio-sound",
     feature = "realtek-rtl8125",
     feature = "xhci-pci",
     all(feature = "net", feature = "pci")
@@ -378,6 +382,7 @@ pub const fn has_pci_endpoint_drivers() -> bool {
         feature = "virtio-gpu",
         feature = "virtio-input",
         feature = "virtio-socket",
+        feature = "virtio-sound",
         feature = "list-pci-devices",
     ))
 }
@@ -1258,18 +1263,11 @@ fn take_virtio_transport_with_intx_policy(
     expected: DeviceType,
     mask_intx_after_match: bool,
 ) -> Result<(PciTransport, EndpointConfigAccess), OnProbeError> {
-    match (endpoint.vendor_id(), endpoint.device_id()) {
-        (0x1af4, 0x1000..=0x107f) => {}
-        _ => return Err(OnProbeError::NotMatch),
-    }
-
-    let bdf = as_device_function(endpoint.address());
-    let dev_info = as_device_function_info(endpoint);
-    let ty = virtio_device_type(&dev_info).ok_or(OnProbeError::NotMatch)?;
-    if ty != expected {
+    if !virtio_transport_matches(endpoint, expected) {
         return Err(OnProbeError::NotMatch);
     }
 
+    let bdf = as_device_function(endpoint.address());
     if rdrive::probe::pci::bound_iommu_domain(endpoint.address()).is_some() {
         return Err(OnProbeError::other(format!(
             "VirtIO PCI endpoint {bdf} requires translated DMA, which VirtIoHalImpl does not \
@@ -1292,6 +1290,17 @@ fn take_virtio_transport_with_intx_policy(
         ))
     })?;
     Ok((transport, config_access))
+}
+
+#[cfg(virtio_dev)]
+pub(crate) fn virtio_transport_matches(endpoint: &Endpoint, expected: DeviceType) -> bool {
+    match (endpoint.vendor_id(), endpoint.device_id()) {
+        (0x1af4, 0x1000..=0x107f) => {}
+        _ => return false,
+    }
+
+    let dev_info = as_device_function_info(endpoint);
+    virtio_device_type(&dev_info) == Some(expected)
 }
 
 #[cfg(virtio_dev)]

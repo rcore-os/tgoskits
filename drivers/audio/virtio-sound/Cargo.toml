@@ -1,0 +1,19 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Portable VirtIO Sound PCM control, playback and capture core"
+edition.workspace = true
+keywords = ["virtio", "sound", "pcm", "audio", "no-std"]
+license = "Apache-2.0"
+name = "virtio-sound"
+repository.workspace = true
+version = "0.1.0"
+
+[dependencies]
+dma-api.workspace = true
+rdif-audio.workspace = true
+thiserror.workspace = true
+virtio-drivers.workspace = true
+
+[dev-dependencies]
+zerocopy.workspace = true

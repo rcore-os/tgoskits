@@ -5,8 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Portable, single-owner PCM playback interface"
+description = "Portable, single-owner PCM playback and capture interface"
 
 [dependencies]
+dma-api.workspace = true
 rdif-base.workspace = true
 thiserror.workspace = true

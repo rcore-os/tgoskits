@@ -5,10 +5,16 @@ use anyhow::{Context, bail, ensure};
 use ostool::run::qemu::QemuConfig;
 use serde::Deserialize;
 
+use crate::test::{HOST_PCM_AUDIODEV_ID, qemu_has_audiodev};
+
+const WAVEFORM_OUTPUT_OPTIONS: &str = "out.frequency=48000,out.channels=2,out.format=s16";
+
 #[derive(Deserialize)]
 struct Config {
     #[serde(default)]
     host_pcm_waveform: Option<WaveformConfig>,
+    #[serde(default)]
+    host_pcm_input: Option<toml::Value>,
 }
 
 #[derive(Deserialize)]
@@ -17,7 +23,7 @@ struct WaveformConfig {
     frames: usize,
 }
 
-pub(super) struct PcmWaveform {
+pub(crate) struct PcmWaveform {
     recording: tempfile::NamedTempFile,
     frames: usize,
 }
@@ -25,21 +31,25 @@ pub(super) struct PcmWaveform {
 impl PcmWaveform {
     /// Opt-in fixture for stereo S16LE/48-kHz PCM carrying the signed counter
     /// defined below. Each invocation gets a fresh recording under Cargo target.
-    pub(super) fn start(
+    pub(crate) fn start(
         config_path: &Path,
         target_dir: &Path,
         qemu: &mut QemuConfig,
     ) -> anyhow::Result<Option<Self>> {
         let config: Config = toml::from_str(&fs::read_to_string(config_path)?)?;
-        let Some(config) = config.host_pcm_waveform else {
+        let Some(waveform) = config.host_pcm_waveform else {
             return Ok(None);
         };
         ensure!(
-            (1..=65_536).contains(&config.frames),
+            config.host_pcm_input.is_none(),
+            "host_pcm_waveform and host_pcm_input are mutually exclusive"
+        );
+        ensure!(
+            (1..=65_536).contains(&waveform.frames),
             "PCM fixture frames must be in 1..=65536"
         );
         ensure!(
-            !qemu.args.iter().any(|arg| arg == "-audiodev"),
+            !qemu_has_audiodev(&qemu.args),
             "PCM fixture owns -audiodev; do not configure a second backend"
         );
         fs::create_dir_all(target_dir)?;
@@ -57,25 +67,39 @@ impl PcmWaveform {
         );
         qemu.args.extend([
             "-audiodev".into(),
-            format!(
-                "wav,id=pcm-capture,path={path},out.frequency=48000,out.channels=2,out.format=s16"
-            ),
+            format!("wav,id={HOST_PCM_AUDIODEV_ID},path={path},{WAVEFORM_OUTPUT_OPTIONS}"),
         ]);
         Ok(Some(Self {
             recording,
-            frames: config.frames,
+            frames: waveform.frames,
         }))
     }
 
-    pub(super) fn verify(self) -> anyhow::Result<()> {
-        let bytes = fs::read(self.recording.path()).context("reading QEMU PCM recording")?;
-        verify_waveform(&bytes, self.frames)?;
-        println!(
-            "PCM_WAVEFORM_OK frames={} bytes={}",
-            self.frames,
-            self.frames * 4
-        );
+    pub(crate) fn verify(self) -> anyhow::Result<()> {
+        let frames = self.frames;
+        let bytes = match fs::read(self.recording.path()).context("reading QEMU PCM recording") {
+            Ok(bytes) => bytes,
+            Err(error) => return self.retain_failed(error),
+        };
+        if let Err(error) = verify_waveform(&bytes, frames) {
+            return self.retain_failed(error);
+        }
+        println!("PCM_WAVEFORM_OK frames={} bytes={}", frames, frames * 4);
         Ok(())
+    }
+
+    fn retain_failed(self, error: anyhow::Error) -> anyhow::Result<()> {
+        let temporary_path = self.recording.path().to_path_buf();
+        match self.recording.keep() {
+            Ok((_file, path)) => {
+                Err(error.context(format!("retained failed PCM WAV at `{}`", path.display())))
+            }
+            Err(persist) => Err(error.context(format!(
+                "failed to retain PCM WAV at `{}`: {}",
+                temporary_path.display(),
+                persist.error
+            ))),
+        }
     }
 }
 
@@ -92,7 +116,8 @@ fn expected_pcm(frames: usize) -> Vec<u8> {
 fn verify_waveform(wav: &[u8], frames: usize) -> anyhow::Result<()> {
     ensure!(
         wav.len() >= 12 && &wav[..4] == b"RIFF" && &wav[8..12] == b"WAVE",
-        "not a RIFF/WAVE recording"
+        "not a RIFF/WAVE recording (file_bytes={})",
+        wav.len()
     );
     let mut offset = 12usize;
     let mut format_valid = false;
@@ -112,8 +137,21 @@ fn verify_waveform(wav: &[u8], frames: usize) -> anyhow::Result<()> {
                     .checked_add(length)
                     .context("WAV data length overflow")?
             };
-            let pcm = wav.get(start..end).context("truncated WAV PCM chunk")?;
-            ensure!(pcm.len().is_multiple_of(4), "incomplete PCM frame");
+            let pcm = wav.get(start..end).with_context(|| {
+                format!(
+                    "truncated WAV PCM chunk (data_start={start}, declared_data_bytes={length}, \
+                     available_pcm_bytes={}, available_frames={}, expected_frames={frames})",
+                    wav.len().saturating_sub(start),
+                    wav.len().saturating_sub(start) / 4
+                )
+            })?;
+            ensure!(
+                pcm.len().is_multiple_of(4),
+                "incomplete PCM frame (actual_pcm_bytes={}, complete_frames={})",
+                pcm.len(),
+                pcm.len() / 4
+            );
+            let actual_frames = pcm.len() / 4;
             let expected = expected_pcm(frames);
             let position = pcm
                 .as_chunks::<4>()
@@ -125,13 +163,24 @@ fn verify_waveform(wav: &[u8], frames: usize) -> anyhow::Result<()> {
                     (pcm.get(position..position + expected.len()) == Some(expected.as_slice()))
                         .then_some(position)
                 })
-                .context("complete PCM waveform is missing, reordered or altered")?;
+                .with_context(|| {
+                    format!(
+                        "complete PCM waveform is missing, reordered or altered ({})",
+                        waveform_mismatch_detail(pcm, &expected, frames, actual_frames)
+                    )
+                })?;
+            let prefix_nonzero = first_nonzero_frame(&pcm[..position]);
+            let suffix_start = position + expected.len();
+            let suffix_nonzero =
+                first_nonzero_frame(&pcm[suffix_start..]).map(|frame| suffix_start / 4 + frame);
             ensure!(
-                pcm[..position].iter().all(|&byte| byte == 0)
-                    && pcm[position + expected.len()..]
-                        .iter()
-                        .all(|&byte| byte == 0),
-                "non-silent output outside the expected PCM waveform"
+                prefix_nonzero.is_none() && suffix_nonzero.is_none(),
+                "non-silent output outside the expected PCM waveform (actual_pcm_bytes={}, \
+                 actual_frames={actual_frames}, expected_frames={frames}, \
+                 waveform_start_frame={}, leading_nonzero_frame={prefix_nonzero:?}, \
+                 trailing_nonzero_frame={suffix_nonzero:?})",
+                pcm.len(),
+                position / 4
             );
             ensure!(
                 end == wav.len(),
@@ -169,7 +218,63 @@ fn verify_waveform(wav: &[u8], frames: usize) -> anyhow::Result<()> {
             .checked_add(length % 2)
             .context("WAV padding overflow")?;
     }
-    bail!("WAV recording contains no PCM data")
+    bail!(
+        "WAV recording contains no PCM data (file_bytes={}, expected_frames={frames})",
+        wav.len()
+    )
+}
+
+fn waveform_mismatch_detail(
+    pcm: &[u8],
+    expected: &[u8],
+    expected_frames: usize,
+    actual_frames: usize,
+) -> String {
+    let signal_start_frame = first_nonzero_frame(pcm);
+    let signal_start = signal_start_frame
+        .map(|frame| frame * 4)
+        .unwrap_or(pcm.len());
+    let signal = pcm.get(signal_start..).unwrap_or_default();
+    let common_prefix_bytes = signal
+        .iter()
+        .zip(expected)
+        .take_while(|(actual, expected)| actual == expected)
+        .count();
+    let common_prefix_frames = common_prefix_bytes / 4;
+    let first_difference_frame =
+        signal_start_frame.map_or(actual_frames, |frame| frame + common_prefix_frames);
+    format!(
+        "actual_pcm_bytes={}, actual_frames={actual_frames}, expected_frames={expected_frames}, \
+         expected_pcm_bytes={}, signal_start_frame={signal_start_frame:?}, \
+         signal_common_prefix_bytes={common_prefix_bytes}, \
+         signal_common_prefix_frames={common_prefix_frames}, \
+         first_difference_frame={first_difference_frame}, first_difference_byte={}, \
+         actual_frame={}, expected_frame={}",
+        pcm.len(),
+        expected.len(),
+        signal_start + common_prefix_bytes,
+        frame_hex(pcm, first_difference_frame),
+        frame_hex(expected, common_prefix_frames)
+    )
+}
+
+fn first_nonzero_frame(pcm: &[u8]) -> Option<usize> {
+    pcm.as_chunks::<4>()
+        .0
+        .iter()
+        .position(|frame| frame.iter().any(|&byte| byte != 0))
+}
+
+fn frame_hex(pcm: &[u8], frame_index: usize) -> String {
+    let frame = frame_index
+        .checked_mul(4)
+        .and_then(|start| start.checked_add(4).map(|end| (start, end)))
+        .and_then(|(start, end)| pcm.get(start..end))
+        .and_then(|frame| <[u8; 4]>::try_from(frame).ok());
+    match frame {
+        Some(frame) => frame.iter().map(|&byte| format!("{byte:02x}")).collect(),
+        None => "none".to_owned(),
+    }
 }
 
 #[cfg(test)]

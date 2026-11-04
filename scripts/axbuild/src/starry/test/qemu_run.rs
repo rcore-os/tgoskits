@@ -17,7 +17,7 @@ use crate::{
     build::{append_cargo_rustflags, env_truthy},
     context::{ResolvedStarryRequest, SnapshotPersistence},
     starry::{Starry, board, build, rootfs},
-    test::{case, qemu as qemu_test, timing},
+    test::{case, pcm_input::PcmInput, pcm_waveform::PcmWaveform, qemu as qemu_test, timing},
 };
 
 const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
@@ -525,7 +525,10 @@ impl Starry {
         let host_http_result = start_qemu_case_host_http_server(case);
         timing_stage.finish();
         let _host_http_server = host_http_result?;
-        case::run_qemu_with_prepared_case_assets(
+        let host_pcm_input = PcmInput::start(&case.qemu_config_path, &mut qemu).await?;
+        let pcm_waveform =
+            PcmWaveform::start(&case.qemu_config_path, self.app.target_dir(), &mut qemu)?;
+        let run_result = case::run_qemu_with_prepared_case_assets(
             &mut self.app,
             cargo,
             qemu,
@@ -536,7 +539,19 @@ impl Starry {
                 qemu_timing_fields: Some(vec![("case", case.display_name.clone())]),
             },
         )
-        .await?;
+        .await;
+        let cleanup_result = match host_pcm_input {
+            Some(fixture) => fixture.finish().await,
+            None => Ok(()),
+        };
+        match (run_result, cleanup_result) {
+            (Err(error), _) => return Err(error),
+            (Ok(()), Err(error)) => return Err(error),
+            (Ok(()), Ok(())) => {}
+        }
+        if let Some(recording) = pcm_waveform {
+            recording.verify()?;
+        }
 
         Ok(())
     }

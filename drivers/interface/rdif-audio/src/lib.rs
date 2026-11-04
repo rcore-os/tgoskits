@@ -1,6 +1,9 @@
-//! PCM playback with one exclusive stream owner and copied submissions.
+//! PCM playback and capture with exclusive stream owners and bounded I/O.
 #![no_std]
 
+mod pcm;
+
+pub use pcm::*;
 pub use rdif_base::DriverGeneric;
 
 /// The encoding of each interleaved channel sample.

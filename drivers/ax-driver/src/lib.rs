@@ -68,6 +68,8 @@ mod registration;
 ))]
 mod sdhci_runtime;
 
+#[cfg(feature = "audio")]
+pub mod audio;
 #[cfg(feature = "block")]
 pub mod block;
 #[cfg(feature = "display")]

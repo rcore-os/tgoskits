@@ -16,6 +16,12 @@ pub mod display;
 pub mod input;
 #[cfg(feature = "virtio-net")]
 pub mod net;
+#[cfg(all(
+    feature = "virtio-sound",
+    target_arch = "x86_64",
+    target_pointer_width = "64"
+))]
+pub mod sound;
 #[cfg(feature = "virtio-socket")]
 pub mod vsock;
 

@@ -80,6 +80,7 @@ members = [
     "drivers/soc/rockchip/*",
     "drivers/soc/cv181x-clock",
     "drivers/audio/intel-hda",
+    "drivers/audio/virtio-sound",
     "drivers/test_crates/*",
     "drivers/tpu/*",
     "drivers/vpu/*",
@@ -228,9 +229,11 @@ riscv_vplic = { version = "0.5", path = "virtualization/riscv_vplic" }
 nvme-driver = { version = "0.8", path = "drivers/blk/nvme-driver" }
 intel-itco-watchdog = { version = "0.1", path = "drivers/watchdog/intel-itco" }
 intel-hda = { version = "0.1", path = "drivers/audio/intel-hda" }
+virtio-sound = { version = "0.1", path = "drivers/audio/virtio-sound" }
 acpica-interpreter = { version = "0.1", path = "drivers/firmware/acpica-interpreter" }
 pcie = { version = "0.7", path = "drivers/pci/pcie" }
 rd-net = { version = "0.3", path = "drivers/net/rd-net" }
+alsa-pcm-uapi = { version = "0.1", path = "drivers/interface/alsa-pcm-uapi", default-features = false }
 rdif-audio = { version = "0.1", path = "drivers/interface/rdif-audio" }
 rdif-base = { version = "0.9", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.13", path = "drivers/interface/rdif-block" }

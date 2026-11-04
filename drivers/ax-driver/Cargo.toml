@@ -10,6 +10,14 @@ description = "ArceOS rdrive driver registration and rdif binding collection"
 [lib]
 name = "ax_driver"
 
+[package.metadata.clippy]
+configurations = [
+    { name = "virtio-sound-x86_64-none", target = "x86_64-unknown-none", features = ["virtio-sound"] },
+]
+
+[package.metadata.clippy.feature-targets]
+virtio-sound = ["x86_64"]
+
 [features]
 default = []
 host-test = ["ax-sync?/host-test"]
@@ -20,6 +28,7 @@ iommu-dma-test = ["arm-smmu-v3"]
 
 block = ["dep:ax-sync", "dep:rdif-block"]
 net = ["dep:ax-sync", "dep:rd-net"]
+audio = ["dep:rdif-audio"]
 audio-playback = ["dep:rdif-audio"]
 intel-hda = ["audio-playback", "pci", "dep:intel-hda", "intel-hda/rdif"]
 display = ["dep:rdif-display", "dep:rdif-gpu"]
@@ -36,6 +45,7 @@ virtio-net = ["net", "virtio", "pci", "dep:ax-sync"]
 virtio-gpu = ["gpu", "virtio", "pci", "dep:virtio-gpu", "virtio-gpu/rdif", "dep:ax-sync", "dep:zerocopy"]
 virtio-input = ["input", "virtio", "pci"]
 virtio-socket = ["vsock", "virtio", "pci", "dep:bitflags", "dep:zerocopy"]
+virtio-sound = ["audio", "virtio", "pci", "dep:virtio-sound"]
 
 ls2k1000-gmac = ["net", "dep:ax-sync"]
 ahci = ["block", "pci", "dep:ahci-driver"]
@@ -226,6 +236,7 @@ starfive-jh7110-dwmmc = { workspace = true, optional = true }
 tock-registers = { workspace = true, optional = true }
 thiserror.workspace = true
 virtio-gpu = { workspace = true, optional = true }
+virtio-sound = { workspace = true, optional = true }
 virtio-drivers = { workspace = true, optional = true }
 zerocopy = { workspace = true, optional = true }
 

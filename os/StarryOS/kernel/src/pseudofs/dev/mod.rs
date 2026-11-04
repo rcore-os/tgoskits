@@ -1,5 +1,7 @@
 //! Special devices
 
+#[cfg(feature = "audio")]
+pub(crate) mod audio;
 mod axivc;
 pub(crate) mod card0;
 #[cfg(feature = "rknpu")]
@@ -865,6 +867,10 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
             );
         }
     }
+    #[cfg(feature = "audio")]
+    audio::register_devices(&mut root, fs.clone())
+        .expect("failed to publish discovered ALSA devices");
+
     #[cfg(feature = "uvc")]
     {
         SimpleDir::new_maker(fs.clone(), Arc::new(video_dir::UvcDevRoot::new(root, fs)))

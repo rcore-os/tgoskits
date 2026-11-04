@@ -76,4 +76,6 @@ starry-vm
 axbuild
 intel-itco-watchdog
 intel-hda
+virtio-sound
 acpica-interpreter
+alsa-pcm-uapi

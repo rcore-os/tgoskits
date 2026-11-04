@@ -21,6 +21,9 @@ targets = [
     "loongarch64-unknown-none-softfloat",
 ]
 
+[package.metadata.clippy.feature-targets]
+audio = ["x86_64"]
+
 [features]
 default = ["dynamic_debug"]
 dev-log = []
@@ -28,6 +31,7 @@ ext4 = ["ax-fs-ng/ext4"]
 fat = ["ax-fs-ng/fat"]
 memtrack = ["ax-alloc/tracking"]
 qperf-metrics = ["ax-runtime/qperf-metrics"]
+audio = ["ax-driver/virtio-sound", "dep:rdif-audio", "dep:alsa-pcm-uapi"]
 # Exposes a debugfs-only synchronization hook used by the real userspace QEMU
 # regression for faultable user copies. Production builds must not enable it.
 uaccess-lock-regression = []
@@ -101,6 +105,8 @@ ax-media = { workspace = true, optional = true }
 media-uvc = { workspace = true, optional = true }
 ax-sync = { workspace = true, features = ["sleep"] }
 anyhow.workspace = true
+alsa-pcm-uapi = { workspace = true, optional = true }
+rdif-audio = { workspace = true, optional = true }
 
 axbacktrace = { workspace = true, features = ["alloc"] }
 ax-cgroup = { workspace = true }

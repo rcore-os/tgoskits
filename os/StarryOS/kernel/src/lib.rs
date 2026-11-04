@@ -18,6 +18,9 @@
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+#[cfg(feature = "audio")]
+mod sound;
+
 // The freestanding axtest target includes `root.rs` directly so that module-local
 // tests and kernel entry symbols are emitted exactly once. Keep Cargo's implicit
 // library dependency empty for that target; linking a second kernel instance

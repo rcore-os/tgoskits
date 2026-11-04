@@ -14,7 +14,7 @@ use super::{
 use crate::{
     arceos::{ArceOS, build, rootfs},
     context::SnapshotPersistence,
-    test::{host_http::HostHttpServerGuard, qemu as qemu_test},
+    test::{host_http::HostHttpServerGuard, pcm_waveform::PcmWaveform, qemu as qemu_test},
 };
 
 pub(super) async fn test_rust_qemu(
@@ -172,7 +172,7 @@ pub(super) async fn run_rust_qemu_case(
         .transpose()?;
 
     let mut qemu = case.qemu.clone();
-    let pcm_waveform = super::pcm_waveform::PcmWaveform::start(
+    let pcm_waveform = PcmWaveform::start(
         &case.case.case.qemu_config_path,
         arceos.app.target_dir(),
         &mut qemu,

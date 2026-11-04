@@ -1,0 +1,14 @@
+[package]
+name = "alsa-pcm-uapi"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "64-bit x86_64 ALSA PCM userspace ABI and parameter negotiation helpers"
+keywords = ["alsa", "pcm", "uapi", "no-std"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+thiserror.workspace = true
+zerocopy = { workspace = true, features = ["derive"] }
