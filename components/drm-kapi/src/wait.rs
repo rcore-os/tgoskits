@@ -103,6 +103,19 @@ struct TaskState {
 
 static TASK_STATES: spin::Mutex<Vec<TaskState>> = spin::Mutex::new(Vec::new());
 
+fn with_task_states<R>(operation: impl FnOnce(&mut Vec<TaskState>) -> R) -> R {
+    // Wake callbacks can run in IRQ context or in a non-preemptible timer
+    // task. Neither may interrupt a same-CPU owner of this spin mutex. Drop
+    // the mutex before restoring that context, which can deliver a wake.
+    let _context = crate::locks::NoPreemptIrqSave::new();
+    let mut states = TASK_STATES.lock();
+    #[cfg(test)]
+    if let Some(interrupt) = tests::ON_STATE_LOCK.take() {
+        interrupt();
+    }
+    operation(&mut states)
+}
+
 #[inline]
 fn current_task_key() -> usize {
     crate::kernel_services::current_task_id()
@@ -114,31 +127,33 @@ fn set_task_state(task: usize, state: u32) {
     if task == 0 {
         return;
     }
-    let mut states = TASK_STATES.lock();
-    let index = states.iter().position(|entry| entry.task == task);
-    match (index, state) {
-        (Some(index), TASK_RUNNING) => {
-            states.swap_remove(index);
+    with_task_states(|states| {
+        let index = states.iter().position(|entry| entry.task == task);
+        match (index, state) {
+            (Some(index), TASK_RUNNING) => {
+                states.swap_remove(index);
+            }
+            (Some(index), _) => states[index].state = state,
+            (None, TASK_RUNNING) => {}
+            (None, _) => states.push(TaskState {
+                task,
+                state,
+                waiter: 0,
+            }),
         }
-        (Some(index), _) => states[index].state = state,
-        (None, TASK_RUNNING) => {}
-        (None, _) => states.push(TaskState {
-            task,
-            state,
-            waiter: 0,
-        }),
-    }
+    });
 }
 
 fn peek_task_state(task: usize) -> Option<u32> {
     if task == 0 {
         return None;
     }
-    TASK_STATES
-        .lock()
-        .iter()
-        .find(|entry| entry.task == task)
-        .map(|entry| entry.state)
+    with_task_states(|states| {
+        states
+            .iter()
+            .find(|entry| entry.task == task)
+            .map(|entry| entry.state)
+    })
 }
 
 /// Consume the recorded state of `task`, if any.
@@ -146,9 +161,10 @@ fn take_task_state(task: usize) -> Option<u32> {
     if task == 0 {
         return None;
     }
-    let mut states = TASK_STATES.lock();
-    let index = states.iter().position(|entry| entry.task == task)?;
-    Some(states.swap_remove(index).state)
+    with_task_states(|states| {
+        let index = states.iter().position(|entry| entry.task == task)?;
+        Some(states.swap_remove(index).state)
+    })
 }
 
 /// Publish the current stack wait flag while holding the state lock, so a
@@ -157,26 +173,28 @@ fn attach_task_waiter(task: usize, ready: &AtomicBool) -> Option<u32> {
     if task == 0 {
         return None;
     }
-    let mut states = TASK_STATES.lock();
-    let entry = states.iter_mut().find(|entry| entry.task == task)?;
-    entry.waiter = ready as *const AtomicBool as usize;
-    if entry.state == TASK_RUNNING {
-        ready.store(true, Ordering::Release);
-    }
-    Some(entry.state)
+    with_task_states(|states| {
+        let entry = states.iter_mut().find(|entry| entry.task == task)?;
+        entry.waiter = ready as *const AtomicBool as usize;
+        if entry.state == TASK_RUNNING {
+            ready.store(true, Ordering::Release);
+        }
+        Some(entry.state)
+    })
 }
 
 fn detach_task_waiter(task: usize, ready: &AtomicBool) {
     if task == 0 {
         return;
     }
-    if let Some(entry) = TASK_STATES
-        .lock()
-        .iter_mut()
-        .find(|entry| entry.task == task && entry.waiter == ready as *const AtomicBool as usize)
-    {
-        entry.waiter = 0;
-    }
+    with_task_states(|states| {
+        if let Some(entry) = states
+            .iter_mut()
+            .find(|entry| entry.task == task && entry.waiter == ready as *const AtomicBool as usize)
+        {
+            entry.waiter = 0;
+        }
+    });
 }
 
 /// Linux `wake_up_process()`: makes a sleeping task runnable. Returns 1 when
@@ -185,21 +203,23 @@ pub fn wake_up_task(task: usize) -> i32 {
     if task == 0 {
         return 0;
     }
-    let mut states = TASK_STATES.lock();
-    let woken = match states.iter_mut().find(|entry| entry.task == task) {
-        Some(slot) if slot.state != TASK_RUNNING => {
-            // Keep a RUNNING record so the pending schedule observes the wake.
-            slot.state = TASK_RUNNING;
-            if slot.waiter != 0 {
-                // SAFETY: the stack flag remains live until schedule_timeout
-                // detaches it under this same state lock.
-                unsafe { &*(slot.waiter as *const AtomicBool) }.store(true, Ordering::Release);
-            }
-            true
-        }
-        _ => false,
-    };
-    drop(states);
+    let woken =
+        with_task_states(
+            |states| match states.iter_mut().find(|entry| entry.task == task) {
+                Some(slot) if slot.state != TASK_RUNNING => {
+                    // Keep a RUNNING record so the pending schedule observes the wake.
+                    slot.state = TASK_RUNNING;
+                    if slot.waiter != 0 {
+                        // SAFETY: the stack flag remains live until schedule_timeout
+                        // detaches it under this same state lock.
+                        unsafe { &*(slot.waiter as *const AtomicBool) }
+                            .store(true, Ordering::Release);
+                    }
+                    true
+                }
+                _ => false,
+            },
+        );
     if woken {
         wake_all();
         1
@@ -1128,9 +1148,89 @@ pub unsafe extern "C" fn __remove_wait_queue(_wq: *mut WaitQueueHead, wait: *mut
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::{
+        cell::Cell,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
+
+    std::thread_local! {
+        pub(super) static ON_STATE_LOCK: Cell<Option<fn()>> = const { Cell::new(None) };
+        static IRQ_ENABLED: Cell<bool> = const { Cell::new(true) };
+        static PREEMPT_DEPTH: Cell<usize> = const { Cell::new(0) };
+        static PENDING_WAKE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    const INTERRUPTED_TASK: usize = usize::MAX;
+
+    fn deliver_wake_interrupt() {
+        // Fail instead of hanging the host test if the same CPU can enter
+        // wake_up_task while its interrupted task still holds the state lock.
+        assert!(
+            TASK_STATES.try_lock().is_some(),
+            "wake interrupt reentered the task-state lock"
+        );
+        PENDING_WAKE.set(false);
+        assert_eq!(wake_up_task(INTERRUPTED_TASK), 1);
+    }
+
+    fn request_wake_interrupt() {
+        PENDING_WAKE.set(true);
+        if IRQ_ENABLED.get() {
+            deliver_wake_interrupt();
+        }
+    }
+
+    fn restore_test_irqs(enabled: bool) {
+        IRQ_ENABLED.set(enabled);
+        if enabled && PENDING_WAKE.get() {
+            deliver_wake_interrupt();
+        }
+    }
+
+    #[test]
+    fn task_waiter_survives_a_wake_interrupt_during_registration() {
+        static CONTEXT: crate::locks::LockContextOps = crate::locks::LockContextOps {
+            preempt_disable: || PREEMPT_DEPTH.set(PREEMPT_DEPTH.get() + 1),
+            preempt_enable: || PREEMPT_DEPTH.set(PREEMPT_DEPTH.get().checked_sub(1).unwrap()),
+            irq_save_disable: || IRQ_ENABLED.replace(false) as _,
+            irq_restore: |flags| restore_test_irqs(flags != 0),
+            irq_disable: || IRQ_ENABLED.set(false),
+            irq_enable: || restore_test_irqs(true),
+            irqs_disabled: || !IRQ_ENABLED.get(),
+        };
+        struct ResetContext;
+        impl Drop for ResetContext {
+            fn drop(&mut self) {
+                crate::locks::TEST_LOCK_CONTEXT.set(None);
+            }
+        }
+        crate::locks::TEST_LOCK_CONTEXT.set(Some(&CONTEXT));
+        let _reset = ResetContext;
+
+        for initially_enabled in [true, false] {
+            IRQ_ENABLED.set(initially_enabled);
+            set_task_state(INTERRUPTED_TASK, TASK_INTERRUPTIBLE);
+            let ready = AtomicBool::new(false);
+            ON_STATE_LOCK.set(Some(request_wake_interrupt));
+            assert_eq!(
+                attach_task_waiter(INTERRUPTED_TASK, &ready),
+                Some(TASK_INTERRUPTIBLE)
+            );
+            assert_eq!(IRQ_ENABLED.get(), initially_enabled);
+            assert_eq!(PREEMPT_DEPTH.get(), 0);
+            assert_eq!(ready.load(Ordering::Acquire), initially_enabled);
+            // An already-masked caller retains the interrupt until it
+            // explicitly restores IRQs; neither path loses the pending wake.
+            restore_test_irqs(true);
+            assert!(ready.load(Ordering::Acquire));
+            assert_eq!(peek_task_state(INTERRUPTED_TASK), Some(TASK_RUNNING));
+            detach_task_waiter(INTERRUPTED_TASK, &ready);
+            assert_eq!(take_task_state(INTERRUPTED_TASK), Some(TASK_RUNNING));
+            assert_eq!(peek_task_state(INTERRUPTED_TASK), None);
+        }
+    }
 
     #[test]
     fn poll_wake_preserves_the_notification_key() {
