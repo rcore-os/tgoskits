@@ -1,4 +1,5 @@
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
     vec::Vec,
@@ -678,20 +679,34 @@ impl PrepareFaultDiagnostic {
 
 struct PreparePageFaultFailure {
     result: FaultResult,
-    diagnostic: Option<PrepareFaultDiagnostic>,
+    diagnostic: Option<Box<PrepareFaultDiagnostic>>,
+    diagnostic_allocation_failed: bool,
 }
 
 impl PreparePageFaultFailure {
     fn with_diagnostic(result: FaultResult, diagnostic: PrepareFaultDiagnostic) -> Self {
+        if result == FaultResult::Retry {
+            return result.into();
+        }
+        let (diagnostic, diagnostic_allocation_failed) = match Box::try_new(diagnostic) {
+            Ok(diagnostic) => (Some(diagnostic), false),
+            Err(_) => (None, true),
+        };
         Self {
             result,
-            diagnostic: Some(diagnostic),
+            diagnostic,
+            diagnostic_allocation_failed,
         }
     }
 
     fn report(self) -> FaultResult {
         if let Some(diagnostic) = self.diagnostic {
             diagnostic.report();
+        } else if self.diagnostic_allocation_failed {
+            warn!(
+                "failed to prepare page fault; diagnostic allocation failed, result={:?}",
+                self.result
+            );
         }
         self.result
     }
@@ -702,6 +717,7 @@ impl From<FaultResult> for PreparePageFaultFailure {
         Self {
             result,
             diagnostic: None,
+            diagnostic_allocation_failed: false,
         }
     }
 }

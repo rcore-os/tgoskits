@@ -253,16 +253,52 @@ static int check_loop_mount_lifetime(void)
         fprintf(stderr, "mounted LOOP_CLR_FD did not record AUTOCLEAR\n");
         goto cleanup;
     }
-    if (mount("/dev/loop0", other, "ext4", 0, NULL) != -1 || errno != EBUSY) {
-        fprintf(stderr, "mounted loop allowed a second mount\n");
+    /* A compatible second mount reuses the same filesystem. Verify that both
+     * mountpoints observe the same file and cache state before exercising the
+     * incompatible read-only requirement. */
+    errno = 0;
+    if (mount("/dev/loop0", other, "ext4", 0, NULL)) {
+        fprintf(stderr, "mounted loop rejected a compatible second mount: errno=%d\n", errno);
         goto cleanup;
     }
-    /* Rejecting the second mount must leave the first one untouched. */
-    if (pwrite(held_fd, "usable", 6, 0) != 6 || fsync(held_fd) ||
-        pread(held_fd, content, 6, 0) != 6 || memcmp(content, "usable", 6)) {
-        fprintf(stderr, "the mounted loop stopped working after a rejected second mount\n");
+    other_mounted = 1;
+    snprintf(path, sizeof(path), "%s/held", other);
+    path_fd = open(path, O_RDONLY | O_CLOEXEC);
+    /* Populate both views before writing so a second filesystem with private
+     * caches cannot pass by reading an already-fsynced backing image. */
+    if (path_fd < 0 ||
+        pread(held_fd, content, 6, 0) != 6 || memcmp(content, "before", 6) ||
+        pread(path_fd, content, 6, 0) != 6 || memcmp(content, "before", 6)) {
+        fprintf(stderr, "the second mount did not observe the established file contents\n");
         goto cleanup;
     }
+    if (pwrite(held_fd, "usable", 6, 0) != 6 ||
+        pread(path_fd, content, 6, 0) != 6 || memcmp(content, "usable", 6)) {
+        fprintf(stderr, "the compatible second mount did not share the filesystem cache\n");
+        goto cleanup;
+    }
+    if (fsync(held_fd)) {
+        fprintf(stderr, "the shared view could not be synced: errno=%d\n", errno);
+        goto cleanup;
+    }
+    errno = 0;
+    if (mount("/dev/loop0", other, "ext4", MS_RDONLY, NULL) != -1 || errno != EBUSY) {
+        fprintf(stderr, "mounted loop accepted an incompatible read-only view: errno=%d\n", errno);
+        goto cleanup;
+    }
+    if (pread(held_fd, content, 6, 0) != 6 || memcmp(content, "usable", 6) ||
+        pread(path_fd, content, 6, 0) != 6 || memcmp(content, "usable", 6)) {
+        fprintf(stderr, "rejecting an incompatible mount changed a shared view\n");
+        goto cleanup;
+    }
+    close(path_fd);
+    path_fd = -1;
+    if (syscall(SYS_umount2, other, 0)) {
+        fprintf(stderr, "compatible second mount did not unmount cleanly: errno=%d\n", errno);
+        goto cleanup;
+    }
+    other_mounted = 0;
+    puts("LOOP_SHARED_MOUNT_CACHE_REUSED_AND_UNMOUNTED");
     /* A mounted loop that became write-protected cannot persist its dirty
        cache. BLKFLSBUF reports the EIO a rejected writeback would produce,
        leaves the backing image byte-for-byte untouched, and keeps the cached
