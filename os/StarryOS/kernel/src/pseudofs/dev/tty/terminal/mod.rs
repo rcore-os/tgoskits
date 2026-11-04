@@ -8,6 +8,8 @@ use bytemuck::AnyBitPattern;
 use crate::sync::RawSpinLock;
 
 pub mod job;
+#[cfg(all(test, axtest))]
+mod job_axtest;
 pub mod ldisc;
 pub mod termios;
 
