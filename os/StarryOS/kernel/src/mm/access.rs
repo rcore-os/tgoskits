@@ -10,15 +10,18 @@ use core::{
 
 use ax_io::prelude::*;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::hal::{
-    cpu::{
-        trap::PageFaultFlags,
-        user::{
-            UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op, user_atomic_u32,
-            user_cmpxchg_u32, user_copy, user_read_u32,
+use ax_runtime::{
+    hal::{
+        cpu::{
+            trap::PageFaultFlags,
+            user::{
+                UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op, user_atomic_u32,
+                user_cmpxchg_u32, user_copy, user_read_u32,
+            },
         },
+        paging::MappingFlags,
     },
-    paging::MappingFlags,
+    task::sync::Semaphore,
 };
 use bytemuck::{AnyBitPattern, NoUninit};
 use starry_vm::{VmError, VmIo, VmResult};
@@ -779,6 +782,9 @@ pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Fixed, allocation-free diagnostic for malformed or reentrant task identity lookups.
 static PAGE_FAULT_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
+/// Serializes kernel text patching. A semaphore, whose waiters sleep, because a
+/// holder waits in stop_machine for every CPU's stopper thread to run.
+static KERNEL_TEXT_PATCH: Semaphore = Semaphore::new(1);
 
 #[cfg(feature = "axtest")]
 const _: fn(&UserTaskRef, &str, usize, usize, MappingFlags) -> VmResult = prepare_user_memory;
@@ -1024,57 +1030,76 @@ where
         return Ok(());
     }
 
+    let cache_range =
+        ax_cpu::cache::CacheRange::new(addr, len).map_err(|_| StarryError::BadAddress)?;
+
+    // Concurrent patchers must not record another patcher's temporary write
+    // permission as the original mapping flags.
+    KERNEL_TEXT_PATCH
+        .down()
+        .expect("kernel text patching requires a sleepable task context");
+    let patched = patch_kernel_text_serialized(addr, len, cache_range, action);
+    KERNEL_TEXT_PATCH
+        .up()
+        .expect("kernel text patching semaphore overflow");
+    patched
+}
+
+fn patch_kernel_text_serialized<F>(
+    addr: VirtAddr,
+    len: usize,
+    cache_range: ax_cpu::cache::CacheRange,
+    action: F,
+) -> StarryResult<()>
+where
+    F: FnOnce(*mut u8),
+{
     let aligned_addr = addr.align_down_4k();
     let aligned_length = (addr + len).align_up_4k() - aligned_addr;
 
-    // Take the IRQ-safe kernel address-space lock inside the stopped action.
-    // stop_machine first acquires a sleeping serialization mutex and allocates
-    // its command state, then pins the coordinator and enters the IRQ-off
-    // phase. Holding kernel_aspace across that preparation could sleep in
-    // atomic context; nesting it here also preserves LIFO IRQ restoration.
+    // Relax and restore the page permissions in task context, outside the
+    // stopped section: `protect` shoots down the TLB on every CPU and waits for
+    // their acknowledgements, which CPUs parked by stop_machine with IRQs
+    // disabled can never send.
+    let original_flags = {
+        let mut aspace = ax_mm::kernel_aspace().lock();
+        if aspace.contains_range(aligned_addr, aligned_length) {
+            let flags = aspace.mapping_flags(aligned_addr)?;
+            aspace.protect(aligned_addr, aligned_length, flags | MappingFlags::WRITE)?;
+            Some(flags)
+        } else {
+            None
+        }
+    };
+
+    // LoongArch64 kernel text may execute from the 0x9000... DMW direct-map
+    // window. DMW translations do not consult PTEs, so there are no page
+    // permissions to relax there. Patch directly while all other CPUs are
+    // parked, then rely on the per-CPU sync callback to flush instruction state.
+    #[cfg(not(target_arch = "loongarch64"))]
+    if original_flags.is_none() {
+        return Err(StarryError::BadAddress);
+    }
+
+    let mapped = original_flags.is_some();
     crate::stop_machine::stop_machine(
-        move || -> StarryResult<()> {
-            let mut guard = ax_mm::kernel_aspace().lock();
-            if guard.contains_range(aligned_addr, aligned_length) {
-                let original_flags = guard.mapping_flags(aligned_addr)?;
-
-                guard.protect(
-                    aligned_addr,
-                    aligned_length,
-                    original_flags | MappingFlags::WRITE,
-                )?;
-
-                flush_tlb_range(aligned_addr, aligned_length);
-                action(addr.as_mut_ptr());
-
-                let cache_range = ax_cpu::cache::CacheRange::new(addr, len)
-                    .map_err(|_| StarryError::BadAddress)?;
-                // SAFETY: the locked kernel mapping covers the range, and
-                // stop_machine excludes concurrent text execution and writes.
+        move || {
+            action(addr.as_mut_ptr());
+            if mapped {
+                // SAFETY: the kernel mapping covers the range, and stop_machine
+                // excludes concurrent text execution and writes.
                 unsafe { ax_cpu::cache::clean_dcache_range_to_pou(cache_range) };
-
-                guard.protect(aligned_addr, aligned_length, original_flags)?;
-                return Ok(());
-            }
-
-            #[cfg(target_arch = "loongarch64")]
-            {
-                // LoongArch64 kernel text may execute from the 0x9000... DMW
-                // direct-map window. DMW translations do not consult PTEs, so
-                // there are no page permissions to relax here. Patch directly
-                // while all other CPUs are parked, then rely on the per-CPU
-                // sync callback to flush instruction state.
-                action(addr.as_mut_ptr());
-                Ok(())
-            }
-
-            #[cfg(not(target_arch = "loongarch64"))]
-            {
-                Err(StarryError::BadAddress)
             }
         },
         move || sync_modified_kernel_text(aligned_addr, aligned_length),
-    )
+    );
+
+    if let Some(flags) = original_flags {
+        ax_mm::kernel_aspace()
+            .lock()
+            .protect(aligned_addr, aligned_length, flags)?;
+    }
+    Ok(())
 }
 
 /// Writes data to kernel text, ensuring the page permissions are properly handled.
@@ -1082,10 +1107,6 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> StarryResult<()> {
     patch_kernel_text(addr, data.len(), |dst| unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
     })
-}
-
-pub fn flush_tlb_range(start: VirtAddr, size: usize) {
-    ax_cpu::mmu::flush_tlb_range(start, size);
 }
 
 pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) -> StarryResult {
