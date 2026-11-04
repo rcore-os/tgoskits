@@ -1056,9 +1056,25 @@ impl MmPin {
         // Allocation, file I/O and page-cache reservation happen with no
         // address-space metadata lock held. The apply phase below rechecks the
         // exact VMA epoch and PTE preimage before publishing anything.
-        let prepared = match AddrSpace::prepare_page_fault(plan) {
+        let base_epoch = plan.base_epoch;
+        let range_start = plan.range.start;
+        let preimage = plan.preimage;
+        let prepared = { AddrSpace::prepare_page_fault(plan) };
+        let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err(result) => return result,
+            Err(result) => {
+                // A competing fault can retire the old COW owner before
+                // preparation looks it up. An error from that obsolete view
+                // must not become a signal against the replacement mapping.
+                let aspace = self.0.aspace.lock();
+                return if aspace.vm_epoch() != base_epoch
+                    || !preimage.matches(range_start, &aspace.pt)
+                {
+                    FaultResult::Retry
+                } else {
+                    result
+                };
+            }
         };
         let mut attempt = prepared.into_apply_attempt();
         let outcome = {
@@ -1815,7 +1831,7 @@ mod tests {
     }
 
     #[axtest::axtest]
-    fn mm_pin_services_blocking_discard_before_refault_retry() {
+    fn mm_pin_retries_stale_faults_and_services_blocking_discard() {
         use ax_runtime::hal::paging::MappingFlags;
 
         use super::super::{MutationError, TlbRange};
@@ -1854,8 +1870,30 @@ mod tests {
             FaultResult::Handled
         ));
 
+        // Two writers can plan against the same read-only zero-page PTE.
+        // Finish one COW before the other starts preparing its retained plan:
+        // the old zero-page identity then has no mapping references, while
+        // the current PTE already permits the write. Preparation failure from
+        // that obsolete plan must retry instead of delivering SIGSEGV.
         let write = PageFaultFlags::WRITE | PageFaultFlags::USER;
-        assert_eq!(pin.handle_page_fault_result(start, write), FaultResult::Handled);
+        let stale = pin
+            .lock()
+            .plan_page_fault(start, write, pin.0.transparent_huge_page_mode())
+            .ok()
+            .unwrap();
+        assert!(matches!(
+            pin.handle_page_fault_result(start, write),
+            FaultResult::Handled
+        ));
+        let current = pin.lock().pt.query(start).unwrap();
+        assert!(current.1.contains(MappingFlags::WRITE));
+        let result = pin.resolve_page_fault_plan(stale, start);
+        assert!(
+            matches!(result, FaultResult::Retry),
+            "stale COW result: {result:?}"
+        );
+        assert_eq!(pin.lock().pt.query(start).unwrap(), current);
+
         {
             let mut space = pin.lock();
             space.write(start, &[0x5a; 4096]).unwrap();

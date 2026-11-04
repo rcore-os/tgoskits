@@ -1139,6 +1139,11 @@ impl MappingOperation {
         self.supports_mremap_dontunmap()
     }
 
+    pub(super) fn is_unnamed_base_anonymous(&self) -> bool {
+        self.write_access.is_none()
+            && matches!(&self.kind, MappingOperationKind::Cow(cow) if cow.is_unnamed_base_anonymous())
+    }
+
     /// Derive the Linux `VM_MAY*`-equivalent permission envelope from the
     /// executable mapping capability rather than exposing its concrete kind.
     pub(crate) fn maximum_mapping_flags(&self, current: MappingFlags) -> MappingFlags {

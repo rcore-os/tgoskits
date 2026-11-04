@@ -777,18 +777,27 @@ pub fn sys_mmap(
     let replace_existing =
         map_flags.contains(MmapFlags::FIXED) && !map_flags.contains(MmapFlags::FIXED_NOREPLACE);
     let maximum_mapping_flags = maximum_mapping_flags_for_backend(&backend, mapping_flags);
-    aspace.map_with_permissions_publication(
-        start,
-        length,
-        crate::mm::MappingPermissions {
-            current: mapping_flags,
-            reported: reported_mapping_flags,
-            maximum: maximum_mapping_flags,
-        },
-        populate,
-        backend,
-        MappingPublication::mmap(replace_existing, lock_mode, mapping_memlock_limit),
-    )?;
+    let permissions = crate::mm::MappingPermissions {
+        current: mapping_flags,
+        reported: reported_mapping_flags,
+        maximum: maximum_mapping_flags,
+    };
+    let appended = anonymous
+        && map_type == MmapFlags::PRIVATE
+        && page_size == PAGE_SIZE_4K
+        && !replace_existing
+        && !populate
+        && aspace.try_append_anonymous_mapping(start, length, permissions)?;
+    if !appended {
+        aspace.map_with_permissions_publication(
+            start,
+            length,
+            permissions,
+            populate,
+            backend,
+            MappingPublication::mmap(replace_existing, lock_mode, mapping_memlock_limit),
+        )?;
+    }
     drop(aspace);
 
     // perf side-band: an executable, file-backed mapping is (almost always) a

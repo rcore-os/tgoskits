@@ -15,7 +15,6 @@ impl Ext4FileSystem {
             let group_idx = BGIndex::new(u32::try_from(idx).map_err(|_| Ext4Error::overflow())?);
             let bitmap_block = AbsoluteBN::new(desc.block_bitmap());
             let cache_key = CacheKey::new_block(group_idx);
-            let mut alloc_res: Result<BlockAlloc, Ext4Error> = Err(Ext4Error::no_space());
             let block_uninit = desc.is_block_bitmap_uninit();
             let initialized_bitmap = if block_uninit {
                 let mut bitmap = vec![0; self.block_size()];
@@ -65,33 +64,30 @@ impl Ext4FileSystem {
                 }
             }
 
-            // The actual allocation happens under the bitmap-cache mutation so
-            // the updated bitmap bytes remain coherent with cache state.
+            // Searching a fragmented group must not dirty an unchanged bitmap:
+            // its eviction could otherwise consume this allocation's credits.
+            let mut candidate = match initialized_bitmap {
+                Some(bitmap) => bitmap,
+                None => self
+                    .bitmap_cache
+                    .get_or_load(block_dev, cache_key, bitmap_block)?
+                    .data
+                    .as_ref()
+                    .clone(),
+            };
+            let alloc =
+                match self
+                    .block_allocator
+                    .alloc_contiguous_blocks(&mut candidate, group_idx, count)
+                {
+                    Ok(allocated) => allocated,
+                    Err(error) if error.kind() == Ext4ErrorKind::NoSpace => continue,
+                    Err(error) => return Err(error),
+                };
             self.bitmap_cache
                 .modify(block_dev, cache_key, bitmap_block, |data| {
-                    let mut candidate = initialized_bitmap.as_deref().unwrap_or(data).to_vec();
-                    alloc_res = self.block_allocator.alloc_contiguous_blocks(
-                        &mut candidate,
-                        group_idx,
-                        count,
-                    );
-                    if alloc_res.is_ok() {
-                        data.copy_from_slice(&candidate);
-                    }
+                    data.copy_from_slice(&candidate);
                 })?;
-
-            // Check the allocation result *before* doing any mutable descriptor
-            // work. If the bitmap had no free block despite the descriptor claiming
-            // otherwise, the group is stale/inconsistent (e.g. dirty unmount with
-            // lazy initialisation). Skip to the next group instead of failing
-            // immediately so that groups with consistent bitmaps are still tried.
-            let alloc = match alloc_res {
-                Ok(a) => a,
-                Err(e) if e.kind() == Ext4ErrorKind::NoSpace => {
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
 
             if ext4_superblock_has_metadata_csum(&self.superblock) {
                 let sb = self.superblock;
@@ -764,6 +760,36 @@ mod tests {
             .get(&CacheKey::new_block(BGIndex::new(1)))
             .unwrap();
         assert_eq!(bitmap.data[0], 0b0011_1111);
+    }
+
+    #[cfg(feature = "USE_MULTILEVEL_CACHE")]
+    #[test]
+    fn fragmented_group_search_does_not_consume_bitmap_write_credits() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), false);
+        let mut fs = fs_with_uninit_block_bitmap();
+        fs.bitmap_cache = BitmapCache::new(1);
+        fs.group_descs[0].bg_free_blocks_count_lo = 5;
+        fs.superblock.s_free_blocks_count_lo = 16;
+        // Metadata blocks stay allocated; the five free data blocks are isolated.
+        dev.read_block(AbsoluteBN::new(2)).unwrap();
+        dev.buffer_mut().fill(0xff);
+        dev.buffer_mut()[0] = 0xbf;
+        dev.buffer_mut()[1] = 0xaa;
+        dev.write_block(AbsoluteBN::new(2), true).unwrap();
+
+        let allocated = fs
+            .with_metadata_transaction(&mut dev, 1, |fs, dev| {
+                let allocated = fs.alloc_blocks(dev, 2)?;
+                fs.bitmap_cache.flush_all(dev)?;
+                Ok(allocated)
+            })
+            .expect("only the successful group's allocation bitmap may consume a write credit");
+
+        assert_eq!(allocated, [AbsoluteBN::new(21), AbsoluteBN::new(22)]);
+        assert_eq!(fs.group_descs[0].free_blocks_count(), 5);
+        assert_eq!(fs.group_descs[1].free_blocks_count(), 9);
+        dev.read_block(AbsoluteBN::new(2)).unwrap();
+        assert_eq!(&dev.buffer()[..2], &[0xbf, 0xaa]);
     }
 
     #[test]

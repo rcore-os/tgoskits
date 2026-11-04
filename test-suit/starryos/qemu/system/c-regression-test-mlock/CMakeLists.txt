@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-mlock C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+add_executable(test-mlock src/main.c)
+target_compile_options(test-mlock PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-mlock RUNTIME DESTINATION usr/bin/starry-test-suit)

@@ -324,7 +324,9 @@ pub(super) struct CachedFilePage {
 
 pub(super) struct FilePageDomain {
     identity: CachedFileIdentity,
-    pages: Mutex<FilePageIndex>,
+    // Every transition names one page. Its identity and publication pins must
+    // share one shard, while unrelated file pages can progress independently.
+    pages: [Mutex<FilePageIndex>; 16],
 }
 
 type FilePageDomains = BTreeMap<CachedFileIdentity, Weak<FilePageDomain>>;
@@ -343,7 +345,7 @@ impl FilePageDomain {
             } else {
                 let domain = Arc::new(Self {
                     identity,
-                    pages: Mutex::new(FilePageIndex::default()),
+                    pages: core::array::from_fn(|_| Mutex::new(FilePageIndex::default())),
                 });
                 domains.insert(identity, Arc::downgrade(&domain));
                 domain
@@ -354,15 +356,18 @@ impl FilePageDomain {
         Ok(domain)
     }
 
+    fn page_index(&self, page_number: u32) -> &Mutex<FilePageIndex> {
+        &self.pages[page_number as usize % self.pages.len()]
+    }
+
     pub(super) fn reserve_page(
         &self,
         file_epoch: u64,
         page_number: u32,
         pin: CachedPagePin,
     ) -> StarryResult<Arc<PageObject>> {
-        self.pages
-            .lock()
-            .reserve_publication(file_epoch, page_number, pin)
+        let mut pages = self.page_index(page_number).lock();
+        pages.reserve_publication(file_epoch, page_number, pin)
     }
 
     fn resolve_page(
@@ -371,7 +376,9 @@ impl FilePageDomain {
         page_number: u32,
         paddr: PhysAddr,
     ) -> StarryResult<Option<Arc<PageObject>>> {
-        self.pages.lock().resolve(file_epoch, page_number, paddr)
+        self.page_index(page_number)
+            .lock()
+            .resolve(file_epoch, page_number, paddr)
     }
 
     pub(super) fn finish_page_publication(
@@ -380,10 +387,10 @@ impl FilePageDomain {
         page_number: u32,
         page: &Arc<PageObject>,
     ) -> StarryResult {
-        let pin = self
-            .pages
-            .lock()
-            .finish_publication(file_epoch, page_number, page)?;
+        let pin = {
+            let mut pages = self.page_index(page_number).lock();
+            pages.finish_publication(file_epoch, page_number, page)?
+        };
         drop(pin);
         Ok(())
     }
@@ -393,7 +400,10 @@ impl FilePageDomain {
         page_number: u32,
         page: &Arc<PageObject>,
     ) -> StarryResult {
-        let pin = self.pages.lock().cancel_publication(page_number, page)?;
+        let pin = self
+            .page_index(page_number)
+            .lock()
+            .cancel_publication(page_number, page)?;
         drop(pin);
         Ok(())
     }
@@ -404,7 +414,7 @@ impl FilePageDomain {
         page_number: u32,
         page: &Arc<PageObject>,
     ) -> StarryResult {
-        self.pages
+        self.page_index(page_number)
             .lock()
             .ensure_identity(file_epoch, page_number, page)
     }
@@ -428,7 +438,7 @@ impl FilePageDomain {
         };
         if page.state() == PageState::Retired && page.mapping_refs() == 0 {
             return if self
-                .pages
+                .page_index(identity.page_number())
                 .lock()
                 .remove_retired(identity.page_number(), &page)
             {
@@ -501,7 +511,7 @@ impl FilePageDomain {
         match lease.retire() {
             Ok(()) => {
                 if self
-                    .pages
+                    .page_index(identity.page_number())
                     .lock()
                     .remove_retired(identity.page_number(), &page)
                 {
@@ -1340,7 +1350,12 @@ fn independent_file_backends_share_page_object_for_test() -> bool {
     assert!(slot.detach());
     drop(slot);
     drop(second_page);
-    first.0.page_domain.pages.lock().retiring_lookup_page = Some(first_page);
+    first
+        .0
+        .page_domain
+        .page_index(0)
+        .lock()
+        .retiring_lookup_page = Some(first_page);
     let replacement_pin = cache.pin_read_page(0).unwrap().unwrap();
     let expected_frame = replacement_pin.paddr();
     let replacement = first
