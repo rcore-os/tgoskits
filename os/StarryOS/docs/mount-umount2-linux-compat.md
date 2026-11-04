@@ -710,6 +710,16 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 定向运行该链使用
 `cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-isolation-exit-fs`。
 
+`ci113159` 对同一 native 回归增加了共享缓存断言和后续 lease 生命周期标记，并在 x86_64、
+aarch64、riscv64、loongarch64 上分别执行上述选择器；四份定向日志均为
+`STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0`。x86_64、aarch64、riscv64 日志直接
+保留 `LOOP_SHARED_MOUNT_CACHE_REUSED_AND_UNMOUNTED`、只读刷新、失败卸载、最终退休、复用及
+lease 释放标记；loongarch64 使用 `--capture-failures`，当前日志保留用例 PASS 与汇总，但未保留
+这些标记文本。x86_64 的红日志则先在旧的第二挂载 `EBUSY` 断言处失败。该证据只证明本节的 loop
+兼容 mount、共享缓存、只读不兼容拒绝和 lease 生命周期，不表示四平台全量 system/Suites 或
+util-linux 完整应用通过，也不改变 9.3 中 StarryOS 对只读写保护 `BLKFLSBUF` 的恢复策略与 Linux
+可观察语义之间的差异。
+
 它覆盖的核心点是：
 
 - propagation flags 的非法组合和无副作用保证
@@ -721,7 +731,8 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 - move descendant target 的 `ELOOP`
 - readonly mount 上的 `chmod` / `rename` / `unlink` / `mkdir`
 - `umount2` 的 invalid flags / invalid combo / expire / nofollow / detach
-- loop 的 `O_EXCL` / 第二挂载拒绝、bind alias 上的 `BLKFLSBUF`、失败卸载保留原 mount，
+- loop 的 `O_EXCL` / 兼容第二挂载共享文件系统、不兼容只读挂载拒绝、bind alias 上的
+  `BLKFLSBUF`、失败卸载保留原 mount，
   以及 mounted `LOOP_CLR_FD` 的延后 AUTOCLEAR
 
 这也是为什么这次修复能够比较扎实：
@@ -749,22 +760,29 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 
 loop 挂载持有者（mount holder）落地后，块设备声明和卸载恢复有若干边界需要在文件系统生命周期上
 自行建立。StarryOS 的 loop 设备只用 `DeviceOps` 暴露块设备语义，没有 Linux 的
-`block_device` / `bd_holder` 结构，文件系统实例也没有“按 backing 复用 superblock”的注册表。
-这里单独列出当前规则和有意偏离，避免以后被当成 bug 改回去。
+`block_device` / `bd_holder` 结构。`LoopDevice.filesystem` 是保存活动文件系统弱引用的独立
+sleeping mutex，`LoopDevice::mounted_filesystem()` 在该 mutex 内升级弱引用，使同一 loop 设备上
+的兼容挂载复用同一个 `Filesystem`。`LoopState.mount_flush_target` 是另一个弱引用，仅供
+`BLKFLSBUF` 定位仍存活的文件系统，不参与兼容 mount 的查找或复用。这里单独列出当前规则和有意
+偏离，避免以后被当成 bug 改回去。
 
-### 9.1 loop 的 exclusive opener 与 mount holder 共用所有权规则
+### 9.1 loop 的兼容挂载与 mount holder 所有权规则
 
-- StarryOS：某个 loop backing 上已经有一个文件系统实例时，再次
-  `mount("/dev/loopX", ..., "ext4", ...)` 返回 `EBUSY`（`LoopDevice::acquire_mount_holder()`）。
-  如果普通 opener 已经以 `O_EXCL` 打开同一 loop，挂载也必须返回 `EBUSY`；两者由同一
-  `LoopState` 临界区仲裁，失败的挂载不会留下 holder。反向也成立：已有 mount holder 时新的
-  `O_EXCL` open 返回 `EBUSY`，普通非独占 opener 仍可用于 ioctl。
-- Linux v6.12：`fs/super.c` 的 `mount_bdev()` / `sget_fc()` 对同一个 block device 复用已有
-  `super_block`，第二个挂载点只是同一个文件系统的另一个挂载；已有不同 holder 的重复声明则由
-  `bd_may_claim()` 拒绝。
-- 为什么必须偏离：`new_filesystem_from_file()` 每次都会新建一个独立文件系统实例（各自的 inode
-  缓存与脏页）。允许第二次挂载等于让两个实例同时写同一份 backing，后写者覆盖先写者。mount holder
-  把“一个 backing 同时只服务一个文件系统实例”变成显式约束，并保留普通 `O_EXCL` 的排他保证。
+- StarryOS：`mount_ext4()` 调用 `LoopDevice::mounted_filesystem()`。活动文件系统已存在且读写
+  模式相同时，第二次挂载直接复用同一个 `Filesystem`，再由 `mount_with_source()` 创建另一个
+  `Mountpoint`，两个视图共享 inode、缓存和脏页；只读模式不兼容时返回 `EBUSY`。只有没有可复用
+  文件系统时才进入创建闭包并调用 `LoopDevice::acquire_mount_holder()`，此时已有独立 mount
+  holder 或普通 `O_EXCL` opener 会返回 `EBUSY`，失败的挂载不会留下 holder。
+- StarryOS 的普通 opener 与兼容 mount 可以共存。已有 mount holder 时新的 `O_EXCL` open 返回
+  `EBUSY`，普通非独占 opener 仍可用于 ioctl。兼容 mount、bind alias 和打开的文件位置都保留同一
+  `Ext4MountLease`；卸载一个视图不会退休文件系统，最后一个 lease 使用者离开后才执行缓存 retirement、
+  drain、shutdown 和 backing 释放。
+- Linux v6.12：固定 tag 的 [`fs/super.c`](https://github.com/torvalds/linux/blob/v6.12/fs/super.c)
+  中 `get_tree_bdev()` / `mount_bdev()` 对同一个 block device 复用已有 `super_block`，第二个
+  挂载点只是同一个文件系统的另一个挂载；只读模式不兼容或独立 holder 冲突时返回 `EBUSY`。
+- 这样处理的原因是 `new_filesystem_from_file()` 每次都会新建一个独立文件系统实例，各自维护 inode
+  缓存与脏页。兼容挂载必须复用已有实例；mount holder 只约束第一个独立实例的创建，并保留普通
+  `O_EXCL` 的排他保证。
 
 ### 9.2 `BLKFLSBUF` 按稳定文件系统刷新，而不是按原 Mountpoint 刷新
 
@@ -796,8 +814,10 @@ loop 挂载持有者（mount holder）落地后，块设备声明和卸载恢复
 
 - StarryOS：mounted loop 上的 `LOOP_CLR_FD` 成功返回，设置 `LO_FLAGS_AUTOCLEAR`，但不会把
   binding 标成 rundown。最后一个普通 opener 和最后一个 mount holder 都离开后，binding 才释放。
-- Linux v7.1：`loop_clr_fd()` 在文件系统仍挂载时同样登记 AUTOCLEAR；只有设备没有其他使用者时
-  才立即 rundown。
+- Linux v6.12：固定 tag 的
+  [`drivers/block/loop.c`](https://github.com/torvalds/linux/blob/v6.12/drivers/block/loop.c)
+  中 `loop_clr_fd()` 在文件系统仍挂载时同样登记 AUTOCLEAR；只有设备没有其他使用者时才立即
+  rundown。
 - 回归必须同时证明请求成功、AUTOCLEAR 可观察、挂载仍然可用，以及最后 `close` / mount lease
   退出后 loop 回到空闲状态。
 
