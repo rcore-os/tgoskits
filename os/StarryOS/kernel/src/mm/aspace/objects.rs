@@ -1,6 +1,6 @@
 //! Typed page ownership and reverse-mapping records.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     any::Any,
     fmt,
@@ -12,7 +12,7 @@ use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange
 use ax_runtime::hal::paging::HugeSplitDeposit;
 
 use super::{AddressSpaceId, MappingId, PageOrder, RssKind};
-use crate::sync::RawSpinLock;
+use crate::{StarryError, sync::RawSpinLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageId(u64);
@@ -32,6 +32,14 @@ impl PageId {
     }
 }
 
+/// The release function and its allocator alignment are one ownership token.
+/// Keeping them optional together lets the function pointer's null niche avoid
+/// a separate discriminator in every resident page's allocation owner.
+struct FrameRelease {
+    align: usize,
+    deallocate: fn(PhysAddr, usize),
+}
+
 /// Shared allocation owner behind one or more bounded frame leases.
 ///
 /// A huge allocation may be split into base-page PageObjects without asking
@@ -40,15 +48,13 @@ impl PageId {
 struct FrameAllocation {
     base: PhysAddr,
     bytes: usize,
-    /// `None` is used for a frame borrowed from platform firmware or a test
-    /// fixture.  Allocated frames carry their allocator alignment and are
-    /// released exactly once by this token's destructor.
-    release_align: Option<usize>,
     /// The default release path is the user/data-frame allocator.  Page-table
     /// detached tokens use a different allocator domain, so the lease carries
     /// an explicit function pointer rather than making callers smuggle a raw
-    /// physical address through the ownership API.
-    release: fn(PhysAddr, usize),
+    /// physical address through the ownership API. Borrowed frames have no
+    /// release token; owned frames are released exactly once with their
+    /// original allocator alignment.
+    release: Option<FrameRelease>,
     /// External allocations (DMA/device/cache pages) retain their provider in
     /// the same capability that names the physical range.  The MM layer never
     /// has to keep a parallel owner beside a bare address list.
@@ -57,8 +63,8 @@ struct FrameAllocation {
 
 impl Drop for FrameAllocation {
     fn drop(&mut self) {
-        if let Some(align) = self.release_align.take() {
-            (self.release)(self.base, align);
+        if let Some(release) = self.release.take() {
+            (release.deallocate)(self.base, release.align);
         }
     }
 }
@@ -79,7 +85,7 @@ impl fmt::Debug for FrameLease {
             .debug_struct("FrameLease")
             .field("paddr", &self.paddr)
             .field("bytes", &self.bytes)
-            .field("owned", &self.allocation.release_align.is_some())
+            .field("owned", &self.allocation.release.is_some())
             .field("anchored", &self.allocation._anchor.is_some())
             .finish()
     }
@@ -103,8 +109,7 @@ impl FrameLease {
             allocation: Arc::new(FrameAllocation {
                 base: paddr,
                 bytes: PAGE_SIZE_4K,
-                release_align: None,
-                release: release_data_frame,
+                release: None,
                 _anchor: None,
             }),
         }
@@ -126,8 +131,7 @@ impl FrameLease {
             allocation: Arc::new(FrameAllocation {
                 base: paddr,
                 bytes,
-                release_align: None,
-                release: release_data_frame,
+                release: None,
                 _anchor: anchor,
             }),
         })
@@ -155,8 +159,10 @@ impl FrameLease {
             allocation: Arc::new(FrameAllocation {
                 base: paddr,
                 bytes: align,
-                release_align: Some(align),
-                release: release_data_frame,
+                release: Some(FrameRelease {
+                    align,
+                    deallocate: release_data_frame,
+                }),
                 _anchor: None,
             }),
         }
@@ -177,8 +183,10 @@ impl FrameLease {
             allocation: Arc::new(FrameAllocation {
                 base: paddr,
                 bytes: align,
-                release_align: Some(align),
-                release,
+                release: Some(FrameRelease {
+                    align,
+                    deallocate: release,
+                }),
                 _anchor: None,
             }),
         }
@@ -886,8 +894,10 @@ pub struct MappingSlot {
     resident_kind: AtomicU8,
     /// Preallocated child table bound to this slot's huge leaf. A freshly
     /// prepared deposit has never been visible to hardware; a deposit returned
-    /// by rollback remains retired until remote TLB confirmation.
-    huge_split_deposit: RawSpinLock<Option<HugeSplitDeposit>>,
+    /// by rollback remains retired until remote TLB confirmation. Only huge
+    /// leaves allocate this storage; taking a deposit keeps its empty cell so
+    /// rollback never needs to allocate while restoring the token.
+    huge_split_deposit: Option<Box<RawSpinLock<Option<HugeSplitDeposit>>>>,
     state: AtomicU8,
 }
 
@@ -909,7 +919,7 @@ impl MappingSlot {
             page,
             frame_offset: 0,
             resident_kind: AtomicU8::new(RssKind::slot_value(resident_kind)),
-            huge_split_deposit: RawSpinLock::new(None),
+            huge_split_deposit: None,
             state: AtomicU8::new(SlotState::Reserved as u8),
         }
     }
@@ -936,7 +946,7 @@ impl MappingSlot {
             page,
             frame_offset,
             resident_kind: AtomicU8::new(RssKind::slot_value(resident_kind)),
-            huge_split_deposit: RawSpinLock::new(None),
+            huge_split_deposit: None,
             state: AtomicU8::new(SlotState::Reserved as u8),
         })
     }
@@ -950,35 +960,49 @@ impl MappingSlot {
     }
 
     /// Attaches the deposit before the slot is published into the address
-    /// space.  A second deposit would mean two page-table-frame owners for one
-    /// huge leaf and is rejected by returning ownership to the caller.
+    /// space. A second deposit would mean two page-table-frame owners for one
+    /// huge leaf and is rejected. The optional cell is allocated without a
+    /// spin guard. Failure drops this unpublished slot and deposit, matching
+    /// the publication transaction's rollback of its prepared resources.
     pub(crate) fn attach_huge_split_deposit(
-        self,
+        mut self,
         deposit: HugeSplitDeposit,
-    ) -> Result<Self, HugeSplitDeposit> {
-        {
-            let mut owner = self.huge_split_deposit.lock_irqsave();
+    ) -> Result<Self, StarryError> {
+        if let Some(storage) = self.huge_split_deposit.as_mut() {
+            let owner = storage.get_mut();
             if owner.is_some() {
-                return Err(deposit);
+                return Err(StarryError::BadState);
             }
             *owner = Some(deposit);
+            return Ok(self);
         }
+        let mut storage = match Box::try_new(RawSpinLock::new(None)) {
+            Ok(storage) => storage,
+            Err(_) => return Err(StarryError::NoMemory),
+        };
+        *storage.get_mut() = Some(deposit);
+        self.huge_split_deposit = Some(storage);
         Ok(self)
     }
 
     pub(crate) fn has_huge_split_deposit(&self) -> bool {
-        self.huge_split_deposit.lock_irqsave().is_some()
+        self.huge_split_deposit
+            .as_ref()
+            .is_some_and(|storage| storage.lock_irqsave().is_some())
     }
 
     pub(crate) fn take_huge_split_deposit(&self) -> Option<HugeSplitDeposit> {
-        self.huge_split_deposit.lock_irqsave().take()
+        self.huge_split_deposit.as_ref()?.lock_irqsave().take()
     }
 
     pub(crate) fn restore_huge_split_deposit(
         &self,
         deposit: HugeSplitDeposit,
     ) -> Result<(), HugeSplitDeposit> {
-        let mut owner = self.huge_split_deposit.lock_irqsave();
+        let Some(storage) = self.huge_split_deposit.as_ref() else {
+            return Err(deposit);
+        };
+        let mut owner = storage.lock_irqsave();
         if owner.is_some() {
             return Err(deposit);
         }
@@ -993,7 +1017,10 @@ impl MappingSlot {
     /// The address-space owner must prove that no CPU can still use this page
     /// table root, including a pending walk or unacknowledged TLB request.
     pub(crate) unsafe fn confirm_quiescent_huge_split_deposit(&self) {
-        if let Some(deposit) = self.huge_split_deposit.lock_irqsave().as_mut() {
+        let Some(storage) = self.huge_split_deposit.as_ref() else {
+            return;
+        };
+        if let Some(deposit) = storage.lock_irqsave().as_mut() {
             // SAFETY: the caller supplies the root-wide quiescence proof.
             unsafe { deposit.confirm_tlb_retirement() };
         }
@@ -1225,15 +1252,12 @@ impl MappingSlot {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(axtest))]
     use core::sync::atomic::AtomicUsize;
 
     use super::*;
 
-    #[cfg(not(axtest))]
     static RELEASES: AtomicUsize = AtomicUsize::new(0);
 
-    #[cfg(not(axtest))]
     fn record_release(_paddr: PhysAddr, bytes: usize) {
         assert_eq!(bytes, PAGE_SIZE_4K * 4);
         RELEASES.fetch_add(1, Ordering::Relaxed);
@@ -1473,7 +1497,8 @@ mod tests {
         assert_eq!(page.state(), PageState::Present);
     }
 
-    #[test]
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
     fn split_frame_leases_release_the_allocation_once_after_the_last_subpage() {
         RELEASES.store(0, Ordering::Relaxed);
         let owner = FrameLease::owned_with_releaser(

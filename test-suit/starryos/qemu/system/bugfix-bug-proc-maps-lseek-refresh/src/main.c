@@ -5,7 +5,7 @@
  *
  * The test primes the seq-file cache by reading /proc/self/maps once, then
  * performs:
- *   1. mmap() a guarded 3-page RW range
+ *   1. mmap() adjacent private anonymous pages into one guarded RW range
  *   2. mprotect() the middle page to force a VMA split
  *   3. munmap() the middle page to create a hole
  *
@@ -20,6 +20,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 enum {
@@ -63,28 +65,15 @@ static int has_vma_prefix(
     const char *perms
 )
 {
-    const int addr_width = (int)sizeof(void *) * 2;
-    char needle[80];
-    const int needle_len = snprintf(
-        needle,
-        sizeof(needle),
-        "%0*lx-%0*lx %s",
-        addr_width, (unsigned long)start,
-        addr_width, (unsigned long)end,
-        perms
-    );
     const char *line = maps;
-
-    if (needle_len <= 0 || (size_t)needle_len >= sizeof(needle)) {
-        return 0;
-    }
 
     while (*line != '\0') {
         const char *newline = strchr(line, '\n');
-        size_t line_len = newline ? (size_t)(newline - line) : strlen(line);
+        unsigned long actual_start, actual_end;
+        char actual_perms[5];
 
-        if (line_len >= (size_t)needle_len &&
-            memcmp(line, needle, (size_t)needle_len) == 0) {
+        if (sscanf(line, "%lx-%lx %4s", &actual_start, &actual_end, actual_perms) == 3 &&
+            actual_start == start && actual_end == end && strcmp(actual_perms, perms) == 0) {
             return 1;
         }
 
@@ -151,19 +140,27 @@ int main(void)
         return 1;
     }
 
-    mapping = mmap(
-        (unsigned char *)reserved + page_size,
-        (size_t)page_size * TEST_PAGES,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
-        -1,
-        0
-    );
-    if (mapping == MAP_FAILED || mapping != (unsigned char *)reserved + page_size) {
-        printf("FAIL: mmap test range: %s\n", strerror(errno));
+    mapping = (unsigned char *)reserved + page_size;
+    if (syscall(SYS_munmap, mapping, (size_t)page_size * TEST_PAGES) != 0) {
+        printf("FAIL: release guarded interval: %s\n", strerror(errno));
         printf("TEST FAILED\n");
         close(maps_fd);
         return 1;
+    }
+    for (int page = 0; page < TEST_PAGES; page++) {
+        unsigned char *address = mapping + page * page_size;
+        void *result = (void *)syscall(SYS_mmap, address, (size_t)page_size,
+                                      PROT_READ | PROT_WRITE,
+                                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+                                      -1, 0);
+        if (result != address) {
+            printf("FAIL: mmap adjacent page %d: %s\n", page, strerror(errno));
+            printf("TEST FAILED\n");
+            close(maps_fd);
+            return 1;
+        }
+        /* Materialize before the next mmap to exercise a live predecessor. */
+        address[0] = (unsigned char)(0x11 * (page + 1));
     }
 
     middle = mapping + page_size;
@@ -185,6 +182,23 @@ int main(void)
             "rw-p")) {
         printf("FAIL: mmap result not reflected on same maps fd after lseek\n");
         print_maps_on_failure(maps_buf);
+        printf("TEST FAILED\n");
+        close(maps_fd);
+        return 1;
+    }
+
+    pid_t child = fork();
+    if (child == 0) {
+        int intact = mapping[0] == 0x11 && middle[0] == 0x22 && right[0] == 0x33;
+        mapping[0] = 0x44;
+        right[0] = 0x55;
+        _exit(intact ? 0 : 1);
+    }
+    int status;
+    if (child < 0 || waitpid(child, &status, 0) != child ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
+        mapping[0] != 0x11 || middle[0] != 0x22 || right[0] != 0x33) {
+        printf("FAIL: merged anonymous mappings lost fork COW isolation\n");
         printf("TEST FAILED\n");
         close(maps_fd);
         return 1;
