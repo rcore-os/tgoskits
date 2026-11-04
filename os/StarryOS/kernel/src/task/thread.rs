@@ -152,6 +152,7 @@ struct ThreadLifecycle {
     exit: Arc<AtomicBool>,
     interrupted: InterruptState,
     user_memory_access: UserMemoryAccessDepth,
+    no_fault_user_read: UserMemoryAccessDepth,
     block_next_signal_check: NextSignalCheckBlock,
     exit_event: Arc<PollSet>,
     vfork_done: RawSpinLock<Option<VforkDone>>,
@@ -182,6 +183,7 @@ impl ThreadLifecycle {
             exit: super::allocation::try_arc(AtomicBool::new(false))?,
             interrupted: InterruptState::new(),
             user_memory_access: UserMemoryAccessDepth::new(),
+            no_fault_user_read: UserMemoryAccessDepth::new(),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: super::allocation::try_arc(PollSet::new())?,
             vfork_done: RawSpinLock::new(None),
@@ -747,6 +749,20 @@ impl Thread {
 
     pub(crate) fn has_active_user_memory_access(&self) -> bool {
         self.lifecycle.user_memory_access.is_active()
+    }
+
+    /// Marks the current thread as performing a no-fault user read.
+    ///
+    /// `handle_page_fault` checks this marker before the thread's faultable
+    /// user-memory scopes, so a no-fault read keeps its promise even when a
+    /// probe exception interrupted an in-progress faultable user copy.
+    pub(crate) fn enter_no_fault_user_read(&self) -> UserMemoryAccessGuard<'_> {
+        self.lifecycle.no_fault_user_read.enter()
+    }
+
+    /// Returns whether a no-fault user read is in progress on this thread.
+    pub(crate) fn in_no_fault_user_read(&self) -> bool {
+        self.lifecycle.no_fault_user_read.is_active()
     }
 
     pub(super) fn interrupt(&self) {

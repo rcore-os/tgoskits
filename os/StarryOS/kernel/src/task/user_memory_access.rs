@@ -1,4 +1,4 @@
-//! Move-only publication of faultable user-memory access state.
+//! Move-only publication of per-thread user-memory access state.
 
 use alloc::rc::Rc;
 use core::{
@@ -6,7 +6,10 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-/// Nesting state for one thread's faultable user-memory access.
+/// Nesting state for one thread's user-memory accesses. One instance tracks
+/// faultable scopes (an active copy may have its faults serviced) and another
+/// tracks no-fault reads (faults from the read must be declined), so
+/// `handle_page_fault` can weigh one against the other.
 pub(crate) struct UserMemoryAccessDepth(AtomicU32);
 
 impl UserMemoryAccessDepth {

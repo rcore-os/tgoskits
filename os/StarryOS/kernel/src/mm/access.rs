@@ -783,6 +783,17 @@ static PAGE_FAULT_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "axtest")]
 const _: fn(&UserTaskRef, &str, usize, usize, MappingFlags) -> VmResult = prepare_user_memory;
 
+/// Whether a user page fault on `thr` may enter the faultable service path.
+///
+/// A no-fault user read in progress outranks an outer faultable user-memory
+/// access scope: the interrupted thread may still hold one from a
+/// `copy_from_user` that a probe exception fired inside, but a fault from the
+/// marked read must be reported as a failed copy instead of being serviced
+/// with local IRQs disabled.
+fn user_page_fault_may_be_serviced(thr: &crate::task::Thread) -> bool {
+    !thr.in_no_fault_user_read() && thr.has_active_user_memory_access()
+}
+
 pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
     if ax_runtime::diagnostics::diagnose_current_stack_guard_page_fault(vaddr) {
         return false;
@@ -816,7 +827,7 @@ pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -
     };
     let thr = curr.as_thread();
 
-    if !thr.has_active_user_memory_access() {
+    if !user_page_fault_may_be_serviced(thr) {
         return false;
     }
 
@@ -854,6 +865,59 @@ pub fn vm_load_string(task: &UserTaskRef, ptr: *const c_char) -> crate::StarryRe
     #[allow(clippy::unnecessary_cast)]
     let bytes = vm_load_until_nul(task, ptr as *const u8)?;
     String::from_utf8(bytes).map_err(|_| crate::StarryError::IllegalBytes)
+}
+
+/// Loads a NUL-terminated user string without servicing page faults.
+///
+/// For callers that cannot sleep, such as BPF helpers run from a probe
+/// exception with local IRQs disabled. A non-resident or invalid page fails
+/// the read instead of being faulted in, whatever user-memory access scope
+/// the interrupted thread holds (see [`vm_read_user_chunk_nofault`]).
+pub fn vm_load_string_nofault(ptr: *const c_char) -> crate::StarryResult<String> {
+    let bytes = with_no_fault_user_read(|vm| starry_vm::vm_load_until_nul(vm, ptr.cast::<u8>()))?;
+    String::from_utf8(bytes).map_err(|_| crate::StarryError::IllegalBytes)
+}
+
+/// Reads one bounded chunk of user memory without servicing page faults and
+/// without heap allocation.
+///
+/// A building block for probe-context readers (see
+/// [`crate::ebpf`]'s `bpf_probe_read_user_str`): their call chain may run with
+/// the heap allocator's lock held by the interrupted code, so the caller's
+/// buffer is the only scratch. The chunk never crosses a page boundary and is
+/// bounded by `max` and the scratch size, so bytes past `start + max` are
+/// never touched and a string that ends anywhere in a resident page reads
+/// successfully at the same granularity as Linux's word-at-a-time
+/// `strncpy_from_user_nofault`. Returns the bytes read, or
+/// [`VmError::AccessDenied`] when the range is not accessible.
+pub(crate) fn vm_read_user_chunk_nofault(
+    start: usize,
+    max: usize,
+    scratch: &mut [MaybeUninit<u8>],
+) -> VmResult<&[u8]> {
+    debug_assert!(!scratch.is_empty());
+    let to_page_end = PAGE_SIZE_4K - start % PAGE_SIZE_4K;
+    let len = max.min(scratch.len()).min(to_page_end);
+    let buf = &mut scratch[..len];
+    with_no_fault_user_read(|vm| vm.read(start, buf))?;
+    // SAFETY: the read initialized the whole chunk or failed.
+    Ok(unsafe { buf.assume_init_ref() })
+}
+
+/// Runs `f` with the current thread marked as performing a no-fault user read.
+///
+/// The marker makes `handle_page_fault` decline faults from the read even
+/// when the interrupted thread holds an outer faultable user-memory access
+/// scope, so the architecture exception table reports the failed copy. A
+/// thread without a Starry extension has no scope to outrank, so lookup
+/// failures simply skip the marker.
+fn with_no_fault_user_read<R>(f: impl FnOnce(&mut NoFaultUserReader) -> R) -> R {
+    let task = try_current_user_task().ok().flatten();
+    let _no_fault = task
+        .as_ref()
+        .map(|task| task.as_thread().enter_no_fault_user_read());
+    let mut reader = NoFaultUserReader;
+    f(&mut reader)
 }
 
 pub fn vm_load_path_string(task: &UserTaskRef, ptr: *const c_char) -> crate::StarryResult<String> {
@@ -931,6 +995,44 @@ unsafe impl VmIo for UserMemoryProvider<'_> {
         }
         UserAccess::<Faultable>::new(start, buf.len(), UserAccessIntent::Write)?
             .copy_to_user(self.task, buf)
+    }
+}
+
+/// Read-only user-memory access that does not service page faults.
+///
+/// It enters no user-memory access scope. Reads run under
+/// [`with_no_fault_user_read`], whose marker makes the page-fault handler
+/// decline faults on user addresses even when the interrupted thread already
+/// holds a faultable scope; the architecture exception table then reports
+/// them as a failed copy.
+struct NoFaultUserReader;
+
+// SAFETY: reads validate the user range and recover faults through the
+// architecture exception table; no borrowed user reference escapes.
+unsafe impl VmIo for NoFaultUserReader {
+    fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let range = UserAccessRange::new(start, buf.len())?;
+        // SAFETY: the checked range is user memory, the kernel buffer is valid
+        // for its declared length, and the exception table resolves faults.
+        let failed_at = unsafe {
+            user_copy(
+                buf.as_mut_ptr().cast(),
+                range.start.as_usize() as *const u8,
+                buf.len(),
+            )
+        };
+        if failed_at != 0 {
+            Err(VmError::AccessDenied)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn write(&mut self, _start: usize, _buf: &[u8]) -> VmResult {
+        Err(VmError::AccessDenied)
     }
 }
 
