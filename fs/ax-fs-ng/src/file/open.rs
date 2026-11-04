@@ -556,11 +556,23 @@ impl OpenOptions {
         let (parent, name, parent_counters) =
             context.resolve_parent_with_constraints(path, constraints, check_search, counters)?;
 
-        let existing = match parent.lookup_no_follow(&name) {
-            Ok(_) => true,
-            Err(VfsError::NotFound) => false,
+        let existing_entry = match parent.lookup_no_follow(&name) {
+            Ok(entry) => Some(entry),
+            Err(VfsError::NotFound) => None,
             Err(error) => return Err(error),
         };
+        let existing = existing_entry.is_some();
+
+        // NO_XDEV covers the final component too: entering a mounted root at
+        // the final entry crosses devices, and Linux reports that from
+        // `traverse_mounts` inside `step_into` before `do_last`'s exclusivity
+        // check, so a cross-mount entry is EXDEV even under O_EXCL.
+        if let Some(entry) = &existing_entry
+            && constraints.is_no_xdev()
+            && !Arc::ptr_eq(parent.mountpoint(), entry.mountpoint())
+        {
+            return Err(VfsError::CrossesDevices);
+        }
 
         // Linux `build_open_flags` makes `O_CREAT|O_EXCL` imply `O_NOFOLLOW`,
         // so the final symlink is not followed and `do_open()` reports EEXIST
