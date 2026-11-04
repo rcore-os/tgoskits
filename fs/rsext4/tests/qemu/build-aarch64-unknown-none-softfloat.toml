@@ -1,0 +1,4 @@
+target = "aarch64-unknown-none-softfloat"
+features = ["ax-driver/nvme"]
+log = "Warn"
+max_cpu_num = 4
