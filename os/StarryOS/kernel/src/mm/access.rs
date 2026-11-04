@@ -1336,6 +1336,45 @@ mod tests {
         assert_eq!(kernel_text_patch_target(), 0x5a5a);
     }
 
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn no_fault_read_marker_outranks_active_user_memory_scope() {
+        use crate::task::{PidReservation, PidReservationKind, ROOT_PID_NS, Thread, Tgid, Tid};
+
+        // A synthetic thread with a real process, as in the clone axtests.
+        let reservation =
+            PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
+        let identity = reservation.identity();
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let process = crate::task::new_test_process_data(identity.clone(), tgid);
+        let thread = Thread::new(
+            identity,
+            tid,
+            process,
+            None,
+            Default::default(),
+            scope_local::Scope::new(),
+        )
+        .unwrap();
+
+        // An outer faultable scope alone allows the faultable service path.
+        let _scope = thread.enter_user_memory_access();
+        assert!(user_page_fault_may_be_serviced(&thread));
+
+        // A no-fault read in progress outranks it: a probe exception that
+        // fired inside an in-progress user copy must not have the copy's
+        // scope service the helper's faults.
+        let _no_fault = thread.enter_no_fault_user_read();
+        assert!(thread.in_no_fault_user_read());
+        assert!(!user_page_fault_may_be_serviced(&thread));
+
+        // Dropping the marker restores the outer scope's service path.
+        drop(_no_fault);
+        assert!(!thread.in_no_fault_user_read());
+        assert!(user_page_fault_may_be_serviced(&thread));
+    }
+
     #[cfg(all(test, not(axtest)))]
     #[test]
     fn user_access_range_rejects_null_overflow_and_kernel_addresses() {

@@ -541,3 +541,122 @@ mod tests {
         assert_eq!(read, (-22i64) as u64);
     }
 }
+
+#[cfg(all(test, axtest))]
+mod axtests {
+    use ax_alloc::alloc_audit::AllocAuditScope;
+
+    use super::{BPF_PROBE_READ_MAX, bpf_probe_read_user_str, copy_str_to_dst};
+
+    /// Runs the helper's copy on a kernel-resident source string, standing in
+    /// for a resident user page that the test kernel does not map.
+    fn copy_from(source: &[u8], dst: &mut [u8]) -> u64 {
+        copy_str_to_dst(dst.as_mut_ptr() as u64, dst.len(), |offset, max, scratch| {
+            let len = max.min(scratch.len()).min(source.len() - offset);
+            for (slot, byte) in scratch[..len].iter_mut().zip(&source[offset..]) {
+                slot.write(*byte);
+            }
+            // SAFETY: the loop above initialized the first `len` bytes.
+            Some(unsafe { scratch[..len].assume_init_ref() })
+        })
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_counts_the_terminator_of_an_empty_string() {
+        // strncpy_from_user_nofault returns the copied length including the
+        // NUL, so an empty source returns 1 with the terminator stored.
+        let mut out = [0x5au8; 8];
+        assert_eq!(copy_from(b"\0", &mut out), 1);
+        assert_eq!(out[0], 0);
+
+        let mut out = [0x5au8; 8];
+        assert_eq!(copy_from(b"ab\0", &mut out), 3);
+        assert_eq!(&out[..3], b"ab\0");
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_fails_and_zeroes_on_a_non_resident_page() {
+        // USER_SPACE_BASE belongs to the user range but is unmapped in the
+        // test kernel, so the nofault reader must fail the copy.
+        let mut out = [0x5au8; 8];
+        let ret = bpf_probe_read_user_str(
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            crate::config::USER_SPACE_BASE as u64,
+            0,
+            0,
+        );
+        assert_eq!(ret as i64, -14); // -EFAULT
+        assert!(out.iter().all(|byte| *byte == 0));
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_does_not_touch_the_heap_allocator() {
+        // A probe can fire while the interrupted code holds the heap
+        // allocator's lock on this CPU: the helper's first allocation would
+        // spin on that lock forever, so its whole call chain must stay off
+        // the heap. The probe scope counts this CPU's allocations with local
+        // IRQs disabled, so only code between enter and finish contributes.
+        let mut out = [0x5au8; 8];
+        let probe = AllocAuditScope::enter();
+        let ret = bpf_probe_read_user_str(
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            crate::config::USER_SPACE_BASE as u64,
+            0,
+            0,
+        );
+        let allocations = probe.finish();
+        assert_eq!(ret as i64, -14); // -EFAULT
+        assert_eq!(allocations, 0);
+        assert!(out.iter().all(|byte| *byte == 0));
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_bounds_the_destination_by_the_cap() {
+        // Nothing proves that the destination holds `size` bytes, so a size
+        // above the cap is refused before either range is touched; one at the
+        // cap is served, and its failure path zeroes exactly `size` bytes.
+        // The buffer is allocated before the probe scope.
+        let cap = BPF_PROBE_READ_MAX as usize;
+        let mut out = alloc::vec![0x5au8; cap + 904];
+        let probe = AllocAuditScope::enter();
+        let refused = bpf_probe_read_user_str(
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            crate::config::USER_SPACE_BASE as u64,
+            0,
+            0,
+        );
+        let refused_untouched = out.iter().all(|byte| *byte == 0x5a);
+        let served = bpf_probe_read_user_str(
+            out.as_mut_ptr() as u64,
+            BPF_PROBE_READ_MAX,
+            crate::config::USER_SPACE_BASE as u64,
+            0,
+            0,
+        );
+        let allocations = probe.finish();
+        assert_eq!(refused as i64, -22); // -EINVAL
+        assert!(refused_untouched);
+        assert_eq!(served as i64, -14); // -EFAULT
+        assert_eq!(allocations, 0);
+        assert!(out[..cap].iter().all(|byte| *byte == 0));
+        assert!(out[cap..].iter().all(|byte| *byte == 0x5a));
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_keeps_the_size_edges_of_the_linux_abi() {
+        // A zero size returns 0 without touching the destination, matching
+        // strncpy_from_user_nofault's `count <= 0` path.
+        let mut out = [0x5au8; 4];
+        let ret = bpf_probe_read_user_str(out.as_mut_ptr() as u64, 0, 0, 0, 0);
+        assert_eq!(ret, 0);
+        assert!(out.iter().all(|byte| *byte == 0x5a));
+
+        // A size that does not even fit the helper's `u32` argument is far
+        // beyond the cap and is refused before any range is touched.
+        let ret = bpf_probe_read_user_str(0, 1 << 33, 0, 0, 0);
+        assert_eq!(ret as i64, -22); // -EINVAL
+    }
+}
