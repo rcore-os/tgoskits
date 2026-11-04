@@ -12,6 +12,71 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <string.h>
+#include <netinet/in.h>
+
+/*
+ * A UDP socket's release waits for the network poller, so it is a file
+ * whose final close must not happen in atomic kernel context. Binding it
+ * to a loopback port makes that final close observable: the port stays
+ * busy exactly as long as some reference to the socket is still open.
+ */
+static int bound_udp_socket(unsigned short *port)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        close(fd);
+        return -1;
+    }
+    *port = ntohs(addr.sin_port);
+    return fd;
+}
+
+static int udp_port_in_use(unsigned short port)
+{
+    struct sockaddr_in addr;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int in_use;
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(port);
+    in_use = bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 && errno == EADDRINUSE;
+    close(fd);
+    return in_use;
+}
+
+static ssize_t send_byte_with_fd(int sock, char byte, int fd)
+{
+    struct iovec iov = { .iov_base = &byte, .iov_len = 1 };
+    char cbuf[CMSG_SPACE(sizeof(int))];
+    struct msghdr mh = {0};
+
+    memset(cbuf, 0, sizeof(cbuf));
+    mh.msg_iov = &iov;
+    mh.msg_iovlen = 1;
+    mh.msg_control = cbuf;
+    mh.msg_controllen = sizeof(cbuf);
+    struct cmsghdr *cmh = CMSG_FIRSTHDR(&mh);
+    cmh->cmsg_level = SOL_SOCKET;
+    cmh->cmsg_type = SCM_RIGHTS;
+    cmh->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmh), &fd, sizeof(int));
+    return sendmsg(sock, &mh, 0);
+}
 
 static size_t cmsg_aligned_len(size_t len)
 {
@@ -45,6 +110,147 @@ static int read_marker_from_fd(int fd, char expected, const char *msg)
     CHECK_RET(ret, 1, msg);
     CHECK(got == expected, "received fd reads expected marker");
     return ret == 1 && got == expected;
+}
+/*
+ * The rejected-datagram case below needs a helper thread, SIGPIPE
+ * suppression and payload pages whose residency it can watch.
+ */
+#include <pthread.h>
+#include <signal.h>
+#include <sys/mman.h>
+
+/* Linux reports ECONNREFUSED here; EPIPE is also a broken-peer error. */
+static int send_rejected_by_closed_peer(ssize_t ret, int err)
+{
+    return ret == -1 && (err == ECONNREFUSED || err == EPIPE);
+}
+
+/* Large enough that copying it spans many page faults, below Linux's
+ * default AF_UNIX datagram send limit. */
+#define REJECTED_PAYLOAD_LEN (128 * 1024)
+#define REJECTED_SEND_ROUNDS 16
+
+struct close_during_send {
+    const unsigned char *payload;
+    int fd;
+    int send_done;
+    int closed;
+    int ret;
+};
+
+/*
+ * sendmsg(2) takes its references to SCM_RIGHTS files before it copies
+ * the payload. Closing the passed fd once the first payload page has
+ * been faulted in leaves the datagram under construction holding the
+ * last reference to the file.
+ */
+static void *close_when_payload_resident(void *arg)
+{
+    struct close_during_send *c = arg;
+    unsigned char resident = 0;
+
+    while (!__atomic_load_n(&c->send_done, __ATOMIC_ACQUIRE) &&
+           mincore((void *)c->payload, 1, &resident) == 0 && !(resident & 1)) {
+    }
+    c->ret = close(c->fd);
+    __atomic_store_n(&c->closed, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+/* Returns a datagram socket whose connected peer has already closed. */
+static int dgram_with_closed_peer(void)
+{
+    int sv[2];
+
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
+        return -1;
+    }
+    close(sv[1]);
+    return sv[0];
+}
+
+static ssize_t send_with_fd(int sock, const void *buf, size_t len, int fd)
+{
+    struct iovec iov = { .iov_base = (void *)buf, .iov_len = len };
+    char cbuf[CMSG_SPACE(sizeof(int))];
+    struct msghdr mh = {0};
+
+    memset(cbuf, 0, sizeof(cbuf));
+    mh.msg_iov = &iov;
+    mh.msg_iovlen = 1;
+    mh.msg_control = cbuf;
+    mh.msg_controllen = sizeof(cbuf);
+    struct cmsghdr *cmh = CMSG_FIRSTHDR(&mh);
+    cmh->cmsg_level = SOL_SOCKET;
+    cmh->cmsg_type = SCM_RIGHTS;
+    cmh->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmh), &fd, sizeof(int));
+    return sendmsg(sock, &mh, MSG_NOSIGNAL);
+}
+
+/*
+ * A datagram rejected because the peer has closed is dropped together
+ * with the files it carries. When the sender closes its own fd while the
+ * send is in flight, the rejected datagram owns the last reference, so
+ * sendmsg(2) itself performs the file's final close and must still fail
+ * normally and release the file.
+ */
+static void rejected_datagram_releases_rights(void)
+{
+    unsigned short port = 0;
+    int raced = 0;
+    char byte = 'X';
+
+    signal(SIGPIPE, SIG_IGN);
+
+    int sock = dgram_with_closed_peer();
+    CHECK(sock >= 0, "datagram socketpair with closed peer");
+    int udp = bound_udp_socket(&port);
+    CHECK(udp >= 0, "bind UDP socket for rejected send");
+    if (sock < 0 || udp < 0) {
+        close(sock);
+        close(udp);
+        return;
+    }
+    errno = 0;
+    ssize_t sent = send_byte_with_fd(sock, byte, udp);
+    CHECK(send_rejected_by_closed_peer(sent, errno), "send with SCM_RIGHTS to closed peer fails");
+    CHECK_RET(close(udp), 0, "close UDP fd after rejected send");
+    CHECK(udp_port_in_use(port) == 0, "rejected datagram kept no UDP reference");
+    CHECK_RET(close(sock), 0, "close rejected datagram sender");
+
+    int round;
+    for (round = 0; round < REJECTED_SEND_ROUNDS; round++) {
+        struct close_during_send c = {0};
+        pthread_t closer;
+
+        sock = dgram_with_closed_peer();
+        c.fd = bound_udp_socket(&port);
+        c.payload = mmap(NULL, REJECTED_PAYLOAD_LEN, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (sock < 0 || c.fd < 0 || c.payload == MAP_FAILED ||
+            pthread_create(&closer, NULL, close_when_payload_resident, &c) != 0) {
+            CHECK(0, "set up concurrent close of passed fd");
+            break;
+        }
+        errno = 0;
+        sent = send_with_fd(sock, c.payload, REJECTED_PAYLOAD_LEN, c.fd);
+        int err = errno;
+        raced += __atomic_load_n(&c.closed, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&c.send_done, 1, __ATOMIC_RELEASE);
+        pthread_join(closer, NULL);
+        munmap((void *)c.payload, REJECTED_PAYLOAD_LEN);
+        close(sock);
+        if (!send_rejected_by_closed_peer(sent, err) || c.ret != 0 || udp_port_in_use(port) != 0) {
+            printf("  INFO | round %d: sendmsg=%zd errno=%d close=%d\n", round, sent, err, c.ret);
+            break;
+        }
+    }
+    CHECK(round == REJECTED_SEND_ROUNDS,
+          "rejected sends fail and release rights closed during sendmsg");
+    printf("  INFO | fd closed while sendmsg was in flight in %d of %d rounds\n",
+           raced, REJECTED_SEND_ROUNDS);
+    CHECK(raced > 0, "passed fd was closed while sendmsg was in flight");
 }
 
 int main(void)
@@ -115,6 +321,8 @@ int main(void)
     close(p[1]);
     close(sv[0]);
     close(sv[1]);
+
+    rejected_datagram_releases_rights();
 
     CHECK_RET(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0, "socketpair for two cmsgs");
 
