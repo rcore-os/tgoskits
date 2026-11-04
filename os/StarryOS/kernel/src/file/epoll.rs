@@ -596,12 +596,19 @@ impl EpollInner {
     }
 
     /// Remove an interest while the global topology mutex is held.
-    fn remove_interest_locked(&self, key: &EntryKey) -> Option<Arc<EpollInterest>> {
+    ///
+    /// The second element is the nested child upgraded while detaching the
+    /// link; the caller must drop it after releasing the topology mutex.
+    fn remove_interest_locked(
+        &self,
+        key: &EntryKey,
+    ) -> Option<(Arc<EpollInterest>, Option<Arc<EpollInner>>)> {
         let interest = self.interests.lock_irqsave().remove(key)?;
-        if let Some(link) = &interest.nested_link {
-            detach_nested_link(self, link);
-        }
-        Some(interest)
+        let nested_child = interest
+            .nested_link
+            .as_ref()
+            .and_then(|link| detach_nested_link(self, link));
+        Some((interest, nested_child))
     }
 
     /// Remove a stale snapshot only if it is still the current map entry.
@@ -956,7 +963,7 @@ impl Epoll {
         )
     }
 
-    #[cfg(all(test, not(axtest)))]
+    #[cfg(test)]
     pub(super) fn add_file_for_test(
         &self,
         fd: i32,
@@ -1034,17 +1041,46 @@ impl Epoll {
 
     pub fn delete(&self, fd: i32) -> StarryResult<()> {
         let key = EntryKey::new(fd)?;
+        self.delete_interest(&key)
+    }
+
+    /// Removes one interest by key, without consulting the fd table.
+    fn delete_interest(&self, key: &EntryKey) -> StarryResult<()> {
         let topology = lock_epoll_topology();
-        let interest = self
+        let (interest, nested_child) = self
             .inner
-            .remove_interest_locked(&key)
+            .remove_interest_locked(key)
             .ok_or(StarryError::NotFound)?;
         drop(topology);
+        // Dropping the child epoll may be the last reference to it, and its
+        // destructor can sleep; it must run after the topology lock.
+        drop(nested_child);
         let ready_entry = Arc::downgrade(&interest);
         self.inner.remove_ready_entries_for(&ready_entry);
         interest.mark_not_in_queue();
-        trace!("Epoll: delete fd={fd}");
+        trace!("Epoll: delete fd={}", key.fd);
         Ok(())
+    }
+
+    /// Deletes an interest installed by `add_nested_for_test`.
+    ///
+    /// The child identity only builds the deletion key: the strong reference
+    /// taken here is released before the deletion path runs, so a reference
+    /// parked by the test remains the last external one.
+    #[cfg(all(test, axtest))]
+    pub(super) fn delete_nested_for_test(
+        &self,
+        fd: i32,
+        target: &Weak<Epoll>,
+    ) -> StarryResult<()> {
+        let key = {
+            let target = target
+                .upgrade()
+                .expect("nested test child must be alive while building the delete key");
+            let file: Arc<dyn FileLike> = target;
+            EntryKey::for_test(fd, &file)
+        };
+        self.delete_interest(&key)
     }
 
     pub fn poll_events_with(
