@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -143,7 +144,9 @@ int main(void)
                                 combo_txt, sub_link_in, sub_link_out, created_in,
                                 sub_link_slash, sub_link_bare,
                                 created_slash, created_bare,
-                                "/tmp/o2c/cached-create.txt" };
+                                "/tmp/o2c/cached-create.txt",
+                                "/tmp/o2c/mnt-file" };
+    (void)umount2("/tmp/o2c/mnt-file", MNT_DETACH);
     for (size_t i = 0; i < sizeof(pre_clean) / sizeof(pre_clean[0]); i++) {
         unlink(pre_clean[i]);
     }
@@ -211,6 +214,35 @@ int main(void)
     expect_errno("trailing slash does not bypass NO_SYMLINKS", rootfd, "rel/",
                  RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
                  O_RDONLY | O_NOFOLLOW | O_CLOEXEC, ELOOP);
+
+    /* NO_XDEV covers the final component too: a file bind mount is a mount
+     * boundary, and Linux traverses it inside `step_into` before `do_last`'s
+     * O_EXCL check, so the combination is EXDEV rather than EEXIST. A
+     * same-mount existing entry keeps EEXIST. */
+    {
+        char mnt_file[64];
+        snprintf(mnt_file, sizeof(mnt_file), "%s/mnt-file", root);
+        unlink(mnt_file);
+        int target = open(mnt_file, O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+        if (target >= 0) {
+            close(target);
+        }
+        if (mount("/tmp/o2c/beneath.txt", mnt_file, NULL, MS_BIND, NULL) == 0) {
+            expect_errno("NO_XDEV|O_CREAT|O_EXCL on a file bind mount -> EXDEV",
+                         rootfd, "mnt-file", RESOLVE_NO_XDEV,
+                         O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, EXDEV);
+            expect_errno("O_CREAT|O_EXCL on a file bind mount without NO_XDEV",
+                         rootfd, "mnt-file", 0,
+                         O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, EEXIST);
+            expect_errno("NO_XDEV|O_CREAT|O_EXCL on a same-mount entry -> EEXIST",
+                         rootfd, "beneath.txt", RESOLVE_NO_XDEV,
+                         O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, EEXIST);
+            (void)umount2(mnt_file, MNT_DETACH);
+        } else {
+            CHECK(0, "bind mount a file for the NO_XDEV final-component case");
+        }
+        unlink(mnt_file);
+    }
 
     /* A dangling symlink whose target stays inside the base must be created
      * through under BENEATH|O_CREAT (`sub/link-in -> ../dangling-in`
