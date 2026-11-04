@@ -35,6 +35,8 @@ use super::epoll_topology::{
     EpollTopology, EpollTopologyLink, commit_nested_link, detach_nested_link, lock_epoll_topology,
     prepare_nested_link, reserve_nested_link,
 };
+#[cfg(all(test, axtest))]
+use super::epoll_topology::epoll_topology_lock_is_held_for_test;
 #[cfg(not(all(test, not(axtest))))]
 use crate::sync::Mutex;
 use crate::{
@@ -216,6 +218,21 @@ impl EntryKey {
 
     #[inline]
     fn get_file(&self) -> Option<Arc<dyn FileLike>> {
+        // Axtest-only observation point: upgrading the target while the
+        // global topology lock is held can turn that temporary reference
+        // into the last one and destroy the file under the lock. Record the
+        // violation and, when a test parked the file's last external
+        // reference, release it so the destruction happens here, exactly as
+        // a concurrent close of the target fd completing at this point
+        // would. Production builds compile this away.
+        #[cfg(all(test, axtest))]
+        {
+            if epoll_topology_lock_is_held_for_test() {
+                super::epoll_axtest::observe_entry_key_upgrade_under_topology_lock_for_test(
+                    &self.file,
+                );
+            }
+        }
         self.file.upgrade()
     }
 
@@ -273,12 +290,11 @@ impl EpollInterest {
         event: EpollEvent,
         flags: EpollFlags,
         nested_link: Option<EpollTopologyLink>,
+        is_signalfd: bool,
     ) -> Self {
         Self {
-            signalfd_registration_owner: key
-                .get_file()
-                .filter(|file| file.is::<Signalfd>())
-                .map(|_| Arc::downgrade(&current_user_task().as_thread().proc_data)),
+            signalfd_registration_owner: is_signalfd
+                .then(|| Arc::downgrade(&current_user_task().as_thread().proc_data)),
             key,
             event,
             nested_link,
@@ -892,8 +908,14 @@ impl Epoll {
         event: EpollEvent,
         flags: EpollFlags,
     ) -> StarryResult<()> {
-        let nested_target = key
-            .get_file()
+        // Do not upgrade the target file under the epoll locks below: that
+        // temporary strong reference may be the last one and its destructor
+        // can sleep.
+        let target_file = key.get_file();
+        let is_signalfd = target_file
+            .as_ref()
+            .is_some_and(|file| file.is::<Signalfd>());
+        let nested_target = target_file
             .and_then(|file| file.downcast_arc::<Epoll>().ok())
             .map(|epoll| Arc::clone(&epoll.inner));
 
@@ -932,6 +954,7 @@ impl Epoll {
             event,
             flags,
             nested_link.clone(),
+            is_signalfd,
         ));
         self.inner
             .interests
@@ -958,6 +981,35 @@ impl Epoll {
             EpollEvent {
                 events: IoEvents::IN,
                 user_data: 0,
+            },
+            EpollFlags::empty(),
+        )
+    }
+
+    /// Adds an interest whose target file is only kept alive by a reference
+    /// parked by the test.
+    ///
+    /// The target identity only builds the insertion key: the strong
+    /// reference taken here is released before the insertion path runs, so
+    /// a reference parked by the test remains the last external one.
+    #[cfg(all(test, axtest))]
+    pub(super) fn add_parked_file_for_test(
+        &self,
+        fd: i32,
+        target: &Weak<dyn FileLike>,
+        user_data: u64,
+    ) -> StarryResult<()> {
+        let key = {
+            let target = target
+                .upgrade()
+                .expect("parked target must be alive while building the add key");
+            EntryKey::for_test(fd, &target)
+        };
+        self.add_interest(
+            key,
+            EpollEvent {
+                events: IoEvents::IN,
+                user_data,
             },
             EpollFlags::empty(),
         )
@@ -993,6 +1045,15 @@ impl Epoll {
 
     pub fn modify(&self, fd: i32, event: EpollEvent, flags: EpollFlags) -> StarryResult<()> {
         let key = EntryKey::new(fd)?;
+        self.modify_interest(key, event, flags)
+    }
+
+    // for modify
+    fn modify_interest(&self, key: EntryKey, event: EpollEvent, flags: EpollFlags) -> StarryResult<()> {
+        // Classify the target before taking the topology mutex and the
+        // interests spinlock: upgrading the file under them may release the
+        // last reference to a file whose destructor can sleep.
+        let is_signalfd = key.get_file().is_some_and(|file| file.is::<Signalfd>());
 
         let topology = lock_epoll_topology();
         let mut guard = self.inner.interests.lock_irqsave();
@@ -1006,6 +1067,7 @@ impl Epoll {
             event,
             flags,
             old.nested_link.clone(),
+            is_signalfd,
         ));
 
         // Preserve ready-queue membership across the swap. The ready_queue
@@ -1032,11 +1094,40 @@ impl Epoll {
         drop(old_interest);
         trace!(
             "Epoll: modify fd={}, events={:?}",
-            fd, interest.event.events
+            key.fd, interest.event.events
         );
         // reset waker
         self.check_and_register_waker(&interest);
         Ok(())
+    }
+
+    /// Modifies an interest whose target file is only kept alive by a
+    /// reference parked by the test.
+    ///
+    /// The target identity only builds the modification key: the strong
+    /// reference taken here is released before the modification path runs,
+    /// so a reference parked by the test remains the last external one.
+    #[cfg(all(test, axtest))]
+    pub(super) fn modify_parked_file_for_test(
+        &self,
+        fd: i32,
+        target: &Weak<dyn FileLike>,
+        user_data: u64,
+    ) -> StarryResult<()> {
+        let key = {
+            let target = target
+                .upgrade()
+                .expect("parked target must be alive while building the modify key");
+            EntryKey::for_test(fd, &target)
+        };
+        self.modify_interest(
+            key,
+            EpollEvent {
+                events: IoEvents::IN,
+                user_data,
+            },
+            EpollFlags::empty(),
+        )
     }
 
     pub fn delete(&self, fd: i32) -> StarryResult<()> {
