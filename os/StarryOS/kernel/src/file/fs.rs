@@ -14,7 +14,7 @@ use linux_raw_sys::{
     ioctl::TIOCSCTTY,
 };
 
-use super::{FileLike, InodeKey, Kstat, get_file_like};
+use super::{FileLike, InodeKey, Kstat, NsFd, get_file_like, ns_target_from_link};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
@@ -145,22 +145,51 @@ fn resolve_at_with_search(
             };
             with_fs(dirfd, |fs| {
                 let boundary = fs.permission_boundary().cloned();
-                if let Some(check) = search {
-                    let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                        fs.resolve_no_follow_with_search_checked(path, |directory| {
-                            check(fs, directory)
-                        })
-                    } else {
-                        fs.resolve_with_search_checked(path, |directory| check(fs, directory))
-                    }?;
+                let check = |directory: &Location| match search {
+                    Some(check) => check(fs, directory),
+                    None => Ok(()),
+                };
+                if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                    let (location, searched) =
+                        fs.resolve_no_follow_with_search_checked(path, check)?;
                     return Ok((ResolveAtResult::File(location), boundary, searched));
                 }
-                let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                    fs.resolve_no_follow_with_search(path)
-                } else {
-                    fs.resolve_with_search(path)
-                }?;
-                Ok((ResolveAtResult::File(location), boundary, searched))
+                match fs.resolve_with_search_checked(path, check) {
+                    Ok((location, searched)) => {
+                        Ok((ResolveAtResult::File(location), boundary, searched))
+                    }
+                    Err(error) => {
+                        // A namespace magic link jumps to an nsfs object, not
+                        // to the pathname in its display text (`mnt:[id]`).
+                        // When the final entry is one, hand out the namespace
+                        // descriptor, whose stat is the nsfs inode; lstat
+                        // (AT_SYMLINK_NOFOLLOW) keeps the link above.
+                        let Ok((entry, searched)) =
+                            fs.resolve_no_follow_with_search_checked(path, check)
+                        else {
+                            return Err(error.into());
+                        };
+                        match ns_target_from_link(&entry) {
+                            Some((task, ns_type)) => {
+                                // The caller's filesystem context is locked
+                                // here; do not re-enter FS_CONTEXT for the
+                                // target when it is this process.
+                                let mnt_fs_ns = (ns_type == "mnt")
+                                    .then(|| fs.mount_namespace().clone());
+                                Ok((
+                                    ResolveAtResult::Other(Arc::new(
+                                        NsFd::from_task_with_mount_ns(
+                                            &task, &ns_type, mnt_fs_ns,
+                                        )?,
+                                    )),
+                                    boundary,
+                                    searched,
+                                ))
+                            }
+                            None => Err(error.into()),
+                        }
+                    }
+                }
             })
         }
     }

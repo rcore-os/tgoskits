@@ -149,8 +149,8 @@ static int expect_write_all(int fd, const char *data, size_t len,
 
 /* Namespace identity follows the Linux `ns(5)` idiom: open the ns file (this
  * yields a dedicated NsFd) and fstat it; the fd's st_ino is the namespace id.
- * A plain path stat reports the static procfs node inode instead, and the NsFd
- * is not readable. */
+ * A plain path stat follows the magic link to the same nsfs object, and the
+ * NsFd is not readable. */
 static int ns_identity(const char *type, ino_t *inode_out)
 {
     char path[64];
@@ -388,6 +388,78 @@ static void check_namespaces(void)
             continue;
         }
         printf("  PASS: %s (ns inode %lu)\n", msg, (unsigned long)inode);
+    }
+
+    /* stat follows the ns magic link to the nsfs object: it reports the
+     * namespace inode, while lstat keeps the link itself and readlink keeps
+     * the `mnt:[id]` display text. */
+    {
+        ino_t ns_ino = 0;
+        struct stat followed;
+        struct stat link;
+        char display[64];
+        int ok = ns_identity("mnt", &ns_ino) == 0;
+        errno = 0;
+        ok = ok && stat("/proc/self/ns/mnt", &followed) == 0 &&
+             followed.st_ino == ns_ino && S_ISREG(followed.st_mode);
+        if (ok) {
+            pass("stat follows the ns link to the namespace inode");
+        } else {
+            fail("stat follows the ns link to the namespace inode");
+        }
+        errno = 0;
+        if (lstat("/proc/self/ns/mnt", &link) == 0 && S_ISLNK(link.st_mode)) {
+            pass("lstat keeps the ns link itself");
+        } else {
+            fail("lstat keeps the ns link itself");
+        }
+        ssize_t n = readlink("/proc/self/ns/mnt", display, sizeof(display) - 1);
+        if (n > 0) {
+            display[n] = 0;
+        }
+        if (n > 0 && strncmp(display, "mnt:[", 5) == 0) {
+            pass("readlink keeps the ns display text");
+        } else {
+            fail("readlink keeps the ns display text");
+        }
+    }
+
+    /* nsfs inodes are S_IRUGO: an unprivileged write open must fail EACCES
+     * (`may_open` MAY_WRITE) while O_RDONLY keeps working. */
+    {
+        pid_t writer = fork();
+        if (writer == 0) {
+            if (setgid(1000) != 0 || setuid(1000) != 0) {
+                _exit(3);
+            }
+            errno = 0;
+            int w = open("/proc/self/ns/mnt", O_WRONLY);
+            if (w >= 0 || errno != EACCES) {
+                _exit(4);
+            }
+            errno = 0;
+            int t = open("/proc/self/ns/mnt", O_RDONLY | O_TRUNC);
+            if (t >= 0 || errno != EACCES) {
+                _exit(5);
+            }
+            int r = open("/proc/self/ns/mnt", O_RDONLY);
+            if (r < 0) {
+                _exit(6);
+            }
+            close(r);
+            _exit(0);
+        }
+        if (writer > 0) {
+            int status = 0;
+            if (waitpid(writer, &status, 0) == writer &&
+                WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                pass("unprivileged ns writes are refused with EACCES");
+            } else {
+                fail("unprivileged ns writes are refused with EACCES");
+            }
+        } else {
+            fail("fork unprivileged ns writer");
+        }
     }
 
     /* Mount namespace: unshare, observe a new ns inode, setns back. */
