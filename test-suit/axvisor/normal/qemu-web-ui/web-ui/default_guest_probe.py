@@ -39,6 +39,25 @@ def run_guest(vm_id):
         # A result absent from the command itself proves actual shell execution.
         # Send after the getty starts; its prompt may include an Alpine hostname.
         probe.receive_output_until(guest, b"# ", deadline, "default guest shell")
+        # The nested x86 guest must retain its native TSC clocksource. Forcing
+        # it unstable sends every time read through emulated ACPI PM I/O and
+        # can exhaust the boot deadline even while the guest keeps progressing.
+        guest.send_binary(
+            b"test -d /sys/devices/system/clocksource || mount -t sysfs sysfs /sys; "
+            b"clock=$(cat /sys/devices/system/clocksource/clocksource0/current_clocksource); "
+            b"printf 'AXVISOR_GUEST_CLOCK_%s=%s\\n' SOURCE \"$clock\"; "
+            b"printf 'AXVISOR_GUEST_CLOCK_%s\\n' DONE\r"
+        )
+        clock_output = probe.receive_output_until(
+            guest, b"AXVISOR_GUEST_CLOCK_DONE", deadline, "default guest clocksource"
+        )
+        clock_line = next(
+            (line for line in clock_output.splitlines() if line.startswith(b"AXVISOR_GUEST_CLOCK_SOURCE=")),
+            b"",
+        )
+        if clock_line not in (b"AXVISOR_GUEST_CLOCK_SOURCE=tsc", b"AXVISOR_GUEST_CLOCK_SOURCE=tsc-early"):
+            raise AssertionError("default guest lost its native TSC clocksource: %r" % clock_output)
+        print("  web-ui probe: default guest clocksource -> %s" % clock_line.decode("ascii"))
         guest.send_binary(probe.GUEST_INPUT_COMMAND)
         probe.receive_output_until(guest, probe.GUEST_INPUT_RESULT, deadline, "default guest arithmetic")
         guest.send_binary(b"cat /etc/alpine-release\r")

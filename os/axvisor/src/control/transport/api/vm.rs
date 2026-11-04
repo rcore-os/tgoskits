@@ -108,7 +108,7 @@ fn creation_schema_fields() -> Value {
 #[cfg(target_arch = "aarch64")]
 const FORM_CMDLINE_DEFAULT: &str = "root=/dev/vda ro rootwait console=ttyAMA0 init=/bin/sh";
 #[cfg(target_arch = "x86_64")]
-const FORM_CMDLINE_DEFAULT: &str = "console=ttyS0 root=/dev/vda ro rootwait devtmpfs.mount=1 init=/sbin/getty pci=conf1 pci=nomsi irqpoll nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0";
+const FORM_CMDLINE_DEFAULT: &str = "console=ttyS0 root=/dev/vda ro rootwait devtmpfs.mount=1 init=/sbin/getty pci=conf1 pci=nomsi irqpoll nox2apic no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0";
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 const FORM_CMDLINE_DEFAULT: &str = "root=/dev/vda ro rootwait console=ttyS0 init=/bin/sh";
 #[cfg(target_arch = "aarch64")]
