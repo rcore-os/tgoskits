@@ -595,7 +595,16 @@ impl TransportOps for DgramTransport {
             }
         };
 
-        let count = dst.write(&packet.data)?;
+        let count = match dst.write(&packet.data) {
+            Ok(count) => count,
+            Err(error) => {
+                // Release the parked-packet lock before the packet is dropped:
+                // its control messages may hold the last references to files
+                // passed with SCM_RIGHTS, and releasing those files can block.
+                drop(peeked);
+                return Err(error.into());
+            }
+        };
         let full_len = packet.data.len();
         // Surface truncation in the returned `msg_flags` (MSG_TRUNC).
         if count < full_len
@@ -627,10 +636,16 @@ impl TransportOps for DgramTransport {
                 }
             }
             *peeked = Some(packet);
-        } else if let Some(dst) = options.cmsg.as_mut() {
-            dst.extend(packet.cmsg);
-            if receive_timestamp && let Some(timestamp) = packet.received_at {
-                dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
+        } else {
+            // The record has been consumed: release the parked-packet lock
+            // before any leftover control messages are dropped, since they may
+            // hold the last references to files passed with SCM_RIGHTS.
+            drop(peeked);
+            if let Some(dst) = options.cmsg.as_mut() {
+                dst.extend(packet.cmsg);
+                if receive_timestamp && let Some(timestamp) = packet.received_at {
+                    dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
+                }
             }
         }
 
