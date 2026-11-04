@@ -10,9 +10,10 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
-    "-append",
-    "root=/dev/nvme0n1",
 ]
+# UEFI starts the kernel from the ESP instead of QEMU's -kernel path, so
+# -append is invalid. Starry selects the sole ext4 root filesystem on this
+# NVMe disk; keep the drive/device wiring as the real root contract.
 uefi = true
 to_bin = true
 fail_regex = [

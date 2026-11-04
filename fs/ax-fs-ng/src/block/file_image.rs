@@ -12,28 +12,51 @@ use crate::{BlockError, BlockResult, file::FileBackend, os::sync::Mutex};
 
 const SECTOR_SIZE: usize = 512;
 
+/// Dynamic backing write-protection state shared by an image and its ext4
+/// filesystem.
+pub trait FileBackingStatus: Send + Sync {
+    /// Reports the current backing write restriction without performing I/O.
+    fn is_write_protected(&self) -> VfsResult<bool>;
+}
+
+pub(crate) struct NoFileBackingStatus;
+
+impl FileBackingStatus for NoFileBackingStatus {
+    fn is_write_protected(&self) -> VfsResult<bool> {
+        Ok(false)
+    }
+}
+
 /// Private release hook shared by the image device and its ext4 filesystem.
 ///
 /// Implementations must release the source binding at most once. The final
 /// lease retirement calls this after shutdown; dropping the last shared owner
 /// remains the RAII fallback when shutdown never completes.
-pub(crate) trait FileBackingLease: Send + Sync {
+pub(crate) trait FileBackingLease: FileBackingStatus {
     fn release(&self);
 }
 
-pub(crate) struct SharedFileBacking<L> {
+pub(crate) struct SharedFileBacking<L, S> {
     lease: Mutex<Option<L>>,
+    status: S,
 }
 
-impl<L> SharedFileBacking<L> {
-    pub(crate) fn new(lease: L) -> Self {
+impl<L, S> SharedFileBacking<L, S> {
+    pub(crate) fn new(lease: L, status: S) -> Self {
         Self {
             lease: Mutex::new(Some(lease)),
+            status,
         }
     }
 }
 
-impl<L: Send> FileBackingLease for SharedFileBacking<L> {
+impl<L: Send, S: FileBackingStatus> FileBackingStatus for SharedFileBacking<L, S> {
+    fn is_write_protected(&self) -> VfsResult<bool> {
+        self.status.is_write_protected()
+    }
+}
+
+impl<L: Send, S: FileBackingStatus> FileBackingLease for SharedFileBacking<L, S> {
     fn release(&self) {
         // Taking the lease out while holding the cell lock would run the
         // caller's Drop (potentially doing I/O) under that lock.

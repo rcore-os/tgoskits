@@ -16,21 +16,25 @@ pub(crate) fn listen_addrs_conflict(a: Option<IpAddress>, b: Option<IpAddress>) 
     a.is_none() || b.is_none() || a == b
 }
 
+/// Takes the next candidate and advances the cursor.
+fn next_ephemeral_port() -> u16 {
+    let mut cursor = EPHEMERAL_PORT_CURSOR.lock();
+    let port = *cursor;
+    *cursor = if port == EPHEMERAL_PORT_END {
+        EPHEMERAL_PORT_START
+    } else {
+        port + 1
+    };
+    port
+}
+
 /// Allocates an ephemeral port accepted by `check_available`.
+///
+/// The cursor lock is released before invoking the availability callback.
+/// The callback may take a sleepable lock or perform dynamic table work.
 pub(crate) fn allocate_ephemeral_port(check_available: impl Fn(u16) -> bool) -> NetResult<u16> {
-    for _ in 0..=EPHEMERAL_PORT_END - EPHEMERAL_PORT_START {
-        // Advance the cursor under the lock, but run the availability check
-        // outside it: callbacks may take sleeping locks such as `udp_binds`.
-        let port = {
-            let mut curr = EPHEMERAL_PORT_CURSOR.lock();
-            let port = *curr;
-            *curr = if port == EPHEMERAL_PORT_END {
-                EPHEMERAL_PORT_START
-            } else {
-                port + 1
-            };
-            port
-        };
+    for _ in 0..=usize::from(EPHEMERAL_PORT_END - EPHEMERAL_PORT_START) {
+        let port = next_ephemeral_port();
         if check_available(port) {
             return Ok(port);
         }
@@ -50,6 +54,8 @@ pub(crate) fn mask_from_prefix(prefix_len: u8) -> Ipv4Address {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use super::*;
 
     /// Serializes tests that drive the process-wide ephemeral port cursor, so
@@ -74,28 +80,30 @@ mod tests {
     }
 
     #[test]
-    fn netmask_and_ephemeral_port_boundaries_hold() {
-        let _cursor = lock_cursor();
+    fn netmask_boundaries_hold() {
         assert_eq!(mask_from_prefix(0), Ipv4Address::new(0, 0, 0, 0));
         assert_eq!(mask_from_prefix(8), Ipv4Address::new(255, 0, 0, 0));
         assert_eq!(mask_from_prefix(24), Ipv4Address::new(255, 255, 255, 0));
         assert_eq!(mask_from_prefix(33), Ipv4Address::new(255, 255, 255, 255));
-
-        assert!(allocate_ephemeral_port(|port| port >= 0xc000).unwrap() >= 0xc000);
-        assert_eq!(allocate_ephemeral_port(|_| false), Err(NetError::AddrInUse));
     }
 
     #[test]
     fn ephemeral_port_check_runs_without_allocator_lock() {
         let _cursor = lock_cursor();
+        let cursor_available_during_check = Cell::new(false);
+
+        // The previous implementation held the cursor guard across this callback,
+        // so this acquisition would deterministically fail there.
         let port = allocate_ephemeral_port(|port| {
-            assert!(
-                EPHEMERAL_PORT_CURSOR.try_lock().is_some(),
-                "the allocator cursor must be released before the availability check"
-            );
+            cursor_available_during_check.set(EPHEMERAL_PORT_CURSOR.try_lock().is_some());
             port >= EPHEMERAL_PORT_START
         })
         .unwrap();
         assert!((EPHEMERAL_PORT_START..=EPHEMERAL_PORT_END).contains(&port));
+        assert!(
+            cursor_available_during_check.get(),
+            "availability check must run after the raw cursor lock is released"
+        );
+        assert_eq!(allocate_ephemeral_port(|_| false), Err(NetError::AddrInUse));
     }
 }

@@ -68,6 +68,17 @@ Statsmodels 地毯的 Logit 混淆表优先真调 `pred_table()`；conda-forge �
 捕获 stdout/stderr，只在无法导入该入口时退回子进程调用；顶层帮助的等价拼写探测也复用同一个入口。因此每条
 命令仍然是独立一次调用、独立检查返回值与输出，只是不再重复付出启动开销。
 
+`conda notices` 用 `CONDA_OFFLINE=1` 强制单次离线调用。退出 0 可以接受；退出 1 只有在输出同时包含
+`EnforceUnusedAdapter called with url` 和 `This command is using a remote connection in offline mode.`
+时才视为预期离线结果。
+`INPROC ERROR`、Traceback、超时和其他非零退出都继续传播为失败。
+
+宿主回归入口：
+
+```bash
+python3 apps/starry/py-sci2/tests/test_conda_notices.py
+```
+
 抽样边界是有意固定的：只抽查帮助文本中最能区分命令形态的 `info`、`config`、`install`、`env`、`run`、
 `search`、`package`、`repoquery`，未抽查的顶层命令仍通过 `create/remove/clean/env/run/compare/search/notices/
 doctor/package/repoquery` 的真实调用覆盖。该集合覆盖帮助解析、配置往返、求解预览、环境管理、命令执行、

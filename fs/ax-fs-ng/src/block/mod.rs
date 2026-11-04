@@ -8,6 +8,8 @@ pub mod runtime;
 
 #[cfg(all(feature = "ext4", feature = "vfs"))]
 pub(crate) mod file_image;
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+pub use file_image::FileBackingStatus;
 
 #[cfg(all(test, feature = "ext4"))]
 mod region_tests;

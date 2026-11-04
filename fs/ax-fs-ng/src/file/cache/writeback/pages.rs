@@ -6,6 +6,7 @@ impl<'a> WritebackPages<'a> {
     pub(super) fn begin(
         shared: &'a CachedFileShared,
         requested: Option<&[u32]>,
+        write_protected: bool,
     ) -> VfsResult<Self> {
         let requested = requested
             .map(|numbers| -> VfsResult<Vec<u32>> {
@@ -39,6 +40,12 @@ impl<'a> WritebackPages<'a> {
                 .iter()
                 .filter(|(number, page)| page.dirty && selected(**number))
                 .count();
+            // A mounted loop can become write-protected after dirty pages were
+            // cached. Do not start a journal-backed writeback that cannot reach
+            // the device; the failed rollback would latch ext4's journal abort.
+            if count != 0 && write_protected {
+                return Err(VfsError::Io);
+            }
             round
                 .pages
                 .try_reserve_exact(count)

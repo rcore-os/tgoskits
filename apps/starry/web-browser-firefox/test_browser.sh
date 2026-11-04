@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(dirname "$0")
+. "$script_dir/firefox_exit_status.sh"
+
 # Firefox-ESR (Gecko: SpiderMonkey + WebRender) on StarryOS, under a Weston
 # compositor on the DRM backend, rendering the full https://www.4399.com/ page.
 # WEB_BROWSER_RENDERER picks the graphics path: pixman (the default) keeps Weston
@@ -378,6 +381,7 @@ echo "WEB_BROWSER_RENDER_WINDOW_OPEN"
 # merely slow keeps adding entries.
 i=0
 ff_died=0
+ff_status=0
 never_started=0
 settled=0
 last_entries=0
@@ -391,7 +395,8 @@ while [ "$i" -lt 80 ]; do
     # 128+N means signal N (137 is SIGKILL, typically the kernel reclaiming
     # memory), anything else is the browser choosing to exit.
     if ! kill -0 "$ff_pid" 2>/dev/null; then
-        ff_status=0; wait "$ff_pid" 2>/dev/null || ff_status=$?
+        wait_child_status "$ff_pid"
+        ff_status=$child_wait_status
         echo "WEB_BROWSER_DIAG firefox exited early: status=$ff_status stderr_bytes=$(wc -c < /tmp/ff_err.log 2>/dev/null)"
         tail -n 5 /tmp/ff_err.log 2>/dev/null || true
         ff_died=1
@@ -491,14 +496,12 @@ case "$PAGE" in
 esac
 echo "WEB_BROWSER_DIAG network page fetched: page=$PAGE navigated=$navigated cache_entries=$cache_entries"
 
-# Firefox can terminate after a remote page has completed its load when Gecko
-# reaches an unsupported graphics or content path.  The cache/navigation
-# checks above are the network assertion; the bundled probe below is the
-# independent rendering assertion.  Treat a post-load exit as diagnostic so a
-# transient remote-page crash does not discard otherwise valid coverage, while
-# preserving failures that occur before any document was fetched.
+# A normal post-load exit is diagnostic: the bundled probe below remains the
+# independent rendering assertion. A nonzero status or signal exit is still a
+# browser/kernel failure and must fail before that probe can replace its signal.
 if [ "$ff_died" = 1 ]; then
-    echo "WEB_BROWSER_DIAG firefox exited after the remote page was fetched; continuing with the bundled render probe"
+    check_firefox_exit_status "$ff_status" \
+        || fail "firefox exited after the remote page was fetched with status $ff_status"
 fi
 
 # A separate profile keeps the probe page the first thing this instance opens.

@@ -41,6 +41,8 @@ import subprocess
 import sys
 import tempfile
 
+from conda_notices import invoke_inproc, verify_notices
+
 ok = 0
 fail = 0
 
@@ -255,24 +257,12 @@ def _run_inproc(args, timeout):
     try:
         fd_state = _install_fd_capture()
         with _alarm(timeout), contextlib.redirect_stdout(_CAPOUT), contextlib.redirect_stderr(_CAPERR):
-            code = INPROC_MAIN(*args)
-        if isinstance(code, int):
-            rc = int(code)
-        else:
-            # conda returns None when the command completed; treat that as success 0.
-            rc = 0
-        extra_out, extra_err = "", ""
+            rc, extra_out, extra_err = invoke_inproc(
+                INPROC_MAIN, args, (_InprocTimeout,)
+            )
     except _InprocTimeout:
         rc, extra_out = 124, ""
         extra_err = "TIMEOUT: conda %s exceeded %ds" % (" ".join(args), timeout)
-    except SystemExit as exc:
-        code = exc.code
-        if code is None:
-            code = 0
-        elif not isinstance(code, int):
-            # `sys.exit("message")`: the message is the failure, the status is 1.
-            code = 1
-        rc, extra_out, extra_err = code, "", ""
     except Exception as exc:
         rc, extra_out = 1, ""
         extra_err = "INPROC ERROR: %s: %s" % (type(exc).__name__, exc)
@@ -713,36 +703,13 @@ chk(rc == 0 or ("rror" in out or "offline" in out.lower() or "not" in out.lower(
     "conda search '*' --offline exits deterministically")
 
 
-def _offline_call(args, timeout=300):
-    """Run one conda command with CONDA_OFFLINE=1 for that call only.
-
-    `--offline` is a per-subcommand option (search, repoquery, ...), not a top-level flag: putting
-    it before the subcommand is an argparse error on current conda. The supported way to force a
-    whole invocation offline is the CONDA_OFFLINE environment variable, which `run` picks up in
-    both its in-process and subprocess paths. It is set here and restored afterwards so it cannot
-    leak into any later check.
-    """
-    previous = os.environ.get("CONDA_OFFLINE")
-    os.environ["CONDA_OFFLINE"] = "1"
-    try:
-        return run(args, timeout=timeout)
-    finally:
-        if previous is None:
-            os.environ.pop("CONDA_OFFLINE", None)
-        else:
-            os.environ["CONDA_OFFLINE"] = previous
-
-
 # ============================================================================
 # 13. conda notices / doctor  --  behavior beyond --help (2 spawns)
 # ============================================================================
-# `conda notices` with CONDA_OFFLINE=1 may legitimately exit rc=1 (no cached notice channels and
-# no network) while still printing a deterministic explanation, so a non-zero status alone is not
-# a failure; a Python traceback is. rc=2 means the invocation itself was rejected, which stays a
-# failure.
-rc, out = _offline_call(["notices"])
-chk("Traceback" not in out and rc in (0, 1),
-    "conda notices with CONDA_OFFLINE=1 deterministic exit (rc 0 or 1), no traceback")
+# `conda notices` with CONDA_OFFLINE=1 may legitimately refuse its remote request. Only that exact
+# diagnostic is accepted for rc=1; other exits and in-process failures keep their normal failure
+# result.
+verify_notices(run, chk)
 
 # A bare `conda doctor` scans every installed package's file manifest against
 # the filesystem - O(packages x files), which is pathologically slow under QEMU

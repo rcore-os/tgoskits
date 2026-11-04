@@ -53,12 +53,17 @@ pub use highlevel::*;
 pub(crate) use mounts::register_mounted_filesystem;
 #[cfg(feature = "vfs")]
 pub mod vfs {
-    /// Create an ext4 filesystem from an owned file source and its open lease.
     #[cfg(feature = "ext4")]
-    pub use crate::fs::new_from_file as new_filesystem_from_file;
+    pub use crate::block::FileBackingStatus;
     /// Create a filesystem from a native block runtime handle.
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub use crate::fs::new_from_handle as new_filesystem_from_handle;
+    /// Create an ext4 filesystem from an owned file source and its open lease.
+    #[cfg(feature = "ext4")]
+    pub use crate::fs::{
+        new_from_file as new_filesystem_from_file,
+        new_from_file_with_status as new_filesystem_from_file_with_status,
+    };
     pub use crate::highlevel::*;
 }
 

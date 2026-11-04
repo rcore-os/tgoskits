@@ -5,6 +5,8 @@
 //! after the last mountpoint is gone, so the final mount lease must quiesce
 //! and release the backing device instead of waiting for the filesystem drop.
 
+use core::sync::atomic::AtomicBool;
+
 use axfs_ng_vfs::{DirEntry, Filesystem, Location, Mountpoint, NodePermission, NodeType, VfsError};
 
 use super::*;
@@ -26,6 +28,7 @@ struct DeviceAccess {
     reads: Arc<AtomicUsize>,
     writes: Arc<AtomicUsize>,
     flushes: Arc<AtomicUsize>,
+    fail_writes: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -83,6 +86,9 @@ impl FsBlockDevice for CountingImageDevice {
     }
 
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult {
+        if self.access.fail_writes.load(Ordering::SeqCst) {
+            return Err(BlockError::Io);
+        }
         self.access.writes.fetch_add(1, Ordering::SeqCst);
         let start = usize::try_from(block_id)
             .map_err(|_| BlockError::InvalidRequest)?
@@ -427,6 +433,129 @@ fn backing_guard_stays_until_the_last_mount_owner_leaves() {
             guard_drops.load(Ordering::SeqCst),
             1,
             "dropping the remaining owner must not release the guard again"
+        );
+    });
+}
+
+#[test]
+fn failed_final_mount_retirement_recovers_through_flush() {
+    with_test_page_provider(true, |_| {
+        let LoopImageFixture {
+            filesystem,
+            mount,
+            root,
+            held,
+            cached,
+            retained,
+            guard_drops,
+            access,
+        } = LoopImageFixture::mount();
+        cached
+            .write_at(b"retry!".as_slice(), 0)
+            .expect("populate dirty cache");
+        access.fail_writes.store(true, Ordering::SeqCst);
+
+        drop(cached);
+        drop(held);
+        drop(root);
+        drop(mount);
+        drop(filesystem);
+        assert_eq!(
+            guard_drops.load(Ordering::SeqCst),
+            0,
+            "final retirement failure must retain the backing guard"
+        );
+        let mut bytes = [0; 6];
+        assert_eq!(
+            retained
+                .as_file()
+                .expect("regular retained file")
+                .read_at(&mut bytes, 0),
+            Ok(6),
+            "the dirty cache must remain readable after the failure"
+        );
+        assert_eq!(&bytes, b"retry!");
+
+        access.fail_writes.store(false, Ordering::SeqCst);
+        retained
+            .filesystem()
+            .flush()
+            .expect("the flush entry must retry the failed final retirement");
+        assert_eq!(
+            guard_drops.load(Ordering::SeqCst),
+            1,
+            "the recovered retirement must release the backing"
+        );
+        assert_eq!(
+            retained
+                .as_file()
+                .expect("regular retained file")
+                .read_at(&mut bytes, 0),
+            Err(VfsError::ResourceBusy),
+            "a released filesystem must reject retained inode I/O"
+        );
+        drop(retained);
+        assert_eq!(
+            guard_drops.load(Ordering::SeqCst),
+            1,
+            "the retained inode must not release the backing twice"
+        );
+    });
+}
+
+#[test]
+fn shutdown_failure_after_cache_retirement_retains_a_recovery_owner() {
+    with_test_page_provider(true, |_| {
+        let LoopImageFixture {
+            filesystem,
+            mount,
+            root,
+            held,
+            cached,
+            retained,
+            guard_drops,
+            access: _,
+        } = LoopImageFixture::mount();
+        let filesystem_weak = filesystem.downgrade();
+        cached
+            .write_at(b"flush!".as_slice(), 0)
+            .expect("populate dirty cache");
+        let _drain_failure =
+            crate::fs::ext4::rsext4::fs::admission::fail_next_cached_write_drain_for_test();
+
+        drop(cached);
+        drop(held);
+        drop(root);
+        drop(retained);
+        drop(mount);
+        drop(filesystem);
+
+        assert_eq!(
+            guard_drops.load(Ordering::SeqCst),
+            0,
+            "shutdown failure must retain the backing guard"
+        );
+        assert!(
+            filesystem_weak.upgrade().is_none(),
+            "the mount state must be gone after the final Mountpoint drops"
+        );
+        let recovery = filesystem_weak
+            .upgrade_ops()
+            .expect("failed retirement must retain a retryable filesystem owner");
+
+        recovery
+            .flush()
+            .expect("the retained owner must retry shutdown through flush");
+        assert_eq!(
+            guard_drops.load(Ordering::SeqCst),
+            1,
+            "successful recovery must release the backing exactly once"
+        );
+
+        drop(recovery);
+        assert!(
+            filesystem_weak.upgrade_ops().is_none(),
+            "successful recovery must clear the self-held retirement owner"
         );
     });
 }

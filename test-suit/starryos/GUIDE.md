@@ -208,10 +208,11 @@ wrapper 在 guest 内依次确认 `/opt/ltp/Version`、`runtest/syscalls` 的唯
 LTP 分组的共享 prebuild 安装 e2fsprogs，CMake 把 `mkfs.ext4`、配置及运行依赖
 注入测试镜像；wrapper 的 PATH 包含 sbin。不得通过隐藏格式化工具或只运行 tmpfs
 来报告 ext4 测试迁移完成。
-LTP 分组还安装 `ltp-isolation-exit-fs`，在 native 阶段验证活跃 cwd 阻止卸载及
-退出通知前释放 cwd，以及 loop 挂载、bind 别名和 lazy detach 的最终释放。
-回归还在最后关闭时留下脏页，再重新挂载核对写回结果。这些是运行设施的配套回归，
-不是上游 LTP 用例，不计入 `cases.txt` 或共同集数量。
+独立的 `qemu/system/ltp-isolation-exit-fs` 子测例验证活跃 cwd 阻止卸载、退出通知前
+释放 cwd，以及 loop 挂载、bind 别名、失败卸载恢复、`BLKFLSBUF` 重试和 lazy detach
+的最终释放。它在最后关闭时留下脏页，再重新挂载核对写回结果。该程序复用
+`ltp-syscalls/src/exit_fs_context.c`，但不是上游 LTP 用例，不计入 `cases.txt` 或
+共同集数量。
 `ltp-isolation-access-context` 同样属于 native 配套回归：验证访问检查中的真实／有效
 凭据、目录搜索及空路径，以及 bind 别名和命名空间副本中的共享只读状态。
 它同时核对 `statfs`、`/proc/self/mountinfo` 和 `/proc/mounts` 的实际报告。
@@ -273,7 +274,9 @@ scripts/test/ltp-syscalls/generate-common.sh \
 只运行一个 LTP testcase 使用
 `cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-syscalls/execve03`。
 单项名称须位于 `cases.txt` 或对应架构的 `cases-<arch>.txt`；无效名称在构建前报错。
-单项运行仅安装该 testcase 的 wrapper，不执行整组专用的两个 native 隔离回归；
+单独的 loop 生命周期回归使用
+`cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-isolation-exit-fs`。
+单项 LTP 运行仅安装该 testcase 的 wrapper，不执行整组专用的 native 隔离回归；
 wrapper 原有的 LTP 版本、`TPASS` 完成数量及文件系统检查仍然生效。
 完整系统验证使用 `cargo xtask starry test qemu --arch <arch> -c qemu/system`。四个架构
 `x86_64`、`aarch64`、`riscv64`、`loongarch64` 在同一工作区串行执行，只有实际完成的

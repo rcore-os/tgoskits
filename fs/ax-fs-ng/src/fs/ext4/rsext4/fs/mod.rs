@@ -175,7 +175,9 @@ enum LeasePhase {
     #[cfg(feature = "vfs")]
     Retiring,
     #[cfg(feature = "vfs")]
-    Terminal,
+    Failed,
+    #[cfg(feature = "vfs")]
+    Released,
 }
 
 #[derive(Default)]
@@ -183,6 +185,12 @@ struct MountLeaseState {
     installed: Weak<Ext4MountLease>,
     generation: u64,
     phase: LeasePhase,
+    /// Failure-only strong owner. It keeps the filesystem and backing lease
+    /// reachable for `FilesystemOps::flush` after all mount/cache owners leave.
+    /// Successful recovery clears it outside retirement locks; a permanent
+    /// journal abort intentionally retains it with the dirty backing.
+    #[cfg(feature = "vfs")]
+    recovery_owner: Option<Arc<Ext4Filesystem>>,
 }
 
 #[derive(Default)]
@@ -228,7 +236,7 @@ impl Drop for Ext4MountLease {
     fn drop(&mut self) {
         #[cfg(feature = "vfs")]
         if self.filesystem.backing_lease.is_some() {
-            self.retire_file_backed_mount();
+            self.filesystem.retire_file_backed_mount(self.generation);
             return;
         }
 
@@ -245,65 +253,6 @@ impl Drop for Ext4MountLease {
         }
         let _ = self.filesystem.retire_mount_caches();
         drop(state);
-    }
-}
-
-#[cfg(feature = "vfs")]
-impl Ext4MountLease {
-    fn retire_file_backed_mount(&self) {
-        if !self.claim_final_retirement() {
-            return;
-        }
-
-        // Serialize retirement with an explicit `FilesystemOps::shutdown`
-        // caller. The mount-lease lock is intentionally not held here: cache
-        // writeback, worker joins and device I/O may sleep or re-enter.
-        let mut shutdown = self.filesystem.shutdown_state.lock();
-        if self.filesystem.retire_mount_caches().is_err() {
-            drop(shutdown);
-            self.finish_file_backed_retirement();
-            return;
-        }
-        if !shutdown.complete {
-            match self.filesystem.shutdown_filesystem_locked() {
-                Ok(()) => shutdown.complete = true,
-                Err(error) => {
-                    log::error!("failed to shut down the final file-backed ext4 mount: {error:?}");
-                    drop(shutdown);
-                    self.finish_file_backed_retirement();
-                    return;
-                }
-            }
-        }
-        drop(shutdown);
-
-        if let Some(backing) = &self.filesystem.backing_lease {
-            backing.release();
-        }
-        self.finish_file_backed_retirement();
-    }
-
-    /// Claims the last lease generation atomically. Publishing `Retiring`
-    /// under the same lock rejects a racing `mount_lease` call, while the
-    /// generation check rejects any lease installed before this destructor
-    /// acquired the lock.
-    fn claim_final_retirement(&self) -> bool {
-        let mut state = self.filesystem.mount_lease.lock();
-        if state.phase != LeasePhase::Active
-            || state.generation != self.generation
-            || state.installed.strong_count() != 0
-        {
-            return false;
-        }
-        state.installed = Weak::new();
-        state.phase = LeasePhase::Retiring;
-        true
-    }
-
-    fn finish_file_backed_retirement(&self) {
-        let mut state = self.filesystem.mount_lease.lock();
-        debug_assert_eq!(state.phase, LeasePhase::Retiring);
-        state.phase = LeasePhase::Terminal;
     }
 }
 
@@ -411,6 +360,13 @@ impl Ext4Filesystem {
         u64::from(self.inode_metadata.block_size())
     }
 
+    #[cfg(feature = "vfs")]
+    fn backing_write_protected(&self) -> VfsResult<bool> {
+        self.backing_lease
+            .as_ref()
+            .map_or(Ok(false), |lease| lease.is_write_protected())
+    }
+
     pub(crate) fn directory_cache_generation(&self, inode: InodeNumber) -> VfsResult<Option<u64>> {
         // Namespace commits advance the canonical parent inode change attribute
         // through rsext4's parent_dir_change, invalidating misses in every
@@ -485,6 +441,120 @@ impl Ext4Filesystem {
         };
         self.lock().finish_reap(claim, result.is_ok());
         result.map_err(into_vfs_err)
+    }
+
+    /// Claims and performs final retirement for one mount-lease generation.
+    ///
+    /// `shutdown_state` serializes retirement and explicit shutdown. The mount
+    /// lease lock is only held for the phase transition, never across cache
+    /// writeback, worker joins or backing release.
+    #[cfg(feature = "vfs")]
+    fn retire_file_backed_mount(&self, generation: u64) {
+        let write_protected = self.backing_write_protected();
+        let mut shutdown = self.shutdown_state.lock();
+        {
+            let mut state = self.mount_lease.lock();
+            if state.phase != LeasePhase::Active
+                || state.generation != generation
+                || state.installed.strong_count() != 0
+            {
+                return;
+            }
+            state.installed = Weak::new();
+            state.phase = LeasePhase::Retiring;
+        }
+
+        let result = match write_protected {
+            Ok(true) => Err(VfsError::Io),
+            Ok(false) => self.run_file_backed_retirement(&mut shutdown),
+            Err(error) => Err(error),
+        };
+        drop(shutdown);
+        self.complete_file_backed_retirement(result);
+    }
+
+    /// Retries a retirement that retained dirty cache after a writeback or
+    /// shutdown error. Only one retry can move `Failed` to `Retiring`.
+    #[cfg(feature = "vfs")]
+    fn retry_file_backed_retirement(&self) -> VfsResult<()> {
+        let phase = self.mount_lease.lock().phase;
+        match phase {
+            LeasePhase::Released => return Ok(()),
+            LeasePhase::Retiring => return Err(VfsError::ResourceBusy),
+            LeasePhase::Active => {
+                if self.backing_write_protected()? {
+                    return Err(VfsError::Io);
+                }
+                return self.sync_to_disk();
+            }
+            LeasePhase::Failed => {}
+        }
+        if self.backing_write_protected()? {
+            return Err(VfsError::Io);
+        }
+        let mut shutdown = self.shutdown_state.lock();
+        {
+            let mut state = self.mount_lease.lock();
+            match state.phase {
+                LeasePhase::Failed => state.phase = LeasePhase::Retiring,
+                LeasePhase::Released => return Ok(()),
+                LeasePhase::Retiring => return Err(VfsError::ResourceBusy),
+                LeasePhase::Active => {
+                    drop(state);
+                    drop(shutdown);
+                    return self.sync_to_disk();
+                }
+            }
+        }
+
+        let result = self.run_file_backed_retirement(&mut shutdown);
+        drop(shutdown);
+        self.complete_file_backed_retirement(result);
+        result
+    }
+
+    /// Caller holds `shutdown_state` and has published `Retiring`.
+    #[cfg(feature = "vfs")]
+    fn run_file_backed_retirement(&self, shutdown: &mut ShutdownState) -> VfsResult<()> {
+        self.retire_mount_caches()?;
+        if !shutdown.complete {
+            self.shutdown_filesystem_locked()?;
+            shutdown.complete = true;
+        }
+        Ok(())
+    }
+
+    /// Releases the backing only after retirement succeeds, then publishes the
+    /// terminal result outside `shutdown_state`.
+    #[cfg(feature = "vfs")]
+    fn complete_file_backed_retirement(&self, result: VfsResult<()>) {
+        if result.is_ok()
+            && let Some(backing) = &self.backing_lease
+        {
+            backing.release();
+        }
+        if let Err(error) = result {
+            log::error!("failed to retire the final file-backed ext4 mount: {error:?}");
+        }
+        let retired_owner = {
+            let mut state = self.mount_lease.lock();
+            debug_assert_eq!(state.phase, LeasePhase::Retiring);
+            if result.is_ok() {
+                state.phase = LeasePhase::Released;
+                state.recovery_owner.take()
+            } else {
+                if state.recovery_owner.is_none() {
+                    state.recovery_owner = Some(
+                        self.self_ref
+                            .upgrade()
+                            .expect("retirement runs through a live filesystem owner"),
+                    );
+                }
+                state.phase = LeasePhase::Failed;
+                None
+            }
+        };
+        drop(retired_owner);
     }
 
     /// Retires the global cache registry and the cached dentry tree. Cached
@@ -598,6 +668,10 @@ impl FilesystemOps for Ext4Filesystem {
     }
 
     fn is_readonly(&self) -> bool {
+        #[cfg(feature = "vfs")]
+        if self.backing_write_protected().unwrap_or(true) {
+            return true;
+        }
         self.lock().ext4.options().readonly
     }
 
@@ -607,14 +681,11 @@ impl FilesystemOps for Ext4Filesystem {
 
     fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
         let mut state = self.mount_lease.lock();
-        // Final retirement owns the transition. Do not publish a lease for a
-        // retiring instance. A final retirement attempt marks the instance
-        // terminal whether shutdown succeeds or the backing guard is retained
-        // after failure. A caller that still builds a Mountpoint from a
-        // retained Filesystem handle receives no lifetime lease. After
-        // successful shutdown the closed admission gate rejects its I/O before
-        // the released device; after failure the retained guard remains owned
-        // by the filesystem until the RAII fallback runs.
+        // Final retirement owns the transition out of `Active`. Retiring,
+        // Failed and Released instances never publish another lease, so a
+        // retained Filesystem handle cannot revive the mount. A failed
+        // retirement remains retryable through `FilesystemOps::flush`; only a
+        // successful retry releases the backing and reaches `Released`.
         if state.phase != LeasePhase::Active {
             return None;
         }
@@ -670,6 +741,10 @@ impl FilesystemOps for Ext4Filesystem {
     }
 
     fn flush(&self) -> VfsResult<()> {
+        #[cfg(feature = "vfs")]
+        if self.backing_lease.is_some() {
+            return self.retry_file_backed_retirement();
+        }
         self.sync_to_disk()
     }
 

@@ -113,6 +113,30 @@ static int check_exit_fs(int private_fs)
     return 0;
 }
 
+/* Search the backing image for bytes that were written through a mount alias.
+ * This observes the real backing store rather than the still-live page cache. */
+static int image_contains(int fd, const char *needle, size_t needle_len)
+{
+    unsigned char buffer[16384 + 64];
+    size_t carried = 0;
+    if (needle_len == 0 || needle_len > 64 || lseek(fd, 0, SEEK_SET) < 0)
+        return -1;
+    for (;;) {
+        ssize_t count = read(fd, buffer + carried, sizeof(buffer) - carried);
+        if (count < 0)
+            return -1;
+        size_t available = carried + (size_t)count;
+        if (memmem(buffer, available, needle, needle_len) != NULL)
+            return 1;
+        size_t retained = available < needle_len - 1 ? available : needle_len - 1;
+        memmove(buffer, buffer + available - retained, retained);
+        carried = retained;
+        if (count == 0)
+            break;
+    }
+    return 0;
+}
+
 /* Rolling checksum of the raw backing image. The image is compared across a
  * rejected flush to show the writeback really did not reach the store, and
  * across a successful one to show that it did. */
@@ -144,8 +168,11 @@ static int check_loop_mount_lifetime(void)
     char alias[] = "/tmp/ltp-loop-alias.XXXXXX";
     char other[] = "/tmp/ltp-loop-other.XXXXXX";
     char path[128];
-    char content[6];
-    int image_fd = -1, loop_fd = -1, held_fd = -1, path_fd = -1;
+    char content[64] = {0};
+    static const char alias_payload[] = "alias-backed-flush-payload-0123456789-abcdef";
+    static const char dirty_payload[] = "failed-unmount-retains-dirty-data";
+    int image_fd = -1, loop_fd = -1, held_fd = -1, alias_fd = -1, excl_fd = -1;
+    int path_fd = -1;
     int bound = 0, mounted = 0, alias_mounted = 0, other_mounted = 0, result = 1;
     uint64_t image_before = 0, image_after = 0;
     unsigned write_protect = 1;
@@ -185,9 +212,32 @@ static int check_loop_mount_lifetime(void)
     int status;
     if (waitpid(formatter, &status, 0) != formatter || !WIFEXITED(status) || WEXITSTATUS(status))
         goto cleanup;
+
+    /* An exclusive opener is a block-device owner too. Mounting must fail
+     * without publishing a second holder, and closing that fd must make the
+     * same mount succeed. */
+    excl_fd = open("/dev/loop0", O_RDWR | O_EXCL | O_CLOEXEC);
+    if (excl_fd < 0)
+        goto cleanup;
+    errno = 0;
+    if (mount("/dev/loop0", other, "ext4", 0, NULL) != -1 || errno != EBUSY) {
+        fprintf(stderr, "mount ignored an exclusive loop opener\n");
+        goto cleanup;
+    }
+    close(excl_fd);
+    excl_fd = -1;
     if (mount("/dev/loop0", target, "ext4", 0, NULL))
         goto cleanup;
     mounted = 1;
+    errno = 0;
+    excl_fd = open("/dev/loop0", O_RDWR | O_EXCL | O_CLOEXEC);
+    if (excl_fd >= 0 || errno != EBUSY) {
+        fprintf(stderr, "mounted loop accepted an exclusive opener\n");
+        if (excl_fd >= 0)
+            close(excl_fd);
+        excl_fd = -1;
+        goto cleanup;
+    }
     if (mount(target, alias, NULL, MS_BIND, NULL))
         goto cleanup;
     alias_mounted = 1;
@@ -195,19 +245,21 @@ static int check_loop_mount_lifetime(void)
     held_fd = open(path, O_CREAT | O_RDWR, 0600);
     if (held_fd < 0 || pwrite(held_fd, "before", 6, 0) != 6 || fsync(held_fd))
         goto cleanup;
-    if (ioctl(loop_fd, LOOP_CLR_FD) != -1 || errno != EBUSY) {
-        fprintf(stderr, "mounted loop allowed LOOP_CLR_FD\n");
+    if (ioctl(loop_fd, LOOP_CLR_FD)) {
+        fprintf(stderr, "mounted loop rejected LOOP_CLR_FD: errno=%d\n", errno);
         goto cleanup;
     }
-    if (ioctl(loop_fd, LOOP_GET_STATUS64, &info) ||
-        mount("/dev/loop0", other, "ext4", 0, NULL) != -1 || errno != EBUSY) {
+    if (ioctl(loop_fd, LOOP_GET_STATUS64, &info) || !(info.lo_flags & LO_FLAGS_AUTOCLEAR)) {
+        fprintf(stderr, "mounted LOOP_CLR_FD did not record AUTOCLEAR\n");
+        goto cleanup;
+    }
+    if (mount("/dev/loop0", other, "ext4", 0, NULL) != -1 || errno != EBUSY) {
         fprintf(stderr, "mounted loop allowed a second mount\n");
         goto cleanup;
     }
     /* Rejecting the second mount must leave the first one untouched. */
     if (pwrite(held_fd, "usable", 6, 0) != 6 || fsync(held_fd) ||
-        pread(held_fd, content, sizeof(content), 0) != (ssize_t)sizeof(content) ||
-        memcmp(content, "usable", sizeof(content))) {
+        pread(held_fd, content, 6, 0) != 6 || memcmp(content, "usable", 6)) {
         fprintf(stderr, "the mounted loop stopped working after a rejected second mount\n");
         goto cleanup;
     }
@@ -242,61 +294,131 @@ static int check_loop_mount_lifetime(void)
         goto cleanup;
     }
     puts("LOOP_READONLY_FLUSH_REJECTED_THEN_WRITTEN_BACK");
-    close(loop_fd);
-    loop_fd = -1;
-    if (pwrite(held_fd, "shared", 6, 0) != 6 || fsync(held_fd))
-        goto cleanup;
-    if (syscall(SYS_umount2, target, MNT_DETACH))
-        goto cleanup;
-    mounted = 0;
-    if (pwrite(held_fd, "detach", 6, 0) != 6 || fsync(held_fd))
-        goto cleanup;
-    loop_fd = open("/dev/loop0", O_RDWR | O_CLOEXEC);
-    if (loop_fd < 0 || ioctl(loop_fd, LOOP_GET_STATUS64, &info))
-        goto cleanup;
-    if (ioctl(loop_fd, LOOP_SET_FD, image_fd) != -1 || errno != EBUSY) {
-        fprintf(stderr, "detached open file allowed loop rebinding\n");
-        goto cleanup;
-    }
-    close(loop_fd);
-    loop_fd = -1;
+
+    /* The original mountpoint is about to disappear. A bind alias remains the
+     * only live mount owner, so BLKFLSBUF must find and flush its filesystem
+     * rather than relying on a weak reference to the original Mountpoint. */
     snprintf(path, sizeof(path), "%s/held", alias);
-    path_fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (path_fd < 0 || pread(path_fd, content, sizeof(content), 0) != (ssize_t)sizeof(content) ||
-        memcmp(content, "detach", sizeof(content)))
-        goto cleanup;
-    close(path_fd);
-    path_fd = -1;
-    if (syscall(SYS_umount2, alias, MNT_DETACH))
-        goto cleanup;
-    alias_mounted = 0;
-    if (pread(held_fd, content, sizeof(content), 0) != (ssize_t)sizeof(content) ||
-        memcmp(content, "detach", sizeof(content)))
-        goto cleanup;
-    /* Final mount retirement must write dirty pages, without an explicit fsync. */
-    if (pwrite(held_fd, "cached", 6, 0) != 6)
+    alias_fd = open(path, O_RDWR | O_CLOEXEC);
+    if (alias_fd < 0)
         goto cleanup;
     close(held_fd);
     held_fd = -1;
+    if (syscall(SYS_umount2, target, MNT_DETACH))
+        goto cleanup;
+    mounted = 0;
+    if (pwrite(alias_fd, alias_payload, sizeof(alias_payload) - 1, 0) !=
+        (ssize_t)(sizeof(alias_payload) - 1))
+        goto cleanup;
+    if (ioctl(loop_fd, BLKFLSBUF, 0)) {
+        fprintf(stderr, "BLKFLSBUF through a bind alias failed: errno=%d\n", errno);
+        goto cleanup;
+    }
+    int found = image_contains(image_fd, alias_payload, sizeof(alias_payload) - 1);
+    if (found != 1) {
+        fprintf(stderr, "BLKFLSBUF through a bind alias did not reach the backing: %d\n", found);
+        goto cleanup;
+    }
+    if (pread(alias_fd, content, sizeof(alias_payload) - 1, 0) !=
+            (ssize_t)(sizeof(alias_payload) - 1) ||
+        memcmp(content, alias_payload, sizeof(alias_payload) - 1)) {
+        fprintf(stderr, "the bind alias stopped working after BLKFLSBUF\n");
+        goto cleanup;
+    }
+
+    /* A normal unmount that cannot write dirty data must leave both the mount
+     * and its lifetime holder reachable for a later retry. */
+    if (pwrite(alias_fd, dirty_payload, sizeof(dirty_payload) - 1, 0) !=
+        (ssize_t)(sizeof(dirty_payload) - 1))
+        goto cleanup;
+    close(alias_fd);
+    alias_fd = -1;
+    write_protect = 1;
+    if (ioctl(loop_fd, BLKROSET, &write_protect))
+        goto cleanup;
+    errno = 0;
+    if (syscall(SYS_umount2, alias, 0) != -1 || errno != EIO) {
+        fprintf(stderr, "failed unmount did not preserve its mount: errno=%d\n", errno);
+        goto cleanup;
+    }
+    snprintf(path, sizeof(path), "%s/held", alias);
+    path_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (path_fd < 0) {
+        fprintf(stderr, "failed unmount destroyed its only recovery owner\n");
+        goto cleanup;
+    }
+    close(path_fd);
+    path_fd = -1;
+    write_protect = 0;
+    if (ioctl(loop_fd, BLKROSET, &write_protect) || syscall(SYS_umount2, alias, 0)) {
+        fprintf(stderr, "failed unmount could not be retried: errno=%d\n", errno);
+        goto cleanup;
+    }
+    alias_mounted = 0;
+
+    /* Reuse the same binding and prove the dirty retry data reached the image. */
+    if (mount("/dev/loop0", other, "ext4", 0, NULL))
+        goto cleanup;
+    other_mounted = 1;
+    snprintf(path, sizeof(path), "%s/held", other);
+    held_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (held_fd < 0 ||
+        pread(held_fd, content, sizeof(dirty_payload) - 1, 0) !=
+            (ssize_t)(sizeof(dirty_payload) - 1) ||
+        memcmp(content, dirty_payload, sizeof(dirty_payload) - 1)) {
+        fprintf(stderr, "the retried unmount lost its dirty data\n");
+        goto cleanup;
+    }
+    close(held_fd);
+    held_fd = -1;
+    puts("LOOP_FAILED_UNMOUNT_RETAINED_OWNER");
+
+    /* The final mount lease must keep failed dirty cache and the loop holder
+     * alive. BLKFLSBUF then retries retirement through the same filesystem
+     * flush entry, and only the last opener applies delayed AUTOCLEAR. */
+    snprintf(path, sizeof(path), "%s/held", other);
+    held_fd = open(path, O_RDWR | O_CLOEXEC);
+    if (held_fd < 0 || syscall(SYS_umount2, other, MNT_DETACH))
+        goto cleanup;
+    other_mounted = 0;
+    if (pwrite(held_fd, "cached", 6, 0) != 6)
+        goto cleanup;
+    write_protect = 1;
+    if (ioctl(loop_fd, BLKROSET, &write_protect))
+        goto cleanup;
+    close(held_fd);
+    held_fd = -1;
+    if (ioctl(loop_fd, LOOP_GET_STATUS64, &info)) {
+        fprintf(stderr, "failed final retirement released the loop holder\n");
+        goto cleanup;
+    }
+    write_protect = 0;
+    if (ioctl(loop_fd, BLKROSET, &write_protect) || ioctl(loop_fd, BLKFLSBUF, 0)) {
+        fprintf(stderr, "BLKFLSBUF did not retry final retirement: errno=%d\n", errno);
+        goto cleanup;
+    }
+    puts("LOOP_FINAL_RETIREMENT_RETRIED_BY_FLUSH");
+    close(loop_fd);
+    loop_fd = -1;
     loop_fd = open("/dev/loop0", O_RDWR | O_CLOEXEC);
     if (loop_fd < 0 || ioctl(loop_fd, LOOP_GET_STATUS64, &info) != -1 || errno != ENXIO) {
-        fprintf(stderr, "last detached file did not release its loop backing\n");
+        fprintf(stderr, "last mount owner did not apply delayed AUTOCLEAR\n");
         goto cleanup;
     }
     bound = 0;
+    memset(&info, 0, sizeof(info));
+    info.lo_flags = LO_FLAGS_AUTOCLEAR;
     if (ioctl(loop_fd, LOOP_SET_FD, image_fd))
         goto cleanup;
     bound = 1;
-    memset(&info, 0, sizeof(info));
-    info.lo_flags = LO_FLAGS_AUTOCLEAR;
     if (ioctl(loop_fd, LOOP_SET_STATUS64, &info) ||
         mount("/dev/loop0", target, "ext4", 0, NULL))
         goto cleanup;
     mounted = 1;
     snprintf(path, sizeof(path), "%s/held", target);
     held_fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (held_fd < 0 || pread(held_fd, content, sizeof(content), 0) != (ssize_t)sizeof(content) ||
-        memcmp(content, "cached", sizeof(content))) {
+    if (held_fd < 0 || pread(held_fd, content, 6, 0) != 6 ||
+        memcmp(content, "cached", 6)) {
         fprintf(stderr, "final mount retirement lost dirty data\n");
         goto cleanup;
     }
@@ -305,31 +427,18 @@ static int check_loop_mount_lifetime(void)
     if (syscall(SYS_umount2, target, 0))
         goto cleanup;
     mounted = 0;
-    /* A committed unmount releases its mount holder, so the same backing store
-       is mountable again and still carries what the first mount wrote. */
-    if (mount("/dev/loop0", other, "ext4", 0, NULL))
-        goto cleanup;
-    other_mounted = 1;
-    snprintf(path, sizeof(path), "%s/held", other);
-    held_fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (held_fd < 0 || pread(held_fd, content, sizeof(content), 0) != (ssize_t)sizeof(content) ||
-        memcmp(content, "cached", sizeof(content))) {
-        fprintf(stderr, "the same backing was not mountable after an unmount\n");
-        goto cleanup;
-    }
-    close(held_fd);
-    held_fd = -1;
-    if (syscall(SYS_umount2, other, 0))
-        goto cleanup;
-    other_mounted = 0;
     puts("LOOP_MOUNT_REUSABLE_AFTER_UNMOUNT");
     puts("LOOP_MOUNT_LEASE_RELEASED_AFTER_LAST_FILE");
     result = 0;
 cleanup:
     if (result)
         perror("loop mount lifecycle");
+    if (excl_fd >= 0)
+        close(excl_fd);
     if (path_fd >= 0)
         close(path_fd);
+    if (alias_fd >= 0)
+        close(alias_fd);
     if (held_fd >= 0)
         close(held_fd);
     if (alias_mounted)
