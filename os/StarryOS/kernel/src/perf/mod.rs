@@ -664,6 +664,24 @@ impl PerfEvent {
     }
 }
 
+impl Drop for PerfEvent {
+    fn drop(&mut self) {
+        let (Some(output), Some(table)) = (&self.irq_output, PERF_FILE.get()) else {
+            return;
+        };
+        let removed: Vec<bpf::BpfPerfOutput> = {
+            let mut map = table.lock_irqsave();
+            let fds: Vec<usize> = map
+                .iter()
+                .filter(|(_, entry)| entry.same_endpoint(output))
+                .map(|(fd, _)| *fd)
+                .collect();
+            fds.iter().filter_map(|fd| map.remove(fd)).collect()
+        };
+        drop(removed);
+    }
+}
+
 impl Pollable for PerfEvent {
     fn poll(&self) -> axpoll::IoEvents {
         if let Some(control) = &self.control {
@@ -1114,27 +1132,39 @@ pub fn perf_event_open(
         if enable_member {
             perf_event.set_enabled(true)?;
         }
+        let output = perf_event.irq_output.clone();
         let event_arc: Arc<dyn FileLike> = perf_event;
         // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC
         // when the caller sets this flag, otherwise the fd survives execve.
         let cloexec = flags.contains(PerfOpenFlags::FD_CLOEXEC);
         let fd = add_file_like(event_arc.clone(), cloexec)?;
 
-        PERF_FILE
-            .get()
-            .expect("perf subsystem not initialized")
-            .lock()
-            .insert(fd as usize, Arc::downgrade(&event_arc));
+        let replaced = {
+            let mut table = PERF_FILE
+                .get()
+                .expect("perf subsystem not initialized")
+                .lock_irqsave();
+            match output {
+                Some(output) => table.insert(fd as usize, output),
+                None => table.remove(&(fd as usize)),
+            }
+        };
+        // Release the replaced entry and our event reference after the lock;
+        // if the fd was closed meanwhile, the event's drop removes its entry.
+        drop(replaced);
+        drop(event_arc);
 
         Ok(fd as isize)
     })
 }
 
-/// Map fd → weak<PerfEvent> so `bpf_perf_event_output` can locate the
-/// target ringbuf without owning a strong reference (the user side owns
-/// it via the fd).
-static PERF_FILE: LazyInit<RawSpinLock<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
-    LazyInit::new();
+/// Map fd → BPF output endpoint so `bpf_perf_event_output` can locate the
+/// target ringbuf. Entries are added and removed in task context (open and the
+/// event's drop); the helper only borrows them. Every acquisition saves and
+/// disables local IRQs: the helper runs with IRQs disabled, so a task-side
+/// `lock()` (preemption only) could deadlock against a local interrupt that
+/// fires a BPF program on the same CPU.
+static PERF_FILE: LazyInit<RawSpinLock<HashMap<usize, bpf::BpfPerfOutput>>> = LazyInit::new();
 
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
@@ -1147,9 +1177,12 @@ pub fn perf_event_init() {
     }
 }
 
-/// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,
-/// downcast the strong upgrade to `PerfEvent`, and have the bpf-software
-/// variant write a record into the ringbuf.
+/// Implementation of `bpf_perf_event_output` helper: write a record into the
+/// ringbuf of the fd's BPF output endpoint.
+///
+/// BPF programs call this with local IRQs disabled. The endpoint is borrowed
+/// under the table lock, never cloned, so the helper cannot end up releasing
+/// the last reference to a perf event or its notifier.
 pub fn perf_event_output(
     _ctx: *mut c_void,
     fd: usize,
@@ -1157,23 +1190,8 @@ pub fn perf_event_output(
     data: &[u8],
 ) -> StarryResult<()> {
     let table = PERF_FILE.get().ok_or(StarryError::NotFound)?;
-    let mut map = table.lock_irqsave();
-    let weak = map.get(&fd).ok_or(StarryError::NotFound)?;
-    let Some(file) = weak.upgrade() else {
-        map.remove(&fd);
-        return Err(StarryError::NotFound);
-    };
-    drop(map);
-
-    let perf_event = file
-        .into_any_arc()
-        .downcast::<PerfEvent>()
-        .map_err(|_| StarryError::InvalidInput)?;
-    perf_event
-        .irq_output
-        .as_ref()
-        .ok_or(StarryError::InvalidInput)?
-        .write_event(data)
+    let map = table.lock_irqsave();
+    map.get(&fd).ok_or(StarryError::NotFound)?.write_event(data)
 }
 
 #[cfg(all(test, axtest))]
