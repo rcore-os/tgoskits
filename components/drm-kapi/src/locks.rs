@@ -44,6 +44,11 @@ pub struct LockContextOps {
 
 static LOCK_CONTEXT: ProviderSlot<LockContextOps> = ProviderSlot::new();
 
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static TEST_LOCK_CONTEXT: core::cell::Cell<Option<&'static LockContextOps>> = const { core::cell::Cell::new(None) };
+}
+
 /// Install the native lock-context provider.
 pub fn install_lock_context_ops(ops: &'static LockContextOps) -> Result<(), &'static str> {
     LOCK_CONTEXT.install(ops)
@@ -52,6 +57,9 @@ pub fn install_lock_context_ops(ops: &'static LockContextOps) -> Result<(), &'st
 fn lock_context() -> &'static LockContextOps {
     #[cfg(test)]
     {
+        if let Some(ops) = TEST_LOCK_CONTEXT.get() {
+            return ops;
+        }
         static TEST_OPS: LockContextOps = LockContextOps {
             preempt_disable: || {},
             preempt_enable: || {},
