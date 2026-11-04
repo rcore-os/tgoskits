@@ -218,6 +218,10 @@ fn render_meminfo() -> String {
     let free_kb = free / 1024;
     let cached_kb = cached / 1024;
     let available_kb = free_kb + cached_kb;
+    let (_, compressed, ..) = crate::mm::swap_usage();
+    let swap_total_kb = total / 2 / 1024;
+    let swap_free_kb = crate::mm::swap_free_bytes() / 1024;
+    let swap_compressed_kb = compressed / 1024;
     let page_tables_kb = page_tables / 1024;
     let anon_pages_kb = anon_pages / 1024;
 
@@ -228,8 +232,9 @@ fn render_meminfo() -> String {
          Buffers:                 0 kB\n\
          Cached:         {cached_kb:>10} kB\n\
          SwapCached:              0 kB\n\
-         SwapTotal:               0 kB\n\
-         SwapFree:                0 kB\n\
+         SwapTotal:      {swap_total_kb:>10} kB\n\
+         SwapFree:       {swap_free_kb:>10} kB\n\
+         SwapCompressed: {swap_compressed_kb:>9} kB\n\
          Dirty:                   0 kB\n\
          Writeback:               0 kB\n\
          AnonPages:      {anon_pages_kb:>10} kB\n\
@@ -275,7 +280,8 @@ fn render_vmstat() -> String {
         + usages.get(ax_alloc::UsageKind::Global);
     let free_pages = total.saturating_sub(used) / 4096;
     let pgfault = crate::mm::PAGE_FAULT_COUNT.load(Ordering::Relaxed);
-    format!("nr_free_pages {free_pages}\npgfault {pgfault}\n")
+    let (_, _, pswpin, pswpout) = crate::mm::swap_usage();
+    format!("nr_free_pages {free_pages}\npgfault {pgfault}\npswpin {pswpin}\npswpout {pswpout}\n")
 }
 
 fn render_cpuinfo() -> String {
@@ -566,11 +572,20 @@ fn render_diskstats_row(
 ) -> String {
     format!(
         "{} {} {} {} 0 {} {} {} 0 {} {} {} {} {} 0 0 0 0 {} {}\n",
-        identity.major, identity.minor, identity.name,
-        stats.reads, stats.sectors_read, stats.read_ns / 1_000_000,
-        stats.writes, stats.sectors_written, stats.write_ns / 1_000_000,
-        stats.inflight, stats.busy_ns / 1_000_000, stats.weighted_ns / 1_000_000,
-        stats.flushes, stats.flush_ns / 1_000_000,
+        identity.major,
+        identity.minor,
+        identity.name,
+        stats.reads,
+        stats.sectors_read,
+        stats.read_ns / 1_000_000,
+        stats.writes,
+        stats.sectors_written,
+        stats.write_ns / 1_000_000,
+        stats.inflight,
+        stats.busy_ns / 1_000_000,
+        stats.weighted_ns / 1_000_000,
+        stats.flushes,
+        stats.flush_ns / 1_000_000,
     )
 }
 

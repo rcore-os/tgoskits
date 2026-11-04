@@ -567,6 +567,36 @@ impl CowBackend {
         }
     }
 
+    pub(super) fn prepare_swap_fault(
+        &self,
+        address: VirtAddr,
+        flags: MappingFlags,
+        stored: &super::super::swap::SwapPage,
+    ) -> StarryResult<FaultMaterialization> {
+        if self.file.is_some() || self.shared || self.page_size != PAGE_SIZE_4K {
+            return Err(StarryError::BadState);
+        }
+        let frame = alloc_frame(true, PAGE_SIZE_4K)?;
+        // SAFETY: this is the unique fresh allocation; the lease owns release.
+        let lease = unsafe { FrameLease::owned(frame, PAGE_SIZE_4K) };
+        // SAFETY: alloc_frame(true, ...) initialized every byte before this
+        // slice is formed. No PTE or provider index exposes the owned frame;
+        // decode failure drops the lease without publishing partial contents.
+        let destination =
+            unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), PAGE_SIZE_4K) };
+        stored.read_into(destination)?;
+        let page = self.index_new_frame(lease, RssKind::Anon)?;
+        let owner = PreparedPteOwner::installed(
+            address,
+            frame,
+            PAGE_SIZE_4K,
+            page,
+            Some(RssKind::Anon),
+            ProviderPublication::Pending,
+        );
+        Ok(FaultMaterialization::with_owner(1, owner, flags))
+    }
+
     fn prepare_zero_page(&self) -> StarryResult<Arc<PageObject>> {
         if let Some(page) = self.pages.lock_irqsave().zero_page.clone() {
             return Ok(page);
@@ -3591,7 +3621,7 @@ mod tests {
             let (key, slot) = aspace.mapping_slots.iter().next().unwrap();
             let key = *key;
             let page = slot.page.clone();
-            aspace.protect_file_mapping_slot(key, &page).unwrap();
+            aspace.protect_mapping_slot(key, &page).unwrap();
             aspace.protect(start, PAGE_SIZE_4K, flags).unwrap();
             assert!(
                 !aspace

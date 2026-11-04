@@ -846,6 +846,8 @@ pub fn sys_sysinfo(
     kinfo.freeram = free as _;
     kinfo.procs = processes().len() as _;
     kinfo.mem_unit = 1;
+    kinfo.totalswap = (total / 2) as _;
+    kinfo.freeswap = crate::mm::swap_free_bytes() as _;
 
     write_sysinfo(current, info, kinfo)?;
     Ok(0)

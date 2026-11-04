@@ -102,6 +102,14 @@ impl FrameLease {
         self.allocation._anchor.as_ref()?.downcast_ref()
     }
 
+    pub(super) fn is_exclusive_base_allocation(&self) -> bool {
+        self.bytes == PAGE_SIZE_4K
+            && self.allocation.bytes == PAGE_SIZE_4K
+            && self.allocation.release.is_some()
+            && self.allocation._anchor.is_none()
+            && Arc::strong_count(&self.allocation) == 1
+    }
+
     pub fn new(paddr: PhysAddr) -> Self {
         Self {
             paddr,

@@ -142,6 +142,7 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
     "io_uring",
 ] }
 lock_api = { version = "0.4", features = ["arc_lock"] }
+lz4_flex = { version = "0.14", default-features = false, features = ["safe-encode", "safe-decode"] }
 ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
 num_enum = { version = "0.7", default-features = false }

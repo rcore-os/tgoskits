@@ -1212,6 +1212,20 @@ impl MappingOperation {
         MappingExecution::populate(self, space_id, request, flags, access_flags, pt)
     }
 
+    pub(super) fn prepare_swap_fault(
+        &self,
+        address: VirtAddr,
+        flags: MappingFlags,
+        stored: &super::swap::SwapPage,
+    ) -> StarryResult<FaultMaterialization> {
+        match &self.kind {
+            MappingOperationKind::Cow(backend) => {
+                backend.prepare_swap_fault(address, flags, stored)
+            }
+            _ => Err(StarryError::BadState),
+        }
+    }
+
     pub(super) fn prepare_fault(
         &self,
         space_id: AddressSpaceId,
