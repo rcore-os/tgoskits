@@ -899,7 +899,11 @@ pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> crate::StarryResult
         return Err(StarryError::TooManyOpenFiles);
     }
     let fd = FileDescriptor { inner: f, cloexec };
-    Ok(table.add(fd).map_err(|_| StarryError::TooManyOpenFiles)? as c_int)
+    let added = table.add(fd);
+    // A rejected descriptor may be the last reference to a newly built file
+    // whose destructor can sleep; drop it after releasing the table lock.
+    drop(table);
+    Ok(added.map_err(|_| StarryError::TooManyOpenFiles)? as c_int)
 }
 
 /// Close a file by `fd`.
