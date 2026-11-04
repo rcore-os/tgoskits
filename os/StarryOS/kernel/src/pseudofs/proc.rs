@@ -218,9 +218,9 @@ fn render_meminfo() -> String {
     let free_kb = free / 1024;
     let cached_kb = cached / 1024;
     let available_kb = free_kb + cached_kb;
-    let (swapped, compressed, ..) = crate::mm::swap_usage();
+    let (_, compressed, ..) = crate::mm::swap_usage();
     let swap_total_kb = total / 2 / 1024;
-    let swap_free_kb = swap_total_kb.saturating_sub(swapped / 1024);
+    let swap_free_kb = crate::mm::swap_free_bytes() / 1024;
     let swap_compressed_kb = compressed / 1024;
     let page_tables_kb = page_tables / 1024;
     let anon_pages_kb = anon_pages / 1024;

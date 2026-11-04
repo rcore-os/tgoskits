@@ -40,7 +40,7 @@ fn complete_page_fault_with(
 
 mod accounting;
 mod swap;
-pub(crate) use swap::swap_usage;
+pub(crate) use swap::{swap_free_bytes, swap_usage};
 mod advice;
 mod backend;
 pub(crate) mod domain;
@@ -3305,6 +3305,15 @@ impl AddrSpace {
         &mut self,
         pages: &[(MappingSlotKey, Arc<PageObject>)],
     ) -> StarryResult {
+        if self.mutation_gate.needs_repair() {
+            return Err(StarryError::BadState);
+        }
+        // Read-only PTEs do not prove that an earlier writable translation
+        // has been revoked. The MM owner must complete its pending receipts
+        // before a retry may expose these frames to writeback or compression.
+        if self.mutation_gate.pending_count() != 0 {
+            return Err(StarryError::ResourceBusy);
+        }
         let ranges = self.mapping_slot_ranges(pages)?;
         let mut changes = Vec::new();
         changes

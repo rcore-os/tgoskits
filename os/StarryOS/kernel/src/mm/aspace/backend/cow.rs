@@ -986,11 +986,12 @@ impl CowBackend {
         if self.file.is_some() || self.shared || self.page_size != PAGE_SIZE_4K {
             return Err(StarryError::BadState);
         }
-        let frame = alloc_frame(false, PAGE_SIZE_4K)?;
+        let frame = alloc_frame(true, PAGE_SIZE_4K)?;
         // SAFETY: this is the unique fresh allocation; the lease owns release.
         let lease = unsafe { FrameLease::owned(frame, PAGE_SIZE_4K) };
-        // SAFETY: no PTE or provider index exposes this owned frame yet. The
-        // entire frame is initialized before publication; decode failure drops it.
+        // SAFETY: alloc_frame(true, ...) initialized every byte before this
+        // slice is formed. No PTE or provider index exposes the owned frame;
+        // decode failure drops the lease without publishing partial contents.
         let destination =
             unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), PAGE_SIZE_4K) };
         stored.read_into(destination)?;

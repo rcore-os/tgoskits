@@ -91,6 +91,20 @@ struct swap_stats {
     uint64_t total, free, compressed, process, in, out;
 };
 
+static void check_free_capacity(struct swap_stats stats) {
+    uint64_t pool = proc_value("/proc/meminfo", "MemTotal:") * 1024 / 8;
+    uint64_t logical_pages = (stats.total - stats.process) / PAGE;
+    /* SwapCompressed is rounded down to KiB. Bound the exact byte quota
+       without assuming every compressed page consumes the same allocation. */
+    uint64_t lower_used = stats.compressed;
+    uint64_t upper_used = lower_used + 1023;
+    uint64_t lower_pages = pool > upper_used ? (pool - upper_used) / (PAGE / 2) : 0;
+    uint64_t upper_pages = pool > lower_used ? (pool - lower_used) / (PAGE / 2) : 0;
+    if (lower_pages > logical_pages) lower_pages = logical_pages;
+    if (upper_pages > logical_pages) upper_pages = logical_pages;
+    REQUIRE(stats.free >= lower_pages * PAGE && stats.free <= upper_pages * PAGE);
+}
+
 static struct swap_stats swap_stats(void) {
     struct sysinfo info;
     REQUIRE(syscall(SYS_sysinfo, &info) == 0 && info.mem_unit > 0);
@@ -105,6 +119,8 @@ static struct swap_stats swap_stats(void) {
     REQUIRE(stats.total > 0 && stats.free <= stats.total);
     REQUIRE(proc_value("/proc/meminfo", "SwapTotal:") == stats.total / 1024);
     REQUIRE(proc_value("/proc/meminfo", "SwapFree:") == stats.free / 1024);
+    /* This phase has no other MM with swapped contents in the isolated guest. */
+    check_free_capacity(stats);
     return stats;
 }
 
@@ -218,6 +234,7 @@ static void check_swapped_lifecycle(void) {
     puts("SWAP_POPULATE_PASSED");
 
     /* ONFAULT can lock a swapped VMA without restoring its page first. */
+    struct swap_stats before_lock = swap_stats();
     swap_out_one();
     REQUIRE(syscall(SYS_mlock2, region, PAGE, MLOCK_ONFAULT) == 0);
     REQUIRE(mincore(region, PAGE, &residency) == 0 && !(residency & 1));
@@ -227,7 +244,8 @@ static void check_swapped_lifecycle(void) {
     REQUIRE(proc_value("/proc/self/status", "VmSwap:") * 1024 == locked.process);
     REQUIRE(syscall(SYS_madvise, region, PAGE, MADV_DONTNEED_LOCKED) == 0);
     struct swap_stats discarded = swap_stats();
-    REQUIRE(discarded.free == locked.free + PAGE && discarded.process + PAGE == locked.process);
+    REQUIRE(discarded.free == before_lock.free && discarded.process + PAGE == locked.process);
+    REQUIRE(discarded.compressed == before_lock.compressed);
     /* SwapCompressed is rounded to KiB; this single payload can be smaller. */
     REQUIRE(discarded.in == locked.in);
     REQUIRE(mincore(region, PAGE, &residency) == 0 && !(residency & 1));
@@ -254,7 +272,7 @@ static void check_swapped_lifecycle(void) {
     struct swap_stats before = swap_stats();
     swap_out_one();
     struct swap_stats swapped = swap_stats();
-    REQUIRE(swapped.free + PAGE == before.free && swapped.process == before.process + PAGE);
+    REQUIRE(swapped.free <= before.free && swapped.process == before.process + PAGE);
     REQUIRE(munmap(region, PAGE) == 0);
     errno = 0;
     REQUIRE(mincore(region, PAGE, &residency) == -1 && errno == ENOMEM);
@@ -306,7 +324,7 @@ int main(void) {
     struct swap_stats swapped = swap_stats();
     REQUIRE(swapped.total == before.total);
     REQUIRE(before.free >= evicted * PAGE);
-    REQUIRE(swapped.free == before.free - evicted * PAGE);
+    REQUIRE(swapped.free < before.free);
     REQUIRE(swapped.process == before.process + evicted * PAGE);
     REQUIRE(swapped.compressed > before.compressed);
     REQUIRE(swapped.out == before.out + evicted && swapped.in == before.in);

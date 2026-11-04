@@ -21,6 +21,21 @@ static PAGE_INS: AtomicUsize = AtomicUsize::new(0);
 static PAGE_OUTS: AtomicUsize = AtomicUsize::new(0);
 const MAX_COMPRESSED_BYTES: usize = PAGE_SIZE_4K / 2;
 
+fn available_swap_bytes(total_ram: usize, stored_pages: usize, stored_bytes: usize) -> usize {
+    let pages = (total_ram / 2 / PAGE_SIZE_4K).saturating_sub(stored_pages);
+    let bytes = (total_ram / 8).saturating_sub(stored_bytes);
+    pages.min(bytes / MAX_COMPRESSED_BYTES) * PAGE_SIZE_4K
+}
+
+/// Conservative capacity for additional pages, in logical bytes.
+pub(crate) fn swap_free_bytes() -> usize {
+    available_swap_bytes(
+        ax_runtime::hal::mem::total_ram_size(),
+        STORED_PAGES.load(Ordering::Relaxed),
+        STORED_BYTES.load(Ordering::Relaxed),
+    )
+}
+
 /// Immutable contents; fork shares storage until each MM faults or unmaps it.
 pub(super) struct SwapPage {
     compressed: [Vec<u8>; 2],
@@ -91,10 +106,7 @@ impl SwapPage {
     }
 
     fn available_pages() -> usize {
-        let total = ax_runtime::hal::mem::total_ram_size();
-        let bytes = (total / 8).saturating_sub(STORED_BYTES.load(Ordering::Relaxed));
-        let pages = (total / 2 / PAGE_SIZE_4K).saturating_sub(STORED_PAGES.load(Ordering::Relaxed));
-        pages.min(bytes / MAX_COMPRESSED_BYTES)
+        swap_free_bytes() / PAGE_SIZE_4K
     }
 }
 
@@ -321,6 +333,91 @@ mod tests {
         super::{HugePageAdvice, MappingOperation},
         *,
     };
+
+    #[axtest::axtest]
+    fn swap_protection_waits_for_an_earlier_shootdown() {
+        use super::super::{MutationError, TlbRange};
+
+        let start = VirtAddr::from(0x7280_0000usize);
+        let range = VirtAddrRange::from_start_size(start, PAGE_SIZE_4K);
+        let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+        let mut space = AddrSpace::new_empty(start, PAGE_SIZE_4K).unwrap();
+        space
+            .map(
+                start,
+                PAGE_SIZE_4K,
+                flags,
+                true,
+                MappingOperation::new_alloc(start, PAGE_SIZE_4K, "[swap-shootdown]"),
+            )
+            .unwrap();
+        space.write(start, &[0x31; PAGE_SIZE_4K]).unwrap();
+        let pages: Vec<_> = space
+            .mapping_slots
+            .iter()
+            .map(|(&key, slot)| (key, slot.page.clone()))
+            .collect();
+        space.protect_mapping_slots(&pages).unwrap();
+        // This MM is not installed on hardware. Retain a real mutation receipt
+        // to model protection whose PTE is published but whose CPU has not acked.
+        let mut protection = space.mutation_gate.begin(space.id, 1);
+        protection.add_tlb_range(TlbRange::new(start, PAGE_SIZE_4K).unwrap());
+        assert_eq!(
+            space.mutation_gate.commit(protection).unwrap_err(),
+            MutationError::TlbPending
+        );
+        let epoch = space.vm_epoch();
+        let blocked = matches!(
+            space.protect_mapping_slots(&pages),
+            Err(StarryError::ResourceBusy)
+        );
+        let frame = pages[0].1.frame().paddr();
+        // SAFETY: the test retains the exclusive initialized frame, and no
+        // hardware CPU uses it. Emulate the final store through a stale TLB
+        // before acknowledging the protection; no compression slice is live.
+        unsafe {
+            phys_to_virt(frame)
+                .as_mut_ptr()
+                .write_bytes(0x7a, PAGE_SIZE_4K)
+        };
+        space
+            .mutation_gate
+            .acknowledge(space.id, epoch, 0)
+            .unwrap()
+            .unwrap();
+        drop(pages);
+        assert_eq!(space.pageout_anonymous_batch(range).unwrap(), range.end);
+        assert_eq!(space.swapped_page_count(), 1);
+        assert_eq!(
+            space.handle_page_fault_result(start, PageFaultFlags::READ),
+            FaultResult::Handled
+        );
+        let mut restored = [0; PAGE_SIZE_4K];
+        space.read(start, &mut restored).unwrap();
+        space.reset_uninstalled_for_loader().unwrap();
+        assert!(
+            blocked,
+            "read-only PTEs must not bypass a pending write-protection receipt"
+        );
+        assert_eq!(restored, [0x7a; PAGE_SIZE_4K]);
+    }
+
+    #[axtest::axtest]
+    fn swap_capacity_obeys_both_quotas() {
+        let total = 48 * PAGE_SIZE_4K;
+        let byte_limit = total / 8;
+        // Byte reservations can fill the pool while logical slots remain.
+        assert_eq!(
+            available_swap_bytes(total, 4, byte_limit),
+            0,
+            "a full compressed byte pool cannot advertise free swap"
+        );
+        assert_eq!(
+            available_swap_bytes(total, 4, byte_limit - MAX_COMPRESSED_BYTES),
+            PAGE_SIZE_4K
+        );
+        assert_eq!(available_swap_bytes(total, total / 2 / PAGE_SIZE_4K, 0), 0);
+    }
 
     #[axtest::axtest]
     fn anonymous_swap_preserves_fork_move_discard_and_replacement() {
