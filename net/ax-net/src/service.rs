@@ -55,6 +55,10 @@
 //! let sockets = SOCKET_SET.inner.lock();
 //! waker.wake();  // WRONG: potential self-deadlock
 //! ```
+//!
+//! The UDP bind side table is a task-context sleepable lock. It is acquired
+//! outside `SOCKET_SET.inner` and must never be taken from a raw/IRQ-save
+//! context. Ephemeral-port selection releases the raw cursor lock first.
 
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 use core::{

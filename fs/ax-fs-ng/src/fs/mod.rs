@@ -55,15 +55,61 @@ pub fn new_from_handle(
 /// dropping the last filesystem owner remains the RAII fallback. A live mount,
 /// bind alias, namespace copy or open location keeps the lease unreleased.
 /// I/O and flush errors propagate through the filesystem's block-I/O boundary.
+///
+/// This compatibility entry has no dynamic backing status. A caller that needs
+/// failed retirement recovery after every mount/cache owner leaves must retain
+/// a `WeakFilesystem` or another strong filesystem handle to reach
+/// `FilesystemOps::flush`; without such an entry the failure-only recovery
+/// owner keeps the backing unreleased but cannot be retried.
 #[cfg(all(feature = "ext4", feature = "vfs"))]
 pub fn new_from_file<L: Send + 'static>(
     backend: crate::file::FileBackend,
     read_only: bool,
     lease: L,
 ) -> VfsResult<Filesystem> {
+    new_from_file_inner(
+        backend,
+        read_only,
+        lease,
+        crate::block::file_image::NoFileBackingStatus,
+    )
+}
+
+/// Creates an ext4 filesystem with a dynamic backing write-protection status.
+///
+/// The status object must only observe backing state; it must not perform I/O
+/// or retain the filesystem itself. Mount retirement and flush use this status
+/// to reject a writeback that cannot reach the device. Callers still need a
+/// retained weak or strong handle to invoke `FilesystemOps::flush` after all
+/// mount owners leave.
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+pub fn new_from_file_with_status<L, S>(
+    backend: crate::file::FileBackend,
+    read_only: bool,
+    lease: L,
+    status: S,
+) -> VfsResult<Filesystem>
+where
+    L: Send + 'static,
+    S: crate::block::FileBackingStatus + 'static,
+{
+    new_from_file_inner(backend, read_only, lease, status)
+}
+
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+fn new_from_file_inner<L, S>(
+    backend: crate::file::FileBackend,
+    read_only: bool,
+    lease: L,
+    status: S,
+) -> VfsResult<Filesystem>
+where
+    L: Send + 'static,
+    S: crate::block::FileBackingStatus + 'static,
+{
     use crate::block::file_image::{FileBackingLease, SharedFileBacking};
 
-    let lease: Arc<dyn FileBackingLease> = Arc::new(SharedFileBacking::new(lease));
+    let lease: Arc<dyn FileBackingLease> = Arc::new(SharedFileBacking::new(lease, status));
     let device =
         crate::block::file_image::FileImageDevice::new(backend, read_only, Arc::clone(&lease))?;
     let region = BlockRegion::from_num_blocks(device.num_blocks());

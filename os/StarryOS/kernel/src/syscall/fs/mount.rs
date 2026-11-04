@@ -3,6 +3,8 @@ use core::ffi::{c_char, c_void};
 
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
+#[cfg(feature = "ext4")]
+use axfs_ng_vfs::{VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, FSMOUNT_CLOEXEC, FSOPEN_CLOEXEC, MOUNT_ATTR__ATIME, MOUNT_ATTR_NOATIME,
@@ -831,10 +833,34 @@ struct LoopMountLease {
     device: Arc<dyn crate::pseudofs::DeviceOps>,
 }
 
+/// Read-only state owner paired with a loop mount lease.
+#[cfg(feature = "ext4")]
+struct LoopBackingStatus {
+    device: Arc<dyn crate::pseudofs::DeviceOps>,
+}
+
+#[cfg(feature = "ext4")]
+impl ax_fs_ng::vfs::FileBackingStatus for LoopBackingStatus {
+    fn is_write_protected(&self) -> VfsResult<bool> {
+        let loop_device = self
+            .device
+            .as_any()
+            .downcast_ref::<crate::pseudofs::dev::r#loop::LoopDevice>()
+            .ok_or(VfsError::NoSuchDevice)?;
+        loop_device.mount_write_protected()
+    }
+}
+
 #[cfg(feature = "ext4")]
 impl LoopMountLease {
     fn new(device: Arc<dyn crate::pseudofs::DeviceOps>) -> Self {
         Self { device }
+    }
+
+    fn status(&self) -> LoopBackingStatus {
+        LoopBackingStatus {
+            device: Arc::clone(&self.device),
+        }
     }
 }
 
@@ -855,7 +881,7 @@ impl Drop for LoopMountLease {
 
 #[cfg(feature = "ext4")]
 fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
-    use ax_fs_ng::vfs::{FileBackend, new_filesystem_from_file};
+    use ax_fs_ng::vfs::{FileBackend, new_filesystem_from_file_with_status};
     use axfs_ng_vfs::NodeType;
 
     use crate::pseudofs::{Device, dev::r#loop::LoopDevice};
@@ -899,6 +925,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     if !readonly && loop_device.is_read_only()? {
         return Err(StarryError::ReadOnlyFilesystem);
     }
+    let lease_device = Arc::clone(device.inner());
     // The filesystem is the lease's sole owner, so the loop holder is released
     // only when the filesystem itself - including a lazily detached one with
     // open files - is dropped. No filesystem-context lock is held during
@@ -907,19 +934,24 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         // Claim the holder only when a new filesystem instance is needed. A
         // reused filesystem already owns its lease.
         loop_device.acquire_mount_holder()?;
-        let lease = LoopMountLease::new(device.inner().clone());
-        // `new_from_file` moves the lease into the shared file-backing cell.
-        // Final retirement takes and drops it only after cache drain/shutdown;
-        // a failed retirement keeps it for the final-filesystem-drop fallback.
-        new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)
+        let lease = LoopMountLease::new(lease_device);
+        let backing_status = lease.status();
+        // The new filesystem owns the lease in its shared file-backing cell and
+        // retires caches, drains and shuts down before the final drop.
+        new_filesystem_from_file_with_status(
+            FileBackend::Direct(source_location),
+            readonly,
+            lease,
+            backing_status,
+        )
     })?;
+    // Associate the stable filesystem owner before the mount is published.
+    // The weak reference survives destruction of the original Mountpoint when a
+    // bind alias or namespace copy still has dirty cached data to flush.
+    loop_device.set_mount_flush_target(fs.downgrade());
     let mount = target_location.mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly());
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
-    // Let BLKFLSBUF flush this filesystem's dirty cache through the loop
-    // device. The reference is weak so the device does not keep the mount or
-    // filesystem alive after an unmount.
-    loop_device.set_mount_flush_target(Arc::downgrade(&mount));
     Ok(())
 }
 
@@ -979,37 +1011,17 @@ pub fn sys_umount2(
 
     // Flush this filesystem's closed-file cache before its own flush. An
     // unrelated filesystem's busy mapping must not reject this unmount.
-    let cached_files = ax_fs_ng::file::sync_filesystem_cached_files(target.filesystem());
+    ax_fs_ng::file::sync_filesystem_cached_files(target.filesystem())?;
 
     if plan.targets().any(is_mount_busy) {
         return Err(StarryError::from(Errno::EBUSY));
     }
-    // Two deliberate deviations from Linux v6.12 are visible here.
-    //
-    // 1. Linux shuts the superblock down inside `ksys_umount()` ->
-    //    `deactivate_locked_super()` -> `generic_shutdown_super()`, and that
-    //    shutdown is `void`: a writeback failure while the superblock goes away
-    //    is not reported back to `umount2()` at all. StarryOS instead flushes
-    //    the filesystem first and returns that error, so callers can see that
-    //    dirty data did not reach the device.
-    // 2. The flush error does not cancel the unmount. The unmount was already
-    //    admitted as not busy, so retaining it to report the error would hold
-    //    its lifetime guard - a loop mount holder, for example - for an
-    //    unbounded time, blocking every later mount of that backing store while
-    //    the caller merely waits for an errno it has already been given.
-    //    `commit_unmount()` therefore releases the mount and its guard, and the
-    //    first failure is reported to userspace afterwards.
-    //
-    // The namespace is only notified once the commit was accepted: a commit
-    // rejected by a concurrent topology change keeps the mount attached, and
-    // announcing an unmount that never happened would be worse than the missing
-    // wakeup for the flush-failure path above.
-    let (commit, committed) = target.commit_unmount_with_status(plan);
-    if committed {
-        crate::file::notify_mount_namespace_changed(&mount_namespace);
-    }
-    commit?;
-    cached_files?;
+    // Keep the existing recovery boundary: a failed cache writeback leaves the
+    // mount and all of its lifetime owners in place so userspace can repair the
+    // backing device and retry. Releasing a dirty backing would make the error
+    // terminal without a reachable retry owner.
+    target.commit_unmount(plan)?;
+    crate::file::notify_mount_namespace_changed(&mount_namespace);
 
     Ok(0)
 }

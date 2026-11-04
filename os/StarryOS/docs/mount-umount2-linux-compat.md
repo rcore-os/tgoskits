@@ -704,6 +704,11 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 本次用户态验证集中在：
 
 - `test-suit/starryos/qemu-smp1/system/util-linux/c/src/main.c`
+- `test-suit/starryos/qemu/system/ltp-syscalls/src/exit_fs_context.c` 的
+  `qemu/system/ltp-isolation-exit-fs` loop 生命周期链
+
+定向运行该链使用
+`cargo xtask starry test qemu --arch x86_64 -c qemu/system/ltp-isolation-exit-fs`。
 
 它覆盖的核心点是：
 
@@ -716,6 +721,8 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 - move descendant target 的 `ELOOP`
 - readonly mount 上的 `chmod` / `rename` / `unlink` / `mkdir`
 - `umount2` 的 invalid flags / invalid combo / expire / nofollow / detach
+- loop 的 `O_EXCL` / 第二挂载拒绝、bind alias 上的 `BLKFLSBUF`、失败卸载保留原 mount，
+  以及 mounted `LOOP_CLR_FD` 的延后 AUTOCLEAR
 
 这也是为什么这次修复能够比较扎实：
 
@@ -738,24 +745,42 @@ pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
 - 而且 shared/private/slave/unbindable / bind / move / readonly / umount2 核心路径已经具备稳定可验证的 Linux 风格语义
 - 但并不意味着 Linux 整体 mount namespace 语义已经“全部实现”
 
-## 9. 与 Linux v6.12 的三项有意偏离
+## 9. loop 挂载所有权、刷新与卸载恢复
 
-loop 挂载持有者（mount holder）落地后，有三处行为与 Linux v6.12 不同。StarryOS 的 loop 设备只用
-`DeviceOps` 暴露块设备语义，没有 Linux 的 `block_device` / `bd_holder` 结构，文件系统实例也没有
-“按 backing 复用 superblock”的注册表，所以其中几项互斥必须在文件系统生命周期上自行建立。这里
-单独列出，避免以后被当成 bug 改回去。
+loop 挂载持有者（mount holder）落地后，块设备声明和卸载恢复有若干边界需要在文件系统生命周期上
+自行建立。StarryOS 的 loop 设备只用 `DeviceOps` 暴露块设备语义，没有 Linux 的
+`block_device` / `bd_holder` 结构，文件系统实例也没有“按 backing 复用 superblock”的注册表。
+这里单独列出当前规则和有意偏离，避免以后被当成 bug 改回去。
 
-### 9.1 同一 loop backing 的第二次 mount 返回 `EBUSY`
+### 9.1 loop 的 exclusive opener 与 mount holder 共用所有权规则
 
 - StarryOS：某个 loop backing 上已经有一个文件系统实例时，再次
   `mount("/dev/loopX", ..., "ext4", ...)` 返回 `EBUSY`（`LoopDevice::acquire_mount_holder()`）。
+  如果普通 opener 已经以 `O_EXCL` 打开同一 loop，挂载也必须返回 `EBUSY`；两者由同一
+  `LoopState` 临界区仲裁，失败的挂载不会留下 holder。反向也成立：已有 mount holder 时新的
+  `O_EXCL` open 返回 `EBUSY`，普通非独占 opener 仍可用于 ioctl。
 - Linux v6.12：`fs/super.c` 的 `mount_bdev()` / `sget_fc()` 对同一个 block device 复用已有
-  `super_block`，第二个挂载点只是同一个文件系统的另一个挂载，不会返回 `EBUSY`。
+  `super_block`，第二个挂载点只是同一个文件系统的另一个挂载；已有不同 holder 的重复声明则由
+  `bd_may_claim()` 拒绝。
 - 为什么必须偏离：`new_filesystem_from_file()` 每次都会新建一个独立文件系统实例（各自的 inode
   缓存与脏页）。允许第二次挂载等于让两个实例同时写同一份 backing，后写者覆盖先写者。mount holder
-  把“一个 backing 同时只服务一个文件系统实例”变成显式约束。
+  把“一个 backing 同时只服务一个文件系统实例”变成显式约束，并保留普通 `O_EXCL` 的排他保证。
 
-### 9.2 已挂载只读 loop 的 `BLKFLSBUF` 返回 `EIO`
+### 9.2 `BLKFLSBUF` 按稳定文件系统刷新，而不是按原 Mountpoint 刷新
+
+- StarryOS：挂载时在发布 Mountpoint 之前把 `WeakFilesystem` 登记到 loop holder；`BLKFLSBUF`
+  通过这个弱引用找到仍存活的文件系统，先写回关闭文件的缓存，再刷新文件系统元数据。
+- 为什么这样实现：bind mount 和复制 namespace 会创建新的 Mountpoint，但共享同一文件系统租约。
+  原 Mountpoint 被 `MNT_DETACH` 后，弱引用仍必须能找到通过 bind alias 存活的文件系统；使用
+  `WeakFilesystem` 不会形成 loop -> mountpoint -> filesystem -> loop 的强引用环。
+- 若 holder 仍标记为 mounted 但稳定文件系统目标已经无法升级，刷新返回
+  `ENXIO`，不能把“没有刷新任何文件系统”报告成成功。
+- 最后 Mountpoint 消失后其 `mount_state` 已释放；`WeakFilesystem::upgrade_ops()` 只临时保留
+  filesystem ops，让失败退休的 `flush` 重试可达。它本身并不阻止调用方用
+  `Filesystem::new(ops)` 再造包装；mount 复活由 `mount_lease` 只允许 `Active` 以及
+  admission 门禁共同阻止。
+
+### 9.3 已挂载只读 loop 的 `BLKFLSBUF` 返回 `EIO`
 
 - StarryOS：`LoopDevice::ioctl(BLKFLSBUF)` 先检查 `mounted && LO_FLAGS_READ_ONLY`，命中即返回
   `EIO`，不驱动文件系统写回。
@@ -767,31 +792,57 @@ loop 挂载持有者（mount holder）落地后，有三处行为与 Linux v6.12
   是这一状态下唯一不破坏文件系统的做法。`ltp-isolation-exit-fs` 覆盖这条路径：只读时
   `BLKFLSBUF` 返回 `-1` / `EIO` 且 backing 不变；解除只读后 `BLKFLSBUF` 成功并把脏页写回。
 
-### 9.3 刷新失败时 `umount` 已提交但返回错误
+### 9.4 mounted loop 的 `LOOP_CLR_FD` 登记 AUTOCLEAR
 
-- StarryOS：`sys_umount2()` 先做 busy 检查并接纳卸载，再调用 `Location::commit_unmount()`。即使
-  `flush` 失败，卸载仍然提交（mount 被摘下、lifetime guard 例如 loop mount holder 被释放），
-  错误在挂载已经释放之后返回给调用方。只有提交本身被拒绝（并发拓扑变化）时 mount 才保留。
-- Linux v6.12：`ksys_umount()` 经由 `deactivate_locked_super()` -> `generic_shutdown_super()`
-  关闭 superblock，而 `generic_shutdown_super()` 返回 `void`，该路径上的写回错误不会回传给
-  `umount2()`。
-- 为什么必须偏离：卸载一旦被判定为不忙就已提交；为上报错误而保留 mount，会让它的 lifetime
-  guard 无限期占用 backing，使同一 backing 的后续挂载全部失败，而调用方只是多拿一个 errno。
-  因此这里“先释放、后报错”，并且只在提交被接受时才 `notify_mount_namespace_changed()`：提交
-  失败的挂载并没有卸载，不能提前通知 namespace。
+- StarryOS：mounted loop 上的 `LOOP_CLR_FD` 成功返回，设置 `LO_FLAGS_AUTOCLEAR`，但不会把
+  binding 标成 rundown。最后一个普通 opener 和最后一个 mount holder 都离开后，binding 才释放。
+- Linux v7.1：`loop_clr_fd()` 在文件系统仍挂载时同样登记 AUTOCLEAR；只有设备没有其他使用者时
+  才立即 rundown。
+- 回归必须同时证明请求成功、AUTOCLEAR 可观察、挂载仍然可用，以及最后 `close` / mount lease
+  退出后 loop 回到空闲状态。
 
-### 9.4 用户命名空间凭据能力范围
+### 9.5 正常卸载刷新失败时保留原 mount
 
-- StarryOS：`/proc/<pid>/uid_map` 与 `gid_map` 当前把映射后的数字 ID 写入线程凭据，
-  并为命名空间内的 root 保留能力集合；能力检查仍读取线程凭据，尚未像 Linux 那样把每项
-  capability 绑定到对应的 user namespace。
+- StarryOS：`sys_umount2()` 在提交卸载之前先同步该文件系统的关闭文件缓存并刷新其元数据；这
+  两步失败时直接返回错误，mount 和它的 loop mount holder 都保留，调用方可以修复 backing 后
+  重试。
+- StarryOS 在普通卸载的 cache writeback 前检查 loop mount holder 的当前写保护状态；检测到
+  `BLKROSET` 只读时返回 `EIO`，不进入 journal 提交。该失败不会把 ext4 置为 journal abort，
+  解除写保护后同一卸载/flush 入口可以重试。该预检必须使用 typed loop 状态，不能以空写结果
+  推断通用只读能力。
+- typed 入口是 `FileBackingStatus::is_write_protected()`；`LoopBackingStatus` 持有 loop 设备
+  状态所有者并调用现有 `mount_write_protected()`，ext4 通过 backing lease 读取该能力而不持
+  `FileBackend`。真正的 I/O 失败已经造成 journal abort 时不清除 abort、不丢弃脏页，仍返回
+  `EIO` 并保留可观察所有者。
+- 共享 VFS 的 `commit_unmount()` 只在 flush 成功后删除挂载；flush 失败返回错误、保持 mount、
+  filesystem lease 和 lifetime guard 不变，不存在“预刷新成功所以删除阶段不会失败”的假设。
+- Linux v7.1 的 `do_umount()` 在 1758–1850 行完成 busy 检查后进入 `umount_tree()` 并返回 0，
+  不把普通同步写回 EIO 返回给 `umount2()`。因此这里“预刷新失败返回 `EIO` 且保留 mount”是
+  StarryOS 的数据安全和可恢复性策略，不是 Linux 已证明的用户可见语义，也不能在兼容表中标成
+  完全一致。
+- lazy detach 后最后一个 mount lease 的退休状态为
+  `Active -> Retiring -> Failed | Released`。失败时保留全局脏缓存和 backing holder，不复活
+  mount；后续 `BLKFLSBUF` 通过稳定文件系统入口调用 `FilesystemOps::flush()`，由同一 ext4
+  filesystem 在 `Failed` 状态重试 cache retirement、shutdown 和 backing release。只有成功才
+  进入 `Released`，并发重试只有一个执行者。
+- 仅 file-backed final retirement 失败时，`MountLeaseState` 保存一个私有的强
+  `Arc<Ext4Filesystem>` recovery owner；常态不形成 loop -> mount 强环。成功重试会在
+  `mount_lease`、`shutdown_state` 和 backing 锁之外取出并析构它；永久 journal abort 则保留
+  owner、脏数据和 `EIO`。默认 `new_from_file()` 调用方必须自行保留 weak 或强 handle 才能
+  调用 `FilesystemOps::flush`；loop 路径由已登记的 `WeakFilesystem` 提供该入口。
+
+### 9.6 用户命名空间凭据能力范围
+
+- StarryOS：`/proc/<pid>/uid_map` 与 `gid_map` 当前把映射后的数字 ID 写入线程凭据，不保存
+  完整 ID 映射。映射第二列为 0 时恢复内核已知 capability 集合；非零映射则清空 permitted、
+  effective、inheritable、ambient 和 bounding 五组集合。能力检查仍读取线程凭据，尚未像
+  Linux 那样把每项 capability 绑定到对应的 user namespace。
 - Linux v6.12：`ns_capable()` 和 `capable_wrt_inode_uidgid()` 会同时检查 capability
   所属的 user namespace，子命名空间的 root 不能直接获得初始命名空间资源的权限。
-- 影响范围：当前兼容路径仍可能出现“非 root 数字 ID + 少量 namespace-setup 能力”的组合；
-  这些能力只为安装映射和准备 sandbox 的 mount/UTS 状态保留，`CAP_SYS_RAWIO`、
-  `CAP_SYS_MODULE`、`CAP_SYS_PTRACE` 等无关能力不会随映射继承。需要在初始命名空间中执行的
-  `setns` 等路径仍额外检查 namespace 身份。更细粒度的 capability 作用域仍需要在凭据结构中
-  保存 user namespace，并统一替换当前的全局 capability 查询。
+- 影响范围：非零映射后没有可跨宿主对象使用的 capability，因此 mount/umount2、setxid、
+  DAC override 等入口按权限不足失败；这是安全失败封闭，不代表完整 user namespace ABI。
+  需要在初始命名空间中执行的 `setns` 等路径仍额外检查 namespace 身份。更细粒度的
+  capability 作用域仍需要在凭据结构中保存 user namespace，并统一替换当前的全局查询。
 
 ## 10. 参考
 

@@ -4,6 +4,28 @@ use rsext4::{Ext4Error, Ext4Result};
 
 use crate::os::{sync::RawSpinLock, waiters::TaskWaiters};
 
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_NEXT_CACHED_WRITE_DRAIN: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_cached_write_drain_for_test() -> CachedWriteDrainFailureGuard {
+    FAIL_NEXT_CACHED_WRITE_DRAIN.with(|failed| failed.set(true));
+    CachedWriteDrainFailureGuard
+}
+
+#[cfg(test)]
+pub(crate) struct CachedWriteDrainFailureGuard;
+
+#[cfg(test)]
+impl Drop for CachedWriteDrainFailureGuard {
+    fn drop(&mut self) {
+        FAIL_NEXT_CACHED_WRITE_DRAIN.with(|failed| failed.set(false));
+    }
+}
+
 /// Counts operations and owns the waiters for drain and resume transitions.
 pub(super) struct Admission {
     /// One exclusion boundary for the phase, active owners, and first failure.
@@ -118,6 +140,10 @@ impl Admission {
     }
 
     fn close_and_drain_with(&self, wait: impl FnMut() -> Ext4Result<()>) -> Ext4Result<()> {
+        #[cfg(test)]
+        if FAIL_NEXT_CACHED_WRITE_DRAIN.with(|failed| failed.replace(false)) {
+            return Err(Ext4Error::io().with_operation("test:cached_write_drain"));
+        }
         self.drain_with(AdmissionPhase::Closing, wait)
     }
 

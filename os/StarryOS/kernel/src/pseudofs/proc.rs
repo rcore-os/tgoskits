@@ -1746,7 +1746,6 @@ impl SimpleDirOps for ThreadDir {
                             }
                             let thr = task.as_thread();
                             let mut cred = (*thr.cred()).clone();
-                            let was_namespace_root = cred.euid == 0;
                             cred.uid = orig;
                             cred.euid = orig;
                             cred.suid = orig;
@@ -1756,23 +1755,17 @@ impl SimpleDirOps for ThreadDir {
                                 cred.cap_permitted = mask;
                                 cred.cap_effective = mask;
                                 cred.cap_bounding = mask;
-                            } else if was_namespace_root {
-                                // Keep only the capabilities required to
-                                // finish sandbox namespace setup.  The
-                                // simplified credential model stores the
-                                // mapped numeric ID directly and does not yet
-                                // scope capabilities to UserNamespace, so a
-                                // non-zero mapping must not retain the full
-                                // host capability mask.
-                                let mask = Cred::user_namespace_setup_cap_mask();
-                                cred.cap_permitted = mask;
-                                cred.cap_effective = mask;
-                                cred.cap_bounding &= mask;
-                                cred.cap_ambient = 0;
                             } else {
+                                // Capability checks are still global rather
+                                // than scoped to UserNamespace. A non-zero
+                                // mapping therefore must not leave any host
+                                // capability state that could bypass DAC,
+                                // regain UID 0, or survive into a later exec.
+                                cred.cap_inheritable = 0;
                                 cred.cap_permitted = 0;
                                 cred.cap_effective = 0;
                                 cred.cap_ambient = 0;
+                                cred.cap_bounding = 0;
                             }
                             cred.sanitize_capabilities();
                             Thread::set_cred(thr, cred);
