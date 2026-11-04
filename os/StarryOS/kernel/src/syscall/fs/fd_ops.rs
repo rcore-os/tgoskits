@@ -1,4 +1,4 @@
-use alloc::{format, string::{String, ToString}, sync::Arc, vec::Vec};
+use alloc::{format, string::ToString, sync::Arc, vec::Vec};
 use core::{
     ffi::{c_char, c_int},
     mem::size_of,
@@ -15,7 +15,8 @@ use crate::{
     StarryError, StarryResult,
     file::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, NsFd, Pipe,
-        add_file_like, close_file_like, get_file_like, memfd::Memfd, with_fs,
+        add_file_like, close_file_like, get_file_like, is_ns_type, memfd::Memfd,
+        ns_target_from_link, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
@@ -540,14 +541,6 @@ fn resolve_magic_link(
     }
 }
 
-/// Whether `name` is one of the `/proc/<pid>/ns/<type>` entry names.
-fn is_ns_type(name: &str) -> bool {
-    matches!(
-        name,
-        "uts" | "ipc" | "mnt" | "pid" | "net" | "user" | "cgroup"
-    )
-}
-
 /// Check whether the open targets a `/proc/<pid>/ns/<type>` entry. If so,
 /// create an [`NsFd`] and add it to the fd table instead of opening a regular
 /// file.
@@ -598,11 +591,17 @@ fn try_open_nsfd(
         return Some(Err(StarryError::AlreadyExists));
     }
 
-    let (task, ns_type) = match ns_target_from_link(&loc) {
-        Ok(target) => target,
-        // Not a namespace directory entry: let the generic walk handle it.
-        Err(_) => return None,
-    };
+    // Not a namespace directory entry: let the generic walk handle it.
+    let (task, ns_type) = ns_target_from_link(&loc)?;
+    // nsfs inodes are S_IRUGO, so `may_open` requires MAY_WRITE for a write
+    // access mode or O_TRUNC and rejects unprivileged callers with EACCES.
+    // O_PATH ignores the access mode.
+    let cred = current.as_thread().cred();
+    let requests_write = flags & O_PATH == 0
+        && (flags & O_ACCMODE != O_RDONLY || flags & O_TRUNC != 0);
+    if requests_write && !cred.has_cap_dac_override() {
+        return Some(Err(StarryError::PermissionDenied));
+    }
     let proc_data = task.as_thread().proc_data.clone();
     match proc_read_access_allowed(current, &proc_data) {
         Ok(true) => Some(ns_fd_from_task(&task, &ns_type, flags)),
@@ -611,60 +610,13 @@ fn try_open_nsfd(
     }
 }
 
-/// Resolves the namespace owning task and type from the magic link actually
-/// reached, so a bind mount that redirects a `/proc/<pid>/ns` directory yields
-/// the namespaces of the process that directory belongs to rather than
-/// re-parsing the path text.
-fn ns_target_from_link(loc: &Location) -> StarryResult<(crate::task::UserTaskRef, String)> {
-    let parent = loc.parent().ok_or(StarryError::NotFound)?;
-    let dir = parent.entry().as_dir().map_err(StarryError::Vfs)?;
-    let ns_dir = dir
-        .downcast::<crate::pseudofs::SimpleDir<crate::pseudofs::proc::NsDir>>()
-        .map_err(|_| StarryError::NotFound)?;
-    let task = ns_dir.ops().ns_task().ok_or(StarryError::NotFound)?;
-    let ns_type = loc.name().into_owned();
-    if !is_ns_type(&ns_type) {
-        return Err(StarryError::NotFound);
-    }
-    Ok((task, ns_type))
-}
-
 /// Builds the [`NsFd`] for one `/proc/<pid>/ns/<type>` entry of `task`.
 fn ns_fd_from_task(
     task: &crate::task::UserTaskRef,
     ns_type: &str,
     flags: u32,
 ) -> crate::StarryResult<i32> {
-    let proc_data = &task.as_thread().proc_data;
-
-    let mnt_fs_ns = if ns_type == "mnt" {
-        let Some(fs_context) = task.as_thread().clone_scope_item(&FS_CONTEXT) else {
-            return Err(StarryError::NotFound);
-        };
-        Some(fs_context.lock().mount_namespace().clone())
-    } else {
-        None
-    };
-
-    let nsproxy = proc_data.namespace_snapshot();
-
-    let nsfd: NsFd = match ns_type {
-        "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
-        "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
-        "mnt" => NsFd::Mnt {
-            ns: nsproxy.mnt_ns.clone(),
-            fs_ns: mnt_fs_ns.unwrap(),
-        },
-        "pid" => NsFd::Pid(proc_data.identity().active_namespace()),
-        "net" => NsFd::Net(nsproxy.net_ns.clone()),
-        "user" => NsFd::User(nsproxy.user_ns.clone()),
-        "cgroup" => NsFd::Cgroup(nsproxy.cgroup_ns.clone()),
-        _ => return Err(StarryError::NotFound),
-    };
-
-    drop(nsproxy);
-
-    nsfd.add_to_fd_table(flags & O_CLOEXEC != 0)
+    NsFd::from_task(task, ns_type)?.add_to_fd_table(flags & O_CLOEXEC != 0)
 }
 
 ax_tracepoint::define_event_trace!(

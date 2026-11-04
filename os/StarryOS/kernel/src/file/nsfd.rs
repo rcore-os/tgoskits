@@ -1,6 +1,7 @@
-use alloc::{borrow::Cow, sync::Arc};
+use alloc::{borrow::Cow, string::String, sync::Arc};
 
-use ax_fs_ng::MountNamespace as FsMountNamespace;
+use ax_fs_ng::{MountNamespace as FsMountNamespace, vfs::FS_CONTEXT};
+use axfs_ng_vfs::Location;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER,
@@ -9,13 +10,39 @@ use linux_raw_sys::general::{
 
 use super::FileLike;
 use crate::{
-    StarryResult,
+    StarryError, StarryResult,
     namespace::{
         CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace,
         UserNamespace, UtNamespace,
     },
+    pseudofs::{SimpleDir, proc::NsDir},
     sync::RawSpinLock,
+    task::UserTaskRef,
 };
+
+/// Whether `name` is one of the `/proc/<pid>/ns/<type>` entry names.
+pub(crate) fn is_ns_type(name: &str) -> bool {
+    matches!(
+        name,
+        "uts" | "ipc" | "mnt" | "pid" | "net" | "user" | "cgroup"
+    )
+}
+
+/// The owning task and namespace type of a reached `/proc/<pid>/ns/<type>`
+/// magic link, if `loc` is one.
+///
+/// The owning task comes from the directory entry that was actually reached,
+/// so a bind mount that redirects a `/proc/<pid>/ns` directory yields the
+/// namespaces of the process that directory belongs to instead of re-parsing
+/// the path text.
+pub(crate) fn ns_target_from_link(loc: &Location) -> Option<(UserTaskRef, String)> {
+    let parent = loc.parent()?;
+    let dir = parent.entry().as_dir().ok()?;
+    let ns_dir = dir.downcast::<SimpleDir<NsDir>>().ok()?;
+    let task = ns_dir.ops().ns_task()?;
+    let ns_type = loc.name().into_owned();
+    is_ns_type(&ns_type).then_some((task, ns_type))
+}
 
 /// A file descriptor that references a specific kernel namespace.
 ///
@@ -46,6 +73,55 @@ impl NsFd {
             NsFd::User(_) => CLONE_NEWUSER,
             NsFd::Cgroup(_) => CLONE_NEWCGROUP,
         }
+    }
+
+    /// Builds the namespace descriptor for one `/proc/<pid>/ns/<type>` entry
+    /// of `task`, resolving the mount namespace from the target's own
+    /// filesystem context.
+    pub(crate) fn from_task(task: &UserTaskRef, ns_type: &str) -> StarryResult<Self> {
+        let mnt_fs_ns = if ns_type == "mnt" {
+            let Some(fs_context) = task.as_thread().clone_scope_item(&FS_CONTEXT) else {
+                return Err(StarryError::NotFound);
+            };
+            Some(fs_context.lock().mount_namespace().clone())
+        } else {
+            None
+        };
+        Self::from_task_with_mount_ns(task, ns_type, mnt_fs_ns)
+    }
+
+    /// Builds the namespace descriptor with an already-resolved mount
+    /// namespace.
+    ///
+    /// Path lookups that follow an ns magic link already hold the caller's
+    /// filesystem context lock, so they must not re-enter
+    /// [`FS_CONTEXT`] for the same process; the mount namespace they supply
+    /// is only used by `setns` consumers, which never receive this
+    /// stat-path object.
+    pub(crate) fn from_task_with_mount_ns(
+        task: &UserTaskRef,
+        ns_type: &str,
+        mnt_fs_ns: Option<Arc<FsMountNamespace>>,
+    ) -> StarryResult<Self> {
+        let proc_data = &task.as_thread().proc_data;
+
+        let nsproxy = proc_data.namespace_snapshot();
+        let nsfd = match ns_type {
+            "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
+            "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
+            "mnt" => NsFd::Mnt {
+                ns: nsproxy.mnt_ns.clone(),
+                fs_ns: mnt_fs_ns.unwrap(),
+            },
+            "pid" => NsFd::Pid(proc_data.identity().active_namespace()),
+            "net" => NsFd::Net(nsproxy.net_ns.clone()),
+            "user" => NsFd::User(nsproxy.user_ns.clone()),
+            "cgroup" => NsFd::Cgroup(nsproxy.cgroup_ns.clone()),
+            _ => return Err(StarryError::NotFound),
+        };
+
+        drop(nsproxy);
+        Ok(nsfd)
     }
 }
 
