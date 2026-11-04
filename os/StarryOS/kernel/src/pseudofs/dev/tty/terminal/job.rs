@@ -37,13 +37,11 @@ impl JobControl {
     }
 
     pub fn current_in_foreground(&self) -> bool {
-        self.state
-            .lock_irqsave()
-            .foreground
-            .upgrade()
-            .is_none_or(|pg| {
-                Arc::ptr_eq(&current_user_task().as_thread().proc_data.proc.group(), &pg)
-            })
+        // `Process::group` takes a sleeping mutex, so compare only after the
+        // IRQ-saving job-control lock has been released.
+        self.foreground().is_none_or(|pg| {
+            Arc::ptr_eq(&current_user_task().as_thread().proc_data.proc.group(), &pg)
+        })
     }
 
     pub fn foreground(&self) -> Option<Arc<ProcessGroup>> {

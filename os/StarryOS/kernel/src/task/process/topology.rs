@@ -249,6 +249,12 @@ impl Process {
 impl Process {
     /// The [`ProcessGroup`] that the [`Process`] belongs to.
     pub fn group(&self) -> Arc<ProcessGroup> {
+        // Axtest-only observation point: this sleeping-lock acquisition must
+        // not run with local IRQs disabled. The tty foreground regression
+        // observes the context here instead of waiting for contention to
+        // reach the PI slow path. Production builds compile this away.
+        #[cfg(all(test, axtest))]
+        crate::task::process_group_probe::observe_acquisition_for_test();
         self.group.lock().clone()
     }
 

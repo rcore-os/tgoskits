@@ -390,6 +390,62 @@ pub(crate) fn new_test_process_data(
     )
 }
 
+/// Axtest-only observation of the context in which `Process::group` acquires
+/// its sleeping lock.
+///
+/// A caller that invokes `Process::group` with local IRQs disabled can panic
+/// in the PI slow path, but only once contention appears. A test parks an
+/// armed [`ProbeWindow`] around one real call and inspects the recorded
+/// context instead, which makes the violation deterministic. Production
+/// builds compile this away.
+#[cfg(all(test, axtest))]
+pub(crate) mod process_group_probe {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static ACQUISITIONS: AtomicUsize = AtomicUsize::new(0);
+    static ACQUISITIONS_WITH_IRQS_DISABLED: AtomicUsize = AtomicUsize::new(0);
+
+    /// Records the context of one `Process::group` lock acquisition.
+    pub(crate) fn observe_acquisition_for_test() {
+        if !ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+        if !ax_hal::cpu::interrupt::irqs_enabled() {
+            ACQUISITIONS_WITH_IRQS_DISABLED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// One armed observation window over `Process::group` acquisitions.
+    pub(crate) struct ProbeWindow {
+        acquisitions: usize,
+        acquisitions_with_irqs_disabled: usize,
+    }
+
+    /// Arms the probe for the calling thread's next observation window.
+    pub(crate) fn arm_for_test() -> ProbeWindow {
+        ARMED.store(true, Ordering::Release);
+        ProbeWindow {
+            acquisitions: ACQUISITIONS.load(Ordering::Acquire),
+            acquisitions_with_irqs_disabled: ACQUISITIONS_WITH_IRQS_DISABLED.load(Ordering::Acquire),
+        }
+    }
+
+    impl ProbeWindow {
+        /// Disarms the probe and returns the acquisitions this window covered
+        /// and how many of them ran with local IRQs disabled.
+        pub(crate) fn finish_for_test(self) -> (usize, usize) {
+            ARMED.store(false, Ordering::Release);
+            (
+                ACQUISITIONS.load(Ordering::Acquire) - self.acquisitions,
+                ACQUISITIONS_WITH_IRQS_DISABLED.load(Ordering::Acquire)
+                    - self.acquisitions_with_irqs_disabled,
+            )
+        }
+    }
+}
+
 #[cfg(all(test, not(axtest)))]
 mod tests {
     use super::ProcessData;
