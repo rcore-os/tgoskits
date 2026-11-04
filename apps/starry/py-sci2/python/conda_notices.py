@@ -1,5 +1,7 @@
-"""Failure propagation for the conda notices smoke check."""
+"""Shared conda invocation, environment scoping, JSON extraction, and diagnostics."""
 
+import contextlib
+import json
 import os
 
 
@@ -14,8 +16,20 @@ NOTICES_CHECK_LABEL = (
 )
 
 
-def invoke_inproc(main, args, timeout_error=()):
-    """Invoke conda's in-process entry point and normalize its completion."""
+def invoke_inproc(
+    main,
+    args,
+    timeout_error=(),
+    timeout_state=None,
+    timeout_message=None,
+):
+    """Invoke conda's in-process entry point and normalize its completion.
+
+    ``timeout_state.expired`` is set by the caller's signal handler. Conda's own
+    exception handler catches broad exception types, so this helper is the one
+    place that maps a swallowed timeout back to its caller-supplied diagnostic.
+    """
+    extra_out = extra_err = ""
     try:
         code = main(*args)
     except timeout_error:
@@ -23,29 +37,116 @@ def invoke_inproc(main, args, timeout_error=()):
     except SystemExit as exc:
         code = exc.code
         if code is None:
-            return 0, "", ""
-        if not isinstance(code, int):
-            return 1, "", ""
-        return code, "", ""
+            code = 0
+        elif not isinstance(code, int):
+            code = 1
     except Exception as exc:
-        return 1, "", "INPROC ERROR: %s: %s" % (type(exc).__name__, exc)
+        code, extra_out, extra_err = (
+            1,
+            "",
+            "INPROC ERROR: %s: %s" % (type(exc).__name__, exc),
+        )
+    else:
+        code = int(code) if isinstance(code, int) else 0
 
-    if isinstance(code, int):
-        return int(code), "", ""
-    return 0, "", ""
+    if timeout_state is not None and getattr(timeout_state, "expired", False):
+        return (
+            124,
+            "",
+            timeout_message or "TIMEOUT: in-process command exceeded its time limit",
+        )
+
+    return int(code), extra_out, extra_err
+
+
+def loadjson(text):
+    """Extract one JSON document while tolerating text before or after it."""
+    if not text:
+        return None
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "{[":
+            continue
+        try:
+            document, _ = decoder.raw_decode(text[index:])
+            return document
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+_DIAGNOSTIC_JSON_KEYS = (
+    "exception_name",
+    "exception_type",
+    "error",
+    "message",
+    "success",
+    "command",
+    "traceback",
+)
+
+
+def _first_line(text, limit):
+    for line in (text or "").splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line[:limit]
+    return "<no output>"
+
+
+def _json_failure(text, limit=2000):
+    document = loadjson(text)
+    if not isinstance(document, dict):
+        return None
+    if not any(key in document for key in ("exception_name", "error", "traceback")):
+        return None
+
+    fields = {}
+    for key in _DIAGNOSTIC_JSON_KEYS:
+        if key not in document:
+            continue
+        value = document[key]
+        if isinstance(value, str) and len(value) > limit:
+            value = "<truncated>..." + value[-limit:]
+        fields[key] = value
+    return json.dumps(fields, ensure_ascii=False, sort_keys=True)
+
+
+def describe_output(rc, stdout, stderr, limit=140):
+    """Keep successful output compact and expose locator fields on failure."""
+    stdout_detail = _json_failure(stdout) if rc != 0 else None
+    stderr_detail = _json_failure(stderr) if rc != 0 else None
+    return "rc=%s stdout=%r stderr=%r" % (
+        rc,
+        stdout_detail or _first_line(stdout, limit),
+        stderr_detail or _first_line(stderr, limit),
+    )
+
+
+@contextlib.contextmanager
+def temporary_env(name, value):
+    """Set one environment variable for a call and restore it on every exit."""
+    previous = os.environ.get(name)
+    os.environ[name] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
 
 
 def run_offline(run, args, timeout=300):
     """Run one conda command with CONDA_OFFLINE=1 for that call only."""
-    previous = os.environ.get("CONDA_OFFLINE")
-    os.environ["CONDA_OFFLINE"] = "1"
-    try:
+    with temporary_env("CONDA_OFFLINE", "1"):
         return run(args, timeout=timeout)
-    finally:
-        if previous is None:
-            os.environ.pop("CONDA_OFFLINE", None)
-        else:
-            os.environ["CONDA_OFFLINE"] = previous
 
 
 def notices_result_ok(rc, output):
