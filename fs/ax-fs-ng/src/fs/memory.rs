@@ -1073,4 +1073,49 @@ mod tests {
             "a denied plan must not modify the inode"
         );
     }
+
+    /// The checked open authorizes only on the create path, and a denied
+    /// authorization leaves no directory entry behind. This closes the
+    /// probe/create race for `O_CREAT`: a concurrent unlink between the
+    /// caller's existence probe and the VFS lookup cannot create an entry
+    /// whose parent write permission was never checked.
+    #[test]
+    fn checked_open_authorizes_only_on_the_create_path() {
+        use super::*;
+
+        let filesystem = MemoryFs::new();
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().expect("memory root is a directory");
+        let options = axfs_ng_vfs::OpenOptions {
+            create: true,
+            ..Default::default()
+        };
+
+        let denied = directory
+            .open_file_checked("target", &options, &|| Err(VfsError::OperationNotPermitted));
+        assert!(matches!(denied, Err(VfsError::OperationNotPermitted)));
+        assert!(
+            directory.lookup("target").is_err(),
+            "a denied create must not leave a directory entry"
+        );
+
+        directory
+            .create(
+                "target",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o644),
+                0,
+                0,
+            )
+            .expect("create fixture entry");
+        let ran = core::cell::Cell::new(false);
+        let opened = directory
+            .open_file_checked("target", &options, &|| {
+                ran.set(true);
+                Ok(())
+            })
+            .expect("existing entries open without creation");
+        assert!(!opened.1, "an existing entry is opened, not created");
+        assert!(!ran.get(), "authorization runs only when creating");
+    }
 }
