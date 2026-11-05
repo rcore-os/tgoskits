@@ -2,6 +2,8 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 use serde::Deserialize;
 
+use super::assets::CaseRunDirectory;
+
 pub(super) const CASE_WORK_ROOT_NAME: &str = "qemu-cases";
 pub(super) const BOARD_CASE_WORK_ROOT_NAME: &str = "board-cases";
 pub(super) const BOARD_CASE_UPLOAD_DIR_NAME: &str = "upload";
@@ -146,16 +148,14 @@ pub(crate) struct CaseAssetConfig {
     pub(crate) prepare_guest_package_env: Option<GuestPackageEnvPrepareFn>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct PreparedCaseAssets {
     /// Path of the rootfs image that QEMU should boot from. For cases without
     /// pipeline injection this points directly to the shared source image; for
     /// cases that need injection it points to the per-case temporary copy.
     pub(crate) rootfs_path: PathBuf,
-    /// Path of the temporary per-case rootfs copy to remove after the QEMU run,
-    /// or `None` when the shared image was used directly (no injection needed).
-    pub(crate) rootfs_copy_to_remove: Option<PathBuf>,
-    pub(crate) run_dir_to_remove: Option<PathBuf>,
+    /// Owns all temporary assets through later setup failures and the QEMU run.
+    pub(super) _run_directory: Option<CaseRunDirectory>,
     pub(crate) pipeline: CasePipeline,
     pub(crate) cache_hit: bool,
 }
@@ -166,13 +166,23 @@ pub(crate) struct RunPreparedQemuCaseOptions {
     pub(crate) qemu_timing_fields: Option<Vec<(&'static str, String)>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct PreparedCaseAssetParts {
     pub(crate) rootfs_path: PathBuf,
-    pub(crate) rootfs_copy_to_remove: Option<PathBuf>,
-    pub(crate) run_dir_to_remove: Option<PathBuf>,
+    pub(super) run_directory: Option<CaseRunDirectory>,
     pub(crate) pipeline: CasePipeline,
     pub(crate) cache_hit: bool,
+}
+
+impl From<PreparedCaseAssetParts> for PreparedCaseAssets {
+    fn from(parts: PreparedCaseAssetParts) -> Self {
+        Self {
+            rootfs_path: parts.rootfs_path,
+            _run_directory: parts.run_directory,
+            pipeline: parts.pipeline,
+            cache_hit: parts.cache_hit,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

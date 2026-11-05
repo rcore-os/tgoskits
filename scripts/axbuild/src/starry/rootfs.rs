@@ -20,6 +20,7 @@ pub use crate::rootfs::qemu::RootfsWritePolicy;
 pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, RootfsPatchOptions, patch_rootfs};
 use crate::{
     context::{DEFAULT_STARRY_ARCH, ResolvedStarryRequest, starry_target_for_arch_checked},
+    image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
     rootfs::inject,
     test::qemu as qemu_test,
 };
@@ -172,13 +173,32 @@ pub(crate) async fn ensure_rootfs_in_tmp_dir(
     arch: &str,
     target: &str,
 ) -> anyhow::Result<PathBuf> {
+    let config = ImageConfig::read_config(workspace_root, target_dir)?;
+    ensure_rootfs_with_config(workspace_root, arch, target, &config).await
+}
+
+/// Prepares the default Alpine image in the caller's selected image storage.
+pub(crate) async fn ensure_rootfs_with_config(
+    workspace_root: &Path,
+    arch: &str,
+    target: &str,
+    config: &ImageConfig,
+) -> anyhow::Result<PathBuf> {
     let expected_target = starry_target_for_arch_checked(arch)?;
     if target != expected_target {
         bail!("Starry arch `{arch}` maps to target `{expected_target}`, but got `{target}`");
     }
 
-    let rootfs =
-        crate::image::storage::ensure_rootfs_for_arch(workspace_root, target_dir, arch).await?;
+    let image_name = crate::image::storage::default_rootfs_image(arch)
+        .with_context(|| format!("no managed rootfs image available for arch `{arch}`"))?;
+    let storage = Storage::new_from_config(config).await?;
+    let workspace = workspace_root.to_path_buf();
+    let rootfs = storage
+        .pull_rootfs_image_with_prepare(ImageSpecRef::parse(image_name), move |image| {
+            sync_qemu_slirp_resolver_in_rootfs(image)?;
+            super::openrc::prepare_in_place(&workspace, image)
+        })
+        .await?;
     let image_lock = crate::support::download::acquire_path_lock(&rootfs).await?;
     let workspace_root = workspace_root.to_path_buf();
     tokio::task::spawn_blocking(move || {

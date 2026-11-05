@@ -8,6 +8,7 @@ mod nixos;
 mod qemu_discovery;
 mod qemu_profiles;
 mod qemu_run;
+mod rootfs_scope;
 mod suite;
 mod types;
 

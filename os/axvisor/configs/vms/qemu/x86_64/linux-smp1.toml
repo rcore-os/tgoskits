@@ -25,12 +25,11 @@ kernel_path = "${workspace}/target/axbuild/images/qemu-x86_64/linux/linux-qemu"
 kernel_load_addr = 0x20_0000
 # Whether to enable BIOS boot flow.
 enable_bios = false
-# Keep one conservative direct-boot baseline for both nested backends. These
-# options avoid the previously observed timer calibration and early device
-# probing stalls without selecting VMX or SVM in the guest configuration. The
-# x86 direct-boot protocol limits this command line to 231 bytes, so omit the
-# non-essential rootfs `noload` and terminal `dumb` options instead.
-cmdline = "console=ttyS0 root=/dev/vda ro rootwait devtmpfs.mount=1 init=/sbin/getty pci=conf1 pci=nomsi irqpoll nox2apic tsc=unstable no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0"
+# Keep the direct-boot device-probing options shared by both nested backends.
+# Let Linux validate TSC instead of forcing clock reads through the emulated
+# ACPI PM timer. The 231-byte boot command-line limit leaves out the optional
+# rootfs `noload` and terminal `dumb` options.
+cmdline = "console=ttyS0 root=/dev/vda ro rootwait devtmpfs.mount=1 init=/sbin/getty pci=conf1 pci=nomsi irqpoll nox2apic no_timer_check initcall_blacklist=ahci_pci_driver_init,i8042_init -- -n -l /bin/sh -L 115200 ttyS0"
 
 ## The path of the disk image.
 

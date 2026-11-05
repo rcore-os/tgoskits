@@ -11,7 +11,8 @@ use super::{
     ArgsTestQemu, PreparedStarryQemuCase, StarryQemuCase, StarryQemuCaseOutcome,
     StarryQemuCaseReport, StarryQemuCaseRequirements, StarryQemuRunReport,
     discover_all_qemu_cases_with_archs, discover_qemu_cases, finalize_qemu_case_run,
-    parse_test_target, starry_case_asset_config, start_qemu_case_host_http_server,
+    parse_test_target, rootfs_scope::TestRootfsScope, starry_case_asset_config,
+    start_qemu_case_host_http_server,
 };
 use crate::{
     build::{append_cargo_rustflags, env_truthy},
@@ -88,6 +89,10 @@ impl Starry {
         let suite_started = Instant::now();
         let mut reports = Vec::new();
         let asset_config = starry_case_asset_config();
+        let image_config = crate::image::config::ImageConfig::read_config(
+            self.app.workspace_root(),
+            self.app.target_dir(),
+        )?;
 
         let timing_stage = timing::TimingStage::new(
             "starry-qemu",
@@ -128,6 +133,9 @@ impl Starry {
                 )
             })?;
 
+            let rootfs_scope = TestRootfsScope::new(&image_config, self.app.target_dir())?;
+            let group_default_rootfs = rootfs_scope.image_path(&default_rootfs_path)?;
+
             let timing_stage = timing::TimingStage::new(
                 "starry-qemu",
                 [
@@ -139,7 +147,8 @@ impl Starry {
                 .prepare_qemu_cases(
                     &build_group.request,
                     &build_group.cargo,
-                    &default_rootfs_path,
+                    &group_default_rootfs,
+                    &rootfs_scope,
                     &build_group.group.cases,
                 )
                 .await;
@@ -163,7 +172,13 @@ impl Starry {
                     &case.build_config_path,
                 );
                 match self
-                    .run_qemu_case(&case_request, &build_group.cargo, case, &asset_config)
+                    .run_qemu_case(
+                        &case_request,
+                        &build_group.cargo,
+                        case,
+                        &asset_config,
+                        &rootfs_scope.config().extract_dir,
+                    )
                     .await
                     .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
                 {
@@ -190,6 +205,7 @@ impl Starry {
                     }
                 }
             }
+            rootfs_scope.close()?;
         }
 
         finalize_qemu_case_run(&StarryQemuRunReport {
@@ -203,6 +219,7 @@ impl Starry {
         request: &ResolvedStarryRequest,
         cargo: &Cargo,
         default_rootfs_path: &Path,
+        rootfs_scope: &TestRootfsScope,
         cases: &[&StarryQemuCase],
     ) -> anyhow::Result<Vec<PreparedStarryQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
@@ -242,24 +259,18 @@ impl Starry {
                     ("phase", "prepare-qemu-config".to_string()),
                 ],
             );
-            Self::rewrite_qemu_case_managed_rootfs_paths(
+            let managed_rootfs = rootfs_scope.rewrite_qemu_images(
                 self.app.workspace_root(),
                 self.app.target_dir(),
                 &mut qemu,
             )?;
-            let rootfs_path = Self::qemu_case_rootfs_path(
-                self.app.workspace_root(),
-                self.app.target_dir(),
-                &qemu,
-                default_rootfs_path,
-            )?;
+            let rootfs_path = managed_rootfs
+                .first()
+                .cloned()
+                .unwrap_or_else(|| default_rootfs_path.to_path_buf());
             if !diskless_host_initramfs {
                 rootfs_paths.insert(rootfs_path.clone());
-                rootfs_paths.extend(Self::qemu_case_managed_rootfs_paths(
-                    self.app.workspace_root(),
-                    self.app.target_dir(),
-                    &qemu,
-                )?);
+                rootfs_paths.extend(managed_rootfs);
             }
             qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
             let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
@@ -288,7 +299,12 @@ impl Starry {
             ],
         );
         let ensure_result = self
-            .ensure_qemu_case_rootfs_paths(request, default_rootfs_path, &rootfs_paths)
+            .ensure_qemu_case_rootfs_paths(
+                request,
+                default_rootfs_path,
+                rootfs_scope.config(),
+                &rootfs_paths,
+            )
             .await;
         timing_stage.finish();
         ensure_result?;
@@ -299,6 +315,7 @@ impl Starry {
         &self,
         request: &ResolvedStarryRequest,
         default_rootfs_path: &Path,
+        image_config: &crate::image::config::ImageConfig,
         rootfs_paths: &BTreeSet<PathBuf>,
     ) -> anyhow::Result<()> {
         for rootfs_path in rootfs_paths {
@@ -316,22 +333,31 @@ impl Starry {
                 ],
             );
             let result = if rootfs_path == default_rootfs_path {
-                rootfs::ensure_rootfs_in_tmp_dir(
+                rootfs::ensure_rootfs_with_config(
                     self.app.workspace_root(),
-                    self.app.target_dir(),
                     &request.arch,
                     &request.target,
+                    image_config,
                 )
                 .await
                 .map(|_| ())
             } else {
-                crate::image::storage::ensure_optional_managed_rootfs(
-                    self.app.workspace_root(),
-                    self.app.target_dir(),
-                    &request.arch,
-                    Some(rootfs_path),
-                )
-                .await
+                let filename = rootfs_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .context("managed test rootfs has no image name")?;
+                let storage = crate::image::storage::Storage::new_from_config(image_config).await?;
+                let spec = crate::image::spec::ImageSpecRef::parse(filename);
+                if storage.image_registry.find(spec).is_some() {
+                    storage.pull_rootfs_image(spec).await.map(|_| ())
+                } else {
+                    let source = crate::image::storage::rootfs_dir(
+                        self.app.workspace_root(),
+                        self.app.target_dir(),
+                    )?
+                    .join(filename);
+                    case::copy_file_fast(&source, rootfs_path)
+                }
             };
             timing_stage.finish();
             result?;
@@ -427,6 +453,7 @@ impl Starry {
         cargo: &Cargo,
         prepared_case: &PreparedStarryQemuCase,
         asset_config: &case::CaseAssetConfig,
+        asset_target_dir: &Path,
     ) -> anyhow::Result<()> {
         let case = &prepared_case.case;
         let mut qemu = prepared_case.qemu.clone();
@@ -450,7 +477,7 @@ impl Starry {
             ],
         );
         let prepared_assets_result = case::prepare_case_assets(
-            self.app.target_dir(),
+            asset_target_dir,
             &request.arch,
             &request.target,
             case,

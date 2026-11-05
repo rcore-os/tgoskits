@@ -46,13 +46,7 @@ pub(crate) async fn prepare_case_assets(
     .await
     .context("qemu test case asset task failed")??;
 
-    Ok(PreparedCaseAssets {
-        rootfs_path: parts.rootfs_path,
-        rootfs_copy_to_remove: parts.rootfs_copy_to_remove,
-        run_dir_to_remove: parts.run_dir_to_remove,
-        pipeline: parts.pipeline,
-        cache_hit: parts.cache_hit,
-    })
+    Ok(parts.into())
 }
 
 /// Returns the Python source directory for a QEMU test case.
@@ -72,44 +66,46 @@ pub(crate) fn copy_shared_rootfs_for_case(
     Ok(())
 }
 
-/// Removes the per-case rootfs copy after a test run completes, if one was
-/// created. Pass `None` when no copy was made (plain cases that boot from the
-/// shared image directly).
-///
-/// The work directory (CMake build cache, APK cache, etc.) is intentionally
-/// kept; only the large rootfs image is removed. Failures are logged as
-/// warnings so that a stale copy never masks an actual test failure.
-pub(crate) fn remove_case_rootfs_copy(path: Option<&Path>) {
-    let Some(path) = path else { return };
-    if path.exists()
-        && let Err(e) = fs::remove_file(path)
-    {
-        eprintln!(
-            "warning: failed to remove case rootfs copy `{}`: {e}",
-            path.display()
-        );
+/// Owns one exclusively created case directory through preparation and execution.
+#[derive(Debug)]
+pub(super) struct CaseRunDirectory {
+    path: PathBuf,
+}
+
+impl CaseRunDirectory {
+    fn create(path: &Path) -> anyhow::Result<Self> {
+        let parent = path
+            .parent()
+            .context("case run directory must have a parent")?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+        // Do not adopt an existing directory: only this successful creation
+        // grants ownership, so cleanup cannot remove another run's assets.
+        fs::create_dir(path).with_context(|| format!("failed to create {}", path.display()))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+        })
     }
 }
 
-pub(crate) fn remove_case_run_dir(path: Option<&Path>) {
-    let Some(path) = path else { return };
-    if path.exists()
-        && let Err(e) = fs::remove_dir_all(path)
-    {
-        eprintln!(
-            "warning: failed to remove case run directory `{}`: {e}",
-            path.display()
-        );
+impl Drop for CaseRunDirectory {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_dir_all(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "warning: failed to remove case run directory `{}`: {error}",
+                self.path.display()
+            );
+        }
     }
 }
 
 /// Performs the synchronous part of QEMU case asset preparation.
 ///
-/// Returns the prepared rootfs and cleanup metadata where:
-/// - `rootfs_path` is the image QEMU should boot from -- the shared source
-///   image for plain cases, or a fresh per-case copy for pipeline cases.
-/// - `rootfs_copy_to_remove` is `Some(copy_path)` when a copy was created and
-///   must be deleted after the run, `None` for plain cases.
+/// Owns the temporary run directory as soon as it is created, so every failure
+/// removes partial assets. Success transfers that ownership to the caller;
+/// shared rootfs images and persistent caches remain outside this scope.
 pub(crate) fn prepare_case_assets_sync(
     target_dir: &Path,
     arch: &str,
@@ -147,7 +143,7 @@ pub(crate) fn prepare_case_assets_sync(
         None
     };
 
-    let (case_rootfs, rootfs_copy_to_remove, run_dir_to_remove, cache_hit) = if needs_injection {
+    let (case_rootfs, run_directory, cache_hit) = if needs_injection {
         let layout = layout.as_ref().expect("layout created above for injection");
 
         // Compute the cache key once and derive the cached rootfs image path.
@@ -174,8 +170,7 @@ pub(crate) fn prepare_case_assets_sync(
                 ("pipeline", pipeline.as_str().to_string()),
             ],
         );
-        fs::create_dir_all(&layout.run_dir)
-            .with_context(|| format!("failed to create {}", layout.run_dir.display()))?;
+        let run_directory = CaseRunDirectory::create(&layout.run_dir)?;
         timing_stage.finish();
 
         let cache_hit = if is_valid_rootfs_cache_image(&rootfs_cache_img) {
@@ -253,11 +248,9 @@ pub(crate) fn prepare_case_assets_sync(
             false
         };
 
-        let copy = layout.case_rootfs_copy.clone();
         (
-            copy.clone(),
-            Some(copy),
-            Some(layout.run_dir.clone()),
+            layout.case_rootfs_copy.clone(),
+            Some(run_directory),
             cache_hit,
         )
     } else {
@@ -272,13 +265,12 @@ pub(crate) fn prepare_case_assets_sync(
             ],
             Duration::ZERO,
         );
-        (shared_rootfs.to_path_buf(), None, None, false)
+        (shared_rootfs.to_path_buf(), None, false)
     };
 
     Ok(PreparedCaseAssetParts {
         rootfs_path: case_rootfs,
-        rootfs_copy_to_remove,
-        run_dir_to_remove,
+        run_directory,
         pipeline,
         cache_hit,
     })
