@@ -103,6 +103,33 @@ static struct cmsghdr *next_cmsg_checked(const struct msghdr *msg,
     return candidate;
 }
 
+/*
+ * After the receiver has closed, the sender's connected channel is the
+ * only owner of datagrams still queued for it. Closing the sender drops
+ * that channel, so the final close of a queued SCM_RIGHTS file happens
+ * inside close(2), which must still succeed and leave the kernel running.
+ */
+static void queued_rights_released_by_datagram_close(void)
+{
+    int sv[2];
+    unsigned short port = 0;
+
+    CHECK_RET(socketpair(AF_UNIX, SOCK_DGRAM, 0, sv), 0, "datagram socketpair for close release");
+    int udp = bound_udp_socket(&port);
+    CHECK(udp >= 0, "bind UDP socket for datagram close release");
+    if (udp < 0) {
+        close(sv[0]);
+        close(sv[1]);
+        return;
+    }
+    CHECK_RET(send_byte_with_fd(sv[0], 'D', udp), 1, "queue UDP fd on datagram socket");
+    CHECK_RET(close(udp), 0, "close sender copy of queued UDP fd");
+    CHECK_RET(close(sv[1]), 0, "close receiver without receiving the rights");
+    CHECK(udp_port_in_use(port) == 1, "queued datagram keeps the UDP socket open");
+    CHECK_RET(close(sv[0]), 0, "close sender releases the connected channel");
+    CHECK(udp_port_in_use(port) == 0, "datagram close dropped the last UDP reference");
+}
+
 static int read_marker_from_fd(int fd, char expected, const char *msg)
 {
     char got = 0;
@@ -143,6 +170,8 @@ static void queued_rights_released_by_stream_shutdown(void)
 int main(void)
 {
     TEST_START("AF_UNIX SOCK_STREAM SCM_RIGHTS round-trip");
+
+    queued_rights_released_by_datagram_close();
 
     int sv[2];
     CHECK_RET(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0, "socketpair");

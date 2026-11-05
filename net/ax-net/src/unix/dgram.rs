@@ -710,7 +710,12 @@ impl DgramTransport {
 
 impl Drop for DgramTransport {
     fn drop(&mut self) {
-        if let Some(chan) = self.connected.write().take() {
+        // The write lock is released before `chan` is dropped below: dropping
+        // the channel releases any queued datagrams, which may hold the last
+        // references to files passed with SCM_RIGHTS, and releasing those files
+        // can block.
+        let chan = self.connected.write().take();
+        if let Some(chan) = chan {
             let peer_poll = chan.poll_update.clone();
 
             // Publish channel closure before a woken reader can retry. On SMP,
