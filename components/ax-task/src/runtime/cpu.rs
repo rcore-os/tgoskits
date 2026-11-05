@@ -49,6 +49,15 @@ pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
     unsafe { current_needs_reschedule_pinned() }
 }
 
+/// Tests whether the calling CPU deferred an ordinary preemption because the
+/// current task had already prepared its park.
+pub(crate) fn current_park_preemption_deferred() -> Result<bool, TaskError> {
+    let _pin = PreemptScope::enter();
+    Ok(current_cpu_remote()
+        .ok_or(TaskError::NotInitialized)?
+        .park_preemption_deferred())
+}
+
 /// Re-arms owner scheduler work for the real-runtime fault-injection probe.
 #[cfg(feature = "fault-injection")]
 pub fn rearm_scheduler_work_for_fault_injection() -> Result<(), TaskError> {

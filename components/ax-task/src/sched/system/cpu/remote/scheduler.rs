@@ -525,6 +525,12 @@ impl CpuRemote {
         self.scheduler_request.defer_park_preemption(request);
     }
 
+    /// Tests whether a safe point kept an ordinary preemption of the parking
+    /// current task deferred until its park commits or is cancelled.
+    pub(crate) fn park_preemption_deferred(&self) -> bool {
+        self.scheduler_request.request.load(Ordering::Acquire) & REQUEST_PARK_PREEMPT_DEFERRED != 0
+    }
+
     pub(crate) fn finish_park_preemption(&self, resume_running: bool) {
         self.scheduler_request
             .finish_park_preemption(resume_running);
