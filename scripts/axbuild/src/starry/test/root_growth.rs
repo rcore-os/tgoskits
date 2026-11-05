@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 use anyhow::{Context, bail};
 use serde::Deserialize;
 
-use crate::test::case::{PreparedCaseAssets, TestQemuCase};
+use crate::test::case::TestQemuCase;
 
 /// Validated size change applied only to the disposable, post-injection copy.
 pub(super) struct RootGrowthFixture {
@@ -47,13 +47,10 @@ impl RootGrowthFixture {
     }
 
     /// Enlarges the owned copy after cache preparation, leaving ext4 unchanged.
-    pub(super) fn extend(&self, assets: &PreparedCaseAssets) -> anyhow::Result<()> {
-        if assets.rootfs_copy_to_remove.as_deref() != Some(assets.rootfs_path.as_path()) {
-            bail!("root growth fixture requires an owned disposable rootfs copy");
-        }
-        let image = fs::OpenOptions::new()
-            .write(true)
-            .open(&assets.rootfs_path)?;
+    pub(super) fn extend(&self, rootfs_path: Option<&Path>) -> anyhow::Result<()> {
+        let rootfs_path =
+            rootfs_path.context("root growth fixture requires an owned disposable rootfs copy")?;
+        let image = fs::OpenOptions::new().write(true).open(rootfs_path)?;
         if image.metadata()?.len() != self.original_bytes {
             bail!("root growth fixture image length changed during asset preparation");
         }
@@ -69,7 +66,6 @@ impl RootGrowthFixture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test::case::CasePipeline;
 
     #[test]
     fn growth_only_resizes_the_disposable_copy_and_preserves_existing_bytes() {
@@ -83,23 +79,14 @@ mod tests {
             original_bytes: 8192,
             target_bytes: 12288,
         };
-        let mut assets = PreparedCaseAssets {
-            rootfs_path: source.clone(),
-            rootfs_copy_to_remove: None,
-            run_dir_to_remove: None,
-            pipeline: CasePipeline::Grouped,
-            cache_hit: true,
-        };
-        assert!(fixture.extend(&assets).is_err());
+        assert!(fixture.extend(None).is_err());
         assert_eq!(fs::read(&source).unwrap(), original);
-        assets.rootfs_path = copy.clone();
-        assets.rootfs_copy_to_remove = Some(copy.clone());
-        fixture.extend(&assets).unwrap();
+        fixture.extend(Some(&copy)).unwrap();
         let grown = fs::read(&copy).unwrap();
         assert_eq!(grown.len(), 12288);
         assert_eq!(&grown[..original.len()], original.as_slice());
         assert!(grown[original.len()..].iter().all(|byte| *byte == 0));
         assert_eq!(fs::read(&source).unwrap(), original);
-        assert!(fixture.extend(&assets).is_err());
+        assert!(fixture.extend(Some(&copy)).is_err());
     }
 }

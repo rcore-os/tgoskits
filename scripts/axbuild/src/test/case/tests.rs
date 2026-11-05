@@ -268,6 +268,10 @@ async fn prepared_case_assets_reclaim_after_successful_or_failed_setup() {
             )
             .await?;
             assert!(assets.cache_hit);
+            assert_eq!(
+                assets.disposable_rootfs_path(),
+                Some(assets.rootfs_path.as_path())
+            );
             assert_eq!(fs::metadata(&assets.rootfs_path)?.len(), 1024 * 1024);
             run_dir = assets.rootfs_path.parent().map(Path::to_path_buf);
             let mut qemu = ostool::run::qemu::QemuConfig::default();

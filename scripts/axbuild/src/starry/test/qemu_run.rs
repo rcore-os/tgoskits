@@ -501,7 +501,7 @@ impl Starry {
         }
         let prepared_assets = prepared_assets_result?;
         if let Some(growth) = growth {
-            growth.extend(&prepared_assets)?;
+            growth.extend(prepared_assets.disposable_rootfs_path())?;
         }
         let prepare_elapsed = prepare_stage.elapsed();
         timing::print_timing_line(
