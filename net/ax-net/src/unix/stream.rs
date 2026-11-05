@@ -570,10 +570,16 @@ impl TransportOps for StreamTransport {
                 peer_poll = Some(chan.peer_poll_update.clone());
             }
         }
-        if self.rx_closed.load(Ordering::Acquire)
-            && self.tx_closed.load(Ordering::Acquire)
-            && let Some(chan) = self.channel.lock().take()
-        {
+        let taken =
+            if self.rx_closed.load(Ordering::Acquire) && self.tx_closed.load(Ordering::Acquire) {
+                self.channel.lock().take()
+            } else {
+                None
+            };
+        // Drop the taken channel after the lock is released: its queues may
+        // hold the last references to files passed with SCM_RIGHTS, and
+        // releasing those files can block.
+        if let Some(chan) = taken {
             peer_poll.get_or_insert(chan.peer_poll_update);
         }
         if let Some(poll) = peer_poll {

@@ -12,6 +12,71 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <string.h>
+#include <netinet/in.h>
+
+/*
+ * A UDP socket's release waits for the network poller, so it is a file
+ * whose final close must not happen in atomic kernel context. Binding it
+ * to a loopback port makes that final close observable: the port stays
+ * busy exactly as long as some reference to the socket is still open.
+ */
+static int bound_udp_socket(unsigned short *port)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        close(fd);
+        return -1;
+    }
+    *port = ntohs(addr.sin_port);
+    return fd;
+}
+
+static int udp_port_in_use(unsigned short port)
+{
+    struct sockaddr_in addr;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int in_use;
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(port);
+    in_use = bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 && errno == EADDRINUSE;
+    close(fd);
+    return in_use;
+}
+
+static ssize_t send_byte_with_fd(int sock, char byte, int fd)
+{
+    struct iovec iov = { .iov_base = &byte, .iov_len = 1 };
+    char cbuf[CMSG_SPACE(sizeof(int))];
+    struct msghdr mh = {0};
+
+    memset(cbuf, 0, sizeof(cbuf));
+    mh.msg_iov = &iov;
+    mh.msg_iovlen = 1;
+    mh.msg_control = cbuf;
+    mh.msg_controllen = sizeof(cbuf);
+    struct cmsghdr *cmh = CMSG_FIRSTHDR(&mh);
+    cmh->cmsg_level = SOL_SOCKET;
+    cmh->cmsg_type = SCM_RIGHTS;
+    cmh->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmh), &fd, sizeof(int));
+    return sendmsg(sock, &mh, 0);
+}
 
 static size_t cmsg_aligned_len(size_t len)
 {
@@ -45,6 +110,34 @@ static int read_marker_from_fd(int fd, char expected, const char *msg)
     CHECK_RET(ret, 1, msg);
     CHECK(got == expected, "received fd reads expected marker");
     return ret == 1 && got == expected;
+}
+
+/*
+ * Once the peer has closed, the sender's stream channel is the only owner
+ * of the queued SCM_RIGHTS file. SHUT_RDWR detaches that channel, so the
+ * file's final close happens inside shutdown(2), which must still return
+ * success and leave the kernel running.
+ */
+static void queued_rights_released_by_stream_shutdown(void)
+{
+    int sv[2];
+    unsigned short port = 0;
+
+    CHECK_RET(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0, "socketpair for shutdown release");
+    int udp = bound_udp_socket(&port);
+    CHECK(udp >= 0, "bind UDP socket for shutdown release");
+    if (udp < 0) {
+        close(sv[0]);
+        close(sv[1]);
+        return;
+    }
+    CHECK_RET(send_byte_with_fd(sv[0], 'S', udp), 1, "queue UDP fd before shutdown");
+    CHECK_RET(close(udp), 0, "close sender copy of queued UDP fd");
+    CHECK_RET(close(sv[1]), 0, "close peer without receiving the rights");
+    CHECK(udp_port_in_use(port) == 1, "queued rights keep the UDP socket open");
+    CHECK_RET(shutdown(sv[0], SHUT_RDWR), 0, "shutdown(SHUT_RDWR) releases the channel");
+    CHECK(udp_port_in_use(port) == 0, "shutdown dropped the last UDP reference");
+    CHECK_RET(close(sv[0]), 0, "close shut-down stream socket");
 }
 
 int main(void)
@@ -195,6 +288,8 @@ int main(void)
     close(p2[1]);
     close(sv[0]);
     close(sv[1]);
+
+    queued_rights_released_by_stream_shutdown();
 
     TEST_DONE();
 }
