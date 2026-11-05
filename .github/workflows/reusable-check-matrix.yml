@@ -161,12 +161,20 @@ jobs:
             done
           fi
 
+      - name: Measure disk before cache restore
+        if: runner.environment == 'github-hosted' && matrix.group == 'Starry'
+        run: bash scripts/test/ci_disk_usage.sh before-cache
+
       - name: Restore Rust cache
         if: matrix.cache_key != ''
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.cache_key }}
           save-if: ${{ inputs.save_cache }}
+
+      - name: Measure disk after cache restore
+        if: runner.environment == 'github-hosted' && matrix.group == 'Starry'
+        run: bash scripts/test/ci_disk_usage.sh after-cache
 
       - name: Download tg-xtask binary artifact
         if: matrix.download_xtask_bin_artifact
@@ -246,6 +254,10 @@ jobs:
             sed 's/^/+ /' "${command_file}"
             exit "${status}"
           fi
+
+      - name: Measure disk after command
+        if: always() && runner.environment == 'github-hosted' && matrix.group == 'Starry'
+        run: bash scripts/test/ci_disk_usage.sh after-command
 
       - name: Render performance report
         if: success() && matrix.performance_report
