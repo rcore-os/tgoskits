@@ -42,6 +42,8 @@ def run_guest(vm_id):
         # The nested x86 guest must retain its native TSC clocksource. Forcing
         # it unstable sends every time read through emulated ACPI PM I/O and
         # can exhaust the boot deadline even while the guest keeps progressing.
+        # Keep SOURCE and DONE as printf arguments: neither complete marker
+        # may appear in the command text echoed by the guest shell.
         guest.send_binary(
             b"test -d /sys/devices/system/clocksource || mount -t sysfs sysfs /sys; "
             b"clock=$(cat /sys/devices/system/clocksource/clocksource0/current_clocksource); "
