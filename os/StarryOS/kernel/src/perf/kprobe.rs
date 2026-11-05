@@ -51,7 +51,9 @@ pub enum ProbeTy {
 pub struct ProbePerfEvent {
     _args: PerfProbeArgs,
     probe: ProbeTy,
-    callback_list: Vec<u32>,
+    // Kept here so that the callbacks are released after unregistration has
+    // waited for the trap handlers that may be running them.
+    callback_list: Vec<(u32, Arc<KprobePerfCallBack>)>,
     _uprobe_target: Option<UprobeTargetLease>,
 }
 
@@ -79,7 +81,7 @@ impl ProbePerfEvent {
 
 impl Drop for ProbePerfEvent {
     fn drop(&mut self) {
-        for cid in &self.callback_list {
+        for (cid, _) in &self.callback_list {
             match self.probe {
                 ProbeTy::Kprobe(ref k) => k.unregister_event_callback(*cid),
                 ProbeTy::Kretprobe(ref k) => k.unregister_event_callback(*cid),
@@ -148,11 +150,11 @@ impl PerfEventOps for ProbePerfEvent {
 
         let callback = Arc::new(KprobePerfCallBack::new(vm));
         match self.probe {
-            ProbeTy::Kprobe(ref k) => k.register_event_callback(id, callback),
-            ProbeTy::Kretprobe(ref k) => k.register_event_callback(id, callback),
-            ProbeTy::Uprobe(ref u) => u.register_event_callback(id, callback),
+            ProbeTy::Kprobe(ref k) => k.register_event_callback(id, callback.clone()),
+            ProbeTy::Kretprobe(ref k) => k.register_event_callback(id, callback.clone()),
+            ProbeTy::Uprobe(ref u) => u.register_event_callback(id, callback.clone()),
         }
-        self.callback_list.push(id);
+        self.callback_list.push((id, callback));
         Ok(())
     }
 }
@@ -160,6 +162,7 @@ impl PerfEventOps for ProbePerfEvent {
 /// Callback handed to the `kprobe` crate. When the probe fires, the crate
 /// invokes `call(&mut pt_regs)` which we hand to the embedded rbpf VM as
 /// its single-pointer context argument.
+#[derive(Debug)]
 pub struct KprobePerfCallBack {
     /// `execute_with_ptregs` runs off `&self`, so the VM can be invoked
     /// directly from the immutable `call(&self, ..)` path — no interior
