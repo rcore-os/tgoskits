@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -147,6 +148,7 @@ int main(void)
                                 "/tmp/o2c/cached-create.txt",
                                 "/tmp/o2c/mnt-file" };
     (void)umount2("/tmp/o2c/mnt-file", MNT_DETACH);
+    (void)rmdir("/tmp/o2c/ro-sub");
     for (size_t i = 0; i < sizeof(pre_clean) / sizeof(pre_clean[0]); i++) {
         unlink(pre_clean[i]);
     }
@@ -242,6 +244,68 @@ int main(void)
             CHECK(0, "bind mount a file for the NO_XDEV final-component case");
         }
         unlink(mnt_file);
+    }
+
+    /* Creation authorization runs inside the create path: an entry that a
+     * concurrent unlink removed between the existence probe and the VFS
+     * lookup must not be created without the parent's write permission. User
+     * space cannot force that window, so pin the enforcement directly: a
+     * non-writable directory rejects O_CREAT with EACCES on both the plain
+     * and the constrained path and leaves no entry behind. */
+    {
+        char ro_sub[64];
+        snprintf(ro_sub, sizeof(ro_sub), "%s/ro-sub", root);
+        CHECK(mkdir(ro_sub, 0555) == 0, "create read-only fixture directory");
+        int rofd = open(ro_sub, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        CHECK(rofd >= 0, "open the read-only fixture directory");
+        if (rofd >= 0) {
+            pid_t creator = fork();
+            if (creator == 0) {
+                if (setgid(1000) != 0 || setuid(1000) != 0) {
+                    _exit(3);
+                }
+                errno = 0;
+                int created = do_openat2(rofd, "new.txt", RESOLVE_BENEATH,
+                                         O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+                if (created >= 0 || errno != EACCES) {
+                    _exit(4);
+                }
+                errno = 0;
+                int plain =
+                    openat(rofd, "new2.txt", O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+                if (plain >= 0 || errno != EACCES) {
+                    _exit(5);
+                }
+                _exit(0);
+            }
+            int status = 0;
+            int reaped = creator > 0 && waitpid(creator, &status, 0) == creator;
+            if (reaped && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                CHECK(1, "a non-writable directory rejects O_CREAT with EACCES");
+            } else {
+                printf("FAIL: a non-writable directory rejects O_CREAT with "
+                       "EACCES (exit=%d)\n",
+                       reaped && WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+                failures++;
+            }
+            close(rofd);
+        }
+        char created_path[80];
+        snprintf(created_path, sizeof(created_path), "%s/ro-sub/new.txt", root);
+        errno = 0;
+        if (stat(created_path, &st) == 0 || errno != ENOENT) {
+            CHECK(0, "a denied create leaves no file behind");
+        } else {
+            CHECK(1, "a denied create leaves no file behind");
+        }
+        snprintf(created_path, sizeof(created_path), "%s/ro-sub/new2.txt", root);
+        errno = 0;
+        if (stat(created_path, &st) == 0 || errno != ENOENT) {
+            CHECK(0, "a denied plain create leaves no file behind");
+        } else {
+            CHECK(1, "a denied plain create leaves no file behind");
+        }
+        CHECK(rmdir(ro_sub) == 0, "remove the read-only fixture directory");
     }
 
     /* A dangling symlink whose target stays inside the base must be created

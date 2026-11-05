@@ -634,6 +634,23 @@ impl DirNode {
         name: &str,
         options: &OpenOptions,
     ) -> VfsResult<(DirEntry, bool)> {
+        self.open_file_checked(name, options, &|| Ok(()))
+    }
+
+    /// Opens (or creates) a file, running `authorize_create` after the entry
+    /// is found missing and before any directory entry is created.
+    ///
+    /// The authorization callback closes the probe/create race: a concurrent
+    /// unlink between a caller's existence probe and this lookup would
+    /// otherwise create an entry whose parent write permission was never
+    /// checked (Linux `lookup_open` runs `may_o_create` under the parent
+    /// inode lock). An existing entry opens without running the callback.
+    pub fn open_file_checked(
+        &self,
+        name: &str,
+        options: &OpenOptions,
+        authorize_create: &dyn Fn() -> VfsResult<()>,
+    ) -> VfsResult<(DirEntry, bool)> {
         verify_entry_name(name)?;
 
         match self.lookup(name) {
@@ -646,6 +663,7 @@ impl DirNode {
             Err(VfsError::NotFound) if options.create => {}
             Err(err) => return Err(err),
         }
+        authorize_create()?;
         let (uid, gid) = options.user.unwrap_or((0, 0));
         let entry = match self.create_entry(name, options.node_type, options.permission, uid, gid) {
             Ok(entry) => (entry, true),
