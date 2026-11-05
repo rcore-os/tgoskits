@@ -55,19 +55,26 @@ pub(super) fn epoll_topology_lock_is_held_for_test() -> bool {
 }
 
 /// Validate a prospective link while the caller holds the topology mutex.
+///
+/// Every node upgraded while scanning is kept in `scanned`, also on error.
+/// The caller must drop it after releasing the topology mutex: a node may be
+/// the last reference to an epoll closed concurrently, whose destructor can
+/// sleep.
 pub(super) fn prepare_nested_link(
     source: &Arc<EpollInner>,
     target: &Arc<EpollInner>,
+    scanned: &mut Vec<Arc<EpollInner>>,
 ) -> StarryResult<EpollTopologyLink> {
     if Arc::ptr_eq(source, target) {
         return Err(StarryError::InvalidInput);
     }
 
-    let downstream = scan_epoll_topology(target, TopologyDirection::Children, Some(source))?;
+    let downstream =
+        scan_epoll_topology(target, TopologyDirection::Children, Some(source), scanned)?;
     if downstream.reached_target {
         return Err(StarryError::FilesystemLoop);
     }
-    let upstream = scan_epoll_topology(source, TopologyDirection::Parents, None)?;
+    let upstream = scan_epoll_topology(source, TopologyDirection::Parents, None, scanned)?;
     if upstream.max_depth + 1 + downstream.max_depth > MAX_NESTED_EPOLL_EDGES {
         return Err(StarryError::FilesystemLoop);
     }
@@ -151,6 +158,7 @@ fn scan_epoll_topology(
     start: &Arc<EpollInner>,
     direction: TopologyDirection,
     target: Option<&Arc<EpollInner>>,
+    scanned: &mut Vec<Arc<EpollInner>>,
 ) -> StarryResult<TopologyScan> {
     let mut pending = Vec::new();
     let mut visited_depths = Vec::new();
@@ -160,10 +168,21 @@ fn scan_epoll_topology(
     let mut max_depth = 0;
     while let Some((node, depth)) = pending.pop() {
         max_depth = max_depth.max(depth);
-        for link in node.topology.snapshot_links(direction)? {
+        let links = node.topology.snapshot_links(direction)?;
+        scanned
+            .try_reserve(links.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        for link in links {
             let Some(next) = link.node.upgrade() else {
                 continue;
             };
+            // Axtest-only observation point: releasing the parked reference
+            // here makes this upgraded reference the last one, exactly as a
+            // concurrent close of the scanned epoll fd completing at this
+            // point would.
+            #[cfg(all(test, axtest))]
+            super::epoll_axtest::release_nested_child_last_ref_for_test(&next);
+            scanned.push(Arc::clone(&next));
             let next_depth = depth + 1;
             if next_depth > MAX_NESTED_EPOLL_EDGES {
                 return Err(StarryError::FilesystemLoop);

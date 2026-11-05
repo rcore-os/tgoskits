@@ -922,6 +922,12 @@ impl Epoll {
         #[cfg(all(test, axtest))]
         epoll_add_test_barrier();
 
+        // Nodes upgraded by the topology scan may hold the last reference to
+        // an epoll closed concurrently, and dropping an epoll can sleep. They
+        // are declared before the guard so that they are dropped after it on
+        // every return path.
+        let mut scanned_nodes = Vec::new();
+
         // Lock order for topology mutation is global topology mutex, then one
         // node's interests/parents/children spinlock. Poll and registration
         // callbacks run only after the global mutex is released.
@@ -939,7 +945,7 @@ impl Epoll {
 
         let nested_link = nested_target
             .as_ref()
-            .map(|target| prepare_nested_link(&self.inner, target))
+            .map(|target| prepare_nested_link(&self.inner, target, &mut scanned_nodes))
             .transpose()?;
 
         // Complete all fallible allocations before changing either the
@@ -964,6 +970,7 @@ impl Epoll {
             commit_nested_link(&self.inner, target, link);
         }
         drop(topology);
+        drop(scanned_nodes);
 
         trace!(
             "Epoll add fd: {} interest {:?} ",
