@@ -478,8 +478,13 @@ vnc_port="${WEB_BROWSER_VNC_PORT:-5900}"
 gl_renderer=$(grep -m1 "GL renderer:" /tmp/weston.log 2>/dev/null | sed 's/.*GL renderer: *//')
 gpu_users=$(render_node_users)
 echo "WEB_BROWSER_GPU renderer=$renderer weston_gl=${gl_renderer:-none} render_node_users=${gpu_users:-none}"
-kill "$ff_pid" 2>/dev/null || true
-wait "$ff_pid" 2>/dev/null || true
+if [ "$ff_died" -eq 0 ]; then
+    if ! finalize_firefox_process "$ff_pid"; then
+        ff_status=$child_wait_status
+        fail "firefox failed while the test was finishing with status $ff_status"
+    fi
+    ff_status=$child_wait_status
+fi
 
 if [ "$navigated" = 0 ]; then
     fail "firefox never navigated to $PAGE - it stayed on the new-tab page"

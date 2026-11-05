@@ -42,6 +42,41 @@ impl CachedFile {
         Ok(end > u64::from(pn))
     }
 
+    /// Synchronously requests the first bounded page window for a byte range.
+    ///
+    /// A zero count means "through EOF". The range is clipped to EOF and the
+    /// first 32 pages are requested. Execution is best effort; incomplete
+    /// prefetching is left for demand reads to retry.
+    pub(in crate::file) fn readahead(&self, offset: u64, count: u64) {
+        let page_size = PAGE_SIZE as u64;
+        let file_len = self.len();
+        let file_pages = file_len.div_ceil(page_size).min(u64::from(u32::MAX) + 1);
+        let first_page = offset / page_size;
+        if first_page >= file_pages {
+            return;
+        }
+
+        let end = if count == 0 {
+            file_len
+        } else {
+            offset.saturating_add(count).min(file_len)
+        };
+        let requested_pages = end.div_ceil(page_size).saturating_sub(first_page);
+        let window_pages = usize::try_from(requested_pages)
+            .unwrap_or(usize::MAX)
+            .min(super::readahead::MAX_READAHEAD_PAGES);
+        if window_pages == 0 {
+            return;
+        }
+
+        let Ok(first_page) = u32::try_from(first_page) else {
+            return;
+        };
+        if let Err(error) = self.prefetch_page_window(first_page, window_pages) {
+            log::debug!("file readahead deferred: {error:?}");
+        }
+    }
+
     fn fill_page_window(
         &self,
         file: &FileNode,

@@ -534,12 +534,13 @@ pub fn sys_fadvise64(
 
 /// Provide Linux's advisory `readahead(2)` contract.
 ///
-/// The page cache already performs demand paging and its own bounded
-/// readahead, so there is no separate synchronous operation to perform here.
-/// Validating the descriptor while treating the hint as a no-op prevents
-/// applications such as Firefox from repeatedly falling through the generic
-/// ENOSYS path. As in Linux v6.12, a negative offset is not an error: the
-/// forced readahead starts past EOF and has no visible effect.
+/// Linux v6.12 submits a bounded read-ahead request whose I/O may complete
+/// asynchronously, and treats backing-I/O and allocation failures as advisory.
+/// This implementation instead synchronously completes at most the first 32
+/// pages of the requested range before returning and still returns success
+/// when the hint cannot be completed. Descriptor access, object type, and
+/// argument validation errors still propagate. As in Linux v6.12, a negative
+/// offset starts past EOF and has no visible effect.
 pub fn sys_readahead(fd: c_int, offset: i64, count: usize) -> StarryResult<isize> {
     debug!("sys_readahead <= {fd}, offset={offset}, count={count}");
     let file_like = get_file_like(fd)?;
@@ -577,6 +578,10 @@ pub fn sys_readahead(fd: c_int, offset: i64, count: usize) -> StarryResult<isize
     if count as u64 > i64::MAX as u64 {
         return Err(StarryError::from(Errno::EINVAL));
     }
+    if offset < 0 {
+        return Ok(0);
+    }
+    file.inner().readahead(offset as u64, count as u64)?;
     Ok(0)
 }
 

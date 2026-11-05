@@ -136,6 +136,19 @@ impl File {
         self.access(FileFlags::READ)?.read_at(dst, offset)
     }
 
+    /// Requests a best-effort synchronous read-ahead for a byte range.
+    ///
+    /// At most the first 32 pages of the range are populated before this
+    /// method returns. A zero count requests through EOF. Cache contention,
+    /// capacity limits, allocation failure, or backing I/O failure may leave
+    /// some or all pages uncached without failing the hint. This method does
+    /// not change the file position and returns an error only when read access
+    /// is not available.
+    pub fn readahead(&self, offset: u64, count: u64) -> VfsResult<()> {
+        self.access(FileFlags::READ)?.readahead(offset, count);
+        Ok(())
+    }
+
     /// Writes a number of bytes starting from a given offset.
     pub fn write_at(&self, src: impl Read + IoBuf, offset: u64) -> VfsResult<usize> {
         self.access(FileFlags::WRITE)?.write_at(src, offset)
