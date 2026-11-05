@@ -1266,10 +1266,25 @@ impl Location {
         name: &str,
         options: &OpenOptions,
     ) -> VfsResult<(Location, bool)> {
+        self.open_file_checked(name, options, &|| Ok(()))
+    }
+
+    /// Opens (or creates) a file, running `authorize_create` after the entry
+    /// is found missing and before the directory creates it; see
+    /// [`DirNode::open_file_checked`].
+    pub fn open_file_checked(
+        &self,
+        name: &str,
+        options: &OpenOptions,
+        authorize_create: &dyn Fn() -> VfsResult<()>,
+    ) -> VfsResult<(Location, bool)> {
         if self.is_readonly() && (options.create || options.create_new) {
             return Err(VfsError::ReadOnlyFilesystem);
         }
-        let opened = self.entry.as_dir()?.open_file_with_status(name, options)?;
+        let opened = self
+            .entry
+            .as_dir()?
+            .open_file_checked(name, options, authorize_create)?;
         Ok((self.wrap(opened.0).resolve_mountpoint(), opened.1))
     }
 

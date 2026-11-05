@@ -414,14 +414,17 @@ impl OpenOptions {
                     // original O_CREAT flag so _open() returns EISDIR.
                     let effective_create = self.create && (!must_be_dir || existing);
                     let effective_create_new = self.create_new && (!must_be_dir || existing);
-                    if (effective_create || effective_create_new) && !existing {
-                        context.check_mutation_parent_with_search(
-                            &parent,
-                            &searched,
-                            credentials,
-                        )?;
-                    }
-                    let (mut loc, newly_created) = parent.open_file_with_status(
+                    // The search trace was already checked above; only the
+                    // parent's own mutation permission remains. Decide it
+                    // inside the create path so a concurrent unlink between
+                    // the existence probe and the VFS lookup cannot create an
+                    // entry in a directory this caller cannot write (Linux
+                    // `lookup_open` runs `may_o_create` under the parent
+                    // inode lock).
+                    let authorize_create = || {
+                        context.check_mutation_parent_with_search(&parent, &searched, credentials)
+                    };
+                    let (mut loc, newly_created) = parent.open_file_checked(
                         &name,
                         &axfs_ng_vfs::OpenOptions {
                             create: effective_create,
@@ -430,6 +433,7 @@ impl OpenOptions {
                             permission: NodePermission::from_bits_truncate(self.mode as _),
                             user: self.user,
                         },
+                        &authorize_create,
                     )?;
                     // A trailing slash sets LOOKUP_FOLLOW|LOOKUP_DIRECTORY in
                     // Linux (`open_last_lookups`), so it overrides O_NOFOLLOW
@@ -619,12 +623,15 @@ impl OpenOptions {
         // _open() returns EISDIR.
         let effective_create = self.create && (!must_be_dir || existing);
         let effective_create_new = self.create_new && (!must_be_dir || existing);
-        if (effective_create || effective_create_new) && !existing {
-            // The constrained walker already search-checked every directory
-            // it entered; only the parent's own mutation permission remains.
-            context.check_mutation_parent_with_search(&parent, &[], credentials)?;
-        }
-        let (mut loc, newly_created) = parent.open_file_with_status(
+        // The constrained walker already search-checked every directory it
+        // entered; only the parent's own mutation permission remains. Decide
+        // it inside the create path: a concurrent unlink between the
+        // existence probe and the VFS lookup would otherwise create an entry
+        // in a directory this caller cannot write (Linux `lookup_open` runs
+        // `may_o_create` under the parent inode lock).
+        let authorize_create =
+            || context.check_mutation_parent_with_search(&parent, &[], credentials);
+        let (mut loc, newly_created) = parent.open_file_checked(
             &name,
             &axfs_ng_vfs::OpenOptions {
                 create: effective_create,
@@ -633,6 +640,7 @@ impl OpenOptions {
                 permission: NodePermission::from_bits_truncate(self.mode as _),
                 user: self.user,
             },
+            &authorize_create,
         )?;
         // `lookup_no_follow` (existing entry) and creation both happen on the
         // already-validated parent; a mount change here means the final
