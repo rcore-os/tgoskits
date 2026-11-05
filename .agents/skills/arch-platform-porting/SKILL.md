@@ -232,3 +232,14 @@ Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项�
 - `qemu-<arch>.toml`、`build-*.toml` 和操作系统配置只声明实际验证过的体系结构。
 - 新目标、容器或固件要求已写入相关技能、测试套件指南或文档。
 - 修改体系结构启动、someboot 启动顺序、统一可扩展固件接口交接、对称多处理调通、动态平台契约、目标 JSON 假设或推荐调试流程时，在同一修改中更新本技能或 `references/boot-debugging.md`。
+
+## OrangePi 自编应用入口
+
+`apps/starry/orangepi-5-plus-selfbuild` 使用宿主机准备 ext4 编译镜像、
+OSTool 启动 StarryOS、会话 HTTP 传输及板端自编这一条正式流程。
+`host-prebuild.sh` 和 `prepare_image.py` 在宿主机完成工具链、源码和已展开
+Cargo 依赖的准备，`prepare_board_session_assets()` 收集镜像分片和校验清单。
+`receive_image.py` 逐片恢复镜像并校验完整 SHA-256 后，`session-selfbuild.sh`
+使用 loop 挂载和独立的外部工作目录运行应用；板端不解包或在线安装依赖。
+运行证据记录种子内核、实际源码快照、镜像及组合提交，不能只凭构建通过声明
+板端自编成功。启动与电源恢复由现有板卡服务契约负责，应用结束留在 StarryOS。

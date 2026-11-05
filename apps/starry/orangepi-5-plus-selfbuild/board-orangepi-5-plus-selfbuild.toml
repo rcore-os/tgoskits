@@ -1,0 +1,19 @@
+# Use the same direct StarryOS shell and root disk as the maintained board tests.
+cmdline = 'root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 init=/bin/sh HOME=/root USER=root HOSTNAME=starry -- -c "cd /root; export PS1=$USER@$HOSTNAME:~#; exec /bin/sh -i"'
+dtb_file = "${workspace}/os/StarryOS/configs/board/orangepi-5-plus.dtb"
+board_type = "OrangePi-5-Plus"
+fail_regex = [
+  '(?m)^===STARRY-ORANGEPI5PLUS-SELFBUILD-FAIL(?: .*)?===$',
+  '(?m)^===STARRY-ORANGEPI5PLUS-SELFBUILD-TIMEOUT===$',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  '(?i)\bpanic(?:ked)?\b',
+]
+timeout = 22800
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "export STARRY_SELFBUILD_ENTRY_URL='${sessionFile:usr/share/selfbuild/run.sh}'"
+success_regex = [
+  '(?m)^===STARRY-ORANGEPI5PLUS-SELFBUILD-SESSION-PASS run=[A-Za-z0-9._-]+===$',
+]

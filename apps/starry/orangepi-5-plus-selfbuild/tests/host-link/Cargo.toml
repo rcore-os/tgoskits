@@ -1,0 +1,10 @@
+[package]
+name = "selfbuild-host-link-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[build-dependencies]
+clang-sys = { version = "=1.9.1", features = ["runtime"] }
