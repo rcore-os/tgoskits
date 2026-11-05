@@ -1,19 +1,19 @@
 //! Deterministic concurrency hooks for epoll kernel tests.
 
-#[cfg(all(test, axtest))]
-use alloc::borrow::Cow;
-#[cfg(all(test, axtest))]
-use alloc::boxed::Box;
-#[cfg(all(test, not(axtest)))]
-use alloc::{borrow::Cow, boxed::Box, vec::Vec};
-use alloc::{sync::Arc, task::Wake};
+use alloc::{borrow::Cow, boxed::Box, sync::Arc, task::Wake, vec::Vec};
 #[cfg(all(test, axtest))]
 use alloc::sync::Weak;
+#[cfg(all(test, axtest))]
+use core::ptr;
+#[cfg(all(test, axtest))]
+use core::sync::atomic::{AtomicPtr, AtomicU64};
 use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Waker,
 };
 
+#[cfg(all(test, axtest))]
+use ax_std::os::arceos::task as scheduler;
 use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable};
 #[cfg(all(test, not(axtest)))]
 use axpoll::{
@@ -546,6 +546,94 @@ fn add_classified_file_last_ref_drops_outside_locks_for_test() -> bool {
         |_epoll, _file| true,
         |epoll, file_weak| epoll.add_parked_file_for_test(6, file_weak, 0x66).is_ok(),
     )
+}
+
+// The ownership-handoff harness proves, without scheduler timing, that a poll
+// callback hands its strong epoll reference to the notification worker instead
+// of releasing it in the callback's own context.
+
+/// Parked strong reference the callback hook drops inside `publish`.
+#[cfg(all(test, axtest))]
+static EPOLL_CALLBACK_RELEASE_PARKED: RawSpinLock<Option<Arc<EpollInner>>> = RawSpinLock::new(None);
+
+/// Whether the next poll callback must drop the parked owner reference.
+#[cfg(all(test, axtest))]
+static EPOLL_CALLBACK_RELEASE_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// Strong count the hook observed after dropping the parked owner; stays
+/// `usize::MAX` until a parked callback actually ran.
+#[cfg(all(test, axtest))]
+static EPOLL_CALLBACK_RELEASE_COUNT: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Watched epoll allocation whose destructor records its releasing context.
+#[cfg(all(test, axtest))]
+static EPOLL_DROP_WATCH: AtomicPtr<EpollInner> = AtomicPtr::new(ptr::null_mut());
+
+/// Thread id of the watched destructor, valid once `EPOLL_DROP_RECORDED` is
+/// set.
+#[cfg(all(test, axtest))]
+static EPOLL_DROP_THREAD: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(test, axtest))]
+static EPOLL_DROP_RECORDED: AtomicBool = AtomicBool::new(false);
+
+/// Completion the watched destructor signals; parked per test run.
+#[cfg(all(test, axtest))]
+static EPOLL_DROP_DONE: RawSpinLock<Option<Arc<crate::task::future::IrqNotify>>> =
+    RawSpinLock::new(None);
+
+/// Thread id the notification worker published at startup, once known.
+#[cfg(all(test, axtest))]
+static EPOLL_NOTIFY_WORKER_THREAD: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(test, axtest))]
+static EPOLL_NOTIFY_WORKER_KNOWN: AtomicBool = AtomicBool::new(false);
+
+/// Publishes the calling worker thread for `epoll_notify_worker_thread_for_test`.
+#[cfg(all(test, axtest))]
+pub(super) fn record_epoll_notify_worker_thread_for_test() {
+    if let Ok(thread) = scheduler::thread::current::current_thread_id() {
+        EPOLL_NOTIFY_WORKER_THREAD.store(thread.as_u64(), Ordering::Release);
+        EPOLL_NOTIFY_WORKER_KNOWN.store(true, Ordering::Release);
+    }
+}
+
+/// Drops the parked owner reference inside the calling poll callback.
+///
+/// The callback has just upgraded its weak epoll reference. Dropping the
+/// parked owner at that point makes the callback's reference deterministically
+/// the last strong one, which is the interleaving a concurrent epoll close
+/// produces by racing this callback; the observed count is recorded for the
+/// test's precondition. Only the watched epoll's callback consumes the hook:
+/// an unrelated waker firing while the hook is armed must not release the
+/// parked owner or consume the release.
+#[cfg(all(test, axtest))]
+pub(super) fn epoll_callback_release_parked_owner_for_test(epoll: &Arc<EpollInner>) {
+    if EPOLL_DROP_WATCH.load(Ordering::Acquire) != Arc::as_ptr(epoll).cast_mut() {
+        return;
+    }
+    if !EPOLL_CALLBACK_RELEASE_ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    drop(EPOLL_CALLBACK_RELEASE_PARKED.lock_irqsave().take());
+    EPOLL_CALLBACK_RELEASE_COUNT.store(Arc::strong_count(epoll), Ordering::Release);
+}
+
+/// Records the releasing context of the watched epoll and signals completion.
+#[cfg(all(test, axtest))]
+pub(super) fn record_epoll_inner_drop_for_test(epoll: &EpollInner) {
+    if EPOLL_DROP_RECORDED.load(Ordering::Acquire)
+        || EPOLL_DROP_WATCH.load(Ordering::Acquire) != ptr::from_ref(epoll).cast_mut()
+    {
+        return;
+    }
+    if let Ok(thread) = scheduler::thread::current::current_thread_id() {
+        EPOLL_DROP_THREAD.store(thread.as_u64(), Ordering::Release);
+        EPOLL_DROP_RECORDED.store(true, Ordering::Release);
+    }
+    if let Some(done) = EPOLL_DROP_DONE.lock_irqsave().clone() {
+        done.notify_irq();
+    }
 }
 
 #[cfg(all(test, not(axtest)))]

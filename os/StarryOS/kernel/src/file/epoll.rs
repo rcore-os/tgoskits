@@ -30,7 +30,10 @@ use hashbrown::HashMap;
 use linux_raw_sys::general::{EPOLLET, EPOLLEXCLUSIVE, EPOLLONESHOT, epoll_event};
 
 #[cfg(all(test, axtest))]
-use super::epoll_axtest::epoll_add_test_barrier;
+use super::epoll_axtest::{
+    epoll_add_test_barrier, epoll_callback_release_parked_owner_for_test,
+    record_epoll_inner_drop_for_test, record_epoll_notify_worker_thread_for_test,
+};
 use super::epoll_topology::{
     EpollTopology, EpollTopologyLink, commit_nested_link, detach_nested_link, lock_epoll_topology,
     prepare_nested_link, reserve_nested_link,
@@ -62,7 +65,11 @@ pub(crate) fn start_epoll_notify_worker() {
             .spawn(|| {
                 // Publish readiness before the first notification registration
                 // so an axtest can observe that this thread has actually been
-                // scheduled rather than racing its startup.
+                // scheduled rather than racing its startup. The thread identity
+                // precedes the readiness flag so an acquire on the flag also
+                // publishes the identity.
+                #[cfg(all(test, axtest))]
+                record_epoll_notify_worker_thread_for_test();
                 #[cfg(all(test, axtest))]
                 EPOLL_NOTIFY_WORKER_READY.store(true, Ordering::Release);
                 loop {
@@ -80,7 +87,15 @@ pub(crate) fn start_epoll_notify_worker() {
                             Arc::from_raw(current)
                         };
                         let next = epoll.notify_next.swap(ptr::null_mut(), Ordering::Acquire);
-                        epoll.notify_queued.store(false, Ordering::SeqCst);
+                        let state = epoll.notify_state.swap(0, Ordering::SeqCst);
+                        for _ in 0..state / NOTIFY_DEFERRED_REF {
+                            unsafe {
+                                // SAFETY: each count is a strong reference that a
+                                // callback handed over without dropping it, and the
+                                // reconstructed node keeps the count above zero.
+                                Arc::decrement_strong_count(Arc::as_ptr(&epoll));
+                            }
+                        }
                         epoll.flush_ready_waiters();
                         current = next;
                     }
@@ -110,6 +125,14 @@ pub(super) fn wait_epoll_notify_worker_ready() -> bool {
 /// Bounded yield budget for the worker startup handshake.
 #[cfg(all(test, axtest))]
 const EPOLL_NOTIFY_WORKER_READY_YIELDS: usize = 4096;
+
+/// `EpollInner::notify_state` bit set from queueing an epoll for the
+/// notification worker until the worker takes it off the queue.
+#[cfg(not(all(test, not(axtest))))]
+const NOTIFY_QUEUED: usize = 1;
+/// `EpollInner::notify_state` unit for one strong reference handed to the
+/// notification worker by a poll callback.
+const NOTIFY_DEFERRED_REF: usize = 2;
 
 pub struct EpollEvent {
     pub events: IoEvents,
@@ -471,6 +494,7 @@ impl RegistrationWakeState {
 
 struct InterestWaker {
     epoll: Weak<EpollInner>,
+    key: EntryKey,
     interest: Weak<EpollInterest>,
     registration_wake: RegistrationWakeState,
 }
@@ -493,6 +517,7 @@ impl InterestWaker {
     fn new(epoll: &Arc<EpollInner>, interest: &Arc<EpollInterest>) -> Arc<Self> {
         Arc::new(Self {
             epoll: Arc::downgrade(epoll),
+            key: interest.key.clone(),
             interest: Arc::downgrade(interest),
             registration_wake: RegistrationWakeState::new(),
         })
@@ -509,20 +534,15 @@ impl InterestWaker {
         let Some(epoll) = self.epoll.upgrade() else {
             return;
         };
-        let Some(interest) = self.interest.upgrade() else {
-            return;
-        };
-
-        // signalfd readiness includes the calling thread's pending signals, so
-        // even a callback running in the same process cannot safely poll or
-        // re-register on behalf of the epoll waiter. A child after fork is an
-        // additional case where doing so would steal the parent's registration.
-        // Wake the original waiter and let it refresh exactly once in context.
-        if interest.requires_owner_repoll() {
-            epoll.request_owner_repoll(&interest);
-        } else {
-            epoll.publish_ready_interest(&interest);
-        }
+        // Gives the ownership-handoff axtest a deterministic last-reference
+        // window inside the callback; a no-op unless that test armed it.
+        #[cfg(all(test, axtest))]
+        epoll_callback_release_parked_owner_for_test(&epoll);
+        epoll.publish_from_callback(&self.key, &self.interest);
+        // Callbacks may run with interrupts disabled under the waking source's
+        // lock. A concurrent close can leave this reference as the last one,
+        // and destroying the interests there may sleep.
+        EpollInner::release_from_callback(epoll);
     }
 }
 
@@ -533,7 +553,7 @@ pub(super) struct EpollInner {
     overflow_ready: AtomicBool,
     poll_ready: PollSet,
     pending_wakes: AtomicUsize,
-    notify_queued: AtomicBool,
+    notify_state: AtomicUsize,
     notify_next: AtomicPtr<EpollInner>,
 }
 
@@ -546,9 +566,18 @@ impl Default for EpollInner {
             overflow_ready: AtomicBool::new(false),
             poll_ready: PollSet::new(),
             pending_wakes: AtomicUsize::new(0),
-            notify_queued: AtomicBool::new(false),
+            notify_state: AtomicUsize::new(0),
             notify_next: AtomicPtr::new(ptr::null_mut()),
         }
+    }
+}
+
+/// Records the releasing context of a watched epoll for the ownership-handoff
+/// axtest; production builds compile this away.
+#[cfg(all(test, axtest))]
+impl Drop for EpollInner {
+    fn drop(&mut self) {
+        record_epoll_inner_drop_for_test(self);
     }
 }
 
@@ -706,23 +735,58 @@ impl EpollInner {
         // included in that worker's swap, or another node will be queued.
         self.pending_wakes.fetch_add(published, Ordering::SeqCst);
         #[cfg(not(all(test, not(axtest))))]
-        if self
-            .notify_queued
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            let node = Arc::into_raw(Arc::clone(self)).cast_mut();
-            {
-                // The queue lock serializes publication with list detachment.
-                // The transferred Arc keeps this embedded link alive until the
-                // notification worker reconstructs and drops that reference.
-                let _queue = EPOLL_NOTIFY_QUEUE.lock_irqsave();
-                let head = EPOLL_NOTIFY_HEAD.load(Ordering::Relaxed);
-                self.notify_next.store(head, Ordering::Relaxed);
-                EPOLL_NOTIFY_HEAD.store(node, Ordering::Release);
-            }
-            EPOLL_NOTIFY.notify_irq();
+        if self.notify_state.fetch_or(NOTIFY_QUEUED, Ordering::SeqCst) & NOTIFY_QUEUED == 0 {
+            Arc::clone(self).queue_notify();
         }
+    }
+
+    /// Hands a poll callback's strong reference to the notification worker,
+    /// which drops it in task context.
+    #[cfg(not(all(test, not(axtest))))]
+    fn release_from_callback(this: Arc<Self>) {
+        let this = core::mem::ManuallyDrop::new(this);
+        let mut state = this.notify_state.load(Ordering::SeqCst);
+        loop {
+            let next = if state & NOTIFY_QUEUED == 0 {
+                state | NOTIFY_QUEUED
+            } else {
+                state + NOTIFY_DEFERRED_REF
+            };
+            match this.notify_state.compare_exchange_weak(
+                state,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(observed) => state = observed,
+            }
+        }
+        // When already queued, the update gave the reference to the worker that
+        // clears the queued bit, and `this` must not be touched again.
+        if state & NOTIFY_QUEUED == 0 {
+            core::mem::ManuallyDrop::into_inner(this).queue_notify();
+        }
+    }
+
+    #[cfg(all(test, not(axtest)))]
+    fn release_from_callback(this: Arc<Self>) {
+        drop(this);
+    }
+
+    /// Publishes this epoll to the notification worker, transferring `self`.
+    #[cfg(not(all(test, not(axtest))))]
+    fn queue_notify(self: Arc<Self>) {
+        {
+            // The queue lock serializes publication with list detachment.
+            // The transferred Arc keeps this embedded link alive until the
+            // notification worker reconstructs and drops that reference.
+            let _queue = EPOLL_NOTIFY_QUEUE.lock_irqsave();
+            let head = EPOLL_NOTIFY_HEAD.load(Ordering::Relaxed);
+            self.notify_next.store(head, Ordering::Relaxed);
+            EPOLL_NOTIFY_HEAD.store(Arc::into_raw(self).cast_mut(), Ordering::Release);
+        }
+        EPOLL_NOTIFY.notify_irq();
     }
 
     fn flush_ready_waiters(&self) {
@@ -751,17 +815,35 @@ impl EpollInner {
         self.defer_ready_waiters(published);
     }
 
-    fn request_owner_repoll(self: &Arc<Self>, interest: &Arc<EpollInterest>) {
-        let should_wake = {
+    /// Publishes the interest a poll callback was registered for.
+    ///
+    /// The interest is borrowed from the interest map rather than upgraded, so
+    /// a callback never holds a reference that outlives the map's. `target`
+    /// keeps its allocation, so its address cannot name a newer interest.
+    fn publish_from_callback(self: &Arc<Self>, key: &EntryKey, target: &Weak<EpollInterest>) {
+        let published = {
             let interests = self.interests.lock_irqsave();
-            interests
-                .get(&interest.key)
-                .is_some_and(|current| Arc::ptr_eq(current, interest))
-                && interest.is_enabled()
+            let Some(interest) = interests.get(key).filter(|current| {
+                ptr::eq(Arc::as_ptr(current), target.as_ptr()) && current.is_enabled()
+            }) else {
+                return;
+            };
+            // signalfd readiness includes the calling thread's pending signals,
+            // so even a callback running in the same process cannot safely poll
+            // or re-register on behalf of the epoll waiter. A child after fork
+            // is an additional case where doing so would steal the parent's
+            // registration. Wake the original waiter and let it refresh exactly
+            // once in context.
+            if interest.requires_owner_repoll() {
+                usize::from(interest.request_owner_repoll())
+            } else if interest.try_mark_in_queue() {
+                self.enqueue_marked_ready_without_wake(interest);
+                1
+            } else {
+                0
+            }
         };
-        if should_wake && interest.request_owner_repoll() {
-            self.defer_ready_waiters(1);
-        }
+        self.defer_ready_waiters(published);
     }
 
     fn remove_ready_entries_for(&self, target: &Weak<EpollInterest>) {
@@ -1036,6 +1118,16 @@ impl Epoll {
     #[cfg(all(test, not(axtest)))]
     pub(super) fn flush_ready_waiters_for_test(&self) {
         self.inner.flush_ready_waiters();
+    }
+
+    /// Removes an interest by its synthetic key, mirroring EPOLL_CTL_DEL.
+    #[cfg(all(test, axtest))]
+    pub(super) fn delete_file_for_test(
+        &self,
+        fd: i32,
+        target: &Arc<dyn FileLike>,
+    ) -> StarryResult<()> {
+        self.delete_interest(&EntryKey::for_test(fd, target))
     }
 
     #[cfg(all(test, axtest))]
