@@ -21,7 +21,7 @@ Currently: **x86_64**.
 |---|---|
 | `prebuild.sh` | Resize rootfs, install Weston + Firefox ESR + Mesa/GTK/NSS stack via qemu-user apk |
 | `test_browser.sh` | Guest-side test: start Weston, launch Firefox, and require evidence that a page was actually fetched and laid out |
-| `firefox_exit_status.sh` | `test_browser.sh` 使用的父 shell `wait` 状态捕获与失败分类，可由宿主回归直接验证 |
+| `firefox_exit_status.sh` | `test_browser.sh` 使用的 Firefox 终止、父 shell `wait` 状态捕获与失败分类，可由宿主回归直接验证 |
 | `render_check.py` | Guest-side VNC client: reads the scanout back from QEMU and counts its colours |
 | `qemu-x86_64.toml` | QEMU launch config: virtio-gpu + virtio-input, `-vnc`, 6G RAM, KVM when the host offers it and TCG otherwise |
 | `qemu-x86_64-gpu.toml` | The same run on `virtio-vga-gl` with `egl-headless`, guest rendering through virgl |
@@ -59,11 +59,15 @@ to show entries the browser wrote for the page it was asked to open, so a blank
 window, a browser that died on its first frame, and a load that never started
 are told apart rather than all reported as success.
 
-远端文档已经留下导航和缓存证据后，`test_browser.sh` 只有在 Gecko 以状态 0
-正常退出时才记录诊断并继续运行内置页面探针。`ff_died=1` 时，生产路径通过
-`wait_child_status` 取得原始 `ff_status`，再由 `check_firefox_exit_status`
-判定：包括 `SIGKILL` 产生的 137 在内的非零或信号退出会在探针运行前失败，
-新 profile 渲染成功不能替代该失败信号。任何文档尚未被获取时的退出也仍然失败。
+监控循环发现 Gecko 提前退出时，`test_browser.sh` 通过 `wait_child_status`
+取得原始状态并交给 `check_firefox_exit_status`。正常结束监控后，
+`finalize_firefox_process` 先用 `kill -0` 预检 Firefox 是否仍存活：已经退出时
+只等待并分类其真实状态，不发送 `TERM`；仍存活时才明确发送 `TERM`，记录 kill
+是否成功，并始终等待真实子进程状态。状态 0 记录正常退出诊断；仅当本次 `TERM`
+投递成功且 wait 返回 143 时接受该主动终止。其他非零或信号退出，包括 `SIGKILL`
+产生的 137、预检前已发生的 143，以及 kill 失败后的 143，都会在启动内置页面
+探针前失败；新 profile 渲染成功不能替代该失败信号。任何文档尚未被获取时的
+退出也仍然失败。
 
 That network fetch is coverage, not the render gate. A remote page's colour
 count depends on what its CDN serves that day, so the pixel proof runs on the
@@ -77,7 +81,8 @@ has to be virgl, and a process other than Weston has to hold the render node.
 A 3D device that is missing or unusable fails the run instead of falling back
 to software.
 
-状态传播辅助函数有独立宿主回归，直接复用生产 `wait_child_status` 和
+状态传播与最终收尾辅助函数有独立宿主回归，直接复用生产
+`wait_child_status`、`finalize_firefox_process` 和
 `check_firefox_exit_status`：
 
 ```bash
