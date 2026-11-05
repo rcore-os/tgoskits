@@ -7,7 +7,8 @@
  *   3. enforce — verify the limit is actually enforced by the kernel
  *
  * Coverage:
- *   RLIMIT_NOFILE  — set, enforce by opening N+1 files, restore
+ *   RLIMIT_NOFILE  — set, enforce by opening N+1 files, restore;
+ *                    raise to 2048, fill the table, UDP socket → EMFILE
  *   RLIMIT_FSIZE   — set, enforce by writing beyond limit
  *   RLIMIT_NICE     — set ceiling, enforce via setpriority(2)
  *   RLIMIT_CORE    — set, enforce (nonzero → nonzero; 0 → no core)
@@ -41,6 +42,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -191,6 +194,61 @@ int main(void)
         CHECK_RET(setrlimit(RLIMIT_NOFILE, &old), 0, "NOFILE: restore");
     }
 nofile_done:
+
+    /* ═══════════════════════════════════════════════════════════════
+     * 3b. ENFORCEMENT: RLIMIT_NOFILE raised to 2048
+     *     Fill the descriptor table until it refuses another entry,
+     *     then create a UDP socket.  The kernel must reject it with
+     *     EMFILE and release the new socket without crashing, even
+     *     when the raised limit exceeds the table's fixed capacity.
+     * ═══════════════════════════════════════════════════════════════ */
+    {
+        enum { RAISED_NOFILE = 2048 };
+        static int fill_fd[RAISED_NOFILE];
+        struct rlimit old, high;
+        CHECK_RET(getrlimit(RLIMIT_NOFILE, &old), 0,
+                  "NOFILE raised: save original");
+
+        high.rlim_cur = RAISED_NOFILE;
+        high.rlim_max = old.rlim_max > RAISED_NOFILE ? old.rlim_max
+                                                      : RAISED_NOFILE;
+        errno = 0;
+        if (setrlimit(RLIMIT_NOFILE, &high) != 0) {
+            printf("  SKIP NOFILE raised: cannot raise limit (errno=%d)\n",
+                   errno);
+            goto nofile_raised_done;
+        }
+
+        int filled = 0;
+        int dup_errno = 0;
+        while (filled < RAISED_NOFILE) {
+            int fd = dup(0);
+            if (fd < 0) {
+                dup_errno = errno;
+                break;
+            }
+            fill_fd[filled++] = fd;
+        }
+        printf("  NOFILE raised: table full after %d dups\n", filled);
+        CHECK(filled < RAISED_NOFILE && dup_errno == EMFILE,
+              "NOFILE raised: dup on a full table → EMFILE");
+
+        errno = 0;
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        CHECK(sock < 0 && errno == EMFILE,
+              "NOFILE raised: UDP socket on a full table → EMFILE");
+        if (sock >= 0) close(sock);
+
+        for (int i = 0; i < filled; i++) close(fill_fd[i]);
+
+        sock = socket(AF_INET, SOCK_DGRAM, 0);
+        CHECK(sock >= 0, "NOFILE raised: UDP socket after closing fds");
+        if (sock >= 0) close(sock);
+
+        CHECK_RET(setrlimit(RLIMIT_NOFILE, &old), 0,
+                  "NOFILE raised: restore");
+    }
+nofile_raised_done:
 
     /* ═══════════════════════════════════════════════════════════════
      * 4. ENFORCEMENT: RLIMIT_FSIZE

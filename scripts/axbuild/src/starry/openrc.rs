@@ -20,6 +20,25 @@ const REQUIRED_PACKAGES: &[(&str, &str)] = &[
 
 /// The caller holds the managed image lock. Publish only a fully prepared copy.
 pub(super) fn prepare(workspace: &Path, image: &Path) -> anyhow::Result<()> {
+    let Some(temporary) = prepare_overlay(workspace, image)? else {
+        return Ok(());
+    };
+    let candidate = temporary.path().join("rootfs.img");
+    copy_file_fast(image, &candidate)?;
+    inject::inject_overlay(&candidate, &temporary.path().join("overlay"))?;
+    fs::rename(candidate, image).context("failed to publish OpenRC rootfs")
+}
+
+/// Prepare an unpublished extraction without allocating another full image.
+/// The caller owns its cleanup and publication under the managed image lock.
+pub(super) fn prepare_in_place(workspace: &Path, image: &Path) -> anyhow::Result<()> {
+    let Some(temporary) = prepare_overlay(workspace, image)? else {
+        return Ok(());
+    };
+    inject::inject_overlay(image, &temporary.path().join("overlay"))
+}
+
+fn prepare_overlay(workspace: &Path, image: &Path) -> anyhow::Result<Option<tempfile::TempDir>> {
     let assets = workspace.join("os/StarryOS/starryos/rootfs");
     let installed = inject::read_text_file(image, "/lib/apk/db/installed")?
         .context("prebuilt Alpine image has no installed package database")?;
@@ -48,7 +67,7 @@ pub(super) fn prepare(workspace: &Path, image: &Path) -> anyhow::Result<()> {
     }
     let version = format!("{:x}\n", digest.finalize());
     if inject::read_text_file(image, MARKER)?.as_deref() == Some(&version) {
-        return Ok(());
+        return Ok(None);
     }
     let parent = image.parent().context("managed image has no parent")?;
     let temporary = tempfile::tempdir_in(parent)?;
@@ -71,10 +90,7 @@ pub(super) fn prepare(workspace: &Path, image: &Path) -> anyhow::Result<()> {
     }
     fs::write(overlay.join("etc/starry-openrc-packages"), installed)?;
     fs::write(overlay.join(MARKER.trim_start_matches('/')), version)?;
-    let candidate = temporary.path().join("rootfs.img");
-    copy_file_fast(image, &candidate)?;
-    inject::inject_overlay(&candidate, &overlay)?;
-    fs::rename(candidate, image).context("failed to publish OpenRC rootfs")
+    Ok(Some(temporary))
 }
 
 fn check_preinstalled_packages(database: &str) -> anyhow::Result<()> {

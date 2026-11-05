@@ -202,6 +202,8 @@ cargo xtask clippy --package someboot
 
 ## 调试流程
 
+Axvisor x86 默认 Linux 客户机由 `os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml` 和 Web API 的 `FORM_CMDLINE_DEFAULT` 提供启动参数。不要预设 `tsc=unstable`：Linux v7.1 的 `arch/x86/kernel/tsc.c::tsc_setup()` 会因此主动停用 TSC，退到 `drivers/clocksource/acpi_pm.c::read_pmtmr()` 的 PIO 读时钟；嵌套虚拟化中每次读取都会进入设备模拟，可能导致启动阶段超时。保留 Linux 自身的校准和不稳定检测，不用 `tsc=reliable` 强行跳过检测。修改两处默认值时，复用 `web-ui-vmx` 的真实 Linux 时钟源、命令交互、删除与重建检查，并在可用的 AMD 运行器上核验共享客户机基线；不能通过增加 `GUEST_BOOT_DEADLINE` 掩盖时钟开销。
+
 Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项时，使用根级 `BuildInfo.rustflags` 数组，不通过 `[env] RUSTFLAGS` 整体替换来源；后者会遮蔽自动栈保护及 `DWARF`/`BACKTRACE` 参数。核对真实 rustc argv 与 ELF，而不只检查生成的 TOML。提取 ELF section 时为 `llvm-objcopy --dump-section` 显式指定独立输出 ELF，并核对输入摘要不变，避免取证过程重写原产物。
 
 1. 定位最后一个可靠输出或机器状态转移：统一可扩展固件接口入口、内存映射、`ExitBootServices`、重定位、启用内存管理单元、安装陷阱向量、释放次处理器、第一条内核输出。

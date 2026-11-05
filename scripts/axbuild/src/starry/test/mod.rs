@@ -10,6 +10,7 @@ mod qemu_discovery;
 mod qemu_profiles;
 mod qemu_run;
 mod root_growth;
+mod rootfs_scope;
 mod suite;
 mod types;
 

@@ -1,6 +1,6 @@
 //! Test-suit asset reuse for scheduler performance experiments.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, ensure};
 use ostool::run::qemu::QemuConfig;
@@ -46,15 +46,7 @@ pub(super) fn resolve(
 }
 
 pub(super) struct PreparedPerfTestCase {
-    rootfs_copy_to_remove: Option<PathBuf>,
-    run_dir_to_remove: Option<PathBuf>,
-}
-
-impl Drop for PreparedPerfTestCase {
-    fn drop(&mut self) {
-        case::remove_case_rootfs_copy(self.rootfs_copy_to_remove.as_deref());
-        case::remove_case_run_dir(self.run_dir_to_remove.as_deref());
-    }
+    _assets: case::PreparedCaseAssets,
 }
 
 pub(super) async fn prepare(
@@ -108,10 +100,7 @@ pub(super) async fn prepare(
         },
     )?;
 
-    Ok(Some(PreparedPerfTestCase {
-        rootfs_copy_to_remove: assets.rootfs_copy_to_remove,
-        run_dir_to_remove: assets.run_dir_to_remove,
-    }))
+    Ok(Some(PreparedPerfTestCase { _assets: assets }))
 }
 
 fn perf_case_asset_config() -> case::CaseAssetConfig {

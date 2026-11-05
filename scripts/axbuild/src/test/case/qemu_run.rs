@@ -2,10 +2,7 @@ use std::path::Path;
 
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
-use super::{
-    assets::{remove_case_rootfs_copy, remove_case_run_dir},
-    types::{PreparedCaseAssets, RunPreparedQemuCaseOptions},
-};
+use super::types::{PreparedCaseAssets, RunPreparedQemuCaseOptions};
 use crate::{context::AppContext, test::timing};
 
 pub(crate) async fn run_qemu_with_prepared_case_assets(
@@ -42,7 +39,6 @@ pub(crate) async fn run_qemu_with_prepared_case_assets(
         timing::print_timing_line("qemu-case", &fields, qemu_elapsed);
     }
 
-    remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
-    remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
+    drop(prepared_assets);
     result
 }

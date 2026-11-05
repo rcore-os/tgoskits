@@ -366,11 +366,16 @@ axbuild 在运行前用 clang/lld 编译 `/init`、构建 `newc` 归档，再交
 | `python` | case 目录下存在 `python/` | 在 staging rootfs 中安装 `python3`，并注入 `.py` 文件 |
 | `grouped` | `qemu-<arch>.toml` 中存在 `test_commands` | 构建子目录资产，注入 grouped runner 需要的 guest 程序 |
 
-Pipeline case 会创建每个 case 独立的 rootfs 副本，并把注入后的 rootfs 缓存在：
+`Starry::test_qemu()` 为每个构建组创建 `TestRootfsScope`，组内复用解包镜像，
+完成该组或因错误退出后释放其独占目录。基础压缩归档继续复用，显式用户磁盘不进入
+清理范围。首次准备 Alpine 时，`Storage::pull_rootfs_image_with_prepare()` 在尚未发布的
+解包文件中完成 OpenRC 配置，再原子发布，避免同时保留两份完整基础镜像。
 
-```text
-target/<target>/qemu-cases/<build_group>/<case>/cache/rootfs/
-```
+Pipeline case 会创建每个 case 独立的 rootfs 副本。`CaseRunDirectory` 在资产准备开始时
+取得本次运行目录的所有权，并在准备、配置或运行结束的成功与失败路径释放目录。
+测试组的派生资产和本地注入后镜像缓存也位于该组的独占目录，组结束一起释放，避免重复
+执行测试集累积大镜像。持续集成不写入注入后镜像缓存；共享下载缓存及预先存在的基础
+镜像不由测试组删除。
 
 plain case 不复制 rootfs。所有 test-suit pipeline 都由 rootfs patcher 对实际主 rootfs
 drive 应用 `snapshot=on`，保证正常退出、panic 或强制终止时 guest 写入不落回源镜像；

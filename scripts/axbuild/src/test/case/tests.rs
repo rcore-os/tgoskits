@@ -182,3 +182,121 @@ fn save_rootfs_cache_image_respects_ci_isolation() {
     save_rootfs_cache_image(&src, &dst).unwrap();
     assert!(dst.is_file());
 }
+
+#[test]
+fn failed_case_preparation_removes_only_its_run_directory() {
+    let root = tempdir().unwrap();
+    let target_dir = root.path().join("target");
+    let shared = root.path().join("shared.img");
+    fs::write(&shared, b"shared rootfs").unwrap();
+    let case = fake_case(root.path(), "compiled");
+    fs::create_dir(case.case_dir.join("c")).unwrap();
+    let layout = case_asset_layout(&target_dir, "test-target", &case.display_name).unwrap();
+    fs::create_dir_all(&layout.cache_dir).unwrap();
+    let cache_marker = layout.cache_dir.join("retained");
+    fs::write(&cache_marker, b"shared cache").unwrap();
+    let other_run = layout.run_dir.parent().unwrap().join("other-run");
+    fs::create_dir_all(&other_run).unwrap();
+    fs::write(other_run.join("retained"), b"another run").unwrap();
+
+    // The real preparation copies the image before rejecting the missing
+    // CMake entry. Its failure must reclaim that image and all partial work.
+    let error = prepare_case_assets_sync(
+        &target_dir,
+        "x86_64",
+        "test-target",
+        &case,
+        &shared,
+        &fake_config(),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("missing case CMake project entry")
+    );
+    let runs = fs::read_dir(other_run.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(runs, vec![other_run.clone()]);
+    assert_eq!(
+        fs::read(other_run.join("retained")).unwrap(),
+        b"another run"
+    );
+    assert_eq!(fs::read(cache_marker).unwrap(), b"shared cache");
+    assert_eq!(fs::read(shared).unwrap(), b"shared rootfs");
+}
+
+#[tokio::test]
+async fn prepared_case_assets_reclaim_after_successful_or_failed_setup() {
+    use crate::rootfs::qemu::{
+        RootfsPatchMode, RootfsPatchOptions, RootfsWritePolicy, patch_rootfs,
+    };
+
+    let root = tempdir().unwrap();
+    let target_dir = root.path().join("target");
+    let shared = root.path().join("shared.img");
+    fs::write(&shared, b"shared rootfs").unwrap();
+    let case = fake_case(root.path(), "scripted");
+    fs::create_dir(case.case_dir.join("sh")).unwrap();
+    let config = fake_config();
+    let layout = case_asset_layout(&target_dir, "test-target", &case.display_name).unwrap();
+    let cache_image = cache::rootfs_cache_image_path(
+        &layout,
+        "x86_64",
+        "test-target",
+        CasePipeline::Sh,
+        &case,
+        &shared,
+        &config,
+    )
+    .unwrap();
+    fs::create_dir_all(cache_image.parent().unwrap()).unwrap();
+    fs::write(&cache_image, vec![0x5a; 1024 * 1024]).unwrap();
+
+    for invalid_qemu in [false, true] {
+        let mut run_dir = None;
+        let result: anyhow::Result<()> = async {
+            let assets = prepare_case_assets(
+                &target_dir,
+                "x86_64",
+                "test-target",
+                &case,
+                shared.clone(),
+                config.clone(),
+            )
+            .await?;
+            assert!(assets.cache_hit);
+            assert_eq!(fs::metadata(&assets.rootfs_path)?.len(), 1024 * 1024);
+            run_dir = assets.rootfs_path.parent().map(Path::to_path_buf);
+            let mut qemu = ostool::run::qemu::QemuConfig::default();
+            if invalid_qemu {
+                qemu.args = vec!["-blockdev".into(), "driver=file,filename=rootfs.img".into()];
+            }
+            patch_rootfs(
+                &mut qemu,
+                &assets.rootfs_path,
+                RootfsPatchOptions {
+                    mode: RootfsPatchMode::EnsureDiskBootNet,
+                    write_policy: RootfsWritePolicy::Discard,
+                },
+            )?;
+            Ok(())
+        }
+        .await;
+        if invalid_qemu {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("QEMU host rootfs -blockdev cannot be patched")
+            );
+        } else {
+            result.unwrap();
+        }
+        assert!(!run_dir.unwrap().exists());
+        assert_eq!(fs::metadata(&cache_image).unwrap().len(), 1024 * 1024);
+        assert_eq!(fs::read(&shared).unwrap(), b"shared rootfs");
+    }
+}

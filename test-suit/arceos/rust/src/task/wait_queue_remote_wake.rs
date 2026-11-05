@@ -13,8 +13,11 @@ use ax_std::os::arceos::{
     },
     modules::ax_hal::percpu::this_cpu_id,
     task::{
-        sched::{CpuId, CpuSet, RtPriority, SchedulePolicy},
-        thread::{SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadId},
+        sched::{CpuId, CpuSet, FairMode, Nice, RtPriority, SchedulePolicy},
+        thread::{
+            SwitchReason, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId,
+            current::current_thread_id,
+        },
     },
 };
 
@@ -30,6 +33,9 @@ static WAKER_STARTED: AtomicBool = AtomicBool::new(false);
 static WAKE_RETURNED: AtomicBool = AtomicBool::new(false);
 static WAKE_RETURNED_BEFORE_ON_CPU_CLEAR: AtomicBool = AtomicBool::new(false);
 static SLEEPER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
+static PRE_PARK_PEER_READY: AtomicBool = AtomicBool::new(false);
+static PRE_PARK_YIELD: AtomicBool = AtomicBool::new(false);
+static PRE_PARK_PEER_RAN: AtomicBool = AtomicBool::new(false);
 
 const REMOTE_WAKE_PROGRESS_TIMEOUT: Duration = Duration::from_secs(2);
 const SWITCH_OUT_PROBE_WINDOW: Duration = Duration::from_millis(250);
@@ -44,8 +50,8 @@ unsafe extern "Rust" fn ignore_switch_in(
 ) {
 }
 
-unsafe extern "Rust" fn stall_switch_out(_data: usize, _thread: ThreadId, _reason: SwitchReason) {
-    if STALL_ARMED.swap(false, Ordering::AcqRel) {
+unsafe extern "Rust" fn stall_switch_out(_data: usize, _thread: ThreadId, reason: SwitchReason) {
+    if reason == SwitchReason::Blocked && STALL_ARMED.swap(false, Ordering::AcqRel) {
         STALL_ENTERED.store(true, Ordering::Release);
         // This fixed upper-bounded atomic probe holds the switch-out baton long
         // enough for another CPU to exercise remote wake publication. It never
@@ -104,7 +110,9 @@ fn wait_for_probe(flag: &AtomicBool, message: &str) {
             started.elapsed() < REMOTE_WAKE_PROGRESS_TIMEOUT,
             "{message}"
         );
-        thread::yield_now();
+        // The release controller must not enter scheduler paths while the
+        // sleeper retains its outgoing runqueue baton.
+        core::hint::spin_loop();
     }
 }
 
@@ -128,6 +136,9 @@ pub fn run() -> crate::TestResult {
     WAKE_RETURNED.store(false, Ordering::Release);
     WAKE_RETURNED_BEFORE_ON_CPU_CLEAR.store(false, Ordering::Release);
     SLEEPER_CPU.store(usize::MAX, Ordering::Release);
+    PRE_PARK_PEER_READY.store(false, Ordering::Release);
+    PRE_PARK_YIELD.store(false, Ordering::Release);
+    PRE_PARK_PEER_RAN.store(false, Ordering::Release);
 
     pin_current_to_cpu(waker_cpu);
     let controller = ax_std::os::arceos::thread::builder("remote-wake-controller".into())
@@ -155,6 +166,22 @@ pub fn run() -> crate::TestResult {
         })
         .expect("failed to spawn remote wake controller");
 
+    let sleeper_policy =
+        SchedulePolicy::fifo(RtPriority::new(40).expect("probe priority must be valid"));
+    let peer = ax_std::os::arceos::thread::builder("remote-wake-pre-park-peer".into())
+        .stack_size(TEST_STACK_SIZE)
+        .policy(sleeper_policy)
+        .affinity(single_cpu_affinity(cpu_num, sleeper_cpu))
+        .spawn(|| {
+            PRE_PARK_PEER_READY.store(true, Ordering::Release);
+            while !PRE_PARK_YIELD.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            PRE_PARK_PEER_RAN.store(true, Ordering::Release);
+        })
+        .expect("failed to spawn pre-park scheduling peer");
+    wait_for_probe(&PRE_PARK_PEER_READY, "pre-park peer did not start");
+
     // SAFETY: the inert extension owns no data, its one-shot switch callback
     // performs only a fixed upper-bounded atomic probe, and its drop callback
     // has no ownership work.
@@ -164,12 +191,27 @@ pub fn run() -> crate::TestResult {
     let sleeper = {
         ax_std::os::arceos::thread::builder("remote-wake-on-cpu".into())
             .stack_size(TEST_STACK_SIZE)
+            .policy(sleeper_policy)
             .extension(extension)
             .affinity(single_cpu_affinity(cpu_num, sleeper_cpu))
             .spawn(move || {
                 assert_eq!(this_cpu_id(), sleeper_cpu);
                 SLEEPER_CPU.store(this_cpu_id(), Ordering::Release);
                 STALL_ARMED.store(true, Ordering::Release);
+                // A real switch before parking must not consume the blocked
+                // switch-out probe. Equal-priority FIFO peers rotate on yield.
+                PRE_PARK_YIELD.store(true, Ordering::Release);
+                thread::yield_now();
+                assert!(
+                    PRE_PARK_PEER_RAN.load(Ordering::Acquire),
+                    "sleeper did not switch to its pre-park peer"
+                );
+                let current = current_thread_id().expect("sleeper must have a task identity");
+                ThreadHandle::lookup(current)
+                    .and_then(|thread| {
+                        thread.set_policy(SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+                    })
+                    .expect("sleeper must restore Fair policy before parking");
                 api::ax_wait_queue_wait_until(&SLEEP_WQ, || GO.load(Ordering::Acquire), None);
                 assert_eq!(
                     this_cpu_id(),
@@ -215,5 +257,6 @@ pub fn run() -> crate::TestResult {
         "remote wait-queue wakeup did not make bounded progress"
     );
     (sleeper).join().expect("remote sleeper must exit cleanly");
+    peer.join().expect("pre-park peer must exit cleanly");
     Ok(())
 }
