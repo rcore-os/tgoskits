@@ -516,6 +516,11 @@ impl TransportOps for DgramTransport {
         let sender = self.local_addr.read().clone();
         let mut cmsg = core::mem::take(&mut options.cmsg);
         let sender_credentials = options.sender_credentials.clone();
+        // Declared before any socket guard: a packet rejected by a full or
+        // closed queue is parked here and dropped after the guards are
+        // released, because its control messages may hold the last references
+        // to files passed with SCM_RIGHTS, and releasing those files can block.
+        let mut rejected = Vec::new();
 
         let wake_poll = if let Some(addr) = options.to.clone() {
             let addr = addr.into_unix()?;
@@ -528,16 +533,17 @@ impl TransportOps for DgramTransport {
                     }
                     let packet = Packet {
                         data: message,
-                        cmsg,
+                        cmsg: core::mem::take(&mut cmsg),
                         sender,
                         received_at: bind
                             .receive_timestamp
                             .load(Ordering::Acquire)
                             .then(wall_time),
                     };
-                    bind.data_tx
-                        .try_send(packet)
-                        .map_err(|_| NetError::BrokenPipe)?;
+                    if let Err(error) = bind.data_tx.try_send(packet) {
+                        rejected.push(error.into_inner());
+                        return Err(NetError::BrokenPipe);
+                    }
                     Ok(bind.poll_update.clone())
                 } else {
                     Err(NetError::NotConnected)
@@ -551,16 +557,17 @@ impl TransportOps for DgramTransport {
             }
             let packet = Packet {
                 data: message,
-                cmsg,
+                cmsg: core::mem::take(&mut cmsg),
                 sender,
                 received_at: chan
                     .receive_timestamp
                     .load(Ordering::Acquire)
                     .then(wall_time),
             };
-            chan.data_tx
-                .try_send(packet)
-                .map_err(|_| NetError::BrokenPipe)?;
+            if let Err(error) = chan.data_tx.try_send(packet) {
+                rejected.push(error.into_inner());
+                return Err(NetError::BrokenPipe);
+            }
             chan.poll_update.clone()
         } else {
             return Err(NetError::NotConnected);
