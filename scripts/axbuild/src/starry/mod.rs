@@ -402,8 +402,7 @@ impl Starry {
             .transpose()?;
 
         let result = self.run_qemu_artifact(&request, cargo, qemu).await;
-        qemu_case::remove_case_rootfs_copy(prepared_assets.rootfs_copy_to_remove.as_deref());
-        qemu_case::remove_case_run_dir(prepared_assets.run_dir_to_remove.as_deref());
+        drop(prepared_assets);
         result
     }
 

@@ -16,7 +16,7 @@ use super::{
     spec::ImageSpecRef,
 };
 use crate::support::download::{
-    DownloadOutcome, acquire_path_lock, download_file_verified_sha256, http_client,
+    DownloadOutcome, PathLock, acquire_path_lock, download_file_verified_sha256, http_client,
 };
 
 pub const REGISTRY_FILENAME: &str = "images.toml";
@@ -84,14 +84,29 @@ impl Storage {
     }
 
     pub async fn pull_rootfs_image(&self, spec: ImageSpecRef<'_>) -> anyhow::Result<PathBuf> {
+        self.pull_rootfs_image_with_prepare(spec, |_| Ok(())).await
+    }
+
+    /// Prepare a fresh extraction in place before publishing it. Reused images
+    /// are returned unchanged. The callback runs under the destination image's
+    /// lock and must not acquire that lock again.
+    pub(crate) async fn pull_rootfs_image_with_prepare(
+        &self,
+        spec: ImageSpecRef<'_>,
+        prepare_new: impl FnOnce(&Path) -> anyhow::Result<()> + Send + 'static,
+    ) -> anyhow::Result<PathBuf> {
         let image = self.resolve_image(spec)?;
         ensure_rootfs_image_name(&image.name)?;
         let archive_path = self.download_dir.join(image_archive_filename(image, spec));
         let archive_outcome = self.ensure_archive(image, &archive_path).await?;
         let rootfs_path = self.extract_dir.join(&image.name);
-        let _lock = acquire_path_lock(&rootfs_path).await?;
+        let image_lock = acquire_path_lock(&rootfs_path).await?;
+        let pending_path = rootfs_path.with_extension("img.pending");
 
-        if archive_outcome == DownloadOutcome::Reused && rootfs_path.is_file() {
+        if archive_outcome == DownloadOutcome::Reused
+            && rootfs_path.is_file()
+            && !pending_path.exists()
+        {
             println!(
                 "image archive is unchanged; keeping rootfs at {}",
                 rootfs_path.display()
@@ -99,7 +114,23 @@ impl Storage {
             return Ok(rootfs_path);
         }
 
-        extract_rootfs_archive(&archive_path, &rootfs_path, &image.name).await?;
+        // This is an unfinished publication, not an image version. A failed
+        // preparation keeps the old image, but must not let archive reuse
+        // suppress the next extraction attempt.
+        fs::write(&pending_path, b"rootfs publication pending\n").with_context(|| {
+            format!(
+                "failed to start rootfs publication {}",
+                rootfs_path.display()
+            )
+        })?;
+        extract_rootfs_archive(
+            &archive_path,
+            &rootfs_path,
+            &image.name,
+            image_lock,
+            prepare_new,
+        )
+        .await?;
         println!("image extracted to {}", rootfs_path.display());
         Ok(rootfs_path)
     }
@@ -359,6 +390,8 @@ async fn extract_rootfs_archive(
     archive_path: &Path,
     rootfs_path: &Path,
     image_name: &str,
+    image_lock: PathLock,
+    prepare_new: impl FnOnce(&Path) -> anyhow::Result<()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let archive_path = archive_path.to_path_buf();
     let rootfs_path = rootfs_path.to_path_buf();
@@ -370,6 +403,9 @@ async fn extract_rootfs_archive(
     let archive_path_for_task = archive_path.clone();
     let rootfs_path_for_task = rootfs_path.clone();
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        // Cancellation of the async caller must not unlock a publication
+        // whose extraction and preparation are still running.
+        let _lock = image_lock;
         let extract_parent = rootfs_path_for_task.parent().ok_or_else(|| {
             anyhow!(
                 "rootfs output path has no parent: {}",
@@ -389,7 +425,14 @@ async fn extract_rootfs_archive(
             .with_context(|| format!("failed to open {}", archive_path_for_task.display()))?;
         unpack_archive(&archive_path_for_task, &mut archive_file, temp_dir.path())?;
         let extracted_rootfs = find_extracted_rootfs_image(temp_dir.path(), &image_name)?;
-        replace_extracted_rootfs(&extracted_rootfs, &rootfs_path_for_task)
+        prepare_new(&extracted_rootfs).context("failed to prepare extracted rootfs")?;
+        replace_extracted_rootfs(&extracted_rootfs, &rootfs_path_for_task)?;
+        fs::remove_file(rootfs_path_for_task.with_extension("img.pending")).with_context(|| {
+            format!(
+                "failed to finish rootfs publication {}",
+                rootfs_path_for_task.display()
+            )
+        })
     })
     .await
     .context("rootfs extraction task failed")?;

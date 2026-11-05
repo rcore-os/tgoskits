@@ -181,19 +181,32 @@ async fn pull_rootfs_image_returns_direct_mutable_file() {
         },
     );
 
+    let published = root.path().join("extracted").join(image_name);
+    let published_during_prepare = published.clone();
     let rootfs = storage
-        .pull_rootfs_image(ImageSpecRef::parse(image_name))
+        .pull_rootfs_image_with_prepare(ImageSpecRef::parse(image_name), move |image| {
+            assert!(!published_during_prepare.exists());
+            assert_eq!(fs::read(image).unwrap(), b"rootfs");
+            fs::write(image, b"prepared rootfs")?;
+            Ok(())
+        })
         .await
         .unwrap();
 
-    assert_eq!(rootfs, root.path().join("extracted").join(image_name));
-    assert_eq!(fs::read(rootfs).unwrap(), b"rootfs");
-    assert!(
-        root.path()
-            .join("downloads")
-            .join(format!("{image_name}.tar.xz"))
-            .is_file()
-    );
+    assert_eq!(rootfs, published);
+    assert_eq!(fs::read(&rootfs).unwrap(), b"prepared rootfs");
+    let archive_path = root
+        .path()
+        .join("downloads")
+        .join(format!("{image_name}.tar.xz"));
+    assert_eq!(sha256_hex(&fs::read(archive_path).unwrap()), sha256);
+    let reused = storage
+        .pull_rootfs_image_with_prepare(ImageSpecRef::parse(image_name), |_| {
+            bail!("reused images must not be prepared in place")
+        })
+        .await
+        .unwrap();
+    assert_eq!(fs::read(reused).unwrap(), b"prepared rootfs");
 }
 
 #[tokio::test]
@@ -268,12 +281,57 @@ async fn changed_archive_replaces_modified_rootfs() {
         },
     );
 
+    let published_during_prepare = rootfs.clone();
+    let error = new_storage
+        .pull_rootfs_image_with_prepare(ImageSpecRef::parse(image_name), move |image| {
+            assert_eq!(
+                fs::read(&published_during_prepare).unwrap(),
+                b"locally modified"
+            );
+            fs::write(image, b"partially prepared")?;
+            bail!("rootfs preparation failed")
+        })
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("rootfs preparation failed"));
+    assert_eq!(fs::read(&rootfs).unwrap(), b"locally modified");
+    assert_eq!(
+        sha256_hex(
+            &fs::read(
+                root.path()
+                    .join("downloads")
+                    .join(format!("{image_name}.tar.xz"))
+            )
+            .unwrap()
+        ),
+        new_sha256
+    );
+
+    let published_during_retry = rootfs.clone();
     let updated_rootfs = new_storage
-        .pull_rootfs_image(ImageSpecRef::parse(image_name))
+        .pull_rootfs_image_with_prepare(ImageSpecRef::parse(image_name), move |image| {
+            assert_eq!(
+                fs::read(&published_during_retry).unwrap(),
+                b"locally modified"
+            );
+            assert_eq!(fs::read(image).unwrap(), b"new rootfs");
+            fs::write(image, b"prepared new rootfs")?;
+            Ok(())
+        })
         .await
         .unwrap();
 
-    assert_eq!(fs::read(updated_rootfs).unwrap(), b"new rootfs");
+    assert_eq!(fs::read(&updated_rootfs).unwrap(), b"prepared new rootfs");
+    assert!(!updated_rootfs.with_extension("img.pending").exists());
+    assert!(
+        fs::read_dir(root.path().join("extracted"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rootfs-extract-"))
+    );
     assert_eq!(new_url.request_count(), 1);
 }
 
