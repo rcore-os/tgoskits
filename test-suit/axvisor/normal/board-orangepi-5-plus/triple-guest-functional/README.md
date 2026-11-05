@@ -4,7 +4,7 @@
 
 ## 1. 测试目标与架构
 
-三个客户机由 `build-aarch64-unknown-none-softfloat.toml` 的 `vm_configs` 按顺序装载，分别由 `linux-virtio-blk.toml`、`starry-virtio-blk.toml` 和 `zephyr-triple-guest-functional.toml` 描述，在一次运行中同时启动并全程保持运行。三者都是 `guest_type = "virtualized"`：Linux 与 StarryOS 从各自独立的文件后端 VirtIO 块设备启动（guest 侧 Linux 为 `/dev/vda`，StarryOS 用整盘 `root=/dev/sda`），Zephyr 不挂磁盘，只运行 tgosimages 发布的 `zephyr-triple-guest-functional` Shell 镜像。
+三个客户机由 `build-aarch64-unknown-none-softfloat.toml` 的 `vm_configs` 按顺序装载，分别由 `linux-virtio-blk.toml`、`starry-virtio-blk.toml` 和 `zephyr-triple-guest-functional.toml` 描述，在一次运行中同时启动并全程保持运行。三者都是 `guest_type = "virtualized"`：Linux 与 StarryOS 从各自独立的文件后端 VirtIO 块设备启动（guest 侧 Linux 为 `/dev/vda`，StarryOS 用整盘 `root=/dev/vda`），Zephyr 不挂磁盘，只运行 tgosimages 发布的 `zephyr-triple-guest-functional` Shell 镜像。
 
 Linux 与 StarryOS 的客户机 FDT 都由 AxVisor 从宿主固件 FDT 按虚拟化规则生成（两者都没有 `dtb_path`），Zephyr 使用与镜像同批构建的 DTB。三个客户机的 `passthrough` 与 `disabled` 列表都为空，它们看到的中断控制器、控制台、块设备和网卡全部是 AxVisor 的仿真窗口。
 
@@ -23,7 +23,7 @@ Linux 与 StarryOS 的 `virtio-net` 接在 AxVisor 内部二层交换机上，�
 | 客户机 | `[base] name` | VM id | 内核来源 | 根文件系统 | 关键设备 |
 | --- | --- | --- | --- | --- | --- |
 | Linux | `linux` | 1 | 板卡已部署的 6.1.99 虚拟客体内核 `/guest/linux/orangepi-5-plus-6.1.99-virtualized`（绝对板卡路径，保持外部），不由本 checkout 构建 | `/guest/rootfs-aarch64-orangepi-jammy-0.img`，`virtio-blk`，guest 侧 `/dev/vda` | 显式虚拟 16550 控制台（`console0`，`uart16550-mmio`，`0xfeb50000`，guest 侧 `ttyS0`）、内部 `virtio-net`（MAC `52:54:00:54:01:01`） |
-| StarryOS | `starry` | 2 | 由本 checkout 构建，作为内置资源打包进宿主 initramfs（`/guest/builtin/images`） | `/guest/rootfs-aarch64-orangepi-jammy-1.img`，`virtio-blk`，整盘 `root=/dev/sda` | 内部 `virtio-net`（MAC `52:54:00:54:01:02`） |
+| StarryOS | `starry` | 2 | 由本 checkout 构建，作为内置资源打包进宿主 initramfs（`/guest/builtin/images`） | `/guest/rootfs-aarch64-orangepi-jammy-1.img`，`virtio-blk`，整盘 `root=/dev/vda` | 内部 `virtio-net`（MAC `52:54:00:54:01:02`） |
 | Zephyr | `zephyr-triple-guest-functional` | 3 | 由 tgosimages 经 `scripts/apps/zephyr-triple-guest-functional.sh` 构建并部署（绝对板卡路径，保持外部） | 无磁盘 | 跟随宿主板级 GIC 地址的合成 vGIC、虚拟 UART |
 | AxVisor | - | - | 由本 checkout 构建的宿主内核 | 板卡 eMMC 根文件系统 | 两块物理 RTL8125、板卡根存储 |
 
@@ -31,7 +31,7 @@ Linux 与 StarryOS 的 `virtio-net` 接在 AxVisor 内部二层交换机上，�
 
 Linux 客户机身份名 `linux` 保持不变，外部内核路径改用板卡已部署的 6.1.99 虚拟客体内核 `/guest/linux/orangepi-5-plus-6.1.99-virtualized`，为全虚拟化 VirtIO 客体准备，并显式声明一个 16550（`uart16550-mmio`）虚拟控制台，guest 侧以 `console=ttyS0` 使用 `0xfeb50000` 窗口，不复制任何板卡 BSP 内核，也没有任何物理直通。该镜像是 6.1.99 的虚拟客体变体，控制台走 8250/ttyS0；复用该内核路径不等于已验证运行兼容，只有板卡运行走到约定标记才能证明，驱动缺失时客户机直接启动失败，不会退回物理直通。
 
-StarryOS 不识别 Linux 的 `/dev/vd*` 名称：它的 `root=` 只接受 `PARTUUID=`、`PARTLABEL=`、`/dev/sd*`、`/dev/nvme*n1` 与 `/dev/mmcblk*`（见 `fs/ax-fs-ng/src/root.rs`），其它取值会直接 panic，所以 StarryOS 客户机用整盘 `/dev/sda` 选择它唯一的那个文件后端根盘。
+StarryOS 的 `RootSelector` 按硬件家族匹配根设备名称：VirtIO 块设备使用 `/dev/vd*`，AHCI 使用 `/dev/sd*`（见 `fs/ax-fs-ng/src/root/mod.rs`）。这里用整盘 `/dev/vda` 选择客户机唯一的 VirtIO 文件后端根盘；镜像没有分区表，因此不加分区后缀，也可以显式使用该文件系统的 UUID。
 
 ## 3. 板上文件需求与放置路径
 

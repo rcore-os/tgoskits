@@ -568,7 +568,7 @@ fn render_diskstats() -> String {
 
 fn render_diskstats_row(
     identity: &ax_fs_ng::root::RootBlockIdentity,
-    stats: &ax_fs_ng::BlockIoStats,
+    stats: &ax_block::BlockIoStats,
 ) -> String {
     format!(
         "{} {} {} {} 0 {} {} {} 0 {} {} {} {} {} 0 0 0 0 {} {}\n",
@@ -2549,11 +2549,11 @@ mod tests {
     #[axtest::axtest]
     fn diskstats_row_preserves_linux_columns_and_truncates_milliseconds() {
         let identity = ax_fs_ng::root::RootBlockIdentity {
-            name: "sample0",
+            name: "sample0".into(),
             major: 253,
             minor: 7,
         };
-        let stats = ax_fs_ng::BlockIoStats {
+        let stats = ax_block::BlockIoStats {
             reads: 11,
             sectors_read: 17,
             read_ns: 999_999,

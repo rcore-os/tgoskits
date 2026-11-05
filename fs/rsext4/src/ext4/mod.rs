@@ -24,6 +24,7 @@ use crate::{
 mod alloc;
 mod fs;
 mod geometry;
+mod grow;
 mod lookup;
 mod mkfs;
 mod mmp;
@@ -44,11 +45,11 @@ pub use owned::{
     CompletedDirectoryLookup, CompletedInodeRead, CompletedInodeTableRead, CompletedInodeWrite,
     CompletedLiveInodeRead, DirectoryBlockRequest, DirectoryCursor, DirectoryEntry,
     DirectoryEntryType, DirectoryLookupOutcome, DirectoryLookupPreparation, DirectoryReadCache,
-    DirectoryReader, Ext4, FilePermissions, InodeBlockRequest, InodeDataRequest, InodeFlags,
-    InodeInfo, InodeMetadataReader, InodeMetadataUpdate, InodeReadCache, InodeReadPreparation,
-    LiveInodeRead, MutationContext, PreparedDirectoryLookup, PreparedInodeRead,
-    PreparedInodeTableRead, PreparedInodeWrite, PreparedLiveInodeRead, PreparedUnmount,
-    SpecialInodeKind, UnmountReceipt, ValidatedInodeRead, format,
+    DirectoryReader, Ext4, Ext4Session, FilePermissions, InodeBlockRequest, InodeDataRequest,
+    InodeFlags, InodeInfo, InodeMetadataReader, InodeMetadataUpdate, InodeReadCache,
+    InodeReadPreparation, LiveInodeRead, MutationContext, PreparedDirectoryLookup,
+    PreparedInodeRead, PreparedInodeTableRead, PreparedInodeWrite, PreparedLiveInodeRead,
+    PreparedUnmount, SpecialInodeKind, UnmountReceipt, ValidatedInodeRead, format,
 };
 pub use sync::umount;
 pub(crate) use system_zone::SystemZoneMap;

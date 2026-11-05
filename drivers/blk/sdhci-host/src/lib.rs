@@ -2,9 +2,7 @@
 //!
 //! This crate ports the [SD Host Controller Standard Specification][sdhci]
 //! v3.x register layout and ADMA2 data path into a physical
-//! [`sdmmc_host::SdMmcHost`] implementation that
-//! [`sdmmc_protocol::sdio::native::SdMmcCard`] drives through
-//! [`sdmmc_protocol::sdio::native::SdMmcCard::new`].
+//! [`sdmmc_host::SdMmcHost`] implementation driven by the card protocol owner.
 //!
 //! # Scope
 //!
@@ -22,25 +20,6 @@
 //!   v4 64-bit transfer contract. Hardware command
 //!   queueing belongs to the separate `cqhci-host` backend; legacy SDHCI still
 //!   owns at most one data request at a time.
-//!
-//! # Usage
-//!
-//! ```no_run
-//! use core::ptr::NonNull;
-//!
-//! use dma_api::DeviceDma;
-//! use sdhci_host::Sdhci;
-//! use sdmmc_protocol::sdio::native::SdMmcCard;
-//!
-//! let mmio = NonNull::new(0xFE31_0000 as *mut u8).unwrap();
-//! let dma: DeviceDma = todo!("install the platform DMA capability");
-//! let mut host = unsafe { Sdhci::new(mmio) };
-//! host.configure_dma(dma)?;
-//! let mut card = SdMmcCard::new(host);
-//! let mut request = card.submit_init()?;
-//! // Advance `request` only from the runtime's IRQ or bounded-deadline events.
-//! # Ok::<(), sdmmc_protocol::Error>(())
-//! ```
 //!
 //! Construction is `unsafe` because the caller must guarantee that the
 //! supplied address is a valid, exclusively-owned SDHCI register file.
@@ -73,12 +52,11 @@ pub use dma::{
     DWC_MSHC_ADMA_BOUNDARY,
 };
 pub use host::{HostClock, HostResetHook, HostTimer, Sdhci};
-use sdmmc_protocol::{
-    DataCommandProgress,
+use sdmmc_host::legacy::{
+    Command, DataCommandProgress, DataDirection,
     block::BlockRequestId,
-    cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
-    sdio::host::{
+    irq_capabilities::{
         BusWidth, CardIrqControl, ClockSpeed, CompletionIrqRearm, CompletionIrqRearmHost,
         HostEvent, HostEventKind, HostEventSource, SdMmcIrqHandle, SdMmcIrqHost, SignalVoltage,
     },
@@ -316,7 +294,7 @@ impl SdMmcIrqHost for Sdhci {
         self.dma.as_ref().ok_or(Error::UnsupportedCommand)
     }
 
-    fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::HostProgressWait {
+    fn progress_wait_kind(&self) -> sdmmc_host::HostProgressWait {
         Sdhci::progress_wait_kind(self)
     }
 }

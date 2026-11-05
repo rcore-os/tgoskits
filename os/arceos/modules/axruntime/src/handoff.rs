@@ -36,7 +36,7 @@ pub unsafe fn enter(enter: impl FnOnce(ax_hal::boot::ExecutionSnapshot)) -> ! {
         if let Err(error) = ax_fs_ng::shutdown_filesystems() {
             reset_with_error(error);
         }
-        if let Err(error) = ax_fs_ng::release_block_irqs_for_passthrough() {
+        if let Err(error) = ax_block::block::runtime::release_block_irqs_for_passthrough() {
             reset_with_error(error);
         }
     }

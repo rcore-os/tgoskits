@@ -13,7 +13,10 @@ impl Ext4Filesystem {
     }
 }
 
-pub(super) fn mmp_identity_for_region(device_name: &str, region: BlockRegion) -> MmpIdentity {
+/// Builds the MMP device identity from `device_name` and `region.start_lba`.
+/// Truncates the name prefix to fit the 32-byte on-disk field while preserving
+/// the region suffix, and leaves the unavailable global node identity empty.
+pub(crate) fn mmp_identity_for_region(device_name: &str, region: BlockRegion) -> MmpIdentity {
     let region_suffix = alloc::format!("@{:x}", region.start_lba);
     let prefix_len = device_name
         .len()

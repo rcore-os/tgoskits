@@ -7,6 +7,15 @@ use crate::regs::*;
 
 const DESCRIPTOR_TABLE_ALIGNMENT: usize = 1024;
 
+/// Host response handling and the point at which a direct command may start.
+pub(crate) enum DirectResponse {
+    /// Non-busy response, allowed while DAT0 still reports card busy.
+    /// The operation's software status checks determine card readiness.
+    R1,
+    /// Hardware busy detection, used by the existing cache-flush command.
+    R1b,
+}
+
 pub(crate) struct DescriptorTables {
     task_list: CoherentArray<u64>,
     transfers: CoherentArray<u64>,
@@ -62,11 +71,11 @@ impl DescriptorTables {
         &mut self,
         command: u8,
         argument: u32,
-        busy_response: bool,
+        response: DirectResponse,
     ) {
         self.task_list.set_cpu(
             DIRECT_COMMAND_SLOT * 2,
-            direct_command_descriptor(command, argument, busy_response).to_le(),
+            direct_command_descriptor(command, argument, response).to_le(),
         );
     }
 
@@ -171,9 +180,11 @@ fn transfer_descriptor(address: u32, encoded_length: u16, end: bool) -> u64 {
         | u64::from(address) << DESCRIPTOR_ADDRESS_SHIFT
 }
 
-fn direct_command_descriptor(command: u8, argument: u32, busy_response: bool) -> u64 {
-    let timing: u64 = if busy_response { 0 } else { 1 };
-    let response: u64 = if busy_response { 3 } else { 2 };
+fn direct_command_descriptor(command: u8, argument: u32, mode: DirectResponse) -> u64 {
+    let (timing, response): (u64, u64) = match mode {
+        DirectResponse::R1 => (1, 2),
+        DirectResponse::R1b => (0, 3),
+    };
     ATTR_VALID
         | ATTR_END
         | ATTR_INTERRUPT
@@ -213,17 +224,22 @@ mod tests {
     }
 
     #[test]
-    fn cache_flush_descriptor_is_a_busy_barrier_command() {
-        let argument = MMC_SWITCH_WRITE_BYTE_TEST << 24
+    fn direct_commands_encode_busy_and_nonbusy_responses() {
+        let flush = MMC_SWITCH_WRITE_BYTE_TEST << 24
             | MMC_FLUSH_CACHE_INDEX_TEST << 16
             | MMC_FLUSH_CACHE_TRIGGER_TEST << 8;
-        let descriptor = direct_command_descriptor(6, argument, true);
-
-        assert_eq!(descriptor & TASK_QUEUE_BARRIER, TASK_QUEUE_BARRIER);
-        assert_eq!(descriptor >> DCMD_COMMAND_SHIFT & 0x3f, 6);
-        assert_eq!(descriptor >> DCMD_TIMING_SHIFT & 1, 0);
-        assert_eq!(descriptor >> DCMD_RESPONSE_SHIFT & 0x3, 3);
-        assert_eq!(descriptor >> DESCRIPTOR_ADDRESS_SHIFT, u64::from(argument));
+        // Flush uses busy-response timing; its final CMD13 uses ordinary R1.
+        for (command, argument, response, timing, encoded_response) in [
+            (6, flush, DirectResponse::R1b, 0, 3),
+            (13, 7 << 16, DirectResponse::R1, 1, 2),
+        ] {
+            let descriptor = direct_command_descriptor(command, argument, response);
+            assert_eq!(descriptor & TASK_QUEUE_BARRIER, TASK_QUEUE_BARRIER);
+            assert_eq!(descriptor >> DCMD_COMMAND_SHIFT & 0x3f, u64::from(command));
+            assert_eq!(descriptor >> DCMD_TIMING_SHIFT & 1, timing);
+            assert_eq!(descriptor >> DCMD_RESPONSE_SHIFT & 3, encoded_response);
+            assert_eq!(descriptor >> DESCRIPTOR_ADDRESS_SHIFT, u64::from(argument));
+        }
     }
 
     const MMC_SWITCH_WRITE_BYTE_TEST: u32 = 0b11;

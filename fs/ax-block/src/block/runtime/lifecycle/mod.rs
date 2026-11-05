@@ -1,0 +1,1696 @@
+mod controller;
+mod device;
+mod io;
+#[cfg(any(test, axtest))]
+mod submission;
+#[cfg(feature = "write-zeroes")]
+mod zero;
+
+use alloc::{
+    boxed::Box,
+    collections::VecDeque,
+    format,
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    time::Duration,
+};
+
+use ax_lazyinit::OnceLock;
+use controller::{ControllerIrqToken, ControllerPort, run_controller};
+use device::{CpuSubmissionChannel, DeviceInfoEpoch};
+use irq_framework::IrqId;
+#[cfg(any(feature = "cache", axtest))]
+use rdif_block::RequestFlags;
+use rdif_block::{
+    BatchSubmitError, BlkError, BlockController, BlockControllerGroup, BlockGroupMember,
+    CompletedRequest, CompletionSink, ControllerEvent, ControllerState, ControllerUpdate,
+    DeviceInfo, GroupControllerEvent, GroupControllerUpdate, HardwareQueue, IrqEndpoint,
+    OwnedRequestBatch, QueueInfo, RequestOp, SharedIrqEndpoint, validate_owned_request,
+};
+#[cfg(any(test, axtest, feature = "cache"))]
+use rdif_block::{OwnedRequest, SubmitError};
+
+#[cfg(any(test, axtest, feature = "cache"))]
+use super::completion::CompletionSubscription;
+#[cfg(axtest)]
+use super::dma;
+use super::{
+    channel::{BoundedChannel, SendError},
+    completion::CompletionGroup,
+    hctx::{
+        ActivatedHctx, ControllerEventPort, Hctx, HctxIrqToken, HctxObserver, PreparedHctx,
+        Submission, request_is_nowait,
+    },
+    irq::{
+        BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, GroupIrqMemberTarget,
+        LatchedControllerIrq,
+    },
+    waiters::{AsyncWaiters, TaskWaiters},
+};
+use crate::{
+    BlockError, BlockResult,
+    os::{
+        BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
+        sync::RawSpinLock, wall_time,
+    },
+};
+
+const CONTROLLER_CHANNEL_DEPTH: usize = 64;
+const CONTROLLER_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_RUNTIME_HCTX: usize = u64::BITS as usize;
+
+const DEVICE_STARTING: u8 = 0;
+const DEVICE_READY: u8 = 1;
+const DEVICE_FAILED: u8 = 2;
+const DEVICE_STOPPED: u8 = 3;
+
+const GROUP_RUNNING: u8 = 0;
+const GROUP_STOPPING: u8 = 1;
+const GROUP_STOPPED: u8 = 2;
+
+static BLOCK_RUNTIME: OnceLock<Arc<BlockRuntime>> = OnceLock::new();
+
+/// One platform IRQ resolved before the portable controller enters runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BlockIrqSource {
+    pub source_id: usize,
+    pub irq: IrqId,
+}
+
+/// Portable controller plus platform IRQ metadata transferred from `ax-driver`.
+pub struct RdifBlockDevice {
+    name: String,
+    irqs: Vec<BlockIrqSource>,
+    controller: Box<dyn BlockController>,
+}
+
+/// Portable controller group plus its one-or-more platform IRQ bindings.
+pub struct RdifBlockGroup {
+    name: String,
+    irqs: Vec<BlockIrqSource>,
+    controller: Box<dyn BlockControllerGroup>,
+}
+
+impl RdifBlockDevice {
+    pub fn new_with_irqs(
+        name: impl Into<String>,
+        irqs: impl IntoIterator<Item = BlockIrqSource>,
+        controller: Box<dyn BlockController>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            irqs: irqs.into_iter().collect(),
+            controller,
+        }
+    }
+}
+
+impl RdifBlockGroup {
+    pub fn new_with_irqs(
+        name: impl Into<String>,
+        irqs: impl IntoIterator<Item = BlockIrqSource>,
+        controller: Box<dyn BlockControllerGroup>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            irqs: irqs.into_iter().collect(),
+            controller,
+        }
+    }
+}
+
+/// Installed IRQ-driven block runtime.
+pub struct BlockRuntime {
+    devices: Vec<Arc<DeviceRef>>,
+    groups: Vec<Arc<BlockGroupHandle>>,
+}
+
+impl BlockRuntime {
+    pub fn from_rdif_devices(devices: impl IntoIterator<Item = RdifBlockDevice>) -> Self {
+        let mut registered = Vec::new();
+        for device in devices {
+            let name = device.name.clone();
+            match DeviceRef::start(device) {
+                Ok(handle) => registered.push(handle),
+                Err(error) => {
+                    warn!("failed to start IRQ-driven block controller {name}: {error:?}");
+                }
+            }
+        }
+        Self {
+            devices: registered,
+            groups: Vec::new(),
+        }
+    }
+
+    pub fn from_rdif_sources(
+        devices: impl IntoIterator<Item = RdifBlockDevice>,
+        groups: impl IntoIterator<Item = RdifBlockGroup>,
+    ) -> Self {
+        let mut runtime = Self::from_rdif_devices(devices);
+        for group in groups {
+            match BlockGroupHandle::start(group) {
+                Ok(group) => {
+                    runtime.devices.extend(group.members.iter().cloned());
+                    runtime.groups.push(group);
+                }
+                Err(error) => {
+                    warn!("failed to start IRQ-shared block controller group: {error:?}");
+                }
+            }
+        }
+        runtime
+    }
+
+    pub fn install_from_rdif_devices(
+        devices: impl IntoIterator<Item = RdifBlockDevice>,
+    ) -> Arc<Self> {
+        let runtime = Arc::new(Self::from_rdif_devices(devices));
+        BLOCK_RUNTIME.call_once(|| Arc::clone(&runtime));
+        runtime
+    }
+
+    pub fn install_from_rdif_sources(
+        devices: impl IntoIterator<Item = RdifBlockDevice>,
+        groups: impl IntoIterator<Item = RdifBlockGroup>,
+    ) -> Arc<Self> {
+        let runtime = Arc::new(Self::from_rdif_sources(devices, groups));
+        BLOCK_RUNTIME.call_once(|| Arc::clone(&runtime));
+        runtime
+    }
+
+    pub fn devices(&self) -> &[Arc<DeviceRef>] {
+        &self.devices
+    }
+
+    /// Returns the devices registered during boot without taking ownership.
+    pub fn installed_devices() -> Option<&'static [Arc<DeviceRef>]> {
+        BLOCK_RUNTIME.get().map(|runtime| runtime.devices())
+    }
+
+    fn online_smp(&self) -> Result<(), BlkError> {
+        for device in &self.devices {
+            device.online_smp()?;
+        }
+        Ok(())
+    }
+
+    fn release_irqs_for_passthrough(&self) -> BlockResult<usize> {
+        let mut released = 0;
+        let mut first_error = None;
+        for group in &self.groups {
+            match group.shutdown_result() {
+                Ok(count) => released += count,
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        for device in &self.devices {
+            if device.inner.group_owner.is_some() {
+                continue;
+            }
+            match device.inner.shutdown_result() {
+                Ok(count) => released += count,
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        first_error.map_or(Ok(released), Err)
+    }
+}
+
+struct BlockGroupHandle {
+    name: String,
+    controller: RawSpinLock<Option<Box<dyn BlockControllerGroup>>>,
+    registrations: RawSpinLock<Vec<InstalledGroupIrqRegistration>>,
+    members: Vec<Arc<DeviceRef>>,
+    teardown_state: AtomicU8,
+    teardown_waiters: TaskWaiters,
+}
+
+struct GroupOwnerLink {
+    state: RawSpinLock<GroupOwnerState>,
+}
+
+enum GroupOwnerState {
+    Provisional { terminal_seen: bool },
+    Installed(Weak<BlockGroupHandle>),
+}
+
+impl GroupOwnerLink {
+    const fn new() -> Self {
+        Self {
+            state: RawSpinLock::new(GroupOwnerState::Provisional {
+                terminal_seen: false,
+            }),
+        }
+    }
+
+    fn terminal_owner(&self) -> Option<Arc<BlockGroupHandle>> {
+        let owner = {
+            let mut state = self.state.lock_irqsave();
+            match &mut *state {
+                GroupOwnerState::Provisional { terminal_seen } => {
+                    *terminal_seen = true;
+                    return None;
+                }
+                GroupOwnerState::Installed(owner) => owner.clone(),
+            }
+        };
+        owner.upgrade()
+    }
+
+    fn provisional_terminal_seen(&self) -> bool {
+        matches!(
+            &*self.state.lock_irqsave(),
+            GroupOwnerState::Provisional {
+                terminal_seen: true
+            }
+        )
+    }
+
+    fn install(&self, owner: &Arc<BlockGroupHandle>) -> bool {
+        let mut state = self.state.lock_irqsave();
+        match &*state {
+            GroupOwnerState::Provisional {
+                terminal_seen: false,
+            } => {
+                *state = GroupOwnerState::Installed(Arc::downgrade(owner));
+                true
+            }
+            GroupOwnerState::Provisional {
+                terminal_seen: true,
+            }
+            | GroupOwnerState::Installed(_) => false,
+        }
+    }
+}
+
+struct InstalledGroupIrqRegistration {
+    registration: Box<dyn BlockIrqRegistration>,
+    hctx_tokens: Vec<HctxIrqToken>,
+    controller_tokens: Vec<ControllerIrqToken>,
+}
+
+impl InstalledGroupIrqRegistration {
+    fn enable(&mut self) -> BlockResult {
+        for token in &mut self.hctx_tokens {
+            token.commit();
+        }
+        for token in &mut self.controller_tokens {
+            token.commit();
+        }
+        self.registration.enable()
+    }
+
+    fn disable_and_synchronize(&self) -> BlockResult {
+        self.registration.disable_and_synchronize()
+    }
+}
+
+struct StartedGroup {
+    members: Vec<BlockGroupMember>,
+    endpoints: Vec<SharedIrqEndpoint>,
+}
+
+impl BlockGroupHandle {
+    fn start(group: RdifBlockGroup) -> Result<Arc<Self>, BlkError> {
+        let RdifBlockGroup {
+            name,
+            irqs,
+            mut controller,
+        } = group;
+        let group_owner = Arc::new(GroupOwnerLink::new());
+        let StartedGroup { members, endpoints } =
+            match start_group_controller(&mut *controller, CONTROLLER_TRANSITION_TIMEOUT) {
+                Ok(started) => started,
+                Err(error) => {
+                    let _ = drive_group_transition(
+                        &mut *controller,
+                        GroupControllerEvent::Shutdown,
+                        CONTROLLER_TRANSITION_TIMEOUT,
+                    );
+                    return Err(error);
+                }
+            };
+        let mut bootstrapped = Vec::new();
+        for member in members {
+            let (member_id, member_controller) = member.into_parts();
+            let member_name = member_controller.name().into();
+            match DeviceRef::bootstrap_group_member(
+                member_id,
+                member_name,
+                member_controller,
+                Arc::clone(&group_owner),
+            ) {
+                Ok(handle) => bootstrapped.push((member_id, handle)),
+                Err(error) => {
+                    warn!("{name}: failed to bootstrap block member {member_id}: {error:?}");
+                }
+            }
+        }
+        if bootstrapped.is_empty() {
+            let _ = drive_group_transition(
+                &mut *controller,
+                GroupControllerEvent::Shutdown,
+                CONTROLLER_TRANSITION_TIMEOUT,
+            );
+            return Err(BlkError::NotSupported);
+        }
+        if group_owner.provisional_terminal_seen() {
+            abort_group_start(controller, bootstrapped, Vec::new());
+            return Err(BlkError::Io);
+        }
+
+        let mut registrations = Vec::new();
+        let mut endpoint_sources = Vec::new();
+        let setup_result = (|| {
+            if endpoints.is_empty() {
+                return Err(BlkError::NotSupported);
+            }
+            registrations
+                .try_reserve(endpoints.len())
+                .map_err(|_| BlkError::NoMemory)?;
+            endpoint_sources
+                .try_reserve(endpoints.len())
+                .map_err(|_| BlkError::NoMemory)?;
+            for (_, member) in &bootstrapped {
+                member.inner.reserve_group_irq_targets(endpoints.len())?;
+            }
+            for endpoint in endpoints {
+                let source_id = endpoint.source_id();
+                let irq = irqs
+                    .iter()
+                    .find(|source| source.source_id == source_id)
+                    .map(|source| source.irq)
+                    .ok_or(BlkError::NotSupported)?;
+                let mut targets = Vec::new();
+                let mut hctx_tokens = Vec::new();
+                let mut controller_tokens = Vec::new();
+                targets
+                    .try_reserve(bootstrapped.len())
+                    .map_err(|_| BlkError::NoMemory)?;
+                controller_tokens
+                    .try_reserve(bootstrapped.len())
+                    .map_err(|_| BlkError::NoMemory)?;
+                let hctx_target_count = bootstrapped
+                    .iter()
+                    .try_fold(0usize, |count, (_, member)| {
+                        count.checked_add(member.inner.hctxs.lock_irqsave().len())
+                    })
+                    .ok_or(BlkError::InvalidRequest)?;
+                hctx_tokens
+                    .try_reserve(hctx_target_count)
+                    .map_err(|_| BlkError::NoMemory)?;
+                for (member_id, member) in &bootstrapped {
+                    let (target, mut member_hctx_tokens, member_controller_token) =
+                        member.inner.group_irq_target(*member_id, source_id)?;
+                    targets.push(target);
+                    hctx_tokens.append(&mut member_hctx_tokens);
+                    controller_tokens.push(member_controller_token);
+                }
+                let cpu = bootstrapped
+                    .first()
+                    .and_then(|(_, member)| member.inner.first_hctx_cpu())
+                    .unwrap_or(0);
+                let registration = register_block_irq(
+                    format!("{name}/irq-{source_id}"),
+                    irq,
+                    cpu,
+                    BlockIrqAction::new_group(endpoint.into_handler(), None, targets),
+                )
+                .map_err(|_| BlkError::Io)?;
+                registrations.push(InstalledGroupIrqRegistration {
+                    registration,
+                    hctx_tokens,
+                    controller_tokens,
+                });
+                endpoint_sources.push(source_id);
+            }
+
+            for registration in &mut registrations {
+                registration.enable().map_err(|_| BlkError::Io)?;
+            }
+            for source_id in &endpoint_sources {
+                for (_, member) in &bootstrapped {
+                    let state = member.inner.controller.call(ControllerEvent::Rearm {
+                        source_id: *source_id,
+                    })?;
+                    if state == ControllerState::Shutdown {
+                        return Err(BlkError::Io);
+                    }
+                }
+                let state = drive_group_transition(
+                    &mut *controller,
+                    GroupControllerEvent::Rearm {
+                        source_id: *source_id,
+                    },
+                    CONTROLLER_TRANSITION_TIMEOUT,
+                )?;
+                if state == ControllerState::Shutdown {
+                    return Err(BlkError::Io);
+                }
+                if group_owner.provisional_terminal_seen() {
+                    return Err(BlkError::Io);
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = setup_result {
+            abort_group_start(controller, bootstrapped, registrations);
+            return Err(error);
+        }
+
+        let ready_error = bootstrapped.iter().find_map(|(member_id, member)| {
+            member
+                .finish_group_start()
+                .err()
+                .map(|error| (*member_id, error))
+        });
+        if let Some((member_id, error)) = ready_error {
+            warn!("{name}: block member {member_id} failed to become ready: {error:?}");
+            abort_group_start(controller, bootstrapped, registrations);
+            return Err(error);
+        }
+        let ready = bootstrapped.into_iter().map(|(_, member)| member).collect();
+        let handle = Arc::new(Self {
+            name,
+            controller: RawSpinLock::new(Some(controller)),
+            registrations: RawSpinLock::new(registrations),
+            members: ready,
+            teardown_state: AtomicU8::new(GROUP_RUNNING),
+            teardown_waiters: TaskWaiters::new(),
+        });
+        if !group_owner.install(&handle) {
+            let _ = handle.shutdown_result();
+            return Err(BlkError::Io);
+        }
+        Ok(handle)
+    }
+
+    fn shutdown_result(&self) -> BlockResult<usize> {
+        self.shutdown_internal(None)
+    }
+
+    fn shutdown_from_member(&self, member_id: usize) {
+        let _ = self.shutdown_internal(Some(member_id));
+    }
+
+    fn shutdown_internal(&self, origin_member: Option<usize>) -> BlockResult<usize> {
+        loop {
+            match self.teardown_state.load(Ordering::Acquire) {
+                GROUP_STOPPED => {
+                    if origin_member.is_none() {
+                        for member in &self.members {
+                            member.inner.join_controller_thread();
+                        }
+                    }
+                    return self
+                        .members
+                        .iter()
+                        .find_map(|member| member.inner.terminal_teardown_error())
+                        .map_or(Ok(0), Err);
+                }
+                GROUP_RUNNING => {
+                    if self
+                        .teardown_state
+                        .compare_exchange(
+                            GROUP_RUNNING,
+                            GROUP_STOPPING,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+                GROUP_STOPPING => self
+                    .teardown_waiters
+                    .wait_while(|| self.teardown_state.load(Ordering::Acquire) == GROUP_STOPPING)?,
+                _ => unreachable!("invalid block group teardown state"),
+            }
+        }
+        // Move the controller out so register retry waits never retain an
+        // IRQ-save guard.
+        let Some(mut controller) = self.controller.lock_irqsave().take() else {
+            return self.finish_shutdown(Err(BlockError::Io));
+        };
+        for member in &self.members {
+            member.inner.prepare_group_shutdown_local();
+        }
+        for member in &self.members {
+            if let Err(error) = quiesce_group_member(member) {
+                *self.controller.lock_irqsave() = Some(controller);
+                return self.finish_shutdown(Err(error.into()));
+            }
+        }
+        let group_quiesce = match drive_group_transition(
+            &mut *controller,
+            GroupControllerEvent::QuiesceIrqs,
+            CONTROLLER_TRANSITION_TIMEOUT,
+        ) {
+            Ok(state) => state,
+            Err(error) => {
+                *self.controller.lock_irqsave() = Some(controller);
+                return self.finish_shutdown(Err(error.into()));
+            }
+        };
+        let registrations = core::mem::take(&mut *self.registrations.lock_irqsave());
+        let count = registrations.len();
+        if let Err(error) = disable_registrations(&registrations) {
+            *self.registrations.lock_irqsave() = registrations;
+            for member in &self.members {
+                member.inner.quiesce_hctxs_for_group();
+            }
+            *self.controller.lock_irqsave() = Some(controller);
+            return self.finish_shutdown(Err(error));
+        }
+        drop(registrations);
+        for member in &self.members {
+            member.inner.quiesce_hctxs_for_group();
+        }
+        for member in &self.members {
+            if let Err(error) = shutdown_group_member(member) {
+                *self.controller.lock_irqsave() = Some(controller);
+                return self.finish_shutdown(Err(error.into()));
+            }
+        }
+        if group_quiesce != ControllerState::Shutdown {
+            match drive_group_transition(
+                &mut *controller,
+                GroupControllerEvent::Shutdown,
+                CONTROLLER_TRANSITION_TIMEOUT,
+            ) {
+                Ok(ControllerState::Shutdown) => {}
+                Ok(state) => {
+                    warn!("{}: group shutdown was not confirmed: {state:?}", self.name);
+                    *self.controller.lock_irqsave() = Some(controller);
+                    return self.finish_shutdown(Err(BlockError::Io));
+                }
+                Err(error) => {
+                    warn!("{}: block group shutdown failed: {error:?}", self.name);
+                    *self.controller.lock_irqsave() = Some(controller);
+                    return self.finish_shutdown(Err(error.into()));
+                }
+            }
+        }
+        drop(controller);
+        let mut first_error = None;
+        for member in &self.members {
+            if let Err(error) = member.inner.finish_group_member_shutdown()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        let result = self.finish_terminal_shutdown(first_error.map_or(Ok(count), Err));
+        for member in &self.members {
+            if member.inner.member_id != origin_member {
+                member.inner.join_controller_thread();
+            }
+        }
+        result
+    }
+
+    fn finish_terminal_shutdown(&self, result: BlockResult<usize>) -> BlockResult<usize> {
+        self.teardown_state.store(GROUP_STOPPED, Ordering::Release);
+        self.teardown_waiters.notify_all();
+        result
+    }
+
+    fn finish_shutdown(&self, result: BlockResult<usize>) -> BlockResult<usize> {
+        let next = if result.is_ok() {
+            GROUP_STOPPED
+        } else {
+            GROUP_RUNNING
+        };
+        self.teardown_state.store(next, Ordering::Release);
+        self.teardown_waiters.notify_all();
+        result
+    }
+}
+
+fn quiesce_group_member(member: &DeviceRef) -> Result<(), BlkError> {
+    if member.inner.controller.terminal_confirmed() {
+        return Ok(());
+    }
+    match member.inner.controller.call(ControllerEvent::QuiesceIrqs) {
+        Ok(_) => Ok(()),
+        Err(_) if member.inner.controller.terminal_confirmed() => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn shutdown_group_member(member: &DeviceRef) -> Result<(), BlkError> {
+    if member.inner.controller.terminal_confirmed() {
+        return Ok(());
+    }
+    match member.inner.controller.call(ControllerEvent::Shutdown) {
+        Ok(ControllerState::Shutdown) => Ok(()),
+        Ok(state) => {
+            warn!(
+                "{}: group member shutdown was not confirmed: {state:?}",
+                member.name()
+            );
+            Err(BlkError::Io)
+        }
+        Err(_) if member.inner.controller.terminal_confirmed() => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn abort_group_start(
+    mut controller: Box<dyn BlockControllerGroup>,
+    members: Vec<(usize, Arc<DeviceRef>)>,
+    registrations: Vec<InstalledGroupIrqRegistration>,
+) {
+    for (_, member) in &members {
+        member.inner.prepare_group_shutdown_local();
+    }
+    let mut quiesced = true;
+    for (_, member) in &members {
+        if quiesce_group_member(member).is_err() {
+            quiesced = false;
+        }
+    }
+    if drive_group_transition(
+        &mut *controller,
+        GroupControllerEvent::QuiesceIrqs,
+        CONTROLLER_TRANSITION_TIMEOUT,
+    )
+    .is_err()
+    {
+        quiesced = false;
+    }
+    let irqs_synchronized = disable_registrations(&registrations).is_ok();
+    for (_, member) in &members {
+        member.inner.quiesce_hctxs_for_group();
+    }
+    if !quiesced || !irqs_synchronized {
+        if irqs_synchronized {
+            drop(registrations);
+        } else {
+            core::mem::forget(registrations);
+        }
+        core::mem::forget(members);
+        core::mem::forget(controller);
+        return;
+    }
+    drop(registrations);
+    for (_, member) in &members {
+        if shutdown_group_member(member).is_err() {
+            core::mem::forget(members);
+            core::mem::forget(controller);
+            return;
+        }
+    }
+    if !matches!(
+        drive_group_transition(
+            &mut *controller,
+            GroupControllerEvent::Shutdown,
+            CONTROLLER_TRANSITION_TIMEOUT,
+        ),
+        Ok(ControllerState::Shutdown)
+    ) {
+        core::mem::forget(members);
+        core::mem::forget(controller);
+        return;
+    }
+    drop(controller);
+    for (_, member) in &members {
+        let _ = member.inner.finish_group_member_shutdown();
+        member.inner.join_controller_thread();
+    }
+}
+
+impl Drop for BlockGroupHandle {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown_result()
+            && self.teardown_state.load(Ordering::Acquire) != GROUP_STOPPED
+        {
+            warn!(
+                "{}: quarantining block group because teardown did not reach a safe terminal \
+                 state: {error:?}",
+                self.name
+            );
+            let controller = self.controller.lock_irqsave().take();
+            let registrations = core::mem::take(&mut *self.registrations.lock_irqsave());
+            let members = core::mem::take(&mut self.members);
+            core::mem::forget(controller);
+            core::mem::forget(registrations);
+            core::mem::forget(members);
+        }
+    }
+}
+
+fn start_group_controller(
+    controller: &mut dyn BlockControllerGroup,
+    timeout: Duration,
+) -> Result<StartedGroup, BlkError> {
+    let mut members = Vec::new();
+    let mut endpoints = Vec::new();
+    let mut event = GroupControllerEvent::Start;
+    let deadline = wall_time().saturating_add(timeout);
+    loop {
+        let mut update = controller.advance(event)?;
+        members.extend(update.take_members());
+        endpoints.extend(update.take_irq_endpoints());
+        match update.controller_state() {
+            ControllerState::Ready => return Ok(StartedGroup { members, endpoints }),
+            ControllerState::RegisterPending { retry_after } => {
+                wait_for_group_retry(deadline, retry_after)?;
+                event = GroupControllerEvent::RegisterRetry;
+            }
+            ControllerState::WaitingForIrq | ControllerState::Shutdown => {
+                return Err(BlkError::Io);
+            }
+        }
+    }
+}
+
+fn drive_group_transition(
+    controller: &mut dyn BlockControllerGroup,
+    mut event: GroupControllerEvent,
+    timeout: Duration,
+) -> Result<ControllerState, BlkError> {
+    let deadline = wall_time().saturating_add(timeout);
+    loop {
+        let update: GroupControllerUpdate = controller.advance(event)?;
+        match update.controller_state() {
+            ControllerState::RegisterPending { retry_after } => {
+                wait_for_group_retry(deadline, retry_after)?;
+                event = GroupControllerEvent::RegisterRetry;
+            }
+            state => return Ok(state),
+        }
+    }
+}
+
+fn wait_for_group_retry(deadline: Duration, retry_after: Duration) -> Result<(), BlkError> {
+    let now = wall_time();
+    if now >= deadline {
+        return Err(BlkError::TimedOut);
+    }
+    let delay = if retry_after.is_zero() {
+        Duration::from_micros(1)
+    } else {
+        retry_after
+    };
+    let wait = delay.min(deadline - now);
+    runtime_ops()
+        .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
+        .notification()
+        .wait_timeout(wait);
+    if wall_time() >= deadline {
+        Err(BlkError::TimedOut)
+    } else {
+        Ok(())
+    }
+}
+
+/// Expands every installed controller after schedulers, IPIs, and local IRQs
+/// are online on all CPUs.
+///
+/// # Errors
+///
+/// Returns the first controller transition failure. No controller falls back
+/// to polling.
+pub fn online_smp() -> Result<(), BlkError> {
+    BLOCK_RUNTIME
+        .get()
+        .ok_or(BlkError::Other("block runtime is not installed"))?
+        .online_smp()
+}
+
+/// Stops host block IRQ ownership before device passthrough.
+///
+/// # Errors
+///
+/// Returns an error if any IRQ registration cannot be disabled and
+/// synchronized, the owning controller cannot confirm shutdown, or a hardware
+/// queue cannot be quiesced completely.
+pub fn release_block_irqs_for_passthrough() -> BlockResult<usize> {
+    BLOCK_RUNTIME
+        .get()
+        .map_or(Ok(0), |runtime| runtime.release_irqs_for_passthrough())
+}
+
+/// Queryable reference to one installed physical device.
+/// Clone its `Arc` to share identity and statistics. Data I/O requires an
+/// explicit volume lease or an exclusive maintenance transaction.
+pub struct DeviceRef {
+    inner: Arc<DeviceInner>,
+}
+
+impl Drop for DeviceRef {
+    fn drop(&mut self) {
+        if let Err(error) = self.inner.shutdown_result() {
+            let terminal = self.inner.lifecycle_gate.lock_irqsave().phase == DevicePhase::Stopped;
+            if !terminal {
+                warn!(
+                    "{}: quarantining block device because teardown did not reach a safe terminal \
+                     state: {error:?}",
+                    self.inner.name
+                );
+                self.inner.quarantine_resources();
+            }
+        }
+    }
+}
+
+struct DeviceInner {
+    access: Arc<crate::access::AccessDomain>,
+    name: String,
+    io_metrics: Arc<super::io_stats::DeviceIoMetrics>,
+    device_info: RawSpinLock<DeviceInfoEpoch>,
+    max_io_queues: usize,
+    irq_sources: Vec<BlockIrqSource>,
+    hctxs: RawSpinLock<Vec<Arc<Hctx>>>,
+    detached_queues: RawSpinLock<Vec<Box<dyn HardwareQueue>>>,
+    cpu_channels: RawSpinLock<Vec<CpuSubmissionChannel>>,
+    irq_registrations: RawSpinLock<Vec<InstalledIrqRegistration>>,
+    controller: Arc<ControllerPort>,
+    controller_thread: RawSpinLock<Option<Box<dyn BlockThread>>>,
+    state: AtomicU8,
+    accepting: AtomicBool,
+    data_gate_waiters: TaskWaiters,
+    flush_gate_waiters: TaskWaiters,
+    data_drain_waiters: TaskWaiters,
+    admission_async_waiters: AsyncWaiters,
+    #[cfg(test)]
+    admission_wait_hook: RawSpinLock<Option<Box<dyn FnOnce() + Send>>>,
+    state_notification: Arc<dyn BlockNotification>,
+    lifecycle_gate: RawSpinLock<LifecycleGateState>,
+    shutdown_waiters: TaskWaiters,
+    member_id: Option<usize>,
+    group_owner: Option<Arc<GroupOwnerLink>>,
+}
+
+struct InstalledIrqRegistration {
+    registration: Box<dyn BlockIrqRegistration>,
+    hctx_tokens: Vec<HctxIrqToken>,
+    controller_token: ControllerIrqToken,
+}
+
+impl InstalledIrqRegistration {
+    fn enable(&mut self) -> BlockResult {
+        for token in &mut self.hctx_tokens {
+            token.commit();
+        }
+        self.controller_token.commit();
+        self.registration.enable()
+    }
+
+    fn disable_and_synchronize(&self) -> BlockResult {
+        self.registration.disable_and_synchronize()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DevicePhase {
+    Starting,
+    Ready,
+    Failed,
+    Stopping,
+    Stopped,
+}
+
+struct LifecycleGateState {
+    phase: DevicePhase,
+    submission_ready_hctx_count: usize,
+    active_data: usize,
+    flush_active: bool,
+    teardown_in_progress: bool,
+    terminal_teardown_error: Option<BlockError>,
+}
+
+impl LifecycleGateState {
+    const fn new() -> Self {
+        Self {
+            phase: DevicePhase::Starting,
+            submission_ready_hctx_count: 0,
+            active_data: 0,
+            flush_active: false,
+            teardown_in_progress: false,
+            terminal_teardown_error: None,
+        }
+    }
+
+    fn try_admit_data(&mut self, count: usize) -> Result<bool, BlkError> {
+        if count == 0 {
+            return Err(BlkError::InvalidRequest);
+        }
+        if self.phase != DevicePhase::Ready {
+            return Err(BlkError::Io);
+        }
+        if self.flush_active {
+            return Ok(false);
+        }
+        self.active_data = self
+            .active_data
+            .checked_add(count)
+            .ok_or(BlkError::InvalidRequest)?;
+        Ok(true)
+    }
+
+    /// `None` means another flush owns the gate. `Some` claims it and reports
+    /// whether all prior data submissions have already drained.
+    fn try_admit_flush(&mut self) -> Result<Option<bool>, BlkError> {
+        if self.phase != DevicePhase::Ready {
+            return Err(BlkError::Io);
+        }
+        if self.flush_active {
+            return Ok(None);
+        }
+        self.flush_active = true;
+        Ok(Some(self.active_data == 0))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SubmissionAdmission {
+    Blocking,
+    Nowait,
+}
+
+impl SubmissionAdmission {
+    const fn is_nowait(self) -> bool {
+        matches!(self, Self::Nowait)
+    }
+
+    fn cannot_wait(self) -> bool {
+        self.is_nowait() || request_cannot_block()
+    }
+}
+
+impl DeviceRef {
+    /// Returns the authoritative ownership domain of this physical device.
+    pub(crate) fn access_domain(&self) -> &Arc<crate::access::AccessDomain> {
+        &self.inner.access
+    }
+
+    fn start(device: RdifBlockDevice) -> Result<Arc<Self>, BlkError> {
+        let RdifBlockDevice {
+            name,
+            irqs,
+            controller,
+        } = device;
+        let handle = Self::bootstrap(name, irqs, controller, None, None)?;
+        handle.finish_group_start()?;
+        Ok(handle)
+    }
+
+    fn bootstrap_group_member(
+        member_id: usize,
+        name: String,
+        controller: Box<dyn BlockController>,
+        group_owner: Arc<GroupOwnerLink>,
+    ) -> Result<Arc<Self>, BlkError> {
+        Self::bootstrap(
+            name,
+            Vec::new(),
+            controller,
+            Some(member_id),
+            Some(group_owner),
+        )
+    }
+
+    fn bootstrap(
+        name: String,
+        irqs: Vec<BlockIrqSource>,
+        controller: Box<dyn BlockController>,
+        member_id: Option<usize>,
+        group_owner: Option<Arc<GroupOwnerLink>>,
+    ) -> Result<Arc<Self>, BlkError> {
+        let info = controller.device_info();
+        let max_io_queues = controller.max_io_queues().min(MAX_RUNTIME_HCTX);
+        if max_io_queues == 0 {
+            return Err(BlkError::NotSupported);
+        }
+        let ops =
+            runtime_ops().map_err(|_| BlkError::Other("block runtime adapter is not installed"))?;
+        let controller_notification = ops.notification();
+        let controller_port = Arc::new(ControllerPort {
+            commands: BoundedChannel::with_item_notification(
+                CONTROLLER_CHANNEL_DEPTH,
+                Arc::clone(&controller_notification),
+            )
+            .map_err(|_| BlkError::NoMemory)?,
+            notification: controller_notification,
+            irq_latches: RawSpinLock::new(Vec::new()),
+            terminal_confirmed: AtomicBool::new(false),
+        });
+        let inner = Arc::new(DeviceInner {
+            access: crate::access::AccessDomain::new(),
+            name,
+            io_metrics: Arc::new(super::io_stats::DeviceIoMetrics::default()),
+            device_info: RawSpinLock::new(DeviceInfoEpoch::new(info)),
+            max_io_queues,
+            irq_sources: irqs,
+            hctxs: RawSpinLock::new(Vec::new()),
+            detached_queues: RawSpinLock::new(Vec::new()),
+            cpu_channels: RawSpinLock::new(Vec::new()),
+            irq_registrations: RawSpinLock::new(Vec::new()),
+            controller: Arc::clone(&controller_port),
+            controller_thread: RawSpinLock::new(None),
+            state: AtomicU8::new(DEVICE_STARTING),
+            accepting: AtomicBool::new(false),
+            data_gate_waiters: TaskWaiters::new(),
+            flush_gate_waiters: TaskWaiters::new(),
+            data_drain_waiters: TaskWaiters::new(),
+            admission_async_waiters: AsyncWaiters::new(),
+            #[cfg(test)]
+            admission_wait_hook: RawSpinLock::new(None),
+            state_notification: ops.notification(),
+            lifecycle_gate: RawSpinLock::new(LifecycleGateState::new()),
+            shutdown_waiters: TaskWaiters::new(),
+            member_id,
+            group_owner,
+        });
+        let weak = Arc::downgrade(&inner);
+        let thread = ops
+            .spawn_pinned(
+                format!("blk-ctl/{}", inner.name),
+                0,
+                Box::new(move || run_controller(controller, controller_port, weak)),
+            )
+            .map_err(|_| BlkError::NoMemory)?;
+        *inner.controller_thread.lock_irqsave() = Some(thread);
+
+        let handle = Arc::new(Self { inner });
+        let state = match handle
+            .inner
+            .controller
+            .call(ControllerEvent::Start { target_queues: 1 })
+        {
+            Ok(state) => state,
+            Err(error) => {
+                handle.inner.shutdown();
+                return Err(error);
+            }
+        };
+        if state == ControllerState::Ready && handle.inner.hctxs.lock_irqsave().is_empty() {
+            handle.shutdown();
+            return Err(BlkError::Other(
+                "controller reported ready without an I/O hardware queue",
+            ));
+        }
+        if state == ControllerState::Ready && !handle.inner.mark_ready() {
+            handle.inner.shutdown();
+            return Err(BlkError::Io);
+        }
+        Ok(handle)
+    }
+
+    fn finish_group_start(&self) -> Result<(), BlkError> {
+        if self.inner.state.load(Ordering::Acquire) != DEVICE_READY {
+            self.inner.wait_until_ready(CONTROLLER_TRANSITION_TIMEOUT)?;
+        }
+        if self.inner.hctxs.lock_irqsave().is_empty() || !self.inner.mark_ready() {
+            return Err(BlkError::Io);
+        }
+        Ok(())
+    }
+
+    pub fn name(&self) -> &str {
+        &self.inner.name
+    }
+
+    pub fn device_info(&self) -> DeviceInfo {
+        self.inner.published_device_info()
+    }
+
+    /// Snapshots this physical device's admission-to-completion counters.
+    pub fn io_stats(&self) -> super::io_stats::BlockIoStats {
+        self.inner.io_metrics.snapshot()
+    }
+
+    /// Returns the installed device list for the Starry kernel axtest target.
+    #[cfg(axtest)]
+    pub fn axtest_devices() -> Option<&'static [Arc<DeviceRef>]> {
+        BLOCK_RUNTIME.get().map(|runtime| runtime.devices())
+    }
+
+    /// Reads one logical block through the complete asynchronous runtime path.
+    ///
+    /// This helper is compiled only into the axtest target so production VFS
+    /// callers continue to use the existing synchronous block facade. DMA
+    /// preparation and request validation remain owned by the runtime.
+    #[cfg(axtest)]
+    pub async fn axtest_read(&self, lba: u64) -> Result<CompletedRequest, BlockError> {
+        self.axtest_read_blocks(lba, 1).await
+    }
+
+    /// Reads a contiguous range of logical blocks through the asynchronous
+    /// runtime path. The returned DMA buffer contains exactly `block_count`
+    /// logical blocks in device order.
+    #[cfg(axtest)]
+    pub async fn axtest_read_blocks(
+        &self,
+        lba: u64,
+        block_count: u32,
+    ) -> Result<CompletedRequest, BlockError> {
+        let owner = self.axtest_access_owner(RequestOp::Read, lba, block_count)?;
+        let request = self.axtest_data_request(RequestOp::Read, lba, block_count, None)?;
+        let subscription = self
+            .submit_owned_async_retained(request, Some(owner))
+            .await
+            .map_err(|error| BlockError::from(error.error))?;
+        Ok(subscription.recv_async().await)
+    }
+
+    /// Reads one logical block through the synchronous completion path.
+    ///
+    /// This helper is only available to the axtest target so a benchmark can
+    /// compare equivalent request construction and DMA ownership on both
+    /// completion paths without duplicating runtime internals in the kernel.
+    #[cfg(axtest)]
+    pub fn axtest_read_sync(&self, lba: u64) -> Result<CompletedRequest, BlockError> {
+        self.axtest_read_blocks_sync(lba, 1)
+    }
+
+    /// Reads a contiguous range of logical blocks through the synchronous
+    /// completion path.
+    #[cfg(axtest)]
+    pub fn axtest_read_blocks_sync(
+        &self,
+        lba: u64,
+        block_count: u32,
+    ) -> Result<CompletedRequest, BlockError> {
+        let owner = self.axtest_access_owner(RequestOp::Read, lba, block_count)?;
+        let request = self.axtest_data_request(RequestOp::Read, lba, block_count, None)?;
+        let subscription = self
+            .submit_owned_retained(request, Some(owner))
+            .map_err(|error| BlockError::from(error.error))?;
+        subscription.recv().map_err(BlockError::from)
+    }
+
+    /// Writes one logical block through the asynchronous runtime path.
+    #[cfg(axtest)]
+    pub async fn axtest_write(
+        &self,
+        lba: u64,
+        data: &[u8],
+    ) -> Result<CompletedRequest, BlockError> {
+        self.axtest_write_blocks(lba, 1, data).await
+    }
+
+    /// Writes a contiguous range of logical blocks through the asynchronous
+    /// runtime path. The caller must provide exactly `block_count` logical
+    /// blocks of data.
+    #[cfg(axtest)]
+    pub async fn axtest_write_blocks(
+        &self,
+        lba: u64,
+        block_count: u32,
+        data: &[u8],
+    ) -> Result<CompletedRequest, BlockError> {
+        let owner = self.axtest_access_owner(RequestOp::Write, lba, block_count)?;
+        let request = self.axtest_data_request(RequestOp::Write, lba, block_count, Some(data))?;
+        let subscription = self
+            .submit_owned_async_retained(request, Some(owner))
+            .await
+            .map_err(|error| BlockError::from(error.error))?;
+        Ok(subscription.recv_async().await)
+    }
+
+    /// Writes one logical block through the synchronous completion path.
+    #[cfg(axtest)]
+    pub fn axtest_write_sync(&self, lba: u64, data: &[u8]) -> Result<CompletedRequest, BlockError> {
+        self.axtest_write_blocks_sync(lba, 1, data)
+    }
+
+    /// Writes a contiguous range of logical blocks through the synchronous
+    /// completion path. The caller must provide exactly `block_count` logical
+    /// blocks of data.
+    #[cfg(axtest)]
+    pub fn axtest_write_blocks_sync(
+        &self,
+        lba: u64,
+        block_count: u32,
+        data: &[u8],
+    ) -> Result<CompletedRequest, BlockError> {
+        let owner = self.axtest_access_owner(RequestOp::Write, lba, block_count)?;
+        let request = self.axtest_data_request(RequestOp::Write, lba, block_count, Some(data))?;
+        let subscription = self
+            .submit_owned_retained(request, Some(owner))
+            .map_err(|error| BlockError::from(error.error))?;
+        subscription.recv().map_err(BlockError::from)
+    }
+
+    #[cfg(axtest)]
+    fn axtest_access_owner(
+        &self,
+        operation: RequestOp,
+        lba: u64,
+        block_count: u32,
+    ) -> BlockResult<Arc<crate::access::AccessOwner>> {
+        use crate::access::VolumeAccess;
+        let end_lba = lba
+            .checked_add(u64::from(block_count))
+            .ok_or(BlockError::InvalidRequest)?;
+        if block_count == 0 || end_lba > self.device_info().num_blocks {
+            return Err(BlockError::InvalidRequest);
+        }
+        let access = match operation {
+            RequestOp::Read => VolumeAccess::ReadOnly,
+            RequestOp::Write if !self.device_info().read_only => VolumeAccess::ReadWrite,
+            RequestOp::Write => return Err(BlockError::Unsupported),
+            _ => return Err(BlockError::InvalidRequest),
+        };
+        let descriptor = self.access_domain().describe(crate::BlockRegion {
+            start_lba: lba,
+            end_lba,
+        });
+        self.access_domain().open(&descriptor, access)
+    }
+
+    #[cfg(axtest)]
+    fn axtest_data_request(
+        &self,
+        op: RequestOp,
+        lba: u64,
+        block_count: u32,
+        source: Option<&[u8]>,
+    ) -> Result<OwnedRequest, BlockError> {
+        let info = self.inner.selected_queue_info().ok_or(BlockError::Io)?;
+        let byte_len = usize::try_from(block_count)
+            .ok()
+            .and_then(|count| count.checked_mul(info.device.logical_block_size))
+            .ok_or(BlockError::InvalidRequest)?;
+        let data = match op {
+            RequestOp::Read => {
+                if source.is_some() {
+                    return Err(BlockError::InvalidRequest);
+                }
+                dma::prepare_read(info.limits, byte_len)?
+            }
+            RequestOp::Write => {
+                let source = source.ok_or(BlockError::InvalidRequest)?;
+                if source.len() != byte_len {
+                    return Err(BlockError::InvalidRequest);
+                }
+                dma::prepare_write(info.limits, source)?
+            }
+            RequestOp::Flush | RequestOp::WriteZeroes => return Err(BlockError::InvalidRequest),
+        };
+        Ok(OwnedRequest {
+            op,
+            lba,
+            block_count,
+            data: Some(data),
+            flags: RequestFlags::NONE,
+        })
+    }
+
+    /// Reports whether every ready queue supports durable flush barriers.
+    /// Returns false while no queue is ready; performs no device I/O.
+    #[cfg(feature = "write-zeroes")]
+    pub fn supports_flush(&self) -> bool {
+        let gate = self.inner.lifecycle_gate.lock_irqsave();
+        let queues = self.inner.hctxs.lock_irqsave();
+        let ready = &queues[..gate.submission_ready_hctx_count.min(queues.len())];
+        !ready.is_empty() && ready.iter().all(|queue| queue.info().limits.supports_flush)
+    }
+
+    #[cfg(feature = "write-zeroes")]
+    pub(crate) fn supports_fua(&self) -> bool {
+        let gate = self.inner.lifecycle_gate.lock_irqsave();
+        let queues = self.inner.hctxs.lock_irqsave();
+        let ready = &queues[..gate.submission_ready_hctx_count.min(queues.len())];
+        !ready.is_empty()
+            && ready.iter().all(|queue| {
+                queue
+                    .info()
+                    .limits
+                    .supported_flags
+                    .contains(RequestFlags::FUA)
+            })
+    }
+
+    /// Enqueues one DMA-owning request on the current CPU software channel.
+    ///
+    /// `NOWAIT` affects only bounded channel admission and is removed before
+    /// hardware validation.
+    #[cfg(test)]
+    pub(crate) fn submit_owned(
+        &self,
+        request: OwnedRequest,
+    ) -> Result<CompletionSubscription, SubmitError> {
+        self.submit_owned_retained(request, None)
+    }
+
+    #[cfg(any(test, axtest, feature = "cache"))]
+    fn submit_owned_retained(
+        &self,
+        request: OwnedRequest,
+        owner: Option<Arc<crate::access::AccessOwner>>,
+    ) -> Result<CompletionSubscription, SubmitError> {
+        let batch = OwnedRequestBatch::from_iter([request]);
+        match self.submit_batch_owned_retained(batch, owner) {
+            Ok(group) => Ok(group
+                .into_single()
+                .expect("single-request submission returns one completion")),
+            Err(error) => {
+                let result = error.error;
+                let mut requests = error.into_batch().into_iter();
+                let request = requests
+                    .next()
+                    .expect("single-request submission error returns its request");
+                Err(SubmitError::new(result, request))
+            }
+        }
+    }
+
+    /// Enqueues one ordered request group on the current CPU software channel.
+    ///
+    /// The runtime may split or combine groups when dispatching to hardware.
+    /// A flush must be submitted alone so the device-level barrier can order it
+    /// against every hardware queue.
+    fn submit_batch_owned_retained(
+        &self,
+        requests: OwnedRequestBatch,
+        owner: Option<Arc<crate::access::AccessOwner>>,
+    ) -> Result<CompletionGroup, BatchSubmitError> {
+        if !self.inner.accepting.load(Ordering::Acquire) {
+            return Err(BatchSubmitError::new(BlkError::Io, requests));
+        }
+        let count = requests.len();
+        if count == 0 {
+            return Err(BatchSubmitError::new(BlkError::InvalidRequest, requests));
+        }
+        let Some(cpu_channel) = self.inner.select_cpu_channel() else {
+            return Err(BatchSubmitError::new(BlkError::Io, requests));
+        };
+        let info = self.inner.effective_queue_info(&cpu_channel);
+        let validation_error = requests
+            .iter()
+            .find_map(|request| validate_owned_request(info, request).err());
+        if let Some(error) = validation_error {
+            return Err(BatchSubmitError::new(error, requests));
+        }
+
+        let (group, mut completions) = match CompletionGroup::pairs(count) {
+            Ok(pair) => pair,
+            Err(error) => return Err(BatchSubmitError::new(error, requests)),
+        };
+        if let Some(owner) = owner
+            && let Err(error) = group.retain_owner(&owner, &requests)
+        {
+            return Err(BatchSubmitError::new(ownership_error(error), requests));
+        }
+        let admission = if requests.iter().any(request_is_nowait) {
+            SubmissionAdmission::Nowait
+        } else {
+            SubmissionAdmission::Blocking
+        };
+        let flush_count = requests
+            .iter()
+            .filter(|request| request.op == RequestOp::Flush)
+            .count();
+        if flush_count != 0 && (flush_count != 1 || count != 1) {
+            return Err(BatchSubmitError::new(BlkError::InvalidRequest, requests));
+        }
+        let is_flush = flush_count == 1;
+        if is_flush {
+            if let Err(error) = self.inner.begin_flush_barrier(admission) {
+                return Err(BatchSubmitError::new(error, requests));
+            }
+        } else if let Err(error) = self.inner.enter_data_submissions(count, admission) {
+            return Err(BatchSubmitError::new(error, requests));
+        }
+
+        let mut submissions = VecDeque::new();
+        if submissions.try_reserve_exact(count).is_err() {
+            self.inner.undo_submission_admission(
+                if is_flush {
+                    RequestOp::Flush
+                } else {
+                    RequestOp::Read
+                },
+                count,
+            );
+            return Err(BatchSubmitError::new(BlkError::NoMemory, requests));
+        }
+        for request in requests {
+            let mut completion = completions
+                .pop_front()
+                .expect("completion sender count matches request batch");
+            completion.account(super::io_stats::RequestAccounting::new(
+                Arc::clone(&self.inner.io_metrics),
+                request.op,
+                sectors_for_blocks(info.device.logical_block_size, request.block_count),
+            ));
+            submissions.push_back(Submission {
+                request,
+                completion,
+            });
+        }
+        let send_result = cpu_channel
+            .channel
+            .send_many(submissions, admission.is_nowait());
+        if let Err(send_error) = send_result {
+            self.inner.undo_submission_admission(
+                if is_flush {
+                    RequestOp::Flush
+                } else {
+                    RequestOp::Read
+                },
+                count,
+            );
+            let error = self.inner.closed_submission_error();
+            let submissions = match send_error {
+                SendError::Closed(submissions) | SendError::Full(submissions) => submissions,
+            };
+            let requests = submissions
+                .into_iter()
+                .map(|submission| submission.request)
+                .collect();
+            return Err(BatchSubmitError::new(error, requests));
+        }
+        Ok(group)
+    }
+
+    #[cfg(test)]
+    fn test_io_owner(&self) -> BlockResult<Arc<crate::access::AccessOwner>> {
+        self.access_domain()
+            .cache_io(crate::BlockRegion::from_num_blocks(
+                self.device_info().num_blocks,
+            ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_blocks(&self, block_id: u64, buf: &mut [u8]) -> BlockResult {
+        self.read_blocks_retained(block_id, buf, self.test_io_owner()?)
+    }
+
+    pub(crate) fn read_blocks_retained(
+        &self,
+        block_id: u64,
+        buf: &mut [u8],
+        owner: Arc<crate::access::AccessOwner>,
+    ) -> BlockResult {
+        io::read_blocks(self, block_id, buf, owner)
+    }
+
+    #[cfg(all(test, feature = "cache"))]
+    pub(crate) fn write_blocks(&self, block_id: u64, buf: &[u8]) -> BlockResult {
+        self.write_blocks_retained(block_id, buf, self.test_io_owner()?)
+    }
+
+    #[cfg(feature = "cache")]
+    pub(crate) fn write_blocks_retained(
+        &self,
+        block_id: u64,
+        buf: &[u8],
+        owner: Arc<crate::access::AccessOwner>,
+    ) -> BlockResult {
+        io::write_blocks(self, block_id, buf, owner)
+    }
+
+    #[cfg(all(test, feature = "write-zeroes"))]
+    pub(crate) fn write_zeroes(&self, ranges: &[crate::block::BlockRegion]) -> BlockResult {
+        self.write_zeroes_retained(ranges, self.test_io_owner()?)
+    }
+
+    /// Synchronously zeros all ranges, retaining access and draining accepted writes on error.
+    #[cfg(feature = "write-zeroes")]
+    pub(crate) fn write_zeroes_retained(
+        &self,
+        ranges: &[crate::block::BlockRegion],
+        owner: Arc<crate::access::AccessOwner>,
+    ) -> BlockResult {
+        zero::write_zeroes(self, ranges, owner)
+    }
+
+    #[cfg(all(test, feature = "write-zeroes"))]
+    pub(crate) fn write_blocks_fua(&self, block_id: u64, buf: &[u8]) -> BlockResult {
+        self.write_blocks_fua_retained(block_id, buf, self.test_io_owner()?)
+    }
+
+    #[cfg(feature = "write-zeroes")]
+    pub(crate) fn write_blocks_fua_retained(
+        &self,
+        block_id: u64,
+        buf: &[u8],
+        owner: Arc<crate::access::AccessOwner>,
+    ) -> BlockResult {
+        if !self.supports_fua() {
+            return Err(BlockError::Unsupported);
+        }
+        io::write_blocks_fua(self, block_id, buf, owner)
+    }
+
+    #[cfg(feature = "cache")]
+    pub(crate) fn flush_blocks_retained(
+        &self,
+        owner: Arc<crate::access::AccessOwner>,
+    ) -> BlockResult {
+        io::ensure_sleepable()?;
+        let request = OwnedRequest {
+            op: RequestOp::Flush,
+            lba: 0,
+            block_count: 0,
+            data: None,
+            flags: RequestFlags::NONE,
+        };
+        let completion = self
+            .submit_owned_retained(request, Some(owner))
+            .map_err(|error| BlockError::from(error.error))?
+            .recv_admitted();
+        completion.result.map_err(BlockError::from)
+    }
+
+    fn online_smp(&self) -> Result<(), BlkError> {
+        self.inner.online_smp()
+    }
+
+    fn shutdown(&self) -> usize {
+        self.inner.shutdown()
+    }
+}
+
+fn ownership_error(error: BlockError) -> BlkError {
+    match error {
+        BlockError::InvalidRequest | BlockError::InvalidState => BlkError::InvalidRequest,
+        BlockError::ResourceBusy | BlockError::WouldBlock => BlkError::Retry,
+        BlockError::Unsupported => BlkError::NotSupported,
+        BlockError::NoMemory => BlkError::NoMemory,
+        BlockError::TimedOut => BlkError::TimedOut,
+        _ => BlkError::Io,
+    }
+}
+
+fn request_cannot_block() -> bool {
+    match runtime_ops() {
+        Ok(ops) => !ops.can_block(),
+        Err(_) => true,
+    }
+}
+
+fn sectors_for_blocks(logical_block_size: usize, block_count: u32) -> u64 {
+    (logical_block_size as u64)
+        .saturating_mul(block_count as u64)
+        .div_ceil(512)
+}
+
+fn stop_hctxs(hctxs: &[Arc<Hctx>]) -> Result<(), BlkError> {
+    let mut first_error = None;
+    for hctx in hctxs {
+        if let Err(error) = hctx.stop()
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn quiesce_hctxs(hctxs: &[Arc<Hctx>]) {
+    for hctx in hctxs {
+        hctx.quiesce();
+    }
+}
+
+struct DetachedCompletionSink;
+
+impl CompletionSink for DetachedCompletionSink {
+    fn complete(&mut self, request: CompletedRequest) {
+        drop(request.data);
+    }
+}
+
+fn shutdown_detached_queues(queues: Vec<Box<dyn HardwareQueue>>) -> Result<(), BlkError> {
+    let mut sink = DetachedCompletionSink;
+    let mut first_error = None;
+    for mut queue in queues {
+        if let Err(error) = queue.shutdown(&mut sink) {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+            warn!(
+                "quarantining detached block queue {} after shutdown failed: {error:?}",
+                queue.id()
+            );
+            core::mem::forget(queue);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+trait IrqRegistrationControl {
+    fn disable_and_synchronize(&self) -> BlockResult;
+}
+
+impl IrqRegistrationControl for InstalledIrqRegistration {
+    fn disable_and_synchronize(&self) -> BlockResult {
+        self.disable_and_synchronize()
+    }
+}
+
+impl IrqRegistrationControl for InstalledGroupIrqRegistration {
+    fn disable_and_synchronize(&self) -> BlockResult {
+        self.disable_and_synchronize()
+    }
+}
+
+impl IrqRegistrationControl for Box<dyn BlockIrqRegistration> {
+    fn disable_and_synchronize(&self) -> BlockResult {
+        (**self).disable_and_synchronize()
+    }
+}
+
+fn disable_registrations<T: IrqRegistrationControl>(registrations: &[T]) -> BlockResult {
+    let mut first_error = None;
+    for registration in registrations {
+        if let Err(error) = registration.disable_and_synchronize()
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn block_io_error(
+    stage: &'static str,
+    operation: RequestOp,
+    lba: u64,
+    source: BlkError,
+) -> BlockError {
+    warn!("block {operation:?} at LBA {lba} failed during {stage}: {source:?}");
+    BlockError::Device {
+        stage,
+        operation,
+        lba,
+        source,
+    }
+}
+
+#[cfg(test)]
+mod tests;

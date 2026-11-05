@@ -8,26 +8,24 @@ description = "ArceOS filesystem module"
 license.workspace = true
 
 [features]
-host-test = ["ax-sync/host-test", "axfs-ng-vfs/host-test"]
-fat = ["dep:fatfs"]
-ext4 = ["dep:rsext4"]
-vfs = ["ax-sync/sleep"]
+host-test = ["ax-block/host-test", "ax-sync/host-test", "axfs-ng-vfs/host-test"]
+fat = ["dep:fatfs", "dep:chrono", "ax-block/cache"]
+ext4 = ["dep:rsext4", "ax-block/cache", "ax-block/write-zeroes"]
+vfs = ["ax-sync/sleep", "ax-block/reclaim"]
 lockdep = ["axfs-ng-vfs/lockdep"]
 
 [dependencies]
-atomic-waker.workspace = true
+ax-block.workspace = true
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
 ax-lazyinit.workspace = true
 axpoll.workspace = true
 ax-sync = { workspace = true, features = ["sleep"] }
 bitflags = "2.10"
-cfg-if = { workspace = true }
-chrono = { workspace = true }
+chrono = { workspace = true, optional = true }
 dma-api = { workspace = true }
 hashbrown = "0.16"
 heapless.workspace = true
-intrusive-collections = "0.9"
 irq-framework = { workspace = true }
 log = { workspace = true }
 miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
@@ -35,7 +33,6 @@ lru = "0.16"
 rdif-block = { workspace = true }
 scope-local = { workspace = true }
 slab = { version = "0.4", default-features = false }
-thiserror.workspace = true
 
 [dependencies.rsext4]
 workspace = true
@@ -49,6 +46,7 @@ optional = true
 features = ["alloc", "lfn", "log_level_trace", "unicode"]
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
+ax-block = { workspace = true, features = ["host-test"] }
 ax-sync = { workspace = true, features = ["host-test"] }
 # Runtime integration is tested from the workspace. A published version here
 # would form a release-order cycle with ax-runtime's filesystem dependency.

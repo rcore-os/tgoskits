@@ -449,7 +449,7 @@ impl Sdhci {
             // Preserve this transfer's IRQ generation across CMD12 so a late
             // data/ADMA error cannot be discarded between transfer complete
             // and the stop response.
-            self.submit_chained_command(&sdmmc_protocol::cmd::CMD12)?;
+            self.submit_chained_command(&sdmmc_host::legacy::CMD12)?;
             return Ok(DataCommandProgress::Pending);
         }
 

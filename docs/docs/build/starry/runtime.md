@@ -40,6 +40,12 @@ QEMU 的 machine、CPU、UEFI、firmware 和 device 全部来自该文件。`--s
 
 `rootfs` patch 同时依据 QEMU drive 合同处理启动和网络所需参数。应用和测试用例可声明自己的 rootfs 与资产流程，因此其行为以各 case 的 TOML 为准。
 
+磁盘根初始化经 `ax-runtime::fs` 调用共享的 `ax_fs_ng::root` 准备管线。`RootRequest` 只解析根身份和 `ro`/`rw` 挂载方式；实际磁盘根由独立启动策略自动检查分区和文件系统增长，无需额外扩容参数，默认选盘也使用相同策略。GPT 与 MBR 分区只向后续连续空闲区增长；整盘 ext4、已经扩大的分区单独检查文件系统容量。分区起点、GUID/PARTUUID、文件系统 UUID 和已有文件保持不变。
+
+共享 `RootSelector` 支持 `root=UUID=<文件系统 UUID>`，与 `PARTUUID` 分别选择文件系统和分区身份。ext4 标准 UUID 以及 FAT16/FAT32 的 `XXXX-XXXX` 卷序列号均可用于分区或整盘根，忽略十六进制字母大小写；无关设备扫描或身份读取、校验失败仅跳过对应候选。目标未找到或已确认身份重复时仍失败，不回退其他根盘；内存不足保留原始错误。根身份选择独立于该卷是否支持自动扩容。
+
+普通 mount 和内存根不执行启动扩容；`ro` 或只读设备不增长。分区增长、原生文件系统增长和正常挂载分别处理结果：扩容失败会记录，重新验证同一卷后仍可正常挂载时继续启动；正常挂载或恢复失败才阻止发布磁盘根。若 initramfs 中的 `/init` 或 `rdinit` 目标可用，仍保留内存根。完整持久化顺序、支持的文件系统能力及失败边界见 [AxVisor 根扩容](../axvisor/runtime)。
+
 ### 1.2 启动产物
 
 基础 Cargo 构建保留 ELF。QEMU TOML 的 `to_bin` 决定运行阶段是否生成 BIN；例如仓库的 aarch64/riscv64/x86_64 默认配置均明确设置该值。x86_64 与 loongarch64 默认配置启用 UEFI 且请求 BIN。

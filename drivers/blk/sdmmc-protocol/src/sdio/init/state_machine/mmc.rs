@@ -38,7 +38,7 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                             info!("sdio: EXT_CSD sector_count={}", sectors);
                         }
                         request.parsed_ext_csd = Some(csd);
-                        submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit8)
+                        self.prepare_mmc_erase_geometry(request)
                     }
                     Err(error) => {
                         let mut ext_request = request
@@ -52,6 +52,38 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                         request.ext_csd_buf = Some(completed.into_cpu_buffer());
                         Err(error)
                     }
+                }
+            }
+            SdMmcInitState::PollMmcEraseGroupDefinition => {
+                let switch_request = request
+                    .mmc_switch_request
+                    .as_mut()
+                    .ok_or(Error::InvalidArgument)?;
+                let result = self.advance_mmc_switch_request(switch_request, cause);
+                let rejected = switch_request.was_rejected();
+                match result {
+                    Ok(OperationProgress::Pending) => Ok(OperationProgress::Pending),
+                    Ok(OperationProgress::Complete(())) => {
+                        request.mmc_switch_request = None;
+                        let ext_csd = request
+                            .parsed_ext_csd
+                            .as_mut()
+                            .ok_or(Error::InvalidArgument)?;
+                        ext_csd.set_hc_erase_group_enabled();
+                        debug!(
+                            "sdio: HC erase-group definition enabled, blocks={:?}",
+                            ext_csd.hc_erase_group_blocks()
+                        );
+                        submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit8)
+                    }
+                    Err(_) if rejected => {
+                        request.mmc_switch_request = None;
+                        debug!(
+                            "sdio: HC erase-group definition rejected; retaining legacy geometry"
+                        );
+                        submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit8)
+                    }
+                    Err(error) => Err(error),
                 }
             }
             SdMmcInitState::PollMmcBusWidth => {
@@ -356,6 +388,40 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                 }
             }
             _ => unreachable!("state dispatched to the wrong initialization phase"),
+        }
+    }
+
+    /// Restores the Linux HC erase/WP definition lost at card reset. A command
+    /// or status failure cannot publish a geometry the card did not confirm.
+    fn prepare_mmc_erase_geometry(
+        &mut self,
+        request: &mut SdMmcInitRequest<H>,
+    ) -> Result<OperationProgress<CardInfo>, Error> {
+        let ext_csd = request
+            .parsed_ext_csd
+            .as_ref()
+            .ok_or(Error::InvalidArgument)?;
+        let Some(timeout_ms) = ext_csd.hc_erase_group_switch_timeout_ms() else {
+            return submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit8);
+        };
+        match self.submit_mmc_switch_with_timeout(
+            0b11,
+            crate::cmd::ext_csd::ERASE_GROUP_DEF as u8,
+            1,
+            timeout_ms,
+        ) {
+            Ok(switch_request) => {
+                request.mmc_switch_request = Some(switch_request);
+                request.state = SdMmcInitState::PollMmcEraseGroupDefinition;
+                Ok(OperationProgress::Pending)
+            }
+            // A refused submission has not executed CMD6. Errors after its
+            // admission require final-ready rejection proof in the state above.
+            Err(Error::UnsupportedCommand) => {
+                debug!("sdio: HC erase-group switch unsupported; retaining legacy geometry");
+                submit_mmc_bus_width_or_continue(self, request, BusWidth::Bit8)
+            }
+            Err(error) => Err(error),
         }
     }
 

@@ -6,7 +6,7 @@
 #     --board orangepi-5-plus-triple-guest-functional
 #
 # Linux (VM 1) and StarryOS (VM 2) run from independent file-backed VirtIO block
-# devices (VM1 `/dev/vda`, VM2 whole-disk `root=/dev/sda`) and share one AxVisor
+# devices (VM1 `/dev/vda`, VM2 whole-disk `root=/dev/vda`) and share one AxVisor
 # internal L2 switch through virtio-net. Zephyr (VM 3) keeps the host GIC/UART identity
 # of its board image. The deployed Zephyr asset must be the interactive Shell image;
 # the top-level fail marker `PROJECT EXECUTION SUCCESSFUL` discriminates a wrong

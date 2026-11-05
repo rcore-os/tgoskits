@@ -70,8 +70,15 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
 
     info!("k230-sdhci: defer protocol initialization to IRQ-driven hctx");
-    let dev =
-        sdhci_rdif::initializing_device(host.into_parts(), config, card_init_preference(info));
+    let parts = host.into_parts();
+    let dev = {
+        sdmmc_protocol::rdif::BlockDevice::new_initializing(
+            sdmmc_protocol::sdio::native::SdMmcCard::new(parts.bus),
+            parts.irq,
+            config,
+            card_init_preference(info),
+        )
+    };
     let irq = probe.register_block(dev)?;
     info!("k230-sdhci block device registered irq={:?}", irq);
     Ok(())

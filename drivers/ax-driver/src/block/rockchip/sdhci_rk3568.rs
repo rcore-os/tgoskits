@@ -153,8 +153,15 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
 
     info!("rockchip-rk3568-sdhci: defer eMMC initialization to IRQ-driven hctx");
-    let dev =
-        sdhci_rdif::initializing_device(host.into_parts(), config, CardInitPreference::MmcFirst);
+    let dev = {
+        let parts = host.into_parts();
+        sdmmc_protocol::rdif::BlockDevice::new_initializing(
+            sdmmc_protocol::sdio::native::SdMmcCard::new(parts.bus),
+            parts.irq,
+            config,
+            CardInitPreference::MmcFirst,
+        )
+    };
     let irq = probe.register_block(dev)?;
     info!(
         "rockchip-rk3568-sdhci block device registered irq={:?}",

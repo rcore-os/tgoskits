@@ -31,9 +31,20 @@ pub trait FilesystemOps: Send + Sync {
     /// Gets the name of the filesystem
     fn name(&self) -> &str;
 
-    /// Returns whether this filesystem was mounted read-only.
+    /// Returns whether the native filesystem backend currently rejects writes.
     fn is_readonly(&self) -> bool {
         false
+    }
+
+    /// Reconfigures a native read-only backend before VFS publishes write access.
+    /// Implementations retain the same filesystem and backing owner. A failure
+    /// must keep write protection; devices without writable authority refuse it.
+    fn remount_read_write(&self) -> VfsResult<()> {
+        if self.is_readonly() {
+            Err(crate::VfsError::PermissionDenied)
+        } else {
+            Ok(())
+        }
     }
 
     /// Gets the root directory entry of the filesystem

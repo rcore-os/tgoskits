@@ -33,7 +33,7 @@ ArceOS 的 HAL 与 `ax-runtime` 组织平台初始化、探测和领域启动；
 
 ![驱动框架的公共组成与不同执行模型](images/driver-framework.svg)
 
-图中的运行时是职责概念，不是一个适用于所有驱动的公共 crate。`ax-fs-ng::block::runtime`、USB `Core`、显示输入适配和 `ax-net::queue_runtime` 分别实现不同合同。
+图中的运行时是职责概念，不是一个适用于所有驱动的公共 crate。`ax-block::block::runtime`、USB `Core`、显示输入适配和 `ax-net::queue_runtime` 分别实现不同合同。
 
 ### 2.2 状态归属
 

@@ -114,9 +114,9 @@ impl Sdhci {
         }
         let expected =
             if command.index == 21 && self.read_u8(REG_HOST_CONTROL1) & HOST_CTRL1_8BIT != 0 {
-                sdmmc_protocol::cmd::MMC_TUNING_BLOCK_SIZE_8BIT
+                128
             } else {
-                sdmmc_protocol::cmd::SD_TUNING_BLOCK_SIZE
+                64
             };
         if u32::from(block_size.get()) != expected {
             return Err(sdmmc_host::Error::InvalidArgument);

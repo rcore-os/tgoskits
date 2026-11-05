@@ -48,6 +48,24 @@ fn csum_v3_writer_transaction_replays_after_checkpoint_loss() {
     dev.set_journal_superblock_with_mapping(superblock, (128..192).map(AbsoluteBN::new).collect())
         .expect("install writer-produced csum-v3 journal");
 
+    let before = dev.inner._device().data.clone();
+    let writes = dev.inner._device().write_calls;
+    let flushes = dev.inner._device().flush_calls;
+    let error = dev
+        .validate_replay(|view| {
+            // Validation must read the indexed journal location on demand rather
+            // than retain a second, full payload image in memory.
+            view.inner
+                ._device_mut()
+                .fail_next_read_at_block(AbsoluteBN::new(130));
+            view.read_block(target)
+        })
+        .expect_err("preview payload read fault must propagate");
+    assert_eq!(error.kind(), crate::Ext4ErrorKind::Io);
+    assert!(dev.replay_preview.is_none());
+    assert_eq!(dev.inner._device().data, before);
+    assert_eq!(dev.inner._device().write_calls, writes);
+    assert_eq!(dev.inner._device().flush_calls, flushes);
     assert_eq!(dev.journal_replay_checked(), ReplayStatus::Complete);
     let inner = dev.into_inner();
     assert!(
@@ -55,6 +73,42 @@ fn csum_v3_writer_transaction_replays_after_checkpoint_loss() {
             .iter()
             .all(|byte| *byte == 0xa5)
     );
+
+    // A valid journal can outlive a truncated home region. Validate even the
+    // destinations that a recovered-layout callback does not need to read.
+    let mut writer = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+    writer
+        .set_journal_superblock(csum_v3_superblock(), AbsoluteBN::new(128))
+        .unwrap();
+    writer
+        .write_blocks(&vec![0x35; BLOCK_SIZE], AbsoluteBN::new(250), 1, true)
+        .unwrap();
+    writer.umount_commit().unwrap();
+    let mut inner = writer.into_inner();
+    inner.data.truncate(192 * BLOCK_SIZE);
+    let before = inner.data.clone();
+    let writes = inner.write_calls;
+    let flushes = inner.flush_calls;
+    let mut truncated = Jbd2Dev::initial_jbd2dev(0, inner, true);
+    truncated
+        .set_journal_superblock_with_mapping(superblock, (128..192).map(AbsoluteBN::new).collect())
+        .unwrap();
+    let mut validated = false;
+    assert!(
+        truncated
+            .validate_replay(|_| {
+                validated = true;
+                Ok(())
+            })
+            .is_err()
+    );
+    assert!(
+        !validated,
+        "out-of-range replay must fail before validation"
+    );
+    assert_eq!(truncated.inner._device().data, before);
+    assert_eq!(truncated.inner._device().write_calls, writes);
+    assert_eq!(truncated.inner._device().flush_calls, flushes);
 }
 
 #[test]

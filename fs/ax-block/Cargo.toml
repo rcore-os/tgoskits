@@ -1,0 +1,38 @@
+[package]
+name = "ax-block"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository = "https://github.com/rcore-os/tgoskits"
+description = "Portable physical block runtime, coherent cache and volume layout"
+
+[features]
+cache = ["dep:bitflags", "dep:hashbrown"]
+write-zeroes = ["cache"]
+reclaim = ["cache"]
+host-test = ["ax-sync/host-test"]
+
+[dependencies]
+atomic-waker.workspace = true
+ax-lazyinit.workspace = true
+ax-sync = { workspace = true, features = ["sleep"] }
+bitflags = { version = "2.10", optional = true }
+dma-api.workspace = true
+hashbrown = { version = "0.16", optional = true }
+irq-framework.workspace = true
+log.workspace = true
+rdif-block.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
+ax-sync = { workspace = true, features = ["host-test"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
+[[package.metadata.clippy.configurations]]
+name = "axtest"
+target = "x86_64-unknown-linux-gnu"
+features = ["host-test", "write-zeroes", "reclaim"]
+rustflags = ["--cfg", "axtest"]

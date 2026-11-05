@@ -91,12 +91,10 @@ impl Sdhci {
 
     fn pending_transaction_progress(&self) -> sdmmc_host::RequestProgress<sdmmc_host::RawResponse> {
         match self.progress_wait_kind() {
-            sdmmc_protocol::sdio::HostProgressWait::Register { retry_after } => {
+            sdmmc_host::HostProgressWait::Register { retry_after } => {
                 sdmmc_host::RequestProgress::RegisterPending { retry_after }
             }
-            sdmmc_protocol::sdio::HostProgressWait::Irq => {
-                sdmmc_host::RequestProgress::WaitingForIrq
-            }
+            sdmmc_host::HostProgressWait::Irq => sdmmc_host::RequestProgress::WaitingForIrq,
         }
     }
 

@@ -1,0 +1,20 @@
+# Reuse the injected executable for initially-readonly FAT boot checks.
+fat_root_init = "/usr/bin/starry-test-suit/test-remount-flags"
+# The readonly disk exposes VIRTIO_BLK_F_RO through the native block runtime.
+# NVMe remains the writable, isolated root used to inject this test executable.
+cmdline = "root=/dev/nvme0n1 rw"
+args = [
+    "-nographic", "-machine", "virt,gic-version=3,its=on",
+    "-m", "512M", "-cpu", "cortex-a53,pmu=on", "-smp", "4",
+    "-device", "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-blk-device,drive=remount",
+    "-drive", "id=remount,if=none,format=raw,snapshot=on,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-busybox.img",
+    "-device", "virtio-blk-device,drive=readonly",
+    "-drive", "id=readonly,if=none,format=raw,readonly=on,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-busybox.img",
+]
+uefi = false
+to_bin = true
+test_commands = ["export STARRY_PHYSICAL_READONLY_DEVICE=/dev/vda STARRY_WRITABLE_REMOUNT_DEVICE=/dev/vdb; exec /usr/bin/starry-run-system-tests"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 180

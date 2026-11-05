@@ -65,6 +65,8 @@ visual 或 golden 类用例时，使用 `cargo xtask starry app ...` 或对应�
 
 ## CI 精确路由
 
+### 执行选择
+
 CI 路由不改变上述 xtask 发现规则。`.github/ci/checks/starry.toml` 通过 check 下的
 `[[check.suite]]` 注册当前可用的 QEMU 架构或 board runner；planner 再以实际存在的
 `qemu-<arch>.toml`、`board-<board>.toml` 和最近的 `build-<target>.toml` 解析 case。
@@ -74,6 +76,20 @@ PR 的有效改动全部位于 `test-suit/**` 时，只运行匹配的已注册 
 稳定去重并集；共享 build wrapper 变更展开到该 wrapper 下所有已注册 case。
 `qemu/system/<subcase>` 源码变更会生成 `qemu/<subcase>` selector。若新增 case 或
 board 尚未在 manifest 注册，`Plan CI` 会明确失败，而不是静默跳过或自动启用真机。
+
+### 启动扩容夹具
+
+分组 QEMU 配置可用 `rootfs_growth_bytes` 声明给原始整盘 ext4 镜像追加的稀疏空间，必须为正的 4096 字节整数倍。`RootGrowthFixture` 先把目标容量通过 `STARRY_ROOT_EXPECTED_BYTES` 注入分组命令，生成并缓存测试资源后，仅扩大本次运行的临时镜像副本；共享镜像与缓存中的 ext4 保留原容量。不能用于没有临时副本的 plain 用例，也不用于分区镜像的容量推导。
+
+`system/root-growth-aarch64.toml` 为 `bugfix-fstatvfs-directory` 追加 256 MiB。该用例通过真实 `statfs` 和 `fstatfs` 查询根，比较文件系统容量与夹具目标；启动流程若跳过扩容，原容量仍合法但测试必须失败。使用 `cargo xtask starry test qemu --arch aarch64 -c qemu/system/bugfix-fstatvfs-directory` 执行同一个 CI 分组配置，不需要额外内核参数或手工验收脚本。
+
+### 挂载权限转换
+
+`system/readonly-mount-aarch64.toml` 将 `test-remount-flags` 放到真实只读 VirtIO 设备与可写 ext4 根的配置中，验证拒绝物理只读介质的写挂载、原生超级块复用、首次只读挂载后的可写提升及文件持久化。
+
+同一配置通过 `fat_root_init` 指定已注入镜像的测试程序。`FatRootFixture` 复用该产物，使用已有宿主 FAT 库创建独占临时根镜像，再用相同内核运行两个首次只读 FAT 根场景：可写介质允许提升并通过写入、`fsync` 和回读；物理只读介质返回 `EACCES`，之后创建文件仍返回 `EROFS`。程序放在附加 ext4 分区执行，以避免混入 FAT 执行权限策略。所有镜像在场景结束或失败时清理，客户机写入使用快照，不修改共享镜像或缓存。
+
+使用 `cargo xtask starry test qemu --arch aarch64 -c qemu/system/test-remount-flags` 执行完整挂载权限验证，常规 AArch64 CI 通过相同入口运行。夹具只额外使用原有 `debugfs` 和 `mkfs.ext4`，不需要独立 Python 脚本、交叉编译步骤、`mtools` 或分区工具。任一场景失败直接使该分组失败；成功判定由对应场景的输出标记驱动。
 
 ## 当前目录概览
 

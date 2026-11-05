@@ -55,6 +55,7 @@ members = [
     "components/ctor_bare/ctor_bare",
     "components/ctor_bare/ctor_bare_macros",
     "fs/ax-fs-ng",
+    "fs/ax-block",
     "fs/axfs-ng-vfs",
     "fs/rsext4",
     "memory/*",
@@ -171,6 +172,7 @@ drm-kapi = { version = "0.1", path = "components/drm-kapi" }
 ax-driver = { version = "0.18", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 virtio-gpu = { version = "0.1", path = "drivers/gpu/virtio-gpu" }
+ax-block = { version = "0.1", path = "fs/ax-block" }
 ax-fs-ng = { version = "0.11", path = "fs/ax-fs-ng" }
 ax-hal = { version = "0.8.4", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.5", path = "components/irq-framework" }

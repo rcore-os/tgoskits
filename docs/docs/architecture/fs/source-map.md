@@ -5,7 +5,7 @@ sidebar_label: "源码结构"
 
 # 文件系统源码结构
 
-文件系统源码按 VFS 机制、文件 I/O 策略、磁盘格式、块运行时和 OS glue 分层。目录位置不是依赖方向：例如 StarryOS 伪文件系统位于 kernel 内，但实现的是 `axfs-ng-vfs` 的底层节点 trait；`ax-fs-ng` 的块运行时位于文件系统 crate 内，却只处理设备 request，不识别 inode 或路径。
+文件系统源码按 VFS 机制、文件 I/O 策略、磁盘格式、块运行时和 OS glue 分层。目录位置不是依赖方向：例如 StarryOS 伪文件系统位于 kernel 内，但实现的是 `axfs-ng-vfs` 的底层节点 trait；`ax-block` 独立拥有物理块运行时、缓存与卷布局，只处理设备 request，不识别 inode 或路径；文件镜像和 VFS 错误转换留在 `ax-fs-ng`。
 
 ## 1. 公共机制
 
@@ -50,7 +50,7 @@ sidebar_label: "源码结构"
 
 ## 2. 存储路径
 
-存储路径把磁盘分区事实、具体文件系统格式和异步块设备运行时分开。`BlockRegion` 是卷发现与格式实现之间的边界，`BlockDeviceHandle` 是格式实现与设备运行时之间的边界。
+存储路径把磁盘分区事实、具体文件系统格式和异步块设备运行时分开。`BlockRegion` 描述卷范围，`VolumeDescriptor` 绑定已观察的布局代际，`VolumeLease` 持有访问能力；`DeviceRef` 负责查询设备和申请这些能力。
 
 ### 2.1 卷与磁盘格式
 
@@ -58,9 +58,10 @@ sidebar_label: "源码结构"
 
 | 源码 | 负责的事实 | 主要入口 |
 | --- | --- | --- |
-| `fs/ax-fs-ng/src/root.rs` | root selector、设备命名、候选排序、附加分区挂载 | `RootSpec`、`init_root*()` |
-| `fs/ax-fs-ng/src/volume/` | GPT、MBR/EBR、raw volume 发现 | `scan_volumes()`、`BlockVolume` |
-| `fs/ax-fs-ng/src/block.rs` | 文件系统可见 block trait 和 region 裁剪 | `FsBlockDevice`、`BlockRegion`、`RegionBlockDevice` |
+| `fs/ax-fs-ng/src/root/mod.rs` | root selector、ext4/FAT UUID 只读身份探测、设备命名、候选排序、附加分区挂载 | `RootSelector`、`read_filesystem_uuid()`、`init_root*()` |
+| `fs/ax-block/src/volume/` | GPT、MBR/EBR、raw volume 发现 | `scan_volumes()`、`BlockVolume` |
+| `fs/ax-block/src/access.rs` | 卷访问准入、整盘排他和布局重读 | `VolumeLease`、`DiskMaintenance` |
+| `fs/ax-block/src/block/mod.rs` | 文件系统可见 block trait 和 region 裁剪 | `BlockDevice`、`BlockRegion`、`RegionBlockDevice` |
 | `fs/ax-fs-ng/src/fs/mod.rs` | 文件系统工厂和 feature 路由 | `new_from_handle()` |
 | `fs/ax-fs-ng/src/fs/ext4/rsext4/` | `rsext4` 到 VFS 的 adapter | `Ext4Filesystem`、`Inode`、`Ext4Disk` |
 | `fs/rsext4/src/` | ext4 superblock、inode、extent、目录、JBD2 和 block cache | `Ext4FileSystem`、public API |
@@ -70,7 +71,7 @@ sidebar_label: "源码结构"
 
 ### 2.2 块设备运行时
 
-IRQ 驱动块运行时消费 `rdif-block` 的 controller、hardware queue、IRQ endpoint 和 owned request，并向文件系统提供同步 `BlockDeviceHandle`。其源码按生命周期、队列、IRQ 和完成所有权拆分。
+IRQ 驱动块运行时消费 `rdif-block` 的 controller、hardware queue、IRQ endpoint 和 owned request，并经访问租约向文件系统提供同步 I/O。以下相对源码路径均位于 `fs/ax-block/src/`，按生命周期、队列、IRQ 和完成所有权拆分。
 
 | 源码 | 负责的事实 |
 | --- | --- |
@@ -78,6 +79,7 @@ IRQ 驱动块运行时消费 `rdif-block` 的 controller、hardware queue、IRQ 
 | `block/runtime/lifecycle/controller.rs` | controller command port 和 transition worker |
 | `block/runtime/lifecycle/device.rs` | hctx 发布、CPU channel、在线 CPU 扩容 |
 | `block/runtime/lifecycle/io.rs` | 文件系统同步 buffer 与 DMA-owned request 的转换 |
+| `block/runtime/lifecycle/zero.rs` | 原生 WriteZeroes 能力选择、精确区间拆分和普通 DMA 写零回退 |
 | `block/runtime/hctx/` | hardware-context event loop、批量 dispatch、commit、completion |
 | `block/runtime/channel.rs` | 有界 MPSC/SPSC 风格运行时 channel |
 | `block/runtime/irq.rs` | hard IRQ action、event latch、shared group fan-out |
@@ -85,7 +87,7 @@ IRQ 驱动块运行时消费 `rdif-block` 的 controller、hardware queue、IRQ 
 | `block/runtime/waiters.rs` | task-context 多等待者通知 |
 | `block/runtime/metrics.rs` | batch、dispatch、commit、backpressure 统计 |
 
-块 runtime 消费 `rdif-block` 的 controller、hardware queue、IRQ endpoint 和 owned request。文件系统只持有 `Arc<BlockDeviceHandle>`，不会获得 hardware queue 的可变引用。
+文件系统后端持有 `VolumeLease`，请求在终结完成前保留其访问所有者。`DeviceRef` 不暴露无约束提交入口，文件系统也不会获得 hardware queue 的可变引用。
 
 ## 3. 系统边界
 
@@ -97,7 +99,8 @@ ArceOS 提供页、DMA、IRQ、任务和时间 provider，StarryOS 提供 file d
 
 | 源码 | 主要职责 |
 | --- | --- |
-| `fs/ax-fs-ng/src/os/` | 定义 page、DMA、IRQ、task、time capability，并保存一次性安装的 provider |
+| `fs/ax-fs-ng/src/os/` | 保存 page 与 entropy provider，转发块层能力并启动文件缓存工作者 |
+| `fs/ax-block/src/os/` | 定义并保存唯一的 DMA、IRQ、task、time provider 和同步能力 |
 | `os/arceos/modules/axruntime/src/fs/block.rs` | 用 `ax-alloc`、`ax-hal`、`ax-task`、`axklib::dma` 实现 capability；收集 rdif 设备 |
 | `os/arceos/modules/axruntime/src/fs/mod.rs` | 按 `fs` feature 调用初始化和 SMP online |
 | `os/arceos/api/arceos_api/` | ArceOS API facade |
@@ -116,6 +119,7 @@ ArceOS 提供页、DMA、IRQ、任务和时间 provider，StarryOS 提供 file d
 flowchart LR
     Vfs["axfs-ng-vfs"]
     Fs["ax-fs-ng"]
+    Block["ax-block"]
     Ext4["rsext4"]
     Rdif["rdif-block"]
     Caps["dma-api / irq-framework / ax-sync"]
@@ -125,8 +129,9 @@ flowchart LR
 
     Fs --> Vfs
     Fs --> Ext4
-    Fs --> Rdif
-    Fs --> Caps
+    Fs --> Block
+    Block --> Rdif
+    Block --> Caps
     Runtime --> Fs
     Runtime --> Rdif
     Starry --> Fs
@@ -140,7 +145,7 @@ flowchart LR
 | --- | --- | --- |
 | `axfs-ng-vfs -> ax-fs-ng` | VFS 机制不能依赖页缓存、磁盘或任务策略 | 由 `ax-fs-ng` 组合 VFS |
 | `ax-fs-ng -> ax-hal/ax-task/ax-alloc` | 公共 crate 会绑定 ArceOS runtime | `ax-fs-ng::os` capability 注入 |
-| ext4/FAT adapter -> `rdrive` | 磁盘格式不负责设备发现 | `BlockDeviceHandle` / `FsBlockDevice` |
+| ext4/FAT adapter -> `rdrive` | 磁盘格式不负责设备发现 | 经 `VolumeLease` 提供的 `BlockDevice` |
 | block runtime -> VFS node/path | 设备运行时不能解释文件语义 | owned block request 与 completion |
 | `rsext4 -> StarryOS` | 格式实现必须可独立 host-test | adapter 将 ext4 错误转换为 `VfsError` |
 

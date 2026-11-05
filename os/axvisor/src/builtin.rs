@@ -36,7 +36,7 @@ pub const BUILTIN_WEB_UI_DIR: &str = "/guest/builtin/web-ui";
 /// out of that registry leaves it anchored at the detached initramfs mount;
 /// the mount owns an immutable memory filesystem and is independent of the
 /// block filesystem released for passthrough.
-static RETAINED_BOOT_CONTEXT: OnceLock<Arc<ax_fs_ng::os::sync::Mutex<FsContext>>> = OnceLock::new();
+static RETAINED_BOOT_CONTEXT: OnceLock<Arc<ax_block::os::sync::Mutex<FsContext>>> = OnceLock::new();
 
 pub fn retain_boot_context(context: &FsContext) -> Result<()> {
     let mut retained = FsContext::new(context.root_dir().clone());
@@ -47,7 +47,7 @@ pub fn retain_boot_context(context: &FsContext) -> Result<()> {
     retained
         .unshare_mount_namespace()
         .context("isolate retained initramfs mount namespace")?;
-    let retained = Arc::new(ax_fs_ng::os::sync::Mutex::new(retained));
+    let retained = Arc::new(ax_block::os::sync::Mutex::new(retained));
     RETAINED_BOOT_CONTEXT.get_or_init(|| retained);
     Ok(())
 }
@@ -214,7 +214,7 @@ pub fn prepare_root() -> Result<()> {
         .any(|arg| arg.starts_with("root="));
     let source_handle = current_fs_context();
     let source = source_handle.lock().clone();
-    let has_block_devices = ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
+    let has_block_devices = ax_block::block::runtime::BlockRuntime::installed_devices()
         .is_some_and(|devices| !devices.is_empty());
     if !has_root || !has_block_devices {
         log::info!("Axvisor uses initramfs root; disk root unavailable or not requested");

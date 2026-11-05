@@ -2,11 +2,7 @@
 
 use core::ptr::NonNull;
 
-use sdmmc_protocol::{
-    CommandProgress, DataDirection,
-    cmd::{cmd7, cmd17},
-    sdio::host::SdMmcIrqHandle,
-};
+use sdmmc_host::legacy::{CommandProgress, DataDirection, irq_capabilities::SdMmcIrqHandle};
 
 use super::*;
 
@@ -166,7 +162,7 @@ fn r1b_busy_release_is_register_progress_after_command_irq() {
     ));
     assert_eq!(
         host.progress_wait_kind(),
-        sdmmc_protocol::sdio::HostProgressWait::Register {
+        sdmmc_host::HostProgressWait::Register {
             retry_after: crate::SDHCI_REGISTER_RETRY_DELAY,
         }
     );
@@ -194,4 +190,11 @@ fn irq_cache_drops_events_from_previous_generation() {
         .cache_if_current(old_generation, NORMAL_INT_CMD_COMPLETE, 0);
 
     assert_eq!(host.irq.state.pending_normal(), 0);
+}
+
+fn cmd7(rca: u16) -> sdmmc_host::Command {
+    sdmmc_host::Command::new(7, u32::from(rca) << 16, sdmmc_host::ResponseType::R1b)
+}
+fn cmd17(address: u32) -> sdmmc_host::Command {
+    sdmmc_host::Command::new(17, address, sdmmc_host::ResponseType::R1)
 }

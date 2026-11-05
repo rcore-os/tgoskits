@@ -10,11 +10,27 @@ use rdif_block::{
     OwnedRequest, OwnedRequestBatch, QueueInfo, RequestFlags, RequestId, RequestOp, SubmissionSink,
     validate_owned_request,
 };
-use sdmmc_protocol::rdif::{BlockConfig, CommandQueueAccelerator, CommandQueueActivation};
+use sdmmc_host::{
+    block_queue::BlockConfig,
+    command_queue::{CommandQueueAccelerator, CommandQueueActivation},
+};
 
 use crate::{
-    CqhciPlatform, descriptor::DescriptorTables, irq::IrqState, read_u32, regs::*, write_u32,
+    CqhciPlatform,
+    descriptor::{DescriptorTables, DirectResponse},
+    irq::IrqState,
+    read_u32,
+    regs::*,
+    write_u32,
 };
+
+fn check_response(raw: u32, final_status: bool) -> Result<(), BlkError> {
+    if raw & 0xFFF9_A080 != 0 || (final_status && (raw & (1 << 8) == 0 || (raw >> 9) & 15 != 4)) {
+        Err(BlkError::Io)
+    } else {
+        Ok(())
+    }
+}
 
 const TRANSITION_TIMEOUT_NS: u64 = 20_000_000;
 
@@ -23,9 +39,42 @@ struct RequestSlot {
     dma: Option<InFlightDma>,
 }
 
-struct FlushSlot {
+/// Owns slot 31 for a complete maintenance sequence, not just one command.
+struct DirectSlot {
+    /// The runtime request is completed only after the entire operation ends.
     request_id: RequestId,
-    needs_status: bool,
+    /// Protocol state remains private while later data submissions are blocked.
+    operation: DirectOperation,
+}
+
+/// Only one maintenance operation can own the physical command/data path.
+enum DirectOperation {
+    /// Preserve the existing flush followed by final card-status verification.
+    Flush {
+        /// Whether CMD6 must still precede the final CMD13 verification.
+        needs_status: bool,
+    },
+}
+
+impl DirectOperation {
+    /// Describes the next command without transferring operation ownership.
+    fn command(&self, activation: CommandQueueActivation) -> (sdmmc_host::Command, DirectResponse) {
+        match self {
+            Self::Flush { needs_status } => {
+                let command = if *needs_status {
+                    activation.flush_command
+                } else {
+                    activation.status_command
+                };
+                let response = if command.response == sdmmc_host::ResponseType::R1b {
+                    DirectResponse::R1b
+                } else {
+                    DirectResponse::R1
+                };
+                (command, response)
+            }
+        }
+    }
 }
 
 /// One CQHCI hardware queue with a single task-context owner.
@@ -37,14 +86,14 @@ pub struct CqhciQueue {
     descriptors: Option<DescriptorTables>,
     slots: Vec<RequestSlot>,
     free_tags: Vec<usize>,
-    flush: Option<FlushSlot>,
+    direct: Option<DirectSlot>,
     staged: u32,
     active: bool,
     engine_armed: bool,
     data_path_restore_pending: bool,
     poisoned: bool,
     depth: usize,
-    next_flush_id: usize,
+    next_direct_id: usize,
     activation: Option<CommandQueueActivation>,
     info: Option<QueueInfo>,
 }
@@ -83,14 +132,14 @@ impl CqhciQueue {
             descriptors: Some(descriptors),
             slots,
             free_tags,
-            flush: None,
+            direct: None,
             staged: 0,
             active: false,
             engine_armed: false,
             data_path_restore_pending: false,
             poisoned: false,
             depth: 0,
-            next_flush_id: usize::MAX / 2,
+            next_direct_id: usize::MAX / 2,
             activation: None,
             info: None,
         };
@@ -150,10 +199,10 @@ impl CqhciQueue {
             requests.push_front(request);
             return Err(BlkError::InvalidRequest);
         }
-        if request.op == RequestOp::Flush {
-            return self.stage_flush(requests, request);
+        if matches!(request.op, RequestOp::Flush | RequestOp::WriteZeroes) {
+            return self.stage_direct(requests, request);
         }
-        if self.flush.is_some() {
+        if self.direct.is_some() {
             requests.push_front(request);
             return Err(BlkError::Retry);
         }
@@ -190,34 +239,50 @@ impl CqhciQueue {
         Ok(id)
     }
 
-    fn stage_flush(
+    /// Drains data before reserving slot 31 and keeps it exclusive until the
+    /// full protocol operation terminates. A QBR on each command alone would
+    /// allow intervening data tasks to invalidate an MMC erase sequence.
+    fn stage_direct(
         &mut self,
         requests: &mut OwnedRequestBatch,
         request: OwnedRequest,
     ) -> Result<RequestId, BlkError> {
         if self.staged != 0
-            || self.flush.is_some()
+            || self.direct.is_some()
             || self.slots.iter().any(|slot| slot.request_id.is_some())
         {
             requests.push_front(request);
             return Err(BlkError::Retry);
         }
-        let (Some(activation), Some(descriptors)) = (self.activation, self.descriptors.as_mut())
-        else {
+        let Some(activation) = self.activation else {
             requests.push_front(request);
             return Err(BlkError::InvalidRequest);
         };
-        let id = RequestId::new(self.next_flush_id);
-        self.next_flush_id = self.next_flush_id.wrapping_add(1).max(DATA_SLOTS);
-        let command = activation.flush_command();
-        descriptors.prepare_direct_command(
-            command.index,
-            command.argument,
-            command.response == sdmmc_protocol::response::ResponseType::R1b,
-        );
-        self.flush = Some(FlushSlot {
+        let operation = match request.op {
+            RequestOp::Flush => Ok(DirectOperation::Flush {
+                needs_status: activation.flush_command.index == 6,
+            }),
+            RequestOp::WriteZeroes => Err(BlkError::NotSupported),
+            RequestOp::Read | RequestOp::Write => Err(BlkError::InvalidRequest),
+        };
+        let operation = match operation {
+            Ok(operation) => operation,
+            Err(error) => {
+                requests.push_front(request);
+                return Err(error);
+            }
+        };
+        let Some(descriptors) = self.descriptors.as_mut() else {
+            requests.push_front(request);
+            return Err(BlkError::InvalidRequest);
+        };
+        let id = RequestId::new(self.next_direct_id);
+        self.next_direct_id = self.next_direct_id.wrapping_add(1).max(DATA_SLOTS);
+        let (command, response) = operation.command(activation);
+        descriptors.prepare_direct_command(command.index, command.argument, response);
+        self.direct = Some(DirectSlot {
             request_id: id,
-            needs_status: activation.cache_enabled,
+            operation,
         });
         self.staged |= 1 << DIRECT_COMMAND_SLOT;
         Ok(id)
@@ -230,11 +295,11 @@ impl CqhciQueue {
         sink: &mut dyn CompletionSink,
     ) -> Result<(), BlkError> {
         if tag == DIRECT_COMMAND_SLOT {
-            let flush = self.flush.take().ok_or(BlkError::Io)?;
+            let direct = self.direct.take().ok_or(BlkError::Io)?;
             if let Some(descriptors) = self.descriptors.as_mut() {
                 descriptors.clear_task(tag);
             }
-            sink.complete(CompletedRequest::new(flush.request_id, result, None));
+            sink.complete(CompletedRequest::new(direct.request_id, result, None));
             return Ok(());
         }
         let slot = self.slots.get_mut(tag).ok_or(BlkError::Io)?;
@@ -253,6 +318,7 @@ impl CqhciQueue {
 
     fn recover_all(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
         self.poisoned = true;
+        self.active = false;
         if self.quiesce() {
             self.complete_all_after_quiesce(sink);
         } else {
@@ -311,21 +377,41 @@ impl CqhciQueue {
     }
 
     fn complete_direct_command(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        let flush = self.flush.as_mut().ok_or(BlkError::Io)?;
-        let result =
-            CommandQueueActivation::check_response(read_u32(self.base, CRDCT), !flush.needs_status);
-        if result.is_ok() && flush.needs_status {
-            let command = self.activation.ok_or(BlkError::Io)?.status_command();
+        let activation = self.activation.ok_or(BlkError::Io)?;
+        let raw = read_u32(self.base, CRDCT);
+        let result = {
+            let direct = self.direct.as_mut().ok_or(BlkError::Io)?;
+            match &mut direct.operation {
+                DirectOperation::Flush { needs_status } => {
+                    let result = check_response(raw, !*needs_status);
+                    let finished = !*needs_status;
+                    if result.is_ok() {
+                        *needs_status = false;
+                    }
+                    result.map(|()| finished)
+                }
+            }
+        };
+        if result == Ok(false) {
+            let (command, response) = self
+                .direct
+                .as_ref()
+                .ok_or(BlkError::Io)?
+                .operation
+                .command(activation);
             self.descriptors
                 .as_mut()
                 .ok_or(BlkError::Io)?
-                .prepare_direct_command(command.index, command.argument, false);
-            flush.needs_status = false;
+                .prepare_direct_command(command.index, command.argument, response);
             wmb();
             write_u32(self.base, TDBR, 1 << DIRECT_COMMAND_SLOT);
             return Ok(());
         }
-        self.complete_tag(DIRECT_COMMAND_SLOT, result, sink)
+        if let Err(error) = result {
+            self.complete_tag(DIRECT_COMMAND_SLOT, Err(error), sink)?;
+            return self.recover_all(sink);
+        }
+        self.complete_tag(DIRECT_COMMAND_SLOT, Ok(()), sink)
     }
 
     fn complete_all_after_quiesce(&mut self, sink: &mut dyn CompletionSink) {
@@ -334,7 +420,7 @@ impl CqhciQueue {
                 let _ = self.complete_tag(tag, Err(BlkError::Io), sink);
             }
         }
-        if self.flush.is_some() {
+        if self.direct.is_some() {
             let _ = self.complete_tag(DIRECT_COMMAND_SLOT, Err(BlkError::Io), sink);
         }
     }
@@ -354,9 +440,9 @@ impl CqhciQueue {
             }
             sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
         }
-        if let Some(flush) = self.flush.take() {
+        if let Some(direct) = self.direct.take() {
             sink.complete(CompletedRequest::new(
-                flush.request_id,
+                direct.request_id,
                 Err(BlkError::Io),
                 None,
             ));
@@ -375,7 +461,7 @@ impl CommandQueueAccelerator for CqhciQueue {
         activation: CommandQueueActivation,
         config: &mut BlockConfig,
     ) -> Result<(), BlkError> {
-        if self.active || self.poisoned || self.engine_armed {
+        if self.active || self.poisoned || self.engine_armed || self.activation.is_some() {
             return Err(BlkError::InvalidRequest);
         }
         self.validate_activation_config(config)?;
@@ -451,6 +537,7 @@ impl CommandQueueAccelerator for CqhciQueue {
             ..constraints
         });
         config.limits.supports_flush = true;
+        config.limits.max_write_zeroes_blocks = 0;
         // FUA and PREFLUSH require hardware/task semantics not encoded here.
         // The runtime consumes NOWAIT independently of this capability mask.
         config.limits.supported_flags = RequestFlags::NONE;
@@ -465,13 +552,93 @@ impl CommandQueueAccelerator for CqhciQueue {
             read_u32(self.base, VER),
             read_u32(self.base, CAP),
             depth,
-            task_list
+            task_list,
         );
         Ok(())
     }
 
     fn is_active(&self) -> bool {
         self.active
+    }
+
+    fn is_idle(&self) -> bool {
+        self.staged == 0
+            && self.direct.is_none()
+            && self.slots.iter().all(|slot| slot.request_id.is_none())
+    }
+
+    fn now_ns(&self) -> u64 {
+        self.platform.now_ns()
+    }
+
+    fn suspend(&mut self) -> Result<(), BlkError> {
+        if !self.active || self.poisoned || !self.is_idle() {
+            return Err(BlkError::Retry);
+        }
+        // HALT while idle retains descriptor ownership; unlike shutdown no task clear.
+        write_u32(self.base, ISGE, 0);
+        write_u32(self.base, ISTE, 0);
+        let (latched_status, _) = self.irq.set_active(false);
+        let hardware_status = read_u32(self.base, IS);
+        if (latched_status | hardware_status) & IS_ERROR_MASK != 0 {
+            self.poisoned = true;
+            return Err(BlkError::Io);
+        }
+        write_u32(self.base, CTL, CTL_HALT);
+        if !self.wait_control(CTL_HALT, CTL_HALT) {
+            self.poisoned = true;
+            return Err(BlkError::TimedOut);
+        }
+        write_u32(self.base, CFG, read_u32(self.base, CFG) & !CFG_ENABLE);
+        if read_u32(self.base, CFG) & CFG_ENABLE != 0 {
+            self.poisoned = true;
+            return Err(BlkError::Io);
+        }
+        rmb();
+        self.engine_armed = false;
+        // IRQ readers of the previous generation have retired. With CQE
+        // halted and no tags owned, stale status cannot belong to new work.
+        let stale_status = read_u32(self.base, IS);
+        write_u32(self.base, IS, stale_status);
+        let stale_tags = read_u32(self.base, TCN);
+        write_u32(self.base, TCN, stale_tags);
+        self.irq.take();
+        if let Err(error) = self.restore_data_path() {
+            self.poisoned = true;
+            self.active = false;
+            return Err(error);
+        }
+        self.active = false;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<(), BlkError> {
+        if self.active
+            || self.poisoned
+            || self.engine_armed
+            || self.activation.is_none()
+            || !self.is_idle()
+        {
+            return Err(BlkError::Io);
+        }
+        self.data_path_restore_pending = true;
+        self.engine_armed = true;
+        write_u32(self.base, CFG, read_u32(self.base, CFG) | CFG_ENABLE);
+        if let Err(error) = self.platform.enable_data_path() {
+            self.poisoned = true;
+            return Err(error);
+        }
+        self.irq.take();
+        self.irq.set_active(true);
+        write_u32(self.base, CTL, 0);
+        if !self.wait_control(CTL_HALT, 0) {
+            self.poisoned = true;
+            return Err(BlkError::TimedOut);
+        }
+        self.active = true;
+        write_u32(self.base, ISTE, IS_RUNTIME_MASK);
+        write_u32(self.base, ISGE, IS_RUNTIME_MASK);
+        Ok(())
     }
 
     fn submit_batch_owned(
@@ -484,6 +651,12 @@ impl CommandQueueAccelerator for CqhciQueue {
         }
         let mut accepted = 0;
         while accepted < self.depth && !requests.is_empty() {
+            if requests
+                .front()
+                .is_some_and(|request| request.op == RequestOp::WriteZeroes)
+            {
+                return BatchSubmitResult::new(accepted, BatchSubmitDisposition::QueueFull);
+            }
             match self.stage_next(requests) {
                 Ok(id) => {
                     sink.accepted(id);
@@ -541,20 +714,23 @@ impl CommandQueueAccelerator for CqhciQueue {
                 first_error.get_or_insert(error);
             }
         }
-        first_error.map_or(Ok(()), Err)
+        if first_error.is_some() {
+            return self.recover_all(sink);
+        }
+        Ok(())
     }
 
     fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
         self.poisoned = true;
+        self.active = false;
         let quiesced = self.quiesce();
         if quiesced {
             self.complete_all_after_quiesce(sink);
         } else {
             self.quarantine_all(sink);
         }
-        // Shutdown does not disable CMDQ_MODE_EN on the card. Keep ownership
-        // after a successful activation so the protocol cannot submit legacy
-        // commands to this poisoned session, even after hardware has stopped.
+        // Shutdown is terminal. Only the protocol scheduler can resume after
+        // a successful suspension; a failed session never returns to legacy I/O.
         if !quiesced {
             return Err(BlkError::Io);
         }
@@ -604,7 +780,7 @@ mod tests {
         DmaDirection, DmaDomainId, DmaError, DmaMapHandle, DmaOp,
     };
     use rdif_block::{BatchSubmitDisposition, CompletedRequest, RequestFlags, SubmissionSink};
-    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, SdMmcIrqHandle};
+    use sdmmc_host::{HostEvent, HostEventKind, SdMmcIrqHandle};
 
     use super::*;
 
@@ -613,8 +789,8 @@ mod tests {
         let mut registers = [0u32; 32];
         let base = NonNull::new(registers.as_mut_ptr().cast::<u8>()).unwrap();
         let dma = test_dma();
-        let mut platform = TestPlatform::new(true);
-        platform.disable_failures = 1;
+        let platform = TestPlatform::new(true);
+
         let platform_state = Arc::clone(&platform.state);
         let (mut queue, mut irq) = unsafe {
             crate::queue_and_irq(
@@ -630,7 +806,12 @@ mod tests {
         let activation = CommandQueueActivation {
             rca: 1,
             card_depth: 2,
-            cache_enabled: true,
+            flush_command: sdmmc_host::Command::new(
+                6,
+                (3 << 24) | (32 << 16) | (1 << 8),
+                sdmmc_host::ResponseType::R1b,
+            ),
+            status_command: sdmmc_host::Command::new(13, 1 << 16, sdmmc_host::ResponseType::R1),
         };
         let mut foreign_config = config;
         foreign_config.limits.dma = DmaDeviceInfo::new(
@@ -659,6 +840,14 @@ mod tests {
             Err(BlkError::InvalidRequest)
         );
         queue.activate(activation, &mut config).unwrap();
+        // Temporary maintenance returns the legacy path without destroying
+        // descriptors or turning the session into shutdown's terminal state.
+        queue.suspend().unwrap();
+        assert!(!queue.is_active());
+        assert!(!platform_state.data_path_enabled.load(Ordering::Acquire));
+        queue.resume().unwrap();
+        assert!(queue.is_active());
+        assert!(platform_state.data_path_enabled.load(Ordering::Acquire));
         let mut rejected_ids = SubmittedIds::default();
         for (op, direction) in [
             (RequestOp::Read, DmaDirection::ToDevice),
@@ -706,6 +895,11 @@ mod tests {
 
         let result = queue.submit_batch_owned(&mut requests, &mut submitted);
         assert_eq!(result.accepted(), 2);
+        assert_eq!(
+            queue.suspend(),
+            Err(BlkError::Retry),
+            "staged DMA must drain before handoff"
+        );
         assert_eq!(result.disposition(), BatchSubmitDisposition::Continue);
         assert!(requests.is_empty());
         assert_eq!(submitted.0, vec![RequestId::new(0), RequestId::new(1)]);
@@ -793,14 +987,17 @@ mod tests {
         assert!(completed.0[2].data.is_some());
         assert!(completed.0[3].result.is_ok());
         assert!(completed.0[3].data.is_none());
+        platform_state
+            .fail_next_disable
+            .store(true, Ordering::Release);
         assert_eq!(queue.shutdown(&mut completed), Err(BlkError::Io));
         assert!(platform_state.data_path_enabled.load(Ordering::Relaxed));
-        assert_eq!(platform_state.disable_attempts.load(Ordering::Relaxed), 1);
+        assert_eq!(platform_state.disable_attempts.load(Ordering::Relaxed), 2);
         for _ in 0..2 {
             queue.shutdown(&mut completed).unwrap();
             assert!(
-                queue.is_active(),
-                "shutdown must keep card-session ownership"
+                !queue.is_active(),
+                "shutdown stops the engine and remains terminal"
             );
             let mut rejected = [flush_request()].into_iter().collect();
             let result = queue.submit_batch_owned(&mut rejected, &mut rejected_ids);
@@ -818,8 +1015,54 @@ mod tests {
         assert!(!platform_state.data_path_enabled.load(Ordering::Relaxed));
         assert_eq!(
             platform_state.disable_attempts.load(Ordering::Relaxed),
-            2,
+            3,
             "retry a failed restoration, but do not repeat a successful one"
+        );
+    }
+
+    #[test]
+    fn suspended_shutdown_reclaims_descriptors_without_rearming_the_engine() {
+        let backend = Box::leak(Box::new(TestDma::default()));
+        let dma = DeviceDma::new(test_dma().info(), backend);
+        let mut registers = [0u32; 32];
+        let base = NonNull::new(registers.as_mut_ptr().cast::<u8>()).unwrap();
+        // This model cannot clear task lists after CFG_ENABLE is removed.
+        // A drained, halted and disabled engine already released DMA ownership.
+        let platform = TestPlatform::new(false);
+        // SAFETY: the aligned register array outlives both serialized endpoints;
+        // the model DMA backend owns every descriptor allocation.
+        let (mut queue, irq) = unsafe {
+            crate::queue_and_irq(
+                base,
+                dma.clone(),
+                Box::new(platform),
+                TestLegacyIrq::default(),
+            )
+        }
+        .unwrap();
+        let status = sdmmc_host::Command::new(13, 1 << 16, sdmmc_host::ResponseType::R1);
+        let activation = CommandQueueActivation {
+            rca: 1,
+            card_depth: 2,
+            flush_command: status,
+            status_command: status,
+        };
+        let mut config = BlockConfig::dma("paused-shutdown", 1024, &dma);
+        queue.activate(activation, &mut config).unwrap();
+        queue.suspend().unwrap();
+        let mut completed = CompletedRequests::default();
+        queue.shutdown(&mut completed).unwrap();
+        assert_eq!(queue.resume(), Err(BlkError::Io));
+        assert_eq!(
+            queue.activate(activation, &mut config),
+            Err(BlkError::InvalidRequest)
+        );
+        assert!(completed.0.is_empty());
+        drop(queue);
+        drop(irq);
+        assert_eq!(
+            backend.allocations.load(Ordering::Relaxed),
+            backend.deallocations.load(Ordering::Relaxed)
         );
     }
 
@@ -852,7 +1095,16 @@ mod tests {
                         CommandQueueActivation {
                             rca: 1,
                             card_depth: 2,
-                            cache_enabled: false,
+                            flush_command: sdmmc_host::Command::new(
+                                13,
+                                1 << 16,
+                                sdmmc_host::ResponseType::R1
+                            ),
+                            status_command: sdmmc_host::Command::new(
+                                13,
+                                1 << 16,
+                                sdmmc_host::ResponseType::R1
+                            ),
                         },
                         &mut BlockConfig::dma("drop-lifecycle", 1024, &dma),
                     ),
@@ -927,7 +1179,16 @@ mod tests {
                     CommandQueueActivation {
                         rca: 1,
                         card_depth: 2,
-                        cache_enabled: false,
+                        flush_command: sdmmc_host::Command::new(
+                            13,
+                            1 << 16,
+                            sdmmc_host::ResponseType::R1,
+                        ),
+                        status_command: sdmmc_host::Command::new(
+                            13,
+                            1 << 16,
+                            sdmmc_host::ResponseType::R1,
+                        ),
                     },
                     &mut BlockConfig::dma("quarantine", 1024, &dma),
                 )
@@ -971,10 +1232,7 @@ mod tests {
             );
             assert_eq!(queue.commit_submissions(), Err(BlkError::Io));
             assert_eq!(queue.shutdown(&mut completed), Err(BlkError::Io));
-            assert!(
-                queue.is_active(),
-                "failed shutdown must keep card-session ownership"
-            );
+            assert!(!queue.is_active(), "failed shutdown must remain terminal");
             let mut rejected = [flush_request()].into_iter().collect();
             let mut rejected_ids = SubmittedIds::default();
             let result = queue.submit_batch_owned(&mut rejected, &mut rejected_ids);
@@ -1054,6 +1312,7 @@ mod tests {
     struct PlatformState {
         data_path_enabled: AtomicBool,
         disable_attempts: AtomicUsize,
+        fail_next_disable: AtomicBool,
     }
 
     struct TestPlatform {
@@ -1107,8 +1366,10 @@ mod tests {
             assert_eq!(read_u32(self.base, CTL) & CTL_CLEAR_ALL_TASKS, 0);
             assert_eq!(read_u32(self.base, CFG) & CFG_ENABLE, 0);
             self.state.disable_attempts.fetch_add(1, Ordering::Relaxed);
-            if self.disable_failures != 0 {
-                self.disable_failures -= 1;
+            if self.state.fail_next_disable.swap(false, Ordering::AcqRel)
+                || self.disable_failures != 0
+            {
+                self.disable_failures = self.disable_failures.saturating_sub(1);
                 return Err(BlkError::Io);
             }
             self.state.data_path_enabled.store(false, Ordering::Relaxed);

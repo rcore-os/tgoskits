@@ -117,7 +117,7 @@ callback 的操作范围由设备合同决定。公共限制是不能进入不�
 
 ### 3.1 块队列事件
 
-`drivers/interface/rdif-block/src/irq.rs` 定义 `HardIrqHandler::ack()`、`IrqAck` 和队列掩码。`fs/ax-fs-ng/src/block/runtime/irq.rs` 根据 `Spurious`、`Cleared`、`MaskedNeedsRearm` 及控制事件发布 latch，再通过 IRQ-safe notify 唤醒维护者。
+`drivers/interface/rdif-block/src/irq.rs` 定义 `HardIrqHandler::ack()`、`IrqAck` 和队列掩码。`fs/ax-block/src/block/runtime/irq.rs` 根据 `Spurious`、`Cleared`、`MaskedNeedsRearm` 及控制事件发布 latch，再通过 IRQ-safe notify 唤醒维护者。
 
 callback 不持有 `HardwareQueue`，队列维护者在已确认事件后调用 `drain_completions()`。存在队列目标时由目标完成 drain 再 rearm，避免控制器路径同时提前解除屏蔽；控制器专属事件使用对应回退目标。
 

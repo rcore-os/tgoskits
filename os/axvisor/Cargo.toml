@@ -78,6 +78,7 @@ web = [
 # keep their own paths.
 web-ui = ["web"]
 [dependencies]
+ax-block = { workspace = true, features = ["cache"] }
 anyhow.workspace = true
 axvmconfig = { workspace = true, default-features = false }
 ax-fs-ng = { workspace = true, features = ["vfs"] }

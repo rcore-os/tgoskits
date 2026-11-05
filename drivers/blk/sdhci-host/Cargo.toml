@@ -4,14 +4,12 @@ version = "0.5.2"
 repository.workspace = true
 edition = "2024"
 license = "Apache-2.0"
-description = "IRQ-driven ADMA2 SDHCI host controller backend for sdmmc-protocol"
+description = "IRQ-driven ADMA2 SDHCI host controller backend"
 keywords = ["sd", "sdhci", "embedded", "no_std"]
 categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
-sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio", "rdif"] }
-sdmmc-host.workspace = true
-embedded-hal = "1"
+sdmmc-host = { workspace = true, features = ["rdif"] }
 log.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
