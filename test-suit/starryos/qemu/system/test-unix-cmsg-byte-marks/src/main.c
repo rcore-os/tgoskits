@@ -16,6 +16,14 @@
  * recv #2 with a 16-byte buffer should:
  *   - return 4 bytes ("CCCC")
  *   - deliver the cmsg from send #3
+ *
+ * A read(2) that consumes the first byte of a cmsg-bearing message has no
+ * control buffer, so the attached SCM_RIGHTS are discarded. When the
+ * sender already closed its copy, that discard is the passed file's final
+ * close. Scenarios 2 and 3 pass a bound UDP socket (whose release waits
+ * for the network poller) over stream and datagram sockets, read the
+ * message with read(2), and check that the read returns the payload and
+ * that the UDP port is released by it.
  */
 
 #include "test_framework.h"
@@ -24,6 +32,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/syscall.h>
 
 static ssize_t send_with_optional_cmsg(int s, const char *buf, size_t len, int fd)
 {
@@ -44,6 +54,46 @@ static ssize_t send_with_optional_cmsg(int s, const char *buf, size_t len, int f
         mh.msg_controllen = cmh->cmsg_len;
     }
     return sendmsg(s, &mh, 0);
+}
+
+static int bound_udp_socket(unsigned short *port)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+        getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        close(fd);
+        return -1;
+    }
+    *port = ntohs(addr.sin_port);
+    return fd;
+}
+
+/* The port stays busy exactly as long as a reference to the socket is open. */
+static int udp_port_in_use(unsigned short port)
+{
+    struct sockaddr_in addr;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int in_use;
+
+    if (fd < 0) {
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(port);
+    in_use = bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 && errno == EADDRINUSE;
+    close(fd);
+    return in_use;
 }
 
 int main(void)
@@ -97,18 +147,23 @@ int main(void)
 
     /* Scenario 2: a recv that consumes the first byte of a cmsg-bearing
      * message but DOES NOT pass msg_control. The cmsg must still be
-     * dropped; a later recvmsg with msg_control must not see it. */
+     * dropped; a later recvmsg with msg_control must not see it. The
+     * dropped rights hold the last reference to a UDP socket. */
     CHECK_RET(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0, "socketpair (2)");
-    int dummy2 = open("/dev/null", O_RDONLY);
-    CHECK(dummy2 >= 0, "open /dev/null (2)");
+    unsigned short port2 = 0;
+    int udp2 = bound_udp_socket(&port2);
+    CHECK(udp2 >= 0, "bind UDP socket (2)");
 
-    CHECK_RET(send_with_optional_cmsg(sv[0], "X", 1, dummy2), 1, "send 1 byte + cmsg");
+    CHECK_RET(send_with_optional_cmsg(sv[0], "X", 1, udp2), 1, "send 1 byte + cmsg");
     CHECK_RET(send_with_optional_cmsg(sv[0], "Y", 1, -1),     1, "send 1 byte no cmsg");
+    CHECK_RET(close(udp2), 0, "close sender copy of passed UDP fd (2)");
+    CHECK(udp_port_in_use(port2) == 1, "queued stream cmsg keeps the UDP socket open");
 
     /* recv with read(): no msg_control. Must still drop the pending cmsg. */
     char b;
-    CHECK_RET(read(sv[1], &b, 1), 1, "plain read of first byte");
+    CHECK_RET(syscall(SYS_read, sv[1], &b, 1), 1, "plain read of first byte");
     CHECK(b == 'X', "plain read returned 'X'");
+    CHECK(udp_port_in_use(port2) == 0, "plain stream read dropped the last UDP reference");
 
     /* Second recv with msg_control. It must NOT carry the dropped cmsg. */
     struct iovec riov2 = { .iov_base = &b, .iov_len = 1 };
@@ -124,7 +179,24 @@ int main(void)
     CHECK(CMSG_FIRSTHDR(&rmh2) == NULL,
           "cmsg from send #1 was dropped (not delivered with later recvmsg)");
 
-    close(dummy2);
+    close(sv[0]);
+    close(sv[1]);
+
+    /* Scenario 3: the datagram counterpart of scenario 2. */
+    CHECK_RET(socketpair(AF_UNIX, SOCK_DGRAM, 0, sv), 0, "datagram socketpair (3)");
+    unsigned short port3 = 0;
+    int udp3 = bound_udp_socket(&port3);
+    CHECK(udp3 >= 0, "bind UDP socket (3)");
+
+    CHECK_RET(send_with_optional_cmsg(sv[0], "D", 1, udp3), 1, "send datagram + cmsg");
+    CHECK_RET(close(udp3), 0, "close sender copy of passed UDP fd (3)");
+    CHECK(udp_port_in_use(port3) == 1, "queued datagram cmsg keeps the UDP socket open");
+
+    b = 0;
+    CHECK_RET(syscall(SYS_read, sv[1], &b, 1), 1, "plain read of datagram");
+    CHECK(b == 'D', "plain datagram read returned 'D'");
+    CHECK(udp_port_in_use(port3) == 0, "plain datagram read dropped the last UDP reference");
+
     close(sv[0]);
     close(sv[1]);
 

@@ -542,6 +542,11 @@ impl TransportOps for StreamTransport {
         // cmsg-bearing message, so at most one entry becomes ready
         // per call.
         let mut dst_cmsg = options.cmsg.as_deref_mut();
+        // Entries whose control messages are not delivered are collected here
+        // and dropped only after both socket locks are released: they may hold
+        // the last references to files passed with SCM_RIGHTS, and releasing
+        // those files can block.
+        let mut discarded = Vec::new();
         let mut guard = self.channel.lock();
         if let Some(chan) = guard.as_mut() {
             let mut q = chan.rx_cmsg.lock();
@@ -549,11 +554,14 @@ impl TransportOps for StreamTransport {
                 && front.start_byte <= chan.rx_bytes_total
             {
                 let entry = q.pop_front().unwrap();
-                if let Some(dst) = dst_cmsg.as_deref_mut() {
-                    dst.extend(entry.cmsg);
+                match dst_cmsg.as_deref_mut() {
+                    Some(dst) => dst.extend(entry.cmsg),
+                    None => discarded.push(entry),
                 }
             }
         }
+        drop(guard);
+        drop(discarded);
 
         Ok(recv_count)
     }
@@ -570,10 +578,16 @@ impl TransportOps for StreamTransport {
                 peer_poll = Some(chan.peer_poll_update.clone());
             }
         }
-        if self.rx_closed.load(Ordering::Acquire)
-            && self.tx_closed.load(Ordering::Acquire)
-            && let Some(chan) = self.channel.lock().take()
-        {
+        let taken =
+            if self.rx_closed.load(Ordering::Acquire) && self.tx_closed.load(Ordering::Acquire) {
+                self.channel.lock().take()
+            } else {
+                None
+            };
+        // Drop the taken channel after the lock is released: its queues may
+        // hold the last references to files passed with SCM_RIGHTS, and
+        // releasing those files can block.
+        if let Some(chan) = taken {
             peer_poll.get_or_insert(chan.peer_poll_update);
         }
         if let Some(poll) = peer_poll {

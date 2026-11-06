@@ -516,6 +516,11 @@ impl TransportOps for DgramTransport {
         let sender = self.local_addr.read().clone();
         let mut cmsg = core::mem::take(&mut options.cmsg);
         let sender_credentials = options.sender_credentials.clone();
+        // Declared before any socket guard: a packet rejected by a full or
+        // closed queue is parked here and dropped after the guards are
+        // released, because its control messages may hold the last references
+        // to files passed with SCM_RIGHTS, and releasing those files can block.
+        let mut rejected = Vec::new();
 
         let wake_poll = if let Some(addr) = options.to.clone() {
             let addr = addr.into_unix()?;
@@ -528,16 +533,17 @@ impl TransportOps for DgramTransport {
                     }
                     let packet = Packet {
                         data: message,
-                        cmsg,
+                        cmsg: core::mem::take(&mut cmsg),
                         sender,
                         received_at: bind
                             .receive_timestamp
                             .load(Ordering::Acquire)
                             .then(wall_time),
                     };
-                    bind.data_tx
-                        .try_send(packet)
-                        .map_err(|_| NetError::BrokenPipe)?;
+                    if let Err(error) = bind.data_tx.try_send(packet) {
+                        rejected.push(error.into_inner());
+                        return Err(NetError::BrokenPipe);
+                    }
                     Ok(bind.poll_update.clone())
                 } else {
                     Err(NetError::NotConnected)
@@ -551,16 +557,17 @@ impl TransportOps for DgramTransport {
             }
             let packet = Packet {
                 data: message,
-                cmsg,
+                cmsg: core::mem::take(&mut cmsg),
                 sender,
                 received_at: chan
                     .receive_timestamp
                     .load(Ordering::Acquire)
                     .then(wall_time),
             };
-            chan.data_tx
-                .try_send(packet)
-                .map_err(|_| NetError::BrokenPipe)?;
+            if let Err(error) = chan.data_tx.try_send(packet) {
+                rejected.push(error.into_inner());
+                return Err(NetError::BrokenPipe);
+            }
             chan.poll_update.clone()
         } else {
             return Err(NetError::NotConnected);
@@ -595,7 +602,16 @@ impl TransportOps for DgramTransport {
             }
         };
 
-        let count = dst.write(&packet.data)?;
+        let count = match dst.write(&packet.data) {
+            Ok(count) => count,
+            Err(error) => {
+                // Release the parked-packet lock before the packet is dropped:
+                // its control messages may hold the last references to files
+                // passed with SCM_RIGHTS, and releasing those files can block.
+                drop(peeked);
+                return Err(error.into());
+            }
+        };
         let full_len = packet.data.len();
         // Surface truncation in the returned `msg_flags` (MSG_TRUNC).
         if count < full_len
@@ -627,10 +643,16 @@ impl TransportOps for DgramTransport {
                 }
             }
             *peeked = Some(packet);
-        } else if let Some(dst) = options.cmsg.as_mut() {
-            dst.extend(packet.cmsg);
-            if receive_timestamp && let Some(timestamp) = packet.received_at {
-                dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
+        } else {
+            // The record has been consumed: release the parked-packet lock
+            // before any leftover control messages are dropped, since they may
+            // hold the last references to files passed with SCM_RIGHTS.
+            drop(peeked);
+            if let Some(dst) = options.cmsg.as_mut() {
+                dst.extend(packet.cmsg);
+                if receive_timestamp && let Some(timestamp) = packet.received_at {
+                    dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
+                }
             }
         }
 
@@ -710,7 +732,12 @@ impl DgramTransport {
 
 impl Drop for DgramTransport {
     fn drop(&mut self) {
-        if let Some(chan) = self.connected.write().take() {
+        // The write lock is released before `chan` is dropped below: dropping
+        // the channel releases any queued datagrams, which may hold the last
+        // references to files passed with SCM_RIGHTS, and releasing those files
+        // can block.
+        let chan = self.connected.write().take();
+        if let Some(chan) = chan {
             let peer_poll = chan.poll_update.clone();
 
             // Publish channel closure before a woken reader can retry. On SMP,
