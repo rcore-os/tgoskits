@@ -10,17 +10,18 @@ use super::*;
 /// enter this path. Missing resizer capabilities preserve the existing volume.
 pub(super) fn grow_selected_root(
     selected: &mut DiscoveredDisk,
-    partition_index: Option<usize>,
+    expected: &RootCandidate,
+    selector: Option<&RootSelector>,
     action: RootAction,
 ) -> axfs_ng_vfs::VfsResult<Option<axfs_ng_vfs::Filesystem>> {
     if action == RootAction::MountReadOnly {
         return Ok(None);
     }
     #[cfg(feature = "ext4")]
-    return grow_native_root(selected, partition_index);
+    return grow_native_root(selected, expected, selector);
     #[cfg(not(feature = "ext4"))]
     {
-        let _ = (selected, partition_index);
+        let _ = (selected, expected, selector);
         Ok(None)
     }
 }
@@ -29,50 +30,95 @@ pub(super) fn grow_selected_root(
 /// The failed session and maintenance owner must already have been dropped.
 pub(super) fn refresh_root_layout(
     selected: &mut DiscoveredDisk,
-    partition_index: Option<usize>,
+    expected: &RootCandidate,
+    selector: Option<&RootSelector>,
 ) -> axfs_ng_vfs::VfsResult<()> {
-    let (layout, scan) = selected
+    let layout = selected
         .handle
-        .volume_layout(DiskId(selected.disk_index as u64))
+        .describe_volume(BlockRegion::from_num_blocks(
+            selected.handle.device_info().num_blocks,
+        ))
         .map_err(crate::block_error_to_vfs_error)?;
-    if let Some(index) = partition_index {
-        let previous = selected
-            .partitions
-            .iter()
-            .find(|partition| partition.info.index == index)
-            .ok_or(VfsError::InvalidData)?;
-        let current = scan
-            .volumes
-            .iter()
-            .find(|volume| volume.partition_id.0 as usize == index + 1)
-            .ok_or(VfsError::InvalidData)?;
-        if current.region.start_block != previous.info.region.start_lba
-            || current.region.num_blocks < previous.info.region.num_blocks()
-            || current
-                .partuuid
-                .as_ref()
-                .map(|identity| identity.0.as_str())
-                != previous.info.part_uuid.as_deref()
-        {
-            return Err(VfsError::InvalidData);
-        }
-    }
     let mut probe = selected
         .handle
         .open_volume(&layout, ax_block::VolumeAccess::ReadOnly)
         .map_err(crate::block_error_to_vfs_error)?;
-    let (raw, _, _, partitions) = collect_partitions(&mut probe, scan.volumes.clone());
+    let (raw, partitions) = refresh_root_device(&mut probe, expected, selector)?;
     selected.layout = layout;
     selected.raw_filesystem = raw;
     selected.partitions = partitions;
     Ok(())
 }
 
+/// Rereads media rather than trusting a layout cached before failed preparation.
+/// The caller retains a read lease through both the table scan and identity probes.
+fn refresh_root_device(
+    device: &mut dyn FsBlockDevice,
+    expected: &RootCandidate,
+    selector: Option<&RootSelector>,
+) -> axfs_ng_vfs::VfsResult<(Option<FilesystemKind>, Vec<DetectedPartition>)> {
+    let scan = crate::volume::scan_volumes(
+        &mut crate::volume::DeviceReader::new(device),
+        DiskId(expected.disk_index as u64),
+    )
+    .map_err(root_volume_error)?;
+    validate_root_selection(device, &scan, expected, selector)
+}
+
+/// Rechecks the original choice while the caller retains maintenance or a read lease.
+/// Only an unchanged origin and nonshrinking capacity may survive preparation;
+/// table identity, labels, format and the explicit selector must still match.
+fn validate_root_selection(
+    device: &mut dyn FsBlockDevice,
+    scan: &crate::volume::VolumeScan,
+    expected: &RootCandidate,
+    selector: Option<&RootSelector>,
+) -> axfs_ng_vfs::VfsResult<(Option<FilesystemKind>, Vec<DetectedPartition>)> {
+    let (raw, _, _, partitions) = collect_partitions(device, scan.volumes.clone());
+    let index = expected.partition.as_ref().map(|part| part.info.index);
+    // Default selection was a global decision. Retain its chosen identity;
+    // a per-device snapshot must not rerun that policy or select a new root.
+    if let Some(selector) = selector {
+        let probe = matches!(selector, RootSelector::FsUuid(_)).then_some(device);
+        let candidates = collect_device_root_candidates(
+            probe,
+            expected.disk_index,
+            &expected.device_name,
+            raw,
+            &partitions,
+        )?;
+        if select_explicit_root(&candidates, selector) != Some((expected.disk_index, index)) {
+            return Err(VfsError::NoSuchDevice);
+        }
+    }
+    if let Some(previous) = &expected.partition {
+        let current = partitions
+            .iter()
+            .find(|part| part.info.index == previous.info.index)
+            .ok_or(VfsError::NoSuchDevice)?;
+        let mut identity = previous.info.clone();
+        // A completed or interrupted resizer may enlarge this same partition.
+        // Its start, table kind, UUID, label and filesystem type cannot change.
+        identity.region.end_lba = current.info.region.end_lba;
+        if current.info.region.end_lba < previous.info.region.end_lba
+            || current.info != identity
+            || current.filesystem != previous.filesystem
+        {
+            return Err(VfsError::InvalidData);
+        }
+    } else if scan.volumes.len() != 1 || scan.volumes[0].table_kind != VolumeTableKind::Raw {
+        return Err(VfsError::InvalidData);
+    }
+    Ok((raw, partitions))
+}
+
 #[cfg(feature = "ext4")]
 fn grow_native_root(
     selected: &mut DiscoveredDisk,
-    index: Option<usize>,
+    expected: &RootCandidate,
+    selector: Option<&RootSelector>,
 ) -> axfs_ng_vfs::VfsResult<Option<axfs_ng_vfs::Filesystem>> {
+    let index = expected.partition.as_ref().map(|part| part.info.index);
     let handle = selected.handle.clone();
     // Maintenance drains the cache, so reject ineligible devices before taking it.
     if handle.device_info().read_only || !handle.supports_flush() {
@@ -80,8 +126,7 @@ fn grow_native_root(
     }
     let kind = selected_filesystem_kind(selected.raw_filesystem, &selected.partitions, index);
     let mut maintenance = handle.maintain().map_err(crate::block_error_to_vfs_error)?;
-    let Some((scan, mounted)) =
-        grow_root_device(&mut maintenance, selected.disk_index, index, kind)?
+    let Some((scan, mounted)) = grow_root_device(&mut maintenance, expected, selector, kind)?
     else {
         return Ok(None);
     };
@@ -115,11 +160,13 @@ fn grow_native_root(
 #[cfg(feature = "ext4")]
 fn grow_root_device(
     maintenance: &mut ax_block::DiskMaintenance,
-    disk_index: usize,
-    index: Option<usize>,
+    expected: &RootCandidate,
+    selector: Option<&RootSelector>,
     kind: Option<FilesystemKind>,
 ) -> axfs_ng_vfs::VfsResult<Option<(crate::volume::VolumeScan, Option<fs::MountedExt4>)>> {
     use crate::volume::PartitionId;
+    let disk_index = expected.disk_index;
+    let index = expected.partition.as_ref().map(|part| part.info.index);
     if maintenance.device_mut().is_read_only() || !maintenance.device_mut().supports_flush() {
         return Ok(None);
     }
@@ -130,6 +177,7 @@ fn grow_root_device(
     let before = maintenance
         .scan_layout(DiskId(disk_index as u64))
         .map_err(root_volume_error)?;
+    validate_root_selection(maintenance.device_mut(), &before, expected, selector)?;
     let source = before
         .volumes
         .iter()
@@ -164,6 +212,7 @@ fn grow_root_device(
     {
         return Err(VfsError::InvalidData);
     }
+    validate_root_selection(maintenance.device_mut(), &scan, expected, selector)?;
     if kind != Some(FilesystemKind::Ext4) {
         debug!("automatic filesystem growth has no resizer for {kind:?}");
         return Ok(Some((scan, None)));
@@ -206,9 +255,9 @@ fn grow_root_device(
     Ok(Some((scan, Some(mounted))))
 }
 
-#[cfg(feature = "ext4")]
 /// Preserves volume error categories at the filesystem preparation boundary.
-fn root_volume_error(error: VolumeError) -> VfsError {
+fn root_volume_error(error: crate::volume::Error) -> VfsError {
+    use crate::volume::Error as VolumeError;
     match error {
         VolumeError::NoMemory => VfsError::NoMemory,
         VolumeError::Reader | VolumeError::Writer => VfsError::Io,
@@ -364,12 +413,29 @@ mod tests {
         disk_index: usize,
         index: Option<usize>,
     ) -> axfs_ng_vfs::VfsResult<Option<crate::volume::VolumeScan>> {
+        let scan = scan_volumes(&mut VolumeReader::new(disk), DiskId(disk_index as u64)).unwrap();
+        let (raw, _, _, partitions) = collect_partitions(disk, scan.volumes);
+        let expected =
+            collect_device_root_candidates(None, disk_index, "fixture", raw, &partitions)?
+                .into_iter()
+                .find(|candidate| candidate.partition.as_ref().map(|part| part.info.index) == index)
+                .ok_or(VfsError::NoSuchDevice)?;
+        grow_observed_image(disk, &expected, None)
+    }
+
+    /// Enters maintenance after an earlier observation, permitting controlled layout changes.
+    fn grow_observed_image(
+        disk: &mut dyn FsBlockDevice,
+        expected: &RootCandidate,
+        selector: Option<&RootSelector>,
+    ) -> axfs_ng_vfs::VfsResult<Option<crate::volume::VolumeScan>> {
+        let index = expected.partition.as_ref().map(|part| part.info.index);
         let backend = disk.fork_io().map_err(crate::block_error_to_vfs_error)?;
         let mut maintenance = ax_block::DiskMaintenance::from_test_backend(backend);
         let Some((scan, mut mounted)) = super::grow_root_device(
             &mut maintenance,
-            disk_index,
-            index,
+            expected,
+            selector,
             Some(FilesystemKind::Ext4),
         )?
         else {
@@ -524,6 +590,97 @@ mod tests {
                 .as_deref(),
                 Some(expected_uuid.as_str())
             );
+            if table == "gpt" && disk_bytes == 128 * 1024 * 1024 {
+                let saved = fs::read(&disk_path).unwrap();
+                for change in ["partuuid", "partlabel", "uuid"] {
+                    let (_, _, _, parts) = collect_partitions(&mut disk, original.volumes.clone());
+                    let expected =
+                        collect_device_root_candidates(Some(&mut disk), 3, "fixture", None, &parts)
+                            .unwrap()
+                            .into_iter()
+                            .find(|candidate| {
+                                candidate.partition.as_ref().map(|part| part.info.index) == Some(1)
+                            })
+                            .unwrap();
+                    let selector = match change {
+                        "partuuid" => RootSelector::PartUuid(
+                            expected
+                                .partition
+                                .as_ref()
+                                .unwrap()
+                                .info
+                                .part_uuid
+                                .clone()
+                                .unwrap(),
+                        ),
+                        "partlabel" => RootSelector::PartLabel("rootfs".into()),
+                        _ => RootSelector::FsUuid(expected_uuid.clone()),
+                    };
+                    assert_eq!(
+                        select_root_candidate(core::slice::from_ref(&expected), Some(&selector)),
+                        Some((3, Some(1)))
+                    );
+                    // The same request must remain usable before its identity changes.
+                    assert!(
+                        validate_root_selection(&mut disk, &original, &expected, Some(&selector))
+                            .is_ok()
+                    );
+                    match change {
+                        "partuuid" => command(
+                            "sfdisk",
+                            &[
+                                "--part-uuid",
+                                disk_path.to_str().unwrap(),
+                                "2",
+                                "11111111-2222-3333-4444-555555555555",
+                            ],
+                        ),
+                        "partlabel" => command(
+                            "sfdisk",
+                            &[
+                                "--part-label",
+                                disk_path.to_str().unwrap(),
+                                "2",
+                                "replacement",
+                            ],
+                        ),
+                        _ => {
+                            let replacement = directory.join("replacement.img");
+                            fs::copy(&root_path, &replacement).unwrap();
+                            command(
+                                "tune2fs",
+                                &[
+                                    "-U",
+                                    "11111111-2222-3333-4444-555555555555",
+                                    replacement.to_str().unwrap(),
+                                ],
+                            );
+                            disk.file
+                                .seek(SeekFrom::Start(region.start_block * 512))
+                                .unwrap();
+                            std::io::copy(&mut File::open(&replacement).unwrap(), &mut disk.file)
+                                .unwrap();
+                        }
+                    }
+                    let writes = disk.trace.writes.load(Ordering::Relaxed);
+                    let flushes = disk.trace.flushes.load(Ordering::Relaxed);
+                    assert!(
+                        grow_observed_image(&mut disk, &expected, Some(&selector)).is_err(),
+                        "{change}: a replaced root must fail before growth or publication"
+                    );
+                    // Metadata identity is pinned for default selection too, even
+                    // when the new volume would still win the same rootfs slot.
+                    if change != "uuid" {
+                        assert!(grow_observed_image(&mut disk, &expected, None).is_err());
+                    }
+                    // The same read-only validation protects ordinary-mount fallback.
+                    assert!(refresh_root_device(&mut disk, &expected, Some(&selector)).is_err());
+                    assert_eq!(disk.trace.writes.load(Ordering::Relaxed), writes);
+                    assert_eq!(disk.trace.flushes.load(Ordering::Relaxed), flushes);
+                    disk.file.seek(SeekFrom::Start(0)).unwrap();
+                    disk.file.write_all(&saved).unwrap();
+                }
+            }
             // Automatic growth skips missing capabilities before changing metadata.
             let before = fs::read(&disk_path).unwrap();
             disk.readonly = true;

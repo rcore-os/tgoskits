@@ -65,9 +65,9 @@ GPT 更新校验主备头及完整数组的 CRC，先写新备份并 flush，再
 
 GPT 来源选择遵循 [Linux 6.12 `find_valid_gpt()`](https://github.com/torvalds/linux/blob/v6.12/block/partitions/efi.c) 的有效主表优先规则：刷入较小镜像后，介质末尾残留的无关备份不能否决有效主表。Linux 内核负责读取选择；备份迁移与重建由 [libfdisk](https://github.com/util-linux/util-linux/blob/v2.37.2/libfdisk/src/gpt.c) 等用户态工具完成。本实现还接受与主表身份一致、仅一个分区单调增长且无重叠的备份，用于恢复备份先写的扩容事务。没有有效主表时，互不兼容的有效备份仍拒绝写入；任何 GPT 探测 I/O 失败也禁止修改。
 
-`grow_root_device()` 在 `DiskMaintenance` 排他权内先尝试分区增长，再从重新验证的最终卷范围创建唯一 `Ext4Session`。`growth_capacity_if_supported()` 预检明确不支持时保留可发布会话；支持时通过 `grow_to_current_capacity()` 在现有范围内增长，再调用 `publish()`。该路径没有旧范围的挂载实例跨越分区更新，分区视图和文件系统设备的范围在创建后保持不变。
+`prepare_root()` 保留最初选中的 `RootCandidate` 和原始 selector。`grow_root_device()` 取得 `DiskMaintenance` 后，在任何布局写入前通过 `validate_root_selection()` 重读身份并重新选根；分区更新后、文件系统恢复前再次核验。分区号相同不足以认定是同一根卷，起点、表类型、分区身份、标签和文件系统格式必须保留，容量只允许不缩小。随后从重新验证的最终卷范围创建唯一 `Ext4Session`。`growth_capacity_if_supported()` 预检明确不支持时保留可发布会话；支持时通过 `grow_to_current_capacity()` 在现有范围内增长，再调用 `publish()`。该路径没有旧范围的挂载实例跨越分区更新，分区视图和文件系统设备的范围在创建后保持不变。
 
-分区增长失败单独记录，再按有效卷布局尝试文件系统阶段；文件系统增长失败则销毁失败会话、重新验证同一卷的身份和范围，通过普通挂载恢复路径判断可用性。可正常挂载的根可以继续启动，不能把所有扩容错误都直接变成启动 panic；正常挂载或恢复本身仍失败时才阻止切根。日志明确区分增长失败和增长完成，不把挂载成功当作扩容成功。扩容进度来自 GPT/ext4 元数据，没有另建完成标记；已增长或中断的卷下次重新检查。不得通过缩小分区终止 LBA 回滚已扩大的 ext4。
+分区增长失败单独记录，再按有效卷布局尝试文件系统阶段；文件系统增长失败则销毁失败会话，由 `refresh_root_layout()` 在读租约保护下直接重读介质分区表，再使用相同规则重新核验原候选及 selector，通过普通挂载恢复路径判断可用性。身份不符时终止根准备，不能通过回退挂载接受同槽位的另一卷。可正常挂载的根可以继续启动，不能把所有扩容错误都直接变成启动 panic；正常挂载或恢复本身仍失败时才阻止切根。日志明确区分增长失败和增长完成，不把挂载成功当作扩容成功。扩容进度来自 GPT/ext4 元数据，没有另建完成标记；已增长或中断的卷下次重新检查。不得通过缩小分区终止 LBA 回滚已扩大的 ext4。
 
 `load_journal_bootstrap_layout()` 在回放前通过 `SystemZoneMap::from_base_metadata()` 保护由超级块独立确定的主备超级块、有效及保留 GDT 区域，再检查候选描述符的位图和 inode 表地址。无描述符校验和时，旧保留 GDT 中非零的 inode 7 指针也不能被当作新描述符；越界、相互重叠或落入固定元数据的记录暂按未知组保护。journal 所在组必须可信，完整恢复视图仍须通过布局、所有权及 journal 映射校验后才能写回，避免新超级块先 checkpoint 时阻断本可恢复的扩容。
 

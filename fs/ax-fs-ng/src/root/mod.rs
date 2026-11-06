@@ -481,9 +481,16 @@ fn prepare_root(
         .iter()
         .position(|disk| disk.disk_index == selected_disk_index)
         .ok_or(VfsError::NoSuchDevice)?;
+    let expected = candidates
+        .iter()
+        .find(|candidate| {
+            candidate.disk_index == selected_disk_index
+                && candidate.partition.as_ref().map(|part| part.info.index) == selected_partition
+        })
+        .ok_or(VfsError::NoSuchDevice)?;
     let mut selected = disks.swap_remove(selected_disk_pos);
     let root_device = selected.identity.device_id(selected_partition)?.0;
-    let grown_filesystem = match grow::grow_selected_root(&mut selected, selected_partition, action)
+    let grown_filesystem = match grow::grow_selected_root(&mut selected, expected, selector, action)
     {
         Ok(filesystem) => filesystem,
         Err(error) => {
@@ -494,7 +501,7 @@ fn prepare_root(
                 "automatic root growth failed on disk {selected_disk_index}: {error:?}; \
                  revalidating root for ordinary mount"
             );
-            grow::refresh_root_layout(&mut selected, selected_partition)?;
+            grow::refresh_root_layout(&mut selected, expected, selector)?;
             None
         }
     };
@@ -1229,13 +1236,10 @@ fn collect_root_candidates(
     let mut candidates = Vec::new();
 
     for disk in disks {
-        let device = match matches!(selector, Some(RootSelector::FsUuid(_)))
+        let mut device = match matches!(selector, Some(RootSelector::FsUuid(_)))
             .then(|| {
                 disk.handle
                     .open_volume(&disk.layout, ax_block::VolumeAccess::ReadOnly)
-                    .map(|lease| {
-                        alloc::boxed::Box::new(lease) as alloc::boxed::Box<dyn FsBlockDevice>
-                    })
             })
             .transpose()
         {
@@ -1250,7 +1254,7 @@ fn collect_root_candidates(
             }
         };
         candidates.extend(collect_device_root_candidates(
-            device,
+            device.as_mut().map(|lease| lease as &mut dyn FsBlockDevice),
             disk.disk_index,
             &disk.identity.name,
             disk.raw_filesystem,
@@ -1267,7 +1271,7 @@ fn collect_root_candidates(
 /// disk's family namespace before discovery. Invalid/unreadable identities exclude only
 /// their candidate, while allocation failures abort the lookup.
 fn collect_device_root_candidates(
-    mut device: Option<alloc::boxed::Box<dyn FsBlockDevice>>,
+    mut device: Option<&mut dyn FsBlockDevice>,
     disk_index: usize,
     device_name: &str,
     raw_filesystem: Option<FilesystemKind>,
@@ -2327,7 +2331,7 @@ mod tests {
                 }
                 candidates.extend(
                     collect_device_root_candidates(
-                        Some(alloc::boxed::Box::new(source)),
+                        Some(&mut source),
                         disk_index,
                         "sda",
                         raw,
@@ -2352,14 +2356,9 @@ mod tests {
             let scan = scan_volumes(&mut VolumeReader::new(&mut siblings), DiskId(9)).unwrap();
             let (raw, _, _, partitions) = collect_partitions(&mut siblings, scan.volumes);
             siblings.remaining_failures = 1;
-            let sibling_candidates = collect_device_root_candidates(
-                Some(alloc::boxed::Box::new(siblings)),
-                9,
-                "sda",
-                raw,
-                &partitions,
-            )
-            .unwrap();
+            let sibling_candidates =
+                collect_device_root_candidates(Some(&mut siblings), 9, "sda", raw, &partitions)
+                    .unwrap();
             assert_eq!(
                 select_root_candidate(&sibling_candidates, Some(&spec)),
                 Some((9, Some(1)))
