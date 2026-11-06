@@ -14,7 +14,7 @@ use linux_raw_sys::{
     ioctl::TIOCSCTTY,
 };
 
-use super::{FileLike, InodeKey, Kstat, NsFd, get_file_like, ns_target_from_link};
+use super::{FileLike, InodeKey, Kstat, NsFd, get_file_like, ns_target_from_link, proc_read_access_allowed};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
@@ -171,6 +171,19 @@ fn resolve_at_with_search(
                         };
                         match ns_target_from_link(&entry) {
                             Some((task, ns_type)) => {
+                                // Following to the nsfs object must obey the
+                                // same cross-process procfs access control as
+                                // opening the entry: Linux `proc_ns_get_link`
+                                // requires PTRACE_MODE_READ_FSCREDS before the
+                                // jump, and the namespace inode id is exactly
+                                // what this stat would leak.
+                                let proc_data = task.as_thread().proc_data.clone();
+                                if !proc_read_access_allowed(
+                                    &current_user_task(),
+                                    &proc_data,
+                                )? {
+                                    return Err(StarryError::PermissionDenied);
+                                }
                                 // The caller's filesystem context is locked
                                 // here; do not re-enter FS_CONTEXT for the
                                 // target when it is this process.
