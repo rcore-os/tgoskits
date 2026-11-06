@@ -83,7 +83,7 @@ task stack guard page hit: fault_addr=0x..., stack=[0x.....0x...), guard=[0x....
 cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case task-stack-guard-page
 ```
 
-运行器规则位于 `scripts/axbuild/src/arceos/test/rust_qemu.rs`。正则使用 ASCII 单词边界，与实际匹配器的 DFA 能力一致。
+运行器规则位于 `scripts/axbuild/src/test/normal/arceos/rust_suite/profile.rs`。正则使用 ASCII 单词边界，与实际匹配器的 DFA 能力一致。
 
 ### 3.2 系统配置
 

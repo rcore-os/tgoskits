@@ -320,6 +320,13 @@ pub fn on_clock_event(
     let update = cpu
         .as_mut()
         .next_scheduler_deadline_update(SchedulerDeadlineDerivationSource::ClockEvent)?;
+    // Class ticks (including RR quantum expiration) publish logical requests
+    // while rq is owned. Fold newly immediate work into the architecture's
+    // IRQ-return preemption word as well; a sticky rq bit alone cannot make
+    // that boundary enter the scheduler.
+    if cpu.remote().needs_immediate_scheduler_work() {
+        let _self_serviced = task_runtime::publish_local_scheduler_work();
+    }
     Ok(TaskClockEventOutcome {
         slice_expired: charge.slice_expired(),
         deadline_overrun: charge.deadline_overrun(),

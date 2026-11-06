@@ -1,54 +1,17 @@
-use std::{sync::Arc, thread, time, vec, vec::Vec};
+use std::{
+    sync::{Arc, Barrier},
+    thread, time, vec,
+    vec::Vec,
+};
 
 use ax_std::os::arceos::{
-    api::task::ax_set_current_priority,
+    api::task::{AxCpuMask, ax_set_current_affinity, ax_set_current_priority},
+    modules::ax_hal::percpu::this_cpu_id,
     task::{
-        sched::{FairMode, Nice, RtPriority, SchedulePolicy},
+        sched::{FairMode, Nice, SchedulePolicy},
         thread::current::current_thread_id,
     },
 };
-
-#[derive(Clone, Copy)]
-enum SchedulerCase {
-    PriorityApi,
-    Fair,
-    RoundRobin,
-}
-
-impl SchedulerCase {
-    fn expected_policy(self, nice: isize) -> SchedulePolicy {
-        match self {
-            Self::PriorityApi | Self::Fair => SchedulePolicy::fair(
-                Nice::new(nice as i8).expect("test nice value must be valid"),
-                FairMode::Normal,
-            ),
-            Self::RoundRobin => SchedulePolicy::round_robin(
-                RtPriority::new(50).expect("test RT priority must be valid"),
-            ),
-        }
-    }
-
-    fn configure_current(self, nice: isize) {
-        let current = current_thread_id().expect("test thread must have a task identity");
-        let expected = self.expected_policy(nice);
-        match self {
-            Self::PriorityApi => {
-                ax_set_current_priority(nice).expect("failed to set test thread priority")
-            }
-            Self::Fair | Self::RoundRobin => {
-                ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
-                    .and_then(|thread| thread.set_policy(expected))
-                    .expect("failed to set test thread scheduling policy")
-            }
-        }
-        assert_eq!(
-            ax_std::os::arceos::task::thread::ThreadHandle::lookup(current)
-                .map(|thread| thread.base_policy()),
-            Ok(expected),
-            "test thread did not enter the selected scheduling policy"
-        );
-    }
-}
 
 struct TaskParam {
     data_len: usize,
@@ -92,58 +55,51 @@ fn load(n: &u64) -> u64 {
     sum
 }
 
-fn run_workload(case: SchedulerCase) -> crate::TestResult {
-    case.configure_current(-20);
-
+pub fn run_priority() -> crate::TestResult {
+    let cpu_count = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
+    let worker_cpu = usize::from(cpu_count > 1);
+    ax_set_current_affinity(AxCpuMask::one_shot(0)).unwrap();
+    ax_set_current_priority(-20).unwrap();
     let data = TASK_PARAMS
         .iter()
-        .map(|param| Arc::new(vec![param.value; param.data_len]))
+        .map(|p| Arc::new(vec![p.value; p.data_len]))
         .collect::<Vec<_>>();
-    let expect = data
+    let expected = data
         .iter()
-        .map(|data_inner| data_inner.iter().map(load).sum::<u64>())
+        .map(|d| d.iter().map(load).sum::<u64>())
         .sum::<u64>();
-
-    let mut tasks = Vec::with_capacity(TASK_PARAMS.len());
-    let start_time = time::Instant::now();
-    for (i, param) in TASK_PARAMS.iter().enumerate() {
-        let data = data[i].clone();
-        let data_len = param.data_len;
+    let ready = Arc::new(Barrier::new(TASK_PARAMS.len() + 1));
+    let started = time::Instant::now();
+    let mut tasks = Vec::new();
+    for (index, param) in TASK_PARAMS.iter().enumerate() {
+        let data = Arc::clone(&data[index]);
+        let ready = Arc::clone(&ready);
         let nice = param.nice;
         tasks.push(thread::spawn(move || {
-            case.configure_current(nice);
-            let partial_sum = data[..data_len].iter().map(load).sum::<u64>();
-            let leave_time = start_time.elapsed().as_millis() as u64;
-            (partial_sum, leave_time)
+            ax_set_current_affinity(AxCpuMask::one_shot(worker_cpu)).unwrap();
+            ax_set_current_priority(nice).unwrap();
+            let policy = ax_std::os::arceos::task::thread::ThreadHandle::lookup(
+                current_thread_id().unwrap(),
+            )
+            .unwrap()
+            .base_policy();
+            assert_eq!(
+                policy,
+                SchedulePolicy::fair(Nice::new(nice as i8).unwrap(), FairMode::Normal)
+            );
+            ready.wait();
+            assert_eq!(this_cpu_id(), worker_cpu);
+            let sum = data.iter().map(load).sum::<u64>();
+            (sum, started.elapsed().as_nanos())
         }));
     }
-
-    let (results, leave_times): (Vec<_>, Vec<_>) =
+    ready.wait();
+    let (sums, finished): (Vec<_>, Vec<_>) =
         tasks.into_iter().map(|task| task.join().unwrap()).unzip();
-    let actual = results.iter().sum::<u64>();
-
-    if matches!(case, SchedulerCase::Fair)
-        && ax_std::os::arceos::task::sched::cpu_topology_len().unwrap() == 1
-    {
-        assert!(
-            leave_times[0] > leave_times[1]
-                && leave_times[1] > leave_times[2]
-                && leave_times[2] > leave_times[3]
-        );
-    }
-
-    assert_eq!(expect, actual);
+    assert_eq!(sums.into_iter().sum::<u64>(), expected);
+    assert!(
+        finished[0] > finished[1] && finished[1] > finished[2] && finished[2] > finished[3],
+        "same-CPU Fair completion order must reflect the distinct nice weights: {finished:?}"
+    );
     Ok(())
-}
-
-pub fn run_priority() -> crate::TestResult {
-    run_workload(SchedulerCase::PriorityApi)
-}
-
-pub fn run_cfs() -> crate::TestResult {
-    run_workload(SchedulerCase::Fair)
-}
-
-pub fn run_rr() -> crate::TestResult {
-    run_workload(SchedulerCase::RoundRobin)
 }

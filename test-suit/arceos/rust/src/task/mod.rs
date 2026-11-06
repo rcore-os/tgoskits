@@ -14,24 +14,18 @@ pub mod irq;
 pub mod kernel_timer;
 #[cfg(feature = "task-mutex")]
 pub mod mutex;
-#[cfg(feature = "task-parallel")]
-pub mod parallel;
 #[cfg(feature = "task-pi-mutex")]
 pub mod pi_mutex;
 #[cfg(feature = "task-preempt-guard")]
 pub mod preempt_guard;
-#[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]
+#[cfg(feature = "task-priority")]
 pub mod priority;
 #[cfg(feature = "task-rt-policy")]
 pub mod rt_policy;
 #[cfg(feature = "task-scheduler-irq-window")]
 pub mod scheduler_irq_window;
-#[cfg(feature = "task-scheduler-local-rearm")]
-pub mod scheduler_local_rearm;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;
-#[cfg(feature = "task-smp-online")]
-pub mod smp_online;
 #[cfg(feature = "task-stack-guard-page")]
 pub mod stack_guard_page;
 #[cfg(feature = "task-tls")]
@@ -41,7 +35,6 @@ pub mod wait_queue;
 #[cfg(feature = "task-wait-queue-remote-wake")]
 pub mod wait_queue_remote_wake;
 #[cfg(feature = "task-yield")]
-#[path = "yield.rs"]
 pub mod yield_now;
 
 #[cfg(feature = "task-executor")]

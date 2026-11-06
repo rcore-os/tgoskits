@@ -19,8 +19,8 @@ mod sg2002_usb_msc {
     use ax_driver::usb::PlatformUsbHost;
     use ax_hal::time::monotonic_time_nanos;
     use ax_runtime::{
-        hal::irq::{IrqError, IrqId, IrqReturn},
-        irq::{Registration, resolve_binding_irq},
+        hal::irq::{IrqError, IrqHandle, IrqId, IrqReturn, free_irq, request_shared_irq},
+        irq::resolve_binding_irq,
     };
     use crab_usb::{
         DeviceInfo, EndpointHandle, Event,
@@ -372,7 +372,16 @@ mod sg2002_usb_msc {
 
     struct UsbIrqRegistration {
         _irq: IrqId,
-        _registration: Registration,
+        registration: IrqHandle,
+    }
+
+    impl Drop for UsbIrqRegistration {
+        fn drop(&mut self) {
+            // The action owns the USB callback; free_irq synchronizes it before release.
+            if let Err(error) = free_irq(self.registration) {
+                axtest::axtest_println!("SG2002_DWC2_MSC_FAIL IRQ cleanup failed: {error:?}");
+            }
+        }
     }
 
     fn install_usb_irq(
@@ -382,17 +391,16 @@ mod sg2002_usb_msc {
             .take_binding_irq_handler()
             .ok_or(SmokeError::MissingIrqBinding)?;
         let irq = resolve_binding_irq(binding).map_err(SmokeError::IrqResolve)?;
-        let registration =
-            Registration::register_shared(DRIVER_NAME, irq, move |_ctx| match handler.handle() {
-                Event::Nothing => IrqReturn::Unhandled,
-                Event::TransferActivity { .. } | Event::PortChange { .. } => IrqReturn::Wake,
-                Event::Stopped => IrqReturn::Handled,
-            })
-            .map_err(SmokeError::IrqRegister)?;
+        let registration = request_shared_irq(irq, move |_ctx| match handler.handle() {
+            Event::Nothing => IrqReturn::Unhandled,
+            Event::TransferActivity { .. } | Event::PortChange { .. } => IrqReturn::Wake,
+            Event::Stopped => IrqReturn::Handled,
+        })
+        .map_err(SmokeError::IrqRegister)?;
         axtest::axtest_println!("SG2002_DWC2_IRQ_MODE mode=irq irq={irq:?}");
         Ok(UsbIrqRegistration {
             _irq: irq,
-            _registration: registration,
+            registration,
         })
     }
 

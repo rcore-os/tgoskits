@@ -9,10 +9,10 @@ description: 在本仓库中新增、重新分组、适配或验证 StarryOS 测
 
 StarryOS 测试由数据驱动。用例位于 `test-suit/starryos`，发现与执行逻辑主要位于：
 
-- `scripts/axbuild/src/starry/test/mod.rs`
-- `scripts/axbuild/src/test/qemu/mod.rs`
-- `scripts/axbuild/src/test/case/mod.rs`
-- `scripts/axbuild/src/test/build/mod.rs`
+- `scripts/axbuild/src/test/normal/starry/mod.rs`
+- `scripts/axbuild/src/execution/qemu/mod.rs`
+- `scripts/axbuild/src/execution/case/mod.rs`
+- `scripts/axbuild/src/execution/build/mod.rs`
 
 QEMU 用例构建 `starryos` 软件包，并运行对应体系结构的 `qemu-<arch>.toml`。板卡用例针对板卡目标构建 StarryOS，再通过板卡运行器执行 `board-<board>.toml`。
 
@@ -31,7 +31,7 @@ ArceOS Rust QEMU 的发现与 runner 契约见 [`arceos-test-adapter`](../arceos
 
 ## 工作流程
 
-1. 检查 `test-suit/starryos` 下的目标目录，以及 `scripts/axbuild/src/starry/test/mod.rs` 中当前测试流程。
+1. 检查 `test-suit/starryos` 下的目标目录，以及 `scripts/axbuild/src/test/normal/starry/mod.rs` 中当前测试流程。
 2. 判断用例运行于 QEMU 还是板卡，再选择根级用例或 `test-suit/starryos` 下的构建包装目录。
 3. QEMU 用例可以直接位于 `test-suit/starryos/<case>` 并带匹配的 `build-*.toml`，也可以位于含相应构建配置的包装目录下。只为实际通过的体系结构添加 `qemu-<arch>.toml`。`qemu` 包装目录根部只保存构建配置，`system/` 是分组 QEMU 用例。
 4. 客户机需要附加文件时，只能选择一种处理流水线：`c/`、`sh/`、`python/`，或使用子用例目录与 `test_commands` 的分组方式。

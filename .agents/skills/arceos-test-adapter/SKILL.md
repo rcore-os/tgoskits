@@ -33,10 +33,10 @@ Starry/板卡边界和目录契约见 [`starry-test-suit`](../starry-test-suit/S
 
 ## 必查项
 
-- Rust suite：在 `test-suit/arceos/rust` 同步 feature、模块、runner、`SELECTED_TESTS`、axbuild 可发现列表和所需 `build-*/qemu-*` 配置。
+- Rust suite：`test-suit/arceos/rust/suite.toml` schema_version=3，顶部`run_order`集中指定启动顺序，下面`[batches.NAME]`下嵌套`[[batches.NAME.tests]]`；未知/重复/遗漏批次均拒绝，组定义位置不影响执行，成员顺序决定目标执行顺序，批次arches由成员继承且可收窄。general代替旧all批次；Cargo只维护单项feature依赖，不复制聚合成员。host按当前架构展开features，build.rs按同一声明生成目标绑定；runner.rs保留状态恢复。list展示启动边界，plan/run同源选择；单项优先自身fixture，否则继承批次runtime。成功仍要求每项结果，panic/lockdep/栈保护保留独立启动。
 - C suite：维护 C 源码/头文件、Makefile 或 `test_cmd`，并同步 C feature 列表和成功/失败匹配。
 - generic suite：按共享发现器提供 build wrapper、package manifest 和 runtime config，不假设存在 `src/main.rs`。
-- board case：使用 `board-*.toml` 与目标 build 配置，通过 `cargo xtask ktest board` 验证，不纳入 QEMU 批次。
+- board case：使用 `board-*.toml` 与目标 build 配置；普通项目通过 `cargo xtask arceos test board`，Cargo axtest 目标通过 `cargo xtask ktest board`，不混入 QEMU 批次。
 - 使用 `edition.workspace = true`；当前发现器不使用 `.axconfig.toml` 或 `.qemu.toml` 作为主要契约。
 - `main.rs` 中若使用 `no_mangle`，按当前仓库风格写成 `unsafe(no_mangle)`。
 - 清理无关旧产物，如 `*.out`、`*.bin`、`*.elf`、`test_cmd`。

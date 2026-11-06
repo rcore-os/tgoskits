@@ -1,0 +1,269 @@
+schema_version = 3
+
+# Default startup order. Every named batch must appear exactly once.
+run_order = [
+    "general",
+    "task-cpu-lifecycle",
+    "iommu-dma",
+    "x86-devices",
+    "serial-rx",
+    "virtio-block-lifecycle",
+    "net-unix-path",
+    "debug-panic-path",
+    "lockdep-detect",
+    "task-stack-guard-page",
+]
+
+[batches.general]
+
+[[batches.general.tests]]
+id = "cpu-capacity"
+name = "published CPU capacity across online CPUs"
+entry = "crate::cpu_capacity::run"
+category = "cpu_capacity"
+
+[[batches.general.tests]]
+id = "debug-backtrace"
+name = "capture backtrace"
+entry = "crate::debug::backtrace::run"
+category = "debug"
+
+[[batches.general.tests]]
+id = "display-basic"
+name = "framebuffer write, readback and restoration"
+entry = "crate::display::basic::run"
+category = "display"
+
+[[batches.general.tests]]
+id = "eventfd-epoll"
+name = "eventfd semantics and epoll wake smoke"
+entry = "crate::io_mpx::run"
+category = "io_mpx"
+
+[[batches.general.tests]]
+id = "exception-breakpoint"
+name = "raise breakpoint exception"
+entry = "crate::exception::breakpoint::run"
+category = "exception"
+arches = ["aarch64", "riscv64", "loongarch64"]
+
+[[batches.general.tests]]
+id = "fs-basic"
+name = "bounded filesystem operations"
+entry = "crate::fs::basic::run"
+category = "fs"
+
+[[batches.general.tests]]
+id = "lockdep-baseline"
+name = "lockdep baseline locking"
+entry = "crate::lockdep::baseline::run"
+category = "lockdep"
+
+[[batches.general.tests]]
+id = "memtest"
+name = "allocator alignment, failure and cross-CPU ownership"
+entry = "crate::mem::test::run"
+category = "mem"
+
+[[batches.general.tests]]
+id = "mem-stage1-transition"
+name = "SMP kernel stage-1 mapping transition"
+entry = "crate::mem::stage1_transition::run"
+category = "mem"
+
+[[batches.general.tests]]
+id = "net-http"
+name = "Rust std host HTTP round trip"
+entry = "crate::net::http::run"
+category = "net"
+
+[[batches.general.tests]]
+id = "task-affinity"
+name = "task CPU affinity"
+entry = "crate::task::affinity::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-fair-idle-pull"
+name = "late Fair backlog kicks an idle CPU"
+entry = "crate::task::fair_idle_pull::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-fair-wake-idle-sibling"
+name = "Fair wake selects an idle sibling"
+entry = "crate::task::fair_wake_idle_sibling::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-ipi"
+name = "IPI wake and hard-call delivery"
+entry = "crate::task::ipi::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-irq"
+name = "task IRQ state"
+entry = "crate::task::irq::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-executor"
+name = "Task executor"
+entry = "crate::task::executor::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-kernel-timer"
+name = "shared kernel timer callbacks"
+entry = "crate::task::kernel_timer::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-mutex"
+name = "mutex contention and wakeup"
+entry = "crate::task::mutex::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-pi-mutex"
+name = "PI mutex late wake after waiter exit"
+entry = "crate::task::pi_mutex::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-preempt-guard"
+name = "nested preemption exit stays on the decrement-only path"
+entry = "crate::task::preempt_guard::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-priority"
+name = "same-CPU Fair priority and completion order"
+entry = "crate::task::priority::run_priority"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-rt-policy"
+name = "FIFO bandwidth and non-yielding RR rotation"
+entry = "crate::task::rt_policy::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-scheduler-irq-window"
+name = "IRQ-return scheduler passes reopen local interrupts"
+entry = "crate::task::scheduler_irq_window::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-sleep"
+name = "bounded task sleeps"
+entry = "crate::task::sleep::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-tls"
+name = "thread local storage"
+entry = "crate::task::tls::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-wait-queue"
+name = "wait queue wake and timeout"
+entry = "crate::task::wait_queue::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-wait-queue-remote-wake"
+name = "remote wait queue wake"
+entry = "crate::task::wait_queue_remote_wake::run"
+category = "task"
+
+[[batches.general.tests]]
+id = "task-yield"
+name = "task yield scheduling"
+entry = "crate::task::yield_now::run"
+category = "task"
+
+[batches.task-cpu-lifecycle]
+
+[[batches.task-cpu-lifecycle.tests]]
+id = "task-cpu-lifecycle"
+name = "CPU offline and activation reservations"
+entry = "crate::task::cpu_lifecycle::run"
+category = "task"
+
+[batches.iommu-dma]
+arches = ["aarch64"]
+
+[[batches.iommu-dma.tests]]
+id = "iommu-dma"
+name = "SMMUv3 PCI DMA translation and isolation"
+entry = "crate::iommu_dma::run"
+category = "iommu_dma"
+
+[batches.x86-devices]
+arches = ["x86_64"]
+runtime = "x86-devices"
+
+[[batches.x86-devices.tests]]
+id = "nvme-qemu"
+name = "QEMU NVMe 4 KiB LBA I/O with cold-cache readback"
+entry = "crate::nvme::run"
+category = "nvme"
+
+[[batches.x86-devices.tests]]
+id = "intel-itco-qemu"
+name = "Q35 ICH9 iTCO v2 watchdog state transitions"
+entry = "crate::intel_itco::run"
+category = "intel_itco"
+
+[batches.serial-rx]
+arches = ["aarch64"]
+
+[[batches.serial-rx.tests]]
+id = "serial-rx"
+name = "serial IRQ receive continuity"
+entry = "crate::serial_rx::run"
+category = "serial_rx"
+
+[batches.virtio-block-lifecycle]
+arches = ["aarch64"]
+
+[[batches.virtio-block-lifecycle.tests]]
+id = "virtio-block-lifecycle"
+name = "confirmed reset and DMA ownership"
+entry = "crate::virtio_block_lifecycle::run"
+category = "virtio_block_lifecycle"
+
+[batches.net-unix-path]
+
+[[batches.net-unix-path.tests]]
+id = "net-unix-path"
+name = "sleepable Unix pathname namespace"
+entry = "crate::net::unix_path::run"
+category = "net"
+
+[batches.debug-panic-path]
+
+[[batches.debug-panic-path.tests]]
+id = "debug-panic-path"
+name = "panic backtrace path"
+entry = "crate::debug::panic_path::run"
+category = "debug"
+
+[batches.lockdep-detect]
+
+[[batches.lockdep-detect.tests]]
+id = "lockdep-detect"
+name = "lockdep order inversion detection"
+entry = "crate::lockdep::detect::run"
+category = "lockdep"
+
+[batches.task-stack-guard-page]
+
+[[batches.task-stack-guard-page.tests]]
+id = "task-stack-guard-page"
+name = "task stack guard page fault"
+entry = "crate::task::stack_guard_page::run"
+category = "task"

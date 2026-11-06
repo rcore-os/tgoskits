@@ -57,7 +57,7 @@ flowchart LR
 | 边界 | 实现位置 | 责任 |
 | --- | --- | --- |
 | 系统声明与制品 | `apps/starry/nixos/` | 锁定输入、生成闭包、构造和校验镜像、记录 provenance |
-| rootfs 编排 | `scripts/axbuild/src/starry/app/` | 选择 `AppOwned` 模式，调用应用 builder，拒绝缺失或不匹配的制品 |
+| rootfs 编排 | `scripts/axbuild/src/app/starry/` | 选择 `AppOwned` 模式，调用应用 builder，拒绝缺失或不匹配的制品 |
 | guest 启动 | `os/StarryOS/starryos/` | 仅在 `nixos` feature 下选择生成的 stage-2 init；其它应用保持原行为 |
 
 ## 为什么使用 app-owned rootfs

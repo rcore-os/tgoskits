@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 将时钟事件新产生的即时调度请求发布至IRQ返回抢占字，恢复非主动yield的RR量子轮转。
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.8.3...ax-task-v0.8.4) - 2026-09-22
 
 ### Other

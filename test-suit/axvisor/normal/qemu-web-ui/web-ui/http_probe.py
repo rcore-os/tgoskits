@@ -7,7 +7,7 @@ concrete requests and assertions — and can evolve independently of the axbuild
 runner.
 
 The generic axbuild probe runner
-(`scripts/axbuild/src/axvisor/test/http_probe.rs`) executes this script after
+(`scripts/axbuild/src/test/normal/axvisor/http_probe.rs`) executes this script after
 the QEMU hostfwd port is reachable, then treats the exit code as the verdict:
 0 = all assertions passed, nonzero = a step failed. The script dials the axum
 management API running *inside* AxVisor through QEMU user-mode networking

@@ -213,7 +213,7 @@ impl AppContext {
         let output = self.build(cargo.clone(), build_config_path).await?;
         self.prepare_elf_artifact(output.elf_path().to_path_buf(), qemu.to_bin)
             .await?;
-        crate::test::qemu::append_backtrace_map(
+        crate::execution::qemu::append_backtrace_map(
             &mut qemu,
             &output.elf_path().with_extension("axbt"),
             &cargo.target,
@@ -384,7 +384,7 @@ impl AppContext {
         ));
         let mut uboot = uboot.take().unwrap_or_default();
         let output = self.build(cargo.clone(), build_config_path).await?;
-        crate::test::qemu::append_backtrace_map_to_initramfs(
+        crate::execution::qemu::append_backtrace_map_to_initramfs(
             &mut uboot.boot.initramfs,
             &output.elf_path().with_extension("axbt"),
         )?;
@@ -414,7 +414,7 @@ impl AppContext {
             display_optional_path(build_config_path.as_deref())
         ));
         let output = self.build(cargo.clone(), build_config_path).await?;
-        crate::test::qemu::append_backtrace_map_to_initramfs(
+        crate::execution::qemu::append_backtrace_map_to_initramfs(
             &mut board_config.boot.initramfs,
             &output.elf_path().with_extension("axbt"),
         )?;

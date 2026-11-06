@@ -1,0 +1,987 @@
+use std::{
+    collections::BTreeMap,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
+    time::Instant,
+};
+
+use anyhow::Context;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
+use serde::Deserialize;
+use sha2::Digest;
+
+use super::{
+    AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
+    assets::axvisor_case_asset_config,
+    discovery::{
+        CaseSource, discover_qemu_cases, discover_test_group_names, list_all_qemu_cases,
+        list_all_qemu_cases_with_archs, suite_roots_label,
+    },
+    host_probe,
+    initramfs::prepare_configured_busybox_initramfs,
+    parse_target,
+    types::{AxvisorHttpProbeConfig, PreparedAxvisorQemuCase},
+};
+use crate::{
+    axvisor::{ArgsTestQemu, Axvisor, build, rootfs},
+    context::{AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence},
+    execution::{case as test_case, qemu as test_qemu},
+};
+
+const VCPU_RUNTIME_ERROR: &str = r"VM\[\d+\] run VCpu\[\d+\] get error";
+
+impl Axvisor {
+    pub(crate) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        self.run_qemu_cases(args, CaseSource::Tests).await
+    }
+
+    pub(crate) async fn run_qemu_cases(
+        &mut self,
+        args: ArgsTestQemu,
+        source: CaseSource,
+    ) -> anyhow::Result<()> {
+        let selectors: Vec<Option<&str>> = if args.test_case.is_empty() {
+            vec![None]
+        } else {
+            args.test_case
+                .iter()
+                .map(|case| Some(case.as_str()))
+                .collect()
+        };
+        if args.list && args.arch.is_none() && args.target.is_none() && args.test_group.is_none() {
+            let mut groups = Vec::new();
+            for selector in &selectors {
+                let mut selected_groups = Vec::new();
+                for group in discover_test_group_names(source, self.app.workspace_root())? {
+                    let case_names = list_all_qemu_cases_with_archs(
+                        source,
+                        self.app.workspace_root(),
+                        &group,
+                        *selector,
+                    )?;
+                    if !case_names.is_empty() {
+                        selected_groups.push((group, case_names));
+                    }
+                }
+                if selected_groups.is_empty() {
+                    anyhow::bail!("no Axvisor qemu cases match {:?}", selector);
+                }
+                groups.extend(selected_groups);
+            }
+            if groups.is_empty() {
+                anyhow::bail!(
+                    "no Axvisor qemu test cases found under {}",
+                    suite_roots_label(source, self.app.workspace_root())
+                );
+            }
+            println!(
+                "{}",
+                test_qemu::render_qemu_case_forest(source.label(), groups)
+            );
+            return Ok(());
+        }
+
+        let test_group = args.test_group.as_deref().unwrap_or(AXVISOR_NORMAL_GROUP);
+        if args.list && args.arch.is_none() && args.target.is_none() {
+            let mut case_names = std::collections::BTreeSet::new();
+            for selector in &selectors {
+                case_names.extend(list_all_qemu_cases(
+                    source,
+                    self.app.workspace_root(),
+                    test_group,
+                    *selector,
+                )?);
+            }
+            println!("{}", test_qemu::render_case_tree(test_group, case_names));
+            return Ok(());
+        }
+
+        let (arch, target) = parse_target(&args.arch, &args.target)?;
+        let mut cases = Vec::new();
+        for selected in selectors {
+            for case in discover_qemu_cases(
+                source,
+                self.app.workspace_root(),
+                test_group,
+                &arch,
+                &target,
+                selected,
+            )? {
+                if !cases
+                    .iter()
+                    .any(|existing: &AxvisorQemuCase| existing.case.name == case.case.name)
+                {
+                    cases.push(case);
+                }
+            }
+        }
+        if args.list {
+            let case_names = cases.iter().map(|case| case.case.name.as_str());
+            println!("{}", test_qemu::render_case_tree(test_group, case_names));
+            return Ok(());
+        }
+
+        println!(
+            "running {} qemu cases for arch: {} (target: {}, cases: {})",
+            source.label(),
+            arch,
+            target,
+            cases.len()
+        );
+
+        for case in &cases {
+            crate::axvisor::guest_build::prepare(&mut self.app, &case.case.qemu_config_path)
+                .await?;
+        }
+        let request = self.prepare_request(
+            axvisor_qemu_test_build_args(&arch, None),
+            None,
+            None,
+            SnapshotPersistence::Discard,
+        )?;
+        let request = Self::qemu_test_request(request);
+        let cases = self
+            .prepare_qemu_cases(&request, cases)
+            .await
+            .context("failed to load Axvisor qemu test cases")?;
+        self.app.set_debug_mode(request.debug)?;
+
+        let total = cases.len();
+        let suite_started = Instant::now();
+        let mut summary = test_qemu::QemuTestSummary::default();
+        let asset_config = axvisor_case_asset_config();
+
+        let build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
+            let prepared = cases
+                .iter()
+                .find(|case| case.case.build_config_path.as_path() == build_config_path)
+                .with_context(|| {
+                    format!(
+                        "missing prepared Axvisor input {}",
+                        build_config_path.display()
+                    )
+                })?;
+            Ok((prepared.request.clone(), prepared.cargo.clone()))
+        })?;
+        // The dashboard bundle depends only on the frontend sources, so build
+        // it once for the first group that enables the feature; Phase 2 then
+        // packs it into every such case's initramfs.
+        let mut web_ui_dist = None;
+        for build_group in &build_groups {
+            if crate::axvisor::web_ui::enabled(&build_group.cargo.features) {
+                web_ui_dist = crate::axvisor::web_ui::build_dist(
+                    &build_group.cargo.features,
+                    &request.axvisor_dir,
+                    self.app.target_dir(),
+                )?;
+                break;
+            }
+        }
+        let artifact_parent = self.app.target_dir().to_path_buf();
+        std::fs::create_dir_all(&artifact_parent).with_context(|| {
+            format!(
+                "failed to create Axvisor qemu artifact parent {}",
+                artifact_parent.display()
+            )
+        })?;
+        let artifact_directory = tempfile::Builder::new()
+            .prefix("axvisor-qemu-artifacts-")
+            .tempdir_in(&artifact_parent)
+            .context("failed to create temporary Axvisor qemu artifact directory")?;
+        let mut build_artifacts = Vec::with_capacity(build_groups.len());
+
+        // Phase 1: Build all build groups first so compilation errors surface
+        // before any QEMU time is spent. Preserve each executable immediately:
+        // Cargo can reuse output paths for different feature groups; retain
+        // each executable until its cases have finished.
+        for (index, build_group) in build_groups.iter().enumerate() {
+            let output = self
+                .app
+                .build(
+                    build_group.cargo.clone(),
+                    build_group.request.config_path().map(Path::to_path_buf),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to build Axvisor qemu test artifact for build group `{}` ({})",
+                        build_group.group.build_group,
+                        build_group.group.build_config_path.display()
+                    )
+                })?;
+            build_artifacts.push(preserve_qemu_build_artifact(
+                output.elf_path(),
+                artifact_directory.path(),
+                index,
+            )?);
+        }
+
+        // Phase 2: Run all QEMU tests now that every artifact is available.
+        let case_groups = build_groups
+            .iter()
+            .map(|build_group| build_group.group.cases.as_slice())
+            .collect::<Vec<_>>();
+        let case_artifacts =
+            plan_qemu_case_artifacts(&case_groups, &build_artifacts, |case| case.qemu.to_bin)?;
+        let mut completed = 0;
+        for case_artifact in case_artifacts {
+            completed += 1;
+            let build_group = &build_groups[case_artifact.build_group_index];
+            let case = case_artifact.case;
+            let case_name = &case.case.case.name;
+            println!("[{completed}/{total}] axvisor qemu {case_name}");
+
+            let case_started = Instant::now();
+            let result = async {
+                self.app
+                    .prepare_elf_artifact(
+                        case_artifact.build_artifact.to_path_buf(),
+                        case_artifact.to_bin,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!("failed to activate Axvisor qemu artifact for case `{case_name}`")
+                    })?;
+                let inputs = crate::axvisor::bundle::case_inputs(&case.case.case.case_dir)?;
+                // Kernel reuse does not replace this case's typed packaging inputs.
+                let case_request = Self::qemu_case_runtime_request(
+                    case,
+                    inputs.vm_configs.as_deref(),
+                    self.app.workspace_context(),
+                )?;
+                if crate::rootfs::qemu::has_host_rootfs_wiring(&case.qemu.args) {
+                    rootfs::ensure_qemu_assets_ready(
+                        &case_request,
+                        self.app.workspace_root(),
+                        self.app.target_dir(),
+                        None,
+                    )
+                    .await?;
+                } else {
+                    rootfs::ensure_guest_image_bundles(
+                        &case_request,
+                        self.app.workspace_root(),
+                        self.app.target_dir(),
+                    )
+                    .await?;
+                }
+                prepare_configured_busybox_initramfs(
+                    &case_request,
+                    &inputs,
+                    self.app.workspace_root(),
+                    self.app.target_dir(),
+                )
+                .await?;
+                let digest = sha2::Sha256::digest(std::fs::read(case_artifact.build_artifact)?);
+                println!("Axvisor kernel sha256={digest:x} case={case_name}");
+                self.run_qemu_case(
+                    &case_request,
+                    &build_group.cargo,
+                    case,
+                    case_artifact.build_artifact,
+                    &asset_config,
+                    web_ui_dist.as_deref(),
+                )
+                .await
+            }
+            .await
+            .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
+            let duration = case_started.elapsed();
+            match result {
+                Ok(()) => {
+                    println!("ok: {case_name} ({duration:.2?})");
+                    summary.pass_with_detail(case_name, format!("{duration:.2?}"));
+                }
+                Err(err) => {
+                    eprintln!("failed: {}: {err:#}", case_name);
+                    summary.fail_with_detail(case_name, format!("{duration:.2?}"));
+                }
+            }
+        }
+
+        let total_duration = format!("{:.2?}", suite_started.elapsed());
+        summary.finish_with_total_detail(source.label(), "case", Some(total_duration.as_str()))
+    }
+
+    async fn prepare_qemu_cases(
+        &mut self,
+        request: &ResolvedAxvisorRequest,
+        cases: Vec<AxvisorQemuCase>,
+    ) -> anyhow::Result<Vec<PreparedAxvisorQemuCase>> {
+        let mut prepared = Vec::with_capacity(cases.len());
+        let mut contexts_by_build_config = BTreeMap::new();
+        for case in cases {
+            let (case_request, cargo) = Self::qemu_case_build_context(
+                request,
+                &case.build_config_path,
+                &mut contexts_by_build_config,
+                self.app.workspace_context(),
+            )?;
+            let mut qemu = self
+                .app
+                .read_qemu_config_from_path_for_cargo(&cargo, &case.case.qemu_config_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to read Axvisor qemu config for case `{}`",
+                        case.case.display_name
+                    )
+                })?;
+            test_qemu::prepare_host_initramfs(
+                self.app.workspace_root(),
+                self.app.target_dir(),
+                &case.case.case_dir,
+                &request.arch,
+                &mut qemu,
+            )?;
+            prepared.push(PreparedAxvisorQemuCase {
+                case,
+                qemu,
+                request: case_request,
+                cargo,
+            });
+        }
+
+        Ok(prepared)
+    }
+
+    fn qemu_case_build_context(
+        request: &ResolvedAxvisorRequest,
+        build_config_path: &Path,
+        contexts_by_build_config: &mut BTreeMap<PathBuf, (ResolvedAxvisorRequest, Cargo)>,
+        workspace: &crate::context::WorkspaceContext,
+    ) -> anyhow::Result<(ResolvedAxvisorRequest, Cargo)> {
+        if let Some(context) = contexts_by_build_config.get(build_config_path) {
+            return Ok(context.clone());
+        }
+
+        let mut request = request.clone();
+        let input = crate::build::load_config_input::<crate::axvisor::config::AxvisorConfig>(
+            workspace.root(),
+            Some(build_config_path),
+            None,
+        )?;
+        if let Some(target) = input.config.common.target.as_deref()
+            && target != request.target
+        {
+            anyhow::bail!(
+                "Axvisor test build config {} selects target `{target}`, expected `{}`",
+                build_config_path.display(),
+                request.target
+            );
+        }
+        request.replace_config_input(input)?;
+        let cargo = build::load_cargo_config(&request, workspace)?;
+        contexts_by_build_config.insert(
+            build_config_path.to_path_buf(),
+            (request.clone(), cargo.clone()),
+        );
+        Ok((request, cargo))
+    }
+
+    fn qemu_case_runtime_request(
+        case: &PreparedAxvisorQemuCase,
+        explicit_vmconfigs: Option<&[PathBuf]>,
+        workspace: &crate::context::WorkspaceContext,
+    ) -> anyhow::Result<ResolvedAxvisorRequest> {
+        let mut request = case.request.clone();
+        request.vmconfigs = match explicit_vmconfigs {
+            Some(paths) => build::resolve_vmconfigs(&request, paths, workspace)?,
+            None => build::load_vmconfigs(&request, workspace)?,
+        };
+        Ok(request)
+    }
+
+    pub(crate) fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
+        request.smp = None;
+        request.vmconfigs.clear();
+        request
+    }
+
+    async fn load_qemu_case_config(
+        &mut self,
+        request: &ResolvedAxvisorRequest,
+        case: &PreparedAxvisorQemuCase,
+        asset_config: &test_case::CaseAssetConfig,
+        web_ui_dist: Option<&Path>,
+    ) -> anyhow::Result<(QemuConfig, test_case::PreparedCaseAssets)> {
+        let mut qemu = case.qemu.clone();
+        let inputs = crate::axvisor::bundle::case_inputs(&case.case.case.case_dir)?;
+        let bundle_path = self
+            .app
+            .target_dir()
+            .join("axbuild/axvisor/host-initramfs")
+            .join(&request.arch)
+            .join(format!("{}.cpio", case.case.case.name.replace('/', "-")));
+        crate::axvisor::bundle::attach(
+            &request.vmconfigs,
+            inputs.vm_configs.is_some(),
+            web_ui_dist,
+            &bundle_path,
+            &mut qemu.boot.initramfs,
+        )?;
+        test_qemu::apply_timeout_scale(&mut qemu);
+        if !qemu
+            .fail_regex
+            .iter()
+            .any(|pattern| pattern == VCPU_RUNTIME_ERROR)
+        {
+            qemu.fail_regex.push(VCPU_RUNTIME_ERROR.to_string());
+        }
+
+        let rootfs_path = rootfs::qemu_rootfs_path(
+            request,
+            self.app.workspace_root(),
+            self.app.target_dir(),
+            None,
+        )?;
+        let prepared_assets = test_case::prepare_case_assets(
+            self.app.target_dir(),
+            &request.arch,
+            &request.target,
+            &case.case.case,
+            rootfs_path,
+            asset_config.clone(),
+        )
+        .await?;
+        if !rootfs::diskless_explicit_qemu(&qemu, true, false) {
+            rootfs::patch_qemu_rootfs_path(
+                &mut qemu,
+                &prepared_assets.rootfs_path,
+                crate::rootfs::qemu::RootfsWritePolicy::Discard,
+            )?;
+        }
+        Ok((qemu, prepared_assets))
+    }
+
+    async fn run_qemu_case(
+        &mut self,
+        request: &ResolvedAxvisorRequest,
+        cargo: &Cargo,
+        case: &PreparedAxvisorQemuCase,
+        kernel: &Path,
+        asset_config: &test_case::CaseAssetConfig,
+        web_ui_dist: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        let prepare_started = Instant::now();
+        let (mut qemu, prepared_assets) = self
+            .load_qemu_case_config(request, case, asset_config, web_ui_dist)
+            .await?;
+        crate::execution::qemu::append_backtrace_map(
+            &mut qemu,
+            &kernel.with_extension("axbt"),
+            &request.target,
+        )?;
+
+        // Optional host->guest TCP probe over QEMU user-mode networking. When
+        // `[host_http_probe]` is configured, the host acts as a *client* that
+        // dials a management API inside the guest through a hostfwd port and
+        // asserts the responses entirely host-side. The concrete requests,
+        // fixtures, and assertions live with the test-suit case as an
+        // executable probe asset (default `http_probe.py` in the case
+        // directory); axbuild only orchestrates: forward the port, execute the
+        // asset, collect its exit code, and report the result. The guard must
+        // live for the whole run, so it is spawned here and dropped at scope
+        // end (after QEMU exits).
+        //
+        // The guard also ends the run: after it stores its verdict it connects
+        // to a QMP monitor socket and sends `quit`, so a successful run ends
+        // on the probe result instead of the serial-timeout path. The runner
+        // owns the QEMU child, so a `quit` QEMU ignores degrades to the case
+        // timeout and fails the run (no `/__probe_result` relay inside the
+        // guest).
+        let mut host_probe_guard = None;
+        if let Some(probe_config) =
+            load_axvisor_http_probe_config(&case.case.case.qemu_config_path)?
+        {
+            let host_port = pick_free_local_port()?;
+            let qmp_socket = std::env::temp_dir().join(format!(
+                "axvisor-qmp-{}-{}.sock",
+                case.case.case.name,
+                std::process::id()
+            ));
+            // Each QEMU option and its value must be a separate argv element
+            // (QEMU takes the value of `-netdev`/`-device` from the following
+            // argument), matching how the `.toml` config stores them.
+            qemu.args.extend([
+                "-netdev".to_string(),
+                format!(
+                    "user,id=net0,hostfwd=tcp:127.0.0.1:{host_port}-:{}",
+                    probe_config.guest_port
+                ),
+                "-device".to_string(),
+                format!("{},netdev=net0", probe_config.nic_model),
+                "-qmp".to_string(),
+                format!("unix:{},server=on,wait=off", qmp_socket.to_string_lossy()),
+            ]);
+            // Stop flag shared with the probe thread's poll loops: the runner
+            // stores `true` when the case is over (QEMU failure, timeout, or
+            // the guard's Drop), so the probe aborts on its next poll instead
+            // of waiting out its deadline.
+            let stop = Arc::new(AtomicBool::new(false));
+            // The probe asset owns the concrete test content (fixtures such as
+            // `vm-memory.toml` and the assertions) in the case directory; the
+            // guard stays orchestration-only.
+            let probe_addr = format!("127.0.0.1:{host_port}");
+            let probe_owned = probe_config.clone();
+            let probe_case_dir = case.case.case.case_dir.clone();
+            let probe_stop = stop.clone();
+            let builtin_configs = qemu
+                .boot
+                .initramfs
+                .as_ref()
+                .map(|archive| Path::new(archive).with_extension("configs"));
+            let probe: host_probe::HostHttpProbeFn = Box::new(move || {
+                super::http_probe::run(
+                    &probe_addr,
+                    &probe_owned,
+                    &probe_case_dir,
+                    builtin_configs.as_deref(),
+                    probe_stop,
+                )
+            });
+            host_probe_guard = Some(host_probe::HostHttpProbeGuard::start(
+                &probe_config,
+                host_port,
+                &case.case.case.name,
+                Some(qmp_socket),
+                stop,
+                probe,
+            )?);
+        }
+
+        // Both conditions must hold for a probe case: QEMU must run cleanly (a
+        // fail_regex match, terminal timeout, or spawn/exit error fails the run
+        // even when the probe passed), and the HTTP probe verdict must be
+        // `Ok`. For non-probe cases the serial-success path in
+        // `run_qemu_with_prepared_case_assets` still applies unchanged.
+        let qemu_result = test_case::run_qemu_with_prepared_case_assets(
+            &mut self.app,
+            cargo,
+            qemu,
+            &case.case.case.qemu_config_path,
+            prepared_assets,
+            test_case::RunPreparedQemuCaseOptions {
+                prepare_elapsed: prepare_started.elapsed(),
+                qemu_timing_fields: None,
+            },
+        )
+        .await;
+
+        // Joins the probe thread now that QEMU has exited.
+        let probe_configured = host_probe_guard.is_some();
+        let probe_outcome = host_probe_guard.and_then(host_probe::HostHttpProbeGuard::finish);
+        let probe_result = match probe_outcome {
+            Some(outcome) => {
+                replay_probe_output(&outcome.output)?;
+                Some(outcome.verdict)
+            }
+            None => None,
+        };
+
+        combine_results(qemu_result, probe_configured, probe_result)
+    }
+}
+
+fn replay_probe_output(output: &[u8]) -> anyhow::Result<()> {
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(output)
+        .context("failed to replay host HTTP probe output")?;
+    stdout
+        .flush()
+        .context("failed to flush host HTTP probe output")
+}
+
+/// Combine the QEMU runner result and the HTTP probe verdict into the final
+/// case result. Both conditions must succeed: `qemu_result` first, then the
+/// probe verdict. A fail_regex match, terminal timeout, or QEMU spawn/exit
+/// failure therefore fails the run even when the probe passed — the probe may
+/// only contribute its verdict once QEMU has run cleanly (e.g. exited via the
+/// probe's QMP `quit`).
+fn combine_results(
+    qemu_result: anyhow::Result<()>,
+    probe_configured: bool,
+    probe_result: Option<anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    qemu_result?;
+
+    match (probe_configured, probe_result) {
+        (false, _) => Ok(()),
+        (true, Some(result)) => result,
+        (true, None) => anyhow::bail!("host http probe produced no verdict"),
+    }
+}
+
+/// Pick a free loopback port for the QEMU hostfwd listen, then release it so
+/// QEMU can bind it. A freshly-assigned ephemeral port avoids stale-port
+/// collisions from CI runner reuse (the same ports are never parked on a
+/// previous run's leftover QEMU). A small bind-release-bind TOCTOU window
+/// exists but is acceptable for a local test harness.
+fn pick_free_local_port() -> anyhow::Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .context("failed to pick a free local port for QEMU hostfwd")?;
+    Ok(listener.local_addr()?.port())
+}
+
+/// Parse the optional `[host_http_probe]` section from an Axvisor qemu case
+/// config. The section is axvisor-specific, so it is read directly from the
+/// case toml here instead of going through the generic
+/// [`test_qemu::load_qemu_case_extra_config`] (which no longer carries the
+/// field).
+fn load_axvisor_http_probe_config(
+    qemu_config_path: &Path,
+) -> anyhow::Result<Option<AxvisorHttpProbeConfig>> {
+    #[derive(Deserialize)]
+    struct ProbeSection {
+        #[serde(default)]
+        host_http_probe: Option<AxvisorHttpProbeConfig>,
+    }
+
+    let content = std::fs::read_to_string(qemu_config_path)
+        .with_context(|| format!("failed to read {}", qemu_config_path.display()))?;
+    Ok(toml::from_str::<ProbeSection>(&content)
+        .with_context(|| format!("failed to parse {}", qemu_config_path.display()))?
+        .host_http_probe)
+}
+
+fn axvisor_qemu_test_build_args(arch: &str, config: Option<PathBuf>) -> AxvisorCliArgs {
+    AxvisorCliArgs {
+        preset: None,
+        config,
+        arch: Some(arch.to_string()),
+        target: None,
+        smp: None,
+        debug: false,
+        vmconfigs: Vec::new(),
+    }
+}
+
+pub(crate) fn preserve_qemu_build_artifact(
+    source: &Path,
+    artifact_directory: &Path,
+    build_group_index: usize,
+) -> anyhow::Result<PathBuf> {
+    crate::execution::qemu::preserve_build_artifact(source, artifact_directory, build_group_index)
+}
+
+#[derive(Debug)]
+pub(crate) struct QemuCaseArtifact<'case, 'artifact, T> {
+    pub(crate) build_group_index: usize,
+    pub(crate) case: &'case T,
+    pub(crate) build_artifact: &'artifact Path,
+    pub(crate) to_bin: bool,
+}
+
+pub(crate) fn plan_qemu_case_artifacts<'case, 'artifact, T>(
+    case_groups: &[&[&'case T]],
+    build_artifacts: &'artifact [PathBuf],
+    to_bin: impl Fn(&T) -> bool,
+) -> anyhow::Result<Vec<QemuCaseArtifact<'case, 'artifact, T>>> {
+    anyhow::ensure!(
+        case_groups.len() == build_artifacts.len(),
+        "Axvisor qemu build-group count ({}) does not match preserved artifact count ({})",
+        case_groups.len(),
+        build_artifacts.len()
+    );
+    Ok(case_groups
+        .iter()
+        .zip(build_artifacts)
+        .enumerate()
+        .flat_map(|(build_group_index, (cases, build_artifact))| {
+            cases.iter().map({
+                let to_bin = &to_bin;
+                move |case| QemuCaseArtifact {
+                    build_group_index,
+                    case: *case,
+                    build_artifact,
+                    to_bin: to_bin(*case),
+                }
+            })
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, fs};
+
+    use ostool::run::qemu::QemuConfig;
+    use tempfile::tempdir;
+
+    use super::{
+        Axvisor, AxvisorQemuCase, PreparedAxvisorQemuCase, combine_results,
+        load_axvisor_http_probe_config, plan_qemu_case_artifacts, preserve_qemu_build_artifact,
+    };
+    use crate::{
+        context::{ResolvedAxvisorRequest, WorkspaceContext},
+        test::qemu as test_qemu,
+    };
+
+    #[test]
+    fn qemu_build_groups_preserve_distinct_executable_artifacts() {
+        let root = tempdir().unwrap();
+        let target = "aarch64-unknown-none-softfloat";
+        let workspace = WorkspaceContext::discover(Some(&root.path().join("target"))).unwrap();
+        let vm_a = root.path().join("vm-a.toml");
+        let vm_c = root.path().join("vm-c.toml");
+        fs::write(&vm_a, "[kernel]\nkernel_path = 'vm-a.bin'\n").unwrap();
+        fs::write(&vm_c, "[kernel]\nkernel_path = 'vm-c.bin'\n").unwrap();
+        let common = format!(
+            "target = '{target}'\nfeatures = []\nlog = 'Info'\nrustflags = \
+             ['--cfg=case_a']\n[env]\nINPUT_MODE = 'a'\nCARGO_ENCODED_RUSTFLAGS = '--cfg=base'\n"
+        );
+        let source_a = root.path().join("case-a.toml");
+        let source_b = root.path().join("case-empty.toml");
+        let source_c = root.path().join("case-c.toml");
+        let vm_list = |path: &std::path::Path| {
+            toml::Value::Array(vec![toml::Value::String(path.display().to_string())]).to_string()
+        };
+        fs::write(
+            &source_a,
+            format!("vm_configs = {}\n{common}", vm_list(&vm_a)),
+        )
+        .unwrap();
+        fs::write(&source_b, format!("vm_configs = []\n{common}")).unwrap();
+        fs::write(
+            &source_c,
+            format!(
+                "target = '{target}'\nfeatures = ['ax-driver/virtio-net']\nlog = \
+                 'Debug'\nrustflags = ['--cfg=case_c']\nmax_cpu_num = 2\nvm_configs = \
+                 {}\n[runtime]\ntask_stack_size = 0x60000\nscheduler_tick_ms = \
+                 5\n[env]\nINPUT_MODE = 'c'\nCARGO_ENCODED_RUSTFLAGS = '--cfg=base'\n",
+                vm_list(&vm_c),
+            ),
+        )
+        .unwrap();
+        let mut config = crate::axvisor::config::AxvisorConfig::default();
+        config.common.target = Some(target.to_string());
+        let runtime_env = ax_config::RuntimeEnv::default();
+        let runtime = ax_config::resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &runtime_env,
+        )
+        .unwrap();
+        let mut request = ResolvedAxvisorRequest {
+            source: crate::build::ConfigSource::Custom,
+            package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "aarch64".to_string(),
+            target: target.to_string(),
+            smp: None,
+            debug: false,
+            config,
+            runtime,
+            runtime_env,
+            environment_features: Vec::new(),
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: Vec::new(),
+        };
+        request.runtime_env = ax_config::RuntimeEnv {
+            smp: Some("3".into()),
+            task_stack_size: Some("0x50000".into()),
+            scheduler_tick_ms: Some("7".into()),
+        };
+        request.environment_features = vec!["ax-driver/virtio-blk".into()];
+        request.vmconfigs = vec![root.path().join("stale.toml")];
+        let mut cache = BTreeMap::new();
+        let mut cases = Vec::new();
+        for (name, path) in [("a", &source_a), ("empty", &source_b), ("c", &source_c)] {
+            let (selected, cargo) =
+                Axvisor::qemu_case_build_context(&request, path, &mut cache, &workspace).unwrap();
+            fs::remove_file(path).unwrap();
+            let cached =
+                Axvisor::qemu_case_build_context(&request, path, &mut cache, &workspace).unwrap();
+            assert_eq!(cached, (selected.clone(), cargo.clone()));
+            cases.push(PreparedAxvisorQemuCase {
+                case: AxvisorQemuCase {
+                    case: crate::test::case::TestQemuCase {
+                        name: name.into(),
+                        display_name: name.into(),
+                        case_dir: root.path().join(name),
+                        qemu_config_path: root.path().join(format!("qemu-{name}.toml")),
+                        test_commands: vec![],
+                        grouped_command_selection: Default::default(),
+                        host_http_server: None,
+                        subcases: vec![],
+                        grouped_subcase_filter: None,
+                        ltp_case_id: None,
+                    },
+                    build_group: name.into(),
+                    build_config_path: path.clone(),
+                },
+                qemu: QemuConfig::default(),
+                request: selected,
+                cargo,
+            });
+        }
+        assert_eq!(cases[0].cargo.env["INPUT_MODE"], "a");
+        assert_eq!(cases[0].cargo.env["AX_LOG"], "info");
+        assert_eq!(cases[0].cargo.env["SMP"], "3");
+        assert_eq!(cases[0].cargo.env["AX_TASK_STACK_SIZE"], "327680");
+        assert_eq!(cases[0].cargo.env["AX_SCHEDULER_TICK_MS"], "7");
+        assert!(cases[0].cargo.env["CARGO_ENCODED_RUSTFLAGS"].contains("--cfg=case_a"));
+        assert_eq!(cases[2].cargo.env["INPUT_MODE"], "c");
+        assert_eq!(cases[2].cargo.env["AX_LOG"], "debug");
+        assert_eq!(cases[2].cargo.env["SMP"], "2");
+        assert_eq!(cases[2].cargo.env["AX_TASK_STACK_SIZE"], "393216");
+        assert_eq!(cases[2].cargo.env["AX_SCHEDULER_TICK_MS"], "5");
+        assert!(cases[2].cargo.env["CARGO_ENCODED_RUSTFLAGS"].contains("--cfg=case_c"));
+        for case in &cases {
+            assert!(
+                case.cargo
+                    .features
+                    .contains(&"ax-driver/virtio-blk".to_string())
+            );
+        }
+        assert!(
+            !cases[0]
+                .cargo
+                .features
+                .contains(&"ax-std/virtio-net".to_string())
+        );
+        assert!(
+            cases[2]
+                .cargo
+                .features
+                .contains(&"ax-std/virtio-net".to_string())
+        );
+        assert!(
+            cases[2]
+                .request
+                .config
+                .common
+                .features
+                .contains(&"ax-driver/virtio-net".to_string())
+        );
+        let groups = test_qemu::prepare_case_build_groups(&cases, |path| {
+            let case = cases
+                .iter()
+                .find(|case| case.case.build_config_path.as_path() == path)
+                .unwrap();
+            Ok((case.request.clone(), case.cargo.clone()))
+        })
+        .unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].group.cases.len(), 2);
+        assert_eq!(groups[1].group.cases.len(), 1);
+        assert_eq!(groups[0].cargo, cases[1].cargo);
+        for (case, image) in [(&cases[0], "vm-a.bin"), (&cases[2], "vm-c.bin")] {
+            let runtime = Axvisor::qemu_case_runtime_request(case, None, &workspace).unwrap();
+            assert_eq!(runtime.vmconfigs.len(), 1);
+            assert!(
+                fs::read_to_string(&runtime.vmconfigs[0])
+                    .unwrap()
+                    .contains(image)
+            );
+        }
+        assert!(
+            Axvisor::qemu_case_runtime_request(&cases[1], None, &workspace)
+                .unwrap()
+                .vmconfigs
+                .is_empty()
+        );
+        assert!(
+            Axvisor::qemu_case_runtime_request(&cases[0], Some(&[]), &workspace)
+                .unwrap()
+                .vmconfigs
+                .is_empty()
+        );
+        let build_output = root.path().join("target/release/axvisor");
+        let artifact_directory = root.path().join("preserved");
+        fs::create_dir_all(build_output.parent().unwrap()).unwrap();
+        let mut artifacts = Vec::new();
+        for index in 0..groups.len() {
+            fs::write(&build_output, format!("kernel-{index}")).unwrap();
+            artifacts.push(
+                preserve_qemu_build_artifact(&build_output, &artifact_directory, index).unwrap(),
+            );
+        }
+        assert_eq!(fs::read(&artifacts[0]).unwrap(), b"kernel-0");
+        assert_eq!(fs::read(&artifacts[1]).unwrap(), b"kernel-1");
+        let case_groups = groups
+            .iter()
+            .map(|group| group.group.cases.as_slice())
+            .collect::<Vec<_>>();
+        let plan =
+            plan_qemu_case_artifacts(&case_groups, &artifacts, |case| case.qemu.to_bin).unwrap();
+        assert_eq!(plan[0].build_artifact, plan[1].build_artifact);
+        assert_ne!(plan[0].build_artifact, plan[2].build_artifact);
+    }
+
+    fn ok() -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn err(message: &str) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("{message}"))
+    }
+
+    #[test]
+    fn qemu_error_wins_over_successful_probe() {
+        // A fail_regex match, terminal timeout, or QEMU spawn/exit failure must
+        // fail the run even when the HTTP probe passed.
+        assert!(
+            combine_results(
+                err("Fail pattern matched '(?i)panic': panicked at ..."),
+                true,
+                Some(ok()),
+            )
+            .is_err()
+        );
+        assert!(combine_results(err("QEMU timeout"), true, Some(ok())).is_err());
+        assert!(combine_results(err("failed to spawn qemu"), true, Some(ok())).is_err());
+    }
+
+    #[test]
+    fn probe_error_wins_on_clean_qemu_exit() {
+        let verdict = combine_results(ok(), true, Some(err("probe: expected 200 got 404")));
+        assert!(
+            verdict
+                .unwrap_err()
+                .to_string()
+                .contains("probe: expected 200")
+        );
+    }
+
+    #[test]
+    fn missing_probe_verdict_on_clean_qemu_exit_fails() {
+        let verdict = combine_results(ok(), true, None);
+        assert!(verdict.unwrap_err().to_string().contains("no verdict"));
+    }
+
+    #[test]
+    fn non_probe_case_uses_qemu_result() {
+        assert!(combine_results(ok(), false, None).is_ok());
+        assert!(combine_results(err("boot failed"), false, None).is_err());
+    }
+
+    #[test]
+    fn probe_config_parses_with_serde_defaults() {
+        let dir =
+            std::env::temp_dir().join(format!("axvisor-probe-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let probe_path = dir.join("qemu-aarch64.toml");
+        let plain_path = dir.join("plain.toml");
+        std::fs::write(&probe_path, "[host_http_probe]\nguest_port = 8081\n").unwrap();
+        std::fs::write(&plain_path, "args = []\n").unwrap();
+
+        let config = load_axvisor_http_probe_config(&probe_path)
+            .unwrap()
+            .expect("host_http_probe present");
+        assert_eq!(config.guest_port, 8081);
+        assert_eq!(config.connect_timeout_secs, 120);
+        assert_eq!(config.request_timeout_secs, 5);
+
+        assert!(
+            load_axvisor_http_probe_config(&plain_path)
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

@@ -47,7 +47,7 @@ pub(crate) use info::{
     into_prepared_no_std_cargo_config_with_metadata_and_defaults,
     into_prepared_std_cargo_config_with_metadata,
     into_prepared_std_cargo_config_with_metadata_and_defaults, package_enables_mmu,
-    resolve_c_app_features, toolchain_rustflags, validate_feature, validate_features,
+    resolved_std_build_features, resolve_c_app_features, toolchain_rustflags, validate_feature, validate_features,
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
 #[cfg(test)]

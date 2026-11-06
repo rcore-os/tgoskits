@@ -498,9 +498,9 @@ fn enter_irq_return_continuation_scheduler() -> bool {
     // Keep one architecture relaxation in the window so a pending IRQ can be
     // delivered before CLI closes the next scheduler transaction.
     core::hint::spin_loop();
-    ax_cpu::interrupt::disable_irqs();
     #[cfg(feature = "qperf-metrics")]
     crate::thread::record_irq_return_scheduler_window();
+    ax_cpu::interrupt::disable_irqs();
 
     let cpu_local::PreemptionExit::Pending(pending) = cpu_local::finish_preemption(token) else {
         panic!("IRQ-return continuation lost its pending scheduler request");

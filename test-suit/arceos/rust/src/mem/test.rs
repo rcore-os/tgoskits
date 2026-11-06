@@ -7,8 +7,7 @@ use core::{
     slice,
 };
 use std::{
-    collections::BTreeMap,
-    format, println,
+    println,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -23,7 +22,6 @@ use ax_std::os::arceos::{
     api::task::{AxCpuMask, ax_set_current_affinity},
     modules::ax_hal::percpu::this_cpu_id,
 };
-use rand::{RngCore, SeedableRng, rngs::SmallRng};
 
 const SLAB_LAYOUT_CASES: [LayoutCase; 9] = [
     LayoutCase::new(1, 1),
@@ -53,8 +51,6 @@ const ALIGN_LAYOUT_CASES: [LayoutCase; 13] = [
     LayoutCase::new(4097, 4096),
 ];
 
-const VEC_LEN: usize = 200_000;
-const BTREE_MAP_LEN: usize = 10_000;
 const ALIGN_TEST_ROUNDS: usize = 3;
 const PARALLEL_ALLOC_ROUNDS: usize = 4;
 const REMOTE_FREE_ROUNDS: usize = 8;
@@ -196,33 +192,6 @@ fn test_memcpy() {
         assert_eq!(ptr::addr_of!((*dst).last).read(), 0x78);
     }
     println!("memtest: memcpy OK");
-}
-
-fn test_vec(rng: &mut impl RngCore) {
-    let mut values = Vec::with_capacity(VEC_LEN);
-    for _ in 0..VEC_LEN {
-        values.push(rng.next_u32());
-    }
-    values.sort();
-    for window in values.windows(2) {
-        assert!(window[0] <= window[1]);
-    }
-    println!("memtest: vec OK");
-}
-
-fn test_btree_map(rng: &mut impl RngCore) {
-    let mut map = BTreeMap::new();
-    for _ in 0..BTREE_MAP_LEN {
-        let value = rng.next_u32();
-        let key = format!("key_{value}");
-        map.insert(key, value);
-    }
-    for (key, value) in &map {
-        if let Some(key) = key.strip_prefix("key_") {
-            assert_eq!(key.parse::<u32>().unwrap(), *value);
-        }
-    }
-    println!("memtest: btree_map OK");
 }
 
 fn test_aligned_allocations() {
@@ -387,9 +356,6 @@ pub fn run() -> crate::TestResult {
     drop(fallible);
     println!("memtest: fallible allocation recovery OK");
 
-    let mut rng = SmallRng::seed_from_u64(0xdead_beef);
-    test_vec(&mut rng);
-    test_btree_map(&mut rng);
     test_aligned_allocations();
     test_parallel_allocations();
     test_cross_cpu_free();

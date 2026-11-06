@@ -128,7 +128,7 @@ cargo xtask board ls --server board-host.local --port 1234
 
 | 代码位置 | 作用 |
 |----------|------|
-| `scripts/axbuild/src/board.rs` | CLI 入口：`Command` 枚举、`ArgsConnect` / `BoardServerArgs` 参数定义、子命令分发 |
+| `scripts/axbuild/src/tools/board.rs` | CLI 入口：`Command` 枚举、`ArgsConnect` / `BoardServerArgs` 参数定义、子命令分发 |
 | `ostool::board`（外部 crate） | 板卡管理的底层实现：`BoardGlobalConfig`（全局配置）、`fetch_board_types`（HTTP 查询）、`connect_board`（分配 + 串口透传）、`render_board_table`（表格输出）、`config`（配置编辑） |
 
 axbuild 的 `board.rs` 是薄封装层，仅负责 CLI 解析和参数透传，全部业务逻辑在 `ostool::board` 中实现。这种分层使得 ostool 可独立于 axbuild 用于其他场景（如直接命令行调用 ostool CLI）。

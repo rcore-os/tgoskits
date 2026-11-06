@@ -1,0 +1,592 @@
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+use anyhow::{Context, bail};
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
+
+use super::{
+    ArgsTestQemu, PreparedStarryQemuCase, StarryQemuCase, StarryQemuCaseOutcome,
+    StarryQemuCaseReport, StarryQemuCaseRequirements, StarryQemuRunReport,
+    discover_all_qemu_cases_with_archs, discover_qemu_cases, finalize_qemu_case_run,
+    parse_test_target, rootfs_scope::TestRootfsScope, starry_case_asset_config,
+    start_qemu_case_host_http_server,
+};
+use crate::{
+    build::{append_cargo_rustflags, env_truthy},
+    context::{RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence},
+    starry::{Starry, build, rootfs},
+    execution::{case, qemu as qemu_test, timing},
+};
+
+const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
+
+impl Starry {
+    pub(crate) async fn test_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
+        if args.build_config.is_some() || args.qemu_config.is_some() || args.rootfs.is_some() {
+            return self.run_external_qemu(args).await;
+        }
+        let environment = RequestEnvironment::capture()?;
+
+        if args.list && args.arch.is_none() && args.target.is_none() {
+            let case_names = discover_all_qemu_cases_with_archs(
+                self.app.workspace_root(),
+                args.test_case.as_deref(),
+            )
+            .map_err(anyhow::Error::new)?;
+            println!(
+                "{}",
+                qemu_test::render_qemu_case_forest("starry", [("qemu", case_names)])
+            );
+            return Ok(());
+        }
+
+        let (arch, target) =
+            parse_test_target(self.app.workspace_root(), &args.arch, &args.target)?;
+        let cases = discover_qemu_cases(
+            self.app.workspace_root(),
+            &arch,
+            &target,
+            args.test_case.as_deref(),
+        )?;
+        if args.list {
+            let case_names = cases.iter().map(|case| case.case.display_name.as_str());
+            println!("{}", qemu_test::render_case_tree("qemu", case_names));
+            return Ok(());
+        }
+        let package = crate::context::STARRY_PACKAGE;
+
+        println!(
+            "running starry qemu tests for package {} on arch: {} (target: {})",
+            package, arch, target
+        );
+
+        let base_input = match cases.first() {
+            Some(case) => case.build_input.clone(),
+            None => crate::build::load_config_input(self.app.workspace_root(), None, None)?,
+        };
+        let request = self.prepare_request_from_input(
+            Self::test_build_args(&target, None),
+            base_input,
+            environment,
+            None,
+            None,
+            SnapshotPersistence::Discard,
+        )?;
+        let request = Self::qemu_test_request(request);
+        let default_rootfs_path = crate::image::storage::default_rootfs_path(
+            self.app.workspace_root(),
+            self.app.target_dir(),
+            &request.arch,
+        )?;
+        self.app.set_debug_mode(request.debug)?;
+
+        let total = cases.len();
+        let suite_started = Instant::now();
+        let mut reports = Vec::new();
+        let asset_config = starry_case_asset_config();
+        let image_config = crate::image::config::ImageConfig::read_config(
+            self.app.workspace_root(),
+            self.app.target_dir(),
+        )?;
+
+        let timing_stage = timing::TimingStage::new(
+            "starry-qemu",
+            [
+                ("phase", "prepare-build-groups".to_string()),
+                ("arch", arch.clone()),
+                ("target", target.clone()),
+            ],
+        );
+        let build_groups = qemu_test::prepare_case_build_groups(&cases, |build_config_path| {
+            let input = cases
+                .iter()
+                .find(|case| case.build_config_path.as_path() == build_config_path)
+                .map(|case| &case.build_input)
+                .expect("build group originated from a discovered Starry case");
+            Self::qemu_group_build_context(&request, input, self.app.workspace_context())
+        });
+        timing_stage.finish();
+        let build_groups = build_groups?;
+
+        let mut completed = 0;
+        for build_group in &build_groups {
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("build_group", build_group.group.build_group.to_string()),
+                    ("phase", "build".to_string()),
+                ],
+            );
+            let build_result = self
+                .build_artifact(&build_group.request, build_group.cargo.clone())
+                .await;
+            timing_stage.finish();
+            build_result.with_context(|| {
+                format!(
+                    "failed to build Starry qemu test artifact for build group `{}` ({})",
+                    build_group.group.build_group,
+                    build_group.group.build_config_path.display()
+                )
+            })?;
+
+            let rootfs_scope = TestRootfsScope::new(&image_config, self.app.target_dir())?;
+            let group_default_rootfs = rootfs_scope.image_path(&default_rootfs_path)?;
+
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("build_group", build_group.group.build_group.to_string()),
+                    ("phase", "prepare-qemu-cases".to_string()),
+                ],
+            );
+            let cases = self
+                .prepare_qemu_cases(
+                    &build_group.request,
+                    &build_group.cargo,
+                    &group_default_rootfs,
+                    &rootfs_scope,
+                    &build_group.group.cases,
+                )
+                .await;
+            timing_stage.finish();
+            let cases = cases.with_context(|| {
+                format!(
+                    "failed to load Starry qemu test cases for build group `{}` ({})",
+                    build_group.group.build_group,
+                    build_group.group.build_config_path.display()
+                )
+            })?;
+
+            for case in &cases {
+                completed += 1;
+                let case_name = &case.case.name;
+                println!("[{completed}/{total}] starry qemu {case_name}");
+
+                let case_started = Instant::now();
+                let case_request = Self::request_for_qemu_case_build_config(
+                    &build_group.request,
+                    &case.build_input,
+                )?;
+                match self
+                    .run_qemu_case(
+                        &case_request,
+                        &build_group.cargo,
+                        case,
+                        &asset_config,
+                        &rootfs_scope.config().extract_dir,
+                    )
+                    .await
+                    .with_context(|| format!("starry qemu test failed for case `{case_name}`"))
+                {
+                    Ok(()) => {
+                        println!("ok: {case_name}");
+                        reports.push(StarryQemuCaseReport {
+                            name: case_name.clone(),
+                            outcome: StarryQemuCaseOutcome::Passed,
+                            duration: case_started.elapsed(),
+                        });
+                    }
+                    Err(err) => {
+                        eprintln!("failed: {case_name}: {err:#}");
+                        reports.push(StarryQemuCaseReport {
+                            name: case_name.clone(),
+                            outcome: StarryQemuCaseOutcome::Failed,
+                            duration: case_started.elapsed(),
+                        });
+                        finalize_qemu_case_run(&StarryQemuRunReport {
+                            cases: reports,
+                            total_duration: suite_started.elapsed(),
+                        })?;
+                        bail!("starry qemu test aborted: case `{case_name}` failed");
+                    }
+                }
+            }
+            rootfs_scope.close()?;
+        }
+
+        finalize_qemu_case_run(&StarryQemuRunReport {
+            cases: reports,
+            total_duration: suite_started.elapsed(),
+        })
+    }
+
+    async fn prepare_qemu_cases(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: &Cargo,
+        default_rootfs_path: &Path,
+        rootfs_scope: &TestRootfsScope,
+        cases: &[&StarryQemuCase],
+    ) -> anyhow::Result<Vec<PreparedStarryQemuCase>> {
+        let mut prepared = Vec::with_capacity(cases.len());
+        let mut rootfs_paths = BTreeSet::new();
+        for starry_case in cases {
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("case", starry_case.case.display_name.clone()),
+                    ("phase", "read-qemu-config".to_string()),
+                ],
+            );
+            let qemu_result = self
+                .app
+                .read_qemu_config_from_path_for_cargo(cargo, &starry_case.case.qemu_config_path)
+                .await;
+            timing_stage.finish();
+            let mut qemu = qemu_result.with_context(|| {
+                format!(
+                    "failed to read Starry qemu config for case `{}`",
+                    starry_case.case.display_name
+                )
+            })?;
+            let host_initramfs = qemu_test::prepare_host_initramfs(
+                self.app.workspace_root(),
+                self.app.target_dir(),
+                &starry_case.case.case_dir,
+                &request.arch,
+                &mut qemu,
+            )?;
+            let diskless_host_initramfs =
+                host_initramfs && qemu_test::host_initramfs_without_rootfs_drive(&qemu);
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("case", starry_case.case.display_name.clone()),
+                    ("phase", "prepare-qemu-config".to_string()),
+                ],
+            );
+            let managed_rootfs = rootfs_scope.rewrite_qemu_images(
+                self.app.workspace_root(),
+                self.app.target_dir(),
+                &mut qemu,
+            )?;
+            let rootfs_path = managed_rootfs
+                .first()
+                .cloned()
+                .unwrap_or_else(|| default_rootfs_path.to_path_buf());
+            if !diskless_host_initramfs {
+                rootfs_paths.insert(rootfs_path.clone());
+                rootfs_paths.extend(managed_rootfs);
+            }
+            qemu_test::validate_grouped_qemu_commands(&qemu, &starry_case.case, "Starry")?;
+            let requirements = Self::qemu_case_requirements(&qemu).with_context(|| {
+                format!(
+                    "failed to read QEMU requirements for `{}`",
+                    starry_case.case.display_name
+                )
+            })?;
+            timing_stage.finish();
+            prepared.push(PreparedStarryQemuCase {
+                case: starry_case.case.clone(),
+                qemu,
+                build_group: starry_case.build_group.clone(),
+                build_config_path: starry_case.build_config_path.clone(),
+                build_input: starry_case.build_input.clone(),
+                rootfs_path,
+                requirements,
+                diskless_host_initramfs,
+            });
+        }
+
+        let timing_stage = timing::TimingStage::new(
+            "starry-qemu",
+            [
+                ("phase", "ensure-rootfs-paths".to_string()),
+                ("rootfs_count", rootfs_paths.len().to_string()),
+            ],
+        );
+        let ensure_result = self
+            .ensure_qemu_case_rootfs_paths(
+                request,
+                default_rootfs_path,
+                rootfs_scope.config(),
+                &rootfs_paths,
+            )
+            .await;
+        timing_stage.finish();
+        ensure_result?;
+        Ok(prepared)
+    }
+
+    async fn ensure_qemu_case_rootfs_paths(
+        &self,
+        request: &ResolvedStarryRequest,
+        default_rootfs_path: &Path,
+        image_config: &crate::image::config::ImageConfig,
+        rootfs_paths: &BTreeSet<PathBuf>,
+    ) -> anyhow::Result<()> {
+        for rootfs_path in rootfs_paths {
+            let rootfs_kind = if rootfs_path == default_rootfs_path {
+                "default"
+            } else {
+                "managed"
+            };
+            let timing_stage = timing::TimingStage::new(
+                "starry-qemu",
+                [
+                    ("phase", "ensure-rootfs-path".to_string()),
+                    ("rootfs_kind", rootfs_kind.to_string()),
+                    ("rootfs", rootfs_path.display().to_string()),
+                ],
+            );
+            let result = if rootfs_path == default_rootfs_path {
+                rootfs::ensure_rootfs_with_config(
+                    self.app.workspace_root(),
+                    &request.arch,
+                    &request.target,
+                    image_config,
+                )
+                .await
+                .map(|_| ())
+            } else {
+                let filename = rootfs_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .context("managed test rootfs has no image name")?;
+                let storage = crate::image::storage::Storage::new_from_config(image_config).await?;
+                let spec = crate::image::spec::ImageSpecRef::parse(filename);
+                if storage.image_registry.find(spec).is_some() {
+                    storage.pull_rootfs_image(spec).await.map(|_| ())
+                } else {
+                    let source = crate::image::storage::rootfs_dir(
+                        self.app.workspace_root(),
+                        self.app.target_dir(),
+                    )?
+                    .join(filename);
+                    case::copy_file_fast(&source, rootfs_path)
+                }
+            };
+            timing_stage.finish();
+            result?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn qemu_case_rootfs_path(
+        workspace_root: &Path,
+        target_dir: &Path,
+        qemu: &QemuConfig,
+        default_rootfs_path: &Path,
+    ) -> anyhow::Result<PathBuf> {
+        Ok(
+            Self::qemu_case_managed_rootfs_paths(workspace_root, target_dir, qemu)?
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| default_rootfs_path.to_path_buf()),
+        )
+    }
+
+    pub(crate) fn qemu_case_managed_rootfs_paths(
+        workspace_root: &Path,
+        target_dir: &Path,
+        qemu: &QemuConfig,
+    ) -> anyhow::Result<Vec<PathBuf>> {
+        crate::rootfs::qemu::drive_file_paths(qemu)
+            .into_iter()
+            .filter_map(|path| {
+                crate::image::storage::resolve_managed_rootfs_path(
+                    workspace_root,
+                    target_dir,
+                    &path,
+                )
+                .transpose()
+            })
+            .collect()
+    }
+
+    pub(crate) fn rewrite_qemu_case_managed_rootfs_paths(
+        workspace_root: &Path,
+        target_dir: &Path,
+        qemu: &mut QemuConfig,
+    ) -> anyhow::Result<()> {
+        crate::rootfs::qemu::rewrite_drive_file_paths(qemu, |path| {
+            crate::image::storage::resolve_managed_rootfs_path(workspace_root, target_dir, path)
+        })
+    }
+
+    pub(crate) fn qemu_case_requirements(
+        qemu: &QemuConfig,
+    ) -> anyhow::Result<StarryQemuCaseRequirements> {
+        Ok(StarryQemuCaseRequirements {
+            smp: qemu_test::smp_from_qemu_arg(qemu).unwrap_or(1),
+        })
+    }
+
+    pub(crate) fn qemu_group_build_context(
+        request: &ResolvedStarryRequest,
+        input: &crate::build::ConfigInput<crate::starry::config::StarryConfig>,
+        workspace: &crate::context::WorkspaceContext,
+    ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
+        let mut request = request.clone();
+        request.replace_config_input(input.clone())?;
+        let mut cargo = build::load_cargo_config(&request, workspace)?;
+        if env_truthy(&cargo.env, "AXTEST") {
+            append_cargo_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
+        }
+        if crate::support::axtest_coverage::enabled(&cargo) {
+            crate::support::axtest_coverage::prepare_starry_cargo(&mut cargo);
+        }
+
+        Ok((request, cargo))
+    }
+
+    fn request_for_qemu_case_build_config(
+        request: &ResolvedStarryRequest,
+        input: &crate::build::ConfigInput<crate::starry::config::StarryConfig>,
+    ) -> anyhow::Result<ResolvedStarryRequest> {
+        let mut request = request.clone();
+        request.replace_config_input(input.clone())?;
+        Ok(request)
+    }
+
+    pub(crate) fn qemu_test_request(mut request: ResolvedStarryRequest) -> ResolvedStarryRequest {
+        request.smp = None;
+        request
+    }
+
+    async fn run_qemu_case(
+        &mut self,
+        request: &ResolvedStarryRequest,
+        cargo: &Cargo,
+        prepared_case: &PreparedStarryQemuCase,
+        asset_config: &case::CaseAssetConfig,
+        asset_target_dir: &Path,
+    ) -> anyhow::Result<()> {
+        let mut case = prepared_case.case.clone();
+        let growth =
+            super::root_growth::RootGrowthFixture::prepare(&mut case, &prepared_case.rootfs_path)?;
+        let case = &case;
+        let mut qemu = prepared_case.qemu.clone();
+        case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_execution);
+
+        qemu_test::append_target_backtrace_map(
+            self.app.target_dir(),
+            &request.target,
+            request.debug,
+            &mut qemu,
+        )?;
+
+        qemu_test::apply_smp_qemu_arg(&mut qemu, Some(prepared_case.requirements.smp));
+        qemu_test::apply_timeout_scale(&mut qemu);
+
+        let prepare_stage = timing::TimingStage::new(
+            "qemu-case",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "prepare-assets".to_string()),
+            ],
+        );
+        let prepared_assets_result = case::prepare_case_assets(
+            asset_target_dir,
+            &request.arch,
+            &request.target,
+            case,
+            prepared_case.rootfs_path.clone(),
+            asset_config.clone(),
+        )
+        .await;
+        if prepared_assets_result.is_err() {
+            timing::print_timing_line(
+                "qemu-case",
+                &[
+                    ("case", case.display_name.clone()),
+                    ("phase", "prepare-assets".to_string()),
+                    ("status", "failed".to_string()),
+                ],
+                prepare_stage.elapsed(),
+            );
+        }
+        let prepared_assets = prepared_assets_result?;
+        if let Some(growth) = growth {
+            growth.extend(prepared_assets.disposable_rootfs_path())?;
+        }
+        let prepare_elapsed = prepare_stage.elapsed();
+        timing::print_timing_line(
+            "qemu-case",
+            &[
+                ("case", case.display_name.clone()),
+                ("phase", "prepare-assets".to_string()),
+                ("pipeline", prepared_assets.pipeline.as_str().to_string()),
+                (
+                    "cache",
+                    if prepared_assets.cache_hit {
+                        "hit"
+                    } else {
+                        "miss"
+                    }
+                    .to_string(),
+                ),
+            ],
+            prepare_elapsed,
+        );
+        let timing_stage = timing::TimingStage::new(
+            "qemu-case",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "patch-rootfs".to_string()),
+            ],
+        );
+        if !prepared_case.diskless_host_initramfs {
+            rootfs::patch_rootfs(
+                &mut qemu,
+                &prepared_assets.rootfs_path,
+                rootfs::RootfsPatchOptions {
+                    mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
+                    write_policy: rootfs::RootfsWritePolicy::Discard,
+                },
+            )?;
+        }
+        timing_stage.finish();
+        let timing_stage = timing::TimingStage::new(
+            "qemu-case",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "apply-dynamic-boot".to_string()),
+            ],
+        );
+        timing_stage.finish();
+        let timing_stage = timing::TimingStage::new(
+            "qemu-case",
+            [
+                ("case", case.display_name.clone()),
+                ("phase", "start-host-http".to_string()),
+            ],
+        );
+        let host_http_result = start_qemu_case_host_http_server(case);
+        timing_stage.finish();
+        let _host_http_server = host_http_result?;
+        let mount_fixture = super::mount::FatRootFixture::prepare(
+            &case.qemu_config_path,
+            &prepared_assets.rootfs_path,
+        )?;
+        if mount_fixture.is_some() && request.arch != "aarch64" {
+            bail!("FAT root mount fixture currently requires aarch64 VirtIO MMIO enumeration");
+        }
+        let mount_qemu = qemu.clone();
+        case::run_qemu_with_prepared_case_assets(
+            &mut self.app,
+            cargo,
+            qemu,
+            &case.qemu_config_path,
+            prepared_assets,
+            case::RunPreparedQemuCaseOptions {
+                prepare_elapsed,
+                qemu_timing_fields: Some(vec![("case", case.display_name.clone())]),
+            },
+        )
+        .await?;
+        if let Some(fixture) = mount_fixture {
+            for readonly in [false, true] {
+                println!("  checking initially readonly FAT root (physical_readonly={readonly})");
+                self.app
+                    .run_qemu_with_axtest_coverage(cargo, fixture.qemu(&mount_qemu, readonly))
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+}

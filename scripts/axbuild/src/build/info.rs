@@ -712,17 +712,9 @@ pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
     )?;
     config.validate()?;
     validate_features(&config)?;
-    resolve_std_features(&mut config);
-    // `max_cpu_num` is an explicit build setting. Propagate SMP only when
-    // the caller requested more than one CPU; package metadata never adds
-    // features implicitly.
-    if config
-        .max_cpu_num
-        .is_some_and(|max_cpu_num| max_cpu_num > 1)
-    {
-        config.features.push("smp".to_string());
-        resolve_std_features(&mut config);
-    }
+    let app_features = package_feature_names(package, metadata)?;
+    let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
+    config.features = resolved_std_build_features(&config, &app_features, &axstd_features)?;
     let std_target = std_build_target_for(target)?;
     let fake_lib_dir = std_fake_lib_dir(axbuild_dir, &std_target.target_name)?;
     let wrapper = std_linker_wrapper_path(axbuild_dir, &std_target.target_name, &fake_lib_dir)?;
@@ -740,9 +732,6 @@ pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
     cargo
         .env
         .insert("AX_TARGET".to_string(), target.to_string());
-    let app_features = package_feature_names(package, metadata)?;
-    let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
-    pass_std_build_nested_features(&mut cargo.features, &app_features, &axstd_features);
     cargo.pre_build_cmds.push(
         std_fake_lib_prebuild_script_path(
             axbuild_dir,
@@ -1029,4 +1018,19 @@ fn rustflags_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String>
 }
 fn bare_target_requires_bin(target: &str) -> bool {
     target.starts_with("aarch64-") || target.starts_with("riscv64")
+}
+
+/// Resolves features identically for suite planning and real std builds.
+pub(crate) fn resolved_std_build_features(
+    config: &CommonConfig,
+    app_features: &[String],
+    axstd_features: &[String],
+) -> anyhow::Result<Vec<String>> {
+    config.validate()?;
+    let mut features = config.features.clone();
+    if config.max_cpu_num.is_some_and(|cpus| cpus > 1) {
+        features.push("smp".to_owned());
+    }
+    pass_std_build_nested_features(&mut features, app_features, axstd_features);
+    Ok(features)
 }

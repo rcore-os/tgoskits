@@ -69,7 +69,11 @@ pub(crate) fn record_irq_return_scheduler_continuation() {
 
 #[cfg(feature = "qperf-metrics")]
 pub(crate) fn record_irq_return_scheduler_window() {
-    IRQ_RETURN_SCHEDULER_WINDOW_COUNT.fetch_add(1, Ordering::Relaxed);
+    // Count the observed hardware state while the window is still open,
+    // rather than recording an intention after IRQs have been disabled.
+    if ax_cpu::interrupt::irqs_enabled() {
+        IRQ_RETURN_SCHEDULER_WINDOW_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
