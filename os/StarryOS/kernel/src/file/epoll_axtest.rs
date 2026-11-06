@@ -1,5 +1,9 @@
 //! Deterministic concurrency hooks for epoll kernel tests.
 
+#[cfg(all(test, axtest))]
+use alloc::borrow::Cow;
+#[cfg(all(test, axtest))]
+use alloc::boxed::Box;
 #[cfg(all(test, not(axtest)))]
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloc::{sync::Arc, task::Wake};
@@ -14,11 +18,16 @@ use axpoll::{
     ExclusiveRegistrationSink, PollRegistration, PollSource, RegistrationMode,
     SharedRegistrationSink,
 };
+#[cfg(all(test, axtest))]
+use axpoll::{PollRegistration, PollSource, RegistrationMode, SharedRegistrationSink};
 #[cfg(all(test, not(axtest)))]
 use axpoll_set::PollSet;
 
 use super::epoll::Epoll;
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
+use super::epoll::EpollInner;
+#[cfg(all(test, axtest))]
+use super::epoll_topology::{epoll_topology_lock_is_held_for_test, lock_epoll_topology};
 use super::{FileLike, epoll::EpollFlags};
 use crate::{StarryError, sync::RawSpinLock};
 
@@ -124,6 +133,204 @@ fn epoll_notify_worker_flushes_deferred_wake_for_test() -> bool {
     // budget. The QEMU execution timeout still bounds a missing notification.
     waiter.completion.wait();
     waiter.woken.load(Ordering::Acquire)
+}
+
+// The parked reference simulates the fd table's strong reference to a nested
+// child epoll. `release_nested_child_last_ref_for_test` drops it from inside
+// `detach_nested_link` right after the topology link is upgraded, which
+// reproduces a concurrent close completing at exactly that point without
+// depending on scheduling.
+#[cfg(all(test, axtest))]
+static NESTED_CHILD_PARKED_REF: RawSpinLock<Option<Arc<Epoll>>> = RawSpinLock::new(None);
+
+#[cfg(all(test, axtest))]
+static NESTED_CHILD_RELEASED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(test, axtest))]
+pub(super) fn park_nested_child_last_ref_for_test(child: Arc<Epoll>) {
+    NESTED_CHILD_RELEASED.store(false, Ordering::Release);
+    *NESTED_CHILD_PARKED_REF.lock_irqsave() = Some(child);
+}
+
+/// Releases the reference parked by [`park_nested_child_last_ref_for_test`]
+/// if it names the freshly upgraded child.
+#[cfg(all(test, axtest))]
+pub(super) fn release_nested_child_last_ref_for_test(child: &Arc<EpollInner>) {
+    let mut parked = NESTED_CHILD_PARKED_REF.lock_irqsave();
+    if parked
+        .as_ref()
+        .is_some_and(|candidate| Arc::ptr_eq(&candidate.inner, child))
+    {
+        *parked = None;
+        NESTED_CHILD_RELEASED.store(true, Ordering::Release);
+    }
+}
+
+// A poll source whose registration lease records whether the lease is
+// destroyed while the global epoll topology lock is held. The lease lives in
+// the interest table of the epoll under test, so its drop runs as part of
+// that epoll's destructor and records the destructor's execution context.
+#[cfg(all(test, axtest))]
+#[derive(Default)]
+struct NestedChildWitness {
+    registrations: AtomicUsize,
+    destructions: AtomicUsize,
+    destroyed_under_topology_lock: AtomicBool,
+}
+
+#[cfg(all(test, axtest))]
+impl NestedChildWitness {
+    fn registrations(&self) -> usize {
+        self.registrations.load(Ordering::Acquire)
+    }
+
+    fn destructions(&self) -> usize {
+        self.destructions.load(Ordering::Acquire)
+    }
+
+    fn destroyed_under_topology_lock(&self) -> bool {
+        self.destroyed_under_topology_lock.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(all(test, axtest))]
+struct NestedChildSource {
+    witness: Arc<NestedChildWitness>,
+}
+
+#[cfg(all(test, axtest))]
+impl PollSource for NestedChildSource {
+    unsafe fn register(
+        &self,
+        _waker: &Waker,
+        _interests: IoEvents,
+        _mode: RegistrationMode,
+    ) -> Option<Box<dyn PollRegistration>> {
+        self.witness.registrations.fetch_add(1, Ordering::AcqRel);
+        Some(Box::new(NestedChildLease {
+            witness: Arc::clone(&self.witness),
+        }))
+    }
+}
+
+#[cfg(all(test, axtest))]
+struct NestedChildLease {
+    witness: Arc<NestedChildWitness>,
+}
+
+#[cfg(all(test, axtest))]
+impl PollRegistration for NestedChildLease {
+    fn was_notified(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(all(test, axtest))]
+impl Drop for NestedChildLease {
+    fn drop(&mut self) {
+        self.witness.destructions.fetch_add(1, Ordering::AcqRel);
+        let under_lock = epoll_topology_lock_is_held_for_test();
+        self.witness
+            .destroyed_under_topology_lock
+            .store(under_lock, Ordering::Release);
+    }
+}
+
+#[cfg(all(test, axtest))]
+struct NestedChildFile {
+    source: Arc<NestedChildSource>,
+}
+
+#[cfg(all(test, axtest))]
+impl FileLike for NestedChildFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
+    fn path(&self) -> Cow<'_, str> {
+        "axtest:[epoll-nested-child-last-ref]".into()
+    }
+}
+
+#[cfg(all(test, axtest))]
+impl Pollable for NestedChildFile {
+    fn poll(&self) -> IoEvents {
+        IoEvents::empty()
+    }
+
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        // SAFETY: Only the axtest task reaches this, through
+        // `Epoll::add_file_for_test`, so it runs in task context and never
+        // from an IRQ or trap path. `self.source` is owned by `self`, and its
+        // `register` only hands out an owned lease without waking anyone.
+        unsafe { sink.register_shared(self.source.as_ref(), events) };
+    }
+}
+
+/// Deletes a nested link whose upgraded reference is the last one, and proves
+/// the child epoll is destroyed outside the global topology lock.
+///
+/// Determinism: the parked reference is released from inside
+/// `detach_nested_link` itself, immediately after the upgrade, so the
+/// "concurrent close completed" interleaving is forced rather than raced. The
+/// child's destruction context is observed by the interest lease above; no
+/// scheduling, barriers, or repetition are involved.
+#[cfg(all(test, axtest))]
+fn nested_child_last_ref_drops_outside_topology_lock_for_test() -> bool {
+    // The lock-held sampler must observe a real acquisition, otherwise the
+    // final assertion would be vacuous.
+    {
+        let _topology = lock_epoll_topology();
+        if !epoll_topology_lock_is_held_for_test() {
+            return false;
+        }
+    }
+    if epoll_topology_lock_is_held_for_test() {
+        return false;
+    }
+
+    let parent = Epoll::new();
+    let child = Arc::new(Epoll::new());
+    let witness = Arc::new(NestedChildWitness::default());
+    let file: Arc<dyn FileLike> = Arc::new(NestedChildFile {
+        source: Arc::new(NestedChildSource {
+            witness: Arc::clone(&witness),
+        }),
+    });
+
+    // The child epoll owns one interest; its lease is destroyed together
+    // with the child's interest table.
+    if child
+        .add_file_for_test(7, file, 0x77, EpollFlags::empty())
+        .is_err()
+    {
+        return false;
+    }
+    if witness.registrations() != 1 {
+        return false;
+    }
+
+    // The topology link keeps only a weak reference to the child.
+    if parent.add_nested_for_test(3, child.clone()).is_err() {
+        return false;
+    }
+
+    // Park the only remaining strong reference and drop the test's own, so
+    // the reference upgraded inside `detach_nested_link` is the last one.
+    let inner_weak = Arc::downgrade(&child.inner);
+    let child_weak = Arc::downgrade(&child);
+    park_nested_child_last_ref_for_test(child);
+    if inner_weak.strong_count() != 1 {
+        return false;
+    }
+
+    let deleted = parent.delete_nested_for_test(3, &child_weak).is_ok();
+
+    deleted
+        && NESTED_CHILD_RELEASED.load(Ordering::Acquire)
+        && inner_weak.strong_count() == 0
+        && witness.destructions() == 1
+        && !witness.destroyed_under_topology_lock()
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -803,6 +1010,15 @@ mod tests {
     #[axtest::axtest]
     fn epoll_notify_worker_flushes_deferred_wake() {
         assert!(super::epoll_notify_worker_flushes_deferred_wake_for_test());
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn nested_child_last_ref_drops_outside_topology_lock() {
+        assert!(
+            super::nested_child_last_ref_drops_outside_topology_lock_for_test(),
+            "the last nested child epoll reference must be dropped after the topology lock"
+        );
     }
 
     #[cfg(all(test, not(axtest)))]
