@@ -24,6 +24,8 @@ use axpoll::{
 use axpoll::{PollRegistration, PollSource, RegistrationMode, SharedRegistrationSink};
 #[cfg(all(test, not(axtest)))]
 use axpoll_set::PollSet;
+#[cfg(all(test, axtest))]
+use axpoll_set::PollSet;
 
 use super::epoll::Epoll;
 #[cfg(all(test, axtest))]
@@ -598,6 +600,14 @@ pub(super) fn record_epoll_notify_worker_thread_for_test() {
     }
 }
 
+/// Returns the notification worker's thread id once it published startup.
+#[cfg(all(test, axtest))]
+fn epoll_notify_worker_thread_for_test() -> Option<u64> {
+    EPOLL_NOTIFY_WORKER_KNOWN
+        .load(Ordering::Acquire)
+        .then(|| EPOLL_NOTIFY_WORKER_THREAD.load(Ordering::Acquire))
+}
+
 /// Drops the parked owner reference inside the calling poll callback.
 ///
 /// The callback has just upgraded its weak epoll reference. Dropping the
@@ -634,6 +644,165 @@ pub(super) fn record_epoll_inner_drop_for_test(epoll: &EpollInner) {
     if let Some(done) = EPOLL_DROP_DONE.lock_irqsave().clone() {
         done.notify_irq();
     }
+}
+
+/// Parks `owner` as the watched epoll's only other strong reference.
+#[cfg(all(test, axtest))]
+fn arm_epoll_callback_release_for_test(
+    epoll: &Arc<EpollInner>,
+    owner: Arc<EpollInner>,
+    done: Arc<crate::task::future::IrqNotify>,
+) {
+    EPOLL_CALLBACK_RELEASE_COUNT.store(usize::MAX, Ordering::Relaxed);
+    EPOLL_DROP_RECORDED.store(false, Ordering::Release);
+    EPOLL_DROP_THREAD.store(0, Ordering::Relaxed);
+    EPOLL_DROP_WATCH.store(Arc::as_ptr(epoll).cast_mut(), Ordering::Release);
+    *EPOLL_DROP_DONE.lock_irqsave() = Some(done);
+    *EPOLL_CALLBACK_RELEASE_PARKED.lock_irqsave() = Some(owner);
+    EPOLL_CALLBACK_RELEASE_ARMED.store(true, Ordering::Release);
+}
+
+/// Strong count the parked callback observed, or `usize::MAX`.
+#[cfg(all(test, axtest))]
+fn epoll_callback_release_count_for_test() -> usize {
+    EPOLL_CALLBACK_RELEASE_COUNT.load(Ordering::Acquire)
+}
+
+/// Waits for the watched epoll's destructor and returns its thread id.
+#[cfg(all(test, axtest))]
+fn wait_for_watched_epoll_drop_for_test(done: &Arc<crate::task::future::IrqNotify>) -> Option<u64> {
+    done.wait();
+    EPOLL_DROP_WATCH.store(ptr::null_mut(), Ordering::Release);
+    *EPOLL_DROP_DONE.lock_irqsave() = None;
+    EPOLL_DROP_RECORDED
+        .load(Ordering::Acquire)
+        .then(|| EPOLL_DROP_THREAD.load(Ordering::Acquire))
+}
+
+// The handoff file is registered but never becomes ready: the test drives the
+// stored callback directly, like a waking source would.
+#[cfg(all(test, axtest))]
+struct HandoffFile {
+    source: Arc<HandoffSource>,
+}
+
+#[cfg(all(test, axtest))]
+impl FileLike for HandoffFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
+    fn path(&self) -> Cow<'_, str> {
+        "axtest:[epoll-handoff-file]".into()
+    }
+}
+
+#[cfg(all(test, axtest))]
+impl Pollable for HandoffFile {
+    fn poll(&self) -> IoEvents {
+        IoEvents::empty()
+    }
+
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { sink.register_shared(self.source.as_ref(), events) };
+    }
+}
+
+#[cfg(all(test, axtest))]
+struct HandoffSource {
+    waiters: PollSet,
+    registered: RawSpinLock<Vec<Waker>>,
+}
+
+#[cfg(all(test, axtest))]
+impl HandoffSource {
+    fn new() -> Self {
+        Self {
+            waiters: PollSet::new(),
+            registered: RawSpinLock::new(Vec::new()),
+        }
+    }
+
+    fn registered_waker(&self) -> Option<Waker> {
+        self.registered.lock_irqsave().last().cloned()
+    }
+}
+
+#[cfg(all(test, axtest))]
+impl PollSource for HandoffSource {
+    unsafe fn register(
+        &self,
+        waker: &Waker,
+        interests: IoEvents,
+        mode: RegistrationMode,
+    ) -> Option<Box<dyn PollRegistration>> {
+        self.registered.lock_irqsave().push(waker.clone());
+        unsafe { self.waiters.register(waker, interests, mode) }
+    }
+}
+
+/// A poll callback must release its last epoll reference in the worker.
+///
+/// The epoll's only other strong reference is parked and then dropped inside
+/// the callback right after its weak upgrade, and the interest was deleted
+/// first, so the callback's upgraded reference is deterministically the final
+/// one: exactly the state a concurrent close racing this callback leaves
+/// behind. An implementation that drops that reference in the callback
+/// destroys the epoll there, while the fix hands it to the notification
+/// worker, so the destructor must run in the worker's thread.
+#[cfg(all(test, axtest))]
+fn callback_releases_last_reference_in_notify_worker_for_test() -> bool {
+    if !super::epoll::wait_epoll_notify_worker_ready() {
+        warn!("epoll-notify worker never reached its wait loop before the handoff test");
+        return false;
+    }
+    let Some(worker_thread) = epoll_notify_worker_thread_for_test() else {
+        warn!("epoll-notify worker never published its thread");
+        return false;
+    };
+
+    let epoll = Epoll::new();
+    let source = Arc::new(HandoffSource::new());
+    let file: Arc<dyn FileLike> = Arc::new(HandoffFile {
+        source: Arc::clone(&source),
+    });
+    if epoll
+        .add_file_for_test(1, file.clone(), 0x71, EpollFlags::empty())
+        .is_err()
+    {
+        return false;
+    }
+    let Some(waker) = source.registered_waker() else {
+        return false;
+    };
+
+    // The EPOLL_CTL_DEL side of the race finished first, so the callback finds
+    // nothing to publish; the stored waker keeps the InterestWaker itself
+    // alive across the deletion.
+    if epoll.delete_file_for_test(1, &file).is_err() {
+        return false;
+    }
+
+    let done = Arc::new(crate::task::future::IrqNotify::new());
+    arm_epoll_callback_release_for_test(&epoll.inner, Arc::clone(&epoll.inner), Arc::clone(&done));
+    // The epoll fd close finished before the callback ran: the parked owner
+    // is now the only other strong reference.
+    drop(epoll);
+
+    let callback_thread =
+        scheduler::thread::current::current_thread_id().expect("axtest must run in task context");
+
+    // Runs InterestWaker::publish in this task, in the callback's context.
+    waker.wake_by_ref();
+
+    let last_count = epoll_callback_release_count_for_test();
+    let Some(drop_thread) = wait_for_watched_epoll_drop_for_test(&done) else {
+        return false;
+    };
+    // The callback's reference must be the last one (a concurrent close could
+    // not have left more), and the destructor must run in the worker rather
+    // than in the callback's context.
+    last_count == 1 && drop_thread == worker_thread && drop_thread != callback_thread.as_u64()
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -1340,6 +1509,12 @@ mod tests {
             super::add_classified_file_last_ref_drops_outside_locks_for_test(),
             "ADD must not upgrade or last-release the interest target under the topology lock"
         );
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn callback_releases_last_reference_in_notify_worker() {
+        assert!(super::callback_releases_last_reference_in_notify_worker_for_test());
     }
 
     #[cfg(all(test, not(axtest)))]
