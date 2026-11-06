@@ -7,6 +7,8 @@ use alloc::boxed::Box;
 #[cfg(all(test, not(axtest)))]
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloc::{sync::Arc, task::Wake};
+#[cfg(all(test, axtest))]
+use alloc::sync::Weak;
 use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     task::Waker,
@@ -331,6 +333,219 @@ fn nested_child_last_ref_drops_outside_topology_lock_for_test() -> bool {
         && inner_weak.strong_count() == 0
         && witness.destructions() == 1
         && !witness.destroyed_under_topology_lock()
+}
+
+// Set whenever `EntryKey::get_file` upgrades its target while the global
+// epoll topology lock is held: the ADD and MOD regression tests assert it
+// stays clear on their respective paths.
+#[cfg(all(test, axtest))]
+static ENTRY_KEY_UPGRADE_UNDER_TOPOLOGY_LOCK: AtomicBool = AtomicBool::new(false);
+
+// The last external strong reference of a file whose interest is being
+// classified. The `EntryKey::get_file` observation point below releases it
+// when the upgrade happens under the topology lock, which reproduces a
+// concurrent close completing at exactly that point without depending on
+// scheduling.
+#[cfg(all(test, axtest))]
+static CLASSIFIED_FILE_PARKED_REF: RawSpinLock<Option<Arc<dyn FileLike>>> = RawSpinLock::new(None);
+
+#[cfg(all(test, axtest))]
+pub(super) fn park_classified_file_last_ref_for_test(file: Arc<dyn FileLike>) {
+    *CLASSIFIED_FILE_PARKED_REF.lock_irqsave() = Some(file);
+}
+
+/// Takes the reference parked by [`park_classified_file_last_ref_for_test`],
+/// so the test can destroy the file at a chosen point outside the epoll locks.
+#[cfg(all(test, axtest))]
+pub(super) fn unpark_classified_file_for_test() -> Option<Arc<dyn FileLike>> {
+    CLASSIFIED_FILE_PARKED_REF.lock_irqsave().take()
+}
+
+/// Observation point called by `EntryKey::get_file` before upgrading the
+/// target while the global topology lock is held.
+///
+/// Records the violation. When the test parked the file's last external
+/// reference and it names the key's target, also releases it: the pending
+/// upgrade then either observes a dead key or becomes the last reference
+/// itself, and the file's destructor runs right here — exactly as a
+/// concurrent close of the target fd completing at this point would.
+#[cfg(all(test, axtest))]
+pub(super) fn observe_entry_key_upgrade_under_topology_lock_for_test(key: &Weak<dyn FileLike>) {
+    ENTRY_KEY_UPGRADE_UNDER_TOPOLOGY_LOCK.store(true, Ordering::Release);
+    let parked = {
+        let mut slot = CLASSIFIED_FILE_PARKED_REF.lock_irqsave();
+        match slot.as_ref() {
+            Some(candidate) if Weak::ptr_eq(&Arc::downgrade(candidate), key) => slot.take(),
+            _ => None,
+        }
+    };
+    drop(parked);
+}
+
+#[cfg(all(test, axtest))]
+fn reset_entry_key_upgrade_observation_for_test() {
+    ENTRY_KEY_UPGRADE_UNDER_TOPOLOGY_LOCK.store(false, Ordering::Release);
+}
+
+#[cfg(all(test, axtest))]
+fn entry_key_upgraded_under_topology_lock_for_test() -> bool {
+    ENTRY_KEY_UPGRADE_UNDER_TOPOLOGY_LOCK.load(Ordering::Acquire)
+}
+
+// A file whose destructor records whether it runs while the global epoll
+// topology lock is held and local interrupts are disabled. The MOD and ADD
+// paths classify the interest target with both held, so its destruction
+// context is exactly the hazard under test.
+#[cfg(all(test, axtest))]
+#[derive(Default)]
+struct ClassifiedWitness {
+    destructions: AtomicUsize,
+    destroyed_under_topology_lock: AtomicBool,
+    destroyed_with_irqs_disabled: AtomicBool,
+}
+
+#[cfg(all(test, axtest))]
+impl ClassifiedWitness {
+    fn destructions(&self) -> usize {
+        self.destructions.load(Ordering::Acquire)
+    }
+
+    fn destroyed_under_topology_lock(&self) -> bool {
+        self.destroyed_under_topology_lock.load(Ordering::Acquire)
+    }
+
+    fn destroyed_with_irqs_disabled(&self) -> bool {
+        self.destroyed_with_irqs_disabled.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(all(test, axtest))]
+struct ClassifiedFile {
+    witness: Arc<ClassifiedWitness>,
+}
+
+#[cfg(all(test, axtest))]
+impl Drop for ClassifiedFile {
+    fn drop(&mut self) {
+        self.witness.destructions.fetch_add(1, Ordering::AcqRel);
+        self.witness
+            .destroyed_under_topology_lock
+            .store(epoll_topology_lock_is_held_for_test(), Ordering::Release);
+        self.witness
+            .destroyed_with_irqs_disabled
+            .store(!ax_hal::cpu::interrupt::irqs_enabled(), Ordering::Release);
+    }
+}
+
+#[cfg(all(test, axtest))]
+impl FileLike for ClassifiedFile {
+    fn validate_write_access(&self) -> crate::StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
+    fn path(&self) -> Cow<'_, str> {
+        "axtest:[epoll-classified-file-last-ref]".into()
+    }
+}
+
+#[cfg(all(test, axtest))]
+impl Pollable for ClassifiedFile {
+    fn poll(&self) -> IoEvents {
+        IoEvents::empty()
+    }
+
+    unsafe fn register_shared(&self, _sink: &mut dyn SharedRegistrationSink, _events: IoEvents) {
+        // Deliberately registers nothing: the fixture never becomes ready,
+        // so no registration outlives the file. The regression below
+        // destroys the file while an interest is still installed, exactly
+        // like a concurrent close would.
+    }
+}
+
+/// Runs one interest construction under the epoll locks with the target
+/// file's last external reference parked, then destroys the file and proves
+/// both that the path never upgraded the target under the topology lock and
+/// that the destruction happened outside the locks.
+///
+/// Determinism: the observation point inside `EntryKey::get_file` releases
+/// the parked reference and records the violation whenever the upgrade
+/// happens under the topology lock, so the "concurrent close completed while
+/// the path held the lock" interleaving is forced rather than raced. The
+/// destruction context is observed by the fixture's destructor above; no
+/// scheduling, barriers, or repetition are involved.
+#[cfg(all(test, axtest))]
+fn classified_file_survives_interest_construction_for_test(
+    install: impl FnOnce(&Epoll, &Arc<dyn FileLike>) -> bool,
+    classify: impl FnOnce(&Epoll, &Weak<dyn FileLike>) -> bool,
+) -> bool {
+    // The lock-held sampler must observe a real acquisition, otherwise the
+    // final assertion would be vacuous.
+    {
+        let _topology = lock_epoll_topology();
+        if !epoll_topology_lock_is_held_for_test() {
+            return false;
+        }
+    }
+    if epoll_topology_lock_is_held_for_test() {
+        return false;
+    }
+
+    let epoll = Epoll::new();
+    let witness = Arc::new(ClassifiedWitness::default());
+    let file: Arc<dyn FileLike> = Arc::new(ClassifiedFile {
+        witness: Arc::clone(&witness),
+    });
+    if !install(&epoll, &file) {
+        return false;
+    }
+
+    // Park the only remaining strong reference and hand ownership to the
+    // parking slot, so the classification path cannot hide behind an extra
+    // reference held by the test.
+    let file_weak = Arc::downgrade(&file);
+    park_classified_file_last_ref_for_test(file);
+    if file_weak.strong_count() != 1 {
+        return false;
+    }
+
+    reset_entry_key_upgrade_observation_for_test();
+    let classified = classify(&epoll, &file_weak);
+    let upgraded_under_lock = entry_key_upgraded_under_topology_lock_for_test();
+
+    // Destroy the file at a point where no epoll lock can be held and
+    // collect what the destructor observed.
+    drop(unpark_classified_file_for_test());
+
+    classified
+        && !upgraded_under_lock
+        && file_weak.strong_count() == 0
+        && witness.destructions() == 1
+        && !witness.destroyed_under_topology_lock()
+        && !witness.destroyed_with_irqs_disabled()
+}
+
+/// The MOD path must not destroy the classified target file while the epoll
+/// locks are held, even when its interest construction is the last reference.
+#[cfg(all(test, axtest))]
+fn modify_classified_file_last_ref_drops_outside_locks_for_test() -> bool {
+    classified_file_survives_interest_construction_for_test(
+        |epoll, file| {
+            epoll
+                .add_file_for_test(5, file.clone(), 0x55, EpollFlags::empty())
+                .is_ok()
+        },
+        |epoll, file_weak| epoll.modify_parked_file_for_test(5, file_weak, 0x56).is_ok(),
+    )
+}
+
+/// The ADD path must not destroy the classified target file while the epoll
+/// locks are held, even when its interest construction is the last reference.
+#[cfg(all(test, axtest))]
+fn add_classified_file_last_ref_drops_outside_locks_for_test() -> bool {
+    classified_file_survives_interest_construction_for_test(
+        |_epoll, _file| true,
+        |epoll, file_weak| epoll.add_parked_file_for_test(6, file_weak, 0x66).is_ok(),
+    )
 }
 
 #[cfg(all(test, not(axtest)))]
@@ -1018,6 +1233,24 @@ mod tests {
         assert!(
             super::nested_child_last_ref_drops_outside_topology_lock_for_test(),
             "the last nested child epoll reference must be dropped after the topology lock"
+        );
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn modify_classified_file_last_ref_drops_outside_locks() {
+        assert!(
+            super::modify_classified_file_last_ref_drops_outside_locks_for_test(),
+            "MOD must not upgrade or last-release the interest target under the topology lock"
+        );
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn add_classified_file_last_ref_drops_outside_locks() {
+        assert!(
+            super::add_classified_file_last_ref_drops_outside_locks_for_test(),
+            "ADD must not upgrade or last-release the interest target under the topology lock"
         );
     }
 
