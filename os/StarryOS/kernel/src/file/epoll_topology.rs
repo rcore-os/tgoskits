@@ -44,6 +44,16 @@ pub(super) fn lock_epoll_topology() -> RawSpinLockGuard<'static, ()> {
     EPOLL_TOPOLOGY_LOCK.lock()
 }
 
+/// Reports whether the global topology lock is currently held.
+///
+/// This is an axtest-only diagnostic snapshot with no synchronization
+/// guarantees; the nested-child regression test uses it to observe the
+/// execution context of an epoll destructor.
+#[cfg(all(test, axtest))]
+pub(super) fn epoll_topology_lock_is_held_for_test() -> bool {
+    EPOLL_TOPOLOGY_LOCK.is_locked()
+}
+
 /// Validate a prospective link while the caller holds the topology mutex.
 pub(super) fn prepare_nested_link(
     source: &Arc<EpollInner>,
@@ -110,19 +120,31 @@ pub(super) fn commit_nested_link(
 }
 
 /// Remove both directions while the caller holds the topology mutex.
-pub(super) fn detach_nested_link(source: &EpollInner, link: &EpollTopologyLink) {
+///
+/// Returns the child node upgraded from the link. The caller must drop it
+/// after releasing the topology mutex: it may be the last reference to the
+/// child epoll, whose destructor can sleep.
+pub(super) fn detach_nested_link(
+    source: &EpollInner,
+    link: &EpollTopologyLink,
+) -> Option<Arc<EpollInner>> {
     source
         .topology
         .children
         .lock_irqsave()
         .retain(|child| child.id != link.id);
-    if let Some(child) = link.node.upgrade() {
-        child
-            .topology
-            .parents
-            .lock_irqsave()
-            .retain(|parent| parent.id != link.id);
-    }
+    let child = link.node.upgrade()?;
+    // Axtest-only observation point: releasing the parked reference here
+    // makes this upgraded reference the last one, exactly as a concurrent
+    // close of the child epoll fd completing at this point would.
+    #[cfg(all(test, axtest))]
+    super::epoll_axtest::release_nested_child_last_ref_for_test(&child);
+    child
+        .topology
+        .parents
+        .lock_irqsave()
+        .retain(|parent| parent.id != link.id);
+    Some(child)
 }
 
 fn scan_epoll_topology(
