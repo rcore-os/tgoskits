@@ -780,6 +780,16 @@ pub fn sys_openat2(
         return sys_openat(current, dirfd, path, flags, mode);
     };
 
+    // O_TMPFILE creates an anonymous inode in the named directory's
+    // filesystem (Linux `do_tmpfile` runs inside `path_openat`); the
+    // constrained walker only opens or creates named entries, so this
+    // combination would fall through to opening the named object. Report the
+    // unsupported combination before any side effect; CACHED|O_TMPFILE
+    // already returned EAGAIN above, matching Linux.
+    if uflags & O_TMPFILE == O_TMPFILE {
+        return Err(StarryError::OperationNotSupported);
+    }
+
     // Copy the pathname after the create/truncate/tmpfile short-circuit:
     // those requests always retry, while every other CACHED open reports the
     // same fundamental errors (EFAULT for a bad pointer, EBADF for an invalid
