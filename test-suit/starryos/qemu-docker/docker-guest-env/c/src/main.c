@@ -1013,7 +1013,17 @@ static int run_exe_acl(void)
             close(root_ns);
             _exit(7);
         }
-        _exit(errno == EPERM || errno == EACCES ? 0 : 8);
+        if (errno != EPERM && errno != EACCES) {
+            _exit(8);
+        }
+        /* stat/statx follow the ns link too: the same ptrace read check must
+         * gate the namespace inode, not only the open path. */
+        errno = 0;
+        struct stat root_ns_st;
+        if (stat("/proc/1/ns/mnt", &root_ns_st) == 0) {
+            _exit(9);
+        }
+        _exit(errno == EPERM || errno == EACCES ? 0 : 10);
     }
 
     int status = 0;
@@ -1033,6 +1043,13 @@ static int run_exe_acl(void)
         failures++;
     } else if (code == 7) {
         printf("  FAIL: another user's /proc/1/ns/mnt opened without permission\n");
+        failures++;
+    } else if (code == 9) {
+        printf("  FAIL: another user's /proc/1/ns/mnt stat without permission\n");
+        failures++;
+    } else if (code == 10) {
+        printf("  FAIL: another user's /proc/1/ns/mnt stat wrong errno=%d\n",
+               code);
         failures++;
     } else {
         printf("  FAIL: another user's /proc/1 exe/ns rejected with wrong errno=%d\n",

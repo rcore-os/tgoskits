@@ -212,7 +212,6 @@ pub(crate) fn dma_buf_seek(size: u64, pos: ax_io::SeekFrom) -> StarryResult<u64>
     }
 }
 
-#[allow(dead_code)]
 /// Mode and owner of an anonymous in-kernel inode (pipe or socket).
 ///
 /// Linux protects these fields with the inode lock, so one `chmod`/`chown`
@@ -477,6 +476,49 @@ pub trait FileLike: Pollable + DowncastSync {
         add_file_like(Arc::new(self), cloexec)
     }
 }
+/// Whether `current` may read procfs metadata of `proc_data`'s process.
+///
+/// `/proc/<pid>/{exe,ns/*}` and the objects they follow expose the target's
+/// executable and namespace identity, so the check follows
+/// `PTRACE_MODE_READ_FSCREDS` (Linux `__ptrace_may_access`): same-thread-group
+/// callers always pass, `CAP_SYS_PTRACE` bypasses, and otherwise the caller's
+/// filesystem uid/gid must match the target's real/effective/saved uid and
+/// gid triplet, or the caller must hold that capability. A non-dumpable
+/// target additionally requires the capability. Members of the caller's own
+/// thread group always pass. StarryOS does not scope capabilities per user
+/// namespace, so `CAP_SYS_PTRACE` is read from the caller's effective set.
+pub(crate) fn proc_read_access_allowed(
+    current: &crate::task::UserTaskRef,
+    proc_data: &Arc<crate::task::ProcessData>,
+) -> StarryResult<bool> {
+    // Same thread group is always allowed (Linux `__ptrace_may_access`).
+    if core::ptr::eq(
+        proc_data.as_ref() as *const _,
+        Arc::as_ref(&current.as_thread().proc_data),
+    ) {
+        return Ok(true);
+    }
+    let caller = current.as_thread().cred();
+    if caller.has_cap_sys_ptrace() {
+        return Ok(true);
+    }
+    let target = proc_data.identity();
+    let target_cred = if let Some(task) = target.live_task() {
+        task.as_thread().cred()
+    } else {
+        target
+            .zombie_snapshot(|zombie| zombie.cred.clone())
+            .ok_or(StarryError::NoSuchProcess)?
+    };
+    let ids_match = caller.fsuid == target_cred.uid
+        && caller.fsuid == target_cred.euid
+        && caller.fsuid == target_cred.suid
+        && caller.fsgid == target_cred.gid
+        && caller.fsgid == target_cred.egid
+        && caller.fsgid == target_cred.sgid;
+    Ok(ids_match && proc_data.dumpable() == 1)
+}
+
 impl_downcast!(sync FileLike);
 
 #[derive(Clone)]
