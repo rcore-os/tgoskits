@@ -246,6 +246,17 @@ int main(void)
         unlink(mnt_file);
     }
 
+    /* A constrained O_TMPFILE open is not supported: the walker only opens
+     * or creates named entries, so the request must fail with a clear error
+     * before any side effect instead of touching the named object (Linux
+     * `do_tmpfile` creates an anonymous inode inside `path_openat`). */
+    expect_errno("NO_XDEV|O_TMPFILE on an existing directory -> EOPNOTSUPP",
+                 rootfd, "sub", RESOLVE_NO_XDEV,
+                 O_TMPFILE | O_RDWR | O_CLOEXEC, EOPNOTSUPP);
+    expect_errno("BENEATH|O_TMPFILE on an existing file -> EOPNOTSUPP", rootfd,
+                 "beneath.txt", RESOLVE_BENEATH,
+                 O_TMPFILE | O_RDWR | O_CLOEXEC, EOPNOTSUPP);
+
     /* Creation authorization runs inside the create path: an entry that a
      * concurrent unlink removed between the existence probe and the VFS
      * lookup must not be created without the parent's write permission. User
