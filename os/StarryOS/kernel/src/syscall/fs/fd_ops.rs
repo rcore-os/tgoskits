@@ -16,7 +16,7 @@ use crate::{
     file::{
         Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, NsFd, Pipe,
         add_file_like, close_file_like, get_file_like, is_ns_type, memfd::Memfd,
-        ns_target_from_link, with_fs,
+        ns_target_from_link, proc_read_access_allowed, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
@@ -356,48 +356,6 @@ fn exe_task_from_link(loc: &Location) -> Option<crate::task::UserTaskRef> {
         .ok()?;
     thread_dir.ops().thread_task()
 }
-
-/// Applies Linux's `PTRACE_MODE_READ_FSCREDS` task-access check
-/// (`kernel/ptrace.c::__ptrace_may_access`) to a cross-process proc read.
-///
-/// The caller's filesystem uid and gid must match the target's
-/// real/effective/saved uid and gid triplet, or the caller must hold
-/// `CAP_SYS_PTRACE`; a non-dumpable target additionally requires that
-/// capability. Members of the caller's own thread group always pass.
-/// StarryOS does not scope capabilities per user namespace, so
-/// `CAP_SYS_PTRACE` is read from the caller's effective set.
-fn proc_read_access_allowed(
-    current: &crate::task::UserTaskRef,
-    proc_data: &Arc<crate::task::ProcessData>,
-) -> StarryResult<bool> {
-    // Same thread group is always allowed (Linux `__ptrace_may_access`).
-    if core::ptr::eq(
-        proc_data.as_ref() as *const _,
-        Arc::as_ref(&current.as_thread().proc_data),
-    ) {
-        return Ok(true);
-    }
-    let caller = current.as_thread().cred();
-    if caller.has_cap_sys_ptrace() {
-        return Ok(true);
-    }
-    let target = proc_data.identity();
-    let target_cred = if let Some(task) = target.live_task() {
-        task.as_thread().cred()
-    } else {
-        target
-            .zombie_snapshot(|zombie| zombie.cred.clone())
-            .ok_or(StarryError::NoSuchProcess)?
-    };
-    let ids_match = caller.fsuid == target_cred.uid
-        && caller.fsuid == target_cred.euid
-        && caller.fsuid == target_cred.suid
-        && caller.fsgid == target_cred.gid
-        && caller.fsgid == target_cred.egid
-        && caller.fsgid == target_cred.sgid;
-    Ok(ids_match && proc_data.dumpable() == 1)
-}
-
 /// `/proc/<pid>/exe` is a magic link: opening it must yield the backing
 /// executable file itself, never a re-resolution of the displayed path. A
 /// memfd-exec'd runc displays `/memfd:... (deleted)`, which no path lookup
