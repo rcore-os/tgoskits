@@ -2,9 +2,9 @@ mod capacity;
 pub(crate) use capacity::{CPU_CAPACITY_SCALE, CpuCapacities};
 mod earlycon;
 mod memory;
-
 pub use earlycon::setup_earlycon;
 use kernutil::StaticCell;
+pub(crate) use memory::{checked_memory_tree, no_map_regions, reserve_static_memory};
 #[allow(unused)]
 pub use memory::{init_memory_map, memories};
 
@@ -51,12 +51,14 @@ pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
 }
 
 pub(crate) fn fdt_base() -> Option<fdt_raw::Fdt<'static>> {
+    fdt_raw::Fdt::from_bytes(fdt_bytes()?).ok()
+}
+
+pub(crate) fn fdt_bytes() -> Option<&'static [u8]> {
     let fdt_addr = fdt_addr()?;
     // SAFETY: the global FDT address points to firmware memory or the saved
     // early RAM copy, both of which stay valid for the boot lifetime.
-    let slice = unsafe { validated_fdt_slice(fdt_addr)? };
-    let fdt = fdt_raw::Fdt::from_bytes(slice).ok()?;
-    Some(fdt)
+    unsafe { validated_fdt_slice(fdt_addr) }
 }
 
 pub(crate) fn boot_entropy() -> Option<[u8; 32]> {

@@ -4,12 +4,17 @@
 
 ### 1.1 设备接口
 
-axloader 在同一网卡使用 UEFI SNP、IP4、UDP4 与 TCP4，向 UDP `2998` 广播自身
+x86_64 原生前端在同一网卡使用 UEFI SNP、IP4、UDP4 与 TCP4，向 UDP `2998` 广播自身
 MAC、架构、`boot_epoch` 和 HTTP 端口，并在 TCP `2999` 提供设备接口。它不再
 发现 ostool-server、轮询任务或通过 HTTP 下载镜像；串口在启动前输出本次身份帧和诊断，并在交接后
 供目标系统使用。`network::NetworkInterface::select()` 选择网卡，
 `network::Announcer` 广播，`direct::Listener` 接受请求。调用方可以直接按设备 IP
 操作，ostool-server 也调用同一组接口。
+
+原生 RISC-V 前端使用 `snp::Network` 独占一个 SNP 控制器，由 smoltcp 提供
+DHCP、IPv4、UDP 和 TCP，不要求固件安装 TCP4。两种原生前端共享
+`http::HttpConnection` 的路由及 `BootServer` 事务；MAC、公告地址与 HTTP
+必须属于同一网卡。连接重置只中止当前请求，NIC 停稳失败则禁止交接。
 
 每次启动创建新的 `boot_epoch`。所有修改请求均需 `X-Boot-Epoch` 与
 `GET /api/v1/status` 返回值一致；错误代次返回 `409`。当前协议为 v6，旧版
@@ -21,7 +26,7 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 | `GET /api/v1/status` | 读取启动代次、MAC、实际 UART 参数、绑定/错误、硬件、启动事务与 OTA 状态 |
 | `POST /api/v1/serial/continue` | 当前 epoch、serial_id、binding_id、bound/direct；相同请求幂等 |
 | `DELETE /api/v1/serial/bindings/{binding_id}` | 撤销当前匹配令牌，恢复身份帧 |
-| `POST /api/v1/boot/jobs` | 提交启动 ID、x86_64 ELF64、内核和可选归档的长度、SHA-256、命令行；入口固定为 `__x86_64_efi_pe_entry` |
+| `POST /api/v1/boot/jobs` | 提交启动 ID、对应架构 ELF64、内核和可选归档的长度、SHA-256、命令行；入口按下方目标契约固定 |
 | `GET /api/v1/boot/jobs/{id}` | 查询已接收文件及阶段 |
 | `PUT /api/v1/boot/jobs/{id}/kernel` | 定长上传内核，要求匹配 `X-Image-Sha256` |
 | `PUT /api/v1/boot/jobs/{id}/initramfs` | 定长上传可选归档，要求匹配摘要 |
@@ -72,7 +77,7 @@ sequenceDiagram
 
 同一 Session 设备复位后得到新启动代次，服务端可以按旧 `boot_id` 重新推送。
 待试 EFI 槽必须先收到对应来源的确认，才接受启动事务。TCP4 被动监听不可用
-时仅显示诊断；完全切换后的网络启动需要固件提供该协议。
+时仅显示诊断；x86_64 原生网络前端需要固件提供该协议，RISC-V 使用 SNP 后端。
 
 ## 2. 自动串口
 
@@ -92,8 +97,10 @@ OTA 代次提交到 `STATE0.BIN`/`STATE1.BIN`，再用代次和当前镜像摘�
 `BootServer` 状态与 UDP 公告关联同一 serial_id 和 epoch；网络确认后停止身份帧。
 
 ```text
-\r\nAXLOADER-SERIAL/1 <32位小写十六进制 serial_id>\r\n
+\nAXLOADER-SERIAL/1 <32位小写十六进制 serial_id>\n
 ```
+
+发送端使用 LF 分隔；固件可转换为 CRLF。不要显式发送 CRLF 后再由固件补充 CR，否则严格身份解码会收到双回车。
 
 `bound` 对应宿主 UART 身份匹配；`direct` 由不需要隧道的客户端显式放行，不能显示为串口已绑定。
 启动需当前 epoch 和绑定令牌；上传、查询、OTA 不受 UART 门禁影响。撤销当前令牌后恢复发送。
@@ -124,6 +131,7 @@ and rejects tables larger than 1 MiB.
 | --- | --- | --- |
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 | `loongarch64` | `loongarch64-unknown-none-softfloat` | `BOOTLOONGARCH64.EFI` |
+| `riscv64` | 仓库自定义 `riscv64-unknown-uefi` | `BOOTRISCV64.EFI` |
 
 The x86_64 frontend accepts little-endian x86_64 ELF64 images. `PT_LOAD`
 segments must have page-aligned physical addresses. Protocol v6 requires the
@@ -147,6 +155,19 @@ someboot 内核入口、分页或 SMP。模块、协议与所有权依据见
 ArceOS 激活 runtime UART 后，axstd 前端报告实际波特率和 8N1 参数，未绑定时
 输出身份帧；没有活动 UART 时状态为 `ready=false`，客户端必须显式 `direct` continue。
 
+RISC-V 原生前端接受 `EM_RISCV` ELF64，固定入口为 someboot 的
+`efi_pe_entry`。接收端要求固件以 S-mode 进入并保持 EFI 内存恒等寻址，提供
+`RISCV_EFI_BOOT_PROTOCOL` 和有效 FDT。遵循 UEFI 2.11，固件页表保留至
+`ExitBootServices` 和 `SetVirtualAddressMap` 完成，随后在回收固件启动内存前切回 Bare。SNP 计时取自 FDT 的
+`/cpus/timebase-frequency`；设备树必须同时满足 EFI 保留内存契约及接收内核的硬件需求。
+构建及交接约束见 [RISC-V UEFI 设计](../../docs/design/axloader-riscv64-uefi.md)。
+
+RISC-V 前端从固件 RNG 生成本次 epoch 和串口身份，无法取得随机数时停止。
+串口复用标准 Serial I/O；没有匹配 UART 时不报告 ready。当前 BananaPi 固件已提供
+这两项协议，无需额外声明控制台或传入身份种子。
+
+BananaPi 已验证“UEFI → 实体 U 盘中的 axloader → 网络下载内核与 initramfs → ArceOS”，通过启动资源、参数、归档内容及 `Hello, world!` 检查。板载 GRUB 临时加载 axloader 的任务工具路径也已通过；实体 U 盘路径直接执行原生 EFI，不依赖 GRUB 或 Linkr。
+
 ## Build and test
 
 Use the project task runner:
@@ -154,6 +175,8 @@ Use the project task runner:
 ```bash
 rustup target add x86_64-unknown-uefi
 cargo xtask axloader build --target x86_64-unknown-uefi --release
+cargo xtask axloader build --target riscv64-unknown-uefi --release
+cargo xtask axloader test host
 cargo xtask clippy --package axloader
 cargo xtask axloader test qemu --target x86_64-unknown-uefi
 ```
@@ -163,6 +186,7 @@ The output is:
 ```text
 target/x86_64-unknown-uefi/release/axloader.efi
 target/x86_64-unknown-uefi/release/axloader-launcher.efi
+target/riscv64-unknown-uefi/release/axloader.efi
 ```
 
 LoongArch ArceOS EFI is built through the ArceOS task runner. The build config
@@ -287,6 +311,24 @@ MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执�
 验证拒绝路径，再允许回滚；旧槽可能恢复旧的内核认证缺口。
 
 ## Install to removable media
+
+RISC-V 原生 UEFI 使用独立测试 U 盘的 FAT ESP，放置构建产物
+`target/riscv64-unknown-uefi/release/axloader.efi` 为
+`EFI/BOOT/BOOTRISCV64.EFI`。同一目录可放入与板卡及固件匹配的 `board.dtb`；
+`Fdt::prepare()` 优先读取该显式文件，完成完整结构、保留内存和标准 DT Fixup
+校验后安装配置表。只有文件缺失或启动映像没有文件系统时，才使用已经满足
+ACPI reclaim 生命周期与保留区契约的固件 FDT；显式文件损坏时不会回退。
+普通静态保留区接受 EFI `BOOT_SERVICES_DATA`，`no-map` 仍必须由 `RESERVED`
+完整覆盖。接收内核的 EFI RAM 映射来自已保存的 EFI 内存图，FDT 仅补充保留与
+`no-map` 约束；EFI 启动不要求 FDT 含有 `/memory`。
+BananaPi 的默认固件树和原 Linux OS DTB 均不满足该契约，实测使用现场
+SPI FIT 中的匹配树，以只读方式提取并放在测试 U 盘。无合格输入时输出
+`loader_fdt_unavailable` 并停止，不放宽 `no-map` 校验。
+不得覆盖板载系统已有的 EFI 启动文件。实体 U 盘直接启动及网络内核交接已通过，
+步骤与验收边界见 [RISC-V UEFI 设计](../../docs/design/axloader-riscv64-uefi.md#53-实体-u-盘启动)。
+
+网络联调也可以先由板载 GRUB 临时加载 axloader 和匹配 DTB，再通过
+`cargo xtask arceos board` 上传内核并检查目标输出；此流程不要求 U 盘或 Linkr。
 
 脚本支持全新安装和旧布局迁移。全新安装适用于已经格式化但没有可用
 `BOOTX64.EFI` 的 x86_64 可写 FAT ESP，不需要旧装载器：

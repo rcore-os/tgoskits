@@ -30,11 +30,12 @@ arceos-efi = [
 ]
 
 [dependencies]
+fdt-raw.workspace = true
 httpboot-protocol = { workspace = true }
-serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
 thiserror = { workspace = true }
+uefi-raw.workspace = true
 
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow = { workspace = true }
@@ -42,8 +43,10 @@ object = "0.38"
 
 [target.'cfg(target_os = "uefi")'.dependencies]
 uefi = { workspace = true, features = ["alloc", "global_allocator"] }
-uefi-raw.workspace = true
 someboot = { workspace = true, features = ["efi-handoff"] }
+
+[target.'cfg(all(target_os = "uefi", target_arch = "riscv64"))'.dependencies]
+smoltcp = { workspace = true, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp", "socket-dhcpv4"] }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
@@ -54,6 +57,10 @@ uefi = { workspace = true, features = ["alloc"] }
 [[package.metadata.clippy.configurations]]
 name = "uefi"
 target = "x86_64-unknown-uefi"
+
+[[package.metadata.clippy.configurations]]
+name = "riscv64-uefi"
+target = "riscv64-unknown-uefi"
 
 [[package.metadata.clippy.configurations]]
 name = "arceos-efi-loongarch64"

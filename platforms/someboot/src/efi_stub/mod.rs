@@ -28,10 +28,12 @@ use uefi::{
     table::{self, cfg::ConfigTableEntry},
 };
 
+#[cfg(not(target_arch = "riscv64"))]
+use crate::arch::relocate;
 use crate::{
     ArchTrait,
     acpi::set_rsdp,
-    arch::{Arch, relocate},
+    arch::Arch,
     mem::{__io, __va},
 };
 
@@ -41,7 +43,11 @@ cfg_select! {
         use loongarch64 as platform;
         pub use loongarch64::{ResetType, reset};
     }
-    any(target_arch = "x86_64", target_arch = "aarch64") => {
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    ) => {
         mod firmware;
         use firmware as platform;
     }
@@ -51,7 +57,7 @@ const EFI_IMAGE_HANDLE_UNSET: usize = usize::MAX;
 const EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE: usize = 128 * 1024;
 const EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY: usize = 1024;
 const EXIT_BOOT_MEMORY_MAP_RETRIES: usize = 3;
-const FDT_TABLE_GUID: Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
+pub(crate) const FDT_TABLE_GUID: Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 const LINUX_EFI_INITRD_MEDIA_GUID: Guid = guid!("5568e427-68fc-4f3d-ac74-ca555231cc68");
 const LINUX_INITRD_DEVICE_PATH_SIZE: usize = 24;
 const MAX_UEFI_INITRAMFS_BYTES: usize = 1024 * 1024 * 1024;
@@ -111,7 +117,7 @@ pub unsafe extern "C" fn __x86_64_efi_pe_entry() -> Status {
     )
 }
 
-unsafe extern "C" fn efi_pe_entry_main(
+pub(crate) unsafe extern "C" fn efi_pe_entry_main(
     image_handle: Handle,
     system_table: *const ::core::ffi::c_void,
 ) -> Status {
@@ -130,7 +136,7 @@ unsafe extern "C" fn efi_pe_entry_main(
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "riscv64")))]
 #[unsafe(export_name = "efi_pe_entry")]
 #[unsafe(link_section = ".text")]
 pub unsafe extern "efiapi" fn efi_pe_entry(
@@ -195,6 +201,9 @@ pub(crate) fn exit_boot_services() {
                 .expect("Failed to set virtual address map");
         }
     }
+
+    #[cfg(target_arch = "riscv64")]
+    platform::retire_boot_page_tables();
 
     memmap::setup_memory_map(mem_map.entries());
     platform::reserve_boot_memory();

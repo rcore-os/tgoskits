@@ -51,6 +51,25 @@ pub const X86_64: TargetSpec = TargetSpec {
     link_address: None,
 };
 
+/// RISC-V kernels enter through their EFI stub while Boot Services are active.
+pub const RISCV64_EFI: TargetSpec = TargetSpec {
+    boot_arch: BootArch::Riscv64,
+    machine: 243,
+    entry_symbol: "efi_pe_entry",
+    load_address: None,
+    link_address: None,
+};
+
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+cfg_select! {
+    target_arch = "x86_64" => {
+        pub const UEFI: TargetSpec = X86_64;
+    }
+    target_arch = "riscv64" => {
+        pub const UEFI: TargetSpec = RISCV64_EFI;
+    }
+}
+
 pub const LOONGARCH64_EFI: TargetSpec = TargetSpec {
     boot_arch: BootArch::Loongarch64,
     machine: 258,

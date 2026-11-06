@@ -2,6 +2,8 @@ use std::{collections::HashMap, path::Path};
 
 use crate::context::arch_spec_for_target;
 
+pub(crate) const RISCV64_UEFI_TARGET: &str = "riscv64-unknown-uefi";
+
 /// Resolved target specification, compiler defaults and build environment.
 pub(crate) struct CargoBuildTarget {
     pub(crate) target: String,
@@ -32,6 +34,34 @@ pub(crate) fn bare_build_target_for(target: &str) -> Option<CargoBuildTarget> {
         } else {
             Vec::new()
         },
+        env: HashMap::from([(
+            "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
+            "true".to_string(),
+        )]),
+    })
+}
+
+/// Resolves native EFI targets whose PE header is embedded in an ELF link.
+pub(crate) fn uefi_build_target_for(target: &str) -> Option<CargoBuildTarget> {
+    if target != RISCV64_UEFI_TARGET {
+        return None;
+    }
+    Some(CargoBuildTarget {
+        target: Path::new("scripts/targets/uefi")
+            .join(format!("{target}.json"))
+            .display()
+            .to_string(),
+        cargo_args: vec![
+            "-Z".to_string(),
+            "json-target-spec".to_string(),
+            "-Z".to_string(),
+            "build-std=core,alloc".to_string(),
+            "--config".to_string(),
+            "profile.release.lto=false".to_string(),
+        ],
+        // The compiler requires is-like-windows for os=uefi, but its embedded
+        // bitcode assembly uses COFF section flags that ELF cannot represent.
+        rustflags: vec!["-Cembed-bitcode=no".to_string()],
         env: HashMap::from([(
             "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
             "true".to_string(),

@@ -101,6 +101,7 @@ impl ClippyCheck {
             };
         };
         let Some(target) = crate::build::bare_build_target_for(target)
+            .or_else(|| crate::build::uefi_build_target_for(target))
             .or_else(|| crate::build::std_check_target_for(target))
         else {
             return ClippyCargoInvocation {

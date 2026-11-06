@@ -1582,11 +1582,12 @@ dependencies = [
  "anyhow",
  "ax-net",
  "ax-std",
+ "fdt-raw",
  "httpboot-protocol 0.5.0",
  "object 0.38.1",
- "serde",
  "serde_json",
  "sha2 0.10.9",
+ "smoltcp",
  "someboot",
  "thiserror 2.0.21",
  "uefi",
@@ -3698,8 +3699,7 @@ checksum = "80bb028c8b4148c9ee0cca68fcd9add6044e81d3619f48577ddf13a263d047a2"
 [[package]]
 name = "fitimage"
 version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e07c5be8e720622c718afeae97c70f8430253772f030bff4b81e1001de11b741"
+source = "git+https://github.com/drivercraft/ostool.git?branch=main#aa87a8956abde26b44e25edf933eb74006cd7c3d"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -4203,9 +4203,9 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpboot-protocol"
-version = "0.4.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "076fcc75bfc4540d58f6fa135dcf0a4efb95bc6afbb7fffdd3a8f125d99eb6fa"
+checksum = "e763493125efcacde753b2728c1f9617123fd82d2b04da76a75d75a4f24e947a"
 dependencies = [
  "serde",
  "serde_json",
@@ -4213,9 +4213,8 @@ dependencies = [
 
 [[package]]
 name = "httpboot-protocol"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e763493125efcacde753b2728c1f9617123fd82d2b04da76a75d75a4f24e947a"
+version = "0.5.1"
+source = "git+https://github.com/drivercraft/ostool.git?branch=main#aa87a8956abde26b44e25edf933eb74006cd7c3d"
 dependencies = [
  "serde",
  "serde_json",
@@ -4729,8 +4728,7 @@ dependencies = [
 [[package]]
 name = "jkconfig"
 version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59eeb5ea30288afa65e106ebfb412e0742853afaeed94f128e8390161866605b"
+source = "git+https://github.com/drivercraft/ostool.git?branch=main#aa87a8956abde26b44e25edf933eb74006cd7c3d"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -5493,6 +5491,18 @@ dependencies = [
 
 [[package]]
 name = "nix"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
@@ -5794,9 +5804,8 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.30.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2eb5adff9cc6e134316ff354178c34d29327cafff9931a51506c6d3e60fc0ee"
+version = "0.31.1"
+source = "git+https://github.com/drivercraft/ostool.git?branch=main#aa87a8956abde26b44e25edf933eb74006cd7c3d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5811,7 +5820,7 @@ dependencies = [
  "fitimage",
  "fs4",
  "futures",
- "httpboot-protocol 0.4.1",
+ "httpboot-protocol 0.5.1",
  "indicatif",
  "jkconfig 0.2.5",
  "keyring",
@@ -5819,6 +5828,7 @@ dependencies = [
  "lzma-rs",
  "network-interface",
  "object 0.39.1",
+ "ostool-serial",
  "ratatui",
  "regex",
  "reqwest",
@@ -5839,6 +5849,23 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "uboot-shell",
  "url",
+]
+
+[[package]]
+name = "ostool-serial"
+version = "0.1.1"
+source = "git+https://github.com/drivercraft/ostool.git?branch=main#aa87a8956abde26b44e25edf933eb74006cd7c3d"
+dependencies = [
+ "futures-util",
+ "httpboot-protocol 0.5.1",
+ "libc",
+ "log",
+ "nix 0.30.1",
+ "serde",
+ "serialport",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-serial",
 ]
 
 [[package]]
@@ -9127,8 +9154,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "uboot-shell"
 version = "0.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d152a2dc9ea4a3133498f85edae500ba7564e9406dda8f66915f8114747db1d"
+source = "git+https://github.com/drivercraft/ostool.git?branch=main#aa87a8956abde26b44e25edf933eb74006cd7c3d"
 dependencies = [
  "colored",
  "futures",

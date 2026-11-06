@@ -7,10 +7,12 @@ use num_align::NumAlign;
 use ranges_ext::*;
 
 pub mod mmu;
+pub(crate) mod no_map;
 pub(crate) mod ram;
 pub(crate) mod region;
 
 pub use mmu::{MemAttributes, PteConfig};
+pub use no_map::{NoMapError, NoMapRegions, reserved_ram_regions};
 pub use page_table_generic::*;
 
 use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};
@@ -196,6 +198,9 @@ pub(crate) fn _fixmap_io(paddr: usize) -> *mut u8 {
 }
 
 pub(crate) fn early_init() {
+    let excluded = NoMapRegions::current().expect("invalid FDT no-map exclusions");
+    required_boot_mappings(&excluded, kimage_range(), 0..0)
+        .expect("kernel mapping overlaps FDT no-map pages");
     #[cfg(efi)]
     crate::efi_stub::init_boot_memory_map();
     #[cfg(not(efi))]
@@ -211,6 +216,24 @@ pub(crate) fn early_init() {
         panic!("failed to add KImage memory descriptor {kernel_range:#x?}: {err:?}")
     });
     reserve_arch_early_ranges();
+
+    for descriptor in memory_map() {
+        if matches!(
+            descriptor.memory_type,
+            MemoryType::KImage
+                | MemoryType::PerCpuData
+                | MemoryType::BootData
+                | MemoryType::BootReclaimable
+        ) {
+            let end = descriptor
+                .physical_start
+                .checked_add(descriptor.size_in_bytes)
+                .expect("required boot range overflows");
+            excluded
+                .ensure_mappable(descriptor.physical_start..end)
+                .expect("required boot mapping overlaps no-map pages");
+        }
+    }
 
     unsafe { MEMORY_MAP.update(|m| m.sort_by_key(|a| a.physical_start)) };
 
@@ -261,6 +284,42 @@ pub(crate) fn kimage_range() -> core::ops::Range<usize> {
     }
 }
 
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn kimage_is_initialized() -> bool {
+    // SAFETY: primary setup publishes these immutable image bounds before
+    // starting other CPUs. The EFI entry can query them before publication.
+    let image_start = unsafe { KIMAGE_START };
+    image_start.is_some()
+}
+
+/// Includes the entire large-page tail mapped by the RISC-V bootstrap.
+pub(crate) fn required_boot_mappings(
+    excluded: &NoMapRegions,
+    range: Range<usize>,
+    percpu: Range<usize>,
+) -> Result<Range<usize>, NoMapError> {
+    let size = range
+        .end
+        .checked_sub(range.start)
+        .ok_or(NoMapError::InvalidRange)?;
+    let size = size
+        .checked_next_multiple_of(KIMAGE_MAP_ALIGN)
+        .ok_or(NoMapError::InvalidRange)?;
+    let kernel = range.start
+        ..range
+            .start
+            .checked_add(size)
+            .ok_or(NoMapError::InvalidRange)?;
+    excluded.ensure_mappable(kernel.clone())?;
+    if percpu.start > percpu.end {
+        return Err(NoMapError::InvalidRange);
+    }
+    if !percpu.is_empty() {
+        excluded.ensure_mappable(percpu)?;
+    }
+    Ok(kernel)
+}
+
 pub fn page_size() -> usize {
     unsafe extern "C" {
         static PAGE_SIZE: usize;
@@ -304,6 +363,11 @@ pub(crate) fn add_memory_descriptor(
     desc: MemoryDescriptor,
 ) -> Result<(), RangeError<MemoryDescriptor>> {
     unsafe { MEMORY_MAP.update(|mem| mem.merge_add(desc)) }
+}
+
+pub(crate) fn reserve_fdt_memory(fdt: &fdt_raw::Fdt<'_>) -> Result<(), NoMapError> {
+    // SAFETY: FDT reservation runs once on the boot CPU before RAM allocation.
+    unsafe { MEMORY_MAP.update(|map| crate::fdt::reserve_static_memory(map, fdt)) }
 }
 
 pub fn virtual_address_space() -> Result<VirtualAddressSpaceLayout, VirtualAddressSpaceError> {

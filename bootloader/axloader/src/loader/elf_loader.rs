@@ -2,7 +2,7 @@ use core::ptr::NonNull;
 
 use axloader::{
     elf::{ElfError, ElfImage, LoadSegment},
-    target::X86_64,
+    target::UEFI,
 };
 use someboot::boot_resources::{self, Allocation, Placement, ResourceId, ResourceRequest};
 
@@ -33,7 +33,7 @@ pub(super) fn load_elf(
     image: &[u8],
     entry_symbol: Option<&str>,
 ) -> Result<LoadedElf, ElfLoadError> {
-    let parsed = ElfImage::parse(image, X86_64, entry_symbol)?;
+    let parsed = ElfImage::parse(image, UEFI, entry_symbol)?;
     let link_load_address = parsed.link_load_address();
     let entry = parsed.entry_point();
     let page_count = parsed.page_count();
@@ -42,6 +42,12 @@ pub(super) fn load_elf(
     let target = NonNull::new(actual_load_addr as *mut u8).ok_or(ElfLoadError::AllocateFailed)?;
 
     copy_segments(image, parsed.segments(), link_load_address, target)?;
+    #[cfg(target_arch = "riscv64")]
+    // SAFETY: this is the boot hart which copied all executable bytes into
+    // its uniquely reserved image; the new code is entered on this same hart.
+    unsafe {
+        core::arch::asm!("fence.i", options(nostack));
+    }
 
     let actual_load_end = actual_load_addr
         .checked_add(

@@ -101,6 +101,19 @@ fn primary_entry(fdt_addr: usize) -> ! {
     <<super::Arch as crate::ArchTrait>::Console as crate::console::ArchConsoleOps>::init();
     println!("RISC-V64 SBI kernel entry.");
 
+    primary_init()
+}
+
+#[cfg(efi)]
+pub(super) fn enter_with_efi_boot_state() -> ! {
+    // The EFI wrapper already cleared BSS, installed the CPU record, and kept
+    // the FDT, command line and initramfs populated by the shared EFI stub.
+    early_trap_init();
+    println!("RISC-V64 UEFI kernel entry.");
+    primary_init()
+}
+
+fn primary_init() -> ! {
     let kernel_code_start_lma = ext_sym_addr!(_head);
     let kernel_code_end_lma = ext_sym_addr!(__kernel_code_end);
 

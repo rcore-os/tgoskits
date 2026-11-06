@@ -1,11 +1,10 @@
 use core::arch::asm;
 
-use num_align::NumAlign;
 use page_table_generic::MapConfig;
 
 use crate::{
     console::print_mapping,
-    mem::{__kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt},
+    mem::{__kimage_va, __va, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt},
     smp::PerCpuMeta,
 };
 
@@ -77,6 +76,13 @@ pub fn enable_mmu_secondary(cpu_boot_info_paddr: usize) -> ! {
 fn setup_page_table() -> anyhow::Result<()> {
     println!("Mapping early memory regions...");
 
+    let excluded = crate::mem::NoMapRegions::current()?;
+    let cpu_area_region = crate::smp::cpu_area_region();
+    let kernel = crate::mem::required_boot_mappings(
+        &excluded,
+        crate::mem::kimage_range(),
+        cpu_area_region.clone(),
+    )?;
     let k_start = crate::mem::kimage_range().start;
     let mut table = crate::mem::mmu::new_boot_table();
 
@@ -121,7 +127,7 @@ fn setup_page_table() -> anyhow::Result<()> {
     }
 
     let v_start = __kimage_va(k_start) as usize;
-    let size = crate::mem::kimage_range().len().align_up(2 * MB);
+    let size = kernel.len();
 
     if !is_ram_alias(v_start, k_start) {
         print_mapping("KImage", v_start, k_start, size);
@@ -136,7 +142,6 @@ fn setup_page_table() -> anyhow::Result<()> {
         })?;
     }
 
-    let cpu_area_region = crate::smp::cpu_area_region();
     let cpu_area_virtual_start = cpu_area_phys_to_virt(cpu_area_region.start) as usize;
 
     if !is_ram_alias(cpu_area_virtual_start, cpu_area_region.start) {

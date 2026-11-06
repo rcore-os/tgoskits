@@ -28,7 +28,10 @@ mod platform;
 mod std_build;
 pub(crate) mod symbol_map;
 
-pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
+pub(crate) use bare_build::{
+    RISCV64_UEFI_TARGET, bare_build_target_for, freestanding_build_target_for,
+    uefi_build_target_for,
+};
 pub(crate) use config_file::{
     ensure_build_info, load_build_info, load_toml_with_rejector, read_toml_with_rejector,
     reject_arceos_app_c_field, reject_removed_std_field,

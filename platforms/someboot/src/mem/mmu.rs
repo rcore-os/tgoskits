@@ -65,7 +65,9 @@ pub fn is_mmu_enabled() -> bool {
 }
 
 pub(crate) fn is_kernel_relocated() -> bool {
-    if crate::consts::VM_LOAD_ADDRESS == crate::consts::KERNEL_LOAD_ADDRESS {
+    if !cfg!(target_arch = "riscv64")
+        && crate::consts::VM_LOAD_ADDRESS == crate::consts::KERNEL_LOAD_ADDRESS
+    {
         return true;
     }
 
