@@ -1,9 +1,70 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{Context, ensure};
+use ostool::board::config::BoardRunConfig;
+use sha2::{Digest, Sha256};
 
 use super::StarryAppBoardCase;
 use crate::starry::test::{
     BoardSessionAssetRequest, PreparedBoardSessionAssets, prepare_board_session_assets,
 };
+
+/// Bind HTTP payloads to the host-prepared bytes through the serial command.
+pub(in crate::starry) fn bind_board_session_checksums(
+    board: &mut BoardRunConfig,
+    assets: Option<&PreparedBoardSessionAssets>,
+) -> anyhow::Result<()> {
+    for step in &mut board.shell_check_steps {
+        if let Some(command) = &step.shell_cmd {
+            step.shell_cmd = Some(resolve_session_file_checksums(command, assets)?);
+        }
+    }
+    Ok(())
+}
+
+fn resolve_session_file_checksums(
+    command: &str,
+    assets: Option<&PreparedBoardSessionAssets>,
+) -> anyhow::Result<String> {
+    let mut remaining = command;
+    let mut resolved = String::new();
+    while let Some((prefix, reference)) = remaining.split_once("${sessionFileSha256:") {
+        resolved.push_str(prefix);
+        let (relative, suffix) = reference
+            .split_once('}')
+            .context("unterminated session file checksum placeholder")?;
+        let assets = assets.context("session file checksum requires prepared assets")?;
+        ensure!(
+            assets
+                .relative_paths
+                .iter()
+                .any(|path| path == Path::new(relative)),
+            "checksum references an undeclared session file: {relative}"
+        );
+        let path = assets.root.join(relative);
+        let mut file = File::open(&path)
+            .with_context(|| format!("failed to open checksum input {}", path.display()))?;
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .with_context(|| format!("failed to hash {}", path.display()))?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+        }
+        resolved.push_str(&format!("{:x}", digest.finalize()));
+        remaining = suffix;
+    }
+    resolved.push_str(remaining);
+    Ok(resolved)
+}
 
 pub(in crate::starry) async fn prepare_app_board_session_assets(
     workspace_root: &Path,

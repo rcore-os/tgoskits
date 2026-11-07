@@ -440,6 +440,7 @@ impl Starry {
             &board_config.session_files,
         )
         .await?;
+        app::bind_board_session_checksums(&mut board_config, session_assets.as_ref())?;
         if args.linux_stage {
             let assets = session_assets.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(

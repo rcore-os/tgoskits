@@ -195,3 +195,63 @@ fn board_init_step_rejects_ambiguous_or_unmatchable_config() {
     };
     assert!(configure_board_init_step(&mut missing_prefix, "app").is_err());
 }
+
+#[test]
+fn board_bootstrap_binds_downloads_to_host_checksums() {
+    use std::{fs, path::PathBuf};
+
+    use crate::starry::{app::bind_board_session_checksums, test::PreparedBoardSessionAssets};
+
+    let root = tempdir().unwrap();
+    let payload = root.path().join("payload");
+    fs::write(&payload, vec![b'x'; 100_003]).unwrap();
+    let assets = PreparedBoardSessionAssets {
+        root: root.path().into(),
+        relative_paths: vec![PathBuf::from("payload")],
+    };
+    let step = ShellCheckStep {
+        shell_prefix: Some("root#".into()),
+        shell_cmd: Some("expected='${sessionFileSha256:payload}'".into()),
+        ..Default::default()
+    };
+    let mut board = BoardRunConfig {
+        shell_check_steps: vec![step],
+        ..Default::default()
+    };
+    let init = format!(
+        "actual=$(sha256sum '{}'); test \"${{actual%% *}}\" = \"$expected\"",
+        payload.display()
+    );
+    configure_board_init_step(&mut board, &init).unwrap();
+    bind_board_session_checksums(&mut board, Some(&assets)).unwrap();
+    let command = board.shell_check_steps[0].shell_cmd.as_deref().unwrap();
+    assert!(
+        Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(&payload, b"changed after preparation").unwrap();
+    assert!(
+        !Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    for reference in [
+        "missing",
+        "../payload",
+        "payload}unfinished${sessionFileSha256:",
+    ] {
+        let init = format!("echo '${{sessionFileSha256:{reference}}}'");
+        configure_board_init_step(&mut board, &init).unwrap();
+        assert!(bind_board_session_checksums(&mut board, Some(&assets)).is_err());
+    }
+    configure_board_init_step(&mut board, "echo '${sessionFileSha256:payload}'").unwrap();
+    assert!(bind_board_session_checksums(&mut board, None).is_err());
+}

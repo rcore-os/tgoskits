@@ -2,12 +2,14 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Component, Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, bail, ensure};
 
 use crate::{
     starry::test::starry_case_asset_config,
+    support::process::ProcessExt,
     test::{
         build::{prepare_c_case_overlay_sync, prepare_rust_case_overlay_sync},
         case::{CasePipeline, TestQemuCase, board_case_asset_layout, resolve_case_pipeline},
@@ -57,7 +59,39 @@ pub(crate) async fn prepare_board_session_assets(
         ltp_case_id: None,
     };
     let prepare_overlay = match resolve_case_pipeline(&case)? {
-        CasePipeline::Plain => return Ok(None),
+        CasePipeline::Plain => {
+            let script = case_dir.join("host-prebuild.sh");
+            if !script.is_file() {
+                return Ok(None);
+            }
+            let layout = board_case_asset_layout(target_dir, target, case_name)?;
+            let case_dir = case_dir.to_path_buf();
+            let arch = arch.to_string();
+            let declared = declared_session_files.to_vec();
+            let assets = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                crate::test::case::reset_dir(&layout.overlay_dir)?;
+                Command::new("bash")
+                    .arg(&script)
+                    .current_dir(&case_dir)
+                    .env("STARRY_ARCH", arch)
+                    .env("STARRY_CASE_DIR", &case_dir)
+                    .env("STARRY_CASE_WORK_DIR", &layout.work_dir)
+                    .env("STARRY_CASE_OVERLAY_DIR", &layout.overlay_dir)
+                    .exec()
+                    .with_context(|| {
+                        format!("failed to prepare board assets: {}", script.display())
+                    })?;
+                copy_declared_session_files(&case_dir, &layout.overlay_dir, &declared)?;
+                let relative_paths = collect_upload_paths(&layout.overlay_dir)?;
+                Ok(PreparedBoardSessionAssets {
+                    root: layout.overlay_dir,
+                    relative_paths,
+                })
+            })
+            .await
+            .context("board host prebuild task failed")??;
+            return Ok(Some(assets));
+        }
         CasePipeline::C => prepare_c_case_overlay_sync,
         CasePipeline::Rust => prepare_rust_case_overlay_sync,
         pipeline => bail!(
@@ -238,7 +272,53 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{collect_upload_paths, copy_declared_session_files};
+    use super::{
+        BoardSessionAssetRequest, collect_upload_paths, copy_declared_session_files,
+        prepare_board_session_assets,
+    };
+
+    #[tokio::test]
+    async fn host_only_assets_are_uploaded_and_preparation_failures_propagate() {
+        let root = tempdir().unwrap();
+        let case_dir = root.path().join("case");
+        let target = root.path().join("target");
+        let config = case_dir.join("board.toml");
+        fs::create_dir(&case_dir).unwrap();
+        let script = case_dir.join("host-prebuild.sh");
+        fs::write(
+            &script,
+            "mkdir -p \"$STARRY_CASE_OVERLAY_DIR/bundle\"\nprintf payload > \
+             \"$STARRY_CASE_OVERLAY_DIR/bundle/part\"\n",
+        )
+        .unwrap();
+        let request = || BoardSessionAssetRequest {
+            workspace_root: root.path(),
+            target_dir: &target,
+            arch: "aarch64",
+            target: "aarch64-unknown-none-softfloat",
+            case_name: "host-assets",
+            case_dir: &case_dir,
+            board_config_path: &config,
+            declared_session_files: &[],
+        };
+        let prepared = prepare_board_session_assets(request())
+            .await
+            .unwrap()
+            .expect("host-only cases must publish their generated assets");
+        assert_eq!(prepared.relative_paths, [PathBuf::from("bundle/part")]);
+        assert_eq!(
+            fs::read(prepared.root.join("bundle/part")).unwrap(),
+            b"payload"
+        );
+        fs::write(script, "exit 9\n").unwrap();
+        assert!(prepare_board_session_assets(request()).await.is_err());
+        // Each call owns a distinct upload directory. Failure must not damage
+        // a previous successful session's still-live assets.
+        assert_eq!(
+            fs::read(prepared.root.join("bundle/part")).unwrap(),
+            b"payload"
+        );
+    }
 
     #[test]
     fn upload_paths_are_sorted_and_keep_nested_relative_paths() {
