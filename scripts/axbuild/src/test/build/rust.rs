@@ -104,7 +104,7 @@ pub(crate) fn prepare_rust_case_overlay_sync(
         run_guest_prebuild(GuestPrebuildRequest {
             arch,
             case,
-            case_rootfs,
+            prebuild_rootfs: case_rootfs,
             script: &prebuild_script,
             work_dir: &rust_dir,
             layout,

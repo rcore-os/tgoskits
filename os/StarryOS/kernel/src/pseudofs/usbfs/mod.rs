@@ -2376,6 +2376,7 @@ mod reap_tests {
             ProcessDataInit::new(
                 ProcessImage::new(
                     Default::default(),
+                    None,
                     Arc::default(),
                     Arc::default(),
                     Default::default(),

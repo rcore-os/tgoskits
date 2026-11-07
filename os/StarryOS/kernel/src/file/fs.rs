@@ -14,7 +14,7 @@ use linux_raw_sys::{
     ioctl::TIOCSCTTY,
 };
 
-use super::{FileLike, InodeKey, Kstat, get_file_like};
+use super::{FileLike, InodeKey, Kstat, NsFd, get_file_like, ns_target_from_link, proc_read_access_allowed};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
@@ -65,25 +65,43 @@ impl ResolveAtResult {
     }
 }
 
-/// Resolves an actual file descriptor without interpreting AT_FDCWD.
-pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
-    let file_like = get_file_like(fd)?;
-    let f = file_like.clone();
-    Ok(if let Some(file) = f.downcast_ref::<File>() {
+/// VFS location backing `file_like`, when it names a filesystem object.
+///
+/// Pipes, sockets, eventfds and similar anonymous handles have no mount
+/// identity and yield `None`; callers treat those as non-location objects
+/// (mode/owner updates, or a magic-link jump that crosses mounts).
+pub(crate) fn file_like_location(file_like: &Arc<dyn FileLike>) -> Option<Location> {
+    if let Some(file) = file_like.downcast_ref::<File>() {
         // Use location() directly: backend() rejects PATH-only fds
         // (BadFileDescriptor) which would break fstat(O_PATH-fd).
         // man "O_PATH": fstat(2) is in the allowed-operations list.
         // Fixes bug-open-path-fstat-ebadf.
-        ResolveAtResult::File(file.inner().location().clone())
-    } else if let Some(file) = f
+        Some(file.inner().location().clone())
+    } else if let Some(file) = file_like
         .downcast_ref::<super::Pipe>()
         .and_then(super::Pipe::named_file)
     {
-        ResolveAtResult::File(file.inner().location().clone())
-    } else if let Some(dir) = f.downcast_ref::<Directory>() {
-        ResolveAtResult::File(dir.inner().clone())
+        Some(file.inner().location().clone())
+    } else if let Some(dir) = file_like.downcast_ref::<Directory>() {
+        Some(dir.inner().clone())
     } else {
-        ResolveAtResult::Other(file_like)
+        // A memfd is a regular file inode (Linux `shmem`/tmpfs) that this
+        // kernel wraps; resolving it to its location lets fchmod/fchown/
+        // utimensat/xattr operate on that inode instead of being treated as a
+        // mode-less anonymous fd. `Memfd::stat` already delegates to the inner
+        // file, and `sys_fstatfs` resolves it the same way.
+        file_like
+            .downcast_ref::<crate::file::memfd::Memfd>()
+            .map(|memfd| memfd.inner().inner().location().clone())
+    }
+}
+
+/// Resolves an actual file descriptor without interpreting AT_FDCWD.
+pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
+    let file_like = get_file_like(fd)?;
+    Ok(match file_like_location(&file_like) {
+        Some(location) => ResolveAtResult::File(location),
+        None => ResolveAtResult::Other(file_like),
     })
 }
 
@@ -127,22 +145,64 @@ fn resolve_at_with_search(
             };
             with_fs(dirfd, |fs| {
                 let boundary = fs.permission_boundary().cloned();
-                if let Some(check) = search {
-                    let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                        fs.resolve_no_follow_with_search_checked(path, |directory| {
-                            check(fs, directory)
-                        })
-                    } else {
-                        fs.resolve_with_search_checked(path, |directory| check(fs, directory))
-                    }?;
+                let check = |directory: &Location| match search {
+                    Some(check) => check(fs, directory),
+                    None => Ok(()),
+                };
+                if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                    let (location, searched) =
+                        fs.resolve_no_follow_with_search_checked(path, check)?;
                     return Ok((ResolveAtResult::File(location), boundary, searched));
                 }
-                let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                    fs.resolve_no_follow_with_search(path)
-                } else {
-                    fs.resolve_with_search(path)
-                }?;
-                Ok((ResolveAtResult::File(location), boundary, searched))
+                match fs.resolve_with_search_checked(path, check) {
+                    Ok((location, searched)) => {
+                        Ok((ResolveAtResult::File(location), boundary, searched))
+                    }
+                    Err(error) => {
+                        // A namespace magic link jumps to an nsfs object, not
+                        // to the pathname in its display text (`mnt:[id]`).
+                        // When the final entry is one, hand out the namespace
+                        // descriptor, whose stat is the nsfs inode; lstat
+                        // (AT_SYMLINK_NOFOLLOW) keeps the link above.
+                        let Ok((entry, searched)) =
+                            fs.resolve_no_follow_with_search_checked(path, check)
+                        else {
+                            return Err(error.into());
+                        };
+                        match ns_target_from_link(&entry) {
+                            Some((task, ns_type)) => {
+                                // Following to the nsfs object must obey the
+                                // same cross-process procfs access control as
+                                // opening the entry: Linux `proc_ns_get_link`
+                                // requires PTRACE_MODE_READ_FSCREDS before the
+                                // jump, and the namespace inode id is exactly
+                                // what this stat would leak.
+                                let proc_data = task.as_thread().proc_data.clone();
+                                if !proc_read_access_allowed(
+                                    &current_user_task(),
+                                    &proc_data,
+                                )? {
+                                    return Err(StarryError::PermissionDenied);
+                                }
+                                // The caller's filesystem context is locked
+                                // here; do not re-enter FS_CONTEXT for the
+                                // target when it is this process.
+                                let mnt_fs_ns = (ns_type == "mnt")
+                                    .then(|| fs.mount_namespace().clone());
+                                Ok((
+                                    ResolveAtResult::Other(Arc::new(
+                                        NsFd::from_task_with_mount_ns(
+                                            &task, &ns_type, mnt_fs_ns,
+                                        )?,
+                                    )),
+                                    boundary,
+                                    searched,
+                                ))
+                            }
+                            None => Err(error.into()),
+                        }
+                    }
+                }
             })
         }
     }

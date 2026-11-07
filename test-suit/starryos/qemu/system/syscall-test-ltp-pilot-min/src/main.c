@@ -187,30 +187,32 @@ static void test_openat2_min(void)
     expect_openat2_padded_e2big();
 
     expect_openat2_success("openat2 ordinary path succeeds", dirfd, "basic", O_RDWR, 0);
-    expect_openat2_errno("openat2 unsupported RESOLVE_NO_XDEV -> EOPNOTSUPP",
-                         dirfd, "resolve-xdev",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_NO_XDEV },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_NO_MAGICLINKS -> EOPNOTSUPP",
-                         dirfd, "resolve-magic",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_NO_MAGICLINKS },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_NO_SYMLINKS -> EOPNOTSUPP",
-                         dirfd, "resolve-symlink",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_NO_SYMLINKS },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_BENEATH -> EOPNOTSUPP",
-                         dirfd, "resolve-beneath",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_BENEATH },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_IN_ROOT -> EOPNOTSUPP",
-                         dirfd, "resolve-in-root",
-                         (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_IN_ROOT },
-                         sizeof(struct open_how), EOPNOTSUPP);
-    expect_openat2_errno("openat2 unsupported RESOLVE_CACHED -> EOPNOTSUPP",
+    /* The kernel enforces all five restricted-RESOLVE sets on this path;
+     * these plain in-base opens satisfy every restriction, so assert the
+     * observable success. RESOLVE_CACHED is covered separately below (this
+     * kernel fails every CACHED open with EAGAIN, including cases Linux
+     * would serve from the dcache). */
+    expect_openat2_success("openat2 RESOLVE_NO_XDEV resolves",
+                           dirfd, "resolve-xdev",
+                           O_RDWR | O_CREAT, RESOLVE_NO_XDEV);
+    expect_openat2_success("openat2 RESOLVE_NO_MAGICLINKS resolves",
+                           dirfd, "resolve-magic",
+                           O_RDWR | O_CREAT, RESOLVE_NO_MAGICLINKS);
+    expect_openat2_success("openat2 RESOLVE_NO_SYMLINKS resolves",
+                           dirfd, "resolve-symlink",
+                           O_RDWR | O_CREAT, RESOLVE_NO_SYMLINKS);
+    expect_openat2_success("openat2 RESOLVE_BENEATH resolves",
+                           dirfd, "resolve-beneath",
+                           O_RDWR | O_CREAT, RESOLVE_BENEATH);
+    expect_openat2_success("openat2 RESOLVE_IN_ROOT resolves",
+                           dirfd, "resolve-in-root",
+                           O_RDWR | O_CREAT, RESOLVE_IN_ROOT);
+    /* RESOLVE_CACHED needs a dcache-only lookup the kernel cannot provide;
+     * it fails with EAGAIN and carries no creation side effect. */
+    expect_openat2_errno("openat2 RESOLVE_CACHED -> EAGAIN",
                          dirfd, "resolve-cached",
                          (struct open_how){ O_RDWR | O_CREAT, 0600, RESOLVE_CACHED },
-                         sizeof(struct open_how), EOPNOTSUPP);
+                         sizeof(struct open_how), EAGAIN);
 
     close(dirfd);
     rmdir(dir);

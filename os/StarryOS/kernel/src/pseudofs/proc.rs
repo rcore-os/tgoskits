@@ -20,7 +20,7 @@ use ax_std::os::arceos::task::{
     sched::{CpuId, CpuSet},
     thread::ThreadState,
 };
-use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
 use zerocopy::IntoBytes;
 
@@ -1084,14 +1084,20 @@ impl SimpleDirOps for ThreadFdDir {
         let task = require_proc_task(&self.task)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
         let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
-        let path = fd_table
-            .read()
-            .get(fd as _)
-            .ok_or(VfsError::NotFound)?
-            .inner
-            .path()
-            .into_owned();
-        Ok(SimpleFile::new(fs, NodeType::Symlink, move || Ok(path.clone())).into())
+        // Resolve both the displayed path and the VFS target of the jump
+        // from the same descriptor: `RESOLVE_NO_XDEV` compares the target's
+        // mount with procfs, and a descriptor that names a procfs object must
+        // not be treated as crossing (Linux `proc_fd_link` jumps to the
+        // fd's `f_path`; anonymous handles have no mount identity).
+        let (path, target) = {
+            let table = fd_table.read();
+            let entry = table.get(fd as _).ok_or(VfsError::NotFound)?;
+            (
+                entry.inner.path().into_owned(),
+                crate::file::file_like_location(&entry.inner),
+            )
+        };
+        Ok(SimpleFile::new_magic_link_targeting(fs, move || Ok(path.clone()), target).into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1170,12 +1176,21 @@ impl SimpleDirOps for ThreadFdInfoDir {
 
 /// The /proc/[pid]/ns directory — namespace entries.
 ///
-/// Each entry is a regular file displaying the namespace identifier.
-/// When opened, the kernel intercepts the open path and creates an
+/// Each entry is a magic link displaying the namespace identifier. When
+/// opened, the kernel intercepts the open path and creates an
 /// [`NsFd`](crate::file::NsFd) instead of a regular file descriptor.
-struct NsDir {
+pub(crate) struct NsDir {
     fs: Arc<SimpleFs>,
     task: WeakUserTaskRef,
+}
+
+impl NsDir {
+    /// Upgrades the owning process task so a dirfd-relative
+    /// `/proc/<pid>/ns/<type>` open can build the same namespace descriptor as
+    /// the absolute path form.
+    pub(crate) fn ns_task(&self) -> Option<crate::task::UserTaskRef> {
+        upgrade_proc_task(&self.task).ok().flatten()
+    }
 }
 
 impl SimpleDirOps for NsDir {
@@ -1234,7 +1249,10 @@ impl SimpleDirOps for NsDir {
         };
 
         let content = content.into_bytes();
-        Ok(SimpleFile::new_regular(fs, move || Ok(content.clone())).into())
+        // Linux exposes ns entries as magic links (their displayed
+        // "uts:[id]" text is a kernel handle, not a pathname), so they carry
+        // the magic-link flag for openat2's link restrictions.
+        Ok(SimpleFile::new_magic_link(fs, move || Ok(content.clone())).into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1243,7 +1261,7 @@ impl SimpleDirOps for NsDir {
 }
 
 /// The /proc/[pid] directory
-struct ThreadDir {
+pub(crate) struct ThreadDir {
     fs: Arc<SimpleFs>,
     task: WeakUserTaskRef,
     /// Authoritative process state for memory counters (`path_pid` lookup).
@@ -1252,6 +1270,18 @@ struct ThreadDir {
     path_pid: u32,
     procfs_pid: Option<u32>,
     view: PidView,
+}
+
+impl ThreadDir {
+    /// Upgrades the owning task so consumers of an actually-resolved entry
+    /// (for example the `/proc/<pid>/exe` fast path) take the process from
+    /// the entry itself instead of re-parsing the path text — a bind mount
+    /// that redirects `/proc/<pid>` then resolves to the mounted directory's
+    /// owner. `None` means the owning task has exited (Linux reports ENOENT
+    /// for the exe link of a process with no remaining mm).
+    pub(crate) fn thread_task(&self) -> Option<crate::task::UserTaskRef> {
+        upgrade_proc_task(&self.task).ok().flatten()
+    }
 }
 
 fn render_thread_maps(task: &WeakUserTaskRef) -> VfsResult<String> {
@@ -1560,6 +1590,15 @@ impl SimpleDirOps for ThreadDir {
                     )),
                     SimpleFileOperation::Write(data) => {
                         if !data.is_empty() {
+                            // Linux oom_score_adj_write() uses
+                            // memdup_user_nul() + kstrtoint(): the first NUL
+                            // terminates the number. runc's nsexec writes its
+                            // bootstrap value verbatim as "0\0", so the write
+                            // must not treat the NUL as trailing garbage.
+                            let data = match data.iter().position(|&byte| byte == 0) {
+                                Some(end) => &data[..end],
+                                None => data,
+                            };
                             let value = str::from_utf8(data)
                                 .ok()
                                 .and_then(|it| it.trim_ascii_end().parse::<i32>().ok())
@@ -1670,10 +1709,19 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "exe" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.exe_path().to_string())
-            })
-            .into(),
+            "exe" => {
+                let proc_data = task.as_thread().proc_data.clone();
+                // The jump target is the backing executable, so NO_XDEV can
+                // compare its mount with procfs instead of refusing every
+                // jump (`nd_jump_link` only refuses cross-mount jumps).
+                let target = proc_data.exe_location();
+                SimpleFile::new_magic_link_targeting(
+                    fs,
+                    move || Ok(proc_data.exe_path().to_string()),
+                    target,
+                )
+                .into()
+            }
             "environ" => SimpleFile::new_regular(fs, move || {
                 let envp = task.as_thread().proc_data.envp();
                 let mut buf = Vec::new();
@@ -1684,11 +1732,11 @@ impl SimpleDirOps for ThreadDir {
                 Ok(buf)
             })
             .into(),
-            "root" => SimpleFile::new(fs, NodeType::Symlink, move || {
+            "root" => SimpleFile::new_magic_link(fs, move || {
                 Ok(task.as_thread().proc_data.root_path().to_string())
             })
             .into(),
-            "cwd" => SimpleFile::new(fs, NodeType::Symlink, move || {
+            "cwd" => SimpleFile::new_magic_link(fs, move || {
                 Ok(task.as_thread().proc_data.cwd_path().to_string())
             })
             .into(),
@@ -2127,11 +2175,22 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     );
     // /proc/filesystems — list of registered filesystem types. Tools like
     // `mount`/`findmnt` and some container runtimes read it to decide what they
-    // can mount; absence (ENOENT) made those probes fail.
+    // can mount; absence (ENOENT) made those probes fail, and a stale list
+    // made `mount -t cgroup2` fail before the syscall even ran. The entries
+    // must stay in sync with the fs_type dispatch in
+    // `syscall/fs/mount.rs` (`sys_mount`/`sys_fsopen`); format follows Linux
+    // `fs/proc/filesystems.c`: `nodev\t<name>` for pseudo filesystems and
+    // `\t<name>` for device-backed ones.
     root.add(
         "filesystems",
         SimpleFile::new_regular(fs.clone(), || {
-            Ok("nodev\tsysfs\nnodev\tproc\nnodev\ttmpfs\nnodev\tdevtmpfs\n\text4\n")
+            Ok(
+                ["nodev\tsysfs", "nodev\tproc", "nodev\ttmpfs", "nodev\tramfs",
+                 "nodev\tdevtmpfs", "nodev\tdevpts", "nodev\tcgroup2",
+                 "nodev\toverlay", "\text4"]
+                    .map(|line| format!("{line}\n"))
+                    .concat(),
+            )
         }),
     );
     root.add("stat", SimpleFile::new_regular(fs.clone(), render_stat));
