@@ -1364,18 +1364,33 @@ impl Location {
     ///
     /// The original attachments and complete propagation set must still match
     /// admission. Unrelated namespace mutations do not invalidate the plan.
+    ///
+    /// A failed flush returns before the mount is detached. The mount, its
+    /// filesystem lease and any lifetime guard remain available so userspace
+    /// can repair the backing device and retry. The flush runs once here, and a
+    /// second flush is never attempted after deletion has started.
     pub fn commit_unmount(&self, plan: UnmountPlan) -> VfsResult<()> {
+        self.commit_unmount_with_status(plan).0
+    }
+
+    /// Commits an admitted normal unmount and reports whether deletion was
+    /// accepted. A flush error leaves the mount attached and returns `false`.
+    pub fn commit_unmount_with_status(&self, plan: UnmountPlan) -> (VfsResult<()>, bool) {
         if !self.is_root_of_mount()
             || !plan
                 .targets()
                 .any(|mountpoint| Arc::ptr_eq(mountpoint, &self.mountpoint))
         {
-            return Err(VfsError::InvalidInput);
+            return (Err(VfsError::InvalidInput), false);
         }
-        self.filesystem().flush()?;
-        self.mountpoint.commit_normal_after_flush(plan)?;
+        if let Err(error) = self.filesystem().flush() {
+            return (Err(error), false);
+        }
+        if let Err(error) = self.mountpoint.commit_normal_after_flush(plan) {
+            return (Err(error), false);
+        }
         self.finish_unmount();
-        Ok(())
+        (Ok(()), true)
     }
 
     fn finish_unmount(&self) {
@@ -1449,6 +1464,7 @@ mod tests {
         self_ref: Weak<Self>,
         topology_change: Box<dyn Fn() + Send + Sync>,
         flushes: AtomicUsize,
+        fail_flush: AtomicBool,
     }
     struct TopologyChangingNode {
         filesystem: Arc<TopologyChangingFs>,
@@ -1517,7 +1533,11 @@ mod tests {
         }
 
         fn flush(&self) -> VfsResult<()> {
-            if self.flushes.fetch_add(1, Ordering::AcqRel) == 0 {
+            let previous = self.flushes.fetch_add(1, Ordering::AcqRel);
+            if self.fail_flush.load(Ordering::Acquire) {
+                return Err(VfsError::Io);
+            }
+            if previous == 0 {
                 (self.topology_change)();
             }
             Ok(())
@@ -1955,6 +1975,7 @@ mod tests {
             self_ref: self_ref.clone(),
             topology_change: Box::new(move || unrelated_mount.set_shared()),
             flushes: AtomicUsize::new(0),
+            fail_flush: AtomicBool::new(false),
         });
         let mounted_fs = Filesystem::new(filesystem_ops.clone());
         let mounted = target.mount(&mounted_fs).expect("mount succeeds");
@@ -1966,6 +1987,47 @@ mod tests {
 
         assert_eq!(filesystem_ops.flushes.load(Ordering::Acquire), 1);
         assert!(!parent.children.lock().contains_key(&target_entry.key()));
+    }
+
+    #[test]
+    fn flush_failure_retains_normal_unmount_and_lifetime_guard() {
+        let parent_fs = mock_filesystem();
+        let parent = Mountpoint::new_root(&parent_fs);
+        let parent_root = parent.root_location();
+        let target_entry = make_child_dir_entry(Some(parent_root.entry().clone()), "mount-target");
+        let target = Location::new(parent.clone(), target_entry.clone());
+        let filesystem_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(|| {}),
+            flushes: AtomicUsize::new(0),
+            fail_flush: AtomicBool::new(true),
+        });
+        let mounted_fs = Filesystem::new(filesystem_ops.clone());
+        let mounted = target.mount(&mounted_fs).expect("mount succeeds");
+        let guard_drops = Arc::new(AtomicUsize::new(0));
+        mounted.set_lifetime_guard(Arc::new(LifetimeGuard(guard_drops.clone())));
+
+        assert_eq!(
+            mounted.root_location().unmount(),
+            Err(VfsError::Io),
+            "the flush error must be returned before deletion"
+        );
+        assert!(mounted.location().is_some());
+        assert!(parent.children.lock().contains_key(&target_entry.key()));
+        assert_eq!(
+            guard_drops.load(Ordering::Acquire),
+            0,
+            "a failed flush must retain the lifetime guard"
+        );
+
+        filesystem_ops.fail_flush.store(false, Ordering::Release);
+        mounted
+            .root_location()
+            .unmount()
+            .expect("a retry after the flush error must succeed");
+        assert!(mounted.location().is_none());
+        assert!(!parent.children.lock().contains_key(&target_entry.key()));
+        assert_eq!(guard_drops.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -1992,11 +2054,13 @@ mod tests {
                 peer_parent_for_flush.join_shared_group(&source_parent_for_flush);
             }),
             flushes: AtomicUsize::new(0),
+            fail_flush: AtomicBool::new(false),
         });
         let peer_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
             self_ref: self_ref.clone(),
             topology_change: Box::new(|| {}),
             flushes: AtomicUsize::new(0),
+            fail_flush: AtomicBool::new(false),
         });
         let source_mount = source_target
             .mount(&Filesystem::new(source_ops.clone()))

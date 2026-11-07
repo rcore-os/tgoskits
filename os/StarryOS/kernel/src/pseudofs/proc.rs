@@ -1756,9 +1756,16 @@ impl SimpleDirOps for ThreadDir {
                                 cred.cap_effective = mask;
                                 cred.cap_bounding = mask;
                             } else {
+                                // Capability checks are still global rather
+                                // than scoped to UserNamespace. A non-zero
+                                // mapping therefore must not leave any host
+                                // capability state that could bypass DAC,
+                                // regain UID 0, or survive into a later exec.
+                                cred.cap_inheritable = 0;
                                 cred.cap_permitted = 0;
                                 cred.cap_effective = 0;
                                 cred.cap_ambient = 0;
+                                cred.cap_bounding = 0;
                             }
                             cred.sanitize_capabilities();
                             Thread::set_cred(thr, cred);

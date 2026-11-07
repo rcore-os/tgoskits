@@ -23,6 +23,14 @@ patterns covered by the Starry direct I/O fixes:
 - short reads such as `bytes should have been read`
 - write failures such as `InnoDB: IO Error`
 
-Before injecting the test script, `prebuild.sh` refreshes the app-specific
-rootfs from the cached clean Alpine archive. This keeps each MariaDB app run
-independent from a previously used or partially filled rootfs image.
+项目 app runner 负责从基础镜像复制本次运行独立的 per-app rootfs，并在运行后清理；
+`prebuild.sh` 只扩容 runner 提供的镜像，并注入测试脚本、`/etc/apk/repositories`
+和 `/etc/resolv.conf`，不直接解压 registry archive。
+
+## Rootfs 容量
+
+`prebuild.sh` 在注入 overlay 前对 per-app rootfs 执行只增不减的扩容，默认
+`MARIADB_ROOTFS_SIZE=4G`；已有更大镜像保持原大小，不会被缩小。扩容使用
+`truncate`、`e2fsck` 和 `resize2fs`，需要主机提供 `e2fsprogs` 与 `coreutils`
+中的 `debugfs`、`e2fsck`、`resize2fs`、`numfmt`、`stat` 和 `truncate`。
+`e2fsck` 返回真实错误或 `resize2fs` 失败都会终止 prebuild。

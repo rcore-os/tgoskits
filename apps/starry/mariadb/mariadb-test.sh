@@ -42,34 +42,58 @@ prep_step() {
     printf "%sMARIADB_PREP %s%s\n" "$bold" "$1" "$reset"
 }
 
+dump_mariadb_log() {
+    echo "MARIADB_LOG_BEGIN path=$log_file"
+    tail -n 80 "$log_file" 2>/dev/null || true
+    echo "MARIADB_LOG_END"
+}
+
 stop_mariadb() {
-    if [ -S "$socket" ]; then
-        mariadb-admin --socket="$socket" shutdown >>"$log_file" 2>&1 || true
-    fi
+    mode="${1:-cleanup}"
 
-    if [ -n "$mariadb_pid" ]; then
-        i=0
-        while kill -0 "$mariadb_pid" >/dev/null 2>&1 && [ "$i" -lt 20 ]; do
-            i=$((i + 1))
-            sleep 1
-        done
-        kill "$mariadb_pid" >/dev/null 2>&1 || true
-        wait "$mariadb_pid" >/dev/null 2>&1 || true
-        mariadb_pid=""
-    fi
-
-    if [ -s "$pid_file" ]; then
-        pid="$(cat "$pid_file" 2>/dev/null || true)"
-        if [ -n "$pid" ]; then
-            kill "$pid" >/dev/null 2>&1 || true
+    if [ "$mode" = required ] && [ -S "$socket" ]; then
+        echo "MARIADB_STOP admin_begin mode=$mode pid=$mariadb_pid"
+        admin_rc=0
+        timeout -k 5 30 mariadb-admin --socket="$socket" shutdown >>"$log_file" 2>&1 || admin_rc=$?
+        echo "MARIADB_STOP admin_rc=$admin_rc mode=$mode"
+        if [ "$admin_rc" -ne 0 ]; then
+            return 1
         fi
     fi
 
+    if [ -n "$mariadb_pid" ]; then
+        if [ "$mode" = required ]; then
+            i=0
+            while kill -0 "$mariadb_pid" >/dev/null 2>&1 && [ "$i" -lt 20 ]; do
+                i=$((i + 1))
+                sleep 1
+            done
+            if kill -0 "$mariadb_pid" >/dev/null 2>&1; then
+                echo "MARIADB_STOP failed: daemon pid $mariadb_pid still alive after 20s"
+                return 1
+            fi
+            wait_rc=0
+            wait "$mariadb_pid" >/dev/null 2>&1 || wait_rc=$?
+            mariadb_pid=""
+            echo "MARIADB_STOP daemon_wait_rc=$wait_rc"
+            if [ "$wait_rc" -ne 0 ]; then
+                return 1
+            fi
+        else
+            echo "MARIADB_STOP cleanup_kill pid=$mariadb_pid"
+            kill -KILL "$mariadb_pid" >/dev/null 2>&1 || true
+            wait "$mariadb_pid" >/dev/null 2>&1 || true
+        fi
+        mariadb_pid=""
+    fi
+
+    # A PID read from pid_file may already belong to another process after reuse.
+    # Only remove our path; never signal it.
     rm -f "$socket" "$pid_file"
 }
 
 cleanup() {
-    stop_mariadb
+    stop_mariadb cleanup
     rm -rf "$data_dir" 2>/dev/null || true
 }
 
@@ -99,6 +123,12 @@ capture_stream() {
         set +e
         "$@" >"$output" 2>&1
     )
+}
+
+dump_install_log() {
+    echo "MARIADB_INSTALL_LOG_BEGIN path=$install_log"
+    cat "$install_log" 2>/dev/null || true
+    echo "MARIADB_INSTALL_LOG_END"
 }
 
 start_mariadb() {
@@ -153,15 +183,21 @@ expect_sql() {
 prep_step install
 capture_stream apk apk add mariadb mariadb-client || fail "apk add mariadb failed"
 
+# No pre-init daemon kill: before start_mariadb no PID in this run is owned by us.
 prep_step initdb
-stop_mariadb
 rm -f "$log_file" "$install_log"
 mkdir -p /run/mysqld "$data_dir"
 
 if command -v mariadb-install-db >/dev/null 2>&1; then
-    capture_stream install-db mariadb-install-db --user=root --datadir="$data_dir" || fail "mariadb-install-db failed"
+    if ! capture_stream install-db mariadb-install-db --user=root --datadir="$data_dir"; then
+        dump_install_log
+        fail "mariadb-install-db failed"
+    fi
 elif command -v mysql_install_db >/dev/null 2>&1; then
-    capture_stream install-db mysql_install_db --user=root --datadir="$data_dir" || fail "mysql_install_db failed"
+    if ! capture_stream install-db mysql_install_db --user=root --datadir="$data_dir"; then
+        dump_install_log
+        fail "mysql_install_db failed"
+    fi
 else
     fail "missing mariadb-install-db/mysql_install_db"
 fi
@@ -358,7 +394,10 @@ expect_sql paid-total 4504.80 "SELECT COALESCE(SUM(amount), 0) FROM starry_test.
 check_innodb_log || fail "InnoDB reported I/O errors"
 stage_pass
 stage_begin restart-persistence
-stop_mariadb
+if ! stop_mariadb required; then
+    dump_mariadb_log
+    fail "mariadbd did not stop cleanly before restart"
+fi
 start_mariadb || fail "mariadbd did not become ready after restart"
 
 expect_sql restart-user-count 6 "SELECT COUNT(*) FROM starry_test.users;" || fail "restart-user-count query failed"
@@ -369,7 +408,7 @@ expect_sql restart-rollback-count 0 "SELECT COUNT(*) FROM starry_test.users WHER
 expect_sql restart-paid-total 4504.80 "SELECT COALESCE(SUM(amount), 0) FROM starry_test.orders WHERE status = 'paid';" || fail "restart-paid-total query failed"
 check_innodb_log || fail "InnoDB reported I/O errors after restart"
 stage_pass
-stop_mariadb
+stop_mariadb cleanup
 
 test_done=1
 trap - EXIT

@@ -273,6 +273,37 @@ impl TaskContext {
         child.fp_state.save();
     }
 
+    /// Snapshots the running task's hardware FP/SIMD image.
+    ///
+    /// The runtime must exclude preemption while calling this method. Eager
+    /// task switching keeps the running task's user register image in the
+    /// hardware, so `fp_state` only holds the image saved at the last switch.
+    #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+    pub fn capture_user_fp_state(&self) -> FpState {
+        assert!(
+            self.task_anchor().is_some(),
+            "FP snapshot requires a bound execution context"
+        );
+        let mut snapshot = FpState::default();
+        snapshot.save();
+        snapshot
+    }
+
+    /// Installs a user FP/SIMD image into the running task and its hardware.
+    ///
+    /// The runtime must exclude preemption while calling this method: the task
+    /// image and the live hardware registers must change in one transaction so
+    /// a switch-out cannot save a partially installed image.
+    #[cfg(all(feature = "fp-simd", feature = "uspace"))]
+    pub fn replace_user_fp_state(&mut self, state: FpState) {
+        assert!(
+            self.task_anchor().is_some(),
+            "FP replacement requires a bound execution context"
+        );
+        self.fp_state = state;
+        self.fp_state.restore();
+    }
+
     /// Completes FP/SIMD work before current-context publication.
     pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]

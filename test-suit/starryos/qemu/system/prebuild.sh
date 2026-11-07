@@ -28,7 +28,7 @@ case ",${STARRY_GROUPED_C_SUBCASES:-}," in
 esac
 
 case ",${STARRY_GROUPED_C_SUBCASES:-}," in
-    *,ltp-syscalls,*)
+    *,ltp-syscalls,*|*,ltp-isolation-exit-fs,*)
         apk_add_with_retry e2fsprogs
         test -x "$STARRY_STAGING_ROOT/sbin/mkfs.ext4"
         ;;

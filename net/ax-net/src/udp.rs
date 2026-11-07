@@ -684,6 +684,16 @@ impl Drop for UdpSocket {
         flush_egress();
         self.shutdown(Shutdown::Both).ok();
         self.clear_tracked_egress_ip_tos();
+        // Binding publishes `local_addr` only after the side-table entry exists,
+        // so it also identifies the single bucket that must be released here.
+        let local_port = self
+            .local_addr
+            .lock()
+            .as_ref()
+            .map(|endpoint| endpoint.port);
+        if let Some(port) = local_port {
+            SOCKET_SET.udp_unbind(self.handle, port);
+        }
         SOCKET_SET.remove(self.handle);
     }
 }

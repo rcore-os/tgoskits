@@ -235,6 +235,7 @@ FC
 
     # Test script
     install -Dm0755 "$app_dir/test_browser.sh" "$overlay_dir/usr/bin/test-browser.sh"
+    install -Dm0644 "$app_dir/firefox_exit_status.sh" "$overlay_dir/usr/bin/firefox_exit_status.sh"
     install -Dm0755 "$app_dir/render_check.py" "$overlay_dir/usr/bin/render-check.py"
 }
 

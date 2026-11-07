@@ -83,6 +83,30 @@ impl FileBackend {
         }
     }
 
+    /// Performs a best-effort synchronous read-ahead for a byte range.
+    ///
+    /// Cacheable direct descriptors reuse the page cache owned by the same
+    /// inode. Nodes explicitly marked non-cacheable retain their existing
+    /// no-cache behavior. A zero count requests through EOF. At most the first
+    /// 32 pages are populated, and execution failures do not make the advisory
+    /// request fail.
+    pub fn readahead(&self, offset: u64, count: u64) {
+        match self {
+            Self::Cached(cached) => cached.readahead(offset, count),
+            Self::Direct(location) => {
+                if location.flags().contains(NodeFlags::NON_CACHEABLE) {
+                    return;
+                }
+                match CachedFile::get_or_create(location.clone()) {
+                    Ok(cached) => cached.readahead(offset, count),
+                    Err(error) => {
+                        log::debug!("file readahead cache unavailable: {error:?}");
+                    }
+                }
+            }
+        }
+    }
+
     /// Reads directly into exclusively borrowed, resident kernel storage.
     ///
     /// Unlike an arbitrary Writer, this destination cannot fault or reenter

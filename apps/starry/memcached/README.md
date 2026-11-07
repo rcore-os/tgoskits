@@ -40,9 +40,13 @@ x86_64 和 LoongArch 对齐当前 system 套件，使用 `uefi = true`、
 
 ### 2.1 执行入口
 
-Python 文件流水线在准备阶段安装 `python3` 并注入客户端；客户机通过
-`apk add memcached python3` 安装服务并保留客户端依赖，避免 apk 根据客户机
-world 清单移除准备阶段注入的 Python。因此准备阶段和客户机均需要可用的软件源。
+Python 文件流水线先在 staging rootfs 中安装 `python3`，随后执行
+`python/prebuild.sh` 安装 Alpine memcached；脚本完成后，流水线把
+`usr/bin`、`usr/lib`、`lib` 与 `.py` 客户端复制到 overlay。客户机启动后只运行
+`python3 /usr/bin/memcached-test.py`，不再在启动瞬间访问 APK 软件源；
+`python/prebuild.sh` 本身不会复制到客户机。
+准备脚本的非零退出由 xtask 作为资产准备失败传播；真实 memcached 服务仍由
+测试脚本启动并完成全部 set/get/delete/stats 断言。
 选择需要验证的体系结构执行，四种取值为 `x86_64`、`aarch64`、`riscv64`
 和 `loongarch64`。
 
@@ -55,15 +59,20 @@ cargo xtask starry app qemu -t memcached --arch x86_64
 `main()` 在成功和异常路径都回收自己启动的子进程，先发送终止信号，五秒内
 未退出则强制终止并等待回收，不使用全局 `pkill`。日志只来自本次服务。
 全部协议判定及回收完成后才输出 `MEMCACHED_TEST_PASSED`；异常输出
-`MEMCACHED_TEST_FAILED` 并非零退出。`shell_check_steps` 同时捕获依赖安装
-失败，由外层运行器判为失败。此用例不提供吞吐量或高并发压力指标。
+`MEMCACHED_TEST_FAILED` 并非零退出。`shell_check_steps` 同时捕获解释器或
+测试启动失败，由外层运行器判为失败。此用例不提供吞吐量或高并发压力指标。
 
 ## 3. 验证记录
 
-2026-09-14，在 PR head `6b7547d09b74` 变基到 `c1f5be7373` 后，使用
+2026-09-14 的旧记录使用当时在客户机内安装依赖的流程，在 PR head
+`6b7547d09b74` 变基到 `c1f5be7373` 后，使用
 `cargo xtask starry app qemu -t memcached --arch <arch>` 分别验证 x86_64、
 AArch64、RISC-V 和 LoongArch。四个架构均运行 Alpine memcached 1.6.42，
 输出 `MEMCACHED_TEST_PASSED`，项目命令退出码均为 0。
+
+2026-10-19 使用现有 `STARRY_APK_REGION=china` 和新 Python 预准备流程验证。
+四架构均实际输出 `MEMCACHED_TEST_PASSED`，对应命令通过：x86_64、riscv64 和
+loongarch64 由全量覆盖，aarch64 使用定向用例验证。
 
 宿主 Linux 的真实 memcached 也通过同一客户端。临时改变期望的读取值后，
 客户端非零退出、输出失败标记且不输出成功标记；恢复后再次通过，确认失败

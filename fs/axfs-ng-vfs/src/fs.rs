@@ -124,6 +124,20 @@ impl WeakFilesystem {
             mount_state: self.mount_state.upgrade()?,
         })
     }
+
+    /// Retains the filesystem implementation without reconstructing VFS mount
+    /// state.
+    ///
+    /// Cached inodes can keep a filesystem alive after its last Mountpoint is
+    /// detached. Callers that only need filesystem-owned flush or retirement
+    /// work can use this entry. It does not itself prevent a caller from
+    /// constructing a fresh [`Filesystem`] around the ops; mount revival is
+    /// rejected by [`FilesystemOps::mount_lease`] outside the active lifecycle,
+    /// and I/O safety additionally depends on the filesystem's admission
+    /// gates.
+    pub fn upgrade_ops(&self) -> Option<Arc<dyn FilesystemOps>> {
+        self.ops.upgrade()
+    }
 }
 
 #[inherit_methods(from = "self.ops")]

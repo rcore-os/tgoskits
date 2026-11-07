@@ -173,6 +173,35 @@ struct AioContextInner {
     worker_count: usize,
 }
 
+struct AioLifecycle {
+    closing: bool,
+    active_calls: usize,
+}
+
+struct AioCall {
+    context: Arc<AioContext>,
+}
+
+impl AioCall {
+    fn context(&self) -> &Arc<AioContext> {
+        &self.context
+    }
+}
+
+impl Drop for AioCall {
+    fn drop(&mut self) {
+        let should_wake = {
+            let mut lifecycle = self.context.lifecycle.lock();
+            debug_assert!(lifecycle.active_calls > 0);
+            lifecycle.active_calls -= 1;
+            lifecycle.active_calls == 0
+        };
+        if should_wake {
+            self.context.lifecycle_wq.notify_all();
+        }
+    }
+}
+
 struct AioContext {
     id: AioContextId,
     owner: PidIdentityId,
@@ -185,10 +214,13 @@ struct AioContext {
     ready_count: AtomicUsize,
     queued_count: AtomicUsize,
     destroying: AtomicBool,
+    ring_mapped: AtomicBool,
     work_wq: WaitQueue,
     inflight_wq: WaitQueue,
+    lifecycle_wq: WaitQueue,
     completion_wakers: PollSet,
     inner: Mutex<AioContextInner>,
+    lifecycle: Mutex<AioLifecycle>,
 }
 
 impl AioContext {
@@ -213,8 +245,10 @@ impl AioContext {
             ready_count: AtomicUsize::new(0),
             queued_count: AtomicUsize::new(0),
             destroying: AtomicBool::new(false),
+            ring_mapped: AtomicBool::new(true),
             work_wq: WaitQueue::new(),
             inflight_wq: WaitQueue::new(),
+            lifecycle_wq: WaitQueue::new(),
             completion_wakers: PollSet::new(),
             inner: Mutex::new(AioContextInner {
                 inflight: 0,
@@ -222,12 +256,40 @@ impl AioContext {
                 pending: BTreeMap::new(),
                 worker_count: 0,
             }),
+            lifecycle: Mutex::new(AioLifecycle {
+                closing: false,
+                active_calls: 0,
+            }),
         }
     }
 
     // Return usable completion slots, leaving one slot empty to distinguish full.
     fn capacity(&self) -> usize {
         self.ring_events.saturating_sub(1) as usize
+    }
+
+    // Admit one syscall while destruction is not closing the context.
+    fn begin_call(self: &Arc<Self>) -> Option<AioCall> {
+        let context = self.clone();
+        let mut lifecycle = self.lifecycle.lock();
+        if lifecycle.closing {
+            return None;
+        }
+        lifecycle.active_calls += 1;
+        drop(lifecycle);
+        Some(AioCall { context })
+    }
+}
+
+impl Drop for AioContext {
+    fn drop(&mut self) {
+        if !self.ring_mapped.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let mut aspace = self.aspace.lock();
+        if let Err(err) = aspace.unmap(self.ring_vaddr, self.ring_size) {
+            warn!("aio context drop: failed to unmap ring buffer: {:?}", err);
+        }
     }
 }
 
@@ -383,25 +445,24 @@ fn write_event_context(context: &AioContext, index: u32, event: &IoEvent) -> Sta
         .write(ring_event_addr(context, index), typed_as_bytes(event))
 }
 
-// Validate a userspace context handle and return its kernel object.
-fn lookup_context(
-    current: &crate::task::UserTaskRef,
-    ctx: AioContextId,
-) -> StarryResult<Arc<AioContext>> {
+// Admit a syscall that may read the ring or copy caller output.
+fn lookup_context(current: &crate::task::UserTaskRef, ctx: AioContextId) -> StarryResult<AioCall> {
     let owner = current_process_identity_id(current);
     let ring = read_ring_user(current, ctx)?;
-    let contexts = AIO_CONTEXTS.read();
     let ctx_id = ring.id as usize;
-    match contexts.get(&ctx_id) {
-        Some(context)
-            if context.owner == owner
-                && context.ring_vaddr.as_usize() == ctx
-                && ring.magic == AIO_RING_MAGIC =>
-        {
-            Ok(context.clone())
-        }
-        _ => Err(invalid_context()),
-    }
+    let context = {
+        let contexts = AIO_CONTEXTS.read();
+        contexts
+            .get(&ctx_id)
+            .filter(|context| {
+                context.owner == owner
+                    && context.ring_vaddr.as_usize() == ctx
+                    && ring.magic == AIO_RING_MAGIC
+            })
+            .cloned()
+            .ok_or_else(invalid_context)?
+    };
+    context.begin_call().ok_or_else(invalid_context)
 }
 
 // Convert a syscall-style result into an io_event result field.
@@ -1104,6 +1165,13 @@ fn wait_for_completion(
     }
 }
 
+// Wait until admitted syscalls have left before retiring the user mapping.
+fn wait_for_callers(context: &AioContext) {
+    context
+        .lifecycle_wq
+        .wait_until(|| context.lifecycle.lock().active_calls == 0);
+}
+
 // Wait until io_destroy sees every running request finish.
 fn wait_for_inflight_drain(context: &AioContext) {
     block_on(poll_shared(
@@ -1188,7 +1256,7 @@ fn copy_completed_events(
 // Shared implementation for io_getevents and io_pgetevents.
 fn do_io_getevents(
     current: &crate::task::UserTaskRef,
-    context: Arc<AioContext>,
+    context: &AioContext,
     min_nr: isize,
     nr: isize,
     events: *mut IoEvent,
@@ -1209,7 +1277,7 @@ fn do_io_getevents(
 
     loop {
         // First drain everything already ready before sleeping.
-        let copied = copy_completed_events(current, &context, nr - completed, events, completed)?;
+        let copied = copy_completed_events(current, context, nr - completed, events, completed)?;
         completed += copied;
         if completed >= min_nr || completed == nr || min_nr == 0 {
             return Ok(completed as isize);
@@ -1219,7 +1287,7 @@ fn do_io_getevents(
         }
 
         // Sleep only when min_nr still requires more events.
-        match wait_for_completion(current, &context, deadline) {
+        match wait_for_completion(current, context, deadline) {
             Ok(true) => {}
             Ok(false) => return Ok(completed as isize),
             Err(_) if completed > 0 => return Ok(completed as isize),
@@ -1274,7 +1342,6 @@ pub fn sys_io_setup(
     let ctx_value = ring_vaddr.as_usize();
     if let Err(err) = ctxp.vm_write(current, ctx_value) {
         AIO_CONTEXTS.write().remove(&ctx_id);
-        let _ = context.aspace.lock().unmap(ring_vaddr, ring_size);
         return Err(err.into());
     }
     debug!(
@@ -1284,9 +1351,14 @@ pub fn sys_io_setup(
     Ok(0)
 }
 
-// Destroy an AIO context after cancelling queued work and draining workers.
+// Destroy an AIO context after admitting callers and requests have drained.
 fn destroy_context(context: Arc<AioContext>) {
     context.destroying.store(true, Ordering::Release);
+    {
+        let mut lifecycle = context.lifecycle.lock();
+        lifecycle.closing = true;
+    }
+    context.lifecycle_wq.notify_all();
 
     {
         // Drop queued requests; running requests are allowed to complete.
@@ -1310,14 +1382,17 @@ fn destroy_context(context: Arc<AioContext>) {
             .wake(IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
     };
 
-    // Wait outside the inner lock so workers can finish_request.
+    // Wait outside the inner lock so admitted callers can observe destroying
+    // and leave before the user ring mapping is retired.
+    wait_for_callers(&context);
     warn!("sys_io_destroy: waiting for inflight to drain");
     wait_for_inflight_drain(&context);
     warn!("sys_io_destroy: all inflight drained");
-
-    let mut aspace = context.aspace.lock();
-    if let Err(err) = aspace.unmap(context.ring_vaddr, context.ring_size) {
-        warn!("sys_io_destroy: failed to unmap ring buffer: {:?}", err);
+    if context.ring_mapped.swap(false, Ordering::AcqRel) {
+        let mut aspace = context.aspace.lock();
+        if let Err(err) = aspace.unmap(context.ring_vaddr, context.ring_size) {
+            warn!("sys_io_destroy: failed to unmap ring buffer: {:?}", err);
+        }
     }
     debug!("sys_io_destroy: success");
 }
@@ -1340,13 +1415,15 @@ pub fn cleanup_aio_contexts_for_process(owner: PidIdentityId) {
     }
 }
 
-// Destroy an AIO context after cancelling queued work and draining workers.
+// Destroy an AIO context after closing admissions and draining callers/workers.
 pub fn sys_io_destroy(
     current: &crate::task::UserTaskRef,
     ctx: AioContextId,
 ) -> crate::StarryResult<isize> {
     debug!("sys_io_destroy called: ctx={:#x}", ctx);
-    let context = lookup_context(current, ctx)?;
+    let call = lookup_context(current, ctx)?;
+    let context = call.context().clone();
+    drop(call);
     let context = AIO_CONTEXTS
         .write()
         .remove(&context.id)
@@ -1370,7 +1447,8 @@ pub fn sys_io_submit(
         lookup_context(current, ctx)?;
         return Ok(0);
     }
-    let context = lookup_context(current, ctx)?;
+    let call = lookup_context(current, ctx)?;
+    let context = call.context();
     if context.destroying.load(Ordering::Acquire) {
         return Err(invalid_context());
     }
@@ -1392,12 +1470,12 @@ pub fn sys_io_submit(
             "sys_io_submit: opcode={}, fd={}, offset={}, nbytes={}",
             cb.lio_opcode, cb.fildes, cb.offset, cb.nbytes
         );
-        let request = match prepare_request(current, &context, &cb, cb_ptr) {
+        let request = match prepare_request(current, context, &cb, cb_ptr) {
             Ok(request) => request,
             Err(_) if submitted > 0 => return Ok(submitted),
             Err(err) => return Err(err),
         };
-        match enqueue_request(&context, request) {
+        match enqueue_request(context, request) {
             Ok(()) => {
                 submitted += 1;
                 debug!("sys_io_submit: enqueued, submitted={}", submitted);
@@ -1420,8 +1498,15 @@ pub fn sys_io_getevents(
     timeout: *const timespec,
 ) -> StarryResult<isize> {
     debug!("sys_io_getevents <= ctx: {ctx:#x}, min_nr: {min_nr}, nr: {nr}, events: {events:p}");
-    let context = lookup_context(current, ctx)?;
-    let result = do_io_getevents(current, context, min_nr, nr, events, timeout)?;
+    let call = lookup_context(current, ctx)?;
+    let result = do_io_getevents(
+        current,
+        call.context().as_ref(),
+        min_nr,
+        nr,
+        events,
+        timeout,
+    )?;
     debug!("sys_io_getevents => result={}", result);
     Ok(result)
 }
@@ -1436,9 +1521,10 @@ pub fn sys_io_pgetevents(
     timeout: *const timespec,
     sigmask: usize,
 ) -> crate::StarryResult<isize> {
-    let context = lookup_context(current, ctx)?;
+    let call = lookup_context(current, ctx)?;
+    let context = call.context();
     if sigmask == 0 {
-        return do_io_getevents(current, context, min_nr, nr, events, timeout);
+        return do_io_getevents(current, context.as_ref(), min_nr, nr, events, timeout);
     }
 
     let sigset = unsafe {
@@ -1454,7 +1540,7 @@ pub fn sys_io_pgetevents(
         Some(unsafe { sigset.sigmask.vm_read_uninit(current)?.assume_init() })
     };
     with_blocked_signals(blocked, || {
-        do_io_getevents(current, context, min_nr, nr, events, timeout)
+        do_io_getevents(current, context.as_ref(), min_nr, nr, events, timeout)
     })
 }
 
@@ -1466,12 +1552,16 @@ pub fn sys_io_cancel(
     result: *mut IoEvent,
 ) -> StarryResult<isize> {
     debug!("sys_io_cancel <= ctx: {ctx:#x}, iocb: {iocb:p}, result: {result:p}");
-    let context = lookup_context(current, ctx)?;
+    let call = lookup_context(current, ctx)?;
+    let context = call.context();
     let cb_ptr = iocb as usize;
 
     let event = {
         let mut inner = context.inner.lock();
-        // Linux AIO can only cancel requests still waiting in the queue here.
+        // This compatibility path only removes queued requests and reports an
+        // ECANCELED result through the caller-provided result pointer. Linux
+        // may cancel a running cancellable request; that completion is
+        // delivered through the ring and the io_cancel result pointer is unused.
         let Some((&request_id, pending)) = inner
             .pending
             .iter()

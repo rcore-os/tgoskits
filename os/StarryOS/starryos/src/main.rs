@@ -8,7 +8,7 @@ use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 
 use ax_std as _;
 
-const DEFAULT_INITS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
+const DEFAULT_INITS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/init", "/bin/sh"];
 
 #[derive(Default)]
 struct InitOptions {

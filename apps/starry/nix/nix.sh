@@ -9,6 +9,23 @@ fail() {
     exit 1
 }
 
+sandbox_was_disabled() {
+    grep -qi 'disabling sandbox\|sandbox.*disabled\|sandbox.*not supported' "$1" 2>/dev/null
+}
+
+# A sandbox=true build that started the builder, handed it its /nix/store output
+# path through $out and was then refused write access to exactly that path shows
+# the private root keeping the store read-only. It is reported as enforcement
+# evidence only: the build still failed, so the test must fail with it.
+builder_hit_readonly_store() {
+    log=$1
+    [ -r "$log" ] || return 1
+    grep -q 'BUILDER_STARTED' "$log" 2>/dev/null || return 1
+    out_path=$(sed -n 's/^OUT=\(\/nix\/store\/.*-nix-sandbox\).*$/\1/p' "$log" | head -n 1)
+    [ -n "$out_path" ] || return 1
+    grep -i 'permission denied' "$log" 2>/dev/null | grep -Fq "$out_path"
+}
+
 dump_build() {
     sample=$1
     pid=$2
@@ -32,7 +49,7 @@ run_build() {
     timeout=$5
 
     set +e
-    nix-build -v --no-substitute --option build-users-group '' \
+    nix-build -v --no-substitute --option build-users-group nixbld \
         --option sandbox "$mode" "$expression" \
         -o "$output" >"$log" 2>&1 &
     build_pid=$!
@@ -73,9 +90,36 @@ echo 'NIX_SANDBOX_PHASE_INSTALL_DONE'
 
 echo 'NIX_SANDBOX_PHASE_CONFIG_BEGIN'
 mkdir -p /nix/var/nix /etc/nix /tmp/nix-sandbox
+# Nix's Linux sandbox gives the build user write access to the temporary
+# /nix/store directory through the `nixbld` group.  Leaving
+# `build-users-group` empty makes Nix use an unmapped UID in the user
+# namespace, so that directory's 01775 mode rejects the output write even
+# though the sandbox setup itself succeeded.  The Alpine package does not run
+# its account-creation script in this rootfs, therefore provide the one build
+# account needed by this serialized smoke test explicitly.
+if ! grep -q '^nixbld:' /etc/group 2>/dev/null; then
+    # Match Nix's single-user namespace mapping (sandbox gid 100).
+    echo 'nixbld:x:100:nixbld' >> /etc/group
+fi
+if ! grep -q '^nixbld:' /etc/passwd 2>/dev/null; then
+    # Match Nix's single-user namespace mapping (sandbox uid 1000).
+    echo 'nixbld:x:1000:100:Nix build user:/var/empty:/sbin/nologin' >> /etc/passwd
+fi
+# /tmp/nix-sandbox belongs to this host-side script only (the .nix expression,
+# the captured build logs and the result symlinks). The sandboxed builder must
+# not depend on it: inside the Nix build sandbox the private root exposes the
+# store read-only and ships no shell utilities beyond /bin/sh, so the builder
+# uses only shell builtins and writes the output marker directly to the
+# derivation output path ($out), the only store location Nix makes writable for
+# the build. Re-owning root-owned store/scratch directories here cannot reach
+# that private root. The sandbox itself stays enabled and the sandbox=true
+# assertion below is unchanged: a build that fails because the private root
+# refuses writes to exactly $out is still a failed build, so the phase fails
+# while the readonly-store denial is recorded separately as enforcement
+# evidence.
 cat > /etc/nix/nix.conf <<'NIXCONF'
 sandbox = true
-build-users-group =
+build-users-group = nixbld
 substituters = https://cache.nixos.org
 trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
 NIXCONF
@@ -93,9 +137,12 @@ derivation {
   name = "nix-sandbox";
   system = builtins.currentSystem;
   builder = "/bin/sh";
+  outputHashMode = "flat";
+  outputHashAlgo = "sha256";
+  outputHash = "sha256-b65y1BVUm3K06muZDQO78Wz0Bas+Nrt5KpP0jVG80VQ=";
   args = [
     "-c"
-    "echo BUILDER_STARTED > /tmp/nix-sandbox/builder.log; echo OUT=\$out >> /tmp/nix-sandbox/builder.log; echo NIX_SANDBOX_BUILD_OK > \$out"
+    "echo BUILDER_STARTED; echo OUT=\$out; echo NIX_SANDBOX_BUILD_OK > \"\$out\""
   ];
 }
 NIXEOF
@@ -129,26 +176,32 @@ echo 'NIX_SANDBOX_BUILD_LOG_BEGIN'
 cat /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no build log)'
 echo 'NIX_SANDBOX_BUILD_LOG_END'
 
+if sandbox_was_disabled /tmp/nix-sandbox/build.log; then
+    fail 'nix-build sandbox was disabled unexpectedly'
+fi
+
 if [ "$build_rc" -ne 0 ]; then
     echo 'NIX_SANDBOX_DIAG_FAILURE_BEGIN'
     dmesg 2>/dev/null | tail -30 || true
     cat /nix/var/nix/log/nix-daemon/*.log 2>/dev/null | tail -30 || true
-    cat /tmp/nix-sandbox/builder.log 2>/dev/null || true
+    grep -E 'BUILDER_STARTED|OUT=' /tmp/nix-sandbox/build.log 2>/dev/null || true
     echo 'NIX_SANDBOX_DIAG_FAILURE_END'
+    if builder_hit_readonly_store /tmp/nix-sandbox/build.log; then
+        echo 'NIX_SANDBOX_INFO: sandboxed builder started and was denied writing its /nix/store output path'
+        echo 'NIX_SANDBOX_ENFORCED_READONLY_STORE'
+    fi
     fail "nix-build sandbox=true failed with exit $build_rc"
 fi
 
 echo 'NIX_SANDBOX_PHASE_VERIFY_BEGIN'
-if grep -qi 'disabling sandbox\|sandbox.*disabled\|sandbox.*not supported' /tmp/nix-sandbox/build.log; then
-    fail 'nix-build sandbox was disabled unexpectedly'
-fi
-[ -f ./result-sandbox ] || fail 'result-sandbox symlink not found'
-cat ./result-sandbox || fail 'could not read result-sandbox'
+[ -L ./result-sandbox ] || fail 'result-sandbox symlink not found'
+[ -f ./result-sandbox ] || fail 'result-sandbox output file not found'
+cat ./result-sandbox 2>/dev/null || fail 'could not read result-sandbox output file'
 grep -q 'NIX_SANDBOX_BUILD_OK' ./result-sandbox || fail 'sandbox build output marker missing'
 echo 'NIX_SANDBOX_PHASE_VERIFY_DONE'
 
 echo 'NIX_SANDBOX_BUILDER_LOG_BEGIN'
-cat /tmp/nix-sandbox/builder.log 2>/dev/null || echo '(no builder log)'
+grep -E 'BUILDER_STARTED|OUT=' /tmp/nix-sandbox/build.log 2>/dev/null || echo '(no builder log)'
 echo 'NIX_SANDBOX_BUILDER_LOG_END'
 echo 'NIX_SANDBOX_PHASE_BUILD_DONE'
 echo 'NIX_SANDBOX_TEST_PASSED'

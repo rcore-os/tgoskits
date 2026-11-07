@@ -53,8 +53,10 @@ go version
 # modernc.org/libc v1.73.4 which supports loongarch64). -mod=readonly makes the build
 # reproducible: it fails loudly if go.sum is incomplete rather than silently editing it.
 # GOPROXY is overridable for mirrors.
+# Use HTTP/1.1 for module downloads; some proxies break HTTP/2 streams.
 mkdir -p "$overlay_dir/usr/local/bin" "$overlay_dir/root"
 ( cd "$app_dir/go" && CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
+    GODEBUG="${GODEBUG:+$GODEBUG,}http2client=0" \
     GOPROXY="${GOPROXY:-https://proxy.golang.org,direct}" GOFLAGS="-mod=readonly -buildvcs=false" \
     go build -trimpath -o "$overlay_dir/usr/local/bin/golang-lang" . )
 

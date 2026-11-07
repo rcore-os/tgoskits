@@ -14,14 +14,19 @@
 //!
 //! smoltcp validates whether a UDP socket can bind, but ax-net needs
 //! Linux-style wildcard/specific-address conflict checks across sockets. The
-//! `udp_binds` table records only successful public binds and is cleaned when a
-//! socket is removed.
+//! `udp_binds` table records only successful public binds and is cleaned when
+//! the owning UDP socket is dropped.
 //!
 //! # Lock Boundary
 //!
 //! The wrapper lock protects smoltcp socket state. Callers should keep the lock
 //! scoped to direct socket access and avoid waking tasks or acquiring the outer
 //! service lock while it is held.
+//!
+//! The UDP side table uses a sleepable PI mutex because bind and close may
+//! allocate entries or scan a dynamic reuseport group. It must not be acquired
+//! while a raw/IRQ-save guard is live; in particular, ephemeral-port selection
+//! releases its raw cursor lock before checking UDP availability.
 
 use alloc::{vec, vec::Vec};
 
@@ -51,6 +56,8 @@ pub(crate) struct SocketSetWrapper<'a> {
     /// The shared smoltcp socket set.
     pub inner: Mutex<SocketSet<'a>>,
     /// UDP bind ownership tracked with Linux-style wildcard/reuseport conflicts.
+    // Bind and close may allocate or scan dynamic groups, so this must remain a
+    // sleepable task-context lock.
     udp_binds: Mutex<HashMap<u16, Vec<UdpBoundEntry>>>,
 }
 
@@ -126,17 +133,28 @@ impl<'a> SocketSetWrapper<'a> {
         }
     }
 
-    /// Removes any UDP bind table entries owned by `handle`.
-    pub fn udp_unbind(&self, handle: SocketHandle) {
-        self.udp_binds.lock().retain(|_, entries| {
-            entries.retain(|entry| entry.handle != handle);
-            !entries.is_empty()
-        });
+    /// Removes the UDP bind table entry owned by `handle` on `port`.
+    pub fn udp_unbind(&self, handle: SocketHandle, port: u16) {
+        if port == 0 {
+            return;
+        }
+        let mut binds = self.udp_binds.lock();
+        let remove_port = match binds.get_mut(&port) {
+            None => return,
+            Some(entries) => {
+                entries.retain(|entry| entry.handle != handle);
+                entries.is_empty()
+            }
+        };
+        if remove_port {
+            binds.remove(&port);
+        }
     }
 
-    /// Removes a socket and all wrapper-maintained side-table state.
+    /// Removes a socket from the shared smoltcp socket set.
+    ///
+    /// Protocol-specific side-table cleanup belongs to the owning socket type.
     pub fn remove(&self, handle: SocketHandle) {
-        self.udp_unbind(handle);
         self.inner.lock().remove(handle);
         debug!("socket {}: destroyed", handle);
     }
