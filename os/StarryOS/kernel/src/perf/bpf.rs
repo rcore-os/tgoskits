@@ -10,6 +10,8 @@
 //! share one buffer.
 
 use alloc::sync::{Arc, Weak};
+#[cfg(all(test, axtest))]
+use core::sync::atomic::AtomicUsize;
 use core::{
     any::Any,
     fmt::Debug,
@@ -75,6 +77,15 @@ impl BpfPerfEventState {
 pub(super) struct BpfPerfOutput {
     state: Arc<RawSpinLock<BpfPerfEventState>>,
     poll_notify: Arc<IrqNotify>,
+    #[cfg(all(test, axtest))]
+    test_strong_count: Arc<RawSpinLock<Option<OutputOwnershipObservation>>>,
+}
+
+// Per-endpoint observation: no global hook or strong PerfEvent reference.
+#[cfg(all(test, axtest))]
+struct OutputOwnershipObservation {
+    event: Weak<super::PerfEvent>,
+    observed: Arc<AtomicUsize>,
 }
 
 /// Task-context readiness capability separated from mutable perf control.
@@ -116,7 +127,30 @@ impl Pollable for BpfPerfPoll {
 }
 
 impl BpfPerfOutput {
+    #[cfg(all(test, axtest))]
+    pub(super) fn observe_strong_count_for_test(
+        &self,
+        event: Weak<super::PerfEvent>,
+        observed: Arc<AtomicUsize>,
+    ) {
+        *self.test_strong_count.lock_irqsave() =
+            Some(OutputOwnershipObservation { event, observed });
+    }
+
+    /// Returns whether both handles name the same perf event's output.
+    pub(super) fn same_endpoint(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+
     pub(super) fn write_event(&self, data: &[u8]) -> StarryResult<()> {
+        #[cfg(all(test, axtest))]
+        if let Some(observation) = self.test_strong_count.lock_irqsave().as_ref() {
+            // The axtest reads this sample after its synchronous helper call.
+            observation
+                .observed
+                .store(observation.event.strong_count(), Ordering::Relaxed);
+        }
+
         let notify = {
             let mut state = self.state.lock_irqsave();
             if !state.is_mapped() {
@@ -217,6 +251,8 @@ impl BpfPerfEventWrapper {
         BpfPerfOutput {
             state: Arc::clone(&self.state),
             poll_notify: Arc::clone(&self.poll_notify),
+            #[cfg(all(test, axtest))]
+            test_strong_count: Arc::new(RawSpinLock::new(None)),
         }
     }
 

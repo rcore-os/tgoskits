@@ -664,6 +664,24 @@ impl PerfEvent {
     }
 }
 
+impl Drop for PerfEvent {
+    fn drop(&mut self) {
+        let (Some(output), Some(table)) = (&self.irq_output, PERF_FILE.get()) else {
+            return;
+        };
+        let removed: Vec<bpf::BpfPerfOutput> = {
+            let mut map = table.lock_irqsave();
+            let fds: Vec<usize> = map
+                .iter()
+                .filter(|(_, entry)| entry.same_endpoint(output))
+                .map(|(fd, _)| *fd)
+                .collect();
+            fds.iter().filter_map(|fd| map.remove(fd)).collect()
+        };
+        drop(removed);
+    }
+}
+
 impl Pollable for PerfEvent {
     fn poll(&self) -> axpoll::IoEvents {
         if let Some(control) = &self.control {
@@ -1114,27 +1132,67 @@ pub fn perf_event_open(
         if enable_member {
             perf_event.set_enabled(true)?;
         }
+        let output = perf_event.irq_output.clone();
         let event_arc: Arc<dyn FileLike> = perf_event;
         // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC
         // when the caller sets this flag, otherwise the fd survives execve.
         let cloexec = flags.contains(PerfOpenFlags::FD_CLOEXEC);
         let fd = add_file_like(event_arc.clone(), cloexec)?;
 
-        PERF_FILE
-            .get()
-            .expect("perf subsystem not initialized")
-            .lock()
-            .insert(fd as usize, Arc::downgrade(&event_arc));
+        let replaced = {
+            let mut table = PERF_FILE
+                .get()
+                .expect("perf subsystem not initialized")
+                .lock_irqsave();
+            match output {
+                Some(output) => table.insert(fd as usize, output),
+                None => table.remove(&(fd as usize)),
+            }
+        };
+        // Release the replaced entry and our event reference after the lock;
+        // if the fd was closed meanwhile, the event's drop removes its entry.
+        drop(replaced);
+        drop(event_arc);
 
         Ok(fd as isize)
     })
 }
 
-/// Map fd → weak<PerfEvent> so `bpf_perf_event_output` can locate the
-/// target ringbuf without owning a strong reference (the user side owns
-/// it via the fd).
-static PERF_FILE: LazyInit<RawSpinLock<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
-    LazyInit::new();
+/// Map fd → BPF output endpoint so `bpf_perf_event_output` can locate the
+/// target ringbuf. Entries are added and removed in task context (open and the
+/// event's drop); the helper only borrows them. Every acquisition saves and
+/// disables local IRQs: the helper runs with IRQs disabled, so a task-side
+/// `lock()` (preemption only) could deadlock against a local interrupt that
+/// fires a BPF program on the same CPU.
+static PERF_FILE: LazyInit<RawSpinLock<HashMap<usize, bpf::BpfPerfOutput>>> = LazyInit::new();
+
+/// Insert and remove a private table entry for the ownership axtest.
+///
+/// This hook is compiled only into the kernel axtest binary. It bypasses the
+/// userspace fd setup while keeping the real `PERF_FILE` and helper lookup
+/// path; production builds have no test-only table operation.
+#[cfg(all(test, axtest))]
+fn install_perf_output_for_test(fd: usize, event: &Arc<PerfEvent>) {
+    let output = event
+        .irq_output
+        .as_ref()
+        .expect("BPF test event must have an output endpoint")
+        .clone();
+    PERF_FILE.call_once(|| RawSpinLock::new(HashMap::new()));
+    let table = PERF_FILE
+        .get()
+        .expect("perf test table must be initialized");
+    assert!(table.lock_irqsave().insert(fd, output).is_none());
+}
+
+#[cfg(all(test, axtest))]
+fn remove_perf_output_for_test(fd: usize) {
+    let table = PERF_FILE
+        .get()
+        .expect("perf test table must be initialized");
+    let removed = table.lock_irqsave().remove(&fd);
+    drop(removed);
+}
 
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
@@ -1147,9 +1205,12 @@ pub fn perf_event_init() {
     }
 }
 
-/// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,
-/// downcast the strong upgrade to `PerfEvent`, and have the bpf-software
-/// variant write a record into the ringbuf.
+/// Implementation of `bpf_perf_event_output` helper: write a record into the
+/// ringbuf of the fd's BPF output endpoint.
+///
+/// BPF programs call this with local IRQs disabled. The endpoint is borrowed
+/// under the table lock, never cloned, so the helper cannot end up releasing
+/// the last reference to a perf event or its notifier.
 pub fn perf_event_output(
     _ctx: *mut c_void,
     fd: usize,
@@ -1157,23 +1218,8 @@ pub fn perf_event_output(
     data: &[u8],
 ) -> StarryResult<()> {
     let table = PERF_FILE.get().ok_or(StarryError::NotFound)?;
-    let mut map = table.lock_irqsave();
-    let weak = map.get(&fd).ok_or(StarryError::NotFound)?;
-    let Some(file) = weak.upgrade() else {
-        map.remove(&fd);
-        return Err(StarryError::NotFound);
-    };
-    drop(map);
-
-    let perf_event = file
-        .into_any_arc()
-        .downcast::<PerfEvent>()
-        .map_err(|_| StarryError::InvalidInput)?;
-    perf_event
-        .irq_output
-        .as_ref()
-        .ok_or(StarryError::InvalidInput)?
-        .write_event(data)
+    let map = table.lock_irqsave();
+    map.get(&fd).ok_or(StarryError::NotFound)?.write_event(data)
 }
 
 #[cfg(all(test, axtest))]
@@ -1284,9 +1330,79 @@ impl Drop for BPFJitMemory {
 
 #[cfg(all(test, axtest))]
 mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use kbpf_basic::{
+        linux_bpf::{perf_event_attr, perf_event_sample_format, perf_sw_ids},
+        perf::{PerfProbeArgs, PerfTypeId},
+    };
+
+    use super::EbpfKernelAuxiliary;
+
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn control_callback_runs_preemptible() {
         assert!(super::control_callback_runs_preemptible_for_test());
+    }
+
+    #[axtest::axtest]
+    fn helper_does_not_acquire_perf_event_reference() {
+        const TEST_FD: usize = usize::MAX;
+
+        // Build the same BPF-output backend used by perf_event_open, without
+        // entering the userspace fd-table path. The private table hook below
+        // still exercises the real PERF_FILE lookup and helper.
+        // SAFETY: perf_event_attr contains only integer fields and unions.
+        let mut attr: perf_event_attr = unsafe { core::mem::zeroed() };
+        attr.type_ = PerfTypeId::PERF_TYPE_SOFTWARE as u32;
+        attr.config = perf_sw_ids::PERF_COUNT_SW_BPF_OUTPUT as u64;
+        attr.sample_type = perf_event_sample_format::PERF_SAMPLE_RAW as u64;
+        let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(&attr, -1, -1, -1, 0)
+            .expect("BPF output test arguments must be valid");
+        let event = Arc::new(
+            super::PerfEvent::new(
+                alloc::boxed::Box::new(super::bpf::perf_event_open_bpf(args)),
+                None,
+                false,
+                false,
+            )
+            .expect("BPF output test event must be constructible"),
+        );
+
+        let observed = Arc::new(AtomicUsize::new(usize::MAX));
+        let event_weak = Arc::downgrade(&event);
+        event
+            .irq_output
+            .as_ref()
+            .expect("BPF output test event must expose an endpoint")
+            .observe_strong_count_for_test(event_weak.clone(), Arc::clone(&observed));
+
+        // The test owns the only file reference, just as an open fd would.
+        // The old helper upgrades its weak entry and must report two at the
+        // write site, even though the count returns to one after the call.
+        super::install_perf_output_for_test(TEST_FD, &event);
+        assert_eq!(Arc::strong_count(&event), 1);
+
+        let result = {
+            let _guard = crate::sync::PreemptIrqSaveGuard::new();
+            super::perf_event_output(core::ptr::null_mut(), TEST_FD, 0, &[])
+        };
+        let after = Arc::strong_count(&event);
+        super::remove_perf_output_for_test(TEST_FD);
+        drop(event);
+
+        result.expect("helper must reach the published BPF output endpoint");
+        assert_eq!(
+            observed.load(Ordering::Relaxed),
+            1,
+            "helper must borrow the output endpoint without acquiring a perf file reference"
+        );
+        assert_eq!(after, 1, "helper must not retain a perf file reference");
+        assert_eq!(
+            event_weak.strong_count(),
+            0,
+            "file owner must release the event"
+        );
     }
 }
