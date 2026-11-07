@@ -6,7 +6,7 @@ default_runner = "qcs"
 [[check]]
 id = "test-axvisor-aarch64-qemu-smoke-axtest"
 impact_targets = ["axvisor:aarch64"]
-name = "QEMU aarch64 · Smoke + virtio-blk guest + axtest"
+name = "QEMU aarch64 · Smoke + virtio-blk/ivshmem guests + axtest"
 # The shared build and the axtest runs are joined by the two-vCPU AxVM runtime
 # case, whose QEMU budget alone is 900 s, so the job keeps a wider bound than
 # the build-only stages used to need.
@@ -20,6 +20,8 @@ echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
 echo "==> axvisor aarch64 five virtio-net guest vCPUs on two host CPUs"
 timeout 600s apps/arceos/virtio-net-peer/run.sh --vcpus
+echo "==> axvisor aarch64 ivshmem-pci ArceOS guest"
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivshmem-pci
 echo "==> axvisor aarch64 axtest"
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 \
   --config os/axvisor/tests/build-memory-root-aarch64.toml \
@@ -56,7 +58,7 @@ run_axvm_cross_test --arch riscv64 --package axvm \
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "aarch64"
-cases = ["smoke", "qemu-host-initramfs"]
+cases = ["smoke", "qemu-host-initramfs", "qemu-ivshmem-pci"]
 
 [[check.suite]]
 # The two-vCPU runtime case is a ktest execution unit of its own: the AxVM
