@@ -1,0 +1,1181 @@
+//! Behavior contracts of the shared block cache. Device IO is recorded by
+//! a mock so cache hits, deferred writes, merged writeback runs, and
+//! writeback-before-barrier ordering are asserted deterministically.
+
+use std::{
+    num::NonZeroUsize,
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+use super::{
+    address_space::{BlockAddressSpace, FolioGeometry},
+    folio::CacheFolio,
+    folio_cache::FolioCache,
+    *,
+};
+use crate::{
+    BlockError, BlockResult,
+    block::{BlockDevice, BlockRegion, RegionBlockDevice},
+};
+
+// These contracts inspect exact IO sequences in the process-wide registry.
+// A global sync or pressure-reclaim contract must not mutate another test's
+// live cache. Retain this guard until all wrappers have been dropped.
+static REGISTRY_TEST: Mutex<()> = Mutex::new(());
+
+const KEY_A: usize = 0x1000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IoOp {
+    Read { lba: u64, blocks: usize },
+    Write { lba: u64, blocks: usize },
+    FuaWrite { lba: u64, blocks: usize },
+    Flush,
+}
+
+impl IoOp {
+    fn is_write_of(&self, lba: u64, blocks: usize) -> bool {
+        matches!(
+            *self,
+            IoOp::Write { lba: l, blocks: n } | IoOp::FuaWrite { lba: l, blocks: n }
+                if l == lba && n == blocks
+        )
+    }
+
+    fn is_read(&self) -> bool {
+        matches!(self, IoOp::Read { .. })
+    }
+
+    fn is_flush(&self) -> bool {
+        matches!(self, IoOp::Flush)
+    }
+}
+
+struct RecordingState {
+    storage: Vec<u8>,
+    log: Vec<IoOp>,
+    fail_writes: bool,
+    partially_commit_blocks: Option<usize>,
+}
+
+#[derive(Clone)]
+struct RecordingDevice {
+    state: Arc<Mutex<RecordingState>>,
+    block_size: usize,
+}
+
+/// Models the runtime endpoint whose final handle drop performs shutdown.
+struct ShutdownTrackedDevice {
+    inner: RecordingDevice,
+    shutdowns: Arc<AtomicUsize>,
+}
+
+impl Drop for ShutdownTrackedDevice {
+    fn drop(&mut self) {
+        self.shutdowns.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+impl BlockDevice for ShutdownTrackedDevice {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn num_blocks(&self) -> u64 {
+        self.inner.num_blocks()
+    }
+
+    fn block_size(&self) -> usize {
+        self.inner.block_size()
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult<()> {
+        self.inner.read_block(block_id, buf)
+    }
+
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
+        self.inner.write_block(block_id, buf)
+    }
+
+    fn flush(&mut self) -> BlockResult<()> {
+        self.inner.flush()
+    }
+}
+
+struct GeometryOnlyDevice {
+    block_size: usize,
+    io_calls: Arc<AtomicUsize>,
+}
+
+impl BlockDevice for GeometryOnlyDevice {
+    fn name(&self) -> &str {
+        "geometry-only"
+    }
+
+    fn num_blocks(&self) -> u64 {
+        1
+    }
+
+    fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    fn read_block(&mut self, _block_id: u64, _buf: &mut [u8]) -> BlockResult<()> {
+        self.io_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn write_block(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult<()> {
+        self.io_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> BlockResult<()> {
+        self.io_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
+impl RecordingDevice {
+    fn new(blocks: usize, block_size: usize) -> (Self, Arc<Mutex<RecordingState>>) {
+        let state = Arc::new(Mutex::new(RecordingState {
+            storage: vec![0u8; blocks * block_size],
+            log: Vec::new(),
+            fail_writes: false,
+            partially_commit_blocks: None,
+        }));
+        (
+            Self {
+                state: state.clone(),
+                block_size,
+            },
+            state,
+        )
+    }
+}
+
+impl BlockDevice for RecordingDevice {
+    fn name(&self) -> &str {
+        "recording"
+    }
+
+    fn num_blocks(&self) -> u64 {
+        (self.state.lock().unwrap().storage.len() / self.block_size) as u64
+    }
+
+    fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    #[cfg(feature = "write-zeroes")]
+    fn supports_fua(&self) -> bool {
+        true
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult<()> {
+        let mut state = self.state.lock().unwrap();
+        state.log.push(IoOp::Read {
+            lba: block_id,
+            blocks: buf.len() / self.block_size,
+        });
+        let start = block_id as usize * self.block_size;
+        let end = start
+            .checked_add(buf.len())
+            .ok_or(BlockError::InvalidRequest)?;
+        let storage = &mut state.storage;
+        if end > storage.len() {
+            return Err(BlockError::InvalidRequest);
+        }
+        buf.copy_from_slice(&storage[start..end]);
+        Ok(())
+    }
+
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.fail_writes {
+            return Err(BlockError::Io);
+        }
+        if let Some(blocks) = state.partially_commit_blocks.take() {
+            let blocks = blocks.min(buf.len() / self.block_size);
+            let bytes = blocks * self.block_size;
+            state.log.push(IoOp::Write {
+                lba: block_id,
+                blocks,
+            });
+            let start = block_id as usize * self.block_size;
+            state.storage[start..start + bytes].copy_from_slice(&buf[..bytes]);
+            return Err(BlockError::Io);
+        }
+        state.log.push(IoOp::Write {
+            lba: block_id,
+            blocks: buf.len() / self.block_size,
+        });
+        let start = block_id as usize * self.block_size;
+        state.storage[start..start + buf.len()].copy_from_slice(buf);
+        Ok(())
+    }
+
+    #[cfg(feature = "write-zeroes")]
+    fn write_block_fua(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.fail_writes {
+            return Err(BlockError::Io);
+        }
+        state.log.push(IoOp::FuaWrite {
+            lba: block_id,
+            blocks: buf.len() / self.block_size,
+        });
+        let start = block_id as usize * self.block_size;
+        state.storage[start..start + buf.len()].copy_from_slice(buf);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> BlockResult<()> {
+        self.state.lock().unwrap().log.push(IoOp::Flush);
+        Ok(())
+    }
+}
+
+/// Records I/O while enforcing the production admission domain on every access.
+#[derive(Clone)]
+struct ScopedRecordingDevice {
+    inner: RecordingDevice,
+    domain: Arc<crate::access::AccessDomain>,
+    owner: Option<Arc<crate::access::AccessOwner>>,
+    writeback_owner: Option<alloc::sync::Weak<crate::access::AccessOwner>>,
+}
+
+impl ScopedRecordingDevice {
+    fn access(&self) -> BlockResult<Arc<crate::access::AccessOwner>> {
+        match &self.owner {
+            Some(owner) => Ok(owner.clone()),
+            None => crate::block::cache_writeback_owner(
+                &self.domain,
+                self.writeback_owner.as_ref(),
+                BlockRegion::from_num_blocks(self.num_blocks()),
+            ),
+        }
+    }
+}
+
+impl BlockDevice for ScopedRecordingDevice {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn num_blocks(&self) -> u64 {
+        self.inner.num_blocks()
+    }
+    fn block_size(&self) -> usize {
+        self.inner.block_size()
+    }
+    fn read_block(&mut self, lba: u64, bytes: &mut [u8]) -> BlockResult {
+        let _request = self.access()?.request(
+            BlockRegion::new(lba, (bytes.len() / self.block_size()) as u64),
+            false,
+        )?;
+        self.inner.read_block(lba, bytes)
+    }
+    fn write_block(&mut self, lba: u64, bytes: &[u8]) -> BlockResult {
+        let _request = self.access()?.request(
+            BlockRegion::new(lba, (bytes.len() / self.block_size()) as u64),
+            true,
+        )?;
+        self.inner.write_block(lba, bytes)
+    }
+    fn flush(&mut self) -> BlockResult {
+        let _request = self.access()?.request_flush()?;
+        self.inner.flush()
+    }
+    #[cfg(feature = "write-zeroes")]
+    fn fork_io(&self) -> BlockResult<Box<dyn BlockDevice>> {
+        Ok(Box::new(self.clone()))
+    }
+}
+
+fn count_ops(state: &Arc<Mutex<RecordingState>>, pred: impl Fn(&IoOp) -> bool) -> usize {
+    state
+        .lock()
+        .unwrap()
+        .log
+        .iter()
+        .filter(|op| pred(op))
+        .count()
+}
+
+fn write_pattern(state: &Arc<Mutex<RecordingState>>, block: usize, block_size: usize, byte: u8) {
+    let start = block * block_size;
+    state.lock().unwrap().storage[start..start + block_size].fill(byte);
+}
+
+fn buffered(key: usize, device: RecordingDevice) -> BufferedBlockDevice<RecordingDevice> {
+    // The registry keeps an equivalent device as the global-sync endpoint.
+    let endpoint = device.clone();
+    BufferedBlockDevice::with_device_key(key, Box::new(endpoint), device.clone(), Box::new(device))
+        .expect("recording device geometry is valid")
+}
+
+#[test]
+fn read_is_served_from_cache_on_second_access() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A, device);
+    write_pattern(&state, 1, 512, 0xAB);
+
+    let mut buf = [0u8; 512];
+    cached.read_block(1, &mut buf).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), 1);
+    assert!(buf.iter().all(|&b| b == 0xAB));
+
+    let mut buf = [0u8; 512];
+    cached.read_block(1, &mut buf).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), 1, "second read must hit");
+    assert!(buf.iter().all(|&b| b == 0xAB));
+}
+
+#[test]
+fn partial_folio_reads_track_slot_state() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 1, device);
+    // One 4 KiB folio covers 8 blocks; reading blocks 1 and 3 of frame 0
+    // must read exactly those blocks and mark only those slots uptodate.
+    let mut buf = [0u8; 512];
+    cached.read_block(1, &mut buf).unwrap();
+    cached.read_block(3, &mut buf).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), 2);
+
+    cached.read_block(1, &mut buf).unwrap();
+    cached.read_block(3, &mut buf).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), 2);
+
+    // The neighboring block 2 was never read and stays uncached.
+    cached.read_block(2, &mut buf).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), 3);
+}
+
+#[test]
+fn write_is_deferred_until_flush() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 2, device);
+
+    let data = [0x5Au8; 512];
+    cached.write_block(3, &data).unwrap();
+    assert_eq!(count_ops(&state, |op| op.is_write_of(3, 1)), 0);
+    assert!(!state.lock().unwrap().storage[3 * 512..4 * 512].contains(&0x5A));
+
+    cached.flush().unwrap();
+    assert_eq!(count_ops(&state, |op| op.is_write_of(3, 1)), 1);
+    assert!(
+        state.lock().unwrap().storage[3 * 512..4 * 512]
+            .iter()
+            .all(|&b| b == 0x5A)
+    );
+    // flush() = writeback followed by the device barrier.
+    let log = state.lock().unwrap().log.clone();
+    assert_eq!(*log.last().unwrap(), IoOp::Flush);
+}
+
+#[cfg(feature = "write-zeroes")]
+#[test]
+fn fua_bypasses_deferred_write_and_refreshes_cached_bytes() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 27, device);
+    let old = [0x11u8; 512];
+    let durable = [0x5au8; 512];
+
+    cached.write_block(3, &old).unwrap();
+    cached.write_block(8, &[0x33; 8 * 512]).unwrap();
+    cached.write_block_fua(3, &durable).unwrap();
+
+    let log = state.lock().unwrap().log.clone();
+    assert_eq!(
+        log,
+        vec![
+            IoOp::Write { lba: 3, blocks: 1 },
+            IoOp::FuaWrite { lba: 3, blocks: 1 }
+        ]
+    );
+    let reads_before = count_ops(&state, IoOp::is_read);
+    let mut observed = [0u8; 512];
+    cached.read_block(3, &mut observed).unwrap();
+    assert_eq!(observed, durable);
+    assert_eq!(count_ops(&state, IoOp::is_read), reads_before);
+    cached.flush().unwrap();
+    assert_eq!(count_ops(&state, |op| op.is_write_of(8, 8)), 1);
+}
+
+#[cfg(feature = "write-zeroes")]
+#[test]
+fn failed_fua_invalidates_overlapping_cache_slots() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 28, device);
+    let mut observed = [0u8; 512];
+    cached.read_block(4, &mut observed).unwrap();
+    state.lock().unwrap().fail_writes = true;
+
+    assert_eq!(
+        cached.write_block_fua(4, &[0x5au8; 512]),
+        Err(BlockError::Io)
+    );
+    state.lock().unwrap().fail_writes = false;
+    let reads_before = count_ops(&state, IoOp::is_read);
+    cached.read_block(4, &mut observed).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), reads_before + 1);
+}
+
+#[test]
+fn flush_merges_adjacent_dirty_runs() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 3, device);
+
+    let data = [0x11u8; 512];
+    for block in 8..24 {
+        cached.write_block(block, &data).unwrap();
+    }
+    cached.write_block(26, &data).unwrap();
+    cached.write_block(27, &data).unwrap();
+    cached.write_block(29, &data).unwrap();
+
+    cached.flush().unwrap();
+    assert_eq!(count_ops(&state, |op| op.is_write_of(8, 16)), 1);
+    assert_eq!(count_ops(&state, |op| op.is_write_of(26, 2)), 1);
+    assert_eq!(count_ops(&state, |op| op.is_write_of(29, 1)), 1);
+    assert_eq!(count_ops(&state, |op| matches!(op, IoOp::Write { .. })), 3);
+}
+
+#[test]
+fn dirty_writeback_precedes_barrier_and_later_writes() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 5, device);
+
+    // Model of the JBD2 commit contract: a "descriptor" write, a flush
+    // barrier, then a "commit record" write, then another flush. The
+    // deferred data must reach the device before the first barrier, and
+    // the commit record must reach it only after that barrier.
+    let descriptor = [0x01u8; 8 * 512];
+    let commit = [0x02u8; 8 * 512];
+    let data = [0x03u8; 8 * 512];
+    cached.write_block(0, &data).unwrap();
+    cached.write_block(8, &descriptor).unwrap();
+    cached.flush().unwrap();
+    cached.write_block(16, &commit).unwrap();
+    cached.flush().unwrap();
+
+    let log = state.lock().unwrap().log.clone();
+    let position = |op: IoOp| log.iter().position(|entry| *entry == op).unwrap();
+    let data_and_descriptor = position(IoOp::Write { lba: 0, blocks: 16 });
+    let first_barrier = log.iter().position(IoOp::is_flush).unwrap();
+    let commit_write = position(IoOp::Write { lba: 16, blocks: 8 });
+    let barriers = count_ops(&state, IoOp::is_flush);
+    assert_eq!(barriers, 2);
+    assert!(data_and_descriptor < first_barrier);
+    assert!(commit_write > first_barrier);
+}
+
+#[test]
+fn lru_eviction_writes_back_dirty_victim() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    // Eviction is exercised on a direct two-folio tree: dirtying frame 0
+    // and touching two other frames must write frame 0 back before it is
+    // dropped.
+    let (device, state) = RecordingDevice::new(64, 512);
+    let domain = crate::access::AccessDomain::new();
+    let first = domain
+        .open(
+            &domain.describe(BlockRegion::new(0, 8)),
+            crate::VolumeAccess::ReadWrite,
+        )
+        .unwrap();
+    let second = domain
+        .open(
+            &domain.describe(BlockRegion::new(8, 56)),
+            crate::VolumeAccess::ReadWrite,
+        )
+        .unwrap();
+    let mut writeback = ScopedRecordingDevice {
+        inner: device,
+        domain,
+        owner: None,
+        writeback_owner: None,
+    };
+    let mut inner = ScopedRecordingDevice {
+        owner: Some(first),
+        ..writeback.clone()
+    };
+    let mut other = ScopedRecordingDevice {
+        owner: Some(second),
+        ..writeback.clone()
+    };
+    let tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 2);
+
+    let data = [0x77u8; 512];
+    tree.write_buffered(&mut inner, 0, 1, &data).unwrap();
+    assert!(tree.has_dirty());
+
+    let mut buf = [0u8; 512];
+    tree.read_buffered(&mut other, Some(&mut writeback), 8, 1, &mut buf)
+        .unwrap();
+    tree.read_buffered(&mut other, Some(&mut writeback), 16, 1, &mut buf)
+        .unwrap();
+    assert!(
+        state.lock().unwrap().storage[..512]
+            .iter()
+            .all(|&b| b == 0x77)
+    );
+    assert!(!tree.has_dirty(), "eviction leaves no dirty accounting");
+
+    // The evicted frame reads back from the device.
+    tree.read_buffered(&mut inner, Some(&mut writeback), 0, 1, &mut buf)
+        .unwrap();
+    assert!(buf.iter().all(|&b| b == 0x77));
+}
+
+#[test]
+fn lru_hit_preserves_the_recently_used_folio() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (mut inner, state) = RecordingDevice::new(64, 512);
+    let tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 2);
+    let mut buf = [0u8; 512];
+
+    tree.read_buffered(&mut inner, None, 0, 1, &mut buf)
+        .unwrap();
+    tree.read_buffered(&mut inner, None, 8, 1, &mut buf)
+        .unwrap();
+    tree.read_buffered(&mut inner, None, 0, 1, &mut buf)
+        .unwrap();
+    let reads_before_eviction = count_ops(&state, IoOp::is_read);
+
+    tree.read_buffered(&mut inner, None, 16, 1, &mut buf)
+        .unwrap();
+    tree.read_buffered(&mut inner, None, 0, 1, &mut buf)
+        .unwrap();
+    assert_eq!(
+        count_ops(&state, IoOp::is_read),
+        reads_before_eviction + 1,
+        "the touched frame must remain cached when the older frame is evicted"
+    );
+
+    tree.read_buffered(&mut inner, None, 8, 1, &mut buf)
+        .unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), reads_before_eviction + 2);
+}
+
+#[test]
+fn lru_reserve_failure_preserves_existing_entry() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let mut cache = FolioCache::new(NonZeroUsize::new(2).unwrap());
+    cache.try_reserve_entry().unwrap();
+    cache.insert_reserved(7, CacheFolio::try_new(1, 1).unwrap());
+
+    assert_eq!(
+        cache.try_reserve_for_test(usize::MAX),
+        Err(BlockError::NoMemory)
+    );
+    assert!(cache.contains(&7));
+    assert_eq!(cache.least_recent(), Some(7));
+}
+
+#[test]
+fn direct_write_overlays_cached_folio() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 7, device);
+
+    let mut buf = [0u8; 512];
+    cached.read_block(0, &mut buf).unwrap();
+    let reads_before = count_ops(&state, IoOp::is_read);
+
+    // 16 blocks span two folios: device-direct write.
+    let data = [0x42u8; 16 * 512];
+    cached.write_block(0, &data).unwrap();
+    assert!(
+        state.lock().unwrap().storage[..16 * 512]
+            .iter()
+            .all(|&b| b == 0x42)
+    );
+
+    // The cached folio of block 0 was overlaid: the read is served from
+    // the folio with the new bytes and no extra device read happens.
+    cached.read_block(0, &mut buf).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), reads_before);
+    assert!(buf.iter().all(|&b| b == 0x42));
+}
+
+#[test]
+fn failed_direct_write_invalidates_partially_updated_folios() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 26, device);
+
+    let mut block = [0u8; 512];
+    cached.read_block(0, &mut block).unwrap();
+    assert_eq!(block, [0u8; 512]);
+    cached.read_block(8, &mut block).unwrap();
+    assert_eq!(block, [0u8; 512]);
+    let reads_before_failure = count_ops(&state, IoOp::is_read);
+
+    // The device commits the first folio before reporting failure for this
+    // two-folio direct write. Its error gives the cache no exact completed
+    // prefix, so every overlapping folio must be treated as unknown.
+    state.lock().unwrap().partially_commit_blocks = Some(8);
+    let direct = [0x42u8; 16 * 512];
+    assert_eq!(cached.write_block(0, &direct), Err(BlockError::Io));
+    assert_eq!(
+        &state.lock().unwrap().storage[..8 * 512],
+        &direct[..8 * 512]
+    );
+
+    block.fill(0);
+    cached.read_block(0, &mut block).unwrap();
+    assert_eq!(block, [0x42u8; 512]);
+    cached.read_block(8, &mut block).unwrap();
+    assert_eq!(block, [0u8; 512]);
+    assert_eq!(
+        count_ops(&state, IoOp::is_read),
+        reads_before_failure + 2,
+        "an indeterminate failure must invalidate every overlapping folio"
+    );
+}
+
+#[cfg(feature = "write-zeroes")]
+#[test]
+fn zero_ranges_preserve_dirty_neighbors_and_invalidate_partial_results() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    state.lock().unwrap().storage.fill(0xa5);
+    let cached = buffered(KEY_A + 30, device);
+    // Partition-relative extents must be translated before reaching the cache.
+    let mut partition = RegionBlockDevice::new(cached, BlockRegion::new(8, 24));
+    let ranges = [BlockRegion::new(2, 2), BlockRegion::new(10, 2)];
+    let mut block = [0u8; 512];
+    partition.read_block(2, &mut block).unwrap();
+    partition.read_block(10, &mut block).unwrap();
+    partition.write_block(1, &[0x77; 512]).unwrap();
+    let writes_before = count_ops(&state, |op| matches!(op, IoOp::Write { .. }));
+    assert!(
+        partition
+            .write_zeroes(&[ranges[0], BlockRegion::new(24, 1)])
+            .is_err()
+    );
+    assert_eq!(
+        count_ops(&state, |op| matches!(op, IoOp::Write { .. })),
+        writes_before
+    );
+
+    // A failed pre-writeback must keep the dirty neighbor authoritative.
+    state.lock().unwrap().fail_writes = true;
+    assert_eq!(partition.write_zeroes(&ranges), Err(BlockError::Io));
+    state.lock().unwrap().fail_writes = false;
+    partition.read_block(1, &mut block).unwrap();
+    assert_eq!(block, [0x77; 512]);
+    partition.flush().unwrap();
+
+    // The first extent is partly written before failure. Every covered cache
+    // folio must be invalidated, including the second unattempted extent.
+    state.lock().unwrap().partially_commit_blocks = Some(1);
+    let reads_before = count_ops(&state, IoOp::is_read);
+    assert_eq!(partition.write_zeroes(&ranges), Err(BlockError::Io));
+    partition.read_block(2, &mut block).unwrap();
+    assert_eq!(block, [0; 512]);
+    partition.read_block(3, &mut block).unwrap();
+    assert_eq!(block, [0xa5; 512]);
+    partition.read_block(10, &mut block).unwrap();
+    assert_eq!(block, [0xa5; 512]);
+    assert!(count_ops(&state, IoOp::is_read) >= reads_before + 2);
+
+    partition.write_zeroes(&ranges).unwrap();
+    for relative in 0..24 {
+        partition.read_block(relative, &mut block).unwrap();
+        let expected = match relative {
+            1 => 0x77,
+            2 | 3 | 10 | 11 => 0,
+            _ => 0xa5,
+        };
+        assert_eq!(block, [expected; 512], "relative block {relative}");
+    }
+    let state = state.lock().unwrap();
+    assert!(state.storage[..8 * 512].iter().all(|&byte| byte == 0xa5));
+    assert!(state.storage[32 * 512..].iter().all(|&byte| byte == 0xa5));
+}
+
+#[test]
+fn direct_read_observes_deferred_dirty_data() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 8, device);
+
+    let data = [0x99u8; 512];
+    cached.write_block(0, &data).unwrap();
+    assert_eq!(count_ops(&state, |op| matches!(op, IoOp::Write { .. })), 0);
+
+    // A multi-folio read must not bypass the dirty folio with stale device
+    // bytes: writeback happens first, then the direct read.
+    let mut buf = [0u8; 16 * 512];
+    cached.read_block(0, &mut buf).unwrap();
+    assert!(buf[..512].iter().all(|&b| b == 0x99));
+    let log = state.lock().unwrap().log.clone();
+    let writeback = log.iter().position(|op| op.is_write_of(0, 1)).unwrap();
+    let direct_read = log
+        .iter()
+        .position(|op| matches!(op, IoOp::Read { lba: 0, blocks: 16 }))
+        .unwrap();
+    assert!(writeback < direct_read);
+}
+
+#[test]
+fn shared_registry_serves_two_instances_from_one_tree() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device_a, state_a) = RecordingDevice::new(64, 512);
+    let (device_b, state_b) = RecordingDevice::new(64, 512);
+    let key = KEY_A + 9;
+    write_pattern(&state_a, 5, 512, 0xEF);
+
+    // Both instances stay alive: they must resolve to one folio tree, so
+    // the second read is served without touching device B at all.
+    let mut first = buffered(key, device_a);
+    let mut buf = [0u8; 512];
+    first.read_block(5, &mut buf).unwrap();
+    assert!(buf.iter().all(|&b| b == 0xEF));
+
+    let mut second = buffered(key, device_b);
+    let mut buf = [0u8; 512];
+    second.read_block(5, &mut buf).unwrap();
+    assert!(buf.iter().all(|&b| b == 0xEF));
+    assert_eq!(count_ops(&state_b, IoOp::is_read), 0);
+}
+
+#[test]
+fn shared_wrappers_observe_dirty_and_direct_updates_without_stale_reads() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let key = KEY_A + 24;
+    let mut first = buffered(key, device.clone());
+    let mut second = buffered(key, device);
+
+    let dirty = [0xA5u8; 512];
+    first.write_block(3, &dirty).unwrap();
+    let mut block = [0u8; 512];
+    second.read_block(3, &mut block).unwrap();
+    assert_eq!(block, dirty);
+    assert_eq!(count_ops(&state, IoOp::is_read), 0);
+    assert_eq!(count_ops(&state, |op| matches!(op, IoOp::Write { .. })), 0);
+
+    let direct = [0x5Au8; 16 * 512];
+    second.write_block(0, &direct).unwrap();
+    block.fill(0);
+    first.read_block(3, &mut block).unwrap();
+    assert!(block.iter().all(|&byte| byte == 0x5A));
+    assert_eq!(count_ops(&state, IoOp::is_read), 0);
+}
+
+#[test]
+fn shared_partition_wrappers_keep_physical_lbas_distinct() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let key = KEY_A + 25;
+    let domain = crate::access::AccessDomain::new();
+    let first_region = BlockRegion::new(3, 3);
+    let second_region = BlockRegion::new(6, 18);
+    let first_owner = domain
+        .open(
+            &domain.describe(first_region),
+            crate::VolumeAccess::ReadWrite,
+        )
+        .unwrap();
+    let second_owner = domain
+        .open(
+            &domain.describe(second_region),
+            crate::VolumeAccess::ReadWrite,
+        )
+        .unwrap();
+    let endpoint = ScopedRecordingDevice {
+        inner: device.clone(),
+        domain: domain.clone(),
+        owner: None,
+        writeback_owner: None,
+    };
+    let first_inner = ScopedRecordingDevice {
+        owner: Some(first_owner),
+        ..endpoint.clone()
+    };
+    let second_inner = ScopedRecordingDevice {
+        owner: Some(second_owner),
+        ..endpoint.clone()
+    };
+    let mut first = RegionBlockDevice::new(
+        BufferedBlockDevice::with_device_key(
+            key,
+            Box::new(endpoint.clone()),
+            first_inner,
+            Box::new(endpoint.clone()),
+        )
+        .unwrap(),
+        first_region,
+    );
+    let mut second = RegionBlockDevice::new(
+        BufferedBlockDevice::with_device_key(
+            key,
+            Box::new(endpoint.clone()),
+            second_inner,
+            Box::new(endpoint),
+        )
+        .unwrap(),
+        second_region,
+    );
+    first.write_block(2, &[0x18; 512]).unwrap();
+    second.write_block(0, &[0x24; 512]).unwrap();
+    second.flush().unwrap();
+    assert_eq!(
+        &state.lock().unwrap().storage[5 * 512..6 * 512],
+        &[0x18; 512]
+    );
+    assert_eq!(
+        &state.lock().unwrap().storage[6 * 512..7 * 512],
+        &[0x24; 512]
+    );
+
+    // Adjacent owners share folio zero, but only the requested read slots may
+    // use the volume endpoint. Dirty writeback owns the physical cache instead.
+    first.write_block(2, &[0x35; 512]).unwrap();
+    second.write_block(0, &[0x46; 512]).unwrap();
+    let mut direct = [0; 9 * 512];
+    second.read_block(0, &mut direct).unwrap();
+    assert_eq!(&direct[..512], &[0x46; 512]);
+    let mut block = [0; 512];
+    first.read_block(2, &mut block).unwrap();
+    assert_eq!(block, [0x35; 512]);
+
+    #[cfg(feature = "write-zeroes")]
+    {
+        first.write_block(2, &[0x55; 512]).unwrap();
+        second.write_block(1, &[0x77; 512]).unwrap();
+        second.write_zeroes(&[BlockRegion::new(0, 2)]).unwrap();
+        first.read_block(2, &mut block).unwrap();
+        assert_eq!(block, [0x55; 512]);
+        second.read_block(1, &mut block).unwrap();
+        assert_eq!(block, [0; 512]);
+    }
+    drop(first);
+    drop(second);
+    let whole = BlockRegion::from_num_blocks(64);
+    let maintenance = domain.maintain(whole).unwrap();
+    let endpoint = ScopedRecordingDevice {
+        inner: device,
+        domain: domain.clone(),
+        owner: None,
+        writeback_owner: None,
+    };
+    let inner = ScopedRecordingDevice {
+        owner: Some(maintenance.clone()),
+        ..endpoint.clone()
+    };
+    let writeback = ScopedRecordingDevice {
+        writeback_owner: Some(Arc::downgrade(&maintenance)),
+        ..endpoint.clone()
+    };
+    let mut cached =
+        BufferedBlockDevice::with_device_key(key, Box::new(endpoint), inner, Box::new(writeback))
+            .unwrap();
+    cached.write_block(40, &[0x81; 512]).unwrap();
+    cached.flush().unwrap();
+    assert!(
+        matches!(sync_all_block_caches(), Err(BlockError::ResourceBusy)),
+        "independent global sync cannot borrow maintenance"
+    );
+    cached.write_block(40, &[0x84; 512]).unwrap();
+    maintenance
+        .publish(first_region, crate::VolumeAccess::ReadWrite)
+        .unwrap();
+    drop(cached);
+    assert_eq!(
+        &state.lock().unwrap().storage[40 * 512..41 * 512],
+        &[0x84; 512],
+        "final drop switches to a private cache permit after publication narrows the original \
+         owner"
+    );
+    drop(maintenance);
+    assert!(domain.maintain(whole).is_ok());
+}
+
+#[test]
+fn drop_flushes_last_instance() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 10, device);
+
+    let data = [0x33u8; 512];
+    cached.write_block(6, &data).unwrap();
+    drop(cached);
+
+    assert!(
+        state.lock().unwrap().storage[6 * 512..7 * 512]
+            .iter()
+            .all(|&b| b == 0x33)
+    );
+    // The count is a lower bound: a concurrently running global-sync test
+    // may flush this live registry entry before the drop happens.
+    assert!(count_ops(&state, IoOp::is_flush) >= 1);
+}
+
+#[test]
+fn dropping_last_consumer_releases_registry_endpoint() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let key = KEY_A + 11;
+
+    for expected_shutdowns in 1..=2 {
+        let (device, _state) = RecordingDevice::new(64, 512);
+        let endpoint = ShutdownTrackedDevice {
+            inner: device.clone(),
+            shutdowns: shutdowns.clone(),
+        };
+        let cached = BufferedBlockDevice::with_device_key(
+            key,
+            Box::new(endpoint),
+            device.clone(),
+            Box::new(device),
+        )
+        .expect("recording device geometry is valid");
+
+        drop(cached);
+        assert_eq!(
+            shutdowns.load(Ordering::Acquire),
+            expected_shutdowns,
+            "each last cache consumer must release the endpoint for shutdown"
+        );
+    }
+}
+
+#[test]
+fn failed_last_drop_retains_dirty_cache_until_global_retry() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, state) = RecordingDevice::new(64, 512);
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let endpoint = ShutdownTrackedDevice {
+        inner: device.clone(),
+        shutdowns: shutdowns.clone(),
+    };
+    let key = KEY_A + 31;
+    let mut cached = BufferedBlockDevice::with_device_key(
+        key,
+        Box::new(endpoint),
+        device.clone(),
+        Box::new(device),
+    )
+    .unwrap();
+    cached.write_block(6, &[0x73; 512]).unwrap();
+    state.lock().unwrap().fail_writes = true;
+    drop(cached);
+    assert_eq!(
+        shutdowns.load(Ordering::Acquire),
+        0,
+        "failed dirt must retain its device owner"
+    );
+    assert!(registry::registry_contains_key_for_test(key));
+    state.lock().unwrap().fail_writes = false;
+    registry::sync_all_block_caches().unwrap();
+    assert_eq!(
+        &state.lock().unwrap().storage[6 * 512..7 * 512],
+        &[0x73; 512]
+    );
+    assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn folio_allocation_failure_returns_no_memory_without_io() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let block_size = 1usize << (usize::BITS - 1);
+    let geometry = FolioGeometry::new(block_size).unwrap();
+    let tree = BlockAddressSpace::with_capacity(geometry, 1);
+    let io_calls = Arc::new(AtomicUsize::new(0));
+    let mut device = GeometryOnlyDevice {
+        block_size,
+        io_calls: io_calls.clone(),
+    };
+    let mut output = [];
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        tree.read_buffered(&mut device, None, 0, 1, &mut output)
+    }));
+
+    assert!(matches!(outcome, Ok(Err(BlockError::NoMemory))));
+    assert_eq!(
+        CacheFolio::try_new(1, usize::MAX).unwrap_err(),
+        BlockError::NoMemory,
+        "per-block head allocation must use the same fallible error path"
+    );
+    assert!(!tree.has_dirty());
+    assert_eq!(io_calls.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn failed_writeback_retains_dirty_data_for_retry() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    // A direct tree keeps the failing device out of the process-global
+    // registry, where a live failing endpoint would break registry-wide
+    // sync in concurrently running tests.
+    let (mut inner, state) = RecordingDevice::new(64, 512);
+    let tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 8);
+
+    let data = [0xD7u8; 512];
+    tree.write_buffered(&mut inner, 7, 1, &data).unwrap();
+    state.lock().unwrap().fail_writes = true;
+    assert_eq!(tree.writeback_dirty(&mut inner, None), Err(BlockError::Io));
+    assert!(tree.has_dirty());
+
+    let mut cached = [0u8; 512];
+    tree.read_buffered(&mut inner, None, 7, 1, &mut cached)
+        .unwrap();
+    assert_eq!(
+        cached, data,
+        "a failed writeback must not discard dirty bytes"
+    );
+
+    state.lock().unwrap().fail_writes = false;
+    tree.writeback_dirty(&mut inner, None).unwrap();
+    assert!(!tree.has_dirty());
+    assert_eq!(&state.lock().unwrap().storage[7 * 512..8 * 512], &data);
+
+    // A merged request can persist its first folio before reporting failure.
+    // Neither folio has a known completion state until the entire run retries.
+    let first = [0x31; 8 * 512];
+    let second = [0x42; 8 * 512];
+    tree.write_buffered(&mut inner, 8, 8, &first).unwrap();
+    tree.write_buffered(&mut inner, 16, 8, &second).unwrap();
+    state.lock().unwrap().partially_commit_blocks = Some(8);
+    assert_eq!(tree.writeback_dirty(&mut inner, None), Err(BlockError::Io));
+    assert!(tree.has_dirty());
+    assert_eq!(&state.lock().unwrap().storage[8 * 512..16 * 512], &first);
+
+    tree.writeback_dirty(&mut inner, None).unwrap();
+    assert!(!tree.has_dirty());
+    assert_eq!(count_ops(&state, |op| op.is_write_of(8, 16)), 1);
+    assert_eq!(&state.lock().unwrap().storage[16 * 512..24 * 512], &second);
+}
+
+#[test]
+fn non_power_of_two_block_size_is_rejected() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    assert!(FolioGeometry::new(1000).is_err());
+    assert!(FolioGeometry::new(0).is_err());
+    let geometry = FolioGeometry::new(4096).unwrap();
+    assert_eq!(geometry.folio_size(), 4096);
+    assert_eq!(geometry.slots(), 1);
+    let geometry = FolioGeometry::new(512).unwrap();
+    assert_eq!(geometry.folio_size(), 4096);
+    assert_eq!(geometry.slots(), 8);
+    assert!(geometry.spans_one_folio(0, 8));
+    assert!(!geometry.spans_one_folio(6, 3));
+}
+
+#[test]
+fn invalid_request_geometry_is_rejected() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, _state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 12, device);
+    let mut misaligned = [0u8; 100];
+    assert_eq!(
+        cached.read_block(0, &mut misaligned),
+        Err(BlockError::InvalidRequest)
+    );
+}
+
+#[test]
+fn sync_all_block_caches_writes_back_every_registered_device() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device_a, state_a) = RecordingDevice::new(64, 512);
+    let (device_b, state_b) = RecordingDevice::new(64, 512);
+    write_pattern(&state_a, 0, 512, 0xEE);
+
+    // Both wrappers stay alive so their registry entries are live during
+    // the global sync; the endpoints see the same recorded devices.
+    let mut wrapper_a = buffered(KEY_A + 20, device_a);
+    let mut wrapper_b = buffered(KEY_A + 21, device_b);
+    let data = [0x66u8; 512];
+    wrapper_a.write_block(1, &data).unwrap();
+    wrapper_b.write_block(2, &data).unwrap();
+
+    let _ = super::sync_all_block_caches();
+    // Effect assertions: both devices persisted their dirty block and saw
+    // a flush barrier, regardless of unrelated registry entries that
+    // concurrently running tests keep alive.
+    assert!(
+        state_a.lock().unwrap().storage[512..2 * 512]
+            .iter()
+            .all(|&b| b == 0x66)
+    );
+    assert!(
+        state_b.lock().unwrap().storage[2 * 512..3 * 512]
+            .iter()
+            .all(|&b| b == 0x66)
+    );
+    assert!(count_ops(&state_a, IoOp::is_flush) >= 1);
+    assert!(count_ops(&state_b, IoOp::is_flush) >= 1);
+}
+
+#[test]
+#[cfg(feature = "reclaim")]
+fn reclaim_clean_folios_drops_only_clean_frames() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    // A direct tree pins the exact dirty/clean layout without interference
+    // from the process-global registry.
+    let (mut inner, state) = RecordingDevice::new(64, 512);
+    let tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 8);
+
+    let data = [0x55u8; 512];
+    tree.write_buffered(&mut inner, 0, 1, &data).unwrap();
+    let mut buf = [0u8; 512];
+    tree.read_buffered(&mut inner, None, 8, 1, &mut buf)
+        .unwrap();
+    tree.read_buffered(&mut inner, None, 16, 1, &mut buf)
+        .unwrap();
+    let reads_before = count_ops(&state, IoOp::is_read);
+
+    let reclaimed = tree.reclaim_clean_folios(2);
+    assert_eq!(reclaimed, 2, "both clean folios are reclaimable");
+    assert!(tree.has_dirty(), "the dirty folio is preserved");
+    // With only the dirty folio left, reclaim makes no progress.
+    assert_eq!(tree.reclaim_clean_folios(4), 0);
+
+    // The reclaimed folios read from the device again; the dirty one still
+    // serves from cache (no write happened yet).
+    tree.read_buffered(&mut inner, None, 8, 1, &mut buf)
+        .unwrap();
+    tree.read_buffered(&mut inner, None, 16, 1, &mut buf)
+        .unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), reads_before + 2);
+    assert_eq!(count_ops(&state, |op| matches!(op, IoOp::Write { .. })), 0);
+}
+
+#[test]
+#[cfg(feature = "reclaim")]
+fn allocator_reclaim_skips_a_cache_with_its_state_lock_held() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, _state) = RecordingDevice::new(64, 512);
+    let cached = buffered(KEY_A + 22, device);
+
+    assert_eq!(
+        cached.reclaim_from_allocator_while_state_locked_for_test(),
+        0,
+        "allocator reclaim must skip a cache already locked by the allocating path"
+    );
+}
+
+#[test]
+#[cfg(feature = "reclaim")]
+fn cache_drop_cleanup_skips_a_contended_registry_lock() {
+    let _registry_test = REGISTRY_TEST.lock().unwrap();
+    let (device, _state) = RecordingDevice::new(64, 512);
+    let cached = buffered(KEY_A + 23, device);
+
+    cached.unregister_while_registry_locked_for_test();
+}

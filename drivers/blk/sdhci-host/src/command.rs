@@ -7,9 +7,8 @@
 //! All raise sites tag their phase with [`Phase::CommandSend`] /
 //! [`Phase::ResponseWait`] so callers can pinpoint failures.
 
-use sdmmc_protocol::{
-    CommandProgress as CommandPoll, CommandResponseProgress, DataDirection,
-    cmd::Command,
+use sdmmc_host::legacy::{
+    Command, CommandProgress as CommandPoll, CommandResponseProgress, DataDirection,
     error::{Error, ErrorContext, Phase},
     response::{IfCondResponse, OcrResponse, R1Response, RcaResponse, Response, ResponseType},
 };
@@ -248,8 +247,8 @@ impl Sdhci {
 
     /// Reports whether the active command can advance from register state
     /// alone after its preceding IRQ has been consumed.
-    pub(crate) fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::host::HostProgressWait {
-        use sdmmc_protocol::sdio::host::HostProgressWait;
+    pub(crate) fn progress_wait_kind(&self) -> sdmmc_host::HostProgressWait {
+        use sdmmc_host::HostProgressWait;
 
         if self.command_needs_register_retry() {
             HostProgressWait::Register {
@@ -471,7 +470,7 @@ fn command_inhibit_mask(cmd: &Command, has_data: bool) -> u32 {
     if command_uses_data_line(cmd, has_data) {
         mask |= PRESENT_DAT_INHIBIT;
     }
-    if cmd.index == sdmmc_protocol::cmd::CMD12.index {
+    if cmd.index == sdmmc_host::legacy::CMD12.index {
         mask &= !PRESENT_DAT_INHIBIT;
     }
     mask
@@ -533,10 +532,10 @@ fn decode_response(host: &Sdhci, resp_type: ResponseType) -> Result<Response, Er
         }),
         ResponseType::R2 => Response::R2(read_r2(host)),
         ResponseType::R3 => Response::R3(OcrResponse::from_raw(host.response32(0))),
-        ResponseType::R4 => Response::R4(sdmmc_protocol::response::SdioOcrResponse::from_raw(
+        ResponseType::R4 => Response::R4(sdmmc_host::legacy::response::SdioOcrResponse::from_raw(
             host.response32(0),
         )),
-        ResponseType::R5 => Response::R5(sdmmc_protocol::response::SdioRwResponse::from_raw(
+        ResponseType::R5 => Response::R5(sdmmc_host::legacy::response::SdioRwResponse::from_raw(
             host.response32(0),
         )),
         ResponseType::R6 => Response::R6(RcaResponse::from_raw(host.response32(0))),
@@ -548,7 +547,7 @@ fn decode_response(host: &Sdhci, resp_type: ResponseType) -> Result<Response, Er
 
 /// Reconstruct the on-bus 128-bit R2 frame from the four 32-bit response
 /// slots, then serialize it MSB-first into the 16-byte buffer that the
-/// protocol layer's [`sdmmc_protocol::CsdResponse`] / `CidResponse`
+/// protocol layer's `CsdResponse` / `CidResponse`
 /// parsers expect.
 ///
 /// SDHCI strips the start/tr/reserved header (top 8 bits of the on-bus

@@ -124,9 +124,9 @@ mount、page cache 和 block runtime 都涉及 SMP，相关变更不能只跑单
 块 runtime 的 deterministic mock tests 位于：
 
 ```text
-fs/ax-fs-ng/src/block/runtime/hctx/tests/
-fs/ax-fs-ng/src/block/runtime/lifecycle/tests/
-fs/ax-fs-ng/src/block/runtime/irq.rs tests
+fs/ax-block/src/block/runtime/hctx/tests/
+fs/ax-block/src/block/runtime/lifecycle/tests/
+fs/ax-block/src/block/runtime/irq.rs tests
 ```
 
 应按变更类型选择：

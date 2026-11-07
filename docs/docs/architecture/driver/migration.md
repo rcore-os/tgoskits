@@ -61,7 +61,7 @@ provider 可以持续借用，显示输入等使用 `TakeRegistered`，块和网
 
 ### 3.2 上层交付
 
-块卷扫描位于 `fs/ax-fs-ng/src/volume/`，显示输入包装位于各自 ArceOS 模块，串口由运行时交付字节和控制台能力，USBFS 属于系统设备管理。不能继续导入旧分区接口或不存在的 `rd-display`、`rd-input`、`rd-vsock` 包。
+块卷扫描位于 `fs/ax-block/src/volume/`，显示输入包装位于各自 ArceOS 模块，串口由运行时交付字节和控制台能力，USBFS 属于系统设备管理。不能继续导入旧分区接口或不存在的 `rd-display`、`rd-input`、`rd-vsock` 包。
 
 用户态设备撤销、挂载、socket 和 guest 直通涉及系统层状态，不能通过丢弃底层对象假定全部完成。调用关系由[领域服务](services.md)及[系统集成](integration.md)定义。
 

@@ -18,6 +18,7 @@ rdif-block
 aic8800
 rdif-eth
 ax-fs-ng
+ax-block
 axfs-ng-vfs
 ax-io
 rsext4
@@ -29,6 +30,7 @@ ax-log
 ax-net
 rd-net
 axklib
+sdmmc-host
 sdmmc-protocol
 cqhci-host
 crab-usb

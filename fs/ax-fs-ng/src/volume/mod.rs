@@ -1,16 +1,2 @@
-mod error;
-mod gpt;
-mod mbr;
-mod reader;
-mod scan;
-#[cfg(test)]
-mod tests;
-mod types;
-
-pub use error::{Error, Result};
-pub use reader::BlockReader;
-pub use scan::{VolumeScan, scan_volumes};
-pub use types::{
-    BlockRegion, BlockVolume, DiskId, PartitionId, PartitionLabel, PartitionTableKind,
-    PartitionUuid,
-};
+//! Volume layouts provided by the physical block service.
+pub(crate) use ax_block::volume::*;

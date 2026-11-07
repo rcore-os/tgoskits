@@ -5,14 +5,15 @@ use core::{
 };
 
 use ax_alloc::UsageKind;
-use ax_fs_ng::{
+use ax_block::{
     BlockError, BlockResult,
     block::runtime::{BlockIrqAction, BlockIrqSource, RdifBlockDevice, RdifBlockGroup},
     os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockNotification,
-        BlockRuntimeOps, BlockThread, BlockTimeProvider, FsPage, FsPageProvider,
+        BlockRuntimeOps, BlockThread, BlockTimeProvider,
     },
 };
+use ax_fs_ng::os::{FsPage, FsPageProvider};
 use ax_lazyinit::LazyInit;
 use ax_task::runtime::RuntimeStatus;
 use axfs_ng_vfs::Mountpoint;
@@ -304,7 +305,7 @@ const BUILTIN_INITRAMFS: &[u8] = &[];
 
 pub(super) fn init(bootargs: Option<&str>) {
     ONLINE_BLOCK_CPUS.store(1, Ordering::Release);
-    ax_fs_ng::os::install_dma_device_resolver(ax_driver::dma_device_for_info);
+    ax_block::os::install_dma_device_resolver(ax_driver::dma_device_for_info);
     ax_fs_ng::os::install(
         &TIME_PROVIDER,
         &PAGE_PROVIDER,
@@ -405,7 +406,7 @@ fn release_archive_pages(archive: ax_hal::boot::Initramfs) {
 #[cfg(all(feature = "smp", feature = "ipi"))]
 pub(super) fn online_smp() {
     ONLINE_BLOCK_CPUS.store(ax_hal::cpu_num().max(1), Ordering::Release);
-    if let Err(error) = ax_fs_ng::block::runtime::online_smp() {
+    if let Err(error) = ax_block::block::runtime::online_smp() {
         panic!("failed to expand block runtime after SMP online: {error}");
     }
 }

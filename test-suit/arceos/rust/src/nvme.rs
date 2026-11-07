@@ -26,7 +26,7 @@ fn verify_nvme_io() -> TestResult {
     // Force dirty block-cache folios through the real NVMe request queues.
     // The device fixture limits MDTS to 64 KiB, so each 128 KiB block-cache
     // writeback batch requires driver-side request splitting.
-    ax_fs_ng::sync_all_block_caches().map_err(|_| "NVMe namespace writeback failed")?;
+    ax_block::block::sync_all_block_caches().map_err(|_| "NVMe namespace writeback failed")?;
     let io_after_write = nvme_io_stats()?;
     let write_sectors = io_after_write
         .sectors_written
@@ -71,11 +71,12 @@ fn verify_nvme_io() -> TestResult {
     fs::remove_file(NVME_FILE).map_err(|_| "NVMe namespace file cleanup failed")?;
     ax_fs_ng::file::sync_all_cached_files(false)
         .map_err(|_| "NVMe namespace cleanup file-cache writeback failed")?;
-    ax_fs_ng::sync_all_block_caches().map_err(|_| "NVMe namespace cleanup writeback failed")?;
+    ax_block::block::sync_all_block_caches()
+        .map_err(|_| "NVMe namespace cleanup writeback failed")?;
     Ok(())
 }
 
-fn nvme_io_stats() -> Result<ax_fs_ng::BlockIoStats, &'static str> {
+fn nvme_io_stats() -> Result<ax_block::BlockIoStats, &'static str> {
     let (identity, stats) =
         ax_fs_ng::root::root_block_stats().ok_or("NVMe test requires a mounted block root")?;
     if identity.name != "nvme0n1" {

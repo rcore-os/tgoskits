@@ -46,6 +46,7 @@ display = ["paging", "dep:ax-gpu", "ax-driver/gpu"]
 fs = [
   "paging",
   "dep:ax-fs-ng",
+  "dep:ax-block",
   "ax-fs-ng/vfs",
   "dep:axfs-ng-vfs",
   "dep:rdif-block",
@@ -75,6 +76,7 @@ ax-ctor-bare = {workspace = true}
 ax-gpu = {workspace = true, optional = true}
 ax-driver = {workspace = true, features = ["serial"]}
 ax-fs-ng = {workspace = true, optional = true}
+ax-block = { workspace = true, optional = true }
 axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
 ax-input = {workspace = true, optional = true}

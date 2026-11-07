@@ -1,7 +1,6 @@
 mod fs;
 mod inode;
 mod util;
-
 use alloc::boxed::Box;
 
 pub use fs::*;
@@ -11,6 +10,7 @@ use rsext4::{
     MountedServices, Observer, SectorId, WriteFlags,
     error::{Ext4Error, Ext4Result},
 };
+pub(crate) use util::into_vfs_err as ext4_error_to_vfs_error;
 
 use crate::block::{BlockRegion, FsBlockDevice, RegionBlockDevice};
 
@@ -18,6 +18,9 @@ pub(crate) struct Ext4Disk {
     device: RegionBlockDevice<Box<dyn FsBlockDevice>>,
     geometry: DeviceGeometry,
 }
+
+pub(crate) type RootSession =
+    rsext4::Ext4Session<Ext4Disk, MountedServices<Ext4Entropy, Ext4Observer, Ext4Delay>>;
 
 pub(crate) type MountedExt4 =
     rsext4::Ext4<Ext4Disk, MountedServices<Ext4Entropy, Ext4Observer, Ext4Delay>>;
@@ -78,7 +81,48 @@ impl Ext4Disk {
     }
 }
 
+/// Recovers the unpublished filesystem once within the validated final volume.
+/// Partition updates and revalidation precede this call; the returned session
+/// retains device ownership for subsequent filesystem growth and publication.
+pub(crate) fn prepare_root_growth(
+    device: Box<dyn FsBlockDevice>,
+    region: BlockRegion,
+) -> Ext4Result<RootSession> {
+    let identity = fs::mmp_identity_for_region(device.name(), region);
+    let disk = Ext4Disk::new(device, region)?;
+    let services = rsext4::MountServices::new(Ext4Clock, Ext4Entropy, Ext4Observer)
+        .with_mmp(Ext4Delay, identity);
+    rsext4::Ext4Session::new(disk, services, rsext4::MountOptions::read_write())
+}
+
 impl BlockIo for Ext4Disk {
+    /// Preserves one batch across partition/cache adapters; the device owns
+    /// bounded transfer splitting, completion waits and zero-DMA recycling.
+    fn write_zeroes(&mut self, ranges: &[rsext4::SectorRange]) -> Ext4Result<()> {
+        let mut regions = alloc::vec::Vec::new();
+        regions
+            .try_reserve_exact(ranges.len())
+            .map_err(|_| Ext4Error::no_memory())?;
+        for range in ranges {
+            regions.push(BlockRegion {
+                start_lba: range.start.raw(),
+                end_lba: range
+                    .start
+                    .raw()
+                    .checked_add(u64::from(range.count))
+                    .ok_or_else(Ext4Error::overflow)?,
+            });
+        }
+        self.device
+            .write_zeroes(&regions)
+            .map_err(|error| match error {
+                crate::BlockError::NoMemory => Ext4Error::no_memory(),
+                crate::BlockError::Unsupported => Ext4Error::unsupported(),
+                crate::BlockError::InvalidRequest => Ext4Error::invalid_input(),
+                _ => Ext4Error::io(),
+            })
+    }
+
     fn write(&mut self, buffer: &[u8], sector: SectorId, count: u32) -> Ext4Result<()> {
         if self.device.is_read_only() {
             return Err(Ext4Error::read_only());

@@ -280,6 +280,7 @@ mod tests {
             max_inflight: 1,
             max_submit_batch: 1,
             max_blocks_per_request,
+            max_write_zeroes_blocks: 0,
             max_segments,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,

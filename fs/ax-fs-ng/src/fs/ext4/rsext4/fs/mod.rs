@@ -14,6 +14,7 @@ mod mutation;
 mod namespace;
 mod read;
 mod read_cache;
+mod remount;
 mod worker;
 mod write;
 mod writeback;
@@ -25,7 +26,7 @@ use axfs_ng_vfs::{
 };
 pub(crate) use guard::Ext4Guard;
 pub(crate) use lifetime::{InodeLifetime, LocatedInode};
-use mmp::mmp_identity_for_region;
+pub(super) use mmp::mmp_identity_for_region;
 use namespace::Namespace;
 pub(crate) use namespace::NamespaceChange;
 use rsext4::{InodeNumber, MmpIdentity, MountServices};
@@ -151,6 +152,9 @@ impl Ext4State {
 
 pub struct Ext4Filesystem {
     self_ref: Weak<Self>,
+    /// Serializes remount and shutdown; never acquired by ordinary file I/O.
+    /// Lock order is lifecycle, operation admission, then filesystem state.
+    lifecycle: Mutex<()>,
     inner: Mutex<Ext4State>,
     inode_metadata: rsext4::InodeMetadataReader,
     mmp_worker: MountWorker,
@@ -161,6 +165,8 @@ pub struct Ext4Filesystem {
     cached_writes: Admission,
     root_dir: Mutex<Option<WeakDirEntry>>,
     mount_lease: Mutex<Weak<Ext4MountLease>>,
+    /// Original device grant retained for checked read-only-to-writable remounts.
+    permissions: Option<ax_block::access::VolumePermissions>,
 }
 
 struct Ext4MountLease {
@@ -207,29 +213,75 @@ impl Drop for Ext4MountLease {
 }
 
 impl Ext4Filesystem {
+    #[cfg(any(feature = "vfs", test))]
     pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
         Self::new_from_boxed(dev, region)
     }
 
     /// Create from a dynamic (boxed) block device (e.g. loop device).
+    #[cfg(any(feature = "vfs", test))]
     pub fn new_from_boxed(
         dev: Box<dyn FsBlockDevice>,
         region: BlockRegion,
     ) -> VfsResult<Filesystem> {
-        let mmp_identity = mmp_identity_for_region(dev.name(), region);
+        Self::new_with_access(dev, region, false, None)
+    }
+
+    /// Recovers under exclusive access, then restricts all native endpoints
+    /// before workers or inode capabilities can observe a read-only mount.
+    pub(crate) fn new_with_access(
+        dev: Box<dyn FsBlockDevice>,
+        region: BlockRegion,
+        readonly: bool,
+        permissions: Option<ax_block::access::VolumePermissions>,
+    ) -> VfsResult<Filesystem> {
+        let identity = mmp_identity_for_region(dev.name(), region);
         let disk = Ext4Disk::new(dev, region).map_err(into_vfs_err)?;
-        let services = MountServices::new(Ext4Clock, Ext4Entropy, Ext4Observer)
-            .with_mmp(Ext4Delay, mmp_identity);
-        let mut ext4 =
-            rsext4::Ext4::mount_with_readonly_fallback(disk, services).map_err(into_vfs_err)?;
-        if ext4.options().readonly {
+        let services =
+            MountServices::new(Ext4Clock, Ext4Entropy, Ext4Observer).with_mmp(Ext4Delay, identity);
+        let ext4 = if readonly {
+            rsext4::Ext4::mount(
+                disk,
+                services,
+                rsext4::MountOptions {
+                    readonly: true,
+                    replay_journal: true,
+                    block_validity: true,
+                },
+            )
+        } else {
+            rsext4::Ext4::mount_with_readonly_fallback(disk, services)
+        }
+        .map_err(into_vfs_err)?;
+        if !readonly && ext4.options().readonly {
             warn!("ext4 recovery required a read-only fallback mount");
         }
+        if ext4.options().readonly
+            && let Some(permissions) = &permissions
+        {
+            permissions
+                .restrict_read_only()
+                .map_err(crate::block_error_to_vfs_error)?;
+        }
+        Self::from_mounted_with_permissions(ext4, permissions)
+    }
+
+    /// Publishes the already recovered owner without opening another mount.
+    pub(crate) fn from_mounted(ext4: MountedExt4) -> VfsResult<Filesystem> {
+        Self::from_mounted_with_permissions(ext4, None)
+    }
+
+    /// Retains the original grant without creating a second device owner.
+    fn from_mounted_with_permissions(
+        mut ext4: MountedExt4,
+        permissions: Option<ax_block::access::VolumePermissions>,
+    ) -> VfsResult<Filesystem> {
         let background_writeback = Self::configure_writeback(&mut ext4)?;
         let inode_metadata = ext4.inode_metadata_reader();
         let fs = Arc::new_cyclic(|self_ref| Self {
             self_ref: self_ref.clone(),
             inode_metadata,
+            lifecycle: Mutex::new(()),
             inner: Mutex::new(Ext4State {
                 ext4,
                 lifetimes: InodeLifetimeTracker::default(),
@@ -245,6 +297,7 @@ impl Ext4Filesystem {
             cached_writes: Admission::new(),
             root_dir: Mutex::new(None),
             mount_lease: Mutex::new(Weak::new()),
+            permissions,
         });
         if fs.lock().ext4.mmp_refresh_interval().is_some()
             && let Err(error) = fs.start_mmp_worker()
@@ -367,6 +420,7 @@ impl Ext4Filesystem {
     }
 
     fn shutdown_filesystem(&self) -> VfsResult<()> {
+        let _lifecycle = self.lifecycle.lock();
         self.cached_writes.close_and_drain().map_err(into_vfs_err)?;
         let result = self.shutdown_after_cached_writes();
         if result.is_err() && !self.lock().shutdown_attempted {
@@ -437,6 +491,10 @@ impl FilesystemOps for Ext4Filesystem {
 
     fn is_readonly(&self) -> bool {
         self.lock().ext4.options().readonly
+    }
+
+    fn remount_read_write(&self) -> VfsResult<()> {
+        self.promote_read_write()
     }
 
     fn cached_write_admission(&self) -> Option<&dyn axfs_ng_vfs::CachedWriteAdmission> {

@@ -45,6 +45,9 @@ pub struct QueueLimits {
     /// Maximum requests one native queue operation may stage before commit.
     pub max_submit_batch: usize,
     pub max_blocks_per_request: u32,
+    /// Maximum logical blocks per zero-range request; zero means unsupported.
+    /// Independent of DMA transfer and segment limits.
+    pub max_write_zeroes_blocks: u32,
     pub max_segments: usize,
     pub supported_flags: RequestFlags,
     pub supports_flush: bool,
@@ -73,6 +76,7 @@ impl QueueLimits {
             max_inflight: 1,
             max_submit_batch: 1,
             max_blocks_per_request: 1,
+            max_write_zeroes_blocks: 0,
             max_segments: 1,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,

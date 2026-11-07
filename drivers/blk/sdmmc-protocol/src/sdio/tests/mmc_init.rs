@@ -1,5 +1,90 @@
 use super::*;
 
+#[cfg(feature = "rdif")]
+#[test]
+fn mmc_init_restores_hc_erase_geometry_before_publishing_trim() {
+    use crate::cmd::ext_csd as e;
+
+    for (switch_reply, geometry_enabled, fatal) in [
+        (Ok(ok_r1()), true, false),
+        (Ok(Response::R1(R1Response { raw: 1 << 7 })), false, false),
+        (
+            Err(Error::Crc(ErrorContext::for_cmd(Phase::CommandSend, 6))),
+            false,
+            true,
+        ),
+    ] {
+        let mut cid = [0; 16];
+        cid[0] = 0x15;
+        cid[1..3].copy_from_slice(&0x0100_u16.to_be_bytes());
+        cid[3..9].copy_from_slice(b"ABCDEF");
+        let replies = std::vec![
+            Ok(ok_r1()),                // CMD0
+            Ok(ocr_ready_mmc_sector()), // CMD1
+            Ok(Response::R2(cid)),      // CMD2
+            Ok(ok_r1()),                // CMD3
+            Ok(csd_v2_response()),      // CMD9
+            Ok(ok_r1()),                // CMD7
+            Ok(ok_r1()),                // CMD8 SEND_EXT_CSD
+            switch_reply,               // CMD6 ERASE_GROUP_DEF=1
+            Ok(r1_tran_ready()),        // CMD13 confirms the definition
+            Ok(ok_r1()),                // CMD6 BUS_WIDTH=8
+            Ok(r1_tran_ready()),        // CMD13
+            Ok(ok_r1()),                // CMD6 HS_TIMING=1
+            Ok(r1_tran_ready()),        // CMD13
+        ];
+        let mut host = MockHost::with_results(replies);
+        let mut ext_csd = ext_csd_blob();
+        ext_csd[e::REV] = 8;
+        ext_csd[e::HC_ERASE_GRP_SIZE] = 1;
+        ext_csd[e::SEC_FEATURE_SUPPORT] = 0x10;
+        ext_csd[e::TRIM_MULT] = 5;
+        ext_csd[e::CMDQ_SUPPORT] = 1;
+        ext_csd[e::CMDQ_DEPTH] = 31;
+        // Reset discarded the volatile definition while the card still
+        // advertises its HC geometry and read-zero TRIM capability.
+        ext_csd[e::ERASE_GROUP_DEF] = 0;
+        host.next_read_payload = Some(ext_csd);
+        let mut driver = SdMmcCard::new(host);
+        let result =
+            poll_init_to_completion_with_preference(&mut driver, CardInitPreference::MmcFirst);
+        let commands = &driver.host().commands;
+        if fatal {
+            assert!(matches!(result, Err(Error::Crc(_))));
+            assert!(
+                !commands.iter().any(|command| {
+                    command.index == 6 && (command.argument >> 16) & 0xff == e::BUS_WIDTH as u32
+                }),
+                "an uncertain switch result must abort before bus configuration"
+            );
+            continue;
+        }
+        let info = result.expect("MMC initialization confirms or explicitly rejects HC geometry");
+        let definition_argument = (3u32 << 24) | ((e::ERASE_GROUP_DEF as u32) << 16) | (1 << 8);
+        let definition = commands
+            .iter()
+            .position(|command| command.index == 6 && command.argument == definition_argument)
+            .expect("initialization must restore the volatile HC erase definition");
+        assert_eq!(commands[definition + 1].index, 13);
+        assert_eq!(commands[definition + 2].index, 6);
+        assert_eq!(
+            (commands[definition + 2].argument >> 16) & 0xff,
+            e::BUS_WIDTH as u32,
+            "card configuration continues only after the ready status"
+        );
+        assert_eq!(
+            crate::rdif::MmcTrimSupport::for_card(
+                info.ext_csd.as_ref().unwrap(),
+                info.cid.as_ref().unwrap(),
+                info.high_capacity,
+            )
+            .is_some(),
+            geometry_enabled,
+            "only a confirmed definition may publish TRIM capability"
+        );
+    }
+}
+
 #[test]
 fn init_falls_back_to_mmc_when_cmd8_and_acmd41_fail() {
     // Canonical eMMC bring-up: CMD8 returns nothing (host reports

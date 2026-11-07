@@ -21,6 +21,7 @@ use linux_raw_sys::{
     ioctl::{FIOASYNC, FIONBIO, FS_IOC_FIEMAP},
 };
 
+use super::mutation_credentials;
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
@@ -31,7 +32,6 @@ use crate::{
     task::UserTaskRef,
     time::TimeValueLike,
 };
-use super::mutation_credentials;
 
 /// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
 /// via `ioctl` (the ioctl spelling of `fcntl(fd, F_SETFD, ...)`). libc/musl and CPython
@@ -355,15 +355,19 @@ pub fn sys_mkdirat(
     } else {
         dirfd
     };
-    let result = with_fs(resolve_dirfd, |fs| match fs.create_dir(&path, mode, uid, gid, &mutation_cred) {
-        Ok(_) => Ok(0),
-        // mkdir on an existing path should report EEXIST.
-        // Use no-follow lookup so dangling symlinks are treated as existing
-        // entries, and avoid converting empty-path invalid input.
-        Err(VfsError::InvalidInput) if !path.is_empty() && fs.resolve_no_follow(&path).is_ok() => {
-            Err(StarryError::AlreadyExists)
+    let result = with_fs(resolve_dirfd, |fs| {
+        match fs.create_dir(&path, mode, uid, gid, &mutation_cred) {
+            Ok(_) => Ok(0),
+            // mkdir on an existing path should report EEXIST.
+            // Use no-follow lookup so dangling symlinks are treated as existing
+            // entries, and avoid converting empty-path invalid input.
+            Err(VfsError::InvalidInput)
+                if !path.is_empty() && fs.resolve_no_follow(&path).is_ok() =>
+            {
+                Err(StarryError::AlreadyExists)
+            }
+            Err(err) => Err(err.into()),
         }
-        Err(err) => Err(err.into()),
     });
     if result.is_ok()
         && let Ok((path, _)) = path_info_at(dirfd, &path)
@@ -580,9 +584,7 @@ pub fn sys_linkat(
     // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the
     // genuinely empty pathname. With a non-empty pathname it is ignored by
     // linkat(), so ordinary path-based linking remains unprivileged.
-    if flags & AT_EMPTY_PATH != 0
-        && old_path.as_deref().is_none_or(|path| path.is_empty())
-    {
+    if flags & AT_EMPTY_PATH != 0 && old_path.as_deref().is_none_or(|path| path.is_empty()) {
         // Linux requires CAP_DAC_READ_SEARCH for AT_EMPTY_PATH and reports
         // ENOENT when the caller does not have it.
         if !mutation_cred.cap_dac_read_search {
@@ -595,9 +597,7 @@ pub fn sys_linkat(
         resolve_flags,
         |fs, directory| fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred),
     )?;
-    let old = old
-        .into_file()
-        .ok_or(StarryError::BadFileDescriptor)?;
+    let old = old.into_file().ok_or(StarryError::BadFileDescriptor)?;
     // Linux rejects hard links to directories before checking the source
     // parent or the destination. Keep this check at the syscall boundary as
     // well as in the VFS helper, because dirfd/`.` resolution is allowed to
@@ -613,8 +613,8 @@ pub fn sys_linkat(
         new_dirfd
     };
     let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, |fs| {
-        let (new_dir, new_name, searched) =
-            fs.resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
+        let (new_dir, new_name, searched) = fs
+            .resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
                 fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
             })?;
         Ok((
@@ -1193,8 +1193,8 @@ pub fn sys_renameat2(
     let cred = current.as_thread().cred();
     let mutation_cred = mutation_credentials(&cred);
     let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, |fs| {
-        let (old_dir, old_name, searched) =
-            fs.resolve_parent_with_search_checked(Path::new(&old_path), |directory| {
+        let (old_dir, old_name, searched) = fs
+            .resolve_parent_with_search_checked(Path::new(&old_path), |directory| {
                 fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
             })?;
         Ok((
@@ -1205,8 +1205,8 @@ pub fn sys_renameat2(
         ))
     })?;
     let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, |fs| {
-        let (new_dir, new_name, searched) =
-            fs.resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
+        let (new_dir, new_name, searched) = fs
+            .resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
                 fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
             })?;
         Ok((
@@ -1272,7 +1272,7 @@ pub fn sys_sync() -> StarryResult<isize> {
             // write back block-cache dirt of every device (other partitions) and
             // issue their flush barriers.
             #[cfg(any(feature = "ext4", feature = "fat"))]
-            ax_fs_ng::sync_all_block_caches()?;
+            ax_block::block::sync_all_block_caches()?;
             Ok(())
         },
     )

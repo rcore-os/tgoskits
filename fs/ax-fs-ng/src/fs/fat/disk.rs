@@ -111,6 +111,11 @@ impl Drop for SeekableDisk {
 }
 
 impl SeekableDiskFlusher {
+    /// Queries the retained backing authority without relying on VFS flags.
+    pub(super) fn is_read_only(&self) -> bool {
+        self.state.lock().dev.is_read_only()
+    }
+
     pub fn flush(&self) -> FsBlockResult<()> {
         self.state.lock().sync()
     }
@@ -258,6 +263,7 @@ mod tests {
     struct MemoryBlockDevice {
         storage: Arc<Mutex<Vec<u8>>>,
         fail_flush: bool,
+        read_only: bool,
     }
 
     impl FsBlockDevice for MemoryBlockDevice {
@@ -266,7 +272,7 @@ mod tests {
         }
 
         fn num_blocks(&self) -> u64 {
-            1
+            (self.storage.lock().unwrap().len() / 512) as u64
         }
 
         fn block_size(&self) -> usize {
@@ -279,7 +285,7 @@ mod tests {
         }
 
         fn is_read_only(&self) -> bool {
-            false
+            self.read_only
         }
 
         #[cfg(feature = "ext4")]
@@ -293,14 +299,17 @@ mod tests {
         }
 
         fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> FsBlockResult<()> {
-            assert_eq!(block_id, 0);
-            buf.copy_from_slice(&self.storage.lock().unwrap());
+            let offset = block_id as usize * 512;
+            buf.copy_from_slice(&self.storage.lock().unwrap()[offset..offset + buf.len()]);
             Ok(())
         }
 
         fn write_block(&mut self, block_id: u64, buf: &[u8]) -> FsBlockResult<()> {
-            assert_eq!(block_id, 0);
-            self.storage.lock().unwrap().copy_from_slice(buf);
+            if self.read_only {
+                return Err(FsBlockError::Unsupported);
+            }
+            let offset = block_id as usize * 512;
+            self.storage.lock().unwrap()[offset..offset + buf.len()].copy_from_slice(buf);
             Ok(())
         }
 
@@ -324,6 +333,7 @@ mod tests {
         let device = MemoryBlockDevice {
             storage: storage.clone(),
             fail_flush: false,
+            read_only: false,
         };
         let mut disk = SeekableDisk::new(Box::new(device), BlockRegion::from_num_blocks(1));
 
@@ -339,6 +349,7 @@ mod tests {
         let device = MemoryBlockDevice {
             storage: storage.clone(),
             fail_flush: true,
+            read_only: false,
         };
         let mut disk = SeekableDisk::new(Box::new(device), BlockRegion::from_num_blocks(1));
         let flusher = disk.flusher();
@@ -346,5 +357,48 @@ mod tests {
 
         assert_eq!(flusher.flush(), Err(FsBlockError::Io));
         assert_eq!(&storage.lock().unwrap()[..3], b"fat");
+    }
+
+    #[test]
+    fn fat_remount_respects_backing_write_authority() {
+        use axfs_ng_vfs::VfsError;
+
+        let storage = Arc::new(Mutex::new(vec![0; 2 * 1024 * 1024]));
+        let region = BlockRegion::from_num_blocks(4096);
+        let mut disk = SeekableDisk::new(
+            Box::new(MemoryBlockDevice {
+                storage: storage.clone(),
+                fail_flush: false,
+                read_only: false,
+            }),
+            region,
+        );
+        fatfs::format_volume(&mut disk, fatfs::FormatVolumeOptions::new()).unwrap();
+        drop(disk);
+
+        for read_only in [true, false] {
+            let filesystem = super::super::FatFilesystem::new(
+                Box::new(MemoryBlockDevice {
+                    storage: storage.clone(),
+                    fail_flush: false,
+                    read_only,
+                }),
+                region,
+                None,
+            )
+            .unwrap();
+            // Native permissions, not just VFS flags, decide whether remount
+            // may publish write access. A physical read-only backend has no
+            // original writable authority to restore.
+            assert_eq!(
+                filesystem.root_dir().filesystem().remount_read_write(),
+                if read_only {
+                    Err(VfsError::PermissionDenied)
+                } else {
+                    Ok(())
+                }
+            );
+            assert_eq!(filesystem.is_readonly(), read_only);
+        }
     }
 }

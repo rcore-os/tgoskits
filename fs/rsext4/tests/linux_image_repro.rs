@@ -2699,6 +2699,65 @@ fn replay_csum_v3_multi_block_journal_from_debugfs() {
     replay_checksum_journal_from_debugfs(3);
 }
 
+/// Replays a Linux-grown image whose new home superblock precedes checkpointed
+/// descriptors, then verifies the recovered capacity and e2fsck consistency.
+#[test]
+fn replay_completes_growth_when_superblock_checkpoint_precedes_new_descriptors() {
+    for tool in ["mkfs.ext4", "resize2fs", "debugfs", "e2fsck", "truncate"] {
+        require_tool(tool);
+    }
+    let (directory, image) = create_ext4_test_image_with_args("rsext4-grow-replay", "64M", &[]);
+    OpenOptions::new()
+        .write(true)
+        .open(&image)
+        .unwrap()
+        .set_len(256 * 1024 * 1024)
+        .unwrap();
+    let grown = directory.join("grown.img");
+    fs::copy(&image, &grown).unwrap();
+    run_command(
+        {
+            let mut command = Command::new("resize2fs");
+            command.arg(&grown);
+            command
+        },
+        "grow replay fixture with Linux",
+    );
+    let blocks = changed_image_blocks(&image, &grown);
+    let payload = directory.join("payload.bin");
+    read_image_blocks(&grown, &blocks, &payload);
+    // Emulate a checkpoint interrupted after the enlarged superblock reached
+    // home, while the GDT still lacks the newly published group's descriptor.
+    let mut grown_file = File::open(&grown).unwrap();
+    grown_file.seek(SeekFrom::Start(1024)).unwrap();
+    let mut superblock = [0; 1024];
+    grown_file.read_exact(&mut superblock).unwrap();
+    let incompat = u32::from_le_bytes(superblock[96..100].try_into().unwrap()) | 4;
+    superblock[96..100].copy_from_slice(&incompat.to_le_bytes());
+    // debugfs updates the superblock checksum after setting RECOVER.
+    let mut image_file = OpenOptions::new().write(true).open(&image).unwrap();
+    image_file.seek(SeekFrom::Start(1024)).unwrap();
+    image_file.write_all(&superblock).unwrap();
+    drop(image_file);
+    run_debugfs_script(
+        &image,
+        &format!("set_super_value feature_incompat {incompat}\nquit\n"),
+        "checksum checkpointed superblock",
+    );
+    // Inject after debugfs closes: opening a filesystem with RECOVER can replay and clear the journal.
+    inject_checksum_journal(&image, &blocks, &payload, 3);
+    let mut device = Jbd2Dev::initial_jbd2dev(0, FileBlockDevice::open(image.clone()), true);
+    let filesystem = Ext4FileSystem::mount(&mut device)
+        .expect("replay before validating newly added descriptors");
+    assert_eq!(
+        filesystem.superblock.blocks_count(),
+        256 * 1024 * 1024 / 4096
+    );
+    umount(filesystem, &mut device).unwrap();
+    e2fsck_readonly_clean(&image, "partially checkpointed growth replay");
+    fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 fn e2fsck_clean_after_sparse_extent_truncate_keeps_tree_blocks_counted() {
     for tool in ["mkfs.ext4", "e2fsck", "truncate"] {

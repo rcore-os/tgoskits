@@ -225,7 +225,7 @@ mod tests {
         // The shared QEMU axtest image exposes an NVMe device. This scenario
         // is meaningful only on the diskless target where the runtime has no
         // block device to prepare, so leave it for that target's harness.
-        if ax_fs_ng::block::runtime::BlockRuntime::installed_devices()
+        if ax_block::block::runtime::BlockRuntime::installed_devices()
             .is_some_and(|devices| !devices.is_empty())
         {
             return axtest::AxTestResult::Ok;

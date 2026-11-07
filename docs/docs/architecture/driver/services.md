@@ -36,7 +36,7 @@ take 成功后注册包装可能为空，原 `Device<T>` 不再代表可以取�
 
 ## 2. 存储区域服务
 
-存储服务区分原始块设备、分区元数据、受限区域和文件系统。`fs/ax-fs-ng` 内的 block runtime、volume 和 root 模块分别维护这些状态。
+存储服务区分原始块设备、分区元数据、受限区域和文件系统。`fs/ax-block` 的 block runtime 与 volume 模块拥有物理设备、缓存和卷布局；`fs/ax-fs-ng::root` 负责根选择、文件系统准备与发布。
 
 ### 2.1 控制器到设备句柄
 
@@ -55,7 +55,7 @@ take 成功后注册包装可能为空，原 `Device<T>` 不再代表可以取�
 | `table_kind`、`bootable` | 分区表类型与启动标志 |
 | `partuuid`、`partlabel` | 可选 UUID 和分区标签 |
 
-`root.rs` 的 `RootSpec` 解析启动参数，`VolumeReader` 限制区域访问。选择根卷和识别文件系统不属于控制器 probe，也不属于 `ax-driver` 的分区服务。
+[`fs/ax-fs-ng/src/root/mod.rs`](../../../../fs/ax-fs-ng/src/root/mod.rs) 的 `RootSelector` 解析启动参数，`VolumeReader` 限制区域访问。选择根卷和识别文件系统不属于控制器 probe，也不属于 `ax-driver` 的分区服务。
 
 ## 3. 字节、帧与连接服务
 

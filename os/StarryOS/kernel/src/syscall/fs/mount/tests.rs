@@ -157,3 +157,57 @@ fn active_use_survives_lazy_detach_and_reattachment() {
     drop(active);
     mount.root_location().unmount().unwrap();
 }
+
+#[axtest::axtest]
+fn writable_remount_preserves_concurrent_file_admission() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use ax_std::thread;
+    use axfs_ng_vfs::CachedWriteGuard;
+
+    let root = ax_fs_ng::vfs::current_fs_context()
+        .lock()
+        .root_dir()
+        .filesystem()
+        .root_dir();
+    let directory = root.as_dir().unwrap();
+    let filesystem = directory.filesystem();
+    assert_eq!(filesystem.name(), "ext4", "this case needs the disk root");
+    assert!(!filesystem.is_readonly());
+
+    // Retain a real cached mutation across remount. The old implementation
+    // must close admission and wait here; the corrected no-op must finish.
+    let active = CachedWriteGuard::acquire(filesystem).unwrap();
+    let completed = Arc::new(AtomicBool::new(false));
+    let worker_done = completed.clone();
+    let worker_root = root.clone();
+    let worker = thread::spawn(move || {
+        let result = worker_root
+            .as_dir()
+            .unwrap()
+            .filesystem()
+            .remount_read_write();
+        worker_done.store(true, Ordering::Release);
+        result
+    });
+
+    // Either remount completes without disturbing admission, or its closing
+    // state becomes observable. Holding `active` prevents the bad window from
+    // disappearing, so this is independent of timer and scheduler timing.
+    let concurrent = loop {
+        let result = CachedWriteGuard::acquire(filesystem);
+        if result.is_err() || completed.load(Ordering::Acquire) {
+            break result.map(drop);
+        }
+        drop(result);
+        thread::yield_now();
+    };
+    drop(active);
+    assert_eq!(worker.join().unwrap(), Ok(()));
+    assert_eq!(
+        concurrent,
+        Ok(()),
+        "remount rejected an unrelated file write"
+    );
+    axtest::axtest_println!("WRITABLE_REMOUNT_CONCURRENCY_PASSED");
+}

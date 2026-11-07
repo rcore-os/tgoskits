@@ -9,14 +9,14 @@ use core::{
 
 use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
-use sdmmc_protocol::error::{Error, ErrorContext, Phase};
+use sdmmc_host::legacy::error::{Error, ErrorContext, Phase};
 
 use crate::{command::CommandState, dma::Adma2DescriptorTable, regs::*};
 
 /// Shape of the single data phase carried by an in-flight command state.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingData {
-    pub direction: sdmmc_protocol::DataDirection,
+    pub direction: sdmmc_host::legacy::DataDirection,
     pub block_size: u32,
     pub block_count: u32,
 }
@@ -27,7 +27,7 @@ pub(crate) use irq_state::IrqCore;
 /// Generic SD Host Controller (SDHCI) backend.
 ///
 /// Owns the MMIO base address of one host controller instance and
-/// implements [`sdmmc_protocol::sdio::SdMmcHost`] so that the protocol
+/// implements [`sdmmc_host::SdMmcHost`] so that the protocol
 /// driver in `sdmmc-protocol` can drive it. Data transfers use the ADMA2
 /// state machine exclusively.
 ///

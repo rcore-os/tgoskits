@@ -36,7 +36,7 @@ sidebar_label: "运行时与完成"
 
 ## 2. 控制器与批量请求
 
-块运行时位于 `fs/ax-fs-ng/src/block/runtime/`。`lifecycle/` 管理控制器与设备句柄，`hctx/` 维护队列提交，`completion.rs` 与 `waiters.rs` 关联完成和等待者。
+块运行时位于 `fs/ax-block/src/block/runtime/`。`lifecycle/` 管理控制器与设备句柄，`hctx/` 维护队列提交，`completion.rs` 与 `waiters.rs` 关联完成和等待者。
 
 ### 2.1 提交与空间
 

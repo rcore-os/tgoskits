@@ -220,10 +220,12 @@ impl sdmmc_host::SdMmcHost for Sdhci {
         match request.kind {
             TransactionRequestKind::Command { response } if !acknowledged_irq => {
                 match self.advance_command() {
-                    Ok(sdmmc_protocol::CommandProgress::Pending) => {
+                    Ok(sdmmc_host::legacy::block::CommandProgress::Pending) => {
                         Ok(self.pending_transaction_progress())
                     }
-                    Ok(sdmmc_protocol::CommandProgress::Complete) if request.acknowledged_irq => {
+                    Ok(sdmmc_host::legacy::block::CommandProgress::Complete)
+                        if request.acknowledged_irq =>
+                    {
                         match self.take_command_response() {
                             Ok(response_value) => {
                                 self.complete_host2_transaction_request(request);
@@ -239,7 +241,7 @@ impl sdmmc_host::SdMmcHost for Sdhci {
                             }
                         }
                     }
-                    Ok(sdmmc_protocol::CommandProgress::Complete) => {
+                    Ok(sdmmc_host::legacy::block::CommandProgress::Complete) => {
                         Ok(sdmmc_host::RequestProgress::WaitingForIrq)
                     }
                     Err(error) => {
@@ -251,10 +253,10 @@ impl sdmmc_host::SdMmcHost for Sdhci {
                 }
             }
             TransactionRequestKind::Command { response } => match self.advance_command_response() {
-                Ok(sdmmc_protocol::CommandResponseProgress::Pending) => {
+                Ok(sdmmc_host::legacy::block::CommandResponseProgress::Pending) => {
                     Ok(self.pending_transaction_progress())
                 }
-                Ok(sdmmc_protocol::CommandResponseProgress::Complete(resp)) => {
+                Ok(sdmmc_host::legacy::block::CommandResponseProgress::Complete(resp)) => {
                     self.complete_host2_transaction_request(request);
                     Ok(sdmmc_host::RequestProgress::Complete(Ok(
                         resp.to_raw_response(response)

@@ -11,3 +11,7 @@ categories.workspace = true
 
 [dependencies]
 dma-api.workspace = true
+rdif-block = { workspace = true, optional = true }
+
+[features]
+rdif = ["dep:rdif-block"]

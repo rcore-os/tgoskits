@@ -111,7 +111,7 @@ Axvisor 的宿主 shell、镜像读取或其他管理功能可通过 `ax-std/fs`
   -> 配置 guest passthrough
 ```
 
-仅关闭文件描述符或卸载路径不代表 host 已放弃硬件；`BlockDeviceHandle`、group controller 或 IRQ registration 仍可能持有设备。公共交接入口见 `release_block_irqs_for_passthrough()` 和 AxVM host boundary。
+仅关闭文件描述符或卸载路径不代表 host 已放弃硬件；`DeviceRef`、group controller 或 IRQ registration 仍可能持有设备。公共交接入口见 `release_block_irqs_for_passthrough()` 和 AxVM host boundary。
 
 ### 3.3 错误转换
 

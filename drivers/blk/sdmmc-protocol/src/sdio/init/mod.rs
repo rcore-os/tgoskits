@@ -47,18 +47,12 @@ impl SdMmcInitTiming {
 pub(super) struct MmcSwitchTiming;
 
 impl MmcSwitchTiming {
-    /// Maximum number of IRQ-completed status checks spent waiting for an
-    /// MMC `CMD6 SWITCH` to leave the Programming state. At the
-    /// [`SdMmcInitTiming::POLL_TICK_MS_HINT`] cadence this is equivalent to
-    /// ~250 ms — long enough to absorb worst-case `GENERIC_CMD6_TIME` while
-    /// short enough that a hung card surfaces as `Error::Timeout` rather
-    /// than blocking init forever.
+    /// Bounded status-query fallback used only without a monotonic clock.
+    /// IRQ completion frequency is not a measure of elapsed busy time.
     pub(super) const MAX_POLLS: u32 = 25;
 
-    /// Wall-clock budget for the MMC `CMD6 SWITCH` busy-wait, enforced when
-    /// the host implements [`SdMmcIrqHost::now_ms`]. Sized to match `MAX_POLLS`
-    /// at the recommended retry cadence so clock-aware and counter-only
-    /// hosts see the same effective budget.
+    /// Default busy budget in ms for existing SWITCH callers. Operations
+    /// with a declared GENERIC_CMD6_TIME pass their own per-request budget.
     pub(super) const TIMEOUT_MS: u64 = 250;
 }
 
@@ -80,30 +74,51 @@ pub(super) fn mmc_switch_deadline_passed<H: SdMmcIrqHost>(
     host: &H,
     request: &MmcSwitchRequest,
 ) -> bool {
-    let elapsed_exceeded = match (request.started_ms, host.now_ms()) {
-        (Some(started), Some(now)) => now.saturating_sub(started) >= MmcSwitchTiming::TIMEOUT_MS,
-        _ => false,
-    };
-    elapsed_exceeded || request.polls >= MmcSwitchTiming::MAX_POLLS
+    match (request.started_ms, host.now_ms()) {
+        (Some(started), Some(now)) => now.saturating_sub(started) >= request.timeout_ms,
+        _ => request.polls >= MmcSwitchTiming::MAX_POLLS,
+    }
 }
 
+/// One IRQ-driven CMD6 switch, retaining refusal until final-ready confirmation.
 pub struct MmcSwitchRequest {
+    /// Selected relative card address for follow-up ordinary CMD13 queries.
     pub(super) rca: u16,
+    /// EXT_CSD byte selected by the submitted CMD6.
     pub(super) index: u8,
+    /// Requested EXT_CSD byte value, retained for terminal diagnostics.
     pub(super) value: u8,
+    /// Completed busy queries, bounding hosts without a monotonic clock.
     pub(super) polls: u32,
     /// Wall-clock submit time captured from [`SdMmcIrqHost::now_ms`], used as
-    /// the start of the [`MmcSwitchTiming::TIMEOUT_MS`] window. `None`
+    /// the start of the per-request `timeout_ms` window. `None`
     /// means the host has no clock and only [`MmcSwitchTiming::MAX_POLLS`]
     /// gates the busy-wait.
     pub(super) started_ms: Option<u64>,
+    /// Fixed elapsed-time budget in ms, measured from CMD6 submission.
+    pub(super) timeout_ms: u64,
+    /// Explicit CMD6 rejection or SWITCH_ERROR seen before its status clears.
+    pub(super) rejection_seen: bool,
+    /// Refusal is safe to report only after ready+TRAN has been confirmed.
+    pub(super) rejection_confirmed: bool,
+    /// Command phase exclusively owned by the caller advancing the request.
     pub(super) state: MmcSwitchRequestState,
+}
+
+impl MmcSwitchRequest {
+    /// Whether this request ended with an explicit CMD6 refusal and a
+    /// confirmed ready+TRAN card. Transport errors, timeouts, and CMD13's own
+    /// ILLEGAL_COMMAND are not proof that the requested switch was rejected.
+    pub const fn was_rejected(&self) -> bool {
+        self.rejection_confirmed
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MmcSwitchRequestState {
     PollSwitch,
     PollStatus,
+    Terminal,
 }
 
 /// Card initialization probe order.
@@ -347,6 +362,8 @@ pub(super) enum SdMmcInitState {
     FinishCardSetup,
     PollSdDefaultClock,
     PollMmcExtCsd,
+    /// Waits for the volatile HC erase definition before changing bus mode.
+    PollMmcEraseGroupDefinition,
     PollMmcBusWidth,
     PollMmcHostBusWidth,
     PrepareMmcSpeed,

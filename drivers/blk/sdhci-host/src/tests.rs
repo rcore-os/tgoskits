@@ -23,13 +23,9 @@ fn irq_capability_trait_controls_hardware_signal_masks() {
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
 
-    assert!(!sdmmc_protocol::sdio::SdMmcIrqHost::completion_irq_enabled(
-        &host
-    ));
-    sdmmc_protocol::sdio::SdMmcIrqHost::enable_completion_irq(&mut host).unwrap();
-    assert!(sdmmc_protocol::sdio::SdMmcIrqHost::completion_irq_enabled(
-        &host
-    ));
+    assert!(!sdmmc_host::SdMmcIrqHost::completion_irq_enabled(&host));
+    sdmmc_host::SdMmcIrqHost::enable_completion_irq(&mut host).unwrap();
+    assert!(sdmmc_host::SdMmcIrqHost::completion_irq_enabled(&host));
     assert_ne!(
         host.read_u16(REG_NORMAL_INT_STATUS_ENABLE) & NORMAL_INT_CMD_COMPLETE,
         0,
@@ -62,11 +58,9 @@ fn irq_capability_trait_controls_hardware_signal_masks() {
     );
 
     let mut card_irq = host.card_irq_endpoint();
-    sdmmc_protocol::sdio::CardIrqControl::disable(&mut card_irq);
-    sdmmc_protocol::sdio::SdMmcIrqHost::disable_completion_irq(&mut host).unwrap();
-    assert!(!sdmmc_protocol::sdio::SdMmcIrqHost::completion_irq_enabled(
-        &host
-    ));
+    sdmmc_host::CardIrqControl::disable(&mut card_irq);
+    sdmmc_host::SdMmcIrqHost::disable_completion_irq(&mut host).unwrap();
+    assert!(!sdmmc_host::SdMmcIrqHost::completion_irq_enabled(&host));
     assert_eq!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
     assert_eq!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
 }
@@ -88,9 +82,8 @@ fn completion_rearm_captures_status_latched_while_signal_is_masked() {
     // when SIGNAL_ENABLE is restored.
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
     assert_eq!(
-        sdmmc_protocol::sdio::CompletionIrqRearmHost::rearm_completion_irq_and_check(&mut host)
-            .unwrap(),
-        sdmmc_protocol::sdio::CompletionIrqRearm::Pending
+        sdmmc_host::CompletionIrqRearmHost::rearm_completion_irq_and_check(&mut host).unwrap(),
+        sdmmc_host::CompletionIrqRearm::Pending
     );
 
     assert_eq!(
@@ -129,7 +122,7 @@ fn event_reports_error_status_without_translating_to_os_action() {
 
 #[test]
 fn event_reports_data_completion_source_for_runtime_wakeup() {
-    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, HostEventSource};
+    use sdmmc_host::{HostEvent, HostEventKind, HostEventSource};
 
     let event = event_from_status(NORMAL_INT_XFER_COMPLETE, 0);
 
@@ -140,7 +133,7 @@ fn event_reports_data_completion_source_for_runtime_wakeup() {
 
 #[test]
 fn merged_command_and_data_irq_reports_queue_ready() {
-    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, HostEventSource};
+    use sdmmc_host::{HostEvent, HostEventKind, HostEventSource};
 
     let event = event_from_status(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE, 0);
 
@@ -151,7 +144,7 @@ fn merged_command_and_data_irq_reports_queue_ready() {
 
 #[test]
 fn card_interrupt_and_transfer_completion_share_one_lossless_snapshot() {
-    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind};
+    use sdmmc_host::{HostEvent, HostEventKind};
 
     let event = event_from_status(NORMAL_INT_CARD_INTERRUPT | NORMAL_INT_XFER_COMPLETE, 0);
 
@@ -162,7 +155,7 @@ fn card_interrupt_and_transfer_completion_share_one_lossless_snapshot() {
 
 #[test]
 fn card_interrupt_and_error_share_one_lossless_snapshot() {
-    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind};
+    use sdmmc_host::{HostEvent, HostEventKind};
 
     let event = event_from_status(
         NORMAL_INT_CARD_INTERRUPT | NORMAL_INT_ERROR,
@@ -175,7 +168,7 @@ fn card_interrupt_and_error_share_one_lossless_snapshot() {
 
 #[test]
 fn card_irq_top_half_masks_status_and_signal_without_acknowledging_level_status() {
-    use sdmmc_protocol::sdio::host::{HostEvent, SdMmcIrqHandle};
+    use sdmmc_host::{HostEvent, SdMmcIrqHandle};
 
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
@@ -207,7 +200,7 @@ fn card_irq_top_half_masks_status_and_signal_without_acknowledging_level_status(
 
 #[test]
 fn card_irq_rearm_closes_already_asserted_window() {
-    use sdmmc_protocol::sdio::CardIrqControl;
+    use sdmmc_host::CardIrqControl;
 
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
@@ -292,7 +285,11 @@ fn host2_r1b_busy_release_advances_on_register_retry() {
     let mut host = unsafe { Sdhci::new(base) };
     host.enable_interrupt_status_capture();
     host.enable_completion_irq();
-    let transaction = sdmmc_host::Transaction::command(sdmmc_protocol::cmd::cmd7(1));
+    let transaction = sdmmc_host::Transaction::command(sdmmc_host::Command::new(
+        7,
+        1 << 16,
+        sdmmc_host::ResponseType::R1b,
+    ));
     let mut request =
         unsafe { <Sdhci as sdmmc_host::SdMmcHost>::submit_transaction(&mut host, transaction) }
             .unwrap();
@@ -730,7 +727,7 @@ fn masked_irq_status_is_acked_without_publishing_an_event() {
 
 #[test]
 fn status_enabled_completion_is_not_lost_when_only_card_signal_is_unmasked() {
-    use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, SdMmcIrqHandle};
+    use sdmmc_host::{HostEvent, HostEventKind, SdMmcIrqHandle};
 
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
@@ -853,7 +850,7 @@ fn tuning_sends_a_real_pattern_command_and_requires_acknowledged_buffer_irq() {
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_BUFFER_READ_READY);
     host.write_u16(REG_ERROR_INT_STATUS, 0);
     let mut irq = host.irq_endpoint();
-    sdmmc_protocol::sdio::SdMmcIrqHandle::handle_irq(&mut irq);
+    sdmmc_host::SdMmcIrqHandle::handle_irq(&mut irq);
     assert!(matches!(
         host.advance_bus_op(&mut request, ProgressCause::AcknowledgedIrq),
         Ok(RequestProgress::Complete(Ok(())))

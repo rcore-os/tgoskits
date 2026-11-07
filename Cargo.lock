@@ -501,6 +501,7 @@ name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
  "ax-alloc",
+ "ax-block",
  "ax-cpu",
  "ax-driver",
  "ax-fs-ng",
@@ -866,6 +867,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-block"
+version = "0.1.0"
+dependencies = [
+ "atomic-waker",
+ "ax-lazyinit",
+ "ax-runtime",
+ "ax-sync",
+ "bitflags 2.13.2",
+ "dma-api",
+ "hashbrown 0.16.1",
+ "irq-framework",
+ "log",
+ "rdif-block",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ax-cgroup"
 version = "0.3.0"
 dependencies = [
@@ -1048,7 +1066,7 @@ dependencies = [
 name = "ax-fs-ng"
 version = "0.11.2"
 dependencies = [
- "atomic-waker",
+ "ax-block",
  "ax-io",
  "ax-lazyinit",
  "ax-runtime",
@@ -1056,12 +1074,10 @@ dependencies = [
  "axfs-ng-vfs",
  "axpoll",
  "bitflags 2.13.2",
- "cfg-if",
  "chrono",
  "dma-api",
  "hashbrown 0.16.1",
  "heapless",
- "intrusive-collections",
  "irq-framework",
  "log",
  "lru 0.16.4",
@@ -1071,7 +1087,6 @@ dependencies = [
  "scope-local",
  "slab",
  "starry-fatfs",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1326,6 +1341,7 @@ name = "ax-runtime"
 version = "0.13.5"
 dependencies = [
  "ax-alloc",
+ "ax-block",
  "ax-cpu",
  "ax-crate-interface",
  "ax-ctor-bare",
@@ -1756,6 +1772,7 @@ version = "0.8.2"
 dependencies = [
  "anyhow",
  "ax-api",
+ "ax-block",
  "ax-driver",
  "ax-fs-ng",
  "ax-hal",
@@ -1791,6 +1808,7 @@ dependencies = [
  "arm-gic-driver",
  "arm_vgic",
  "ax-api",
+ "ax-block",
  "ax-cpu",
  "ax-cpumask",
  "ax-crate-interface",
@@ -2567,7 +2585,7 @@ dependencies = [
  "log",
  "mbarrier",
  "rdif-block",
- "sdmmc-protocol",
+ "sdmmc-host",
 ]
 
 [[package]]
@@ -4585,15 +4603,6 @@ name = "intel-itco-watchdog"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "intrusive-collections"
-version = "0.9.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "189d0897e4cbe8c75efedf3502c18c887b05046e59d28404d4d8e46cbc4d1e86"
-dependencies = [
- "memoffset",
 ]
 
 [[package]]
@@ -7533,12 +7542,10 @@ name = "sdhci-host"
 version = "0.5.2"
 dependencies = [
  "dma-api",
- "embedded-hal",
  "log",
  "mmio-api",
  "rdif-block",
  "sdmmc-host",
- "sdmmc-protocol",
  "tock-registers 0.10.1",
 ]
 
@@ -7547,13 +7554,13 @@ name = "sdmmc-host"
 version = "0.1.8"
 dependencies = [
  "dma-api",
+ "rdif-block",
 ]
 
 [[package]]
 name = "sdmmc-protocol"
 version = "0.5.4"
 dependencies = [
- "bitflags 2.13.2",
  "dma-api",
  "embedded-hal",
  "log",
@@ -8095,6 +8102,7 @@ version = "0.12.1"
 dependencies = [
  "anyhow",
  "ax-alloc",
+ "ax-block",
  "ax-cgroup",
  "ax-cpu",
  "ax-display",

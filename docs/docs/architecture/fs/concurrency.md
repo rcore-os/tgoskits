@@ -18,7 +18,7 @@ sidebar_label: "锁与并发"
 | 类型 | 文件系统中的用途 | 约束 |
 | --- | --- | --- |
 | `axfs-ng-vfs::RawSpinLock`（`ax_sync::RawSpinLock`） | 短时 dentry cache、mount local relation/flags | 不能等待 I/O、不能调用可能睡眠的文件系统实现 |
-| `ax-fs-ng::os::sync::RawSpinLock` | provider registry、短时 runtime 状态、FS registry | IRQ-safe 短临界区，析构/回调移到 guard 外 |
+| `ax-block::os::sync::RawSpinLock` | provider registry、短时 runtime 状态、FS registry | IRQ-safe 短临界区，析构/回调移到 guard 外 |
 | `Mutex` | `FsContext`、ext4/FAT state、cached-file I/O/page state | 可等待任务通知或块完成；不能在 hard IRQ 获取 |
 | 原子 | length、generation、mount flags、runtime state/counter | 只发布明确事实，不替代复合事务锁 |
 | topology mutation guard | mount tree/propagation 事务 | 不在 guard 内 flush 或执行 node/filesystem callback |

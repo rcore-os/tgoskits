@@ -378,7 +378,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
                     "rockchip-sdhci: CQHCI available at offset={:#x}",
                     cqhci_base.as_ptr() as usize - mmio_base.as_ptr() as usize
                 );
-                sdhci_rdif::BlockDevice::new_initializing_accelerated(
+                sdmmc_protocol::rdif::BlockDevice::new_initializing_accelerated(
                     card,
                     irq,
                     config,
@@ -391,7 +391,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
                     "rockchip-sdhci: CQHCI allocation failed ({:?}); using legacy SDHCI",
                     failure.error
                 );
-                sdhci_rdif::BlockDevice::new_initializing(
+                sdmmc_protocol::rdif::BlockDevice::new_initializing(
                     card,
                     failure.legacy_irq,
                     config,
@@ -400,7 +400,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             }
         }
     } else {
-        sdhci_rdif::BlockDevice::new_initializing(card, parts.irq, config, preference)
+        sdmmc_protocol::rdif::BlockDevice::new_initializing(card, parts.irq, config, preference)
     };
     let irq = probe.register_block(dev)?;
     info!("rockchip-sdhci block device registered irq={:?}", irq);

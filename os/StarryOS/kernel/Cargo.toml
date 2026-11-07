@@ -56,6 +56,7 @@ axtest-coverage = ["dep:axtest", "axtest/coverage"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(axtest_coverage)', 'cfg(feature, values("ax-std"))'] }
 
 [dependencies]
+ax-block = { workspace = true, features = ["cache"] }
 axtest = { workspace = true, optional = true }
 ax-alloc = { workspace = true }
 ax-display.workspace = true

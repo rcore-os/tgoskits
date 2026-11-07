@@ -1,7 +1,12 @@
 # sdhci-host
 
-`no_std` SD Host Controller Interface backend for
-[`sdmmc-protocol`](../sdmmc-protocol).
+`no_std` SD Host Controller Interface backend implementing
+[`sdmmc-host`](../sdmmc-host).
+
+The hardware layer depends only on the transaction, response, and interrupt
+capabilities provided by `sdmmc-host`. After obtaining `HostParts`, platform code
+assembles the protocol queue through `sdmmc-protocol::rdif::BlockDevice`;
+`sdhci_host::rdif` retains only hardware constraints such as `dma_config`.
 
 The crate owns SDHCI command, response, ADMA2, interrupt-status, and
 register-transition state. Platform glue owns MMIO mapping, clock/reset trees,
@@ -37,6 +42,8 @@ use core::ptr::NonNull;
 
 use dma_api::DeviceDma;
 use sdhci_host::{Sdhci, rdif};
+use sdmmc_host::SdMmcIrqHost;
+use sdmmc_protocol::rdif::BlockDevice;
 use sdmmc_protocol::sdio::{
     init::CardInitPreference,
     native::SdMmcCard,
@@ -49,9 +56,10 @@ let dma: DeviceDma = todo!("construct from the platform DMA domain");
 let config = rdif::dma_config("dwcmshc", 0, &dma);
 host.configure_dma(dma)?;
 
-let card = SdMmcCard::new(host);
+let parts = host.into_parts();
+let card = SdMmcCard::new(parts.bus);
 let controller =
-    rdif::initializing_device(card, config, CardInitPreference::MmcFirst);
+    BlockDevice::new_initializing(card, parts.irq, config, CardInitPreference::MmcFirst);
 // Transfer `controller` and its resolved IRQ source to the shared block
 // runtime. The hctx owns initialization, submission, and completion.
 # Ok::<(), sdmmc_protocol::Error>(())
@@ -70,13 +78,13 @@ transferred to the protocol/runtime owner.
    handler. `BlockQueue` enables it through `SdMmcIrqHost`.
 5. Require `CompletionIrqRearmHost` only for an SDIO owner that closes the
    masked completion-delivery window before rearming `CARD_INT`.
-6. Use `SdMmcCard::new` plus `rdif::initializing_device`; do not run a local
+6. Use `SdMmcCard::new` plus `BlockDevice::new_initializing`; do not run a local
    initialization or completion polling loop.
 
 ## Validation
 
 ```bash
-cargo test -p sdhci-host
+cargo xtask test --since origin/dev
 cargo xtask clippy --package sdhci-host
 ```
 
