@@ -361,7 +361,8 @@ fn stop_worker(
     }
 }
 
-struct VsockEventWorker {
+/// Event worker that drains device events into the connection manager.
+pub struct VsockEventWorker {
     device: Arc<Mutex<VsockDevice>>,
     pending_events: heapless::Deque<VsockEvent, VSOCK_PENDING_EVENT_CAPACITY>,
     rx_buffer: Vec<u8>,
@@ -526,6 +527,80 @@ impl VsockEventWorker {
             VsockEvent::Unknown => warn!("received unknown vsock event"),
         }
         EventDisposition::Consumed
+    }
+}
+
+/// Test-only surface: kernel tests replay device events through the real
+/// worker dispatch path without the IRQ runtime.
+#[cfg(axtest)]
+impl VsockEventWorker {
+    /// Creates a worker over [`InertVsockDevice`].
+    pub fn with_inert_device_for_test() -> Self {
+        Self::new(Arc::new(Mutex::new(Box::new(InertVsockDevice))))
+    }
+
+    /// Dispatches one device event through the real event path.
+    pub fn handle_event_for_test(&mut self, event: VsockEvent) {
+        self.handle_event(event);
+    }
+}
+
+/// Device stub whose every operation is inert, for kernel tests that drive
+/// the event paths only.
+#[cfg(axtest)]
+struct InertVsockDevice;
+
+#[cfg(axtest)]
+impl rdif_vsock::DriverGeneric for InertVsockDevice {
+    fn name(&self) -> &str {
+        "axtest-inert-vsock"
+    }
+}
+
+#[cfg(axtest)]
+impl rdif_vsock::Interface for InertVsockDevice {
+    fn guest_cid(&self) -> u64 {
+        0
+    }
+
+    fn listen(&mut self, _port: u32) -> Result<(), VsockError> {
+        Ok(())
+    }
+
+    fn connect(&mut self, _id: VsockConnId) -> Result<(), VsockError> {
+        Err(VsockError::NotAvailable)
+    }
+
+    fn send_capacity(&mut self, _id: VsockConnId) -> Result<usize, VsockError> {
+        Ok(0)
+    }
+
+    fn send(&mut self, _id: VsockConnId, _buf: &[u8]) -> Result<usize, VsockError> {
+        Ok(0)
+    }
+
+    fn recv(&mut self, _id: VsockConnId, _buf: &mut [u8]) -> Result<usize, VsockError> {
+        Ok(0)
+    }
+
+    fn recv_avail(&mut self, _id: VsockConnId) -> Result<usize, VsockError> {
+        Ok(0)
+    }
+
+    fn disconnect(&mut self, _id: VsockConnId) -> Result<(), VsockError> {
+        Err(VsockError::NotAvailable)
+    }
+
+    fn abort(&mut self, _id: VsockConnId) -> Result<(), VsockError> {
+        Err(VsockError::NotAvailable)
+    }
+
+    fn poll_event(&mut self) -> Result<Option<VsockEvent>, VsockError> {
+        Ok(None)
+    }
+
+    fn take_irq_endpoints(&mut self) -> Result<rdif_vsock::VsockIrqEndpoints, VsockError> {
+        Err(VsockError::NotAvailable)
     }
 }
 

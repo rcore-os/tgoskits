@@ -14,6 +14,10 @@ pub(crate) mod stream;
 
 use ax_io::{IoBuf, IoBufMut, Read, Write};
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+#[cfg(axtest)]
+pub use connection_manager::{axtest_connection_pending, axtest_listen, axtest_unlisten};
+#[cfg(axtest)]
+pub use rdif_vsock::VsockEvent;
 pub use rdif_vsock::{VsockAddr, VsockConnId};
 
 pub use self::stream::VsockStreamTransport;

@@ -275,3 +275,22 @@ impl VsockConnectionManager {
 
 pub static VSOCK_CONN_MANAGER: Mutex<VsockConnectionManager> =
     Mutex::new(VsockConnectionManager::new());
+
+/// Registers a listen queue for kernel tests, mirroring the socket listen
+/// path without a device.
+#[cfg(axtest)]
+pub fn axtest_listen(port: u32) -> NetResult<()> {
+    VSOCK_CONN_MANAGER.lock().listen(VsockAddr { cid: 0, port })
+}
+
+/// Reports whether a connection is pending on the port's accept queue.
+#[cfg(axtest)]
+pub fn axtest_connection_pending(port: u32) -> bool {
+    VSOCK_CONN_MANAGER.lock().can_accept(port)
+}
+
+/// Retires the test listen queue together with its pending connections.
+#[cfg(axtest)]
+pub fn axtest_unlisten(port: u32) {
+    drop(VSOCK_CONN_MANAGER.lock().unlisten(port));
+}
