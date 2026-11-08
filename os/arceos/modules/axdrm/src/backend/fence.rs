@@ -2,15 +2,18 @@
 // Copyright 2026 The TGOSKits contributors.
 //! RDIF completion tokens bridged into the shared Linux dma-fence core.
 
+use alloc::{boxed::Box, string::String};
 use core::{
     ffi::{c_char, c_void},
     mem::{MaybeUninit, offset_of, size_of},
     ptr,
     sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
 use ax_gpu::rdif_gpu::{Completion, CompletionStatus, GpuError};
 use ax_lazyinit::LazyInit;
+use ax_task::sync::WaitQueue;
 use drm_kapi::{
     config::GFP_KERNEL,
     dma_fence::{
@@ -19,6 +22,7 @@ use drm_kapi::{
     },
     dma_resv::{dma_resv_add_fence, dma_resv_reserve_fences},
     memory::{kfree, kmalloc},
+    task_runtime,
     types::{DmaFence, DmaFenceOps, Spinlock, WorkStruct},
     workqueue::{SYSTEM_DFL_WQ, init_work_c, queue_work},
 };
@@ -110,6 +114,21 @@ impl CompletionQueue {
 
 static COMPLETIONS: LazyInit<CompletionQueue> = LazyInit::new();
 
+/// Wake channel for the background completion pump thread. Notified from
+/// `schedule_completion_worker`, which only runs in task context (submits,
+/// fence-signaling arming, and the ax-gpu completion notifier), so the queue
+/// never sees hard-IRQ callers. The native queue keeps a notification
+/// generation, so a notify that lands between two pump passes is not lost.
+static PUMP_WAKE: WaitQueue = WaitQueue::new();
+
+/// Poll cadence of the completion pump while fenced work is in flight. The
+/// interval doubles on each pass that confirms nothing, up to
+/// [`PUMP_IDLE_POLL`], and resets as soon as any fence retires.
+const PUMP_ACTIVE_POLL: Duration = Duration::from_micros(250);
+/// Upper bound of the pump's backoff, and its re-check period while parked
+/// with an empty queue.
+const PUMP_IDLE_POLL: Duration = Duration::from_millis(50);
+
 static FENCE_OPS: DmaFenceOps = DmaFenceOps {
     get_driver_name: Some(driver_name),
     get_timeline_name: Some(timeline_name),
@@ -130,6 +149,25 @@ pub(crate) fn init() {
     // the queue's entire lifetime. The runtime workqueue provider is installed
     // before this function is called by ax-drm initialization.
     unsafe { init_work_c(&mut *queue.work.get(), completion_worker) };
+    // R4: a compositor's render thread parks in
+    // `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` (WAIT_FOR_SUBMIT, INT64_MAX) holding
+    // its userspace GL lock, and every other GPU ioctl caller freezes with
+    // it. The completion worker above is one-shot per schedule, and on a
+    // platform whose GPU delivers no interrupt there is nothing left to
+    // re-poll once the submit-time pass misses the (already retired) host
+    // response, so out-syncobj fences never signal and the waiter sleeps
+    // forever. A dedicated pump keeps re-polling while fences are pending —
+    // the same shape the previous StarryOS card0 backend used for its
+    // retire pump.
+    if let Err(error) = task_runtime::spawn(
+        String::from("gpu-completion-pump"),
+        Box::new(completion_pump),
+    ) {
+        log::warn!(
+            "failed to start the GPU completion pump ({error}); fence completion now relies on \
+             GPU interrupts and ioctl-time pumps only"
+        );
+    }
 }
 
 /// This is installed as ax-gpu's sole notifier. It runs while the GPU owner
@@ -368,6 +406,66 @@ fn schedule_completion_worker() {
     // SAFETY: `work` is initialized by `init`, lives in a static LazyInit, and
     // queue_work is safe to call from the notifier's short callback context.
     unsafe { queue_work(SYSTEM_DFL_WQ, queue.work.get()) };
+    PUMP_WAKE.notify_all();
+}
+
+/// Poll every queued completion token once and return how many reached a
+/// terminal state. Unconfirmed nodes go back on the shared queue; the GPU
+/// lock is only held inside each status query, so fence callbacks and user
+/// ioctls interleave freely with a pass.
+fn poll_pending_completions() -> usize {
+    let Some(queue) = COMPLETIONS.get() else {
+        return 0;
+    };
+    let mut pending = PendingList::default();
+    pending.head = queue.pending.lock().take() as usize;
+    let confirmed = poll_completions(&mut pending, |completion| {
+        ax_gpu::with_gpu_for_cleanup(|gpu| gpu.completion_status(completion))
+            .and_then(core::convert::identity)
+    });
+    // Keep every unconfirmed owner pinned, without blocking unrelated
+    // contexts/rings behind it. IRQ service and the pump schedule later passes.
+    let mut node = pending.take();
+    let mut shared = queue.pending.lock();
+    while !node.is_null() {
+        // SAFETY: The detached list exclusively owns these live nodes.
+        let next = unsafe { (*node).next };
+        shared.push(node);
+        node = next;
+    }
+    drop(shared);
+    confirmed
+}
+
+/// Whether any completion token still awaits observation. Called between
+/// passes, when the shared queue owns every node.
+fn completions_pending() -> bool {
+    COMPLETIONS
+        .get()
+        .is_some_and(|queue| queue.pending.lock().head != 0)
+}
+
+/// Background completion pump (see `init`): the last-resort observer for
+/// fenced RDIF completions when neither a GPU interrupt nor any user ioctl
+/// re-polls the device. Mirrors the retired-fence pump of the previous
+/// StarryOS card0 backend: poll fast while work is in flight, back off
+/// exponentially to [`PUMP_IDLE_POLL`] when a host stalls, and park until
+/// scheduled (or for the idle period) once the queue drains.
+fn completion_pump() {
+    let mut poll = PUMP_ACTIVE_POLL;
+    loop {
+        let confirmed = poll_pending_completions();
+        if confirmed > 0 {
+            poll = PUMP_ACTIVE_POLL;
+        }
+        if !completions_pending() {
+            poll = PUMP_ACTIVE_POLL;
+            PUMP_WAKE.wait_timeout(PUMP_IDLE_POLL);
+        } else {
+            PUMP_WAKE.wait_timeout(poll);
+            poll = poll.saturating_mul(2).min(PUMP_IDLE_POLL);
+        }
+    }
 }
 
 /// # Safety
@@ -378,23 +476,7 @@ unsafe extern "C" fn completion_worker(_work: *mut WorkStruct) {
     };
     loop {
         queue.requested.store(false, Ordering::Release);
-        let mut pending = PendingList::default();
-        pending.head = queue.pending.lock().take() as usize;
-        poll_completions(&mut pending, |completion| {
-            ax_gpu::with_gpu_for_cleanup(|gpu| gpu.completion_status(completion))
-                .and_then(core::convert::identity)
-        });
-        // Keep every unconfirmed owner pinned, without blocking unrelated
-        // contexts/rings behind it. IRQ service schedules the next pass.
-        let mut node = pending.take();
-        let mut shared = queue.pending.lock();
-        while !node.is_null() {
-            // SAFETY: The detached list exclusively owns these live nodes.
-            let next = unsafe { (*node).next };
-            shared.push(node);
-            node = next;
-        }
-        drop(shared);
+        poll_pending_completions();
         if !queue.requested.swap(false, Ordering::AcqRel) {
             return;
         }
@@ -403,10 +485,12 @@ unsafe extern "C" fn completion_worker(_work: *mut WorkStruct) {
 
 /// Check each independent RDIF token once; only confirmed completion or DMA-
 /// stopping device loss authorizes dropping the queue's resource owners.
+/// Returns how many tokens the pass confirmed terminal.
 fn poll_completions(
     pending: &mut PendingList,
     mut status: impl FnMut(Completion) -> Result<CompletionStatus, GpuError>,
-) {
+) -> usize {
+    let mut confirmed = 0;
     let mut node = pending.take();
     while !node.is_null() {
         // SAFETY: This detached list exclusively owns each node and its fence.
@@ -420,6 +504,7 @@ fn poll_completions(
             Ok(CompletionStatus::Pending) | Err(_) => None,
         };
         if let Some(failed) = terminal {
+            confirmed += 1;
             // SAFETY: The terminal device state permits consuming all owners;
             // no GPU/pending-list lock is held across callbacks or final puts.
             unsafe {
@@ -439,6 +524,7 @@ fn poll_completions(
         }
         node = next;
     }
+    confirmed
 }
 
 fn wait_for_completion(completion: Completion) -> Result<(), GpuError> {
