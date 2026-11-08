@@ -34,12 +34,12 @@ pub use ext4::{
     CompletedDirectoryLookup, CompletedInodeRead, CompletedInodeTableRead, CompletedInodeWrite,
     CompletedLiveInodeRead, DirectoryBlockRequest, DirectoryCursor, DirectoryEntry,
     DirectoryEntryType, DirectoryLookupOutcome, DirectoryLookupPreparation, DirectoryReadCache,
-    DirectoryReader, Ext4, Ext4FileSystem, FilePermissions, InodeBlockRequest, InodeDataRequest,
-    InodeFlags, InodeInfo, InodeMetadataReader, InodeMetadataUpdate, InodeReadCache,
-    InodeReadPreparation, LiveInodeRead, MkfsOptions, MountOptions, MutationContext,
-    PreparedDirectoryLookup, PreparedInodeRead, PreparedInodeTableRead, PreparedInodeWrite,
-    PreparedLiveInodeRead, PreparedUnmount, SpecialInodeKind, UnmountReceipt, ValidatedInodeRead,
-    format, mkfs, mkfs_with_options, umount,
+    DirectoryReader, Ext4, Ext4FileSystem, Ext4Session, FilePermissions, InodeBlockRequest,
+    InodeDataRequest, InodeFlags, InodeInfo, InodeMetadataReader, InodeMetadataUpdate,
+    InodeReadCache, InodeReadPreparation, LiveInodeRead, MkfsOptions, MountOptions,
+    MutationContext, PreparedDirectoryLookup, PreparedInodeRead, PreparedInodeTableRead,
+    PreparedInodeWrite, PreparedLiveInodeRead, PreparedUnmount, SpecialInodeKind, UnmountReceipt,
+    ValidatedInodeRead, format, mkfs, mkfs_with_options, umount,
 };
 pub use file::{
     FileExtent, FileExtentMap, FileExtentState, FileExtentTarget, InodeResize,
@@ -50,7 +50,7 @@ pub use file::{
     read_file, read_inode_data_into, reap_unlinked_inode, rename, truncate, truncate_inode, unlink,
     write_file, write_inode_data, zero_range_inode,
 };
-pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, WriteFlags};
+pub use io::{BlockIo, DeviceCapabilities, DeviceGeometry, SectorId, SectorRange, WriteFlags};
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
 pub use runtime::{
     Clock, Delay, EntropySource, Event, MmpIdentity, MountServices, MountedServices, NoopObserver,

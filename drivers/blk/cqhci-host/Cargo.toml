@@ -13,4 +13,4 @@ dma-api.workspace = true
 log.workspace = true
 mbarrier.workspace = true
 rdif-block.workspace = true
-sdmmc-protocol = { workspace = true, default-features = false, features = ["rdif"] }
+sdmmc-host = { workspace = true, features = ["rdif"] }

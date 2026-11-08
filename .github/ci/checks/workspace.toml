@@ -16,10 +16,20 @@ cargo xtask clippy --since "$SINCE_REF"
 id = "test-with-std"
 name = "std tests"
 timeout_minutes = 60
-# command and pull_request_command are identical after the first line, which
-# only differs by the incremental `--since` entry point. Change trailing
-# commands in both fields together.
+# Keep host prerequisites and trailing commands identical in both fields;
+# only the cargo xtask test invocation differs by the incremental entry point.
 command = '''
+# GPT growth tests use sfdisk from the fdisk package to create and verify images.
+export PATH="${PATH}:/usr/sbin:/sbin"
+if ! command -v sfdisk >/dev/null 2>&1; then
+  apt_get=(apt-get)
+  if [ "$(id -u)" != "0" ]; then
+    apt_get=(sudo -n apt-get)
+  fi
+  "${apt_get[@]}" update
+  "${apt_get[@]}" install -y --no-install-recommends fdisk
+fi
+command -v sfdisk
 cargo xtask test
 bash apps/starry/linux-perf/test-download.sh
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
@@ -27,6 +37,17 @@ cargo test -p qperf --test reg
 python3 tools/qperf/tests/prebuild.py
 '''
 pull_request_command = '''
+# GPT growth tests use sfdisk from the fdisk package to create and verify images.
+export PATH="${PATH}:/usr/sbin:/sbin"
+if ! command -v sfdisk >/dev/null 2>&1; then
+  apt_get=(apt-get)
+  if [ "$(id -u)" != "0" ]; then
+    apt_get=(sudo -n apt-get)
+  fi
+  "${apt_get[@]}" update
+  "${apt_get[@]}" install -y --no-install-recommends fdisk
+fi
+command -v sfdisk
 cargo xtask test --since "$SINCE_REF"
 bash apps/starry/linux-perf/test-download.sh
 cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features

@@ -27,3 +27,15 @@ pub use host::{
     Transaction,
 };
 pub use irq::HostParts;
+
+pub mod legacy;
+pub use irq::{
+    CardIrqControl, CompletionIrqRearm, CompletionIrqRearmHost, HostEvent, HostEventKind,
+    HostEventSource, HostProgressWait, SdMmcIrqHandle, SdMmcIrqHost,
+};
+
+#[cfg(feature = "rdif")]
+pub mod block_queue;
+
+#[cfg(feature = "rdif")]
+pub mod command_queue;

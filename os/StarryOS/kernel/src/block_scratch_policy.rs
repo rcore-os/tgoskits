@@ -7,7 +7,7 @@
 //! tests; the device scan and marker read live in
 //! [`crate::block_runtime_axtest`].
 
-use ax_fs_ng::BlockRegion;
+use ax_block::BlockRegion;
 use rdif_block::DeviceInfo;
 
 /// First-sector marker identifying a dedicated scratch disk.
@@ -253,10 +253,7 @@ mod tests {
         // A GPT disk keeps its header and entry areas before the first
         // usable LBA and behind the last one; a declaration that reaches
         // either side would destroy the table.
-        let metadata = [
-            BlockRegion::new(0, 34),
-            BlockRegion::new(4_000, 96),
-        ];
+        let metadata = [BlockRegion::new(0, 34), BlockRegion::new(4_000, 96)];
         let partition = BlockRegion::new(2_048, 1_952);
         let root = BlockRegion::new(2_048, 1_952);
         assert!(!declared_scratch_device_eligible(
@@ -396,11 +393,7 @@ mod tests {
         ));
         let mut read_only = writable_device(1_024);
         read_only.read_only = true;
-        assert!(!marker_scratch_device_eligible(
-            read_only,
-            false,
-            Some(&[]),
-        ));
+        assert!(!marker_scratch_device_eligible(read_only, false, Some(&[]),));
         // The marker must fit one logical sector.
         let tiny_sector = DeviceInfo::new(1_024, 16);
         assert!(!marker_scratch_device_eligible(

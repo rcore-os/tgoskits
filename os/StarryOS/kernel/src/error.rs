@@ -1,6 +1,6 @@
 use ax_alloc::AllocError;
+use ax_block::BlockError;
 use ax_cgroup::CgroupError;
-use ax_fs_ng::BlockError;
 use ax_hal::{cache::TlbShootdownError, paging::PagingError};
 use ax_io::IoError;
 use ax_memory_set::MappingError;

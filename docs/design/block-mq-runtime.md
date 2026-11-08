@@ -154,7 +154,7 @@ No block-runtime crate is added.
   hardware queues, tags, DMA ownership after submission, and IRQ acknowledgement.
 - `ax-driver` owns probe, MMIO/PCI/FDT discovery, DMA capability construction,
   IRQ source resolution, and publication through `rdrive`.
-- `ax-fs-ng::block::runtime` owns channels, software queues, hardware-context
+- `ax-block::block::runtime` owns channels, software queues, hardware-context
   maintenance tasks, completion subscriptions, barriers, timeouts, and teardown.
 - `axruntime` implements the task/IRQ capability adapter and invokes the
   post-SMP-online expansion hook.
@@ -165,15 +165,15 @@ APIs. Hard IRQ callbacks must not call `rdrive`.
 The implementation keeps these ownership boundaries visible in the source
 layout:
 
-- `ax-fs-ng::block::runtime::hctx::{submission}` separates the hctx event loop
+- `ax-block::block::runtime::hctx::{submission}` separates the hctx event loop
   from batch collection/reconciliation;
-- `ax-fs-ng::block::runtime::lifecycle::{controller,device,io}` separates
+- `ax-block::block::runtime::lifecycle::{controller,device,io}` separates
   controller transitions, installed queue/IRQ ownership, and filesystem-facing
   planned I/O windows;
-- `ax-fs-ng::block::runtime::metrics` records dispatch batches, commit calls,
+- `ax-block::block::runtime::metrics` records dispatch batches, commit calls,
   terminal completions, largest batches, and peak in-flight depth without
   participating in synchronization;
-- `ax-fs-ng::block::runtime::waiters` separates task-context multi-waiter
+- `ax-block::block::runtime::waiters` separates task-context multi-waiter
   registration from the IRQ-safe single-worker notification primitive;
 - `ax-fs-ng::file::cache::{readahead,writeback,reclaim}` keeps page-cache read
   policy, durability boundaries, and memory-pressure eviction independent;
@@ -483,7 +483,7 @@ The watchdog must not inspect a completion queue or resubmit a polling query.
 The bootstrap CPU creates the control task and one I/O hctx before root
 filesystem discovery. After every secondary CPU has initialized its scheduler,
 IPI path, and local IRQ state, `axruntime` calls
-`ax_fs_ng::block::runtime::online_smp()`.
+`ax_block::block::runtime::online_smp()`.
 
 The expansion path:
 

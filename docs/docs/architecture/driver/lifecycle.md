@@ -58,7 +58,7 @@ sidebar_label: "生命周期"
 
 块队列的完成 sink 返回终态请求及 backing。控制器进入关闭时，已经交付的队列内存需保持有效直到 `ControllerState::Shutdown`；`advance()` 失败后仍要按已发布资源处理，不能直接释放所有请求。
 
-`fs/ax-fs-ng/src/block/runtime/lifecycle/` 与 `hctx/` 分别保存控制器和队列状态。停止控制器、唤醒等待者、处理已接受前缀及释放 IRQ 不是一个无条件 `Drop` 就能代替的操作。
+`fs/ax-block/src/block/runtime/lifecycle/` 与 `hctx/` 分别保存控制器和队列状态。停止控制器、唤醒等待者、处理已接受前缀及释放 IRQ 不是一个无条件 `Drop` 就能代替的操作。
 
 ### 3.2 USB 端点
 
@@ -112,7 +112,7 @@ FDT 子节点发布维护固件与注册关联，PCI endpoint 枚举维护地址
 
 ### 5.2 直通与上层状态
 
-`fs/ax-fs-ng/src/block/runtime/lifecycle/mod.rs` 提供 `release_block_irqs_for_passthrough()`。该入口说明块领域有相应 IRQ 交接操作，不等于所有硬件具备统一直通关闭协议，也不解除共享时钟寄存器保护。
+`fs/ax-block/src/block/runtime/lifecycle/mod.rs` 提供 `release_block_irqs_for_passthrough()`。该入口说明块领域有相应 IRQ 交接操作，不等于所有硬件具备统一直通关闭协议，也不解除共享时钟寄存器保护。
 
 系统层需要分别处理设备可见性、未完成请求和地址空间归属。宿主驱动生命周期与 guest 模拟设备不同，接入位置由[系统集成](integration.md)说明。
 
@@ -126,6 +126,6 @@ FDT 子节点发布维护固件与注册关联，PCI endpoint 枚举维护地址
 
 ### 6.2 回归位置
 
-块生命周期测试位于 `fs/ax-fs-ng/src/block/runtime/lifecycle/tests/`，网络执行器及拓扑测试位于 `net/ax-net/src/queue_runtime/`，USB 端点和串口 gate 也有对应测试。测试源码说明被断言的条件，不代表当前硬件已经执行该场景。
+块生命周期测试位于 `fs/ax-block/src/block/runtime/lifecycle/tests/`，网络执行器及拓扑测试位于 `net/ax-net/src/queue_runtime/`，USB 端点和串口 gate 也有对应测试。测试源码说明被断言的条件，不代表当前硬件已经执行该场景。
 
 接管、启动失败、部分提交、取消、共享 IRQ 和无法确认停止都需要独立证据。文档与源码对应不替代具体目标的运行验证。

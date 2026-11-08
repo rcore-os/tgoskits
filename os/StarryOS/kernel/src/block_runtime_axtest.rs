@@ -1,13 +1,6 @@
 //! Starry axtests for the asynchronous block runtime boundary.
 
-use alloc::{
-    boxed::Box,
-    format,
-    string::String,
-    sync::Arc,
-    vec,
-    vec::Vec,
-};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 use core::{
     fmt,
     future::{Future, poll_fn},
@@ -15,13 +8,13 @@ use core::{
     task::Poll,
 };
 
-use ax_fs_ng::{BlockDeviceHandle, BlockError, BlockRegion, block_batch_stats};
+use ax_block::{BlockError, BlockRegion, DeviceRef, block::runtime::block_batch_stats};
 use rdif_block::CompletedRequest;
 
 use crate::block_scratch_policy::{
     MIXED_TEST_BLOCKS, MULTI_DESCRIPTOR_TEST_BLOCKS, SCRATCH_DISK_MARKER, WRITE_TEST_BLOCKS,
     declared_scratch_device_eligible, marker_scratch_device_eligible, marker_scratch_region,
-    scratch_covers_case,
+    regions_disjoint, scratch_covers_case,
 };
 
 type MixedFuture = Pin<Box<dyn Future<Output = Result<CompletedRequest, BlockError>>>>;
@@ -137,9 +130,9 @@ fn checked_read_bytes(request: &CompletedRequest, byte_len: usize) -> Result<(),
 /// partition or partition-table metadata region) are pure functions in
 /// [`crate::block_scratch_policy`] with deterministic unit tests; only device
 /// I/O stays here.
-fn writable_test_device() -> Option<(Arc<BlockDeviceHandle>, BlockRegion)> {
-    let devices = BlockDeviceHandle::axtest_devices()
-        .expect("block runtime must be installed for block axtest");
+fn writable_test_device() -> Option<(Arc<DeviceRef>, BlockRegion)> {
+    let devices =
+        DeviceRef::axtest_devices().expect("block runtime must be installed for block axtest");
 
     // An explicit bootargs declaration is a hard commitment: a malformed one
     // fails the destructive tests instead of falling back to the marker path
@@ -217,7 +210,7 @@ fn writable_test_device() -> Option<(Arc<BlockDeviceHandle>, BlockRegion)> {
     Some((device, scratch))
 }
 
-fn log_write_device(device: &BlockDeviceHandle, scratch: &BlockRegion) {
+fn log_write_device(device: &DeviceRef, scratch: &BlockRegion) {
     let info = device.device_info();
     // The root region is logged for the board record; eligibility was already
     // enforced by the candidate filters above.
@@ -249,17 +242,15 @@ fn log_write_tests_skip() {
     );
 }
 
-fn pattern_bytes(
-    block_size: usize,
-    block_count: u32,
-    seed: u8,
-) -> Result<Vec<u8>, CaseFailure> {
-    let byte_len = block_size.checked_mul(block_count as usize).ok_or_else(|| {
-        CaseFailure::new(
-            "pattern allocation",
-            format!("{block_size} bytes x {block_count} blocks overflows usize"),
-        )
-    })?;
+fn pattern_bytes(block_size: usize, block_count: u32, seed: u8) -> Result<Vec<u8>, CaseFailure> {
+    let byte_len = block_size
+        .checked_mul(block_count as usize)
+        .ok_or_else(|| {
+            CaseFailure::new(
+                "pattern allocation",
+                format!("{block_size} bytes x {block_count} blocks overflows usize"),
+            )
+        })?;
     Ok((0..byte_len)
         .map(|index| {
             seed.wrapping_add(index as u8)
@@ -269,17 +260,19 @@ fn pattern_bytes(
 }
 
 fn try_read_region_sync(
-    device: &Arc<BlockDeviceHandle>,
+    device: &Arc<DeviceRef>,
     lba: u64,
     block_count: u32,
 ) -> Result<Vec<u8>, CaseFailure> {
     let block_size = device.device_info().logical_block_size;
-    let byte_len = block_size.checked_mul(block_count as usize).ok_or_else(|| {
-        CaseFailure::new(
-            "synchronous read",
-            format!("{block_size} bytes x {block_count} blocks overflows usize"),
-        )
-    })?;
+    let byte_len = block_size
+        .checked_mul(block_count as usize)
+        .ok_or_else(|| {
+            CaseFailure::new(
+                "synchronous read",
+                format!("{block_size} bytes x {block_count} blocks overflows usize"),
+            )
+        })?;
     let request = device
         .axtest_read_blocks_sync(lba, block_count)
         .map_err(|error| CaseFailure::new("synchronous read", format!("lba {lba}: {error:?}")))?;
@@ -295,7 +288,7 @@ fn try_read_region_sync(
 /// so recovery is driven explicitly by [`run_destructive_case`] before any
 /// failure is reported.
 struct ScratchRestore {
-    device: Arc<BlockDeviceHandle>,
+    device: Arc<DeviceRef>,
     lba: u64,
     block_count: u32,
     original: Vec<u8>,
@@ -309,7 +302,10 @@ impl ScratchRestore {
             .device
             .axtest_write_blocks_sync(self.lba, self.block_count, &self.original)
             .map_err(|error| {
-                CaseFailure::new("scratch restore write", format!("lba {}: {error:?}", self.lba))
+                CaseFailure::new(
+                    "scratch restore write",
+                    format!("lba {}: {error:?}", self.lba),
+                )
             })?;
         if restored.result.is_err() {
             return Err(CaseFailure::new(
@@ -347,7 +343,7 @@ impl CaseReport {
             self.body.as_ref(),
             self.restore.as_ref(),
         ) {
-            (Some(failure), _, _) => format!(
+            (Some(failure), ..) => format!(
                 "destructive case {} failed before touching the scratch region: {failure}",
                 self.label
             ),
@@ -357,8 +353,8 @@ impl CaseReport {
                 self.label
             ),
             (None, Some(failure), Some(restore)) => format!(
-                "destructive case {} failed: {failure}; restoring the scratch region also \
-                 failed: {restore}",
+                "destructive case {} failed: {failure}; restoring the scratch region also failed: \
+                 {restore}",
                 self.label
             ),
             (None, None, Some(restore)) => format!(
@@ -381,7 +377,7 @@ impl CaseReport {
 /// by their own request results and data comparisons.
 fn run_destructive_case(
     label: &'static str,
-    device: Arc<BlockDeviceHandle>,
+    device: Arc<DeviceRef>,
     scratch_region: BlockRegion,
     offset_blocks: u32,
     case_blocks: u32,
@@ -410,9 +406,7 @@ fn run_destructive_case(
             label,
             untouched: Some(CaseFailure::new(
                 "scratch coverage",
-                format!(
-                    "case start {lba} plus {case_blocks} blocks overflows the LBA space"
-                ),
+                format!("case start {lba} plus {case_blocks} blocks overflows the LBA space"),
             )),
             body: None,
             restore: None,
@@ -469,41 +463,88 @@ enum MixedExpectation {
     Read(u64, Vec<u8>),
 }
 
-async fn read_one(
-    device: Arc<BlockDeviceHandle>,
-    lba: u64,
-) -> Result<CompletedRequest, BlockError> {
+async fn read_one(device: Arc<DeviceRef>, lba: u64) -> Result<CompletedRequest, BlockError> {
     device.axtest_read(lba).await
+}
+
+/// Selects readable test sectors outside every discovered protected extent.
+/// This permits gaps on a partitioned root device while excluding a mounted
+/// raw root and disks whose layout could not be established.
+fn read_test_device(block_count: u64) -> Option<(Arc<DeviceRef>, u64)> {
+    let devices = DeviceRef::axtest_devices()?;
+    for device in devices {
+        let info = device.device_info();
+        if info.logical_block_size == 0 {
+            continue;
+        }
+        let Some(protected) = ax_fs_ng::root::axtest_disk_protected_regions(device) else {
+            continue;
+        };
+        let root = ax_fs_ng::root::axtest_root_region(device);
+        let mut first = 0u64;
+        while let Some(end) = first
+            .checked_add(block_count)
+            .filter(|end| *end <= info.num_blocks)
+        {
+            let candidate = BlockRegion {
+                start_lba: first,
+                end_lba: end,
+            };
+            let next = protected
+                .iter()
+                .copied()
+                .chain(root)
+                .filter(|region| !regions_disjoint(candidate, *region))
+                .map(|region| region.end_lba)
+                .max();
+            match next {
+                Some(end) => first = end,
+                None => {
+                    axtest::axtest_println!(
+                        "BLOCK_READ_DEVICE name={} start_lba={} blocks={}",
+                        device.name(),
+                        first,
+                        block_count
+                    );
+                    return Some((device.clone(), first));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Confirms registration readiness and consistency between completion paths.
 #[axtest::axtest]
 fn block_runtime_registration_and_read_consistency() {
-    let devices = BlockDeviceHandle::axtest_devices()
-        .expect("block runtime must be installed for block axtest");
+    let devices =
+        DeviceRef::axtest_devices().expect("block runtime must be installed for block axtest");
     assert!(!devices.is_empty(), "block runtime must register a device");
-    let device = devices
-        .first()
-        .cloned()
-        .expect("block runtime device list must contain the registered device");
+    for device in devices {
+        let info = device.device_info();
+        assert!(
+            info.num_blocks != 0,
+            "registered block device must have blocks"
+        );
+        assert!(
+            info.logical_block_size != 0,
+            "registered block device must expose a logical block size"
+        );
+        axtest::axtest_println!(
+            "BLOCK_DEVICE name={} blocks={} logical_block_size={}",
+            device.name(),
+            info.num_blocks,
+            info.logical_block_size
+        );
+    }
+    let Some((device, lba)) = read_test_device(1) else {
+        axtest::axtest_println!("BLOCK_READ_TESTS_SKIPPED reason=no unowned raw region");
+        return axtest::AxTestResult::Ok;
+    };
     let info = device.device_info();
-    assert!(
-        info.num_blocks != 0,
-        "registered block device must have blocks"
-    );
-    assert!(
-        info.logical_block_size != 0,
-        "registered block device must expose a logical block size"
-    );
-    axtest::axtest_println!(
-        "BLOCK_DEVICE name={} blocks={} logical_block_size={}",
-        device.name(),
-        info.num_blocks,
-        info.logical_block_size,
-    );
 
     let synchronous = device
-        .axtest_read_sync(0)
+        .axtest_read_sync(lba)
         .unwrap_or_else(|error| panic!("registered device synchronous read failed: {error:?}"));
     assert_successful_read(&synchronous, info.logical_block_size);
     let synchronous_data = synchronous
@@ -511,7 +552,7 @@ fn block_runtime_registration_and_read_consistency() {
         .expect("successful synchronous read must return DMA data")
         .into_cpu_buffer();
 
-    let asynchronous = crate::task::future::block_on(device.axtest_read(0))
+    let asynchronous = crate::task::future::block_on(device.axtest_read(lba))
         .unwrap_or_else(|error| panic!("registered device asynchronous read failed: {error:?}"));
     assert_successful_read(&asynchronous, info.logical_block_size);
     let asynchronous_data = asynchronous
@@ -534,20 +575,13 @@ fn block_runtime_registration_and_read_consistency() {
 /// waker coverage.
 #[axtest::axtest]
 fn block_runtime_async_double_read() {
-    let devices = BlockDeviceHandle::axtest_devices()
-        .expect("block runtime must be installed for block axtest");
-    let device = devices
-        .first()
-        .cloned()
-        .expect("block axtest requires an installed block device");
-    let info = device.device_info();
-    assert!(
-        info.num_blocks >= 2,
-        "block axtest requires at least two blocks"
-    );
-    let block_size = info.logical_block_size;
-    let mut first = pin!(read_one(Arc::clone(&device), 0));
-    let mut second = pin!(read_one(device, 1));
+    let Some((device, lba)) = read_test_device(2) else {
+        axtest::axtest_println!("BLOCK_READ_TESTS_SKIPPED reason=no unowned raw region");
+        return axtest::AxTestResult::Ok;
+    };
+    let block_size = device.device_info().logical_block_size;
+    let mut first = pin!(read_one(Arc::clone(&device), lba));
+    let mut second = pin!(read_one(device, lba + 1));
     let mut first_result = None;
     let mut second_result = None;
     let (first_result, second_result) = crate::task::future::block_on(poll_fn(|cx| {
@@ -627,7 +661,7 @@ fn block_runtime_single_block_contiguous_read_write() -> axtest::AxTestResult {
 }
 
 fn run_single_block_body(
-    device: &Arc<BlockDeviceHandle>,
+    device: &Arc<DeviceRef>,
     restore: &ScratchRestore,
     block_size: usize,
 ) -> Result<(), CaseFailure> {
@@ -636,7 +670,10 @@ fn run_single_block_body(
     for index in 0..WRITE_TEST_BLOCKS {
         let offset = index as usize * block_size;
         let request = device
-            .axtest_write_sync(lba + u64::from(index), &pattern[offset..offset + block_size])
+            .axtest_write_sync(
+                lba + u64::from(index),
+                &pattern[offset..offset + block_size],
+            )
             .map_err(|error| {
                 CaseFailure::new(
                     "single-block synchronous write",
@@ -744,7 +781,7 @@ fn block_runtime_multi_descriptor_contiguous_read_write() -> axtest::AxTestResul
 }
 
 fn run_multi_block_body(
-    device: &Arc<BlockDeviceHandle>,
+    device: &Arc<DeviceRef>,
     restore: &ScratchRestore,
     block_size: usize,
     seed: u8,
@@ -752,30 +789,28 @@ fn run_multi_block_body(
     let lba = restore.lba;
     let block_count = restore.block_count;
     let pattern = pattern_bytes(block_size, block_count, seed)?;
-    let write = crate::task::future::block_on(device.axtest_write_blocks(
-        lba,
-        block_count,
-        &pattern,
-    ))
-    .map_err(|error| {
-        CaseFailure::new(
-            "multi-block asynchronous write",
-            format!("lba {lba} blocks {block_count}: {error:?}"),
-        )
-    })?;
+    let write =
+        crate::task::future::block_on(device.axtest_write_blocks(lba, block_count, &pattern))
+            .map_err(|error| {
+                CaseFailure::new(
+                    "multi-block asynchronous write",
+                    format!("lba {lba} blocks {block_count}: {error:?}"),
+                )
+            })?;
     if write.result.is_err() {
         return Err(CaseFailure::new(
             "multi-block asynchronous write",
             format!("lba {lba} blocks {block_count}: {:?}", write.result),
         ));
     }
-    let read = crate::task::future::block_on(device.axtest_read_blocks(lba, block_count))
-        .map_err(|error| {
+    let read = crate::task::future::block_on(device.axtest_read_blocks(lba, block_count)).map_err(
+        |error| {
             CaseFailure::new(
                 "multi-block asynchronous read",
                 format!("lba {lba} blocks {block_count}: {error:?}"),
             )
-        })?;
+        },
+    )?;
     checked_read_bytes(&read, pattern.len())?;
     let data = read.data.as_ref().expect("checked read data");
     let mut read_back = vec![0; pattern.len()];
@@ -824,7 +859,7 @@ fn block_runtime_async_mixed_read_write() -> axtest::AxTestResult {
 }
 
 fn run_mixed_body(
-    device: &Arc<BlockDeviceHandle>,
+    device: &Arc<DeviceRef>,
     restore: &ScratchRestore,
     block_size: usize,
 ) -> Result<(), CaseFailure> {
@@ -888,7 +923,10 @@ fn run_mixed_body(
                                 failure.get_or_insert_with(|| {
                                     CaseFailure::new(
                                         "mixed asynchronous read",
-                                        format!("lba {target_lba}: expected {block_size} bytes of DMA data"),
+                                        format!(
+                                            "lba {target_lba}: expected {block_size} bytes of DMA \
+                                             data"
+                                        ),
                                     )
                                 });
                             } else {
@@ -900,7 +938,8 @@ fn run_mixed_body(
                                         CaseFailure::new(
                                             "mixed read-back compare",
                                             format!(
-                                                "lba {target_lba} does not match its expected bytes"
+                                                "lba {target_lba} does not match its expected \
+                                                 bytes"
                                             ),
                                         )
                                     });
@@ -941,7 +980,10 @@ fn run_mixed_body(
         if mixed_read_back[offset..offset + block_size] != expected[..] {
             return Err(CaseFailure::new(
                 "mixed read-back compare",
-                format!("lba {} does not match its expected bytes", lba + index as u64),
+                format!(
+                    "lba {} does not match its expected bytes",
+                    lba + index as u64
+                ),
             ));
         }
     }

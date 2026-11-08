@@ -5,20 +5,20 @@ sidebar_label: "块存储运行时"
 
 # 块存储运行时
 
-`ax-fs-ng::block::runtime` 把 `rdif-block` controller/hardware queue 转换为文件系统可同步调用的 `BlockDeviceHandle`。它保留 owned DMA request、多硬件队列、IRQ 完成和 flush barrier，不让 ext4/FAT 持有 driver queue 或在调用线程中轮询设备。
+`ax-block::block::runtime` 把 `rdif-block` controller/hardware queue 转换为可查询设备信息和申请访问能力的 `DeviceRef`。文件系统经 `VolumeLease` 同步访问磁盘；整盘布局修改由 `DiskMaintenance` 排他持有。运行时保留 owned DMA request、多硬件队列、IRQ 完成和 flush barrier，不让 ext4/FAT 持有 driver queue 或在调用线程中轮询设备。
 
 ## 1. 运行时边界
 
-块运行时通过 `BlockDeviceHandle` 隔离同步文件访问和异步硬件队列，并通过 `ax-fs-ng::os` capability 隔离公共 crate 与 ArceOS 平台实现。文件系统、运行时和驱动之间只传递 typed request、completion 和 owner。
+块运行时通过访问租约隔离同步文件访问和异步硬件队列，并通过 `ax-block::os` capability 隔离公共 crate 与 ArceOS 平台实现。`DeviceRef` 本身不提供无约束 I/O；租约校验区域、权限和布局代际，请求完成前持续持有所属访问能力。
 
 ### 1.1 数据边界
 
-数据路径从 `FsBlockDevice` 进入 per-CPU software channel，再由 Hctx owner 提交到 `rdif-block::HardwareQueue`。IRQ 只向对应 Hctx 发布事件，不把 queue ownership 交还调用任务。
+数据路径从 `BlockDevice` 进入 per-CPU software channel，再由 Hctx owner 提交到 `rdif-block::HardwareQueue`。IRQ 只向对应 Hctx 发布事件，不把 queue ownership 交还调用任务。
 
 ```mermaid
 flowchart LR
-    FS["ext4 / FAT\nFsBlockDevice"]
-    Handle["BlockDeviceHandle"]
+    FS["ext4 / FAT\nVolumeLease"]
+    Handle["private native I/O endpoint"]
     CpuQ["per-CPU bounded channel"]
     Hctx["Hctx owner worker"]
     Queue["rdif HardwareQueue"]
@@ -36,6 +36,10 @@ flowchart LR
 
 `RdifBlockDevice` 携带一个 `BlockController` 和已由平台解析的 `BlockIrqSource`；`RdifBlockGroup` 表示一个共享 controller group 及多个 member device。runtime 不解析 FDT/ACPI/PCI，也不猜 IRQ 或 DMA 属性。
 
+`BufferedBlockDevice` 的数据端点和缓存写回端点分开持有。数据读写经卷所有者检查实际扇区范围；缓存命中只填充请求覆盖的槽。整盘共享脏数据的刷新、直接访问前的写回以及淘汰可以跨分区，因此使用独立的缓存写回端点，避免借用当前分区的权限写入邻接分区。
+
+`NativeHandleBlockDevice::for_writeback()` 仅保存原所有者的弱引用：原所有者仍为 `DiskMaintenance` 时沿用维护权，否则为每次物理操作申请 `cache_io()` 临时能力。维护权发布为较小根卷后，写回端点自动改用缓存能力。注册表保存的全局端点始终申请独立缓存能力，维护期间返回忙错误，不借用维护事务。最后一个缓存对象释放时使用同一规则；失败脏数据继续由注册表保留以供重试。
+
 ### 1.2 系统能力
 
 `ax-fs-ng::os::install()` 一次性注入页、任务、DMA、IRQ 和时间能力。每个 provider 都有明确失败语义，未安装时不会回退到假地址、轮询或默认 IRQ。
@@ -52,7 +56,7 @@ provider 未安装时返回 `BadState`/`RuntimeUnavailable` 类错误，不回�
 
 ## 2. 设备生命周期
 
-设备生命周期包括 controller 启动、queue 发布、CPU channel 建立和 SMP 扩展。`BlockRuntime` 只有在这些资源全部可用后才发布 `BlockDeviceHandle`，失败则按相反顺序回收。
+设备生命周期包括 controller 启动、queue 发布、CPU channel 建立和 SMP 扩展。`BlockRuntime` 只有在这些资源全部可用后才发布 `DeviceRef`，失败则按相反顺序回收。
 
 ### 2.1 启动发布
 
@@ -60,7 +64,7 @@ provider 未安装时返回 `BadState`/`RuntimeUnavailable` 类错误，不回�
 
 ```text
 BlockRuntime::install_from_rdif_sources()
-  -> 对每个独立 device 执行 BlockDeviceHandle::start()
+  -> 对每个独立 device 执行 DeviceRef::start()
   -> 对每个 group 启动 group controller 并生成 member handles
   -> controller worker 固定到 CPU0
   -> ControllerEvent::Start { target_queues: 1 }
@@ -152,29 +156,29 @@ shared IRQ group 由一个 handler fan-out 到 member target；spurious 或 ackn
 
 ### 4.1 分区范围
 
-`NativeHandleBlockDevice` 将同步 read/write/flush 转换为 owned runtime request。`RegionBlockDevice` 再把文件系统相对 LBA 映射到物理磁盘：
+`VolumeLease` 保留访问所有者，私有的 `NativeHandleBlockDevice` 将同步 read/write/flush 转换为 owned runtime request。`RegionBlockDevice` 再把文件系统相对 LBA 映射到物理磁盘：
 
 ```text
 logical request [block_id, block_id + blocks)
   -> buffer length 必须是 logical block size 的整数倍
   -> end <= region.num_blocks()
   -> physical_lba = region.start_lba + block_id（checked add）
-  -> submit to BlockDeviceHandle
+  -> 验证访问能力并提交 owned request
 ```
 
-读取 GPT/MBR 时使用全盘 handle；挂载具体分区后必须通过 region 裁剪。任何越界或整数溢出返回 typed error，不能让下层设备静默截断。
+读取 GPT/MBR 时经 `DeviceRef::volume_layout()` 在受控的整盘只读租约内扫描，或读取已验证的布局缓存；挂载具体分区时使用该代际的 `VolumeDescriptor` 申请租约。任何越界或整数溢出返回 typed error，不能让下层设备静默截断。
 
 ### 4.2 设备交接
 
-最后一个 `BlockDeviceHandle` 引用释放或显式 passthrough 准备时执行 shutdown：停止 admission，等待/取消活动请求，quiesce Hctx，禁用并 synchronize IRQ，停止 worker/controller，最后释放 queue 和 DMA owner。
+最后一个 `DeviceRef` 引用释放或显式 passthrough 准备时执行 shutdown：停止 admission，等待/取消活动请求，quiesce Hctx，禁用并 synchronize IRQ，停止 worker/controller，最后释放 queue 和 DMA owner。
 
 `release_block_irqs_for_passthrough()` 先关闭 group，再关闭独立 device，并返回释放的 IRQ 数。Axvisor 只能在文件系统写回与 shutdown 完成后把物理块设备交给 guest；不能仅 unregister VFS root 而保留 host IRQ/hctx owner。
 
 ### 4.3 运行时统计
 
-`BlockDeviceHandle::io_stats()` 返回本设备的 `BlockIoStats`，`root_block_stats()` 通过已挂载根设备句柄提供同一份统计，供 `/proc/diskstats` 使用。请求通过参数校验与运行时准入后开始计时，覆盖软件通道等待、hctx 调度及硬件重试，终结完成被消费时结束。普通读写计入在途数与忙碌区间；加权时间是已完成读、写及硬件 flush 的延迟之和。512 字节扇区记录终结请求的字节数，错误终态也计完整请求长度，不表示介质成功传输量。入队前取消或返回原请求只撤销在途状态并结算已观察的忙碌区间，不增加完成次数、扇区、完成耗时、失败数或加权时间。接收端取消不影响已入队请求的终结统计。
+`DeviceRef::io_stats()` 返回本设备的 `BlockIoStats`，`root_block_stats()` 通过已挂载根设备句柄提供同一份统计，供 `/proc/diskstats` 使用。请求通过参数校验与运行时准入后开始计时，覆盖软件通道等待、hctx 调度及硬件重试，终结完成被消费时结束。普通读写计入在途数与忙碌区间；加权时间是已完成读、写及硬件 flush 的延迟之和。512 字节扇区记录终结请求的字节数，错误终态也计完整请求长度，不表示介质成功传输量。入队前取消或返回原请求只撤销在途状态并结算已观察的忙碌区间，不增加完成次数、扇区、完成耗时、失败数或加权时间。接收端取消不影响已入队请求的终结统计。
 
-没有可导出的根块设备快照时，`root_block_stats()` 返回 `None`，StarryOS 的 `render_diskstats()` 输出空文件；这包括内存根、根设备记录尚不可用及 `Weak<BlockDeviceHandle>` 无法升级的情况。成功读取的空结果表示“无数据”，不能解释为零 I/O 活动、没有磁盘或读取错误。消费者应清除旧计数与速率基线，待设备行恢复后重新采样，不延续旧速率或猜测设备行。此处说明的是接口约定，不表示现有监控示例已经覆盖空结果及恢复后的速率计算。
+没有可导出的根块设备快照时，`root_block_stats()` 返回 `None`，StarryOS 的 `render_diskstats()` 输出空文件；这包括内存根、根设备记录尚不可用及 `Weak<DeviceRef>` 无法升级的情况。成功读取的空结果表示“无数据”，不能解释为零 I/O 活动、没有磁盘或读取错误。消费者应清除旧计数与速率基线，待设备行恢复后重新采样，不延续旧速率或猜测设备行。此处说明的是接口约定，不表示现有监控示例已经覆盖空结果及恢复后的速率计算。
 
 `BlockBatchStats` 和 runtime metrics 继续记录 dispatch batch、commit、channel/backpressure 等内部事实，用于区分：
 
@@ -183,4 +187,4 @@ logical request [block_id, block_id + blocks)
 - driver 接收但没有 IRQ completion；
 - completion 正常但 flush barrier 未解除。
 
-设备统计在 `DeviceIoMetrics` 的 IRQ-safe 叶子锁内更新和生成快照，快照只推进忙碌区间，不累加尚未完成请求的加权时间；批量指标仍使用 Relaxed 原子。两类统计都只用于观测，不承担 request 所有权或生命周期同步。运行时仍以 `BlockDeviceHandle` 作为文件系统唯一设备入口，以 owned request 保存 DMA 生命周期，以当前 `DeviceInfo` epoch 验证 queue limit，并让 IRQ 只执行 latch/notify。相关生命周期同时受[驱动 IRQ](../driver/irq.md)和[内存 DMA](../memory/dma.md)的能力契约约束。
+设备统计在 `DeviceIoMetrics` 的 IRQ-safe 叶子锁内更新和生成快照，快照只推进忙碌区间，不累加尚未完成请求的加权时间；批量指标仍使用 Relaxed 原子。两类统计都只用于观测，不承担 request 所有权或生命周期同步。运行时通过 `DeviceRef` 申请访问能力，以 owned request 保存访问能力及 DMA 生命周期，以当前 `DeviceInfo` epoch 验证 queue limit，并让 IRQ 只执行 latch/notify。相关生命周期同时受[驱动 IRQ](../driver/irq.md)和[内存 DMA](../memory/dma.md)的能力契约约束。

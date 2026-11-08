@@ -273,7 +273,7 @@ CMake读取`CMAKE_C_COMPILER_TARGET`的架构前缀，将可选的`cases-<arch>.
 
 LTP用`mount("/dev/zero", ..., "ext4", ...)`探测支持范围，而当前`mount_ext4`恒返回`ENODEV`，使目录候选只在tmpfs执行。继续保留停用后端无法承接原ext4测试；仅改变探测errno同样不能建立真实挂载。历史全镜像缓存和同步`IQueue::poll_request`依赖已经删除的块接口，也不能恢复。
 
-选择在ax-fs-ng内部用现有`FsBlockDevice`适配有所有权的`FileBackend`，通过一个文件来源构造入口交给Starry的loop挂载使用。`FsBlockDevice`保持内部接口，物理设备的`BlockDeviceHandle`及IRQ完成路径保持原有所有者。文件适配器按需调用`read_at`、`write_at`、`sync`，不复制整幅镜像，不建立软件IRQ或第二个块运行时；底层物理I/O继续经过文件系统现有块运行时。块范围用受检算术验证，短I/O和同步错误必须传播。
+选择在ax-fs-ng内部用现有`FsBlockDevice`适配有所有权的`FileBackend`，通过一个文件来源构造入口交给Starry的loop挂载使用。`FsBlockDevice`保持内部接口，物理设备的`DeviceRef`及IRQ完成路径保持原有所有者。文件适配器按需调用`read_at`、`write_at`、`sync`，不复制整幅镜像，不建立软件IRQ或第二个块运行时；底层物理I/O继续经过文件系统现有块运行时。块范围用受检算术验证，短I/O和同步错误必须传播。
 
 Starry设备边界需要转发长度和同步能力，默认行为与原`Device::len`、`Device::sync`一致，loop实现提供真实容量和后端同步。挂载入口验证块设备类型及绑定状态，在FsContext锁外构造文件系统，最后发布挂载；失败时由源租约自动释放打开计数。现有从native handle构造文件系统的调用者保持既有接口。
 

@@ -30,7 +30,7 @@ sidebar_label: "总体架构"
 | 平台绑定 | FDT/ACPI/PCI 资源、对象构造与发布 | `drivers/ax-driver/src/` |
 | 内存资源能力 | 映射、DMA domain、约束及同步 | `memory/mmio-api/src/lib.rs`、`memory/dma-api/src/lib.rs` |
 | 硬件核心 | 寄存器、描述符、设备状态 | 具体存储、网络、USB 和 SoC 驱动 |
-| 领域运行时 | 提交、完成、事件、任务及停止 | `fs/ax-fs-ng/src/block/runtime/`、USB `Core` 等 |
+| 领域运行时 | 提交、完成、事件、任务及停止 | `fs/ax-block/src/block/runtime/`、USB `Core` 等 |
 | 系统适配 | 启动组织和用户态语义 | `os/arceos/modules/axruntime/src/`、StarryOS 与 Axvisor |
 
 代码归属以依赖和状态所有者判定。硬件机制与系统策略的边界由[驱动分层](layering.md)进一步定义。
@@ -122,7 +122,7 @@ USB `disconnect_port()` 维护子树断开，注册表增加对象不等于全�
 
 块运行时交付块设备句柄，卷层提供磁盘区域和分区元数据；网络运行时交付帧端口；显示和输入交付帧缓冲及事件接口；USB 主机交付设备变化与设备对象；平台控制器交付配置能力。
 
-分区解析在 `fs/ax-fs-ng/src/volume/`，不属于 `ax-driver`；协议和 socket 不属于网卡寄存器层；Linux USBFS 不属于 DWC3 PHY 核心。交付关系由[领域服务](services.md)定义。
+分区解析在 `fs/ax-block/src/volume/`，不属于 `ax-driver`；协议和 socket 不属于网卡寄存器层；Linux USBFS 不属于 DWC3 PHY 核心。交付关系由[领域服务](services.md)定义。
 
 ### 6.2 系统与构建配置
 

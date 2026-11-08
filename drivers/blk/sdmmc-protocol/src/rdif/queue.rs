@@ -10,7 +10,7 @@ use rdif_block::{
 use sdmmc_host::ProgressCause;
 
 use crate::{
-    BlockProgress, BlockRequestId, OperationProgress,
+    BlockProgress, BlockRequestId, CommandResponseProgress, OperationProgress,
     rdif::{
         accelerator::{CommandQueueAccelerator, CommandQueueActivation},
         config::{block_addr_for_card, device_info, map_dev_err_to_blk_err, queue_limits},
@@ -70,6 +70,13 @@ where
     cache_enabled: bool,
     accelerator: Option<Box<dyn CommandQueueAccelerator>>,
     command_queue_enable: Option<CommandQueueEnable>,
+    trim_support: Option<super::MmcTrimSupport>,
+    trim: Option<(
+        RequestId,
+        super::MmcTrimRequest,
+        crate::sdio::native::SdMmcCommandRequest,
+    )>,
+    closed: bool,
 }
 
 impl<H> BlockQueue<H>
@@ -78,8 +85,14 @@ where
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {
-    pub(super) fn new(card: SdMmcCard<H>, config: super::config::BlockConfig, id: usize) -> Self {
+    pub(super) fn new(
+        card: SdMmcCard<H>,
+        mut config: super::config::BlockConfig,
+        id: usize,
+    ) -> Self {
         let supports_flush = queue_supports_flush(card.kind(), None);
+        // Only a successfully activated accelerator can publish native TRIM.
+        config.limits.max_write_zeroes_blocks = 0;
         let legacy_limits = config.limits;
         Self {
             card,
@@ -99,6 +112,9 @@ where
             cache_enabled: false,
             accelerator: None,
             command_queue_enable: None,
+            trim_support: None,
+            trim: None,
+            closed: false,
         }
     }
 
@@ -200,11 +216,44 @@ where
                     && ext_csd.command_queue_supported()
                     && self.accelerator.is_some()
                 {
+                    self.trim_support = info.cid.as_ref().and_then(|cid| {
+                        super::MmcTrimSupport::for_card(ext_csd, cid, info.high_capacity)
+                    });
                     let activation = CommandQueueActivation {
                         rca: info.rca,
                         card_depth: ext_csd.command_queue_depth(),
-                        cache_enabled: self.cache_enabled,
+                        flush_command: if self.cache_enabled {
+                            crate::cmd::cmd6_mmc_switch(
+                                3,
+                                crate::cmd::ext_csd::FLUSH_CACHE as u8,
+                                1,
+                            )
+                        } else {
+                            crate::cmd::cmd13(info.rca)
+                        },
+                        status_command: crate::cmd::cmd13(info.rca),
                     };
+                    if self.trim_support.is_none() {
+                        // Preserve the rejected card facts before queue
+                        // activation collapses unsupported native zeroes to
+                        // a zero limit. CID prefix excludes the serial number.
+                        let registers = ext_csd.as_bytes();
+                        log::debug!(
+                            "sdmmc: native zero unavailable: device={} high_capacity={} \
+                             ext_csd_rev={} sec_features={:#04x} erased_mem_cont={:#04x} \
+                             erase_group_def={:#04x} hc_erase_grp_size={} trim_mult={} \
+                             cid_prefix={:02x?}",
+                            self.config.name(),
+                            info.high_capacity,
+                            ext_csd.revision(),
+                            registers[crate::cmd::ext_csd::SEC_FEATURE_SUPPORT],
+                            registers[crate::cmd::ext_csd::ERASED_MEM_CONT],
+                            registers[crate::cmd::ext_csd::ERASE_GROUP_DEF],
+                            registers[crate::cmd::ext_csd::HC_ERASE_GRP_SIZE],
+                            registers[crate::cmd::ext_csd::TRIM_MULT],
+                            info.cid.as_ref().map(|cid| &cid.raw[..9]),
+                        );
+                    }
                     let request = self
                         .card
                         .submit_mmc_switch(
@@ -301,6 +350,8 @@ where
                     }
                 }
                 self.register_retry_after = None;
+                self.config.limits.max_write_zeroes_blocks =
+                    self.trim_support.map_or(0, |support| support.max_blocks());
                 self.publish_ready(enabling.capacity_blocks);
                 info!(
                     "sdmmc block init complete with command queue: rca={} depth={}",
@@ -337,6 +388,7 @@ where
         if self.accelerator.is_some() {
             self.config.limits = self.legacy_limits;
         }
+        self.config.limits.max_write_zeroes_blocks = 0;
     }
 
     fn initialization_pending(&self) -> bool {
@@ -444,6 +496,7 @@ where
         match request.op {
             RequestOp::Read | RequestOp::Write => self.submit_data(request),
             RequestOp::Flush => self.submit_flush(request),
+            RequestOp::WriteZeroes => Err(SubmitError::new(BlkError::NotSupported, request)),
         }
     }
 
@@ -466,6 +519,7 @@ where
                 sink.complete(CompletedRequest::new(id, Ok(()), data));
             }
             Err(error) => {
+                self.closed = true;
                 let abort = abort_request(
                     self.card.protocol_host_mut(),
                     &mut self.pending,
@@ -498,6 +552,7 @@ where
                         sink.complete(CompletedRequest::new(id, Ok(()), None));
                     }
                     Err(error) => {
+                        self.closed = true;
                         warn!("sdmmc flush request {id:?} failed: {error}");
                         sink.complete(CompletedRequest::new(
                             id,
@@ -516,10 +571,12 @@ where
                         sink.complete(CompletedRequest::new(id, Ok(()), None));
                     }
                     Ok(OperationProgress::Complete(state)) => {
+                        self.closed = true;
                         warn!("sdmmc flush status barrier ended in card state {state:?}");
                         sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
                     }
                     Err(error) => {
+                        self.closed = true;
                         warn!("sdmmc flush status barrier {id:?} failed: {error}");
                         sink.complete(CompletedRequest::new(
                             id,
@@ -543,6 +600,87 @@ where
                 .abort_status_request(request)
                 .map_err(map_dev_err_to_blk_err),
         }
+    }
+
+    fn submit_trim(&mut self, request: &OwnedRequest) -> Result<RequestId, BlkError> {
+        validate_owned_request(self.queue_info(), request)?;
+        let support = self.trim_support.ok_or(BlkError::NotSupported)?;
+        let trim = support.request(request.lba, request.block_count, self.card.rca())?;
+        let engine = self.accelerator.as_mut().ok_or(BlkError::NotSupported)?;
+        if !engine.is_idle() {
+            return Err(BlkError::Retry);
+        }
+        if let Err(error) = engine.suspend() {
+            if error != BlkError::Retry {
+                self.closed = true;
+            }
+            return Err(error);
+        }
+        let command = match self.card.submit_command_request(&trim.command()) {
+            Ok(command) => command,
+            Err(error) => {
+                self.closed = true;
+                return Err(map_dev_err_to_blk_err(error));
+            }
+        };
+        let id = RequestId::new(self.next_flush_id);
+        self.next_flush_id = self.next_flush_id.wrapping_add(1);
+        self.trim = Some((id, trim, command));
+        self.sync_protocol_register_retry();
+        Ok(id)
+    }
+
+    fn advance_trim(
+        &mut self,
+        cause: ProgressCause,
+        sink: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError> {
+        let Some((id, mut trim, mut command)) = self.trim.take() else {
+            return Ok(());
+        };
+        let progress = self
+            .card
+            .advance_command_request(&mut command, cause)
+            .map_err(map_dev_err_to_blk_err);
+        let result = match progress {
+            Ok(CommandResponseProgress::Pending) => {
+                self.trim = Some((id, trim, command));
+                self.sync_protocol_register_retry();
+                return Ok(());
+            }
+            Ok(CommandResponseProgress::Complete(response)) => {
+                let now = self.accelerator.as_ref().ok_or(BlkError::Io)?.now_ns();
+                trim.advance(
+                    response
+                        .to_raw_response(crate::response::ResponseType::R1)
+                        .words[0],
+                    now,
+                )
+            }
+            Err(error) => Err(error),
+        };
+        let result = match result {
+            Ok(false) => match self.card.submit_command_request(&trim.command()) {
+                Ok(command) => {
+                    self.trim = Some((id, trim, command));
+                    self.sync_protocol_register_retry();
+                    return Ok(());
+                }
+                Err(error) => Err(map_dev_err_to_blk_err(error)),
+            },
+            Ok(true) => self.accelerator.as_mut().ok_or(BlkError::Io)?.resume(),
+            Err(error) => Err(error),
+        };
+        if result.is_err() {
+            self.closed = true;
+            let _ = self.card.abort_maintenance_command();
+            if let Some(engine) = self.accelerator.as_mut() {
+                let _ = engine.shutdown(sink);
+            }
+        }
+        sink.complete(CompletedRequest::new(id, result, None));
+        self.register_retry_after = None;
+        result
     }
 
     fn sync_protocol_register_retry(&mut self) {
@@ -579,10 +717,37 @@ where
         requests: &mut OwnedRequestBatch,
         sink: &mut dyn SubmissionSink,
     ) -> BatchSubmitResult {
+        if self.closed {
+            return BatchSubmitResult::new(0, BatchSubmitDisposition::Fatal(BlkError::Io));
+        }
+        if self.trim.is_some() {
+            return BatchSubmitResult::new(0, BatchSubmitDisposition::QueueFull);
+        }
+        if requests
+            .front()
+            .is_some_and(|request| request.op == RequestOp::WriteZeroes)
+        {
+            let result = self.submit_trim(requests.front().expect("checked request"));
+            return match result {
+                Ok(id) => {
+                    let _ = requests.pop_front();
+                    sink.accepted(id);
+                    BatchSubmitResult::new(1, BatchSubmitDisposition::Continue)
+                }
+                Err(BlkError::Retry) => {
+                    BatchSubmitResult::new(0, BatchSubmitDisposition::QueueFull)
+                }
+                Err(error) => BatchSubmitResult::new(0, BatchSubmitDisposition::Fatal(error)),
+            };
+        }
         if let Some(accelerator) = self.accelerator.as_mut()
             && accelerator.is_active()
         {
-            return accelerator.submit_batch_owned(requests, sink);
+            let result = accelerator.submit_batch_owned(requests, sink);
+            if matches!(result.disposition(), BatchSubmitDisposition::Fatal(_)) {
+                self.closed = true;
+            }
+            return result;
         }
         let Some(request) = requests.pop_front() else {
             return BatchSubmitResult::new(0, BatchSubmitDisposition::Continue);
@@ -605,10 +770,15 @@ where
     }
 
     fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        if self.closed {
+            return Err(BlkError::Io);
+        }
         if let Some(accelerator) = self.accelerator.as_mut()
             && accelerator.is_active()
         {
-            return accelerator.commit_submissions();
+            let result = accelerator.commit_submissions();
+            self.closed |= result.is_err();
+            return result;
         }
         // DWCMSHC owns only one in-flight request and the host submit primitive
         // starts it immediately, so there is no separate doorbell to publish.
@@ -616,15 +786,23 @@ where
     }
 
     fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        if self.trim.is_some() {
+            return self.advance_trim(ProgressCause::AcknowledgedIrq, sink);
+        }
         if self.initialization_pending() {
             self.register_retry_after = None;
-            self.advance_initialization(ProgressCause::AcknowledgedIrq)?;
-            return Ok(());
+            let result = self
+                .advance_initialization(ProgressCause::AcknowledgedIrq)
+                .map(|_| ());
+            self.closed |= result.is_err();
+            return result;
         }
         if let Some(accelerator) = self.accelerator.as_mut()
             && accelerator.is_active()
         {
-            return accelerator.drain_completions(sink);
+            let result = accelerator.drain_completions(sink);
+            self.closed |= result.is_err();
+            return result;
         }
         self.advance_data(ProgressCause::AcknowledgedIrq, sink);
         self.advance_flush(ProgressCause::AcknowledgedIrq, sink);
@@ -641,9 +819,14 @@ where
             return Err(BlkError::InvalidRequest);
         }
         if self.initialization_pending() {
-            return self
+            let result = self
                 .advance_initialization(ProgressCause::RegisterRetry)
                 .map(|_| ());
+            self.closed |= result.is_err();
+            return result;
+        }
+        if self.trim.is_some() {
+            return self.advance_trim(ProgressCause::RegisterRetry, sink);
         }
         if self.pending_id.is_some() {
             self.advance_data(ProgressCause::RegisterRetry, sink);
@@ -657,7 +840,16 @@ where
     }
 
     fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        self.closed = true;
         let mut first_error = None;
+        if let Some((id, ..)) = self.trim.take() {
+            first_error = self
+                .card
+                .abort_maintenance_command()
+                .map_err(map_dev_err_to_blk_err)
+                .err();
+            sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
+        }
         let mut remember = |result: Result<(), BlkError>| {
             if let Err(error) = result
                 && first_error.is_none()
@@ -665,9 +857,7 @@ where
                 first_error = Some(error);
             }
         };
-        if let Some(accelerator) = self.accelerator.as_mut()
-            && accelerator.is_active()
-        {
+        if let Some(accelerator) = self.accelerator.as_mut() {
             remember(accelerator.shutdown(sink));
         }
         if self.completion_irq_enabled {

@@ -1,29 +1,18 @@
-pub mod dma;
+pub(crate) use ax_block::os::dma;
 pub mod entropy;
-pub mod irq;
+pub(crate) use ax_block::os::irq;
 pub mod memory;
-pub mod sync;
-pub mod task;
-pub mod time;
-pub(crate) mod waiters;
-
-pub use dma::{
-    DmaDeviceResolver, dma_device, dma_op, has_dma_op, install_dma_device_resolver, install_dma_op,
-};
+pub(crate) use ax_block::os::{sync, task, time, waiters};
 pub use entropy::{FsEntropyProvider, fill_entropy, has_entropy_provider, set_entropy_provider};
-pub use irq::{
-    BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, has_irq_registrar,
-    register_block_irq, set_irq_registrar,
-};
 pub use memory::{
     FsPage, FsPageProvider, alloc_page, has_page_provider, install_page_provider, virt_to_phys,
 };
-pub use task::{
-    BlockNotification, BlockRuntimeOps, BlockThread, has_runtime_ops, runtime_ops, set_runtime_ops,
-};
-pub use time::{
-    BlockTimeProvider, has_time_provider, monotonic_time, set_time_provider, wall_time,
-};
+#[cfg(feature = "ext4")]
+pub(crate) use task::has_runtime_ops;
+pub(crate) use task::{BlockNotification, BlockRuntimeOps, BlockThread, runtime_ops};
+#[cfg(any(feature = "ext4", feature = "vfs"))]
+pub(crate) use time::monotonic_time;
+pub(crate) use time::wall_time;
 
 /// Installs all OS capabilities used by ax-fs-ng.
 pub fn install(

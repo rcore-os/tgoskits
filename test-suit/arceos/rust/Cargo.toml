@@ -70,6 +70,7 @@ nvme-qemu = [
     "ax-std/alloc",
     "ax-std/fatfs",
     "dep:ax-fs-ng",
+    "dep:ax-block",
     "ax-fs-ng/fat",
 ]
 iommu-dma = [
@@ -148,6 +149,7 @@ ax-task = { workspace = true, optional = true }
 ax-cpu = { workspace = true, optional = true }
 ax-driver = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
+ax-block = { workspace = true, optional = true, features = ["cache"] }
 ax-hal = { workspace = true, optional = true }
 ax-memory-addr.workspace = true
 ax-std = { workspace = true, optional = true, features = ["default"] }

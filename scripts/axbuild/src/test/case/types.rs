@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use serde::Deserialize;
 
@@ -158,6 +162,15 @@ pub(crate) struct PreparedCaseAssets {
     pub(super) _run_directory: Option<CaseRunDirectory>,
     pub(crate) pipeline: CasePipeline,
     pub(crate) cache_hit: bool,
+}
+
+impl PreparedCaseAssets {
+    /// Returns the rootfs path when its temporary run directory owns it.
+    pub(crate) fn disposable_rootfs_path(&self) -> Option<&Path> {
+        self._run_directory
+            .as_ref()
+            .map(|_| self.rootfs_path.as_path())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

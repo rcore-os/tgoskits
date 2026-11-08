@@ -1,0 +1,64 @@
+//! Shared block cache between the block runtime and filesystem consumers,
+//! modeled on Linux's block-device page cache and its `buffer_head` layer
+//! (`fs/buffer.c`, `block/bdev.c`).
+//!
+//! # Linux design mapping
+//!
+//! | Linux | Here |
+//! |---|---|
+//! | bdev inode `address_space`, keyed by page index | [`BlockAddressSpace`], keyed by folio frame index, one per device |
+//! | `folio` with attached buffers | [`CacheFolio`], 4 KiB or one device block, whichever is larger |
+//! | `buffer_head` `BH_Uptodate`/`BH_Dirty` bits | [`BufferHead`] slot state (`BH_Mapped` is implicit: the cache is an identity mapping) |
+//! | `PAGECACHE_TAG_DIRTY` tree mark | finite sorted frame snapshot, per-folio dirty state |
+//! | `getblk` / `bread` | [`BlockAddressSpace`] folio lookup / [`BufferedBlockDevice`] buffered reads |
+//! | `mark_buffer_dirty` | deferred one-folio writes (data reaches the device only at writeback) |
+//! | `sync_dirty_buffers` | [`BlockAddressSpace::writeback_dirty`], submitting merged dirty runs |
+//! | `invalidate_bdev` | [`BlockAddressSpace::invalidate_range`] after an indeterminate direct-write failure |
+//! | partitions sharing one bdev cache | [`registry`], keyed by runtime-handle identity |
+//!
+//! [`registry`]: super::cache::registry
+//!
+//! # Deviations from Linux (recorded deliberately)
+//!
+//! * Calls remain synchronous, but independent endpoints can progress in
+//!   parallel. A short index lock pins entries; each folio owns I/O and data
+//!   exclusion. Immutable writeback snapshots permit concurrent redirty.
+//! * Resident and in-flight frames share a 1024-frame budget. With no spare
+//!   frame, writeback locks only its folio's data until I/O completes.
+//! * A short active-range index excludes overlapping direct and buffered
+//!   requests. Disjoint ranges proceed independently; conflict waits happen
+//!   outside the reservation and cache-index locks.
+//! * The metadata/data split is expressed at folio granularity: requests
+//!   inside one folio take the buffered path, multi-folio requests go
+//!   device-direct. Linux declares the same split at the filesystem layer
+//!   (metadata via `__bread` into the bdev cache, file data via the inode
+//!   page cache); the `BlockDevice` boundary only sees request shapes,
+//!   and block-granular access is exactly the metadata-style pattern.
+//!
+//! # Crash-consistency contract
+//!
+//! `flush()` writes back every dirty slot and only then issues the device
+//! barrier. rsext4's JBD2 commit already flushes the device before writing
+//! the commit record, so deferring block writes into this layer preserves
+//! journal ordering without any change to the commit sequence.
+
+mod address_space;
+mod buffer_head;
+mod device;
+mod folio;
+mod folio_cache;
+mod folio_state;
+mod range_locks;
+mod registry;
+
+#[cfg(test)]
+mod concurrency_tests;
+#[cfg(test)]
+mod tests;
+
+pub(crate) use device::BufferedBlockDevice;
+#[cfg(feature = "reclaim")]
+pub use registry::reclaim_clean_folios;
+pub use registry::sync_all_block_caches;
+#[cfg(test)]
+pub(super) use registry::{fail_registry_reserve_for_key_for_test, registry_contains_key_for_test};

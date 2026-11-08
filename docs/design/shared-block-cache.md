@@ -165,22 +165,23 @@ later without changing the registry or `FsBlockDevice` API.
 ## Layering and Dependency Direction
 
 - `rdif-block` and hardware drivers remain unaware of filesystem caches.
-- `ax-fs-ng::block::runtime` owns request planning, DMA, submission windows,
+- `ax-block::block::runtime` owns request planning, DMA, submission windows,
   terminal completion, barriers, and device handles.
-- `ax-fs-ng::block::cache` wraps `FsBlockDevice`, owns folios and the per-device
+- `ax-block::block::cache` wraps `BlockDevice`, owns folios and the per-device
   registry, and depends only on the synchronous block capability.
 - ext4 and FAT adapters consume the wrapper but do not reach into cache state.
 - `rsext4` keeps journal and metadata ownership; it hands block traffic to the
-  wrapper and never depends on `ax-fs-ng` cache types.
+  wrapper and never depends on physical-cache implementation types.
 - StarryOS calls the exported device-wide sync operation after its page-cache
   and filesystem stages; cache types do not depend on StarryOS.
 
-No new crate or reverse dependency is introduced.
+The physical runtime and cache now reside in `ax-block`; filesystem adapters
+depend on that service without a reverse dependency on VFS.
 
 ## Ownership and Lifetime
 
 The registry is keyed by the allocation identity of a live
-`BlockDeviceHandle`. A live `BlockCacheShared` owns:
+`DeviceRef`. A live `BlockCacheShared` owns:
 
 - a weakly registered identity entry;
 - one bounded `BlockAddressSpace`;

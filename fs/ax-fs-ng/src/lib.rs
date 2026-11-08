@@ -20,7 +20,7 @@ use axfs_ng_vfs::Location;
 pub use axfs_ng_vfs::{VfsError, VfsResult};
 
 pub mod api;
-pub mod block;
+pub(crate) mod block;
 pub mod bootargs;
 pub mod bundle;
 mod error;
@@ -35,19 +35,15 @@ mod highlevel;
 mod mounts;
 pub mod os;
 pub mod root;
-pub mod volume;
+pub(crate) mod volume;
 
-#[cfg(any(feature = "ext4", feature = "fat"))]
-pub use block::sync_all_block_caches;
-pub use block::{
+pub(crate) use block::{
     BlockRegion,
-    runtime::{
-        BlockBatchStats, BlockDeviceHandle, BlockIoStats, CompletionGroup, CompletionSubscription,
-        block_batch_stats, release_block_irqs_for_passthrough,
-    },
+    runtime::{BlockIoStats, DeviceRef},
 };
-pub use error::{BlockError, BlockResult};
-pub(crate) use error::{block_error_to_vfs_error, io_error_to_vfs_error, vfs_error_to_io_error};
+pub(crate) use error::{
+    BlockError, BlockResult, block_error_to_vfs_error, io_error_to_vfs_error, vfs_error_to_io_error,
+};
 #[cfg(feature = "vfs")]
 pub use highlevel::*;
 pub(crate) use mounts::register_mounted_filesystem;

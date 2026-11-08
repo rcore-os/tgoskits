@@ -77,11 +77,30 @@ const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile
     features: &["alloc"],
 }];
 
+const AX_BLOCK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test+write-zeroes+reclaim",
+        no_default_features: false,
+        features: &["host-test", "write-zeroes", "reclaim"],
+    },
+    PackageFeatureProfile {
+        name: "host-test",
+        no_default_features: false,
+        features: &["host-test"],
+    },
+];
+
 const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
         name: "host-test+vfs+fat+ext4",
         no_default_features: false,
         features: &["host-test", "vfs", "fat", "ext4"],
+    },
+    // FAT write protection must not depend on ext4 enabling write-zeroes.
+    PackageFeatureProfile {
+        name: "host-test+vfs+fat",
+        no_default_features: false,
+        features: &["host-test", "vfs", "fat"],
     },
     PackageFeatureProfile {
         name: "host-test+ext4",
@@ -390,6 +409,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
         "axvm" => Some(AXVM_FEATURE_PROFILES),
         "ax-fs-ng" => Some(AX_FS_NG_FEATURE_PROFILES),
+        "ax-block" => Some(AX_BLOCK_FEATURE_PROFILES),
         "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-hal" => Some(AX_HAL_FEATURE_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),

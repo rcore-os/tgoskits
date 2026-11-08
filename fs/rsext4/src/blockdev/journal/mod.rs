@@ -124,6 +124,7 @@ mod block_io;
 mod credits;
 mod detached;
 mod handles;
+mod preview;
 mod sync;
 use detached::CommitLedger;
 pub(crate) use detached::MetadataReadVersion;
@@ -137,6 +138,9 @@ pub struct Jbd2Dev<B: BlockIo> {
     _state: Jbd2RunState,
     system: Option<JBD2DEVSYSTEM>,
     journal_blocks: Vec<AbsoluteBN>,
+    /// Bounded recovery locations and one reusable payload buffer. Mutation
+    /// admission rejects writes until validation removes this exclusive view.
+    replay_preview: Option<preview::ReplayPreview>,
     active_handle: Option<ActiveJournalHandle>,
     active_direct_handle: Option<ActiveDirectHandle>,
     reserved_handles: Vec<JournalReservation>,
@@ -242,6 +246,7 @@ impl<B: BlockIo> Jbd2Dev<B> {
             _state: Jbd2RunState::Commit,
             system: None,
             journal_blocks: Vec::new(),
+            replay_preview: None,
             active_handle: None,
             active_direct_handle: None,
             reserved_handles: Vec::new(),
@@ -288,8 +293,27 @@ impl<B: BlockIo> Jbd2Dev<B> {
         self.inner.set_filesystem_block_size(block_size)
     }
 
+    /// Reads `output.len()` bytes at byte `offset` relative to this filesystem
+    /// device, overlaying replay-preview images when validation is active.
+    /// Source I/O and offset-overflow errors propagate to the mount caller.
     pub(crate) fn read_device_bytes(&mut self, offset: u64, output: &mut [u8]) -> Ext4Result<()> {
-        self.inner.read_device_bytes(offset, output)
+        if self.replay_preview.is_none() {
+            return self.inner.read_device_bytes(offset, output);
+        }
+        let size = self.inner.block_size() as u64;
+        offset
+            .checked_add(output.len() as u64)
+            .ok_or_else(Ext4Error::overflow)?;
+        let mut copied = 0;
+        while copied < output.len() {
+            let position = offset + copied as u64;
+            self.read_block(AbsoluteBN::new(position / size))?;
+            let within = (position % size) as usize;
+            let count = (output.len() - copied).min(size as usize - within);
+            output[copied..copied + count].copy_from_slice(&self.buffer()[within..within + count]);
+            copied += count;
+        }
+        Ok(())
     }
 
     /// Reads home blocks without consulting cached or journal-owned images.
@@ -317,9 +341,44 @@ impl<B: BlockIo> Jbd2Dev<B> {
         )
     }
 
+    /// Initializes `count` filesystem blocks at `block` outside the committed
+    /// geometry, using `input` without journalling or per-request FUA. The
+    /// exclusive growth owner must verify that range. Its journal transaction's
+    /// preflush must persist these writes before committing references to them;
+    /// no separate checkpoint or per-request FUA is required for initialization.
+    /// Mutation/abort and device errors propagate without publishing geometry.
+    pub(crate) fn write_unpublished_blocks(
+        &mut self,
+        input: &[u8],
+        block: AbsoluteBN,
+        count: u32,
+    ) -> Ext4Result<()> {
+        self.ensure_mutation_admitted()?;
+        self.inner
+            .write_blocks_with_flags(input, block, count, WriteFlags::METADATA)
+    }
+
+    /// Clears unpublished extents through one synchronous device operation.
+    /// The exclusive growth owner validates non-overlap with live geometry;
+    /// the later journal preflush remains their durability boundary.
+    pub(crate) fn zero_unpublished_ranges(
+        &mut self,
+        ranges: &[(AbsoluteBN, u64)],
+    ) -> Ext4Result<()> {
+        self.ensure_mutation_admitted()?;
+        self.inner.write_zeroes(ranges)
+    }
+
     /// Returns whether journal support is enabled.
     pub fn is_use_journal(&self) -> bool {
         self.journal_use
+    }
+
+    /// Reports whether this device advertises writable access and flush support,
+    /// the minimum capabilities required by backup-first growth ordering.
+    pub(crate) fn growth_durability_supported(&self) -> bool {
+        let capabilities = self.inner._device().capabilities();
+        !capabilities.read_only && capabilities.flush
     }
 
     pub(crate) fn device_is_read_only(&self) -> bool {

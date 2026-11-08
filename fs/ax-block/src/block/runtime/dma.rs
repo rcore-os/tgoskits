@@ -1,0 +1,57 @@
+use core::num::NonZeroUsize;
+
+use dma_api::{CompletedDma, CpuDmaBuffer, DmaDirection, PreparedDma};
+use rdif_block::{BlkError, QueueLimits};
+
+use crate::os::dma_device;
+
+pub(super) fn prepare_read(limits: QueueLimits, len: usize) -> Result<PreparedDma, BlkError> {
+    allocate(limits, len, DmaDirection::FromDevice).map(CpuDmaBuffer::prepare_for_device)
+}
+
+/// Creates an owned zero payload without copying from a second CPU buffer.
+#[cfg(feature = "write-zeroes")]
+pub(super) fn prepare_zero(limits: QueueLimits, len: usize) -> Result<PreparedDma, BlkError> {
+    allocate(limits, len, DmaDirection::ToDevice).map(CpuDmaBuffer::prepare_for_device)
+}
+
+#[cfg(any(feature = "cache", axtest))]
+pub(super) fn prepare_write(limits: QueueLimits, source: &[u8]) -> Result<PreparedDma, BlkError> {
+    let mut buffer = allocate(limits, source.len(), DmaDirection::ToDevice)?;
+    buffer.copy_from_slice_cpu(source);
+    Ok(buffer.prepare_for_device())
+}
+
+pub(super) fn complete_without_submit(data: Option<PreparedDma>) -> Option<CompletedDma> {
+    data.map(PreparedDma::complete_without_device)
+}
+
+fn allocate(
+    limits: QueueLimits,
+    len: usize,
+    direction: DmaDirection,
+) -> Result<CpuDmaBuffer, BlkError> {
+    let constraints = limits.dma.constraints();
+    if constraints.align == 0
+        || limits.dma_length_alignment == 0
+        || !len.is_multiple_of(limits.dma_length_alignment)
+    {
+        return Err(BlkError::InvalidRequest);
+    }
+    if let Some(boundary) = constraints.boundary
+        && !boundary.is_power_of_two()
+    {
+        return Err(BlkError::InvalidRequest);
+    }
+    let device = dma_device(limits.dma).map_err(BlkError::from)?;
+    if device.info() != limits.dma {
+        return Err(BlkError::Io);
+    }
+    CpuDmaBuffer::new_zero(
+        &device,
+        NonZeroUsize::new(len).ok_or(BlkError::InvalidRequest)?,
+        constraints.align,
+        direction,
+    )
+    .map_err(BlkError::from)
+}

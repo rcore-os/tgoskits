@@ -192,9 +192,13 @@ impl DeviceOps for PhysicalBlock {
         Err(VfsError::Io)
     }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn flags(&self) -> NodeFlags { NodeFlags::NON_CACHEABLE }
+    fn flags(&self) -> NodeFlags {
+        NodeFlags::NON_CACHEABLE
+    }
 }
 
 impl DeviceOps for RootBlk {
@@ -522,21 +526,36 @@ fn builder(fs: Arc<SimpleFs>, root_mount_device: u64) -> DirMaker {
     let block_nodes = ax_fs_ng::root::block_device_nodes()
         .unwrap_or_else(|error| panic!("failed to discover block device nodes: {error:?}"));
     let root_name = ax_fs_ng::root::root_block_identity().name;
-    if !block_nodes.iter().any(|node| node.path.strip_prefix("/dev/") == Some(root_name)) {
-    root.add(
-        ax_fs_ng::root::root_block_identity().name,
-        Device::new(
-            fs.clone(),
-            NodeType::BlockDevice,
-            DeviceId(root_mount_device),
-            Arc::new(RootBlk),
-        ),
-    );
+    if !block_nodes
+        .iter()
+        .any(|node| node.path.strip_prefix("/dev/") == Some(root_name.as_ref()))
+    {
+        root.add(
+            root_name.as_ref(),
+            Device::new(
+                fs.clone(),
+                NodeType::BlockDevice,
+                DeviceId(root_mount_device),
+                Arc::new(RootBlk),
+            ),
+        );
     }
     for node in block_nodes {
-        let name = node.path.strip_prefix("/dev/").expect("device path").to_string();
+        let name = node
+            .path
+            .strip_prefix("/dev/")
+            .expect("device path")
+            .to_string();
         let device = node.device;
-        root.add(name, Device::new(fs.clone(), NodeType::BlockDevice, device, Arc::new(PhysicalBlock(node))));
+        root.add(
+            name,
+            Device::new(
+                fs.clone(),
+                NodeType::BlockDevice,
+                device,
+                Arc::new(PhysicalBlock(node)),
+            ),
+        );
     }
     if ax_display::has_display() {
         root.add(

@@ -79,7 +79,7 @@ xHCI `Xhci::new()` 读取 AC64 并构造 DMA mask，使用传入一致性属性�
 
 网络 `prepare_device()` 为 group 建立 `ToDevice` TX 池和 `FromDevice` RX 池，`QueueConfig` 决定大小、对齐和 ring 参数，可用容量为 `ring_size - 1`。`RxQueue::reclaim()` 的 CPU 同步范围限制为报告长度、配置大小与实际容量的最小值，同时保留原始长度供上层校验。
 
-块运行时的 DMA 逻辑位于 `fs/ax-fs-ng/src/block/runtime/dma.rs`，owned 请求及完成归还合同位于 `rdif-block`。网络容量公式不能用于推导块队列或 USB 环深度。
+块运行时的 DMA 逻辑位于 `fs/ax-block/src/block/runtime/dma.rs`，owned 请求及完成归还合同位于 `rdif-block`。网络容量公式不能用于推导块队列或 USB 环深度。
 
 ## 4. 控制资源
 

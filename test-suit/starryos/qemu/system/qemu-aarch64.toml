@@ -45,6 +45,16 @@ name = "perf"
 subcase_prefix = "perf-"
 config = "perf-aarch64.toml"
 
+[[grouped_qemu_profiles]]
+name = "root-growth"
+subcase_prefix = "bugfix-fstatvfs-directory"
+config = "root-growth-aarch64.toml"
+
+[[grouped_qemu_profiles]]
+name = "readonly-mount"
+subcase_prefix = "test-remount-flags"
+config = "readonly-mount-aarch64.toml"
+
 [host_http_server]
 bind = "127.0.0.1"
 port = 18381

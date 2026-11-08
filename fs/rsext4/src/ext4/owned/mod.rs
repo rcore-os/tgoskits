@@ -9,6 +9,7 @@ mod inode_writeback;
 mod metadata;
 mod namespace;
 mod read;
+mod session;
 mod shutdown;
 mod write;
 mod writeback;
@@ -23,6 +24,7 @@ pub use inode_load::{CompletedLiveInodeRead, LiveInodeRead, PreparedLiveInodeRea
 pub use inode_writeback::{CompletedInodeTableRead, PreparedInodeTableRead};
 pub use metadata::InodeMetadataReader;
 pub use read::{CompletedInodeRead, InodeReadPreparation, PreparedInodeRead, ValidatedInodeRead};
+pub use session::Ext4Session;
 pub use shutdown::{PreparedUnmount, UnmountReceipt};
 pub use write::{CompletedInodeWrite, PreparedInodeWrite};
 
@@ -95,7 +97,34 @@ where
     where
         C: Clock + Send + 'static,
     {
-        Self::mount_selecting_options(device, services, |_| Ok(options))
+        Ext4Session::new(device, services, options)?.publish()
+    }
+
+    /// Mounts and expands an exclusively owned device before publishing any
+    /// inode readers or asynchronous I/O capabilities. A failed growth consumes
+    /// the mount; callers must reopen the durable device for recovery.
+    /// Growth targets the supplied device's capacity and rejects read-only
+    /// options or unsupported resize metadata. Partition-table updates belong
+    /// to the embedding OS and must finish before supplying this device view.
+    /// Consumes `device` and runtime `services`; `options` controls the initial
+    /// mount and must permit writes. Returns the sole mounted owner on success,
+    /// or a mount/preflight/commit error without publishing inode capabilities.
+    /// The observer receives initial and durably committed growth capacities;
+    /// an already complete filesystem emits no growth progress events.
+    pub fn mount_growing<C>(
+        device: D,
+        services: MountServices<C, E, O, W>,
+        options: MountOptions,
+    ) -> Ext4Result<Self>
+    where
+        C: Clock + Send + 'static,
+    {
+        if options.readonly {
+            return Err(Ext4Error::read_only().with_operation("grow:readonly_mount"));
+        }
+        Ext4Session::new(device, services, options)?
+            .grow_to_current_capacity()?
+            .publish()
     }
 
     /// Selects read-only replay before mounting when the on-disk filesystem
@@ -111,57 +140,7 @@ where
     where
         C: Clock + Send + 'static,
     {
-        Self::mount_selecting_options(device, services, |device| {
-            let read_write = MountOptions::read_write();
-            let read_only_replay = MountOptions {
-                readonly: true,
-                replay_journal: true,
-                block_validity: true,
-            };
-            if Ext4FileSystem::device_has_error_state(device)? {
-                Ok(read_only_replay)
-            } else {
-                Ok(read_write)
-            }
-        })
-    }
-
-    fn mount_selecting_options<C, F>(
-        device: D,
-        services: MountServices<C, E, O, W>,
-        select_options: F,
-    ) -> Ext4Result<Self>
-    where
-        C: Clock + Send + 'static,
-        F: FnOnce(&mut Jbd2Dev<D>) -> Ext4Result<MountOptions>,
-    {
-        let MountServices {
-            clock,
-            mut entropy,
-            mut observer,
-            mut mmp_delay,
-            mmp_identity,
-        } = services;
-        let mut device = Jbd2Dev::with_clock(0, device, clock, true);
-        let options = select_options(&mut device)?;
-        let filesystem = Ext4FileSystem::mount_with_services(
-            &mut device,
-            options,
-            &mut observer,
-            &mut entropy,
-            &mut mmp_delay,
-            mmp_identity,
-        )?;
-
-        Ok(Self {
-            filesystem,
-            device,
-            services: MountedServices::new(entropy, observer, mmp_delay, mmp_identity),
-            options,
-            shutdown_ticket: None,
-            unmount_error: None,
-            writes: write::InodeWriteOwners::default(),
-        })
+        Ext4Session::mount_with_readonly_fallback(device, services)?.publish()
     }
 }
 
@@ -172,6 +151,20 @@ where
     O: Observer,
     W: crate::runtime::Delay,
 {
+    /// Preflights a future partition capacity in bytes without changing the
+    /// filesystem geometry. The embedding OS owns any partition-table update.
+    /// Returns the usable filesystem capacity in bytes, which may leave a tiny
+    /// final group unused; unsupported targets are reported as errors.
+    /// `target_bytes` may exceed the current device view. Requires a writable
+    /// mount, performs metadata reads only, and returns no new device or mount.
+    pub fn growth_capacity(&mut self, target_bytes: u64) -> Ext4Result<u64> {
+        if self.options.readonly {
+            return Err(Ext4Error::read_only().with_operation("grow:readonly_mount"));
+        }
+        self.filesystem
+            .growth_capacity(&mut self.device, target_bytes)
+    }
+
     pub const fn options(&self) -> MountOptions {
         self.options
     }

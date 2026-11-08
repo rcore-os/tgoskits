@@ -44,6 +44,7 @@ enum MockBusFailure {
 struct MockHost {
     replies: Vec<Result<Response, Error>>,
     commands: Vec<Command>,
+    command_trace: Option<std::sync::Arc<std::sync::Mutex<Vec<u8>>>>,
     events: Vec<MockEvent>,
     bus_ops: Vec<sdmmc_host::BusOp>,
     /// Fail the next matching bus operation at submission or terminal completion.
@@ -106,6 +107,7 @@ impl MockHost {
         Self {
             replies: replies.into_iter().map(Ok).collect(),
             commands: Vec::new(),
+            command_trace: None,
             events: Vec::new(),
             bus_ops: Vec::new(),
             bus_op_failure: None,
@@ -135,6 +137,7 @@ impl MockHost {
         Self {
             replies,
             commands: Vec::new(),
+            command_trace: None,
             events: Vec::new(),
             bus_ops: Vec::new(),
             bus_op_failure: None,
@@ -172,6 +175,9 @@ impl sdmmc_host::SdMmcHost for MockHost {
     {
         let command = transaction.command;
         self.commands.push(command);
+        if let Some(trace) = &self.command_trace {
+            trace.lock().unwrap().push(command.index);
+        }
         self.events.push(MockEvent::Command(command));
         let result = if self.replies.is_empty() {
             Err(sdmmc_host::Error::Timeout)

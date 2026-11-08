@@ -322,22 +322,109 @@ fn submit_mmc_switch_returns_before_polling_status() {
             .unwrap(),
         OperationProgress::Complete(())
     ));
+    assert!(!request.was_rejected());
+}
+
+#[test]
+fn mmc_switch_retains_rejection_until_the_card_is_ready() {
+    let programming = 7 << 9;
+    // SWITCH_ERROR may be reported by CMD6 or an intermediate CMD13 and
+    // then cleared by the card. Neither response may be mistaken for success,
+    // and a rejection must not release a still-programming card to the caller.
+    for (switch_status, busy_status) in [
+        (1 << 7, programming),
+        (0, programming | (1 << 7)),
+        (1 << 22, programming),
+    ] {
+        let mut driver = SdMmcCard::new(MockHost::new(std::vec![
+            Response::R1(R1Response { raw: switch_status }),
+            Response::R1(R1Response { raw: busy_status }),
+            r1_tran_ready(),
+        ]));
+        driver.rca = 1;
+        let mut request = driver
+            .submit_mmc_switch(0b11, crate::cmd::ext_csd::ERASE_GROUP_DEF as u8, 1)
+            .unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                driver
+                    .advance_mmc_switch_request(
+                        &mut request,
+                        sdmmc_host::ProgressCause::AcknowledgedIrq
+                    )
+                    .unwrap(),
+                OperationProgress::Pending
+            ));
+            assert!(!request.was_rejected());
+        }
+        assert_eq!(
+            driver
+                .advance_mmc_switch_request(
+                    &mut request,
+                    sdmmc_host::ProgressCause::AcknowledgedIrq
+                )
+                .unwrap_err(),
+            Error::CardError(crate::error::CardError::IllegalCommand)
+        );
+        assert!(request.was_rejected());
+        assert_eq!(
+            driver
+                .host()
+                .commands
+                .iter()
+                .map(|command| command.index)
+                .collect::<Vec<_>>(),
+            std::vec![6, 13, 13]
+        );
+    }
+
+    // A CMD13 error cannot establish that the preceding CMD6 was refused,
+    // even when an earlier response already reported SWITCH_ERROR.
+    for status in [
+        Ok(Response::R1(R1Response { raw: 1 << 22 })),
+        Err(Error::Crc(ErrorContext::for_cmd(Phase::ResponseWait, 13))),
+        Err(Error::UnsupportedCommand),
+    ] {
+        let mut driver = SdMmcCard::new(MockHost::with_results(std::vec![
+            Ok(Response::R1(R1Response { raw: 1 << 7 })),
+            status,
+        ]));
+        driver.rca = 1;
+        let mut request = driver.submit_mmc_switch(3, 175, 1).unwrap();
+        assert!(matches!(
+            driver
+                .advance_mmc_switch_request(
+                    &mut request,
+                    sdmmc_host::ProgressCause::AcknowledgedIrq
+                )
+                .unwrap(),
+            OperationProgress::Pending
+        ));
+        let error = driver
+            .advance_mmc_switch_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::CardError(crate::error::CardError::IllegalCommand)
+                | Error::Crc(_)
+                | Error::UnsupportedCommand
+        ));
+        assert!(!request.was_rejected());
+    }
 }
 
 #[test]
 fn mmc_switch_surfaces_wall_clock_timeout_when_host_has_clock() {
     // Programming-state R1: READY_FOR_DATA (bit 8) + state nibble 7
-    // (bits 9..=12). The mmc_switch loop will keep retrying until either
-    // MAX_POLLS or TIMEOUT_MS trips.
+    // (bits 9..=12). Fast IRQ-completed queries must not exhaust a synthetic
+    // poll budget before the actual wall-clock deadline.
     let programming = || -> Response {
         Response::R1(R1Response::from_native_raw((1u32 << 8) | (7u32 << 9)).unwrap())
     };
 
-    let mut driver = SdMmcCard::new(MockHost::with_results(std::vec![
-        Ok(ok_r1()),       // CMD6 ack
-        Ok(programming()), // CMD13 #1
-        Ok(programming()), // CMD13 #2
-    ]));
+    let mut replies = std::vec![Ok(ok_r1())];
+    replies.extend((0..MmcSwitchTiming::MAX_POLLS + 2).map(|_| Ok(programming())));
+    let mut driver = SdMmcCard::new(MockHost::with_results(replies));
     driver.rca = 1;
     // Arm the clock at t=0 so submit_mmc_switch records started_ms=0.
     driver.host_mut().now_ms = Some(0);
@@ -352,22 +439,24 @@ fn mmc_switch_surfaces_wall_clock_timeout_when_host_has_clock() {
             .unwrap(),
         OperationProgress::Pending
     ));
-    // 2nd poll: CMD13 says still programming; well within the wall-clock
-    // budget, so the loop reissues CMD13.
-    assert!(matches!(
-        driver
-            .advance_mmc_switch_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq)
-            .unwrap(),
-        OperationProgress::Pending
-    ));
-    let polls_before_jump = request.polls;
-    assert!(polls_before_jump < MmcSwitchTiming::MAX_POLLS);
+    for _ in 0..MmcSwitchTiming::MAX_POLLS + 1 {
+        assert!(matches!(
+            driver
+                .advance_mmc_switch_request(
+                    &mut request,
+                    sdmmc_host::ProgressCause::AcknowledgedIrq
+                )
+                .unwrap(),
+            OperationProgress::Pending
+        ));
+    }
+    let commands_before_deadline = driver.host().commands.len();
 
     // Jump the wall clock past the 250 ms CMD6 SWITCH budget.
     driver.host_mut().now_ms = Some(MmcSwitchTiming::TIMEOUT_MS + 1);
 
-    // 3rd poll: CMD13 still reports programming, but the wall-clock
-    // deadline fires before the poll counter would have.
+    // The next completed query observes the fixed deadline. No additional
+    // CMD13 may be issued after a terminal timeout.
     let err = driver
         .advance_mmc_switch_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq)
         .unwrap_err();
@@ -376,12 +465,61 @@ fn mmc_switch_surfaces_wall_clock_timeout_when_host_has_clock() {
         "expected CMD6 timeout, got {:?}",
         err
     );
-    assert!(
-        request.polls < MmcSwitchTiming::MAX_POLLS,
-        "wall-clock check should fire before the poll budget ({} < {})",
-        request.polls,
-        MmcSwitchTiming::MAX_POLLS
-    );
+    assert_eq!(driver.host().commands.len(), commands_before_deadline);
+    assert!(!request.was_rejected());
+}
+
+#[test]
+fn mmc_switch_honors_per_request_time_and_bounds_clockless_queries() {
+    let programming = Response::R1(R1Response { raw: 7 << 9 });
+    let mut driver = SdMmcCard::new(MockHost::new(std::vec![ok_r1(), programming, programming]));
+    driver.rca = 1;
+    driver.host_mut().now_ms = Some(0);
+    let mut request = driver
+        .submit_mmc_switch_with_timeout(3, 175, 1, 500)
+        .unwrap();
+    assert!(matches!(
+        driver
+            .advance_mmc_switch_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq)
+            .unwrap(),
+        OperationProgress::Pending
+    ));
+    driver.host_mut().now_ms = Some(400);
+    assert!(matches!(
+        driver
+            .advance_mmc_switch_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq)
+            .unwrap(),
+        OperationProgress::Pending
+    ));
+    driver.host_mut().now_ms = Some(500);
+    assert!(matches!(
+        driver.advance_mmc_switch_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq),
+        Err(Error::Timeout(_))
+    ));
+    assert!(!request.was_rejected());
+
+    let mut replies = std::vec![Ok(ok_r1())];
+    replies.extend((0..MmcSwitchTiming::MAX_POLLS + 1).map(|_| Ok(programming)));
+    let mut driver = SdMmcCard::new(MockHost::with_results(replies));
+    driver.rca = 1;
+    let mut request = driver.submit_mmc_switch(3, 175, 1).unwrap();
+    // One CMD6 response, then MAX_POLLS busy responses, remain pending.
+    for _ in 0..=MmcSwitchTiming::MAX_POLLS {
+        assert!(matches!(
+            driver
+                .advance_mmc_switch_request(
+                    &mut request,
+                    sdmmc_host::ProgressCause::AcknowledgedIrq
+                )
+                .unwrap(),
+            OperationProgress::Pending
+        ));
+    }
+    assert!(matches!(
+        driver.advance_mmc_switch_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq),
+        Err(Error::Timeout(_))
+    ));
+    assert!(!request.was_rejected());
 }
 
 #[test]

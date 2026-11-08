@@ -37,7 +37,7 @@ type SharedFileTable = Arc<RawSpinRwLock<FileTable>>;
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,
-    fs_context: Option<Arc<ax_fs_ng::os::sync::Mutex<FsContext>>>,
+    fs_context: Option<Arc<ax_block::os::sync::Mutex<FsContext>>>,
     nsproxy: Option<NsProxy>,
 }
 

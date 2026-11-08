@@ -455,7 +455,10 @@ impl Starry {
         asset_config: &case::CaseAssetConfig,
         asset_target_dir: &Path,
     ) -> anyhow::Result<()> {
-        let case = &prepared_case.case;
+        let mut case = prepared_case.case.clone();
+        let growth =
+            super::root_growth::RootGrowthFixture::prepare(&mut case, &prepared_case.rootfs_path)?;
+        let case = &case;
         let mut qemu = prepared_case.qemu.clone();
         case::apply_grouped_qemu_config(&mut qemu, case, &asset_config.grouped_execution);
 
@@ -497,6 +500,9 @@ impl Starry {
             );
         }
         let prepared_assets = prepared_assets_result?;
+        if let Some(growth) = growth {
+            growth.extend(prepared_assets.disposable_rootfs_path())?;
+        }
         let prepare_elapsed = prepare_stage.elapsed();
         timing::print_timing_line(
             "qemu-case",
@@ -552,6 +558,14 @@ impl Starry {
         let host_http_result = start_qemu_case_host_http_server(case);
         timing_stage.finish();
         let _host_http_server = host_http_result?;
+        let mount_fixture = super::mount::FatRootFixture::prepare(
+            &case.qemu_config_path,
+            &prepared_assets.rootfs_path,
+        )?;
+        if mount_fixture.is_some() && request.arch != "aarch64" {
+            bail!("FAT root mount fixture currently requires aarch64 VirtIO MMIO enumeration");
+        }
+        let mount_qemu = qemu.clone();
         case::run_qemu_with_prepared_case_assets(
             &mut self.app,
             cargo,
@@ -564,6 +578,14 @@ impl Starry {
             },
         )
         .await?;
+        if let Some(fixture) = mount_fixture {
+            for readonly in [false, true] {
+                println!("  checking initially readonly FAT root (physical_readonly={readonly})");
+                self.app
+                    .run_qemu_with_axtest_coverage(cargo, fixture.qemu(&mount_qemu, readonly))
+                    .await?;
+            }
+        }
 
         Ok(())
     }

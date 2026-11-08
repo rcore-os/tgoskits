@@ -206,6 +206,7 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
             | SdMmcInitState::FinishCardSetup
             | SdMmcInitState::PollSdDefaultClock => self.advance_identification(request, cause),
             SdMmcInitState::PollMmcExtCsd
+            | SdMmcInitState::PollMmcEraseGroupDefinition
             | SdMmcInitState::PollMmcBusWidth
             | SdMmcInitState::PollMmcHostBusWidth
             | SdMmcInitState::PrepareMmcSpeed

@@ -9,7 +9,7 @@ sidebar_label: "文件系统与根盘"
 
 ## 1. 根盘选择
 
-根盘选择先把物理磁盘归一成 `BlockVolume`，再检测每个 region 的文件系统格式，最后由 `RootSpec` 或默认策略选择唯一候选。卷 parser 不读取 bootargs，root policy 也不重复解析 GPT/MBR。
+根盘选择先把物理磁盘归一成 `BlockVolume`，再检测每个 region 的文件系统格式，最后由 `RootSelector` 或默认策略选择唯一候选。卷 parser 不读取 bootargs，root policy 也不重复解析 GPT/MBR。
 
 ### 1.1 卷发现
 
@@ -44,17 +44,18 @@ GPT header、entry size/count 和 entry-array 范围必须完全位于设备内�
 
 ### 1.3 显式选择
 
-`RootSpec::parse_bootargs()` 提取 `root=` 并支持：
+`RootRequest::parse_bootargs()` 提取 `root=` 并支持：
 
+- `UUID=<uuid>`；
 - `PARTUUID=<uuid>`；
 - `PARTLABEL=<label>`；
-- `/dev/sdXN`；
+- `/dev/sdXN`、`/dev/vdXN`；
 - `/dev/nvmeCn1pN`；
-- `/dev/mmcblkXpN`；
+- `/dev/mmcblkXpN`、`/dev/blkXpN`；
 - 裸 disk path（不带 partition）。
 
-设备 path 被解析成发现顺序中的 `disk_index` 和 zero-based `partition_index`。
-`PARTUUID` 比较不区分大小写，`PARTLABEL` 按原字符串精确匹配。当至少一个块设备已注册并进入磁盘根初始化后，显式 `root=` 无法解析或找不到候选时启动失败，不会猜测默认磁盘。没有块设备驱动或没有可用块设备时，root policy 保留 initramfs 的内存根，即使启动参数继承了 `root=`，也不会尝试切换到不存在的磁盘根。
+`RootRequest` 同时保存 `RootSelector` 与 `RootAction`。`RootAction` 只表达只读或读写挂载。实际选中的磁盘根由独立启动策略检查分区及现有文件系统的增长，默认选盘与显式选根相同；分区只使用后续连续空闲区，整盘 ext4 也可增长。`ro`、内存根和普通 mount 不增长，无需额外启动参数。`RootSelector::Device` 保存经过校验的物理设备名 `device_name` 和 zero-based `partition_index`，不会把不同设备家族的序号当成全局磁盘序号。`BlockIdentities` 按完整设备枚举为 NVMe、AHCI、Virtio、SD/MMC 和其他设备分别编号，扫描失败的磁盘仍占据自己的家族序号；`DiscoveredDisk::identity` 保存生成的 `RootBlockIdentity`，根选择、设备节点与根盘统计复用这份身份。例如 Virtio 先于 NVMe 注册时，`/dev/vda` 与 `/dev/nvme0n1` 分别指向各自家族的首盘，后面的首块 AHCI 仍为 `/dev/sda`。
+`PARTUUID` 比较不区分大小写，`PARTLABEL` 按原字符串精确匹配。当至少一个块设备已注册并进入磁盘根初始化后，显式 `root=` 无法解析或找不到候选时启动失败，不会猜测默认磁盘。没有块设备时保留 initramfs 内存根，不因可写 `root=` 而强制切盘。启动适配器的延迟准备策略也可以先保留内存根，随后完成磁盘根准备和切根。
 
 ### 1.4 默认策略
 
@@ -70,25 +71,27 @@ GPT header、entry size/count 和 entry-array 范围必须完全位于设备内�
 
 ## 2. 挂载发布
 
+`new_from_handle_with_kind_readonly()` 在可写介质上保留原始写授权，并在只读发布前通过 `VolumePermissions::restrict_read_only()` 撤销当前写权限。ext4 与 FAT 的 `remount_read_write()` 在恢复原始权限、完成后端重新配置后，才允许调用方发布 VFS 可写标志。FAT 使用同一文件系统互斥锁串行化操作与提升；同步失败会恢复只读权限，物理只读介质仍返回 `EACCES`。
+
 `init_root()` 把选择完成的 device、region 和 format kind 交给文件系统 factory，再创建 root mount、发布 `ROOT_FS_CONTEXT` 并处理其他可识别分区。发布后的根上下文不会被第二次替换。
 
 ### 2.1 根挂载
 
-根挂载序列从已启动的 `BlockRuntime` 接收 `BlockDeviceHandle`，经过卷扫描和格式 factory 得到 `Filesystem`，最后创建带 source 信息的根 `Mountpoint`。
+根挂载序列从已启动的 `BlockRuntime` 接收 `DeviceRef`，经过卷扫描和格式 factory 得到 `Filesystem`，最后创建带 source 信息的根 `Mountpoint`。
 
 ```mermaid
 sequenceDiagram
     participant Runtime as BlockRuntime
-    participant Root as root.rs
+    participant Root as root/mod.rs
     participant Volume
     participant Factory as fs factory
     participant VFS
 
-    Runtime-->>Root: BlockDeviceHandle list
+    Runtime-->>Root: DeviceRef list
     Root->>Volume: scan_volumes(each disk)
     Volume-->>Root: BlockVolume metadata
     Root->>Root: detect formats + select candidate
-    Root->>Factory: new_from_handle_with_kind(handle, region, kind)
+    Root->>Factory: new_from_handle_with_kind_readonly(handle, descriptor, kind, readonly)
     Factory-->>Root: Filesystem
     Root->>VFS: Mountpoint::new_root_with_source()
     Root->>Root: register mounted filesystem
@@ -96,7 +99,7 @@ sequenceDiagram
     Root->>VFS: mount additional supported partitions
 ```
 
-`ROOT_FS_CONTEXT` 只初始化一次。文件系统实例同时登记到 `MOUNTED_FILESYSTEMS`，用于 shutdown 时逆序关闭。mount source 根据硬件 driver identity 生成 `/dev/nvme0n1`、`/dev/sdX`、`/dev/mmcblkX` 类名字，供 mountinfo 和诊断使用。
+`ROOT_FS_CONTEXT` 只初始化一次。文件系统实例同时登记到 `MOUNTED_FILESYSTEMS`，用于 shutdown 时逆序关闭。未显式指定 source 时，`default_root_source()` 从已保存的 `RootBlockIdentity` 生成 `/dev/nvme0n1`、`/dev/sdX`、`/dev/vdX`、`/dev/mmcblkX` 或 `/dev/blkX`；数字结尾的盘名以 `pN` 追加分区号，字母结尾的盘名直接追加 `N`。`block_device_nodes()` 使用同一命名分配规则，`root_block_stats()` 返回选中物理盘的身份。每盘保留 256 个 minor，whole disk 使用偏移 0，分区使用偏移 1..255；超出范围返回错误，避免把分区号解释为下一块物理盘。
 
 ### 2.2 附加分区
 
@@ -121,7 +124,9 @@ ext4 和 FAT adapter 都实现 `FilesystemOps`、file/dir node 与 region-bounde
 
 unlink 把 on-disk link count 降为零后，如果仍有 live `Inode Arc`，inode number 进入 `zero_link`；最后一个 live reference Drop 时才释放 block/inode。这样已 unlink 但仍打开的文件继续可用。hard link 和重复 dentry 则通过 inode cache 共享 page state。
 
-mount 时若 superblock 已标 error，或 journal replay 返回 `EUCLEAN`，adapter 尝试不重放 journal的只读 fallback并记录 warning。其他 mount 错误保持 typed failure；不能为了启动成功把所有 ext4 错误都降级为只读。
+`Ext4Session` 在恢复前检查 superblock 的 error 标记，并为这类文件系统选择只读策略；`RootAction::MountReadOnly` 仍允许在独占准备阶段完成必要恢复，然后撤销写权限再发布。journal replay 失败直接传播，不通过重新挂载、跳过 replay 或退化只读来掩盖恢复错误。
+
+首次只读挂载的可写 ext4 可以通过 `FilesystemOps::remount_read_write()` 切换为读写。`Ext4Filesystem` 对已经读写的实例直接返回；实际提升时先暂停并排空操作准入，再由 `VolumePermissions::restore_read_write()` 在设备准入域内核对原始权限及重叠所有者，复用同一个 `rsext4::Ext4::remount()` 完成状态切换；成功后系统调用才发布 VFS 写权限。物理只读设备和仍有重叠使用者的卷不能提升权限，失败不改变挂载标志。原先只读的实例继续使用同步写回；启用了 MMP 时，必须启动刷新任务后才能允许写入。
 
 ### 3.2 FAT 适配
 
@@ -165,4 +170,4 @@ Cargo feature 决定哪些磁盘格式和 VFS 运行时能力进入镜像，fact
 7. root/附加 mount 集成验证；
 8. flush、shutdown、unlink-open、rename 和 error-state 行为。
 
-新增 root selector 只修改 `RootSpec`/candidate policy，不能复制 GPT/MBR 解析。新增分区表只修改 `volume/`，不能把 root label 策略写进 scanner。
+新增 root selector 只修改 `RootSelector`/candidate policy，不能复制 GPT/MBR 解析。新增分区表只修改 `volume/`，不能把 root label 策略写进 scanner。

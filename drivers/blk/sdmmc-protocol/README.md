@@ -28,14 +28,32 @@ combinations listed under [Validated host backends](#validated-host-backends).
 ```toml
 [features]
 default = ["spi"]
-spi = []
+spi = ["dep:embedded-hal"]
 sdio = []
-rdif = ["sdio", "dep:rdif-block"]
+rdif = ["sdio", "dep:rdif-block", "sdmmc-host/rdif"]
 ```
 
 - `spi`: enables the SPI transport and `SpiSdmmc` driver.
 - `sdio`: enables the SDIO host abstraction and `SdMmcCard` driver.
 - `rdif`: enables the RDIF block-device adapter for SDIO-backed host crates.
+
+`rdif::BlockQueue` schedules both regular transfers and maintenance operations.
+`WriteZeroes` waits for accepted CQE requests to complete, then returns control of
+the command channel through `CommandQueueAccelerator::suspend`. The protocol
+layer uses the legacy host to issue CMD13, CMD35, CMD36, CMD38, and CMD13 in order.
+`MmcTrimRequest` uses a fixed busy deadline and resumes CQE only after confirming
+ready+TRAN. The request completes only after CQE resumes successfully. Any failure
+closes the queue; native zeroing is never replayed. Flush retains the CQHCI DCMD
+fast path.
+
+This channel handoff follows Linux v6.12's
+[`mmc_cqe_issue_type`](https://github.com/torvalds/linux/blob/v6.12/drivers/mmc/core/queue.c),
+[`mmc_start_request`](https://github.com/torvalds/linux/blob/v6.12/drivers/mmc/core/core.c),
+and [`cqhci_off`](https://github.com/torvalds/linux/blob/v6.12/drivers/mmc/host/cqhci-core.c):
+synchronous maintenance suspends host CQE while idle and preserves the card's
+`CMDQ_MODE_EN`. Shutdown is terminal; only a successful suspension can be resumed.
+Register models and protocol tests do not replace validation on real cards or
+power-loss testing.
 
 Diagnostics use the `log` crate. Configure a logger in the caller if runtime
 messages are needed.

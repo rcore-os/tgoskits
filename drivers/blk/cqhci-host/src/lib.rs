@@ -11,7 +11,7 @@ use core::ptr::NonNull;
 
 pub use dma_api::DeviceDma;
 pub use rdif_block::{BlkError, HardIrqHandler};
-pub use sdmmc_protocol::sdio::host::SdMmcIrqHandle;
+pub use sdmmc_host::SdMmcIrqHandle;
 
 mod descriptor;
 mod irq;
@@ -33,8 +33,9 @@ pub trait CqhciPlatform: Send + 'static {
 
     /// Restores platform routing after CQHCI has stopped, including a failed
     /// enable. An error leaves restoration pending and may be retried during
-    /// shutdown or drop. This does not disable CMDQ_MODE_EN on the card or
-    /// authorize submitting legacy commands to the still-owned card session.
+    /// shutdown or drop. Successful suspend uses this handoff before protocol
+    /// maintenance; card-side CMDQ_MODE_EN remains enabled. Shutdown is terminal
+    /// even if the platform routing has been restored.
     fn disable_data_path(&mut self) -> Result<(), BlkError>;
 }
 

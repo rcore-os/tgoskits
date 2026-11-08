@@ -184,6 +184,7 @@ fn mount_test_storage(
         Ext4Filesystem {
             self_ref: Weak::new(),
             inode_metadata: ext4.inode_metadata_reader(),
+            lifecycle: Mutex::new(()),
             inner: Mutex::new(Ext4State {
                 ext4,
                 lifetimes: InodeLifetimeTracker::default(),
@@ -199,6 +200,7 @@ fn mount_test_storage(
             cached_writes: Admission::new(),
             root_dir: Mutex::new(None),
             mount_lease: Mutex::new(Weak::new()),
+            permissions: None,
         },
         flushes,
     )
@@ -253,6 +255,7 @@ fn readonly_shutdown_finishes_the_core_mount_lifecycle() {
     filesystem
         .shutdown_filesystem()
         .expect("shutdown read-only mount");
+    assert_eq!(filesystem.remount_read_write(), Err(VfsError::ResourceBusy));
 
     let mut state = filesystem.lock();
     let options = state.ext4.options();

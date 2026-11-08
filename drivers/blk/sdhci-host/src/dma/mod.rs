@@ -24,12 +24,12 @@ use core::{num::NonZeroUsize, ptr::NonNull};
 use dma_api::{
     CoherentArray, CompletedDma, CpuDmaBuffer, DeviceDma, DmaDirection, InFlightDma, PreparedDma,
 };
-use sdmmc_protocol::{
+use sdmmc_host::legacy::{
+    Command, DataDirection,
     block::{
         BlockProgress, BlockRequestId, BlockTransferDirection, BlockTransferMode,
         BlockTransferState, CommandProgress as CommandPoll, DataCommandProgress,
     },
-    cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
     response::Response,
 };

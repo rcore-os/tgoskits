@@ -672,6 +672,11 @@ pub fn sys_mount(
         if !target.is_root_of_mount() {
             return Err(StarryError::InvalidInput);
         }
+        // Reconfigure the same backend before publishing VFS write access.
+        // Physical read-only devices and conflicting owners leave flags intact.
+        if flags & MS_BIND == 0 && flags & MS_RDONLY == 0 {
+            target.filesystem().remount_read_write()?;
+        }
         let mp = target.mountpoint();
         if flags & MS_BIND == 0 {
             mp.set_filesystem_readonly(flags & MS_RDONLY != 0);
@@ -844,10 +849,13 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         .downcast_ref::<crate::pseudofs::dev::PhysicalBlock>()
     {
         if !readonly && physical.0.handle.device_info().read_only {
-            return Err(StarryError::ReadOnlyFilesystem);
+            return Err(StarryError::PermissionDenied);
         }
-        let fs =
-            ax_fs_ng::vfs::new_filesystem_from_handle(physical.0.handle.clone(), physical.0.region)?;
+        let fs = ax_fs_ng::vfs::new_filesystem_from_handle(
+            physical.0.handle.clone(),
+            &physical.0.descriptor,
+            readonly,
+        )?;
         if fs.name() != "ext4" {
             return Err(StarryError::NoSuchDevice);
         }

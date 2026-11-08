@@ -22,7 +22,7 @@
 
 ## 2. 设备计时
 
-`DeviceIoMetrics` 属于一个 `BlockDeviceHandle`，代替原先将全局请求计数放到根设备名下的做法。`RequestAccounting` 随唯一 `CompletionSender` 移动，统计生命周期覆盖运行时准入、软件排队和硬件完成，不由等候线程是否继续等待决定。旧全局 `block_io_stats()` 及其四个累计计数已删除，NVMe 回归通过 `root_block_stats()` 使用根设备句柄的同一份统计，避免跨设备累计值掩盖未发生的目标设备 I/O。
+`DeviceIoMetrics` 属于一个 `DeviceRef`，代替原先将全局请求计数放到根设备名下的做法。`RequestAccounting` 随唯一 `CompletionSender` 移动，统计生命周期覆盖运行时准入、软件排队和硬件完成，不由等候线程是否继续等待决定。旧全局 `block_io_stats()` 及其四个累计计数已删除，NVMe 回归通过 `root_block_stats()` 使用根设备句柄的同一份统计，避免跨设备累计值掩盖未发生的目标设备 I/O。
 
 ### 2.1 统计口径
 
@@ -38,7 +38,7 @@
 
 StarryOS 的 `render_diskstats()` 将根块设备快照按 Linux 字段顺序输出，时间转换为毫秒，合并与 discard 字段保持零，因为当前路径没有相应操作计数。时间覆盖本内核准入到终结的延迟，不能称为纯介质服务时间。忙碌时间按单调时钟统计区间并集，Linux 使用 jiffies 更新 `io_ticks`；两者不承诺逐位相同。统计边界参照 [Linux v7.1 blk-mq.c](https://github.com/torvalds/linux/blob/v7.1/block/blk-mq.c)、[blk-flush.c](https://github.com/torvalds/linux/blob/v7.1/block/blk-flush.c) 和 [genhd.c](https://github.com/torvalds/linux/blob/v7.1/block/genhd.c)。
 
-`root_block_stats()` 在根不是块设备（如内存根）、根设备记录尚不可用或其 `Weak<BlockDeviceHandle>` 无法升级时返回 `None`；`render_diskstats()` 随之返回空字符串，因此成功读取 `/proc/diskstats` 会得到零行。空结果表示当前没有可导出的根块设备快照，不能据此推断 I/O 活动为零、系统没有磁盘或读取失败；读取失败仍由打开和读取操作的错误返回判断。该接口不枚举其他磁盘，也不补造全零的 `blk0` 行。
+`root_block_stats()` 在根不是块设备（如内存根）、根设备记录尚不可用或其 `Weak<DeviceRef>` 无法升级时返回 `None`；`render_diskstats()` 随之返回空字符串，因此成功读取 `/proc/diskstats` 会得到零行。空结果表示当前没有可导出的根块设备快照，不能据此推断 I/O 活动为零、系统没有磁盘或读取失败；读取失败仍由打开和读取操作的错误返回判断。该接口不枚举其他磁盘，也不补造全零的 `blk0` 行。
 
 监控消费者应将空结果标为“无数据”，清除此前的计数与速率基线，不延续旧速率，也不猜测设备行；设备行重新出现后，先按设备身份建立新基线，再用后续有效样本计算速率。`apps/starry/monitor` 的 `GlancesHeadlessCarpet.py` 与 `NodeExporterCarpet.py` 当前要求 NVMe 根盘 `nvme0n1` 的非零启动读计数，不覆盖空结果及恢复后的速率计算；本次仅明确接口约定，没有修改这些消费方。
 

@@ -95,7 +95,7 @@ The member id is the AHCI physical port number. Queue ids remain local to the
 member block device.
 
 The block runtime owns one group controller task, one physical IRQ token, and
-one ordinary `BlockDeviceHandle` per successful member. All member queue and
+one ordinary `DeviceRef` per successful member. All member queue and
 controller targets are prepared before the physical IRQ is enabled. The hard
 IRQ action contains an immutable, preallocated target table.
 

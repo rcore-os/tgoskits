@@ -271,6 +271,7 @@ impl AhciQueue {
                 max_inflight: scheduling_depth,
                 max_submit_batch: scheduling_depth,
                 max_blocks_per_request: max_blocks,
+                max_write_zeroes_blocks: 0,
                 max_segments: 1,
                 supported_flags,
                 supports_flush: self.supports_flush,
@@ -297,7 +298,7 @@ impl AhciQueue {
                     data.direction(),
                     DmaDirection::ToDevice | DmaDirection::Bidirectional
                 ),
-                RequestOp::Flush => false,
+                RequestOp::Flush | RequestOp::WriteZeroes => false,
             };
             if !direction_matches {
                 return Err(BlkError::InvalidRequest);
