@@ -1281,9 +1281,18 @@ unsafe extern "C" fn ioctl_blob_create(
     let descriptor = BlobDescriptor {
         memory: request.blob_mem,
         flags: request.blob_flags,
-        // The host allocation belongs to Vulkan and may be only 4 KiB.
-        // BAR slot padding must not enlarge the RESOURCE_CREATE_BLOB size.
-        size: request.size,
+        // QEMU's memory listener registers the hostmem section by the
+        // device-side blob size. A non-page-multiple size produces an
+        // unaligned memory section that HVF silently skips (`skip unaligned
+        // memory section gpa=0x8040000000 size=0x200c4` observed with a
+        // 131,268-byte Venus ring blob), so no stage-2 mapping is created
+        // and the first guest access faults forever. Round the device-facing
+        // size up to the BAR slot granularity, the same rounding
+        // `host_blob::Layout` applies to its slot reservation; the GEM
+        // object and mmap keep facing the user-requested size.
+        size: host_layout
+            .as_ref()
+            .map_or(request.size, |layout| layout.wire_size()),
         id: request.blob_id,
     };
     let created = with_virgl(|virgl| {
