@@ -147,6 +147,9 @@ struct Host {
     device_features: u64,
     reset_readback: bool,
     commands: Vec<u32>,
+    /// `CtrlHeader::flags` word of every `RESOURCE_UNREF` request the host
+    /// processed, for wire-contract assertions.
+    unref_flags: Vec<u32>,
     created_formats: Vec<u32>,
     scanout: u32,
     output_width: u32,
@@ -175,6 +178,9 @@ impl Host {
     fn reply(&mut self, request: &[u8]) -> Vec<u8> {
         let command = word(request, 0);
         self.commands.push(command);
+        if command == Command::RESOURCE_UNREF.0 {
+            self.unref_flags.push(word(request, 4));
+        }
         if command == Command::RESOURCE_CREATE_2D.0 {
             self.created_formats.push(word(request, 28));
         }
@@ -680,8 +686,9 @@ fn stalled_release_submits_without_resetting_the_device() {
 
     host.lock().unwrap().stall = true;
     // The old contract reset the device here when the inline drain timed
-    // out; the submission is fire-and-forget with a fence now, so a stalled
-    // host no longer wedges or resets on release.
+    // out; the submission is fire-and-forget with a driver-local
+    // completion token now, so a stalled host no longer wedges or resets
+    // on release.
     let completion = device.release_buffer(buffer).unwrap();
     let Completion::Pending(fence) = completion else {
         panic!("a stalled release must report a pending fence, got {completion:?}")
@@ -693,6 +700,45 @@ fn stalled_release_submits_without_resetting_the_device() {
     // DeviceLost.
     assert!(!device.fence_completed(fence.get()).unwrap());
     assert!(weak.upgrade().is_none());
+}
+
+/// Wire contract (Linux `virtio_gpu_cmd_resource_unref` alignment): the unref
+/// must be submitted WITHOUT `VIRTIO_GPU_FLAG_FENCE`. The completion proof is
+/// the used-ring pop, not a host fence object: a venus-only host has no virgl
+/// fence support and parks a plain-fenced control command on its fence queue
+/// forever, so during teardown — when no later EXECBUFFER fence sweeps that
+/// queue — a fenced unref is never popped and its completion waiter wedges
+/// permanently. The driver-local token still completes through the pop, so
+/// the release observes its completion as soon as the host answers (even an
+/// error answer pops the entry and completes the token).
+#[test]
+fn resource_unref_is_unfenced_on_the_wire_and_completes_on_the_pop() {
+    let host = Arc::new(Mutex::new(Host::default()));
+    let mut device = make_device(&host, frozen_clock);
+    let buffer = device
+        .create_buffer(
+            BufferDescriptor::Image2d {
+                width: WIDTH,
+                height: HEIGHT,
+                stride: WIDTH * 4,
+                format: PixelFormat::Xrgb8888,
+            },
+            TestBacking::new(),
+        )
+        .unwrap();
+
+    let completion = device.release_buffer(buffer).unwrap();
+    let Completion::Pending(fence) = completion else {
+        panic!("release must report a pending token, got {completion:?}")
+    };
+    // The host answered the unfenced unref right away (OK_NODATA), so the
+    // pop completed the driver-local token — no host fence involved.
+    assert_eq!(
+        device.completion_status(completion).unwrap(),
+        rdif_gpu::CompletionStatus::Complete
+    );
+    assert!(device.fence_completed(fence.get()).unwrap());
+    assert_eq!(host.lock().unwrap().unref_flags, vec![0]);
 }
 
 /// Async submit semantics: `submit` returns a pending fence token, and the
