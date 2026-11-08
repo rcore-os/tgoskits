@@ -446,7 +446,11 @@ impl VsockEventWorker {
         debug!("handling vsock event: {event:?}");
         match event {
             VsockEvent::ConnectionRequest(conn_id) => {
-                match VSOCK_CONN_MANAGER.lock().on_connection_request(conn_id) {
+                // Bind the request first: a match scrutinee guard lives until
+                // the end of the statement, and `publish` (and its rollback)
+                // re-acquire the same manager lock.
+                let request = VSOCK_CONN_MANAGER.lock().on_connection_request(conn_id);
+                match request {
                     Ok(Some(incoming)) => incoming.publish(),
                     Ok(None) => {}
                     Err(error) => {
