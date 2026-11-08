@@ -141,9 +141,9 @@ fn epoll_notify_worker_flushes_deferred_wake_for_test() -> bool {
 
 // The parked reference simulates the fd table's strong reference to a nested
 // child epoll. `release_nested_child_last_ref_for_test` drops it from inside
-// `detach_nested_link` right after the topology link is upgraded, which
-// reproduces a concurrent close completing at exactly that point without
-// depending on scheduling.
+// `detach_nested_link` or `scan_epoll_topology` right after the topology link
+// is upgraded, which reproduces a concurrent close completing at exactly that
+// point without depending on scheduling.
 #[cfg(all(test, axtest))]
 static NESTED_CHILD_PARKED_REF: RawSpinLock<Option<Arc<Epoll>>> = RawSpinLock::new(None);
 
@@ -331,6 +331,75 @@ fn nested_child_last_ref_drops_outside_topology_lock_for_test() -> bool {
     let deleted = parent.delete_nested_for_test(3, &child_weak).is_ok();
 
     deleted
+        && NESTED_CHILD_RELEASED.load(Ordering::Acquire)
+        && inner_weak.strong_count() == 0
+        && witness.destructions() == 1
+        && !witness.destroyed_under_topology_lock()
+}
+
+/// Adds a nested epoll while one epolls it watches holds only the test's
+/// parked reference, and proves that scanned epoll is destroyed outside the
+/// global topology lock.
+///
+/// Determinism: the parked reference is released from inside
+/// `scan_epoll_topology` itself, immediately after the upgrade, so the
+/// "concurrent close completed" interleaving is forced rather than raced. The
+/// scanned epoll's destruction context is observed by the interest lease
+/// above; no scheduling, barriers, or repetition are involved.
+#[cfg(all(test, axtest))]
+fn scanned_child_last_ref_drops_outside_topology_lock_for_test() -> bool {
+    // The lock-held sampler must observe a real acquisition, otherwise the
+    // final assertion would be vacuous.
+    {
+        let _topology = lock_epoll_topology();
+        if !epoll_topology_lock_is_held_for_test() {
+            return false;
+        }
+    }
+    if epoll_topology_lock_is_held_for_test() {
+        return false;
+    }
+
+    let parent = Epoll::new();
+    let target = Arc::new(Epoll::new());
+    let child = Arc::new(Epoll::new());
+    let witness = Arc::new(NestedChildWitness::default());
+    let file: Arc<dyn FileLike> = Arc::new(NestedChildFile {
+        source: Arc::new(NestedChildSource {
+            witness: Arc::clone(&witness),
+        }),
+    });
+
+    // The scanned epoll owns one interest; its lease is destroyed together
+    // with the scanned epoll's interest table.
+    if child
+        .add_file_for_test(7, file, 0x77, EpollFlags::empty())
+        .is_err()
+    {
+        return false;
+    }
+    if witness.registrations() != 1 {
+        return false;
+    }
+
+    // The target already nests the scanned epoll, so adding the target to the
+    // parent upgrades the scanned epoll while walking the topology.
+    if target.add_nested_for_test(5, child.clone()).is_err() {
+        return false;
+    }
+
+    // Park the only remaining strong reference and drop the test's own, so
+    // the reference upgraded inside `scan_epoll_topology` is the last one.
+    let inner_weak = Arc::downgrade(&child.inner);
+    park_nested_child_last_ref_for_test(child);
+    if inner_weak.strong_count() != 1 {
+        return false;
+    }
+
+    let added = parent.add_nested_for_test(3, target.clone()).is_ok();
+    drop(target);
+
+    added
         && NESTED_CHILD_RELEASED.load(Ordering::Acquire)
         && inner_weak.strong_count() == 0
         && witness.destructions() == 1
@@ -1490,6 +1559,15 @@ mod tests {
         assert!(
             super::nested_child_last_ref_drops_outside_topology_lock_for_test(),
             "the last nested child epoll reference must be dropped after the topology lock"
+        );
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn scanned_child_last_ref_drops_outside_topology_lock() {
+        assert!(
+            super::scanned_child_last_ref_drops_outside_topology_lock_for_test(),
+            "the last reference upgraded by the topology scan must be dropped after the lock"
         );
     }
 
