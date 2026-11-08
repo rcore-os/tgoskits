@@ -164,8 +164,19 @@ fn resolve_at_with_search(
                         // When the final entry is one, hand out the namespace
                         // descriptor, whose stat is the nsfs inode; lstat
                         // (AT_SYMLINK_NOFOLLOW) keeps the link above.
+                        //
+                        // The lookup must not repeat the caller's spelling:
+                        // a trailing slash (or a trailing `.`) demands a
+                        // directory of the *target*, and an nsfs inode is a
+                        // regular file, so Linux reports ENOTDIR instead of
+                        // retrying to resolve `mnt:[id]/`. Strip the demand
+                        // from the lookup path, remember it, and apply it to
+                        // the object this fallback produces.
+                        let lookup_path = path.trim_end_matches('/');
+                        let lookup_path = lookup_path.strip_suffix("/.").unwrap_or(lookup_path);
+                        let requires_directory = path.len() != lookup_path.len();
                         let Ok((entry, searched)) =
-                            fs.resolve_no_follow_with_search_checked(path, check)
+                            fs.resolve_no_follow_with_search_checked(lookup_path, check)
                         else {
                             return Err(error.into());
                         };
@@ -183,6 +194,9 @@ fn resolve_at_with_search(
                                     &proc_data,
                                 )? {
                                     return Err(StarryError::PermissionDenied);
+                                }
+                                if requires_directory {
+                                    return Err(StarryError::NotADirectory);
                                 }
                                 // The caller's filesystem context is locked
                                 // here; do not re-enter FS_CONTEXT for the
