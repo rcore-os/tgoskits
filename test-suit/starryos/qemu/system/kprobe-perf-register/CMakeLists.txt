@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(kprobe-perf-register C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(kprobe-perf-register src/kprobe_perf_register.c)
+target_compile_options(kprobe-perf-register PRIVATE -Wall -Wextra -Werror)
+install(TARGETS kprobe-perf-register RUNTIME DESTINATION usr/bin/starry-test-suit)

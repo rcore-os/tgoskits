@@ -30,9 +30,12 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
-use ax_runtime::hal::{
-    cpu::context::{KernelTrapFrame, UserRegisters},
-    paging::MappingFlags,
+use ax_runtime::{
+    hal::{
+        cpu::context::{KernelTrapFrame, UserRegisters},
+        paging::MappingFlags,
+    },
+    task::sync::Semaphore,
 };
 use kprobe::{
     KprobeAuxiliaryOps, KretprobeBuilder, ProbeBuilder, ProbePointList,
@@ -44,7 +47,7 @@ use kprobe::{
 
 use crate::{
     StarryError, StarryResult,
-    sync::{RawSpinLock, RawSpinLockIrqSaveBackend},
+    sync::{Mutex, RawSpinLock, RawSpinLockIrqSaveBackend},
     task::PidIdentity,
 };
 
@@ -315,7 +318,13 @@ pub type KernelKretprobe = kprobe::Kretprobe<RawSpinLockIrqSaveBackend, KernelKp
 pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
-static KPROBE_POINT_LIST: RawSpinLock<KprobePointList> = RawSpinLock::new(KprobePointList::new());
+// Probe points are only added and removed from task context; the trap handlers
+// look probes up through `KPROBE_MANAGER`. Installing or removing a point patches
+// kernel text through `stop_machine`, which sleeps, so this lock must too.
+static KPROBE_POINT_LIST: Mutex<KprobePointList> = Mutex::new(KprobePointList::new());
+// Serializes probe-point updates so that `KPROBE_POINT_LIST` is never
+// contended; a semaphore for the reason given at `KERNEL_TEXT_PATCH`.
+static KPROBE_POINT_UPDATE: Semaphore = Semaphore::new(1);
 const KERNEL_KRETPROBE_STACK_CAPACITY: usize = 64;
 static INSTANCE: LazyInit<RawSpinLock<Vec<RetprobeInstance>>> = LazyInit::new();
 
@@ -336,8 +345,14 @@ fn with_manager_and_list<F, R>(f: F) -> R
 where
     F: FnOnce(&KprobeManager, &mut KprobePointList) -> R,
 {
-    let mut list = KPROBE_POINT_LIST.try_lock_irqsave().unwrap();
-    f(&KPROBE_MANAGER, &mut list)
+    KPROBE_POINT_UPDATE
+        .down()
+        .expect("kprobe updates require a sleepable task context");
+    let result = f(&KPROBE_MANAGER, &mut KPROBE_POINT_LIST.lock());
+    KPROBE_POINT_UPDATE
+        .up()
+        .expect("kprobe update semaphore overflow");
+    result
 }
 
 /// Register a kprobe into the global manager, returning the live handle.
