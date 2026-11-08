@@ -142,8 +142,14 @@ pub(super) struct HostMapping {
 }
 
 /// Do not let a failed enqueue release a still-mapped slot. Retry until UNMAP
-/// is queued or RDIF confirms that device loss has stopped all device access.
+/// is queued or RDIF confirms that device loss has stopped all device access,
+/// bounded by [`super::CLEANUP_BUDGET_NS`]: a host whose submission queue
+/// stays wedged gets bounded patience instead of a permanent waiter on the
+/// closer's thread. Past the budget this warns once and lets the caller
+/// release the resource anyway — the host may keep the BAR mapping (and leak
+/// the slot's mapping) until reset.
 pub(super) fn unmap_before_release(resource: BufferHandle) {
+    let deadline = super::cleanup_deadline();
     loop {
         let result = ax_gpu::with_gpu_for_cleanup(|gpu| {
             let virgl = gpu.virgl().ok_or(GpuError::Unsupported)?;
@@ -158,10 +164,18 @@ pub(super) fn unmap_before_release(resource: BufferHandle) {
             Ok(()) | Err(GpuError::DeviceLost) => return,
             Err(error) => {
                 log::debug!("retrying host-visible blob unmap after {error}");
-                if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
-                    drm_kapi::task_runtime::yield_now();
-                }
             }
+        }
+        if drm_kapi::clock::now_ns() >= deadline {
+            log::warn!(
+                "ax-drm: host blob unmap for resource {} exceeded the cleanup budget; releasing \
+                 without the unmap (the host may keep the mapping until reset)",
+                resource.id().get()
+            );
+            return;
+        }
+        if drm_kapi::task_runtime::sleep_ns(1_000_000).is_err() {
+            drm_kapi::task_runtime::yield_now();
         }
     }
 }
