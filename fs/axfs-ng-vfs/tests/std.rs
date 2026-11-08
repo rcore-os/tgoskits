@@ -664,6 +664,39 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     dir.unlink("child", false).unwrap();
     assert!(dir.lookup_cache("child").is_none());
     assert!(matches!(dir.lookup("child"), Err(VfsError::NotFound)));
+    // Entry creation and the directory's own metadata updates share one guard:
+    // while a metadata update holds it, a create authorization observes the
+    // guard as taken, and no entry is inserted before the update lands.
+    let guard = dir.mutation_guard();
+    assert!(
+        dir.try_mutation_guard().is_none(),
+        "an in-flight mutation excludes a concurrent create decision"
+    );
+    drop(guard);
+    assert!(
+        dir.try_mutation_guard().is_some(),
+        "the guard is free once the mutation finishes"
+    );
+
+    let options = OpenOptions {
+        create: true,
+        ..Default::default()
+    };
+    let saw_guard = Arc::new(RawSpinLock::new(false));
+    let probe = saw_guard.clone();
+    let dir_ref = dir;
+    let opened = dir_ref
+        .open_file_checked("serialized-create", &options, &|| {
+            // The create decision runs with the directory guard held.
+            *probe.lock_irqsave() = dir_ref.try_mutation_guard().is_none();
+            Ok(())
+        })
+        .unwrap();
+    assert!(opened.1, "the fixture reports a created entry");
+    assert!(
+        *saw_guard.lock_irqsave(),
+        "authorization runs inside the directory mutation guard"
+    );
 }
 
 #[test]

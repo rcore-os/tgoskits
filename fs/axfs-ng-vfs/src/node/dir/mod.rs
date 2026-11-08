@@ -9,7 +9,8 @@ use core::{
 
 use super::{DirEntry, FileExtentMap, FileExtentTarget};
 use crate::{
-    Mountpoint, NodeOps, NodePermission, NodeType, RawSpinLock, VfsError, VfsResult,
+    Metadata, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, RawSpinLock, VfsError,
+    VfsResult,
     path::{DOT, DOTDOT, verify_entry_name},
 };
 
@@ -333,6 +334,14 @@ pub struct DirNode {
     ops: Arc<dyn DirNodeOps>,
     cache: RawSpinLock<DirectoryCache>,
     pub(crate) mountpoint: RawSpinLock<Option<Arc<Mountpoint>>>,
+    /// Serializes entry creation with the directory's own metadata updates.
+    ///
+    /// Linux `lookup_open` runs `may_o_create` under the parent inode lock,
+    /// which `chmod_common` also takes. Holding this across the create
+    /// authorization and the entry commit gives the same ordering: a chmod
+    /// that revokes write permission either precedes the authorization (which
+    /// then fails) or follows the committed entry.
+    mutation: Arc<ax_sync::Mutex<()>>,
 }
 
 impl Deref for DirNode {
@@ -355,7 +364,38 @@ impl DirNode {
             ops,
             cache: RawSpinLock::new(DirectoryCache::default()),
             mountpoint: RawSpinLock::new(None),
+            mutation: Arc::new(ax_sync::Mutex::new(())),
         }
+    }
+
+    /// Serializes this directory's entry creation with its metadata updates.
+    pub fn mutation_guard(&self) -> ax_sync::MutexGuard<'_, ()> {
+        self.mutation.lock()
+    }
+
+    /// Non-blocking probe of [`Self::mutation_guard`]; `None` means a create
+    /// authorization or a metadata update currently owns the guard.
+    pub fn try_mutation_guard(&self) -> Option<ax_sync::MutexGuard<'_, ()>> {
+        self.mutation.try_lock()
+    }
+
+    /// Commits one metadata update under the same guard as entry creation.
+    ///
+    /// Linux `chmod_common` takes the directory inode lock that `lookup_open`
+    /// holds across `may_o_create` and the entry insert, so a permission
+    /// revocation and a concurrent `O_CREAT` are ordered by that lock.
+    pub(crate) fn update_metadata_serialized(&self, update: MetadataUpdate) -> VfsResult<()> {
+        let _mutation = self.mutation.lock();
+        self.ops.update_metadata(update)
+    }
+
+    /// Planning form of [`Self::update_metadata_serialized`].
+    pub(crate) fn update_metadata_checked_serialized(
+        &self,
+        plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
+    ) -> VfsResult<()> {
+        let _mutation = self.mutation.lock();
+        self.ops.update_metadata_checked(plan)
     }
 
     pub fn inner(&self) -> &Arc<dyn DirNodeOps> {
@@ -653,6 +693,11 @@ impl DirNode {
     ) -> VfsResult<(DirEntry, bool)> {
         verify_entry_name(name)?;
 
+        // One guard spans the existence decision, the authorization and the
+        // entry commit, and the directory's own mode/owner updates take it
+        // too, so a chmod cannot revoke write permission between the check
+        // and the insert.
+        let _mutation = self.mutation.lock();
         match self.lookup(name) {
             Ok(val) => {
                 if options.create_new {

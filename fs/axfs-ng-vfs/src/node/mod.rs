@@ -312,12 +312,24 @@ impl DirEntry {
 
     pub fn filesystem(&self) -> &dyn FilesystemOps;
 
-    pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+    /// Updates metadata; a directory update takes the same guard as its
+    /// entry creation (see [`DirNode::update_metadata_serialized`]).
+    pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
+        match &self.0.node {
+            Node::Dir(dir) => dir.update_metadata_serialized(update),
+            Node::File(file) => file.inner().update_metadata(update),
+        }
+    }
 
     pub fn update_metadata_checked(
         &self,
         plan: &dyn Fn(&Metadata) -> VfsResult<MetadataUpdate>,
-    ) -> VfsResult<()>;
+    ) -> VfsResult<()> {
+        match &self.0.node {
+            Node::Dir(dir) => dir.update_metadata_checked_serialized(plan),
+            Node::File(file) => file.inner().update_metadata_checked(plan),
+        }
+    }
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> VfsResult<u64>;
