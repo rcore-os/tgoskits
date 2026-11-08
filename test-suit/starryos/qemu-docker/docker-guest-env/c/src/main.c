@@ -424,6 +424,46 @@ static void check_namespaces(void)
         }
     }
 
+    /* A trailing slash (or a trailing `.`) on the path demands a directory of
+     * the followed object. The nsfs inode is a regular file, so Linux reports
+     * ENOTDIR for `/proc/self/ns/mnt/` and `/proc/self/ns/mnt/.` while the
+     * plain spelling keeps succeeding. */
+    {
+        struct stat st;
+        errno = 0;
+        if (stat("/proc/self/ns/mnt/", &st) != 0 && errno == ENOTDIR) {
+            pass("a trailing slash on an ns link reports ENOTDIR");
+        } else {
+            fail("a trailing slash on an ns link reports ENOTDIR");
+        }
+        errno = 0;
+        if (stat("/proc/self/ns/mnt/.", &st) != 0 && errno == ENOTDIR) {
+            pass("a trailing dot on an ns link reports ENOTDIR");
+        } else {
+            fail("a trailing dot on an ns link reports ENOTDIR");
+        }
+        errno = 0;
+        if (fstatat(AT_FDCWD, "/proc/self/ns/mnt/", &st, 0) != 0 &&
+            errno == ENOTDIR) {
+            pass("newfstatat with a trailing slash reports ENOTDIR");
+        } else {
+            fail("newfstatat with a trailing slash reports ENOTDIR");
+        }
+        errno = 0;
+        if (fstatat(AT_FDCWD, "/proc/self/ns/mnt", &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+            S_ISLNK(st.st_mode)) {
+            pass("no-follow keeps the ns link under a trailing dot spelling");
+        } else {
+            fail("no-follow keeps the ns link under a trailing dot spelling");
+        }
+        errno = 0;
+        if (lstat("/proc/self/ns/mnt", &st) == 0 && S_ISLNK(st.st_mode)) {
+            pass("lstat still reports the ns link after the fallback change");
+        } else {
+            fail("lstat still reports the ns link after the fallback change");
+        }
+    }
+
     /* nsfs inodes are S_IRUGO: an unprivileged write open must fail EACCES
      * (`may_open` MAY_WRITE) while O_RDONLY keeps working. */
     {
