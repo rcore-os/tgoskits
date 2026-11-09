@@ -265,7 +265,7 @@ x86_64 的虚拟化后端由运行时 CPUID 选择，不在预设中选择 Cargo
 ```text
 test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml
 test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml
-scripts/axbuild/src/axvisor/config/presets/entries.rs
+scripts/axbuild/src/axvisor/config/presets/qemu_x86_64.rs
 ```
 
 VMX/SVM 用例共享后端中立的内核配置，各 case 独立持有客户机打包输入。修改 VM 列表不改变内核 Cargo 身份，空列表也不会继承前一 case 的 VM。

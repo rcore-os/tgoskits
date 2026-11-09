@@ -128,6 +128,8 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - **Starry 夜测应用启动契约**：参与当前夜测的 x86_64 PIE 应用使用 `uefi = true`、`to_bin = true`，避免直接 ELF 加载的 PVH note 错误；LoongArch64 携带宿主 initramfs 或命令行时也使用 UEFI，直接启动不支持此交接。AArch64/RISC-V 保留各自支持的直接启动方式。默认受管 Alpine 镜像无论由运行器隐式选择还是在 QEMU 配置中显式引用，都须完成 Starry OpenRC 和控制台准备；Debian、NixOS 等其他镜像按其自己的初始化契约处理。启动方式恢复后，仍须用应用自身的成功标记验收，不能只以进入 shell 为通过依据。
 - **操作系统配置与测试用例**：只为已验证体系结构更新 ArceOS、StarryOS 和 Axvisor 配置。`qemu-<arch>.toml` 运行配置与 `build-*.toml` 用户构建配置分离。内置配方在 `scripts/axbuild/src/<os>/config/presets/`，用 `--preset <name>` 直接选择，不再复制 `configs/board` 编译 TOML。Starry 应用板卡用例默认使用同名静态预设；只有共享同一目标的全部板卡都能安全使用相同处理器、内存管理单元和片上系统功能集时，才加入应用局部 `build-<target>.toml`。板卡需要扫描输出桌面（card0/fb0 链路）时，构建特性必须同时包含 `ax-runtime/display` 与 `ax-driver/virtio-gpu`：`ax_runtime::devices::init_display` 由 `ax-runtime/display` 特性门控，缺配时 ax_display 永不初始化——`/dev/fb0` 不创建、card0 连接器模式回退 640x480、`present_fb` 静默空操作，用户态合成器整条管线正常但屏幕恒黑；对齐 `qemu-riscv64` 预设与同目标 clippy 配置的特性集即可。
 
+静态板卡身份在 `components/ax-config/src/boards/<board>.rs`，OS 配方在 `scripts/axbuild/src/<os>/config/presets/<board>.rs`，均由相应 `mod.rs` 统一导出和登记。每个物理板卡独立文件，QEMU 按目标架构分文件；同板用途变体放在同一板文件，不重建集中 `entries.rs` 或家族混合配置。修改时保留 registry 顺序，确有跨 OS 复用的驱动片段归 `boards/features.rs`，板卡策略仍归 OS 配方。
+
 ## someboot 必备条件
 
 - 保持固件入口二进制接口。统一可扩展固件接口入口携带 `image_handle` 和 `system_table`，直接启动参数不同。

@@ -20,6 +20,8 @@ axbuild 启用 toml 与 schema。runtime/HAL 只通过 build-dependencies 使用
 
 静态配方与用户稀疏覆盖具有不同职责。`Board` 只拥有跨 OS 共享的身份和 target；`CommonPreset` 组合公共默认与静态片段，各 OS 的预设保存自己的策略和资源。唯一 `materialize()` 将借用数据展开为本次请求的 owned 值，不解析内嵌 TOML。
 
+公共 `boards/` 与三 OS 的 `config/presets/` 都以 `mod.rs` 为统一入口，每块物理板卡独立一个同名 Rust 文件，QEMU 按目标架构分别存放。OS 的同板用途变体放在该板文件中，例如 `qemu_aarch64.rs` 同时维护普通、vCPU 和 VirtIO 用途，不另复制公共板卡身份。`mod.rs` 统一声明模块、维护唯一有序 registry、查找及默认 QEMU 映射；不再使用集中全部配方的 `entries.rs`。确有复用的驱动片段单独放在 `boards/features.rs`，不混入某块板卡策略，也不保留只转发旧布局的空壳模块。
+
 ### 2.1 合并顺序
 
 解析入口只读取一份用户文件一次。没有用户文件时，直接使用静态展开对象；有文件时先提取 preset、features_add、features_remove、unset 控制键，再将普通字段交给 Figment 的普通 merge。最终 OS 对象只解码一次，随后应用本次环境 FEATURES 和显式 CLI，再校验。
