@@ -59,7 +59,7 @@ struct Entry<'a> {
 /// replace entries from earlier archives, like Linux's built-in + external pair.
 pub fn unpack_sources(sources: &[&[u8]]) -> Result<(Filesystem, UnpackReport), InitramfsError> {
     let fs = MemoryFs::new_ramfs();
-    let root = Mountpoint::new_root(&fs).root_location();
+    let root = Mountpoint::new_root(&fs)?.root_location();
     let context = FsContext::new(root);
     let mut report = UnpackReport::default();
     for source in sources.iter().copied().filter(|source| !source.is_empty()) {
@@ -587,7 +587,11 @@ mod tests {
                     entries: 15
                 }
             );
-            let context = FsContext::new(Mountpoint::new_root(&fs).root_location());
+            let context = FsContext::new(
+                Mountpoint::new_root(&fs)
+                    .expect("unpacked initramfs root")
+                    .root_location(),
+            );
             let init = context.metadata("/bin/init").unwrap();
             let copy = context.metadata("/bin/init-copy").unwrap();
             assert_eq!(init.inode, copy.inode);

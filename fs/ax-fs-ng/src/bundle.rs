@@ -269,7 +269,11 @@ mod tests {
     use crate::MemoryFs;
 
     fn context() -> FsContext {
-        FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location())
+        FsContext::new(
+            Mountpoint::new_root(&MemoryFs::new())
+                .expect("bundle test root")
+                .root_location(),
+        )
     }
     fn write(context: &FsContext, path: &str, data: &[u8]) {
         File::create(context, path)
@@ -321,7 +325,9 @@ mod tests {
             install_directory(&source, &target, "/guest/builtin", |_, _| Ok(())).unwrap();
             assert!(child_names(&target, "/guest/builtin").unwrap().is_empty());
             let full = FsContext::new(
-                Mountpoint::new_root(&MemoryFs::new_with_size_limit(4)).root_location(),
+                Mountpoint::new_root(&MemoryFs::new_with_size_limit(4))
+                    .expect("full bundle test root")
+                    .root_location(),
             );
             mkdir_parents(&full, "/guest/builtin").unwrap();
             write(&full, "/guest/builtin/old-only", b"old");

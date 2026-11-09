@@ -211,9 +211,7 @@ impl CachedFileShared {
 
     #[cfg(all(feature = "ext4", feature = "vfs"))]
     pub(super) fn retire_from_writeback_registry(self: &Arc<Self>) -> VfsResult<()> {
-        if self.backing_write_protected() {
-            return Err(VfsError::Io);
-        }
+        let write_protected = self.backing_write_protected();
         #[cfg(test)]
         self.notify_retirement_lock_attempt();
         let _writeback = self.writeback_lock.lock();
@@ -223,7 +221,7 @@ impl CachedFileShared {
                 .store(true, core::sync::atomic::Ordering::Release);
         }
         let result = (|| {
-            let mut round = WritebackPages::begin(self, None, false)?;
+            let mut round = WritebackPages::begin(self, None, write_protected)?;
             round.protect()?;
             round.write_back()
         })();

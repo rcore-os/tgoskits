@@ -74,7 +74,8 @@ fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location
 
     // Keep an immutable namespace anchor; the actual root mount can then be
     // pivoted and detached without invalidating the namespace itself.
-    let anchor = axfs_ng_vfs::Mountpoint::new_root_with_source(&MemoryFs::new(), "nullfs");
+    let anchor = axfs_ng_vfs::Mountpoint::new_root_with_source(&MemoryFs::new(), "nullfs")
+        .expect("root filesystem anchor");
     anchor.set_readonly(true);
     let mp = anchor
         .root_location()

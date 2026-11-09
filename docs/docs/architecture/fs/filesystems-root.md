@@ -101,6 +101,8 @@ sequenceDiagram
 
 `ROOT_FS_CONTEXT` 只初始化一次。文件系统实例同时登记到 `MOUNTED_FILESYSTEMS`，用于 shutdown 时逆序关闭。未显式指定 source 时，`default_root_source()` 从已保存的 `RootBlockIdentity` 生成 `/dev/nvme0n1`、`/dev/sdX`、`/dev/vdX`、`/dev/mmcblkX` 或 `/dev/blkX`；数字结尾的盘名以 `pN` 追加分区号，字母结尾的盘名直接追加 `N`。`block_device_nodes()` 使用同一命名分配规则，`root_block_stats()` 返回选中物理盘的身份。每盘保留 256 个 minor，whole disk 使用偏移 0，分区使用偏移 1..255；超出范围返回错误，避免把分区号解释为下一块物理盘。
 
+`Mountpoint::new*` 在读取新文件系统根目录前取得挂载租约，并以 `VfsResult` 传播失败。没有生命周期所有者的文件系统返回无租约状态；已经进入退休、失败或释放阶段的生命周期文件系统返回 `ResourceBusy`，因此不会发布一个成功但不可用的挂载。bind alias 和 namespace copy 直接克隆已有强租约，不重新查找租约。
+
 ### 2.2 附加分区
 
 其余同 disk 的可识别 partition 会自动挂载：label 含 `boot` 的目标为 `/boot`，其他 label 使用 `/<label>`，无 label 使用 `/partition`。目标不存在时尝试创建；只读 root 无法创建或原位置不是目录时，可建立 transient in-memory mount directory 覆盖该名字，使只读 root 仍能承载额外挂载而不修改 backing。

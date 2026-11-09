@@ -215,11 +215,6 @@ pub(crate) fn new_from_handle_with_kind_readonly(
     Err(axfs_ng_vfs::VfsError::OperationNotSupported)
 }
 
-#[cfg(all(feature = "ext4", feature = "vfs"))]
-fn new_ext4(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
-    ext4::Ext4Filesystem::new(dev, region)
-}
-
 #[cfg(feature = "fat")]
 fn new_fat(
     dev: Box<dyn FsBlockDevice>,

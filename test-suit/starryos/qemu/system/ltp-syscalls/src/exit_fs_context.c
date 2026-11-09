@@ -18,6 +18,7 @@
 #define LOOP_CLR_FD 0x4c01
 #define LOOP_SET_STATUS64 0x4c04
 #define LOOP_GET_STATUS64 0x4c05
+#define LO_FLAGS_READ_ONLY 1
 #define LO_FLAGS_AUTOCLEAR 4
 /* Block-device ioctls are _IO(0x12,nr) on every architecture this suite runs. */
 #ifndef BLKROSET
@@ -465,6 +466,85 @@ static int check_loop_mount_lifetime(void)
     mounted = 0;
     puts("LOOP_MOUNT_REUSABLE_AFTER_UNMOUNT");
     puts("LOOP_MOUNT_LEASE_RELEASED_AFTER_LAST_FILE");
+    if (close(loop_fd))
+        goto cleanup;
+    loop_fd = -1;
+    loop_fd = open("/dev/loop0", O_RDWR | O_CLOEXEC);
+    errno = 0;
+    if (loop_fd < 0 || ioctl(loop_fd, LOOP_GET_STATUS64, &info) != -1 || errno != ENXIO) {
+        fprintf(stderr, "writable loop binding survived its last opener\n");
+        goto cleanup;
+    }
+    bound = 0;
+
+    /* A loop bound from an O_RDONLY image is read-only from its initial
+       mount. It has no dirty state to recover, so syncfs and a normal unmount
+       must succeed. Repeating with MNT_DETACH proves the last file and loop
+       opener still release the delayed AUTOCLEAR binding. */
+    if (close(image_fd))
+        goto cleanup;
+    image_fd = -1;
+    image_fd = open(image, O_RDONLY | O_CLOEXEC);
+    if (image_fd < 0 || ioctl(loop_fd, LOOP_SET_FD, image_fd))
+        goto cleanup;
+    bound = 1;
+    memset(&info, 0, sizeof(info));
+    info.lo_flags = LO_FLAGS_AUTOCLEAR | LO_FLAGS_READ_ONLY;
+    if (ioctl(loop_fd, LOOP_SET_STATUS64, &info) ||
+        ioctl(loop_fd, LOOP_GET_STATUS64, &info) ||
+        (info.lo_flags & (LO_FLAGS_AUTOCLEAR | LO_FLAGS_READ_ONLY)) !=
+            (LO_FLAGS_AUTOCLEAR | LO_FLAGS_READ_ONLY)) {
+        fprintf(stderr, "initial read-only loop binding lost its flags\n");
+        goto cleanup;
+    }
+    if (mount("/dev/loop0", target, "ext4", MS_RDONLY, NULL)) {
+        fprintf(stderr, "initial read-only ext4 mount failed: errno=%d\n", errno);
+        goto cleanup;
+    }
+    mounted = 1;
+    snprintf(path, sizeof(path), "%s/held", target);
+    path_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (path_fd < 0) {
+        fprintf(stderr, "initial read-only mount did not expose its data: errno=%d\n", errno);
+        goto cleanup;
+    }
+    errno = 0;
+    if (syscall(SYS_syncfs, path_fd)) {
+        fprintf(stderr, "initial read-only syncfs failed: errno=%d\n", errno);
+        goto cleanup;
+    }
+    close(path_fd);
+    path_fd = -1;
+    errno = 0;
+    if (syscall(SYS_umount2, target, 0)) {
+        fprintf(stderr, "initial read-only normal unmount failed: errno=%d\n", errno);
+        goto cleanup;
+    }
+    mounted = 0;
+
+    if (mount("/dev/loop0", target, "ext4", MS_RDONLY, NULL)) {
+        fprintf(stderr, "initial read-only remount failed: errno=%d\n", errno);
+        goto cleanup;
+    }
+    mounted = 1;
+    path_fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (path_fd < 0 || syscall(SYS_umount2, target, MNT_DETACH)) {
+        fprintf(stderr, "initial read-only lazy unmount failed: errno=%d\n", errno);
+        goto cleanup;
+    }
+    mounted = 0;
+    close(path_fd);
+    path_fd = -1;
+    close(loop_fd);
+    loop_fd = -1;
+    loop_fd = open("/dev/loop0", O_RDWR | O_CLOEXEC);
+    errno = 0;
+    if (loop_fd < 0 || ioctl(loop_fd, LOOP_GET_STATUS64, &info) != -1 || errno != ENXIO) {
+        fprintf(stderr, "initial read-only lazy mount retained its loop holder: errno=%d\n", errno);
+        goto cleanup;
+    }
+    bound = 0;
+    puts("LOOP_INITIAL_READONLY_SYNC_UNMOUNT_AND_AUTOCLEAR");
     result = 0;
 cleanup:
     if (result)

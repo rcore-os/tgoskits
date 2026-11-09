@@ -345,9 +345,17 @@ impl Mountpoint {
         root: DirEntry,
         location_in_parent: Option<Location>,
         device: u64,
-    ) -> Arc<Self> {
+    ) -> VfsResult<Arc<Self>> {
+        let filesystem_lease = root.filesystem().mount_lease()?;
         let state = Arc::new(FilesystemMountState::new(root.filesystem().is_readonly()));
-        Self::new_with_root_and_source(root, location_in_parent, device, "none".into(), state)
+        Ok(Self::new_with_root_and_source(
+            root,
+            location_in_parent,
+            device,
+            "none".into(),
+            state,
+            filesystem_lease,
+        ))
     }
 
     fn new_with_root_and_source(
@@ -356,8 +364,8 @@ impl Mountpoint {
         device: u64,
         source: String,
         filesystem_state: Arc<FilesystemMountState>,
+        filesystem_lease: Option<Arc<dyn FilesystemMountLease>>,
     ) -> Arc<Self> {
-        let filesystem_lease = root.filesystem().mount_lease();
         Arc::new(Self {
             root,
             location: RawSpinLock::new(location_in_parent),
@@ -380,16 +388,21 @@ impl Mountpoint {
         })
     }
 
-    pub fn new(fs: &Filesystem, location_in_parent: Option<Location>) -> Arc<Self> {
+    /// Builds a mountpoint after acquiring the filesystem's mount lease.
+    ///
+    /// Returns an error if the filesystem can no longer enter a new mount.
+    pub fn new(fs: &Filesystem, location_in_parent: Option<Location>) -> VfsResult<Arc<Self>> {
         Self::new_with_source(fs, location_in_parent, "none")
     }
 
     /// Creates a mountpoint with the source name exposed through mount metadata.
+    ///
+    /// Returns an error if the filesystem cannot acquire a mount lease.
     pub fn new_with_source(
         fs: &Filesystem,
         location_in_parent: Option<Location>,
         source: &str,
-    ) -> Arc<Self> {
+    ) -> VfsResult<Arc<Self>> {
         Self::new_with_device_source(
             fs,
             location_in_parent,
@@ -400,45 +413,60 @@ impl Mountpoint {
 
     /// Creates a mountpoint with an explicitly selected filesystem device
     /// number. The mount identifier remains independently allocated.
+    ///
+    /// The lease is acquired before the new root directory is read.
     pub fn new_with_device_source(
         fs: &Filesystem,
         location_in_parent: Option<Location>,
         device: u64,
         source: &str,
-    ) -> Arc<Self> {
+    ) -> VfsResult<Arc<Self>> {
+        let filesystem_lease = fs.mount_lease()?;
         let result = Self::new_with_root_and_source(
             fs.root_dir(),
             location_in_parent,
             device,
             source.to_owned(),
             fs.mount_state.clone(),
+            filesystem_lease,
         );
         result.readonly.store(fs.is_readonly(), Ordering::Release);
-        result
+        Ok(result)
     }
 
-    pub fn new_root(fs: &Filesystem) -> Arc<Self> {
+    /// Creates a root mountpoint after acquiring the filesystem's mount lease.
+    pub fn new_root(fs: &Filesystem) -> VfsResult<Arc<Self>> {
         Self::new(fs, None)
     }
 
     /// Creates the root mountpoint with the source name exposed through mount metadata.
-    pub fn new_root_with_source(fs: &Filesystem, source: &str) -> Arc<Self> {
+    ///
+    /// Returns an error if the filesystem cannot acquire a mount lease.
+    pub fn new_root_with_source(fs: &Filesystem, source: &str) -> VfsResult<Arc<Self>> {
         Self::new_with_source(fs, None, source)
     }
 
     /// Creates a root mountpoint with an explicitly selected filesystem
     /// device number.
-    pub fn new_root_with_device_source(fs: &Filesystem, device: u64, source: &str) -> Arc<Self> {
+    ///
+    /// Returns an error if the filesystem cannot acquire a mount lease.
+    pub fn new_root_with_device_source(
+        fs: &Filesystem,
+        device: u64,
+        source: &str,
+    ) -> VfsResult<Arc<Self>> {
         Self::new_with_device_source(fs, None, device, source)
     }
 
     fn bind(source: &Location, location_in_parent: Location, recursive: bool) -> Arc<Self> {
+        let filesystem_lease = source.mountpoint._filesystem_lease.clone();
         let result = Self::new_with_root_and_source(
             source.entry.clone(),
             Some(location_in_parent),
             source.mountpoint.device(),
             source.mountpoint.source.clone(),
             source.mountpoint.filesystem_state.clone(),
+            filesystem_lease,
         );
         result
             .readonly
@@ -457,12 +485,14 @@ impl Mountpoint {
     }
 
     fn clone_shallow(source: &Arc<Self>, location_in_parent: Option<Location>) -> Arc<Self> {
+        let filesystem_lease = source._filesystem_lease.clone();
         let result = Self::new_with_root_and_source(
             source.root.clone(),
             location_in_parent,
             source.device(),
             source.source.clone(),
             source.filesystem_state.clone(),
+            filesystem_lease,
         );
         result
             .readonly
@@ -1284,7 +1314,7 @@ impl Location {
         // unpublished mount before entering the non-preemptible topology
         // transaction; only topology validation and publication belong inside
         // the global guard.
-        let result = Mountpoint::new_with_device_source(fs, Some(self.clone()), device, source);
+        let result = Mountpoint::new_with_device_source(fs, Some(self.clone()), device, source)?;
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let should_propagate = self.mountpoint.is_shared();
         self.check_is_dir()?;
@@ -1481,6 +1511,18 @@ mod tests {
 
     fn current_thread_owns_mount_topology_guard() -> bool {
         MOUNT_TOPOLOGY_MUTATION.is_owned_by_current()
+    }
+
+    fn test_root(fs: &Filesystem) -> Arc<Mountpoint> {
+        Mountpoint::new_root(fs).expect("test root mount")
+    }
+
+    fn test_mount_with_root(
+        root: DirEntry,
+        location_in_parent: Option<Location>,
+        device: u64,
+    ) -> Arc<Mountpoint> {
+        Mountpoint::new_with_root(root, location_in_parent, device).expect("test child mount")
     }
 
     impl FilesystemOps for MockFs {
@@ -1885,7 +1927,7 @@ mod tests {
 
     #[test]
     fn mount_invokes_filesystem_callbacks_outside_topology_guard() {
-        let root = Mountpoint::new_root(&mock_filesystem());
+        let root = test_root(&mock_filesystem());
         let root_location = root.root_location();
         let target_entry =
             make_child_dir_entry(Some(root_location.entry().clone()), "mount-target");
@@ -1966,11 +2008,11 @@ mod tests {
     #[test]
     fn unmount_replans_after_unrelated_topology_change_during_flush() {
         let parent_fs = mock_filesystem();
-        let parent = Mountpoint::new_root(&parent_fs);
+        let parent = test_root(&parent_fs);
         let parent_root = parent.root_location();
         let target_entry = make_child_dir_entry(Some(parent_root.entry().clone()), "mount-target");
         let target = Location::new(parent.clone(), target_entry.clone());
-        let unrelated_mount = Mountpoint::new_root(&parent_fs);
+        let unrelated_mount = test_root(&parent_fs);
         let filesystem_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
             self_ref: self_ref.clone(),
             topology_change: Box::new(move || unrelated_mount.set_shared()),
@@ -1992,7 +2034,7 @@ mod tests {
     #[test]
     fn flush_failure_retains_normal_unmount_and_lifetime_guard() {
         let parent_fs = mock_filesystem();
-        let parent = Mountpoint::new_root(&parent_fs);
+        let parent = test_root(&parent_fs);
         let parent_root = parent.root_location();
         let target_entry = make_child_dir_entry(Some(parent_root.entry().clone()), "mount-target");
         let target = Location::new(parent.clone(), target_entry.clone());
@@ -2033,8 +2075,8 @@ mod tests {
     #[test]
     fn unmount_rejects_a_replan_that_adds_an_unflushed_peer() {
         let parent_fs = mock_filesystem();
-        let source_parent = Mountpoint::new_root(&parent_fs);
-        let peer_parent = Mountpoint::new_root(&parent_fs);
+        let source_parent = test_root(&parent_fs);
+        let peer_parent = test_root(&parent_fs);
         source_parent.set_shared();
 
         let source_parent_root = source_parent.root_location();
@@ -2096,7 +2138,7 @@ mod tests {
     #[test]
     fn unmount_all_on_root_returns_invalid_input() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         assert!(matches!(
             root.root_location().unmount_all(),
             Err(VfsError::InvalidInput)
@@ -2106,7 +2148,8 @@ mod tests {
     #[test]
     fn bind_and_namespace_clone_preserve_mount_source() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root_with_source(&fs, "/dev/vda");
+        let root =
+            Mountpoint::new_root_with_source(&fs, "/dev/vda").expect("test sourced root mount");
         let root_loc = root.root_location();
         let bind_target = Location::new(
             root.clone(),
@@ -2123,7 +2166,7 @@ mod tests {
     #[test]
     fn recursive_bind_clones_only_mounts_below_source() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let root_loc = root.root_location();
         let source_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "source");
         let source = Location::new(root.clone(), source_entry.clone());
@@ -2149,7 +2192,7 @@ mod tests {
     #[test]
     fn location_descendant_checks_resolved_parent_chain() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let root_loc = root.root_location();
         let child_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "child");
         let sibling_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "sibling");
@@ -2165,12 +2208,12 @@ mod tests {
     #[test]
     fn location_descendant_crosses_mount_boundary_and_stops_at_root() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let root_loc = root.root_location();
         let mount_target_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "mounted");
         let mount_target = Location::new(root.clone(), mount_target_entry);
         let mounted_root_entry = make_dir_entry("mounted-root");
-        let mounted = Mountpoint::new_with_root(
+        let mounted = test_mount_with_root(
             mounted_root_entry.clone(),
             Some(mount_target),
             root.device() + 1,
@@ -2186,12 +2229,12 @@ mod tests {
     #[test]
     fn pivot_mount_reparents_old_root_below_put_old() {
         let fs = mock_filesystem();
-        let old_root = Mountpoint::new_root(&fs);
+        let old_root = test_root(&fs);
         let old_root_loc = old_root.root_location();
         let new_root_target_entry = make_child_dir_entry(Some(old_root_loc.entry().clone()), "new");
         let new_root_target = Location::new(old_root.clone(), new_root_target_entry.clone());
         let new_root_entry = make_dir_entry("new-root");
-        let new_root = Mountpoint::new_with_root(
+        let new_root = test_mount_with_root(
             new_root_entry.clone(),
             Some(new_root_target),
             old_root.device() + 1,
@@ -2232,14 +2275,14 @@ mod tests {
     #[test]
     fn pivot_mount_detaches_new_root_from_its_immediate_parent() {
         let fs = mock_filesystem();
-        let old_root = Mountpoint::new_root(&fs);
+        let old_root = test_root(&fs);
         let old_root_loc = old_root.root_location();
         let intermediate_target_entry =
             make_child_dir_entry(Some(old_root_loc.entry().clone()), "intermediate");
         let intermediate_target =
             Location::new(old_root.clone(), intermediate_target_entry.clone());
         let intermediate_entry = make_dir_entry("intermediate-root");
-        let intermediate = Mountpoint::new_with_root(
+        let intermediate = test_mount_with_root(
             intermediate_entry.clone(),
             Some(intermediate_target),
             old_root.device() + 1,
@@ -2247,7 +2290,7 @@ mod tests {
         let new_root_target_entry = make_child_dir_entry(Some(intermediate_entry), "new-root");
         let new_root_target = Location::new(intermediate.clone(), new_root_target_entry.clone());
         let new_root_entry = make_dir_entry("new-root");
-        let new_root = Mountpoint::new_with_root(
+        let new_root = test_mount_with_root(
             new_root_entry.clone(),
             Some(new_root_target),
             old_root.device() + 2,
@@ -2286,7 +2329,7 @@ mod tests {
     #[test]
     fn walk_tree_root_only() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let result = root.walk_tree();
         assert_eq!(result.len(), 1);
         let (mount_id, parent_id, mp) = &result[0];
@@ -2298,24 +2341,24 @@ mod tests {
     #[test]
     fn walk_tree_root_two_children_one_grandchild() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let root_id = root.mount_id();
 
         let child1_entry = make_dir_entry("child1");
         let child2_entry = make_dir_entry("child2");
         let grandchild_entry = make_dir_entry("grandchild");
 
-        let child1 = Mountpoint::new_with_root(
+        let child1 = test_mount_with_root(
             child1_entry.clone(),
             Some(root.root_location()),
             root.device() + 1,
         );
-        let child2 = Mountpoint::new_with_root(
+        let child2 = test_mount_with_root(
             child2_entry.clone(),
             Some(root.root_location()),
             root.device() + 2,
         );
-        let grandchild = Mountpoint::new_with_root(
+        let grandchild = test_mount_with_root(
             grandchild_entry.clone(),
             Some(child1.root_location()),
             root.device() + 3,
@@ -2361,17 +2404,17 @@ mod tests {
     #[test]
     fn detaching_shared_mount_preserves_unrelated_peer() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
 
         let shared_entry = make_dir_entry("shared");
         let peer_entry = make_dir_entry("peer");
 
-        let shared = Mountpoint::new_with_root(
+        let shared = test_mount_with_root(
             shared_entry.clone(),
             Some(Location::new(root.clone(), shared_entry.clone())),
             root.device() + 1,
         );
-        let peer = Mountpoint::new_with_root(
+        let peer = test_mount_with_root(
             peer_entry.clone(),
             Some(Location::new(root.clone(), peer_entry.clone())),
             root.device() + 2,
@@ -2403,17 +2446,17 @@ mod tests {
     #[test]
     fn detach_private_mount_does_not_propagate() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
 
         let private_entry = make_dir_entry("private");
         let neighbor_entry = make_dir_entry("neighbor");
 
-        let private = Mountpoint::new_with_root(
+        let private = test_mount_with_root(
             private_entry.clone(),
             Some(Location::new(root.clone(), private_entry.clone())),
             root.device() + 1,
         );
-        let neighbor = Mountpoint::new_with_root(
+        let neighbor = test_mount_with_root(
             neighbor_entry.clone(),
             Some(Location::new(root.clone(), neighbor_entry.clone())),
             root.device() + 2,
@@ -2441,9 +2484,9 @@ mod tests {
     #[test]
     fn detach_releases_lifetime_guard_before_mountpoint_drop() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let entry = make_dir_entry("guarded");
-        let mountpoint = Mountpoint::new_with_root(
+        let mountpoint = test_mount_with_root(
             entry.clone(),
             Some(Location::new(root.clone(), entry.clone())),
             root.device() + 1,
@@ -2462,7 +2505,7 @@ mod tests {
     #[test]
     fn clone_tree_reconnects_shared_clone_to_source_peer_group() {
         let fs = mock_filesystem();
-        let source = Mountpoint::new_root(&fs);
+        let source = test_root(&fs);
         source.set_shared();
 
         let cloned = source.clone_tree();
@@ -2492,8 +2535,8 @@ mod tests {
     #[test]
     fn clone_tree_rebuilds_slave_master_directionality() {
         let fs = mock_filesystem();
-        let master = Mountpoint::new_root(&fs);
-        let slave = Mountpoint::new_root(&fs);
+        let master = test_root(&fs);
+        let slave = test_root(&fs);
         master.set_shared();
         slave.join_shared_group(&master);
         slave.set_slave();
@@ -2519,8 +2562,8 @@ mod tests {
     #[test]
     fn cloned_relations_do_not_depend_on_slave_master_rebuild_order() {
         let fs = mock_filesystem();
-        let master = Mountpoint::new_root(&fs);
-        let slave = Mountpoint::new_root(&fs);
+        let master = test_root(&fs);
+        let slave = test_root(&fs);
         master.set_shared();
         slave.join_shared_group(&master);
         slave.set_slave();
@@ -2555,15 +2598,15 @@ mod tests {
     #[test]
     fn recursive_propagation_change_reaches_every_descendant() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let child_entry = make_dir_entry("child");
-        let child = Mountpoint::new_with_root(
+        let child = test_mount_with_root(
             child_entry.clone(),
             Some(Location::new(root.clone(), child_entry.clone())),
             root.device() + 1,
         );
         let grandchild_entry = make_dir_entry("grandchild");
-        let grandchild = Mountpoint::new_with_root(
+        let grandchild = test_mount_with_root(
             grandchild_entry.clone(),
             Some(Location::new(child.clone(), grandchild_entry.clone())),
             root.device() + 2,
@@ -2600,9 +2643,9 @@ mod tests {
     #[test]
     fn recursive_private_change_removes_descendant_relations_symmetrically() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let child_entry = make_dir_entry("child");
-        let child = Mountpoint::new_with_root(
+        let child = test_mount_with_root(
             child_entry.clone(),
             Some(Location::new(root.clone(), child_entry.clone())),
             root.device() + 1,
@@ -2611,11 +2654,11 @@ mod tests {
             .lock()
             .insert(child_entry.key(), child.clone());
 
-        let root_peer = Mountpoint::new_root(&fs);
+        let root_peer = test_root(&fs);
         root.set_shared();
         root_peer.join_shared_group(&root);
 
-        let child_master = Mountpoint::new_root(&fs);
+        let child_master = test_root(&fs);
         child_master.set_shared();
         child.join_shared_group(&child_master);
         child.set_slave();
@@ -2633,13 +2676,13 @@ mod tests {
     #[test]
     fn propagated_child_has_destination_specific_mount_identity() {
         let fs = mock_filesystem();
-        let source_parent = Mountpoint::new_root(&fs);
-        let peer_parent = Mountpoint::new_root(&fs);
+        let source_parent = test_root(&fs);
+        let peer_parent = test_root(&fs);
         source_parent.set_shared();
         peer_parent.join_shared_group(&source_parent);
 
         let source_location = source_parent.root_location();
-        let child = Mountpoint::new_with_root(
+        let child = test_mount_with_root(
             make_dir_entry("child-root"),
             Some(source_location.clone()),
             source_parent.device() + 1,
@@ -2671,9 +2714,9 @@ mod tests {
     #[test]
     fn propagate_new_child_reaches_slave_of_slave() {
         let fs = mock_filesystem();
-        let source_parent = Mountpoint::new_root(&fs);
-        let middle_parent = Mountpoint::new_root(&fs);
-        let leaf_parent = Mountpoint::new_root(&fs);
+        let source_parent = test_root(&fs);
+        let middle_parent = test_root(&fs);
+        let leaf_parent = test_root(&fs);
 
         source_parent.set_shared();
         middle_parent.join_shared_group(&source_parent);
@@ -2682,7 +2725,7 @@ mod tests {
         leaf_parent.set_slave();
 
         let source_location = source_parent.root_location();
-        let child = Mountpoint::new_with_root(
+        let child = test_mount_with_root(
             make_dir_entry("child-root"),
             Some(source_location.clone()),
             source_parent.device() + 1,
@@ -2723,8 +2766,8 @@ mod tests {
     #[test]
     fn propagation_change_removes_master_slave_edges_symmetrically() {
         let fs = mock_filesystem();
-        let master = Mountpoint::new_root(&fs);
-        let slave = Mountpoint::new_root(&fs);
+        let master = test_root(&fs);
+        let slave = test_root(&fs);
         master.set_shared();
         slave.join_shared_group(&master);
         slave.set_slave();
@@ -2739,10 +2782,10 @@ mod tests {
     #[test]
     fn detaching_slave_removes_master_slave_edges_symmetrically() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
-        let master = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
+        let master = test_root(&fs);
         let slave_entry = make_dir_entry("slave");
-        let slave = Mountpoint::new_with_root(
+        let slave = test_mount_with_root(
             slave_entry.clone(),
             Some(Location::new(root.clone(), slave_entry.clone())),
             root.device() + 1,
@@ -2763,20 +2806,20 @@ mod tests {
     #[test]
     fn propagated_detach_includes_downstream_slaves() {
         let fs = mock_filesystem();
-        let source_parent = Mountpoint::new_root(&fs);
-        let slave_parent = Mountpoint::new_root(&fs);
+        let source_parent = test_root(&fs);
+        let slave_parent = test_root(&fs);
         source_parent.set_shared();
         slave_parent.join_shared_group(&source_parent);
         slave_parent.set_slave();
 
         let source_slot = make_child_dir_entry(Some(source_parent.root.clone()), "slot");
         let slave_slot = make_child_dir_entry(Some(slave_parent.root.clone()), "slot");
-        let source_child = Mountpoint::new_with_root(
+        let source_child = test_mount_with_root(
             make_dir_entry("source-child"),
             Some(Location::new(source_parent.clone(), source_slot.clone())),
             source_parent.device() + 1,
         );
-        let slave_child = Mountpoint::new_with_root(
+        let slave_child = test_mount_with_root(
             make_dir_entry("slave-child"),
             Some(Location::new(slave_parent.clone(), slave_slot.clone())),
             source_parent.device() + 2,
@@ -2801,19 +2844,19 @@ mod tests {
     #[test]
     fn propagated_detach_is_all_or_nothing_when_a_target_cannot_detach() {
         let fs = mock_filesystem();
-        let source_parent = Mountpoint::new_root(&fs);
-        let peer_parent = Mountpoint::new_root(&fs);
+        let source_parent = test_root(&fs);
+        let peer_parent = test_root(&fs);
         source_parent.set_shared();
         peer_parent.join_shared_group(&source_parent);
 
         let source_slot = make_child_dir_entry(Some(source_parent.root.clone()), "slot");
         let peer_slot = make_child_dir_entry(Some(peer_parent.root.clone()), "slot");
-        let source_child = Mountpoint::new_with_root(
+        let source_child = test_mount_with_root(
             make_dir_entry("source-child"),
             Some(Location::new(source_parent.clone(), source_slot.clone())),
             source_parent.device() + 1,
         );
-        let peer_child = Mountpoint::new_with_root(
+        let peer_child = test_mount_with_root(
             make_dir_entry("peer-child"),
             Some(Location::new(peer_parent.clone(), peer_slot.clone())),
             source_parent.device() + 2,
@@ -2830,7 +2873,7 @@ mod tests {
         let plan = source_child
             .plan_unmount(UnmountKind::Detach)
             .expect("plan succeeds");
-        let unrelated = Mountpoint::new_root(&fs);
+        let unrelated = test_root(&fs);
         unrelated.set_shared();
 
         assert_eq!(plan.commit(), Err(UnmountCommitError::TopologyChanged));
@@ -2848,19 +2891,19 @@ mod tests {
     #[test]
     fn normal_unmount_plan_rejects_corresponding_child_subtree_without_mutation() {
         let fs = mock_filesystem();
-        let source_parent = Mountpoint::new_root(&fs);
-        let peer_parent = Mountpoint::new_root(&fs);
+        let source_parent = test_root(&fs);
+        let peer_parent = test_root(&fs);
         source_parent.set_shared();
         peer_parent.join_shared_group(&source_parent);
 
         let source_slot = make_child_dir_entry(Some(source_parent.root.clone()), "slot");
         let peer_slot = make_child_dir_entry(Some(peer_parent.root.clone()), "slot");
-        let source = Mountpoint::new_with_root(
+        let source = test_mount_with_root(
             make_dir_entry("source-root"),
             Some(Location::new(source_parent.clone(), source_slot.clone())),
             source_parent.device() + 1,
         );
-        let peer = Mountpoint::new_with_root(
+        let peer = test_mount_with_root(
             make_dir_entry("peer-root"),
             Some(Location::new(peer_parent.clone(), peer_slot.clone())),
             source_parent.device() + 2,
@@ -2875,7 +2918,7 @@ mod tests {
             .insert(peer_slot.key(), peer.clone());
 
         let child_entry = make_dir_entry("child");
-        let child = Mountpoint::new_with_root(
+        let child = test_mount_with_root(
             make_dir_entry("child-root"),
             Some(Location::new(peer.clone(), child_entry.clone())),
             source_parent.device() + 3,
@@ -2913,19 +2956,19 @@ mod tests {
     #[test]
     fn lazy_detach_removes_complete_propagated_subtrees_child_first() {
         let fs = mock_filesystem();
-        let source_parent = Mountpoint::new_root(&fs);
-        let peer_parent = Mountpoint::new_root(&fs);
+        let source_parent = test_root(&fs);
+        let peer_parent = test_root(&fs);
         source_parent.set_shared();
         peer_parent.join_shared_group(&source_parent);
 
         let source_entry = make_child_dir_entry(Some(source_parent.root.clone()), "slot");
         let peer_entry = make_child_dir_entry(Some(peer_parent.root.clone()), "slot");
-        let source = Mountpoint::new_with_root(
+        let source = test_mount_with_root(
             make_dir_entry("source-root"),
             Some(Location::new(source_parent.clone(), source_entry.clone())),
             source_parent.device() + 1,
         );
-        let peer = Mountpoint::new_with_root(
+        let peer = test_mount_with_root(
             make_dir_entry("peer-root"),
             Some(Location::new(peer_parent.clone(), peer_entry.clone())),
             source_parent.device() + 2,
@@ -2941,12 +2984,12 @@ mod tests {
 
         let source_child_entry = make_dir_entry("source-child");
         let peer_child_entry = make_dir_entry("peer-child");
-        let source_child = Mountpoint::new_with_root(
+        let source_child = test_mount_with_root(
             make_dir_entry("source-child-root"),
             Some(Location::new(source.clone(), source_child_entry.clone())),
             source_parent.device() + 3,
         );
-        let peer_child = Mountpoint::new_with_root(
+        let peer_child = test_mount_with_root(
             make_dir_entry("peer-child-root"),
             Some(Location::new(peer.clone(), peer_child_entry.clone())),
             source_parent.device() + 4,
@@ -2973,9 +3016,9 @@ mod tests {
     #[test]
     fn stale_unmount_plan_reports_topology_change_without_detaching() {
         let fs = mock_filesystem();
-        let root = Mountpoint::new_root(&fs);
+        let root = test_root(&fs);
         let source_entry = make_dir_entry("source");
-        let source = Mountpoint::new_with_root(
+        let source = test_mount_with_root(
             make_dir_entry("source-root"),
             Some(Location::new(root.clone(), source_entry.clone())),
             root.device() + 1,
@@ -2987,7 +3030,7 @@ mod tests {
         let plan = source
             .plan_unmount(UnmountKind::Normal)
             .expect("plan succeeds");
-        let unrelated = Mountpoint::new_root(&fs);
+        let unrelated = test_root(&fs);
         unrelated.set_shared();
 
         assert_eq!(plan.commit(), Err(UnmountCommitError::TopologyChanged));
@@ -3003,12 +3046,12 @@ mod tests {
     #[test]
     fn joining_shared_group_prunes_dead_and_duplicate_peer_edges() {
         let fs = mock_filesystem();
-        let source = Mountpoint::new_root(&fs);
-        let peer = Mountpoint::new_root(&fs);
+        let source = test_root(&fs);
+        let peer = test_root(&fs);
         source.set_shared();
         peer.join_shared_group(&source);
 
-        let dead = Arc::downgrade(&Mountpoint::new_root(&fs));
+        let dead = Arc::downgrade(&test_root(&fs));
         source.peers.lock().push(dead);
         source.peers.lock().push(Arc::downgrade(&peer));
         peer.join_shared_group(&source);

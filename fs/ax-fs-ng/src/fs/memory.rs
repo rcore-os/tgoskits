@@ -246,16 +246,16 @@ impl MemoryFs {
 }
 
 impl FilesystemOps for MemoryFs {
-    fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
+    fn mount_lease(&self) -> VfsResult<Option<Arc<dyn FilesystemMountLease>>> {
         let mut installed = self.mount_lease.lock_irqsave();
         if let Some(lease) = installed.upgrade() {
-            return Some(lease);
+            return Ok(Some(lease));
         }
         let lease = Arc::new(MemoryMountLease {
             filesystem: self.self_ref.upgrade().expect("live memory filesystem"),
         });
         *installed = Arc::downgrade(&lease);
-        Some(lease)
+        Ok(Some(lease))
     }
 
     fn name(&self) -> &str {

@@ -17,7 +17,9 @@ fn directory(parent: &Location, name: &str) -> Location {
 }
 
 fn mounted_tree() -> (Location, Arc<Mountpoint>) {
-    let root = Mountpoint::new_root(&MemoryFs::new()).root_location();
+    let root = Mountpoint::new_root(&MemoryFs::new())
+        .expect("mount test root")
+        .root_location();
     let mounted = directory(&root, "mnt")
         .mount(&MemoryFs::new())
         .expect("mount tmpfs");
@@ -33,7 +35,7 @@ fn admitted_unmount_survives_unrelated_namespace_clone() {
 
     // Reproduce the exact plan/commit interleaving without scheduling luck.
     // This is a separate tree with no propagation relationship to the target.
-    let unrelated = Mountpoint::new_root(&MemoryFs::new());
+    let unrelated = Mountpoint::new_root(&MemoryFs::new()).expect("unrelated mount test root");
     let cloned_namespace = unrelated.clone_tree();
     mounted
         .root_location()

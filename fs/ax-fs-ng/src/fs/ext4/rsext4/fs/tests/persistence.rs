@@ -107,7 +107,9 @@ fn mount_background(
         filesystem.self_ref = weak.clone();
         filesystem
     });
-    let root = Mountpoint::new_root(&Filesystem::new(filesystem.clone())).root_location();
+    let root = Mountpoint::new_root(&Filesystem::new(filesystem.clone()))
+        .expect("mount persistence test filesystem")
+        .root_location();
     (filesystem, root)
 }
 
@@ -128,8 +130,16 @@ fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
             BlockRegion::from_num_blocks((TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64),
         )
         .unwrap();
-        let target = FsContext::new(Mountpoint::new_root(&filesystem).root_location());
-        let source = FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location());
+        let target = FsContext::new(
+            Mountpoint::new_root(&filesystem)
+                .expect("mount persistence target")
+                .root_location(),
+        );
+        let source = FsContext::new(
+            Mountpoint::new_root(&MemoryFs::new())
+                .expect("mount persistence source")
+                .root_location(),
+        );
         for context in [&source, &target] {
             for path in ["/guest", "/guest/builtin"] {
                 context

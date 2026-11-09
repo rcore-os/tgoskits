@@ -540,7 +540,7 @@ fn prepare_root(
         }
     };
     let context = crate::highlevel::FsContext::new(
-        axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source)
+        axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source)?
             .root_location(),
     );
     if action == RootAction::MountReadOnly {
@@ -664,7 +664,9 @@ fn should_use_memory_root(
 /// filesystem.  A real initramfs remains the memory root when it contains
 /// any startup or userspace entry.
 fn memory_contains_only_kernel_map(memory: &axfs_ng_vfs::Filesystem) -> bool {
-    let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
+    let root = axfs_ng_vfs::Mountpoint::new_root(memory)
+        .expect("memory root must be mountable")
+        .root_location();
     let context = crate::highlevel::FsContext::new(root);
     let has_map = context.resolve("/symbols/kernel.axbt").is_ok()
         || context.resolve("/boot/symbols/kernel.axbt").is_ok();
@@ -683,7 +685,9 @@ fn memory_init_accessible(memory: &axfs_ng_vfs::Filesystem, path: &str) -> bool 
     if !path.starts_with('/') {
         return false;
     }
-    let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
+    let root = axfs_ng_vfs::Mountpoint::new_root(memory)
+        .expect("memory root must be mountable")
+        .root_location();
     let context = crate::highlevel::FsContext::new(root);
     context.resolve(path).is_ok()
 }
@@ -1738,7 +1742,9 @@ mod tests {
         crate::os::memory::test_support::with_test_page_provider(true, |_| {
             let fs = crate::MemoryFs::new_ramfs();
             let context = crate::highlevel::FsContext::new(
-                axfs_ng_vfs::Mountpoint::new_root(&fs).root_location(),
+                axfs_ng_vfs::Mountpoint::new_root(&fs)
+                    .expect("initramfs test root")
+                    .root_location(),
             );
             context
                 .create_node(
@@ -1765,7 +1771,9 @@ mod tests {
 
             let map_fs = crate::MemoryFs::new_ramfs();
             let map_context = crate::highlevel::FsContext::new(
-                axfs_ng_vfs::Mountpoint::new_root(&map_fs).root_location(),
+                axfs_ng_vfs::Mountpoint::new_root(&map_fs)
+                    .expect("map filesystem test root")
+                    .root_location(),
             );
             map_context
                 .create_node(
@@ -2547,7 +2555,9 @@ mod tests {
     #[test]
     fn readonly_root_uses_transient_mountpoint_for_missing_auto_mount_dir() {
         let root_fs = Filesystem::new(ReadonlyFs::new(None));
-        let root = axfs_ng_vfs::Mountpoint::new_root(&root_fs).root_location();
+        let root = axfs_ng_vfs::Mountpoint::new_root(&root_fs)
+            .expect("readonly root")
+            .root_location();
 
         assert_eq!(
             root.create(
@@ -2570,7 +2580,9 @@ mod tests {
     #[test]
     fn readonly_root_shadows_bad_mountpoint_type_for_auto_mount_dir() {
         let root_fs = Filesystem::new(ReadonlyFs::new(Some(NodeType::RegularFile)));
-        let root = axfs_ng_vfs::Mountpoint::new_root(&root_fs).root_location();
+        let root = axfs_ng_vfs::Mountpoint::new_root(&root_fs)
+            .expect("readonly root")
+            .root_location();
 
         assert_eq!(
             root.lookup_no_follow("userdata").unwrap().node_type(),

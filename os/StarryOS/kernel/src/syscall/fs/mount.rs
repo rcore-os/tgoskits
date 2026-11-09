@@ -456,7 +456,7 @@ pub fn sys_fsmount(
         .ok_or(StarryError::InvalidInput)?
         .clone();
     let mountpoint =
-        Mountpoint::new_root_with_source(&filesystem, state.source.as_deref().unwrap_or("none"));
+        Mountpoint::new_root_with_source(&filesystem, state.source.as_deref().unwrap_or("none"))?;
     let root = mountpoint.root_location();
     if context.kind != MountContextKind::DevPts {
         root.update_metadata(MetadataUpdate {
@@ -930,7 +930,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     // only when the filesystem itself - including a lazily detached one with
     // open files - is dropped. No filesystem-context lock is held during
     // superblock or backing-file I/O.
-    let fs = loop_device.mounted_filesystem(readonly, move || {
+    let (fs, filesystem_lease) = loop_device.mounted_filesystem(readonly, move || {
         // Claim the holder only when a new filesystem instance is needed. A
         // reused filesystem already owns its lease.
         loop_device.acquire_mount_holder()?;
@@ -952,6 +952,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     let mount = target_location.mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly());
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+    drop(filesystem_lease);
     Ok(())
 }
 

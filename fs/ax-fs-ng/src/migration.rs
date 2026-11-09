@@ -570,7 +570,11 @@ mod tests {
     use crate::MemoryFs;
 
     fn context() -> FsContext {
-        FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location())
+        FsContext::new(
+            Mountpoint::new_root(&MemoryFs::new())
+                .expect("migration test root")
+                .root_location(),
+        )
     }
 
     #[test]

@@ -127,8 +127,9 @@ where
             .publish()
     }
 
-    /// Selects read-only replay before mounting when the on-disk filesystem
-    /// has recorded errors; otherwise performs one read-write mount attempt.
+    /// Selects read-only replay before mounting when the device is read-only or
+    /// the on-disk filesystem has recorded errors; otherwise performs one
+    /// read-write mount attempt.
     ///
     /// A failed mount is never retried through the same journal/cache owner.
     /// Replay may already have updated home blocks or latched an abort, so a

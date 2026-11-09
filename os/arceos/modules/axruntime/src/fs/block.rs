@@ -326,7 +326,11 @@ pub(super) fn init(bootargs: Option<&str>) {
         // the target-side map into an owned allocation before releasing them so
         // panic paths never borrow initramfs memory.  Missing maps are expected
         // for early or address-only builds and retain the raw fallback.
-        let context = ax_fs_ng::vfs::FsContext::new(Mountpoint::new_root(&fs).root_location());
+        let context = ax_fs_ng::vfs::FsContext::new(
+            Mountpoint::new_root(&fs)
+                .expect("host initramfs root")
+                .root_location(),
+        );
         for path in ["/symbols/kernel.axbt", "/boot/symbols/kernel.axbt"] {
             match context.read(path) {
                 Ok(bytes) => {

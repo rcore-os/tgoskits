@@ -283,9 +283,7 @@ impl CowBackend {
             owner.get_or_insert_with(|| domain.clone()).clone()
         };
         let epoch = cache.mapping_epoch();
-        let pin = {
-            cache.pin_read_page(number)?
-        };
+        let pin = { cache.pin_read_page(number)? };
         let Some(pin) = pin else {
             return Ok(None);
         };
@@ -632,9 +630,7 @@ impl CowBackend {
         if size < PAGE_SIZE_4K || !size.is_power_of_two() {
             return Err(StarryError::InvalidInput);
         }
-        let frame = {
-            alloc_frame(zeroed, size)?
-        };
+        let frame = { alloc_frame(zeroed, size)? };
         // SAFETY: alloc_frame returned this unique allocation with the same
         // size, and the lease takes over its only release duty.
         self.index_new_frame(unsafe { FrameLease::owned(frame, size) }, resident_kind)
@@ -712,9 +708,7 @@ impl CowBackend {
         if leaf_size < PAGE_SIZE_4K || !leaf_size.is_power_of_two() {
             return Err(StarryError::InvalidInput);
         }
-        let frame = {
-            alloc_frame(false, leaf_size)?
-        };
+        let frame = { alloc_frame(false, leaf_size)? };
         // SAFETY: this unique allocation is not indexed or mapped. The lease
         // releases it on every error before an initialized PageObject exists.
         let lease = unsafe { FrameLease::owned(frame, leaf_size) };
@@ -3555,9 +3549,11 @@ mod tests {
             0,
             0,
         );
-        let cache =
-            CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry))
-                .unwrap();
+        let cache = CachedFile::get_or_create(Location::new(
+            Mountpoint::new_root(&filesystem).expect("private cache test root"),
+            entry,
+        ))
+        .unwrap();
         let contents = alloc::vec![0x41; PAGE_SIZE_4K * 2 + 17];
         cache.write_at(contents.as_slice(), 0).unwrap();
         let start = VirtAddr::from_usize(0x4a00_0000);
@@ -3718,9 +3714,11 @@ mod tests {
             0,
             0,
         );
-        let cache =
-            CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry))
-                .unwrap();
+        let cache = CachedFile::get_or_create(Location::new(
+            Mountpoint::new_root(&filesystem).expect("private file test root"),
+            entry,
+        ))
+        .unwrap();
         let contents: alloc::vec::Vec<u8> = (0..256).map(|byte| (byte % 251 + 1) as u8).collect();
         assert_eq!(
             cache.write_at(contents.as_slice(), 0).unwrap(),

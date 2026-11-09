@@ -6,11 +6,13 @@
 //! and release the backing device instead of waiting for the filesystem drop.
 
 use core::sync::atomic::AtomicBool;
+use std::sync::Barrier;
 
 use axfs_ng_vfs::{DirEntry, Filesystem, Location, Mountpoint, NodePermission, NodeType, VfsError};
 
 use super::*;
 use crate::{
+    MemoryFs,
     file::{CachedFile, FileBackend},
     os::memory::test_support::with_test_page_provider,
     vfs::new_filesystem_from_file,
@@ -143,7 +145,7 @@ impl LoopImageFixture {
         let backing_storage = format_storage(BACKING_DEVICE_BYTES);
         let access = DeviceAccess::default();
         let backing = mount_counting_backing(backing_storage, access.clone());
-        let backing_mount = Mountpoint::new_root(&backing);
+        let backing_mount = Mountpoint::new_root(&backing).expect("mount backing filesystem");
         let backing_root = backing_mount.root_location();
         let image = backing_root
             .create(
@@ -180,7 +182,7 @@ impl LoopImageFixture {
         )
         .expect("mount ext4 from the file image");
 
-        let mount = Mountpoint::new_root(&filesystem);
+        let mount = Mountpoint::new_root(&filesystem).expect("mount loop image filesystem");
         let root = mount.root_location();
         let held = root
             .create(
@@ -278,8 +280,32 @@ fn mount_counting_backing(storage: Arc<StdMutex<Vec<u8>>>, access: DeviceAccess)
 }
 
 #[test]
-fn final_mount_retirement_releases_the_backing_guard_before_cached_inode_drops() {
+fn mount_with_source_rejects_filesystem_retired_after_barrier_interleaving() {
     with_test_page_provider(true, |_| {
+        let fixture = LoopImageFixture::mount();
+        let stalled_filesystem = fixture.filesystem.clone();
+        let anchor_filesystem = MemoryFs::new();
+        let anchor_mount =
+            Mountpoint::new_root(&anchor_filesystem).expect("mount anchor filesystem");
+        let anchor_root = anchor_mount.root_location();
+        let source = anchor_root
+            .create(
+                "source",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .expect("create source mount target");
+        let target = anchor_root
+            .create("late", NodeType::Directory, NodePermission::default(), 0, 0)
+            .expect("create mount target");
+        let original_mount = source
+            .mount_with_source(&fixture.filesystem, "source")
+            .expect("establish the original mount through VFS");
+        assert!(original_mount.root_location().is_root_of_mount());
+        assert!(!target.is_root_of_mount());
+
         let LoopImageFixture {
             filesystem,
             mount,
@@ -289,100 +315,113 @@ fn final_mount_retirement_releases_the_backing_guard_before_cached_inode_drops()
             retained,
             guard_drops,
             access,
-        } = LoopImageFixture::mount();
-
+        } = fixture;
         drop(cached);
         drop(held);
         drop(root);
         drop(mount);
 
-        // Stable red signal for the old implementation: only the filesystem
-        // drop released the image-device lease, and `retained` still holds it.
-        assert_eq!(
-            guard_drops.load(Ordering::SeqCst),
-            1,
-            "the final mount lease must release the file backing guard"
-        );
+        let raw_filesystem_acquired = Arc::new(Barrier::new(2));
+        let original_mount_retired = Arc::new(Barrier::new(2));
+        std::thread::scope(|scope| {
+            let stalled_mount = scope.spawn({
+                let raw_filesystem_acquired = Arc::clone(&raw_filesystem_acquired);
+                let original_mount_retired = Arc::clone(&original_mount_retired);
+                move || {
+                    // Hold only the raw Filesystem handle here. The lease is
+                    // acquired later, when VFS publishes the new mount.
+                    let filesystem = stalled_filesystem;
+                    raw_filesystem_acquired.wait();
+                    original_mount_retired.wait();
+                    target.mount_with_source(&filesystem, "late")
+                }
+            });
 
-        let reads = access.reads.load(Ordering::SeqCst);
-        let writes = access.writes.load(Ordering::SeqCst);
-        let flushes = access.flushes.load(Ordering::SeqCst);
+            raw_filesystem_acquired.wait();
+            let original_unmount = original_mount.root_location().unmount();
+            drop(original_mount);
+            drop(filesystem);
+            let drops_after_retirement = guard_drops.load(Ordering::SeqCst);
 
-        let file = retained.as_file().expect("regular retained file");
-        let mut late = [0; 6];
-        assert_eq!(
-            file.read_at(&mut late, 0),
-            Err(VfsError::ResourceBusy),
-            "a retired filesystem must reject reads"
-        );
-        assert_eq!(
-            file.write_at(b"late!!".as_slice(), 0),
-            Err(VfsError::ResourceBusy),
-            "a retired filesystem must reject writes"
-        );
-        assert_eq!(
-            retained.sync(false),
-            Err(VfsError::ResourceBusy),
-            "a retired filesystem must reject flushes"
-        );
-        // Retaining the original Filesystem handle must not make the retired
-        // instance mountable again. A fresh Mountpoint receives no lifetime
-        // lease, and every path into the filesystem is still rejected by the
-        // closed admission gate before it can reach the released device.
-        let late_mount = Mountpoint::new_root(&filesystem);
-        let late_root = late_mount.root_location();
-        assert!(
-            late_root.filesystem().mount_lease().is_none(),
-            "a retired filesystem must not publish another lifetime lease"
-        );
-        assert_eq!(
-            late_root.lookup_no_follow("held").unwrap_err(),
-            VfsError::ResourceBusy,
-            "a retired filesystem must reject a new location"
-        );
-        assert_eq!(
-            late_root
-                .create(
-                    "late",
-                    NodeType::RegularFile,
-                    NodePermission::default(),
-                    0,
-                    0,
-                )
-                .unwrap_err(),
-            VfsError::ResourceBusy,
-            "a retired filesystem must reject a new file"
-        );
-        assert_eq!(
-            access.reads.load(Ordering::SeqCst),
-            reads,
-            "a retired filesystem read the released backing device"
-        );
-        assert_eq!(
-            access.writes.load(Ordering::SeqCst),
-            writes,
-            "a retired filesystem wrote the released backing device"
-        );
-        assert_eq!(
-            access.flushes.load(Ordering::SeqCst),
-            flushes,
-            "a retired filesystem flushed the released backing device"
-        );
-        drop(late_root);
-        drop(late_mount);
-        drop(filesystem);
-        assert_eq!(
-            guard_drops.load(Ordering::SeqCst),
-            1,
-            "a retained filesystem handle must not release the guard again"
-        );
+            original_mount_retired.wait();
+            let late_mount = stalled_mount
+                .join()
+                .expect("stalled mount thread must not panic");
+            assert_eq!(
+                original_unmount,
+                Ok(()),
+                "the last original VFS mount must unmount cleanly"
+            );
+            assert_eq!(
+                drops_after_retirement, 1,
+                "the final original mount lease must release the backing guard"
+            );
+            match &late_mount {
+                Err(VfsError::ResourceBusy) => {}
+                Ok(_) => panic!(
+                    "mounting a filesystem retired before lease acquisition must fail with EBUSY"
+                ),
+                Err(error) => panic!(
+                    "mounting a filesystem retired before lease acquisition returned {error:?}"
+                ),
+            }
+            let visible_target = anchor_root
+                .lookup_no_follow("late")
+                .expect("the mount target must remain in the parent topology");
+            assert!(
+                !visible_target.is_root_of_mount(),
+                "a rejected mount must not publish itself in the VFS topology"
+            );
+            drop(late_mount);
 
-        drop(retained);
-        assert_eq!(
-            guard_drops.load(Ordering::SeqCst),
-            1,
-            "the RAII fallback must not release the guard twice"
-        );
+            let reads = access.reads.load(Ordering::SeqCst);
+            let writes = access.writes.load(Ordering::SeqCst);
+            let flushes = access.flushes.load(Ordering::SeqCst);
+            let file = retained.as_file().expect("regular retained file");
+            let mut late = [0; 6];
+            assert_eq!(
+                file.read_at(&mut late, 0),
+                Err(VfsError::ResourceBusy),
+                "a retired filesystem must reject reads"
+            );
+            assert_eq!(
+                file.write_at(b"late!!".as_slice(), 0),
+                Err(VfsError::ResourceBusy),
+                "a retired filesystem must reject writes"
+            );
+            assert_eq!(
+                retained.sync(false),
+                Err(VfsError::ResourceBusy),
+                "a retired filesystem must reject flushes"
+            );
+            assert_eq!(
+                access.reads.load(Ordering::SeqCst),
+                reads,
+                "a retired filesystem read the released backing device"
+            );
+            assert_eq!(
+                access.writes.load(Ordering::SeqCst),
+                writes,
+                "a retired filesystem wrote the released backing device"
+            );
+            assert_eq!(
+                access.flushes.load(Ordering::SeqCst),
+                flushes,
+                "a retired filesystem flushed the released backing device"
+            );
+            assert_eq!(
+                guard_drops.load(Ordering::SeqCst),
+                1,
+                "a retained inode and stale Filesystem handle must not release the guard again"
+            );
+
+            drop(retained);
+            assert_eq!(
+                guard_drops.load(Ordering::SeqCst),
+                1,
+                "the RAII fallback must not release the guard twice"
+            );
+        });
     });
 }
 
@@ -392,7 +431,7 @@ fn backing_guard_stays_until_the_last_mount_owner_leaves() {
         let fixture = LoopImageFixture::mount();
         // A second mountpoint shares the same filesystem lease, like a bind
         // alias or namespace copy.
-        let alias = Mountpoint::new_root(&fixture.filesystem);
+        let alias = Mountpoint::new_root(&fixture.filesystem).expect("mount backing lease alias");
         let alias_root = alias.root_location();
         let guard_drops = Arc::clone(&fixture.guard_drops);
         let LoopImageFixture {

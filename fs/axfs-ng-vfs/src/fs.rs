@@ -52,8 +52,12 @@ pub trait FilesystemOps: Send + Sync {
 
     /// Retains mount ownership separately from cached inode references.
     /// Bind mounts and namespace copies retain the same filesystem lease.
-    fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
-        None
+    ///
+    /// `Ok(None)` means the filesystem has no mount-scoped lifetime owner.
+    /// Filesystems with such an owner return an error once a new mount can no
+    /// longer acquire it.
+    fn mount_lease(&self) -> VfsResult<Option<Arc<dyn FilesystemMountLease>>> {
+        Ok(None)
     }
 
     /// Returns the optional boundary used to drain buffered writes and mmap
@@ -161,6 +165,10 @@ impl Filesystem {
         }
     }
     pub fn name(&self) -> &str;
+
+    /// Retains the current mount generation, or reports that a new mount can
+    /// no longer acquire one.
+    pub fn mount_lease(&self) -> VfsResult<Option<Arc<dyn FilesystemMountLease>>>;
 
     pub fn root_dir(&self) -> DirEntry;
 

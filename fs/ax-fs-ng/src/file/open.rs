@@ -648,7 +648,10 @@ mod tests {
 
     fn test_location(metadata: Metadata) -> Location {
         let filesystem = Filesystem::new(Arc::new(TestFilesystem));
-        Location::new(Mountpoint::new_root(&filesystem), test_entry(metadata))
+        Location::new(
+            Mountpoint::new_root(&filesystem).expect("open test root"),
+            test_entry(metadata),
+        )
     }
 
     fn credentials(fsuid: u32, fsgid: u32, supplementary_gids: &[u32]) -> MutationCredentials<'_> {

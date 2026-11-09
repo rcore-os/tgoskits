@@ -381,7 +381,7 @@ fn reopen_cached_file(backing: Arc<CacheTestFile>) -> CachedFile {
         Reference::root(),
     );
     let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "cache-test" }));
-    let mountpoint = Mountpoint::new_root(&filesystem);
+    let mountpoint = Mountpoint::new_root(&filesystem).expect("cache test root");
     CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap()
 }
 
@@ -1338,7 +1338,7 @@ fn retirement_waits_for_periodic_writeback_before_registry_removal() {
             Reference::root(),
         );
         let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "ext4" }));
-        let mountpoint = Mountpoint::new_root(&filesystem);
+        let mountpoint = Mountpoint::new_root(&filesystem).expect("ext4 cache test root");
         let cached = CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap();
         let initial_data: &[u8] = &[0x81; 64];
         assert_eq!(cached.write_at(initial_data, 0), Ok(64));
@@ -1406,7 +1406,7 @@ fn failed_retirement_keeps_dirty_file_registered_for_retry() {
             Reference::root(),
         );
         let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "ext4" }));
-        let mountpoint = Mountpoint::new_root(&filesystem);
+        let mountpoint = Mountpoint::new_root(&filesystem).expect("ext4 cache test root");
         let cached = CachedFile::get_or_create(Location::new(mountpoint, entry)).unwrap();
         let data: &[u8] = &[0x91; 64];
         assert_eq!(cached.write_at(data, 0), Ok(data.len()));

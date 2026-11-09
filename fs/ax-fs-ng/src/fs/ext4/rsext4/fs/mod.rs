@@ -264,13 +264,13 @@ impl Drop for Ext4MountLease {
 }
 
 impl Ext4Filesystem {
-    #[cfg(any(feature = "vfs", test))]
+    #[cfg(test)]
     pub fn new(dev: Box<dyn FsBlockDevice>, region: BlockRegion) -> VfsResult<Filesystem> {
         Self::new_from_boxed(dev, region)
     }
 
     /// Create from a dynamic (boxed) block device (e.g. loop device).
-    #[cfg(any(feature = "vfs", test))]
+    #[cfg(test)]
     pub fn new_from_boxed(
         dev: Box<dyn FsBlockDevice>,
         region: BlockRegion,
@@ -305,6 +305,7 @@ impl Ext4Filesystem {
         permissions: Option<ax_block::access::VolumePermissions>,
         _backing: Ext4Backing,
     ) -> VfsResult<Filesystem> {
+        let device_read_only = dev.is_read_only();
         let identity = mmp_identity_for_region(dev.name(), region);
         let disk = Ext4Disk::new(dev, region).map_err(into_vfs_err)?;
         let services =
@@ -324,7 +325,11 @@ impl Ext4Filesystem {
         }
         .map_err(into_vfs_err)?;
         if !readonly && ext4.options().readonly {
-            warn!("ext4 recovery required a read-only fallback mount");
+            if device_read_only {
+                info!("ext4 mounted from a read-only device");
+            } else {
+                warn!("ext4 recovery required a read-only fallback mount");
+            }
         }
         if ext4.options().readonly
             && let Some(permissions) = &permissions
@@ -420,9 +425,17 @@ impl Ext4Filesystem {
 
     #[cfg(feature = "vfs")]
     fn backing_write_protected(&self) -> VfsResult<bool> {
-        self.backing_lease
+        let write_protected = self
+            .backing_lease
             .as_ref()
-            .map_or(Ok(false), |lease| lease.is_write_protected())
+            .map_or(Ok(false), |lease| lease.is_write_protected())?;
+        if !write_protected {
+            return Ok(false);
+        }
+        // A filesystem mounted read-only never needs writeback recovery. Only
+        // a writable mount that lost access to mutable state must retain its
+        // backing and caches for a later retry.
+        Ok(!self.lock().ext4.options().readonly)
     }
 
     pub(crate) fn directory_cache_generation(&self, inode: InodeNumber) -> VfsResult<Option<u64>> {
@@ -746,7 +759,7 @@ impl FilesystemOps for Ext4Filesystem {
         Some(&self.cached_writes)
     }
 
-    fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
+    fn mount_lease(&self) -> VfsResult<Option<Arc<dyn FilesystemMountLease>>> {
         let mut state = self.mount_lease.lock();
         // Final retirement owns the transition out of `Active`. Retiring,
         // Failed and Released instances never publish another lease, so a
@@ -754,10 +767,10 @@ impl FilesystemOps for Ext4Filesystem {
         // retirement remains retryable through `FilesystemOps::flush`; only a
         // successful retry releases the backing and reaches `Released`.
         if state.phase != LeasePhase::Active {
-            return None;
+            return Err(VfsError::ResourceBusy);
         }
         if let Some(lease) = state.installed.upgrade() {
-            return Some(lease);
+            return Ok(Some(lease));
         }
         state.generation = state.generation.wrapping_add(1);
         let lease = Arc::new(Ext4MountLease {
@@ -765,7 +778,7 @@ impl FilesystemOps for Ext4Filesystem {
             generation: state.generation,
         });
         state.installed = Arc::downgrade(&lease);
-        Some(lease)
+        Ok(Some(lease))
     }
 
     fn root_dir(&self) -> DirEntry {

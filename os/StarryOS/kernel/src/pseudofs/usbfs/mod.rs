@@ -2190,7 +2190,11 @@ mod reap_tests {
             stable_id_to_device_num: Default::default(),
         }]));
         let fs = create_filesystem(manager.clone());
-        let context = FsContext::new(Mountpoint::new_root(&fs).root_location());
+        let context = FsContext::new(
+            Mountpoint::new_root(&fs)
+                .expect("usbfs test root")
+                .root_location(),
+        );
         let base = KernelFile::new(
             ax_fs_ng::File::open(&context, "/001/001").unwrap(),
             O_RDONLY,

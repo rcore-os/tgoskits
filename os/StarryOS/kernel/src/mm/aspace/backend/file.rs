@@ -1308,8 +1308,11 @@ fn independent_file_backends_share_page_object_for_test() -> bool {
         0,
         0,
     );
-    let cache =
-        CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
+    let cache = CachedFile::get_or_create(Location::new(
+        Mountpoint::new_root(&filesystem).expect("file page test root"),
+        entry,
+    ))
+    .unwrap();
     cache.write_at(&[0x41; PAGE_SIZE_4K][..], 0).unwrap();
     let first_start = VirtAddr::from_usize(0x4000_0000);
     let second_start = VirtAddr::from_usize(0x5000_0000);
@@ -1388,8 +1391,11 @@ fn evicting_file_page_rejects_publication_as_retry_for_test() -> bool {
         0,
         0,
     );
-    let cache =
-        CachedFile::get_or_create(Location::new(Mountpoint::new_root(&filesystem), entry)).unwrap();
+    let cache = CachedFile::get_or_create(Location::new(
+        Mountpoint::new_root(&filesystem).expect("eviction test root"),
+        entry,
+    ))
+    .unwrap();
     let operation = MappingOperation::new_file(
         VirtAddr::from_usize(0x6000_0000),
         cache.clone(),

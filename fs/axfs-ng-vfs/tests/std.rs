@@ -1001,7 +1001,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         10,
         &["mnt", "bind", "move-target", "put-old"],
     );
-    let root_mount = Mountpoint::new_root(&root_fs);
+    let root_mount = Mountpoint::new_root(&root_fs).expect("root mount");
     let root = root_mount.root_location();
     assert!(root.is_root());
     assert!(root_mount.is_root());
@@ -1531,9 +1531,9 @@ fn axfs_ng_vfs_shared_mount_propagation_rules_hold() {
     let slave_fs = new_more_fs("slave-root", false, 300, &["target", "left"], &[]);
     let child_fs = new_more_fs("child", false, 400, &["inside"], &["leaf"]);
 
-    let source_mount = Mountpoint::new_root(&source_fs);
-    let peer_mount = Mountpoint::new_root(&peer_fs);
-    let slave_mount = Mountpoint::new_root(&slave_fs);
+    let source_mount = Mountpoint::new_root(&source_fs).expect("source mount");
+    let peer_mount = Mountpoint::new_root(&peer_fs).expect("peer mount");
+    let slave_mount = Mountpoint::new_root(&slave_fs).expect("slave mount");
     source_mount.set_shared();
     peer_mount.join_shared_group(&source_mount);
     slave_mount.join_shared_group(&source_mount);
@@ -1621,7 +1621,7 @@ fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
     let nested_fs = new_more_fs("nested", false, 700, &["deep"], &[]);
     let skipped_fs = new_more_fs("skipped", false, 800, &["hidden"], &[]);
 
-    let source_mount = Mountpoint::new_root(&source_fs);
+    let source_mount = Mountpoint::new_root(&source_fs).expect("source mount");
     let source_root = source_mount.root_location();
     let nested_mount = source_root
         .lookup_no_follow("sub")
@@ -1636,7 +1636,7 @@ fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
     skipped_mount.set_unbindable();
     assert!(skipped_mount.is_unbindable());
 
-    let target_mount = Mountpoint::new_root(&target_fs);
+    let target_mount = Mountpoint::new_root(&target_fs).expect("target mount");
     let target_root = target_mount.root_location();
     let bind_mount = target_root
         .lookup_no_follow("recursive")
@@ -1669,7 +1669,7 @@ fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
 
     source_mount.set_shared();
     let shared_target_fs = new_more_fs("shared-bind-target", false, 900, &["bind"], &[]);
-    let shared_target_mount = Mountpoint::new_root(&shared_target_fs);
+    let shared_target_mount = Mountpoint::new_root(&shared_target_fs).expect("shared target mount");
     let shared_bind = shared_target_mount
         .root_location()
         .lookup_no_follow("bind")
@@ -1681,7 +1681,7 @@ fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
     shared_bind.set_slave();
     assert!(shared_bind.is_slave());
     let slave_target_fs = new_more_fs("slave-bind-target", false, 1000, &["bind"], &[]);
-    let slave_target_mount = Mountpoint::new_root(&slave_target_fs);
+    let slave_target_mount = Mountpoint::new_root(&slave_target_fs).expect("slave target mount");
     let slave_bind = slave_target_mount
         .root_location()
         .lookup_no_follow("bind")
@@ -1718,7 +1718,7 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
     );
     let child_fs = new_more_fs("move-child", false, 1200, &["inner"], &[]);
     let busy_fs = new_more_fs("busy-child", false, 1250, &[], &[]);
-    let root_mount = Mountpoint::new_root(&root_fs);
+    let root_mount = Mountpoint::new_root(&root_fs).expect("root mount");
     let root = root_mount.root_location();
     let child_mount = root
         .lookup_no_follow("first")
@@ -1764,7 +1764,7 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
     assert!(!root.lookup_no_follow("second").unwrap().is_root_of_mount());
 
     let readonly_fs = new_more_fs("readonly-root", true, 1300, &["mnt"], &["file"]);
-    let readonly_mount = Mountpoint::new_root(&readonly_fs);
+    let readonly_mount = Mountpoint::new_root(&readonly_fs).expect("readonly mount");
     let readonly_root = readonly_mount.root_location();
     assert!(readonly_root.is_readonly());
     assert!(matches!(
@@ -1808,8 +1808,8 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
     );
     let right_fs = new_more_fs("right-root", false, 1500, &["dir"], &["file"]);
     let mounted_fs = new_more_fs("mounted-root", false, 1600, &["inside"], &[]);
-    let left_mount = Mountpoint::new_root(&left_fs);
-    let right_mount = Mountpoint::new_root(&right_fs);
+    let left_mount = Mountpoint::new_root(&left_fs).expect("left mount");
+    let right_mount = Mountpoint::new_root(&right_fs).expect("right mount");
     let left_root = left_mount.root_location();
     let right_root = right_mount.root_location();
 
@@ -1896,7 +1896,7 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
     );
 
     let readonly_fs = new_more_fs("transient-root", true, 1700, &["existing"], &["file"]);
-    let readonly_mount = Mountpoint::new_root(&readonly_fs);
+    let readonly_mount = Mountpoint::new_root(&readonly_fs).expect("transient readonly root");
     let readonly_root = readonly_mount.root_location();
     let existing = readonly_root
         .create_transient_mount_dir("existing", NodePermission::default(), 1, 2)

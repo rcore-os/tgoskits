@@ -32,8 +32,9 @@ where
         Self::new_selecting_options(device, services, |_| Ok(options))
     }
 
-    /// Selects read-only replay for recorded errors before recovery starts.
-    /// A failed recovery is never retried with the same cache/journal owner.
+    /// Selects read-only replay for a read-only device or recorded errors before
+    /// recovery starts. A failed recovery is never retried with the same
+    /// cache/journal owner.
     pub fn mount_with_readonly_fallback<C>(
         device: D,
         services: MountServices<C, E, O, W>,
@@ -41,8 +42,9 @@ where
     where
         C: Clock + Send + 'static,
     {
+        let device_read_only = device.capabilities().read_only;
         Self::new_selecting_options(device, services, |device| {
-            if Ext4FileSystem::device_has_error_state(device)? {
+            if device_read_only || Ext4FileSystem::device_has_error_state(device)? {
                 Ok(MountOptions {
                     readonly: true,
                     replay_journal: true,

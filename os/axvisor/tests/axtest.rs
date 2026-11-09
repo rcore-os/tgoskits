@@ -253,8 +253,11 @@ mod tests {
 
     #[test]
     fn builtin_catalog_ignores_vm_default_and_rejects_invalid_builtin_configs() {
-        let context =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        let context = FsContext::new(
+            Mountpoint::new_root(&ax_fs_ng::MemoryFs::new())
+                .expect("builtin catalog test root")
+                .root_location(),
+        );
         for path in [
             "/guest",
             "/guest/builtin",
@@ -299,10 +302,16 @@ mod tests {
 
     #[test]
     fn package_install_validates_external_assets_before_replacing_defaults() {
-        let source =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
-        let target =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        let source = FsContext::new(
+            Mountpoint::new_root(&ax_fs_ng::MemoryFs::new())
+                .expect("package source test root")
+                .root_location(),
+        );
+        let target = FsContext::new(
+            Mountpoint::new_root(&ax_fs_ng::MemoryFs::new())
+                .expect("package target test root")
+                .root_location(),
+        );
         for context in [&source, &target] {
             for path in [
                 "/guest",

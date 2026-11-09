@@ -145,7 +145,9 @@ fn no_background_runtime_keeps_synchronous_namespace_completion() {
         filesystem.self_ref = weak.clone();
         filesystem
     });
-    let root = Mountpoint::new_root(&Filesystem::new(filesystem.clone())).root_location();
+    let root = Mountpoint::new_root(&Filesystem::new(filesystem.clone()))
+        .expect("mount sync policy filesystem")
+        .root_location();
     let before = flushes.load(Ordering::Relaxed);
     let file = create_file(&root, "fallback");
     assert!(flushes.load(Ordering::Relaxed) > before);
@@ -187,7 +189,9 @@ pub(super) fn background_mount() -> (Arc<Ext4Filesystem>, Location, Arc<AtomicUs
         filesystem
     });
     let vfs = Filesystem::new(filesystem.clone());
-    let root = Mountpoint::new_root(&vfs).root_location();
+    let root = Mountpoint::new_root(&vfs)
+        .expect("mount sync policy vfs")
+        .root_location();
     filesystem.sync_to_disk().unwrap();
     (filesystem, root, flushes)
 }

@@ -1,3 +1,5 @@
+#[cfg(feature = "ext4")]
+use alloc::sync::Arc;
 use core::{
     any::Any,
     mem::offset_of,
@@ -5,9 +7,9 @@ use core::{
 };
 
 use ax_fs_ng::vfs::FileBackend;
-#[cfg(feature = "ext4")]
-use axfs_ng_vfs::Filesystem;
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult, WeakFilesystem};
+#[cfg(feature = "ext4")]
+use axfs_ng_vfs::{Filesystem, FilesystemMountLease};
 use linux_raw_sys::{
     general::{O_ACCMODE, O_RDONLY},
     ioctl::{
@@ -42,8 +44,9 @@ pub struct LoopDevice {
     dev_id: DeviceId,
     // Binding publication and open/close transitions share one lock.
     state: Mutex<LoopState>,
-    // This sleeping lock serializes superblock creation, outside the binding
-    // lock. A weak reference cannot keep a detached mount or its lease alive.
+    // This sleeping lock serializes superblock reuse, creation and mount-lease
+    // acquisition, outside the binding lock. A weak reference cannot keep a
+    // detached mount or its lease alive.
     #[cfg(feature = "ext4")]
     filesystem: Mutex<Option<WeakFilesystem>>,
     ra: AtomicU32,
@@ -119,22 +122,48 @@ impl LoopDevice {
         Ok(self.state.lock().binding()?.flags & LO_FLAGS_READ_ONLY as u32 != 0)
     }
 
+    /// Reuses or creates the mounted filesystem and retains its active mount
+    /// lease while the filesystem cache lock excludes concurrent replacement.
     #[cfg(feature = "ext4")]
     pub(crate) fn mounted_filesystem(
         &self,
         read_only: bool,
         create: impl FnOnce() -> VfsResult<Filesystem>,
-    ) -> VfsResult<Filesystem> {
+    ) -> VfsResult<(Filesystem, Arc<dyn FilesystemMountLease>)> {
         let mut mounted = self.filesystem.lock();
-        if let Some(filesystem) = mounted.as_ref().and_then(WeakFilesystem::upgrade) {
+        let reused = mounted.as_ref().and_then(WeakFilesystem::upgrade);
+        let new_instance = reused.is_none();
+        let filesystem = if let Some(filesystem) = reused {
             if filesystem.is_readonly() != read_only {
+                drop(mounted);
                 return Err(VfsError::ResourceBusy);
             }
-            return Ok(filesystem);
+            filesystem
+        } else {
+            match create() {
+                Ok(filesystem) => filesystem,
+                Err(error) => {
+                    drop(mounted);
+                    return Err(error);
+                }
+            }
+        };
+        let lease = filesystem.mount_lease();
+        if new_instance && lease.as_ref().is_ok_and(|lease| lease.is_some()) {
+            *mounted = Some(filesystem.downgrade());
         }
-        let filesystem = create()?;
-        *mounted = Some(filesystem.downgrade());
-        Ok(filesystem)
+        drop(mounted);
+        match lease {
+            Ok(Some(lease)) => Ok((filesystem, lease)),
+            Ok(None) => {
+                drop(filesystem);
+                Err(VfsError::BadState)
+            }
+            Err(error) => {
+                drop(filesystem);
+                Err(error)
+            }
+        }
     }
 
     fn bind(&self, file: &crate::file::File, name: [u8; 64], mut flags: u32) -> VfsResult<()> {

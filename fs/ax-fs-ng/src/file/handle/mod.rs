@@ -532,7 +532,7 @@ mod tests {
             name: "readonly-file-drop-test",
             readonly: true,
         }));
-        let mountpoint = Mountpoint::new_root(&filesystem);
+        let mountpoint = Mountpoint::new_root(&filesystem).expect("readonly file test root");
         let location = Location::new(
             mountpoint,
             test_entry(Arc::new(MetadataTrackingTestFile::new(
@@ -561,7 +561,7 @@ mod tests {
             name: "writable-file-drop-test",
             readonly: false,
         }));
-        let mountpoint = Mountpoint::new_root(&filesystem);
+        let mountpoint = Mountpoint::new_root(&filesystem).expect("writable file test root");
         let location = Location::new(
             mountpoint,
             test_entry(Arc::new(MetadataTrackingTestFile::new(
@@ -589,7 +589,7 @@ mod tests {
             MetadataTrackingTestFile::new(&READONLY_TEST_FILESYSTEM, Arc::new(AtomicUsize::new(0)));
         node.read_record_size = Some(32);
         let location = Location::new(
-            Mountpoint::new_root(&filesystem),
+            Mountpoint::new_root(&filesystem).expect("direct read test root"),
             test_entry(Arc::new(node)),
         );
         let file = File::new(FileBackend::new_direct(location), FileFlags::READ);

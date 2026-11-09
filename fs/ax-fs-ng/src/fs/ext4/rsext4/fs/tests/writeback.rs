@@ -133,7 +133,8 @@ fn failed_final_mount_writeback_keeps_dirty_cache_for_retry() {
         assert_eq!(endpoint.0.load(Ordering::Relaxed), 1);
         let retained = entry.upgrade().expect("dirty dentry owner was discarded");
 
-        let new_mount = Mountpoint::new_root(&Filesystem::new(filesystem.clone()));
+        let new_mount = Mountpoint::new_root(&Filesystem::new(filesystem.clone()))
+            .expect("mount reopened filesystem");
         let reopened = CachedFile::get_or_create(Location::new(new_mount, retained)).unwrap();
         assert_eq!(reopened.identity(), identity);
         assert_eq!(reopened.dirty_pages_in_range(0, 1).unwrap(), [0]);
@@ -322,7 +323,7 @@ fn cache_on_filesystem(mut filesystem: Ext4Filesystem) -> (Arc<Ext4Filesystem>, 
         filesystem
     });
     let vfs = Filesystem::new(filesystem.clone());
-    let mount = Mountpoint::new_root(&vfs);
+    let mount = Mountpoint::new_root(&vfs).expect("mount writeback test filesystem");
     let entry = filesystem
         .root_dir()
         .as_dir()
