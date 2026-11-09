@@ -459,6 +459,9 @@ impl AppContext {
             Vec::new()
         };
         let mut config = input.config;
+        if !vmconfigs.is_empty() {
+            config.vm_configs.clone_from(&vmconfigs);
+        }
         config.common.target = Some(target.clone());
         crate::build::apply_makefile_features(&mut config.common, &environment_features)?;
         if let Some(smp) = smp {

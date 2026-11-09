@@ -71,7 +71,7 @@ CLI 和文件 preset 必须一致，预设的 target 约束 CLI target、arch �
 
 OS 专属特性禁令也是请求有效性的一部分。Axvisor 的运行时 VMX/SVM 选择规则由同一校验器拒绝对应 Cargo 特性；依赖工作区 metadata 的平台特性限制也必须在 resolver 完成前执行，不能只在 Cargo 适配中才拒绝，否则 show 与 build 会不一致，失败输入还会抢先覆盖快照。
 
-`config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。`defconfig` 显式序列化展开对象，以临时文件替换输出，成功后才更新快照。任何解析、校验或写入失败都不覆盖原文件与快照。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
+`config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。Axvisor resolver 将有效的 CLI 或恢复快照 VM 覆盖同步到最终 `config.vm_configs`，使展示结果重新读取后仍选择同一有序 VM 列表；不读取 VM 文件或将其加入内核 Cargo 身份。`defconfig` 显式序列化展开对象，以临时文件替换输出，成功后才更新快照。任何解析、校验或写入失败都不覆盖原文件与快照。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
 
 ### 3.2 路径与打包
 
