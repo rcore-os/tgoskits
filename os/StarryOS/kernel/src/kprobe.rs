@@ -323,7 +323,8 @@ static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
 // kernel text through `stop_machine`, which sleeps, so this lock must too.
 static KPROBE_POINT_LIST: Mutex<KprobePointList> = Mutex::new(KprobePointList::new());
 // Serializes probe-point updates so that `KPROBE_POINT_LIST` is never
-// contended; a semaphore for the reason given at `KERNEL_TEXT_PATCH`.
+// contended. A semaphore, whose waiters sleep, because a holder waits in
+// `stop_machine` for every CPU's stopper thread to run.
 static KPROBE_POINT_UPDATE: Semaphore = Semaphore::new(1);
 const KERNEL_KRETPROBE_STACK_CAPACITY: usize = 64;
 static INSTANCE: LazyInit<RawSpinLock<Vec<RetprobeInstance>>> = LazyInit::new();
