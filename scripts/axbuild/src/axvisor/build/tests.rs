@@ -141,7 +141,14 @@ log = "Info"
         .unwrap_err();
 
         assert!(err.to_string().contains("selected from CPU capabilities"));
-        assert!(err.to_string().contains(&format!("`{feature}`")));
+        assert!(
+            err.chain().any(|cause| matches!(
+                cause.downcast_ref::<ax_config::ConfigError>(),
+                Some(ax_config::ConfigError::InvalidValue { field, value, .. })
+                    if field == "features" && value == feature
+            )),
+            "{err:#}"
+        );
     }
 }
 

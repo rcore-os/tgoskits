@@ -252,13 +252,13 @@ impl ArceOS {
         for (group_label, group) in runnable {
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
-            let build_config = match group.build_config_path.canonicalize() {
-                Ok(path) => path,
-                Err(error) => {
+            let build_config = match group.build_input.source.path() {
+                Some(path) => path.to_path_buf(),
+                None => {
                     run_state.fail_group(
                         group_label,
                         anyhow::anyhow!(
-                            "failed to resolve ArceOS board build config `{}`: {error}",
+                            "ArceOS board group has no saved input source for `{}`",
                             group.build_config_path.display()
                         ),
                     );
