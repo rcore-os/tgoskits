@@ -71,7 +71,7 @@ impl Starry {
         )?;
         let mut request = Self::qemu_test_request(request);
         if let Some(default_board) = default_board {
-            request.build_info_override = Some(default_board.build_info);
+            request.replace_config(default_board.config)?;
         } else {
             anyhow::bail!(
                 "missing Starry qemu defconfig for target `{target}` in tests; expected a default \
@@ -170,7 +170,7 @@ impl Starry {
                 let case_request = Self::request_for_qemu_case_build_config(
                     &build_group.request,
                     &case.build_config_path,
-                );
+                )?;
                 match self
                     .run_qemu_case(
                         &case_request,
@@ -420,7 +420,7 @@ impl Starry {
         build_config_path: &Path,
         workspace: &crate::context::WorkspaceContext,
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
-        let request = Self::request_for_qemu_case_build_config(request, build_config_path);
+        let request = Self::request_for_qemu_case_build_config(request, build_config_path)?;
         let mut cargo = build::load_cargo_config(&request, workspace)?;
         if env_truthy(&cargo.env, "AXTEST") {
             append_cargo_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
@@ -435,11 +435,13 @@ impl Starry {
     fn request_for_qemu_case_build_config(
         request: &ResolvedStarryRequest,
         build_config_path: &Path,
-    ) -> ResolvedStarryRequest {
+    ) -> anyhow::Result<ResolvedStarryRequest> {
         let mut request = request.clone();
+        let config: crate::starry::config::StarryConfig =
+            crate::build::load_build_config(build_config_path)?;
+        request.replace_config(config)?;
         request.build_info_path = build_config_path.to_path_buf();
-        request.build_info_override = None;
-        request
+        Ok(request)
     }
 
     pub(crate) fn qemu_test_request(mut request: ResolvedStarryRequest) -> ResolvedStarryRequest {

@@ -64,4 +64,5 @@ rdrive.workspace = true
 thiserror.workspace = true
 
 [build-dependencies]
+ax-config.workspace = true
 quote = { workspace = true }

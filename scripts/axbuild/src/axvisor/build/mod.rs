@@ -1,4 +1,3 @@
-mod config;
 mod features;
 mod load;
 mod metadata;
@@ -7,20 +6,20 @@ mod vm_config;
 #[cfg(test)]
 mod tests;
 
-pub type AxvisorBuildInfo = config::AxvisorBuildInfo;
 use std::path::{Path, PathBuf};
 
-pub(crate) use config::AxvisorBoardFile;
-pub use config::{AXVISOR_PACKAGE, AxvisorBoardConfig};
+pub use ax_config::CommonConfig;
+
+pub use super::config::AxvisorConfig;
+pub const AXVISOR_PACKAGE: &str = "axvisor";
 pub(crate) use load::{
-    default_build_info_path, load_board_file, load_target_from_build_config,
+    default_build_info_path, load_board_file, load_or_create_default_config,
     resolve_build_info_path,
 };
 use ostool::build::config::Cargo;
 
 use self::{
-    config::LoadedAxvisorBuildConfig, features::reject_unsupported_nested_platform_features,
-    load::load_build_config, metadata::platform_feature_names,
+    features::reject_unsupported_nested_platform_features, metadata::platform_feature_names,
 };
 pub use crate::build::LogLevel;
 use crate::context::{ResolvedAxvisorRequest, WorkspaceContext};
@@ -29,8 +28,7 @@ pub(crate) fn load_cargo_config(
     request: &ResolvedAxvisorRequest,
     workspace: &WorkspaceContext,
 ) -> anyhow::Result<Cargo> {
-    let makefile_features = crate::build::makefile_features_from_env();
-    load_cargo_config_with_makefile_features(request, workspace, &makefile_features)
+    load_cargo_config_with_makefile_features(request, workspace, &[])
 }
 
 fn load_cargo_config_with_makefile_features(
@@ -39,7 +37,7 @@ fn load_cargo_config_with_makefile_features(
     makefile_features: &[String],
 ) -> anyhow::Result<Cargo> {
     to_cargo_config(
-        load_build_config(request)?,
+        request.config.clone(),
         request,
         workspace,
         makefile_features,
@@ -47,23 +45,23 @@ fn load_cargo_config_with_makefile_features(
 }
 
 fn to_cargo_config(
-    mut config: LoadedAxvisorBuildConfig,
+    mut config: AxvisorConfig,
     request: &ResolvedAxvisorRequest,
     workspace: &WorkspaceContext,
     makefile_features: &[String],
 ) -> anyhow::Result<Cargo> {
-    config.target = request.target.clone();
-    crate::build::apply_makefile_features(&mut config.build_info, makefile_features)?;
+    config.validate()?;
+    crate::build::apply_makefile_features(&mut config.common, makefile_features)?;
     let known_platforms = platform_feature_names(workspace.metadata());
-    reject_unsupported_nested_platform_features(&config.build_info.features, &known_platforms)?;
-    let mut cargo = config
-        .build_info
-        .into_prepared_std_cargo_config_with_metadata(
-            &request.package,
-            &config.target,
-            workspace.metadata(),
-            &workspace.axbuild_artifact_dir(),
-        )?;
+    reject_unsupported_nested_platform_features(&config.common.features, &known_platforms)?;
+    let mut cargo = crate::build::into_prepared_std_cargo_config_with_metadata(
+        config.common,
+        &request.package,
+        &request.target,
+        workspace.metadata(),
+        &workspace.axbuild_artifact_dir(),
+        request.runtime,
+    )?;
     patch_axvisor_cargo_config(&mut cargo, request);
     Ok(cargo)
 }
@@ -98,7 +96,7 @@ pub(crate) fn load_vmconfigs(
     request: &ResolvedAxvisorRequest,
     workspace: &WorkspaceContext,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    let config = load_build_config(request)?;
+    let config = &request.config;
     let paths = if request.vmconfigs.is_empty() {
         config
             .vm_configs

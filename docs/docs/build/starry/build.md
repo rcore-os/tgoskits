@@ -5,7 +5,7 @@ sidebar_label: "构建"
 
 # StarryOS 构建
 
-`cargo xtask starry build` 构建固定 package `starryos`。执行链位于 `starry/mod.rs` 和 `starry/build.rs`：先解析共享请求并加载 board-derived Build Config，再生成 std-aware Cargo 配置，最后在 ELF 构建成功后生成同名 AXBT map，并按需生成 uImage。
+`cargo xtask starry build` 构建固定 package `starryos`。执行链位于 `starry/mod.rs` 和 `starry/build.rs`：先解析共享请求和系统配置，再生成 freestanding Cargo 配置，最后在 ELF 构建成功后生成同名 AXBT map，并按需生成 uImage。
 
 ## 1. 构建流程
 
@@ -16,11 +16,11 @@ flowchart TD
     A["starry build"] --> B["prepare_starry_request"]
     B --> C["解析 arch / target / config / Snapshot"]
     C --> D["从 qemu-* board 补齐缺失 Build Config"]
-    D --> E["BuildInfo → std PIE Cargo"]
+    D --> E["CommonConfig → bare PIE Cargo"]
     E --> F["AppContext::build"]
     F --> G["ELF"]
     G --> H["generate_axbt_map"]
-    H --> I{"同名 .its 存在？"}
+    H --> I{"最终 fit_its 已指定？"}
     I -->|是| J["mkimage 生成 uImage"]
     I -->|否| K["完成"]
     J --> K
@@ -49,17 +49,19 @@ log = "Warn"
 max_cpu_num = 4
 ```
 
-CLI `--smp` 覆盖配置或 Snapshot 中的 `max_cpu_num`。`FEATURES` 环境变量经 `apply_makefile_features()` 验证后并入 BuildInfo；字段和 feature 的验证规则见 [参数与配置](../configuration)。
+CLI `--smp` 覆盖配置或 Snapshot 中的 `max_cpu_num`。`FEATURES` 环境变量经 `apply_makefile_features()` 验证后并入公共配置；字段和 feature 的验证规则见 [参数与配置](../configuration)。
+
+公共输入由 `CommonConfig` 拥有，`runtime.task_stack_size` 和 `runtime.scheduler_tick_ms` 通过本次 Cargo 子进程环境交给 runtime/HAL 的共同 helper；不要在 `[env]` 设置四个保留参数。默认值、数值检查和环境回退见[运行参数](../configuration#34-运行参数)。
 
 ### 1.2 Cargo 装配
 
-`starry/build.rs::load_cargo_config()` 使用共享 BuildInfo 实现：
+`starry/build.rs::load_cargo_config()` 使用共享 `CommonConfig` 和 axbuild 的裸机构建适配函数：
 
-- 逻辑裸机 target 映射到 `scripts/targets/std/pie/` 的 musl PIE JSON target；
-- 使用 `build-std = ["std", "panic_abort"]`，release 采用 `panic = "abort"`、`lto = false`；
-- 准备 musl C 交叉编译环境、占位库和 linker wrapper；
+- 逻辑裸机 target 映射到 `scripts/targets/bare/` 的 JSON target；
+- 使用 `build-std = ["core", "alloc"]` 和 `BareKernelLinkMode::Pie`；
+- 保持无内核 TLS 的独立 `no_std` 镜像契约；
 - 固定 package 为 `starryos`，并确保 Cargo 选择其 binary；
-- 写入 `AX_ARCH`、`AX_TARGET`，以及来自 BuildInfo 的 `AX_LOG`、`SMP`、`[env]`。
+- 写入 `AX_ARCH`、`AX_TARGET`，以及本次配置的日志、有效 runtime 参数和其他环境。
 - 默认追加 `-Cdebuginfo=2`、`-Cstrip=none` 和 `-Cforce-frame-pointers=yes`，保证每个 Starry ELF 都能生成带文件行号的 AXBT map；不需要在 Build Config 中设置 `BACKTRACE` 或 `DWARF`。
 
 共享基础配置的 `to_bin` 为 `false`。因此 `starry build` 的直接产物是 ELF；运行和部署阶段按 QEMU 或板卡配置决定是否转换。
@@ -76,7 +78,9 @@ Starry 在 ELF 构建成功后按固定顺序处理内核符号和可选的启�
 
 ### 2.2 镜像生成
 
-`uimage_generation_plan()` 查找当前 Build Config 同目录、同 basename 的 `.its`。找到时，axbuild 调用 `mkimage` 将已后处理的 ELF 生成 uImage；`defconfig` 会将 board 的 companion ITS 一同复制，使该板卡的启动格式随配置一起被选择。
+`uimage_generation_plan()` 只消费最终 `StarryConfig.fit_its`，axbuild 调用 `mkimage` 将已后处理的 ELF 生成 uImage。模板相对路径以工作区根为基准，也支持绝对路径；指定资源缺失或打包失败会报错。
+
+旧板卡 TOML 迁移期间，同名 ITS 仅在文件覆盖前装入基值，`defconfig` 仍保留其原有资源复制行为。显式 `fit_its` 可以替换模板，`unset = ["fit_its"]` 可以清除它；打包阶段不会重新猜测同名文件，因此清除不会被撤销。
 
 ## 3. 命令示例
 

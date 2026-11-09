@@ -6,11 +6,12 @@ use std::{
 };
 
 use anyhow::{Context as _, anyhow, bail};
+pub use ax_config::CommonConfig;
 use cargo_metadata::Metadata;
 use ostool::build::config::Cargo;
 
-use super::{Starry, board};
-pub type StarryBuildInfo = crate::build::BuildInfo;
+use super::Starry;
+pub use super::config::StarryConfig;
 pub use crate::build::LogLevel;
 use crate::{
     build::BareKernelLinkMode,
@@ -26,10 +27,6 @@ const STARRY_SYMBOLIZATION_RUSTFLAGS: &[&str] = &[
     "-Cstrip=none",
     "-Cforce-frame-pointers=yes",
 ];
-
-pub(crate) fn default_starry_build_info() -> StarryBuildInfo {
-    StarryBuildInfo::default()
-}
 
 pub(crate) fn resolve_build_info_path(
     workspace_root: &Path,
@@ -48,70 +45,33 @@ pub(crate) fn resolve_build_info_path(
     ))
 }
 
-pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
-    let content = crate::build::read_toml_with_rejector(
-        path,
-        "Starry build config",
-        reject_unsupported_starry_fields,
-    )?;
-
-    if let Ok(board_file) = toml::from_str::<board::StarryBoardFile>(&content) {
-        return Ok(Some(board_file.target));
-    }
-    if toml::from_str::<StarryBuildInfo>(&content).is_ok() {
-        return Ok(None);
-    }
-
-    Err(anyhow!("invalid Starry build config {}", path.display()))
-}
-
-fn reject_unsupported_starry_fields(path: &Path, content: &str) -> anyhow::Result<()> {
-    crate::build::reject_removed_std_field(path, content)?;
-    crate::build::reject_arceos_app_c_field(path, content)?;
-    Ok(())
-}
-
-pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<StarryBuildInfo> {
-    let makefile_features = crate::build::makefile_features_from_env();
-    let mut build_info = if let Some(build_info) = &request.build_info_override {
-        build_info.clone()
-    } else {
-        crate::build::ensure_build_info(&request.build_info_path, default_starry_build_info)?;
-        crate::build::load_toml_with_rejector(
-            &request.build_info_path,
-            "build info",
-            crate::build::reject_arceos_app_c_field,
-        )?
-    };
-
-    crate::build::apply_makefile_features(&mut build_info, &makefile_features)?;
-
-    for feature in &mut build_info.features {
+pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<CommonConfig> {
+    request.config.validate()?;
+    let mut common = request.config.common.clone();
+    for feature in &mut common.features {
         if feature == "paging" {
             *feature = STARRY_MMU_FEATURE.to_string();
         }
     }
-
-    if let Some(smp) = request.smp {
-        build_info.max_cpu_num = Some(smp);
-    }
-
-    Ok(build_info)
+    Ok(common)
 }
 
 pub(crate) fn load_cargo_config(
     request: &ResolvedStarryRequest,
     workspace: &WorkspaceContext,
 ) -> anyhow::Result<Cargo> {
+    request.config.validate_resources(workspace.root())?;
     let metadata = workspace.metadata();
     let mut build_info = load_build_info(request)?;
     build_info.features.sort();
     build_info.features.dedup();
-    let mut cargo = build_info.into_prepared_no_std_cargo_config_with_metadata(
+    let mut cargo = crate::build::into_prepared_no_std_cargo_config_with_metadata(
+        build_info,
         &request.package,
         &request.target,
         metadata,
         BareKernelLinkMode::Pie,
+        request.runtime,
     )?;
     patch_starry_cargo_config(&mut cargo, request, metadata)?;
     // Starry always ships target-side symbol maps. Keep the ELF information
@@ -176,12 +136,7 @@ pub(crate) fn postprocess_starry_artifact(
     println!("[axbuild] starry artifact elf={}", elf.display());
     refresh_bin_if_present(elf)?;
 
-    if let Some(plan) = uimage_generation_plan(
-        &request.build_info_path,
-        &request.arch,
-        &request.target,
-        elf,
-    ) {
+    if let Some(plan) = uimage_generation_plan(&request.config, workspace_root, elf)? {
         generate_uimage_from_its(workspace_root, &plan, &request.arch, &request.target, elf)?;
     }
 
@@ -281,29 +236,24 @@ struct UimageGenerationPlan {
     output_uimg: PathBuf,
 }
 
-pub(crate) fn uimage_its_path_for_config(config_path: &Path) -> PathBuf {
-    config_path.with_extension("its")
-}
-
 fn uimage_generation_plan(
-    config_path: &Path,
-    _arch: &str,
-    _target: &str,
+    config: &StarryConfig,
+    workspace_root: &Path,
     kernel_elf: &Path,
-) -> Option<UimageGenerationPlan> {
-    let source_its = uimage_its_path_for_config(config_path);
-    source_its.exists().then(|| {
-        let rendered_its = temp_file_path(kernel_elf, "uimage.its")
-            .expect("kernel ELF path should have a valid parent and filename");
-        let kernel_bin = kernel_elf.with_extension("bin");
-        let output_uimg = kernel_bin.with_extension("uimg");
-        UimageGenerationPlan {
-            source_its,
-            rendered_its,
-            kernel_bin,
-            output_uimg,
-        }
-    })
+) -> anyhow::Result<Option<UimageGenerationPlan>> {
+    let Some(source_its) = &config.fit_its else {
+        return Ok(None);
+    };
+    config.validate_resources(workspace_root)?;
+    let rendered_its = temp_file_path(kernel_elf, "uimage.its")?;
+    let kernel_bin = kernel_elf.with_extension("bin");
+    let output_uimg = kernel_bin.with_extension("uimg");
+    Ok(Some(UimageGenerationPlan {
+        source_its: workspace_root.join(source_its),
+        rendered_its,
+        kernel_bin,
+        output_uimg,
+    }))
 }
 
 fn generate_uimage_from_its(

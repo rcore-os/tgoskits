@@ -56,14 +56,6 @@ edition = "2021"
     }
 }
 
-fn resolve_arceos_build_info_path(
-    package: &str,
-    target: &str,
-    explicit_path: Option<PathBuf>,
-) -> anyhow::Result<PathBuf> {
-    crate::arceos::build::resolve_build_info_path(package, target, explicit_path)
-}
-
 pub(super) fn prepare_arceos_request(
     app: &AppContext,
     cli: BuildCliArgs,
@@ -74,7 +66,15 @@ pub(super) fn prepare_arceos_request(
         cli,
         qemu_config,
         uboot_config,
-        resolve_arceos_build_info_path,
+        |package, target, explicit| {
+            Ok(explicit.unwrap_or_else(|| {
+                crate::build::default_build_info_path_in_workspace(
+                    app.workspace_root(),
+                    package,
+                    target,
+                )
+            }))
+        },
     )
 }
 
@@ -111,7 +111,6 @@ pub(super) fn prepare_axvisor_request(
         AxvisorRequestPaths {
             package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
             axvisor_dir: app.workspace_root().join("os/axvisor"),
-            load_config_target: crate::axvisor::build::load_target_from_build_config,
             resolve_build_info_path: crate::axvisor::build::resolve_build_info_path,
         },
         qemu_config,

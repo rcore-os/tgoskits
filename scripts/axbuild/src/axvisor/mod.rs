@@ -356,7 +356,6 @@ impl Axvisor {
             AxvisorRequestPaths {
                 package: build::AXVISOR_PACKAGE.to_string(),
                 axvisor_dir,
-                load_config_target: build::load_target_from_build_config,
                 resolve_build_info_path: build::resolve_build_info_path,
             },
             qemu_config,

@@ -21,6 +21,7 @@ members = [
     "components/axtest/axtest_macros",
     "components/cpu-local",
     "components/ax-cgroup",
+    "components/ax-config",
     "components/ax-lazyinit",
     "components/ax-task",
     "components/axbacktrace",
@@ -160,6 +161,7 @@ ax-arm-pl031 = { version = "0.4", path = "drivers/rtc/arm_pl031" }
 cpu-local = { version = "0.4.3", path = "components/cpu-local" }
 ax-cpu = { version = "0.10.3", path = "components/axcpu" }
 ax-cpumask = { version = "0.4", path = "components/cpumask" }
+ax-config = { version = "0.1", path = "components/ax-config" }
 ax-crate-interface = { version = "0.5", path = "components/crate_interface" }
 ax-cgroup = { version = "0.3", path = "components/ax-cgroup" }
 ax-ctor-bare = { version = "0.4", path = "components/ctor_bare/ctor_bare" }
@@ -322,11 +324,13 @@ enum_dispatch = "0.3"
 env_logger = "0.11"
 extern-trait = "0.5.0"
 futures = { version = "0.3", default-features = false }
+figment = { version = "0.10.19", default-features = false }
 getrandom = "0.3.4"
 heapless = "0.9"
 hmac = { version = "0.13.0", default-features = false, features = ["zeroize"] }
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 schemars = "1.2.1"
+serde = { version = "1.0", features = ["derive"] }
 shlex = { version = "2.0.1", default-features = false }
 prettyplease = "0.3.0"
 proc-macro2 = "1.0.107"

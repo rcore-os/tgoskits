@@ -6,14 +6,14 @@ use std::{
 
 use anyhow::anyhow;
 
-use crate::axvisor::build::{AxvisorBoardConfig, load_board_file};
+use crate::axvisor::build::{AxvisorConfig, load_board_file};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Board {
     pub name: String,
     pub path: PathBuf,
     pub target: String,
-    pub config: AxvisorBoardConfig,
+    pub config: AxvisorConfig,
 }
 
 pub(crate) fn board_dir(axvisor_dir: &Path) -> PathBuf {
@@ -40,12 +40,16 @@ pub(crate) fn board_default_list(axvisor_dir: &Path) -> anyhow::Result<Vec<Board
             .ok_or_else(|| anyhow!("invalid Axvisor board filename {}", path.display()))?
             .to_string();
         let board_file = load_board_file(&path)?;
-        let target = board_file.target.clone();
+        let target = board_file
+            .common
+            .target
+            .clone()
+            .expect("board target was validated");
         boards.push(Board {
             name,
             path,
             target,
-            config: board_file.into_board_config(),
+            config: board_file,
         });
     }
     boards.sort_by(|left, right| left.name.cmp(&right.name));

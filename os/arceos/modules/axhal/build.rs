@@ -1,8 +1,4 @@
-use std::{
-    env, fs,
-    io::{Error, ErrorKind, Result},
-    path::PathBuf,
-};
+use std::{env, fs, io::Result, path::PathBuf};
 
 use quote::{format_ident, quote};
 
@@ -10,9 +6,8 @@ const SELECTED_PLATFORM_NAME: &str = "selected_platform.rs";
 const BUILD_INFO_NAME: &str = "build_info.rs";
 const PLATFORM_CRATE_ENV: &str = "AX_PLATFORM_CRATE";
 const DEFAULT_PLATFORM_CRATE: &str = "axplat_dyn";
-const DEFAULT_CPU_CAPACITY: usize = 16;
 
-fn main() {
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let kernel_tls = std::env::var_os("CARGO_FEATURE_TLS").is_some()
         && std::env::var_os("CARGO_FEATURE_USPACE").is_none();
     println!("cargo::rustc-check-cfg=cfg(kernel_tls)");
@@ -20,11 +15,12 @@ fn main() {
         println!("cargo::rustc-cfg=kernel_tls");
     }
 
-    println!("cargo:rerun-if-env-changed=SMP");
     println!("cargo:rerun-if-env-changed={PLATFORM_CRATE_ENV}");
 
-    gen_selected_platform().unwrap();
-    gen_build_info(read_cpu_capacity_env().unwrap()).unwrap();
+    let config = ax_config::load_build_env()?;
+    gen_selected_platform()?;
+    gen_build_info(config.cpu_capacity)?;
+    Ok(())
 }
 
 fn gen_selected_platform() -> Result<()> {
@@ -41,27 +37,6 @@ fn selected_platform_source(crate_name: &str) -> String {
         pub extern crate #crate_ident as selected;
     }
     .to_string()
-}
-
-fn parse_usize(value: &str) -> std::result::Result<usize, std::num::ParseIntError> {
-    let value = value.replace('_', "");
-    if let Some(hex) = value.strip_prefix("0x") {
-        usize::from_str_radix(hex, 16)
-    } else {
-        value.parse()
-    }
-}
-
-fn invalid_data(error: impl std::fmt::Display) -> Error {
-    Error::new(ErrorKind::InvalidData, error.to_string())
-}
-
-fn read_cpu_capacity_env() -> Result<usize> {
-    match env::var("SMP") {
-        Ok(value) => parse_usize(&value)
-            .map_err(|err| invalid_data(format!("failed to parse SMP value `{value}`: {err}"))),
-        Err(_) => Ok(DEFAULT_CPU_CAPACITY),
-    }
 }
 
 fn gen_build_info(cpu_capacity: usize) -> Result<()> {

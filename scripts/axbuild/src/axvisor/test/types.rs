@@ -1,9 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use ostool::run::qemu::QemuConfig;
+use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 use serde::Deserialize;
 
-use crate::test::{board as board_test, case::TestQemuCase, qemu as test_qemu};
+use crate::{
+    context::ResolvedAxvisorRequest,
+    test::{board as board_test, case::TestQemuCase, qemu as test_qemu},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AxvisorQemuCase {
@@ -12,10 +15,12 @@ pub(crate) struct AxvisorQemuCase {
     pub(crate) build_config_path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct PreparedAxvisorQemuCase {
     pub(super) case: AxvisorQemuCase,
     pub(super) qemu: QemuConfig,
+    pub(super) request: ResolvedAxvisorRequest,
+    pub(super) cargo: Cargo,
 }
 
 impl test_qemu::BuildConfigRef for PreparedAxvisorQemuCase {

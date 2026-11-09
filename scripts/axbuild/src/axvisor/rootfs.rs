@@ -525,10 +525,16 @@ mod tests {
             target: "aarch64-unknown-none-softfloat".to_string(),
             smp: None,
             debug: false,
-            build_info_path: root.join(".build.toml"),
+            build_info_path: (root.join(".build.toml")).clone(),
             qemu_config: None,
             uboot_config: None,
             vmconfigs,
+            ..crate::context::test_support::axvisor_request(
+                &(root.join(".build.toml")),
+                "aarch64",
+                "aarch64-unknown-none-softfloat",
+                &(root.join("os/axvisor")),
+            )
         }
     }
 

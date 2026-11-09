@@ -250,11 +250,11 @@ pub fn probe_all_devices() -> Result<(), PlatformProbeError> {
 
 ## build.rs — 链接脚本生成
 
-`platforms/axplat-dyn/build.rs` 从 `link.ld` 模板生成 `axplat.x`：
+`platforms/axplat-dyn/build.rs` 将 `link.ld` 复制为 `axplat.x`，不解析运行时 CPU 容量：
 
 - `INCLUDE "link.x"` 引入 somehal/someboot 提供的脚本。
-- 把 `{{SMP}}` 占位符替换成 `SMP` 环境变量（默认 16）。
-- 定义 `__SMP`、`boot_stack`、`boot_stack_top`；`__SMP` 只表示运行时容量，不参与 `.percpu.template` 复制。
+- 定义 `boot_stack`、`boot_stack_top`，启动栈保持启动层所有权。
+- runtime 与 HAL 的容量由 `ax-config` 构建 helper 统一校验，实际 CPU 拓扑与 CPU-local 区域仍由固件发现结果决定，见[分层配置契约](../../../../design/layered-build-config.md)。
 - CPU-local 输出节和中性边界符号由 include 的 someboot 脚本统一提供；x86 trap 通过 `__CPU_LOCAL_TSS_OFFSET` 取得相对 CPU-area prefix 的 TSS 偏移。
 
 ## 约束

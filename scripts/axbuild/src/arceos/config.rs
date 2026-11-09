@@ -4,6 +4,81 @@ use std::{
 };
 
 use anyhow::anyhow;
+use ax_config::{CommonConfig, ConfigError};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Final ArceOS input. Unknown root fields are retained only for diagnostics.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[serde(default)]
+pub struct ArceosConfig {
+    #[serde(flatten)]
+    pub common: CommonConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    pub to_bin: bool,
+    pub freestanding: bool,
+    #[serde(rename = "app-c", skip_serializing_if = "Option::is_none")]
+    pub app_c: Option<PathBuf>,
+    #[serde(flatten, skip_serializing)]
+    #[schemars(skip)]
+    extra: toml::Table,
+}
+
+impl ArceosConfig {
+    /// Validate a fully selected configuration without reading process state.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        <Self as crate::build::BuildConfiguration>::validate_input(self)?;
+        crate::build::validate_config_target(&self.common)?;
+        if self.app_c.is_none() && self.package.as_deref().is_none_or(str::is_empty) {
+            return Err(crate::build::invalid_config_value(
+                "package",
+                "<unspecified>",
+                "an ArceOS application package",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Generate the same input contract used by the production overlay parser.
+    pub fn input_schema() -> Result<schemars::Schema, ConfigError> {
+        ax_config::input_schema::<Self>()
+    }
+}
+
+impl crate::build::BuildConfiguration for ArceosConfig {
+    const CLEARABLE_FIELDS: &'static [&'static str] = &["app-c"];
+
+    fn extra_fields(&self) -> &toml::Table {
+        &self.extra
+    }
+
+    fn validate_input(&self) -> Result<(), ConfigError> {
+        crate::build::reject_extra_fields(&self.extra)?;
+        self.common.validate()?;
+        if self.freestanding && self.app_c.is_some() {
+            return Err(crate::build::invalid_config_value(
+                "app-c",
+                "<present>",
+                "freestanding Rust and app-c are distinct build inputs",
+            ));
+        }
+        if let Some(app_c) = &self.app_c {
+            crate::build::validate_resource_path("app-c", app_c)?;
+            if let Some(package) = &self.package
+                && package != super::cbuild::AX_LIBC_PACKAGE
+            {
+                return Err(crate::build::invalid_config_value(
+                    "package",
+                    package,
+                    "ax-libc when app-c is selected",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 use super::board::{self, Board};
 use crate::context::{
@@ -50,7 +125,7 @@ fn update_snapshot_for_board(
         package: Some(board.package.clone()),
         arch: Some(arch_for_target_checked(&board.target)?.to_string()),
         target: Some(board.target.clone()),
-        smp: board.build_config.build_info.max_cpu_num,
+        smp: board.build_config.common.max_cpu_num,
         config: Some(snapshot_path_value(workspace_root, build_config_path)),
         qemu: ArceosQemuSnapshot::default(),
         uboot: ArceosUbootSnapshot::default(),

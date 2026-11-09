@@ -26,6 +26,8 @@ mod board_elf;
 mod resolve;
 mod snapshot;
 #[cfg(test)]
+pub(crate) mod test_support;
+#[cfg(test)]
 mod tests;
 mod types;
 mod workspace;

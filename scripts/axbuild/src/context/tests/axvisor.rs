@@ -21,12 +21,15 @@ uboot_config = "configs/snapshot-uboot.toml"
     )
     .unwrap();
 
+    let custom_config = root.path().join("custom-build.toml");
+    fs::write(&custom_config, "").unwrap();
+
     let app = test_app_context(root.path());
 
     let (request, snapshot) = prepare_axvisor_request(
         &app,
         AxvisorCliArgs {
-            config: Some(PathBuf::from("/tmp/custom-build.toml")),
+            config: Some(custom_config.clone()),
             arch: Some("aarch64".into()),
             target: Some(DEFAULT_AXVISOR_TARGET.into()),
             smp: Some(6),
@@ -46,10 +49,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.target, DEFAULT_AXVISOR_TARGET);
     assert_eq!(request.smp, Some(6));
     assert!(request.debug);
-    assert_eq!(
-        request.build_info_path,
-        PathBuf::from("/tmp/custom-build.toml")
-    );
+    assert_eq!(request.build_info_path, custom_config);
     assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
     assert_eq!(request.uboot_config, Some(PathBuf::from("/tmp/uboot.toml")));
     assert_eq!(
@@ -59,10 +59,7 @@ uboot_config = "configs/snapshot-uboot.toml"
             PathBuf::from("/tmp/vm2.toml")
         ]
     );
-    assert_eq!(
-        snapshot.config,
-        Some(PathBuf::from("/tmp/custom-build.toml"))
-    );
+    assert_eq!(snapshot.config, Some(PathBuf::from("custom-build.toml")));
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_AXVISOR_TARGET));
     assert_eq!(snapshot.smp, Some(6));
@@ -253,7 +250,7 @@ target = "loongarch64-unknown-none-softfloat"
 }
 
 #[test]
-fn prepare_axvisor_request_explicit_config_drops_snapshot_vmconfigs() {
+fn prepare_axvisor_request_explicit_config_drops_snapshot_runtime_and_vmconfigs() {
     let root = tempdir().unwrap();
     let explicit = root
         .path()
@@ -265,7 +262,11 @@ fn prepare_axvisor_request_explicit_config_drops_snapshot_vmconfigs() {
 target = "x86_64-unknown-none"
 features = []
 log = "Info"
+max_cpu_num = 2
 vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/arceos-smp1.toml"]
+[runtime]
+task_stack_size = 0x50000
+scheduler_tick_ms = 5
 "#,
     )
     .unwrap();
@@ -275,6 +276,7 @@ vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/arceos-smp1.toml"]
         r#"
 arch = "x86_64"
 target = "x86_64-unknown-none"
+smp = 8
 vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]
 "#,
     )
@@ -300,4 +302,36 @@ vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]
     assert_eq!(request.build_info_path, explicit);
     assert!(request.vmconfigs.is_empty());
     assert!(snapshot.vmconfigs.is_empty());
+    assert_eq!(request.smp, None);
+    assert_eq!(snapshot.smp, None);
+    assert_eq!(request.config.common.max_cpu_num, Some(2));
+    assert_eq!(request.runtime.cpu_capacity, 2);
+    assert_eq!(request.runtime.task_stack_size, 0x50000);
+    assert_eq!(request.runtime.scheduler_tick_ms, 5);
+
+    let snapshot_path = root.path().join(AXVISOR_SNAPSHOT_FILE);
+    let saved_snapshot = fs::read(&snapshot_path).unwrap();
+    let contents = fs::read_to_string(&explicit).unwrap();
+    fs::write(
+        &explicit,
+        contents.replace("max_cpu_num = 2", "max_cpu_num = 0"),
+    )
+    .unwrap();
+    let cli = |smp| AxvisorCliArgs {
+        config: Some(explicit.clone()),
+        smp,
+        ..Default::default()
+    };
+    let (overridden, _) = prepare_axvisor_request(&app, cli(Some(4)), None, None).unwrap();
+    assert_eq!(overridden.runtime.cpu_capacity, 4);
+    assert_eq!(overridden.config.common.max_cpu_num, Some(4));
+    let error = prepare_axvisor_request(&app, cli(None), None, None).unwrap_err();
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<ax_config::ConfigError>(),
+            Some(ax_config::ConfigError::InvalidValue { value, .. }) if value == "0"
+        )),
+        "{error:#}"
+    );
+    assert_eq!(fs::read(snapshot_path).unwrap(), saved_snapshot);
 }

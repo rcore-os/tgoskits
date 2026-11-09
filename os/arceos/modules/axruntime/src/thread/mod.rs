@@ -176,22 +176,12 @@ pub use user_entry::UserExecutionContext;
 
 const PAGE_SIZE: usize = 4096;
 
-#[cfg(not(feature = "fs"))]
-const DEFAULT_TASK_STACK_SIZE: usize = 256 * 1024;
-
 const fn runtime_status_error(status: RuntimeStatus) -> TaskError {
     TaskError::RuntimeFailure(status as u32)
 }
 
 const fn runtime_task_stack_size() -> usize {
-    #[cfg(feature = "fs")]
-    {
-        crate::build_info::TASK_STACK_SIZE
-    }
-    #[cfg(not(feature = "fs"))]
-    {
-        DEFAULT_TASK_STACK_SIZE
-    }
+    crate::build_info::TASK_STACK_SIZE
 }
 
 /// Returns the kernel stack size used by ordinary runtime threads.

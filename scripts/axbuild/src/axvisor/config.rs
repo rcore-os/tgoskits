@@ -4,6 +4,52 @@ use std::{
 };
 
 use anyhow::anyhow;
+use ax_config::{CommonConfig, ConfigError};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Final Axvisor input. VM files remain packaging inputs, not Cargo identity.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[serde(default)]
+pub struct AxvisorConfig {
+    #[serde(flatten)]
+    pub common: CommonConfig,
+    pub vm_configs: Vec<PathBuf>,
+    #[serde(flatten, skip_serializing)]
+    #[schemars(skip)]
+    extra: toml::Table,
+}
+
+impl AxvisorConfig {
+    /// Validate a fully selected configuration without reading process state.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        <Self as crate::build::BuildConfiguration>::validate_input(self)?;
+        crate::build::validate_config_target(&self.common)
+    }
+
+    /// Generate the production input contract, including overlay controls.
+    pub fn input_schema() -> Result<schemars::Schema, ConfigError> {
+        ax_config::input_schema::<Self>()
+    }
+}
+
+impl crate::build::BuildConfiguration for AxvisorConfig {
+    const CLEARABLE_FIELDS: &'static [&'static str] = &[];
+
+    fn extra_fields(&self) -> &toml::Table {
+        &self.extra
+    }
+
+    fn validate_input(&self) -> Result<(), ConfigError> {
+        crate::build::reject_extra_fields(&self.extra)?;
+        self.common.validate()?;
+        for path in &self.vm_configs {
+            crate::build::validate_resource_path("vm_configs", path)?;
+        }
+        Ok(())
+    }
+}
 
 use crate::{
     axvisor::board::{self, Board},

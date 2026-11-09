@@ -259,11 +259,8 @@ fn do_uname(cmd: &ParsedCommand) {
     let show_arch = cmd.flags.contains("machine");
 
     let arch = option_env!("AX_ARCH").unwrap_or("");
-    let platform = option_env!("AX_PLATFORM").unwrap_or("");
-    let smp = match option_env!("AX_SMP") {
-        None | Some("1") => "",
-        _ => " SMP",
-    };
+    let platform = ax_hal::platform_name();
+    let smp = if ax_hal::cpu_num() > 1 { " SMP" } else { "" };
     let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
 
     if show_all {

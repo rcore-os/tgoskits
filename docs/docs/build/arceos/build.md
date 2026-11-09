@@ -17,7 +17,7 @@ flowchart TD
     B --> C["解析 package / arch / target / config"]
     C --> D["必要时从 qemu board 创建缺失 Build Config"]
     D --> E["load_build_config_with_makefile_features"]
-    E --> F["BuildInfo → std PIE Cargo 配置"]
+    E --> F["CommonConfig → std PIE Cargo 配置"]
     F --> G["AppContext::build → ostool cargo_build"]
     G --> H["ELF"]
 ```
@@ -34,7 +34,7 @@ flowchart TD
 tmp/axbuild/config/<package>/build-<target>.toml
 ```
 
-对于 `build` 和 `qemu`，若默认路径不存在，`ensure_default_build_config_for_target()` 会查找 `os/arceos/configs/board/qemu-<arch>.toml` 中 package 与 target 都匹配的文件并复制。找不到匹配 board 时，`ensure_build_info()` 才会写入 `ArceosBuildConfig::default_config()`。
+对于 `build` 和 `qemu`，若默认路径不存在，默认配置入口会查找 `os/arceos/configs/board/qemu-<arch>.toml` 中 package 与 target 都匹配的文件并复制。找不到匹配 board 时使用 `ArceosConfig` 的通用默认值。显式文件读取失败则报错。
 
 普通 ArceOS Build Config 的最小示例：
 
@@ -58,11 +58,13 @@ Board 文件可以额外带 `package` 与 `target`，因此既可作为 `defconf
 3. 用 CLI `--smp` 覆盖 `max_cpu_num`；
 4. 再次校验，确保环境变量同样不能绕过规则。
 
-随后共享 BuildInfo 逻辑把裸机 logical target 映射到 `scripts/targets/std/pie/` 下的 musl JSON target，设置 `build-std=std,panic_abort`，准备交叉 C 编译环境、占位库和 linker wrapper。`max_cpu_num > 1` 会加入 `smp`；应用 Cargo metadata 决定该 feature 传递给 app、`ax-std` 或两者。
+随后 axbuild 的共享 Cargo 适配函数把裸机 logical target 映射到 `scripts/targets/std/pie/` 下的 musl JSON target，设置 `build-std=std,panic_abort`，准备交叉 C 编译环境、占位库和 linker wrapper。`max_cpu_num > 1` 会加入 `smp`；应用 Cargo metadata 决定该 feature 传递给 app、`ax-std` 或两者。
 
 ### 1.4 产物生成
 
 `AppContext::build()` 调用 `ostool_build::cargo_build()`，基础 Cargo 配置中的 `to_bin` 为 `false`。生成的 ELF 路径由 ostool 输出；QEMU、U-Boot 或 Board 命令才会根据各自运行配置决定是否准备 raw BIN。
+
+`CommonConfig.runtime` 通过本次 Cargo 环境和 runtime/HAL 的共同构建 helper 生效。任务栈在有无 fs 时使用同一生成值，默认 ArceOS 线程栈也复用它；优先级和迁移示例见[运行参数](../configuration#34-运行参数)。
 
 ## 2. C 应用构建
 

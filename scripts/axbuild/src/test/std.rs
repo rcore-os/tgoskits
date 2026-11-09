@@ -151,6 +151,12 @@ const AXBUILD_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfi
     features: &[],
 }];
 
+const AX_CONFIG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "toml-schema",
+    no_default_features: false,
+    features: &["toml", "schema"],
+}];
+
 const SOMEBOOT_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "boot-resources",
     no_default_features: false,
@@ -419,6 +425,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         "sdmmc-protocol" => Some(SDMMC_RDIF_FEATURE_PROFILES),
         "aic8800" => Some(AIC8800_FEATURE_PROFILES),
         "axbuild" => Some(AXBUILD_FEATURE_PROFILES),
+        "ax-config" => Some(AX_CONFIG_FEATURE_PROFILES),
         "someboot" => Some(SOMEBOOT_FEATURE_PROFILES),
         "virtio-gpu" => Some(VIRTIO_GPU_FEATURE_PROFILES),
         _ => None,

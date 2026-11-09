@@ -14,13 +14,13 @@ fn rejects_legacy_and_removed_platform_features() {
         "axlibc/stack-protector",
         "starry-kernel/stack-protector",
     ] {
-        let info = BuildInfo {
+        let info = CommonConfig {
             features: vec![feature.to_string()],
-            ..BuildInfo::default()
+            ..CommonConfig::default()
         };
 
         assert!(
-            info.validate_features().is_err(),
+            validate_features(&info).is_err(),
             "{feature} must be rejected"
         );
     }
@@ -28,12 +28,11 @@ fn rejects_legacy_and_removed_platform_features() {
 
 #[test]
 fn removed_stack_hardening_features_explain_paging_migration() {
-    let error = BuildInfo {
+    let common = CommonConfig {
         features: vec!["ax-std/stack-protector".to_string()],
-        ..BuildInfo::default()
-    }
-    .validate_features()
-    .unwrap_err();
+        ..CommonConfig::default()
+    };
+    let error = validate_features(&common).unwrap_err();
 
     assert!(error.to_string().contains("canonical `paging`"));
 }

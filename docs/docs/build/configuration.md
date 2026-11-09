@@ -87,7 +87,7 @@ qemu_config = "os/arceos/configs/qemu/qemu-aarch64.toml"
 
 ## 3. 构建配置
 
-共享的 `BuildInfo` 保存能力、日志、CPU 容量、环境及追加 rustc 参数。根级 `rustflags` 保留 axbuild 的默认参数来源，不同于直接设置 `RUSTFLAGS` 环境变量：
+共享的 `ax_config::CommonConfig` 保存目标、能力、日志、CPU 容量、环境、runtime 选项及追加 rustc 参数。根级 `rustflags` 保留 axbuild 的默认参数来源，不同于直接设置 `RUSTFLAGS` 环境变量：
 
 ```toml
 features = ["fs", "net", "ax-driver/nvme"]
@@ -106,7 +106,8 @@ DWARF = "y"
 | `log` | `Warn` | 转成 `AX_LOG=<小写级别>` |
 | `max_cpu_num` | 无 | 写入 `SMP`；大于 1 时显式增加 `smp` 能力；0 非法 |
 | `rustflags` | `[]` | 每项为一个完整 rustc 参数；在 std/no_std Cargo 配置生成后，追加到当前有效来源，不做 shell 展开 |
-| `[env]` | 空表 | 原样加入 Cargo 环境；部分键会驱动工具链选项 |
+| `[runtime]` | 两项均未指定 | `task_stack_size` 和 `scheduler_tick_ms` 分别控制任务栈字节数及调度 tick 毫秒数 |
+| `[env]` | 空表 | 原样加入 Cargo 环境；保留的日志和 runtime 参数必须使用 typed 字段 |
 
 根级 `rustflags` 复用 `append_cargo_rustflags()`：没有显式环境覆盖时保留 target 配置中的栈保护、调试和链接参数。显式 `CARGO_ENCODED_RUSTFLAGS` 或 `RUSTFLAGS` 仍按 Cargo 的原优先级覆盖配置来源，追加项进入该有效来源，不会自动恢复被遮蔽的默认值。需要在默认参数之上扩展时使用根级数组；完整契约见 [axbuild 构建参数追加](../../../design/axbuild-rustflags.md)。
 
@@ -120,7 +121,7 @@ tmp/axbuild/config/<package>/build-<logical-target>.toml
 
 ### 3.1 系统配置形态
 
-三个系统共享 `BuildInfo`，但 board 文件提供的选择器和缺失默认配置的处理方式不同。下表对应各自的 `config.rs` 与 `build/load.rs`，用于判断某个字段应放入何处。
+三个系统组合共享 `CommonConfig` 与各自字段，根未知键和跨系统专属字段均报错。下表对应各自的配置入口，用于判断某个字段应放入何处。
 
 | 系统 | 额外字段 | 缺失默认配置时 |
 | --- | --- | --- |
@@ -132,19 +133,19 @@ tmp/axbuild/config/<package>/build-<logical-target>.toml
 
 ### 3.2 特性校验
 
-`BuildInfo::validate_features()` 在 Cargo 配置生成前检查所有 Build Config 和 `FEATURES` 输入。验证规则将 feature 归属限制在当前 Cargo 接口，并保证各系统只接收自己的配置字段：
+axbuild 的 `validate_features()` 在 Cargo 配置生成前检查所有 Build Config 和 `FEATURES` 输入。验证规则将 feature 归属限制在当前 Cargo 接口，并保证各系统只接收自己的配置字段：
 
 - `axstd` 与 `axstd/<feature>` 不属于有效 feature 名称；配置应使用 package 实际声明的 Cargo feature。
-- `dyn-plat`、`plat-dyn`、`axplat-dyn`、`ax-hal/plat-dyn`、`ax-std/plat-dyn`、`axvm/plat-dyn`、`ax-driver/plat-dyn` 不属于有效 BuildInfo feature。
-- Build Config 共享根字段为 `env`、`features`、`log`、`max_cpu_num`、`rustflags`，另有系统专属字段；`std`、`plat_dyn` 会在 TOML 读取时报告结构错误。
+- `dyn-plat`、`plat-dyn`、`axplat-dyn`、`ax-hal/plat-dyn`、`ax-std/plat-dyn`、`axvm/plat-dyn`、`ax-driver/plat-dyn` 不属于有效构建 feature。
+- Build Config 共享根字段为 `target`、`env`、`features`、`log`、`max_cpu_num`、`rustflags`、`runtime`，另有系统专属字段；`std`、`plat_dyn` 会在 TOML 读取时报告结构错误。
 - `app-c` 只由 ArceOS 的 C app 路径消费；StarryOS 和 Axvisor 的配置读取器会拒绝该字段。
 - Axvisor 的 `reject_unsupported_nested_platform_features()` 额外检查 `axplat-dyn/*`、`ax-std/<platform>` 和裸平台名。
 
-`FEATURES` 提供以逗号或空白分隔的外部 feature 输入；`apply_makefile_features()` 对每项执行相同验证、规范化和去重，然后并入 BuildInfo。
+`FEATURES` 提供以逗号或空白分隔的外部 feature 输入；`apply_makefile_features()` 对每项执行相同验证、规范化和去重，然后并入公共配置。
 
 ### 3.3 标准库构建
 
-ArceOS Rust app、StarryOS 和 Axvisor 共用 `into_prepared_base_cargo_config_with_metadata()`：
+ArceOS 默认 Rust app 和 Axvisor 使用 `into_prepared_base_cargo_config_with_metadata()`；StarryOS 使用共享裸机 JSON 和 `into_prepared_no_std_cargo_config_with_metadata()`，构建 core/alloc 的 PIE 镜像，不启用内核 TLS。标准库路径按以下步骤装配：
 
 1. 验证 `max_cpu_num` 和 feature。
 2. 将 `ax-std/foo` 规范成逻辑能力 `foo`，保留 `ax-hal/*`、`ax-driver/*`、`ax-runtime/*` 边界。
@@ -162,6 +163,24 @@ Build Config 中 `[env]` 的以下键会补充 Rust 工具链选项：
 | Cargo 特性图可到达 `ax-runtime/paging`；常见入口包括 `paging`、`ax-std/paging`、`ax-runtime/paging`、`ax-libc/paging`、`axlibc/paging`，以及会转发 `paging` 的 `ax-std/uspace`、`ax-runtime/uspace`、`ax-std/hv` | `-Zstack-protector=strong` |
 
 `ax-runtime/uspace`、`ax-std/uspace` 和 `ax-std/hv` 若启用底层 `ax-hal` 的 MMU，均传递本地 `paging`；因此直接选择这些入口也会获得动态任务栈保护和同一 compiler rustflag。仅启用 `ax-hal/paging`、`ax-hal/uspace` 或 `ax-hal/hv` 不会到达 `ax-runtime/paging`，不会单独追加该标志。`paging` 不隐式增加 `ipi`，多核仍由 `smp -> wake-ipi` 提供远端 TLB 刷新。
+
+### 3.4 运行参数
+
+`resolve_runtime()` 按每个参数分别选择 typed 配置、进程环境、公共默认值。`max_cpu_num` 的默认状态是未指定，有效 CPU 容量回退到 16；这与显式写入 16 不同，后者还会参与 SMP feature 选择。实际 CPU 数仍由平台发现并受容量限制，配置容量不决定 QEMU 的 vCPU 数。
+
+用户配置通过普通字段设置运行参数，例如为任务选择 320 KiB 栈和 5 毫秒 tick。
+
+```toml
+max_cpu_num = 4
+
+[runtime]
+task_stack_size = 0x50000
+scheduler_tick_ms = 5
+```
+
+缺省任务栈回退到进程 `AX_TASK_STACK_SIZE` 或 0x40000 字节；缺省 tick 回退到 `AX_SCHEDULER_TICK_MS` 或 10 毫秒；缺省 CPU 容量回退到 `SMP` 或 16。环境数字支持十进制、十六进制和下划线，仅解析胜出来源。CPU 和 tick 不能为零，栈必须非零且 16 字节对齐，分配及时间转换溢出会报错。任务栈在有无文件系统时生效，ArceOS 的默认线程栈也使用同一值。
+
+用户 `[env]` 中不再接受 `SMP`、`AX_LOG`、`AX_TASK_STACK_SIZE`、`AX_SCHEDULER_TICK_MS`，应分别迁移到 `max_cpu_num`、`log` 和上述 runtime 字段。axbuild 将最终有效参数写入本次 Cargo 子进程环境，runtime/HAL 的构建 helper 使用相同规则并声明环境失效；连续请求不会修改父进程环境。启动栈仍由 someboot 管理，独立于任务栈。
 
 ## 4. 产物与启动
 

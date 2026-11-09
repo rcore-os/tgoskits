@@ -24,6 +24,8 @@
 
 CPU 拓扑测试通过 `cpu_topology_len()` 获取运行时 CPU 数；`std::thread::available_parallelism()` 表达调用者可用并行度，不能代替内核拓扑。`RunnerTaskState` 在每项任务测试后恢复原亲和性和调度策略，防止用例互相影响。
 
+四架构的共享构建输入使用 320 KiB 任务栈和 5 毫秒 tick，覆盖公共配置到真实 runtime 的非默认参数链。`task-yield` 在创建和等待内核任务时检查 API 与 runtime 的栈参数一致，`cpu-capacity` 检查 HAL、运行时拓扑和编译容量的关系；既有调度时钟用例继续验证真实中断和任务计时。验证 fs 与无 fs 时使用相同线程用例，仅切换所需文件系统能力，避免另建参数实例测试。
+
 ## 2. 运行与判定
 
 所有 ArceOS 构建和运行通过 `cargo xtask` 进行。feature、`test_runner!`、`SELECTED_TESTS` 和构建配置共同决定实际执行内容，不能用缺少运行时的空函数返回成功。

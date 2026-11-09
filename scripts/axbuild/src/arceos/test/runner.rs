@@ -304,9 +304,15 @@ mod tests {
                 target: "x86_64-unknown-none".to_string(),
                 smp: None,
                 debug: false,
-                build_info_path: build_config_path.to_path_buf(),
+                build_info_path: (build_config_path.to_path_buf()).clone(),
                 qemu_config: None,
                 uboot_config: None,
+                ..crate::context::test_support::arceos_request(
+                    build_config_path,
+                    ARCEOS_RUST_TEST_PACKAGE,
+                    "x86_64",
+                    "x86_64-unknown-none",
+                )
             },
             cargo: Cargo {
                 env: Default::default(),

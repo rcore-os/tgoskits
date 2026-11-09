@@ -8,12 +8,11 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use ax_config::RuntimeValues;
+pub use ax_config::{CommonConfig, LogLevel};
 use cargo_metadata::{Metadata, Package};
-use log::info;
 use ostool::build::config::Cargo;
-pub use ostool::build::config::LogLevel;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::context::axbuild_tmp_dir;
@@ -29,19 +28,27 @@ mod std_build;
 pub(crate) mod symbol_map;
 
 pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
+#[cfg(test)]
+pub(crate) use config_file::parse_build_config;
 pub(crate) use config_file::{
-    ensure_build_info, load_build_info, load_toml_with_rejector, read_toml_with_rejector,
-    reject_arceos_app_c_field, reject_removed_std_field,
+    BuildConfiguration, ensure_build_info, invalid_config_value, load_build_config,
+    reject_extra_fields, validate_config_target, validate_resource_path,
 };
 pub(crate) use future_incompat::{
     FutureIncompatReportSession, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,
 };
 pub(crate) use info::{
-    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags, env_truthy,
-    package_enables_mmu, toolchain_rustflags,
+    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, append_cargo_rustflags, env_truthy,
+    into_prepared_no_std_cargo_config_with_metadata,
+    into_prepared_no_std_cargo_config_with_metadata_and_defaults,
+    into_prepared_std_cargo_config_with_metadata,
+    into_prepared_std_cargo_config_with_metadata_and_defaults, package_enables_mmu,
+    resolve_c_app_features, toolchain_rustflags, validate_feature, validate_features,
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
+#[cfg(test)]
+pub(crate) use info::{into_base_cargo_config, into_prepared_base_cargo_config_with_metadata};
 #[cfg(test)]
 pub(crate) use platform::workspace_metadata;
 use platform::*;

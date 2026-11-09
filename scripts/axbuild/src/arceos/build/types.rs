@@ -1,58 +1,5 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
-use crate::build::BuildInfo;
-
-pub type ArceosBuildInfo = BuildInfo;
-
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
-#[serde(default)]
-pub(crate) struct ArceosBuildConfig {
-    #[serde(flatten, default)]
-    pub(crate) build_info: ArceosBuildInfo,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub(crate) to_bin: bool,
-    /// Build Rust against core/alloc for images whose CPU contract forbids kernel TLS.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub(crate) freestanding: bool,
-    #[serde(rename = "app-c", skip_serializing_if = "Option::is_none")]
-    pub(crate) app_c: Option<PathBuf>,
-}
-
-impl ArceosBuildConfig {
-    pub(super) fn validate_runtime(&self) -> anyhow::Result<()> {
-        if self.freestanding && self.app_c.is_some() {
-            anyhow::bail!("freestanding Rust and app-c are distinct build inputs");
-        }
-        Ok(())
-    }
-
-    pub(super) fn default_config() -> Self {
-        Self {
-            build_info: ArceosBuildInfo::default(),
-            to_bin: false,
-            freestanding: false,
-            app_c: None,
-        }
-    }
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
-#[serde(default)]
-pub(crate) struct ArceosBuildFile {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) package: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) target: Option<String>,
-    #[serde(flatten)]
-    pub(crate) config: ArceosBuildConfig,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ArceosBuildMode {
     Rust,

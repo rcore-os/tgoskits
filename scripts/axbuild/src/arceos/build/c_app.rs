@@ -5,28 +5,28 @@ use std::{
 
 use anyhow::{Context, bail};
 
-use super::{ArceosBuildConfig, ArceosBuildFile, ArceosBuildMode};
+use super::{ArceosBuildMode, ArceosConfig};
 use crate::build;
 
-pub(crate) fn load_arceos_build_file(path: &Path) -> anyhow::Result<ArceosBuildFile> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read ArceOS build config {}", path.display()))?;
-    build::reject_removed_std_field(path, &content)?;
-    let config: ArceosBuildFile = toml::from_str(&content)
-        .with_context(|| format!("failed to parse ArceOS build config {}", path.display()))?;
-    config.config.validate_runtime()?;
-    Ok(config)
+pub(crate) fn load_arceos_build_file(path: &Path) -> anyhow::Result<ArceosConfig> {
+    build::load_build_config(path)
 }
 
-pub(crate) fn load_arceos_build_config(path: &Path) -> anyhow::Result<ArceosBuildConfig> {
-    build::ensure_build_info(path, ArceosBuildConfig::default_config)?;
-    Ok(load_arceos_build_file(path)?.config)
+pub(crate) fn load_arceos_build_config(path: &Path) -> anyhow::Result<ArceosConfig> {
+    load_arceos_build_file(path)
 }
 
 pub(crate) fn load_arceos_build_mode(path: &Path) -> anyhow::Result<ArceosBuildMode> {
     let config = load_arceos_build_config(path)?;
-    match config.app_c {
-        Some(app_c) => super::resolve_app_c_mode(path, &app_c),
+    arceos_build_mode(&config, path)
+}
+
+pub(crate) fn arceos_build_mode(
+    config: &ArceosConfig,
+    path: &Path,
+) -> anyhow::Result<ArceosBuildMode> {
+    match &config.app_c {
+        Some(app_c) => super::resolve_app_c_mode(path, app_c),
         None => Ok(ArceosBuildMode::Rust),
     }
 }

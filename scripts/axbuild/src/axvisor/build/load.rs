@@ -1,22 +1,16 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 
-use super::{AxvisorBoardFile, AxvisorBuildInfo, LoadedAxvisorBuildConfig};
-use crate::{
-    axvisor::board,
-    context::{ResolvedAxvisorRequest, arch_for_target_checked},
-};
+use super::AxvisorConfig;
+use crate::{axvisor::board, context::arch_for_target_checked};
 
-pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<AxvisorBoardFile> {
-    crate::build::load_toml_with_rejector(
-        path,
-        "Axvisor board config",
-        reject_unsupported_axvisor_fields,
-    )
+pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<AxvisorConfig> {
+    let config: AxvisorConfig = crate::build::load_build_config(path)?;
+    config
+        .validate()
+        .with_context(|| format!("invalid Axvisor board config {}", path.display()))?;
+    Ok(config)
 }
 
 pub(crate) fn resolve_build_info_path(
@@ -27,7 +21,6 @@ pub(crate) fn resolve_build_info_path(
     if let Some(path) = explicit_path {
         return Ok(path);
     }
-
     let _ = arch_for_target_checked(target)?;
     Ok(default_build_info_path(axvisor_dir, target))
 }
@@ -48,114 +41,30 @@ pub(crate) fn default_build_info_path(axvisor_dir: &Path, target: &str) -> PathB
     )
 }
 
-pub(crate) fn load_target_from_build_config(path: &Path) -> anyhow::Result<Option<String>> {
-    let content = crate::build::read_toml_with_rejector(
-        path,
-        "Axvisor build config",
-        reject_unsupported_axvisor_fields,
-    )?;
-
-    if let Ok(board_file) = toml::from_str::<AxvisorBoardFile>(&content) {
-        return Ok(Some(board_file.target));
+pub(crate) fn load_or_create_default_config(
+    axvisor_dir: &Path,
+    target: &str,
+    path: &Path,
+) -> anyhow::Result<AxvisorConfig> {
+    if path.exists() {
+        return crate::build::load_build_config(path);
     }
-    if toml::from_str::<AxvisorBuildInfo>(&content).is_ok() {
-        return Ok(None);
-    }
-
-    Err(anyhow!("invalid Axvisor build config {}", path.display()))
-}
-
-pub(super) fn load_build_config(
-    request: &ResolvedAxvisorRequest,
-) -> anyhow::Result<LoadedAxvisorBuildConfig> {
-    println!("Using build config: {}", request.build_info_path.display());
-
-    if !request.build_info_path.exists() {
-        return load_or_create_missing_build_config(request);
-    }
-
-    let content = crate::build::read_toml_with_rejector(
-        &request.build_info_path,
-        "Axvisor build config",
-        reject_unsupported_axvisor_fields,
-    )?;
-
-    if let Ok(board_config) = toml::from_str::<AxvisorBoardFile>(&content) {
-        let mut loaded = board_config.into_loaded();
-        apply_request_smp(&mut loaded, request);
-        return Ok(loaded);
-    }
-
-    toml::from_str::<AxvisorBuildInfo>(&content)
-        .map(|build_info| {
-            let mut loaded = LoadedAxvisorBuildConfig {
-                build_info,
-                target: request.target.clone(),
-                vm_configs: Vec::new(),
-            };
-            apply_request_smp(&mut loaded, request);
-            loaded
-        })
-        .map_err(|e| {
-            anyhow!(
-                "failed to parse build info {}: {e}",
-                request.build_info_path.display()
-            )
-        })
-}
-
-fn load_or_create_missing_build_config(
-    request: &ResolvedAxvisorRequest,
-) -> anyhow::Result<LoadedAxvisorBuildConfig> {
-    if let Some(parent) = request.build_info_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if let Some(default_board) =
-        board::default_board_for_target(&request.axvisor_dir, &request.target)?
+    if board::board_dir(axvisor_dir).exists()
+        && let Some(board) = board::default_board_for_target(axvisor_dir, target)?
     {
-        fs::copy(&default_board.path, &request.build_info_path).map_err(|e| {
-            anyhow!(
-                "failed to copy default board config {} to {}: {e}",
-                default_board.path.display(),
-                request.build_info_path.display()
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&board.path, path).with_context(|| {
+            format!(
+                "failed to copy default board {} to {}",
+                board.path.display(),
+                path.display()
             )
         })?;
-        let mut loaded = default_board
-            .config
-            .into_loaded(default_board.target.clone());
-        apply_request_smp(&mut loaded, request);
-        return Ok(loaded);
+        return Ok(board.config);
     }
-
-    let default_build_info = super::config::default_axvisor_build_info();
-    fs::write(
-        &request.build_info_path,
-        toml::to_string_pretty(&default_build_info)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed to write default Axvisor build config {}",
-            request.build_info_path.display()
-        )
-    })?;
-
-    let mut loaded = LoadedAxvisorBuildConfig {
-        build_info: default_build_info,
-        target: request.target.clone(),
-        vm_configs: Vec::new(),
-    };
-    apply_request_smp(&mut loaded, request);
-    Ok(loaded)
-}
-
-fn apply_request_smp(loaded: &mut LoadedAxvisorBuildConfig, request: &ResolvedAxvisorRequest) {
-    if let Some(smp) = request.smp {
-        loaded.build_info.max_cpu_num = Some(smp);
-    }
-}
-
-fn reject_unsupported_axvisor_fields(path: &Path, content: &str) -> anyhow::Result<()> {
-    crate::build::reject_removed_std_field(path, content)?;
-    crate::build::reject_arceos_app_c_field(path, content)?;
-    Ok(())
+    let config = AxvisorConfig::default();
+    crate::build::ensure_build_info(path, || config.clone())?;
+    Ok(config)
 }

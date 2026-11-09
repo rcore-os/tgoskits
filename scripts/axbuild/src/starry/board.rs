@@ -5,24 +5,16 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use serde::Deserialize;
 
-use super::build::StarryBuildInfo;
+use super::config::StarryConfig;
 use crate::context::STARRY_PACKAGE;
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub(crate) struct StarryBoardFile {
-    pub(crate) target: String,
-    #[serde(flatten)]
-    pub(crate) build_info: StarryBuildInfo,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Board {
     pub(crate) name: String,
     pub(crate) path: PathBuf,
     pub(crate) target: String,
-    pub(crate) build_info: StarryBuildInfo,
+    pub(crate) config: StarryConfig,
 }
 
 pub(crate) fn starry_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
@@ -44,12 +36,12 @@ pub(crate) fn board_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
     Ok(starry_dir(workspace_root)?.join("configs/board"))
 }
 
-pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<StarryBoardFile> {
-    let contents = fs::read_to_string(path)?;
-    crate::build::reject_removed_std_field(path, &contents)?;
-    toml::from_str::<StarryBoardFile>(&contents)
-        .map_err(anyhow::Error::from)
-        .with_context(|| format!("failed to parse Starry board config {}", path.display()))
+pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<StarryConfig> {
+    let config: StarryConfig = crate::build::load_build_config(path)?;
+    config
+        .validate()
+        .with_context(|| format!("invalid Starry board config {}", path.display()))?;
+    Ok(config)
 }
 
 pub(crate) fn board_default_list(workspace_root: &Path) -> anyhow::Result<Vec<Board>> {
@@ -78,8 +70,12 @@ pub(crate) fn board_default_list(workspace_root: &Path) -> anyhow::Result<Vec<Bo
         boards.push(Board {
             name,
             path,
-            target: board_file.target,
-            build_info: board_file.build_info,
+            target: board_file
+                .common
+                .target
+                .clone()
+                .expect("board target was validated"),
+            config: board_file,
         });
     }
     boards.sort_by(|left, right| left.name.cmp(&right.name));
