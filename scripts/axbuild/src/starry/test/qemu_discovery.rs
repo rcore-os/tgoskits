@@ -19,10 +19,7 @@ pub(crate) fn parse_test_target(
         &arch,
         "starry qemu tests",
         "arch values",
-        &supported_arches
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
+        &supported_arches.iter().copied().collect::<Vec<_>>(),
     )?;
     validate_supported_target(&target, "starry qemu tests", "targets", &supported_targets)?;
     Ok((arch, target))
@@ -194,8 +191,11 @@ fn load_qemu_case(
         workspace_root.join(case.build_config_path)
     };
     let build_input = if build_config_path.is_file() {
-        let input =
-            crate::build::load_config_input(workspace_root, Some(&build_config_path), None)?;
+        let input = crate::build::load_config_input::<crate::starry::config::StarryConfig>(
+            workspace_root,
+            Some(&build_config_path),
+            None,
+        )?;
         if input.config.common.target.as_deref() != Some(target) {
             bail!(
                 "Starry build config {} declares target {:?}, expected {target}",

@@ -1,10 +1,9 @@
 use std::{
-    collections::HashSet,
     env, fs,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use toml::Value;
 
 const WORKSPACE_TABLE: &str = "workspace";
@@ -97,21 +96,6 @@ pub(crate) fn workspace_root_path_from(
         .context("failed to canonicalize workspace root")
 }
 
-pub(crate) fn workspace_member_dir(package: &str) -> anyhow::Result<PathBuf> {
-    workspace_member_dir_in(&workspace_root_path()?, package)
-}
-
-pub(crate) fn workspace_member_dir_in(
-    workspace_root: &Path,
-    package: &str,
-) -> anyhow::Result<PathBuf> {
-    let manifest_path = workspace_member_manifest_path(workspace_root, package)?;
-    manifest_path
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| anyhow!("package manifest path has no parent directory"))
-}
-
 pub(crate) fn workspace_manifest_path() -> anyhow::Result<PathBuf> {
     Ok(workspace_root_path()?.join("Cargo.toml"))
 }
@@ -159,21 +143,6 @@ pub(crate) fn workspace_metadata_root_manifest_with_deps(
                 workspace_manifest_path.display()
             )
         })
-}
-
-fn workspace_member_manifest_path(workspace_root: &Path, package: &str) -> anyhow::Result<PathBuf> {
-    let metadata = workspace_metadata(workspace_root)?;
-    let workspace_members: HashSet<_> = metadata.workspace_members.iter().cloned().collect();
-    metadata
-        .packages
-        .iter()
-        .find(|pkg| workspace_members.contains(&pkg.id) && pkg.name == package)
-        .map(|pkg| pkg.manifest_path.clone().into_std_path_buf())
-        .ok_or_else(|| anyhow!("workspace package `{package}` not found"))
-}
-
-fn workspace_metadata(workspace_root: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
-    workspace_metadata_root_manifest(&workspace_manifest_path_in(workspace_root))
 }
 
 fn runtime_workspace_root(start: &Path) -> anyhow::Result<Option<PathBuf>> {

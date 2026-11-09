@@ -1,5 +1,7 @@
 //! Shared board identities and genuinely cross-OS feature fragments.
 
+use crate::Board;
+
 pub const TARGET_AARCH64: &str = "aarch64-unknown-none-softfloat";
 pub const TARGET_RISCV64: &str = "riscv64gc-unknown-none-elf";
 pub const TARGET_LOONGARCH64: &str = "loongarch64-unknown-none-softfloat";

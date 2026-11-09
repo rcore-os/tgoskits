@@ -332,7 +332,7 @@ impl Axvisor {
             ConfigCommand::Show(args) => {
                 let request =
                     self.prepare_request((&args).into(), None, None, SnapshotPersistence::Discard)?;
-                build::show_config(
+                crate::build::show_config(
                     &request.config,
                     &request.source,
                     request.runtime,

@@ -29,12 +29,12 @@ mod std_build;
 pub(crate) mod symbol_map;
 
 pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
-#[cfg(test)]
-pub(crate) use config_file::parse_build_config;
 pub(crate) use config_file::{
-    BuildConfiguration, invalid_config_value, load_build_config, reject_extra_fields,
-    validate_config_target, validate_resource_path,
+    BuildConfiguration, invalid_config_value, reject_extra_fields, validate_config_target,
+    validate_resource_path,
 };
+#[cfg(test)]
+pub(crate) use config_file::{load_build_config, parse_build_config};
 pub use config_source::ConfigSource;
 pub(crate) use config_source::{
     ConfigInput, FileFields, export_config, load_config_input, show_config,

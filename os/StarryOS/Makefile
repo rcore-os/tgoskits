@@ -87,10 +87,10 @@ la:
 	$(MAKE) ARCH=loongarch64 run
 
 sg2002:
-	$(XTASK) build --config $(STARRY_DIR)/configs/board/licheerv-nano-sg2002.toml
+	$(XTASK) build --preset licheerv-nano-sg2002
 
 sg2002-wifi:
-	$(XTASK) build --config $(STARRY_DIR)/configs/board/licheerv-nano-sg2002-wifi.toml
+	$(XTASK) build --preset licheerv-nano-sg2002-wifi
 
 .PHONY: default rootfs img defconfig build run justrun debug disasm ci-test clean \
 	rv la sg2002 sg2002-wifi

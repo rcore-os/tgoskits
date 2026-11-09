@@ -1,5 +1,7 @@
 //! Test-suit asset reuse for scheduler performance experiments.
 
+use std::path::Path;
+
 use anyhow::{Context, ensure};
 use ostool::run::qemu::QemuConfig;
 

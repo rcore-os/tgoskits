@@ -50,7 +50,7 @@ pub(crate) fn test_request(path: &Path, arch: &str, target: &str) -> ResolvedSta
                 preset: None,
             },
             target_constraint: None,
-            app_c_from_file: false,
+            file_fields: Default::default(),
         }
     };
     let mut config = input.config;
@@ -149,7 +149,7 @@ impl Starry {
             ConfigCommand::Show(args) => {
                 let request =
                     self.prepare_request((&args).into(), None, None, SnapshotPersistence::Discard)?;
-                build::show_config(
+                crate::build::show_config(
                     &request.config,
                     &request.source,
                     request.runtime,

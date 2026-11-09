@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     env,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
@@ -53,8 +52,8 @@ pub use types::{
 };
 pub(crate) use workspace::{
     WorkspaceContext, axbuild_tmp_dir, resolve_axbuild_artifact_path, workspace_manifest_path,
-    workspace_member_dir as resolve_workspace_member_dir, workspace_metadata_root_manifest,
-    workspace_metadata_root_manifest_with_deps, workspace_root_path,
+    workspace_metadata_root_manifest, workspace_metadata_root_manifest_with_deps,
+    workspace_root_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +80,6 @@ pub struct AppContext {
     invocation: Invocation,
     build_config_path: Option<PathBuf>,
     workspace: WorkspaceContext,
-    member_dirs: HashMap<String, PathBuf>,
     original_path: OsString,
     debug: bool,
 }
@@ -119,7 +117,6 @@ impl AppContext {
             invocation,
             build_config_path: None,
             workspace,
-            member_dirs: HashMap::new(),
             original_path: env::var_os("PATH").unwrap_or_default(),
             debug: false,
         })
@@ -139,22 +136,6 @@ impl AppContext {
 
     pub(crate) fn workspace_context(&self) -> &WorkspaceContext {
         &self.workspace
-    }
-
-    pub(crate) fn workspace_member_dir(&mut self, package: &str) -> anyhow::Result<&Path> {
-        if !self.member_dirs.contains_key(package) {
-            let member_dir = resolve_workspace_member_dir(package)?;
-            info!(
-                "Workspace member dir for {package}: {}",
-                member_dir.display()
-            );
-            self.member_dirs.insert(package.to_string(), member_dir);
-        }
-
-        self.member_dirs
-            .get(package)
-            .map(PathBuf::as_path)
-            .context("workspace member dir should be initialized")
     }
 
     pub(crate) async fn build(

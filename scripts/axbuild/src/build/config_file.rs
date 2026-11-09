@@ -23,6 +23,7 @@ pub(crate) trait BuildConfiguration: Default + Serialize + DeserializeOwned {
     fn validate_input(&self) -> Result<(), ConfigError>;
 }
 
+#[cfg(test)]
 pub(crate) fn parse_build_config<T: BuildConfiguration>(
     path: &Path,
     contents: &str,
@@ -30,6 +31,7 @@ pub(crate) fn parse_build_config<T: BuildConfiguration>(
     Ok(super::config_source::parse_config_input::<T>(Some((path, contents)), None)?.config)
 }
 
+#[cfg(test)]
 pub(crate) fn load_build_config<T: BuildConfiguration>(path: &Path) -> anyhow::Result<T> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read build config {}", path.display()))?;

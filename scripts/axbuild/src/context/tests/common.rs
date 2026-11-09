@@ -1,5 +1,4 @@
 pub(super) use std::{
-    collections::HashMap,
     env,
     ffi::{OsStr, OsString},
     fs,
@@ -19,7 +18,6 @@ pub(super) fn test_app_context(root: &Path) -> AppContext {
         invocation: test_invocation(&workspace),
         build_config_path: None,
         workspace,
-        member_dirs: HashMap::from([("axvisor".to_string(), root.join("os/axvisor"))]),
         original_path: env::var_os("PATH").unwrap_or_default(),
         debug: false,
     }

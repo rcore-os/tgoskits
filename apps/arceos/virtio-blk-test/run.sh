@@ -17,5 +17,5 @@ cargo xtask arceos build -p arceos-virtio-blk-test \
     target/aarch64-unknown-linux-musl/release/arceos-virtio-blk-test.bin
 
 exec cargo xtask axvisor qemu \
-    --config os/axvisor/configs/board/qemu-aarch64-virtio-blk-test.toml \
+    --preset qemu-aarch64-virtio-blk-test \
     --qemu-config os/axvisor/configs/qemu/qemu-aarch64-virtio-blk-test.toml

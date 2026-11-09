@@ -13,8 +13,8 @@ use super::{
 };
 use crate::{
     context::{
-        RequestEnvironment, ResolvedStarryRequest, StarryCliArgs, arch_for_target_checked,
-        board_run_request,
+        RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
+        arch_for_target_checked, board_run_request,
     },
     starry::{Starry, build},
     test::{board as board_test, qemu as qemu_test},
@@ -37,14 +37,17 @@ pub(crate) fn collect_board_test_groups(
 ) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
     let mut groups = Vec::new();
     for info in board_test::discover_board_case_build_infos(test_suite_dir, "Starry")? {
-        let build_input =
-            crate::build::load_config_input(_workspace_root, Some(&info.build_config_path), None)
-                .with_context(|| {
-                format!(
-                    "failed to load Starry board build config `{}`",
-                    info.build_config_path.display()
-                )
-            })?;
+        let build_input = crate::build::load_config_input::<crate::starry::config::StarryConfig>(
+            _workspace_root,
+            Some(&info.build_config_path),
+            None,
+        )
+        .with_context(|| {
+            format!(
+                "failed to load Starry board build config `{}`",
+                info.build_config_path.display()
+            )
+        })?;
         let target = build_input
             .config
             .common
