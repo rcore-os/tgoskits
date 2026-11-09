@@ -99,6 +99,14 @@ impl AddrSpace {
             .map_err(|_| MmError::BadAddress)
     }
 
+    /// Returns the physical address one materialized mapping translates to.
+    pub fn translate(&self, vaddr: VirtAddr) -> MmResult<PhysAddr> {
+        self.pt
+            .query(vaddr)
+            .map(|(paddr, ..)| paddr)
+            .map_err(|_| MmError::BadAddress)
+    }
+
     /// Returns flags and leaf size without exposing page-table ownership.
     pub fn mapping_attributes(&self, vaddr: VirtAddr) -> MmResult<(MappingFlags, usize)> {
         self.pt
