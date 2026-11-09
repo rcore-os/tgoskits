@@ -100,7 +100,11 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
     cargo.to_bin = qemu_to_bin_requested(&qemu)?;
     axvisor
         .app
-        .qemu(cargo, request.build_info_path, Some(qemu))
+        .qemu(
+            cargo,
+            request.config_path().map(Path::to_path_buf),
+            Some(qemu),
+        )
         .await
 }
 
@@ -518,23 +522,31 @@ mod tests {
     }
 
     fn request(root: &Path, vmconfigs: Vec<PathBuf>) -> ResolvedAxvisorRequest {
+        let target = "aarch64-unknown-none-softfloat";
+        let mut config = crate::axvisor::config::AxvisorConfig::default();
+        config.common.target = Some(target.to_string());
+        let runtime_env = ax_config::RuntimeEnv::default();
+        let runtime = ax_config::resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &runtime_env,
+        )
+        .unwrap();
         ResolvedAxvisorRequest {
             package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
             axvisor_dir: root.join("os/axvisor"),
             arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
+            target: target.to_string(),
             smp: None,
             debug: false,
-            build_info_path: (root.join(".build.toml")).clone(),
+            source: crate::build::ConfigSource::Custom,
+            config,
+            runtime,
+            runtime_env,
+            environment_features: Vec::new(),
             qemu_config: None,
             uboot_config: None,
             vmconfigs,
-            ..crate::context::test_support::axvisor_request(
-                &(root.join(".build.toml")),
-                "aarch64",
-                "aarch64-unknown-none-softfloat",
-                &(root.join("os/axvisor")),
-            )
         }
     }
 

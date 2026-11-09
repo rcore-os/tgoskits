@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Context;
@@ -22,7 +22,6 @@ use crate::{
 
 struct PreparedBoardBuild {
     cargo: Cargo,
-    request: ResolvedAxvisorRequest,
     elf_path: PathBuf,
 }
 
@@ -76,7 +75,7 @@ impl Axvisor {
             .await?;
         let uboot = Some(merge_board_test_uboot_config(base_uboot, board_config));
         self.app
-            .uboot(cargo, request.build_info_path, uboot)
+            .uboot(cargo, request.config_path().map(Path::to_path_buf), uboot)
             .await
             .with_context(|| {
                 format!(
@@ -213,6 +212,7 @@ impl Axvisor {
             .context("failed to create temporary Axvisor board artifact directory")?;
         let mut prepared_builds = Vec::<PreparedBoardBuildGroup>::new();
         let mut config_to_build = HashMap::<PathBuf, usize>::new();
+        let mut requests_by_build_config = HashMap::<PathBuf, ResolvedAxvisorRequest>::new();
         for (build_config, positions) in build_groups {
             let group = &runnable[positions[0]].1;
             let prepared = async {
@@ -240,6 +240,7 @@ impl Axvisor {
                     continue;
                 }
             };
+            requests_by_build_config.insert(build_config.clone(), request.clone());
             if let Some(index) = prepared_builds
                 .iter()
                 .position(|existing| existing.result.is_ok() && existing.cargo == cargo)
@@ -252,7 +253,7 @@ impl Axvisor {
             let result = async {
                 let output = self
                     .app
-                    .build(cargo.clone(), request.build_info_path.clone())
+                    .build(cargo.clone(), request.config_path().map(Path::to_path_buf))
                     .await?;
                 let elf_path = test_qemu::preserve_build_artifact(
                     output.elf_path(),
@@ -261,7 +262,6 @@ impl Axvisor {
                 )?;
                 Ok::<_, anyhow::Error>(PreparedBoardBuild {
                     cargo: result_cargo,
-                    request,
                     elf_path,
                 })
             }
@@ -312,10 +312,12 @@ impl Axvisor {
             let mut transport_retries = 0;
             let result = loop {
                 let result = async {
-                    let mut request = prepared.request.clone();
-                    // Cargo identity is shared, but each board case keeps its own
-                    // build metadata and guest resource selection.
-                    request.build_info_path = group.build_config.clone();
+                    // Cargo identity may be shared; use the request resolved
+                    // from this group's own config for guest packaging.
+                    let mut request = requests_by_build_config
+                        .get(build_config)
+                        .context("missing resolved Axvisor board group request")?
+                        .clone();
                     let mut board_config = self
                         .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                         .await?;
@@ -330,7 +332,7 @@ impl Axvisor {
                         .board_prepared_elf(
                             prepared.elf_path.clone(),
                             prepared.cargo.to_bin,
-                            request.build_info_path,
+                            request.config_path().map(Path::to_path_buf),
                             board_config,
                             RunBoardOptions {
                                 board_type: args.board_type.clone(),
@@ -431,6 +433,7 @@ fn merge_board_test_uboot_config(
 
 fn axvisor_board_test_build_args(group: &BoardTestGroup) -> AxvisorCliArgs {
     AxvisorCliArgs {
+        preset: None,
         config: Some(group.build_config.clone()),
         arch: None,
         target: None,

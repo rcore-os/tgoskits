@@ -1,5 +1,4 @@
 mod features;
-mod load;
 mod metadata;
 mod vm_config;
 
@@ -12,10 +11,6 @@ pub use ax_config::CommonConfig;
 
 pub use super::config::AxvisorConfig;
 pub const AXVISOR_PACKAGE: &str = "axvisor";
-pub(crate) use load::{
-    default_build_info_path, load_board_file, load_or_create_default_config,
-    resolve_build_info_path,
-};
 use ostool::build::config::Cargo;
 
 use self::{

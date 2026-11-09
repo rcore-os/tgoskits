@@ -199,7 +199,7 @@ impl Axvisor {
                 .app
                 .build(
                     build_group.cargo.clone(),
-                    build_group.request.build_info_path.clone(),
+                    build_group.request.config_path().map(Path::to_path_buf),
                 )
                 .await
                 .with_context(|| {
@@ -356,9 +356,21 @@ impl Axvisor {
         }
 
         let mut request = request.clone();
-        let config = crate::build::load_build_config(build_config_path)?;
-        request.replace_config(config)?;
-        request.build_info_path = build_config_path.to_path_buf();
+        let input = crate::build::load_config_input::<crate::axvisor::config::AxvisorConfig>(
+            workspace.root(),
+            Some(build_config_path),
+            None,
+        )?;
+        if let Some(target) = input.config.common.target.as_deref()
+            && target != request.target
+        {
+            anyhow::bail!(
+                "Axvisor test build config {} selects target `{target}`, expected `{}`",
+                build_config_path.display(),
+                request.target
+            );
+        }
+        request.replace_config_input(input)?;
         let cargo = build::load_cargo_config(&request, workspace)?;
         contexts_by_build_config.insert(
             build_config_path.to_path_buf(),
@@ -635,6 +647,7 @@ fn load_axvisor_http_probe_config(
 
 fn axvisor_qemu_test_build_args(arch: &str, config: Option<PathBuf>) -> AxvisorCliArgs {
     AxvisorCliArgs {
+        preset: None,
         config,
         arch: Some(arch.to_string()),
         target: None,
@@ -738,12 +751,31 @@ mod tests {
             ),
         )
         .unwrap();
-        let mut request = crate::context::test_support::axvisor_request(
-            &root.path().join("default.toml"),
-            "aarch64",
-            target,
-            &root.path().join("os/axvisor"),
-        );
+        let mut config = crate::axvisor::config::AxvisorConfig::default();
+        config.common.target = Some(target.to_string());
+        let runtime_env = ax_config::RuntimeEnv::default();
+        let runtime = ax_config::resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &runtime_env,
+        )
+        .unwrap();
+        let mut request = ResolvedAxvisorRequest {
+            source: crate::build::ConfigSource::Custom,
+            package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
+            axvisor_dir: root.path().join("os/axvisor"),
+            arch: "aarch64".to_string(),
+            target: target.to_string(),
+            smp: None,
+            debug: false,
+            config,
+            runtime,
+            runtime_env,
+            environment_features: Vec::new(),
+            qemu_config: None,
+            uboot_config: None,
+            vmconfigs: Vec::new(),
+        };
         request.runtime_env = ax_config::RuntimeEnv {
             smp: Some("3".into()),
             task_stack_size: Some("0x50000".into()),
