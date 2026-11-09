@@ -83,6 +83,14 @@ impl Layout {
         })
     }
 
+    /// The device-facing blob size: `size` rounded up to the slot
+    /// granularity. Sending this size in RESOURCE_CREATE_BLOB keeps the
+    /// hostmem section the host registers for the mapping slot-aligned and
+    /// page-multiple, matching the reserved BAR slot exactly.
+    pub(super) fn wire_size(&self) -> u64 {
+        self.slot_size
+    }
+
     /// On success the caller retains the resource and the returned BAR lease.
     /// Every failure consumes the resource, including local admission failure.
     pub(super) fn map(&self, resource: BufferHandle) -> Result<HostMapping, i32> {
