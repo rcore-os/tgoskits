@@ -96,302 +96,76 @@ impl crate::build::BuildConfiguration for StarryConfig {
     }
 }
 
-use super::{
-    board::{self, Board},
-    build,
-};
-use crate::context::{StarryCommandSnapshot, snapshot_path_value, starry_arch_for_target_checked};
+/// Export a fully expanded recipe, then select the written file for later commands.
+pub(crate) fn write_defconfig(workspace_root: &Path, name: &str) -> anyhow::Result<PathBuf> {
+    use crate::context::{
+        STARRY_PACKAGE, StarryCommandSnapshot, snapshot_path_value, starry_arch_for_target_checked,
+    };
 
-pub(crate) fn available_board_names(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
-    board::board_names(workspace_root)
-}
-
-fn resolve_board(workspace_root: &Path, name: &str) -> anyhow::Result<Board> {
-    board::find_board(workspace_root, name)?.ok_or_else(|| {
-        let available = available_board_names(workspace_root).unwrap_or_default();
-        anyhow!(
-            "unknown Starry board `{name}` in {}; available boards: {}",
-            board::board_dir(workspace_root)
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|_| "os/StarryOS/configs/board".to_string()),
-            available.join(", ")
-        )
-    })
-}
-
-fn write_board_to_default_build_config(
-    workspace_root: &Path,
-    board: &Board,
-) -> anyhow::Result<PathBuf> {
-    let build_config_path = build::resolve_build_info_path(workspace_root, &board.target, None)?;
-    write_board_to_build_config(&build_config_path, board)?;
-    Ok(build_config_path)
-}
-
-fn write_board_to_build_config(build_config_path: &Path, board: &Board) -> anyhow::Result<()> {
-    if let Some(parent) = build_config_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(&board.path, build_config_path).map_err(|e| {
-        anyhow!(
-            "failed to copy Starry board config {} to {}: {e}",
-            board.path.display(),
-            build_config_path.display()
-        )
+    let preset = presets::find_preset(name).ok_or_else(|| ConfigError::PresetNotFound {
+        origin: None,
+        name: name.to_owned(),
     })?;
-    copy_companion_its(&board.path, build_config_path)?;
-    Ok(())
-}
-
-fn copy_companion_its(src_config: &Path, dst_config: &Path) -> anyhow::Result<()> {
-    let src_its = src_config.with_extension("its");
-    if !src_its.exists() {
-        return Ok(());
+    let config = preset.materialize();
+    config.validate()?;
+    config.validate_resources(workspace_root)?;
+    let target = preset.common.board.target;
+    let path =
+        crate::build::default_build_info_path_in_workspace(workspace_root, STARRY_PACKAGE, target);
+    crate::build::export_config(&path, &config)?;
+    StarryCommandSnapshot {
+        arch: Some(starry_arch_for_target_checked(target)?.to_owned()),
+        target: Some(target.to_owned()),
+        config: Some(snapshot_path_value(workspace_root, &path)),
+        ..Default::default()
     }
-    let dst_its = dst_config.with_extension("its");
-    fs::copy(&src_its, &dst_its).map_err(|e| {
-        anyhow!(
-            "failed to copy Starry uImage ITS {} to {}: {e}",
-            src_its.display(),
-            dst_its.display()
-        )
-    })?;
-    Ok(())
-}
-
-fn update_snapshot_for_board(
-    workspace_root: &Path,
-    board: &Board,
-    build_config_path: &Path,
-) -> anyhow::Result<()> {
-    let mut snapshot = StarryCommandSnapshot::load(workspace_root)?;
-    snapshot.arch = Some(starry_arch_for_target_checked(&board.target)?.to_string());
-    snapshot.target = Some(board.target.clone());
-    snapshot.config = Some(snapshot_path_value(workspace_root, build_config_path));
-    snapshot.qemu.qemu_config = None;
-    snapshot.uboot.uboot_config = None;
-    snapshot.store(workspace_root)?;
-    Ok(())
-}
-
-pub(crate) fn ensure_default_build_config_for_target(
-    workspace_root: &Path,
-    target: &str,
-    build_config_path: &Path,
-) -> anyhow::Result<Option<Board>> {
-    if build_config_path.exists() {
-        return Ok(None);
-    }
-
-    let board = board::default_board_for_target(workspace_root, target)?.ok_or_else(|| {
-        anyhow!(
-            "missing Starry qemu defconfig for target `{target}`; expected a default qemu board \
-             config under {}",
-            board::board_dir(workspace_root)
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|_| "os/StarryOS/configs/board".to_string())
-        )
-    })?;
-    // This only materializes a missing build config. The command dispatcher owns
-    // snapshot persistence, so implicit config creation cannot alter it here.
-    write_board_to_build_config(build_config_path, &board)?;
-    Ok(Some(board))
-}
-
-pub(crate) fn write_defconfig(workspace_root: &Path, board_name: &str) -> anyhow::Result<PathBuf> {
-    let board = resolve_board(workspace_root, board_name)?;
-    let build_config_path = write_board_to_default_build_config(workspace_root, &board)?;
-    update_snapshot_for_board(workspace_root, &board, &build_config_path)?;
-    Ok(build_config_path)
+    .store(workspace_root)?;
+    Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use tempfile::tempdir;
-
     use super::*;
-    use crate::context::{StarryQemuSnapshot, StarryUbootSnapshot};
-
-    fn write_workspace(root: &Path) {
-        let starry_workspace_dir = root.join("os/StarryOS");
-        let starry_dir = root.join("os/StarryOS/starryos");
-        let src_dir = starry_dir.join("src");
-        fs::create_dir_all(&starry_workspace_dir).unwrap();
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("lib.rs"), "").unwrap();
-        fs::write(
-            starry_dir.join("Cargo.toml"),
-            "[package]\nname = \"starryos\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-        )
-        .unwrap();
-        fs::write(
-            starry_workspace_dir.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"starryos\"]\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"os/StarryOS/starryos\"]\n",
-        )
-        .unwrap();
-    }
-
-    fn write_board(root: &Path, name: &str, body: &str) -> PathBuf {
-        let path = board::board_dir(root).unwrap().join(format!("{name}.toml"));
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, body).unwrap();
-        path
-    }
+    use crate::context::{
+        DEFAULT_STARRY_TARGET, STARRY_SNAPSHOT_FILE, StarryCommandSnapshot, StarryQemuSnapshot,
+    };
 
     #[test]
-    fn write_defconfig_generates_build_file_and_resets_runtime_config() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        let source = write_board(
-            root.path(),
-            "qemu-riscv64",
-            r#"
-target = "riscv64gc-unknown-none-elf"
-features = ["ax-driver/serial", "ax-driver/nvme"]
-log = "Warn"
-"#,
-        );
-        let existing_snapshot = StarryCommandSnapshot {
-            arch: Some("aarch64".to_string()),
-            target: Some("aarch64-unknown-none-softfloat".to_string()),
-            smp: None,
-            config: None,
+    fn write_defconfig_roundtrips_selected_input_and_preserves_snapshot_on_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let preset = presets::default_qemu_preset(DEFAULT_STARRY_TARGET).unwrap();
+        let previous = StarryCommandSnapshot {
+            smp: Some(7),
             qemu: StarryQemuSnapshot {
-                qemu_config: Some(PathBuf::from(
-                    "test-suit/starryos/qemu/system/qemu-riscv64.toml",
-                )),
+                qemu_config: Some("old-qemu.toml".into()),
             },
-            uboot: StarryUbootSnapshot {
-                uboot_config: Some(PathBuf::from("configs/uboot.toml")),
-            },
+            ..Default::default()
         };
-        existing_snapshot.store(root.path()).unwrap();
-
-        let path = write_defconfig(root.path(), "qemu-riscv64").unwrap();
-
+        previous.store(root.path()).unwrap();
+        let path = write_defconfig(root.path(), preset.name).unwrap();
+        let exported: StarryConfig = crate::build::load_build_config(&path).unwrap();
+        assert_eq!(exported, preset.materialize());
+        let selected = StarryCommandSnapshot::load(root.path()).unwrap();
         assert_eq!(
-            path,
-            root.path()
-                .join("tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
+            selected.config,
+            Some(crate::context::snapshot_path_value(root.path(), &path))
         );
+        assert_eq!(selected.smp, None);
+        assert_eq!(selected.qemu.qemu_config, None);
+        assert_eq!(selected.uboot.uboot_config, None);
+        assert_eq!(selected.preset, None);
+        let snapshot_path = crate::context::axbuild_tmp_dir(root.path()).join(STARRY_SNAPSHOT_FILE);
+        let saved_snapshot = fs::read(&snapshot_path).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("unchanged"), "sentinel").unwrap();
+        assert!(write_defconfig(root.path(), preset.name).is_err());
+        assert_eq!(fs::read(&snapshot_path).unwrap(), saved_snapshot);
         assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            fs::read_to_string(source).unwrap()
+            fs::read_to_string(path.join("unchanged")).unwrap(),
+            "sentinel"
         );
-
-        let snapshot = StarryCommandSnapshot::load(root.path()).unwrap();
-        assert_eq!(snapshot.arch.as_deref(), Some("riscv64"));
-        assert_eq!(
-            snapshot.target.as_deref(),
-            Some("riscv64gc-unknown-none-elf")
-        );
-        assert_eq!(
-            snapshot.config,
-            Some(PathBuf::from(
-                "tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml"
-            ))
-        );
-        assert_eq!(snapshot.qemu.qemu_config, None);
-        assert_eq!(snapshot.uboot.uboot_config, None);
-    }
-
-    #[test]
-    fn write_defconfig_reports_board_directory_for_unknown_name() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        write_board(
-            root.path(),
-            "qemu-aarch64",
-            r#"
-target = "aarch64-unknown-none-softfloat"
-features = ["ax-driver/virtio-net"]
-log = "Warn"
-"#,
-        );
-
-        let err = write_defconfig(root.path(), "missing")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("unknown Starry board `missing`"));
-        assert!(err.contains(&board::board_dir(root.path()).unwrap().display().to_string()));
-        assert!(err.contains("qemu-aarch64"));
-    }
-
-    #[test]
-    fn write_defconfig_copies_companion_its_with_matching_output_basename() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        let source = write_board(
-            root.path(),
-            "licheerv-nano-sg2002",
-            r#"
-target = "riscv64gc-unknown-none-elf"
-features = [
-  "starry-kernel/sg2002",
-  "axplat-dyn/thead-mae",
-  "ax-driver/serial",
-]
-log = "Info"
-"#,
-        );
-        fs::write(source.with_extension("its"), "ITS_TEMPLATE").unwrap();
-
-        let build_config_path = write_defconfig(root.path(), "licheerv-nano-sg2002").unwrap();
-
-        assert_eq!(
-            fs::read_to_string(build_config_path.with_extension("its")).unwrap(),
-            "ITS_TEMPLATE"
-        );
-    }
-
-    #[test]
-    fn ensure_default_build_config_for_target_generates_missing_file_without_changing_snapshot() {
-        let root = tempdir().unwrap();
-        write_workspace(root.path());
-        let source = write_board(
-            root.path(),
-            "qemu-riscv64",
-            r#"
-target = "riscv64gc-unknown-none-elf"
-features = ["ax-driver/serial", "ax-driver/nvme"]
-log = "Warn"
-"#,
-        );
-        let existing_snapshot = StarryCommandSnapshot {
-            arch: Some("aarch64".to_string()),
-            target: Some("aarch64-unknown-none-softfloat".to_string()),
-            smp: None,
-            config: None,
-            qemu: StarryQemuSnapshot::default(),
-            uboot: StarryUbootSnapshot::default(),
-        };
-        existing_snapshot.store(root.path()).unwrap();
-
-        let output = root.path().join("tmp/custom-starry.toml");
-        let board = ensure_default_build_config_for_target(
-            root.path(),
-            "riscv64gc-unknown-none-elf",
-            &output,
-        )
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(board.name, "qemu-riscv64");
-        assert_eq!(
-            fs::read_to_string(&output).unwrap(),
-            fs::read_to_string(source).unwrap()
-        );
-
-        assert_eq!(
-            StarryCommandSnapshot::load(root.path()).unwrap(),
-            existing_snapshot
-        );
+        assert!(write_defconfig(root.path(), "unknown-synthetic-preset").is_err());
+        assert_eq!(fs::read(snapshot_path).unwrap(), saved_snapshot);
     }
 }

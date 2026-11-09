@@ -6,15 +6,15 @@ use ax_config::{RuntimeEnv, resolve_runtime};
 use super::{
     AppContext, ArceosCommandSnapshot, ArceosQemuSnapshot, ArceosUbootSnapshot, AxvisorCliArgs,
     AxvisorCommandSnapshot, AxvisorQemuSnapshot, AxvisorUbootSnapshot, BuildCliArgs,
-    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
-    StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot, StarryUbootSnapshot,
+    RequestEnvironment, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest,
+    STARRY_PACKAGE, StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot, StarryUbootSnapshot,
     resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
     resolve_starry_arch_and_target,
 };
 use crate::{
     arceos::{cbuild::AX_LIBC_PACKAGE, config::ArceosConfig},
     axvisor::config::AxvisorConfig,
-    build::{ConfigInput, ConfigSource, load_config_input},
+    build::{ConfigInput, load_config_input},
     starry::config::StarryConfig,
 };
 
@@ -165,7 +165,8 @@ impl AppContext {
             } else {
                 self.workspace_root()
             };
-            config.app_c = Some(std::path::absolute(base.join(app_c))?);
+            let app_c = std::path::absolute(base.join(app_c))?;
+            config.app_c = Some(crate::arceos::build::resolve_app_c_dir(&app_c)?);
         }
         crate::build::validate_features(&config.common)?;
         let runtime = resolve_runtime(
@@ -226,10 +227,36 @@ impl AppContext {
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
-        let runtime_env = RuntimeEnv::capture()?;
-        let environment_features = crate::build::makefile_features_from_env();
+        self.resolve_starry_request(cli, None, qemu_config, uboot_config)
+    }
+
+    pub(crate) fn prepare_starry_request_from_input(
+        &self,
+        cli: StarryCliArgs,
+        input: ConfigInput<StarryConfig>,
+        environment: RequestEnvironment,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
+        self.resolve_starry_request(cli, Some((input, environment)), qemu_config, uboot_config)
+    }
+
+    fn resolve_starry_request(
+        &self,
+        cli: StarryCliArgs,
+        provided: Option<(ConfigInput<StarryConfig>, RequestEnvironment)>,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
+        let (provided, environment) = match provided {
+            Some((input, environment)) => (Some(input), environment),
+            None => (None, RequestEnvironment::capture()?),
+        };
+        let runtime_env = environment.runtime;
+        let environment_features = environment.features;
         let saved = StarryCommandSnapshot::load(self.workspace_root())?;
-        let inherit = cli.preset.is_none()
+        let inherit = provided.is_none()
+            && cli.preset.is_none()
             && cli.config.is_none()
             && cli.arch.is_none()
             && cli.target.is_none();
@@ -241,7 +268,23 @@ impl AppContext {
             .preset
             .as_deref()
             .or_else(|| inherit.then_some(saved.preset.as_deref()).flatten());
-        let mut input: ConfigInput<StarryConfig> = self.load_request_input(path, preset)?;
+        let mut input: ConfigInput<StarryConfig> = match provided {
+            Some(input) => {
+                if let Some(preset) = cli.preset.as_deref()
+                    && input.source.preset() != Some(preset)
+                {
+                    return Err(ax_config::ConfigError::SelectorConflict {
+                        origin: input.source.path().map(Path::to_path_buf),
+                        field: "preset".into(),
+                        expected: preset.to_owned(),
+                        actual: input.source.preset().unwrap_or("<custom>").to_owned(),
+                    }
+                    .into());
+                }
+                input
+            }
+            None => self.load_request_input(path, preset)?,
+        };
         input.check_selectors(cli.target.as_deref(), cli.arch.as_deref())?;
         let (arch, target) = resolve_starry_arch_and_target(
             cli.arch.clone().or_else(|| {

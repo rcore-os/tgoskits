@@ -37,6 +37,7 @@ impl ConfigSource {
 ///
 /// Only field provenance needed after decoding is retained; the raw overlay is
 /// dropped before this value leaves the parser.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ConfigInput<T> {
     pub config: T,
     pub source: ConfigSource,

@@ -5,6 +5,7 @@ use std::path::Path;
 use ax_config::{RuntimeEnv, resolve_runtime};
 
 use super::{ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest};
+use crate::build::ConfigSource;
 
 pub(crate) fn arceos_request(
     path: &Path,
@@ -32,10 +33,14 @@ pub(crate) fn arceos_request(
         target: target.to_string(),
         smp: None,
         debug: false,
-        build_info_path: path.to_path_buf(),
+        source: ConfigSource::File {
+            path: path.to_path_buf(),
+            preset: None,
+        },
         config,
         runtime,
         runtime_env,
+        environment_features: Vec::new(),
         qemu_config: None,
         uboot_config: None,
     }
@@ -61,7 +66,10 @@ pub(crate) fn starry_request(path: &Path, arch: &str, target: &str) -> ResolvedS
         target: target.to_string(),
         smp: None,
         debug: false,
-        build_info_path: path.to_path_buf(),
+        source: ConfigSource::File {
+            path: path.to_path_buf(),
+            preset: None,
+        },
         config,
         runtime,
         runtime_env,
@@ -79,8 +87,6 @@ pub(crate) fn axvisor_request(
 ) -> ResolvedAxvisorRequest {
     let mut config: crate::axvisor::config::AxvisorConfig = if path.is_file() {
         crate::build::load_build_config(path).unwrap()
-    } else if axvisor_dir.join("configs/board").exists() {
-        crate::axvisor::build::load_or_create_default_config(axvisor_dir, target, path).unwrap()
     } else {
         Default::default()
     };
@@ -99,7 +105,10 @@ pub(crate) fn axvisor_request(
         target: target.to_string(),
         smp: None,
         debug: false,
-        build_info_path: path.to_path_buf(),
+        source: ConfigSource::File {
+            path: path.to_path_buf(),
+            preset: None,
+        },
         config,
         runtime,
         runtime_env,

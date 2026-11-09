@@ -25,23 +25,23 @@ pub(crate) struct StarryAppCase {
     pub(crate) benchmark: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StarryAppBoardCase {
     pub(crate) name: String,
     pub(crate) case_dir: PathBuf,
     pub(crate) init_path: PathBuf,
     pub(crate) init_cmd: String,
-    pub(crate) build_config_path: PathBuf,
+    pub(crate) build_input: crate::build::ConfigInput<crate::starry::config::StarryConfig>,
     pub(crate) board_config_path: PathBuf,
     pub(crate) target: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct StarryAppQemuCase {
     pub(crate) name: String,
     pub(crate) arch: String,
     pub(crate) target: String,
-    pub(crate) build_config_path: Option<PathBuf>,
+    pub(crate) build_input: Option<crate::build::ConfigInput<crate::starry::config::StarryConfig>>,
     pub(crate) qemu_config_path: Option<PathBuf>,
     pub(crate) rootfs_path: PathBuf,
     pub(crate) rootfs_cleanup_dir: Option<PathBuf>,

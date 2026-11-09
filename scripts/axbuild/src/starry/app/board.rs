@@ -42,10 +42,10 @@ pub(crate) fn resolve_board_case(
         Some(path) => resolve_explicit_board_config(&case_dir, path),
         None => discover_case_board_config(&case_dir)?,
     };
-    let (build_config_path, target) =
+    let (build_input, target) =
         match default_build_config_for_board_config(workspace_root, &board_config_path)? {
             Some((board_build_config, target)) => (board_build_config, target),
-            None => discover_case_build_config(&case_dir, None)?,
+            None => discover_case_build_config(workspace_root, &case_dir, None)?,
         };
 
     Ok(StarryAppBoardCase {
@@ -53,7 +53,7 @@ pub(crate) fn resolve_board_case(
         case_dir,
         init_path,
         init_cmd,
-        build_config_path,
+        build_input,
         board_config_path,
         target,
     })

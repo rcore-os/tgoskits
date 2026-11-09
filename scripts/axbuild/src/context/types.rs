@@ -23,6 +23,22 @@ pub const DEFAULT_STARRY_TARGET: &str = ax_config::boards::TARGET_RISCV64;
 pub const STARRY_PACKAGE: &str = "starryos";
 pub const STARRY_KERNEL_PACKAGE: &str = "starry-kernel";
 
+/// Environment captured before an application discovers and decodes its input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequestEnvironment {
+    pub runtime: RuntimeEnv,
+    pub features: Vec<String>,
+}
+
+impl RequestEnvironment {
+    pub fn capture() -> anyhow::Result<Self> {
+        Ok(Self {
+            runtime: RuntimeEnv::capture()?,
+            features: crate::build::makefile_features_from_env(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuildCliArgs {
     pub preset: Option<String>,
