@@ -1,6 +1,25 @@
+#[path = "../../../../scripts/axbuild/src/test/normal/arceos/board/bindings.rs"]
+mod board_bindings;
+#[path = "../../../../scripts/axbuild/src/test/normal/arceos/board/catalog.rs"]
+pub mod board_catalog;
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    let image = if env::var("CARGO_PKG_NAME")
+        .expect("entry package")
+        .ends_with("-freestanding")
+    {
+        board_catalog::Image::Freestanding
+    } else {
+        board_catalog::Image::Std
+    };
+    if let Some(generated) = board_bindings::generate_bindings(board_catalog::Executor::Cpu, image)
+        .expect("valid board suite bindings")
+    {
+        let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
+        fs::write(output.join("selected_batch.rs"), generated).expect("write board CPU bindings");
+        return;
+    }
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"))
         .parent()
         .expect("normal image directory")
@@ -47,7 +66,7 @@ fn main() {
         !tests.is_empty(),
         "CPU selection must execute at least one test"
     );
-    let expected_fault = batch["mode"].as_str() == Some("expected-fault");
+    let expected_fault = batch.get("mode").and_then(toml::Value::as_str) == Some("expected-fault");
     let mut generated = String::from("fn run_selected_batch() {\n");
     if batch.get("pin_to_boot_cpu").and_then(toml::Value::as_bool) == Some(true) {
         generated.push_str("    cpu_tests::pin_to_boot_cpu();\n");

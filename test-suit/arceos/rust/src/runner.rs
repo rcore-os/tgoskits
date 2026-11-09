@@ -114,4 +114,7 @@ pub fn run() {
         }
     }
     println!("ArceOS test suite run OK!");
+    if let Some(completion) = arceos_test_suit::suite::BOARD_COMPLETION {
+        println!("{completion}");
+    }
 }

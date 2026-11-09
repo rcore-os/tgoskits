@@ -1,6 +1,6 @@
 mod args;
 mod assets;
-mod board;
+pub(crate) mod board;
 mod c_suite;
 pub(crate) mod cpu;
 mod directory;

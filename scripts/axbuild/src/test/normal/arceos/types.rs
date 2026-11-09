@@ -46,6 +46,7 @@ pub(crate) struct ArceosBoardTestGroup {
     pub(crate) build_config_path: PathBuf,
     pub(crate) build_input: ConfigInput<ArceosConfig>,
     pub(crate) board_test_config_path: PathBuf,
+    pub(crate) declaration: Option<super::board::selection::BoardSelection>,
 }
 
 impl board_test::BoardTestGroupInfo for ArceosBoardTestGroup {

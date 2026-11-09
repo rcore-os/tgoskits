@@ -3,7 +3,7 @@
 extern crate ax_std as std;
 
 #[cfg(all(feature = "cpufreq", target_arch = "aarch64"))]
-pub mod cpufreq;
+pub mod board;
 #[cfg(all(feature = "fp-context", target_arch = "aarch64"))]
 pub mod fp_context;
 #[cfg(feature = "guest-entry")]

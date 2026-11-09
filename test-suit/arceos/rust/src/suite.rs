@@ -1,11 +1,11 @@
 //! Target bindings generated from the shared suite declaration.
 
 macro_rules! register_tests {
-    ($($(#[$condition:meta])* ($id:literal, $name:literal, $runner:ident, $entry:path);)*) => {
+    ($($(#[$condition:meta])* ($id:literal, $name:literal, $runner:ident, $body:block);)*) => {
         $(
             $(#[$condition])*
             #[cfg(feature = "ax-std")]
-            fn $runner() -> crate::TestResult { $entry() }
+            fn $runner() -> crate::TestResult $body
         )*
         pub(crate) const SELECTED_TESTS: &[crate::TestCase] = &[
             $(

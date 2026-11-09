@@ -1,3 +1,6 @@
+pub(crate) mod catalog;
+pub(crate) mod selection;
+
 use std::{
     collections::HashMap,
     fs,
@@ -20,6 +23,13 @@ pub(crate) fn collect_board_test_groups(
     workspace_root: &Path,
     test_suite_dir: &Path,
 ) -> anyhow::Result<Vec<ArceosBoardTestGroup>> {
+    if test_suite_dir.join("suite.toml").is_file()
+        && test_suite_dir
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("board-"))
+    {
+        return selection::collect(test_suite_dir);
+    }
     let mut groups = Vec::new();
     for info in board_test::discover_board_case_build_infos(test_suite_dir, "ArceOS")? {
         let build_input = crate::build::load_config_input::<crate::arceos::config::ArceosConfig>(
@@ -55,6 +65,7 @@ pub(crate) fn collect_board_test_groups(
             build_config_path: info.build_config_path,
             build_input,
             board_test_config_path: info.board_test_config_path,
+            declaration: None,
         });
     }
 
@@ -76,9 +87,9 @@ pub(crate) fn discover_board_test_groups(
         groups.extend(collect_board_test_groups(workspace_root, &group_dir)?);
     }
 
-    board_test::filter_board_test_groups_by_names(
+    let groups = board_test::filter_board_test_groups_by_names(
         groups,
-        selected_cases,
+        &[],
         selected_board,
         "ArceOS",
         || {
@@ -87,7 +98,8 @@ pub(crate) fn discover_board_test_groups(
                 suite_root.display()
             )
         },
-    )
+    )?;
+    selection::select(groups, selected_cases)
 }
 
 struct PreparedBoardBuild {
@@ -111,11 +123,30 @@ impl ArceOS {
             args.board.as_deref(),
         )?;
         if args.list {
-            let case_names = board_test::labeled_board_cases(groups);
-            println!(
-                "{}",
-                qemu_test::render_labeled_case_forest("arceos", [("board", case_names)])
-            );
+            if groups.iter().any(|group| group.declaration.is_some()) {
+                println!("arceos board tests: boots={}", groups.len());
+                for group in &groups {
+                    if let Some(declaration) = &group.declaration {
+                        println!(
+                            "  {}/{}: tests={} boots=1",
+                            group.board_name,
+                            group.name,
+                            declaration.selected.len()
+                        );
+                        for member in &declaration.selected {
+                            println!("    {member}");
+                        }
+                    } else {
+                        println!("  {}/{}: boots=1", group.board_name, group.name);
+                    }
+                }
+            } else {
+                let case_names = board_test::labeled_board_cases(groups);
+                println!(
+                    "{}",
+                    qemu_test::render_labeled_case_forest("arceos", [("board", case_names)])
+                );
+            }
             return Ok(());
         }
 
@@ -181,7 +212,7 @@ impl ArceOS {
                 )?;
                 self.app.set_debug_mode(request.debug)?;
                 let mode = build::arceos_build_mode(&request.config)?;
-                let cargo = match &mode {
+                let mut cargo = match &mode {
                     build::ArceosBuildMode::Rust => {
                         build::load_cargo_config(&request, self.app.workspace_context())?
                     }
@@ -189,6 +220,7 @@ impl ArceOS {
                         build::load_c_app_cargo_config(&request, self.app.workspace_context())?
                     }
                 };
+                selection::configure(group, &request, &mut cargo)?;
                 Ok::<_, anyhow::Error>((request, mode, cargo))
             }
             .await;
@@ -284,9 +316,10 @@ impl ArceOS {
             };
 
             let result = async {
-                let board_config = self
+                let mut board_config = self
                     .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                     .await?;
+                selection::configure_completion(&group, &mut board_config)?;
                 self.app
                     .board_prepared_elf(
                         prepared.elf_path.clone(),

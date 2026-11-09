@@ -250,14 +250,29 @@ entry = "cpu_tests::io::run"
             checks.append({"id": f"cpu-{arch}", "name": f"CPU {arch}", "command": "fixture", "suite": [
                 {"kind": "arceos-qemu", "arch": arch, "group": "cpu"}]})
         (cpu / "normal/suite.toml").write_text("\n".join(declarations))
-        adapter = cpu / "adapter"
-        adapter.mkdir()
-        (adapter / "Cargo.toml").write_text('[package]\nname = "board-adapter"\n[dependencies.cpu-tests]\nfeatures = ["io"]\n')
         board = root / "test-suit/arceos/board-demo/probe"
         board.mkdir(parents=True)
         (board / "build-aarch64-unknown-none-softfloat.toml").write_text(
-            'package = "board-adapter"\ntarget = "aarch64-unknown-none-softfloat"\n')
+            'package = "arceos-cpu-normal-std"\ntarget = "aarch64-unknown-none-softfloat"\n')
         (board / "board-demo.toml").write_text('board_type = "Demo"\n')
+        (board.parent / "suite.toml").write_text('''
+schema_version = 1
+board = "demo"
+run_order = ["probe"]
+[batches.probe]
+arch = "aarch64"
+image = "std"
+executor = "cpu"
+package = "arceos-cpu-normal-std"
+build_config = "probe/build-aarch64-unknown-none-softfloat.toml"
+board_config = "probe/board-demo.toml"
+[[batches.probe.tests]]
+id = "io"
+name = "board I/O capability"
+entry = "cpu_tests::io::run"
+returns = "unit"
+features = ["cpu-tests/io"]
+''')
         checks.append({"id": "board-io", "name": "Board I/O", "command": "fixture", "suite": [
             {"kind": "arceos-board", "board": "demo", "cases": ["probe"]}]})
         return checks
@@ -272,6 +287,50 @@ entry = "cpu_tests::io::run"
             self.assertTrue(any("--test-case alpha" in item.command for item in selections))
             scoped = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/configs/x86_64/beta/qemu.toml"])
             self.assertEqual([item.template_id for item in scoped], ["cpu-x86_64"])
+            entry = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/main.rs"])
+            self.assertEqual({item.template_id for item in entry}, {"cpu-aarch64", "cpu-x86_64", "board-io"})
+            std_entry = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/std/Cargo.toml"])
+            self.assertIn("board-io", {item.template_id for item in std_entry})
+
+    def test_board_scoped_source_routes_only_its_board_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            for source in ["src/board/demo/io.rs", "src/board/demo/mod.rs", "src/board/mod.rs"]:
+                selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/" + source])
+                self.assertEqual({item.template_id for item in selections}, {"board-io"})
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/src/board/other/io.rs"])
+
+    def test_board_manifest_routes_shared_changes_without_directory_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            source = "test-suit/arceos/board-demo/suite.toml"
+            selections = ci_suite.resolve_suite_selections(root, checks, [source])
+            self.assertEqual(len(selections), 1)
+            self.assertIn("--test-case probe", selections[0].command)
+            manifest = root / source
+            original = manifest.read_text()
+            for invalid in [original.replace('run_order = ["probe"]', 'run_order = []'),
+                    original.replace('returns = "unit"', 'returns = "result"'),
+                    original.replace('features = ["cpu-tests/io"]', 'features = "cpu-tests/io"')]:
+                manifest.write_text(invalid)
+                with self.assertRaises(ci_suite.SuiteRouteError):
+                    ci_suite.validate_suite_catalog(root, checks)
+
+    def test_rust_member_source_routes_board_batch_while_unrelated_sources_do_not(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            manifest = root / "test-suit/arceos/board-demo/suite.toml"
+            manifest.write_text(manifest.read_text().replace('executor = "cpu"', 'executor = "rust"')
+                .replace('entry = "cpu_tests::io::run"', 'entry = "crate::task::delivery::run"')
+                .replace('returns = "unit"', 'returns = "result"'))
+            selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/rust/src/task/delivery.rs"])
+            self.assertEqual([item.template_id for item in selections], ["board-io"])
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/rust/src/task/unrelated.rs"])
 
     def test_missing_cpu_runtime_is_rejected_and_arch_specific_sources_stay_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

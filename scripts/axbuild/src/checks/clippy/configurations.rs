@@ -27,6 +27,8 @@ struct ClippyMetadata {
     configurations: Vec<RawClippyConfiguration>,
     #[serde(default)]
     cpu_suite: Option<CpuSuiteClippy>,
+    #[serde(default)]
+    board_suite: Option<BoardSuiteClippy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +36,72 @@ struct ClippyMetadata {
 struct CpuSuiteClippy {
     path: std::path::PathBuf,
     image: crate::test::normal::arceos::cpu::catalog::Image,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoardSuiteClippy {
+    path: std::path::PathBuf,
+}
+
+fn board_suite_configurations(
+    package: &Package,
+    source: BoardSuiteClippy,
+) -> anyhow::Result<Vec<PackageClippyConfiguration>> {
+    use crate::test::normal::arceos::board::catalog::{self, Catalog, Image};
+    let path = package
+        .manifest_path
+        .parent()
+        .context("package directory")?
+        .as_std_path()
+        .join(source.path)
+        .canonicalize()?;
+    let root = path.parent().context("board suite directory")?;
+    let catalog = Catalog::load(&path)?;
+    let mut configurations = Vec::new();
+    for id in &catalog.run_order {
+        let batch = &catalog.batches[id];
+        if batch.package != package.name.as_str() {
+            continue;
+        }
+        let build: crate::arceos::build::ArceosBuildFile =
+            crate::arceos::board::load_build_file(&root.join(&batch.build_config))?;
+        ensure!(
+            build.config.freestanding == (batch.image == Image::Freestanding),
+            "board Clippy runtime mismatch"
+        );
+        let target = if batch.image == Image::Freestanding {
+            build.target.context("board target")?
+        } else {
+            match batch.arch.as_str() {
+                "aarch64" => "aarch64-unknown-linux-musl",
+                "riscv64" => "riscv64gc-unknown-linux-musl",
+                "x86_64" => "x86_64-unknown-linux-musl",
+                "loongarch64" => "loongarch64-unknown-linux-musl",
+                _ => anyhow::bail!("unsupported board Clippy architecture"),
+            }
+            .to_owned()
+        };
+        let mut env = catalog::build_env(&path, id, "all");
+        let cpus = build
+            .config
+            .build_info
+            .max_cpu_num
+            .context("board CPU count")?;
+        env.insert("SMP".into(), cpus.to_string());
+        configurations.push(PackageClippyConfiguration {
+            name: format!("board-{}-{id}", catalog.board),
+            target,
+            features: batch.features(),
+            rustflags: Vec::new(),
+            env: env.into_iter().collect(),
+        });
+    }
+    ensure!(
+        !configurations.is_empty(),
+        "package has no matching board suite batches"
+    );
+    Ok(configurations)
 }
 
 fn cpu_suite_configurations(
@@ -114,6 +182,7 @@ pub(super) fn package_clippy_configurations(
         .with_context(|| format!("invalid clippy metadata for `{}`", package.name))?;
     let mut names = BTreeSet::new();
     let cpu_suite = metadata.clippy.cpu_suite;
+    let board_suite = metadata.clippy.board_suite;
     let mut configurations = metadata
         .clippy
         .configurations
@@ -125,6 +194,15 @@ pub(super) fn package_clippy_configurations(
             ensure!(
                 names.insert(configuration.name.clone()),
                 "duplicate CPU clippy configuration"
+            );
+            configurations.push(configuration);
+        }
+    }
+    if let Some(source) = board_suite {
+        for configuration in board_suite_configurations(package, source)? {
+            ensure!(
+                names.insert(configuration.name.clone()),
+                "duplicate board Clippy configuration"
             );
             configurations.push(configuration);
         }

@@ -319,20 +319,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-cpu-cpufreq"
-version = "0.1.0"
-dependencies = [
- "arceos-cpu-tests",
- "ax-std",
-]
-
-[[package]]
 name = "arceos-cpu-normal-freestanding"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arceos-cpu-tests",
  "ax-alloc",
  "ax-std",
+ "serde",
  "toml 1.1.8+spec-1.1.0",
 ]
 
@@ -340,18 +334,12 @@ dependencies = [
 name = "arceos-cpu-normal-std"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arceos-cpu-tests",
  "ax-alloc",
  "ax-std",
+ "serde",
  "toml 1.1.8+spec-1.1.0",
-]
-
-[[package]]
-name = "arceos-cpu-pmu"
-version = "0.1.0"
-dependencies = [
- "arceos-cpu-tests",
- "ax-std",
 ]
 
 [[package]]
@@ -367,15 +355,6 @@ dependencies = [
  "ax-std",
  "someboot",
  "trait-ffi",
-]
-
-[[package]]
-name = "arceos-cpu-user-entry"
-version = "0.1.0"
-dependencies = [
- "arceos-cpu-tests",
- "ax-alloc",
- "ax-std",
 ]
 
 [[package]]
@@ -469,6 +448,8 @@ dependencies = [
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
+ "anyhow",
+ "arceos-cpu-tests",
  "ax-alloc",
  "ax-block",
  "ax-cpu",
@@ -491,6 +472,7 @@ dependencies = [
  "rdif-block",
  "rdif-iommu",
  "rdrive",
+ "serde",
  "toml 1.1.8+spec-1.1.0",
  "virtio-drivers",
  "zerocopy",

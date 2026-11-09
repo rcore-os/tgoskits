@@ -28,13 +28,14 @@ Starry/板卡边界和目录契约见 [`starry-test-suit`](../starry-test-suit/S
 
 1. 先读目标测试的 manifest、实现入口、现有 `build-*.toml` 与 `qemu-*.toml`，不要盲目复制别的目录。
 2. 再参考最接近的现有测试目录，复用必要配置，但按当前测试的实际行为改写。
-3. 判断测试属于 Rust、C、generic 还是 board 流程，并使用对应发现器；不要为了复用配置改变运行时边界。
+3. 判断测试属于 Rust、C、generic 还是 board 流程，并使用对应发现器；按[test-quality的启动复用约束](../test-quality/SKILL.md#36-优先复用启动)先检查已有批次，兼容成员统一开启所需feature并集，调用选择与feature解耦。只有存在具体不兼容或判定差异时才独立启动。
 4. 改完后运行最小的 `cargo xtask arceos test qemu ...` 命令验证。
 
 ## 必查项
 
 - Rust suite：`test-suit/arceos/rust/suite.toml` schema_version=3，顶部`run_order`集中指定启动顺序，下面`[batches.NAME]`下嵌套`[[batches.NAME.tests]]`；未知/重复/遗漏批次均拒绝，组定义位置不影响执行，成员顺序决定目标执行顺序，批次arches由成员继承且可收窄。general代替旧all批次；Cargo只维护单项feature依赖，不复制聚合成员。host按当前架构展开features，build.rs按同一声明生成目标绑定；runner.rs保留状态恢复。list展示启动边界，plan/run同源选择；单项优先自身fixture，否则继承批次runtime。成功仍要求每项结果，panic/lockdep/栈保护保留独立启动。
-- CPU suite：`cpu/normal/suite.toml`显式登记批次顺序、架构、std/freestanding入口、成员及旧case别名；实现唯一位于`cpu/src`库，`normal/build.rs`生成顺序调用并强制unit返回，成员失败中止当前启动，全部正常返回才输出带batch/selection的整批标记。普通配置单step；预期boot-trap独立启动并保持专用判定。host与生成器同读清单，AX_CPU_TEST_BATCH/AX_CPU_TEST_CASE进入构建身份；list/plan/run同源。PMU/user-entry/cpufreq板端包保留薄包装，配置仍在board-orangepi-5-plus。增改删规则见`cpu/README.md`；Rust套件规则见`rust/README.md`。
+- CPU suite：`cpu/normal/suite.toml`显式登记批次顺序、架构、std/freestanding入口、成员及旧case别名；实现唯一位于`cpu/src`库，`normal/build.rs`生成顺序调用并强制unit返回，成员失败中止当前启动，全部正常返回才输出带batch/selection的整批标记。普通配置单step；预期boot-trap独立启动并保持专用判定。host与生成器同读清单，AX_CPU_TEST_BATCH/AX_CPU_TEST_CASE进入构建身份；list/plan/run同源。normal/main.rs为唯一main，std/freestanding两个Cargo声明通过bin.path引用它；CPU清单仅登记QEMU。板端成员统一登记在对应board目录的suite.toml，不另建包装包。增改删规则见`cpu/README.md`；Rust套件规则见`rust/README.md`。
+- 声明式板测：`board-orangepi-5-plus/suite.toml`顶部run_order决定启动顺序，batches登记成员/入口/所需features及unit/result契约。kernel复用Rust runner，CPU成员unit正常返回后才转Ok；IPI保留原Result及RunnerTaskState恢复。pmu-user复用CPU freestanding入口。host与两个绑定生成器共用board/catalog.rs及bindings.rs，AX_BOARD_TEST_SUITE/BATCH/CASES进入构建身份；同批成员选择合并为一次启动，未选成员不会因feature并集被执行。默认kernel、pmu-user两启动，boot已删除。普通板配置只等待整批最终标记，失败必须传到最外层。清单存在时不再目录扫描该板，其他板保持原发现方式。
 - C suite：维护 C 源码/头文件、Makefile 或 `test_cmd`，并同步 C feature 列表和成功/失败匹配。
 - generic suite：按共享发现器提供 build wrapper、package manifest 和 runtime config，不假设存在 `src/main.rs`。
 - board case：使用 `board-*.toml` 与目标 build 配置；普通项目通过 `cargo xtask arceos test board`，Cargo axtest 目标通过 `cargo xtask ktest board`，不混入 QEMU 批次。
@@ -53,7 +54,7 @@ Starry/板卡边界和目录契约见 [`starry-test-suit`](../starry-test-suit/S
 
 ## 适配建议
 
-- 新增测试时，优先复制最接近的 `qemu-*.toml` 与 build 配置，再根据当前测试修正。
+- 新增测试先加入兼容批次；确认必须独立启动后，才复制最接近的 `qemu-*.toml` 与 build 配置并按实际条件修正。
 - 不同架构的 `success_regex` 应与该测试真实输出一致；如果成功输出跨架构相同，可以保持一致。
 - 不要为了“让测试通过”去放宽正则到过于宽泛的内容。
 - 失败检测要确保内核恐慌会使 `xtask` 以非零状态码退出。
@@ -70,14 +71,14 @@ Starry/板卡边界和目录契约见 [`starry-test-suit`](../starry-test-suit/S
 
 ArceOS Rust 构建默认使用标准库和 musl PIE。验证 `uspace` 时，内核 TLS 按运行期契约关闭，不能放宽 someboot 链接断言来容纳标准库 TLS。此类独立 Rust 镜像在 build TOML 显式使用 `freestanding = true`，由同一个 `cargo xtask arceos test qemu/board` 入口选择共享裸机 JSON、`build-std=core,alloc` 与 PIE 内核链接脚本。它与 `app-c` 互斥，不恢复已删除的 `std` 配置别名。
 
-软件包应保持 `no_std`、`no_main`，按真实需求启用 `ax-std` 的 mini-std 能力，不启用 `ax-std/arceos` 带入的 `std-compat`。全局分配器由 `ax-alloc/global-allocator` 显式提供。参考 `cpu/normal/freestanding` 与 `cpu/src/user_entry`（`cpu/user-entry`保留板端薄包装）：用户线程经 `TaskAddressSpace` 保留真实页表及 backing pages，再由 `UserExecutionContext` 验证并进入，不能绕过调度器创建伪用户上下文。
+软件包应保持 `no_std`、`no_main`，按真实需求启用 `ax-std` 的 mini-std 能力，不启用 `ax-std/arceos` 带入的 `std-compat`。全局分配器由 `ax-alloc/global-allocator` 显式提供。参考 `cpu/normal/freestanding` 与 `cpu/src/user_entry`（板端pmu-user也使用同一入口）：用户线程经 `TaskAddressSpace` 保留真实页表及 backing pages，再由 `UserExecutionContext` 验证并进入，不能绕过调度器创建伪用户上下文。
 
 
 ## CPU 契约用例的 CI 归属
 
 `test-suit/arceos/cpu` 通过 `cargo xtask arceos test qemu --arch <arch> --test-group cpu` 运行，并在 `.github/ci/checks/arceos.toml` 以 `group = "cpu"` 注册。不指定组的本地入口仍发现所有组；CI 普通 runner 显式选择 Rust/C，CPU 组单独使用满足硬件要求的 runner，避免普通 x86 runner 误跑 VMX。x86 CPU 组包含 VMX，必须使用 Intel KVM runner；LoongArch 客体进入使用 LVZ 镜像 runner。针对单个变体的测试路径通过 CI 规划器保留准确的 `--test-case`，不能降级为只跑默认 Rust 组。
 
-OrangePi 的 `pmu`、`pmu-user` 使用 `arceos-board` 注册，保持板卡 runner 和真实 case 名。调整这些规则时，运行 `test_ci_plan.py` 的 CPU QEMU 与板卡路由回归；脚本要求 Python 3.11 以上，系统 Python 3.10 时可用 `uv run --python 3.13 --no-project python3 -m unittest discover -s scripts/test -p 'test_ci_*.py'`。
+OrangePi以`arceos-board`注册`kernel`、`pmu-user`两个批次，kernel包含PMU、IPI、cpufreq；保持板卡runner，单项诊断不重复加入默认CI。调整这些规则时，运行 `test_ci_plan.py` 的 CPU QEMU 与板卡路由回归；脚本要求 Python 3.11 以上，系统 Python 3.10 时可用 `uv run --python 3.13 --no-project python3 -m unittest discover -s scripts/test -p 'test_ci_*.py'`。
 
 
 CPU QEMU/板卡配置使用最新 ostool 的 `[[shell_check_steps]]`，被动等待用例只在该步骤内声明 `success_regex`，不填写 shell 命令。`fail_regex`、`timeout`、启动参数保留在根配置。不得恢复已删除的根级 `success_regex` 或 `shell_init_cmd`；分组程序的执行协议沿用当前 axbuild。

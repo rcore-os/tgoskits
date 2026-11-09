@@ -74,7 +74,7 @@ cargo xtask arceos test qemu --test-group rust --arch aarch64 --test-case net-un
 
 ### 3.2 平台与板卡
 
-非对齐异常表恢复由[CPU套件](../cpu/README.md)的unaligned-fixup成员执行，旧loongarch组仅保留手动兼容转发。`../board-orangepi-5-plus/ipi` 复用 Rust suite 的 `task-ipi` feature及逐远端CPU应答。`../axtest/sg2002-usb-msc` 保留 no_std 硬件 harness，直接检查 USB、IRQ、DMA 和传输完成；其中的纯逻辑模块可以通过宿主单元测试验证，但不能替代实体板卡运行。
+非对齐异常表恢复由[CPU套件](../cpu/README.md)的unaligned-fixup成员执行，旧loongarch组仅保留手动兼容转发。`../board-orangepi-5-plus/kernel`批次复用Rust suite的`task-ipi`实现及逐远端CPU应答，与CPU库PMU/cpufreq同启动。`../axtest/sg2002-usb-msc` 保留 no_std 硬件 harness，直接检查 USB、IRQ、DMA 和传输完成；其中的纯逻辑模块可以通过宿主单元测试验证，但不能替代实体板卡运行。
 
 
 ## 4. 后续维护规范
@@ -123,3 +123,9 @@ cargo xtask arceos test qemu --arch riscv64 --test-group rust --test-case genera
 ```
 
 根据实际改动运行cargo fmt、受影响cargo xtask clippy、相关架构QEMU及共享板端消费者。错误修复须保留错误实现失败、修复后通过的命令和日志；宿主执行机制用合成配置验证发现/选择/失败传播，不镜像固定生产清单。新增功能是否接入CI与是否保留实现分别说明，不默认偷偷新增启动。
+
+## 板端复用与新增测试
+
+OrangePi的kernel批次由`../board-orangepi-5-plus/suite.toml`登记，复用本包标准库入口及runner，顺序执行CPU库PMU、原task-ipi和CPU库cpufreq。board-cpu-tests为可选依赖接入feature；该批次所需features取并集，选中调用由AX_BOARD_TEST_SUITE/BATCH/CASES决定并参与构建身份。CPU unit入口仅在正常返回后转Ok，原IPI Result和RunnerTaskState恢复保留，最终等待整批BOARD_BATCH_OK。未选择板批次时仍按本目录suite.toml生成QEMU调用，默认QEMU矩阵不加入板成员。
+
+新增测试必须先遵守[启动复用约束](../../../.agents/skills/test-quality/SKILL.md#36-优先复用启动)，检查能否加入已有批次；不能只因feature不同就新增启动。整批启用所需feature并集，单项诊断只执行所选函数。确需独立启动时记录具体不兼容/判定原因，并更新测试数、批次数与启动预算。板端增改方法见[OrangePi README](../board-orangepi-5-plus/README.md)。

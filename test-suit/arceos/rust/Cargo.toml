@@ -5,6 +5,7 @@ edition.workspace = true
 publish = false
 
 [features]
+board-cpu-tests = ["task-runtime", "dep:cpu-tests"]
 default = []
 # Every kernel test reaches ax-std through this feature, so it owns the ArceOS
 # baseline instead of relying on axbuild to add it for the selected test case.
@@ -90,6 +91,7 @@ lockdep-detect = [
 ]
 
 [dependencies]
+cpu-tests = { package = "arceos-cpu-tests", path = "../cpu", optional = true }
 ax-alloc = { workspace = true, optional = true }
 axklib = { workspace = true, optional = true }
 dma-api = { workspace = true, optional = true }
@@ -116,4 +118,9 @@ mmio-api = { workspace = true, optional = true }
 rdif-iommu = { workspace = true, optional = true }
 
 [build-dependencies]
+anyhow.workspace = true
+serde = { version = "1.0", features = ["derive"] }
 toml = { workspace = true, features = ["parse", "serde"] }
+
+[package.metadata.clippy.board_suite]
+path = "../board-orangepi-5-plus/suite.toml"

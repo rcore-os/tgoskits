@@ -1,3 +1,7 @@
+#[path = "../../../scripts/axbuild/src/test/normal/arceos/board/bindings.rs"]
+mod board_bindings;
+#[path = "../../../scripts/axbuild/src/test/normal/arceos/board/catalog.rs"]
+pub mod board_catalog;
 use std::{env, fs, path::PathBuf};
 
 fn strings(value: Option<&toml::Value>) -> Vec<&str> {
@@ -9,6 +13,14 @@ fn strings(value: Option<&toml::Value>) -> Vec<&str> {
 }
 
 fn main() {
+    if let Some(generated) =
+        board_bindings::generate_bindings(board_catalog::Executor::Rust, board_catalog::Image::Std)
+            .expect("valid board suite bindings")
+    {
+        let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
+        fs::write(output.join("suite_bindings.rs"), generated).expect("write board suite bindings");
+        return;
+    }
     println!("cargo:rerun-if-changed=suite.toml");
     println!("cargo:rerun-if-changed=Cargo.toml");
     let source = fs::read_to_string("suite.toml").expect("failed to read suite declaration");
@@ -91,10 +103,12 @@ fn main() {
                 generated.push_str(&format!("    #[cfg(any({}))]\n", values.join(",")));
             }
             let runner = format!("run_{}", id.replace('-', "_"));
-            generated.push_str(&format!("    ({id:?}, {name:?}, {runner}, {entry});\n"));
+            generated.push_str(&format!(
+                "    ({id:?}, {name:?}, {runner}, {{ {entry}() }});\n"
+            ));
         }
     }
-    generated.push_str("}\n");
+    generated.push_str("}\npub const BOARD_COMPLETION: Option<&str> = None;\n");
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"));
     fs::write(output.join("suite_bindings.rs"), generated).expect("failed to write suite bindings");
 }

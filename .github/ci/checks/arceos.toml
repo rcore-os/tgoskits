@@ -154,21 +154,19 @@ group = "drivers"
 [[check]]
 id = "test-arceos-cpu-orangepi-5-plus"
 impact_targets = ["arceos:aarch64"]
-name = "Board OrangePi 5 Plus · CPU PMU and cpufreq"
+name = "Board OrangePi 5 Plus · kernel and user-mode"
 runner = "board"
 resource_group = "orangepi-5-plus"
 timeout_minutes = 30
 cache_key = ""
 command = '''
-cargo xtask arceos test board --board orangepi-5-plus --test-case pmu
-cargo xtask arceos test board --board orangepi-5-plus --test-case pmu-user
-cargo xtask arceos test board --board orangepi-5-plus --test-case cpufreq
+cargo xtask arceos test board --board orangepi-5-plus --test-case kernel,pmu-user
 '''
 
 [[check.suite]]
 kind = "arceos-board"
 board = "orangepi-5-plus"
-cases = ["pmu", "pmu-user", "cpufreq"]
+cases = ["kernel", "pmu-user"]
 
 [[check]]
 id = "test-arceos-board-loongson-3a6000-ll"

@@ -15,6 +15,10 @@ pub mod serial_rx;
 #[cfg(all(feature = "virtio-block-lifecycle", target_arch = "aarch64"))]
 mod virtio_block_lifecycle;
 
+// Board bindings are generated only for an explicitly selected board batch.
+#[cfg(feature = "board-cpu-tests")]
+use cpu_tests as _;
+
 pub type TestResult = Result<(), &'static str>;
 
 #[derive(Clone, Copy, Debug)]
