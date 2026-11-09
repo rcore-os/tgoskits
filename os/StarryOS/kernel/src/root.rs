@@ -57,6 +57,8 @@ mod block_runtime_axtest;
 mod block_scratch_policy;
 #[cfg(all(test, axtest))]
 mod thread_lifecycle_axtest;
+#[cfg(all(test, axtest))]
+mod vsock_event_axtest;
 
 pub use error::{DmaOperation, StarryError, StarryResult};
 // The staged MM ownership and transaction types are intentionally reachable

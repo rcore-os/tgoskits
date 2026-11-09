@@ -103,6 +103,8 @@ use smoltcp::{
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
 };
 
+#[cfg(all(feature = "vsock", axtest))]
+pub use self::device::VsockEventWorker;
 #[cfg(feature = "vsock")]
 pub use self::device::{VsockDevice, VsockDeviceInput, VsockDeviceList, VsockRuntimeError};
 use self::{

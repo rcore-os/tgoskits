@@ -27,6 +27,8 @@ use crate::{NetError, NetResult, PinnedNetIrqRegistrar};
 
 mod irq_runtime;
 
+#[cfg(axtest)]
+pub use irq_runtime::VsockEventWorker;
 use irq_runtime::VsockIrqRuntime;
 pub use irq_runtime::VsockRuntimeError;
 
