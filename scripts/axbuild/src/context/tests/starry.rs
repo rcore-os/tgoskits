@@ -28,6 +28,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     let (request, snapshot) = prepare_starry_request(
         &app,
         StarryCliArgs {
+            preset: None,
             config: Some(custom_config.clone()),
             arch: Some("aarch64".into()),
             target: Some("aarch64-unknown-none-softfloat".into()),
@@ -44,7 +45,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.target, "aarch64-unknown-none-softfloat");
     assert_eq!(request.smp, Some(4));
     assert!(request.debug);
-    assert_eq!(request.build_info_path, custom_config);
+    assert_eq!(request.config_path().unwrap().to_path_buf(), custom_config);
     assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
     assert_eq!(request.uboot_config, None);
     assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
@@ -83,23 +84,17 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(request.package, STARRY_PACKAGE);
     assert_eq!(request.arch, DEFAULT_STARRY_ARCH);
     assert_eq!(request.target, DEFAULT_STARRY_TARGET);
-    assert_eq!(
-        request.build_info_path,
-        root.path()
-            .join("tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml")
-    );
+    assert_eq!(request.config_path(), None);
+    assert_eq!(request.source.preset(), snapshot.preset.as_deref());
+    assert!(snapshot.preset.is_some());
+    assert!(!root.path().join("tmp/axbuild/config").exists());
     assert_eq!(
         request.qemu_config,
         Some(root.path().join("configs/qemu.toml"))
     );
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_STARRY_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_STARRY_TARGET));
-    assert_eq!(
-        snapshot.config,
-        Some(PathBuf::from(
-            "tmp/axbuild/config/starryos/build-riscv64gc-unknown-none-elf.toml"
-        ))
-    );
+    assert_eq!(snapshot.config, None);
 }
 
 #[test]
@@ -119,13 +114,22 @@ config = "configs/custom-starry.toml"
 
     let app = test_app_context(root.path());
 
+    let saved_path = snapshot_path(root.path(), STARRY_SNAPSHOT_FILE);
+    let saved = fs::read(&saved_path).unwrap();
+    let missing = prepare_starry_request(&app, StarryCliArgs::default(), None, None).unwrap_err();
+    assert!(format!("{missing:#}").contains("--preset"));
+    assert_eq!(fs::read(&saved_path).unwrap(), saved);
+    let custom = root.path().join("configs/custom-starry.toml");
+    fs::create_dir_all(custom.parent().unwrap()).unwrap();
+    fs::write(&custom, "").unwrap();
+
     let (request, snapshot) =
         prepare_starry_request(&app, StarryCliArgs::default(), None, None).unwrap();
 
     assert_eq!(request.arch, "aarch64");
     assert_eq!(request.target, "aarch64-unknown-none-softfloat");
     assert_eq!(
-        request.build_info_path,
+        request.config_path().unwrap().to_path_buf(),
         root.path().join("configs/custom-starry.toml")
     );
     assert_eq!(
@@ -167,6 +171,7 @@ target = "aarch64-unknown-none-softfloat"
     let (request, snapshot) = prepare_starry_request(
         &app,
         StarryCliArgs {
+            preset: None,
             config: Some(config.clone()),
             arch: None,
             target: None,
@@ -180,7 +185,7 @@ target = "aarch64-unknown-none-softfloat"
 
     assert_eq!(request.arch, "riscv64");
     assert_eq!(request.target, "riscv64gc-unknown-none-elf");
-    assert_eq!(request.build_info_path, config);
+    assert_eq!(request.config_path().unwrap().to_path_buf(), config);
     assert_eq!(snapshot.arch.as_deref(), Some("riscv64"));
     assert_eq!(
         snapshot.target.as_deref(),
@@ -197,6 +202,7 @@ fn prepare_starry_request_rejects_mismatched_arch_and_target() {
     let err = prepare_starry_request(
         &app,
         StarryCliArgs {
+            preset: None,
             config: None,
             arch: Some("aarch64".into()),
             target: Some("x86_64-unknown-none".into()),
@@ -230,6 +236,7 @@ target = "aarch64-unknown-none-softfloat"
     let (request, snapshot) = prepare_starry_request(
         &app,
         StarryCliArgs {
+            preset: None,
             config: None,
             arch: Some("riscv64".into()),
             target: None,
@@ -276,6 +283,7 @@ uboot_config = "configs/uboot-aarch64.toml"
     let (request, snapshot) = prepare_starry_request(
         &app,
         StarryCliArgs {
+            preset: None,
             config: None,
             arch: Some("riscv64".into()),
             target: None,

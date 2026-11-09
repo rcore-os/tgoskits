@@ -109,7 +109,8 @@ pub(crate) fn write_defconfig(workspace_root: &Path, preset_name: &str) -> anyho
     })?;
     let mut config = preset.materialize();
     if let Some(app_c) = config.app_c.as_deref() {
-        config.app_c = Some(super::build::resolve_app_c_dir(app_c)?);
+        let app_c = std::path::absolute(workspace_root.join(app_c))?;
+        config.app_c = Some(super::build::resolve_app_c_dir(&app_c)?);
     }
     config.validate()?;
     let package = config

@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use build_config::KtestBuildConfig;
+use build_config::{KtestBuildConfig, KtestBuildSelection};
 use cargo_metadata::{Metadata, Package};
 use clap::{Args, Subcommand, ValueEnum};
 use ostool::{
@@ -118,6 +118,10 @@ pub(crate) struct ArgsKtestQemu {
     #[arg(long = "config", value_name = "BUILD_TOML")]
     pub(crate) config: Option<PathBuf>,
 
+    /// Built-in compilation preset, optionally combined with a sparse TOML
+    #[arg(long, value_name = "NAME")]
+    pub(crate) preset: Option<String>,
+
     /// QEMU TOML path
     #[arg(long = "qemu-config", value_name = "QEMU_TOML")]
     pub(crate) qemu_config: Option<PathBuf>,
@@ -162,6 +166,10 @@ pub(crate) struct ArgsKtestBoard {
     /// Build TOML path
     #[arg(long = "config", value_name = "BUILD_TOML")]
     pub(crate) config: Option<PathBuf>,
+
+    /// Built-in compilation preset, independent of the remote board endpoint
+    #[arg(long, value_name = "NAME")]
+    pub(crate) preset: Option<String>,
 
     /// Board TOML path
     #[arg(long = "board-config", value_name = "BOARD_TOML")]
@@ -288,27 +296,32 @@ async fn run_qemu_unit(
         .manifest_path
         .parent()
         .ok_or_else(|| anyhow!("invalid manifest path {}", package.manifest_path.display()))?;
-    let build_config = args.config.clone().unwrap_or_else(|| {
-        default_qemu_build_config(
-            app.workspace_root(),
-            package_dir,
-            unit.runtime,
-            &unit.arch,
-            &unit.target,
-        )
+    let selected_config = args.config.clone().or_else(|| {
+        args.preset
+            .is_none()
+            .then(|| default_qemu_build_config(package_dir, &unit.target))
+            .flatten()
     });
     let qemu_config = args.qemu_config.clone().unwrap_or_else(|| {
         default_qemu_run_config(app.workspace_root(), package_dir, unit.runtime, &unit.arch)
     });
     let qemu_config = app.workspace_root().join(qemu_config).canonicalize()?;
-    let parsed_config = KtestBuildConfig::load(unit.runtime, &build_config)?;
+    let parsed_config = KtestBuildConfig::load(
+        app.workspace_root(),
+        KtestBuildSelection {
+            runtime: unit.runtime,
+            config: selected_config.as_deref(),
+            preset: args.preset.as_deref(),
+            default_qemu_target: Some(&unit.target),
+        },
+    )?;
+    let build_config = parsed_config.config_path().map(Path::to_path_buf);
     let mut cargo = parsed_config.cargo(
         app.workspace_context(),
         &KtestUnitConfig {
             package: &unit.package,
             arch: &unit.arch,
             target: &unit.target,
-            build_config: &build_config,
             run_config: &qemu_config,
             config: &parsed_config,
         },
@@ -334,7 +347,6 @@ async fn run_qemu_unit(
             package: &unit.package,
             arch: &unit.arch,
             target: &unit.target,
-            build_config: &build_config,
             config: &parsed_config,
         },
         &cargo,
@@ -352,7 +364,6 @@ async fn run_qemu_unit(
                 package: &unit.package,
                 arch: &unit.arch,
                 target: &unit.target,
-                build_config: &build_config,
                 run_config: &qemu_config,
                 config: &parsed_config,
             },
@@ -484,7 +495,6 @@ struct KtestBuildContext<'a> {
     package: &'a str,
     arch: &'a str,
     target: &'a str,
-    build_config: &'a Path,
     config: &'a KtestBuildConfig,
 }
 
@@ -494,7 +504,6 @@ struct KtestUnitConfig<'a> {
     package: &'a str,
     arch: &'a str,
     target: &'a str,
-    build_config: &'a Path,
     run_config: &'a Path,
     config: &'a KtestBuildConfig,
 }
@@ -582,9 +591,15 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
         )
     })?;
     let board = args.board;
-    let build_config = args.config.unwrap_or_else(|| {
-        default_board_build_config(app.workspace_root(), package_dir, runtime, &board)
-    });
+    let selected_config = match args.config.as_ref() {
+        Some(path) => Some(path.clone()),
+        None if args.preset.is_none() => default_board_build_config(package_dir, &board)?,
+        None => None,
+    };
+    let selected_preset = args
+        .preset
+        .as_deref()
+        .or_else(|| selected_config.is_none().then_some(board.as_str()));
     let board_config_path = args.board_config.unwrap_or_else(|| {
         default_board_run_config(app.workspace_root(), package_dir, runtime, &board)
     });
@@ -592,10 +607,19 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
         .workspace_root()
         .join(board_config_path)
         .canonicalize()?;
-    let parsed_config = KtestBuildConfig::load(runtime, &build_config)?;
+    let parsed_config = KtestBuildConfig::load(
+        app.workspace_root(),
+        KtestBuildSelection {
+            runtime,
+            config: selected_config.as_deref(),
+            preset: selected_preset,
+            default_qemu_target: None,
+        },
+    )?;
+    let build_config = parsed_config.config_path().map(Path::to_path_buf);
     let triple = parsed_config
         .target()
-        .ok_or_else(|| anyhow!("board ktest requires target in {}", build_config.display()))?
+        .ok_or_else(|| anyhow!("board ktest requires a target in its selected build input"))?
         .to_string();
     let arch = crate::context::arch_for_target_checked(&triple)?;
     let mut cargo = parsed_config.cargo(
@@ -604,7 +628,6 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
             package: &args.package,
             arch,
             target: &triple,
-            build_config: &build_config,
             run_config: &board_config_path,
             config: &parsed_config,
         },
@@ -635,7 +658,6 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
             package: &args.package,
             arch,
             target: &triple,
-            build_config: &build_config,
             config: &parsed_config,
         },
         &cargo,
@@ -649,7 +671,6 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
                 package: &args.package,
                 arch,
                 target: &triple,
-                build_config: &build_config,
                 run_config: &board_config_path,
                 config: &parsed_config,
             },
@@ -1266,7 +1287,7 @@ fn maybe_postprocess_starry_artifact(
     }
     let request = ctx
         .config
-        .starry_request(ctx.package, ctx.arch, ctx.target, ctx.build_config)?;
+        .starry_request(ctx.package, ctx.arch, ctx.target)?;
     starry::build::postprocess_starry_artifact(ctx.workspace_root, &request, cargo, output)
 }
 
@@ -1281,18 +1302,12 @@ fn maybe_start_starry_future_incompat_report(
     crate::build::start_future_incompat_report_session(target_dir).map(Some)
 }
 
-fn default_qemu_build_config(
-    workspace_root: &Path,
-    package_dir: &Path,
-    runtime: KtestRuntime,
-    arch: &str,
-    target: &str,
-) -> PathBuf {
+fn default_qemu_build_config(package_dir: &Path, target: &str) -> Option<PathBuf> {
     let package_config = package_dir.join(format!("build-{target}.toml"));
     if package_config.exists() {
-        package_config
+        Some(package_config)
     } else {
-        runtime_config_root(workspace_root, runtime).join(format!("configs/board/qemu-{arch}.toml"))
+        None
     }
 }
 
@@ -1310,20 +1325,14 @@ fn default_qemu_run_config(
     }
 }
 
-fn default_board_build_config(
-    workspace_root: &Path,
-    package_dir: &Path,
-    runtime: KtestRuntime,
-    board: &str,
-) -> PathBuf {
+fn default_board_build_config(package_dir: &Path, board: &str) -> anyhow::Result<Option<PathBuf>> {
     let package_config = package_dir.join(format!("build-{board}.toml"));
     if package_config.exists() {
-        return package_config;
+        return Ok(Some(package_config));
     }
-    let mut package_configs = fs::read_dir(package_dir)
+    let mut package_configs = fs::read_dir(package_dir)?
+        .collect::<Result<Vec<_>, _>>()?
         .into_iter()
-        .flatten()
-        .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
             path.file_name()
@@ -1333,9 +1342,9 @@ fn default_board_build_config(
         .collect::<Vec<_>>();
     package_configs.sort();
     if let [only] = package_configs.as_slice() {
-        return only.clone();
+        return Ok(Some(only.clone()));
     }
-    runtime_config_root(workspace_root, runtime).join(format!("configs/board/{board}.toml"))
+    Ok(None)
 }
 
 fn default_board_run_config(

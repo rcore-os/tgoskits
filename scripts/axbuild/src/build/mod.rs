@@ -32,8 +32,8 @@ pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for
 #[cfg(test)]
 pub(crate) use config_file::parse_build_config;
 pub(crate) use config_file::{
-    BuildConfiguration, ensure_build_info, invalid_config_value, load_build_config,
-    reject_extra_fields, validate_config_target, validate_resource_path,
+    BuildConfiguration, invalid_config_value, load_build_config, reject_extra_fields,
+    validate_config_target, validate_resource_path,
 };
 pub use config_source::ConfigSource;
 pub(crate) use config_source::{ConfigInput, export_config, load_config_input, show_config};

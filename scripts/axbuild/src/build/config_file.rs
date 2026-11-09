@@ -81,19 +81,3 @@ pub(crate) fn validate_resource_path(field: &str, path: &Path) -> Result<(), Con
     }
     Ok(())
 }
-
-// PR1 deliberately retains default file materialization. Explicit files are
-// checked by the resolver and never pass through this missing-default branch.
-pub(crate) fn ensure_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<()>
-where
-    T: Serialize,
-{
-    if path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, toml::to_string_pretty(&default())?)?;
-    Ok(())
-}
