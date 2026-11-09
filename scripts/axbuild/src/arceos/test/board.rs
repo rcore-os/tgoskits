@@ -17,18 +17,23 @@ use crate::{
 };
 
 pub(crate) fn collect_board_test_groups(
-    _workspace_root: &Path,
+    workspace_root: &Path,
     test_suite_dir: &Path,
 ) -> anyhow::Result<Vec<ArceosBoardTestGroup>> {
     let mut groups = Vec::new();
     for info in board_test::discover_board_case_build_infos(test_suite_dir, "ArceOS")? {
-        let build_file = crate::arceos::board::load_build_file(&info.build_config_path)
-            .with_context(|| {
-                format!(
-                    "failed to load ArceOS board build config `{}`",
-                    info.build_config_path.display()
-                )
-            })?;
+        let build_file = crate::build::load_config_input::<crate::arceos::config::ArceosConfig>(
+            workspace_root,
+            Some(&info.build_config_path),
+            None,
+        )
+        .with_context(|| {
+            format!(
+                "failed to load ArceOS board build config `{}`",
+                info.build_config_path.display()
+            )
+        })?
+        .config;
         let package = build_file.package.with_context(|| {
             format!(
                 "ArceOS board build config `{}` must set `package`",
@@ -172,9 +177,8 @@ impl ArceOS {
                     None,
                     SnapshotPersistence::Discard,
                 )?;
-                Self::validate_board_request(&request)?;
                 self.app.set_debug_mode(request.debug)?;
-                let mode = build::arceos_build_mode(&request.config, &request.build_info_path)?;
+                let mode = build::arceos_build_mode(&request.config)?;
                 let cargo = match &mode {
                     build::ArceosBuildMode::Rust => {
                         build::load_cargo_config(&request, self.app.workspace_context())?
@@ -212,7 +216,7 @@ impl ArceOS {
                     build::ArceosBuildMode::Rust => {
                         let output = self
                             .app
-                            .build(cargo.clone(), request.build_info_path.clone())
+                            .build(cargo.clone(), request.config_path().map(Path::to_path_buf))
                             .await?;
                         output.elf_path().to_path_buf()
                     }
@@ -281,13 +285,11 @@ impl ArceOS {
                 let board_config = self
                     .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                     .await?;
-                let mut request = prepared.request.clone();
-                request.build_info_path = group.build_config_path.clone();
                 self.app
                     .board_prepared_elf(
                         prepared.elf_path.clone(),
                         prepared.cargo.to_bin,
-                        request.build_info_path,
+                        prepared.request.config_path().map(Path::to_path_buf),
                         board_config,
                         RunBoardOptions {
                             board_type: args.board_type.clone(),
@@ -319,6 +321,7 @@ impl ArceOS {
 
 fn test_board_build_args(group: &ArceosBoardTestGroup) -> BuildCliArgs {
     BuildCliArgs {
+        preset: None,
         config: Some(group.build_config_path.clone()),
         package: Some(group.package.clone()),
         arch: None,

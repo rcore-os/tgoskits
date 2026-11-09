@@ -6,71 +6,45 @@ use std::{
 use anyhow::{Context, bail};
 
 use super::{ArceosBuildMode, ArceosConfig};
-use crate::build;
-
-pub(crate) fn load_arceos_build_file(path: &Path) -> anyhow::Result<ArceosConfig> {
-    build::load_build_config(path)
-}
-
-pub(crate) fn load_arceos_build_config(path: &Path) -> anyhow::Result<ArceosConfig> {
-    load_arceos_build_file(path)
-}
-
-pub(crate) fn load_arceos_build_mode(path: &Path) -> anyhow::Result<ArceosBuildMode> {
-    let config = load_arceos_build_config(path)?;
-    arceos_build_mode(&config, path)
-}
-
-pub(crate) fn arceos_build_mode(
-    config: &ArceosConfig,
-    path: &Path,
-) -> anyhow::Result<ArceosBuildMode> {
+pub(crate) fn arceos_build_mode(config: &ArceosConfig) -> anyhow::Result<ArceosBuildMode> {
     match &config.app_c {
-        Some(app_c) => super::resolve_app_c_mode(path, app_c),
+        Some(app_c) => resolve_app_c_mode(app_c),
         None => Ok(ArceosBuildMode::Rust),
     }
 }
 
-pub(crate) fn resolve_app_c_mode(
-    config_path: &Path,
-    app_c: &Path,
-) -> anyhow::Result<ArceosBuildMode> {
-    let app_dir = super::resolve_app_c_dir(config_path, app_c)?;
+pub(crate) fn resolve_app_c_mode(app_c: &Path) -> anyhow::Result<ArceosBuildMode> {
+    let app_dir = resolve_app_c_dir(app_c)?;
     let app_name = c_app_name(&app_dir)
         .with_context(|| format!("failed to derive C app name from {}", app_dir.display()))?;
 
     Ok(ArceosBuildMode::AppC { app_dir, app_name })
 }
 
-pub(crate) fn resolve_app_c_dir(config_path: &Path, app_c: &Path) -> anyhow::Result<PathBuf> {
-    let app_dir = if app_c.is_absolute() {
-        app_c.to_path_buf()
-    } else {
-        config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(app_c)
-    };
-
-    if !app_dir.is_dir() {
+pub(crate) fn resolve_app_c_dir(app_c: &Path) -> anyhow::Result<PathBuf> {
+    if !app_c.is_absolute() {
         bail!(
-            "app-c source directory {} configured by {} does not exist or is not a directory",
-            app_dir.display(),
-            config_path.display()
+            "app-c source directory {} must be absolute",
+            app_c.display()
         );
     }
-    if !dir_has_direct_c_source(&app_dir)? {
+    if !app_c.is_dir() {
         bail!(
-            "app-c source directory {} configured by {} must contain at least one direct .c file",
-            app_dir.display(),
-            config_path.display()
+            "app-c source directory {} does not exist or is not a directory",
+            app_c.display()
+        );
+    }
+    if !dir_has_direct_c_source(app_c)? {
+        bail!(
+            "app-c source directory {} must contain at least one direct .c file",
+            app_c.display()
         );
     }
 
-    app_dir.canonicalize().with_context(|| {
+    app_c.canonicalize().with_context(|| {
         format!(
             "failed to resolve app-c source directory {}",
-            app_dir.display()
+            app_c.display()
         )
     })
 }

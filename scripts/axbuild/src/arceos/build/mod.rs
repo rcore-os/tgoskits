@@ -5,31 +5,11 @@ mod info;
 mod tests;
 mod types;
 
-use std::path::{Path, PathBuf};
-
 pub use ax_config::{CommonConfig, LogLevel};
-pub(crate) use c_app::{
-    arceos_build_mode, load_arceos_build_config, load_arceos_build_file, load_arceos_build_mode,
-};
+pub(crate) use c_app::{arceos_build_mode, resolve_app_c_dir, resolve_app_c_mode};
 pub(crate) use cargo_config::{
     load_c_app_cargo_config, load_cargo_config, load_cargo_config_with_default_features,
 };
-pub(crate) use info::resolve_build_info_path;
 pub(crate) use types::ArceosBuildMode;
 
 pub use super::config::ArceosConfig;
-
-pub(crate) fn resolve_app_c_dir(config_path: &Path, app_c: &Path) -> anyhow::Result<PathBuf> {
-    c_app::resolve_app_c_dir(config_path, app_c)
-}
-
-pub(crate) fn resolve_app_c_mode(
-    config_path: &Path,
-    app_c: &Path,
-) -> anyhow::Result<ArceosBuildMode> {
-    c_app::resolve_app_c_mode(config_path, app_c)
-}
-
-pub(crate) fn default_build_info_path(package: &str, target: &str) -> anyhow::Result<PathBuf> {
-    info::default_build_info_path(package, target)
-}
