@@ -14,7 +14,7 @@ pub(in crate::sched::system::task_system) use fair_nohz::RootDomainFairNoHzClaim
 
 use super::*;
 use crate::{
-    runtime::lock::PreemptTicketGuard,
+    runtime::lock::{IrqTicketGuard, PreemptTicketGuard},
     sched::{
         RtPriority,
         algorithm::{DEADLINE_UTILIZATION_SCALE, RootRtBandwidth},
@@ -68,9 +68,12 @@ struct RootDomainOverloadMask {
 /// A priority drop starts one serialized scan instead of broadcasting an IPI
 /// to every overloaded rq. The target owner claims the published generation,
 /// performs its rq-local push callback, then hands the scan to the next owner.
+///
+/// Like Linux `rto_lock`, the state is IRQ-safe: wake activation starts a push
+/// from both task context and hard-IRQ timer expiry on the same CPU.
 #[derive(Debug)]
 struct RootDomainPushIterator {
-    state: PreemptTicketLock<RootDomainPushState>,
+    state: IrqTicketLock<RootDomainPushState>,
     /// Zero means no published target; otherwise this is `CpuId + 1`.
     ///
     /// The serialized state remains authoritative for claim and completion.
@@ -244,7 +247,7 @@ impl RootDomainOverloadIndex {
 impl RootDomainPushIterator {
     const fn new() -> Self {
         Self {
-            state: PreemptTicketLock::new(RootDomainPushState {
+            state: IrqTicketLock::new(RootDomainPushState {
                 requested_generation: 0,
                 scan_generation: 0,
                 cursor: None,
@@ -254,8 +257,9 @@ impl RootDomainPushIterator {
         }
     }
 
-    fn lock_state(&self) -> PreemptTicketGuard<'_, RootDomainPushState> {
-        self.state.lock()
+    fn lock_state(&self) -> IrqTicketGuard<'_, RootDomainPushState> {
+        self.state
+            .lock(crate::runtime::IrqGuardSource::RootDomainPushTicket)
     }
 
     fn target_token(source: CpuId) -> usize {
@@ -464,5 +468,7 @@ mod publication;
 mod fair_balance;
 
 mod push;
+#[cfg(axtest)]
+pub use push::observe_root_domain_push_locks_for_test;
 
 mod admission;

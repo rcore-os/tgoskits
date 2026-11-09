@@ -250,6 +250,7 @@ impl QperfSchedulerMetrics {
         let irq_ticket_root_rt_period_entries = irq_entries(IrqGuardSource::RootRtPeriodTicket);
         let irq_ticket_root_deadline_index_entries =
             irq_entries(IrqGuardSource::RootDeadlineIndexTicket);
+        let irq_ticket_root_domain_push_entries = irq_entries(IrqGuardSource::RootDomainPushTicket);
         let irq_guard_ticket_entries = irq_ticket_thread_sched_entries
             + irq_ticket_deadline_server_entries
             + irq_ticket_cpu_run_queue_entries
@@ -257,7 +258,8 @@ impl QperfSchedulerMetrics {
             + irq_ticket_cpu_deadline_entries
             + irq_ticket_root_rt_runtime_entries
             + irq_ticket_root_rt_period_entries
-            + irq_ticket_root_deadline_index_entries;
+            + irq_ticket_root_deadline_index_entries
+            + irq_ticket_root_domain_push_entries;
         let irq_guard_ticket_none = irq_none(IrqGuardSource::ThreadSchedTicket)
             + irq_none(IrqGuardSource::DeadlineServerTicket)
             + irq_none(IrqGuardSource::CpuRunQueueTransactionTicket)
@@ -278,7 +280,8 @@ impl QperfSchedulerMetrics {
             + irq_none(IrqGuardSource::CpuDeadlineLifecycleTicket)
             + irq_none(IrqGuardSource::RootRtRuntimeTicket)
             + irq_none(IrqGuardSource::RootRtPeriodTicket)
-            + irq_none(IrqGuardSource::RootDeadlineIndexTicket);
+            + irq_none(IrqGuardSource::RootDeadlineIndexTicket)
+            + irq_none(IrqGuardSource::RootDomainPushTicket);
         let irq_guard_explicit_entries = irq_entries(IrqGuardSource::ExplicitScope);
         let irq_guard_explicit_none = irq_none(IrqGuardSource::ExplicitScope);
         let irq_guard_runtime_cpu_entries = irq_entries(IrqGuardSource::RuntimeCpu);
