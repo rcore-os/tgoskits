@@ -163,7 +163,6 @@ impl AppContext {
     ) -> anyhow::Result<ostool_build::CargoBuildOutput> {
         reject_raw_target_dir_args(&cargo)?;
         self.set_build_config_path(build_config_path);
-        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let build_config_path = self.build_config_path.clone();
         let stage = StageLog::start(format!(
             "cargo build package={} target={} config={}",
@@ -206,7 +205,6 @@ impl AppContext {
         qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
-        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let _path_guard = self.scoped_qemu_path(&cargo)?;
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
@@ -394,7 +392,6 @@ impl AppContext {
         mut uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
-        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
         let to_bin = cargo.to_bin;
@@ -429,7 +426,6 @@ impl AppContext {
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
-        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
         let to_bin = cargo.to_bin;
@@ -679,43 +675,6 @@ fn display_optional_path(path: Option<&Path>) -> String {
 
 pub(crate) fn cargo_bin_path_for_elf(elf_path: &Path) -> PathBuf {
     elf_path.with_extension("bin")
-}
-
-struct EnvRestoreGuard {
-    vars: Vec<(OsString, Option<OsString>)>,
-}
-
-impl EnvRestoreGuard {
-    fn set(vars: &HashMap<String, String>) -> Self {
-        let mut saved = Vec::with_capacity(vars.len());
-        for (key, value) in vars {
-            let key = OsString::from(key);
-            let previous = env::var_os(&key);
-            // SAFETY: axbuild runs each cargo build/run flow serially in this CLI process.
-            // These variables must be visible to ostool's short-lived child cargo probes
-            // (for example `cargo tree`) before the final cargo command is constructed.
-            unsafe {
-                env::set_var(&key, value);
-            }
-            saved.push((key, previous));
-        }
-        Self { vars: saved }
-    }
-}
-
-impl Drop for EnvRestoreGuard {
-    fn drop(&mut self) {
-        for (key, previous) in self.vars.iter().rev() {
-            // SAFETY: see `EnvRestoreGuard::set`; this restores the process environment
-            // immediately after the scoped ostool cargo operation completes.
-            unsafe {
-                match previous {
-                    Some(value) => env::set_var(key, value),
-                    None => env::remove_var(key),
-                }
-            }
-        }
-    }
 }
 
 struct PathRestoreGuard {
