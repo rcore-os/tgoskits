@@ -30,7 +30,7 @@ use rbpf::ebpf::Insn;
 use crate::{
     ebpf::map::BpfMap,
     file::get_file_like,
-    mm::{VmBytes, VmBytesMut, vm_load_string},
+    mm::{VmBytes, VmBytesMut, vm_load_string, vm_load_string_nofault},
     sync::RawSpinLockIrqSaveBackend,
 };
 
@@ -210,6 +210,11 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn string_from_user_cstr(ptr: *const u8) -> kbpf_basic::BpfResult<String> {
+        // Probe exceptions run BPF programs with local IRQs disabled, where a
+        // user page fault cannot be serviced.
+        if !ax_runtime::hal::cpu::interrupt::irqs_enabled() {
+            return vm_load_string_nofault(ptr as *const _).map_err(|_| BpfError::EFAULT);
+        }
         let current = crate::task::current_user_task();
         vm_load_string(&current, ptr as *const _).map_err(|_| BpfError::EFAULT)
     }

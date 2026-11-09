@@ -49,8 +49,8 @@ sg2002-cvi-usb-camera = [
     "dep:sg200x-jpu",
 ]
 uvc = ["dep:ax-media", "dep:media-uvc"]
-axtest = ["ax-runtime/fault-injection", "dep:axtest"]
-axtest-coverage = ["dep:axtest", "axtest/coverage"]
+axtest = ["ax-runtime/fault-injection", "ax-alloc/alloc-audit", "dep:axtest"]
+axtest-coverage = ["ax-alloc/alloc-audit", "dep:axtest", "axtest/coverage"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(axtest_coverage)', 'cfg(feature, values("ax-std"))'] }
