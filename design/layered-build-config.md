@@ -51,6 +51,8 @@ flowchart TD
 
 `ConfigSource` 区分内置预设、用户文件与无文件自定义输入。context 的已解析请求携带完整 OS 配置和 `RuntimeValues`；供 ostool 使用的配置路径为 Option，内置配置没有伪造文件。构建不隐式写 TOML。
 
+`ConfigSource::Preset` 保存内置名称，`File` 保存绝对文件路径及可选预设名称，`Custom` 表示无文件的自定义选择。请求通过 `config_path()` 从来源派生可选路径，不再并列保存可独立修改的路径副本。`load_config_input()` 读取文件并调用 `parse_config_input()`，保留预设目标约束和 `app-c` 字段来源所需的最少信息，随后丢弃原始覆盖表。测试组切换使用 `replace_config_input()` 同时更换配置、来源及 runtime，不能只修改路径。
+
 测试或应用切换构建输入时，必须替换完整 typed 配置，并使用原请求捕获的环境重新解析 runtime；仅修改路径不能改变已确认对象。构建分组可以复用同一内核 Cargo 身份，但每个用例仍持有自己的 VM 打包输入。客户机准备入口要求源文件显式声明 package 和 target，该约束在解析后的原始配置上、默认值及快照补齐前检查，不通过最终字段非空来推断来源。
 
 ### 3.1 选择与快照
@@ -58,6 +60,8 @@ flowchart TD
 CLI 和文件 preset 必须一致，预设的 target 约束 CLI target、arch 与文件 target。无预设时保留 CLI target 优先于文件 target 的能力，并校验显式 arch。默认 target 为 ArceOS/Axvisor AArch64、Starry RISC-V。标准 QEMU 预设由显式映射选择，不依赖名字排序。
 
 显式更换 preset、config、arch、target 或 ArceOS package 时，不继承旧 target、SMP、VM 或运行配置。无新选择器时才恢复同 OS 的快照选择；快照不作为覆盖默认层。只有原本支持的裸 ArceOS qemu 自动使用 Hello World，显式应用不会套用其板卡策略。
+
+`prepare_arceos_qemu_request()` 是允许无应用选择时使用 Hello World 的入口，仍先尝试恢复未被新选择器切断的快照；普通构建和 `config show` 使用 `prepare_arceos_request()`，缺少应用时明确报错。StarryOS 与 Axvisor 的无文件输入通过各自明确的标准 QEMU 映射选择预设。三个 resolver 都只返回待提交的快照，展示命令不保存它。
 
 `config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。`defconfig` 显式序列化展开对象，以临时文件替换输出，成功后才更新快照。任何解析、校验或写入失败都不覆盖原文件与快照。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
 
