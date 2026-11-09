@@ -55,7 +55,7 @@ flowchart TD
 
 Starry 应用发现器将 `ConfigInput<StarryConfig>` 随用例传给构建入口，不把已解析输入退化为待重读的文件路径。应用 dispatcher 在发现前通过 `RequestEnvironment::capture()` 捕获环境，再交给 `prepare_starry_request_from_input()`；该入口复用环境和输入，不再次读取二者。
 
-测试或应用切换构建输入时，必须替换完整 typed 配置，并使用原请求捕获的环境重新解析 runtime；仅修改路径不能改变已确认对象。构建分组可以复用同一内核 Cargo 身份，但每个用例仍持有自己的 VM 打包输入。客户机准备入口要求源文件显式声明 package 和 target，该约束在解析后的原始配置上、默认值及快照补齐前检查，不通过最终字段非空来推断来源。
+测试或应用切换构建输入时，必须替换完整 typed 配置，并使用原请求捕获的环境重新解析 runtime；仅修改路径不能改变已确认对象。构建分组可以复用同一内核 Cargo 身份，但每个用例仍持有自己的 VM 打包输入。客户机准备入口要求源文件显式声明 package 和 target；`ConfigInput::file_fields` 保留这两个键及 `app-c` 的最少字段存在信息。guest 在默认值及快照补齐前检查原文件键，不能通过展开后字段非空推断来源，也不能让文件 preset 的展开值代替显式声明。
 
 ### 3.1 选择与快照
 

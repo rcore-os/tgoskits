@@ -42,7 +42,7 @@ impl AppContext {
             qemu_config,
             uboot_config,
             ArceosDefault::RequireApplication,
-            |_| Ok(()),
+            |_, _| Ok(()),
         )
     }
 
@@ -51,7 +51,9 @@ impl AppContext {
         cli: BuildCliArgs,
         qemu_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
-        self.resolve_arceos_request(cli, qemu_config, None, ArceosDefault::QemuHello, |_| Ok(()))
+        self.resolve_arceos_request(cli, qemu_config, None, ArceosDefault::QemuHello, |_, _| {
+            Ok(())
+        })
     }
 
     pub(crate) fn prepare_arceos_request_with_input_check(
@@ -59,7 +61,7 @@ impl AppContext {
         cli: BuildCliArgs,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
-        input_check: impl FnOnce(&ArceosConfig) -> anyhow::Result<()>,
+        input_check: impl FnOnce(&ArceosConfig, crate::build::FileFields) -> anyhow::Result<()>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
         self.resolve_arceos_request(
             cli,
@@ -76,7 +78,7 @@ impl AppContext {
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
         default: ArceosDefault,
-        input_check: impl FnOnce(&ArceosConfig) -> anyhow::Result<()>,
+        input_check: impl FnOnce(&ArceosConfig, crate::build::FileFields) -> anyhow::Result<()>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
         let runtime_env = RuntimeEnv::capture()?;
         let environment_features = crate::build::makefile_features_from_env();
@@ -95,7 +97,7 @@ impl AppContext {
             .as_deref()
             .or_else(|| inherit.then_some(saved.preset.as_deref()).flatten());
         let mut input: ConfigInput<ArceosConfig> = self.load_request_input(path, preset)?;
-        input_check(&input.config)?;
+        input_check(&input.config, input.file_fields)?;
         input.check_selectors(cli.target.as_deref(), cli.arch.as_deref())?;
         let (arch, target) = resolve_arceos_arch_and_target(
             cli.arch.clone().or_else(|| {
@@ -156,7 +158,7 @@ impl AppContext {
         }
         config.validate()?;
         if let Some(app_c) = &config.app_c {
-            let base = if input.app_c_from_file {
+            let base = if input.file_fields.app_c {
                 input
                     .source
                     .path()

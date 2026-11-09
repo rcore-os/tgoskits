@@ -56,10 +56,9 @@ pub(crate) async fn prepare(app: &mut AppContext, run_config: &Path) -> anyhow::
             },
             None,
             None,
-            crate::arceos::build::resolve_build_info_path,
-            |input| {
+            |_, fields| {
                 ensure!(
-                    input.package.is_some() && input.common.target.is_some(),
+                    fields.package && fields.target,
                     "test guest config must declare package and target"
                 );
                 Ok(())
@@ -68,7 +67,8 @@ pub(crate) async fn prepare(app: &mut AppContext, run_config: &Path) -> anyhow::
         let cargo = crate::arceos::build::load_cargo_config(&request, app.workspace_context())?;
         ensure!(cargo.to_bin, "board guest build must enable to_bin");
         println!("prepare board guest: {}", request.package);
-        app.build(cargo, request.build_info_path).await?;
+        app.build(cargo, request.config_path().map(Path::to_path_buf))
+            .await?;
     }
     Ok(())
 }
@@ -170,7 +170,9 @@ mod tests {
         .unwrap();
         let target_dir = root.path().join("build-output");
         let mut app = AppContext::from_workspace_root(root.path(), Some(&target_dir)).unwrap();
-        let snapshot_path = root.path().join(crate::context::ARCEOS_SNAPSHOT_FILE);
+        let snapshot_path =
+            crate::context::axbuild_tmp_dir(root.path()).join(crate::context::ARCEOS_SNAPSHOT_FILE);
+        fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
         let snapshot = b"package = 'guest-fixture'\ntarget = 'aarch64-unknown-none-softfloat'\n";
         fs::write(&snapshot_path, snapshot).unwrap();
         fs::write(
@@ -181,6 +183,7 @@ mod tests {
         for input in [
             "package = 'guest-fixture'\nto_bin = true\n",
             "target = 'aarch64-unknown-none-softfloat'\nto_bin = true\n",
+            "preset = 'qemu-aarch64'\nto_bin = true\n",
         ] {
             fs::write(root.path().join("guest.toml"), input).unwrap();
             let error = prepare(&mut app, &run_config).await.unwrap_err();

@@ -42,7 +42,15 @@ pub(crate) struct ConfigInput<T> {
     pub config: T,
     pub source: ConfigSource,
     pub target_constraint: Option<String>,
-    pub app_c_from_file: bool,
+    pub file_fields: FileFields,
+}
+
+/// Minimal presence information needed by path and guest preparation rules.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FileFields {
+    pub app_c: bool,
+    pub package: bool,
+    pub target: bool,
 }
 
 impl<T: BuildConfiguration> ConfigInput<T> {
@@ -168,14 +176,19 @@ pub(crate) fn parse_config_input<T: BuildConfiguration>(
             config.common().target.clone().unwrap_or_default(),
         ));
     }
-    let app_c_from_file = overlay
+    let file_fields = overlay
         .as_ref()
-        .is_some_and(|overlay| overlay.contains_field("app-c"));
+        .map(|overlay| FileFields {
+            app_c: overlay.contains_field("app-c"),
+            package: overlay.contains_field("package"),
+            target: overlay.contains_field("target"),
+        })
+        .unwrap_or_default();
     Ok(ConfigInput {
         config,
         source,
         target_constraint,
-        app_c_from_file,
+        file_fields,
     })
 }
 

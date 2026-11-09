@@ -132,6 +132,16 @@ qemu_config = "configs/qemu.toml"
         Some(root.path().join("configs/qemu.toml"))
     );
     assert_eq!(snapshot.config, Some(PathBuf::from("configs/board.toml")));
+
+    // Restoring a file selection must read its current preset, not promote the
+    // previous file control key into a competing CLI selector.
+    fs::write(&config_path, "preset = 'qemu-aarch64'\n").unwrap();
+    let (_, snapshot) = prepare_arceos_request(&app, BuildCliArgs::default(), None, None).unwrap();
+    app.store_arceos_snapshot(&snapshot).unwrap();
+    fs::write(&config_path, "preset = 'qemu-riscv64'\n").unwrap();
+    let (request, _) = prepare_arceos_request(&app, BuildCliArgs::default(), None, None).unwrap();
+    assert_eq!(request.arch, "riscv64");
+    assert_eq!(request.target, ax_config::boards::TARGET_RISCV64);
 }
 
 #[test]
