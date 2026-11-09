@@ -118,6 +118,7 @@ MANIFEST_LINKS = {
     "host": ["get"],
     "vms": [
         "browse",
+        "config_normalize",
         "create",
         "defaults",
         "delete",
@@ -127,6 +128,7 @@ MANIFEST_LINKS = {
         "pause",
         "pool",
         "pool_save",
+        "pool_update",
         "resume",
         "schema",
         "start",
@@ -917,6 +919,45 @@ def check_recreate(events):
     vm_config = candidates[0].get("toml")
     if not isinstance(vm_config, str) or not vm_config:
         raise AssertionError("pool candidate did not contain TOML: %r" % candidates[0])
+    status, registry_before = request("GET", "/api/vms")
+    expect_status("GET /api/vms (before normalization)", status, 200)
+    status, normalized = request(
+        "POST", "/api/vms/config/normalize", json.dumps({"toml": vm_config})
+    )
+    expect_status("POST /api/vms/config/normalize", status, 200)
+    canonical = normalized.get("toml")
+    if not isinstance(canonical, str) or not canonical:
+        raise AssertionError("normalization returned no TOML: %r" % normalized)
+    status, repeated = request(
+        "POST", "/api/vms/config/normalize", json.dumps({"toml": canonical})
+    )
+    expect_status("POST /api/vms/config/normalize (round trip)", status, 200)
+    check("canonical TOML is stable", repeated.get("toml"), canonical)
+    status, rejected = request(
+        "POST", "/api/vms/config/normalize", json.dumps({"toml": "[invalid"})
+    )
+    expect_status("POST /api/vms/config/normalize (invalid)", status, 400)
+    if not isinstance(rejected.get("error"), str) or not rejected["error"]:
+        raise AssertionError("normalization refusal had no error: %r" % rejected)
+    status, registry_after = request("GET", "/api/vms")
+    expect_status("GET /api/vms (after normalization)", status, 200)
+    check("normalization does not create a VM", registry_after, registry_before)
+    if candidates[0].get("editable") is not False:
+        raise AssertionError("builtin pool candidate was reported editable: %r" % candidates[0])
+    status, body = request(
+        "POST",
+        "/api/vms/pool/update",
+        json.dumps(
+            {
+                "path": candidates[0].get("path"),
+                "expected_toml": vm_config,
+                "toml": vm_config,
+            }
+        ),
+    )
+    expect_status("POST /api/vms/pool/update (builtin)", status, 403)
+    if not isinstance(body.get("error"), str) or not body["error"]:
+        raise AssertionError("pool update rejection had no readable error: %r" % body)
     status, body = request(
         "POST", "/api/vms/create", json.dumps({"toml": vm_config})
     )

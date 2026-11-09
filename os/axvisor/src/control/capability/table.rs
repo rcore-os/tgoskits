@@ -28,6 +28,7 @@
 //! | POST | `/api/vms/{id}/resume` | `vm::vm_resume` | resume |
 //! | GET | `/api/vms/pool` | `vm::vm_pool` | pool (`web`) |
 //! | POST | `/api/vms/pool` | `vm::vm_pool_save` | pool_save (`web`) |
+//! | POST | `/api/vms/pool/update` | `vm::vm_pool_update` | pool_update (`web`) |
 //! | GET | `/api/vms/browse` | `vm::vm_browse` | browse (`web`) |
 //! | GET | `/api/files` | `files::list_files` | list (`web`) |
 //! | POST | `/api/files` | `files::open_file` | open (`web`) |
@@ -140,6 +141,13 @@ static VMS_ENDPOINTS: &[Endpoint] = &[
         build: || get(vm::vm_defaults),
     },
     Endpoint {
+        name: "config_normalize",
+        verb: Verb::Read,
+        method: Method::Post,
+        path: "/api/vms/config/normalize",
+        build: || post(vm::vm_config_normalize),
+    },
+    Endpoint {
         name: "detail",
         verb: Verb::Read,
         method: Method::Get,
@@ -161,6 +169,13 @@ static VMS_ENDPOINTS: &[Endpoint] = &[
         method: Method::Post,
         path: "/api/vms/pool",
         build: || post(vm::vm_pool_save),
+    },
+    Endpoint {
+        name: "pool_update",
+        verb: Verb::Write,
+        method: Method::Post,
+        path: "/api/vms/pool/update",
+        build: || post(vm::vm_pool_update),
     },
     Endpoint {
         name: "browse",

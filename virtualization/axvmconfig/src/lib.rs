@@ -46,7 +46,10 @@ pub const BOOT_IMAGE_PATH_FIELDS: [&str; 5] = [
 
 pub use error::*;
 
-#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[cfg_attr(
+    all(feature = "std", any(windows, unix)),
+    derive(schemars::JsonSchema_repr)
+)]
 #[derive(Debug, Clone, PartialEq, Eq, serde_repr::Serialize_repr, serde_repr::Deserialize_repr)]
 #[repr(u8)]
 enum VmMemMappingTypeSerde {

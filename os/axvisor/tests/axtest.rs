@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn vm_pool_save_only_writes_validated_configs_inside_the_directory() {
-        use crate::pool::{SaveError, save_in, scan_dir};
+        use crate::pool::{SaveError, UpdateError, save_in, scan_dir, update_in};
 
         let root = "/tmp/axvisor-vm-pool-save";
         reset_test_dir(root);
@@ -1190,6 +1190,109 @@ mod tests {
             save_in(root, "saved.toml", &valid),
             Err(SaveError::Exists(_))
         ));
+
+        // Updating preserves the create-only save contract while replacing the
+        // selected file. The operation returns only after a fresh
+        // read observes the complete replacement.
+        let updated = valid.replace("name = \"saved\"", "name = \"updated\"");
+        ax_assert_eq!(
+            update_in(root, &path, &valid, &updated).expect("update the saved config"),
+            path
+        );
+        ax_assert_eq!(
+            fs::read_to_string(&path).expect("read the updated config"),
+            updated
+        );
+        ax_assert!(fs::metadata(&format!("{root}/.saved.toml.axvisor-update")).is_err());
+
+        // An occupied staging name must neither truncate the original nor
+        // delete or overwrite a temporary file owned by another writer.
+        let temporary = format!("{root}/.saved.toml.axvisor-update");
+        fs::write(&temporary, "another writer's temporary file").expect("occupy staging name");
+        ax_assert!(matches!(
+            update_in(root, &path, &updated, &valid),
+            Err(UpdateError::Io(_))
+        ));
+        ax_assert_eq!(
+            fs::read_to_string(&path).expect("read config after staging failure"),
+            updated
+        );
+        ax_assert_eq!(
+            fs::read_to_string(&temporary).expect("read another writer's staging file"),
+            "another writer's temporary file"
+        );
+        fs::remove_file(&temporary).expect("remove occupied staging fixture");
+
+        // Both stale writers and invalid replacement text leave the complete
+        // current file untouched.
+        ax_assert!(matches!(
+            update_in(root, &path, &valid, &valid),
+            Err(UpdateError::Conflict(_))
+        ));
+        ax_assert!(matches!(
+            update_in(root, &path, &updated, "base = { id = 1,"),
+            Err(UpdateError::InvalidToml(_))
+        ));
+        ax_assert_eq!(
+            fs::read_to_string(&path).expect("read config after rejected updates"),
+            updated
+        );
+
+        // The writable boundary is the selected pool directory. Non-canonical
+        // paths, hidden directories, non-files, missing files and paths outside
+        // that boundary are rejected without changing either file.
+        ax_assert!(matches!(
+            update_in(root, &format!("{root}//saved.toml"), &updated, &valid),
+            Err(UpdateError::InvalidPath(_))
+        ));
+        ax_assert!(matches!(
+            update_in(root, &format!("/{root}/saved.toml"), &updated, &valid),
+            Err(UpdateError::InvalidPath(_))
+        ));
+        ax_assert!(matches!(
+            update_in(root, "/tmp/axvisor-vm-pool-outside.toml", &valid, &updated),
+            Err(UpdateError::Forbidden(_))
+        ));
+        fs::create_dir(&format!("{root}/.hidden")).expect("create hidden directory");
+        fs::write(&format!("{root}/.hidden/guest.toml"), &valid).expect("write hidden config");
+        ax_assert!(matches!(
+            update_in(
+                root,
+                &format!("{root}/.hidden/guest.toml"),
+                &valid,
+                &updated
+            ),
+            Err(UpdateError::Forbidden(_))
+        ));
+        fs::create_dir(&format!("{root}/directory.toml")).expect("create non-file target");
+        ax_assert!(matches!(
+            update_in(root, &format!("{root}/directory.toml"), &valid, &updated),
+            Err(UpdateError::Forbidden(_))
+        ));
+        ax_assert!(matches!(
+            update_in(root, &format!("{root}/missing.toml"), &valid, &updated),
+            Err(UpdateError::NotFound(_))
+        ));
+
+        // A link anywhere in the path is read-only even when it resolves to a
+        // regular config below the pool root.
+        let actual = format!("{root}/actual");
+        let alias = format!("{root}/alias");
+        fs::create_dir(&actual).expect("create symlink target directory");
+        fs::write(&format!("{actual}/guest.toml"), &valid).expect("write linked config");
+        ax_fs_ng::current_fs_context()
+            .lock()
+            .symlink(&actual, &alias, 0, 0, &MutationCredentials::root())
+            .expect("create pool parent symlink");
+        ax_assert!(matches!(
+            update_in(root, &format!("{alias}/guest.toml"), &valid, &updated),
+            Err(UpdateError::Forbidden(_))
+        ));
+        ax_assert_eq!(
+            fs::read_to_string(&format!("{actual}/guest.toml"))
+                .expect("read config behind rejected symlink"),
+            valid
+        );
 
         remove_path(
             root,

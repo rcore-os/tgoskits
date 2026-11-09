@@ -380,6 +380,17 @@ fn menuconfig_schema_exposes_only_structured_device_selectors() {
     assert!(base_properties.contains_key("guest_type"));
     assert!(!base_properties.contains_key("vm_type"));
 
+    // The schema must use the same numeric representation as serde_repr.
+    let memory_mapping = &definitions["VmMemMappingTypeSerde"];
+    assert_eq!(memory_mapping["type"], "integer");
+    assert!(
+        memory_mapping["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| value.as_u64().is_some())
+    );
+
     let root_properties = schema
         .as_value()
         .get("properties")

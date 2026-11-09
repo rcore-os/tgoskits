@@ -46,7 +46,10 @@ use alloc::{
 #[cfg(any(feature = "web", test, axtest))]
 use std::sync::{LazyLock, Mutex};
 
-use ax_std::fs::FileTypeExt;
+#[cfg(any(feature = "web", test, axtest))]
+use ax_fs_ng::VfsError;
+#[cfg(any(feature = "web", test, axtest))]
+use ax_fs_ng::fops::{FileAttrExt, FileTypeExt as AxFileTypeExt};
 #[cfg(any(feature = "web", test, axtest))]
 use ax_std::fs::OpenOptions;
 #[cfg(any(feature = "web", test, axtest))]
@@ -789,6 +792,49 @@ impl core::fmt::Display for SaveError {
     }
 }
 
+/// Why an existing pool configuration could not be updated.
+#[cfg(any(feature = "web", test, axtest))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateError {
+    /// The request path is not a canonical absolute `*.toml` path.
+    InvalidPath(String),
+    /// The path does not name an editable regular file in the writable pool.
+    Forbidden(String),
+    /// The filesystem has no verified safe same-directory replacement.
+    UnsupportedFilesystem(String),
+    /// The target no longer exists.
+    NotFound(String),
+    /// The target changed since the caller read it.
+    Conflict(String),
+    /// Reading or replacing failed; a rename error may follow a committed change.
+    Io(String),
+    /// The replacement text is not a guest configuration.
+    InvalidToml(String),
+}
+
+#[cfg(any(feature = "web", test, axtest))]
+impl core::fmt::Display for UpdateError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidPath(path) => {
+                write!(formatter, "`{path}` is not a canonical absolute .toml path")
+            }
+            Self::Forbidden(reason) => write!(formatter, "configuration is read-only: {reason}"),
+            Self::UnsupportedFilesystem(name) => write!(
+                formatter,
+                "configuration is read-only: filesystem `{name}` has no verified safe replacement support"
+            ),
+            Self::NotFound(path) => write!(formatter, "configuration `{path}` does not exist"),
+            Self::Conflict(path) => write!(
+                formatter,
+                "configuration `{path}` changed after it was opened; reload it before saving"
+            ),
+            Self::Io(error) => write!(formatter, "configuration update failed: {error}"),
+            Self::InvalidToml(error) => write!(formatter, "not a guest config: {error}"),
+        }
+    }
+}
+
 /// Create a directory if it is not there yet, reporting the failure as text.
 ///
 /// `ax_std::fs::create_dir_all` is not usable on the guest filesystem (it
@@ -868,6 +914,218 @@ pub fn save_in(directory: &str, name: &str, toml: &str) -> Result<String, SaveEr
         return Err(SaveError::Unwritable(error.to_string()));
     }
     Ok(path)
+}
+
+/// Return whether `path` can be replaced through the pool update API.
+///
+/// This is the single policy check used by both API discovery and mutation.
+/// It rejects paths outside the writable pool, hidden/private components,
+/// symbolic links at any level, and anything but an existing regular `.toml`
+/// file on a filesystem with verified safe same-directory replacement.
+#[cfg(any(feature = "web", test, axtest))]
+pub fn is_editable(path: &str) -> bool {
+    editable_target(path).is_ok()
+}
+
+/// Replace an existing writable-pool configuration using a verified backend.
+#[cfg(any(feature = "web", test, axtest))]
+pub fn update(path: &str, expected_toml: &str, toml: &str) -> Result<String, UpdateError> {
+    update_in(directory(), path, expected_toml, toml)
+}
+
+/// Replace a configuration under `pool_directory` using a same-directory rename.
+///
+/// The directory parameter keeps the complete operation testable against an
+/// isolated filesystem fixture. Production callers use [`update`], which fixes
+/// it to [`directory`].
+///
+/// Failures before rename leave the original untouched. Ext4 can report a
+/// post-commit reap or sync failure: on rename error, callers must reload the
+/// target before retrying, and any remaining temporary file is retained.
+#[cfg(any(feature = "web", test, axtest))]
+pub fn update_in(
+    pool_directory: &str,
+    path: &str,
+    expected_toml: &str,
+    toml: &str,
+) -> Result<String, UpdateError> {
+    let _save = SAVE_LOCK.lock_unpoisoned();
+    editable_target_in(pool_directory, path)?;
+    GuestConfig::from_toml(toml).map_err(|error| UpdateError::InvalidToml(format!("{error}")))?;
+
+    let current = ax_std::fs::read_to_string(path).map_err(|error| {
+        if is_not_found(&error) {
+            UpdateError::NotFound(path.to_string())
+        } else {
+            UpdateError::Io(format!("read `{path}`: {error}"))
+        }
+    })?;
+    if current != expected_toml {
+        return Err(UpdateError::Conflict(path.to_string()));
+    }
+
+    let (parent, name) = path
+        .rsplit_once('/')
+        .expect("canonical absolute paths contain a separator");
+    let temporary = if parent.is_empty() {
+        format!("/.{name}.axvisor-update")
+    } else {
+        format!("{parent}/.{name}.axvisor-update")
+    };
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| {
+            UpdateError::Io(format!("create temporary file `{temporary}`: {error}"))
+        })?;
+    if let Err(error) = file.write_all(toml.as_bytes()) {
+        drop(file);
+        let _ = ax_std::fs::remove_file(&temporary);
+        return Err(UpdateError::Io(format!(
+            "write temporary file `{temporary}`: {error}"
+        )));
+    }
+    drop(file);
+
+    if let Err(error) = ax_std::fs::rename(&temporary, path) {
+        // Ext4 may already have committed the namespace change before a reap
+        // or sync error. Do not roll back or delete a potentially unique copy.
+        return Err(UpdateError::Io(format!(
+            "replace `{path}` with `{temporary}`: {error}; the replacement may already be committed; reload the configuration before retrying; any remaining temporary file is retained"
+        )));
+    }
+    Ok(path.to_string())
+}
+
+#[cfg(any(feature = "web", test, axtest))]
+fn editable_target(path: &str) -> Result<(), UpdateError> {
+    editable_target_in(directory(), path)
+}
+
+#[cfg(any(feature = "web", test, axtest))]
+fn editable_target_in(pool_directory: &str, path: &str) -> Result<(), UpdateError> {
+    if !is_canonical_absolute(path) || !path.ends_with(".toml") {
+        return Err(UpdateError::InvalidPath(path.to_string()));
+    }
+
+    let pool_directory = if pool_directory == "/" {
+        "/"
+    } else {
+        pool_directory.trim_end_matches('/')
+    };
+    if !is_canonical_absolute(pool_directory) && pool_directory != "/" {
+        return Err(UpdateError::Forbidden(format!(
+            "writable pool directory `{pool_directory}` is not canonical"
+        )));
+    }
+    let relative = if pool_directory == "/" {
+        path.strip_prefix('/')
+    } else {
+        path.strip_prefix(pool_directory)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+    }
+    .filter(|relative| !relative.is_empty())
+    .ok_or_else(|| {
+        UpdateError::Forbidden(format!(
+            "`{path}` is outside writable pool `{pool_directory}`"
+        ))
+    })?;
+
+    if axvisor::builtin::is_builtin_path(path) {
+        return Err(UpdateError::Forbidden(format!(
+            "`{path}` belongs to the builtin catalog"
+        )));
+    }
+    if relative
+        .split('/')
+        .any(|component| component.starts_with('.') || component == STAGING_DIR)
+    {
+        return Err(UpdateError::Forbidden(format!(
+            "`{path}` contains a hidden or private component"
+        )));
+    }
+
+    let components: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let mut inspected = String::new();
+    for (index, component) in components.iter().enumerate() {
+        inspected.push('/');
+        inspected.push_str(component);
+        let metadata = ax_fs_ng::api::symlink_metadata(&inspected).map_err(|error| {
+            if error == VfsError::NotFound {
+                UpdateError::NotFound(path.to_string())
+            } else {
+                UpdateError::Io(format!("inspect `{inspected}`: {error}"))
+            }
+        })?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            return Err(UpdateError::Forbidden(format!(
+                "`{inspected}` is a symbolic link"
+            )));
+        }
+        let is_target = index + 1 == components.len();
+        if (is_target && !file_type.is_file()) || (!is_target && !file_type.is_dir()) {
+            return Err(UpdateError::Forbidden(format!(
+                "`{inspected}` is not {}",
+                if is_target {
+                    "a regular file"
+                } else {
+                    "a directory"
+                }
+            )));
+        }
+    }
+
+    let parent = parent_path(path).expect("canonical absolute paths have a parent");
+    let context = ax_fs_ng::current_fs_context();
+    let context = context.lock();
+    let target = context
+        .resolve(path)
+        .map_err(|error| UpdateError::Io(format!("resolve `{path}`: {error}")))?;
+    let parent_location = context
+        .resolve(parent.as_str())
+        .map_err(|error| UpdateError::Io(format!("resolve parent `{parent}`: {error}")))?;
+    // Only these built-in backends have verified non-destructive same-directory
+    // replacement. Generic VFS rename does not guarantee this (FAT removes the
+    // destination first). Audit failure and commit semantics before extending.
+    for location in [&target, &parent_location] {
+        let name = location.filesystem().name();
+        if !matches!(name, "ext4" | "tmpfs" | "ramfs") {
+            return Err(UpdateError::UnsupportedFilesystem(name.to_string()));
+        }
+    }
+    if target.mountpoint().filesystem_id() != parent_location.mountpoint().filesystem_id() {
+        return Err(UpdateError::Forbidden(format!(
+            "`{path}` and its parent are on different filesystems"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "web", test, axtest))]
+fn is_canonical_absolute(path: &str) -> bool {
+    path.starts_with('/')
+        && path.len() > 1
+        && !path[1..].starts_with('/')
+        && !path.ends_with('/')
+        && !path.contains('\0')
+        && path
+            .strip_prefix('/')
+            .expect("absolute path has a leading separator")
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+#[cfg(any(feature = "web", test, axtest))]
+fn is_not_found(error: &ax_std::StdError) -> bool {
+    match error {
+        ax_std::StdError::Api(error) => IoError::from(*error) == IoError::NotFound,
+        ax_std::StdError::Io(error) => *error == IoError::NotFound,
+        _ => false,
+    }
 }
 
 /// The first guest image a config names but that is missing from the guest

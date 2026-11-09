@@ -44,6 +44,9 @@ virtio-net-pci，并在转发端口可达后执行 `http-control-plane/http_prob
 | GET | `/api/vms/schema` | 网页创建字段及展示信息 | 200 |
 | GET | `/api/vms/defaults` | 可直接用于创建的初始 `fields` | 200 |
 | GET | `/api/vms/pool` | 列出动态 pool 与只读 builtin catalog | 200 |
+| POST | `/api/vms/pool` | 新建候选 TOML，重名不覆盖 | 200 `{"path": "..."}` |
+| POST | `/api/vms/pool/update` | 按原文快照更新可写池配置，不修改运行实例 | 200 `{"path": "..."}` |
+| POST | `/api/vms/config/normalize` | 解析并返回规范 TOML，仅用于可视化预览，不落盘或创建实例 | 200 `{"toml": "..."}` |
 | GET | `/api/vms/{id}` | 单个 VM 详情 | 200 |
 | POST | `/api/vms/create` | 从 `fields`、TOML 或配置路径创建并注册 | 200 `{"id": n}` |
 | DELETE | `/api/vms/{id}` | 销毁并注销 | 204 |

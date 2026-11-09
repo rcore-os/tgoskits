@@ -241,6 +241,10 @@ model = "ivc-channel"
 
 桌面 `std` 构建下，这些配置类型派生 `schemars::JsonSchema`。`VirtualDeviceRequestSchema` 只为通用工具声明 `id` 和 `model`；model 私有 options 不可能由通用 schema 穷举。`cargo xtask axvisor config vm` 对应的实现通过 `jkconfig::run::<axvmconfig::GuestConfig>()` 启动 menuconfig，读取的就是这份 JSON Schema。
 
+网页完整配置编辑使用同一派生类型生成的 Draft 7 Schema。`cargo xtask axvisor config vm-schema --output <文件>` 提供宿主导出入口，`web_ui::build_dist` 在前端暂存区生成 Schema 后打包，不在 AxVisor 目标构建中启用 Schemars。网页的草稿、开放参数与文件更新边界见[网页配置编辑设计](https://github.com/rcore-os/tgoskits/blob/dev/design/axvisor-web-config-editor.md)。
+
+网页通过无落盘副作用的 `config_normalize` 动作，将兼容输入转换为同一序列化器的规范表示后生成表单，切换视图不改写原始草稿。内存映射类型的 Schema 使用 `JsonSchema_repr`，与持久化数字编码保持一致，不另设网页专用取值。
+
 序列化输出遵循当前 canonical 格式：
 
 - 只输出 `guest_type = "virtualized"|"passthrough"`，不输出数字 `vm_type`。

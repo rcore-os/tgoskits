@@ -16,6 +16,7 @@ pub mod build;
 mod bundle;
 pub mod config;
 pub mod rootfs;
+mod schema;
 pub mod test;
 mod web_ui;
 
@@ -225,6 +226,12 @@ pub enum ConfigCommand {
         /// Guest configuration file to edit
         guest_config: PathBuf,
     },
+    /// Generate the complete guest configuration JSON Schema
+    VmSchema {
+        /// JSON Schema output path
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 pub struct Axvisor {
@@ -331,6 +338,10 @@ impl Axvisor {
             }
             ConfigCommand::Vm { guest_config } => {
                 let _ = jkconfig::run::<axvmconfig::GuestConfig>(guest_config, true, &[]).await?;
+            }
+            ConfigCommand::VmSchema { output } => {
+                let path = schema::generate_guest_config_schema(&output)?;
+                println!("Generated {}", path.display());
             }
         }
         Ok(())

@@ -52,6 +52,9 @@ pub(super) fn build_dist(
     );
     let staging = target_dir.join("axbuild").join("axvisor").join("web-ui");
     stage_sources(&source, &staging)?;
+    super::schema::generate_guest_config_schema(
+        &staging.join("src/generated/guest-config.schema.json"),
+    )?;
     check_toolchain()?;
     install_dependencies(&source, &staging)?;
     run_build(&staging)?;

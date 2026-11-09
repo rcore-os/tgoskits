@@ -59,6 +59,16 @@ pub async fn vm_schema() -> Json<Value> {
     Json(json!({"fields": creation_schema_fields()}))
 }
 
+/// Parse compatible TOML and return its canonical representation without side effects.
+pub async fn vm_config_normalize(Json(payload): Json<Value>) -> Result<Json<Value>, Response> {
+    let raw = required_string(&payload, "toml")?;
+    let config =
+        GuestConfig::from_toml(raw).map_err(|error| json_error(StatusCode::BAD_REQUEST, error))?;
+    let toml = toml::to_string_pretty(&config)
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    Ok(Json(json!({"toml": toml})))
+}
+
 /// `GET /api/vms/defaults` — a ready-to-submit form, with server-assigned ID.
 pub async fn vm_defaults() -> Json<Value> {
     let fields = creation_schema_fields()
@@ -484,6 +494,40 @@ pub async fn vm_pool_save(Json(payload): Json<Value>) -> Result<Json<Value>, Sta
     }
 }
 
+/// `POST /api/vms/pool/update` — atomically replace an existing pool config.
+pub async fn vm_pool_update(Json(payload): Json<Value>) -> Result<Json<Value>, Response> {
+    let path = required_string(&payload, "path")?;
+    let expected_toml = required_string(&payload, "expected_toml")?;
+    let toml = required_string(&payload, "toml")?;
+    crate::vm_pool::update(path, expected_toml, toml)
+        .map(|path| Json(json!({"path": path})))
+        .map_err(|error| {
+            let status = match error {
+                crate::vm_pool::UpdateError::InvalidPath(_)
+                | crate::vm_pool::UpdateError::InvalidToml(_) => StatusCode::BAD_REQUEST,
+                crate::vm_pool::UpdateError::Forbidden(_)
+                | crate::vm_pool::UpdateError::UnsupportedFilesystem(_) => StatusCode::FORBIDDEN,
+                crate::vm_pool::UpdateError::NotFound(_) => StatusCode::NOT_FOUND,
+                crate::vm_pool::UpdateError::Conflict(_) => StatusCode::CONFLICT,
+                crate::vm_pool::UpdateError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            json_error(status, error)
+        })
+}
+
+fn required_string<'a>(payload: &'a Value, field: &str) -> Result<&'a str, Response> {
+    payload.get(field).and_then(Value::as_str).ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            format!("request field `{field}` must be a string"),
+        )
+    })
+}
+
+fn json_error(status: StatusCode, error: impl core::fmt::Display) -> Response {
+    (status, Json(json!({"error": error.to_string()}))).into_response()
+}
+
 fn files_json(files: &[crate::vm_pool::File]) -> Vec<Value> {
     files
         .iter()
@@ -491,7 +535,7 @@ fn files_json(files: &[crate::vm_pool::File]) -> Vec<Value> {
         .collect()
 }
 fn entries_json(entries: &[crate::vm_pool::Entry]) -> Vec<Value> {
-    entries.iter().map(|entry| json!({"id": entry.id(), "name": entry.name(), "path": entry.path(), "source": entry.source(), "toml": entry.toml()})).collect()
+    entries.iter().map(|entry| json!({"id": entry.id(), "name": entry.name(), "path": entry.path(), "source": entry.source(), "toml": entry.toml(), "editable": crate::vm_pool::is_editable(entry.path())})).collect()
 }
 fn issues_json(issues: &[crate::vm_pool::Issue]) -> Vec<Value> {
     issues.iter().map(|issue| json!({"kind": issue.kind().as_str(), "path": issue.path(), "detail": issue.kind().to_string()})).collect()
@@ -507,6 +551,7 @@ fn builtin_entries_json(catalog: &BuiltinCatalog) -> Vec<Value> {
                 "path": entry.path(),
                 "source": "builtin",
                 "toml": entry.toml(),
+                "editable": false,
             })
         })
         .collect()
