@@ -23,7 +23,7 @@ flowchart LR
 
 ## 1. QEMU 快速启动
 
-不带 `--package` 时，QEMU 子命令从 `os/arceos/configs/board/qemu-<arch>.toml` 读取默认应用与 feature；当前模板使用最小的 `arceos-helloworld`。需要运行其他应用时，再通过 `--package` 显式覆盖。
+没有应用来源且无可恢复快照时，QEMU 子命令按 target 的明确映射展开内置 Hello 预设，选择最小的 `arceos-helloworld`，不生成配置文件。可以用 `--preset qemu-aarch64` 显式选择；运行其他应用时通过 `--package` 指定，此时不自动套用 Hello 的板卡策略。
 
 ### 1.1 RISC-V 64
 

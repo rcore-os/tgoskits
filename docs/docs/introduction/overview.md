@@ -264,19 +264,19 @@ Axvisor Runtime 通过虚拟化组件管理 Guest 生命周期，并通过平台
 | 虚拟化抽象 | `axvm`（VM 与 vCPU wrapper/run loop）、`axvm-types`（共享 vCPU/exit 协议）、`axdevice`（虚拟设备） |
 | 架构支持 | ARM vCPU/VGIC、RISC-V vCPU/vPLIC、x86 vCPU/vLAPIC |
 | Guest 支持 | Linux（AArch64 / RISC-V）、ArceOS、RT-Thread |
-| 配置体系 | 板级配置（`configs/board/*.toml`）+ VM 配置（`configs/vms/**/*.toml`）双层结构 |
+| 配置体系 | Rust 静态预设 + 可选稀疏构建 TOML，VM 配置（`configs/vms/**/*.toml`）保持独立 |
 
 ## 4. 构建与配置
 
-三套系统共享 `scripts/axbuild` 提供的配置解析和运行编排。板卡配置保存 target、feature、CPU 数量、VM 列表等静态输入；`defconfig` 将所选板卡写入默认构建快照；`build`、`qemu`、`uboot` 和 `board` 在此基础上生成镜像并选择运行后端。
+三套系统共享 `scripts/axbuild` 提供的配置解析和运行编排。各 OS 的 Rust 预设保存 target、feature、CPU 上限及自身资源策略，用户 TOML 可以稀疏覆盖或完全自定义；`build`、`qemu`、`uboot` 和 `board` 消费同一解析结果，不生成临时配置文件。只有显式 `defconfig` 才导出可编辑 TOML。
 
 ### 4.1 配置模型
 
-每套系统在 `configs/board/` 中维护命名板卡配置，配置名由 `config ls` 枚举。ArceOS 配置额外选择应用包，StarryOS 配置描述内核与 rootfs 运行参数，Axvisor 配置还可以关联 `configs/vms/` 下的 Guest 定义。
+每套系统在 `scripts/axbuild/src/<os>/config/presets/` 中维护命名配方，由 `config ls` 枚举。ArceOS 配置额外选择应用包，StarryOS 配置可以显式关联 ITS，Axvisor 配置可以关联 `configs/vms/` 下的 Guest 定义。运行工具 TOML 与硬件资源不参与编译字段合并。
 
 | 阶段 | 输入或产物 | 实现入口 |
 | --- | --- | --- |
-| 配置发现 | `configs/board/*.toml` | `cargo arceos config ls` |
+| 配置发现 | Rust 静态 registry | `cargo arceos config ls` |
 | 默认配置 | 选中的板卡名 | `cargo arceos defconfig qemu-riscv64` |
 | 构建解析 | target、feature、SMP、VM 配置 | `scripts/axbuild/` |
 | 产物生成 | ELF、二进制镜像、rootfs 或 Guest 资产 | `cargo arceos build` |

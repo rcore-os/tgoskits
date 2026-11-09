@@ -15,7 +15,7 @@ Starry 构建在共享 Cargo 装配后生成 AXBT sidecar 和可选镜像；图�
 flowchart TD
     A["starry build"] --> B["prepare_starry_request"]
     B --> C["解析 arch / target / config / Snapshot"]
-    C --> D["从 qemu-* board 补齐缺失 Build Config"]
+    C --> D["静态预设展开并合并稀疏用户覆盖"]
     D --> E["CommonConfig → bare PIE Cargo"]
     E --> F["AppContext::build"]
     F --> G["ELF"]
@@ -28,13 +28,13 @@ flowchart TD
 
 ### 1.1 配置装载
 
-默认路径是：
+`--preset` 选择 `starry/config/presets/` 中的静态配方；`--config` 选择稀疏覆盖或完全自定义 TOML。没有来源选择时，resolver 按 target 的明确映射选择标准 QEMU 预设，不创建配置文件。只有显式 `defconfig` 才导出到：
 
 ```text
 tmp/axbuild/config/starryos/build-<target>.toml
 ```
 
-如果路径不存在，`starry/config.rs::ensure_default_build_config_for_target()` 查找与 target 匹配的默认 `qemu-*` board 配置并复制它。显式 `--config` 具有最高优先级；找不到默认 board 时请求返回配置错误。
+`load_config_input()` 只读取本次选中的用户文件一次；显式文件缺失报错。CLI 与文件都声明 preset 时必须一致，预设 target 不能被文件或 CLI 改为另一架构。
 
 典型 board-derived 配置：
 
@@ -80,7 +80,7 @@ Starry 在 ELF 构建成功后按固定顺序处理内核符号和可选的启�
 
 `uimage_generation_plan()` 只消费最终 `StarryConfig.fit_its`，axbuild 调用 `mkimage` 将已后处理的 ELF 生成 uImage。模板相对路径以工作区根为基准，也支持绝对路径；指定资源缺失或打包失败会报错。
 
-旧板卡 TOML 迁移期间，同名 ITS 仅在文件覆盖前装入基值，`defconfig` 仍保留其原有资源复制行为。显式 `fit_its` 可以替换模板，`unset = ["fit_its"]` 可以清除它；打包阶段不会重新猜测同名文件，因此清除不会被撤销。
+三个 SG2002 静态预设显式保存 ITS 路径，`defconfig` 导出该字段，不复制 ITS。显式 `fit_its` 可以替换模板，`unset = ["fit_its"]` 可以清除它。旧用户文件旁存在同名 ITS、最终未指定 `fit_its` 且没有显式清除时，解析器给出迁移错误；打包阶段不猜测同名文件。
 
 ## 3. 命令示例
 
@@ -89,7 +89,7 @@ Starry 在 ELF 构建成功后按固定顺序处理内核符号和可选的启�
 ```bash
 cargo xtask starry build
 cargo xtask starry build --arch aarch64 --smp 4
-cargo xtask starry build --config os/StarryOS/configs/board/qemu-riscv64.toml
+cargo xtask starry build --preset qemu-riscv64
 ```
 
 QEMU rootfs、UEFI 和 `to_bin` 的运行契约见 [StarryOS 运行](./runtime)。

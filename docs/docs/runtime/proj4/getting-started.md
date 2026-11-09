@@ -119,7 +119,7 @@ cargo starry defconfig licheerv-nano-sg2002
 cargo starry build
 
 # 或者一步到位，直接指定配置文件（推荐）
-cargo starry build -c os/StarryOS/configs/board/aka-00-sg2002.toml
+cargo starry build --preset aka-00-sg2002
 ```
 
 在容器里编译 SG2002 内核的完整命令是这样，注意 `-c` 不能省：
@@ -127,7 +127,7 @@ cargo starry build -c os/StarryOS/configs/board/aka-00-sg2002.toml
 ```bash
 docker run --rm -v "$PWD":/work -w /work \
   ghcr.io/rcore-os/tgoskits-container:latest bash -lc \
-  'cargo xtask starry build -c os/StarryOS/configs/board/aka-00-sg2002.toml'
+  'cargo xtask starry build --preset aka-00-sg2002'
 ```
 
 SG2002 的产物在 `target/riscv64gc-unknown-none-elf/release/starryos.uimg`，另外还需要一份设备树。用哪一份不看编译时选的 config 叫什么名字，而是由运行配置里的 `dtb_file` 指定：车板的 `aka-00-sg2002-board.toml` 和 `aka-00-sg2002-uboot.toml` 都指向 `os/StarryOS/configs/board/aka-00-sg2002.dtb`，荔枝派的两份指向同目录下的 `licheerv-nano-sg2002.dtb`。像 `licheerv-nano-sg2002-wifi.toml` 这样只写 `features` 的配置文件是编译用的，里面没有 `dtb_file`，别按它的名字去找同名的设备树。功能项在板卡配置文件里选：三份 SG2002 配置都带 `ax-driver/serial` 和 `ax-driver/cv181x-sdhci`；`ax-driver/aic8800-wifi` 在 `licheerv-nano-sg2002-wifi.toml` 和 `aka-00-sg2002.toml` 里；决定摄像头能不能用的 `starry-kernel/sg2002-cvi-usb-camera` 和 `ax-driver/sg2002-dwc2` 只有 `aka-00-sg2002.toml` 带。这份指南里的推理和遥控都要用摄像头，所以车板一律编译 `aka-00-sg2002.toml`。
@@ -744,7 +744,7 @@ SG2002 上则要关注摄像头采集帧率和每帧的分段耗时，`akars` �
 | 写卡 | `dd` 在 Linux 和 macOS 上可用，Windows 的命令行里没有 | Windows 用 USBimager 或 balenaEtcher，`.img.xz` 可以直接选 |
 | 容器挂载路径 | 2.1 和 4.2 里的 `-v "$PWD":...` 是 Unix shell 的写法 | Windows 的 cmd 里写 `%cd%`，PowerShell 里写 `${PWD}`，换成仓库的实际路径也一样 |
 | 传文件 | Windows 上不一定装了 OpenSSH 客户端，`rsync` 默认没有 | 用 WinSCP 这类图形工具，或者在 WSL 里执行同样的命令 |
-| 编译 RK3588 内核 | macOS 上的 `ar` 打出的是 Mach-O 归档，链接 aarch64 ELF 时会报找不到符号，`lwprintf` 这个依赖先撞上 | 指定一个交叉工具链的 `ar`，工具链来自 `brew install musl-cross`：`AR_aarch64_unknown_none_softfloat=$(brew --prefix)/bin/aarch64-linux-musl-ar cargo starry build -c os/StarryOS/configs/board/orangepi-5-plus.toml` |
+| 编译 RK3588 内核 | macOS 上的 `ar` 打出的是 Mach-O 归档，链接 aarch64 ELF 时会报找不到符号，`lwprintf` 这个依赖先撞上 | 指定一个交叉工具链的 `ar`，工具链来自 `brew install musl-cross`：`AR_aarch64_unknown_none_softfloat=$(brew --prefix)/bin/aarch64-linux-musl-ar cargo starry build --preset orangepi-5-plus` |
 | 组网 | 开发机和板子要在同一个网段里，接同一台交换机可以，网线直连也可以；直连时两侧都要手动配静态地址，地址要配在接板子那块网卡上 | 例如开发机 `192.168.99.1/24`、板子 `192.168.99.2/24`，板子一侧的地址在串口里用 `ip addr` 查；配错网卡是最常见的"网线是好的但不通" |
 
 还有一条和操作系统无关：开发机上开着 VPN 时，去直连网段的流量会被 VPN 的虚拟网卡抢走，现象是网线明明插着却 `ping` 不通，排查网络之前先把 VPN 关掉。

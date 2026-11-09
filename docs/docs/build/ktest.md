@@ -108,9 +108,9 @@ runtime = "arceos" # starry | axvisor | board
 
 | 运行时 | Build Config | QEMU Config |
 | --- | --- | --- |
-| ArceOS | package `build-<target>.toml`，否则 `os/arceos/configs/board/qemu-<arch>.toml` | package `qemu-<arch>.toml`，否则 `os/arceos/configs/qemu/qemu-<arch>.toml` |
-| StarryOS | `os/StarryOS/configs/board/qemu-<arch>.toml` | `os/StarryOS/configs/qemu/qemu-<arch>.toml` |
-| Axvisor | `os/axvisor/configs/board/qemu-<arch>.toml` | `os/axvisor/configs/qemu/qemu-<arch>.toml` |
+| ArceOS | package `build-<target>.toml`，否则对应静态 QEMU 预设 | package `qemu-<arch>.toml`，否则 `os/arceos/configs/qemu/qemu-<arch>.toml` |
+| StarryOS | 对应静态 QEMU 预设 | `os/StarryOS/configs/qemu/qemu-<arch>.toml` |
+| Axvisor | 对应静态 QEMU 预设 | `os/axvisor/configs/qemu/qemu-<arch>.toml` |
 
 StarryOS 会准备其 managed rootfs；Axvisor 会准备当前 arch 的 managed rootfs。随后 QEMU drive 被替换为该镜像，并追加以下判定标记：
 
@@ -124,7 +124,7 @@ StarryOS 会准备其 managed rootfs；Axvisor 会准备当前 arch 的 managed 
 
 ## 6. 板卡验证
 
-板卡模式要求 `--test` 和 `--board`。Build Config 优先使用 package 内的 `build-<board>.toml`；若不存在且 package 内恰好只有一个 `build-*.toml`，则使用该文件，否则回退到运行时的 `configs/board/<board>.toml`。Run Config 优先使用 package 内的 `board-<board>.toml`；否则 StarryOS 优先采用存在的 `configs/board/<board>-board.toml`，其他情况使用 `configs/board/<board>.toml`。完成构建后，ktest 使用当前 Cargo 的 `to_bin` 调用 `board_prepared_elf()`。
+板卡模式要求 `--test` 和 `--board`。未显式指定 `--preset` 时，Build Config 优先使用 package 内的 `build-<board>.toml`；若不存在且 package 内恰好只有一个 `build-*.toml`，则使用该文件，否则选择对应 OS 的同名静态预设。`KtestBuildSelection` 携带可选文件和 preset，`KtestBuildConfig::load()` 一次捕获环境和读取文件。Run Config 优先使用 package 内的 `board-<board>.toml`，否则使用 OS 保留的 `configs/board/<board>-board.toml`；不把编译预设当运行配置。完成构建后，ktest 使用当前 Cargo 的 `to_bin` 调用 `board_prepared_elf()`。
 
 ## 7. 命令示例
 

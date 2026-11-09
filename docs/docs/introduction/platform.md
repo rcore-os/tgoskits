@@ -68,7 +68,7 @@ docker run -it --rm -v "$(pwd)":/workspace -w /workspace tgoskits-test-env
 
 ## 2. 目标架构
 
-TGOSKits 为 AArch64、RISC-V 64、x86_64 和 LoongArch64 提供统一的板卡配置命名与 QEMU 测试入口。架构支持状态以仓库中的 `configs/board/qemu-*.toml`、`test-suit` 构建配置和运行用例为准，不使用“主力”或“实验性”等缺少判定标准的标签。
+TGOSKits 为 AArch64、RISC-V 64、x86_64 和 LoongArch64 提供统一的板卡预设命名与 QEMU 测试入口。架构支持状态以 `scripts/axbuild/src/<os>/config/presets/` 静态配方、`test-suit` 构建配置及真实运行用例为准，不使用“主力”或“实验性”等缺少判定标准的标签。
 
 ### 2.1 支持矩阵
 

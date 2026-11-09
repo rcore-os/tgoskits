@@ -13,7 +13,7 @@ sidebar_label: "构建"
 
 ### 1.1 配置装载
 
-默认配置为 `tmp/axbuild/config/axvisor/build-<target>.toml`。配置由统一的 `AxvisorConfig` 解析公共字段和 `vm_configs`，不再尝试多种嵌套格式；CLI `--smp` 覆盖 CPU 容量。缺失默认配置仍从对应 QEMU 板卡输入生成，显式文件读取失败则报错。
+`--preset` 直接展开 `axvisor/config/presets/` 中的静态配方；无来源选择时使用 target 对应的标准 QEMU 预设，不生成文件。`--config` 可选择完全自定义 TOML 或叠加在预设上的稀疏覆盖，显式文件读取失败报错。统一的 `AxvisorConfig` 解析公共字段和 `vm_configs`，不再尝试多种嵌套格式；CLI `--smp` 覆盖 CPU 容量。`defconfig` 才显式导出到 `tmp/axbuild/config/axvisor/build-<target>.toml`。
 
 文件系统是 Axvisor 的必需能力，无需 `fs` feature。块设备驱动仍由配置显式选择；只用 initramfs 启动客户机不需要块设备驱动。x86 虚拟化后端由运行时 CPUID 选择，QEMU TOML 控制暴露 VMX 或 SVM 扩展。
 
@@ -47,7 +47,7 @@ CLI 的 `--vmconfig <PATH>` 可重复，`--vmconfigs` 为兼容别名；非空 C
 
 ```bash
 cargo xtask axvisor build --arch aarch64
-cargo xtask axvisor build --config os/axvisor/configs/board/qemu-x86_64.toml
+cargo xtask axvisor build --preset qemu-x86_64
 cargo xtask axvisor build --arch x86_64 \
   --vmconfig os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml
 ```
