@@ -468,5 +468,7 @@ mod publication;
 mod fair_balance;
 
 mod push;
+#[cfg(axtest)]
+pub use push::observe_root_domain_push_locks_for_test;
 
 mod admission;
