@@ -8,11 +8,7 @@ pub(super) static ASUS_NUC15CRH_X86_64: AxvisorPreset = AxvisorPreset {
         &boards::ASUS_NUC15CRH_X86_64,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_env(&[
@@ -29,11 +25,7 @@ pub(super) static ORANGEPI_5_PLUS: AxvisorPreset = AxvisorPreset {
         &boards::ORANGEPI_5_PLUS,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[
@@ -49,11 +41,7 @@ pub(super) static PHYTIUMPI: AxvisorPreset = AxvisorPreset {
         &boards::PHYTIUMPI,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["ax-driver/ahci-fdt", "ax-driver/phytium-mci"]]),
@@ -66,11 +54,7 @@ pub(super) static QEMU_AARCH64_VCPUS: AxvisorPreset = AxvisorPreset {
         &boards::QEMU_AARCH64,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     vm_configs: &[
@@ -87,11 +71,7 @@ pub(super) static QEMU_AARCH64_VIRTIO_BLK_TEST: AxvisorPreset = AxvisorPreset {
         &boards::QEMU_AARCH64,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["ax-driver/nvme"]]),
@@ -104,11 +84,7 @@ pub(super) static QEMU_AARCH64_VIRTIO_NET_PEER: AxvisorPreset = AxvisorPreset {
         &boards::QEMU_AARCH64,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     vm_configs: &[
@@ -125,11 +101,7 @@ pub(super) static QEMU_AARCH64: AxvisorPreset = AxvisorPreset {
         &boards::QEMU_AARCH64,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["ax-driver/nvme"]]),
@@ -143,10 +115,7 @@ pub(super) static QEMU_LOONGARCH64: AxvisorPreset = AxvisorPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(1),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["ax-driver/nvme"]])
@@ -164,10 +133,7 @@ pub(super) static QEMU_RISCV64: AxvisorPreset = AxvisorPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(4),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["ax-driver/nvme", "sstc"]]),
@@ -180,11 +146,7 @@ pub(super) static QEMU_X86_64_LINUX: AxvisorPreset = AxvisorPreset {
         &boards::QEMU_X86_64,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     vm_configs: &[],
@@ -197,10 +159,7 @@ pub(super) static QEMU_X86_64: AxvisorPreset = AxvisorPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(2),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["web-ui", "ax-driver/nvme", "ax-driver/intel-net"]])
@@ -214,11 +173,7 @@ pub(super) static RDK_S100: AxvisorPreset = AxvisorPreset {
         &boards::RDK_S100,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     vm_configs: &[],
@@ -230,11 +185,7 @@ pub(super) static ROC_RK3568_PC: AxvisorPreset = AxvisorPreset {
         &boards::ROC_RK3568_PC,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["ax-driver/rockchip-sdhci"]]),
@@ -248,10 +199,7 @@ pub(super) static ROCK_4D: AxvisorPreset = AxvisorPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(8),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["ax-driver/rockchip-dwmmc"]]),
@@ -264,11 +212,7 @@ pub(super) static TAC_E400: AxvisorPreset = AxvisorPreset {
         &boards::TAC_E400,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     vm_configs: &[],

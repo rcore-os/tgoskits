@@ -9,10 +9,7 @@ pub(super) static ORANGEPI_5_PLUS: ArceosPreset = ArceosPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(8),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[boards::rockchip::RK3588_CPUFREQ]),
@@ -29,10 +26,7 @@ pub(super) static QEMU_AARCH64: ArceosPreset = ArceosPreset {
         CommonDefaults {
             log: LogLevel::Warn,
             max_cpu_num: Some(1),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     package: "arceos-helloworld",
@@ -48,10 +42,7 @@ pub(super) static QEMU_LOONGARCH64: ArceosPreset = ArceosPreset {
         CommonDefaults {
             log: LogLevel::Warn,
             max_cpu_num: Some(1),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     package: "arceos-helloworld",
@@ -67,10 +58,7 @@ pub(super) static QEMU_RISCV64: ArceosPreset = ArceosPreset {
         CommonDefaults {
             log: LogLevel::Warn,
             max_cpu_num: Some(1),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     package: "arceos-helloworld",
@@ -86,10 +74,7 @@ pub(super) static QEMU_X86_64: ArceosPreset = ArceosPreset {
         CommonDefaults {
             log: LogLevel::Warn,
             max_cpu_num: Some(1),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     ),
     package: "arceos-helloworld",

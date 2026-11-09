@@ -8,11 +8,7 @@ pub(super) static AKA_00_SG2002: StarryPreset = StarryPreset {
         &boards::AKA_00_SG2002,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&[
@@ -33,11 +29,7 @@ pub(super) static JL_LSGD2K10: StarryPreset = StarryPreset {
         &boards::JL_LSGD2K10,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&[
@@ -55,11 +47,7 @@ pub(super) static K230_CANMV: StarryPreset = StarryPreset {
         &boards::K230_CANMV,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&["k230"]]),
@@ -72,11 +60,7 @@ pub(super) static LICHEERV_NANO_SG2002_WIFI: StarryPreset = StarryPreset {
         &boards::LICHEERV_NANO_SG2002,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&[
@@ -95,11 +79,7 @@ pub(super) static LICHEERV_NANO_SG2002: StarryPreset = StarryPreset {
         &boards::LICHEERV_NANO_SG2002,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&[
@@ -117,11 +97,7 @@ pub(super) static LS2K1000: StarryPreset = StarryPreset {
         &boards::LS2K1000,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&[
@@ -140,10 +116,7 @@ pub(super) static ORANGEPI_5_PLUS: StarryPreset = StarryPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(8),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[
@@ -170,10 +143,7 @@ pub(super) static PHYTIUMPI: StarryPreset = StarryPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(4),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&[
@@ -186,124 +156,77 @@ pub(super) static PHYTIUMPI: StarryPreset = StarryPreset {
 
 pub(super) static QEMU_AARCH64: StarryPreset = StarryPreset {
     name: "qemu-aarch64",
-    common: CommonPreset::new(
-        &boards::QEMU_AARCH64,
-        CommonDefaults {
-            log: LogLevel::Warn,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
-        },
-    )
-    .with_feature_sets(&[&[
-        "ax-runtime/display",
-        "ax-runtime/rtc",
-        "ax-driver/nvme",
-        "ax-driver/virtio-net",
-        "ax-driver/virtio-gpu",
-        "ax-driver/virtio-input",
-        "ax-driver/virtio-socket",
-    ]]),
+    common: CommonPreset::new(&boards::QEMU_AARCH64, CommonDefaults::DEFAULT).with_feature_sets(&[
+        &[
+            "ax-runtime/display",
+            "ax-runtime/rtc",
+            "ax-driver/nvme",
+            "ax-driver/virtio-net",
+            "ax-driver/virtio-gpu",
+            "ax-driver/virtio-input",
+            "ax-driver/virtio-socket",
+        ],
+    ]),
     fit_its: None,
 };
 
 pub(super) static QEMU_LOONGARCH64_UEFI: StarryPreset = StarryPreset {
     name: "qemu-loongarch64-uefi",
-    common: CommonPreset::new(
-        &boards::QEMU_LOONGARCH64,
-        CommonDefaults {
-            log: LogLevel::Warn,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
-        },
-    )
-    .with_feature_sets(&[&[
-        "axplat-dyn/efi",
-        "ax-driver/nvme",
-        "ax-driver/virtio-net",
-        "ax-driver/virtio-gpu",
-        "ax-driver/virtio-input",
-        "ax-driver/virtio-socket",
-    ]]),
+    common: CommonPreset::new(&boards::QEMU_LOONGARCH64, CommonDefaults::DEFAULT)
+        .with_feature_sets(&[&[
+            "axplat-dyn/efi",
+            "ax-driver/nvme",
+            "ax-driver/virtio-net",
+            "ax-driver/virtio-gpu",
+            "ax-driver/virtio-input",
+            "ax-driver/virtio-socket",
+        ]]),
     fit_its: None,
 };
 
 pub(super) static QEMU_LOONGARCH64: StarryPreset = StarryPreset {
     name: "qemu-loongarch64",
-    common: CommonPreset::new(
-        &boards::QEMU_LOONGARCH64,
-        CommonDefaults {
-            log: LogLevel::Warn,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
-        },
-    )
-    .with_feature_sets(&[&[
-        "axplat-dyn/efi",
-        "ax-driver/nvme",
-        "ax-driver/virtio-net",
-        "ax-driver/virtio-gpu",
-        "ax-driver/virtio-input",
-        "ax-driver/virtio-socket",
-    ]]),
+    common: CommonPreset::new(&boards::QEMU_LOONGARCH64, CommonDefaults::DEFAULT)
+        .with_feature_sets(&[&[
+            "axplat-dyn/efi",
+            "ax-driver/nvme",
+            "ax-driver/virtio-net",
+            "ax-driver/virtio-gpu",
+            "ax-driver/virtio-input",
+            "ax-driver/virtio-socket",
+        ]]),
     fit_its: None,
 };
 
 pub(super) static QEMU_RISCV64: StarryPreset = StarryPreset {
     name: "qemu-riscv64",
-    common: CommonPreset::new(
-        &boards::QEMU_RISCV64,
-        CommonDefaults {
-            log: LogLevel::Warn,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
-        },
-    )
-    .with_feature_sets(&[&[
-        "ax-runtime/display",
-        "ax-runtime/rtc",
-        "ax-driver/serial",
-        "ax-driver/nvme",
-        "ax-driver/virtio-net",
-        "ax-driver/virtio-gpu",
-        "ax-driver/virtio-input",
-        "ax-driver/virtio-socket",
-    ]]),
+    common: CommonPreset::new(&boards::QEMU_RISCV64, CommonDefaults::DEFAULT).with_feature_sets(&[
+        &[
+            "ax-runtime/display",
+            "ax-runtime/rtc",
+            "ax-driver/serial",
+            "ax-driver/nvme",
+            "ax-driver/virtio-net",
+            "ax-driver/virtio-gpu",
+            "ax-driver/virtio-input",
+            "ax-driver/virtio-socket",
+        ],
+    ]),
     fit_its: None,
 };
 
 pub(super) static QEMU_X86_64: StarryPreset = StarryPreset {
     name: "qemu-x86_64",
-    common: CommonPreset::new(
-        &boards::QEMU_X86_64,
-        CommonDefaults {
-            log: LogLevel::Warn,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
-        },
-    )
-    .with_feature_sets(&[&[
-        "axplat-dyn/efi",
-        "ax-driver/nvme",
-        "ax-driver/virtio-net",
-        "ax-driver/virtio-gpu",
-        "ax-driver/virtio-input",
-        "ax-driver/virtio-socket",
-    ]]),
+    common: CommonPreset::new(&boards::QEMU_X86_64, CommonDefaults::DEFAULT).with_feature_sets(&[
+        &[
+            "axplat-dyn/efi",
+            "ax-driver/nvme",
+            "ax-driver/virtio-net",
+            "ax-driver/virtio-gpu",
+            "ax-driver/virtio-input",
+            "ax-driver/virtio-socket",
+        ],
+    ]),
     fit_its: None,
 };
 
@@ -314,10 +237,7 @@ pub(super) static ROC_RK3568_PC: StarryPreset = StarryPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(4),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&[
@@ -335,10 +255,7 @@ pub(super) static ROCK_4D: StarryPreset = StarryPreset {
         CommonDefaults {
             log: LogLevel::Info,
             max_cpu_num: Some(8),
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[
@@ -360,11 +277,7 @@ pub(super) static VISIONFIVE2: StarryPreset = StarryPreset {
         &boards::VISIONFIVE2,
         CommonDefaults {
             log: LogLevel::Info,
-            max_cpu_num: None,
-            runtime: ax_config::RuntimeOptions {
-                task_stack_size: None,
-                scheduler_tick_ms: None,
-            },
+            ..CommonDefaults::DEFAULT
         },
     )
     .with_feature_sets(&[&[
