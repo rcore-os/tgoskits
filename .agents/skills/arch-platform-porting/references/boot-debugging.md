@@ -711,7 +711,7 @@ EL1/EL2 页表分别使用 `El1Pte`、`El2Pte`，启动 feature 只选择消费�
 
 ArceOS 的用户态 CPU 集成镜像使用 `freestanding = true` 构建配置，经共享 `BareKernelLinkMode::Pie` 选择裸机 JSON、core/alloc 和真实内核链接脚本。普通 RustStd 镜像仍为默认值。不要用内核 TLS 存储绕过 `uspace` 的寄存器所有权契约，也不要用缺少 `-Tlinker.x` 的普通裸机链接替代完整启动映像。
 
-AArch64 的 PMU `exclude_kernel` 只过滤计数事件；[IRQ 是异步异常](https://developer.arm.com/-/media/Arm%20Developer%20Community/PDF/Learn%20the%20Architecture/Exception%20model.pdf)，不能据此要求溢出 IRQ 一定打断 EL0。[用户入口用例](../../../../test-suit/arceos/cpu/user-entry/src/aarch64.rs)用 `PMOVSSET_EL0` 先触发真实 EL1 IRQ，检查内核 PC/SP 后清除并重装计数器，再要求真实 EL0 IRQ 满足原 PC/SP/FP 契约。Kernel 快照不得写入用户成功状态；缺少真实 User 快照仍必须失败。注入时保持本地 IRQ 关闭并结束 PMU 独占借用后才开放 IRQ，保留原 60 秒 QEMU 截止时间。
+AArch64 的 PMU `exclude_kernel` 只过滤计数事件；[IRQ 是异步异常](https://developer.arm.com/-/media/Arm%20Developer%20Community/PDF/Learn%20the%20Architecture/Exception%20model.pdf)，不能据此要求溢出 IRQ 一定打断 EL0。[用户入口用例](../../../../test-suit/arceos/cpu/src/user_entry/aarch64.rs)用 `PMOVSSET_EL0` 先触发真实 EL1 IRQ，检查内核 PC/SP 后清除并重装计数器，再要求真实 EL0 IRQ 满足原 PC/SP/FP 契约。Kernel 快照不得写入用户成功状态；缺少真实 User 快照仍必须失败。注入时保持本地 IRQ 关闭并结束 PMU 独占借用后才开放 IRQ，保留原 60 秒 QEMU 截止时间。
 
 异常修复表保留链接时原位记录，不能在每核初始化时排序。AArch64、x86 和 LoongArch 的字段相对偏移会在原样移动表项后指向错误位置；RISC-V 当前格式以 section 起点为基址。CPU 使用只读查找，无需初始化锁或堆分配。`cpu/user-entry/src/fixup.rs` 用逆序记录和实际缺页验证这一契约，不能用源码字符串断言替代。
 
@@ -879,3 +879,10 @@ x86_64 httpboot 用例）可以只含 selector；axbuild 不向板卡环境
 先核对实际宿主 cmdline、builtin catalog 的 VM ID 与测试 case 的 shell/HTTP 启动
 步骤，再检查客户机内核或 initrd；不要恢复已删除的自动启动 feature 或
 `/guest/vm_default` 启动覆盖路径。
+
+
+## CPU集成测试批次的运行时装配
+
+CPU测试实现集中在test-suit/arceos/cpu/src，normal/suite.toml声明实际架构、特权级、CPU型号和启动批次。先用cargo xtask arceos test qemu --arch <arch> --test-group cpu --plan核对所选std/freestanding入口、SMP、features和配置，再运行；板端仍使用board-orangepi-5-plus配置及保留的薄入口。增改删规则见cpu/README.md，避免凭目录名推断架构或把逻辑项数当启动数。
+
+共享库启用AXCPU fp-simd/context时，入口的HAL/runtime浮点能力必须同步。CPU测试库的guest-entry、virtualization-lifecycle与fp-context能力同步启用ax-std/fp-simd，防止EL1在测试开始前因上下文保存访问FP寄存器而异常；入口不预先编入无关测试能力。不要通过关闭断言或改变QEMU语义处理这类装配错误。ARM EL0批次继续使用freestanding/uspace且无kernel TLS；RISC-V和Loong的无TLSnofault入口保留，不等同于真实进入用户态。预期boot异常独立启动，按专用诊断验收；普通批次只在全部成员返回后输出整批完成。

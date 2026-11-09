@@ -34,6 +34,7 @@ Starry/板卡边界和目录契约见 [`starry-test-suit`](../starry-test-suit/S
 ## 必查项
 
 - Rust suite：`test-suit/arceos/rust/suite.toml` schema_version=3，顶部`run_order`集中指定启动顺序，下面`[batches.NAME]`下嵌套`[[batches.NAME.tests]]`；未知/重复/遗漏批次均拒绝，组定义位置不影响执行，成员顺序决定目标执行顺序，批次arches由成员继承且可收窄。general代替旧all批次；Cargo只维护单项feature依赖，不复制聚合成员。host按当前架构展开features，build.rs按同一声明生成目标绑定；runner.rs保留状态恢复。list展示启动边界，plan/run同源选择；单项优先自身fixture，否则继承批次runtime。成功仍要求每项结果，panic/lockdep/栈保护保留独立启动。
+- CPU suite：`cpu/normal/suite.toml`显式登记批次顺序、架构、std/freestanding入口、成员及旧case别名；实现唯一位于`cpu/src`库，`normal/build.rs`生成顺序调用并强制unit返回，成员失败中止当前启动，全部正常返回才输出带batch/selection的整批标记。普通配置单step；预期boot-trap独立启动并保持专用判定。host与生成器同读清单，AX_CPU_TEST_BATCH/AX_CPU_TEST_CASE进入构建身份；list/plan/run同源。PMU/user-entry/cpufreq板端包保留薄包装，配置仍在board-orangepi-5-plus。增改删规则见`cpu/README.md`；Rust套件规则见`rust/README.md`。
 - C suite：维护 C 源码/头文件、Makefile 或 `test_cmd`，并同步 C feature 列表和成功/失败匹配。
 - generic suite：按共享发现器提供 build wrapper、package manifest 和 runtime config，不假设存在 `src/main.rs`。
 - board case：使用 `board-*.toml` 与目标 build 配置；普通项目通过 `cargo xtask arceos test board`，Cargo axtest 目标通过 `cargo xtask ktest board`，不混入 QEMU 批次。
@@ -69,7 +70,7 @@ Starry/板卡边界和目录契约见 [`starry-test-suit`](../starry-test-suit/S
 
 ArceOS Rust 构建默认使用标准库和 musl PIE。验证 `uspace` 时，内核 TLS 按运行期契约关闭，不能放宽 someboot 链接断言来容纳标准库 TLS。此类独立 Rust 镜像在 build TOML 显式使用 `freestanding = true`，由同一个 `cargo xtask arceos test qemu/board` 入口选择共享裸机 JSON、`build-std=core,alloc` 与 PIE 内核链接脚本。它与 `app-c` 互斥，不恢复已删除的 `std` 配置别名。
 
-软件包应保持 `no_std`、`no_main`，按真实需求启用 `ax-std` 的 mini-std 能力，不启用 `ax-std/arceos` 带入的 `std-compat`。全局分配器由 `ax-alloc/global-allocator` 显式提供。参考 `cpu/user-entry`：用户线程经 `TaskAddressSpace` 保留真实页表及 backing pages，再由 `UserExecutionContext` 验证并进入，不能绕过调度器创建伪用户上下文。
+软件包应保持 `no_std`、`no_main`，按真实需求启用 `ax-std` 的 mini-std 能力，不启用 `ax-std/arceos` 带入的 `std-compat`。全局分配器由 `ax-alloc/global-allocator` 显式提供。参考 `cpu/normal/freestanding` 与 `cpu/src/user_entry`（`cpu/user-entry`保留板端薄包装）：用户线程经 `TaskAddressSpace` 保留真实页表及 backing pages，再由 `UserExecutionContext` 验证并进入，不能绕过调度器创建伪用户上下文。
 
 
 ## CPU 契约用例的 CI 归属

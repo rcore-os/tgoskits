@@ -308,13 +308,15 @@ impl AppContext {
             "qemu run package={} target={}",
             cargo.package, cargo.target
         ));
+        let host_completion_step = qemu.shell_check_steps.len().checked_sub(1);
         let result = self
             .run_qemu_captured(cargo, qemu, Some(success_output.clone()))
             .await;
         let coverage_result = capture.finish();
-        let qemu_result = crate::support::qemu_success::verify_qemu_success_contract(
+        let qemu_result = crate::support::qemu_success::verify_qemu_host_completion_contract(
             result,
             Some(&success_output),
+            coverage_result.as_ref().ok().and(host_completion_step),
         );
         let result = crate::support::qemu_success::combine_qemu_and_coverage_results(
             qemu_result,

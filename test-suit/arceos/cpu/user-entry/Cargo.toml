@@ -6,12 +6,12 @@ publish = false
 
 [features]
 default = ["ax-std"]
-ax-std = ["dep:ax-std"]
+ax-std = ["dep:ax-std", "ax-std/uspace"]
 
 [dependencies]
-ax-alloc = { workspace = true, features = ["global-allocator"] }
-ax-cpu = { workspace = true, features = ["uspace", "pmu"] }
+cpu-tests = { package = "arceos-cpu-tests", path = "..", features = ["user-entry"] }
 ax-std = { workspace = true, optional = true, default-features = false, features = ["alloc", "paging", "uspace", "ipi", "smp"] }
+ax-alloc = { workspace = true, features = ["global-allocator"] }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]

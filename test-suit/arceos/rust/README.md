@@ -70,8 +70,56 @@ cargo xtask arceos test qemu --test-group rust --arch aarch64 --test-case net-un
 
 ### 3.1 C 接口
 
-`../c` 通过 musl 与 `ax-libc` 验证 malloc、pthread、时间、管道、epoll 和 socket 的 C/POSIX 语义。它与 Rust std suite 覆盖不同的消费者入口，继续保留 C harness 和 `ARCEOS_C_TEST_*` 判定。
+`../c` 通过 `ax-libc` 静态库验证 malloc、pthread、时间、管道、epoll 和 socket 的 C/POSIX 语义。它与 Rust std suite 覆盖不同的消费者入口，继续保留 C harness 和 `ARCEOS_C_TEST_*` 判定。
 
 ### 3.2 平台与板卡
 
-`../loongarch/unaligned-fixup` 使用标准 Rust 启动入口，异常表修复仍调用架构 helper。`../board-orangepi-5-plus/ipi` 复用 Rust suite 的 `task-ipi` feature及逐远端CPU应答。`../axtest/sg2002-usb-msc` 保留 no_std 硬件 harness，直接检查 USB、IRQ、DMA 和传输完成；其中的纯逻辑模块可以通过宿主单元测试验证，但不能替代实体板卡运行。
+非对齐异常表恢复由[CPU套件](../cpu/README.md)的unaligned-fixup成员执行，旧loongarch组仅保留手动兼容转发。`../board-orangepi-5-plus/ipi` 复用 Rust suite 的 `task-ipi` feature及逐远端CPU应答。`../axtest/sg2002-usb-msc` 保留 no_std 硬件 harness，直接检查 USB、IRQ、DMA 和传输完成；其中的纯逻辑模块可以通过宿主单元测试验证，但不能替代实体板卡运行。
+
+
+## 4. 后续维护规范
+
+### 4.1 文件职责与执行顺序
+
+| 文件 | 维护内容 |
+| --- | --- |
+| suite.toml | 唯一启动顺序run_order；各批次按tests登记ID、名称、入口、分类及架构 |
+| Cargo.toml | 单项feature与依赖；不复制general等批次的成员集合 |
+| build.rs、src/suite.rs | 从同一清单生成目标函数绑定；不手写第二份测试表 |
+| src/<功能模块> | 真正测试实现与断言 |
+| src/runner.rs | 顺序执行、逐项结果、任务身份/亲和性/调度策略恢复、整批完成 |
+| qemu-*.toml、cases/<配置>/ | 默认及专属运行环境、输出匹配、宿主夹具 |
+| scripts/axbuild/src/test/normal/arceos/rust_suite/ | 宿主登记读取、选择、list/plan及专用判定 |
+
+run_order中每个批次必须恰好出现一次，组定义在文件中的位置不改变启动顺序；tests的声明顺序就是批内执行顺序。一个普通批次启动一次；单项继承对应运行配置，存在自身fixture时优先使用它。不能把逻辑测试项数当作启动次数。
+
+### 4.2 添加与修改
+
+1. 先明确本项目要保护的行为、错误实现及已有覆盖，优先扩展既有完整功能测试。
+2. 在src中实现普通函数，返回TestResult；成功Ok，失败Err或assert/panic。使用真实Rust std覆盖std/POSIX调用链，不用mini-std或宿主fake runtime替代目标行为。
+3. 增加单项Cargo feature、lib模块声明及suite.toml登记；entry指向真实实现。ID全清单唯一，测试arches不能超出其批次arches。不在SELECTED_TESTS或Cargo中再维护聚合成员。
+4. 优先加入运行条件兼容的现有批次；新增批次须补run_order，声明必要架构、features或runtime配置。预期panic、lockdep、栈保护保持独立启动和专用判定。
+5. 使用--list/--plan确认选择、架构、features和启动数，运行单项及完整所属批次；需要跨架构能力时覆盖相应架构。不能通过不登记、空函数或成功正则放宽制造通过。
+
+普通测试由runner逐项调用；Err或panic中止正常流程，全部返回成功后才输出ArceOS test suite run OK!。宿主普通配置等待整批标记，并匹配panic/ARCEOS_TEST_FAIL；目前不逐条解析END核对ID与数量。每项自身仍必须有有效断言，runner不能替代功能判定。成员内禁止process::exit或捕获失败后返回Ok。
+
+改变线程亲和性或调度策略时保留RunnerTaskState恢复。后台线程、IRQ、设备、命名空间及其他全局资源由用例自己完成清理，不能假设runner会恢复所有状态。需要独占一次性注册的功能保持自己的runtime。
+
+### 4.3 删除、合并与运行配置
+
+删除前证明已有测试承接独特失败信号；同时检查清单、feature、lib声明、函数、专属依赖/夹具、别名和文档。空批次及run_order项一起移除。板端IPI等消费者仍使用的功能不能直接删除。
+
+合并批次必须确认构建feature、硬件、运行时和退出契约兼容，并实跑合批；函数删除只记负载减少，只有整个独立目标取消才记启动减少。记录前后选择、顺序、构建身份、启动数及通过情况。
+
+普通成功标记只在全体通过后输出；预期诊断只接受该功能的指定证据。host_pcm_waveform、host_http_server、serial-rx等宿主夹具是实际判定的一部分，不因客体输出成功而跳过。--plan默认只写stdout，需要JSON文件时保存到已忽略的target目录。
+
+### 4.4 验收
+
+```bash
+cargo xtask arceos test qemu --arch riscv64 --test-group rust --list
+cargo xtask arceos test qemu --arch riscv64 --test-group rust --plan
+cargo xtask arceos test qemu --arch riscv64 --test-group rust --test-case task-mutex
+cargo xtask arceos test qemu --arch riscv64 --test-group rust --test-case general
+```
+
+根据实际改动运行cargo fmt、受影响cargo xtask clippy、相关架构QEMU及共享板端消费者。错误修复须保留错误实现失败、修复后通过的命令和日志；宿主执行机制用合成配置验证发现/选择/失败传播，不镜像固定生产清单。新增功能是否接入CI与是否保留实现分别说明，不默认偷偷新增启动。

@@ -17,6 +17,28 @@ pub(super) fn expand_clippy_checks(
 ) -> anyhow::Result<Vec<ClippyCheck>> {
     let mut checks = Vec::new();
     for package in packages {
+        // CPU entry points are checked under their actual catalog selections,
+        // rather than enabling unrelated modules for a synthetic default main.
+        if package
+            .metadata
+            .get("clippy")
+            .and_then(|value| value.get("cpu_suite"))
+            .is_some()
+        {
+            checks.extend(package_clippy_configurations(package)?.into_iter().map(
+                |configuration| ClippyCheck {
+                    package: package.name.to_string(),
+                    kind: ClippyCheckKind::Configuration {
+                        name: configuration.name,
+                        features: configuration.features,
+                        rustflags: configuration.rustflags,
+                    },
+                    target: Some(configuration.target),
+                    env: configuration.env,
+                },
+            ));
+            continue;
+        }
         let mut features: BTreeSet<_> = package
             .features
             .keys()

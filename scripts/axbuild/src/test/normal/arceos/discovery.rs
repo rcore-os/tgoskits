@@ -189,6 +189,7 @@ pub(crate) fn selected_qemu_test_groups(
                 if group != ARCEOS_RUST_TEST_GROUP
                     && group != ARCEOS_C_TEST_GROUP
                     && group != ARCEOS_AXTEST_GROUP
+                    && group != "loongarch"
                 {
                     flows.push(QemuTestFlow::Generic(group));
                 }

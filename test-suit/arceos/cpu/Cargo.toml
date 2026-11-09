@@ -1,0 +1,47 @@
+[package]
+name = "arceos-cpu-tests"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[features]
+default = []
+paging = ["ax-hal/paging", "dep:someboot", "dep:ax-mm", "ax-std/paging", "ax-std/ipi"]
+fp-context = ["ax-cpu/fp-simd", "ax-std/fp-simd"]
+pmu = ["ax-cpu/pmu", "ax-std/ipi"]
+kernel-access = ["ax-cpu/exception-table", "ax-std/paging", "ax-hal/paging"]
+user-entry = ["kernel-access", "ax-cpu/uspace", "ax-cpu/pmu", "ax-std/uspace", "ax-std/ipi", "ax-std/smp"]
+hypervisor-probe = []
+virtualization-lifecycle = ["ax-cpu/virtualization", "ax-std/fp-simd"]
+guest-entry = ["ax-cpu/virtualization", "ax-std/fp-simd", "ax-hal/paging", "ax-std/paging"]
+trap-entry = ["ax-cpu/context"]
+unaligned-fixup = ["ax-cpu/exception-table"]
+cpufreq = ["pmu", "dep:ax-driver", "ax-driver/rk3588-cpufreq-thermal-test", "dep:ax-runtime"]
+hv = ["ax-std/hv"]
+expect-h = []
+expect-svm = []
+stage2-tlb = ["guest-entry", "ax-std/smp", "ax-std/ipi"]
+sstc = ["guest-entry", "ax-cpu/riscv-sstc"]
+expect-no-sstc = ["sstc"]
+boot-trap = ["paging"]
+
+[dependencies]
+ax-alloc.workspace = true
+ax-cpu.workspace = true
+ax-hal.workspace = true
+ax-std = { workspace = true, default-features = false, features = ["alloc"] }
+ax-mm = { workspace = true, optional = true }
+someboot = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+ax-driver = { workspace = true, optional = true }
+ax-runtime = { workspace = true, optional = true }
+trait-ffi.workspace = true
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat", "x86_64-unknown-none"]

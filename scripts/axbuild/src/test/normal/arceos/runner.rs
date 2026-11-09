@@ -81,10 +81,15 @@ pub(crate) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
         crate::context::resolve_arceos_arch_and_target,
     )?;
     if args.plan {
-        if groups != [QemuTestFlow::Rust] {
-            bail!("--plan requires --test-group rust");
-        }
-        return super::rust_suite::print_plan(arceos, &arch, &target, selected_case);
+        return match groups.as_slice() {
+            [QemuTestFlow::Rust] => {
+                super::rust_suite::print_plan(arceos, &arch, &target, selected_case)
+            }
+            [QemuTestFlow::Generic(group)] if group == "cpu" => {
+                super::cpu::print_plan(arceos, &arch, &target, selected_case)
+            }
+            _ => bail!("--plan requires --test-group rust or cpu"),
+        };
     }
     let allow_rust_case_miss = args.test_group.is_none() && !args.only_rust;
     if args.list {
@@ -212,6 +217,7 @@ pub(crate) fn group_arceos_qemu_cases_by_build_identity(
             group.build_config_path == case.case.build_config_path
                 && group.package == case.case.package
                 && group.features == case.case.features.as_slice()
+                && group.cargo.env == case.cargo.env
         }) {
             group.cases.push(case);
             continue;
@@ -281,6 +287,21 @@ mod tests {
         assert_eq!(groups[0].feature, Some("feature-one"));
         assert_eq!(groups[1].package, ARCEOS_RUST_TEST_PACKAGE);
         assert_eq!(groups[1].feature, Some("feature-two"));
+
+        let mut single = cases[0].clone();
+        single
+            .cargo
+            .env
+            .insert("AX_CPU_TEST_CASE".to_owned(), "one".to_owned());
+        let selections = [cases[0].clone(), single, cases[0].clone()];
+        let groups = group_arceos_qemu_cases_by_build_identity(&selections);
+        assert_eq!(
+            groups.len(),
+            2,
+            "different generated call selections must not share a build"
+        );
+        assert_eq!(groups[0].cases.len(), 2);
+        assert_eq!(groups[1].cases.len(), 1);
     }
 
     fn prepared_arceos_qemu_case(

@@ -59,6 +59,20 @@ pub(crate) fn list_generic_qemu_cases(
     group: &str,
     selected_case: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
+    if group == "cpu" {
+        return Ok(Some(super::cpu::render_listing(
+            arceos,
+            target.map(|(arch, _)| arch),
+            selected_case,
+        )?));
+    }
+    if group == "loongarch" {
+        return Ok(Some(super::cpu::render_listing(
+            arceos,
+            Some("loongarch64"),
+            Some(selected_case.unwrap_or("unaligned-fixup")),
+        )?));
+    }
     let dir = arceos_test_group_dir(arceos.app.workspace_root(), group);
     let cases: Vec<String> = match target {
         Some((arch, target)) => {
@@ -91,6 +105,8 @@ pub(crate) fn all_qemu_case_groups(
             ARCEOS_RUST_TEST_GROUP => rust_qemu_listed_cases(arceos, selected_case)
                 .ok()
                 .filter(|cases| !cases.is_empty()),
+            "cpu" => super::cpu::listed_cases(arceos, selected_case).ok(),
+            "loongarch" => None,
             ARCEOS_C_TEST_GROUP => c_qemu_listed_cases(arceos, selected_case)
                 .ok()
                 .filter(|v| !v.is_empty()),

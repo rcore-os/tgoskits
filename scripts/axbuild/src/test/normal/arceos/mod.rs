@@ -2,6 +2,7 @@ mod args;
 mod assets;
 mod board;
 mod c_suite;
+pub(crate) mod cpu;
 mod directory;
 mod discovery;
 mod listing;

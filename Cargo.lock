@@ -322,82 +322,59 @@ dependencies = [
 name = "arceos-cpu-cpufreq"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
- "ax-driver",
- "ax-runtime",
+ "arceos-cpu-tests",
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-cpu-fp-context"
+name = "arceos-cpu-normal-freestanding"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-guest-entry"
-version = "0.1.0"
-dependencies = [
+ "arceos-cpu-tests",
  "ax-alloc",
- "ax-cpu",
- "ax-hal",
  "ax-std",
- "trait-ffi",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
-name = "arceos-cpu-hypervisor-probe"
+name = "arceos-cpu-normal-std"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
+ "arceos-cpu-tests",
+ "ax-alloc",
  "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-paging"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-hal",
- "ax-mm",
- "ax-std",
- "someboot",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
 name = "arceos-cpu-pmu"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
+ "arceos-cpu-tests",
  "ax-std",
 ]
 
 [[package]]
-name = "arceos-cpu-trap-entry"
+name = "arceos-cpu-tests"
 version = "0.1.0"
 dependencies = [
+ "ax-alloc",
  "ax-cpu",
+ "ax-driver",
+ "ax-hal",
+ "ax-mm",
+ "ax-runtime",
  "ax-std",
+ "someboot",
+ "trait-ffi",
 ]
 
 [[package]]
 name = "arceos-cpu-user-entry"
 version = "0.1.0"
 dependencies = [
+ "arceos-cpu-tests",
  "ax-alloc",
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-virtualization-lifecycle"
-version = "0.1.0"
-dependencies = [
- "ax-alloc",
- "ax-cpu",
- "ax-hal",
  "ax-std",
 ]
 
@@ -451,14 +428,6 @@ dependencies = [
  "ax-std",
  "axhvc",
  "axivc",
-]
-
-[[package]]
-name = "arceos-loongarch-unaligned-fixup"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-std",
 ]
 
 [[package]]

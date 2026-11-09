@@ -63,7 +63,6 @@ name = "QEMU loongarch64 · Suites"
 command = '''
 cargo xtask arceos test qemu --arch loongarch64 --test-group rust
 cargo xtask arceos test qemu --arch loongarch64 --test-group c
-cargo xtask arceos test qemu --arch loongarch64 --test-group loongarch
 '''
 
 [[check.suite]]

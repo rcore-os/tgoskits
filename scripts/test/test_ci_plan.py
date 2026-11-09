@@ -944,7 +944,7 @@ command = "cargo xtask clippy --all"
                 ci_plan.validate_suite_catalog(root, checks)
 
     def test_cpu_vmx_suite_routes_to_the_registered_cpu_case(self) -> None:
-        path = "test-suit/arceos/cpu/guest-entry/qemu-x86_64-vmx.toml"
+        path = "test-suit/arceos/cpu/normal/configs/x86_64/x86-vmx/qemu.toml"
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
@@ -966,7 +966,7 @@ command = "cargo xtask clippy --all"
         self.assertEqual(
             rows[0]["command"],
             "cargo xtask arceos test qemu --arch x86_64 "
-            "--test-group cpu --test-case guest-entry-vmx",
+            "--test-group cpu --test-case x86-vmx",
         )
 
     def test_board_suite_changes_share_one_build_configuration_row(self) -> None:

@@ -6,11 +6,11 @@ publish = false
 
 [features]
 default = ["ax-std"]
-ax-std = ["dep:ax-std", "ax-std/arceos"]
+ax-std = ["dep:ax-std"]
 
 [dependencies]
-ax-cpu = { workspace = true, features = ["pmu"] }
-ax-std = { workspace = true, optional = true, features = ["default", "ipi"] }
+cpu-tests = { package = "arceos-cpu-tests", path = "..", features = ["pmu"] }
+ax-std = { workspace = true, optional = true, features = ["default", "arceos", "ipi"] }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-linux-musl"]

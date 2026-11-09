@@ -173,7 +173,9 @@ def validate_suite_catalog(
             arch = registration["arch"]
             group = registration.get("group")
             if group in ARCEOS_GENERIC_QEMU_GROUPS:
-                cases = _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"] / group, "arceos")
+                cpu_manifest = workspace_root / SUITE_ROOTS["arceos"] / "cpu/normal/suite.toml"
+                cases = (_cpu_runtime_cases(workspace_root) if group == "cpu" and cpu_manifest.is_file()
+                    else _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"] / group, "arceos"))
                 present = {case.case for case in cases if case.arch == arch}
                 required = set(registration.get("cases", present))
                 if not required or required - present:
@@ -268,6 +270,113 @@ def check_matches_input(check: dict[str, Any], selection: str) -> bool:
     return False
 
 
+def _cpu_runtime_cases(workspace_root: Path) -> list[_RuntimeCase]:
+    root = workspace_root / SUITE_ROOTS["arceos"] / "cpu/normal"
+    catalog = _toml_document(root / "suite.toml")
+    order, batches = catalog.get("run_order", []), catalog.get("batches", {})
+    if (catalog.get("schema_version") != 1 or not order or len(order) != len(set(order))
+            or set(order) != set(batches)):
+        raise SuiteRouteError("invalid CPU batch declaration or startup order")
+    result = []
+    for name in order:
+        batch = batches[name]
+        if (not re.fullmatch(r"[A-Za-z0-9_-]+", name) or batch.get("arch") not in ARCH_TARGETS
+                or batch.get("image") not in {"std", "freestanding"}
+                or batch.get("mode") not in {"normal", "expected-fault"} or not batch.get("tests")):
+            raise SuiteRouteError(f"CPU batch {name!r} has invalid identity, runtime or members")
+        if batch["mode"] == "expected-fault" and len(batch["tests"]) != 1:
+            raise SuiteRouteError(f"CPU diagnostic batch {name!r} must have one member")
+        for field in ("build_config", "qemu_config"):
+            relative = Path(batch[field])
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                raise SuiteRouteError(f"CPU batch {name!r} configuration escapes its suite")
+        build, runtime = root / batch["build_config"], root / batch["qemu_config"]
+        if not build.is_file() or not runtime.is_file():
+            raise SuiteRouteError(f"CPU batch {name!r} references missing configurations")
+        result.append(_RuntimeCase("arceos-qemu", batch["arch"], None, name,
+            runtime.parent, build.parent, runtime, build))
+    return result
+
+
+def _cpu_feature_closure(features: Sequence[str], graph: dict[str, Any]) -> set[str]:
+    pending, result = list(features), set()
+    while pending:
+        feature = pending.pop()
+        if feature in result:
+            continue
+        result.add(feature)
+        pending.extend(item for item in graph.get(feature, []) if item in graph)
+    return result
+
+
+def _cpu_selections(workspace_root: Path, registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
+        path: Path) -> list[SuiteSelection]:
+    root = workspace_root / SUITE_ROOTS["arceos"] / "cpu"
+    normal = root / "normal"
+    catalog = _toml_document(normal / "suite.toml")
+    graph = _toml_document(root / "Cargo.toml").get("features", {})
+    absolute = workspace_root / path
+    relative = absolute.relative_to(root) if _is_prefix(absolute, root) else Path("src/unaligned_fixup.rs")
+    module = None
+    if len(relative.parts) >= 2 and relative.parts[0] == "src" and relative.name != "lib.rs":
+        module = Path(relative.parts[1]).stem.replace("_", "-")
+    arch = next((part for part in (Path(item).stem for item in relative.parts) if part in ARCH_TARGETS), None)
+    # A helper without its own capability is shared: conservatively select
+    # all consumers instead of silently dropping its source change.
+    if module not in graph:
+        module = None
+    wrapper = relative.parts[0] if relative.parts else ""
+    board_wrapper = (root / wrapper / "Cargo.toml").is_file() and wrapper != "normal"
+    matches = []
+    for case in _cpu_runtime_cases(workspace_root):
+        batch = catalog["batches"][case.case]
+        if board_wrapper or (arch and case.arch != arch):
+            continue
+        if _is_prefix(absolute, normal / "configs"):
+            if _is_prefix(absolute, case.case_dir):
+                matches.append(case)
+            continue
+        if module:
+            roots = [test["id"] for test in batch["tests"]]
+            roots.extend(feature.removeprefix("cpu-tests/") for feature in batch.get("features", []))
+            if module not in _cpu_feature_closure(roots, graph):
+                continue
+        elif _is_prefix(absolute, normal / "std") and batch["image"] != "std":
+            continue
+        elif _is_prefix(absolute, normal / "freestanding") and batch["image"] != "freestanding":
+            continue
+        matches.append(case)
+    selections = _runtime_selections(registrations, path, matches, suite_group="cpu")
+    # Board build configs remain their owners; use their declared package and
+    # its ordinary CPU-library feature dependency to find shared consumers.
+    package_dirs = {}
+    for manifest in root.glob("*/Cargo.toml"):
+        package = _toml_document(manifest).get("package", {}).get("name")
+        if package:
+            package_dirs[package] = manifest.parent
+    board_cases = []
+    for case in _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"], "arceos"):
+        if case.kind != "arceos-board":
+            continue
+        board_build = _toml_document(case.build_config)
+        board_arch = next((name for name in ARCH_TARGETS if str(board_build.get("target", "")).startswith(name)), None)
+        if arch and board_arch != arch:
+            continue
+        owner = package_dirs.get(board_build.get("package"))
+        if owner is None:
+            continue
+        if board_wrapper:
+            if owner == root / wrapper:
+                board_cases.append(case)
+            continue
+        if relative.parts[0] == "normal":
+            continue
+        dependency = _toml_document(owner / "Cargo.toml").get("dependencies", {}).get("cpu-tests", {})
+        if not module or module in _cpu_feature_closure(dependency.get("features", []), graph):
+            board_cases.append(case)
+    return selections + _runtime_selections(registrations, path, board_cases)
+
+
 def _selections_for_path(
     workspace_root: Path,
     registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
@@ -278,6 +387,9 @@ def _selections_for_path(
         return ktest
     if _is_prefix(path, SUITE_ROOTS["arceos"]):
         relative = path.relative_to(SUITE_ROOTS["arceos"])
+        if (relative.parts and relative.parts[0] in {"cpu", "loongarch"}
+                and (workspace_root / SUITE_ROOTS["arceos"] / "cpu/normal/suite.toml").is_file()):
+            return _cpu_selections(workspace_root, registrations, path)
         if relative.parts and relative.parts[0] in ARCEOS_GENERIC_QEMU_GROUPS:
             group = relative.parts[0]
             root = workspace_root / SUITE_ROOTS["arceos"] / group

@@ -575,3 +575,72 @@ fn package_clippy_configuration_rejects_empty_rustflags() {
         "clippy configuration `aarch64-source` rustflag for `alpha` must be non-empty and trimmed"
     );
 }
+
+#[cfg(test)]
+mod cpu_suite_tests {
+    use crate::checks::clippy::{
+        configurations::package_clippy_configurations, tests::common::pkg_with_metadata,
+    };
+
+    #[test]
+    fn cpu_entry_checks_follow_catalog_features_and_real_build_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::create_dir(root.join("entry")).unwrap();
+        let declaration = r#"
+schema_version = 1
+run_order = ["cold", "warm"]
+[batches.cold]
+arch = "riscv64"
+image = "std"
+mode = "normal"
+build_config = "cold.toml"
+qemu_config = "run.toml"
+[[batches.cold.tests]]
+id = "transport"
+name = "transport transfer"
+entry = "cpu_tests::transport::run"
+[batches.warm]
+arch = "riscv64"
+image = "std"
+mode = "normal"
+build_config = "warm.toml"
+qemu_config = "run.toml"
+features = ["cpu-tests/fast-path"]
+[[batches.warm.tests]]
+id = "transport"
+name = "transport transfer"
+entry = "cpu_tests::transport::run"
+"#;
+        std::fs::write(root.join("matrix.toml"), declaration).unwrap();
+        std::fs::write(root.join("cold.toml"), "max_cpu_num = 2").unwrap();
+        std::fs::write(root.join("warm.toml"), "max_cpu_num = 4").unwrap();
+        let mut package = pkg_with_metadata(
+            "entry-demo",
+            "entry-demo 0.1.0 (path+file:///tmp/entry-demo)",
+            &[],
+            serde_json::json!({
+                "docs.rs": {"targets": ["riscv64gc-unknown-linux-musl"]},
+                "clippy": {"cpu_suite": {"path": "../matrix.toml", "image": "std"}},
+            }),
+        );
+        package.manifest_path = root.join("entry/Cargo.toml").to_str().unwrap().into();
+        let checks = package_clippy_configurations(&package).unwrap();
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].features, ["cpu-tests/transport"]);
+        assert!(
+            checks[1]
+                .features
+                .contains(&"cpu-tests/fast-path".to_owned())
+        );
+        assert!(
+            checks[0]
+                .env
+                .contains(&("AX_CPU_TEST_BATCH".to_owned(), "cold".to_owned()))
+        );
+        assert!(checks[0].env.contains(&("SMP".to_owned(), "2".to_owned())));
+        assert!(checks[1].env.contains(&("SMP".to_owned(), "4".to_owned())));
+        std::fs::write(root.join("warm.toml"), "max_cpu_num = 0").unwrap();
+        assert!(package_clippy_configurations(&package).is_err());
+    }
+}

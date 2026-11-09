@@ -222,5 +222,66 @@ class KtestQemuSuiteTests(unittest.TestCase):
         self.assertEqual(selections[0].template_id, DEMO_CHECK_ID)
 
 
+
+class CpuManifestRoutingTests(unittest.TestCase):
+    def make_workspace(self, root: Path) -> list[dict]:
+        cpu = root / "test-suit/arceos/cpu"
+        (cpu / "normal").mkdir(parents=True)
+        (cpu / "Cargo.toml").write_text('[package]\nname = "cpu-fixture"\n[features]\nio = []\n')
+        declarations = ['schema_version = 1', 'run_order = ["alpha", "beta"]']
+        checks = []
+        for name, arch in [("alpha", "aarch64"), ("beta", "x86_64")]:
+            directory = cpu / "normal/configs" / arch / name
+            directory.mkdir(parents=True)
+            (directory / "build.toml").write_text('features = []\n')
+            (directory / "qemu.toml").write_text('args = []\n')
+            declarations.append(f"""
+[batches.{name}]
+arch = "{arch}"
+image = "std"
+mode = "normal"
+build_config = "configs/{arch}/{name}/build.toml"
+qemu_config = "configs/{arch}/{name}/qemu.toml"
+[[batches.{name}.tests]]
+id = "io"
+name = "real I/O capability"
+entry = "cpu_tests::io::run"
+""")
+            checks.append({"id": f"cpu-{arch}", "name": f"CPU {arch}", "command": "fixture", "suite": [
+                {"kind": "arceos-qemu", "arch": arch, "group": "cpu"}]})
+        (cpu / "normal/suite.toml").write_text("\n".join(declarations))
+        adapter = cpu / "adapter"
+        adapter.mkdir()
+        (adapter / "Cargo.toml").write_text('[package]\nname = "board-adapter"\n[dependencies.cpu-tests]\nfeatures = ["io"]\n')
+        board = root / "test-suit/arceos/board-demo/probe"
+        board.mkdir(parents=True)
+        (board / "build-aarch64-unknown-none-softfloat.toml").write_text(
+            'package = "board-adapter"\ntarget = "aarch64-unknown-none-softfloat"\n')
+        (board / "board-demo.toml").write_text('board_type = "Demo"\n')
+        checks.append({"id": "board-io", "name": "Board I/O", "command": "fixture", "suite": [
+            {"kind": "arceos-board", "board": "demo", "cases": ["probe"]}]})
+        return checks
+
+    def test_shared_capability_selects_declared_qemu_and_board_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            ci_suite.validate_suite_catalog(root, checks)
+            selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/src/io.rs"])
+            self.assertEqual({item.template_id for item in selections}, {"cpu-aarch64", "cpu-x86_64", "board-io"})
+            self.assertTrue(any("--test-case alpha" in item.command for item in selections))
+            scoped = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/configs/x86_64/beta/qemu.toml"])
+            self.assertEqual([item.template_id for item in scoped], ["cpu-x86_64"])
+
+    def test_missing_cpu_runtime_is_rejected_and_arch_specific_sources_stay_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/src/io/aarch64.rs"])
+            self.assertEqual({item.template_id for item in selections}, {"cpu-aarch64", "board-io"})
+            (root / "test-suit/arceos/cpu/normal/configs/x86_64/beta/qemu.toml").unlink()
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.validate_suite_catalog(root, checks)
+
 if __name__ == "__main__":
     unittest.main()
