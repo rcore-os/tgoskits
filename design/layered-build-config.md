@@ -75,7 +75,7 @@ Starry 三个 SG2002 预设显式持有各自 ITS。mkimage 只消费 fit_its，
 
 CPU、任务栈、tick 的优先级为 typed 值大于进程环境大于公共默认。唯一默认为 16、0x40000 字节、10 毫秒。CPU Option 保持原值，只有显式大于 1 才参与现有 SMP feature 派生；环境 SMP 不凭空改变 Option。
 
-CPU 必须非零；任务栈非零且 16 字节对齐，页取整和保护页计算 checked，并通过 Layout 的 isize 边界；tick 非零且转换纳秒不溢出、不超过 i64::MAX。环境数字保留十进制、十六进制和下划线，非 Unicode 输入报编码错误。用户 env 禁止 SMP、AX_LOG、AX_TASK_STACK_SIZE、AX_SCHEDULER_TICK_MS，使用对应 typed 字段替代。
+CPU 必须非零；任务栈非零且 16 字节对齐，页取整和保护页计算 checked，并通过 Layout 的 isize 边界；tick 非零且转换纳秒不溢出、不超过 i64::MAX。`RuntimeValues` 保留公开数据字段；其 `scheduler_tick_interval_nanos()` 返回 `Result<u64, ConfigError>`，直接构造或修改对象后调用也必须执行同一受检换算，不能依赖调用方曾经过 resolver 的假设。`resolve_runtime()` 复用该换算规则，构建脚本向外传播错误，不截断、回绕或改用默认值。环境数字保留十进制、十六进制和下划线，非 Unicode 输入报编码错误。用户 env 禁止 SMP、AX_LOG、AX_TASK_STACK_SIZE、AX_SCHEDULER_TICK_MS，使用对应 typed 字段替代。
 
 ### 4.2 消费与失效
 

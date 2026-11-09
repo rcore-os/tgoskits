@@ -14,7 +14,7 @@ fn runtime_resolution_uses_only_each_winning_source() {
     let values = resolve_runtime(None, RuntimeOptions::default(), &env).unwrap();
     assert_eq!(values.cpu_capacity, 4);
     assert_eq!(values.task_stack_size, 0x1010);
-    assert_eq!(values.scheduler_tick_interval_nanos(), 20_000_000);
+    assert_eq!(values.scheduler_tick_interval_nanos().unwrap(), 20_000_000);
 
     let malformed = RuntimeEnv {
         smp: Some("not-a-number".into()),
@@ -28,7 +28,7 @@ fn runtime_resolution_uses_only_each_winning_source() {
     let values = resolve_runtime(Some(2), typed, &malformed).unwrap();
     assert_eq!(values.cpu_capacity, 2);
     assert_eq!(values.task_stack_size, 16);
-    assert_eq!(values.scheduler_tick_interval_nanos(), 3_000_000);
+    assert_eq!(values.scheduler_tick_interval_nanos().unwrap(), 3_000_000);
     assert!(matches!(
         resolve_runtime(None, typed, &malformed),
         Err(ConfigError::Number { field: "SMP", .. })
@@ -123,8 +123,19 @@ fn runtime_validation_enforces_stack_layout_and_finite_tick_domain() {
     )
     .unwrap();
     assert_eq!(values.task_stack_size, 4112);
-    assert_eq!(values.scheduler_tick_interval_nanos(), max_tick * 1_000_000);
-    for scheduler_tick_ms in [0, max_tick + 1, u64::MAX] {
+    assert_eq!(
+        values.scheduler_tick_interval_nanos().unwrap(),
+        max_tick * 1_000_000
+    );
+    for scheduler_tick_ms in [u64::MAX, 0, max_tick + 1] {
+        let mut direct = values;
+        direct.scheduler_tick_ms = scheduler_tick_ms;
+        let error = direct.scheduler_tick_interval_nanos().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidValue { field, value, .. }
+                if field == "runtime.scheduler_tick_ms" && value == scheduler_tick_ms.to_string()
+        ));
         assert!(
             resolve_runtime(
                 None,
@@ -215,11 +226,11 @@ fn environment_capture_and_build_helper_obey_the_process_protocol() {
                 if case == "valid" {
                     assert_eq!(actual.cpu_capacity, 3);
                     assert_eq!(actual.task_stack_size, 4112);
-                    assert_eq!(actual.scheduler_tick_interval_nanos(), 7_000_000);
+                    assert_eq!(actual.scheduler_tick_interval_nanos().unwrap(), 7_000_000);
                 } else {
                     assert_eq!(actual.cpu_capacity, 16);
                     assert_eq!(actual.task_stack_size, 0x40000);
-                    assert_eq!(actual.scheduler_tick_interval_nanos(), 10_000_000);
+                    assert_eq!(actual.scheduler_tick_interval_nanos().unwrap(), 10_000_000);
                 }
             }
             "invalid" => {

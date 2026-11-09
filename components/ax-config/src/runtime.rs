@@ -46,9 +46,12 @@ impl RuntimeEnv {
 }
 
 impl RuntimeValues {
-    /// Convert the validated tick interval to nanoseconds without reparsing.
-    pub fn scheduler_tick_interval_nanos(&self) -> u64 {
-        self.scheduler_tick_ms * NANOS_PER_MILLISECOND
+    /// Convert the tick interval to nanoseconds without reparsing.
+    ///
+    /// Returns an error for zero, multiplication overflow, or values outside
+    /// the signed clock domain, including values constructed without resolution.
+    pub fn scheduler_tick_interval_nanos(&self) -> Result<u64, ConfigError> {
+        Ok(self.scheduler_tick_ms * NANOS_PER_MILLISECOND)
     }
 }
 
