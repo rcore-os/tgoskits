@@ -202,14 +202,21 @@ uboot_config = "configs/uboot.toml"
 
     let app = test_app_context(root.path());
 
+    let saved_path = snapshot_path(root.path(), AXVISOR_SNAPSHOT_FILE);
+    let saved = fs::read(&saved_path).unwrap();
+    let error = prepare_axvisor_request(&app, AxvisorCliArgs::default(), None, None).unwrap_err();
+    assert!(format!("{error:#}").contains("--preset"), "{error:#}");
+    assert_eq!(fs::read(&saved_path).unwrap(), saved);
+    let restored_file = root.path().join("os/axvisor/.build.toml");
+    fs::create_dir_all(restored_file.parent().unwrap()).unwrap();
+    fs::write(&restored_file, "").unwrap();
     let (request, snapshot) =
         prepare_axvisor_request(&app, AxvisorCliArgs::default(), None, None).unwrap();
 
     assert_eq!(request.arch, DEFAULT_AXVISOR_ARCH);
     assert_eq!(request.target, DEFAULT_AXVISOR_TARGET);
-    assert_eq!(request.config_path(), None);
-    assert_eq!(request.source.preset(), snapshot.preset.as_deref());
-    assert!(snapshot.preset.is_some());
+    assert_eq!(request.config_path(), Some(restored_file.as_path()));
+    assert_eq!(snapshot.preset, None);
     assert!(!root.path().join("tmp/axbuild/config").exists());
     assert_eq!(
         request.qemu_config,
@@ -226,7 +233,10 @@ uboot_config = "configs/uboot.toml"
             root.path().join("tmp/vm2.toml")
         ]
     );
-    assert_eq!(snapshot.config, None);
+    assert_eq!(
+        snapshot.config,
+        Some(PathBuf::from("os/axvisor/.build.toml"))
+    );
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_AXVISOR_TARGET));
     assert_eq!(

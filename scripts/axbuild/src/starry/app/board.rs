@@ -43,7 +43,8 @@ pub(crate) fn resolve_board_case(
         None => discover_case_board_config(&case_dir)?,
     };
     let (build_input, target) =
-        match default_build_config_for_board_config(workspace_root, &board_config_path)? {
+        match default_build_config_for_board_config(workspace_root, &case_dir, &board_config_path)?
+        {
             Some((board_build_config, target)) => (board_build_config, target),
             None => discover_case_build_config(workspace_root, &case_dir, None)?,
         };

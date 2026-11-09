@@ -177,7 +177,7 @@ impl AppContext {
             &runtime_env,
         )?;
         let snapshot = ArceosCommandSnapshot {
-            preset: input.source.preset().map(str::to_owned),
+            preset: input.selection_preset,
             config: input
                 .source
                 .path()
@@ -328,7 +328,7 @@ impl AppContext {
             &runtime_env,
         )?;
         let snapshot = StarryCommandSnapshot {
-            preset: input.source.preset().map(str::to_owned),
+            preset: input.selection_preset,
             config: input
                 .source
                 .path()
@@ -445,7 +445,7 @@ impl AppContext {
             &runtime_env,
         )?;
         let snapshot = AxvisorCommandSnapshot {
-            preset: input.source.preset().map(str::to_owned),
+            preset: input.selection_preset,
             config: input
                 .source
                 .path()

@@ -191,6 +191,7 @@ fn build_config_target_from_stem(stem: &str) -> Option<String> {
 
 pub(super) fn default_build_config_for_board_config(
     workspace_root: &Path,
+    case_dir: &Path,
     board_config_path: &Path,
 ) -> anyhow::Result<Option<(ConfigInput<StarryConfig>, String)>> {
     let Some(stem) = board_config_path.file_stem().and_then(|stem| stem.to_str()) else {
@@ -202,6 +203,11 @@ pub(super) fn default_build_config_for_board_config(
     let Some(preset) = presets::find_preset(board_name) else {
         return Ok(None);
     };
+    let path = case_dir.join(format!("build-{}.toml", preset.common.board.target));
+    if path.is_file() {
+        let candidate = build_config_candidate(workspace_root, &path)?;
+        return Ok(Some((candidate.input, candidate.target)));
+    }
     let input = load_config_input(workspace_root, None, Some(preset.name))?;
     Ok(Some((input, preset.common.board.target.to_owned())))
 }

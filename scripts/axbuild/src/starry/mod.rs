@@ -50,6 +50,7 @@ pub(crate) fn test_request(path: &Path, arch: &str, target: &str) -> ResolvedSta
                 preset: None,
             },
             target_constraint: None,
+            selection_preset: None,
             file_fields: Default::default(),
         }
     };

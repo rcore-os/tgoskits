@@ -41,6 +41,8 @@ impl ConfigSource {
 pub(crate) struct ConfigInput<T> {
     pub config: T,
     pub source: ConfigSource,
+    /// Explicit selector to restore, excluding controls owned by a user file.
+    pub selection_preset: Option<String>,
     pub target_constraint: Option<String>,
     pub file_fields: FileFields,
 }
@@ -187,6 +189,7 @@ pub(crate) fn parse_config_input<T: BuildConfiguration>(
     Ok(ConfigInput {
         config,
         source,
+        selection_preset: cli_preset.map(str::to_owned),
         target_constraint,
         file_fields,
     })

@@ -370,7 +370,7 @@ uboot_config = "configs/uboot-aarch64.toml"
         BuildCliArgs {
             preset: None,
             config: None,
-            package: None,
+            package: Some("arceos-helloworld".into()),
             arch: None,
             target: Some("riscv64gc-unknown-none-elf".into()),
             smp: None,

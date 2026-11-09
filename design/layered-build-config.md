@@ -63,6 +63,8 @@ CLI 和文件 preset 必须一致，预设的 target 约束 CLI target、arch �
 
 显式更换 preset、config、arch、target 或 ArceOS package 时，不继承旧 target、SMP、VM 或运行配置。无新选择器时才恢复同 OS 的快照选择；快照不作为覆盖默认层。只有原本支持的裸 ArceOS qemu 自动使用 Hello World，显式应用不会套用其板卡策略。
 
+文件来源的有效 preset 与 CLI 选择不同：`ConfigInput::selection_preset` 只保存显式 CLI（含恢复的 CLI 选择）或 source-free 默认预设，文件自身的 preset 控制键随本次文件内容重新读取。快照不能将上次文件控制键提升为额外 CLI 约束，否则编辑同一文件选择另一个 preset 会产生伪冲突；显式 CLI preset 与新文件冲突时仍必须拒绝。
+
 `prepare_arceos_qemu_request()` 是允许无应用选择时使用 Hello World 的入口，仍先尝试恢复未被新选择器切断的快照；普通构建和 `config show` 使用 `prepare_arceos_request()`，缺少应用时明确报错。StarryOS 与 Axvisor 的无文件输入通过各自明确的标准 QEMU 映射选择预设。三个 resolver 都只返回待提交的快照，展示命令不保存它。
 
 `config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。`defconfig` 显式序列化展开对象，以临时文件替换输出，成功后才更新快照。任何解析、校验或写入失败都不覆盖原文件与快照。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
