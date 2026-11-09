@@ -46,9 +46,12 @@ impl RuntimeEnv {
 }
 
 impl RuntimeValues {
-    /// Convert the validated tick interval to nanoseconds without reparsing.
-    pub fn scheduler_tick_interval_nanos(&self) -> u64 {
-        self.scheduler_tick_ms * NANOS_PER_MILLISECOND
+    /// Convert the tick interval to nanoseconds without reparsing.
+    ///
+    /// Returns an error for zero, multiplication overflow, or values outside
+    /// the signed clock domain, including values constructed without resolution.
+    pub fn scheduler_tick_interval_nanos(&self) -> Result<u64, ConfigError> {
+        checked_tick_interval_nanos(self.scheduler_tick_ms)
     }
 }
 
@@ -90,17 +93,7 @@ pub fn resolve_runtime(
         "AX_SCHEDULER_TICK_MS",
         parse_u64,
     )?;
-    if scheduler_tick_ms == 0
-        || scheduler_tick_ms
-            .checked_mul(NANOS_PER_MILLISECOND)
-            .is_none_or(|nanos| nanos > i64::MAX as u64)
-    {
-        return Err(ConfigError::invalid(
-            "runtime.scheduler_tick_ms",
-            scheduler_tick_ms,
-            "a nonzero interval whose nanoseconds fit in i64",
-        ));
-    }
+    checked_tick_interval_nanos(scheduler_tick_ms)?;
     Ok(RuntimeValues {
         cpu_capacity,
         task_stack_size,
@@ -160,6 +153,19 @@ fn parse_u64(value: &str) -> Result<u64, ParseIntError> {
     } else {
         value.parse()
     }
+}
+
+fn checked_tick_interval_nanos(milliseconds: u64) -> Result<u64, ConfigError> {
+    milliseconds
+        .checked_mul(NANOS_PER_MILLISECOND)
+        .filter(|&nanoseconds| nanoseconds != 0 && nanoseconds <= i64::MAX as u64)
+        .ok_or_else(|| {
+            ConfigError::invalid(
+                "runtime.scheduler_tick_ms",
+                milliseconds,
+                "a nonzero interval whose nanoseconds fit in i64",
+            )
+        })
 }
 
 fn validate_stack(size: usize) -> Result<(), ConfigError> {

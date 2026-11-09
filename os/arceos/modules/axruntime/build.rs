@@ -134,7 +134,7 @@ fn build_info_source(config: ax_config::RuntimeValues) -> Result<String> {
         .map_err(|err| std::io::Error::other(format!("CARGO_CFG_TARGET_ARCH is not set: {err}")))?;
     let target = env::var("AX_TARGET").unwrap_or_default();
     let mode = env::var("AX_MODE").unwrap_or_default();
-    Ok(build_info_source_from(&arch, &target, &mode, config))
+    build_info_source_from(&arch, &target, &mode, config)
 }
 
 fn build_info_source_from(
@@ -142,12 +142,14 @@ fn build_info_source_from(
     target: &str,
     mode: &str,
     config: ax_config::RuntimeValues,
-) -> String {
+) -> Result<String> {
     let cpu_capacity = config.cpu_capacity;
     let task_stack_size = config.task_stack_size;
-    let scheduler_tick_interval_nanos = config.scheduler_tick_interval_nanos();
+    let scheduler_tick_interval_nanos = config
+        .scheduler_tick_interval_nanos()
+        .map_err(|error| Error::new(ErrorKind::InvalidInput, error))?;
 
-    quote! {
+    Ok(quote! {
         pub const ARCH: &str = #arch;
         pub const TARGET: &str = #target;
         pub const MODE: &str = #mode;
@@ -158,5 +160,5 @@ fn build_info_source_from(
         pub const TASK_STACK_SIZE: usize = #task_stack_size;
         pub const SCHEDULER_TICK_INTERVAL_NANOS: u64 = #scheduler_tick_interval_nanos;
     }
-    .to_string()
+    .to_string())
 }
