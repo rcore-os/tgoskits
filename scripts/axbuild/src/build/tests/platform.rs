@@ -1,5 +1,3 @@
-use super::*;
-
 #[test]
 fn build_cargo_args_uses_target_stem_as_rustflags_key() {
     let args = crate::build::info::build_cargo_args(

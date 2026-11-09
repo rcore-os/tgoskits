@@ -805,11 +805,19 @@ mod tests {
             !cases[0]
                 .cargo
                 .features
-                .contains(&"ax-driver/virtio-net".to_string())
+                .contains(&"ax-std/virtio-net".to_string())
         );
         assert!(
             cases[2]
                 .cargo
+                .features
+                .contains(&"ax-std/virtio-net".to_string())
+        );
+        assert!(
+            cases[2]
+                .request
+                .config
+                .common
                 .features
                 .contains(&"ax-driver/virtio-net".to_string())
         );

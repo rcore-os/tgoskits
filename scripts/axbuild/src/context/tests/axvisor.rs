@@ -309,7 +309,7 @@ vmconfigs = ["os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml"]
     assert_eq!(request.runtime.task_stack_size, 0x50000);
     assert_eq!(request.runtime.scheduler_tick_ms, 5);
 
-    let snapshot_path = root.path().join(AXVISOR_SNAPSHOT_FILE);
+    let snapshot_path = snapshot_path(root.path(), AXVISOR_SNAPSHOT_FILE);
     let saved_snapshot = fs::read(&snapshot_path).unwrap();
     let contents = fs::read_to_string(&explicit).unwrap();
     fs::write(
