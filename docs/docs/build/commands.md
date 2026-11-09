@@ -225,8 +225,9 @@ cargo xtask agent-review-bench run --case <id> --agent codex --min-recall 100
 
 | 参数 | 说明 |
 |------|------|
-| `-c/--config <CONFIG>` | 显式 Build Info 路径 |
-| `-p/--package <PACKAGE>` | ArceOS app 包名（必需） |
+| `--preset <NAME>` | 直接选择内置 Rust 构建预设 |
+| `-c/--config <CONFIG>` | 用户 TOML，可完全自定义或稀疏覆盖预设 |
+| `-p/--package <PACKAGE>` | ArceOS app 包名，也可由配置或预设选择 |
 | `--arch <ARCH>` | 目标架构，默认 `aarch64` |
 | `-t/--target <TARGET>` | target triple |
 | `--smp <CPUS>` | CPU 核数 |
@@ -240,8 +241,8 @@ cargo xtask agent-review-bench run --case <id> --agent codex --min-recall 100
 | `board` | 编译并在远程板卡运行 |
 | `test qemu` | QEMU 测试套件（Rust + C） |
 | `test board` | 板级测试套件 |
-| `defconfig <BOARD>` | 生成默认板卡配置 |
-| `config ls` | 列出可用板卡名称 |
+| `defconfig <PRESET>` | 原子导出展开 TOML，成功后更新文件选择 |
+| `config ls` / `config show` | 列出静态预设或展示解析结果，不写快照 |
 
 **各运行目标的额外参数**：
 
@@ -257,7 +258,7 @@ cargo xtask agent-review-bench run --case <id> --agent codex --min-recall 100
 |--------|------|
 | `test board` | `[-c/--test-case <C>] [--board <B>] [-b/--board-type <T>] [--server <H>] [--port <P>] [--list]` |
 
-ArceOS Build Config 通过 `features`、`log`、`max_cpu_num` 与 `[env]` 描述构建能力；`BuildInfo::validate_features()` 验证输入，构建命令输出 ELF，QEMU TOML 的 `to_bin` 决定运行阶段是否准备 BIN。
+ArceOS Build Config 通过 `CommonConfig` 的 features、log、max_cpu_num、env、runtime 与 rustflags 描述构建输入；`validate_features()` 验证能力。`--preset` 直接展开静态配方，`--config` 可选择稀疏覆盖或完整自定义文件。构建命令输出 ELF，QEMU TOML 的 `to_bin` 决定运行阶段是否准备 BIN。
 
 ```bash
 cargo xtask arceos build --package arceos-helloworld --arch aarch64

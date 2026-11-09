@@ -109,7 +109,7 @@ cargo starry qemu --arch aarch64
 
 ### 3.1 编译 StarryOS 内核
 
-内核用板卡配置文件来区分平台，配置文件放在 `os/StarryOS/configs/board/` 下。RK3588 用 `orangepi-5-plus.toml`，SG2002 根据板子形态选一个：裸板用 `licheerv-nano-sg2002.toml`，带 WiFi 的版本用 `licheerv-nano-sg2002-wifi.toml`，AKA-00 车板用 `aka-00-sg2002.toml`。
+内核用 `--preset` 选择 Rust 静态板卡配方，位于 `scripts/axbuild/src/starry/config/presets/`。RK3588 用 `orangepi-5-plus`，SG2002 根据板子形态选一个：裸板用 `licheerv-nano-sg2002`，带 WiFi 的版本用 `licheerv-nano-sg2002-wifi`，AKA-00 车板用 `aka-00-sg2002`。保留在 `os/StarryOS/configs/board/` 下的是运行配置、设备树和 ITS，不再存放编译预设 TOML。
 
 ```bash
 # 先写入板卡配置（会持久化一份到 tmp/axbuild 下）
@@ -118,11 +118,11 @@ cargo starry defconfig licheerv-nano-sg2002
 # 再编译
 cargo starry build
 
-# 或者一步到位，直接指定配置文件（推荐）
+# 或者一步到位，直接选择内置配方（推荐）
 cargo starry build --preset aka-00-sg2002
 ```
 
-在容器里编译 SG2002 内核的完整命令是这样，注意 `-c` 不能省：
+在容器里编译 SG2002 内核的完整命令是这样，注意显式选择 `--preset`，避免恢复其他平台的旧快照：
 
 ```bash
 docker run --rm -v "$PWD":/work -w /work \
@@ -130,7 +130,7 @@ docker run --rm -v "$PWD":/work -w /work \
   'cargo xtask starry build --preset aka-00-sg2002'
 ```
 
-SG2002 的产物在 `target/riscv64gc-unknown-none-elf/release/starryos.uimg`，另外还需要一份设备树。用哪一份不看编译时选的 config 叫什么名字，而是由运行配置里的 `dtb_file` 指定：车板的 `aka-00-sg2002-board.toml` 和 `aka-00-sg2002-uboot.toml` 都指向 `os/StarryOS/configs/board/aka-00-sg2002.dtb`，荔枝派的两份指向同目录下的 `licheerv-nano-sg2002.dtb`。像 `licheerv-nano-sg2002-wifi.toml` 这样只写 `features` 的配置文件是编译用的，里面没有 `dtb_file`，别按它的名字去找同名的设备树。功能项在板卡配置文件里选：三份 SG2002 配置都带 `ax-driver/serial` 和 `ax-driver/cv181x-sdhci`；`ax-driver/aic8800-wifi` 在 `licheerv-nano-sg2002-wifi.toml` 和 `aka-00-sg2002.toml` 里；决定摄像头能不能用的 `starry-kernel/sg2002-cvi-usb-camera` 和 `ax-driver/sg2002-dwc2` 只有 `aka-00-sg2002.toml` 带。这份指南里的推理和遥控都要用摄像头，所以车板一律编译 `aka-00-sg2002.toml`。
+SG2002 的产物在 `target/riscv64gc-unknown-none-elf/release/starryos.uimg`，另外还需要一份设备树。设备树由运行配置里的 `dtb_file` 指定：车板的 `aka-00-sg2002-board.toml` 和 `aka-00-sg2002-uboot.toml` 都指向 `os/StarryOS/configs/board/aka-00-sg2002.dtb`，荔枝派的两份指向同目录下的 `licheerv-nano-sg2002.dtb`。编译预设不提供 `dtb_file`，不要根据预设名称猜同名设备树。三份 SG2002 预设都带 `ax-driver/serial` 和 `ax-driver/cv181x-sdhci`；`ax-driver/aic8800-wifi` 在 `licheerv-nano-sg2002-wifi` 和 `aka-00-sg2002` 中；摄像头所需的 `starry-kernel/sg2002-cvi-usb-camera` 和 `ax-driver/sg2002-dwc2` 只有 `aka-00-sg2002` 带。这份指南里的推理和遥控都要用摄像头，所以车板一律选择 `--preset aka-00-sg2002`；对应 ITS 由配方显式关联。
 
 SG2002 的产物编译完必须校验一次加载地址：
 

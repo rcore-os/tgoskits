@@ -131,11 +131,21 @@ tmp/axbuild/config/<package>/build-<logical-target>.toml
 
 `cargo xtask <system> config ls` 列出内置名称；`config show --preset <name>` 使用构建 resolver 将可复用 TOML 写到 stdout，来源、环境追加特性和有效 runtime 写到 stderr，不写快照。`defconfig <name>` 是显式导出入口，不是构建前置步骤。
 
+纯内置请求直接展开 Rust 配方，不需要先生成任何文件。
+
+```bash
+cargo xtask arceos build --preset qemu-aarch64
+cargo xtask starry config show --preset qemu-riscv64
+cargo xtask axvisor config show --preset qemu-aarch64
+```
+
 用户可以只写相对预设的变化，或不指定预设而提供完全自定义 TOML。`load_config_input()` 一次读取文件，`parse_config_input()` 按预设展开、unset、普通覆盖、features_add、features_remove、本次 FEATURES、显式 CLI、校验的顺序完成解析。
 
 ```toml
 preset = "qemu-aarch64"
+features = ["ax-driver/nvme"]
 features_add = ["ax-driver/virtio-net"]
+features_remove = ["ax-driver/nvme"]
 unset = ["max_cpu_num"]
 
 [runtime]
@@ -143,6 +153,23 @@ task_stack_size = 0x50000
 ```
 
 普通数组整体替换，空数组清空；表递归合并，空表不清空已有子键。`unset` 只允许 CPU、runtime、env 及对应 OS 的可清除资源字段。CLI 与文件 preset 不一致、预设 target 与文件或 CLI target/arch 不一致时明确报错；没有预设时 CLI target 仍能覆盖文件 target。未知字段和类型错误不会被忽略。输入 Schema 包含四个控制键，导出 TOML 不包含控制键。
+
+将上面的内容存入 `local.toml` 后，普通数组先替换为 NVMe，再追加网络驱动并删除 NVMe，最终显式列表只剩网络驱动。`features = []` 可以清空整个显式列表，但不能反向取消 Cargo 默认或依赖特性。
+
+```bash
+cargo xtask starry config show --preset qemu-aarch64 --config local.toml
+```
+
+完全自定义 ArceOS 文件不含 preset，因而没有板卡配方约束；例如 `full.toml` 可以只声明完整应用选择与所需能力。
+
+```toml
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+```
+
+用 `cargo xtask arceos build --config full.toml` 构建。省略 `max_cpu_num` 保持 `None`，只在计算有效容量时回退到环境或 16；显式写 `max_cpu_num = 16` 则是 `Some(16)`，还会触发 SMP 特性推导。`config show` 的 runtime 说明不能改变这个区别。
 
 ### 3.2 特性校验
 
@@ -194,6 +221,21 @@ scheduler_tick_ms = 5
 缺省任务栈回退到进程 `AX_TASK_STACK_SIZE` 或 0x40000 字节；缺省 tick 回退到 `AX_SCHEDULER_TICK_MS` 或 10 毫秒；缺省 CPU 容量回退到 `SMP` 或 16。环境数字支持十进制、十六进制和下划线，仅解析胜出来源。CPU 和 tick 不能为零，栈必须非零且 16 字节对齐，分配及时间转换溢出会报错。任务栈在有无文件系统时生效，ArceOS 的默认线程栈也使用同一值。
 
 用户 `[env]` 中不再接受 `SMP`、`AX_LOG`、`AX_TASK_STACK_SIZE`、`AX_SCHEDULER_TICK_MS`，应分别迁移到 `max_cpu_num`、`log` 和上述 runtime 字段。axbuild 将最终有效参数写入本次 Cargo 子进程环境，runtime/HAL 的构建 helper 使用相同规则并声明环境失效；连续请求不会修改父进程环境。启动栈仍由 someboot 管理，独立于任务栈。
+
+### 3.5 资源路径
+
+资源由各自消费者处理，不作为公共字段合并器的隐式来源。`ConfigInput::file_fields` 只保存路径和 guest 必填键规则需要的最少来源信息，最终请求不保留原始覆盖表。
+
+| 字段或文件 | 相对路径基准 | 消费者 |
+| --- | --- | --- |
+| 用户文件显式 `app-c` | 用户 TOML 的目录 | ArceOS resolver 绝对化后交 C 构建 |
+| 内置 `app-c` | 工作区根 | 同上；defconfig 导出绝对路径 |
+| `fit_its` | 工作区根 | Starry mkimage，资源缺失或失败报错 |
+| `vm_configs` | 工作区根 | Axvisor 打包；不进入内核 Cargo 身份 |
+| VM 内镜像字段 | 保留 VM 协议规定的文件目录和变量展开 | 现有 GuestConfig 与资源打包器 |
+| QEMU/U-Boot/远程板卡 TOML | 对应运行工具协议 | 启动与部署，不冒充编译配置 |
+
+旧 `--config os/<system>/configs/board/<name>.toml` 改用 `--preset <name>`；需要编辑时显式运行 `defconfig`，或另建稀疏用户文件。旧 Starry 用户文件旁有同名 ITS、最终没有 `fit_its` 且未显式 unset 时会报迁移错误，应补显式资源路径或明确清除。保留运行 TOML、DTB/DTS/ITS 与 VM 文件，不按目录整体删除。
 
 ## 4. 产物与启动
 

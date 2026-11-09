@@ -190,23 +190,18 @@ fn load_qemu_case(
     } else {
         workspace_root.join(case.build_config_path)
     };
-    let build_input = if build_config_path.is_file() {
-        let input = crate::build::load_config_input::<crate::starry::config::StarryConfig>(
-            workspace_root,
-            Some(&build_config_path),
-            None,
-        )?;
-        if input.config.common.target.as_deref() != Some(target) {
-            bail!(
-                "Starry build config {} declares target {:?}, expected {target}",
-                build_config_path.display(),
-                input.config.common.target
-            );
-        }
-        input
-    } else {
-        crate::build::load_config_input(workspace_root, None, None)?
-    };
+    let build_input = crate::build::load_config_input::<crate::starry::config::StarryConfig>(
+        workspace_root,
+        Some(&build_config_path),
+        None,
+    )?;
+    if build_input.config.common.target.as_deref() != Some(target) {
+        bail!(
+            "Starry build config {} declares target {:?}, expected {target}",
+            build_config_path.display(),
+            build_input.config.common.target
+        );
+    }
     let mut test_case = qemu_test::load_test_qemu_case_fields(
         case.display_name,
         case.name,

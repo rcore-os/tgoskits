@@ -90,11 +90,11 @@ Tokenization does not provide variable expansion, globbing, pipelines, general r
 
 AxVisor uses the xtask tool for build management, supporting multiple hardware platforms and configuration options. For a quick build and run of AxVisor, please refer to the [Quick Start](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart) chapter in the configuration documentation.
 
-1. **List Available Boards**: Use `cargo xtask axvisor config ls` to view the available board names under `configs/board/`.
+1. **List Built-in Presets**: Use `cargo xtask axvisor config ls` to view the static Rust recipes and `config show --preset <name>` to inspect the resolved input.
 
-2. **Generate Configuration**: Use `cargo xtask axvisor defconfig <board_name>` to copy the selected board-level configuration to `.build.toml`.
+2. **Export When Needed**: `cargo xtask axvisor defconfig <name>` atomically exports expanded TOML to `tmp/axbuild/config/axvisor/build-<target>.toml` and updates the selection only after success. Exporting is not a build prerequisite.
 
-3. **Execute Build**: Use `cargo xtask axvisor build` to compile AxVisor according to `.build.toml`. You can also pass an explicit config file via `cargo xtask axvisor build --config configs/board/<board_name>.toml`.
+3. **Execute Build**: Use `cargo xtask axvisor build --preset <name>` directly, add `--config local.toml` for sparse overrides, or use `--config full.toml` for a custom configuration. Builds do not generate implicit input files.
 
 4. **Run on QEMU**: From the workspace root, use `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` to run the maintained smoke case.
 

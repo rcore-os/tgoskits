@@ -24,7 +24,7 @@ AArch64 裸机构建通过 `CargoBuildTarget.rustflags` 调整短复制的内联
 
 ### 2.1 参数流向
 
-[`BuildInfo::build_cargo_args()`](../../scripts/axbuild/src/build/info.rs) 先加入目标默认值，再加入调用方参数，通过 Cargo 的目标 `rustflags` 传给 rustc。[`ClippyCheck::cargo_invocation()`](../../scripts/axbuild/src/clippy/check.rs) 则把同一组默认值放在 `--` 后、已有 rustc 参数之前。位置无关代码、链接脚本和调用方配置沿原有流程保留。
+[`build_cargo_args()`](../../scripts/axbuild/src/build/info.rs) 先加入目标默认值，再加入调用方参数，通过 Cargo 的目标 `rustflags` 传给 rustc。[`ClippyCheck::cargo_invocation()`](../../scripts/axbuild/src/clippy/check.rs) 则把同一组默认值放在 `--` 后、已有 rustc 参数之前。位置无关代码、链接脚本和调用方配置沿原有流程保留。
 
 两条入口共享参数所有者，图中的分叉只表示 Cargo 构建参数与 Clippy 参数的不同装配位置。
 
@@ -32,7 +32,7 @@ AArch64 裸机构建通过 `CargoBuildTarget.rustflags` 调整短复制的内联
 flowchart LR
     T[逻辑裸机目标] --> R[bare_build_target_for]
     R --> D[CargoBuildTarget.rustflags]
-    D --> B[BuildInfo::build_cargo_args]
+    D --> B[build_cargo_args]
     D --> C[ClippyCheck::cargo_invocation]
     B --> L[rustc / LLVM]
     C --> L
@@ -40,7 +40,7 @@ flowchart LR
 
 该设置只改变编译期的复制展开选择，不增加运行时开关或第二份目标规格。调整策略时应从这个共同入口修改，避免构建与检查形成不同配置。
 
-固定 CPU 的标准库客户机不自动继承裸机默认值；需要同一代价策略时，通过 `BuildInfo.rustflags` 显式追加，保留生成的 target rustflags，而不是以环境变量替换栈保护与调试参数。这是部署配置选择，不改变裸机默认值的所有者或所有标准库目标的默认行为，见 [构建参数追加契约](../../design/axbuild-rustflags.md)。
+固定 CPU 的标准库客户机不自动继承裸机默认值；需要同一代价策略时，通过 `CommonConfig.rustflags` 显式追加，保留生成的 target rustflags，而不是以环境变量替换栈保护与调试参数。这是部署配置选择，不改变裸机默认值的所有者或所有标准库目标的默认行为，见 [构建参数追加契约](../../design/axbuild-rustflags.md)。
 
 ### 2.2 验证边界
 
