@@ -10,6 +10,7 @@ license.workspace = true
 [features]
 default = []
 host-test = ["ax-hal/host-test"]
+fault-injection = []
 
 [dependencies]
 ax-hal = { workspace = true, features = ["ipi"] }

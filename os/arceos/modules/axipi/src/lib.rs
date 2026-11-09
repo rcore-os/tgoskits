@@ -145,14 +145,30 @@ fn endpoint_delivery_ready(state: u8) -> Result<bool, u8> {
 /// same destination.
 pub fn notify_cpu(cpu: CpuId) -> Result<IpiNotification, IrqError> {
     validate_target_cpu(cpu)?;
-    endpoint(cpu)?.edge.notify(|| {
-        let target = if cpu.0 == this_cpu_id() {
-            IpiTarget::Current
-        } else {
-            IpiTarget::Cpu(cpu)
-        };
-        ax_hal::irq::send_ipi(ax_hal::irq::ipi_irq(), target)
-    })
+    endpoint(cpu)?.edge.notify(|| send_ipi_to_cpu(cpu, |_| {}))
+}
+
+/// Sends a physical IPI with a task-context probe after destination selection.
+///
+/// This exercises the physical-send primitive used by [`notify_cpu`] without
+/// competing for its shared coalescing edge. The probe receives the selected
+/// target and may migrate the sender before the real controller send.
+#[cfg(feature = "fault-injection")]
+#[doc(hidden)]
+pub fn send_ipi_with_before_send_for_test(
+    cpu: CpuId,
+    before_send: impl FnOnce(IpiTarget),
+) -> Result<(), IrqError> {
+    validate_target_cpu(cpu)?;
+    send_ipi_to_cpu(cpu, before_send)
+}
+
+fn send_ipi_to_cpu(cpu: CpuId, before_send: impl FnOnce(IpiTarget)) -> Result<(), IrqError> {
+    // The endpoint belongs to this fixed CPU even if the sending task
+    // migrates before the controller consumes the target.
+    let target = IpiTarget::Cpu(cpu);
+    before_send(target);
+    ax_hal::irq::send_ipi(ax_hal::irq::ipi_irq(), target)
 }
 
 /// Claims the acknowledged physical delivery before logical owners are

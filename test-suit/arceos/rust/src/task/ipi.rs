@@ -10,7 +10,10 @@ use ax_std::os::arceos::{
         time::ax_monotonic_time,
     },
     modules::{
-        ax_hal::{irq::CpuId, percpu::this_cpu_id},
+        ax_hal::{
+            irq::{CpuId, IpiTarget},
+            percpu::this_cpu_id,
+        },
         ax_ipi,
         ax_ipi::IpiNotification,
     },
@@ -326,7 +329,36 @@ fn run_concurrent_hard_calls(target_cpu: usize, sender_cpus: &[usize]) {
 }
 
 fn verify_fixed_ipi_preserves_local_irq_state(sender_cpu: usize, target_cpu: usize) {
-    pin_current_to_cpu(sender_cpu);
+    pin_current_to_cpu(target_cpu);
+    let mut selected_target = None;
+    ax_ipi::send_ipi_with_before_send_for_test(CpuId(target_cpu), |target| {
+        selected_target = Some((target, this_cpu_id()));
+        // Keep the real controller send after migration: a fixed logical CPU
+        // must not become relative to the sender's new execution context.
+        pin_current_to_cpu(sender_cpu);
+    })
+    .expect("migration-overlap physical IPI send failed");
+    let (selected_target, before_cpu) =
+        selected_target.expect("migration-overlap probe did not execute");
+    let after_cpu = this_cpu_id();
+    assert_eq!(before_cpu, target_cpu);
+    assert_eq!(after_cpu, sender_cpu);
+    assert_ne!(before_cpu, after_cpu);
+    // The hook has returned and the real send has completed. Affinity keeps
+    // this task on sender_cpu, so Current resolves to that CPU at send time.
+    let actual_destination = match selected_target {
+        IpiTarget::Cpu(cpu) => cpu.0,
+        IpiTarget::Current => after_cpu,
+    };
+    println!(
+        "task_ipi: physical send completed: selected={selected_target:?}, \
+         before_cpu={before_cpu}, after_cpu={after_cpu}, actual_destination={actual_destination}, \
+         logical_target={target_cpu}"
+    );
+    assert_eq!(
+        actual_destination, target_cpu,
+        "fixed IPI destination changed when its sender migrated before the physical send"
+    );
     assert!(ax_cpu::interrupt::irqs_enabled());
 
     let calls_before = EXECUTED_HARD_CALLS.load(Ordering::Relaxed);
