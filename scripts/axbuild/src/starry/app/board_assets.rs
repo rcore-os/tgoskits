@@ -44,7 +44,7 @@ mod tests {
             name: "probe".into(),
             init_path: case_dir.join("init.sh"),
             init_cmd: "echo probe".into(),
-            build_config_path: case_dir.join("build.toml"),
+            build_input: crate::build::load_config_input(root.path(), None, None).unwrap(),
             board_config_path: case_dir.join("board.toml"),
             target: "aarch64-unknown-none-softfloat".into(),
             case_dir,

@@ -713,7 +713,10 @@ mod tests {
         Axvisor, AxvisorQemuCase, PreparedAxvisorQemuCase, combine_results,
         load_axvisor_http_probe_config, plan_qemu_case_artifacts, preserve_qemu_build_artifact,
     };
-    use crate::{context::WorkspaceContext, test::qemu as test_qemu};
+    use crate::{
+        context::{ResolvedAxvisorRequest, WorkspaceContext},
+        test::qemu as test_qemu,
+    };
 
     #[test]
     fn qemu_build_groups_preserve_distinct_executable_artifacts() {
