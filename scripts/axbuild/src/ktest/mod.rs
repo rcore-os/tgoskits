@@ -1358,12 +1358,7 @@ fn default_board_run_config(
         return package_config;
     }
     let root = runtime_config_root(workspace_root, runtime);
-    let starry_board_config = root.join(format!("configs/board/{board}-board.toml"));
-    if runtime != KtestRuntime::Axvisor && starry_board_config.exists() {
-        starry_board_config
-    } else {
-        root.join(format!("configs/board/{board}.toml"))
-    }
+    root.join(format!("configs/board/{board}-board.toml"))
 }
 
 fn runtime_config_root(workspace_root: &Path, runtime: KtestRuntime) -> PathBuf {
