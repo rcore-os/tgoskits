@@ -13,10 +13,10 @@ use super::{
 };
 use crate::{
     context::{
-        ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, arch_for_target_checked,
+        RequestEnvironment, ResolvedStarryRequest, StarryCliArgs, arch_for_target_checked,
         board_run_request,
     },
-    starry::{Starry, board, build},
+    starry::{Starry, build},
     test::{board as board_test, qemu as qemu_test},
 };
 
@@ -37,16 +37,21 @@ pub(crate) fn collect_board_test_groups(
 ) -> anyhow::Result<Vec<StarryBoardTestGroup>> {
     let mut groups = Vec::new();
     for info in board_test::discover_board_case_build_infos(test_suite_dir, "Starry")? {
-        let board_file = board::load_board_file(&info.build_config_path).with_context(|| {
-            format!(
-                "failed to load Starry board build config `{}`",
-                info.build_config_path.display()
-            )
-        })?;
-        let target = board_file
+        let build_input =
+            crate::build::load_config_input(_workspace_root, Some(&info.build_config_path), None)
+                .with_context(|| {
+                format!(
+                    "failed to load Starry board build config `{}`",
+                    info.build_config_path.display()
+                )
+            })?;
+        let target = build_input
+            .config
             .common
             .target
-            .expect("board target was validated");
+            .as_ref()
+            .expect("board target was validated")
+            .clone();
         let arch = arch_for_target_checked(&target)?.to_string();
         groups.push(StarryBoardTestGroup {
             name: info.name,
@@ -54,6 +59,7 @@ pub(crate) fn collect_board_test_groups(
             arch,
             target,
             build_config_path: info.build_config_path,
+            build_input,
             board_test_config_path: info.board_test_config_path,
             required_env: info.required_env,
         });
@@ -64,6 +70,7 @@ pub(crate) fn collect_board_test_groups(
 
 impl Starry {
     pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
+        let environment = RequestEnvironment::capture()?;
         let groups = discover_board_test_groups(
             self.app.workspace_root(),
             &args.test_case,
@@ -140,8 +147,10 @@ impl Starry {
         for (build_config, positions) in build_groups {
             let group = &runnable[positions[0]].2;
             let prepared = async {
-                let request = self.prepare_request(
+                let request = self.prepare_request_from_input(
                     Self::test_board_build_args(group),
+                    group.build_input.clone(),
+                    environment.clone(),
                     None,
                     None,
                     SnapshotPersistence::Discard,
@@ -230,7 +239,7 @@ impl Starry {
 
             let result = async {
                 let mut request = prepared.request.clone();
-                request.build_info_path = group.build_config_path.clone();
+                request.replace_config_input(group.build_input.clone())?;
                 let (mut board_config, board_config_path) = self
                     .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                     .await?;
@@ -273,7 +282,7 @@ impl Starry {
                     .board_prepared_elf_with_request(
                         prepared.elf_path.clone(),
                         prepared.cargo.to_bin,
-                        request.build_info_path.clone(),
+                        request.config_path().map(Path::to_path_buf),
                         board_request,
                     )
                     .await
@@ -299,6 +308,7 @@ impl Starry {
 
     pub(crate) fn test_build_args(target: &str, config: Option<PathBuf>) -> StarryCliArgs {
         StarryCliArgs {
+            preset: None,
             config,
             arch: None,
             target: Some(target.to_string()),
@@ -309,8 +319,9 @@ impl Starry {
 
     fn test_board_build_args(group: &StarryBoardTestGroup) -> StarryCliArgs {
         StarryCliArgs {
-            config: Some(group.build_config_path.clone()),
-            arch: None,
+            preset: None,
+            config: None,
+            arch: Some(group.arch.clone()),
             target: Some(group.target.clone()),
             smp: None,
             debug: false,

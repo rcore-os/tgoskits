@@ -161,8 +161,9 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
     request.environment_features = vec!["ax-driver/virtio-net".to_string()];
     request.runtime_env.task_stack_size = Some("0x50000".to_string());
 
+    let input = crate::build::load_config_input(root.path(), Some(&build_config), None).unwrap();
     let (group_request, cargo) =
-        Starry::qemu_group_build_context(&request, &build_config, &workspace()).unwrap();
+        Starry::qemu_group_build_context(&request, &input, &workspace()).unwrap();
 
     assert_eq!(cargo.env.get("SMP").map(String::as_str), Some("4"));
     assert_eq!(
@@ -193,8 +194,9 @@ fn qemu_group_build_context_prepares_starry_coverage() {
         "x86_64-unknown-none",
     );
 
+    let input = crate::build::load_config_input(root.path(), Some(&build_config), None).unwrap();
     let (_group_request, cargo) =
-        Starry::qemu_group_build_context(&request, &build_config, &workspace()).unwrap();
+        Starry::qemu_group_build_context(&request, &input, &workspace()).unwrap();
 
     assert!(cargo.features.contains(&"axtest-coverage".to_string()));
     assert!(!cargo.features.contains(&"axtest/coverage".to_string()));
@@ -233,8 +235,9 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
     )
     .unwrap();
 
+    let input = crate::build::load_config_input(root.path(), Some(&build_config), None).unwrap();
     let (_group_request, cargo) =
-        Starry::qemu_group_build_context(&request, &build_config, &workspace()).unwrap();
+        Starry::qemu_group_build_context(&request, &input, &workspace()).unwrap();
 
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
     assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));

@@ -422,21 +422,11 @@ mod tests {
         write_test_image_config(root.path());
         let rootfs = managed_rootfs_path(root.path(), "rootfs-x86_64-alpine.img");
 
-        let request = ResolvedStarryRequest {
-            package: "starryos".to_string(),
-            arch: "x86_64".to_string(),
-            target: "x86_64-unknown-none".to_string(),
-            smp: None,
-            debug: false,
-            build_info_path: (PathBuf::from("/tmp/.build.toml")).clone(),
-            qemu_config: None,
-            uboot_config: None,
-            ..crate::context::test_support::starry_request(
-                &(PathBuf::from("/tmp/.build.toml")),
-                "x86_64",
-                "x86_64-unknown-none",
-            )
-        };
+        let request = crate::starry::test_request(
+            &PathBuf::from("/tmp/.build.toml"),
+            "x86_64",
+            "x86_64-unknown-none",
+        );
         let mut qemu = QemuConfig::default();
 
         patch_qemu_rootfs(

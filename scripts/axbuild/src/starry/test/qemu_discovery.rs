@@ -1,33 +1,30 @@
 pub(crate) fn parse_test_target(
-    workspace_root: &Path,
+    _workspace_root: &Path,
     arch: &Option<String>,
     target: &Option<String>,
 ) -> anyhow::Result<(String, String)> {
-    let supported_targets = board::board_default_list(workspace_root)?
-        .into_iter()
-        .filter(|board| board.name.starts_with("qemu-"))
-        .map(|board| board.target)
-        .collect::<Vec<_>>();
-
-    let supported_target_refs = supported_targets
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
+    let supported_targets = [
+        ax_config::boards::TARGET_AARCH64,
+        ax_config::boards::TARGET_RISCV64,
+        ax_config::boards::TARGET_LOONGARCH64,
+        ax_config::boards::TARGET_X86_64,
+    ];
     let supported_arches = supported_targets
         .iter()
         .map(|target| arch_for_target_checked(target))
-        .collect::<anyhow::Result<BTreeSet<_>>>()?
-        .into_iter()
-        .collect::<Vec<_>>();
+        .collect::<anyhow::Result<BTreeSet<_>>>()?;
 
     let (arch, target) = resolve_starry_arch_and_target(arch.clone(), target.clone())?;
-    validate_supported_target(&arch, "starry qemu tests", "arch values", &supported_arches)?;
     validate_supported_target(
-        &target,
+        &arch,
         "starry qemu tests",
-        "targets",
-        &supported_target_refs,
+        "arch values",
+        &supported_arches
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
     )?;
+    validate_supported_target(&target, "starry qemu tests", "targets", &supported_targets)?;
     Ok((arch, target))
 }
 
@@ -43,6 +40,7 @@ pub(crate) fn discover_qemu_cases(
         && direct_starry_qemu_case_exists(&test_suite_dir, direct_case)?
     {
         return load_qemu_cases_for_selection(
+            workspace_root,
             &test_suite_dir,
             arch,
             target,
@@ -53,6 +51,7 @@ pub(crate) fn discover_qemu_cases(
     }
 
     load_qemu_cases_for_selection(
+        workspace_root,
         &test_suite_dir,
         arch,
         target,
@@ -63,6 +62,7 @@ pub(crate) fn discover_qemu_cases(
 }
 
 fn load_qemu_cases_for_selection(
+    workspace_root: &Path,
     test_suite_dir: &Path,
     arch: &str,
     target: &str,
@@ -79,7 +79,16 @@ fn load_qemu_cases_for_selection(
         "qemu",
     )?
     .into_iter()
-    .map(|case| load_qemu_case(case, arch, grouped_subcase_filter.clone(), ltp_case_id))
+    .map(|case| {
+        load_qemu_case(
+            workspace_root,
+            case,
+            arch,
+            target,
+            grouped_subcase_filter.clone(),
+            ltp_case_id,
+        )
+    })
     .collect::<anyhow::Result<Vec<_>>>()?;
     let mut expanded = Vec::new();
     for case in cases {
@@ -171,13 +180,33 @@ fn is_starry_qemu_system_group(group: &str) -> bool {
 }
 
 fn load_qemu_case(
+    workspace_root: &Path,
     case: qemu_test::DiscoveredQemuCase,
     arch: &str,
+    target: &str,
     grouped_subcase_filter: Option<BTreeSet<String>>,
     ltp_case_id: Option<&str>,
 ) -> anyhow::Result<StarryQemuCase> {
     let build_group = case.build_group;
-    let build_config_path = case.build_config_path;
+    let build_config_path = if case.build_config_path.is_absolute() {
+        case.build_config_path
+    } else {
+        workspace_root.join(case.build_config_path)
+    };
+    let build_input = if build_config_path.is_file() {
+        let input =
+            crate::build::load_config_input(workspace_root, Some(&build_config_path), None)?;
+        if input.config.common.target.as_deref() != Some(target) {
+            bail!(
+                "Starry build config {} declares target {:?}, expected {target}",
+                build_config_path.display(),
+                input.config.common.target
+            );
+        }
+        input
+    } else {
+        crate::build::load_config_input(workspace_root, None, None)?
+    };
     let mut test_case = qemu_test::load_test_qemu_case_fields(
         case.display_name,
         case.name,
@@ -198,6 +227,7 @@ fn load_qemu_case(
         case: test_case,
         build_group,
         build_config_path,
+        build_input,
     })
 }
 
@@ -409,6 +439,5 @@ use anyhow::{Context, bail};
 use super::{StarryQemuCase, require_test_suite_dir};
 use crate::{
     context::{arch_for_target_checked, resolve_starry_arch_and_target, validate_supported_target},
-    starry::board,
     test::{case, case::TestQemuCase, qemu as qemu_test},
 };

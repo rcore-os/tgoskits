@@ -15,9 +15,7 @@ pub use super::config::StarryConfig;
 pub use crate::build::LogLevel;
 use crate::{
     build::BareKernelLinkMode,
-    context::{
-        ResolvedStarryRequest, STARRY_PACKAGE, WorkspaceContext, starry_arch_for_target_checked,
-    },
+    context::{ResolvedStarryRequest, WorkspaceContext},
     support::process::{ProcessExt, find_optional_host_binary},
 };
 
@@ -27,23 +25,6 @@ const STARRY_SYMBOLIZATION_RUSTFLAGS: &[&str] = &[
     "-Cstrip=none",
     "-Cforce-frame-pointers=yes",
 ];
-
-pub(crate) fn resolve_build_info_path(
-    workspace_root: &Path,
-    target: &str,
-    explicit_path: Option<PathBuf>,
-) -> anyhow::Result<PathBuf> {
-    if let Some(path) = explicit_path {
-        return Ok(path);
-    }
-
-    let _ = starry_arch_for_target_checked(target)?;
-    Ok(crate::build::default_build_info_path_in_workspace(
-        workspace_root,
-        STARRY_PACKAGE,
-        target,
-    ))
-}
 
 pub(crate) fn load_build_info(request: &ResolvedStarryRequest) -> anyhow::Result<CommonConfig> {
     request.config.validate()?;
@@ -118,7 +99,7 @@ pub(crate) async fn build_starry_artifact(
     };
     let build_result = starry
         .app
-        .build(cargo.clone(), request.build_info_path.clone())
+        .build(cargo.clone(), request.config_path().map(Path::to_path_buf))
         .await;
     let output = crate::build::finish_future_incompat_report_session(report_session, build_result)?;
     stage.done();

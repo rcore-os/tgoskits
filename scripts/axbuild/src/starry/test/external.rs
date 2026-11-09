@@ -8,7 +8,7 @@ use object::{Object as _, ObjectSection as _};
 
 use super::ArgsTestQemu;
 use crate::{
-    context::{SnapshotPersistence, StarryCliArgs, axbuild_tmp_dir},
+    context::{RequestEnvironment, SnapshotPersistence, StarryCliArgs, axbuild_tmp_dir},
     rootfs::qemu::{RootfsPatchMode, RootfsPatchOptions, RootfsWritePolicy},
     starry::{Starry, rootfs},
     test::qemu as qemu_test,
@@ -24,14 +24,23 @@ struct ExternalRun {
 impl Starry {
     pub(super) async fn run_external_qemu(&mut self, args: ArgsTestQemu) -> anyhow::Result<()> {
         let external = ExternalRun::from_args(args)?;
-        let request = self.prepare_request(
+        let environment = RequestEnvironment::capture()?;
+        let input = crate::build::load_config_input(
+            self.app.workspace_root(),
+            Some(&external.build_config),
+            None,
+        )?;
+        let request = self.prepare_request_from_input(
             StarryCliArgs {
-                config: Some(external.build_config.clone()),
+                preset: None,
+                config: None,
                 arch: None,
                 target: None,
                 smp: None,
                 debug: false,
             },
+            input.clone(),
+            environment,
             Some(external.qemu_config.clone()),
             None,
             SnapshotPersistence::Discard,
@@ -43,11 +52,8 @@ impl Starry {
             .as_deref()
             .map(|path| FixedElf::open(path, self.app.target_dir()))
             .transpose()?;
-        let (request, cargo) = Self::qemu_group_build_context(
-            &request,
-            &external.build_config,
-            self.app.workspace_context(),
-        )?;
+        let (request, cargo) =
+            Self::qemu_group_build_context(&request, &input, self.app.workspace_context())?;
         let output = self
             .build_artifact(&request, cargo.clone())
             .await

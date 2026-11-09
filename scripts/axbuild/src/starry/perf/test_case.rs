@@ -1,7 +1,5 @@
 //! Test-suit asset reuse for scheduler performance experiments.
 
-use std::path::Path;
-
 use anyhow::{Context, ensure};
 use ostool::run::qemu::QemuConfig;
 
@@ -16,8 +14,10 @@ pub(super) struct PerfTestCase {
 }
 
 impl PerfTestCase {
-    pub(super) fn build_config_path(&self) -> &Path {
-        &self.selected.build_config_path
+    pub(super) fn build_input(
+        &self,
+    ) -> &crate::build::ConfigInput<crate::starry::config::StarryConfig> {
+        &self.selected.build_input
     }
 
     pub(super) fn qemu_config_path(&self) -> &Path {

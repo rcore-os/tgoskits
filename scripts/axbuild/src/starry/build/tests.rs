@@ -13,7 +13,7 @@ fn workspace() -> WorkspaceContext {
 }
 
 fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
-    crate::context::test_support::starry_request(&path, arch, target)
+    crate::starry::test_request(&path, arch, target)
 }
 
 #[test]

@@ -306,6 +306,7 @@ fn discover_cases(cases_dir: &Path) -> anyhow::Result<Vec<NixosCase>> {
 async fn build_kernel(starry: &mut Starry, build_config: PathBuf) -> anyhow::Result<PathBuf> {
     let mut request = starry.prepare_request(
         StarryCliArgs {
+            preset: None,
             config: Some(build_config),
             arch: Some(ARCH.to_string()),
             target: Some(TARGET.to_string()),

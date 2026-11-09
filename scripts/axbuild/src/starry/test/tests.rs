@@ -102,7 +102,7 @@ fn write_starry_board_build_config(root: &Path, build_group: &str, target: &str)
 }
 
 fn starry_request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
-    crate::context::test_support::starry_request(&path, arch, target)
+    crate::starry::test_request(&path, arch, target)
 }
 
 fn write_board_test_config(
@@ -235,6 +235,7 @@ fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQ
         qemu: QemuConfig::default(),
         build_group: "default".to_string(),
         build_config_path,
+        build_input: crate::build::load_config_input(Path::new("/"), None, None).unwrap(),
         rootfs_path: PathBuf::from("/tmp/rootfs.img"),
         requirements: StarryQemuCaseRequirements { smp: 1 },
         diskless_host_initramfs: false,

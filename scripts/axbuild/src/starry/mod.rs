@@ -7,7 +7,7 @@ use ostool::{
 
 use crate::{
     context::{
-        AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
+        AppContext, RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
         arch_for_target_checked, board_run_request,
     },
     test::{case as qemu_case, host_http::HostHttpServerGuard, qemu},
@@ -16,7 +16,6 @@ use crate::{
 pub(crate) mod apk;
 pub mod app;
 mod args;
-pub mod board;
 mod boot_entropy;
 pub mod build;
 pub mod config;
@@ -32,6 +31,51 @@ pub use args::*;
 
 pub struct Starry {
     pub(super) app: AppContext,
+}
+
+#[cfg(test)]
+pub(crate) fn test_request(path: &Path, arch: &str, target: &str) -> ResolvedStarryRequest {
+    use crate::{
+        build::{ConfigInput, ConfigSource},
+        context::STARRY_PACKAGE,
+    };
+
+    let input: ConfigInput<config::StarryConfig> = if path.is_file() {
+        crate::build::load_config_input(Path::new("/"), Some(path), None).unwrap()
+    } else {
+        ConfigInput {
+            config: config::StarryConfig::default(),
+            source: ConfigSource::File {
+                path: path.to_path_buf(),
+                preset: None,
+            },
+            target_constraint: None,
+            app_c_from_file: false,
+        }
+    };
+    let mut config = input.config;
+    config.common.target = Some(target.to_string());
+    let runtime_env = ax_config::RuntimeEnv::default();
+    let runtime = ax_config::resolve_runtime(
+        config.common.max_cpu_num,
+        config.common.runtime,
+        &runtime_env,
+    )
+    .unwrap();
+    ResolvedStarryRequest {
+        package: STARRY_PACKAGE.to_string(),
+        arch: arch.to_string(),
+        target: target.to_string(),
+        smp: None,
+        debug: false,
+        source: input.source,
+        config,
+        runtime,
+        runtime_env,
+        environment_features: Vec::new(),
+        qemu_config: None,
+        uboot_config: None,
+    }
 }
 
 impl Starry {
@@ -60,7 +104,6 @@ impl Starry {
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
-        self.ensure_default_build_config_for_request(&request, "build")?;
         self.run_build_request(request).await
     }
 
@@ -72,7 +115,6 @@ impl Starry {
             None,
             SnapshotPersistence::Store,
         )?;
-        self.ensure_default_build_config_for_request(&request, "qemu")?;
         if let Some(rootfs) = args.rootfs {
             rootfs::qemu_with_explicit_rootfs(self, request, rootfs, write_policy).await
         } else {
@@ -97,9 +139,22 @@ impl Starry {
     fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
         match args.command {
             ConfigCommand::Ls => {
-                for board in config::available_board_names(self.app.workspace_root())? {
-                    println!("{board}");
+                for preset in config::presets::PRESETS {
+                    println!(
+                        "{}\t{}\t{}",
+                        preset.name, preset.common.board.id, preset.common.board.target
+                    );
                 }
+            }
+            ConfigCommand::Show(args) => {
+                let request =
+                    self.prepare_request((&args).into(), None, None, SnapshotPersistence::Discard)?;
+                build::show_config(
+                    &request.config,
+                    &request.source,
+                    request.runtime,
+                    &request.environment_features,
+                )?;
             }
         }
         Ok(())
@@ -253,6 +308,7 @@ impl Starry {
         app: &app::StarryAppCase,
         args: &app::ArgsAppQemu,
     ) -> anyhow::Result<()> {
+        let environment = RequestEnvironment::capture()?;
         let case = app::prepare_qemu_app_case(
             self.app.workspace_root(),
             self.app.target_dir(),
@@ -261,14 +317,21 @@ impl Starry {
             args.qemu_config.as_deref(),
         )
         .await?;
-        let request = self.prepare_request(
+        let build_input = match case.build_input.clone() {
+            Some(input) => input,
+            None => crate::build::load_config_input(self.app.workspace_root(), None, None)?,
+        };
+        let request = self.prepare_request_from_input(
             StarryCliArgs {
-                config: case.build_config_path.clone(),
+                preset: None,
+                config: None,
                 arch: Some(case.arch.clone()),
                 target: Some(case.target.clone()),
                 smp: None,
                 debug: args.debug,
             },
+            build_input,
+            environment,
             case.qemu_config_path.clone(),
             None,
             SnapshotPersistence::Store,
@@ -407,19 +470,23 @@ impl Starry {
     }
 
     async fn app_board(&mut self, args: app::ArgsAppBoard) -> anyhow::Result<()> {
+        let environment = RequestEnvironment::capture()?;
         let case = app::resolve_board_case(
             self.app.workspace_root(),
             &args.test_case,
             args.board_config.as_deref(),
         )?;
-        let request = self.prepare_request(
+        let request = self.prepare_request_from_input(
             StarryCliArgs {
-                config: Some(case.build_config_path.clone()),
-                arch: None,
+                preset: None,
+                config: None,
+                arch: Some(arch_for_target_checked(&case.target)?.to_owned()),
                 target: Some(case.target.clone()),
                 smp: None,
                 debug: args.debug,
             },
+            case.build_input.clone(),
+            environment,
             None,
             None,
             SnapshotPersistence::Store,
@@ -471,11 +538,30 @@ impl Starry {
         uboot_config: Option<PathBuf>,
         persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedStarryRequest> {
-        let (request, snapshot) = self.app.prepare_starry_request(
+        let (request, snapshot) =
+            self.app
+                .prepare_starry_request(args, qemu_config, uboot_config)?;
+        if persistence.should_store() {
+            self.app.store_starry_snapshot(&snapshot)?;
+        }
+        Ok(request)
+    }
+
+    pub(super) fn prepare_request_from_input(
+        &self,
+        args: StarryCliArgs,
+        input: crate::build::ConfigInput<crate::starry::config::StarryConfig>,
+        environment: RequestEnvironment,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+        persistence: SnapshotPersistence,
+    ) -> anyhow::Result<ResolvedStarryRequest> {
+        let (request, snapshot) = self.app.prepare_starry_request_from_input(
             args,
+            input,
+            environment,
             qemu_config,
             uboot_config,
-            build::resolve_build_info_path,
         )?;
         if persistence.should_store() {
             self.app.store_starry_snapshot(&snapshot)?;
@@ -483,29 +569,11 @@ impl Starry {
         Ok(request)
     }
 
-    pub(super) fn ensure_default_build_config_for_request(
-        &self,
-        request: &ResolvedStarryRequest,
-        command: &str,
-    ) -> anyhow::Result<()> {
-        if let Some(board) = config::ensure_default_build_config_for_target(
-            self.app.workspace_root(),
-            &request.target,
-            &request.build_info_path,
-        )? {
-            println!(
-                "generated missing Starry {command} build config {} from board {}",
-                request.build_info_path.display(),
-                board.name
-            );
-        }
-        Ok(())
-    }
-
-    fn quick_start_build_args(arch: &str, config: PathBuf) -> StarryCliArgs {
+    fn quick_start_build_args(preset: &str) -> StarryCliArgs {
         StarryCliArgs {
-            config: Some(config),
-            arch: Some(arch.to_string()),
+            preset: Some(preset.to_string()),
+            config: None,
+            arch: None,
             target: None,
             smp: None,
             debug: false,
@@ -619,7 +687,7 @@ impl Starry {
             .board_prepared_elf_with_request(
                 output.elf_path().to_path_buf(),
                 cargo.to_bin,
-                request.build_info_path.clone(),
+                request.config_path().map(Path::to_path_buf),
                 board_request,
             )
             .await
@@ -655,7 +723,6 @@ impl Starry {
 
         match action {
             quick_start::QuickQemuAction::Build => {
-                quick_start::refresh_qemu_build_config(self.app.workspace_root(), platform)?;
                 rootfs::ensure_quick_start_qemu_rootfs(
                     self.app.workspace_root(),
                     self.app.target_dir(),
@@ -663,13 +730,7 @@ impl Starry {
                 )
                 .await?;
                 let request = self.prepare_request(
-                    Self::quick_start_build_args(
-                        arch,
-                        quick_start::tmp_qemu_build_config_path(
-                            self.app.workspace_root(),
-                            platform,
-                        ),
-                    ),
+                    Self::quick_start_build_args(platform.cli_name()),
                     None,
                     None,
                     SnapshotPersistence::Store,
@@ -677,15 +738,8 @@ impl Starry {
                 self.run_build_request(request).await
             }
             quick_start::QuickQemuAction::Run => {
-                quick_start::ensure_qemu_build_config(self.app.workspace_root(), platform)?;
                 let request = self.prepare_request(
-                    Self::quick_start_build_args(
-                        arch,
-                        quick_start::tmp_qemu_build_config_path(
-                            self.app.workspace_root(),
-                            platform,
-                        ),
-                    ),
+                    Self::quick_start_build_args(platform.cli_name()),
                     None,
                     None,
                     SnapshotPersistence::Store,
@@ -701,12 +755,9 @@ impl Starry {
         args: quick_start::QuickOrangeConfigArgs,
     ) -> anyhow::Result<()> {
         quick_start::prepare_orangepi_uboot_config(self.app.workspace_root(), &args)?;
-        quick_start::ensure_orangepi_configs(self.app.workspace_root())?;
+        quick_start::ensure_orangepi_uboot_config(self.app.workspace_root())?;
         let request = self.prepare_request(
-            Self::quick_start_build_args(
-                "aarch64",
-                quick_start::tmp_orangepi_build_config_path(self.app.workspace_root()),
-            ),
+            Self::quick_start_build_args("orangepi-5-plus"),
             None,
             None,
             SnapshotPersistence::Store,
@@ -720,12 +771,8 @@ impl Starry {
     ) -> anyhow::Result<()> {
         let uboot_config =
             quick_start::prepare_orangepi_uboot_config(self.app.workspace_root(), &args)?;
-        quick_start::ensure_orangepi_configs(self.app.workspace_root())?;
         let request = self.prepare_request(
-            Self::quick_start_build_args(
-                "aarch64",
-                quick_start::tmp_orangepi_build_config_path(self.app.workspace_root()),
-            ),
+            Self::quick_start_build_args("orangepi-5-plus"),
             None,
             Some(uboot_config),
             SnapshotPersistence::Store,
@@ -734,12 +781,9 @@ impl Starry {
     }
 
     async fn quick_start_sg2002_build(&mut self) -> anyhow::Result<()> {
-        quick_start::refresh_sg2002_config(self.app.workspace_root())?;
+        quick_start::ensure_sg2002_uboot_config(self.app.workspace_root())?;
         let request = self.prepare_request(
-            Self::quick_start_build_args(
-                "riscv64",
-                quick_start::tmp_sg2002_build_config_path(self.app.workspace_root()),
-            ),
+            Self::quick_start_build_args("licheerv-nano-sg2002"),
             None,
             None,
             SnapshotPersistence::Store,
@@ -753,12 +797,8 @@ impl Starry {
     ) -> anyhow::Result<()> {
         let uboot_config_path =
             quick_start::prepare_sg2002_uboot_config(self.app.workspace_root(), &args)?;
-        quick_start::ensure_sg2002_config(self.app.workspace_root())?;
         let request = self.prepare_request(
-            Self::quick_start_build_args(
-                "riscv64",
-                quick_start::tmp_sg2002_build_config_path(self.app.workspace_root()),
-            ),
+            Self::quick_start_build_args("licheerv-nano-sg2002"),
             None,
             Some(uboot_config_path),
             SnapshotPersistence::Store,
