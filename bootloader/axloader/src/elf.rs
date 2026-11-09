@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use thiserror::Error;
 
-use crate::target::{TargetSpec, ranges_overlap};
+use crate::target::{RelocationSpec, TargetSpec, ranges_overlap};
 
 /// The executable flag from an ELF program header.
 pub const ELF_PF_X: u32 = 1;
@@ -19,8 +19,12 @@ const ELF_DATA_LSB: u8 = 1;
 const ELF_VERSION_CURRENT: u8 = 1;
 const PT_LOAD: u32 = 1;
 const SHT_SYMTAB: u32 = 2;
+const SHT_RELA: u32 = 4;
 const SHT_DYNSYM: u32 = 11;
 const SHT_STRTAB: u32 = 3;
+const SHT_RELR: u32 = 19;
+const SHF_ALLOC: u64 = 2;
+const ELF64_RELA_SIZE: usize = 24;
 
 /// Errors encountered while validating an EFI ELF image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -51,6 +55,10 @@ pub enum ElfError {
     SegmentAddressOverflow,
     #[error("ELF symbol table is outside the image or malformed")]
     SymbolTableRange,
+    #[error("ELF relocation section is outside the loaded image")]
+    RelocationSectionRange,
+    #[error("ELF image uses an unsupported dynamic relocation")]
+    UnsupportedRelocation,
     #[error("required EFI entry symbol is missing")]
     EntrySymbolMissing,
     #[error("EFI entry symbol is not in an executable load segment")]
@@ -95,6 +103,7 @@ impl ElfImage {
         let header = Elf64Header::read(image).ok_or(ElfError::TooSmall)?;
         validate_header(&header, spec, requested_entry_symbol)?;
         let segments = load_segments(image, &header)?;
+        validate_dynamic_relocations(image, &header, &segments, spec.relocation)?;
 
         let first_physical_address = segments
             .iter()
@@ -227,6 +236,8 @@ impl Elf64ProgramHeader {
 #[derive(Debug, Clone, Copy)]
 struct Elf64SectionHeader {
     section_type: u32,
+    flags: u64,
+    address: u64,
     data_offset: u64,
     data_size: u64,
     link: u32,
@@ -237,6 +248,8 @@ impl Elf64SectionHeader {
     fn read(image: &[u8], offset: usize) -> Option<Self> {
         Some(Self {
             section_type: read_u32(image, offset.checked_add(4)?)?,
+            flags: read_u64(image, offset.checked_add(8)?)?,
+            address: read_u64(image, offset.checked_add(16)?)?,
             data_offset: read_u64(image, offset.checked_add(24)?)?,
             data_size: read_u64(image, offset.checked_add(32)?)?,
             link: read_u32(image, offset.checked_add(40)?)?,
@@ -359,6 +372,92 @@ fn load_segments(image: &[u8], header: &Elf64Header) -> Result<Vec<LoadSegment>,
     Ok(segments)
 }
 
+fn validate_dynamic_relocations(
+    image: &[u8],
+    header: &Elf64Header,
+    segments: &[LoadSegment],
+    policy: Option<RelocationSpec>,
+) -> Result<(), ElfError> {
+    let Some(policy) = policy else {
+        return Ok(());
+    };
+    let section_count = usize::from(header.section_header_count);
+    if section_count == 0 {
+        return Ok(());
+    }
+    let section_size = usize::from(header.section_header_size);
+    if section_size < ELF64_SECTION_HEADER_SIZE {
+        return Err(ElfError::RelocationSectionRange);
+    }
+    let table_offset = usize::try_from(header.section_header_offset)
+        .map_err(|_| ElfError::RelocationSectionRange)?;
+    let table_size = section_count
+        .checked_mul(section_size)
+        .ok_or(ElfError::RelocationSectionRange)?;
+    let table_end = table_offset
+        .checked_add(table_size)
+        .ok_or(ElfError::RelocationSectionRange)?;
+    if table_end > image.len() {
+        return Err(ElfError::RelocationSectionRange);
+    }
+
+    for index in 0..section_count {
+        let section = Elf64SectionHeader::read(image, table_offset + index * section_size)
+            .ok_or(ElfError::RelocationSectionRange)?;
+        if section.flags & SHF_ALLOC == 0 {
+            continue;
+        }
+        if section.section_type == SHT_RELR {
+            if section.data_size != 0 {
+                return Err(ElfError::UnsupportedRelocation);
+            }
+            continue;
+        }
+        if section.section_type != SHT_RELA {
+            continue;
+        }
+        if section.entry_size != 0 && section.entry_size != ELF64_RELA_SIZE as u64 {
+            return Err(ElfError::RelocationSectionRange);
+        }
+        let bytes = section_bytes(image, section.data_offset, section.data_size)
+            .map_err(|_| ElfError::RelocationSectionRange)?;
+        if bytes.len() % ELF64_RELA_SIZE != 0 || !section_is_loaded(section, segments) {
+            return Err(ElfError::RelocationSectionRange);
+        }
+        for offset in (0..bytes.len()).step_by(ELF64_RELA_SIZE) {
+            let info = read_u64(bytes, offset + 8).ok_or(ElfError::RelocationSectionRange)?;
+            let relocation_type = info as u32;
+            let symbol_index = (info >> 32) as u32;
+            if relocation_type != policy.relative || symbol_index != 0 {
+                return Err(ElfError::UnsupportedRelocation);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn section_is_loaded(section: Elf64SectionHeader, segments: &[LoadSegment]) -> bool {
+    let Some(virtual_end) = section.address.checked_add(section.data_size) else {
+        return false;
+    };
+    let Some(file_end) = section.data_offset.checked_add(section.data_size) else {
+        return false;
+    };
+    segments.iter().any(|segment| {
+        let Some(segment_virtual_end) = segment.virtual_address.checked_add(segment.memory_size)
+        else {
+            return false;
+        };
+        let Some(segment_file_end) = segment.file_offset.checked_add(segment.file_size) else {
+            return false;
+        };
+        section.address >= segment.virtual_address
+            && virtual_end <= segment_virtual_end
+            && section.data_offset >= segment.file_offset
+            && file_end <= segment_file_end
+    })
+}
+
 fn find_symbol(image: &[u8], header: &Elf64Header, name: &str) -> Result<Option<u64>, ElfError> {
     let section_count = usize::from(header.section_header_count);
     if section_count == 0 {
@@ -475,8 +574,8 @@ fn read_u64(image: &[u8], offset: usize) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ELF_PF_X, ElfError, ElfImage};
-    use crate::target::{LOONGARCH64_EFI, TargetSpec, X86_64};
+    use super::{ELF_PF_X, ELF64_RELA_SIZE, ElfError, ElfImage, SHF_ALLOC, SHT_RELA};
+    use crate::target::{LOONGARCH64_EFI, LOONGARCH64_UEFI, TargetSpec, X86_64};
 
     struct TestSegment {
         flags: u32,
@@ -587,7 +686,7 @@ mod tests {
 
     #[test]
     fn valid_x86_and_loong_images_parse_link_time_layout() {
-        for spec in [X86_64, LOONGARCH64_EFI] {
+        for spec in [X86_64, LOONGARCH64_EFI, LOONGARCH64_UEFI] {
             let image = parse(spec, &[executable_segment(spec)]).unwrap();
             let expected_link = if spec.load_address.is_some() {
                 spec.link_address.unwrap()
@@ -646,6 +745,49 @@ mod tests {
             ElfImage::parse(&image, X86_64, Some(X86_64.entry_symbol)).unwrap_err(),
             ElfError::EntrySymbolMissing
         );
+    }
+
+    #[test]
+    fn native_loong_relocations_allow_only_relative_entries() {
+        for (relocation_type, expected) in [
+            (3_u32, Ok(())),
+            (4_u32, Err(ElfError::UnsupportedRelocation)),
+        ] {
+            let mut image = test_elf(LOONGARCH64_UEFI, &[executable_segment(LOONGARCH64_UEFI)]);
+            let first_segment = 64;
+            write_u64(&mut image, first_segment + 32, ELF64_RELA_SIZE as u64);
+            let relocation_offset = 64 + 56;
+            write_u64(&mut image, relocation_offset, 0x10_0123);
+            write_u64(
+                &mut image,
+                relocation_offset + 8,
+                u64::from(relocation_type),
+            );
+            write_u64(&mut image, relocation_offset + 16, 0x10_0000);
+
+            let section_offset = read_test_u64(&image, 40) as usize;
+            image.resize(section_offset + 4 * 64, 0);
+            write_u16(&mut image, 60, 4);
+            let relocation_section = section_offset + 3 * 64;
+            write_u32(&mut image, relocation_section + 4, SHT_RELA);
+            write_u64(&mut image, relocation_section + 8, SHF_ALLOC);
+            write_u64(&mut image, relocation_section + 16, 0x10_0123);
+            write_u64(
+                &mut image,
+                relocation_section + 24,
+                relocation_offset as u64,
+            );
+            write_u64(&mut image, relocation_section + 32, ELF64_RELA_SIZE as u64);
+            write_u64(&mut image, relocation_section + 56, ELF64_RELA_SIZE as u64);
+
+            let result = ElfImage::parse(
+                &image,
+                LOONGARCH64_UEFI,
+                Some(LOONGARCH64_UEFI.entry_symbol),
+            )
+            .map(|_| ());
+            assert_eq!(result, expected);
+        }
     }
 
     #[test]

@@ -2,16 +2,27 @@
 
 use httpboot_protocol::{BootArch, DeviceBootJob, ImageFormat};
 
+/// Dynamic relocation forms accepted in a loadable ELF image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelocationSpec {
+    /// The only relocation type the target entry can apply itself.
+    pub relative: u32,
+}
+
 /// The ELF and handoff contract for one loader target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetSpec {
     pub boot_arch: BootArch,
     pub machine: u16,
+    /// PE/COFF machine expected by the launcher and OTA slot validator.
+    pub pe_machine: u16,
     pub entry_symbol: &'static str,
     /// Physical placement selected by the target's EFI image contract.
     pub load_address: Option<u64>,
     /// Link-time PT_LOAD base accepted for fixed-placement EFI images.
     pub link_address: Option<u64>,
+    /// Dynamic relocations accepted when the target entry relocates itself.
+    pub relocation: Option<RelocationSpec>,
 }
 
 impl TargetSpec {
@@ -46,36 +57,74 @@ pub fn is_idempotent_boot_job(existing: &DeviceBootJob, incoming: &DeviceBootJob
 pub const X86_64: TargetSpec = TargetSpec {
     boot_arch: BootArch::X86_64,
     machine: 62,
+    pe_machine: 0x8664,
     entry_symbol: "__x86_64_efi_pe_entry",
     load_address: None,
     link_address: None,
+    relocation: None,
 };
 
 pub const LOONGARCH64_EFI: TargetSpec = TargetSpec {
     boot_arch: BootArch::Loongarch64,
     machine: 258,
+    pe_machine: 0x6264,
     entry_symbol: "efi_pe_entry",
     load_address: Some(0x20_0000),
     link_address: Some(0xffff_ffff_8000_0000),
+    relocation: None,
 };
+
+/// Relocatable LoongArch target used by the native UEFI frontend.
+///
+/// The fixed-placement [`LOONGARCH64_EFI`] contract remains owned by the
+/// legacy `arceos-efi` frontend.
+pub const LOONGARCH64_UEFI: TargetSpec = TargetSpec {
+    boot_arch: BootArch::Loongarch64,
+    machine: 258,
+    pe_machine: 0x6264,
+    entry_symbol: "efi_pe_entry",
+    load_address: None,
+    link_address: None,
+    relocation: Some(RelocationSpec { relative: 3 }),
+};
+
+#[cfg(all(target_os = "uefi", target_arch = "x86_64"))]
+pub const CURRENT: TargetSpec = X86_64;
+
+#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
+pub const CURRENT: TargetSpec = LOONGARCH64_UEFI;
+
+#[cfg(all(not(target_os = "uefi"), target_arch = "loongarch64"))]
+pub const CURRENT: TargetSpec = LOONGARCH64_EFI;
+
+#[cfg(not(any(target_os = "uefi", target_arch = "loongarch64",)))]
+pub const CURRENT: TargetSpec = X86_64;
 
 #[cfg(test)]
 mod tests {
     use httpboot_protocol::{BootArch, ImageFormat};
 
-    use super::{LOONGARCH64_EFI, X86_64};
+    use super::{LOONGARCH64_EFI, LOONGARCH64_UEFI, X86_64};
 
     #[test]
     fn target_contracts_keep_protocol_and_entry_abis_distinct() {
         assert_eq!(X86_64.boot_arch, BootArch::X86_64);
         assert_eq!(X86_64.machine, 62);
+        assert_eq!(X86_64.pe_machine, 0x8664);
         assert_eq!(X86_64.entry_symbol, "__x86_64_efi_pe_entry");
         assert_eq!(X86_64.load_address, None);
+        assert_eq!(X86_64.relocation, None);
         assert_eq!(LOONGARCH64_EFI.boot_arch, BootArch::Loongarch64);
         assert_eq!(LOONGARCH64_EFI.machine, 258);
+        assert_eq!(LOONGARCH64_EFI.pe_machine, 0x6264);
         assert_eq!(LOONGARCH64_EFI.entry_symbol, "efi_pe_entry");
         assert_eq!(LOONGARCH64_EFI.load_address, Some(0x20_0000));
         assert_eq!(LOONGARCH64_EFI.link_address, Some(0xffff_ffff_8000_0000));
+        assert_eq!(LOONGARCH64_EFI.relocation, None);
+        assert_eq!(LOONGARCH64_UEFI.boot_arch, BootArch::Loongarch64);
+        assert_eq!(LOONGARCH64_UEFI.load_address, None);
+        assert_eq!(LOONGARCH64_UEFI.link_address, None);
+        assert_eq!(LOONGARCH64_UEFI.relocation.unwrap().relative, 3);
     }
 
     #[test]

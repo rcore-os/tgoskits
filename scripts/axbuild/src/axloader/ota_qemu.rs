@@ -1,11 +1,13 @@
 //! Persistent FAT image OTA checks using real OVMF TCP4 and host forwarding.
 
 use std::{
+    env,
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     net::{TcpListener, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -25,20 +27,130 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(75);
 
 mod payloads;
 
-struct QemuChild(Child);
+struct QemuChild(Mutex<Child>);
 
-impl Drop for QemuChild {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+impl QemuChild {
+    fn ensure_running(&self, root: &Path) -> anyhow::Result<()> {
+        let mut child = self.0.lock().expect("QEMU process lock poisoned");
+        let Some(status) = child.try_wait().context("failed to poll QEMU process")? else {
+            return Ok(());
+        };
+        let serial = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
+        let stderr = fs::read_to_string(root.join("qemu-stderr.log")).unwrap_or_default();
+        bail!(
+            "QEMU exited before the test completed: {status}; serial tail:\n{}\nstderr tail:\n{}",
+            tail(&serial, 4096),
+            tail(&stderr, 4096),
+        )
     }
 }
 
-fn start_qemu(firmware: &OvmfFirmware, root: &Path, port: u16) -> anyhow::Result<QemuChild> {
-    start_qemu_with_resources(firmware, root, port, "256M", "1")
+impl Drop for QemuChild {
+    fn drop(&mut self) {
+        if let Ok(child) = self.0.get_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn tail(text: &str, limit: usize) -> String {
+    text.chars()
+        .rev()
+        .take(limit)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct QemuProfile {
+    artifact_prefix: &'static str,
+    qemu_binary: &'static str,
+    machine: &'static str,
+    cpu: &'static str,
+    accel: &'static str,
+    firmware_arch: Arch,
+    boot_filename: &'static str,
+    manifest_arch: &'static str,
+    entry_symbol: &'static str,
+    default_memory: &'static str,
+    default_cpus: &'static str,
+    guest_payloads: bool,
+}
+
+impl QemuProfile {
+    fn for_target(target: &str) -> anyhow::Result<Self> {
+        match target {
+            super::DEFAULT_UEFI_TARGET => Ok(Self {
+                artifact_prefix: "x86-",
+                qemu_binary: "qemu-system-x86_64",
+                machine: "q35",
+                cpu: "host,-la57",
+                accel: "kvm",
+                firmware_arch: Arch::X64,
+                boot_filename: "BOOTX64.EFI",
+                manifest_arch: "x86_64",
+                entry_symbol: "__x86_64_efi_pe_entry",
+                default_memory: "256M",
+                default_cpus: "1",
+                guest_payloads: true,
+            }),
+            super::LOONGARCH64_UEFI_TARGET => Ok(Self {
+                artifact_prefix: "loongarch64-",
+                qemu_binary: "qemu-system-loongarch64",
+                machine: "virt",
+                cpu: "la464",
+                accel: "tcg",
+                firmware_arch: Arch::LoongArch64,
+                boot_filename: "BOOTLOONGARCH64.EFI",
+                manifest_arch: "loongarch64",
+                entry_symbol: "efi_pe_entry",
+                default_memory: "1G",
+                default_cpus: "1",
+                guest_payloads: false,
+            }),
+            _ => bail!("unsupported axloader UEFI target `{target}`"),
+        }
+    }
+
+    fn qemu_executable(self) -> PathBuf {
+        if matches!(self.firmware_arch, Arch::LoongArch64)
+            && let Some(path) = env::var_os("AXBUILD_QEMU_SYSTEM_LOONGARCH64")
+                .or_else(|| env::var_os("QEMU_SYSTEM_LOONGARCH64"))
+                .map(PathBuf::from)
+                .filter(|path| path.is_file())
+        {
+            return path;
+        }
+        if matches!(self.firmware_arch, Arch::LoongArch64)
+            && Path::new("/opt/qemu-11.1.1/bin/qemu-system-loongarch64").is_file()
+        {
+            return "/opt/qemu-11.1.1/bin/qemu-system-loongarch64".into();
+        }
+        self.qemu_binary.into()
+    }
+}
+
+fn start_qemu(
+    profile: QemuProfile,
+    firmware: &OvmfFirmware,
+    root: &Path,
+    port: u16,
+) -> anyhow::Result<QemuChild> {
+    start_qemu_with_resources(
+        profile,
+        firmware,
+        root,
+        port,
+        profile.default_memory,
+        profile.default_cpus,
+    )
 }
 
 fn start_qemu_with_resources(
+    profile: QemuProfile,
     firmware: &OvmfFirmware,
     root: &Path,
     port: u16,
@@ -63,7 +175,7 @@ fn start_qemu_with_resources(
     let stderr = fs::File::create(root.join("qemu-stderr.log"))?;
     let vars = root.join("vars.fd");
     let disk = root.join("esp.img");
-    let mut command = Command::new("qemu-system-x86_64");
+    let mut command = Command::new(profile.qemu_executable());
     let netdev = format!("user,id=user0,hostfwd=tcp:127.0.0.1:{port}-:2999");
     command.args([
         "-m",
@@ -71,11 +183,11 @@ fn start_qemu_with_resources(
         "-smp",
         cpus,
         "-machine",
-        "q35",
+        profile.machine,
         "-accel",
-        "kvm",
+        profile.accel,
         "-cpu",
-        "host,-la57",
+        profile.cpu,
         "-display",
         "none",
         "-monitor",
@@ -85,29 +197,55 @@ fn start_qemu_with_resources(
         "-netdev",
         &netdev,
     ]);
-    command.args([
-        "-device",
-        "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01",
-        "-drive",
-        &format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            firmware.code().display()
-        ),
-        "-drive",
-        &format!("if=pflash,format=raw,file={}", vars.display()),
-        "-drive",
-        &format!("format=raw,if=ide,file={}", disk.display()),
-    ]);
+    let network_device = if matches!(profile.firmware_arch, Arch::LoongArch64) {
+        "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01,romfile="
+    } else {
+        "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01"
+    };
+    command.args(["-device", network_device]);
+    match profile.firmware_arch {
+        Arch::LoongArch64 => {
+            command.args([
+                "-drive",
+                &format!(
+                    "if=pflash,format=raw,unit=0,readonly=on,file={}",
+                    firmware.code().display()
+                ),
+                "-drive",
+                &format!("if=pflash,format=raw,unit=1,file={}", vars.display()),
+                "-drive",
+                &format!("id=esp,if=none,format=raw,file={}", disk.display()),
+                "-device",
+                "virtio-blk-pci,drive=esp",
+                "-device",
+                "virtio-rng-pci,romfile=",
+            ]);
+        }
+        _ => {
+            command.args([
+                "-drive",
+                &format!(
+                    "if=pflash,format=raw,readonly=on,file={}",
+                    firmware.code().display()
+                ),
+                "-drive",
+                &format!("if=pflash,format=raw,file={}", vars.display()),
+                "-drive",
+                &format!("format=raw,if=ide,file={}", disk.display()),
+            ]);
+        }
+    }
     let child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::from(serial))
         .stderr(Stdio::from(stderr))
         .spawn()
         .context("failed to start OTA OVMF guest")?;
-    Ok(QemuChild(child))
+    Ok(QemuChild(Mutex::new(child)))
 }
 
 async fn status(
+    qemu: &QemuChild,
     client: &reqwest::Client,
     port: u16,
     root: &Path,
@@ -117,6 +255,7 @@ async fn status(
     let url = format!("http://127.0.0.1:{port}/api/v1/ota/status");
     let mut last = String::new();
     while Instant::now() < deadline {
+        qemu.ensure_running(root)?;
         match client.get(&url).send().await {
             Ok(response) => match response.json::<Value>().await {
                 Ok(value) => {
@@ -134,13 +273,7 @@ async fn status(
     let log = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
     bail!(
         "OTA status timed out: {last}; QEMU serial tail:\n{}",
-        log.chars()
-            .rev()
-            .take(2048)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect::<String>()
+        tail(&log, 2048)
     )
 }
 
@@ -197,10 +330,23 @@ struct BootScenario<'a> {
     check_retries: bool,
 }
 
-async fn build_boot_kernels(workspace: &WorkspaceContext) -> anyhow::Result<BootKernels> {
+async fn build_boot_kernels(
+    workspace: &WorkspaceContext,
+    profile: QemuProfile,
+) -> anyhow::Result<BootKernels> {
     let mut app = AppContext::from_workspace_root(workspace.root(), Some(workspace.target_dir()))?;
     let build_config = workspace.root().join("Cargo.toml");
     let runtime_env = ax_config::RuntimeEnv::capture()?;
+    let (target, cmdline_feature, initramfs_feature) =
+        if matches!(profile.firmware_arch, Arch::LoongArch64) {
+            (
+                "loongarch64-unknown-none-softfloat",
+                "loong-efi-cmdline-smoke",
+                "loong-efi-initramfs-smoke",
+            )
+        } else {
+            ("x86_64-unknown-none", "cmdline-smoke", "initramfs-smoke")
+        };
     let build = |feature: &str| {
         let info = CommonConfig {
             features: vec![feature.to_string()],
@@ -211,18 +357,28 @@ async fn build_boot_kernels(workspace: &WorkspaceContext) -> anyhow::Result<Boot
         crate::build::into_prepared_std_cargo_config_with_metadata(
             info,
             "arceos-helloworld",
-            "x86_64-unknown-none",
+            target,
             workspace.metadata(),
             &workspace.axbuild_artifact_dir(),
             runtime,
         )
     };
     let output = app
-        .build(build("cmdline-smoke")?, build_config.clone())
+        .build(build(cmdline_feature)?, build_config.clone())
         .await?;
-    let cmdline = fs::read(output.elf_path()).context("failed to read cmdline smoke kernel")?;
-    let output = app.build(build("initramfs-smoke")?, build_config).await?;
-    let initramfs = fs::read(output.elf_path()).context("failed to read initramfs smoke kernel")?;
+    let cmdline = fs::read(output.elf_path()).with_context(|| {
+        format!(
+            "failed to read {target} cmdline smoke kernel for {}",
+            profile.artifact_prefix
+        )
+    })?;
+    let output = app.build(build(initramfs_feature)?, build_config).await?;
+    let initramfs = fs::read(output.elf_path()).with_context(|| {
+        format!(
+            "failed to read {target} initramfs smoke kernel for {}",
+            profile.artifact_prefix
+        )
+    })?;
     Ok(BootKernels { cmdline, initramfs })
 }
 
@@ -230,16 +386,15 @@ pub(super) async fn test_direct_ota(
     workspace: &WorkspaceContext,
     target: &str,
     server_only: bool,
+    firmware: Option<OvmfFirmware>,
 ) -> anyhow::Result<()> {
-    if target != super::DEFAULT_UEFI_TARGET {
-        bail!("persistent OTA QEMU test supports only x86_64 UEFI");
-    }
+    let profile = QemuProfile::for_target(target)?;
     let kernels = if server_only {
         None
     } else {
-        Some(build_boot_kernels(workspace).await?)
+        Some(build_boot_kernels(workspace, profile).await?)
     };
-    let os_payloads = if server_only {
+    let os_payloads = if server_only || !profile.guest_payloads {
         None
     } else {
         Some(payloads::OsPayloads::build(workspace).await?)
@@ -249,7 +404,7 @@ pub(super) async fn test_direct_ota(
     let artifacts = workspace.axbuild_artifact_dir().join("axloader/qemu");
     fs::create_dir_all(&artifacts)?;
     let root = tempfile::Builder::new()
-        .prefix("x86-")
+        .prefix(profile.artifact_prefix)
         .tempdir_in(artifacts)
         .context("failed to create OTA FAT image directory")?
         .keep();
@@ -267,8 +422,11 @@ pub(super) async fn test_direct_ota(
     } else {
         Some(fs::read(&host_initramfs_path).context("failed to read host initramfs")?)
     };
-    let firmware = OvmfFirmware::fetch(Arch::X64).await?;
-    fs::copy(firmware.vars(), root.join("vars.fd"))?;
+    let firmware = match firmware {
+        Some(firmware) => firmware,
+        None => OvmfFirmware::fetch(profile.firmware_arch).await?,
+    };
+    let firmware = prepare_firmware(profile, &firmware, root)?;
     let loader = fs::read(target_dir.join(target).join("release/axloader.efi"))?;
     // Distinct, valid PE files represent the old and the first new loader.
     let mut old_loader = loader.clone();
@@ -279,7 +437,7 @@ pub(super) async fn test_direct_ota(
         target_dir
             .join(target)
             .join("release/axloader-launcher.efi"),
-        root.join("BOOTX64.EFI"),
+        root.join(profile.boot_filename),
     )?;
     let output = Command::new("python3")
         .arg(workspace_root.join("bootloader/axloader/scripts/init-ota-state.py"))
@@ -301,21 +459,25 @@ pub(super) async fn test_direct_ota(
     }
 
     let disk = root.join("esp.img");
-    create_esp_image(root, &disk)?;
+    create_esp_image(profile, root, &disk)?;
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(35))
         .build()?;
     if server_only {
-        let qemu = start_qemu(&firmware, root, port)?;
-        status(&client, port, root, |value| value["running_slot"] == "a").await?;
-        server_assignment(&client, port, root, &loader).await?;
+        let qemu = start_qemu(profile, &firmware, root, port)?;
+        status(&qemu, &client, port, root, |value| {
+            value["running_slot"] == "a"
+        })
+        .await?;
+        server_assignment(&qemu, &client, port, root, &loader).await?;
         drop(qemu);
         println!("axloader OTA QEMU: assigned v6 upload and confirmation passed");
         return Ok(());
     }
-    let mut qemu = start_qemu(&firmware, root, port)?;
-    let status0 = status(&client, port, root, |value| {
+    let mut qemu = start_qemu(profile, &firmware, root, port)?;
+    let status0 = status(&qemu, &client, port, root, |value| {
         value["pending_update_id"] == initial_id && value["trial"] == true
     })
     .await?;
@@ -334,7 +496,7 @@ pub(super) async fn test_direct_ota(
         "first trial confirmation failed: {}",
         confirmed.status()
     );
-    status(&client, port, root, |value| {
+    status(&qemu, &client, port, root, |value| {
         value["active_slot"] == "b" && value["pending_update_id"].is_null()
     })
     .await?;
@@ -383,16 +545,24 @@ pub(super) async fn test_direct_ota(
         },
     ];
     for scenario in scenarios {
-        status(&client, port, root, |value| value["running_slot"] == "b").await?;
-        boot_smoke(&client, port, root, scenario).await?;
+        status(&qemu, &client, port, root, |value| {
+            value["running_slot"] == "b"
+        })
+        .await?;
+        boot_smoke(profile, &qemu, &client, port, root, scenario).await?;
         drop(qemu);
-        qemu = start_qemu(&firmware, root, port)?;
+        qemu = start_qemu(profile, &firmware, root, port)?;
     }
     drop(qemu);
     write_esp_file(&disk, "EFI/BOOT/initramfs.cpio", &host_initramfs)?;
-    qemu = start_qemu(&firmware, root, port)?;
-    status(&client, port, root, |value| value["running_slot"] == "b").await?;
+    qemu = start_qemu(profile, &firmware, root, port)?;
+    status(&qemu, &client, port, root, |value| {
+        value["running_slot"] == "b"
+    })
+    .await?;
     boot_smoke(
+        profile,
+        &qemu,
         &client,
         port,
         root,
@@ -408,10 +578,15 @@ pub(super) async fn test_direct_ota(
     .await?;
     drop(qemu);
     if let Some(payloads) = os_payloads {
-        payloads.test(&client, &firmware, root, port).await?;
+        payloads
+            .test(profile, &client, &firmware, root, port)
+            .await?;
     }
-    qemu = start_qemu(&firmware, root, port)?;
-    status(&client, port, root, |value| value["running_slot"] == "b").await?;
+    qemu = start_qemu(profile, &firmware, root, port)?;
+    status(&qemu, &client, port, root, |value| {
+        value["running_slot"] == "b"
+    })
+    .await?;
     println!("axloader OTA QEMU: checking failed uploads on stable B");
 
     let digest = format!("{:x}", Sha256::digest(&old_loader));
@@ -432,7 +607,7 @@ pub(super) async fn test_direct_ota(
     )?;
     short.shutdown(std::net::Shutdown::Write)?;
     drop(short);
-    status(&client, port, root, |value| {
+    status(&qemu, &client, port, root, |value| {
         value["active_slot"] == "b" && value["pending_update_id"].is_null()
     })
     .await?;
@@ -447,14 +622,14 @@ pub(super) async fn test_direct_ota(
         .as_str()
         .context("missing update ID")?
         .to_owned();
-    status(&client, port, root, |value| {
+    status(&qemu, &client, port, root, |value| {
         value["trial"] == true && value["running_slot"] == "a" && value["pending_update_id"] == id
     })
     .await?;
     // A killed trial retains its attempted record on the *same* FAT image.
     drop(qemu);
-    qemu = start_qemu(&firmware, root, port)?;
-    let rolled = status(&client, port, root, |value| {
+    qemu = start_qemu(profile, &firmware, root, port)?;
+    let rolled = status(&qemu, &client, port, root, |value| {
         value["last_outcome"] == "rolled_back" && value["running_slot"] == "b"
     })
     .await?;
@@ -472,7 +647,7 @@ pub(super) async fn test_direct_ota(
         .as_str()
         .context("missing second ID")?
         .to_owned();
-    status(&client, port, root, |value| {
+    status(&qemu, &client, port, root, |value| {
         value["pending_update_id"] == id && value["running_slot"] == "a"
     })
     .await?;
@@ -487,8 +662,8 @@ pub(super) async fn test_direct_ota(
         "second confirmation failed"
     );
     drop(qemu);
-    let qemu = start_qemu(&firmware, root, port)?;
-    let stable = status(&client, port, root, |value| {
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    let stable = status(&qemu, &client, port, root, |value| {
         value["active_slot"] == "a"
             && value["running_slot"] == "a"
             && value["pending_update_id"].is_null()
@@ -506,10 +681,11 @@ pub(super) async fn test_direct_ota(
     // A complete inactive-slot file without a new record must not be started.
     let mut uncommitted = loader.clone();
     uncommitted.push(0x42);
+    println!("axloader OTA QEMU: checking complete but uncommitted inactive slot");
     fs::write(root.join("UNCOMMITTED.EFI"), &uncommitted)?;
     write_esp_file(&disk, "EFI/AXLOADER/B.EFI", &uncommitted)?;
-    let qemu = start_qemu(&firmware, root, port)?;
-    status(&client, port, root, |value| {
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    status(&qemu, &client, port, root, |value| {
         value["running_slot"] == "a"
             && value["active_slot"] == "a"
             && value["pending_update_id"].is_null()
@@ -518,9 +694,11 @@ pub(super) async fn test_direct_ota(
     drop(qemu);
     // A valid pending record pointing at a file which cannot be loaded must
     // be committed as a failed trial before returning to the stable slot.
-    stage_unloadable_trial(root, &disk)?;
-    let qemu = start_qemu(&firmware, root, port)?;
-    let failed = status(&client, port, root, |value| {
+    println!("axloader OTA QEMU: checking unloadable pending trial");
+    let unloadable_loader = unloadable_slot_image(&loader)?;
+    stage_unloadable_trial(root, &disk, &unloadable_loader)?;
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    let failed = status(&qemu, &client, port, root, |value| {
         value["running_slot"] == "a"
             && value["active_slot"] == "a"
             && value["pending_update_id"].is_null()
@@ -532,15 +710,65 @@ pub(super) async fn test_direct_ota(
         "unloadable EFI trial did not record the cause: {failed}"
     );
     drop(qemu);
-    let qemu = start_qemu(&firmware, root, port)?;
-    status(&client, port, root, |value| value["running_slot"] == "a").await?;
-    server_assignment(&client, port, root, &loader).await?;
+    println!("axloader OTA QEMU: checking corrupt-header pending trial");
+    let corrupt_header = vec![0x55; 4096];
+    stage_unloadable_trial(root, &disk, &corrupt_header)?;
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    let failed = status(&qemu, &client, port, root, |value| {
+        value["running_slot"] == "a"
+            && value["active_slot"] == "a"
+            && value["pending_update_id"].is_null()
+            && value["last_outcome"] == "failed"
+    })
+    .await?;
+    ensure!(
+        failed["last_failure_reason"] == "trial_image_load_or_digest_failed",
+        "corrupt-header EFI trial did not record the cause: {failed}"
+    );
+    drop(qemu);
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    status(&qemu, &client, port, root, |value| {
+        value["running_slot"] == "a"
+    })
+    .await?;
+    server_assignment(&qemu, &client, port, root, &loader).await?;
     drop(qemu);
     println!("axloader OTA QEMU: assigned v6 confirmation and subsequent FAT boot passed");
     Ok(())
 }
 
-fn create_esp_image(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
+fn prepare_firmware(
+    profile: QemuProfile,
+    source: &OvmfFirmware,
+    root: &Path,
+) -> anyhow::Result<OvmfFirmware> {
+    let flash_size = matches!(profile.firmware_arch, Arch::LoongArch64).then_some(16 * 1024 * 1024);
+    let code = if flash_size.is_some() {
+        let destination = root.join("code.fd");
+        fs::copy(source.code(), &destination)?;
+        pad_flash(&destination, flash_size)?;
+        destination
+    } else {
+        source.code().to_path_buf()
+    };
+    let vars = root.join("vars.fd");
+    fs::copy(source.vars(), &vars)?;
+    pad_flash(&vars, flash_size)?;
+    OvmfFirmware::from_paths(code, vars)
+}
+
+fn pad_flash(path: &Path, target_size: Option<usize>) -> anyhow::Result<()> {
+    let Some(target_size) = target_size else {
+        return Ok(());
+    };
+    let file = OpenOptions::new().write(true).open(path)?;
+    if file.metadata()?.len() < target_size as u64 {
+        file.set_len(target_size as u64)?;
+    }
+    Ok(())
+}
+
+fn create_esp_image(profile: QemuProfile, root: &Path, disk_path: &Path) -> anyhow::Result<()> {
     const ESP_SIZE: u64 = 128 * 1024 * 1024;
     let mut disk = OpenOptions::new()
         .create(true)
@@ -567,8 +795,8 @@ fn create_esp_image(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
         root_dir.create_dir("EFI/AXLOADER")?;
         copy_into_fat(
             &root_dir,
-            "EFI/BOOT/BOOTX64.EFI",
-            &fs::read(root.join("BOOTX64.EFI"))?,
+            &format!("EFI/BOOT/{}", profile.boot_filename),
+            &fs::read(root.join(profile.boot_filename))?,
         )?;
         for name in ["A.EFI", "B.EFI", "STATE0.BIN", "STATE1.BIN"] {
             copy_into_fat(
@@ -617,9 +845,34 @@ fn read_esp_file(disk_path: &Path, path: &str) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn stage_unloadable_trial(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
-    let invalid = vec![0x55; 4096];
-    write_esp_file(disk_path, "EFI/AXLOADER/B.EFI", &invalid)?;
+fn unloadable_slot_image(loader: &[u8]) -> anyhow::Result<Vec<u8>> {
+    ensure!(
+        loader.len() >= 0x40 && &loader[..2] == b"MZ",
+        "invalid loader image"
+    );
+    let pe_offset =
+        usize::try_from(read_le_u32(loader, 0x3c)?).context("loader PE offset overflows")?;
+    let end = pe_offset
+        .checked_add(184)
+        .context("loader PE header range overflows")?;
+    ensure!(
+        pe_offset.checked_add(4).is_some_and(|start| {
+            start <= loader.len() && &loader[pe_offset..start] == b"PE\0\0"
+        }) && end <= loader.len(),
+        "loader does not contain a complete slot-validation header"
+    );
+    Ok(loader[..end].to_vec())
+}
+
+fn read_le_u32(bytes: &[u8], offset: usize) -> anyhow::Result<u32> {
+    let value = bytes
+        .get(offset..offset.checked_add(4).context("field offset overflows")?)
+        .context("truncated u32 field")?;
+    Ok(u32::from_le_bytes(value.try_into().unwrap()))
+}
+
+fn stage_unloadable_trial(root: &Path, disk_path: &Path, invalid: &[u8]) -> anyhow::Result<()> {
+    write_esp_file(disk_path, "EFI/AXLOADER/B.EFI", invalid)?;
     let records = [root.join("STATE0.BIN"), root.join("STATE1.BIN")];
     for (index, path) in records.iter().enumerate() {
         fs::write(
@@ -643,7 +896,7 @@ fn stage_unloadable_trial(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
     next[17] = 1;
     next[18] = 0;
     next[19] = 0;
-    next[52..84].copy_from_slice(&Sha256::digest(&invalid));
+    next[52..84].copy_from_slice(&Sha256::digest(invalid));
     next[84..120].copy_from_slice(b"01234567-89ab-cdef-0123-456789abcdef");
     next[120] = 0;
     let checksum = Sha256::digest(&next[..224]);
@@ -659,6 +912,7 @@ fn stage_unloadable_trial(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
 }
 
 async fn server_assignment(
+    qemu: &QemuChild,
     client: &reqwest::Client,
     port: u16,
     root: &Path,
@@ -680,7 +934,7 @@ async fn server_assignment(
         "assigned upload failed: {}",
         response.status()
     );
-    status(client, port, root, |value| {
+    status(qemu, client, port, root, |value| {
         value["pending_update_id"] == ID && value["running_slot"] == "b"
     })
     .await?;
@@ -696,7 +950,7 @@ async fn server_assignment(
         "assigned confirmation failed: {}",
         response.status()
     );
-    status(client, port, root, |value| {
+    status(qemu, client, port, root, |value| {
         value["running_slot"] == "b" && value["active_slot"] == "b" && value["source"] == "server"
     })
     .await?;
@@ -704,6 +958,8 @@ async fn server_assignment(
 }
 
 async fn boot_smoke(
+    profile: QemuProfile,
+    qemu: &QemuChild,
     client: &reqwest::Client,
     port: u16,
     root: &Path,
@@ -715,10 +971,10 @@ async fn boot_smoke(
     let boot_id = format!("qemu-v6-{}", scenario.name);
     let mut manifest = serde_json::json!({
         "boot_id": boot_id,
-        "arch": "x86_64",
+        "arch": profile.manifest_arch,
         "image_format": "elf64",
         "kernel": {"size": kernel.len(), "sha256": format!("{:x}", Sha256::digest(kernel))},
-        "entry_symbol": "__x86_64_efi_pe_entry",
+        "entry_symbol": profile.entry_symbol,
     });
     if let Some(initramfs) = scenario.initramfs {
         manifest["initramfs"] = serde_json::json!({
@@ -1010,6 +1266,7 @@ async fn boot_smoke(
             println!("axloader QEMU: {} kernel output passed", scenario.name);
             return Ok(());
         }
+        qemu.ensure_running(root)?;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     bail!(

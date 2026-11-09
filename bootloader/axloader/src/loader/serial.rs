@@ -32,30 +32,53 @@ pub struct SerialBeacon {
 }
 impl SerialBeacon {
     pub fn new(serial_id: alloc::string::String) -> Self {
-        let (handle, parameters, force_parameters, error) = match select_console() {
-            Ok(handle) => match parameters(handle) {
+        let selection = select_console();
+        crate::logln!(
+            "loader_serial_probe: handles={} conout_matches={} selected={}",
+            selection.handles,
+            selection.conout_matches,
+            u8::from(selection.handle.is_some())
+        );
+        let (handle, parameters, force_parameters, error) = match selection.handle {
+            Some(handle) => match parameters(handle) {
                 Ok((parameters, warning)) => {
                     (Some(handle), Some(parameters), warning.is_some(), warning)
                 }
                 Err(error) => (
                     Some(handle),
-                    Some(default_serial_parameters()),
-                    true,
-                    Some(format!(
-                        "UART parameters unavailable: {error:?}; using defaults 115200 8N1"
-                    )),
+                    None,
+                    false,
+                    Some(format!("UART parameters unavailable: {error:?}")),
                 ),
             },
-            Err(error) => (
-                None,
-                None,
-                false,
-                Some(format!("UART selection failed: {error:?}")),
-            ),
+            None => (None, None, false, selection.error),
         };
-        let timer = timer().ok();
-        let ready = handle.is_some() && timer.is_some();
+        let (timer, timer_error) = match timer() {
+            Ok(timer) => (Some(timer), None),
+            Err(error) => (None, Some(format!("UART timer unavailable: {error:?}"))),
+        };
+        let ready = handle.is_some() && timer.is_some() && parameters.is_some();
+        let error = error.or(timer_error);
         let startup_error = error.clone();
+        if ready {
+            let parameters = parameters.expect("ready serial has parameters");
+            crate::logln!(
+                "loader_serial_ready: serial_id={serial_id} baud={} data={} parity={} stop={} \
+                 flow={}",
+                parameters.baud_rate,
+                parameters.data_bits,
+                parity_name(parameters.parity),
+                stop_bits_name(parameters.stop_bits),
+                flow_control_name(parameters.flow_control)
+            );
+        } else {
+            crate::logln!(
+                "loader_serial_unavailable: handles={} conout_matches={} reason={}",
+                selection.handles,
+                selection.conout_matches,
+                error.as_deref().unwrap_or("UART identity unavailable")
+            );
+        }
         let frame = format!("\r\nAXLOADER-SERIAL/1 {serial_id}\r\n").into_bytes();
         Self {
             handle,
@@ -75,7 +98,7 @@ impl SerialBeacon {
         }
     }
     pub fn progress(&mut self) {
-        if self.state.borrow().binding.is_some() {
+        if self.state.borrow().binding.is_some() || self.state.borrow().parameters.is_none() {
             self.offset = 0;
             return;
         }
@@ -95,12 +118,11 @@ impl SerialBeacon {
             return;
         };
         let end = (self.offset + 4).min(self.frame.len());
-        let parameters = self.force_parameters.then(|| {
-            self.state
-                .borrow()
-                .parameters
-                .unwrap_or_else(default_serial_parameters)
-        });
+        let parameters = if self.force_parameters {
+            self.state.borrow().parameters
+        } else {
+            None
+        };
         match write_chunk(handle, &self.frame[self.offset..end], parameters) {
             Ok(size) => {
                 // A timeout reports firmware-written bytes; treat that count as
@@ -238,13 +260,31 @@ fn write_chunk(
         Err(error) => Err(error.to_err_without_payload()),
     }
 }
-fn select_console() -> uefi::Result<Handle> {
-    let handles = boot::find_handles::<Serial>()?;
+struct SerialSelection {
+    handle: Option<Handle>,
+    handles: usize,
+    conout_matches: usize,
+    error: Option<String>,
+}
+
+fn select_console() -> SerialSelection {
+    let handles = match boot::find_handles::<Serial>() {
+        Ok(handles) => handles,
+        Err(error) => {
+            return SerialSelection {
+                handle: None,
+                handles: 0,
+                conout_matches: 0,
+                error: Some(format!("SerialIo discovery failed: {error:?}")),
+            };
+        }
+    };
     let console =
         runtime::get_variable_boxed(uefi::cstr16!("ConOut"), &VariableVendor::GLOBAL_VARIABLE)
             .ok()
             .map(|(console, _)| console);
     let mut selected = None;
+    let mut conout_matches = 0;
     if let Some(console) = console.as_deref() {
         for handle in &handles {
             // SAFETY: DevicePath is borrowed only inside this firmware-call scope.
@@ -253,29 +293,61 @@ fn select_console() -> uefi::Result<Handle> {
                 continue;
             };
             if console_matches(console, path.as_bytes()) {
-                if selected.is_some() {
-                    return Err(Status::UNSUPPORTED.into());
-                }
+                conout_matches += 1;
                 selected = Some(*handle);
             }
         }
     }
-    if let Some(selected) = selected {
-        return Ok(selected);
-    }
-    match handles.as_slice() {
-        [handle] => Ok(*handle),
-        [] => Err(Status::NOT_FOUND.into()),
-        _ => Err(Status::UNSUPPORTED.into()),
+    let handle_count = handles.len();
+    let (handle, error) = if conout_matches > 1 {
+        (
+            None,
+            Some("UART selection failed: multiple ConOut matches".into()),
+        )
+    } else if selected.is_some() {
+        (selected, None)
+    } else {
+        match handles.as_slice() {
+            [handle] => (Some(*handle), None),
+            [] => (
+                None,
+                Some(format!("UART selection failed: {:?}", Status::NOT_FOUND)),
+            ),
+            _ => (
+                None,
+                Some(format!("UART selection failed: {:?}", Status::UNSUPPORTED)),
+            ),
+        }
+    };
+    SerialSelection {
+        handle,
+        handles: handle_count,
+        conout_matches,
+        error,
     }
 }
 
-fn default_serial_parameters() -> SerialParameters {
-    SerialParameters {
-        baud_rate: 115_200,
-        data_bits: 8,
-        parity: SerialParity::None,
-        stop_bits: SerialStopBits::One,
-        flow_control: SerialFlowControl::None,
+fn parity_name(parity: SerialParity) -> &'static str {
+    match parity {
+        SerialParity::None => "none",
+        SerialParity::Odd => "odd",
+        SerialParity::Even => "even",
+        SerialParity::Mark => "mark",
+        SerialParity::Space => "space",
+    }
+}
+
+fn stop_bits_name(stop_bits: SerialStopBits) -> &'static str {
+    match stop_bits {
+        SerialStopBits::One => "1",
+        SerialStopBits::OnePointFive => "1.5",
+        SerialStopBits::Two => "2",
+    }
+}
+
+fn flow_control_name(flow_control: SerialFlowControl) -> &'static str {
+    match flow_control {
+        SerialFlowControl::None => "none",
+        SerialFlowControl::RtsCts => "rts-cts",
     }
 }

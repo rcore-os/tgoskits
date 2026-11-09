@@ -479,17 +479,53 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 ### axloader UEFI 网络启动
 
 - axloader v6 控制面只使用固件提供的网络协议。`SimpleNetwork`、`Ip4Config2`、`UDP4 Service Binding` 和 `TCP4 Service Binding` 必须来自同一个 UEFI 控制器；广播、MAC 和 HTTP 监听分别来自不同网卡不算可用实现。
-- `ConOut` 输出诊断；实际控制台对应的唯一 `SerialIo` 以受控非独占短借用输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧并上报生效线参数。单个线参数无法读取时使用 UEFI 常见的 115200/8N1、无硬件流控并记录诊断；无法唯一选择 UART 仍失败。不能从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或启动命令。借用限定 `TPL_CALLBACK`，写入有界且恢复原超时，guard 先于 TPL guard 释放。目标映像接管后，串口作为交互终端。
-- x86_64 UEFI 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。每次上电还生成新的 `serial_id`；UART 匹配后网络 continue 才允许带 `X-Serial-Binding` 启动，直连须显式 direct continue。缺少 RNG 时使用平台单调计数，不能仅用秒级 RTC 和栈地址生成身份。LoongArch axstd EFI 的无熵回退见下方专节，并使用持久化 OTA 代次。
+- `ConOut` 输出诊断；实际控制台对应的唯一 `SerialIo` 以受控非独占短借用输出 `AXLOADER-SERIAL/1 <serial_id>` 身份帧并上报生效线参数。波特率、数据位、校验或停止位无效时拒绝自动绑定；读取流控位失败沿用既有无硬件流控策略并记录诊断。无法唯一选择 UART 仍失败，不能伪造 UART 存在。不能从 `ConIn` 或 `SerialIo` 解析 READY/BOOT、AT 命令或启动命令。借用限定 `TPL_CALLBACK`，写入有界且恢复原超时，guard 先于 TPL guard 释放。目标映像接管后，串口作为交互终端。
+- 原生 x86_64/LoongArch UEFI 每次固件启动生成新的 `boot_epoch`，在 UDP 2998 单向广播，并在 TCP4 2999 提供设备 HTTP 接口；即使 ostool-server 不在线，直连调用方仍可上传、确认和启动。修改请求携带 `X-Boot-Epoch`，旧代次必须拒绝。每次上电还生成新的 `serial_id`；UART 匹配后网络 continue 才允许带 `X-Serial-Binding` 启动，直连须显式 direct continue。缺少 RNG 时使用平台单调计数，不能仅用秒级 RTC 和栈地址生成身份。
 - QEMU smoke 使用真实 UEFI TCP4 接收启动及 OTA 文件，SLiRP `hostfwd` 将宿主空闲端口指向客户机 2999。ostool 的隔离服务端联调用私有 PTY 原样转发 OVMF UART，从真实 HTTP 状态取得启动身份，再构造公告调用同一设备协调入口；测试地址仅在夹具内映射到 `hostfwd`。该夹具不证明生产 UDP 路由或虚拟板卡 netns 路径，仍须独立联调。
-- UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。v6 只接受 `__x86_64_efi_pe_entry`；cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 Linux EFI `LoadFile2` 提供者交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，命令行来源优先级是 EFI LoadOptions、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
+- UEFI HTTP 修改请求明确携带准确的 `Content-Length`；核对内核与 initramfs 的长度和 SHA-256，并在 OTA 待试确认前拒绝启动。v6 按当前目标验证 ELF machine 和入口：x86_64 使用 `__x86_64_efi_pe_entry`，原生 LoongArch 使用 `efi_pe_entry`；cmdline 以 UCS-2 EFI LoadOptions 交接，可选 initramfs 以 Linux EFI `LoadFile2` 提供者交接。someboot 在退出 Boot Services 前从实际 image handle 复制 LoadOptions，命令行来源优先级是 EFI LoadOptions、ESP `cmdline.txt`、FDT `/chosen/bootargs`、编译期命令行。
 - 实体板卡发布通过 `context::board_elf::BoardElf` 持有独立的 ELF 传输副本，使用固定 Rust 工具链 `llvm-tools` 组件中的 `llvm-objcopy --strip-debug` 去掉 DWARF，防止 StarryOS 的调试 ELF 超过已部署 ostool-server 的 64 MiB 内核上传上限。原始 ELF、AXBT/AXKS 保留用于调试；传输副本必须保留符号表、EFI 入口和全部装载段，不能使用 `--strip-all`。临时 ELF/BIN 由板卡运行结束后统一清理。ASUS NUC15CRH 沿用板卡配置中的 `RDRIVE_ACPI_LOAD_AML=0`；Linux 客体测试先执行 `.github/ci/checks/axvisor.toml` 中的两条镜像准备命令，缺少构建机镜像时不能将目标内核的路径错误归因于 axloader。
 - `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 必须上传真实 ArceOS UEFI ELF，跨同一 FAT 镜像的独立启动验证无附加字段、仅 cmdline、仅 initramfs、两者都有以及 ESP initramfs 回退；成功证据来自内核的 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED`，不能只停在 `ready_to_handoff`。
 - 同一入口的 `ota_qemu::payloads::OsPayloads` 构建 StarryOS 和 AxVisor，再复用 HTTP 事务上传真实 ELF 与归档。StarryOS 用户态和 AxVisor Linux 客体须在内存根运行 `axloader-smoke.sh`、检查参数及文件写读，输出各自完整成功行；不能把 cmdline 回显、host banner 或 VM 创建日志当作客体执行证据。AxVisor 用例等待管理 shell 后执行 `vm console 1`，要求嵌套 KVM（VMX/SVM）、2 vCPU、2 GiB、`host,-la57`；不改为 TCG 或跳过客体来掩盖缺失能力。证据保存在 `target/axbuild/axloader/qemu/x86-*` 的独立 ESP、VARS、串口和 stderr。
 - 三系统夹具通过 `AXBUILD_NO_SNAPSHOT=1` 子进程调用 OS 的 `cargo xtask` 构建，检查 `.starry.toml`/`.axvisor.toml` 构建前后字节不变。直接调用保存快照的 CLI 路径会改变用户后续默认选择；不要在多线程父进程中设置全局环境来关闭持久化。
-- 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，再调用 `ExitBootServices`；退出后不能再调用固件网络或控制台服务。
+- 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，然后在 Boot Services 存活时通过 someboot 固件交接调用目标 EFI 入口。loader 不调用 `ExitBootServices`；目标复制 LoadOptions/initramfs 并自行退出服务，再初始化 ArceOS。退出后不能再调用固件网络或控制台服务。
+- 原生 launcher 和 loader 在 helpers 初始化后、OTA/网络/SerialIO 等待前关闭 BDS watchdog：timeout 为 0，`WatchdogCode` 使用应用区合法值 `>= 0x10000`；关闭失败须诊断并返回错误。`V00011003` 来自 `WatchdogTimerDxe`，不能直接判为 CPU 非法指令。
+- TCP4 `CloseToken` 不能传给 `Cancel()`。graceful close 使用有界轮询，超时后以 `Configure(NULL)` 中止 pending Close 并重置实例。Accept、receive/transmit 的合法 Cancel 同样须有界等待；无法确认 token 已出队时冷复位，不能释放固件仍可能引用的 token 或 fragment。一次性 `handoff_stage` 日志区分 HTTP close、listener close、资源关闭和目标入口。
 
-#### LoongArch ArceOS EFI
+#### LoongArch 原生 UEFI axloader
+
+- 构建入口是 `cargo xtask axloader build --target loongarch64-unknown-uefi --release`，
+  使用自定义 `os=uefi`、ELF/PIC、LP64 soft-float 目标；最终生成 Loong PE32+
+  loader 和 launcher。裸入口先清 BSS、自重定位再进入 UEFI Rust 运行逻辑。
+  loader 不链接 ArceOS、ax-net 或 YT6801 驱动；目标 ArceOS 在 EFI 交接后独立启动。
+- U 盘安装复用 `build-install-efi.sh --target loongarch64-unknown-uefi --fresh`，
+  固件入口为 `EFI/BOOT/BOOTLOONGARCH64.EFI`，与 x86 共用 `EFI/AXLOADER`
+  A/B 和持久状态布局。不要把 legacy `.bin` 文件当作原生 EFI 产物。
+- 原生回归入口为 `cargo xtask axloader test qemu --target loongarch64-unknown-uefi`，
+  使用 `virt`、`la464`、Loong UEFI CODE/VARS 和真实 HTTP ELF 交接。
+  必须观察目标 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`；
+  HTTP 成功或 `ready_to_handoff` 不能代替目标执行。SLiRP `hostfwd` 只证明 HTTP，
+  真实 UDP 广播发现需要隔离 TAP 或实体板卡。
+- LoongArch 回归使用 ArceOS payload 验证目标执行、命令行、initramfs 和 OTA；
+  本轮实机范围为原生 UEFI loader 直接启动 ArceOS Hello，不启动 AxVisor。
+  QEMU 网络固件须具备 RNG 和 Hash2 生产者，可用成对的
+  `--firmware-code`/`--firmware-vars` 选择隔离构建的测试固件。
+- A/B 回归分别覆盖坏头校验失败和有效头截断后的 `LoadImage` 失败。两类待试槽
+  都须提交失败结果、清理 pending，并校验稳定槽后回退；不能让新增 PE 校验在
+  到达回退分支前直接退出 launcher。
+- 固件须暴露同一控制器上的 SNP、IP4Config2、UDP4/TCP4 Service Binding。
+  只有固件网络启动菜单或 SNP 不证明完整协议可用；用 `loader_net_controller`
+  的实际状态区分未连接协议和缺少固件网络栈。SerialIO 缺失时明确诊断，不能
+  回退到自有网卡/串口驱动并称其为原生 UEFI 路径。
+- 实机入口为 `cargo xtask arceos test board --board loongson-3a6000-ll --test-case http-boot`。
+  最小 Hello 使用单核、`RDRIVE_ACPI_LOAD_AML=0`、上游 ACPI 和 earlycon；
+  不启用 PCI、网络、文件系统或虚拟化。应核对自动串口绑定、目标命令行和
+  `Hello, world!`，不能把 `ready_to_handoff` 计作目标启动成功。
+
+#### LoongArch EFI 目标启动与通用交接
+
+- PE 数据段的文件区间须满足 FileAlignment，并实际包含全部 RawData 字节。
+- 目标退出 Boot Services 后的虚拟地址图不能假设只有 32 项；保留 descriptor stride、version 和尾随字节，避免早期堆分配。
+- `Exiting UEFI boot services...` 是视频 ConOut 关闭前的最后输出。3A6000 ArceOS 板测通过 HTTP job cmdline 传入 `earlycon=ns16550,mmio,0x1fe001e0`，让目标早期日志进入同一 UART；不能依赖 USB loader 的 cmdline 自动继承，也不猜测 console 或 guest selector。
 
 - 公共启动资源位于 `someboot::boot_resources`，交接描述、v4 协议和应用元数据位于
   `someboot::handoff`。`boot-resources` 可独立于交接、网络和 OTA 使用；
@@ -755,10 +791,40 @@ U-Boot 回显命令在中途缺字、尾部丢失或重试内容交错时，先�
 Axvisor Linux guest 的 `ramdisk_path`。FDT `linux,initrd-start/end` 必须在
 页分配器启动前预留，按页扩展的范围也必须位于 RAM。UEFI 与 FDT 同时存在时，
 UEFI 内存图负责 RAM 分类，FDT 只补充保留区；LoongArch UEFI 入口不能再次清零
-已保存交接状态的 `.bss`。可回收归档属于物理 RAM，但在解包完成前仍须排除在
+已保存交接状态的 `.bss`。若要对固件 PE zero-fill 做兜底，必须在最早的
+LoongArch EFI PE 裸入口、任何 Rust prologue 和重定位之前完成；用 PC-relative
+边界和普通 store，保留固件参数与返回栈，不能在 `kernel_entry` 的 EFI 分支
+再次清零。需要验证 zero-fill 时，可以把 PE 尾部扩成实际
+非零 raw 数据作 QEMU 对照，但该实验不单独证明真实固件违反了清零约定。
+可回收归档属于物理 RAM，但在解包完成前仍须排除在
 启动分配器之外。UEFI/HTTP 镜像必须在 `ExitBootServices` 前完成读取和校验。
 UEFI 配置表和 ESP cmdline 含内部 NUL 时必须拒绝，不能静默截断启动参数。
 内置归档通过同一解包器，但不能代替外部传输验证。
+若阶段标记已确认内存图读取完成、但 KImage 登记失败，先打印实际映像末尾、
+物理占用范围与页表映射范围。物理占用只能按实际末尾扩到必要页，不能按
+2 MiB 映射粒度扩大后覆盖相邻 ACPI/Reserved/BootData；`kimage_range()`
+与 `kimage_mapping_range()` 的消费者必须区分占用、回收、handoff 和页表用途。
+合成图应覆盖非 2 MiB 对齐的映像及末尾紧邻的保留页、外部归档，并证明旧扩张
+会 Conflict、新占用可插入且保留项不变。实机 KImage 错误先用不经过 stdio、
+堆或 CPU-local 的 earlycon 输出 Conflict/Capacity 及区间，再终止；std panic
+自身可能发生次生异常并掩盖原始错误。
+LoongArch 在 `Trap vector at` 之后、第二次内存图打印前停住时，继续检查
+`memory_map_setup()` 的 debug UART Mmio 登记。真实固件可能将 UART 整页包在
+大块 Reserved 中，而 QEMU 单独提供 Mmio；直接 `merge_add(...).unwrap()`
+会在 Reserved/Mmio 类型冲突时 panic。LoongArch UART 使用固定 DMW I/O
+映射、串口参数来自 earlycon 时，完整覆盖该页的 Reserved 已能保证物理预留；
+不要为重复登记改写整片保留区。只接受完整 Reserved 覆盖，不可笼统忽略
+BootData/KImage 或部分覆盖冲突。需要独立页表 MMIO 映射的其他架构必须
+保留其原有登记语义。
+LoongArch 的 AML 初始化失败时，保留原始错误并离线提取 DSDT/SSDT，
+通过真实解释器入口复现；不要把 tables-only 模式当成无损替代，也不要永久保留
+全表转储框架。解释器缺陷应在上游 ACPI 仓库修复，项目只保留平台适配。
+UEFI 实机在 `VM Load Offset` 后、`Memory Map` 前异常时，也要检查启动内存图
+排序是否间接申请了全局堆。`sort_by_key` 的稳定排序可能在描述符较多时分配
+scratch buffer；此时全局堆尚未初始化，应使用不分配堆的 `sort_unstable_by_key`。
+检查 `early_init()` 与 `print_memory_map()` 两处，QEMU 中较短的内存图可能不会
+触发分配分支。panic 后的日志递归可能进一步覆盖启动栈和 vtable，必须用精确
+EFI 对应 ELF 定位原始阶段，不能把最终 callback 异常直接当作首因。
 FIT 或 FDT initramfs 在 `VM Load` 后、`Memory Map` 前停住时，核对
 `boot_payload::publish()` 的实际机器码。该发布只由启动 CPU 在次处理器和
 消费者启动前执行，必须使用普通 load/store；AArch64 在 MMU 开启前不能

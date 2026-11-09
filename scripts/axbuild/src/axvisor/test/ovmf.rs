@@ -182,7 +182,7 @@ mod tests {
         let code = vec![0x5a; OVMF_SIZE - vars.len()];
         fs::write(&code_path, &code).unwrap();
         fs::write(&vars_path, &vars).unwrap();
-        let firmware = OvmfFirmware::from_paths(code_path.clone(), vars_path.clone());
+        let firmware = OvmfFirmware::from_paths(code_path.clone(), vars_path.clone()).unwrap();
 
         let evidence = prepare_x86_ovmf_from_firmware(&output_path, &firmware).unwrap();
         let image = fs::read(&output_path).unwrap();

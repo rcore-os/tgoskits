@@ -21,7 +21,7 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 | `GET /api/v1/status` | 读取启动代次、MAC、实际 UART 参数、绑定/错误、硬件、启动事务与 OTA 状态 |
 | `POST /api/v1/serial/continue` | 当前 epoch、serial_id、binding_id、bound/direct；相同请求幂等 |
 | `DELETE /api/v1/serial/bindings/{binding_id}` | 撤销当前匹配令牌，恢复身份帧 |
-| `POST /api/v1/boot/jobs` | 提交启动 ID、x86_64 ELF64、内核和可选归档的长度、SHA-256、命令行；入口固定为 `__x86_64_efi_pe_entry` |
+| `POST /api/v1/boot/jobs` | 提交启动 ID、当前架构 ELF64、内核和可选归档的长度、SHA-256、命令行；入口必须匹配本机目标：x86_64 使用 `__x86_64_efi_pe_entry`，LoongArch64 使用 `efi_pe_entry` |
 | `GET /api/v1/boot/jobs/{id}` | 查询已接收文件及阶段 |
 | `PUT /api/v1/boot/jobs/{id}/kernel` | 定长上传内核，要求匹配 `X-Image-Sha256` |
 | `PUT /api/v1/boot/jobs/{id}/initramfs` | 定长上传可选归档，要求匹配摘要 |
@@ -42,6 +42,12 @@ ostool-server 配套使用，板卡 ESP/U 盘中的 `axloader.efi` 也要更新�
 `BootServer::create()` 允许同 ID、同清单重试，其他并发事务返回冲突。只有
 文件核对、`elf_loader::load_elf()` 和 `someboot::handoff::PreparedHandoff::prepare()` 成功后，
 才回复 `ready_to_handoff`、释放 TCP/UDP 对象并进入内核。
+HTTP `CloseToken` 只做有界等待；超时后用 `Configure(NULL)` 按 Tcp4 reset 契约中止
+并重置实例，不能把 Close token 传给 `Cancel()`。监听 Accept token 可在有界等待中
+使用合法 `Cancel()`，之后同样以 `Configure(NULL)` 完成 reset。固件无法确认 token
+已出队时 loader 冷复位，不释放可能仍被固件引用的 token；receive/transmit 超时取消
+也遵循同一有界 reset 契约。交接路径一次性输出
+`handoff_stage: http_close_start/http_closed/listener_closed/resources_closed/target_enter`。
 
 `cmdline` 与 `initramfs` 相互独立且都可省略。axloader 把命令行编码成带 NUL
 结尾的 UCS-2，临时安装到自身 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；没有
@@ -77,17 +83,15 @@ sequenceDiagram
 ## 2. 自动串口
 
 `loader::serial::SerialBeacon` 从固件 `ConOut` 设备路径匹配唯一 UART，读取 `Serial::io_mode()`
-的生效波特率、数据位、校验、停止位和硬件流控。无法读取某个参数时使用 UEFI 常见的
-115200/8N1、无硬件流控，并在 HTTP 状态保留诊断；无法唯一选择 UART 或没有可用协议时仍
-明确报告自动绑定不可用。身份帧会先应用有效参数写出，再恢复固件原设置。不以 USB SN 或
-SMBIOS serial 作为启动身份。
+的生效波特率、数据位、校验、停止位和硬件流控。无法读取线路参数时状态保持
+`ready=false`，HTTP 状态和 ConOut 诊断记录具体原因；不得用固定的 115200 参数伪造
+一个可绑定的 UART。无法唯一选择 UART 或没有 SerialIo 时同样明确报告自动绑定不可用。
+身份帧会先应用有效参数写出，再恢复固件原设置。不以 USB SN 或 SMBIOS serial 作为启动身份。
 
 ### 2.1 本次身份与门禁
 
-每次启动的 `serial_id` 是独立 128 位 ID。x86_64 UEFI 优先使用 UEFI RNG，缺失时
-使用平台提供的单调启动值；LoongArch axstd EFI 在没有可信启动熵时，先把持久化
-OTA 代次提交到 `STATE0.BIN`/`STATE1.BIN`，再用代次和当前镜像摘要派生身份，不能
-仅靠秒级时间、进程计数器或栈地址区分快速复位。
+每次启动的 `serial_id` 是独立 128 位 ID。两个原生 UEFI 目标都优先使用 UEFI RNG，
+缺失时使用固件单调计数和运行时信息派生控制面身份。
 `SerialBeacon::progress()` 每 250 ms 启动 ASCII 身份帧发送，以最多 4 字节的部分写入推进。
 `BootServer` 状态与 UDP 公告关联同一 serial_id 和 epoch；网络确认后停止身份帧。
 
@@ -123,29 +127,45 @@ and rejects tables larger than 1 MiB.
 | Architecture | Rust UEFI target | EFI boot filename |
 | --- | --- | --- |
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
-| `loongarch64` | `loongarch64-unknown-none-softfloat` | `BOOTLOONGARCH64.EFI` |
+| `loongarch64` | `loongarch64-unknown-uefi` | `BOOTLOONGARCH64.EFI` |
 
-The x86_64 frontend accepts little-endian x86_64 ELF64 images. `PT_LOAD`
-segments must have page-aligned physical addresses. Protocol v6 requires the
-`__x86_64_efi_pe_entry` symbol and rejects `httpboot_entry`, an ELF header entry,
-or a `BootInfo` fallback. The maximum uploaded kernel is 256 MiB.
+x86_64 and LoongArch64 now use the same native UEFI loader code, firmware
+network protocols, HTTP v6/OTA transaction, serial identity and ELF handoff.
+The architecture profile only selects the ELF machine/entry symbol, firmware
+architecture, QEMU machine and boot filename. x86_64 accepts
+`__x86_64_efi_pe_entry`; LoongArch accepts ELF64 `EM_LOONGARCH` with
+`efi_pe_entry`. The maximum uploaded target is 256 MiB.
 
-LoongArch 使用 `arceos-efi` axstd 前端，接受 little-endian ELF64、
-`EM_LOONGARCH` 和固定入口 `efi_pe_entry`。应用通过
-`someboot::declare_boot_resources!` 声明镜像区、归档区、EFI 槽执行区与固件原文件区，
-分别为 32 MiB、256 MiB、32 MiB、32 MiB；镜像区固定在 `0x200000`。
-`boot_resources::Allocation` 保持唯一所有权，`handoff::HandoffSpec` 与
-`PreparedHandoff` 统一描述、校验和执行交接。x86 原生 UEFI 也使用这些公共接口，
-保留 LoadOptions、Linux LoadFile2 和 OTA LoadImage/StartImage 生命周期。
+The native loader keeps UEFI Boot Services active. Target LoadOptions and the
+Linux EFI `LoadFile2` initramfs provider are published through
+`someboot::handoff::PreparedHandoff`; the target kernel installs its own
+execution environment and calls `ExitBootServices`. The loader never enters
+LoongArch inherited-handoff mode and never runs ArceOS as loader internals. A
+target uploaded over HTTP is ordinary ELF and must
+complete its own EFI-entry relocation and handoff.
+
+Both native entries disable the firmware watchdog immediately after UEFI
+helper initialization and before OTA, network or SerialIO waits. Firmware BDS
+normally starts a five-minute watchdog around `StartImage`; an unattended
+loader must explicitly cancel it with zero timeout and a non-reserved
+application `WatchdogCode` (`>= 0x10000`). A failed `SetWatchdogTimer` call is
+reported and fails initialization. This does not call `ExitBootServices`; the
+target still owns that transition. The Loongson `V00011003` event from
+`WatchdogTimerDxe` is a watchdog expiry, not a LoongArch CPU exception.
+
+One firmware controller must expose SNP, IP4Config2, UDP4 service binding and
+TCP4 service binding; broadcast does not prove this bundle. Automatic serial
+identity requires a uniquely selectable UEFI SerialIo device associated with
+ConOut. Missing protocols are reported through ConOut as
+`loader_net_controller[...]`, `loader_tcp4_listen_failed`,
+`loader_serial_probe` and `loader_serial_unavailable`; absence of SerialIo is
+never replaced with a synthetic 115200 identity.
 
 `boot-resources` 可独立于网络、OTA 和交接生产端使用；`efi-handoff` 组合 EFI 与
 资源能力，替代已经删除的 `efi-loader`。普通 EFI 内核消费交接始终随 `cfg(efi)`，
 无需开启生产端。原生 `target_os = "uefi"` 依赖只编译公共能力和固件适配，不带入
 someboot 内核入口、分页或 SMP。模块、协议与所有权依据见
 [启动资源设计](../../docs/design/someboot-boot-resources.md)。
-
-ArceOS 激活 runtime UART 后，axstd 前端报告实际波特率和 8N1 参数，未绑定时
-输出身份帧；没有活动 UART 时状态为 `ready=false`，客户端必须显式 `direct` continue。
 
 ## Build and test
 
@@ -154,99 +174,61 @@ Use the project task runner:
 ```bash
 rustup target add x86_64-unknown-uefi
 cargo xtask axloader build --target x86_64-unknown-uefi --release
+cargo xtask axloader build --target loongarch64-unknown-uefi --release
 cargo xtask clippy --package axloader
 cargo xtask axloader test qemu --target x86_64-unknown-uefi
+cargo xtask axloader test qemu --target loongarch64-unknown-uefi
+cargo xtask axloader test qemu --target loongarch64-unknown-uefi \
+  --firmware-code /path/to/code.fd --firmware-vars /path/to/vars.fd
 ```
 
-The output is:
+The outputs are:
 
 ```text
 target/x86_64-unknown-uefi/release/axloader.efi
 target/x86_64-unknown-uefi/release/axloader-launcher.efi
+target/loongarch64-unknown-uefi/release/axloader.efi
+target/loongarch64-unknown-uefi/release/axloader-launcher.efi
 ```
 
-LoongArch ArceOS EFI is built through the ArceOS task runner. The build config
-selects `loongarch64-unknown-none-softfloat`, `arceos-efi`, one CPU and the
-EFI binary conversion; the QEMU config supplies the NVMe/FAT volume, virtio
-network and port forwarding from host port `3999` to guest port `2999`.
+### Native QEMU verification
 
-LoongArch 的 `axstd_loader::run()` 在启动及每次连接处理后发送 UDP 公告，
-阻塞等待连接期间不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或
-启动广播丢失时，使用已知设备 IP 直接访问 HTTP 接口。
+`test qemu` uses the same real FAT/OTA/HTTP transaction for both native targets.
+The Loong profile selects `qemu-system-loongarch64`, `virt`, `la464`, Loong
+UEFI firmware, `BOOTLOONGARCH64.EFI`, `BootArch::Loongarch64` and
+`efi_pe_entry`. Its ArceOS smoke target must print `HOST_CMDLINE` and
+`HOST_INITRAMFS_PASSED`; `ready_to_handoff` alone is not success. The QEMU
+test uses SLiRP host forwarding and proves HTTP, not real UDP broadcast
+discovery. UDP discovery still requires an isolated TAP network or a physical
+board.
+
+The default LoongArch run validates the native loader, HTTP v6, OTA, and
+direct ArceOS handoff scenarios with standard QEMU. The target is an ordinary
+ArceOS ELF whose `efi_pe_entry` calls `ExitBootServices`; no AxVisor host or
+virtual machine is involved.
+
+`--firmware-code` and `--firmware-vars` must be supplied together and override
+only the test invocation's firmware pair. Loong QEMU copies both files into the
+run directory and pads short copies to 16 MiB without modifying the source.
+The Loong profile adds `virtio-rng-pci` and disables the virtio-net/rng option
+ROM lookup because the firmware supplies the network drivers. RNG is required
+by `DxeNetLib`; TCP4 additionally requires a firmware `Hash2DxeCrypto`
+producer. The stock debug firmware may still lack Hash2, which must be reported
+as a firmware dependency rather than worked around with a loader network stack.
+CI therefore gates the native Loong EFI build unconditionally; the full native
+Loong QEMU command remains a release/board validation entry that must be given a
+firmware pair containing Hash2. The old axstd `loong-qemu-smoke.py` gate remains
+as separate legacy-backend protection.
+
+Native Loong QEMU coverage is not evidence that physical LoongArch firmware,
+USB installation, network protocols and SerialIO have been accepted on
+hardware. The physical-board entry boots the same native loader directly into
+the ArceOS Hello image:
 
 ```bash
-cargo xtask arceos build \
-  --package axloader \
-  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml
-cargo xtask arceos qemu \
-  --package axloader \
-  --config bootloader/axloader/build-loongarch64-unknown-none-softfloat.toml \
-  --qemu-config bootloader/axloader/qemu-loongarch64.toml
+cargo xtask arceos test board \
+  --board loongson-3a6000-ll --test-case http-boot
 ```
-
-LoongArch 在持久 FAT 卷维护 `axloader/A.EFI`、`axloader/B.EFI`、
-`axloader/STATE0.BIN` 和 `axloader/STATE1.BIN`。`State::mark_attempt()` 在进入
-pending 槽前提交，`ota::handoff` 将应用自有的槽位和代次编码为有版本的元数据，
-`/api/v1/ota/confirm` 按更新 ID 和来源提交稳定槽。没有可信 UEFI/FDT 熵时，先提交
-持久代次再派生控制面身份；继承阶段复用父 loader 已提交的代次。
-
-someboot 的 v4 `HandoffRecord` 使用 GUID `7b9fa931-a25b-d043-b13c-63435428c473`，
-承载目标范围、cmdline、initramfs、资源快照、内存图和有界应用元数据，不包含固定池
-或 OTA 槽位字段。继承内核复制记录后跳过第二次 ExitBootServices。v2/v3 不兼容，
-生产者、目标和 A/B 槽必须一起重建；不提供旧协议或旧接口别名。非 EFI LoongArch、
-UHI FDT handoff 和 AArch64 EFI 镜像生成不在本阶段。
-
-首次启动通过显式 `InitialContents::FirmwareBootImage` 资源，在退出服务前读取
-最初固件启动文件的原始字节，再校验、Flush 并读回 `A.EFI`，最后创建状态记录。
-不能复制已重定位且数据段被修改的运行镜像来构造回滚槽。该 axloader 配置要求最初
-镜像从可读 EFI 文件系统启动，文件不超过 32 MiB；来源不可读或必需预留失败时停止
-初始化，不猜测可启动文件。仅接受 `ImageBase = 0`、无 base relocation directory
-的 someboot LoongArch PE。继承阶段保留同一份固件来源字节，当前运行槽摘要以
-已验证持久状态为准，缺失状态时拒绝重新建档。
-
-上述 x86_64 UEFI QEMU 测试使用 OVMF、真实 FAT 磁盘和 `hostfwd` 访问设备监听端口；
-跨启动上传真实 ArceOS UEFI ELF，分别验证两个字段均省略、仅 cmdline、仅
-initramfs、两者都有以及 ESP initramfs 回退，并以目标内核输出的 `HOST_CMDLINE`、
-`HOST_INITRAMFS_PASSED` 为成功证据。测试先核对真实 UART 身份及上报参数，再验证 bound/direct 放行、错误绑定令牌拒绝，
-并覆盖 SHA-256、OTA 待试槽确认和回滚。
-同一入口还通过 HTTP 上传 StarryOS ELF 与 BusyBox 归档，以及 AxVisor ELF 与
-包含 Linux 客体的宿主归档。`ota_qemu::payloads::OsPayloads` 复用各 OS 的构建和
-归档流水线，通过带 `AXBUILD_NO_SNAPSHOT=1` 的子进程调用 `cargo xtask`，并检查
-构建前后命令快照不变，保留用户后续命令的默认选择。
-`test-payloads/root/axloader-smoke.sh` 检查启动参数并实际写读内存根，
-分别输出完整行 `STARRY_AXLOADER_USERSPACE_PASSED` 和
-`AXVISOR_GUEST_AXLOADER_USERSPACE_PASSED`。AxVisor 使用 2 GiB、2 vCPU 和嵌套
-KVM；测试等待管理 shell 后执行 `vm console 1` 取得客体输出。宿主必须提供
-VMX/SVM，不能只凭宿主启动日志判定客体通过。
-每次运行在 `target/axbuild/axloader/qemu/x86-*` 保留独立 ESP、VARS、各次串口及
-QEMU stderr 日志。服务端协议测试另见 ostool 的
-`docs/axloader-network-control.md`。
-
-LoongArch 使用独立的完整 EFI 回归入口，所需宿主工具为 QEMU LoongArch、
-`mkfs.fat`、`mcopy`、`mmd`、`mdir` 和 `python3`：
-
-```bash
-python3 bootloader/axloader/scripts/loong-qemu-smoke.py
-# 保留本次独占磁盘和日志，路径需足够短以容纳 QMP Unix socket。
-python3 bootloader/axloader/scripts/loong-qemu-smoke.py --output-dir /tmp/loong-efi
-```
-
-该脚本先通过 `cargo xtask arceos qemu` 运行只启用 `boot-resources` 的独立资源应用，
-检查对齐、互不重叠、释放回退和容量拒绝。随后构建 loader、独立的
-`arceos-helloworld` EFI ELF 和打包的 `test-suit/host-initramfs`。loader 构建配置声明
-`to_bin = true`，确保 `arceos build` 在准备 FAT 前生成 EFI `.bin`。在私有 FAT、QMP
-socket 与空闲宿主端口中调用 `loong-http-smoke.py`。写满场景验证合法上传返回
-`409 ota_storage_failed` 且状态不变；正常场景验证 manifest 幂等、串口门禁、坏
-ELF/OTA 拒绝、真实 trial、QMP 复位后的 rollback、旧确认拒绝、再次 trial/confirm。
-确认后再次复位核对稳定摘要持久化，再上传会返回的最小 EFI ELF，检查自动复位、新 epoch 和稳定 OTA 状态。最后上传独立目标，检查 `elf_loaded`、`ready_to_handoff`、`runtime_handoff_devices_stopped`、
-`HOST_CMDLINE: axloader-positive=1`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`。
-`ready_to_handoff` 单独出现只表示准备交接；`qemu-loongarch64.toml` 仅用于观察
-网络服务启动。
-
-原始 `qemu-loongarch64-http.toml` 将宿主 `3999` 转发至客户机 `2999` 并开放 QMP；
-完整脚本根据同一模板改写为独占资源，退出时清理自己创建的 QEMU 进程组。
-独立目标由 `build-loongarch64-helloworld-efi.toml` 构建，不能用 loader 自身 ELF
-替代目标内核的实际执行证明。
 
 ## x86_64 OTA 布局与状态
 
@@ -288,12 +270,14 @@ MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执�
 
 ## Install to removable media
 
-脚本支持全新安装和旧布局迁移。全新安装适用于已经格式化但没有可用
-`BOOTX64.EFI` 的 x86_64 可写 FAT ESP，不需要旧装载器：
+脚本支持 x86_64 与 LoongArch64 的全新安装和旧布局迁移。全新安装适用于已经格式化但没有
+可用架构 launcher 的可写 FAT ESP，不需要旧装载器：
 
 ```bash
 ./bootloader/axloader/scripts/build-install-efi.sh \
   --fresh --device /dev/sdb1
+./bootloader/axloader/scripts/build-install-efi.sh \
+  --fresh --device /dev/sdb1 --target loongarch64-unknown-uefi
 ```
 
 全新安装会把新装载器复制到 A、B，生成稳定状态记录，再写入 launcher。
@@ -309,17 +293,30 @@ MAC 也不是身份认证。若以后要求内核验签，须先让 A/B 都执�
 ./bootloader/axloader/scripts/build-install-efi.sh --device /dev/sdb1
 ```
 
-默认按 `OSTOOLBOOT` 查找分区。脚本会构建并校验两个 PE 映像、检查空闲空间、
-写入 A/B 和双状态记录、同步并逐项核对，最后替换 `BOOTX64.EFI`。迁移模式还会
-把旧文件保存为 `EFI/AXLOADER/BOOTX64.ORIGINAL.EFI`，B 首次作为直连待试槽，
+默认按 `OSTOOLBOOT` 查找分区。脚本会按 `--target` 构建并校验两个同架构 PE 映像、
+检查空闲空间、写入 A/B 和双状态记录、同步并逐项核对，最后替换
+`BOOTX64.EFI` 或 `BOOTLOONGARCH64.EFI`。迁移模式还会把旧文件保存为同名的
+`.ORIGINAL.EFI`，B 首次作为直连待试槽，
 安装命令打印升级 ID，上传方须在首次启动后核对摘要并调用确认接口。两种模式都
 会拒绝已有 `EFI/AXLOADER` 文件的 ESP，避免覆盖未知状态；请先离线恢复或清理。
+
+从 legacy ArceOS LoongArch loader 切换到 native loader 时使用 `--fresh`。该模式
+把 A、B 都写成 native loader，旧 `BOOTLOONGARCH64.EFI` 只保存为
+`BOOTLOONGARCH64.PREVIOUS.EFI` 备份，不进入 OTA 回滚槽，避免静默回退到旧
+ArceOS loader。
 
 `cargo xtask axloader test qemu --target x86_64-unknown-uefi` 使用同一块真实
 FAT 映像跨多次启动，检查 `hostfwd` 上的直连、错误摘要、短请求、待试复位、
 持久确认及旧槽恢复。宿主需要 `qemu-system-x86_64`、KVM、`mkfs.vfat`、
 `mcopy`、`mmd` 和 `python3`。完整的本地服务端联调以隔离配置和 loopback
 管理端口运行，不安装 systemd 服务，也不修改 runner。
+
+LoongArch native uses the same installer and QEMU flow. For that target the
+launcher is `BOOTLOONGARCH64.EFI`, the PE machine must be LoongArch64, and the
+installer accepts only the matching boot filename. The Loong QEMU command
+requires `qemu-system-loongarch64` plus Loong UEFI CODE/VARS firmware; it does
+not require an ArceOS loader configuration. Physical 3A6000 validation uses
+the ArceOS board case above rather than an AxVisor host shell.
 
 ## Troubleshooting
 

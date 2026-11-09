@@ -1,4 +1,5 @@
 pub mod boot_server;
+mod cache;
 pub mod console;
 pub mod direct;
 pub mod elf_loader;
@@ -14,17 +15,33 @@ use uefi::{Status, boot, prelude::*, proto::rng::Rng};
 
 use crate::logln;
 
+const MAX_BOOTSTRAP_DIAGNOSTICS: usize = 3;
+const WATCHDOG_APPLICATION_CODE: u64 = 0x0001_0000;
+
 #[entry]
 fn efi_main() -> Status {
     uefi::helpers::init().expect("failed to initialize UEFI helpers");
+    if let Err(error) = boot::set_watchdog_timer(0, WATCHDOG_APPLICATION_CODE, None) {
+        let status = error.status();
+        logln!("loader_watchdog_disable_failed: {status:?}");
+        return status;
+    }
     let mut ota = axloader::ota::OtaController::open();
     let mut interface = None;
+    let mut discovery_attempts = 0;
+    let mut identity_failures = 0;
+    let mut listen_failures = 0;
     loop {
         if interface.is_none() {
-            interface = network::NetworkInterface::select().ok();
+            interface =
+                network::NetworkInterface::select(discovery_attempts < MAX_BOOTSTRAP_DIAGNOSTICS)
+                    .ok();
         }
         let Some(nic) = interface else {
-            logln!("loader_tcp4_unavailable: no matching SNP/IP4/UDP4/TCP4 controller");
+            if discovery_attempts < MAX_BOOTSTRAP_DIAGNOSTICS {
+                logln!("loader_tcp4_unavailable: no matching SNP/IP4Config2/UDP4/TCP4 controller");
+            }
+            discovery_attempts = discovery_attempts.saturating_add(1);
             boot::stall(Duration::from_secs(2));
             continue;
         };
@@ -32,9 +49,29 @@ fn efi_main() -> Status {
             new_boot_identity(nic, b"serial-id").map(|serial_id| (epoch, serial_id))
         });
         let (epoch, serial_id) = match identity {
-            Ok(identity) => identity,
+            Ok(identity) => {
+                identity_failures = 0;
+                identity
+            }
             Err(error) => {
-                logln!("loader_identity_unavailable: {error:?}");
+                if identity_failures < MAX_BOOTSTRAP_DIAGNOSTICS {
+                    logln!("loader_identity_unavailable: {error:?}");
+                }
+                identity_failures = identity_failures.saturating_add(1);
+                boot::stall(Duration::from_secs(2));
+                continue;
+            }
+        };
+        let mut listener = match direct::Listener::open(nic.handle()) {
+            Ok(value) => value,
+            Err(error) => {
+                if listen_failures < MAX_BOOTSTRAP_DIAGNOSTICS {
+                    logln!(
+                        "loader_tcp4_listen_failed: controller={} port=2999 status={error:?}",
+                        nic.controller_index()
+                    );
+                }
+                listen_failures = listen_failures.saturating_add(1);
                 boot::stall(Duration::from_secs(2));
                 continue;
             }
@@ -54,29 +91,30 @@ fn efi_main() -> Status {
                 None
             }
         };
-        let mut listener = match direct::Listener::open(nic.handle()) {
-            Ok(value) => value,
-            Err(error) => {
-                logln!("loader_tcp4_listen_failed: {error:?}");
-                boot::stall(Duration::from_secs(2));
-                continue;
-            }
-        };
         logln!(
-            "loader_device_listening: port=2999 epoch={}",
+            "loader_device_listening: controller={} mac={} port=2999 epoch={}",
+            nic.controller_index(),
+            nic.mac_address,
             server.epoch()
         );
         let mut ticks = 200_u16;
+        let mut broadcast_failures = 0;
         loop {
             let mut progress = || {
                 beacon.progress();
                 ticks = ticks.saturating_add(1);
                 if ticks >= 200 {
                     ticks = 0;
-                    if let Some(announcer) = announcer.as_mut()
-                        && let Err(error) = announcer.broadcast(&beacon.state.borrow())
-                    {
-                        logln!("loader_broadcast_error: {error:?}");
+                    if let Some(announcer) = announcer.as_mut() {
+                        match announcer.broadcast(&beacon.state.borrow()) {
+                            Ok(()) => broadcast_failures = 0,
+                            Err(error) => {
+                                if broadcast_failures < MAX_BOOTSTRAP_DIAGNOSTICS {
+                                    logln!("loader_broadcast_error: {error:?}");
+                                }
+                                broadcast_failures = broadcast_failures.saturating_add(1);
+                            }
+                        }
                     }
                 }
             };
@@ -100,10 +138,13 @@ fn efi_main() -> Status {
                     );
                     logln!("ready_to_handoff");
                     drop(listener);
+                    logln!("handoff_stage: listener_closed");
                     drop(announcer);
                     drop(beacon);
+                    logln!("handoff_stage: resources_closed");
                     // SAFETY: ELF validation found the EFI entry in the live image;
                     // networking has been closed and the guard retains payloads.
+                    logln!("handoff_stage: target_enter");
                     let result = unsafe { handoff.enter(elf.entry_point) };
                     drop(handoff);
                     drop(elf);

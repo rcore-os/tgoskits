@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Install or migrate an x86_64 ESP to the A/B axloader layout.
+# Install or migrate an x86_64 or LoongArch64 ESP to the A/B axloader layout.
 #
 # Default target:
 #   package: axloader
 #   target:  x86_64-unknown-uefi
-#   output:  BOOTX64.EFI
+#   output:  BOOTX64.EFI or BOOTLOONGARCH64.EFI (selected by --target)
 #   USB fs label: OSTOOLBOOT
 #
 # Examples:
@@ -23,7 +23,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PACKAGE="axloader"
 TARGET="x86_64-unknown-uefi"
 BIN="axloader"
-EFI_OUTPUT="BOOTX64.EFI"
+EFI_OUTPUT=""
+EFI_OUTPUT_SET=0
 USB_LABEL="OSTOOLBOOT"
 DEVICE=""
 MOUNT_POINT="/tmp/ostool-efi"
@@ -42,12 +43,12 @@ usage() {
 Usage: $SCRIPT_NAME [OPTIONS]
 
 Options:
-  --fresh             Install a new A/B layout without an existing BOOTX64.EFI.
+  --fresh             Install a new A/B layout without an existing boot launcher.
   --device PATH       EFI partition to mount, for example /dev/sdb1.
   --label LABEL       Find EFI partition by filesystem label. Default: $USB_LABEL.
   --mount-point DIR   Temporary mount point. Default: $MOUNT_POINT.
   --target TARGET     Rust target. Default: $TARGET.
-  --output FILE       EFI output filename under EFI/BOOT. Default: $EFI_OUTPUT.
+  --output FILE       EFI output filename under EFI/BOOT. Default follows --target.
   --cargo PATH        Cargo executable. Default: \$CARGO, cargo, or /root/.cargo/bin/cargo.
   --no-clean          Skip cargo clean before building.
   --keep-mounted      Do not unmount after writing.
@@ -84,6 +85,7 @@ while [[ $# -gt 0 ]]; do
         --output)
             EFI_OUTPUT="${2:-}"
             [[ -n "$EFI_OUTPUT" ]] || die "--output requires a filename"
+            EFI_OUTPUT_SET=1
             shift 2
             ;;
         --cargo)
@@ -150,11 +152,40 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$REPO_ROOT"
-[[ "$TARGET" == "x86_64-unknown-uefi" && "$EFI_OUTPUT" == "BOOTX64.EFI" ]] || die "A/B migration currently supports only x86_64-unknown-uefi and BOOTX64.EFI"
+case "$TARGET" in
+    x86_64-unknown-uefi)
+        DEFAULT_EFI_OUTPUT="BOOTX64.EFI"
+        EXPECTED_MACHINE_HEX="6486"
+        ;;
+    loongarch64-unknown-uefi)
+        DEFAULT_EFI_OUTPUT="BOOTLOONGARCH64.EFI"
+        EXPECTED_MACHINE_HEX="6462"
+        ;;
+    *)
+        die "A/B migration supports x86_64-unknown-uefi and loongarch64-unknown-uefi"
+        ;;
+esac
+if [[ "$EFI_OUTPUT_SET" -eq 0 ]]; then
+    EFI_OUTPUT="$DEFAULT_EFI_OUTPUT"
+fi
+[[ "$EFI_OUTPUT" == "$DEFAULT_EFI_OUTPUT" ]] || die "$TARGET requires $DEFAULT_EFI_OUTPUT"
+if [[ "$TARGET" == "loongarch64-unknown-uefi" && "$FRESH" -eq 0 ]]; then
+    die "native LoongArch installation requires --fresh so both A/B slots are native; the old launcher is backed up only"
+fi
+BOOT_STEM="${EFI_OUTPUT%.EFI}"
+PREVIOUS_BOOT="$BOOT_STEM.PREVIOUS.EFI"
+ORIGINAL_BOOT="$BOOT_STEM.ORIGINAL.EFI"
+NEW_BOOT="$BOOT_STEM.NEW.EFI"
 
 if [[ "$CLEAN" -eq 1 ]]; then
     info "Cleaning $PACKAGE for $TARGET"
-    "$CARGO_BIN" clean -p "$PACKAGE" --target "$TARGET"
+    if [[ "$TARGET" == "loongarch64-unknown-uefi" ]]; then
+        # Cargo clean expects a built-in target for --target; the native Loong
+        # target is supplied as a JSON path by xtask. Remove only its artifacts.
+        rm -rf -- "$REPO_ROOT/target/$TARGET"
+    else
+        "$CARGO_BIN" clean -p "$PACKAGE" --target "$TARGET"
+    fi
 fi
 
 info "Building the loader and immutable launcher for $TARGET"
@@ -185,7 +216,7 @@ if [[ -d "$SLOTS" ]] && [[ -n "$(find "$SLOTS" -mindepth 1 -maxdepth 1 -print -q
     die "ESP already contains files under EFI/AXLOADER; recover it offline before reinstalling"
 fi
 if [[ "$FRESH" -eq 0 ]]; then
-    [[ -f "$TARGET_LOADER" ]] || die "existing BOOTX64.EFI required for migration; use --fresh for a new ESP"
+    [[ -f "$TARGET_LOADER" ]] || die "existing $EFI_OUTPUT required for migration; use --fresh for a new ESP"
 fi
 
 STAGING="$(mktemp -d)"
@@ -196,7 +227,7 @@ if [[ "$FRESH" -eq 1 ]]; then
         --fresh-image "$STAGING/A.EFI" \
         --output "$STAGING"
     if [[ -f "$TARGET_LOADER" ]]; then
-        cp -- "$TARGET_LOADER" "$STAGING/BOOTX64.PREVIOUS.EFI"
+        cp -- "$TARGET_LOADER" "$STAGING/$PREVIOUS_BOOT"
     fi
 else
     cp -- "$TARGET_LOADER" "$STAGING/A.EFI"
@@ -206,30 +237,31 @@ else
         --trial "$STAGING/B.EFI" \
         --output "$STAGING"
 fi
-cp -- "$LAUNCHER" "$STAGING/BOOTX64.EFI"
-for image in "$STAGING/A.EFI" "$STAGING/B.EFI" "$STAGING/BOOTX64.EFI"; do
-    python3 - "$image" <<'PY'
+cp -- "$LAUNCHER" "$STAGING/$EFI_OUTPUT"
+for image in "$STAGING/A.EFI" "$STAGING/B.EFI" "$STAGING/$EFI_OUTPUT"; do
+    python3 - "$image" "$EXPECTED_MACHINE_HEX" <<'PY'
 import pathlib, sys
 b = pathlib.Path(sys.argv[1]).read_bytes()
+expected_machine = bytes.fromhex(sys.argv[2])
 assert b[:2] == b'MZ' and len(b) >= 128, 'missing DOS header'
 p = int.from_bytes(b[0x3c:0x40], 'little')
 assert p + 94 <= len(b) and b[p:p+4] == b'PE\0\0', 'missing PE signature'
-assert b[p+4:p+6] == b'\x64\x86', 'not an x86_64 EFI image'
+assert b[p+4:p+6] == expected_machine, 'EFI machine does not match --target'
 assert b[p+24:p+26] == b'\x0b\x02' and b[p+92:p+94] == b'\x0a\x00', 'not an EFI application'
 PY
 done
 required="$((
     $(stat -c %s "$STAGING/A.EFI")
     + $(stat -c %s "$STAGING/B.EFI")
-    + $(stat -c %s "$STAGING/BOOTX64.EFI")
+    + $(stat -c %s "$STAGING/$EFI_OUTPUT")
     + $(stat -c %s "$STAGING/STATE0.BIN")
     + $(stat -c %s "$STAGING/STATE1.BIN")
     + 4194304
 ))"
 if [[ "$FRESH" -eq 0 ]]; then
     required="$((required + $(stat -c %s "$STAGING/A.EFI")))"
-elif [[ -f "$STAGING/BOOTX64.PREVIOUS.EFI" ]]; then
-    required="$((required + $(stat -c %s "$STAGING/BOOTX64.PREVIOUS.EFI")))"
+elif [[ -f "$STAGING/$PREVIOUS_BOOT" ]]; then
+    required="$((required + $(stat -c %s "$STAGING/$PREVIOUS_BOOT")))"
 fi
 available="$(df -B1 --output=avail "$MOUNT_POINT" | tail -1 | tr -d ' ')"
 (( available > required )) || die "insufficient ESP space: need at least $required bytes available"
@@ -237,41 +269,41 @@ available="$(df -B1 --output=avail "$MOUNT_POINT" | tail -1 | tr -d ' ')"
 if [[ "$FRESH" -eq 1 ]]; then
     info "Preparing a fresh A/B layout"
 else
-    info "Preserving the old BOOTX64.EFI and preparing both slots"
+    info "Preserving the old $EFI_OUTPUT and preparing both slots"
 fi
 "${SUDO[@]}" mkdir -p "$SLOTS"
 if [[ "$FRESH" -eq 1 ]]; then
-    if [[ -f "$STAGING/BOOTX64.PREVIOUS.EFI" ]]; then
-        "${SUDO[@]}" cp -- "$STAGING/BOOTX64.PREVIOUS.EFI" "$SLOTS/BOOTX64.PREVIOUS.EFI"
+    if [[ -f "$STAGING/$PREVIOUS_BOOT" ]]; then
+        "${SUDO[@]}" cp -- "$STAGING/$PREVIOUS_BOOT" "$SLOTS/$PREVIOUS_BOOT"
     fi
 else
-    "${SUDO[@]}" cp -- "$STAGING/A.EFI" "$SLOTS/BOOTX64.ORIGINAL.EFI"
+    "${SUDO[@]}" cp -- "$STAGING/A.EFI" "$SLOTS/$ORIGINAL_BOOT"
 fi
 "${SUDO[@]}" cp -- "$STAGING/A.EFI" "$SLOTS/A.EFI"
 "${SUDO[@]}" cp -- "$STAGING/B.EFI" "$SLOTS/B.EFI"
 "${SUDO[@]}" cp -- "$STAGING/STATE0.BIN" "$SLOTS/STATE0.BIN"
 "${SUDO[@]}" cp -- "$STAGING/STATE1.BIN" "$SLOTS/STATE1.BIN"
-"${SUDO[@]}" cp -- "$STAGING/BOOTX64.EFI" "$EFI_DIR/BOOTX64.NEW.EFI"
+"${SUDO[@]}" cp -- "$STAGING/$EFI_OUTPUT" "$EFI_DIR/$NEW_BOOT"
 "${SUDO[@]}" sync
 for name in A.EFI B.EFI STATE0.BIN STATE1.BIN; do
     [[ "$(sha256sum "$STAGING/$name" | awk '{print $1}')" == "$(sha256sum "$SLOTS/$name" | awk '{print $1}')" ]] || die "staged $name verification failed"
 done
 if [[ "$FRESH" -eq 0 ]]; then
-    [[ "$(sha256sum "$STAGING/A.EFI" | awk '{print $1}')" == "$(sha256sum "$SLOTS/BOOTX64.ORIGINAL.EFI" | awk '{print $1}')" ]] || die "legacy loader backup verification failed"
+    [[ "$(sha256sum "$STAGING/A.EFI" | awk '{print $1}')" == "$(sha256sum "$SLOTS/$ORIGINAL_BOOT" | awk '{print $1}')" ]] || die "legacy loader backup verification failed"
 fi
-if [[ "$FRESH" -eq 1 && -f "$STAGING/BOOTX64.PREVIOUS.EFI" ]]; then
-    [[ "$(sha256sum "$STAGING/BOOTX64.PREVIOUS.EFI" | awk '{print $1}')" == "$(sha256sum "$SLOTS/BOOTX64.PREVIOUS.EFI" | awk '{print $1}')" ]] || die "previous loader backup verification failed"
+if [[ "$FRESH" -eq 1 && -f "$STAGING/$PREVIOUS_BOOT" ]]; then
+    [[ "$(sha256sum "$STAGING/$PREVIOUS_BOOT" | awk '{print $1}')" == "$(sha256sum "$SLOTS/$PREVIOUS_BOOT" | awk '{print $1}')" ]] || die "previous loader backup verification failed"
 fi
-[[ "$(sha256sum "$STAGING/BOOTX64.EFI" | awk '{print $1}')" == "$(sha256sum "$EFI_DIR/BOOTX64.NEW.EFI" | awk '{print $1}')" ]] || die "launcher staging verification failed"
+[[ "$(sha256sum "$STAGING/$EFI_OUTPUT" | awk '{print $1}')" == "$(sha256sum "$EFI_DIR/$NEW_BOOT" | awk '{print $1}')" ]] || die "launcher staging verification failed"
 
-info "Replacing BOOTX64.EFI (power loss here requires recovery media)"
-"${SUDO[@]}" cp -- "$EFI_DIR/BOOTX64.NEW.EFI" "$TARGET_LOADER"
+info "Replacing $EFI_OUTPUT (power loss here requires recovery media)"
+"${SUDO[@]}" cp -- "$EFI_DIR/$NEW_BOOT" "$TARGET_LOADER"
 
 info "Syncing USB writes"
 "${SUDO[@]}" sync
 
 info "Verifying SHA-256"
-source_hash="$(sha256sum "$STAGING/BOOTX64.EFI" | awk '{print $1}')"
+source_hash="$(sha256sum "$STAGING/$EFI_OUTPUT" | awk '{print $1}')"
 target_hash="$(sha256sum "$TARGET_LOADER" | awk '{print $1}')"
 printf "source: %s  %s\n" "$source_hash" "$LAUNCHER"
 printf "target: %s  %s\n" "$target_hash" "$TARGET_LOADER"

@@ -14,6 +14,10 @@ name = "aarch64-runtime"
 target = "aarch64-unknown-none-softfloat"
 features = ["uspace"]
 
+[[package.metadata.clippy.configurations]]
+name = "loongarch64-runtime"
+target = "loongarch64-unknown-none-softfloat"
+
 [features]
 efi = ["someboot/efi"]
 efi-handoff = ["someboot/efi-handoff"]

@@ -11,7 +11,7 @@ use axloader::{
     },
     integrity::decode_sha256,
     ota::OtaController,
-    target::X86_64,
+    target::CURRENT,
 };
 use httpboot_protocol::{
     DEVICE_PROTOCOL_VERSION, DeviceBootJob, LoaderDeviceStatus, MAX_HTTP_BOOT_INITRAMFS_BYTES,
@@ -81,6 +81,7 @@ pub struct Listener {
     protocol: Option<ScopedProtocol<Tcp>>,
     token: Box<Tcp4ListenToken>,
     event: Option<Event>,
+    armed: bool,
 }
 
 pub enum Action {
@@ -122,6 +123,7 @@ impl Listener {
                 new_child_handle: ptr::null_mut(),
             }),
             event: Some(event),
+            armed: false,
         };
         let config = Tcp4ConfigData {
             type_of_service: 0,
@@ -149,7 +151,9 @@ impl Listener {
         let tcp = self.protocol.as_mut().expect("open TCP protocol");
         // SAFETY: The boxed token and its event remain live until completion
         // or cancellation in Drop.
-        unsafe { (tcp.0.accept)(&mut tcp.0, &mut *self.token) }.to_result()
+        let result = unsafe { (tcp.0.accept)(&mut tcp.0, &mut *self.token) }.to_result();
+        self.armed = result.is_ok();
+        result
     }
 
     /// Drive one accepted connection, then return the requested firmware action.
@@ -166,6 +170,7 @@ impl Listener {
         if status == Status::NOT_READY {
             return Action::None;
         }
+        self.armed = false;
         let mut action = Action::None;
         if status == Status::SUCCESS {
             if let Some(handle) = unsafe { Handle::from_ptr(self.token.new_child_handle) } {
@@ -177,7 +182,14 @@ impl Listener {
                                 crate::logln!("loader_http_error: {error:?}");
                                 Action::None
                             });
+                        let booting = matches!(&action, Action::Boot(_));
+                        if booting {
+                            crate::logln!("handoff_stage: http_close_start");
+                        }
                         connection.close();
+                        if booting {
+                            crate::logln!("handoff_stage: http_closed");
+                        }
                     }
                     Err(error) => crate::logln!("ota_tcp_child_error: {error:?}"),
                 }
@@ -195,23 +207,41 @@ impl Listener {
 impl Drop for Listener {
     fn drop(&mut self) {
         if let Some(mut tcp) = self.protocol.take() {
-            if self.token.completion_token.status == Status::NOT_READY {
+            let listener_token_queued = self.armed;
+            if listener_token_queued {
+                self.armed = false;
                 // SAFETY: Cancel completes the queued boxed token before it is freed.
-                let _ = unsafe { (tcp.0.cancel)(&mut tcp.0, &mut self.token.completion_token) };
-                while completion_status(&self.token.completion_token.status) == Status::NOT_READY {
-                    let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
+                let cancel =
+                    unsafe { (tcp.0.cancel)(&mut tcp.0, &mut self.token.completion_token) };
+                if cancel != Status::SUCCESS && cancel != Status::NOT_FOUND {
+                    crate::logln!("loader_tcp_listen_cancel_failed: {cancel:?}");
+                }
+                if !wait_for_completion(&mut tcp, &self.token.completion_token.status) {
+                    crate::logln!("loader_tcp_listen_cancel_timeout");
                 }
             }
-            let _ = unsafe { (tcp.0.configure)(&mut tcp.0, ptr::null()) };
+            abort_tcp(&mut tcp, "loader_tcp_listen");
+            if listener_token_queued
+                && completion_status(&self.token.completion_token.status) == Status::NOT_READY
+            {
+                crate::logln!("loader_tcp_listen_reset_incomplete");
+                uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::DEVICE_ERROR, None);
+            }
             drop(tcp);
         }
-        if let Some(event) = self.event.take() {
-            let _ = boot::close_event(event);
+        if let Some(event) = self.event.take()
+            && let Err(error) = boot::close_event(event)
+        {
+            crate::logln!("loader_tcp_listen_event_close_failed: {error:?}");
         }
         // SAFETY: The listener has no live protocol guard or completion token.
-        let _ = unsafe {
+        let destroy = unsafe {
             (self.binding.0.destroy_child)(&mut self.binding.0, self.listen_handle.as_ptr())
         };
+        if destroy != Status::SUCCESS {
+            crate::logln!("loader_tcp_listen_destroy_failed: {destroy:?}");
+            uefi::runtime::reset(uefi::runtime::ResetType::COLD, destroy, None);
+        }
     }
 }
 
@@ -269,10 +299,19 @@ impl<'a> Connection<'a> {
             boot::stall(core::time::Duration::from_millis(10));
         }
         // SAFETY: Wait until Cancel has completed before stack-backed token
-        // and fragment buffers are released.
-        unsafe { (tcp.0.cancel)(&mut tcp.0, &mut token.completion_token) }.to_result()?;
-        while completion_status(&token.completion_token.status) == Status::NOT_READY {
-            let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
+        // and fragment buffers are released. A firmware that cannot complete
+        // the token is reset instead of freeing memory it may still reference.
+        let cancel = unsafe { (tcp.0.cancel)(&mut tcp.0, &mut token.completion_token) };
+        if cancel != Status::SUCCESS && cancel != Status::NOT_FOUND {
+            crate::logln!("loader_tcp_io_cancel_failed: {cancel:?}");
+        }
+        if !wait_for_completion(tcp, &token.completion_token.status) {
+            crate::logln!("loader_tcp_io_cancel_timeout");
+            abort_tcp(tcp, "loader_tcp_io");
+            if completion_status(&token.completion_token.status) == Status::NOT_READY {
+                crate::logln!("loader_tcp_io_reset_incomplete");
+                uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::DEVICE_ERROR, None);
+            }
         }
         Err(Status::TIMEOUT.into())
     }
@@ -434,7 +473,7 @@ impl<'a> Connection<'a> {
                 boot_epoch: boot_server.epoch().into(),
                 mac_address: boot_server.mac_address(),
                 current_mac_address: boot_server.current_mac_address(),
-                arch: X86_64.boot_arch,
+                arch: CURRENT.boot_arch,
                 loader_version: env!("CARGO_PKG_VERSION").into(),
                 hardware: boot_server.hardware().clone(),
                 boot: boot_server.status(),
@@ -708,29 +747,38 @@ impl<'a> Connection<'a> {
         let Some(tcp) = self.protocol.as_mut() else {
             return;
         };
-        let Ok(event) = completion_event() else {
-            return;
+        let event = match completion_event() {
+            Ok(event) => event,
+            Err(error) => {
+                let error = error.status();
+                crate::logln!("loader_tcp_close_event_failed: {error:?}");
+                abort_tcp(tcp, "loader_tcp_close");
+                return;
+            }
         };
         let mut token = uefi_raw::protocol::network::tcp4::Tcp4CloseToken {
             completion_token: status_token(&event),
             abort_on_close: false.into(),
         };
-        if unsafe { (tcp.0.close)(&mut tcp.0, &mut token) } == Status::SUCCESS {
-            for _ in 0..IO_WAIT_POLLS {
-                if token.completion_token.status != Status::NOT_READY {
-                    break;
-                }
-                let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
-                boot::stall(core::time::Duration::from_millis(10));
+        let close = unsafe { (tcp.0.close)(&mut tcp.0, &mut token) };
+        if close != Status::SUCCESS {
+            crate::logln!("loader_tcp_close_failed: {close:?}");
+            abort_tcp(tcp, "loader_tcp_close");
+        } else if !wait_for_completion(tcp, &token.completion_token.status) {
+            crate::logln!("loader_tcp_close_timeout");
+            abort_tcp(tcp, "loader_tcp_close");
+            if completion_status(&token.completion_token.status) == Status::NOT_READY {
+                crate::logln!("loader_tcp_close_reset_incomplete");
+                uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::DEVICE_ERROR, None);
             }
-            if token.completion_token.status == Status::NOT_READY {
-                let _ = unsafe { (tcp.0.cancel)(&mut tcp.0, &mut token.completion_token) };
-                while completion_status(&token.completion_token.status) == Status::NOT_READY {
-                    let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
-                }
+            let status = completion_status(&token.completion_token.status);
+            if status != Status::SUCCESS {
+                crate::logln!("loader_tcp_close_aborted: {status:?}");
             }
         }
-        let _ = boot::close_event(event);
+        if let Err(error) = boot::close_event(event) {
+            crate::logln!("loader_tcp_close_event_close_failed: {error:?}");
+        }
     }
 }
 
@@ -741,7 +789,37 @@ impl Drop for Connection<'_> {
             drop(tcp);
         }
         // SAFETY: No token or protocol guard refers to this accepted child.
-        let _ = unsafe { (self.binding.0.destroy_child)(&mut self.binding.0, self.child.as_ptr()) };
+        let destroy =
+            unsafe { (self.binding.0.destroy_child)(&mut self.binding.0, self.child.as_ptr()) };
+        if destroy != Status::SUCCESS {
+            crate::logln!("loader_tcp_connection_destroy_failed: {destroy:?}");
+            uefi::runtime::reset(uefi::runtime::ResetType::COLD, destroy, None);
+        }
+    }
+}
+
+fn wait_for_completion(tcp: &mut Tcp, status: &Status) -> bool {
+    for _ in 0..IO_WAIT_POLLS {
+        if completion_status(status) != Status::NOT_READY {
+            return true;
+        }
+        let poll = unsafe { (tcp.0.poll)(&mut tcp.0) };
+        if poll != Status::SUCCESS && poll != Status::NOT_READY {
+            crate::logln!("loader_tcp_poll_failed: {poll:?}");
+            break;
+        }
+        boot::stall(core::time::Duration::from_millis(10));
+    }
+    completion_status(status) != Status::NOT_READY
+}
+
+fn abort_tcp(tcp: &mut Tcp, context: &'static str) {
+    // Tcp4 Configure(NULL) is the specified reset operation. Unlike Cancel,
+    // it also aborts a pending Close and completes all supported async tokens.
+    let reset = unsafe { (tcp.0.configure)(&mut tcp.0, ptr::null()) };
+    if reset != Status::SUCCESS {
+        crate::logln!("{context}_reset_failed: {reset:?}");
+        uefi::runtime::reset(uefi::runtime::ResetType::COLD, reset, None);
     }
 }
 

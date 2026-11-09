@@ -46,6 +46,7 @@ impl OtaController {
         if disk.hash_slot(slot).ok()? != *state.digest(slot) {
             return None;
         }
+        disk.verify_slot(slot).ok()?;
         Some(Self {
             state,
             slot,

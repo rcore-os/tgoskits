@@ -6,7 +6,7 @@ use alloc::{rc::Rc, string::String};
 use core::cell::RefCell;
 
 pub use axloader::boot_job::FileKind;
-use axloader::{boot_job::BootJobStore, target::X86_64};
+use axloader::{boot_job::BootJobStore, target::CURRENT};
 use httpboot_protocol::{
     DeviceBootJob, LoaderHardwareInfo, MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress,
 };
@@ -76,7 +76,7 @@ impl BootServer {
     pub fn create(&mut self, manifest: DeviceBootJob) -> Result<bool, &'static str> {
         self.jobs.create(
             manifest,
-            X86_64,
+            CURRENT,
             MAX_HTTP_BOOT_INITRAMFS_BYTES,
             MAX_HTTP_BOOT_INITRAMFS_BYTES,
         )

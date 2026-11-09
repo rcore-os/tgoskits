@@ -4,6 +4,14 @@
 #[cfg(not(target_os = "uefi"))]
 fn main() {}
 
+#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
+#[path = "arch/loongarch64/mod.rs"]
+mod arch;
+
+#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
+#[path = "uefi_runtime.rs"]
+mod uefi_runtime;
+
 #[cfg(target_os = "uefi")]
 mod firmware {
 
@@ -12,10 +20,17 @@ mod firmware {
     use axloader::ota::{OtaDisk, Outcome, load_slot};
     use uefi::{Status, boot, prelude::*};
 
+    const WATCHDOG_APPLICATION_CODE: u64 = 0x0001_0000;
+
     #[entry]
     fn efi_main() -> Status {
         if uefi::helpers::init().is_err() {
             return Status::LOAD_ERROR;
+        }
+        if let Err(error) = boot::set_watchdog_timer(0, WATCHDOG_APPLICATION_CODE, None) {
+            let status = error.status();
+            uefi::println!("axloader launcher watchdog disable failed: {status:?}");
+            return status;
         }
         match launch() {
             Ok(()) => Status::SUCCESS,
@@ -73,6 +88,14 @@ mod firmware {
         if disk.hash_slot(chosen).map_err(|error| error.status())? != *state.digest(chosen) {
             return Err(Status::CRC_ERROR);
         }
+        if let Err(error) = disk.verify_slot(chosen) {
+            if chosen != state.active {
+                uefi::println!("axloader trial image validation failed: {error:?}");
+                drop(disk);
+                return fallback_after_failure();
+            }
+            return Err(error.status());
+        }
         drop(disk);
         let image = match load_slot(chosen) {
             Ok(image) => image,
@@ -115,6 +138,7 @@ mod firmware {
         if disk.hash_slot(previous).map_err(|error| error.status())? != *failed.digest(previous) {
             return Err(Status::CRC_ERROR);
         }
+        disk.verify_slot(previous).map_err(|error| error.status())?;
         drop(disk);
         let stable = load_slot(previous).map_err(|error| error.status())?;
         boot::start_image(stable).map_err(|error| error.status())

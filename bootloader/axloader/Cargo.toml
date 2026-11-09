@@ -45,7 +45,7 @@ uefi = { workspace = true, features = ["alloc", "global_allocator"] }
 uefi-raw.workspace = true
 someboot = { workspace = true, features = ["efi-handoff"] }
 
-[target.'cfg(target_arch = "loongarch64")'.dependencies]
+[target.'cfg(all(target_arch = "loongarch64", not(target_os = "uefi")))'.dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
 ax-net = { workspace = true, optional = true }
 someboot = { workspace = true, optional = true, features = ["efi-handoff"] }
@@ -54,6 +54,11 @@ uefi = { workspace = true, features = ["alloc"] }
 [[package.metadata.clippy.configurations]]
 name = "uefi"
 target = "x86_64-unknown-uefi"
+
+[[package.metadata.clippy.configurations]]
+name = "loongarch64-uefi"
+target = "loongarch64-unknown-uefi"
+features = ["uefi-launcher"]
 
 [[package.metadata.clippy.configurations]]
 name = "arceos-efi-loongarch64"

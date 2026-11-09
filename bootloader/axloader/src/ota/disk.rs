@@ -17,6 +17,7 @@ use uefi::{
 };
 
 use super::{Slot, State, state};
+use crate::target::CURRENT;
 
 pub const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -97,7 +98,7 @@ impl InactiveWriter {
         if &disk.hash_slot(slot)? != expected {
             return Err(Status::CRC_ERROR.into());
         }
-        disk.verify_efi_image(slot)?;
+        disk.verify_slot(slot)?;
         Ok(slot)
     }
 }
@@ -178,7 +179,7 @@ impl OtaDisk {
         Ok(hasher.finalize().into())
     }
 
-    fn verify_efi_image(&mut self, slot: Slot) -> Result<()> {
+    pub fn verify_slot(&mut self, slot: Slot) -> Result<()> {
         let mut file = self.file(slot_path(slot), FileMode::Read)?;
         let mut dos = [0_u8; 64];
         if file.read(&mut dos)? != dos.len() || &dos[..2] != b"MZ" {
@@ -192,14 +193,28 @@ impl OtaDisk {
             return Err(Status::LOAD_ERROR.into());
         }
         file.set_position(offset as u64)?;
-        let mut pe = [0_u8; 94];
+        let mut pe = [0_u8; 184];
         if file.read(&mut pe)? != pe.len()
             || &pe[..4] != b"PE\0\0"
-            || pe[4..6] != [0x64, 0x86]
+            || pe[4..6] != CURRENT.pe_machine.to_le_bytes()
             || pe[24..26] != [0x0b, 0x02]
             || pe[92..94] != [10, 0]
         {
             return Err(Status::LOAD_ERROR.into());
+        }
+        let optional_size = u16::from_le_bytes(pe[20..22].try_into().unwrap()) as usize;
+        if optional_size < 112 {
+            return Err(Status::LOAD_ERROR.into());
+        }
+        if CURRENT.pe_machine == crate::target::LOONGARCH64_UEFI.pe_machine {
+            let image_base = u64::from_le_bytes(pe[48..56].try_into().unwrap());
+            let directory_count = u32::from_le_bytes(pe[132..136].try_into().unwrap());
+            if image_base != 0 {
+                return Err(Status::LOAD_ERROR.into());
+            }
+            if directory_count > 5 && (pe[176..180] != [0; 4] || pe[180..184] != [0; 4]) {
+                return Err(Status::LOAD_ERROR.into());
+            }
         }
         Ok(())
     }
