@@ -80,7 +80,7 @@ fn preset_overlay_selection_is_isolated_and_rejects_conflicts_before_snapshot_co
     let error = prepare_axvisor_request(
         &app,
         AxvisorCliArgs {
-            config: Some(overlay),
+            config: Some(overlay.clone()),
             target: Some(ax_config::boards::TARGET_AARCH64.into()),
             ..Default::default()
         },
@@ -95,7 +95,29 @@ fn preset_overlay_selection_is_isolated_and_rejects_conflicts_before_snapshot_co
         )),
         "{error:#}"
     );
-    assert_eq!(fs::read(saved_path).unwrap(), bytes);
+    assert_eq!(fs::read(&saved_path).unwrap(), bytes);
+    for feature in ["vmx", "svm"] {
+        fs::write(
+            &overlay,
+            format!("preset = 'qemu-x86_64'\nfeatures = ['{feature}']\n"),
+        )
+        .unwrap();
+        let error = prepare_axvisor_request(
+            &app,
+            AxvisorCliArgs {
+                config: Some(overlay.clone()),
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("selected from CPU capabilities at runtime"),
+            "{error:#}"
+        );
+        assert_eq!(fs::read(&saved_path).unwrap(), bytes);
+    }
 }
 
 #[test]
