@@ -9,7 +9,7 @@ use crate::{
 };
 
 const PREEMPT_GUARD_SOURCE_COUNT: usize = 5;
-const IRQ_GUARD_SOURCE_COUNT: usize = 24;
+const IRQ_GUARD_SOURCE_COUNT: usize = 25;
 const SCHEDULER_DEADLINE_DERIVATION_SOURCE_COUNT: usize = 6;
 const SWITCH_SCHEDULER_DETAIL_COUNT: usize = 30;
 

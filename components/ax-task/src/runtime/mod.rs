@@ -46,6 +46,7 @@ pub(crate) enum IrqGuardSource {
     RootRtRuntimeTicket,
     RootRtPeriodTicket,
     RootDeadlineIndexTicket,
+    RootDomainPushTicket,
     ExplicitScope,
     RuntimeCpu,
     Executor,
