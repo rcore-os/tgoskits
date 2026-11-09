@@ -1,5 +1,0 @@
-package = "arceos-helloworld"
-target = "aarch64-unknown-none-softfloat"
-features = ["ax-driver/rk3588-cpufreq"]
-log = "Info"
-max_cpu_num = 8
