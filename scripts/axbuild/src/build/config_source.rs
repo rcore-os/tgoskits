@@ -56,6 +56,21 @@ pub(crate) struct FileFields {
 }
 
 impl<T: BuildConfiguration> ConfigInput<T> {
+    /// Keep explicit CLI selection consistent when discovery already decoded input.
+    pub fn check_preset(&self, preset: Option<&str>) -> anyhow::Result<()> {
+        if let Some(preset) = preset
+            && self.source.preset() != Some(preset)
+        {
+            return Err(selector_conflict(
+                &self.source,
+                "preset",
+                preset.to_owned(),
+                self.source.preset().unwrap_or("<custom>").to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Select the OS's standard QEMU recipe only for a source-free request.
     pub fn select_default_qemu(&mut self, target: &str) -> anyhow::Result<()> {
         if self.source == ConfigSource::Custom

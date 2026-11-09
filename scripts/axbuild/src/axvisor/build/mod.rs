@@ -13,11 +13,21 @@ pub use super::config::AxvisorConfig;
 pub const AXVISOR_PACKAGE: &str = "axvisor";
 use ostool::build::config::Cargo;
 
-use self::{
-    features::reject_unsupported_nested_platform_features, metadata::platform_feature_names,
-};
+pub(crate) use self::features::reject_unsupported_nested_platform_features;
+use self::metadata::platform_feature_names;
 pub use crate::build::LogLevel;
 use crate::context::{ResolvedAxvisorRequest, WorkspaceContext};
+
+/// Check metadata-dependent policy before a resolved selection can be persisted.
+pub(crate) fn validate_workspace_features(
+    config: &AxvisorConfig,
+    metadata: &cargo_metadata::Metadata,
+) -> Result<(), ax_config::ConfigError> {
+    reject_unsupported_nested_platform_features(
+        &config.common.features,
+        &platform_feature_names(metadata),
+    )
+}
 
 pub(crate) fn load_cargo_config(
     request: &ResolvedAxvisorRequest,
@@ -47,8 +57,7 @@ fn to_cargo_config(
 ) -> anyhow::Result<Cargo> {
     config.validate()?;
     crate::build::apply_makefile_features(&mut config.common, makefile_features)?;
-    let known_platforms = platform_feature_names(workspace.metadata());
-    reject_unsupported_nested_platform_features(&config.common.features, &known_platforms)?;
+    validate_workspace_features(&config, workspace.metadata())?;
     let mut cargo = crate::build::into_prepared_std_cargo_config_with_metadata(
         config.common,
         &request.package,

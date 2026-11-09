@@ -39,6 +39,7 @@ impl AppContext {
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
         self.resolve_arceos_request(
             cli,
+            None,
             qemu_config,
             uboot_config,
             ArceosDefault::RequireApplication,
@@ -51,9 +52,14 @@ impl AppContext {
         cli: BuildCliArgs,
         qemu_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
-        self.resolve_arceos_request(cli, qemu_config, None, ArceosDefault::QemuHello, |_, _| {
-            Ok(())
-        })
+        self.resolve_arceos_request(
+            cli,
+            None,
+            qemu_config,
+            None,
+            ArceosDefault::QemuHello,
+            |_, _| Ok(()),
+        )
     }
 
     pub(crate) fn prepare_arceos_request_with_input_check(
@@ -65,6 +71,7 @@ impl AppContext {
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
         self.resolve_arceos_request(
             cli,
+            None,
             qemu_config,
             uboot_config,
             ArceosDefault::RequireApplication,
@@ -72,18 +79,42 @@ impl AppContext {
         )
     }
 
+    pub(crate) fn prepare_arceos_request_from_input(
+        &self,
+        cli: BuildCliArgs,
+        input: ConfigInput<ArceosConfig>,
+        environment: RequestEnvironment,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+    ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
+        self.resolve_arceos_request(
+            cli,
+            Some((input, environment)),
+            qemu_config,
+            uboot_config,
+            ArceosDefault::RequireApplication,
+            |_, _| Ok(()),
+        )
+    }
+
     fn resolve_arceos_request(
         &self,
         cli: BuildCliArgs,
+        provided: Option<(ConfigInput<ArceosConfig>, RequestEnvironment)>,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
         default: ArceosDefault,
         input_check: impl FnOnce(&ArceosConfig, crate::build::FileFields) -> anyhow::Result<()>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
-        let runtime_env = RuntimeEnv::capture()?;
-        let environment_features = crate::build::makefile_features_from_env();
+        let (provided, environment) = match provided {
+            Some((input, environment)) => (Some(input), environment),
+            None => (None, RequestEnvironment::capture()?),
+        };
+        let runtime_env = environment.runtime;
+        let environment_features = environment.features;
         let saved = ArceosCommandSnapshot::load(self.workspace_root())?;
-        let inherit = cli.preset.is_none()
+        let inherit = provided.is_none()
+            && cli.preset.is_none()
             && cli.config.is_none()
             && cli.package.is_none()
             && cli.arch.is_none()
@@ -96,7 +127,13 @@ impl AppContext {
             .preset
             .as_deref()
             .or_else(|| inherit.then_some(saved.preset.as_deref()).flatten());
-        let mut input: ConfigInput<ArceosConfig> = self.load_request_input(path, preset)?;
+        let mut input: ConfigInput<ArceosConfig> = match provided {
+            Some(input) => {
+                input.check_preset(cli.preset.as_deref())?;
+                input
+            }
+            None => self.load_request_input(path, preset)?,
+        };
         input_check(&input.config, input.file_fields)?;
         input.check_selectors(cli.target.as_deref(), cli.arch.as_deref())?;
         let (arch, target) = resolve_arceos_arch_and_target(
@@ -272,17 +309,7 @@ impl AppContext {
             .or_else(|| inherit.then_some(saved.preset.as_deref()).flatten());
         let mut input: ConfigInput<StarryConfig> = match provided {
             Some(input) => {
-                if let Some(preset) = cli.preset.as_deref()
-                    && input.source.preset() != Some(preset)
-                {
-                    return Err(ax_config::ConfigError::SelectorConflict {
-                        origin: input.source.path().map(Path::to_path_buf),
-                        field: "preset".into(),
-                        expected: preset.to_owned(),
-                        actual: input.source.preset().unwrap_or("<custom>").to_owned(),
-                    }
-                    .into());
-                }
+                input.check_preset(cli.preset.as_deref())?;
                 input
             }
             None => self.load_request_input(path, preset)?,
@@ -438,6 +465,7 @@ impl AppContext {
             config.common.max_cpu_num = Some(smp);
         }
         config.validate()?;
+        crate::axvisor::build::validate_workspace_features(&config, self.workspace_metadata())?;
         crate::build::validate_features(&config.common)?;
         let runtime = resolve_runtime(
             config.common.max_cpu_num,

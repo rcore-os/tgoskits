@@ -53,7 +53,12 @@ pub(crate) fn collect_board_test_groups(
             .common
             .target
             .as_ref()
-            .expect("board target was validated")
+            .with_context(|| {
+                format!(
+                    "Starry board build config `{}` must set `target`",
+                    info.build_config_path.display(),
+                )
+            })?
             .clone();
         let arch = arch_for_target_checked(&target)?.to_string();
         groups.push(StarryBoardTestGroup {

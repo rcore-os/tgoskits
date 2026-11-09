@@ -54,6 +54,7 @@ impl crate::build::BuildConfiguration for AxvisorConfig {
     fn validate_input(&self) -> Result<(), ConfigError> {
         crate::build::reject_extra_fields(&self.extra)?;
         self.common.validate()?;
+        super::build::reject_unsupported_nested_platform_features(&self.common.features, &[])?;
         for path in &self.vm_configs {
             crate::build::validate_resource_path("vm_configs", path)?;
         }

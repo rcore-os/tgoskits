@@ -55,6 +55,8 @@ flowchart TD
 
 Starry 应用发现器将 `ConfigInput<StarryConfig>` 随用例传给构建入口，不把已解析输入退化为待重读的文件路径。应用 dispatcher 在发现前通过 `RequestEnvironment::capture()` 捕获环境，再交给 `prepare_starry_request_from_input()`；该入口复用环境和输入，不再次读取二者。
 
+ArceOS 板测同样在发现前捕获环境，`ArceosBoardTestGroup` 保留 `ConfigInput<ArceosConfig>`，通过 `prepare_arceos_request_from_input()` 形成请求。发现后构建输入不再从路径重新读取，也不能将旧 package/target 当作新 CLI 覆盖；分组身份取已保存来源，不要求源文件在发现后仍存在。板卡缺少 target 时返回带文件上下文的错误，不能假设尚未发生的校验并 panic。
+
 测试或应用切换构建输入时，必须替换完整 typed 配置，并使用原请求捕获的环境重新解析 runtime；仅修改路径不能改变已确认对象。构建分组可以复用同一内核 Cargo 身份，但每个用例仍持有自己的 VM 打包输入。客户机准备入口要求源文件显式声明 package 和 target；`ConfigInput::file_fields` 保留这两个键及 `app-c` 的最少字段存在信息。guest 在默认值及快照补齐前检查原文件键，不能通过展开后字段非空推断来源，也不能让文件 preset 的展开值代替显式声明。
 
 ### 3.1 选择与快照
@@ -66,6 +68,8 @@ CLI 和文件 preset 必须一致，预设的 target 约束 CLI target、arch �
 文件来源的有效 preset 与 CLI 选择不同：`ConfigInput::selection_preset` 只保存显式 CLI（含恢复的 CLI 选择）或 source-free 默认预设，文件自身的 preset 控制键随本次文件内容重新读取。快照不能将上次文件控制键提升为额外 CLI 约束，否则编辑同一文件选择另一个 preset 会产生伪冲突；显式 CLI preset 与新文件冲突时仍必须拒绝。
 
 `prepare_arceos_qemu_request()` 是允许无应用选择时使用 Hello World 的入口，仍先尝试恢复未被新选择器切断的快照；普通构建和 `config show` 使用 `prepare_arceos_request()`，缺少应用时明确报错。StarryOS 与 Axvisor 的无文件输入通过各自明确的标准 QEMU 映射选择预设。三个 resolver 都只返回待提交的快照，展示命令不保存它。
+
+OS 专属特性禁令也是请求有效性的一部分。Axvisor 的运行时 VMX/SVM 选择规则由同一校验器拒绝对应 Cargo 特性；依赖工作区 metadata 的平台特性限制也必须在 resolver 完成前执行，不能只在 Cargo 适配中才拒绝，否则 show 与 build 会不一致，失败输入还会抢先覆盖快照。
 
 `config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。`defconfig` 显式序列化展开对象，以临时文件替换输出，成功后才更新快照。任何解析、校验或写入失败都不覆盖原文件与快照。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
 
