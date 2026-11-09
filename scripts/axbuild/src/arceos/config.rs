@@ -8,6 +8,8 @@ use ax_config::{CommonConfig, ConfigError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod presets;
+
 /// Final ArceOS input. Unknown root fields are retained only for diagnostics.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -49,6 +51,18 @@ impl ArceosConfig {
 
 impl crate::build::BuildConfiguration for ArceosConfig {
     const CLEARABLE_FIELDS: &'static [&'static str] = &["app-c"];
+
+    fn preset(name: &str) -> Option<Self> {
+        presets::find_preset(name).map(|preset| preset.materialize())
+    }
+
+    fn default_qemu_preset(target: &str) -> Option<&'static str> {
+        presets::default_qemu_preset(target).map(|preset| preset.name)
+    }
+
+    fn common(&self) -> &CommonConfig {
+        &self.common
+    }
 
     fn extra_fields(&self) -> &toml::Table {
         &self.extra

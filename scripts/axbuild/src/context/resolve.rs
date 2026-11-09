@@ -4,16 +4,17 @@ use anyhow::{Context, anyhow};
 use ax_config::{RuntimeEnv, resolve_runtime};
 
 use super::{
-    ARCEOS_SNAPSHOT_FILE, AppContext, ArceosCommandSnapshot, ArceosQemuSnapshot,
-    ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
-    AxvisorUbootSnapshot, BuildCliArgs, ResolvedAxvisorRequest, ResolvedBuildRequest,
-    ResolvedStarryRequest, STARRY_PACKAGE, StarryCliArgs, StarryCommandSnapshot,
-    StarryQemuSnapshot, StarryUbootSnapshot, resolve_arceos_arch_and_target,
-    resolve_axvisor_arch_and_target, resolve_starry_arch_and_target,
+    AppContext, ArceosCommandSnapshot, ArceosQemuSnapshot, ArceosUbootSnapshot, AxvisorCliArgs,
+    AxvisorCommandSnapshot, AxvisorQemuSnapshot, AxvisorUbootSnapshot, BuildCliArgs,
+    ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest, STARRY_PACKAGE,
+    StarryCliArgs, StarryCommandSnapshot, StarryQemuSnapshot, StarryUbootSnapshot,
+    resolve_arceos_arch_and_target, resolve_axvisor_arch_and_target,
+    resolve_starry_arch_and_target,
 };
 use crate::{
     arceos::{cbuild::AX_LIBC_PACKAGE, config::ArceosConfig},
     axvisor::config::AxvisorConfig,
+    build::{ConfigInput, ConfigSource, load_config_input},
     starry::config::StarryConfig,
 };
 
@@ -23,10 +24,10 @@ struct ResolvedCommandPaths {
     uboot_config: Option<PathBuf>,
 }
 
-pub(crate) struct AxvisorRequestPaths<R> {
-    pub(crate) package: String,
-    pub(crate) axvisor_dir: PathBuf,
-    pub(crate) resolve_build_info_path: R,
+#[derive(Clone, Copy)]
+enum ArceosDefault {
+    RequireApplication,
+    QemuHello,
 }
 
 impl AppContext {
@@ -35,153 +36,136 @@ impl AppContext {
         cli: BuildCliArgs,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
-        resolve_build_info_path: impl FnOnce(&str, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
-        self.prepare_arceos_request_with_input_check(
+        self.resolve_arceos_request(
             cli,
             qemu_config,
             uboot_config,
-            resolve_build_info_path,
+            ArceosDefault::RequireApplication,
             |_| Ok(()),
         )
     }
 
-    /// Check unselected file input before any selector defaults or snapshot
-    /// values are applied. No selected file is represented by an empty input.
+    pub(crate) fn prepare_arceos_qemu_request(
+        &self,
+        cli: BuildCliArgs,
+        qemu_config: Option<PathBuf>,
+    ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
+        self.resolve_arceos_request(cli, qemu_config, None, ArceosDefault::QemuHello, |_| Ok(()))
+    }
+
     pub(crate) fn prepare_arceos_request_with_input_check(
         &self,
         cli: BuildCliArgs,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
-        resolve_build_info_path: impl FnOnce(&str, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
+        input_check: impl FnOnce(&ArceosConfig) -> anyhow::Result<()>,
+    ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
+        self.resolve_arceos_request(
+            cli,
+            qemu_config,
+            uboot_config,
+            ArceosDefault::RequireApplication,
+            input_check,
+        )
+    }
+
+    fn resolve_arceos_request(
+        &self,
+        cli: BuildCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+        default: ArceosDefault,
         input_check: impl FnOnce(&ArceosConfig) -> anyhow::Result<()>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
         let runtime_env = RuntimeEnv::capture()?;
         let environment_features = crate::build::makefile_features_from_env();
-        let snapshot = ArceosCommandSnapshot::load(self.workspace_root())?;
-        let inherit_snapshot_config = cli.package.is_none()
+        let saved = ArceosCommandSnapshot::load(self.workspace_root())?;
+        let inherit = cli.preset.is_none()
+            && cli.config.is_none()
+            && cli.package.is_none()
             && cli.arch.is_none()
-            && cli.target.is_none()
-            && cli.config.is_none();
-        let resolved_config = self.resolve_command_path(
-            cli.config.clone(),
-            inherit_snapshot_config
-                .then_some(snapshot.config.as_ref())
+            && cli.target.is_none();
+        let path = cli
+            .config
+            .as_deref()
+            .or_else(|| inherit.then_some(saved.config.as_deref()).flatten());
+        let preset = cli
+            .preset
+            .as_deref()
+            .or_else(|| inherit.then_some(saved.preset.as_deref()).flatten());
+        let mut input: ConfigInput<ArceosConfig> = self.load_request_input(path, preset)?;
+        input_check(&input.config)?;
+        input.check_selectors(cli.target.as_deref(), cli.arch.as_deref())?;
+        let (arch, target) = resolve_arceos_arch_and_target(
+            cli.arch.clone().or_else(|| {
+                (inherit && cli.target.is_none() && input.config.common.target.is_none())
+                    .then(|| saved.arch.clone())
+                    .flatten()
+            }),
+            cli.target
+                .clone()
+                .or(input.config.common.target.clone())
+                .or_else(|| {
+                    (inherit && cli.arch.is_none())
+                        .then(|| saved.target.clone())
+                        .flatten()
+                }),
+        )?;
+        let package = cli
+            .package
+            .clone()
+            .or(input.config.package.clone())
+            .or_else(|| inherit.then(|| saved.package.clone()).flatten());
+        if package.is_none()
+            && input.config.app_c.is_none()
+            && matches!(default, ArceosDefault::QemuHello)
+        {
+            input.select_default_qemu(&target)?;
+        }
+        let package = package
+            .or(input.config.package.clone())
+            .or_else(|| {
+                input
+                    .config
+                    .app_c
+                    .as_ref()
+                    .map(|_| AX_LIBC_PACKAGE.to_owned())
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "missing ArceOS package; pass `--package`, select `--preset`, or set \
+                     `package` in a custom TOML"
+                )
+            })?;
+        let smp = cli.smp.or_else(|| inherit.then_some(saved.smp).flatten());
+        let paths = self.resolve_runtime_paths(
+            qemu_config,
+            inherit.then_some(saved.qemu.qemu_config.as_ref()).flatten(),
+            uboot_config,
+            inherit
+                .then_some(saved.uboot.uboot_config.as_ref())
                 .flatten(),
         );
-        let mut config: Option<ArceosConfig> =
-            load_selected_config(resolved_config.as_deref(), cli.config.is_some())?;
-        match config.as_ref() {
-            Some(input) => input_check(input)?,
-            None => input_check(&ArceosConfig::default())?,
-        }
-        let config_package = config.as_ref().and_then(|config| config.package.clone());
-        let config_target = config
-            .as_ref()
-            .and_then(|config| config.common.target.clone());
-        let uses_app_c = config.as_ref().is_some_and(|config| config.app_c.is_some());
-        let explicit_config_path = if cli.config.is_some() {
-            resolved_config
-        } else {
-            resolved_config.filter(|path| path.exists())
-        };
-
-        // Select the winning input before checking C application's ax-libc
-        // contract. A CLI package may replace an invalid draft file value.
-        let selected_package = cli.package.clone().or(config_package);
-        let package = if uses_app_c {
-            selected_package.unwrap_or_else(|| AX_LIBC_PACKAGE.to_string())
-        } else {
-            selected_package
-                .or(snapshot.package.clone())
-                .ok_or_else(|| {
-                    anyhow!(
-                        "missing ArceOS package; pass `--package` or set `package` in {}",
-                        ARCEOS_SNAPSHOT_FILE
-                    )
-                })?
-        };
-        let effective_arch = cli.arch.clone().or_else(|| {
-            if cli.target.is_some() || config_target.is_some() {
-                None
-            } else {
-                inherit_snapshot_config
-                    .then(|| snapshot.arch.clone())
-                    .flatten()
-            }
-        });
-        let effective_target = cli.target.clone().or(config_target).or_else(|| {
-            if cli.arch.is_some() {
-                None
-            } else {
-                inherit_snapshot_config
-                    .then(|| snapshot.target.clone())
-                    .flatten()
-            }
-        });
-        let (arch, target) = resolve_arceos_arch_and_target(effective_arch, effective_target)?;
-        let inherit_snapshot_runtime = cli.package.is_none()
-            && cli.arch.is_none()
-            && cli.target.is_none()
-            && cli.config.is_none();
-        let smp = cli
-            .smp
-            .or_else(|| inherit_snapshot_runtime.then_some(snapshot.smp).flatten());
-        let runtime_paths = self.resolve_runtime_paths(
-            qemu_config,
-            if inherit_snapshot_runtime {
-                snapshot.qemu.qemu_config.as_ref()
-            } else {
-                None
-            },
-            uboot_config,
-            if inherit_snapshot_runtime {
-                snapshot.uboot.uboot_config.as_ref()
-            } else {
-                None
-            },
-        );
-        let build_info_path = resolve_build_info_path(&package, &target, explicit_config_path)?;
-        let mut config = match config.take() {
-            Some(config) => config,
-            None => {
-                if build_info_path.exists() {
-                    crate::build::load_build_config(&build_info_path)?
-                } else {
-                    let board = if self
-                        .workspace_root()
-                        .join("os/arceos/configs/board")
-                        .exists()
-                    {
-                        crate::arceos::config::ensure_default_build_config_for_target(
-                            self.workspace_root(),
-                            &package,
-                            &target,
-                            &build_info_path,
-                        )?
-                    } else {
-                        None
-                    };
-                    let config = board.map(|board| board.build_config).unwrap_or_default();
-                    crate::build::ensure_build_info(&build_info_path, || config.clone())?;
-                    config
-                }
-            }
-        };
+        let mut config = input.config;
         config.package = Some(package.clone());
         config.common.target = Some(target.clone());
         crate::build::apply_makefile_features(&mut config.common, &environment_features)?;
         if let Some(smp) = smp {
             config.common.max_cpu_num = Some(smp);
         }
-        config
-            .validate()
-            .with_context(|| format!("invalid ArceOS config {}", build_info_path.display()))?;
+        config.validate()?;
         if let Some(app_c) = &config.app_c {
-            config.app_c = Some(crate::arceos::build::resolve_app_c_dir(
-                &build_info_path,
-                app_c,
-            )?);
+            let base = if input.app_c_from_file {
+                input
+                    .source
+                    .path()
+                    .and_then(Path::parent)
+                    .context("app-c file source has no parent")?
+            } else {
+                self.workspace_root()
+            };
+            config.app_c = Some(std::path::absolute(base.join(app_c))?);
         }
         crate::build::validate_features(&config.common)?;
         let runtime = resolve_runtime(
@@ -189,41 +173,43 @@ impl AppContext {
             config.common.runtime,
             &runtime_env,
         )?;
-
-        let request = ResolvedBuildRequest {
-            package: package.clone(),
-            arch: arch.clone(),
-            target: target.clone(),
-            smp,
-            debug: cli.debug,
-            build_info_path: build_info_path.clone(),
-            config,
-            runtime,
-            runtime_env,
-            qemu_config: runtime_paths.qemu_config.clone(),
-            uboot_config: runtime_paths.uboot_config.clone(),
-        };
-
         let snapshot = ArceosCommandSnapshot {
-            package: Some(package),
-            arch: Some(arch),
-            target: Some(target),
+            preset: input.source.preset().map(str::to_owned),
+            config: input
+                .source
+                .path()
+                .map(|path| snapshot_path_value(self.workspace_root(), path)),
+            package: Some(package.clone()),
+            arch: Some(arch.clone()),
+            target: Some(target.clone()),
             smp,
-            config: Some(snapshot_path_value(self.workspace_root(), &build_info_path)),
             qemu: ArceosQemuSnapshot {
-                qemu_config: runtime_paths
+                qemu_config: paths
                     .qemu_config
-                    .as_ref()
+                    .as_deref()
                     .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
             uboot: ArceosUbootSnapshot {
-                uboot_config: runtime_paths
+                uboot_config: paths
                     .uboot_config
-                    .as_ref()
+                    .as_deref()
                     .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
         };
-
+        let request = ResolvedBuildRequest {
+            package,
+            arch,
+            target,
+            smp,
+            debug: cli.debug,
+            source: input.source,
+            config,
+            runtime,
+            runtime_env,
+            environment_features,
+            qemu_config: paths.qemu_config,
+            uboot_config: paths.uboot_config,
+        };
         Ok((request, snapshot))
     }
 
@@ -239,97 +225,56 @@ impl AppContext {
         cli: StarryCliArgs,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
-        resolve_build_info_path: impl FnOnce(&Path, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
     ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
         let runtime_env = RuntimeEnv::capture()?;
         let environment_features = crate::build::makefile_features_from_env();
-        let snapshot = StarryCommandSnapshot::load(self.workspace_root())?;
-        let inherit_snapshot_config =
-            cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
-        let resolved_config = self.resolve_command_path(
-            cli.config.clone(),
-            inherit_snapshot_config
-                .then_some(snapshot.config.as_ref())
+        let saved = StarryCommandSnapshot::load(self.workspace_root())?;
+        let inherit = cli.preset.is_none()
+            && cli.config.is_none()
+            && cli.arch.is_none()
+            && cli.target.is_none();
+        let path = cli
+            .config
+            .as_deref()
+            .or_else(|| inherit.then_some(saved.config.as_deref()).flatten());
+        let preset = cli
+            .preset
+            .as_deref()
+            .or_else(|| inherit.then_some(saved.preset.as_deref()).flatten());
+        let mut input: ConfigInput<StarryConfig> = self.load_request_input(path, preset)?;
+        input.check_selectors(cli.target.as_deref(), cli.arch.as_deref())?;
+        let (arch, target) = resolve_starry_arch_and_target(
+            cli.arch.clone().or_else(|| {
+                (inherit && cli.target.is_none() && input.config.common.target.is_none())
+                    .then(|| saved.arch.clone())
+                    .flatten()
+            }),
+            cli.target
+                .clone()
+                .or(input.config.common.target.clone())
+                .or_else(|| {
+                    (inherit && cli.arch.is_none())
+                        .then(|| saved.target.clone())
+                        .flatten()
+                }),
+        )?;
+        input.select_default_qemu(&target)?;
+        let smp = cli.smp.or_else(|| inherit.then_some(saved.smp).flatten());
+        let paths = self.resolve_runtime_paths(
+            qemu_config,
+            inherit.then_some(saved.qemu.qemu_config.as_ref()).flatten(),
+            uboot_config,
+            inherit
+                .then_some(saved.uboot.uboot_config.as_ref())
                 .flatten(),
         );
-        let mut config: Option<StarryConfig> =
-            load_selected_config(resolved_config.as_deref(), cli.config.is_some())?;
-        let config_target = config
-            .as_ref()
-            .and_then(|config| config.common.target.clone());
-        let effective_arch = cli.arch.clone().or_else(|| {
-            if cli.target.is_some() || config_target.is_some() {
-                None
-            } else {
-                inherit_snapshot_config
-                    .then(|| snapshot.arch.clone())
-                    .flatten()
-            }
-        });
-        let effective_target = cli.target.clone().or(config_target).or_else(|| {
-            if cli.arch.is_some() {
-                None
-            } else {
-                inherit_snapshot_config
-                    .then(|| snapshot.target.clone())
-                    .flatten()
-            }
-        });
-        let (arch, target) = resolve_starry_arch_and_target(effective_arch, effective_target)?;
-        let inherit_snapshot_runtime =
-            cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
-        let smp = cli
-            .smp
-            .or_else(|| inherit_snapshot_runtime.then_some(snapshot.smp).flatten());
-        let runtime_paths = self.resolve_runtime_paths(
-            qemu_config,
-            if inherit_snapshot_runtime {
-                snapshot.qemu.qemu_config.as_ref()
-            } else {
-                None
-            },
-            uboot_config,
-            if inherit_snapshot_runtime {
-                snapshot.uboot.uboot_config.as_ref()
-            } else {
-                None
-            },
-        );
-        let build_info_path =
-            resolve_build_info_path(self.workspace_root(), &target, resolved_config)?;
-        let mut config = match config.take() {
-            Some(config) => config,
-            None => {
-                if build_info_path.exists() {
-                    crate::build::load_build_config(&build_info_path)?
-                } else {
-                    let board = if self
-                        .workspace_root()
-                        .join("os/StarryOS/configs/board")
-                        .exists()
-                    {
-                        crate::starry::config::ensure_default_build_config_for_target(
-                            self.workspace_root(),
-                            &target,
-                            &build_info_path,
-                        )?
-                    } else {
-                        None
-                    };
-                    let config = board.map(|board| board.config).unwrap_or_default();
-                    crate::build::ensure_build_info(&build_info_path, || config.clone())?;
-                    config
-                }
-            }
-        };
+        let mut config = input.config;
         config.common.target = Some(target.clone());
         crate::build::apply_makefile_features(&mut config.common, &environment_features)?;
         if let Some(smp) = smp {
             config.common.max_cpu_num = Some(smp);
         }
-        config
-            .validate()
-            .with_context(|| format!("invalid Starry config {}", build_info_path.display()))?;
+        config.validate()?;
         crate::build::validate_features(&config.common)?;
         config.validate_resources(self.workspace_root())?;
         let runtime = resolve_runtime(
@@ -337,41 +282,42 @@ impl AppContext {
             config.common.runtime,
             &runtime_env,
         )?;
-
+        let snapshot = StarryCommandSnapshot {
+            preset: input.source.preset().map(str::to_owned),
+            config: input
+                .source
+                .path()
+                .map(|path| snapshot_path_value(self.workspace_root(), path)),
+            arch: Some(arch.clone()),
+            target: Some(target.clone()),
+            smp,
+            qemu: StarryQemuSnapshot {
+                qemu_config: paths
+                    .qemu_config
+                    .as_deref()
+                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
+            },
+            uboot: StarryUbootSnapshot {
+                uboot_config: paths
+                    .uboot_config
+                    .as_deref()
+                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
+            },
+        };
         let request = ResolvedStarryRequest {
-            package: STARRY_PACKAGE.to_string(),
-            arch: arch.clone(),
-            target: target.clone(),
+            package: STARRY_PACKAGE.to_owned(),
+            arch,
+            target,
             smp,
             debug: cli.debug,
-            build_info_path: build_info_path.clone(),
+            source: input.source,
             config,
             runtime,
             runtime_env,
             environment_features,
-            qemu_config: runtime_paths.qemu_config.clone(),
-            uboot_config: runtime_paths.uboot_config.clone(),
+            qemu_config: paths.qemu_config,
+            uboot_config: paths.uboot_config,
         };
-
-        let snapshot = StarryCommandSnapshot {
-            arch: Some(arch),
-            target: Some(target),
-            smp,
-            config: Some(snapshot_path_value(self.workspace_root(), &build_info_path)),
-            qemu: StarryQemuSnapshot {
-                qemu_config: runtime_paths
-                    .qemu_config
-                    .as_ref()
-                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
-            },
-            uboot: StarryUbootSnapshot {
-                uboot_config: runtime_paths
-                    .uboot_config
-                    .as_ref()
-                    .map(|path| snapshot_path_value(self.workspace_root(), path)),
-            },
-        };
-
         Ok((request, snapshot))
     }
 
@@ -385,150 +331,116 @@ impl AppContext {
     pub(crate) fn prepare_axvisor_request(
         &self,
         cli: AxvisorCliArgs,
-        paths: AxvisorRequestPaths<
-            impl FnOnce(&Path, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
-        >,
         qemu_config: Option<PathBuf>,
         uboot_config: Option<PathBuf>,
     ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
-        let AxvisorRequestPaths {
-            package,
-            axvisor_dir,
-            resolve_build_info_path,
-        } = paths;
         let runtime_env = RuntimeEnv::capture()?;
         let environment_features = crate::build::makefile_features_from_env();
-        let snapshot = AxvisorCommandSnapshot::load(self.workspace_root())?;
-        let inherit_snapshot_config =
-            cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
-        let resolved_config = self.resolve_command_path(
-            cli.config.clone(),
-            inherit_snapshot_config
-                .then_some(snapshot.config.as_ref())
+        let saved = AxvisorCommandSnapshot::load(self.workspace_root())?;
+        let inherit = cli.preset.is_none()
+            && cli.config.is_none()
+            && cli.arch.is_none()
+            && cli.target.is_none();
+        let path = cli
+            .config
+            .as_deref()
+            .or_else(|| inherit.then_some(saved.config.as_deref()).flatten());
+        let preset = cli
+            .preset
+            .as_deref()
+            .or_else(|| inherit.then_some(saved.preset.as_deref()).flatten());
+        let mut input: ConfigInput<AxvisorConfig> = self.load_request_input(path, preset)?;
+        input.check_selectors(cli.target.as_deref(), cli.arch.as_deref())?;
+        let (arch, target) = resolve_axvisor_arch_and_target(
+            cli.arch.clone().or_else(|| {
+                (inherit && cli.target.is_none() && input.config.common.target.is_none())
+                    .then(|| saved.arch.clone())
+                    .flatten()
+            }),
+            cli.target
+                .clone()
+                .or(input.config.common.target.clone())
+                .or_else(|| {
+                    (inherit && cli.arch.is_none())
+                        .then(|| saved.target.clone())
+                        .flatten()
+                }),
+        )?;
+        input.select_default_qemu(&target)?;
+        let smp = cli.smp.or_else(|| inherit.then_some(saved.smp).flatten());
+        let inherit_runtime = inherit && cli.vmconfigs.is_empty();
+        let paths = self.resolve_runtime_paths(
+            qemu_config,
+            inherit_runtime
+                .then_some(saved.qemu.qemu_config.as_ref())
+                .flatten(),
+            uboot_config,
+            inherit_runtime
+                .then_some(saved.uboot.uboot_config.as_ref())
                 .flatten(),
         );
-        let mut config: Option<AxvisorConfig> =
-            load_selected_config(resolved_config.as_deref(), cli.config.is_some())?;
-        let config_target = config
-            .as_ref()
-            .and_then(|config| config.common.target.clone());
-        let explicit_config = if cli.config.is_some() {
-            resolved_config
+        let vmconfigs = if !cli.vmconfigs.is_empty() {
+            self.resolve_workspace_paths(cli.vmconfigs.iter())
+        } else if inherit_runtime {
+            self.resolve_workspace_paths(saved.vmconfigs.iter())
         } else {
-            resolved_config.filter(|path| path.exists())
+            Vec::new()
         };
-        let effective_arch = cli.arch.clone().or_else(|| {
-            if cli.target.is_some() || config_target.is_some() {
-                None
-            } else {
-                inherit_snapshot_config
-                    .then(|| snapshot.arch.clone())
-                    .flatten()
-            }
-        });
-        let effective_target = cli.target.clone().or(config_target.clone()).or_else(|| {
-            if cli.arch.is_some() {
-                None
-            } else {
-                inherit_snapshot_config
-                    .then(|| snapshot.target.clone())
-                    .flatten()
-            }
-        });
-        let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
-        let smp = cli
-            .smp
-            .or_else(|| inherit_snapshot_config.then_some(snapshot.smp).flatten());
-        let build_info_path = resolve_build_info_path(&axvisor_dir, &target, explicit_config)?;
-        let mut config = match config.take() {
-            Some(config) => config,
-            None => crate::axvisor::build::load_or_create_default_config(
-                &axvisor_dir,
-                &target,
-                &build_info_path,
-            )?,
-        };
+        let mut config = input.config;
         config.common.target = Some(target.clone());
         crate::build::apply_makefile_features(&mut config.common, &environment_features)?;
         if let Some(smp) = smp {
             config.common.max_cpu_num = Some(smp);
         }
-        config
-            .validate()
-            .with_context(|| format!("invalid Axvisor config {}", build_info_path.display()))?;
+        config.validate()?;
         crate::build::validate_features(&config.common)?;
         let runtime = resolve_runtime(
             config.common.max_cpu_num,
             config.common.runtime,
             &runtime_env,
         )?;
-
-        let inherit_snapshot_runtime = cli.arch.is_none()
-            && cli.target.is_none()
-            && cli.config.is_none()
-            && cli.vmconfigs.is_empty();
-        let runtime_paths = self.resolve_runtime_paths(
-            qemu_config,
-            if inherit_snapshot_runtime {
-                snapshot.qemu.qemu_config.as_ref()
-            } else {
-                None
-            },
-            uboot_config,
-            if inherit_snapshot_runtime {
-                snapshot.uboot.uboot_config.as_ref()
-            } else {
-                None
-            },
-        );
-        let vmconfigs = if !cli.vmconfigs.is_empty() {
-            self.resolve_workspace_paths(cli.vmconfigs.iter())
-        } else if inherit_snapshot_runtime {
-            self.resolve_workspace_paths(snapshot.vmconfigs.iter())
-        } else {
-            Vec::new()
-        };
-
-        let request = ResolvedAxvisorRequest {
-            package,
-            axvisor_dir,
-            arch: arch.clone(),
-            target: target.clone(),
-            smp,
-            debug: cli.debug,
-            build_info_path: build_info_path.clone(),
-            config,
-            runtime,
-            runtime_env,
-            environment_features,
-            qemu_config: runtime_paths.qemu_config.clone(),
-            uboot_config: runtime_paths.uboot_config.clone(),
-            vmconfigs: vmconfigs.clone(),
-        };
-
         let snapshot = AxvisorCommandSnapshot {
-            arch: Some(arch),
-            target: Some(target),
+            preset: input.source.preset().map(str::to_owned),
+            config: input
+                .source
+                .path()
+                .map(|path| snapshot_path_value(self.workspace_root(), path)),
+            arch: Some(arch.clone()),
+            target: Some(target.clone()),
             smp,
-            config: Some(snapshot_path_value(self.workspace_root(), &build_info_path)),
             vmconfigs: vmconfigs
                 .iter()
                 .map(|path| snapshot_path_value(self.workspace_root(), path))
                 .collect(),
             qemu: AxvisorQemuSnapshot {
-                qemu_config: runtime_paths
+                qemu_config: paths
                     .qemu_config
-                    .as_ref()
+                    .as_deref()
                     .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
             uboot: AxvisorUbootSnapshot {
-                uboot_config: runtime_paths
+                uboot_config: paths
                     .uboot_config
-                    .as_ref()
+                    .as_deref()
                     .map(|path| snapshot_path_value(self.workspace_root(), path)),
             },
         };
-
+        let request = ResolvedAxvisorRequest {
+            package: crate::axvisor::build::AXVISOR_PACKAGE.to_owned(),
+            axvisor_dir: self.workspace_root().join("os/axvisor"),
+            arch,
+            target,
+            smp,
+            debug: cli.debug,
+            source: input.source,
+            config,
+            runtime,
+            runtime_env,
+            environment_features,
+            qemu_config: paths.qemu_config,
+            uboot_config: paths.uboot_config,
+            vmconfigs,
+        };
         Ok((request, snapshot))
     }
 
@@ -539,6 +451,17 @@ impl AppContext {
         snapshot.store(self.workspace_root())
     }
 
+    fn load_request_input<T: crate::build::BuildConfiguration>(
+        &self,
+        path: Option<&Path>,
+        preset: Option<&str>,
+    ) -> anyhow::Result<ConfigInput<T>> {
+        load_config_input(self.workspace_root(), path, preset).with_context(|| {
+            "resolve build selection; use `--preset <name>` or explicit `defconfig <name>` to \
+             replace an obsolete saved template"
+        })
+    }
+
     fn resolve_runtime_paths(
         &self,
         qemu_config: Option<PathBuf>,
@@ -547,17 +470,11 @@ impl AppContext {
         snapshot_uboot: Option<&PathBuf>,
     ) -> ResolvedCommandPaths {
         ResolvedCommandPaths {
-            qemu_config: self.resolve_command_path(qemu_config, snapshot_qemu),
-            uboot_config: self.resolve_command_path(uboot_config, snapshot_uboot),
+            qemu_config: qemu_config
+                .or_else(|| resolve_snapshot_path(self.workspace_root(), snapshot_qemu)),
+            uboot_config: uboot_config
+                .or_else(|| resolve_snapshot_path(self.workspace_root(), snapshot_uboot)),
         }
-    }
-
-    fn resolve_command_path(
-        &self,
-        explicit_path: Option<PathBuf>,
-        snapshot_path: Option<&PathBuf>,
-    ) -> Option<PathBuf> {
-        explicit_path.or_else(|| resolve_snapshot_path(self.workspace_root(), snapshot_path))
     }
 
     fn resolve_workspace_paths<'a>(
@@ -566,45 +483,17 @@ impl AppContext {
     ) -> Vec<PathBuf> {
         paths
             .into_iter()
-            .map(|path| self.resolve_workspace_path(path))
+            .map(|path| self.workspace_root().join(path))
             .collect()
-    }
-
-    fn resolve_workspace_path(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.workspace_root().join(path)
-        }
-    }
-}
-
-fn load_selected_config<T: crate::build::BuildConfiguration>(
-    path: Option<&Path>,
-    explicit: bool,
-) -> anyhow::Result<Option<T>> {
-    match path {
-        Some(path) if explicit || path.exists() => crate::build::load_build_config(path).map(Some),
-        _ => Ok(None),
     }
 }
 
 pub(crate) fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {
-    path.map(|path| {
-        if path.is_relative() {
-            root.join(path)
-        } else {
-            path.clone()
-        }
-    })
+    path.map(|path| root.join(path))
 }
 
 pub(crate) fn snapshot_path_value(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.strip_prefix(root)
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| path.to_path_buf())
-    } else {
-        path.to_path_buf()
-    }
+    path.strip_prefix(root)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| path.to_path_buf())
 }

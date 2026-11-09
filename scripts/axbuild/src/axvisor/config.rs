@@ -8,6 +8,8 @@ use ax_config::{CommonConfig, ConfigError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod presets;
+
 /// Final Axvisor input. VM files remain packaging inputs, not Cargo identity.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -36,6 +38,18 @@ impl AxvisorConfig {
 
 impl crate::build::BuildConfiguration for AxvisorConfig {
     const CLEARABLE_FIELDS: &'static [&'static str] = &[];
+
+    fn preset(name: &str) -> Option<Self> {
+        presets::find_preset(name).map(|preset| preset.materialize())
+    }
+
+    fn default_qemu_preset(target: &str) -> Option<&'static str> {
+        presets::default_qemu_preset(target).map(|preset| preset.name)
+    }
+
+    fn common(&self) -> &CommonConfig {
+        &self.common
+    }
 
     fn extra_fields(&self) -> &toml::Table {
         &self.extra

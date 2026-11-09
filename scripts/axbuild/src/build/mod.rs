@@ -21,6 +21,7 @@ use crate::context::{workspace_manifest_path, workspace_metadata_root_manifest};
 
 mod bare_build;
 mod config_file;
+mod config_source;
 mod future_incompat;
 mod info;
 mod platform;
@@ -34,6 +35,8 @@ pub(crate) use config_file::{
     BuildConfiguration, ensure_build_info, invalid_config_value, load_build_config,
     reject_extra_fields, validate_config_target, validate_resource_path,
 };
+pub use config_source::ConfigSource;
+pub(crate) use config_source::{ConfigInput, load_config_input};
 pub(crate) use future_incompat::{
     FutureIncompatReportSession, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,

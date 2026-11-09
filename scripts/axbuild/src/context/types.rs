@@ -1,27 +1,31 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ax_config::{RuntimeEnv, RuntimeValues};
 use serde::{Deserialize, Serialize};
 
 use super::snapshot::{CommandSnapshotFile, load_snapshot, store_snapshot};
 use crate::{
-    arceos::build::ArceosConfig, axvisor::build::AxvisorConfig, starry::build::StarryConfig,
+    arceos::build::ArceosConfig,
+    axvisor::build::AxvisorConfig,
+    build::{ConfigInput, ConfigSource},
+    starry::build::StarryConfig,
 };
 
 pub const ARCEOS_SNAPSHOT_FILE: &str = ".arceos.toml";
 pub const DEFAULT_ARCEOS_ARCH: &str = "aarch64";
-pub const DEFAULT_ARCEOS_TARGET: &str = "aarch64-unknown-none-softfloat";
+pub const DEFAULT_ARCEOS_TARGET: &str = ax_config::boards::TARGET_AARCH64;
 pub const AXVISOR_SNAPSHOT_FILE: &str = ".axvisor.toml";
 pub const DEFAULT_AXVISOR_ARCH: &str = "aarch64";
-pub const DEFAULT_AXVISOR_TARGET: &str = "aarch64-unknown-none-softfloat";
+pub const DEFAULT_AXVISOR_TARGET: &str = ax_config::boards::TARGET_AARCH64;
 pub const STARRY_SNAPSHOT_FILE: &str = ".starry.toml";
 pub const DEFAULT_STARRY_ARCH: &str = "riscv64";
-pub const DEFAULT_STARRY_TARGET: &str = "riscv64gc-unknown-none-elf";
+pub const DEFAULT_STARRY_TARGET: &str = ax_config::boards::TARGET_RISCV64;
 pub const STARRY_PACKAGE: &str = "starryos";
 pub const STARRY_KERNEL_PACKAGE: &str = "starry-kernel";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BuildCliArgs {
+    pub preset: Option<String>,
     pub config: Option<PathBuf>,
     pub package: Option<String>,
     pub arch: Option<String>,
@@ -32,6 +36,7 @@ pub struct BuildCliArgs {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StarryCliArgs {
+    pub preset: Option<String>,
     pub config: Option<PathBuf>,
     pub arch: Option<String>,
     pub target: Option<String>,
@@ -41,6 +46,7 @@ pub struct StarryCliArgs {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AxvisorCliArgs {
+    pub preset: Option<String>,
     pub config: Option<PathBuf>,
     pub arch: Option<String>,
     pub target: Option<String>,
@@ -64,6 +70,8 @@ pub struct ArceosUbootSnapshot {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArceosCommandSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
@@ -86,10 +94,11 @@ pub struct ResolvedBuildRequest {
     pub target: String,
     pub smp: Option<usize>,
     pub debug: bool,
-    pub build_info_path: PathBuf,
+    pub source: ConfigSource,
     pub config: ArceosConfig,
     pub runtime: RuntimeValues,
     pub runtime_env: RuntimeEnv,
+    pub environment_features: Vec<String>,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
 }
@@ -108,6 +117,8 @@ pub struct AxvisorUbootSnapshot {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AxvisorCommandSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,7 +143,7 @@ pub struct ResolvedAxvisorRequest {
     pub target: String,
     pub smp: Option<usize>,
     pub debug: bool,
-    pub build_info_path: PathBuf,
+    pub source: ConfigSource,
     pub config: AxvisorConfig,
     pub runtime: RuntimeValues,
     pub runtime_env: RuntimeEnv,
@@ -158,6 +169,8 @@ pub struct StarryUbootSnapshot {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StarryCommandSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
@@ -178,7 +191,7 @@ pub struct ResolvedStarryRequest {
     pub target: String,
     pub smp: Option<usize>,
     pub debug: bool,
-    pub build_info_path: PathBuf,
+    pub source: ConfigSource,
     pub config: StarryConfig,
     pub runtime: RuntimeValues,
     pub runtime_env: RuntimeEnv,
@@ -189,6 +202,20 @@ pub struct ResolvedStarryRequest {
 }
 
 impl ResolvedStarryRequest {
+    pub(crate) fn config_path(&self) -> Option<&Path> {
+        self.source.path()
+    }
+
+    pub(crate) fn replace_config_input(
+        &mut self,
+        input: ConfigInput<StarryConfig>,
+    ) -> anyhow::Result<()> {
+        input.check_selectors(Some(&self.target), Some(&self.arch))?;
+        self.replace_config(input.config)?;
+        self.source = input.source;
+        Ok(())
+    }
+
     /// Replace a test/build group's input while retaining this request's captured
     /// environment. Explicit runtime CLI values still win over file inputs.
     pub(crate) fn replace_config(&mut self, mut config: StarryConfig) -> anyhow::Result<()> {
@@ -211,6 +238,20 @@ impl ResolvedStarryRequest {
 }
 
 impl ResolvedAxvisorRequest {
+    pub(crate) fn config_path(&self) -> Option<&Path> {
+        self.source.path()
+    }
+
+    pub(crate) fn replace_config_input(
+        &mut self,
+        input: ConfigInput<AxvisorConfig>,
+    ) -> anyhow::Result<()> {
+        input.check_selectors(Some(&self.target), Some(&self.arch))?;
+        self.replace_config(input.config)?;
+        self.source = input.source;
+        Ok(())
+    }
+
     /// Replace a case's full input using this request's captured environment.
     /// VM selections from the preceding input are never inherited.
     pub(crate) fn replace_config(&mut self, mut config: AxvisorConfig) -> anyhow::Result<()> {
@@ -230,6 +271,12 @@ impl ResolvedAxvisorRequest {
         self.runtime = runtime;
         self.vmconfigs.clear();
         Ok(())
+    }
+}
+
+impl ResolvedBuildRequest {
+    pub(crate) fn config_path(&self) -> Option<&Path> {
+        self.source.path()
     }
 }
 

@@ -38,7 +38,7 @@ pub(crate) struct ArchSpec {
 const ARCH_SPECS: &[ArchSpec] = &[
     ArchSpec {
         arch: "aarch64",
-        target: "aarch64-unknown-none-softfloat",
+        target: ax_config::boards::TARGET_AARCH64,
         default_rootfs_image: "rootfs-aarch64-alpine.img",
         cross_compile: CrossCompileSpec {
             llvm_target: "aarch64-linux-musl",
@@ -60,7 +60,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
     },
     ArchSpec {
         arch: "x86_64",
-        target: "x86_64-unknown-none",
+        target: ax_config::boards::TARGET_X86_64,
         default_rootfs_image: "rootfs-x86_64-alpine.img",
         cross_compile: CrossCompileSpec {
             llvm_target: "x86_64-linux-musl",
@@ -82,7 +82,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
     },
     ArchSpec {
         arch: "riscv64",
-        target: "riscv64gc-unknown-none-elf",
+        target: ax_config::boards::TARGET_RISCV64,
         default_rootfs_image: "rootfs-riscv64-alpine.img",
         cross_compile: CrossCompileSpec {
             llvm_target: "riscv64-linux-musl",
@@ -104,7 +104,7 @@ const ARCH_SPECS: &[ArchSpec] = &[
     },
     ArchSpec {
         arch: "loongarch64",
-        target: "loongarch64-unknown-none-softfloat",
+        target: ax_config::boards::TARGET_LOONGARCH64,
         default_rootfs_image: "rootfs-loongarch64-alpine.img",
         cross_compile: CrossCompileSpec {
             llvm_target: "loongarch64-linux-musl",

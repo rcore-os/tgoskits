@@ -8,6 +8,8 @@ use ax_config::{CommonConfig, ConfigError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod presets;
+
 /// Final StarryOS input; its Cargo package is fixed by the adapter.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -50,16 +52,34 @@ impl StarryConfig {
 impl crate::build::BuildConfiguration for StarryConfig {
     const CLEARABLE_FIELDS: &'static [&'static str] = &["fit_its"];
 
-    fn file_base(path: &Path) -> Self {
-        // PR1 preserves old file associations as a low-priority base, so an
-        // explicit overlay or unset remains the final owner of this resource.
-        // PR2 replaces this hook with static preset resources.
-        let companion = path.with_extension("its");
-        let mut config = Self::default();
-        if companion.exists() {
-            config.fit_its = Some(companion);
+    fn preset(name: &str) -> Option<Self> {
+        presets::find_preset(name).map(|preset| preset.materialize())
+    }
+
+    fn default_qemu_preset(target: &str) -> Option<&'static str> {
+        presets::default_qemu_preset(target).map(|preset| preset.name)
+    }
+
+    fn common(&self) -> &CommonConfig {
+        &self.common
+    }
+
+    fn check_source(&self, overlay: &ax_config::Overlay) -> anyhow::Result<()> {
+        if self.fit_its.is_none()
+            && !overlay
+                .controls
+                .unset
+                .iter()
+                .any(|field| field == "fit_its")
+            && overlay.source().with_extension("its").exists()
+        {
+            anyhow::bail!(
+                "build config {} has an ambiguous companion ITS; set `fit_its` explicitly \
+                 (relative to the workspace root), select a preset, or use `unset = ['fit_its']`",
+                overlay.source().display()
+            );
         }
-        config
+        Ok(())
     }
 
     fn extra_fields(&self) -> &toml::Table {
