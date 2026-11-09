@@ -337,6 +337,12 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     /// and executing, this waiter remains most urgent, and the current CPU has
     /// no pending reschedule request. The architecture current-state query is
     /// advisory and leaves owner spinning preemptible.
+    ///
+    /// The first spin runs with the waiter's park already prepared. A safe
+    /// point that interrupts it keeps an ordinary preemption deferred instead
+    /// of publishing it, so that deferral also counts as a pending reschedule:
+    /// otherwise a higher-priority task woken on this CPU, such as a CPU
+    /// stopper the owner is waiting for, could never run.
     fn spin_on_owner(&self, token: &PiWaitToken) -> bool {
         let Some(owner) = token.initial_owner() else {
             return token.can_claim() || token.is_granted();
@@ -356,7 +362,11 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                     self.core.is_owned_by(owner),
                     token.initial_owner_is_on_cpu(),
                     token.is_top_waiter(),
-                    crate::runtime::task_runtime::current_preemption_pending(),
+                    crate::runtime::task_runtime::current_preemption_pending()
+                        || task_result(
+                            crate::runtime::cpu::current_park_preemption_deferred(),
+                            "observe deferred PI mutex waiter preemption",
+                        ),
                 )
             });
             if !may_spin {
