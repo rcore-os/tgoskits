@@ -57,6 +57,7 @@ import {
 import { isMoving, sessionId, useFiles } from '@/domain/files'
 import { cn } from '@/lib/utils'
 import { FilePicker } from './FilePicker'
+import { SchemaForm } from '@/components/config/SchemaForm'
 import {
   acceptMatches,
   advancedFields,
@@ -70,12 +71,9 @@ import {
   splitGuestPath,
   transferDestination,
   unplacedFiles,
+  vmFieldsJsonSchema,
   type FormValues,
 } from './schema'
-
-/** Matches the field controls' look; there is no select primitive in `ui/`. */
-const SELECT_CLASS =
-  'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50'
 
 /** What one lookup of a guest path concluded. */
 interface Placement {
@@ -285,19 +283,24 @@ export function CreateForm({
           files={files}
         />
       ) : (
-        <label className="flex flex-col gap-1">
-          <FieldName field={field} />
-          <FieldControl
-            field={field}
-            value={values[field.name] ?? ''}
-            onChange={(next) => setValues((current) => ({ ...current, [field.name]: next }))}
-          />
-        </label>
+        <SchemaForm
+          schema={vmFieldsJsonSchema([field])}
+          data={quickFieldData(field, values[field.name] ?? '')}
+          disabled={busy}
+          onChange={(next) => {
+            if (next === null || typeof next !== 'object' || Array.isArray(next)) return
+            const value = (next as Record<string, unknown>)[field.name]
+            setValues((current) => ({
+              ...current,
+              [field.name]: value === undefined || value === null ? '' : String(value),
+            }))
+          }}
+        />
       )}
-      {field.description !== undefined && (
+      {field.type === 'file' && field.description !== undefined && (
         <p className="text-xs text-muted-foreground">{field.description}</p>
       )}
-      {field.example !== undefined && (
+      {field.type === 'file' && field.example !== undefined && (
         <p className="text-xs text-muted-foreground">
           例：<span className="font-mono">{String(field.example)}</span>
         </p>
@@ -309,10 +312,9 @@ export function CreateForm({
     <Dialog open={open} onOpenChange={(next) => !busy && onOpenChange(next)}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>填表创建客户机</DialogTitle>
+          <DialogTitle>创建客户机</DialogTitle>
           <DialogDescription>
-            已为当前机器填好默认值。直接点击「创建」，再启动并打开终端即可使用。
-            自定义镜像时可选择已有文件或上传。标 * 的是必填项。
+            已加载当前构建的默认值。镜像路径必须指向 guest 文件系统中已经就位的文件。
           </DialogDescription>
         </DialogHeader>
 
@@ -613,72 +615,14 @@ function FileField({
   )
 }
 
-/**
- * One field's control, chosen by the type the declaration gives it.
- *
- * An `enum` is a choice among declared options; an `enum` that declares none
- * falls back to a text field, because a select with nothing to select cannot say
- * anything. A `boolean` is a choice between 是 and 否, and its text is the only
- * thing that leaves this control: `./schema` is what turns it into the JSON
- * boolean the plane reads. Everything else is text, which is also what a field
- * type this build does not know becomes. A control that shows a hint accepts
- * Enter as "make the hint the value", the way an address bar accepts its own
- * suggestion — the hint is the plane's own example, and typing it by hand is
- * exactly reproducing it.
- */
-function FieldControl({
-  field,
-  value,
-  onChange,
-}: {
-  field: VmSchemaField
-  value: string
-  onChange(value: string): void
-}) {
-  const options = field.options ?? []
-  if (field.type === 'boolean') {
-    return (
-      <select
-        className={SELECT_CLASS}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {/* Only fields without an initial choice offer an unset value. */}
-        {!field.required && (field.default == null || value === '') && <option value="">未设置</option>}
-        <option value="true">是</option>
-        <option value="false">否</option>
-      </select>
-    )
+function quickFieldData(field: VmSchemaField, text: string): Record<string, unknown> {
+  if (text.length === 0) return {}
+  if (field.type === 'boolean') return { [field.name]: text === 'true' }
+  if (field.type === 'integer' && /^\d+$/.test(text)) {
+    const value = Number(text)
+    if (Number.isSafeInteger(value)) return { [field.name]: value }
   }
-  if (field.type === 'enum' && options.length > 0) {
-    return (
-      <select
-        className={SELECT_CLASS}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    )
-  }
-  return (
-    <Input
-      value={value}
-      spellCheck={false}
-      className="font-mono text-xs"
-      placeholder={exampleHint(field)}
-      onChange={(event) => onChange(event.target.value)}
-      onKeyDown={(event) => {
-        if (event.key !== 'Enter' || value.trim().length > 0) return
-        const hint = event.currentTarget.placeholder
-        if (hint.length > 0) onChange(hint)
-      }}
-    />
-  )
+  return { [field.name]: text }
 }
 
 /**

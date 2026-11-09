@@ -28,8 +28,8 @@ interface NavProps {
 
 export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: NavProps) {
   return (
-    <nav className="flex w-60 shrink-0 flex-col overflow-y-auto border-r">
-      <div className="px-4 pb-1.5 pt-3.5 eyebrow">管理功能</div>
+    <nav aria-label="管理导航" className="flex w-20 shrink-0 flex-col overflow-y-auto border-r sm:w-60">
+      <div className="px-2 pb-1.5 pt-3.5 text-center text-[10px] text-muted-foreground sm:px-4 sm:text-left sm:text-[11px]">管理功能</div>
       <ul className="flex flex-col gap-0.5 px-2">
         {panels.map((panel) => {
           const Icon = panelIcon(panel)
@@ -42,9 +42,10 @@ export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: N
                   thing that does not carry information. */}
               <button
                 type="button"
+                title={panel.title}
                 onClick={() => onOpen(panel.kind)}
                 className={cn(
-                  'group relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left transition-colors',
+                  'group relative flex w-full flex-col items-center gap-1 rounded-md px-1 py-2 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:flex-row sm:gap-2.5 sm:px-3 sm:text-left',
                   active ? 'bg-accent/60' : 'hover:bg-accent/40',
                 )}
               >
@@ -62,7 +63,7 @@ export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: N
                 <span className="flex min-w-0 flex-col leading-tight">
                   <span
                     className={cn(
-                      'truncate text-sm font-medium',
+                      'max-w-full truncate text-[11px] font-medium sm:text-sm',
                       active ? 'text-foreground' : 'text-foreground/85',
                     )}
                   >
@@ -71,7 +72,7 @@ export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: N
                   {/* The verbs stay — they are what the manifest declares about
                       what a panel may do — but as a caption: as badges they read
                       as debug output. */}
-                  <span className="truncate font-mono text-[10px] text-muted-foreground">
+                  <span className="hidden truncate font-mono text-[10px] text-muted-foreground sm:block">
                     {panel.verbs.map((verb) => VERB_LABELS[verb] ?? verb).join(' · ')}
                   </span>
                 </span>
@@ -84,7 +85,7 @@ export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: N
         <p className="px-4 py-2 text-sm text-muted-foreground">manifest 未暴露任何面板</p>
       )}
 
-      <div className="mt-4 flex items-center justify-between px-4 pb-1.5 pt-1 eyebrow">
+      <div className="mt-4 hidden items-center justify-between px-4 pb-1.5 pt-1 eyebrow sm:flex">
         <span>客户机 · 实时</span>
         <span
           className={cn(
@@ -102,14 +103,15 @@ export function Nav({ panels, resources, live, activeKind, onOpen, onOpenVm }: N
           {live ? '已连接' : '未连接'}
         </span>
       </div>
-      <ul className="flex flex-col gap-0.5 px-2 pb-4">
+      <ul className="mt-4 flex flex-col gap-0.5 border-t px-1 pb-4 pt-2 sm:mt-0 sm:border-0 sm:px-2 sm:pt-0">
         {resources.map((vm) => (
           <li key={vm.id}>
             <button
               type="button"
               onClick={() => onOpenVm(vm.id)}
               title={`打开 VM[${vm.id}] ${vm.name} 的终端`}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left hover:bg-accent/40"
+              aria-label={`打开 VM[${vm.id}] ${vm.name} 的终端`}
+              className="flex w-full items-center gap-1 rounded-md px-1 py-2 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:gap-2 sm:px-3"
             >
               <span
                 className={cn('h-1.5 w-1.5 shrink-0 rounded-full', STATUS_DOT[vm.status] ?? 'bg-muted-foreground')}

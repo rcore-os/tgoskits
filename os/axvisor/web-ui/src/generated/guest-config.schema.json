@@ -1,0 +1,366 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GuestConfig",
+  "description": "The configuration structure for the guest VM serialized from a toml file provided by user,\nand then converted to `AxVMConfig` for the VM creation.",
+  "type": "object",
+  "properties": {
+    "base": {
+      "description": "The base configuration for the VM.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/VMBaseConfig"
+        }
+      ],
+      "default": {
+        "cpu_num": 0,
+        "guest_type": "virtualized",
+        "id": 0,
+        "name": "",
+        "phys_cpu_ids": null,
+        "phys_cpu_sets": null
+      }
+    },
+    "devices": {
+      "description": "The devices configuration for the VM.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/GuestDevices"
+        }
+      ],
+      "default": {
+        "disabled": [],
+        "passthrough": [],
+        "virtual": []
+      }
+    },
+    "kernel": {
+      "description": "The kernel configuration for the VM.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/VMKernelConfig"
+        }
+      ],
+      "default": {
+        "bios_load_addr": null,
+        "bios_path": null,
+        "boot_protocol": null,
+        "cmdline": null,
+        "dtb_load_addr": null,
+        "dtb_path": null,
+        "enable_bios": false,
+        "entry_point": 0,
+        "kernel_load_addr": 0,
+        "kernel_path": "",
+        "memory_regions": [],
+        "ramdisk_load_addr": null,
+        "ramdisk_path": null,
+        "uefi_firmware_path": null
+      }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "GuestDevices": {
+      "description": "User-selectable physical-device configuration.\n\nVirtual platform devices, including the serial port and interrupt\ncontroller, are selected by the machine profile and never appear here.",
+      "type": "object",
+      "properties": {
+        "disabled": {
+          "description": "Physical devices removed from a passthrough guest's default assignment.\n\nThe root baseline selector `/` is not valid here. An empty `passthrough`\nlist still keeps the baseline; starting from no physical devices requires\n`guest_type = \"virtualized\"`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/PhysicalDeviceRef"
+          }
+        },
+        "passthrough": {
+          "description": "Physical devices explicitly assigned to the guest.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/PhysicalDeviceRef"
+          }
+        },
+        "virtual": {
+          "description": "Virtual devices instantiated through the code-registered model catalog.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/VirtualDeviceRequestSchema"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "GuestType": {
+      "description": "Determines how the guest receives physical devices.\n\nVirtualized guests start with no physical-device mappings. Passthrough\nguests start with all guest-assignable physical devices and then remove the\ndevices listed in [`GuestDevices::disabled`].",
+      "oneOf": [
+        {
+          "description": "Only explicitly selected physical devices are mapped into the guest.",
+          "type": "string",
+          "const": "virtualized"
+        },
+        {
+          "description": "All guest-assignable physical devices are mapped unless disabled.",
+          "type": "string",
+          "const": "passthrough"
+        }
+      ]
+    },
+    "PhysicalDeviceRef": {
+      "description": "A structured reference to a host physical device.\n\nThe initial selector is an absolute device-tree path. Raw addresses and IRQ\nnumbers deliberately are not part of the user-facing configuration.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Absolute device-tree path identifying the physical device, or `/` for\nthe root baseline a `passthrough` guest already starts from. `/` is only\nvalid in the `passthrough` list of a passthrough guest.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ]
+    },
+    "VMBaseConfig": {
+      "description": "The configuration structure for the guest VM base info.",
+      "type": "object",
+      "properties": {
+        "cpu_num": {
+          "description": "The number of virtual CPUs.",
+          "type": "integer",
+          "format": "uint",
+          "default": 0,
+          "minimum": 0
+        },
+        "guest_type": {
+          "description": "Guest address-space and physical-device assignment model.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/GuestType"
+            }
+          ],
+          "default": "virtualized"
+        },
+        "id": {
+          "description": "VM ID.",
+          "type": "integer",
+          "format": "uint",
+          "default": 0,
+          "minimum": 0
+        },
+        "name": {
+          "description": "VM name.",
+          "type": "string",
+          "default": ""
+        },
+        "phys_cpu_ids": {
+          "description": "The physical CPU ids.\n- if `phys_cpu_sets` is `Some`, these are the guest-visible vCPU ids.\n- otherwise, these select host CPU identities and also become the guest IDs.\n\nSome ARM platforms will provide a specified cpu hw id in the device tree, which is\nread from `MPIDR_EL1` register (probably for clustering).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "phys_cpu_sets": {
+          "description": "The final host affinity mask for each vCPU.\n\n- If `None`, vcpu will be scheduled on available physical CPUs randomly.\n- If set, each vcpu will be scheduled on the specified physical CPUs.\n\n  FDT-backed AArch64 and RISC-V paths require one mask per `phys_cpu_ids` entry;\n  each mask must be non-zero, fit the host CPU width, and select one host CPU.\n  Other scheduler paths may support masks selecting multiple physical CPUs.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "VMBootProtocolSerde": {
+      "type": "string",
+      "enum": [
+        "direct",
+        "multiboot",
+        "uefi"
+      ]
+    },
+    "VMKernelConfig": {
+      "description": "The configuration structure for the guest VM kernel.",
+      "type": "object",
+      "properties": {
+        "bios_load_addr": {
+          "description": "The load address of the BIOS image, `None` if not used.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "bios_path": {
+          "description": "The file path of the BIOS image, `None` if not used.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "boot_protocol": {
+          "description": "Guest boot protocol. When omitted, `enable_bios` selects `multiboot`;\notherwise direct boot is used.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/VMBootProtocolSerde"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cmdline": {
+          "description": "The command line of the kernel.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "dtb_load_addr": {
+          "description": "The load address of the device tree blob (DTB), `None` if not used.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "dtb_path": {
+          "description": "The file path of the device tree blob (DTB), `None` if not used.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "enable_bios": {
+          "description": "Whether to enable BIOS boot flow for this VM.",
+          "type": "boolean",
+          "default": false
+        },
+        "entry_point": {
+          "description": "The entry point of the kernel image.",
+          "type": "integer",
+          "format": "uint",
+          "default": 0,
+          "minimum": 0
+        },
+        "kernel_load_addr": {
+          "description": "The load address of the kernel image.",
+          "type": "integer",
+          "format": "uint",
+          "default": 0,
+          "minimum": 0
+        },
+        "kernel_path": {
+          "description": "The file path of the kernel image.",
+          "type": "string",
+          "default": ""
+        },
+        "memory_regions": {
+          "description": "Memory Information",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/VmMemConfigSerde"
+          }
+        },
+        "ramdisk_load_addr": {
+          "description": "The load address of the ramdisk image, `None` if not used.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "ramdisk_path": {
+          "description": "The file path of the ramdisk image, `None` if not used.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "uefi_firmware_path": {
+          "description": "The file path of the UEFI firmware image, `None` if not used.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "VirtualDeviceRequestSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "model"
+      ]
+    },
+    "VmMemConfigSerde": {
+      "type": "object",
+      "properties": {
+        "flags": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "gpa": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "map_type": {
+          "$ref": "#/definitions/VmMemMappingTypeSerde"
+        },
+        "size": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "gpa",
+        "size",
+        "flags",
+        "map_type"
+      ]
+    },
+    "VmMemMappingTypeSerde": {
+      "type": "integer",
+      "enum": [
+        0,
+        1,
+        2
+      ]
+    }
+  }
+}

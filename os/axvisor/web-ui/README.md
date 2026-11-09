@@ -22,7 +22,7 @@
 - 不保存密钥或票据。控制面没有鉴权，前端也不提供任何登录界面。
 - 不访问内核之外的地址。所有请求路径都是相对路径，构建产物换一个部署位置仍然可用。
 - 不在浏览器里重新实现生命周期规则。能否启动、停止、删除以内核返回的状态与错误码为准，前端只做按钮的可用性提示。
-- 不与文件系统直通交互。控制台只发控制请求，不碰客户机文件系统。
+- 不直接访问文件系统。配置读写、目录浏览和文件传输全部通过控制面能力执行，前端不绕过后端的路径与写入校验。
 
 ## 2 与内核的接口
 
@@ -92,6 +92,16 @@ graph LR
 
 事件通道在连接建立后先发一帧全量快照，随后只发增量帧。前端据此维护一份以客户机 id 为键的视图，并在收到增量帧时更新它。登记表本身仍以 `GET /api/vms` 为权威，事件通道只用于避免不必要的轮询和让界面动作及时反映到多个页面。
 
+### 2.5 配置编辑
+
+客户机页面将运行实例和配置库分开：快速创建沿用构建发布的默认值与自动 ID；完整配置的新建、查看、编辑和另存为共享可视化/TOML 编辑器。保存配置只影响后续创建，不会修改已注册实例。内置配置保持只读，可另存为动态配置。
+
+完整表单使用 `axvmconfig::GuestConfig` 生成的标准 JSON Schema，快速创建把已有 `fields` 声明适配为同一表单基础的输入。控件沿用管理台主题，校验不得要求放宽 `script-src 'self'`。草稿转换、开放设备参数保留及更新冲突处理的统一契约见[网页配置编辑设计](../../../design/axvisor-web-config-editor.md)。
+
+兼容输入通过 `config_normalize` 能力在后端解析为规范 TOML 后进入表单，不在前端另写内存数组等业务转换规则。此预览不落盘；只切换视图仍保留原文，实际修改才规范化输出。加载失败时仍可继续源码编辑。
+
+开发时用 `cargo xtask axvisor config vm-schema --output os/axvisor/web-ui/src/generated/guest-config.schema.json` 更新 Schema 快照；axbuild 打包时在暂存目录重新生成，避免配置类型演进后使用旧字段。模型私有设备选项仍由后端最终解释，通用 Schema 不承诺覆盖所有设备约束。
+
 ## 3 目录结构
 
 源码按“外壳、面板、能力、接口、基础库”五层组织。外壳不知道任何面板的存在，面板之间互不引用，面板也不自己拼路径：三者只通过注册表、能力访问器和请求客户端连接，这样任何一个面板都可以单独删除而不影响其余部分。
@@ -120,6 +130,14 @@ graph LR
 | `src/panels/registry.ts` | 渲染器注册表，按 `kind` 懒加载面板组件 |
 | `src/panels/FallbackPanel.tsx` | 未知 `kind` 降级为 JSON 视图 |
 | `src/panels/vms/VmsPanel.tsx` | 客户机面板：登记表、配置池、目录浏览、生命周期动作 |
+| `src/components/config/ConfigDialog.tsx` | 配置新建、查看、编辑及另存为，共用提交与脏草稿退出流程 |
+| `src/components/config/ConfigEditor.tsx` | 配置分区与可视化/TOML 视图 |
+| `src/components/config/SchemaForm.tsx` | 快速创建和完整配置共享的 JSON Schema 表单渲染及 CSP 安全校验 |
+| `src/components/config/editor-draft.ts` | 草稿转换状态：源码有效性与可视化表达能力分离 |
+| `src/components/config/visual-mode-request.ts` | 规范化预览请求的取消、代次与迟到结果隔离 |
+| `src/components/config/config-model.ts` | TOML 解析、序列化、数值安全及文件名校验 |
+| `src/components/config/schema-presentation.ts` | 从生成 Schema 派生显示标签与兼容的枚举控件，不复制业务取值 |
+| `src/generated/guest-config.schema.json` | 从 `GuestConfig` 导出的开发期 Schema 快照，打包时重新生成 |
 | `src/panels/vms/Overview.tsx` | 客户机面板的总量指标：台数、vCPU 超配比、内存合计、进入次数 |
 | `src/panels/vms/AffinityMatrix.tsx` | vCPU 亲和矩阵：客户机 × 物理核，一格一个绑定 |
 | `src/panels/vms/DetailDrawer.tsx` | 单台客户机详情抽屉：进度计数与逐 vCPU 亲和 |

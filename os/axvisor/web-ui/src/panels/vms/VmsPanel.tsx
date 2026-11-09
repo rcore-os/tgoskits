@@ -11,14 +11,15 @@
 //!   action took effect, so every mutation is followed by a settle poll after the
 //!   HTTP response confirms the owner transition.
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Pause, Play, RefreshCw, Square, Terminal, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Copy, FilePenLine, Pause, Play, Plus, RefreshCw, Search, Square, Terminal, Trash2 } from 'lucide-react'
+import type { RJSFSchema } from '@rjsf/utils'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
@@ -37,11 +38,17 @@ import {
   type ActionResult,
   type BrowseInfo,
   type PanelProps,
+  type PoolEntry,
   type PoolInfo,
   type VmDetail,
   type VmStatus,
   type VmSummary,
 } from '@/api/types'
+import {
+  ConfigDialog,
+  type ConfigDialogTarget,
+} from '@/components/config/ConfigDialog'
+import guestConfigSchema from '@/generated/guest-config.schema.json'
 import {
   countersOf,
   settleToTerminalState,
@@ -82,13 +89,10 @@ export default function VmsPanel({
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [detail, setDetail] = useState<VmDetail | null>(null)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [createToml, setCreateToml] = useState('')
-  const [createError, setCreateError] = useState<string | null>(null)
   // The field-driven form, which builds its own request from the declared schema.
   const [formOpen, setFormOpen] = useState(false)
-  // Name the pasted config is stored under when it is dropped into the pool.
-  const [createName, setCreateName] = useState('')
+  const [configTarget, setConfigTarget] = useState<ConfigDialogTarget | null>(null)
+  const [configQuery, setConfigQuery] = useState('')
   const [browseOpen, setBrowseOpen] = useState(false)
   const [browsePath, setBrowsePath] = useState('')
   const [browseInfo, setBrowseInfo] = useState<BrowseInfo | null>(null)
@@ -122,6 +126,14 @@ export default function VmsPanel({
   // The just-created guest as the registry now reports it: the banner's action
   // follows the state it is actually in, not the state it was in at creation.
   const createdVm = created === null ? undefined : registry.find((vm) => vm.id === created)
+  const filteredBuiltin = useMemo(
+    () => filterPool(pool?.builtin ?? [], configQuery),
+    [configQuery, pool?.builtin],
+  )
+  const filteredEntries = useMemo(
+    () => filterPool(pool?.entries ?? [], configQuery),
+    [configQuery, pool?.entries],
+  )
 
   const refreshRegistry = useCallback(async () => {
     try {
@@ -329,50 +341,6 @@ export default function VmsPanel({
     }
   }
 
-  const create = async () => {
-    setCreateError(null)
-    setBusy('create')
-    try {
-      const created = await api.post<{ id: number }>(link.url('create'), { toml: createToml })
-      setCreateOpen(false)
-      setCreateToml('')
-      setCreated(created.id)
-      setNote(`已创建 VM[${created.id}]，可用「启动」或「启动并打开终端」进入 guest`)
-      await refreshRegistry()
-      await refreshPool()
-    } catch (e: unknown) {
-      // The failure stays inside the dialog: the input is wrong, not the page.
-      setCreateError(describeError(e))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  /**
-   * Stores the pasted text as a pool file instead of creating a VM from it.
-   *
-   * The pool is what the hypervisor itself owns, so this is how a config becomes
-   * part of the machine: after it is written it is listed here and can be
-   * started on demand like any other candidate.
-   */
-  const saveToPool = async () => {
-    setCreateError(null)
-    setBusy('save-pool')
-    try {
-      const saved = await api.post<{ path: string }>(link.url('pool_save'), {
-        name: createName.trim(),
-        toml: createToml,
-      })
-      setCreateOpen(false)
-      setNote(`已存为候选配置：${saved.path}`)
-      await refreshPool()
-    } catch (e: unknown) {
-      setCreateError(describeError(e))
-    } finally {
-      setBusy(null)
-    }
-  }
-
   /** Reads one directory of the guest filesystem for the folder picker. */
   const loadBrowse = useCallback(
     async (path: string) => {
@@ -425,6 +393,37 @@ export default function VmsPanel({
 
   return (
     <div className="flex flex-col gap-4">
+      <header className="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">客户机</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            创建和运行客户机，并维护下一次创建使用的配置。
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => setConfigTarget({ kind: 'new' })}>
+            <Plus className="mr-1.5 h-4 w-4" />
+            新建配置
+          </Button>
+          <Button onClick={() => setFormOpen(true)}>
+            <Plus className="mr-1.5 h-4 w-4" />
+            创建客户机
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            aria-label="刷新客户机与配置库"
+            title="刷新客户机与配置库"
+            onClick={() => {
+              void refreshRegistry()
+              void refreshPool()
+            }}
+          >
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        </div>
+      </header>
+
       {error && (
         <Banner tone="error">
           读取 VM 列表失败：{error}
@@ -474,30 +473,26 @@ export default function VmsPanel({
         </Banner>
       )}
 
-      <Overview vms={registry} details={details} physCpuCount={physCpuCount} />
-
-      <AffinityMatrix vms={registry} details={details} physCpuCount={physCpuCount} />
+      <details className="group rounded-md border bg-card">
+        <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          运行概览与 CPU 亲和性
+          <span className="ml-2 text-xs font-normal text-muted-foreground">
+            {registry.length} 台已注册客户机
+          </span>
+        </summary>
+        <div className="flex flex-col gap-4 border-t p-4">
+          <Overview vms={registry} details={details} physCpuCount={physCpuCount} />
+          <AffinityMatrix vms={registry} details={details} physCpuCount={physCpuCount} />
+        </div>
+      </details>
 
       <Card>
         <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div>
-            <CardTitle>已注册客户机</CardTitle>
-            <CardDescription>
-              使用默认值创建第一台客户机，启动后即可在网页终端输入命令。
-            </CardDescription>
-          </div>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => void refreshRegistry()}>
-              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              刷新
-            </Button>
-            <Button size="sm" onClick={() => setFormOpen(true)}>
-              填表创建
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
-              粘贴配置创建
-            </Button>
-          </div>
+          <CardTitle>已注册客户机</CardTitle>
+          <Button size="sm" variant="outline" onClick={() => void refreshRegistry()}>
+            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            刷新
+          </Button>
         </CardHeader>
         <CardContent>
           <ul className="flex flex-col gap-1.5">
@@ -574,7 +569,7 @@ export default function VmsPanel({
             ))}
             {registry.length === 0 && (
               <li className="rounded-lg border border-dashed px-3 py-8 text-center text-sm text-muted-foreground">
-                还没有客户机。点击「填表创建」，使用默认值即可开始，无需上传镜像。
+                还没有客户机。使用页面上方的「创建客户机」按当前构建默认值创建。
               </li>
             )}
           </ul>
@@ -626,94 +621,91 @@ export default function VmsPanel({
       </Dialog>
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div>
-            <CardTitle>内置客户机与动态候选</CardTitle>
-            <CardDescription>
-              内置客户机随系统提供，动态候选来自已配置的目录。点击「启动」后创建客户机。
-            </CardDescription>
+        <CardHeader className="gap-3 space-y-0">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle>配置库</CardTitle>
+              {pool !== null && (
+                <p className="mt-1 font-mono text-xs text-muted-foreground">{pool.directory}</p>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => setConfigTarget({ kind: 'new' })}>
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
+                新建配置
+              </Button>
+              {pool && (
+                <Button size="sm" variant="outline" onClick={() => openBrowse(pool.directory)}>
+                  浏览目录
+                </Button>
+              )}
+            </div>
           </div>
-          {pool && (
-            <Button size="sm" variant="outline" onClick={() => openBrowse(pool.directory)}>
-              浏览目录…
-            </Button>
-          )}
+          <label className="relative block max-w-md">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <span className="sr-only">搜索配置</span>
+            <Input
+              value={configQuery}
+              className="pl-9"
+              placeholder="按名称、路径或 VM ID 搜索"
+              onChange={(event) => setConfigQuery(event.target.value)}
+            />
+          </label>
         </CardHeader>
         <CardContent className="flex flex-col gap-3 text-sm">
-          {poolError && <Banner tone="error">读取候选配置失败：{poolError}</Banner>}
+          {poolError && <Banner tone="error">读取配置库失败：{poolError}</Banner>}
           {pool === null && !poolError && (
-            <p className="text-muted-foreground">
-              这个构建没有候选配置（未启用文件系统能力），可以直接粘贴配置创建。
+            <p className="rounded-md border border-dashed px-3 py-8 text-center text-muted-foreground">
+              当前构建没有配置库文件系统能力；仍可使用快速创建客户机。
             </p>
           )}
           {pool && (
             <>
-              <p className="text-muted-foreground">
-                读取来源（按优先级）：
-                {pool.sources.map((source) => (
-                  <span key={source} className="ml-1 font-mono text-xs">
-                    {source}
-                  </span>
-                ))}
-              </p>
-              <p className="text-muted-foreground">
-                新建配置写入：
-                <span className="ml-1 font-mono text-xs">{pool.directory}</span>
-              </p>
               <section className="flex flex-col gap-2">
-                <h3 className="font-medium">内置客户机（只读）</h3>
-                <ul className="flex flex-col gap-2">
-                  {pool.builtin.map((entry) => (
-                    <li key={`builtin-${entry.id}-${entry.path}`} className="rounded border p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span>
-                          VM[{entry.id}] <span className="font-mono text-xs">{entry.name}</span>
-                        </span>
-                        <span className="flex items-center gap-2">
-                          <span className="font-mono text-xs text-muted-foreground">{entry.path}</span>
-                          <CandidateAction
-                            entryId={entry.id}
-                            registry={registry}
-                            busy={busy !== null}
-                            onOpenVm={onOpenVm}
-                            onStart={() => void start(entry.id)}
-                            onStartAndOpen={() => void startAndOpen(entry.id)}
-                          />
-                        </span>
-                      </div>
-                    </li>
+                <h3 className="text-sm font-medium">内置配置</h3>
+                <ul className="divide-y rounded-md border">
+                  {filteredBuiltin.map((entry) => (
+                    <ConfigRow
+                      key={`builtin-${entry.id}-${entry.path}`}
+                      entry={{ ...entry, editable: false }}
+                      builtin
+                      registry={registry}
+                      busy={busy !== null}
+                      onOpenVm={onOpenVm}
+                      onOpen={() => setConfigTarget({ kind: 'entry', entry: { ...entry, editable: false }, copy: false })}
+                      onCopy={() => setConfigTarget({ kind: 'entry', entry, copy: true })}
+                      onStart={() => void start(entry.id)}
+                      onStartAndOpen={() => void startAndOpen(entry.id)}
+                    />
                   ))}
-                  {pool.builtin.length === 0 && (
-                    <li className="text-muted-foreground">这个构建没有 builtin 客户机配置。</li>
+                  {filteredBuiltin.length === 0 && (
+                    <li className="px-3 py-5 text-center text-muted-foreground">
+                      {pool.builtin.length === 0 ? '这个构建没有内置配置。' : '没有匹配的内置配置。'}
+                    </li>
                   )}
                 </ul>
               </section>
               <section className="flex flex-col gap-2">
-                <h3 className="font-medium">动态池</h3>
-                <ul className="flex flex-col gap-2">
-                  {pool.entries.map((entry) => (
-                    <li key={`${entry.id}-${entry.path}`} className="rounded border p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span>
-                          VM[{entry.id}] <span className="font-mono text-xs">{entry.name}</span>
-                        </span>
-                        <span className="flex items-center gap-2">
-                          <span className="font-mono text-xs text-muted-foreground">{entry.path}</span>
-                          <CandidateAction
-                            entryId={entry.id}
-                            registry={registry}
-                            busy={busy !== null}
-                            onOpenVm={onOpenVm}
-                            onStart={() => void start(entry.id)}
-                            onStartAndOpen={() => void startAndOpen(entry.id)}
-                          />
-                        </span>
-                      </div>
-                    </li>
+                <h3 className="text-sm font-medium">用户配置</h3>
+                <ul className="divide-y rounded-md border">
+                  {filteredEntries.map((entry) => (
+                    <ConfigRow
+                      key={`${entry.id}-${entry.path}`}
+                      entry={entry}
+                      registry={registry}
+                      busy={busy !== null}
+                      onOpenVm={onOpenVm}
+                      onOpen={() => setConfigTarget({ kind: 'entry', entry, copy: false })}
+                      onCopy={() => setConfigTarget({ kind: 'entry', entry, copy: true })}
+                      onStart={() => void start(entry.id)}
+                      onStartAndOpen={() => void startAndOpen(entry.id)}
+                    />
                   ))}
-                  {pool.entries.length === 0 && (
-                    <li className="text-muted-foreground">
-                      写入目录里还没有可启动的配置，用「粘贴配置创建」里的「存为候选配置」放一份进去。
+                  {filteredEntries.length === 0 && (
+                    <li className="px-3 py-5 text-center text-muted-foreground">
+                      {pool.entries.length === 0
+                        ? '配置库还是空的。使用「新建配置」保存第一份配置。'
+                        : '没有匹配的用户配置。'}
                     </li>
                   )}
                 </ul>
@@ -821,51 +813,29 @@ export default function VmsPanel({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>粘贴客户机配置</DialogTitle>
-            <DialogDescription>
-              「创建」用这份 TOML 建一台客户机；「存为候选配置」把它写进候选配置卡片显示的
-              目录，写进去的配置会出现在动态池里，之后可以直接启动。
-            </DialogDescription>
-          </DialogHeader>
-          <textarea
-            className="h-56 w-full rounded-md border bg-transparent p-2 font-mono text-xs"
-            value={createToml}
-            spellCheck={false}
-            placeholder={'[base]\nid = 9\nname = "guest"\n\n[kernel]\nkernel_path = "/guest/kernel"\n...'}
-            onChange={(event) => setCreateToml(event.target.value)}
-          />
-          {pool && (
-            <Input
-              value={createName}
-              onChange={(event) => setCreateName(event.target.value)}
-              spellCheck={false}
-              className="font-mono text-xs"
-              placeholder="文件名，如 guest.toml（写入 /guest）"
-            />
-          )}
-          {createError && <Banner tone="error">{createError}</Banner>}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              取消
-            </Button>
-            {pool && (
-              <Button
-                variant="outline"
-                disabled={busy !== null || createToml.trim().length === 0 || createName.trim().length === 0}
-                onClick={() => void saveToPool()}
-              >
-                存为候选配置
-              </Button>
-            )}
-            <Button disabled={busy !== null || createToml.trim().length === 0} onClick={() => void create()}>
-              创建
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {configTarget !== null && (
+        <ConfigDialog
+          open
+          target={configTarget}
+          schema={guestConfigSchema as RJSFSchema}
+          api={api}
+          link={link}
+          onOpenChange={(open) => {
+            if (!open) setConfigTarget(null)
+          }}
+          onCopy={(entry) => setConfigTarget({ kind: 'entry', entry, copy: true })}
+          onSaved={(path) => {
+            setNote(`配置已保存：${path}`)
+            void refreshPool()
+          }}
+          onCreated={(id) => {
+            setCreated(id)
+            setNote(`已创建 VM[${id}]`)
+            void refreshRegistry()
+            void refreshPool()
+          }}
+        />
+      )}
 
       <CreateForm
         api={api}
@@ -901,6 +871,76 @@ export function canStart(status: VmStatus): boolean {
 
 export function canStop(status: VmStatus): boolean {
   return status === 'running' || status === 'paused'
+}
+
+function ConfigRow({
+  entry,
+  builtin = false,
+  registry,
+  busy,
+  onOpenVm,
+  onOpen,
+  onCopy,
+  onStart,
+  onStartAndOpen,
+}: {
+  entry: PoolEntry
+  builtin?: boolean
+  registry: VmSummary[]
+  busy: boolean
+  onOpenVm: ((id: number) => void) | undefined
+  onOpen(): void
+  onCopy(): void
+  onStart(): void
+  onStartAndOpen(): void
+}) {
+  const editable = !builtin && entry.editable === true
+  return (
+    <li className="flex flex-col gap-2 px-3 py-3 lg:flex-row lg:items-center">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">{entry.name}</span>
+          <span className="font-mono text-xs text-muted-foreground">VM[{entry.id}]</span>
+          <Badge variant="outline">{builtin ? '内置' : editable ? '可编辑' : '只读'}</Badge>
+        </div>
+        <p className="mt-1 truncate font-mono text-xs text-muted-foreground" title={entry.path}>
+          {entry.path}
+        </p>
+        {entry.source !== entry.path && (
+          <p className="mt-0.5 truncate text-xs text-muted-foreground" title={entry.source}>
+            来源：<span className="font-mono">{entry.source}</span>
+          </p>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5 lg:justify-end">
+        <Button size="sm" variant="ghost" onClick={onOpen}>
+          <FilePenLine className="mr-1 h-3.5 w-3.5" />
+          {editable ? '编辑' : '查看'}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onCopy}>
+          <Copy className="mr-1 h-3.5 w-3.5" />
+          另存为
+        </Button>
+        <CandidateAction
+          entryId={entry.id}
+          registry={registry}
+          busy={busy}
+          onOpenVm={onOpenVm}
+          onStart={onStart}
+          onStartAndOpen={onStartAndOpen}
+        />
+      </div>
+    </li>
+  )
+}
+
+function filterPool(entries: PoolEntry[], query: string): PoolEntry[] {
+  const needle = query.trim().toLocaleLowerCase()
+  if (needle.length === 0) return entries
+  return entries.filter((entry) =>
+    [entry.name, entry.path, entry.source, String(entry.id)]
+      .some((value) => value.toLocaleLowerCase().includes(needle)),
+  )
 }
 
 /**

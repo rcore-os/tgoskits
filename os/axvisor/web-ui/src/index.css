@@ -116,3 +116,141 @@
     @apply text-[11px] uppercase tracking-[0.08em] text-muted-foreground;
   }
 }
+
+@layer components {
+  /*
+   * RJSF intentionally ships unthemed Bootstrap-compatible markup. Keep its
+   * schema semantics and provide the same controls, focus treatment and density
+   * as the rest of the dashboard without introducing another visual system.
+   */
+  .config-schema-form {
+    @apply flex flex-col gap-4 text-sm;
+  }
+
+  .config-schema-form fieldset {
+    @apply min-w-0 space-y-4;
+  }
+
+  .config-schema-form fieldset > legend {
+    @apply mb-2 w-full border-b pb-2 text-base font-semibold;
+  }
+
+  .config-schema-form .form-group {
+    @apply flex min-w-0 flex-col gap-1.5;
+  }
+
+  .config-schema-form .control-label {
+    @apply text-sm font-medium;
+  }
+
+  .config-schema-form .required {
+    @apply ml-1 text-destructive;
+  }
+
+  .config-schema-form .form-control {
+    @apply flex min-h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none ring-offset-background;
+  }
+
+  .config-schema-form .form-control:focus-visible,
+  .config-schema-form button:focus-visible,
+  .config-schema-form input[type='checkbox']:focus-visible,
+  .config-schema-form input[type='radio']:focus-visible {
+    @apply ring-2 ring-ring ring-offset-2;
+  }
+
+  .config-schema-form .form-control:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  .config-schema-form .field-description,
+  .config-schema-form .help-block {
+    @apply max-w-3xl text-xs leading-5 text-muted-foreground;
+  }
+
+  .config-schema-form .error-detail {
+    @apply mt-1 list-disc pl-5 text-xs text-destructive;
+  }
+
+  .config-schema-form .checkbox > label,
+  .config-schema-form .radio > label,
+  .config-schema-form .checkbox-inline,
+  .config-schema-form .radio-inline {
+    @apply flex items-start gap-2 text-sm;
+  }
+
+  .config-schema-form input[type='checkbox'],
+  .config-schema-form input[type='radio'] {
+    @apply mt-0.5 h-4 w-4 accent-primary;
+  }
+
+  .config-schema-form .array-item-list {
+    @apply flex flex-col gap-2;
+  }
+
+  .config-schema-form .array-item {
+    @apply grid grid-cols-[minmax(0,1fr)_auto] gap-2 rounded-md border bg-muted/15 p-3;
+  }
+
+  .config-schema-form .array-item-toolbox .btn-group {
+    @apply flex flex-col gap-1;
+  }
+
+  .config-schema-form .btn {
+    @apply inline-flex min-h-8 items-center justify-center rounded-md border bg-background px-2.5 text-xs font-medium outline-none hover:bg-accent disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  .config-schema-form .rjsf-array-item-add {
+    @apply mt-2 flex justify-end;
+  }
+
+  .config-schema-form .rjsf-array-item-add .btn::after {
+    content: '添加一项';
+  }
+
+  .config-schema-form .rjsf-array-item-move-up::after {
+    content: '上移';
+  }
+
+  .config-schema-form .rjsf-array-item-move-down::after {
+    content: '下移';
+  }
+
+  .config-schema-form .rjsf-array-item-remove {
+    @apply border-destructive/40 text-destructive;
+  }
+
+  .config-schema-form .rjsf-array-item-remove::after,
+  .config-schema-form .rjsf-object-property-remove::after {
+    content: '移除';
+  }
+
+  .config-schema-form .rjsf-object-property-expand::after {
+    content: '添加参数';
+  }
+
+  .config-schema-form .glyphicon {
+    @apply hidden;
+  }
+
+  .config-schema-form .panel {
+    @apply rounded-md border p-3;
+  }
+
+  .config-schema-form .form-additional {
+    @apply min-w-0;
+  }
+
+  .config-schema-form .form-additional > .form-group {
+    @apply min-w-0;
+  }
+
+  @media (max-width: 767px) {
+    .config-schema-form .array-item {
+      @apply grid-cols-1;
+    }
+
+    .config-schema-form .array-item-toolbox .btn-group {
+      @apply flex-row flex-wrap;
+    }
+  }
+}

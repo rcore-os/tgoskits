@@ -16,6 +16,7 @@ import {
   joinGuestPath,
   splitGuestPath,
   unplacedFiles,
+  vmFieldsJsonSchema,
 } from './schema'
 
 /** The declaration the control plane currently serves, as a fixture. */
@@ -243,6 +244,19 @@ describe('fileFields', () => {
       'kernel_path',
       'rootfs_path',
     ])
+  })
+})
+
+describe('vmFieldsJsonSchema', () => {
+  it('adapts the declared quick-create fields without maintaining another field list', () => {
+    const schema = vmFieldsJsonSchema(SYNTHETIC.fields)
+    expect(schema.required).toEqual(['title'])
+    expect(schema.properties).toMatchObject({
+      id: { type: 'integer' },
+      title: { type: 'string' },
+      weight: { type: 'integer' },
+      sticky: { type: 'boolean' },
+    })
   })
 })
 

@@ -70,7 +70,7 @@ export function Tabs(props: TabsProps) {
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex items-center gap-1 border-b px-2">
+      <div className="flex flex-wrap items-center gap-1 border-b px-2">
         {tabs.map((tab) => {
           const meta = panels.find((panel) => panel.kind === tab.kind)
           if (!meta) return null

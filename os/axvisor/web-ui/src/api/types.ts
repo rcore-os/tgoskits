@@ -369,6 +369,25 @@ export interface PoolEntry {
   source: string
   /** The raw TOML of the entry, so a client can show or prefill it. */
   toml: string
+  /**
+   * Whether the source file can be replaced through `pool_update`.
+   *
+   * Older control planes omit this field. Absence is read as false: the UI must
+   * never infer write access from a path or extension.
+   */
+  editable?: boolean
+}
+
+/** Body of the optimistic-concurrency pool update operation. */
+export interface PoolUpdateRequest {
+  path: string
+  expected_toml: string
+  toml: string
+}
+
+/** Successful pool create/update response. */
+export interface PoolWriteResult {
+  path: string
 }
 
 /**

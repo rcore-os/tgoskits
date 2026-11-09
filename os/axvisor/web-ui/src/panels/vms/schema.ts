@@ -8,6 +8,7 @@
 //! what each field actually means.
 
 import type { VmSchema, VmSchemaField } from '@/api/types'
+import type { RJSFSchema } from '@rjsf/utils'
 
 /** Values as the form holds them: every control yields text. */
 export type FormValues = Record<string, string>
@@ -100,6 +101,40 @@ export function basicFields(schema: VmSchema): VmSchemaField[] {
 /** The fields the form keeps behind 「高级设置」 until the operator asks for them. */
 export function advancedFields(schema: VmSchema): VmSchemaField[] {
   return schema.fields.filter((field) => field.advanced === true)
+}
+
+/**
+ * Adapt the control plane's quick-create descriptor to standard JSON Schema.
+ *
+ * This adapter is intentionally structural only. Defaults still come from the
+ * separate `/defaults` response, and file placement remains the quick-create
+ * form's specialized boundary.
+ */
+export function vmFieldsJsonSchema(fields: VmSchemaField[]): RJSFSchema {
+  const properties: Record<string, RJSFSchema> = {}
+  const required: string[] = []
+  for (const field of fields) {
+    const property: RJSFSchema = {
+      title: fieldLabel(field),
+      description: field.description,
+    }
+    if (field.type === 'integer') property.type = 'integer'
+    else if (field.type === 'boolean') property.type = 'boolean'
+    else if (field.type === 'enum' && (field.options?.length ?? 0) > 0) {
+      property.type = 'string'
+      property.enum = field.options
+    } else {
+      property.type = 'string'
+    }
+    properties[field.name] = property
+    if (field.required) required.push(field.name)
+  }
+  return {
+    type: 'object',
+    properties,
+    required,
+    additionalProperties: false,
+  }
 }
 
 /**
