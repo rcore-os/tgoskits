@@ -1201,6 +1201,39 @@ mod tests {
         ));
     }
 
+    #[cfg(all(test, axtest))]
+    #[inline(never)]
+    fn kernel_text_patch_target() -> usize {
+        core::hint::black_box(0x5a5a)
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn kernel_text_patch_leaves_the_text_mapping_unchanged() {
+        // A block mapping split by break-before-make is briefly absent for
+        // every CPU, so patching must not reshape the mapping it executes from.
+        let target = VirtAddr::from(kernel_text_patch_target as *const () as usize);
+        let mapping = || {
+            ax_mm::kernel_aspace()
+                .lock()
+                .mapping_attributes(target)
+                .unwrap()
+        };
+        let before = mapping();
+        let mut original = [0u8; 4];
+        // SAFETY: the target is a mapped, readable function in kernel text.
+        unsafe { ptr::copy_nonoverlapping(target.as_ptr(), original.as_mut_ptr(), 4) };
+
+        write_kernel_text(target, &original).unwrap();
+
+        assert_eq!(
+            mapping(),
+            before,
+            "patching kernel text changed the mapping of the patched page"
+        );
+        assert_eq!(kernel_text_patch_target(), 0x5a5a);
+    }
+
     #[cfg(all(test, not(axtest)))]
     #[test]
     fn user_access_range_rejects_null_overflow_and_kernel_addresses() {
