@@ -142,7 +142,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     .unwrap();
 
     let custom_config = root.path().join("custom-build.toml");
-    fs::write(&custom_config, "").unwrap();
+    fs::write(&custom_config, "vm_configs = ['old-config-vm.toml']\n").unwrap();
 
     let app = test_app_context(root.path());
 
@@ -180,6 +180,23 @@ uboot_config = "configs/snapshot-uboot.toml"
             PathBuf::from("/tmp/vm2.toml")
         ]
     );
+    let shown_path = root.path().join("shown.toml");
+    fs::write(
+        &shown_path,
+        toml::to_string_pretty(&request.config).unwrap(),
+    )
+    .unwrap();
+    let (reused, _) = prepare_axvisor_request(
+        &app,
+        AxvisorCliArgs {
+            config: Some(shown_path),
+            ..Default::default()
+        },
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(reused.config.vm_configs, request.vmconfigs);
     assert_eq!(snapshot.config, Some(PathBuf::from("custom-build.toml")));
     assert_eq!(snapshot.arch.as_deref(), Some(DEFAULT_AXVISOR_ARCH));
     assert_eq!(snapshot.target.as_deref(), Some(DEFAULT_AXVISOR_TARGET));
@@ -255,6 +272,23 @@ uboot_config = "configs/uboot.toml"
             root.path().join("tmp/vm2.toml")
         ]
     );
+    let shown_path = root.path().join("shown.toml");
+    fs::write(
+        &shown_path,
+        toml::to_string_pretty(&request.config).unwrap(),
+    )
+    .unwrap();
+    let (reused, _) = prepare_axvisor_request(
+        &app,
+        AxvisorCliArgs {
+            config: Some(shown_path),
+            ..Default::default()
+        },
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(reused.config.vm_configs, request.vmconfigs);
     assert_eq!(
         snapshot.config,
         Some(PathBuf::from("os/axvisor/.build.toml"))
