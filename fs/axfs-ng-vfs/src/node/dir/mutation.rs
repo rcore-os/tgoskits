@@ -302,22 +302,24 @@ impl<'slot, 'attempt, 'request> ParentSlot<'slot, 'attempt, 'request> {
         if request.options.exchange() && self.observed.target.is_none() {
             return Err(VfsError::NotFound);
         }
-        for parent in [&self.parents.0, &self.parents.1] {
-            request.credentials.check_permission(
-                parent,
-                NodePermission::OTHER_WRITE | NodePermission::OTHER_EXEC,
-            )?;
-        }
         let noop = self.observed.target.as_ref().is_some_and(|target| {
             target
                 .entry
                 .same_backend_object(&self.observed.source.entry)
         });
-        if noop && !request.options.whiteout() {
+        // Same-object renames do not modify either name, even with WHITEOUT.
+        // Only the locked observation may bypass mutation-specific permissions.
+        if noop {
             return Ok(AuthorizedSlot {
                 slot: self,
                 noop: true,
             });
+        }
+        for parent in [&self.parents.0, &self.parents.1] {
+            request.credentials.check_permission(
+                parent,
+                NodePermission::OTHER_WRITE | NodePermission::OTHER_EXEC,
+            )?;
         }
         request
             .credentials
@@ -339,6 +341,27 @@ impl<'slot, 'attempt, 'request> ParentSlot<'slot, 'attempt, 'request> {
                     (_, NodeType::Directory) => return Err(VfsError::IsADirectory),
                     _ => {}
                 }
+            }
+        }
+        // Changing a directory's parent also writes its native ".." entry.
+        // Compare backend entities, not aliases, and use this attempt's metadata.
+        if !request
+            .source_parent()
+            .same_backend_object(request.destination_parent())
+        {
+            if self.observed.source.entry.node_type() == NodeType::Directory {
+                request.credentials.check_permission(
+                    &self.observed.source.metadata,
+                    NodePermission::OTHER_WRITE,
+                )?;
+            }
+            if request.options.exchange()
+                && let Some(target) = &self.observed.target
+                && target.entry.node_type() == NodeType::Directory
+            {
+                request
+                    .credentials
+                    .check_permission(&target.metadata, NodePermission::OTHER_WRITE)?;
             }
         }
         if self.observed.source.entry.node_type() == NodeType::Directory

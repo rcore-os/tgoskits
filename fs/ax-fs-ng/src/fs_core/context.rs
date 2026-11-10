@@ -1229,6 +1229,10 @@ impl FsContext {
         if !Arc::ptr_eq(src_dir.mountpoint(), dst_dir.mountpoint()) {
             return Err(VfsError::CrossesDevices);
         }
+        // Already-resolved callers may have no search trace. Validate both
+        // parent paths before probing names, without deciding write access.
+        self.check_search_path(src_dir, src_boundary, credentials)?;
+        self.check_search_path(dst_dir, dst_boundary, credentials)?;
         // Preserve preflight error ordering; none of these observations grants
         // permission to commit. The backend attempt rechecks current objects.
         src_dir.lookup_no_follow(src_name)?;
@@ -1244,24 +1248,9 @@ impl FsContext {
             return Err(VfsError::AlreadyExists);
         }
 
-        // Resolve both final entries before checking parent write access. A
-        // missing source must remain ENOENT even when either mutation parent
-        // is searchable but not writable.
-        self.check_mutation_parent_with_boundary_and_search(
-            src_dir,
-            src_search,
-            src_boundary,
-            credentials,
-        )?;
-        self.check_mutation_parent_with_boundary_and_search(
-            dst_dir,
-            dst_search,
-            dst_boundary,
-            credentials,
-        )?;
-
-        // No-op and sticky decisions belong to the same locked observation as
-        // commit, not the objects retained by these preflight ordering checks.
+        // Parent write, sticky, and no-op decisions all depend on the locked
+        // current objects. An outer write check could reject a legal no-op
+        // after a competing move, even if these probes saw different inodes.
         src_dir.rename_with_options(src_name, dst_dir, dst_name, options, credentials)
     }
 
