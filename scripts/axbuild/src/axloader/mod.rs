@@ -124,6 +124,7 @@ fn build_with_context(
         workspace.target_dir(),
         &args.target,
         args.release || !args.debug,
+        false,
     )
 }
 
@@ -147,7 +148,13 @@ async fn test_qemu(
     )?;
     run_loader_check(workspace.root(), workspace.target_dir(), &args.target)?;
 
-    run_loader_build(workspace.root(), workspace.target_dir(), &args.target, true)?;
+    run_loader_build(
+        workspace.root(),
+        workspace.target_dir(),
+        &args.target,
+        true,
+        true,
+    )?;
     let firmware = match (args.firmware_code, args.firmware_vars) {
         (Some(code), Some(vars)) => Some(OvmfFirmware::from_paths(code, vars)?),
         (None, None) => None,
@@ -184,6 +191,7 @@ fn run_loader_build(
     target_dir: &Path,
     target: &str,
     release: bool,
+    inject_202_write_failure: bool,
 ) -> anyhow::Result<()> {
     let plan = LoaderBuildPlan::for_target(target)?;
     let mut args = vec![
@@ -197,7 +205,12 @@ fn run_loader_build(
         "--bin".to_string(),
         LAUNCHER_BIN.to_string(),
         "--features".to_string(),
-        "uefi-launcher".to_string(),
+        if inject_202_write_failure {
+            "uefi-launcher,qemu-fail-202-write"
+        } else {
+            "uefi-launcher"
+        }
+        .to_string(),
     ];
     args.extend(plan.cargo_args.iter().cloned());
     append_target_rustflags(&mut args, &plan);

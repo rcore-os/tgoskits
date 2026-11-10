@@ -2,11 +2,15 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{string::ToString, vec::Vec};
 
+use httpboot_protocol::DeviceOperationError;
 use thiserror::Error;
 
-use crate::target::{RelocationSpec, TargetSpec, ranges_overlap};
+use crate::{
+    boot_job::operation_error,
+    target::{RelocationSpec, TargetSpec, ranges_overlap},
+};
 
 /// The executable flag from an ELF program header.
 pub const ELF_PF_X: u32 = 1;
@@ -39,10 +43,10 @@ pub enum ElfError {
     UnsupportedEndian,
     #[error("unsupported ELF version")]
     UnsupportedVersion,
-    #[error("ELF machine does not match the target")]
-    UnsupportedMachine,
-    #[error("requested EFI entry symbol does not match the target")]
-    UnsupportedEntrySymbol,
+    #[error(
+        "ELF e_machine={actual} does not match the loader target (expected e_machine={expected})"
+    )]
+    UnsupportedMachine { actual: u16, expected: u16 },
     #[error("ELF header offset is outside the image")]
     HeaderRange,
     #[error("ELF program header table is outside the image")]
@@ -59,10 +63,24 @@ pub enum ElfError {
     RelocationSectionRange,
     #[error("ELF image uses an unsupported dynamic relocation")]
     UnsupportedRelocation,
-    #[error("required EFI entry symbol is missing")]
-    EntrySymbolMissing,
-    #[error("EFI entry symbol is not in an executable load segment")]
-    EntryNotExecutable,
+    #[error("required EFI entry symbol `{symbol}` is missing")]
+    EntrySymbolMissing { symbol: &'static str },
+    #[error("EFI entry symbol `{symbol}` is not in an executable load segment")]
+    EntryNotExecutable { symbol: &'static str },
+}
+
+impl ElfError {
+    /// Converts a parser failure into the device control-plane error contract
+    /// while retaining the complete underlying diagnostic.
+    pub fn device_error(self) -> DeviceOperationError {
+        let code = match &self {
+            Self::UnsupportedMachine { .. } => "elf_machine_mismatch",
+            Self::EntrySymbolMissing { .. } => "efi_entry_missing",
+            Self::EntryNotExecutable { .. } => "efi_entry_not_executable",
+            _ => "invalid_elf",
+        };
+        operation_error(code, self.to_string())
+    }
 }
 
 /// A validated ELF64 PT_LOAD segment.
@@ -92,18 +110,11 @@ pub struct ElfImage {
 impl ElfImage {
     /// Validates an ELF64 image against a target contract and resolves its EFI
     /// entry symbol to an executable PT_LOAD mapping.
-    ///
-    /// `requested_entry_symbol` is the protocol-visible symbol. It must match
-    /// the symbol named by `spec` before the image's symbol table is searched.
-    pub fn parse(
-        image: &[u8],
-        spec: TargetSpec,
-        requested_entry_symbol: Option<&str>,
-    ) -> Result<Self, ElfError> {
+    pub fn parse(image: &[u8], spec: TargetSpec) -> Result<Self, ElfError> {
         let header = Elf64Header::read(image).ok_or(ElfError::TooSmall)?;
-        validate_header(&header, spec, requested_entry_symbol)?;
+        validate_header(&header, spec)?;
         let segments = load_segments(image, &header)?;
-        validate_dynamic_relocations(image, &header, &segments, spec.relocation)?;
+        validate_dynamic_relocations(image, &header, &segments, spec.relocation())?;
 
         let first_physical_address = segments
             .iter()
@@ -128,10 +139,16 @@ impl ElfImage {
         let page_count =
             usize::try_from(span / EFI_PAGE_SIZE).map_err(|_| ElfError::SegmentAddressOverflow)?;
 
-        let entry_symbol =
-            find_symbol(image, &header, spec.entry_symbol)?.ok_or(ElfError::EntrySymbolMissing)?;
-        let entry_point = virtual_to_executable_physical(entry_symbol, &segments)
-            .ok_or(ElfError::EntryNotExecutable)?;
+        let entry_symbol = find_symbol(image, &header, spec.entry_symbol)?.ok_or(
+            ElfError::EntrySymbolMissing {
+                symbol: spec.entry_symbol,
+            },
+        )?;
+        let entry_point = virtual_to_executable_physical(entry_symbol, &segments).ok_or(
+            ElfError::EntryNotExecutable {
+                symbol: spec.entry_symbol,
+            },
+        )?;
 
         Ok(Self {
             segments,
@@ -273,11 +290,7 @@ impl Elf64Symbol {
     }
 }
 
-fn validate_header(
-    header: &Elf64Header,
-    spec: TargetSpec,
-    requested_entry_symbol: Option<&str>,
-) -> Result<(), ElfError> {
+fn validate_header(header: &Elf64Header, spec: TargetSpec) -> Result<(), ElfError> {
     if header.ident[..4] != *ELF_MAGIC {
         return Err(ElfError::BadMagic);
     }
@@ -293,10 +306,10 @@ fn validate_header(
         return Err(ElfError::UnsupportedVersion);
     }
     if !spec.matches_machine(header.machine) {
-        return Err(ElfError::UnsupportedMachine);
-    }
-    if requested_entry_symbol != Some(spec.entry_symbol) {
-        return Err(ElfError::UnsupportedEntrySymbol);
+        return Err(ElfError::UnsupportedMachine {
+            actual: header.machine,
+            expected: spec.machine,
+        });
     }
     Ok(())
 }
@@ -574,6 +587,8 @@ fn read_u64(image: &[u8], offset: usize) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::{ELF_PF_X, ELF64_RELA_SIZE, ElfError, ElfImage, SHF_ALLOC, SHT_RELA};
     use crate::target::{LOONGARCH64_EFI, LOONGARCH64_UEFI, TargetSpec, X86_64};
 
@@ -667,7 +682,7 @@ mod tests {
 
     fn parse(spec: TargetSpec, segments: &[TestSegment]) -> Result<ElfImage, ElfError> {
         let image = test_elf(spec, segments);
-        ElfImage::parse(&image, spec, Some(spec.entry_symbol))
+        ElfImage::parse(&image, spec)
     }
 
     fn executable_segment(spec: TargetSpec) -> TestSegment {
@@ -713,38 +728,47 @@ mod tests {
     }
 
     #[test]
-    fn wrong_machine_or_entry_symbol_is_rejected() {
+    fn wrong_machine_is_rejected_with_actual_and_expected_values() {
         let mut image = test_elf(X86_64, &[executable_segment(X86_64)]);
         write_u16(&mut image, 18, LOONGARCH64_EFI.machine);
+        let error = ElfImage::parse(&image, X86_64).unwrap_err();
         assert_eq!(
-            ElfImage::parse(&image, X86_64, Some(X86_64.entry_symbol)).unwrap_err(),
-            ElfError::UnsupportedMachine
+            error,
+            ElfError::UnsupportedMachine {
+                actual: LOONGARCH64_EFI.machine,
+                expected: X86_64.machine,
+            }
         );
-
-        let image = test_elf(X86_64, &[executable_segment(X86_64)]);
-        assert_eq!(
-            ElfImage::parse(&image, X86_64, Some("httpboot_entry")).unwrap_err(),
-            ElfError::UnsupportedEntrySymbol
-        );
+        assert!(error.to_string().contains("e_machine=258"));
+        assert!(error.to_string().contains("expected e_machine=62"));
+        assert_eq!(error.device_error().code, "elf_machine_mismatch");
     }
 
     #[test]
     fn entry_symbol_must_map_to_an_executable_load_segment() {
         let mut segment = executable_segment(X86_64);
         segment.flags = 4;
+        let error = parse(X86_64, &[segment]).unwrap_err();
         assert_eq!(
-            parse(X86_64, &[segment]).unwrap_err(),
-            ElfError::EntryNotExecutable
+            error,
+            ElfError::EntryNotExecutable {
+                symbol: X86_64.entry_symbol
+            }
         );
+        assert_eq!(error.device_error().code, "efi_entry_not_executable");
 
         let mut image = test_elf(X86_64, &[executable_segment(X86_64)]);
         let section_offset = read_test_u64(&image, 40) as usize;
         let symbol_section = section_offset + 64;
         write_u32(&mut image, symbol_section + 4, 1);
+        let error = ElfImage::parse(&image, X86_64).unwrap_err();
         assert_eq!(
-            ElfImage::parse(&image, X86_64, Some(X86_64.entry_symbol)).unwrap_err(),
-            ElfError::EntrySymbolMissing
+            error,
+            ElfError::EntrySymbolMissing {
+                symbol: X86_64.entry_symbol
+            }
         );
+        assert_eq!(error.device_error().code, "efi_entry_missing");
     }
 
     #[test]
@@ -780,12 +804,7 @@ mod tests {
             write_u64(&mut image, relocation_section + 32, ELF64_RELA_SIZE as u64);
             write_u64(&mut image, relocation_section + 56, ELF64_RELA_SIZE as u64);
 
-            let result = ElfImage::parse(
-                &image,
-                LOONGARCH64_UEFI,
-                Some(LOONGARCH64_UEFI.entry_symbol),
-            )
-            .map(|_| ());
+            let result = ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ());
             assert_eq!(result, expected);
         }
     }
@@ -795,7 +814,7 @@ mod tests {
         let mut image = test_elf(X86_64, &[executable_segment(X86_64)]);
         image.truncate(63);
         assert_eq!(
-            ElfImage::parse(&image, X86_64, Some(X86_64.entry_symbol)).unwrap_err(),
+            ElfImage::parse(&image, X86_64).unwrap_err(),
             ElfError::TooSmall
         );
 
@@ -803,7 +822,7 @@ mod tests {
         let length = image.len() as u64;
         write_u64(&mut image, 32, length);
         assert_eq!(
-            ElfImage::parse(&image, X86_64, Some(X86_64.entry_symbol)).unwrap_err(),
+            ElfImage::parse(&image, X86_64).unwrap_err(),
             ElfError::ProgramHeaderRange
         );
 
@@ -812,7 +831,7 @@ mod tests {
         write_u64(&mut image, 72, length);
         write_u64(&mut image, 80, length);
         assert_eq!(
-            ElfImage::parse(&image, X86_64, Some(X86_64.entry_symbol)).unwrap_err(),
+            ElfImage::parse(&image, X86_64).unwrap_err(),
             ElfError::SegmentRange
         );
     }

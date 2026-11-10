@@ -150,11 +150,11 @@ impl OsPayloads {
             .await?;
             if let Some(vm_id) = guest_console {
                 tokio::try_join!(
-                    boot_smoke(profile, &qemu, client, port, root, scenario),
+                    boot_smoke(&qemu, client, port, root, scenario),
                     attach_guest_console(&qemu, root, vm_id),
                 )?;
             } else {
-                boot_smoke(profile, &qemu, client, port, root, scenario).await?;
+                boot_smoke(&qemu, client, port, root, scenario).await?;
             }
             drop(qemu);
         }

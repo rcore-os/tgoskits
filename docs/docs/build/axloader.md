@@ -5,7 +5,7 @@ sidebar_label: "Axloader"
 
 # Axloader
 
-`cargo xtask axloader` 为 x86_64 和 LoongArch64 构建同一套原生 UEFI 装载器。两者共享固件网络、串口身份、HTTP v6、A/B OTA、ELF 校验和 someboot 固件交接；架构 profile 只选择 ELF machine/入口、UEFI 固件、QEMU 参数和启动文件名。通用 legacy LoongArch axstd 后端仍保留，但不是新默认路径；LoongArch 原生路径直接加载目标 ArceOS ELF。
+`cargo xtask axloader` 为 x86_64 和 LoongArch64 构建同一套原生 UEFI 装载器。两者共享固件网络、串口身份、HTTP v7、A/B OTA、ELF 校验和 someboot 固件交接。客户端只上传实际文件；设备按本地 `TargetSpec` 检查 machine、EFI 符号和装载约束，并从本机符号约定选择入口。通用 legacy LoongArch axstd 后端仍保留，但不是新默认路径；LoongArch 原生路径直接加载目标 ArceOS ELF。
 
 ## 1. 构建入口
 
@@ -82,9 +82,11 @@ GUID 为 `7b9fa931-a25b-d043-b13c-63435428c473`。v2/v3 已拒绝，迁移须同
 不周期重发。依赖公告发现的服务端须先就绪；服务端后启动或启动广播丢失时，
 使用已知设备 IP 直接访问 HTTP 接口。
 
-两前端使用 `http_control::Route` 共享 epoch/trial 准入，三种 GET 状态查询无需
-epoch，单值控制头重复时返回 `400`。`elf::ElfImage` 统一解析和校验可执行 EFI
-入口，具体装载地址、内存申请和缓存维护由后端负责。LoongArch 在最终跳转前
+两前端使用 `http_control::Route` 共享 v7、epoch/trial 准入，三种 GET 状态查询
+无需 epoch，单值控制头重复时返回 `400`。v7 是唯一运行协议；非 v7 修改请求在
+解析 body、接管串口或写入文件前返回顶层 `unsupported_protocol`，不进入旧协议
+解析器。`elf::ElfImage::parse(image, target)` 只接收本机 `TargetSpec`，统一解析
+并校验可执行 EFI 入口；具体装载地址、内存申请和缓存维护由后端负责。LoongArch 在最终跳转前
 通过 `ax-runtime::handoff::enter()` 同步文件系统、停止块设备与网络 DMA、join
 网络任务、关闭串口及本核中断；当前限定一个运行处理器。停稳失败或保持调用方
 执行上下文的 EFI 目标返回时复位；已接管栈、MMU 或处理器状态的内核不得返回。
@@ -144,11 +146,11 @@ EFI 文件系统启动，源文件不超过 32 MiB，来源不可用或必需资
 
 ## 2. 设备控制
 
-v6 把控制面放在设备上。`network::NetworkInterface` 要求同一 UEFI 控制器同时提供 SNP、IP4、UDP4 和 TCP4；`network::Announcer` 向 UDP `2998` 单向广播带 `serial_id` 与 `serial_ready` 的 `LoaderAnnouncement`，`direct::Listener` 在 TCP `2999` 接受请求。设备不再发现、轮询或下载 ostool-server 的资源。
+v7 把控制面放在设备上。`network::NetworkInterface` 要求同一 UEFI 控制器同时提供 SNP、IP4、UDP4 和 TCP4；`network::Announcer` 向 UDP `2998` 单向广播带 `serial_id` 与 `serial_ready` 的 `LoaderAnnouncement`，`direct::Listener` 在 TCP `2999` 接受请求。设备不发现、轮询或下载 ostool-server 的资源，也不维护旧 discovery、poll 或 OTA 兼容入口。
 
 ### 2.1 发现与代次
 
-每次固件启动都会生成新的 `boot_epoch`。调用方先读取 `GET /api/v1/status`，随后在修改请求中携带相同的 `X-Boot-Epoch`；旧代次返回 `409`。广播只用于发现，有设备地址的直连调用方不依赖 ostool-server。
+每次固件启动都会生成新的 `boot_epoch`。调用方先读取 `GET /api/v1/status`，随后在所有 boot、serial 和 OTA mutation 中携带相同的 `X-Boot-Epoch` 与 `X-Axloader-Protocol-Version: 7`；旧代次返回 `409 boot_epoch_mismatch`。GET 状态查询可以不带协议版本头。广播只用于发现，有设备地址的直连调用方不依赖 ostool-server。
 
 ```mermaid
 sequenceDiagram
@@ -158,34 +160,35 @@ sequenceDiagram
     L-->>C: UDP 2998 LoaderAnnouncement（可选转发）
     C->>L: GET /api/v1/status
     L-->>C: LoaderDeviceStatus、boot_epoch、serial_id 与参数
-    C->>L: POST /api/v1/serial/continue（bound 或 direct）
-    C->>L: HTTP 修改请求与 X-Boot-Epoch
+    C->>L: POST /api/v1/serial/continue（v7、bound 或 direct）
+    C->>L: HTTP 修改请求、X-Axloader-Protocol-Version 与 X-Boot-Epoch
 ```
 
 本地服务端联调只把测试环境中的设备地址映射到 QEMU `hostfwd` 端口。ostool-server 随后通过真实 HTTP 连接操作客户机中的 axloader，测试夹具不替设备生成响应。
 
 ### 2.2 启动事务
 
-`boot_server::BootServer` 保存单个内存事务，并直接使用 `httpboot_protocol::DeviceBootJob`、`DeviceBootImage` 和 `DeviceBootStatus`。同一启动 ID 与相同清单可以重试；冲突清单或并发事务返回 `409`。cmdline 和 initramfs 相互独立，均可省略。
+`boot_server::BootServer` 保存单个内存事务，并使用 v7 `DeviceBootJob`、`DeviceBootImage` 和 `DeviceBootStatus`。`DeviceBootJob` 只有 `boot_id`、`kernel`、可选 `initramfs` 与可选 `cmdline`；`arch`、`image_format` 和 `entry_symbol` 不属于请求，携带这些字段的 JSON 因 `deny_unknown_fields` 被拒绝。同一启动 ID 与相同清单重试返回当前状态；冲突清单或并发事务返回 `409 boot_job_busy`。
 
 | 接口 | 行为 |
 | --- | --- |
-| `POST /api/v1/boot/jobs` | 提交启动 ID、当前架构 ELF64、文件长度和 SHA-256，以及可选 cmdline/initramfs |
-| `GET /api/v1/boot/jobs/{id}` | 查询文件接收状态和阶段 |
+| `POST /api/v1/boot/jobs` | 提交启动 ID、内核长度和 SHA-256，以及可选 cmdline/initramfs；不传架构、格式或入口 |
+| `GET /api/v1/boot/jobs/{id}` | 查询接收、ready 或 failed 状态及首个错误 |
 | `PUT /api/v1/boot/jobs/{id}/kernel` | 定长上传内核并核对 `X-Image-Sha256` |
 | `PUT /api/v1/boot/jobs/{id}/initramfs` | 上传清单声明的可选归档 |
 | `POST /api/v1/serial/continue` | 携带 `X-Boot-Epoch`、`serial_id`、`binding_id` 和 `bound/direct`；相同请求幂等，`bound` 需要当前串口身份就绪 |
 | `DELETE /api/v1/serial/bindings/{binding_id}` | 撤销当前启动的绑定令牌并恢复身份帧 |
-| `DELETE /api/v1/boot/jobs/{id}` | 取消尚未执行的事务 |
-| `POST /api/v1/boot/jobs/{id}/start` | 完成 ELF 与载荷检查，核对 `X-Serial-Binding`，回复 `202`，关闭网络对象后交接 |
+| `DELETE /api/v1/boot/jobs/{id}` | 释放当前事务；failed 事务同样可通过 DELETE 释放 |
+| `POST /api/v1/boot/jobs/{id}/start` | 在本机唯一解析实际 ELF，核对 `X-Serial-Binding`，成功写完 `202 ready_to_handoff` 后才交接 |
 
-x86_64 只接受 `__x86_64_efi_pe_entry`，LoongArch64 只接受 `efi_pe_entry`；广播、状态和启动 manifest 的架构都来自当前编译目标。`someboot::handoff::PreparedHandoff` 在内部将 cmdline 编码为带 NUL 的 UCS-2 EFI LoadOptions，并为可选 initramfs 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。上传、状态查询和 OTA 不受串口门禁限制；没有隧道需求的调用方必须显式使用 `direct` continue。
+x86_64 的本地目标使用 machine `62` 和 `__x86_64_efi_pe_entry`，原生 LoongArch64 使用 machine `258` 和 `efi_pe_entry`。这些值由设备 `TargetSpec` 持有，状态 `arch` 只用于显示和诊断；主机不据此做准入。当前 backend 是 x86_64 UEFI 和 LoongArch64 `arceos-efi`/原生 UEFI，不能把未验证的目标描述成已有 RISC-V axloader backend。`someboot::handoff::PreparedHandoff` 将 cmdline 编码为带 NUL 的 UCS-2 EFI LoadOptions，并为可选 initramfs 注册 Linux EFI `EFI_LOAD_FILE2_PROTOCOL` 提供者。启动文件单个上限 256 MiB，请求头上限 4 KiB，只接受定长 body。上传、GET 状态和 OTA 状态不受串口门禁限制；没有隧道需求的调用方必须显式使用 `direct` continue。
 
-LoongArch 原生请求使用 `BootArch::Loongarch64`、`ImageFormat::Elf64` 和
-`efi_pe_entry`。共享 `elf_loader::load_elf()` 拒绝错误 machine、入口、重叠
-`PT_LOAD`、不支持的 RELA/RELR；复制前清零完整分配范围，复制后刷新 LoongArch
-指令缓存。目标入口必须自行应用 `R_LARCH_RELATIVE`，并由目标调用
-`ExitBootServices`。
+LoongArch 原生请求只传文件字节。`target::LOONGARCH64_UEFI` 提供本机 machine、
+`efi_pe_entry`、装载/链接地址与允许的 `R_LARCH_RELATIVE` 策略。
+`ElfImage::parse()` 在 start 中只执行一次，拒绝错误 machine、缺失或不可执行入口、
+重叠/溢出 `PT_LOAD` 和不支持的 RELA/RELR，并把 machine 实际值与期望值、本地要求的
+符号写入错误消息。复制前清零完整分配范围，复制后刷新 LoongArch 指令缓存。目标入口
+仍须自行应用重定位并调用 `ExitBootServices`。
 
 固件必须由同一控制器提供 SNP、IP4Config2、UDP4 service binding 和 TCP4
 service binding。串口身份要求能从 ConOut 唯一选择 UEFI SerialIo 并读取线路参数。
@@ -209,10 +212,29 @@ Hash2、SNP/IP4/UDP4/TCP4 和 SerialIO 的 CODE/VARS 对。legacy
 `loong-qemu-smoke.py` 继续作为旧 axstd-loader 的独立保护项，不能代替 native
 QEMU 验收。
 
-v6 设备必须与支持 `POST /api/v1/serial/continue`、`X-Serial-Binding` 的 ostool-server
-配套，板卡 ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。启动返回
-`409 serial_binding_required` 时，先检查服务端与 loader 是否配套，再检查当前
-`serial_id` 是否已完成绑定；无需串口隧道时使用显式 `direct` continue。
+v7 设备必须与发送 v7 头和 `X-Serial-Binding` 的 ostool CLI/server 配套，板卡
+ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。启动返回
+`409 serial_binding_required` 时，检查当前 `serial_id` 是否已完成 `bound` 或
+显式 `direct` continue；无需串口隧道时使用 `direct`。
+
+设备控制错误统一为顶层 `{code,message}`。上传长度或摘要失败、ELF/装载失败及
+handoff 准备失败进入 `failed`，保留首个错误并释放 kernel/initramfs 大缓冲；
+failed 事务的后续 PUT/start 返回同一 `422`，GET 返回 `200 failed`，DELETE
+后释放。epoch/binding 不匹配、文件未齐和未知 ID 是非终态，不破坏事务。
+
+两个 frontend 都在 body 读取和状态修改前按 v7 版本、epoch/trial、当前 ID 与
+failed 状态依次检查。旧 epoch 即使指向 failed job 也先返回
+`409 boot_epoch_mismatch`；当前 epoch 的 failed PUT/start 即使携带错误或超大的
+新长度，也直接重放首个 `422`，不扩展或保留恢复缓冲。只有这些检查通过后才验证
+声明长度、摘要并读取/分配 body。
+
+`BootServer::prepare()` 返回拥有装载镜像和 handoff 载荷的 `BootExecution`。
+只有 `202 ready_to_handoff` 完整写出后才进入终结 `Boot` 分支；响应写失败会析构
+本次 execution，保留 ready job 供同一 ID 重试。成功写出后不再处理第二个控制
+请求：UEFI 路径在进入目标前释放 `BootServer`、OTA、监听器、广播和串口 beacon，
+Loong axstd 路径在 runtime 停稳及 seal 前释放普通 heap 上的 server/OTA/连接对象，
+只保留 execution 持有的装载和 handoff 资源。`202` 只表示准备完成，不表示内核
+已经成功运行。
 
 ### 2.3 OTA 事务
 
@@ -277,6 +299,14 @@ QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/ax
 
 测试必须到达目标内核，`ready_to_handoff` 只表示 axloader 已准备交接。五种组合分别验证无附加载荷、仅 cmdline、仅 initramfs、两者都有和 ESP initramfs 回退。
 
+202 资源所有权回归使用仅 QEMU 测试构建启用的 `qemu-fail-202-write` feature。
+它只对固定测试 boot ID 的首次真实 prepare 结果注入一次提交错误，生产构建完全
+编译掉该分支且 HTTP 不能开启。测试要求不进入目标，并确认原 ready job 仍可 GET
+和用同一 ID 再次 start。x86_64 与原生
+LoongArch QEMU 还分别上传错误 machine、缺失本地 EFI 符号、不可执行入口和坏段范围
+的 ELF，要求 `422`、failed 可 GET，以及后续 PUT/start 重放首错；随后正确 ELF
+仍须完成真实启动。
+
 - 基础场景输出 `Hello, world!`。
 - cmdline 场景输出精确的 `HOST_CMDLINE`。
 - initramfs 场景输出 `HOST_INITRAMFS_PASSED`。
@@ -293,7 +323,7 @@ LoongArch native CI 无条件执行
 custom target、ELF 转换和最终 PE 门禁。完整
 `cargo xtask axloader test qemu --target loongarch64-unknown-uefi` 尚不是自动 CI
 门禁，因为默认 Loong 固件可能缺 Hash2；运行它必须显式提供完整 CODE/VARS
-对。该 QEMU 场景才验证 HTTP v6、真实 FAT、OTA 回滚/确认、ArceOS
+对。该 QEMU 场景才验证 HTTP v7、真实 FAT、OTA 回滚/确认、ArceOS
 `HOST_CMDLINE`/`HOST_INITRAMFS_PASSED`。标准 QEMU 不需要 QEMU-LVZ 或 AxVisor
 宿主配置。
 
@@ -308,6 +338,19 @@ legacy `scripts/loong-qemu-smoke.py` 继续保留用于旧 axstd loader 回归�
 cargo xtask arceos test board \
   --board loongson-3a6000-ll --test-case http-boot
 ```
+
+### 3.3 升级到 v7
+
+v7 是破坏性切换，运行时不接受 v2–v6 manifest、旧 discovery/poll 路由或旧
+arch/format/entry 字段，也不提供“仅用于 OTA 升级”的桥接。切换前先暂停新 session
+和 OTA 任务，完成或取消活动旧 OTA 并确认设备退出 pending/trial；随后停止旧
+server，按部署要求人工整理旧配置和 OTA 观测缓存，备份后安装新的 v7 axloader，
+再部署配套 CLI/server 并重新发现设备。
+
+旧 `boot.boot_arch`、旧配置 kind 和已删除的 loader network 字段不会自动迁移。
+保留的 `jobs.json`、OTA 镜像和有效回滚记录不由 loader 删除。安装失败时按
+现有外部恢复介质流程恢复稳定槽；不得让新 server 通过旧协议把旧 loader
+升级到 v7。
 
 ## 4. 故障定位
 
@@ -324,7 +367,7 @@ cargo xtask arceos test board \
 | `loader_broadcast_error` | UDP `2998` 的广播地址和载荷大小；公告是可选发现路径，有设备 IP 时仍可直连 |
 | `serial_binding_required` | 先读取当前 `serial_id`，通过 `POST /api/v1/serial/continue` 完成 `bound` 或显式 `direct` continue，再在启动请求中携带返回的绑定令牌 |
 | `serial` 为 `ready=false` | 检查 UEFI `ConOut` 或 axstd EFI console 是否可用，再读取新的 `serial_id` 和 `boot_epoch` |
-| `409 stale_boot_epoch` | 重新读取 `/api/v1/status` 并使用新的启动代次 |
+| `409 boot_epoch_mismatch` | 重新读取 `/api/v1/status` 并使用新的启动代次 |
 | 上传被拒绝 | `Content-Length`、`X-Image-Sha256`、清单长度和当前事务 ID |
 
 设备回复准备交接后，`direct::Listener`、TCP 子句柄、事件和 UDP 广播对象必须先析构。退出 Boot Services 后不能继续调用固件网络或控制台服务。

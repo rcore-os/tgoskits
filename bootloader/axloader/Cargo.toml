@@ -19,6 +19,7 @@ required-features = ["uefi-launcher"]
 [features]
 default = []
 uefi-launcher = []
+qemu-fail-202-write = []
 arceos = ["dep:ax-std", "dep:ax-net", "ax-std/arceos", "ax-std/net"]
 arceos-efi = [
     "arceos",

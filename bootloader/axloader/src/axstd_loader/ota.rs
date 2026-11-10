@@ -203,13 +203,14 @@ impl LaOta {
         Ok(())
     }
 
-    pub(super) fn launch_slot(&mut self, slot: Slot) -> Result<(), &'static str> {
+    pub(super) fn launch_slot(&mut self, slot: Slot) -> Result<(), String> {
         let path = Self::slot_path(slot);
-        let image = fs::read(&path).map_err(|_| "OTA slot read failed")?;
+        let image = fs::read(&path).map_err(|_| String::from("OTA slot read failed"))?;
         if Sha256::digest(&image).as_slice() != self.state.digest(slot) {
-            return Err("OTA slot digest mismatch");
+            return Err("OTA slot digest mismatch".into());
         }
-        let loaded = LoadedPe::load(&image)?;
+        let loaded =
+            LoadedPe::load(&image).map_err(|error| format!("OTA slot load failed: {error}"))?;
         let bytes = ota::handoff::OtaHandoff {
             slot,
             generation: self.state.generation,
@@ -224,7 +225,13 @@ impl LaOta {
                 version: 1,
                 bytes: &bytes,
             }),
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "OTA handoff preparation failed: {} (code={})",
+                error.message, error.code
+            )
+        })?;
         enter_prepared(payload, loaded.entry_point, loaded)
     }
 

@@ -126,6 +126,7 @@ fn efi_main() -> Status {
                     drop(listener);
                     drop(announcer);
                     drop(beacon);
+                    drop(server);
                     uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::SUCCESS, None);
                 }
                 direct::Action::Boot(execution) => {
@@ -141,6 +142,7 @@ fn efi_main() -> Status {
                     logln!("handoff_stage: listener_closed");
                     drop(announcer);
                     drop(beacon);
+                    drop(server);
                     logln!("handoff_stage: resources_closed");
                     // SAFETY: ELF validation found the EFI entry in the live image;
                     // networking has been closed and the guard retains payloads.

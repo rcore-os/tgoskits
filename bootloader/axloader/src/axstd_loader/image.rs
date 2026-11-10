@@ -1,7 +1,9 @@
 //! Reserved image memory, payload ownership and terminal EFI entry.
+use alloc::{format, string::ToString};
 use core::ptr::NonNull;
 
-use axloader::{efi_image, elf::ElfImage};
+use axloader::{boot_job::operation_error, efi_image, elf::ElfImage};
+use httpboot_protocol::DeviceOperationError;
 use someboot::{
     boot_resources::{self, Allocation, PhysicalRange, ResourceId},
     handoff::{ApplicationMetadata, HandoffSpec, PreparedHandoff},
@@ -34,12 +36,8 @@ pub(super) enum ElfError {
 }
 
 impl LoadedElf {
-    pub(super) fn load(
-        image: &[u8],
-        spec: axloader::target::TargetSpec,
-        entry_symbol: Option<&str>,
-    ) -> Result<Self, ElfError> {
-        let parsed = ElfImage::parse(image, spec, entry_symbol).map_err(ElfError::Elf)?;
+    pub(super) fn load(image: &[u8], spec: axloader::target::TargetSpec) -> Result<Self, ElfError> {
+        let parsed = ElfImage::parse(image, spec).map_err(ElfError::Elf)?;
         let link_addr = parsed.link_load_address();
         let entry = parsed.entry_point();
         let page_count = parsed.page_count();
@@ -108,6 +106,15 @@ impl LoadedElf {
             load_end: target_end as u64,
             _allocation: allocation,
         })
+    }
+}
+
+impl ElfError {
+    pub(super) fn device_error(&self) -> DeviceOperationError {
+        match self {
+            Self::Elf(error) => (*error).device_error(),
+            error => operation_error("image_load_failed", error.to_string()),
+        }
     }
 }
 
@@ -270,7 +277,7 @@ impl PublishedPayload {
         initramfs: Option<&[u8]>,
         cmdline: Option<&str>,
         target_image: Option<(usize, usize)>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, DeviceOperationError> {
         Self::with_metadata(initramfs, cmdline, target_image, None)
     }
     pub(super) fn with_metadata(
@@ -278,8 +285,13 @@ impl PublishedPayload {
         cmdline: Option<&str>,
         target_image: Option<(usize, usize)>,
         metadata: Option<ApplicationMetadata<'_>>,
-    ) -> Result<Self, &'static str> {
-        let (start, end) = target_image.ok_or("missing target image")?;
+    ) -> Result<Self, DeviceOperationError> {
+        let (start, end) = target_image.ok_or_else(|| {
+            operation_error(
+                "handoff_prepare_failed",
+                "target image range is unavailable for EFI handoff",
+            )
+        })?;
         let archive = initramfs
             .filter(|bytes| !bytes.is_empty())
             .map(|bytes| {
@@ -287,10 +299,20 @@ impl PublishedPayload {
                     ARCHIVE_RESOURCE,
                     (bytes.len() as u64)
                         .checked_next_multiple_of(4096)
-                        .ok_or("archive size overflows")?,
+                        .ok_or_else(|| {
+                            operation_error(
+                                "handoff_prepare_failed",
+                                "initramfs archive size overflows",
+                            )
+                        })?,
                     4096,
                 )
-                .map_err(|_| "archive resource unavailable")
+                .map_err(|error| {
+                    operation_error(
+                        "handoff_prepare_failed",
+                        format!("initramfs archive reservation failed: {error:?}"),
+                    )
+                })
             })
             .transpose()?;
         PreparedHandoff::prepare(
@@ -304,7 +326,12 @@ impl PublishedPayload {
             archive,
         )
         .map(Self)
-        .map_err(|_| "EFI handoff preparation failed")
+        .map_err(|error| {
+            operation_error(
+                "handoff_prepare_failed",
+                format!("EFI handoff preparation failed: {error}"),
+            )
+        })
     }
 }
 

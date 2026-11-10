@@ -5,15 +5,16 @@
 ### 1.1 设备接口
 
 axloader 在同一网卡使用 UEFI SNP、IP4、UDP4 与 TCP4，向 UDP `2998` 广播自身
-MAC、架构、`boot_epoch` 和 HTTP 端口，并在 TCP `2999` 提供设备接口。它不再
+MAC、架构名称、`boot_epoch` 和 HTTP 端口，并在 TCP `2999` 提供设备接口。它不再
 发现 ostool-server、轮询任务或通过 HTTP 下载镜像；串口在启动前输出本次身份帧和诊断，并在交接后
 供目标系统使用。`network::NetworkInterface::select()` 选择网卡，
 `network::Announcer` 广播，`direct::Listener` 接受请求。调用方可以直接按设备 IP
 操作，ostool-server 也调用同一组接口。
 
-每次启动创建新的 `boot_epoch`。所有修改请求均需 `X-Boot-Epoch` 与
-`GET /api/v1/status` 返回值一致；错误代次返回 `409`。当前协议为 v6，旧版
-v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
+每次启动创建新的 `boot_epoch`。所有 boot、serial 和 OTA mutation 均需
+`X-Axloader-Protocol-Version: 7` 与 `X-Boot-Epoch`；GET 状态查询可省略版本头。
+错误代次返回 `409 boot_epoch_mismatch`。v7 是唯一协议，不维护 v2–v6 运行分支、
+旧 discovery/poll 路由或 arch/format/entry 请求字段。以下接口由
 `boot_server::BootServer` 和 `axloader::ota::OtaController` 共享监听器：
 
 | 接口 | 作用 |
@@ -21,8 +22,8 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 | `GET /api/v1/status` | 读取启动代次、MAC、实际 UART 参数、绑定/错误、硬件、启动事务与 OTA 状态 |
 | `POST /api/v1/serial/continue` | 当前 epoch、serial_id、binding_id、bound/direct；相同请求幂等 |
 | `DELETE /api/v1/serial/bindings/{binding_id}` | 撤销当前匹配令牌，恢复身份帧 |
-| `POST /api/v1/boot/jobs` | 提交启动 ID、当前架构 ELF64、内核和可选归档的长度、SHA-256、命令行；入口必须匹配本机目标：x86_64 使用 `__x86_64_efi_pe_entry`，LoongArch64 使用 `efi_pe_entry` |
-| `GET /api/v1/boot/jobs/{id}` | 查询已接收文件及阶段 |
+| `POST /api/v1/boot/jobs` | 提交启动 ID、内核和可选归档的长度、SHA-256、命令行；不传 arch、image format 或入口 |
+| `GET /api/v1/boot/jobs/{id}` | 查询 receiving/ready/failed 及首个错误，failed 仍返回 200 |
 | `PUT /api/v1/boot/jobs/{id}/kernel` | 定长上传内核，要求匹配 `X-Image-Sha256` |
 | `PUT /api/v1/boot/jobs/{id}/initramfs` | 定长上传可选归档，要求匹配摘要 |
 | `POST /api/v1/boot/jobs/{id}/start` | 核对 `X-Serial-Binding` 后装载、回复 `202`，释放 UART 和固件网络后交接 |
@@ -31,17 +32,28 @@ v2/v3/v4 的兼容入口只保留在 ostool-server。以下接口由
 | `PUT /api/v1/ota/image` | 定长上传 EFI，写入非活动槽后回复 `202` 并重启 |
 | `POST /api/v1/ota/confirm` | 用升级 ID 和来源确认当前待试槽 |
 
-v6 设备必须与支持 `POST /api/v1/serial/continue`、`X-Serial-Binding` 的
-ostool-server 配套使用，板卡 ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。
+v7 设备必须与发送 v7 头和 `X-Serial-Binding` 的 ostool CLI/server 配套使用，
+板卡 ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。
 不需要串口隧道时仍须显式发送 `direct` continue；启动返回 `409 serial_binding_required`
 时，先检查服务端/loader 版本是否配套，再检查串口身份是否完成绑定。
 
 启动文件暂存内存，每个文件上限 256 MiB，EFI 上限 32 MiB，请求头上限
 4 KiB。只接受定长请求体，连接空闲 30 秒后取消，SHA-256 不符时不发布文件。
 上传时 `direct::Connection::wait()` 仍推进广播；同一时间只处理一个上传事务。
-`BootServer::create()` 允许同 ID、同清单重试，其他并发事务返回冲突。只有
-文件核对、`elf_loader::load_elf()` 和 `someboot::handoff::PreparedHandoff::prepare()` 成功后，
-才回复 `ready_to_handoff`、释放 TCP/UDP 对象并进入内核。
+`BootServer::create()` 允许同 ID、同清单重试，其他并发事务返回冲突。upload 只在
+move 后核对一次长度和摘要，任务只向 backend 借用不可变文件切片。start 每次从内存
+读取并在 `ElfImage::parse(image, target)` 中解析一次；machine 不匹配、缺少/不可执行
+本地 EFI 符号、坏段或 handoff 准备失败会记录首个错误、释放上传缓冲并返回 422。
+只有文件和 handoff 准备成功、`202 ready_to_handoff` 完整写出后，才停止控制面并
+进入内核；202 写失败会析构本次 execution，原 ready 事务仍可再次 start。
+
+两个 frontend 的顺序固定为版本、epoch/trial、当前 ID/failed、长度/摘要、body
+读取与分配，最后才进入 route。旧 epoch 不因 failed 事务改成 422；当前 failed
+PUT/start 则在检查新长度或分配恢复缓冲前重放首错。真实 QEMU 构建启用默认关闭的
+`qemu-fail-202-write` feature，只对固定测试 boot ID 的首次真实提交注入一次错误；
+生产构建不保留注入分支，HTTP 也没有开关。测试要求同 ID 重试；x86_64 与
+LoongArch64 还跑错误 machine、缺符号、
+不可执行入口和坏段矩阵。
 HTTP `CloseToken` 只做有界等待；超时后用 `Configure(NULL)` 按 Tcp4 reset 契约中止
 并重置实例，不能把 Close token 传给 `Cancel()`。监听 Accept token 可在有界等待中
 使用合法 `Cancel()`，之后同样以 `Configure(NULL)` 完成 reset。固件无法确认 token
@@ -49,7 +61,10 @@ HTTP `CloseToken` 只做有界等待；超时后用 `Configure(NULL)` 按 Tcp4 r
 也遵循同一有界 reset 契约。交接路径一次性输出
 `handoff_stage: http_close_start/http_closed/listener_closed/resources_closed/target_enter`。
 
-`cmdline` 与 `initramfs` 相互独立且都可省略。axloader 把命令行编码成带 NUL
+`cmdline` 与 `initramfs` 相互独立且都可省略。设备端固定 `TargetSpec` 决定 ELF
+machine、EFI 入口符号和装载约束，状态里的 `arch` 只是开放字符串诊断值；当前只实现
+x86_64 UEFI 和 LoongArch64 UEFI/arceos-efi，不声称有 RISC-V axloader backend。
+axloader 把命令行编码成带 NUL
 结尾的 UCS-2，临时安装到自身 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`；没有
 命令行时显式安装空 LoadOptions，避免把 axloader 自身参数传给内核。归档存在时，
 axloader 注册 Linux EFI initrd 约定的 `EFI_LOAD_FILE2_PROTOCOL` 提供者和
@@ -129,10 +144,10 @@ and rejects tables larger than 1 MiB.
 | `x86_64` | `x86_64-unknown-uefi` | `BOOTX64.EFI` |
 | `loongarch64` | `loongarch64-unknown-uefi` | `BOOTLOONGARCH64.EFI` |
 
-x86_64 and LoongArch64 now use the same native UEFI loader code, firmware
-network protocols, HTTP v6/OTA transaction, serial identity and ELF handoff.
-The architecture profile only selects the ELF machine/entry symbol, firmware
-architecture, QEMU machine and boot filename. x86_64 accepts
+x86_64 and LoongArch64 use the same native UEFI loader code, firmware network
+protocols, HTTP v7/OTA transaction, serial identity and ELF handoff. The device
+target selects the ELF machine, local EFI entry symbol and load/link contract;
+QEMU still selects its firmware architecture and boot filename. x86_64 accepts
 `__x86_64_efi_pe_entry`; LoongArch accepts ELF64 `EM_LOONGARCH` with
 `efi_pe_entry`. The maximum uploaded target is 256 MiB.
 
@@ -195,14 +210,14 @@ target/loongarch64-unknown-uefi/release/axloader-launcher.efi
 
 `test qemu` uses the same real FAT/OTA/HTTP transaction for both native targets.
 The Loong profile selects `qemu-system-loongarch64`, `virt`, `la464`, Loong
-UEFI firmware, `BOOTLOONGARCH64.EFI`, `BootArch::Loongarch64` and
-`efi_pe_entry`. Its ArceOS smoke target must print `HOST_CMDLINE` and
+UEFI firmware, `BOOTLOONGARCH64.EFI`, and the local LoongArch `TargetSpec`
+whose EFI symbol is `efi_pe_entry`. Its ArceOS smoke target must print `HOST_CMDLINE` and
 `HOST_INITRAMFS_PASSED`; `ready_to_handoff` alone is not success. The QEMU
 test uses SLiRP host forwarding and proves HTTP, not real UDP broadcast
 discovery. UDP discovery still requires an isolated TAP network or a physical
 board.
 
-The default LoongArch run validates the native loader, HTTP v6, OTA, and
+The default LoongArch run validates the native loader, HTTP v7, OTA, and
 direct ArceOS handoff scenarios with standard QEMU. The target is an ordinary
 ArceOS ELF whose `efi_pe_entry` calls `ExitBootServices`; no AxVisor host or
 virtual machine is involved.
@@ -323,7 +338,7 @@ the ArceOS board case above rather than an AxVisor host shell.
 `loader_tcp4_unavailable` 表示同一网卡没有 SNP/IP4/UDP4/TCP4 协议束；
 `loader_tcp4_listen_failed` 表示固件未能在端口 `2999` 创建被动 TCP4 实例。
 `loader_broadcast_error` 仅影响自动发现；有设备 IP 的直连调用仍可用。
-返回 `409 stale_boot_epoch` 时重新 GET 状态，使用新的启动代次发起请求。
+返回 `409 boot_epoch_mismatch` 时重新 GET 状态，使用新的启动代次发起请求。
 `ready_to_handoff` 后出现交接错误，应核对 ELF/归档入口和 UEFI 退出路径。
 
 

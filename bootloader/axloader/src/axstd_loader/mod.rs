@@ -12,19 +12,20 @@ use std::{
 };
 
 use axloader::{
-    boot_job::{BootJobStore, FileKind},
+    boot_job::{BootJob, BootJobStore, FileKind, operation_error},
     http_control::{
-        MAX_HEADER_BYTES, MAX_IMAGE_BYTES, RequestHead, Route, error_status, parse_head,
-        parse_update_id, route as control_route, validate_body_length,
+        MAX_HEADER_BYTES, MAX_IMAGE_BYTES, RequestHead, Route, commit_after_successful_write,
+        error_status, operation_error_json, parse_head, parse_update_id, qemu_202_write_failure,
+        route as control_route, validate_body_length, validate_request_protocol,
     },
     integrity,
     ota::Outcome,
     target::LOONGARCH64_EFI,
 };
 use httpboot_protocol::{
-    BootArch, DEVICE_PROTOCOL_VERSION, DeviceBootJob, LoaderAnnouncement, LoaderDeviceStatus,
-    LoaderHardwareInfo, MAX_DISCOVERY_DATAGRAM_BYTES, MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress,
-    OtaSource, SerialParameters,
+    DEVICE_PROTOCOL_VERSION, DeviceBootJob, DeviceBootStatus, DeviceOperationError,
+    LoaderAnnouncement, LoaderDeviceStatus, LoaderHardwareInfo, MAX_HTTP_BOOT_INITRAMFS_BYTES,
+    MacAddress, OtaSource, SerialParameters,
 };
 use sha2::{Digest, Sha256};
 use someboot::boot_resources::{Placement, ResourceId, ResourceRequest};
@@ -43,6 +44,7 @@ someboot::declare_boot_resources! {
 
 const HTTP_PORT: u16 = 2999;
 const DISCOVERY_PORT: u16 = 2998;
+const MAX_UDP_ANNOUNCEMENT_BYTES: usize = 1400;
 mod image;
 mod ota;
 
@@ -121,9 +123,13 @@ pub fn run() {
                 // listener before firmware takes over the machine reset.
                 drop(stream);
                 drop(listener);
+                drop(server);
                 ax_std::os::arceos::api::modules::ax_hal::power::system_reset();
             }
-            Ok(Action::Boot(execution)) => {
+            Ok(Action::Boot {
+                execution,
+                inject_write_failure: _,
+            }) => {
                 println!(
                     "elf_loaded: load={:#x} end={:#x} entry={:#x} pages={}",
                     execution.elf.load_addr,
@@ -136,6 +142,7 @@ pub fn run() {
                 // workers and confirms that device DMA has stopped.
                 drop(stream);
                 drop(listener);
+                drop(server);
                 execution.handoff();
             }
             Err(error) => {
@@ -212,7 +219,7 @@ fn announce(mac: MacAddress, epoch: &str, serial_ready: bool) {
         protocol_version: DEVICE_PROTOCOL_VERSION,
         mac_address: mac,
         current_mac_address: mac,
-        arch: BootArch::Loongarch64,
+        arch: LOONGARCH64_EFI.arch_name.into(),
         loader_version: env!("CARGO_PKG_VERSION").into(),
         boot_epoch: epoch.into(),
         http_port: HTTP_PORT,
@@ -221,7 +228,7 @@ fn announce(mac: MacAddress, epoch: &str, serial_ready: bool) {
     }) else {
         return;
     };
-    if payload.len() > MAX_DISCOVERY_DATAGRAM_BYTES {
+    if payload.len() > MAX_UDP_ANNOUNCEMENT_BYTES {
         return;
     }
     let _ = socket.send_to(
@@ -270,7 +277,10 @@ fn hex(bytes: &[u8]) -> String {
 enum Action {
     None,
     Reset,
-    Boot(BootExecution),
+    Boot {
+        execution: BootExecution,
+        inject_write_failure: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -290,10 +300,12 @@ fn handle_connection(
     ota: &mut LaOta,
     server: &mut BootServer,
 ) -> Result<Action, String> {
-    let request = match read_request(stream) {
+    let request = match read_request(stream, ota, server) {
         Ok(request) => request,
         Err(error) => {
-            let response = Response::json(error_status(&error), error_json(&error), Action::None);
+            let error = error.into_operation_error();
+            let response =
+                Response::json(error_status(&error.code), error_json(&error), Action::None);
             stream
                 .write_all(response.bytes())
                 .map_err(|_| "response write failed".to_string())?;
@@ -302,66 +314,184 @@ fn handle_connection(
     };
     let response = match route(request, ota, server) {
         Ok(response) => response,
-        Err(error) => Response::json(error_status(&error), error_json(&error), Action::None),
+        Err(error) => Response::json(error_status(&error.code), error_json(&error), Action::None),
     };
-    stream
-        .write_all(response.bytes())
-        .map_err(|_| "response write failed".to_string())?;
-    Ok(response.action)
+    let Response { bytes, action } = response;
+    let injected_error: Option<fn() -> String> = match &action {
+        Action::Boot {
+            inject_write_failure: true,
+            ..
+        } => Some(|| String::from("injected 202 response write failure")),
+        _ => None,
+    };
+    commit_after_successful_write(
+        || {
+            stream
+                .write_all(&bytes)
+                .map_err(|_| "response write failed".to_string())
+        },
+        action,
+        injected_error,
+    )
 }
 
-fn error_json(error: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "error": error })).unwrap_or_else(|_| b"{}".to_vec())
+fn error_json(error: &DeviceOperationError) -> Vec<u8> {
+    operation_error_json(error).unwrap_or_else(|_| {
+        br#"{"code":"internal_error","message":"failed to encode device error"}"#.to_vec()
+    })
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
+enum ReadRequestError {
+    Device(DeviceOperationError),
+    Io(String),
+}
+
+impl ReadRequestError {
+    fn into_operation_error(self) -> DeviceOperationError {
+        match self {
+            Self::Device(error) => error,
+            Self::Io(message) => operation_error("invalid_request", message),
+        }
+    }
+}
+
+fn read_request(
+    stream: &mut TcpStream,
+    ota: &LaOta,
+    server: &mut BootServer,
+) -> Result<HttpRequest, ReadRequestError> {
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; 2048];
     let header_end = loop {
         if bytes.len() >= MAX_HEADER_BYTES {
-            return Err("request header too large".into());
+            return Err(ReadRequestError::Device(operation_error(
+                "request_header_too_large",
+                "HTTP request header exceeds the control-plane limit",
+            )));
         }
         let count = stream
             .read(&mut chunk)
-            .map_err(|_| "request read failed".to_string())?;
+            .map_err(|_| ReadRequestError::Io("request read failed".into()))?;
         if count == 0 {
-            return Err("request ended".into());
+            return Err(ReadRequestError::Io("request ended".into()));
         }
         bytes.extend_from_slice(&chunk[..count]);
         if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
             let header_end = index + 4;
             if header_end > MAX_HEADER_BYTES {
-                return Err("request header too large".into());
+                return Err(ReadRequestError::Device(operation_error(
+                    "request_header_too_large",
+                    "HTTP request header exceeds the control-plane limit",
+                )));
             }
             break header_end;
         }
     };
-    let (head, parsed_header_end) = parse_head(&bytes).map_err(str::to_string)?;
+    let (head, parsed_header_end) = parse_head(&bytes)
+        .map_err(|error| ReadRequestError::Device(operation_error("invalid_request", error)))?;
     debug_assert_eq!(parsed_header_end, header_end);
+    validate_request_protocol(&head).map_err(ReadRequestError::Device)?;
     let method = head.method.as_str();
     let path = head.path.as_str();
     let length = head.content_length;
-    let mut body = bytes[header_end..].to_vec();
+    let initial = &bytes[header_end..];
+    let selected_route = control_route(method, path);
+    selected_route
+        .check_admission(head.header("x-boot-epoch"), &server.epoch, ota.trial())
+        .map_err(|error| ReadRequestError::Device(error.device_error()))?;
+    if let Route::BootJobUpload { id, .. } | Route::BootJobStart { id } = selected_route {
+        match server.failure(id) {
+            Ok(Some(error)) => {
+                return Err(ReadRequestError::Device(error.clone()));
+            }
+            Err(error) => return Err(ReadRequestError::Device(error)),
+            Ok(None) => {}
+        }
+    }
+    let upload = match selected_route {
+        Route::BootJobUpload { id, kind } => Some((id, kind)),
+        _ => None,
+    };
+    if let Some((id, kind)) = upload {
+        let descriptor = server
+            .descriptor(id, kind)
+            .map_err(ReadRequestError::Device)?;
+        let expected_size = descriptor.size;
+        let expected_digest = integrity::decode_sha256(&descriptor.sha256);
+        if expected_size as usize != length {
+            let error = operation_error(
+                "image_size_mismatch",
+                format!(
+                    "upload length {length} does not match declared length {}",
+                    expected_size
+                ),
+            );
+            let _ = server.fail(id, error.clone());
+            return Err(ReadRequestError::Device(error));
+        }
+        if head.ota_image_sha256() != expected_digest {
+            let error = operation_error(
+                "image_digest_mismatch",
+                "X-Image-Sha256 does not match the boot manifest",
+            );
+            let _ = server.fail(id, error.clone());
+            return Err(ReadRequestError::Device(error));
+        }
+    }
+    if let Some((id, _)) = upload
+        && initial.len() > length
+    {
+        let error = operation_error(
+            "image_size_mismatch",
+            format!(
+                "upload exceeded declared length {length}: received at least {}",
+                initial.len()
+            ),
+        );
+        let _ = server.fail(id, error.clone());
+        return Err(ReadRequestError::Device(error));
+    }
     validate_body_length(
         method,
         path,
         length,
-        body.len(),
+        initial.len(),
         MAX_HTTP_BOOT_INITRAMFS_BYTES,
     )
-    .map_err(str::to_string)?;
+    .map_err(|error| ReadRequestError::Device(operation_error(error, error)))?;
+    let mut body = initial.to_vec();
     body.try_reserve(length.saturating_sub(body.len()))
-        .map_err(|_| "body allocation failed".to_string())?;
+        .map_err(|_| {
+            ReadRequestError::Device(operation_error(
+                "image_load_failed",
+                "request body allocation failed",
+            ))
+        })?;
     while body.len() < length {
-        let count = stream
-            .read(&mut chunk)
-            .map_err(|_| "request read failed".to_string())?;
+        let count = stream.read(&mut chunk).map_err(|_| {
+            let error = operation_error("image_receive_failed", "request body read failed");
+            if let Some((id, _)) = upload {
+                let _ = server.fail(id, error.clone());
+            }
+            ReadRequestError::Device(error)
+        })?;
         if count == 0 {
-            return Err("short body".to_string());
+            let error = operation_error(
+                "image_size_mismatch",
+                "request ended before Content-Length bytes",
+            );
+            if let Some((id, _)) = upload {
+                let _ = server.fail(id, error.clone());
+            }
+            return Err(ReadRequestError::Device(error));
         }
         let remaining = length - body.len();
         if count > remaining {
-            return Err("body exceeds content length".to_string());
+            let error = operation_error("invalid_request", "request body exceeds Content-Length");
+            if let Some((id, _)) = upload {
+                let _ = server.fail(id, error.clone());
+            }
+            return Err(ReadRequestError::Device(error));
         }
         body.extend_from_slice(&chunk[..count]);
     }
@@ -399,7 +529,7 @@ fn route(
     request: HttpRequest,
     ota: &mut LaOta,
     server: &mut BootServer,
-) -> Result<Response, String> {
+) -> Result<Response, DeviceOperationError> {
     let selected_route = control_route(&request.head.method, &request.head.path);
     if let Err(error) =
         selected_route.check_admission(request.header("x-boot-epoch"), &server.epoch, ota.trial())
@@ -412,105 +542,168 @@ fn route(
             boot_epoch: server.epoch.clone(),
             mac_address: server.mac,
             current_mac_address: server.current_mac,
-            arch: BootArch::Loongarch64,
+            arch: LOONGARCH64_EFI.arch_name.into(),
             loader_version: env!("CARGO_PKG_VERSION").into(),
             hardware: LoaderHardwareInfo::default(),
             boot: server.status(),
             ota: Some(ota.protocol_state()),
             serial: Some(server.serial.clone()),
         })
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            operation_error(
+                "internal_error",
+                format!("failed to encode device status: {error}"),
+            )
+        })?;
         return Ok(Response::json("200 OK", body, Action::None));
     }
     if selected_route == Route::SerialContinue {
         let binding: httpboot_protocol::SerialBinding = serde_json::from_slice(&request.body)
-            .map_err(|_| "invalid serial binding".to_string())?;
+            .map_err(|_| {
+                operation_error("invalid_serial_binding", "serial binding JSON is invalid")
+            })?;
         let result = server.serial.grant(binding);
-        return Ok(Response::json(
-            if result.is_ok() {
-                "200 OK"
-            } else {
-                "409 Conflict"
-            },
-            serde_json::to_vec(&server.serial).map_err(|error| error.to_string())?,
-            Action::None,
+        if result.is_ok() {
+            return Ok(Response::json(
+                "200 OK",
+                serde_json::to_vec(&server.serial).map_err(|error| {
+                    operation_error(
+                        "internal_error",
+                        format!("failed to encode serial status: {error}"),
+                    )
+                })?,
+                Action::None,
+            ));
+        }
+        return Err(operation_error(
+            "serial_binding_conflict",
+            "serial binding is already owned by another request",
         ));
     }
     if let Route::SerialBindingRevoke { id: binding_id } = selected_route {
         let result = server.serial.revoke(binding_id);
-        return Ok(Response::empty(if result.is_ok() {
-            "200 OK"
+        return if result.is_ok() {
+            Ok(Response::empty("200 OK"))
         } else {
-            "409 Conflict"
-        }));
+            Err(operation_error(
+                "serial_binding_conflict",
+                "serial binding does not match the active owner",
+            ))
+        };
     }
     if selected_route == Route::OtaStatus {
         return Ok(Response::json(
             "200 OK",
-            serde_json::to_vec(&ota.status_json()).map_err(|error| error.to_string())?,
+            serde_json::to_vec(&ota.status_json()).map_err(|error| {
+                operation_error(
+                    "internal_error",
+                    format!("failed to encode OTA status: {error}"),
+                )
+            })?,
             Action::None,
         ));
     }
     if selected_route == Route::OtaConfirm {
-        let value: serde_json::Value = serde_json::from_slice(&request.body)
-            .map_err(|_| "invalid OTA confirmation".to_string())?;
+        let value: serde_json::Value = serde_json::from_slice(&request.body).map_err(|_| {
+            operation_error(
+                "invalid_ota_confirmation",
+                "OTA confirmation JSON is invalid",
+            )
+        })?;
         let update_id = value
             .get("update_id")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "missing OTA update id".to_string())?;
+            .ok_or_else(|| {
+                operation_error(
+                    "invalid_ota_confirmation",
+                    "OTA confirmation requires update_id",
+                )
+            })?;
         if parse_update_id(update_id).is_none() {
-            return Err("invalid OTA update id".to_string());
+            return Err(operation_error(
+                "invalid_ota_confirmation",
+                "OTA update_id is not a UUID",
+            ));
         }
-        let source = request.head.ota_source()?;
+        let source = request
+            .head
+            .ota_source()
+            .map_err(|message| operation_error("invalid_ota_source", message))?;
         if ota.confirm(update_id, source).is_err() {
-            return Ok(Response::json("409 Conflict", b"{}", Action::None));
+            return Err(operation_error(
+                "ota_confirmation_conflict",
+                "OTA update ID or source does not match the pending trial",
+            ));
         }
         return Ok(Response::json(
             "200 OK",
-            serde_json::to_vec(&ota.status_json()).map_err(|error| error.to_string())?,
+            serde_json::to_vec(&ota.status_json()).map_err(|error| {
+                operation_error(
+                    "internal_error",
+                    format!("failed to encode OTA status: {error}"),
+                )
+            })?,
             Action::None,
         ));
     }
     if selected_route == Route::OtaImage {
         if ota.state.pending.is_some() {
-            return Ok(Response::json(
-                "409 Conflict",
-                br#"{"error":"ota_trial_requires_confirmation"}"#,
-                Action::None,
+            return Err(operation_error(
+                "ota_trial_requires_confirmation",
+                "OTA trial requires confirmation before another update",
             ));
         }
         if server.busy() {
-            return Ok(Response::json(
-                "409 Conflict",
-                br#"{"error":"boot_job_busy"}"#,
-                Action::None,
+            return Err(operation_error(
+                "boot_job_busy",
+                "a boot job is active during OTA upload",
             ));
         }
         let Some(expected) = request.head.ota_image_sha256() else {
-            return Ok(Response::json("400 Bad Request", b"{}", Action::None));
+            return Err(operation_error(
+                "invalid_ota_image",
+                "X-Image-Sha256 is missing or invalid",
+            ));
         };
         if request.body.is_empty() || request.body.len() > MAX_IMAGE_BYTES {
-            return Ok(Response::json("413 Payload Too Large", b"{}", Action::None));
+            return Err(operation_error(
+                "image_too_large",
+                "OTA image is empty or exceeds the device limit",
+            ));
         }
-        let source = request.head.ota_source()?;
-        let version = request.head.ota_image_version()?;
+        let source = request
+            .head
+            .ota_source()
+            .map_err(|message| operation_error("invalid_ota_source", message))?;
+        let version = request
+            .head
+            .ota_image_version()
+            .map_err(|message| operation_error("invalid_ota_image_version", message))?;
         let update_id = match source {
-            OtaSource::Server => request
-                .head
-                .ota_update_id()
-                .ok_or_else(|| "invalid OTA update id".to_string())?,
+            OtaSource::Server => request.head.ota_update_id().ok_or_else(|| {
+                operation_error(
+                    "invalid_ota_update_id",
+                    "server OTA upload requires a valid X-Update-ID",
+                )
+            })?,
             OtaSource::Direct => ota.next_direct_id(&expected),
         };
         if let Err(error) = ota.stage_image(&request.body, expected, update_id, version, source) {
             let (status, body): (_, &[u8]) = match error {
                 OtaStageError::InvalidImage => (
                     "422 Unprocessable Content",
-                    br#"{"error":"image_digest_or_efi_validation_failed"}"#,
+                    br#"{"code":"invalid_ota_image","message":"OTA image digest or EFI structure is invalid"}"#,
                 ),
-                OtaStageError::Conflict => ("409 Conflict", br#"{"error":"ota_state_conflict"}"#),
+                OtaStageError::Conflict => (
+                    "409 Conflict",
+                    br#"{"code":"ota_state_conflict","message":"OTA state cannot accept this image"}"#,
+                ),
                 OtaStageError::Storage(reason) => {
                     println!("ota_stage_storage_failed: {reason}");
-                    ("409 Conflict", br#"{"error":"ota_storage_failed"}"#)
+                    (
+                        "409 Conflict",
+                        br#"{"code":"ota_storage_failed","message":"OTA image storage failed"}"#,
+                    )
                 }
             };
             return Ok(Response::json(status, body, Action::None));
@@ -518,79 +711,86 @@ fn route(
         let body = serde_json::to_vec(&serde_json::json!({
             "update_id": core::str::from_utf8(&update_id).unwrap_or("")
         }))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            operation_error(
+                "internal_error",
+                format!("failed to encode OTA response: {error}"),
+            )
+        })?;
         return Ok(Response::json("202 Accepted", body, Action::Reset));
     }
     if selected_route == Route::BootJobCreate {
-        let manifest: DeviceBootJob = serde_json::from_slice(&request.body)
-            .map_err(|_| "invalid boot manifest".to_string())?;
-        let status = match server.create(manifest) {
-            Ok(true) => "201 Created",
-            Ok(false) => "200 OK",
-            Err(_) => "409 Conflict",
-        };
+        let manifest: DeviceBootJob = serde_json::from_slice(&request.body).map_err(|_| {
+            operation_error(
+                "invalid_boot_manifest",
+                "boot manifest JSON does not match the v7 schema",
+            )
+        })?;
+        let boot_id = manifest.boot_id.clone();
+        let created = server.create(manifest)?;
+        let status = server.status_for(&boot_id)?;
         return Ok(Response::json(
-            status,
-            serde_json::to_vec(&server.status()).map_err(|error| error.to_string())?,
+            if created { "201 Created" } else { "200 OK" },
+            serde_json::to_vec(&status).map_err(|error| {
+                operation_error(
+                    "internal_error",
+                    format!("failed to encode boot status: {error}"),
+                )
+            })?,
             Action::None,
         ));
     }
     if let Route::BootJobStatus { id } = selected_route {
+        let status = server.status_for(id)?;
         return Ok(Response::json(
-            if server.descriptor(id, FileKind::Kernel).is_ok() {
-                "200 OK"
-            } else {
-                "404 Not Found"
-            },
-            serde_json::to_vec(&server.status()).map_err(|error| error.to_string())?,
+            "200 OK",
+            serde_json::to_vec(&status).map_err(|error| {
+                operation_error(
+                    "internal_error",
+                    format!("failed to encode boot status: {error}"),
+                )
+            })?,
             Action::None,
         ));
     }
     if let Route::BootJobCancel { id } = selected_route {
-        let status = if server.cancel(id).is_ok() {
-            "204 No Content"
-        } else {
-            "404 Not Found"
-        };
-        return Ok(Response::empty(status));
+        server.cancel(id)?;
+        return Ok(Response::empty("204 No Content"));
     }
     if let Route::BootJobUpload { id, kind } = selected_route {
-        let descriptor = server
-            .descriptor(id, kind)
-            .map_err(|error| error.to_string())?;
-        if descriptor.size as usize != request.body.len()
-            || request.head.ota_image_sha256() != integrity::decode_sha256(&descriptor.sha256)
-        {
-            let _ = server.cancel(id);
-            return Ok(Response::json("400 Bad Request", b"{}", Action::None));
-        }
-        let result = server.upload(id, kind, request.body);
+        server.upload(id, kind, request.body)?;
+        let status = server.status_for(id)?;
         return Ok(Response::json(
-            if result.is_ok() {
-                "200 OK"
-            } else {
-                "422 Unprocessable Content"
-            },
-            serde_json::to_vec(&server.status()).map_err(|error| error.to_string())?,
+            "200 OK",
+            serde_json::to_vec(&status).map_err(|error| {
+                operation_error(
+                    "internal_error",
+                    format!("failed to encode boot status: {error}"),
+                )
+            })?,
             Action::None,
         ));
     }
     if let Route::BootJobStart { id } = selected_route {
         return match server.prepare(id, request.header("x-serial-binding")) {
-            Ok(execution) => Ok(Response::json(
-                "202 Accepted",
-                br#"{"phase":"ready_to_handoff"}"#,
-                Action::Boot(execution),
-            )),
-            Err(error) => Ok(Response::json(
-                "409 Conflict",
-                serde_json::to_vec(&serde_json::json!({"error": error}))
-                    .map_err(|error| error.to_string())?,
-                Action::None,
-            )),
+            Ok(execution) => {
+                let inject_write_failure = qemu_202_write_failure(id);
+                Ok(Response::json(
+                    "202 Accepted",
+                    br#"{"phase":"ready_to_handoff"}"#,
+                    Action::Boot {
+                        execution,
+                        inject_write_failure,
+                    },
+                ))
+            }
+            Err(error) => Err(error),
         };
     }
-    Ok(Response::json("404 Not Found", b"{}", Action::None))
+    Err(operation_error(
+        "not_found",
+        "control endpoint does not exist",
+    ))
 }
 
 struct BootServer {
@@ -640,68 +840,85 @@ impl BootServer {
         self.jobs.status()
     }
 
-    fn create(&mut self, manifest: DeviceBootJob) -> Result<bool, &'static str> {
-        self.jobs.create(
-            manifest,
-            LOONGARCH64_EFI,
-            MAX_IMAGE_BYTES,
-            MAX_HTTP_BOOT_INITRAMFS_BYTES,
-        )
+    fn status_for(&self, id: &str) -> Result<DeviceBootStatus, DeviceOperationError> {
+        self.jobs.status_for(id)
+    }
+
+    fn failure(&self, id: &str) -> Result<Option<&DeviceOperationError>, DeviceOperationError> {
+        self.jobs.failure(id)
+    }
+
+    fn create(&mut self, manifest: DeviceBootJob) -> Result<bool, DeviceOperationError> {
+        self.jobs
+            .create(manifest, MAX_IMAGE_BYTES, MAX_HTTP_BOOT_INITRAMFS_BYTES)
     }
 
     fn descriptor(
         &self,
         id: &str,
         kind: FileKind,
-    ) -> Result<&httpboot_protocol::DeviceBootImage, &'static str> {
+    ) -> Result<&httpboot_protocol::DeviceBootImage, DeviceOperationError> {
         self.jobs.descriptor(id, kind)
     }
 
-    fn upload(&mut self, id: &str, kind: FileKind, data: Vec<u8>) -> Result<(), &'static str> {
+    fn upload(
+        &mut self,
+        id: &str,
+        kind: FileKind,
+        data: Vec<u8>,
+    ) -> Result<(), DeviceOperationError> {
         self.jobs.upload(id, kind, data)
     }
 
-    fn cancel(&mut self, id: &str) -> Result<(), &'static str> {
+    fn cancel(&mut self, id: &str) -> Result<(), DeviceOperationError> {
         self.jobs.cancel(id)
+    }
+
+    fn fail(&mut self, id: &str, error: DeviceOperationError) -> Result<(), DeviceOperationError> {
+        self.jobs.fail(id, error)
     }
 
     fn prepare(
         &mut self,
         id: &str,
         binding_id: Option<&str>,
-    ) -> Result<BootExecution, &'static str> {
+    ) -> Result<BootExecution, DeviceOperationError> {
+        let job = self.jobs.job(id)?;
         if !binding_id.is_some_and(|binding| self.serial.permits_start(binding)) {
-            return Err("serial_binding_required");
+            return Err(operation_error(
+                "serial_binding_required",
+                "a valid X-Serial-Binding header is required before start",
+            ));
         }
-        let job = self.jobs.job().ok_or("unknown_boot_job")?;
-        if job.manifest.boot_id != id {
-            return Err("unknown_boot_job");
+        if job.kernel().is_none() {
+            return Err(operation_error(
+                "kernel_not_uploaded",
+                "kernel upload is not complete",
+            ));
         }
-        let kernel = job.kernel.as_ref().ok_or("kernel_not_uploaded")?;
-        if job.manifest.initramfs.is_some() && job.initramfs.is_none() {
-            return Err("initramfs_not_uploaded");
+        if job.manifest().initramfs.is_some() && job.initramfs().is_none() {
+            return Err(operation_error(
+                "initramfs_not_uploaded",
+                "initramfs upload is not complete",
+            ));
         }
-        if Sha256::digest(kernel).as_slice()
-            != integrity::decode_sha256(&job.manifest.kernel.sha256)
-                .as_ref()
-                .ok_or("kernel_digest_mismatch")?
-        {
-            return Err("kernel_digest_mismatch");
+        let prepared = load_loong_execution(job);
+        if let Err(error) = &prepared {
+            self.jobs.fail(id, error.clone())?;
         }
-        let elf = LoadedElf::load(
-            kernel,
-            LOONGARCH64_EFI,
-            job.manifest.entry_symbol.as_deref(),
-        )
-        .map_err(|_| "kernel_load_failed")?;
-        let payload = PublishedPayload::new(
-            job.initramfs.as_deref(),
-            job.manifest.cmdline.as_deref(),
-            Some((elf.load_addr as usize, elf.load_end as usize)),
-        )
-        .map_err(|_| "host_payload_failed")?;
-        Ok(BootExecution { elf, payload })
+        prepared
     }
+}
+
+fn load_loong_execution(job: &BootJob) -> Result<BootExecution, DeviceOperationError> {
+    let kernel = job.kernel().expect("prepare checked kernel presence");
+    let elf = LoadedElf::load(kernel, LOONGARCH64_EFI).map_err(|error| error.device_error())?;
+    let payload = PublishedPayload::new(
+        job.initramfs(),
+        job.manifest().cmdline.as_deref(),
+        Some((elf.load_addr as usize, elf.load_end as usize)),
+    )?;
+    Ok(BootExecution { elf, payload })
 }
 
 fn active_serial_parameters() -> Option<SerialParameters> {

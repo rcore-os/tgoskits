@@ -196,7 +196,7 @@ impl OtaDisk {
         let mut pe = [0_u8; 184];
         if file.read(&mut pe)? != pe.len()
             || &pe[..4] != b"PE\0\0"
-            || pe[4..6] != CURRENT.pe_machine.to_le_bytes()
+            || pe[4..6] != CURRENT.pe_machine().to_le_bytes()
             || pe[24..26] != [0x0b, 0x02]
             || pe[92..94] != [10, 0]
         {
@@ -206,7 +206,7 @@ impl OtaDisk {
         if optional_size < 112 {
             return Err(Status::LOAD_ERROR.into());
         }
-        if CURRENT.pe_machine == crate::target::LOONGARCH64_UEFI.pe_machine {
+        if CURRENT.machine == crate::target::LOONGARCH64_UEFI.machine {
             let image_base = u64::from_le_bytes(pe[48..56].try_into().unwrap());
             let directory_count = u32::from_le_bytes(pe[132..136].try_into().unwrap());
             if image_base != 0 {

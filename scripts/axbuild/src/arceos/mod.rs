@@ -408,7 +408,6 @@ impl ArceOS {
                 self.app
                     .board_prepared_elf(
                         output.elf_path,
-                        cargo.to_bin,
                         request.config_path().map(Path::to_path_buf),
                         board_config,
                         options,

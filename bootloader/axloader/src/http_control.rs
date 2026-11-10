@@ -3,15 +3,42 @@
 extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
+#[cfg(feature = "qemu-fail-202-write")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use httpboot_protocol::OtaSource;
+use httpboot_protocol::{DEVICE_PROTOCOL_VERSION_HEADER, DeviceOperationError, OtaSource};
 use thiserror::Error;
 
-use crate::{boot_job::FileKind, integrity::decode_sha256};
+use crate::{
+    boot_job::{FileKind, operation_error},
+    integrity::decode_sha256,
+};
 
 pub const MAX_HEADER_BYTES: usize = 4 * 1024;
 pub const MAX_SERIAL_BINDING_BYTES: usize = 1024;
 pub const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(feature = "qemu-fail-202-write")]
+pub(crate) const QEMU_202_WRITE_FAILURE_BOOT_ID: &str = "qemu-202-write-failure";
+
+#[cfg(feature = "qemu-fail-202-write")]
+static QEMU_202_WRITE_FAILURE_PENDING: AtomicBool = AtomicBool::new(true);
+
+/// Select the first test-only request that must fail its 202 commit.
+///
+/// This trigger is compiled out of production builds.
+#[doc(hidden)]
+pub fn qemu_202_write_failure(boot_id: &str) -> bool {
+    #[cfg(feature = "qemu-fail-202-write")]
+    {
+        boot_id == QEMU_202_WRITE_FAILURE_BOOT_ID
+            && QEMU_202_WRITE_FAILURE_PENDING.swap(false, Ordering::SeqCst)
+    }
+    #[cfg(not(feature = "qemu-fail-202-write"))]
+    {
+        let _ = boot_id;
+        false
+    }
+}
 
 /// The parsed request line and headers. The body is read by the transport
 /// adapter after this bounded framing step completes.
@@ -60,10 +87,88 @@ impl AdmissionError {
 
     pub fn body(self) -> &'static [u8] {
         match self {
-            Self::StaleBootEpoch => br#"{"error":"stale_boot_epoch"}"#,
-            Self::OtaTrialRequiresConfirmation => br#"{"error":"ota_trial_requires_confirmation"}"#,
+            Self::StaleBootEpoch => {
+                br#"{"code":"boot_epoch_mismatch","message":"boot epoch does not match the current device generation"}"#
+            }
+            Self::OtaTrialRequiresConfirmation => {
+                br#"{"code":"ota_trial_requires_confirmation","message":"OTA trial requires confirmation before boot"}"#
+            }
         }
     }
+
+    /// Convert an admission failure to the shared top-level operation error.
+    pub fn device_error(self) -> DeviceOperationError {
+        match self {
+            Self::StaleBootEpoch => operation_error(
+                "boot_epoch_mismatch",
+                "boot epoch does not match the current device generation",
+            ),
+            Self::OtaTrialRequiresConfirmation => operation_error(
+                "ota_trial_requires_confirmation",
+                "OTA trial requires confirmation before boot",
+            ),
+        }
+    }
+}
+
+/// Validate the v7 protocol header with the one shared wire contract.
+pub fn validate_device_protocol_version(version: Option<&str>) -> Result<(), DeviceOperationError> {
+    httpboot_protocol::validate_device_protocol_version_header(version)
+}
+
+/// Return whether the request mutates boot, serial or OTA state.
+pub fn mutation_requires_device_protocol(method: &str, path: &str) -> bool {
+    if method.eq_ignore_ascii_case("GET") {
+        return false;
+    }
+    matches!(
+        route(method, path),
+        Route::SerialContinue
+            | Route::SerialBindingRevoke { .. }
+            | Route::OtaConfirm
+            | Route::OtaImage
+            | Route::BootJobCreate
+            | Route::BootJobCancel { .. }
+            | Route::BootJobUpload { .. }
+            | Route::BootJobStart { .. }
+    )
+}
+
+/// Apply the protocol header gate before parsing a body or changing state.
+pub fn validate_request_protocol(head: &RequestHead) -> Result<(), DeviceOperationError> {
+    if mutation_requires_device_protocol(&head.method, &head.path) {
+        validate_device_protocol_version(head.header(DEVICE_PROTOCOL_VERSION_HEADER))
+    } else {
+        Ok(())
+    }
+}
+
+/// Serialize the canonical top-level device error shape.
+pub fn operation_error_json(error: &DeviceOperationError) -> serde_json::Result<Vec<u8>> {
+    serde_json::to_vec(error)
+}
+
+/// Commit an already-prepared action only after its response is fully written.
+///
+/// On failure the action is dropped inside this function, so owned boot
+/// execution resources are released while the original job remains reusable.
+pub fn commit_after_successful_write<T, E, F>(
+    write: impl FnOnce() -> Result<(), E>,
+    action: T,
+    injected_error: Option<F>,
+) -> Result<T, E>
+where
+    F: FnOnce() -> E,
+{
+    #[cfg(feature = "qemu-fail-202-write")]
+    if let Some(injected_error) = injected_error {
+        return Err(injected_error());
+    }
+    #[cfg(not(feature = "qemu-fail-202-write"))]
+    let _ = injected_error;
+
+    write()?;
+    Ok(action)
 }
 
 /// Classify a request into the control-plane operation its backend must run.
@@ -252,8 +357,9 @@ pub fn parse_head(bytes: &[u8]) -> Result<(RequestHead, usize), &'static str> {
     ))
 }
 
-const SINGLE_VALUE_HEADERS: [&str; 7] = [
+const SINGLE_VALUE_HEADERS: [&str; 8] = [
     "content-length",
+    "x-axloader-protocol-version",
     "x-boot-epoch",
     "x-serial-binding",
     "x-image-sha256",
@@ -288,24 +394,44 @@ pub fn validate_body_length(
 ) -> Result<(), &'static str> {
     if declared > body_limit(method, path, initramfs_limit) {
         return Err(match route(method, path) {
-            Route::SerialContinue | Route::OtaConfirm | Route::BootJobCreate => {
-                "request body too large"
-            }
-            _ => "body too large",
+            Route::OtaImage | Route::BootJobUpload { .. } => "image_too_large",
+            _ => "invalid_request",
         });
     }
     if already_read > declared {
-        return Err("body exceeds content length");
+        return Err("invalid_request");
     }
     Ok(())
 }
 
 pub fn error_status(error: &str) -> &'static str {
     match error {
-        "unknown_boot_job" => "404 Not Found",
-        "body too large" => "413 Payload Too Large",
-        "request body too large" => "400 Bad Request",
-        "request header too large" => "431 Request Header Fields Too Large",
+        "unknown_boot_job" | "not_found" => "404 Not Found",
+        "image_too_large" => "413 Payload Too Large",
+        "ota_unavailable" => "503 Service Unavailable",
+        "internal_error" => "500 Internal Server Error",
+        "boot_job_busy"
+        | "boot_epoch_mismatch"
+        | "serial_binding_required"
+        | "kernel_not_uploaded"
+        | "initramfs_not_uploaded"
+        | "initramfs_not_requested"
+        | "ota_trial_requires_confirmation"
+        | "ota_state_conflict"
+        | "ota_storage_failed"
+        | "ota_confirmation_conflict"
+        | "serial_binding_conflict" => "409 Conflict",
+        "image_size_mismatch"
+        | "image_digest_mismatch"
+        | "invalid_elf"
+        | "elf_machine_mismatch"
+        | "efi_entry_missing"
+        | "efi_entry_not_executable"
+        | "image_load_failed"
+        | "handoff_prepare_failed"
+        | "image_receive_failed"
+        | "invalid_ota_image" => "422 Unprocessable Content",
+        "request_header_too_large" => "431 Request Header Fields Too Large",
         _ => "400 Bad Request",
     }
 }
@@ -331,9 +457,23 @@ pub fn valid_image_version(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+
+    use httpboot_protocol::{DeviceBootImage, DeviceBootJob};
+
     use super::*;
+    use crate::boot_job::BootJobStore;
 
     const INITRAMFS_LIMIT: usize = 256 * 1024 * 1024;
+
+    #[derive(Debug)]
+    struct DropProbe(alloc::rc::Rc<core::cell::Cell<usize>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
 
     #[test]
     fn request_head_rejects_ambiguous_framing() {
@@ -352,6 +492,7 @@ mod tests {
         for header in [
             "x-boot-epoch",
             "x-serial-binding",
+            "x-axloader-protocol-version",
             "x-image-sha256",
             "x-image-version",
             "x-update-id",
@@ -478,14 +619,14 @@ mod tests {
                 0,
                 INITRAMFS_LIMIT,
             ),
-            Err("request body too large")
+            Err("invalid_request")
         );
         assert_eq!(
             validate_body_length("POST", "/api/v1/boot/jobs", 1, 2, INITRAMFS_LIMIT),
-            Err("body exceeds content length")
+            Err("invalid_request")
         );
         assert_eq!(
-            error_status("request header too large"),
+            error_status("request_header_too_large"),
             "431 Request Header Fields Too Large"
         );
     }
@@ -496,5 +637,94 @@ mod tests {
         assert!(parse_update_id("01234567-89ab-cdef-0123-456789abcdeg").is_none());
         assert!(valid_image_version("2026.10.13-loongarch"));
         assert!(!valid_image_version("line\nfeed"));
+    }
+
+    #[test]
+    fn protocol_gate_rejects_every_mutation_before_body_processing() {
+        for (method, path) in [
+            ("POST", "/api/v1/boot/jobs"),
+            ("PUT", "/api/v1/boot/jobs/job/kernel"),
+            ("POST", "/api/v1/boot/jobs/job/start"),
+            ("DELETE", "/api/v1/boot/jobs/job"),
+            ("POST", "/api/v1/serial/continue"),
+            ("DELETE", "/api/v1/serial/bindings/id"),
+            ("PUT", "/api/v1/ota/image"),
+            ("POST", "/api/v1/ota/confirm"),
+        ] {
+            assert!(mutation_requires_device_protocol(method, path));
+            let request = format!("{method} {path} HTTP/1.1\r\nContent-Length: 1\r\n\r\n");
+            let (head, _) = parse_head(request.as_bytes()).unwrap();
+            assert_eq!(
+                validate_request_protocol(&head).unwrap_err().code,
+                "unsupported_protocol"
+            );
+        }
+
+        for (method, path) in [
+            ("GET", "/api/v1/status"),
+            ("GET", "/api/v1/ota/status"),
+            ("GET", "/api/v1/boot/jobs/job"),
+        ] {
+            assert!(!mutation_requires_device_protocol(method, path));
+            let request = format!("{method} {path} HTTP/1.1\r\n\r\n");
+            let (head, _) = parse_head(request.as_bytes()).unwrap();
+            assert!(validate_request_protocol(&head).is_ok());
+        }
+    }
+
+    #[test]
+    fn protocol_error_has_the_exact_top_level_shape() {
+        let error = validate_device_protocol_version(Some("6")).unwrap_err();
+        let body: serde_json::Value =
+            serde_json::from_slice(&operation_error_json(&error).unwrap()).unwrap();
+        assert_eq!(body["code"], "unsupported_protocol");
+        assert_eq!(body["message"], "axloader protocol 7 is required");
+        assert!(body.get("error").is_none());
+    }
+
+    #[test]
+    fn response_commit_preserves_ready_job_and_drops_action_on_write_failure() {
+        for write_succeeds in [false, true] {
+            let manifest = DeviceBootJob {
+                boot_id: "ready".into(),
+                kernel: DeviceBootImage {
+                    size: 1,
+                    sha256: "ca358758f6d27e6cf45272937977a748fd88391db679ceda7dc7bf1f005ee879"
+                        .into(),
+                },
+                initramfs: None,
+                cmdline: None,
+            };
+            let mut jobs = BootJobStore::default();
+            assert!(matches!(jobs.create(manifest, 1, 1), Ok(true)));
+            assert!(
+                jobs.upload("ready", crate::boot_job::FileKind::Kernel, alloc::vec![7])
+                    .is_ok()
+            );
+            assert_eq!(jobs.status_for("ready").unwrap().phase, "ready");
+
+            let drops = alloc::rc::Rc::new(core::cell::Cell::new(0));
+            let result = commit_after_successful_write(
+                || {
+                    if write_succeeds {
+                        Ok(())
+                    } else {
+                        Err("response write failed")
+                    }
+                },
+                DropProbe(drops.clone()),
+                None::<fn() -> &'static str>,
+            );
+            assert_eq!(jobs.status_for("ready").unwrap().phase, "ready");
+            if write_succeeds {
+                assert!(result.is_ok());
+                assert_eq!(drops.get(), 0);
+                drop(result);
+                assert_eq!(drops.get(), 1);
+            } else {
+                assert_eq!(result.unwrap_err(), "response write failed");
+                assert_eq!(drops.get(), 1);
+            }
+        }
     }
 }

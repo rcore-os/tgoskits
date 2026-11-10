@@ -1,23 +1,32 @@
+use alloc::string::ToString;
 use core::ptr::NonNull;
 
 use axloader::{
+    boot_job::operation_error,
     elf::{ElfError, ElfImage, LoadSegment},
     target::CURRENT,
 };
+use httpboot_protocol::DeviceOperationError;
 use someboot::boot_resources::{self, Allocation, Placement, ResourceId, ResourceRequest};
 
 const UEFI_PAGE_SIZE: usize = 4096;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ElfLoadError {
-    Elf(ElfError),
+    #[error(transparent)]
+    Elf(#[from] ElfError),
+    #[error("ELF load allocation failed")]
     AllocateFailed,
+    #[error("ELF load address or image span overflows")]
     SegmentAddressOverflow,
 }
 
-impl From<ElfError> for ElfLoadError {
-    fn from(error: ElfError) -> Self {
-        Self::Elf(error)
+impl ElfLoadError {
+    pub fn device_error(self) -> DeviceOperationError {
+        match self {
+            Self::Elf(error) => error.device_error(),
+            error => operation_error("image_load_failed", error.to_string()),
+        }
     }
 }
 
@@ -29,11 +38,8 @@ pub struct LoadedElf {
     _allocation: Allocation,
 }
 
-pub(super) fn load_elf(
-    image: &[u8],
-    entry_symbol: Option<&str>,
-) -> Result<LoadedElf, ElfLoadError> {
-    let parsed = ElfImage::parse(image, CURRENT, entry_symbol)?;
+pub(super) fn load_elf(image: &[u8]) -> Result<LoadedElf, ElfLoadError> {
+    let parsed = ElfImage::parse(image, CURRENT)?;
     let link_load_address = parsed.link_load_address();
     let entry = parsed.entry_point();
     let page_count = parsed.page_count();
