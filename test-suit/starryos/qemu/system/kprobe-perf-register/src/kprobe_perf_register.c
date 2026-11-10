@@ -6,19 +6,25 @@
  * BPF program; a probe must count exactly the calls made while it is
  * installed and leave the syscall unaffected after it is closed. Probes are
  * installed and removed one after another, and two probes on different
- * functions are also kept installed together.
+ * functions are also kept installed together. Finally a probe is closed while
+ * its BPF program is running on another CPU: close() must not return before
+ * the program has finished.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef SYS_bpf
@@ -49,6 +55,7 @@
 #define BPF_K 0x00
 #define BPF_X 0x08
 #define BPF_ADD 0x00
+#define BPF_SUB 0x10
 #define BPF_MOV 0xb0
 #define BPF_JEQ 0x10
 #define BPF_JNE 0x50
@@ -64,6 +71,11 @@
 
 #define SEQUENTIAL_CYCLES 8
 #define CALLS_PER_CHECK 3
+/* Bounds the loop of the running program if nothing releases it. */
+#define RUNNING_LOOP_LIMIT 0x7fffffff
+#define RUNNING_START_TIMEOUT_NS 10000000000LL
+/* Where an unregistration starts waiting for a running kprobe handler. */
+#define UNREGISTER_WAIT_SYMBOL "wait_for_trap_handler_exit"
 
 struct bpf_insn {
     uint8_t code;
@@ -76,6 +88,21 @@ struct bpf_insn {
 struct hit_slot {
     uint64_t pid_tgid;
     uint64_t hits;
+};
+
+/*
+ * Array map value for the running program: the program spins while it runs
+ * for `pid_tgid`, from setting `started` until `release` is set, and sets
+ * `expired` if it gives up first. The observer sets `waiting` and `release`
+ * when `closer` starts waiting for the program in the unregistration.
+ */
+struct run_slot {
+    uint64_t pid_tgid;
+    uint64_t started;
+    uint64_t release;
+    uint64_t closer;
+    uint64_t waiting;
+    uint64_t expired;
 };
 
 struct perf_event_attr {
@@ -149,7 +176,7 @@ static int find_kernel_symbol(const char *suffix, char *name, size_t len) {
     return found;
 }
 
-static int slot_access(int cmd, int map_fd, struct hit_slot *slot) {
+static int slot_access(int cmd, int map_fd, void *slot) {
     uint32_t key = 0;
     struct {
         uint32_t map_fd;
@@ -163,6 +190,27 @@ static int slot_access(int cmd, int map_fd, struct hit_slot *slot) {
         .value = (uint64_t)(uintptr_t)slot,
     };
     return (int)sys_bpf(cmd, &attr, sizeof(attr));
+}
+
+static int load_prog(const struct bpf_insn *prog, uint32_t insn_cnt) {
+    static const char license[] = "GPL";
+    struct {
+        uint32_t prog_type;
+        uint32_t insn_cnt;
+        uint64_t insns;
+        uint64_t license;
+        uint32_t log_level;
+        uint32_t log_size;
+        uint64_t log_buf;
+        uint32_t kern_version;
+        uint32_t prog_flags;
+    } attr = {
+        .prog_type = BPF_PROG_TYPE_KPROBE,
+        .insn_cnt = insn_cnt,
+        .insns = (uint64_t)(uintptr_t)prog,
+        .license = (uint64_t)(uintptr_t)license,
+    };
+    return (int)sys_bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
 }
 
 /* r0 = lookup(map, 0); if this thread hit the probe, r0->hits += 1 */
@@ -185,30 +233,68 @@ static int load_counter(int map_fd) {
         insn(BPF_ALU64 | BPF_MOV | BPF_K, 0, 0, 0, 0),
         insn(BPF_JMP | BPF_EXIT, 0, 0, 0, 0),
     };
-    static const char license[] = "GPL";
-    struct {
-        uint32_t prog_type;
-        uint32_t insn_cnt;
-        uint64_t insns;
-        uint64_t license;
-        uint32_t log_level;
-        uint32_t log_size;
-        uint64_t log_buf;
-        uint32_t kern_version;
-        uint32_t prog_flags;
-    } attr = {
-        .prog_type = BPF_PROG_TYPE_KPROBE,
-        .insn_cnt = sizeof(prog) / sizeof(prog[0]),
-        .insns = (uint64_t)(uintptr_t)prog,
-        .license = (uint64_t)(uintptr_t)license,
-    };
-    return (int)sys_bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
+    return load_prog(prog, sizeof(prog) / sizeof(prog[0]));
 }
 
-static int prepare_probe(struct probe *p) {
-    if (find_kernel_symbol(p->suffix, p->symbol, sizeof(p->symbol)) != 0) {
-        return -1;
-    }
+/*
+ * r0 = lookup(map, 0); if this thread hit the probe, set r0->started and
+ * spin until r0->release is set, or set r0->expired after the loop limit.
+ */
+static int load_runner(int map_fd) {
+    struct bpf_insn prog[] = {
+        insn(BPF_LD | BPF_DW | BPF_IMM, 1, BPF_PSEUDO_MAP_FD, 0, map_fd),
+        insn(0, 0, 0, 0, 0),
+        insn(BPF_ST | BPF_MEM | BPF_W, 10, 0, -4, 0),
+        insn(BPF_ALU64 | BPF_MOV | BPF_X, 2, 10, 0, 0),
+        insn(BPF_ALU64 | BPF_ADD | BPF_K, 2, 0, 0, -4),
+        insn(BPF_JMP | BPF_CALL, 0, 0, 0, HELPER_MAP_LOOKUP_ELEM),
+        insn(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 13, 0), /* -> exit */
+        insn(BPF_ALU64 | BPF_MOV | BPF_X, 7, 0, 0, 0),
+        insn(BPF_JMP | BPF_CALL, 0, 0, 0, HELPER_GET_CURRENT_PID_TGID),
+        insn(BPF_LDX | BPF_MEM | BPF_DW, 1, 7, 0, 0),
+        insn(BPF_JMP | BPF_JNE | BPF_X, 0, 1, 9, 0), /* -> exit */
+        insn(BPF_ALU64 | BPF_MOV | BPF_K, 1, 0, 0, 1),
+        insn(BPF_STX | BPF_MEM | BPF_DW, 7, 1, 8, 0),
+        insn(BPF_ALU64 | BPF_MOV | BPF_K, 2, 0, 0, RUNNING_LOOP_LIMIT),
+        insn(BPF_LDX | BPF_MEM | BPF_DW, 1, 7, 16, 0), /* loop: */
+        insn(BPF_JMP | BPF_JNE | BPF_K, 1, 0, 4, 0),   /* -> exit */
+        insn(BPF_ALU64 | BPF_SUB | BPF_K, 2, 0, 0, 1),
+        insn(BPF_JMP | BPF_JNE | BPF_K, 2, 0, -4, 0),  /* -> loop */
+        insn(BPF_ALU64 | BPF_MOV | BPF_K, 1, 0, 0, 1),
+        insn(BPF_STX | BPF_MEM | BPF_DW, 7, 1, 40, 0),
+        insn(BPF_ALU64 | BPF_MOV | BPF_K, 0, 0, 0, 0), /* exit: */
+        insn(BPF_JMP | BPF_EXIT, 0, 0, 0, 0),
+    };
+    return load_prog(prog, sizeof(prog) / sizeof(prog[0]));
+}
+
+/*
+ * r0 = lookup(map, 0); if r0->closer hit the probe, set r0->waiting and
+ * r0->release.
+ */
+static int load_observer(int map_fd) {
+    struct bpf_insn prog[] = {
+        insn(BPF_LD | BPF_DW | BPF_IMM, 1, BPF_PSEUDO_MAP_FD, 0, map_fd),
+        insn(0, 0, 0, 0, 0),
+        insn(BPF_ST | BPF_MEM | BPF_W, 10, 0, -4, 0),
+        insn(BPF_ALU64 | BPF_MOV | BPF_X, 2, 10, 0, 0),
+        insn(BPF_ALU64 | BPF_ADD | BPF_K, 2, 0, 0, -4),
+        insn(BPF_JMP | BPF_CALL, 0, 0, 0, HELPER_MAP_LOOKUP_ELEM),
+        insn(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 7, 0), /* -> exit */
+        insn(BPF_ALU64 | BPF_MOV | BPF_X, 7, 0, 0, 0),
+        insn(BPF_JMP | BPF_CALL, 0, 0, 0, HELPER_GET_CURRENT_PID_TGID),
+        insn(BPF_LDX | BPF_MEM | BPF_DW, 1, 7, 24, 0),
+        insn(BPF_JMP | BPF_JNE | BPF_X, 0, 1, 3, 0), /* -> exit */
+        insn(BPF_ALU64 | BPF_MOV | BPF_K, 1, 0, 0, 1),
+        insn(BPF_STX | BPF_MEM | BPF_DW, 7, 1, 32, 0),
+        insn(BPF_STX | BPF_MEM | BPF_DW, 7, 1, 16, 0),
+        insn(BPF_ALU64 | BPF_MOV | BPF_K, 0, 0, 0, 0), /* exit: */
+        insn(BPF_JMP | BPF_EXIT, 0, 0, 0, 0),
+    };
+    return load_prog(prog, sizeof(prog) / sizeof(prog[0]));
+}
+
+static int create_array_map(uint32_t value_size) {
     struct {
         uint32_t map_type;
         uint32_t key_size;
@@ -218,12 +304,22 @@ static int prepare_probe(struct probe *p) {
     } attr = {
         .map_type = BPF_MAP_TYPE_ARRAY,
         .key_size = sizeof(uint32_t),
-        .value_size = sizeof(struct hit_slot),
+        .value_size = value_size,
         .max_entries = 1,
     };
-    p->map_fd = (int)sys_bpf(BPF_MAP_CREATE, &attr, sizeof(attr));
-    if (p->map_fd < 0) {
+    int fd = (int)sys_bpf(BPF_MAP_CREATE, &attr, sizeof(attr));
+    if (fd < 0) {
         printf("BPF_MAP_CREATE failed errno=%d\n", errno);
+    }
+    return fd;
+}
+
+static int prepare_probe(struct probe *p) {
+    if (find_kernel_symbol(p->suffix, p->symbol, sizeof(p->symbol)) != 0) {
+        return -1;
+    }
+    p->map_fd = create_array_map(sizeof(struct hit_slot));
+    if (p->map_fd < 0) {
         return -1;
     }
     struct hit_slot slot = {.pid_tgid = self_pid_tgid, .hits = 0};
@@ -287,6 +383,225 @@ static int expect_hits(const struct probe *p, int64_t expected, const char *when
     return 0;
 }
 
+static int64_t now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+static uint64_t current_pid_tgid(void) {
+    return ((uint64_t)getpid() << 32) | (uint64_t)syscall(SYS_gettid);
+}
+
+enum { RUNNER, CLOSER };
+
+struct running_removal {
+    long sysno;
+    int map_fd;
+    int perf_fd;
+    int cpu[2];
+    /* Per thread: 1 once it runs on its CPU, -1 if it cannot. */
+    atomic_int pinned[2];
+    atomic_ullong closer_pid_tgid;
+    int closed;
+    /* The slot as seen right after close() returned. */
+    struct run_slot after_close;
+    long result;
+};
+
+static int run_on_cpu(int cpu) {
+    cpu_set_t affinity;
+    CPU_ZERO(&affinity);
+    CPU_SET(cpu, &affinity);
+    if (sched_setaffinity(0, sizeof(affinity), &affinity) != 0) {
+        printf("sched_setaffinity(cpu %d) failed errno=%d\n", cpu, errno);
+        return -1;
+    }
+    unsigned current;
+    if (syscall(SYS_getcpu, &current, NULL, NULL) != 0) {
+        printf("getcpu failed errno=%d\n", errno);
+        return -1;
+    }
+    if (current != (unsigned)cpu) {
+        printf("pinned to cpu %d but running on cpu %u\n", cpu, current);
+        return -1;
+    }
+    return 0;
+}
+
+/* Calls the probed syscall, whose BPF program spins until released. */
+static void *call_probed(void *arg) {
+    struct running_removal *r = arg;
+    if (run_on_cpu(r->cpu[RUNNER]) != 0) {
+        atomic_store(&r->pinned[RUNNER], -1);
+        return NULL;
+    }
+    struct run_slot slot = {
+        .pid_tgid = current_pid_tgid(),
+        .closer = atomic_load(&r->closer_pid_tgid),
+    };
+    if (slot_access(BPF_MAP_UPDATE_ELEM, r->map_fd, &slot) != 0) {
+        printf("map update failed errno=%d\n", errno);
+        atomic_store(&r->pinned[RUNNER], -1);
+        return NULL;
+    }
+    atomic_store(&r->pinned[RUNNER], 1);
+    r->result = syscall(r->sysno);
+    return NULL;
+}
+
+/*
+ * Closes the probe once its program is running. A kernel whose close() waits
+ * for the program has it released by the observer; one that returns early
+ * releases it here, after the probe has been removed.
+ */
+static void *close_probe(void *arg) {
+    struct running_removal *r = arg;
+    if (run_on_cpu(r->cpu[CLOSER]) != 0) {
+        atomic_store(&r->pinned[CLOSER], -1);
+        return NULL;
+    }
+    atomic_store(&r->closer_pid_tgid, current_pid_tgid());
+    atomic_store(&r->pinned[CLOSER], 1);
+
+    struct run_slot slot = {0};
+    int64_t deadline = now_ns() + RUNNING_START_TIMEOUT_NS;
+    while (slot.started == 0) {
+        if (atomic_load(&r->pinned[RUNNER]) < 0 || now_ns() >= deadline) {
+            return NULL;
+        }
+        if (slot_access(BPF_MAP_LOOKUP_ELEM, r->map_fd, &slot) != 0) {
+            printf("map lookup failed errno=%d\n", errno);
+            return NULL;
+        }
+        sched_yield();
+    }
+    close(r->perf_fd);
+    r->closed = 1;
+    if (slot_access(BPF_MAP_LOOKUP_ELEM, r->map_fd, &r->after_close) != 0) {
+        printf("map lookup failed errno=%d\n", errno);
+        memset(&r->after_close, 0, sizeof(r->after_close));
+    }
+    if (r->after_close.release == 0) {
+        slot = r->after_close;
+        slot.release = 1;
+        if (slot_access(BPF_MAP_UPDATE_ELEM, r->map_fd, &slot) != 0) {
+            printf("map update failed errno=%d\n", errno);
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Closes the probe from one thread while its BPF program runs for another
+ * thread on a different CPU. Unregistration must wait for the running
+ * program, so close() cannot return before the program is released, and the
+ * probed syscall must still complete normally.
+ *
+ * The program is released only once the outcome is decided: by the observer
+ * when close() reaches the unregistration wait, or by the closing thread when
+ * close() has returned. Nothing depends on how long a step takes.
+ */
+static int remove_while_running(struct probe *p) {
+    struct running_removal r = {.sysno = p->sysno};
+    cpu_set_t allowed;
+    int cpus = 0;
+    pthread_t caller;
+    pthread_t closer;
+    int failures = 0;
+
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+        printf("sched_getaffinity failed errno=%d\n", errno);
+        return 1;
+    }
+    for (int cpu = 0; cpu < CPU_SETSIZE && cpus < 2; cpu++) {
+        if (CPU_ISSET(cpu, &allowed)) {
+            r.cpu[cpus++] = cpu;
+        }
+    }
+    if (cpus < 2) {
+        printf("%s removal while running SKIP: requires two allowed CPUs\n", p->suffix);
+        return 0;
+    }
+
+    r.map_fd = create_array_map(sizeof(struct run_slot));
+    if (r.map_fd < 0) {
+        return 1;
+    }
+    struct probe runner = *p;
+    runner.prog_fd = load_runner(r.map_fd);
+    if (runner.prog_fd < 0) {
+        printf("BPF_PROG_LOAD failed errno=%d\n", errno);
+        return 1;
+    }
+    /* Absent from a kernel whose unregistration does not wait. */
+    struct probe observer = {.suffix = UNREGISTER_WAIT_SYMBOL};
+    int observer_fd = -1;
+    if (find_kernel_symbol(observer.suffix, observer.symbol, sizeof(observer.symbol)) == 0) {
+        observer.prog_fd = load_observer(r.map_fd);
+        if (observer.prog_fd < 0) {
+            printf("BPF_PROG_LOAD failed errno=%d\n", errno);
+            return 1;
+        }
+        observer_fd = install(&observer);
+        if (observer_fd < 0) {
+            return 1;
+        }
+    }
+    r.perf_fd = install(&runner);
+    if (r.perf_fd < 0) {
+        return 1;
+    }
+
+    /* The closer runs on its CPU before the program can start spinning. */
+    if (pthread_create(&closer, NULL, close_probe, &r) != 0) {
+        printf("pthread_create failed\n");
+        return 1;
+    }
+    while (atomic_load(&r.pinned[CLOSER]) == 0) {
+        sched_yield();
+    }
+    if (atomic_load(&r.pinned[CLOSER]) > 0) {
+        if (pthread_create(&caller, NULL, call_probed, &r) != 0) {
+            printf("pthread_create failed\n");
+            return 1;
+        }
+        pthread_join(caller, NULL);
+    }
+    pthread_join(closer, NULL);
+    if (!r.closed) {
+        close(r.perf_fd);
+    }
+    if (observer_fd >= 0) {
+        close(observer_fd);
+        close(observer.prog_fd);
+    }
+    close(runner.prog_fd);
+    close(r.map_fd);
+
+    if (atomic_load(&r.pinned[RUNNER]) < 0 || atomic_load(&r.pinned[CLOSER]) < 0) {
+        printf("%s: could not run the caller on cpu %d and the closer on cpu %d\n", p->suffix,
+               r.cpu[RUNNER], r.cpu[CLOSER]);
+        return failures + 1;
+    }
+    if (!r.closed) {
+        printf("%s: the attached program did not start\n", p->suffix);
+        failures++;
+    } else if (r.after_close.expired != 0) {
+        printf("%s: close blocked without reaching %s until the program gave up\n", p->suffix,
+               UNREGISTER_WAIT_SYMBOL);
+        failures++;
+    } else if (r.after_close.waiting == 0) {
+        printf("%s: close returned while the attached program was running\n", p->suffix);
+        failures++;
+    }
+    if (r.result != getpid()) {
+        printf("%s: probed call returned %ld errno=%d\n", p->suffix, r.result, errno);
+        failures++;
+    }
+    return failures;
+}
+
 int main(void) {
     struct probe pid = {.suffix = "sys_getpid", .sysno = SYS_getpid};
     struct probe ppid = {.suffix = "sys_getppid", .sysno = SYS_getppid};
@@ -319,6 +634,9 @@ int main(void) {
     failures += expect_hits(&ppid, CALLS_PER_CHECK, "kept after another probe was removed");
     close(ppid_fd);
     failures += expect_hits(&ppid, 0, "removed");
+
+    failures += remove_while_running(&pid);
+    failures += expect_hits(&pid, 0, "removed while running");
 
     if (failures != 0) {
         return 1;
