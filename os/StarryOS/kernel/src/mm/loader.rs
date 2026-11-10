@@ -1,6 +1,6 @@
 //! User address space management.
 
-use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Vec};
+use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, vec, vec::Vec};
 use core::{ffi::CStr, iter, mem::size_of};
 
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
@@ -18,7 +18,8 @@ use crate::{
         UserVirtualAddressLayout,
         aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
     },
-    sync::Mutex,
+    namespace::UserNamespace,
+    sync::{Mutex, RawSpinLock},
     task::Cred,
 };
 
@@ -119,6 +120,11 @@ impl PreparedUserImage {
 }
 
 impl UserImageBuilder {
+    /// Sets the nascent MM's authority before loading or publishing its image.
+    pub(crate) fn set_user_namespace(&mut self, namespace: Arc<RawSpinLock<UserNamespace>>) {
+        self.aspace.set_user_namespace(namespace);
+    }
+
     /// Consumes a successfully loaded attempt after verifying that no later
     /// retry changed the builder contents represented by `loaded`.
     pub fn finish(self, loaded: LoadedUserImage) -> StarryResult<PreparedUserImage> {
