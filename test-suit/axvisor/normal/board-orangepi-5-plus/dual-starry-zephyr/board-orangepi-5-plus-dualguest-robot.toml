@@ -18,11 +18,20 @@ shell_cmd = "vm console 1"
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_cmd = 'd=/home/orangepi/robot-ci/aka-rk3588-dual; m=DUAL_PICK_CI; g=starry-zephyr'
+# Require a guest-produced acknowledgement before starting the workload.
+shell_cmd = '''if test -x /home/orangepi/robot-ci/aka-rk3588-dual/run_dual_pick_ci_once.sh; then printf '\n%s_%s guest=starry-zephyr\n' DUAL_PICK_SETUP OK; else printf '\n%s_%s guest=starry-zephyr\n' DUAL_PICK_SETUP FAIL; fi'''
+success_regex = [
+  '(?m)^DUAL_PICK_SETUP_OK guest=starry-zephyr\r?$',
+]
+fail_regex = [
+  '(?m)^DUAL_PICK_SETUP_FAIL guest=starry-zephyr\r?$',
+  '(?i)\bpanic(?:ked)?\b',
+]
+timeout = 10
 
 [[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_cmd = '''if "$d/run_dual_pick_ci_once.sh" --min-fps 28 && sync; then printf "\n%s_PASS guest=%s\n" "$m" "$g"; else r=$?; sync; printf "\n%s_FAIL guest=%s status=%s\n" "$m" "$g" "$r"; fi'''
+shell_cmd = '''if /home/orangepi/robot-ci/aka-rk3588-dual/run_dual_pick_ci_once.sh --min-fps 28 && sync; then printf '\n%s_%s guest=starry-zephyr\n' DUAL_PICK_CI PASS; else r=$?; sync; printf '\n%s_%s guest=starry-zephyr status=%s\n' DUAL_PICK_CI FAIL "$r"; fi'''
 success_regex = [
   '(?m)^DUAL_PICK_CI_PASS guest=starry-zephyr\s*$',
 ]

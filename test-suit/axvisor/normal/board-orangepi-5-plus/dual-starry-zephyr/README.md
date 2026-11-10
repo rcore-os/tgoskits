@@ -112,11 +112,15 @@ AxVisor 的 `exit` 会先调用宿主文件系统关闭流程。StarryOS 用户�
 
 本专用 CI guest 在 `starry-smp1.toml` 的 `[kernel].cmdline` 中显式使用
 `init=/bin/sh`，并通过 bootargs 环境变量设置标准 `PATH`、`HOME`、`USER`、
-`HOSTNAME`、`TERM` 与固定字面值 `PS1`（`root@starry:#` 加空格）。该 shell 是测试 PID 1，
+`HOSTNAME`、`TERM` 与 `PS1="$USER@$HOSTNAME:# "`。shell 展开后显示
+`root@starry:#` 加空格，启动参数回显则不包含这个提示符，避免提前触发串口命令。
+该 shell 是测试 PID 1，
 只为 `shell_check_steps` 提供稳定的 `root@starry:` 交互入口；它不验证
 OpenRC/systemd 服务启动，普通板端系统 init 是否可用仍需独立验收。
 
-StarryOS 测试 Shell 出现 `root@starry:` 前缀的提示符后，由本目录的 board 配置运行：
+StarryOS 测试 Shell 出现 `root@starry:` 前缀的提示符后，board 配置先检查脚本可执行，
+收到独占一行的 `DUAL_PICK_SETUP_OK guest=starry-zephyr` 后才继续；检查失败立即终止，
+10 秒内未收到确认也会失败。随后使用固定绝对路径运行，不依赖前一步的 shell 变量：
 
 ```sh
 /home/orangepi/robot-ci/aka-rk3588-dual/run_dual_pick_ci_once.sh --min-fps 28
