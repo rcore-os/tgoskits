@@ -9,24 +9,25 @@ pub use access::{ExecutableFile, WriteAccess};
 pub(crate) use cache::BusyDirtyCachedFile;
 #[cfg(feature = "ext4")]
 pub(crate) use cache::forget_cached_file_key;
-#[cfg(all(feature = "vfs", feature = "ext4", not(feature = "fat")))]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) use cache::prune_cached_files;
 pub(crate) use cache::start_background_readahead;
 #[cfg(feature = "vfs")]
 pub(crate) use cache::start_background_writeback;
+#[cfg(feature = "fat")]
+pub(crate) use cache::sync_fat_cached_files;
 pub use cache::{
     CacheMappingEndpoint, CacheMappingEvent, CacheMappingResult, CachePageIdentity,
     CachePageoutDeferred, CachePageoutResult, CachedFile, CachedFileIdentity, CachedFrameIdentity,
     CachedPagePin,
 };
-#[cfg(feature = "vfs")]
-pub use cache::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
-#[cfg(feature = "fat")]
-pub(crate) use cache::{prune_cached_files, sync_fat_cached_files};
 #[cfg(feature = "ext4")]
 pub(crate) use cache::{
-    retire_filesystem_cache, writeback_filesystem_pages, writeback_filesystem_pages_periodic,
+    observe_filesystem_persistence, retire_filesystem_cache, writeback_filesystem_pages,
+    writeback_filesystem_pages_periodic,
 };
+#[cfg(feature = "vfs")]
+pub use cache::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 pub use handle::{File, FileBackend};
 pub use open::{FileFlags, OpenOptions, OpenResult};
 pub use page::{CachedPageBacking, CachedPageBytes, PageCache};

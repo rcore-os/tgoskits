@@ -89,7 +89,7 @@ impl CachedFileRegistry {
                     };
                     remaining -= 1;
                     let closed_and_clean = Arc::strong_count(cached) == 1
-                        && !cached.sync_failed.load(Ordering::Acquire)
+                        && cached.backing_persistence.is_persisted()
                         && cached
                             .page_cache
                             .try_lock()
@@ -106,7 +106,7 @@ impl CachedFileRegistry {
                         // first check and index acquisition. Count alone cannot
                         // detect that completed lifetime; recheck dirty pages.
                         let still_closed_and_clean = Arc::strong_count(cached) == 1
-                            && !cached.sync_failed.load(Ordering::Acquire)
+                            && cached.backing_persistence.is_persisted()
                             && cached
                                 .page_cache
                                 .try_lock()
@@ -132,6 +132,15 @@ impl CachedFileRegistry {
 }
 
 static GLOBAL_CACHED_FILES: CachedFileRegistry = CachedFileRegistry::new();
+
+#[cfg(feature = "ext4")]
+pub(crate) fn observe_filesystem_persistence(
+    filesystem: &dyn axfs_ng_vfs::FilesystemOps,
+) -> super::persistence::FilesystemPersistence {
+    let files = GLOBAL_CACHED_FILES.files.read().clone();
+    super::persistence::FilesystemPersistence::observe(files, filesystem)
+}
+
 #[cfg(feature = "vfs")]
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 

@@ -231,7 +231,11 @@ impl Drop for FatInode {
         // fatfs File::drop may flush. Keep its FileSystem and mutex alive.
         drop(handle);
         let parent = self.name.borrow_mut(&mut guard).parent.take();
-        guard.release_inode(self.inode);
+        // The filesystem reserves the root number across temporary holder
+        // lifetimes; only ordinary inode holders return their slab slot.
+        if self.inode != self.fs.root_inode {
+            guard.release_inode(self.inode);
+        }
         drop(guard);
         drop(parent);
     }

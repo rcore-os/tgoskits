@@ -51,6 +51,14 @@ impl NameChange<'_> {
         self.complete = true;
     }
 
+    pub(super) fn invalidate_affected(&mut self) {
+        self.collect_affected();
+        self.directory.cache.lock().valid.clear();
+        for entry in &self.affected {
+            entry.invalidate_name();
+        }
+    }
+
     pub(super) fn finish_pair(&mut self, other: &mut Self) {
         self.collect_affected();
         other.collect_affected();

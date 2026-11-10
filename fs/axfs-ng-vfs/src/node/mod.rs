@@ -446,6 +446,13 @@ impl DirEntry {
         self.0.reference.lock().state = state;
     }
 
+    pub(crate) fn invalidate_name(&self) {
+        let mut reference = self.0.reference.lock();
+        if matches!(reference.state, NameState::Linked | NameState::Root) {
+            reference.state = NameState::Untrusted;
+        }
+    }
+
     pub fn node_type(&self) -> NodeType {
         self.0.node_type
     }

@@ -499,17 +499,36 @@ impl DirNode {
         self.invalidate_missing_entries();
         let outcome = self.ops.unlink_outcome(name, is_dir);
         let removed = self.remove_cache_after_mutation(name);
-        if outcome.state() == NamespaceState::Applied
-            && let Some(entry) = &entry
-            && outcome
-                .observation()
-                .is_some_and(|node| node.matches(entry))
-        {
-            entry.set_name_state(crate::NameState::Unlinked);
-        } else if outcome.state() == NamespaceState::Uncertain
-            && let Some(entry) = &entry
-        {
-            entry.set_name_state(crate::NameState::Untrusted);
+        if outcome.state() == NamespaceState::Applied {
+            let matches_actual = |entry: &DirEntry| {
+                outcome
+                    .observation()
+                    .is_some_and(|node| node.matches(entry))
+            };
+            if entry.as_ref().is_some_and(|entry| !matches_actual(entry))
+                || removed.as_ref().is_some_and(|entry| !matches_actual(entry))
+                || outcome.observation().is_none()
+            {
+                // A completed replacement can separate the probe from the
+                // object actually removed. Invalidate every pinned relationship
+                // before certifying the alias selected by the backend.
+                change.invalidate_affected();
+                if let Some(entry) = &entry {
+                    entry.invalidate_name();
+                }
+            }
+            for alias in entry.iter().chain(removed.iter()) {
+                if matches_actual(alias) {
+                    alias.set_name_state(crate::NameState::Unlinked);
+                } else {
+                    alias.invalidate_name();
+                }
+            }
+        } else if outcome.state() == NamespaceState::Uncertain {
+            change.invalidate_affected();
+            for alias in entry.iter().chain(removed.iter()) {
+                alias.invalidate_name();
+            }
         }
         Self::forget_removed_entry(removed);
         change.finish();

@@ -2,6 +2,7 @@ mod backing;
 mod fill;
 mod mapping;
 mod pages;
+mod persistence;
 mod prefetch;
 mod read;
 mod readahead;
@@ -9,6 +10,8 @@ mod reclaim;
 mod resize;
 mod update;
 mod writeback;
+#[cfg(feature = "ext4")]
+pub(crate) use reclaim::observe_filesystem_persistence;
 #[cfg(feature = "vfs")]
 mod writeback_worker;
 use alloc::{
@@ -26,7 +29,7 @@ use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
 use pages::CachedPages;
 pub(crate) use prefetch::start_background_readahead;
 use readahead::ReadAheadState;
-#[cfg(any(feature = "fat", all(feature = "vfs", feature = "ext4")))]
+#[cfg(any(feature = "fat", feature = "ext4"))]
 pub(crate) use reclaim::prune_cached_files;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
@@ -324,7 +327,7 @@ struct CachedFileShared {
     mapping_update_in_progress: AtomicBool,
     unlinked: AtomicBool,
     retired: AtomicBool,
-    sync_failed: AtomicBool,
+    backing_persistence: persistence::BackingPersistence,
     #[cfg(feature = "vfs")]
     background_writeback_requested: AtomicBool,
     #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -348,7 +351,7 @@ impl CachedFileShared {
             mapping_update_in_progress: AtomicBool::new(false),
             unlinked: AtomicBool::new(false),
             retired: AtomicBool::new(false),
-            sync_failed: AtomicBool::new(false),
+            backing_persistence: persistence::BackingPersistence::new(),
             #[cfg(feature = "vfs")]
             background_writeback_requested: AtomicBool::new(false),
             #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -372,7 +375,7 @@ impl CachedFileShared {
             mapping_update_in_progress: AtomicBool::new(false),
             unlinked: AtomicBool::new(false),
             retired: AtomicBool::new(false),
-            sync_failed: AtomicBool::new(false),
+            backing_persistence: persistence::BackingPersistence::new(),
             #[cfg(feature = "vfs")]
             background_writeback_requested: AtomicBool::new(false),
             #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -1007,6 +1010,7 @@ impl CachedFile {
         if self.in_memory {
             return Ok(());
         }
+        let _backing_change = self.shared.backing_persistence.begin()?;
         if self
             .shared
             .mapping_update_in_progress
@@ -1123,6 +1127,9 @@ impl CachedFile {
         update: &mut update::CacheUpdateGuard<'_>,
     ) -> VfsResult<usize> {
         self.shared.ensure_writeback_owner_active()?;
+        let _backing_change = (!self.in_memory)
+            .then(|| self.shared.backing_persistence.begin())
+            .transpose()?;
         let file = self.inner.entry().as_file()?;
         let end = offset.saturating_add(buf.remaining() as u64);
         let old_len = self.shared.len();

@@ -11,7 +11,7 @@ use axfs_ng_vfs::{
 use super::{
     ff,
     file::FatFileNode,
-    fs::{FatFilesystem, FatFilesystemGuard},
+    fs::FatFilesystemGuard,
     state::FatInode,
     util::{file_metadata, into_vfs_err},
 };
@@ -22,16 +22,7 @@ pub struct FatDirNode {
 }
 
 impl FatDirNode {
-    pub fn new(
-        fs: Arc<FatFilesystem>,
-        dir: ff::Dir<'_>,
-        inode: u64,
-        this: WeakDirEntry,
-    ) -> DirNode {
-        Self::from_state(FatInode::root(fs, dir, inode), this)
-    }
-
-    fn from_state(state: Arc<FatInode>, this: WeakDirEntry) -> DirNode {
+    pub(super) fn from_state(state: Arc<FatInode>, this: WeakDirEntry) -> DirNode {
         DirNode::new(Arc::new(Self { state, this }))
     }
 
@@ -82,6 +73,9 @@ impl FatDirNode {
         }
         if options.exchange() || options.whiteout() {
             return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
+        }
+        if let Err(error) = validate_rename_name(dst) {
+            return NamespaceOutcome::unchanged(Err(error));
         }
         let mut guard = self.state.fs.lock();
         let source = match self.find(src, &guard) {
@@ -166,6 +160,29 @@ impl FatDirNode {
             }
         }
     }
+}
+
+fn validate_rename_name(name: &str) -> VfsResult<()> {
+    // starry-fatfs validates this byte limit and character set in write_entry,
+    // after rename_internal has already deleted the source slots. Validate the
+    // complete component before touching a shared editor or namespace state.
+    const MAX_FAT_NAME_BYTES: usize = 255;
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.len() > MAX_FAT_NAME_BYTES
+        || !name.chars().all(|character| {
+            matches!(
+                character,
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '\u{80}'..='\u{ffff}'
+                    | '$' | '%' | '\'' | '-' | '_' | '@' | '~' | '`' | '!' | '(' | ')'
+                    | '{' | '}' | '.' | ' ' | '+' | ',' | ';' | '=' | '[' | ']'
+                    | '^' | '#' | '&'
+            )
+        })
+    {
+        return Err(VfsError::InvalidInput);
+    }
+    Ok(())
 }
 
 impl NodeOps for FatDirNode {

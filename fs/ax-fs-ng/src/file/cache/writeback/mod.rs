@@ -36,6 +36,14 @@ struct WritebackPages<'a> {
 }
 
 impl CachedFileShared {
+    fn sync_backing(&self, data_only: bool) -> VfsResult<()> {
+        let backing = self.backing()?;
+        let change = self.backing_persistence.begin()?;
+        backing.sync(data_only)?;
+        change.complete_sync();
+        Ok(())
+    }
+
     /// Runs after the writer publishes its current stable page and releases
     /// io_lock. Concurrent writeback may temporarily exceed the soft target.
     pub(super) fn balance_dirty_pages(&self, growing: bool) -> VfsResult<()> {
@@ -171,7 +179,7 @@ impl CachedFileShared {
         round.protect()?;
         round.write_back()?;
         drop(round);
-        self.backing()?.sync(false)?;
+        self.sync_backing(false)?;
         Ok(numbers)
     }
 
@@ -181,7 +189,7 @@ impl CachedFileShared {
         round.protect()?;
         round.write_back()?;
         drop(round);
-        self.backing()?.sync(false)
+        self.sync_backing(false)
     }
 
     pub(super) fn sync(&self, data_only: bool) -> VfsResult<()> {
@@ -190,12 +198,7 @@ impl CachedFileShared {
         round.protect()?;
         round.write_back()?;
         drop(round);
-        let result = self.backing()?.sync(data_only);
-        // Pages may already be clean while the backing editor still failed to
-        // persist. Keep its registry owner until an explicit successful retry.
-        self.sync_failed
-            .store(result.is_err(), core::sync::atomic::Ordering::Release);
-        result
+        self.sync_backing(data_only)
     }
 
     #[cfg(feature = "ext4")]

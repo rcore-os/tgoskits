@@ -11,7 +11,8 @@ use core::{
 };
 
 use axfs_ng_vfs::{
-    DirEntry, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
+    DirEntry, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, WeakDirEntry,
+    path::MAX_NAME_LEN,
 };
 use slab::Slab;
 
@@ -52,10 +53,18 @@ impl FatFilesystemInner {
     }
 }
 
+#[derive(Default)]
+struct RootIndex {
+    entry: Option<WeakDirEntry>,
+    holder: Weak<FatInode>,
+}
+
 pub struct FatFilesystem {
+    self_ref: Weak<Self>,
     inner: Mutex<FatFilesystemInner>,
     disk_flusher: SeekableDiskFlusher,
-    root_dir: RawSpinLock<Option<DirEntry>>,
+    root_dir: RawSpinLock<RootIndex>,
+    pub(super) root_inode: u64,
     /// Original device authority, retained while current writes are revoked.
     permissions: Option<ax_block::VolumePermissions>,
 }
@@ -116,30 +125,42 @@ impl FatFilesystem {
             _pinned: PhantomPinned,
         };
         let root_inode = inner.alloc_inode();
-        let result = Arc::new(Self {
+        let result = Arc::new_cyclic(|self_ref| Self {
+            self_ref: self_ref.clone(),
             inner: Mutex::new(inner),
             disk_flusher,
-            root_dir: RawSpinLock::new(None),
+            root_dir: RawSpinLock::new(RootIndex::default()),
+            root_inode,
             permissions,
         });
-
-        let root_dir = DirEntry::new_dir(
-            |this| {
-                FatDirNode::new(
-                    result.clone(),
-                    result.lock().inner.root_dir(),
-                    root_inode,
-                    this,
-                )
-            },
-            Reference::root(),
-        );
-        *result.root_dir.lock_irqsave() = Some(root_dir);
         Ok(Filesystem::new(result))
     }
 }
 
 impl FatFilesystem {
+    fn root_holder(&self) -> Arc<FatInode> {
+        // Never hold the root index while acquiring the sleepable filesystem
+        // mutex. That mutex canonicalizes raw holders; the short index lock
+        // only publishes weak references.
+        let mut guard = self.lock();
+        let existing = self.root_dir.lock_irqsave().holder.upgrade();
+        let holder = existing.unwrap_or_else(|| {
+            FatInode::root(
+                self.self_ref.upgrade().expect("live FAT filesystem owner"),
+                guard.inner.root_dir(),
+                self.root_inode,
+            )
+        });
+        guard.retain(&holder);
+        let retired = {
+            let mut index = self.root_dir.lock_irqsave();
+            core::mem::replace(&mut index.holder, Arc::downgrade(&holder))
+        };
+        drop(guard);
+        drop(retired);
+        holder
+    }
+
     /// Locks the shared FAT state.
     ///
     /// FAT operations may block on channel-backed block completion while this
@@ -191,7 +212,35 @@ impl FilesystemOps for FatFilesystem {
     }
 
     fn root_dir(&self) -> DirEntry {
-        self.root_dir.lock_irqsave().clone().unwrap()
+        let existing = self
+            .root_dir
+            .lock_irqsave()
+            .entry
+            .as_ref()
+            .and_then(WeakDirEntry::upgrade);
+        if let Some(root) = existing {
+            return root;
+        }
+        let holder = self.root_holder();
+        let candidate = DirEntry::new_dir(
+            |this| FatDirNode::from_state(holder, this),
+            Reference::root(),
+        );
+        let (root, retired) = {
+            let mut index = self.root_dir.lock_irqsave();
+            match index.entry.as_ref().and_then(WeakDirEntry::upgrade) {
+                Some(root) => (root, None),
+                None => {
+                    let retired = index.entry.replace(candidate.downgrade());
+                    (candidate.clone(), retired)
+                }
+            }
+        };
+        // A losing candidate owns a raw holder whose destructor takes the
+        // filesystem mutex. Both index locks and the mutex are gone here.
+        drop(candidate);
+        drop(retired);
+        root
     }
 
     fn stat(&self) -> VfsResult<StatFs> {

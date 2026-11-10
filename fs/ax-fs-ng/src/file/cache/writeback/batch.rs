@@ -19,6 +19,7 @@ impl WritebackPages<'_> {
     pub(super) fn write_back(&self) -> VfsResult<()> {
         let mut cursor = 0;
         while let Some(batch) = self.prepare_batch(&mut cursor)? {
+            let _backing_change = self.shared.backing_persistence.begin()?;
             super::super::backing::write_all_at(
                 self.shared.backing()?,
                 &batch.bytes,

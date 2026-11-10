@@ -255,7 +255,6 @@ impl DirNodeOps for Inode {
         let mut observation = None;
         let mut applied = false;
         let result = (|| -> VfsResult<()> {
-            #[cfg(feature = "vfs")]
             {
                 // Release closed, clean cache owners before another orphan-chain
                 // mutation. Drop the state lock before pruning: the final cache
@@ -331,7 +330,6 @@ impl DirNodeOps for Inode {
         let mut observation = None;
         let mut applied = false;
         let result = (|| -> VfsResult<()> {
-            #[cfg(feature = "vfs")]
             {
                 let has_orphans = self.fs().lock().has_pending_reaps();
                 if has_orphans {
