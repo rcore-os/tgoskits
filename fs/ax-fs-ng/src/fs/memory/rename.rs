@@ -176,11 +176,10 @@ impl LockedAttempt for MemoryAttempt<'_> {
         };
         let request = match command {
             NamespaceMutation::Create(request) => {
-                return Ok(MutationObservation::Create(optional(
-                    self,
-                    self.source,
-                    request.name(),
-                )?));
+                return Ok(MutationObservation::Create {
+                    target: optional(self, self.source, request.name())?,
+                    owner_policy: axfs_ng_vfs::CreateOwnerPolicy::ParentSetgid,
+                });
             }
             NamespaceMutation::Link(request) => {
                 let source = request.source().downcast::<MemoryNode>()?;

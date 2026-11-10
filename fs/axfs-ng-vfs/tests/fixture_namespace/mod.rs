@@ -115,9 +115,10 @@ impl<T: Backend> LockedAttempt for Attempt<'_, T> {
         retired: &MutationRetire,
     ) -> VfsResult<MutationObservation> {
         match command {
-            NamespaceMutation::Create(request) => Ok(MutationObservation::Create(
-                self.target(request.name(), retired)?,
-            )),
+            NamespaceMutation::Create(request) => Ok(MutationObservation::Create {
+                target: self.target(request.name(), retired)?,
+                owner_policy: axfs_ng_vfs::CreateOwnerPolicy::ParentSetgid,
+            }),
             NamespaceMutation::Link(request) => Ok(MutationObservation::Link {
                 source: self.node(request.source().clone(), &request.source().name(), retired)?,
                 target: self.target(request.name(), retired)?,

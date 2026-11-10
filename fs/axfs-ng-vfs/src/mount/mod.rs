@@ -2100,7 +2100,10 @@ mod tests {
             _: &crate::MutationRetire,
         ) -> VfsResult<crate::MutationObservation> {
             match command {
-                crate::NamespaceMutation::Create(_) => Ok(crate::MutationObservation::Create(None)),
+                crate::NamespaceMutation::Create(_) => Ok(crate::MutationObservation::Create {
+                    target: None,
+                    owner_policy: crate::CreateOwnerPolicy::ParentSetgid,
+                }),
                 _ => Err(VfsError::OperationNotSupported),
             }
         }

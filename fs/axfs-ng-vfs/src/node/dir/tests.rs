@@ -442,7 +442,10 @@ impl LockedAttempt for ScriptedAttempt<'_> {
         } else {
             None
         };
-        Ok(MutationObservation::Create(target))
+        Ok(MutationObservation::Create {
+            target,
+            owner_policy: CreateOwnerPolicy::ParentSetgid,
+        })
     }
     fn is_ancestor(&mut self, _: &NamespaceNode, _: u64) -> VfsResult<bool> {
         Err(VfsError::Unsupported)

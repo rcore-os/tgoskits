@@ -362,7 +362,10 @@ impl LockedAttempt for Ext4Attempt<'_> {
                     Err(VfsError::NotFound) => None,
                     Err(error) => return Err(error),
                 };
-                return Ok(MutationObservation::Create(target));
+                return Ok(MutationObservation::Create {
+                    target,
+                    owner_policy: axfs_ng_vfs::CreateOwnerPolicy::ParentSetgid,
+                });
             }
             NamespaceMutation::Link(request) => {
                 let source = request.source().downcast::<Inode>()?;

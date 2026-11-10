@@ -19,12 +19,42 @@ impl CreateContent<'_> {
     }
 }
 
-/// Creation attributes are not credentials. Ordinary requests always use the
-/// caller's identity and the current parent's SGID inheritance.
+/// Creation attributes are not credentials. The backend selects ownership
+/// semantics from its locked observation, not from this caller-provided data.
 #[derive(Clone, Copy, Debug)]
 pub struct CreateAttributes<'a> {
     pub content: CreateContent<'a>,
     pub permission: NodePermission,
+}
+
+/// Ownership semantics selected by the backend in the current locked attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateOwnerPolicy {
+    /// Use the caller's identity with the current parent's SGID inheritance.
+    ParentSetgid,
+    /// Use the caller's UID/GID and the kernfs directory creation mode mask.
+    Caller,
+}
+
+impl CreateOwnerPolicy {
+    fn initial_attributes(
+        self,
+        attributes: CreateAttributes<'_>,
+        parent: &Metadata,
+        credentials: &MutationCredentials<'_>,
+    ) -> (NodePermission, (u32, u32)) {
+        // Retain the existing authorizer while collecting the policy regression.
+        let mut permission = attributes.permission;
+        let gid = if parent.mode.contains(NodePermission::SET_GID) {
+            if attributes.content.node_type() == NodeType::Directory {
+                permission.insert(NodePermission::SET_GID);
+            }
+            parent.gid
+        } else {
+            credentials.fsgid
+        };
+        (permission, (credentials.fsuid, gid))
+    }
 }
 
 /// Explicit authority for approved kernel archive initialization.
@@ -200,7 +230,10 @@ impl<'a> MutationTarget<'a> {
 
 /// Command-specific observations cannot be interchanged by the authorizer.
 pub enum MutationObservation {
-    Create(Option<RenameNode>),
+    Create {
+        target: Option<RenameNode>,
+        owner_policy: CreateOwnerPolicy,
+    },
     Link {
         source: RenameNode,
         target: Option<RenameNode>,
@@ -364,7 +397,9 @@ impl<'attempt, 'request> CommandGuard<'attempt, 'request> {
         (parent, mut observed): (Metadata, MutationObservation),
     ) -> VfsResult<CommandSlot<'_, 'attempt, 'request>> {
         let candidate = match (&self.command, &mut observed) {
-            (NamespaceMutation::Create(_), MutationObservation::Create(target)) => target.as_mut(),
+            (NamespaceMutation::Create(_), MutationObservation::Create { target, .. }) => {
+                target.as_mut()
+            }
             (NamespaceMutation::Link(_), MutationObservation::Link { source, target }) => {
                 self.retired.retire(source.entry.clone());
                 target.as_mut()
@@ -404,7 +439,13 @@ impl<'slot, 'attempt, 'request> CommandSlot<'slot, 'attempt, 'request> {
         let credentials = self.guard.target.credentials;
         let parent = self.guard.target.parent;
         match (self.guard.command, &self.observed) {
-            (NamespaceMutation::Create(request), MutationObservation::Create(target)) => {
+            (
+                NamespaceMutation::Create(request),
+                MutationObservation::Create {
+                    target,
+                    owner_policy,
+                },
+            ) => {
                 if let Some(target) = target {
                     let existing = request.existing.ok_or(VfsError::AlreadyExists)?;
                     if target.entry.node_type() != NodeType::Symlink {
@@ -428,19 +469,10 @@ impl<'slot, 'attempt, 'request> CommandSlot<'slot, 'attempt, 'request> {
                         return Err(VfsError::InvalidInput);
                     }
                 }
-                let mut permission = request.attributes.permission;
-                let owner = if let Some(owner) = request.restore_owner {
-                    owner
+                let (permission, owner) = if let Some(owner) = request.restore_owner {
+                    (request.attributes.permission, owner)
                 } else {
-                    let gid = if self.parent.mode.contains(NodePermission::SET_GID) {
-                        if request.attributes.content.node_type() == NodeType::Directory {
-                            permission.insert(NodePermission::SET_GID);
-                        }
-                        self.parent.gid
-                    } else {
-                        credentials.fsgid
-                    };
-                    (credentials.fsuid, gid)
+                    owner_policy.initial_attributes(request.attributes, &self.parent, credentials)
                 };
                 Ok(CommandAuthorization::Commit(
                     self,
@@ -505,7 +537,11 @@ impl CommandAuthorization<'_, '_, '_> {
     fn commit(self) -> NamespaceOutcome<NamespaceEffect> {
         let (slot, attributes) = match self {
             Self::Existing(slot) => {
-                let MutationObservation::Create(Some(target)) = &slot.observed else {
+                let MutationObservation::Create {
+                    target: Some(target),
+                    ..
+                } = &slot.observed
+                else {
                     unreachable!()
                 };
                 return NamespaceOutcome::unchanged_observed(
@@ -519,7 +555,10 @@ impl CommandAuthorization<'_, '_, '_> {
             Self::Commit(slot, attributes) => (slot, attributes),
         };
         let authorized = match (slot.guard.command, &slot.observed) {
-            (NamespaceMutation::Create(request), MutationObservation::Create(None)) => {
+            (
+                NamespaceMutation::Create(request),
+                MutationObservation::Create { target: None, .. },
+            ) => {
                 let (permission, owner) = attributes.expect("authorized creation attributes");
                 AuthorizedMutation::Create(AuthorizedCreate {
                     request,
@@ -550,5 +589,54 @@ impl CommandAuthorization<'_, '_, '_> {
             slot.guard.retired.retire(old);
         }
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn backend_creation_policy_chooses_owner_and_directory_mode() {
+        let parent = Metadata {
+            device: 1,
+            inode: 1,
+            nlink: 2,
+            mode: NodePermission::from_bits_truncate(0o2777),
+            node_type: NodeType::Directory,
+            uid: 0,
+            gid: 23,
+            size: 0,
+            block_size: 4096,
+            blocks: 0,
+            rdev: DeviceId::default(),
+            atime: Duration::ZERO,
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
+        };
+        let credentials = MutationCredentials {
+            fsuid: 1000,
+            fsgid: 1001,
+            ..MutationCredentials::root()
+        };
+        let observations = [
+            (CreateOwnerPolicy::ParentSetgid, 0o755),
+            (CreateOwnerPolicy::Caller, 0o7755),
+        ]
+        .map(|(policy, mode)| {
+            let (permission, owner) = policy.initial_attributes(
+                CreateAttributes {
+                    content: CreateContent::Node(NodeType::Directory, DeviceId::default()),
+                    permission: NodePermission::from_bits_truncate(mode),
+                },
+                &parent,
+                &credentials,
+            );
+            (permission.bits(), owner)
+        });
+
+        assert_eq!(observations, [(0o2755, (1000, 23)), (0o1755, (1000, 1001))]);
     }
 }

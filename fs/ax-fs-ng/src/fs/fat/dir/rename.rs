@@ -164,7 +164,10 @@ impl LockedAttempt for FatAttempt<'_> {
                     Err(VfsError::NotFound) => None,
                     Err(error) => return Err(error),
                 };
-                return Ok(MutationObservation::Create(target));
+                return Ok(MutationObservation::Create {
+                    target,
+                    owner_policy: axfs_ng_vfs::CreateOwnerPolicy::ParentSetgid,
+                });
             }
             NamespaceMutation::Unlink(request) => {
                 let raw = self.source.find(request.name(), &self.guard)?;
