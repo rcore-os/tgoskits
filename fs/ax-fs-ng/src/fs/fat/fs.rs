@@ -74,6 +74,7 @@ pub(super) struct FatFilesystemGuard<'a> {
     held: Option<MutexGuard<'a, FatFilesystemInner>>,
     owner: &'a FatFilesystem,
     retained: Vec<Arc<FatInode>>,
+    retired: Option<&'a axfs_ng_vfs::MutationRetire>,
 }
 
 impl FatFilesystemGuard<'_> {
@@ -104,7 +105,11 @@ impl Drop for FatFilesystemGuard<'_> {
         // An inode destructor acquires this mutex. Never become its last owner
         // while still holding the filesystem guard.
         drop(self.held.take());
-        self.retained.clear();
+        if let Some(retired) = self.retired {
+            retired.retire(core::mem::take(&mut self.retained));
+        } else {
+            self.retained.clear();
+        }
     }
 }
 
@@ -170,7 +175,17 @@ impl FatFilesystem {
             held: Some(self.inner.lock()),
             owner: self,
             retained: Vec::new(),
+            retired: None,
         }
+    }
+
+    pub(super) fn lock_retiring<'a>(
+        &'a self,
+        retired: &'a axfs_ng_vfs::MutationRetire,
+    ) -> FatFilesystemGuard<'a> {
+        let mut guard = self.lock();
+        guard.retired = Some(retired);
+        guard
     }
 }
 

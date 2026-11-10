@@ -144,7 +144,13 @@ fn negative_directory_cache_is_revalidated_through_a_renamed_open_directory() {
             0,
         )
         .unwrap();
-    root.rename("original", &root, "renamed").unwrap();
+    root.rename(
+        "original",
+        &root,
+        "renamed",
+        &axfs_ng_vfs::MutationCredentials::root(),
+    )
+    .unwrap();
     let renamed = root.lookup_no_follow("renamed").unwrap();
     assert!(original.entry().ptr_eq(renamed.entry()));
     assert_eq!(original.inode(), renamed.inode());
@@ -199,7 +205,13 @@ fn negative_directory_cache_follows_rename_and_preserves_unsupported_whiteout() 
         target.lookup_no_follow("moved"),
         Err(VfsError::NotFound)
     ));
-    root.rename("original", &target, "moved").unwrap();
+    root.rename(
+        "original",
+        &target,
+        "moved",
+        &axfs_ng_vfs::MutationCredentials::root(),
+    )
+    .unwrap();
     assert_eq!(
         target.lookup_no_follow("moved").unwrap().inode(),
         original.inode()
@@ -211,7 +223,13 @@ fn negative_directory_cache_follows_rename_and_preserves_unsupported_whiteout() 
     // The current portable core explicitly rejects rename:whiteout. Preserve
     // that error and both names rather than expanding backend capabilities.
     assert_eq!(
-        target.rename_with_options("moved", &root, "original", RenameOptions::WHITEOUT),
+        target.rename_with_options(
+            "moved",
+            &root,
+            "original",
+            RenameOptions::WHITEOUT,
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::OperationNotSupported)
     );
     assert!(matches!(
@@ -222,7 +240,14 @@ fn negative_directory_cache_follows_rename_and_preserves_unsupported_whiteout() 
         target.lookup_no_follow("moved").unwrap().inode(),
         original.inode()
     );
-    target.rename("moved", &root, "original").unwrap();
+    target
+        .rename(
+            "moved",
+            &root,
+            "original",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
     assert_eq!(
         root.lookup_no_follow("original").unwrap().inode(),
         original.inode()
@@ -259,9 +284,14 @@ fn directory_exchange_preserves_both_cached_file_owners() {
         .unwrap();
     first.user_data().insert(1_u32);
     second.user_data().insert(2_u32);
-    directory
-        .rename_with_options("first", directory, "second", RenameOptions::EXCHANGE)
-        .unwrap();
+    root.rename_with_options(
+        "first",
+        &root,
+        "second",
+        RenameOptions::EXCHANGE,
+        &axfs_ng_vfs::MutationCredentials::root(),
+    )
+    .unwrap();
     let new_first = directory.lookup("first").unwrap();
     let new_second = directory.lookup("second").unwrap();
     assert_eq!(new_first.inode(), second.inode());

@@ -454,7 +454,14 @@ mod tests {
         opened.sync(false).unwrap();
         let inode = source.inode();
 
-        let result = directory.rename("safe.txt", directory, "bad:name");
+        let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+        let location = mount.root_location();
+        let result = location.rename(
+            "safe.txt",
+            &location,
+            "bad:name",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        );
         let mut old_contents = [0; 21];
         let old_read = opened.read_at(&mut old_contents, 0);
         directory.clear_cached_entries();

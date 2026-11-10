@@ -229,16 +229,6 @@ impl DirNodeOps for SyntheticMountDir {
     fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
         Err(VfsError::ReadOnlyFilesystem)
     }
-
-    fn rename(
-        &self,
-        _src_name: &str,
-        _dst_dir: &DirNode,
-        _dst_name: &str,
-        _options: RenameOptions,
-    ) -> VfsResult<()> {
-        Err(VfsError::ReadOnlyFilesystem)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1321,8 +1311,21 @@ impl Location {
         Ok(self.wrap(entry))
     }
 
-    pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
-        self.rename_with_options(src_name, dst_dir, dst_name, RenameOptions::REPLACE)
+    /// Renames with explicit current credentials and exact-mount write authority.
+    pub fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &Self,
+        dst_name: &str,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        self.rename_with_options(
+            src_name,
+            dst_dir,
+            dst_name,
+            RenameOptions::REPLACE,
+            credentials,
+        )
     }
 
     pub fn rename_with_options(
@@ -1331,39 +1334,49 @@ impl Location {
         dst_dir: &Self,
         dst_name: &str,
         options: RenameOptions,
+        credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<()> {
-        if self.is_readonly() || dst_dir.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
-        }
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
-        let src_loc = self.lookup_no_follow(src_name)?;
-        // Disallow moving a directory into one of its own descendants. Regular
-        // files may still be renamed into child directories (e.g. Redis AOF
-        // `temp-rewriteaof-*.aof` -> `appendonlydir/...`).
-        if src_loc.node_type() == NodeType::Directory
-            && !self.ptr_eq(dst_dir)
-            && src_loc.entry.is_ancestor_of(&dst_dir.entry)?
-        {
-            return Err(VfsError::InvalidInput);
-        }
-        if options.exchange() {
-            let dst_loc = dst_dir.lookup_no_follow(dst_name)?;
-            if dst_loc.node_type() == NodeType::Directory
-                && !self.ptr_eq(dst_dir)
-                && dst_loc.entry.is_ancestor_of(&self.entry)?
-            {
-                return Err(VfsError::InvalidInput);
-            }
-        }
-        self.entry.as_dir()?.rename_with_options(
+        let write = self.acquire_write()?;
+        let retired = crate::MutationRetire::new();
+        self.rename_with_write(
             src_name,
-            dst_dir.entry.as_dir()?,
-            dst_name,
+            (dst_dir, dst_name),
             options,
-        )?;
-        Ok(())
+            credentials,
+            &write,
+            &retired,
+        )
+    }
+
+    /// Borrows rights and retirement from an outer command. All backing write
+    /// leases must already exist before its outermost backend gate is entered.
+    pub fn rename_with_write(
+        &self,
+        src_name: &str,
+        destination: (&Self, &str),
+        options: RenameOptions,
+        credentials: &crate::MutationCredentials<'_>,
+        write: &crate::MountWriteGuard,
+        retired: &crate::MutationRetire,
+    ) -> VfsResult<()> {
+        let (dst_dir, dst_name) = destination;
+        if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
+            return Err(VfsError::CrossesDevices);
+        }
+        let command = crate::NamespaceMutation::Rename(crate::RenameRequest::new(
+            (self, src_name),
+            (dst_dir, dst_name),
+            options,
+            credentials,
+            write,
+        )?);
+        self.entry
+            .as_dir()?
+            .inner()
+            .mutate_namespace(&command, retired)
     }
 
     pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
@@ -1739,15 +1752,6 @@ mod tests {
         fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
-        fn rename(
-            &self,
-            _src: &str,
-            _dst_dir: &DirNode,
-            _dst: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
     }
 
     impl NodeOps for TopologyChangingNode {
@@ -1816,16 +1820,6 @@ mod tests {
         }
 
         fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn rename(
-            &self,
-            _src: &str,
-            _dst_dir: &DirNode,
-            _dst: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }
@@ -1904,16 +1898,6 @@ mod tests {
         }
 
         fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::OperationNotSupported)
-        }
-
-        fn rename(
-            &self,
-            _src: &str,
-            _dst_dir: &DirNode,
-            _dst: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
             Err(VfsError::OperationNotSupported)
         }
     }

@@ -18,27 +18,11 @@ impl NodeOps for Inode {
 
     fn metadata(&self) -> VfsResult<Metadata> {
         let inode = self.lifetime.metadata().map_err(into_vfs_err)?;
-        let node_type = directory_entry_type_to_vfs(inode.file_type());
-        let block_size = self.fs().block_size();
-        Ok(Metadata {
-            inode: self.number().as_u64(),
-            device: 0,
-            nlink: inode.links as _,
-            mode: NodePermission::from_bits_truncate(inode.mode),
-            node_type,
-            uid: inode.uid,
-            gid: inode.gid,
-            size: inode.size,
-            block_size,
-            blocks: inode.blocks,
-            rdev: inode
-                .device_number
-                .map(|device| DeviceId::new(device.major(), device.minor()))
-                .unwrap_or_default(),
-            atime: core::time::Duration::from_secs(u64::from(inode.atime)),
-            mtime: core::time::Duration::from_secs(u64::from(inode.mtime)),
-            ctime: core::time::Duration::from_secs(u64::from(inode.ctime)),
-        })
+        Ok(metadata_from_info(
+            self.number().as_u64(),
+            self.fs().block_size(),
+            inode,
+        ))
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
@@ -111,5 +95,34 @@ impl Inode {
         let seconds = i64::try_from(value.as_secs())
             .map_err(|_| into_vfs_err(rsext4::Ext4Error::overflow()))?;
         Ok(Ext4Timestamp::new(seconds, value.subsec_nanos()))
+    }
+}
+
+/// Decodes already loaded native metadata without entering admission again.
+pub(crate) fn metadata_from_info(
+    number: u64,
+    block_size: u64,
+    inode: rsext4::InodeInfo,
+) -> Metadata {
+    let node_type = directory_entry_type_to_vfs(inode.file_type());
+
+    Metadata {
+        inode: number,
+        device: 0,
+        nlink: inode.links as _,
+        mode: NodePermission::from_bits_truncate(inode.mode),
+        node_type,
+        uid: inode.uid,
+        gid: inode.gid,
+        size: inode.size,
+        block_size,
+        blocks: inode.blocks,
+        rdev: inode
+            .device_number
+            .map(|device| DeviceId::new(device.major(), device.minor()))
+            .unwrap_or_default(),
+        atime: core::time::Duration::from_secs(u64::from(inode.atime)),
+        mtime: core::time::Duration::from_secs(u64::from(inode.mtime)),
+        ctime: core::time::Duration::from_secs(u64::from(inode.ctime)),
     }
 }

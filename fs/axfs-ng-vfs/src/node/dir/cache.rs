@@ -5,7 +5,7 @@ use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, v
 use hashbrown::{HashMap, HashSet};
 
 use super::{DirEntry, DirNode, VfsError, VfsResult};
-use crate::{NameState, RawSpinLock, WeakDirEntry};
+use crate::{MutationRetire, NameState, RawSpinLock, WeakDirEntry};
 
 const MAX_NEGATIVE_ENTRIES: usize = 128;
 const MAX_RETAINED_ENTRIES: usize = 256;
@@ -31,6 +31,7 @@ pub(super) struct NameChange<'a> {
     complete: bool,
     publication: Arc<super::super::name::NamePublication>,
     affected: Vec<DirEntry>,
+    retired: Option<&'a MutationRetire>,
 }
 
 impl NameChange<'_> {
@@ -97,11 +98,15 @@ impl Drop for NameChange<'_> {
                 self.publication.close(&self.affected, &uncertain);
             }
         }
+        if let Some(retired) = self.retired {
+            retired.retire(core::mem::take(&mut self.affected));
+            retired.retire(uncertain);
+        }
     }
 }
 
-fn retain(entry: &DirEntry) {
-    let retired = {
+fn retain_deferred(entry: &DirEntry) -> (Option<DirEntry>, Option<DirEntry>) {
+    {
         let mut entries = RETAINED_ENTRIES.lock();
         let duplicate = entries
             .iter()
@@ -114,8 +119,11 @@ fn retain(entry: &DirEntry) {
             None
         };
         (duplicate, evicted)
-    };
-    drop(retired);
+    }
+}
+
+fn retain(entry: &DirEntry) {
+    drop(retain_deferred(entry));
 }
 
 fn release_retained(children: &[DirEntry]) {
@@ -143,10 +151,6 @@ impl DirNode {
         self.begin_name_change_with(publication)
     }
 
-    pub(super) fn begin_related_name_change(&self, other: &NameChange<'_>) -> NameChange<'_> {
-        self.begin_name_change_with(other.publication.clone())
-    }
-
     fn begin_name_change_with(
         &self,
         publication: Arc<super::super::name::NamePublication>,
@@ -168,7 +172,100 @@ impl DirNode {
             complete: false,
             publication,
             affected,
+            retired: None,
         }
+    }
+
+    pub(super) fn begin_locked_name_change<'a>(
+        &'a self,
+        domain: usize,
+        retired: &'a MutationRetire,
+    ) -> NameChange<'a> {
+        let mut change =
+            self.begin_name_change_with(super::super::name::NamePublication::begin(domain));
+        change.retired = Some(retired);
+        change
+    }
+
+    pub(super) fn begin_related_locked_name_change<'a>(
+        &'a self,
+        other: &NameChange<'_>,
+        retired: &'a MutationRetire,
+    ) -> NameChange<'a> {
+        let mut change = self.begin_name_change_with(other.publication.clone());
+        change.retired = Some(retired);
+        change
+    }
+
+    pub(super) fn canonicalize_locked(
+        &self,
+        name: &str,
+        candidate: DirEntry,
+        cacheable: bool,
+        retired: &MutationRetire,
+    ) -> DirEntry {
+        retired.retire(candidate.clone());
+        let existing = self
+            .cache
+            .lock()
+            .entries
+            .get(name)
+            .and_then(WeakDirEntry::upgrade);
+        let winner = match existing {
+            Some(existing) => {
+                let same = existing.same_backend_object(&candidate);
+                retired.retire(existing.clone());
+                if !same {
+                    existing.set_name_state(NameState::Untrusted);
+                }
+                if same { existing } else { candidate }
+            }
+            None => candidate,
+        };
+        winner.set_name_state(NameState::Linked);
+        self.insert_locked_cache(name.to_owned(), &winner, cacheable, retired);
+        winner
+    }
+
+    pub(super) fn insert_locked_cache(
+        &self,
+        name: String,
+        entry: &DirEntry,
+        cacheable: bool,
+        retired: &MutationRetire,
+    ) {
+        let replaced = {
+            let mut cache = self.cache.lock();
+            cache.invalidate_missing();
+            cache.prune_dead_names();
+            if cacheable {
+                cache.valid.insert(name.clone());
+            }
+            cache
+                .entries
+                .insert(name, entry.downgrade())
+                .and_then(|old| old.upgrade())
+        };
+        retired.retire(replaced);
+        if cacheable {
+            retired.retire(retain_deferred(entry));
+        }
+    }
+
+    pub(super) fn locked_entry(&self, name: &str) -> Option<DirEntry> {
+        self.cache
+            .lock()
+            .entries
+            .get(name)
+            .and_then(WeakDirEntry::upgrade)
+    }
+
+    pub(super) fn invalidate_locked_name(&self, name: &str, retired: &MutationRetire) {
+        let removed = self.remove_cache_after_mutation(name);
+        if let Some(entry) = &removed {
+            entry.set_name_state(NameState::Untrusted);
+        }
+        retired.retire(removed);
     }
 
     pub(super) fn release_mutation_probe(entry: DirEntry) -> Option<DirEntry> {

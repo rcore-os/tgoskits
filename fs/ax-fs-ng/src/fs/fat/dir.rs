@@ -1,20 +1,15 @@
 use alloc::{borrow::ToOwned, sync::Arc};
-use core::{any::Any, time::Duration};
+use core::any::Any;
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
-    Metadata, MetadataUpdate, NamespaceNode, NamespaceOutcome, NodeFlags, NodeIdentity, NodeOps,
-    NodePermission, NodeType, Reference, RenameAction, RenameEffect, RenameOptions, VfsError,
-    VfsResult, WeakDirEntry,
+    DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps, Metadata,
+    MetadataUpdate, NamespaceNode, NamespaceOutcome, NodeFlags, NodeIdentity, NodeOps,
+    NodePermission, NodeType, Reference, RenameEffect, VfsError, VfsResult, WeakDirEntry,
 };
 
-use super::{
-    ff,
-    file::FatFileNode,
-    fs::FatFilesystemGuard,
-    state::FatInode,
-    util::{file_metadata, into_vfs_err},
-};
+use super::{ff, file::FatFileNode, fs::FatFilesystemGuard, state::FatInode, util::into_vfs_err};
+
+mod rename;
 
 pub struct FatDirNode {
     state: Arc<FatInode>,
@@ -60,106 +55,6 @@ impl FatDirNode {
         let state = FatInode::get(&self.state, entry, guard)?;
         Ok(self.entry(state, is_dir, &canonical))
     }
-
-    fn rename_attempt(
-        &self,
-        src: &str,
-        destination: &Self,
-        dst: &str,
-        options: RenameOptions,
-    ) -> NamespaceOutcome<RenameEffect> {
-        if !Arc::ptr_eq(&self.state.fs, &destination.state.fs) {
-            return NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
-        }
-        if options.exchange() || options.whiteout() {
-            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
-        }
-        if let Err(error) = validate_rename_name(dst) {
-            return NamespaceOutcome::unchanged(Err(error));
-        }
-        let mut guard = self.state.fs.lock();
-        let source = match self.find(src, &guard) {
-            Ok(source) => source,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        let source_name = source.file_name();
-        let target = match destination.find(dst, &guard) {
-            Ok(target) => Some(target),
-            Err(VfsError::NotFound) => None,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        if options.no_replace() && target.is_some() {
-            return NamespaceOutcome::unchanged(Err(VfsError::AlreadyExists));
-        }
-        let source_is_dir = source.is_dir();
-        let state = match FatInode::get(&self.state, source, &mut guard) {
-            Ok(state) => state,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        let source_object = NamespaceNode {
-            inode: state.inode,
-            node_type: if source_is_dir {
-                NodeType::Directory
-            } else {
-                NodeType::RegularFile
-            },
-            identity: Some(state.identity()),
-        };
-        if let Some(target) = target {
-            // Both names were resolved by fatfs, including SFN and case aliases.
-            if Arc::ptr_eq(&self.state, &destination.state) && target.file_name() == source_name {
-                return NamespaceOutcome::unchanged_observed(
-                    RenameEffect {
-                        source: source_object.clone(),
-                        target: Some(source_object),
-                        action: RenameAction::Noop,
-                        source_name: source_name.clone(),
-                        destination_name: source_name,
-                    },
-                    Ok(()),
-                );
-            }
-            // fatfs cannot atomically replace or preserve an open unlinked target.
-            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
-        }
-        // Directory moves require an update to ".." unavailable in the public
-        // fatfs API. Keep file moves and same-object noops independently usable.
-        if source_is_dir && !Arc::ptr_eq(&self.state, &destination.state) {
-            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
-        }
-        let parent = match self.state.directory(&guard) {
-            Ok(dir) => dir,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        let target_parent = match destination.state.directory(&guard) {
-            Ok(dir) => dir,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        if let Err(error) = state.close_handle(&mut guard) {
-            return NamespaceOutcome::unchanged(Err(error));
-        }
-        let effect = RenameEffect {
-            source: source_object,
-            target: None,
-            action: RenameAction::Move,
-            source_name,
-            destination_name: dst.to_owned(),
-        };
-        if let Err(error) = parent.rename(src, &target_parent, dst) {
-            state.invalidate_name(&mut guard);
-            return NamespaceOutcome::uncertain(Some(effect), Err(into_vfs_err(error)));
-        }
-        match destination.find(dst, &guard) {
-            Ok(entry) => {
-                state.move_handle(destination.state.clone(), entry, &mut guard);
-                NamespaceOutcome::applied(effect, Ok(()))
-            }
-            Err(error) => {
-                state.invalidate_name(&mut guard);
-                NamespaceOutcome::applied(effect, Err(error))
-            }
-        }
-    }
 }
 
 fn validate_rename_name(name: &str) -> VfsResult<()> {
@@ -193,29 +88,7 @@ impl NodeOps for FatDirNode {
         Some(self.state.identity())
     }
     fn metadata(&self) -> VfsResult<Metadata> {
-        let guard = self.state.fs.lock();
-        let dir = self.state.directory(&guard)?;
-        if let Some(file) = dir.as_file() {
-            let mut result = file_metadata(&guard, file, NodeType::Directory);
-            result.inode = self.inode();
-            return Ok(result);
-        }
-        Ok(Metadata {
-            inode: self.inode(),
-            device: 0,
-            nlink: 1,
-            mode: NodePermission::default(),
-            node_type: NodeType::Directory,
-            uid: 0,
-            gid: 0,
-            size: 0,
-            block_size: guard.inner.bytes_per_sector() as u64,
-            blocks: 0,
-            rdev: DeviceId::default(),
-            atime: Duration::ZERO,
-            mtime: Duration::ZERO,
-            ctime: Duration::ZERO,
-        })
+        self.state.metadata(&self.state.fs.lock())
     }
     fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
         Ok(())
@@ -391,27 +264,11 @@ impl DirNodeOps for FatDirNode {
         }
     }
 
-    fn rename(
+    fn mutate_namespace(
         &self,
-        src: &str,
-        destination: &DirNode,
-        dst: &str,
-        options: RenameOptions,
+        command: &axfs_ng_vfs::NamespaceMutation<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
     ) -> VfsResult<()> {
-        self.rename_outcome(src, destination, dst, options)
-            .into_result()
-    }
-
-    fn rename_outcome(
-        &self,
-        src: &str,
-        destination: &DirNode,
-        dst: &str,
-        options: RenameOptions,
-    ) -> NamespaceOutcome<RenameEffect> {
-        match destination.downcast::<Self>() {
-            Ok(destination) => self.rename_attempt(src, &destination, dst, options),
-            Err(error) => NamespaceOutcome::unchanged(Err(error)),
-        }
+        self.run_namespace(command, retired)
     }
 }

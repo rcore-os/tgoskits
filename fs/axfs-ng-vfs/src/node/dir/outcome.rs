@@ -52,6 +52,9 @@ pub struct RenameEffect {
     pub action: RenameAction,
     pub source_name: String,
     pub destination_name: String,
+    /// Policies determined by the locked backend, never queried during publication.
+    pub source_cacheable: bool,
+    pub destination_cacheable: bool,
 }
 
 /// One attempt's namespace effect and its independently fallible completion.

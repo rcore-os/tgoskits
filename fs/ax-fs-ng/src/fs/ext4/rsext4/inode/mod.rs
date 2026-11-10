@@ -18,6 +18,7 @@ use super::{
 mod directory;
 mod io;
 mod metadata;
+pub(crate) use metadata::metadata_from_info;
 mod xattr;
 
 pub struct Inode {
@@ -30,11 +31,11 @@ impl Inode {
         Arc::new(Self { lifetime, this })
     }
 
-    fn fs(&self) -> &Arc<Ext4Filesystem> {
+    pub(crate) fn fs(&self) -> &Arc<Ext4Filesystem> {
         self.lifetime.filesystem()
     }
 
-    fn number(&self) -> InodeNumber {
+    pub(crate) fn number(&self) -> InodeNumber {
         self.lifetime.number()
     }
 

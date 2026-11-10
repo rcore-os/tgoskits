@@ -4,6 +4,8 @@
 //! gate while any operation holds it. Rename/rmdir exclude topology readers,
 //! avoiding speculative preflight lookups or a new ancestor-locking protocol.
 
+mod rename;
+
 use alloc::{
     collections::BTreeMap,
     sync::{Arc, Weak},

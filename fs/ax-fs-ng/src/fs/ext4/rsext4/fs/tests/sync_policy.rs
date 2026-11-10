@@ -20,7 +20,13 @@ fn ordinary_namespace_and_metadata_changes_do_not_force_a_commit() {
     })
     .unwrap();
     let link = root.link("linked", &file).unwrap();
-    root.rename("linked", &root, "renamed").unwrap();
+    root.rename(
+        "linked",
+        &root,
+        "renamed",
+        &axfs_ng_vfs::MutationCredentials::root(),
+    )
+    .unwrap();
     root.unlink("renamed", false).unwrap();
     let symlink = root
         .create_symlink("symbolic", "original", NodePermission::default(), 0, 0)

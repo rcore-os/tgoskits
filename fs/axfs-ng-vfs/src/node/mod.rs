@@ -384,8 +384,8 @@ impl DirEntry {
         }
     }
 
-    pub(crate) fn move_to(&self, parent: DirEntry, name: String) {
-        let old = {
+    pub(crate) fn move_to(&self, parent: DirEntry, name: String) -> NameSnapshot {
+        {
             let mut reference = self.0.reference.lock();
             core::mem::replace(
                 &mut *reference,
@@ -395,8 +395,7 @@ impl DirEntry {
                     state: NameState::Linked,
                 },
             )
-        };
-        drop(old);
+        }
     }
 
     pub(crate) fn exchange_names(
@@ -406,13 +405,13 @@ impl DirEntry {
         right: &Self,
         right_parent: Self,
         right_name: String,
-    ) {
+    ) -> (NameSnapshot, NameSnapshot) {
         let (first, second) = if left.as_ptr() < right.as_ptr() {
             (left, right)
         } else {
             (right, left)
         };
-        let retired = {
+        {
             let mut first_state = first.0.reference.lock();
             let mut second_state = second.0.reference.lock();
             let (left_state, right_state) = if left.ptr_eq(first) {
@@ -438,8 +437,7 @@ impl DirEntry {
                     },
                 ),
             )
-        };
-        drop(retired);
+        }
     }
 
     pub(crate) fn set_name_state(&self, state: NameState) {

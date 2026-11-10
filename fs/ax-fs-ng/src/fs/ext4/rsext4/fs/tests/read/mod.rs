@@ -84,7 +84,13 @@ pub(super) fn observe_device_read(sector: u64, bytes: usize) -> BlockResult {
         )
     });
     if let Some(root) = rename_root {
-        root.rename("replacement", &root, "victim").unwrap();
+        root.rename(
+            "replacement",
+            &root,
+            "victim",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
     }
     if let Some(other) = other {
         let mut output = [0; 5];

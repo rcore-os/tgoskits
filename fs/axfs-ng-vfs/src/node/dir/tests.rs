@@ -320,9 +320,6 @@ impl DirNodeOps for ScriptedDirectory {
     fn unlink(&self, _: &str, _: bool) -> VfsResult<()> {
         Err(VfsError::Unsupported)
     }
-    fn rename(&self, _: &str, _: &DirNode, _: &str, _: RenameOptions) -> VfsResult<()> {
-        Err(VfsError::Unsupported)
-    }
 }
 
 #[derive(Debug)]

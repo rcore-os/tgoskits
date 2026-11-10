@@ -936,35 +936,10 @@ impl FsContext {
         if credentials.cap_dac_override {
             return Ok(());
         }
-
-        // CAP_DAC_READ_SEARCH bypasses read/search checks, but it does not
-        // grant write access to a directory. Keep write bits in the normal
-        // DAC path even when a read/search capability is present.
-        const READ_SEARCH_PERMISSIONS: NodePermission = NodePermission::OWNER_READ
-            .union(NodePermission::GROUP_READ)
-            .union(NodePermission::OTHER_READ)
-            .union(NodePermission::OWNER_EXEC)
-            .union(NodePermission::GROUP_EXEC)
-            .union(NodePermission::OTHER_EXEC);
-        if credentials.cap_dac_read_search
-            && required.difference(READ_SEARCH_PERMISSIONS).is_empty()
-        {
+        if credentials.cap_dac_read_search && required.bits() & !0o555 == 0 {
             return Ok(());
         }
-
-        let metadata = location.metadata()?;
-        let mode = if credentials.fsuid == metadata.uid {
-            metadata.mode.bits() >> 6
-        } else if credentials.in_group(metadata.gid) {
-            metadata.mode.bits() >> 3
-        } else {
-            metadata.mode.bits()
-        };
-        if NodePermission::from_bits_truncate(mode).contains(required) {
-            Ok(())
-        } else {
-            Err(VfsError::PermissionDenied)
-        }
+        credentials.check_permission(&location.metadata()?, required)
     }
 
     /// Check execute/search permission up to the selected path boundary.
@@ -1251,7 +1226,12 @@ impl FsContext {
         // ENOENT/EEXIST from an inaccessible parent before DAC search checks.
         self.check_search_trace(src_search, src_boundary, credentials)?;
         self.check_search_trace(dst_search, dst_boundary, credentials)?;
-        let source = src_dir.lookup_no_follow(src_name)?;
+        if !Arc::ptr_eq(src_dir.mountpoint(), dst_dir.mountpoint()) {
+            return Err(VfsError::CrossesDevices);
+        }
+        // Preserve preflight error ordering; none of these observations grants
+        // permission to commit. The backend attempt rechecks current objects.
+        src_dir.lookup_no_follow(src_name)?;
         let destination = match dst_dir.lookup_no_follow(dst_name) {
             Ok(destination) => Some(destination),
             Err(VfsError::NotFound) => None,
@@ -1280,24 +1260,9 @@ impl FsContext {
             credentials,
         )?;
 
-        // Match the VFS no-op result before applying sticky-directory removal
-        // rules to an unchanged ordinary rename.
-        if options == RenameOptions::REPLACE
-            && Arc::ptr_eq(src_dir.mountpoint(), dst_dir.mountpoint())
-            && destination
-                .as_ref()
-                .is_some_and(|destination| destination.inode() == source.inode())
-        {
-            return Ok(());
-        }
-
-        Self::check_sticky(src_dir, &source, credentials)?;
-        if !options.no_replace()
-            && let Some(destination) = &destination
-        {
-            Self::check_sticky(dst_dir, destination, credentials)?;
-        }
-        src_dir.rename_with_options(src_name, dst_dir, dst_name, options)
+        // No-op and sticky decisions belong to the same locked observation as
+        // commit, not the objects retained by these preflight ordering checks.
+        src_dir.rename_with_options(src_name, dst_dir, dst_name, options, credentials)
     }
 
     /// Creates a new, empty directory at the provided path.

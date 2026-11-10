@@ -26,7 +26,7 @@ fn namespace_staging_releases_lookup_before_real_flush() {
         NodeType::CharacterDevice,
         NodeType::BlockDevice,
     ] {
-        let (filesystem, root) = fixture();
+        let (filesystem, root, _mount) = fixture();
         let probe = lookup_during_staging(&filesystem, &root);
 
         let created = root
@@ -42,7 +42,7 @@ fn namespace_staging_releases_lookup_before_real_flush() {
 
 #[test]
 fn real_checkpoint_pressure_retries_without_holding_namespace_rights() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, _mount) = fixture();
     let batch = filesystem
         .lock()
         .ext4
@@ -82,7 +82,7 @@ fn real_checkpoint_pressure_retries_without_holding_namespace_rights() {
 
 #[test]
 fn symlink_and_hardlink_staging_release_namespace_rights() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, _mount) = fixture();
     let witness = root.lookup("witness").unwrap();
     let probe = lookup_during_staging(&filesystem, &root);
     let symlink = root
@@ -102,7 +102,7 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
 #[test]
 fn unlink_and_rmdir_staging_release_both_namespace_scopes() {
     for kind in [NodeType::RegularFile, NodeType::Directory] {
-        let (filesystem, root) = fixture();
+        let (filesystem, root, _mount) = fixture();
         let victim = root
             .create("victim", kind, NodePermission::default(), 0, 0)
             .unwrap();
@@ -124,13 +124,21 @@ fn unlink_and_rmdir_staging_release_both_namespace_scopes() {
 #[test]
 fn rename_replace_and_exchange_retain_current_successful_inodes() {
     for options in [RenameOptions::REPLACE, RenameOptions::EXCHANGE] {
-        let (filesystem, root) = fixture();
+        let (filesystem, root, mount) = fixture();
         let source = create_file(&root, "source");
         let target = create_file(&root, "target");
         let directory = filesystem.root_dir();
         let probe = lookup_during_staging(&filesystem, &root);
 
-        root.rename("source", directory.as_dir().unwrap(), "target", options)
+        mount
+            .root_location()
+            .rename_with_options(
+                "source",
+                &axfs_ng_vfs::Location::new(mount.clone(), directory.clone()),
+                "target",
+                options,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
             .unwrap();
 
         probe.finish();
@@ -148,7 +156,7 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
 
 #[test]
 fn failed_pressure_flush_returns_io_without_publishing_a_child() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, _mount) = fixture();
     filesystem.lock().staging = true;
     let lookup = root.clone();
     let probe = watch_flush(move || {
@@ -167,7 +175,7 @@ fn failed_pressure_flush_returns_io_without_publishing_a_child() {
 
 #[test]
 fn non_retryable_namespace_error_does_not_wait_for_journal_progress() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, _mount) = fixture();
     let probe = watch_flush(|| panic!("AlreadyExists must not force journal progress"));
 
     assert_eq!(
@@ -183,7 +191,7 @@ fn non_retryable_namespace_error_does_not_wait_for_journal_progress() {
 
 #[test]
 fn closed_mount_admission_rejects_namespace_mutation_without_a_guard_leak() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, _mount) = fixture();
     filesystem.admission.close_and_drain().unwrap();
 
     assert_eq!(
@@ -196,11 +204,16 @@ fn closed_mount_admission_rejects_namespace_mutation_without_a_guard_leak() {
     create_file(&root, "reopened");
 }
 
-fn fixture() -> (Arc<Ext4Filesystem>, Arc<Inode>) {
+fn fixture() -> (
+    Arc<Ext4Filesystem>,
+    Arc<Inode>,
+    Arc<axfs_ng_vfs::Mountpoint>,
+) {
     let (filesystem, root, _) = super::sync_policy::background_mount();
+    let mount = root.mountpoint().clone();
     let root: Arc<Inode> = root.entry().downcast().unwrap();
     create_file(&root, "witness");
-    (filesystem, root)
+    (filesystem, root, mount)
 }
 
 fn create_file(root: &Inode, name: &str) -> DirEntry {

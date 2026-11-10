@@ -15,15 +15,21 @@ fn create(parent: &DirEntry, name: &str, kind: NodeType) -> DirEntry {
 #[test]
 fn rename_moves_the_original_alias_and_live_descendant_chain() {
     let filesystem = MemoryFs::new();
+    let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
     let root = filesystem.root_dir();
     let source = create(&root, "source", NodeType::Directory);
     let destination = create(&root, "destination", NodeType::Directory);
     let descendant = create(&source, "descendant", NodeType::Directory);
     let identity = source.key();
 
-    root.as_dir()
-        .unwrap()
-        .rename("source", destination.as_dir().unwrap(), "moved")
+    mount
+        .root_location()
+        .rename(
+            "source",
+            &axfs_ng_vfs::Location::new(mount.clone(), destination.clone()),
+            "moved",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
         .unwrap();
 
     let moved = destination.as_dir().unwrap().lookup("moved").unwrap();
@@ -60,14 +66,20 @@ fn rename_moves_the_original_alias_and_live_descendant_chain() {
 #[test]
 fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
     let filesystem = MemoryFs::new();
+    let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
     let root = filesystem.root_dir();
     let source = create(&root, "source", NodeType::RegularFile);
     let overwritten = create(&root, "target", NodeType::RegularFile);
     let old_inode = overwritten.inode();
 
-    root.as_dir()
-        .unwrap()
-        .rename("source", root.as_dir().unwrap(), "target")
+    mount
+        .root_location()
+        .rename(
+            "source",
+            &mount.root_location(),
+            "target",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
         .unwrap();
     assert!(
         root.as_dir()
@@ -83,9 +95,14 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
     let alias = root.as_dir().unwrap().link("alias", &source).unwrap();
     assert!(!alias.ptr_eq(&source));
     assert_eq!(alias.inode(), source.inode());
-    root.as_dir()
-        .unwrap()
-        .rename("target", root.as_dir().unwrap(), "alias")
+    mount
+        .root_location()
+        .rename(
+            "target",
+            &mount.root_location(),
+            "alias",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
         .unwrap();
     assert!(
         root.as_dir()

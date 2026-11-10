@@ -1722,8 +1722,8 @@ mod tests {
 
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-        FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, Reference, RenameOptions,
-        StatFs, VfsResult, WeakDirEntry,
+        FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, Reference, StatFs, VfsResult,
+        WeakDirEntry,
     };
     use rdif_block::DeviceInfo;
 
@@ -2022,16 +2022,6 @@ mod tests {
         }
 
         fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn rename(
-            &self,
-            _src_name: &str,
-            _dst_dir: &DirNode,
-            _dst_name: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
             Err(VfsError::ReadOnlyFilesystem)
         }
     }

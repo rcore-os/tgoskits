@@ -16,14 +16,16 @@ use core::{
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
     FileRangeOperation, Filesystem, FilesystemMountLease, FilesystemOps, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference, RenameOptions,
-    StatFs, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
+    NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference, StatFs, TypeMap,
+    VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
 use crate::os::sync::{Mutex, RawSpinLock};
+
+mod rename;
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;
@@ -83,6 +85,8 @@ pub struct MemoryFs {
     // Starry has reached a sleepable task context.
     root: RawSpinLock<Option<WeakDirEntry>>,
     mount_lease: RawSpinLock<Weak<MemoryMountLease>>,
+    // Serializes namespace authorization and permission-affecting metadata.
+    mutation: Mutex<()>,
 }
 
 #[derive(Debug)]
@@ -177,6 +181,7 @@ impl MemoryFs {
             inodes: RawSpinLock::new(Slab::new()),
             root: RawSpinLock::new(None),
             mount_lease: RawSpinLock::new(Weak::new()),
+            mutation: Mutex::new(()),
         });
         let root_ino = Inode::new(
             &handle,
@@ -554,12 +559,14 @@ impl MemoryNode {
         })
     }
 
-    fn clear_dir_entries(inode: &Inode) {
+    fn clear_dir_entries(inode: &Inode) -> Option<HashMap<FileName, InodeRef>> {
         // Do this from unlink/rename paths while still in normal syscall
         // context. MemoryNode::drop may run during task cleanup, where a
         // blocking directory-entry mutex would panic in might_sleep().
         if let NodeContent::Dir(dir) = &inode.content {
-            dir.entries.lock_irqsave().clear();
+            Some(core::mem::take(&mut *dir.entries.lock_irqsave()))
+        } else {
+            None
         }
     }
 }
@@ -587,6 +594,11 @@ impl NodeOps for MemoryNode {
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
+        let _mutation = if update.mode.is_some() || update.owner.is_some() {
+            Some(self.fs.mutation.lock())
+        } else {
+            None
+        };
         let mut metadata = self.inode.metadata.lock_irqsave();
         if let Some(mode) = update.mode {
             metadata.mode = mode;
@@ -763,6 +775,7 @@ impl DirNodeOps for MemoryNode {
         uid: u32,
         gid: u32,
     ) -> VfsResult<DirEntry> {
+        let _mutation = self.fs.mutation.lock();
         if node_type == NodeType::Symlink {
             return Err(VfsError::InvalidInput);
         }
@@ -797,6 +810,7 @@ impl DirNodeOps for MemoryNode {
         uid: u32,
         gid: u32,
     ) -> VfsResult<DirEntry> {
+        let _mutation = self.fs.mutation.lock();
         let target = target.to_owned();
         let target_len = target.len() as u64;
         let dir = self.inode.as_dir()?;
@@ -855,6 +869,7 @@ impl DirNodeOps for MemoryNode {
     }
 
     fn link(&self, name: &str, target: &DirEntry) -> VfsResult<DirEntry> {
+        let _mutation = self.fs.mutation.lock();
         let dir = self.inode.as_dir()?;
         let mut entries = dir.entries.lock_irqsave();
 
@@ -882,6 +897,8 @@ impl DirNodeOps for MemoryNode {
         name: &str,
         is_dir: bool,
     ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceNode> {
+        let retired = axfs_ng_vfs::MutationRetire::new();
+        let _mutation = self.fs.mutation.lock();
         use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome};
         let mut observation = None;
         let result = (|| -> VfsResult<()> {
@@ -911,8 +928,9 @@ impl DirNodeOps for MemoryNode {
             };
 
             observation = Some(NamespaceNode::new(entry.ino, entry.node_type));
-            Self::clear_dir_entries(&inode);
-            drop(entry);
+            retired.retire(Self::clear_dir_entries(&inode));
+            retired.retire(entry);
+            retired.retire(inode);
 
             Ok(())
         })();
@@ -922,99 +940,12 @@ impl DirNodeOps for MemoryNode {
         }
     }
 
-    fn rename(
+    fn mutate_namespace(
         &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: RenameOptions,
+        command: &axfs_ng_vfs::NamespaceMutation<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
     ) -> VfsResult<()> {
-        self.rename_outcome(src_name, dst_dir, dst_name, options)
-            .into_result()
-    }
-
-    fn rename_outcome(
-        &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: RenameOptions,
-    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
-        use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome, RenameAction, RenameEffect};
-        let mut observation = None;
-        let result = (|| -> VfsResult<()> {
-            if options.exchange() || options.whiteout() {
-                return Err(VfsError::OperationNotSupported);
-            }
-            let dst_node = dst_dir.downcast::<Self>()?;
-            let destination_entries = dst_node.inode.as_dir()?;
-            if let Ok(entry) = dst_node.lookup(dst_name) {
-                let src_entry = self.lookup(src_name)?;
-                if options.no_replace() {
-                    return Err(VfsError::AlreadyExists);
-                }
-                if entry.inode() == src_entry.inode() {
-                    observation = Some(RenameEffect {
-                        source: NamespaceNode::new(src_entry.inode(), src_entry.node_type()),
-                        target: Some(NamespaceNode::new(entry.inode(), entry.node_type())),
-                        action: RenameAction::Noop,
-                        source_name: src_name.to_owned(),
-                        destination_name: dst_name.to_owned(),
-                    });
-                    return Ok(());
-                }
-            }
-
-            let src_entry = {
-                let mut entries = self.inode.as_dir()?.entries.lock_irqsave();
-                entries.remove(src_name).ok_or(VfsError::NotFound)?
-            };
-            let dst_dir = destination_entries;
-            let cookie = dst_dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
-            let moved_entry = InodeRef::new(
-                src_entry.fs.clone(),
-                src_entry.ino,
-                src_entry.node_type,
-                cookie,
-            );
-            let overwritten = {
-                let mut entries = dst_dir.entries.lock_irqsave();
-                entries.insert(dst_name.into(), moved_entry)
-            };
-            observation = Some(RenameEffect {
-                source: NamespaceNode::new(src_entry.ino, src_entry.node_type),
-                target: overwritten
-                    .as_ref()
-                    .map(|entry| NamespaceNode::new(entry.ino, entry.node_type)),
-                action: RenameAction::Move,
-                source_name: src_name.to_owned(),
-                destination_name: dst_name.to_owned(),
-            });
-            if src_entry.node_type == NodeType::Directory && self.inode.ino != dst_node.inode.ino {
-                let moved = src_entry.get();
-                let parent =
-                    InodeRef::new(self.fs.clone(), dst_node.inode.ino, NodeType::Directory, 2);
-                let old_parent = moved
-                    .as_dir()?
-                    .entries
-                    .lock_irqsave()
-                    .insert("..".into(), parent);
-                drop(old_parent);
-            }
-            drop(src_entry);
-            if let Some(entry) = overwritten {
-                Self::clear_dir_entries(&entry.get());
-                drop(entry);
-            }
-            Ok(())
-        })();
-        match observation {
-            Some(effect) if effect.action == RenameAction::Noop => {
-                NamespaceOutcome::unchanged_observed(effect, result)
-            }
-            Some(effect) => NamespaceOutcome::applied(effect, result),
-            None => NamespaceOutcome::unchanged(result),
-        }
+        self.run_namespace(command, retired)
     }
 }
 
@@ -1117,14 +1048,20 @@ mod tests {
             )
             .unwrap();
         let concurrent_root = root.clone();
+        let concurrent_mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
         BEFORE_NAMESPACE_CHANGE.with(|slot| {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(Box::new(move || {
                 // A has already probed victim=original. B now completes a real
                 // VFS rename before A starts its publication and unlinks it.
-                let directory = concurrent_root.as_dir().unwrap();
+                let directory = axfs_ng_vfs::Location::new(concurrent_mount, concurrent_root);
                 directory
-                    .rename("replacement", directory, "victim")
+                    .rename(
+                        "replacement",
+                        &directory,
+                        "victim",
+                        &axfs_ng_vfs::MutationCredentials::root(),
+                    )
                     .unwrap();
             }));
         });
@@ -1170,6 +1107,7 @@ mod tests {
         }
 
         let filesystem = MemoryFs::new();
+        let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
         let root = filesystem.root_dir();
         let directory = root.as_dir().unwrap();
         let left = directory
@@ -1187,22 +1125,31 @@ mod tests {
         let moved = Arc::new(AtomicBool::new(false));
         let competing_move_completed = moved.clone();
         let competing_root = root.clone();
+        let competing_mount = mount.clone();
         let competing_parent = left.clone();
         BEFORE_NAMESPACE_CHANGE.with(|slot| {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(Box::new(move || {
                 // A has selected its source/destination. Complete B's real
                 // move before A enters the backend; no sleep or timing race.
-                competing_root
-                    .as_dir()
-                    .unwrap()
-                    .rename("right", competing_parent.as_dir().unwrap(), "right")
+                axfs_ng_vfs::Location::new(competing_mount.clone(), competing_root)
+                    .rename(
+                        "right",
+                        &axfs_ng_vfs::Location::new(competing_mount, competing_parent),
+                        "right",
+                        &axfs_ng_vfs::MutationCredentials::root(),
+                    )
                     .unwrap();
                 competing_move_completed.store(true, Ordering::Release);
             }));
         });
         let _reset = ResetHook;
-        let result = directory.rename("left", right.as_dir().unwrap(), "left");
+        let result = axfs_ng_vfs::Location::new(mount.clone(), root.clone()).rename(
+            "left",
+            &axfs_ng_vfs::Location::new(mount, right.clone()),
+            "left",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        );
         assert!(moved.load(Ordering::Acquire));
         assert_eq!(result, Err(VfsError::InvalidInput));
 
@@ -1241,6 +1188,7 @@ mod tests {
         };
         for into_descendant in [false, true] {
             let filesystem = MemoryFs::new();
+            let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
             let root = filesystem.root_dir();
             let source = create(&root, "source");
             let descendant = create(&source, "descendant");
@@ -1250,10 +1198,12 @@ mod tests {
                 &source
             };
 
-            let result =
-                root.as_dir()
-                    .unwrap()
-                    .rename("source", destination.as_dir().unwrap(), "inside");
+            let result = axfs_ng_vfs::Location::new(mount.clone(), root.clone()).rename(
+                "source",
+                &axfs_ng_vfs::Location::new(mount, destination.clone()),
+                "inside",
+                &axfs_ng_vfs::MutationCredentials::root(),
+            );
             // Only inspect individual edges: the faulty implementation can have
             // created a cycle, so path walking or recursive cache clearing is unsafe.
             let snapshot = source.name_snapshot();

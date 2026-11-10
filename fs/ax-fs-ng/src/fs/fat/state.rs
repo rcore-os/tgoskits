@@ -40,6 +40,39 @@ unsafe impl Send for FatInode {}
 unsafe impl Sync for FatInode {}
 
 impl FatInode {
+    pub fn metadata(&self, guard: &FatFilesystemGuard<'_>) -> VfsResult<axfs_ng_vfs::Metadata> {
+        use core::time::Duration;
+
+        use axfs_ng_vfs::{DeviceId, Metadata, NodePermission, NodeType};
+        if let Some(FatHandle::File(file)) = self.handle.borrow(guard).as_ref() {
+            let mut metadata = super::util::file_metadata(guard, file, NodeType::RegularFile);
+            metadata.inode = self.inode;
+            return Ok(metadata);
+        }
+        let dir = self.directory(guard)?;
+        if let Some(file) = dir.as_file() {
+            let mut result = super::util::file_metadata(guard, file, NodeType::Directory);
+            result.inode = self.inode;
+            return Ok(result);
+        }
+        Ok(Metadata {
+            inode: self.inode,
+            device: 0,
+            nlink: 1,
+            mode: NodePermission::default(),
+            node_type: NodeType::Directory,
+            uid: 0,
+            gid: 0,
+            size: 0,
+            block_size: guard.inner.bytes_per_sector() as u64,
+            blocks: 0,
+            rdev: DeviceId::default(),
+            atime: Duration::ZERO,
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
+        })
+    }
+
     pub fn canonical_name(entry: &ff::DirEntry<'_>) -> VfsResult<String> {
         if let Some(name) = entry.long_file_name_as_ucs2_units() {
             return String::from_utf16(name).map_err(|_| VfsError::InvalidData);

@@ -10,8 +10,10 @@ use crate::{
 };
 
 mod cache;
+mod mutation;
 mod outcome;
 use cache::DirectoryCache;
+pub use mutation::*;
 pub use outcome::*;
 
 /// A trait for a sink that can receive directory entries.
@@ -302,33 +304,15 @@ pub trait DirNodeOps: NodeOps {
         NamespaceOutcome::uncertain(None, self.unlink(name, is_dir))
     }
 
-    /// Renames a directory entry, replacing the original entry (dst) if it
-    /// already exists.
-    ///
-    /// If src and dst link to the same file, this should do nothing and return
-    /// `Ok(())`.
-    ///
-    /// The caller should ensure:
-    /// - If `src` is a directory, `dst` must not exist or be an empty
-    ///   directory.
-    /// - If `src` is not a directory, `dst` must not exist or not be a
-    ///   directory.
-    fn rename(
+    /// Runs a controlled command under the backend's real exclusion. Writable
+    /// backends implement this by lending each locked attempt to the request's
+    /// fixed executor. Read-only/synthetic directories gain no write capability.
+    fn mutate_namespace(
         &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: RenameOptions,
-    ) -> VfsResult<()>;
-
-    fn rename_outcome(
-        &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: RenameOptions,
-    ) -> NamespaceOutcome<RenameEffect> {
-        NamespaceOutcome::uncertain(None, self.rename(src_name, dst_dir, dst_name, options))
+        _command: &NamespaceMutation<'_>,
+        _retired: &MutationRetire,
+    ) -> VfsResult<()> {
+        Err(VfsError::OperationNotSupported)
     }
 }
 
@@ -596,142 +580,67 @@ impl DirNode {
         Ok(entry)
     }
 
-    fn publish_rename(
+    pub(crate) fn publish_locked_rename(
         &self,
-        src_name: &str,
-        dst_dir: &Self,
-        dst_name: &str,
-        source: &DirEntry,
-        target: Option<&DirEntry>,
-        action: RenameAction,
+        destination: &Self,
+        effect: &RenameEffect,
+        retired: &MutationRetire,
     ) -> VfsResult<()> {
-        if action == RenameAction::Noop {
+        if effect.action == RenameAction::Noop {
             return Ok(());
         }
-        let parent = dst_dir.owner()?;
-        let old_parent = source
-            .name_snapshot()
-            .parent()
-            .cloned()
+        let source = self
+            .locked_entry(&effect.source_name)
             .ok_or(VfsError::BadState)?;
-        let removed = (
-            self.remove_cache_after_mutation(src_name),
-            dst_dir.remove_cache_after_mutation(dst_name),
-        );
-        if action == RenameAction::Exchange {
-            let target = target.ok_or(VfsError::BadState)?;
-            DirEntry::exchange_names(
-                source,
-                parent,
-                dst_name.to_owned(),
+        retired.retire(source.clone());
+        if !effect.source.matches(&source) {
+            return Err(VfsError::BadState);
+        }
+        let target = destination.locked_entry(&effect.destination_name);
+        retired.retire(target.clone());
+        if !match (&effect.target, &target) {
+            (Some(actual), Some(entry)) => actual.matches(entry),
+            (None, None) => true,
+            _ => false,
+        } {
+            return Err(VfsError::BadState);
+        }
+        let old_parent = source.name_snapshot();
+        let source_parent = old_parent.parent().cloned().ok_or(VfsError::BadState)?;
+        retired.retire(old_parent);
+        let destination_parent = destination.owner()?;
+        retired.retire(self.remove_cache_after_mutation(&effect.source_name));
+        retired.retire(destination.remove_cache_after_mutation(&effect.destination_name));
+        if effect.action == RenameAction::Exchange {
+            let target = target.as_ref().ok_or(VfsError::BadState)?;
+            retired.retire(DirEntry::exchange_names(
+                &source,
+                destination_parent,
+                effect.destination_name.clone(),
                 target,
-                old_parent,
-                src_name.to_owned(),
+                source_parent,
+                effect.source_name.clone(),
+            ));
+            self.insert_locked_cache(
+                effect.source_name.clone(),
+                target,
+                effect.source_cacheable,
+                retired,
             );
-            drop(self.insert_cache(src_name.to_owned(), target.clone()));
         } else {
-            source.move_to(parent, dst_name.to_owned());
-            if let Some(target) = target {
+            retired.retire(source.move_to(destination_parent, effect.destination_name.clone()));
+            if let Some(target) = &target {
                 target.set_name_state(crate::NameState::Unlinked);
             }
+            retired.retire(source_parent);
         }
-        drop(dst_dir.insert_cache(dst_name.to_owned(), source.clone()));
-        drop(removed);
+        destination.insert_locked_cache(
+            effect.destination_name.clone(),
+            &source,
+            effect.destination_cacheable,
+            retired,
+        );
         Ok(())
-    }
-
-    /// Renames a directory entry with ordinary replacement semantics.
-    pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
-        self.rename_with_options(src_name, dst_dir, dst_name, RenameOptions::REPLACE)
-    }
-
-    /// Renames a directory entry with typed `renameat2` behavior.
-    pub fn rename_with_options(
-        &self,
-        src_name: &str,
-        dst_dir: &Self,
-        dst_name: &str,
-        options: RenameOptions,
-    ) -> VfsResult<()> {
-        verify_entry_name(src_name)?;
-        verify_entry_name(dst_name)?;
-        self.ensure_linked()?;
-        dst_dir.ensure_linked()?;
-
-        let src = self.lookup(src_name)?;
-        let destination = match dst_dir.lookup(dst_name) {
-            Ok(destination) => Some(destination),
-            Err(VfsError::NotFound) => None,
-            Err(error) => return Err(error),
-        };
-        if options.no_replace() && destination.is_some() {
-            return Err(VfsError::AlreadyExists);
-        }
-        if options.exchange() && destination.is_none() {
-            return Err(VfsError::NotFound);
-        }
-        if !options.exchange()
-            && let Some(destination) = &destination
-            && !destination.same_backend_object(&src)
-        {
-            match (
-                src.node_type() == NodeType::Directory,
-                destination.node_type() == NodeType::Directory,
-            ) {
-                (true, false) => return Err(VfsError::NotADirectory),
-                (false, true) => return Err(VfsError::IsADirectory),
-                (true, true) if destination.as_dir()?.has_children()? => {
-                    return Err(VfsError::DirectoryNotEmpty);
-                }
-                _ => {}
-            }
-        }
-        let mut source_change = self.begin_name_change();
-        let mut destination_change = dst_dir.begin_related_name_change(&source_change);
-        self.invalidate_missing_entries();
-        dst_dir.invalidate_missing_entries();
-        let outcome = self
-            .ops
-            .rename_outcome(src_name, dst_dir, dst_name, options);
-        let verified = outcome.observation().filter(|effect| {
-            effect.source.matches(&src)
-                && match (&effect.target, &destination) {
-                    (Some(actual), Some(observed)) => actual.matches(observed),
-                    (None, None) => true,
-                    _ => false,
-                }
-        });
-        if outcome.state() == NamespaceState::Applied
-            && let Some(effect) = verified
-        {
-            if let Err(error) = self.publish_rename(
-                &effect.source_name,
-                dst_dir,
-                &effect.destination_name,
-                &src,
-                destination.as_ref(),
-                effect.action,
-            ) {
-                src.set_name_state(crate::NameState::Untrusted);
-                if let Some(target) = &destination {
-                    target.set_name_state(crate::NameState::Untrusted);
-                }
-                let result = outcome.into_result();
-                return result.and(Err(error));
-            }
-        } else if matches!(
-            outcome.state(),
-            NamespaceState::Applied | NamespaceState::Uncertain
-        ) {
-            src.set_name_state(crate::NameState::Untrusted);
-            if let Some(target) = &destination {
-                target.set_name_state(crate::NameState::Untrusted);
-            }
-            drop(self.remove_cache_after_mutation(src_name));
-            drop(dst_dir.remove_cache_after_mutation(dst_name));
-        }
-        source_change.finish_pair(&mut destination_change);
-        outcome.into_result()
     }
 
     /// Opens (or creates) a file in the directory.

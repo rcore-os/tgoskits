@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn create_retry_preserves_a_name_created_during_commit() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, _mount) = fixture();
     filesystem.lock().staging = true;
     let competing = root.clone();
     let probe = watch_flush(move || {
@@ -27,7 +27,7 @@ fn create_retry_preserves_a_name_created_during_commit() {
 
 #[test]
 fn removed_retained_parent_cannot_publish_a_child_after_pressure() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, _mount) = fixture();
     let parent = root
         .create(
             "parent",
@@ -62,31 +62,46 @@ fn removed_retained_parent_cannot_publish_a_child_after_pressure() {
 
 #[test]
 fn rename_retry_re_resolves_a_replaced_source_name() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, mount) = fixture();
     let original = create_file(&root, "source");
     let replacement = create_file(&root, "replacement");
     let directory = filesystem.root_dir();
     filesystem.lock().staging = true;
-    let competing = root.clone();
+    let competing = mount.root_location();
     let parent = directory.clone();
     let probe = watch_flush(move || {
-        let directory = parent.as_dir().unwrap();
+        let directory = axfs_ng_vfs::Location::new(competing.mountpoint().clone(), parent);
         competing
-            .rename("source", directory, "saved", RenameOptions::REPLACE)
+            .rename_with_options(
+                "source",
+                &directory,
+                "saved",
+                RenameOptions::REPLACE,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
             .unwrap();
         competing
-            .rename("replacement", directory, "source", RenameOptions::REPLACE)
+            .rename_with_options(
+                "replacement",
+                &directory,
+                "source",
+                RenameOptions::REPLACE,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
             .unwrap();
         Ok(())
     });
 
-    root.rename(
-        "source",
-        directory.as_dir().unwrap(),
-        "target",
-        RenameOptions::REPLACE,
-    )
-    .unwrap();
+    mount
+        .root_location()
+        .rename_with_options(
+            "source",
+            &axfs_ng_vfs::Location::new(mount.clone(), directory.clone()),
+            "target",
+            RenameOptions::REPLACE,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
 
     probe.finish();
     assert_eq!(root.lookup("target").unwrap().inode(), replacement.inode());
@@ -96,7 +111,7 @@ fn rename_retry_re_resolves_a_replaced_source_name() {
 
 #[test]
 fn rename_retry_rejects_a_removed_retained_destination_directory() {
-    let (filesystem, root) = fixture();
+    let (filesystem, root, mount) = fixture();
     let source = create_file(&root, "source");
     let destination = root
         .create(
@@ -115,11 +130,12 @@ fn rename_retry_rejects_a_removed_retained_destination_directory() {
     });
 
     assert_eq!(
-        root.rename(
+        mount.root_location().rename_with_options(
             "source",
-            destination.as_dir().unwrap(),
+            &axfs_ng_vfs::Location::new(mount.clone(), destination.clone()),
             "target",
-            RenameOptions::REPLACE
+            RenameOptions::REPLACE,
+            &axfs_ng_vfs::MutationCredentials::root(),
         ),
         Err(VfsError::NotFound)
     );

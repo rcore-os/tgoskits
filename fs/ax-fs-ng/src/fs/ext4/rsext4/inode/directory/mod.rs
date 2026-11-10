@@ -5,8 +5,7 @@ use alloc::{borrow::ToOwned, boxed::Box, sync::Arc};
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor as VfsDirectoryCursor,
     DirectoryReadState, FileExtentMap as VfsFileExtentMap, FileExtentTarget as VfsFileExtentTarget,
-    FileNode, NodeOps, NodePermission, NodeType, Reference, RenameOptions as VfsRenameOptions,
-    VfsError, VfsResult, WeakDirEntry,
+    FileNode, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
 };
 use rsext4::{
     DeviceNumber, FileName, FilePermissions, InodeFlags, MutationContext, SpecialInodeKind,
@@ -308,125 +307,17 @@ impl DirNodeOps for Inode {
         }
     }
 
-    fn rename(
+    fn mutate_namespace(
         &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: VfsRenameOptions,
+        command: &axfs_ng_vfs::NamespaceMutation<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
     ) -> VfsResult<()> {
-        self.rename_outcome(src_name, dst_dir, dst_name, options)
-            .into_result()
-    }
-
-    fn rename_outcome(
-        &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: VfsRenameOptions,
-    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
-        use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome, RenameAction, RenameEffect};
-        let mut observation = None;
-        let mut applied = false;
-        let result = (|| -> VfsResult<()> {
-            {
-                let has_orphans = self.fs().lock().has_pending_reaps();
-                if has_orphans {
-                    crate::file::prune_cached_files();
-                }
-            }
-            let dst_dir: Arc<Self> = dst_dir.downcast().map_err(|_| VfsError::InvalidInput)?;
-            if !Arc::ptr_eq(self.fs(), dst_dir.fs()) {
-                return Err(VfsError::CrossesDevices);
-            }
-            let src_name = FileName::new(src_name.as_bytes()).map_err(into_vfs_err)?;
-            let dst_name = FileName::new(dst_name.as_bytes()).map_err(into_vfs_err)?;
-            let core_options = match (options.no_replace(), options.exchange(), options.whiteout())
-            {
-                (false, false, false) => rsext4::RenameOptions::REPLACE,
-                (true, false, false) => rsext4::RenameOptions::NO_REPLACE,
-                (false, true, false) => rsext4::RenameOptions::EXCHANGE,
-                (false, false, true) => rsext4::RenameOptions::WHITEOUT,
-                (true, false, true) => rsext4::RenameOptions::WHITEOUT_NO_REPLACE,
-                _ => return Err(VfsError::InvalidInput),
-            };
-            let reap_claim =
-                self.lifetime
-                    .mutate_namespace(NamespaceChange::Topology, |state| {
-                        state.ensure_linked_parent(dst_dir.number())?;
-                        let source = state
-                            .ext4
-                            .lookup_child(self.number(), src_name)?
-                            .ok_or_else(rsext4::Ext4Error::not_found)?;
-                        let target = state.ext4.lookup_child(dst_dir.number(), dst_name)?;
-                        let outcome = state.ext4.rename(
-                            self.number(),
-                            src_name,
-                            dst_dir.number(),
-                            dst_name,
-                            core_options,
-                        )?;
-                        let action = if target
-                            .as_ref()
-                            .is_some_and(|target| target.number == source.number)
-                        {
-                            RenameAction::Noop
-                        } else if options.exchange() {
-                            RenameAction::Exchange
-                        } else {
-                            RenameAction::Move
-                        };
-                        observation = Some(RenameEffect {
-                            source: NamespaceNode::new(
-                                source.number.as_u64(),
-                                directory_entry_type_to_vfs(source.file_type()),
-                            ),
-                            target: target.map(|target| {
-                                NamespaceNode::new(
-                                    target.number.as_u64(),
-                                    directory_entry_type_to_vfs(target.file_type()),
-                                )
-                            }),
-                            action,
-                            source_name: core::str::from_utf8(src_name.as_bytes())
-                                .expect("VFS UTF-8 name")
-                                .to_owned(),
-                            destination_name: core::str::from_utf8(dst_name.as_bytes())
-                                .expect("VFS UTF-8 name")
-                                .to_owned(),
-                        });
-                        Ok(
-                            match outcome.replaced.filter(|outcome| outcome.requires_reap()) {
-                                Some(outcome) => state.publish_zero_link(outcome.inode),
-                                None => None,
-                            },
-                        )
-                    })?;
-            applied = true;
-            if let Some(claim) = reap_claim {
-                self.fs().reap(claim)?;
-            }
-            if !self.fs().background_writeback_enabled()
-                || self.writeback_policy()?.syncs_directory()
-                || dst_dir.writeback_policy()?.syncs_directory()
-            {
-                self.fs().sync_to_disk()?;
-            }
-            Ok(())
-        })();
-        match (applied, observation) {
-            (true, Some(effect)) if effect.action == RenameAction::Noop => {
-                NamespaceOutcome::unchanged_observed(effect, result)
-            }
-            (true, Some(effect)) => NamespaceOutcome::applied(effect, result),
-            (_, observation) => NamespaceOutcome::uncertain(observation, result),
-        }
+        self.fs().run_namespace(command, retired)
     }
 }
 
 impl Inode {
-    fn create_entry(&self, located: LocatedInode, name: &str) -> DirEntry {
+    pub(crate) fn create_entry(&self, located: LocatedInode, name: &str) -> DirEntry {
         let name = name.to_owned();
         let reference = Reference::new(
             self.this.as_ref().and_then(WeakDirEntry::upgrade),
