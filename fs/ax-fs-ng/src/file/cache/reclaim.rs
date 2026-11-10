@@ -65,7 +65,16 @@ impl CachedFileRegistry {
     }
 
     fn prune_with(&self, inode_index: &Mutex<InodeCacheIndex>, after_scan: impl FnOnce()) {
-        self.prune_with_candidate_observer(inode_index, after_scan, |_| {});
+        self.prune_with_candidate_observer(inode_index, after_scan, |_| {}, None);
+    }
+
+    #[cfg(any(feature = "ext4", all(test, feature = "vfs")))]
+    fn prune_retiring(
+        &self,
+        inode_index: &Mutex<InodeCacheIndex>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) {
+        self.prune_with_candidate_observer(inode_index, || {}, |_| {}, Some(retired));
     }
 
     fn prune_with_candidate_observer(
@@ -73,6 +82,7 @@ impl CachedFileRegistry {
         inode_index: &Mutex<InodeCacheIndex>,
         after_scan: impl FnOnce(),
         mut before_claim: impl FnMut(&Arc<CachedFileShared>),
+        retired: Option<&axfs_ng_vfs::MutationRetire>,
     ) {
         // Keep live entries visible to sync and writeback throughout pruning.
         // Examine only the entries present at the start, even if new files
@@ -122,10 +132,14 @@ impl CachedFileRegistry {
                 removed
             };
             // The backing FileNode can reap an ext4 inode in Drop.
-            if removed.is_none() {
+            let Some(removed) = removed else {
                 break;
+            };
+            if let Some(retired) = retired {
+                retired.retire(removed);
+            } else {
+                drop(removed);
             }
-            drop(removed);
         }
         after_scan();
     }
@@ -288,6 +302,12 @@ pub fn sync_filesystem_cached_files(filesystem: &dyn axfs_ng_vfs::FilesystemOps)
 
 pub(crate) fn prune_cached_files() {
     GLOBAL_CACHED_FILES.prune(&super::CACHED_FILE_BY_INODE);
+}
+
+/// Detaches the same eligible caches, retaining actual owners past all gates.
+#[cfg(feature = "ext4")]
+pub(crate) fn prune_cached_files_retiring(retired: &axfs_ng_vfs::MutationRetire) {
+    GLOBAL_CACHED_FILES.prune_retiring(&super::CACHED_FILE_BY_INODE, retired);
 }
 
 #[cfg(feature = "vfs")]
@@ -470,7 +490,12 @@ mod tests {
         let weak = Arc::downgrade(&cached);
         registry.files.write().push(cached);
         let mut reopened = None;
-        registry.prune_with_candidate_observer(&inode_index, || {}, |_| reopened = weak.upgrade());
+        registry.prune_with_candidate_observer(
+            &inode_index,
+            || {},
+            |_| reopened = weak.upgrade(),
+            None,
+        );
         let reopened = reopened.expect("the reopen wins before ownership is claimed");
         assert!(
             registry
@@ -495,6 +520,23 @@ mod tests {
             weak.upgrade().is_none(),
             "a closed clean cache is reclaimable"
         );
+
+        let cached = Arc::new(CachedFileShared::new_unbounded(0));
+        let weak = Arc::downgrade(&cached);
+        registry.files.write().push(cached);
+        let retired = axfs_ng_vfs::MutationRetire::new();
+        registry.prune_retiring(&inode_index, &retired);
+        assert!(registry.files.read().is_empty());
+        let retained = weak
+            .upgrade()
+            .expect("the outer command still owns retirement");
+        assert!(retained.retired.load(Ordering::Acquire));
+        drop(retained);
+        drop(retired);
+        assert!(
+            weak.upgrade().is_none(),
+            "the actual cache owner is released only after outer retirement"
+        );
     }
 
     #[test]
@@ -515,6 +557,7 @@ mod tests {
                 // The transient owner is gone before pruning claims ownership.
                 drop(reopened);
             },
+            None,
         );
         let cached = weak.upgrade().expect("dirty cache must survive pruning");
         assert!(

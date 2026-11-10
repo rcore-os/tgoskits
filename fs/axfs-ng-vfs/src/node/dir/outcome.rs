@@ -118,6 +118,13 @@ impl<T> NamespaceOutcome<T> {
         self.observation.as_ref()
     }
 
+    /// Merges lock-external completion without losing state or observation.
+    /// The first error wins, including when later persistence also fails.
+    pub fn with_completion(mut self, completion: VfsResult<()>) -> Self {
+        self.result = self.result.and(completion);
+        self
+    }
+
     pub fn into_result(self) -> VfsResult<()> {
         self.result
     }

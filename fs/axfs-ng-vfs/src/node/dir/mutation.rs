@@ -5,7 +5,7 @@ use core::{any::Any, cell::RefCell};
 
 use super::{NamespaceNode, NamespaceOutcome, NamespaceState, RenameAction, RenameEffect};
 use crate::{
-    DirEntry, Location, Metadata, MountWriteGuard, MutationCredentials, NodePermission, NodeType,
+    DirEntry, Location, Metadata, MutationCredentials, NodePermission, NodeType, PreparedWrite,
     RenameOptions, VfsError, VfsResult,
 };
 
@@ -40,7 +40,7 @@ pub struct RenameRequest<'a> {
     destination: (&'a Location, &'a str),
     options: RenameOptions,
     credentials: &'a MutationCredentials<'a>,
-    write: &'a MountWriteGuard,
+    write: &'a PreparedWrite,
     domain: usize,
 }
 
@@ -50,10 +50,12 @@ impl<'a> RenameRequest<'a> {
         destination: (&'a Location, &'a str),
         options: RenameOptions,
         credentials: &'a MutationCredentials<'a>,
-        write: &'a MountWriteGuard,
+        write: &'a PreparedWrite,
     ) -> VfsResult<Self> {
-        write.check_location(source.0)?;
-        write.check_location(destination.0)?;
+        write.write_for(source.0)?.check_location(source.0)?;
+        write
+            .write_for(destination.0)?
+            .check_location(destination.0)?;
         let root = source.0.mountpoint().root_location();
         let owner = root.filesystem() as *const dyn crate::FilesystemOps as *const ();
         for parent in [source.0, destination.0] {
@@ -89,6 +91,11 @@ impl<'a> RenameRequest<'a> {
     }
     pub fn options(&self) -> RenameOptions {
         self.options
+    }
+
+    /// Borrows the outer operation's already-prepared backing write leases.
+    pub fn write_authority(&self) -> &PreparedWrite {
+        self.write
     }
 
     /// Executes exactly one attempt while the backend retains real exclusion.
@@ -294,8 +301,14 @@ impl<'attempt, 'request> MutationGuard<'attempt, 'request> {
 impl<'slot, 'attempt, 'request> ParentSlot<'slot, 'attempt, 'request> {
     fn authorize(self) -> VfsResult<AuthorizedSlot<'slot, 'attempt, 'request>> {
         let request = self.guard.request;
-        request.write.check_location(request.source.0)?;
-        request.write.check_location(request.destination.0)?;
+        request
+            .write
+            .write_for(request.source.0)?
+            .check_location(request.source.0)?;
+        request
+            .write
+            .write_for(request.destination.0)?
+            .check_location(request.destination.0)?;
         if request.options.no_replace() && self.observed.target.is_some() {
             return Err(VfsError::AlreadyExists);
         }

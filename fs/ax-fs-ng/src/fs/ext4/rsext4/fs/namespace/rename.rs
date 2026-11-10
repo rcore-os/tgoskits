@@ -4,8 +4,8 @@ use alloc::{sync::Arc, vec::Vec};
 
 use axfs_ng_vfs::{
     AuthorizedRename, LockedAttempt, Metadata, MutationRetire, NamespaceMutation, NamespaceNode,
-    NamespaceOutcome, NamespaceState, NodeOps, NodeType, RenameNode, RenameObservation,
-    RenameRequest, VfsError, VfsResult,
+    NamespaceOutcome, NamespaceState, NodeOps, NodeType, RenameEffect, RenameNode,
+    RenameObservation, RenameRequest, VfsError, VfsResult,
 };
 use rsext4::{Ext4Error, Ext4Result, FileName, InodeNumber};
 
@@ -33,25 +33,29 @@ impl Ext4Filesystem {
         self: &Arc<Self>,
         command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> VfsResult<()> {
+    ) -> NamespaceOutcome<RenameEffect> {
         let NamespaceMutation::Rename(request) = command;
-        let source = request.source_parent().as_dir()?.downcast::<Inode>()?;
-        let destination = request.destination_parent().as_dir()?.downcast::<Inode>()?;
-        if !Arc::ptr_eq(self, source.fs()) || !Arc::ptr_eq(self, destination.fs()) {
-            return Err(VfsError::CrossesDevices);
-        }
-        FileName::new(request.source_name().as_bytes()).map_err(into_vfs_err)?;
-        FileName::new(request.destination_name().as_bytes()).map_err(into_vfs_err)?;
+        let (source, destination) = match self.rename_parents(request) {
+            Ok(parents) => parents,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
         if self.lock().has_pending_reaps() {
-            crate::file::prune_cached_files();
+            crate::file::prune_cached_files_retiring(retired);
         }
-        let reap = {
-            let _admission = self.admission.enter().map_err(into_vfs_err)?;
+        let (outcome, reap) = {
+            let _admission = match self.admission.enter() {
+                Ok(admission) => admission,
+                Err(error) => return NamespaceOutcome::unchanged(Err(into_vfs_err(error))),
+            };
             loop {
                 let completed = {
-                    let namespace = self
+                    let namespace = match self
                         .namespace
-                        .change(source.number(), NamespaceChange::Topology)?;
+                        .change(source.number(), NamespaceChange::Topology)
+                    {
+                        Ok(namespace) => namespace,
+                        Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+                    };
                     let mut state = self.lock();
                     if state.staging {
                         None
@@ -71,42 +75,72 @@ impl Ext4Filesystem {
                     }
                 };
                 let Some((outcome, error, reap)) = completed else {
-                    self.finish_mutation_attempt::<()>(MutationAttempt::Staging)
-                        .map_err(into_vfs_err)?;
+                    if let Err(error) = self.finish_mutation_attempt::<()>(MutationAttempt::Staging)
+                    {
+                        return NamespaceOutcome::unchanged(Err(into_vfs_err(error)));
+                    }
                     continue;
                 };
                 // The attempt and all VFS publication guards have ended before
                 // journal progress, abort persistence, or retry authorization.
                 if let Some(error) = error {
+                    let completion = self
+                        .finish_mutation_attempt::<()>(MutationAttempt::Finished(Err(error)))
+                        .map(|_| ())
+                        .map_err(into_vfs_err);
                     if error.requires_journal_progress()
                         && matches!(
                             outcome.state(),
                             NamespaceState::Retry | NamespaceState::Unchanged
                         )
                     {
-                        self.finish_mutation_attempt::<()>(MutationAttempt::Finished(Err(error)))
-                            .map_err(into_vfs_err)?;
+                        // The retry has not modified names. A failed preparation
+                        // for the next attempt is not a replayable Retry result.
+                        if let Err(error) = completion {
+                            return NamespaceOutcome::unchanged(Err(error));
+                        }
                         continue;
                     }
-                    self.finish_mutation_attempt::<()>(MutationAttempt::Finished(Err(error)))
-                        .map_err(into_vfs_err)?;
+                    return outcome.with_completion(completion);
                 }
-                outcome.into_result()?;
-                break reap;
+                match outcome.state() {
+                    NamespaceState::Applied => break (outcome, reap),
+                    NamespaceState::Unchanged if outcome.observation().is_some() => {
+                        break (outcome, reap);
+                    }
+                    _ => return outcome,
+                }
             }
         };
         // Do not recursively enter operation admission while retaining its
         // outer guard: a concurrent lifecycle pause may be draining that guard.
-        if let Some(claim) = reap {
-            self.reap(claim)?;
+        let completion = (|| {
+            if let Some(claim) = reap {
+                self.reap(claim)?;
+            }
+            if !self.background_writeback_enabled()
+                || source.writeback_policy()?.syncs_directory()
+                || destination.writeback_policy()?.syncs_directory()
+            {
+                self.sync_to_disk()?;
+            }
+            Ok(())
+        })();
+        outcome.with_completion(completion)
+    }
+
+    fn rename_parents(
+        self: &Arc<Self>,
+        request: &RenameRequest<'_>,
+    ) -> VfsResult<(Arc<Inode>, Arc<Inode>)> {
+        let source = request.source_parent().as_dir()?.downcast::<Inode>()?;
+        let destination = request.destination_parent().as_dir()?.downcast::<Inode>()?;
+        if !Arc::ptr_eq(self, source.fs()) || !Arc::ptr_eq(self, destination.fs()) {
+            return Err(VfsError::CrossesDevices);
         }
-        if !self.background_writeback_enabled()
-            || source.writeback_policy()?.syncs_directory()
-            || destination.writeback_policy()?.syncs_directory()
-        {
-            self.sync_to_disk()?;
-        }
-        Ok(())
+        FileName::new(request.source_name().as_bytes()).map_err(into_vfs_err)?;
+        FileName::new(request.destination_name().as_bytes()).map_err(into_vfs_err)?;
+        Ok((source, destination))
     }
 }
 

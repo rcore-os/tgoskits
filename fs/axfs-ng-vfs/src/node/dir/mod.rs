@@ -311,8 +311,8 @@ pub trait DirNodeOps: NodeOps {
         &self,
         _command: &NamespaceMutation<'_>,
         _retired: &MutationRetire,
-    ) -> VfsResult<()> {
-        Err(VfsError::OperationNotSupported)
+    ) -> NamespaceOutcome<RenameEffect> {
+        NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported))
     }
 }
 

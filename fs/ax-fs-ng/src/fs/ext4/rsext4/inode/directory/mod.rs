@@ -311,7 +311,7 @@ impl DirNodeOps for Inode {
         &self,
         command: &axfs_ng_vfs::NamespaceMutation<'_>,
         retired: &axfs_ng_vfs::MutationRetire,
-    ) -> VfsResult<()> {
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
         self.fs().run_namespace(command, retired)
     }
 }

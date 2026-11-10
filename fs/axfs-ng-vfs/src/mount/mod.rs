@@ -1339,7 +1339,7 @@ impl Location {
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
-        let write = self.acquire_write()?;
+        let write = crate::PreparedWrite::acquire(self)?;
         let retired = crate::MutationRetire::new();
         self.rename_with_write(
             src_name,
@@ -1349,6 +1349,7 @@ impl Location {
             &write,
             &retired,
         )
+        .into_result()
     }
 
     /// Borrows rights and retirement from an outer command. All backing write
@@ -1359,24 +1360,30 @@ impl Location {
         destination: (&Self, &str),
         options: RenameOptions,
         credentials: &crate::MutationCredentials<'_>,
-        write: &crate::MountWriteGuard,
+        write: &crate::PreparedWrite,
         retired: &crate::MutationRetire,
-    ) -> VfsResult<()> {
+    ) -> crate::NamespaceOutcome<crate::RenameEffect> {
         let (dst_dir, dst_name) = destination;
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
-            return Err(VfsError::CrossesDevices);
+            return crate::NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
         }
-        let command = crate::NamespaceMutation::Rename(crate::RenameRequest::new(
+        let request = match crate::RenameRequest::new(
             (self, src_name),
             (dst_dir, dst_name),
             options,
             credentials,
             write,
-        )?);
-        self.entry
-            .as_dir()?
+        ) {
+            Ok(request) => request,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        let directory = match self.entry.as_dir() {
+            Ok(directory) => directory,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        directory
             .inner()
-            .mutate_namespace(&command, retired)
+            .mutate_namespace(&crate::NamespaceMutation::Rename(request), retired)
     }
 
     pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {

@@ -944,7 +944,7 @@ impl DirNodeOps for MemoryNode {
         &self,
         command: &axfs_ng_vfs::NamespaceMutation<'_>,
         retired: &axfs_ng_vfs::MutationRetire,
-    ) -> VfsResult<()> {
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
         self.run_namespace(command, retired)
     }
 }

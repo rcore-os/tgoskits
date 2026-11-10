@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use ax_sync::Mutex;
 use inherit_methods_macro::inherit_methods;
 
-use crate::{CachedWriteAdmission, DirEntry, RawSpinLock, VfsError, VfsResult};
+use crate::{CachedWriteAdmission, DirEntry, Location, RawSpinLock, VfsError, VfsResult};
 
 pub struct StatFs {
     pub fs_type: u32,
@@ -50,6 +50,18 @@ pub trait FilesystemOps: Send + Sync {
 
     /// Gets the root directory entry of the filesystem
     fn root_dir(&self) -> DirEntry;
+
+    /// Returns the immutable stacking depth, without I/O or backend gates.
+    /// Native filesystems have depth zero; writable backing edges must descend.
+    fn stack_depth(&self) -> u32 {
+        0
+    }
+
+    /// Returns immutable writable backing roots without I/O or backend gates.
+    /// Read-only dependencies do not belong in this list.
+    fn write_backing_roots(&self) -> &[Location] {
+        &[]
+    }
 
     /// Retains mount ownership separately from cached inode references.
     /// Bind mounts and namespace copies retain the same filesystem lease.

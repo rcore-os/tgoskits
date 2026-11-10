@@ -1423,15 +1423,22 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         &self,
         command: &axfs_ng_vfs::NamespaceMutation<'_>,
         retired: &axfs_ng_vfs::MutationRetire,
-    ) -> axfs_ng_vfs::VfsResult<()> {
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
         let axfs_ng_vfs::NamespaceMutation::Rename(request) = command;
-        let destination = request.destination_parent().as_dir()?.downcast::<Self>()?;
+        let destination = match request
+            .destination_parent()
+            .as_dir()
+            .and_then(|directory| directory.downcast::<Self>())
+        {
+            Ok(destination) => destination,
+            Err(error) => return axfs_ng_vfs::NamespaceOutcome::unchanged(Err(error)),
+        };
         let mut attempt = MoreRenameAttempt {
             _gate: MORE_NAMESPACE_GATE.lock(),
             source: self,
             destination: &destination,
         };
-        request.execute(&mut attempt, retired).into_result()
+        request.execute(&mut attempt, retired)
     }
 }
 

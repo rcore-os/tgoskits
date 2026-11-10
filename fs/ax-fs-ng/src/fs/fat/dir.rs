@@ -268,7 +268,7 @@ impl DirNodeOps for FatDirNode {
         &self,
         command: &axfs_ng_vfs::NamespaceMutation<'_>,
         retired: &axfs_ng_vfs::MutationRetire,
-    ) -> VfsResult<()> {
+    ) -> NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
         self.run_namespace(command, retired)
     }
 }

@@ -2,7 +2,7 @@
 
 use axfs_ng_vfs::{
     AuthorizedRename, LockedAttempt, MutationRetire, NamespaceMutation, NamespaceNode,
-    NamespaceOutcome, RenameNode, RenameObservation, RenameRequest,
+    NamespaceOutcome, RenameEffect, RenameNode, RenameObservation, RenameRequest,
 };
 
 use super::*;
@@ -19,21 +19,28 @@ impl MemoryNode {
         &self,
         command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> VfsResult<()> {
+    ) -> NamespaceOutcome<RenameEffect> {
         let NamespaceMutation::Rename(request) = command;
-        let destination = request.destination_parent().as_dir()?.downcast::<Self>()?;
+        let destination = match request
+            .destination_parent()
+            .as_dir()
+            .and_then(|directory| directory.downcast::<Self>())
+        {
+            Ok(destination) => destination,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
         if !Arc::ptr_eq(&self.fs, &destination.fs) {
-            return Err(VfsError::CrossesDevices);
+            return NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
         }
         if request.options().exchange() || request.options().whiteout() {
-            return Err(VfsError::OperationNotSupported);
+            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
         }
         let mut attempt = MemoryAttempt {
             _gate: self.fs.mutation.lock(),
             source: self,
             destination: &destination,
         };
-        request.execute(&mut attempt, retired).into_result()
+        request.execute(&mut attempt, retired)
     }
 }
 

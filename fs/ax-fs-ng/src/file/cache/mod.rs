@@ -31,6 +31,8 @@ pub(crate) use prefetch::start_background_readahead;
 use readahead::ReadAheadState;
 #[cfg(any(feature = "fat", feature = "ext4"))]
 pub(crate) use reclaim::prune_cached_files;
+#[cfg(feature = "ext4")]
+pub(crate) use reclaim::prune_cached_files_retiring;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 #[cfg(feature = "vfs")]
