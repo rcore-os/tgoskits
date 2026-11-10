@@ -18,6 +18,7 @@
 //! - [`handle_debug`]: Entry point for debug exceptions (x86_64 single-step only)
 
 use alloc::{
+    boxed::Box,
     collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
@@ -25,7 +26,7 @@ use alloc::{
 use core::{
     fmt,
     num::NonZeroI32,
-    sync::atomic::{AtomicI32, Ordering},
+    sync::atomic::{AtomicI32, AtomicUsize, Ordering},
 };
 
 use ax_lazyinit::LazyInit;
@@ -34,6 +35,7 @@ use ax_runtime::{
     hal::{
         cpu::context::{KernelTrapFrame, UserRegisters},
         paging::MappingFlags,
+        percpu::this_cpu_id,
     },
     task::sync::Semaphore,
 };
@@ -323,7 +325,8 @@ static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
 // kernel text through `stop_machine`, which sleeps, so this lock must too.
 static KPROBE_POINT_LIST: Mutex<KprobePointList> = Mutex::new(KprobePointList::new());
 // Serializes probe-point updates so that `KPROBE_POINT_LIST` is never
-// contended; a semaphore for the reason given at `KERNEL_TEXT_PATCH`.
+// contended. A semaphore, whose waiters sleep, because a holder waits in
+// `stop_machine` for every CPU's stopper thread to run.
 static KPROBE_POINT_UPDATE: Semaphore = Semaphore::new(1);
 const KERNEL_KRETPROBE_STACK_CAPACITY: usize = 64;
 static INSTANCE: LazyInit<RawSpinLock<Vec<RetprobeInstance>>> = LazyInit::new();
@@ -334,11 +337,62 @@ fn kernel_kretprobe_stack() -> &'static RawSpinLock<Vec<RetprobeInstance>> {
         .expect("kernel kretprobe stack must be prepared before probes are armed")
 }
 
-fn with_manager<F, R>(f: F) -> R
+/// Kprobe trap handlers running on one CPU.
+///
+/// A trap handler works on clones of the probes registered at the trapping
+/// address, and of their event callbacks. Unregistration waits for the
+/// handlers that may have found a probe before it was removed, so that the
+/// last reference, whose drop restores kernel text, is released in task
+/// context. Linux `unregister_kprobe()` waits with `synchronize_rcu()` for the
+/// same reason.
+struct TrapHandlerCount {
+    depth: AtomicUsize,
+    exits: AtomicUsize,
+}
+
+static KPROBE_TRAP_HANDLERS: LazyInit<Box<[TrapHandlerCount]>> = LazyInit::new();
+
+fn with_trap_handler<F, R>(f: F) -> R
 where
     F: FnOnce(&KprobeManager) -> R,
 {
-    f(&KPROBE_MANAGER)
+    let Some(counts) = KPROBE_TRAP_HANDLERS.get() else {
+        return f(&KPROBE_MANAGER);
+    };
+    let count = &counts[this_cpu_id()];
+    count.depth.fetch_add(1, Ordering::AcqRel);
+    let result = f(&KPROBE_MANAGER);
+    if count.depth.fetch_sub(1, Ordering::AcqRel) == 1 {
+        count.exits.fetch_add(1, Ordering::AcqRel);
+    }
+    result
+}
+
+/// Waits until the trap handlers running on any CPU when it is called have
+/// returned. Handlers that start later cannot find the probes removed before.
+fn wait_for_trap_handlers() {
+    let Some(counts) = KPROBE_TRAP_HANDLERS.get() else {
+        return;
+    };
+    for count in counts.iter() {
+        if count.depth.load(Ordering::Acquire) != 0 {
+            wait_for_trap_handler_exit(count);
+        }
+    }
+}
+
+/// Waits until the trap handlers running on one CPU have returned.
+///
+/// Only called while a handler is running there. Kept out of line so that the
+/// point where an unregistration starts waiting can be probed; the
+/// `kprobe-perf-register` regression relies on it.
+#[inline(never)]
+fn wait_for_trap_handler_exit(count: &TrapHandlerCount) {
+    let exits = count.exits.load(Ordering::Acquire);
+    while count.depth.load(Ordering::Acquire) != 0 && count.exits.load(Ordering::Acquire) == exits
+    {
+        crate::task::yield_now();
+    }
 }
 
 fn with_manager_and_list<F, R>(f: F) -> R
@@ -348,6 +402,14 @@ where
     KPROBE_POINT_UPDATE
         .down()
         .expect("kprobe updates require a sleepable task context");
+    KPROBE_TRAP_HANDLERS.get_or_init(|| {
+        (0..ax_runtime::hal::cpu_num())
+            .map(|_| TrapHandlerCount {
+                depth: AtomicUsize::new(0),
+                exits: AtomicUsize::new(0),
+            })
+            .collect()
+    });
     let result = f(&KPROBE_MANAGER, &mut KPROBE_POINT_LIST.lock());
     KPROBE_POINT_UPDATE
         .up()
@@ -381,9 +443,13 @@ pub fn register_kprobe(
 }
 
 /// Unregister a previously registered kprobe.
+///
+/// Returns once no trap handler holds a clone of the probe or of its event
+/// callbacks.
 #[inline(never)]
 pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kprobe(mgr, list, kprobe));
+    wait_for_trap_handlers();
 }
 
 /// Register a kretprobe and return its live handle.
@@ -406,9 +472,12 @@ pub fn register_kretprobe(
 }
 
 /// Unregister a previously registered kretprobe.
+///
+/// Waits for trap handlers like [`unregister_kprobe`].
 #[inline(never)]
 pub fn unregister_kretprobe(kretprobe: Arc<KernelKretprobe>) {
     with_manager_and_list(|mgr, list| kprobe_crate_unregister_kretprobe(mgr, list, kretprobe));
+    wait_for_trap_handlers();
 }
 
 pub(crate) fn trapframe_to_ptregs(tf: &UserRegisters) -> kprobe::PtRegs {
@@ -648,7 +717,7 @@ pub(crate) fn ptregs_write_back(pt: &kprobe::PtRegs, tf: &mut UserRegisters) {
 pub fn handle_breakpoint(tf: &mut KernelTrapFrame<'_>) -> bool {
     let mut updated = tf.snapshot();
     let mut pt_regs = trapframe_to_ptregs(&updated);
-    let handled = with_manager(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
+    let handled = with_trap_handler(|manager| kprobe::kprobe_handler_from_break(manager, &mut pt_regs));
     if handled.is_some() {
         ptregs_write_back(&pt_regs, &mut updated);
         tf.apply_registers(&updated);
@@ -661,7 +730,8 @@ pub fn handle_breakpoint(tf: &mut KernelTrapFrame<'_>) -> bool {
 pub fn handle_debug(tf: &mut KernelTrapFrame<'_>) -> bool {
     let mut updated = tf.snapshot();
     let mut pt_regs = trapframe_to_ptregs(&updated);
-    let handled = with_manager(|manager| kprobe::kprobe_handler_from_debug(manager, &mut pt_regs));
+    let handled =
+        with_trap_handler(|manager| kprobe::kprobe_handler_from_debug(manager, &mut pt_regs));
     if handled.is_some() {
         ptregs_write_back(&pt_regs, &mut updated);
         tf.apply_registers(&updated);

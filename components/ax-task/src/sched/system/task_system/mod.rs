@@ -24,6 +24,8 @@ mod placement;
 mod priority_index;
 mod registry;
 mod root_domain;
+#[cfg(axtest)]
+pub use root_domain::observe_root_domain_push_locks_for_test;
 mod scheduling;
 mod switch;
 mod thread_api;

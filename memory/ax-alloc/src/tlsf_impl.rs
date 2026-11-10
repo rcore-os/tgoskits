@@ -12,7 +12,11 @@ use super::{AllocResult, AllocatorOps, UsageKind, Usages};
 
 /// The global allocator instance for TLSF mode.
 #[cfg_attr(
-    all(any(target_os = "none", feature = "global-allocator"), not(test)),
+    all(
+        any(target_os = "none", feature = "global-allocator"),
+        not(feature = "alloc-audit"),
+        not(test)
+    ),
     global_allocator
 )]
 static GLOBAL_ALLOCATOR: GlobalAllocator = GlobalAllocator::new();

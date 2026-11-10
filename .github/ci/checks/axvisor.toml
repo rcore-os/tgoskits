@@ -284,7 +284,7 @@ name = "Board ROC-RK3568-PC · Linux guest"
 runner = "board"
 cache_key = ""
 command = '''
-AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest cargo xtask axvisor test board --board roc-rk3568-pc-linux
+RUST_LOG=info,uboot_shell=debug AXVISOR_GUEST_ASSETS=/userdata/rootfs_overlay/guest cargo xtask axvisor test board --board roc-rk3568-pc-linux
 '''
 
 [[check.suite]]

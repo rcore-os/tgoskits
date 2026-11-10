@@ -16,6 +16,7 @@
 //! PR #805 (`feat/ebpf-observability`) — see the PR description.
 
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec};
+use core::mem::MaybeUninit;
 
 use ax_io::Read;
 use ax_lazyinit::LazyInit;
@@ -58,13 +59,17 @@ pub static BPF_HELPER_FUN_SET: LazyInit<BTreeMap<u32, RawBPFHelperFn>> = LazyIni
 
 /// BPF helper ID for `bpf_probe_read` (legacy, address-space-agnostic).
 const BPF_FUNC_PROBE_READ: u32 = 4;
-/// Largest read `bpf_probe_read` performs, in bytes.
+/// Largest destination `bpf_probe_read` and `bpf_probe_read_user_str` write,
+/// in bytes.
 ///
-/// Linux lets the verifier bound the size instead. Nothing bounds it here, and
-/// the helper runs in whatever context its probe fired from — interrupt
-/// context included — so a program that asks for gigabytes would stall or
-/// overwrite the kernel before anyone could react. One page covers the
-/// context samples and protocol headers the helper is used for.
+/// Linux lets the verifier bound the size instead: it proves that
+/// `dst..dst + size` lies inside the program's stack or a map value. Nothing
+/// proves that here — helpers are called with bare register values, without
+/// the calling VM's stack or map bounds — and the helpers run in whatever
+/// context their probe fired from, interrupt context included, so a program
+/// that asks for gigabytes would stall or overwrite the kernel before anyone
+/// could react. One page covers the context samples, protocol headers and
+/// path strings the helpers are used for.
 const BPF_PROBE_READ_MAX: u64 = 4096;
 /// BPF helper ID for `bpf_get_current_pid_tgid`. kbpf-basic does not register
 /// this helper, so we implement it directly in StarryOS.
@@ -75,6 +80,21 @@ const BPF_FUNC_GET_CURRENT_COMM: u32 = 16;
 /// BPF helper ID for `bpf_probe_read_kernel`. Both ids name the same read in
 /// this VM, and both are installed from [`bpf_probe_read`].
 const BPF_FUNC_PROBE_READ_KERNEL: u32 = 113;
+/// BPF helper ID for `bpf_probe_read_user_str`. kbpf-basic resolves this id
+/// through `string_from_user_cstr`, whose trait shape has no place for the
+/// helper's `size`, so its reader scans for the terminator unbounded and a
+/// valid bounded read can fail on the mapping state past the requested range.
+/// We install our own helper instead, threading `size` down to the reader.
+const BPF_FUNC_PROBE_READ_USER_STR: u32 = 114;
+/// Stack scratch, in bytes, for one chunk of `bpf_probe_read_user_str`'s
+/// user-to-destination copy.
+///
+/// The copy must run without heap allocation: a probe may have interrupted an
+/// allocator critical section on this CPU, and any `Vec` in the chain would
+/// spin on the allocator lock that the interrupted code holds (see issue
+/// #2761). Reads advance through this buffer and land in the caller's buffer
+/// directly, so the size only trades stack use against copy-call count.
+const BPF_PROBE_READ_USER_STR_CHUNK: usize = 256;
 
 /// `bpf_probe_read(void *dst, u32 size, const void *unsafe_ptr)` — copies
 /// kernel memory into a BPF-visible buffer without resolving a fault.
@@ -114,6 +134,17 @@ fn bpf_probe_read(dst: u64, size: u64, unsafe_ptr: u64, _c: u64, _e: u64) -> u64
     // Linux clears the destination on failure so that a program which ignores
     // the return value reads zeros rather than whatever the buffer held. A
     // destination that faults here leaves the remainder untouched.
+    bpf_zero_dst(dst, len);
+    (-14i64) as u64 // -EFAULT
+}
+
+/// Zeroes a BPF-visible destination in bounded chunks, tolerating an
+/// inaccessible destination by stopping there.
+///
+/// Both string-reading helpers clear the destination on failure so that a
+/// program which ignores the return value reads zeros rather than whatever
+/// the buffer held.
+fn bpf_zero_dst(dst: u64, len: usize) {
     let zeros = [0u8; 64];
     let mut written = 0;
     while written < len {
@@ -132,7 +163,131 @@ fn bpf_probe_read(dst: u64, size: u64, unsafe_ptr: u64, _c: u64, _e: u64) -> u64
         }
         written += chunk;
     }
+}
+
+/// `bpf_probe_read_user_str(void *dst, u32 size, const void *unsafe_ptr)` —
+/// copies a NUL-terminated string from user memory into a BPF-visible buffer
+/// without servicing page faults, matching the Linux helper ABI.
+///
+/// Probe programs run with local IRQs disabled, where a user page fault
+/// cannot be serviced: a non-resident or invalid page inside the requested
+/// range fails the read with `-EFAULT` and a zeroed destination instead of
+/// being faulted in. `size` bounds the source read, so bytes past
+/// `unsafe_ptr + size` are never touched: a longer source string is truncated
+/// to `size - 1` bytes with a forced NUL at the last byte, and the returned
+/// length includes the terminator, so an empty source returns 1. `size == 0`
+/// returns 0 without touching the destination. `size` beyond
+/// [`BPF_PROBE_READ_MAX`] is `-EINVAL` before either range is touched, the
+/// same bound as `bpf_probe_read`: without a verifier proving that
+/// `dst..dst + size` is a stack or map-value object, the cap is what keeps the
+/// copy and the failure-path clearing from writing past the program's buffer
+/// by more than one page.
+///
+/// The copy runs chunk-by-chunk through
+/// [`BPF_PROBE_READ_USER_STR_CHUNK`] bytes of stack scratch straight into the
+/// destination: probe context may have interrupted an allocator critical
+/// section, so the whole call chain stays off the heap.
+fn bpf_probe_read_user_str(dst: u64, size: u64, unsafe_ptr: u64, _c: u64, _e: u64) -> u64 {
+    if size > BPF_PROBE_READ_MAX {
+        return (-22i64) as u64; // -EINVAL
+    }
+    let len = size as usize;
+    if len == 0 {
+        return 0;
+    }
+
+    copy_str_to_dst(dst, len, |offset, max, scratch| {
+        next_source_chunk(unsafe_ptr as usize, offset, max, scratch)
+    })
+}
+
+/// Copies a NUL-terminated string from `next_chunk` into the BPF destination
+/// with `strncpy_from_user_nofault` semantics, for a `len` of at least one.
+///
+/// `next_chunk(offset, max, scratch)` reads at most `max` source bytes at
+/// `offset` into `scratch` and returns them, or `None` when they are not
+/// accessible. Returns the length including the terminator; `len` on
+/// truncation, with a forced terminator at the last byte; or `-EFAULT` with the
+/// whole destination zeroed when the source is not accessible.
+fn copy_str_to_dst(
+    dst: u64,
+    len: usize,
+    mut next_chunk: impl FnMut(usize, usize, &mut [MaybeUninit<u8>]) -> Option<&[u8]>,
+) -> u64 {
+    debug_assert!(len > 0);
+    let mut scratch = [const { MaybeUninit::uninit() }; BPF_PROBE_READ_USER_STR_CHUNK];
+    let mut copied = 0; // bytes already stored into the destination
+    while let Some(chunk) = next_chunk(copied, len - copied, &mut scratch) {
+        match chunk.iter().position(|byte| *byte == 0) {
+            Some(nul) => {
+                // Store the bytes up to and including the terminator.
+                if store_to_dst(dst, copied, &chunk[..=nul]).is_err() {
+                    return (-14i64) as u64; // -EFAULT
+                }
+                // `strncpy_from_user_nofault` returns the length including
+                // the terminator, so an empty source returns 1.
+                return (copied + nul + 1) as u64;
+            }
+            None => {
+                if store_to_dst(dst, copied, chunk).is_err() {
+                    return (-14i64) as u64; // -EFAULT
+                }
+                copied += chunk.len();
+                if copied == len {
+                    // Truncation: the source filled the whole range without a
+                    // terminator, so force one at the last byte and return
+                    // `size`, as `strncpy_from_user_nofault` does.
+                    let terminator = [0];
+                    if store_to_dst(dst, len - 1, &terminator).is_err() {
+                        return (-14i64) as u64; // -EFAULT
+                    }
+                    return len as u64;
+                }
+            }
+        }
+    }
+
+    // Linux clears the whole destination on failure so that a program which
+    // ignores the return value reads zeros rather than whatever the buffer
+    // held. A destination that faults here leaves the remainder untouched.
+    bpf_zero_dst(dst, len);
     (-14i64) as u64 // -EFAULT
+}
+
+/// Reads the next source chunk of a `bpf_probe_read_user_str` copy.
+///
+/// Returns `None` when the remaining range is not accessible — it wraps the
+/// address space, or a page inside it is non-resident or invalid — so the
+/// caller reports `-EFAULT` with a zeroed destination.
+fn next_source_chunk(
+    base: usize,
+    offset: usize,
+    max: usize,
+    scratch: &mut [MaybeUninit<u8>],
+) -> Option<&[u8]> {
+    let start = base.checked_add(offset)?;
+    crate::mm::vm_read_user_chunk_nofault(start, max, scratch).ok()
+}
+
+/// Stores `bytes` at `offset` in the BPF destination `dst`.
+///
+/// Returns the copy error when the destination range is not accessible, so
+/// callers can report `-EFAULT` without touching the buffer further.
+fn store_to_dst(dst: u64, offset: usize, bytes: &[u8]) -> Result<(), ()> {
+    let Some(target) = (dst as usize).checked_add(offset) else {
+        return Err(());
+    };
+    // SAFETY: `dst` names the program's buffer; an inaccessible range is
+    // reported as a fault by the exception table instead of reaching the
+    // page-fault handler.
+    unsafe {
+        ax_cpu::kernel_access::copy_from_kernel_nofault(
+            target as *mut u8,
+            bytes.as_ptr(),
+            bytes.len(),
+        )
+    }
+    .map_err(|_| ())
 }
 
 /// `bpf_get_current_pid_tgid()` — returns `(tgid << 32) | tid` of the
@@ -215,6 +370,9 @@ pub fn init_ebpf() {
     // context memory — e.g. `TracePointContext::read_at`, which a cooked
     // tracepoint program uses to pull fields out of its sample buffer.
     set.insert(BPF_FUNC_PROBE_READ_KERNEL, bpf_probe_read);
+    // The string helper needs the caller's `size` to bound the nofault read;
+    // kbpf-basic's own registration drops it (see BPF_FUNC_PROBE_READ_USER_STR).
+    set.insert(BPF_FUNC_PROBE_READ_USER_STR, bpf_probe_read_user_str);
     // Register helpers that kbpf-basic does not yet provide (#14, #16).
     set.entry(BPF_FUNC_GET_CURRENT_PID_TGID)
         .or_insert(bpf_get_current_pid_tgid);
@@ -381,5 +539,124 @@ mod tests {
         // first would follow these null pointers into a fault.
         let read = bpf_probe_read(0, BPF_PROBE_READ_MAX + 1, 0, 0, 0);
         assert_eq!(read, (-22i64) as u64);
+    }
+}
+
+#[cfg(all(test, axtest))]
+mod axtests {
+    use ax_alloc::alloc_audit::AllocAuditScope;
+
+    use super::{BPF_PROBE_READ_MAX, bpf_probe_read_user_str, copy_str_to_dst};
+
+    /// Runs the helper's copy on a kernel-resident source string, standing in
+    /// for a resident user page that the test kernel does not map.
+    fn copy_from(source: &[u8], dst: &mut [u8]) -> u64 {
+        copy_str_to_dst(dst.as_mut_ptr() as u64, dst.len(), |offset, max, scratch| {
+            let len = max.min(scratch.len()).min(source.len() - offset);
+            for (slot, byte) in scratch[..len].iter_mut().zip(&source[offset..]) {
+                slot.write(*byte);
+            }
+            // SAFETY: the loop above initialized the first `len` bytes.
+            Some(unsafe { scratch[..len].assume_init_ref() })
+        })
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_counts_the_terminator_of_an_empty_string() {
+        // strncpy_from_user_nofault returns the copied length including the
+        // NUL, so an empty source returns 1 with the terminator stored.
+        let mut out = [0x5au8; 8];
+        assert_eq!(copy_from(b"\0", &mut out), 1);
+        assert_eq!(out[0], 0);
+
+        let mut out = [0x5au8; 8];
+        assert_eq!(copy_from(b"ab\0", &mut out), 3);
+        assert_eq!(&out[..3], b"ab\0");
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_fails_and_zeroes_on_a_non_resident_page() {
+        // USER_SPACE_BASE belongs to the user range but is unmapped in the
+        // test kernel, so the nofault reader must fail the copy.
+        let mut out = [0x5au8; 8];
+        let ret = bpf_probe_read_user_str(
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            crate::config::USER_SPACE_BASE as u64,
+            0,
+            0,
+        );
+        assert_eq!(ret as i64, -14); // -EFAULT
+        assert!(out.iter().all(|byte| *byte == 0));
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_does_not_touch_the_heap_allocator() {
+        // A probe can fire while the interrupted code holds the heap
+        // allocator's lock on this CPU: the helper's first allocation would
+        // spin on that lock forever, so its whole call chain must stay off
+        // the heap. The probe scope counts this CPU's allocations with local
+        // IRQs disabled, so only code between enter and finish contributes.
+        let mut out = [0x5au8; 8];
+        let probe = AllocAuditScope::enter();
+        let ret = bpf_probe_read_user_str(
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            crate::config::USER_SPACE_BASE as u64,
+            0,
+            0,
+        );
+        let allocations = probe.finish();
+        assert_eq!(ret as i64, -14); // -EFAULT
+        assert_eq!(allocations, 0);
+        assert!(out.iter().all(|byte| *byte == 0));
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_bounds_the_destination_by_the_cap() {
+        // Nothing proves that the destination holds `size` bytes, so a size
+        // above the cap is refused before either range is touched; one at the
+        // cap is served, and its failure path zeroes exactly `size` bytes.
+        // The buffer is allocated before the probe scope.
+        let cap = BPF_PROBE_READ_MAX as usize;
+        let mut out = alloc::vec![0x5au8; cap + 904];
+        let probe = AllocAuditScope::enter();
+        let refused = bpf_probe_read_user_str(
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            crate::config::USER_SPACE_BASE as u64,
+            0,
+            0,
+        );
+        let refused_untouched = out.iter().all(|byte| *byte == 0x5a);
+        let served = bpf_probe_read_user_str(
+            out.as_mut_ptr() as u64,
+            BPF_PROBE_READ_MAX,
+            crate::config::USER_SPACE_BASE as u64,
+            0,
+            0,
+        );
+        let allocations = probe.finish();
+        assert_eq!(refused as i64, -22); // -EINVAL
+        assert!(refused_untouched);
+        assert_eq!(served as i64, -14); // -EFAULT
+        assert_eq!(allocations, 0);
+        assert!(out[..cap].iter().all(|byte| *byte == 0));
+        assert!(out[cap..].iter().all(|byte| *byte == 0x5a));
+    }
+
+    #[axtest::axtest]
+    fn probe_read_user_str_keeps_the_size_edges_of_the_linux_abi() {
+        // A zero size returns 0 without touching the destination, matching
+        // strncpy_from_user_nofault's `count <= 0` path.
+        let mut out = [0x5au8; 4];
+        let ret = bpf_probe_read_user_str(out.as_mut_ptr() as u64, 0, 0, 0, 0);
+        assert_eq!(ret, 0);
+        assert!(out.iter().all(|byte| *byte == 0x5a));
+
+        // A size that does not even fit the helper's `u32` argument is far
+        // beyond the cap and is refused before any range is touched.
+        let ret = bpf_probe_read_user_str(0, 1 << 33, 0, 0, 0);
+        assert_eq!(ret as i64, -22); // -EINVAL
     }
 }

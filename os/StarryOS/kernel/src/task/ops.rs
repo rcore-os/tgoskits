@@ -123,7 +123,7 @@ mod axtests {
         task::{
             diagnostics::{
                 begin_pi_schedule_test_probe, end_pi_schedule_test_probe,
-                pi_schedule_test_probe_snapshot,
+                observe_root_domain_push_locks_for_test, pi_schedule_test_probe_snapshot,
             },
             sync::WaitQueue,
             thread::current::current_thread_id,
@@ -148,6 +148,30 @@ mod axtests {
         assert!(
             ax_runtime::thread::kernel_thread_retains_active_mm_membarrier_state_for_test(),
             "a kernel thread borrows the CPU's active mm and must retain its rq membarrier state",
+        );
+    }
+
+    #[axtest::axtest]
+    fn root_domain_push_lock_excludes_the_local_timer_irq() {
+        // Waking an RT/DL thread starts a root-domain push from task context
+        // after the rq transaction has restored local IRQs, and a local timer
+        // IRQ that wakes an RT thread takes the same ticket lock. If the task
+        // could hold it with IRQs enabled, that IRQ would spin on a ticket its
+        // interrupted context owns.
+        let irqs_enabled = ax_runtime::hal::cpu::interrupt::irqs_enabled;
+        assert!(
+            irqs_enabled(),
+            "the test must take the push lock from task context with local IRQs enabled"
+        );
+        let excluded = observe_root_domain_push_locks_for_test(|| !irqs_enabled())
+            .expect("task context must be able to take the root-domain push locks");
+        assert!(
+            excluded,
+            "the root-domain push lock must keep local IRQs disabled while held"
+        );
+        assert!(
+            irqs_enabled(),
+            "releasing the push lock must restore local IRQs"
         );
     }
 

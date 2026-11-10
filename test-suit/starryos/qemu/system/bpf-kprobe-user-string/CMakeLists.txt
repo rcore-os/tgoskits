@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(bpf-kprobe-user-string C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(bpf-kprobe-user-string src/bpf_kprobe_user_string.c)
+target_compile_options(bpf-kprobe-user-string PRIVATE -Wall -Wextra -Werror)
+install(TARGETS bpf-kprobe-user-string RUNTIME DESTINATION usr/bin/starry-test-suit)

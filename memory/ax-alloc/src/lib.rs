@@ -119,6 +119,24 @@ pub(crate) const fn layout_reclaim_pages(layout: Layout) -> usize {
 mod page;
 pub use page::GlobalPage;
 
+/// Test-only counting wrapper around the selected backend allocator.
+///
+/// Kernel axtests use it to prove that a call path never allocates: probe
+/// context may run with the heap allocator's lock already held by the
+/// interrupted code, so a whole call chain must stay off the heap. Enabled
+/// with the `alloc-audit` feature; nothing here is compiled into production
+/// builds.
+#[cfg(feature = "alloc-audit")]
+pub mod alloc_audit;
+
+#[cfg(all(
+    feature = "alloc-audit",
+    any(target_os = "none", feature = "global-allocator"),
+    not(test)
+))]
+#[global_allocator]
+static GLOBAL_ALLOCATOR_AUDIT: alloc_audit::AuditAllocator = alloc_audit::AuditAllocator;
+
 /// Tracking of memory usage, enabled with the `tracking` feature.
 #[cfg(feature = "tracking")]
 pub mod tracking;

@@ -33,6 +33,8 @@
 | profile       | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | sched_trace   | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 
+已知限制：`bpf_probe_read` 与 `bpf_probe_read_user_str` 的 `size` 上限为 4096 字节，超过时返回 `-EINVAL`（Linux 不限制）。StarryOS 没有 verifier 证明 `dst..dst+size` 落在程序的栈或 map 值内，这个上限用来限制越界写入；有了范围证明后再放开。
+
 ## Build & Run
 
 ```sh

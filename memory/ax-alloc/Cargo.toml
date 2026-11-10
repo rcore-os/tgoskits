@@ -17,6 +17,9 @@ buddy-slab = [
   "dep:ax-percpu",
   "dep:ax-plat",
 ]
+# Wrap the selected backend with a counting allocator and expose
+# [`alloc_audit`], so kernel tests can prove a call path never allocates.
+alloc-audit = ["dep:ax-percpu", "global-allocator"]
 tracking = ["dep:ax-percpu", "dep:axbacktrace"]
 
 [package.metadata.docs.rs]

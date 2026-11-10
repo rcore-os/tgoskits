@@ -10,6 +10,7 @@ The current backends are selected by feature: `tlsf` uses the `rlsf` crate, and
 - `tlsf` – TLSF byte and page allocation backed by `rlsf`
 - `buddy-slab` – buddy page allocation plus per-CPU slab allocation
 - `global-allocator` – register the selected backend as `#[global_allocator]`
+- `alloc-audit` – register a counting wrapper instead, and expose `alloc_audit` for tests that prove a call path never allocates
 - `tracking` – allocation tracking (requires `ax-percpu`, `axbacktrace`)
 
 ## License

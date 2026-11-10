@@ -24,7 +24,7 @@ task-fair-idle-pull = ["task-runtime", "ax-std/alloc"]
 task-fair-wake-idle-sibling = ["task-runtime"]
 task-wait-queue = ["task-runtime", "dep:ax-runtime", "ax-runtime/fault-injection", "ax-std/tls"]
 task-wait-queue-remote-wake = ["task-runtime", "ax-std/ipi"]
-task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/ipi"]
+task-ipi = ["task-runtime", "ax-std/alloc", "ax-std/ipi", "dep:ax-ipi", "ax-ipi/fault-injection"]
 task-irq = ["task-runtime"]
 task-kernel-timer = ["task-runtime"]
 task-executor = ["task-runtime"]
@@ -151,6 +151,7 @@ ax-driver = { workspace = true, optional = true }
 ax-fs-ng = { workspace = true, optional = true }
 ax-block = { workspace = true, optional = true, features = ["cache"] }
 ax-hal = { workspace = true, optional = true }
+ax-ipi = { workspace = true, optional = true }
 ax-memory-addr.workspace = true
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }

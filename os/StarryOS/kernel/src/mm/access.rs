@@ -10,18 +10,15 @@ use core::{
 
 use ax_io::prelude::*;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
-use ax_runtime::{
-    hal::{
-        cpu::{
-            trap::PageFaultFlags,
-            user::{
-                UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op, user_atomic_u32,
-                user_cmpxchg_u32, user_copy, user_read_u32,
-            },
+use ax_runtime::hal::{
+    cpu::{
+        trap::PageFaultFlags,
+        user::{
+            UserAccessError, UserAccessType, UserAtomicError, UserAtomicU32Op, user_atomic_u32,
+            user_cmpxchg_u32, user_copy, user_read_u32,
         },
-        paging::MappingFlags,
     },
-    task::sync::Semaphore,
+    paging::MappingFlags,
 };
 use bytemuck::{AnyBitPattern, NoUninit};
 use starry_vm::{VmError, VmIo, VmResult};
@@ -782,12 +779,20 @@ pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Fixed, allocation-free diagnostic for malformed or reentrant task identity lookups.
 static PAGE_FAULT_IDENTITY_FAILURES: AtomicU64 = AtomicU64::new(0);
-/// Serializes kernel text patching. A semaphore, whose waiters sleep, because a
-/// holder waits in stop_machine for every CPU's stopper thread to run.
-static KERNEL_TEXT_PATCH: Semaphore = Semaphore::new(1);
 
 #[cfg(feature = "axtest")]
 const _: fn(&UserTaskRef, &str, usize, usize, MappingFlags) -> VmResult = prepare_user_memory;
+
+/// Whether a user page fault on `thr` may enter the faultable service path.
+///
+/// A no-fault user read in progress outranks an outer faultable user-memory
+/// access scope: the interrupted thread may still hold one from a
+/// `copy_from_user` that a probe exception fired inside, but a fault from the
+/// marked read must be reported as a failed copy instead of being serviced
+/// with local IRQs disabled.
+fn user_page_fault_may_be_serviced(thr: &crate::task::Thread) -> bool {
+    !thr.in_no_fault_user_read() && thr.has_active_user_memory_access()
+}
 
 pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
     if ax_runtime::diagnostics::diagnose_current_stack_guard_page_fault(vaddr) {
@@ -822,7 +827,7 @@ pub(crate) fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -
     };
     let thr = curr.as_thread();
 
-    if !thr.has_active_user_memory_access() {
+    if !user_page_fault_may_be_serviced(thr) {
         return false;
     }
 
@@ -860,6 +865,59 @@ pub fn vm_load_string(task: &UserTaskRef, ptr: *const c_char) -> crate::StarryRe
     #[allow(clippy::unnecessary_cast)]
     let bytes = vm_load_until_nul(task, ptr as *const u8)?;
     String::from_utf8(bytes).map_err(|_| crate::StarryError::IllegalBytes)
+}
+
+/// Loads a NUL-terminated user string without servicing page faults.
+///
+/// For callers that cannot sleep, such as BPF helpers run from a probe
+/// exception with local IRQs disabled. A non-resident or invalid page fails
+/// the read instead of being faulted in, whatever user-memory access scope
+/// the interrupted thread holds (see [`vm_read_user_chunk_nofault`]).
+pub fn vm_load_string_nofault(ptr: *const c_char) -> crate::StarryResult<String> {
+    let bytes = with_no_fault_user_read(|vm| starry_vm::vm_load_until_nul(vm, ptr.cast::<u8>()))?;
+    String::from_utf8(bytes).map_err(|_| crate::StarryError::IllegalBytes)
+}
+
+/// Reads one bounded chunk of user memory without servicing page faults and
+/// without heap allocation.
+///
+/// A building block for probe-context readers (see
+/// [`crate::ebpf`]'s `bpf_probe_read_user_str`): their call chain may run with
+/// the heap allocator's lock held by the interrupted code, so the caller's
+/// buffer is the only scratch. The chunk never crosses a page boundary and is
+/// bounded by `max` and the scratch size, so bytes past `start + max` are
+/// never touched and a string that ends anywhere in a resident page reads
+/// successfully at the same granularity as Linux's word-at-a-time
+/// `strncpy_from_user_nofault`. Returns the bytes read, or
+/// [`VmError::AccessDenied`] when the range is not accessible.
+pub(crate) fn vm_read_user_chunk_nofault(
+    start: usize,
+    max: usize,
+    scratch: &mut [MaybeUninit<u8>],
+) -> VmResult<&[u8]> {
+    debug_assert!(!scratch.is_empty());
+    let to_page_end = PAGE_SIZE_4K - start % PAGE_SIZE_4K;
+    let len = max.min(scratch.len()).min(to_page_end);
+    let buf = &mut scratch[..len];
+    with_no_fault_user_read(|vm| vm.read(start, buf))?;
+    // SAFETY: the read initialized the whole chunk or failed.
+    Ok(unsafe { buf.assume_init_ref() })
+}
+
+/// Runs `f` with the current thread marked as performing a no-fault user read.
+///
+/// The marker makes `handle_page_fault` decline faults from the read even
+/// when the interrupted thread holds an outer faultable user-memory access
+/// scope, so the architecture exception table reports the failed copy. A
+/// thread without a Starry extension has no scope to outrank, so lookup
+/// failures simply skip the marker.
+fn with_no_fault_user_read<R>(f: impl FnOnce(&mut NoFaultUserReader) -> R) -> R {
+    let task = try_current_user_task().ok().flatten();
+    let _no_fault = task
+        .as_ref()
+        .map(|task| task.as_thread().enter_no_fault_user_read());
+    let mut reader = NoFaultUserReader;
+    f(&mut reader)
 }
 
 pub fn vm_load_path_string(task: &UserTaskRef, ptr: *const c_char) -> crate::StarryResult<String> {
@@ -937,6 +995,44 @@ unsafe impl VmIo for UserMemoryProvider<'_> {
         }
         UserAccess::<Faultable>::new(start, buf.len(), UserAccessIntent::Write)?
             .copy_to_user(self.task, buf)
+    }
+}
+
+/// Read-only user-memory access that does not service page faults.
+///
+/// It enters no user-memory access scope. Reads run under
+/// [`with_no_fault_user_read`], whose marker makes the page-fault handler
+/// decline faults on user addresses even when the interrupted thread already
+/// holds a faultable scope; the architecture exception table then reports
+/// them as a failed copy.
+struct NoFaultUserReader;
+
+// SAFETY: reads validate the user range and recover faults through the
+// architecture exception table; no borrowed user reference escapes.
+unsafe impl VmIo for NoFaultUserReader {
+    fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let range = UserAccessRange::new(start, buf.len())?;
+        // SAFETY: the checked range is user memory, the kernel buffer is valid
+        // for its declared length, and the exception table resolves faults.
+        let failed_at = unsafe {
+            user_copy(
+                buf.as_mut_ptr().cast(),
+                range.start.as_usize() as *const u8,
+                buf.len(),
+            )
+        };
+        if failed_at != 0 {
+            Err(VmError::AccessDenied)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn write(&mut self, _start: usize, _buf: &[u8]) -> VmResult {
+        Err(VmError::AccessDenied)
     }
 }
 
@@ -1032,60 +1128,36 @@ where
 
     let cache_range =
         ax_cpu::cache::CacheRange::new(addr, len).map_err(|_| StarryError::BadAddress)?;
-
-    // Concurrent patchers must not record another patcher's temporary write
-    // permission as the original mapping flags.
-    KERNEL_TEXT_PATCH
-        .down()
-        .expect("kernel text patching requires a sleepable task context");
-    let patched = patch_kernel_text_serialized(addr, len, cache_range, action);
-    KERNEL_TEXT_PATCH
-        .up()
-        .expect("kernel text patching semaphore overflow");
-    patched
-}
-
-fn patch_kernel_text_serialized<F>(
-    addr: VirtAddr,
-    len: usize,
-    cache_range: ax_cpu::cache::CacheRange,
-    action: F,
-) -> StarryResult<()>
-where
-    F: FnOnce(*mut u8),
-{
     let aligned_addr = addr.align_down_4k();
     let aligned_length = (addr + len).align_up_4k() - aligned_addr;
 
-    // Relax and restore the page permissions in task context, outside the
-    // stopped section: `protect` shoots down the TLB on every CPU and waits for
-    // their acknowledgements, which CPUs parked by stop_machine with IRQs
-    // disabled can never send.
-    let original_flags = {
-        let mut aspace = ax_mm::kernel_aspace().lock();
-        if aspace.contains_range(aligned_addr, aligned_length) {
-            let flags = aspace.mapping_flags(aligned_addr)?;
-            aspace.protect(aligned_addr, aligned_length, flags | MappingFlags::WRITE)?;
-            Some(flags)
-        } else {
-            None
-        }
-    };
+    // Write through a temporary writable alias of the text frames, as Linux
+    // text_poke does, and leave the text mapping itself untouched. Changing
+    // its permissions would first split a block mapping by break-before-make,
+    // and a CPU fetching from that block in the window, including an exception
+    // vector placed there, takes a translation fault it cannot recover from.
+    // The alias is mapped and removed in task context, because both may
+    // allocate and wait for TLB shootdown acknowledgements, which CPUs parked
+    // by stop_machine with IRQs disabled can never send.
+    let alias = map_kernel_text_alias(aligned_addr, aligned_length)?;
 
     // LoongArch64 kernel text may execute from the 0x9000... DMW direct-map
     // window. DMW translations do not consult PTEs, so there are no page
     // permissions to relax there. Patch directly while all other CPUs are
     // parked, then rely on the per-CPU sync callback to flush instruction state.
     #[cfg(not(target_arch = "loongarch64"))]
-    if original_flags.is_none() {
+    if alias.is_none() {
         return Err(StarryError::BadAddress);
     }
 
-    let mapped = original_flags.is_some();
+    let target = match alias {
+        Some(alias) => alias + addr.align_offset_4k(),
+        None => addr,
+    };
     crate::stop_machine::stop_machine(
         move || {
-            action(addr.as_mut_ptr());
-            if mapped {
+            action(target.as_mut_ptr());
+            if alias.is_some() {
                 // SAFETY: the kernel mapping covers the range, and stop_machine
                 // excludes concurrent text execution and writes.
                 unsafe { ax_cpu::cache::clean_dcache_range_to_pou(cache_range) };
@@ -1094,12 +1166,33 @@ where
         move || sync_modified_kernel_text(aligned_addr, aligned_length),
     );
 
-    if let Some(flags) = original_flags {
-        ax_mm::kernel_aspace()
-            .lock()
-            .protect(aligned_addr, aligned_length, flags)?;
+    if let Some(alias) = alias {
+        ax_runtime::kernel_mapping::unmap_kernel_range(alias, aligned_length)?;
     }
     Ok(())
+}
+
+/// Maps the frames behind a page-aligned kernel text range at a fresh,
+/// writable, non-executable kernel address. Returns `None` if the range is not
+/// translated by the kernel page table.
+fn map_kernel_text_alias(start: VirtAddr, size: usize) -> StarryResult<Option<VirtAddr>> {
+    let mut frames = Vec::with_capacity(size / PAGE_SIZE_4K);
+    let hint = {
+        let aspace = ax_mm::kernel_aspace().lock();
+        if !aspace.contains_range(start, size) {
+            return Ok(None);
+        }
+        for offset in (0..size).step_by(PAGE_SIZE_4K) {
+            frames.push(aspace.translate(start + offset)?);
+        }
+        aspace.base()
+    };
+    let alias = ax_runtime::kernel_mapping::map_kernel_pages(
+        hint,
+        &frames,
+        MappingFlags::READ | MappingFlags::WRITE,
+    )?;
+    Ok(Some(alias))
 }
 
 /// Writes data to kernel text, ensuring the page permissions are properly handled.
@@ -1208,6 +1301,78 @@ mod tests {
             unsafe { user_read_u32(crate::config::USER_SPACE_BASE as *const u32) },
             Err(UserAccessError::Fault)
         ));
+    }
+
+    #[cfg(all(test, axtest))]
+    #[inline(never)]
+    fn kernel_text_patch_target() -> usize {
+        core::hint::black_box(0x5a5a)
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn kernel_text_patch_leaves_the_text_mapping_unchanged() {
+        // A block mapping split by break-before-make is briefly absent for
+        // every CPU, so patching must not reshape the mapping it executes from.
+        let target = VirtAddr::from(kernel_text_patch_target as *const () as usize);
+        let mapping = || {
+            ax_mm::kernel_aspace()
+                .lock()
+                .mapping_attributes(target)
+                .unwrap()
+        };
+        let before = mapping();
+        let mut original = [0u8; 4];
+        // SAFETY: the target is a mapped, readable function in kernel text.
+        unsafe { ptr::copy_nonoverlapping(target.as_ptr(), original.as_mut_ptr(), 4) };
+
+        write_kernel_text(target, &original).unwrap();
+
+        assert_eq!(
+            mapping(),
+            before,
+            "patching kernel text changed the mapping of the patched page"
+        );
+        assert_eq!(kernel_text_patch_target(), 0x5a5a);
+    }
+
+    #[cfg(all(test, axtest))]
+    #[axtest::axtest]
+    fn no_fault_read_marker_outranks_active_user_memory_scope() {
+        use crate::task::{PidReservation, PidReservationKind, ROOT_PID_NS, Thread, Tgid, Tid};
+
+        // A synthetic thread with a real process, as in the clone axtests.
+        let reservation =
+            PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader).unwrap();
+        let identity = reservation.identity();
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let process = crate::task::new_test_process_data(identity.clone(), tgid);
+        let thread = Thread::new(
+            identity,
+            tid,
+            process,
+            None,
+            Default::default(),
+            scope_local::Scope::new(),
+        )
+        .unwrap();
+
+        // An outer faultable scope alone allows the faultable service path.
+        let _scope = thread.enter_user_memory_access();
+        assert!(user_page_fault_may_be_serviced(&thread));
+
+        // A no-fault read in progress outranks it: a probe exception that
+        // fired inside an in-progress user copy must not have the copy's
+        // scope service the helper's faults.
+        let _no_fault = thread.enter_no_fault_user_read();
+        assert!(thread.in_no_fault_user_read());
+        assert!(!user_page_fault_may_be_serviced(&thread));
+
+        // Dropping the marker restores the outer scope's service path.
+        drop(_no_fault);
+        assert!(!thread.in_no_fault_user_read());
+        assert!(user_page_fault_may_be_serviced(&thread));
     }
 
     #[cfg(all(test, not(axtest)))]

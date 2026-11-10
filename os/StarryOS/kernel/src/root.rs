@@ -52,6 +52,8 @@ mod trap;
 mod uprobe;
 
 #[cfg(all(test, axtest))]
+mod alloc_audit_axtest;
+#[cfg(all(test, axtest))]
 mod block_runtime_axtest;
 #[cfg(any(test, axtest))]
 mod block_scratch_policy;

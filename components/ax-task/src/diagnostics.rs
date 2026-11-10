@@ -20,6 +20,8 @@ pub use crate::sched::system::PiScheduleTestProbeSnapshot;
 pub use crate::sched::system::begin_pi_schedule_test_probe;
 #[cfg(axtest)]
 pub use crate::sched::system::end_pi_schedule_test_probe;
+#[cfg(axtest)]
+pub use crate::sched::system::observe_root_domain_push_locks_for_test;
 
 #[cfg(feature = "qperf-metrics")]
 pub(crate) mod counters;

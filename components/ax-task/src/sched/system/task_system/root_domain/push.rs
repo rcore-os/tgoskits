@@ -191,3 +191,24 @@ impl RootDomain {
         }
     }
 }
+
+/// Runs `observe` in the calling task context while it holds each root-domain
+/// push iterator lock, and returns whether every observation held.
+///
+/// Wake activation takes this lock from task context after the rq transaction
+/// has restored local IRQs; real-runtime tests use this to check that the
+/// lock itself keeps the local timer IRQ out of that critical section.
+#[cfg(axtest)]
+pub fn observe_root_domain_push_locks_for_test(
+    mut observe: impl FnMut() -> bool,
+) -> Result<bool, TaskError> {
+    crate::runtime::context::validate_task_context()?;
+    let system = crate::runtime::context::runtime_task_system()?;
+    let held = [RootDomainPushClass::Deadline, RootDomainPushClass::Realtime]
+        .into_iter()
+        .all(|class| {
+            let _state = system.root_domain.push_iterator(class).lock_state();
+            observe()
+        });
+    Ok(held)
+}

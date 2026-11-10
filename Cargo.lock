@@ -506,6 +506,7 @@ dependencies = [
  "ax-driver",
  "ax-fs-ng",
  "ax-hal",
+ "ax-ipi",
  "ax-memory-addr",
  "ax-mm",
  "ax-runtime",
