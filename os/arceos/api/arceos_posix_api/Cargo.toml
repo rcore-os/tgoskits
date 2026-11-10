@@ -18,6 +18,14 @@ license.workspace = true
 [features]
 default = []
 
+host-test = [
+    "ax-api/host-test",
+    "ax-hal/host-test",
+    "ax-log/host-test",
+    "ax-runtime/host-test",
+    "ax-task/host-test",
+]
+
 smp = ["ax-runtime/smp"]
 alloc = ["dep:ax-alloc"]
 lockdep = ["ax-runtime/lockdep"]

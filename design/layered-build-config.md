@@ -99,7 +99,7 @@ axbuild 只向本次 Cargo 子进程 env map 写入有效 SMP、栈、tick 和�
 
 执行边界由 `AppContext::build()`、`qemu()`、`uboot()` 和 `board()` 保持：`Cargo.env` 交给 ostool 的子进程命令，不先安装到 axbuild 进程中，也不让独立的构建前置命令误继承本次 Cargo 覆盖。三 OS 的 Cargo 适配已通过 `disable_someboot_build_config` 关闭 ostool 的重复探测，不能再为旧探测保留全局环境暂存和恢复封装。
 
-TASK_STACK_SIZE 无条件生成，任务栈 getter 的 fs 与无 fs 路径使用同一值。`ax_api::config::TASK_STACK_SIZE` 同样引用 runtime getter，使 axstd 的默认线程栈与直接 runtime 线程保持一致。tick 同时用于 clockevent 和任务系统 balance interval。启动栈仍属于 someboot，不合并到任务栈。无消费者的 axplat-dyn `__SMP` 定义及解析链删除；Axvisor host facts 使用 runtime 容量，shell 使用实际 CPU 数，平台名使用 HAL。
+TASK_STACK_SIZE 无条件生成，任务栈 getter 的 fs 与无 fs 路径使用同一值。`ax_api::config::TASK_STACK_SIZE` 与 `ax_posix_api::config::TASK_STACK_SIZE` 同样引用 runtime getter，使 axstd、空属性 `pthread_create()` 与直接 runtime 线程的默认任务栈保持一致。显式 pthread 属性的栈大小不受默认值覆盖；`RLIMIT_STACK` 报告同一默认任务栈大小，不引入可修改资源限制。tick 同时用于 clockevent 和任务系统 balance interval。启动栈仍属于 someboot，不合并到任务栈。无消费者的 axplat-dyn `__SMP` 定义及解析链删除；Axvisor host facts 使用 runtime 容量，shell 使用实际 CPU 数，平台名使用 HAL。
 
 ## 5. 迁移和交付
 
@@ -111,7 +111,7 @@ PR 1 的旧同名 ITS 关联仅在用户覆盖前装入 Starry 文件基值，�
 
 删除前对照 36 个旧预设与新静态展开结果，保留 target、feature、log、env、rustflags 顺序、CPU Option、OS 字段和资源关联。基础板卡只定义共享身份，场景保留独立预设名称。一次性对照留作 PR 证据，不永久维护旧模板或生产名单镜像。
 
-测试使用公开解析入口和真实 resolver 验证覆盖、严格拒绝、Schema、连续选择与失败保持；runtime 边界由公共 helper 验证，真实容量、栈和 tick 由现有运行入口验证。ax-config 的 toml+schema profile 必须进入标准库测试发现且非零执行。四架构三 OS 构建及代表性运行、ITS 实际打包、VM Cargo 身份隔离按议题验收。
+测试使用公开解析入口和真实 resolver 验证覆盖、严格拒绝、Schema、连续选择与失败保持；runtime 边界由公共 helper 验证，真实容量、栈和 tick 由现有运行入口验证。ax-config 的 toml+schema profile 与 ax-posix-api 的 host-test profile 必须进入标准库测试发现且非零执行。POSIX 的 host-test 仅启用依赖已有的宿主后端，用于属性解码等纯逻辑；非默认任务栈环境下检查空属性与 runtime getter 同源，不以该测试代替真实线程运行。四架构三 OS 构建及代表性运行、ITS 实际打包、VM Cargo 身份隔离按议题验收。
 
 ### 5.2 回滚和审查
 
