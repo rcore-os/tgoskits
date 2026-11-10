@@ -140,7 +140,7 @@ mkimage -l target/riscv64gc-unknown-none-elf/release/starryos.uimg
 
 输出里的 `Load Address` 和 `Entry Point` 必须都是 `0x80200000`。如果这里是 0，说明打包模板 `.its` 没有被正确解析，这个镜像烧进去 `bootm` 会跳到地址 0 直接崩溃。
 
-RK3588 的产物和 SG2002 不是一回事：它只有 `target/aarch64-unknown-none-softfloat/release/starryos.bin`，一个裸内核二进制，没有配套的 FIT 镜像。打不打 FIT 取决于板卡配置旁边有没有同名的打包模板：`scripts/axbuild/src/starry/build.rs` 里的 `uimage_generation_plan` 只在 `os/StarryOS/configs/board/` 下存在同名 `.its` 时才会调用 `mkimage` 产出 `starryos.uimg`，而这个目录里的三份 `.its` 都是 SG2002 的，没有 `orangepi-5-plus.its`。
+RK3588 的产物和 SG2002 不是一回事：它只有 `target/aarch64-unknown-none-softfloat/release/starryos.bin`，一个裸内核二进制，没有配套的 FIT 镜像。是否打包 FIT 由 `StarryConfig.fit_its` 显式选择：`scripts/axbuild/src/starry/build.rs` 里的 `uimage_generation_plan` 在该字段指定 ITS 时才会调用 `mkimage` 产出 `starryos.uimg`，不再扫描板卡配置旁的同名模板。SG2002 的三个预设分别关联各自的 ITS；OrangePi-5-Plus 预设没有指定 `fit_its`，因此默认不生成 FIT 镜像。
 
 所以 RK3588 拿不到 FIT 产物，`cargo starry uboot` 和 `quick-start` 这两条要上传 FIT 镜像的通道在这块板上没有东西可以送。它走的是另一条路：拿 `starryos.bin` 打一个只装内核的 legacy uImage，和设备树分开加载，打包见 4.2，引导命令见 5.1。
 

@@ -73,7 +73,9 @@ CLI 和文件 preset 必须一致，预设的 target 约束 CLI target、arch �
 
 OS 专属特性禁令也是请求有效性的一部分。Axvisor 的运行时 VMX/SVM 选择规则由同一校验器拒绝对应 Cargo 特性；依赖工作区 metadata 的平台特性限制也必须在 resolver 完成前执行，不能只在 Cargo 适配中才拒绝，否则 show 与 build 会不一致，失败输入还会抢先覆盖快照。
 
-`config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。Axvisor resolver 将有效的 CLI 或恢复快照 VM 覆盖同步到最终 `config.vm_configs`，使展示结果重新读取后仍选择同一有序 VM 列表；不读取 VM 文件或将其加入内核 Cargo 身份。`defconfig` 显式序列化展开对象，以临时文件替换输出，成功后才更新快照。任何解析、校验或写入失败都不覆盖原文件与快照。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
+`config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。Axvisor resolver 将有效的 CLI 或恢复快照 VM 覆盖同步到最终 `config.vm_configs`，使展示结果重新读取后仍选择同一有序 VM 列表；不读取 VM 文件或将其加入内核 Cargo 身份。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
+
+三个 OS 的 `write_defconfig()` 共用 `export_config_with_snapshot()`，将展开配置和新选择作为一次失败可回滚的操作：先完成两份 TOML 的序列化、同目录临时文件写入与同步，并保存原配置的回滚副本，再替换配置、最后原子替换快照。提交快照失败时恢复原配置；目标原先不存在时移除新配置。普通快照保存同样使用临时文件原子替换，不截断旧快照。解析、校验或暂存失败不修改原文件与旧选择；回滚自身失败时保留恢复副本，并报告原提交错误、回滚错误和副本路径，不能声称原状态已恢复。此保证针对单个命令的普通 I/O 失败，不提供跨文件的崩溃、断电原子性，也不协调并发写入命令。
 
 ### 3.2 路径与打包
 
