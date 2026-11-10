@@ -726,6 +726,78 @@ ArceOS API、Starry 伪文件系统和测试后端。只为迁移保留的旧命
 不得在最终交付中留下永久无凭据路径。新增命名结果持有的引用也受第 4.3 节约束，
 在 outer gate 内丢弃结果时移交实际 owner，不能让返回载荷形成新的析构反入点。
 
+### 4.12 原生删除的引用准备
+
+FAT 目前不能安全删除仍有活跃原生 holder 的对象。这个存储边界必须保留，
+但本轮为锁外析构增加的 `NameChange::affected`、观察结果和 `MutationRetire`
+不能自行把本来没有使用者的对象变成“活跃”。原生删除因此分为 gate 外的引用准备，
+以及同一真实 backend guard 内的当前观察、授权、提交和发布；准备不是一次提前授权。
+
+`Location::prepare_unlink` 生成最窄的 `PreparedUnlink`，绑定 exact mount、
+稳定父目录和请求末名，字段由 VFS 私有构造。它不持待删目标的强引用，
+不保存目标存在性、metadata、权限、inode 身份或 active 为零的结论。
+`unlink_with_write` 仅接受与本请求匹配的既有准备，并将其移交本次 `UnlinkRequest`，
+同时保留原来的显式凭据、`PreparedWrite` 和最外层退役集合。
+普通 `Location::unlink` 在任何 backend gate 之前完成准备；
+借写权利的入口只核对和使用既有准备，不能在 gate 内补做。
+
+一份准备只服务一次外层删除。`PreparedUnlink` 不实现 `Copy` 或 `Clone`，
+由受控入口消费进本次私有构造的 `UnlinkRequest`；后端的明确未应用重试只借用
+同一请求，并重新观察授权，不复制准备用于另一次操作。请求完成后独立的删除必须
+重新准备。匹配使用 exact mount、稳定父 dentry 身份和请求末名的原始字节，
+不以 inode 相等或准备时提前规范化 FAT 名称代替。
+
+准备先短持父目录缓存锁，从弱规范索引收集当前直接子项，随后退出缓存锁，
+复用 `release_retained` 的算法撤出这些子项的全局正项保留，
+并在进入下一步前实际释放全部临时 Vec、探测引用和被撤出的引用。
+按目录的直接子项处理可覆盖 FAT 大小写和短名别名，
+不需要按用户拼写慢 lookup，也不删除弱索引、清除 `valid`、递归清理后代
+或把活跃 dentry 改成 `Untrusted`。准备不会用一次提前的查找错误覆盖实际尝试的错误顺序。
+
+VFS 引用释放完成后，才调用 backend 的固定 `prepare_unlink` 准备 hook；
+原生默认不做额外工作，FAT 在这里调用现有 `prune_cached_files`，
+使符合原有条件的 clean、已持久化、registry-only cache 真正释放其 backing。
+顺序不能只写成“native prune 后释放 VFS 引用”：正项 dentry 的 `user_data`
+可能强持 `CachedFileShared`，它又强持 `FatInode`，必须先解除这条引用再做最终 prune。
+该 hook 不是任意闭包，不修改请求的命名状态，不发放提交能力。
+旧 prune 是有界的尽力扫描，准备完成不保证所有 cache 被回收，更不保证 active 为零；
+真实 fd、活跃路径/目录项、脏缓存和其他仍需保留的 owner 不被强制移除。
+
+FAT 的尝试取得真实 FS guard 后，在构造本轮 holder 之前观察当前 active 状态，
+再读取当前目标并形成观察。这个采样不能晚于 `NameChange` 对弱项的强升级，
+也不能在本轮 `FatInode::get`、guard retain 或候选发布之后重新按裸计数解释。
+采样为活跃时保留原有不支持边界；为非活跃时，新出现的纯本轮观察引用
+由本次受控操作保留，不被重新误判为外部使用者。
+
+固定单名命令的顺序应为：先执行 backend 的当前观察，
+随后在首次 `canonicalize_locked` 发布该观察之前建立 `NameChange` 在途边界，
+然后完成规范化、当前授权、提交和锁内发布。不能只把 `NameChange` 移到授权之后：
+当前 `CommandGuard::slot` 会在授权前公开正项，
+若公开时没有 writer 边界，另一个缓存快路径读取者可在 active 采样之后取得新引用。
+在途边界必须使这样的读取转入需要真实 backend guard 的路径，
+直到本轮发布结束。既有 rename 的成对协议不因本节调整。
+
+成功删除还须撤出实际已移除别名的全局正项保留，并把这些引用交给外层退役集合。
+仅调用 `remove_cache_after_mutation` 删除弱名称索引并标记 `Unlinked` 不够：
+留下的全局正项仍可通过已删子项的强父链或 `FatName::parent` 保活父目录，
+使随后删除父目录再次误遇 active。这里撤出的对象必须匹配实际提交结果，
+不以先前 probe 的名称或对象代替，也不在锁内销毁它们。
+
+本节冻结的是原生单层删除协议。分层调用同样不能在 inner guard 退出后清空外层退役袋；
+需要重新准备时，最外层 owner 先结束全部旧槽位和授权、退出全部 gate，
+再实际释放旧的临时目标、结果及退役 owner，之后准备下一阶段并重新观察授权。
+已经 `Applied` 或 `Uncertain` 的步骤不因阶段切换重放。
+`PreparedUnlink` 不是证明不存在外层 gate 的类型魔法，调用方仍须遵守并验证上述顺序。
+
+**强 backing 的分层删除另有尚未闭合的能力边界，不能由本节外推。**
+现有 Overlay 的局部 `upper: Location`，以及稳定逻辑实体持有的原生 backing，
+都会使 FAT active 为真；如果每轮 outer observation 都重建同一个临时 backing pin，
+退出 gate 再准备也不会自动产生进展。不得无限重试、减去猜测的 Arc 数量，
+也不得把自身临时 pin 解释成真实外部使用者而统一拒绝 FAT upper 删除。
+这一路径的逻辑实体保留与原生 holder 转移/暂停协议需在相应 Overlay 实施前单独明确，
+当前不授权照搬旧 `lookup_visible_upper_child` 后持目标调用 unlink 的路径，
+原生实现和验收可以独立完成，但不代表该分层场景已经获准或通过。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。
@@ -989,6 +1061,14 @@ proc 魔链接跟随的实际 mode 更新，并覆盖相对路径或 proc 目录
 原测试的 libc fchmod wrapper 可能执行 fallback，不能充当原始 `SYS_fchmod` 的判定；
 “proc 继承 O_PATH 限制”的旧注释和 oracle 必须修正，不能仅删掉拒绝断言造绿。
 同一用例对各步核对返回值与最终 inode mode，拒绝和成功路径都取得直接系统证据。
+
+FAT 原生删除增强既有真实文件系统生命周期回归，证明关闭普通文件后，
+即使正项和 clean file cache 尚存仍可删除，再删除其父目录；
+同时保留真实活跃对象拒绝删除及失败无错误副作用的判定。
+引用准备不得删弱规范索引或破坏活跃身份，需在同一完整行为中核对。
+在实际发布前受控阻塞另一个缓存读取者，证明 active 采样后没有未经 backend guard
+取得新目标的窗口；仅检查方法调用顺序或 Arc 数值不是等价证明。
+嵌套 Overlay/FAT 的临时 pin 问题仍是独立未闭合项，不用原生绿冒充其证据。
 
 R4 复用真实 MemoryFs 自移/后代拒绝回归，并补足受控并发拓扑交错的最终无环与身份
 判定；已有自移首断言的红测不冒充后代及并发分支也已采红。
