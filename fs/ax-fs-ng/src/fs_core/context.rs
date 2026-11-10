@@ -18,9 +18,8 @@ use ax_lazyinit::OnceLock;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    CreateAttributes, CreateContent, DirectoryCursor, DirectoryReadState, Location, Metadata,
-    MetadataUpdate, MutationCredentials, NodePermission, NodeType, RenameOptions, VfsError,
-    VfsResult,
+    CreateAttributes, DirectoryCursor, DirectoryReadState, Location, Metadata, MutationCredentials,
+    NodePermission, NodeType, RenameOptions, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
@@ -1331,25 +1330,7 @@ impl FsContext {
                 self.check_search_path(directory, self.permission_root.as_ref(), credentials)
             })?;
         self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
-        // Preserve the legacy syscall sequence while collecting the #2481
-        // regression: authorization sees rdev 0, then the published node is updated.
-        let location = dir.create(
-            &name,
-            attributes.content.node_type(),
-            attributes.permission,
-            credentials.fsuid,
-            credentials.fsgid,
-            credentials,
-        )?;
-        if let CreateContent::Node(NodeType::CharacterDevice | NodeType::BlockDevice, device) =
-            attributes.content
-        {
-            location.update_metadata(MetadataUpdate {
-                rdev: Some(device),
-                ..Default::default()
-            })?;
-        }
-        Ok(location)
+        dir.create_initialized(&name, attributes, credentials)
     }
 
     /// Returns the canonical, absolute form of a path.
