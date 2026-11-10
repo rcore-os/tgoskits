@@ -111,6 +111,21 @@ fn test_floating_point_context() {
 }
 
 fn test_join_exit_codes() {
+    if let Some(configured) = option_env!("AX_TASK_STACK_SIZE") {
+        let expected = configured
+            .parse::<usize>()
+            .expect("axbuild must pass the normalized task stack size");
+        assert_eq!(
+            TASK_STACK_SIZE, expected,
+            "task API lost the runtime stack setting"
+        );
+        assert_eq!(
+            ax_std::os::arceos::thread::default_task_stack_size(),
+            expected,
+            "runtime lost the task stack setting"
+        );
+        println!("Task stack configured bytes: {expected}");
+    }
     let mut tasks = Vec::with_capacity(NUM_TASKS);
 
     for index in 0..NUM_TASKS {

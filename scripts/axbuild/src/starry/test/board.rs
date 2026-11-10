@@ -43,8 +43,11 @@ pub(crate) fn collect_board_test_groups(
                 info.build_config_path.display()
             )
         })?;
-        let arch = arch_for_target_checked(&board_file.target)?.to_string();
-        let target = board_file.target;
+        let target = board_file
+            .common
+            .target
+            .expect("board target was validated");
+        let arch = arch_for_target_checked(&target)?.to_string();
         groups.push(StarryBoardTestGroup {
             name: info.name,
             board_name: info.board_name,

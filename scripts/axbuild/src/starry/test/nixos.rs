@@ -213,9 +213,7 @@ pub(crate) fn ensure_success(status: ExitStatus, operation: &str) -> anyhow::Res
     }
 }
 
-pub(crate) fn configure_p1_build_info(
-    mut build_info: build::StarryBuildInfo,
-) -> build::StarryBuildInfo {
+pub(crate) fn configure_p1_build_info(mut build_info: build::CommonConfig) -> build::CommonConfig {
     // The P1 contract observes systemd's serial markers, while Info-level
     // per-task kernel logging can consume the bounded TCG terminal window.
     build_info.log = build::LogLevel::Warn;
@@ -321,7 +319,7 @@ async fn build_kernel(starry: &mut Starry, build_config: PathBuf) -> anyhow::Res
     starry.app.set_debug_mode(false)?;
     let build_info = build::load_build_info(&request)
         .context("failed to load the Starry nixosTest build configuration")?;
-    request.build_info_override = Some(configure_p1_build_info(build_info));
+    request.config.common = configure_p1_build_info(build_info);
     let cargo = build::load_cargo_config(&request, starry.app.workspace_context())
         .context("failed to prepare the Starry nixosTest build configuration")?;
     let output = starry

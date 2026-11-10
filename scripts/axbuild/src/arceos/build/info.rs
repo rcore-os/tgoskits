@@ -1,8 +1,6 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
-use anyhow::Context;
-
-use super::ArceosBuildConfig;
+use super::ArceosConfig;
 use crate::{build, context::ResolvedBuildRequest};
 
 pub(crate) fn resolve_build_info_path(
@@ -20,26 +18,11 @@ pub(crate) fn resolve_build_info_path(
 pub(super) fn load_build_config_with_makefile_features(
     request: &ResolvedBuildRequest,
     makefile_features: &[String],
-) -> anyhow::Result<ArceosBuildConfig> {
-    build::ensure_build_info(&request.build_info_path, ArceosBuildConfig::default_config)?;
-    let content = fs::read_to_string(&request.build_info_path)?;
-    build::reject_removed_std_field(&request.build_info_path, &content)?;
-    let mut config: ArceosBuildConfig = toml::from_str(&content).with_context(|| {
-        format!(
-            "failed to parse build info {}",
-            request.build_info_path.display()
-        )
-    })?;
-    config.validate_runtime()?;
-    config.build_info.validate_features()?;
-
-    build::apply_makefile_features(&mut config.build_info, makefile_features)?;
-
-    if let Some(smp) = request.smp {
-        config.build_info.max_cpu_num = Some(smp);
-    }
-    config.build_info.validate_features()?;
-
+) -> anyhow::Result<ArceosConfig> {
+    let mut config = request.config.clone();
+    build::apply_makefile_features(&mut config.common, makefile_features)?;
+    config.validate()?;
+    build::validate_features(&config.common)?;
     Ok(config)
 }
 

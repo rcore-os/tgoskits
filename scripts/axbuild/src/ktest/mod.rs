@@ -1,3 +1,4 @@
+mod build_config;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
@@ -7,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
+use build_config::KtestBuildConfig;
 use cargo_metadata::{Metadata, Package};
 use clap::{Args, Subcommand, ValueEnum};
 use ostool::{
@@ -21,11 +23,7 @@ use self::plan::{
     DiscoveredKtestPackage, KtestExecutionUnit, KtestRuntime, PlanFailure, QemuPlanSelector,
     build_qemu_plan,
 };
-use crate::{
-    arceos, axvisor,
-    context::{AppContext, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest},
-    starry,
-};
+use crate::{arceos, context::AppContext, starry};
 
 mod plan;
 #[cfg(test)]
@@ -303,13 +301,17 @@ async fn run_qemu_unit(
         default_qemu_run_config(app.workspace_root(), package_dir, unit.runtime, &unit.arch)
     });
     let qemu_config = app.workspace_root().join(qemu_config).canonicalize()?;
-    let mut cargo = load_runtime_cargo(
-        unit.runtime,
+    let parsed_config = KtestBuildConfig::load(unit.runtime, &build_config)?;
+    let mut cargo = parsed_config.cargo(
         app.workspace_context(),
-        &unit.package,
-        &unit.arch,
-        &unit.target,
-        &build_config,
+        &KtestUnitConfig {
+            package: &unit.package,
+            arch: &unit.arch,
+            target: &unit.target,
+            build_config: &build_config,
+            run_config: &qemu_config,
+            config: &parsed_config,
+        },
         args.no_default_features,
     )?;
     prepare_ktest_cargo(&mut cargo, target, unit.runtime, args.coverage);
@@ -333,6 +335,7 @@ async fn run_qemu_unit(
             arch: &unit.arch,
             target: &unit.target,
             build_config: &build_config,
+            config: &parsed_config,
         },
         &cargo,
         &output,
@@ -351,6 +354,7 @@ async fn run_qemu_unit(
                 target: &unit.target,
                 build_config: &build_config,
                 run_config: &qemu_config,
+                config: &parsed_config,
             },
             &mut qemu.boot,
             false,
@@ -481,6 +485,7 @@ struct KtestBuildContext<'a> {
     arch: &'a str,
     target: &'a str,
     build_config: &'a Path,
+    config: &'a KtestBuildConfig,
 }
 
 /// The build and run configuration owned by one axtest execution unit.
@@ -491,6 +496,7 @@ struct KtestUnitConfig<'a> {
     target: &'a str,
     build_config: &'a Path,
     run_config: &'a Path,
+    config: &'a KtestBuildConfig,
 }
 
 /// Prepares the AxVisor guest resources one axtest unit boots.
@@ -521,13 +527,7 @@ async fn prepare_axvisor_ktest_payload(
         unit.arch,
         boot,
     )?;
-    let mut request = axvisor_request(
-        app.workspace_root(),
-        unit.package,
-        unit.arch,
-        unit.target,
-        unit.build_config,
-    );
+    let mut request = unit.config.axvisor_request(app.workspace_root(), unit)?;
     crate::axvisor::prepare_ktest_guest_payload(
         app,
         &mut request,
@@ -592,23 +592,22 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
         .workspace_root()
         .join(board_config_path)
         .canonicalize()?;
-    let target_from_config =
-        load_target_from_build_config(runtime, &build_config).with_context(|| {
-            format!(
-                "failed to read build target from {}",
-                build_config.display()
-            )
-        })?;
-    let triple = target_from_config
-        .ok_or_else(|| anyhow!("board ktest requires target in {}", build_config.display()))?;
+    let parsed_config = KtestBuildConfig::load(runtime, &build_config)?;
+    let triple = parsed_config
+        .target()
+        .ok_or_else(|| anyhow!("board ktest requires target in {}", build_config.display()))?
+        .to_string();
     let arch = crate::context::arch_for_target_checked(&triple)?;
-    let mut cargo = load_runtime_cargo(
-        runtime,
+    let mut cargo = parsed_config.cargo(
         app.workspace_context(),
-        &args.package,
-        arch,
-        &triple,
-        &build_config,
+        &KtestUnitConfig {
+            package: &args.package,
+            arch,
+            target: &triple,
+            build_config: &build_config,
+            run_config: &board_config_path,
+            config: &parsed_config,
+        },
         false,
     )?;
     prepare_ktest_cargo(&mut cargo, target, runtime, false);
@@ -637,6 +636,7 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
             arch,
             target: &triple,
             build_config: &build_config,
+            config: &parsed_config,
         },
         &cargo,
         &output,
@@ -651,6 +651,7 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
                 target: &triple,
                 build_config: &build_config,
                 run_config: &board_config_path,
+                config: &parsed_config,
             },
             &mut board_config.boot,
             true,
@@ -1255,57 +1256,6 @@ fn runtime_name(runtime: KtestRuntime) -> &'static str {
     }
 }
 
-fn load_runtime_cargo(
-    runtime: KtestRuntime,
-    workspace: &crate::context::WorkspaceContext,
-    package: &str,
-    arch: &str,
-    target: &str,
-    build_config: &Path,
-    no_default_features: bool,
-) -> anyhow::Result<Cargo> {
-    match runtime {
-        KtestRuntime::Arceos | KtestRuntime::Board => {
-            let request = arceos_request(package, arch, target, build_config);
-            arceos::build::load_cargo_config_with_default_features(
-                &request,
-                workspace,
-                !no_default_features,
-            )
-        }
-        KtestRuntime::Starry => {
-            let request = starry_request(package, arch, target, build_config);
-            starry::build::load_cargo_config(&request, workspace)
-        }
-        KtestRuntime::Axvisor => {
-            let request = axvisor_request(workspace.root(), package, arch, target, build_config);
-            axvisor::build::load_cargo_config(&request, workspace)
-        }
-    }
-}
-
-fn load_target_from_build_config(
-    runtime: KtestRuntime,
-    build_config: &Path,
-) -> anyhow::Result<Option<String>> {
-    match runtime {
-        KtestRuntime::Arceos | KtestRuntime::Board => load_target_from_toml(build_config),
-        KtestRuntime::Starry => starry::build::load_target_from_build_config(build_config),
-        KtestRuntime::Axvisor => axvisor::build::load_target_from_build_config(build_config),
-    }
-}
-
-fn load_target_from_toml(path: &Path) -> anyhow::Result<Option<String>> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read build config {}", path.display()))?;
-    let config: toml::Value = toml::from_str(&contents)
-        .with_context(|| format!("failed to parse build config {}", path.display()))?;
-    Ok(config
-        .get("target")
-        .and_then(toml::Value::as_str)
-        .map(str::to_string))
-}
-
 fn maybe_postprocess_starry_artifact(
     ctx: KtestBuildContext<'_>,
     cargo: &Cargo,
@@ -1314,7 +1264,9 @@ fn maybe_postprocess_starry_artifact(
     if ctx.runtime != KtestRuntime::Starry {
         return Ok(());
     }
-    let request = starry_request(ctx.package, ctx.arch, ctx.target, ctx.build_config);
+    let request = ctx
+        .config
+        .starry_request(ctx.package, ctx.arch, ctx.target, ctx.build_config)?;
     starry::build::postprocess_starry_artifact(ctx.workspace_root, &request, cargo, output)
 }
 
@@ -1327,64 +1279,6 @@ fn maybe_start_starry_future_incompat_report(
         return Ok(None);
     }
     crate::build::start_future_incompat_report_session(target_dir).map(Some)
-}
-
-fn starry_request(
-    package: &str,
-    arch: &str,
-    target: &str,
-    build_config: &Path,
-) -> ResolvedStarryRequest {
-    ResolvedStarryRequest {
-        package: package.to_string(),
-        arch: arch.to_string(),
-        target: target.to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: build_config.to_path_buf(),
-        build_info_override: None,
-        qemu_config: None,
-        uboot_config: None,
-    }
-}
-
-fn arceos_request(
-    package: &str,
-    arch: &str,
-    target: &str,
-    build_config: &Path,
-) -> ResolvedBuildRequest {
-    ResolvedBuildRequest {
-        package: package.to_string(),
-        arch: arch.to_string(),
-        target: target.to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: build_config.to_path_buf(),
-        qemu_config: None,
-        uboot_config: None,
-    }
-}
-
-fn axvisor_request(
-    workspace_root: &Path,
-    package: &str,
-    arch: &str,
-    target: &str,
-    build_config: &Path,
-) -> ResolvedAxvisorRequest {
-    ResolvedAxvisorRequest {
-        package: package.to_string(),
-        axvisor_dir: workspace_root.join("os/axvisor"),
-        arch: arch.to_string(),
-        target: target.to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: build_config.to_path_buf(),
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: Vec::new(),
-    }
 }
 
 fn default_qemu_build_config(

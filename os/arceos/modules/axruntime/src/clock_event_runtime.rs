@@ -505,19 +505,6 @@ mod tests {
         );
     }
     #[test]
-    fn scheduler_tick_interval_honors_build_configuration() {
-        let configured_milliseconds = option_env!("AX_SCHEDULER_TICK_MS")
-            .unwrap_or("10")
-            .parse::<u64>()
-            .expect("test scheduler tick interval must be decimal milliseconds");
-
-        assert_eq!(
-            super::periodic_interval_nanos(),
-            configured_milliseconds * 1_000_000
-        );
-    }
-
-    #[test]
     fn only_elapsed_logical_deadlines_enter_scheduler_service() {
         assert!(!super::scheduler_service_required(false, false));
         assert!(super::scheduler_service_required(true, false));

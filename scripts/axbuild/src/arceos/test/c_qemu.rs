@@ -82,7 +82,7 @@ pub(super) fn arceos_c_test_suit_qemu_config_path(
     qemu_config_path(root, arch, "ArceOS C test suite")
 }
 
-fn load_c_test_build_config(path: &Path) -> anyhow::Result<build::ArceosBuildConfig> {
+fn load_c_test_build_config(path: &Path) -> anyhow::Result<build::ArceosConfig> {
     let config = build::load_arceos_build_config(path)
         .with_context(|| format!("failed to parse C build config {}", path.display()))?;
     if config.app_c.is_none() {
@@ -217,7 +217,7 @@ async fn build_and_run_c_test(
         artifacts.target_dir,
         artifacts.out_dir,
         &test.name,
-        build_config.build_info.features.clone(),
+        build_config.common.features.clone(),
     );
     let output = cbuild::build_c_app(arceos.app.workspace_context(), &request, &input)?;
     let map_path = output.elf_path.with_extension("axbt");

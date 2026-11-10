@@ -215,7 +215,7 @@ fn feature_resolution_has_mmu(
 
 /// Returns whether Cargo's default and requested package features select an MMU-backed
 /// ArceOS dependency. This closes the gap between Cargo's feature resolver and the
-/// explicit `BuildInfo.features` list used to construct rustflags.
+/// explicit `CommonConfig.features` list used to construct rustflags.
 pub(crate) fn package_enables_mmu(
     package: &str,
     metadata: &Metadata,
@@ -628,425 +628,405 @@ impl BareKernelLinkMode {
     }
 }
 
-#[derive(Debug, Clone, JsonSchema, Deserialize, Serialize, PartialEq)]
-pub struct BuildInfo {
-    /// Environment variables to set during the build.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
-    /// Complete rustc arguments appended in order to Cargo's active source.
-    /// Elements are not shell-expanded or split on whitespace.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rustflags: Vec<String>,
-    /// Cargo features to enable.
-    pub features: Vec<String>,
-    /// Log level feature to automatically enable.
-    pub log: LogLevel,
-    /// Maximum number of CPUs to expose to the build.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_cpu_num: Option<usize>,
+/// Converts the shared log level to the runner's configuration contract.
+pub(crate) fn runner_log_level(log: LogLevel) -> ostool::build::config::LogLevel {
+    match log {
+        LogLevel::Trace => ostool::build::config::LogLevel::Trace,
+        LogLevel::Debug => ostool::build::config::LogLevel::Debug,
+        LogLevel::Info => ostool::build::config::LogLevel::Info,
+        LogLevel::Warn => ostool::build::config::LogLevel::Warn,
+        LogLevel::Error => ostool::build::config::LogLevel::Error,
+    }
 }
 
-impl BuildInfo {
-    pub fn with_features<T: AsRef<str>>(mut self, features: impl AsRef<[T]>) -> Self {
-        let features = features
-            .as_ref()
-            .iter()
-            .map(|feature| feature.as_ref().to_string())
-            .collect();
-        self.features = features;
-        self
+pub(crate) fn into_base_cargo_config(
+    config: CommonConfig,
+    package: String,
+    target: String,
+    args: Vec<String>,
+    runtime: RuntimeValues,
+) -> Cargo {
+    let mut env: HashMap<_, _> = config.env.into_iter().collect();
+    env.insert("AX_LOG".into(), format!("{:?}", config.log).to_lowercase());
+    env.insert("SMP".into(), runtime.cpu_capacity.to_string());
+    env.insert(
+        "AX_TASK_STACK_SIZE".into(),
+        runtime.task_stack_size.to_string(),
+    );
+    env.insert(
+        "AX_SCHEDULER_TICK_MS".into(),
+        runtime.scheduler_tick_ms.to_string(),
+    );
+    Cargo {
+        env,
+        target,
+        package,
+        features: config.features,
+        log: Some(runner_log_level(config.log)),
+        extra_config: None,
+        profile: None,
+        disable_someboot_build_config: true,
+        args,
+        pre_build_cmds: vec![],
+        post_build_cmds: vec![],
+        to_bin: false,
+        bin: None,
+        test: None,
     }
+}
 
-    pub(crate) fn prepare_log_env(&mut self) {
-        self.env
-            .insert("AX_LOG".into(), format!("{:?}", self.log).to_lowercase());
+pub(crate) fn into_prepared_base_cargo_config_with_metadata(
+    config: CommonConfig,
+    package: &str,
+    target: &str,
+    metadata: &Metadata,
+    axbuild_dir: &Path,
+    runtime: RuntimeValues,
+) -> anyhow::Result<Cargo> {
+    into_prepared_base_cargo_config_with_metadata_and_defaults(
+        config,
+        package,
+        target,
+        metadata,
+        axbuild_dir,
+        true,
+        runtime,
+    )
+}
+
+pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
+    mut config: CommonConfig,
+    package: &str,
+    target: &str,
+    metadata: &Metadata,
+    axbuild_dir: &Path,
+    include_default_features: bool,
+    runtime: RuntimeValues,
+) -> anyhow::Result<Cargo> {
+    normalize_mmu_feature_aliases(&mut config, package, metadata)?;
+    let mmu_enabled = package_mmu_enabled(
+        package,
+        metadata,
+        &config.features,
+        include_default_features,
+    )?;
+    config.validate()?;
+    validate_features(&config)?;
+    resolve_std_features(&mut config);
+    // `max_cpu_num` is an explicit build setting. Propagate SMP only when
+    // the caller requested more than one CPU; package metadata never adds
+    // features implicitly.
+    if config
+        .max_cpu_num
+        .is_some_and(|max_cpu_num| max_cpu_num > 1)
+    {
+        config.features.push("smp".to_string());
+        resolve_std_features(&mut config);
     }
-
-    pub(crate) fn prepare_max_cpu_num_env(&mut self) -> anyhow::Result<()> {
-        if let Some(max_cpu_num) = self.validated_max_cpu_num()? {
-            self.env.insert("SMP".into(), max_cpu_num.to_string());
-        }
-        Ok(())
-    }
-
-    pub(crate) fn into_base_cargo_config(
-        self,
-        package: String,
-        target: String,
-        args: Vec<String>,
-    ) -> Cargo {
-        // Keep the Cargo artifact as ELF by default. BIN conversion is an
-        // explicit runner/config concern and must not be inferred from target.
-        self.into_base_cargo_config_with_to_bin(package, target, args, false)
-    }
-
-    pub(crate) fn into_base_cargo_config_with_to_bin(
-        self,
-        package: String,
-        target: String,
-        args: Vec<String>,
-        to_bin: bool,
-    ) -> Cargo {
-        Cargo {
-            env: self.env,
-            target,
-            package,
-            features: self.features,
-            log: Some(self.log),
-            extra_config: None,
-            profile: None,
-            disable_someboot_build_config: true,
-            args,
-            pre_build_cmds: vec![],
-            post_build_cmds: vec![],
-            to_bin,
-            bin: None,
-            test: None,
-        }
-    }
-
-    pub(crate) fn into_base_cargo_config_with_log(
-        mut self,
-        package: String,
-        target: String,
-        args: Vec<String>,
-    ) -> Cargo {
-        self.prepare_log_env();
-        self.prepare_max_cpu_num_env()
-            .expect("max_cpu_num validation should run before cargo config generation");
-        self.into_base_cargo_config(package, target, args)
-    }
-
-    pub(crate) fn into_prepared_base_cargo_config_with_metadata(
-        self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
-        axbuild_dir: &Path,
-    ) -> anyhow::Result<Cargo> {
-        self.into_prepared_base_cargo_config_with_metadata_and_defaults(
-            package,
-            target,
-            metadata,
+    let std_target = std_build_target_for(target)?;
+    let fake_lib_dir = std_fake_lib_dir(axbuild_dir, &std_target.target_name)?;
+    let wrapper = std_linker_wrapper_path(axbuild_dir, &std_target.target_name, &fake_lib_dir)?;
+    let extra_rustflags = std::mem::take(&mut config.rustflags);
+    let mut cargo = into_base_cargo_config(
+        config,
+        package.to_string(),
+        std_target.target.clone(),
+        std_target.cargo_args,
+        runtime,
+    );
+    cargo.env.extend(std_target.env);
+    // The std target wrapper needs the original kernel target. This is
+    // build context, not a Cargo feature or platform selection.
+    cargo
+        .env
+        .insert("AX_TARGET".to_string(), target.to_string());
+    let app_features = package_feature_names(package, metadata)?;
+    let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
+    pass_std_build_nested_features(&mut cargo.features, &app_features, &axstd_features);
+    cargo.pre_build_cmds.push(
+        std_fake_lib_prebuild_script_path(
             axbuild_dir,
-            true,
-        )
-    }
-
-    pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
-        mut self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
-        axbuild_dir: &Path,
-        include_default_features: bool,
-    ) -> anyhow::Result<Cargo> {
-        self.normalize_mmu_feature_aliases(package, metadata)?;
-        let mmu_enabled =
-            package_mmu_enabled(package, metadata, &self.features, include_default_features)?;
-        self.validated_max_cpu_num()?;
-        self.validate_features()?;
-        self.resolve_std_features();
-        // `max_cpu_num` is an explicit build setting. Propagate SMP only when
-        // the caller requested more than one CPU; package metadata never adds
-        // features implicitly.
-        if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
-            self.features.push("smp".to_string());
-            self.resolve_std_features();
-        }
-        let std_target = std_build_target_for(target)?;
-        let fake_lib_dir = std_fake_lib_dir(axbuild_dir, &std_target.target_name)?;
-        let wrapper = std_linker_wrapper_path(axbuild_dir, &std_target.target_name, &fake_lib_dir)?;
-        let extra_rustflags = std::mem::take(&mut self.rustflags);
-        let mut cargo = self.into_base_cargo_config_with_log(
-            package.to_string(),
-            std_target.target.clone(),
-            std_target.cargo_args,
-        );
-        cargo.env.extend(std_target.env);
-        // The std target wrapper needs the original kernel target. This is
-        // build context, not a Cargo feature or platform selection.
-        cargo
-            .env
-            .insert("AX_TARGET".to_string(), target.to_string());
-        let app_features = package_feature_names(package, metadata)?;
-        let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
-        pass_std_build_nested_features(&mut cargo.features, &app_features, &axstd_features);
-        cargo.pre_build_cmds.push(
-            std_fake_lib_prebuild_script_path(
-                axbuild_dir,
-                &std_target.target_name,
-                &fake_lib_dir,
-                &cargo.env,
-            )?
+            &std_target.target_name,
+            &fake_lib_dir,
+            &cargo.env,
+        )?
+        .display()
+        .to_string(),
+    );
+    let rustflags = toolchain_rustflags_for_mmu(&cargo.env, mmu_enabled);
+    cargo.extra_config = Some(
+        std_cargo_config_path(axbuild_dir, &std_target.target_name, &wrapper, &rustflags)?
             .display()
             .to_string(),
-        );
-        let rustflags = toolchain_rustflags_for_mmu(&cargo.env, mmu_enabled);
-        cargo.extra_config = Some(
-            std_cargo_config_path(axbuild_dir, &std_target.target_name, &wrapper, &rustflags)?
-                .display()
-                .to_string(),
-        );
-        append_cargo_rustflags(
-            &mut cargo,
-            &extra_rustflags
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-        );
-        Ok(cargo)
-    }
-
-    /// Builds a Rust-`std` kernel through the musl PIE target and linker wrapper.
-    pub(crate) fn into_prepared_std_cargo_config_with_metadata(
-        self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
-        axbuild_dir: &Path,
-    ) -> anyhow::Result<Cargo> {
-        self.into_prepared_base_cargo_config_with_metadata(package, target, metadata, axbuild_dir)
-    }
-
-    pub(crate) fn into_prepared_std_cargo_config_with_metadata_and_defaults(
-        self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
-        axbuild_dir: &Path,
-        include_default_features: bool,
-    ) -> anyhow::Result<Cargo> {
-        self.into_prepared_base_cargo_config_with_metadata_and_defaults(
-            package,
-            target,
-            metadata,
-            axbuild_dir,
-            include_default_features,
-        )
-    }
-
-    /// Builds a freestanding kernel against only `core` and `alloc`.
-    pub(crate) fn into_prepared_no_std_cargo_config_with_metadata(
-        self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
-        link_mode: BareKernelLinkMode,
-    ) -> anyhow::Result<Cargo> {
-        self.into_prepared_no_std_cargo_config_with_metadata_and_defaults(
-            package, target, metadata, link_mode, true,
-        )
-    }
-
-    pub(crate) fn into_prepared_no_std_cargo_config_with_metadata_and_defaults(
-        mut self,
-        package: &str,
-        target: &str,
-        metadata: &Metadata,
-        link_mode: BareKernelLinkMode,
-        include_default_features: bool,
-    ) -> anyhow::Result<Cargo> {
-        self.normalize_mmu_feature_aliases(package, metadata)?;
-        let mmu_enabled =
-            package_mmu_enabled(package, metadata, &self.features, include_default_features)?;
-        self.validated_max_cpu_num()?;
-        self.validate_features()?;
-        self.reject_freestanding_std_compat()?;
-        self.enable_package_smp_feature(package, metadata)?;
-
-        let mut rustflags = toolchain_rustflags_for_mmu(&self.env, mmu_enabled);
-        rustflags.extend(link_mode.rustflags(target));
-        let bare_target = freestanding_build_target_for(target);
-        let args = Self::build_cargo_args(target, &rustflags);
-        let extra_rustflags = std::mem::take(&mut self.rustflags);
-        let mut cargo =
-            self.into_base_cargo_config_with_log(package.to_string(), bare_target.target, args);
-        cargo.env.extend(bare_target.env);
-        cargo
-            .env
-            .insert("AX_TARGET".to_string(), target.to_string());
-        cargo.to_bin = bare_target_requires_bin(target);
-        append_cargo_rustflags(
-            &mut cargo,
-            &extra_rustflags
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-        );
-        Ok(cargo)
-    }
-
-    fn reject_freestanding_std_compat(&self) -> anyhow::Result<()> {
-        if let Some(feature) = self
-            .features
+    );
+    append_cargo_rustflags(
+        &mut cargo,
+        &extra_rustflags
             .iter()
-            .find(|feature| feature.rsplit('/').next() == Some("std-compat"))
-        {
-            bail!("freestanding no_std build cannot enable `{feature}`");
-        }
-        Ok(())
-    }
-
-    fn enable_package_smp_feature(
-        &mut self,
-        package: &str,
-        metadata: &Metadata,
-    ) -> anyhow::Result<()> {
-        if !self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
-            return Ok(());
-        }
-        if package_feature_names(package, metadata)?
-            .iter()
-            .any(|feature| feature == "smp")
-        {
-            self.features.push("smp".to_string());
-            self.features.sort();
-            self.features.dedup();
-        }
-        Ok(())
-    }
-
-    pub(super) fn resolve_std_features(&mut self) {
-        self.features = self
-            .features
-            .iter()
-            .map(|feature| normalize_std_feature(feature))
-            .collect();
-        self.features.sort();
-        self.features.dedup();
-    }
-
-    fn normalize_mmu_feature_aliases(
-        &mut self,
-        package: &str,
-        metadata: &Metadata,
-    ) -> anyhow::Result<()> {
-        if !self
-            .features
-            .iter()
-            .any(|feature| feature == "axlibc/paging")
-        {
-            return Ok(());
-        }
-
-        let marker = package_mmu_feature_marker(package, metadata)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "feature `axlibc/paging` cannot be normalized for package `{package}`; use a \
-                 package with a paging capability"
-            )
-        })?;
-        for feature in &mut self.features {
-            if feature == "axlibc/paging" {
-                *feature = marker.clone();
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn resolve_c_app_features(&mut self) -> anyhow::Result<()> {
-        self.validate_features()?;
-        // `max_cpu_num` is an explicit C build setting; expose the matching ax-std
-        // capability only when the caller requested more than one CPU.
-        if self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
-            self.features.push("ax-std/smp".to_string());
-        }
-        self.features.sort();
-        self.features.dedup();
-        Ok(())
-    }
-
-    /// Reject compatibility aliases and removed platform controls instead of silently changing
-    /// the build contract selected by the caller.
-    pub(crate) fn validate_features(&self) -> anyhow::Result<()> {
-        let selects_mode = |mode: &str| {
-            self.features
-                .iter()
-                .any(|feature| feature.rsplit('/').next() == Some(mode))
-        };
-        if selects_mode("uspace") && selects_mode("tls") {
-            bail!(
-                "features `uspace` and `tls` select incompatible CPU-local register ownership \
-                 modes"
-            );
-        }
-        for feature in &self.features {
-            self.validate_feature(feature)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validate_feature(&self, feature: &str) -> anyhow::Result<()> {
-        if feature == "axstd" || feature.starts_with("axstd/") {
-            bail!(
-                "feature `{feature}` uses the removed `axstd` alias; use the declared Cargo \
-                 feature name instead"
-            );
-        }
-        if is_removed_dynamic_platform_feature(feature) {
-            bail!(
-                "feature `{feature}` is no longer supported; dynamic platform selection is \
-                 automatic, remove the feature from the selected configuration"
-            );
-        }
-        if is_removed_stack_hardening_feature(feature) {
-            bail!(
-                "feature `{feature}` was removed; enable the canonical `paging` capability \
-                 (`ax-std/paging` for system builds) instead"
-            );
-        }
-        Ok(())
-    }
-
-    pub(crate) fn validated_max_cpu_num(&self) -> anyhow::Result<Option<usize>> {
-        match self.max_cpu_num {
-            Some(0) => bail!("max_cpu_num must be greater than 0"),
-            Some(max_cpu_num) => Ok(Some(max_cpu_num)),
-            None => Ok(None),
-        }
-    }
-
-    pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
-        let bare_target = freestanding_build_target_for(target);
-        let mut args = bare_target.cargo_args;
-        let mut rustflags = bare_target.rustflags;
-        rustflags.extend_from_slice(extra_rustflags);
-        args.extend(Self::rustflags_cargo_args(&bare_target.target, &rustflags));
-        args
-    }
-
-    fn rustflags_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
-        let mut args = Vec::new();
-        let target_key = Path::new(target)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or(target);
-
-        let rustflags = extra_rustflags.to_vec();
-
-        if !rustflags.is_empty() {
-            args.push("--config".to_string());
-            let rustflags_toml =
-                toml::Value::Array(rustflags.into_iter().map(toml::Value::String).collect())
-                    .to_string();
-            args.push(format!("target.{target_key}.rustflags={rustflags_toml}"));
-        }
-        args
-    }
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    Ok(cargo)
 }
 
+/// Builds a Rust-`std` kernel through the musl PIE target and linker wrapper.
+pub(crate) fn into_prepared_std_cargo_config_with_metadata(
+    config: CommonConfig,
+    package: &str,
+    target: &str,
+    metadata: &Metadata,
+    axbuild_dir: &Path,
+    runtime: RuntimeValues,
+) -> anyhow::Result<Cargo> {
+    into_prepared_base_cargo_config_with_metadata(
+        config,
+        package,
+        target,
+        metadata,
+        axbuild_dir,
+        runtime,
+    )
+}
+
+pub(crate) fn into_prepared_std_cargo_config_with_metadata_and_defaults(
+    config: CommonConfig,
+    package: &str,
+    target: &str,
+    metadata: &Metadata,
+    axbuild_dir: &Path,
+    include_default_features: bool,
+    runtime: RuntimeValues,
+) -> anyhow::Result<Cargo> {
+    into_prepared_base_cargo_config_with_metadata_and_defaults(
+        config,
+        package,
+        target,
+        metadata,
+        axbuild_dir,
+        include_default_features,
+        runtime,
+    )
+}
+
+/// Builds a freestanding kernel against only `core` and `alloc`.
+pub(crate) fn into_prepared_no_std_cargo_config_with_metadata(
+    config: CommonConfig,
+    package: &str,
+    target: &str,
+    metadata: &Metadata,
+    link_mode: BareKernelLinkMode,
+    runtime: RuntimeValues,
+) -> anyhow::Result<Cargo> {
+    into_prepared_no_std_cargo_config_with_metadata_and_defaults(
+        config, package, target, metadata, link_mode, true, runtime,
+    )
+}
+
+pub(crate) fn into_prepared_no_std_cargo_config_with_metadata_and_defaults(
+    mut config: CommonConfig,
+    package: &str,
+    target: &str,
+    metadata: &Metadata,
+    link_mode: BareKernelLinkMode,
+    include_default_features: bool,
+    runtime: RuntimeValues,
+) -> anyhow::Result<Cargo> {
+    normalize_mmu_feature_aliases(&mut config, package, metadata)?;
+    let mmu_enabled = package_mmu_enabled(
+        package,
+        metadata,
+        &config.features,
+        include_default_features,
+    )?;
+    config.validate()?;
+    validate_features(&config)?;
+    reject_freestanding_std_compat(&config)?;
+    enable_package_smp_feature(&mut config, package, metadata)?;
+
+    let build_env = config
+        .env
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let mut rustflags = toolchain_rustflags_for_mmu(&build_env, mmu_enabled);
+    rustflags.extend(link_mode.rustflags(target));
+    let bare_target = freestanding_build_target_for(target);
+    let args = build_cargo_args(target, &rustflags);
+    let extra_rustflags = std::mem::take(&mut config.rustflags);
+    let mut cargo = into_base_cargo_config(
+        config,
+        package.to_string(),
+        bare_target.target,
+        args,
+        runtime,
+    );
+    cargo.env.extend(bare_target.env);
+    cargo
+        .env
+        .insert("AX_TARGET".to_string(), target.to_string());
+    cargo.to_bin = bare_target_requires_bin(target);
+    append_cargo_rustflags(
+        &mut cargo,
+        &extra_rustflags
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    Ok(cargo)
+}
+
+fn reject_freestanding_std_compat(config: &CommonConfig) -> anyhow::Result<()> {
+    if let Some(feature) = config
+        .features
+        .iter()
+        .find(|feature| feature.rsplit('/').next() == Some("std-compat"))
+    {
+        bail!("freestanding no_std build cannot enable `{feature}`");
+    }
+    Ok(())
+}
+
+fn enable_package_smp_feature(
+    config: &mut CommonConfig,
+    package: &str,
+    metadata: &Metadata,
+) -> anyhow::Result<()> {
+    if !config
+        .max_cpu_num
+        .is_some_and(|max_cpu_num| max_cpu_num > 1)
+    {
+        return Ok(());
+    }
+    if package_feature_names(package, metadata)?
+        .iter()
+        .any(|feature| feature == "smp")
+    {
+        config.features.push("smp".to_string());
+        config.features.sort();
+        config.features.dedup();
+    }
+    Ok(())
+}
+
+pub(super) fn resolve_std_features(config: &mut CommonConfig) {
+    config.features = config
+        .features
+        .iter()
+        .map(|feature| normalize_std_feature(feature))
+        .collect();
+    config.features.sort();
+    config.features.dedup();
+}
+
+fn normalize_mmu_feature_aliases(
+    config: &mut CommonConfig,
+    package: &str,
+    metadata: &Metadata,
+) -> anyhow::Result<()> {
+    if !config
+        .features
+        .iter()
+        .any(|feature| feature == "axlibc/paging")
+    {
+        return Ok(());
+    }
+
+    let marker = package_mmu_feature_marker(package, metadata)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "feature `axlibc/paging` cannot be normalized for package `{package}`; use a package \
+             with a paging capability"
+        )
+    })?;
+    for feature in &mut config.features {
+        if feature == "axlibc/paging" {
+            *feature = marker.clone();
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_c_app_features(config: &mut CommonConfig) -> anyhow::Result<()> {
+    validate_features(config)?;
+    // `max_cpu_num` is an explicit C build setting; expose the matching ax-std
+    // capability only when the caller requested more than one CPU.
+    if config
+        .max_cpu_num
+        .is_some_and(|max_cpu_num| max_cpu_num > 1)
+    {
+        config.features.push("ax-std/smp".to_string());
+    }
+    config.features.sort();
+    config.features.dedup();
+    Ok(())
+}
+
+/// Reject compatibility aliases and removed platform controls instead of silently changing
+/// the build contract selected by the caller.
+pub(crate) fn validate_features(config: &CommonConfig) -> anyhow::Result<()> {
+    let selects_mode = |mode: &str| {
+        config
+            .features
+            .iter()
+            .any(|feature| feature.rsplit('/').next() == Some(mode))
+    };
+    if selects_mode("uspace") && selects_mode("tls") {
+        bail!("features `uspace` and `tls` select incompatible CPU-local register ownership modes");
+    }
+    for feature in &config.features {
+        validate_feature(feature)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_feature(feature: &str) -> anyhow::Result<()> {
+    if feature == "axstd" || feature.starts_with("axstd/") {
+        bail!(
+            "feature `{feature}` uses the removed `axstd` alias; use the declared Cargo feature \
+             name instead"
+        );
+    }
+    if is_removed_dynamic_platform_feature(feature) {
+        bail!(
+            "feature `{feature}` is no longer supported; dynamic platform selection is automatic, \
+             remove the feature from the selected configuration"
+        );
+    }
+    if is_removed_stack_hardening_feature(feature) {
+        bail!(
+            "feature `{feature}` was removed; enable the canonical `paging` capability \
+             (`ax-std/paging` for system builds) instead"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn build_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
+    let bare_target = freestanding_build_target_for(target);
+    let mut args = bare_target.cargo_args;
+    let mut rustflags = bare_target.rustflags;
+    rustflags.extend_from_slice(extra_rustflags);
+    args.extend(rustflags_cargo_args(&bare_target.target, &rustflags));
+    args
+}
+
+fn rustflags_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    let target_key = Path::new(target)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(target);
+
+    let rustflags = extra_rustflags.to_vec();
+
+    if !rustflags.is_empty() {
+        args.push("--config".to_string());
+        let rustflags_toml =
+            toml::Value::Array(rustflags.into_iter().map(toml::Value::String).collect())
+                .to_string();
+        args.push(format!("target.{target_key}.rustflags={rustflags_toml}"));
+    }
+    args
+}
 fn bare_target_requires_bin(target: &str) -> bool {
     target.starts_with("aarch64-") || target.starts_with("riscv64")
-}
-
-impl Default for BuildInfo {
-    fn default() -> Self {
-        Self {
-            env: HashMap::new(),
-            rustflags: Vec::new(),
-            log: LogLevel::Warn,
-            features: Vec::new(),
-            max_cpu_num: None,
-        }
-    }
 }

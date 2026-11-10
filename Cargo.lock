@@ -895,6 +895,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-config"
+version = "0.1.0"
+dependencies = [
+ "figment",
+ "schemars",
+ "serde",
+ "thiserror 2.0.21",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
 name = "ax-cpu"
 version = "0.10.3"
 dependencies = [
@@ -1110,6 +1121,7 @@ name = "ax-hal"
 version = "0.8.4"
 dependencies = [
  "ax-alloc",
+ "ax-config",
  "ax-cpu",
  "ax-lazyinit",
  "ax-memory-addr",
@@ -1343,6 +1355,7 @@ version = "0.13.5"
 dependencies = [
  "ax-alloc",
  "ax-block",
+ "ax-config",
  "ax-cpu",
  "ax-crate-interface",
  "ax-ctor-bare",
@@ -1476,6 +1489,7 @@ version = "0.9.1"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
+ "ax-config",
  "axvmconfig",
  "cargo_metadata",
  "chrono",
@@ -3679,6 +3693,18 @@ dependencies = [
  "num_cpus",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "figment"
+version = "0.10.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cb01cd46b0cf372153850f4c6c272d9cbea2da513e07538405148f95bd789f3"
+dependencies = [
+ "atomic",
+ "serde",
+ "uncased",
+ "version_check",
 ]
 
 [[package]]
@@ -9222,6 +9248,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c8a2469e56e6e5095c82ccd3afb98dad95f7af7929aab6d8ba8d6e0f73657da"
 dependencies = [
  "arrayvec",
+]
+
+[[package]]
+name = "uncased"
+version = "0.9.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1b88fcfe09e89d3866a5c11019378088af2d24c3fbd4f0543f96b479ec90697"
+dependencies = [
+ "version_check",
 ]
 
 [[package]]

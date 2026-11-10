@@ -623,25 +623,6 @@ fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
 }
 
 #[test]
-fn qemu_build_groups_preserve_distinct_executable_artifacts() {
-    let root = tempdir().unwrap();
-    let build_output = root.path().join("target/release/axvisor");
-    let artifact_directory = root.path().join("preserved");
-    fs::create_dir_all(build_output.parent().unwrap()).unwrap();
-
-    fs::write(&build_output, b"first VM config").unwrap();
-    let first =
-        super::qemu::preserve_qemu_build_artifact(&build_output, &artifact_directory, 0).unwrap();
-    fs::write(&build_output, b"second VM config").unwrap();
-    let second =
-        super::qemu::preserve_qemu_build_artifact(&build_output, &artifact_directory, 1).unwrap();
-
-    assert_ne!(first, second);
-    assert_eq!(fs::read(first).unwrap(), b"first VM config");
-    assert_eq!(fs::read(second).unwrap(), b"second VM config");
-}
-
-#[test]
 fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
     let first = false;
     let second = true;

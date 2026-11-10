@@ -21,21 +21,8 @@ fn write_board(axvisor_dir: &Path, name: &str, body: &str) -> PathBuf {
 }
 
 fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
-    ResolvedAxvisorRequest {
-        package: AXVISOR_PACKAGE.to_string(),
-        axvisor_dir: path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("os/axvisor")),
-        arch: arch.to_string(),
-        target: target.to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: path,
-        qemu_config: None,
-        uboot_config: None,
-        vmconfigs: vec![],
-    }
+    let axvisor_dir = path.parent().unwrap_or_else(|| Path::new("os/axvisor"));
+    crate::context::test_support::axvisor_request(&path, arch, target, axvisor_dir)
 }
 
 #[test]
@@ -63,10 +50,16 @@ log = "Info"
             target: "aarch64-unknown-none-softfloat".to_string(),
             smp: None,
             debug: false,
-            build_info_path: config_path,
+            build_info_path: config_path.clone(),
             qemu_config: None,
             uboot_config: None,
             vmconfigs: vmconfigs.clone(),
+            ..crate::context::test_support::axvisor_request(
+                &config_path,
+                "aarch64",
+                "aarch64-unknown-none-softfloat",
+                &(root.path().join("os/axvisor")),
+            )
         },
         &workspace(),
     )
@@ -91,6 +84,8 @@ log = "Info"
         "aarch64",
         "aarch64-unknown-none-softfloat",
     );
+    // Cargo consumes the confirmed request, not a second read of its source.
+    fs::remove_file(root.path().join(".build.toml")).unwrap();
     alternate.vmconfigs = vec![root.path().join("missing-resource.toml")];
     let other = load_cargo_config(&alternate, &workspace()).unwrap();
     assert_eq!(cargo.env, other.env);
@@ -169,6 +164,12 @@ vm_configs = []
             qemu_config: None,
             uboot_config: None,
             vmconfigs: vec![],
+            ..crate::context::test_support::axvisor_request(
+                &path,
+                "x86_64",
+                "x86_64-unknown-none",
+                &(root.path().join("os/axvisor")),
+            )
         },
         &workspace(),
     )
@@ -210,10 +211,16 @@ log = "Info"
             target: "loongarch64-unknown-none-softfloat".to_string(),
             smp: None,
             debug: false,
-            build_info_path: config_path,
+            build_info_path: config_path.clone(),
             qemu_config: None,
             uboot_config: None,
             vmconfigs: vec![],
+            ..crate::context::test_support::axvisor_request(
+                &config_path,
+                "loongarch64",
+                "loongarch64-unknown-none-softfloat",
+                &(root.path().join("os/axvisor")),
+            )
         },
         &workspace(),
     )

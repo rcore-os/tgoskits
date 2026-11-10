@@ -147,15 +147,33 @@ fn qemu_group_build_context_uses_group_build_config_over_default_override() {
         "x86_64",
         "x86_64-unknown-none",
     );
-    request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
+    request.config.common = crate::starry::build::CommonConfig {
         max_cpu_num: Some(1),
-        ..crate::starry::build::default_starry_build_info()
-    });
+        ..crate::starry::build::CommonConfig::default()
+    };
+    request.config.common.target = Some(request.target.clone());
+    request.runtime = ax_config::resolve_runtime(
+        request.config.common.max_cpu_num,
+        request.config.common.runtime,
+        &request.runtime_env,
+    )
+    .unwrap();
+    request.environment_features = vec!["ax-driver/virtio-net".to_string()];
+    request.runtime_env.task_stack_size = Some("0x50000".to_string());
 
-    let (_group_request, cargo) =
+    let (group_request, cargo) =
         Starry::qemu_group_build_context(&request, &build_config, &workspace()).unwrap();
 
     assert_eq!(cargo.env.get("SMP").map(String::as_str), Some("4"));
+    assert_eq!(
+        cargo.env.get("AX_TASK_STACK_SIZE").map(String::as_str),
+        Some("327680")
+    );
+    assert!(cargo.features.contains(&"ax-driver/virtio-net".to_string()));
+    assert_eq!(
+        group_request.environment_features,
+        request.environment_features
+    );
     assert!(!cargo.features.contains(&"smp".to_string()));
 }
 
@@ -203,10 +221,17 @@ fn qemu_group_build_context_uses_dynamic_group_platform_over_default_request() {
         "aarch64",
         "aarch64-unknown-none-softfloat",
     );
-    request.build_info_override = Some(crate::starry::build::StarryBuildInfo {
+    request.config.common = crate::starry::build::CommonConfig {
         features: vec!["ax-driver/nvme".to_string()],
-        ..crate::starry::build::default_starry_build_info()
-    });
+        ..crate::starry::build::CommonConfig::default()
+    };
+    request.config.common.target = Some(request.target.clone());
+    request.runtime = ax_config::resolve_runtime(
+        request.config.common.max_cpu_num,
+        request.config.common.runtime,
+        &request.runtime_env,
+    )
+    .unwrap();
 
     let (_group_request, cargo) =
         Starry::qemu_group_build_context(&request, &build_config, &workspace()).unwrap();

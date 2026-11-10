@@ -8,6 +8,16 @@ use ax_std::os::arceos::{
 
 pub fn run() -> crate::TestResult {
     let cpu_num = cpu_topology_len().expect("runtime topology must be published");
+    let runtime_capacity = ax_std::os::arceos::modules::ax_runtime::CPU_CAPACITY;
+    assert_eq!(
+        cpu_num,
+        ax_std::os::arceos::modules::ax_hal::cpu_num(),
+        "runtime topology and HAL CPU count differ"
+    );
+    assert!(
+        cpu_num <= runtime_capacity,
+        "online CPUs exceed build capacity"
+    );
     assert!(cpu_num > 0);
     let mut workers = Vec::with_capacity(cpu_num);
     for cpu_id in 0..cpu_num {

@@ -4,6 +4,77 @@ use std::{
 };
 
 use anyhow::anyhow;
+use ax_config::{CommonConfig, ConfigError};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Final StarryOS input; its Cargo package is fixed by the adapter.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[serde(default)]
+pub struct StarryConfig {
+    #[serde(flatten)]
+    pub common: CommonConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fit_its: Option<PathBuf>,
+    #[serde(flatten, skip_serializing)]
+    #[schemars(skip)]
+    extra: toml::Table,
+}
+
+impl StarryConfig {
+    /// Validate a fully selected configuration without reading process state.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        <Self as crate::build::BuildConfiguration>::validate_input(self)?;
+        crate::build::validate_config_target(&self.common)
+    }
+
+    /// Generate the production input contract, including overlay controls.
+    pub fn input_schema() -> Result<schemars::Schema, ConfigError> {
+        ax_config::input_schema::<Self>()
+    }
+
+    pub(crate) fn validate_resources(&self, workspace_root: &Path) -> anyhow::Result<()> {
+        if let Some(path) = &self.fit_its {
+            let path = workspace_root.join(path);
+            let file = fs::File::open(&path)
+                .map_err(|error| anyhow!("failed to read fit_its {}: {error}", path.display()))?;
+            if !file.metadata()?.is_file() {
+                anyhow::bail!("fit_its {} is not a file", path.display());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl crate::build::BuildConfiguration for StarryConfig {
+    const CLEARABLE_FIELDS: &'static [&'static str] = &["fit_its"];
+
+    fn file_base(path: &Path) -> Self {
+        // PR1 preserves old file associations as a low-priority base, so an
+        // explicit overlay or unset remains the final owner of this resource.
+        // PR2 replaces this hook with static preset resources.
+        let companion = path.with_extension("its");
+        let mut config = Self::default();
+        if companion.exists() {
+            config.fit_its = Some(companion);
+        }
+        config
+    }
+
+    fn extra_fields(&self) -> &toml::Table {
+        &self.extra
+    }
+
+    fn validate_input(&self) -> Result<(), ConfigError> {
+        crate::build::reject_extra_fields(&self.extra)?;
+        self.common.validate()?;
+        if let Some(path) = &self.fit_its {
+            crate::build::validate_resource_path("fit_its", path)?;
+        }
+        Ok(())
+    }
+}
 
 use super::{
     board::{self, Board},

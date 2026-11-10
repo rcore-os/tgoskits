@@ -16,7 +16,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    build::BuildInfo,
+    build::CommonConfig,
     context::{AppContext, WorkspaceContext},
     support::ovmf::OvmfFirmware,
 };
@@ -200,14 +200,21 @@ struct BootScenario<'a> {
 async fn build_boot_kernels(workspace: &WorkspaceContext) -> anyhow::Result<BootKernels> {
     let mut app = AppContext::from_workspace_root(workspace.root(), Some(workspace.target_dir()))?;
     let build_config = workspace.root().join("Cargo.toml");
+    let runtime_env = ax_config::RuntimeEnv::capture()?;
     let build = |feature: &str| {
-        let mut info = BuildInfo::default().with_features([feature]);
-        info.max_cpu_num = Some(1);
-        info.into_prepared_std_cargo_config_with_metadata(
+        let info = CommonConfig {
+            features: vec![feature.to_string()],
+            max_cpu_num: Some(1),
+            ..CommonConfig::default()
+        };
+        let runtime = ax_config::resolve_runtime(info.max_cpu_num, info.runtime, &runtime_env)?;
+        crate::build::into_prepared_std_cargo_config_with_metadata(
+            info,
             "arceos-helloworld",
             "x86_64-unknown-none",
             workspace.metadata(),
             &workspace.axbuild_artifact_dir(),
+            runtime,
         )
     };
     let output = app

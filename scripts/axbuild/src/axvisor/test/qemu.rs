@@ -152,11 +152,16 @@ impl Axvisor {
         let asset_config = axvisor_case_asset_config();
 
         let build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
-            Self::qemu_group_build_context(
-                &request,
-                build_config_path,
-                self.app.workspace_context(),
-            )
+            let prepared = cases
+                .iter()
+                .find(|case| case.case.build_config_path.as_path() == build_config_path)
+                .with_context(|| {
+                    format!(
+                        "missing prepared Axvisor input {}",
+                        build_config_path.display()
+                    )
+                })?;
+            Ok((prepared.request.clone(), prepared.cargo.clone()))
         })?;
         // The dashboard bundle depends only on the frontend sources, so build
         // it once for the first group that enables the feature; Phase 2 then
@@ -238,24 +243,12 @@ impl Axvisor {
                         format!("failed to activate Axvisor qemu artifact for case `{case_name}`")
                     })?;
                 let inputs = crate::axvisor::bundle::case_inputs(&case.case.case.case_dir)?;
-                let mut case_request = build_group.request.clone();
-                // Cargo identity is the compile boundary. The build TOML still
-                // owns per-case runtime inputs such as vm_configs, so restore
-                // its path before loading guest assets after a shared build.
-                case_request.build_info_path = case.case.build_config_path.clone();
-                // The build-group request carries the first case's VM configs
-                // for compilation and bundling. Clear them before resolving
-                // this case's runtime configuration, otherwise a case whose
-                // build TOML has `vm_configs = []` would inherit stale guests.
-                case_request.vmconfigs.clear();
-                case_request.vmconfigs = match &inputs.vm_configs {
-                    Some(configs) => build::resolve_vmconfigs(
-                        &case_request,
-                        configs,
-                        self.app.workspace_context(),
-                    )?,
-                    None => build::load_vmconfigs(&case_request, self.app.workspace_context())?,
-                };
+                // Kernel reuse does not replace this case's typed packaging inputs.
+                let case_request = Self::qemu_case_runtime_request(
+                    case,
+                    inputs.vm_configs.as_deref(),
+                    self.app.workspace_context(),
+                )?;
                 if crate::rootfs::qemu::has_host_rootfs_wiring(&case.qemu.args) {
                     rootfs::ensure_qemu_assets_ready(
                         &case_request,
@@ -316,12 +309,12 @@ impl Axvisor {
         cases: Vec<AxvisorQemuCase>,
     ) -> anyhow::Result<Vec<PreparedAxvisorQemuCase>> {
         let mut prepared = Vec::with_capacity(cases.len());
-        let mut cargo_by_build_config = BTreeMap::new();
+        let mut contexts_by_build_config = BTreeMap::new();
         for case in cases {
-            let cargo = Self::qemu_case_cargo_config(
+            let (case_request, cargo) = Self::qemu_case_build_context(
                 request,
                 &case.build_config_path,
-                &mut cargo_by_build_config,
+                &mut contexts_by_build_config,
                 self.app.workspace_context(),
             )?;
             let mut qemu = self
@@ -341,40 +334,50 @@ impl Axvisor {
                 &request.arch,
                 &mut qemu,
             )?;
-            prepared.push(PreparedAxvisorQemuCase { case, qemu });
+            prepared.push(PreparedAxvisorQemuCase {
+                case,
+                qemu,
+                request: case_request,
+                cargo,
+            });
         }
 
         Ok(prepared)
     }
 
-    fn qemu_case_cargo_config(
+    fn qemu_case_build_context(
         request: &ResolvedAxvisorRequest,
         build_config_path: &Path,
-        cargo_by_build_config: &mut BTreeMap<PathBuf, Cargo>,
+        contexts_by_build_config: &mut BTreeMap<PathBuf, (ResolvedAxvisorRequest, Cargo)>,
         workspace: &crate::context::WorkspaceContext,
-    ) -> anyhow::Result<Cargo> {
-        if let Some(cargo) = cargo_by_build_config.get(build_config_path) {
-            return Ok(cargo.clone());
+    ) -> anyhow::Result<(ResolvedAxvisorRequest, Cargo)> {
+        if let Some(context) = contexts_by_build_config.get(build_config_path) {
+            return Ok(context.clone());
         }
 
         let mut request = request.clone();
+        let config = crate::build::load_build_config(build_config_path)?;
+        request.replace_config(config)?;
         request.build_info_path = build_config_path.to_path_buf();
         let cargo = build::load_cargo_config(&request, workspace)?;
-        cargo_by_build_config.insert(build_config_path.to_path_buf(), cargo.clone());
-        Ok(cargo)
+        contexts_by_build_config.insert(
+            build_config_path.to_path_buf(),
+            (request.clone(), cargo.clone()),
+        );
+        Ok((request, cargo))
     }
 
-    fn qemu_group_build_context(
-        request: &ResolvedAxvisorRequest,
-        build_config_path: &Path,
+    fn qemu_case_runtime_request(
+        case: &PreparedAxvisorQemuCase,
+        explicit_vmconfigs: Option<&[PathBuf]>,
         workspace: &crate::context::WorkspaceContext,
-    ) -> anyhow::Result<(ResolvedAxvisorRequest, Cargo)> {
-        let mut request = request.clone();
-        request.build_info_path = build_config_path.to_path_buf();
-        let cargo = build::load_cargo_config(&request, workspace)?;
-        request.vmconfigs = build::load_vmconfigs(&request, workspace)?;
-
-        Ok((request, cargo))
+    ) -> anyhow::Result<ResolvedAxvisorRequest> {
+        let mut request = case.request.clone();
+        request.vmconfigs = match explicit_vmconfigs {
+            Some(paths) => build::resolve_vmconfigs(&request, paths, workspace)?,
+            None => build::load_vmconfigs(&request, workspace)?,
+        };
+        Ok(request)
     }
 
     pub(super) fn qemu_test_request(mut request: ResolvedAxvisorRequest) -> ResolvedAxvisorRequest {
@@ -688,7 +691,190 @@ pub(super) fn plan_qemu_case_artifacts<'case, 'artifact, T>(
 
 #[cfg(test)]
 mod tests {
-    use super::{combine_results, load_axvisor_http_probe_config};
+    use std::{collections::BTreeMap, fs};
+
+    use ostool::run::qemu::QemuConfig;
+    use tempfile::tempdir;
+
+    use super::{
+        Axvisor, AxvisorQemuCase, PreparedAxvisorQemuCase, combine_results,
+        load_axvisor_http_probe_config, plan_qemu_case_artifacts, preserve_qemu_build_artifact,
+    };
+    use crate::{context::WorkspaceContext, test::qemu as test_qemu};
+
+    #[test]
+    fn qemu_build_groups_preserve_distinct_executable_artifacts() {
+        let root = tempdir().unwrap();
+        let target = "aarch64-unknown-none-softfloat";
+        let workspace = WorkspaceContext::discover(Some(&root.path().join("target"))).unwrap();
+        let vm_a = root.path().join("vm-a.toml");
+        let vm_c = root.path().join("vm-c.toml");
+        fs::write(&vm_a, "[kernel]\nkernel_path = 'vm-a.bin'\n").unwrap();
+        fs::write(&vm_c, "[kernel]\nkernel_path = 'vm-c.bin'\n").unwrap();
+        let common = format!(
+            "target = '{target}'\nfeatures = []\nlog = 'Info'\nrustflags = \
+             ['--cfg=case_a']\n[env]\nINPUT_MODE = 'a'\nCARGO_ENCODED_RUSTFLAGS = '--cfg=base'\n"
+        );
+        let source_a = root.path().join("case-a.toml");
+        let source_b = root.path().join("case-empty.toml");
+        let source_c = root.path().join("case-c.toml");
+        let vm_list = |path: &std::path::Path| {
+            toml::Value::Array(vec![toml::Value::String(path.display().to_string())]).to_string()
+        };
+        fs::write(
+            &source_a,
+            format!("vm_configs = {}\n{common}", vm_list(&vm_a)),
+        )
+        .unwrap();
+        fs::write(&source_b, format!("vm_configs = []\n{common}")).unwrap();
+        fs::write(
+            &source_c,
+            format!(
+                "target = '{target}'\nfeatures = ['ax-driver/virtio-net']\nlog = \
+                 'Debug'\nrustflags = ['--cfg=case_c']\nmax_cpu_num = 2\nvm_configs = \
+                 {}\n[runtime]\ntask_stack_size = 0x60000\nscheduler_tick_ms = \
+                 5\n[env]\nINPUT_MODE = 'c'\nCARGO_ENCODED_RUSTFLAGS = '--cfg=base'\n",
+                vm_list(&vm_c),
+            ),
+        )
+        .unwrap();
+        let mut request = crate::context::test_support::axvisor_request(
+            &root.path().join("default.toml"),
+            "aarch64",
+            target,
+            &root.path().join("os/axvisor"),
+        );
+        request.runtime_env = ax_config::RuntimeEnv {
+            smp: Some("3".into()),
+            task_stack_size: Some("0x50000".into()),
+            scheduler_tick_ms: Some("7".into()),
+        };
+        request.environment_features = vec!["ax-driver/virtio-blk".into()];
+        request.vmconfigs = vec![root.path().join("stale.toml")];
+        let mut cache = BTreeMap::new();
+        let mut cases = Vec::new();
+        for (name, path) in [("a", &source_a), ("empty", &source_b), ("c", &source_c)] {
+            let (selected, cargo) =
+                Axvisor::qemu_case_build_context(&request, path, &mut cache, &workspace).unwrap();
+            fs::remove_file(path).unwrap();
+            let cached =
+                Axvisor::qemu_case_build_context(&request, path, &mut cache, &workspace).unwrap();
+            assert_eq!(cached, (selected.clone(), cargo.clone()));
+            cases.push(PreparedAxvisorQemuCase {
+                case: AxvisorQemuCase {
+                    case: crate::test::case::TestQemuCase {
+                        name: name.into(),
+                        display_name: name.into(),
+                        case_dir: root.path().join(name),
+                        qemu_config_path: root.path().join(format!("qemu-{name}.toml")),
+                        test_commands: vec![],
+                        grouped_command_selection: Default::default(),
+                        host_http_server: None,
+                        subcases: vec![],
+                        grouped_subcase_filter: None,
+                        ltp_case_id: None,
+                    },
+                    build_group: name.into(),
+                    build_config_path: path.clone(),
+                },
+                qemu: QemuConfig::default(),
+                request: selected,
+                cargo,
+            });
+        }
+        assert_eq!(cases[0].cargo.env["INPUT_MODE"], "a");
+        assert_eq!(cases[0].cargo.env["AX_LOG"], "info");
+        assert_eq!(cases[0].cargo.env["SMP"], "3");
+        assert_eq!(cases[0].cargo.env["AX_TASK_STACK_SIZE"], "327680");
+        assert_eq!(cases[0].cargo.env["AX_SCHEDULER_TICK_MS"], "7");
+        assert!(cases[0].cargo.env["CARGO_ENCODED_RUSTFLAGS"].contains("--cfg=case_a"));
+        assert_eq!(cases[2].cargo.env["INPUT_MODE"], "c");
+        assert_eq!(cases[2].cargo.env["AX_LOG"], "debug");
+        assert_eq!(cases[2].cargo.env["SMP"], "2");
+        assert_eq!(cases[2].cargo.env["AX_TASK_STACK_SIZE"], "393216");
+        assert_eq!(cases[2].cargo.env["AX_SCHEDULER_TICK_MS"], "5");
+        assert!(cases[2].cargo.env["CARGO_ENCODED_RUSTFLAGS"].contains("--cfg=case_c"));
+        for case in &cases {
+            assert!(
+                case.cargo
+                    .features
+                    .contains(&"ax-driver/virtio-blk".to_string())
+            );
+        }
+        assert!(
+            !cases[0]
+                .cargo
+                .features
+                .contains(&"ax-std/virtio-net".to_string())
+        );
+        assert!(
+            cases[2]
+                .cargo
+                .features
+                .contains(&"ax-std/virtio-net".to_string())
+        );
+        assert!(
+            cases[2]
+                .request
+                .config
+                .common
+                .features
+                .contains(&"ax-driver/virtio-net".to_string())
+        );
+        let groups = test_qemu::prepare_case_build_groups(&cases, |path| {
+            let case = cases
+                .iter()
+                .find(|case| case.case.build_config_path.as_path() == path)
+                .unwrap();
+            Ok((case.request.clone(), case.cargo.clone()))
+        })
+        .unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].group.cases.len(), 2);
+        assert_eq!(groups[1].group.cases.len(), 1);
+        assert_eq!(groups[0].cargo, cases[1].cargo);
+        for (case, image) in [(&cases[0], "vm-a.bin"), (&cases[2], "vm-c.bin")] {
+            let runtime = Axvisor::qemu_case_runtime_request(case, None, &workspace).unwrap();
+            assert_eq!(runtime.vmconfigs.len(), 1);
+            assert!(
+                fs::read_to_string(&runtime.vmconfigs[0])
+                    .unwrap()
+                    .contains(image)
+            );
+        }
+        assert!(
+            Axvisor::qemu_case_runtime_request(&cases[1], None, &workspace)
+                .unwrap()
+                .vmconfigs
+                .is_empty()
+        );
+        assert!(
+            Axvisor::qemu_case_runtime_request(&cases[0], Some(&[]), &workspace)
+                .unwrap()
+                .vmconfigs
+                .is_empty()
+        );
+        let build_output = root.path().join("target/release/axvisor");
+        let artifact_directory = root.path().join("preserved");
+        fs::create_dir_all(build_output.parent().unwrap()).unwrap();
+        let mut artifacts = Vec::new();
+        for index in 0..groups.len() {
+            fs::write(&build_output, format!("kernel-{index}")).unwrap();
+            artifacts.push(
+                preserve_qemu_build_artifact(&build_output, &artifact_directory, index).unwrap(),
+            );
+        }
+        assert_eq!(fs::read(&artifacts[0]).unwrap(), b"kernel-0");
+        assert_eq!(fs::read(&artifacts[1]).unwrap(), b"kernel-1");
+        let case_groups = groups
+            .iter()
+            .map(|group| group.group.cases.as_slice())
+            .collect::<Vec<_>>();
+        let plan =
+            plan_qemu_case_artifacts(&case_groups, &artifacts, |case| case.qemu.to_bin).unwrap();
+        assert_eq!(plan[0].build_artifact, plan[1].build_artifact);
+        assert_ne!(plan[0].build_artifact, plan[2].build_artifact);
+    }
 
     fn ok() -> anyhow::Result<()> {
         Ok(())

@@ -1,8 +1,6 @@
-use super::*;
-
 #[test]
 fn build_cargo_args_uses_target_stem_as_rustflags_key() {
-    let args = BuildInfo::build_cargo_args(
+    let args = crate::build::info::build_cargo_args(
         "aarch64-unknown-none-softfloat",
         &["-Cforce-frame-pointers=yes".to_string()],
     );

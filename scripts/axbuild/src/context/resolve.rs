@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail};
+use anyhow::{Context, anyhow};
+use ax_config::{RuntimeEnv, resolve_runtime};
 
 use super::{
     ARCEOS_SNAPSHOT_FILE, AppContext, ArceosCommandSnapshot, ArceosQemuSnapshot,
@@ -10,7 +11,11 @@ use super::{
     StarryQemuSnapshot, StarryUbootSnapshot, resolve_arceos_arch_and_target,
     resolve_axvisor_arch_and_target, resolve_starry_arch_and_target,
 };
-use crate::arceos::cbuild::AX_LIBC_PACKAGE;
+use crate::{
+    arceos::{cbuild::AX_LIBC_PACKAGE, config::ArceosConfig},
+    axvisor::config::AxvisorConfig,
+    starry::config::StarryConfig,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ResolvedCommandPaths {
@@ -18,17 +23,9 @@ struct ResolvedCommandPaths {
     uboot_config: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ArceosConfigSelectors {
-    package: Option<String>,
-    target: Option<String>,
-    uses_app_c: bool,
-}
-
-pub(crate) struct AxvisorRequestPaths<L, R> {
+pub(crate) struct AxvisorRequestPaths<R> {
     pub(crate) package: String,
     pub(crate) axvisor_dir: PathBuf,
-    pub(crate) load_config_target: L,
     pub(crate) resolve_build_info_path: R,
 }
 
@@ -40,6 +37,27 @@ impl AppContext {
         uboot_config: Option<PathBuf>,
         resolve_build_info_path: impl FnOnce(&str, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
     ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
+        self.prepare_arceos_request_with_input_check(
+            cli,
+            qemu_config,
+            uboot_config,
+            resolve_build_info_path,
+            |_| Ok(()),
+        )
+    }
+
+    /// Check unselected file input before any selector defaults or snapshot
+    /// values are applied. No selected file is represented by an empty input.
+    pub(crate) fn prepare_arceos_request_with_input_check(
+        &self,
+        cli: BuildCliArgs,
+        qemu_config: Option<PathBuf>,
+        uboot_config: Option<PathBuf>,
+        resolve_build_info_path: impl FnOnce(&str, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
+        input_check: impl FnOnce(&ArceosConfig) -> anyhow::Result<()>,
+    ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
+        let runtime_env = RuntimeEnv::capture()?;
+        let environment_features = crate::build::makefile_features_from_env();
         let snapshot = ArceosCommandSnapshot::load(self.workspace_root())?;
         let inherit_snapshot_config = cli.package.is_none()
             && cli.arch.is_none()
@@ -51,38 +69,30 @@ impl AppContext {
                 .then_some(snapshot.config.as_ref())
                 .flatten(),
         );
-        let config_selectors = resolved_config
-            .as_deref()
-            .filter(|path| path.exists())
-            .map(arceos_config_selectors)
-            .transpose()?
-            .unwrap_or_default();
+        let mut config: Option<ArceosConfig> =
+            load_selected_config(resolved_config.as_deref(), cli.config.is_some())?;
+        match config.as_ref() {
+            Some(input) => input_check(input)?,
+            None => input_check(&ArceosConfig::default())?,
+        }
+        let config_package = config.as_ref().and_then(|config| config.package.clone());
+        let config_target = config
+            .as_ref()
+            .and_then(|config| config.common.target.clone());
+        let uses_app_c = config.as_ref().is_some_and(|config| config.app_c.is_some());
         let explicit_config_path = if cli.config.is_some() {
             resolved_config
         } else {
             resolved_config.filter(|path| path.exists())
         };
 
-        // A C source app is linked against ax-libc, not an arbitrary workspace
-        // package. Reject conflicts here so command execution never rewrites the
-        // request selected by the user or build configuration.
-        let package = if config_selectors.uses_app_c {
-            for package in [&cli.package, &config_selectors.package]
-                .into_iter()
-                .flatten()
-            {
-                if package != AX_LIBC_PACKAGE {
-                    bail!(
-                        "ArceOS build config with `app-c` must use package `{AX_LIBC_PACKAGE}`; \
-                         remove the conflicting package selector `{package}`"
-                    );
-                }
-            }
-            AX_LIBC_PACKAGE.to_string()
+        // Select the winning input before checking C application's ax-libc
+        // contract. A CLI package may replace an invalid draft file value.
+        let selected_package = cli.package.clone().or(config_package);
+        let package = if uses_app_c {
+            selected_package.unwrap_or_else(|| AX_LIBC_PACKAGE.to_string())
         } else {
-            cli.package
-                .clone()
-                .or(config_selectors.package)
+            selected_package
                 .or(snapshot.package.clone())
                 .ok_or_else(|| {
                     anyhow!(
@@ -91,19 +101,22 @@ impl AppContext {
                     )
                 })?
         };
-        let config_target = config_selectors.target;
         let effective_arch = cli.arch.clone().or_else(|| {
             if cli.target.is_some() || config_target.is_some() {
                 None
             } else {
-                snapshot.arch.clone()
+                inherit_snapshot_config
+                    .then(|| snapshot.arch.clone())
+                    .flatten()
             }
         });
         let effective_target = cli.target.clone().or(config_target).or_else(|| {
             if cli.arch.is_some() {
                 None
             } else {
-                snapshot.target.clone()
+                inherit_snapshot_config
+                    .then(|| snapshot.target.clone())
+                    .flatten()
             }
         });
         let (arch, target) = resolve_arceos_arch_and_target(effective_arch, effective_target)?;
@@ -129,6 +142,53 @@ impl AppContext {
             },
         );
         let build_info_path = resolve_build_info_path(&package, &target, explicit_config_path)?;
+        let mut config = match config.take() {
+            Some(config) => config,
+            None => {
+                if build_info_path.exists() {
+                    crate::build::load_build_config(&build_info_path)?
+                } else {
+                    let board = if self
+                        .workspace_root()
+                        .join("os/arceos/configs/board")
+                        .exists()
+                    {
+                        crate::arceos::config::ensure_default_build_config_for_target(
+                            self.workspace_root(),
+                            &package,
+                            &target,
+                            &build_info_path,
+                        )?
+                    } else {
+                        None
+                    };
+                    let config = board.map(|board| board.build_config).unwrap_or_default();
+                    crate::build::ensure_build_info(&build_info_path, || config.clone())?;
+                    config
+                }
+            }
+        };
+        config.package = Some(package.clone());
+        config.common.target = Some(target.clone());
+        crate::build::apply_makefile_features(&mut config.common, &environment_features)?;
+        if let Some(smp) = smp {
+            config.common.max_cpu_num = Some(smp);
+        }
+        config
+            .validate()
+            .with_context(|| format!("invalid ArceOS config {}", build_info_path.display()))?;
+        if let Some(app_c) = &config.app_c {
+            config.app_c = Some(crate::arceos::build::resolve_app_c_dir(
+                &build_info_path,
+                app_c,
+            )?);
+        }
+        crate::build::validate_features(&config.common)?;
+        let runtime = resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &runtime_env,
+        )?;
 
         let request = ResolvedBuildRequest {
             package: package.clone(),
@@ -137,6 +197,9 @@ impl AppContext {
             smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
+            config,
+            runtime,
+            runtime_env,
             qemu_config: runtime_paths.qemu_config.clone(),
             uboot_config: runtime_paths.uboot_config.clone(),
         };
@@ -178,6 +241,8 @@ impl AppContext {
         uboot_config: Option<PathBuf>,
         resolve_build_info_path: impl FnOnce(&Path, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
     ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
+        let runtime_env = RuntimeEnv::capture()?;
+        let environment_features = crate::build::makefile_features_from_env();
         let snapshot = StarryCommandSnapshot::load(self.workspace_root())?;
         let inherit_snapshot_config =
             cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
@@ -187,24 +252,27 @@ impl AppContext {
                 .then_some(snapshot.config.as_ref())
                 .flatten(),
         );
-        let config_target = resolved_config
-            .as_deref()
-            .filter(|_| cli.config.is_some() && cli.target.is_none())
-            .map(crate::starry::build::load_target_from_build_config)
-            .transpose()?
-            .flatten();
+        let mut config: Option<StarryConfig> =
+            load_selected_config(resolved_config.as_deref(), cli.config.is_some())?;
+        let config_target = config
+            .as_ref()
+            .and_then(|config| config.common.target.clone());
         let effective_arch = cli.arch.clone().or_else(|| {
             if cli.target.is_some() || config_target.is_some() {
                 None
             } else {
-                snapshot.arch.clone()
+                inherit_snapshot_config
+                    .then(|| snapshot.arch.clone())
+                    .flatten()
             }
         });
         let effective_target = cli.target.clone().or(config_target).or_else(|| {
             if cli.arch.is_some() {
                 None
             } else {
-                snapshot.target.clone()
+                inherit_snapshot_config
+                    .then(|| snapshot.target.clone())
+                    .flatten()
             }
         });
         let (arch, target) = resolve_starry_arch_and_target(effective_arch, effective_target)?;
@@ -229,6 +297,46 @@ impl AppContext {
         );
         let build_info_path =
             resolve_build_info_path(self.workspace_root(), &target, resolved_config)?;
+        let mut config = match config.take() {
+            Some(config) => config,
+            None => {
+                if build_info_path.exists() {
+                    crate::build::load_build_config(&build_info_path)?
+                } else {
+                    let board = if self
+                        .workspace_root()
+                        .join("os/StarryOS/configs/board")
+                        .exists()
+                    {
+                        crate::starry::config::ensure_default_build_config_for_target(
+                            self.workspace_root(),
+                            &target,
+                            &build_info_path,
+                        )?
+                    } else {
+                        None
+                    };
+                    let config = board.map(|board| board.config).unwrap_or_default();
+                    crate::build::ensure_build_info(&build_info_path, || config.clone())?;
+                    config
+                }
+            }
+        };
+        config.common.target = Some(target.clone());
+        crate::build::apply_makefile_features(&mut config.common, &environment_features)?;
+        if let Some(smp) = smp {
+            config.common.max_cpu_num = Some(smp);
+        }
+        config
+            .validate()
+            .with_context(|| format!("invalid Starry config {}", build_info_path.display()))?;
+        crate::build::validate_features(&config.common)?;
+        config.validate_resources(self.workspace_root())?;
+        let runtime = resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &runtime_env,
+        )?;
 
         let request = ResolvedStarryRequest {
             package: STARRY_PACKAGE.to_string(),
@@ -237,7 +345,10 @@ impl AppContext {
             smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
-            build_info_override: None,
+            config,
+            runtime,
+            runtime_env,
+            environment_features,
             qemu_config: runtime_paths.qemu_config.clone(),
             uboot_config: runtime_paths.uboot_config.clone(),
         };
@@ -275,7 +386,6 @@ impl AppContext {
         &self,
         cli: AxvisorCliArgs,
         paths: AxvisorRequestPaths<
-            impl FnOnce(&Path) -> anyhow::Result<Option<String>>,
             impl FnOnce(&Path, &str, Option<PathBuf>) -> anyhow::Result<PathBuf>,
         >,
         qemu_config: Option<PathBuf>,
@@ -284,9 +394,10 @@ impl AppContext {
         let AxvisorRequestPaths {
             package,
             axvisor_dir,
-            load_config_target,
             resolve_build_info_path,
         } = paths;
+        let runtime_env = RuntimeEnv::capture()?;
+        let environment_features = crate::build::makefile_features_from_env();
         let snapshot = AxvisorCommandSnapshot::load(self.workspace_root())?;
         let inherit_snapshot_config =
             cli.config.is_none() && cli.arch.is_none() && cli.target.is_none();
@@ -296,12 +407,11 @@ impl AppContext {
                 .then_some(snapshot.config.as_ref())
                 .flatten(),
         );
-        let config_target = resolved_config
+        let mut config: Option<AxvisorConfig> =
+            load_selected_config(resolved_config.as_deref(), cli.config.is_some())?;
+        let config_target = config
             .as_ref()
-            .filter(|path| path.exists())
-            .map(|path| load_config_target(path))
-            .transpose()?
-            .flatten();
+            .and_then(|config| config.common.target.clone());
         let explicit_config = if cli.config.is_some() {
             resolved_config
         } else {
@@ -311,19 +421,48 @@ impl AppContext {
             if cli.target.is_some() || config_target.is_some() {
                 None
             } else {
-                snapshot.arch.clone()
+                inherit_snapshot_config
+                    .then(|| snapshot.arch.clone())
+                    .flatten()
             }
         });
         let effective_target = cli.target.clone().or(config_target.clone()).or_else(|| {
             if cli.arch.is_some() {
                 None
             } else {
-                snapshot.target.clone()
+                inherit_snapshot_config
+                    .then(|| snapshot.target.clone())
+                    .flatten()
             }
         });
         let (arch, target) = resolve_axvisor_arch_and_target(effective_arch, effective_target)?;
-        let smp = cli.smp.or(snapshot.smp);
+        let smp = cli
+            .smp
+            .or_else(|| inherit_snapshot_config.then_some(snapshot.smp).flatten());
         let build_info_path = resolve_build_info_path(&axvisor_dir, &target, explicit_config)?;
+        let mut config = match config.take() {
+            Some(config) => config,
+            None => crate::axvisor::build::load_or_create_default_config(
+                &axvisor_dir,
+                &target,
+                &build_info_path,
+            )?,
+        };
+        config.common.target = Some(target.clone());
+        crate::build::apply_makefile_features(&mut config.common, &environment_features)?;
+        if let Some(smp) = smp {
+            config.common.max_cpu_num = Some(smp);
+        }
+        config
+            .validate()
+            .with_context(|| format!("invalid Axvisor config {}", build_info_path.display()))?;
+        crate::build::validate_features(&config.common)?;
+        let runtime = resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &runtime_env,
+        )?;
+
         let inherit_snapshot_runtime = cli.arch.is_none()
             && cli.target.is_none()
             && cli.config.is_none()
@@ -358,6 +497,10 @@ impl AppContext {
             smp,
             debug: cli.debug,
             build_info_path: build_info_path.clone(),
+            config,
+            runtime,
+            runtime_env,
+            environment_features,
             qemu_config: runtime_paths.qemu_config.clone(),
             uboot_config: runtime_paths.uboot_config.clone(),
             vmconfigs: vmconfigs.clone(),
@@ -436,13 +579,14 @@ impl AppContext {
     }
 }
 
-fn arceos_config_selectors(path: &Path) -> anyhow::Result<ArceosConfigSelectors> {
-    let file = crate::arceos::build::load_arceos_build_file(path)?;
-    Ok(ArceosConfigSelectors {
-        package: file.package,
-        target: file.target,
-        uses_app_c: file.config.app_c.is_some(),
-    })
+fn load_selected_config<T: crate::build::BuildConfiguration>(
+    path: Option<&Path>,
+    explicit: bool,
+) -> anyhow::Result<Option<T>> {
+    match path {
+        Some(path) if explicit || path.exists() => crate::build::load_build_config(path).map(Some),
+        _ => Ok(None),
+    }
 }
 
 pub(crate) fn resolve_snapshot_path(root: &Path, path: Option<&PathBuf>) -> Option<PathBuf> {

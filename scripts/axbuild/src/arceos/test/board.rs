@@ -35,7 +35,7 @@ pub(crate) fn collect_board_test_groups(
                 info.build_config_path.display()
             )
         })?;
-        let target = build_file.target.with_context(|| {
+        let target = build_file.common.target.with_context(|| {
             format!(
                 "ArceOS board build config `{}` must set `target`",
                 info.build_config_path.display()
@@ -174,7 +174,7 @@ impl ArceOS {
                 )?;
                 Self::validate_board_request(&request)?;
                 self.app.set_debug_mode(request.debug)?;
-                let mode = build::load_arceos_build_mode(&request.build_info_path)?;
+                let mode = build::arceos_build_mode(&request.config, &request.build_info_path)?;
                 let cargo = match &mode {
                     build::ArceosBuildMode::Rust => {
                         build::load_cargo_config(&request, self.app.workspace_context())?

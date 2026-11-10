@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use tempfile::tempdir;
 
@@ -12,23 +12,8 @@ fn workspace() -> WorkspaceContext {
     WorkspaceContext::discover(None).unwrap()
 }
 
-#[test]
-fn default_starry_build_info_keeps_feature_selection_explicit() {
-    assert!(default_starry_build_info().features.is_empty());
-}
-
 fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
-    ResolvedStarryRequest {
-        package: STARRY_PACKAGE.to_string(),
-        arch: arch.to_string(),
-        target: target.to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: path,
-        build_info_override: None,
-        qemu_config: None,
-        uboot_config: None,
-    }
+    crate::context::test_support::starry_request(&path, arch, target)
 }
 
 #[test]
@@ -38,17 +23,20 @@ fn patch_starry_cargo_config_sets_environment() {
         "aarch64",
         "aarch64-unknown-none-softfloat",
     );
-    let build_info = StarryBuildInfo {
-        env: HashMap::from([(String::from("CUSTOM"), String::from("1"))]),
+    let build_info = CommonConfig {
+        env: BTreeMap::from([(String::from("CUSTOM"), String::from("1"))]),
         rustflags: Vec::new(),
         features: vec!["net".to_string()],
         log: LogLevel::Info,
         max_cpu_num: None,
+        ..CommonConfig::default()
     };
-    let mut cargo = build_info.into_base_cargo_config_with_log(
+    let mut cargo = crate::build::into_base_cargo_config(
+        build_info,
         STARRY_PACKAGE.to_string(),
         request.target.clone(),
         vec![],
+        request.runtime,
     );
     let metadata = crate::build::workspace_metadata().unwrap();
     patch_starry_cargo_config(&mut cargo, &request, &metadata).unwrap();
@@ -78,7 +66,14 @@ fn load_cargo_config_enables_target_symbolization_by_default() {
         "x86_64",
         "x86_64-unknown-none",
     );
-    request.build_info_override = Some(default_starry_build_info());
+    request.config.common = CommonConfig::default();
+    request.config.common.target = Some(request.target.clone());
+    request.runtime = ax_config::resolve_runtime(
+        request.config.common.max_cpu_num,
+        request.config.common.runtime,
+        &request.runtime_env,
+    )
+    .unwrap();
 
     let cargo = load_cargo_config(&request, &workspace()).unwrap();
     let flags = cargo
@@ -101,8 +96,8 @@ fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
         "aarch64",
         "aarch64-unknown-none-softfloat",
     );
-    request.build_info_override = Some(StarryBuildInfo {
-        env: HashMap::new(),
+    request.config.common = CommonConfig {
+        env: BTreeMap::new(),
         rustflags: Vec::new(),
         features: vec![
             "common".to_string(),
@@ -112,7 +107,15 @@ fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
         ],
         log: LogLevel::Info,
         max_cpu_num: Some(8),
-    });
+        ..CommonConfig::default()
+    };
+    request.config.common.target = Some(request.target.clone());
+    request.runtime = ax_config::resolve_runtime(
+        request.config.common.max_cpu_num,
+        request.config.common.runtime,
+        &request.runtime_env,
+    )
+    .unwrap();
 
     let err = load_cargo_config(&request, &workspace()).unwrap_err();
 
@@ -124,7 +127,7 @@ fn load_cargo_config_rejects_removed_dynamic_platform_feature() {
 }
 
 #[test]
-fn uimage_generation_plan_uses_mkimage_f_for_companion_its() {
+fn uimage_generation_plan_follows_final_file_resource_selection() {
     let root = tempdir().unwrap();
     let config = root.path().join("board/foo.toml");
     fs::create_dir_all(config.parent().unwrap()).unwrap();
@@ -135,8 +138,12 @@ fn uimage_generation_plan_uses_mkimage_f_for_companion_its() {
     )
     .unwrap();
     let elf = root.path().join("target/kernel.elf");
+    let its = root.path().join("board/foo.its");
 
-    let plan = uimage_generation_plan(&config, "riscv64", "riscv64gc-unknown-none-elf", &elf)
+    let loaded: StarryConfig = crate::build::load_build_config(&config).unwrap();
+    loaded.validate().unwrap();
+    let plan = uimage_generation_plan(&loaded, root.path(), &elf)
+        .unwrap()
         .expect("companion ITS should request uImage generation");
 
     assert_eq!(plan.source_its, root.path().join("board/foo.its"));
@@ -156,6 +163,36 @@ fn uimage_generation_plan_uses_mkimage_f_for_companion_its() {
             plan.rendered_its.display().to_string(),
             plan.output_uimg.display().to_string(),
         ]
+    );
+
+    let replacement = root.path().join("resources/replacement.its");
+    fs::create_dir_all(replacement.parent().unwrap()).unwrap();
+    fs::write(&replacement, "replacement template").unwrap();
+    fs::write(
+        &config,
+        "target = 'riscv64gc-unknown-none-elf'\nfit_its = 'resources/replacement.its'\n",
+    )
+    .unwrap();
+    let overridden: StarryConfig = crate::build::load_build_config(&config).unwrap();
+    let plan = uimage_generation_plan(&overridden, root.path(), &elf)
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.source_its, replacement);
+    fs::remove_file(&replacement).unwrap();
+    assert!(uimage_generation_plan(&overridden, root.path(), &elf).is_err());
+
+    fs::write(
+        &config,
+        "target = 'riscv64gc-unknown-none-elf'\nunset = ['fit_its']\n",
+    )
+    .unwrap();
+    let cleared: StarryConfig = crate::build::load_build_config(&config).unwrap();
+    cleared.validate().unwrap();
+    assert!(its.exists(), "the old template remains available");
+    assert!(
+        uimage_generation_plan(&cleared, root.path(), &elf)
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -195,10 +232,17 @@ fn load_cargo_config_rejects_std_compat_for_freestanding_kernel() {
     for feature in ["std-compat", "ax-std/std-compat"] {
         let target = "x86_64-unknown-none";
         let mut request = request(PathBuf::from("/tmp/.build.toml"), "x86_64", target);
-        request.build_info_override = Some(StarryBuildInfo {
+        request.config.common = CommonConfig {
             features: vec![feature.to_string()],
-            ..default_starry_build_info()
-        });
+            ..CommonConfig::default()
+        };
+        request.config.common.target = Some(request.target.clone());
+        request.runtime = ax_config::resolve_runtime(
+            request.config.common.max_cpu_num,
+            request.config.common.runtime,
+            &request.runtime_env,
+        )
+        .unwrap();
 
         let err = load_cargo_config(&request, &workspace()).unwrap_err();
         assert!(err.to_string().contains("freestanding no_std build"));

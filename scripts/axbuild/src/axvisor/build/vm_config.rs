@@ -179,10 +179,16 @@ ramdisk_path = "../images/initramfs.cpio"
             target: "aarch64-unknown-none-softfloat".into(),
             smp: None,
             debug: false,
-            build_info_path: workspace.join("build.toml"),
+            build_info_path: (workspace.join("build.toml")).clone(),
             qemu_config: None,
             uboot_config: None,
             vmconfigs: vec![],
+            ..crate::context::test_support::axvisor_request(
+                &(workspace.join("build.toml")),
+                "aarch64",
+                "aarch64-unknown-none-softfloat",
+                &package,
+            )
         };
         let outputs = resolve_vmconfigs(
             &request,

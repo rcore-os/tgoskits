@@ -84,11 +84,12 @@ pub(super) async fn prepare_rust_qemu_cases(
                     case.case.display_name
                 )
             })?;
-        let build_info: build::ArceosBuildInfo =
-            crate::build::load_build_info(&request.build_info_path)?;
         qemu_test::apply_smp_qemu_arg(
             &mut qemu,
-            request.smp.or(build_info.max_cpu_num).or(Some(1)),
+            request
+                .smp
+                .or(request.config.common.max_cpu_num)
+                .or(Some(1)),
         );
         apply_rust_qemu_feature_overrides(&mut qemu, case.feature.as_deref());
         qemu_test::apply_timeout_scale(&mut qemu);

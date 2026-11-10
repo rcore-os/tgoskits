@@ -428,10 +428,14 @@ mod tests {
             target: "x86_64-unknown-none".to_string(),
             smp: None,
             debug: false,
-            build_info_path: PathBuf::from("/tmp/.build.toml"),
-            build_info_override: None,
+            build_info_path: (PathBuf::from("/tmp/.build.toml")).clone(),
             qemu_config: None,
             uboot_config: None,
+            ..crate::context::test_support::starry_request(
+                &(PathBuf::from("/tmp/.build.toml")),
+                "x86_64",
+                "x86_64-unknown-none",
+            )
         };
         let mut qemu = QemuConfig::default();
 

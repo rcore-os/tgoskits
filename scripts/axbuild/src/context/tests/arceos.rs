@@ -20,12 +20,15 @@ uboot_config = "configs/snapshot-uboot.toml"
     )
     .unwrap();
 
+    let custom_config = root.path().join("custom-build.toml");
+    fs::write(&custom_config, "").unwrap();
+
     let app = test_app_context(root.path());
 
     let (request, snapshot) = prepare_arceos_request(
         &app,
         BuildCliArgs {
-            config: Some(PathBuf::from("/tmp/custom-build.toml")),
+            config: Some(custom_config.clone()),
             package: Some("from-cli".into()),
             arch: Some("aarch64".into()),
             target: Some(DEFAULT_ARCEOS_TARGET.into()),
@@ -41,10 +44,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
     assert_eq!(request.smp, Some(4));
     assert!(request.debug);
-    assert_eq!(
-        request.build_info_path,
-        PathBuf::from("/tmp/custom-build.toml")
-    );
+    assert_eq!(request.build_info_path, custom_config);
     assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
     assert_eq!(request.uboot_config, None);
     assert_eq!(snapshot.package.as_deref(), Some("from-cli"));
@@ -230,11 +230,11 @@ config = "configs/orangepi.toml"
     assert_eq!(request.package, "arceos-helloworld");
     assert_eq!(
         request.build_info_path,
-        crate::arceos::build::default_build_info_path(
+        crate::build::default_build_info_path_in_workspace(
+            root.path(),
             "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
         )
-        .unwrap()
     );
     assert_ne!(
         snapshot.config,
@@ -253,7 +253,7 @@ fn prepare_request_requires_package() {
 }
 
 #[test]
-fn prepare_request_rejects_package_override_for_c_app_config() {
+fn prepare_request_validates_c_app_package_after_cli_override() {
     let root = tempdir().unwrap();
     let config_path = root.path().join("configs/c-app.toml");
     fs::create_dir_all(config_path.parent().unwrap()).unwrap();
@@ -273,7 +273,7 @@ log = "Info"
     let err = prepare_arceos_request(
         &app,
         BuildCliArgs {
-            config: Some(config_path),
+            config: Some(config_path.clone()),
             package: Some("arceos-helloworld".into()),
             ..Default::default()
         },
@@ -282,8 +282,34 @@ log = "Info"
     )
     .unwrap_err();
 
-    assert!(err.to_string().contains("app-c"));
-    assert!(err.to_string().contains("ax-libc"));
+    let diagnostic = format!("{err:#}");
+    assert!(diagnostic.contains("app-c"));
+    assert!(diagnostic.contains("ax-libc"));
+
+    let app_dir = config_path.parent().unwrap().join("c");
+    fs::create_dir_all(&app_dir).unwrap();
+    fs::write(app_dir.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+    let (request, _) = prepare_arceos_request(
+        &app,
+        BuildCliArgs {
+            config: Some(config_path.clone()),
+            package: Some(crate::arceos::cbuild::AX_LIBC_PACKAGE.into()),
+            ..Default::default()
+        },
+        None,
+        None,
+    )
+    .unwrap();
+    let mode = crate::arceos::build::arceos_build_mode(&request.config, &config_path).unwrap();
+    match mode {
+        crate::arceos::build::ArceosBuildMode::AppC {
+            app_dir: resolved, ..
+        } => {
+            assert_eq!(resolved, app_dir.canonicalize().unwrap());
+            assert_eq!(request.package, crate::arceos::cbuild::AX_LIBC_PACKAGE);
+        }
+        crate::arceos::build::ArceosBuildMode::Rust => panic!("expected the C application path"),
+    }
 }
 
 #[test]

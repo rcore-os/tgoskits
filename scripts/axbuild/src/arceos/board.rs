@@ -5,17 +5,8 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use serde::Deserialize;
 
-use super::build::{ArceosBuildConfig, ArceosBuildFile};
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub(crate) struct ArceosBoardFile {
-    pub(crate) package: String,
-    pub(crate) target: String,
-    #[serde(flatten)]
-    pub(crate) build_config: ArceosBuildConfig,
-}
+use super::build::ArceosConfig;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Board {
@@ -23,7 +14,7 @@ pub(crate) struct Board {
     pub(crate) path: PathBuf,
     pub(crate) package: String,
     pub(crate) target: String,
-    pub(crate) build_config: ArceosBuildConfig,
+    pub(crate) build_config: ArceosConfig,
 }
 
 pub(crate) fn arceos_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
@@ -42,17 +33,16 @@ pub(crate) fn board_dir(workspace_root: &Path) -> anyhow::Result<PathBuf> {
     Ok(arceos_dir(workspace_root)?.join("configs/board"))
 }
 
-pub(crate) fn load_build_file(path: &Path) -> anyhow::Result<ArceosBuildFile> {
+pub(crate) fn load_build_file(path: &Path) -> anyhow::Result<ArceosConfig> {
     super::build::load_arceos_build_file(path)
 }
 
-pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<ArceosBoardFile> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read ArceOS board config {}", path.display()))?;
-    crate::build::reject_removed_std_field(path, &contents)?;
-    let board_file: ArceosBoardFile = toml::from_str(&contents)
-        .with_context(|| format!("failed to parse ArceOS board config {}", path.display()))?;
-    Ok(board_file)
+pub(crate) fn load_board_file(path: &Path) -> anyhow::Result<ArceosConfig> {
+    let config: ArceosConfig = crate::build::load_build_config(path)?;
+    config
+        .validate()
+        .with_context(|| format!("invalid ArceOS board config {}", path.display()))?;
+    Ok(config)
 }
 
 pub(crate) fn board_default_list(workspace_root: &Path) -> anyhow::Result<Vec<Board>> {
@@ -79,9 +69,16 @@ pub(crate) fn board_default_list(workspace_root: &Path) -> anyhow::Result<Vec<Bo
         boards.push(Board {
             name,
             path,
-            package: board_file.package,
-            target: board_file.target,
-            build_config: board_file.build_config,
+            package: board_file
+                .package
+                .clone()
+                .unwrap_or_else(|| super::cbuild::AX_LIBC_PACKAGE.into()),
+            target: board_file
+                .common
+                .target
+                .clone()
+                .expect("board target was validated"),
+            build_config: board_file,
         });
     }
     boards.sort_by(|left, right| left.name.cmp(&right.name));

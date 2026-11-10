@@ -5,7 +5,7 @@ sidebar_label: "构建"
 
 # Axvisor 构建
 
-`cargo xtask axvisor build` 构建固定 package `axvisor`，随后准备客户机资源归档。内核只依赖 `BuildInfo` 中的驱动、CPU 数及功能配置；`vm_configs` 和 `--vmconfig` 是宿主 initramfs 的打包输入，客户机镜像不再编入内核。
+`cargo xtask axvisor build` 构建固定 package `axvisor`，随后准备客户机资源归档。内核只依赖 `CommonConfig` 中的驱动、CPU 容量、runtime 及功能配置；`vm_configs` 和 `--vmconfig` 是宿主 initramfs 的打包输入，客户机镜像不再编入内核。
 
 ## 1. 内核构建
 
@@ -13,15 +13,17 @@ sidebar_label: "构建"
 
 ### 1.1 配置装载
 
-默认配置为 `tmp/axbuild/config/axvisor/build-<target>.toml`。`load_build_config()` 接受纯 `BuildInfo` 或含 `target`、`vm_configs` 的 board 配置；CLI `--smp` 覆盖 CPU 数。缺失配置优先从 `os/axvisor/configs/board/qemu-*.toml` 生成，否则生成空功能配置。
+默认配置为 `tmp/axbuild/config/axvisor/build-<target>.toml`。配置由统一的 `AxvisorConfig` 解析公共字段和 `vm_configs`，不再尝试多种嵌套格式；CLI `--smp` 覆盖 CPU 容量。缺失默认配置仍从对应 QEMU 板卡输入生成，显式文件读取失败则报错。
 
 文件系统是 Axvisor 的必需能力，无需 `fs` feature。块设备驱动仍由配置显式选择；只用 initramfs 启动客户机不需要块设备驱动。x86 虚拟化后端由运行时 CPUID 选择，QEMU TOML 控制暴露 VMX 或 SVM 扩展。
 
 ### 1.2 Cargo 装配
 
-`load_cargo_config()` 固定 package/binary 为 `axvisor`，写入 `AX_ARCH` 和原始裸机 `AX_TARGET`，合并 `FEATURES` 后排序去重并验证平台边界。裸机 target 映射到工作区 musl PIE target，链接方式与交叉 C 环境沿用共享 `BuildInfo`。
+`load_cargo_config()` 固定 package/binary 为 `axvisor`，写入 `AX_ARCH` 和原始裸机 `AX_TARGET`，合并 `FEATURES` 后排序去重并验证平台边界。裸机 target 映射到工作区 musl PIE target，链接方式与交叉 C 环境由 axbuild 的共享适配函数维护。
 
 直接构建产出 ELF；QEMU 读取实际 TOML 后按 `to_bin` 决定是否转换为 BIN。VM 配置不会写入 Cargo 环境，也不会作为 `os/axvisor/build.rs` 的输入。
+
+`runtime.task_stack_size` 和 `runtime.scheduler_tick_ms` 通过本次 Cargo 子进程环境进入 runtime/HAL 的共同 helper。host facts 的容量使用 `ax_runtime::CPU_CAPACITY`，物理 CPU 数和 shell 的 SMP 展示使用实际在线数量；不再读取 `AX_SMP`。参数优先级和旧 env 迁移见[运行参数](../configuration#34-运行参数)。
 
 ## 2. 自带资源打包
 

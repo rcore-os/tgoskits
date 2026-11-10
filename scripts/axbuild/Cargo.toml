@@ -14,6 +14,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow = { workspace = true }
+ax-config = { workspace = true, features = ["toml", "schema"] }
 axvmconfig = { workspace = true, features = ["std"] }
 cargo_metadata = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
@@ -37,7 +38,7 @@ reqwest = { version = "0.13", features = ["stream"] }
 addr2line = "0.26"
 rustc-demangle = "0.1"
 schemars = { workspace = true, features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
+serde = { workspace = true }
 serde_json = { version = "1" }
 shlex.workspace = true
 sha2 = { version = "0.10" }

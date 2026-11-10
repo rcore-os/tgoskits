@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
+use ax_config::{RuntimeEnv, RuntimeValues};
 use serde::{Deserialize, Serialize};
 
 use super::snapshot::{CommandSnapshotFile, load_snapshot, store_snapshot};
-use crate::build::BuildInfo;
+use crate::{
+    arceos::build::ArceosConfig, axvisor::build::AxvisorConfig, starry::build::StarryConfig,
+};
 
 pub const ARCEOS_SNAPSHOT_FILE: &str = ".arceos.toml";
 pub const DEFAULT_ARCEOS_ARCH: &str = "aarch64";
@@ -76,7 +79,7 @@ pub struct ArceosCommandSnapshot {
     pub uboot: ArceosUbootSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedBuildRequest {
     pub package: String,
     pub arch: String,
@@ -84,6 +87,9 @@ pub struct ResolvedBuildRequest {
     pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
+    pub config: ArceosConfig,
+    pub runtime: RuntimeValues,
+    pub runtime_env: RuntimeEnv,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
 }
@@ -118,7 +124,7 @@ pub struct AxvisorCommandSnapshot {
     pub uboot: AxvisorUbootSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedAxvisorRequest {
     pub package: String,
     pub axvisor_dir: PathBuf,
@@ -127,6 +133,11 @@ pub struct ResolvedAxvisorRequest {
     pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
+    pub config: AxvisorConfig,
+    pub runtime: RuntimeValues,
+    pub runtime_env: RuntimeEnv,
+    /// Original FEATURES input, reapplied when a test selects another file.
+    pub environment_features: Vec<String>,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
     pub vmconfigs: Vec<PathBuf>,
@@ -168,9 +179,58 @@ pub struct ResolvedStarryRequest {
     pub smp: Option<usize>,
     pub debug: bool,
     pub build_info_path: PathBuf,
-    pub build_info_override: Option<BuildInfo>,
+    pub config: StarryConfig,
+    pub runtime: RuntimeValues,
+    pub runtime_env: RuntimeEnv,
+    /// Original FEATURES input, reapplied when a test selects another file.
+    pub environment_features: Vec<String>,
     pub qemu_config: Option<PathBuf>,
     pub uboot_config: Option<PathBuf>,
+}
+
+impl ResolvedStarryRequest {
+    /// Replace a test/build group's input while retaining this request's captured
+    /// environment. Explicit runtime CLI values still win over file inputs.
+    pub(crate) fn replace_config(&mut self, mut config: StarryConfig) -> anyhow::Result<()> {
+        super::resolve_starry_arch_and_target(Some(self.arch.clone()), Some(self.target.clone()))?;
+        config.common.target = Some(self.target.clone());
+        crate::build::apply_makefile_features(&mut config.common, &self.environment_features)?;
+        if let Some(smp) = self.smp {
+            config.common.max_cpu_num = Some(smp);
+        }
+        config.validate()?;
+        let runtime = ax_config::resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &self.runtime_env,
+        )?;
+        self.config = config;
+        self.runtime = runtime;
+        Ok(())
+    }
+}
+
+impl ResolvedAxvisorRequest {
+    /// Replace a case's full input using this request's captured environment.
+    /// VM selections from the preceding input are never inherited.
+    pub(crate) fn replace_config(&mut self, mut config: AxvisorConfig) -> anyhow::Result<()> {
+        super::resolve_axvisor_arch_and_target(Some(self.arch.clone()), Some(self.target.clone()))?;
+        config.common.target = Some(self.target.clone());
+        crate::build::apply_makefile_features(&mut config.common, &self.environment_features)?;
+        if let Some(smp) = self.smp {
+            config.common.max_cpu_num = Some(smp);
+        }
+        config.validate()?;
+        let runtime = ax_config::resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &self.runtime_env,
+        )?;
+        self.config = config;
+        self.runtime = runtime;
+        self.vmconfigs.clear();
+        Ok(())
+    }
 }
 
 impl ArceosQemuSnapshot {

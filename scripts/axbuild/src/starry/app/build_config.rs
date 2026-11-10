@@ -4,7 +4,6 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
-use serde::Deserialize;
 
 use super::super::board;
 
@@ -12,11 +11,6 @@ use super::super::board;
 struct BuildConfigCandidate {
     path: PathBuf,
     target: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct BuildConfigTarget {
-    target: Option<String>,
 }
 
 pub(super) fn discover_optional_build_config(
@@ -147,16 +141,14 @@ fn collect_build_config_candidates(case_dir: &Path) -> anyhow::Result<Vec<BuildC
 }
 
 fn build_config_target(path: &Path) -> anyhow::Result<String> {
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let parsed: BuildConfigTarget =
-        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+    let parsed: crate::starry::config::StarryConfig = crate::build::load_build_config(path)?;
     let filename_target = path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .and_then(build_config_target_from_stem);
 
-    if let (Some(parsed), Some(filename)) = (parsed.target.as_deref(), filename_target.as_deref())
+    if let (Some(parsed), Some(filename)) =
+        (parsed.common.target.as_deref(), filename_target.as_deref())
         && parsed != filename
     {
         bail!(
@@ -165,7 +157,7 @@ fn build_config_target(path: &Path) -> anyhow::Result<String> {
         );
     }
 
-    parsed.target.or(filename_target).ok_or_else(|| {
+    parsed.common.target.or(filename_target).ok_or_else(|| {
         anyhow::anyhow!(
             "build config `{}` must define top-level `target` or use build-<target>.toml",
             path.display()
@@ -196,7 +188,10 @@ pub(super) fn default_build_config_for_board_config(
     if !build_config_path.is_file() {
         return Ok(None);
     }
-    let target = board::load_board_file(&build_config_path)?.target;
+    let target = board::load_board_file(&build_config_path)?
+        .common
+        .target
+        .expect("board target was validated");
     Ok(Some((build_config_path, target)))
 }
 

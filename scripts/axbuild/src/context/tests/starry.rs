@@ -20,12 +20,15 @@ uboot_config = "configs/snapshot-uboot.toml"
     )
     .unwrap();
 
+    let custom_config = root.path().join("starry-build.toml");
+    fs::write(&custom_config, "").unwrap();
+
     let app = test_app_context(root.path());
 
     let (request, snapshot) = prepare_starry_request(
         &app,
         StarryCliArgs {
-            config: Some(PathBuf::from("/tmp/starry-build.toml")),
+            config: Some(custom_config.clone()),
             arch: Some("aarch64".into()),
             target: Some("aarch64-unknown-none-softfloat".into()),
             smp: Some(4),
@@ -41,10 +44,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.target, "aarch64-unknown-none-softfloat");
     assert_eq!(request.smp, Some(4));
     assert!(request.debug);
-    assert_eq!(
-        request.build_info_path,
-        PathBuf::from("/tmp/starry-build.toml")
-    );
+    assert_eq!(request.build_info_path, custom_config);
     assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
     assert_eq!(request.uboot_config, None);
     assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
@@ -53,10 +53,7 @@ uboot_config = "configs/snapshot-uboot.toml"
         Some("aarch64-unknown-none-softfloat")
     );
     assert_eq!(snapshot.smp, Some(4));
-    assert_eq!(
-        snapshot.config,
-        Some(PathBuf::from("/tmp/starry-build.toml"))
-    );
+    assert_eq!(snapshot.config, Some(PathBuf::from("starry-build.toml")));
     assert_eq!(
         snapshot.qemu.qemu_config,
         Some(PathBuf::from("/tmp/qemu.toml"))

@@ -49,12 +49,7 @@ pub(crate) async fn prepare(app: &mut AppContext, run_config: &Path) -> anyhow::
             config.starts_with(app.workspace_root()),
             "guest config escapes workspace"
         );
-        let guest = crate::arceos::build::load_arceos_build_file(&config)?;
-        ensure!(
-            guest.package.is_some() && guest.target.is_some(),
-            "test guest config must declare package and target"
-        );
-        let (request, _) = app.prepare_arceos_request(
+        let (request, _) = app.prepare_arceos_request_with_input_check(
             BuildCliArgs {
                 config: Some(config),
                 ..Default::default()
@@ -62,6 +57,13 @@ pub(crate) async fn prepare(app: &mut AppContext, run_config: &Path) -> anyhow::
             None,
             None,
             crate::arceos::build::resolve_build_info_path,
+            |input| {
+                ensure!(
+                    input.package.is_some() && input.common.target.is_some(),
+                    "test guest config must declare package and target"
+                );
+                Ok(())
+            },
         )?;
         let cargo = crate::arceos::build::load_cargo_config(&request, app.workspace_context())?;
         ensure!(cargo.to_bin, "board guest build must enable to_bin");
@@ -147,8 +149,8 @@ mod tests {
         (path, writer)
     }
 
-    #[test]
-    fn case_without_a_sidecar_is_not_prepared() {
+    #[tokio::test]
+    async fn case_preparation_checks_declared_guest_inputs_before_building() {
         let root = tempdir().unwrap();
         let run_config = root.path().join("qemu-aarch64.toml");
 
@@ -158,6 +160,40 @@ mod tests {
             fs::read_dir(root.path()).unwrap().next().is_none(),
             "a case that declares nothing must not run anything"
         );
+
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "").unwrap();
+        fs::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname = 'guest-fixture'\nversion = '0.1.0'\nedition = '2024'\n[workspace]\n",
+        )
+        .unwrap();
+        let target_dir = root.path().join("build-output");
+        let mut app = AppContext::from_workspace_root(root.path(), Some(&target_dir)).unwrap();
+        let snapshot_path = root.path().join(crate::context::ARCEOS_SNAPSHOT_FILE);
+        let snapshot = b"package = 'guest-fixture'\ntarget = 'aarch64-unknown-none-softfloat'\n";
+        fs::write(&snapshot_path, snapshot).unwrap();
+        fs::write(
+            root.path().join(GUEST_BUILDS_FILE),
+            "arceos_build_configs = ['guest.toml']\n",
+        )
+        .unwrap();
+        for input in [
+            "package = 'guest-fixture'\nto_bin = true\n",
+            "target = 'aarch64-unknown-none-softfloat'\nto_bin = true\n",
+        ] {
+            fs::write(root.path().join("guest.toml"), input).unwrap();
+            let error = prepare(&mut app, &run_config).await.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("test guest config must declare package and target"),
+                "{error:#}"
+            );
+            assert_eq!(fs::read(&snapshot_path).unwrap(), snapshot.to_vec());
+            assert!(
+                !target_dir.exists(),
+                "invalid guest input must not start Cargo"
+            );
+        }
     }
 
     #[cfg(unix)]

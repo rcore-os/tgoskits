@@ -102,17 +102,7 @@ fn write_starry_board_build_config(root: &Path, build_group: &str, target: &str)
 }
 
 fn starry_request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
-    ResolvedStarryRequest {
-        package: crate::context::STARRY_PACKAGE.to_string(),
-        arch: arch.to_string(),
-        target: target.to_string(),
-        smp: None,
-        debug: false,
-        build_info_path: path,
-        build_info_override: None,
-        qemu_config: None,
-        uboot_config: None,
-    }
+    crate::context::test_support::starry_request(&path, arch, target)
 }
 
 fn write_board_test_config(
