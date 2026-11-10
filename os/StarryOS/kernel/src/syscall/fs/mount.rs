@@ -423,7 +423,7 @@ pub fn sys_fsconfig(
                 return Err(StarryError::InvalidInput);
             }
             for mountpoint in &state.mounts {
-                mountpoint.set_readonly(true);
+                mountpoint.set_readonly(true)?;
             }
             state.readonly_reconfigure = false;
         }
@@ -462,7 +462,7 @@ pub fn sys_fsmount(
             ..Default::default()
         })?;
     }
-    mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0);
+    mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0)?;
     mountpoint.set_mount_flags(
         mount_attributes & (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC),
     );
@@ -547,7 +547,7 @@ pub fn sys_mount_setattr(
         .walk_tree()
         .into_iter()
         .any(|(_, _, mountpoint)| Arc::ptr_eq(&mountpoint, directory.inner().mountpoint()));
-    apply_mount_attributes(directory.inner().mountpoint(), &attributes);
+    apply_mount_attributes(directory.inner().mountpoint(), &attributes)?;
     if is_visible {
         crate::file::notify_mount_namespace_changed(&mount_namespace);
     }
@@ -578,11 +578,14 @@ fn validate_mount_attributes(attributes: &MountAttr) -> StarryResult<()> {
     Ok(())
 }
 
-fn apply_mount_attributes(mountpoint: &Arc<Mountpoint>, attributes: &MountAttr) {
+fn apply_mount_attributes(
+    mountpoint: &Arc<Mountpoint>,
+    attributes: &MountAttr,
+) -> StarryResult<()> {
     if attributes.attr_set & MOUNT_ATTR_RDONLY as u64 != 0 {
-        mountpoint.set_readonly(true);
+        mountpoint.set_readonly(true)?;
     } else if attributes.attr_clr & MOUNT_ATTR_RDONLY as u64 != 0 {
-        mountpoint.set_readonly(false);
+        mountpoint.set_readonly(false)?;
     }
 
     let basic_attributes = (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC) as u64;
@@ -601,6 +604,7 @@ fn apply_mount_attributes(mountpoint: &Arc<Mountpoint>, attributes: &MountAttr) 
         }
     }
     mountpoint.set_mount_flags(mount_flags);
+    Ok(())
 }
 
 pub fn sys_mount(
@@ -674,16 +678,12 @@ pub fn sys_mount(
         if !target.is_root_of_mount() {
             return Err(StarryError::InvalidInput);
         }
-        // Reconfigure the same backend before publishing VFS write access.
-        // Physical read-only devices and conflicting owners leave flags intact.
-        if flags & MS_BIND == 0 && flags & MS_RDONLY == 0 {
-            target.filesystem().remount_read_write()?;
-        }
         let mp = target.mountpoint();
         if flags & MS_BIND == 0 {
-            mp.set_filesystem_readonly(flags & MS_RDONLY != 0);
+            mp.set_filesystem_readonly(flags & MS_RDONLY != 0)?;
+        } else {
+            mp.set_readonly(flags & MS_RDONLY != 0)?;
         }
-        mp.set_readonly((flags & MS_RDONLY) != 0);
         mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
@@ -710,11 +710,11 @@ pub fn sys_mount(
             let fs = crate::pseudofs::proc::new_procfs(current.as_thread().active_pid_namespace());
             let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -722,11 +722,11 @@ pub fn sys_mount(
             let fs = MemoryFs::new();
             let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -737,11 +737,11 @@ pub fn sys_mount(
             let fs = MemoryFs::new_ramfs();
             let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -749,11 +749,11 @@ pub fn sys_mount(
             let fs = new_devptsfs(parse_devpts_options(current, data)?);
             let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -767,12 +767,12 @@ pub fn sys_mount(
             let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);
             let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -796,7 +796,7 @@ pub fn sys_mount(
             })?;
             let target = context.resolve(target)?;
             if readonly || flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
@@ -856,7 +856,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
             return Err(StarryError::NoSuchDevice);
         }
         let mount = target_location.mount_with_source(&fs, source)?;
-        mount.set_readonly(readonly || fs.is_readonly());
+        mount.set_readonly(readonly || fs.is_readonly())?;
         mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         return Ok(());
     }
@@ -876,7 +876,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)
     })?;
     let mount = target_location.mount_with_source(&fs, source)?;
-    mount.set_readonly(readonly || fs.is_readonly());
+    mount.set_readonly(readonly || fs.is_readonly())?;
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
     Ok(())
 }
