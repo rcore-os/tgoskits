@@ -682,8 +682,11 @@ rename 暂不扩大 lower-backed 目录移动、真实 exchange/whiteout 等存�
 后端只能通过对应授权提交。rename 仍在同一观察内取得两槽、检查真实祖先，
 其既有锁序、no-op 和发布规则不因扩展而改变。
 
-创建只在当前父目录可搜索、可写且名称状态允许时提交；创建 owner 与父目录
-SGID 继承在本轮当前父元数据上决定。请求中的新对象 uid/gid 不是调用者身份。
+创建只在当前父目录可搜索、可写且名称状态允许时提交；创建 owner 按后端在
+本轮观察中选定的 `CreateOwnerPolicy` 决定。普通 Unix 后端采用 `ParentSetgid`，
+在当前父元数据上处理 SGID；cgroup/kernfs 的 `Caller` 规则见第 4.13 节。
+该策略由真实 backend attempt 提供，不能成为用户请求中的 owner 覆盖开关。
+请求中的新对象 uid/gid 不是调用者身份。
 普通用户创建不能借指定 owner 字段给自己提权；归档恢复使用显式初始化身份，
 后续恢复元数据也经过第 6 节的受控入口。mknod 的 rdev 和 symlink 文本在节点
 可见前完整初始化，不先公布一个零设备号或未初始化链接再补写。
@@ -807,6 +810,155 @@ FAT 的尝试取得真实 FS guard 后，在构造本轮 holder 之前观察当�
 这一路径的逻辑实体保留与原生 holder 转移/暂停协议需在相应 Overlay 实施前单独明确，
 当前不授权照搬旧 `lookup_visible_upper_child` 后持目标调用 unlink 的路径，
 原生实现和验收可以独立完成，但不代表该分层场景已经获准或通过。
+
+### 4.13 控制组文件系统的真实所有者
+
+`pseudofs/cgroup.rs` 目前在每次包装目录或控制文件时创建私有
+`SimpleFsNode` 属性，chmod/chown 的结果会随 wrapper 或挂载视图改变。
+`CgroupNode::remove_child` 的 children、members 和 pins 检查也没有阻止保留的
+节点引用在脱链后再次创建、迁入或成为 namespace root。本节把属性与业务活性
+放回真实组件所有者，不以修正 trait 签名或统一返回不支持代替这些行为。
+
+#### 4.13.1 持久属性与初始化
+
+采用组件节点持有中立属性的方案：`ax-cgroup` 中的 `CgroupNode` 强持有其目录
+及已创建控制文件的 `CgroupFsAttributes`，每个目标各有独立 uid、gid、mode、
+atime、mtime、ctime 和稳定 inode 标识。组件不依赖 VFS、任务凭据类型、
+`Location`、`PreparedWrite` 或 Starry `FileLike`。Starry wrapper 只持节点、
+文件种类和现有文件系统视图引用；metadata 和 `MetadataChange` 均访问这份
+真实状态，不能继续继承 `SimpleFsNode` 的私有属性写入。
+
+目录和七类控制文件用 `CgroupFileKind` 区分，不把目录属性复制成所有文件的
+共同属性。稳定语义身份包含 hierarchy、节点代际和文件种类；inode 标识在实体
+创建时分配并保留，不能由每次 lookup、mount 或临时 wrapper 分配，不能溢出回绕。
+同一节点的别名和不同挂载视图共享属性；视图自身的 root、mount 使用权和路径授权
+仍各自保留。节点强持有属性，wrapper 强持有节点，没有反向强持有 wrapper 的边，
+也不另建按裸地址或弱缓存登记的属性表。
+
+`CgroupFsInit` 显式携带创建上下文的 fsuid、fsgid 和时间。启动根由 Starry
+初始化入口提供内核初始化上下文；运行期 mkdir 和 `+pids` 使用执行该操作的
+成对文件系统凭据快照，不使用首次 lookup 的读取者，也不默认为 root。
+初始化、子项安装和首次可见性属于同一 mutation attempt；失败前不公布半初始化
+对象。目录增删更新当前父目录的 mtime、ctime；chmod/chown 按第 6 节仅更新其
+命令涉及的字段和 ctime，不顺带重写 atime/mtime 或其它控制文件。
+
+固定 Linux 的 cgroup 目录及控制文件分别取创建时的 `current_fsuid/fsgid`，
+不是从父目录或新目录继承 owner。VFS 创建观察因此携带
+`CreateOwnerPolicy::{ParentSetgid, Caller}`：原生 Unix 后端明确选择前者，
+cgroup 选择后者，不继承父 gid 或补入父 SGID。cgroup mkdir 的 mode 保留
+Linux `vfs_mkdir` 允许的普通权限与 sticky 位，不保留请求的 SUID/SGID；
+控制文件 mode 按种类的读写能力初始化，不采用 mkdir mode。
+固定授权器生成 `AuthorizedCreate` 时就完成这项 mode 规范化，不能等到组件
+commit 再静默删位，使已授权属性与实际提交值不一致。
+`AuthorizedCreate` 仍由固定当前授权器产生，策略不绕过父搜索、写权限、名称、
+只读 admission 或 backend 能力检查；不得在 commit 阶段忽略已经选定的属性策略。
+
+当前 controller 仍只支持已有的 `+pids`，本次不增加 disable 或其它 controller。
+给现有子目录启用 pids 时，在启用操作的同一 owner gate 内，为这些子目录
+首次安装四个 pids 文件属性，使用实际启用者的上下文；之后新建的子目录在创建
+时初始化已启用的接口。重复 `+pids` 不重置已有属性。可见性不能先由原子布尔值
+公布、再由 lookup 懒补属性；若未来支持移除和重建接口，必须另设实体代际，
+不能把仍由旧 fd 保留的属性改造成新文件。
+
+这保留了现有组件边界并扩展真实 owner。仅在 Starry 建稳定关联 owner 仍须改动
+组件的共同锁协议，还增加关联生命周期；只给 wrapper 加锁或用弱索引保存属性
+既不能保证保留，也不能约束组件直改路径，因而不采用。
+
+#### 4.13.2 真实守卫与锁顺序
+
+每个 hierarchy 由根节点建立并向后代共享一个 `CgroupMutationDomain`。
+其不可睡眠 gate 覆盖该 hierarchy 的目录状态、属性、live/dead、成员发布、
+首次 pin 和 fork 存活预留；不是覆盖所有 VFS 查找的全局锁。
+`CgroupMutationGuard` 实际持有这把锁，并借用 domain；guard 方法核对目标
+节点确属同一 domain，才允许观察或修改。不得以空生命周期标记代替持锁，
+不得导出可在 guard 外直接改属性、children、成员或 pins 的入口。
+
+Starry 的 cgroup `LockedAttempt` 拥有该 guard，在其中完成当前属性及名称观察、
+固定 VFS 授权、组件提交和命名缓存发布。组件 guard 提供领域操作，不运行任意
+外部闭包；不调用普通 lookup、任务/fd/proc 回调或底层文件系统 I/O。
+目录 create/remove、`+pids` 文件安装及目录和控制文件的元数据写均参与同一
+domain。普通组件入口内部取得 guard，已持 guard 的适配使用专门的 locked 方法，
+不能嵌套重取 gate。lookup/metadata 读取需取得与其有效性匹配的短快照。
+目录项构造会读取 `identity/filesystem/inode`；这些身份从不可变实体字段或本轮
+受控快照取得，不经普通 metadata 入口重取 domain。发布及退役所需的分配须核实
+在该不可睡眠上下文合法；不能因无 I/O 就默认不睡眠。需准备的容量先在 gate 外
+取得，再于当前 attempt 消费，不能在锁内调用可能阻塞的分配路径。
+
+锁顺序保留现有进程成员事务向组件下降的方向：
+进程 membership mutex → 成员账本 `membership::STATE` → hierarchy gate →
+节点局部 children/members/属性锁 → VFS 命名与缓存短锁。没有成员账本需要的
+目录和属性操作直接从 gate 开始；gate 内不能反取 `STATE`、进程 membership、
+namespace 发布锁或任务注册表。namespace 发布前先取得节点 pin，
+取得与安装分离但 pin 覆盖间隙；不能持 namespace 发布锁再执行可重入的 FS 回调。
+
+现有节点短锁可以保留内部数据访问职责，但都在共同 gate 之下，不能据它们
+声称整个尝试已原子。所有可能成为最后 owner 的移除项、临时 vnode 和结果
+归最外层 `MutationRetire` 或组件的显式外层退役值；先释放 gate、局部锁和
+`STATE`，再析构。不得在锁内丢弃 pin 后通过 Drop 再次进入同一 gate。
+
+#### 4.13.3 活性与存活权利
+
+`Arc<CgroupNode>` 只证明内存仍在。节点有不可逆的 `Live → Dead` 状态；
+成功 rmdir 在共同 gate 内检查无子组、无成员、无 namespace/mount pin、
+无在途 fork 存活预留，然后标记 Dead 并从父项脱链。普通打开目录描述不凭
+Arc 数量阻止 rmdir，但保留该描述不能使节点重新变成 Live。
+固定控制文件不是阻止 rmdir 的子组，不能因目录中存在这些接口就判为非空。
+Dead 节点的新创建、迁入、显式 fork 准备和首次 pin 均拒绝；
+仍被引用的属性可读取，不能把所有针对旧 fd 的操作机械改成同一错误。
+
+新增成员的迁移、初始 attach、fork publish 及回滚继续使用现有 `STATE` 事务，
+并按上一节顺序在 gate 内核对活性和更新成员。`CgroupForkGuard` 从准备成功起
+保留一份 `CgroupReservation`；它是删除可见的非复制存活权利，不跨调度持锁，
+不替代现有 pids charge、pending/task 账本或回滚。提交时先发布成员，再释放
+预留；失败、取消及 Drop 先完成已有账本和 charge 撤销，再释放预留。
+因此成功准备与 rmdir 有确定先后，不能在空目标已被删除后无条件 publish。
+
+首次 pin 改为检查 Live 后取得的可失败操作；`CgroupNamespace::new` 及其调用者
+传播失败。已有 `CgroupPin` 可创建独立 pin，因为原 pin 已阻止删除，
+不把它降为裸 Arc 再凭运气重取。pin/reservation 的 Drop 只释放本地存活权利，
+不提交目录操作或回滚磁盘。普通继承 fork、namespace root 与 mount 的既有
+强引用和计数职责继续复用，不以新预留改变 pids 控制算法。
+
+组件错误明确区分“名称不存在”与“实体已删除”；后者不能仍用 `add_member`
+的 bool 或宽泛忙碌错误隐藏，但不能全局直接映射为同一个用户错误。
+成功 rmdir 后，Linux 将目录 inode 标为 `S_DEAD`；路径查找和
+`may_create_dentry` 的 dead 父检查可先返回 `ENOENT`，后者先于父写/搜索 DAC。
+保留 dirfd 下创建必须保留这层前置拒绝，不因组件返回 Removed 就改成 `ENODEV`。
+
+已经进入 kernfs mkdir/rmdir 入口时，取得 active reference 失败才是 `ENODEV`；
+cgroup rmdir 回调中的 live 获取失败则返回零，不能混同外层错误或据此把普通
+查无名称的 rmdir 伪装成成功。`cgroup.procs` 先检查目标 live，再解析 PID；
+`CLONE_INTO_CGROUP` 的 dead 检查先于 `cgroup_may_write`。
+这些顺序分别由对应适配入口保持，不能统一前置或后置所有权限/参数检查。
+成员、pin 或预留阻止删除仍按当前组件边界给出 `EBUSY`，不据此宣称预留等待
+与 Linux 持有 cgroup mutex 跨 fork 的调度行为完全等价。
+身份分配耗尽明确失败，不回绕标识。
+
+#### 4.13.4 迁移与验收边界
+
+本节先迁移组件 owner、guard 和存活权利，再迁移 Starry cgroup 目录/文件属性、
+命名命令、`+pids` 上下文，以及 namespace、mount、clone 和成员适配。所有直改
+入口与错误映射在同一可审查序列替换，不保留永久无 guard 双轨；组件不反依赖
+VFS。cgroup 的 link、symlink 和 rename 仍保持原本不支持，不把全部 create、
+remove 或元数据写统一降成不支持以消除编译错误。
+
+复用组件成员/删除测试增强存活预留与实际脱链后的拒绝，复用 cgroup 系统用例
+证明多次 lookup、两个挂载视图与保留 fd 的属性共享，目录和控制文件属性互不
+覆盖，普通用户当前 owner 授权及 `+pids` 实际创建者。受控交错证明撤权后拒绝、
+迁入/pin/fork 预留与 rmdir 的先后和失败无错误副作用；同一回归先在错误行为
+上确定失败，再取得修后绿。Clippy 或组件模型不代替真实 syscall 装配证据。
+
+gate 增加的代价限定在 cgroup owner 域，不给普通 open 添加全局串行路径；
+检查短临界区、批量接口安装和最后 owner 锁外释放，复用原成员账本与计数，
+不新建后台任务、全局属性注册表或磁盘格式。代码提交可回滚，回滚不依赖 Drop
+恢复已删除状态。固定 Linux 的
+[kernfs 属性链](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/kernfs/inode.c#L67-L209)、
+[活性入口](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/kernfs/dir.c#L1292-L1327)、
+[控制文件凭据](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/cgroup/cgroup.c#L4380-L4394)、
+[目录创建](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/cgroup/cgroup.c#L5816-L5837)、
+[删除](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/cgroup/cgroup.c#L6170-L6204)和
+[显式 fork](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/cgroup/cgroup.c#L6720-L6763)
+分别决定真实属性 owner、活性检查、创建上下文和提交边界。
 
 ## 5. 对象型链接
 
