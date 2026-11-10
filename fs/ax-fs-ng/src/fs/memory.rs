@@ -1154,6 +1154,51 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn directory_rename_rejects_self_and_descendant_destinations_without_changing_the_tree() {
+        use axfs_ng_vfs::NameState;
+
+        use super::*;
+
+        let create = |parent: &DirEntry, name: &str| {
+            parent
+                .as_dir()
+                .unwrap()
+                .create(name, NodeType::Directory, NodePermission::default(), 0, 0)
+                .unwrap()
+        };
+        for into_descendant in [false, true] {
+            let filesystem = MemoryFs::new();
+            let root = filesystem.root_dir();
+            let source = create(&root, "source");
+            let descendant = create(&source, "descendant");
+            let destination = if into_descendant {
+                &descendant
+            } else {
+                &source
+            };
+
+            let result =
+                root.as_dir()
+                    .unwrap()
+                    .rename("source", destination.as_dir().unwrap(), "inside");
+            // Only inspect individual edges: the faulty implementation can have
+            // created a cycle, so path walking or recursive cache clearing is unsafe.
+            let snapshot = source.name_snapshot();
+            let original = root.as_dir().unwrap().lookup("source");
+            let inserted = destination.as_dir().unwrap().lookup("inside");
+
+            assert_eq!(result, Err(VfsError::InvalidInput));
+            assert!(original.is_ok_and(|entry| entry.ptr_eq(&source)));
+            assert!(matches!(inserted, Err(VfsError::NotFound)));
+            assert_eq!(snapshot.state(), NameState::Linked);
+            assert_eq!(snapshot.name(), "source");
+            assert!(snapshot.parent().unwrap().ptr_eq(&root));
+            assert!(descendant.parent().unwrap().ptr_eq(&source));
+        }
+    }
+
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn failed_symlink_capacity_reservation_does_not_publish_name() {
