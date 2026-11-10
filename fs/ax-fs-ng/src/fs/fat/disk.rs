@@ -510,8 +510,8 @@ mod tests {
         };
 
         use crate::{
-            FsContext,
             file::{FileBackend, FileFlags, OpenOptions, OpenResult},
+            highlevel::FsContext,
         };
 
         let (filesystem, _storage) = formatted_fat();
@@ -541,7 +541,7 @@ mod tests {
         let contents = b"retained FAT contents";
         assert_eq!(file.write_at(contents.as_slice(), 0), Ok(contents.len()));
         file.sync(false).unwrap();
-        filesystem.flush().unwrap();
+        root.entry().filesystem().flush().unwrap();
 
         let original = file.location().entry().clone();
         let key = original.key();
