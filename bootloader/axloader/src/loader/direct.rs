@@ -40,6 +40,8 @@ use super::boot_server::{BootExecution, BootServer};
 const TCP4_BINDING_GUID: uefi::Guid = uefi::guid!("00720665-67eb-4a99-baf7-d3c33a1c7cc9");
 const TCP4_GUID: uefi::Guid = uefi::guid!("65530bc7-a359-410f-b010-5aadc7ec2b62");
 const IO_WAIT_POLLS: usize = 3000;
+/// UEFI TCP4 reports peer FIN as implementation status `EFI_CONNECTION_FIN`.
+const TCP4_CONNECTION_FIN: Status = Status(Status::ERROR_BIT | 0x68);
 
 fn injected_202_write_error() -> uefi::Error {
     Status::ABORTED.into()
@@ -860,8 +862,12 @@ impl<'a> Connection<'a> {
                 Ok(data) => data,
                 Err(error) => {
                     let status = error.status();
-                    if matches!(status, Status::END_OF_FILE | Status::BAD_BUFFER_SIZE) {
-                        let reason = if status == Status::END_OF_FILE {
+                    if matches!(
+                        status,
+                        Status::END_OF_FILE | TCP4_CONNECTION_FIN | Status::BAD_BUFFER_SIZE
+                    ) {
+                        let reason = if matches!(status, Status::END_OF_FILE | TCP4_CONNECTION_FIN)
+                        {
                             format!("upload ended before declared length {expected_size}")
                         } else {
                             format!("upload exceeded declared length {expected_size}")

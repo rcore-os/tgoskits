@@ -1137,14 +1137,32 @@ async fn expect_injected_start_failure(
 }
 
 fn read_http_json_response(stream: &mut TcpStream) -> anyhow::Result<(u16, Value)> {
-    let mut response = Vec::new();
+    const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
     stream
-        .read_to_end(&mut response)
-        .context("failed to read raw HTTP response")?;
+        .set_read_timeout(Some(READ_TIMEOUT))
+        .context("failed to set raw HTTP response read timeout")?;
+    let mut response = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut response) {
+        let preview_len = response.len().min(4096);
+        let preview = String::from_utf8_lossy(&response[..preview_len]);
+        bail!(
+            "failed to read raw HTTP response within {}s: {error}; received {} bytes: {preview:?}",
+            READ_TIMEOUT.as_secs(),
+            response.len(),
+        );
+    }
     let header_end = response
         .windows(4)
         .position(|part| part == b"\r\n\r\n")
-        .context("raw HTTP response has no header terminator")?;
+        .with_context(|| {
+            let preview_len = response.len().min(4096);
+            let preview = String::from_utf8_lossy(&response[..preview_len]);
+            format!(
+                "raw HTTP response has no header terminator; received {} bytes: {preview:?}",
+                response.len(),
+            )
+        })?;
     let head = std::str::from_utf8(&response[..header_end])
         .context("raw HTTP response header is not UTF-8")?;
     let status = head
@@ -1169,11 +1187,94 @@ async fn elf_rejection_matrix(
     kernel: &[u8],
 ) -> anyhow::Result<()> {
     let base = format!("http://127.0.0.1:{port}/api/v1/boot/jobs");
+    let mismatch_id = "qemu-length-mismatch";
+    let mismatch_digest = format!("{:x}", Sha256::digest(kernel));
+    let mismatch_manifest = serde_json::json!({
+        "boot_id": mismatch_id,
+        "kernel": {"size": kernel.len(), "sha256": mismatch_digest.clone()},
+    });
+    let response = client
+        .post(&base)
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .json(&mismatch_manifest)
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::CREATED,
+        "length mismatch manifest was rejected"
+    );
+    let response = client
+        .put(format!("{base}/{mismatch_id}/kernel"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .header("X-Image-Sha256", mismatch_digest)
+        .body(vec![0])
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "complete length mismatch upload did not return 422"
+    );
+    let error: Value = response.json().await?;
+    ensure!(
+        error["code"] == "image_size_mismatch",
+        "complete length mismatch upload returned the wrong error: {error}"
+    );
+    let failed: Value = client
+        .get(format!("{base}/{mismatch_id}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    ensure!(
+        failed["phase"] == "failed"
+            && failed["kernel_received"] == false
+            && failed["last_error"]["code"] == "image_size_mismatch",
+        "complete length mismatch failed status is incomplete: {failed}"
+    );
+    let replay_start = client
+        .post(format!("{base}/{mismatch_id}/start"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .header("X-Serial-Binding", binding_id)
+        .send()
+        .await?;
+    ensure!(
+        replay_start.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "complete length mismatch did not reject start"
+    );
+    let error: Value = replay_start.json().await?;
+    ensure!(error["code"] == "image_size_mismatch");
+    let deleted = client
+        .delete(format!("{base}/{mismatch_id}"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .send()
+        .await?;
+    ensure!(
+        deleted.status() == reqwest::StatusCode::NO_CONTENT,
+        "complete length mismatch transaction could not be deleted"
+    );
+
     let short_id = "qemu-short-upload";
     let short_digest = format!("{:x}", Sha256::digest(kernel));
     let short_manifest = serde_json::json!({
         "boot_id": short_id,
-        "kernel": {"size": kernel.len(), "sha256": short_digest},
+        "kernel": {"size": kernel.len(), "sha256": short_digest.clone()},
     });
     let response = client
         .post(&base)
