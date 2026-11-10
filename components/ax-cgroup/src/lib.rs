@@ -55,6 +55,9 @@ pub enum CgroupError {
     /// The requested cgroup does not exist.
     #[error("cgroup was not found")]
     NotFound,
+    /// The retained cgroup entity has already been removed.
+    #[error("cgroup has been removed")]
+    Removed,
     /// A child cgroup with the requested name already exists.
     #[error("cgroup already exists")]
     AlreadyExists,

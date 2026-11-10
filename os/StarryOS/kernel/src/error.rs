@@ -310,6 +310,8 @@ fn cgroup_errno(error: CgroupError) -> Errno {
     match error {
         CgroupError::NotInitialized | CgroupError::InvalidInput => Errno::EINVAL,
         CgroupError::NotFound => Errno::ENOENT,
+        // Path-based operations must apply dead-parent precedence first.
+        CgroupError::Removed => Errno::ENODEV,
         CgroupError::AlreadyExists => Errno::EEXIST,
         CgroupError::ResourceBusy => Errno::EBUSY,
         CgroupError::LimitExceeded => Errno::EAGAIN,
@@ -618,6 +620,7 @@ fn memory_errno_mappings_hold() -> bool {
         (AllocError::NotFound.into(), Errno::ENOENT),
         (CgroupError::NotInitialized.into(), Errno::EINVAL),
         (CgroupError::NotFound.into(), Errno::ENOENT),
+        (CgroupError::Removed.into(), Errno::ENODEV),
         (CgroupError::AlreadyExists.into(), Errno::EEXIST),
         (CgroupError::ResourceBusy.into(), Errno::EBUSY),
         (CgroupError::LimitExceeded.into(), Errno::EAGAIN),

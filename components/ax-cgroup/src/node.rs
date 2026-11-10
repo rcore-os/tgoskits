@@ -323,6 +323,12 @@ mod tests {
         drop(pin);
         assert_eq!(root.remove_child("child"), Ok(()));
         assert_eq!(incidental_reference.name(), "child");
+        let late_create = incidental_reference.create_child("late").map(|_| ());
+        let still_absent = root.lookup_child("child").map(|_| ());
+        assert_eq!(
+            (late_create, still_absent),
+            (Err(CgroupError::Removed), Err(CgroupError::NotFound))
+        );
     }
 
     #[test]

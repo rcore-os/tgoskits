@@ -331,6 +331,8 @@ fn cgroup_error_to_vfs_error(error: CgroupError) -> VfsError {
     match error {
         CgroupError::NotInitialized | CgroupError::InvalidInput => VfsError::InvalidInput,
         CgroupError::NotFound => VfsError::NotFound,
+        // Namespace attempts must reject dead parents before this conversion.
+        CgroupError::Removed => VfsError::NoSuchDevice,
         CgroupError::AlreadyExists => VfsError::AlreadyExists,
         CgroupError::ResourceBusy => VfsError::ResourceBusy,
         CgroupError::LimitExceeded => VfsError::WouldBlock,
