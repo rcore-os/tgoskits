@@ -606,6 +606,73 @@ owner gate，在当前 backing inode 锁内完成实际授权与更新，而非�
 rename 暂不扩大 lower-backed 目录移动、真实 exchange/whiteout 等存储能力边界；
 合法 no-op 和本来支持的 upper 修改仍按第 4.1 节处理。
 
+### 4.11 其余命名命令
+
+创建、硬链接与删除复用 `NamespaceMutation` 的数据命令边界，不另建绕过授权的
+`DirNodeOps::create/link/unlink` 长期通道。命令扩展为 `Create`、`Link`、
+`Unlink` 和既有 `Rename`；symlink 是带文本载荷的创建，rmdir 是要求目录的删除，
+不为每个系统调用号建立一套事务。各请求由 `Location` 的受控入口私有构造，
+借用显式调用凭据、同一个写入准备结果和最外层 `MutationRetire`。
+确实修改名称的分支必须借用成功的 `PreparedWrite`；创建式 open 的既存分支
+按下述规则保留准备错误，不伪造可写能力。
+
+命名 hook 的结果扩展为 `NamespaceOutcome<NamespaceEffect>`，
+`NamespaceEffect` 按命令区分创建、链接、删除和既有 `RenameEffect`。
+创建结果保留实际 `DirEntry`、规范名称与本次是否创建；链接保留新别名及共享实体；
+删除保留实际移出的实体身份，不重新探测旧名称，也不临时分配一个 inode 数值
+冒充已删除实体。各载荷包含本轮已确定的缓存策略，发布时不调用未知 backend 回调。
+已有 generic outcome 的状态和第一错误规则不变，不复制第二份完成状态。
+
+`LockedAttempt` 扩展为对命令的本轮观察和已授权提交；观察使用与命令相匹配的
+枚举载荷，包含实际父元数据、当前名称槽与必要源实体，不使用未检查的字段组合。
+`AuthorizedMutation` 的构造仍私有，消费当前槽位并借原 guard，
+后端只能通过对应授权提交。rename 仍在同一观察内取得两槽、检查真实祖先，
+其既有锁序、no-op 和发布规则不因扩展而改变。
+
+创建只在当前父目录可搜索、可写且名称状态允许时提交；创建 owner 与父目录
+SGID 继承在本轮当前父元数据上决定。请求中的新对象 uid/gid 不是调用者身份。
+普通用户创建不能借指定 owner 字段给自己提权；归档恢复使用显式初始化身份，
+后续恢复元数据也经过第 6 节的受控入口。mknod 的 rdev 和 symlink 文本在节点
+可见前完整初始化，不先公布一个零设备号或未初始化链接再补写。
+创建普通字符/块设备在本轮 `may_create` 等价的名称与父权限检查后，
+还须检查调用者按固定 Linux `capable(CAP_MKNOD)` 语义得到的能力事实，
+失败 `EPERM`；父可写或 `CAP_FOWNER` 不能替代。凭据快照显式携带
+`cap_mknod`，不能用 uid 0 或未经解释的其他用户命名空间同名能力位代替。
+字符设备 `rdev=0:0` 按 Linux `vfs_mknod` 的 whiteout 例外处理，
+但仍需其余创建检查和后端能力；该例外不意味着支持 rename whiteout。
+
+创建式 open 使用同一个 `Create` 命令表达排他创建或“已有则打开”的意图。
+后端在锁内返回实际对象与 created 状态；非排他竞争遇到已有名称时，对该轮当前对象
+完成所需授权，不能把外层旧 `ENOENT` 变成跳过文件检查的理由。
+写权利仍在 gate 前尝试准备，但其结果以
+`CreationWrite::Ready(&PreparedWrite)` 或 `Denied(VfsError)` 保留，
+不在观察名称之前统一返回准备错误。当前槽位已存在时，排他请求先给 `EEXIST`，
+非排他请求按该对象的打开意图检查；只读打开不需要创建权利，也不要求父写权限。
+只有当前槽位缺失、确实需要创建时才使用保存的准备错误；
+`Denied` 不能构造任何可修改槽位的授权能力。
+若既存对象后续需要写入或截断，仍须在退出观察后取得相应完整权利并重验证，
+不能持 gate 临时补 admission，也不能因创建分支被取消而省略这些检查。
+open 后续截断仍有自己的写权利与实际对象检查，不把描述符租约倒推成此前创建
+已获授权。末链接和悬空目标继续沿第 3 节原会话消费，不重新顶层 open。
+
+链接在当前父目录、实际源实体和调用凭据上检查跨 mount、目标不存在、目录类型与
+保护硬链接规则。删除在本轮同时检查父写权限、sticky、实际目标类型、目录为空和
+挂载忙碌边界。范围与路径搜索预检保留错误顺序，但不能充当槽位授权；
+`FsContext` 不以锁外探测代替当前提交结果。拒绝操作的伪文件系统保留原错误，
+不会因默认适配获得新写能力。
+
+MemoryFs 在现有 mutation gate 内完成观察、权限、修改与发布，移出 inode 交外层
+退役集合，不再在局部函数返回时提前释放。Ext4 的每轮真实 namespace/state
+尝试读取当前槽和权限，日志推进后重新观察授权；创建或链接实际应用之后的
+`finish_directory_change` 错误必须保留对象与状态。FAT 同一 FS guard 内观察和提交，
+保留已有不支持边界，创建之后 find/holder 失败不能伪称 `Unchanged`。
+对外的便利入口仅在发布或失效完成后取出命令对应载荷；应用后错误仍向用户返回错误。
+
+这些接口迁移覆盖 `FsContext`、创建式 open、initramfs、挂载目录恢复、
+ArceOS API、Starry 伪文件系统和测试后端。只为迁移保留的旧命名入口有明确删除点，
+不得在最终交付中留下永久无凭据路径。新增命名结果持有的引用也受第 4.3 节约束，
+在 outer gate 内丢弃结果时移交实际 owner，不能让返回载荷形成新的析构反入点。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。
@@ -719,6 +786,70 @@ socketpair 两端是不同对象，不能为了复用字段误合并 inode。
 不通过 syscall 层事前 probe 或析构猜测是否创建。
 memfd 复用已有内存 inode 与执行路径，只修正受影响的对象访问和显示。
 
+### 6.3 当前 inode 尝试
+
+用户元数据修改通过 `Location` 构造私有 `MetadataRequest`，
+携带 `MetadataChange`、显式 `MutationCredentials` 与已准备的写权利，
+再进入 `NodeOps` 的受控命令能力。inode 修改不伪装成父目录 rename：
+`LockedMetadataAttempt` 借用该 inode 实际所有者的锁，提供当前元数据观察和
+消费式已授权提交，不暴露可在锁内调用的普通 `Location` 慢操作。
+`MetadataRequest::execute` 固定完成观察、授权和提交；重试前结束本轮全部借用。
+
+结果复用现有 `NamespaceOutcome<Metadata>`，此处泛型观察代表实际提交后的
+inode 状态，不触发命名发布。`Applied` 后的持久化失败仍带原观察和错误，
+不重放修改；`Uncertain` 使相关属性缓存不可信。结果链不新增独立状态枚举，
+也不要求 metadata 必须改变名称。最终系统调用只在处理实际结果后转换为普通返回值。
+
+MemoryFs 对 mode/owner 修改使用现有 mutation gate 加真实 inode metadata 锁，
+覆盖目录自身与 sticky 所需 owner；原子引用回收不取得该 gate。
+Ext4 对命名授权相关 mode/uid/gid 取得与命名操作协调的 namespace 权利，
+再按统一顺序进入 content/state 观察；不能先拿 content 锁再反向补 namespace。
+实际类型为目录还是文件、需要的 namespace 范围在准备阶段取得并在尝试内重验证。
+每次释放 state/namespace 作日志推进后重新读当前 inode 并重新授权，
+不复用循环外构造的 `InodeMetadataUpdate`。
+
+FAT 使用其实际 FS guard；不支持的 mode/owner/rdev 修改明确返回不支持，
+不得继续 `Ok(())` 丢弃字段。只改时间仍沿真实后端能力执行。
+伪文件系统和匿名对象在实际共享 inode owner 内执行同一协议，
+不把临时 wrapper 的私有 metadata 锁当作跨别名授权边界。
+
+### 6.4 领域意图与权限
+
+`MetadataChange` 的用户入口保留 `Chmod`、`Chown { uid, gid }` 和时间修改的意图，
+后端原始 `MetadataUpdate` 只在已授权的 inode 尝试或未发布对象构造中使用。
+`MutationCredentials` 补充当前操作需要的 `CAP_CHOWN`、`CAP_FSETID` 能力事实，
+来源仍是已有凭据快照；不从 uid 0 推导，不新增凭据镜像或 namespace ID 分配。
+设备创建另外携带第 4.11 节的 `CAP_MKNOD` 事实，各能力按对应 Linux
+命名空间范围解释，不能把有一个 capability 位当作对所有 inode/namespace 的授权。
+本次不借此实现缺失的 mount idmap、LSM 或完整 user namespace 映射。
+
+chmod 在当前 owner 或 `CAP_FOWNER` 授权后设置请求权限位，并按当前组身份和
+`CAP_FSETID` 决定 SGID；不从旧快照重写 owner。chown 对每个 `Some` 字段分别
+检查当前 inode：即使请求 uid/gid 与当前值相同，也不能仅以“没有变化”免除权限；
+无 `CAP_CHOWN` 时，仅允许当前 owner 保持自己的 uid，并将 gid 保持原值或改为
+调用者所属组。`None` 不参与该字段更新，不在锁外补值。
+
+chown 的非目录 SUID/SGID 清理按固定 Linux `chown_common`、
+`setattr_should_drop_sgid` 和 `setattr_prepare` 针对当前 inode 决定。
+`(-1,-1)` 仍可能清理权限位并更新时间，不当作未经检查的空命令。
+SGID 清理不只看 GROUP_EXEC，还包括当前组身份与 `CAP_FSETID`；
+目录保留用于继承的 SGID。物理后端提交已计算的受控变更时不得再套一份不同的
+隐式 owner 清理规则；rsext4 的原始更新策略须与这条领域命令同步，
+不能在 VFS 决策后又无条件清除更多位。
+
+时间命令保留“设为 Now、保持原值、显式时间”的区别，入口处理 ABI 参数和
+Linux 的全 OMIT 早返回顺序；只有已确认有效的命令进入 inode 尝试。
+需要 owner/CAP_FOWNER 或写权限的情况按当前 inode 检查，
+不能将 `UTIME_OMIT` 在锁外展开成旧时间再回写。访问时间维护仍由文件内容 owner
+处理，不把 File Drop 的尽力时间更新转化为用户修改权限的入口。
+
+归档、copy-up、设备初始化和新挂载根属性属于内部恢复，不冒充用户 chmod/chown。
+其受控恢复能力只能由未发布构造或已授权的初始化/分层 owner 派生，
+绑定实际对象、写权利和退役集合，不能由 syscall 接收一个任意 raw patch 后选择
+“跳过授权”。copy-up 恢复 lower 属性与最终用户修改分开记录真实阶段，
+后者仍用当前访问者和 mounter 双层语义检查；不默认 root。
+`MetadataUpdate` 不能作为对外长期无凭据修改接口留存。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
@@ -767,6 +898,10 @@ memfd 复用已有内存 inode 与执行路径，只修正受影响的对象访�
 不为测试扩大私有接口，也不能让缺导入等无关编译错误冒充契约证明。
 组件测试使用真实实现及受控交错，证明重命名身份、授权重试、
 元数据部分更新、错误传播、缓存与析构顺序。
+创建式 open 的完整证明包括只读挂载上既存对象只读打开、排他已有 `EEXIST`，
+以及实际缺失时的创建错误，不能仅验证可写挂载创建成功。
+特殊节点创建同时证明普通字符/块设备的 `CAP_MKNOD` 门禁和 whiteout 例外；
+元数据交错证明逐字段 chown 不回写并发字段、同值请求仍按当前 owner 授权。
 
 R4 复用真实 MemoryFs 自移/后代拒绝回归，并补足受控并发拓扑交错的最终无环与身份
 判定；已有自移首断言的红测不冒充后代及并发分支也已采红。
@@ -809,6 +944,9 @@ Linux 行为以固定提交源码为准；Rust 与其他 VFS 资料用于解释�
 
 - [Linux v7.1 路径查找](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c)
 - [Linux v7.1 打开参数与元数据操作](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c)
+- [Linux v7.1 inode 属性授权与权限位](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/attr.c#L20-L235)
+- [Linux v7.1 创建式打开的延后写入错误](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4442-L4479)
+- [Linux v7.1 特殊节点创建授权](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5100-L5132)
 - [Linux v7.1 挂载写入权利与只读切换](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L590-L721)
 - [Linux v7.1 superblock 重配置](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/super.c#L1036-L1092)
 - [Linux v7.1 Overlay layer、work 与深度](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L805-L836)
