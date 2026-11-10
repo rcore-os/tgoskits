@@ -92,7 +92,7 @@ eventfd-epoll = ["ax-std", "ax-std/fd", "dep:libc"]
 exception-breakpoint = ["ax-std"]
 exception-page-fault = ["ax-std", "ax-std/paging"]
 futex-errno-order = ["ax-std", "dep:libc"]
-lockdep-baseline = ["ax-std", "dep:axfs-ng-vfs", "ax-std/alloc"]
+lockdep-baseline = ["ax-std", "dep:ax-fs-ng", "dep:axfs-ng-vfs", "ax-std/alloc"]
 lockdep-detect = [
     "ax-std",
     "dep:axfs-ng-vfs",
