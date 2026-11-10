@@ -152,6 +152,160 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
         }
         assert_admission_released(&filesystem);
     }
+
+    use axfs_ng_vfs::{
+        MutationCredentials, MutationRetire, NameState, NamespaceState, PreparedWrite, RenameAction,
+    };
+
+    use crate::file::{File, FileBackend, FileFlags};
+
+    for options in [RenameOptions::REPLACE, RenameOptions::EXCHANGE] {
+        let (filesystem, root, _) = super::sync_policy::background_mount();
+        let source = root
+            .create(
+                "source",
+                NodeType::RegularFile,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .unwrap();
+        let target = root
+            .create(
+                "target",
+                NodeType::RegularFile,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .unwrap();
+        let source_handle = File::new(
+            FileBackend::new_direct(source.clone()),
+            FileFlags::READ | FileFlags::WRITE,
+        );
+        let target_handle = File::new(
+            FileBackend::new_direct(target.clone()),
+            FileFlags::READ | FileFlags::WRITE,
+        );
+        assert_eq!(source_handle.write_at(b"new".as_slice(), 0), Ok(3));
+        assert_eq!(target_handle.write_at(b"old".as_slice(), 0), Ok(3));
+        filesystem.sync_to_disk().unwrap();
+        super::sync_policy::set_inode_flags(&filesystem, &root, rsext4::InodeFlags::DIRECTORY_SYNC);
+        let write = PreparedWrite::acquire(&root).unwrap();
+        let retired = MutationRetire::new();
+        let inspected_root = root.clone();
+        let inspected_source = source.clone();
+        let inspected_target = target.clone();
+        let observed_flushes = Arc::new(AtomicUsize::new(0));
+        let observed = observed_flushes.clone();
+        let probe = watch_flush(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+            // Only inspect published VFS state here. The commit gate is held;
+            // do not reenter inode I/O or any synchronous namespace mutation.
+            let published = inspected_root
+                .entry()
+                .as_dir()
+                .unwrap()
+                .lookup_cache("target")
+                .expect("rename must publish before its completion flush");
+            assert!(published.ptr_eq(inspected_source.entry()));
+            let source_name = inspected_source.entry().name_snapshot();
+            assert_eq!(source_name.state(), NameState::Linked);
+            assert_eq!(source_name.name(), "target");
+            assert!(source_name.parent().unwrap().ptr_eq(inspected_root.entry()));
+            let target_name = inspected_target.entry().name_snapshot();
+            if options.exchange() {
+                assert_eq!(target_name.state(), NameState::Linked);
+                assert_eq!(target_name.name(), "source");
+            } else {
+                assert_eq!(target_name.state(), NameState::Unlinked);
+            }
+            Err(BlockError::Io)
+        });
+
+        let outcome = root.rename_with_write(
+            "source",
+            (&root, "target"),
+            options,
+            &MutationCredentials::root(),
+            &write,
+            &retired,
+        );
+
+        probe.finish();
+        assert_eq!(observed_flushes.load(Ordering::Relaxed), 1);
+        assert_eq!(outcome.state(), NamespaceState::Applied);
+        // A second, real completion failure must not replace the original I/O
+        // error or discard the effect. The prepared writer makes this EBUSY.
+        let later_completion = root.mountpoint().set_readonly(true);
+        assert_eq!(later_completion, Err(VfsError::ResourceBusy));
+        let outcome = outcome.with_completion(later_completion);
+        assert_eq!(outcome.state(), NamespaceState::Applied);
+        let effect = outcome
+            .observation()
+            .expect("applied rename retains its observation");
+        assert!(effect.source.matches(source.entry()));
+        assert!(effect.target.as_ref().unwrap().matches(target.entry()));
+        assert_eq!(
+            effect.action,
+            if options.exchange() {
+                RenameAction::Exchange
+            } else {
+                RenameAction::Move
+            }
+        );
+        assert_eq!(effect.source_name, "source");
+        assert_eq!(effect.destination_name, "target");
+        assert_eq!(outcome.into_result(), Err(VfsError::Io));
+        assert!(!root.is_readonly());
+
+        // Compare both native names and live VFS aliases. In particular, an
+        // exchange replay would swap the two real inodes back.
+        let native_root: Arc<Inode> = root.entry().downcast().unwrap();
+        assert_eq!(
+            native_root.lookup("target").unwrap().inode(),
+            source.inode()
+        );
+        assert!(
+            root.lookup_no_follow("target")
+                .unwrap()
+                .entry()
+                .ptr_eq(source.entry())
+        );
+        if options.exchange() {
+            assert_eq!(
+                native_root.lookup("source").unwrap().inode(),
+                target.inode()
+            );
+            assert!(
+                root.lookup_no_follow("source")
+                    .unwrap()
+                    .entry()
+                    .ptr_eq(target.entry())
+            );
+            assert_eq!(target.metadata().unwrap().nlink, 1);
+        } else {
+            assert_eq!(
+                native_root.lookup("source").unwrap_err(),
+                VfsError::NotFound
+            );
+            assert_eq!(
+                root.lookup_no_follow("source").unwrap_err(),
+                VfsError::NotFound
+            );
+            assert_eq!(target.entry().name_state(), NameState::Unlinked);
+            assert_eq!(target.metadata().unwrap().nlink, 0);
+        }
+        assert_eq!(source.metadata().unwrap().nlink, 1);
+        let mut bytes = [0; 3];
+        assert_eq!(source_handle.read_at(&mut bytes[..], 0), Ok(3));
+        assert_eq!(&bytes, b"new");
+        assert_eq!(target_handle.read_at(&mut bytes[..], 0), Ok(3));
+        assert_eq!(&bytes, b"old");
+        assert_admission_released(&filesystem);
+        drop(retired);
+        drop(write);
+    }
 }
 
 #[test]

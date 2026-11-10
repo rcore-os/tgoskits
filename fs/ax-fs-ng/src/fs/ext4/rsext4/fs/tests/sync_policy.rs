@@ -203,7 +203,7 @@ fn create_file(root: &Location, name: &str) -> Location {
         .unwrap()
 }
 
-fn set_inode_flags(filesystem: &Ext4Filesystem, location: &Location, flags: InodeFlags) {
+pub(super) fn set_inode_flags(filesystem: &Ext4Filesystem, location: &Location, flags: InodeFlags) {
     let number = InodeNumber::new(location.inode() as u32).unwrap();
     filesystem
         .with_writeback_progress(|state| {

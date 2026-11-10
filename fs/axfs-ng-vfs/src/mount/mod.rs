@@ -1612,6 +1612,8 @@ mod tests {
     use super::*;
     use crate::{FileNode, FileNodeOps, StatFs};
 
+    mod prepared_write;
+
     struct MockFs;
     struct ContextCheckingFs;
     struct MockNode;
