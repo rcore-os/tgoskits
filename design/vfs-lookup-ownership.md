@@ -338,6 +338,14 @@ fork 随 MM 复制、exec 构建新 MM 时按调用者空间初始化，用于 n
 这与复用 MM 内既有 `ExecutableFile` 一致，不新增可执行对象镜像或重写映像发布。
 本次不重做完整 UID/GID 映射子系统，也不因新增谱系信息向现有凭据发放原本没有的能力。
 
+强父链必须有创建边界，不能让无特权任务构造无界遍历或递归析构。
+`UserNamespace::new_child` 在分配子对象、占用新身份或发布之前检查父层级；
+按固定 Linux `create_user_ns` 的条件，父 `level > 32` 时返回 `ENOSPC`，
+父层级为 32 时仍可创建层级 33，不能用含糊的“最多 32 层”替代实际边界。
+`NsProxy::unshare_user`、unshare 与 clone/clone3 的准备流程传播这个可失败结果，
+拒绝时保留原命名空间身份、凭据和 MM，不发布部分准备状态。
+边界及失败保持通过有界的真实创建操作验证，不以耗尽内核栈作为测试方法。
+
 具体接口落在既有 `AddrSpace`：执行文件 getter 只克隆已有执行租约，
 用户命名空间 getter 返回创建时的引用。`UserImageBuilder` 通过构建期 setter
 向内部地址空间传递命名空间，不公开私有 `aspace`，exec caller 不绕过 builder。
@@ -453,6 +461,7 @@ Linux 行为以固定提交源码为准；Rust 与其他 VFS 资料用于解释�
 
 - [Linux v7.1 路径查找](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c)
 - [Linux v7.1 打开参数与元数据操作](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c)
+- [Linux v7.1 用户命名空间创建边界](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/user_namespace.c#L83-L135)
 - [Linux v7.1 持锁证据](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/rust/kernel/sync/locked_by.rs)
 - [Starnix 固定版本目录项与重命名](https://fuchsia.googlesource.com/fuchsia/+/3b5d6be01bbadd768777e59bb65af7860b45b8af/src/starnix/kernel/core/vfs/dir_entry.rs)
 - [Rust API Guidelines：类型安全](https://rust-lang.github.io/api-guidelines/type-safety.html)
