@@ -226,6 +226,55 @@ scoped 向上过程中不能证明没有竞争时返回 `EAGAIN`，
 最终创建必须在槽位实际排他范围内完成必要的作用域重验证。
 普通查找不长期持有全局写锁，缓存专用查找不能等待慢路径来修复观察。
 
+### 3.5 调用身份与能力范围
+
+文件系统调用的身份不仅是 `Cred` 中的 UID/GID 和 effective capability 位，
+还包含解释这些能力的用户命名空间。当前 `task::Cred` 没有 namespace 字段，
+真实身份在 `NsProxy::user_ns`；因此 Starry 在任务层引入拥有引用的
+`FsCredentialsSnapshot`，成对保存 `Arc<Cred>` 与
+`Arc<RawSpinLock<UserNamespace>>`，不把后者补成显示 ID 或映射完成布尔值。
+这不是另一份可修改的凭据库，两个字段都引用现有权威所有者。
+
+`FsCredentialsSnapshot::capture` 在调用线程所属
+`ProcessData::namespace_update` 发布边界内取得这两个引用，复用
+`task::proc_access::ProcReadCredentials::snapshot` 已有的成对读取方式。
+取得顺序为发布边界、线程凭据锁、namespace aggregate 的短时快照；
+在调用任务 FS 上下文、路径解析、写入 admission、后端或 proc 回调前释放这些锁。
+已发布 `Cred` 按现有写时复制方式保持不可变；namespace Arc 固定对象身份，
+不声称冻结该对象以后可能改变的映射状态。
+
+Starry 的 `syscall::fs::mutation_credentials` 改为借用该拥有型快照，
+按下述已支持范围生成短寿命 `MutationCredentials`，groups 仍借自快照内的 `Cred`。
+VFS 不依赖 Starry 的任务或 namespace 类型，也不根据 uid 0 推导能力。
+同一次查找、续走和修改使用同一调用身份；重新进入一个后端尝试仍须针对当前
+inode 重新授权，身份快照不能代替槽位和 inode 的当前观察。
+
+Linux 各能力的目标范围并不相同。以下区分决定本次适配可以生成哪些事实，
+不能把 `Cred::has_cap` 的裸位或 proc READ_FSCREDS 的专用 ptrace 判断当成通用授权。
+
+| 使用位置 | 固定 Linux 规则 | 本次 Starry 适配边界 |
+| --- | --- | --- |
+| 普通字符/块设备创建 | `capable(CAP_MKNOD)` 检查 initial user namespace | 仅快照的 namespace 与 `ROOT_USER_NS` 真实 Arc 相同且 effective MKNOD 位存在时生成 `cap_mknod=true`；whiteout 例外仍按第 4.11 节处理 |
+| DAC 能力放行 | `capable_wrt_inode_uidgid` 检查调用者当前 user namespace，并要求 inode UID/GID 经 mount idmap 后在该 namespace 中有映射 | 现有扁平、非 idmapped 身份域仅在调用者处于 initial namespace 时生成相应 DAC 能力事实 |
+| owner 的 FOWNER 例外 | `inode_owner_or_capable` 先比较映射后的 owner 与 fsuid，能力分支检查当前 namespace 及 UID 映射；sticky 删除另按其实际 Linux 检查处理 | initial namespace 中可解释 effective FOWNER；非 initial namespace 不从裸位生成特权例外，普通 owner 判断仍在当前 inode 上执行 |
+| chown 与 chmod 的保留 SGID 例外 | CHOWN 及 `in_group_or_capable` 的 FSETID 要求相应当前 namespace 和 inode 映射；chown 的无效映射还有 `s_user_ns` 特例 | `cap_chown`、元数据用途的 `cap_fsetid` 仅在 initial namespace 中生成；不伪造不存在的映射或 `s_user_ns` |
+| 普通文件写入剥除 setid 的例外 | `setattr_should_drop_suidgid` 另用 initial-namespace `capable(CAP_FSETID)` | 不把元数据用途的 FSETID 布尔值推广成未来所有 FSETID 用途的通用证明 |
+
+当前 `UserNamespace::{uid_mapped,gid_mapped,is_root}` 只有简化状态，
+`pseudofs::proc` 的 map 写入甚至直接改写 `Cred` 数值，不保存可核验的映射区间；
+`Filesystem`、`FilesystemMountState` 和 `Mountpoint` 也没有 mount idmap 或权限
+creator-userns 数据。这些事实不足以证明子 namespace 中的 inode 映射，
+`is_root` 可在子 namespace 中改变，不能作为 initial namespace 判断。
+本次不重做该子系统：非 initial namespace 的上述 capability 放行事实均为 false，
+仍执行普通 owner/group/mode 与已有数值身份规则，不把整个操作统一拒绝，
+也不把该保守处理宣称为完整 Linux user-namespace 隔离或兼容。
+特别是现有数值映射的 owner 别名问题没有因此消失，最终兼容性记录须保留此限制。
+
+与继续复制裸位相比，这个边界不会把未知映射解释成已获特权；与新增完整映射系统相比，
+它不扩大本次批准范围。未来加入真实映射时，能力必须在当前 inode 观察上结合目标映射
+解释，并按用途拆分必要事实，不能仅把非 initial 的布尔值重新打开。
+启动和测试中没有用户任务的初始化继续使用显式初始化身份，不提供 syscall 的 root 兜底。
+
 ## 4. 命名事务
 
 VFS 统一授权与提交协议，真实排他权由文件系统状态所有者落实。
@@ -558,11 +607,15 @@ upper/work 不属于保证用法，不声称仅凭这组检查提供跨实例事
 
 ### 4.10 分层打开与元数据
 
-Overlay 挂载入口保存真实创建者的 `Arc<Cred>` 快照，每次内部操作临时借用转换为
-`MutationCredentials`；不保存借用 groups 的长寿命快照，不在操作时读取创建者的新凭据，
+Overlay 挂载入口保存第 3.5 节成对取得的真实创建者 `FsCredentialsSnapshot`，
+包含凭据和用户命名空间的拥有型引用，每次内部操作临时借用转换为
+`MutationCredentials`；不能仅保存不含 namespace 的 `Arc<Cred>`。
+不保存借用 groups 的长寿命快照，不在操作时读取创建者的新凭据或新 namespace，
 也不使用 `MutationCredentials::root()` 兜底。当前唯一生产创建点为同步 `sys_mount`，
-取得时点就是构造本实例；未来增加其他 mount API 时必须明确对应取得时点。
+取得时点就是构造本实例之前、进入 backing 解析和准备之前；
+未来增加其他 mount API 时必须明确对应取得时点。
 对外使用当前访问者凭据检查 Overlay 实体，对内使用已保存身份检查所选 backing。
+两个身份分别遵守第 3.5 节的能力范围，不以挂载成功代替 backing 操作授权。
 本次不宣称新增 Linux quota、LSM 或尚未实现的 user namespace 映射保证。
 
 所有 writable regular-file open 在返回描述前完成 copy-up；`O_PATH` 和普通只读打开
@@ -818,7 +871,8 @@ FAT 使用其实际 FS guard；不支持的 mode/owner/rdev 修改明确返回�
 `MetadataChange` 的用户入口保留 `Chmod`、`Chown { uid, gid }` 和时间修改的意图，
 后端原始 `MetadataUpdate` 只在已授权的 inode 尝试或未发布对象构造中使用。
 `MutationCredentials` 补充当前操作需要的 `CAP_CHOWN`、`CAP_FSETID` 能力事实，
-来源仍是已有凭据快照；不从 uid 0 推导，不新增凭据镜像或 namespace ID 分配。
+来源是第 3.5 节的凭据与 namespace 成对快照，遵守其 initial-namespace 适配范围；
+不从 uid 0 推导，不新增凭据镜像或 namespace ID 分配。
 设备创建另外携带第 4.11 节的 `CAP_MKNOD` 事实，各能力按对应 Linux
 命名空间范围解释，不能把有一个 capability 位当作对所有 inode/namespace 的授权。
 本次不借此实现缺失的 mount idmap、LSM 或完整 user namespace 映射。
@@ -849,6 +903,30 @@ Linux 的全 OMIT 早返回顺序；只有已确认有效的命令进入 inode �
 “跳过授权”。copy-up 恢复 lower 属性与最终用户修改分开记录真实阶段，
 后者仍用当前访问者和 mounter 双层语义检查；不默认 root。
 `MetadataUpdate` 不能作为对外长期无凭据修改接口留存。
+
+### 6.5 路径句柄的入口差异
+
+`O_PATH` 描述保留路径引用，不具有普通 fd 操作能力；但使用该路径发起另一次
+路径操作，不会继承原描述的所有操作限制。Starry 当前
+`sys_fchmod` 复用 `sys_fchmodat` 的方式混淆了两类入口，
+按 `/proc/self/fd/` 字符串早拒又使别名与相对路径行为不同，迁移时必须删除该分流。
+
+固定 Linux 的三个入口先各自完成 fd 或路径取得，再共用当前 inode 的 chmod 命令。
+此处“可继续”仅表示不因原 fd 的 `O_PATH` 提前拒绝，仍须执行实际权限、
+只读挂载、目标类型、proc 读取授权和后端能力检查，并不保证调用成功。
+
+| 请求 | fd 或路径取得规则 | 可观察结果 |
+| --- | --- | --- |
+| 原始 `SYS_fchmod`，fd 为 `O_PATH` | `fs/open.c` 的普通 fd 取得过滤 `FMODE_PATH` | `EBADF`，inode mode 不变 |
+| 原始 `SYS_fchmodat2(fd, "", mode, AT_EMPTY_PATH)` | 路径起点用 raw fd，空后缀不要求该 inode 是目录 | 可继续对该 fd 的真实路径执行 chmod，不因 `O_PATH` 返回 `EBADF` |
+| chmod/fchmodat 跟随 proc fd 魔链接 | proc 取得目标 fd 的 `f_path`，授权后将对象交回统一 walker | 可继续对目标 inode 执行 chmod；相对路径、proc 目录别名与绝对拼写一致 |
+
+直接 `sys_fchmod` 在入口取得并检查普通 fd 后提交 `MetadataChange::Chmod`，
+不再用传入空路径来让共享 helper 猜测调用来源。
+`sys_fchmodat`/fchmodat2 保留各自 flags、参数和路径查找顺序，空路径取得与 proc
+对象跟随只交付实际目标；最终 owner/能力、SGID 和更新按第 6.3–6.4 节在当前 inode 内完成。
+`AT_SYMLINK_NOFOLLOW` 操作链接自身时仍按目标和后端能力判断，
+不能误当成已经跟随到目标，也不能由字符串拼写选择另一套权限检查。
 
 ## 7. 缓存专用查找
 
@@ -902,6 +980,15 @@ Linux 的全 OMIT 早返回顺序；只有已确认有效的命令进入 inode �
 以及实际缺失时的创建错误，不能仅验证可写挂载创建成功。
 特殊节点创建同时证明普通字符/块设备的 `CAP_MKNOD` 门禁和 whiteout 例外；
 元数据交错证明逐字段 chown 不回写并发字段、同值请求仍按当前 owner 授权。
+Starry 入口还须证明 initial 与子 user namespace 的 MKNOD 能力范围不同，
+以及挂载者身份不因其后续凭据或 namespace 替换而改变；这不是完整映射兼容性证明。
+
+O_PATH 的 chmod 回归增强现有 `bugfix-bug-open-path-fchmod-bypass` 功能用例，
+以原始 syscall 分别验证直接 fchmod 的 `EBADF` 和无副作用、fchmodat2 空路径及
+proc 魔链接跟随的实际 mode 更新，并覆盖相对路径或 proc 目录别名。
+原测试的 libc fchmod wrapper 可能执行 fallback，不能充当原始 `SYS_fchmod` 的判定；
+“proc 继承 O_PATH 限制”的旧注释和 oracle 必须修正，不能仅删掉拒绝断言造绿。
+同一用例对各步核对返回值与最终 inode mode，拒绝和成功路径都取得直接系统证据。
 
 R4 复用真实 MemoryFs 自移/后代拒绝回归，并补足受控并发拓扑交错的最终无环与身份
 判定；已有自移首断言的红测不冒充后代及并发分支也已采红。
@@ -947,6 +1034,16 @@ Linux 行为以固定提交源码为准；Rust 与其他 VFS 资料用于解释�
 - [Linux v7.1 inode 属性授权与权限位](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/attr.c#L20-L235)
 - [Linux v7.1 创建式打开的延后写入错误](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4442-L4479)
 - [Linux v7.1 特殊节点创建授权](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L5100-L5132)
+- [Linux v7.1 能力目标与 inode 映射](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/capability.c#L404-L479)
+- [Linux v7.1 能力的 namespace 谱系](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/security/commoncap.c#L68-L103)
+- [Linux v7.1 owner 与 SGID 能力检查](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2685-L2707)
+- [Linux v7.1 保留 SGID 的组与能力检查](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/inode.c#L2971-L2988)
+- [Linux v7.1 chmod 的三个入口](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L618-L707)
+- [Linux v7.1 空路径的 raw fd 起点](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2738-L2764)
+- [Linux v7.1 普通 fd 与 raw fd 的 O_PATH 过滤](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/file.c#L1196-L1217)
+- [Linux v7.1 跨任务 fd 的保活取得](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/file.c#L1123-L1133)
+- [Linux v7.1 proc fd 对象路径](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc/fd.c#L174-L195)
+- [Linux v7.1 proc 对象链接的授权与跟随](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc/base.c#L1799-L1820)
 - [Linux v7.1 挂载写入权利与只读切换](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L590-L721)
 - [Linux v7.1 superblock 重配置](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/super.c#L1036-L1092)
 - [Linux v7.1 Overlay layer、work 与深度](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L805-L836)
