@@ -317,6 +317,7 @@ fn cgroup_errno(error: CgroupError) -> Errno {
         CgroupError::LimitExceeded => Errno::EAGAIN,
         CgroupError::NoSuchProcess => Errno::ESRCH,
         CgroupError::DirectoryNotEmpty => Errno::ENOTEMPTY,
+        CgroupError::NoSpace => Errno::ENOSPC,
     }
 }
 
@@ -627,6 +628,7 @@ fn memory_errno_mappings_hold() -> bool {
         (CgroupError::InvalidInput.into(), Errno::EINVAL),
         (CgroupError::NoSuchProcess.into(), Errno::ESRCH),
         (CgroupError::DirectoryNotEmpty.into(), Errno::ENOTEMPTY),
+        (CgroupError::NoSpace.into(), Errno::ENOSPC),
     ])
 }
 

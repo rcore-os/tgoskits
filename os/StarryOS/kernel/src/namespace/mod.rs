@@ -199,7 +199,15 @@ mod tests {
     #[cfg(not(axtest))]
     fn init_cgroup() {
         static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(ax_cgroup::init);
+        INIT.call_once(|| {
+            ax_cgroup::init(ax_cgroup::CgroupFsInit {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                now: core::time::Duration::ZERO,
+            })
+            .expect("explicit test hierarchy initialization");
+        });
     }
 
     #[cfg(not(axtest))]

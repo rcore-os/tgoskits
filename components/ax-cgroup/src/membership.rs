@@ -565,13 +565,14 @@ mod tests {
     use std::sync::{LazyLock, Mutex, MutexGuard, Once};
 
     use super::*;
+    use crate::TEST_FS_INIT;
 
     static INIT: Once = Once::new();
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn setup() -> MutexGuard<'static, ()> {
         let guard = TEST_LOCK.lock().expect("cgroup test lock poisoned");
-        INIT.call_once(crate::init);
+        INIT.call_once(|| crate::init(TEST_FS_INIT).unwrap());
         guard
     }
 
@@ -591,8 +592,10 @@ mod tests {
     fn published_guard_rolls_back_until_scheduler_commit() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let target = root.create_child("published-rollback-target").unwrap();
+        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let target = root
+            .create_child("published-rollback-target", TEST_FS_INIT)
+            .unwrap();
         let pid = process_id(4001);
 
         let mut guard =
@@ -612,7 +615,7 @@ mod tests {
             "published membership must remain migration-pending until scheduler commit"
         );
         assert_eq!(
-            root.remove_child("published-rollback-target"),
+            root.remove_child("published-rollback-target", TEST_FS_INIT.now),
             Err(CgroupError::ResourceBusy)
         );
 
@@ -620,18 +623,23 @@ mod tests {
 
         assert!(!target.has_member(pid));
         assert_eq!(target.pids_current_text().unwrap(), "0\n");
-        assert_eq!(root.remove_child("published-rollback-target"), Ok(()));
+        assert_eq!(
+            root.remove_child("published-rollback-target", TEST_FS_INIT.now),
+            Ok(())
+        );
     }
 
     #[test]
     fn migration_moves_all_tasks_without_double_charging_common_ancestors() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let parent = root.create_child("owned-migration-parent").unwrap();
-        parent.write_subtree_control("+pids").unwrap();
-        let source = parent.create_child("source").unwrap();
-        let target = parent.create_child("target").unwrap();
+        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let parent = root
+            .create_child("owned-migration-parent", TEST_FS_INIT)
+            .unwrap();
+        parent.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let source = parent.create_child("source", TEST_FS_INIT).unwrap();
+        let target = parent.create_child("target", TEST_FS_INIT).unwrap();
         let pid = process_id(4010);
         let tid = process_id(4011);
         let mut membership = commit_process(&source, pid);
@@ -645,13 +653,15 @@ mod tests {
         assert_eq!(source.pids_peak_text().unwrap(), "2\n");
         assert_eq!(parent.pids_current_text().unwrap(), "2\n");
         assert_eq!(parent.pids_peak_text().unwrap(), "2\n");
-        let dead = parent.create_child("removed-target").unwrap();
-        parent.remove_child("removed-target").unwrap();
+        let dead = parent.create_child("removed-target", TEST_FS_INIT).unwrap();
+        parent
+            .remove_child("removed-target", TEST_FS_INIT.now)
+            .unwrap();
         assert_eq!(
             membership.migrate(pid, Arc::clone(&dead)),
             Err(CgroupError::Removed)
         );
-        let unrelated_root = CgroupNode::new_root();
+        let unrelated_root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
         assert_eq!(
             membership.migrate(pid, unrelated_root),
             Err(CgroupError::InvalidInput)
@@ -686,9 +696,13 @@ mod tests {
     fn pending_thread_blocks_process_migration_and_releases_its_charge() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let source = root.create_child("owned-pending-source").unwrap();
-        let target = root.create_child("owned-pending-target").unwrap();
+        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let source = root
+            .create_child("owned-pending-source", TEST_FS_INIT)
+            .unwrap();
+        let target = root
+            .create_child("owned-pending-target", TEST_FS_INIT)
+            .unwrap();
         let pid = process_id(4020);
         let tid = process_id(4021);
         let mut membership = commit_process(&source, pid);
@@ -719,8 +733,10 @@ mod tests {
     fn pending_thread_blocks_final_process_exit() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let target = root.create_child("owned-pending-exit-target").unwrap();
+        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let target = root
+            .create_child("owned-pending-exit-target", TEST_FS_INIT)
+            .unwrap();
         let pid = process_id(4025);
         let tid = process_id(4026);
         let mut membership = commit_process(&target, pid);
@@ -746,9 +762,13 @@ mod tests {
     fn explicit_process_reservation_charges_only_its_target() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let source = root.create_child("owned-explicit-source").unwrap();
-        let target = root.create_child("owned-explicit-target").unwrap();
+        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let source = root
+            .create_child("owned-explicit-source", TEST_FS_INIT)
+            .unwrap();
+        let target = root
+            .create_child("owned-explicit-target", TEST_FS_INIT)
+            .unwrap();
         let parent = process_id(4030);
         let child = process_id(4031);
         let mut parent_membership = commit_process(&source, parent);
@@ -758,12 +778,15 @@ mod tests {
         assert_eq!(source.pids_current_text().unwrap(), "1\n");
         assert_eq!(target.pids_current_text().unwrap(), "1\n");
         assert_eq!(
-            root.remove_child("owned-explicit-target"),
+            root.remove_child("owned-explicit-target", TEST_FS_INIT.now),
             Err(CgroupError::ResourceBusy)
         );
         drop(pending);
         assert_eq!(target.pids_current_text().unwrap(), "0\n");
-        assert_eq!(root.remove_child("owned-explicit-target"), Ok(()));
+        assert_eq!(
+            root.remove_child("owned-explicit-target", TEST_FS_INIT.now),
+            Ok(())
+        );
         assert!(matches!(
             crate::begin_process_at(Arc::clone(&target), child),
             Err(CgroupError::Removed)
@@ -778,9 +801,13 @@ mod tests {
     fn pids_limit_denies_clone_but_not_organizational_migration() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let source = root.create_child("owned-limit-source").unwrap();
-        let target = root.create_child("owned-limit-target").unwrap();
+        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let source = root
+            .create_child("owned-limit-source", TEST_FS_INIT)
+            .unwrap();
+        let target = root
+            .create_child("owned-limit-target", TEST_FS_INIT)
+            .unwrap();
         let pid = process_id(4040);
         let tid = process_id(4041);
         let mut membership = commit_process(&source, pid);
@@ -803,10 +830,14 @@ mod tests {
     fn ancestor_rejection_rolls_back_current_but_retains_leaf_peak() {
         let _guard = setup();
         let root = crate::root();
-        let parent = root.create_child("peak-rollback-parent").unwrap();
-        root.write_subtree_control("+pids").unwrap();
-        parent.write_subtree_control("+pids").unwrap();
-        let child = parent.create_child("peak-rollback-child").unwrap();
+        let parent = root
+            .create_child("peak-rollback-parent", TEST_FS_INIT)
+            .unwrap();
+        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        parent.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let child = parent
+            .create_child("peak-rollback-child", TEST_FS_INIT)
+            .unwrap();
         let pid = process_id(1034);
         let tid = process_id(1035);
         let mut membership = commit_process(&child, pid);
@@ -836,8 +867,10 @@ mod tests {
     fn de_thread_rename_preserves_the_last_task_charge() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let target = root.create_child("owned-rename-target").unwrap();
+        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        let target = root
+            .create_child("owned-rename-target", TEST_FS_INIT)
+            .unwrap();
         let pid = process_id(4050);
         let tid = process_id(4051);
         let mut membership = commit_process(&target, pid);

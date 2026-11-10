@@ -4,15 +4,36 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::Duration,
+};
 
 use ax_sync::RawSpinLockIrqSaveGuard;
 
-use crate::{CgroupError, CgroupResult, ProcessId, pids::PidsState, sync::RawSpinLock};
+use crate::{
+    CgroupError, CgroupFileKind, CgroupFsInit, CgroupFsTarget, CgroupResult, ProcessId,
+    fs::CgroupFsState, pids::PidsState, sync::RawSpinLock,
+};
 
-static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(2);
+mod attributes;
+mod path;
+
+pub(crate) use path::relative_path;
+
+static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(1);
 const PIDS_CONTROLLER: &[&str] = &["pids"];
 const NO_CONTROLLERS: &[&str] = &[];
+
+fn allocate_id() -> CgroupResult<u64> {
+    // This counter only allocates unique values. The hierarchy gate publishes
+    // the actual node and all of its initialized inode slots.
+    NEXT_CGROUP_ID
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
+            (id <= CgroupFsTarget::MAX_NODE_ID).then_some(id + 1)
+        })
+        .map_err(|_| CgroupError::NoSpace)
+}
 
 /// The non-sleeping mutation boundary shared by one hierarchy.
 ///
@@ -49,6 +70,7 @@ pub struct CgroupNode {
     parent_pids_enabled: Option<Arc<AtomicBool>>,
     domain: Arc<CgroupMutationDomain>,
     lifetime: RawSpinLock<NodeLifetime>,
+    fs: RawSpinLock<CgroupFsState>,
 }
 
 /// An ownership reference that prevents removal of a cgroup hierarchy node.
@@ -72,9 +94,11 @@ impl CgroupMutationDomain {
 }
 
 impl CgroupNode {
-    pub(crate) fn new_root() -> Arc<Self> {
-        Arc::new(Self {
-            id: 1,
+    pub(crate) fn new_root(init: CgroupFsInit) -> CgroupResult<Arc<Self>> {
+        init.validate()?;
+        let id = allocate_id()?;
+        Ok(Arc::new(Self {
+            id,
             name: String::new(),
             parent: None,
             children: RawSpinLock::new(BTreeMap::new()),
@@ -90,7 +114,8 @@ impl CgroupNode {
                 pins: 0,
                 reservations: 0,
             }),
-        })
+            fs: RawSpinLock::new(CgroupFsState::new(id, init, false)),
+        }))
     }
 
     /// Return the stable internal node ID.
@@ -145,15 +170,6 @@ impl CgroupNode {
         }
     }
 
-    /// Enable pids for direct children.
-    ///
-    /// The first controller increment intentionally supports only `+pids`.
-    /// Other controller updates remain unsupported until their domain behavior
-    /// is implemented and independently validated.
-    pub fn write_subtree_control(&self, data: &str) -> CgroupResult<()> {
-        self.domain.lock().write_subtree_control(self, data)
-    }
-
     /// Return whether this non-root cgroup exposes pids interface files.
     pub fn has_pids_interface(&self) -> bool {
         self.parent.is_some() && self.available_controllers().contains(&"pids")
@@ -189,8 +205,12 @@ impl CgroupNode {
     }
 
     /// Create a direct child, rejecting a retained dead parent.
-    pub fn create_child(self: &Arc<Self>, name: &str) -> CgroupResult<Arc<Self>> {
-        self.domain.lock().create_child(self, name)
+    pub fn create_child(
+        self: &Arc<Self>,
+        name: &str,
+        init: CgroupFsInit,
+    ) -> CgroupResult<Arc<Self>> {
+        self.domain.lock().create_child(self, name, init)
     }
 
     /// Look up a direct child.
@@ -203,11 +223,16 @@ impl CgroupNode {
         self.children.lock_irqsave().keys().cloned().collect()
     }
 
+    /// Whether this node contains any child groups, excluding interface files.
+    pub fn has_children(&self) -> bool {
+        !self.children.lock_irqsave().is_empty()
+    }
+
     /// Remove an empty child; ordinary retained Arcs do not prevent removal.
-    pub fn remove_child(&self, name: &str) -> CgroupResult<()> {
+    pub fn remove_child(&self, name: &str, now: Duration) -> CgroupResult<()> {
         let retired = {
             let guard = self.domain.lock();
-            guard.remove_child(self, name)?
+            guard.remove_child(self, name, now)?
         };
         drop(retired);
         Ok(())
@@ -254,17 +279,6 @@ impl CgroupMutationGuard<'_> {
         }
     }
 
-    /// Enable the existing pids controller under this hierarchy's gate.
-    pub fn write_subtree_control(&self, node: &CgroupNode, data: &str) -> CgroupResult<()> {
-        self.check_live(node)?;
-        if data.trim() != "+pids" || !node.available_controllers().contains(&"pids") {
-            return Err(CgroupError::InvalidInput);
-        }
-        node.pids_enabled_for_children
-            .store(true, Ordering::Release);
-        Ok(())
-    }
-
     /// Update the existing pids limit without re-acquiring the hierarchy gate.
     pub fn write_pids_max(&self, node: &CgroupNode, data: &str) -> CgroupResult<()> {
         self.check_live(node)?;
@@ -281,19 +295,25 @@ impl CgroupMutationGuard<'_> {
         &self,
         parent: &Arc<CgroupNode>,
         name: &str,
+        init: CgroupFsInit,
     ) -> CgroupResult<Arc<CgroupNode>> {
         self.check_live(parent)?;
         if name.is_empty() || name == "." || name == ".." || name.contains('/') {
             return Err(CgroupError::InvalidInput);
         }
+        if CgroupFileKind::from_name(name).is_some() {
+            return Err(CgroupError::AlreadyExists);
+        }
+        init.validate()?;
 
         let mut children = parent.children.lock_irqsave();
         let entry = match children.entry(name.to_string()) {
             Entry::Occupied(_) => return Err(CgroupError::AlreadyExists),
             Entry::Vacant(entry) => entry,
         };
+        let id = allocate_id()?;
         let child = Arc::new(CgroupNode {
-            id: NEXT_CGROUP_ID.fetch_add(1, Ordering::Relaxed),
+            id,
             name: name.to_string(),
             parent: Some(Arc::downgrade(parent)),
             children: RawSpinLock::new(BTreeMap::new()),
@@ -307,9 +327,16 @@ impl CgroupMutationGuard<'_> {
                 pins: 0,
                 reservations: 0,
             }),
+            fs: RawSpinLock::new(CgroupFsState::new(
+                id,
+                init,
+                parent.pids_enabled_for_children.load(Ordering::Relaxed),
+            )),
         });
         // The checked vacant entry cannot retire an old node under the gate.
         entry.insert(Arc::clone(&child));
+        drop(children);
+        parent.fs.lock_irqsave().touch_directory(init.now);
         Ok(child)
     }
 
@@ -327,7 +354,12 @@ impl CgroupMutationGuard<'_> {
     /// Mark an empty child dead and detach it atomically.
     ///
     /// The returned owner must be retired after this guard and any ledger lock.
-    pub fn remove_child(&self, parent: &CgroupNode, name: &str) -> CgroupResult<Arc<CgroupNode>> {
+    pub fn remove_child(
+        &self,
+        parent: &CgroupNode,
+        name: &str,
+        now: Duration,
+    ) -> CgroupResult<Arc<CgroupNode>> {
         self.check_live(parent)?;
         // The gate stabilizes the parent table, so parent/child local locks
         // need not be nested in the same lock class.
@@ -346,11 +378,13 @@ impl CgroupMutationGuard<'_> {
         lifetime.live = false;
         drop(lifetime);
         // Return the table's owner; `child` cannot be the last owner here.
-        Ok(parent
+        let retired = parent
             .children
             .lock_irqsave()
             .remove(name)
-            .expect("child slot is stable under its hierarchy gate"))
+            .expect("child slot is stable under its hierarchy gate");
+        parent.fs.lock_irqsave().touch_directory(now);
+        Ok(retired)
     }
 
     pub(crate) fn add_member(&self, node: &CgroupNode, pid: ProcessId) -> CgroupResult<()> {
@@ -467,59 +501,17 @@ impl Drop for CgroupReservation {
     }
 }
 
-fn ancestry(node: &Arc<CgroupNode>) -> Vec<Arc<CgroupNode>> {
-    let mut nodes = Vec::new();
-    let mut current = Some(Arc::clone(node));
-    while let Some(node) = current {
-        current = node.parent();
-        nodes.push(node);
-    }
-    nodes
-}
-
-pub(crate) fn relative_path(root: &Arc<CgroupNode>, target: &Arc<CgroupNode>) -> String {
-    if Arc::ptr_eq(root, target) {
-        return "/".to_string();
-    }
-
-    let root_path = ancestry(root);
-    let target_path = ancestry(target);
-    let mut root_unique = root_path.len();
-    let mut target_unique = target_path.len();
-    while root_unique > 0
-        && target_unique > 0
-        && Arc::ptr_eq(&root_path[root_unique - 1], &target_path[target_unique - 1])
-    {
-        root_unique -= 1;
-        target_unique -= 1;
-    }
-
-    let mut path = String::from("/");
-    for index in 0..root_unique {
-        if index != 0 {
-            path.push('/');
-        }
-        path.push_str("..");
-    }
-    for node in target_path[..target_unique].iter().rev() {
-        if path != "/" && !path.ends_with('/') {
-            path.push('/');
-        }
-        path.push_str(node.name());
-    }
-    path
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CgroupFsAttributes, CgroupFsUpdate, TEST_FS_INIT};
 
     #[test]
     fn renders_paths_relative_to_namespace_root() {
-        let root = CgroupNode::new_root();
-        let parent = root.create_child("parent").unwrap();
-        let child = parent.create_child("child").unwrap();
-        let sibling = root.create_child("sibling").unwrap();
+        let root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
+        let parent = root.create_child("parent", TEST_FS_INIT).unwrap();
+        let child = parent.create_child("child", TEST_FS_INIT).unwrap();
+        let sibling = root.create_child("sibling", TEST_FS_INIT).unwrap();
 
         assert_eq!(relative_path(&parent, &parent), "/");
         assert_eq!(relative_path(&parent, &child), "/child");
@@ -529,8 +521,8 @@ mod tests {
 
     #[test]
     fn rejects_removal_while_node_is_pinned() {
-        let root = CgroupNode::new_root();
-        let child = root.create_child("child").unwrap();
+        let root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
+        let child = root.create_child("child", TEST_FS_INIT).unwrap();
         let incidental_reference = child.clone();
         let pin = child.try_pin().unwrap();
         let namespace = crate::CgroupNamespace::new(Arc::clone(&child)).unwrap();
@@ -538,13 +530,18 @@ mod tests {
         drop(namespace);
         drop(child);
 
-        assert_eq!(root.remove_child("child"), Err(CgroupError::ResourceBusy));
+        assert_eq!(
+            root.remove_child("child", TEST_FS_INIT.now),
+            Err(CgroupError::ResourceBusy)
+        );
 
         drop(mount_pin);
         drop(pin);
-        assert_eq!(root.remove_child("child"), Ok(()));
+        assert_eq!(root.remove_child("child", TEST_FS_INIT.now), Ok(()));
         assert_eq!(incidental_reference.name(), "child");
-        let late_create = incidental_reference.create_child("late").map(|_| ());
+        let late_create = incidental_reference
+            .create_child("late", TEST_FS_INIT)
+            .map(|_| ());
         let still_absent = root.lookup_child("child").map(|_| ());
         assert_eq!(
             (late_create, still_absent),
@@ -558,33 +555,209 @@ mod tests {
             crate::CgroupNamespace::new(Arc::clone(&incidental_reference)),
             Err(CgroupError::Removed)
         ));
+        // Ordinary references preserve attributes, not permission to relink.
+        let before = incidental_reference
+            .fs_attributes(CgroupFsTarget::Directory)
+            .unwrap();
+        incidental_reference
+            .update_fs_attributes(
+                CgroupFsTarget::Directory,
+                CgroupFsUpdate {
+                    uid: Some(42),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let after = incidental_reference
+            .fs_attributes(CgroupFsTarget::Directory)
+            .unwrap();
+        assert_eq!(after, CgroupFsAttributes { uid: 42, ..before });
     }
 
     #[test]
     fn exposes_pids_only_after_the_parent_enables_it() {
-        let root = CgroupNode::new_root();
-        let child = root.create_child("child").unwrap();
+        let root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
+        let creator = CgroupFsInit {
+            uid: 1001,
+            gid: 1002,
+            mode: 0o1700,
+            now: Duration::from_secs(5),
+        };
+        let child = root.create_child("child", creator).unwrap();
+        let alias = Arc::clone(&root.lookup_child("child").unwrap());
+        let directory = child.fs_attributes(CgroupFsTarget::Directory).unwrap();
+        let procs_target = CgroupFsTarget::File(CgroupFileKind::Procs);
+        let procs = child.fs_attributes(procs_target).unwrap();
+        assert_eq!(
+            (
+                directory.uid,
+                directory.gid,
+                directory.mode,
+                directory.ctime
+            ),
+            (creator.uid, creator.gid, creator.mode, creator.now)
+        );
+        assert_eq!(
+            (procs.uid, procs.gid, procs.mode, procs.ctime),
+            (
+                creator.uid,
+                creator.gid,
+                CgroupFileKind::Procs.mode(),
+                creator.now
+            )
+        );
+        alias
+            .update_fs_attributes(
+                CgroupFsTarget::Directory,
+                CgroupFsUpdate {
+                    mode: Some(0o711),
+                    gid: Some(2002),
+                    ctime: Some(Duration::from_secs(7)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let changed = child.fs_attributes(CgroupFsTarget::Directory).unwrap();
+        assert_eq!(
+            changed,
+            CgroupFsAttributes {
+                gid: 2002,
+                mode: 0o711,
+                ctime: Duration::from_secs(7),
+                ..directory
+            }
+        );
+        child
+            .update_fs_attributes(
+                procs_target,
+                CgroupFsUpdate {
+                    uid: Some(3001),
+                    atime: Some(Duration::from_secs(9)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            alias.fs_attributes(procs_target).unwrap(),
+            CgroupFsAttributes {
+                uid: 3001,
+                atime: Duration::from_secs(9),
+                ..procs
+            }
+        );
+        assert_eq!(
+            alias.fs_attributes(CgroupFsTarget::Directory).unwrap(),
+            changed
+        );
+        assert_eq!(
+            child.update_fs_attributes(
+                procs_target,
+                CgroupFsUpdate {
+                    mode: Some(0o10000),
+                    uid: Some(9001),
+                    ..Default::default()
+                },
+            ),
+            Err(CgroupError::InvalidInput)
+        );
+        assert_eq!(child.fs_attributes(procs_target).unwrap().uid, 3001);
 
         assert_eq!(root.available_controllers(), ["pids"]);
         assert!(!child.has_pids_interface());
         assert_eq!(child.pids_max_text(), Err(CgroupError::NotFound));
         assert_eq!(child.pids_peak_text(), Err(CgroupError::NotFound));
 
-        root.write_subtree_control("+pids").unwrap();
+        let enabler = CgroupFsInit {
+            uid: 4001,
+            gid: 4002,
+            now: Duration::from_secs(11),
+            ..TEST_FS_INIT
+        };
+        root.write_subtree_control("+pids", enabler).unwrap();
 
         assert!(child.has_pids_interface());
         assert_eq!(child.pids_max_text(), Ok(String::from("max\n")));
         assert_eq!(child.pids_peak_text(), Ok(String::from("0\n")));
+        for kind in [
+            CgroupFileKind::PidsMax,
+            CgroupFileKind::PidsCurrent,
+            CgroupFileKind::PidsPeak,
+            CgroupFileKind::PidsEvents,
+        ] {
+            let target = CgroupFsTarget::File(kind);
+            let attributes = child.fs_attributes(target).unwrap();
+            assert_eq!(
+                (attributes.uid, attributes.gid, attributes.atime),
+                (enabler.uid, enabler.gid, enabler.now)
+            );
+            assert_ne!(attributes.inode, directory.inode);
+            alias
+                .update_fs_attributes(
+                    target,
+                    CgroupFsUpdate {
+                        gid: Some(5002),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            root.write_subtree_control("+pids", creator).unwrap();
+            assert_eq!(
+                child.fs_attributes(target).unwrap(),
+                CgroupFsAttributes {
+                    gid: 5002,
+                    ..attributes
+                }
+            );
+        }
+        let late = root.create_child("late", creator).unwrap();
+        let late_pids = late
+            .fs_attributes(CgroupFsTarget::File(CgroupFileKind::PidsMax))
+            .unwrap();
+        assert_eq!(
+            (
+                late_pids.uid,
+                late_pids.gid,
+                late_pids.mode,
+                late_pids.ctime
+            ),
+            (
+                creator.uid,
+                creator.gid,
+                CgroupFileKind::PidsMax.mode(),
+                creator.now
+            )
+        );
     }
 
     #[test]
     fn removes_empty_child_from_dynamic_parent() {
-        let root = CgroupNode::new_root();
-        let parent = root.create_child("parent").unwrap();
-        let child = parent.create_child("child").unwrap();
+        let root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
+        let parent = root.create_child("parent", TEST_FS_INIT).unwrap();
+        let created = Duration::from_secs(13);
+        let child = parent
+            .create_child(
+                "child",
+                CgroupFsInit {
+                    now: created,
+                    ..TEST_FS_INIT
+                },
+            )
+            .unwrap();
         assert!(parent.child_names().contains(&"child".to_string()));
         assert!(child.child_names().is_empty());
 
-        assert_eq!(parent.remove_child("child"), Ok(()));
+        let after_create = parent.fs_attributes(CgroupFsTarget::Directory).unwrap();
+        assert_eq!((after_create.mtime, after_create.ctime), (created, created));
+        let removed = Duration::from_secs(17);
+        assert_eq!(parent.remove_child("child", removed), Ok(()));
+        let after_remove = parent.fs_attributes(CgroupFsTarget::Directory).unwrap();
+        assert_eq!(
+            after_remove,
+            CgroupFsAttributes {
+                mtime: removed,
+                ctime: removed,
+                ..after_create
+            }
+        );
     }
 }

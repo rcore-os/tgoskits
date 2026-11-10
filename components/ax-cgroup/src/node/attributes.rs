@@ -1,0 +1,88 @@
+//! Persistent inode attributes and first-time controller interface publication.
+
+use core::sync::atomic::Ordering;
+
+use super::{CgroupMutationGuard, CgroupNode};
+use crate::{
+    CgroupError, CgroupFsAttributes, CgroupFsInit, CgroupFsTarget, CgroupFsUpdate, CgroupResult,
+};
+
+impl CgroupNode {
+    /// Return the stable inode number for an entity. Does not check visibility.
+    pub const fn fs_inode(&self, target: CgroupFsTarget) -> u64 {
+        target.inode(self.id)
+    }
+
+    /// Read the attributes of an installed inode, including a retained dead one.
+    pub fn fs_attributes(&self, target: CgroupFsTarget) -> CgroupResult<CgroupFsAttributes> {
+        self.domain.lock().fs_attributes(self, target)
+    }
+
+    /// Update installed inode attributes after the caller's authorization.
+    pub fn update_fs_attributes(
+        &self,
+        target: CgroupFsTarget,
+        update: CgroupFsUpdate,
+    ) -> CgroupResult<()> {
+        self.domain
+            .lock()
+            .update_fs_attributes(self, target, update)
+    }
+
+    /// Enable pids for direct children.
+    ///
+    /// Only `+pids` is supported. The initialization context supplies owners and
+    /// timestamps for newly installed interfaces, whose kinds fix their modes.
+    pub fn write_subtree_control(&self, data: &str, init: CgroupFsInit) -> CgroupResult<()> {
+        self.domain.lock().write_subtree_control(self, data, init)
+    }
+}
+
+impl CgroupMutationGuard<'_> {
+    /// Snapshot an installed inode under the hierarchy gate without testing liveness.
+    pub fn fs_attributes(
+        &self,
+        node: &CgroupNode,
+        target: CgroupFsTarget,
+    ) -> CgroupResult<CgroupFsAttributes> {
+        self.check_domain(node)?;
+        node.fs.lock_irqsave().attributes(target)
+    }
+
+    /// Apply a caller-authorized patch to one installed inode, including a retained dead one.
+    pub fn update_fs_attributes(
+        &self,
+        node: &CgroupNode,
+        target: CgroupFsTarget,
+        update: CgroupFsUpdate,
+    ) -> CgroupResult<()> {
+        self.check_domain(node)?;
+        node.fs.lock_irqsave().update(target, update)
+    }
+
+    /// Enable the existing pids controller with explicitly initialized interfaces.
+    pub fn write_subtree_control(
+        &self,
+        node: &CgroupNode,
+        data: &str,
+        init: CgroupFsInit,
+    ) -> CgroupResult<()> {
+        self.check_live(node)?;
+        if data.trim() != "+pids" || !node.available_controllers().contains(&"pids") {
+            return Err(CgroupError::InvalidInput);
+        }
+        if node.pids_enabled_for_children.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        // Every slot is already reserved in its node. Installation cannot
+        // allocate or fail after it starts, and gate readers cannot see a prefix.
+        for child in node.children.lock_irqsave().values() {
+            child.fs.lock_irqsave().install_pids(child.id, init);
+        }
+        // Existing controller readers acquire this same flag, including through
+        // the children's shared parent reference.
+        node.pids_enabled_for_children
+            .store(true, Ordering::Release);
+        Ok(())
+    }
+}

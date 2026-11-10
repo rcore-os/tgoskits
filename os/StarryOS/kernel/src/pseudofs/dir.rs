@@ -9,8 +9,8 @@ use core::any::Any;
 
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
-    Metadata, MetadataUpdate, MutationRetire, NamespaceMutation, NamespaceOutcome, NodeIdentity,
-    NodeOps, NodePermission, NodeType, Reference, RenameEffect, VfsError, VfsResult, WeakDirEntry,
+    Metadata, MetadataUpdate, MutationRetire, NamespaceEffect, NamespaceMutation, NamespaceOutcome,
+    NodeIdentity, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -244,41 +244,11 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         self.ops.is_cacheable_child(name)
     }
 
-    fn create(
-        &self,
-        _name: &str,
-        _node_type: NodeType,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn create_symlink(
-        &self,
-        _name: &str,
-        _target: &str,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
     fn mutate_namespace(
         &self,
         _command: &NamespaceMutation<'_>,
         _retired: &MutationRetire,
-    ) -> NamespaceOutcome<RenameEffect> {
+    ) -> NamespaceOutcome<NamespaceEffect> {
         NamespaceOutcome::unchanged(Err(VfsError::OperationNotPermitted))
     }
 }

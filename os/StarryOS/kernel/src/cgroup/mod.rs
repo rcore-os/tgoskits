@@ -3,23 +3,19 @@
 use alloc::{string::String, sync::Arc};
 use core::fmt::Write;
 
-use ax_cgroup::{CgroupChildKind, CgroupError, CgroupForkGuard, CgroupNode, ProcessId};
+use ax_cgroup::{
+    CgroupChildKind, CgroupError, CgroupForkGuard, CgroupFsInit, CgroupNode, ProcessId,
+};
 pub use ax_cgroup::{relative_path, root};
+use ax_runtime::hal::time::wall_time;
 
 use crate::{
     StarryError,
-    task::{PidIdentity, PidIdentityId, PidView, ProcessData, Tgid, TgidNumber, UserTaskRef},
+    task::{
+        FsCredentialsSnapshot, PidIdentity, PidIdentityId, PidView, ProcessData, Tgid, TgidNumber,
+        UserTaskRef,
+    },
 };
-
-const INTERFACE_FILES: [&str; 7] = [
-    "cgroup.procs",
-    "cgroup.controllers",
-    "cgroup.subtree_control",
-    "pids.max",
-    "pids.current",
-    "pids.peak",
-    "pids.events",
-];
 
 fn process_id(identity: &PidIdentity) -> ProcessId {
     ProcessId::new(identity.id().get()).expect("PID identity generation must be non-zero")
@@ -63,11 +59,13 @@ pub fn rename_task(
 
 /// Initialize the cgroup hierarchy and task ledger.
 pub fn init() {
-    ax_cgroup::init();
-}
-
-pub fn is_interface_file_name(name: &str) -> bool {
-    INTERFACE_FILES.contains(&name)
+    ax_cgroup::init(CgroupFsInit {
+        uid: 0,
+        gid: 0,
+        mode: 0o755,
+        now: wall_time(),
+    })
+    .expect("cgroup startup requires a valid root and available inode space");
 }
 
 pub fn controllers_text(node: &CgroupNode) -> String {
@@ -127,9 +125,23 @@ pub fn write_procs(
         .map_err(StarryError::from)
 }
 
-pub fn write_subtree_control(node: &CgroupNode, data: &[u8]) -> Result<(), StarryError> {
+pub(crate) fn write_subtree_control(
+    node: &CgroupNode,
+    data: &[u8],
+    caller: &FsCredentialsSnapshot,
+) -> Result<(), StarryError> {
     let data = core::str::from_utf8(data).map_err(|_| StarryError::InvalidInput)?;
-    node.write_subtree_control(data).map_err(StarryError::from)
+    let credentials = caller.credentials();
+    node.write_subtree_control(
+        data,
+        CgroupFsInit {
+            uid: credentials.fsuid,
+            gid: credentials.fsgid,
+            mode: 0, // Each installed control file supplies its own mode.
+            now: wall_time(),
+        },
+    )
+    .map_err(StarryError::from)
 }
 
 pub fn pids_max_text(node: &CgroupNode) -> Result<String, StarryError> {
