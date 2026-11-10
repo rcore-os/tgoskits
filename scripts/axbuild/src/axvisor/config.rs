@@ -85,8 +85,6 @@ pub(crate) fn write_defconfig(
     );
     let previous_snapshot = crate::context::AxvisorCommandSnapshot::load(workspace_root)?;
 
-    crate::build::export_config(&path, &input.config)?;
-
     let mut snapshot = previous_snapshot;
     snapshot.preset = None;
     snapshot.config = Some(crate::context::snapshot_path_value(workspace_root, &path));
@@ -96,7 +94,7 @@ pub(crate) fn write_defconfig(
     snapshot.vmconfigs.clear();
     snapshot.qemu.qemu_config = None;
     snapshot.uboot.uboot_config = None;
-    snapshot.store(workspace_root)?;
+    crate::context::export_config_with_snapshot(workspace_root, &path, &input.config, &snapshot)?;
 
     Ok(path)
 }

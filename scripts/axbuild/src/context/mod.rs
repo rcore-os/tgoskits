@@ -40,6 +40,7 @@ pub(crate) use arch::{
     supported_targets, validate_supported_target,
 };
 pub(crate) use resolve::snapshot_path_value;
+pub(crate) use snapshot::export_config_with_snapshot;
 pub(crate) use types::RequestEnvironment;
 pub use types::{
     ARCEOS_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot, ArceosQemuSnapshot,

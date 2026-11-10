@@ -124,7 +124,6 @@ pub(crate) fn write_defconfig(workspace_root: &Path, preset_name: &str) -> anyho
         .context("ArceOS preset must specify a target")?;
     let build_config_path =
         crate::build::default_build_info_path_in_workspace(workspace_root, package, target);
-    crate::build::export_config(&build_config_path, &config)?;
     let snapshot = ArceosCommandSnapshot {
         preset: None,
         package: Some(package.to_owned()),
@@ -135,7 +134,12 @@ pub(crate) fn write_defconfig(workspace_root: &Path, preset_name: &str) -> anyho
         qemu: ArceosQemuSnapshot::default(),
         uboot: ArceosUbootSnapshot::default(),
     };
-    snapshot.store(workspace_root)?;
+    crate::context::export_config_with_snapshot(
+        workspace_root,
+        &build_config_path,
+        &config,
+        &snapshot,
+    )?;
     Ok(build_config_path)
 }
 

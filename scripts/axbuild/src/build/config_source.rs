@@ -243,25 +243,3 @@ pub(crate) fn show_config<T: serde::Serialize>(
     print!("{contents}");
     Ok(())
 }
-
-/// Serialize before touching the destination and replace it atomically.
-///
-/// The caller commits its command snapshot only after this operation succeeds.
-pub(crate) fn export_config<T: serde::Serialize>(path: &Path, config: &T) -> anyhow::Result<()> {
-    use std::io::Write;
-
-    let contents = toml::to_string_pretty(config)?;
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(contents.as_bytes())?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("failed to replace exported config {}", path.display()))?;
-    Ok(())
-}

@@ -36,9 +36,7 @@ pub(crate) use config_file::{
 #[cfg(test)]
 pub(crate) use config_file::{load_build_config, parse_build_config};
 pub use config_source::ConfigSource;
-pub(crate) use config_source::{
-    ConfigInput, FileFields, export_config, load_config_input, show_config,
-};
+pub(crate) use config_source::{ConfigInput, FileFields, load_config_input, show_config};
 pub(crate) use future_incompat::{
     FutureIncompatReportSession, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,

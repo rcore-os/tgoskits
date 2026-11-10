@@ -112,14 +112,13 @@ pub(crate) fn write_defconfig(workspace_root: &Path, name: &str) -> anyhow::Resu
     let target = preset.common.board.target;
     let path =
         crate::build::default_build_info_path_in_workspace(workspace_root, STARRY_PACKAGE, target);
-    crate::build::export_config(&path, &config)?;
-    StarryCommandSnapshot {
+    let snapshot = StarryCommandSnapshot {
         arch: Some(starry_arch_for_target_checked(target)?.to_owned()),
         target: Some(target.to_owned()),
         config: Some(snapshot_path_value(workspace_root, &path)),
         ..Default::default()
-    }
-    .store(workspace_root)?;
+    };
+    crate::context::export_config_with_snapshot(workspace_root, &path, &config, &snapshot)?;
     Ok(path)
 }
 
