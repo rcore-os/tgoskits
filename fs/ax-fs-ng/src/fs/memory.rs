@@ -1012,6 +1012,129 @@ mod tests {
 
     #[cfg(feature = "host-test")]
     #[test]
+    fn namespace_mutations_recheck_current_parent_and_target_authority_before_commit() {
+        use alloc::boxed::Box;
+
+        use axfs_ng_vfs::{Mountpoint, MutationCredentials, NameState};
+
+        use super::*;
+        use crate::fs_core::FsContext;
+
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                BEFORE_NAMESPACE_CHANGE.with(|slot| drop(slot.borrow_mut().take()));
+            }
+        }
+
+        let credentials = MutationCredentials {
+            fsuid: 1000,
+            fsgid: 1000,
+            supplementary_gids: &[],
+            cap_dac_override: false,
+            cap_dac_read_search: false,
+            cap_fowner: false,
+        };
+        let _reset = ResetHook;
+        let filesystem = MemoryFs::new();
+        let root = Mountpoint::new_root(&filesystem).root_location();
+        root.update_metadata(MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(0o777)),
+            ..Default::default()
+        })
+        .unwrap();
+        let context = FsContext::new(root.clone());
+        let revoked = root.clone();
+        BEFORE_NAMESPACE_CHANGE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // FsContext has checked the writable parent; no backend gate
+                // has been entered. Revoke only write, leaving search allowed.
+                revoked
+                    .update_metadata(MetadataUpdate {
+                        mode: Some(NodePermission::from_bits_truncate(0o555)),
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }));
+        });
+        let created = context.create_dir(
+            "created",
+            NodePermission::from_bits_truncate(0o755),
+            1000,
+            1000,
+            &credentials,
+        );
+        assert!(BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow().is_none()));
+        let current_parent_mode = root.metadata().unwrap().mode;
+        let created_absent = matches!(root.lookup_no_follow("created"), Err(VfsError::NotFound));
+
+        let filesystem = MemoryFs::new();
+        let root = Mountpoint::new_root(&filesystem).root_location();
+        root.update_metadata(MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(0o1777)),
+            owner: Some((0, 0)),
+            ..Default::default()
+        })
+        .unwrap();
+        let victim = root
+            .create(
+                "victim",
+                NodeType::Directory,
+                NodePermission::from_bits_truncate(0o755),
+                1000,
+                1000,
+            )
+            .unwrap();
+        let context = FsContext::new(root.clone());
+        let revoked = victim.clone();
+        BEFORE_NAMESPACE_CHANGE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // The old sticky probe allowed the caller as victim owner.
+                // The actual target must be authorized again after this change.
+                revoked
+                    .update_metadata(MetadataUpdate {
+                        owner: Some((2000, 2000)),
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }));
+        });
+        let removed = context.remove_dir("victim", &credentials);
+        assert!(BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow().is_none()));
+        let current_owner = victim.metadata().unwrap().uid;
+        let retained = root
+            .lookup_no_follow("victim")
+            .is_ok_and(|entry| entry.entry().ptr_eq(victim.entry()));
+        let name = victim.entry().name_snapshot();
+
+        // Both operations use fresh trees and finish before either oracle can
+        // stop the test, so the failure reports both independently reached calls.
+        assert_eq!(
+            (created.map(|_| ()), removed),
+            (
+                Err(VfsError::PermissionDenied),
+                Err(VfsError::OperationNotPermitted)
+            )
+        );
+        assert_eq!(current_parent_mode.bits(), 0o555);
+        assert!(
+            created_absent,
+            "a rejected creation must not publish its name"
+        );
+        assert_eq!(current_owner, 2000);
+        assert!(
+            retained,
+            "sticky rejection must retain the actual target alias"
+        );
+        assert_eq!(name.state(), NameState::Linked);
+        assert_eq!(name.name(), "victim");
+        assert!(name.parent().unwrap().ptr_eq(root.entry()));
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
     fn unlink_invalidates_the_actual_directory_replaced_after_its_probe() {
         use alloc::boxed::Box;
 

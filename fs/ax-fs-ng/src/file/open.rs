@@ -866,5 +866,111 @@ mod tests {
             drop(reader);
             drop(path_file);
         }
+
+        let filesystem = crate::MemoryFs::new();
+        let mount = Mountpoint::new_root(&filesystem);
+        let root = mount.root_location();
+        root.update_metadata(MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(0o777)),
+            ..Default::default()
+        })
+        .unwrap();
+        let existing = root
+            .create(
+                "existing",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o600),
+                1000,
+                1000,
+            )
+            .unwrap();
+        let credentials = credentials(1000, 1000, &[]);
+        let context = FsContext::new(root.clone());
+        let mut writable = OpenOptions::new();
+        writable.read(true).write(true).direct = true;
+        let writer = writable
+            .open_with_credentials(&context, "existing", &credentials)
+            .and_then(OpenResult::into_file)
+            .unwrap();
+        assert_eq!(writer.write_at(b"retained".as_slice(), 0), Ok(8));
+        drop(writer);
+        let identity = existing.entry().key();
+        mount.set_readonly(true).unwrap();
+
+        let mut read_only = OpenOptions::new();
+        read_only.read(true).direct = true;
+        let mut path = read_only.clone();
+        path.path = true;
+        let mut create = read_only.clone();
+        create.create(true);
+        let mut exclusive = create.clone();
+        exclusive.create_new(true);
+        let ordinary = read_only
+            .open_with_credentials(&context, "existing", &credentials)
+            .and_then(OpenResult::into_file);
+        let path_only = path
+            .open_with_credentials(&context, "existing", &credentials)
+            .and_then(OpenResult::into_file);
+        let opened = create
+            .open_with_credentials(&context, "existing", &credentials)
+            .and_then(OpenResult::into_file);
+        let excluded = exclusive
+            .open_with_credentials(&context, "existing", &credentials)
+            .and_then(OpenResult::into_file);
+        let missing = create
+            .open_with_credentials(&context, "missing", &credentials)
+            .and_then(OpenResult::into_file);
+        // OpenResult hides the created marker. Exercise its real existing
+        // status-bearing entry as well, without bypassing the creation request.
+        let status = root.open_file_with_status(
+            "existing",
+            &axfs_ng_vfs::OpenOptions {
+                create: true,
+                create_new: false,
+                node_type: NodeType::RegularFile,
+                permission: NodePermission::from_bits_truncate(0o600),
+                user: Some((1000, 1000)),
+            },
+        );
+        let missing_absent = matches!(root.lookup_no_follow("missing"), Err(VfsError::NotFound));
+        assert_eq!(
+            (
+                ordinary.as_ref().map(|_| ()).map_err(|error| *error),
+                path_only.as_ref().map(|_| ()).map_err(|error| *error),
+                opened.as_ref().map(|_| ()).map_err(|error| *error),
+                excluded.as_ref().map(|_| ()).map_err(|error| *error),
+                missing.as_ref().map(|_| ()).map_err(|error| *error),
+                status
+                    .as_ref()
+                    .map(|(_, created)| *created)
+                    .map_err(|error| *error),
+            ),
+            (
+                Ok(()),
+                Ok(()),
+                Ok(()),
+                Err(VfsError::AlreadyExists),
+                Err(VfsError::ReadOnlyFilesystem),
+                Ok(false),
+            ),
+            "ordinary, O_PATH, existing O_CREAT, existing O_EXCL, missing O_CREAT, created status"
+        );
+        assert!(
+            missing_absent,
+            "a read-only creation failure must not publish a name"
+        );
+        assert!(mount.is_readonly());
+        for reader in [ordinary.unwrap(), opened.unwrap()] {
+            assert!(reader.location().entry().ptr_eq(existing.entry()));
+            assert_eq!(reader.location().entry().key(), identity);
+            assert!(reader.write_access().is_none());
+            let mut bytes = [0; 8];
+            assert_eq!(reader.read_at(&mut bytes[..], 0), Ok(8));
+            assert_eq!(&bytes, b"retained");
+        }
+        let (location, created) = status.unwrap();
+        assert!(!created);
+        assert!(location.entry().ptr_eq(existing.entry()));
+        assert_eq!(existing.metadata().unwrap().nlink, 1);
     }
 }
