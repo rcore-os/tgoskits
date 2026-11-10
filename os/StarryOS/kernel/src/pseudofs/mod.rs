@@ -9,6 +9,7 @@ mod dyn_debug;
 mod file;
 mod fs;
 mod mqueue;
+pub(crate) mod object;
 pub(crate) mod overlay;
 pub(crate) mod proc;
 mod proc_mountinfo;

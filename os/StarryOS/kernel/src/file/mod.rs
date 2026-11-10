@@ -16,6 +16,8 @@ mod mount_table;
 mod net;
 pub mod netlink;
 mod nsfd;
+pub(crate) use fs::display_location;
+pub(crate) use nsfd::{NamespaceKind, NamespaceObject};
 mod packet;
 mod pidfd;
 mod pipe;

@@ -3,7 +3,6 @@ use core::{
     mem::{offset_of, size_of},
 };
 
-use ax_fs_ng::vfs::current_fs_context;
 use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
@@ -325,7 +324,8 @@ pub fn sys_statfs(
     let path = vm_load_path_string(current, path)?;
     debug!("sys_statfs <= path: {path:?}");
 
-    let location = current_fs_context().lock().resolve(path)?;
+    let location =
+        crate::file::with_fs(linux_raw_sys::general::AT_FDCWD, |fs| Ok(fs.resolve(path)?))?;
     write_statfs(
         current,
         buf,

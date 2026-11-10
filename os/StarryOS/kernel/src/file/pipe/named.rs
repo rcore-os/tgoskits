@@ -13,6 +13,7 @@ use super::{Pipe, PipeAccess, PipeState, Shared};
 use crate::{
     StarryError, StarryResult,
     file::{File, InodeKey},
+    pseudofs::object::ObjectNode,
     sync::Mutex,
     task::UserTaskRef,
 };
@@ -80,7 +81,15 @@ impl Pipe {
         let mount_use = file.location().mountpoint().acquire_use()?;
         let key = InodeKey::for_location(file.location());
         let file = Arc::new(File::new(file, flags));
-        let shared = {
+        let object = file
+            .inner()
+            .location()
+            .entry()
+            .downcast::<ObjectNode<Arc<Shared>>>()
+            .ok();
+        let shared = if let Some(object) = object {
+            object.object.clone()
+        } else {
             let mut registry = FIFOS.lock();
             registry.prune_stale();
             if let Some(shared) = registry.channels.get(&key).and_then(Weak::upgrade) {

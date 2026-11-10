@@ -575,11 +575,8 @@ impl FileLike for Memfd {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        // Linux reports memfds as `/memfd:<name> (deleted)` via
-        // `readlink /proc/<pid>/fd/<n>`. We drop the " (deleted)" suffix
-        // since callers here are primarily internal `path()` consumers
-        // not readlink.
-        format!("/memfd:{}", self.name).into()
+        // Display only: proc object resolution uses the backing Location.
+        format!("/memfd:{} (deleted)", self.name).into()
     }
 
     fn file_mmap(&self) -> StarryResult<(ax_fs_ng::vfs::FileBackend, ax_fs_ng::vfs::FileFlags)> {

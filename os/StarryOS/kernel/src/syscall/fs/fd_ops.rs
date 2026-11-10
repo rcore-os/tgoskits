@@ -92,6 +92,9 @@ fn add_to_fd(
             if flags & O_PATH != 0 {
                 return add_file_like(Arc::new(File::new(file, flags)), flags & O_CLOEXEC != 0);
             }
+            if let Some(namespace) = crate::file::NamespaceObject::at_location(file.location()) {
+                return namespace.into_fd().add_to_fd_table(flags & O_CLOEXEC != 0);
+            }
             if file.location().node_type() == NodeType::Fifo {
                 let reservation = crate::file::FileDescriptorReservation::new()?;
                 let pipe = Pipe::open_fifo(current, file, flags)?;

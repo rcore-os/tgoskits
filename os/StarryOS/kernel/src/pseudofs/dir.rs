@@ -9,8 +9,8 @@ use core::any::Any;
 
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
-    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, RenameOptions,
-    VfsError, VfsResult, WeakDirEntry,
+    Metadata, MetadataUpdate, NodeIdentity, NodeOps, NodePermission, NodeType, Reference,
+    RenameOptions, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -20,6 +20,11 @@ use crate::pseudofs::NodeOpsMuxTy;
 
 /// Operations for a simple directory.
 pub trait SimpleDirOps: Send + Sync + 'static {
+    /// Semantic identity for dynamically materialized directories.
+    fn identity(&self) -> Option<NodeIdentity> {
+        None
+    }
+
     /// Get the names of all children in the directory.
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a>;
     /// Look up a child directory or file by name.
@@ -162,6 +167,10 @@ impl<O: SimpleDirOps> SimpleDir<O> {
 
 #[inherit_methods(from = "self.node")]
 impl<O: SimpleDirOps> NodeOps for SimpleDir<O> {
+    fn identity(&self) -> Option<NodeIdentity> {
+        self.ops.identity()
+    }
+
     fn inode(&self) -> u64;
 
     fn metadata(&self) -> VfsResult<Metadata>;

@@ -243,10 +243,11 @@ pub fn sys_chdir(current: &UserTaskRef, path: *const c_char) -> StarryResult<isi
     debug_fn!("sys_chdir <= path: {path}");
 
     let fs_context = current_fs_context();
+    let entry = with_fs(AT_FDCWD, |fs| Ok(fs.resolve(path)?))?;
+    let cwd = entry.absolute_path()?.to_string();
     let mut fs = fs_context.lock();
-    let entry = fs.resolve(path)?;
     fs.set_current_dir(entry)?;
-    let cwd = fs.current_dir().absolute_path()?.to_string();
+    drop(fs);
     current.as_thread().proc_data.set_cwd_path(cwd);
     Ok(0)
 }
@@ -279,14 +280,15 @@ pub fn sys_chroot(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
     debug!("sys_chroot <= path: {path}");
 
     let fs_context = current_fs_context();
-    let mut fs = fs_context.lock();
-    let loc = fs.resolve(path)?;
+    let loc = with_fs(AT_FDCWD, |fs| Ok(fs.resolve(path)?))?;
     if loc.node_type() != NodeType::Directory {
         return Err(StarryError::NotADirectory);
     }
-    *fs = FsContext::new(loc);
-    let root = fs.root_dir().absolute_path()?.to_string();
-    let cwd = fs.current_dir().absolute_path()?.to_string();
+    let replacement = FsContext::new(loc);
+    let root = replacement.root_dir().absolute_path()?.to_string();
+    let cwd = replacement.current_dir().absolute_path()?.to_string();
+    let retired = core::mem::replace(&mut *fs_context.lock(), replacement);
+    drop(retired);
     let proc_data = current.as_thread().proc_data.clone();
     proc_data.set_root_path(root);
     proc_data.set_cwd_path(cwd);
