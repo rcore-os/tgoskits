@@ -17,7 +17,7 @@ extern crate ax_runtime;
 extern crate log;
 
 use axfs_ng_vfs::Location;
-pub use axfs_ng_vfs::{VfsError, VfsResult};
+pub use axfs_ng_vfs::{MutationCredentials, VfsError, VfsResult};
 
 pub mod api;
 pub(crate) mod block;
