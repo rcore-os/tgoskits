@@ -366,7 +366,7 @@ impl CloneArgs {
                     nsproxy.unshare_user(parent_cred.euid)?;
                 }
                 if flags.contains(CloneFlags::NEWCGROUP) {
-                    nsproxy.unshare_cgroup(child_cgroup.clone());
+                    nsproxy.unshare_cgroup(child_cgroup.clone())?;
                 }
                 if flags.contains(CloneFlags::NEWPID) {
                     nsproxy.pid_ns_for_children = target_pid_ns.clone();

@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{CgroupNode, CgroupPin};
+use crate::{CgroupNode, CgroupPin, CgroupResult};
 
 static NEXT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -13,11 +13,12 @@ pub struct CgroupNamespace {
 
 impl CgroupNamespace {
     /// Create a namespace rooted at the caller's current membership.
-    pub fn new(root: Arc<CgroupNode>) -> Self {
-        Self {
+    pub fn new(root: Arc<CgroupNode>) -> CgroupResult<Self> {
+        let root = root.try_pin()?;
+        Ok(Self {
             id: NEXT_NAMESPACE_ID.fetch_add(1, Ordering::Relaxed),
-            root: root.pin(),
-        }
+            root,
+        })
     }
 
     /// Return the namespace inode identity.
@@ -32,6 +33,6 @@ impl CgroupNamespace {
 
     /// Create an independent ownership pin for a new cgroup2 mount.
     pub fn pin_root(&self) -> CgroupPin {
-        self.root.node().pin()
+        self.root.duplicate()
     }
 }

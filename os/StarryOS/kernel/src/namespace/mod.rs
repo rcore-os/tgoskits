@@ -132,8 +132,10 @@ impl NsProxy {
         Ok(())
     }
 
-    pub fn unshare_cgroup(&mut self, root: Arc<CgroupNode>) {
-        self.cgroup_ns = new_cgroup_namespace(root);
+    pub fn unshare_cgroup(&mut self, root: Arc<CgroupNode>) -> crate::StarryResult<()> {
+        let namespace = new_cgroup_namespace(root)?;
+        self.cgroup_ns = namespace;
+        Ok(())
     }
 
     /// Replace the UTS namespace with an existing one (used by `setns(2)`).
@@ -215,7 +217,7 @@ mod tests {
     fn final_process_exit_releases_cgroup_namespace_root() {
         init_cgroup();
         let mut nsproxy = NsProxy::new_root();
-        nsproxy.unshare_cgroup(ax_cgroup::root());
+        nsproxy.unshare_cgroup(ax_cgroup::root()).unwrap();
         let exiting_namespace = nsproxy.cgroup_ns.clone();
 
         assert!(!Arc::ptr_eq(&exiting_namespace, &ROOT_CGROUP_NS));

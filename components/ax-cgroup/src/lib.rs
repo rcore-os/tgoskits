@@ -18,7 +18,7 @@ use core::{fmt, num::NonZeroU64};
 use ax_lazyinit::LazyInit;
 pub use membership::{CgroupChildKind, CgroupForkGuard, CgroupTaskExit, ProcessMembership};
 pub use namespace::CgroupNamespace;
-pub use node::{CgroupNode, CgroupPin};
+pub use node::{CgroupMutationDomain, CgroupMutationGuard, CgroupNode, CgroupPin};
 
 /// Stable, non-reusable process generation used by cgroup membership.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
