@@ -21,6 +21,7 @@ fn rejects_mismatched_build_target_filename() {
     );
 
     let err = discover_case_build_config(
+        root.path(),
         &root.path().join("apps/starry/demo"),
         Some("aarch64-unknown-none-softfloat"),
     )

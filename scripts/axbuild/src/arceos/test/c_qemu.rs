@@ -10,12 +10,12 @@ use ostool::run::qemu::QemuConfig;
 use super::{
     ARCEOS_C_ALL_FEATURE, ARCEOS_C_QEMU_FEATURES, ARCEOS_C_QEMU_LISTED_CASES,
     ARCEOS_C_TEST_BUILD_GROUP,
-    assets::{arceos_c_test_dir, build_config_path, qemu_config_path},
+    assets::{arceos_c_test_dir, build_config_path, qemu_config_path, test_build_args},
     types::{CTestArtifactPaths, CTestDef},
 };
 use crate::{
     arceos::{ArceOS, build, cbuild, rootfs},
-    context::{BuildCliArgs, SnapshotPersistence},
+    context::SnapshotPersistence,
     test::{host_http::HostHttpServerGuard, qemu as qemu_test},
 };
 
@@ -82,9 +82,7 @@ pub(super) fn arceos_c_test_suit_qemu_config_path(
     qemu_config_path(root, arch, "ArceOS C test suite")
 }
 
-fn load_c_test_build_config(path: &Path) -> anyhow::Result<build::ArceosConfig> {
-    let config = build::load_arceos_build_config(path)
-        .with_context(|| format!("failed to parse C build config {}", path.display()))?;
+fn validate_c_test_build_config(config: &build::ArceosConfig, path: &Path) -> anyhow::Result<()> {
     if config.app_c.is_none() {
         bail!(
             "ArceOS C qemu test build config {} must set `app-c = \"c\"` or another C source \
@@ -92,7 +90,7 @@ fn load_c_test_build_config(path: &Path) -> anyhow::Result<build::ArceosConfig> 
             path.display()
         );
     }
-    Ok(config)
+    Ok(())
 }
 
 fn load_c_test_qemu_config(path: &Path) -> anyhow::Result<QemuConfig> {
@@ -181,9 +179,15 @@ async fn build_and_run_c_test(
     _arch: &str,
     test: &CTestDef,
 ) -> anyhow::Result<()> {
-    let build_config = load_c_test_build_config(&test.build_config_path)?;
     let qemu_config = load_c_test_qemu_config(&test.qemu_config_path)?;
-    let mode = build::load_arceos_build_mode(&test.build_config_path)?;
+    let request = arceos.prepare_request(
+        test_build_args("ax-libc", target, &test.build_config_path),
+        None,
+        None,
+        SnapshotPersistence::Discard,
+    )?;
+    validate_c_test_build_config(&request.config, &test.build_config_path)?;
+    let mode = build::arceos_build_mode(&request.config)?;
     let build::ArceosBuildMode::AppC { app_dir, app_name } = mode else {
         bail!(
             "ArceOS C qemu test build config {} must set `app-c = \"c\"` or another C source \
@@ -198,26 +202,13 @@ async fn build_and_run_c_test(
         c_test_artifact_index(test),
     );
 
-    let request = arceos.prepare_request(
-        BuildCliArgs {
-            config: Some(test.build_config_path.clone()),
-            package: Some("ax-libc".to_string()),
-            arch: None,
-            target: Some(target.to_string()),
-            smp: None,
-            debug: false,
-        },
-        None,
-        None,
-        SnapshotPersistence::Discard,
-    )?;
     let input = c_test_build_input(
         app_dir,
         app_name,
         artifacts.target_dir,
         artifacts.out_dir,
         &test.name,
-        build_config.common.features.clone(),
+        request.config.common.features.clone(),
     );
     let output = cbuild::build_c_app(arceos.app.workspace_context(), &request, &input)?;
     let map_path = output.elf_path.with_extension("axbt");
@@ -289,8 +280,6 @@ fn c_test_artifact_paths(
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
-
     use super::*;
 
     #[test]
@@ -300,12 +289,9 @@ mod tests {
     }
 
     #[test]
-    fn load_c_test_build_config_rejects_missing_app_c() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("build-x86_64-unknown-none.toml");
-        fs::write(&path, "features = [\"alloc\"]\nlog = \"Info\"\n\n[env]\n").unwrap();
-
-        let err = load_c_test_build_config(&path).unwrap_err();
+    fn c_test_requires_app_c_in_resolved_config() {
+        let config = build::ArceosConfig::default();
+        let err = validate_c_test_build_config(&config, Path::new("build.toml")).unwrap_err();
         assert!(err.to_string().contains("must set `app-c = \"c\"`"));
     }
 }

@@ -12,30 +12,34 @@ use super::{
 };
 use crate::{
     arceos::{ArceOS, build},
-    context::{BuildCliArgs, SnapshotPersistence, arch_for_target_checked},
+    context::{BuildCliArgs, RequestEnvironment, arch_for_target_checked},
     test::{board as board_test, qemu as qemu_test, suite as test_suite},
 };
 
 pub(crate) fn collect_board_test_groups(
-    _workspace_root: &Path,
+    workspace_root: &Path,
     test_suite_dir: &Path,
 ) -> anyhow::Result<Vec<ArceosBoardTestGroup>> {
     let mut groups = Vec::new();
     for info in board_test::discover_board_case_build_infos(test_suite_dir, "ArceOS")? {
-        let build_file = crate::arceos::board::load_build_file(&info.build_config_path)
-            .with_context(|| {
-                format!(
-                    "failed to load ArceOS board build config `{}`",
-                    info.build_config_path.display()
-                )
-            })?;
-        let package = build_file.package.with_context(|| {
+        let build_input = crate::build::load_config_input::<crate::arceos::config::ArceosConfig>(
+            workspace_root,
+            Some(&info.build_config_path),
+            None,
+        )
+        .with_context(|| {
+            format!(
+                "failed to load ArceOS board build config `{}`",
+                info.build_config_path.display()
+            )
+        })?;
+        let package = build_input.config.package.clone().with_context(|| {
             format!(
                 "ArceOS board build config `{}` must set `package`",
                 info.build_config_path.display()
             )
         })?;
-        let target = build_file.common.target.with_context(|| {
+        let target = build_input.config.common.target.clone().with_context(|| {
             format!(
                 "ArceOS board build config `{}` must set `target`",
                 info.build_config_path.display()
@@ -49,6 +53,7 @@ pub(crate) fn collect_board_test_groups(
             arch,
             target,
             build_config_path: info.build_config_path,
+            build_input,
             board_test_config_path: info.board_test_config_path,
         });
     }
@@ -99,6 +104,7 @@ struct PreparedBoardBuildGroup {
 
 impl ArceOS {
     pub(super) async fn test_board(&mut self, args: ArgsTestBoard) -> anyhow::Result<()> {
+        let environment = RequestEnvironment::capture()?;
         let groups = discover_board_test_groups(
             self.app.workspace_root(),
             &args.test_case,
@@ -132,12 +138,12 @@ impl ArceOS {
 
         let mut build_configs = Vec::<(PathBuf, Vec<usize>)>::new();
         for (position, (_, group)) in runnable.iter().enumerate() {
-            let build_config = group.build_config_path.canonicalize().with_context(|| {
-                format!(
-                    "failed to resolve ArceOS board build config `{}`",
-                    group.build_config_path.display()
-                )
-            })?;
+            let build_config = group
+                .build_input
+                .source
+                .path()
+                .context("ArceOS board group has no build input source")?
+                .to_path_buf();
             if let Some((_, positions)) = build_configs
                 .iter_mut()
                 .find(|(config, _)| *config == build_config)
@@ -166,15 +172,15 @@ impl ArceOS {
         for (build_config, positions) in build_configs {
             let group = &runnable[positions[0]].1;
             let prepared = async {
-                let request = self.prepare_request(
-                    test_board_build_args(group),
+                let (request, _) = self.app.prepare_arceos_request_from_input(
+                    BuildCliArgs::default(),
+                    group.build_input.clone(),
+                    environment.clone(),
                     None,
                     None,
-                    SnapshotPersistence::Discard,
                 )?;
-                Self::validate_board_request(&request)?;
                 self.app.set_debug_mode(request.debug)?;
-                let mode = build::arceos_build_mode(&request.config, &request.build_info_path)?;
+                let mode = build::arceos_build_mode(&request.config)?;
                 let cargo = match &mode {
                     build::ArceosBuildMode::Rust => {
                         build::load_cargo_config(&request, self.app.workspace_context())?
@@ -212,7 +218,7 @@ impl ArceOS {
                     build::ArceosBuildMode::Rust => {
                         let output = self
                             .app
-                            .build(cargo.clone(), request.build_info_path.clone())
+                            .build(cargo.clone(), request.config_path().map(Path::to_path_buf))
                             .await?;
                         output.elf_path().to_path_buf()
                     }
@@ -246,13 +252,13 @@ impl ArceOS {
         for (group_label, group) in runnable {
             let board_test_config = group.board_test_config_path.clone();
             let board_test_config_summary = board_test_config.display().to_string();
-            let build_config = match group.build_config_path.canonicalize() {
-                Ok(path) => path,
-                Err(error) => {
+            let build_config = match group.build_input.source.path() {
+                Some(path) => path.to_path_buf(),
+                None => {
                     run_state.fail_group(
                         group_label,
                         anyhow::anyhow!(
-                            "failed to resolve ArceOS board build config `{}`: {error}",
+                            "ArceOS board group has no saved input source for `{}`",
                             group.build_config_path.display()
                         ),
                     );
@@ -281,13 +287,11 @@ impl ArceOS {
                 let board_config = self
                     .load_board_config(&prepared.cargo, Some(board_test_config.as_path()))
                     .await?;
-                let mut request = prepared.request.clone();
-                request.build_info_path = group.build_config_path.clone();
                 self.app
                     .board_prepared_elf(
                         prepared.elf_path.clone(),
                         prepared.cargo.to_bin,
-                        request.build_info_path,
+                        prepared.request.config_path().map(Path::to_path_buf),
                         board_config,
                         RunBoardOptions {
                             board_type: args.board_type.clone(),
@@ -314,17 +318,6 @@ impl ArceOS {
             }
         }
         run_state.finish()
-    }
-}
-
-fn test_board_build_args(group: &ArceosBoardTestGroup) -> BuildCliArgs {
-    BuildCliArgs {
-        config: Some(group.build_config_path.clone()),
-        package: Some(group.package.clone()),
-        arch: None,
-        target: Some(group.target.clone()),
-        smp: None,
-        debug: false,
     }
 }
 
@@ -363,7 +356,7 @@ fail_regex = ["(?i)panic"]
     }
 
     #[test]
-    fn collect_board_test_groups_reads_package_and_target_from_build_config() {
+    fn board_discovery_preserves_input_for_request_preparation() {
         let root = tempdir().unwrap();
         write_board_group(root.path());
         let group_dir = root.path().join("test-suit/arceos/board-orangepi-5-plus");
@@ -384,6 +377,40 @@ fail_regex = ["(?i)panic"]
             group.board_test_config_path,
             group_dir.join("boot/board-orangepi-5-plus.toml")
         );
+
+        let environment = RequestEnvironment {
+            runtime: ax_config::RuntimeEnv {
+                task_stack_size: Some("0x50000".into()),
+                scheduler_tick_ms: Some("5".into()),
+                ..Default::default()
+            },
+            features: vec!["ax-driver/nvme".into()],
+        };
+        fs::remove_file(&group.build_config_path).unwrap();
+        let app = crate::context::AppContext::new().unwrap();
+        let (request, _) = app
+            .prepare_arceos_request_from_input(
+                BuildCliArgs::default(),
+                group.build_input.clone(),
+                environment,
+                None,
+                None,
+            )
+            .unwrap();
+        let cargo = build::load_cargo_config(&request, app.workspace_context()).unwrap();
+        assert_eq!(request.package, "arceos-helloworld");
+        assert_eq!(request.target, "aarch64-unknown-none-softfloat");
+        assert!(
+            request
+                .config
+                .common
+                .features
+                .iter()
+                .any(|feature| feature == "ax-driver/nvme")
+        );
+        assert_eq!(cargo.env["SMP"], "1");
+        assert_eq!(cargo.env["AX_TASK_STACK_SIZE"], "327680");
+        assert_eq!(cargo.env["AX_SCHEDULER_TICK_MS"], "5");
     }
 
     #[test]

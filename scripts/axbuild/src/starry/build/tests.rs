@@ -13,7 +13,7 @@ fn workspace() -> WorkspaceContext {
 }
 
 fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedStarryRequest {
-    crate::context::test_support::starry_request(&path, arch, target)
+    crate::starry::test_request(&path, arch, target)
 }
 
 #[test]
@@ -140,11 +140,21 @@ fn uimage_generation_plan_follows_final_file_resource_selection() {
     let elf = root.path().join("target/kernel.elf");
     let its = root.path().join("board/foo.its");
 
+    let error = crate::build::load_build_config::<StarryConfig>(&config).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("ambiguous companion ITS"),
+        "{error:#}"
+    );
+    fs::write(
+        &config,
+        "target = 'riscv64gc-unknown-none-elf'\nfit_its = 'board/foo.its'\n",
+    )
+    .unwrap();
     let loaded: StarryConfig = crate::build::load_build_config(&config).unwrap();
     loaded.validate().unwrap();
     let plan = uimage_generation_plan(&loaded, root.path(), &elf)
         .unwrap()
-        .expect("companion ITS should request uImage generation");
+        .expect("explicit ITS should request uImage generation");
 
     assert_eq!(plan.source_its, root.path().join("board/foo.its"));
     assert_eq!(

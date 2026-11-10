@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use ostool::{
     board::{RunBoardOptions, config::BoardRunConfig},
@@ -8,14 +8,10 @@ use ostool::{
 };
 
 use crate::{
-    context::{
-        AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence,
-        resolve_arceos_arch_and_target,
-    },
+    context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
     test::host_http::HostHttpServerGuard,
 };
 
-mod board;
 pub mod build;
 pub mod cbuild;
 pub mod config;
@@ -46,9 +42,9 @@ pub enum Command {
     Build(ArgsBuild),
     /// Build and run ArceOS application in QEMU
     Qemu(ArgsQemu),
-    /// Generate a default ArceOS dynamic board config
+    /// Export an expanded ArceOS preset as a build config file
     Defconfig(ArgsDefconfig),
-    /// ArceOS board config helpers
+    /// Inspect ArceOS build presets and resolved config inputs
     Config(ArgsConfig),
     /// Run ArceOS test suites
     Test(test::ArgsTest),
@@ -60,6 +56,9 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct ArgsBuild {
+    /// Built-in Rust compilation recipe; may be combined with a sparse TOML.
+    #[arg(long, value_name = "NAME")]
+    pub preset: Option<String>,
     #[arg(short, long)]
     pub config: Option<PathBuf>,
     #[arg(short, long)]
@@ -118,7 +117,7 @@ pub struct ArgsBoard {
 
 #[derive(Args)]
 pub struct ArgsDefconfig {
-    pub board: String,
+    pub preset: String,
 }
 
 #[derive(Args)]
@@ -129,8 +128,10 @@ pub struct ArgsConfig {
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
-    /// List available board names
+    /// List available preset names, board IDs, and targets
     Ls,
+    /// Show the resolved build input without building or updating snapshots
+    Show(ArgsBuild),
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +145,7 @@ pub struct ArceOS {
 impl From<&ArgsBuild> for BuildCliArgs {
     fn from(args: &ArgsBuild) -> Self {
         Self {
+            preset: args.preset.clone(),
             config: args.config.clone(),
             package: args.package.clone(),
             arch: args.arch.clone(),
@@ -175,36 +177,15 @@ impl ArceOS {
     async fn build(&mut self, args: ArgsBuild) -> anyhow::Result<()> {
         let request =
             self.prepare_request((&args).into(), None, None, SnapshotPersistence::Store)?;
-        self.ensure_default_build_config_for_request(&request, "build")?;
         self.run_build_request(request).await
     }
 
     async fn qemu(&mut self, args: ArgsQemu) -> anyhow::Result<()> {
-        let mut build_args = BuildCliArgs::from(&args.build);
-        if build_args.package.is_none() && build_args.config.is_none() {
-            // Bare `arceos qemu` is a command-level default: select the matching
-            // board template, whose package and features define the runnable app.
-            // Explicit package/config selectors remain fully authoritative.
-            let (_, target) =
-                resolve_arceos_arch_and_target(build_args.arch.clone(), build_args.target.clone())?;
-            let board = board::default_qemu_board(self.app.workspace_root(), &target, None)?
-                .ok_or_else(|| {
-                    anyhow!(
-                        "missing ArceOS QEMU default config for target `{target}` under {}",
-                        board::board_dir(self.app.workspace_root())
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|_| "os/arceos/configs/board".to_string())
-                    )
-                })?;
-            build_args.config = Some(board.path);
-        }
-        let request = self.prepare_request(
-            build_args,
+        let request = self.prepare_qemu_request(
+            (&args.build).into(),
             args.qemu_config,
-            None,
             SnapshotPersistence::Store,
         )?;
-        self.ensure_default_build_config_for_request(&request, "qemu")?;
         if let Some(rootfs) = args.rootfs {
             rootfs::qemu_with_explicit_rootfs(self, request, rootfs).await
         } else {
@@ -223,17 +204,30 @@ impl ArceOS {
     }
 
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
-        let path = config::write_defconfig(self.app.workspace_root(), &args.board)?;
-        println!("Generated {} for board {}", path.display(), args.board);
+        let path = config::write_defconfig(self.app.workspace_root(), &args.preset)?;
+        println!("Generated {} for preset {}", path.display(), args.preset);
         Ok(())
     }
 
     fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
         match args.command {
             ConfigCommand::Ls => {
-                for board in config::available_board_names(self.app.workspace_root())? {
-                    println!("{board}");
+                for preset in config::presets::PRESETS {
+                    println!(
+                        "{} {} {}",
+                        preset.name, preset.common.board.id, preset.common.board.target
+                    );
                 }
+            }
+            ConfigCommand::Show(args) => {
+                let request =
+                    self.prepare_request((&args).into(), None, None, SnapshotPersistence::Discard)?;
+                crate::build::show_config(
+                    &request.config,
+                    &request.source,
+                    request.runtime,
+                    &request.environment_features,
+                )?;
             }
         }
         Ok(())
@@ -269,36 +263,26 @@ impl ArceOS {
         uboot_config: Option<PathBuf>,
         persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedBuildRequest> {
-        let (request, snapshot) = self.app.prepare_arceos_request(
-            args,
-            qemu_config,
-            uboot_config,
-            build::resolve_build_info_path,
-        )?;
+        let (request, snapshot) =
+            self.app
+                .prepare_arceos_request(args, qemu_config, uboot_config)?;
         if persistence.should_store() {
             self.app.store_arceos_snapshot(&snapshot)?;
         }
         Ok(request)
     }
 
-    fn ensure_default_build_config_for_request(
+    fn prepare_qemu_request(
         &self,
-        request: &ResolvedBuildRequest,
-        command: &str,
-    ) -> anyhow::Result<()> {
-        if let Some(board) = config::ensure_default_build_config_for_target(
-            self.app.workspace_root(),
-            &request.package,
-            &request.target,
-            &request.build_info_path,
-        )? {
-            println!(
-                "generated missing ArceOS {command} build config {} from board {}",
-                request.build_info_path.display(),
-                board.name
-            );
+        args: BuildCliArgs,
+        qemu_config: Option<PathBuf>,
+        persistence: SnapshotPersistence,
+    ) -> anyhow::Result<ResolvedBuildRequest> {
+        let (request, snapshot) = self.app.prepare_arceos_qemu_request(args, qemu_config)?;
+        if persistence.should_store() {
+            self.app.store_arceos_snapshot(&snapshot)?;
         }
-        Ok(())
+        Ok(request)
     }
 
     pub(super) async fn load_qemu_config(
@@ -359,15 +343,8 @@ impl ArceOS {
         }
     }
 
-    fn validate_board_request(request: &ResolvedBuildRequest) -> anyhow::Result<()> {
-        if request.build_info_path.exists() {
-            board::load_build_file(&request.build_info_path)?;
-        }
-        Ok(())
-    }
-
     async fn run_qemu_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
-        match build::arceos_build_mode(&request.config, &request.build_info_path)? {
+        match build::arceos_build_mode(&request.config)? {
             build::ArceosBuildMode::Rust => {
                 let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
                 self.run_qemu_request_with_cargo(request, cargo).await
@@ -396,9 +373,8 @@ impl ArceOS {
         options: RunBoardOptions,
         extra_rustflags: &[&str],
     ) -> anyhow::Result<()> {
-        Self::validate_board_request(&request)?;
         self.app.set_debug_mode(request.debug)?;
-        match build::arceos_build_mode(&request.config, &request.build_info_path)? {
+        match build::arceos_build_mode(&request.config)? {
             build::ArceosBuildMode::Rust => {
                 let mut cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
                 if !extra_rustflags.is_empty() {
@@ -408,7 +384,12 @@ impl ArceOS {
                     .load_board_config(&cargo, board_config_path.as_deref())
                     .await?;
                 self.app
-                    .board(cargo, request.build_info_path, board_config, options)
+                    .board(
+                        cargo,
+                        request.config_path().map(Path::to_path_buf),
+                        board_config,
+                        options,
+                    )
                     .await
             }
             build::ArceosBuildMode::AppC { app_dir, app_name } => {
@@ -428,7 +409,7 @@ impl ArceOS {
                     .board_prepared_elf(
                         output.elf_path,
                         cargo.to_bin,
-                        request.build_info_path,
+                        request.config_path().map(Path::to_path_buf),
                         board_config,
                         options,
                     )
@@ -461,17 +442,21 @@ impl ArceOS {
         rootfs::prepare_default_qemu_fat32_rootfs(self.app.workspace_root(), &qemu)?;
         let _host_http_server = start_qemu_host_http_server(&request)?;
         self.app
-            .qemu(cargo, request.build_info_path, Some(qemu))
+            .qemu(
+                cargo,
+                request.config_path().map(Path::to_path_buf),
+                Some(qemu),
+            )
             .await
     }
 
     async fn run_build_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        match build::arceos_build_mode(&request.config, &request.build_info_path)? {
+        match build::arceos_build_mode(&request.config)? {
             build::ArceosBuildMode::Rust => {
                 let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
                 self.app
-                    .build(cargo, request.build_info_path)
+                    .build(cargo, request.config_path().map(Path::to_path_buf))
                     .await
                     .map(|_| ())
             }
@@ -495,11 +480,13 @@ impl ArceOS {
 
     async fn run_uboot_request(&mut self, request: ResolvedBuildRequest) -> anyhow::Result<()> {
         self.app.set_debug_mode(request.debug)?;
-        match build::arceos_build_mode(&request.config, &request.build_info_path)? {
+        match build::arceos_build_mode(&request.config)? {
             build::ArceosBuildMode::Rust => {
                 let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
                 let uboot = self.load_uboot_config(&request, &cargo).await?;
-                self.app.uboot(cargo, request.build_info_path, uboot).await
+                self.app
+                    .uboot(cargo, request.config_path().map(Path::to_path_buf), uboot)
+                    .await
             }
             build::ArceosBuildMode::AppC { app_dir, app_name } => {
                 self.run_c_app_uboot_request(request, app_dir, app_name)
@@ -543,8 +530,8 @@ impl ArceOS {
             .await?
             .with_context(|| {
                 format!(
-                    "ArceOS C app config {} requires an explicit qemu config",
-                    request.build_info_path.display()
+                    "ArceOS C app source {:?} requires an explicit qemu config",
+                    request.source
                 )
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
@@ -576,8 +563,8 @@ impl ArceOS {
             .await?
             .with_context(|| {
                 format!(
-                    "ArceOS C app config {} requires an explicit uboot config",
-                    request.build_info_path.display()
+                    "ArceOS C app source {:?} requires an explicit uboot config",
+                    request.source
                 )
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;

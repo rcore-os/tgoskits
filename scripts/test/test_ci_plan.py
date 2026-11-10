@@ -1148,7 +1148,7 @@ command = "true"
             impact=ci_plan.CiImpact(
                 full=False,
                 reason="fixture",
-                changed_paths=("os/StarryOS/configs/board/future-board.toml",),
+                changed_paths=("os/StarryOS/configs/board/future-board-board.toml",),
                 input_selections=("starry:board:future-board",),
             ),
         )

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Context;
@@ -75,7 +75,7 @@ impl Axvisor {
             .await?;
         let uboot = Some(merge_board_test_uboot_config(base_uboot, board_config));
         self.app
-            .uboot(cargo, request.build_info_path, uboot)
+            .uboot(cargo, request.config_path().map(Path::to_path_buf), uboot)
             .await
             .with_context(|| {
                 format!(
@@ -253,7 +253,7 @@ impl Axvisor {
             let result = async {
                 let output = self
                     .app
-                    .build(cargo.clone(), request.build_info_path.clone())
+                    .build(cargo.clone(), request.config_path().map(Path::to_path_buf))
                     .await?;
                 let elf_path = test_qemu::preserve_build_artifact(
                     output.elf_path(),
@@ -332,7 +332,7 @@ impl Axvisor {
                         .board_prepared_elf(
                             prepared.elf_path.clone(),
                             prepared.cargo.to_bin,
-                            request.build_info_path,
+                            request.config_path().map(Path::to_path_buf),
                             board_config,
                             RunBoardOptions {
                                 board_type: args.board_type.clone(),
@@ -433,6 +433,7 @@ fn merge_board_test_uboot_config(
 
 fn axvisor_board_test_build_args(group: &BoardTestGroup) -> AxvisorCliArgs {
     AxvisorCliArgs {
+        preset: None,
         config: Some(group.build_config.clone()),
         arch: None,
         target: None,

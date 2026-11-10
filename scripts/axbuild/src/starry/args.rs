@@ -37,6 +37,9 @@ pub enum Command {
 
 #[derive(Args, Clone)]
 pub struct ArgsBuild {
+    /// Built-in Rust compilation recipe; may be combined with a sparse TOML.
+    #[arg(long, value_name = "NAME")]
+    pub preset: Option<String>,
     #[arg(short, long)]
     pub config: Option<PathBuf>,
     #[arg(long)]
@@ -306,11 +309,14 @@ pub struct ArgsConfig {
 pub enum ConfigCommand {
     /// List available board names
     Ls,
+    /// Show the resolved build input without building or updating snapshots
+    Show(ArgsBuild),
 }
 
 impl From<&ArgsBuild> for StarryCliArgs {
     fn from(args: &ArgsBuild) -> Self {
         Self {
+            preset: args.preset.clone(),
             config: args.config.clone(),
             arch: args.arch.clone(),
             target: args.target.clone(),

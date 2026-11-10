@@ -98,11 +98,11 @@ Tab 通过 `shell::completion::complete_line` 补全命令和子命令；启用�
 
 AxVisor 使用 xtask 工具进行构建管理，支持多种硬件平台和配置选项。快速构建及运行 AxVisor，请参见配置套文档中的[快速上手](https://arceos-hypervisor.github.io/axvisorbook/docs/quickstart)章节。
 
-1. **查看可用板级配置**：使用 `cargo xtask axvisor config ls` 查看 `configs/board/` 目录下可用的板级配置名。
+1. **查看内置预设**：使用 `cargo xtask axvisor config ls` 查看 Rust 静态配方的名称、板卡和 target，`config show --preset <name>` 展示解析结果。
 
-2. **生成配置**：使用 `cargo xtask axvisor defconfig <board_name>` 选择目标硬件平台配置。此命令会将对应板级配置复制为 `.build.toml`。
+2. **按需导出**：使用 `cargo xtask axvisor defconfig <name>` 原子导出展开 TOML 到 `tmp/axbuild/config/axvisor/build-<target>.toml`，写出成功后更新选择；这不是构建前置步骤。
 
-3. **执行构建**：使用 `cargo xtask axvisor build` 根据 `.build.toml` 编译 AxVisor。若不想依赖 `.build.toml`，也可以直接指定配置文件，例如：`cargo xtask axvisor build --config configs/board/<board_name>.toml`。
+3. **执行构建**：使用 `cargo xtask axvisor build --preset <name>` 直接构建；`--preset <name> --config local.toml` 应用稀疏覆盖，`--config full.toml` 可提供完全自定义输入。普通构建不隐式生成配置文件。
 
 4. **运行 QEMU**：在工作区根目录使用 `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` 运行维护中的 smoke 用例。
 

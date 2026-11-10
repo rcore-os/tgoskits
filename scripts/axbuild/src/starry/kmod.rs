@@ -78,7 +78,6 @@ impl Starry {
 
         let request =
             self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
-        self.ensure_default_build_config_for_request(&request, "kmod")?;
         self.app.set_debug_mode(request.debug)?;
         let base_cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         let metadata = self.app.workspace_metadata();

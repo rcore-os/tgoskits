@@ -14,7 +14,9 @@ mod toolchain;
 use anyhow::bail;
 
 use super::{ArgsBuild, ArgsPerf, PerfFlamegraphKind, PerfFormat, Starry, build, rootfs};
-use crate::context::{SnapshotPersistence, StarryCliArgs, starry_target_for_arch_checked};
+use crate::context::{
+    RequestEnvironment, SnapshotPersistence, StarryCliArgs, starry_target_for_arch_checked,
+};
 
 pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<()> {
     args_support::validate_args(&args)?;
@@ -24,6 +26,7 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
         .unwrap_or_else(|| crate::context::DEFAULT_STARRY_ARCH.to_string());
     qemu::validate_arch(&arch)?;
     let target = starry_target_for_arch_checked(&arch)?.to_string();
+    let environment = RequestEnvironment::capture()?;
     let selected_test_case = test_case::resolve(
         starry.app.workspace_root(),
         &arch,
@@ -48,17 +51,22 @@ pub(super) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<(
 
     let tools = harness::build_qperf_tools(starry.app.workspace_root(), generate_svg)?;
 
+    let input = match selected_test_case.as_ref() {
+        Some(selected) => selected.build_input().clone(),
+        None => crate::build::load_config_input(starry.app.workspace_root(), None, None)?,
+    };
     let build_args = ArgsBuild {
-        config: selected_test_case
-            .as_ref()
-            .map(|selected| selected.build_config_path().to_path_buf()),
+        preset: None,
+        config: None,
         arch: Some(arch.clone()),
         target: None,
         smp: args.smp,
         debug: args.debug,
     };
-    let request = starry.prepare_request(
+    let request = starry.prepare_request_from_input(
         StarryCliArgs::from(&build_args),
+        input,
+        environment,
         selected_test_case
             .as_ref()
             .map(|selected| selected.qemu_config_path().to_path_buf()),

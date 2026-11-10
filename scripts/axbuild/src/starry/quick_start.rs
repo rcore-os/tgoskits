@@ -139,15 +139,11 @@ pub fn print_supported_platforms(workspace_root: &Path) {
         QuickQemuPlatform::Loongarch64,
         QuickQemuPlatform::X8664,
     ] {
-        let build = qemu_build_config_path(workspace_root, platform);
-        let tmp_build = tmp_qemu_build_config_path(workspace_root, platform);
         println!("  {}", platform.cli_name());
-        println!("    build template: {}", build.display());
         println!(
             "    run template:   {}",
             super::default_qemu_config_template_path(workspace_root, platform.arch()).display()
         );
-        println!("    tmp build cfg:  {}", tmp_build.display());
         println!(
             "    commands:\n      cargo xtask starry quick-start {} build\n      cargo xtask \
              starry quick-start {} run",
@@ -156,58 +152,31 @@ pub fn print_supported_platforms(workspace_root: &Path) {
         );
     }
 
-    let build = orangepi_build_config_path(workspace_root);
     let run = orangepi_uboot_config_path(workspace_root);
-    let tmp_build = tmp_orangepi_build_config_path(workspace_root);
     let tmp_run = tmp_orangepi_uboot_config_path(workspace_root);
     println!("  orangepi-5-plus");
-    println!("    build template: {}", build.display());
     println!("    run template:   {}", run.display());
-    println!("    tmp build cfg:  {}", tmp_build.display());
     println!("    tmp run cfg:    {}", tmp_run.display());
     println!(
         "    commands:\n      cargo xtask starry quick-start orangepi-5-plus build\n      cargo \
          xtask starry quick-start orangepi-5-plus run --serial /dev/ttyUSB0"
     );
 
-    let build = sg2002_build_config_path(workspace_root);
     let board = sg2002_board_config_path(workspace_root);
-    let tmp_build = tmp_sg2002_build_config_path(workspace_root);
     println!("  licheerv-nano-sg2002");
-    println!("    build template: {}", build.display());
     println!("    board template: {}", board.display());
     println!(
         "    local run template: {}",
         sg2002_uboot_config_path(workspace_root).display()
     );
-    println!("    tmp build cfg:  {}", tmp_build.display());
     println!(
         "    commands:\n      cargo xtask starry quick-start licheerv-nano-sg2002 build\n      \
          cargo xtask starry quick-start licheerv-nano-sg2002 run --serial /dev/ttyUSB0"
     );
 }
 
-pub fn qemu_build_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
-    workspace_root
-        .join("os/StarryOS/configs/board")
-        .join(match platform {
-            QuickQemuPlatform::Aarch64 => "qemu-aarch64.toml",
-            QuickQemuPlatform::Riscv64 => "qemu-riscv64.toml",
-            QuickQemuPlatform::Loongarch64 => "qemu-loongarch64.toml",
-            QuickQemuPlatform::X8664 => "qemu-x86_64.toml",
-        })
-}
-
-pub fn orangepi_build_config_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("os/StarryOS/configs/board/orangepi-5-plus.toml")
-}
-
 pub fn orangepi_uboot_config_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join("os/StarryOS/configs/board/orangepi-5-plus-uboot.toml")
-}
-
-pub fn sg2002_build_config_path(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("os/StarryOS/configs/board/licheerv-nano-sg2002.toml")
 }
 
 pub fn sg2002_board_config_path(workspace_root: &Path) -> PathBuf {
@@ -225,25 +194,8 @@ pub fn tmp_config_dir(workspace_root: &Path) -> PathBuf {
         .join("quick-start")
 }
 
-pub fn tmp_qemu_build_config_path(workspace_root: &Path, platform: QuickQemuPlatform) -> PathBuf {
-    tmp_config_dir(workspace_root).join(match platform {
-        QuickQemuPlatform::Aarch64 => "build-aarch64.toml",
-        QuickQemuPlatform::Riscv64 => "build-riscv64.toml",
-        QuickQemuPlatform::Loongarch64 => "build-loongarch64.toml",
-        QuickQemuPlatform::X8664 => "build-x86_64.toml",
-    })
-}
-
-pub fn tmp_orangepi_build_config_path(workspace_root: &Path) -> PathBuf {
-    tmp_config_dir(workspace_root).join("orangepi-5-plus.toml")
-}
-
 pub fn tmp_orangepi_uboot_config_path(workspace_root: &Path) -> PathBuf {
     tmp_config_dir(workspace_root).join("orangepi-5-plus-uboot.toml")
-}
-
-pub fn tmp_sg2002_build_config_path(workspace_root: &Path) -> PathBuf {
-    tmp_config_dir(workspace_root).join("licheerv-nano-sg2002.toml")
 }
 
 pub fn tmp_sg2002_uboot_config_path(workspace_root: &Path) -> PathBuf {
@@ -264,54 +216,7 @@ fn copy_template(src: &Path, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn copy_build_template(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    copy_template(src, dst)?;
-    copy_companion_its(src, dst)
-}
-
-fn copy_companion_its(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    let src_its = src.with_extension("its");
-    if !src_its.exists() {
-        return Ok(());
-    }
-    let dst_its = dst.with_extension("its");
-    fs::copy(&src_its, &dst_its).with_context(|| {
-        format!(
-            "failed to copy {} to {}",
-            src_its.display(),
-            dst_its.display()
-        )
-    })?;
-    Ok(())
-}
-
-pub fn refresh_qemu_build_config(
-    workspace_root: &Path,
-    platform: QuickQemuPlatform,
-) -> anyhow::Result<()> {
-    copy_build_template(
-        &qemu_build_config_path(workspace_root, platform),
-        &tmp_qemu_build_config_path(workspace_root, platform),
-    )?;
-    Ok(())
-}
-
-pub fn ensure_qemu_build_config(
-    workspace_root: &Path,
-    platform: QuickQemuPlatform,
-) -> anyhow::Result<()> {
-    let build_cfg = tmp_qemu_build_config_path(workspace_root, platform);
-    if !build_cfg.exists() {
-        refresh_qemu_build_config(workspace_root, platform)?;
-    }
-    Ok(())
-}
-
-pub fn refresh_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
-    copy_build_template(
-        &orangepi_build_config_path(workspace_root),
-        &tmp_orangepi_build_config_path(workspace_root),
-    )?;
+pub fn refresh_orangepi_uboot_config(workspace_root: &Path) -> anyhow::Result<()> {
     copy_template(
         &orangepi_uboot_config_path(workspace_root),
         &tmp_orangepi_uboot_config_path(workspace_root),
@@ -319,11 +224,7 @@ pub fn refresh_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn refresh_sg2002_config(workspace_root: &Path) -> anyhow::Result<()> {
-    copy_build_template(
-        &sg2002_build_config_path(workspace_root),
-        &tmp_sg2002_build_config_path(workspace_root),
-    )?;
+pub fn refresh_sg2002_uboot_config(workspace_root: &Path) -> anyhow::Result<()> {
     copy_template(
         &sg2002_uboot_config_path(workspace_root),
         &tmp_sg2002_uboot_config_path(workspace_root),
@@ -331,11 +232,7 @@ pub fn refresh_sg2002_config(workspace_root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn ensure_sg2002_config(workspace_root: &Path) -> anyhow::Result<()> {
-    let build_cfg = tmp_sg2002_build_config_path(workspace_root);
-    if !build_cfg.exists() {
-        copy_build_template(&sg2002_build_config_path(workspace_root), &build_cfg)?;
-    }
+pub fn ensure_sg2002_uboot_config(workspace_root: &Path) -> anyhow::Result<()> {
     let run_cfg = tmp_sg2002_uboot_config_path(workspace_root);
     if !run_cfg.exists() {
         copy_template(&sg2002_uboot_config_path(workspace_root), &run_cfg)?;
@@ -343,12 +240,8 @@ pub fn ensure_sg2002_config(workspace_root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn ensure_orangepi_configs(workspace_root: &Path) -> anyhow::Result<()> {
-    let build_cfg = tmp_orangepi_build_config_path(workspace_root);
+pub fn ensure_orangepi_uboot_config(workspace_root: &Path) -> anyhow::Result<()> {
     let run_cfg = tmp_orangepi_uboot_config_path(workspace_root);
-    if !build_cfg.exists() {
-        copy_build_template(&orangepi_build_config_path(workspace_root), &build_cfg)?;
-    }
     if !run_cfg.exists() {
         copy_template(&orangepi_uboot_config_path(workspace_root), &run_cfg)?;
     }

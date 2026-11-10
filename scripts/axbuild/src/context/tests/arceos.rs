@@ -28,6 +28,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     let (request, snapshot) = prepare_arceos_request(
         &app,
         BuildCliArgs {
+            preset: None,
             config: Some(custom_config.clone()),
             package: Some("from-cli".into()),
             arch: Some("aarch64".into()),
@@ -44,7 +45,7 @@ uboot_config = "configs/snapshot-uboot.toml"
     assert_eq!(request.target, DEFAULT_ARCEOS_TARGET);
     assert_eq!(request.smp, Some(4));
     assert!(request.debug);
-    assert_eq!(request.build_info_path, custom_config);
+    assert_eq!(request.config_path().unwrap().to_path_buf(), custom_config);
     assert_eq!(request.qemu_config, Some(PathBuf::from("/tmp/qemu.toml")));
     assert_eq!(request.uboot_config, None);
     assert_eq!(snapshot.package.as_deref(), Some("from-cli"));
@@ -125,12 +126,22 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(request.package, "arceos-helloworld");
     assert_eq!(request.arch, "aarch64");
     assert_eq!(request.target, "aarch64-unknown-none-softfloat");
-    assert_eq!(request.build_info_path, config_path);
+    assert_eq!(request.config_path().unwrap().to_path_buf(), config_path);
     assert_eq!(
         request.qemu_config,
         Some(root.path().join("configs/qemu.toml"))
     );
     assert_eq!(snapshot.config, Some(PathBuf::from("configs/board.toml")));
+
+    // Restoring a file selection must read its current preset, not promote the
+    // previous file control key into a competing CLI selector.
+    fs::write(&config_path, "preset = 'qemu-aarch64'\n").unwrap();
+    let (_, snapshot) = prepare_arceos_request(&app, BuildCliArgs::default(), None, None).unwrap();
+    app.store_arceos_snapshot(&snapshot).unwrap();
+    fs::write(&config_path, "preset = 'qemu-riscv64'\n").unwrap();
+    let (request, _) = prepare_arceos_request(&app, BuildCliArgs::default(), None, None).unwrap();
+    assert_eq!(request.arch, "riscv64");
+    assert_eq!(request.target, ax_config::boards::TARGET_RISCV64);
 }
 
 #[test]
@@ -167,6 +178,7 @@ qemu_config = "configs/qemu.toml"
     let (request, snapshot) = prepare_arceos_request(
         &app,
         BuildCliArgs {
+            preset: None,
             config: Some(config_path.clone()),
             package: None,
             arch: None,
@@ -182,7 +194,7 @@ qemu_config = "configs/qemu.toml"
     assert_eq!(request.package, "arceos-helloworld");
     assert_eq!(request.arch, "aarch64");
     assert_eq!(request.target, "aarch64-unknown-none-softfloat");
-    assert_eq!(request.build_info_path, config_path);
+    assert_eq!(request.config_path().unwrap().to_path_buf(), config_path);
     assert_eq!(request.qemu_config, None);
     assert_eq!(
         snapshot.config,
@@ -219,6 +231,7 @@ config = "configs/orangepi.toml"
     let (request, snapshot) = prepare_arceos_request(
         &app,
         BuildCliArgs {
+            preset: None,
             package: Some("arceos-helloworld".to_string()),
             ..Default::default()
         },
@@ -228,14 +241,9 @@ config = "configs/orangepi.toml"
     .unwrap();
 
     assert_eq!(request.package, "arceos-helloworld");
-    assert_eq!(
-        request.build_info_path,
-        crate::build::default_build_info_path_in_workspace(
-            root.path(),
-            "arceos-helloworld",
-            "aarch64-unknown-none-softfloat",
-        )
-    );
+    assert_eq!(request.config_path(), None);
+    assert_eq!(request.source, crate::build::ConfigSource::Custom);
+    assert!(!root.path().join("tmp/axbuild/config").exists());
     assert_ne!(
         snapshot.config,
         Some(PathBuf::from("configs/orangepi.toml"))
@@ -273,6 +281,7 @@ log = "Info"
     let err = prepare_arceos_request(
         &app,
         BuildCliArgs {
+            preset: None,
             config: Some(config_path.clone()),
             package: Some("arceos-helloworld".into()),
             ..Default::default()
@@ -292,6 +301,7 @@ log = "Info"
     let (request, _) = prepare_arceos_request(
         &app,
         BuildCliArgs {
+            preset: None,
             config: Some(config_path.clone()),
             package: Some(crate::arceos::cbuild::AX_LIBC_PACKAGE.into()),
             ..Default::default()
@@ -300,7 +310,7 @@ log = "Info"
         None,
     )
     .unwrap();
-    let mode = crate::arceos::build::arceos_build_mode(&request.config, &config_path).unwrap();
+    let mode = crate::arceos::build::arceos_build_mode(&request.config).unwrap();
     match mode {
         crate::arceos::build::ArceosBuildMode::AppC {
             app_dir: resolved, ..
@@ -358,8 +368,9 @@ uboot_config = "configs/uboot-aarch64.toml"
     let (request, snapshot) = prepare_arceos_request(
         &app,
         BuildCliArgs {
+            preset: None,
             config: None,
-            package: None,
+            package: Some("arceos-helloworld".into()),
             arch: None,
             target: Some("riscv64gc-unknown-none-elf".into()),
             smp: None,

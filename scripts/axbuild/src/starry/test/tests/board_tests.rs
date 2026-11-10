@@ -20,6 +20,15 @@ fn discovers_board_test_group_and_build_mapping() {
     assert_eq!(groups[0].target, "aarch64-unknown-none-softfloat");
     assert_eq!(groups[0].build_config_path, build_config);
     assert_eq!(groups[0].board_test_config_path, board_test_config);
+
+    fs::write(&build_config, "features = []\n").unwrap();
+    let error = discover_board_test_groups(root.path(), &[], None).unwrap_err();
+    let diagnostic = format!("{error:#}");
+    assert!(diagnostic.contains("target"), "{diagnostic}");
+    assert!(
+        diagnostic.contains(&build_config.display().to_string()),
+        "{diagnostic}"
+    );
 }
 
 #[test]

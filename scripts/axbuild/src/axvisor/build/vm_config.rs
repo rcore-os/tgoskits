@@ -173,22 +173,25 @@ ramdisk_path = "../images/initramfs.cpio"
         )
         .unwrap();
         let request = ResolvedAxvisorRequest {
+            source: crate::build::ConfigSource::Custom,
             package: "axvisor".into(),
             axvisor_dir: package.clone(),
             arch: "aarch64".into(),
             target: "aarch64-unknown-none-softfloat".into(),
             smp: None,
             debug: false,
-            build_info_path: (workspace.join("build.toml")).clone(),
+            config: crate::axvisor::config::AxvisorConfig::default(),
+            runtime: ax_config::resolve_runtime(
+                None,
+                ax_config::RuntimeOptions::default(),
+                &ax_config::RuntimeEnv::default(),
+            )
+            .unwrap(),
+            runtime_env: ax_config::RuntimeEnv::default(),
+            environment_features: Vec::new(),
             qemu_config: None,
             uboot_config: None,
             vmconfigs: vec![],
-            ..crate::context::test_support::axvisor_request(
-                &(workspace.join("build.toml")),
-                "aarch64",
-                "aarch64-unknown-none-softfloat",
-                &package,
-            )
         };
         let outputs = resolve_vmconfigs(
             &request,

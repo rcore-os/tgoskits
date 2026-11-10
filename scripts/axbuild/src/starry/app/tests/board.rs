@@ -21,7 +21,10 @@ fn resolves_board_case_from_apps_dir() {
             .ends_with("board-orangepi-5-plus.toml")
     );
     assert!(
-        case.build_config_path
+        case.build_input
+            .source
+            .path()
+            .unwrap()
             .ends_with("build-aarch64-unknown-none-softfloat.toml")
     );
 }

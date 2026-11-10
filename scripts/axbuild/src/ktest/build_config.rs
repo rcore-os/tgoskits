@@ -7,7 +7,10 @@ use ostool::build::config::Cargo;
 use super::{KtestRuntime, KtestUnitConfig};
 use crate::{
     arceos, axvisor,
-    context::{ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest},
+    build::{BuildConfiguration, ConfigInput, ConfigSource, load_config_input},
+    context::{
+        RequestEnvironment, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest,
+    },
     starry,
 };
 
@@ -15,8 +18,17 @@ use crate::{
 #[derive(Debug)]
 pub(super) struct KtestBuildConfig {
     config: OsConfig,
+    source: ConfigSource,
+    target_constraint: Option<String>,
     runtime_env: RuntimeEnv,
     environment_features: Vec<String>,
+}
+
+pub(super) struct KtestBuildSelection<'a> {
+    pub runtime: KtestRuntime,
+    pub config: Option<&'a Path>,
+    pub preset: Option<&'a str>,
+    pub default_qemu_target: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -27,25 +39,49 @@ enum OsConfig {
 }
 
 impl KtestBuildConfig {
-    pub(super) fn load(runtime: KtestRuntime, path: &Path) -> anyhow::Result<Self> {
-        let runtime_env = RuntimeEnv::capture()?;
-        let mut config = match runtime {
+    pub(super) fn load(
+        workspace_root: &Path,
+        selection: KtestBuildSelection<'_>,
+    ) -> anyhow::Result<Self> {
+        let environment = RequestEnvironment::capture()?;
+        let (mut config, source, target_constraint) = match selection.runtime {
             KtestRuntime::Arceos | KtestRuntime::Board => {
-                OsConfig::Arceos(crate::build::load_build_config(path)?)
+                let input = select_input(workspace_root, &selection)?;
+                (
+                    OsConfig::Arceos(input.config),
+                    input.source,
+                    input.target_constraint,
+                )
             }
-            KtestRuntime::Starry => OsConfig::Starry(crate::build::load_build_config(path)?),
-            KtestRuntime::Axvisor => OsConfig::Axvisor(crate::build::load_build_config(path)?),
+            KtestRuntime::Starry => {
+                let input = select_input(workspace_root, &selection)?;
+                (
+                    OsConfig::Starry(input.config),
+                    input.source,
+                    input.target_constraint,
+                )
+            }
+            KtestRuntime::Axvisor => {
+                let input = select_input(workspace_root, &selection)?;
+                (
+                    OsConfig::Axvisor(input.config),
+                    input.source,
+                    input.target_constraint,
+                )
+            }
         };
         let common = match &mut config {
             OsConfig::Arceos(config) => &mut config.common,
             OsConfig::Starry(config) => &mut config.common,
             OsConfig::Axvisor(config) => &mut config.common,
         };
-        let environment_features = crate::build::makefile_features_from_env();
+        let environment_features = environment.features;
         crate::build::apply_makefile_features(common, &environment_features)?;
         Ok(Self {
             config,
-            runtime_env,
+            source,
+            target_constraint,
+            runtime_env: environment.runtime,
             environment_features,
         })
     }
@@ -62,12 +98,31 @@ impl KtestBuildConfig {
         self.common().target.as_deref()
     }
 
+    pub(super) fn config_path(&self) -> Option<&Path> {
+        self.source.path()
+    }
+
+    fn check_target(&self, arch: &str, target: &str) -> anyhow::Result<()> {
+        if let Some(expected) = &self.target_constraint {
+            anyhow::ensure!(
+                expected == target,
+                "preset target `{expected}` conflicts with ktest target `{target}`"
+            );
+            anyhow::ensure!(
+                crate::context::arch_for_target_checked(expected)? == arch,
+                "preset target `{expected}` conflicts with ktest architecture `{arch}`"
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn cargo(
         &self,
         workspace: &crate::context::WorkspaceContext,
         unit: &KtestUnitConfig<'_>,
         no_default_features: bool,
     ) -> anyhow::Result<Cargo> {
+        self.check_target(unit.arch, unit.target)?;
         match &self.config {
             OsConfig::Arceos(config) => {
                 let mut config = config.clone();
@@ -85,10 +140,11 @@ impl KtestBuildConfig {
                     target: unit.target.to_string(),
                     smp: None,
                     debug: false,
-                    build_info_path: unit.build_config.to_path_buf(),
+                    source: self.source.clone(),
                     config,
                     runtime,
                     runtime_env: self.runtime_env.clone(),
+                    environment_features: self.environment_features.clone(),
                     qemu_config: None,
                     uboot_config: None,
                 };
@@ -99,8 +155,7 @@ impl KtestBuildConfig {
                 )
             }
             OsConfig::Starry(_) => {
-                let request =
-                    self.starry_request(unit.package, unit.arch, unit.target, unit.build_config)?;
+                let request = self.starry_request(unit.package, unit.arch, unit.target)?;
                 starry::build::load_cargo_config(&request, workspace)
             }
             OsConfig::Axvisor(_) => {
@@ -115,8 +170,8 @@ impl KtestBuildConfig {
         package: &str,
         arch: &str,
         target: &str,
-        path: &Path,
     ) -> anyhow::Result<ResolvedStarryRequest> {
+        self.check_target(arch, target)?;
         let OsConfig::Starry(config) = &self.config else {
             bail!("Starry postprocessing requires a Starry build input");
         };
@@ -134,7 +189,7 @@ impl KtestBuildConfig {
             target: target.to_string(),
             smp: None,
             debug: false,
-            build_info_path: path.to_path_buf(),
+            source: self.source.clone(),
             config,
             runtime,
             runtime_env: self.runtime_env.clone(),
@@ -149,6 +204,7 @@ impl KtestBuildConfig {
         workspace_root: &Path,
         unit: &KtestUnitConfig<'_>,
     ) -> anyhow::Result<ResolvedAxvisorRequest> {
+        self.check_target(unit.arch, unit.target)?;
         let OsConfig::Axvisor(config) = &self.config else {
             bail!("Axvisor packaging requires an Axvisor build input");
         };
@@ -167,7 +223,7 @@ impl KtestBuildConfig {
             target: unit.target.to_string(),
             smp: None,
             debug: false,
-            build_info_path: unit.build_config.to_path_buf(),
+            source: self.source.clone(),
             config,
             runtime,
             runtime_env: self.runtime_env.clone(),
@@ -177,4 +233,15 @@ impl KtestBuildConfig {
             vmconfigs: Vec::new(),
         })
     }
+}
+
+fn select_input<T: BuildConfiguration>(
+    workspace_root: &Path,
+    selection: &KtestBuildSelection<'_>,
+) -> anyhow::Result<ConfigInput<T>> {
+    let mut input = load_config_input(workspace_root, selection.config, selection.preset)?;
+    if let Some(target) = selection.default_qemu_target {
+        input.select_default_qemu(target)?;
+    }
+    Ok(input)
 }

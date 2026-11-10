@@ -6,12 +6,9 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::context::{
-    AppContext, AxvisorCliArgs, AxvisorRequestPaths, ResolvedAxvisorRequest, SnapshotPersistence,
-};
+use crate::context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence};
 
 pub mod app;
-pub mod board;
 pub mod build;
 mod bundle;
 pub mod config;
@@ -34,14 +31,17 @@ pub enum Command {
     Test(ArgsTest),
     /// Build and run Axvisor with U-Boot
     Uboot(ArgsUboot),
-    /// Generate a default board config
+    /// Export a built-in compilation preset to a TOML config file
     Defconfig(ArgsDefconfig),
-    /// Board config helpers
+    /// Compilation preset and config helpers
     Config(ArgsConfig),
 }
 
 #[derive(Args, Clone)]
 pub struct ArgsBuild {
+    /// Built-in Rust compilation recipe; may be combined with a sparse TOML.
+    #[arg(long, value_name = "NAME")]
+    pub preset: Option<String>,
     #[arg(short, long)]
     pub config: Option<PathBuf>,
 
@@ -103,7 +103,8 @@ pub struct ArgsBoard {
 
 #[derive(Args)]
 pub struct ArgsDefconfig {
-    pub board: String,
+    #[arg(value_name = "PRESET")]
+    pub preset: String,
 }
 
 #[derive(Args)]
@@ -220,6 +221,8 @@ pub struct ArgsTestBoard {
 pub enum ConfigCommand {
     /// List available board names
     Ls,
+    /// Show the resolved build input without building or updating snapshots
+    Show(ArgsBuild),
     /// Edit one guest configuration with menuconfig
     Vm {
         /// Guest configuration file to edit
@@ -234,6 +237,7 @@ pub struct Axvisor {
 impl From<&ArgsBuild> for AxvisorCliArgs {
     fn from(args: &ArgsBuild) -> Self {
         Self {
+            preset: args.preset.clone(),
             config: args.config.clone(),
             arch: args.arch.clone(),
             target: args.target.clone(),
@@ -298,7 +302,7 @@ impl Axvisor {
         self.app
             .board(
                 cargo,
-                request.build_info_path,
+                request.config_path().map(Path::to_path_buf),
                 board_config,
                 RunBoardOptions {
                     board_type: args.board_type,
@@ -311,23 +315,30 @@ impl Axvisor {
 
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
         let workspace_root = self.app.workspace_root().to_path_buf();
-        let axvisor_dir = self
-            .app
-            .workspace_member_dir(build::AXVISOR_PACKAGE)?
-            .to_path_buf();
-        let path = config::write_defconfig(&workspace_root, &axvisor_dir, &args.board)?;
-        println!("Generated {} for board {}", path.display(), args.board);
+        let path = config::write_defconfig(&workspace_root, &args.preset)?;
+        println!("Generated {} from preset {}", path.display(), args.preset);
         Ok(())
     }
 
     async fn config(&mut self, args: ArgsConfig) -> anyhow::Result<()> {
         match args.command {
             ConfigCommand::Ls => {
-                for board in config::available_board_names(
-                    self.app.workspace_member_dir(build::AXVISOR_PACKAGE)?,
-                )? {
-                    println!("{board}");
+                for preset in config::presets::PRESETS {
+                    println!(
+                        "{}\t{}\t{}",
+                        preset.name, preset.common.board.id, preset.common.board.target
+                    );
                 }
+            }
+            ConfigCommand::Show(args) => {
+                let request =
+                    self.prepare_request((&args).into(), None, None, SnapshotPersistence::Discard)?;
+                crate::build::show_config(
+                    &request.config,
+                    &request.source,
+                    request.runtime,
+                    &request.environment_features,
+                )?;
             }
             ConfigCommand::Vm { guest_config } => {
                 let _ = jkconfig::run::<axvmconfig::GuestConfig>(guest_config, true, &[]).await?;
@@ -347,20 +358,9 @@ impl Axvisor {
         uboot_config: Option<PathBuf>,
         persistence: SnapshotPersistence,
     ) -> anyhow::Result<ResolvedAxvisorRequest> {
-        let axvisor_dir = self
-            .app
-            .workspace_member_dir(build::AXVISOR_PACKAGE)?
-            .to_path_buf();
-        let (request, snapshot) = self.app.prepare_axvisor_request(
-            args,
-            AxvisorRequestPaths {
-                package: build::AXVISOR_PACKAGE.to_string(),
-                axvisor_dir,
-                resolve_build_info_path: build::resolve_build_info_path,
-            },
-            qemu_config,
-            uboot_config,
-        )?;
+        let (request, snapshot) =
+            self.app
+                .prepare_axvisor_request(args, qemu_config, uboot_config)?;
         if persistence.should_store() {
             self.app.store_axvisor_snapshot(&snapshot)?;
         }
@@ -409,7 +409,7 @@ impl Axvisor {
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request, self.app.workspace_context())?;
         self.app
-            .build(cargo.clone(), request.build_info_path.clone())
+            .build(cargo.clone(), request.config_path().map(Path::to_path_buf))
             .await?;
         self.prepare_guest_payload(
             &mut request,
@@ -433,7 +433,11 @@ impl Axvisor {
         self.prepare_guest_payload(&mut request, &mut uboot.boot, &cargo, true)
             .await?;
         self.app
-            .uboot(cargo, request.build_info_path, Some(uboot))
+            .uboot(
+                cargo,
+                request.config_path().map(Path::to_path_buf),
+                Some(uboot),
+            )
             .await
     }
 

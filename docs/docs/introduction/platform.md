@@ -68,7 +68,7 @@ docker run -it --rm -v "$(pwd)":/workspace -w /workspace tgoskits-test-env
 
 ## 2. 目标架构
 
-TGOSKits 为 AArch64、RISC-V 64、x86_64 和 LoongArch64 提供统一的板卡配置命名与 QEMU 测试入口。架构支持状态以仓库中的 `configs/board/qemu-*.toml`、`test-suit` 构建配置和运行用例为准，不使用“主力”或“实验性”等缺少判定标准的标签。
+TGOSKits 为 AArch64、RISC-V 64、x86_64 和 LoongArch64 提供统一的板卡预设命名与 QEMU 测试入口。架构支持状态以 `scripts/axbuild/src/<os>/config/presets/` 静态配方、`test-suit` 构建配置及真实运行用例为准，不使用“主力”或“实验性”等缺少判定标准的标签。
 
 ### 2.1 支持矩阵
 
@@ -142,7 +142,7 @@ Axvisor 板测由 `test-suit/axvisor/normal/board-<platform>/` 自动发现，�
 | RDK-S100 | AArch64 | 有 | Linux smoke | 当前 CI 矩阵未启用 |
 | TAC E400 | AArch64 | 有 | 无 | 无 |
 
-Axvisor 的 VM 配置位于 `os/axvisor/configs/vms/`，描述 Guest 内存、vCPU、镜像和虚拟设备。板卡构建配置位于 `os/axvisor/configs/board/`，两者分别维护 host 平台与 Guest 运行契约。
+Axvisor 的 VM 配置位于 `os/axvisor/configs/vms/`，描述 Guest 内存、vCPU、镜像和虚拟设备。Host 编译预设位于 `scripts/axbuild/src/axvisor/config/presets/`，组合 `components/ax-config` 的公共板卡配方；通过 `cargo xtask axvisor config ls/show` 查看，通过 `defconfig <PRESET>` 导出可编辑 TOML。预设名称与 board ID 分别表示编译配方和板卡元数据；`os/axvisor/configs/board/` 中保留的 DTB/DTS，以及 QEMU、板卡和 U-Boot 运行 TOML 仍按各自用途维护。
 
 ### 3.2 StarryOS 开发板
 

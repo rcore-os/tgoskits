@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use crate::{
+    arceos::config::ArceosConfig,
+    build::ConfigInput,
     context::ResolvedBuildRequest,
     test::{board as board_test, case::TestQemuCase, qemu as qemu_test},
 };
@@ -31,7 +33,7 @@ pub(super) struct PreparedArceosRustQemuCase {
     pub(super) qemu: QemuConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ArceosBoardTestGroup {
     pub(crate) name: String,
     pub(crate) board_name: String,
@@ -39,6 +41,7 @@ pub(crate) struct ArceosBoardTestGroup {
     pub(crate) arch: String,
     pub(crate) target: String,
     pub(crate) build_config_path: PathBuf,
+    pub(crate) build_input: ConfigInput<ArceosConfig>,
     pub(crate) board_test_config_path: PathBuf,
 }
 

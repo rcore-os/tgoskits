@@ -210,14 +210,14 @@ fn global_config_file_falls_back_to_full_run() {
 }
 
 #[test]
-fn arceos_board_config_selects_no_clippy_packages() {
+fn runtime_config_selects_no_clippy_packages() {
     let (root, metadata, workspace_packages) = test_workspace();
     let selected = select_incremental_packages_for_paths(
         root.path(),
         &metadata,
         &workspace_packages,
         [PathBuf::from(
-            "os/arceos/configs/board/orangepi-5-plus.toml",
+            "os/StarryOS/configs/board/rock-4d-board.toml",
         )],
     )
     .unwrap();
@@ -232,14 +232,14 @@ fn arceos_board_config_selects_no_clippy_packages() {
 }
 
 #[test]
-fn arceos_board_config_does_not_hide_package_changes() {
+fn runtime_config_does_not_hide_package_changes() {
     let (root, metadata, workspace_packages) = test_workspace();
     let selected = select_incremental_packages_for_paths(
         root.path(),
         &metadata,
         &workspace_packages,
         [
-            PathBuf::from("os/arceos/configs/board/orangepi-5-plus.toml"),
+            PathBuf::from("os/StarryOS/configs/board/rock-4d-board.toml"),
             PathBuf::from("crates/beta/src/lib.rs"),
         ],
     )

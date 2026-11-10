@@ -17,13 +17,14 @@ pub(crate) struct StarryQemuRunReport {
     pub(crate) total_duration: Duration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StarryBoardTestGroup {
     pub(crate) name: String,
     pub(crate) board_name: String,
     pub(crate) arch: String,
     pub(crate) target: String,
     pub(crate) build_config_path: PathBuf,
+    pub(crate) build_input: crate::build::ConfigInput<crate::starry::config::StarryConfig>,
     pub(crate) board_test_config_path: PathBuf,
     pub(crate) required_env: Vec<String>,
 }
@@ -43,11 +44,12 @@ pub(crate) struct StarryQemuCaseRequirements {
     pub(crate) smp: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StarryQemuCase {
     pub(crate) case: TestQemuCase,
     pub(crate) build_group: String,
     pub(crate) build_config_path: PathBuf,
+    pub(crate) build_input: crate::build::ConfigInput<crate::starry::config::StarryConfig>,
 }
 
 impl qemu_test::BuildConfigRef for StarryQemuCase {
@@ -66,6 +68,7 @@ pub(crate) struct PreparedStarryQemuCase {
     pub(crate) qemu: QemuConfig,
     pub(crate) build_group: String,
     pub(crate) build_config_path: PathBuf,
+    pub(crate) build_input: crate::build::ConfigInput<crate::starry::config::StarryConfig>,
     pub(crate) rootfs_path: PathBuf,
     pub(crate) requirements: StarryQemuCaseRequirements,
     pub(crate) diskless_host_initramfs: bool,

@@ -355,7 +355,7 @@ cargo xtask starry test board \
 
 ```bash
 cargo xtask starry board \
-  -c os/StarryOS/configs/board/rock-4d.toml \
+  --preset rock-4d \
   --smp 8 \
   --board-config os/StarryOS/configs/board/rock-4d-board.toml \
   -b Rock-4D

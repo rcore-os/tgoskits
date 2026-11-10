@@ -582,14 +582,9 @@ Board 用例目录结构：
     board-<board>.toml
 ```
 
-`board-<board>.toml` 是板测运行配置。发现 board case 后，xtask 会默认映射到：
-
-```text
-os/StarryOS/configs/board/<board>.toml
-```
-
-并从该 board build config 读取 target。如果当前 build wrapper 下存在匹配的
-`build-<target>.toml`，则优先使用 test-suit 中的构建配置。
+`board-<board>.toml` 是板测运行配置。发现 board case 后，xtask 默认从
+`starry/config/presets/` 中的同名静态预设取得 target。如果当前 build wrapper 下存在匹配的
+`build-<target>.toml`，则优先使用 test-suit 中的构建配置。发现时读取的 typed 输入随分组传到构建阶段，不因需要 target 而重新读文件。
 
 板测需要在运行时下载 case 资产时，可在 typed TOML 配置中声明相对于
 `board-<board>.toml` 所在目录的文件：
@@ -653,7 +648,7 @@ Linux 会话中下载并验证资产，写入 Starry 可见的持久 rootfs 路�
 复用成功标记。
 
 App 的 `board-<name>.toml` 默认复用
-`os/StarryOS/configs/board/<name>.toml` 作为内核 build config；只有 app 目录存在
+StarryOS 的同名 Rust 静态预设作为内核配置；只有 app 目录存在
 精确的 `build-<target>.toml` 时才覆盖。多个同架构板卡需要不同 SoC feature 时应
 省略共享覆盖，避免把某块板的 CPU、MMU 或控制器 feature 注入另一块板。
 
@@ -726,7 +721,7 @@ cargo xtask starry test board -c boot --board rock-4d -b Rock-4D
 
 ```bash
 cargo xtask starry board \
-  -c os/StarryOS/configs/board/rock-4d.toml \
+  --preset rock-4d \
   --smp 8 \
   --board-config os/StarryOS/configs/board/rock-4d-board.toml \
   -b Rock-4D

@@ -1,4 +1,4 @@
-use ax_config::{ConfigError, apply_overlay, parse_overlay};
+use ax_config::ConfigError;
 
 use super::*;
 
@@ -6,10 +6,15 @@ use super::*;
 pub(crate) trait BuildConfiguration: Default + Serialize + DeserializeOwned {
     const CLEARABLE_FIELDS: &'static [&'static str];
 
-    /// PR1-only file defaults applied before the user's sparse overlay.
-    /// The parser supplies an absolute source path.
-    fn file_base(_path: &Path) -> Self {
-        Self::default()
+    fn preset(name: &str) -> Option<Self>;
+
+    fn default_qemu_preset(target: &str) -> Option<&'static str>;
+
+    fn common(&self) -> &CommonConfig;
+
+    /// Reject legacy ambiguous resource selection before the source is discarded.
+    fn check_source(&self, _overlay: &ax_config::Overlay) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn extra_fields(&self) -> &toml::Table;
@@ -18,28 +23,15 @@ pub(crate) trait BuildConfiguration: Default + Serialize + DeserializeOwned {
     fn validate_input(&self) -> Result<(), ConfigError>;
 }
 
+#[cfg(test)]
 pub(crate) fn parse_build_config<T: BuildConfiguration>(
     path: &Path,
     contents: &str,
 ) -> anyhow::Result<T> {
-    let source = std::path::absolute(path)
-        .with_context(|| format!("failed to resolve build config path {}", path.display()))?;
-    let overlay = parse_overlay(&source, contents)?;
-    // PR1 keeps the existing board files as its only preset source. A preset
-    // control must not disappear merely because the static registry is pending.
-    if let Some(name) = &overlay.controls.preset {
-        return Err(ConfigError::PresetNotFound {
-            origin: Some(source),
-            name: name.clone(),
-        }
-        .into());
-    }
-    let config: T = apply_overlay(&T::file_base(&source), &overlay, T::CLEARABLE_FIELDS)?;
-    reject_extra_fields(config.extra_fields())
-        .with_context(|| format!("invalid build config {}", path.display()))?;
-    Ok(config)
+    Ok(super::config_source::parse_config_input::<T>(Some((path, contents)), None)?.config)
 }
 
+#[cfg(test)]
 pub(crate) fn load_build_config<T: BuildConfiguration>(path: &Path) -> anyhow::Result<T> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read build config {}", path.display()))?;
@@ -89,21 +81,5 @@ pub(crate) fn validate_resource_path(field: &str, path: &Path) -> Result<(), Con
     if path.as_os_str().is_empty() {
         return Err(invalid_config_value(field, "", "a nonempty resource path"));
     }
-    Ok(())
-}
-
-// PR1 deliberately retains default file materialization. Explicit files are
-// checked by the resolver and never pass through this missing-default branch.
-pub(crate) fn ensure_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<()>
-where
-    T: Serialize,
-{
-    if path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, toml::to_string_pretty(&default())?)?;
     Ok(())
 }

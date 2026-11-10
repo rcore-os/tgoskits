@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     env,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
@@ -40,7 +39,9 @@ pub(crate) use arch::{
     starry_arch_for_target_checked, starry_target_for_arch_checked, supported_arches,
     supported_targets, validate_supported_target,
 };
-pub(crate) use resolve::{AxvisorRequestPaths, snapshot_path_value};
+pub(crate) use resolve::snapshot_path_value;
+pub(crate) use snapshot::export_config_with_snapshot;
+pub(crate) use types::RequestEnvironment;
 pub use types::{
     ARCEOS_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot, ArceosQemuSnapshot,
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
@@ -52,8 +53,8 @@ pub use types::{
 };
 pub(crate) use workspace::{
     WorkspaceContext, axbuild_tmp_dir, resolve_axbuild_artifact_path, workspace_manifest_path,
-    workspace_member_dir as resolve_workspace_member_dir, workspace_metadata_root_manifest,
-    workspace_metadata_root_manifest_with_deps, workspace_root_path,
+    workspace_metadata_root_manifest, workspace_metadata_root_manifest_with_deps,
+    workspace_root_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +81,6 @@ pub struct AppContext {
     invocation: Invocation,
     build_config_path: Option<PathBuf>,
     workspace: WorkspaceContext,
-    member_dirs: HashMap<String, PathBuf>,
     original_path: OsString,
     debug: bool,
 }
@@ -118,7 +118,6 @@ impl AppContext {
             invocation,
             build_config_path: None,
             workspace,
-            member_dirs: HashMap::new(),
             original_path: env::var_os("PATH").unwrap_or_default(),
             debug: false,
         })
@@ -140,26 +139,10 @@ impl AppContext {
         &self.workspace
     }
 
-    pub(crate) fn workspace_member_dir(&mut self, package: &str) -> anyhow::Result<&Path> {
-        if !self.member_dirs.contains_key(package) {
-            let member_dir = resolve_workspace_member_dir(package)?;
-            info!(
-                "Workspace member dir for {package}: {}",
-                member_dir.display()
-            );
-            self.member_dirs.insert(package.to_string(), member_dir);
-        }
-
-        self.member_dirs
-            .get(package)
-            .map(PathBuf::as_path)
-            .context("workspace member dir should be initialized")
-    }
-
     pub(crate) async fn build(
         &mut self,
         cargo: Cargo,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
     ) -> anyhow::Result<ostool_build::CargoBuildOutput> {
         reject_raw_target_dir_args(&cargo)?;
         self.set_build_config_path(build_config_path);
@@ -201,7 +184,7 @@ impl AppContext {
     pub(crate) async fn qemu(
         &mut self,
         cargo: Cargo,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
@@ -227,9 +210,7 @@ impl AppContext {
             cargo.target,
             display_optional_path(build_config_path.as_deref())
         ));
-        let output = self
-            .build(cargo.clone(), build_config_path.unwrap_or_default())
-            .await?;
+        let output = self.build(cargo.clone(), build_config_path).await?;
         self.prepare_elf_artifact(output.elf_path().to_path_buf(), qemu.to_bin)
             .await?;
         crate::test::qemu::append_backtrace_map(
@@ -388,7 +369,7 @@ impl AppContext {
     pub(crate) async fn uboot(
         &mut self,
         cargo: Cargo,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         mut uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
@@ -402,9 +383,7 @@ impl AppContext {
             display_optional_path(build_config_path.as_deref())
         ));
         let mut uboot = uboot.take().unwrap_or_default();
-        let output = self
-            .build(cargo.clone(), build_config_path.unwrap_or_default())
-            .await?;
+        let output = self.build(cargo.clone(), build_config_path).await?;
         crate::test::qemu::append_backtrace_map_to_initramfs(
             &mut uboot.boot.initramfs,
             &output.elf_path().with_extension("axbt"),
@@ -421,7 +400,7 @@ impl AppContext {
     pub(crate) async fn board(
         &mut self,
         cargo: Cargo,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         mut board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
@@ -435,9 +414,7 @@ impl AppContext {
             cargo.target,
             display_optional_path(build_config_path.as_deref())
         ));
-        let output = self
-            .build(cargo.clone(), build_config_path.unwrap_or_default())
-            .await?;
+        let output = self.build(cargo.clone(), build_config_path).await?;
         crate::test::qemu::append_backtrace_map_to_initramfs(
             &mut board_config.boot.initramfs,
             &output.elf_path().with_extension("axbt"),
@@ -446,7 +423,7 @@ impl AppContext {
             .board_prepared_elf(
                 output.elf_path().to_path_buf(),
                 to_bin,
-                self.build_config_path.clone().unwrap_or_default(),
+                self.build_config_path.clone(),
                 board_config,
                 options,
             )
@@ -461,7 +438,7 @@ impl AppContext {
         &mut self,
         elf_path: PathBuf,
         to_bin: bool,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
@@ -493,7 +470,7 @@ impl AppContext {
         &mut self,
         elf_path: PathBuf,
         to_bin: bool,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         board_request: BoardRunRequest,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
@@ -577,8 +554,8 @@ impl AppContext {
         ostool_board::ensure_run_config_in_dir_for_cargo(&self.invocation, cargo, dir).await
     }
 
-    fn set_build_config_path(&mut self, path: PathBuf) {
-        self.build_config_path = Some(path);
+    fn set_build_config_path(&mut self, path: impl Into<Option<PathBuf>>) {
+        self.build_config_path = path.into();
     }
 
     fn activate_cargo_build_context(&mut self, cargo: &Cargo) -> anyhow::Result<()> {

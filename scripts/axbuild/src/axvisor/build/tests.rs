@@ -11,18 +11,44 @@ fn workspace() -> WorkspaceContext {
     WorkspaceContext::discover(None).unwrap()
 }
 
-fn write_board(axvisor_dir: &Path, name: &str, body: &str) -> PathBuf {
-    let path = axvisor_dir
-        .join("configs/board")
-        .join(format!("{name}.toml"));
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, body).unwrap();
-    path
+fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
+    let workspace_root = path.parent().unwrap_or_else(|| Path::new("."));
+    let input = crate::build::load_config_input::<AxvisorConfig>(workspace_root, Some(&path), None)
+        .unwrap();
+    request_from_input(input, arch, target, workspace_root.join("os/axvisor"))
 }
 
-fn request(path: PathBuf, arch: &str, target: &str) -> ResolvedAxvisorRequest {
-    let axvisor_dir = path.parent().unwrap_or_else(|| Path::new("os/axvisor"));
-    crate::context::test_support::axvisor_request(&path, arch, target, axvisor_dir)
+fn request_from_input(
+    input: crate::build::ConfigInput<AxvisorConfig>,
+    arch: &str,
+    target: &str,
+    axvisor_dir: PathBuf,
+) -> ResolvedAxvisorRequest {
+    let mut config = input.config;
+    config.common.target = Some(target.to_owned());
+    let runtime_env = ax_config::RuntimeEnv::default();
+    let runtime = ax_config::resolve_runtime(
+        config.common.max_cpu_num,
+        config.common.runtime,
+        &runtime_env,
+    )
+    .unwrap();
+    ResolvedAxvisorRequest {
+        package: AXVISOR_PACKAGE.to_owned(),
+        axvisor_dir,
+        arch: arch.to_owned(),
+        target: target.to_owned(),
+        smp: None,
+        debug: false,
+        source: input.source,
+        config,
+        runtime,
+        runtime_env,
+        environment_features: Vec::new(),
+        qemu_config: None,
+        uboot_config: None,
+        vmconfigs: Vec::new(),
+    }
 }
 
 #[test]
@@ -42,28 +68,13 @@ log = "Info"
     )
     .unwrap();
 
-    let cargo = load_cargo_config(
-        &ResolvedAxvisorRequest {
-            package: AXVISOR_PACKAGE.to_string(),
-            axvisor_dir: root.path().join("os/axvisor"),
-            arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
-            smp: None,
-            debug: false,
-            build_info_path: config_path.clone(),
-            qemu_config: None,
-            uboot_config: None,
-            vmconfigs: vmconfigs.clone(),
-            ..crate::context::test_support::axvisor_request(
-                &config_path,
-                "aarch64",
-                "aarch64-unknown-none-softfloat",
-                &(root.path().join("os/axvisor")),
-            )
-        },
-        &workspace(),
-    )
-    .unwrap();
+    let mut build_request = request(
+        config_path.clone(),
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+    );
+    build_request.vmconfigs = vmconfigs.clone();
+    let cargo = load_cargo_config(&build_request, &workspace()).unwrap();
 
     assert_eq!(cargo.package, AXVISOR_PACKAGE);
     assert!(
@@ -130,56 +141,35 @@ log = "Info"
         .unwrap_err();
 
         assert!(err.to_string().contains("selected from CPU capabilities"));
-        assert!(err.to_string().contains(&format!("`{feature}`")));
+        assert!(
+            err.chain().any(|cause| matches!(
+                cause.downcast_ref::<ax_config::ConfigError>(),
+                Some(ax_config::ConfigError::InvalidValue { field, value, .. })
+                    if field == "features" && value == feature
+            )),
+            "{err:#}"
+        );
     }
 }
 
 #[test]
-fn load_cargo_config_uses_board_defaults_when_default_file_is_missing() {
+fn load_cargo_config_uses_static_preset_without_materializing_a_toml() {
     let root = tempdir().unwrap();
     let path = root
         .path()
         .join("os/axvisor/.build-x86_64-unknown-none.toml");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let board_path = write_board(
-        path.parent().unwrap(),
-        "qemu-x86_64",
-        r#"
-target = "x86_64-unknown-none"
-features = []
-log = "Info"
-vm_configs = []
-"#,
+    let input =
+        crate::build::load_config_input::<AxvisorConfig>(root.path(), None, Some("qemu-x86_64"))
+            .unwrap();
+    let request = request_from_input(
+        input,
+        "x86_64",
+        "x86_64-unknown-none",
+        root.path().join("os/axvisor"),
     );
+    let cargo = load_cargo_config(&request, &workspace()).unwrap();
 
-    let cargo = load_cargo_config(
-        &ResolvedAxvisorRequest {
-            package: AXVISOR_PACKAGE.to_string(),
-            axvisor_dir: root.path().join("os/axvisor"),
-            arch: "x86_64".to_string(),
-            target: "x86_64-unknown-none".to_string(),
-            smp: None,
-            debug: false,
-            build_info_path: path.clone(),
-            qemu_config: None,
-            uboot_config: None,
-            vmconfigs: vec![],
-            ..crate::context::test_support::axvisor_request(
-                &path,
-                "x86_64",
-                "x86_64-unknown-none",
-                &(root.path().join("os/axvisor")),
-            )
-        },
-        &workspace(),
-    )
-    .unwrap();
-
-    assert!(path.exists());
-    assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        fs::read_to_string(board_path).unwrap()
-    );
+    assert!(!path.exists());
     assert!(!cargo.features.contains(&"fs".to_string()));
     assert!(!cargo.features.contains(&"vmx".to_string()));
     assert!(!cargo.features.contains(&"plat-dyn".to_string()));
@@ -204,24 +194,11 @@ log = "Info"
     .unwrap();
 
     let err = load_cargo_config(
-        &ResolvedAxvisorRequest {
-            package: AXVISOR_PACKAGE.to_string(),
-            axvisor_dir: root.path().join("os/axvisor"),
-            arch: "loongarch64".to_string(),
-            target: "loongarch64-unknown-none-softfloat".to_string(),
-            smp: None,
-            debug: false,
-            build_info_path: config_path.clone(),
-            qemu_config: None,
-            uboot_config: None,
-            vmconfigs: vec![],
-            ..crate::context::test_support::axvisor_request(
-                &config_path,
-                "loongarch64",
-                "loongarch64-unknown-none-softfloat",
-                &(root.path().join("os/axvisor")),
-            )
-        },
+        &request(
+            config_path,
+            "loongarch64",
+            "loongarch64-unknown-none-softfloat",
+        ),
         &workspace(),
     )
     .unwrap_err();

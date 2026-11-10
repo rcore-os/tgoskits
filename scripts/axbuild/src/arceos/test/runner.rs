@@ -152,7 +152,10 @@ pub(super) async fn run_prepared_qemu_groups(
             .app
             .build(
                 build_group.cargo.clone(),
-                build_group.request.build_info_path.clone(),
+                build_group
+                    .request
+                    .config_path()
+                    .map(std::path::Path::to_path_buf),
             )
             .await
             .with_context(|| {
@@ -304,7 +307,6 @@ mod tests {
                 target: "x86_64-unknown-none".to_string(),
                 smp: None,
                 debug: false,
-                build_info_path: (build_config_path.to_path_buf()).clone(),
                 qemu_config: None,
                 uboot_config: None,
                 ..crate::context::test_support::arceos_request(

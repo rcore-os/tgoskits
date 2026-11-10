@@ -14,6 +14,7 @@ use crate::{
 
 pub(super) fn test_build_args(package: &str, target: &str, config: &Path) -> BuildCliArgs {
     BuildCliArgs {
+        preset: None,
         config: Some(config.to_path_buf()),
         package: Some(package.to_string()),
         arch: None,

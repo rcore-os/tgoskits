@@ -1,5 +1,4 @@
 pub(super) use std::{
-    collections::HashMap,
     env,
     ffi::{OsStr, OsString},
     fs,
@@ -19,7 +18,6 @@ pub(super) fn test_app_context(root: &Path) -> AppContext {
         invocation: test_invocation(&workspace),
         build_config_path: None,
         workspace,
-        member_dirs: HashMap::from([("axvisor".to_string(), root.join("os/axvisor"))]),
         original_path: env::var_os("PATH").unwrap_or_default(),
         debug: false,
     }
@@ -62,28 +60,7 @@ pub(super) fn prepare_arceos_request(
     qemu_config: Option<PathBuf>,
     uboot_config: Option<PathBuf>,
 ) -> anyhow::Result<(ResolvedBuildRequest, ArceosCommandSnapshot)> {
-    app.prepare_arceos_request(
-        cli,
-        qemu_config,
-        uboot_config,
-        |package, target, explicit| {
-            Ok(explicit.unwrap_or_else(|| {
-                crate::build::default_build_info_path_in_workspace(
-                    app.workspace_root(),
-                    package,
-                    target,
-                )
-            }))
-        },
-    )
-}
-
-fn resolve_starry_build_info_path(
-    workspace_root: &Path,
-    target: &str,
-    explicit_path: Option<PathBuf>,
-) -> anyhow::Result<PathBuf> {
-    crate::starry::build::resolve_build_info_path(workspace_root, target, explicit_path)
+    app.prepare_arceos_request(cli, qemu_config, uboot_config)
 }
 
 pub(super) fn prepare_starry_request(
@@ -92,12 +69,7 @@ pub(super) fn prepare_starry_request(
     qemu_config: Option<PathBuf>,
     uboot_config: Option<PathBuf>,
 ) -> anyhow::Result<(ResolvedStarryRequest, StarryCommandSnapshot)> {
-    app.prepare_starry_request(
-        cli,
-        qemu_config,
-        uboot_config,
-        resolve_starry_build_info_path,
-    )
+    app.prepare_starry_request(cli, qemu_config, uboot_config)
 }
 
 pub(super) fn prepare_axvisor_request(
@@ -106,16 +78,7 @@ pub(super) fn prepare_axvisor_request(
     qemu_config: Option<PathBuf>,
     uboot_config: Option<PathBuf>,
 ) -> anyhow::Result<(ResolvedAxvisorRequest, AxvisorCommandSnapshot)> {
-    app.prepare_axvisor_request(
-        cli,
-        AxvisorRequestPaths {
-            package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
-            axvisor_dir: app.workspace_root().join("os/axvisor"),
-            resolve_build_info_path: crate::axvisor::build::resolve_build_info_path,
-        },
-        qemu_config,
-        uboot_config,
-    )
+    app.prepare_axvisor_request(cli, qemu_config, uboot_config)
 }
 
 pub(super) static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));

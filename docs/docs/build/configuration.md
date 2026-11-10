@@ -11,7 +11,7 @@ axbuild 将一次构建或运行拆成四类相互独立的输入：命令行参
 | --- | --- | --- | --- |
 | Snapshot | `tmp/axbuild/.arceos.toml` 等 | 最近使用的 package、arch、target、config 和运行配置路径 | Cargo feature、QEMU 参数 |
 | Build Config | `tmp/axbuild/config/<package>/build-<target>.toml` | feature、环境变量、日志、CPU 数，以及系统专属字段和显式产物转换 | firmware、CPU 型号 |
-| Board Build Config | `os/<system>/configs/board/*.toml` | checked-in 的 target、能力和板卡默认值 | QEMU 命令行 |
+| 内置预设 | `scripts/axbuild/src/<system>/config/presets/` | Rust 静态 target、能力和板卡策略 | QEMU 命令行 |
 | QEMU Config | `os/<system>/configs/qemu/qemu-<arch>.toml` 或测试目录 | QEMU 参数、UEFI、`to_bin`、成功/失败判定 | Cargo feature |
 | U-Boot / Board Run Config | 显式路径或 ostool 约定位置 | 下载、部署和运行协议 | 构建能力选择 |
 
@@ -56,17 +56,17 @@ Snapshot 将最近成功解析的选择器写入系统独立文件；它保存�
 | StarryOS | `tmp/axbuild/.starry.toml` | 固定 package `starryos`，不持久化 package |
 | Axvisor | `tmp/axbuild/.axvisor.toml` | `vmconfigs` |
 
-三者共同保存 `arch`、`target`、`smp`、`config`，并分别在 `[qemu]`、`[uboot]` 下保存运行配置路径。
+三者共同保存 `preset`、`arch`、`target`、`smp`、可选 `config`，并分别在 `[qemu]`、`[uboot]` 下保存运行配置路径。内置预设没有配置文件路径；文件中的 preset 控制键随文件读取，不应成为额外的快照覆盖层。
 
 ### 2.2 合并规则
 
 Snapshot 不是无条件的“CLI 缺省值”。为避免把旧 target 的配置带入新 target，源码设置了交叉抑制和整体继承条件：
 
 - 显式 `--arch` 时不继承旧 `target`；显式 `--target` 或 Build Config 已给出 target 时不继承旧 `arch`。
-- 只有没有切换 package、arch、target 或 config 等选择器时，才继承旧的 Build Config 路径和 QEMU/U-Boot 路径。
+- 只有没有切换 preset、package、arch、target 或 config 等选择器时，才继承旧的来源、SMP 和 QEMU/U-Boot 路径。
 - ArceOS 的 package 优先级为 CLI → Build Config → Snapshot；若三者均无值，命令报错。含 `app-c` 的配置强制选择 `ax-libc`，与其他 package 选择冲突时直接报错。
 - StarryOS 的 `--smp`、Axvisor 的 `--smp` 均优先于 Snapshot；Axvisor 显式 `--vmconfigs` 优先于 Snapshot 和 Build Config。
-- `defconfig` 会更新 arch、target 和 config，并清除旧 QEMU/U-Boot 配置路径；Axvisor 保留已有 Snapshot 中的 `vmconfigs`。
+- `defconfig` 原子导出展开配置，成功后才更新文件选择，并清除旧 SMP、VM 和 QEMU/U-Boot 路径；导出失败不更新快照。
 
 例如：
 
@@ -111,25 +111,65 @@ DWARF = "y"
 
 根级 `rustflags` 复用 `append_cargo_rustflags()`：没有显式环境覆盖时保留 target 配置中的栈保护、调试和链接参数。显式 `CARGO_ENCODED_RUSTFLAGS` 或 `RUSTFLAGS` 仍按 Cargo 的原优先级覆盖配置来源，追加项进入该有效来源，不会自动恢复被遮蔽的默认值。需要在默认参数之上扩展时使用根级数组；完整契约见 [axbuild 构建参数追加](../../../design/axbuild-rustflags.md)。
 
-默认路径由 `default_build_info_path_in_workspace()` 生成：
+只有显式 `defconfig` 导出使用 `default_build_info_path_in_workspace()` 生成的默认输出路径：
 
 ```text
 tmp/axbuild/config/<package>/build-<logical-target>.toml
 ```
 
-其中 package 分别是 ArceOS app 名、`starryos` 和 `axvisor`。`--config <PATH>` 可覆盖默认路径。
+其中 package 分别是 ArceOS app 名、`starryos` 和 `axvisor`。构建不会隐式创建、复制或回读此文件。`--config <PATH>` 选择用户文件，显式缺失报错；`--preset <NAME>` 直接展开内置 Rust 配方，也可与稀疏用户文件组合。
 
 ### 3.1 系统配置形态
 
 三个系统组合共享 `CommonConfig` 与各自字段，根未知键和跨系统专属字段均报错。下表对应各自的配置入口，用于判断某个字段应放入何处。
 
-| 系统 | 额外字段 | 缺失默认配置时 |
+| 系统 | 额外字段 | 无文件来源时 |
 | --- | --- | --- |
-| ArceOS | board 文件可含 `package`、`target`；可用 `to_bin` 请求 BIN；C app 配置可含 `app-c` | `build`/`qemu` 优先复制 target 和 package 匹配的 `qemu-*` board；否则生成空能力配置 |
-| StarryOS | board 文件含 `target`，可有同名 `.its` | `build`/`qemu` 必须找到 target 对应的默认 `qemu-*` board 并复制；`.its` 一并复制 |
-| Axvisor | board 文件含 `target`、`vm_configs` | 读取配置时优先复制 target 匹配的默认 board；找不到才生成空能力配置 |
+| ArceOS | `package`、`to_bin`、`freestanding`、`app-c` | 只有裸 `qemu` 请求默认使用对应 Hello 预设；显式 package 不套用该策略 |
+| StarryOS | `fit_its` | 按明确的 target 映射选择标准 QEMU 预设 |
+| Axvisor | `vm_configs` | 按明确的 target 映射选择标准 QEMU 预设 |
 
-`cargo xtask <system> defconfig <board>` 是显式选择板卡的入口；`config ls` 列出源码树中可以选择的名称。
+`cargo xtask <system> config ls` 列出内置名称；`config show --preset <name>` 使用构建 resolver 将可复用 TOML 写到 stdout，来源、环境追加特性和有效 runtime 写到 stderr，不写快照。`defconfig <name>` 是显式导出入口，不是构建前置步骤。
+
+纯内置请求直接展开 Rust 配方，不需要先生成任何文件。
+
+```bash
+cargo xtask arceos build --preset qemu-aarch64
+cargo xtask starry config show --preset qemu-riscv64
+cargo xtask axvisor config show --preset qemu-aarch64
+```
+
+用户可以只写相对预设的变化，或不指定预设而提供完全自定义 TOML。`load_config_input()` 一次读取文件，`parse_config_input()` 按预设展开、unset、普通覆盖、features_add、features_remove、本次 FEATURES、显式 CLI、校验的顺序完成解析。
+
+```toml
+preset = "qemu-aarch64"
+features = ["ax-driver/nvme"]
+features_add = ["ax-driver/virtio-net"]
+features_remove = ["ax-driver/nvme"]
+unset = ["max_cpu_num"]
+
+[runtime]
+task_stack_size = 0x50000
+```
+
+普通数组整体替换，空数组清空；表递归合并，空表不清空已有子键。`unset` 只允许 CPU、runtime、env 及对应 OS 的可清除资源字段。CLI 与文件 preset 不一致、预设 target 与文件或 CLI target/arch 不一致时明确报错；没有预设时 CLI target 仍能覆盖文件 target。未知字段和类型错误不会被忽略。输入 Schema 包含四个控制键，导出 TOML 不包含控制键。
+
+将上面的内容存入 `local.toml` 后，普通数组先替换为 NVMe，再追加网络驱动并删除 NVMe，最终显式列表只剩网络驱动。`features = []` 可以清空整个显式列表，但不能反向取消 Cargo 默认或依赖特性。
+
+```bash
+cargo xtask starry config show --preset qemu-aarch64 --config local.toml
+```
+
+完全自定义 ArceOS 文件不含 preset，因而没有板卡配方约束；例如 `full.toml` 可以只声明完整应用选择与所需能力。
+
+```toml
+package = "arceos-helloworld"
+target = "aarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+```
+
+用 `cargo xtask arceos build --config full.toml` 构建。省略 `max_cpu_num` 保持 `None`，只在计算有效容量时回退到环境或 16；显式写 `max_cpu_num = 16` 则是 `Some(16)`，还会触发 SMP 特性推导。`config show` 的 runtime 说明不能改变这个区别。
 
 ### 3.2 特性校验
 
@@ -182,6 +222,21 @@ scheduler_tick_ms = 5
 
 用户 `[env]` 中不再接受 `SMP`、`AX_LOG`、`AX_TASK_STACK_SIZE`、`AX_SCHEDULER_TICK_MS`，应分别迁移到 `max_cpu_num`、`log` 和上述 runtime 字段。axbuild 将最终有效参数写入本次 Cargo 子进程环境，runtime/HAL 的构建 helper 使用相同规则并声明环境失效；连续请求不会修改父进程环境。启动栈仍由 someboot 管理，独立于任务栈。
 
+### 3.5 资源路径
+
+资源由各自消费者处理，不作为公共字段合并器的隐式来源。`ConfigInput::file_fields` 只保存路径和 guest 必填键规则需要的最少来源信息，最终请求不保留原始覆盖表。
+
+| 字段或文件 | 相对路径基准 | 消费者 |
+| --- | --- | --- |
+| 用户文件显式 `app-c` | 用户 TOML 的目录 | ArceOS resolver 绝对化后交 C 构建 |
+| 内置 `app-c` | 工作区根 | 同上；defconfig 导出绝对路径 |
+| `fit_its` | 工作区根 | Starry mkimage，资源缺失或失败报错 |
+| `vm_configs` | 工作区根 | Axvisor 打包；不进入内核 Cargo 身份 |
+| VM 内镜像字段 | 保留 VM 协议规定的文件目录和变量展开 | 现有 GuestConfig 与资源打包器 |
+| QEMU/U-Boot/远程板卡 TOML | 对应运行工具协议 | 启动与部署，不冒充编译配置 |
+
+旧 `--config os/<system>/configs/board/<name>.toml` 改用 `--preset <name>`；需要编辑时显式运行 `defconfig`，或另建稀疏用户文件。旧 Starry 用户文件旁有同名 ITS、最终没有 `fit_its` 且未显式 unset 时会报迁移错误，应补显式资源路径或明确清除。保留运行 TOML、DTB/DTS/ITS 与 VM 文件，不按目录整体删除。
+
 ## 4. 产物与启动
 
 Cargo 基础配置以 `to_bin = false` 创建，默认 `build` 输出 ELF，运行器根据选中的启动配置准备实际加载的产物格式。ArceOS 可在 Build Config 根声明 `to_bin = true`，由 `load_cargo_config()` 将请求交给 ostool，使 `cargo xtask arceos build` 同时输出 ELF 和 raw BIN。需要在运行前把 EFI 镜像写入 FAT 时，loader 配置使用这一显式请求。
@@ -203,20 +258,17 @@ to_bin = true
 
 ## 5. 虚拟化后端
 
-x86_64 的虚拟化后端属于 Build Config 的显式能力：Intel 配置声明 `vmx`，AMD 配置声明 `svm`。`patch_axvisor_cargo_config()` 将已解析的 feature、package/bin 和目标架构写入 Cargo 环境；VM 配置仅用于宿主 initramfs 打包。QEMU CPU flags 由测试或运行 TOML 声明，例如 VMX 用例使用 `+vmx-ept`，SVM 用例使用 `+svm,+npt,+nrip-save`。
+x86_64 的虚拟化后端由运行时 CPUID 选择，不在预设中选择 Cargo `vmx` 或 `svm`。`patch_axvisor_cargo_config()` 将已解析的 feature、package/bin 和目标架构写入 Cargo 环境；VM 配置仅用于宿主 initramfs 打包。QEMU CPU flags 由测试或运行 TOML 声明，例如 VMX 用例使用 `+vmx-ept`，SVM 用例使用 `+svm,+npt,+nrip-save`。
 
 仓库中的参考配置包括：
 
 ```text
 test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml
 test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml
-os/axvisor/configs/board/qemu-x86_64.toml
+scripts/axbuild/src/axvisor/config/presets/qemu_x86_64.rs
 ```
 
-首阶段 NVMe 块运行时验证中，这两个 x86 测试 Build Config 的
-`vm_configs = []`。测试保留 VMX/SVM 宿主能力检查，并在 Axvisor shell
-直接对宿主 NVMe 根文件系统执行写入、回读和删除；guest 块设备 ABI 与
-guest 内核驱动不属于该迁移。
+VMX/SVM 用例共享后端中立的内核配置，各 case 独立持有客户机打包输入。修改 VM 列表不改变内核 Cargo 身份，空列表也不会继承前一 case 的 VM。
 
 ## 6. 环境变量
 

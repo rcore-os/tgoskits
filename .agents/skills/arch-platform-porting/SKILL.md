@@ -126,7 +126,9 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - **StarryNixOS x86_64 诊断**：从 `apps/starry/nixos/flake.lock` 原生构建应用所有映像，再运行 `cargo xtask starry app qemu -t nixos --arch x86_64`。只有相邻清单通过锁文件、闭包、目标、ext4 和映像散列检查的已发布映像才能设置 `STARRY_NIXOS_REUSE_ROOTFS=1`。不得重建或切换宿主 NixOS，也不得在 `.ci-cache/{cargo,rustup,tmp}` 外创建仓库本地缓存。按有序阶段定位最早分歧，并在改变系统调用、procfs、挂载或文件系统语义前添加定向 `qemu/system/<behavior>`；后续 systemd 连锁错误不是第一根因。
 - **x86 调度基准启动**：`apps/arceos/scheduler-latency-bench/qemu-x86_64.toml` 对动态平台 PIE 使用 `uefi = true`、`to_bin = true`，与 ArceOS Rust 套件一致。直接把没有 PVH note 的映像交给 QEMU `-kernel` 会在进入内核前失败；比较旧提交与新提交时两侧使用同一份有效启动配置，不把启动失败计作性能数据。
 - **Starry 夜测应用启动契约**：参与当前夜测的 x86_64 PIE 应用使用 `uefi = true`、`to_bin = true`，避免直接 ELF 加载的 PVH note 错误；LoongArch64 携带宿主 initramfs 或命令行时也使用 UEFI，直接启动不支持此交接。AArch64/RISC-V 保留各自支持的直接启动方式。默认受管 Alpine 镜像无论由运行器隐式选择还是在 QEMU 配置中显式引用，都须完成 Starry OpenRC 和控制台准备；Debian、NixOS 等其他镜像按其自己的初始化契约处理。启动方式恢复后，仍须用应用自身的成功标记验收，不能只以进入 shell 为通过依据。
-- **操作系统配置与测试用例**：只为已验证体系结构更新 ArceOS、StarryOS 和 Axvisor 配置。`qemu-<arch>.toml` 运行配置与 `build-*.toml` 构建配置分离。Starry 应用板卡用例默认使用匹配的 `os/StarryOS/configs/board/<board>.toml`；只有共享同一目标的全部板卡都能安全使用相同处理器、内存管理单元和片上系统功能集时，才加入应用局部 `build-<target>.toml`。板卡需要扫描输出桌面（card0/fb0 链路）时，构建特性必须同时包含 `ax-runtime/display` 与 `ax-driver/virtio-gpu`：`ax_runtime::devices::init_display` 由 `ax-runtime/display` 特性门控，缺配时 ax_display 永不初始化——`/dev/fb0` 不创建、card0 连接器模式回退 640x480、`present_fb` 静默空操作，用户态合成器整条管线正常但屏幕恒黑；对齐 `qemu-riscv64` 板卡与同目标 clippy 配置的特性集即可。
+- **操作系统配置与测试用例**：只为已验证体系结构更新 ArceOS、StarryOS 和 Axvisor 配置。`qemu-<arch>.toml` 运行配置与 `build-*.toml` 用户构建配置分离。内置配方在 `scripts/axbuild/src/<os>/config/presets/`，用 `--preset <name>` 直接选择，不再复制 `configs/board` 编译 TOML。Starry 应用板卡用例默认使用同名静态预设；只有共享同一目标的全部板卡都能安全使用相同处理器、内存管理单元和片上系统功能集时，才加入应用局部 `build-<target>.toml`。板卡需要扫描输出桌面（card0/fb0 链路）时，构建特性必须同时包含 `ax-runtime/display` 与 `ax-driver/virtio-gpu`：`ax_runtime::devices::init_display` 由 `ax-runtime/display` 特性门控，缺配时 ax_display 永不初始化——`/dev/fb0` 不创建、card0 连接器模式回退 640x480、`present_fb` 静默空操作，用户态合成器整条管线正常但屏幕恒黑；对齐 `qemu-riscv64` 预设与同目标 clippy 配置的特性集即可。
+
+静态板卡身份在 `components/ax-config/src/boards/<board>.rs`，OS 配方在 `scripts/axbuild/src/<os>/config/presets/<board>.rs`，均由相应 `mod.rs` 统一导出和登记。每个物理板卡独立文件，QEMU 按目标架构分文件；同板用途变体放在同一板文件，不重建集中 `entries.rs` 或家族混合配置。修改时保留 registry 顺序，确有跨 OS 复用的驱动片段归 `boards/features.rs`，板卡策略仍归 OS 配方。
 
 ## someboot 必备条件
 
@@ -205,7 +207,7 @@ cargo xtask clippy --package someboot
 
 Axvisor x86 默认 Linux 客户机由 `os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml` 和 Web API 的 `FORM_CMDLINE_DEFAULT` 提供启动参数。不要预设 `tsc=unstable`：Linux v7.1 的 `arch/x86/kernel/tsc.c::tsc_setup()` 会因此主动停用 TSC，退到 `drivers/clocksource/acpi_pm.c::read_pmtmr()` 的 PIO 读时钟；嵌套虚拟化中每次读取都会进入设备模拟，可能导致启动阶段超时。保留 Linux 自身的校准和不稳定检测，不用 `tsc=reliable` 强行跳过检测。修改两处默认值时，复用 `web-ui-vmx` 的真实 Linux 时钟源、命令交互、删除与重建检查，并在可用的 AMD 运行器上核验共享客户机基线；不能通过增加 `GUEST_BOOT_DEADLINE` 掩盖时钟开销。
 
-Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项时，使用根级 `BuildInfo.rustflags` 数组，不通过 `[env] RUSTFLAGS` 整体替换来源；后者会遮蔽自动栈保护及 `DWARF`/`BACKTRACE` 参数。核对真实 rustc argv 与 ELF，而不只检查生成的 TOML。提取 ELF section 时为 `llvm-objcopy --dump-section` 显式指定独立输出 ELF，并核对输入摘要不变，避免取证过程重写原产物。
+Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项时，使用根级 `CommonConfig.rustflags` 数组，不通过 `[env] RUSTFLAGS` 整体替换来源；后者会遮蔽自动栈保护及 `DWARF`/`BACKTRACE` 参数。核对真实 rustc argv 与 ELF，而不只检查导出的 TOML。提取 ELF section 时为 `llvm-objcopy --dump-section` 显式指定独立输出 ELF，并核对输入摘要不变，避免取证过程重写原产物。
 
 1. 定位最后一个可靠输出或机器状态转移：统一可扩展固件接口入口、内存映射、`ExitBootServices`、重定位、启用内存管理单元、安装陷阱向量、释放次处理器、第一条内核输出。
 2. 在转移前后加入临时单字节串口或设备映射标记，找到根因后删除。
@@ -216,7 +218,7 @@ Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项�
 7. RISC-V 平台级中断控制器平台在启用 `sie.SEXT` 前取得全部监管者上下文所有权：清除固件或启动加载器遗留来源启用位、初始化阈值，并维护软件“来源已启用”状态，不从非零优先级推断。中断框架可以在动作禁用时设置亲和性，但亲和性变化不得提前启用来源。
 8. 可行时把根因转化为回归测试或定向 QEMU 用例。
 
-当前 `.vscode` 的 AArch64 调试路径按 axbuild 后端区分：ArceOS 与 Axvisor 的 `std` PIE ELF 位于 `target/aarch64-unknown-linux-musl/debug/`，StarryOS 的 bare ELF 位于 `target/aarch64-unknown-none-softfloat/debug/starryos`。Axvisor 调试固定使用 `os/axvisor/configs/board/qemu-aarch64.toml`（`vm_configs = []`）和 `os/axvisor/configs/qemu/qemu-aarch64.toml`，不依赖可变的 `.build.toml`。
+当前 `.vscode` 的 AArch64 调试路径按 axbuild 后端区分：ArceOS 与 Axvisor 的 `std` PIE ELF 位于 `target/aarch64-unknown-linux-musl/debug/`，StarryOS 的 bare ELF 位于 `target/aarch64-unknown-none-softfloat/debug/starryos`。Axvisor 调试固定使用 `--preset qemu-aarch64`（`vm_configs = []`）和 `os/axvisor/configs/qemu/qemu-aarch64.toml`，不依赖可变的默认文件或旧快照。
 
 ## 常见失败信号
 

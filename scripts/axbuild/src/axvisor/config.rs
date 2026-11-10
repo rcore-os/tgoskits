@@ -1,12 +1,10 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
-use anyhow::anyhow;
 use ax_config::{CommonConfig, ConfigError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+pub(crate) mod presets;
 
 /// Final Axvisor input. VM files remain packaging inputs, not Cargo identity.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -37,6 +35,18 @@ impl AxvisorConfig {
 impl crate::build::BuildConfiguration for AxvisorConfig {
     const CLEARABLE_FIELDS: &'static [&'static str] = &[];
 
+    fn preset(name: &str) -> Option<Self> {
+        presets::find_preset(name).map(|preset| preset.materialize())
+    }
+
+    fn default_qemu_preset(target: &str) -> Option<&'static str> {
+        presets::default_qemu_preset(target).map(|preset| preset.name)
+    }
+
+    fn common(&self) -> &CommonConfig {
+        &self.common
+    }
+
     fn extra_fields(&self) -> &toml::Table {
         &self.extra
     }
@@ -44,6 +54,7 @@ impl crate::build::BuildConfiguration for AxvisorConfig {
     fn validate_input(&self) -> Result<(), ConfigError> {
         crate::build::reject_extra_fields(&self.extra)?;
         self.common.validate()?;
+        super::build::reject_unsupported_nested_platform_features(&self.common.features, &[])?;
         for path in &self.vm_configs {
             crate::build::validate_resource_path("vm_configs", path)?;
         }
@@ -51,149 +62,94 @@ impl crate::build::BuildConfiguration for AxvisorConfig {
     }
 }
 
-use crate::{
-    axvisor::board::{self, Board},
-    context::{AxvisorCommandSnapshot, arch_for_target_checked, snapshot_path_value},
-};
-
-pub(crate) fn available_board_names(axvisor_dir: &Path) -> anyhow::Result<Vec<String>> {
-    board::board_names(axvisor_dir)
-}
-
-fn resolve_board(axvisor_dir: &Path, name: &str) -> anyhow::Result<Board> {
-    board::find_board(axvisor_dir, name)?.ok_or_else(|| {
-        let available = available_board_names(axvisor_dir).unwrap_or_default();
-        anyhow!(
-            "unknown Axvisor board `{name}` in {}; available boards: {}",
-            board::board_dir(axvisor_dir).display(),
-            available.join(", ")
-        )
-    })
-}
-
+/// Export one fully expanded built-in recipe to Axvisor's target-specific
+/// default config, then update the snapshot only after the atomic file replace.
 pub(crate) fn write_defconfig(
-    workspace_root: &Path,
-    axvisor_dir: &Path,
-    board_name: &str,
+    workspace_root: &std::path::Path,
+    name: &str,
 ) -> anyhow::Result<PathBuf> {
-    let board = resolve_board(axvisor_dir, board_name)?;
-    let build_config_path =
-        crate::axvisor::build::default_build_info_path(axvisor_dir, board.target.as_str());
-    if let Some(parent) = build_config_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(&board.path, &build_config_path).map_err(|e| {
-        anyhow!(
-            "failed to copy board config {} to {}: {e}",
-            board.path.display(),
-            build_config_path.display()
-        )
-    })?;
+    let input = crate::build::load_config_input::<AxvisorConfig>(workspace_root, None, Some(name))?;
+    input.config.validate()?;
+    crate::build::validate_features(&input.config.common)?;
+    let target = input
+        .config
+        .common
+        .target
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Axvisor preset `{name}` has no target"))?;
+    let arch = crate::context::arch_for_target_checked(target)?;
+    let path = crate::build::default_build_info_path_in_workspace(
+        workspace_root,
+        crate::axvisor::build::AXVISOR_PACKAGE,
+        target,
+    );
+    let previous_snapshot = crate::context::AxvisorCommandSnapshot::load(workspace_root)?;
 
-    let mut snapshot = AxvisorCommandSnapshot::load(workspace_root)?;
-    snapshot.arch = Some(arch_for_target_checked(&board.target)?.to_string());
-    snapshot.target = Some(board.target);
-    snapshot.config = Some(snapshot_path_value(workspace_root, &build_config_path));
+    let mut snapshot = previous_snapshot;
+    snapshot.preset = None;
+    snapshot.config = Some(crate::context::snapshot_path_value(workspace_root, &path));
+    snapshot.arch = Some(arch.to_owned());
+    snapshot.target = Some(target.to_owned());
+    snapshot.smp = None;
+    snapshot.vmconfigs.clear();
     snapshot.qemu.qemu_config = None;
     snapshot.uboot.uboot_config = None;
-    snapshot.store(workspace_root)?;
+    crate::context::export_config_with_snapshot(workspace_root, &path, &input.config, &snapshot)?;
 
-    Ok(build_config_path)
+    Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use tempfile::tempdir;
 
     use super::*;
-    use crate::context::{
-        AxvisorQemuSnapshot, AxvisorUbootSnapshot, DEFAULT_AXVISOR_ARCH, DEFAULT_AXVISOR_TARGET,
-    };
-
-    fn write_board(root: &Path, name: &str, body: &str) -> PathBuf {
-        let path = board::board_dir(root).join(format!("{name}.toml"));
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, body).unwrap();
-        path
-    }
+    use crate::context::{AxvisorCommandSnapshot, AxvisorQemuSnapshot, AxvisorUbootSnapshot};
 
     #[test]
-    fn write_defconfig_generates_build_toml_and_updates_snapshot() {
+    fn defconfig_exports_expanded_preset_then_clears_old_snapshot_selectors() {
         let root = tempdir().unwrap();
-        let axvisor_dir = root.path().join("os/axvisor");
-        let source = write_board(
-            &axvisor_dir,
-            "roc-rk3568-pc",
-            r#"
-target = "aarch64-unknown-none-softfloat"
-features = ["ax-driver/rockchip-sdhci"]
-log = "Info"
-vm_configs = []
-"#,
-        );
-        let qemu_config = PathBuf::from("configs/qemu.toml");
-        let existing_snapshot = AxvisorCommandSnapshot {
-            arch: Some(DEFAULT_AXVISOR_ARCH.to_string()),
-            target: Some(DEFAULT_AXVISOR_TARGET.to_string()),
-            smp: None,
-            config: Some(PathBuf::from("os/axvisor/.build-aarch64.toml")),
-            vmconfigs: vec![PathBuf::from("tmp/vm1.toml")],
+        AxvisorCommandSnapshot {
+            preset: Some("removed-board-template".into()),
+            arch: Some("x86_64".into()),
+            target: Some("x86_64-unknown-none".into()),
+            smp: Some(4),
+            config: Some(PathBuf::from("old.toml")),
+            vmconfigs: vec![PathBuf::from("old-vm.toml")],
             qemu: AxvisorQemuSnapshot {
-                qemu_config: Some(qemu_config.clone()),
+                qemu_config: Some(PathBuf::from("old-qemu.toml")),
             },
             uboot: AxvisorUbootSnapshot {
-                uboot_config: Some(PathBuf::from("configs/uboot.toml")),
+                uboot_config: Some(PathBuf::from("old-uboot.toml")),
             },
-        };
-        existing_snapshot.store(root.path()).unwrap();
+        }
+        .store(root.path())
+        .unwrap();
 
-        let path = write_defconfig(root.path(), &axvisor_dir, "roc-rk3568-pc").unwrap();
-
+        let path = write_defconfig(root.path(), "qemu-aarch64").unwrap();
+        let exported: AxvisorConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
-            path,
-            root.path()
-                .join("tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml")
+            exported.common.target.as_deref(),
+            Some(ax_config::boards::TARGET_AARCH64)
         );
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            fs::read_to_string(source).unwrap()
-        );
+        assert_eq!(exported.vm_configs, Vec::<PathBuf>::new());
 
         let snapshot = AxvisorCommandSnapshot::load(root.path()).unwrap();
+        assert_eq!(snapshot.preset, None);
         assert_eq!(
             snapshot.config,
-            Some(PathBuf::from(
-                "tmp/axbuild/config/axvisor/build-aarch64-unknown-none-softfloat.toml"
-            ))
+            Some(crate::context::snapshot_path_value(root.path(), &path))
         );
         assert_eq!(snapshot.arch.as_deref(), Some("aarch64"));
         assert_eq!(
             snapshot.target.as_deref(),
-            Some("aarch64-unknown-none-softfloat")
+            Some(ax_config::boards::TARGET_AARCH64)
         );
-        assert_eq!(snapshot.vmconfigs, existing_snapshot.vmconfigs);
+        assert_eq!(snapshot.smp, None);
+        assert!(snapshot.vmconfigs.is_empty());
         assert_eq!(snapshot.qemu.qemu_config, None);
         assert_eq!(snapshot.uboot.uboot_config, None);
-    }
-
-    #[test]
-    fn resolve_board_config_reports_board_directory_for_unknown_name() {
-        let root = tempdir().unwrap();
-        write_board(
-            root.path(),
-            "qemu-aarch64",
-            r#"
-target = "aarch64-unknown-none-softfloat"
-features = []
-log = "Info"
-"#,
-        );
-
-        let err = resolve_board(root.path(), "missing")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("unknown Axvisor board `missing`"));
-        assert!(err.contains(&board::board_dir(root.path()).display().to_string()));
-        assert!(err.contains("qemu-aarch64"));
     }
 }

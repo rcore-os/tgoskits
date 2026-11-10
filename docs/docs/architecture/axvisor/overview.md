@@ -18,7 +18,7 @@ Axvisor 与 ArceOS/StarryOS 的最大差异在于：**代码、配置和 Guest �
 | --- | --- | --- |
 | 统一 | 尽可能用同一套代码覆盖多架构平台 | `hal/arch/*`、`configs/board/*` |
 | 组件化 | 将 VM、vCPU、虚拟设备、地址空间、API 注入等能力拆成独立组件 | `virtualization/axvm`、`axvm-types`、各架构 `*_vcpu`、`axdevice`、`axaddrspace`、`axvisor_api` |
-| 可配置 | 通过板级配置与 VM 配置控制构建与运行行为 | `configs/board/*.toml`、`configs/vms/**/*.toml` |
+| 可配置 | 通过静态预设、用户覆盖与独立 VM 配置控制构建和打包 | `axvisor/config/presets/`、`configs/vms/**/*.toml` |
 | 可验证 | 通过 xtask、QEMU workflow 和统一测试入口形成闭环 | `cargo xtask axvisor test qemu ...` |
 
 ## 架构概览
@@ -33,7 +33,7 @@ flowchart LR
     apiBridge["ApiBridge: axvisor_api + hal impl"]
     axvisorRuntime["AxvisorRuntime: main hal vmm task shell driver"]
     guestSystems["GuestSystems: ArceOS Linux RT-Thread FreeRTOS Zephyr"]
-    boardConfig["BoardConfig: configs/board/*.toml"]
+    boardConfig["静态预设与用户 TOML: AxvisorConfig"]
     vmConfig["VmConfig: build vm_configs -> /guest/builtin/configs；/guest 动态池"]
 
     hardware --> arceosBase

@@ -16,8 +16,8 @@ use super::{
 };
 use crate::{
     build::{append_cargo_rustflags, env_truthy},
-    context::{ResolvedStarryRequest, SnapshotPersistence},
-    starry::{Starry, board, build, rootfs},
+    context::{RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence},
+    starry::{Starry, build, rootfs},
     test::{case, qemu as qemu_test, timing},
 };
 
@@ -28,6 +28,7 @@ impl Starry {
         if args.build_config.is_some() || args.qemu_config.is_some() || args.rootfs.is_some() {
             return self.run_external_qemu(args).await;
         }
+        let environment = RequestEnvironment::capture()?;
 
         if args.list && args.arch.is_none() && args.target.is_none() {
             let case_names = discover_all_qemu_cases_with_archs(
@@ -62,22 +63,19 @@ impl Starry {
             package, arch, target
         );
 
-        let default_board = board::default_board_for_target(self.app.workspace_root(), &target)?;
-        let request = self.prepare_request(
+        let base_input = match cases.first() {
+            Some(case) => case.build_input.clone(),
+            None => crate::build::load_config_input(self.app.workspace_root(), None, None)?,
+        };
+        let request = self.prepare_request_from_input(
             Self::test_build_args(&target, None),
+            base_input,
+            environment,
             None,
             None,
             SnapshotPersistence::Discard,
         )?;
-        let mut request = Self::qemu_test_request(request);
-        if let Some(default_board) = default_board {
-            request.replace_config(default_board.config)?;
-        } else {
-            anyhow::bail!(
-                "missing Starry qemu defconfig for target `{target}` in tests; expected a default \
-                 qemu board config under os/StarryOS/configs/board"
-            );
-        }
+        let request = Self::qemu_test_request(request);
         let default_rootfs_path = crate::image::storage::default_rootfs_path(
             self.app.workspace_root(),
             self.app.target_dir(),
@@ -103,11 +101,12 @@ impl Starry {
             ],
         );
         let build_groups = qemu_test::prepare_case_build_groups(&cases, |build_config_path| {
-            Self::qemu_group_build_context(
-                &request,
-                build_config_path,
-                self.app.workspace_context(),
-            )
+            let input = cases
+                .iter()
+                .find(|case| case.build_config_path.as_path() == build_config_path)
+                .map(|case| &case.build_input)
+                .expect("build group originated from a discovered Starry case");
+            Self::qemu_group_build_context(&request, input, self.app.workspace_context())
         });
         timing_stage.finish();
         let build_groups = build_groups?;
@@ -169,7 +168,7 @@ impl Starry {
                 let case_started = Instant::now();
                 let case_request = Self::request_for_qemu_case_build_config(
                     &build_group.request,
-                    &case.build_config_path,
+                    &case.build_input,
                 )?;
                 match self
                     .run_qemu_case(
@@ -285,6 +284,7 @@ impl Starry {
                 qemu,
                 build_group: starry_case.build_group.clone(),
                 build_config_path: starry_case.build_config_path.clone(),
+                build_input: starry_case.build_input.clone(),
                 rootfs_path,
                 requirements,
                 diskless_host_initramfs,
@@ -417,10 +417,11 @@ impl Starry {
 
     pub(crate) fn qemu_group_build_context(
         request: &ResolvedStarryRequest,
-        build_config_path: &Path,
+        input: &crate::build::ConfigInput<crate::starry::config::StarryConfig>,
         workspace: &crate::context::WorkspaceContext,
     ) -> anyhow::Result<(ResolvedStarryRequest, Cargo)> {
-        let request = Self::request_for_qemu_case_build_config(request, build_config_path)?;
+        let mut request = request.clone();
+        request.replace_config_input(input.clone())?;
         let mut cargo = build::load_cargo_config(&request, workspace)?;
         if env_truthy(&cargo.env, "AXTEST") {
             append_cargo_rustflags(&mut cargo, AXTEST_RUSTFLAGS);
@@ -434,13 +435,10 @@ impl Starry {
 
     fn request_for_qemu_case_build_config(
         request: &ResolvedStarryRequest,
-        build_config_path: &Path,
+        input: &crate::build::ConfigInput<crate::starry::config::StarryConfig>,
     ) -> anyhow::Result<ResolvedStarryRequest> {
         let mut request = request.clone();
-        let config: crate::starry::config::StarryConfig =
-            crate::build::load_build_config(build_config_path)?;
-        request.replace_config(config)?;
-        request.build_info_path = build_config_path.to_path_buf();
+        request.replace_config_input(input.clone())?;
         Ok(request)
     }
 

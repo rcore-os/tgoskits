@@ -111,8 +111,8 @@
         "axvisor",
         "build",
         "--debug",
-        "--config",
-        "os/axvisor/configs/board/qemu-aarch64.toml"
+        "--preset",
+        "qemu-aarch64"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -149,7 +149,7 @@
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
-          "TGOS_DEBUG_COMMAND": "cargo xtask axvisor qemu --debug --config os/axvisor/configs/board/qemu-aarch64.toml --qemu-config os/axvisor/configs/qemu/qemu-aarch64.toml",
+          "TGOS_DEBUG_COMMAND": "cargo xtask axvisor qemu --debug --preset qemu-aarch64 --qemu-config os/axvisor/configs/qemu/qemu-aarch64.toml",
           "TGOS_DEBUG_PORT": "1234",
           "TGOS_DEBUG_SESSION": "axvisor",
           "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"

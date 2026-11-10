@@ -20,6 +20,8 @@ axbuild 启用 toml 与 schema。runtime/HAL 只通过 build-dependencies 使用
 
 静态配方与用户稀疏覆盖具有不同职责。`Board` 只拥有跨 OS 共享的身份和 target；`CommonPreset` 组合公共默认与静态片段，各 OS 的预设保存自己的策略和资源。唯一 `materialize()` 将借用数据展开为本次请求的 owned 值，不解析内嵌 TOML。
 
+公共 `boards/` 与三 OS 的 `config/presets/` 都以 `mod.rs` 为统一入口，每块物理板卡独立一个同名 Rust 文件，QEMU 按目标架构分别存放。OS 的同板用途变体放在该板文件中，例如 `qemu_aarch64.rs` 同时维护普通、vCPU 和 VirtIO 用途，不另复制公共板卡身份。`mod.rs` 统一声明模块、维护唯一有序 registry、查找及默认 QEMU 映射；不再使用集中全部配方的 `entries.rs`。确有复用的驱动片段单独放在 `boards/features.rs`，不混入某块板卡策略，也不保留只转发旧布局的空壳模块。
+
 ### 2.1 合并顺序
 
 解析入口只读取一份用户文件一次。没有用户文件时，直接使用静态展开对象；有文件时先提取 preset、features_add、features_remove、unset 控制键，再将普通字段交给 Figment 的普通 merge。最终 OS 对象只解码一次，随后应用本次环境 FEATURES 和显式 CLI，再校验。
@@ -51,7 +53,13 @@ flowchart TD
 
 `ConfigSource` 区分内置预设、用户文件与无文件自定义输入。context 的已解析请求携带完整 OS 配置和 `RuntimeValues`；供 ostool 使用的配置路径为 Option，内置配置没有伪造文件。构建不隐式写 TOML。
 
-测试或应用切换构建输入时，必须替换完整 typed 配置，并使用原请求捕获的环境重新解析 runtime；仅修改路径不能改变已确认对象。构建分组可以复用同一内核 Cargo 身份，但每个用例仍持有自己的 VM 打包输入。客户机准备入口要求源文件显式声明 package 和 target，该约束在解析后的原始配置上、默认值及快照补齐前检查，不通过最终字段非空来推断来源。
+`ConfigSource::Preset` 保存内置名称，`File` 保存绝对文件路径及可选预设名称，`Custom` 表示无文件的自定义选择。请求通过 `config_path()` 从来源派生可选路径，不再并列保存可独立修改的路径副本。`load_config_input()` 读取文件并调用 `parse_config_input()`，保留预设目标约束和 `app-c` 字段来源所需的最少信息，随后丢弃原始覆盖表。测试组切换使用 `replace_config_input()` 同时更换配置、来源及 runtime，不能只修改路径。
+
+Starry 应用发现器将 `ConfigInput<StarryConfig>` 随用例传给构建入口，不把已解析输入退化为待重读的文件路径。应用 dispatcher 在发现前通过 `RequestEnvironment::capture()` 捕获环境，再交给 `prepare_starry_request_from_input()`；该入口复用环境和输入，不再次读取二者。
+
+ArceOS 板测同样在发现前捕获环境，`ArceosBoardTestGroup` 保留 `ConfigInput<ArceosConfig>`，通过 `prepare_arceos_request_from_input()` 形成请求。发现后构建输入不再从路径重新读取，也不能将旧 package/target 当作新 CLI 覆盖；分组身份取已保存来源，不要求源文件在发现后仍存在。板卡缺少 target 时返回带文件上下文的错误，不能假设尚未发生的校验并 panic。
+
+测试或应用切换构建输入时，必须替换完整 typed 配置，并使用原请求捕获的环境重新解析 runtime；仅修改路径不能改变已确认对象。构建分组可以复用同一内核 Cargo 身份，但每个用例仍持有自己的 VM 打包输入。客户机准备入口要求源文件显式声明 package 和 target；`ConfigInput::file_fields` 保留这两个键及 `app-c` 的最少字段存在信息。guest 在默认值及快照补齐前检查原文件键，不能通过展开后字段非空推断来源，也不能让文件 preset 的展开值代替显式声明。
 
 ### 3.1 选择与快照
 
@@ -59,7 +67,15 @@ CLI 和文件 preset 必须一致，预设的 target 约束 CLI target、arch �
 
 显式更换 preset、config、arch、target 或 ArceOS package 时，不继承旧 target、SMP、VM 或运行配置。无新选择器时才恢复同 OS 的快照选择；快照不作为覆盖默认层。只有原本支持的裸 ArceOS qemu 自动使用 Hello World，显式应用不会套用其板卡策略。
 
-`config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。`defconfig` 显式序列化展开对象，以临时文件替换输出，成功后才更新快照。任何解析、校验或写入失败都不覆盖原文件与快照。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
+文件来源的有效 preset 与 CLI 选择不同：`ConfigInput::selection_preset` 只保存显式 CLI（含恢复的 CLI 选择）或 source-free 默认预设，文件自身的 preset 控制键随本次文件内容重新读取。快照不能将上次文件控制键提升为额外 CLI 约束，否则编辑同一文件选择另一个 preset 会产生伪冲突；显式 CLI preset 与新文件冲突时仍必须拒绝。
+
+`prepare_arceos_qemu_request()` 是允许无应用选择时使用 Hello World 的入口，仍先尝试恢复未被新选择器切断的快照；普通构建和 `config show` 使用 `prepare_arceos_request()`，缺少应用时明确报错。StarryOS 与 Axvisor 的无文件输入通过各自明确的标准 QEMU 映射选择预设。三个 resolver 都只返回待提交的快照，展示命令不保存它。
+
+OS 专属特性禁令也是请求有效性的一部分。Axvisor 的运行时 VMX/SVM 选择规则由同一校验器拒绝对应 Cargo 特性；依赖工作区 metadata 的平台特性限制也必须在 resolver 完成前执行，不能只在 Cargo 适配中才拒绝，否则 show 与 build 会不一致，失败输入还会抢先覆盖快照。
+
+`config ls/show` 不构建、不写快照；show 使用与构建相同的 resolver，TOML 主体保留 Option 语义，有效 runtime 值作为说明输出。Axvisor resolver 将有效的 CLI 或恢复快照 VM 覆盖同步到最终 `config.vm_configs`，使展示结果重新读取后仍选择同一有序 VM 列表；不读取 VM 文件或将其加入内核 Cargo 身份。旧快照指向已删除模板时给出 preset/defconfig 迁移方法。
+
+三个 OS 的 `write_defconfig()` 共用 `export_config_with_snapshot()`，将展开配置和新选择作为一次失败可回滚的操作：先完成两份 TOML 的序列化、同目录临时文件写入与同步，并保存原配置的回滚副本，再替换配置、最后原子替换快照。提交快照失败时恢复原配置；目标原先不存在时移除新配置。普通快照保存同样使用临时文件原子替换，不截断旧快照。解析、校验或暂存失败不修改原文件与旧选择；回滚自身失败时保留恢复副本，并报告原提交错误、回滚错误和副本路径，不能声称原状态已恢复。此保证针对单个命令的普通 I/O 失败，不提供跨文件的崩溃、断电原子性，也不协调并发写入命令。
 
 ### 3.2 路径与打包
 

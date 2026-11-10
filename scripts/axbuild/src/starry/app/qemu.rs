@@ -61,7 +61,7 @@ pub(crate) async fn prepare_qemu_app_case(
         })
         .unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
     let target = starry_target_for_arch_checked(&arch)?.to_string();
-    let build_config_path = discover_optional_build_config(&app.case_dir, &target)?;
+    let build_input = discover_optional_build_config(workspace_root, &app.case_dir, &target)?;
     let fields = qemu_config_path
         .as_deref()
         .map(|path| load_qemu_app_case_fields(workspace_root, target_dir, app, path))
@@ -86,7 +86,7 @@ pub(crate) async fn prepare_qemu_app_case(
         name: app.name.clone(),
         arch,
         target,
-        build_config_path,
+        build_input,
         qemu_config_path,
         rootfs_path: rootfs.path,
         rootfs_cleanup_dir: rootfs.cleanup_dir,

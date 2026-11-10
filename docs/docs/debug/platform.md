@@ -108,7 +108,7 @@ sidebar_label: "平台实现"
 | Axvisor | `target/aarch64-unknown-linux-musl/debug/axvisor` |
 | StarryOS | `target/aarch64-unknown-none-softfloat/debug/starryos` |
 
-Axvisor 的 `Build` 与 `Start` 任务都显式使用 `os/axvisor/configs/board/qemu-aarch64.toml`，QEMU 命令同时固定 `os/axvisor/configs/qemu/qemu-aarch64.toml`。该 board 配置包含 `target = "aarch64-unknown-none-softfloat"` 与 `vm_configs = []`，因此调试入口不会继承可变默认 `.build.toml` 中的 x86_64 target 或旧设备配置。
+Axvisor 的 `Build` 与 `Start` 任务都显式使用 `--preset qemu-aarch64`，QEMU 命令同时固定 `os/axvisor/configs/qemu/qemu-aarch64.toml`。该静态预设包含 `target = "aarch64-unknown-none-softfloat"` 与 `vm_configs = []`，显式选择也会切断旧快照，因此调试入口不会继承 x86_64 target 或旧设备配置。
 
 随后通过：
 
@@ -301,7 +301,7 @@ StarryOS Main 与 Boot 对 `#[unsafe(no_mangle)] extern "C" fn main()` 入口使
 
 ```json
 "env": {
-  "TGOS_DEBUG_COMMAND": "cargo xtask axvisor qemu --debug --config os/axvisor/configs/board/qemu-aarch64.toml --qemu-config os/axvisor/configs/qemu/qemu-aarch64.toml",
+  "TGOS_DEBUG_COMMAND": "cargo xtask axvisor qemu --debug --preset qemu-aarch64 --qemu-config os/axvisor/configs/qemu/qemu-aarch64.toml",
   "TGOS_DEBUG_PORT": "1234",
   "TGOS_DEBUG_SESSION": "axvisor",
   "TGOS_DEBUG_STATE_DIR": "${workspaceFolder}/target/qemu-debug"

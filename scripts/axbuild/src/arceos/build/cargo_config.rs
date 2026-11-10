@@ -1,7 +1,7 @@
 use anyhow::bail;
 use ostool::build::config::Cargo;
 
-use super::info::load_build_config_with_makefile_features;
+use super::info::config_with_makefile_features;
 use crate::{
     build,
     context::{ResolvedBuildRequest, WorkspaceContext},
@@ -21,11 +21,11 @@ pub(crate) fn load_cargo_config_with_default_features(
 ) -> anyhow::Result<Cargo> {
     let metadata = workspace.metadata();
     let axbuild_dir = workspace.axbuild_artifact_dir();
-    let config = load_build_config_with_makefile_features(request, &[])?;
+    let config = config_with_makefile_features(request, &[])?;
     if config.app_c.is_some() {
         bail!(
-            "ArceOS build config {} uses `app-c`; use the C app build path",
-            request.build_info_path.display()
+            "ArceOS build input {:?} uses `app-c`; use the C app build path",
+            request.source
         );
     }
     let to_bin = config.to_bin;
@@ -60,7 +60,7 @@ pub(crate) fn load_c_app_cargo_config(
     workspace: &WorkspaceContext,
 ) -> anyhow::Result<Cargo> {
     let metadata = workspace.metadata();
-    let config = load_build_config_with_makefile_features(request, &[])?;
+    let config = config_with_makefile_features(request, &[])?;
     let to_bin = config.to_bin;
     let mut build_info = config.common;
     build_info.validate()?;

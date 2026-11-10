@@ -21,6 +21,7 @@ use crate::context::{workspace_manifest_path, workspace_metadata_root_manifest};
 
 mod bare_build;
 mod config_file;
+mod config_source;
 mod future_incompat;
 mod info;
 mod platform;
@@ -28,12 +29,14 @@ mod std_build;
 pub(crate) mod symbol_map;
 
 pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
-#[cfg(test)]
-pub(crate) use config_file::parse_build_config;
 pub(crate) use config_file::{
-    BuildConfiguration, ensure_build_info, invalid_config_value, load_build_config,
-    reject_extra_fields, validate_config_target, validate_resource_path,
+    BuildConfiguration, invalid_config_value, reject_extra_fields, validate_config_target,
+    validate_resource_path,
 };
+#[cfg(test)]
+pub(crate) use config_file::{load_build_config, parse_build_config};
+pub use config_source::ConfigSource;
+pub(crate) use config_source::{ConfigInput, FileFields, load_config_input, show_config};
 pub(crate) use future_incompat::{
     FutureIncompatReportSession, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,
