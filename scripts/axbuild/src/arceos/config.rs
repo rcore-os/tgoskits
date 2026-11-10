@@ -196,6 +196,26 @@ mod tests {
         );
         assert_eq!(snapshot.qemu.qemu_config, None);
         assert_eq!(snapshot.uboot.uboot_config, None);
+
+        // A snapshot destination that cannot be replaced must not publish a
+        // new configuration, whether the configuration already exists or not.
+        let snapshot_path = root
+            .path()
+            .join("tmp/axbuild")
+            .join(crate::context::ARCEOS_SNAPSHOT_FILE);
+        std::fs::remove_file(&snapshot_path).unwrap();
+        std::fs::create_dir(&snapshot_path).unwrap();
+        std::fs::write(snapshot_path.join("unchanged"), "old selection").unwrap();
+        std::fs::write(&path, "user configuration").unwrap();
+        assert!(write_defconfig(root.path(), "orangepi-5-plus").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"user configuration");
+        std::fs::remove_file(&path).unwrap();
+        assert!(write_defconfig(root.path(), "orangepi-5-plus").is_err());
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(snapshot_path.join("unchanged")).unwrap(),
+            b"old selection"
+        );
     }
 
     #[test]
