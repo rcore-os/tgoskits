@@ -819,9 +819,12 @@ impl Mountpoint {
 
     /// Performs an ordinary remount of the shared filesystem and this mount.
     ///
-    /// Active writers anywhere on this filesystem return `ResourceBusy`.
-    /// Synchronization and native write promotion run before publishing either
-    /// flag, without short state locks. On failure both old flags remain intact.
+    /// Only a shared read-write to read-only transition rejects active writers
+    /// anywhere on this filesystem with `ResourceBusy`. Keeping shared write
+    /// access may clear this mount's local protection despite other writers.
+    /// Actual shared transitions synchronize or promote native write access
+    /// before publishing either flag, without short state locks. On failure
+    /// both old flags remain intact.
     /// This may sleep; backend gates must not be held by the caller.
     pub fn set_filesystem_readonly(&self, readonly: bool) -> VfsResult<()> {
         let _configuration = self.filesystem_state.reconfiguration.lock();
@@ -835,12 +838,13 @@ impl Mountpoint {
     }
 
     /// Reconfigures only this mount, as for bind remount/mount attributes.
-    /// May sleep behind another configuration. Active local writers return
-    /// `ResourceBusy` without changing flags; shared/native state is unchanged.
+    /// May sleep behind another configuration. Only a local read-write to
+    /// read-only transition rejects active local writers with `ResourceBusy`,
+    /// without changing flags. Shared/native state is always unchanged.
     pub fn set_readonly(&self, readonly: bool) -> VfsResult<()> {
         let _configuration = self.filesystem_state.reconfiguration.lock();
         let mut local = self.writes.lock();
-        if local.writers != 0 {
+        if readonly && !local.readonly && local.writers != 0 {
             return Err(VfsError::ResourceBusy);
         }
         local.readonly = readonly;

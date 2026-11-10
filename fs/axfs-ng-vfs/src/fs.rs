@@ -139,19 +139,16 @@ impl FilesystemMountState {
     ) -> VfsResult<()> {
         let previous = {
             let state = self.writes.lock();
-            if state.writers != 0 {
+            if readonly && !state.readonly && state.writers != 0 {
                 return Err(VfsError::ResourceBusy);
             }
             state.readonly
         };
-        if readonly {
-            if !previous {
-                ops.flush()?;
-            }
-        } else {
-            ops.remount_read_write()?;
+        match (previous, readonly) {
+            (false, true) => ops.flush(),
+            (true, false) => ops.remount_read_write(),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -220,8 +217,10 @@ impl Filesystem {
         self.mount_state.is_readonly()
     }
 
-    /// Reconfigures shared VFS protection, rejecting active writers with
-    /// `ResourceBusy`. This may sleep and perform synchronization/native I/O.
+    /// Reconfigures shared VFS protection. Only a read-write to read-only
+    /// transition rejects active writers with `ResourceBusy`; same-state
+    /// requests do not reconfigure the backend.
+    /// This may sleep and perform synchronization/native I/O.
     /// Failure leaves VFS flags unchanged. Mount-local flags are not changed;
     /// use `Mountpoint::set_filesystem_readonly` for an ordinary remount.
     pub fn set_readonly(&self, readonly: bool) -> VfsResult<()> {
