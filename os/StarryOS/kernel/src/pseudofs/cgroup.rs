@@ -4,8 +4,9 @@ use core::any::Any;
 use ax_cgroup::{CgroupError, CgroupNode};
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, Filesystem,
-    FilesystemOps, Location, Metadata, MetadataUpdate, MutationRetire, NamespaceMutation, NodeOps,
-    NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
+    FilesystemOps, Location, Metadata, MetadataUpdate, MutationRetire, NamespaceMutation,
+    NamespaceOutcome, NodeOps, NodePermission, NodeType, Reference, RenameEffect, VfsError,
+    VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -321,8 +322,8 @@ impl DirNodeOps for CgroupDir {
         &self,
         _command: &NamespaceMutation<'_>,
         _retired: &MutationRetire,
-    ) -> VfsResult<()> {
-        Err(VfsError::OperationNotPermitted)
+    ) -> NamespaceOutcome<RenameEffect> {
+        NamespaceOutcome::unchanged(Err(VfsError::OperationNotPermitted))
     }
 }
 
