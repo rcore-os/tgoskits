@@ -8,8 +8,12 @@ impl Mountpoint {
         let mut components = Vec::new();
         let mut current = location.clone();
         while !current.is_root_of_mount() {
-            components.push(current.name().into_owned());
-            current = current.parent().ok_or(VfsError::InvalidInput)?;
+            let snapshot = current.entry.name_snapshot();
+            if snapshot.state() == crate::NameState::Untrusted {
+                return Err(VfsError::WouldBlock);
+            }
+            components.push(snapshot.name().to_owned());
+            current = current.wrap(snapshot.parent().cloned().ok_or(VfsError::InvalidInput)?);
         }
         components.reverse();
         Ok(components)

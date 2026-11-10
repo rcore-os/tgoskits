@@ -187,6 +187,24 @@ pub struct FsContext {
 }
 
 impl FsContext {
+    // Convert an already resolved final entry into a naming pair. This is not a
+    // walker step: scoped traversal must inspect each ParentStep itself.
+    fn resolved_parent_name(location: &Location) -> VfsResult<Option<(Location, String)>> {
+        let mut current = location.clone();
+        loop {
+            match current.parent_step()? {
+                axfs_ng_vfs::ParentStep::Parent { parent, name } => {
+                    return Ok(Some((parent, name)));
+                }
+                axfs_ng_vfs::ParentStep::Covered(covered) => current = covered,
+                axfs_ng_vfs::ParentStep::Root => return Ok(None),
+                axfs_ng_vfs::ParentStep::Unlinked { parent, name } => {
+                    return Ok(parent.map(|parent| (parent, name)));
+                }
+            }
+        }
+    }
+
     /// Publishes a shared context to mount-busy and pivot-root tracking.
     ///
     /// Every independently owned context, including an unshared replacement,
@@ -659,13 +677,13 @@ impl FsContext {
             Ok((dir, Cow::Borrowed(name), searched))
         } else if self.is_process_root(&dir) {
             Err(VfsError::InvalidInput)
-        } else if let Some(parent) = dir.parent() {
+        } else if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
             // `parent` is only used to represent the resolved final `.`/`..`
             // entry as `(parent, name)`. It was not traversed by the path
             // walk, so it must not be added to the search trace. This is
             // essential for an already-open dirfd whose own parent is not
             // searchable.
-            Ok((parent, dir.name().into_owned().into(), searched))
+            Ok((parent, name.into(), searched))
         } else {
             Err(VfsError::InvalidInput)
         }
@@ -788,8 +806,8 @@ impl FsContext {
                 Component::RootDir => return Err(VfsError::CrossesDevices),
                 Component::CurDir if is_last => {
                     check_search(&dir)?;
-                    if let Some(parent) = dir.parent() {
-                        return Ok((parent, dir.name().into_owned().into()));
+                    if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
+                        return Ok((parent, name.into()));
                     }
                     return Ok((dir, Cow::Borrowed(".")));
                 }
@@ -802,8 +820,8 @@ impl FsContext {
                     dir = dir.parent().ok_or(VfsError::CrossesDevices)?;
                     depth -= 1;
                     if is_last {
-                        if let Some(parent) = dir.parent() {
-                            return Ok((parent, dir.name().into_owned().into()));
+                        if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
+                            return Ok((parent, name.into()));
                         }
                         return Ok((dir, Cow::Borrowed(".")));
                     }
@@ -840,8 +858,8 @@ impl FsContext {
         } else {
             if self.is_process_root(&dir) {
                 Err(VfsError::InvalidInput)
-            } else if let Some(parent) = dir.parent() {
-                Ok((parent, dir.name().into_owned().into()))
+            } else if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
+                Ok((parent, name.into()))
             } else {
                 Err(VfsError::InvalidInput)
             }
@@ -1075,10 +1093,13 @@ impl FsContext {
         if entry.is_dir() {
             return Err(VfsError::IsADirectory);
         }
-        let directory = entry.parent().ok_or(VfsError::IsADirectory)?;
+        let (directory, name) =
+            Self::resolved_parent_name(&entry)?.ok_or(VfsError::IsADirectory)?;
         self.check_mutation_parent_with_search(&directory, &searched, credentials)?;
         Self::check_sticky(&directory, &entry, credentials)?;
-        directory.unlink(&entry.name(), false)
+        drop(entry);
+        drop(searched);
+        directory.unlink(&name, false)
     }
 
     /// Removes a directory from the filesystem.
@@ -1121,14 +1142,17 @@ impl FsContext {
         if entry.ptr_eq(&self.root_dir) || entry.is_root_of_mount() {
             return Err(VfsError::ResourceBusy);
         }
-        let directory = entry.parent().ok_or(VfsError::ResourceBusy)?;
+        let (directory, name) =
+            Self::resolved_parent_name(&entry)?.ok_or(VfsError::ResourceBusy)?;
         self.check_mutation_parent_with_search(&directory, &searched, credentials)?;
         Self::check_sticky(&directory, &entry, credentials)?;
         let dir = entry.entry().as_dir()?;
         if dir.has_children()? {
             return Err(VfsError::DirectoryNotEmpty);
         }
-        directory.unlink(&entry.name(), true)
+        drop(entry);
+        drop(searched);
+        directory.unlink(&name, true)
     }
 
     /// Renames a file or directory to a new name, replacing the original file

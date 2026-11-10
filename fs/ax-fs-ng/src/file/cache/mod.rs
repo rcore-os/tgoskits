@@ -5,7 +5,6 @@ mod pages;
 mod prefetch;
 mod read;
 mod readahead;
-#[cfg(feature = "vfs")]
 mod reclaim;
 mod resize;
 mod update;
@@ -27,7 +26,7 @@ use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
 use pages::CachedPages;
 pub(crate) use prefetch::start_background_readahead;
 use readahead::ReadAheadState;
-#[cfg(all(feature = "vfs", feature = "ext4"))]
+#[cfg(any(feature = "fat", all(feature = "vfs", feature = "ext4")))]
 pub(crate) use reclaim::prune_cached_files;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
@@ -324,8 +323,8 @@ struct CachedFileShared {
     mapping_epoch: AtomicU64,
     mapping_update_in_progress: AtomicBool,
     unlinked: AtomicBool,
-    #[cfg(feature = "vfs")]
     retired: AtomicBool,
+    sync_failed: AtomicBool,
     #[cfg(feature = "vfs")]
     background_writeback_requested: AtomicBool,
     #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -348,8 +347,8 @@ impl CachedFileShared {
             mapping_epoch: AtomicU64::new(0),
             mapping_update_in_progress: AtomicBool::new(false),
             unlinked: AtomicBool::new(false),
-            #[cfg(feature = "vfs")]
             retired: AtomicBool::new(false),
+            sync_failed: AtomicBool::new(false),
             #[cfg(feature = "vfs")]
             background_writeback_requested: AtomicBool::new(false),
             #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -372,8 +371,8 @@ impl CachedFileShared {
             mapping_epoch: AtomicU64::new(0),
             mapping_update_in_progress: AtomicBool::new(false),
             unlinked: AtomicBool::new(false),
-            #[cfg(feature = "vfs")]
             retired: AtomicBool::new(false),
+            sync_failed: AtomicBool::new(false),
             #[cfg(feature = "vfs")]
             background_writeback_requested: AtomicBool::new(false),
             #[cfg(all(test, feature = "ext4", feature = "vfs"))]
@@ -402,7 +401,6 @@ impl CachedFileShared {
     }
 
     fn ensure_writeback_owner_active(&self) -> VfsResult<()> {
-        #[cfg(feature = "vfs")]
         if self.retired.load(Ordering::Acquire) {
             return Err(VfsError::BadState);
         }
@@ -516,7 +514,7 @@ impl CachedFileShared {
         )
     }
 
-    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    #[cfg(feature = "ext4")]
     fn mark_unlinked(&self) {
         // Serialize publication with the worker's final lifecycle check and
         // backing I/O. Once this returns, no writeback that observed the old
@@ -623,7 +621,6 @@ impl CachedFile {
                 .map(FileUserData::get)
         };
         if let Some(shared) = existing {
-            #[cfg(feature = "vfs")]
             if shared.retired.swap(false, Ordering::AcqRel) {
                 reclaim::register_cached_file(&shared);
             }
@@ -667,12 +664,9 @@ impl CachedFile {
 
         // tmpfs and ramfs have no backing store, so evicting clean pages would
         // lose data. Only register disk-backed files for reclaim.
-        #[cfg(feature = "vfs")]
         if !in_memory && (owner_created || shared.retired.swap(false, Ordering::AcqRel)) {
             reclaim::register_cached_file(&shared);
         }
-        #[cfg(not(feature = "vfs"))]
-        let _ = owner_created;
 
         Ok(Self {
             inner: location,
@@ -1286,7 +1280,16 @@ impl CachedFile {
 }
 
 fn should_share_cached_file_by_inode(location: &Location) -> bool {
-    matches!(location.filesystem().name(), "ext4" | "tmpfs" | "ramfs")
+    matches!(
+        location.filesystem().name(),
+        "ext4" | "tmpfs" | "ramfs" | "vfat"
+    )
+}
+
+/// Flushes FAT data and its holder-owned directory editor before device flush.
+#[cfg(feature = "fat")]
+pub(crate) fn sync_fat_cached_files(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    reclaim::writeback_cached_files(Some(filesystem), |file| file.sync(false))
 }
 
 fn filesystem_key(filesystem: &dyn FilesystemOps) -> usize {
@@ -1323,10 +1326,7 @@ pub(crate) fn retire_filesystem_cache(filesystem: &dyn FilesystemOps) -> VfsResu
         .collect();
     let mut first_error = None;
     for file in files {
-        #[cfg(feature = "vfs")]
         let result = file.retire_from_writeback_registry();
-        #[cfg(not(feature = "vfs"))]
-        let result = file.writeback_dirty_for_global_sync();
         if let Err(error) = result {
             first_error.get_or_insert(error);
         }
@@ -1341,20 +1341,17 @@ pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64)
             .lock()
             .remove(&(filesystem_key(filesystem), inode))
             .and_then(|cached| cached.upgrade());
-        #[cfg(feature = "vfs")]
         if let Some(cached) = cached {
             cached.mark_unlinked();
             reclaim::release_cached_file(&cached);
         }
-        #[cfg(not(feature = "vfs"))]
-        let _ = cached;
     }
 }
 
 impl Drop for CachedFile {
     fn drop(&mut self) {
         // Linux close(2) does not imply fsync(2). Disk-backed page cache is
-        // retained by the inode user_data and written by explicit sync paths.
+        // retained by the independent registry; memory contents remain inode-owned.
     }
 }
 
@@ -1384,24 +1381,5 @@ fn writeback_filesystem_pages_with(
     filesystem: &dyn FilesystemOps,
     writeback: fn(&CachedFileShared) -> VfsResult<()>,
 ) -> VfsResult<()> {
-    #[cfg(feature = "vfs")]
-    {
-        reclaim::writeback_cached_files(Some(filesystem), writeback)
-    }
-    #[cfg(not(feature = "vfs"))]
-    {
-        let key = filesystem_key(filesystem);
-        let files: Vec<_> = CACHED_FILE_BY_INODE
-            .lock()
-            .range((key, 0)..=(key, u64::MAX))
-            .filter_map(|(_, cached)| cached.upgrade())
-            .collect();
-        let mut first_error = None;
-        for file in files {
-            if let Err(error) = writeback(&file) {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
+    reclaim::writeback_cached_files(Some(filesystem), writeback)
 }

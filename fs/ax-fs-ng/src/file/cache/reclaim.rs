@@ -10,18 +10,27 @@
 //! durability paths do not rely on a best-effort scan reaching every entry.
 
 use alloc::{sync::Arc, vec::Vec as AllocVec};
-use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "vfs")]
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
 
+#[cfg(any(feature = "vfs", feature = "ext4", feature = "fat"))]
 use axfs_ng_vfs::VfsResult;
+#[cfg(feature = "vfs")]
 use heapless::Vec as InlineVec;
 
-use super::{CachedFileShared, InodeCacheIndex, PageCache};
+#[cfg(feature = "vfs")]
+use super::PageCache;
+use super::{CachedFileShared, InodeCacheIndex};
 use crate::os::sync::Mutex;
 
+#[cfg(feature = "vfs")]
 const MAX_RECLAIM_BATCH: usize = 256;
 
+#[cfg(feature = "vfs")]
 struct ReclaimGuard;
 
+#[cfg(feature = "vfs")]
 impl Drop for ReclaimGuard {
     fn drop(&mut self) {
         RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
@@ -80,6 +89,7 @@ impl CachedFileRegistry {
                     };
                     remaining -= 1;
                     let closed_and_clean = Arc::strong_count(cached) == 1
+                        && !cached.sync_failed.load(Ordering::Acquire)
                         && cached
                             .page_cache
                             .try_lock()
@@ -96,6 +106,7 @@ impl CachedFileRegistry {
                         // first check and index acquisition. Count alone cannot
                         // detect that completed lifetime; recheck dirty pages.
                         let still_closed_and_clean = Arc::strong_count(cached) == 1
+                            && !cached.sync_failed.load(Ordering::Acquire)
                             && cached
                                 .page_cache
                                 .try_lock()
@@ -121,8 +132,10 @@ impl CachedFileRegistry {
 }
 
 static GLOBAL_CACHED_FILES: CachedFileRegistry = CachedFileRegistry::new();
+#[cfg(feature = "vfs")]
 static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+#[cfg(feature = "vfs")]
 fn visit_registered_cached_file<R>(
     index: usize,
     visit: impl FnOnce(&Arc<CachedFileShared>) -> R,
@@ -136,6 +149,7 @@ fn visit_registered_cached_file<R>(
 
 /// Reclaims clean disk-backed cache pages without holding listener callbacks
 /// under the page-cache lock.
+#[cfg(feature = "vfs")]
 pub fn page_cache_reclaim(num_pages: usize) -> usize {
     if RECLAIM_IN_PROGRESS.swap(true, Ordering::AcqRel) {
         return 0;
@@ -197,6 +211,7 @@ pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
     }
 }
 
+#[cfg(feature = "vfs")]
 pub(super) fn take_background_writeback_files() -> AllocVec<Arc<CachedFileShared>> {
     GLOBAL_CACHED_FILES
         .files
@@ -207,6 +222,7 @@ pub(super) fn take_background_writeback_files() -> AllocVec<Arc<CachedFileShared
         .collect()
 }
 
+#[cfg(feature = "vfs")]
 pub(super) fn snapshot_cached_files() -> AllocVec<Arc<CachedFileShared>> {
     GLOBAL_CACHED_FILES.files.read().clone()
 }
@@ -220,10 +236,12 @@ pub(super) fn release_cached_file(file: &Arc<CachedFileShared>) {
     GLOBAL_CACHED_FILES.release(file);
 }
 
+#[cfg(feature = "vfs")]
 pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
     writeback_cached_files(None, CachedFileShared::writeback_dirty_for_global_sync)
 }
 
+#[cfg(any(feature = "vfs", feature = "ext4", feature = "fat"))]
 pub(super) fn writeback_cached_files(
     filesystem: Option<&dyn axfs_ng_vfs::FilesystemOps>,
     writeback: fn(&CachedFileShared) -> VfsResult<()>,
@@ -251,6 +269,7 @@ pub(super) fn writeback_cached_files(
 }
 
 /// Writes back cached files belonging to one filesystem before its unmount.
+#[cfg(feature = "vfs")]
 pub fn sync_filesystem_cached_files(filesystem: &dyn axfs_ng_vfs::FilesystemOps) -> VfsResult<()> {
     writeback_cached_files(
         Some(filesystem),
@@ -262,6 +281,7 @@ pub(crate) fn prune_cached_files() {
     GLOBAL_CACHED_FILES.prune(&super::CACHED_FILE_BY_INODE);
 }
 
+#[cfg(feature = "vfs")]
 impl CachedFileShared {
     /// Scans the LRU and evicts up to `max` clean pages.
     ///
@@ -317,12 +337,12 @@ impl CachedFileShared {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vfs"))]
 struct ReclaimTestEndpoint {
     invoked: Arc<AtomicBool>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vfs"))]
 impl super::CacheMappingEndpoint for ReclaimTestEndpoint {
     fn publish(&self, _event: super::CacheMappingEvent) -> super::CacheMappingResult {
         self.invoked.store(true, Ordering::Release);
@@ -330,7 +350,7 @@ impl super::CacheMappingEndpoint for ReclaimTestEndpoint {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vfs"))]
 fn pressure_reclaim_is_allocation_free_and_skips_live_mappings_for_test() -> bool {
     const RECLAIM_PAGES: usize = 32;
 
@@ -359,7 +379,7 @@ fn pressure_reclaim_is_allocation_free_and_skips_live_mappings_for_test() -> boo
         && !invoked.load(Ordering::Acquire)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vfs"))]
 mod tests {
     use std::{
         alloc::{GlobalAlloc, Layout, System},

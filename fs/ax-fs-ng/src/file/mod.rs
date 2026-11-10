@@ -9,7 +9,7 @@ pub use access::{ExecutableFile, WriteAccess};
 pub(crate) use cache::BusyDirtyCachedFile;
 #[cfg(feature = "ext4")]
 pub(crate) use cache::forget_cached_file_key;
-#[cfg(all(feature = "vfs", feature = "ext4"))]
+#[cfg(all(feature = "vfs", feature = "ext4", not(feature = "fat")))]
 pub(crate) use cache::prune_cached_files;
 pub(crate) use cache::start_background_readahead;
 #[cfg(feature = "vfs")]
@@ -21,6 +21,8 @@ pub use cache::{
 };
 #[cfg(feature = "vfs")]
 pub use cache::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
+#[cfg(feature = "fat")]
+pub(crate) use cache::{prune_cached_files, sync_fat_cached_files};
 #[cfg(feature = "ext4")]
 pub(crate) use cache::{
     retire_filesystem_cache, writeback_filesystem_pages, writeback_filesystem_pages_periodic,

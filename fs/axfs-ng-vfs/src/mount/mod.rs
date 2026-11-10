@@ -18,10 +18,10 @@ use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
-    Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps, Metadata,
-    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, RawSpinLock,
-    RawSpinLockGuard, Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult,
+    DeviceId, DirEntry, DirEntryId, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor,
+    DirectoryReadState, Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps,
+    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
+    RawSpinLock, RawSpinLockGuard, Reference, RenameOptions, TypeMap, VfsError, VfsResult,
     WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
@@ -282,7 +282,7 @@ pub struct Mountpoint {
     /// Location in the parent mountpoint. `None` for the global root mount.
     location: RawSpinLock<Option<Location>>,
     /// Children of the mountpoint in this namespace-local mount tree.
-    children: RawSpinLock<HashMap<ReferenceKey, Arc<Self>>>,
+    children: RawSpinLock<HashMap<DirEntryId, Arc<Self>>>,
     /// Device ID (filesystem superblock device — used for major:minor in mountinfo).
     device: u64,
     /// Source name supplied when this mount was created (Linux `mnt_devname`).
@@ -493,7 +493,7 @@ impl Mountpoint {
             .children
             .lock()
             .iter()
-            .map(|(key, child)| (key.clone(), child.clone()))
+            .map(|(key, child)| (*key, child.clone()))
             .collect();
         let children: Vec<_> = children
             .into_iter()
@@ -853,6 +853,22 @@ pub struct Location {
     entry: DirEntry,
 }
 
+/// One upward step. A walker checks its root and mount policy before crossing
+/// `Covered`; it must not silently skip the covered mount root.
+#[derive(Debug)]
+pub enum ParentStep {
+    Parent {
+        parent: Location,
+        name: String,
+    },
+    Covered(Location),
+    Root,
+    Unlinked {
+        parent: Option<Location>,
+        name: String,
+    },
+}
+
 #[inherit_methods(from = "self.entry")]
 impl Location {
     pub fn inode(&self) -> u64;
@@ -943,15 +959,41 @@ impl Location {
                 .as_ref()
                 .map_or(Cow::Borrowed(""), |loc| Cow::Owned(loc.name().into_owned()))
         } else {
-            Cow::Borrowed(self.entry.name())
+            Cow::Owned(self.entry.name())
         }
     }
 
     pub fn parent(&self) -> Option<Self> {
         if !self.is_root_of_mount() {
-            return Some(self.wrap(self.entry.parent().unwrap()));
+            return self.entry.parent().map(|parent| self.wrap(parent));
         }
         self.mountpoint.location()?.parent()
+    }
+
+    pub fn parent_step(&self) -> VfsResult<ParentStep> {
+        if self.is_root_of_mount() {
+            return Ok(self
+                .mountpoint
+                .location()
+                .map_or(ParentStep::Root, ParentStep::Covered));
+        }
+        let snapshot = self.entry.name_snapshot();
+        if snapshot.state() == crate::NameState::Untrusted {
+            return Err(VfsError::WouldBlock);
+        }
+        if snapshot.state() == crate::NameState::Unlinked {
+            return Ok(ParentStep::Unlinked {
+                parent: snapshot.parent().cloned().map(|parent| self.wrap(parent)),
+                name: snapshot.name().to_owned(),
+            });
+        }
+        Ok(snapshot
+            .parent()
+            .cloned()
+            .map_or(ParentStep::Root, |parent| ParentStep::Parent {
+                parent: self.wrap(parent),
+                name: snapshot.name().to_owned(),
+            }))
     }
 
     pub fn is_root(&self) -> bool {
@@ -977,8 +1019,9 @@ impl Location {
         let mut cur = self.clone();
         loop {
             while !cur.is_root_of_mount() {
-                components.push(cur.entry.name().to_owned());
-                let parent = cur.entry.parent().ok_or(VfsError::InvalidInput)?;
+                let snapshot = cur.entry.name_snapshot();
+                components.push(snapshot.name().to_owned());
+                let parent = snapshot.parent().cloned().ok_or(VfsError::InvalidInput)?;
                 cur = cur.wrap(parent);
             }
             cur = match cur.mountpoint.location() {
@@ -1008,8 +1051,9 @@ impl Location {
                     .location()
                     .ok_or(VfsError::InvalidInput)?;
             } else {
-                components.push(current.entry.name().to_owned());
-                let parent = current.entry.parent().ok_or(VfsError::InvalidInput)?;
+                let snapshot = current.entry.name_snapshot();
+                components.push(snapshot.name().to_owned());
+                let parent = snapshot.parent().cloned().ok_or(VfsError::InvalidInput)?;
                 current = current.wrap(parent);
             }
         }

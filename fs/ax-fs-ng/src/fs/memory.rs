@@ -328,9 +328,8 @@ struct FileContent {
 }
 
 struct DirContent {
-    // VFS dentry-cache operations call tmpfs directory ops while holding
-    // RawSpinLock guards, so this per-directory map must not use a blocking
-    // mutex.
+    // Inode references may be retired during atomic task cleanup. This native
+    // in-memory state uses IRQ-safe exclusion; VFS cache guards never cover it.
     entries: RawSpinLock<HashMap<FileName, InodeRef>>,
     next_cookie: AtomicU64,
 }
@@ -690,6 +689,10 @@ impl Pollable for MemoryNode {
 }
 
 impl DirNodeOps for MemoryNode {
+    fn namespace_domain(&self) -> usize {
+        Arc::as_ptr(&self.fs) as usize
+    }
+
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let offset = cursor.offset();
         let dir = self.inode.as_dir()?;
@@ -869,38 +872,54 @@ impl DirNodeOps for MemoryNode {
     }
 
     fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        let dir = self.inode.as_dir()?;
-
-        let (entry, inode) = {
-            let mut entries = dir.entries.lock_irqsave();
-            let Some(entry) = entries.get(name) else {
-                return Err(VfsError::NotFound);
-            };
-            let inode = entry.get();
-            match (&inode.content, is_dir) {
-                (NodeContent::Dir(_), false) => return Err(VfsError::IsADirectory),
-                (NodeContent::Dir(DirContent { entries, .. }), true)
-                    if entries
-                        .lock_irqsave_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS)
-                        .len()
-                        > 2 =>
-                {
-                    return Err(VfsError::DirectoryNotEmpty);
-                }
-                (NodeContent::File(_), true) => return Err(VfsError::NotADirectory),
-                _ => {}
-            }
-            let entry = entries.remove(name).ok_or(VfsError::NotFound)?;
-            (entry, inode)
-        };
-
-        Self::clear_dir_entries(&inode);
-        drop(entry);
-
-        Ok(())
+        self.unlink_outcome(name, is_dir).into_result()
     }
 
-    // TODO: atomicity
+    fn unlink_outcome(
+        &self,
+        name: &str,
+        is_dir: bool,
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceNode> {
+        use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome};
+        let mut observation = None;
+        let result = (|| -> VfsResult<()> {
+            let dir = self.inode.as_dir()?;
+
+            let (entry, inode) = {
+                let mut entries = dir.entries.lock_irqsave();
+                let Some(entry) = entries.get(name) else {
+                    return Err(VfsError::NotFound);
+                };
+                let inode = entry.get();
+                match (&inode.content, is_dir) {
+                    (NodeContent::Dir(_), false) => return Err(VfsError::IsADirectory),
+                    (NodeContent::Dir(DirContent { entries, .. }), true)
+                        if entries
+                            .lock_irqsave_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS)
+                            .len()
+                            > 2 =>
+                    {
+                        return Err(VfsError::DirectoryNotEmpty);
+                    }
+                    (NodeContent::File(_), true) => return Err(VfsError::NotADirectory),
+                    _ => {}
+                }
+                let entry = entries.remove(name).ok_or(VfsError::NotFound)?;
+                (entry, inode)
+            };
+
+            observation = Some(NamespaceNode::new(entry.ino, entry.node_type));
+            Self::clear_dir_entries(&inode);
+            drop(entry);
+
+            Ok(())
+        })();
+        match observation {
+            Some(node) => NamespaceOutcome::applied(node, result),
+            None => NamespaceOutcome::unchanged(result),
+        }
+    }
+
     fn rename(
         &self,
         src_name: &str,
@@ -908,42 +927,92 @@ impl DirNodeOps for MemoryNode {
         dst_name: &str,
         options: RenameOptions,
     ) -> VfsResult<()> {
-        if options.exchange() || options.whiteout() {
-            return Err(VfsError::OperationNotSupported);
-        }
-        let dst_node = dst_dir.downcast::<Self>()?;
-        if let Ok(entry) = dst_dir.lookup(dst_name) {
-            let src_entry = self.lookup(src_name)?;
-            if options.no_replace() {
-                return Err(VfsError::AlreadyExists);
-            }
-            if entry.inode() == src_entry.inode() {
-                return Ok(());
-            }
-        }
+        self.rename_outcome(src_name, dst_dir, dst_name, options)
+            .into_result()
+    }
 
-        let src_entry = {
-            let mut entries = self.inode.as_dir()?.entries.lock_irqsave();
-            entries.remove(src_name).ok_or(VfsError::NotFound)?
-        };
-        let dst_dir = dst_node.inode.as_dir()?;
-        let cookie = dst_dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
-        let moved_entry = InodeRef::new(
-            src_entry.fs.clone(),
-            src_entry.ino,
-            src_entry.node_type,
-            cookie,
-        );
-        let overwritten = {
-            let mut entries = dst_dir.entries.lock_irqsave();
-            entries.insert(dst_name.into(), moved_entry)
-        };
-        drop(src_entry);
-        if let Some(entry) = overwritten {
-            Self::clear_dir_entries(&entry.get());
-            drop(entry);
+    fn rename_outcome(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: RenameOptions,
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
+        use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome, RenameAction, RenameEffect};
+        let mut observation = None;
+        let result = (|| -> VfsResult<()> {
+            if options.exchange() || options.whiteout() {
+                return Err(VfsError::OperationNotSupported);
+            }
+            let dst_node = dst_dir.downcast::<Self>()?;
+            let destination_entries = dst_node.inode.as_dir()?;
+            if let Ok(entry) = dst_node.lookup(dst_name) {
+                let src_entry = self.lookup(src_name)?;
+                if options.no_replace() {
+                    return Err(VfsError::AlreadyExists);
+                }
+                if entry.inode() == src_entry.inode() {
+                    observation = Some(RenameEffect {
+                        source: NamespaceNode::new(src_entry.inode(), src_entry.node_type()),
+                        target: Some(NamespaceNode::new(entry.inode(), entry.node_type())),
+                        action: RenameAction::Noop,
+                        source_name: src_name.to_owned(),
+                        destination_name: dst_name.to_owned(),
+                    });
+                    return Ok(());
+                }
+            }
+
+            let src_entry = {
+                let mut entries = self.inode.as_dir()?.entries.lock_irqsave();
+                entries.remove(src_name).ok_or(VfsError::NotFound)?
+            };
+            let dst_dir = destination_entries;
+            let cookie = dst_dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
+            let moved_entry = InodeRef::new(
+                src_entry.fs.clone(),
+                src_entry.ino,
+                src_entry.node_type,
+                cookie,
+            );
+            let overwritten = {
+                let mut entries = dst_dir.entries.lock_irqsave();
+                entries.insert(dst_name.into(), moved_entry)
+            };
+            observation = Some(RenameEffect {
+                source: NamespaceNode::new(src_entry.ino, src_entry.node_type),
+                target: overwritten
+                    .as_ref()
+                    .map(|entry| NamespaceNode::new(entry.ino, entry.node_type)),
+                action: RenameAction::Move,
+                source_name: src_name.to_owned(),
+                destination_name: dst_name.to_owned(),
+            });
+            if src_entry.node_type == NodeType::Directory && self.inode.ino != dst_node.inode.ino {
+                let moved = src_entry.get();
+                let parent =
+                    InodeRef::new(self.fs.clone(), dst_node.inode.ino, NodeType::Directory, 2);
+                let old_parent = moved
+                    .as_dir()?
+                    .entries
+                    .lock_irqsave()
+                    .insert("..".into(), parent);
+                drop(old_parent);
+            }
+            drop(src_entry);
+            if let Some(entry) = overwritten {
+                Self::clear_dir_entries(&entry.get());
+                drop(entry);
+            }
+            Ok(())
+        })();
+        match observation {
+            Some(effect) if effect.action == RenameAction::Noop => {
+                NamespaceOutcome::unchanged_observed(effect, result)
+            }
+            Some(effect) => NamespaceOutcome::applied(effect, result),
+            None => NamespaceOutcome::unchanged(result),
         }
-        Ok(())
     }
 }
 

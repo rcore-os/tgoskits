@@ -1,6 +1,6 @@
 //! File-scoped writeback rounds with lock-external owned I/O batches.
 
-#[cfg(all(feature = "ext4", feature = "vfs"))]
+#[cfg(feature = "ext4")]
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -25,6 +25,7 @@ struct WritebackPage {
 #[cfg(any(feature = "vfs", feature = "ext4"))]
 enum WritebackProtection {
     Required,
+    #[cfg(any(feature = "vfs", feature = "ext4"))]
     Opportunistic,
 }
 
@@ -151,6 +152,7 @@ impl CachedFileShared {
         let mut round = WritebackPages::begin(self, requested)?;
         match protection {
             WritebackProtection::Required => round.protect()?,
+            #[cfg(any(feature = "vfs", feature = "ext4"))]
             WritebackProtection::Opportunistic => round.protect_available()?,
         }
         #[cfg(feature = "vfs")]
@@ -188,12 +190,17 @@ impl CachedFileShared {
         round.protect()?;
         round.write_back()?;
         drop(round);
-        self.backing()?.sync(data_only)
+        let result = self.backing()?.sync(data_only);
+        // Pages may already be clean while the backing editor still failed to
+        // persist. Keep its registry owner until an explicit successful retry.
+        self.sync_failed
+            .store(result.is_err(), core::sync::atomic::Ordering::Release);
+        result
     }
 
-    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    #[cfg(feature = "ext4")]
     pub(super) fn retire_from_writeback_registry(self: &Arc<Self>) -> VfsResult<()> {
-        #[cfg(test)]
+        #[cfg(all(test, feature = "vfs"))]
         self.notify_retirement_lock_attempt();
         let _writeback = self.writeback_lock.lock();
         {

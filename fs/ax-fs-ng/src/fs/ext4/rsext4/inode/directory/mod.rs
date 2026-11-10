@@ -29,6 +29,10 @@ struct Ext4DirectoryReadState {
 }
 
 impl DirNodeOps for Inode {
+    fn namespace_domain(&self) -> usize {
+        Arc::as_ptr(self.fs()) as usize
+    }
+
     fn negative_cache_generation(&self) -> VfsResult<Option<u64>> {
         // This mount owns exact-byte names and namespace mutation. Unsupported
         // casefold/encryption features are rejected by the core mount checks.
@@ -239,48 +243,70 @@ impl DirNodeOps for Inode {
     }
 
     fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        #[cfg(feature = "vfs")]
-        {
-            // Release closed, clean cache owners before another orphan-chain
-            // mutation. Drop the state lock before pruning: the final cache
-            // owner may reap its inode when dropped.
-            let has_orphans = self.fs().lock().has_pending_reaps();
-            if has_orphans {
-                crate::file::prune_cached_files();
+        self.unlink_outcome(name, is_dir).into_result()
+    }
+
+    fn unlink_outcome(
+        &self,
+        name: &str,
+        is_dir: bool,
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceNode> {
+        use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome};
+        let mut observation = None;
+        let mut applied = false;
+        let result = (|| -> VfsResult<()> {
+            #[cfg(feature = "vfs")]
+            {
+                // Release closed, clean cache owners before another orphan-chain
+                // mutation. Drop the state lock before pruning: the final cache
+                // owner may reap its inode when dropped.
+                let has_orphans = self.fs().lock().has_pending_reaps();
+                if has_orphans {
+                    crate::file::prune_cached_files();
+                }
             }
-        }
-        let raw_name = FileName::new(name.as_bytes()).map_err(into_vfs_err)?;
-        let scope = if is_dir {
-            NamespaceChange::Topology
-        } else {
-            NamespaceChange::Directory
-        };
-        let reap_claim = self.lifetime.mutate_namespace(scope, |state| {
-            let info = state
-                .ext4
-                .lookup_child(self.number(), raw_name)?
-                .ok_or_else(rsext4::Ext4Error::not_found)?;
-            let target_is_dir = info.is_directory();
-            match (target_is_dir, is_dir) {
-                (true, false) => return Err(rsext4::Ext4Error::is_dir()),
-                (false, true) => return Err(rsext4::Ext4Error::not_dir()),
-                _ => {}
-            }
-            let outcome = if target_is_dir {
-                state.ext4.remove_empty_directory(self.number(), raw_name)
+            let raw_name = FileName::new(name.as_bytes()).map_err(into_vfs_err)?;
+            let scope = if is_dir {
+                NamespaceChange::Topology
             } else {
-                state.ext4.unlink(self.number(), raw_name)
-            }?;
-            if outcome.requires_reap() {
-                Ok(state.publish_zero_link(outcome.inode))
-            } else {
-                Ok(None)
+                NamespaceChange::Directory
+            };
+            let reap_claim = self.lifetime.mutate_namespace(scope, |state| {
+                let info = state
+                    .ext4
+                    .lookup_child(self.number(), raw_name)?
+                    .ok_or_else(rsext4::Ext4Error::not_found)?;
+                let target_is_dir = info.is_directory();
+                match (target_is_dir, is_dir) {
+                    (true, false) => return Err(rsext4::Ext4Error::is_dir()),
+                    (false, true) => return Err(rsext4::Ext4Error::not_dir()),
+                    _ => {}
+                }
+                let outcome = if target_is_dir {
+                    state.ext4.remove_empty_directory(self.number(), raw_name)
+                } else {
+                    state.ext4.unlink(self.number(), raw_name)
+                }?;
+                observation = Some(NamespaceNode::new(
+                    info.number.as_u64(),
+                    directory_entry_type_to_vfs(info.file_type()),
+                ));
+                if outcome.requires_reap() {
+                    Ok(state.publish_zero_link(outcome.inode))
+                } else {
+                    Ok(None)
+                }
+            })?;
+            applied = true;
+            if let Some(claim) = reap_claim {
+                self.fs().reap(claim)?;
             }
-        })?;
-        if let Some(claim) = reap_claim {
-            self.fs().reap(claim)?;
+            self.finish_directory_change()
+        })();
+        match (applied, observation) {
+            (true, Some(node)) => NamespaceOutcome::applied(node, result),
+            (_, observation) => NamespaceOutcome::uncertain(observation, result),
         }
-        self.finish_directory_change()
     }
 
     fn rename(
@@ -290,55 +316,114 @@ impl DirNodeOps for Inode {
         dst_name: &str,
         options: VfsRenameOptions,
     ) -> VfsResult<()> {
-        #[cfg(feature = "vfs")]
-        {
-            let has_orphans = self.fs().lock().has_pending_reaps();
-            if has_orphans {
-                crate::file::prune_cached_files();
+        self.rename_outcome(src_name, dst_dir, dst_name, options)
+            .into_result()
+    }
+
+    fn rename_outcome(
+        &self,
+        src_name: &str,
+        dst_dir: &DirNode,
+        dst_name: &str,
+        options: VfsRenameOptions,
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
+        use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome, RenameAction, RenameEffect};
+        let mut observation = None;
+        let mut applied = false;
+        let result = (|| -> VfsResult<()> {
+            #[cfg(feature = "vfs")]
+            {
+                let has_orphans = self.fs().lock().has_pending_reaps();
+                if has_orphans {
+                    crate::file::prune_cached_files();
+                }
             }
+            let dst_dir: Arc<Self> = dst_dir.downcast().map_err(|_| VfsError::InvalidInput)?;
+            if !Arc::ptr_eq(self.fs(), dst_dir.fs()) {
+                return Err(VfsError::CrossesDevices);
+            }
+            let src_name = FileName::new(src_name.as_bytes()).map_err(into_vfs_err)?;
+            let dst_name = FileName::new(dst_name.as_bytes()).map_err(into_vfs_err)?;
+            let core_options = match (options.no_replace(), options.exchange(), options.whiteout())
+            {
+                (false, false, false) => rsext4::RenameOptions::REPLACE,
+                (true, false, false) => rsext4::RenameOptions::NO_REPLACE,
+                (false, true, false) => rsext4::RenameOptions::EXCHANGE,
+                (false, false, true) => rsext4::RenameOptions::WHITEOUT,
+                (true, false, true) => rsext4::RenameOptions::WHITEOUT_NO_REPLACE,
+                _ => return Err(VfsError::InvalidInput),
+            };
+            let reap_claim =
+                self.lifetime
+                    .mutate_namespace(NamespaceChange::Topology, |state| {
+                        state.ensure_linked_parent(dst_dir.number())?;
+                        let source = state
+                            .ext4
+                            .lookup_child(self.number(), src_name)?
+                            .ok_or_else(rsext4::Ext4Error::not_found)?;
+                        let target = state.ext4.lookup_child(dst_dir.number(), dst_name)?;
+                        let outcome = state.ext4.rename(
+                            self.number(),
+                            src_name,
+                            dst_dir.number(),
+                            dst_name,
+                            core_options,
+                        )?;
+                        let action = if target
+                            .as_ref()
+                            .is_some_and(|target| target.number == source.number)
+                        {
+                            RenameAction::Noop
+                        } else if options.exchange() {
+                            RenameAction::Exchange
+                        } else {
+                            RenameAction::Move
+                        };
+                        observation = Some(RenameEffect {
+                            source: NamespaceNode::new(
+                                source.number.as_u64(),
+                                directory_entry_type_to_vfs(source.file_type()),
+                            ),
+                            target: target.map(|target| {
+                                NamespaceNode::new(
+                                    target.number.as_u64(),
+                                    directory_entry_type_to_vfs(target.file_type()),
+                                )
+                            }),
+                            action,
+                            source_name: core::str::from_utf8(src_name.as_bytes())
+                                .expect("VFS UTF-8 name")
+                                .to_owned(),
+                            destination_name: core::str::from_utf8(dst_name.as_bytes())
+                                .expect("VFS UTF-8 name")
+                                .to_owned(),
+                        });
+                        Ok(
+                            match outcome.replaced.filter(|outcome| outcome.requires_reap()) {
+                                Some(outcome) => state.publish_zero_link(outcome.inode),
+                                None => None,
+                            },
+                        )
+                    })?;
+            applied = true;
+            if let Some(claim) = reap_claim {
+                self.fs().reap(claim)?;
+            }
+            if !self.fs().background_writeback_enabled()
+                || self.writeback_policy()?.syncs_directory()
+                || dst_dir.writeback_policy()?.syncs_directory()
+            {
+                self.fs().sync_to_disk()?;
+            }
+            Ok(())
+        })();
+        match (applied, observation) {
+            (true, Some(effect)) if effect.action == RenameAction::Noop => {
+                NamespaceOutcome::unchanged_observed(effect, result)
+            }
+            (true, Some(effect)) => NamespaceOutcome::applied(effect, result),
+            (_, observation) => NamespaceOutcome::uncertain(observation, result),
         }
-        let dst_dir: Arc<Self> = dst_dir.downcast().map_err(|_| VfsError::InvalidInput)?;
-        if !Arc::ptr_eq(self.fs(), dst_dir.fs()) {
-            return Err(VfsError::CrossesDevices);
-        }
-        let src_name = FileName::new(src_name.as_bytes()).map_err(into_vfs_err)?;
-        let dst_name = FileName::new(dst_name.as_bytes()).map_err(into_vfs_err)?;
-        let core_options = match (options.no_replace(), options.exchange(), options.whiteout()) {
-            (false, false, false) => rsext4::RenameOptions::REPLACE,
-            (true, false, false) => rsext4::RenameOptions::NO_REPLACE,
-            (false, true, false) => rsext4::RenameOptions::EXCHANGE,
-            (false, false, true) => rsext4::RenameOptions::WHITEOUT,
-            (true, false, true) => rsext4::RenameOptions::WHITEOUT_NO_REPLACE,
-            _ => return Err(VfsError::InvalidInput),
-        };
-        let reap_claim = self
-            .lifetime
-            .mutate_namespace(NamespaceChange::Topology, |state| {
-                state.ensure_linked_parent(dst_dir.number())?;
-                let outcome = state.ext4.rename(
-                    self.number(),
-                    src_name,
-                    dst_dir.number(),
-                    dst_name,
-                    core_options,
-                )?;
-                Ok(
-                    match outcome.replaced.filter(|outcome| outcome.requires_reap()) {
-                        Some(outcome) => state.publish_zero_link(outcome.inode),
-                        None => None,
-                    },
-                )
-            })?;
-        if let Some(claim) = reap_claim {
-            self.fs().reap(claim)?;
-        }
-        if !self.fs().background_writeback_enabled()
-            || self.writeback_policy()?.syncs_directory()
-            || dst_dir.writeback_policy()?.syncs_directory()
-        {
-            self.fs().sync_to_disk()?;
-        }
-        Ok(())
     }
 }
 

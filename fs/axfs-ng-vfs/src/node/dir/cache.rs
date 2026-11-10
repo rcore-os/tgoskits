@@ -1,39 +1,188 @@
-//! Name-cache ownership and publication across lock-free backend calls.
+//! Weak alias indexing and bounded, independently owned positive retention.
 
-use alloc::{borrow::ToOwned, string::String};
-use core::mem;
+use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, vec::Vec};
 
 use hashbrown::{HashMap, HashSet};
 
 use super::{DirEntry, DirNode, VfsError, VfsResult};
+use crate::{NameState, RawSpinLock, WeakDirEntry};
 
-// Bound attacker-controlled missing names without evicting live positive
-// entries, whose user_data may own the only dirty file-page cache.
 const MAX_NEGATIVE_ENTRIES: usize = 128;
+const MAX_RETAINED_ENTRIES: usize = 256;
+
+// No filesystem, directory, or mount owns this cache: retained children cannot
+// lead back to the retention owner through their strong ancestor chains.
+static RETAINED_ENTRIES: RawSpinLock<VecDeque<DirEntry>> = RawSpinLock::new(VecDeque::new());
 
 #[derive(Default)]
 pub(super) struct DirectoryCache {
-    entries: HashMap<String, DirEntry>,
+    entries: HashMap<String, WeakDirEntry>,
+    valid: HashSet<String>,
     missing: HashSet<String>,
     missing_version: Option<u64>,
     generation: u64,
+    namespace_generation: u64,
+    writers: usize,
+    publications: usize,
+}
+
+pub(super) struct NameChange<'a> {
+    directory: &'a DirNode,
+    complete: bool,
+    publication: Arc<super::super::name::NamePublication>,
+    affected: Vec<DirEntry>,
+}
+
+impl NameChange<'_> {
+    fn collect_affected(&mut self) {
+        self.affected.extend(
+            self.directory
+                .cache
+                .lock()
+                .entries
+                .values()
+                .filter_map(WeakDirEntry::upgrade),
+        );
+    }
+
+    pub(super) fn finish(&mut self) {
+        self.collect_affected();
+        self.publication.close(&self.affected, &[]);
+        self.complete = true;
+    }
+
+    pub(super) fn finish_pair(&mut self, other: &mut Self) {
+        self.collect_affected();
+        other.collect_affected();
+        self.publication.close(&self.affected, &other.affected);
+        self.complete = true;
+        other.complete = true;
+    }
+}
+
+impl Drop for NameChange<'_> {
+    fn drop(&mut self) {
+        let uncertain = {
+            let mut cache = self.directory.cache.lock();
+            cache.writers -= 1;
+            cache.namespace_generation = cache.namespace_generation.wrapping_add(1);
+            cache.invalidate_missing();
+            if self.complete {
+                Vec::new()
+            } else {
+                cache.valid.clear();
+                cache
+                    .entries
+                    .values()
+                    .filter_map(WeakDirEntry::upgrade)
+                    .collect()
+            }
+        };
+        for entry in &uncertain {
+            entry.set_name_state(NameState::Untrusted);
+        }
+        if !self.complete {
+            for entry in &self.affected {
+                entry.set_name_state(NameState::Untrusted);
+            }
+            if Arc::strong_count(&self.publication) == 1 {
+                self.publication.close(&self.affected, &uncertain);
+            }
+        }
+    }
+}
+
+fn retain(entry: &DirEntry) {
+    let retired = {
+        let mut entries = RETAINED_ENTRIES.lock();
+        let duplicate = entries
+            .iter()
+            .rposition(|item| item.ptr_eq(entry))
+            .and_then(|index| entries.remove(index));
+        entries.push_back(entry.clone());
+        let evicted = if entries.len() > MAX_RETAINED_ENTRIES {
+            entries.pop_front()
+        } else {
+            None
+        };
+        (duplicate, evicted)
+    };
+    drop(retired);
+}
+
+fn release_retained(children: &[DirEntry]) {
+    let retired = {
+        let mut entries = RETAINED_ENTRIES.lock();
+        let mut retired = Vec::new();
+        let mut index = 0;
+        while index < entries.len() {
+            if children.iter().any(|child| child.ptr_eq(&entries[index])) {
+                if let Some(entry) = entries.remove(index) {
+                    retired.push(entry);
+                }
+            } else {
+                index += 1;
+            }
+        }
+        retired
+    };
+    drop(retired);
 }
 
 impl DirNode {
-    pub(super) fn lookup_and_cache(&self, name: &str) -> VfsResult<DirEntry> {
-        if !self.ops.is_cacheable_child(name) {
-            return self.ops.lookup(name);
+    pub(super) fn begin_name_change(&self) -> NameChange<'_> {
+        let publication = super::super::name::NamePublication::begin(self.ops.namespace_domain());
+        self.begin_name_change_with(publication)
+    }
+
+    pub(super) fn begin_related_name_change(&self, other: &NameChange<'_>) -> NameChange<'_> {
+        self.begin_name_change_with(other.publication.clone())
+    }
+
+    fn begin_name_change_with(
+        &self,
+        publication: Arc<super::super::name::NamePublication>,
+    ) -> NameChange<'_> {
+        let affected;
+        {
+            let mut cache = self.cache.lock();
+            cache.writers += 1;
+            cache.namespace_generation = cache.namespace_generation.wrapping_add(1);
+            cache.invalidate_missing();
+            affected = cache
+                .entries
+                .values()
+                .filter_map(WeakDirEntry::upgrade)
+                .collect();
         }
+        NameChange {
+            directory: self,
+            complete: false,
+            publication,
+            affected,
+        }
+    }
 
-        let generation = {
+    pub(super) fn release_mutation_probe(entry: DirEntry) -> Option<DirEntry> {
+        release_retained(core::slice::from_ref(&entry));
+        entry.has_other_owners().then_some(entry)
+    }
+
+    pub(super) fn lookup_and_cache(&self, name: &str) -> VfsResult<DirEntry> {
+        let cacheable = self.ops.is_cacheable_child(name);
+        if let Some(entry) = self.lookup_cache(name) {
+            retain(&entry);
+            return Ok(entry);
+        }
+        let (generation, namespace_generation) = {
             let cache = self.cache.lock();
-            if let Some(entry) = cache.entries.get(name) {
-                return Ok(entry.clone());
-            }
-            cache.generation
+            (cache.generation, cache.namespace_generation)
         };
-
-        let version = self.ops.negative_cache_generation()?;
+        let version = if cacheable {
+            self.ops.negative_cache_generation()?
+        } else {
+            None
+        };
         if let Some(version) = version {
             let cache = self.cache.lock();
             if cache.generation == generation
@@ -43,10 +192,7 @@ impl DirNode {
                 return Err(VfsError::NotFound);
             }
         }
-
         let result = self.ops.lookup(name);
-        // Recheck aliases and transaction visibility without a cache guard.
-        // Unavailable versions cannot certify the namespace seen by lookup.
         let missing_version = if matches!(result, Err(VfsError::NotFound))
             && version.is_some()
             && self.ops.negative_cache_generation()? == version
@@ -55,84 +201,151 @@ impl DirNode {
         } else {
             None
         };
-        let mut cache = self.cache.lock();
-        if cache.generation != generation {
-            return result;
-        }
-        match &result {
-            Ok(entry) => {
-                // Preserve the winning lookup's shared user_data. Keep the
-                // losing result alive until after the cache guard is dropped.
-                let cached = cache
-                    .entries
-                    .entry(name.to_owned())
-                    .or_insert_with(|| entry.clone())
-                    .clone();
-                drop(cache);
-                Ok(cached)
+        match result {
+            Ok(candidate) => {
+                // Dynamic entries still execute the backend lookup above. Their
+                // supplied semantic identity only canonicalizes the live alias.
+                if !cacheable && candidate.identity().is_none() {
+                    return Ok(candidate);
+                }
+                self.publish_lookup(name, candidate, generation, namespace_generation, cacheable)
             }
-            Err(VfsError::NotFound) if missing_version.is_some() => {
-                cache.remember_missing(name, missing_version);
-                result
+            Err(error) => {
+                let mut cache = self.cache.lock();
+                if cache.generation == generation && missing_version.is_some() {
+                    cache.remember_missing(name, missing_version);
+                }
+                Err(error)
             }
-            Err(_) => result,
         }
     }
 
-    /// Looks up a positive directory entry in the cache.
+    fn publish_lookup(
+        &self,
+        name: &str,
+        candidate: DirEntry,
+        generation: u64,
+        namespace_generation: u64,
+        cacheable: bool,
+    ) -> VfsResult<DirEntry> {
+        let canonical = self.ops.canonical_name(name, &candidate);
+        let candidate_state = candidate.name_state();
+        let (winner, previous, retain_winner) = {
+            let mut cache = self.cache.lock();
+            if cache.namespace_generation != namespace_generation || cache.writers != 0 {
+                return Err(VfsError::WouldBlock);
+            }
+            let existing = cache
+                .entries
+                .get(&canonical)
+                .and_then(WeakDirEntry::upgrade);
+            let winner = match &existing {
+                Some(existing) if existing.same_backend_object(&candidate) => {
+                    if candidate_state == NameState::Linked {
+                        // Pure state publication under cache exclusion; no
+                        // parent owner or backend resource is released here.
+                        existing.set_name_state(NameState::Linked);
+                    }
+                    existing.clone()
+                }
+                _ => candidate.clone(),
+            };
+            cache.prune_dead_names();
+            cache.entries.insert(canonical.clone(), winner.downgrade());
+            cache.entries.insert(name.to_owned(), winner.downgrade());
+            let retain_winner = cacheable && cache.generation == generation;
+            if retain_winner {
+                cache.valid.insert(canonical);
+                cache.valid.insert(name.to_owned());
+            }
+            (winner, existing, retain_winner)
+        };
+        drop(previous);
+        if retain_winner {
+            retain(&winner);
+        }
+        Ok(winner)
+    }
+
     pub fn lookup_cache(&self, name: &str) -> Option<DirEntry> {
-        if self.ops.is_cacheable_child(name) {
-            self.cache.lock().entries.get(name).cloned()
-        } else {
-            None
+        if !self.ops.is_cacheable_child(name) {
+            return None;
         }
+        let entry = {
+            let cache = self.cache.lock();
+            (cache.writers == 0 && cache.valid.contains(name))
+                .then(|| cache.entries.get(name).and_then(WeakDirEntry::upgrade))
+                .flatten()
+        }?;
+        matches!(entry.name_state(), NameState::Root | NameState::Linked).then_some(entry)
     }
 
-    /// Publishes an entry and invalidates observations preceding this mutation.
-    ///
-    /// The replaced entry is returned so its resources are released outside the
-    /// cache lock. This does not change the backing filesystem.
+    /// Publishes a committed alias. Replaced owners are returned for lock-external destruction.
     pub fn insert_cache(&self, name: String, entry: DirEntry) -> Option<DirEntry> {
-        if self.ops.is_cacheable_child(&name) {
+        let cacheable = self.ops.is_cacheable_child(&name);
+        let replaced = {
             let mut cache = self.cache.lock();
             cache.invalidate_missing();
-            cache.entries.insert(name, entry)
-        } else {
-            None
+            cache.prune_dead_names();
+            if cacheable {
+                cache.valid.insert(name.clone());
+            }
+            cache
+                .entries
+                .insert(name, entry.downgrade())
+                .and_then(|old| old.upgrade())
+        };
+        if cacheable {
+            retain(&entry);
         }
+        replaced
     }
 
     pub(super) fn remove_cache_after_mutation(&self, name: &str) -> Option<DirEntry> {
         let mut cache = self.cache.lock();
         cache.invalidate_missing();
-        cache.entries.remove(name)
+        let old = cache.entries.remove(name)?;
+        cache.entries.retain(|_, entry| !entry.ptr_eq(&old));
+        let DirectoryCache { valid, entries, .. } = &mut **cache;
+        valid.retain(|name| entries.contains_key(name));
+        old.upgrade()
     }
 
-    // A backend may change the namespace and then fail during persistence.
-    // Preserve existing positive owners, but never retain pre-operation misses.
     pub(super) fn invalidate_missing_entries(&self) {
         self.cache.lock().invalidate_missing();
     }
 
-    /// Clears cached names and user data without unlinking backing entries.
-    ///
-    /// Open locations remain valid. In-flight lookups cannot republish entries
-    /// observed before this clear and recreate parent/child reference cycles.
+    /// Releases retention without discarding the identity of an active alias.
     pub fn clear_cached_entries(&self) {
-        let children = {
+        let children: Vec<_> = {
             let mut cache = self.cache.lock();
             cache.invalidate_missing();
-            mem::take(&mut cache.entries)
+            cache.valid.clear();
+            cache
+                .entries
+                .values()
+                .filter_map(WeakDirEntry::upgrade)
+                .collect()
         };
-        for (_, child) in children {
+        for child in &children {
             if let Ok(dir) = child.as_dir() {
                 dir.clear_cached_entries();
             }
         }
+        release_retained(&children);
     }
 }
 
 impl DirectoryCache {
+    fn prune_dead_names(&mut self) {
+        self.publications = self.publications.wrapping_add(1);
+        if self.publications.is_multiple_of(64) {
+            self.entries.retain(|_, entry| entry.is_alive());
+            let Self { valid, entries, .. } = self;
+            valid.retain(|name| entries.contains_key(name));
+        }
+    }
+
     fn remember_missing(&mut self, name: &str, version: Option<u64>) {
         if self.missing.len() == MAX_NEGATIVE_ENTRIES || self.missing_version != version {
             self.missing.clear();
@@ -144,23 +357,6 @@ impl DirectoryCache {
     fn invalidate_missing(&mut self) {
         self.missing.clear();
         self.missing_version = None;
-        // Both the observed version and publication use the same mutex. A
-        // lookup cannot span 2^64 completed namespace changes in practice.
         self.generation = self.generation.wrapping_add(1);
-    }
-
-    pub(super) fn remove_renamed(
-        &mut self,
-        source: &str,
-        destination: &str,
-    ) -> (Option<DirEntry>, Option<DirEntry>) {
-        self.invalidate_missing();
-        let source_entry = self.entries.remove(source);
-        let destination_entry = if source == destination {
-            None
-        } else {
-            self.entries.remove(destination)
-        };
-        (source_entry, destination_entry)
     }
 }

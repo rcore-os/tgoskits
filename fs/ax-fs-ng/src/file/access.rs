@@ -29,6 +29,11 @@ pub struct ExecutableFile {
 }
 
 impl ExecutableFile {
+    /// Path pinned by this execution lease, shared by forked address spaces.
+    pub fn location(&self) -> &Location {
+        &self._lease._location
+    }
+
     /// Acquires execution access, failing with `TextFileBusy` if writers exist.
     /// Acquisition and destruction may block on the access registry mutex.
     pub fn acquire(location: Location) -> VfsResult<Self> {

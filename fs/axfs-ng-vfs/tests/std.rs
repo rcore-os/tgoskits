@@ -281,7 +281,6 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
     assert!(!entry.is_dir());
     assert_eq!(entry.node_type(), NodeType::Symlink);
     assert_eq!(entry.name(), "link");
-    assert_eq!(entry.key().1, "link");
     assert_eq!(entry.metadata().unwrap().node_type, NodeType::Symlink);
     assert_eq!(entry.read_link().unwrap(), "target-path");
     assert_eq!(entry.ioctl(0, 0), Err(VfsError::NotATty));
