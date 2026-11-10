@@ -602,6 +602,54 @@ mod tests {
         )
         .unwrap();
         assert!(!native_parent_present);
+
+        #[cfg(feature = "host-test")]
+        assert_unlink_blocks_new_cache_readers(&root);
+    }
+
+    #[cfg(feature = "host-test")]
+    fn assert_unlink_blocks_new_cache_readers(root: &axfs_ng_vfs::Location) {
+        use axfs_ng_vfs::{
+            MutationCredentials, NodePermission, NodeType, VfsError,
+            testing::UnlinkPublicationProbe,
+        };
+
+        // No reader owns the target before the active sample. The only lookup
+        // starts after the real attempt has published its canonical candidate.
+        drop(
+            root.create(
+                "reader",
+                NodeType::RegularFile,
+                NodePermission::default(),
+                0,
+                0,
+                &MutationCredentials::root(),
+            )
+            .unwrap(),
+        );
+        let probe = Arc::new(UnlinkPublicationProbe::default());
+        let directory = root.entry().as_dir().unwrap();
+        directory.set_unlink_probe(Some(probe.clone()));
+        let writer_root = root.clone();
+        let writer = std::thread::spawn(move || {
+            writer_root.unlink("reader", false, &MutationCredentials::root())
+        });
+        probe.wait_for_publication();
+        let reader_root = root.clone();
+        let reader_probe = probe.clone();
+        let reader = std::thread::spawn(move || {
+            let result = reader_root.lookup_no_follow("reader");
+            reader_probe.reader_completed();
+            result
+        });
+        let blocked = probe.wait_for_reader();
+        probe.resume();
+        let removed = writer.join().unwrap();
+        let observed = reader.join().unwrap();
+        directory.set_unlink_probe(None);
+        assert!(blocked, "lookup bypassed the held native filesystem gate");
+        assert_eq!(removed, Ok(()));
+        assert_eq!(observed.unwrap_err(), VfsError::NotFound);
     }
 
     #[test]

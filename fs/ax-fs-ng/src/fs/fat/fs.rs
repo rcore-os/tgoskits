@@ -143,6 +143,11 @@ impl FatFilesystem {
 }
 
 impl FatFilesystem {
+    #[cfg(all(test, feature = "host-test"))]
+    pub(super) fn lookup_gate_is_held(&self) -> bool {
+        self.inner.try_lock().is_none()
+    }
+
     fn root_holder(&self) -> Arc<FatInode> {
         // Never hold the root index while acquiring the sleepable filesystem
         // mutex. That mutex canonicalizes raw holders; the short index lock

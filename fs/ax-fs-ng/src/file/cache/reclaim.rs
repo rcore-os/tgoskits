@@ -68,7 +68,7 @@ impl CachedFileRegistry {
         self.prune_with_candidate_observer(inode_index, after_scan, |_| {}, None);
     }
 
-    #[cfg(any(feature = "ext4", feature = "fat", all(test, feature = "vfs")))]
+    #[cfg(any(feature = "ext4", all(test, feature = "vfs")))]
     fn prune_retiring(
         &self,
         inode_index: &Mutex<InodeCacheIndex>,
@@ -305,7 +305,7 @@ pub(crate) fn prune_cached_files() {
 }
 
 /// Detaches the same eligible caches, retaining actual owners past all gates.
-#[cfg(any(feature = "ext4", feature = "fat"))]
+#[cfg(feature = "ext4")]
 pub(crate) fn prune_cached_files_retiring(retired: &axfs_ng_vfs::MutationRetire) {
     GLOBAL_CACHED_FILES.prune_retiring(&super::CACHED_FILE_BY_INODE, retired);
 }

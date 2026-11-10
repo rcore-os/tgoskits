@@ -1502,6 +1502,18 @@ impl Location {
             .mutate_namespace(&crate::NamespaceMutation::Rename(request), retired)
     }
 
+    /// Releases direct-child cache retention before native unlink admission.
+    ///
+    /// Call outside all backend gates. This performs no target lookup and
+    /// grants no authority; current state is checked by the eventual attempt.
+    pub fn prepare_unlink(&self, name: &str) -> VfsResult<crate::PreparedUnlink> {
+        crate::path::verify_entry_name(name)?;
+        let directory = self.entry.as_dir()?;
+        directory.prepare_unlink_references();
+        directory.inner().prepare_unlink();
+        Ok(crate::PreparedUnlink::new(self.clone(), name.into()))
+    }
+
     pub fn unlink(
         &self,
         name: &str,
@@ -1509,19 +1521,28 @@ impl Location {
         credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<()> {
         let write = crate::PreparedWrite::acquire(self)?;
+        let prepared = self.prepare_unlink(name)?;
         let retired = crate::MutationRetire::new();
-        self.unlink_with_write(name, is_dir, credentials, &write, &retired)
+        self.unlink_with_write(name, is_dir, credentials, prepared, &write, &retired)
             .into_result()
     }
 
+    /// Consumes gate-external preparation matching this exact request.
+    ///
+    /// Does not prepare or release cache owners under a caller's backend gate.
     pub fn unlink_with_write(
         &self,
         name: &str,
         is_dir: bool,
         credentials: &crate::MutationCredentials<'_>,
+        prepared: crate::PreparedUnlink,
         write: &crate::PreparedWrite,
         retired: &crate::MutationRetire,
     ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        if let Err(error) = prepared.check(self, name) {
+            retired.retire(prepared);
+            return crate::NamespaceOutcome::unchanged(Err(error));
+        }
         let target = match crate::MutationTarget::new(self, name, credentials) {
             Ok(target) => target,
             Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
@@ -1530,7 +1551,9 @@ impl Location {
             .as_dir()
             .expect("validated parent")
             .mutate_namespace(
-                &crate::NamespaceMutation::Unlink(crate::UnlinkRequest::new(target, is_dir, write)),
+                &crate::NamespaceMutation::Unlink(crate::UnlinkRequest::new(
+                    target, is_dir, prepared, write,
+                )),
                 retired,
             )
     }

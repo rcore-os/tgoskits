@@ -141,10 +141,10 @@ impl<'a> LinkRequest<'a> {
     }
 }
 
-#[derive(Clone)]
 pub struct UnlinkRequest<'a> {
     pub(super) target: MutationTarget<'a>,
     directory: bool,
+    _prepared: crate::PreparedUnlink,
     write: &'a PreparedWrite,
 }
 
@@ -152,11 +152,13 @@ impl<'a> UnlinkRequest<'a> {
     pub(crate) fn new(
         target: MutationTarget<'a>,
         directory: bool,
+        prepared: crate::PreparedUnlink,
         write: &'a PreparedWrite,
     ) -> Self {
         Self {
             target,
             directory,
+            _prepared: prepared,
             write,
         }
     }
@@ -289,14 +291,20 @@ impl NamespaceMutation<'_> {
             Self::Rename(_) => unreachable!(),
         };
         let directory = target.parent.entry().as_dir().expect("validated parent");
-        let mut change = directory.begin_locked_name_change(target.domain, retired);
         let mut guard = CommandGuard {
             attempt,
             command: self,
             target,
             retired,
         };
-        let mut outcome = match guard.slot().and_then(CommandSlot::authorize) {
+        // Observe before NameChange upgrades any weak aliases. FAT samples
+        // external activity here, before acquiring its own observation owners.
+        let observed = match guard.observe() {
+            Ok(observed) => observed,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        let mut change = directory.begin_locked_name_change(target.domain, retired);
+        let mut outcome = match guard.slot(observed).and_then(CommandSlot::authorize) {
             Ok(authorization) => authorization.commit(),
             Err(error) => NamespaceOutcome::unchanged(Err(error)),
         };
@@ -342,12 +350,19 @@ enum CommandAuthorization<'slot, 'attempt, 'request> {
 }
 
 impl<'attempt, 'request> CommandGuard<'attempt, 'request> {
-    fn slot(&mut self) -> VfsResult<CommandSlot<'_, 'attempt, 'request>> {
+    fn observe(&mut self) -> VfsResult<(Metadata, MutationObservation)> {
         let (parent, _) = self.attempt.parents()?;
         self.target
             .credentials
             .check_permission(&parent, NodePermission::OTHER_EXEC)?;
-        let mut observed = self.attempt.observe(self.command, self.retired)?;
+        let observed = self.attempt.observe(self.command, self.retired)?;
+        Ok((parent, observed))
+    }
+
+    fn slot(
+        &mut self,
+        (parent, mut observed): (Metadata, MutationObservation),
+    ) -> VfsResult<CommandSlot<'_, 'attempt, 'request>> {
         let candidate = match (&self.command, &mut observed) {
             (NamespaceMutation::Create(_), MutationObservation::Create(target)) => target.as_mut(),
             (NamespaceMutation::Link(_), MutationObservation::Link { source, target }) => {
@@ -368,6 +383,13 @@ impl<'attempt, 'request> CommandGuard<'attempt, 'request> {
             self.retired.retire(candidate.entry.clone());
         } else {
             directory.invalidate_locked_name(self.target.name, self.retired);
+        }
+        #[cfg(feature = "host-test")]
+        if matches!(self.command, NamespaceMutation::Unlink(_))
+            && let Some(probe) = directory.unlink_probe()
+        {
+            // After the real candidate publication, before authorization.
+            probe.pause_after_publication();
         }
         Ok(CommandSlot {
             guard: self,

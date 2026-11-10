@@ -164,8 +164,20 @@ impl DirNodeOps for FatDirNode {
             }
             _ => {}
         }
+        #[cfg(all(test, feature = "host-test"))]
+        if let Some(probe) = self
+            .this
+            .upgrade()
+            .and_then(|entry| entry.as_dir().ok()?.unlink_probe())
+        {
+            probe.reader_entering_backend(self.state.fs.lookup_gate_is_held());
+        }
         let mut guard = self.state.fs.lock();
         self.object(self.find(name, &guard)?, &mut guard)
+    }
+
+    fn prepare_unlink(&self) {
+        crate::file::prune_cached_files();
     }
 
     fn mutate_namespace(

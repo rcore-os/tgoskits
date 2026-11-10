@@ -34,7 +34,6 @@ impl MutationRetire {
 }
 
 /// A concrete namespace command, not an arbitrary backend callback.
-#[derive(Clone)]
 pub enum NamespaceMutation<'a> {
     Create(CreateRequest<'a>),
     Link(LinkRequest<'a>),

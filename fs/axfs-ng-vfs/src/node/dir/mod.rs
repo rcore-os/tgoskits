@@ -271,6 +271,11 @@ pub trait DirNodeOps: NodeOps {
         Ok(has_children)
     }
 
+    /// Best-effort native reference preparation, called after VFS direct-child
+    /// retention has actually been released and outside all backend gates.
+    /// This hook performs no namespace mutation and grants no commit authority.
+    fn prepare_unlink(&self) {}
+
     /// Runs a controlled command under the backend's real exclusion. Writable
     /// backends implement this by lending each locked attempt to the request's
     /// fixed executor. Read-only/synthetic directories gain no write capability.
@@ -444,16 +449,7 @@ impl DirNode {
                 );
             }
             NamespaceEffect::Unlink(removed) => {
-                let cached = self.remove_cache_after_mutation(&removed.canonical_name);
-                if let Some(cached) = &cached {
-                    cached.set_name_state(if cached.same_backend_object(&removed.entry) {
-                        crate::NameState::Unlinked
-                    } else {
-                        crate::NameState::Untrusted
-                    });
-                }
-                removed.entry.set_name_state(crate::NameState::Unlinked);
-                retired.retire(cached);
+                self.retire_unlinked_alias(&removed.entry, retired);
             }
             NamespaceEffect::Rename(_) => return Err(VfsError::BadState),
         }

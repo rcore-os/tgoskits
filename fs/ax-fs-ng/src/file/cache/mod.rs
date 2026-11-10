@@ -29,7 +29,9 @@ use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
 use pages::CachedPages;
 pub(crate) use prefetch::start_background_readahead;
 use readahead::ReadAheadState;
-#[cfg(any(feature = "ext4", feature = "fat"))]
+#[cfg(feature = "fat")]
+pub(crate) use reclaim::prune_cached_files;
+#[cfg(feature = "ext4")]
 pub(crate) use reclaim::prune_cached_files_retiring;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};

@@ -53,9 +53,6 @@ impl FatDirNode {
         if let Err(error) = names {
             return NamespaceOutcome::unchanged(Err(error));
         }
-        if matches!(command, NamespaceMutation::Unlink(_)) {
-            crate::file::prune_cached_files_retiring(retired);
-        }
         let mut attempt = FatAttempt {
             guard: self.state.fs.lock_retiring(retired),
             source: self,

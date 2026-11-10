@@ -24,6 +24,8 @@ pub(super) struct DirectoryCache {
     namespace_generation: u64,
     writers: usize,
     publications: usize,
+    #[cfg(feature = "host-test")]
+    unlink_probe: Option<Arc<crate::testing::UnlinkPublicationProbe>>,
 }
 
 pub(super) struct NameChange<'a> {
@@ -119,25 +121,64 @@ fn retain(entry: &DirEntry) {
 }
 
 fn release_retained(children: &[DirEntry]) {
-    let retired = {
-        let mut entries = RETAINED_ENTRIES.lock();
-        let mut retired = Vec::new();
-        let mut index = 0;
-        while index < entries.len() {
-            if children.iter().any(|child| child.ptr_eq(&entries[index])) {
-                if let Some(entry) = entries.remove(index) {
-                    retired.push(entry);
-                }
-            } else {
-                index += 1;
+    drop(take_retained(children));
+}
+
+fn take_retained(children: &[DirEntry]) -> Vec<DirEntry> {
+    let mut entries = RETAINED_ENTRIES.lock();
+    let mut retired = Vec::new();
+    let mut index = 0;
+    while index < entries.len() {
+        if children.iter().any(|child| child.ptr_eq(&entries[index])) {
+            if let Some(entry) = entries.remove(index) {
+                retired.push(entry);
             }
+        } else {
+            index += 1;
         }
-        retired
-    };
-    drop(retired);
+    }
+    retired
 }
 
 impl DirNode {
+    #[cfg(feature = "host-test")]
+    #[doc(hidden)]
+    pub fn set_unlink_probe(&self, probe: Option<Arc<crate::testing::UnlinkPublicationProbe>>) {
+        self.cache.lock().unlink_probe = probe;
+    }
+
+    #[cfg(feature = "host-test")]
+    #[doc(hidden)]
+    pub fn unlink_probe(&self) -> Option<Arc<crate::testing::UnlinkPublicationProbe>> {
+        self.cache.lock().unlink_probe.clone()
+    }
+
+    /// Drop all temporary and retained owners before backend preparation.
+    pub(crate) fn prepare_unlink_references(&self) {
+        let children: Vec<_> = self
+            .cache
+            .lock()
+            .entries
+            .values()
+            .filter_map(WeakDirEntry::upgrade)
+            .collect();
+        release_retained(&children);
+    }
+
+    pub(super) fn retire_unlinked_alias(&self, removed: &DirEntry, retired: &MutationRetire) {
+        {
+            let mut cache = self.cache.lock();
+            cache.invalidate_missing();
+            let alias = removed.downgrade();
+            cache.entries.retain(|_, entry| !entry.ptr_eq(&alias));
+            let DirectoryCache { valid, entries, .. } = &mut **cache;
+            valid.retain(|name| entries.contains_key(name));
+        }
+        // Match the actual selected alias, never an old spelling or inode.
+        retired.retire(take_retained(core::slice::from_ref(removed)));
+        removed.set_name_state(NameState::Unlinked);
+    }
+
     fn begin_name_change_with(
         &self,
         publication: Arc<super::super::name::NamePublication>,
