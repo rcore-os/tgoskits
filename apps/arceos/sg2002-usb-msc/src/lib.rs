@@ -1,4 +1,11 @@
 #![no_std]
+extern crate alloc;
+
+#[cfg(feature = "ax-std")]
+use ax_std as _;
+
+#[cfg(feature = "usb-msc")]
+pub mod usb;
 
 const DEFAULT_READ_BENCH_SIZES: [usize; 5] = [512, 4096, 16 * 1024, 64 * 1024, 256 * 1024];
 const MIN_READ_BENCH_BYTES: usize = 4 * 1024 * 1024;

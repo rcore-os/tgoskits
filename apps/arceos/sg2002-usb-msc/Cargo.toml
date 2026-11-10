@@ -7,13 +7,26 @@ publish = false
 [features]
 default = []
 ax-std = ["dep:ax-hal", "dep:ax-runtime", "dep:ax-std"]
-axtest = [
+usb-msc = [
     "ax-std",
     "dep:ax-driver",
     "dep:axplat-dyn",
     "dep:crab-usb",
     "dep:rdrive",
+    "ax-std/paging",
+    "ax-std/std-compat",
+    "ax-driver/serial",
+    "ax-driver/sg2002-dwc2",
+    "axplat-dyn/thead-mae",
 ]
+
+axtest = ["usb-msc"]
+arceos = ["usb-msc", "ax-std/arceos"]
+
+[[bin]]
+name = "arceos-axtest-sg2002-usb-msc"
+path = "src/main.rs"
+required-features = ["arceos"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
@@ -34,12 +47,11 @@ harness = false
 required-features = ["axtest"]
 
 [dev-dependencies]
-axtest = { path = "../../../../components/axtest/axtest" }
-ax-hal = { path = "../../../../os/arceos/modules/axhal" }
-ax-std = { path = "../../../../os/arceos/ulib/axstd", features = ["default"] }
+axtest = { path = "../../../components/axtest/axtest" }
 
 [package.metadata.axtest]
 runtime = "board"
+target_triples = ["riscv64gc-unknown-none-elf"]
 
 [package.metadata.docs.rs]
-targets = ["riscv64gc-unknown-none-elf"]
+targets = ["riscv64gc-unknown-linux-musl"]
