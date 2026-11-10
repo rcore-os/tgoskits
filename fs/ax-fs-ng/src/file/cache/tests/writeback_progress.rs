@@ -1,13 +1,13 @@
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum WritebackEntry {
     All,
     Selected,
     Sync,
     #[cfg(any(feature = "ext4", feature = "vfs"))]
     Global,
-    #[cfg(feature = "vfs")]
+    #[cfg(any(feature = "ext4", feature = "vfs"))]
     Periodic,
 }
 
@@ -18,7 +18,7 @@ fn entries() -> Vec<WritebackEntry> {
         WritebackEntry::Sync,
         #[cfg(any(feature = "ext4", feature = "vfs"))]
         WritebackEntry::Global,
-        #[cfg(feature = "vfs")]
+        #[cfg(any(feature = "ext4", feature = "vfs"))]
         WritebackEntry::Periodic,
     ]
 }
@@ -30,7 +30,7 @@ fn run_entry(cached: &CachedFile, entry: WritebackEntry) -> VfsResult<()> {
         WritebackEntry::Sync => cached.sync(false),
         #[cfg(any(feature = "ext4", feature = "vfs"))]
         WritebackEntry::Global => cached.shared.writeback_dirty_for_global_sync(),
-        #[cfg(feature = "vfs")]
+        #[cfg(any(feature = "ext4", feature = "vfs"))]
         WritebackEntry::Periodic => cached.shared.writeback_dirty_for_periodic(),
     }
 }
@@ -92,6 +92,71 @@ fn explicit_empty_sync_releases_io_and_failed_sync_releases_the_round() {
             assert_eq!(run_entry(&cached, entry), Err(VfsError::Io));
             assert!(cached.shared.writeback_lock.try_lock().is_some());
             cached.sync(false).unwrap();
+        }
+
+        static DISK_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "vfat" };
+        for entry in entries() {
+            let backing = Arc::new(CacheTestFile::new_on(vec![0; PAGE_SIZE], &DISK_FILESYSTEM));
+            let cached = reopen_cached_file(backing.clone());
+            cached.write_at(&[0x41][..], 0).unwrap();
+            let owner = Arc::downgrade(&cached.shared);
+            let editor = Arc::downgrade(&backing);
+            let sync_attempted = Arc::new(AtomicBool::new(false));
+            let attempted = sync_attempted.clone();
+            *backing.before_sync.lock().unwrap() = Some(Box::new(move || {
+                attempted.store(true, Ordering::Release);
+                Err(VfsError::Io)
+            }));
+            let result = run_entry(&cached, entry);
+            assert_eq!(
+                result,
+                if sync_attempted.load(Ordering::Acquire) {
+                    Err(VfsError::Io)
+                } else {
+                    // Registered writeback may leave the editor pending after
+                    // writing the pages; it must still retain its real owner.
+                    Ok(())
+                }
+            );
+            assert!(cached.dirty_pages_in_range(0, 1).unwrap().is_empty());
+            drop(cached);
+            drop(backing);
+            super::super::reclaim::prune_cached_files();
+
+            let retained = owner.upgrade().unwrap_or_else(|| {
+                panic!("{entry:?}: failed or pending editor lost its cache owner")
+            });
+            let backing = editor
+                .upgrade()
+                .expect("the cache must retain its actual backing");
+            let reopened = reopen_cached_file(backing);
+            assert!(Arc::ptr_eq(&retained, &reopened.shared));
+            drop(retained);
+            let reopened = if !sync_attempted.load(Ordering::Acquire) {
+                assert_eq!(reopened.sync(false), Err(VfsError::Io));
+                drop(reopened);
+                super::super::reclaim::prune_cached_files();
+                let backing = editor
+                    .upgrade()
+                    .expect("failed editor must remain retryable");
+                let reopened = reopen_cached_file(backing);
+                assert!(
+                    owner
+                        .upgrade()
+                        .is_some_and(|owner| Arc::ptr_eq(&owner, &reopened.shared))
+                );
+                reopened
+            } else {
+                reopened
+            };
+            reopened.sync(false).unwrap();
+            let mut byte = [0];
+            reopened.read_at(&mut byte[..], 0).unwrap();
+            assert_eq!(byte, [0x41]);
+            drop(reopened);
+            super::super::reclaim::prune_cached_files();
+            assert!(owner.upgrade().is_none());
+            assert!(editor.upgrade().is_none());
         }
     });
 }

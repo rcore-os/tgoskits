@@ -287,9 +287,13 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
     assert!(matches!(entry.as_dir(), Err(VfsError::NotADirectory)));
     assert!(entry.as_file().is_ok());
     assert!(entry.downcast::<TestFile>().is_ok());
-    assert!(entry.is_root_of_mount());
+    assert!(!entry.is_root_of_mount());
+    assert_eq!(entry.name_state(), axfs_ng_vfs::NameState::Unlinked);
     assert_eq!(entry.absolute_path().unwrap().as_str(), "/link");
     assert!(entry.downgrade().upgrade().unwrap().ptr_eq(&entry));
+    let root = DirEntry::new_file((*file_node).clone(), NodeType::Symlink, Reference::root());
+    assert!(root.is_root_of_mount());
+    assert_eq!(root.absolute_path().unwrap().as_str(), "/");
 
     let mut user_data = entry.user_data();
     user_data.insert(vec![1_u8, 2, 3]);
@@ -1436,17 +1440,72 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         src_name: &str,
         dst_dir: &axfs_ng_vfs::DirNode,
         dst_name: &str,
-        _options: axfs_ng_vfs::RenameOptions,
+        options: axfs_ng_vfs::RenameOptions,
     ) -> axfs_ng_vfs::VfsResult<()> {
-        let entry = self.remove_child(src_name)?;
-        if let Ok(existing) = dst_dir.lookup(dst_name) {
-            if existing.node_type() == axfs_ng_vfs::NodeType::Directory {
-                return Err(axfs_ng_vfs::VfsError::IsADirectory);
-            }
-            dst_dir.unlink(dst_name, false)?;
+        self.rename_outcome(src_name, dst_dir, dst_name, options)
+            .into_result()
+    }
+
+    fn rename_outcome(
+        &self,
+        src_name: &str,
+        dst_dir: &axfs_ng_vfs::DirNode,
+        dst_name: &str,
+        options: axfs_ng_vfs::RenameOptions,
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
+        use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome, RenameAction, RenameEffect, VfsError};
+
+        let destination = match dst_dir.downcast::<Self>() {
+            Ok(destination) => destination,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        // This is the fixture's authoritative backing store. Calling back into
+        // the VFS cache here would reenter an in-flight namespace publication.
+        let source = match self.lookup(src_name) {
+            Ok(source) => source,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        let target = match destination.lookup(dst_name) {
+            Ok(target) => Some(target),
+            Err(VfsError::NotFound) => None,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        if options.exchange() || options.whiteout() {
+            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
         }
-        dst_dir.link(dst_name, &entry)?;
-        Ok(())
+        if options.no_replace() && target.is_some() {
+            return NamespaceOutcome::unchanged(Err(VfsError::AlreadyExists));
+        }
+        let mut effect = RenameEffect {
+            source: NamespaceNode::new(source.inode(), source.node_type()),
+            target: target
+                .as_ref()
+                .map(|target| NamespaceNode::new(target.inode(), target.node_type())),
+            action: RenameAction::Move,
+            source_name: src_name.into(),
+            destination_name: dst_name.into(),
+        };
+        if target
+            .as_ref()
+            .is_some_and(|target| target.inode() == source.inode())
+        {
+            effect.action = RenameAction::Noop;
+            return NamespaceOutcome::unchanged_observed(effect, Ok(()));
+        }
+        if target.as_ref().is_some_and(|target| target.is_dir()) {
+            return NamespaceOutcome::unchanged(Err(VfsError::IsADirectory));
+        }
+        let source = match self.remove_child(src_name) {
+            Ok(source) => source,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        if target.is_some()
+            && let Err(error) = destination.remove_child(dst_name)
+        {
+            return NamespaceOutcome::uncertain(Some(effect), Err(error));
+        }
+        destination.children.lock().push((dst_name.into(), source));
+        NamespaceOutcome::applied(effect, Ok(()))
     }
 }
 
@@ -1826,9 +1885,32 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
         left_root.lookup_no_follow("linked"),
         Err(VfsError::NotFound)
     ));
-    assert!(left_root.lookup_no_follow("renamed").unwrap().is_file());
+    assert!(
+        left_root
+            .lookup_no_follow("renamed")
+            .unwrap()
+            .entry()
+            .ptr_eq(linked.entry())
+    );
+    let overwritten = left_root.lookup_no_follow("replace").unwrap();
+    let overwritten_inode = overwritten.inode();
     left_root.rename("renamed", &left_root, "replace").unwrap();
-    assert!(left_root.lookup_no_follow("replace").unwrap().is_file());
+    assert!(
+        left_root
+            .lookup_no_follow("replace")
+            .unwrap()
+            .entry()
+            .ptr_eq(linked.entry())
+    );
+    assert_eq!(overwritten.inode(), overwritten_inode);
+    assert_eq!(
+        overwritten.entry().name_state(),
+        axfs_ng_vfs::NameState::Unlinked
+    );
+    assert!(matches!(
+        left_root.lookup_no_follow("renamed"),
+        Err(VfsError::NotFound)
+    ));
     assert!(matches!(
         left_root.rename("dir", &left_root, "replace"),
         Err(VfsError::NotADirectory)

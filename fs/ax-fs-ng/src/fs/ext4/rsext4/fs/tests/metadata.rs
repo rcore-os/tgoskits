@@ -146,8 +146,13 @@ fn negative_directory_cache_is_revalidated_through_a_renamed_open_directory() {
         .unwrap();
     root.rename("original", &root, "renamed").unwrap();
     let renamed = root.lookup_no_follow("renamed").unwrap();
-    assert!(!original.entry().ptr_eq(renamed.entry()));
+    assert!(original.entry().ptr_eq(renamed.entry()));
     assert_eq!(original.inode(), renamed.inode());
+    assert_eq!(original.entry().name(), "renamed");
+    assert!(matches!(
+        root.lookup_no_follow("original"),
+        Err(VfsError::NotFound)
+    ));
     assert!(matches!(
         original.lookup_no_follow("created"),
         Err(VfsError::NotFound)

@@ -690,6 +690,8 @@ impl Pollable for MemoryNode {
 
 impl DirNodeOps for MemoryNode {
     fn namespace_domain(&self) -> usize {
+        #[cfg(all(test, feature = "host-test"))]
+        tests::before_namespace_change();
         Arc::as_ptr(&self.fs) as usize
     }
 
@@ -1063,6 +1065,95 @@ fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool 
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "host-test")]
+    std::thread_local! {
+        static BEFORE_NAMESPACE_CHANGE: std::cell::RefCell<Option<alloc::boxed::Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(feature = "host-test")]
+    pub(super) fn before_namespace_change() {
+        let hook = BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn unlink_invalidates_the_actual_directory_replaced_after_its_probe() {
+        use alloc::boxed::Box;
+
+        use axfs_ng_vfs::NameState;
+
+        use super::*;
+
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                BEFORE_NAMESPACE_CHANGE.with(|slot| drop(slot.borrow_mut().take()));
+            }
+        }
+
+        let filesystem = MemoryFs::new();
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().unwrap();
+        let original = directory
+            .create(
+                "victim",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .unwrap();
+        let replacement = directory
+            .create(
+                "replacement",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .unwrap();
+        let concurrent_root = root.clone();
+        BEFORE_NAMESPACE_CHANGE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // A has already probed victim=original. B now completes a real
+                // VFS rename before A starts its publication and unlinks it.
+                let directory = concurrent_root.as_dir().unwrap();
+                directory
+                    .rename("replacement", directory, "victim")
+                    .unwrap();
+            }));
+        });
+        let _reset = ResetHook;
+        directory.unlink("victim", true).unwrap();
+        assert!(BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow().is_none()));
+        assert!(matches!(
+            directory.lookup("victim"),
+            Err(VfsError::NotFound)
+        ));
+        assert_eq!(original.name_state(), NameState::Unlinked);
+        let actual_state = replacement.name_state();
+        let create_result = replacement.as_dir().unwrap().create(
+            "must-not-be-created",
+            NodeType::RegularFile,
+            NodePermission::default(),
+            0,
+            0,
+        );
+        assert!(
+            matches!(actual_state, NameState::Unlinked | NameState::Untrusted),
+            "the actual removed directory must not retain a trusted linked relationship"
+        );
+        assert!(matches!(
+            create_result,
+            Err(VfsError::NotFound | VfsError::WouldBlock)
+        ));
+    }
+
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn failed_symlink_capacity_reservation_does_not_publish_name() {

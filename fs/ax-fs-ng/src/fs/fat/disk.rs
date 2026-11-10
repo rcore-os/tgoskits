@@ -401,4 +401,128 @@ mod tests {
             assert_eq!(filesystem.is_readonly(), read_only);
         }
     }
+
+    fn formatted_fat() -> (axfs_ng_vfs::Filesystem, Arc<Mutex<Vec<u8>>>) {
+        let storage = Arc::new(Mutex::new(vec![0; 2 * 1024 * 1024]));
+        let region = BlockRegion::from_num_blocks(4096);
+        let device = || {
+            Box::new(MemoryBlockDevice {
+                storage: storage.clone(),
+                fail_flush: false,
+                read_only: false,
+            }) as Box<dyn FsBlockDevice>
+        };
+        let mut disk = SeekableDisk::new(device(), region);
+        fatfs::format_volume(&mut disk, fatfs::FormatVolumeOptions::new()).unwrap();
+        drop(disk);
+        let filesystem = super::super::FatFilesystem::new(device(), region, None).unwrap();
+        (filesystem, storage)
+    }
+
+    #[test]
+    fn invalid_fat_rename_preserves_the_source_contents_and_open_handle() {
+        use axfs_ng_vfs::{NameState, NodePermission, NodeType, VfsError};
+
+        let (filesystem, _storage) = formatted_fat();
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().unwrap();
+        let source = directory
+            .create(
+                "safe.txt",
+                NodeType::RegularFile,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .unwrap();
+        let opened = source.as_file().unwrap();
+        let contents = b"original FAT contents";
+        assert_eq!(opened.write_at(contents, 0).unwrap(), contents.len());
+        opened.sync(false).unwrap();
+        let inode = source.inode();
+
+        let result = directory.rename("safe.txt", directory, "bad:name");
+        let mut old_contents = [0; 21];
+        let old_read = opened.read_at(&mut old_contents, 0);
+        directory.clear_cached_entries();
+        let rediscovered = directory.lookup("safe.txt");
+
+        assert_eq!(old_read, Ok(contents.len()));
+        assert_eq!(&old_contents, contents);
+        let rediscovered = rediscovered.expect("invalid rename must leave the source on disk");
+        assert!(rediscovered.ptr_eq(&source));
+        assert_eq!(rediscovered.inode(), inode);
+        assert_eq!(source.name_state(), NameState::Linked);
+        assert_eq!(source.name(), "safe.txt");
+        assert!(source.parent().unwrap().ptr_eq(&root));
+        assert_eq!(result, Err(VfsError::InvalidInput));
+        assert!(matches!(
+            directory.lookup("bad:name"),
+            Err(VfsError::NotFound)
+        ));
+        assert_eq!(opened.write_at(b"still open", 0).unwrap(), 10);
+        opened.sync(false).unwrap();
+        let mut updated = [0; 10];
+        assert_eq!(
+            rediscovered
+                .as_file()
+                .unwrap()
+                .read_at(&mut updated, 0)
+                .unwrap(),
+            updated.len()
+        );
+        assert_eq!(&updated, b"still open");
+    }
+
+    #[test]
+    fn fat_root_rediscovery_preserves_identity_and_releases_the_device_after_its_last_child() {
+        use axfs_ng_vfs::{NodePermission, NodeType};
+
+        let (filesystem, storage) = formatted_fat();
+        let device_lifetime = Arc::downgrade(&storage);
+        let first = filesystem.root_dir();
+        let root_inode = first.inode();
+        let root_identity = first.identity().cloned();
+        let root_lifetime = first.downgrade();
+        drop(first);
+        let root_was_released = root_lifetime.upgrade().is_none();
+
+        for _ in 0..3 {
+            let root = filesystem.root_dir();
+            let alias = filesystem.root_dir();
+            assert!(root.ptr_eq(&alias));
+            assert_eq!(root.inode(), root_inode);
+            assert_eq!(root.identity(), root_identity.as_ref());
+        }
+        let root = filesystem.root_dir();
+        let child = root
+            .as_dir()
+            .unwrap()
+            .create(
+                "active-child",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .unwrap();
+        root.as_dir().unwrap().clear_cached_entries();
+        drop(root);
+        drop(filesystem);
+        drop(storage);
+        let device_alive_with_child = device_lifetime.upgrade().is_some();
+        let child_is_usable = child.metadata().is_ok();
+        drop(child);
+        let device_was_released = device_lifetime.upgrade().is_none();
+
+        assert!(
+            root_was_released,
+            "the filesystem must only weakly index its root"
+        );
+        assert!(device_alive_with_child && child_is_usable);
+        assert!(
+            device_was_released,
+            "the last child and root holder must release the FAT device"
+        );
+    }
 }
