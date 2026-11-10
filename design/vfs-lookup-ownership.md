@@ -383,10 +383,15 @@ VFS 在原 mount-local 和 shared FS 状态中维护只读标志与写者计数�
 全部写入权利；进入 gate 后只借这些现有权利，不在 upper 子命令中递归取得配置锁。
 部分取得失败只释放已得租约，尚未开始命名修改；不同 FS 的 admission 不同时持锁。
 
-配置者保持该 mutex，检查受影响计数为零后才进行本次只读切换、必要同步及 native
-重配置；计数非零则返回 `EBUSY` 且不改 flags。bind remount 只检查和更改该 mount，
-普通 remount 检查 shared 计数并更新 shared 与目标 local 状态。
-清除只读前先完成真实 native `remount_read_write`；失败保留旧 VFS flags。
+配置者保持该 mutex，先比较原状态与请求方向。只有从可写切换为只读、
+实际撤销写权限时，才检查受影响写者计数；非零则返回 `EBUSY` 且不改 flags。
+bind remount 只在 local 的 RW→RO 转换检查本 mount，普通 remount 在 shared 的
+RW→RO 转换检查 shared 计数，并在成功后更新 shared 与目标 local 状态。
+保持原状态的请求不因已有 writer 失败；shared 已可写时，普通 remount-RW
+清除另一别名的 local 只读也不因该 FS 其他别名的 writer 而失败。
+真正把 shared 只读改为可写前，仍须先完成 native `remount_read_write`；
+失败保留旧 VFS flags。bind 仅放宽 local 限制不提升 native/shared 能力，
+不能因本次请求可写而绕过仍生效的 shared 只读。
 配置期间新写权利取得者等待 mutex，不能绕过检查，也不把内部忙碌映射成用户 `EAGAIN`。
 同步/重配置内部的写回走既有内部权利，不递归取得用户写入权利。
 
@@ -592,7 +597,9 @@ memfd 复用已有内存 inode 与执行路径，只修正受影响的对象访�
 R4 复用真实 MemoryFs 自移/后代拒绝回归，并补足受控并发拓扑交错的最终无环与身份
 判定；已有自移首断言的红测不冒充后代及并发分支也已采红。
 后端尝试证明覆盖解锁后重试重新观察/授权，以及 publish 缓存淘汰的跨 FS 析构不重入锁。
-只读权利证明涵盖 writer 在途时 `EBUSY`、失败保持 flags、释放后成功及新写 `EROFS`，
+只读权利证明涵盖 writer 在途时 RW→RO 的 `EBUSY`、失败保持 flags、释放后成功及
+新写 `EROFS`；同一生命周期回归还验证保持可写的请求及跨别名 local RO→RW
+不被无关 writer 拒绝，不为这些边界另建重复用例，
 并以 Starry 入口验证 remount/相关 mount attributes 的实际消费者。
 这些是共享行为证明，不按每个 helper 复制一套测试；不重跑已有效且不受影响的局部证据。
 
