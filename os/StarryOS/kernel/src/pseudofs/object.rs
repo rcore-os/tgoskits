@@ -79,22 +79,13 @@ impl ObjectInode {
         self.node.metadata.lock_irqsave().inode
     }
 
-    /// Pins the original namespace inode number, rather than a materialization ID.
-    pub(crate) fn namespace(kind: u64, number: u64) -> Arc<Self> {
-        let mut inode = Self::new(NodeType::RegularFile, 0o444);
-        let unique = Arc::get_mut(&mut inode).expect("unpublished namespace inode");
-        unique.identity = NodeIdentity::new(alloc::vec![
-            Arc::as_ptr(&NAMESPACE_FS.0) as u64,
-            1,
-            kind,
-            number,
-        ]);
+    /// Allocates in the shared nsfs slab domain, including its root inode.
+    pub(crate) fn namespace() -> Arc<Self> {
+        let inode = Self::new(NodeType::RegularFile, 0o444);
         {
-            let mut metadata = unique.node.metadata.lock_irqsave();
-            metadata.inode = number;
+            let mut metadata = inode.node.metadata.lock_irqsave();
             metadata.uid = 0;
             metadata.gid = 0;
-            metadata.block_size = 4096;
         }
         inode
     }
