@@ -492,7 +492,7 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 - 三系统夹具通过 `AXBUILD_NO_SNAPSHOT=1` 子进程调用 OS 的 `cargo xtask` 构建，检查 `.starry.toml`/`.axvisor.toml` 构建前后字节不变。直接调用保存快照的 CLI 路径会改变用户后续默认选择；不要在多线程父进程中设置全局环境来关闭持久化。
 - 发送准备交接响应后先析构 TCP4 监听、子句柄、事件、UART 身份计时器及 UDP4 广播对象，然后在 Boot Services 存活时通过 someboot 固件交接调用目标 EFI 入口。loader 不调用 `ExitBootServices`；目标复制 LoadOptions/initramfs 并自行退出服务，再初始化 ArceOS。退出后不能再调用固件网络或控制台服务。
 - 原生 launcher 和 loader 在 helpers 初始化后、OTA/网络/SerialIO 等待前关闭 BDS watchdog：timeout 为 0，`WatchdogCode` 使用应用区合法值 `>= 0x10000`；关闭失败须诊断并返回错误。`V00011003` 来自 `WatchdogTimerDxe`，不能直接判为 CPU 非法指令。
-- TCP4 `CloseToken` 不能传给 `Cancel()`。graceful close 使用有界轮询，超时后以 `Configure(NULL)` 中止 pending Close 并重置实例。Accept、receive/transmit 的合法 Cancel 同样须有界等待；无法确认 token 已出队时冷复位，不能释放固件仍可能引用的 token 或 fragment。一次性 `handoff_stage` 日志区分 HTTP close、listener close、资源关闭和目标入口。
+- TCP4 `CloseToken` 不能传给 `Cancel()`。graceful close 使用有界轮询，超时后以 `Configure(NULL)` 中止 pending Close 并重置实例。Accept、receive/transmit 的合法 Cancel 同样须有界等待；轮询期间固件可写的 token status 只通过稳定地址上的裸指针易失读取，不持有跨越 Poll/Cancel/Configure 的共享引用。无法确认 token 已出队时冷复位，不能释放固件仍可能引用的 token 或 fragment。一次性 `handoff_stage` 日志区分 HTTP close、listener close、资源关闭和目标入口。
 
 #### LoongArch 原生 UEFI axloader
 
@@ -508,13 +508,16 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   必须观察目标 `HOST_CMDLINE`、`HOST_INITRAMFS_PASSED` 和 `Hello, world!`；
   HTTP 成功或 `ready_to_handoff` 不能代替目标执行。SLiRP `hostfwd` 只证明 HTTP，
   真实 UDP 广播发现需要隔离 TAP 或实体板卡。
+- LoongArch QEMU 只使用显式设置的 `AXBUILD_QEMU_SYSTEM_LOONGARCH64`，否则按
+  `qemu-system-loongarch64` 从 `PATH` 查找；不探测固定 `/opt` 路径或读取环境
+  专用别名。显式路径错误由进程启动失败直接报告，不能静默换用其他模拟器。
 - LoongArch 回归使用 ArceOS payload 验证目标执行、命令行、initramfs 和 OTA；
   本轮实机范围为原生 UEFI loader 直接启动 ArceOS Hello，不启动 AxVisor。
   QEMU 网络固件须具备 RNG 和 Hash2 生产者，可用成对的
   `--firmware-code`/`--firmware-vars` 选择隔离构建的测试固件。
-- A/B 回归分别覆盖坏头校验失败和有效头截断后的 `LoadImage` 失败。两类待试槽
-  都须提交失败结果、清理 pending，并校验稳定槽后回退；不能让新增 PE 校验在
-  到达回退分支前直接退出 launcher。
+- A/B 回归用一个待试槽不可加载镜像覆盖真实 `LoadImage` 失败，要求提交失败结果、
+  清理 pending、校验稳定槽后回退，并再次启动稳定槽。上传完成仍须验证 PE 契约，
+  但 launcher、loader 和回退路径不重复解析 PE 头。
 - 固件须暴露同一控制器上的 SNP、IP4Config2、UDP4/TCP4 Service Binding。
   只有固件网络启动菜单或 SNP 不证明完整协议可用；用 `loader_net_controller`
   的实际状态区分未连接协议和缺少固件网络栈。SerialIO 缺失时明确诊断，不能

@@ -134,15 +134,6 @@ fn copy_segments(
             // the destination is inside the unique load reservation.
             unsafe { core::ptr::copy_nonoverlapping(source.as_ptr(), destination, file_size) };
         }
-        let memory_size = usize::try_from(segment.memory_size)
-            .map_err(|_| ElfLoadError::SegmentAddressOverflow)?;
-        if memory_size > file_size {
-            // SAFETY: `ElfImage::parse` proved `filesz <= memsz`, and both
-            // offsets remain inside the reserved image span.
-            unsafe {
-                core::ptr::write_bytes(destination.add(file_size), 0, memory_size - file_size)
-            };
-        }
     }
     Ok(())
 }

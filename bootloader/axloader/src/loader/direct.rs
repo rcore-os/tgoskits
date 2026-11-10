@@ -174,7 +174,9 @@ impl Listener {
         let tcp = self.protocol.as_mut().expect("open TCP protocol");
         // SAFETY: TCP polling only touches the configured passive instance.
         let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
-        let status = self.token.completion_token.status;
+        // SAFETY: The boxed listener token is initialized, aligned and remains
+        // at a stable address; firmware owns its status during Accept.
+        let status = unsafe { completion_status(&raw const self.token.completion_token.status) };
         if status == Status::NOT_READY {
             return Action::None;
         }
@@ -226,13 +228,19 @@ impl Drop for Listener {
                 if cancel != Status::SUCCESS && cancel != Status::NOT_FOUND {
                     crate::logln!("loader_tcp_listen_cancel_failed: {cancel:?}");
                 }
-                if !wait_for_completion(&mut tcp, &self.token.completion_token.status) {
+                let status = &raw const self.token.completion_token.status;
+                // SAFETY: The boxed listener token remains at a stable address
+                // and permits firmware updates until this drop completes.
+                if !unsafe { wait_for_completion(&mut tcp, status) } {
                     crate::logln!("loader_tcp_listen_cancel_timeout");
                 }
             }
             abort_tcp(&mut tcp, "loader_tcp_listen");
+            // SAFETY: Configure(NULL) has completed supported async tokens and
+            // the boxed listener token remains live until this drop returns.
             if listener_token_queued
-                && completion_status(&self.token.completion_token.status) == Status::NOT_READY
+                && unsafe { completion_status(&raw const self.token.completion_token.status) }
+                    == Status::NOT_READY
             {
                 crate::logln!("loader_tcp_listen_reset_incomplete");
                 uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::DEVICE_ERROR, None);
@@ -297,13 +305,19 @@ impl<'a> Connection<'a> {
 
     fn wait(&mut self, token: &mut Tcp4IoToken) -> uefi::Result<()> {
         let tcp = self.protocol.as_mut().expect("open TCP protocol");
+        let status = &raw const token.completion_token.status;
         for _ in 0..IO_WAIT_POLLS {
-            if token.completion_token.status != Status::NOT_READY {
-                return token.completion_token.status.to_result();
+            // SAFETY: The stack token lives through this call and firmware may
+            // update its aligned status while the I/O operation is pending.
+            let current = unsafe { completion_status(status) };
+            if current != Status::NOT_READY {
+                return current.to_result();
             }
             let _ = unsafe { (tcp.0.poll)(&mut tcp.0) };
-            if token.completion_token.status != Status::NOT_READY {
-                return token.completion_token.status.to_result();
+            // SAFETY: The token remains live at the same address across Poll.
+            let current = unsafe { completion_status(status) };
+            if current != Status::NOT_READY {
+                return current.to_result();
             }
             (self.progress)();
             boot::stall(core::time::Duration::from_millis(10));
@@ -315,10 +329,14 @@ impl<'a> Connection<'a> {
         if cancel != Status::SUCCESS && cancel != Status::NOT_FOUND {
             crate::logln!("loader_tcp_io_cancel_failed: {cancel:?}");
         }
-        if !wait_for_completion(tcp, &token.completion_token.status) {
+        let status = &raw const token.completion_token.status;
+        // SAFETY: Cancel has returned, but the live stack token may still be
+        // updated asynchronously. Poll until completion before releasing it.
+        if !unsafe { wait_for_completion(tcp, status) } {
             crate::logln!("loader_tcp_io_cancel_timeout");
             abort_tcp(tcp, "loader_tcp_io");
-            if completion_status(&token.completion_token.status) == Status::NOT_READY {
+            // SAFETY: The token remains live until this function returns.
+            if unsafe { completion_status(status) } == Status::NOT_READY {
                 crate::logln!("loader_tcp_io_reset_incomplete");
                 uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::DEVICE_ERROR, None);
             }
@@ -877,6 +895,15 @@ impl<'a> Connection<'a> {
                         self.reply_error(&error)?;
                         return Ok(Action::None);
                     }
+                    if status == Status::OUT_OF_RESOURCES {
+                        let error = operation_error(
+                            "image_load_failed",
+                            "insufficient resources while receiving image upload",
+                        );
+                        let _ = boot_server.fail(id, error.clone());
+                        self.reply_error(&error)?;
+                        return Ok(Action::None);
+                    }
                     let _ = boot_server.fail(
                         id,
                         operation_error(
@@ -945,16 +972,27 @@ impl<'a> Connection<'a> {
         if close != Status::SUCCESS {
             crate::logln!("loader_tcp_close_failed: {close:?}");
             abort_tcp(tcp, "loader_tcp_close");
-        } else if !wait_for_completion(tcp, &token.completion_token.status) {
-            crate::logln!("loader_tcp_close_timeout");
-            abort_tcp(tcp, "loader_tcp_close");
-            if completion_status(&token.completion_token.status) == Status::NOT_READY {
-                crate::logln!("loader_tcp_close_reset_incomplete");
-                uefi::runtime::reset(uefi::runtime::ResetType::COLD, Status::DEVICE_ERROR, None);
-            }
-            let status = completion_status(&token.completion_token.status);
-            if status != Status::SUCCESS {
-                crate::logln!("loader_tcp_close_aborted: {status:?}");
+        } else {
+            let status = &raw const token.completion_token.status;
+            // SAFETY: The stack token and event remain live and at stable
+            // addresses throughout Close completion polling.
+            if !unsafe { wait_for_completion(tcp, status) } {
+                crate::logln!("loader_tcp_close_timeout");
+                abort_tcp(tcp, "loader_tcp_close");
+                // SAFETY: Configure(NULL) completed Close tokens before this read.
+                if unsafe { completion_status(status) } == Status::NOT_READY {
+                    crate::logln!("loader_tcp_close_reset_incomplete");
+                    uefi::runtime::reset(
+                        uefi::runtime::ResetType::COLD,
+                        Status::DEVICE_ERROR,
+                        None,
+                    );
+                }
+                // SAFETY: The token is still live and this is its final status read.
+                let final_status = unsafe { completion_status(status) };
+                if final_status != Status::SUCCESS {
+                    crate::logln!("loader_tcp_close_aborted: {final_status:?}");
+                }
             }
         }
         if let Err(error) = boot::close_event(event) {
@@ -979,9 +1017,15 @@ impl Drop for Connection<'_> {
     }
 }
 
-fn wait_for_completion(tcp: &mut Tcp, status: &Status) -> bool {
+/// # Safety
+///
+/// `status` must point to an initialized, aligned status field in a token that
+/// remains alive at the same address throughout this call. The token must
+/// permit firmware to update that field while TCP is polled.
+unsafe fn wait_for_completion(tcp: &mut Tcp, status: *const Status) -> bool {
     for _ in 0..IO_WAIT_POLLS {
-        if completion_status(status) != Status::NOT_READY {
+        // SAFETY: The caller guarantees a live, firmware-updatable token field.
+        if unsafe { completion_status(status) } != Status::NOT_READY {
             return true;
         }
         let poll = unsafe { (tcp.0.poll)(&mut tcp.0) };
@@ -991,7 +1035,8 @@ fn wait_for_completion(tcp: &mut Tcp, status: &Status) -> bool {
         }
         boot::stall(core::time::Duration::from_millis(10));
     }
-    completion_status(status) != Status::NOT_READY
+    // SAFETY: The caller guarantees the token remains live for this final read.
+    (unsafe { completion_status(status) }) != Status::NOT_READY
 }
 
 fn abort_tcp(tcp: &mut Tcp, context: &'static str) {
@@ -1004,8 +1049,12 @@ fn abort_tcp(tcp: &mut Tcp, context: &'static str) {
     }
 }
 
-fn completion_status(status: &Status) -> Status {
-    // SAFETY: the live token owns this aligned field. Firmware may update it
-    // during Poll/Cancel; a volatile load observes each completion before reuse.
+/// # Safety
+///
+/// `status` must point to an initialized, aligned status field in a live token.
+/// The token must permit firmware updates during the volatile read.
+unsafe fn completion_status(status: *const Status) -> Status {
+    // SAFETY: The caller guarantees the token field remains live and aligned.
+    // Volatile access observes firmware changes without borrowing the field.
     unsafe { ptr::read_volatile(status) }
 }

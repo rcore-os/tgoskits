@@ -14,6 +14,7 @@ use crate::{
 
 /// The executable flag from an ELF program header.
 pub const ELF_PF_X: u32 = 1;
+const ELF_PF_W: u32 = 2;
 /// Both EFI frontends place ELF images on four-KiB pages.
 pub const EFI_PAGE_SIZE: u64 = 4096;
 
@@ -29,6 +30,8 @@ const SHT_STRTAB: u32 = 3;
 const SHT_RELR: u32 = 19;
 const SHF_ALLOC: u64 = 2;
 const ELF64_RELA_SIZE: usize = 24;
+const ELF64_RELOCATION_SIZE: u64 = 8;
+const ELF_RELOCATION_NONE: u32 = 0;
 
 /// Errors encountered while validating an EFI ELF image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -61,6 +64,8 @@ pub enum ElfError {
     SymbolTableRange,
     #[error("ELF relocation section is outside the loaded image")]
     RelocationSectionRange,
+    #[error("ELF relocation target is outside a writable load segment")]
+    RelocationTargetRange,
     #[error("ELF image uses an unsupported dynamic relocation")]
     UnsupportedRelocation,
     #[error("required EFI entry symbol `{symbol}` is missing")]
@@ -441,12 +446,33 @@ fn validate_dynamic_relocations(
             let info = read_u64(bytes, offset + 8).ok_or(ElfError::RelocationSectionRange)?;
             let relocation_type = info as u32;
             let symbol_index = (info >> 32) as u32;
+            if relocation_type == ELF_RELOCATION_NONE {
+                continue;
+            }
             if relocation_type != policy.relative || symbol_index != 0 {
                 return Err(ElfError::UnsupportedRelocation);
+            }
+            let target = read_u64(bytes, offset).ok_or(ElfError::RelocationSectionRange)?;
+            if !relocation_target_is_writable(target, segments) {
+                return Err(ElfError::RelocationTargetRange);
             }
         }
     }
     Ok(())
+}
+
+fn relocation_target_is_writable(target: u64, segments: &[LoadSegment]) -> bool {
+    let Some(target_end) = target.checked_add(ELF64_RELOCATION_SIZE) else {
+        return false;
+    };
+    segments.iter().any(|segment| {
+        segment.flags & ELF_PF_W != 0
+            && target >= segment.virtual_address
+            && segment
+                .virtual_address
+                .checked_add(segment.memory_size)
+                .is_some_and(|segment_end| target_end <= segment_end)
+    })
 }
 
 fn section_is_loaded(section: Elf64SectionHeader, segments: &[LoadSegment]) -> bool {
@@ -771,41 +797,82 @@ mod tests {
         assert_eq!(error.device_error().code, "efi_entry_missing");
     }
 
+    fn native_loong_relocation_image(
+        relocation_type: u32,
+        target_segment_flags: u32,
+        relocation_target: u64,
+    ) -> Vec<u8> {
+        let executable = executable_segment(LOONGARCH64_UEFI);
+        let executable_virtual_address = executable.virtual_address;
+        let target = TestSegment {
+            flags: target_segment_flags,
+            virtual_address: 0x10_3000,
+            physical_address: 0x10_3000,
+            memory_size: 32,
+        };
+        let mut image = test_elf(LOONGARCH64_UEFI, &[executable, target]);
+        let first_segment = 64;
+        write_u64(&mut image, first_segment + 32, ELF64_RELA_SIZE as u64);
+        let relocation_offset = 64 + 2 * 56;
+        write_u64(&mut image, relocation_offset, relocation_target);
+        write_u64(
+            &mut image,
+            relocation_offset + 8,
+            u64::from(relocation_type),
+        );
+        write_u64(&mut image, relocation_offset + 16, 0x10_0000);
+
+        let section_offset = read_test_u64(&image, 40) as usize;
+        image.resize(section_offset + 4 * 64, 0);
+        write_u16(&mut image, 60, 4);
+        let relocation_section = section_offset + 3 * 64;
+        write_u32(&mut image, relocation_section + 4, SHT_RELA);
+        write_u64(&mut image, relocation_section + 8, SHF_ALLOC);
+        write_u64(
+            &mut image,
+            relocation_section + 16,
+            executable_virtual_address,
+        );
+        write_u64(
+            &mut image,
+            relocation_section + 24,
+            relocation_offset as u64,
+        );
+        write_u64(&mut image, relocation_section + 32, ELF64_RELA_SIZE as u64);
+        write_u64(&mut image, relocation_section + 56, ELF64_RELA_SIZE as u64);
+        image
+    }
+
     #[test]
-    fn native_loong_relocations_allow_only_relative_entries() {
-        for (relocation_type, expected) in [
-            (3_u32, Ok(())),
-            (4_u32, Err(ElfError::UnsupportedRelocation)),
+    fn native_loong_relocations_allow_only_relative_and_none_entries() {
+        for (relocation_type, target_segment_flags, relocation_target, expected) in [
+            (3, 6, 0x10_3018, Ok(())),
+            (0, 4, u64::MAX, Ok(())),
+            (4, 6, 0x10_3000, Err(ElfError::UnsupportedRelocation)),
         ] {
-            let mut image = test_elf(LOONGARCH64_UEFI, &[executable_segment(LOONGARCH64_UEFI)]);
-            let first_segment = 64;
-            write_u64(&mut image, first_segment + 32, ELF64_RELA_SIZE as u64);
-            let relocation_offset = 64 + 56;
-            write_u64(&mut image, relocation_offset, 0x10_0123);
-            write_u64(
-                &mut image,
-                relocation_offset + 8,
-                u64::from(relocation_type),
+            let image = native_loong_relocation_image(
+                relocation_type,
+                target_segment_flags,
+                relocation_target,
             );
-            write_u64(&mut image, relocation_offset + 16, 0x10_0000);
-
-            let section_offset = read_test_u64(&image, 40) as usize;
-            image.resize(section_offset + 4 * 64, 0);
-            write_u16(&mut image, 60, 4);
-            let relocation_section = section_offset + 3 * 64;
-            write_u32(&mut image, relocation_section + 4, SHT_RELA);
-            write_u64(&mut image, relocation_section + 8, SHF_ALLOC);
-            write_u64(&mut image, relocation_section + 16, 0x10_0123);
-            write_u64(
-                &mut image,
-                relocation_section + 24,
-                relocation_offset as u64,
-            );
-            write_u64(&mut image, relocation_section + 32, ELF64_RELA_SIZE as u64);
-            write_u64(&mut image, relocation_section + 56, ELF64_RELA_SIZE as u64);
-
             let result = ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ());
             assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn native_loong_relocations_reject_invalid_write_targets() {
+        for (target_segment_flags, relocation_target) in [
+            (4, 0x10_3000), // read-only segment
+            (6, 0x10_3019), // eight-byte write crosses the segment end
+            (6, 0x10_4000), // target is outside every load segment
+            (6, u64::MAX),  // checked end overflows
+        ] {
+            let image = native_loong_relocation_image(3, target_segment_flags, relocation_target);
+            assert_eq!(
+                ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+                Err(ElfError::RelocationTargetRange),
+            );
         }
     }
 

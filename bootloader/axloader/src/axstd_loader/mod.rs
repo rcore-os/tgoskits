@@ -537,11 +537,6 @@ fn route(
     server: &mut BootServer,
 ) -> Result<Response, DeviceOperationError> {
     let selected_route = control_route(&request.head.method, &request.head.path);
-    if let Err(error) =
-        selected_route.check_admission(request.header("x-boot-epoch"), &server.epoch, ota.trial())
-    {
-        return Ok(Response::json(error.status(), error.body(), Action::None));
-    }
     if selected_route == Route::DeviceStatus {
         let body = serde_json::to_vec(&LoaderDeviceStatus {
             protocol_version: DEVICE_PROTOCOL_VERSION,

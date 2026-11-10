@@ -210,7 +210,10 @@ pub(crate) fn early_init() {
     });
     if let Err(error) = result {
         #[cfg(target_arch = "loongarch64")]
-        report_kimage_error(&error, memory_map().len());
+        println!(
+            "KImage reservation failed: range={kernel_range:#x?}, entries={}, error={error:?}",
+            memory_map().len(),
+        );
         panic!("failed to add KImage memory descriptor {kernel_range:#x?}: {error:?}");
     }
     reserve_arch_early_ranges();
@@ -286,70 +289,6 @@ fn kimage_mapping_cover(range: &core::ops::Range<usize>) -> core::ops::Range<usi
 
 fn kimage_reservation_end(end: usize) -> usize {
     end.align_up(crate::consts::PAGE_SIZE)
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn report_kimage_error(error: &RangeError<MemoryDescriptor>, entries: usize) {
-    match error {
-        RangeError::Conflict { existing, .. } => {
-            write_early(b"[LoongArch EFI] KImage conflict type=");
-            write_early(memory_type_name(existing.memory_type));
-            write_early(b" range=");
-            write_early_range(
-                &(existing.physical_start..existing.physical_start + existing.size_in_bytes),
-            );
-            write_early(b"\r\n");
-        }
-        RangeError::Capacity => {
-            write_early(b"[LoongArch EFI] KImage capacity\r\n");
-        }
-    }
-    write_early(b"[LoongArch EFI] KImage map entries=");
-    write_early_hex(entries);
-    write_early(b"\r\n");
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn write_early(bytes: &[u8]) {
-    let _ = crate::console::_write_bytes(bytes);
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn write_early_range(range: &core::ops::Range<usize>) {
-    write_early_hex(range.start);
-    write_early(b"-");
-    write_early_hex(range.end);
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn write_early_hex(mut value: usize) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut digits = [0_u8; 16];
-    let mut start = digits.len();
-    loop {
-        start -= 1;
-        digits[start] = HEX[value & 0xf];
-        value >>= 4;
-        if value == 0 {
-            break;
-        }
-    }
-    write_early(b"0x");
-    write_early(&digits[start..]);
-}
-
-#[cfg(target_arch = "loongarch64")]
-fn memory_type_name(memory_type: MemoryType) -> &'static [u8] {
-    match memory_type {
-        MemoryType::Free => b"free",
-        MemoryType::Ram => b"ram",
-        MemoryType::KImage => b"kimage",
-        MemoryType::Reserved => b"reserved",
-        MemoryType::Mmio => b"mmio",
-        MemoryType::PerCpuData => b"percpu",
-        MemoryType::BootData => b"boot",
-        MemoryType::BootReclaimable => b"reclaimable",
-    }
 }
 
 pub fn page_size() -> usize {

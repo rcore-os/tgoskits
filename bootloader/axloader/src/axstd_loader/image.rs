@@ -193,8 +193,6 @@ fn copy_segments(
             usize::try_from(segment.file_offset).map_err(|_| ElfError::SegmentAddressOverflow)?;
         let filesz =
             usize::try_from(segment.file_size).map_err(|_| ElfError::SegmentAddressOverflow)?;
-        let memsz =
-            usize::try_from(segment.memory_size).map_err(|_| ElfError::SegmentAddressOverflow)?;
         if filesz != 0 {
             // SAFETY: the source range was validated against the uploaded
             // image, while the destination remains inside the unique image
@@ -214,11 +212,6 @@ fn copy_segments(
                     filesz,
                 );
             }
-        }
-        if memsz > filesz {
-            // SAFETY: `filesz <= memsz` and the validated PT_LOAD span keeps
-            // both the copied prefix and zeroed tail within the allocation.
-            unsafe { core::ptr::write_bytes(destination.add(filesz), 0, memsz - filesz) };
         }
     }
     Ok(())

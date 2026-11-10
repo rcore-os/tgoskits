@@ -179,7 +179,7 @@ impl OtaDisk {
         Ok(hasher.finalize().into())
     }
 
-    pub fn verify_slot(&mut self, slot: Slot) -> Result<()> {
+    fn verify_slot(&mut self, slot: Slot) -> Result<()> {
         let mut file = self.file(slot_path(slot), FileMode::Read)?;
         let mut dos = [0_u8; 64];
         if file.read(&mut dos)? != dos.len() || &dos[..2] != b"MZ" {

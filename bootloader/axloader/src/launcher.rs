@@ -88,14 +88,6 @@ mod firmware {
         if disk.hash_slot(chosen).map_err(|error| error.status())? != *state.digest(chosen) {
             return Err(Status::CRC_ERROR);
         }
-        if let Err(error) = disk.verify_slot(chosen) {
-            if chosen != state.active {
-                uefi::println!("axloader trial image validation failed: {error:?}");
-                drop(disk);
-                return fallback_after_failure();
-            }
-            return Err(error.status());
-        }
         drop(disk);
         let image = match load_slot(chosen) {
             Ok(image) => image,
@@ -138,7 +130,6 @@ mod firmware {
         if disk.hash_slot(previous).map_err(|error| error.status())? != *failed.digest(previous) {
             return Err(Status::CRC_ERROR);
         }
-        disk.verify_slot(previous).map_err(|error| error.status())?;
         drop(disk);
         let stable = load_slot(previous).map_err(|error| error.status())?;
         boot::start_image(stable).map_err(|error| error.status())

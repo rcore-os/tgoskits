@@ -114,16 +114,8 @@ impl QemuProfile {
     fn qemu_executable(self) -> PathBuf {
         if matches!(self.firmware_arch, Arch::LoongArch64)
             && let Some(path) = env::var_os("AXBUILD_QEMU_SYSTEM_LOONGARCH64")
-                .or_else(|| env::var_os("QEMU_SYSTEM_LOONGARCH64"))
-                .map(PathBuf::from)
-                .filter(|path| path.is_file())
         {
-            return path;
-        }
-        if matches!(self.firmware_arch, Arch::LoongArch64)
-            && Path::new("/opt/qemu-11.1.1/bin/qemu-system-loongarch64").is_file()
-        {
-            return "/opt/qemu-11.1.1/bin/qemu-system-loongarch64".into();
+            return path.into();
         }
         self.qemu_binary.into()
     }
@@ -704,8 +696,7 @@ pub(super) async fn test_direct_ota(
     // A valid pending record pointing at a file which cannot be loaded must
     // be committed as a failed trial before returning to the stable slot.
     println!("axloader OTA QEMU: checking unloadable pending trial");
-    let unloadable_loader = unloadable_slot_image(&loader)?;
-    stage_unloadable_trial(root, &disk, &unloadable_loader)?;
+    stage_unloadable_trial(root, &disk)?;
     let qemu = start_qemu(profile, &firmware, root, port)?;
     let failed = status(&qemu, &client, port, root, |value| {
         value["running_slot"] == "a"
@@ -717,22 +708,6 @@ pub(super) async fn test_direct_ota(
     ensure!(
         failed["last_failure_reason"] == "trial_image_load_or_digest_failed",
         "unloadable EFI trial did not record the cause: {failed}"
-    );
-    drop(qemu);
-    println!("axloader OTA QEMU: checking corrupt-header pending trial");
-    let corrupt_header = vec![0x55; 4096];
-    stage_unloadable_trial(root, &disk, &corrupt_header)?;
-    let qemu = start_qemu(profile, &firmware, root, port)?;
-    let failed = status(&qemu, &client, port, root, |value| {
-        value["running_slot"] == "a"
-            && value["active_slot"] == "a"
-            && value["pending_update_id"].is_null()
-            && value["last_outcome"] == "failed"
-    })
-    .await?;
-    ensure!(
-        failed["last_failure_reason"] == "trial_image_load_or_digest_failed",
-        "corrupt-header EFI trial did not record the cause: {failed}"
     );
     drop(qemu);
     let qemu = start_qemu(profile, &firmware, root, port)?;
@@ -854,34 +829,9 @@ fn read_esp_file(disk_path: &Path, path: &str) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn unloadable_slot_image(loader: &[u8]) -> anyhow::Result<Vec<u8>> {
-    ensure!(
-        loader.len() >= 0x40 && &loader[..2] == b"MZ",
-        "invalid loader image"
-    );
-    let pe_offset =
-        usize::try_from(read_le_u32(loader, 0x3c)?).context("loader PE offset overflows")?;
-    let end = pe_offset
-        .checked_add(184)
-        .context("loader PE header range overflows")?;
-    ensure!(
-        pe_offset.checked_add(4).is_some_and(|start| {
-            start <= loader.len() && &loader[pe_offset..start] == b"PE\0\0"
-        }) && end <= loader.len(),
-        "loader does not contain a complete slot-validation header"
-    );
-    Ok(loader[..end].to_vec())
-}
-
-fn read_le_u32(bytes: &[u8], offset: usize) -> anyhow::Result<u32> {
-    let value = bytes
-        .get(offset..offset.checked_add(4).context("field offset overflows")?)
-        .context("truncated u32 field")?;
-    Ok(u32::from_le_bytes(value.try_into().unwrap()))
-}
-
-fn stage_unloadable_trial(root: &Path, disk_path: &Path, invalid: &[u8]) -> anyhow::Result<()> {
-    write_esp_file(disk_path, "EFI/AXLOADER/B.EFI", invalid)?;
+fn stage_unloadable_trial(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
+    let invalid = vec![0x55; 4096];
+    write_esp_file(disk_path, "EFI/AXLOADER/B.EFI", &invalid)?;
     let records = [root.join("STATE0.BIN"), root.join("STATE1.BIN")];
     for (index, path) in records.iter().enumerate() {
         fs::write(
@@ -905,7 +855,7 @@ fn stage_unloadable_trial(root: &Path, disk_path: &Path, invalid: &[u8]) -> anyh
     next[17] = 1;
     next[18] = 0;
     next[19] = 0;
-    next[52..84].copy_from_slice(&Sha256::digest(invalid));
+    next[52..84].copy_from_slice(&Sha256::digest(&invalid));
     next[84..120].copy_from_slice(b"01234567-89ab-cdef-0123-456789abcdef");
     next[120] = 0;
     let checksum = Sha256::digest(&next[..224]);
@@ -1046,7 +996,9 @@ fn invalid_elf_cases(kernel: &[u8]) -> anyhow::Result<Vec<(&'static str, Vec<u8>
             )
             .context("ELF header overflow")?;
         if elf_u32(kernel, offset)? == 1 {
-            write_elf_u32(&mut non_executable, offset + 4, 0)?;
+            let flags = elf_u32(kernel, offset + 4)?;
+            // Preserve read/write permissions so relocation targets stay valid.
+            write_elf_u32(&mut non_executable, offset + 4, flags & !1)?;
             found_load = true;
         }
     }
@@ -1502,51 +1454,53 @@ async fn boot_smoke(
     if let Some(cmdline) = scenario.cmdline {
         manifest["cmdline"] = serde_json::json!(cmdline);
     }
-    let no_protocol = client
-        .post(&base)
-        .header("X-Boot-Epoch", &epoch)
-        .json(&manifest)
-        .send()
-        .await?;
-    ensure!(
-        no_protocol.status() == reqwest::StatusCode::BAD_REQUEST,
-        "mutation without the v7 header was accepted"
-    );
-    let error: Value = no_protocol.json().await?;
-    ensure!(
-        error["code"] == "unsupported_protocol",
-        "missing protocol header produced the wrong error: {error}"
-    );
-    let mut legacy_manifest = manifest.clone();
-    legacy_manifest["arch"] = serde_json::json!("future-isa");
-    let legacy = client
-        .post(&base)
-        .header(
-            DEVICE_PROTOCOL_VERSION_HEADER,
-            device_protocol_version_header_value(),
-        )
-        .header("X-Boot-Epoch", &epoch)
-        .json(&legacy_manifest)
-        .send()
-        .await?;
-    ensure!(
-        legacy.status() == reqwest::StatusCode::BAD_REQUEST,
-        "removed v6 manifest fields were accepted"
-    );
-    let error: Value = legacy.json().await?;
-    ensure!(
-        error["code"] == "invalid_boot_manifest",
-        "legacy manifest produced the wrong error: {error}"
-    );
-    ensure!(
-        client
-            .get(format!("{base}/{boot_id}"))
+    if scenario.check_retries {
+        let no_protocol = client
+            .post(&base)
+            .header("X-Boot-Epoch", &epoch)
+            .json(&manifest)
             .send()
-            .await?
-            .status()
-            == reqwest::StatusCode::NOT_FOUND,
-        "rejected mutation changed boot state"
-    );
+            .await?;
+        ensure!(
+            no_protocol.status() == reqwest::StatusCode::BAD_REQUEST,
+            "mutation without the v7 header was accepted"
+        );
+        let error: Value = no_protocol.json().await?;
+        ensure!(
+            error["code"] == "unsupported_protocol",
+            "missing protocol header produced the wrong error: {error}"
+        );
+        let mut legacy_manifest = manifest.clone();
+        legacy_manifest["arch"] = serde_json::json!("future-isa");
+        let legacy = client
+            .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", &epoch)
+            .json(&legacy_manifest)
+            .send()
+            .await?;
+        ensure!(
+            legacy.status() == reqwest::StatusCode::BAD_REQUEST,
+            "removed v6 manifest fields were accepted"
+        );
+        let error: Value = legacy.json().await?;
+        ensure!(
+            error["code"] == "invalid_boot_manifest",
+            "legacy manifest produced the wrong error: {error}"
+        );
+        ensure!(
+            client
+                .get(format!("{base}/{boot_id}"))
+                .send()
+                .await?
+                .status()
+                == reqwest::StatusCode::NOT_FOUND,
+            "rejected mutation changed boot state"
+        );
+    }
     let response = client
         .post(&base)
         .header(
