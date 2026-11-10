@@ -269,11 +269,121 @@ static int assert_symlink(const char *path)
     return 0;
 }
 
+static int assert_directory_fd(const char *path, int target)
+{
+    struct stat expected, followed, link;
+    int procfd = syscall(SYS_openat, AT_FDCWD, path,
+                         O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+    int linkfd = syscall(SYS_openat, AT_FDCWD, path,
+                         O_PATH | O_NOFOLLOW | O_CLOEXEC, 0);
+    int failed = target < 0 || procfd < 0 || linkfd < 0 ||
+                 fstat(target, &expected) != 0 ||
+                 fstatat(AT_FDCWD, path, &followed, 0) != 0 ||
+                 !S_ISDIR(followed.st_mode) ||
+                 expected.st_dev != followed.st_dev ||
+                 expected.st_ino != followed.st_ino ||
+                 expect_same_directory(target, procfd, path) != 0 ||
+                 fstat(linkfd, &link) != 0 || !S_ISLNK(link.st_mode);
+    if (procfd >= 0) close(procfd);
+    if (linkfd >= 0) close(linkfd);
+    if (failed) {
+        fprintf(stderr, "FAIL: %s must follow to pinned directory, but nofollow pins a link: %s\n",
+                path, strerror(errno));
+    }
+    return failed;
+}
+
+static int assert_directory_target(const char *path, const char *directory)
+{
+    int target = syscall(SYS_openat, AT_FDCWD, directory,
+                         O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+    int failed = assert_directory_fd(path, target);
+    if (target >= 0) close(target);
+    return failed;
+}
+
+/* A textual symlink cannot reopen a removed root/cwd. The child holds the
+ * actual directory while the parent removes its only filesystem name. */
+static int test_detached_root_cwd(void)
+{
+    char dir[] = "/tmp/proc-detached-root-XXXXXX", path[64];
+    int ready[2] = {-1, -1}, release[2] = {-1, -1}, target = -1;
+    int failed = 1;
+    pid_t child = -1;
+    if (mkdtemp(dir) == NULL) {
+        perror("FAIL: SETUP detached root directory");
+        return 1;
+    }
+    target = syscall(SYS_openat, AT_FDCWD, dir, O_PATH | O_DIRECTORY, 0);
+    if (target < 0 || pipe(ready) != 0 || pipe(release) != 0) {
+        perror("FAIL: SETUP detached root fixture");
+        goto cleanup;
+    }
+    child = fork();
+    if (child == 0) {
+        close(ready[0]);
+        close(release[1]);
+        if (syscall(SYS_chroot, dir) != 0 || syscall(SYS_chdir, "/") != 0)
+            _exit(2);
+        char value = 'R';
+        if (write(ready[1], &value, 1) != 1) _exit(2);
+        close(ready[1]);
+        /* Closing the parent's writer releases this child on every path. */
+        int result = read(release[0], &value, 1) == 0 ? 0 : 2;
+        close(release[0]);
+        close(target);
+        _exit(result);
+    }
+    if (child < 0) {
+        perror("FAIL: SETUP detached root child");
+        goto cleanup;
+    }
+    close(ready[1]);
+    ready[1] = -1;
+    close(release[0]);
+    release[0] = -1;
+    char value = 0;
+    if (read(ready[0], &value, 1) != 1 || value != 'R') {
+        perror("FAIL: SETUP detached root ready");
+        goto cleanup;
+    }
+    if (rmdir(dir) != 0) {
+        perror("FAIL: detach child root and cwd");
+        goto cleanup;
+    }
+    snprintf(path, sizeof(path), "/proc/%d/root", child);
+    failed = assert_directory_fd(path, target);
+    snprintf(path, sizeof(path), "/proc/%d/cwd", child);
+    failed |= assert_directory_fd(path, target);
+cleanup:
+    for (int i = 0; i < 2; ++i) {
+        if (ready[i] >= 0) close(ready[i]);
+        if (release[i] >= 0) close(release[i]);
+    }
+    if (child > 0) {
+        int status = 0;
+        if (waitpid(child, &status, 0) != child ||
+            !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            fprintf(stderr, "FAIL: detached root child status=%d\n", status);
+            failed = 1;
+        }
+    }
+    if (target >= 0) close(target);
+    if (rmdir(dir) != 0 && errno != ENOENT) {
+        perror("FAIL: clean detached root directory");
+        failed = 1;
+    }
+    if (!failed) puts("INFO: proc root/cwd reopen a removed directory by identity");
+    return failed;
+}
+
 int main(void)
 {
     char buf[PATH_MAX];
     char cwd[PATH_MAX];
 
+    if (assert_directory_target("/proc/self/root", "/") != 0 ||
+        assert_directory_target("/proc/self/cwd", ".") != 0) return 1;
     if (assert_symlink("/proc/self/root") < 0) return 1;
     printf("INFO: /proc/self/root is a symlink\n");
 
@@ -312,6 +422,7 @@ int main(void)
         return 1;
     }
     printf("INFO: after chdir, /proc/self/cwd -> /tmp\n");
+    if (assert_directory_target("/proc/self/cwd", "/tmp") != 0) return 1;
 
     if (readlink_to("/proc/self/root", buf, sizeof(buf)) < 0) return 1;
     if (strcmp(buf, "/") != 0) {
@@ -330,7 +441,7 @@ int main(void)
     }
     printf("INFO: after chdir(/), /proc/self/cwd -> /\n");
 
-    if (test_chroot_cwd() != 0) return 1;
+    if (test_detached_root_cwd() != 0 || test_chroot_cwd() != 0) return 1;
     printf("TEST_PROC_ROOT_CWD_PASSED\n");
     return 0;
 }
