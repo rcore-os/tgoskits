@@ -145,6 +145,11 @@ fn failed_external_progress_discards_the_completed_mapping_owner() {
             axfs_ng_vfs::NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     let input: Arc<Inode> = entry.entry().downcast().unwrap();

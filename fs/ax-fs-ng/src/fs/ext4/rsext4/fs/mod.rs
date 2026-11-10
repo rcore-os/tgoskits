@@ -28,6 +28,7 @@ pub(crate) use guard::Ext4Guard;
 pub(crate) use lifetime::{InodeLifetime, LocatedInode};
 pub(super) use mmp::mmp_identity_for_region;
 use namespace::Namespace;
+#[cfg(test)]
 pub(crate) use namespace::NamespaceChange;
 use rsext4::{InodeNumber, MmpIdentity, MountServices};
 use worker::MountWorker;

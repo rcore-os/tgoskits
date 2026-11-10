@@ -439,15 +439,24 @@ mod tests {
         let (filesystem, _storage) = formatted_fat();
         let root = filesystem.root_dir();
         let directory = root.as_dir().unwrap();
-        let source = directory
-            .create(
-                "safe.txt",
-                NodeType::RegularFile,
-                NodePermission::default(),
-                0,
-                0,
-            )
-            .unwrap();
+        let source = axfs_ng_vfs::Location::new(
+            axfs_ng_vfs::Mountpoint::new_root(&filesystem),
+            root.clone(),
+        )
+        .create(
+            "safe.txt",
+            NodeType::RegularFile,
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
+        .map(|location| location.entry().clone())
+        .unwrap();
         let opened = source.as_file().unwrap();
         let contents = b"original FAT contents";
         assert_eq!(opened.write_at(contents, 0).unwrap(), contents.len());
@@ -495,6 +504,107 @@ mod tests {
     }
 
     #[test]
+    fn fat_unlink_preserves_active_identity_and_releases_closed_cache_owners() {
+        use axfs_ng_vfs::{
+            Mountpoint, MutationCredentials, NameState, NodePermission, NodeType, VfsError,
+        };
+
+        use crate::{
+            FsContext,
+            file::{FileBackend, FileFlags, OpenOptions, OpenResult},
+        };
+
+        let (filesystem, _storage) = formatted_fat();
+        let root = Mountpoint::new_root(&filesystem).root_location();
+        let credentials = MutationCredentials::root();
+        let parent = root
+            .create(
+                "parent",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+                &credentials,
+            )
+            .unwrap();
+        let context = FsContext::new(parent.clone());
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        let file = options
+            .open_with_credentials(&context, "data", &credentials)
+            .and_then(OpenResult::into_file)
+            .unwrap();
+        assert!(matches!(
+            file.access(FileFlags::READ).unwrap(),
+            FileBackend::Cached(_)
+        ));
+        let contents = b"retained FAT contents";
+        assert_eq!(file.write_at(contents.as_slice(), 0), Ok(contents.len()));
+        file.sync(false).unwrap();
+        filesystem.flush().unwrap();
+
+        let original = file.location().entry().clone();
+        let key = original.key();
+        assert_eq!(
+            parent.unlink("data", false, &credentials),
+            Err(VfsError::OperationNotSupported)
+        );
+        let current = parent.lookup_no_follow("data").unwrap();
+        assert!(current.entry().ptr_eq(&original));
+        assert_eq!(current.entry().key(), key);
+        assert_eq!(original.name_state(), NameState::Linked);
+        assert_eq!(original.name(), "data");
+        assert!(original.parent().unwrap().ptr_eq(parent.entry()));
+        let mut bytes = [0; 21];
+        assert_eq!(file.read_at(&mut bytes[..], 0), Ok(contents.len()));
+        assert_eq!(&bytes, contents);
+        let mut native_file_present = false;
+        parent
+            .read_dir(
+                axfs_ng_vfs::DirectoryCursor::START,
+                &mut |name: &[u8], _, _, _| {
+                    native_file_present |= name == b"data";
+                    true
+                },
+            )
+            .unwrap();
+        assert!(native_file_present);
+        assert!(
+            root.lookup_no_follow("parent")
+                .unwrap()
+                .entry()
+                .ptr_eq(parent.entry())
+        );
+
+        // Keep the positive and clean content caches intact. Only actual users
+        // leave scope; unlink preparation must release eligible cache owners.
+        drop(current);
+        drop(original);
+        drop(file);
+        drop(context);
+        let removed_file = parent.unlink("data", false, &credentials);
+        let file_absent = matches!(parent.lookup_no_follow("data"), Err(VfsError::NotFound));
+        drop(parent);
+        let removed_parent = root.unlink("parent", true, &credentials);
+        assert_eq!((removed_file, removed_parent), (Ok(()), Ok(())));
+        assert!(file_absent);
+        assert!(matches!(
+            root.lookup_no_follow("parent"),
+            Err(VfsError::NotFound)
+        ));
+        let mut native_parent_present = false;
+        root.read_dir(
+            axfs_ng_vfs::DirectoryCursor::START,
+            &mut |name: &[u8], _, _, _| {
+                native_parent_present |= name == b"parent";
+                true
+            },
+        )
+        .unwrap();
+        assert!(!native_parent_present);
+    }
+
+    #[test]
     fn fat_root_rediscovery_preserves_identity_and_releases_the_device_after_its_last_child() {
         use axfs_ng_vfs::{NodePermission, NodeType};
 
@@ -515,17 +625,24 @@ mod tests {
             assert_eq!(root.identity(), root_identity.as_ref());
         }
         let root = filesystem.root_dir();
-        let child = root
-            .as_dir()
-            .unwrap()
-            .create(
-                "active-child",
-                NodeType::Directory,
-                NodePermission::default(),
-                0,
-                0,
-            )
-            .unwrap();
+        let child = axfs_ng_vfs::Location::new(
+            axfs_ng_vfs::Mountpoint::new_root(&filesystem),
+            root.clone(),
+        )
+        .create(
+            "active-child",
+            NodeType::Directory,
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
+        .map(|location| location.entry().clone())
+        .unwrap();
         root.as_dir().unwrap().clear_cached_entries();
         drop(root);
         drop(filesystem);

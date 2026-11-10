@@ -35,13 +35,20 @@ fn removed_retained_parent_cannot_publish_a_child_after_pressure() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     let parent: Arc<Inode> = parent.downcast().unwrap();
     filesystem.lock().staging = true;
     let competing = root.clone();
     let probe = watch_flush(move || {
-        competing.unlink("parent", true).unwrap();
+        competing
+            .unlink("parent", true, &axfs_ng_vfs::MutationCredentials::root())
+            .unwrap();
         Ok(())
     });
 
@@ -120,12 +127,23 @@ fn rename_retry_rejects_a_removed_retained_destination_directory() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     filesystem.lock().staging = true;
     let competing = root.clone();
     let probe = watch_flush(move || {
-        competing.unlink("destination", true).unwrap();
+        competing
+            .unlink(
+                "destination",
+                true,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
         Ok(())
     });
 

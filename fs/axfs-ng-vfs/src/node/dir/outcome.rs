@@ -57,6 +57,29 @@ pub struct RenameEffect {
     pub destination_cacheable: bool,
 }
 
+/// An alias selected by the current backend attempt.
+#[derive(Debug, Clone)]
+pub struct NamespaceEntry {
+    pub entry: DirEntry,
+    pub canonical_name: String,
+    pub cacheable: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateEffect {
+    pub selected: NamespaceEntry,
+    pub created: bool,
+}
+
+/// The actual effect of one data command, independent from its completion.
+#[derive(Debug, Clone)]
+pub enum NamespaceEffect {
+    Create(CreateEffect),
+    Link(NamespaceEntry),
+    Unlink(NamespaceEntry),
+    Rename(RenameEffect),
+}
+
 /// One attempt's namespace effect and its independently fallible completion.
 ///
 /// VFS must publish `Applied`, or invalidate `Uncertain`, before returning the
@@ -127,5 +150,20 @@ impl<T> NamespaceOutcome<T> {
 
     pub fn into_result(self) -> VfsResult<()> {
         self.result
+    }
+
+    /// Consumes a completed command without probing its former pathname.
+    pub fn into_observation(self) -> VfsResult<T> {
+        self.result?;
+        self.observation.ok_or(VfsError::BadState)
+    }
+
+    /// Changes only the observation type, preserving state and the first error.
+    pub fn map<U>(self, map: impl FnOnce(T) -> U) -> NamespaceOutcome<U> {
+        NamespaceOutcome {
+            state: self.state,
+            observation: self.observation.map(map),
+            result: self.result,
+        }
     }
 }

@@ -19,7 +19,9 @@ fn ordinary_namespace_and_metadata_changes_do_not_force_a_commit() {
         ..Default::default()
     })
     .unwrap();
-    let link = root.link("linked", &file).unwrap();
+    let link = root
+        .link("linked", &file, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     root.rename(
         "linked",
         &root,
@@ -27,9 +29,21 @@ fn ordinary_namespace_and_metadata_changes_do_not_force_a_commit() {
         &axfs_ng_vfs::MutationCredentials::root(),
     )
     .unwrap();
-    root.unlink("renamed", false).unwrap();
+    root.unlink("renamed", false, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     let symlink = root
-        .create_symlink("symbolic", "original", NodePermission::default(), 0, 0)
+        .create_symlink(
+            "symbolic",
+            "original",
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
         .unwrap();
     assert_eq!(flushes.load(Ordering::Relaxed), before);
     assert_eq!(file.metadata().unwrap().mode.bits(), 0o640);
@@ -163,11 +177,15 @@ fn open_unlinked_hardlink_reuses_dirty_cache_until_final_inode_retirement() {
     crate::os::memory::test_support::with_test_page_provider(true, |_| {
         let (filesystem, root, _) = background_mount();
         let file = create_file(&root, "original");
-        let alias = root.link("alias", &file).unwrap();
+        let alias = root
+            .link("alias", &file, &axfs_ng_vfs::MutationCredentials::root())
+            .unwrap();
         let cached = crate::file::CachedFile::get_or_create(file.clone()).unwrap();
         cached.write_at(b"retained".as_slice(), 0).unwrap();
-        root.unlink("original", false).unwrap();
-        root.unlink("alias", false).unwrap();
+        root.unlink("original", false, &axfs_ng_vfs::MutationCredentials::root())
+            .unwrap();
+        root.unlink("alias", false, &axfs_ng_vfs::MutationCredentials::root())
+            .unwrap();
 
         let reopened = crate::file::CachedFile::get_or_create(alias).unwrap();
         assert!(cached.ptr_eq(&reopened));
@@ -199,8 +217,19 @@ pub(super) fn background_mount() -> (Arc<Ext4Filesystem>, Location, Arc<AtomicUs
 }
 
 fn create_file(root: &Location, name: &str) -> Location {
-    root.create(name, NodeType::RegularFile, NodePermission::default(), 0, 0)
-        .unwrap()
+    root.create(
+        name,
+        NodeType::RegularFile,
+        NodePermission::default(),
+        0,
+        0,
+        &axfs_ng_vfs::MutationCredentials {
+            fsuid: 0,
+            fsgid: 0,
+            ..axfs_ng_vfs::MutationCredentials::root()
+        },
+    )
+    .unwrap()
 }
 
 pub(super) fn set_inode_flags(filesystem: &Ext4Filesystem, location: &Location, flags: InodeFlags) {

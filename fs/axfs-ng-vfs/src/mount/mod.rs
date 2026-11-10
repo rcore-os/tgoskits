@@ -200,34 +200,12 @@ impl DirNodeOps for SyntheticMountDir {
         }
     }
 
-    fn create(
+    fn mutate_namespace(
         &self,
-        _name: &str,
-        _node_type: NodeType,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::ReadOnlyFilesystem)
-    }
-
-    fn create_symlink(
-        &self,
-        _name: &str,
-        _target: &str,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::ReadOnlyFilesystem)
-    }
-
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::ReadOnlyFilesystem)
-    }
-
-    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-        Err(VfsError::ReadOnlyFilesystem)
+        _command: &crate::NamespaceMutation<'_>,
+        _retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        crate::NamespaceOutcome::unchanged(Err(VfsError::ReadOnlyFilesystem))
     }
 }
 
@@ -949,6 +927,12 @@ pub struct Location {
     entry: DirEntry,
 }
 
+enum CreateSelection {
+    Exclusive,
+    Open(crate::ExistingOpen),
+    Restore((u32, u32)),
+}
+
 /// One upward step. A walker checks its root and mount policy before crossing
 /// `Covered`; it must not silently skip the covered mount root.
 #[derive(Debug)]
@@ -1222,15 +1206,115 @@ impl Location {
         permission: NodePermission,
         uid: u32,
         gid: u32,
+        credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<Self> {
-        if self.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
+        // Requested ownership is not a credential or an ownership override.
+        let _ = (uid, gid);
+        self.create_initialized(
+            name,
+            crate::CreateAttributes {
+                content: crate::CreateContent::Node(node_type, crate::DeviceId::default()),
+                permission,
+            },
+            credentials,
+        )
+    }
+
+    /// Creates a node with all initial contents, including rdev, already set.
+    pub fn create_initialized(
+        &self,
+        name: &str,
+        attributes: crate::CreateAttributes<'_>,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<Self> {
+        let write = crate::PreparedWrite::acquire(self)?;
+        let retired = crate::MutationRetire::new();
+        let effect = self
+            .create_with_write(name, attributes, credentials, &write, &retired)
+            .into_observation()?;
+        match effect {
+            crate::NamespaceEffect::Create(effect) => Ok(self.wrap(effect.selected.entry)),
+            _ => Err(VfsError::BadState),
         }
-        let entry = self
-            .entry
-            .as_dir()?
-            .create(name, node_type, permission, uid, gid)?;
-        Ok(self.wrap(entry))
+    }
+
+    /// Borrows pre-admitted rights and retirement from an outer namespace owner.
+    pub fn create_with_write(
+        &self,
+        name: &str,
+        attributes: crate::CreateAttributes<'_>,
+        credentials: &crate::MutationCredentials<'_>,
+        write: &crate::PreparedWrite,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        self.run_create(
+            name,
+            attributes,
+            CreateSelection::Exclusive,
+            credentials,
+            crate::CreationWrite::Ready(write),
+            retired,
+        )
+    }
+
+    fn run_create(
+        &self,
+        name: &str,
+        attributes: crate::CreateAttributes<'_>,
+        selection: CreateSelection,
+        credentials: &crate::MutationCredentials<'_>,
+        write: crate::CreationWrite<'_>,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        let (existing, restore_owner) = match selection {
+            CreateSelection::Exclusive => (None, None),
+            CreateSelection::Open(intent) => (Some(intent), None),
+            CreateSelection::Restore(owner) => (None, Some(owner)),
+        };
+        let target = match crate::MutationTarget::new(self, name, credentials) {
+            Ok(target) => target,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        self.entry
+            .as_dir()
+            .expect("validated parent")
+            .mutate_namespace(
+                &crate::NamespaceMutation::Create(crate::CreateRequest::new(
+                    target,
+                    attributes,
+                    existing,
+                    restore_owner,
+                    write,
+                )),
+                retired,
+            )
+    }
+
+    /// Trusted archive initialization only; never use this as a syscall fallback.
+    /// The initialization authority is an explicit input, not inferred from uid.
+    pub fn restore_create(
+        &self,
+        name: &str,
+        attributes: crate::CreateAttributes<'_>,
+        owner: (u32, u32),
+        initialization: &crate::TrustedInitialization,
+    ) -> VfsResult<Self> {
+        let write = crate::PreparedWrite::acquire(self)?;
+        let retired = crate::MutationRetire::new();
+        match self
+            .run_create(
+                name,
+                attributes,
+                CreateSelection::Restore(owner),
+                initialization.credentials(),
+                crate::CreationWrite::Ready(&write),
+                &retired,
+            )
+            .into_observation()?
+        {
+            crate::NamespaceEffect::Create(effect) => Ok(self.wrap(effect.selected.entry)),
+            _ => Err(VfsError::BadState),
+        }
     }
 
     pub fn create_symlink(
@@ -1240,15 +1324,17 @@ impl Location {
         permission: NodePermission,
         uid: u32,
         gid: u32,
+        credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<Self> {
-        if self.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
-        }
-        let entry = self
-            .entry
-            .as_dir()?
-            .create_symlink(name, target, permission, uid, gid)?;
-        Ok(self.wrap(entry))
+        let _ = (uid, gid);
+        self.create_initialized(
+            name,
+            crate::CreateAttributes {
+                content: crate::CreateContent::Symlink(target),
+                permission,
+            },
+            credentials,
+        )
     }
 
     /// Creates an in-memory directory entry that exists only as a mount target.
@@ -1300,15 +1386,45 @@ impl Location {
         Ok(self.wrap(entry))
     }
 
-    pub fn link(&self, name: &str, node: &Self) -> VfsResult<Self> {
-        if self.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
+    pub fn link(
+        &self,
+        name: &str,
+        node: &Self,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<Self> {
+        let write = crate::PreparedWrite::acquire(self)?;
+        let retired = crate::MutationRetire::new();
+        match self
+            .link_with_write(name, node, credentials, &write, &retired)
+            .into_observation()?
+        {
+            crate::NamespaceEffect::Link(alias) => Ok(self.wrap(alias.entry)),
+            _ => Err(VfsError::BadState),
         }
+    }
+
+    pub fn link_with_write(
+        &self,
+        name: &str,
+        node: &Self,
+        credentials: &crate::MutationCredentials<'_>,
+        write: &crate::PreparedWrite,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
         if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
-            return Err(VfsError::CrossesDevices);
+            return crate::NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
         }
-        let entry = self.entry.as_dir()?.link(name, &node.entry)?;
-        Ok(self.wrap(entry))
+        let target = match crate::MutationTarget::new(self, name, credentials) {
+            Ok(target) => target,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        self.entry
+            .as_dir()
+            .expect("validated parent")
+            .mutate_namespace(
+                &crate::NamespaceMutation::Link(crate::LinkRequest::new(target, node, write)),
+                retired,
+            )
     }
 
     /// Renames with explicit current credentials and exact-mount write authority.
@@ -1362,7 +1478,7 @@ impl Location {
         credentials: &crate::MutationCredentials<'_>,
         write: &crate::PreparedWrite,
         retired: &crate::MutationRetire,
-    ) -> crate::NamespaceOutcome<crate::RenameEffect> {
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
         let (dst_dir, dst_name) = destination;
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return crate::NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
@@ -1386,15 +1502,46 @@ impl Location {
             .mutate_namespace(&crate::NamespaceMutation::Rename(request), retired)
     }
 
-    pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        if self.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
-        }
-        self.entry.as_dir()?.unlink(name, is_dir)
+    pub fn unlink(
+        &self,
+        name: &str,
+        is_dir: bool,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        let write = crate::PreparedWrite::acquire(self)?;
+        let retired = crate::MutationRetire::new();
+        self.unlink_with_write(name, is_dir, credentials, &write, &retired)
+            .into_result()
     }
 
-    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<Location> {
-        self.open_file_with_status(name, options)
+    pub fn unlink_with_write(
+        &self,
+        name: &str,
+        is_dir: bool,
+        credentials: &crate::MutationCredentials<'_>,
+        write: &crate::PreparedWrite,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        let target = match crate::MutationTarget::new(self, name, credentials) {
+            Ok(target) => target,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        self.entry
+            .as_dir()
+            .expect("validated parent")
+            .mutate_namespace(
+                &crate::NamespaceMutation::Unlink(crate::UnlinkRequest::new(target, is_dir, write)),
+                retired,
+            )
+    }
+
+    pub fn open_file(
+        &self,
+        name: &str,
+        options: &OpenOptions,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<Location> {
+        self.open_file_with_status(name, options, credentials)
             .map(|(location, _)| location)
     }
 
@@ -1403,12 +1550,48 @@ impl Location {
         &self,
         name: &str,
         options: &OpenOptions,
+        credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<(Location, bool)> {
-        if self.is_readonly() && (options.create || options.create_new) {
-            return Err(VfsError::ReadOnlyFilesystem);
+        if !options.create && !options.create_new {
+            return self
+                .lookup_no_follow(name)
+                .map(|location| (location, false));
         }
-        let opened = self.entry.as_dir()?.open_file_with_status(name, options)?;
-        Ok((self.wrap(opened.0).resolve_mountpoint(), opened.1))
+        let preparation = crate::PreparedWrite::acquire(self);
+        let write = match &preparation {
+            Ok(write) => crate::CreationWrite::Ready(write),
+            Err(error) => crate::CreationWrite::Denied(*error),
+        };
+        let retired = crate::MutationRetire::new();
+        let effect = self
+            .run_create(
+                name,
+                crate::CreateAttributes {
+                    content: crate::CreateContent::Node(
+                        options.node_type,
+                        crate::DeviceId::default(),
+                    ),
+                    permission: options.permission,
+                },
+                if options.create_new {
+                    CreateSelection::Exclusive
+                } else {
+                    CreateSelection::Open(crate::ExistingOpen {
+                        access: options.access,
+                    })
+                },
+                credentials,
+                write,
+                &retired,
+            )
+            .into_observation()?;
+        match effect {
+            crate::NamespaceEffect::Create(effect) => Ok((
+                self.wrap(effect.selected.entry).resolve_mountpoint(),
+                effect.created,
+            )),
+            _ => Err(VfsError::BadState),
+        }
     }
 
     pub fn read_dir(
@@ -1735,31 +1918,13 @@ mod tests {
         fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
             Err(VfsError::NotFound)
         }
-        fn create(
+
+        fn mutate_namespace(
             &self,
-            _name: &str,
-            _node_type: NodeType,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-        fn create_symlink(
-            &self,
-            _name: &str,
-            _target: &str,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
+            _: &crate::NamespaceMutation<'_>,
+            _: &crate::MutationRetire,
+        ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+            crate::NamespaceOutcome::unchanged(Err(VfsError::ReadOnlyFilesystem))
         }
     }
 
@@ -1802,34 +1967,12 @@ mod tests {
             Err(VfsError::NotFound)
         }
 
-        fn create(
+        fn mutate_namespace(
             &self,
-            _name: &str,
-            _node_type: NodeType,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn create_symlink(
-            &self,
-            _name: &str,
-            _target: &str,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
+            _: &crate::NamespaceMutation<'_>,
+            _: &crate::MutationRetire,
+        ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+            crate::NamespaceOutcome::unchanged(Err(VfsError::ReadOnlyFilesystem))
         }
     }
 
@@ -1872,7 +2015,20 @@ mod tests {
             Err(VfsError::NotFound)
         }
 
-        fn create(
+        fn mutate_namespace(
+            &self,
+            command: &crate::NamespaceMutation<'_>,
+            retired: &crate::MutationRetire,
+        ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+            let mut attempt = SymlinkAttempt {
+                node: self,
+                _gate: SYMLINK_NAMESPACE_GATE.lock(),
+            };
+            command.execute(&mut attempt, retired)
+        }
+    }
+    impl SymlinkDir {
+        fn create_locked(
             &self,
             _name: &str,
             _node_type: NodeType,
@@ -1884,7 +2040,7 @@ mod tests {
             Err(VfsError::InvalidInput)
         }
 
-        fn create_symlink(
+        fn create_symlink_locked(
             &self,
             name: &str,
             target: &str,
@@ -1901,13 +2057,73 @@ mod tests {
                 Reference::new(None, name.to_string()),
             ))
         }
+    }
 
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+    static SYMLINK_NAMESPACE_GATE: ax_sync::Mutex<()> = ax_sync::Mutex::new(());
+
+    struct SymlinkAttempt<'a> {
+        _gate: ax_sync::MutexGuard<'a, ()>,
+        node: &'a SymlinkDir,
+    }
+
+    impl crate::LockedAttempt for SymlinkAttempt<'_> {
+        fn parents(&mut self) -> VfsResult<(Metadata, Metadata)> {
+            let parent = self.node.metadata()?;
+            Ok((parent.clone(), parent))
+        }
+        fn observe(
+            &mut self,
+            command: &crate::NamespaceMutation<'_>,
+            _: &crate::MutationRetire,
+        ) -> VfsResult<crate::MutationObservation> {
+            match command {
+                crate::NamespaceMutation::Create(_) => Ok(crate::MutationObservation::Create(None)),
+                _ => Err(VfsError::OperationNotSupported),
+            }
+        }
+        fn is_ancestor(&mut self, _: &crate::NamespaceNode, _: u64) -> VfsResult<bool> {
             Err(VfsError::OperationNotSupported)
         }
-
-        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::OperationNotSupported)
+        fn commit(
+            &mut self,
+            authorized: &crate::AuthorizedMutation<'_>,
+            retired: &crate::MutationRetire,
+        ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+            let crate::AuthorizedMutation::Create(authorized) = authorized else {
+                return crate::NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
+            };
+            let request = authorized.request();
+            let (uid, gid) = authorized.owner();
+            let result = match request.attributes().content {
+                crate::CreateContent::Node(kind, _) => {
+                    self.node
+                        .create_locked(request.name(), kind, authorized.permission(), uid, gid)
+                }
+                crate::CreateContent::Symlink(target) => self.node.create_symlink_locked(
+                    request.name(),
+                    target,
+                    authorized.permission(),
+                    uid,
+                    gid,
+                ),
+            };
+            match result {
+                Ok(entry) => {
+                    retired.retire(entry.clone());
+                    crate::NamespaceOutcome::applied(
+                        crate::NamespaceEffect::Create(crate::CreateEffect {
+                            selected: crate::NamespaceEntry {
+                                entry,
+                                canonical_name: request.name().into(),
+                                cacheable: true,
+                            },
+                            created: true,
+                        }),
+                        Ok(()),
+                    )
+                }
+                Err(error) => crate::NamespaceOutcome::unchanged(Err(error)),
+            }
         }
     }
 
@@ -2034,7 +2250,8 @@ mod tests {
             symlink_create_calls: symlink_create_calls.clone(),
         });
         let root = DirEntry::new_dir(|_| DirNode::new(ops), Reference::root());
-        let directory = root.as_dir().expect("root directory");
+        let location = Location::new(Mountpoint::new_root(&mock_filesystem()), root);
+        let directory = &location;
 
         assert!(matches!(
             directory.create(
@@ -2043,6 +2260,11 @@ mod tests {
                 NodePermission::default(),
                 0,
                 0,
+                &crate::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..crate::MutationCredentials::root()
+                },
             ),
             Err(VfsError::InvalidInput)
         ));
@@ -2055,6 +2277,11 @@ mod tests {
                 NodePermission::default(),
                 1000,
                 1001,
+                &crate::MutationCredentials {
+                    fsuid: 1000,
+                    fsgid: 1001,
+                    ..crate::MutationCredentials::root()
+                },
             )
             .expect("atomic symlink create");
         assert_eq!(

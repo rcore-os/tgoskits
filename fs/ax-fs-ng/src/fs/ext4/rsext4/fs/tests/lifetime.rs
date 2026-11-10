@@ -15,13 +15,19 @@ fn unlink_reaps_a_closed_clean_cached_inode_before_the_next_unlink() {
             axfs_ng_vfs::NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     let number = InodeNumber::new(first.inode() as u32).unwrap();
     let cached = CachedFile::get_or_create(first.clone()).unwrap();
     drop(cached);
     drop(first);
-    root.unlink("first", false).unwrap();
+    root.unlink("first", false, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
 
     let second = root
         .create(
@@ -30,10 +36,16 @@ fn unlink_reaps_a_closed_clean_cached_inode_before_the_next_unlink() {
             axfs_ng_vfs::NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     drop(second);
-    root.unlink("second", false).unwrap();
+    root.unlink("second", false, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
 
     let mut state = filesystem.lock();
     assert!(!state.lifetimes.zero_link.contains(&number));

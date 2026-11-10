@@ -126,6 +126,8 @@ pub struct MutationCredentials<'a> {
     pub cap_dac_read_search: bool,
     /// Whether the caller has `CAP_FOWNER`.
     pub cap_fowner: bool,
+    /// Result of the caller's `capable(CAP_MKNOD)` check, not a raw namespace bit.
+    pub cap_mknod: bool,
 }
 
 impl MutationCredentials<'static> {
@@ -138,6 +140,7 @@ impl MutationCredentials<'static> {
             cap_dac_override: true,
             cap_dac_read_search: true,
             cap_fowner: true,
+            cap_mknod: true,
         }
     }
 }

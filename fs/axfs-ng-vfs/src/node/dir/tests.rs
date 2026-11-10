@@ -56,7 +56,7 @@ fn opted_out_and_uncacheable_directories_revalidate_missing_names() {
             policy,
             ..Default::default()
         });
-        let directory = DirNode::new(backend.clone());
+        let directory = TestDirectory::new(backend.clone());
         assert_missing(&directory, "missing");
         assert_missing(&directory, "missing");
         assert_eq!(backend.lookups.load(Ordering::Relaxed), 2);
@@ -69,7 +69,7 @@ fn mixed_directory_revalidates_only_dynamic_children() {
         policy: CachePolicy::Mixed,
         ..Default::default()
     });
-    let directory = DirNode::new(backend.clone());
+    let directory = TestDirectory::new(backend.clone());
     let stable = create_directory(&directory, "stable");
     create_directory(&directory, "volatile");
 
@@ -129,7 +129,12 @@ fn failed_mutation_invalidates_missing_results_without_losing_positive_owners() 
             NodeType::Directory,
             NodePermission::default(),
             0,
-            0
+            0,
+            &crate::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..crate::MutationCredentials::root()
+            }
         ),
         Err(VfsError::Io)
     ));
@@ -148,7 +153,7 @@ fn successful_create_replaces_a_cached_missing_name() {
 #[test]
 fn a_second_directory_alias_invalidates_cached_missing_names() {
     let (directory, backend) = fixture();
-    let alias = DirNode::new(backend);
+    let alias = TestDirectory::new(backend);
     assert_missing(&directory, "created");
     let child = create_directory(&alias, "created");
     assert!(directory.lookup("created").unwrap().ptr_eq(&child));
@@ -170,7 +175,7 @@ fn unavailable_generation_forces_authoritative_lookup() {
 #[test]
 fn an_alias_mutation_during_lookup_prevents_negative_publication() {
     let (directory, backend) = fixture();
-    let alias = DirNode::new(backend.clone());
+    let alias = TestDirectory::new(backend.clone());
     *backend.after_lookup.lock() = Some(Box::new(move || {
         create_directory(&alias, "created");
     }));
@@ -178,15 +183,69 @@ fn an_alias_mutation_during_lookup_prevents_negative_publication() {
     assert!(directory.lookup("created").is_ok());
 }
 
-fn fixture() -> (Arc<DirNode>, Arc<ScriptedDirectory>) {
+fn fixture() -> (Arc<TestDirectory>, Arc<ScriptedDirectory>) {
     let backend = Arc::new(ScriptedDirectory::default());
-    (Arc::new(DirNode::new(backend.clone())), backend)
+    (Arc::new(TestDirectory::new(backend.clone())), backend)
 }
 
-fn create_directory(directory: &DirNode, name: &str) -> DirEntry {
+fn create_directory(directory: &TestDirectory, name: &str) -> DirEntry {
     directory
-        .create(name, NodeType::Directory, NodePermission::default(), 0, 0)
+        .create(
+            name,
+            NodeType::Directory,
+            NodePermission::default(),
+            0,
+            0,
+            &crate::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..crate::MutationCredentials::root()
+            },
+        )
         .unwrap()
+}
+
+struct TestDirectory(crate::Location);
+
+impl TestDirectory {
+    fn new(backend: Arc<ScriptedDirectory>) -> Self {
+        struct Root(DirEntry);
+        impl FilesystemOps for Root {
+            fn name(&self) -> &str {
+                "scripted-directory"
+            }
+            fn root_dir(&self) -> DirEntry {
+                self.0.clone()
+            }
+            fn stat(&self) -> VfsResult<StatFs> {
+                Err(VfsError::Unsupported)
+            }
+        }
+        let root = DirEntry::new_dir(|_| DirNode::new(backend), Reference::root());
+        let fs = crate::Filesystem::new(Arc::new(Root(root)));
+        Self(crate::Mountpoint::new_root(&fs).root_location())
+    }
+
+    fn create(
+        &self,
+        name: &str,
+        kind: NodeType,
+        mode: NodePermission,
+        uid: u32,
+        gid: u32,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<DirEntry> {
+        self.0
+            .create(name, kind, mode, uid, gid, credentials)
+            .map(|entry| entry.entry().clone())
+    }
+}
+
+impl core::ops::Deref for TestDirectory {
+    type Target = DirNode;
+    fn deref(&self) -> &Self::Target {
+        self.0.entry().as_dir().unwrap()
+    }
 }
 
 fn assert_missing(directory: &DirNode, name: &str) {
@@ -203,6 +262,7 @@ enum CachePolicy {
 }
 
 struct ScriptedDirectory {
+    mutation: std::sync::Mutex<()>,
     entries: RawSpinLock<HashMap<String, DirEntry>>,
     lookups: AtomicUsize,
     lookup_error: RawSpinLock<VfsError>,
@@ -215,6 +275,7 @@ struct ScriptedDirectory {
 impl Default for ScriptedDirectory {
     fn default() -> Self {
         Self {
+            mutation: std::sync::Mutex::new(()),
             entries: RawSpinLock::new(HashMap::new()),
             lookups: AtomicUsize::new(0),
             lookup_error: RawSpinLock::new(VfsError::NotFound),
@@ -231,7 +292,22 @@ impl NodeOps for ScriptedDirectory {
         1
     }
     fn metadata(&self) -> VfsResult<Metadata> {
-        Err(VfsError::Unsupported)
+        Ok(Metadata {
+            inode: 1,
+            device: 0,
+            nlink: 1,
+            mode: NodePermission::default(),
+            node_type: NodeType::Directory,
+            uid: 0,
+            gid: 0,
+            size: 0,
+            block_size: 4096,
+            blocks: 0,
+            rdev: crate::DeviceId::default(),
+            atime: core::time::Duration::ZERO,
+            mtime: core::time::Duration::ZERO,
+            ctime: core::time::Duration::ZERO,
+        })
     }
     fn update_metadata(&self, _: MetadataUpdate) -> VfsResult<()> {
         Err(VfsError::Unsupported)
@@ -278,14 +354,31 @@ impl DirNodeOps for ScriptedDirectory {
         result
     }
 
-    fn create(
+    fn read_dir(&self, _: DirectoryCursor, _: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        Err(VfsError::Unsupported)
+    }
+
+    fn mutate_namespace(
+        &self,
+        command: &NamespaceMutation<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let mut attempt = ScriptedAttempt {
+            backend: self,
+            _gate: self.mutation.lock().unwrap(),
+        };
+        command.execute(&mut attempt, retired)
+    }
+}
+impl ScriptedDirectory {
+    fn create_locked(
         &self,
         name: &str,
         _: NodeType,
         _: NodePermission,
         _: u32,
         _: u32,
-    ) -> VfsResult<DirEntry> {
+    ) -> NamespaceOutcome<DirEntry> {
         let entry = DirEntry::new_dir(
             |_| DirNode::new(Arc::new(Self::default())),
             Reference::root(),
@@ -294,31 +387,12 @@ impl DirNodeOps for ScriptedDirectory {
         if let Ok(Some(generation)) = &mut *self.generation.lock() {
             *generation += 1;
         }
-        if self.fail_after_create.load(Ordering::Relaxed) {
+        let completion = if self.fail_after_create.load(Ordering::Relaxed) {
             Err(VfsError::Io)
         } else {
-            Ok(entry)
-        }
-    }
-
-    fn read_dir(&self, _: DirectoryCursor, _: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        Err(VfsError::Unsupported)
-    }
-    fn create_symlink(
-        &self,
-        _: &str,
-        _: &str,
-        _: NodePermission,
-        _: u32,
-        _: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::Unsupported)
-    }
-    fn link(&self, _: &str, _: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::Unsupported)
-    }
-    fn unlink(&self, _: &str, _: bool) -> VfsResult<()> {
-        Err(VfsError::Unsupported)
+            Ok(())
+        };
+        NamespaceOutcome::applied(entry, completion)
     }
 }
 
@@ -334,5 +408,73 @@ impl FilesystemOps for ScriptedFilesystem {
     }
     fn stat(&self) -> VfsResult<StatFs> {
         Err(VfsError::Unsupported)
+    }
+}
+
+struct ScriptedAttempt<'a> {
+    _gate: std::sync::MutexGuard<'a, ()>,
+    backend: &'a ScriptedDirectory,
+}
+
+impl LockedAttempt for ScriptedAttempt<'_> {
+    fn parents(&mut self) -> VfsResult<(Metadata, Metadata)> {
+        let parent = self.backend.metadata()?;
+        Ok((parent.clone(), parent))
+    }
+    fn observe(
+        &mut self,
+        command: &NamespaceMutation<'_>,
+        retired: &MutationRetire,
+    ) -> VfsResult<MutationObservation> {
+        let NamespaceMutation::Create(request) = command else {
+            return Err(VfsError::Unsupported);
+        };
+        let candidate = self.backend.entries.lock().get(request.name()).cloned();
+        let target = if let Some(entry) = candidate {
+            retired.retire(entry.clone());
+            Some(RenameNode {
+                metadata: entry.metadata()?,
+                entry,
+                canonical_name: request.name().into(),
+                cacheable: self.backend.is_cacheable_child(request.name()),
+                empty: false,
+            })
+        } else {
+            None
+        };
+        Ok(MutationObservation::Create(target))
+    }
+    fn is_ancestor(&mut self, _: &NamespaceNode, _: u64) -> VfsResult<bool> {
+        Err(VfsError::Unsupported)
+    }
+    fn commit(
+        &mut self,
+        authorized: &AuthorizedMutation<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let AuthorizedMutation::Create(authorized) = authorized else {
+            return NamespaceOutcome::unchanged(Err(VfsError::Unsupported));
+        };
+        let request = authorized.request();
+        let (uid, gid) = authorized.owner();
+        self.backend
+            .create_locked(
+                request.name(),
+                request.attributes().content.node_type(),
+                authorized.permission(),
+                uid,
+                gid,
+            )
+            .map(|entry| {
+                retired.retire(entry.clone());
+                NamespaceEffect::Create(CreateEffect {
+                    selected: NamespaceEntry {
+                        entry,
+                        canonical_name: request.name().into(),
+                        cacheable: self.backend.is_cacheable_child(request.name()),
+                    },
+                    created: true,
+                })
+            })
     }
 }

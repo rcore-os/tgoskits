@@ -357,7 +357,7 @@ fn create_or_link(
     if let Some(previous) = previous {
         return Ok(context.link(previous, path, credentials)?);
     }
-    create_entry(context, path, ty, mode, entry, credentials)
+    create_entry(context, path, ty, mode, entry)
 }
 
 fn write_file(
@@ -369,7 +369,7 @@ fn write_file(
     let file = OpenOptions::new()
         .write(true)
         .truncate(truncate)
-        .open(context, path)?
+        .open(context, path, &MutationCredentials::root())?
         .into_file()?;
     let written = file.write_at(data, 0)?;
     if written != data.len() {
@@ -384,19 +384,29 @@ fn create_entry(
     ty: NodeType,
     mode: NodePermission,
     entry: &Entry<'_>,
-    credentials: &MutationCredentials<'_>,
 ) -> Result<axfs_ng_vfs::Location, InitramfsError> {
-    let location = match ty {
-        NodeType::Directory => context.create_dir(path, mode, entry.uid, entry.gid, credentials)?,
+    let content = match ty {
         NodeType::Symlink => {
             if entry.data.contains(&0) {
                 return Err(InitramfsError::Corrupt("NUL in symlink target"));
             }
             let target = str::from_utf8(entry.data).map_err(|_| InitramfsError::InvalidText)?;
-            context.symlink(target, path, entry.uid, entry.gid, credentials)?
+            axfs_ng_vfs::CreateContent::Symlink(target)
         }
-        _ => context.create_node(path, ty, mode, entry.uid, entry.gid, credentials)?,
+        _ => {
+            axfs_ng_vfs::CreateContent::Node(ty, DeviceId::new(entry.rdev_major, entry.rdev_minor))
+        }
     };
+    let (parent, name) = context.resolve_parent(path.as_ref())?;
+    let location = parent.restore_create(
+        &name,
+        axfs_ng_vfs::CreateAttributes {
+            content,
+            permission: mode,
+        },
+        (entry.uid, entry.gid),
+        &axfs_ng_vfs::TrustedInitialization::kernel(),
+    )?;
     if ty == NodeType::RegularFile && !entry.data.is_empty() {
         write_file(context, path, entry.data, false)?;
     }
@@ -597,7 +607,11 @@ mod tests {
             assert!(context.resolve("/bin").unwrap().is_dir());
             let short = OpenOptions::new()
                 .read(true)
-                .open(&context, "/short-a")
+                .open(
+                    &context,
+                    "/short-a",
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
                 .unwrap()
                 .into_file()
                 .unwrap();

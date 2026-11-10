@@ -310,8 +310,13 @@ impl OpenOptions {
     }
 
     /// Opens a file at the given path relative to the provided [`FsContext`].
-    pub fn open(&self, context: &FsContext, path: impl AsRef<Path>) -> VfsResult<OpenResult> {
-        self.open_with_credentials(context, path, &MutationCredentials::root())
+    pub fn open(
+        &self,
+        context: &FsContext,
+        path: impl AsRef<Path>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<OpenResult> {
+        self.open_with_credentials(context, path, credentials)
     }
 
     /// Opens a file while authorizing any file creation against its parent.
@@ -367,12 +372,15 @@ impl OpenOptions {
                     // original O_CREAT flag so _open() returns EISDIR.
                     let effective_create = self.create && (!must_be_dir || existing);
                     let effective_create_new = self.create_new && (!must_be_dir || existing);
-                    if (effective_create || effective_create_new) && !existing {
-                        context.check_mutation_parent_with_search(
-                            &parent,
-                            &searched,
-                            credentials,
-                        )?;
+                    let flags = self.to_flags()?;
+                    let mut access = NodePermission::empty();
+                    if !self.path {
+                        if flags.contains(FileFlags::READ) {
+                            access.insert(NodePermission::OTHER_READ);
+                        }
+                        if flags.contains(FileFlags::WRITE) || self.truncate {
+                            access.insert(NodePermission::OTHER_WRITE);
+                        }
                     }
                     let (mut loc, newly_created) = parent.open_file_with_status(
                         &name,
@@ -382,7 +390,9 @@ impl OpenOptions {
                             node_type: self.node_type,
                             permission: NodePermission::from_bits_truncate(self.mode as _),
                             user: self.user,
+                            access,
                         },
+                        credentials,
                     )?;
                     if !self.no_follow {
                         // Save the symlink-target path before resolving, so we can
@@ -653,6 +663,7 @@ mod tests {
 
     fn credentials(fsuid: u32, fsgid: u32, supplementary_gids: &[u32]) -> MutationCredentials<'_> {
         MutationCredentials {
+            cap_mknod: false,
             fsuid,
             fsgid,
             supplementary_gids,
@@ -761,6 +772,11 @@ mod tests {
                     NodePermission::from_bits_truncate(0o600),
                     1000,
                     1000,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 1000,
+                        fsgid: 1000,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let target = if shared {
@@ -882,6 +898,11 @@ mod tests {
                 NodePermission::from_bits_truncate(0o600),
                 1000,
                 1000,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 1000,
+                    fsgid: 1000,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
             )
             .unwrap();
         let credentials = credentials(1000, 1000, &[]);
@@ -925,12 +946,14 @@ mod tests {
         let status = root.open_file_with_status(
             "existing",
             &axfs_ng_vfs::OpenOptions {
+                access: axfs_ng_vfs::NodePermission::empty(),
                 create: true,
                 create_new: false,
                 node_type: NodeType::RegularFile,
                 permission: NodePermission::from_bits_truncate(0o600),
                 user: Some((1000, 1000)),
             },
+            &axfs_ng_vfs::MutationCredentials::root(),
         );
         let missing_absent = matches!(root.lookup_no_follow("missing"), Err(VfsError::NotFound));
         assert_eq!(

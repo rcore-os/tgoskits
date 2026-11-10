@@ -30,7 +30,18 @@ fn namespace_staging_releases_lookup_before_real_flush() {
         let probe = lookup_during_staging(&filesystem, &root);
 
         let created = root
-            .create("created", kind, NodePermission::default(), 0, 0)
+            .create(
+                "created",
+                kind,
+                NodePermission::default(),
+                0,
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
             .unwrap();
 
         probe.finish();
@@ -86,13 +97,26 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
     let witness = root.lookup("witness").unwrap();
     let probe = lookup_during_staging(&filesystem, &root);
     let symlink = root
-        .create_symlink("symbolic", "witness", NodePermission::default(), 0, 0)
+        .create_symlink(
+            "symbolic",
+            "witness",
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
         .unwrap();
     probe.finish();
     assert_eq!(symlink.node_type(), NodeType::Symlink);
 
     let probe = lookup_during_staging(&filesystem, &root);
-    let alias = root.link("alias", &witness).unwrap();
+    let alias = root
+        .link("alias", &witness, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     probe.finish();
     assert_eq!(alias.inode(), witness.inode());
     assert_eq!(alias.metadata().unwrap().nlink, 2);
@@ -104,11 +128,27 @@ fn unlink_and_rmdir_staging_release_both_namespace_scopes() {
     for kind in [NodeType::RegularFile, NodeType::Directory] {
         let (filesystem, root, _mount) = fixture();
         let victim = root
-            .create("victim", kind, NodePermission::default(), 0, 0)
+            .create(
+                "victim",
+                kind,
+                NodePermission::default(),
+                0,
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
             .unwrap();
         let probe = lookup_during_staging(&filesystem, &root);
 
-        root.unlink("victim", kind == NodeType::Directory).unwrap();
+        root.unlink(
+            "victim",
+            kind == NodeType::Directory,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
 
         probe.finish();
         assert_eq!(root.lookup("victim").unwrap_err(), VfsError::NotFound);
@@ -168,6 +208,11 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
                 NodePermission::default(),
                 0,
                 0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
             )
             .unwrap();
         let target = root
@@ -177,6 +222,11 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
                 NodePermission::default(),
                 0,
                 0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
             )
             .unwrap();
         let source_handle = File::new(
@@ -244,6 +294,9 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
         let effect = outcome
             .observation()
             .expect("applied rename retains its observation");
+        let axfs_ng_vfs::NamespaceEffect::Rename(effect) = effect else {
+            panic!("rename returned another command's effect");
+        };
         assert!(effect.source.matches(source.entry()));
         assert!(effect.target.as_ref().unwrap().matches(target.entry()));
         assert_eq!(
@@ -375,7 +428,18 @@ fn create_file(root: &Inode, name: &str) -> DirEntry {
 }
 
 fn create_result(root: &Inode, name: &str) -> VfsResult<DirEntry> {
-    root.create(name, NodeType::RegularFile, NodePermission::default(), 0, 0)
+    root.create(
+        name,
+        NodeType::RegularFile,
+        NodePermission::default(),
+        0,
+        0,
+        &axfs_ng_vfs::MutationCredentials {
+            fsuid: 0,
+            fsgid: 0,
+            ..axfs_ng_vfs::MutationCredentials::root()
+        },
+    )
 }
 
 fn inode_number(inode: &Inode) -> InodeNumber {

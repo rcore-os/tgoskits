@@ -3,8 +3,8 @@ use core::any::Any;
 
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps, Metadata,
-    MetadataUpdate, NamespaceNode, NamespaceOutcome, NodeFlags, NodeIdentity, NodeOps,
-    NodePermission, NodeType, Reference, RenameEffect, VfsError, VfsResult, WeakDirEntry,
+    MetadataUpdate, NamespaceOutcome, NodeFlags, NodeIdentity, NodeOps, NodeType, Reference,
+    RenameEffect, VfsError, VfsResult, WeakDirEntry,
 };
 
 use super::{ff, file::FatFileNode, fs::FatFilesystemGuard, state::FatInode, util::into_vfs_err};
@@ -168,107 +168,11 @@ impl DirNodeOps for FatDirNode {
         self.object(self.find(name, &guard)?, &mut guard)
     }
 
-    fn create(
-        &self,
-        name: &str,
-        node_type: NodeType,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        let mut guard = self.state.fs.lock();
-        match self.find(name, &guard) {
-            Ok(_) => return Err(VfsError::AlreadyExists),
-            Err(VfsError::NotFound) => {}
-            Err(error) => return Err(error),
-        }
-        let dir = self.state.directory(&guard)?;
-        match node_type {
-            NodeType::RegularFile => {
-                drop(dir.create_file(name).map_err(into_vfs_err)?);
-            }
-            NodeType::Directory => {
-                drop(dir.create_dir(name).map_err(into_vfs_err)?);
-            }
-            _ => return Err(VfsError::OperationNotSupported),
-        }
-        self.object(self.find(name, &guard)?, &mut guard)
-    }
-
-    fn create_symlink(
-        &self,
-        _name: &str,
-        _target: &str,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotSupported)
-    }
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::PermissionDenied)
-    }
-
-    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        self.unlink_outcome(name, is_dir).into_result()
-    }
-
-    fn unlink_outcome(&self, name: &str, is_dir: bool) -> NamespaceOutcome<NamespaceNode> {
-        crate::file::prune_cached_files();
-        let mut guard = self.state.fs.lock();
-        let entry = match self.find(name, &guard) {
-            Ok(entry) => entry,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        if entry.is_dir() != is_dir {
-            return NamespaceOutcome::unchanged(Err(if is_dir {
-                VfsError::NotADirectory
-            } else {
-                VfsError::IsADirectory
-            }));
-        }
-        let key = (self.inode(), entry.file_name());
-        if guard
-            .active
-            .get(&key)
-            .is_some_and(|inode| inode.strong_count() != 0)
-        {
-            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
-        }
-        let dir = match self.state.directory(&guard) {
-            Ok(dir) => dir,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        let (inode, _) = match guard.alloc_identity() {
-            Ok(identity) => identity,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        let object = NamespaceNode::new(
-            inode,
-            if is_dir {
-                NodeType::Directory
-            } else {
-                NodeType::RegularFile
-            },
-        );
-        // No live holder can be upgraded: fs exclusion prevents rediscovery
-        // until remove completes. fatfs may still partially modify on I/O error.
-        let result = dir.remove(name);
-        guard.release_inode(inode);
-        match result {
-            Ok(()) => {
-                guard.active.remove(&key);
-                NamespaceOutcome::applied(object, Ok(()))
-            }
-            Err(error) => NamespaceOutcome::uncertain(None, Err(into_vfs_err(error))),
-        }
-    }
-
     fn mutate_namespace(
         &self,
         command: &axfs_ng_vfs::NamespaceMutation<'_>,
         retired: &axfs_ng_vfs::MutationRetire,
-    ) -> NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
+    ) -> NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
         self.run_namespace(command, retired)
     }
 }

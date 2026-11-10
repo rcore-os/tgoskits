@@ -3,7 +3,11 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::{any::Any, cell::RefCell};
 
-use super::{NamespaceNode, NamespaceOutcome, NamespaceState, RenameAction, RenameEffect};
+use super::{
+    AuthorizedMutation, CreateRequest, LinkRequest, MutationObservation, NamespaceEffect,
+    NamespaceEntry, NamespaceNode, NamespaceOutcome, NamespaceState, RenameAction, RenameEffect,
+    UnlinkRequest,
+};
 use crate::{
     DirEntry, Location, Metadata, MutationCredentials, NodePermission, NodeType, PreparedWrite,
     RenameOptions, VfsError, VfsResult,
@@ -30,11 +34,16 @@ impl MutationRetire {
 }
 
 /// A concrete namespace command, not an arbitrary backend callback.
+#[derive(Clone)]
 pub enum NamespaceMutation<'a> {
+    Create(CreateRequest<'a>),
+    Link(LinkRequest<'a>),
+    Unlink(UnlinkRequest<'a>),
     Rename(RenameRequest<'a>),
 }
 
 /// Unforgeable request borrowing the actual mount's write authority.
+#[derive(Clone)]
 pub struct RenameRequest<'a> {
     source: (&'a Location, &'a str),
     destination: (&'a Location, &'a str),
@@ -166,6 +175,13 @@ pub struct RenameNode {
 }
 
 impl RenameNode {
+    pub fn selected(&self) -> NamespaceEntry {
+        NamespaceEntry {
+            entry: self.entry.clone(),
+            canonical_name: self.canonical_name.clone(),
+            cacheable: self.cacheable,
+        }
+    }
     pub fn object(&self) -> NamespaceNode {
         NamespaceNode {
             inode: self.entry.inode(),
@@ -189,15 +205,15 @@ pub trait LockedAttempt {
     fn parents(&mut self) -> VfsResult<(Metadata, Metadata)>;
     fn observe(
         &mut self,
-        request: &RenameRequest<'_>,
+        request: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> VfsResult<RenameObservation>;
+    ) -> VfsResult<MutationObservation>;
     fn is_ancestor(&mut self, ancestor: &NamespaceNode, directory: u64) -> VfsResult<bool>;
     fn commit(
         &mut self,
-        authorized: &AuthorizedRename<'_>,
+        authorized: &AuthorizedMutation<'_>,
         retired: &MutationRetire,
-    ) -> NamespaceOutcome<RenameEffect>;
+    ) -> NamespaceOutcome<NamespaceEffect>;
 }
 
 /// Only the fixed VFS authorizer can construct this backend commit capability.
@@ -263,7 +279,13 @@ impl<'attempt, 'request> MutationGuard<'attempt, 'request> {
         self.request
             .credentials
             .check_permission(&parents.1, NodePermission::OTHER_EXEC)?;
-        let mut observed = self.attempt.observe(self.request, self.retired)?;
+        let MutationObservation::Rename(mut observed) = self.attempt.observe(
+            &NamespaceMutation::Rename(self.request.clone()),
+            self.retired,
+        )?
+        else {
+            return Err(VfsError::BadState);
+        };
         observed.source.entry = self.request.source_parent().as_dir()?.canonicalize_locked(
             &observed.source.canonical_name,
             observed.source.entry,
@@ -416,6 +438,13 @@ impl AuthorizedSlot<'_, '_, '_> {
         self.slot
             .guard
             .attempt
-            .commit(&authorized, self.slot.guard.retired)
+            .commit(
+                &AuthorizedMutation::Rename(authorized),
+                self.slot.guard.retired,
+            )
+            .map(|effect| match effect {
+                NamespaceEffect::Rename(effect) => effect,
+                _ => unreachable!("rename attempt returned another command's effect"),
+            })
     }
 }

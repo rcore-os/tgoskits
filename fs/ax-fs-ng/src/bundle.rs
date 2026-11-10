@@ -220,7 +220,7 @@ pub(crate) fn copy_tree(
         }
         NodeType::RegularFile => {
             let input = File::open(source, from)?;
-            let output = File::create(target, to)?;
+            let output = File::create(target, to, &MutationCredentials::root())?;
             let mut buffer = vec![0; crate::os::memory::PAGE_SIZE];
             let mut offset = 0;
             loop {
@@ -272,7 +272,7 @@ mod tests {
         FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location())
     }
     fn write(context: &FsContext, path: &str, data: &[u8]) {
-        File::create(context, path)
+        File::create(context, path, &axfs_ng_vfs::MutationCredentials::root())
             .unwrap()
             .write_at(data, 0)
             .unwrap();

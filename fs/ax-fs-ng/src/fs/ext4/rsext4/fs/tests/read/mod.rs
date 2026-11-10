@@ -130,6 +130,11 @@ fn rename_replacement_preserves_the_open_victims_in_flight_data() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     victim
@@ -145,6 +150,11 @@ fn rename_replacement_preserves_the_open_victims_in_flight_data() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     replacement

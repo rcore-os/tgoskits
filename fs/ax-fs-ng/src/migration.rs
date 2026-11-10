@@ -601,8 +601,20 @@ mod tests {
             let target = context();
             crate::bundle::mkdir_parents(&source, "/symbols").unwrap();
             crate::bundle::mkdir_parents(&target, "/symbols").unwrap();
-            source.write("/symbols/kernel.map", b"new").unwrap();
-            target.write("/symbols/kernel.map", b"old").unwrap();
+            source
+                .write(
+                    "/symbols/kernel.map",
+                    b"new",
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
+            target
+                .write(
+                    "/symbols/kernel.map",
+                    b"old",
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
             let hash = {
                 let mut plan = MigrationPlan::new();
                 plan.add(MigrationEntry::new(
@@ -635,8 +647,20 @@ mod tests {
             let target = context();
             crate::bundle::mkdir_parents(&source, "/symbols").unwrap();
             crate::bundle::mkdir_parents(&target, "/symbols").unwrap();
-            source.write("/symbols/kernel.map", b"new").unwrap();
-            target.write("/symbols/kernel.map", b"old").unwrap();
+            source
+                .write(
+                    "/symbols/kernel.map",
+                    b"new",
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
+            target
+                .write(
+                    "/symbols/kernel.map",
+                    b"old",
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
             let mut plan = MigrationPlan::new();
             plan.add(
                 MigrationEntry::new(
@@ -660,8 +684,20 @@ mod tests {
             let target = context();
             crate::bundle::mkdir_parents(&target, "/pkg").unwrap();
             crate::bundle::mkdir_parents(&target, "/pkg.old").unwrap();
-            target.write("/pkg/incomplete", b"bad").unwrap();
-            target.write("/pkg.old/required", b"old").unwrap();
+            target
+                .write(
+                    "/pkg/incomplete",
+                    b"bad",
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
+            target
+                .write(
+                    "/pkg.old/required",
+                    b"old",
+                    &axfs_ng_vfs::MutationCredentials::root(),
+                )
+                .unwrap();
 
             let mut plan = MigrationPlan::new();
             plan.add(

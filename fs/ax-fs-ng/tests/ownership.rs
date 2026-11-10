@@ -7,11 +7,26 @@ use axfs_ng_vfs::{
     NodeType, RenameOptions, VfsError,
 };
 
-fn create(parent: &DirEntry, name: &str, kind: NodeType) -> DirEntry {
-    parent
-        .as_dir()
-        .unwrap()
-        .create(name, kind, NodePermission::default(), 0, 0)
+fn create(
+    mount: &std::sync::Arc<axfs_ng_vfs::Mountpoint>,
+    parent: &DirEntry,
+    name: &str,
+    kind: NodeType,
+) -> DirEntry {
+    axfs_ng_vfs::Location::new(mount.clone(), parent.clone())
+        .create(
+            name,
+            kind,
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
+        .map(|location| location.entry().clone())
         .unwrap()
 }
 
@@ -20,9 +35,9 @@ fn rename_moves_the_original_alias_and_live_descendant_chain() {
     let filesystem = MemoryFs::new();
     let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
     let root = filesystem.root_dir();
-    let source = create(&root, "source", NodeType::Directory);
-    let destination = create(&root, "destination", NodeType::Directory);
-    let descendant = create(&source, "descendant", NodeType::Directory);
+    let source = create(&mount, &root, "source", NodeType::Directory);
+    let destination = create(&mount, &root, "destination", NodeType::Directory);
+    let descendant = create(&mount, &source, "descendant", NodeType::Directory);
     let identity = source.key();
 
     mount
@@ -78,6 +93,11 @@ fn rename_moves_the_original_alias_and_live_descendant_chain() {
                     NodePermission::from_bits_truncate(0o777),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let q = root
@@ -87,6 +107,11 @@ fn rename_moves_the_original_alias_and_live_descendant_chain() {
                     NodePermission::from_bits_truncate(0o777),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let source = p
@@ -96,6 +121,11 @@ fn rename_moves_the_original_alias_and_live_descendant_chain() {
                     NodePermission::from_bits_truncate(mode),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let destination = if cross_parent { &q } else { &p };
@@ -167,8 +197,8 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
     let filesystem = MemoryFs::new();
     let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
     let root = filesystem.root_dir();
-    let source = create(&root, "source", NodeType::RegularFile);
-    let overwritten = create(&root, "target", NodeType::RegularFile);
+    let source = create(&mount, &root, "source", NodeType::RegularFile);
+    let overwritten = create(&mount, &root, "target", NodeType::RegularFile);
     let old_inode = overwritten.inode();
 
     mount
@@ -191,7 +221,14 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
     assert_eq!(overwritten.inode(), old_inode);
     assert_ne!(overwritten.inode(), source.inode());
 
-    let alias = root.as_dir().unwrap().link("alias", &source).unwrap();
+    let alias = axfs_ng_vfs::Location::new(mount.clone(), root.clone())
+        .link(
+            "alias",
+            &axfs_ng_vfs::Location::new(mount.clone(), source.clone()),
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .map(|location| location.entry().clone())
+        .unwrap();
     assert!(!alias.ptr_eq(&source));
     assert_eq!(alias.inode(), source.inode());
     mount
@@ -220,16 +257,23 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
     assert_eq!(source.name_state(), NameState::Linked);
     assert_eq!(alias.name_state(), NameState::Linked);
 
-    let directory = create(&root, "deleted", NodeType::Directory);
-    root.as_dir().unwrap().unlink("deleted", true).unwrap();
+    let directory = create(&mount, &root, "deleted", NodeType::Directory);
+    axfs_ng_vfs::Location::new(mount.clone(), root.clone())
+        .unlink("deleted", true, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     assert_eq!(directory.name_state(), NameState::Unlinked);
     assert!(matches!(
-        directory.as_dir().unwrap().create(
+        axfs_ng_vfs::Location::new(mount.clone(), directory.clone()).create(
             "child",
             NodeType::RegularFile,
             NodePermission::default(),
             0,
-            0
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            }
         ),
         Err(VfsError::NotFound)
     ));
@@ -252,6 +296,11 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
                     NodePermission::from_bits_truncate(0o555),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let source = parent
@@ -261,9 +310,16 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
                     NodePermission::default(),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
-            let alias = parent.link("alias", &source).unwrap();
+            let alias = parent
+                .link("alias", &source, &axfs_ng_vfs::MutationCredentials::root())
+                .unwrap();
             #[cfg(feature = "vfs")]
             let context = ax_fs_ng::FsContext::new(parent.clone());
             let rename = |source_name, destination_name, options| {
@@ -348,6 +404,7 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
 
 fn unprivileged_credentials() -> MutationCredentials<'static> {
     MutationCredentials {
+        cap_mknod: false,
         fsuid: 1000,
         fsgid: 1000,
         supplementary_gids: &[],
@@ -375,17 +432,19 @@ fn directory_parent_inode(directory: &DirEntry) -> u64 {
 #[test]
 fn positive_retention_is_bounded_without_losing_live_ancestors() {
     let filesystem = MemoryFs::new();
+    let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
     let root = filesystem.root_dir();
-    let unused = create(&root, "unused", NodeType::RegularFile);
+    let unused = create(&mount, &root, "unused", NodeType::RegularFile);
     let unused_weak = unused.downgrade();
     drop(unused);
-    let ancestor = create(&root, "ancestor", NodeType::Directory);
-    let descendant = create(&ancestor, "active", NodeType::Directory);
+    let ancestor = create(&mount, &root, "ancestor", NodeType::Directory);
+    let descendant = create(&mount, &ancestor, "active", NodeType::Directory);
     let ancestor_weak = ancestor.downgrade();
     drop(ancestor);
 
     for index in 0..1024 {
         drop(create(
+            &mount,
             &root,
             &format!("retained-{index}"),
             NodeType::RegularFile,

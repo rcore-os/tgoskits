@@ -60,24 +60,11 @@ impl NodeOps for WriteLayerRoot {
 impl DirNodeOps for WriteLayerRoot {
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize>;
     fn lookup(&self, name: &str) -> VfsResult<DirEntry>;
-    fn create(
+    fn mutate_namespace(
         &self,
-        name: &str,
-        node_type: NodeType,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry>;
-    fn create_symlink(
-        &self,
-        name: &str,
-        target: &str,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry>;
-    fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry>;
-    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()>;
+        command: &crate::NamespaceMutation<'_>,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect>;
 }
 
 fn layer(depth: u32, roots: Vec<Location>) -> Location {

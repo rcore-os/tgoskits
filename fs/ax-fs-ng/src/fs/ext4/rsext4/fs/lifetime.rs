@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use axfs_ng_vfs::VfsResult;
 use rsext4::InodeNumber;
 
-use super::{AccessGate, Ext4Filesystem, Ext4State, into_vfs_err, namespace::NamespaceChange};
+use super::{AccessGate, Ext4Filesystem, Ext4State, into_vfs_err};
 
 /// A registered reference to one allocated inode on one mount. This owner can
 /// exist before its VFS wrapper: an independent metadata read must not rely on
@@ -57,35 +57,6 @@ impl Ext4State {
 }
 
 impl InodeLifetime {
-    /// Replays only atomic namespace operations, never partial file mutations.
-    /// Every attempt re-resolves names under fresh namespace exclusion. The
-    /// closure must retain any successful child before releasing mount state.
-    pub(crate) fn mutate_namespace<T>(
-        &self,
-        scope: NamespaceChange,
-        mut operation: impl FnMut(&mut Ext4State) -> rsext4::Ext4Result<T>,
-    ) -> VfsResult<T> {
-        let filesystem = &self.filesystem;
-        let _admission = filesystem.admission.enter().map_err(into_vfs_err)?;
-        loop {
-            let attempt = {
-                let _namespace = filesystem.namespace.change(self.number, scope)?;
-                filesystem.attempt_admitted_mutation(|state| {
-                    state.ensure_linked_parent(self.number)?;
-                    operation(state)
-                })
-            };
-            // All namespace and mount guards are gone before committing or
-            // persisting an abort. Admission and allocation references remain.
-            if let Some(value) = filesystem
-                .finish_mutation_attempt(attempt)
-                .map_err(into_vfs_err)?
-            {
-                return Ok(value);
-            }
-        }
-    }
-
     /// Lookup and reference acquisition share one namespace publication point.
     /// Later unlink may remove the name, but cannot recycle the selected inode
     /// during its independent metadata load. The VFS cache separately checks

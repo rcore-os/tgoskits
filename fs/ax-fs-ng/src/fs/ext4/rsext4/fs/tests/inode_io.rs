@@ -49,9 +49,16 @@ fn hardlink_write_append_truncate_and_hole_punch_share_inode_exclusion() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
-    let alias = root.link("alias", &input).unwrap();
+    let alias = root
+        .link("alias", &input, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     let number = InodeNumber::new(input.inode() as u32).unwrap();
     assert_eq!(alias.inode(), input.inode());
     let inode = filesystem.inode_access(number);

@@ -108,27 +108,57 @@ fn negative_directory_cache_follows_create_link_symlink_and_unlink() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     assert_eq!(
         directory.lookup("created").unwrap().inode(),
         created.inode()
     );
-    let linked = directory.link("linked", &created).unwrap();
+    let linked = directory
+        .link(
+            "linked",
+            &created,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
     assert_eq!(directory.lookup("linked").unwrap().inode(), created.inode());
     let symbolic = directory
-        .create_symlink("symbolic", "created", NodePermission::default(), 0, 0)
+        .create_symlink(
+            "symbolic",
+            "created",
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
         .unwrap();
     assert_eq!(
         directory.lookup("symbolic").unwrap().inode(),
         symbolic.inode()
     );
-    directory.unlink("linked", false).unwrap();
+    directory
+        .unlink("linked", false, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     assert!(matches!(
         directory.lookup("linked"),
         Err(VfsError::NotFound)
     ));
-    directory.link("linked", &created).unwrap();
+    directory
+        .link(
+            "linked",
+            &created,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
     assert_eq!(directory.lookup("linked").unwrap().inode(), linked.inode());
 }
 
@@ -142,6 +172,11 @@ fn negative_directory_cache_is_revalidated_through_a_renamed_open_directory() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     root.rename(
@@ -170,6 +205,11 @@ fn negative_directory_cache_is_revalidated_through_a_renamed_open_directory() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     assert_eq!(
@@ -190,6 +230,11 @@ fn negative_directory_cache_follows_rename_and_preserves_unsupported_whiteout() 
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     let original = root
@@ -199,6 +244,11 @@ fn negative_directory_cache_follows_rename_and_preserves_unsupported_whiteout() 
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     assert!(matches!(
@@ -265,12 +315,28 @@ fn negative_directory_cache_follows_rename_and_preserves_unsupported_whiteout() 
     .map(|(kind, target_name)| {
         let (_, root, _) = super::sync_policy::background_mount();
         let source = root
-            .create("a", kind, NodePermission::default(), 0, 0)
+            .create(
+                "a",
+                kind,
+                NodePermission::default(),
+                0,
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
             .unwrap();
         let target = if target_name == "a" {
             source.clone()
         } else {
-            root.link(target_name, &source).unwrap()
+            root.link(
+                target_name,
+                &source,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap()
         };
         let links_before = source.metadata().unwrap().nlink;
         let result = root.rename_with_options(
@@ -298,6 +364,11 @@ fn negative_directory_cache_follows_rename_and_preserves_unsupported_whiteout() 
                     NodePermission::default(),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .and_then(|child| {
                     root.lookup_no_follow("a")?
@@ -368,6 +439,11 @@ fn directory_exchange_preserves_both_cached_file_owners() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     let second = directory
@@ -377,6 +453,11 @@ fn directory_exchange_preserves_both_cached_file_owners() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     first.user_data().insert(1_u32);
@@ -397,6 +478,7 @@ fn directory_exchange_preserves_both_cached_file_owners() {
     assert_eq!(*new_second.user_data().get::<u32>().unwrap(), 1);
 
     let credentials = axfs_ng_vfs::MutationCredentials {
+        cap_mknod: false,
         fsuid: 1000,
         fsgid: 1000,
         supplementary_gids: &[],
@@ -414,6 +496,11 @@ fn directory_exchange_preserves_both_cached_file_owners() {
                     NodePermission::from_bits_truncate(0o777),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let q = root
@@ -423,6 +510,11 @@ fn directory_exchange_preserves_both_cached_file_owners() {
                     NodePermission::from_bits_truncate(0o777),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let source = p
@@ -432,6 +524,11 @@ fn directory_exchange_preserves_both_cached_file_owners() {
                     NodePermission::from_bits_truncate(source_mode),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let target = q
@@ -441,6 +538,11 @@ fn directory_exchange_preserves_both_cached_file_owners() {
                     NodePermission::from_bits_truncate(target_mode),
                     0,
                     0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
                 )
                 .unwrap();
             let links_before = (
@@ -579,9 +681,16 @@ fn hardlink_metadata_updates_remain_visible_without_global_lock_after_unlink() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
-    let alias = root.link("alias", &input).unwrap();
+    let alias = root
+        .link("alias", &input, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     alias
         .update_metadata(MetadataUpdate {
             mode: Some(NodePermission::from_bits_truncate(0o640)),
@@ -590,8 +699,10 @@ fn hardlink_metadata_updates_remain_visible_without_global_lock_after_unlink() {
         })
         .unwrap();
     alias.entry().as_file().unwrap().set_len(7).unwrap();
-    root.unlink("input", false).unwrap();
-    root.unlink("alias", false).unwrap();
+    root.unlink("input", false, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
+    root.unlink("alias", false, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     let _state = filesystem.lock();
     let _cache_only = CacheOnlyInspection::begin();
 

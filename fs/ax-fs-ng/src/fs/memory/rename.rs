@@ -1,8 +1,10 @@
 //! A memory filesystem's gate-bearing rename attempt.
 
 use axfs_ng_vfs::{
-    AuthorizedRename, LockedAttempt, MutationRetire, NamespaceMutation, NamespaceNode,
-    NamespaceOutcome, RenameEffect, RenameNode, RenameObservation, RenameRequest,
+    AuthorizedCreate, AuthorizedMutation, AuthorizedRename, CreateContent, CreateEffect,
+    LockedAttempt, MutationObservation, MutationRetire, NamespaceEffect, NamespaceEntry,
+    NamespaceMutation, NamespaceNode, NamespaceOutcome, RenameEffect, RenameNode,
+    RenameObservation,
 };
 
 use super::*;
@@ -19,10 +21,10 @@ impl MemoryNode {
         &self,
         command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> NamespaceOutcome<RenameEffect> {
-        let NamespaceMutation::Rename(request) = command;
-        let destination = match request
-            .destination_parent()
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let destination = match command
+            .parents()
+            .1
             .as_dir()
             .and_then(|directory| directory.downcast::<Self>())
         {
@@ -32,7 +34,9 @@ impl MemoryNode {
         if !Arc::ptr_eq(&self.fs, &destination.fs) {
             return NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
         }
-        if request.options().exchange() || request.options().whiteout() {
+        if let NamespaceMutation::Rename(request) = command
+            && (request.options().exchange() || request.options().whiteout())
+        {
             return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
         }
         let mut attempt = MemoryAttempt {
@@ -40,11 +44,72 @@ impl MemoryNode {
             source: self,
             destination: &destination,
         };
-        request.execute(&mut attempt, retired)
+        command.execute(&mut attempt, retired)
     }
 }
 
 impl MemoryAttempt<'_> {
+    fn create(
+        &mut self,
+        authorized: &AuthorizedCreate<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let request = authorized.request();
+        let content = request.attributes().content;
+        let kind = content.node_type();
+        let target_len = match content {
+            CreateContent::Symlink(target) => target.len() as u64,
+            _ => 0,
+        };
+        if let Err(error) = self.source.fs.resize_usage(0, target_len) {
+            return NamespaceOutcome::unchanged(Err(error));
+        }
+        let (uid, gid) = authorized.owner();
+        let inode = Inode::new(
+            &self.source.fs,
+            Some(self.source.inode.ino),
+            kind,
+            authorized.permission(),
+            uid,
+            gid,
+            TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
+        );
+        retired.retire(inode.clone());
+        match content {
+            CreateContent::Symlink(target) => {
+                let file = inode.as_file().expect("new symlink file");
+                file.length.store(target_len, AtomicOrdering::Release);
+                *file.symlink.lock() = Some(target.to_owned());
+            }
+            CreateContent::Node(_, device) => inode.metadata.lock_irqsave().rdev = device,
+        }
+        let entry = self
+            .source
+            .new_entry(request.name(), kind, inode.clone())
+            .expect("validated directory");
+        retired.retire(entry.clone());
+        let directory = self.source.inode.as_dir().expect("locked directory");
+        let cookie = directory.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
+        let reference = InodeRef::new(self.source.fs.clone(), inode.ino, kind, cookie);
+        let old = directory
+            .entries
+            .lock_irqsave()
+            .insert(request.name().into(), reference);
+        assert!(old.is_none(), "authorized vacant slot");
+        retired.retire(old);
+        NamespaceOutcome::applied(
+            NamespaceEffect::Create(CreateEffect {
+                selected: NamespaceEntry {
+                    entry,
+                    canonical_name: request.name().into(),
+                    cacheable: true,
+                },
+                created: true,
+            }),
+            Ok(()),
+        )
+    }
+
     fn observe_node(
         &self,
         parent: &MemoryNode,
@@ -99,9 +164,52 @@ impl LockedAttempt for MemoryAttempt<'_> {
 
     fn observe(
         &mut self,
-        request: &RenameRequest<'_>,
+        command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> VfsResult<RenameObservation> {
+    ) -> VfsResult<MutationObservation> {
+        let optional = |attempt: &Self, parent: &MemoryNode, name: &str| match attempt
+            .observe_node(parent, name, retired)
+        {
+            Ok(node) => Ok(Some(node)),
+            Err(VfsError::NotFound) => Ok(None),
+            Err(error) => Err(error),
+        };
+        let request = match command {
+            NamespaceMutation::Create(request) => {
+                return Ok(MutationObservation::Create(optional(
+                    self,
+                    self.source,
+                    request.name(),
+                )?));
+            }
+            NamespaceMutation::Link(request) => {
+                let source = request.source().downcast::<MemoryNode>()?;
+                if !Arc::ptr_eq(&source.fs, &self.source.fs) {
+                    return Err(VfsError::CrossesDevices);
+                }
+                let metadata = source.inode.metadata.lock_irqsave().clone();
+                let node = RenameNode {
+                    entry: request.source().clone(),
+                    metadata,
+                    canonical_name: request.source().name(),
+                    cacheable: true,
+                    empty: false,
+                };
+                retired.retire(source);
+                return Ok(MutationObservation::Link {
+                    source: node,
+                    target: optional(self, self.source, request.name())?,
+                });
+            }
+            NamespaceMutation::Unlink(request) => {
+                return Ok(MutationObservation::Unlink(self.observe_node(
+                    self.source,
+                    request.name(),
+                    retired,
+                )?));
+            }
+            NamespaceMutation::Rename(request) => request,
+        };
         let source = self.observe_node(self.source, request.source_name(), retired)?;
         let target = match self.observe_node(self.destination, request.destination_name(), retired)
         {
@@ -109,7 +217,10 @@ impl LockedAttempt for MemoryAttempt<'_> {
             Err(VfsError::NotFound) => None,
             Err(error) => return Err(error),
         };
-        Ok(RenameObservation { source, target })
+        Ok(MutationObservation::Rename(RenameObservation {
+            source,
+            target,
+        }))
     }
 
     fn is_ancestor(&mut self, ancestor: &NamespaceNode, mut directory: u64) -> VfsResult<bool> {
@@ -139,9 +250,73 @@ impl LockedAttempt for MemoryAttempt<'_> {
 
     fn commit(
         &mut self,
+        authorized: &AuthorizedMutation<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        match authorized {
+            AuthorizedMutation::Create(authorized) => self.create(authorized, retired),
+            AuthorizedMutation::Link(authorized) => {
+                let source = authorized
+                    .source()
+                    .entry
+                    .downcast::<MemoryNode>()
+                    .expect("observed memory source");
+                let directory = self.source.inode.as_dir().expect("locked directory");
+                let kind = authorized.source().entry.node_type();
+                let name = authorized.request().name();
+                let cookie = directory.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
+                let reference =
+                    InodeRef::new(self.source.fs.clone(), source.inode.ino, kind, cookie);
+                let entry = self
+                    .source
+                    .new_entry(name, kind, source.inode.clone())
+                    .expect("locked directory");
+                retired.retire(entry.clone());
+                retired.retire(source);
+                let old = directory
+                    .entries
+                    .lock_irqsave()
+                    .insert(name.into(), reference);
+                assert!(old.is_none(), "authorized vacant link slot");
+                retired.retire(old);
+                NamespaceOutcome::applied(
+                    NamespaceEffect::Link(NamespaceEntry {
+                        entry,
+                        canonical_name: name.into(),
+                        cacheable: true,
+                    }),
+                    Ok(()),
+                )
+            }
+            AuthorizedMutation::Unlink(authorized) => {
+                let directory = self.source.inode.as_dir().expect("locked directory");
+                let removed = directory
+                    .entries
+                    .lock_irqsave()
+                    .remove(authorized.request().name())
+                    .expect("authorized occupied slot");
+                let inode = removed.get();
+                retired.retire(MemoryNode::clear_dir_entries(&inode));
+                retired.retire(inode);
+                retired.retire(removed);
+                NamespaceOutcome::applied(
+                    NamespaceEffect::Unlink(authorized.target().selected()),
+                    Ok(()),
+                )
+            }
+            AuthorizedMutation::Rename(authorized) => self
+                .rename(authorized, retired)
+                .map(NamespaceEffect::Rename),
+        }
+    }
+}
+
+impl MemoryAttempt<'_> {
+    fn rename(
+        &mut self,
         authorized: &AuthorizedRename<'_>,
         retired: &MutationRetire,
-    ) -> NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
+    ) -> NamespaceOutcome<RenameEffect> {
         let request = authorized.request();
         let source_dir = self.source.inode.as_dir().expect("locked directory");
         let destination_dir = self.destination.inode.as_dir().expect("locked directory");

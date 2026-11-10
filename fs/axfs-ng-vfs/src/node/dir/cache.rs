@@ -52,14 +52,6 @@ impl NameChange<'_> {
         self.complete = true;
     }
 
-    pub(super) fn invalidate_affected(&mut self) {
-        self.collect_affected();
-        self.directory.cache.lock().valid.clear();
-        for entry in &self.affected {
-            entry.invalidate_name();
-        }
-    }
-
     pub(super) fn finish_pair(&mut self, other: &mut Self) {
         self.collect_affected();
         other.collect_affected();
@@ -146,11 +138,6 @@ fn release_retained(children: &[DirEntry]) {
 }
 
 impl DirNode {
-    pub(super) fn begin_name_change(&self) -> NameChange<'_> {
-        let publication = super::super::name::NamePublication::begin(self.ops.namespace_domain());
-        self.begin_name_change_with(publication)
-    }
-
     fn begin_name_change_with(
         &self,
         publication: Arc<super::super::name::NamePublication>,
@@ -266,11 +253,6 @@ impl DirNode {
             entry.set_name_state(NameState::Untrusted);
         }
         retired.retire(removed);
-    }
-
-    pub(super) fn release_mutation_probe(entry: DirEntry) -> Option<DirEntry> {
-        release_retained(core::slice::from_ref(&entry));
-        entry.has_other_owners().then_some(entry)
     }
 
     pub(super) fn lookup_and_cache(&self, name: &str) -> VfsResult<DirEntry> {
@@ -414,10 +396,6 @@ impl DirNode {
         let DirectoryCache { valid, entries, .. } = &mut **cache;
         valid.retain(|name| entries.contains_key(name));
         old.upgrade()
-    }
-
-    pub(super) fn invalidate_missing_entries(&self) {
-        self.cache.lock().invalidate_missing();
     }
 
     /// Releases retention without discarding the identity of an active alias.

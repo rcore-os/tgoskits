@@ -3,11 +3,15 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use axfs_ng_vfs::{
-    AuthorizedRename, LockedAttempt, Metadata, MutationRetire, NamespaceMutation, NamespaceNode,
-    NamespaceOutcome, NamespaceState, NodeOps, NodeType, RenameEffect, RenameNode,
-    RenameObservation, RenameRequest, VfsError, VfsResult,
+    AuthorizedCreate, AuthorizedMutation, AuthorizedRename, CreateContent, CreateEffect,
+    LockedAttempt, Metadata, MutationObservation, MutationRetire, NamespaceEffect, NamespaceEntry,
+    NamespaceMutation, NamespaceNode, NamespaceOutcome, NamespaceState, NodeOps, NodeType,
+    RenameEffect, RenameNode, RenameObservation, VfsError, VfsResult,
 };
-use rsext4::{Ext4Error, Ext4Result, FileName, InodeNumber};
+use rsext4::{
+    DeviceNumber, Ext4Error, Ext4Result, FileName, FilePermissions, InodeNumber, MutationContext,
+    SpecialInodeKind,
+};
 
 use super::{
     super::{
@@ -33,9 +37,8 @@ impl Ext4Filesystem {
         self: &Arc<Self>,
         command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> NamespaceOutcome<RenameEffect> {
-        let NamespaceMutation::Rename(request) = command;
-        let (source, destination) = match self.rename_parents(request) {
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let (source, destination) = match self.command_parents(command) {
             Ok(parents) => parents,
             Err(error) => return NamespaceOutcome::unchanged(Err(error)),
         };
@@ -49,18 +52,21 @@ impl Ext4Filesystem {
             };
             loop {
                 let completed = {
-                    let namespace = match self
-                        .namespace
-                        .change(source.number(), NamespaceChange::Topology)
-                    {
+                    let scope = match command {
+                        NamespaceMutation::Rename(_) => NamespaceChange::Topology,
+                        NamespaceMutation::Unlink(request) if request.directory() => {
+                            NamespaceChange::Topology
+                        }
+                        _ => NamespaceChange::Directory,
+                    };
+                    let namespace = match self.namespace.change(source.number(), scope) {
                         Ok(namespace) => namespace,
                         Err(error) => return NamespaceOutcome::unchanged(Err(error)),
                     };
-                    let mut state = self.lock();
+                    let state = self.lock();
                     if state.staging {
                         None
                     } else {
-                        state.dirty = true;
                         let mut attempt = Ext4Attempt {
                             state,
                             _namespace: namespace,
@@ -70,7 +76,7 @@ impl Ext4Filesystem {
                             error: None,
                             reap: None,
                         };
-                        let outcome = request.execute(&mut attempt, retired);
+                        let outcome = command.execute(&mut attempt, retired);
                         Some((outcome, attempt.error.take(), attempt.reap.take()))
                     }
                 };
@@ -112,6 +118,10 @@ impl Ext4Filesystem {
                 }
             }
         };
+        if matches!(outcome.observation(), Some(NamespaceEffect::Create(effect)) if !effect.created)
+        {
+            return outcome;
+        }
         // Do not recursively enter operation admission while retaining its
         // outer guard: a concurrent lifecycle pause may be draining that guard.
         let completion = (|| {
@@ -129,22 +139,143 @@ impl Ext4Filesystem {
         outcome.with_completion(completion)
     }
 
-    fn rename_parents(
+    fn command_parents(
         self: &Arc<Self>,
-        request: &RenameRequest<'_>,
+        command: &NamespaceMutation<'_>,
     ) -> VfsResult<(Arc<Inode>, Arc<Inode>)> {
-        let source = request.source_parent().as_dir()?.downcast::<Inode>()?;
-        let destination = request.destination_parent().as_dir()?.downcast::<Inode>()?;
+        let (source, destination) = command.parents();
+        let source = source.as_dir()?.downcast::<Inode>()?;
+        let destination = destination.as_dir()?.downcast::<Inode>()?;
         if !Arc::ptr_eq(self, source.fs()) || !Arc::ptr_eq(self, destination.fs()) {
             return Err(VfsError::CrossesDevices);
         }
-        FileName::new(request.source_name().as_bytes()).map_err(into_vfs_err)?;
-        FileName::new(request.destination_name().as_bytes()).map_err(into_vfs_err)?;
+        match command {
+            NamespaceMutation::Create(request) => {
+                FileName::new(request.name().as_bytes()).map_err(into_vfs_err)?;
+            }
+            NamespaceMutation::Link(request) => {
+                FileName::new(request.name().as_bytes()).map_err(into_vfs_err)?;
+            }
+            NamespaceMutation::Unlink(request) => {
+                FileName::new(request.name().as_bytes()).map_err(into_vfs_err)?;
+            }
+            NamespaceMutation::Rename(request) => {
+                FileName::new(request.source_name().as_bytes()).map_err(into_vfs_err)?;
+                FileName::new(request.destination_name().as_bytes()).map_err(into_vfs_err)?;
+            }
+        }
         Ok((source, destination))
     }
 }
 
 impl Ext4Attempt<'_> {
+    fn failed(&mut self, error: Ext4Error) -> NamespaceOutcome<NamespaceEffect> {
+        self.error = Some(error);
+        if error.requires_journal_progress() {
+            NamespaceOutcome::retry()
+        } else {
+            NamespaceOutcome::uncertain(None, Err(into_vfs_err(error)))
+        }
+    }
+
+    fn created_entry(
+        &mut self,
+        info: rsext4::InodeInfo,
+        name: &str,
+        retired: &MutationRetire,
+    ) -> NamespaceEntry {
+        let lifetime = self.state.retain_inode(self.filesystem, info.number);
+        let entry = self.source.create_entry(
+            LocatedInode {
+                lifetime,
+                file_type: info.file_type(),
+            },
+            name,
+        );
+        retired.retire(entry.clone());
+        NamespaceEntry {
+            entry,
+            canonical_name: name.into(),
+            cacheable: true,
+        }
+    }
+
+    fn create(
+        &mut self,
+        authorized: &AuthorizedCreate<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let request = authorized.request();
+        let name = FileName::new(request.name().as_bytes()).expect("validated name");
+        let permissions =
+            FilePermissions::new(authorized.permission().bits()).expect("permission bits");
+        let (uid, gid) = authorized.owner();
+        let context = MutationContext::new(uid, gid, 0, 0);
+        let parent = self.source.number();
+        self.state.dirty = true;
+        let result = match request.attributes().content {
+            CreateContent::Symlink(target) => {
+                self.state
+                    .ext4
+                    .create_symlink(context, parent, name, target.as_bytes())
+            }
+            CreateContent::Node(kind, device) => match kind {
+                NodeType::RegularFile => {
+                    self.state
+                        .ext4
+                        .create_regular_file(context, parent, name, permissions)
+                }
+                NodeType::Directory => {
+                    self.state
+                        .ext4
+                        .create_directory(context, parent, name, permissions)
+                }
+                NodeType::CharacterDevice | NodeType::BlockDevice => {
+                    let device = match DeviceNumber::new(device.major(), device.minor()) {
+                        Ok(device) => device,
+                        Err(error) => return NamespaceOutcome::unchanged(Err(into_vfs_err(error))),
+                    };
+                    let kind = if kind == NodeType::CharacterDevice {
+                        SpecialInodeKind::CharacterDevice(device)
+                    } else {
+                        SpecialInodeKind::BlockDevice(device)
+                    };
+                    self.state
+                        .ext4
+                        .create_special_inode(context, parent, name, permissions, kind)
+                }
+                NodeType::Fifo => self.state.ext4.create_special_inode(
+                    context,
+                    parent,
+                    name,
+                    permissions,
+                    SpecialInodeKind::Fifo,
+                ),
+                NodeType::Socket => self.state.ext4.create_special_inode(
+                    context,
+                    parent,
+                    name,
+                    permissions,
+                    SpecialInodeKind::Socket,
+                ),
+                _ => return NamespaceOutcome::unchanged(Err(VfsError::InvalidInput)),
+            },
+        };
+        match result {
+            Ok(info) => {
+                let selected = self.created_entry(info, request.name(), retired);
+                NamespaceOutcome::applied(
+                    NamespaceEffect::Create(CreateEffect {
+                        selected,
+                        created: true,
+                    }),
+                    Ok(()),
+                )
+            }
+            Err(error) => self.failed(error),
+        }
+    }
+
     fn core<T>(&mut self, result: Ext4Result<T>) -> VfsResult<T> {
         result.map_err(|error| {
             self.error = Some(error);
@@ -221,9 +352,57 @@ impl LockedAttempt for Ext4Attempt<'_> {
 
     fn observe(
         &mut self,
-        request: &RenameRequest<'_>,
+        command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> VfsResult<RenameObservation> {
+    ) -> VfsResult<MutationObservation> {
+        let request = match command {
+            NamespaceMutation::Create(request) => {
+                let target = match self.observe_node(self.source, request.name(), retired) {
+                    Ok(target) => Some(target),
+                    Err(VfsError::NotFound) => None,
+                    Err(error) => return Err(error),
+                };
+                return Ok(MutationObservation::Create(target));
+            }
+            NamespaceMutation::Link(request) => {
+                let source = request.source().downcast::<Inode>()?;
+                if !Arc::ptr_eq(self.filesystem, source.fs()) {
+                    return Err(VfsError::CrossesDevices);
+                }
+                let result = self.state.ext4.inode(source.number());
+                let info = self.core(result)?;
+                let metadata = metadata_from_info(
+                    source.number().as_u64(),
+                    self.filesystem.block_size(),
+                    info,
+                );
+                let node = RenameNode {
+                    entry: request.source().clone(),
+                    metadata,
+                    canonical_name: request.source().name(),
+                    cacheable: true,
+                    empty: false,
+                };
+                retired.retire(source);
+                let target = match self.observe_node(self.source, request.name(), retired) {
+                    Ok(target) => Some(target),
+                    Err(VfsError::NotFound) => None,
+                    Err(error) => return Err(error),
+                };
+                return Ok(MutationObservation::Link {
+                    source: node,
+                    target,
+                });
+            }
+            NamespaceMutation::Unlink(request) => {
+                return Ok(MutationObservation::Unlink(self.observe_node(
+                    self.source,
+                    request.name(),
+                    retired,
+                )?));
+            }
+            NamespaceMutation::Rename(request) => request,
+        };
         let source = self.observe_node(self.source, request.source_name(), retired)?;
         let target = match self.observe_node(self.destination, request.destination_name(), retired)
         {
@@ -231,7 +410,10 @@ impl LockedAttempt for Ext4Attempt<'_> {
             Err(VfsError::NotFound) => None,
             Err(error) => return Err(error),
         };
-        Ok(RenameObservation { source, target })
+        Ok(MutationObservation::Rename(RenameObservation {
+            source,
+            target,
+        }))
     }
 
     fn is_ancestor(&mut self, ancestor: &NamespaceNode, mut directory: u64) -> VfsResult<bool> {
@@ -261,9 +443,68 @@ impl LockedAttempt for Ext4Attempt<'_> {
 
     fn commit(
         &mut self,
-        authorized: &AuthorizedRename<'_>,
-        _retired: &MutationRetire,
-    ) -> NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
+        authorized: &AuthorizedMutation<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        match authorized {
+            AuthorizedMutation::Create(authorized) => self.create(authorized, retired),
+            AuthorizedMutation::Link(authorized) => {
+                let request = authorized.request();
+                let source = authorized
+                    .source()
+                    .entry
+                    .downcast::<Inode>()
+                    .expect("observed ext4 source");
+                self.state.dirty = true;
+                let result = self.state.ext4.hard_link(
+                    source.number(),
+                    self.source.number(),
+                    FileName::new(request.name().as_bytes()).expect("validated name"),
+                );
+                retired.retire(source);
+                match result {
+                    Ok(info) => {
+                        let entry = self.created_entry(info, request.name(), retired);
+                        NamespaceOutcome::applied(NamespaceEffect::Link(entry), Ok(()))
+                    }
+                    Err(error) => self.failed(error),
+                }
+            }
+            AuthorizedMutation::Unlink(authorized) => {
+                let request = authorized.request();
+                let name = FileName::new(request.name().as_bytes()).expect("validated name");
+                self.state.dirty = true;
+                let result = if request.directory() {
+                    self.state
+                        .ext4
+                        .remove_empty_directory(self.source.number(), name)
+                } else {
+                    self.state.ext4.unlink(self.source.number(), name)
+                };
+                match result {
+                    Ok(outcome) => {
+                        self.reap = outcome
+                            .requires_reap()
+                            .then(|| self.state.publish_zero_link(outcome.inode))
+                            .flatten();
+                        NamespaceOutcome::applied(
+                            NamespaceEffect::Unlink(authorized.target().selected()),
+                            Ok(()),
+                        )
+                    }
+                    Err(error) => self.failed(error),
+                }
+            }
+            AuthorizedMutation::Rename(authorized) => {
+                self.rename(authorized).map(NamespaceEffect::Rename)
+            }
+        }
+    }
+}
+
+impl Ext4Attempt<'_> {
+    fn rename(&mut self, authorized: &AuthorizedRename<'_>) -> NamespaceOutcome<RenameEffect> {
+        self.state.dirty = true;
         let request = authorized.request();
         let options = request.options();
         let options = match (options.no_replace(), options.exchange(), options.whiteout()) {

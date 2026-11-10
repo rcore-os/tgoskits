@@ -5,16 +5,11 @@ use alloc::{borrow::ToOwned, boxed::Box, sync::Arc};
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor as VfsDirectoryCursor,
     DirectoryReadState, FileExtentMap as VfsFileExtentMap, FileExtentTarget as VfsFileExtentTarget,
-    FileNode, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
+    FileNode, Reference, VfsError, VfsResult, WeakDirEntry,
 };
-use rsext4::{
-    DeviceNumber, FileName, FilePermissions, InodeFlags, MutationContext, SpecialInodeKind,
-};
+use rsext4::{FileName, InodeFlags};
 
-use super::{
-    super::{fs::NamespaceChange, util::directory_entry_type_to_vfs},
-    Inode, LocatedInode, into_vfs_err,
-};
+use super::{super::util::directory_entry_type_to_vfs, Inode, LocatedInode, into_vfs_err};
 
 mod cursor;
 use cursor::{
@@ -117,201 +112,11 @@ impl DirNodeOps for Inode {
         self.lookup_entry(name)
     }
 
-    fn create(
-        &self,
-        name: &str,
-        node_type: NodeType,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry> {
-        let raw_name = FileName::new(name.as_bytes()).map_err(into_vfs_err)?;
-        let permissions = FilePermissions::new(permission.bits()).map_err(into_vfs_err)?;
-        let context = Self::mutation_context(uid, gid);
-        match node_type {
-            NodeType::Symlink => return Err(VfsError::InvalidInput),
-            NodeType::Unknown => return Err(VfsError::InvalidData),
-            _ => {}
-        }
-        let info = self
-            .lifetime
-            .mutate_namespace(NamespaceChange::Directory, |state| {
-                let info = match node_type {
-                    NodeType::RegularFile => state.ext4.create_regular_file(
-                        context,
-                        self.number(),
-                        raw_name,
-                        permissions,
-                    ),
-                    NodeType::Directory => {
-                        state
-                            .ext4
-                            .create_directory(context, self.number(), raw_name, permissions)
-                    }
-                    NodeType::Symlink => return Err(rsext4::Ext4Error::invalid_input()),
-                    NodeType::CharacterDevice => state.ext4.create_special_inode(
-                        context,
-                        self.number(),
-                        raw_name,
-                        permissions,
-                        SpecialInodeKind::CharacterDevice(DeviceNumber::ZERO),
-                    ),
-                    NodeType::BlockDevice => state.ext4.create_special_inode(
-                        context,
-                        self.number(),
-                        raw_name,
-                        permissions,
-                        SpecialInodeKind::BlockDevice(DeviceNumber::ZERO),
-                    ),
-                    NodeType::Fifo => state.ext4.create_special_inode(
-                        context,
-                        self.number(),
-                        raw_name,
-                        permissions,
-                        SpecialInodeKind::Fifo,
-                    ),
-                    NodeType::Socket => state.ext4.create_special_inode(
-                        context,
-                        self.number(),
-                        raw_name,
-                        permissions,
-                        SpecialInodeKind::Socket,
-                    ),
-                    NodeType::Unknown => return Err(rsext4::Ext4Error::invalid_input()),
-                }?;
-                Ok(LocatedInode {
-                    lifetime: state.retain_inode(self.fs(), info.number),
-                    file_type: info.file_type(),
-                })
-            })?;
-
-        let entry = self.create_entry(info, name);
-        self.finish_directory_change()?;
-        Ok(entry)
-    }
-
-    fn create_symlink(
-        &self,
-        name: &str,
-        target: &str,
-        _permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry> {
-        let raw_name = FileName::new(name.as_bytes()).map_err(into_vfs_err)?;
-        let info = self
-            .lifetime
-            .mutate_namespace(NamespaceChange::Directory, |state| {
-                let info = state.ext4.create_symlink(
-                    Self::mutation_context(uid, gid),
-                    self.number(),
-                    raw_name,
-                    target.as_bytes(),
-                )?;
-                Ok(LocatedInode {
-                    lifetime: state.retain_inode(self.fs(), info.number),
-                    file_type: info.file_type(),
-                })
-            })?;
-
-        let entry = self.create_entry(info, name);
-        self.finish_directory_change()?;
-        Ok(entry)
-    }
-
-    fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
-        let target: Arc<Self> = node.downcast().map_err(|_| VfsError::InvalidInput)?;
-        if !Arc::ptr_eq(self.fs(), target.fs()) {
-            return Err(VfsError::CrossesDevices);
-        }
-        let raw_name = FileName::new(name.as_bytes()).map_err(into_vfs_err)?;
-        let info = self
-            .lifetime
-            .mutate_namespace(NamespaceChange::Directory, |state| {
-                let info = state
-                    .ext4
-                    .hard_link(target.number(), self.number(), raw_name)?;
-                Ok(LocatedInode {
-                    lifetime: state.retain_inode(self.fs(), info.number),
-                    file_type: info.file_type(),
-                })
-            })?;
-        let entry = self.create_entry(info, name);
-        self.finish_directory_change()?;
-        Ok(entry)
-    }
-
-    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        self.unlink_outcome(name, is_dir).into_result()
-    }
-
-    fn unlink_outcome(
-        &self,
-        name: &str,
-        is_dir: bool,
-    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceNode> {
-        use axfs_ng_vfs::{NamespaceNode, NamespaceOutcome};
-        let mut observation = None;
-        let mut applied = false;
-        let result = (|| -> VfsResult<()> {
-            {
-                // Release closed, clean cache owners before another orphan-chain
-                // mutation. Drop the state lock before pruning: the final cache
-                // owner may reap its inode when dropped.
-                let has_orphans = self.fs().lock().has_pending_reaps();
-                if has_orphans {
-                    crate::file::prune_cached_files();
-                }
-            }
-            let raw_name = FileName::new(name.as_bytes()).map_err(into_vfs_err)?;
-            let scope = if is_dir {
-                NamespaceChange::Topology
-            } else {
-                NamespaceChange::Directory
-            };
-            let reap_claim = self.lifetime.mutate_namespace(scope, |state| {
-                let info = state
-                    .ext4
-                    .lookup_child(self.number(), raw_name)?
-                    .ok_or_else(rsext4::Ext4Error::not_found)?;
-                let target_is_dir = info.is_directory();
-                match (target_is_dir, is_dir) {
-                    (true, false) => return Err(rsext4::Ext4Error::is_dir()),
-                    (false, true) => return Err(rsext4::Ext4Error::not_dir()),
-                    _ => {}
-                }
-                let outcome = if target_is_dir {
-                    state.ext4.remove_empty_directory(self.number(), raw_name)
-                } else {
-                    state.ext4.unlink(self.number(), raw_name)
-                }?;
-                observation = Some(NamespaceNode::new(
-                    info.number.as_u64(),
-                    directory_entry_type_to_vfs(info.file_type()),
-                ));
-                if outcome.requires_reap() {
-                    Ok(state.publish_zero_link(outcome.inode))
-                } else {
-                    Ok(None)
-                }
-            })?;
-            applied = true;
-            if let Some(claim) = reap_claim {
-                self.fs().reap(claim)?;
-            }
-            self.finish_directory_change()
-        })();
-        match (applied, observation) {
-            (true, Some(node)) => NamespaceOutcome::applied(node, result),
-            (_, observation) => NamespaceOutcome::uncertain(observation, result),
-        }
-    }
-
     fn mutate_namespace(
         &self,
         command: &axfs_ng_vfs::NamespaceMutation<'_>,
         retired: &axfs_ng_vfs::MutationRetire,
-    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
         self.fs().run_namespace(command, retired)
     }
 }
@@ -335,10 +140,6 @@ impl Inode {
                 reference,
             )
         }
-    }
-
-    const fn mutation_context(uid: u32, gid: u32) -> MutationContext {
-        MutationContext::new(uid, gid, 0, 0)
     }
 
     fn lookup_entry(&self, name: &str) -> VfsResult<DirEntry> {

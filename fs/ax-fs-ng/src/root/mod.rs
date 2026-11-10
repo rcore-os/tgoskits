@@ -1545,7 +1545,14 @@ fn ensure_mountpoint_dir_result(root: &Location, path: &str) -> axfs_ng_vfs::Vfs
         Err(err) => return Err(err),
     }
 
-    match root.create(name, NodeType::Directory, NodePermission::default(), 0, 0) {
+    match root.create(
+        name,
+        NodeType::Directory,
+        NodePermission::default(),
+        0,
+        0,
+        &axfs_ng_vfs::MutationCredentials::root(),
+    ) {
         Ok(location) => Ok(location),
         Err(VfsError::ReadOnlyFilesystem) => create_transient_mountpoint_dir(root, path, name),
         Err(VfsError::AlreadyExists) => root.lookup_no_follow(name),
@@ -1952,17 +1959,6 @@ mod tests {
     }
 
     impl DirNodeOps for ReadonlyDir {
-        fn create_symlink(
-            &self,
-            _name: &str,
-            _target: &str,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
         fn read_dir(
             &self,
             _cursor: axfs_ng_vfs::DirectoryCursor,
@@ -2006,23 +2002,12 @@ mod tests {
             }
         }
 
-        fn create(
+        fn mutate_namespace(
             &self,
-            _name: &str,
-            _node_type: NodeType,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
+            _: &axfs_ng_vfs::NamespaceMutation<'_>,
+            _: &axfs_ng_vfs::MutationRetire,
+        ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
+            axfs_ng_vfs::NamespaceOutcome::unchanged(Err(VfsError::ReadOnlyFilesystem))
         }
     }
 
@@ -2542,7 +2527,12 @@ mod tests {
                 NodeType::Directory,
                 NodePermission::default(),
                 0,
-                0
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                }
             )
             .unwrap_err(),
             VfsError::ReadOnlyFilesystem

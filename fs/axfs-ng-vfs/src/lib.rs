@@ -16,6 +16,7 @@ mod writeback_policy;
 
 pub use fs::*;
 pub use mount::*;
+pub(crate) use node::MutationTarget;
 pub use node::*;
 pub use prepared_write::*;
 pub use types::*;

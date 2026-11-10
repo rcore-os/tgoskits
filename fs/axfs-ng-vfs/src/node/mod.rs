@@ -17,6 +17,7 @@ use core::{
 
 use axpoll::{IoEvents, Pollable};
 use bitflags::bitflags;
+pub(crate) use dir::MutationTarget;
 pub use dir::*;
 pub use file::*;
 use inherit_methods_macro::inherit_methods;
@@ -335,10 +336,6 @@ impl DirEntry {
         WeakDirEntry(Arc::downgrade(&self.0))
     }
 
-    pub(super) fn has_other_owners(&self) -> bool {
-        Arc::strong_count(&self.0) != 1
-    }
-
     pub fn key(&self) -> DirEntryId {
         DirEntryId(self.as_ptr())
     }
@@ -442,13 +439,6 @@ impl DirEntry {
 
     pub(crate) fn set_name_state(&self, state: NameState) {
         self.0.reference.lock().state = state;
-    }
-
-    pub(crate) fn invalidate_name(&self) {
-        let mut reference = self.0.reference.lock();
-        if matches!(reference.state, NameState::Linked | NameState::Root) {
-            reference.state = NameState::Untrusted;
-        }
     }
 
     pub fn node_type(&self) -> NodeType {

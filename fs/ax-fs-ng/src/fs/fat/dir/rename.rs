@@ -3,8 +3,9 @@
 use alloc::vec::Vec;
 
 use axfs_ng_vfs::{
-    AuthorizedRename, LockedAttempt, MutationRetire, NamespaceMutation, RenameNode,
-    RenameObservation, RenameRequest,
+    AuthorizedCreate, AuthorizedMutation, AuthorizedRename, CreateContent, CreateEffect,
+    LockedAttempt, MutationObservation, MutationRetire, NamespaceEffect, NamespaceMutation,
+    NamespaceNode, RenameNode, RenameObservation,
 };
 
 use super::*;
@@ -14,6 +15,7 @@ struct FatAttempt<'a> {
     source: &'a FatDirNode,
     destination: &'a FatDirNode,
     source_holder: Option<Arc<FatInode>>,
+    unlink_active: bool,
 }
 
 impl FatDirNode {
@@ -21,10 +23,10 @@ impl FatDirNode {
         &self,
         command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> NamespaceOutcome<axfs_ng_vfs::RenameEffect> {
-        let NamespaceMutation::Rename(request) = command;
-        let destination = match request
-            .destination_parent()
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let destination = match command
+            .parents()
+            .1
             .as_dir()
             .and_then(|directory| directory.downcast::<Self>())
         {
@@ -34,25 +36,73 @@ impl FatDirNode {
         if !Arc::ptr_eq(&self.state.fs, &destination.state.fs) {
             return NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
         }
-        if request.options().exchange() || request.options().whiteout() {
-            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
-        }
-        if let Err(error) = validate_rename_name(request.source_name())
-            .and_then(|()| validate_rename_name(request.destination_name()))
-        {
+        let names = match command {
+            NamespaceMutation::Rename(request) => {
+                if request.options().exchange() || request.options().whiteout() {
+                    return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
+                }
+                validate_rename_name(request.source_name())
+                    .and_then(|()| validate_rename_name(request.destination_name()))
+            }
+            NamespaceMutation::Create(request) => validate_rename_name(request.name()),
+            NamespaceMutation::Link(_) => {
+                return NamespaceOutcome::unchanged(Err(VfsError::PermissionDenied));
+            }
+            NamespaceMutation::Unlink(request) => validate_rename_name(request.name()),
+        };
+        if let Err(error) = names {
             return NamespaceOutcome::unchanged(Err(error));
+        }
+        if matches!(command, NamespaceMutation::Unlink(_)) {
+            crate::file::prune_cached_files_retiring(retired);
         }
         let mut attempt = FatAttempt {
             guard: self.state.fs.lock_retiring(retired),
             source: self,
             destination: &destination,
             source_holder: None,
+            unlink_active: false,
         };
-        request.execute(&mut attempt, retired)
+        command.execute(&mut attempt, retired)
     }
 }
 
 impl FatAttempt<'_> {
+    fn create(
+        &mut self,
+        authorized: &AuthorizedCreate<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let request = authorized.request();
+        let kind = request.attributes().content;
+        let directory = match self.source.state.directory(&self.guard) {
+            Ok(directory) => directory,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        let result = match kind {
+            CreateContent::Node(NodeType::RegularFile, _) => {
+                directory.create_file(request.name()).map(drop)
+            }
+            CreateContent::Node(NodeType::Directory, _) => {
+                directory.create_dir(request.name()).map(drop)
+            }
+            _ => return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported)),
+        };
+        if let Err(error) = result {
+            return NamespaceOutcome::uncertain(None, Err(into_vfs_err(error)));
+        }
+        match self.observe_node(self.source, request.name(), retired) {
+            Ok((node, _holder)) => NamespaceOutcome::applied(
+                NamespaceEffect::Create(CreateEffect {
+                    selected: node.selected(),
+                    created: true,
+                }),
+                Ok(()),
+            ),
+            Err(error) => NamespaceOutcome::uncertain(None, Err(error)),
+        }
+    }
+
     fn observe_node(
         &mut self,
         parent: &FatDirNode,
@@ -107,9 +157,34 @@ impl LockedAttempt for FatAttempt<'_> {
 
     fn observe(
         &mut self,
-        request: &RenameRequest<'_>,
+        command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
-    ) -> VfsResult<RenameObservation> {
+    ) -> VfsResult<MutationObservation> {
+        let request = match command {
+            NamespaceMutation::Create(request) => {
+                let target = match self.observe_node(self.source, request.name(), retired) {
+                    Ok((node, _holder)) => Some(node),
+                    Err(VfsError::NotFound) => None,
+                    Err(error) => return Err(error),
+                };
+                return Ok(MutationObservation::Create(target));
+            }
+            NamespaceMutation::Unlink(request) => {
+                let raw = self.source.find(request.name(), &self.guard)?;
+                let key = (self.source.state.inode, FatInode::canonical_name(&raw)?);
+                // Record activity before adding this attempt's own retained owner.
+                self.unlink_active = self
+                    .guard
+                    .active
+                    .get(&key)
+                    .is_some_and(|holder| holder.strong_count() != 0);
+                let (node, holder) = self.observe_node(self.source, request.name(), retired)?;
+                self.source_holder = Some(holder);
+                return Ok(MutationObservation::Unlink(node));
+            }
+            NamespaceMutation::Link(_) => return Err(VfsError::PermissionDenied),
+            NamespaceMutation::Rename(request) => request,
+        };
         let (source, holder) = self.observe_node(self.source, request.source_name(), retired)?;
         self.source_holder = Some(holder);
         let target = match self.observe_node(self.destination, request.destination_name(), retired)
@@ -118,7 +193,10 @@ impl LockedAttempt for FatAttempt<'_> {
             Err(VfsError::NotFound) => None,
             Err(error) => return Err(error),
         };
-        Ok(RenameObservation { source, target })
+        Ok(MutationObservation::Rename(RenameObservation {
+            source,
+            target,
+        }))
     }
 
     fn is_ancestor(&mut self, ancestor: &NamespaceNode, directory: u64) -> VfsResult<bool> {
@@ -149,9 +227,55 @@ impl LockedAttempt for FatAttempt<'_> {
 
     fn commit(
         &mut self,
-        authorized: &AuthorizedRename<'_>,
-        _retired: &MutationRetire,
-    ) -> NamespaceOutcome<RenameEffect> {
+        authorized: &AuthorizedMutation<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        match authorized {
+            AuthorizedMutation::Create(authorized) => self.create(authorized, retired),
+            AuthorizedMutation::Link(_) => {
+                NamespaceOutcome::unchanged(Err(VfsError::PermissionDenied))
+            }
+            AuthorizedMutation::Unlink(authorized) => {
+                if self.unlink_active {
+                    return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
+                }
+                let holder = self
+                    .source_holder
+                    .as_ref()
+                    .expect("observed removed holder");
+                let directory = match self.source.state.directory(&self.guard) {
+                    Ok(directory) => directory,
+                    Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+                };
+                if let Err(error) = holder.close_handle(&mut self.guard) {
+                    return NamespaceOutcome::unchanged(Err(error));
+                }
+                match directory.remove(authorized.request().name()) {
+                    Ok(()) => {
+                        holder.invalidate_name(&mut self.guard);
+                        NamespaceOutcome::applied(
+                            NamespaceEffect::Unlink(authorized.target().selected()),
+                            Ok(()),
+                        )
+                    }
+                    Err(error) => {
+                        holder.invalidate_name(&mut self.guard);
+                        NamespaceOutcome::uncertain(
+                            Some(NamespaceEffect::Unlink(authorized.target().selected())),
+                            Err(into_vfs_err(error)),
+                        )
+                    }
+                }
+            }
+            AuthorizedMutation::Rename(authorized) => {
+                self.rename(authorized).map(NamespaceEffect::Rename)
+            }
+        }
+    }
+}
+
+impl FatAttempt<'_> {
+    fn rename(&mut self, authorized: &AuthorizedRename<'_>) -> NamespaceOutcome<RenameEffect> {
         let request = authorized.request();
         if authorized.observation().target.is_some() {
             // No safe replacement of a different target/editor in starry-fatfs.
