@@ -13,8 +13,8 @@ use starry_signal::{SignalSet, Signo, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, Cred, ExitPathLease, PidIdentity, PidNamespaceRef, PidRoleLease,
-    ProcessData, ROOT_PID_NS, SeccompDecision, SeccompState, SeccompStateStore, SockFilter, Tid,
-    TidNumber, UserTaskRef,
+    ProcessData, ProcessNamespaceUpdate, ROOT_PID_NS, SeccompDecision, SeccompState,
+    SeccompStateStore, SockFilter, Tid, TidNumber, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
     future,
@@ -973,9 +973,16 @@ impl Thread {
         self.security.cred.lock().clone()
     }
 
-    fn set_cred_single(&self, new_cred: Arc<Cred>) {
+    fn set_cred_single(&self, update: &ProcessNamespaceUpdate<'_>, new_cred: Arc<Cred>) {
+        assert!(update.owns(&self.proc_data));
         let previous = {
             let mut current = self.security.cred.lock();
+            if super::proc_access::credential_resets_dumpable(&current, &new_cred) {
+                // Clear before publication, including capability gains. The
+                // credential mutex release and common process gate pair with
+                // READ_FSCREDS's credential-then-dumpable observation.
+                self.proc_data.set_dumpable(0);
+            }
             core::mem::replace(&mut *current, new_cred)
         };
         drop(previous);
@@ -983,19 +990,28 @@ impl Thread {
 
     /// Replaces credentials for this thread only.
     pub(crate) fn set_thread_cred(&self, new_cred: Cred) {
-        self.set_cred_single(Arc::new(new_cred));
+        let update = self.proc_data.namespace_update();
+        self.set_cred_single(&update, Arc::new(new_cred));
     }
 
     /// Replaces credentials for every thread in this process.
     pub fn set_cred(&self, new_cred: Cred) {
+        let update = self.proc_data.namespace_update();
+        update.set_process_cred(self, new_cred);
+    }
+
+    pub(super) fn set_cred_under(&self, update: &ProcessNamespaceUpdate<'_>, new_cred: Cred) {
         let new_arc = Arc::new(new_cred);
-        self.set_cred_single(new_arc.clone());
+        self.set_cred_single(update, new_arc.clone());
 
         let mut tids = self.proc_data.proc.threads();
         tids.sort_unstable();
         for tid in &tids {
             if let Ok(task) = ops::get_task_by_number(*tid) {
-                task.as_thread().set_cred_single(new_arc.clone());
+                let thread = task.as_thread();
+                if update.owns(&thread.proc_data) {
+                    thread.set_cred_single(update, new_arc.clone());
+                }
             }
         }
     }
@@ -1005,19 +1021,20 @@ impl Thread {
     /// Process-wide set-ID transitions must preserve thread-local state such
     /// as `PR_SET_KEEPCAPS` while publishing the shared ID change.
     pub(crate) fn update_process_creds(&self, update: impl Fn(&Cred) -> Cred) {
+        let publication = self.proc_data.namespace_update();
         let old_cred = self.cred();
-        self.set_cred_single(Arc::new(update(&old_cred)));
+        self.set_cred_single(&publication, Arc::new(update(&old_cred)));
 
         let mut tids = self.proc_data.proc.threads();
         tids.sort_unstable();
         for tid in &tids {
             if let Ok(task) = ops::get_task_by_number(*tid) {
                 let thread = task.as_thread();
-                if core::ptr::eq(thread, self) {
+                if core::ptr::eq(thread, self) || !publication.owns(&thread.proc_data) {
                     continue;
                 }
                 let old_cred = thread.cred();
-                thread.set_cred_single(Arc::new(update(&old_cred)));
+                thread.set_cred_single(&publication, Arc::new(update(&old_cred)));
             }
         }
     }

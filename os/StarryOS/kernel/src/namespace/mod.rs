@@ -125,9 +125,11 @@ impl NsProxy {
         self.net_ns = Arc::new(RawSpinLock::new(new_inner));
     }
 
-    pub fn unshare_user(&mut self) {
-        let new_inner = self.user_ns.lock_irqsave().clone_ns();
+    /// Creates a child user namespace, preserving this snapshot on ENOSPC.
+    pub fn unshare_user(&mut self, creator_euid: u32) -> crate::StarryResult<()> {
+        let new_inner = UserNamespace::new_child(self.user_ns.clone(), creator_euid)?;
         self.user_ns = Arc::new(RawSpinLock::new(new_inner));
+        Ok(())
     }
 
     pub fn unshare_cgroup(&mut self, root: Arc<CgroupNode>) {
@@ -185,17 +187,20 @@ impl NsProxy {
     }
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(test)]
 mod tests {
+    #[cfg(not(axtest))]
     extern crate std;
 
     use super::*;
 
+    #[cfg(not(axtest))]
     fn init_cgroup() {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(ax_cgroup::init);
     }
 
+    #[cfg(not(axtest))]
     #[test]
     fn clone_for_unshare_preserves_cgroup_namespace() {
         init_cgroup();
@@ -205,6 +210,7 @@ mod tests {
         assert!(Arc::ptr_eq(&nsproxy.cgroup_ns, &cloned.cgroup_ns));
     }
 
+    #[cfg(not(axtest))]
     #[test]
     fn final_process_exit_releases_cgroup_namespace_root() {
         init_cgroup();
@@ -218,5 +224,47 @@ mod tests {
 
         assert!(Arc::ptr_eq(&nsproxy.cgroup_ns, &ROOT_CGROUP_NS));
         assert_eq!(Arc::strong_count(&exiting_namespace), 1);
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn user_namespace_depth_failure_preserves_namespace_snapshot() {
+        #[cfg(not(axtest))]
+        init_cgroup();
+        let mut nsproxy = NsProxy::new_root();
+        for _ in 0..32 {
+            nsproxy.unshare_user(41).unwrap();
+        }
+        let parent = nsproxy.user_ns.clone();
+        nsproxy.unshare_user(99).unwrap();
+        assert!(!Arc::ptr_eq(&nsproxy.user_ns, &parent));
+        let child_id = {
+            let mut user = nsproxy.user_ns.lock_irqsave();
+            user.is_root = true;
+            user.uid_mapped = true;
+            user.gid_mapped = true;
+            user.id
+        };
+        let before = nsproxy.clone_all();
+
+        let error = nsproxy.unshare_user(100).unwrap_err();
+        assert_eq!(error.linux_errno(), syscalls::Errno::ENOSPC);
+        assert!(Arc::ptr_eq(&nsproxy.user_ns, &before.user_ns));
+        assert!(Arc::ptr_eq(&nsproxy.uts_ns, &before.uts_ns));
+        assert!(Arc::ptr_eq(&nsproxy.ipc_ns, &before.ipc_ns));
+        assert!(Arc::ptr_eq(&nsproxy.mnt_ns, &before.mnt_ns));
+        assert!(Arc::ptr_eq(
+            &nsproxy.pid_ns_for_children,
+            &before.pid_ns_for_children,
+        ));
+        assert!(Arc::ptr_eq(&nsproxy.net_ns, &before.net_ns));
+        assert!(Arc::ptr_eq(&nsproxy.cgroup_ns, &before.cgroup_ns));
+        let user = nsproxy.user_ns.lock_irqsave();
+        let lineage = user.lineage();
+        assert_eq!(lineage.level, 33);
+        assert_eq!(lineage.owner_uid, 99);
+        assert!(Arc::ptr_eq(lineage.parent.as_ref().unwrap(), &parent));
+        assert_eq!(user.id, child_id);
+        assert!(user.is_root && user.uid_mapped && user.gid_mapped);
     }
 }
