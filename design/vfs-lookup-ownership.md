@@ -445,6 +445,167 @@ whiteout、目录物化、元数据变更及 overlay VFS 发布。
 协调边界，不能只给临时 vnode 加锁。接口迁移和测试 mock 适配在同一可审查序列完成；
 跨包消费者未迁移前不得声称基础能力已全部交付。
 
+### 4.7 分层操作结果
+
+分层后端必须能知道一次内部命令是否已经改变状态。当前
+`Location::rename_with_write` 和 `DirNodeOps::mutate_namespace` 的
+`VfsResult<()>` 会丢掉原生 `NamespaceOutcome`，因此不能作为 Overlay 的完成协议。
+受控内部入口保留现有 `NamespaceOutcome` 的状态、实际观察和最终错误；
+只有最外层便捷入口在发布或失效完成后消费为普通 `VfsResult`。
+这是一条结果链，不另建“已执行”布尔值或第二套事务登记。
+
+rename 切片先让现有 hook 和借权利入口返回
+`NamespaceOutcome<RenameEffect>`。`RenameRequest::execute` 仍在真实后端锁内
+发布；后端退出锁后的持久化错误只改变 completion，不丢失已经发布的状态。
+后续 create、link、unlink 与元数据命令沿同一泛型结果协议携带各自的实际对象，
+不把尚未迁移的旧入口当作可用于分层提交的能力。无凭据的公开 raw 修改入口在消费者
+迁移中删除，不以 `Unchanged(Unsupported)` 默认实现代替已有真实写能力。
+
+Overlay 的结果使用 Overlay 逻辑实体，不能直接转发 upper 的 inode/effect。
+外层当前槽位授权后，每个内部命令独立形成原生 attempt。内部 `Unchanged` 且此前
+无副作用时，外层才能保持 `Unchanged`；明确未应用的 `Retry` 才能重新观察授权。
+内部已经 `Applied` 后发生日志错误、源 whiteout 失败或目录标记失败时，
+根据已知的合并命名关系返回实际 `Applied`，不能证明最终关系时返回 `Uncertain`，
+保留最初的错误并在 outer gate 内失效受影响别名。不得自动重放整个复合操作。
+仅完成 copy-up 而未改源/目标名称，也要保留实体已切换 upper 的事实；
+不能用一个 rename 的 `Unchanged` 擦除此前的 copy-up。
+
+`MutationRetire` 从最外层传入并贯穿内部命令，分层结果中的观察与失败候选也移交它。
+普通 `?` 只用于仍能证明未修改的准备步骤；首次可能修改之后必须先合并实际结果，
+再决定传播错误。通知以实际已提交事实为依据，在全部相关锁外发送。
+主动清理也受这条边界约束：现有 Ext4 `run_namespace` 的
+`prune_cached_files()` 可能释放其他 FS 的最后 backing 引用，不能原样带入 outer gate。
+清理移到最外层取得 gate 之前，或由既有缓存退休入口把实际待释放对象移交
+`MutationRetire`；不另建全局延迟队列，不在 inner 解锁后立即清空它。
+
+### 4.8 Overlay 实体与别名
+
+Overlay 的名称别名继续由 VFS `DirEntry::name_snapshot` 管理；
+`OverlayDir::path`、`OverlayFile::parent_path/name` 不再成为运行期定位依据。
+一个别名的 wrapper 持有稳定的 `Arc<OverlayInode>`，其逻辑 inode 和
+`NodeIdentity` 在 copy-up、rename、unlink 及替换之后不改变。
+实体保存实际 upper/lower 的强 `Location`，metadata 从当前 backing 读取，
+不复制一份 uid/gid/mode 权威状态。copy-up 只改变该实体的 backing 选择；
+旧文件句柄不按旧文件名重新 lookup，也不因同名新建而改指新对象。
+
+每个 `OverlayFs` 以弱实体索引归并当前活跃的 backing 身份，并在成功 copy-up
+时把 upper 身份关联到同一实体。键包含真实 FS owner 及实体身份/代际；
+不能仅用 inode 号，也不能把一个名称当作 inode 身份。实体持有真实 backing，
+保证活跃键对应的对象不能被回收重用；死亡弱项及时移除，不把历史名称强留到卸载。
+真实 upper 硬链接及通过 Overlay 创建的硬链接共享实体，但各自仍有独立 dentry。
+当前挂载仅支持 `index=off`：可写 Overlay 中 lower 非目录且 nlink 大于 1 时，
+按 Linux `ovl_hash_bylower` 的边界保留每个 lower 别名独立的逻辑实体，
+不按 lower inode 把它们归并。该别名的键采用被强引用保活的真实 lower dentry 身份，
+不采用可被重命名的字符串。copy-up 一个别名不使另一个仅有 lower 名称的别名
+临时改读其 upper；不能让该行为取决于弱索引是否仍活跃。只读 lower-only 视图
+没有 copy-up，可按真实 lower 实体共享。此次不增加持久化 lower→upper index。
+合并查找仍重新验证存在性、
+whiteout 和 opaque；提供 `NodeIdentity` 只使活跃别名规范化，不把动态查找变成永久正项。
+
+对外 `Metadata.inode/device` 投影为选定 Overlay 实体及本实例设备身份，
+不能把 backing metadata 的 inode/device 原样返回而使 stat 与内部稳定身份分离。
+其他权限、时间和内容字段仍来自实际 backing。稳定指活跃实体在 copy-up、
+rename 和脱链中保持身份；不承诺没有 index 时跨卸载或全部引用回收后保留逻辑编号。
+
+需要物化 upper 父目录时，在 outer gate 内沿本别名的一致 VFS 快照取得当前父链，
+并使用各父实体已经保存的 backing；不从 FS root 重新解释一份旧字符串路径。
+同一 gate 覆盖 Overlay 命名修改和相关元数据修改，因此这条链的观察和实际安装之间
+不能被另一次 Overlay rename 改写。无链接别名不能重新占用其旧名称；
+需要写入而尚无 upper 的脱链实体，使用 work 中不可见的暂存及原生孤儿对象保活协议。
+后端不具备所需 unlink/保活能力时，在安装或修改可见名称前明确返回不支持。
+
+root 也遵守无强引用环的规则。`OverlayFs` 保留 root 实体，root dentry 索引为弱引用；
+wrapper 持 FS，实体不反向强持 FS。`root_dir()` 可在禁止抢占的 mount 路径调用，
+因此重建 root wrapper 只使用已准备状态与短锁，不取得 mutation gate 或执行 backing I/O。
+实体索引的短锁不跨 backing 回调，落败候选、旧 backing 与最后一个 FS 引用锁外释放。
+
+### 4.9 固定 backing 与写入准备
+
+用户选定 lower/upper/work root 时使用普通路径解析；绑定之后，内部单名查找固定在
+所选 mount 与 backend dentry 视图内，不跟随该 mount namespace 后来挂入的子挂载。
+这与 Linux `clone_private_mount` 配合 `lookup_one_unlocked` 的 layer 语义一致：
+被子挂载覆盖的原 backing 目录仍可见，不是先跳入子挂载再返回 `EXDEV`。
+merged Overlay 上用户显式挂载的子 FS 仍由普通用户路径 walker 处理，两者不能混同。
+这里复用的是内部查找语义，仍保留本项目 exact mount 的写权利与生命周期；
+没有照搬 private clone 的独立 local flags，也不宣称两者只读切换完全等价。
+
+VFS 为此提供明确的单组件 backing 查找能力：校验普通末名后以相同 mount 包装
+实际 backend 子项，不执行 `resolve_mountpoint`，不处理 `.`、`..`、多组件路径或
+文本链接跳转。Overlay 的 lookup、read_dir 后续探测、物化、copy-up、
+whiteout、opaque 全部使用同一能力。它不是 `CachedLookup` 的出口。
+初始化时 root 以上的搜索与凭据检查不能因内部不跨 mount 而省略。
+
+upper 与 work 必须是同一个精确 mount，且不相同、彼此不包含；不只比较设备或
+shared FS。lower、upper、work 的根重叠和回到本实例的 trap 在构造时检查，
+冲突在发布文件系统前报错。backing 关系构造后不可变，所有层声明自己的
+`stack_depth`：原生为 0，Overlay 为所有 backing 最大值加 1，最大为 2，
+超限 `EINVAL`。内部下降只允许严格较小深度，不以普通 namespace 祖先指针遍历
+代替 backing 图；不添加按业务名称登记的全局图。多个实例同时直接修改同一
+upper/work 不属于保证用法，不声称仅凭这组检查提供跨实例事务。
+
+`FilesystemOps` 的可选分层能力公开不可变的写入 backing roots 和深度，
+原生默认没有写入依赖。一个 `PreparedWrite` 拥有本次可见 mount 及沿这些 roots
+递归取得的 exact-mount `MountWriteGuard`，以实际 mount 身份去重；lower 的只读引用
+不取得写权利。准备在任何后端 gate 之前完成，逐一取得 admission，
+不同时持不同 FS 的配置 mutex。固定视图和有限深度使准备不再依赖 gate 内发现新挂载。
+准备失败时没有命名副作用，已有租约在锁外释放。
+
+操作期间 `PreparedWrite` 只借出已拥有的 exact-mount 权利，不能临时补 admission，
+也不放宽 `MountWriteGuard::check_location`。Overlay 私有的 backing 命令适配器还核对
+目标来自本实例绑定 roots 及受控物化结果；不向 syscall 导出“任意目标 + mounter
+凭据”的修改入口。外层 gate 到 backing gate 按深度下降，最后释放退役集合时所有层
+的 gate 均已退出。backing 查找不得重新进入上层 Overlay。
+
+### 4.10 分层打开与元数据
+
+Overlay 挂载入口保存真实创建者的 `Arc<Cred>` 快照，每次内部操作临时借用转换为
+`MutationCredentials`；不保存借用 groups 的长寿命快照，不在操作时读取创建者的新凭据，
+也不使用 `MutationCredentials::root()` 兜底。当前唯一生产创建点为同步 `sys_mount`，
+取得时点就是构造本实例；未来增加其他 mount API 时必须明确对应取得时点。
+对外使用当前访问者凭据检查 Overlay 实体，对内使用已保存身份检查所选 backing。
+本次不宣称新增 Linux quota、LSM 或尚未实现的 user namespace 映射保证。
+
+所有 writable regular-file open 在返回描述前完成 copy-up；`O_PATH` 和普通只读打开
+不物化 upper。分层打开借用预先准备的权利，不能在 gate 内调用会重新
+`acquire_write` 的 `open_loc`。`WriteAccess` 保留实际准备对象并继续维护现有执行互斥；
+dup/映射延长同一描述权利，独立 reopen 执行新的打开检查和 admission。
+内部打开需要保留同一准备对象的所有权或真实借用，不能用无关联的栈变量作证明。
+
+`FileBackend` 到 `FileNodeOps` 的可变文件操作把准备权利和外层退役集合继续传下去，
+覆盖 write、append、truncate、range 操作及 copy-up 数据复制。原生默认适配仍执行
+自身实现；Overlay 只使用 locked helper 与已有权利，不由回调偷偷再准备一次。
+缓存写入和 writeback 沿既有所有权路径处理，不能为绕过接口改成 raw I/O，
+破坏页缓存一致性或执行文件写保护。数据读取取得稳定 backing 快照后可释放 gate；
+向用户或未知 sink 的回调也在 gate 外执行。
+`poll`、注册和不允许睡眠的 flags/identity 查询只读已经准备的实体/backing 快照，
+不得为了取快照取得可睡眠 gate 或执行物化。
+
+缓存端点在建立时沿有限层级解析到稳定的原生 backing，`CachedFileShared::backing`
+不保存仍会 copy-up 或重新 admission 的 Overlay wrapper。普通读描述符仍持有
+稳定 Overlay 实体，每轮 I/O 选择其当前 backing，copy-up 后后续读取可以切换 upper，
+不永久绑定打开时的 lower。单轮 I/O 的原生缓存端点与已建立的映射保持所选 backing；
+可写打开与共享可写映射先完成必要 copy-up，并保持准备对象及既有
+`WriteAccess`。对外路径仍保留 Overlay 别名，内容缓存复用原生 backing 的既有
+inode/cache owner。后台写回不借已经结束的调用栈或退役集合，继续使用原生内部
+写回权利；这只改变端点的所有权连接，不重写页缓存算法，也不新增一层内容缓存。
+
+copy-up 在 work 的暂存对象准备数据、元数据和已有 xattr，完成后才安装到目标名称，
+并在 owner gate 内切换逻辑实体的 upper。已有后备写回与孤儿保活负责内容和资源，
+不新增内容镜像。需要为 I/O 释放 gate 时，本轮槽位与授权结束；
+重新进入后重查名称、实体、权限及暂存位置，只有新授权能安装。
+嵌套层需要退出其调用方 gate 时，将准备工作返回到最外层协调，结束全部相关尝试后
+再做 I/O；不能只释放 inner gate 却沿用仍存活的 outer 授权。重入后若另一轮已经为
+原实体安装 upper，采用获胜状态并显式清理本轮暂存，不用旧副本覆盖新的 backing。
+暂存清理显式返回结果，失败保留诊断与原始错误，不把 Drop 当作磁盘回滚。
+已安装后出现错误按第 4.7 节传播真实状态。
+
+`syscall/fs/xattr.rs` 不再获取 raw upper 后在 gate 外复制和修改 xattr。
+copy-up 的属性迁移及最终 set/remove 由 Overlay owner 内的同一领域命令完成；
+普通 xattr 入口仍负责用户内存、名称、flag 和 ABI 检查。`MetadataChange` 也进入同一
+owner gate，在当前 backing inode 锁内完成实际授权与更新，而非整体回写旧 metadata。
+rename 暂不扩大 lower-backed 目录移动、真实 exchange/whiteout 等存储能力边界；
+合法 no-op 和本来支持的 upper 修改仍按第 4.1 节处理。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。
@@ -612,6 +773,13 @@ R4 复用真实 MemoryFs 自移/后代拒绝回归，并补足受控并发拓扑
 后端尝试证明覆盖解锁后重试重新观察/授权，以及 publish 缓存淘汰的跨 FS 析构不重入锁。
 已有 no-op、权限和目录移动回归还覆盖同对象 `WHITEOUT` 不改名称/链接关系、
 可搜索但不可写父目录的合法 no-op，以及跨父源/交换目标目录自身写权限拒绝并保持树。
+Overlay 复用旧 fd/后代与覆盖行为证明，增加真实分层 fixture：copy-up 后同一实体、
+rename 后旧句柄与旧名重建隔离、覆盖目标脱链、hardlink 别名、backing 子挂载不穿越、
+嵌套写权利与只读撤销、copy-up/安装/后续步骤失败的实际副作用和锁外析构。
+hardlink 证明区分真实 upper 共享与 `index=off` 的 lower 多链接 copy-up 分离，
+并在全部活跃 wrapper 回收后重开，避免弱索引生存期改变可见内容。
+这些场景归入既有完整功能测试，不按内部适配方法增加镜像测试；
+原有用例没有 Overlay fixture 时，不把相近名称或普通 xattr 测试当作等价证据。
 只读权利证明涵盖 writer 在途时 RW→RO 的 `EBUSY`、失败保持 flags、释放后成功及
 新写 `EROFS`；同一生命周期回归还验证保持可写的请求及跨别名 local RO→RW
 不被无关 writer 拒绝，不为这些边界另建重复用例，
@@ -643,6 +811,13 @@ Linux 行为以固定提交源码为准；Rust 与其他 VFS 资料用于解释�
 - [Linux v7.1 打开参数与元数据操作](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c)
 - [Linux v7.1 挂载写入权利与只读切换](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L590-L721)
 - [Linux v7.1 superblock 重配置](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/super.c#L1036-L1092)
+- [Linux v7.1 Overlay layer、work 与深度](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L805-L836)
+- [Linux v7.1 私有 backing mount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2360-L2408)
+- [Linux v7.1 Overlay 单组件查找](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/namei.c#L211-L283)
+- [Linux v7.1 Overlay 权限与嵌套锁](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/inode.c#L290-L321)
+- [Linux v7.1 未启用 index 时的 lower 硬链接](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/inode.c#L1154-L1181)
+- [Linux v7.1 普通读取选择当前 backing](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/file.c#L122-L195)
+- [Linux v7.1 Overlay 暂存与安装](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/copy_up.c#L758-L911)
 - [Linux v7.1 用户命名空间创建边界](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/user_namespace.c#L83-L135)
 - [Linux v7.1 namespace inode 生命周期](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nscommon.c#L56-L94)
 - [Linux v7.1 nsfs 显示与实体路径](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/nsfs.c#L43-L76)
