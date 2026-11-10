@@ -321,6 +321,39 @@ walker 先决定是否跟随，再获取目标，因此 `O_PATH|O_NOFOLLOW` 可�
 proc fd 的重新打开形成新打开描述，重新执行相关打开语义；
 不是复制旧描述的偏移和状态。namespace 对象的 stat 与不跟随的链接 stat 不能混淆。
 
+### 5.3 读取授权与凭据发布
+
+proc 敏感链接使用一个由任务安全状态所有者提供的 `READ_FSCREDS` 授权入口，
+不复用信号发送或 ptrace attach 的父子关系放行。调用者使用 fsuid、fsgid 和
+effective capability；目标使用实际线程凭据及其用户命名空间。
+同线程组自省按 Linux 放行；其他任务需要六项 real/effective/saved UID/GID
+匹配或对目标凭据用户命名空间的 `CAP_SYS_PTRACE`。
+随后检查 dumpable，并应用 commoncap 的同命名空间 permitted 子集或目标命名空间
+能力规则。不能仅凭 uid 0、父进程关系或一个全局 capability 位放行。
+
+用户命名空间保留不可变的父引用、层级和创建者在父空间中的身份，
+据此实现 Linux `cap_capable_helper` 的祖先、所有者与 capability 判断；
+不从 namespace 显示 ID 反查对象。MM 保留创建时的用户命名空间引用，
+fork 随 MM 复制、exec 构建新 MM 时按调用者空间初始化，用于 nondumpable 的能力检查。
+这与复用 MM 内既有 `ExecutableFile` 一致，不新增可执行对象镜像或重写映像发布。
+本次不重做完整 UID/GID 映射子系统，也不因新增谱系信息向现有凭据发放原本没有的能力。
+
+具体接口落在既有 `AddrSpace`：执行文件 getter 只克隆已有执行租约，
+用户命名空间 getter 返回创建时的引用。`UserImageBuilder` 通过构建期 setter
+向内部地址空间传递命名空间，不公开私有 `aspace`，exec caller 不绕过 builder。
+
+授权读取的一组 namespace 和 credential 快照须来自共同协调的发布边界，
+复用 `ProcessData::namespace_update` 的串行化职责或等价的实际所有者协议，
+不能分别抓取无关联快照后声称一致。凭据所有者在暴露新的 effective/fs IDs
+或需要重置 dumpable 的权限变化之前清除 dumpable；读取者先读凭据，再读 dumpable，
+并建立与写侧对应的同步关系。不能只在各 syscall 发布凭据之后补清除，
+也不能只加一个读侧屏障来弥补错误写序。
+
+获得授权后保留实际目标任务引用，并在同一操作中从它取得链接目标；
+不重新按 PID 字符串挑选任务，不缓存授权结果供后续访问复用。
+已有用户命名空间映射或能力发放未完成的入口不因此被宣称完整兼容，
+但读取授权本身不得用宽松替代规则或静默越权兜底。
+
 ## 6. 元数据变更
 
 `Metadata` 是读取结果，不是可以稍后整体写回的授权凭证。
