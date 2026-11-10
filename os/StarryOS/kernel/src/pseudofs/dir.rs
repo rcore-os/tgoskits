@@ -9,8 +9,8 @@ use core::any::Any;
 
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
-    Metadata, MetadataUpdate, NodeIdentity, NodeOps, NodePermission, NodeType, Reference,
-    RenameOptions, VfsError, VfsResult, WeakDirEntry,
+    Metadata, MetadataUpdate, MutationRetire, NamespaceMutation, NodeIdentity, NodeOps,
+    NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -274,12 +274,10 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         Err(VfsError::OperationNotPermitted)
     }
 
-    fn rename(
+    fn mutate_namespace(
         &self,
-        _src_name: &str,
-        _dst_dir: &DirNode,
-        _dst_name: &str,
-        _options: RenameOptions,
+        _command: &NamespaceMutation<'_>,
+        _retired: &MutationRetire,
     ) -> VfsResult<()> {
         Err(VfsError::OperationNotPermitted)
     }
