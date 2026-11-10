@@ -800,6 +800,24 @@ mod tests {
                     Err(VfsError::CrossesDevices)
                 );
             }
+            // Keeping or relaxing write authority must not reject live writers.
+            // Collect every result before asserting so one refusal cannot hide
+            // the other entry points in the same regression run.
+            let writable_reconfigurations = (
+                mount.set_readonly(false),
+                filesystem.set_readonly(false),
+                mount.set_filesystem_readonly(false),
+                alias.set_filesystem_readonly(false),
+            );
+            assert_eq!(
+                writable_reconfigurations,
+                (Ok(()), Ok(()), Ok(()), Ok(())),
+                "local RW, shared RW, ordinary RW, ordinary RW clearing alias-local RO"
+            );
+            assert!(!mount.is_readonly());
+            assert!(!filesystem.is_readonly());
+            assert!(!alias.is_readonly());
+            assert!(!alias.is_filesystem_readonly());
             let reject_readonly = || {
                 if shared {
                     assert_eq!(
