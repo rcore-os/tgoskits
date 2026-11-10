@@ -245,6 +245,25 @@ rename 由同一尝试产生源/目标槽对，不拼接来自两次观察的令
 父目录 mode 更新、unlink 与创建不能绕过共同排他边界。
 公开的受控操作不遗留供系统调用绕开的未检查修改入口。
 
+公开边界传递 `NamespaceMutation` 数据命令及凭据、挂载写入权利，不传任意生产
+`Fn/FnMut`。后端继续拥有真实锁和重试循环，每轮把私有的持锁 attempt 借给
+VFS 的固定执行入口；`MutationGuard` 在该入口内部构造，实际借用
+`&mut dyn LockedAttempt`。后者只提供本轮查槽、读取当前元数据、检查真实祖先、
+保留实体及执行已授权命令所需的窄能力，不提供普通 `Location` 慢操作。
+生命周期只限制借用，具体后端仍负责证明其 attempt 确实持有正确所有者的锁。
+
+`ParentSlot` 借用栈上的 `MutationGuard`，`AuthorizedSlot` 接管这条借用；
+`commit(self)` 使用内部原守卫，不接受另一个守卫参数。rename 的两端作为一个
+槽对取得，避免同时借出两个独占守卫或拼接不同轮次的观察。权限策略从既有
+`MutationCredentials` 提取为对当前元数据的纯数据判断，不在持锁阶段调用
+`FsContext::check_permission`、普通 lookup、metadata 或任意节点回调。
+
+目录成环检查属于同一次 locked attempt：普通移动拒绝把源目录移入自身或后代，
+exchange 对两侧分别检查，所有比较使用实际 backend owner 与实体身份。
+同名和同 inode 的合法无操作按 Linux 的顺序保留，不能统一当成循环拒绝。
+检查之后到后端修改和 VFS 命名发布之前不释放排他权；仅在 `Location` 外层作一次
+`is_ancestor_of` 或收窄一个公开方法，均不能解决并发成环。
+
 ### 4.2 后端重试
 
 Ext4 当前 `InodeLifetime::mutate_namespace` 在每次尝试中持有命名空间权利，
@@ -264,8 +283,10 @@ sequenceDiagram
     O->>G: 取得实际排他权
     G->>A: 查槽并按当前状态授权
     A->>G: 消费授权并尝试提交
+    G->>G: 按实际结果发布或失效 VFS 命名关系
     G-->>O: 结果或需要新的尝试
     Note over G,A: 槽位结束后才能释放守卫
+    O->>O: 解锁后释放退役引用
     O->>J: 锁外完成日志推进
     J-->>O: 完成、错误或重新尝试
 ```
@@ -279,6 +300,12 @@ sequenceDiagram
 发布或标记关系不可信，再把最终错误交给调用者；不能在发布之前对一个普通 `Err`
 直接使用 `?` 丢失已发生的修改。基础目录项发布与后续授权使用同一结果协议，
 不另建相互竞争的提交状态机。
+
+固定入口在后端排他权结束前处理现有 `NamespaceOutcome`：`Applied` 即使带最终
+错误也先按实际对象发布，`Uncertain` 先失效，`Unchanged` 不虚构修改。
+每轮产生的 completion 不含槽位或守卫借用，请求只保留操作输入，不保存旧授权。
+只有明确可重试且未发生用户可见命名修改的结果才能重新执行命令；
+日志错误本身不是重放已经 `Applied` 的理由。
 
 ### 4.3 析构边界
 
@@ -295,6 +322,110 @@ sequenceDiagram
 既有 Ext4 orphan reap 和挂载租约的缓存退休保留其权威失败/重试所有者；
 迁移时不得将这些错误伪装成新守卫可保证的回滚。若本轮改变其调用或引用释放路径，
 必须同时核对锁外清理、错误留存与重试责任。
+
+尝试使用一个在实际锁之前建立、在解锁后销毁的退役集合，覆盖提前返回和展开路径。
+集合接收旧 `NameSnapshot`、替换或移出的缓存项、规范化落败候选、`NameChange`
+保留项以及后端暂存实体。`DirEntry::move_to`、`exchange_names`、
+`DirNode::publish_rename` 和 `DirectoryCache::retain` 的持锁版本只移交引用，
+不能在内部释放最后一个强引用；全局有界保留队列淘汰的对象可能属于另一文件系统，
+不能只 pin 本次源、目标来声称安全。
+
+发布阶段只使用本轮已确定的身份和缓存策略，不调用 `is_cacheable_child` 等未知实现。
+先完成短时 VFS 命名锁内发布，再退出全部 slot/guard 借用和后端锁，最后释放退役集合。
+清理回调、reap、prune、通知、同步策略读取和可失败持久化都不放进这段发布临界区。
+真实 attempt 保持项目守卫的线程归属，不增加 `Send/Sync` 超特征，不跨线程或异步挂起。
+
+### 4.4 后端锁域
+
+各后端复用已有权威状态而不是在 VFS 添加全局命名大锁。下列锁域同时覆盖
+命名观察、会改变授权结果的元数据修改和该次 VFS 发布；普通路径 lookup
+仍使用原有读取路径及命名在途观察，不为每个分量取得全局排他权。
+
+| 后端 | 实际尝试及内部能力 | 锁外责任 |
+| --- | --- | --- |
+| Ext4 | operation admission 跨循环；每轮 namespace 权利与 state guard；直接以 `state.ext4` 查槽/读 inode，并在该轮 `retain_inode` | 退出 state 与 namespace 后释放退役引用，再作 `finish_mutation_attempt`、reap 和同步 |
+| FAT | 同一个 `FatFilesystemGuard`；`find`、holder 查找、当前元数据及 parent holder 祖先链均借它 | 复用 guard 先解锁再释放 retained 的顺序，并接收 VFS 退役项 |
+| MemoryFs | 每实例可睡眠 mutation gate；在 gate 内逐步短持 entries/slab/metadata 锁，发布前释放这些自旋锁 | inode 引用回收、最后 Arc 析构不取得可睡眠 gate |
+| 可变伪文件系统 | 实际数据所有者的命名/元数据协调边界；拒绝的操作直接返回既有不支持错误 | 通知与失去引用的目标在 owner 锁外释放 |
+
+Ext4 不能在尝试内重新调用 `InodeLifetime::lookup`、普通 metadata 或 admission
+`enter()`；除递归锁外，reconfigure 的 pause/drain 也可能造成互等。
+权限相关 inode 内容锁与 namespace 权利沿实际调用链统一顺序；若需要当前未锁住的
+目标 inode，先保留对象、退出观察，再按既有顺序重新取得并重验证，不能锁内倒序补锁。
+FAT 不借接口迁移扩大第 2.4 节的支持边界，尤其不把未实现的 chmod 写入伪装成成功。
+
+MemoryFs 的 create、symlink、link、unlink/rmdir、rename 及所有相关 mode/uid/gid
+更新都参加同一 gate，包括 sticky 所依赖的目标 owner；不能只锁 rename。
+gate 不用于 `root_dir()`、初始未发布 root 构造或 atomic inode 回收。
+实际启动命名修改在 `axruntime::bootstrap` 发布 scheduler、释放 bootstrap preemption
+后执行；如有更早消费者，应迁移到发布前私有构造，不引入可从运行期调用的免锁开关。
+
+### 4.5 挂载写入权利
+
+挂载使用权与写入权分别保护普通卸载和只读切换。当前 `MountUseGuard` 的
+`active_uses`、Ext4 admission、`CachedWriteGuard` 都不能替代 mount-local 与
+`FilesystemMountState` 的只读写入协议。Linux v7.1 的 `mnt_hold_writers`、
+`mnt_make_readonly` 和 `sb_prepare_remount_readonly` 在有活跃写者时返回 `EBUSY`，
+不是必须等待所有写者退出。
+
+VFS 在原 mount-local 和 shared FS 状态中维护只读标志与写者计数，不增设另一份
+挂载登记表。`MountWriteGuard` 同时拥有所选挂载及 shared FS 的一次计数，
+取得时在同一受控 admission 内检查两层只读状态；两端命名操作核对挂载边界并持有
+所需权利，不能从一个可写别名借权利修改只读别名。后端 attempt 只借用这份权利，
+不能提前 drop 它后继续提交；重试、最终发布及操作完成之前持续保留。
+
+每个 shared FS 使用可睡眠 reconfiguration mutex 串行化写权利取得的短阶段与配置者。
+普通写者取得 mutex 后，只在短状态锁内检查并增加 shared/local 计数，随后释放 mutex
+才进入后端；并不在整个写操作中持有此 mutex。释放计数只需短状态锁，
+对象最终引用在锁外释放。统一顺序为 reconfiguration mutex、shared 状态、
+按稳定 mount 身份排序的 local 状态；后端锁不反向取得 reconfiguration mutex。
+分层命令在进入最外层后端 gate 前，先从已经绑定的 backing 引用取得本次所需的
+全部写入权利；进入 gate 后只借这些现有权利，不在 upper 子命令中递归取得配置锁。
+部分取得失败只释放已得租约，尚未开始命名修改；不同 FS 的 admission 不同时持锁。
+
+配置者保持该 mutex，检查受影响计数为零后才进行本次只读切换、必要同步及 native
+重配置；计数非零则返回 `EBUSY` 且不改 flags。bind remount 只检查和更改该 mount，
+普通 remount 检查 shared 计数并更新 shared 与目标 local 状态。
+清除只读前先完成真实 native `remount_read_write`；失败保留旧 VFS flags。
+配置期间新写权利取得者等待 mutex，不能绕过检查，也不把内部忙碌映射成用户 `EAGAIN`。
+同步/重配置内部的写回走既有内部权利，不递归取得用户写入权利。
+
+普通 writable regular-file open 在暴露描述前取得写入租约并与既有 `WriteAccess`
+一起保留；dup 和共享映射延长原租约，独立 reopen 取得新租约。
+创建、命名修改、元数据变更及临时截断使用操作期权利；只读打开、`O_PATH` 和
+不修改挂载内容的 pipe/socket I/O 不应错误计为 regular-file writer。
+原来的裸 readonly setters 改为受控可失败重配置；未发布对象的初始 flags
+通过构造参数设置，不让早期 root 构造为了设置初值取得可睡眠锁。
+
+### 4.6 分层后端与入口迁移
+
+`DirNode`、`Location`、创建式 open 和 `FsContext` 的全部命名修改统一进入数据命令。
+原生后端的 raw 修改只留在私有 locked helper，不保留永久无凭据兼容入口。
+initramfs、bundle 和 `root::ensure_mountpoint_dir_result` 等启动调用显式传入内核
+初始化身份，仍遵守真实尝试和只读限制；该身份不成为运行期 syscall 的默认提权回退。
+`SimpleDir`、合成挂载目录及只读测试后端不因适配 trait 而获得写能力。
+
+Starry 的 `pseudofs/overlay.rs` 是复合后端，不是单次 upper rename 的透明转发。
+每个 OverlayFs 拥有自己的 mutation gate，覆盖合并视图的观察、授权、copy-up、
+whiteout、目录物化、元数据变更及 overlay VFS 发布。
+外层使用调用者凭据授权，底层内部操作使用挂载时核准并保存的 backend 凭据和
+明确 upper/work 引用；内部权利只由 overlay owner 的持锁 attempt 派生，
+不接受任意目标或绕过 upper 的真实写入 admission、重试及发布。
+
+每次 upper 命令仍形成自己的真实槽位，不把来自 lower/upper 的观察拼成一个原生槽位，
+也不把第一次用户授权令牌传给后续原生尝试。锁顺序从 overlay owner 向其 backing
+层下降，不允许 backing 回调反取 overlay gate；循环分层在建立 backing 关系时拒绝。
+内部命令借用预先取得的 upper/work 写权利，但每轮重新取得原生 backend attempt。
+退役集合归最外层命令所有，并贯穿所有嵌套调用；仅释放 upper 锁不足以开始析构，
+必须连同外层 overlay gate 也退出后再释放，避免跨层、跨 FS 的析构锁反转。
+普通 upper 操作已应用但后续 whiteout/metadata 失败时，保留实际副作用并使合并命名
+关系不可信，返回原错误，不伪造全步骤原子成功或用 Drop 回滚磁盘。
+既有 lower-backed directory、exchange/whiteout 等不支持边界不在此次迁移中扩大。
+直接并发修改已挂载 overlay 的底层目录不作为受保证用法，不能据此宣称跨文件系统事务。
+
+`pseudofs/cgroup.rs` 的 create/remove 及目录元数据更新参加实际 cgroup owner 的共同
+协调边界，不能只给临时 vnode 加锁。接口迁移和测试 mock 适配在同一可审查序列完成；
+跨包消费者未迁移前不得声称基础能力已全部交付。
 
 ## 5. 对象型链接
 
@@ -458,6 +589,13 @@ memfd 复用已有内存 inode 与执行路径，只修正受影响的对象访�
 组件测试使用真实实现及受控交错，证明重命名身份、授权重试、
 元数据部分更新、错误传播、缓存与析构顺序。
 
+R4 复用真实 MemoryFs 自移/后代拒绝回归，并补足受控并发拓扑交错的最终无环与身份
+判定；已有自移首断言的红测不冒充后代及并发分支也已采红。
+后端尝试证明覆盖解锁后重试重新观察/授权，以及 publish 缓存淘汰的跨 FS 析构不重入锁。
+只读权利证明涵盖 writer 在途时 `EBUSY`、失败保持 flags、释放后成功及新写 `EROFS`，
+并以 Starry 入口验证 remount/相关 mount attributes 的实际消费者。
+这些是共享行为证明，不按每个 helper 复制一套测试；不重跑已有效且不受影响的局部证据。
+
 Linux ABI 回归放在 `test-suit/starryos`，通过项目入口直接运行 syscall。
 同一窄测试在错误实现上先失败，修复后通过；先完成一个目标红绿，再运行
 x86_64、AArch64、RISC-V、LoongArch 的受影响定向集合。
@@ -481,6 +619,8 @@ Linux 行为以固定提交源码为准；Rust 与其他 VFS 资料用于解释�
 
 - [Linux v7.1 路径查找](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c)
 - [Linux v7.1 打开参数与元数据操作](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c)
+- [Linux v7.1 挂载写入权利与只读切换](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L590-L721)
+- [Linux v7.1 superblock 重配置](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/super.c#L1036-L1092)
 - [Linux v7.1 用户命名空间创建边界](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/user_namespace.c#L83-L135)
 - [Linux v7.1 namespace inode 生命周期](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nscommon.c#L56-L94)
 - [Linux v7.1 nsfs 显示与实体路径](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/nsfs.c#L43-L76)
