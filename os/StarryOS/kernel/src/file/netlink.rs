@@ -38,7 +38,7 @@ use axpoll_set::PollSet;
 use linux_raw_sys::{
     general::O_RDWR,
     net::AF_NETLINK,
-    netlink::{NETLINK_GENERIC, NETLINK_KOBJECT_UEVENT, NETLINK_ROUTE, sockaddr_nl},
+    netlink::{NETLINK_GENERIC, NETLINK_ROUTE, sockaddr_nl},
 };
 
 use crate::{
