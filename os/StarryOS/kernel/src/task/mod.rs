@@ -51,21 +51,22 @@ use starry_signal::{
 #[cfg(target_arch = "aarch64")]
 pub(crate) use self::process_accounting::PerfSchedulerTickLease;
 pub use self::{
-    cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable, process::*,
+    cred::Cred, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable, process::*,
     process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
     seccomp::*, signal::*, stat::*, thread::Thread, timer::*, user::*,
+};
+pub(crate) use self::{
+    cred::FsCredentialsSnapshot,
+    pid::*,
+    proc_access::authorize_proc_read,
+    process_identity::*,
+    process_memory::{PreparedProcessMemory, scheduler_address_space},
 };
 use self::{
     job_control::ProcessJobControl, process_accounting::ProcessAccountingState,
     process_cgroup::ProcessCgroupState, process_image::ProcessImageState,
     process_memory::ProcessMemoryState, process_policy::ProcessPolicyState,
     process_ptrace::ProcessPtraceState, process_wait::ProcessWaitState,
-};
-pub(crate) use self::{
-    pid::*,
-    proc_access::authorize_proc_read,
-    process_identity::*,
-    process_memory::{PreparedProcessMemory, scheduler_address_space},
 };
 use crate::{
     mm::MmHandle,

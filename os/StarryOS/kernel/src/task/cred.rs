@@ -15,6 +15,12 @@ use linux_raw_sys::general::{
     CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PTRACE, CAP_SYS_RESOURCE, CAP_SYS_TIME,
 };
 
+use super::Thread;
+use crate::{
+    namespace::{ROOT_USER_NS, UserNamespace},
+    sync::RawSpinLock,
+};
+
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
 const SECBIT_NO_SETUID_FIXUP: u32 = 1 << 2;
 const SECBIT_KEEP_CAPS: u32 = 1 << 4;
@@ -63,6 +69,40 @@ pub struct Cred {
     /// Preserve permitted capabilities when all root UIDs become nonzero.
     pub securebits: u32,
     keep_capabilities: bool,
+}
+
+/// Owns one coherent filesystem identity without retaining publication locks.
+///
+/// The namespace reference pins its identity, not its mutable UID/GID mappings.
+/// Filesystem capability adapters must still enforce their supported mapping
+/// scope; an effective bit alone is not a cross-namespace capability.
+pub(crate) struct FsCredentialsSnapshot {
+    cred: Arc<Cred>,
+    user_ns: Arc<RawSpinLock<UserNamespace>>,
+}
+
+impl FsCredentialsSnapshot {
+    /// Captures credentials and their namespace under the writers' common gate.
+    ///
+    /// All publication locks are released before returning, so the snapshot may
+    /// be retained while resolving paths or calling filesystem backends.
+    pub(crate) fn capture(thread: &Thread) -> Self {
+        let update = thread.proc_data.namespace_update();
+        Self {
+            cred: thread.cred(),
+            user_ns: update.snapshot().user_ns.clone(),
+        }
+    }
+
+    /// Borrows the immutable credential, including its supplementary groups.
+    pub(crate) fn credentials(&self) -> &Cred {
+        &self.cred
+    }
+
+    /// Tests the saved namespace's identity, never its mutable mapping flags.
+    pub(crate) fn in_initial_user_ns(&self) -> bool {
+        Arc::ptr_eq(&self.user_ns, &ROOT_USER_NS)
+    }
 }
 
 impl Cred {

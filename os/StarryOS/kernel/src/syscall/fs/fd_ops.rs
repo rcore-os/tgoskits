@@ -11,6 +11,7 @@ use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
+use super::mutation_credentials;
 use crate::{
     StarryError, StarryResult,
     file::{
@@ -21,12 +22,10 @@ use crate::{
     pseudofs::{Device, dev::tty},
     sync::RawSpinRwLock,
     task::{
-        TgidNumber, TidNumber, current_pid_view, get_user_process_data_by_number,
-        get_user_task_by_number,
+        FsCredentialsSnapshot, TgidNumber, TidNumber, current_pid_view,
+        get_user_process_data_by_number, get_user_task_by_number,
     },
 };
-
-use super::mutation_credentials;
 
 /// Convert open flags to [`OpenOptions`].
 fn flags_to_options(flags: c_int, mode: __kernel_mode_t, (uid, gid): (u32, u32)) -> OpenOptions {
@@ -124,11 +123,7 @@ fn add_to_fd(
                     return add_file_like(wrapped, flags & O_CLOEXEC != 0);
                 }
                 if crate::pseudofs::dev::card0::is_card0_device(inner) {
-                    let wrapped = crate::pseudofs::dev::card0::open_card0_file(
-                        inner,
-                        file,
-                        flags,
-                    )?;
+                    let wrapped = crate::pseudofs::dev::card0::open_card0_file(inner, file, flags)?;
                     if flags & O_NONBLOCK != 0 {
                         wrapped.set_nonblocking(true)?;
                     }
@@ -313,8 +308,9 @@ fn try_reopen_self_file(
         return None;
     }
 
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let cred = fs_credentials.credentials();
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
     Some(
         options
@@ -550,8 +546,9 @@ pub fn sys_openat(
         return result.map(|fd| fd as isize);
     }
 
-    let cred = thread.cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(thread);
+    let cred = fs_credentials.credentials();
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let should_notify_create = uflags & O_CREAT != 0
         && uflags & O_PATH == 0
@@ -562,7 +559,9 @@ pub fn sys_openat(
         })?;
 
     // Open first, then install the file so filesystem errors propagate unchanged.
-    let result = with_fs(dirfd, |fs| Ok(options.open_with_credentials(fs, path, &mutation_cred)?))?;
+    let result = with_fs(dirfd, |fs| {
+        Ok(options.open_with_credentials(fs, path, &mutation_cred)?)
+    })?;
     let mount_table_namespace = mount_table_namespace(current, &result);
     let fd = add_to_fd(current, result, flags as _, mount_table_namespace)?;
     if should_notify_create {
@@ -646,8 +645,9 @@ pub fn sys_openat2(
     let curr = current;
     let thread = curr.as_thread();
     let mode = mode & !thread.proc_data.umask();
-    let cred = thread.cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(thread);
+    let cred = fs_credentials.credentials();
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let result = with_fs(dirfd, |fs| {
         let path_ref = axfs_ng_vfs::path::Path::new(&path);
@@ -664,16 +664,17 @@ pub fn sys_openat2(
             if uflags & (O_CREAT | O_EXCL) == (O_CREAT | O_EXCL) {
                 return Err(StarryError::AlreadyExists);
             }
-            let (location, _) = fs.resolve_with_search_checked(axfs_ng_vfs::path::Path::new(&path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
-            })?;
+            let (location, _) =
+                fs.resolve_with_search_checked(axfs_ng_vfs::path::Path::new(&path), |directory| {
+                    fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
+                })?;
             options.no_follow(true);
             return Ok(options.open_loc_with_credentials(location, &mutation_cred)?);
         }
-        let (parent, name) = fs.resolve_parent_beneath_no_symlinks_checked(
-            path.as_ref(),
-            |directory| fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred),
-        )?;
+        let (parent, name) = fs
+            .resolve_parent_beneath_no_symlinks_checked(path.as_ref(), |directory| {
+                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
+            })?;
         match parent.lookup_no_follow(name.as_ref()) {
             Ok(location) if location.node_type() == NodeType::Symlink => {
                 return Err(StarryError::FilesystemLoop);

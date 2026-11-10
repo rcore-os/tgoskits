@@ -29,7 +29,7 @@ use crate::{
         resolve_at_with_boundary_checked, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
-    task::UserTaskRef,
+    task::{FsCredentialsSnapshot, UserTaskRef},
     time::TimeValueLike,
 };
 
@@ -344,10 +344,11 @@ pub fn sys_mkdirat(
 
     let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
-    let cred = thread.cred();
+    let fs_credentials = FsCredentialsSnapshot::capture(thread);
+    let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
+    let mutation_cred = mutation_credentials(&fs_credentials);
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
@@ -410,10 +411,11 @@ pub fn sys_mknodat(
         _ => return Err(StarryError::InvalidInput),
     };
 
-    let cred = thread.cred();
+    let fs_credentials = FsCredentialsSnapshot::capture(thread);
+    let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let resolve_dirfd = if path.starts_with('/') {
         AT_FDCWD
     } else {
@@ -581,8 +583,8 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let mutation_cred = mutation_credentials(&fs_credentials);
     // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the
     // genuinely empty pathname. With a non-empty pathname it is ignored by
     // linkat(), so ordinary path-based linking remains unprivileged.
@@ -659,8 +661,8 @@ pub fn sys_unlinkat(
     flags: i32,
 ) -> StarryResult<isize> {
     let path = vm_load_path_string(current, path)?;
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let mutation_cred = mutation_credentials(&fs_credentials);
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -750,10 +752,11 @@ pub fn sys_symlinkat(
     let linkpath = vm_load_path_string(current, linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
-    let cred = current.as_thread().cred();
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let resolve_dirfd = if linkpath.starts_with('/') {
         AT_FDCWD
     } else {
@@ -1192,8 +1195,8 @@ pub fn sys_renameat2(
     };
     // Check search permissions while resolving each parent, before a missing
     // entry or dangling symlink target can mask EACCES.
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, |fs| {
         let (old_dir, old_name, searched) = fs
             .resolve_parent_with_search_checked(Path::new(&old_path), |directory| {
