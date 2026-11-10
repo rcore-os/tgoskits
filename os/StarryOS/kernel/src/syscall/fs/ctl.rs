@@ -10,7 +10,10 @@ use core::{
     time::Duration,
 };
 
-use ax_fs_ng::vfs::{FsContext, current_fs_context, sync_all_cached_files};
+use ax_fs_ng::{
+    CreateAttributes, CreateContent,
+    vfs::{FsContext, current_fs_context, sync_all_cached_files},
+};
 use ax_runtime::hal::time::wall_time;
 use axfs_ng_vfs::{
     DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, NodePermission, NodeType,
@@ -412,33 +415,26 @@ pub fn sys_mknodat(
     };
 
     let fs_credentials = FsCredentialsSnapshot::capture(thread);
-    let cred = fs_credentials.credentials();
-    let uid = cred.fsuid;
-    let gid = cred.fsgid;
     let mutation_cred = mutation_credentials(&fs_credentials);
     let resolve_dirfd = if path.starts_with('/') {
         AT_FDCWD
     } else {
         dirfd
     };
+    let device = if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
+        DeviceId(u64::from(dev as u32))
+    } else {
+        DeviceId::default()
+    };
     let res = with_fs(resolve_dirfd, |fs| {
-        let loc = fs.create_node(
+        fs.create_node(
             Path::new(&path),
-            node_type,
-            NodePermission::from_bits_truncate(perm as u16),
-            uid,
-            gid,
+            CreateAttributes {
+                content: CreateContent::Node(node_type, device),
+                permission: NodePermission::from_bits_truncate(perm as u16),
+            },
             &mutation_cred,
         )?;
-
-        // If device node, set rdev via update_metadata
-        if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
-            loc.update_metadata(MetadataUpdate {
-                rdev: Some(DeviceId(dev)),
-                ..Default::default()
-            })?;
-        }
-
         Ok(0)
     })?;
     Ok(res)

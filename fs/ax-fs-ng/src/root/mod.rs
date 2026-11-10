@@ -1747,10 +1747,13 @@ mod tests {
             context
                 .create_node(
                     "/init",
-                    NodeType::RegularFile,
-                    NodePermission::from_bits_truncate(0o644),
-                    0,
-                    0,
+                    crate::CreateAttributes {
+                        content: crate::CreateContent::Node(
+                            NodeType::RegularFile,
+                            axfs_ng_vfs::DeviceId::default(),
+                        ),
+                        permission: NodePermission::from_bits_truncate(0o644),
+                    },
                     &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();
@@ -1774,20 +1777,26 @@ mod tests {
             map_context
                 .create_node(
                     "/symbols",
-                    NodeType::Directory,
-                    NodePermission::from_bits_truncate(0o755),
-                    0,
-                    0,
+                    crate::CreateAttributes {
+                        content: crate::CreateContent::Node(
+                            NodeType::Directory,
+                            axfs_ng_vfs::DeviceId::default(),
+                        ),
+                        permission: NodePermission::from_bits_truncate(0o755),
+                    },
                     &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();
             map_context
                 .create_node(
                     "/symbols/kernel.axbt",
-                    NodeType::RegularFile,
-                    NodePermission::from_bits_truncate(0o644),
-                    0,
-                    0,
+                    crate::CreateAttributes {
+                        content: crate::CreateContent::Node(
+                            NodeType::RegularFile,
+                            axfs_ng_vfs::DeviceId::default(),
+                        ),
+                        permission: NodePermission::from_bits_truncate(0o644),
+                    },
                     &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();

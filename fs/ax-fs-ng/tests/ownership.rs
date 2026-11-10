@@ -402,6 +402,139 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
     }
 }
 
+#[cfg(feature = "vfs")]
+#[test]
+fn device_creation_checks_capability_and_retains_device_metadata() {
+    use ax_fs_ng::{CreateAttributes, CreateContent, FsContext};
+    use axfs_ng_vfs::{DeviceId, Mountpoint};
+
+    let filesystem = MemoryFs::new();
+    let mount = Mountpoint::new_root(&filesystem);
+    let root = mount.root_location();
+    root.create(
+        "devices",
+        NodeType::Directory,
+        NodePermission::from_bits_truncate(0o777),
+        0,
+        0,
+        &MutationCredentials::root(),
+    )
+    .unwrap();
+    let context = FsContext::new(root);
+    let credentials = unprivileged_credentials();
+    let permission = NodePermission::from_bits_truncate(0o640);
+    let whiteout = context
+        .create_node(
+            "/devices/whiteout",
+            CreateAttributes {
+                content: CreateContent::Node(NodeType::CharacterDevice, DeviceId::default()),
+                permission,
+            },
+            &credentials,
+        )
+        .and_then(|location| location.metadata())
+        .map(|metadata| {
+            (
+                metadata.rdev,
+                metadata.uid,
+                metadata.gid,
+                metadata.mode.bits(),
+                metadata.node_type,
+            )
+        });
+    let denied = [
+        (
+            "/devices/denied-char",
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 3),
+        ),
+        (
+            "/devices/denied-block",
+            NodeType::BlockDevice,
+            DeviceId::new(8, 0),
+        ),
+    ]
+    .map(|(path, kind, device)| {
+        let result = context.create_node(
+            path,
+            CreateAttributes {
+                content: CreateContent::Node(kind, device),
+                permission,
+            },
+            &credentials,
+        );
+        (
+            result.map(|_| ()),
+            context.resolve_no_follow(path).map(|_| ()),
+        )
+    });
+    let capable = MutationCredentials {
+        cap_mknod: true,
+        ..credentials
+    };
+    let permitted = [
+        (
+            "/devices/capable-char",
+            NodeType::CharacterDevice,
+            DeviceId::new(1, 3),
+        ),
+        (
+            "/devices/capable-block",
+            NodeType::BlockDevice,
+            DeviceId::new(8, 0),
+        ),
+    ]
+    .map(|(path, kind, device)| {
+        let result = context
+            .create_node(
+                path,
+                CreateAttributes {
+                    content: CreateContent::Node(kind, device),
+                    permission,
+                },
+                &capable,
+            )
+            .and_then(|location| location.metadata())
+            .map(|metadata| {
+                (
+                    metadata.rdev,
+                    metadata.uid,
+                    metadata.gid,
+                    metadata.mode.bits(),
+                    metadata.node_type,
+                )
+            });
+        (kind, device, result)
+    });
+
+    assert_eq!(
+        whiteout,
+        Ok((
+            DeviceId::default(),
+            1000,
+            1000,
+            permission.bits(),
+            NodeType::CharacterDevice
+        ))
+    );
+    assert_eq!(
+        denied,
+        [
+            (
+                Err(VfsError::OperationNotPermitted),
+                Err(VfsError::NotFound)
+            ),
+            (
+                Err(VfsError::OperationNotPermitted),
+                Err(VfsError::NotFound)
+            ),
+        ]
+    );
+    for (kind, device, result) in permitted {
+        assert_eq!(result, Ok((device, 1000, 1000, permission.bits(), kind)));
+    }
+}
+
 fn unprivileged_credentials() -> MutationCredentials<'static> {
     MutationCredentials {
         cap_mknod: false,
