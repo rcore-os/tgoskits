@@ -88,6 +88,13 @@ pub fn is_initialized() -> bool {
     CONTAINER.get().is_some()
 }
 
+/// Runs an IRQ-side operation while task-side registry access is excluded.
+#[cfg(axtest)]
+pub fn with_registry_locked_for_test<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = container().lock_irqsave();
+    f()
+}
+
 pub fn init(platform: Platform) -> Result<(), DriverError> {
     match platform {
         Platform::Static => init_sources(&[PlatformSource::Static])?,
