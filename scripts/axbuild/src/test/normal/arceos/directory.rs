@@ -14,19 +14,25 @@ pub(crate) async fn test_generic_qemu(
     group: &str,
     options: GenericQemuRunOptions<'_>,
 ) -> anyhow::Result<()> {
-    if group == "cpu" || group == "loongarch" {
-        if group == "loongarch" {
-            anyhow::ensure!(
-                arch == "loongarch64",
-                "the loongarch compatibility group requires loongarch64"
-            );
-        }
-        let selected = if group == "loongarch" {
-            Some(options.selected_case.unwrap_or("unaligned-fixup"))
-        } else {
-            options.selected_case
-        };
-        return super::cpu::run(arceos, arch, target, selected, options.allow_empty).await;
+    if group == "cpu" {
+        return super::cpu::run(
+            arceos,
+            arch,
+            target,
+            options.selected_case,
+            options.allow_empty,
+        )
+        .await;
+    }
+    if group == "drivers" {
+        return super::drivers::run(
+            arceos,
+            arch,
+            target,
+            options.selected_case,
+            options.allow_empty,
+        )
+        .await;
     }
     let dir = arceos_test_group_dir(arceos.app.workspace_root(), group);
     let cases = if options.allow_empty && options.selected_case.is_none() {

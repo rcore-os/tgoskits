@@ -103,3 +103,12 @@ PMU与cpufreq由Rust标准库kernel批次复用CPU库，IPI复用原Rust实现�
 
 
 板卡专项实现放在`src/board/<实际板名>/`，当前调频实现为`src/board/orangepi-5-plus/cpufreq.rs`；Rust模块路径为`cpu_tests::board::orangepi_5_plus::cpufreq::run`。目录名中的连字符仅在本crate内用普通模块路径映射为合法Rust标识符，不包含其他项目生产源码。PMU和user-entry同时被QEMU及实板使用，继续保留在共享模块。移动专项路径时必须同步清单与CI路由，确保该板源码不触发无关QEMU批次。
+
+## LoongArch非对齐恢复入口
+
+非对齐恢复测试唯一实现位于`src/unaligned_fixup.rs`，在`normal/suite.toml`的loong-standard批次登记，默认与该批次其他成员共用一次启动。旧独立loongarch目录及测试组已移除，统一使用：
+
+```bash
+cargo xtask arceos test qemu --arch loongarch64 --test-group cpu
+cargo xtask arceos test qemu --arch loongarch64 --test-group cpu --test-case unaligned-fixup
+```

@@ -30,8 +30,8 @@ pub struct ArgsTestQemu {
         short = 'g',
         long = "test-group",
         value_name = "GROUP",
-        help = "Run ArceOS QEMU test cases from one test group (rust, c, cpu or another directory \
-                suite)"
+        help = "Run ArceOS QEMU test cases from one test group (rust, c, cpu, drivers or another \
+                directory suite)"
     )]
     pub test_group: Option<String>,
     #[arg(
@@ -43,7 +43,7 @@ pub struct ArgsTestQemu {
     pub test_case: Option<String>,
     #[arg(short = 'l', long, help = "List discovered ArceOS QEMU test cases")]
     pub list: bool,
-    /// Print the Rust or CPU startup plan without building or starting a machine.
+    /// Print the Rust, C, CPU or driver startup plan without building or starting a machine.
     #[arg(long, conflicts_with = "list")]
     pub plan: bool,
     /// Removed: Rust tests are selected with `--test-case`.

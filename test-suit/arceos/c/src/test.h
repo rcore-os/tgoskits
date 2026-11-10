@@ -11,13 +11,7 @@ struct arceos_c_test_case {
     arceos_c_test_fn run;
 };
 
-int arceos_c_test_mem(char *reason, size_t reason_len);
-int arceos_c_test_pthread_basic(char *reason, size_t reason_len);
-int arceos_c_test_pthread_parallel(char *reason, size_t reason_len);
-int arceos_c_test_pthread_sleep(char *reason, size_t reason_len);
-int arceos_c_test_pipe(char *reason, size_t reason_len);
-int arceos_c_test_epoll(char *reason, size_t reason_len);
-int arceos_c_test_net_http(char *reason, size_t reason_len);
+#include "suite_declarations.h"
 
 void test_fail(char *reason, size_t reason_len, const char *fmt, ...);
 

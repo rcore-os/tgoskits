@@ -508,11 +508,12 @@ impl ArceOS {
             target_dir: paths.target_dir,
             out_dir: paths.out_dir,
             features: config.common.features,
+            include_dirs: Vec::new(),
+            source_flags: Default::default(),
         };
 
         let output = cbuild::build_c_app(self.app.workspace_context(), request, &input)?;
-        let map_path = output.elf_path.with_extension("axbt");
-        crate::build::symbol_map::generate_axbt_map(&output.elf_path, &map_path)?;
+        cbuild::ensure_symbol_maps(&output.elf_path)?;
         Ok(output)
     }
 

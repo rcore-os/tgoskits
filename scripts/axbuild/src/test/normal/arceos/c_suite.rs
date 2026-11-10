@@ -1,3 +1,7 @@
+mod bindings;
+mod catalog;
+mod listing;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -5,13 +9,15 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use bindings::Bindings;
+use catalog::{Catalog, Selection};
+pub(crate) use listing::{print_plan, render_listing};
 use ostool::run::qemu::QemuConfig;
 
 use super::{
-    ARCEOS_C_ALL_FEATURE, ARCEOS_C_QEMU_FEATURES, ARCEOS_C_QEMU_LISTED_CASES,
     ARCEOS_C_TEST_BUILD_GROUP,
-    assets::{arceos_c_test_dir, build_config_path, qemu_config_path, test_build_args},
-    types::{CTestArtifactPaths, CTestDef},
+    assets::{arceos_c_test_dir, build_config_path, qemu_config_path},
+    types::CTestArtifactPaths,
 };
 use crate::{
     arceos::{ArceOS, build, cbuild, rootfs},
@@ -19,208 +25,167 @@ use crate::{
     execution::{host_http::HostHttpServerGuard, qemu as qemu_test},
 };
 
-pub(crate) async fn test_c_qemu(
-    arceos: &mut ArceOS,
-    target: &str,
-    selected_case: Option<&str>,
-) -> anyhow::Result<()> {
-    test_c_qemu_axbuild(arceos, target, selected_case).await
-}
-
-pub(crate) fn c_qemu_features_for_run(
-    selected_case: Option<&str>,
-) -> anyhow::Result<Vec<&'static str>> {
-    match selected_case {
-        Some(_) => c_qemu_features_for_list(selected_case),
-        None => Ok(vec![ARCEOS_C_ALL_FEATURE]),
-    }
-}
-
-pub(crate) fn c_qemu_features_for_list(
-    selected_case: Option<&str>,
-) -> anyhow::Result<Vec<&'static str>> {
-    let Some(selected_case) = selected_case else {
-        return Ok(ARCEOS_C_QEMU_LISTED_CASES.to_vec());
-    };
-
-    let features = ARCEOS_C_QEMU_FEATURES
-        .iter()
-        .copied()
-        .filter(|feature| *feature == selected_case)
-        .collect::<Vec<_>>();
-    if features.is_empty() {
-        bail!("unknown ArceOS c qemu test feature `{selected_case}`");
-    }
-    Ok(features)
-}
-
-pub(crate) fn load_arceos_c_test_suit_qemu_case(
+pub(crate) fn c_qemu_batch_listing(
     root: &Path,
-    arch: &str,
-    target: &str,
-    feature: &str,
-) -> anyhow::Result<CTestDef> {
-    Ok(CTestDef {
-        name: feature.to_string(),
-        build_group: ARCEOS_C_TEST_BUILD_GROUP.to_string(),
-        build_config_path: arceos_c_test_suit_build_config_path(root, target)?,
-        qemu_config_path: arceos_c_test_suit_qemu_config_path(root, arch)?,
-    })
+    selected: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
+    Ok(Catalog::load(root)?
+        .select(selected)?
+        .into_iter()
+        .map(|selection| format!("{} ({} tests; 1 boot)", selection.id, selection.tests.len()))
+        .collect())
 }
-
 pub(crate) fn arceos_c_test_suit_build_config_path(
     root: &Path,
     target: &str,
 ) -> anyhow::Result<PathBuf> {
     build_config_path(root, target, "ArceOS C test suite")
 }
-
 pub(crate) fn arceos_c_test_suit_qemu_config_path(
     root: &Path,
     arch: &str,
 ) -> anyhow::Result<PathBuf> {
     qemu_config_path(root, arch, "ArceOS C test suite")
 }
-
-fn validate_c_test_build_config(config: &build::ArceosConfig, path: &Path) -> anyhow::Result<()> {
+fn load_c_test_build_config(path: &Path) -> anyhow::Result<build::ArceosBuildConfig> {
+    let config = build::load_arceos_build_config(path)?;
     if config.app_c.is_none() {
-        bail!(
-            "ArceOS C qemu test build config {} must set `app-c = \"c\"` or another C source \
-             directory",
-            path.display()
-        );
+        bail!("ArceOS C build config must set app-c source directory");
     }
     Ok(())
 }
-
 fn load_c_test_qemu_config(path: &Path) -> anyhow::Result<QemuConfig> {
-    toml::from_str(&fs::read_to_string(path)?)
-        .with_context(|| format!("failed to parse C qemu config {}", path.display()))
+    toml::from_str(&fs::read_to_string(path)?).context("parse C QEMU configuration")
 }
-
-fn c_test_artifact_index(test: &CTestDef) -> usize {
-    let stem = test
-        .qemu_config_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("qemu");
-    match stem.strip_prefix("qemu-") {
-        Some("x86_64") => 0,
-        Some("aarch64") => 1,
-        Some("riscv64") => 2,
-        Some("loongarch64") => 3,
-        Some(_) | None => 0,
+fn c_test_artifact_index(arch: &str) -> usize {
+    match arch {
+        "x86_64" => 0,
+        "aarch64" => 1,
+        "riscv64" => 2,
+        "loongarch64" => 3,
+        _ => unreachable!("validated C architecture"),
+    }
+}
+fn c_test_artifact_paths(target: &Path, id: &str, arch: &str) -> CTestArtifactPaths {
+    CTestArtifactPaths {
+        target_dir: target
+            .join("axbuild/arceos-c")
+            .join(ARCEOS_C_TEST_BUILD_GROUP)
+            .join("cargo"),
+        out_dir: target
+            .join("axbuild/arceos-c")
+            .join(id)
+            .join(format!("out-{}", c_test_artifact_index(arch))),
     }
 }
 
-fn c_test_display_suffix(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .and_then(|stem| stem.strip_prefix("qemu-"))
-        .map(|arch| format!(" ({arch})"))
-        .unwrap_or_default()
-}
-
-async fn test_c_qemu_axbuild(
+pub(crate) async fn test_c_qemu(
     arceos: &mut ArceOS,
     target: &str,
-    selected_case: Option<&str>,
+    selected: Option<&str>,
 ) -> anyhow::Result<()> {
     let arch = crate::context::arch_for_target_checked(target)?;
-    let c_test_root = arceos_c_test_dir(arceos);
-    let c_tests = c_qemu_features_for_run(selected_case)?
-        .into_iter()
-        .map(|feature| load_arceos_c_test_suit_qemu_case(&c_test_root, arch, target, feature))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    if c_tests.is_empty() {
-        println!("no C tests found in {}", c_test_root.display());
-        return Ok(());
-    }
-
+    let root = arceos_c_test_dir(arceos);
+    let catalog = Catalog::load(&root)?;
+    let selections = catalog.select(selected)?;
     println!(
-        "running arceos C qemu tests for {} test(s) on target: {} (arch: {})",
-        c_tests.len(),
-        target,
-        arch
+        "running arceos C tests: arch={arch} boots={} tests={}",
+        selections.len(),
+        selections.iter().map(|s| s.tests.len()).sum::<usize>()
     );
-
     let mut summary = qemu_test::QemuTestSummary::default();
-    let total = c_tests.len();
-    let suite_started = Instant::now();
-    for (index, c_test) in c_tests.into_iter().enumerate() {
-        println!("[{}/{}] arceos c qemu {}", index + 1, total, c_test.name);
+    let started = Instant::now();
+    for selection in selections {
+        let name = format!("c/{}", selection.id);
         let case_started = Instant::now();
-        let result = build_and_run_c_test(arceos, target, arch, &c_test)
-            .await
-            .with_context(|| {
-                format!(
-                    "c test `{}` failed{}",
-                    c_test.name,
-                    c_test_display_suffix(&c_test.qemu_config_path)
-                )
-            });
-        let duration = case_started.elapsed();
-        if let Err(err) = result {
-            eprintln!("failed: c/{}: {err:#}", c_test.name);
-            summary.fail_with_detail(format!("c/{}", c_test.name), format!("{duration:.2?}"));
-        } else {
-            println!("ok: c/{} ({duration:.2?})", c_test.name);
-            summary.pass_with_detail(format!("c/{}", c_test.name), format!("{duration:.2?}"));
+        match build_and_run(arceos, target, arch, &root, &catalog, &selection).await {
+            Ok(()) => {
+                println!("ok: {name}");
+                summary.pass_with_detail(name, format!("{:.2?}", case_started.elapsed()));
+            }
+            Err(error) => {
+                eprintln!("failed: {name}: {error:#}");
+                summary.fail_with_detail(name, format!("{error:#}"));
+            }
         }
     }
-
-    let total_duration = format!("{:.2?}", suite_started.elapsed());
-    summary.finish_with_total_detail("arceos c", "test", Some(total_duration.as_str()))
+    summary.finish_with_total_detail(
+        "arceos c",
+        "test",
+        Some(&format!("{:.2?}", started.elapsed())),
+    )
 }
 
-async fn build_and_run_c_test(
+async fn build_and_run(
     arceos: &mut ArceOS,
     target: &str,
-    _arch: &str,
-    test: &CTestDef,
+    arch: &str,
+    root: &Path,
+    catalog: &Catalog,
+    selection: &Selection<'_>,
 ) -> anyhow::Result<()> {
-    let qemu_config = load_c_test_qemu_config(&test.qemu_config_path)?;
+    let build_path = arceos_c_test_suit_build_config_path(root, target)?;
+    let qemu_path = arceos_c_test_suit_qemu_config_path(root, arch)?;
+    let config = load_c_test_build_config(&build_path)?;
+    let mut qemu = load_c_test_qemu_config(&qemu_path)?;
+    let build::ArceosBuildMode::AppC { app_dir, .. } = build::arceos_build_mode(&config)?
+    else {
+        bail!("C suite requires app-c");
+    };
     let request = arceos.prepare_request(
-        test_build_args("ax-libc", target, &test.build_config_path),
+        BuildCliArgs {
+            config: Some(build_path.clone()),
+            package: Some("ax-libc".into()),
+            arch: None,
+            target: Some(target.into()),
+            smp: None,
+            debug: false,
+        },
         None,
         None,
         SnapshotPersistence::Discard,
     )?;
-    validate_c_test_build_config(&request.config, &test.build_config_path)?;
-    let mode = build::arceos_build_mode(&request.config)?;
-    let build::ArceosBuildMode::AppC { app_dir, app_name } = mode else {
-        bail!(
-            "ArceOS C qemu test build config {} must set `app-c = \"c\"` or another C source \
-             directory",
-            test.build_config_path.display()
-        );
-    };
-    let artifacts = c_test_artifact_paths(
-        arceos.app.target_dir(),
-        &test.build_group,
-        &test.name,
-        c_test_artifact_index(test),
-    );
-
-    let input = c_test_build_input(
+    let artifacts = c_test_artifact_paths(arceos.app.target_dir(), selection.id, arch);
+    let bindings = Bindings::new(catalog, selection);
+    let generated = arceos.app.target_dir().join("axbuild/arceos-c/generated");
+    let (include, header) = bindings.write(&generated)?;
+    let mut features = config.common.features.clone();
+    features.extend(selection.features());
+    features.sort();
+    features.dedup();
+    let main = app_dir.join("main.c");
+    let input = cbuild::ArceosCBuildInput {
         app_dir,
-        app_name,
-        artifacts.target_dir,
-        artifacts.out_dir,
-        &test.name,
-        request.config.common.features.clone(),
-    );
+        app_name: ARCEOS_C_TEST_BUILD_GROUP.into(),
+        target_dir: artifacts.target_dir,
+        out_dir: artifacts.out_dir.join(bindings.identity()),
+        features,
+        include_dirs: vec![include],
+        source_flags: std::collections::BTreeMap::from([(
+            main,
+            vec![format!(
+                "-DARCEOS_C_SELECTED_HEADER={}",
+                bindings::literal(&header.to_string_lossy())
+            )],
+        )]),
+    };
     let output = cbuild::build_c_app(arceos.app.workspace_context(), &request, &input)?;
-    let map_path = output.elf_path.with_extension("axbt");
-    crate::build::symbol_map::generate_axbt_map(&output.elf_path, &map_path)?;
-    qemu_test::validate_test_qemu_rootfs_write_policy(&test.qemu_config_path, "ArceOS")?;
-    let mut qemu = qemu_config;
+    let map = output.elf_path.with_extension("axbt");
+    cbuild::ensure_symbol_maps(&output.elf_path)?;
+    qemu_test::validate_test_qemu_rootfs_write_policy(&qemu_path, "ArceOS")?;
     rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
     rootfs::isolate_qemu_test_rootfs(&mut qemu)?;
-    qemu_test::append_backtrace_map(&mut qemu, &map_path, target)?;
-    let _host_http_server = qemu_test::load_qemu_case_host_http_server(&test.qemu_config_path)?
+    qemu_test::append_backtrace_map(&mut qemu, &map, target)?;
+    crate::support::qemu_success::replace_configured_success_regex(
+        &mut qemu,
+        vec![format!(
+            r"(?m)^{}\s*$",
+            regex::escape(&selection.completion())
+        )],
+    );
+    let _server = qemu_test::load_qemu_case_host_http_server(&qemu_path)?
         .as_ref()
-        .map(|config| HostHttpServerGuard::start(config, &test.name))
+        .map(|config| HostHttpServerGuard::start(config, selection.id))
         .transpose()?;
     arceos
         .app
@@ -229,69 +194,19 @@ async fn build_and_run_c_test(
     arceos.app.run_prepared_qemu(qemu).await
 }
 
-fn c_test_build_input(
-    app_dir: PathBuf,
-    app_name: String,
-    target_dir: PathBuf,
-    out_dir: PathBuf,
-    feature: &str,
-    mut features: Vec<String>,
-) -> cbuild::ArceosCBuildInput {
-    features.push(format!("c-define:{}", c_test_feature_define(feature)));
-    cbuild::ArceosCBuildInput {
-        app_dir,
-        app_name,
-        target_dir,
-        out_dir,
-        features,
-    }
-}
-
-fn c_test_feature_define(feature: &str) -> String {
-    format!(
-        "ARCEOS_C_TEST_CASE_{}",
-        feature.replace('-', "_").to_ascii_uppercase()
-    )
-}
-
-/// Returns isolated artifact paths for a single C test invocation.
-///
-/// Cases under the same build wrapper share a Cargo target dir and therefore
-/// reuse the same ax-libc static library. QEMU output stays isolated per case
-/// and per invocation so generated ELF files do not overwrite each other.
-fn c_test_artifact_paths(
-    target_dir: &Path,
-    build_group: &str,
-    test_name: &str,
-    invocation_index: usize,
-) -> CTestArtifactPaths {
-    let root = target_dir
-        .join("axbuild")
-        .join("arceos-c")
-        .join(test_name.replace('/', "-"));
-    CTestArtifactPaths {
-        target_dir: target_dir
-            .join("axbuild/arceos-c")
-            .join(build_group.replace('/', "-"))
-            .join("cargo"),
-        out_dir: root.join(format!("out-{invocation_index}")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn arceos_c_default_run_selects_all_feature_only() {
-        let features = c_qemu_features_for_run(None).unwrap();
-        assert_eq!(features, vec![ARCEOS_C_ALL_FEATURE]);
-    }
-
-    #[test]
-    fn c_test_requires_app_c_in_resolved_config() {
-        let config = build::ArceosConfig::default();
-        let err = validate_c_test_build_config(&config, Path::new("build.toml")).unwrap_err();
-        assert!(err.to_string().contains("must set `app-c = \"c\"`"));
+    fn c_runner_rejects_a_rust_only_build_configuration() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("build.toml");
+        fs::write(&path, "features = []\nlog = \"Info\"\n").unwrap();
+        assert!(
+            load_c_test_build_config(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("must set app-c")
+        );
     }
 }

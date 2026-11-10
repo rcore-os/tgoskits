@@ -5,6 +5,7 @@ mod c_suite;
 pub(crate) mod cpu;
 mod directory;
 mod discovery;
+mod drivers;
 mod listing;
 mod pcm_waveform;
 mod qemu;
@@ -24,30 +25,9 @@ const ARCEOS_TEST_SUITE_OS: &str = "arceos";
 const ARCEOS_RUST_TEST_PACKAGE: &str = "arceos-test-suit";
 const ARCEOS_RUST_TEST_BUILD_GROUP: &str = "arceos-test-suit";
 const ARCEOS_C_TEST_BUILD_GROUP: &str = "arceos-c-test-suit";
-const ARCEOS_C_ALL_FEATURE: &str = "all";
 const ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE: &str = "debug-panic-path";
 const ARCEOS_RUST_LOCKDEP_DETECT_FEATURE: &str = "lockdep-detect";
 const ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE: &str = "task-stack-guard-page";
-
-const ARCEOS_C_QEMU_FEATURES: &[&str] = &[
-    ARCEOS_C_ALL_FEATURE,
-    "mem",
-    "pthread-basic",
-    "pthread-parallel",
-    "pthread-sleep",
-    "pipe",
-    "epoll",
-    "net-http",
-];
-const ARCEOS_C_QEMU_LISTED_CASES: &[&str] = &[
-    "mem",
-    "pthread-basic",
-    "pthread-parallel",
-    "pthread-sleep",
-    "pipe",
-    "epoll",
-    "net-http",
-];
 
 pub(crate) async fn test(arceos: &mut ArceOS, args: ArgsTest) -> anyhow::Result<()> {
     match args.command {

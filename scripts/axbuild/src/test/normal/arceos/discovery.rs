@@ -189,7 +189,6 @@ pub(crate) fn selected_qemu_test_groups(
                 if group != ARCEOS_RUST_TEST_GROUP
                     && group != ARCEOS_C_TEST_GROUP
                     && group != ARCEOS_AXTEST_GROUP
-                    && group != "loongarch"
                 {
                     flows.push(QemuTestFlow::Generic(group));
                 }
@@ -247,6 +246,22 @@ mod tests {
             selected_qemu_test_groups(dir.path(), &qemu_args(false, false, Vec::new())).unwrap();
 
         assert_eq!(flows, &[QemuTestFlow::Rust, QemuTestFlow::C]);
+
+        let root = dir.path().join("test-suit/arceos");
+        fs::create_dir_all(root.join("fixture-platform")).unwrap();
+        let mut args = qemu_args(false, false, Vec::new());
+        args.test_group = Some("fixture-platform".to_owned());
+        assert_eq!(
+            selected_qemu_test_groups(dir.path(), &args).unwrap(),
+            [QemuTestFlow::Generic("fixture-platform".to_owned())]
+        );
+        fs::remove_dir(root.join("fixture-platform")).unwrap();
+        let error = selected_qemu_test_groups(dir.path(), &args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported ArceOS qemu test group")
+        );
     }
 
     #[test]

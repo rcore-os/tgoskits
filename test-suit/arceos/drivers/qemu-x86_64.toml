@@ -12,10 +12,10 @@ args = [
 timeout = 120
 uefi = true
 to_bin = true
-fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "ACPICA_TEST_FAIL"]
 
 [[shell_check_steps]]
-success_regex = ["(?m)^INTEL_HDA_QEMU_OK\\s*$"]
+success_regex = ["(?m)^DRIVERS_BATCH_OK batch=x86-q35 selection=all\\s*$"]
 
 [host_pcm_waveform]
 frames = 4096

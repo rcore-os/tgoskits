@@ -34,6 +34,7 @@ pub(crate) struct PreparedArceosQemuCase {
     pub(crate) request: ResolvedBuildRequest,
     pub(crate) cargo: Cargo,
     pub(crate) qemu: QemuConfig,
+    pub(crate) verify_pcm_output: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,24 +84,6 @@ pub(crate) struct ArceosQemuBuildGroup<'a> {
 pub(crate) struct GenericQemuRunOptions<'a> {
     pub(crate) selected_case: Option<&'a str>,
     pub(crate) allow_empty: bool,
-}
-
-/// A discovered C test under `test-suit/arceos/c/`.
-pub(crate) struct CTestDef {
-    pub(crate) name: String,
-    pub(crate) build_group: String,
-    pub(crate) build_config_path: PathBuf,
-    pub(crate) qemu_config_path: PathBuf,
-}
-
-impl qemu_test::BuildConfigRef for CTestDef {
-    fn build_group(&self) -> &str {
-        &self.build_group
-    }
-
-    fn build_config_path(&self) -> &Path {
-        &self.build_config_path
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

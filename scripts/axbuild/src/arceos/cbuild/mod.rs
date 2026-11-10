@@ -5,6 +5,7 @@ use anyhow::{Context, ensure};
 use super::build;
 use crate::context::{ResolvedBuildRequest, WorkspaceContext};
 
+mod cache;
 mod compile;
 mod features;
 mod flags;
@@ -14,7 +15,8 @@ mod link;
 mod tests;
 mod types;
 
-use compile::{archive_static_lib, compile_dir_c_sources};
+pub(crate) use cache::ensure_symbol_maps;
+use compile::{Compiler, archive_static_lib, cc_for_arch};
 use features::{c_compiler_features, dynamic_pie_for_c_app, map_c_app_features};
 use flags::{CFlagsInput, cflags, write_pthread_mutex_header};
 pub(crate) use libc::AX_LIBC_PACKAGE;
@@ -37,6 +39,22 @@ pub(crate) fn build_c_app(
     request: &ResolvedBuildRequest,
     input: &ArceosCBuildInput,
 ) -> anyhow::Result<ArceosCBuildOutput> {
+    fs::create_dir_all(&input.target_dir)?;
+    // The same Cargo static-library output can serve several C selections.
+    // Retain this lock through compilation and linking, not just Cargo's phase.
+    let build_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(
+            input
+                .target_dir
+                .join(format!(".c-build-{}.lock", request.arch)),
+        )?;
+    build_lock
+        .lock()
+        .context("lock C build inputs and outputs")?;
     let workspace_root = workspace.root();
     let cargo = prepare_c_app_cargo_config(request, workspace, &input.features)?;
     let c_features = c_compiler_features(&cargo.features, &input.features);
@@ -91,26 +109,40 @@ pub(crate) fn build_c_app(
     )
     .context("failed to locate ArceOS C app linker scripts")?;
 
-    let cflags = cflags(CFlagsInput {
+    let mut cflags = cflags(CFlagsInput {
         workspace_root,
         arch,
         mode,
         generated_include_dir: &generated_include_dir,
         include_dir: &include_dir,
         features: &c_features,
-        log: cargo.log,
+        log: cargo.log.clone(),
         dynamic_pie,
     });
+    cflags.extend(
+        input
+            .include_dirs
+            .iter()
+            .map(|path| format!("-I{}", path.display())),
+    );
+    let mut compiler = Compiler::new(&cc_for_arch(arch))?;
     let lib_objects =
-        compile_dir_c_sources(&c_source_dir, &axlibc_obj_dir, &cflags, None, "axlibc")?;
-    let app_objects = compile_dir_c_sources(&input.app_dir, &app_obj_dir, &cflags, None, "app")?;
+        compiler.compile_dir(&c_source_dir, &axlibc_obj_dir, &cflags, &Default::default())?;
+    let app_objects =
+        compiler.compile_dir(&input.app_dir, &app_obj_dir, &cflags, &input.source_flags)?;
     let libc = axlibc_obj_dir.join("libc.a");
-    archive_static_lib(arch, &libc, &lib_objects)?;
-
-    let elf_path = input
-        .out_dir
-        .join(format!("{}_{}.unstripped", input.app_name, platform));
-    link_c_app(
+    let archived = archive_static_lib(arch, &libc, &lib_objects)?;
+    let identity = cache::signature(&(
+        &cargo,
+        &input.app_dir,
+        &input.include_dirs,
+        &input.source_flags,
+    ))?;
+    let elf_path = input.out_dir.join(format!(
+        "{}_{}-{}.unstripped",
+        input.app_name, platform, identity
+    ));
+    let linked = link_c_app(
         arch,
         &link_scripts,
         &elf_path,
@@ -120,6 +152,14 @@ pub(crate) fn build_c_app(
         libgcc(arch, &cargo.features)?,
     )?;
 
+    println!(
+        "[axbuild] C build cache: preprocessed={} compiled={} reused={} archive={} link={}",
+        compiler.stats.preprocessed,
+        compiler.stats.compiled,
+        compiler.stats.reused,
+        if archived { "built" } else { "reused" },
+        if linked { "built" } else { "reused" }
+    );
     Ok(ArceosCBuildOutput { elf_path })
 }
 

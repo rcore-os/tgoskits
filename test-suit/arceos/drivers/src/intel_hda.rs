@@ -1,6 +1,3 @@
-#![no_std]
-#![no_main]
-
 extern crate alloc;
 extern crate ax_std as std;
 
@@ -100,8 +97,7 @@ fn play(device: &mut dyn Playback) {
     assert_eq!(device.prepare(config), Err(PlaybackError::BadState));
 }
 
-#[unsafe(no_mangle)]
-fn main() {
+pub fn run() {
     let mut devices =
         ax_driver::playback::take_playback_devices().expect("PCM ownership transfer failed");
     assert_eq!(
@@ -113,5 +109,4 @@ fn main() {
     std::println!("PCM_PLAYBACK_DEVICE {}", device.name());
     play(device.as_mut());
     std::println!("INTEL_HDA_QEMU_OK");
-    std::process::exit(0);
 }

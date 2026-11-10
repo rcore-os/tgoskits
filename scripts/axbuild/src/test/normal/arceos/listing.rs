@@ -5,10 +5,7 @@ use super::{
     assets::{
         arceos_c_test_dir, arceos_rust_test_dir, arceos_test_group_dir, arceos_test_suit_qemu_archs,
     },
-    c_suite::{
-        arceos_c_test_suit_build_config_path, arceos_c_test_suit_qemu_config_path,
-        c_qemu_features_for_list,
-    },
+    c_suite::{arceos_c_test_suit_build_config_path, arceos_c_test_suit_qemu_config_path},
     discovery::{
         arceos_test_suit_build_config_path, arceos_test_suit_qemu_config_path,
         discover_qemu_cases_in_dir,
@@ -43,14 +40,16 @@ pub(crate) fn list_c_qemu_cases(
     target: Option<(&str, &str)>,
     selected_case: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    let cases = c_qemu_case_names(arceos, target, selected_case)?;
-    if cases.is_empty() {
-        return Ok(None);
+    if let Some((arch, target)) = target {
+        let root = arceos_c_test_dir(arceos);
+        arceos_c_test_suit_build_config_path(&root, target)?;
+        arceos_c_test_suit_qemu_config_path(&root, arch)?;
     }
-    Ok(Some(qemu_test::render_case_tree(
-        ARCEOS_C_TEST_GROUP,
-        cases,
-    )))
+    Ok(Some(super::c_suite::render_listing(
+        &arceos_c_test_dir(arceos),
+        target.map(|(arch, _)| arch),
+        selected_case,
+    )?))
 }
 
 pub(crate) fn list_generic_qemu_cases(
@@ -66,11 +65,11 @@ pub(crate) fn list_generic_qemu_cases(
             selected_case,
         )?));
     }
-    if group == "loongarch" {
-        return Ok(Some(super::cpu::render_listing(
+    if group == "drivers" {
+        return Ok(Some(super::drivers::render_listing(
             arceos,
-            Some("loongarch64"),
-            Some(selected_case.unwrap_or("unaligned-fixup")),
+            target.map(|(arch, _)| arch),
+            selected_case,
         )?));
     }
     let dir = arceos_test_group_dir(arceos.app.workspace_root(), group);
@@ -106,7 +105,7 @@ pub(crate) fn all_qemu_case_groups(
                 .ok()
                 .filter(|cases| !cases.is_empty()),
             "cpu" => super::cpu::listed_cases(arceos, selected_case).ok(),
-            "loongarch" => None,
+            "drivers" => super::drivers::listed_cases(arceos, selected_case).ok(),
             ARCEOS_C_TEST_GROUP => c_qemu_listed_cases(arceos, selected_case)
                 .ok()
                 .filter(|v| !v.is_empty()),
@@ -201,23 +200,6 @@ fn rust_qemu_case_names(
     }
 }
 
-fn c_qemu_case_names(
-    arceos: &ArceOS,
-    target: Option<(&str, &str)>,
-    selected_case: Option<&str>,
-) -> anyhow::Result<Vec<String>> {
-    if let Some((arch, target)) = target {
-        let root = arceos_c_test_dir(arceos);
-        arceos_c_test_suit_build_config_path(&root, target)?;
-        arceos_c_test_suit_qemu_config_path(&root, arch)?;
-    }
-
-    Ok(c_qemu_features_for_list(selected_case)?
-        .into_iter()
-        .map(|feature| feature.to_string())
-        .collect())
-}
-
 fn c_qemu_listed_cases(
     arceos: &ArceOS,
     selected_case: Option<&str>,
@@ -227,7 +209,7 @@ fn c_qemu_listed_cases(
     if archs.is_empty() {
         return Ok(Vec::new());
     }
-    let Ok(features) = c_qemu_features_for_list(selected_case) else {
+    let Ok(features) = super::c_suite::c_qemu_batch_listing(&root, selected_case) else {
         return Ok(Vec::new());
     };
     Ok(features

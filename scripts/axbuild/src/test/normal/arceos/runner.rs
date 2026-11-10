@@ -85,10 +85,14 @@ pub(crate) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
             [QemuTestFlow::Rust] => {
                 super::rust_suite::print_plan(arceos, &arch, &target, selected_case)
             }
+            [QemuTestFlow::C] => super::c_suite::print_plan(arceos, &arch, &target, selected_case),
+            [QemuTestFlow::Generic(group)] if group == "drivers" => {
+                super::drivers::print_plan(arceos, &arch, &target, selected_case)
+            }
             [QemuTestFlow::Generic(group)] if group == "cpu" => {
                 super::cpu::print_plan(arceos, &arch, &target, selected_case)
             }
-            _ => bail!("--plan requires --test-group rust or cpu"),
+            _ => bail!("--plan requires --test-group rust, c, cpu or drivers"),
         };
     }
     let allow_rust_case_miss = args.test_group.is_none() && !args.only_rust;
@@ -310,6 +314,7 @@ mod tests {
         build_config_path: &Path,
     ) -> PreparedArceosQemuCase {
         PreparedArceosQemuCase {
+            verify_pcm_output: true,
             case: ArceosQemuCase {
                 case: TestQemuCase {
                     name: name.to_string(),

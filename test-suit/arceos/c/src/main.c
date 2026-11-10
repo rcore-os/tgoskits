@@ -34,29 +34,7 @@ static unsigned long elapsed_ms(const struct timespec *started)
     return (unsigned long)sec * 1000UL + (unsigned long)(nsec / 1000000L);
 }
 
-static const struct arceos_c_test_case TESTS[] = {
-#if defined(ARCEOS_C_TEST_CASE_ALL) || defined(ARCEOS_C_TEST_CASE_MEM)
-    {"mem", "memory allocation APIs", arceos_c_test_mem},
-#endif
-#if defined(ARCEOS_C_TEST_CASE_ALL) || defined(ARCEOS_C_TEST_CASE_PTHREAD_BASIC)
-    {"pthread-basic", "pthread create join exit mutex APIs", arceos_c_test_pthread_basic},
-#endif
-#if defined(ARCEOS_C_TEST_CASE_ALL) || defined(ARCEOS_C_TEST_CASE_PTHREAD_PARALLEL)
-    {"pthread-parallel", "pthread parallel compute APIs", arceos_c_test_pthread_parallel},
-#endif
-#if defined(ARCEOS_C_TEST_CASE_ALL) || defined(ARCEOS_C_TEST_CASE_PTHREAD_SLEEP)
-    {"pthread-sleep", "pthread sleep and clock APIs", arceos_c_test_pthread_sleep},
-#endif
-#if defined(ARCEOS_C_TEST_CASE_ALL) || defined(ARCEOS_C_TEST_CASE_PIPE)
-    {"pipe", "pipe read write close APIs", arceos_c_test_pipe},
-#endif
-#if defined(ARCEOS_C_TEST_CASE_ALL) || defined(ARCEOS_C_TEST_CASE_EPOLL)
-    {"epoll", "epoll pipe readiness APIs", arceos_c_test_epoll},
-#endif
-#if defined(ARCEOS_C_TEST_CASE_ALL) || defined(ARCEOS_C_TEST_CASE_NET_HTTP)
-    {"net-http", "socket host HTTP APIs", arceos_c_test_net_http},
-#endif
-};
+#include ARCEOS_C_SELECTED_HEADER
 
 int main(void)
 {
@@ -94,5 +72,6 @@ int main(void)
     }
 
     puts("ArceOS C test suite run OK!");
+    puts(ARCEOS_C_BATCH_COMPLETION);
     return 0;
 }

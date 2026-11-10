@@ -285,6 +285,8 @@ features = ["cpu-tests/io"]
             selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/src/io.rs"])
             self.assertEqual({item.template_id for item in selections}, {"cpu-aarch64", "cpu-x86_64", "board-io"})
             self.assertTrue(any("--test-case alpha" in item.command for item in selections))
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/retired-platform/io.rs"])
             scoped = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/configs/x86_64/beta/qemu.toml"])
             self.assertEqual([item.template_id for item in scoped], ["cpu-x86_64"])
             entry = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/main.rs"])
@@ -341,6 +343,39 @@ features = ["cpu-tests/io"]
             (root / "test-suit/arceos/cpu/normal/configs/x86_64/beta/qemu.toml").unlink()
             with self.assertRaises(ci_suite.SuiteRouteError):
                 ci_suite.validate_suite_catalog(root, checks)
+
+class DriverBatchRoutingTests(unittest.TestCase):
+    def test_shared_driver_image_routes_members_and_rejects_missing_output_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            suite=root/"test-suit/arceos/drivers"
+            suite.mkdir(parents=True)
+            (suite/"build.toml").write_text('freestanding = true\n')
+            runtime=suite/"qemu.toml"
+            runtime.write_text('[host_pcm_waveform]\nframes=64\n')
+            manifest=suite/"suite.toml"
+            manifest.write_text('''
+schema_version=1
+run_order=["combined"]
+[batches.combined]
+arch="x86_64"
+build_config="build.toml"
+qemu_config="qemu.toml"
+[[batches.combined.tests]]
+id="parse"
+entry="crate::parse::run"
+[[batches.combined.tests]]
+id="play"
+entry="crate::play::run"
+pcm_waveform=true
+''')
+            checks=[{"id":"driver-fixture","name":"Driver fixture","command":"fixture","suite":[{"kind":"arceos-qemu","arch":"x86_64","group":"drivers"}]}]
+            ci_suite.validate_suite_catalog(root,checks)
+            rows=ci_suite.resolve_suite_selections(root,checks,["test-suit/arceos/drivers/src/parse.rs","test-suit/arceos/drivers/src/play.rs"])
+            self.assertEqual(len(rows),1)
+            self.assertIn("--test-group drivers --test-case combined",rows[0].command)
+            runtime.write_text('args=[]\n')
+            with self.assertRaises(ci_suite.SuiteRouteError):ci_suite.validate_suite_catalog(root,checks)
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,7 +74,7 @@ cargo xtask arceos test qemu --test-group rust --arch aarch64 --test-case net-un
 
 ### 3.2 平台与板卡
 
-非对齐异常表恢复由[CPU套件](../cpu/README.md)的unaligned-fixup成员执行，旧loongarch组仅保留手动兼容转发。`../board-orangepi-5-plus/kernel`批次复用Rust suite的`task-ipi`实现及逐远端CPU应答，与CPU库PMU/cpufreq同启动。`../axtest/sg2002-usb-msc` 保留 no_std 硬件 harness，直接检查 USB、IRQ、DMA 和传输完成；其中的纯逻辑模块可以通过宿主单元测试验证，但不能替代实体板卡运行。
+非对齐异常表恢复由[CPU套件](../cpu/README.md)的unaligned-fixup成员执行，通过`--test-group cpu --test-case unaligned-fixup`选择。`../board-orangepi-5-plus/kernel`批次复用Rust suite的`task-ipi`实现及逐远端CPU应答，与CPU库PMU/cpufreq同启动。`../axtest/sg2002-usb-msc` 保留 no_std 硬件 harness，直接检查 USB、IRQ、DMA 和传输完成；其中的纯逻辑模块可以通过宿主单元测试验证，但不能替代实体板卡运行。
 
 
 ## 4. 后续维护规范

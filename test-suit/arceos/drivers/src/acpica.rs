@@ -1,6 +1,3 @@
-#![no_std]
-#![no_main]
-
 extern crate ax_std as std;
 
 use core::{
@@ -76,7 +73,7 @@ struct GuestBackend {
 impl GuestBackend {
     fn synthetic() -> Self {
         let dsdt = FirmwareTable::new(include_bytes!(
-            "../../../../../drivers/firmware/acpica-interpreter/tests/synthetic.aml"
+            "../../../../drivers/firmware/acpica-interpreter/tests/synthetic.aml"
         ));
 
         let mut fadt = vec![0; 276];
@@ -282,8 +279,7 @@ fn notification(path: &str, value: u32) {
     NOTIFY_VALUE.store(value as usize, Ordering::Release);
 }
 
-#[unsafe(no_mangle)]
-fn main() {
+pub fn run() {
     let backend: &'static GuestBackend = Box::leak(Box::new(GuestBackend::synthetic()));
     let registration: &'static BackendRegistration =
         Box::leak(Box::new(BackendRegistration(backend)));

@@ -68,6 +68,7 @@ pub(crate) async fn prepare_qemu_cases(
             request,
             cargo,
             qemu,
+            verify_pcm_output: true,
         });
     }
     Ok(prepared)
@@ -118,7 +119,9 @@ pub(crate) async fn run_qemu_case(
         fixture.finish().await?;
     }
     result?;
-    if let Some(recording) = pcm_waveform {
+    if case.verify_pcm_output
+        && let Some(recording) = pcm_waveform
+    {
         recording.verify()?;
     }
 

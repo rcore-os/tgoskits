@@ -358,6 +358,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-driver-tests"
+version = "0.1.0"
+dependencies = [
+ "acpica-interpreter",
+ "anyhow",
+ "ax-alloc",
+ "ax-driver",
+ "ax-hal",
+ "ax-std",
+ "serde",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
 name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [
@@ -421,26 +435,6 @@ dependencies = [
 name = "arceos-shell"
 version = "0.3.1"
 dependencies = [
- "ax-std",
-]
-
-[[package]]
-name = "arceos-test-acpica-interpreter"
-version = "0.1.0"
-dependencies = [
- "acpica-interpreter",
- "ax-alloc",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-test-intel-hda"
-version = "0.1.0"
-dependencies = [
- "ax-alloc",
- "ax-driver",
- "ax-hal",
  "ax-std",
 ]
 
