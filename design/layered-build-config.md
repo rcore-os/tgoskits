@@ -95,7 +95,7 @@ PR 1 的旧同名 ITS 关联仅在用户覆盖前装入 Starry 文件基值，�
 
 删除前对照 36 个旧预设与新静态展开结果，保留 target、feature、log、env、rustflags 顺序、CPU Option、OS 字段和资源关联。基础板卡只定义共享身份，场景保留独立预设名称。一次性对照留作 PR 证据，不永久维护旧模板或生产名单镜像。
 
-测试使用公开解析入口和真实 resolver 验证覆盖、严格拒绝、Schema、连续选择与失败保持；runtime 边界由公共 helper 验证，真实容量、栈和 tick 由现有运行入口验证。ax-config 的 toml+schema profile 必须进入标准库测试发现且非零执行。四架构三 OS 构建及代表性运行、ITS 实际打包、VM Cargo 身份隔离按议题验收。
+测试使用公开解析入口和真实 resolver 验证覆盖、严格拒绝、Schema、连续选择与失败保持；runtime 边界由公共 helper 验证，真实容量、栈和 tick 由现有运行入口验证。ax-config 的 toml+schema profile 与 ax-posix-api 的 host-test profile 必须进入标准库测试发现且非零执行。POSIX 的 host-test 仅启用依赖已有的宿主后端，用于属性解码等纯逻辑；非默认任务栈环境下检查空属性与 runtime getter 同源，不以该测试代替真实线程运行。四架构三 OS 构建及代表性运行、ITS 实际打包、VM Cargo 身份隔离按议题验收。
 
 ### 5.2 回滚和审查
 
