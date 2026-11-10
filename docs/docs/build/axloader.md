@@ -206,11 +206,12 @@ RNG 协议；Virtio 网卡和 RNG 都使用空 `romfile`，由 Loong 固件提�
 立即报错。Loong CODE/VARS 会复制到本次 artifact 目录并按需补零到 16 MiB，
 源文件不变。
 
-默认 `Prebuilt::LATEST` 的 Loong 固件当前可能缺少 Hash2，因此 CI 无条件执行的
-是 native Loong EFI 构建门禁；完整 native Loong QEMU 验收必须显式提供包含
-Hash2、SNP/IP4/UDP4/TCP4 和 SerialIO 的 CODE/VARS 对。legacy
-`loong-qemu-smoke.py` 继续作为旧 axstd-loader 的独立保护项，不能代替 native
-QEMU 验收。
+`cargo xtask axloader build --target loongarch64-unknown-uefi --release` 是 native
+LoongArch EFI 的构建入口，执行 custom target 构建、ELF 转换和最终 PE 校验；
+当前 CI 未将该命令设为独立步骤。现有 LoongArch HTTP CI 仍执行旧 axstd 后端的
+`loong-qemu-smoke.py`。默认 `Prebuilt::LATEST` 的 Loong 固件当前可能缺少 Hash2；
+完整 native Loong QEMU 验收必须显式提供包含 Hash2、SNP/IP4/UDP4/TCP4 和
+SerialIO 的 CODE/VARS 对。
 
 v7 设备必须与发送 v7 头和 `X-Serial-Binding` 的 ostool CLI/server 配套，板卡
 ESP/U 盘中的 `axloader.efi` 也要更新到同一版本。启动返回
@@ -318,9 +319,10 @@ LoongArch QEMU 还分别上传错误 machine、缺失本地 EFI 符号、不可�
 
 `ota_qemu::payloads::OsPayloads` 只负责准备 OS 载荷，复用 `boot_smoke()` 的真实 HTTP 上传、校验和串口门禁。构建在 `AXBUILD_NO_SNAPSHOT=1` 子进程中调用现有 `cargo xtask starry/axvisor build`，前后逐字节核对保存的命令快照，保留用户默认选择；不修改多线程父进程的全局环境。成功行不出现在 cmdline 原文中，命令行回显不能替代实际执行。每次运行在 `target/axbuild/axloader/qemu/x86-*` 保留 ESP、VARS、历次串口和 stderr；提前退出或超时也保留。测试应根据具体失败阶段报告 HTTP、网络、磁盘或内核交接错误，不能用重试掩盖确定性失败。
 
-LoongArch native CI 无条件执行
-`cargo xtask axloader build --target loongarch64-unknown-uefi --release`，只证明
-custom target、ELF 转换和最终 PE 门禁。完整
+`cargo xtask axloader build --target loongarch64-unknown-uefi --release` 是 native
+LoongArch EFI 的构建入口，执行 custom target 构建、ELF 转换和最终 PE 校验；
+当前 CI 未将该命令设为独立步骤。现有 LoongArch HTTP CI 仍执行旧 axstd 后端的
+`loong-qemu-smoke.py`。完整
 `cargo xtask axloader test qemu --target loongarch64-unknown-uefi` 尚不是自动 CI
 门禁，因为默认 Loong 固件可能缺 Hash2；运行它必须显式提供完整 CODE/VARS
 对。该 QEMU 场景才验证 HTTP v7、真实 FAT、OTA 回滚/确认、ArceOS

@@ -462,10 +462,11 @@ fn read_request(
     let mut body = initial.to_vec();
     body.try_reserve(length.saturating_sub(body.len()))
         .map_err(|_| {
-            ReadRequestError::Device(operation_error(
-                "image_load_failed",
-                "request body allocation failed",
-            ))
+            let error = operation_error("image_load_failed", "request body allocation failed");
+            if let Some((id, _)) = upload {
+                let _ = server.fail(id, error.clone());
+            }
+            ReadRequestError::Device(error)
         })?;
     while body.len() < length {
         let count = stream.read(&mut chunk).map_err(|_| {
@@ -487,7 +488,12 @@ fn read_request(
         }
         let remaining = length - body.len();
         if count > remaining {
-            let error = operation_error("invalid_request", "request body exceeds Content-Length");
+            let code = if upload.is_some() {
+                "image_size_mismatch"
+            } else {
+                "invalid_request"
+            };
+            let error = operation_error(code, "request body exceeds Content-Length");
             if let Some((id, _)) = upload {
                 let _ = server.fail(id, error.clone());
             }

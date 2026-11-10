@@ -230,10 +230,12 @@ ROM lookup because the firmware supplies the network drivers. RNG is required
 by `DxeNetLib`; TCP4 additionally requires a firmware `Hash2DxeCrypto`
 producer. The stock debug firmware may still lack Hash2, which must be reported
 as a firmware dependency rather than worked around with a loader network stack.
-CI therefore gates the native Loong EFI build unconditionally; the full native
+The native Loong EFI build is available through
+`cargo xtask axloader build --target loongarch64-unknown-uefi --release`; this
+command is not currently run as a separate CI step. The existing
+`loong-qemu-smoke.py` CI gate covers the legacy axstd backend. The full native
 Loong QEMU command remains a release/board validation entry that must be given a
-firmware pair containing Hash2. The old axstd `loong-qemu-smoke.py` gate remains
-as separate legacy-backend protection.
+firmware pair containing Hash2.
 
 Native Loong QEMU coverage is not evidence that physical LoongArch firmware,
 USB installation, network protocols and SerialIO have been accepted on
