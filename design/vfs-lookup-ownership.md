@@ -694,6 +694,16 @@ SGID 继承在本轮当前父元数据上决定。请求中的新对象 uid/gid 
 字符设备 `rdev=0:0` 按 Linux `vfs_mknod` 的 whiteout 例外处理，
 但仍需其余创建检查和后端能力；该例外不意味着支持 rename whiteout。
 
+完整初始化数据必须跨越任务适配层和路径上下文，不能只在叶级接口提供正确能力。
+`FsContext::create_node` 改为接收 `CreateAttributes` 与显式调用凭据，
+替换分散的类型、权限及已不代表所有权授权的 uid/gid 参数；
+完成原有父路径搜索和边界检查后，将同一数据交给 `Location::create_initialized`。
+Starry `sys_mknodat` 将真实字符/块设备号放入 `CreateContent::Node`，
+不再先经普通 `Location::create` 生成默认 `0:0`，再用 `MetadataUpdate::rdev` 补写。
+whiteout 例外必须针对真实请求设备判断，不能针对中途丢失参数后产生的默认值。
+普通文件、FIFO 和 socket 创建忽略 mknod 的 dev 参数，初始化 rdev 为零；
+syscall 的 dev 按固定 Linux `unsigned int` ABI 解释，不能把寄存器高 32 位带入设备号。
+
 创建式 open 使用同一个 `Create` 命令表达排他创建或“已有则打开”的意图。
 后端在锁内返回实际对象与 created 状态；非排他竞争遇到已有名称时，对该轮当前对象
 完成所需授权，不能把外层旧 `ENOENT` 变成跳过文件检查的理由。
@@ -1052,6 +1062,10 @@ Linux 的全 OMIT 早返回顺序；只有已确认有效的命令进入 inode �
 以及实际缺失时的创建错误，不能仅验证可写挂载创建成功。
 特殊节点创建同时证明普通字符/块设备的 `CAP_MKNOD` 门禁和 whiteout 例外；
 元数据交错证明逐字段 chown 不回写并发字段、同值请求仍按当前 owner 授权。
+设备创建回归经过实际 `FsContext::create_node` 消费链，而不只直接调用叶级
+`create_initialized`：无 MKNOD 事实的非零字符/块请求返回 `EPERM` 且名称不存在，
+有权请求与字符 `0:0` 例外保留正确设备号及副作用。Starry 的原始 syscall 回归仍需
+另证 ABI 参数截断及该消费者的实际装配，组件绿不能代替系统证据。
 Starry 入口还须证明 initial 与子 user namespace 的 MKNOD 能力范围不同，
 以及挂载者身份不因其后续凭据或 namespace 替换而改变；这不是完整映射兼容性证明。
 
