@@ -8035,6 +8035,7 @@ dependencies = [
  "anyhow",
  "arm-gic-driver",
  "ax-cpu",
+ "ax-lazyinit",
  "ax-percpu",
  "ax-riscv-plic",
  "ax-sync",

@@ -60,6 +60,7 @@ loongArch64 = "0.2"
 loongarch-intc-driver = { workspace = true, features = ["rdif"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+ax-lazyinit.workspace = true
 x86-apic-driver = { workspace = true, features = ["rdif"] }
 
 [dev-dependencies]
