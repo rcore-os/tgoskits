@@ -753,7 +753,8 @@ impl ElfLoader {
         // PT_INTERP is protected while loading, but is not mm->exe_file.
         let _interpreter_access;
         let (elf, ldso) = if let Some(ldso) = ldso {
-            let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
+            let fs = ax_fs_ng::vfs::current_fs_context().lock().clone();
+            let loc = fs.resolve(ldso)?;
             check_executable_access(&loc, cred)?;
             _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
@@ -946,9 +947,8 @@ fn load_user_app_with_depth(
                     .collect();
                 // Open the interpreter by path (Linux's `open_exec` on the
                 // shebang interpreter) and load it as the new executable.
-                let interp = ax_fs_ng::vfs::current_fs_context()
-                    .lock()
-                    .resolve(&new_args[0])?;
+                let fs = ax_fs_ng::vfs::current_fs_context().lock().clone();
+                let interp = fs.resolve(&new_args[0])?;
                 // A script stops being the executable when its interpreter takes over.
                 drop(executable_file);
                 return load_user_app_with_depth(
