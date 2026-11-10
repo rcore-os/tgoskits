@@ -409,6 +409,7 @@ fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeaturePro
         | "ax-log"
         | "ax-runtime"
         | "ax-api"
+        | "ax-posix-api"
         | "rdrive"
         | "ax-net"
         | "dma-api"

@@ -27,6 +27,7 @@ ax-sched
 ax-linked-list-r4l
 ax-driver
 ax-runtime
+ax-posix-api
 ax-log
 ax-net
 rd-net
