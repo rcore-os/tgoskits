@@ -31,9 +31,9 @@ pub enum Command {
     Test(ArgsTest),
     /// Build and run Axvisor with U-Boot
     Uboot(ArgsUboot),
-    /// Generate a default board config
+    /// Export a built-in compilation preset to a TOML config file
     Defconfig(ArgsDefconfig),
-    /// Board config helpers
+    /// Compilation preset and config helpers
     Config(ArgsConfig),
 }
 
@@ -103,7 +103,8 @@ pub struct ArgsBoard {
 
 #[derive(Args)]
 pub struct ArgsDefconfig {
-    pub board: String,
+    #[arg(value_name = "PRESET")]
+    pub preset: String,
 }
 
 #[derive(Args)]
@@ -314,8 +315,8 @@ impl Axvisor {
 
     fn defconfig(&mut self, args: ArgsDefconfig) -> anyhow::Result<()> {
         let workspace_root = self.app.workspace_root().to_path_buf();
-        let path = config::write_defconfig(&workspace_root, &args.board)?;
-        println!("Generated {} for board {}", path.display(), args.board);
+        let path = config::write_defconfig(&workspace_root, &args.preset)?;
+        println!("Generated {} from preset {}", path.display(), args.preset);
         Ok(())
     }
 
