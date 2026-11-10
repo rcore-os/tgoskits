@@ -2,7 +2,10 @@
 
 use ax_fs_ng::MemoryFs;
 use ax_runtime as _;
-use axfs_ng_vfs::{DirEntry, DirectoryCursor, NameState, NodePermission, NodeType, VfsError};
+use axfs_ng_vfs::{
+    DirEntry, DirectoryCursor, MetadataUpdate, MutationCredentials, NameState, NodePermission,
+    NodeType, RenameOptions, VfsError,
+};
 
 fn create(parent: &DirEntry, name: &str, kind: NodeType) -> DirEntry {
     parent
@@ -61,6 +64,102 @@ fn rename_moves_the_original_alias_and_live_descendant_chain() {
         root.as_dir().unwrap().lookup("source"),
         Err(VfsError::NotFound)
     ));
+
+    let credentials = unprivileged_credentials();
+    let observations =
+        [(0o555, true), (0o555, false), (0o777, true)].map(|(mode, cross_parent)| {
+            let filesystem = MemoryFs::new();
+            let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+            let root = mount.root_location();
+            let p = root
+                .create(
+                    "p",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(0o777),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let q = root
+                .create(
+                    "q",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(0o777),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let source = p
+                .create(
+                    "d",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(mode),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let destination = if cross_parent { &q } else { &p };
+            let destination_name = if cross_parent { "d" } else { "moved" };
+            let result = p.rename("d", destination, destination_name, &credentials);
+            let permitted = !cross_parent || mode == 0o777;
+            let snapshot = source.entry().name_snapshot();
+            let expected_parent = if permitted { destination } else { &p };
+            let expected_name = if permitted { destination_name } else { "d" };
+            (
+                mode,
+                cross_parent,
+                result,
+                p.lookup_no_follow("d")
+                    .map(|entry| entry.entry().ptr_eq(source.entry())),
+                destination
+                    .lookup_no_follow(destination_name)
+                    .map(|entry| entry.entry().ptr_eq(source.entry())),
+                snapshot.state() == NameState::Linked
+                    && snapshot.name() == expected_name
+                    && snapshot.parent().unwrap().ptr_eq(expected_parent.entry()),
+                directory_parent_inode(source.entry()),
+                expected_parent.inode(),
+            )
+        });
+    // Each input has a fresh tree, so a failed denial cannot affect a control.
+    for (mode, cross_parent, result, original, moved, linked, parent, expected_parent) in
+        observations
+    {
+        let permitted = !cross_parent || mode == 0o777;
+        assert_eq!(
+            result,
+            if permitted {
+                Ok(())
+            } else {
+                Err(VfsError::PermissionDenied)
+            },
+            "directory mode {mode:o}, cross-parent {cross_parent}"
+        );
+        assert_eq!(
+            original,
+            if permitted {
+                Err(VfsError::NotFound)
+            } else {
+                Ok(true)
+            }
+        );
+        assert_eq!(
+            moved,
+            if permitted {
+                Ok(true)
+            } else {
+                Err(VfsError::NotFound)
+            }
+        );
+        assert!(
+            linked,
+            "the retained directory must keep the expected name and parent"
+        );
+        assert_eq!(
+            parent, expected_parent,
+            "the native .. edge must match the published parent"
+        );
+    }
 }
 
 #[test]
@@ -134,6 +233,143 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
         ),
         Err(VfsError::NotFound)
     ));
+
+    let credentials = unprivileged_credentials();
+    let mut observations = Vec::new();
+    for via_context in [
+        false,
+        #[cfg(feature = "vfs")]
+        true,
+    ] {
+        for target_name in ["source", "alias"] {
+            let filesystem = MemoryFs::new();
+            let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+            let parent = mount
+                .root_location()
+                .create(
+                    "searchable",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(0o555),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let source = parent
+                .create(
+                    "source",
+                    NodeType::RegularFile,
+                    NodePermission::default(),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let alias = parent.link("alias", &source).unwrap();
+            #[cfg(feature = "vfs")]
+            let context = ax_fs_ng::FsContext::new(parent.clone());
+            let rename = |source_name, destination_name, options| {
+                #[cfg(feature = "vfs")]
+                if via_context {
+                    return context.rename_with_options(
+                        source_name,
+                        destination_name,
+                        options,
+                        &credentials,
+                    );
+                }
+                parent.rename_with_options(
+                    source_name,
+                    &parent,
+                    destination_name,
+                    options,
+                    &credentials,
+                )
+            };
+            let no_replace = rename("source", target_name, RenameOptions::NO_REPLACE);
+            let missing = rename("absent", target_name, RenameOptions::REPLACE);
+            let noop = rename("source", target_name, RenameOptions::REPLACE);
+            parent
+                .update_metadata(MetadataUpdate {
+                    mode: Some(NodePermission::from_bits_truncate(0o444)),
+                    ..Default::default()
+                })
+                .unwrap();
+            let unsearchable = rename("source", target_name, RenameOptions::REPLACE);
+            let unsearchable_no_replace = rename("source", target_name, RenameOptions::NO_REPLACE);
+            let source_name = source.entry().name_snapshot();
+            let alias_name = alias.entry().name_snapshot();
+            observations.push((
+                via_context,
+                target_name,
+                (
+                    no_replace,
+                    missing,
+                    noop,
+                    unsearchable,
+                    unsearchable_no_replace,
+                ),
+                parent
+                    .lookup_no_follow("source")
+                    .unwrap()
+                    .entry()
+                    .ptr_eq(source.entry())
+                    && parent
+                        .lookup_no_follow("alias")
+                        .unwrap()
+                        .entry()
+                        .ptr_eq(alias.entry()),
+                source_name.state() == NameState::Linked
+                    && source_name.name() == "source"
+                    && source_name.parent().unwrap().ptr_eq(parent.entry())
+                    && alias_name.state() == NameState::Linked
+                    && alias_name.name() == "alias"
+                    && alias_name.parent().unwrap().ptr_eq(parent.entry()),
+                source.metadata().unwrap().nlink,
+            ));
+        }
+    }
+    for (via_context, target_name, results, retained, linked, nlink) in observations {
+        assert_eq!(results.0, Err(VfsError::AlreadyExists));
+        assert_eq!(results.1, Err(VfsError::NotFound));
+        assert_eq!(
+            results.2,
+            Ok(()),
+            "same-object no-op to {target_name}, FsContext entry {via_context}"
+        );
+        assert_eq!(results.3, Err(VfsError::PermissionDenied));
+        assert_eq!(results.4, Err(VfsError::PermissionDenied));
+        assert!(retained, "both live aliases must remain canonical");
+        assert!(
+            linked,
+            "no-op and denied search must leave both names linked"
+        );
+        assert_eq!(nlink, 2);
+    }
+}
+
+fn unprivileged_credentials() -> MutationCredentials<'static> {
+    MutationCredentials {
+        fsuid: 1000,
+        fsgid: 1000,
+        supplementary_gids: &[],
+        cap_dac_override: false,
+        cap_dac_read_search: false,
+        cap_fowner: false,
+    }
+}
+
+fn directory_parent_inode(directory: &DirEntry) -> u64 {
+    let mut parent = None;
+    directory
+        .as_dir()
+        .unwrap()
+        .read_dir(DirectoryCursor::START, &mut |name: &[u8], inode, _, _| {
+            if name == b".." {
+                parent = Some(inode);
+            }
+            true
+        })
+        .unwrap();
+    parent.unwrap()
 }
 
 #[test]

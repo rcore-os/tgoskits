@@ -2,7 +2,7 @@
 
 use core::cell::Cell;
 
-use axfs_ng_vfs::{MetadataUpdate, NodeOps, NodePermission, NodeType};
+use axfs_ng_vfs::{Location, MetadataUpdate, NodeOps, NodePermission, NodeType};
 
 use super::*;
 
@@ -256,6 +256,103 @@ fn negative_directory_cache_follows_rename_and_preserves_unsupported_whiteout() 
         target.lookup_no_follow("moved"),
         Err(VfsError::NotFound)
     ));
+
+    let observations = [
+        (NodeType::RegularFile, "a"),
+        (NodeType::RegularFile, "b"),
+        (NodeType::Directory, "a"),
+    ]
+    .map(|(kind, target_name)| {
+        let (_, root, _) = super::sync_policy::background_mount();
+        let source = root
+            .create("a", kind, NodePermission::default(), 0, 0)
+            .unwrap();
+        let target = if target_name == "a" {
+            source.clone()
+        } else {
+            root.link(target_name, &source).unwrap()
+        };
+        let links_before = source.metadata().unwrap().nlink;
+        let result = root.rename_with_options(
+            "a",
+            &root,
+            target_name,
+            RenameOptions::WHITEOUT,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        );
+        // Inspect live VFS aliases before lookup can repair an invalidated name.
+        let names = [source.entry(), target.entry()].map(|entry| {
+            let snapshot = entry.name_snapshot();
+            (
+                snapshot.state(),
+                alloc::string::String::from(snapshot.name()),
+                snapshot.parent().unwrap().ptr_eq(root.entry()),
+            )
+        });
+        let links_after = source.metadata().unwrap().nlink;
+        let create_through_old_directory = (kind == NodeType::Directory).then(|| {
+            source
+                .create(
+                    "child",
+                    NodeType::RegularFile,
+                    NodePermission::default(),
+                    0,
+                    0,
+                )
+                .and_then(|child| {
+                    root.lookup_no_follow("a")?
+                        .lookup_no_follow("child")
+                        .map(|found| found.entry().ptr_eq(child.entry()))
+                })
+        });
+        let retained = root
+            .lookup_no_follow("a")
+            .unwrap()
+            .entry()
+            .ptr_eq(source.entry())
+            && root
+                .lookup_no_follow(target_name)
+                .unwrap()
+                .entry()
+                .ptr_eq(target.entry());
+        (
+            kind,
+            target_name,
+            result,
+            names,
+            retained,
+            (links_before, links_after),
+            create_through_old_directory,
+        )
+    });
+    // Complete all independent native requests before checking their results.
+    for (kind, target_name, result, names, retained, links, old_directory) in observations {
+        assert_eq!(
+            result,
+            Ok(()),
+            "WHITEOUT no-op {kind:?}: a -> {target_name}"
+        );
+        for ((state, name, parent), expected_name) in names.into_iter().zip(["a", target_name]) {
+            assert_eq!(
+                state,
+                axfs_ng_vfs::NameState::Linked,
+                "{kind:?}: a -> {target_name}"
+            );
+            assert_eq!(name, expected_name);
+            assert!(parent);
+        }
+        assert!(
+            retained,
+            "WHITEOUT no-op must retain both canonical aliases"
+        );
+        assert_eq!(
+            links.1, links.0,
+            "WHITEOUT no-op must not change native link counts"
+        );
+        if kind == NodeType::Directory {
+            assert_eq!(old_directory, Some(Ok(true)));
+        }
+    }
 }
 
 #[test]
@@ -298,6 +395,143 @@ fn directory_exchange_preserves_both_cached_file_owners() {
     assert_eq!(new_second.inode(), first.inode());
     assert_eq!(*new_first.user_data().get::<u32>().unwrap(), 2);
     assert_eq!(*new_second.user_data().get::<u32>().unwrap(), 1);
+
+    let credentials = axfs_ng_vfs::MutationCredentials {
+        fsuid: 1000,
+        fsgid: 1000,
+        supplementary_gids: &[],
+        cap_dac_override: false,
+        cap_dac_read_search: false,
+        cap_fowner: false,
+    };
+    let observations =
+        [(0o555, 0o777), (0o777, 0o555), (0o777, 0o777)].map(|(source_mode, target_mode)| {
+            let (_, root, _) = super::sync_policy::background_mount();
+            let p = root
+                .create(
+                    "p",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(0o777),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let q = root
+                .create(
+                    "q",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(0o777),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let source = p
+                .create(
+                    "d",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(source_mode),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let target = q
+                .create(
+                    "e",
+                    NodeType::Directory,
+                    NodePermission::from_bits_truncate(target_mode),
+                    0,
+                    0,
+                )
+                .unwrap();
+            let links_before = (
+                source.metadata().unwrap().nlink,
+                target.metadata().unwrap().nlink,
+            );
+            let result = p.rename_with_options("d", &q, "e", RenameOptions::EXCHANGE, &credentials);
+            let permitted = source_mode == 0o777 && target_mode == 0o777;
+            let source_parent = if permitted { &q } else { &p };
+            let target_parent = if permitted { &p } else { &q };
+            let source_name = source.entry().name_snapshot();
+            let target_name = target.entry().name_snapshot();
+            let names_preserved = source_name.state() == axfs_ng_vfs::NameState::Linked
+                && source_name.name() == if permitted { "e" } else { "d" }
+                && source_name.parent().unwrap().ptr_eq(source_parent.entry())
+                && target_name.state() == axfs_ng_vfs::NameState::Linked
+                && target_name.name() == if permitted { "d" } else { "e" }
+                && target_name.parent().unwrap().ptr_eq(target_parent.entry());
+            let first = p.lookup_no_follow("d").unwrap();
+            let second = q.lookup_no_follow("e").unwrap();
+            let parents = (
+                directory_parent_inode(&source),
+                directory_parent_inode(&target),
+            );
+            (
+                source_mode,
+                target_mode,
+                result,
+                first.entry().ptr_eq(if permitted {
+                    target.entry()
+                } else {
+                    source.entry()
+                }) && second.entry().ptr_eq(if permitted {
+                    source.entry()
+                } else {
+                    target.entry()
+                }),
+                names_preserved,
+                parents == (source_parent.inode(), target_parent.inode()),
+                links_before,
+                (
+                    source.metadata().unwrap().nlink,
+                    target.metadata().unwrap().nlink,
+                ),
+            )
+        });
+    for (source_mode, target_mode, result, retained, linked, parents, before, after) in observations
+    {
+        let permitted = source_mode == 0o777 && target_mode == 0o777;
+        assert_eq!(
+            result,
+            if permitted {
+                Ok(())
+            } else {
+                Err(VfsError::PermissionDenied)
+            },
+            "cross-parent exchange: source {source_mode:o}, target {target_mode:o}"
+        );
+        assert!(
+            retained,
+            "exchange must preserve the expected canonical directory aliases"
+        );
+        assert!(
+            linked,
+            "exchange must preserve the expected names and parent identities"
+        );
+        assert!(
+            parents,
+            "both native .. edges must match the expected parents"
+        );
+        assert_eq!(after, before);
+    }
+}
+
+fn directory_parent_inode(directory: &Location) -> u64 {
+    let mut parent = None;
+    directory
+        .entry()
+        .as_dir()
+        .unwrap()
+        .read_dir(
+            axfs_ng_vfs::DirectoryCursor::START,
+            &mut |name: &[u8], inode, _, _| {
+                if name == b".." {
+                    parent = Some(inode);
+                }
+                true
+            },
+        )
+        .unwrap();
+    parent.unwrap()
 }
 
 #[test]
