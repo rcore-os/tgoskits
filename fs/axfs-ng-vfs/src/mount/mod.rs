@@ -20,9 +20,9 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntryId, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor,
     DirectoryReadState, Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps,
-    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
-    RawSpinLock, RawSpinLockGuard, Reference, RenameOptions, TypeMap, VfsError, VfsResult,
-    WeakDirEntry, XattrSetMode,
+    Metadata, MetadataUpdate, MountWriteState, NodeFlags, NodeOps, NodePermission, NodeType,
+    OpenOptions, RawSpinLock, RawSpinLockGuard, Reference, RenameOptions, TypeMap, VfsError,
+    VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -275,6 +275,39 @@ impl Drop for MountUseGuard {
     }
 }
 
+/// Owns one write admission on an exact mount and its shared filesystem.
+///
+/// Acquire before entering any backend gate. Keep this guard through the whole
+/// operation, including retries and publication, or share its owner with all
+/// writable descriptions/mappings. Forgetting it conservatively retains counts.
+#[derive(Debug)]
+pub struct MountWriteGuard {
+    mountpoint: Arc<Mountpoint>,
+}
+
+impl MountWriteGuard {
+    /// Checks that a borrowed right belongs to the actual mount being modified.
+    /// A writable alias cannot authorize writes through a read-only mount.
+    pub fn check_location(&self, location: &Location) -> VfsResult<()> {
+        if Arc::ptr_eq(&self.mountpoint, location.mountpoint()) {
+            Ok(())
+        } else {
+            Err(VfsError::CrossesDevices)
+        }
+    }
+}
+
+impl Drop for MountWriteGuard {
+    fn drop(&mut self) {
+        // No sleeping configuration mutex or backend callback in this release.
+        // The final mount/filesystem references drop after both short locks.
+        let mut shared = self.mountpoint.filesystem_state.writes.lock();
+        let mut local = self.mountpoint.writes.lock();
+        shared.writers -= 1;
+        local.writers -= 1;
+    }
+}
+
 #[derive(Debug)]
 pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
@@ -294,8 +327,8 @@ pub struct Mountpoint {
     /// Assigned when `set_shared()` is first called; shared among all mounts in
     /// the same peer group.
     peer_group_id: AtomicU64,
-    /// Read-only flag for this mountpoint.
-    readonly: AtomicBool,
+    /// Mount-local write restriction and active write admissions.
+    writes: RawSpinLock<MountWriteState>,
     filesystem_state: Arc<FilesystemMountState>,
     active_uses: RawSpinLock<MountUseState>,
     /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
@@ -340,6 +373,33 @@ impl Mountpoint {
         })
     }
 
+    /// Acquires a write lease after checking both local and shared protection.
+    ///
+    /// May sleep behind reconfiguration. Never call while holding a backend
+    /// gate: layered operations acquire every backing lease first, without
+    /// holding admissions for different filesystems simultaneously.
+    pub fn acquire_write(self: &Arc<Self>) -> VfsResult<MountWriteGuard> {
+        let _configuration = self.filesystem_state.reconfiguration.lock();
+        let mut shared = self.filesystem_state.writes.lock();
+        let mut local = self.writes.lock();
+        if shared.readonly || local.readonly {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        let shared_writers = shared
+            .writers
+            .checked_add(1)
+            .ok_or(VfsError::ValueOverflow)?;
+        let local_writers = local
+            .writers
+            .checked_add(1)
+            .ok_or(VfsError::ValueOverflow)?;
+        shared.writers = shared_writers;
+        local.writers = local_writers;
+        Ok(MountWriteGuard {
+            mountpoint: self.clone(),
+        })
+    }
+
     #[cfg(test)]
     fn new_with_root(
         root: DirEntry,
@@ -347,7 +407,14 @@ impl Mountpoint {
         device: u64,
     ) -> Arc<Self> {
         let state = Arc::new(FilesystemMountState::new(root.filesystem().is_readonly()));
-        Self::new_with_root_and_source(root, location_in_parent, device, "none".into(), state)
+        Self::new_with_root_and_source(
+            root,
+            location_in_parent,
+            device,
+            "none".into(),
+            state,
+            false,
+        )
     }
 
     fn new_with_root_and_source(
@@ -356,6 +423,7 @@ impl Mountpoint {
         device: u64,
         source: String,
         filesystem_state: Arc<FilesystemMountState>,
+        readonly: bool,
     ) -> Arc<Self> {
         let filesystem_lease = root.filesystem().mount_lease();
         Arc::new(Self {
@@ -366,7 +434,7 @@ impl Mountpoint {
             source,
             mount_id: MOUNT_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             peer_group_id: AtomicU64::new(0),
-            readonly: AtomicBool::new(false),
+            writes: RawSpinLock::new(MountWriteState::new(readonly)),
             filesystem_state,
             active_uses: RawSpinLock::new(MountUseState::default()),
             mount_flags: AtomicU32::new(0),
@@ -406,15 +474,14 @@ impl Mountpoint {
         device: u64,
         source: &str,
     ) -> Arc<Self> {
-        let result = Self::new_with_root_and_source(
+        Self::new_with_root_and_source(
             fs.root_dir(),
             location_in_parent,
             device,
             source.to_owned(),
             fs.mount_state.clone(),
-        );
-        result.readonly.store(fs.is_readonly(), Ordering::Release);
-        result
+            fs.is_readonly(),
+        )
     }
 
     pub fn new_root(fs: &Filesystem) -> Arc<Self> {
@@ -424,6 +491,24 @@ impl Mountpoint {
     /// Creates the root mountpoint with the source name exposed through mount metadata.
     pub fn new_root_with_source(fs: &Filesystem, source: &str) -> Arc<Self> {
         Self::new_with_source(fs, None, source)
+    }
+
+    /// Constructs a root with initial protection without entering reconfiguration.
+    /// Root discovery retains its backend's synchronization requirements.
+    /// This does not reconfigure the shared filesystem or its native backend.
+    pub fn new_root_with_source_readonly(
+        fs: &Filesystem,
+        source: &str,
+        readonly: bool,
+    ) -> Arc<Self> {
+        Self::new_with_root_and_source(
+            fs.root_dir(),
+            None,
+            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            source.to_owned(),
+            fs.mount_state.clone(),
+            readonly || fs.is_readonly(),
+        )
     }
 
     /// Creates a root mountpoint with an explicitly selected filesystem
@@ -439,10 +524,8 @@ impl Mountpoint {
             source.mountpoint.device(),
             source.mountpoint.source.clone(),
             source.mountpoint.filesystem_state.clone(),
+            source.mountpoint.is_readonly(),
         );
-        result
-            .readonly
-            .store(source.mountpoint.is_readonly(), Ordering::Release);
         result
             .mount_flags
             .store(source.mountpoint.mount_flags(), Ordering::Release);
@@ -463,10 +546,8 @@ impl Mountpoint {
             source.device(),
             source.source.clone(),
             source.filesystem_state.clone(),
+            source.is_readonly(),
         );
-        result
-            .readonly
-            .store(source.is_readonly(), Ordering::Release);
         result
             .mount_flags
             .store(source.mount_flags(), Ordering::Release);
@@ -728,7 +809,7 @@ impl Mountpoint {
     }
 
     pub fn is_readonly(&self) -> bool {
-        self.readonly.load(Ordering::Acquire)
+        self.writes.lock().readonly
     }
 
     /// Returns the superblock write restriction shared across namespace copies.
@@ -736,13 +817,34 @@ impl Mountpoint {
         self.filesystem_state.is_readonly()
     }
 
-    /// Updates the shared VFS superblock state, not a bind mount's local flags.
-    pub fn set_filesystem_readonly(&self, readonly: bool) {
-        self.filesystem_state.set_readonly(readonly);
+    /// Performs an ordinary remount of the shared filesystem and this mount.
+    ///
+    /// Active writers anywhere on this filesystem return `ResourceBusy`.
+    /// Synchronization and native write promotion run before publishing either
+    /// flag, without short state locks. On failure both old flags remain intact.
+    /// This may sleep; backend gates must not be held by the caller.
+    pub fn set_filesystem_readonly(&self, readonly: bool) -> VfsResult<()> {
+        let _configuration = self.filesystem_state.reconfiguration.lock();
+        self.filesystem_state
+            .prepare_readonly(self.root.filesystem(), readonly)?;
+        let mut shared = self.filesystem_state.writes.lock();
+        let mut local = self.writes.lock();
+        shared.readonly = readonly;
+        local.readonly = readonly;
+        Ok(())
     }
 
-    pub fn set_readonly(&self, readonly: bool) {
-        self.readonly.store(readonly, Ordering::Release);
+    /// Reconfigures only this mount, as for bind remount/mount attributes.
+    /// May sleep behind another configuration. Active local writers return
+    /// `ResourceBusy` without changing flags; shared/native state is unchanged.
+    pub fn set_readonly(&self, readonly: bool) -> VfsResult<()> {
+        let _configuration = self.filesystem_state.reconfiguration.lock();
+        let mut local = self.writes.lock();
+        if local.writers != 0 {
+            return Err(VfsError::ResourceBusy);
+        }
+        local.readonly = readonly;
+        Ok(())
     }
 
     pub fn mount_flags(&self) -> u32 {
@@ -914,6 +1016,13 @@ impl Location {
 
     pub fn is_readonly(&self) -> bool {
         self.mountpoint.is_readonly() || self.mountpoint.is_filesystem_readonly()
+    }
+
+    /// Acquires operation-scoped write authority for this exact mount.
+    /// Acquire all backing rights before entering any backend gate, then lend
+    /// the existing guards to inner operations rather than admitting recursively.
+    pub fn acquire_write(&self) -> VfsResult<MountWriteGuard> {
+        self.mountpoint.acquire_write()
     }
 
     pub fn entry(&self) -> &DirEntry {

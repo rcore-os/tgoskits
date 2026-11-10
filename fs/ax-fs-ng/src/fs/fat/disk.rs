@@ -402,8 +402,16 @@ mod tests {
             let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
             // Clearing shared write protection must first succeed at the real
             // FAT/device boundary, and preserve flags when authority is absent.
-            mount.set_filesystem_readonly(false);
+            assert_eq!(
+                mount.set_filesystem_readonly(false),
+                if read_only {
+                    Err(VfsError::PermissionDenied)
+                } else {
+                    Ok(())
+                }
+            );
             assert_eq!(mount.is_filesystem_readonly(), read_only);
+            assert_eq!(mount.is_readonly(), read_only);
         }
     }
 

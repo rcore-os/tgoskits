@@ -783,15 +783,33 @@ mod tests {
                 ._open(location.clone(), &credentials, false)
                 .and_then(OpenResult::into_file)
                 .unwrap();
+            // A bind-local change does not drain writers on another alias,
+            // and those writers cannot lend authority to the read-only alias.
+            let alias = mount.clone_tree();
+            alias.set_readonly(true).unwrap();
+            let alias_location = Location::new(alias.clone(), location.entry().clone());
+            assert!(matches!(
+                alias_location.acquire_write(),
+                Err(VfsError::ReadOnlyFilesystem)
+            ));
+            {
+                let right = location.acquire_write().unwrap();
+                right.check_location(&location).unwrap();
+                assert_eq!(
+                    right.check_location(&alias_location),
+                    Err(VfsError::CrossesDevices)
+                );
+            }
             let reject_readonly = || {
-                // The current raw setters return (). Their controlled
-                // replacements must additionally report ResourceBusy; this
-                // baseline-compatible oracle checks the observable flags.
                 if shared {
-                    target.set_filesystem_readonly(true);
+                    assert_eq!(
+                        target.set_filesystem_readonly(true),
+                        Err(VfsError::ResourceBusy)
+                    );
                     assert!(!target.is_filesystem_readonly());
+                    assert!(!target.is_readonly());
                 } else {
-                    target.set_readonly(true);
+                    assert_eq!(target.set_readonly(true), Err(VfsError::ResourceBusy));
                     assert!(!target.is_readonly());
                 }
             };
@@ -816,10 +834,11 @@ mod tests {
                 .and_then(OpenResult::into_file)
                 .unwrap();
             if shared {
-                target.set_filesystem_readonly(true);
+                target.set_filesystem_readonly(true).unwrap();
                 assert!(target.is_filesystem_readonly());
+                assert!(target.is_readonly());
             } else {
-                target.set_readonly(true);
+                target.set_readonly(true).unwrap();
                 assert!(target.is_readonly());
             }
             assert!(matches!(

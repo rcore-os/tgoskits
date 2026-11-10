@@ -1,9 +1,10 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
+use ax_sync::Mutex;
 use inherit_methods_macro::inherit_methods;
 
-use crate::{CachedWriteAdmission, DirEntry, VfsResult};
+use crate::{CachedWriteAdmission, DirEntry, RawSpinLock, VfsError, VfsResult};
 
 pub struct StatFs {
     pub fs_type: u32,
@@ -83,10 +84,35 @@ pub struct FilesystemId(u64);
 static NEXT_FILESYSTEM_ID: AtomicU64 = AtomicU64::new(1);
 
 /// VFS superblock flags shared by every mount of a filesystem instance.
-#[derive(Debug)]
 pub(crate) struct FilesystemMountState {
     pub(crate) id: FilesystemId,
-    readonly: AtomicBool,
+    /// Lock order: reconfiguration, shared writes, mount-local writes.
+    pub(crate) reconfiguration: Mutex<()>,
+    pub(crate) writes: RawSpinLock<MountWriteState>,
+}
+
+impl core::fmt::Debug for FilesystemMountState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FilesystemMountState")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Flags and counts are observed together during write admission.
+#[derive(Debug)]
+pub(crate) struct MountWriteState {
+    pub(crate) readonly: bool,
+    pub(crate) writers: usize,
+}
+
+impl MountWriteState {
+    pub(crate) fn new(readonly: bool) -> Self {
+        Self {
+            readonly,
+            writers: 0,
+        }
+    }
 }
 
 impl FilesystemMountState {
@@ -96,16 +122,36 @@ impl FilesystemMountState {
             .expect("filesystem identity space exhausted");
         Self {
             id: FilesystemId(id),
-            readonly: AtomicBool::new(readonly),
+            reconfiguration: Mutex::new(()),
+            writes: RawSpinLock::new(MountWriteState::new(readonly)),
         }
     }
 
     pub(crate) fn is_readonly(&self) -> bool {
-        self.readonly.load(Ordering::Acquire)
+        self.writes.lock().readonly
     }
 
-    pub(crate) fn set_readonly(&self, readonly: bool) {
-        self.readonly.store(readonly, Ordering::Release);
+    /// Caller holds reconfiguration, but no state or backend lock across I/O.
+    pub(crate) fn prepare_readonly(
+        &self,
+        ops: &dyn FilesystemOps,
+        readonly: bool,
+    ) -> VfsResult<()> {
+        let previous = {
+            let state = self.writes.lock();
+            if state.writers != 0 {
+                return Err(VfsError::ResourceBusy);
+            }
+            state.readonly
+        };
+        if readonly {
+            if !previous {
+                ops.flush()?;
+            }
+        } else {
+            ops.remount_read_write()?;
+        }
+        Ok(())
     }
 }
 
@@ -158,7 +204,14 @@ impl Filesystem {
 impl Filesystem {
     /// Creates a filesystem instance. Clone this handle to share its mounts.
     pub fn new(ops: Arc<dyn FilesystemOps>) -> Self {
-        let mount_state = Arc::new(FilesystemMountState::new(ops.is_readonly()));
+        Self::new_with_readonly(ops, false)
+    }
+
+    /// Sets initial VFS protection without entering reconfiguration.
+    /// Native write protection cannot be cleared by construction; querying it
+    /// retains the backend's own synchronization requirements.
+    pub fn new_with_readonly(ops: Arc<dyn FilesystemOps>, readonly: bool) -> Self {
+        let mount_state = Arc::new(FilesystemMountState::new(readonly || ops.is_readonly()));
         Self { ops, mount_state }
     }
 
@@ -167,9 +220,15 @@ impl Filesystem {
         self.mount_state.is_readonly()
     }
 
-    /// Configures VFS write protection before publishing a new mount.
-    /// This does not change the capabilities of the backing device.
-    pub fn set_readonly(&self, readonly: bool) {
-        self.mount_state.set_readonly(readonly);
+    /// Reconfigures shared VFS protection, rejecting active writers with
+    /// `ResourceBusy`. This may sleep and perform synchronization/native I/O.
+    /// Failure leaves VFS flags unchanged. Mount-local flags are not changed;
+    /// use `Mountpoint::set_filesystem_readonly` for an ordinary remount.
+    pub fn set_readonly(&self, readonly: bool) -> VfsResult<()> {
+        let _configuration = self.mount_state.reconfiguration.lock();
+        self.mount_state
+            .prepare_readonly(self.ops.as_ref(), readonly)?;
+        self.mount_state.writes.lock().readonly = readonly;
+        Ok(())
     }
 }

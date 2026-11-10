@@ -1028,7 +1028,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         Err(VfsError::InvalidInput)
     ));
 
-    root_mount.set_readonly(true);
+    root_mount.set_readonly(true).unwrap();
     assert!(matches!(
         root.create(
             "blocked",
@@ -1048,7 +1048,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         root.lookup_no_follow("transient").unwrap().inode(),
         transient.inode()
     );
-    root_mount.set_readonly(false);
+    root_mount.set_readonly(false).unwrap();
 
     let child_fs = new_fs("childfs", false, 20, &["put-old", "inside"]);
     let mnt = root.lookup_no_follow("mnt").unwrap();

@@ -21,11 +21,12 @@ pub use backend::FileBackend;
 
 /// Provides `std::fs::File`-like interface.
 pub struct File {
-    pub(super) write_access: Option<Arc<WriteAccess>>,
     inner: FileBackend,
     flags: AtomicU8,
     position: Option<Mutex<u64>>,
     access_flags: AtomicU8,
+    // Backend/cache destruction must finish before releasing writer authority.
+    pub(super) write_access: Option<Arc<WriteAccess>>,
 }
 
 impl File {

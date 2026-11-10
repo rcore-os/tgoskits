@@ -331,7 +331,7 @@ mod tests {
                 Err(VfsError::StorageFull)
             );
             assert!(full.resolve("/guest/builtin/old-only").is_ok());
-            target.root_dir().mountpoint().set_readonly(true);
+            target.root_dir().mountpoint().set_readonly(true).unwrap();
             assert_eq!(
                 install_directory(&source, &target, "/guest/builtin", |_, _| Ok(())),
                 Err(VfsError::ReadOnlyFilesystem)

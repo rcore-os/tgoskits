@@ -543,9 +543,6 @@ fn prepare_root(
         axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source)
             .root_location(),
     );
-    if action == RootAction::MountReadOnly {
-        context.root_dir().mountpoint().set_readonly(true);
-    }
     mount_additional_partitions(context.root_dir(), &selected, selected_partition);
     for disk in &disks {
         mount_additional_partitions(context.root_dir(), disk, None);

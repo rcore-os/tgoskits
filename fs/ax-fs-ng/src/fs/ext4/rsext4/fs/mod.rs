@@ -553,6 +553,9 @@ impl FilesystemOps for Ext4Filesystem {
     }
 
     fn flush(&self) -> VfsResult<()> {
+        // Read-only reconfiguration must flush buffered data before publishing
+        // protection. This uses internal writeback, not user write admission.
+        crate::file::writeback_filesystem_pages(self)?;
         self.sync_to_disk()
     }
 

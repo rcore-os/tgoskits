@@ -1,23 +1,30 @@
 use alloc::collections::BTreeMap;
 
-use axfs_ng_vfs::{FilesystemOps, Location, VfsError, VfsResult};
+use axfs_ng_vfs::{FilesystemOps, Location, MountWriteGuard, VfsError, VfsResult};
 
 use crate::os::sync::Mutex;
 
-/// Prevents execution while a regular file is open for writing.
+/// Prevents execution and read-only remount while a regular file is writable.
 ///
 /// Share this lease through `Arc` when an open file description is retained by
 /// a mapping. The last owner releases write access, including on failed opens.
 pub struct WriteAccess {
     _lease: AccessLease,
+    // Release inode ownership before the mount's write authority.
+    _mount_write: MountWriteGuard,
 }
 
 impl WriteAccess {
-    /// Acquires write access, failing with `TextFileBusy` if execution holds it.
-    /// Acquisition and destruction may block on the access registry mutex.
+    /// Acquires mount write authority and inode write access.
+    /// Fails with `ReadOnlyFilesystem` for local/shared protection or
+    /// `TextFileBusy` if execution holds the inode. Acquire before backend gates.
+    /// Acquisition may sleep behind reconfiguration; destruction releases the
+    /// inode registry before releasing the mount writer count.
     pub fn acquire(location: Location) -> VfsResult<Self> {
+        let mount_write = location.acquire_write()?;
         Ok(Self {
             _lease: AccessLease::acquire(location, AccessKind::Write)?,
+            _mount_write: mount_write,
         })
     }
 }
