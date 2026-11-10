@@ -746,4 +746,88 @@ mod tests {
             Err(VfsError::PermissionDenied)
         ));
     }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn readonly_reconfiguration_preserves_writers_until_description_and_mapping_release() {
+        for shared in [false, true] {
+            let filesystem = crate::MemoryFs::new();
+            let mount = Mountpoint::new_root(&filesystem);
+            let location = mount
+                .root_location()
+                .create(
+                    "writer",
+                    NodeType::RegularFile,
+                    NodePermission::from_bits_truncate(0o600),
+                    1000,
+                    1000,
+                )
+                .unwrap();
+            let target = if shared {
+                mount.clone_tree()
+            } else {
+                mount.clone()
+            };
+            let credentials = credentials(1000, 1000, &[]);
+            let mut writable = OpenOptions::new();
+            writable.write(true).direct = true;
+            let description = Arc::new(
+                writable
+                    ._open(location.clone(), &credentials, false)
+                    .and_then(OpenResult::into_file)
+                    .unwrap(),
+            );
+            let duplicate = description.clone();
+            let mapping = description.write_access().unwrap().clone();
+            let reopened = writable
+                ._open(location.clone(), &credentials, false)
+                .and_then(OpenResult::into_file)
+                .unwrap();
+            let reject_readonly = || {
+                // The current raw setters return (). Their controlled
+                // replacements must additionally report ResourceBusy; this
+                // baseline-compatible oracle checks the observable flags.
+                if shared {
+                    target.set_filesystem_readonly(true);
+                    assert!(!target.is_filesystem_readonly());
+                } else {
+                    target.set_readonly(true);
+                    assert!(!target.is_readonly());
+                }
+            };
+            reject_readonly();
+            drop(description);
+            reject_readonly();
+            drop(duplicate);
+            drop(reopened);
+            reject_readonly();
+            drop(mapping);
+
+            let mut read_only = OpenOptions::new();
+            read_only.read(true).direct = true;
+            let reader = read_only
+                ._open(location.clone(), &credentials, false)
+                .and_then(OpenResult::into_file)
+                .unwrap();
+            let mut path = read_only.clone();
+            path.path = true;
+            let path_file = path
+                ._open(location.clone(), &credentials, false)
+                .and_then(OpenResult::into_file)
+                .unwrap();
+            if shared {
+                target.set_filesystem_readonly(true);
+                assert!(target.is_filesystem_readonly());
+            } else {
+                target.set_readonly(true);
+                assert!(target.is_readonly());
+            }
+            assert!(matches!(
+                writable._open(location, &credentials, false),
+                Err(VfsError::ReadOnlyFilesystem)
+            ));
+            drop(reader);
+            drop(path_file);
+        }
+    }
 }

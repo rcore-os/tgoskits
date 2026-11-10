@@ -1156,6 +1156,77 @@ mod tests {
 
     #[cfg(feature = "host-test")]
     #[test]
+    fn rename_revalidates_ancestry_after_a_completed_competing_move() {
+        use alloc::boxed::Box;
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        use super::*;
+
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                BEFORE_NAMESPACE_CHANGE.with(|slot| drop(slot.borrow_mut().take()));
+            }
+        }
+
+        let filesystem = MemoryFs::new();
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().unwrap();
+        let left = directory
+            .create("left", NodeType::Directory, NodePermission::default(), 0, 0)
+            .unwrap();
+        let right = directory
+            .create(
+                "right",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+            )
+            .unwrap();
+        let moved = Arc::new(AtomicBool::new(false));
+        let competing_move_completed = moved.clone();
+        let competing_root = root.clone();
+        let competing_parent = left.clone();
+        BEFORE_NAMESPACE_CHANGE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // A has selected its source/destination. Complete B's real
+                // move before A enters the backend; no sleep or timing race.
+                competing_root
+                    .as_dir()
+                    .unwrap()
+                    .rename("right", competing_parent.as_dir().unwrap(), "right")
+                    .unwrap();
+                competing_move_completed.store(true, Ordering::Release);
+            }));
+        });
+        let _reset = ResetHook;
+        let result = directory.rename("left", right.as_dir().unwrap(), "left");
+        assert!(moved.load(Ordering::Acquire));
+        assert_eq!(result, Err(VfsError::InvalidInput));
+
+        // Inspect only single edges and names. The faulty implementation can
+        // form left -> right -> left, so never traverse its ancestor chain.
+        assert!(directory.lookup("left").unwrap().ptr_eq(&left));
+        assert!(matches!(directory.lookup("right"), Err(VfsError::NotFound)));
+        assert!(left.parent().unwrap().ptr_eq(&root));
+        assert!(right.parent().unwrap().ptr_eq(&left));
+        assert!(
+            left.as_dir()
+                .unwrap()
+                .lookup("right")
+                .unwrap()
+                .ptr_eq(&right)
+        );
+        assert!(matches!(
+            right.as_dir().unwrap().lookup("left"),
+            Err(VfsError::NotFound)
+        ));
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
     fn directory_rename_rejects_self_and_descendant_destinations_without_changing_the_tree() {
         use axfs_ng_vfs::NameState;
 
