@@ -43,9 +43,11 @@ impl CreateOwnerPolicy {
         parent: &Metadata,
         credentials: &MutationCredentials<'_>,
     ) -> (NodePermission, (u32, u32)) {
-        // Retain the existing authorizer while collecting the policy regression.
         let mut permission = attributes.permission;
-        let gid = if parent.mode.contains(NodePermission::SET_GID) {
+        if self == Self::Caller && attributes.content.node_type() == NodeType::Directory {
+            permission = NodePermission::from_bits_truncate(permission.bits() & 0o1777);
+        }
+        let gid = if self == Self::ParentSetgid && parent.mode.contains(NodePermission::SET_GID) {
             if attributes.content.node_type() == NodeType::Directory {
                 permission.insert(NodePermission::SET_GID);
             }
