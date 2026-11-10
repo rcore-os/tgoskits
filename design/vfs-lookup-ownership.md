@@ -144,6 +144,13 @@ FAT 底层 file/editor 若绑定磁盘目录槽，必须同步重绑定共享后
 不能先删目标再失败，也不能以禁用整个 FAT 或全部拒绝 rename 代替适配。
 FAT 后端支持边界和被拒绝路径在交付证据中单独记录，不宣称其具有完整 Linux 存储语义。
 
+FAT 的根目录不能通过 `root_dir → DirEntry → FatInode → FatFilesystem` 保留自身。
+文件系统只弱索引根目录项与根 holder；根逻辑 inode 的保留责任属于文件系统本身，
+不在一个短命根 holder 析构时释放或重新分配。根引用消失后，`root_dir()` 可从仍存活的
+文件系统重建并规范化发布同一根身份；活跃 holder 和子项继续强持实际 backend 所有者。
+候选构造与最终引用释放在根索引自旋锁外完成，不能在升级失败时把文件系统误判为无根。
+这复用已有弱根重发现模式，不以额外永久强登记或仅调用 flush 掩盖根引用环。
+
 现有 `FsRef::borrow_mut` 从共享所有者引用返回可变引用，不能继续作为健全性依据。
 共享句柄访问改为借用实际文件系统守卫，写访问需要独占借用该守卫，
 返回引用同时受句柄和守卫生命周期约束，并核对具体所有者身份。
@@ -305,6 +312,19 @@ sequenceDiagram
 动态目标以一次快照取得，不以分开查询长度与读取内容拼接不一致结果。
 目标引用取得后及时释放任务或 fd 表锁；fd 关闭和复用不能把已有引用改指向新对象。
 
+namespace 的文件身份使用同一 nsfs inode 分配域，不直接采用各 namespace 类型独立分配的
+显示 ID。Starry 扩展现有 `NamespaceObject` 的单份 inode 索引：记录以真实 namespace
+引用身份为键，弱持实际 namespace 所有者，强保留其 `ObjectInode`；不弱持临时
+`NamespaceObject` 包装。只要真实 namespace、已打开 fd 或 vnode 仍存活，重复观察得到
+同一 inode；不同类型和不同实体不能在同一 nsfs device 中碰撞。
+fd、vnode 与 readlink 数字共同消费此 inode，不改写网络、IPC 等子系统原有 ID 分配政策。
+
+索引不强持 namespace，`ObjectInode` 也不反向强持 namespace；只有 vnode 的目标对象
+引用承担使用保活。每次访问清理已失去真实所有者的登记，先在锁内移出、再在锁外释放；
+空闲时允许保留最近一次访问留下的已死登记，但新增访问不能使历史已死项无界累积。
+候选 inode 在索引锁外分配，重新持锁规范化发布后，落败候选同样在锁外释放。
+复用 nsfs 的 inode 分配器及现有索引，不增加并行身份表，不用哈希或移位拼接代替唯一性。
+
 ### 5.2 统一消费者
 
 walker 先决定是否跟随，再获取目标，因此 `O_PATH|O_NOFOLLOW` 可保留末链接自身。
@@ -462,6 +482,8 @@ Linux 行为以固定提交源码为准；Rust 与其他 VFS 资料用于解释�
 - [Linux v7.1 路径查找](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c)
 - [Linux v7.1 打开参数与元数据操作](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c)
 - [Linux v7.1 用户命名空间创建边界](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/user_namespace.c#L83-L135)
+- [Linux v7.1 namespace inode 生命周期](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nscommon.c#L56-L94)
+- [Linux v7.1 nsfs 显示与实体路径](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/nsfs.c#L43-L76)
 - [Linux v7.1 持锁证据](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/rust/kernel/sync/locked_by.rs)
 - [Starnix 固定版本目录项与重命名](https://fuchsia.googlesource.com/fuchsia/+/3b5d6be01bbadd768777e59bb65af7860b45b8af/src/starnix/kernel/core/vfs/dir_entry.rs)
 - [Rust API Guidelines：类型安全](https://rust-lang.github.io/api-guidelines/type-safety.html)
