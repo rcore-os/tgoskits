@@ -266,7 +266,11 @@ pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> 
             let dir = ax_fs_ng::fops::Directory::open_dir(filename, &options)?;
             Directory::new(dir).add_to_fd_table()
         } else {
-            let file = ax_fs_ng::fops::File::open(filename, &options)?;
+            let file = ax_fs_ng::fops::File::open(
+                filename,
+                &options,
+                &ax_fs_ng::MutationCredentials::root(),
+            )?;
             File::new(file).add_to_fd_table()
         }
     })
