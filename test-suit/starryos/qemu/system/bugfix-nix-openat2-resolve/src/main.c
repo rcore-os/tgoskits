@@ -100,7 +100,7 @@ int main(void)
     fd = openat2_beneath_no_symlinks(
         rootfd, "../nix-openat2-escape",
         O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0666);
-    CHECK(fd == -1 && (errno == EXDEV || errno == ELOOP),
+    CHECK(fd == -1 && errno == EXDEV,
           "RESOLVE_BENEATH rejects parent escape");
     if (fd >= 0) {
         close(fd);
@@ -129,8 +129,8 @@ int main(void)
     errno = 0;
     fd = openat2_beneath_no_symlinks(
         rootfd, "link", O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0666);
-    CHECK(fd == -1 && errno == ELOOP,
-          "RESOLVE_NO_SYMLINKS takes precedence over O_EXCL for a symlink");
+    CHECK(fd == -1 && errno == EEXIST,
+          "O_CREAT|O_EXCL rejects an existing symlink without following it");
     if (fd >= 0)
         close(fd);
 
