@@ -103,6 +103,15 @@ impl CachedFileShared {
         self.page_cache.lock().dirty_count()
     }
 
+    /// Reports dirty pages or an owned writeback round without waiting for it.
+    /// A held writeback lock is itself a pending writeback owner.
+    #[cfg(all(feature = "ext4", feature = "vfs"))]
+    pub(super) fn has_pending_writeback(&self) -> bool {
+        self.writeback_lock
+            .try_lock()
+            .is_none_or(|_writeback| self.dirty_page_count() != 0)
+    }
+
     fn backing_write_protected(&self) -> bool {
         self.backing
             .as_ref()

@@ -146,3 +146,13 @@ fn writeback_protection_retains_the_round_without_io_index_or_endpoint_locks() {
         }
     });
 }
+
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+#[test]
+fn pending_writeback_probe_treats_an_owned_round_as_pending() {
+    with_test_page_provider(true, |_| {
+        let cached = reopen_cached_file(Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE])));
+        let _writeback = cached.shared.writeback_lock.lock();
+        assert!(cached.shared.has_pending_writeback());
+    });
+}

@@ -162,6 +162,117 @@ static int image_checksum(int fd, uint64_t *checksum)
     return 0;
 }
 
+/* A writable mount with no user writes and no pending metadata can be made
+ * read-only at the backing layer. Both syncfs and the selected unmount form
+ * must leave the filesystem quiescent, then the last mount and loop openers
+ * must release the AUTOCLEAR binding without requiring a backing write. */
+static int check_clean_write_protected_lifecycle(int image_fd, int *loop_fd_ptr,
+                                                 const char *target, int unmount_flags,
+                                                 const char *unmount_name,
+                                                 const char *success_marker)
+{
+    int loop_fd = *loop_fd_ptr;
+    int root_fd = -1;
+    int bound = 0, mounted = 0, result = 1;
+    unsigned write_protect = 1;
+    struct loop_info64 info = {0};
+
+    *loop_fd_ptr = -1;
+    if (loop_fd < 0)
+        return 1;
+    if (ioctl(loop_fd, LOOP_SET_FD, image_fd)) {
+        fprintf(stderr, "clean %s lifecycle could not bind the loop: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    bound = 1;
+    info.lo_flags = LO_FLAGS_AUTOCLEAR;
+    if (ioctl(loop_fd, LOOP_SET_STATUS64, &info)) {
+        fprintf(stderr, "clean %s lifecycle could not set AUTOCLEAR: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    if (mount("/dev/loop0", target, "ext4", 0, NULL)) {
+        fprintf(stderr, "clean %s lifecycle writable mount failed: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    mounted = 1;
+    root_fd = open(target, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (root_fd < 0) {
+        fprintf(stderr, "clean %s lifecycle could not open the mount root: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    /* Bring the writable mount to a quiescent boundary before changing the
+     * backing state, so the protected sync below has no pending user work. */
+    if (syscall(SYS_syncfs, root_fd)) {
+        fprintf(stderr, "clean %s lifecycle quiescence sync failed: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    if (ioctl(loop_fd, BLKROSET, &write_protect)) {
+        fprintf(stderr, "clean %s lifecycle could not write-protect the loop: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    if (syscall(SYS_syncfs, root_fd)) {
+        fprintf(stderr, "clean %s lifecycle protected sync failed: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    /* The syncfs-only root fd must not make a normal unmount busy. Keep it
+     * across MNT_DETACH so closing it exercises the delayed final release. */
+    if (!unmount_flags) {
+        close(root_fd);
+        root_fd = -1;
+    }
+    errno = 0;
+    if (syscall(SYS_umount2, target, unmount_flags)) {
+        fprintf(stderr, "clean %s lifecycle unmount failed: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    mounted = 0;
+    if (root_fd >= 0) {
+        close(root_fd);
+        root_fd = -1;
+    }
+
+    write_protect = 0;
+    if (ioctl(loop_fd, BLKROSET, &write_protect)) {
+        fprintf(stderr, "clean %s lifecycle could not restore the loop: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    close(loop_fd);
+    loop_fd = -1;
+    loop_fd = open("/dev/loop0", O_RDWR | O_CLOEXEC);
+    errno = 0;
+    if (loop_fd < 0 || ioctl(loop_fd, LOOP_GET_STATUS64, &info) != -1 || errno != ENXIO) {
+        fprintf(stderr, "clean %s lifecycle retained its AUTOCLEAR holder: errno=%d\n",
+                unmount_name, errno);
+        goto cleanup;
+    }
+    bound = 0;
+    puts(success_marker);
+    result = 0;
+cleanup:
+    if (result) {
+        if (root_fd >= 0)
+            close(root_fd);
+        if (mounted)
+            syscall(SYS_umount2, target, MNT_DETACH);
+        if (bound && loop_fd >= 0)
+            ioctl(loop_fd, LOOP_CLR_FD);
+        if (loop_fd >= 0)
+            close(loop_fd);
+    } else {
+        *loop_fd_ptr = loop_fd;
+    }
+    return result;
+}
+
 static int check_loop_mount_lifetime(void)
 {
     char image[] = "/tmp/ltp-loop-image.XXXXXX";
@@ -476,6 +587,14 @@ static int check_loop_mount_lifetime(void)
         goto cleanup;
     }
     bound = 0;
+
+    if (check_clean_write_protected_lifecycle(
+            image_fd, &loop_fd, target, 0, "normal",
+            "LOOP_CLEAN_WRITE_PROTECTED_NORMAL_UNMOUNT_AND_AUTOCLEAR") ||
+        check_clean_write_protected_lifecycle(
+            image_fd, &loop_fd, target, MNT_DETACH, "lazy",
+            "LOOP_CLEAN_WRITE_PROTECTED_MNT_DETACH_AND_AUTOCLEAR"))
+        goto cleanup;
 
     /* A loop bound from an O_RDONLY image is read-only from its initial
        mount. It has no dirty state to recover, so syncfs and a normal unmount

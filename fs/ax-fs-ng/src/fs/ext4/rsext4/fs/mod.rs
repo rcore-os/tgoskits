@@ -3,6 +3,8 @@ use alloc::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Weak},
 };
+#[cfg(feature = "vfs")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 mod access;
 mod admission;
@@ -131,6 +133,20 @@ impl Ext4State {
         self.ext4.unmount().map_err(into_vfs_err)
     }
 
+    #[cfg(feature = "vfs")]
+    fn unmount_without_publication(&mut self) -> VfsResult<()> {
+        let result = self
+            .ext4
+            .finish_unmount_without_publication()
+            .map_err(into_vfs_err);
+        if result.is_ok() {
+            // The local session is terminal even though the on-disk RECOVER
+            // and MMP state remain for the next writable mount to recover.
+            self.shutdown_attempted = true;
+        }
+        result
+    }
+
     pub(crate) fn release_ref(&mut self, ino: InodeNumber) -> Option<ReapClaim> {
         self.lifetimes.release_ref(ino)
     }
@@ -161,6 +177,11 @@ pub struct Ext4Filesystem {
     inner: Mutex<Ext4State>,
     inode_metadata: rsext4::InodeMetadataReader,
     mmp_worker: MountWorker,
+    /// Set while dynamic backing protection has forced both device-writing
+    /// workers to stop. Only the lifecycle owner restores them after writes
+    /// become admissible again.
+    #[cfg(feature = "vfs")]
+    protected_workers_stopped: AtomicBool,
     writeback: Writeback,
     inode_access: Mutex<BTreeMap<InodeNumber, Weak<AccessGate>>>,
     namespace: Namespace,
@@ -203,6 +224,13 @@ struct MountLeaseState {
 #[derive(Default)]
 struct ShutdownState {
     complete: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShutdownMode {
+    PublishClean,
+    #[cfg(feature = "vfs")]
+    ProtectedWritable,
 }
 
 /// Selects whether the filesystem owns a removable file backend. Physical
@@ -367,6 +395,8 @@ impl Ext4Filesystem {
                 staging: false,
             }),
             mmp_worker: MountWorker::disabled(),
+            #[cfg(feature = "vfs")]
+            protected_workers_stopped: AtomicBool::new(false),
             writeback: Writeback::new(background_writeback),
             inode_access: Mutex::new(BTreeMap::new()),
             namespace: Namespace::new(),
@@ -424,18 +454,73 @@ impl Ext4Filesystem {
     }
 
     #[cfg(feature = "vfs")]
-    fn backing_write_protected(&self) -> VfsResult<bool> {
-        let write_protected = self
-            .backing_lease
+    fn backing_is_write_protected(&self) -> VfsResult<bool> {
+        self.backing_lease
             .as_ref()
-            .map_or(Ok(false), |lease| lease.is_write_protected())?;
-        if !write_protected {
-            return Ok(false);
+            .map_or(Ok(false), |lease| lease.is_write_protected())
+    }
+
+    #[cfg(feature = "vfs")]
+    fn writable_backing_is_write_protected(&self) -> VfsResult<bool> {
+        Ok(self.backing_is_write_protected()? && !self.lock().ext4.options().readonly)
+    }
+
+    /// Stops every worker that may write the protected backing. The lifecycle
+    /// owner records the stopped state so an unprotected flush restores the
+    /// workers exactly once.
+    #[cfg(feature = "vfs")]
+    fn stop_device_writing_workers_for_protection(&self) {
+        self.mmp_worker.stop_and_join();
+        self.writeback.stop_and_join();
+        self.protected_workers_stopped
+            .store(true, Ordering::Release);
+    }
+
+    /// Restores workers after the backing permits writes again. MMP starts
+    /// before writeback; a failed MMP start remains latched by the core.
+    #[cfg(feature = "vfs")]
+    fn restore_device_writing_workers_after_protection(&self) -> VfsResult<()> {
+        if !self.protected_workers_stopped.load(Ordering::Acquire) {
+            return Ok(());
         }
-        // A filesystem mounted read-only never needs writeback recovery. Only
-        // a writable mount that lost access to mutable state must retain its
-        // backing and caches for a later retry.
-        Ok(!self.lock().ext4.options().readonly)
+        if self.lock().ext4.mmp_refresh_interval().is_some()
+            && let Err(error) = self.start_mmp_worker()
+        {
+            log::error!("ext4 MMP restart after write-protection recovery failed: {error}");
+            self.lock()
+                .ext4
+                .report_mmp_runtime_failure(rsext4::Ext4Error::unsupported_capability(
+                    "runtime:mmp_worker",
+                ));
+            return Err(error);
+        }
+        self.start_writeback_worker()?;
+        self.protected_workers_stopped
+            .store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Caller must stop device-writing workers and drain cached-write and
+    /// operation admission before accepting this snapshot. A page writeback
+    /// owner observed under exclusion is reported as pending without waiting,
+    /// so this probe cannot deadlock behind paused admission or commit I/O.
+    #[cfg(feature = "vfs")]
+    fn has_pending_writeback_quiescent(&self) -> VfsResult<bool> {
+        let core_pending = {
+            let state = self.lock();
+            if state.dirty || state.staging || state.has_pending_reaps() {
+                true
+            } else {
+                state
+                    .ext4
+                    .has_pending_writeback_without_io()
+                    .map_err(into_vfs_err)?
+            }
+        };
+        if core_pending {
+            return Ok(true);
+        }
+        Ok(crate::file::filesystem_has_dirty_pages(self))
     }
 
     pub(crate) fn directory_cache_generation(&self, inode: InodeNumber) -> VfsResult<Option<u64>> {
@@ -523,7 +608,7 @@ impl Ext4Filesystem {
     #[cfg(feature = "vfs")]
     fn retire_file_backed_mount(&self, generation: u64) {
         let _lifecycle = self.lifecycle.lock();
-        let write_protected = self.backing_write_protected();
+        let write_protected = self.writable_backing_is_write_protected();
         let mut shutdown = self.shutdown_state.lock();
         {
             let mut state = self.mount_lease.lock();
@@ -538,8 +623,7 @@ impl Ext4Filesystem {
         }
 
         let result = match write_protected {
-            Ok(true) => Err(VfsError::Io),
-            Ok(false) => self.run_file_backed_retirement(&mut shutdown),
+            Ok(write_protected) => self.run_file_backed_retirement(&mut shutdown, write_protected),
             Err(error) => Err(error),
         };
         drop(shutdown);
@@ -556,15 +640,17 @@ impl Ext4Filesystem {
             LeasePhase::Released => return Ok(()),
             LeasePhase::Retiring => return Err(VfsError::ResourceBusy),
             LeasePhase::Active => {
-                if self.backing_write_protected()? {
-                    return Err(VfsError::Io);
+                if self.writable_backing_is_write_protected()? {
+                    return self.sync_clean_write_protected();
                 }
+                self.restore_device_writing_workers_after_protection()?;
                 return self.sync_to_disk();
             }
             LeasePhase::Failed => {}
         }
-        if self.backing_write_protected()? {
-            return Err(VfsError::Io);
+        let write_protected = self.writable_backing_is_write_protected()?;
+        if !write_protected {
+            self.restore_device_writing_workers_after_protection()?;
         }
         let mut shutdown = self.shutdown_state.lock();
         {
@@ -576,12 +662,16 @@ impl Ext4Filesystem {
                 LeasePhase::Active => {
                     drop(state);
                     drop(shutdown);
+                    if write_protected {
+                        return self.sync_clean_write_protected();
+                    }
+                    self.restore_device_writing_workers_after_protection()?;
                     return self.sync_to_disk();
                 }
             }
         }
 
-        let result = self.run_file_backed_retirement(&mut shutdown);
+        let result = self.run_file_backed_retirement(&mut shutdown, write_protected);
         drop(shutdown);
         self.complete_file_backed_retirement(result);
         result
@@ -589,12 +679,20 @@ impl Ext4Filesystem {
 
     /// Caller holds `lifecycle`, `shutdown_state` and has published `Retiring`.
     #[cfg(feature = "vfs")]
-    fn run_file_backed_retirement(&self, shutdown: &mut ShutdownState) -> VfsResult<()> {
-        self.retire_mount_caches()?;
-        if !shutdown.complete {
-            self.shutdown_filesystem_locked()?;
-            shutdown.complete = true;
+    fn run_file_backed_retirement(
+        &self,
+        shutdown: &mut ShutdownState,
+        write_protected: bool,
+    ) -> VfsResult<()> {
+        if write_protected {
+            self.shutdown_filesystem_locked_with_mode(ShutdownMode::ProtectedWritable)?;
+        } else {
+            self.retire_mount_caches()?;
+            if !shutdown.complete {
+                self.shutdown_filesystem_locked()?;
+            }
         }
+        shutdown.complete = true;
         Ok(())
     }
 
@@ -675,9 +773,19 @@ impl Ext4Filesystem {
     /// re-enter the admission drain while the first is still restarting or
     /// joining workers.
     fn shutdown_filesystem_locked(&self) -> VfsResult<()> {
+        self.shutdown_filesystem_locked_with_mode(ShutdownMode::PublishClean)
+    }
+
+    fn shutdown_filesystem_locked_with_mode(&self, mode: ShutdownMode) -> VfsResult<()> {
         self.cached_writes.close_and_drain().map_err(into_vfs_err)?;
-        let result = self.shutdown_after_cached_writes();
+        let result = self.shutdown_after_cached_writes(mode);
         if result.is_err() && !self.lock().shutdown_attempted {
+            #[cfg(feature = "vfs")]
+            if mode == ShutdownMode::ProtectedWritable {
+                self.admission.reopen();
+                self.cached_writes.reopen();
+                return result;
+            }
             if self.lock().ext4.mmp_refresh_interval().is_some()
                 && let Err(error) = self.start_mmp_worker()
             {
@@ -699,13 +807,47 @@ impl Ext4Filesystem {
         result
     }
 
-    fn shutdown_after_cached_writes(&self) -> VfsResult<()> {
-        // The worker may already own a page snapshot. Join it before the
-        // final pass, outside filesystem, registry and file I/O locks.
-        self.writeback.stop_and_join();
-        crate::file::writeback_filesystem_pages(self)?;
-        self.admission.close_and_drain().map_err(into_vfs_err)?;
+    fn shutdown_after_cached_writes(&self, mode: ShutdownMode) -> VfsResult<()> {
+        match mode {
+            ShutdownMode::PublishClean => {
+                // The worker may already own a page snapshot. Join it before
+                // the final writable pass, outside all file I/O locks.
+                self.writeback.stop_and_join();
+                crate::file::writeback_filesystem_pages(self)?;
+                self.admission.close_and_drain().map_err(into_vfs_err)?;
+            }
+            #[cfg(feature = "vfs")]
+            ShutdownMode::ProtectedWritable => {
+                self.stop_device_writing_workers_for_protection();
+                self.admission.close_and_drain().map_err(into_vfs_err)?;
+                if self
+                    .writeback
+                    .with_commit_gate(|| self.has_pending_writeback_quiescent())?
+                {
+                    return Err(VfsError::Io);
+                }
+            }
+        }
+        #[cfg(feature = "vfs")]
+        if mode == ShutdownMode::ProtectedWritable {
+            return self.shutdown_quiescent_protected();
+        }
         self.shutdown_quiescent()
+    }
+
+    #[cfg(feature = "vfs")]
+    fn shutdown_quiescent_protected(&self) -> VfsResult<()> {
+        self.retire_mount_caches()?;
+        // Clearing the final dentry/cache owners can publish a zero-link inode
+        // and create a new reap obligation. Recheck after retirement before
+        // ending the local session without a clean publication.
+        if self
+            .writeback
+            .with_commit_gate(|| self.has_pending_writeback_quiescent())?
+        {
+            return Err(VfsError::Io);
+        }
+        self.lock().unmount_without_publication()
     }
 
     fn shutdown_quiescent(&self) -> VfsResult<()> {
@@ -745,7 +887,7 @@ impl FilesystemOps for Ext4Filesystem {
 
     fn is_readonly(&self) -> bool {
         #[cfg(feature = "vfs")]
-        if self.backing_write_protected().unwrap_or(true) {
+        if self.backing_is_write_protected().unwrap_or(true) {
             return true;
         }
         self.lock().ext4.options().readonly

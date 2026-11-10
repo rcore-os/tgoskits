@@ -3,6 +3,7 @@
 use super::*;
 use crate::{
     SyncTicket,
+    error::Ext4ErrorKind,
     ext4::{
         mmp::MmpState,
         sync::{clean_superblock, write_clean_superblock},
@@ -67,17 +68,7 @@ where
     where
         D: crate::ForkBlockIo,
     {
-        self.ensure_writable("unmount:prepare")?;
-        self.writes.ensure_drained()?;
-        if self.filesystem.superblock.s_last_orphan != 0
-            || self.filesystem.superblock_dirty
-            || self.filesystem.dirty_group_descs.iter().any(|dirty| *dirty)
-            || self.filesystem.datablock_cache.stats().dirty_entries != 0
-            || self.filesystem.inodetable_cache.stats().dirty_entries != 0
-            || self.filesystem.bitmap_cache.stats().dirty_entries != 0
-        {
-            return Err(Ext4Error::busy().with_operation("unmount:undrained_metadata"));
-        }
+        self.ensure_clean_without_publication()?;
         let (device, ticket) = self.device.fork_clean_publication()?;
         let superblock = clean_superblock(self.filesystem.superblock);
         self.services
@@ -92,6 +83,54 @@ where
             mmp,
             ticket,
         })
+    }
+
+    /// Reports whether a protected writable mount still owns writeback work.
+    ///
+    /// This validation performs no device I/O. Busy metadata, journal or data
+    /// owners are reported as pending; terminal journal errors remain errors.
+    pub fn has_pending_writeback_without_io(&self) -> Ext4Result<bool> {
+        match self.ensure_clean_without_publication() {
+            Ok(()) => Ok(false),
+            Err(error) if error.kind() == Ext4ErrorKind::Busy => Ok(true),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Terminates the local writable session without publishing clean state.
+    ///
+    /// The caller must first drain workers and admission. This performs no
+    /// device I/O and deliberately retains the on-disk RECOVER state and MMP
+    /// record for recovery by a later writable mount.
+    pub fn finish_unmount_without_publication(&mut self) -> Ext4Result<()> {
+        self.ensure_clean_without_publication()?;
+        self.services
+            .observer
+            .event(Event::Mount(MountEvent::UnmountStarted));
+        self.shutdown_ticket = None;
+        self.unmount_error = None;
+        self.filesystem.mounted = false;
+        // Drop the in-memory MMP lease without writing MMP_SEQUENCE_CLEAN.
+        self.filesystem.mmp = MmpState::Disabled;
+        self.services
+            .observer
+            .event(Event::Mount(MountEvent::Unmounted));
+        Ok(())
+    }
+
+    fn ensure_clean_without_publication(&self) -> Ext4Result<()> {
+        self.ensure_writable("unmount:prepare_noio")?;
+        self.writes.ensure_drained()?;
+        if self.filesystem.superblock.s_last_orphan != 0
+            || self.filesystem.superblock_dirty
+            || self.filesystem.dirty_group_descs.iter().any(|dirty| *dirty)
+            || self.filesystem.datablock_cache.stats().dirty_entries != 0
+            || self.filesystem.inodetable_cache.stats().dirty_entries != 0
+            || self.filesystem.bitmap_cache.stats().dirty_entries != 0
+        {
+            return Err(Ext4Error::busy().with_operation("unmount:undrained_metadata"));
+        }
+        self.device.ensure_clean_publication_ready()
     }
 
     /// Publishes one actual final I/O result without issuing device I/O.

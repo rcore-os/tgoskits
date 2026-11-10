@@ -1,4 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
+#[cfg(feature = "vfs")]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex as StdMutex;
 
@@ -195,6 +197,8 @@ fn mount_test_storage(
                 staging: false,
             }),
             mmp_worker: MountWorker::disabled(),
+            #[cfg(feature = "vfs")]
+            protected_workers_stopped: AtomicBool::new(false),
             writeback: Writeback::new(false),
             inode_access: Mutex::new(BTreeMap::new()),
             namespace: Namespace::new(),

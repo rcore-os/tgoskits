@@ -264,6 +264,8 @@ fn mount_counting_backing(storage: Arc<StdMutex<Vec<u8>>>, access: DeviceAccess)
             staging: false,
         }),
         mmp_worker: MountWorker::disabled(),
+        #[cfg(feature = "vfs")]
+        protected_workers_stopped: AtomicBool::new(false),
         writeback: Writeback::new(false),
         inode_access: Mutex::new(BTreeMap::new()),
         namespace: Namespace::new(),

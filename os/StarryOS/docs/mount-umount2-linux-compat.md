@@ -823,17 +823,23 @@ sleeping mutex，`LoopDevice::mounted_filesystem()` 在该 mutex 内升级弱引
 
 ### 9.5 正常卸载刷新失败时保留原 mount
 
-- StarryOS：`sys_umount2()` 在提交卸载之前先同步该文件系统的关闭文件缓存并刷新其元数据；这
-  两步失败时直接返回错误，mount 和它的 loop mount holder 都保留，调用方可以修复 backing 后
-  重试。
+- StarryOS：`sys_umount2()` 在提交卸载之前先同步该文件系统的关闭文件缓存并刷新其元数据。
+  当 backing 已写保护且仍有文件页、元数据、journal 或生命周期工作待写回时，这两步返回
+  `EIO`，mount 和它的 loop mount holder 都保留，调用方可以修复 backing 后重试。
 - StarryOS 在普通卸载的 cache writeback 前检查 loop mount holder 的当前写保护状态；检测到
-  `BLKROSET` 只读时返回 `EIO`，不进入 journal 提交。该失败不会把 ext4 置为 journal abort，
-  解除写保护后同一卸载/flush 入口可以重试。该预检必须使用 typed loop 状态，不能以空写结果
-  推断通用只读能力。
+  `BLKROSET` 只读且存在待写回义务时返回 `EIO`，不进入 journal 提交。该失败不会把 ext4 置为
+  journal abort，解除写保护后同一卸载/flush 入口可以重试。该预检必须使用 typed loop 状态，
+  不能以空写结果推断通用只读能力。
 - typed 入口是 `FileBackingStatus::is_write_protected()`；`LoopBackingStatus` 持有 loop 设备
   状态所有者并调用现有 `mount_write_protected()`，ext4 通过 backing lease 读取该能力而不持
   `FileBackend`。真正的 I/O 失败已经造成 journal abort 时不清除 abort、不丢弃脏页，仍返回
   `EIO` 并保留可观察所有者。
+- backing 已写保护但已经确认没有文件页、`Ext4State` 的 `dirty`/`staging`、pending reap、
+  core 元数据缓存或 JBD2 commit/checkpoint 工作时，`syncfs()` 和普通卸载可以成功返回，且
+  不执行会制造写入的设备同步。确认动作在 lifecycle exclusion 下停止 MMP 和 writeback
+  worker、排空缓存写和普通操作 admission，并取得 commit gate 后完成。写保护仍存在时这两个
+  worker 保持停止；第一次在解除写保护后进入 flush 时才按 MMP、writeback 的顺序恢复，且每个
+  停止周期只恢复一次。恢复中的 MMP 启动失败会继续沿用 rsext4 的 sticky failure。
 - 共享 VFS 的 `commit_unmount()` 只在 flush 成功后删除挂载；flush 失败返回错误、保持 mount、
   filesystem lease 和 lifetime guard 不变，不存在“预刷新成功所以删除阶段不会失败”的假设。
 - Linux v7.1 的 `do_umount()` 在 1758–1850 行完成 busy 检查后进入 `umount_tree()` 并返回 0，
@@ -841,10 +847,13 @@ sleeping mutex，`LoopDevice::mounted_filesystem()` 在该 mutex 内升级弱引
   StarryOS 的数据安全和可恢复性策略，不是 Linux 已证明的用户可见语义，也不能在兼容表中标成
   完全一致。
 - lazy detach 后最后一个 mount lease 的退休状态为
-  `Active -> Retiring -> Failed | Released`。失败时保留全局脏缓存和 backing holder，不复活
-  mount；后续 `BLKFLSBUF` 通过稳定文件系统入口调用 `FilesystemOps::flush()`，由同一 ext4
-  filesystem 在 `Failed` 状态重试 cache retirement、shutdown 和 backing release。只有成功才
-  进入 `Released`，并发重试只有一个执行者。
+  `Active -> Retiring -> Failed | Released`。存在待写回义务而 backing 又被写保护时，退休
+  失败并保留全局脏缓存和 backing holder，不复活 mount；后续 `BLKFLSBUF` 通过稳定文件系统
+  入口调用 `FilesystemOps::flush()`，由同一 ext4 filesystem 在 `Failed` 状态重试 cache
+  retirement、shutdown 和 backing release。只有成功才进入 `Released`，并发重试只有一个执行者。
+- lazy detach 时若 backing 写保护但 pending 检查已确认干净，退休路径会停止 worker、排空
+  admission、退休缓存并结束本地 ext4 session，然后释放 backing holder。该路径不写 CLEAN
+  superblock，也不写 MMP CLEAN；磁盘上的 `RECOVER` 和 MMP 状态保留给下一次可写挂载恢复。
 - 仅 file-backed final retirement 失败时，`MountLeaseState` 保存一个私有的强
   `Arc<Ext4Filesystem>` recovery owner；常态不形成 loop -> mount 强环。成功重试会在
   `mount_lease`、`shutdown_state` 和 backing 锁之外取出并析构它；永久 journal abort 则保留

@@ -1334,6 +1334,25 @@ pub(crate) fn retire_filesystem_cache(filesystem: &dyn FilesystemOps) -> VfsResu
     first_error.map_or(Ok(()), Err)
 }
 
+/// Reports whether this filesystem has dirty cached pages or a page writeback
+/// round still in flight. The caller is responsible for excluding new cached
+/// writes while it uses this snapshot to retire a protected backing.
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+pub(crate) fn filesystem_has_dirty_pages(filesystem: &dyn FilesystemOps) -> bool {
+    let key = filesystem_key(filesystem);
+    let files: Vec<_> = CACHED_FILE_BY_INODE
+        .lock()
+        .range((key, 0)..=(key, u64::MAX))
+        .filter_map(|(_, cached)| cached.upgrade())
+        .collect();
+    for file in files {
+        if file.has_pending_writeback() {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(feature = "ext4")]
 pub(crate) fn forget_cached_file_key(filesystem: &dyn FilesystemOps, inode: u64) {
     if filesystem.name() == "ext4" {

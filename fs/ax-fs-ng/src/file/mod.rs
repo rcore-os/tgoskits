@@ -7,6 +7,8 @@ mod page;
 pub use access::{ExecutableFile, WriteAccess};
 #[cfg(all(test, feature = "vfs"))]
 pub(crate) use cache::BusyDirtyCachedFile;
+#[cfg(all(feature = "ext4", feature = "vfs"))]
+pub(crate) use cache::filesystem_has_dirty_pages;
 #[cfg(feature = "ext4")]
 pub(crate) use cache::forget_cached_file_key;
 #[cfg(all(feature = "vfs", feature = "ext4"))]

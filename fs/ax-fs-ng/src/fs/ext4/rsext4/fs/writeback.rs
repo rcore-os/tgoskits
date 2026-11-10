@@ -56,6 +56,12 @@ impl Writeback {
     pub(super) fn stop(&self) {
         self.task.stop();
     }
+
+    #[cfg(feature = "vfs")]
+    pub(super) fn with_commit_gate<T>(&self, operation: impl FnOnce() -> T) -> T {
+        let _gate = self.gate.lock();
+        operation()
+    }
 }
 
 impl Ext4Filesystem {
@@ -119,6 +125,26 @@ impl Ext4Filesystem {
         let _operation = self.admission.enter().map_err(into_vfs_err)?;
         self.sync_core(CheckpointPolicy::LogPressure)
             .map_err(into_vfs_err)
+    }
+
+    /// Completes a protected sync boundary without writing when the filesystem
+    /// is already clean. Device-writing workers stay stopped while protection
+    /// remains, and both mutation admissions are drained before the pending
+    /// state snapshot is accepted.
+    #[cfg(feature = "vfs")]
+    pub(super) fn sync_clean_write_protected(&self) -> VfsResult<()> {
+        self.stop_device_writing_workers_for_protection();
+        (|| -> VfsResult<()> {
+            let _cached_pause = self.cached_writes.pause_and_drain().map_err(into_vfs_err)?;
+            let _operation_pause = self.admission.pause_and_drain().map_err(into_vfs_err)?;
+            self.writeback.with_commit_gate(|| {
+                if self.has_pending_writeback_quiescent()? {
+                    Err(VfsError::Io)
+                } else {
+                    Ok(())
+                }
+            })
+        })()
     }
 
     pub(super) fn sync_core(&self, checkpoint: CheckpointPolicy) -> Ext4Result<()> {
