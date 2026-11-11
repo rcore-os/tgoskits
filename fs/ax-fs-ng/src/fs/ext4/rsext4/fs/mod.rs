@@ -9,6 +9,7 @@ mod admission;
 mod directory;
 mod guard;
 mod lifetime;
+mod metadata;
 mod mmp;
 mod mutation;
 mod namespace;

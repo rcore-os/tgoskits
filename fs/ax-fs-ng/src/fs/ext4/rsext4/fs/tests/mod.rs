@@ -83,6 +83,7 @@ mod inode_writeback;
 mod lifetime;
 mod metadata;
 mod metadata_change;
+pub(super) mod metadata_pressure;
 mod namespace;
 mod persistence;
 mod read;

@@ -49,6 +49,13 @@ impl NodeOps for Inode {
         self.finish_metadata_change()
     }
 
+    fn change_metadata(
+        &self,
+        request: &axfs_ng_vfs::MetadataRequest<'_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+        self.fs().change_inode_metadata(self, request)
+    }
+
     fn len(&self) -> VfsResult<u64> {
         self.lifetime
             .metadata()

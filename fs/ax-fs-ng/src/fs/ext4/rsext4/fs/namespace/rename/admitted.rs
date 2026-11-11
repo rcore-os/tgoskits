@@ -158,7 +158,6 @@ impl NamespacePressure for Ext4NamespacePressure {
             attempt,
             reap,
         } = *self;
-        let staging = matches!(attempt, Some(MutationAttempt::Staging));
         let retryable = match &attempt {
             Some(MutationAttempt::Staging) => true,
             Some(MutationAttempt::Finished(Err(error))) => error.requires_journal_progress(),
@@ -175,20 +174,10 @@ impl NamespacePressure for Ext4NamespacePressure {
             if retryable {
                 *outcome = match completion {
                     Ok(()) => NamespaceOutcome::retry(),
-                    Err(error) if staging => NamespaceOutcome::unchanged(Err(error)),
                     Err(error) => {
-                        // A failed pressure phase is not another Retry. Keep
-                        // the original result and any actual observation.
                         let original =
                             core::mem::replace(outcome, NamespaceOutcome::unchanged(Ok(())));
-                        let observed = original.observation().cloned();
-                        let result = original.into_result().and(Err(error));
-                        match observed {
-                            Some(observed) => {
-                                NamespaceOutcome::unchanged_observed(observed, result)
-                            }
-                            None => NamespaceOutcome::unchanged(result),
-                        }
+                        original.with_completion(Err(error))
                     }
                 };
             } else {

@@ -141,9 +141,15 @@ impl<T> NamespaceOutcome<T> {
         self.observation.as_ref()
     }
 
-    /// Merges lock-external completion without losing state or observation.
-    /// The first error wins, including when later persistence also fails.
+    /// Merges lock-external completion, preserving the first real error.
+    /// A completion failure ends Retry: its WouldBlock is only a control marker.
+    /// Other states and their actual observations remain unchanged.
     pub fn with_completion(mut self, completion: VfsResult<()>) -> Self {
+        if self.state == NamespaceState::Retry
+            && let Err(error) = completion
+        {
+            return Self::unchanged(Err(error));
+        }
         self.result = self.result.and(completion);
         self
     }

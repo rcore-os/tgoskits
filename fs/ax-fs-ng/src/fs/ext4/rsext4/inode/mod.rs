@@ -52,7 +52,7 @@ impl Inode {
         self.lifetime.number()
     }
 
-    fn content_access(&self) -> &Arc<AccessGate> {
+    pub(super) fn content_access(&self) -> &Arc<AccessGate> {
         self.lifetime.content_access()
     }
 
