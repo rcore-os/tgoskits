@@ -3,13 +3,10 @@ use alloc::{string::String, vec};
 use core::{fmt, time::Duration};
 
 use ax_driver::usb::PlatformUsbHost;
-use ax_runtime::{
-    hal::irq::{IrqError, IrqHandle, IrqId, IrqReturn, free_irq, request_shared_irq},
-    irq::resolve_binding_irq,
-};
+use ax_runtime::hal::irq::IrqError;
 use ax_std as std;
 use crab_usb::{
-    DeviceInfo, EndpointHandle, Event,
+    DeviceInfo, EndpointHandle,
     err::{TransferError, USBError},
     usb_if::{descriptor::EndpointType, endpoint::TransferRequest, transfer::Direction},
 };
@@ -19,6 +16,7 @@ use crate::{
     BenchConfig, build_read10_command, build_write10_command, compile_time_write_bench_config,
 };
 mod bench;
+mod irq;
 use bench::{run_read_bench, run_write_bench};
 
 const DRIVER_NAME: &str = "usb-sg2002-dwc2";
@@ -51,6 +49,8 @@ pub enum SmokeError {
     MissingIrqBinding,
     IrqResolve(IrqError),
     IrqRegister(IrqError),
+    IrqWorker(std::StdError),
+    IrqWorkerWait(ax_runtime::task::thread::TaskError),
     NoMassStorageDevice,
     MissingBulkEndpoint,
     ShortTransfer {
@@ -96,6 +96,8 @@ impl fmt::Display for SmokeError {
             Self::MissingIrqBinding => write!(f, "SG2002 DWC2 host has no binding IRQ"),
             Self::IrqResolve(err) => write!(f, "failed to resolve USB binding IRQ: {err:?}"),
             Self::IrqRegister(err) => write!(f, "failed to register USB IRQ: {err:?}"),
+            Self::IrqWorker(err) => write!(f, "USB event worker failed: {err:?}"),
+            Self::IrqWorkerWait(err) => write!(f, "USB event worker could not wait: {err:?}"),
             Self::NoMassStorageDevice => write!(f, "USB mass-storage device not found"),
             Self::MissingBulkEndpoint => write!(f, "mass-storage bulk endpoint missing"),
             Self::ShortTransfer {
@@ -200,15 +202,37 @@ pub async fn run() -> Result<MscSmokeReport, SmokeError> {
 async fn run_on_host(
     host: &mut DeviceGuard<PlatformUsbHost>,
 ) -> Result<MscSmokeReport, SmokeError> {
-    let _irq = install_usb_irq(host)?;
+    let mut irq = irq::UsbIrqRegistration::install(host)?;
+    let result = run_with_irq(host, &irq).await;
+    // Disable the controller before joining its worker, so a concurrent rearm
+    // cannot leave the device generating interrupts after callback removal.
+    let disable_result = host.disable_irq().map_err(SmokeError::from);
+    let stop_result = irq.stop();
+    let report = result?;
+    disable_result?;
+    stop_result?;
+    Ok(report)
+}
+
+async fn run_with_irq(
+    host: &mut DeviceGuard<PlatformUsbHost>,
+    irq: &irq::UsbIrqRegistration,
+) -> Result<MscSmokeReport, SmokeError> {
     std::println!("SG2002_DWC2_INIT_START");
     host.host_mut().init().await?;
+    irq.enable()?;
     host.enable_irq()?;
     std::println!("SG2002_DWC2_INIT_DONE");
     std::println!("SG2002_DWC2_PROBE_START");
     let devices = host.host_mut().probe_devices().await?;
     std::println!("SG2002_DWC2_PROBE_DONE devices={}", devices.connected.len());
     for probed in devices.connected {
+        std::println!(
+            "SG2002_DWC2_DEVICE vid={:04x} pid={:04x} class={:02x}",
+            probed.vendor_id(),
+            probed.product_id(),
+            probed.descriptor().class,
+        );
         let Some(info) = probed.as_device_info() else {
             continue;
         };
@@ -352,40 +376,6 @@ async fn run_on_device(
         blocks: capacity.blocks,
         block_size: capacity.block_size,
         read_checksum,
-    })
-}
-
-struct UsbIrqRegistration {
-    _irq: IrqId,
-    registration: IrqHandle,
-}
-
-impl Drop for UsbIrqRegistration {
-    fn drop(&mut self) {
-        // The action owns the USB callback; free_irq synchronizes it before release.
-        if let Err(error) = free_irq(self.registration) {
-            std::println!("SG2002_DWC2_MSC_FAIL IRQ cleanup failed: {error:?}");
-        }
-    }
-}
-
-fn install_usb_irq(
-    host: &mut DeviceGuard<PlatformUsbHost>,
-) -> Result<UsbIrqRegistration, SmokeError> {
-    let (binding, handler) = host
-        .take_binding_irq_handler()
-        .ok_or(SmokeError::MissingIrqBinding)?;
-    let irq = resolve_binding_irq(binding).map_err(SmokeError::IrqResolve)?;
-    let registration = request_shared_irq(irq, move |_ctx| match handler.handle() {
-        Event::Nothing => IrqReturn::Unhandled,
-        Event::TransferActivity { .. } | Event::PortChange { .. } => IrqReturn::Wake,
-        Event::Stopped => IrqReturn::Handled,
-    })
-    .map_err(SmokeError::IrqRegister)?;
-    std::println!("SG2002_DWC2_IRQ_MODE mode=irq irq={irq:?}");
-    Ok(UsbIrqRegistration {
-        _irq: irq,
-        registration,
     })
 }
 
