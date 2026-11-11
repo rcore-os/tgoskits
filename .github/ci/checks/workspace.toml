@@ -54,3 +54,13 @@ cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 cargo test -p qperf --test reg
 python3 tools/qperf/tests/prebuild.py
 '''
+
+[[check]]
+id = "test-orangepi5plus-selfbuild-scripts"
+name = "Orange Pi 5 Plus · Self-build script contracts"
+runner = "ubuntu-base"
+container_preflight = "none"
+timeout_minutes = 20
+command = '''
+bash apps/starry/orangepi-5-plus-selfbuild/tests/script_smoke.sh
+'''
