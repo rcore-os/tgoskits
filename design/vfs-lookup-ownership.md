@@ -945,6 +945,11 @@ SGID 和显式属性状态决定是否覆盖 GID；文件 mode 仍按 kind 的�
 根初始化没有父继承，初始文件创建者由同一次明确根初始化身份给出。
 
 当前 controller 仍只支持已有的 `+pids`，本次不增加 disable 或其它 controller。
+普通节点入口采用 `write_subtree_control(&self, data: &str, creator: (u32, u32),
+now: Duration) -> CgroupResult<()>`；已持锁的 `CgroupMutationGuard` 入口另接收
+目标 `node: &CgroupNode`，其余参数和语义相同。`creator` 是实际写入者的
+fsuid/fsgid，`now` 是本次安装时间；两者不借用 `CgroupFsInit`，也不从目标目录
+的最终属性反推。Starry 在取得 gate 前取得成对凭据快照并准备时间值。
 给现有子目录启用 pids 时，在启用操作的同一 owner gate 内，为这些子目录
 首次安装四个 pids 文件属性，UID/GID 候选取实际启用者的上下文，再针对每个 child
 自身的 SGID 和显式属性状态选择 GID；不能取写入所在父目录的组。之后新建子目录在创建
