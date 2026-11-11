@@ -610,7 +610,7 @@ admitted 入口把完整 parent、成功返回的候选子项及后端查询产�
 内触发最后析构。
 
 这两个入口不改变 `lookup_no_follow` 的用户路径语义，不成为 `CachedLookup`
-取得慢路径的出口，也不在本切片补齐分层的读依赖枚举、双层授权或完成回交。
+取得慢路径的出口，也不负责分层读依赖枚举、双层授权或完成回交。
 admitted 变体要求调用者确实已有匹配权利，不能把尚未准备的 lower 当作已 admitted。
 回归使用真实文件系统与子挂载，对照普通查找进入覆盖挂载而固定查找仍见原后备，
 并核对 exact mount、错误及资源释放；Overlay 整体的挂载与 I/O 证据另行取得。
@@ -623,12 +623,45 @@ shared FS。lower、upper、work 的根重叠和回到本实例的 trap 在构�
 代替 backing 图；不添加按业务名称登记的全局图。多个实例同时直接修改同一
 upper/work 不属于保证用法，不声称仅凭这组检查提供跨实例事务。
 
-`FilesystemOps` 的可选分层能力公开不可变的写入 backing roots 和深度，
-原生默认没有写入依赖。一个 `PreparedWrite` 拥有本次可见 mount 及沿这些 roots
-递归取得的 exact-mount `MountWriteGuard`，以实际 mount 身份去重；lower 的只读引用
-不取得写权利。准备在任何后端 gate 之前完成，逐一取得 admission，
-不同时持不同 FS 的配置 mutex。固定视图和有限深度使准备不再依赖 gate 内发现新挂载。
-准备失败时没有命名副作用，已有租约在锁外释放。
+`FilesystemOps` 以既有 `write_backing_roots()` 和新增的
+`read_backing_roots() -> &[Location]` 分别声明写入与只读依赖，原生默认都为空。
+两组位置及 `stack_depth` 都是构造后不变、无 I/O 和 backend gate 的描述，
+不能在遍历时解析新路径或临时取得另一份权限。只读依赖的目的，是让操作提前
+保住其实际 mount/FS 并取得读查询所需的 operation admission，不是使它变成可写。
+
+`PreparedWrite` 仍表示一次写操作的完整准备：可见目标和写角色的后备取得真实
+exact-mount `MountWriteGuard`；只读角色仅保存强 `Location`，不调用
+`acquire_write`，也不因该 mount 只读而拒绝整个准备。写角色递归时，子项按其声明的
+读写角色继续；只读角色递归时，该 FS 的两组 backing 都按只读角色遍历。
+因此读取作为 lower 的另一层 Overlay，不会顺带为它的 upper/work 取得写租约。
+同一 exact mount 从只读升级为写角色时，还须按写角色继续准备其子依赖，
+不能只给当前 mount 补租约便跳过已经按只读角色访问过的子图。
+所有边都在去重之前校验深度不超过 2 且严格下降，只读边不能隐藏循环或超深声明。
+
+去重仍使用真实 exact mount 身份，而非 inode、设备号或 FS 名称。同一个 mount
+被多个角色引用时，存在写需求就必须取得写租约；不能因为先前已保存一个只读引用
+而跳过写准备。`write_for` 只查询真实写租约集合，不能从只读引用合成写权利，
+只按只读角色使用的 exact mount 仍返回 `CrossesDevices`。若另一条写依赖已经为
+同一 exact mount 取得租约，`write_for` 可以找到它，但这不授权 Overlay 写入 lower：
+私有 backing 适配器仍须核对目标属于已绑定的可写 roots，不能只凭整个 mount 可写。
+
+`PreparedWrite::filesystems` 枚举写租约及只读引用中的实际 FS receiver；
+`NamespaceAdmissions::acquire` 在第一次 enter 之前完整收集、排序、按真实 receiver
+去重，两种角色共享同一个 FS 时只 enter 一次。`for_location` 因而可以为已准备的
+只读 backing 借出匹配 admission，供固定查询使用，不要求也不隐式补写租约。
+admission 只保证操作存活，不代替目录搜索权限、mounter 身份、后端可读能力或
+具体修改所需的 `write_for` 检查。
+
+全部依赖准备均在任何 backend gate 之前完成，不同时持不同 FS 的配置 mutex。
+准备失败没有命名副作用，已取写租约和只读引用在锁外释放；enter 部分失败时，
+先退出全部已取 admissions，再释放准备对象。只读引用保活到整个操作结束，
+包括取消、查询失败、压力和显式完成；`NamespaceDeferred` 不借用准备对象，
+调用者须让准备对象活过全部 `finish()`，不能以 admission 借用结束代替操作结束。
+强 `Location` 只保证对象保活，不是 `MountUseGuard`，不保证阻止卸载或关闭。
+不在 gate 内重新发现或补入依赖。
+只读依赖准备不改变内部 atime、后台写回等维护权利，也不声称读依赖
+永远不会发生后端内部 I/O。普通原生操作的空读依赖不分配引用数组，但新增描述查询
+及准备对象开销仍须纳入最终同环境性能比较，不能据空列表断言没有性能回退。
 
 操作期间 `PreparedWrite` 只借出已拥有的 exact-mount 权利，不能临时补 admission，
 也不放宽 `MountWriteGuard::check_location`。Overlay 私有的 backing 命令适配器还核对
@@ -1078,7 +1111,8 @@ typed `Ext4Error` 的日志压力或 abort 处理、`ReapClaim`、operation admi
 以及目录同步策略。因此单独返回一个 boxed attempt 或 `NamespaceOutcome` 不构成
 可用的分层完成协议；不能只移动锁而丢失这些责任。
 
-最外层在全部 gate 之外，从已固定的写入 backing 图准备 `NamespaceAdmissions`，
+最外层在全部 gate 之外，从本轮写操作已固定的完整 backing 图（含只读依赖）
+准备 `NamespaceAdmissions`，
 按真实 FS owner 去重，每个需要 admission 的 FS 只进入一次；这与按 exact mount
 保留的 `PreparedWrite` 不同，二者不能相互替代。该对象只持已有的原生 operation
 guard，不新增计数或全局登记。guard 借用仍在栈外被稳定 root 保活的 FS receiver，
