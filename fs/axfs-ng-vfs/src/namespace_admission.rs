@@ -107,7 +107,8 @@ impl NamespaceAdmission<'_> {
 }
 
 /// Each real owner appears once, acquired in data-address order outside gates.
-/// Mount write authority is separate and must outlive this preparation.
+/// Mount write authority is separate; read-only dependencies enter as well.
+/// Keep the borrowed preparation through all explicit deferred finishes.
 pub struct NamespaceAdmissions<'a> {
     admissions: Vec<NamespaceAdmission<'a>>,
 }

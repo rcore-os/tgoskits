@@ -83,14 +83,23 @@ pub trait FilesystemOps: Send + Sync {
     fn root_dir(&self) -> DirEntry;
 
     /// Returns the immutable stacking depth, without I/O or backend gates.
-    /// Native filesystems have depth zero; writable backing edges must descend.
+    /// Native filesystems have depth zero; all backing edges must descend.
     fn stack_depth(&self) -> u32 {
         0
     }
 
     /// Returns immutable writable backing roots without I/O or backend gates.
-    /// Read-only dependencies do not belong in this list.
+    /// Dependencies used only for reading belong in [`Self::read_backing_roots`].
     fn write_backing_roots(&self) -> &[Location] {
+        &[]
+    }
+
+    /// Returns immutable read-only backing roots without I/O or backend gates.
+    /// Write preparation pins these locations for the operation-admission
+    /// factory without granting mount write authority. Reading a layered root
+    /// also prepares all of its dependencies as read-only, including its
+    /// writable roots.
+    fn read_backing_roots(&self) -> &[Location] {
         &[]
     }
 
