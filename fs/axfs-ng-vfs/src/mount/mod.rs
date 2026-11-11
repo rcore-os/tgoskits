@@ -1216,7 +1216,7 @@ impl Location {
         {
             return Err(VfsError::CrossesDevices);
         }
-        Ok(Self::new(self.mountpoint.clone(), entry).resolve_mountpoint())
+        Ok(Self::new(self.mountpoint.clone(), entry))
     }
 
     pub fn create(
