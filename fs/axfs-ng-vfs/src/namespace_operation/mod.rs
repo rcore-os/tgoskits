@@ -139,7 +139,7 @@ impl<'a, T> NamespaceOperationScope<'a, T> {
         drop(state.admissions.take());
         drop(state.retired.take());
         for child in &mut state.children.get_mut().children {
-            phase = child.finish().and(phase);
+            phase = phase.and(child.finish());
         }
         let outcome = match root {
             Some(root) => {
