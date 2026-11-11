@@ -412,7 +412,6 @@ pub(crate) fn exercise_scope() {
             .unwrap()
             .unwrap();
         assert_eq!(observed.state(), state);
-        drop(observed);
         let outcome = scope
             .finish()
             .unwrap_or_else(|_| panic!("actual owner mismatch"));
@@ -433,6 +432,10 @@ pub(crate) fn exercise_scope() {
         let first_exit = trace
             .iter()
             .position(|event| matches!(event, Event::Exit(_)))
+            .unwrap();
+        let last_exit = trace
+            .iter()
+            .rposition(|event| matches!(event, Event::Exit(_)))
             .unwrap();
         let retire = trace
             .iter()
@@ -466,7 +469,7 @@ pub(crate) fn exercise_scope() {
                 .iter()
                 .all(|event| !matches!(event, Event::Pressure(_)))
         );
-        assert!(first_exit < retire && retire < first_finish);
+        assert!(last_exit < retire && retire < first_finish);
         let mut expected_names = vec!["namespace"; 12];
         expected_names.push("metadata");
         if root_work {
@@ -547,7 +550,6 @@ fn exercise_incomplete_and_preflight() {
             "observation released the real gate"
         );
         assert_eq!(scope.state().children.borrow().reservations, 0);
-        drop(observation);
         let outcome = scope
             .finish()
             .unwrap_or_else(|_| panic!("actual owner mismatch"));
