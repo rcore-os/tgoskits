@@ -224,7 +224,14 @@ impl CgroupFsState {
     }
 
     fn file_owner(&self, creator: (u32, u32)) -> (u32, u32) {
-        creator
+        (
+            creator.0,
+            if self.directory.mode & 0o2000 != 0 && self.directory_has_explicit_attrs {
+                self.directory.gid
+            } else {
+                creator.1
+            },
+        )
     }
 
     pub(crate) fn install_pids(&mut self, node_id: u64, creator: (u32, u32), now: Duration) {

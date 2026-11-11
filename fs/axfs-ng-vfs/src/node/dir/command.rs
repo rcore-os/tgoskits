@@ -49,9 +49,6 @@ impl CreateOwnerPolicy {
         if matches!(self, Self::Kernfs { .. }) && directory {
             permission = NodePermission::from_bits_truncate(permission.bits() & 0o1777);
         }
-        if matches!(self, Self::Kernfs { .. }) {
-            return (permission, (credentials.fsuid, credentials.fsgid));
-        }
         let mut gid = credentials.fsgid;
         if parent.mode.contains(NodePermission::SET_GID) {
             if directory {
