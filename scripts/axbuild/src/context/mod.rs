@@ -407,7 +407,6 @@ impl AppContext {
         reject_raw_target_dir_args(&cargo)?;
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
-        let to_bin = cargo.to_bin;
         let stage = StageLog::start(format!(
             "board build+run package={} target={} config={}",
             cargo.package,
@@ -422,7 +421,6 @@ impl AppContext {
         let result = self
             .board_prepared_elf(
                 output.elf_path().to_path_buf(),
-                to_bin,
                 self.build_config_path.clone(),
                 board_config,
                 options,
@@ -437,22 +435,20 @@ impl AppContext {
     pub(crate) async fn board_prepared_elf(
         &mut self,
         elf_path: PathBuf,
-        to_bin: bool,
         build_config_path: impl Into<Option<PathBuf>>,
         board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         let prepare_stage = StageLog::start(format!(
-            "prepare runtime artifact elf={} to_bin={}",
-            elf_path.display(),
-            to_bin
+            "prepare runtime artifact elf={}",
+            elf_path.display()
         ));
         let runtime_elf =
             board_elf::BoardElf::prepare(&elf_path, &self.workspace.axbuild_artifact_dir())?;
         ostool_build::prepare_runtime_artifact(
             &mut self.invocation,
-            RuntimeArtifactInput::new(runtime_elf.path(), to_bin),
+            RuntimeArtifactInput::new(runtime_elf.path(), false),
         )?;
         prepare_stage.done();
 
@@ -469,21 +465,19 @@ impl AppContext {
     pub(crate) async fn board_prepared_elf_with_request(
         &mut self,
         elf_path: PathBuf,
-        to_bin: bool,
         build_config_path: impl Into<Option<PathBuf>>,
         board_request: BoardRunRequest,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         let prepare_stage = StageLog::start(format!(
-            "prepare runtime artifact elf={} to_bin={}",
-            elf_path.display(),
-            to_bin
+            "prepare runtime artifact elf={}",
+            elf_path.display()
         ));
         let runtime_elf =
             board_elf::BoardElf::prepare(&elf_path, &self.workspace.axbuild_artifact_dir())?;
         ostool_build::prepare_runtime_artifact(
             &mut self.invocation,
-            RuntimeArtifactInput::new(runtime_elf.path(), to_bin),
+            RuntimeArtifactInput::new(runtime_elf.path(), false),
         )?;
         prepare_stage.done();
 

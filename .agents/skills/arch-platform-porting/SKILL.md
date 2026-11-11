@@ -22,7 +22,7 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 3. 从 QEMU 参数一直追踪到内核入口的完整启动契约。固件、目标二进制接口、加载器和运行时平台不一致时，只改 QEMU 配置不能解决问题。
 4. ArceOS、StarryOS 和 Axvisor 优先使用 `cargo xtask`。特殊 QEMU 或容器环境必须用原生命令时，先检查 `xtask` 路径并保持参数一致。
 5. 最终补丁不得留下临时调试标记，除非用户明确要求保留。
-6. 修改 axloader UEFI 网络发现、HTTP 启动或 QEMU smoke 时，按 `references/boot-debugging.md` 的“axloader UEFI 网络启动”检查同网卡协议束、串口边界、发现响应注入和 `ExitBootServices` 前资源释放。
+6. 修改 axloader UEFI 网络发现、HTTP 启动或 QEMU smoke 时，按 `references/boot-debugging.md` 的“axloader UEFI 网络启动”检查唯一 v7 门禁、设备本地 `TargetSpec` 的 EFI 入口、同网卡协议束、串口边界、公告注入和交接前资源释放。主机不选择架构或入口，传输 ELF 必须保留符号表；`202` 不能代替目标内核输出。
 
 ## Axvisor 客户机设备树身份
 

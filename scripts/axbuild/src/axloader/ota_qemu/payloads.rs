@@ -11,7 +11,8 @@ use std::{
 use anyhow::{Context, bail, ensure};
 
 use super::{
-    BootScenario, QemuChild, STATUS_TIMEOUT, boot_smoke, start_qemu_with_resources, status,
+    BootScenario, QemuChild, QemuProfile, STATUS_TIMEOUT, boot_smoke, start_qemu_with_resources,
+    status,
 };
 use crate::{
     context::{AXVISOR_SNAPSHOT_FILE, STARRY_SNAPSHOT_FILE, WorkspaceContext, axbuild_tmp_dir},
@@ -108,6 +109,7 @@ impl OsPayloads {
 
     pub(super) async fn test(
         &self,
+        profile: QemuProfile,
         client: &reqwest::Client,
         firmware: &OvmfFirmware,
         root: &Path,
@@ -141,15 +143,18 @@ impl OsPayloads {
                 },
             ),
         ] {
-            let mut qemu = start_qemu_with_resources(firmware, root, port, memory, cpus)?;
-            status(client, port, root, |value| value["running_slot"] == "b").await?;
+            let qemu = start_qemu_with_resources(profile, firmware, root, port, memory, cpus)?;
+            status(&qemu, client, port, root, |value| {
+                value["running_slot"] == "b"
+            })
+            .await?;
             if let Some(vm_id) = guest_console {
                 tokio::try_join!(
-                    boot_smoke(client, port, root, scenario),
-                    attach_guest_console(&mut qemu, root, vm_id),
+                    boot_smoke(&qemu, client, port, root, scenario),
+                    attach_guest_console(&qemu, root, vm_id),
                 )?;
             } else {
-                boot_smoke(client, port, root, scenario).await?;
+                boot_smoke(&qemu, client, port, root, scenario).await?;
             }
             drop(qemu);
         }
@@ -185,13 +190,13 @@ fn read_snapshot(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     }
 }
 
-async fn attach_guest_console(qemu: &mut QemuChild, root: &Path, vm_id: u32) -> anyhow::Result<()> {
+async fn attach_guest_console(qemu: &QemuChild, root: &Path, vm_id: u32) -> anyhow::Result<()> {
     let deadline = Instant::now() + STATUS_TIMEOUT;
     while Instant::now() < deadline {
         let log = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
         if log.contains("axvisor:/$") {
-            let input = qemu
-                .0
+            let mut child = qemu.0.lock().expect("QEMU process lock poisoned");
+            let input = child
                 .stdin
                 .as_mut()
                 .context("QEMU serial input is unavailable")?;

@@ -401,7 +401,7 @@ mod tests {
             let args = prepare_uefi_boot(
                 temp.path(),
                 &kernel_bin,
-                &OvmfFirmware::from_paths(code.clone(), vars),
+                &OvmfFirmware::from_paths(code.clone(), vars).unwrap(),
                 boot_filename,
             )
             .unwrap();

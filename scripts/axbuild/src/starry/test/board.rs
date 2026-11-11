@@ -289,7 +289,6 @@ impl Starry {
                 self.app
                     .board_prepared_elf_with_request(
                         prepared.elf_path.clone(),
-                        prepared.cargo.to_bin,
                         request.config_path().map(Path::to_path_buf),
                         board_request,
                     )

@@ -1,0 +1,33 @@
+{
+  "abi": "softfloat",
+  "arch": "loongarch64",
+  "binary-format": "elf",
+  "code-model": "medium",
+  "crt-objects-fallback": "false",
+  "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
+  "disable-redzone": true,
+  "eh-frame-header": false,
+  "env": "uefi",
+  "features": "-f,-d,-ual",
+  "is-like-windows": true,
+  "linker": "scripts/targets/uefi/loongarch64-elf-linker.sh",
+  "linker-flavor": "gnu-lld",
+  "llvm-abiname": "lp64s",
+  "llvm-target": "loongarch64-unknown-none",
+  "max-atomic-width": 64,
+  "metadata": {
+    "description": "LoongArch64 UEFI application ELF",
+    "host_tools": false,
+    "std": false,
+    "tier": 2
+  },
+  "os": "uefi",
+  "panic-strategy": "abort",
+  "plt-by-default": false,
+  "position-independent-executables": true,
+  "relocation-model": "pic",
+  "relro-level": "off",
+  "static-position-independent-executables": true,
+  "target-pointer-width": 64,
+  "vendor": "unknown"
+}

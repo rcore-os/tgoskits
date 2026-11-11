@@ -26,6 +26,7 @@ fdt-edit.workspace = true
 fatfs = "0.3.6"
 flate2 = { version = "1.0" }
 getrandom.workspace = true
+httpboot-protocol = { workspace = true, default-features = false, features = ["alloc"] }
 indicatif = "0.18"
 jkconfig = { version = "0.1" }
 log = "0.4"

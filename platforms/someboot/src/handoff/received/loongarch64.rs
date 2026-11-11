@@ -7,7 +7,7 @@ use core::{
 pub(crate) use crate::handoff::protocol::HANDOFF_GUID;
 use crate::{
     handoff::protocol::{HandoffRecord, memory_kind},
-    mem::{KIMAGE_MAP_ALIGN, MemoryDescriptor, MemoryType, add_memory_descriptor},
+    mem::{MemoryDescriptor, MemoryType, add_memory_descriptor},
 };
 pub(crate) const RETIRED_HANDOFF_GUID: uefi::Guid =
     uefi::guid!("5d34b5d2-9a5b-4d0f-8e3c-6bb3dfc6a1fe");
@@ -68,10 +68,9 @@ pub(crate) fn restore_inherited_memory_map() {
         return;
     };
     let map = receiver_map(payload);
-    let start = payload.image.start as usize;
-    let end = (payload.image.end().unwrap() as usize)
-        .checked_next_multiple_of(KIMAGE_MAP_ALIGN)
-        .expect("target alignment overflows");
+    let image = crate::mem::kimage_range();
+    let start = image.start;
+    let end = image.end;
     for region in &map.regions[..map.len] {
         let a = region.range.start as usize;
         let b = region.range.end().unwrap() as usize;

@@ -681,7 +681,6 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     }
     app.board_prepared_elf(
         output.elf_path().to_path_buf(),
-        cargo.to_bin,
         build_config,
         board_config,
         RunBoardOptions {

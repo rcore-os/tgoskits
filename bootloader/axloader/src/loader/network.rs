@@ -2,10 +2,8 @@ extern crate alloc;
 
 use core::{ffi::c_void, ptr, time::Duration};
 
-use axloader::target::X86_64;
-use httpboot_protocol::{
-    DEVICE_PROTOCOL_VERSION, LoaderAnnouncement, MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress,
-};
+use axloader::target::CURRENT;
+use httpboot_protocol::{DEVICE_PROTOCOL_VERSION, LoaderAnnouncement, MacAddress};
 use uefi::{
     Event, Handle, Status, StatusExt,
     boot::{self, EventType, OpenProtocolAttributes, OpenProtocolParams, ScopedProtocol, Tpl},
@@ -20,7 +18,10 @@ const UDP4_PROTOCOL_GUID: uefi::Guid = uefi::guid!("3ad9df29-4501-478d-b1f8-7f7f
 const UDP4_SERVICE_BINDING_GUID: uefi::Guid = uefi::guid!("83f01464-99bd-45e5-b383-af6305d8e9e6");
 const UDP_POLL_STALL: Duration = Duration::from_millis(10);
 const UDP_COMPLETION_POLLS: usize = 200;
+const DISCOVERY_PORT: u16 = 2998;
 const DISCOVERY_CLIENT_PORT: u16 = 2997;
+const MAX_UDP_ANNOUNCEMENT_BYTES: usize = 1400;
+const MAX_DIAGNOSTIC_CONTROLLERS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkError {
@@ -36,40 +37,84 @@ pub enum NetworkError {
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkInterface {
     handle: Handle,
+    controller_index: usize,
     pub mac_address: MacAddress,
     pub current_mac_address: MacAddress,
     broadcast_address: Ipv4Address,
 }
 
 impl NetworkInterface {
-    pub fn select() -> Result<Self, NetworkError> {
-        let handles = boot::find_handles::<super::direct::TcpBinding>()
+    pub fn select(diagnose: bool) -> Result<Self, NetworkError> {
+        let handles = boot::find_handles::<SimpleNetwork>()
             .map_err(|_| NetworkError::NoCompatibleInterface)?;
-        for handle in handles {
-            let Ok(mut ip4) = Ip4Config2::new(handle) else {
-                continue;
-            };
-            let Ok(udp_binding) = open_protocol::<Udp4Binding>(handle) else {
-                continue;
-            };
-            let Ok(snp) = open_protocol::<SimpleNetwork>(handle) else {
+        if diagnose {
+            let reported = handles.len().min(MAX_DIAGNOSTIC_CONTROLLERS);
+            crate::logln!(
+                "loader_net_probe: controllers={} reported={} skipped={}",
+                handles.len(),
+                reported,
+                handles.len() - reported
+            );
+        }
+        for (controller_index, handle) in handles.into_iter().enumerate() {
+            let report_diagnostics = diagnose && controller_index < MAX_DIAGNOSTIC_CONTROLLERS;
+            let snp = open_protocol::<SimpleNetwork>(handle);
+            let ip4 = Ip4Config2::new(handle);
+            let udp = open_protocol::<Udp4Binding>(handle);
+            let tcp = open_protocol::<super::direct::TcpBinding>(handle);
+            if report_diagnostics {
+                crate::logln!(
+                    "loader_net_controller[{controller_index}]: snp={} ip4config2={} udp4={} \
+                     tcp4={}",
+                    probe_state(&snp),
+                    probe_state(&ip4),
+                    probe_state(&udp),
+                    probe_state(&tcp)
+                );
+            }
+            let (Ok(snp), Ok(mut ip4), Ok(udp), Ok(tcp)) = (snp, ip4, udp, tcp) else {
                 continue;
             };
             if snp.mode().hw_address_size != 6 {
+                if report_diagnostics {
+                    crate::logln!(
+                        "loader_net_controller[{controller_index}]: invalid_mac_size={}",
+                        snp.mode().hw_address_size
+                    );
+                }
                 continue;
             }
             let Ok(permanent) = ethernet_mac(&snp.mode().permanent_address.0) else {
+                if report_diagnostics {
+                    crate::logln!(
+                        "loader_net_controller[{controller_index}]: invalid_permanent_mac"
+                    );
+                }
                 continue;
             };
             let Ok(current) = ethernet_mac(&snp.mode().current_address.0) else {
+                if report_diagnostics {
+                    crate::logln!("loader_net_controller[{controller_index}]: invalid_current_mac");
+                }
                 continue;
             };
             drop(snp);
-            drop(udp_binding);
-            if ip4.ifup().is_err() {
+            drop(udp);
+            drop(tcp);
+            if let Err(error) = ip4.ifup() {
+                if report_diagnostics {
+                    crate::logln!(
+                        "loader_net_controller[{controller_index}]: ip4_ifup_failed={error:?}"
+                    );
+                }
                 continue;
             }
             let Ok(info) = ip4.get_interface_info() else {
+                if report_diagnostics {
+                    crate::logln!(
+                        "loader_net_controller[{controller_index}]: ip4_interface_info_missing"
+                    );
+                }
                 continue;
             };
             let mac_address = if permanent.is_zero() {
@@ -78,10 +123,27 @@ impl NetworkInterface {
                 permanent
             };
             if mac_address.is_zero() || current.is_zero() {
+                if report_diagnostics {
+                    crate::logln!("loader_net_controller[{controller_index}]: zero_mac");
+                }
                 continue;
+            }
+            if report_diagnostics {
+                crate::logln!(
+                    "loader_net_controller[{controller_index}]: selected=yes mac={mac_address} \
+                     address={:?} mask={:?}",
+                    info.station_addr,
+                    info.subnet_mask
+                );
+                crate::logln!(
+                    "loader_net_ready: controller={controller_index} mac={mac_address} \
+                     broadcast={:?} port=2999",
+                    subnet_broadcast(info.station_addr, info.subnet_mask)
+                );
             }
             return Ok(Self {
                 handle,
+                controller_index,
                 mac_address,
                 current_mac_address: current,
                 broadcast_address: subnet_broadcast(info.station_addr, info.subnet_mask),
@@ -92,6 +154,17 @@ impl NetworkInterface {
 
     pub const fn handle(self) -> Handle {
         self.handle
+    }
+
+    pub const fn controller_index(self) -> usize {
+        self.controller_index
+    }
+}
+
+fn probe_state<T>(result: &uefi::Result<T>) -> alloc::string::String {
+    match result {
+        Ok(_) => "ok".into(),
+        Err(error) => alloc::format!("missing({error:?})"),
     }
 }
 
@@ -108,7 +181,7 @@ impl Announcer {
             protocol_version: DEVICE_PROTOCOL_VERSION,
             mac_address: interface.mac_address,
             current_mac_address: interface.current_mac_address,
-            arch: X86_64.boot_arch,
+            arch: CURRENT.arch_name.into(),
             loader_version: env!("CARGO_PKG_VERSION").into(),
             boot_epoch: boot_epoch.into(),
             http_port: 2999,
@@ -130,15 +203,11 @@ impl Announcer {
         self.announcement.serial_ready = serial.ready;
         let payload =
             serde_json::to_vec(&self.announcement).map_err(|_| NetworkError::MalformedResponse)?;
-        if payload.len() > MAX_DISCOVERY_DATAGRAM_BYTES {
+        if payload.len() > MAX_UDP_ANNOUNCEMENT_BYTES {
             return Err(NetworkError::MalformedResponse);
         }
-        self.udp.transmit(
-            self.address,
-            httpboot_protocol::DISCOVERY_PORT,
-            &payload,
-            &mut || (),
-        )
+        self.udp
+            .transmit(self.address, DISCOVERY_PORT, &payload, &mut || ())
     }
 }
 

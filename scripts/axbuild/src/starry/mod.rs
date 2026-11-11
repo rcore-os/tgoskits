@@ -687,7 +687,6 @@ impl Starry {
         self.app
             .board_prepared_elf_with_request(
                 output.elf_path().to_path_buf(),
-                cargo.to_bin,
                 request.config_path().map(Path::to_path_buf),
                 board_request,
             )

@@ -4,6 +4,14 @@
 #[cfg(not(target_os = "uefi"))]
 fn main() {}
 
+#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
+#[path = "arch/loongarch64/mod.rs"]
+mod arch;
+
+#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
+#[path = "uefi_runtime.rs"]
+mod uefi_runtime;
+
 #[cfg(target_os = "uefi")]
 mod firmware {
 
@@ -12,10 +20,17 @@ mod firmware {
     use axloader::ota::{OtaDisk, Outcome, load_slot};
     use uefi::{Status, boot, prelude::*};
 
+    const WATCHDOG_APPLICATION_CODE: u64 = 0x0001_0000;
+
     #[entry]
     fn efi_main() -> Status {
         if uefi::helpers::init().is_err() {
             return Status::LOAD_ERROR;
+        }
+        if let Err(error) = boot::set_watchdog_timer(0, WATCHDOG_APPLICATION_CODE, None) {
+            let status = error.status();
+            uefi::println!("axloader launcher watchdog disable failed: {status:?}");
+            return status;
         }
         match launch() {
             Ok(()) => Status::SUCCESS,

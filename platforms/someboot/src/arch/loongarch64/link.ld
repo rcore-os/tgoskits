@@ -54,6 +54,12 @@ ${ld_debug}
     _kernel_fsize = ABSOLUTE(_edata - _head);
     _kernel_vsize = ABSOLUTE(_end   - _etext);
     _kernel_rsize = ABSOLUTE(_edata - _etext);
+    ASSERT(((_etext - _head) & (PECOFF_FILE_ALIGN - 1)) == 0,
+           "PE section raw offset must follow FileAlignment")
+    ASSERT((_kernel_rsize & (PECOFF_FILE_ALIGN - 1)) == 0,
+           "PE .data SizeOfRawData must follow FileAlignment")
+    ASSERT((__bss_start & 7) == 0, "LoongArch PE BSS start must be 8-byte aligned")
+    ASSERT((__bss_stop & 7) == 0, "LoongArch PE BSS end must be 8-byte aligned")
     .gptab.sdata : {
         *(.gptab.data)
         *(.gptab.sdata)

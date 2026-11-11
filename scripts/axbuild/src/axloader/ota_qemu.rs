@@ -1,16 +1,19 @@
 //! Persistent FAT image OTA checks using real OVMF TCP4 and host forwarding.
 
 use std::{
+    env,
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    net::{TcpListener, TcpStream},
-    path::Path,
+    net::{Shutdown, TcpListener, TcpStream},
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, bail, ensure};
 use fatfs::{FatType, FileSystem, FormatVolumeOptions, FsOptions, format_volume};
+use httpboot_protocol::{DEVICE_PROTOCOL_VERSION_HEADER, device_protocol_version_header_value};
 use ostool::ovmf::Arch;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -22,23 +25,120 @@ use crate::{
 };
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(75);
+const QEMU_202_WRITE_FAILURE_BOOT_ID: &str = "qemu-202-write-failure";
 
 mod payloads;
 
-struct QemuChild(Child);
+struct QemuChild(Mutex<Child>);
 
-impl Drop for QemuChild {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+impl QemuChild {
+    fn ensure_running(&self, root: &Path) -> anyhow::Result<()> {
+        let mut child = self.0.lock().expect("QEMU process lock poisoned");
+        let Some(status) = child.try_wait().context("failed to poll QEMU process")? else {
+            return Ok(());
+        };
+        let serial = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
+        let stderr = fs::read_to_string(root.join("qemu-stderr.log")).unwrap_or_default();
+        bail!(
+            "QEMU exited before the test completed: {status}; serial tail:\n{}\nstderr tail:\n{}",
+            tail(&serial, 4096),
+            tail(&stderr, 4096),
+        )
     }
 }
 
-fn start_qemu(firmware: &OvmfFirmware, root: &Path, port: u16) -> anyhow::Result<QemuChild> {
-    start_qemu_with_resources(firmware, root, port, "256M", "1")
+impl Drop for QemuChild {
+    fn drop(&mut self) {
+        if let Ok(child) = self.0.get_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn tail(text: &str, limit: usize) -> String {
+    text.chars()
+        .rev()
+        .take(limit)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct QemuProfile {
+    artifact_prefix: &'static str,
+    qemu_binary: &'static str,
+    machine: &'static str,
+    cpu: &'static str,
+    accel: &'static str,
+    firmware_arch: Arch,
+    boot_filename: &'static str,
+    default_memory: &'static str,
+    default_cpus: &'static str,
+    guest_payloads: bool,
+}
+
+impl QemuProfile {
+    fn for_target(target: &str) -> anyhow::Result<Self> {
+        match target {
+            super::DEFAULT_UEFI_TARGET => Ok(Self {
+                artifact_prefix: "x86-",
+                qemu_binary: "qemu-system-x86_64",
+                machine: "q35",
+                cpu: "host,-la57",
+                accel: "kvm",
+                firmware_arch: Arch::X64,
+                boot_filename: "BOOTX64.EFI",
+                default_memory: "256M",
+                default_cpus: "1",
+                guest_payloads: true,
+            }),
+            super::LOONGARCH64_UEFI_TARGET => Ok(Self {
+                artifact_prefix: "loongarch64-",
+                qemu_binary: "qemu-system-loongarch64",
+                machine: "virt",
+                cpu: "la464",
+                accel: "tcg",
+                firmware_arch: Arch::LoongArch64,
+                boot_filename: "BOOTLOONGARCH64.EFI",
+                default_memory: "1G",
+                default_cpus: "1",
+                guest_payloads: false,
+            }),
+            _ => bail!("unsupported axloader UEFI target `{target}`"),
+        }
+    }
+
+    fn qemu_executable(self) -> PathBuf {
+        if matches!(self.firmware_arch, Arch::LoongArch64)
+            && let Some(path) = env::var_os("AXBUILD_QEMU_SYSTEM_LOONGARCH64")
+        {
+            return path.into();
+        }
+        self.qemu_binary.into()
+    }
+}
+
+fn start_qemu(
+    profile: QemuProfile,
+    firmware: &OvmfFirmware,
+    root: &Path,
+    port: u16,
+) -> anyhow::Result<QemuChild> {
+    start_qemu_with_resources(
+        profile,
+        firmware,
+        root,
+        port,
+        profile.default_memory,
+        profile.default_cpus,
+    )
 }
 
 fn start_qemu_with_resources(
+    profile: QemuProfile,
     firmware: &OvmfFirmware,
     root: &Path,
     port: u16,
@@ -63,7 +163,7 @@ fn start_qemu_with_resources(
     let stderr = fs::File::create(root.join("qemu-stderr.log"))?;
     let vars = root.join("vars.fd");
     let disk = root.join("esp.img");
-    let mut command = Command::new("qemu-system-x86_64");
+    let mut command = Command::new(profile.qemu_executable());
     let netdev = format!("user,id=user0,hostfwd=tcp:127.0.0.1:{port}-:2999");
     command.args([
         "-m",
@@ -71,11 +171,11 @@ fn start_qemu_with_resources(
         "-smp",
         cpus,
         "-machine",
-        "q35",
+        profile.machine,
         "-accel",
-        "kvm",
+        profile.accel,
         "-cpu",
-        "host,-la57",
+        profile.cpu,
         "-display",
         "none",
         "-monitor",
@@ -85,29 +185,55 @@ fn start_qemu_with_resources(
         "-netdev",
         &netdev,
     ]);
-    command.args([
-        "-device",
-        "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01",
-        "-drive",
-        &format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            firmware.code().display()
-        ),
-        "-drive",
-        &format!("if=pflash,format=raw,file={}", vars.display()),
-        "-drive",
-        &format!("format=raw,if=ide,file={}", disk.display()),
-    ]);
+    let network_device = if matches!(profile.firmware_arch, Arch::LoongArch64) {
+        "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01,romfile="
+    } else {
+        "virtio-net-pci,netdev=user0,mac=02:00:00:00:00:01"
+    };
+    command.args(["-device", network_device]);
+    match profile.firmware_arch {
+        Arch::LoongArch64 => {
+            command.args([
+                "-drive",
+                &format!(
+                    "if=pflash,format=raw,unit=0,readonly=on,file={}",
+                    firmware.code().display()
+                ),
+                "-drive",
+                &format!("if=pflash,format=raw,unit=1,file={}", vars.display()),
+                "-drive",
+                &format!("id=esp,if=none,format=raw,file={}", disk.display()),
+                "-device",
+                "virtio-blk-pci,drive=esp",
+                "-device",
+                "virtio-rng-pci,romfile=",
+            ]);
+        }
+        _ => {
+            command.args([
+                "-drive",
+                &format!(
+                    "if=pflash,format=raw,readonly=on,file={}",
+                    firmware.code().display()
+                ),
+                "-drive",
+                &format!("if=pflash,format=raw,file={}", vars.display()),
+                "-drive",
+                &format!("format=raw,if=ide,file={}", disk.display()),
+            ]);
+        }
+    }
     let child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::from(serial))
         .stderr(Stdio::from(stderr))
         .spawn()
         .context("failed to start OTA OVMF guest")?;
-    Ok(QemuChild(child))
+    Ok(QemuChild(Mutex::new(child)))
 }
 
 async fn status(
+    qemu: &QemuChild,
     client: &reqwest::Client,
     port: u16,
     root: &Path,
@@ -117,6 +243,7 @@ async fn status(
     let url = format!("http://127.0.0.1:{port}/api/v1/ota/status");
     let mut last = String::new();
     while Instant::now() < deadline {
+        qemu.ensure_running(root)?;
         match client.get(&url).send().await {
             Ok(response) => match response.json::<Value>().await {
                 Ok(value) => {
@@ -134,13 +261,7 @@ async fn status(
     let log = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
     bail!(
         "OTA status timed out: {last}; QEMU serial tail:\n{}",
-        log.chars()
-            .rev()
-            .take(2048)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect::<String>()
+        tail(&log, 2048)
     )
 }
 
@@ -175,6 +296,10 @@ async fn upload(
 ) -> anyhow::Result<reqwest::Response> {
     client
         .put(format!("http://127.0.0.1:{port}/api/v1/ota/image"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", epoch(client, port).await?)
         .header("X-Image-Sha256", digest)
         .body(bytes.to_vec())
@@ -197,10 +322,23 @@ struct BootScenario<'a> {
     check_retries: bool,
 }
 
-async fn build_boot_kernels(workspace: &WorkspaceContext) -> anyhow::Result<BootKernels> {
+async fn build_boot_kernels(
+    workspace: &WorkspaceContext,
+    profile: QemuProfile,
+) -> anyhow::Result<BootKernels> {
     let mut app = AppContext::from_workspace_root(workspace.root(), Some(workspace.target_dir()))?;
     let build_config = workspace.root().join("Cargo.toml");
     let runtime_env = ax_config::RuntimeEnv::capture()?;
+    let (target, cmdline_feature, initramfs_feature) =
+        if matches!(profile.firmware_arch, Arch::LoongArch64) {
+            (
+                "loongarch64-unknown-none-softfloat",
+                "loong-efi-cmdline-smoke",
+                "loong-efi-initramfs-smoke",
+            )
+        } else {
+            ("x86_64-unknown-none", "cmdline-smoke", "initramfs-smoke")
+        };
     let build = |feature: &str| {
         let info = CommonConfig {
             features: vec![feature.to_string()],
@@ -211,18 +349,28 @@ async fn build_boot_kernels(workspace: &WorkspaceContext) -> anyhow::Result<Boot
         crate::build::into_prepared_std_cargo_config_with_metadata(
             info,
             "arceos-helloworld",
-            "x86_64-unknown-none",
+            target,
             workspace.metadata(),
             &workspace.axbuild_artifact_dir(),
             runtime,
         )
     };
     let output = app
-        .build(build("cmdline-smoke")?, build_config.clone())
+        .build(build(cmdline_feature)?, build_config.clone())
         .await?;
-    let cmdline = fs::read(output.elf_path()).context("failed to read cmdline smoke kernel")?;
-    let output = app.build(build("initramfs-smoke")?, build_config).await?;
-    let initramfs = fs::read(output.elf_path()).context("failed to read initramfs smoke kernel")?;
+    let cmdline = fs::read(output.elf_path()).with_context(|| {
+        format!(
+            "failed to read {target} cmdline smoke kernel for {}",
+            profile.artifact_prefix
+        )
+    })?;
+    let output = app.build(build(initramfs_feature)?, build_config).await?;
+    let initramfs = fs::read(output.elf_path()).with_context(|| {
+        format!(
+            "failed to read {target} initramfs smoke kernel for {}",
+            profile.artifact_prefix
+        )
+    })?;
     Ok(BootKernels { cmdline, initramfs })
 }
 
@@ -230,16 +378,15 @@ pub(super) async fn test_direct_ota(
     workspace: &WorkspaceContext,
     target: &str,
     server_only: bool,
+    firmware: Option<OvmfFirmware>,
 ) -> anyhow::Result<()> {
-    if target != super::DEFAULT_UEFI_TARGET {
-        bail!("persistent OTA QEMU test supports only x86_64 UEFI");
-    }
+    let profile = QemuProfile::for_target(target)?;
     let kernels = if server_only {
         None
     } else {
-        Some(build_boot_kernels(workspace).await?)
+        Some(build_boot_kernels(workspace, profile).await?)
     };
-    let os_payloads = if server_only {
+    let os_payloads = if server_only || !profile.guest_payloads {
         None
     } else {
         Some(payloads::OsPayloads::build(workspace).await?)
@@ -249,7 +396,7 @@ pub(super) async fn test_direct_ota(
     let artifacts = workspace.axbuild_artifact_dir().join("axloader/qemu");
     fs::create_dir_all(&artifacts)?;
     let root = tempfile::Builder::new()
-        .prefix("x86-")
+        .prefix(profile.artifact_prefix)
         .tempdir_in(artifacts)
         .context("failed to create OTA FAT image directory")?
         .keep();
@@ -267,8 +414,11 @@ pub(super) async fn test_direct_ota(
     } else {
         Some(fs::read(&host_initramfs_path).context("failed to read host initramfs")?)
     };
-    let firmware = OvmfFirmware::fetch(Arch::X64).await?;
-    fs::copy(firmware.vars(), root.join("vars.fd"))?;
+    let firmware = match firmware {
+        Some(firmware) => firmware,
+        None => OvmfFirmware::fetch(profile.firmware_arch).await?,
+    };
+    let firmware = prepare_firmware(profile, &firmware, root)?;
     let loader = fs::read(target_dir.join(target).join("release/axloader.efi"))?;
     // Distinct, valid PE files represent the old and the first new loader.
     let mut old_loader = loader.clone();
@@ -279,7 +429,7 @@ pub(super) async fn test_direct_ota(
         target_dir
             .join(target)
             .join("release/axloader-launcher.efi"),
-        root.join("BOOTX64.EFI"),
+        root.join(profile.boot_filename),
     )?;
     let output = Command::new("python3")
         .arg(workspace_root.join("bootloader/axloader/scripts/init-ota-state.py"))
@@ -301,21 +451,25 @@ pub(super) async fn test_direct_ota(
     }
 
     let disk = root.join("esp.img");
-    create_esp_image(root, &disk)?;
+    create_esp_image(profile, root, &disk)?;
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(35))
         .build()?;
     if server_only {
-        let qemu = start_qemu(&firmware, root, port)?;
-        status(&client, port, root, |value| value["running_slot"] == "a").await?;
-        server_assignment(&client, port, root, &loader).await?;
+        let qemu = start_qemu(profile, &firmware, root, port)?;
+        status(&qemu, &client, port, root, |value| {
+            value["running_slot"] == "a"
+        })
+        .await?;
+        server_assignment(&qemu, &client, port, root, &loader).await?;
         drop(qemu);
-        println!("axloader OTA QEMU: assigned v6 upload and confirmation passed");
+        println!("axloader OTA QEMU: assigned v7 upload and confirmation passed");
         return Ok(());
     }
-    let mut qemu = start_qemu(&firmware, root, port)?;
-    let status0 = status(&client, port, root, |value| {
+    let mut qemu = start_qemu(profile, &firmware, root, port)?;
+    let status0 = status(&qemu, &client, port, root, |value| {
         value["pending_update_id"] == initial_id && value["trial"] == true
     })
     .await?;
@@ -325,6 +479,10 @@ pub(super) async fn test_direct_ota(
     );
     let confirmed = client
         .post(format!("http://127.0.0.1:{port}/api/v1/ota/confirm"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", epoch(&client, port).await?)
         .json(&serde_json::json!({"update_id": initial_id}))
         .send()
@@ -334,7 +492,7 @@ pub(super) async fn test_direct_ota(
         "first trial confirmation failed: {}",
         confirmed.status()
     );
-    status(&client, port, root, |value| {
+    status(&qemu, &client, port, root, |value| {
         value["active_slot"] == "b" && value["pending_update_id"].is_null()
     })
     .await?;
@@ -383,16 +541,23 @@ pub(super) async fn test_direct_ota(
         },
     ];
     for scenario in scenarios {
-        status(&client, port, root, |value| value["running_slot"] == "b").await?;
-        boot_smoke(&client, port, root, scenario).await?;
+        status(&qemu, &client, port, root, |value| {
+            value["running_slot"] == "b"
+        })
+        .await?;
+        boot_smoke(&qemu, &client, port, root, scenario).await?;
         drop(qemu);
-        qemu = start_qemu(&firmware, root, port)?;
+        qemu = start_qemu(profile, &firmware, root, port)?;
     }
     drop(qemu);
     write_esp_file(&disk, "EFI/BOOT/initramfs.cpio", &host_initramfs)?;
-    qemu = start_qemu(&firmware, root, port)?;
-    status(&client, port, root, |value| value["running_slot"] == "b").await?;
+    qemu = start_qemu(profile, &firmware, root, port)?;
+    status(&qemu, &client, port, root, |value| {
+        value["running_slot"] == "b"
+    })
+    .await?;
     boot_smoke(
+        &qemu,
         &client,
         port,
         root,
@@ -408,10 +573,15 @@ pub(super) async fn test_direct_ota(
     .await?;
     drop(qemu);
     if let Some(payloads) = os_payloads {
-        payloads.test(&client, &firmware, root, port).await?;
+        payloads
+            .test(profile, &client, &firmware, root, port)
+            .await?;
     }
-    qemu = start_qemu(&firmware, root, port)?;
-    status(&client, port, root, |value| value["running_slot"] == "b").await?;
+    qemu = start_qemu(profile, &firmware, root, port)?;
+    status(&qemu, &client, port, root, |value| {
+        value["running_slot"] == "b"
+    })
+    .await?;
     println!("axloader OTA QEMU: checking failed uploads on stable B");
 
     let digest = format!("{:x}", Sha256::digest(&old_loader));
@@ -423,16 +593,18 @@ pub(super) async fn test_direct_ota(
     let mut short = TcpStream::connect(format!("127.0.0.1:{port}"))?;
     short.write_all(
         format!(
-            "PUT /api/v1/ota/image HTTP/1.1\r\nHost: localhost\r\nX-Boot-Epoch: \
+            "PUT /api/v1/ota/image HTTP/1.1\r\nHost: localhost\r\nX-Boot-Epoch: {}\r\n{}: \
              {}\r\nContent-Length: 10000\r\nX-Image-Sha256: {}\r\n\r\nhello",
             epoch(&client, port).await?,
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
             "0".repeat(64)
         )
         .as_bytes(),
     )?;
     short.shutdown(std::net::Shutdown::Write)?;
     drop(short);
-    status(&client, port, root, |value| {
+    status(&qemu, &client, port, root, |value| {
         value["active_slot"] == "b" && value["pending_update_id"].is_null()
     })
     .await?;
@@ -447,14 +619,14 @@ pub(super) async fn test_direct_ota(
         .as_str()
         .context("missing update ID")?
         .to_owned();
-    status(&client, port, root, |value| {
+    status(&qemu, &client, port, root, |value| {
         value["trial"] == true && value["running_slot"] == "a" && value["pending_update_id"] == id
     })
     .await?;
     // A killed trial retains its attempted record on the *same* FAT image.
     drop(qemu);
-    qemu = start_qemu(&firmware, root, port)?;
-    let rolled = status(&client, port, root, |value| {
+    qemu = start_qemu(profile, &firmware, root, port)?;
+    let rolled = status(&qemu, &client, port, root, |value| {
         value["last_outcome"] == "rolled_back" && value["running_slot"] == "b"
     })
     .await?;
@@ -472,12 +644,16 @@ pub(super) async fn test_direct_ota(
         .as_str()
         .context("missing second ID")?
         .to_owned();
-    status(&client, port, root, |value| {
+    status(&qemu, &client, port, root, |value| {
         value["pending_update_id"] == id && value["running_slot"] == "a"
     })
     .await?;
     let confirmed = client
         .post(format!("http://127.0.0.1:{port}/api/v1/ota/confirm"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", epoch(&client, port).await?)
         .json(&serde_json::json!({"update_id": id}))
         .send()
@@ -487,8 +663,8 @@ pub(super) async fn test_direct_ota(
         "second confirmation failed"
     );
     drop(qemu);
-    let qemu = start_qemu(&firmware, root, port)?;
-    let stable = status(&client, port, root, |value| {
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    let stable = status(&qemu, &client, port, root, |value| {
         value["active_slot"] == "a"
             && value["running_slot"] == "a"
             && value["pending_update_id"].is_null()
@@ -506,10 +682,11 @@ pub(super) async fn test_direct_ota(
     // A complete inactive-slot file without a new record must not be started.
     let mut uncommitted = loader.clone();
     uncommitted.push(0x42);
+    println!("axloader OTA QEMU: checking complete but uncommitted inactive slot");
     fs::write(root.join("UNCOMMITTED.EFI"), &uncommitted)?;
     write_esp_file(&disk, "EFI/AXLOADER/B.EFI", &uncommitted)?;
-    let qemu = start_qemu(&firmware, root, port)?;
-    status(&client, port, root, |value| {
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    status(&qemu, &client, port, root, |value| {
         value["running_slot"] == "a"
             && value["active_slot"] == "a"
             && value["pending_update_id"].is_null()
@@ -518,9 +695,10 @@ pub(super) async fn test_direct_ota(
     drop(qemu);
     // A valid pending record pointing at a file which cannot be loaded must
     // be committed as a failed trial before returning to the stable slot.
+    println!("axloader OTA QEMU: checking unloadable pending trial");
     stage_unloadable_trial(root, &disk)?;
-    let qemu = start_qemu(&firmware, root, port)?;
-    let failed = status(&client, port, root, |value| {
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    let failed = status(&qemu, &client, port, root, |value| {
         value["running_slot"] == "a"
             && value["active_slot"] == "a"
             && value["pending_update_id"].is_null()
@@ -532,15 +710,49 @@ pub(super) async fn test_direct_ota(
         "unloadable EFI trial did not record the cause: {failed}"
     );
     drop(qemu);
-    let qemu = start_qemu(&firmware, root, port)?;
-    status(&client, port, root, |value| value["running_slot"] == "a").await?;
-    server_assignment(&client, port, root, &loader).await?;
+    let qemu = start_qemu(profile, &firmware, root, port)?;
+    status(&qemu, &client, port, root, |value| {
+        value["running_slot"] == "a"
+    })
+    .await?;
+    server_assignment(&qemu, &client, port, root, &loader).await?;
     drop(qemu);
-    println!("axloader OTA QEMU: assigned v6 confirmation and subsequent FAT boot passed");
+    println!("axloader OTA QEMU: assigned v7 confirmation and subsequent FAT boot passed");
     Ok(())
 }
 
-fn create_esp_image(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
+fn prepare_firmware(
+    profile: QemuProfile,
+    source: &OvmfFirmware,
+    root: &Path,
+) -> anyhow::Result<OvmfFirmware> {
+    let flash_size = matches!(profile.firmware_arch, Arch::LoongArch64).then_some(16 * 1024 * 1024);
+    let code = if flash_size.is_some() {
+        let destination = root.join("code.fd");
+        fs::copy(source.code(), &destination)?;
+        pad_flash(&destination, flash_size)?;
+        destination
+    } else {
+        source.code().to_path_buf()
+    };
+    let vars = root.join("vars.fd");
+    fs::copy(source.vars(), &vars)?;
+    pad_flash(&vars, flash_size)?;
+    OvmfFirmware::from_paths(code, vars)
+}
+
+fn pad_flash(path: &Path, target_size: Option<usize>) -> anyhow::Result<()> {
+    let Some(target_size) = target_size else {
+        return Ok(());
+    };
+    let file = OpenOptions::new().write(true).open(path)?;
+    if file.metadata()?.len() < target_size as u64 {
+        file.set_len(target_size as u64)?;
+    }
+    Ok(())
+}
+
+fn create_esp_image(profile: QemuProfile, root: &Path, disk_path: &Path) -> anyhow::Result<()> {
     const ESP_SIZE: u64 = 128 * 1024 * 1024;
     let mut disk = OpenOptions::new()
         .create(true)
@@ -567,8 +779,8 @@ fn create_esp_image(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
         root_dir.create_dir("EFI/AXLOADER")?;
         copy_into_fat(
             &root_dir,
-            "EFI/BOOT/BOOTX64.EFI",
-            &fs::read(root.join("BOOTX64.EFI"))?,
+            &format!("EFI/BOOT/{}", profile.boot_filename),
+            &fs::read(root.join(profile.boot_filename))?,
         )?;
         for name in ["A.EFI", "B.EFI", "STATE0.BIN", "STATE1.BIN"] {
             copy_into_fat(
@@ -659,6 +871,7 @@ fn stage_unloadable_trial(root: &Path, disk_path: &Path) -> anyhow::Result<()> {
 }
 
 async fn server_assignment(
+    qemu: &QemuChild,
     client: &reqwest::Client,
     port: u16,
     root: &Path,
@@ -668,6 +881,10 @@ async fn server_assignment(
     let digest = format!("{:x}", Sha256::digest(image));
     let response = client
         .put(format!("http://127.0.0.1:{port}/api/v1/ota/image"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", epoch(client, port).await?)
         .header("X-Image-Sha256", digest.clone())
         .header("X-Update-Source", "server")
@@ -680,12 +897,16 @@ async fn server_assignment(
         "assigned upload failed: {}",
         response.status()
     );
-    status(client, port, root, |value| {
+    status(qemu, client, port, root, |value| {
         value["pending_update_id"] == ID && value["running_slot"] == "b"
     })
     .await?;
     let response = client
         .post(format!("http://127.0.0.1:{port}/api/v1/ota/confirm"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", epoch(client, port).await?)
         .header("X-Update-Source", "server")
         .json(&serde_json::json!({"update_id": ID}))
@@ -696,14 +917,517 @@ async fn server_assignment(
         "assigned confirmation failed: {}",
         response.status()
     );
-    status(client, port, root, |value| {
+    status(qemu, client, port, root, |value| {
         value["running_slot"] == "b" && value["active_slot"] == "b" && value["source"] == "server"
     })
     .await?;
     Ok(())
 }
 
+fn elf_u16(image: &[u8], offset: usize) -> anyhow::Result<u16> {
+    let bytes = image
+        .get(offset..offset + 2)
+        .context("ELF u16 field is outside the image")?;
+    Ok(u16::from_le_bytes(bytes.try_into()?))
+}
+
+fn elf_u32(image: &[u8], offset: usize) -> anyhow::Result<u32> {
+    let bytes = image
+        .get(offset..offset + 4)
+        .context("ELF u32 field is outside the image")?;
+    Ok(u32::from_le_bytes(bytes.try_into()?))
+}
+
+fn elf_u64(image: &[u8], offset: usize) -> anyhow::Result<u64> {
+    let bytes = image
+        .get(offset..offset + 8)
+        .context("ELF u64 field is outside the image")?;
+    Ok(u64::from_le_bytes(bytes.try_into()?))
+}
+
+fn write_elf_u16(image: &mut [u8], offset: usize, value: u16) -> anyhow::Result<()> {
+    image
+        .get_mut(offset..offset + 2)
+        .context("ELF u16 field is outside the image")?
+        .copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn write_elf_u32(image: &mut [u8], offset: usize, value: u32) -> anyhow::Result<()> {
+    image
+        .get_mut(offset..offset + 4)
+        .context("ELF u32 field is outside the image")?
+        .copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn write_elf_u64(image: &mut [u8], offset: usize, value: u64) -> anyhow::Result<()> {
+    image
+        .get_mut(offset..offset + 8)
+        .context("ELF u64 field is outside the image")?
+        .copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn invalid_elf_cases(kernel: &[u8]) -> anyhow::Result<Vec<(&'static str, Vec<u8>, &'static str)>> {
+    let mut wrong_machine = kernel.to_vec();
+    let original_machine = elf_u16(kernel, 18)?;
+    let wrong_machine_value = if original_machine == u16::MAX {
+        u16::MAX - 1
+    } else {
+        u16::MAX
+    };
+    write_elf_u16(&mut wrong_machine, 18, wrong_machine_value)?;
+
+    let mut missing_entry = kernel.to_vec();
+    write_elf_u16(&mut missing_entry, 60, 0)?;
+
+    let mut non_executable = kernel.to_vec();
+    let program_offset = usize::try_from(elf_u64(kernel, 32)?)?;
+    let program_entry_size = usize::from(elf_u16(kernel, 54)?);
+    let program_count = usize::from(elf_u16(kernel, 56)?);
+    let mut found_load = false;
+    for index in 0..program_count {
+        let offset = program_offset
+            .checked_add(
+                index
+                    .checked_mul(program_entry_size)
+                    .context("ELF header overflow")?,
+            )
+            .context("ELF header overflow")?;
+        if elf_u32(kernel, offset)? == 1 {
+            let flags = elf_u32(kernel, offset + 4)?;
+            // Preserve read/write permissions so relocation targets stay valid.
+            write_elf_u32(&mut non_executable, offset + 4, flags & !1)?;
+            found_load = true;
+        }
+    }
+    ensure!(found_load, "valid ELF has no PT_LOAD segment");
+
+    let mut bad_segment = kernel.to_vec();
+    let first_load = (0..program_count).find_map(|index| {
+        let offset = program_offset + index * program_entry_size;
+        (elf_u32(kernel, offset).ok() == Some(1)).then_some(offset)
+    });
+    let first_load = first_load.context("valid ELF has no first PT_LOAD segment")?;
+    let memory_size = elf_u64(kernel, first_load + 40)?;
+    write_elf_u64(
+        &mut bad_segment,
+        first_load + 32,
+        memory_size.saturating_add(1),
+    )?;
+
+    Ok(vec![
+        ("machine", wrong_machine, "elf_machine_mismatch"),
+        ("missing-entry", missing_entry, "efi_entry_missing"),
+        (
+            "entry-not-executable",
+            non_executable,
+            "efi_entry_not_executable",
+        ),
+        ("bad-segment", bad_segment, "invalid_elf"),
+    ])
+}
+
+async fn expect_injected_start_failure(
+    qemu: &QemuChild,
+    client: &reqwest::Client,
+    port: u16,
+    root: &Path,
+    boot_id: &str,
+    binding_id: &str,
+) -> anyhow::Result<()> {
+    let log_offset = fs::read(root.join("ota-qemu.log"))?.len();
+    let epoch = epoch(client, port).await?;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))?;
+    stream.write_all(
+        format!(
+            "POST /api/v1/boot/jobs/{boot_id}/start HTTP/1.1\r\nHost: localhost\r\nConnection: \
+             close\r\n{}: {}\r\nX-Boot-Epoch: {epoch}\r\nX-Serial-Binding: \
+             {binding_id}\r\nContent-Length: 0\r\n\r\n",
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .as_bytes(),
+    )?;
+    let _ = stream.shutdown(Shutdown::Write);
+    drop(stream);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let log = fs::read(root.join("ota-qemu.log"))?;
+        let recent = log.get(log_offset..).unwrap_or_default();
+        ensure!(
+            !String::from_utf8_lossy(recent).contains("elf_loaded:"),
+            "injected 202 write failure handed off the kernel"
+        );
+        if String::from_utf8_lossy(recent).contains("loader_http_error:") {
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "injected 202 write failure did not reach the error path"
+        );
+        qemu.ensure_running(root)?;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let status: Value = client
+        .get(format!(
+            "http://127.0.0.1:{port}/api/v1/boot/jobs/{boot_id}"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    ensure!(
+        status["phase"] == "ready" && status["kernel_received"] == true,
+        "failed 202 write changed the ready transaction: {status}"
+    );
+    Ok(())
+}
+
+fn read_http_json_response(stream: &mut TcpStream) -> anyhow::Result<(u16, Value)> {
+    const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+    stream
+        .set_read_timeout(Some(READ_TIMEOUT))
+        .context("failed to set raw HTTP response read timeout")?;
+    let mut response = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut response) {
+        let preview_len = response.len().min(4096);
+        let preview = String::from_utf8_lossy(&response[..preview_len]);
+        bail!(
+            "failed to read raw HTTP response within {}s: {error}; received {} bytes: {preview:?}",
+            READ_TIMEOUT.as_secs(),
+            response.len(),
+        );
+    }
+    let header_end = response
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .with_context(|| {
+            let preview_len = response.len().min(4096);
+            let preview = String::from_utf8_lossy(&response[..preview_len]);
+            format!(
+                "raw HTTP response has no header terminator; received {} bytes: {preview:?}",
+                response.len(),
+            )
+        })?;
+    let head = std::str::from_utf8(&response[..header_end])
+        .context("raw HTTP response header is not UTF-8")?;
+    let status = head
+        .lines()
+        .next()
+        .context("raw HTTP response has no status line")?
+        .split_ascii_whitespace()
+        .nth(1)
+        .context("raw HTTP response has no status code")?
+        .parse::<u16>()
+        .context("raw HTTP response status is not numeric")?;
+    let body = serde_json::from_slice(&response[header_end + 4..])
+        .context("raw HTTP response body is not JSON")?;
+    Ok((status, body))
+}
+
+async fn elf_rejection_matrix(
+    client: &reqwest::Client,
+    port: u16,
+    epoch: &str,
+    binding_id: &str,
+    kernel: &[u8],
+) -> anyhow::Result<()> {
+    let base = format!("http://127.0.0.1:{port}/api/v1/boot/jobs");
+    let mismatch_id = "qemu-length-mismatch";
+    let mismatch_digest = format!("{:x}", Sha256::digest(kernel));
+    let mismatch_manifest = serde_json::json!({
+        "boot_id": mismatch_id,
+        "kernel": {"size": kernel.len(), "sha256": mismatch_digest.clone()},
+    });
+    let response = client
+        .post(&base)
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .json(&mismatch_manifest)
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::CREATED,
+        "length mismatch manifest was rejected"
+    );
+    let response = client
+        .put(format!("{base}/{mismatch_id}/kernel"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .header("X-Image-Sha256", mismatch_digest)
+        .body(vec![0])
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "complete length mismatch upload did not return 422"
+    );
+    let error: Value = response.json().await?;
+    ensure!(
+        error["code"] == "image_size_mismatch",
+        "complete length mismatch upload returned the wrong error: {error}"
+    );
+    let failed: Value = client
+        .get(format!("{base}/{mismatch_id}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    ensure!(
+        failed["phase"] == "failed"
+            && failed["kernel_received"] == false
+            && failed["last_error"]["code"] == "image_size_mismatch",
+        "complete length mismatch failed status is incomplete: {failed}"
+    );
+    let replay_start = client
+        .post(format!("{base}/{mismatch_id}/start"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .header("X-Serial-Binding", binding_id)
+        .send()
+        .await?;
+    ensure!(
+        replay_start.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "complete length mismatch did not reject start"
+    );
+    let error: Value = replay_start.json().await?;
+    ensure!(error["code"] == "image_size_mismatch");
+    let deleted = client
+        .delete(format!("{base}/{mismatch_id}"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .send()
+        .await?;
+    ensure!(
+        deleted.status() == reqwest::StatusCode::NO_CONTENT,
+        "complete length mismatch transaction could not be deleted"
+    );
+
+    let short_id = "qemu-short-upload";
+    let short_digest = format!("{:x}", Sha256::digest(kernel));
+    let short_manifest = serde_json::json!({
+        "boot_id": short_id,
+        "kernel": {"size": kernel.len(), "sha256": short_digest.clone()},
+    });
+    let response = client
+        .post(&base)
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .json(&short_manifest)
+        .send()
+        .await?;
+    ensure!(
+        response.status() == reqwest::StatusCode::CREATED,
+        "short upload manifest was rejected"
+    );
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))?;
+    stream.write_all(
+        format!(
+            "PUT /api/v1/boot/jobs/{short_id}/kernel HTTP/1.1\r\nHost: localhost\r\nConnection: \
+             close\r\n{}: {}\r\nX-Boot-Epoch: {epoch}\r\nX-Image-Sha256: \
+             {short_digest}\r\nContent-Length: {}\r\n\r\n",
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+            kernel.len(),
+        )
+        .as_bytes(),
+    )?;
+    stream.write_all(&kernel[..1])?;
+    let _ = stream.shutdown(Shutdown::Write);
+    let (status, error) = read_http_json_response(&mut stream)?;
+    ensure!(
+        status == 422 && error["code"] == "image_size_mismatch",
+        "short upload did not return 422 image_size_mismatch: {error}"
+    );
+    let failed: Value = client
+        .get(format!("{base}/{short_id}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    ensure!(
+        failed["phase"] == "failed"
+            && failed["kernel_received"] == false
+            && failed["last_error"]["code"] == "image_size_mismatch",
+        "short upload failed status is incomplete: {failed}"
+    );
+    let replay_start = client
+        .post(format!("{base}/{short_id}/start"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .header("X-Serial-Binding", binding_id)
+        .send()
+        .await?;
+    ensure!(
+        replay_start.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "short upload failed transaction did not reject start"
+    );
+    let error: Value = replay_start.json().await?;
+    ensure!(error["code"] == "image_size_mismatch");
+    let deleted = client
+        .delete(format!("{base}/{short_id}"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
+        .header("X-Boot-Epoch", epoch)
+        .send()
+        .await?;
+    ensure!(
+        deleted.status() == reqwest::StatusCode::NO_CONTENT,
+        "short upload failed transaction could not be deleted"
+    );
+
+    for (name, image, expected_code) in invalid_elf_cases(kernel)? {
+        let boot_id = format!("qemu-invalid-{name}");
+        let digest = format!("{:x}", Sha256::digest(&image));
+        let manifest = serde_json::json!({
+            "boot_id": boot_id.clone(),
+            "kernel": {"size": image.len(), "sha256": digest.clone()},
+        });
+        let response = client
+            .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", epoch)
+            .json(&manifest)
+            .send()
+            .await?;
+        ensure!(
+            response.status() == reqwest::StatusCode::CREATED,
+            "{name} invalid ELF manifest was rejected before execution"
+        );
+        let response = client
+            .put(format!("{base}/{boot_id}/kernel"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", epoch)
+            .header("X-Image-Sha256", &digest)
+            .body(image.clone())
+            .send()
+            .await?;
+        ensure!(
+            response.status().is_success(),
+            "{name} invalid ELF upload failed before device validation"
+        );
+
+        let start = client
+            .post(format!("{base}/{boot_id}/start"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", epoch)
+            .header("X-Serial-Binding", binding_id)
+            .send()
+            .await?;
+        ensure!(
+            start.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "{name} invalid ELF did not fail with 422"
+        );
+        let error: Value = start.json().await?;
+        ensure!(
+            error["code"] == expected_code,
+            "{name} returned the wrong error: {error}"
+        );
+
+        let failed: Value = client
+            .get(format!("{base}/{boot_id}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        ensure!(
+            failed["phase"] == "failed"
+                && failed["last_error"]["code"] == expected_code
+                && failed["kernel_received"] == false,
+            "{name} failed status is incomplete: {failed}"
+        );
+
+        let replay_put = client
+            .put(format!("{base}/{boot_id}/kernel"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", epoch)
+            .body(vec![0])
+            .send()
+            .await?;
+        ensure!(
+            replay_put.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "{name} failed PUT did not replay its first error"
+        );
+        let error: Value = replay_put.json().await?;
+        ensure!(error["code"] == expected_code);
+
+        let replay_start = client
+            .post(format!("{base}/{boot_id}/start"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", epoch)
+            .header("X-Serial-Binding", binding_id)
+            .send()
+            .await?;
+        ensure!(
+            replay_start.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "{name} failed start did not replay its first error"
+        );
+        let error: Value = replay_start.json().await?;
+        ensure!(error["code"] == expected_code);
+
+        let deleted = client
+            .delete(format!("{base}/{boot_id}"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", epoch)
+            .send()
+            .await?;
+        ensure!(
+            deleted.status() == reqwest::StatusCode::NO_CONTENT,
+            "{name} failed transaction could not be deleted"
+        );
+    }
+    Ok(())
+}
+
 async fn boot_smoke(
+    qemu: &QemuChild,
     client: &reqwest::Client,
     port: u16,
     root: &Path,
@@ -712,13 +1436,14 @@ async fn boot_smoke(
     let kernel = scenario.kernel;
     let base = format!("http://127.0.0.1:{port}/api/v1/boot/jobs");
     let epoch = epoch(client, port).await?;
-    let boot_id = format!("qemu-v6-{}", scenario.name);
+    let boot_id = if scenario.check_retries {
+        QEMU_202_WRITE_FAILURE_BOOT_ID.to_string()
+    } else {
+        format!("qemu-v7-{}", scenario.name)
+    };
     let mut manifest = serde_json::json!({
         "boot_id": boot_id,
-        "arch": "x86_64",
-        "image_format": "elf64",
         "kernel": {"size": kernel.len(), "sha256": format!("{:x}", Sha256::digest(kernel))},
-        "entry_symbol": "__x86_64_efi_pe_entry",
     });
     if let Some(initramfs) = scenario.initramfs {
         manifest["initramfs"] = serde_json::json!({
@@ -729,8 +1454,59 @@ async fn boot_smoke(
     if let Some(cmdline) = scenario.cmdline {
         manifest["cmdline"] = serde_json::json!(cmdline);
     }
+    if scenario.check_retries {
+        let no_protocol = client
+            .post(&base)
+            .header("X-Boot-Epoch", &epoch)
+            .json(&manifest)
+            .send()
+            .await?;
+        ensure!(
+            no_protocol.status() == reqwest::StatusCode::BAD_REQUEST,
+            "mutation without the v7 header was accepted"
+        );
+        let error: Value = no_protocol.json().await?;
+        ensure!(
+            error["code"] == "unsupported_protocol",
+            "missing protocol header produced the wrong error: {error}"
+        );
+        let mut legacy_manifest = manifest.clone();
+        legacy_manifest["arch"] = serde_json::json!("future-isa");
+        let legacy = client
+            .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", &epoch)
+            .json(&legacy_manifest)
+            .send()
+            .await?;
+        ensure!(
+            legacy.status() == reqwest::StatusCode::BAD_REQUEST,
+            "removed v6 manifest fields were accepted"
+        );
+        let error: Value = legacy.json().await?;
+        ensure!(
+            error["code"] == "invalid_boot_manifest",
+            "legacy manifest produced the wrong error: {error}"
+        );
+        ensure!(
+            client
+                .get(format!("{base}/{boot_id}"))
+                .send()
+                .await?
+                .status()
+                == reqwest::StatusCode::NOT_FOUND,
+            "rejected mutation changed boot state"
+        );
+    }
     let response = client
         .post(&base)
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", &epoch)
         .json(&manifest)
         .send()
@@ -743,6 +1519,10 @@ async fn boot_smoke(
     if scenario.check_retries {
         let stale = client
             .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", "previous-generation")
             .json(&manifest)
             .send()
@@ -753,6 +1533,10 @@ async fn boot_smoke(
         );
         let repeated = client
             .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .json(&manifest)
             .send()
@@ -763,6 +1547,10 @@ async fn boot_smoke(
         );
         let concurrent_ota = client
             .put(format!("http://127.0.0.1:{port}/api/v1/ota/image"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .header("X-Image-Sha256", "00".repeat(32))
             .body(vec![1])
@@ -776,6 +1564,10 @@ async fn boot_smoke(
         conflicting_manifest["boot_id"] = serde_json::json!("another-boot-id");
         let conflicting = client
             .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .json(&conflicting_manifest)
             .send()
@@ -786,24 +1578,114 @@ async fn boot_smoke(
         );
         let rejected = client
             .put(format!("{base}/{boot_id}/kernel"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .header("X-Image-Sha256", "00".repeat(32))
             .body(kernel.to_vec())
             .send()
             .await?;
         ensure!(
-            rejected.status() == reqwest::StatusCode::BAD_REQUEST,
-            "bad digest accepted"
+            rejected.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "bad digest did not produce a terminal 422"
+        );
+        let failed: Value = client
+            .get(format!("{base}/{boot_id}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        ensure!(
+            failed["phase"] == "failed"
+                && failed["kernel_received"] == false
+                && failed["last_error"]["code"] == "image_digest_mismatch",
+            "failed boot job was not queryable: {failed}"
+        );
+        let stale_failed = client
+            .put(format!("{base}/{boot_id}/kernel"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", "previous-generation")
+            .body(vec![0])
+            .send()
+            .await?;
+        ensure!(
+            stale_failed.status() == reqwest::StatusCode::CONFLICT,
+            "stale presentation overrode a failed transaction"
+        );
+        let error: Value = stale_failed.json().await?;
+        ensure!(error["code"] == "boot_epoch_mismatch");
+        let failed_again: Value = client
+            .get(format!("{base}/{boot_id}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        ensure!(
+            failed_again["last_error"]["code"] == "image_digest_mismatch",
+            "stale failed PUT changed the first error: {failed_again}"
+        );
+        let replay = client
+            .put(format!("{base}/{boot_id}/kernel"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", &epoch)
+            .header("X-Image-Sha256", format!("{:x}", Sha256::digest(kernel)))
+            .body(vec![0])
+            .send()
+            .await?;
+        ensure!(
+            replay.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "failed job did not replay its terminal error"
         );
         let retry = client
             .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .json(&manifest)
             .send()
             .await?;
         ensure!(
-            retry.status() == reqwest::StatusCode::CREATED,
-            "failed upload kept its transaction"
+            retry.status() == reqwest::StatusCode::OK,
+            "failed manifest retry did not return current status"
+        );
+        let deleted = client
+            .delete(format!("{base}/{boot_id}"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", &epoch)
+            .send()
+            .await?;
+        ensure!(
+            deleted.status() == reqwest::StatusCode::NO_CONTENT,
+            "failed job could not be deleted"
+        );
+        let recreated = client
+            .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", &epoch)
+            .json(&manifest)
+            .send()
+            .await?;
+        ensure!(
+            recreated.status() == reqwest::StatusCode::CREATED,
+            "fresh transaction after DELETE was rejected"
         );
     }
     let mut uploads = vec![("kernel", kernel)];
@@ -814,6 +1696,10 @@ async fn boot_smoke(
         let digest = format!("{:x}", Sha256::digest(bytes));
         let response = client
             .put(format!("{base}/{boot_id}/{kind}"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .header("X-Image-Sha256", digest)
             .body(bytes.to_vec())
@@ -828,6 +1714,10 @@ async fn boot_smoke(
     // Upload is allowed before binding; handoff requires an exact current token.
     let gated = client
         .post(format!("{base}/{boot_id}/start"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", &epoch)
         .send()
         .await?;
@@ -887,6 +1777,10 @@ async fn boot_smoke(
     let continue_url = format!("http://127.0.0.1:{port}/api/v1/serial/continue");
     let malformed = client
         .post(&continue_url)
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", &epoch)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body("{")
@@ -900,6 +1794,10 @@ async fn boot_smoke(
     for _ in 0..2 {
         let granted = client
             .post(&continue_url)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .json(&binding)
             .send()
@@ -920,6 +1818,10 @@ async fn boot_smoke(
             .delete(format!(
                 "http://127.0.0.1:{port}/api/v1/serial/bindings/{binding_id}"
             ))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .send()
             .await?;
@@ -965,6 +1867,10 @@ async fn boot_smoke(
         }
         let regranted = client
             .post(&continue_url)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
             .header("X-Boot-Epoch", &epoch)
             .json(&binding)
             .send()
@@ -975,8 +1881,67 @@ async fn boot_smoke(
             regranted.text().await?
         );
     }
+    if scenario.check_retries {
+        let deleted = client
+            .delete(format!("{base}/{boot_id}"))
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", &epoch)
+            .send()
+            .await?;
+        ensure!(
+            deleted.status() == reqwest::StatusCode::NO_CONTENT,
+            "ready job could not be deleted for the ELF error matrix"
+        );
+        elf_rejection_matrix(client, port, &epoch, binding_id, kernel).await?;
+
+        let recreated = client
+            .post(&base)
+            .header(
+                DEVICE_PROTOCOL_VERSION_HEADER,
+                device_protocol_version_header_value(),
+            )
+            .header("X-Boot-Epoch", &epoch)
+            .json(&manifest)
+            .send()
+            .await?;
+        ensure!(
+            recreated.status() == reqwest::StatusCode::CREATED,
+            "boot job could not be recreated after the ELF error matrix"
+        );
+        let mut uploads = vec![("kernel", kernel)];
+        if let Some(initramfs) = scenario.initramfs {
+            uploads.push(("initramfs", initramfs));
+        }
+        for (kind, bytes) in uploads {
+            let digest = format!("{:x}", Sha256::digest(bytes));
+            let response = client
+                .put(format!("{base}/{boot_id}/{kind}"))
+                .header(
+                    DEVICE_PROTOCOL_VERSION_HEADER,
+                    device_protocol_version_header_value(),
+                )
+                .header("X-Boot-Epoch", &epoch)
+                .header("X-Image-Sha256", digest)
+                .body(bytes.to_vec())
+                .send()
+                .await?;
+            ensure!(
+                response.status().is_success(),
+                "{kind} upload after ELF error matrix failed: {}",
+                response.status()
+            );
+        }
+        expect_injected_start_failure(qemu, client, port, root, &boot_id, binding_id).await?;
+    }
     let wrong = client
         .post(format!("{base}/{boot_id}/start"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", &epoch)
         .header("X-Serial-Binding", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         .send()
@@ -987,6 +1952,10 @@ async fn boot_smoke(
     );
     let response = client
         .post(format!("{base}/{boot_id}/start"))
+        .header(
+            DEVICE_PROTOCOL_VERSION_HEADER,
+            device_protocol_version_header_value(),
+        )
         .header("X-Boot-Epoch", &epoch)
         .header("X-Serial-Binding", binding_id)
         .send()
@@ -1010,6 +1979,7 @@ async fn boot_smoke(
             println!("axloader QEMU: {} kernel output passed", scenario.name);
             return Ok(());
         }
+        qemu.ensure_running(root)?;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     bail!(

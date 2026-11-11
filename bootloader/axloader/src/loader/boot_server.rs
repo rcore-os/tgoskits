@@ -2,13 +2,14 @@
 
 extern crate alloc;
 
-use alloc::{rc::Rc, string::String};
+use alloc::{format, rc::Rc, string::String};
 use core::cell::RefCell;
 
 pub use axloader::boot_job::FileKind;
-use axloader::{boot_job::BootJobStore, target::X86_64};
+use axloader::boot_job::{BootJob, BootJobStore, operation_error};
 use httpboot_protocol::{
-    DeviceBootJob, LoaderHardwareInfo, MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress,
+    DeviceBootJob, DeviceBootStatus, DeviceOperationError, LoaderHardwareInfo,
+    MAX_HTTP_BOOT_INITRAMFS_BYTES, MacAddress,
 };
 use someboot::{
     boot_resources::PhysicalRange,
@@ -69,14 +70,21 @@ impl BootServer {
         &self.hardware
     }
 
-    pub fn status(&self) -> Option<httpboot_protocol::DeviceBootStatus> {
+    pub fn status(&self) -> Option<DeviceBootStatus> {
         self.jobs.status()
     }
 
-    pub fn create(&mut self, manifest: DeviceBootJob) -> Result<bool, &'static str> {
+    pub fn status_for(&self, id: &str) -> Result<DeviceBootStatus, DeviceOperationError> {
+        self.jobs.status_for(id)
+    }
+
+    pub fn failure(&self, id: &str) -> Result<Option<&DeviceOperationError>, DeviceOperationError> {
+        self.jobs.failure(id)
+    }
+
+    pub fn create(&mut self, manifest: DeviceBootJob) -> Result<bool, DeviceOperationError> {
         self.jobs.create(
             manifest,
-            X86_64,
             MAX_HTTP_BOOT_INITRAMFS_BYTES,
             MAX_HTTP_BOOT_INITRAMFS_BYTES,
         )
@@ -86,7 +94,7 @@ impl BootServer {
         &self,
         id: &str,
         kind: FileKind,
-    ) -> Result<&httpboot_protocol::DeviceBootImage, &'static str> {
+    ) -> Result<&httpboot_protocol::DeviceBootImage, DeviceOperationError> {
         self.jobs.descriptor(id, kind)
     }
 
@@ -95,53 +103,72 @@ impl BootServer {
         id: &str,
         kind: FileKind,
         data: alloc::vec::Vec<u8>,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), DeviceOperationError> {
         self.jobs.upload(id, kind, data)
     }
 
-    pub fn cancel(&mut self, id: &str) -> Result<(), &'static str> {
+    pub fn cancel(&mut self, id: &str) -> Result<(), DeviceOperationError> {
         self.jobs.cancel(id)
+    }
+
+    pub fn fail(
+        &mut self,
+        id: &str,
+        error: DeviceOperationError,
+    ) -> Result<(), DeviceOperationError> {
+        self.jobs.fail(id, error)
     }
 
     pub fn prepare(
         &mut self,
         id: &str,
         binding: Option<&str>,
-    ) -> Result<BootExecution, &'static str> {
-        if !binding.is_some_and(|id| self.serial.borrow().permits_start(id)) {
-            return Err("serial_binding_required");
+    ) -> Result<BootExecution, DeviceOperationError> {
+        let job = self.jobs.job(id)?;
+        if !binding.is_some_and(|binding| self.serial.borrow().permits_start(binding)) {
+            return Err(operation_error(
+                "serial_binding_required",
+                "a valid X-Serial-Binding header is required before start",
+            ));
         }
-        let job = self.jobs.job().ok_or("unknown_boot_job")?;
-        if job.manifest.boot_id != id {
-            return Err("unknown_boot_job");
+        if job.kernel().is_none() {
+            return Err(operation_error(
+                "kernel_not_uploaded",
+                "kernel upload is not complete",
+            ));
         }
-        let bytes = job.kernel.as_ref().ok_or("kernel_not_uploaded")?;
-        if job.manifest.initramfs.is_some() && job.initramfs.is_none() {
-            return Err("initramfs_not_uploaded");
+        if job.manifest().initramfs.is_some() && job.initramfs().is_none() {
+            return Err(operation_error(
+                "initramfs_not_uploaded",
+                "initramfs upload is not complete",
+            ));
         }
-        let elf = match elf_loader::load_elf(bytes, job.manifest.entry_symbol.as_deref()) {
-            Ok(elf) => elf,
-            Err(_) => {
-                self.jobs.clear();
-                return Err("kernel_load_failed");
-            }
-        };
-        let handoff = match PreparedHandoff::prepare(
-            HandoffSpec {
-                preserve: &[],
-                image: PhysicalRange::new(elf.load_addr, elf.load_end - elf.load_addr),
-                cmdline: job.manifest.cmdline.as_deref(),
-                initramfs: job.initramfs.as_deref(),
-                metadata: None,
-            },
-            None,
-        ) {
-            Ok(handoff) => handoff,
-            Err(_) => {
-                self.jobs.clear();
-                return Err("host_payload_failed");
-            }
-        };
-        Ok(BootExecution { elf, handoff })
+        let prepared = load_execution(job);
+        if let Err(error) = &prepared {
+            self.jobs.fail(id, error.clone())?;
+        }
+        prepared
     }
+}
+
+fn load_execution(job: &BootJob) -> Result<BootExecution, DeviceOperationError> {
+    let bytes = job.kernel().expect("prepare checked kernel presence");
+    let elf = elf_loader::load_elf(bytes).map_err(|error| error.device_error())?;
+    let handoff = PreparedHandoff::prepare(
+        HandoffSpec {
+            preserve: &[],
+            image: PhysicalRange::new(elf.load_addr, elf.load_end - elf.load_addr),
+            cmdline: job.manifest().cmdline.as_deref(),
+            initramfs: job.initramfs(),
+            metadata: None,
+        },
+        None,
+    )
+    .map_err(|error| {
+        operation_error(
+            "handoff_prepare_failed",
+            format!("EFI handoff preparation failed: {error}"),
+        )
+    })?;
+    Ok(BootExecution { elf, handoff })
 }

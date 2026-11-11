@@ -331,7 +331,6 @@ impl Axvisor {
                     self.app
                         .board_prepared_elf(
                             prepared.elf_path.clone(),
-                            prepared.cargo.to_bin,
                             request.config_path().map(Path::to_path_buf),
                             board_config,
                             RunBoardOptions {
