@@ -6,8 +6,8 @@ use core::time::Duration;
 
 use crate::{
     Location, Metadata, MutationCredentials, MutationRetire, NamespaceAdmission,
-    NamespaceAdmissions, NamespaceCompletion, NamespaceOutcome, NodePermission, PreparedWrite,
-    VfsResult,
+    NamespaceAdmissions, NamespaceCompletion, NamespaceOutcome, NamespaceState, NodePermission,
+    PreparedWrite, VfsResult,
 };
 
 /// An inode timestamp intention, resolved only inside the real owner lock.
@@ -209,6 +209,7 @@ impl Location {
     /// All-Keep times require neither write authority nor an inode observation.
     /// Other requests finish pressure, release all admissions, retire owners,
     /// then finish backend work before converting to an ordinary result.
+    /// A completed Retry starts a fresh observation and authorization attempt.
     pub fn change_metadata(
         &self,
         change: MetadataChange,
@@ -218,21 +219,24 @@ impl Location {
             return Ok(());
         }
         let write = PreparedWrite::acquire(self)?;
-        let retired = MutationRetire::new();
-        let admissions = NamespaceAdmissions::acquire(&write)?;
-        let completion = admissions
-            .for_location(self)?
-            .change_metadata(self, change, credentials, &write, &retired)?
-            .expect("nonempty metadata command");
-        let mut deferred = admissions
-            .pressure(alloc::vec![completion])
-            .unwrap_or_else(|_| unreachable!("fixed metadata dispatch binds the admitted owner"));
-        drop(admissions);
-        drop(retired);
-        deferred
-            .pop()
-            .expect("one metadata completion")
-            .finish()
-            .into_result()
+        loop {
+            let retired = MutationRetire::new();
+            let admissions = NamespaceAdmissions::acquire(&write)?;
+            let completion = admissions
+                .for_location(self)?
+                .change_metadata(self, change, credentials, &write, &retired)?
+                .expect("nonempty metadata command");
+            let mut deferred = admissions
+                .pressure(alloc::vec![completion])
+                .unwrap_or_else(|_| {
+                    unreachable!("fixed metadata dispatch binds the admitted owner")
+                });
+            drop(admissions);
+            drop(retired);
+            let outcome = deferred.pop().expect("one metadata completion").finish();
+            if outcome.state() != NamespaceState::Retry {
+                return outcome.into_result();
+            }
+        }
     }
 }
