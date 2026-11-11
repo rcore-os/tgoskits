@@ -749,7 +749,7 @@ rename 暂不扩大 lower-backed 目录移动、真实 exchange/whiteout 等存�
 
 创建只在当前父目录可搜索、可写且名称状态允许时提交；创建 owner 按后端在
 本轮观察中选定的 `CreateOwnerPolicy` 决定。普通 Unix 后端采用 `ParentSetgid`，
-在当前父元数据上处理 SGID；cgroup/kernfs 的 `Caller` 规则见第 4.13 节。
+在当前父元数据上处理 SGID；cgroup/kernfs 的两阶段规则见第 4.13 节。
 该策略由真实 backend attempt 提供，不能成为用户请求中的 owner 覆盖开关。
 请求中的新对象 uid/gid 不是调用者身份。
 普通用户创建不能借指定 owner 字段给自己提权；归档恢复使用显式初始化身份，
@@ -900,27 +900,54 @@ atime、mtime、ctime 和稳定 inode 标识。组件不依赖 VFS、任务凭�
 仍各自保留。节点强持有属性，wrapper 强持有节点，没有反向强持有 wrapper 的边，
 也不另建按裸地址或弱缓存登记的属性表。
 
-`CgroupFsInit` 显式携带创建上下文的 fsuid、fsgid 和时间。启动根由 Starry
-初始化入口提供内核初始化上下文；运行期 mkdir 和 `+pids` 使用执行该操作的
-成对文件系统凭据快照，不使用首次 lookup 的读取者，也不默认为 root。
+`CgroupFsInit` 表达待安装目录的最终 uid、gid、mode 和时间，不再混称调用者凭据。
+运行期创建另以 `CgroupFsCreate` 同时保存该最终目录初始化值与原创建者的
+`creator: (uid, gid)`；这两个 owner 可以不同，不能从目录最终 owner 反推创建者。
+运行期 `create_child` 改为接收这份记录，原调用者在同一迁移中显式提供两者；
+不提供把 `CgroupFsInit` 自动转成记录、暗取目录 owner 充作 creator 的兼容入口。
+启动根由 Starry 初始化入口提供明确上下文；运行期 mkdir 和 `+pids` 使用执行操作时
+的成对文件系统凭据快照，不使用首次 lookup 的读取者、opener 或隐式 root。
 初始化、子项安装和首次可见性属于同一 mutation attempt；失败前不公布半初始化
-对象。目录增删更新当前父目录的 mtime、ctime；chmod/chown 按第 6 节仅更新其
+对象。目录增删的现有时间策略与本轮边界见第 6.17 节；chmod/chown 按第 6 节更新其
 命令涉及的字段和 ctime，不顺带重写 atime/mtime 或其它控制文件。
 
-固定 Linux 的 cgroup 目录及控制文件分别取创建时的 `current_fsuid/fsgid`，
-不是从父目录或新目录继承 owner。VFS 创建观察因此携带
-`CreateOwnerPolicy::{ParentSetgid, Caller}`：原生 Unix 后端明确选择前者，
-cgroup 选择后者，不继承父 gid 或补入父 SGID。cgroup mkdir 的 mode 保留
-Linux `vfs_mkdir` 允许的普通权限与 sticky 位，不保留请求的 SUID/SGID；
-控制文件 mode 按种类的读写能力初始化，不采用 mkdir mode。
-固定授权器生成 `AuthorizedCreate` 时就完成这项 mode 规范化，不能等到组件
-commit 再静默删位，使已授权属性与实际提交值不一致。
+固定 Linux 的 `cgroup_create` 虽向 kernfs 传入 `current_fsuid/fsgid`，
+[`kernfs_new_node`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/kernfs/dir.c#L729-L755)
+还会处理父目录 SGID，不能在前一层截断调用链就认定无继承。
+VFS 以 `CreateOwnerPolicy::Kernfs { parent_has_explicit_attrs: bool }`
+替代旧 `Caller` 变体；普通 Unix 后端的 `ParentSetgid` 不变。
+Kernfs 策略先将请求目录 mode 限为 `01777`，剔除用户请求的 SUID/SGID，
+再在当前父目录有 SGID 时给新目录补 SGID；只有父目录的逻辑显式属性已建立，
+才同时把新目录 GID 选为父 GID，否则仍用创建者 fsgid。UID 始终取创建者 fsuid。
+布尔值由 backend 在同一真实 hierarchy guard 下从节点所有者取得，
+不是用户参数，也不能从当前 uid/gid/mode 猜测。
+组件只增加 `CgroupMutationGuard::directory_has_explicit_attrs(&self, node: &CgroupNode)
+-> CgroupResult<bool>` 这一只读接点，核对实际 domain，不测试 live，
+不暴露可变状态字段，也不提供会自行重新加锁的普通节点 getter。
+固定授权器生成 `AuthorizedCreate` 时完成 mode 和目录 owner 选择，
+并以只读 `creator_owner()` 返回原请求凭据中的 fsuid/fsgid；
+该 getter 不返回写权利、可替换凭据或新的 admission。
 `AuthorizedCreate` 仍由固定当前授权器产生，策略不绕过父搜索、写权限、名称、
 只读 admission 或 backend 能力检查；不得在 commit 阶段忽略已经选定的属性策略。
 
+组件以原 `CgroupFsState` 中的目录逻辑状态区分显式属性是否已建立，不新增属性镜像
+或按地址登记表。新目录最终 owner 非 `0:0` 时建立该状态；最终为 `0:0` 时保持默认，
+即使它已经继承 SGID。成功的非空目录属性更新，包括显式同值 chmod/chown、
+ctime-only chown，都会建立状态；只读观察、子项安装、空更新和失败请求不建立。
+这模拟受支持操作中会影响后续 GID 的 kernfs 条件，不要求实际惰性分配内存。
+`CgroupFsInit` 的最终目录 mode 校验允许 `03777`，接受内核继承的 SGID，
+但不把这当成允许用户绕过 VFS 保留 SUID/SGID 的入口。
+
+初始控制文件以 `CgroupFsCreate.creator` 作为 UID/GID 候选，再依据新目录自身的
+SGID 和显式属性状态决定是否覆盖 GID；文件 mode 仍按 kind 的读写能力确定，
+不采用 mkdir mode，也不自动继承 SGID 位。于是 SGID 祖先下创建的 `0:0`
+默认目录，其初始文件仍可能使用原创建者的非零 fsgid，不能复用目录最终 owner。
+根初始化没有父继承，初始文件创建者由同一次明确根初始化身份给出。
+
 当前 controller 仍只支持已有的 `+pids`，本次不增加 disable 或其它 controller。
 给现有子目录启用 pids 时，在启用操作的同一 owner gate 内，为这些子目录
-首次安装四个 pids 文件属性，使用实际启用者的上下文；之后新建的子目录在创建
+首次安装四个 pids 文件属性，UID/GID 候选取实际启用者的上下文，再针对每个 child
+自身的 SGID 和显式属性状态选择 GID；不能取写入所在父目录的组。之后新建子目录在创建
 时初始化已启用的接口。重复 `+pids` 不重置已有属性。可见性不能先由原子布尔值
 公布、再由 lookup 懒补属性；若未来支持移除和重建接口，必须另设实体代际，
 不能把仍由旧 fd 保留的属性改造成新文件。
@@ -2080,6 +2107,62 @@ Starry 消费者迁移后，按第 6.8 节删除 raw 长期接口，不能据桥
 `cargo xtask test --since <本单元基线>` 选择实际受影响 profiles 并核对具体旅程执行。
 记录目标包结果与现有 Starry Overlay 编译阻塞，不把整批退出失败写成全绿。
 迁移不改变磁盘格式，回滚以提交为单位；已经成功持久化的时间不因代码回滚自动恢复。
+
+### 6.17 Cgroup 的同一所有者尝试
+
+Cgroup 的目录与控制文件由组件 `CgroupNode.fs` 保存属性，Starry 的 `CgroupDir`
+和 `CgroupFile` 只是视图。新 `change_metadata` 入口共同借用原节点、目标 kind
+与该 wrapper 实际引用的 `SimpleFs` receiver；先校验 request 的原 admission，
+再取得已有 `CgroupMutationGuard`，不把另一个挂载视图的 FS receiver 换进请求。
+不同视图可以共享 hierarchy 和节点属性，但各自 exact-mount 写权利仍分别验证，
+不能按 inode、device 或 domain 数值合并它们的写租约。
+
+同一个 hierarchy guard 覆盖观察、固定授权、组件更新与实际后置观察。
+已有 `guard.fs_attributes(node, target)` 和 `guard.update_fs_attributes(...)`
+在其中短取 node.fs 锁，所有已发布属性写者都受同一 domain gate 排斥，
+因此不需要为跨层借用再导出 node.fs guard、新增公共任意闭包或第二把属性锁。
+`LockedMetadataAttempt` 是 Starry 内部的栈上适配，组件继续不依赖 VFS、任务、
+凭据或可睡眠运行时。持 guard 后不得调用会自行重新取得 domain 的
+`CgroupNode::fs_attributes/update_fs_attributes` 普通入口。
+
+这里允许调用的是固定、已核可在原子上下文执行的纯属性授权与 HAL 时钟路径，
+不是任意 OS/filesystem 回调。观察只把中立数值字段映射成 `Metadata`，
+不读取控制文件内容、不调用进程回调或取 membership ledger；
+Now 在本次尝试中取得，实施前核对所用 HAL 调用不睡眠、不重入当前 gate。
+`AuthorizedMetadataChange` 的参与字段映射到 `CgroupFsUpdate`，
+ctime 显式取本轮授权时刻；后端不重复 chown/setid 规则，不补全 UID/GID 的 None。
+
+目录的逻辑显式属性状态与属性变更在同一 gate 内提交。组件先校验完整更新，
+确定不会因非法 mode、目标不存在或 domain 错配留下部分修改，再更新字段和状态。
+空 `CgroupFsUpdate` 不建立状态；用户 `Chown(None,None)` 仍有本轮 ctime，
+不是这个空更新。成功后从原 owner 重新读取实际属性，以 `Applied` 交回 typed completion；
+修改前拒绝返回带当前观察的 `Unchanged`。若修改后实际观察失败，保留首错并
+返回 `Uncertain`，不回写旧快照或重放。Cgroup 没有本单元需要的日志压力或持久化 phase。
+
+已删除但仍被 fd/Location 保留的属性不因业务 live=false 而消失：
+复用 guard 属性方法的既有 retained-dead 语义。pin、reservation、节点或 FS 的最后 owner
+不能在 hierarchy/node.fs gate 或 outer admission 内释放；适配只借原 request
+已经保留的 target，不在锁内查找、构造替代 wrapper、分配退役袋或丢弃临时候选。
+如确需新增 owner，先在锁外纳入原 request 的退役责任。guard 必须在 completion 返回前退出。
+
+第 4.13 节的逻辑显式属性状态只用于本轮支持操作的后续 GID 推导：
+初始非 `0:0` owner、成功的显式目录属性更新建立它；普通读取、子项创建与安装
+不建立它。组件无需复制 Linux 的 iattr 物理分配、xattrs/LSM 触发或 inode cache。
+但这不等于那些差异不可观察：Linux 默认 `0:0`、无 iattr 时的时间随 inode 实例化，
+首次显式 setattr 又会初始化持久时间，父目录是否持久更新时间也受 iattr 条件影响。
+本单元保留现有 canonical 属性的创建时间种子和字段参与规则，不借 SGID 修复
+引入一套 inode-cache 时间副本；默认时间与首次属性建立的完整 Linux 时间语义仍是
+后续兼容性缺口，不能在逐系统调用表标为正确或据此宣布整个 Cgroup 迁移已完成。
+首次 `+pids` 安装作为目录内容变化更新目标 child 的 mtime/ctime，重复启用不更新时间
+或重置文件属性；这项已有 owner 内的时间策略与完整 kernfs 默认时间机制仍需区分。
+
+验证增强既有通用创建策略与组件属性/controller 旅程，不按七种文件另建测试。
+输入同时区分 `01777` 用户 mask、继承 SGID、父显式/默认状态、目录最终 owner
+与初始文件创建者、各 child 的延后 pids GID，以及显式同值更新建立状态但只读不建立。
+包含 `0:0` SGID 多代链；普通非零组与默认零组两种来源不可被统一成一个分支。
+真实 Starry 适配还需在既有 cgroup 系统旅程中证明原 actor→创建/安装→stat 链，
+组件或 VFS helper 通过不替代该装配证明。Overlay 编译阻塞尚存时，不绕过模块
+或伪造 harness 取绿，保留未覆盖项，等待依赖迁移后补直接系统红绿。
 
 ## 7. 缓存专用查找
 
