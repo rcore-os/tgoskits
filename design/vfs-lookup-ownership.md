@@ -807,9 +807,9 @@ FAT 的尝试取得真实 FS guard 后，在构造本轮 holder 之前观察当�
 都会使 FAT active 为真；如果每轮 outer observation 都重建同一个临时 backing pin，
 退出 gate 再准备也不会自动产生进展。不得无限重试、减去猜测的 Arc 数量，
 也不得把自身临时 pin 解释成真实外部使用者而统一拒绝 FAT upper 删除。
-这一路径的逻辑实体保留与原生 holder 转移/暂停协议需在相应 Overlay 实施前单独明确，
-当前不授权照搬旧 `lookup_visible_upper_child` 后持目标调用 unlink 的路径，
-原生实现和验收可以独立完成，但不代表该分层场景已经获准或通过。
+分层删除的原观察续走与锁外完成协议在第 4.14 节单独约束，实施前须独立核对该设计。
+不得照搬旧 `lookup_visible_upper_child` 后持目标调用 unlink 的路径，
+原生实现和验收可以独立完成，但不代表该分层场景已经实现或通过。
 
 ### 4.13 控制组文件系统的真实所有者
 
@@ -959,6 +959,198 @@ gate 增加的代价限定在 cgroup owner 域，不给普通 open 添加全局�
 [删除](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/cgroup/cgroup.c#L6170-L6204)和
 [显式 fork](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/cgroup/cgroup.c#L6720-L6763)
 分别决定真实属性 owner、活性检查、创建上下文和提交边界。
+
+### 4.14 分层删除的原观察续走
+
+本节细化第 4.12 节留下的临时引用问题，不改变 FAT 的存储能力。FAT 的
+`FatAttempt::observe` 在同一个 `FatFilesystemGuard` 内先检查 active 弱表中是否有
+存活 holder，再取得本轮目标 holder；`commit` 只允许删除此前没有 holder 的目标。
+`starry-fatfs::Dir::remove` 会立即释放簇链，故不能让仍持有旧原生文件句柄的对象继续
+访问被删除的数据。本节约束后续实现，不是已取得的运行结论。
+
+#### 4.14.1 准备与引用分类
+
+分层删除先准备父目录，不先查出要删除的目标。最外层命令在所有 backend gate
+之外退出本次父目录可枚举的正项保留，并实际销毁临时集合；随后对所选 backing
+父目录做同样准备，最后才进入 outer gate 和下降的真实 attempt。outer 和 native
+正项由不同 dentry 指针登记，不能用一次 outer 准备冒充 native 已准备。
+
+准备只产生绑定 exact mount、父 dentry 和原始名称的 `PreparedUnlink`，不保存目标、
+权限结果或 active 结论。尚需物化 upper 父目录时，先按第 4.10 节完成该独立阶段，
+结束旧观察和授权、退出全部 gate 并释放退役引用，再准备已安装的实际父目录。
+重新进入后核对所选父实体与准备绑定；不能在 gate 内临时 prune，或因名称未变就
+沿用另一个父对象的准备。阶段推进以真实物化结果为依据，不通过反复创建和丢弃同一
+目标 wrapper 取得进展，也不以无限重试等待 active 消失。
+
+引用分类决定哪些 owner 可以退出，而不是由猜测的 `Arc::strong_count` 决定。
+这里的“已有 holder”既可能属于外部使用者，也可能属于尚未退出的内部缓存。
+
+| 引用类别 | 准备及删除的约束 |
+| --- | --- |
+| 当前父弱索引可达的全局正项 | gate 外撤出并实际释放；不清除活跃弱身份索引 |
+| 仅 registry 保留、clean、已持久化的文件缓存 | 复用既有有界、尽力 prune；返回不表示一次清空全部缓存 |
+| fd、路径句柄、映射、进行中 I/O、脏页或未完成写回 | 保留真实 owner；不能清 dirty、强拆 handle 或降为弱 backing |
+| 其他别名正项、ELF 装载器 LRU 等独立内部 owner | 不宣称通用准备能退出；若仍持原生 holder，保持原生 FAT 相同的拒绝边界 |
+| 本轮真实原生观察之后才创建的逻辑 wrapper | 不重新采样 active；只能随原观察一次消费续走 |
+
+`mm/loader.rs::ElfCacheEntry` 的 LRU 已经可以保留原生 `CachedFile`，不仅限于 Overlay。
+本次不修改 ELF 解析、装载、LRU 策略或为删除新增 ELF 清理入口；不把这一内部 owner
+称为外部 fd，也不承诺 POSIX 式的 FAT 活跃文件脱链。必须实现并证明的新增进展是：
+没有此前 holder、或既有准备已实际退出 holder 时，不能被本轮观察自己新造的引用拒绝。
+这保留原生能力限制，不允许据此统一拒绝所有 FAT upper 删除。
+
+#### 4.14.2 封闭的观察结果
+
+VFS 增加仅用于这条实际分层调用的 `ObservedUnlink`：它拥有未消费的删除输入、
+本轮真实原生 driver、父和目标快照及未结束的命名发布范围。Overlay 只能读取该观察
+并消费 `resume(self)` 或取消，不能取出 `&mut dyn LockedAttempt`，不能替换观察、
+凭据、父对象、原始名称或 commit 实现。普通原生删除与续走复用同一固定授权、
+规范化和发布核心，不复制第二份 unlink 算法。
+
+原生 factory 在固定 backing root 所属的 `FilesystemOps` owner 上取得 guard；
+该 root 在 Overlay 实例中不可变，guard 借用这个外部 owner，不借用栈上临时
+downcast 的 `Arc`。driver 自己拥有已经核过同 FS 的父节点 `Arc`。删除输入拥有
+父 `Location`、名称和已消费的准备，凭据视图按值保存且只借用仍被 mounter 快照
+保活的 groups；不得保存指向临时 `MutationCredentials` 变量的引用。
+`PreparedWrite`、第 4.14.3 节的原生 admission 借用及最外层退役集合贯穿续走，
+不伪造 `'static`。带借用的输入、driver 或 completion 不放进要求 `Any` 的
+`MutationRetire`；只把其中拥有型的 inode、dentry、父对象及候选引用移交退役集合。
+
+私有命名发布范围持有父 dentry owner，而不是借用同一个结构体内部的父字段，
+以免把 `NameChange` 改造成自引用对象。driver 的 guard 也不借用自身拥有的父 `Arc`。
+命名发布范围的 `affected`、取消时升级的别名及不确定关系也必须锁外退役。
+这些连接不新增 owned-lock unsafe 封装、不泄漏对象、不要求 guard 为 `Send/Sync`。
+暂存对象只在同一同步调用栈使用，不能排入任务、跨线程或跨异步挂起点。
+
+执行顺序保持一次真实观察。FAT 在取得本轮目标前完成 active 采样；之后 VFS
+立即建立该原生父目录的 `NameChange`，再向 outer 交出观察。返回观察之前不发布
+目标正项，但也不留下可从旧正项不经 backend 排他权获取新 holder 的缓存窗口。
+随后 Overlay 使用已取得的 metadata、identity 和目标引用构造逻辑观察，不在仍持
+原生锁时调用普通 lookup、metadata、read_dir 或反向取得其他 backing 的锁。
+
+原观察由 opaque owner 保留。外层固定授权通过后，`resume(self)` 在原生固定授权器
+内消费原来的父和目标快照，按已保存 mounter 身份及已有写权利授权，并通过原 driver
+提交、规范化发布或失效。它不调用 `NamespaceMutation::execute` 重新 observe，
+不接收外层生成的 `AuthorizedUnlink`，也不允许用任意 wrapper 伪造 parents/observe
+后把授权转交给真实原生 commit。外层拒绝时取消原生观察，不提交命名修改。
+
+下降与返回遵守第 4.9 节的有限 backing 深度。需要多个源/目标的命令仍须成对使用
+一个真实 attempt，本节不提供把多个单目标观察拼成 rename 的接口。需要读取 lower
+或其他 backing 的准备在取得待续走的原生锁前完成；不能持有一个 native guard
+再重入同一个 FS 查询 lower。无法满足该锁序时返回到最外层分阶段协调，而非增加递归锁。
+
+#### 4.14.3 最外层完成责任
+
+Ext4 的真实完成流程并不都在 `LockedAttempt` 内。现有
+`fs/namespace/rename.rs::run_namespace` 还负责 `MutationAttempt::Staging`、
+typed `Ext4Error` 的日志压力或 abort 处理、`ReapClaim`、operation admission 退出，
+以及目录同步策略。因此单独返回一个 boxed attempt 或 `NamespaceOutcome` 不构成
+可用的分层完成协议；不能只移动锁而丢失这些责任。
+
+最外层在全部 gate 之外，从已固定的写入 backing 图准备 `NamespaceAdmissions`，
+按真实 FS owner 去重，每个需要 admission 的 FS 只进入一次；这与按 exact mount
+保留的 `PreparedWrite` 不同，二者不能相互替代。该对象只持已有的原生 operation
+guard，不新增计数或全局登记。guard 借用仍在栈外被稳定 root 保活的 FS receiver，
+不借用该集合自己的字段；取得期间不持其他 FS 的配置 mutex 或 backend gate。
+
+在取得第一份原生 admission 前，先枚举并校验全部 receiver、按真实 owner 去重，
+再以所有调用方一致的 owner 全序逐一取得。全序使用被这些稳定 root 保活的实际
+`FilesystemOps` 数据地址；强 owner 在本次准备期间不退出，因此地址不会被回收复用。
+不按 backing 图遍历顺序取得，也不另建全局编号表。部分取得失败时，先释放全部已取得
+admission，再退出准备引用，均在 gate 外进行；去重不能代替一致顺序。这是通用
+多 FS 合同，不宣称当前受限 Overlay 写图已经证明可到达多个原生可暂停 FS。
+
+VFS 固定 factory 绑定每个 admission 的真实 FS 身份，不公开可填任意 owner 的
+构造器。driver 与内部后续 whiteout、创建、元数据步骤只能借用已核同 FS 的原有
+admission，不能再次 `enter()`，不能在 gate 内补一项缺失的 admission。它不代替
+mounter 授权或原生 namespace guard。原生普通入口拥有单 FS 的同一上下文，仍使用
+同一受控核心；不让分层路径绕回会自行重新 admission 的普通入口。
+
+原生 admission 存活期间也不能调用会隐式重新 admission 的普通 read、lookup、
+metadata、xattr 或 I/O。实际所需的查询使用同一个受控借用和 locked helper，或在
+取得这些 admission 前完成准备；需要独立 I/O 阶段时先按第 4.10 节退出并收束。
+特别是旧 `is_whiteout`、`is_opaque` 及 unlink 后再查询 lower 的调用不能原样搬入。
+这避免“旧 completion 保留 admission、下一步等待暂停恢复、暂停者等待旧 admission”
+的环，也不靠在 upper 删除与 whiteout 之间无条件释放 outer gate 暴露暂态。
+
+driver 结束时同时移交无锁的 `NamespaceCompletion`，由原生 owner 保留 typed
+完成状态，不在 VFS 把它压成一个 `bool` 或提前映射掉可重试原因。返回形状须覆盖
+尚未产生观察的 `Staging`、观察失败及正常观察，不能只是
+`Result<ObservedUnlink, VfsError>`。锁内提取实际 `NamespaceState`、观察或效果、
+typed 原始错误、唯一 `ReapClaim` 及供同步策略使用的父 inode owner；不能锁外按编号重猜。
+
+completion 不持 slot、授权、命名发布范围或 backend guard。它在第一阶段借用
+`NamespaceAdmissions` 完成既有 pressure/abort 处理，返回不再借用 admission 的
+剩余完成对象；后者持有 reap、同步所需的真实 FS 和 inode owner，不提供命名 commit
+能力。一个复合操作的完成责任沿原结果链归最外层，不另建全局队列、后台任务或事务登记表。
+
+操作的分层状态与锁外工作按下图交接。只有已知未修改的 journal-pressure 分支可以
+要求下一轮观察；已经产生的效果先发布或失效，再退出所有层。
+
+```mermaid
+sequenceDiagram
+    participant O as 最外层命令
+    participant L as Overlay gate
+    participant N as 原生观察及发布范围
+    participant C as 原生完成 owner
+    O->>O: gate 外准备父目录及每个真实 FS 的一次 admission
+    O->>L: 当前逻辑父和名称观察
+    L->>N: 一次真实观察及 active 采样
+    N-->>L: 封闭观察和只读快照
+    L->>L: 固定授权当前逻辑槽位
+    L->>N: 消费原观察并作原生授权提交
+    N-->>L: 实际效果及无锁完成责任
+    L->>L: 发布逻辑效果或使别名不可信
+    L-->>O: 退出全部发布范围及 gate
+    O->>C: 借原 admission 完成全部 pressure 和 abort
+    C-->>O: 不再借 admission 的剩余完成责任
+    O->>O: 先释放全部 operation admission
+    O->>O: 再释放可能触发 reap 的退役引用
+    O->>C: 显式 reap 和目录同步
+    C-->>O: 完成、真实错误或未修改的重新尝试
+```
+
+最外层固定按四段收束：先结束全部层的观察、授权、发布范围和 gate；再保留原
+admission 完成全部 typed pressure/abort；然后释放所有 FS 的原 admission；
+最后才释放可能进入 admission 的退役 owner，并执行显式 reap、同步和锁外通知。
+必须先释放全部 admission，不能只释放当前 completion 的一份后，就析构可能重入另一
+FS 的对象。`InodeLifetime::drop` 本身可触发重新 admission 的 reap，因此退役集合
+的销毁不是可以任意提前的无害步骤。
+
+上述顺序适用于成功、拒绝、取消和错误出口；即使日志完成失败，也先保留错误，
+安全释放全部 admission，再退出退役 owner。进入下一轮前所有旧槽位与授权均已结束，
+native `Retry` 不能在仍持 outer gate 时自行循环。typed journal-progress 原因与
+确知未改命名状态共同决定是否可重试，不以普通 `Err` 猜测。
+
+内部命令已经 `Applied` 后，后续 whiteout、metadata 或完成工作失败仍按第 4.7 节合并
+实际状态并保留原始错误；不得重放此前步骤。重试后一步也不能重用此前的逻辑授权。
+完成错误只补充原有结果，不将 `Applied` 改写成 `Unchanged`。全部观察、临时候选、
+取消时的目标及旧父 owner 移到最外层 `MutationRetire`，不能在 inner guard 退出后
+立即析构它们。新 driver 与 completion 的 Drop 只释放自身权利、转交引用或保留权威
+失败，不隐式提交、日志推进、prune、reap、同步或回滚；既有 inode 最后析构中的 reap
+只允许在上述第四段发生，不把它声称为新完成对象的保证。忘记完成最多保守保留资源
+或权威失败，不得制造成功或新的提交权限。
+
+#### 4.14.4 迁移与证明
+
+先抽取 VFS 原有 unlink 观察后的固定核心，再实现封闭续走和原生 owner 的完成交接，
+最后接 Overlay。原生普通入口仍立即消费同一核心；不保留公开 raw attempt factory
+或供 syscall 绕开授权的 commit。Memory、FAT、Ext4 及实际分层消费者在同一可审查
+序列接通；未迁移消费者不以统一 `Unsupported` 消除编译错误。若可返回的 guard
+或输入无法按第 4.14.2 节形成非自引用借用，停止该实现并回到设计，不以 unsafe 越过。
+
+复用原生生命周期回归和真实 Overlay/FAT fixture，证明 closed/cached 对象可删除、
+本轮观察引用不自造 active、已有活跃 holder 仍拒绝且无副作用，并控制另一个缓存
+读取者在观察到续走之间尝试访问。取消、外层撤权及完成错误归入同一完整删除行为；
+Ext4 复用既有日志重试/撤权与 Applied completion 用例，证明退出全部层后才完成，
+下一轮重新观察授权、typed abort 不丢失，并覆盖暂停已发布时的后续 whiteout 与
+退役 inode 析构，证明复用 admission 不等待自身、reap/sync 前全部原 admission 已释放。
+编译失败契约只证明重复消费和真实 guard 借用，不用缺导入或接口不可见制造假证明。
+
+性能开销限于需要交出真实观察的分层修改：持有 driver 和一次观察，不在普通路径查找
+新增全局锁、目标计数或重复 lookup。回归之外核对最后 owner 的锁外释放、有限深度
+和源/目标原生能力边界；只读或原生测试绿色不代替分层运行证据。无磁盘格式变更，
+可按代码提交回滚，但不能依赖 Drop 恢复已提交的命名修改。
 
 ## 5. 对象型链接
 
@@ -1234,7 +1426,8 @@ FAT 原生删除增强既有真实文件系统生命周期回归，证明关闭�
 引用准备不得删弱规范索引或破坏活跃身份，需在同一完整行为中核对。
 在实际发布前受控阻塞另一个缓存读取者，证明 active 采样后没有未经 backend guard
 取得新目标的窗口；仅检查方法调用顺序或 Arc 数值不是等价证明。
-嵌套 Overlay/FAT 的临时 pin 问题仍是独立未闭合项，不用原生绿冒充其证据。
+嵌套 Overlay/FAT 按第 4.14 节单独证明原观察续走及锁外完成；
+该分层实现与运行证据未交付前，不用原生绿冒充其证据。
 
 R4 复用真实 MemoryFs 自移/后代拒绝回归，并补足受控并发拓扑交错的最终无环与身份
 判定；已有自移首断言的红测不冒充后代及并发分支也已采红。
