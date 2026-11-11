@@ -158,6 +158,165 @@ FAT 的根目录不能通过 `root_dir → DirEntry → FatInode → FatFilesyst
 既有生命周期延长与 `Send/Sync` 逐项重新证明，保留资源销毁在底层文件系统仍存活时
 执行的顺序；不得靠增加 `allow` 或继续返回裸可变引用维持编译。
 
+### 2.5 简单文件系统的实体寿命
+
+`SimpleFs::root` 当前强持根目录项，普通根的 `SimpleFsNode.fs` 又强持
+`SimpleFs`；`CgroupDir.fs` 的自定义根也有相同返回边。静态目录 maker、
+静态文件和动态 ops 还可能经捕获的 FS 形成额外环。仅把 root 改弱会在
+`new_with()` 返回前失去唯一根引用；把节点 FS 改弱又不能满足
+`NodeOps::filesystem() -> &dyn FilesystemOps` 的借用和存活要求。
+因此采用“无反向 FS 的实体状态与构造配方，强持实际 FS 的活跃包装”分层，
+不增加全局属性表、永久强缓存或卸载时猜测断环的补丁。
+
+#### 2.5.1 分配域与实体状态
+
+`SimpleFsCore` 保存不可变的实例配置与原 inode 分配域，不实现
+`FilesystemOps`，也不持有根、目录项、文件包装或构造配方。
+`SimpleFsContext` 只强持该 core，供 builder 和底层 ops 分配实体、取得实例身份，
+不是实际 FS receiver，不能取得 root、mount、admission 或写入能力。
+`SimpleFs::new_with` 的 builder 改接收这份 context，不再接收完整 FS 的 Arc。
+
+普通实体由 `Arc<SimpleInode>` 唯一拥有编号与 `RawSpinLock<Metadata>`；
+编号的释放责任跟随该实体，而不是跟随某一次路径包装。它只保留分配域，
+不反持完整 `SimpleFs`。core 的 slab 继续记录分配占位，不同时强持所有 inode，
+避免 `core → inode → core` 成为新的环。编号溢出或耗尽明确失败，不借裸地址
+登记第二份可变状态；不同实例身份不能因当下 inode 数值相同而合并。
+
+基础分配入口固定为 `SimpleFsContext::allocate_inode(&self, node_type: NodeType,
+mode: NodePermission) -> VfsResult<Arc<SimpleInode>>`。先在分配域锁内核对空槽键
+到 `u64` 的转换与加一，再插入占位；编号无法表达时返回 `VfsError::NoMemory`，
+失败不消费槽位。唯一 lease 私有地保留原 core 与编号，最后实体释放才归还一次；
+配方和包装只共享实体，不各自承担归还责任。本契约不把已有 `Arc`/集合的
+分配器终止策略改成全仓可恢复 OOM，也不以 `unwrap` 吞掉可报告的编号错误。
+
+实例身份取仍由 context/实体保活的 core 拥有身份，不取两个 slab 中相同的编号。
+已有 proc 身份的实例前缀相应迁到该域；它与实际 admission receiver 仍是不同概念。
+只要活跃 dentry、包装或配方还会参与身份比较，就必须保留原实体或相应 context；
+没有这些持有者后才允许复用 slab 槽。不新增裸标识跨实体死亡继续比较的入口，
+也不因本次重构新增业务 ID 或全局属性登记。
+
+`SimpleFsNode` 是活跃适配，强持实际 `SimpleFsOwner` 与原 `Arc<SimpleInode>`。
+它的 `filesystem()` 仍返回该实际 receiver 的借用，不返回 core 或临时 Weak 升级值。
+不同包装引用同一个实体的属性锁，不复制 Metadata；现有字段参与和大小投影
+不因这次分层顺带改写。外部真实内核对象可继续持有自己的稳定属性 owner，
+不要求为了统一形式把 Cgroup 或消息队列状态复制进普通 `SimpleInode`。
+
+#### 2.5.2 根与构造配方
+
+完整 `SimpleFs` 强持 core、根构造配方和必要的根实体状态，只弱索引根目录项；
+配方及其传递拥有的 ops、静态子项和内容闭包不得反持同一完整 FS、
+其 Location、Mountpoint 或已物化包装。构造配方不是重跑原先有副作用的
+一次性 builder：builder 只执行一次，生成保留真实实体与业务输入的配方。
+
+具体工厂固定为 `SimpleFs::new_with(name: String, fs_type: u32, builder:
+impl FnOnce(SimpleFsContext) -> VfsResult<DirMaker>) -> VfsResult<SimpleFsOwner>`。
+它先建 core、执行 builder 并校验根配方属于该 core，全部可恢复准备成功后才
+以私有 `Arc::new_cyclic` 构造实际 FS。实际 FS 只保存非拥有的 self-Weak，
+供原分配中的 `&self` 在根物化时取得临时持有，不在构造回调中升级它。
+`SimpleFsOwner` 的 Arc 字段和构造器仅在 FS 实现模块内可见；它可克隆，
+只借出 `&SimpleFs` 并以 `as_filesystem(&self) -> Filesystem` 建立通用句柄。
+不返回具体 Arc、可变引用、可拆出的内部值或原始指针，不实现到 Arc 的 Deref、
+`into_inner`、`get_mut` 等逃逸；`SimpleFs` 也不提供可按值克隆或另行构造的入口。
+因此调用方不能用 `Arc::try_unwrap/make_mut` 在安全接口中搬走实际 FS，
+而不是仅约定它不得这样做。通用句柄内部只接收擦除类型后的原 Arc，
+不增加可取回具体 Arc 的 downcast。私有根物化将升级结果重新包成同一持有句柄。
+Object 工厂从具体结果保留这个 owner，不把完整 FS 偷塞回 context。
+各可挂载工厂返回 `VfsResult<Filesystem>` 并向原 mount/初始化调用者传播错误；
+永久对象 FS 的一次性初始化失败才可在其既有致命初始化边界显式终止。
+
+`DirMaker` 不再是可任意调用的 Fn 别名，而是字段私有的可共享配方。
+`SimpleDir::new_maker(context: SimpleFsContext, ops: Arc<O>) -> VfsResult<DirMaker>`
+在建立时完成一次可失败实体分配。`DirMaker::prepare(&self, fs: SimpleFsOwner)
+-> VfsResult<PreparedDir>` 核对配方 core 与实际 receiver 的 core 一致；
+错配返回 `VfsError::BadState`，不分配替代实体或改变 receiver。
+`PreparedDir::materialize(self, this: WeakDirEntry) -> Arc<dyn DirNodeOps>`
+消费准备值，只组装已准备的实体、ops 与实际 FS。
+这里才显式接收 `WeakDirEntry`，不得在 `DirEntry::new_dir` 的循环构造回调中
+升级尚未发布的 this，也不得调用可能失败的业务初始化。
+
+`FileMaker::prepare(&self, fs: SimpleFsOwner) -> VfsResult<PreparedFile>` 使用相同
+域校验；`PreparedFile::materialize(self) -> Arc<dyn FileNodeOps>` 同样消费准备值。
+两个 Prepared 类型不可克隆、不导出可替换 receiver 的 setter，准备失败不产生
+半初始化包装。目录 lookup 的准备在 `DirEntry::new_dir` 之外完成，根的全部
+可恢复准备在 FS 发布前完成，因此不改变通用无 Result 的 `root_dir()` 和
+`DirEntry::new_dir`。私有根物化只使用构造时已验证的根配方与自身 core。
+持实际 FS 的 Prepared 值只活在调用栈或外部操作中，不存回 FS、配方或 backing；
+否则会重新形成 `FS → Prepared → FS`。配方可以反复准备、物化，
+消费约束仅表示每个绑定准备值最多使用一次，不把一个实体限制为只准有一个包装。
+动态 `DirMapping::add_dynamic` 回调改为 `Fn() -> VfsResult<NodeOpsMux>`，
+真实分配错误向外传播；链式目录仍只有 `NotFound` 才查另一来源。
+
+这些配方不再靠捕获强 FS 取得 receiver。普通静态目录在建立 maker 时分配一次实体；
+每次物化只建 `SimpleDir` 包装，并复用该实体与原 ops。静态文件同样由
+`FileMaker` 保留无反向 FS 的 backing，在实际 lookup 时接收 receiver 并建立
+`SimpleFile`、`Device` 或 `SpecialFsFile` 包装。`NodeOpsMux` 保存这些配方，
+不把强持完整 FS 的现成包装存回 FS 自有目录树。
+
+普通文件和设备的 backing 分别保留其真实属性实体、原内容/设备 ops 与身份；
+包装只负责把该 backing 接到实际 FS 和 VFS 接口。外部打开描述或真实对象
+仍可强持活跃包装，这种外部保活不是 FS 自有环。`ObjectInode` 的弱 dentry
+规范化及真实对象保活继续复用；永久 pipefs/sockfs/nsfs 的外部根持有与
+“所有外部持有均释放后可销毁”的验证分别记录。
+
+`root_dir()` 从仍由 FS 拥有的根实体和配方重建包装，不能重新分配 inode 或
+恢复默认属性。候选构造、业务回调和败选候选的最后 Drop 在根索引锁外执行；
+锁内只升级、比较与发布弱索引。活跃根仍规范化为同一目录项。Mountpoint 和
+MountUse 已有的强根保活继续使用，不给通用 `Filesystem` 新增一份重复根缓存，
+也不把初次挂载前的构造空档推给 mount lease 处理。
+
+#### 2.5.3 不同实体的保留责任
+
+静态目录和静态文件由其配方保留属性，缓存驱逐后仍取原实体。动态 proc 实体
+则保留 Linux 的可回收 inode 寿命：同一有效父名和语义身份的活跃 dentry 可复用，
+但不建立按 task 永久合并所有路径属性的全局 owner。重新验证按相应 proc 类别
+刷新允许刷新的字段，不能把所有权限和时间都重置，也不能把全部 proc 属性改为只读。
+这部分 setter 与刷新顺序须在元数据适配契约中逐类明确，生命周期分层不授权猜测。
+通用 VFS 规范化当前可能丢弃新候选而保留旧 dentry，因此只更新新候选不构成
+对旧 fd 的刷新。领域契约必须明确被保留的真实 owner 如何在原刷新/提交锁域中
+观察任务状态并保留未参与字段，不能用候选的整份 Metadata 覆盖旧 owner。
+
+devpts 的数字表须保留真实设备 backing，而不是每次 lookup 复制属性；
+删除从表中取出后，在表锁外释放。ptmx 是实例内持久实体，lookup 不重置 chmod，
+其属性 owner 与 per-open master I/O 状态分开。配方不得经
+`instance → ptmx backing → Ptmx → instance` 新建另一条强环。
+当前 Legacy 共享表可能保存另一实际 FS 的 Device，不能机械把它换成当前
+lookup receiver，也不能在 Weak FS 升级失败时把仍有实体的设备说成已消失。
+迁移这部分前必须同时明确新 mount 的私有实例、bind 保留原实例及现有内置
+devfs 视图的归属；不能混用新 backing 与未处理的旧跨实例共享。
+
+mqueue 的路径、mqd 和后续权限检查须读写同一 `MessageQueue` 属性 owner，
+不保留 `status_line` 包装中的属性副本。资源计费创建者与可修改文件属主必须分离，
+不能 chown 后向新属主退还原创建者的 charge；不新增业务 ID、队列命名或 namespace
+身份。真实 owner 的迁移及 mqd 属性入口另受元数据契约约束，不能仅靠配方分层
+宣称已经接通。Cgroup 配方只保留组件节点，在物化时取得当前视图 FS；
+其实际 receiver 校验、同 hierarchy guard 和节点属性所有权不变。
+
+#### 2.5.4 迁移与验收
+
+先完成 core、实体与配方的闭合引用图，再同一可审查序列迁移所有普通
+SimpleFS builder、静态文件/设备、动态 ops 及 Cgroup 自定义根；
+不留“有些根仍强持完整 FS 配方”的永久双轨。proc/sysfs、dev/debug/tracepoint、
+usbfs 和可选硬件设备构造路径都属于真实消费者，不能只核默认 feature。
+devpts 跨 receiver、mqueue 真实 owner 和 proc 字段策略的未决接点必须先由根
+形成明确契约；这三类受影响迁移不凭普通包装的通用更新入口先行。
+
+UVC 等动态设备 slot 也必须改存 FS-free backing；在原 slot 锁内只取出淘汰项，
+失败候选和最后 backing 在锁外释放，不把驱动清理带进索引锁。
+trace、SeqObject 等有状态内容 ops 保留原 producer 的创建时机与共享范围，
+不能把每次打开的状态全局合并，也不能在每次路径物化时重置原静态共享状态。
+内容、设备 I/O、动态长度及可睡眠读取仍在属性锁外，File 的已有时间维护入口
+最终必须接同一真实 owner，不给 Drop 伪造一次用户授权。
+
+验证分别证明实体保留与包装释放：在真实实现中修改静态目录/文件属性，回收
+全部路径包装后从仍存活 FS 重发现，核相同实体与原属性；释放 FS、mount、
+描述及可清理缓存后，核实体和 core 的最终释放发生且不在索引或属性锁内。
+保持一个旧描述时应继续保活，重新物化不复制文件描述偏移；候选竞争败选也要锁外释放。
+这些判定优先并入既有完整身份/生命周期旅程，不以只检查 Arc 数量或访问器回读代替。
+
+本节是下一单元的分层设计，不是已实现或已验收声明。Starry 当前受 Overlay
+编译阻塞时，不能绕过模块建立假装配或把组件模型当作系统通过；完成领域接点
+和独立设计核对后再派发生产迁移，后续仍须真实系统入口及受影响目标的证据。
+
 ## 3. 查找会话
 
 `LookupSession` 负责一次操作的完整解析，不把父遍历与最终打开变成独立操作。
