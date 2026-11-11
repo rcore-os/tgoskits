@@ -1650,8 +1650,8 @@ Ext4 对命名授权相关 mode/uid/gid 取得与命名操作协调的 namespace
 每次释放 state/namespace 作日志推进后重新读当前 inode 并重新授权，
 不复用循环外构造的 `InodeMetadataUpdate`。
 
-FAT 使用其实际 FS guard；不支持的 mode/owner/rdev 修改明确返回不支持，
-不得继续 `Ok(())` 丢弃字段。只改时间仍沿真实后端能力执行。
+FAT 使用其实际 FS guard；新协议不能继续 `Ok(())` 丢弃不支持的字段，
+具体支持能力和错误见第 6.14–6.16 节。只改时间仍沿真实后端能力执行。
 伪文件系统和匿名对象在实际共享 inode owner 内执行同一协议，
 不把临时 wrapper 的私有 metadata 锁当作跨别名授权边界。
 
@@ -1972,6 +1972,114 @@ abort；只有成功推进、原尝试可安全重做时才留下 Retry，失败
 物理提交的纳秒字段。真实时钟沿既有 BlockTimeProvider 链取得，不新增零值回退。
 时间观察精度和 provider 安装仍需在后续用户消费者与运行证据中单独核实，
 本原生准备单元不因此宣称 Linux 时间 ABI 已兼容。
+
+### 6.14 FAT 的实际属性能力
+
+FAT 迁移复用 `FatInode` 持有的 canonical handle 和 `FatFilesystemGuard`，
+不是给每个 `FatFileNode`、`FatDirNode` 增加属性副本。入口在原 request 的 admission
+校验后取得 `lock_retiring(request.retired())`；同一 guard 覆盖读取当前 metadata、
+固定授权、支持能力检查、修改与结果观察。guard 退出仍先解锁，再把 retained owners
+交给外层退役袋；不能在 FS mutex 或外层 admission 中释放可能重入该 mutex 的最后引用。
+不通过旧父名重开目标，不 clone file/editor 后更新，也不另起一次普通 Location 操作。
+
+本单元保持第 2.4 节不替换第三方依赖的边界。固定的
+`starry-fatfs 0.4.1-preview.2` 公开了现有 `File` 的时间 setter 与可失败 `flush`，
+但 `Dir::as_file()` 只给不可变引用，没有目录时间、目录 flush 或 readonly 属性写入口。
+FAT12/16 根没有 File，FAT32 根的 File 也没有可持久化的目录项 editor。
+格式能存储某个字段不代表适配层已有受控写能力；不复制依赖的 editor、不直接改磁盘槽，
+也不以 Drop 的尽力刷新冒充显式成功。
+
+Linux 基准仍为 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`：
+[`fat_setattr`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fat/file.c#L424-L569)
+使用挂载 owner、mask、readonly 和时间选项解释属性；本项目构造器只有设备写权限，
+没有这些挂载选项。本单元因此保留当前固定 `uid=0`、`gid=0`、`mode=0666` 投影，
+不伪称它等于 Linux 默认挂载，不添加配置体系，也不修造一份可变 mode/owner 镜像。
+DOS readonly 的权限投影、任意 owner、目录属性写入及完整挂载选项兼容仍不在本单元能力内。
+不能从这项局部迁移得出 FAT 系统调用已经兼容的结论。
+
+支持能力的判断发生在通用授权之后、第一次修改之前。下表区分可忠实完成的请求与
+缺少存储入口的请求；拒绝路径保持当前 editor、文件数据与 birth time 不变。
+
+| 已授权字段或对象 | 本单元处理 | 不得采用的替代 |
+| --- | --- | --- |
+| UID/GID 的 `None` 或显式固定值 0 | 保留固定投影，返回当前真实观察；显式同值仍经过通用授权 | 先补成旧值，或因同值跳过授权 |
+| UID/GID 的显式非 0 值 | `OperationNotPermitted`，对应固定 owner 不能改变的边界 | CAP_CHOWN 后伪造成功或缓存 owner |
+| 最终 mode 与当前固定投影相同 | 通用 chmod 授权成功后保留投影 | 未授权的同值捷径 |
+| 最终 mode 不同 | `OperationNotSupported`，不伪造 readonly 写入 | 统一忽略 mode 或新增权限镜像 |
+| 普通文件的参与 atime/mtime | 修改原 canonical File，显式 flush，并返回投影后的实际时间 | 修改 clone、重开路径、返回未截断的请求值 |
+| 非根目录或根的参与 atime/mtime | `OperationNotSupported`，即使请求值碰巧相同也不假称已实现目录写入 | 空成功、root 补权、修改不可变 as_file 的复制品 |
+| 独立 ctime | 不写 birth time；按第 6.15 节由 mtime 投影 | 用请求的 now 覆盖 FAT 创建时间 |
+
+这不是 Linux FAT 所有 chmod 历史行为的实现：Linux 的 `fat_sanitize_mode` 可以清掉
+不可表示的 mode 请求并成功，且不要求 `quiet`；本项目在缺少 readonly 写入口时明确
+拒绝实际 mode 改变。`quiet` 还会抑制另一组 prepare/fixed-owner 错误，两者不能混同。
+不为模仿其中的成功返回而跳过本项目尚未落实的持久化。两个 `Keep` 仍在 VFS 外层
+准备之前返回；`Chown(None,None)` 则不是空命令，但也不追加无条件 owner 检查。
+
+### 6.15 FAT 的时间投影
+
+`file_metadata` 与 `FatInode::metadata` 从同一个真实 handle 读取时间。
+目录观察直接借用 canonical `FatHandle::Dir` 的不可变引用，不再为 metadata 克隆
+Dir；Dir clone 所含 File 的 Drop 会尝试 flush，不能让只读预检隐式执行并吞掉刷新错误。
+这种读取给出 holder 中真实 editor 的快照，不承诺每次重新加载磁盘，也不借此宣称
+目录内容变化后的 mtime 已实现完整 Linux 更新规则。
+非根对象的 atime 是访问日期的 UTC 午夜，mtime 是 FAT 的偶数秒，ctime 与 mtime
+相同；`File::created()` 是 birth time，不再冒充 Linux FAT 的 ctime。
+根的三个时间均为零，不从 FAT32 根的无目录项 File 推导可修改的属性。
+这些规则依据 Linux
+[`fat_truncate_time`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/fat/misc.c#L279-L345)，
+但本项目没有可配置时区，本单元只沿用既有 UTC 转换，不宣称覆盖 Linux 时区选项。
+
+时间转换在第一次 setter 前完成所有参与字段的归一化。`Duration` 的整体值先夹紧到
+1980-01-01 00:00:00 至 2107-12-31 23:59:59 的 UTC 区间，再取得合法日期和时间；
+mtime 向下取偶数秒并清除亚秒，atime 只取日期。不能仅 clamp year 而保留原月日，
+也不能先执行可能溢出的 `UNIX_EPOCH + Duration`。因此极大输入不触发 chrono panic，
+alias 立即观察到的值与关闭旧 FS 后重新读出的目录项精度一致。
+
+`LockedMetadataAttempt::wall_time` 使用 `crate::os::wall_time()`，
+不使用 fatfs 默认 TimeProvider 的零值或旧 inode 时间。Now、Set、Keep 的通用授权
+仍由 `MetadataRequest::execute` 完成；本单元不增加 FAT `allow_utime` 授权扩展，
+也不允许 backend 从已合流的 getter 猜测原始 ABI flags。ctime-only 的 chown 或同投影
+chmod 不改变 mtime/birth time；这是 FAT 的独立 ctime 不持久化边界，不是对所有后端的规定。
+
+### 6.16 FAT 的失败与迁移证明
+
+FAT 的 metadata 尝试不需要 Ext4 日志重试或新增 phase-two 状态。支持范围检查和
+时间归一化失败发生在修改之前，返回带当前观察的 `Unchanged`。参与字段通过 setter
+写入 canonical editor 后，必须调用现有 `File::flush()` 并传播首个真实 I/O 错误。
+setter 不执行 I/O，它修改 editor 编码字段；editor 成功序列化后清 dirty，随后
+File 才调用底层 disk.flush。因此 flush 失败不能证明未修改，也不抹掉已知的 owner
+状态。原 handle 可以直接读出完整后置 metadata 时，返回 `Applied(实际观察, Err)`；
+这个状态表示 owner 效果已知，不表示已耐久。只有后置 owner 本身无法可靠观察时，
+才返回 `Uncertain`，不得带旧快照冒充未修改。不回滚、自动重试或依靠 Drop 修复；
+后续 Drop 仍可能再次刷新残留内容，但不改变本次显式错误。
+完整成功返回 `Applied` 与当前投影；纯固定属性保留返回 `Unchanged` 的成功观察，
+不为了构造“提交”而无条件刷新先前积压的内容。
+
+既有 `NodeOps::update_metadata` 在第 6.8 节消费者尚未迁完前只是有明确删除条件的
+内部桥接，不是新协议的用户授权入口，但当前 Starry 等尚未迁移的用户消费者仍能到达它，
+这项缺口不得隐去。本单元只缩小私有时间 helper 的职责，使 raw 文件时间与 native
+时间共用端点归一化和已有 setter，不收紧 raw 对外的字段接受集合，不删除 File Drop
+的自动记时能力，也不让旧 raw 目录/根突然开始返回新错误。initramfs、fsmount 和
+Overlay 等仍会提交混合字段；不能把新增严格 native 子集暗中变成这些调用的兼容性变更。
+旧 raw 丢弃不支持字段的行为是待消除的已知缺口，不属于严格 native 支持范围或验收成果。
+不为桥接新增公开能力、另一份原始属性结构或弃用警告豁免；全部内部维护、恢复和
+Starry 消费者迁移后，按第 6.8 节删除 raw 长期接口，不能据桥接存在宣布整体迁移完成。
+
+证明采用一个完整 FAT 属性旅程，复用 `disk.rs` 的真实内存 image fixture，
+与现有 holder 生命周期回归互补，而不逐字段新建测试：从正常 Location 入口更新文件，
+从大小写别名观察同一状态，验证授权拒绝与不支持请求不改状态，覆盖部分时间保留、
+精度和范围端点，显式提交后释放全部旧 holder/FS，再由同 image 的新 FS 读取实际目录项。
+固定属性同值与拒绝、目录/根限制、birth time 不变纳入这条旅程。
+失败路径通过真实设备 flush 故障观察错误、当前 editor 和带错误的 `Applied`，不让测试替身
+实现属性状态机。旧实现应在同一旅程上因真实 MetadataChange 不支持或错误投影失败，
+不是以编译失败、源码文本匹配或零测试作为红证据。
+
+本单元不重复已有效的创建、Scope、Ext4 或 FAT 删除生命周期红绿。源码改动使用
+`cargo fmt`、`cargo xtask clippy --package ax-fs-ng`；提交后通过
+`cargo xtask test --since <本单元基线>` 选择实际受影响 profiles 并核对具体旅程执行。
+记录目标包结果与现有 Starry Overlay 编译阻塞，不把整批退出失败写成全绿。
+迁移不改变磁盘格式，回滚以提交为单位；已经成功持久化的时间不因代码回滚自动恢复。
 
 ## 7. 缓存专用查找
 
