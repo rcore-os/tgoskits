@@ -93,11 +93,7 @@ impl<T> NamespaceCompletion<T> {
             || NamespacePressureResult::new(Ok(()), None),
             |pressure| pressure.pressure(&mut self.outcome),
         );
-        let completion = if self.outcome.state() == crate::NamespaceState::Applied {
-            Ok(())
-        } else {
-            phase.completion
-        };
+        let completion = phase.completion;
         (
             NamespaceDeferred {
                 outcome: self.outcome,
