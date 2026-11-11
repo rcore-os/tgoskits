@@ -500,6 +500,11 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   使用自定义 `os=uefi`、ELF/PIC、LP64 soft-float 目标；最终生成 Loong PE32+
   loader 和 launcher。裸入口先清 BSS、自重定位再进入 UEFI Rust 运行逻辑。
   loader 不链接 ArceOS、ax-net 或 YT6801 驱动；目标 ArceOS 在 EFI 交接后独立启动。
+- Native LoongArch 的当前构建链接 ABI 要求每个 `PT_LOAD` 的 `p_vaddr` 与
+  `p_paddr` 相等。axloader 按 `p_paddr` 分配和复制，someboot 对 `r_offset`
+  加 `load_offset`；该相等关系保证 checked 8 字节目标映射回同一已装载可写段。
+  启用 relocation policy 的 ELF 只要任一 `PT_LOAD` 布局不一致就拒绝，即使没有
+  RELA section；x86 与 fixed-placement Loong 不受约束，`R_LARCH_NONE` 无写入。
 - U 盘安装复用 `build-install-efi.sh --target loongarch64-unknown-uefi --fresh`，
   固件入口为 `EFI/BOOT/BOOTLOONGARCH64.EFI`，与 x86 共用 `EFI/AXLOADER`
   A/B 和持久状态布局。不要把 legacy `.bin` 文件当作原生 EFI 产物。

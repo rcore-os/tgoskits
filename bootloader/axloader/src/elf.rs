@@ -399,6 +399,16 @@ fn validate_dynamic_relocations(
     let Some(policy) = policy else {
         return Ok(());
     };
+    // Native LoongArch allocates and copies PT_LOAD ranges by `p_paddr`, while
+    // someboot applies RELA to `r_offset + load_offset`. The current linker ABI
+    // emits identical virtual and physical addresses; other layouts can move a
+    // checked relocation target outside the populated writable segment.
+    if segments
+        .iter()
+        .any(|segment| segment.virtual_address != segment.physical_address)
+    {
+        return Err(ElfError::RelocationTargetRange);
+    }
     let section_count = usize::from(header.section_header_count);
     if section_count == 0 {
         return Ok(());
@@ -751,6 +761,11 @@ mod tests {
             assert_eq!(image.segments().len(), 1);
             assert!(image.segments()[0].flags & ELF_PF_X != 0);
         }
+        for spec in [X86_64, LOONGARCH64_EFI] {
+            let mut segment = executable_segment(spec);
+            segment.physical_address += 0x1000;
+            assert!(parse(spec, &[segment]).is_ok());
+        }
     }
 
     #[test]
@@ -801,13 +816,14 @@ mod tests {
         relocation_type: u32,
         target_segment_flags: u32,
         relocation_target: u64,
+        target_physical_address: u64,
     ) -> Vec<u8> {
         let executable = executable_segment(LOONGARCH64_UEFI);
         let executable_virtual_address = executable.virtual_address;
         let target = TestSegment {
             flags: target_segment_flags,
             virtual_address: 0x10_3000,
-            physical_address: 0x10_3000,
+            physical_address: target_physical_address,
             memory_size: 32,
         };
         let mut image = test_elf(LOONGARCH64_UEFI, &[executable, target]);
@@ -854,6 +870,7 @@ mod tests {
                 relocation_type,
                 target_segment_flags,
                 relocation_target,
+                0x10_3000,
             );
             let result = ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ());
             assert_eq!(result, expected);
@@ -868,12 +885,42 @@ mod tests {
             (6, 0x10_4000), // target is outside every load segment
             (6, u64::MAX),  // checked end overflows
         ] {
-            let image = native_loong_relocation_image(3, target_segment_flags, relocation_target);
+            let image = native_loong_relocation_image(
+                3,
+                target_segment_flags,
+                relocation_target,
+                0x10_3000,
+            );
             assert_eq!(
                 ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
                 Err(ElfError::RelocationTargetRange),
             );
         }
+    }
+
+    #[test]
+    fn native_loong_relocations_reject_inconsistent_physical_layout() {
+        for target_physical_address in [0x10_4000, 0x2_000] {
+            let image = native_loong_relocation_image(3, 6, 0x10_3018, target_physical_address);
+            assert_eq!(
+                ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+                Err(ElfError::RelocationTargetRange),
+            );
+        }
+
+        let mut executable = executable_segment(LOONGARCH64_UEFI);
+        executable.physical_address = 0x10_1000;
+        let target = TestSegment {
+            flags: 6,
+            virtual_address: 0x10_3000,
+            physical_address: 0x10_3000,
+            memory_size: 32,
+        };
+        let image = test_elf(LOONGARCH64_UEFI, &[executable, target]);
+        assert_eq!(
+            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+            Err(ElfError::RelocationTargetRange),
+        );
     }
 
     #[test]
