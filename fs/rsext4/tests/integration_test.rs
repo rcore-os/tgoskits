@@ -1172,7 +1172,7 @@ fn owned_special_inode_persists_modern_device_number() {
 }
 
 #[test]
-fn owned_empty_metadata_update_is_a_noop() {
+fn owned_metadata_updates_preserve_normalized_and_unspecified_fields() {
     let mut filesystem = owned_test_filesystem();
     let root = filesystem.root_inode();
     let context = MutationContext::new(1000, 1001, 0, 0);
@@ -1193,6 +1193,72 @@ fn owned_empty_metadata_update_is_a_noop() {
     assert_eq!(
         filesystem.inode(inode.number).expect("inspect inode"),
         inode
+    );
+
+    let uid_changed = filesystem
+        .update_inode_metadata(
+            inode.number,
+            InodeMetadataUpdate {
+                permissions: Some(FilePermissions::new(0o6750).expect("valid permissions")),
+                uid: Some(123_456),
+                ..Default::default()
+            },
+        )
+        .expect("apply final permissions and only UID");
+    assert_eq!(uid_changed.mode & 0o7777, 0o6750);
+    assert_eq!((uid_changed.uid, uid_changed.gid), (123_456, inode.gid));
+    assert!(uid_changed.ctime > inode.ctime);
+    assert_eq!(uid_changed.atime, inode.atime);
+    assert_eq!(uid_changed.mtime, inode.mtime);
+
+    let gid_changed = filesystem
+        .update_inode_metadata(
+            inode.number,
+            InodeMetadataUpdate {
+                gid: Some(234_567),
+                ctime: Some(Ext4Timestamp::new(1_600_000_123, 0)),
+                ..Default::default()
+            },
+        )
+        .expect("apply only GID and explicit ctime");
+    assert_eq!(
+        gid_changed,
+        InodeInfo {
+            gid: 234_567,
+            ctime: 1_600_000_123,
+            ..uid_changed
+        }
+    );
+
+    let time_changed = filesystem
+        .update_inode_metadata(
+            inode.number,
+            InodeMetadataUpdate {
+                ctime: Some(Ext4Timestamp::new(1_600_000_456, 0)),
+                ..Default::default()
+            },
+        )
+        .expect("ctime alone must participate in a real update");
+    assert_eq!(
+        time_changed,
+        InodeInfo {
+            ctime: 1_600_000_456,
+            ..gid_changed
+        }
+    );
+    assert_eq!(
+        filesystem
+            .update_inode_metadata(inode.number, InodeMetadataUpdate::default())
+            .expect("empty update must preserve explicit ctime"),
+        time_changed
+    );
+    filesystem.sync().expect("persist normalized metadata");
+    assert_eq!(
+        filesystem
+            .inode_metadata_reader()
+            .try_get(inode.number)
+            .expect("inspect committed metadata"),
+        Some(time_changed)
     );
 }
 

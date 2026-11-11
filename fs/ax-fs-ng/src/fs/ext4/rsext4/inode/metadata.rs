@@ -33,7 +33,8 @@ impl NodeOps for Inode {
                 .map(|mode| FilePermissions::new(mode.bits()))
                 .transpose()
                 .map_err(into_vfs_err)?,
-            owner: update.owner,
+            uid: update.owner.map(|(uid, _)| uid),
+            gid: update.owner.map(|(_, gid)| gid),
             device_number: update
                 .rdev
                 .map(|device| DeviceNumber::new(device.major(), device.minor()))

@@ -38,7 +38,8 @@ fn external_extent_conversion_preserves_concurrent_links_owner_and_xattr_blocks(
         .update_inode_metadata(
             number,
             InodeMetadataUpdate {
-                owner: Some((73, 91)),
+                uid: Some(73),
+                gid: Some(91),
                 ..Default::default()
             },
         )
