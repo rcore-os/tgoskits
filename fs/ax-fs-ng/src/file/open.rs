@@ -918,6 +918,11 @@ mod tests {
         assert_eq!(writer.write_at(b"retained".as_slice(), 0), Ok(8));
         drop(writer);
         let identity = existing.entry().key();
+        root.change_metadata(
+            axfs_ng_vfs::MetadataChange::Chmod(NodePermission::from_bits_truncate(0o555)),
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
         mount.set_readonly(true).unwrap();
 
         let mut read_only = OpenOptions::new();
@@ -996,6 +1001,61 @@ mod tests {
         let (location, created) = status.unwrap();
         assert!(!created);
         assert!(location.entry().ptr_eq(existing.entry()));
+        assert_eq!(existing.metadata().unwrap().nlink, 1);
+
+        // Searchable but non-writable parents do not block existing selections.
+        // The current object's DAC still applies despite the saved write denial.
+        let stranger = MutationCredentials {
+            fsuid: 2000,
+            fsgid: 2000,
+            ..credentials
+        };
+        assert!(matches!(
+            create.open_with_credentials(&context, "existing", &stranger),
+            Err(VfsError::PermissionDenied)
+        ));
+        let path_created = root
+            .open_file_with_status(
+                "existing",
+                &axfs_ng_vfs::OpenOptions {
+                    create: true,
+                    ..Default::default()
+                },
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 2000,
+                    fsgid: 2000,
+                    cap_dac_override: false,
+                    cap_dac_read_search: false,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        assert!(!path_created.1);
+        assert!(path_created.0.entry().ptr_eq(existing.entry()));
+        assert!(matches!(
+            exclusive.open_with_credentials(&context, "existing", &stranger),
+            Err(VfsError::AlreadyExists)
+        ));
+        mount.set_readonly(false).unwrap();
+        assert!(matches!(
+            create.open_with_credentials(&context, "denied", &credentials),
+            Err(VfsError::PermissionDenied)
+        ));
+        assert!(matches!(
+            root.lookup_no_follow("denied"),
+            Err(VfsError::NotFound)
+        ));
+        root.change_metadata(
+            axfs_ng_vfs::MetadataChange::Chmod(NodePermission::from_bits_truncate(0o444)),
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
+        mount.set_readonly(true).unwrap();
+        assert!(matches!(
+            create.open_with_credentials(&context, "existing", &credentials),
+            Err(VfsError::PermissionDenied)
+        ));
+        assert_eq!(existing.entry().key(), identity);
         assert_eq!(existing.metadata().unwrap().nlink, 1);
     }
 }

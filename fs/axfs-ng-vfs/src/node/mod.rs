@@ -17,8 +17,8 @@ use core::{
 
 use axpoll::{IoEvents, Pollable};
 use bitflags::bitflags;
-pub(crate) use dir::MutationTarget;
 pub use dir::*;
+pub(crate) use dir::{CreateSelection, MutationTarget};
 pub use file::*;
 use inherit_methods_macro::inherit_methods;
 pub use link::*;

@@ -106,11 +106,39 @@ pub struct ExistingOpen {
     pub access: NodePermission,
 }
 
+/// Ordinary creation intent; trusted archive ownership is not an open option.
+#[derive(Clone, Copy, Debug)]
+pub enum CreateIntent {
+    Exclusive,
+    Open(ExistingOpen),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CreateSelection {
+    Ordinary(CreateIntent),
+    Restore((u32, u32)),
+}
+
+impl CreateSelection {
+    pub(crate) fn request<'a>(
+        self,
+        target: MutationTarget<'a>,
+        attributes: CreateAttributes<'a>,
+        write: CreationWrite<'a>,
+    ) -> CreateRequest<'a> {
+        let (intent, restore_owner) = match self {
+            Self::Ordinary(intent) => (intent, None),
+            Self::Restore(owner) => (CreateIntent::Exclusive, Some(owner)),
+        };
+        CreateRequest::new(target, attributes, intent, restore_owner, write)
+    }
+}
+
 #[derive(Clone)]
 pub struct CreateRequest<'a> {
     pub(super) target: MutationTarget<'a>,
     attributes: CreateAttributes<'a>,
-    existing: Option<ExistingOpen>,
+    intent: CreateIntent,
     restore_owner: Option<(u32, u32)>,
     write: CreationWrite<'a>,
 }
@@ -119,14 +147,14 @@ impl<'a> CreateRequest<'a> {
     pub(crate) fn new(
         target: MutationTarget<'a>,
         attributes: CreateAttributes<'a>,
-        existing: Option<ExistingOpen>,
+        intent: CreateIntent,
         restore_owner: Option<(u32, u32)>,
         write: CreationWrite<'a>,
     ) -> Self {
         Self {
             target,
             attributes,
-            existing,
+            intent,
             restore_owner,
             write,
         }
@@ -140,6 +168,9 @@ impl<'a> CreateRequest<'a> {
     }
     pub fn attributes(&self) -> CreateAttributes<'_> {
         self.attributes
+    }
+    pub fn intent(&self) -> CreateIntent {
+        self.intent
     }
 }
 
@@ -488,7 +519,9 @@ impl<'slot, 'attempt, 'request> CommandSlot<'slot, 'attempt, 'request> {
                 },
             ) => {
                 if let Some(target) = target {
-                    let existing = request.existing.ok_or(VfsError::AlreadyExists)?;
+                    let CreateIntent::Open(existing) = request.intent else {
+                        return Err(VfsError::AlreadyExists);
+                    };
                     if target.entry.node_type() != NodeType::Symlink {
                         credentials.check_permission(&target.metadata, existing.access)?;
                     }

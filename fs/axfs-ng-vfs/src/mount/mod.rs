@@ -931,11 +931,7 @@ pub struct Location {
     entry: DirEntry,
 }
 
-enum CreateSelection {
-    Exclusive,
-    Open(crate::ExistingOpen),
-    Restore((u32, u32)),
-}
+use crate::node::CreateSelection;
 
 /// One upward step. A walker checks its root and mount policy before crossing
 /// `Covered`; it must not silently skip the covered mount root.
@@ -1248,33 +1244,56 @@ impl Location {
         credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<Self> {
         let write = crate::PreparedWrite::acquire(self)?;
-        let retired = crate::MutationRetire::new();
-        let effect = self
-            .create_with_write(name, attributes, credentials, &write, &retired)
-            .into_observation()?;
+        let outcome = if self.filesystem().has_native_namespace() {
+            self.run_native_create(
+                name,
+                attributes,
+                crate::CreateIntent::Exclusive,
+                credentials,
+                crate::prepared_write::PreparedView::write(&write),
+            )?
+        } else {
+            let retired = crate::MutationRetire::new();
+            self.run_create(
+                name,
+                attributes,
+                CreateSelection::Ordinary(crate::CreateIntent::Exclusive),
+                credentials,
+                crate::CreationWrite::Ready(&write),
+                &retired,
+            )
+        };
+        let effect = outcome.into_observation()?;
         match effect {
             crate::NamespaceEffect::Create(effect) => Ok(self.wrap(effect.selected.entry)),
             _ => Err(VfsError::BadState),
         }
     }
 
-    /// Borrows pre-admitted rights and retirement from an outer namespace owner.
-    pub fn create_with_write(
+    fn run_native_create(
         &self,
         name: &str,
         attributes: crate::CreateAttributes<'_>,
+        intent: crate::CreateIntent,
         credentials: &crate::MutationCredentials<'_>,
-        write: &crate::PreparedWrite,
-        retired: &crate::MutationRetire,
-    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
-        self.run_create(
-            name,
-            attributes,
-            CreateSelection::Exclusive,
-            credentials,
-            crate::CreationWrite::Ready(write),
-            retired,
-        )
+        prepared: crate::prepared_write::PreparedView<'_>,
+    ) -> VfsResult<crate::NamespaceOutcome<crate::NamespaceEffect>> {
+        loop {
+            let scope = crate::NamespaceOperationScope::acquire_prepared(prepared)?;
+            {
+                let context = scope.context();
+                scope.create(&context, self, name, attributes, intent, credentials)?;
+            }
+            let outcome = scope
+                .finish()
+                .unwrap_or_else(|_| unreachable!("fixed native factory binds the admitted owner"));
+            if outcome.state() == crate::NamespaceState::Retry
+                && matches!(outcome.result(), Ok(()) | Err(VfsError::WouldBlock))
+            {
+                continue;
+            }
+            return Ok(outcome);
+        }
     }
 
     fn run_create(
@@ -1286,11 +1305,7 @@ impl Location {
         write: crate::CreationWrite<'_>,
         retired: &crate::MutationRetire,
     ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
-        let (existing, restore_owner) = match selection {
-            CreateSelection::Exclusive => (None, None),
-            CreateSelection::Open(intent) => (Some(intent), None),
-            CreateSelection::Restore(owner) => (None, Some(owner)),
-        };
+        assert!(!self.filesystem().has_native_namespace());
         let target = match crate::MutationTarget::new(self, name, credentials) {
             Ok(target) => target,
             Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
@@ -1299,13 +1314,7 @@ impl Location {
             .as_dir()
             .expect("validated parent")
             .mutate_namespace(
-                &crate::NamespaceMutation::Create(crate::CreateRequest::new(
-                    target,
-                    attributes,
-                    existing,
-                    restore_owner,
-                    write,
-                )),
+                &crate::NamespaceMutation::Create(selection.request(target, attributes, write)),
                 retired,
             )
     }
@@ -1320,9 +1329,33 @@ impl Location {
         initialization: &crate::TrustedInitialization,
     ) -> VfsResult<Self> {
         let write = crate::PreparedWrite::acquire(self)?;
-        let retired = crate::MutationRetire::new();
-        match self
-            .run_create(
+        let outcome = if self.filesystem().has_native_namespace() {
+            loop {
+                let scope = crate::NamespaceOperationScope::acquire(&write)?;
+                {
+                    let context = scope.context();
+                    scope.restore_create(
+                        &context,
+                        self,
+                        name,
+                        attributes,
+                        owner,
+                        initialization,
+                    )?;
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
+                if outcome.state() == crate::NamespaceState::Retry
+                    && matches!(outcome.result(), Ok(()) | Err(VfsError::WouldBlock))
+                {
+                    continue;
+                }
+                break outcome;
+            }
+        } else {
+            let retired = crate::MutationRetire::new();
+            self.run_create(
                 name,
                 attributes,
                 CreateSelection::Restore(owner),
@@ -1330,8 +1363,8 @@ impl Location {
                 crate::CreationWrite::Ready(&write),
                 &retired,
             )
-            .into_observation()?
-        {
+        };
+        match outcome.into_observation()? {
             crate::NamespaceEffect::Create(effect) => Ok(self.wrap(effect.selected.entry)),
             _ => Err(VfsError::BadState),
         }
@@ -1672,34 +1705,33 @@ impl Location {
                 .lookup_no_follow(name)
                 .map(|location| (location, false));
         }
-        let preparation = crate::PreparedWrite::acquire(self);
-        let write = match &preparation {
-            Ok(write) => crate::CreationWrite::Ready(write),
-            Err(error) => crate::CreationWrite::Denied(*error),
+        let preparation = crate::PreparedCreation::acquire(self)?;
+        let prepared = crate::prepared_write::PreparedView::creation(&preparation);
+        let attributes = crate::CreateAttributes {
+            content: crate::CreateContent::Node(options.node_type, crate::DeviceId::default()),
+            permission: options.permission,
         };
-        let retired = crate::MutationRetire::new();
-        let effect = self
-            .run_create(
+        let intent = if options.create_new {
+            crate::CreateIntent::Exclusive
+        } else {
+            crate::CreateIntent::Open(crate::ExistingOpen {
+                access: options.access,
+            })
+        };
+        let outcome = if self.filesystem().has_native_namespace() {
+            self.run_native_create(name, attributes, intent, credentials, prepared)?
+        } else {
+            let retired = crate::MutationRetire::new();
+            self.run_create(
                 name,
-                crate::CreateAttributes {
-                    content: crate::CreateContent::Node(
-                        options.node_type,
-                        crate::DeviceId::default(),
-                    ),
-                    permission: options.permission,
-                },
-                if options.create_new {
-                    CreateSelection::Exclusive
-                } else {
-                    CreateSelection::Open(crate::ExistingOpen {
-                        access: options.access,
-                    })
-                },
+                attributes,
+                CreateSelection::Ordinary(intent),
                 credentials,
-                write,
+                prepared.creation_write(self)?,
                 &retired,
             )
-            .into_observation()?;
+        };
+        let effect = outcome.into_observation()?;
         match effect {
             crate::NamespaceEffect::Create(effect) => Ok((
                 self.wrap(effect.selected.entry).resolve_mountpoint(),

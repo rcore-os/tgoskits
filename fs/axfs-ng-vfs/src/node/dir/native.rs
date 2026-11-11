@@ -209,7 +209,7 @@ pub(crate) fn start_unlink<'a>(
         target,
         directory,
         prepared,
-        context.write(),
+        context.write()?,
     ));
     start_command(context, &parent, command, reservation)
 }
@@ -238,7 +238,24 @@ pub(crate) fn start_link<'a>(
             return Err(VfsError::CrossesDevices);
         }
     }
-    let command = NamespaceMutation::Link(LinkRequest::new(target, source, context.write()));
+    let command = NamespaceMutation::Link(LinkRequest::new(target, source, context.write()?));
+    Ok(start_command(context, parent, command, reservation)?.resume())
+}
+
+pub(crate) fn start_create<'a>(
+    context: &'a NamespaceOperationContext<'a>,
+    parent: &'a crate::Location,
+    name: &str,
+    attributes: CreateAttributes<'a>,
+    selection: super::command::CreateSelection,
+    credentials: &MutationCredentials<'a>,
+    reservation: Reservation<'a>,
+) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+    context.retired().retire(parent.clone());
+    let target = super::command::MutationTarget::new(parent, name, credentials)?;
+    parent.entry().as_dir()?.ensure_linked()?;
+    let write = context.creation_write(parent)?;
+    let command = NamespaceMutation::Create(selection.request(target, attributes, write));
     Ok(start_command(context, parent, command, reservation)?.resume())
 }
 
@@ -260,7 +277,7 @@ pub(crate) fn start_rename<'a>(
         destination,
         options,
         credentials,
-        context.write(),
+        context.write()?,
     )?);
     Ok(start_command(context, source.0, command, reservation)?.resume())
 }

@@ -124,6 +124,10 @@ impl ProbeFs {
 }
 
 impl FilesystemOps for ProbeFs {
+    fn has_native_namespace(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "completion-protocol-probe"
     }
@@ -156,6 +160,7 @@ impl FilesystemOps for ProbeFs {
         let parent = request.command().parents().0.clone();
         let target = self.entry(Reference::new(Some(parent), "victim".into()));
         let name = match request.command() {
+            NamespaceMutation::Create(_) => "create",
             NamespaceMutation::Link(_) => "link",
             NamespaceMutation::Rename(_) => "rename",
             _ => "namespace",
@@ -209,6 +214,21 @@ impl NodeOps for ProbeNode {
             assert_eq!(observed.state(), NamespaceState::Unchanged);
             assert_eq!(observed.result(), Err(VfsError::AlreadyExists));
             let context = request.context();
+            let selected = context
+                .create(
+                    backing,
+                    "victim",
+                    creation_attributes(),
+                    crate::CreateIntent::Open(crate::ExistingOpen {
+                        access: NodePermission::OTHER_READ,
+                    }),
+                    &MutationCredentials::root(),
+                )
+                .unwrap();
+            assert_eq!(selected.state(), NamespaceState::Unchanged);
+            assert_eq!(selected.result(), Ok(()));
+            assert!(matches!(selected.observation(),
+                Some(NamespaceEffect::Create(effect)) if !effect.created && effect.selected.entry.inode() == 1));
             let linked = context
                 .link(backing, "alias", backing, &MutationCredentials::root())
                 .unwrap();
@@ -315,6 +335,10 @@ impl LockedAttempt for Driver<'_> {
             empty: true,
         };
         Ok(match command {
+            NamespaceMutation::Create(_) => MutationObservation::Create {
+                target: Some(target),
+                owner_policy: crate::CreateOwnerPolicy::ParentSetgid,
+            },
             NamespaceMutation::Unlink(_) => MutationObservation::Unlink(target),
             NamespaceMutation::Link(_) => MutationObservation::Link {
                 source: target,
@@ -324,7 +348,6 @@ impl LockedAttempt for Driver<'_> {
                 source: target,
                 target: None,
             }),
-            _ => panic!("unexpected command"),
         })
     }
     fn is_ancestor(&mut self, _: &NamespaceNode, _: u64) -> VfsResult<bool> {
@@ -523,7 +546,7 @@ pub(crate) fn exercise_scope() {
         assert!(last_exit < retire && retire < first_finish);
         let mut expected_names = vec!["namespace"; 12];
         expected_names.push("metadata");
-        expected_names.extend(["link", "rename"]);
+        expected_names.extend(["create", "link", "rename"]);
         if root_work {
             expected_names.push("root");
         }
@@ -555,6 +578,167 @@ pub(crate) fn exercise_scope() {
         assert!(weak_logical.upgrade().is_none());
     }
     exercise_incomplete_and_preflight();
+    exercise_creation();
+}
+
+fn creation_attributes() -> crate::CreateAttributes<'static> {
+    crate::CreateAttributes {
+        content: crate::CreateContent::Node(NodeType::RegularFile, crate::DeviceId::default()),
+        permission: NodePermission::from_bits_truncate(0o600),
+    }
+}
+
+fn exercise_creation() {
+    for phase_errors in [false, true] {
+        let events = Events::default();
+        let owner = Arc::new(Owner(events.clone()));
+        let weak_owner = Arc::downgrade(&owner);
+        let (native, backing) = filesystem(1, vec![], &events, &owner, true, phase_errors);
+        let (logical, root) = filesystem(
+            0,
+            vec![backing.clone(), backing.clone()],
+            &events,
+            &owner,
+            true,
+            phase_errors,
+        );
+        let mounts = [
+            Arc::downgrade(root.mountpoint()),
+            Arc::downgrade(backing.mountpoint()),
+        ];
+        let weak_native = Arc::downgrade(&native);
+        let weak_logical = Arc::downgrade(&logical);
+        // The outer write lease is acquired before this backing fails. Read
+        // preparation must release that partial lease, not retain writable pins.
+        backing.mountpoint().set_readonly(true).unwrap();
+        let prepared = crate::PreparedCreation::acquire(&root).unwrap();
+        root.mountpoint().set_readonly(true).unwrap();
+        let alias = Location::new(root.mountpoint().clone_tree(), root.entry().clone());
+        let scope = NamespaceOperationScope::acquire_creation(&prepared).unwrap();
+        {
+            let context = scope.context();
+            context.retired().retire(Retired(events.clone()));
+            for target in [&root, &backing, &alias] {
+                assert!(matches!(
+                    context.write_for(target),
+                    Err(VfsError::CrossesDevices)
+                ));
+            }
+            let credentials = MutationCredentials::root();
+            assert!(
+                matches!(
+                    context.create(
+                        &alias,
+                        "victim",
+                        creation_attributes(),
+                        crate::CreateIntent::Exclusive,
+                        &credentials
+                    ),
+                    Err(VfsError::CrossesDevices)
+                ),
+                "same FS is not the prepared exact mount"
+            );
+            for (name_state, error) in [
+                (crate::NameState::Unlinked, VfsError::NotFound),
+                (crate::NameState::Untrusted, VfsError::WouldBlock),
+            ] {
+                root.entry().set_name_state(name_state);
+                assert!(matches!(
+                    context.create(&root, "victim", creation_attributes(), crate::CreateIntent::Exclusive, &credentials),
+                    Err(actual) if actual == error
+                ));
+            }
+            root.entry().set_name_state(crate::NameState::Linked);
+            let child = context
+                .create(
+                    &backing,
+                    "victim",
+                    creation_attributes(),
+                    crate::CreateIntent::Open(crate::ExistingOpen {
+                        access: NodePermission::OTHER_READ,
+                    }),
+                    &credentials,
+                )
+                .unwrap();
+            assert_eq!(child.state(), NamespaceState::Unchanged);
+            assert_eq!(child.result(), Ok(()));
+            let selected = scope
+                .create(
+                    &context,
+                    &root,
+                    "victim",
+                    creation_attributes(),
+                    crate::CreateIntent::Open(crate::ExistingOpen {
+                        access: NodePermission::OTHER_READ,
+                    }),
+                    &credentials,
+                )
+                .unwrap();
+            assert_eq!(selected.state(), NamespaceState::Unchanged);
+            assert_eq!(selected.result(), Ok(()));
+            assert!(matches!(selected.observation(),
+                Some(NamespaceEffect::Create(effect)) if !effect.created));
+            assert!(
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|event| matches!(event, Event::Enter(_)))
+            );
+        }
+        drop((root, backing, logical, native, alias, owner));
+        let outcome = scope
+            .finish()
+            .unwrap_or_else(|_| panic!("fixed create owners"));
+        assert_eq!(outcome.state(), NamespaceState::Unchanged);
+        assert!(matches!(outcome.observation(),
+            Some(NamespaceEffect::Create(effect)) if !effect.created));
+        assert_eq!(
+            outcome.into_result(),
+            if phase_errors {
+                Err(VfsError::Io)
+            } else {
+                Ok(())
+            }
+        );
+        let trace = events.lock().unwrap();
+        let mut entered: Vec<_> = trace
+            .iter()
+            .filter_map(|event| match event {
+                Event::Enter(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        entered.sort_unstable();
+        assert_eq!(entered, vec![0, 1]);
+        let stages: Vec<_> = trace
+            .iter()
+            .filter(|event| !matches!(event, Event::Enter(_) | Event::DropWork(_)))
+            .cloned()
+            .collect();
+        assert!(matches!(
+            stages.as_slice(),
+            [
+                Event::Pressure("create"),
+                Event::Pressure("create"),
+                Event::Exit(_),
+                Event::Exit(_),
+                Event::Retire,
+                Event::Finish("create"),
+                Event::Finish("create")
+            ]
+        ));
+        drop(trace);
+        assert!(mounts.iter().all(|mount| mount.upgrade().is_some()));
+        assert!(weak_native.upgrade().is_some());
+        assert!(weak_logical.upgrade().is_some());
+        assert!(weak_owner.upgrade().is_some());
+        drop(prepared);
+        assert!(mounts.iter().all(|mount| mount.upgrade().is_none()));
+        assert!(weak_native.upgrade().is_none());
+        assert!(weak_logical.upgrade().is_none());
+        assert!(weak_owner.upgrade().is_none());
+    }
 }
 
 fn exercise_incomplete_and_preflight() {

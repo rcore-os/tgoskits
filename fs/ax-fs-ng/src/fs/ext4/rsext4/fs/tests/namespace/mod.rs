@@ -50,6 +50,56 @@ fn namespace_staging_releases_lookup_before_real_flush() {
         assert_eq!(root.lookup("created").unwrap().inode(), created.inode());
         assert_admission_released(&filesystem);
     }
+
+    // One ordinary create must retry after real pressure, with fresh parent
+    // authorization. Never mutate metadata inside the device-flush callback.
+    let (filesystem, native_root, mount) = fixture();
+    let root = mount.root_location();
+    root.change_metadata(
+        axfs_ng_vfs::MetadataChange::Chmod(NodePermission::from_bits_truncate(0o777)),
+        &axfs_ng_vfs::MutationCredentials::root(),
+    )
+    .unwrap();
+    filesystem.lock().staging = true;
+    let probe = lookup_during_staging(&filesystem, &native_root);
+    let revoking = filesystem.clone();
+    let revoked = root.clone();
+    let progress = super::metadata_pressure::ProgressProbe::install(move || {
+        assert!(!revoking.lock().staging);
+        assert_eq!(revoking.admission.active_count(), 1);
+        revoking.sync_to_disk().unwrap();
+        revoked
+            .change_metadata(
+                axfs_ng_vfs::MetadataChange::Chmod(NodePermission::from_bits_truncate(0o555)),
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
+    });
+    let credentials = axfs_ng_vfs::MutationCredentials {
+        fsuid: 1000,
+        fsgid: 1000,
+        cap_dac_override: false,
+        cap_dac_read_search: false,
+        cap_fowner: false,
+        ..axfs_ng_vfs::MutationCredentials::root()
+    };
+    let result = root.create(
+        "denied-create",
+        NodeType::RegularFile,
+        NodePermission::default(),
+        1000,
+        1000,
+        &credentials,
+    );
+    probe.finish();
+    progress.finish();
+    assert_eq!(result.unwrap_err(), VfsError::PermissionDenied);
+    assert_eq!(
+        root.lookup_no_follow("denied-create").unwrap_err(),
+        VfsError::NotFound
+    );
+    assert_eq!(root.metadata().unwrap().mode.bits() & 0o777, 0o555);
+    assert_admission_released(&filesystem);
 }
 
 #[test]

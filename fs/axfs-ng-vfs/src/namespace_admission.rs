@@ -121,11 +121,17 @@ impl<'a> NamespaceAdmissions<'a> {
     }
 
     pub fn acquire(write: &'a PreparedWrite) -> VfsResult<Self> {
+        Self::acquire_prepared(crate::prepared_write::PreparedView::write(write))
+    }
+
+    pub(crate) fn acquire_prepared(
+        prepared: crate::prepared_write::PreparedView<'a>,
+    ) -> VfsResult<Self> {
         // Complete enumeration, validation and allocation before entering the
         // first FS. The borrowed receivers belong to external mount roots,
         // never to fields of this collection.
         let mut owners = Vec::new();
-        for owner in write.filesystems() {
+        for owner in prepared.filesystems() {
             if owner.stack_depth() > 2 {
                 return Err(VfsError::InvalidInput);
             }

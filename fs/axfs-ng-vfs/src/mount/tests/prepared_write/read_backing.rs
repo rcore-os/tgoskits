@@ -56,7 +56,65 @@ fn namespace_admissions_order_real_receivers_once_and_release_partial_acquisitio
         vec![higher.clone(), alias.clone(), lower.clone()],
         Some(probe.clone()),
     );
+    // A failed complete write attempt must be followed by a fully read-only
+    // traversal, including both declared root groups and exact-mount aliases.
+    higher.mountpoint().set_readonly(true).unwrap();
+    let creation = crate::PreparedCreation::acquire(&visible).unwrap();
+    let view = crate::prepared_write::PreparedView::creation(&creation);
+    for location in [&visible, &higher, &alias, &lower, &read_only, &read_alias] {
+        assert_eq!(location.mountpoint().writes.lock().writers, 0);
+        assert_eq!(
+            view.creation_write(location)
+                .unwrap()
+                .require(location)
+                .unwrap_err(),
+            VfsError::ReadOnlyFilesystem,
+        );
+    }
+    let admissions = NamespaceAdmissions::acquire_prepared(view).unwrap();
+    let retired = MutationRetire::new();
+    for location in [&visible, &higher, &alias, &lower, &read_only, &read_alias] {
+        let provider = location.entry().downcast::<WriteLayerRoot>().unwrap();
+        *provider.filesystem.lookup_response.lock().unwrap() =
+            Some(crate::NamespaceRead::Entry(None));
+        assert!(matches!(
+            admissions
+                .for_location(location)
+                .unwrap()
+                .lookup_backing(location, "missing", &retired),
+            Err(VfsError::NotFound)
+        ));
+    }
+    let mut receivers: Vec<_> = [&visible, &higher, &lower, &read_only]
+        .into_iter()
+        .map(address)
+        .collect();
+    receivers.sort_unstable();
+    assert_eq!(
+        *probe.events.lock().unwrap(),
+        receivers
+            .iter()
+            .map(|owner| (*owner, true))
+            .collect::<Vec<_>>(),
+        "read fallback must enter actual receivers exactly once"
+    );
+    drop(admissions);
+    drop(retired);
+    drop(creation);
+    let fallback_events = core::mem::take(&mut *probe.events.lock().unwrap());
+    assert_eq!(fallback_events.len(), receivers.len() * 2);
+    higher.mountpoint().set_readonly(false).unwrap();
     let write = PreparedWrite::acquire(&visible).unwrap();
+    let ready = crate::prepared_write::PreparedView::write(&write);
+    assert_eq!(
+        ready
+            .creation_write(&read_only)
+            .unwrap()
+            .require(&read_only)
+            .unwrap_err(),
+        VfsError::CrossesDevices,
+        "a prepared read dependency permits observation but never creation"
+    );
     assert!(probe.events.lock().unwrap().is_empty());
     for location in [&visible, &higher, &alias, &lower] {
         assert_eq!(location.mountpoint().writes.lock().writers, 1);
@@ -430,6 +488,12 @@ fn prepared_write_retains_exact_mounts_across_dependencies_and_releases_failed_p
         );
         assert_eq!(invalid.mountpoint().writes.lock().writers, 0);
         invalid.mountpoint().set_readonly(true).unwrap();
+        // The saved write error must not hide an invalid pure-read graph,
+        // including the duplicate-edge declaration above.
+        assert_eq!(
+            crate::PreparedCreation::acquire(&invalid).unwrap_err(),
+            VfsError::InvalidInput
+        );
         invalid.mountpoint().set_filesystem_readonly(true).unwrap();
     }
     for location in [&seen, &invalid_parent] {

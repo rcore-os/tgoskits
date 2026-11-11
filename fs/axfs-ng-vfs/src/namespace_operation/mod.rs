@@ -14,6 +14,7 @@ use crate::{
     NamespaceAdmission, NamespaceAdmissions, NamespaceCompletion, NamespaceEffect,
     NamespaceOutcome, NamespaceQuery, NamespaceRead, NamespaceStart, NamespaceState,
     PreparedUnlink, PreparedWrite, RenameOptions, VfsError, VfsResult,
+    prepared_write::PreparedView,
 };
 
 /// An owned snapshot, never a transferable completion or write capability.
@@ -62,19 +63,29 @@ struct OperationState<'a, T> {
     retired: Option<MutationRetire>,
     children: RefCell<Registration>,
     root: RefCell<Option<NamespaceCompletion<T>>>,
-    write: &'a PreparedWrite,
+    prepared: PreparedView<'a>,
 }
 
 impl<'a, T> NamespaceOperationScope<'a, T> {
     pub fn acquire(write: &'a PreparedWrite) -> VfsResult<Self> {
+        Self::acquire_prepared(PreparedView::write(write))
+    }
+
+    /// Borrows complete creation preparation, including a fully read-only graph
+    /// when creation write preparation failed. No rights are acquired in gates.
+    pub fn acquire_creation(creation: &'a crate::PreparedCreation) -> VfsResult<Self> {
+        Self::acquire_prepared(PreparedView::creation(creation))
+    }
+
+    pub(crate) fn acquire_prepared(prepared: PreparedView<'a>) -> VfsResult<Self> {
         let mut state = Vec::new();
         state.try_reserve_exact(1).map_err(|_| VfsError::NoMemory)?;
         state.push(OperationState {
-            admissions: Some(NamespaceAdmissions::acquire(write)?),
+            admissions: Some(NamespaceAdmissions::acquire_prepared(prepared)?),
             retired: Some(MutationRetire::new()),
             children: RefCell::new(Registration::new()),
             root: RefCell::new(None),
-            write,
+            prepared,
         });
         Ok(Self { state })
     }
@@ -90,7 +101,7 @@ impl<'a, T> NamespaceOperationScope<'a, T> {
             admissions: state.admissions.as_ref().expect("live scope"),
             retired: state.retired.as_ref().expect("live scope"),
             children: &state.children,
-            write: state.write,
+            prepared: state.prepared,
         }
     }
 
@@ -180,6 +191,50 @@ impl NamespaceOperationScope<'_, Metadata> {
 }
 
 impl NamespaceOperationScope<'_, NamespaceEffect> {
+    /// Starts one root creation or existing-object selection. Even an unchanged
+    /// selection transfers its typed completion before returning this snapshot.
+    pub fn create<'a>(
+        &'a self,
+        context: &'a NamespaceOperationContext<'a>,
+        parent: &'a Location,
+        name: &str,
+        attributes: crate::CreateAttributes<'a>,
+        intent: crate::CreateIntent,
+        credentials: &MutationCredentials<'a>,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        self.check_context(context)?;
+        crate::node::start_create(
+            context,
+            parent,
+            name,
+            attributes,
+            crate::node::CreateSelection::Ordinary(intent),
+            credentials,
+            Reservation::root_namespace(context.children, &self.state().root),
+        )
+    }
+
+    pub(crate) fn restore_create<'a>(
+        &'a self,
+        context: &'a NamespaceOperationContext<'a>,
+        parent: &'a Location,
+        name: &str,
+        attributes: crate::CreateAttributes<'a>,
+        owner: (u32, u32),
+        initialization: &crate::TrustedInitialization,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        self.check_context(context)?;
+        crate::node::start_create(
+            context,
+            parent,
+            name,
+            attributes,
+            crate::node::CreateSelection::Restore(owner),
+            initialization.credentials(),
+            Reservation::root_namespace(context.children, &self.state().root),
+        )
+    }
+
     /// Starts exactly one root native hard-link attempt. Completion remains in
     /// this scope even when the returned observation reports an error.
     pub fn link<'a>(
@@ -258,10 +313,31 @@ pub struct NamespaceOperationContext<'a> {
     admissions: &'a NamespaceAdmissions<'a>,
     retired: &'a MutationRetire,
     children: &'a RefCell<Registration>,
-    write: &'a PreparedWrite,
+    prepared: PreparedView<'a>,
 }
 
 impl<'a> NamespaceOperationContext<'a> {
+    /// Starts a prepared child create/open without re-entering any admission.
+    pub fn create(
+        &'a self,
+        parent: &'a Location,
+        name: &str,
+        attributes: crate::CreateAttributes<'a>,
+        intent: crate::CreateIntent,
+        credentials: &MutationCredentials<'a>,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        let reservation = Reservation::child(self.children)?;
+        crate::node::start_create(
+            self,
+            parent,
+            name,
+            attributes,
+            crate::node::CreateSelection::Ordinary(intent),
+            credentials,
+            reservation,
+        )
+    }
+
     /// Reads a prepared receiver without entering another admission.
     /// As with `NamespaceAdmission::query`, no native driver or backend gate may
     /// be held; the snapshot does not authorize a later backing mutation.
@@ -292,7 +368,7 @@ impl<'a> NamespaceOperationContext<'a> {
 
     /// Returns only a real exact-mount write lease; read pins cannot satisfy it.
     pub fn write_for(&self, target: &Location) -> VfsResult<&MountWriteGuard> {
-        self.write.write_for(target)
+        self.prepared.require_write()?.write_for(target)
     }
 
     pub fn change_metadata(
@@ -359,8 +435,13 @@ impl<'a> NamespaceOperationContext<'a> {
         self.admissions.for_owner(owner)
     }
 
-    pub(crate) fn write(&self) -> &'a PreparedWrite {
-        self.write
+    pub(crate) fn write(&self) -> VfsResult<&'a PreparedWrite> {
+        self.prepared.require_write()
+    }
+
+    pub(crate) fn creation_write(&self, target: &Location) -> VfsResult<crate::CreationWrite<'a>> {
+        self.admission(target)?.check_owner(target.filesystem())?;
+        self.prepared.creation_write(target)
     }
 
     fn dispatch_metadata(
