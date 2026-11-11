@@ -9,11 +9,11 @@ use crate::{
 
 /// Backend-owned typed pressure/abort state. This object holds no backend gate,
 /// slot, authorization or name publication scope. It must not reenter admission.
-pub trait NamespacePressure {
+pub trait NamespacePressure<T = NamespaceEffect> {
     /// Consumes phase two and returns only admission-independent owners.
     fn pressure(
         self: Box<Self>,
-        outcome: &mut NamespaceOutcome<NamespaceEffect>,
+        outcome: &mut NamespaceOutcome<T>,
     ) -> Option<Box<dyn NamespaceFinish>>;
 }
 
@@ -25,18 +25,18 @@ pub trait NamespaceFinish {
 
 /// No-lock completion, including attempts that never produced an observation.
 #[must_use = "finish pressure/abort before releasing all operation admissions"]
-pub struct NamespaceCompletion {
-    outcome: NamespaceOutcome<NamespaceEffect>,
+pub struct NamespaceCompletion<T = NamespaceEffect> {
+    outcome: NamespaceOutcome<T>,
     owner: Option<usize>,
-    pressure: Option<Box<dyn NamespacePressure>>,
+    pressure: Option<Box<dyn NamespacePressure<T>>>,
     parents: Vec<DirEntry>,
 }
 
-impl NamespaceCompletion {
+impl<T> NamespaceCompletion<T> {
     /// Backend completion payload; the fixed request binds the actual owner.
     pub fn new(
-        outcome: NamespaceOutcome<NamespaceEffect>,
-        pressure: Option<Box<dyn NamespacePressure>>,
+        outcome: NamespaceOutcome<T>,
+        pressure: Option<Box<dyn NamespacePressure<T>>>,
     ) -> Self {
         Self {
             outcome,
@@ -46,7 +46,7 @@ impl NamespaceCompletion {
         }
     }
 
-    pub fn outcome(&self) -> &NamespaceOutcome<NamespaceEffect> {
+    pub fn outcome(&self) -> &NamespaceOutcome<T> {
         &self.outcome
     }
 
@@ -65,7 +65,7 @@ impl NamespaceCompletion {
             .is_some_and(|owner| admissions.contains_owner(owner))
     }
 
-    pub(crate) fn pressure(mut self) -> NamespaceDeferred {
+    pub(crate) fn pressure(mut self) -> NamespaceDeferred<T> {
         let finish = self
             .pressure
             .take()
@@ -80,14 +80,14 @@ impl NamespaceCompletion {
 
 /// Phase-four work. No admission, gate or borrowed mutation input is retained.
 #[must_use = "release every FS admission and retired owner before explicit completion"]
-pub struct NamespaceDeferred {
-    outcome: NamespaceOutcome<NamespaceEffect>,
+pub struct NamespaceDeferred<T = NamespaceEffect> {
+    outcome: NamespaceOutcome<T>,
     finish: Option<Box<dyn NamespaceFinish>>,
     _parents: Vec<DirEntry>,
 }
 
-impl NamespaceDeferred {
-    pub fn finish(self) -> NamespaceOutcome<NamespaceEffect> {
+impl<T> NamespaceDeferred<T> {
+    pub fn finish(self) -> NamespaceOutcome<T> {
         let completion = self.finish.map_or(Ok(()), |finish| finish.finish());
         self.outcome.with_completion(completion)
     }

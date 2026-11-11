@@ -143,10 +143,17 @@ impl<'a> NamespaceAdmissions<'a> {
     /// remaining owner. No completion is consumed before all owners validate.
     /// On success, explicitly drop *all* admissions, then retirement, and only
     /// then call [`NamespaceDeferred::finish`] for the remaining work.
-    pub fn pressure(
+    ///
+    /// Mixed operations keep separate typed collections. Process both sets
+    /// before dropping any admission, retaining either result on mismatch.
+    /// Do not use `?` on the second set: that could drop the first set's
+    /// deferred inode owners while admissions are still held. After releasing
+    /// every admission and retired owner, finish successful sets and return
+    /// mismatched sets with their completion responsibility intact.
+    pub fn pressure<T>(
         &self,
-        completions: Vec<NamespaceCompletion>,
-    ) -> Result<Vec<NamespaceDeferred>, Vec<NamespaceCompletion>> {
+        completions: Vec<NamespaceCompletion<T>>,
+    ) -> Result<Vec<NamespaceDeferred<T>>, Vec<NamespaceCompletion<T>>> {
         if completions
             .iter()
             .any(|completion| !completion.admitted_by(self))

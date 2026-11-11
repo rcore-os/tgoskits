@@ -1,6 +1,6 @@
 //! Deterministic backend interleavings exercise the actual DirNode cache.
 
-use alloc::{boxed::Box, string::String, sync::Arc};
+use alloc::{boxed::Box, string::String, sync::Arc, vec};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -181,6 +181,141 @@ fn an_alias_mutation_during_lookup_prevents_negative_publication() {
     }));
     assert_missing(&directory, "created");
     assert!(directory.lookup("created").is_ok());
+}
+
+#[test]
+fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
+    // The fixture supplies receivers and completion work, not a replacement
+    // admission/completion state machine or a metadata mutation algorithm.
+    struct ForeignFilesystem(DirEntry);
+    impl FilesystemOps for ForeignFilesystem {
+        fn name(&self) -> &str {
+            "foreign-completion-owner"
+        }
+        fn root_dir(&self) -> DirEntry {
+            self.0.clone()
+        }
+        fn stat(&self) -> VfsResult<StatFs> {
+            Err(VfsError::Unsupported)
+        }
+    }
+    struct FinishProbe {
+        calls: Arc<AtomicUsize>,
+        _owner: Arc<()>,
+    }
+    impl NamespaceFinish for FinishProbe {
+        fn finish(self: Box<Self>) -> VfsResult<()> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Err(VfsError::InvalidInput)
+        }
+    }
+    struct PressureProbe {
+        calls: Arc<AtomicUsize>,
+        finish: FinishProbe,
+    }
+    impl<T> NamespacePressure<T> for PressureProbe {
+        fn pressure(
+            self: Box<Self>,
+            outcome: &mut NamespaceOutcome<T>,
+        ) -> Option<Box<dyn NamespaceFinish>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let original = core::mem::replace(outcome, NamespaceOutcome::unchanged(Ok(())));
+            *outcome = original.with_completion(Err(VfsError::Io));
+            Some(Box::new(self.finish))
+        }
+    }
+
+    let (directory, backend) = fixture();
+    // ScriptedDirectory reports a shared zero-sized owner. Use a distinct
+    // receiver, not another mount of that same owner, for the mismatch.
+    let foreign = ForeignFilesystem(directory.0.entry().clone());
+    let write = crate::PreparedWrite::acquire(&directory.0).unwrap();
+    let admissions = crate::NamespaceAdmissions::acquire(&write).unwrap();
+    let retired = MutationRetire::new();
+    let pressure_calls = Arc::new(AtomicUsize::new(0));
+    let finish_calls = Arc::new(AtomicUsize::new(0));
+    let owner = Arc::new(());
+    let work = || {
+        Some(Box::new(PressureProbe {
+            calls: pressure_calls.clone(),
+            finish: FinishProbe {
+                calls: finish_calls.clone(),
+                _owner: owner.clone(),
+            },
+        }))
+    };
+    let namespace: NamespaceCompletion = NamespaceCompletion::new(
+        NamespaceOutcome::unchanged(Ok(())),
+        work().map(|work| work as Box<dyn NamespacePressure>),
+    )
+    .bind(directory.0.filesystem());
+    let snapshot = backend.metadata().unwrap();
+    let metadata = NamespaceCompletion::new(
+        NamespaceOutcome::applied(snapshot.clone(), Err(VfsError::PermissionDenied)),
+        work().map(|work| work as Box<dyn NamespacePressure<Metadata>>),
+    )
+    .bind(directory.0.filesystem());
+    let namespace = admissions.pressure(vec![namespace]).unwrap_or_else(|_| {
+        panic!("the default namespace completion must match its real receiver")
+    });
+    let metadata = admissions
+        .pressure(vec![metadata])
+        .unwrap_or_else(|_| panic!("the metadata completion must match its real receiver"));
+
+    // A later mismatch returns the entire typed set, without consuming even
+    // its first (matching) pressure/finish owner or the earlier deferred sets.
+    let rejected = vec![
+        NamespaceCompletion::new(
+            NamespaceOutcome::unchanged_observed(snapshot.clone(), Ok(())),
+            work().map(|work| work as Box<dyn NamespacePressure<Metadata>>),
+        )
+        .bind(directory.0.filesystem()),
+        NamespaceCompletion::new(
+            NamespaceOutcome::uncertain(None, Err(VfsError::Io)),
+            work().map(|work| work as Box<dyn NamespacePressure<Metadata>>),
+        )
+        .bind(&foreign),
+    ];
+    let rejected = match admissions.pressure(rejected) {
+        Ok(_) => panic!("a foreign owner must reject the whole set"),
+        Err(rejected) => rejected,
+    };
+    assert_eq!(rejected.len(), 2);
+    assert!(rejected[0].admitted_by(&admissions));
+    assert!(!rejected[1].admitted_by(&admissions));
+    assert_eq!(rejected[0].outcome().state(), NamespaceState::Unchanged);
+    assert_eq!(
+        rejected[0].outcome().observation().unwrap().inode,
+        snapshot.inode
+    );
+    assert_eq!(rejected[1].outcome().state(), NamespaceState::Uncertain);
+    assert!(rejected[1].outcome().observation().is_none());
+    assert_eq!(pressure_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(finish_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(Arc::strong_count(&owner), 5);
+
+    drop(admissions);
+    drop(retired);
+    let mut namespace = namespace.into_iter();
+    let namespace = namespace.next().unwrap().finish();
+    assert_eq!(namespace.state(), NamespaceState::Unchanged);
+    assert!(namespace.observation().is_none());
+    assert_eq!(namespace.into_result(), Err(VfsError::Io));
+    let mut metadata = metadata.into_iter();
+    let metadata: NamespaceOutcome<Metadata> = metadata.next().unwrap().finish();
+    assert_eq!(metadata.state(), NamespaceState::Applied);
+    let observed = metadata.observation().unwrap();
+    assert_eq!(observed.inode, snapshot.inode);
+    assert_eq!(observed.mode.bits(), snapshot.mode.bits());
+    assert_eq!(observed.uid, snapshot.uid);
+    assert_eq!(metadata.into_result(), Err(VfsError::PermissionDenied));
+    assert_eq!(finish_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(Arc::strong_count(&owner), 3);
+    // Abandoning mismatches releases responsibility, never runs completion.
+    drop(rejected);
+    assert_eq!(Arc::strong_count(&owner), 1);
+    assert_eq!(pressure_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(finish_calls.load(Ordering::Relaxed), 2);
 }
 
 fn fixture() -> (Arc<TestDirectory>, Arc<ScriptedDirectory>) {
