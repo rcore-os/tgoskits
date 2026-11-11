@@ -202,42 +202,58 @@ fn namespace_admissions_order_real_receivers_once_and_release_partial_acquisitio
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
     };
-    let retired = MutationRetire::new();
-    let admissions = NamespaceAdmissions::acquire(&write).unwrap();
-    let completion = admissions
-        .for_location(&visible)
-        .unwrap()
+    let scope = crate::NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let context = scope.context();
+    let completion = scope
         .change_metadata(
+            &context,
             &visible,
             MetadataChange::Chown {
                 uid: None,
                 gid: None,
             },
             &MutationCredentials::root(),
-            &write,
-            &retired,
         )
         .unwrap()
         .unwrap();
-    assert_eq!(
-        completion.outcome().state(),
-        crate::NamespaceState::Unchanged
-    );
-    assert!(completion.outcome().observation().is_none());
+    assert_eq!(completion.state(), crate::NamespaceState::Unchanged);
+    assert!(completion.observation().is_none());
     drop((visible, higher, lower, alias, read_alias, read_only, host));
     assert_graph_alive();
-    let mut deferred = admissions
-        .pressure(vec![completion])
+    struct BeforeFinish(Option<alloc::boxed::Box<dyn FnOnce()>>);
+    impl Drop for BeforeFinish {
+        fn drop(&mut self) {
+            self.0.take().unwrap()();
+        }
+    }
+    let retained_mounts = mounts.clone();
+    let retained_filesystems = filesystems.clone();
+    let retained_dropped = dropped.clone();
+    let retained_probe = probe.clone();
+    context
+        .retired()
+        .retire(BeforeFinish(Some(alloc::boxed::Box::new(move || {
+            let events = retained_probe.events.lock().unwrap();
+            assert_eq!(
+                events.iter().filter(|(_, enter)| *enter).count(),
+                events.iter().filter(|(_, enter)| !*enter).count()
+            );
+            assert!(
+                retained_mounts
+                    .iter()
+                    .all(|mount| mount.upgrade().is_some())
+            );
+            assert!(
+                retained_filesystems
+                    .iter()
+                    .all(|filesystem| filesystem.upgrade().is_some())
+            );
+            assert_eq!(retained_dropped.load(Ordering::Relaxed), 0);
+        }))));
+    let outcome = scope
+        .finish()
         .unwrap_or_else(|_| panic!("fixed metadata owner"));
-    assert_graph_alive();
-    drop(admissions);
-    assert_graph_alive();
-    drop(retired);
-    assert_graph_alive();
-    assert_eq!(
-        deferred.pop().unwrap().finish().into_result(),
-        Err(VfsError::OperationNotSupported)
-    );
+    assert_eq!(outcome.into_result(), Err(VfsError::OperationNotSupported));
     assert_graph_alive();
     // Immutable backing roots themselves own Locations. This proves retention
     // by PreparedWrite as a whole, not that a read pin is the sole strong owner.

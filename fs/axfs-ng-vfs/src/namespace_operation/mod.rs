@@ -221,6 +221,9 @@ pub struct NamespaceOperationContext<'a> {
 }
 
 impl<'a> NamespaceOperationContext<'a> {
+    /// Reads a prepared receiver without entering another admission.
+    /// As with `NamespaceAdmission::query`, no native driver or backend gate may
+    /// be held; the snapshot does not authorize a later backing mutation.
     pub fn query(&self, query: NamespaceQuery<'_>) -> VfsResult<NamespaceRead> {
         let admission = match self.admissions.for_owner(query.entry().filesystem()) {
             Ok(admission) => admission,
@@ -232,6 +235,9 @@ impl<'a> NamespaceOperationContext<'a> {
         admission.query(query, self.retired)
     }
 
+    /// Looks up one exact-mount backing component, without following mounts or
+    /// links. Call outside native drivers/backend gates and apply the caller's
+    /// own search and backing-identity checks.
     pub fn lookup_backing(&self, parent: &Location, name: &str) -> VfsResult<Location> {
         let admission = match self.admission(parent) {
             Ok(admission) => admission,
