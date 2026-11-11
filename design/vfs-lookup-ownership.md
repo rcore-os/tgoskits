@@ -1217,6 +1217,153 @@ Ext4 复用既有日志重试/撤权与 Applied completion 用例，证明退出
 和源/目标原生能力边界；只读或原生测试绿色不代替分层运行证据。无磁盘格式变更，
 可按代码提交回滚，但不能依赖 Drop 恢复已提交的命名修改。
 
+### 4.15 跨层操作上下文
+
+只读依赖准备解决了“哪些真实文件系统必须提前存活”，没有解决“后端如何借用另一层
+已有的准入”和“所有层的完成责任交给谁”。`MetadataRequest` 与
+`NamespaceDriverRequest` 当前各借一份 admission；`NamespaceCompletion::bind`
+当前只记录一个 owner。不能把 backing completion 直接当成逻辑层 completion 返回，
+再覆盖其 owner，也不能只留下最后一步的错误。这里扩展既有四阶段边界，不另建全局
+队列、事务登记表、后台执行器或第二份元数据权威。
+
+#### 4.15.1 操作所有者与借用视图
+
+最外层使用 VFS crate 定义、字段私有的 `NamespaceOperationScope` 拥有本轮
+`NamespaceAdmissions`、`MutationRetire`、根完成对象及所有已登记的子完成对象。
+它借用外部具名 `PreparedWrite`，不把借用自身字段的视图存回自己，也不延长任何
+借用为静态寿命。准备对象仍由最外层保留到 scope 的全部显式完成之后。
+合法的跨软件包最外层调用者可通过受控 factory 取得这个拥有者，以保留单次尝试及
+显式完成的验证入口；后端请求拿到的借用 context 不因此取得 scope 的所有权。
+
+后端请求只借用私有构造的 `NamespaceOperationContext`。该视图可选择已经准备的
+真实 FS admission，执行固定 backing 查询，借用实际写租约及最外层退役袋，并发起
+受控的 backing 命令；不暴露整个 `NamespaceAdmissions`、可消费的 scope 或执行
+pressure/finish 的入口。不能在其中补 admission、重新 `enter`，也不能从 Read
+角色合成写权利。它不授予 mounter 凭据，不替代 Overlay 私有适配器的可写 roots
+核验；逻辑授权到 backing 授权的投影仍按第 4.10 节单独落实。
+
+scope 与请求的关系是操作所有者向内借出能力，而非每层各自创建一次操作。关系图中的
+完成集合属于这一轮栈上操作；真实后端的压力对象仍拥有自己的 FS、inode 与 typed 原因。
+
+```mermaid
+flowchart TD
+    P[外部 PreparedWrite] --> S[NamespaceOperationScope]
+    S --> A[全部 NamespaceAdmissions]
+    S --> R[共同 MutationRetire]
+    S --> C[根完成与 typed 子完成]
+    S -.借用.-> V[NamespaceOperationContext]
+    V -.借用.-> Q[MetadataRequest 或 NamespaceDriverRequest]
+    Q --> B[本层与 backing 的真实后端]
+    B --> C
+```
+
+Context 的内部分配登记状态不跨线程共享；不为方便新增 `Send`、`Sync` 或一把覆盖
+后端调用的锁。取得登记状态的短借用必须在调用任意后端之前结束，允许下一层沿同一
+context 继续调用。普通原生操作也使用同一 scope，不能为分层保留一套不同的完成算法。
+正常出口必须显式完成；意外丢弃 scope 时也须先退出全部 admissions，再释放退役和
+待完成对象的 owner。这个释放顺序不代表已执行 pressure 或 finish，不把 Drop 当作成功。
+
+#### 4.15.2 子操作的责任登记
+
+命名与元数据子操作分别保留 `NamespaceCompletion<NamespaceEffect>` 和
+`NamespaceCompletion<Metadata>`，不经 `Any`、裸 errno 或伪造的观察统一类型。
+VFS 的固定分派器绑定每个实际 receiver，并在向调用层返回观察前，把完成对象移交
+同一 scope。返回的是拥有型只读观察，不是可被调用层提前 pressure、finish、改绑
+或遗忘的 backing completion。观察可复制，写租约、授权、driver 和完成责任不能复制。
+
+登记容量必须在进入该次后端调用、产生其副作用之前准备好。内部使用不可复制的登记
+预留权利，递归调用各自保留尚未兑现的预留；不能假定外层的一次 `reserve` 不会被
+内层消费。登记本身不再分配。预留失败在该子操作尚未开始时返回 `NoMemory`；
+上层仍保留此前全部效果与完成责任，不回退成“整轮未修改”。不以固定全局条数上限
+替代资源失败，也不在已有完成对象之后因插入失败而丢弃它。
+
+封闭观察句柄继续借用真实 driver，只能消费式 `resume` 或 `cancel`，得到的完成责任
+也直接登记到 scope，再返回只读观察。丢弃未消费观察只释放 gate、退役已知 owner，
+不伪造已完成结果；缺失根完成对象不能使 scope 成功结束。已登记的子责任不随某一层
+的拒绝、取消或错误返回而消失。Drop 不执行 pressure、同步、回滚或新的命名提交。
+登记预留的释放须区分“尚未开始调用”和“调用已开始却没有交回完成”。后一种情况
+留下不可清除的不完整标记；即使根已登记、未兑现计数归零也不能返回成功或自动重试。
+仍须安全完成所有已知责任，再以 `BadState` 收束，保留已有根效果和首真错；缺失根
+观察时保守返回无观察的 `Uncertain`。显式 `cancel` 交回完成不是这个不完整分支。
+
+#### 4.15.3 统一完成与错误顺序
+
+`NamespaceOperationScope` 的显式完成先验证根与两种子集合的全部实际 owner，
+确认都在原 admissions 中，再消费任何 pressure。某项错配时整体保留所有未消费
+完成责任及上下文，不把坏项重绑成一个已有 owner，不只返回 errno。此时没有任何
+集合已经推进，也不需要靠第二个集合的 `?` 恢复第一组已消费对象。
+
+验证成功后，按子完成登记顺序处理所有子 pressure，最后处理根 pressure；只有它们
+全部结束后，才退出全部 admissions、释放退役袋并执行所有子 finish，最后执行根
+finish。一个 pressure 或 finish 失败都不能短路剩余责任。各步骤保留原 typed 状态、
+观察和后端原因，原有 `NamespaceCompletion`、`NamespaceDeferred` 与静态拥有型
+`NamespacePressure` 继续承担各自阶段；不把请求、slot、授权、gate 或 admission
+借用装进压力对象。
+
+登记顺序是实际交回完成的全序，不是预留先后或预占槽下标：外层 A 先预留、内层 B
+先交回完成时，顺序为 B、A。两种 typed 责任共享这个局部全序。转入 Deferred 时
+同样不能因新增存储分配、提前返回或一个处理中的对象析构而丢失责任。
+
+根的初始状态和逻辑观察由持有逻辑 gate 的适配器根据实际步骤决定，scope 不从物理
+子操作的 `Applied` 自动推断逻辑可见状态。例如未安装的 work 暂存与已经发布的 upper
+效果不同。逻辑可见前缀已经生效后，后一步失败或 Retry 不得把根标成可重放的 Retry；
+必须保留实际逻辑效果或使其不可信。组件完成汇总不能代替这项 Overlay 语义证明。
+
+根在第一阶段已保留的首个真实错误优先；其后按上述完成执行顺序保留第一个真实完成
+错误，同时执行剩余责任。只有 `state == Retry` 的 `WouldBlock` 是控制占位；
+`Applied` 中同值错误仍是真错。子操作原有拒绝与状态必须在逻辑适配器决定根结果时
+被观察，不能等完成阶段才猜发生了什么。真实完成错误通过既有 `with_completion`
+规则终止根 Retry，但不抹去根的 Applied、Uncertain 或实际观察。隐藏的子完成错误
+不能因为根本身没有 pressure 而被忽略。
+
+阶段错误必须在与单对象旧错误合并之前独立可见。压力回调以
+`NamespacePressureResult` 分别交出本阶段 `VfsResult<()>` 和可选的 finish owner；
+后端不再先用 `with_completion` 隐去这个阶段的新错。通用完成桥接也须保留每次
+finish 的原始结果，scope 按真实执行时点记录，不能从最终子 Outcome 的 errno
+反推或按子对象顺序重新选错。根的既有结果与本次完成错误分别保留，最后按上述
+优先级合并；不能让根自己的较晚完成错误先写进结果，再遮住更早的子完成错误。
+例如 A pressure 成功、B pressure 报 `NoMemory`、A finish 报 `Io`，根原本成功时
+必须返回 `NoMemory`，并继续完成 B 和根；子操作第一阶段已有的错误不冒充阶段新错。
+
+本轮分离既有可返回的阶段错误，不顺带扩展 Ext4 abort 持久化的错误 API。
+`finish_mutation_attempt` 对非 journal-progress 原错误调用 `persist_latched_abort`
+后回送的仍是原尝试错误，不能把这个 Err 填进新的阶段通道；须按 typed attempt
+分支区分，不按 errno 相同与否去重。abort 准备或持久化当前仅记录日志的新失败，
+仍保留其既有日志与后端权威失败语义，不声称已通过 `NamespacePressureResult`
+完整传播。Staging 或 typed journal-progress 的 `sync_core(LogPressure)` 真实失败
+则属于本轮可返回的阶段新错。这个范围不允许逻辑适配器忽略原操作的真实失败，
+也不改变后台 abort 记录、失败锁定及原调用者保留首个原因的规则。
+
+原生的 Staging 或确知发布前 typed journal-progress 必须在向逻辑调用层返回只读
+观察之前分类为 Retry。phase-two 保留原 typed 原因并执行推进或 abort，真实失败
+终止 Retry；不能到 phase-two 才把调用层已经观察为普通失败的状态改成 Retry。
+这使适配器能在退出自身 gate 前形成正确根状态，又不授权它提前循环或重用授权。
+这个分类位置调整与阶段结果桥接须同时迁移真实 Ext4 路径，不能只修改容器或探针。
+
+#### 4.15.4 迁移与验证边界
+
+先把普通元数据与原生 unlink 的最外层收束迁到 scope，再让其请求借用 context；
+原生后端仍首次绑定自己的完成对象，不转发另一层的已绑定对象。旧的可提前消费子完成
+出口在同一可审查迁移序列中收回，底层查询与原生 locked helper 复用。Create、Link、
+Rename、existing-open、restore 和 Overlay 消费者继续按实际差异逐一迁移，不用
+`Unsupported` 或只补参数冒充接通。
+
+创建式打开必须保留 `CreationWrite::Denied` 下先观察已存在对象的顺序；已有对象的
+合法打开不能因为新 scope 无条件要求成功写准备而提前变成只读错误。其读准备和真正
+创建时才兑现写权利的接头须在迁移该入口前补齐，不把当前原生 exclusive-create
+入口直接作为 existing-open 或 restore 的替代。
+
+复用 `completion_pressure_preserves_typed_results_and_mismatched_owners` 和现有
+admission、退役探针，增强完整跨层交回功能：至少两个真实 owner、两种 typed 子责任，
+全部 pressure 先于全部 admission 退出与退役，所有 finish 不因首错短路，错配不消费，
+根 Applied 前缀及首真错不丢失，递归登记预留不会互相占用。受控错误实现须产生真实
+行为失败；编译错误不算红。随后用真实 Ext4 证明接头没有改变日志推进、回收与重新
+授权，再用实际 Overlay 证明逻辑可见状态与不重放；探针不冒真实暂停调度或系统证明。
+
+这一步不新增磁盘格式或后台工作，可按代码提交回滚；普通原生操作新增的 scope、
+登记存储与观察复制成本纳入最终同环境性能比较，不能宣称零分配或零退化。未完成
+上下文、完成交回或任一消费者迁移时，不把本节设计或组件通过当作整体 Overlay 完成。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。
@@ -1548,20 +1695,20 @@ operation admission 和最外层退役集合。普通调用者不能构造 reque
 交给原目标的 `NodeOps` 元数据能力；后端在真实 owner 锁内调用原 request 的
 `execute`，当前状态观察、固定授权和提交的借用在该次调用内结束。
 
-分层消费者已经持有外层权利时，走 `NamespaceAdmission` 的元数据入口，借用原
-`PreparedWrite` 和退役集合，不调用会重新 admission 的普通 `Location` 入口。
-该入口返回 `VfsResult<Option<NamespaceCompletion<Metadata>>>`，其中 `None` 只表示
-全 Keep 时间命令：不读取 metadata、不检查后端能力、不构造请求或完成对象，也不
+分层消费者已经持有外层权利时，走第 4.15 节 context 的元数据入口，复用原
+`PreparedWrite`、admissions 和退役集合，不调用会重新 admission 的普通 `Location`
+入口。固定分派器将类型化完成责任交给 scope，再向调用层返回拥有型只读观察。
+空结果只表示全 Keep 时间命令：不读取 metadata、不检查后端能力、不构造请求或完成对象，也不
 伪造一份当前 inode 快照。调用者应在取得外层修改权利前先排除这一空命令；该入口
 自身的检查必须位于目标验证和后端分发之前。其它命令的完成对象始终保留真实
 `NamespaceOutcome<Metadata>`，包括尚未产生正常观察的失败。
 
 `NodeOps` 的后端入口只接收受控 request 并返回 `NamespaceCompletion<Metadata>`。
 VFS 的固定分发负责核对同 FS admission 和原目标写权利，绑定真实 owner，并保留
-目标引用直至全部 admission 退出；后端不能自行把完成标成属于另一个 FS。普通入口
-按第 6.6 节的四阶段完成协议处理这个对象，最后才将实际观察转换为普通返回值。
-分层入口只交出类型化完成责任，不提前 pressure、sync、退出 admission 或销毁
-可能重入的目标；外层仍负责全部命名与元数据完成集合的统一退出顺序。
+目标引用直至全部 admission 退出；后端不能自行把完成标成属于另一个 FS。这个返回
+是后端到固定分派器的交接，不是向分层调用者借出可消费 completion。普通入口与
+分层入口由同一 scope 按第 6.6 节的四阶段协议处理，最后才转换普通返回值；内层
+不提前 pressure、sync、退出 admission 或销毁可能重入的目标。
 
 `LockedMetadataAttempt` 的当前时间从实际 owner 的既有时钟读取，单次尝试的
 ctime 和参与的 Now 字段使用同一个时刻。全 Keep 不读取时钟；释放锁作日志推进后，
@@ -1603,8 +1750,9 @@ AX 适配层负责时间和权限编码，并把显式 ctime 传给 owned 更新
 admissions、退役 owner 并显式 finish。只有完成这些步骤后仍为 `Retry`，才开始下一轮
 准备、当前观察、授权和取时。不能把已经授权的 patch 或借用的 attempt 保存在压力对象中。
 
-分层入口继续只返回类型化 completion。Overlay 等最外层消费者负责合并命名和元数据
-两组责任、完整退出后再决定重试；Ext4 入口和 phase-two 对象不在持有 outer gate 时
+后端向固定分派器交出类型化 completion，context 向分层调用者只返回观察；完成责任
+按第 4.15 节归同一 scope，完整退出后再由最外层决定重试。Ext4 入口和 phase-two
+对象不在持有 outer gate 时
 自行循环，也不调用会重新 admission 的普通 `Location` 入口。Staging 是后端尚未开始
 可提交尝试的阶段，不增加 `NamespaceState` 变体；普通 Busy 或 WouldBlock 错误本身
 不授予重试能力。
