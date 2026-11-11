@@ -21,15 +21,17 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
         let filesystem_owners = Arc::strong_count(&filesystem);
         let retired = MutationRetire::new();
         let admissions = NamespaceAdmissions::acquire(&write).unwrap();
-        let start = admissions.for_location(&parent).unwrap().unlink(
+        let completion = match admissions.for_location(&parent).unwrap().unlink(
             prepared,
             false,
             &credentials,
             &write,
             &retired,
-        );
-        let NamespaceStart::Complete(completion) = start else {
-            panic!("cold target observation must fail before commit");
+        ) {
+            NamespaceStart::Complete(completion) => completion,
+            NamespaceStart::Observed(_) => {
+                panic!("cold target observation must fail before commit");
+            }
         };
         // This is the backend handoff, before any pressure callback. Removing
         // finish()'s early classification must fail here, not at final unlink.
@@ -86,15 +88,17 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
             let prepared = parent.prepare_unlink("witness").unwrap();
             let retired = MutationRetire::new();
             let admissions = NamespaceAdmissions::acquire(&write).unwrap();
-            let start = admissions.for_location(&parent).unwrap().unlink(
+            let observed = match admissions.for_location(&parent).unwrap().unlink(
                 prepared,
                 false,
                 &credentials,
                 &write,
                 &retired,
-            );
-            let NamespaceStart::Observed(observed) = start else {
-                panic!("checkpoint progress must allow a fresh target observation");
+            ) {
+                NamespaceStart::Observed(observed) => observed,
+                NamespaceStart::Complete(_) => {
+                    panic!("checkpoint progress must allow a fresh target observation");
+                }
             };
             assert_eq!(observed.target().entry.inode(), witness.inode());
             let completion = observed.resume();
