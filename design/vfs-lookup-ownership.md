@@ -584,6 +584,37 @@ VFS 为此提供明确的单组件 backing 查找能力：校验普通末名后�
 whiteout、opaque 全部使用同一能力。它不是 `CachedLookup` 的出口。
 初始化时 root 以上的搜索与凭据检查不能因内部不跨 mount 而省略。
 
+固定查找使用两个有明确调用环境的入口。`Location::lookup_backing(name)` 用于没有
+外层 operation admission 的普通后备读取；它复用目录项查找及缓存规则，但不调用
+`resolve_mountpoint`。该入口只在没有后端 gate/driver 的独立读取或准备阶段使用，
+不是在持锁期间绕过 admitted 查询的捷径。
+`NamespaceAdmission::lookup_backing(parent, name, retired)`
+用于调用者已经持有目标 FS admission 的读取；它经现有
+`NamespaceQuery::Lookup` 执行，不重新 enter，也不从普通查找回退取得 admission。
+两个入口都返回包在原 parent 精确 mount 中的 `Location`，不跟随末尾文本或对象链接。
+它们不是路径解析器，不代替调用方的搜索权限、root 边界或 mounter 身份检查。
+
+末名统一复用 `path::verify_entry_name`：空名、`.`、`..`、斜杠和 NUL 返回
+`InvalidInput`，超过 `MAX_NAME_LEN` 的字节长度返回 `NameTooLong`，合法但不存在的
+单组件返回 `NotFound`。目录类型、后端读取等错误保留原值；成功子项必须属于
+parent 的真实 FS owner，否则返回 `CrossesDevices`，不能把外来子项硬包成原 mount。
+普通入口先校验末名再访问目录；admitted 入口先保活完整 parent `Location` 并校验
+admission owner，再按既有 query 顺序校验末名。它仍受 query 的原生 driver/gate
+调用约束，不授予新的持锁查询或跨层反向进入许可。
+
+admitted 入口把完整 parent、成功返回的候选子项及后端查询产生的临时 owner 留在
+同一个最外层 `MutationRetire` 中，包括 owner、名称、结果形状或候选 FS 校验失败的
+出口。`NamespaceRead::Entry(None)` 解释为 `NotFound`；其它非 Entry 响应为
+`BadState`，不伪造位置。取得的结果只是本轮查找，不授权随后修改，也不保证名称
+持续存在。全部 admissions 退出后才释放退役集合，不能让失败候选在 outer gate
+内触发最后析构。
+
+这两个入口不改变 `lookup_no_follow` 的用户路径语义，不成为 `CachedLookup`
+取得慢路径的出口，也不在本切片补齐分层的读依赖枚举、双层授权或完成回交。
+admitted 变体要求调用者确实已有匹配权利，不能把尚未准备的 lower 当作已 admitted。
+回归使用真实文件系统与子挂载，对照普通查找进入覆盖挂载而固定查找仍见原后备，
+并核对 exact mount、错误及资源释放；Overlay 整体的挂载与 I/O 证据另行取得。
+
 upper 与 work 必须是同一个精确 mount，且不相同、彼此不包含；不只比较设备或
 shared FS。lower、upper、work 的根重叠和回到本实例的 trap 在构造时检查，
 冲突在发布文件系统前报错。backing 关系构造后不可变，所有层声明自己的
