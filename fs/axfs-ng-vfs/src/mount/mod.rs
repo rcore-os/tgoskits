@@ -1707,6 +1707,7 @@ impl Location {
         }
         let preparation = crate::PreparedCreation::acquire(self)?;
         let prepared = crate::prepared_write::PreparedView::creation(&preparation);
+        prepared.creation_write(self)?.require(self)?;
         let attributes = crate::CreateAttributes {
             content: crate::CreateContent::Node(options.node_type, crate::DeviceId::default()),
             permission: options.permission,
