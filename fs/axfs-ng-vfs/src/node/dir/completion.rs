@@ -50,7 +50,7 @@ impl<T> NamespaceCompletion<T> {
         &self.outcome
     }
 
-    pub(super) fn bind(mut self, owner: &dyn FilesystemOps) -> Self {
+    pub(crate) fn bind(mut self, owner: &dyn FilesystemOps) -> Self {
         self.owner = Some(owner_address(owner));
         self
     }

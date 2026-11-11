@@ -78,6 +78,18 @@ pub trait NodeOps: Send + Sync + 'static {
     /// Updates the metadata of the node.
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
+    /// Executes a controlled request on this inode's real metadata owner.
+    /// Unmigrated backends must not fall back to raw metadata updates.
+    fn change_metadata(
+        &self,
+        _request: &crate::MetadataRequest<'_>,
+    ) -> crate::NamespaceCompletion<Metadata> {
+        crate::NamespaceCompletion::new(
+            crate::NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported)),
+            None,
+        )
+    }
+
     /// Gets the filesystem
     fn filesystem(&self) -> &dyn FilesystemOps;
 
@@ -268,6 +280,11 @@ impl DirEntry {
     pub fn filesystem(&self) -> &dyn FilesystemOps;
 
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    pub(crate) fn change_metadata(
+        &self,
+        request: &crate::MetadataRequest<'_>,
+    ) -> crate::NamespaceCompletion<Metadata>;
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> VfsResult<u64>;

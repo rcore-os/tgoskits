@@ -535,6 +535,404 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
     }
 }
 
+#[test]
+fn metadata_commands_authorize_current_owners_and_preserve_alias_fields() {
+    use axfs_ng_vfs::MetadataChange::{Chmod, Chown};
+
+    let filesystem = MemoryFs::new();
+    let root = axfs_ng_vfs::Mountpoint::new_root(&filesystem).root_location();
+    let owner = unprivileged_credentials();
+    let privileged = MutationCredentials::root();
+    let creator = MutationCredentials {
+        fsuid: owner.fsuid,
+        fsgid: owner.fsgid,
+        ..privileged
+    };
+    let permission = |mode| NodePermission::from_bits_truncate(mode);
+    let input = root
+        .create(
+            "metadata",
+            NodeType::RegularFile,
+            permission(0o6750),
+            owner.fsuid,
+            owner.fsgid,
+            &creator,
+        )
+        .unwrap();
+    let alias = root.link("metadata-alias", &input, &privileged).unwrap();
+    let member = MutationCredentials {
+        supplementary_gids: &[2000],
+        ..owner
+    };
+    alias
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: Some(2000),
+            },
+            &member,
+        )
+        .unwrap();
+    let metadata = input.metadata().unwrap();
+    assert_eq!(
+        (metadata.uid, metadata.gid, metadata.mode.bits()),
+        (owner.fsuid, 2000, 0o750)
+    );
+
+    // An independent owner update must not be overwritten by a later partial chown.
+    input
+        .change_metadata(
+            Chown {
+                uid: Some(3000),
+                gid: None,
+            },
+            &privileged,
+        )
+        .unwrap();
+    alias
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: Some(4000),
+            },
+            &privileged,
+        )
+        .unwrap();
+    assert_eq!(
+        (input.metadata().unwrap().uid, alias.metadata().unwrap().gid),
+        (3000, 4000)
+    );
+    for command in [
+        Chown {
+            uid: Some(3000),
+            gid: None,
+        },
+        Chown {
+            uid: None,
+            gid: Some(4000),
+        },
+        Chmod(permission(0o777)),
+    ] {
+        assert_eq!(
+            alias.change_metadata(command, &owner),
+            Err(VfsError::OperationNotPermitted)
+        );
+    }
+    assert_eq!(input.metadata().unwrap().mode.bits(), 0o750);
+
+    let current_owner = MutationCredentials {
+        fsuid: 3000,
+        ..owner
+    };
+    input
+        .change_metadata(Chmod(permission(0o2640)), &current_owner)
+        .unwrap();
+    assert_eq!(
+        alias.metadata().unwrap().mode.bits(),
+        0o640,
+        "chmod clears SGID for a foreign group"
+    );
+    let group_owner = MutationCredentials {
+        supplementary_gids: &[4000],
+        ..current_owner
+    };
+    alias
+        .change_metadata(Chmod(permission(0o2640)), &group_owner)
+        .unwrap();
+    // Non-executable SGID survives chown(None,None) for group members.
+    input
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: None,
+            },
+            &group_owner,
+        )
+        .unwrap();
+    assert_eq!(alias.metadata().unwrap().mode.bits(), 0o2640);
+    input
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: None,
+            },
+            &current_owner,
+        )
+        .unwrap();
+    assert_eq!(alias.metadata().unwrap().mode.bits(), 0o640);
+
+    // A no-owner-field chown is allowed to an outsider only if it derives no MODE.
+    input
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: None,
+            },
+            &owner,
+        )
+        .unwrap();
+    input
+        .change_metadata(Chmod(permission(0o4640)), &privileged)
+        .unwrap();
+    let only_chown = MutationCredentials {
+        cap_chown: true,
+        ..owner
+    };
+    assert_eq!(
+        alias.change_metadata(
+            Chown {
+                uid: Some(5000),
+                gid: None
+            },
+            &only_chown
+        ),
+        Err(VfsError::OperationNotPermitted),
+        "derived MODE still needs owner/CAP_FOWNER after UID authorization"
+    );
+    assert_eq!(input.metadata().unwrap().uid, 3000);
+    assert_eq!(input.metadata().unwrap().mode.bits(), 0o4640);
+    // CAP_FSETID does not exempt chown's unconditional non-directory SUID kill.
+    alias
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: None,
+            },
+            &privileged,
+        )
+        .unwrap();
+    assert_eq!(input.metadata().unwrap().mode.bits(), 0o640);
+
+    let directory = root
+        .create(
+            "inherit",
+            NodeType::Directory,
+            permission(0o2770),
+            3000,
+            4000,
+            &MutationCredentials {
+                fsuid: 3000,
+                fsgid: 4000,
+                ..privileged
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        directory.change_metadata(
+            Chown {
+                uid: None,
+                gid: Some(2000)
+            },
+            &group_owner
+        ),
+        Err(VfsError::OperationNotPermitted)
+    );
+    directory
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: Some(2000),
+            },
+            &privileged,
+        )
+        .unwrap();
+    assert_eq!(
+        directory.metadata().unwrap().mode.bits(),
+        0o2770,
+        "directory inheritance SGID survives"
+    );
+
+    let symlink = root
+        .create_symlink(
+            "metadata-link",
+            "metadata",
+            permission(0o4777),
+            3000,
+            4000,
+            &privileged,
+        )
+        .unwrap();
+    assert_eq!(
+        symlink.change_metadata(Chmod(permission(0o777)), &owner),
+        Err(VfsError::OperationNotSupported)
+    );
+    symlink
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: None,
+            },
+            &privileged,
+        )
+        .unwrap();
+    assert_eq!(
+        symlink.metadata().unwrap().mode.bits(),
+        0o777,
+        "derived MODE is not explicit symlink chmod"
+    );
+}
+
+#[test]
+fn metadata_times_distinguish_touch_explicit_times_and_omission() {
+    use core::time::Duration;
+
+    use axfs_ng_vfs::{
+        MetadataChange::{Chown, Times},
+        TimeChange::{Keep, Now, Set},
+    };
+
+    std::thread_local! {
+        static TICKS: core::cell::Cell<u64> = const { core::cell::Cell::new(10000) };
+    }
+    struct Clock;
+    impl ax_block::os::time::BlockTimeProvider for Clock {
+        fn wall_time(&self) -> Duration {
+            TICKS.with(|ticks| {
+                let now = ticks.get();
+                ticks.set(now + 1);
+                Duration::from_secs(now)
+            })
+        }
+        fn monotonic_time(&self) -> Duration {
+            TICKS.with(|ticks| Duration::from_secs(ticks.get()))
+        }
+    }
+    static CLOCK: Clock = Clock;
+    ax_block::os::time::set_time_provider(&CLOCK);
+    let filesystem = MemoryFs::new();
+    let root = axfs_ng_vfs::Mountpoint::new_root(&filesystem).root_location();
+    let privileged = MutationCredentials::root();
+    let owner = unprivileged_credentials();
+    let creator = MutationCredentials {
+        fsuid: owner.fsuid,
+        fsgid: owner.fsgid,
+        ..privileged
+    };
+    let outsider = MutationCredentials {
+        fsuid: 2000,
+        fsgid: 2000,
+        ..owner
+    };
+    let input = root
+        .create(
+            "times",
+            NodeType::RegularFile,
+            NodePermission::from_bits_truncate(0o666),
+            owner.fsuid,
+            owner.fsgid,
+            &creator,
+        )
+        .unwrap();
+    let alias = root.link("times-alias", &input, &privileged).unwrap();
+    let before = input.metadata().unwrap();
+    alias
+        .change_metadata(
+            Times {
+                atime: Now,
+                mtime: Now,
+            },
+            &outsider,
+        )
+        .unwrap();
+    let touched = input.metadata().unwrap();
+    assert!(touched.ctime > before.ctime);
+    assert_eq!(
+        (touched.atime, touched.mtime),
+        (touched.ctime, touched.ctime)
+    );
+    for change in [
+        Times {
+            atime: Keep,
+            mtime: Now,
+        },
+        Times {
+            atime: Set(Duration::from_secs(123)),
+            mtime: Keep,
+        },
+    ] {
+        assert_eq!(
+            alias.change_metadata(change, &outsider),
+            Err(VfsError::OperationNotPermitted)
+        );
+    }
+    let denied = input.metadata().unwrap();
+    assert_eq!(
+        (denied.atime, denied.mtime, denied.ctime),
+        (touched.atime, touched.mtime, touched.ctime)
+    );
+    alias
+        .change_metadata(
+            Times {
+                atime: Keep,
+                mtime: Now,
+            },
+            &owner,
+        )
+        .unwrap();
+    let partial = input.metadata().unwrap();
+    assert_eq!(partial.atime, touched.atime);
+    assert_eq!(partial.mtime, partial.ctime);
+    assert!(partial.ctime > touched.ctime);
+    input
+        .change_metadata(
+            Times {
+                atime: Set(Duration::from_secs(123)),
+                mtime: Keep,
+            },
+            &owner,
+        )
+        .unwrap();
+    let explicit = alias.metadata().unwrap();
+    assert_eq!(
+        (explicit.atime, explicit.mtime),
+        (Duration::from_secs(123), partial.mtime)
+    );
+    assert!(explicit.ctime > partial.ctime);
+    // None/None still obtains real time even without a mode/owner change.
+    input
+        .change_metadata(
+            Chown {
+                uid: None,
+                gid: None,
+            },
+            &outsider,
+        )
+        .unwrap();
+    let chowned = alias.metadata().unwrap();
+    assert!(chowned.ctime > explicit.ctime);
+    assert_eq!(
+        (chowned.atime, chowned.mtime),
+        (explicit.atime, explicit.mtime)
+    );
+    input.mountpoint().set_readonly(true).unwrap();
+    let ticks = TICKS.with(core::cell::Cell::get);
+    input
+        .change_metadata(
+            Times {
+                atime: Keep,
+                mtime: Keep,
+            },
+            &outsider,
+        )
+        .unwrap();
+    assert_eq!(
+        TICKS.with(core::cell::Cell::get),
+        ticks,
+        "empty command must not read the clock"
+    );
+    assert_eq!(alias.metadata().unwrap().ctime, chowned.ctime);
+    assert_eq!(
+        input.change_metadata(
+            Times {
+                atime: Now,
+                mtime: Now
+            },
+            &owner
+        ),
+        Err(VfsError::ReadOnlyFilesystem)
+    );
+}
+
 fn unprivileged_credentials() -> MutationCredentials<'static> {
     MutationCredentials {
         cap_mknod: false,

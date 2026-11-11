@@ -6,6 +6,7 @@ extern crate ax_runtime as _;
 extern crate std;
 
 mod fs;
+mod metadata;
 mod mount;
 mod namespace_admission;
 mod node;
@@ -20,6 +21,7 @@ mod write_admission;
 mod writeback_policy;
 
 pub use fs::*;
+pub use metadata::*;
 pub use mount::*;
 pub use namespace_admission::*;
 pub(crate) use node::MutationTarget;

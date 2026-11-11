@@ -25,6 +25,7 @@ use slab::Slab;
 
 use crate::os::sync::{Mutex, RawSpinLock};
 
+mod metadata;
 mod rename;
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
@@ -592,6 +593,13 @@ impl MemoryNode {
 }
 
 impl NodeOps for MemoryNode {
+    fn change_metadata(
+        &self,
+        request: &axfs_ng_vfs::MetadataRequest<'_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+        self.run_metadata(request)
+    }
+
     fn inode_user_data(&self) -> Option<&axfs_ng_vfs::RawSpinLock<TypeMap>> {
         Some(&self.inode.user_data)
     }
@@ -915,7 +923,7 @@ mod tests {
 
     #[cfg(feature = "host-test")]
     std::thread_local! {
-        static BEFORE_NAMESPACE_CHANGE: std::cell::RefCell<Option<alloc::boxed::Box<dyn FnOnce()>>> =
+        pub(super) static BEFORE_NAMESPACE_CHANGE: std::cell::RefCell<Option<alloc::boxed::Box<dyn FnOnce()>>> =
             const { std::cell::RefCell::new(None) };
     }
 
