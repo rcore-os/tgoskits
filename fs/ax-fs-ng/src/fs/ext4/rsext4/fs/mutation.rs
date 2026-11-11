@@ -72,4 +72,17 @@ impl Ext4Filesystem {
         }
         Ok(None)
     }
+
+    /// Completes pressure without repeating an error already observed by the
+    /// caller. Abort persistence retains its existing log-only failure contract.
+    /// Only staging or typed journal progress can produce a new returned error.
+    pub(super) fn finish_mutation_pressure(&self, attempt: MutationAttempt<()>) -> Ext4Result<()> {
+        match attempt {
+            MutationAttempt::Finished(Err(error)) if !error.requires_journal_progress() => {
+                self.persist_latched_abort();
+                Ok(())
+            }
+            attempt => self.finish_mutation_attempt(attempt).map(|_| ()),
+        }
+    }
 }

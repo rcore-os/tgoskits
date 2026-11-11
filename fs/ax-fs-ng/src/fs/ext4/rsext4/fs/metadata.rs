@@ -5,8 +5,8 @@ use core::time::Duration;
 
 use axfs_ng_vfs::{
     AuthorizedMetadataChange, LockedMetadataAttempt, Metadata, MetadataRequest,
-    NamespaceCompletion, NamespaceFinish, NamespaceOutcome, NamespacePressure, NamespaceState,
-    VfsError, VfsResult,
+    NamespaceCompletion, NamespaceFinish, NamespaceOutcome, NamespacePressure,
+    NamespacePressureResult, NamespaceState, VfsError, VfsResult,
 };
 use rsext4::{
     DirectoryEntryType, Ext4Error, Ext4Result, Ext4Timestamp, FilePermissions, InodeFlags,
@@ -262,35 +262,38 @@ impl NamespacePressure<Metadata> for Ext4MetadataPressure {
     fn pressure(
         self: Box<Self>,
         outcome: &mut NamespaceOutcome<Metadata>,
-    ) -> Option<Box<dyn NamespaceFinish>> {
+    ) -> NamespacePressureResult {
         let Self {
             filesystem,
             attempt,
             synchronous,
         } = *self;
-        if let Some(attempt) = attempt {
+        let completion = if let Some(attempt) = attempt {
             #[cfg(test)]
             let typed_progress = matches!(
                 &attempt, MutationAttempt::Finished(Err(error)) if error.requires_journal_progress()
             );
             let completion = filesystem
-                .finish_mutation_attempt(attempt)
-                .map(|_| ())
+                .finish_mutation_pressure(attempt)
                 .map_err(into_vfs_err);
             #[cfg(test)]
             if typed_progress && completion.is_ok() && outcome.state() == NamespaceState::Retry {
-                // finish_mutation_attempt has also released the writeback gate.
+                // finish_mutation_pressure has also released the writeback gate.
                 super::tests::metadata_pressure::after_journal_progress();
             }
-            let original = core::mem::replace(outcome, NamespaceOutcome::unchanged(Ok(())));
-            *outcome = original.with_completion(completion);
-        }
+            completion
+        } else {
+            Ok(())
+        };
         let synchronize = outcome.state() == NamespaceState::Applied
             && (synchronous || !filesystem.background_writeback_enabled());
-        Some(Box::new(Ext4MetadataFinish {
-            filesystem,
-            synchronize,
-        }))
+        NamespacePressureResult::new(
+            completion,
+            Some(Box::new(Ext4MetadataFinish {
+                filesystem,
+                synchronize,
+            })),
+        )
     }
 }
 

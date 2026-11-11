@@ -10,11 +10,27 @@ use crate::{
 /// Backend-owned typed pressure/abort state. This object holds no backend gate,
 /// slot, authorization or name publication scope. It must not reenter admission.
 pub trait NamespacePressure<T = NamespaceEffect> {
-    /// Consumes phase two and returns only admission-independent owners.
-    fn pressure(
-        self: Box<Self>,
-        outcome: &mut NamespaceOutcome<T>,
-    ) -> Option<Box<dyn NamespaceFinish>>;
+    /// Consumes phase two and returns its new error separately from the original
+    /// operation result. Do not merge this phase into `outcome` here: an outer
+    /// scope must preserve error order across every pressure and finish.
+    /// Retry classification must already be visible at the backend handoff.
+    fn pressure(self: Box<Self>, outcome: &mut NamespaceOutcome<T>) -> NamespacePressureResult;
+}
+
+/// One pressure phase's result and admission-independent remaining ownership.
+///
+/// The result reports this phase, not an error repeated from the original
+/// attempt. Owners needed after admission exit must survive in `finish`, even
+/// when pressure fails. Construction neither runs nor merges either phase.
+pub struct NamespacePressureResult {
+    completion: VfsResult<()>,
+    finish: Option<Box<dyn NamespaceFinish>>,
+}
+
+impl NamespacePressureResult {
+    pub fn new(completion: VfsResult<()>, finish: Option<Box<dyn NamespaceFinish>>) -> Self {
+        Self { completion, finish }
+    }
 }
 
 /// Reap and directory-sync owners, used only after *all* admissions are gone.
@@ -65,16 +81,27 @@ impl<T> NamespaceCompletion<T> {
             .is_some_and(|owner| admissions.contains_owner(owner))
     }
 
-    pub(crate) fn pressure(mut self) -> NamespaceDeferred<T> {
-        let finish = self
-            .pressure
-            .take()
-            .and_then(|pressure| pressure.pressure(&mut self.outcome));
-        NamespaceDeferred {
-            outcome: self.outcome,
-            finish,
-            _parents: self.parents,
-        }
+    pub(crate) fn pressure(self) -> NamespaceDeferred<T> {
+        let (mut deferred, completion) = self.pressure_step();
+        deferred.outcome = deferred.outcome.with_completion(completion);
+        deferred
+    }
+
+    /// Preserves the phase result before a composite owner chooses error order.
+    pub(crate) fn pressure_step(mut self) -> (NamespaceDeferred<T>, VfsResult<()>) {
+        let phase = self.pressure.take().map_or_else(
+            || NamespacePressureResult::new(Ok(()), None),
+            |pressure| pressure.pressure(&mut self.outcome),
+        );
+        let completion = phase.completion;
+        (
+            NamespaceDeferred {
+                outcome: self.outcome,
+                finish: phase.finish,
+                _parents: self.parents,
+            },
+            completion,
+        )
     }
 }
 
@@ -88,7 +115,13 @@ pub struct NamespaceDeferred<T = NamespaceEffect> {
 
 impl<T> NamespaceDeferred<T> {
     pub fn finish(self) -> NamespaceOutcome<T> {
+        let (outcome, completion) = self.finish_step();
+        outcome.with_completion(completion)
+    }
+
+    /// Runs only phase four, retaining its new result independently of old errors.
+    pub(crate) fn finish_step(self) -> (NamespaceOutcome<T>, VfsResult<()>) {
         let completion = self.finish.map_or(Ok(()), |finish| finish.finish());
-        self.outcome.with_completion(completion)
+        (self.outcome, completion)
     }
 }

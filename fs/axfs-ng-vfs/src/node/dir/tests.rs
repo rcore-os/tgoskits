@@ -217,14 +217,13 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
     impl<T> NamespacePressure<T> for PressureProbe {
         fn pressure(
             self: Box<Self>,
-            outcome: &mut NamespaceOutcome<T>,
-        ) -> Option<Box<dyn NamespaceFinish>> {
+            _outcome: &mut NamespaceOutcome<T>,
+        ) -> NamespacePressureResult {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            if let Some(error) = self.error {
-                let original = core::mem::replace(outcome, NamespaceOutcome::unchanged(Ok(())));
-                *outcome = original.with_completion(Err(error));
-            }
-            Some(Box::new(self.finish))
+            NamespacePressureResult::new(
+                self.error.map_or(Ok(()), Err),
+                Some(Box::new(self.finish)),
+            )
         }
     }
 
@@ -362,6 +361,34 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
     }
     assert_eq!(pressure_calls.load(Ordering::Relaxed), 4);
     assert_eq!(finish_calls.load(Ordering::Relaxed), 4);
+
+    // A composite owner needs each new phase error before merging. Neither a
+    // successful Applied result nor its old error may hide pressure or finish.
+    // This exercises the real phase bridge, not a substitute scope algorithm.
+    for original in [Ok(()), Err(VfsError::WouldBlock)] {
+        let admissions = crate::NamespaceAdmissions::acquire(&write).unwrap();
+        let completion = NamespaceCompletion::new(
+            NamespaceOutcome::applied(snapshot.clone(), original),
+            work().map(|work| work as Box<dyn NamespacePressure<Metadata>>),
+        )
+        .bind(directory.0.filesystem());
+        assert!(completion.admitted_by(&admissions));
+        let (deferred, pressure) = completion.pressure_step();
+        assert_eq!(pressure, Err(VfsError::Io));
+        assert_eq!(
+            finish_calls.load(Ordering::Relaxed) + 1,
+            pressure_calls.load(Ordering::Relaxed)
+        );
+        drop(admissions);
+        let (outcome, finish) = deferred.finish_step();
+        assert_eq!(finish, Err(VfsError::InvalidInput));
+        assert_eq!(outcome.state(), NamespaceState::Applied);
+        assert_eq!(outcome.observation().unwrap().inode, snapshot.inode);
+        assert_eq!(outcome.into_result(), original);
+        assert_eq!(Arc::strong_count(&owner), 1);
+    }
+    assert_eq!(pressure_calls.load(Ordering::Relaxed), 6);
+    assert_eq!(finish_calls.load(Ordering::Relaxed), 6);
 }
 
 fn fixture() -> (Arc<TestDirectory>, Arc<ScriptedDirectory>) {

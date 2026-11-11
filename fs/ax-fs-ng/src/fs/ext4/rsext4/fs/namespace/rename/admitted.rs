@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 
 use axfs_ng_vfs::{
     NamespaceCompletion, NamespaceDriver, NamespaceDriverRequest, NamespaceFinish,
-    NamespacePressure, NamespaceStart,
+    NamespacePressure, NamespacePressureResult, NamespaceStart,
 };
 
 use super::*;
@@ -128,8 +128,23 @@ impl Ext4Filesystem {
 impl NamespaceDriver for Ext4Attempt<'_> {
     fn finish(
         mut self: Box<Self>,
-        outcome: NamespaceOutcome<NamespaceEffect>,
+        mut outcome: NamespaceOutcome<NamespaceEffect>,
     ) -> NamespaceCompletion {
+        // Typed observation/ancestor errors return immediately through core().
+        // Successful observation and ordinary authorization failures cannot
+        // leave that cause behind. Never discard an existing effect or error
+        // merely because its VFS errno happens to resemble journal pressure.
+        if self
+            .error
+            .is_some_and(|error| error.requires_journal_progress())
+            && matches!(
+                outcome.state(),
+                NamespaceState::Retry | NamespaceState::Unchanged
+            )
+            && outcome.observation().is_none()
+        {
+            outcome = NamespaceOutcome::retry();
+        }
         let pressure = Ext4NamespacePressure {
             filesystem: self.filesystem.clone(),
             source: self.source.clone(),
@@ -150,7 +165,7 @@ impl NamespacePressure for Ext4NamespacePressure {
     fn pressure(
         self: Box<Self>,
         outcome: &mut NamespaceOutcome<NamespaceEffect>,
-    ) -> Option<Box<dyn NamespaceFinish>> {
+    ) -> NamespacePressureResult {
         let Self {
             filesystem,
             source,
@@ -158,46 +173,28 @@ impl NamespacePressure for Ext4NamespacePressure {
             attempt,
             reap,
         } = *self;
-        let retryable = match &attempt {
-            Some(MutationAttempt::Staging) => true,
-            Some(MutationAttempt::Finished(Err(error))) => error.requires_journal_progress(),
-            _ => false,
-        } && matches!(
-            outcome.state(),
-            NamespaceState::Retry | NamespaceState::Unchanged
-        );
-        if let Some(attempt) = attempt {
-            let completion = filesystem
-                .finish_mutation_attempt(attempt)
-                .map(|_| ())
-                .map_err(into_vfs_err);
-            if retryable {
-                *outcome = match completion {
-                    Ok(()) => NamespaceOutcome::retry(),
-                    Err(error) => {
-                        let original =
-                            core::mem::replace(outcome, NamespaceOutcome::unchanged(Ok(())));
-                        original.with_completion(Err(error))
-                    }
-                };
-            } else {
-                let original = core::mem::replace(outcome, NamespaceOutcome::unchanged(Ok(())));
-                *outcome = original.with_completion(completion);
-            }
-        }
+        let completion = match attempt {
+            Some(attempt) => filesystem
+                .finish_mutation_pressure(attempt)
+                .map_err(into_vfs_err),
+            None => Ok(()),
+        };
         let sync_directory = matches!(outcome.state(), NamespaceState::Applied)
             || (outcome.state() == NamespaceState::Unchanged && outcome.observation().is_some());
         let sync_directory = sync_directory
             && !matches!(outcome.observation(), Some(NamespaceEffect::Create(effect)) if !effect.created);
         // Always keep the owners until phase four, even for cancellation or a
         // failed observation. InodeLifetime::drop can itself enter admission.
-        Some(Box::new(Ext4NamespaceFinish {
-            filesystem,
-            source,
-            destination,
-            reap,
-            sync_directory,
-        }))
+        NamespacePressureResult::new(
+            completion,
+            Some(Box::new(Ext4NamespaceFinish {
+                filesystem,
+                source,
+                destination,
+                reap,
+                sync_directory,
+            })),
+        )
     }
 }
 
