@@ -255,6 +255,8 @@ impl SeekableDiskState {
 
 #[cfg(test)]
 mod tests {
+    mod metadata;
+
     use alloc::sync::Arc;
     use std::sync::Mutex;
 
@@ -264,6 +266,7 @@ mod tests {
         storage: Arc<Mutex<Vec<u8>>>,
         fail_flush: bool,
         read_only: bool,
+        flush_control: Option<Arc<Mutex<metadata::FlushControl>>>,
     }
 
     impl FsBlockDevice for MemoryBlockDevice {
@@ -319,6 +322,9 @@ mod tests {
         }
 
         fn flush(&mut self) -> FsBlockResult<()> {
+            if let Some(control) = &self.flush_control {
+                control.lock().unwrap().record_flush()?;
+            }
             if self.fail_flush {
                 Err(FsBlockError::Io)
             } else {
@@ -334,6 +340,7 @@ mod tests {
             storage: storage.clone(),
             fail_flush: false,
             read_only: false,
+            flush_control: None,
         };
         let mut disk = SeekableDisk::new(Box::new(device), BlockRegion::from_num_blocks(1));
 
@@ -350,6 +357,7 @@ mod tests {
             storage: storage.clone(),
             fail_flush: true,
             read_only: false,
+            flush_control: None,
         };
         let mut disk = SeekableDisk::new(Box::new(device), BlockRegion::from_num_blocks(1));
         let flusher = disk.flusher();
@@ -370,6 +378,7 @@ mod tests {
                 storage: storage.clone(),
                 fail_flush: false,
                 read_only: false,
+                flush_control: None,
             }),
             region,
         );
@@ -382,6 +391,7 @@ mod tests {
                     storage: storage.clone(),
                     fail_flush: false,
                     read_only,
+                    flush_control: None,
                 }),
                 region,
                 None,
@@ -416,6 +426,12 @@ mod tests {
     }
 
     fn formatted_fat() -> (axfs_ng_vfs::Filesystem, Arc<Mutex<Vec<u8>>>) {
+        formatted_fat_with_flush_control(None)
+    }
+
+    fn formatted_fat_with_flush_control(
+        flush_control: Option<Arc<Mutex<metadata::FlushControl>>>,
+    ) -> (axfs_ng_vfs::Filesystem, Arc<Mutex<Vec<u8>>>) {
         let storage = Arc::new(Mutex::new(vec![0; 2 * 1024 * 1024]));
         let region = BlockRegion::from_num_blocks(4096);
         let device = || {
@@ -423,6 +439,7 @@ mod tests {
                 storage: storage.clone(),
                 fail_flush: false,
                 read_only: false,
+                flush_control: flush_control.clone(),
             }) as Box<dyn FsBlockDevice>
         };
         let mut disk = SeekableDisk::new(device(), region);
