@@ -9,6 +9,9 @@ name = "rdrive"
 repository.workspace = true
 version = "0.25.0"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 acpi = "6.1.1"
 ax-sync = { workspace = true }

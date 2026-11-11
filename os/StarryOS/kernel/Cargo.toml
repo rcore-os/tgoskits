@@ -187,7 +187,7 @@ ax-std = { path = "../../arceos/ulib/axstd", default-features = false, features 
     "fs",
 ] }
 
-[target.'cfg(target_arch = "loongarch64")'.dev-dependencies]
+[target.'cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))'.dev-dependencies]
 somehal.workspace = true
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]

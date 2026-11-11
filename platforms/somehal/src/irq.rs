@@ -120,6 +120,14 @@ fn irq_domains() -> RawSpinLockUnpinnedGuard<'static, Vec<IrqDomain>> {
 fn irq_routes() -> RawSpinLockIrqSaveGuard<'static, Vec<IrqRoute>> {
     IRQ_ROUTES.lock()
 }
+
+/// Runs an IRQ-side operation while task-side domain lookup is excluded.
+#[cfg(axtest)]
+pub fn with_irq_domains_locked_for_test<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = IRQ_DOMAINS.lock_irqsave();
+    f()
+}
+
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static X86_MSI_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);

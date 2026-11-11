@@ -9,6 +9,9 @@ name = "somehal"
 repository.workspace = true
 version = "0.11.3"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [[package.metadata.clippy.configurations]]
 name = "aarch64-runtime"
 target = "aarch64-unknown-none-softfloat"
@@ -64,6 +67,7 @@ loongArch64 = "0.2"
 loongarch-intc-driver = { workspace = true, features = ["rdif"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+ax-lazyinit.workspace = true
 x86-apic-driver = { workspace = true, features = ["rdif"] }
 
 [dev-dependencies]
