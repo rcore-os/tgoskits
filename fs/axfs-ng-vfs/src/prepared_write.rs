@@ -20,7 +20,10 @@ pub struct PreparedWrite {
 
 impl PreparedWrite {
     pub(crate) fn filesystems(&self) -> impl Iterator<Item = &dyn crate::FilesystemOps> {
-        self.writes.iter().map(MountWriteGuard::filesystem)
+        self.writes
+            .iter()
+            .map(MountWriteGuard::filesystem)
+            .chain(self.reads.iter().map(Location::filesystem))
     }
 
     /// Prepares the visible mount for writing and all declared dependencies.
