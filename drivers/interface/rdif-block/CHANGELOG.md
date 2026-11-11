@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.13.2...rdif-block-v0.14.0) - 2026-11-11
+
+### Added
+
+- *(ax-fs-ng)* support boot-time root growth with exclusive block access ([#2706](https://github.com/rcore-os/tgoskits/pull/2706))
+
+### Other
+
+- *(starry)* extend async block runtime performance coverage ([#2515](https://github.com/rcore-os/tgoskits/pull/2515))
+
 ## [0.13.2](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.13.1...rdif-block-v0.13.2) - 2026-09-18
 
 ### Other
