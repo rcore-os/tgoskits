@@ -195,6 +195,26 @@ impl FatFilesystem {
 }
 
 impl FilesystemOps for FatFilesystem {
+    fn query_namespace(
+        &self,
+        admission: &axfs_ng_vfs::NamespaceAdmission<'_>,
+        query: axfs_ng_vfs::NamespaceQuery<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> VfsResult<axfs_ng_vfs::NamespaceRead> {
+        self.query_admitted_namespace(admission, query, retired)
+    }
+
+    fn has_native_namespace(&self) -> bool {
+        true
+    }
+
+    fn begin_namespace<'a>(
+        &'a self,
+        request: axfs_ng_vfs::NamespaceDriverRequest<'a>,
+    ) -> axfs_ng_vfs::NamespaceStart<'a> {
+        self.begin_admitted_namespace(request)
+    }
+
     fn name(&self) -> &str {
         "vfat"
     }

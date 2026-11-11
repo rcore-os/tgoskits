@@ -121,9 +121,13 @@ impl<'a> RenameRequest<'a> {
             .destination_parent()
             .as_dir()
             .expect("validated rename parent");
-        let mut source_change = source.begin_locked_name_change(self.domain, retired);
-        let mut destination_change =
-            destination.begin_related_locked_name_change(&source_change, retired);
+        let mut source_change =
+            source.begin_locked_name_change(self.source_parent().clone(), self.domain, retired);
+        let mut destination_change = destination.begin_related_locked_name_change(
+            self.destination_parent().clone(),
+            &source_change,
+            retired,
+        );
         let mut guard = MutationGuard {
             attempt,
             request: self,

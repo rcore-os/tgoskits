@@ -11,12 +11,16 @@ use crate::{
 
 mod cache;
 mod command;
+mod completion;
 mod mutation;
+mod native;
 mod outcome;
 use cache::DirectoryCache;
 pub(crate) use command::MutationTarget;
 pub use command::*;
+pub use completion::*;
 pub use mutation::*;
+pub use native::*;
 pub use outcome::*;
 
 /// A trait for a sink that can receive directory entries.

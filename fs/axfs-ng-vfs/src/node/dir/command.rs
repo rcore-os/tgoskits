@@ -136,7 +136,7 @@ impl<'a> CreateRequest<'a> {
         self.target.parent.entry()
     }
     pub fn name(&self) -> &str {
-        self.target.name
+        &self.target.name
     }
     pub fn attributes(&self) -> CreateAttributes<'_> {
         self.attributes
@@ -166,7 +166,7 @@ impl<'a> LinkRequest<'a> {
         self.target.parent.entry()
     }
     pub fn name(&self) -> &str {
-        self.target.name
+        &self.target.name
     }
     pub fn source(&self) -> &DirEntry {
         self.source.entry()
@@ -198,7 +198,7 @@ impl<'a> UnlinkRequest<'a> {
         self.target.parent.entry()
     }
     pub fn name(&self) -> &str {
-        self.target.name
+        &self.target.name
     }
     pub fn directory(&self) -> bool {
         self.directory
@@ -207,24 +207,24 @@ impl<'a> UnlinkRequest<'a> {
 
 #[derive(Clone)]
 pub(crate) struct MutationTarget<'a> {
-    parent: &'a Location,
-    name: &'a str,
-    credentials: &'a MutationCredentials<'a>,
+    parent: Location,
+    name: String,
+    credentials: MutationCredentials<'a>,
     domain: usize,
 }
 
 impl<'a> MutationTarget<'a> {
     pub(crate) fn new(
-        parent: &'a Location,
-        name: &'a str,
-        credentials: &'a MutationCredentials<'a>,
+        parent: &Location,
+        name: &str,
+        credentials: &MutationCredentials<'a>,
     ) -> VfsResult<Self> {
         verify_entry_name(name)?;
         let domain = parent.entry().as_dir()?.inner().namespace_domain();
         Ok(Self {
-            parent,
-            name,
-            credentials,
+            parent: parent.clone(),
+            name: name.into(),
+            credentials: *credentials,
             domain,
         })
     }
@@ -298,7 +298,7 @@ impl AuthorizedUnlink<'_> {
     }
 }
 
-impl NamespaceMutation<'_> {
+impl<'request> NamespaceMutation<'request> {
     /// Immutable parent references for backend owner validation before locking.
     pub fn parents(&self) -> (&DirEntry, &DirEntry) {
         match self {
@@ -319,12 +319,58 @@ impl NamespaceMutation<'_> {
                 .execute(attempt, retired)
                 .map(NamespaceEffect::Rename);
         }
-        let target = match self {
+        let observed = match self.observe_locked(attempt, retired) {
+            Ok(observed) => observed,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        let change = self.begin_observed_change(retired);
+        self.resume_locked(attempt, retired, observed, change)
+    }
+
+    pub(super) fn target(&self) -> &MutationTarget<'request> {
+        match self {
             Self::Create(request) => &request.target,
             Self::Link(request) => &request.target,
             Self::Unlink(request) => &request.target,
             Self::Rename(_) => unreachable!(),
-        };
+        }
+    }
+
+    pub(super) fn observe_locked(
+        &self,
+        attempt: &mut dyn LockedAttempt,
+        retired: &MutationRetire,
+    ) -> VfsResult<(Metadata, MutationObservation)> {
+        CommandGuard {
+            attempt,
+            command: self,
+            target: self.target(),
+            retired,
+        }
+        .observe()
+    }
+
+    pub(super) fn begin_observed_change<'a>(
+        &self,
+        retired: &'a MutationRetire,
+    ) -> super::cache::NameChange<'a> {
+        let target = self.target();
+        target
+            .parent
+            .entry()
+            .as_dir()
+            .expect("validated parent")
+            .begin_locked_name_change(target.parent.entry().clone(), target.domain, retired)
+    }
+
+    pub(super) fn resume_locked(
+        &self,
+        attempt: &mut dyn LockedAttempt,
+        retired: &MutationRetire,
+        observed: (Metadata, MutationObservation),
+        mut change: super::cache::NameChange<'_>,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        let target = self.target();
         let directory = target.parent.entry().as_dir().expect("validated parent");
         let mut guard = CommandGuard {
             attempt,
@@ -332,13 +378,6 @@ impl NamespaceMutation<'_> {
             target,
             retired,
         };
-        // Observe before NameChange upgrades any weak aliases. FAT samples
-        // external activity here, before acquiring its own observation owners.
-        let observed = match guard.observe() {
-            Ok(observed) => observed,
-            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
-        };
-        let mut change = directory.begin_locked_name_change(target.domain, retired);
         let mut outcome = match guard.slot(observed).and_then(CommandSlot::authorize) {
             Ok(authorization) => authorization.commit(),
             Err(error) => NamespaceOutcome::unchanged(Err(error)),
@@ -350,13 +389,13 @@ impl NamespaceMutation<'_> {
                 .ok_or(VfsError::BadState)
                 .and_then(|effect| directory.publish_locked_command(effect, retired));
             if let Err(error) = result {
-                directory.invalidate_locked_name(target.name, retired);
+                directory.invalidate_locked_name(&target.name, retired);
                 let effect = outcome.observation().cloned();
                 let result = outcome.into_result().and(Err(error));
                 outcome = NamespaceOutcome::uncertain(effect, result);
             }
         } else if outcome.state() == NamespaceState::Uncertain {
-            directory.invalidate_locked_name(target.name, retired);
+            directory.invalidate_locked_name(&target.name, retired);
         }
         change.finish();
         outcome
@@ -419,7 +458,7 @@ impl<'attempt, 'request> CommandGuard<'attempt, 'request> {
             );
             self.retired.retire(candidate.entry.clone());
         } else {
-            directory.invalidate_locked_name(self.target.name, self.retired);
+            directory.invalidate_locked_name(&self.target.name, self.retired);
         }
         #[cfg(feature = "host-test")]
         if matches!(self.command, NamespaceMutation::Unlink(_))
@@ -438,8 +477,8 @@ impl<'attempt, 'request> CommandGuard<'attempt, 'request> {
 
 impl<'slot, 'attempt, 'request> CommandSlot<'slot, 'attempt, 'request> {
     fn authorize(self) -> VfsResult<CommandAuthorization<'slot, 'attempt, 'request>> {
-        let credentials = self.guard.target.credentials;
-        let parent = self.guard.target.parent;
+        let credentials = &self.guard.target.credentials;
+        let parent = &self.guard.target.parent;
         match (self.guard.command, &self.observed) {
             (
                 NamespaceMutation::Create(request),

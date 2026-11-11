@@ -22,12 +22,14 @@ use super::{
     NamespaceChange, NamespaceChangeGuard,
 };
 
+mod admitted;
+
 struct Ext4Attempt<'a> {
     state: Ext4Guard<'a>,
     _namespace: NamespaceChangeGuard,
-    filesystem: &'a Arc<Ext4Filesystem>,
-    source: &'a Inode,
-    destination: &'a Inode,
+    filesystem: Arc<Ext4Filesystem>,
+    source: Arc<Inode>,
+    destination: Arc<Inode>,
     error: Option<Ext4Error>,
     reap: Option<ReapClaim>,
 }
@@ -70,9 +72,9 @@ impl Ext4Filesystem {
                         let mut attempt = Ext4Attempt {
                             state,
                             _namespace: namespace,
-                            filesystem: self,
-                            source: &source,
-                            destination: &destination,
+                            filesystem: self.clone(),
+                            source: source.clone(),
+                            destination: destination.clone(),
                             error: None,
                             reap: None,
                         };
@@ -140,13 +142,15 @@ impl Ext4Filesystem {
     }
 
     fn command_parents(
-        self: &Arc<Self>,
+        &self,
         command: &NamespaceMutation<'_>,
     ) -> VfsResult<(Arc<Inode>, Arc<Inode>)> {
         let (source, destination) = command.parents();
         let source = source.as_dir()?.downcast::<Inode>()?;
         let destination = destination.as_dir()?.downcast::<Inode>()?;
-        if !Arc::ptr_eq(self, source.fs()) || !Arc::ptr_eq(self, destination.fs()) {
+        if !core::ptr::eq(self, source.fs().as_ref())
+            || !core::ptr::eq(self, destination.fs().as_ref())
+        {
             return Err(VfsError::CrossesDevices);
         }
         match command {
@@ -184,7 +188,7 @@ impl Ext4Attempt<'_> {
         name: &str,
         retired: &MutationRetire,
     ) -> NamespaceEntry {
-        let lifetime = self.state.retain_inode(self.filesystem, info.number);
+        let lifetime = self.state.retain_inode(&self.filesystem, info.number);
         let entry = self.source.create_entry(
             LocatedInode {
                 lifetime,
@@ -307,7 +311,7 @@ impl Ext4Attempt<'_> {
         } else {
             false
         };
-        let lifetime = self.state.retain_inode(self.filesystem, number);
+        let lifetime = self.state.retain_inode(&self.filesystem, number);
         let entry = parent.create_entry(
             LocatedInode {
                 lifetime,
@@ -355,9 +359,11 @@ impl LockedAttempt for Ext4Attempt<'_> {
         command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
     ) -> VfsResult<MutationObservation> {
+        let source_parent = self.source.clone();
+        let destination_parent = self.destination.clone();
         let request = match command {
             NamespaceMutation::Create(request) => {
-                let target = match self.observe_node(self.source, request.name(), retired) {
+                let target = match self.observe_node(&source_parent, request.name(), retired) {
                     Ok(target) => Some(target),
                     Err(VfsError::NotFound) => None,
                     Err(error) => return Err(error),
@@ -369,7 +375,7 @@ impl LockedAttempt for Ext4Attempt<'_> {
             }
             NamespaceMutation::Link(request) => {
                 let source = request.source().downcast::<Inode>()?;
-                if !Arc::ptr_eq(self.filesystem, source.fs()) {
+                if !Arc::ptr_eq(&self.filesystem, source.fs()) {
                     return Err(VfsError::CrossesDevices);
                 }
                 let result = self.state.ext4.inode(source.number());
@@ -387,7 +393,7 @@ impl LockedAttempt for Ext4Attempt<'_> {
                     empty: false,
                 };
                 retired.retire(source);
-                let target = match self.observe_node(self.source, request.name(), retired) {
+                let target = match self.observe_node(&source_parent, request.name(), retired) {
                     Ok(target) => Some(target),
                     Err(VfsError::NotFound) => None,
                     Err(error) => return Err(error),
@@ -399,20 +405,20 @@ impl LockedAttempt for Ext4Attempt<'_> {
             }
             NamespaceMutation::Unlink(request) => {
                 return Ok(MutationObservation::Unlink(self.observe_node(
-                    self.source,
+                    &source_parent,
                     request.name(),
                     retired,
                 )?));
             }
             NamespaceMutation::Rename(request) => request,
         };
-        let source = self.observe_node(self.source, request.source_name(), retired)?;
-        let target = match self.observe_node(self.destination, request.destination_name(), retired)
-        {
-            Ok(target) => Some(target),
-            Err(VfsError::NotFound) => None,
-            Err(error) => return Err(error),
-        };
+        let source = self.observe_node(&source_parent, request.source_name(), retired)?;
+        let target =
+            match self.observe_node(&destination_parent, request.destination_name(), retired) {
+                Ok(target) => Some(target),
+                Err(VfsError::NotFound) => None,
+                Err(error) => return Err(error),
+            };
         Ok(MutationObservation::Rename(RenameObservation {
             source,
             target,

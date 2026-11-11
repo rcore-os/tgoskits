@@ -7,6 +7,24 @@ struct WriteLayer {
     this: Weak<Self>,
     depth: u32,
     roots: Vec<Location>,
+    operations: Option<Arc<OperationProbe>>,
+}
+
+#[derive(Default)]
+struct OperationProbe {
+    events: std::sync::Mutex<Vec<(usize, bool)>>,
+    fail_owner: core::sync::atomic::AtomicUsize,
+}
+
+struct ProbedOperation<'a> {
+    owner: usize,
+    probe: &'a OperationProbe,
+}
+
+impl Drop for ProbedOperation<'_> {
+    fn drop(&mut self) {
+        self.probe.events.lock().unwrap().push((self.owner, false));
+    }
 }
 
 struct WriteLayerRoot {
@@ -15,6 +33,18 @@ struct WriteLayerRoot {
 }
 
 impl FilesystemOps for WriteLayer {
+    fn enter_namespace(&self) -> VfsResult<Box<dyn crate::NamespaceOperation + '_>> {
+        let Some(probe) = &self.operations else {
+            return Ok(Box::new(()));
+        };
+        let owner = core::ptr::from_ref(self) as usize;
+        if probe.fail_owner.load(Ordering::Relaxed) == owner {
+            return Err(VfsError::Io);
+        }
+        probe.events.lock().unwrap().push((owner, true));
+        Ok(Box::new(ProbedOperation { owner, probe }))
+    }
+
     fn name(&self) -> &str {
         "write-layer-fixture"
     }
@@ -68,12 +98,98 @@ impl DirNodeOps for WriteLayerRoot {
 }
 
 fn layer(depth: u32, roots: Vec<Location>) -> Location {
+    probed_layer(depth, roots, None)
+}
+
+fn probed_layer(
+    depth: u32,
+    roots: Vec<Location>,
+    operations: Option<Arc<OperationProbe>>,
+) -> Location {
     let filesystem = Filesystem::new(Arc::new_cyclic(|this| WriteLayer {
         this: this.clone(),
         depth,
         roots,
+        operations,
     }));
     Mountpoint::new_root(&filesystem).root_location()
+}
+
+#[test]
+fn namespace_admissions_order_real_receivers_once_and_release_partial_acquisitions() {
+    let probe = Arc::new(OperationProbe::default());
+    let first = probed_layer(0, vec![], Some(probe.clone()));
+    let second = probed_layer(0, vec![], Some(probe.clone()));
+    let address = |location: &Location| {
+        location.filesystem() as *const dyn FilesystemOps as *const () as usize
+    };
+    // Reverse data-address order, including two exact mounts of one FS.
+    let (higher, lower) = if address(&first) > address(&second) {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    let host = Mountpoint::new_root(&mock_filesystem());
+    let target = Location::new(
+        host.clone(),
+        make_child_dir_entry(Some(host.root.clone()), "alias"),
+    );
+    let alias = target.bind_mount(&lower, false).unwrap().root_location();
+    let visible = probed_layer(1, vec![higher, alias, lower], Some(probe.clone()));
+    let write = PreparedWrite::acquire(&visible).unwrap();
+    let admissions = crate::NamespaceAdmissions::acquire(&write).unwrap();
+    let entered: Vec<_> = probe
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(owner, enter)| enter.then_some(*owner))
+        .collect();
+    assert_eq!(
+        entered.len(),
+        3,
+        "duplicate backing roots entered the FS twice"
+    );
+    assert!(entered.windows(2).all(|pair| pair[0] < pair[1]));
+    drop(admissions);
+    let events = core::mem::take(&mut *probe.events.lock().unwrap());
+    for owner in &entered {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == (*owner, false))
+                .count(),
+            1
+        );
+    }
+
+    // Fail the last acquisition: every earlier guard must be gone when the
+    // factory returns the original error, not held in a partial preparation.
+    probe
+        .fail_owner
+        .store(*entered.last().unwrap(), Ordering::Relaxed);
+    assert!(matches!(
+        crate::NamespaceAdmissions::acquire(&write),
+        Err(VfsError::Io)
+    ));
+    let events = probe.events.lock().unwrap();
+    assert_eq!(events.len(), 4);
+    for owner in &entered[..2] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == (*owner, true))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == (*owner, false))
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]

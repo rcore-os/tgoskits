@@ -582,7 +582,64 @@ mod tests {
         drop(original);
         drop(file);
         drop(context);
-        let removed_file = parent.unlink("data", false, &credentials);
+        // Cancelling an observed native target must not commit it or leave a
+        // holder owned only by the cancelled round. The next preparation can
+        // then make progress without weakening FAT's active-holder rule.
+        let write = axfs_ng_vfs::PreparedWrite::acquire(&parent).unwrap();
+        let prepared = parent.prepare_unlink("data").unwrap();
+        let retired = axfs_ng_vfs::MutationRetire::new();
+        let admissions = axfs_ng_vfs::NamespaceAdmissions::acquire(&write).unwrap();
+        let observed = match admissions.for_location(&parent).unwrap().unlink(
+            prepared,
+            false,
+            &credentials,
+            &write,
+            &retired,
+        ) {
+            axfs_ng_vfs::NamespaceStart::Observed(observed) => observed,
+            axfs_ng_vfs::NamespaceStart::Complete(_) => panic!("expected actual FAT observation"),
+        };
+        let cancelled = observed.cancel();
+        let mut remaining = admissions
+            .pressure(vec![cancelled])
+            .unwrap_or_else(|_| panic!("wrong FAT admission"));
+        drop(admissions);
+        drop(retired);
+        let cancelled = remaining.pop().unwrap().finish();
+        assert_eq!(cancelled.state(), axfs_ng_vfs::NamespaceState::Unchanged);
+        assert_eq!(cancelled.into_result(), Ok(()));
+        assert!(parent.lookup_no_follow("data").is_ok());
+
+        let prepared = parent.prepare_unlink("data").unwrap();
+        let retired = axfs_ng_vfs::MutationRetire::new();
+        let admissions = axfs_ng_vfs::NamespaceAdmissions::acquire(&write).unwrap();
+        let observed = match admissions.for_location(&parent).unwrap().unlink(
+            prepared,
+            false,
+            &credentials,
+            &write,
+            &retired,
+        ) {
+            axfs_ng_vfs::NamespaceStart::Observed(observed) => observed,
+            axfs_ng_vfs::NamespaceStart::Complete(_) => panic!("expected actual FAT observation"),
+        };
+        // A logical wrapper acquired *after* this real observation must not
+        // cause a second active sample. The same locked driver resumes once.
+        let wrapper = axfs_ng_vfs::Location::new(
+            parent.mountpoint().clone(),
+            observed.target().entry.clone(),
+        );
+        retired.retire(wrapper);
+        let completion = observed.resume();
+        let mut remaining = admissions
+            .pressure(vec![completion])
+            .unwrap_or_else(|_| panic!("wrong FAT admission"));
+        drop(admissions);
+        drop(retired);
+        let completed = remaining.pop().unwrap().finish();
+        assert_eq!(completed.state(), axfs_ng_vfs::NamespaceState::Applied);
+        let removed_file = completed.into_result();
+        drop(write);
         let file_absent = matches!(parent.lookup_no_follow("data"), Err(VfsError::NotFound));
         drop(parent);
         let removed_parent = root.unlink("parent", true, &credentials);

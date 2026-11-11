@@ -12,8 +12,8 @@ use super::*;
 struct MemoryAttempt<'a> {
     // Unlock before destroying any owned attempt resources.
     _gate: crate::os::sync::MutexGuard<'a, ()>,
-    source: &'a MemoryNode,
-    destination: &'a MemoryNode,
+    source: Arc<MemoryNode>,
+    destination: Arc<MemoryNode>,
 }
 
 impl MemoryNode {
@@ -39,12 +39,102 @@ impl MemoryNode {
         {
             return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
         }
+        let source = match command
+            .parents()
+            .0
+            .as_dir()
+            .and_then(|directory| directory.downcast::<Self>())
+        {
+            Ok(source) => source,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        if !Arc::ptr_eq(&self.fs, &source.fs) {
+            return NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
+        }
         let mut attempt = MemoryAttempt {
             _gate: self.fs.mutation.lock(),
-            source: self,
-            destination: &destination,
+            source,
+            destination,
         };
         command.execute(&mut attempt, retired)
+    }
+}
+
+impl MemoryFs {
+    pub(super) fn query_admitted_namespace(
+        &self,
+        admission: &axfs_ng_vfs::NamespaceAdmission<'_>,
+        query: axfs_ng_vfs::NamespaceQuery<'_>,
+        retired: &MutationRetire,
+    ) -> VfsResult<axfs_ng_vfs::NamespaceRead> {
+        use axfs_ng_vfs::{NamespaceQuery, NamespaceRead};
+        admission.check_owner(self)?;
+        admission.check_owner(query.entry().filesystem())?;
+        let source = query.entry().downcast::<MemoryNode>()?;
+        let attempt = MemoryAttempt {
+            _gate: self.mutation.lock(),
+            source: source.clone(),
+            destination: source.clone(),
+        };
+        match query {
+            NamespaceQuery::Metadata(_) => {
+                // This concrete reader only takes inode spinlocks.
+                source.metadata().map(NamespaceRead::Metadata)
+            }
+            NamespaceQuery::Lookup { name, .. } => {
+                match attempt.observe_node(&source, name, retired) {
+                    Ok(node) => Ok(NamespaceRead::Entry(Some(node.entry))),
+                    Err(VfsError::NotFound) => Ok(NamespaceRead::Entry(None)),
+                    Err(error) => Err(error),
+                }
+            }
+            NamespaceQuery::Xattr { name, .. } => {
+                source.inode.get_xattr(name).map(NamespaceRead::Xattr)
+            }
+        }
+    }
+
+    pub(super) fn begin_admitted_namespace<'a>(
+        &'a self,
+        request: axfs_ng_vfs::NamespaceDriverRequest<'a>,
+    ) -> axfs_ng_vfs::NamespaceStart<'a> {
+        let parents = (|| {
+            request.admission().check_owner(self)?;
+            let (source, destination) = request.command().parents();
+            let source = source.as_dir()?.downcast::<MemoryNode>()?;
+            let destination = destination.as_dir()?.downcast::<MemoryNode>()?;
+            if !core::ptr::eq(self, source.fs.as_ref())
+                || !core::ptr::eq(self, destination.fs.as_ref())
+            {
+                return Err(VfsError::CrossesDevices);
+            }
+            if let NamespaceMutation::Rename(rename) = request.command()
+                && (rename.options().exchange() || rename.options().whiteout())
+            {
+                return Err(VfsError::OperationNotSupported);
+            }
+            Ok((source, destination))
+        })();
+        let (source, destination) = match parents {
+            Ok(parents) => parents,
+            Err(error) => return request.fail(error),
+        };
+        let attempt = MemoryAttempt {
+            _gate: self.mutation.lock(),
+            source,
+            destination,
+        };
+        request.observe(alloc::boxed::Box::new(attempt))
+    }
+}
+
+impl axfs_ng_vfs::NamespaceDriver for MemoryAttempt<'_> {
+    fn finish(
+        self: alloc::boxed::Box<Self>,
+        outcome: NamespaceOutcome<NamespaceEffect>,
+    ) -> axfs_ng_vfs::NamespaceCompletion {
+        drop(self);
+        axfs_ng_vfs::NamespaceCompletion::new(outcome, None)
     }
 }
 
@@ -177,7 +267,7 @@ impl LockedAttempt for MemoryAttempt<'_> {
         let request = match command {
             NamespaceMutation::Create(request) => {
                 return Ok(MutationObservation::Create {
-                    target: optional(self, self.source, request.name())?,
+                    target: optional(self, &self.source, request.name())?,
                     owner_policy: axfs_ng_vfs::CreateOwnerPolicy::ParentSetgid,
                 });
             }
@@ -197,20 +287,20 @@ impl LockedAttempt for MemoryAttempt<'_> {
                 retired.retire(source);
                 return Ok(MutationObservation::Link {
                     source: node,
-                    target: optional(self, self.source, request.name())?,
+                    target: optional(self, &self.source, request.name())?,
                 });
             }
             NamespaceMutation::Unlink(request) => {
                 return Ok(MutationObservation::Unlink(self.observe_node(
-                    self.source,
+                    &self.source,
                     request.name(),
                     retired,
                 )?));
             }
             NamespaceMutation::Rename(request) => request,
         };
-        let source = self.observe_node(self.source, request.source_name(), retired)?;
-        let target = match self.observe_node(self.destination, request.destination_name(), retired)
+        let source = self.observe_node(&self.source, request.source_name(), retired)?;
+        let target = match self.observe_node(&self.destination, request.destination_name(), retired)
         {
             Ok(target) => Some(target),
             Err(VfsError::NotFound) => None,

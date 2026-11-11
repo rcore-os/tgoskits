@@ -29,6 +29,37 @@ pub trait FilesystemMountLease: Send + Sync + core::fmt::Debug {}
 
 /// Trait for filesystem operations
 pub trait FilesystemOps: Send + Sync {
+    /// Whether this owner implements the closed native namespace boundary.
+    fn has_native_namespace(&self) -> bool {
+        false
+    }
+
+    /// Acquires only the existing operation admission, never a backend gate.
+    /// The VFS binds the returned guard to this receiver before exposing it.
+    fn enter_namespace(&self) -> VfsResult<alloc::boxed::Box<dyn crate::NamespaceOperation + '_>> {
+        Ok(alloc::boxed::Box::new(()))
+    }
+
+    /// Backend implementation hook. The request is privately constructed by
+    /// the same-FS admission factory; this is not a public raw-attempt factory.
+    fn begin_namespace<'a>(
+        &'a self,
+        request: crate::NamespaceDriverRequest<'a>,
+    ) -> crate::NamespaceStart<'a> {
+        request.fail(VfsError::OperationNotSupported)
+    }
+
+    /// Admitted native reads, without ordinary entry points that may reenter
+    /// operation admission. The caller holds no native backend gate.
+    fn query_namespace(
+        &self,
+        _admission: &crate::NamespaceAdmission<'_>,
+        _query: crate::NamespaceQuery<'_>,
+        _retired: &crate::MutationRetire,
+    ) -> VfsResult<crate::NamespaceRead> {
+        Err(VfsError::OperationNotSupported)
+    }
+
     /// Gets the name of the filesystem
     fn name(&self) -> &str;
 

@@ -254,6 +254,10 @@ pub struct MountWriteGuard {
 }
 
 impl MountWriteGuard {
+    pub(crate) fn filesystem(&self) -> &dyn FilesystemOps {
+        self.mountpoint.root.filesystem()
+    }
+
     /// Checks that a borrowed right belongs to the actual mount being modified.
     /// A writable alias cannot authorize writes through a read-only mount.
     pub fn check_location(&self, location: &Location) -> VfsResult<()> {
@@ -1521,6 +1525,33 @@ impl Location {
         credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<()> {
         let write = crate::PreparedWrite::acquire(self)?;
+        if self.filesystem().has_native_namespace() {
+            loop {
+                let prepared = self.prepare_unlink(name)?;
+                let retired = crate::MutationRetire::new();
+                let admissions = crate::NamespaceAdmissions::acquire(&write)?;
+                let completion = admissions
+                    .for_location(self)?
+                    .unlink(prepared, is_dir, credentials, &write, &retired)
+                    .resume();
+                // The observation, publication and backend driver have ended.
+                // Pressure for every FS precedes release of *all* rights; only
+                // then may retired inode owners run their existing destructors.
+                let mut remaining =
+                    admissions
+                        .pressure(alloc::vec![completion])
+                        .unwrap_or_else(|_| {
+                            unreachable!("fixed native factory binds the admitted owner")
+                        });
+                drop(admissions);
+                drop(retired);
+                let outcome = remaining.pop().expect("one native completion").finish();
+                if outcome.state() == crate::NamespaceState::Retry {
+                    continue;
+                }
+                return outcome.into_result();
+            }
+        }
         let prepared = self.prepare_unlink(name)?;
         let retired = crate::MutationRetire::new();
         self.unlink_with_write(name, is_dir, credentials, prepared, &write, &retired)

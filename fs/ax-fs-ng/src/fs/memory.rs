@@ -251,6 +251,26 @@ impl MemoryFs {
 }
 
 impl FilesystemOps for MemoryFs {
+    fn query_namespace(
+        &self,
+        admission: &axfs_ng_vfs::NamespaceAdmission<'_>,
+        query: axfs_ng_vfs::NamespaceQuery<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> VfsResult<axfs_ng_vfs::NamespaceRead> {
+        self.query_admitted_namespace(admission, query, retired)
+    }
+
+    fn has_native_namespace(&self) -> bool {
+        true
+    }
+
+    fn begin_namespace<'a>(
+        &'a self,
+        request: axfs_ng_vfs::NamespaceDriverRequest<'a>,
+    ) -> axfs_ng_vfs::NamespaceStart<'a> {
+        self.begin_admitted_namespace(request)
+    }
+
     fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
         let mut installed = self.mount_lease.lock_irqsave();
         if let Some(lease) = installed.upgrade() {

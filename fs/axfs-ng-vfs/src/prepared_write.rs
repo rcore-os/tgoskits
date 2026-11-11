@@ -15,6 +15,10 @@ pub struct PreparedWrite {
 }
 
 impl PreparedWrite {
+    pub(crate) fn filesystems(&self) -> impl Iterator<Item = &dyn crate::FilesystemOps> {
+        self.writes.iter().map(MountWriteGuard::filesystem)
+    }
+
     /// Prepares the visible mount and its declared writable backing roots.
     ///
     /// Depth must not exceed two and must strictly decrease on every edge.

@@ -23,6 +23,14 @@ pub struct PreparedUnlink {
 }
 
 impl PreparedUnlink {
+    pub(crate) fn parent_owner(&self) -> Location {
+        self.parent.clone()
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     pub(crate) fn new(parent: Location, name: String) -> Self {
         Self { parent, name }
     }

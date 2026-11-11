@@ -29,7 +29,7 @@ pub(super) struct DirectoryCache {
 }
 
 pub(super) struct NameChange<'a> {
-    directory: &'a DirNode,
+    directory: DirEntry,
     complete: bool,
     publication: Arc<super::super::name::NamePublication>,
     affected: Vec<DirEntry>,
@@ -37,15 +37,22 @@ pub(super) struct NameChange<'a> {
 }
 
 impl NameChange<'_> {
+    fn directory(&self) -> &DirNode {
+        self.directory
+            .as_dir()
+            .expect("validated publication parent")
+    }
+
     fn collect_affected(&mut self) {
-        self.affected.extend(
-            self.directory
-                .cache
-                .lock()
-                .entries
-                .values()
-                .filter_map(WeakDirEntry::upgrade),
-        );
+        let affected: Vec<_> = self
+            .directory()
+            .cache
+            .lock()
+            .entries
+            .values()
+            .filter_map(WeakDirEntry::upgrade)
+            .collect();
+        self.affected.extend(affected);
     }
 
     pub(super) fn finish(&mut self) {
@@ -66,7 +73,7 @@ impl NameChange<'_> {
 impl Drop for NameChange<'_> {
     fn drop(&mut self) {
         let uncertain = {
-            let mut cache = self.directory.cache.lock();
+            let mut cache = self.directory().cache.lock();
             cache.writers -= 1;
             cache.namespace_generation = cache.namespace_generation.wrapping_add(1);
             cache.invalidate_missing();
@@ -93,6 +100,7 @@ impl Drop for NameChange<'_> {
             }
         }
         if let Some(retired) = self.retired {
+            retired.retire(self.directory.clone());
             retired.retire(core::mem::take(&mut self.affected));
             retired.retire(uncertain);
         }
@@ -179,10 +187,11 @@ impl DirNode {
         removed.set_name_state(NameState::Unlinked);
     }
 
-    fn begin_name_change_with(
+    fn begin_name_change_with<'a>(
         &self,
+        owner: DirEntry,
         publication: Arc<super::super::name::NamePublication>,
-    ) -> NameChange<'_> {
+    ) -> NameChange<'a> {
         let affected;
         {
             let mut cache = self.cache.lock();
@@ -196,7 +205,7 @@ impl DirNode {
                 .collect();
         }
         NameChange {
-            directory: self,
+            directory: owner,
             complete: false,
             publication,
             affected,
@@ -205,22 +214,24 @@ impl DirNode {
     }
 
     pub(super) fn begin_locked_name_change<'a>(
-        &'a self,
+        &self,
+        owner: DirEntry,
         domain: usize,
         retired: &'a MutationRetire,
     ) -> NameChange<'a> {
         let mut change =
-            self.begin_name_change_with(super::super::name::NamePublication::begin(domain));
+            self.begin_name_change_with(owner, super::super::name::NamePublication::begin(domain));
         change.retired = Some(retired);
         change
     }
 
     pub(super) fn begin_related_locked_name_change<'a>(
-        &'a self,
+        &self,
+        owner: DirEntry,
         other: &NameChange<'_>,
         retired: &'a MutationRetire,
     ) -> NameChange<'a> {
-        let mut change = self.begin_name_change_with(other.publication.clone());
+        let mut change = self.begin_name_change_with(owner, other.publication.clone());
         change.retired = Some(retired);
         change
     }

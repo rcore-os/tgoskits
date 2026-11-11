@@ -486,6 +486,35 @@ impl Drop for Ext4Filesystem {
 }
 
 impl FilesystemOps for Ext4Filesystem {
+    fn query_namespace(
+        &self,
+        admission: &axfs_ng_vfs::NamespaceAdmission<'_>,
+        query: axfs_ng_vfs::NamespaceQuery<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> VfsResult<axfs_ng_vfs::NamespaceRead> {
+        self.query_admitted_namespace(admission, query, retired)
+    }
+
+    fn has_native_namespace(&self) -> bool {
+        true
+    }
+
+    fn enter_namespace(
+        &self,
+    ) -> VfsResult<alloc::boxed::Box<dyn axfs_ng_vfs::NamespaceOperation + '_>> {
+        self.admission
+            .enter()
+            .map(|guard| alloc::boxed::Box::new(guard) as _)
+            .map_err(into_vfs_err)
+    }
+
+    fn begin_namespace<'a>(
+        &'a self,
+        request: axfs_ng_vfs::NamespaceDriverRequest<'a>,
+    ) -> axfs_ng_vfs::NamespaceStart<'a> {
+        self.begin_admitted_namespace(request)
+    }
+
     fn name(&self) -> &str {
         "ext4"
     }

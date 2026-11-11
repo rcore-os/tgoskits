@@ -12,8 +12,8 @@ use super::*;
 
 struct FatAttempt<'a> {
     guard: FatFilesystemGuard<'a>,
-    source: &'a FatDirNode,
-    destination: &'a FatDirNode,
+    source: Arc<FatDirNode>,
+    destination: Arc<FatDirNode>,
     source_holder: Option<Arc<FatInode>>,
     unlink_active: bool,
 }
@@ -53,14 +53,125 @@ impl FatDirNode {
         if let Err(error) = names {
             return NamespaceOutcome::unchanged(Err(error));
         }
+        let source = match command
+            .parents()
+            .0
+            .as_dir()
+            .and_then(|directory| directory.downcast::<Self>())
+        {
+            Ok(source) => source,
+            Err(error) => return NamespaceOutcome::unchanged(Err(error)),
+        };
+        if !Arc::ptr_eq(&self.state.fs, &source.state.fs) {
+            return NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
+        }
         let mut attempt = FatAttempt {
             guard: self.state.fs.lock_retiring(retired),
-            source: self,
-            destination: &destination,
+            source,
+            destination,
             source_holder: None,
             unlink_active: false,
         };
         command.execute(&mut attempt, retired)
+    }
+}
+
+impl super::super::fs::FatFilesystem {
+    pub(in super::super) fn query_admitted_namespace(
+        &self,
+        admission: &axfs_ng_vfs::NamespaceAdmission<'_>,
+        query: axfs_ng_vfs::NamespaceQuery<'_>,
+        retired: &MutationRetire,
+    ) -> VfsResult<axfs_ng_vfs::NamespaceRead> {
+        use axfs_ng_vfs::{NamespaceQuery, NamespaceRead};
+        admission.check_owner(self)?;
+        admission.check_owner(query.entry().filesystem())?;
+        match query {
+            NamespaceQuery::Lookup { parent, name } => {
+                let parent = parent.as_dir()?.downcast::<FatDirNode>()?;
+                let mut attempt = FatAttempt {
+                    guard: self.lock_retiring(retired),
+                    source: parent.clone(),
+                    destination: parent.clone(),
+                    source_holder: None,
+                    unlink_active: false,
+                };
+                match attempt.observe_node(&parent, name, retired) {
+                    Ok((node, _holder)) => Ok(NamespaceRead::Entry(Some(node.entry))),
+                    Err(VfsError::NotFound) => Ok(NamespaceRead::Entry(None)),
+                    Err(error) => Err(error),
+                }
+            }
+            NamespaceQuery::Metadata(entry) => {
+                // These concrete readers take only the FAT mutex. FAT has no
+                // separate operation admission and no backend gate is held here.
+                if entry.is_dir() {
+                    entry
+                        .as_dir()?
+                        .downcast::<FatDirNode>()?
+                        .metadata()
+                        .map(NamespaceRead::Metadata)
+                } else {
+                    entry
+                        .downcast::<FatFileNode>()?
+                        .metadata()
+                        .map(NamespaceRead::Metadata)
+                }
+            }
+            NamespaceQuery::Xattr { .. } => Err(VfsError::OperationNotSupported),
+        }
+    }
+
+    pub(in super::super) fn begin_admitted_namespace<'a>(
+        &'a self,
+        request: axfs_ng_vfs::NamespaceDriverRequest<'a>,
+    ) -> axfs_ng_vfs::NamespaceStart<'a> {
+        let parents = (|| {
+            request.admission().check_owner(self)?;
+            let (source, destination) = request.command().parents();
+            let source = source.as_dir()?.downcast::<FatDirNode>()?;
+            let destination = destination.as_dir()?.downcast::<FatDirNode>()?;
+            if !core::ptr::eq(self, source.state.fs.as_ref())
+                || !core::ptr::eq(self, destination.state.fs.as_ref())
+            {
+                return Err(VfsError::CrossesDevices);
+            }
+            match request.command() {
+                NamespaceMutation::Rename(rename) => {
+                    if rename.options().exchange() || rename.options().whiteout() {
+                        return Err(VfsError::OperationNotSupported);
+                    }
+                    validate_rename_name(rename.source_name())?;
+                    validate_rename_name(rename.destination_name())?;
+                }
+                NamespaceMutation::Unlink(unlink) => validate_rename_name(unlink.name())?,
+                NamespaceMutation::Create(create) => validate_rename_name(create.name())?,
+                NamespaceMutation::Link(_) => return Err(VfsError::PermissionDenied),
+            }
+            Ok((source, destination))
+        })();
+        let (source, destination) = match parents {
+            Ok(parents) => parents,
+            Err(error) => return request.fail(error),
+        };
+        let attempt = FatAttempt {
+            guard: self.lock_retiring(request.retired()),
+            source,
+            destination,
+            source_holder: None,
+            unlink_active: false,
+        };
+        request.observe(alloc::boxed::Box::new(attempt))
+    }
+}
+
+impl axfs_ng_vfs::NamespaceDriver for FatAttempt<'_> {
+    fn finish(
+        self: alloc::boxed::Box<Self>,
+        outcome: NamespaceOutcome<NamespaceEffect>,
+    ) -> axfs_ng_vfs::NamespaceCompletion {
+        drop(self);
+        axfs_ng_vfs::NamespaceCompletion::new(outcome, None)
     }
 }
 
@@ -88,7 +199,8 @@ impl FatAttempt<'_> {
         if let Err(error) = result {
             return NamespaceOutcome::uncertain(None, Err(into_vfs_err(error)));
         }
-        match self.observe_node(self.source, request.name(), retired) {
+        let source = self.source.clone();
+        match self.observe_node(&source, request.name(), retired) {
             Ok((node, _holder)) => NamespaceOutcome::applied(
                 NamespaceEffect::Create(CreateEffect {
                     selected: node.selected(),
@@ -157,9 +269,11 @@ impl LockedAttempt for FatAttempt<'_> {
         command: &NamespaceMutation<'_>,
         retired: &MutationRetire,
     ) -> VfsResult<MutationObservation> {
+        let source_parent = self.source.clone();
+        let destination_parent = self.destination.clone();
         let request = match command {
             NamespaceMutation::Create(request) => {
-                let target = match self.observe_node(self.source, request.name(), retired) {
+                let target = match self.observe_node(&source_parent, request.name(), retired) {
                     Ok((node, _holder)) => Some(node),
                     Err(VfsError::NotFound) => None,
                     Err(error) => return Err(error),
@@ -178,21 +292,21 @@ impl LockedAttempt for FatAttempt<'_> {
                     .active
                     .get(&key)
                     .is_some_and(|holder| holder.strong_count() != 0);
-                let (node, holder) = self.observe_node(self.source, request.name(), retired)?;
+                let (node, holder) = self.observe_node(&source_parent, request.name(), retired)?;
                 self.source_holder = Some(holder);
                 return Ok(MutationObservation::Unlink(node));
             }
             NamespaceMutation::Link(_) => return Err(VfsError::PermissionDenied),
             NamespaceMutation::Rename(request) => request,
         };
-        let (source, holder) = self.observe_node(self.source, request.source_name(), retired)?;
+        let (source, holder) = self.observe_node(&source_parent, request.source_name(), retired)?;
         self.source_holder = Some(holder);
-        let target = match self.observe_node(self.destination, request.destination_name(), retired)
-        {
-            Ok((target, _holder)) => Some(target),
-            Err(VfsError::NotFound) => None,
-            Err(error) => return Err(error),
-        };
+        let target =
+            match self.observe_node(&destination_parent, request.destination_name(), retired) {
+                Ok((target, _holder)) => Some(target),
+                Err(VfsError::NotFound) => None,
+                Err(error) => return Err(error),
+            };
         Ok(MutationObservation::Rename(RenameObservation {
             source,
             target,

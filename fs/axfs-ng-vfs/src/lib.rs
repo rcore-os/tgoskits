@@ -7,6 +7,7 @@ extern crate std;
 
 mod fs;
 mod mount;
+mod namespace_admission;
 mod node;
 pub mod path;
 mod prepared_unlink;
@@ -20,6 +21,7 @@ mod writeback_policy;
 
 pub use fs::*;
 pub use mount::*;
+pub use namespace_admission::*;
 pub(crate) use node::MutationTarget;
 pub use node::*;
 pub use prepared_unlink::*;
