@@ -1424,16 +1424,7 @@ impl Location {
                 let scope = crate::NamespaceOperationScope::acquire(&write)?;
                 {
                     let context = scope.context();
-                    scope.link(
-                        &context,
-                        self,
-                        name,
-                        node,
-                        &crate::MutationCredentials {
-                            cap_fowner: true,
-                            ..*credentials
-                        },
-                    )?;
+                    scope.link(&context, self, name, node, credentials)?;
                 }
                 let outcome = scope.finish().unwrap_or_else(|_| {
                     unreachable!("fixed native factory binds the admitted owner")
