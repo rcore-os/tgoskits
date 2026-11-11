@@ -1281,6 +1281,10 @@ inode 状态，不触发命名发布。`Applied` 后的持久化失败仍带原�
 
 MemoryFs 对 mode/owner 修改使用现有 mutation gate 加真实 inode metadata 锁，
 覆盖目录自身与 sticky 所需 owner；原子引用回收不取得该 gate。
+目录快照的 size 在同一 mutation gate 内、取得 metadata 锁前短读 entries，
+明确释放 entries guard 后才进入 inode 尝试；目录项数量在本轮 gate 内保持稳定。
+不能持 metadata 再读 entries：普通 lookup 的 entries→inodes 与包装器回收的
+inodes→metadata 会闭合三方锁环。文件长度仍从其实际内容 owner 原子读取。
 Ext4 对命名授权相关 mode/uid/gid 取得与命名操作协调的 namespace 权利，
 再按统一顺序进入 content/state 观察；不能先拿 content 锁再反向补 namespace。
 实际类型为目录还是文件、需要的 namespace 范围在准备阶段取得并在尝试内重验证。
@@ -1409,11 +1413,11 @@ pressure/abort，再释放所有 FS admission，最后退出所有退役 owner �
 
 ### 6.7 已归一化的物理提交
 
-`rsext4::InodeMetadataUpdate` 的公开说明已经把它定义为 embedding VFS 已授权、已
-归一化的字段更新，但当前 `ext4/owned/inode.rs::update_inode_metadata` 仍把
-`owner.is_some()` 转成隐式清除 SUID/SGID。外部调用者既不能单独更新 UID/GID，也
-不能阻止这次二次清位；不能因私有 `Ext4InodeMetadataUpdate` 有独立字段，就宣称
-公开接口已经支持部分 owner。
+`rsext4::InodeMetadataUpdate` 是 embedding VFS 已授权、已归一化的字段更新。
+实施前 `ext4/owned/inode.rs::update_inode_metadata` 曾把 `owner.is_some()` 转成
+隐式清除 SUID/SGID，外部调用者既不能单独更新 UID/GID，也不能阻止二次清位。
+本节规定已落实的公开投影合同；不能因私有 `Ext4InodeMetadataUpdate` 原本有独立
+字段，就把旧公开接口误认为已经支持部分 owner。
 
 公开 owned DTO 将成对 `owner` 替换为各自可选的 `uid`、`gid`，并增加可选的实际
 `ctime`。当前授权器决定参与字段和最终权限位；owned 提交只忠实应用它们，不再按
@@ -1506,6 +1510,108 @@ Set 就采用普通写权限。chmod 对符号链接的拒绝与 chown 清位后
 可审查的中间版本不迁移用户系统调用，也不删除其红测窗口；它不表示其余后端失去
 原有 raw 能力，更不构成最终双轨。原生后端和全部消费者仍按第 6.8 节连续迁移，
 最终移除旧入口后才作完整行为验收。
+
+### 6.10 授权字段的原生投影
+
+不同后端保存元数据的类型不同，不能要求磁盘后端先修改一份通用 `Metadata`，
+再通过比较新旧值猜回哪些字段参与。`Some(current.uid)` 与 `None`、同值 Set 与 Keep
+在数值比较后无法区分；rsext4 的时间参与性还会决定是否扩展对应 extra-isize 字段。
+因此 `AuthorizedMetadataChange` 增加只读的 `mode()`、`uid()`、`gid()`、`atime()`、
+`mtime()` 和 `ctime()`，分别保留原可选字段及必有的本轮 ctime。MemoryFs 继续使用
+消费式 `apply`，Ext4 在原 `LockedMetadataAttempt::commit` 内逐项投影公开
+`rsext4::InodeMetadataUpdate`，不填满未参与字段。
+
+这些读取方法只揭示固定授权器已经确定的值，不增加公开构造、替换字段、克隆授权
+对象或取回 raw driver 的入口。`commit` 仍消费由原 request 生成的授权对象；
+普通调用者不能仅凭字段值取得对另一 inode 的修改权利。VFS 不依赖 rsext4 类型，
+AX 适配层负责时间和权限编码，并把显式 ctime 传给 owned 更新，不让底层另取一次 Now。
+
+后端选锁还需要区分领域命令。`MetadataRequest::changes_permissions_or_ownership()`
+只根据原始意图判断：Chmod 和 Chown 返回真，包括 `Chown(None,None)`，Times 返回假。
+这是只读分类，不允许后端替换意图、凭据或目标；不能通过 apply 后的数值差异反推它。
+
+### 6.11 重试的最外层所有者
+
+`Location::change_metadata` 对非空命令保留同一次 `PreparedWrite`，按完整尝试循环。
+每轮重新建立退役集合和全部 FS operation admissions，构造原意图与原凭据视图的
+新 request；退出本轮所有 gate 后，先处理全部 pressure/abort，再释放全部
+admissions、退役 owner 并显式 finish。只有完成这些步骤后仍为 `Retry`，才开始下一轮
+准备、当前观察、授权和取时。不能把已经授权的 patch 或借用的 attempt 保存在压力对象中。
+
+分层入口继续只返回类型化 completion。Overlay 等最外层消费者负责合并命名和元数据
+两组责任、完整退出后再决定重试；Ext4 入口和 phase-two 对象不在持有 outer gate 时
+自行循环，也不调用会重新 admission 的普通 `Location` 入口。Staging 是后端尚未开始
+可提交尝试的阶段，不增加 `NamespaceState` 变体；普通 Busy 或 WouldBlock 错误本身
+不授予重试能力。
+
+`NamespaceOutcome::retry()` 中的 WouldBlock 是内部续走标记，不是一次真实操作失败。
+若 `NamespaceOutcome::with_completion` 收到真实收尾错误，必须把 `Retry` 转为带该
+错误的 `Unchanged`，不能继续循环或由标记遮住错误。其它状态仍保留首个真实错误、
+原状态与实际观察。此规则由共用完成核心维护，同时覆盖原生命名和元数据消费者，
+不在每个 syscall 重写一份错误优先级。压力失败也必须清除可重试状态；原生压力
+对象处理一个原本为 Retry 的结果时，同样不能先用标记与错误作 `and` 合并，
+再返回被标记遮住的错误。已有非 Retry 操作错误的优先级不因此改变。
+
+### 6.12 Ext4 的原生锁范围
+
+Ext4 元数据入口由 `fs` 子树内的专用实现承接，借用原 request 的同 FS admission。
+它可以直接使用既有 `Namespace`、content `AccessGate` 和 `Ext4Guard`，但不能调用
+会自行 enter 的 `Inode::mutate`、`with_writeback_progress`、普通冷 metadata 读取或
+同步入口来包住新尝试。`with_admitted_writeback_progress` 也不是替代品：它会在
+调用栈中推进日志，不能代替本协议显式结束 namespace/content/state 的要求。
+
+Chmod 和 Chown 先在 namespace/content gate 外取得仅供选锁的当前类型准备快照，
+释放该次 state，再选择既有 namespace 权利。目录使用自身 inode 对应的
+`NamespaceChange::Directory`，即 topology 共享加该目录排他；非目录使用既有
+`NamespaceChange::Topology` 排他，以覆盖不能从单个名称枚举的硬链接别名。
+Times 不改变命名授权字段，不取得 namespace 权利，仍取同 inode content 排他和 state。
+这里不新增全局路径解析锁；非目录 mode/owner 的保守排他范围只持续实际尝试，
+日志推进和最终同步都在其外，后续性能核验需覆盖这项代价。
+
+取得所需 namespace 权利后，再取得原 inode content 排他，最后进入 `Ext4Guard`。
+锁内直接调用 owned `inode(number)` 读取当前 inode，并核对选锁时的实际类型。
+活跃 `InodeLifetime` 保证编号不能被回收复用，合法元数据操作也不改变 inode 种类；
+若当前类型仍与准备值不符，视为本轮状态不一致，返回未应用的 `BadState`，
+不持 content/state 反向升级 namespace，不沿错误范围授权或伪装成日志重试。
+已 unlink 但仍被引用的 inode 不因此被拒绝，不能套用命名父目录的 linked 检查。
+
+`LockedMetadataAttempt` 的观察和提交都使用这一份真实 state，当前字段通过
+`metadata_from_info` 解码，物理提交调用公开 owned `update_inode_metadata`。
+成功观察来自它返回的 `InodeInfo`；不能调用会再取 state 的 admitted 冷读 helper，
+也不能用 VFS 的旧快照拼出“提交结果”。本轮 state、content、namespace 权利和
+授权借用必须在进入 phase two 前全部结束，guard 的字段及显式释放顺序应能核对。
+
+### 6.13 Ext4 的错误与收尾
+
+Ext4 使用本地的 `NamespacePressure<Metadata>` 和 `NamespaceFinish`，复用
+`MutationAttempt`、`finish_mutation_attempt`、LogPressure 和既有 abort 持久化，
+不泛化命名 `NamespaceDriver`，不把 metadata 塞进 `NamespaceEffect`。
+Staging 或 typed journal-progress 只有在能够证明 inode 字段尚未提交时才返回 Retry。
+已 Applied 或状态不明的结果，不能因底层错误恰好带 progress 标记就重放。
+
+这个证明必须落在实际调用链和功能组合上。当前 AX 依赖启用 rsext4 默认的
+`USE_MULTILEVEL_CACHE`；本次 owned 字段更新在 canonical cache 发布后只剩纯解码，
+因此只可把发布前的 typed progress 作为未提交重试边界。禁用该功能的 rsext4
+路径在 cache 发布后还可能写块，本单元不宣称覆盖它，不能把当前证明推广到所有
+rsext4 配置。编码转换等确定在提交前发生的错误可以返回 Unchanged；可能已经发布、
+却无法证明最终字段状态的错误返回不带旧可信快照的 Uncertain，并保留原错误和完成责任。
+
+本地压力对象保留原 typed 原因与真实 FS owner。它在所有 gate 外推进日志或持久化
+abort；只有成功推进、原尝试可安全重做时才留下 Retry，失败则保留首个真实错误并
+结束重试。任何实际需要保活的新 inode owner 都要留到全部 admissions 退出后，
+不能在压力、取消、观察失败或转换错误出口提前析构。
+
+元数据 phase four 不新增目录 reap 或 DIRSYNC 语义。对已实际提交的元数据，
+从真实 inode 观察保留 `InodeFlags::SYNC` 决定，结合现有后台写回策略显式完成同步；
+可只持有真实 FS owner 和该决定，不为收尾重造 inode wrapper。Retry 的 finish
+只释放所保留的 owner，不做一次假提交或元数据同步。Applied 后同步失败仍带实际
+观察和错误，不重放用户命令；原调用者在处理完成责任后才转换普通返回值。
+
+当前 `InodeInfo` 和 `metadata_from_info` 的时间观察只有秒精度。新适配必须返回
+真实后端可观察的精度，不能把请求中的纳秒拼回返回值制造一致；这也不授权丢掉
+物理提交的纳秒字段。真实时钟沿既有 BlockTimeProvider 链取得，不新增零值回退。
+时间观察精度和 provider 安装仍需在后续用户消费者与运行证据中单独核实，
+本原生准备单元不因此宣称 Linux 时间 ABI 已兼容。
 
 ## 7. 缓存专用查找
 
