@@ -166,12 +166,7 @@ impl LockedAttempt for CgroupAttempt<'_> {
     ) -> VfsResult<MutationObservation> {
         let name = match request {
             NamespaceMutation::Create(request) => request.name(),
-            NamespaceMutation::Unlink(request) => {
-                if CgroupFileKind::from_name(request.name()).is_some() {
-                    return Err(VfsError::OperationNotPermitted);
-                }
-                request.name()
-            }
+            NamespaceMutation::Unlink(request) => request.name(),
             NamespaceMutation::Link(_) | NamespaceMutation::Rename(_) => {
                 return Err(VfsError::OperationNotPermitted);
             }

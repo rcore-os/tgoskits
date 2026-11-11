@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -274,6 +275,145 @@ static void expect_clone_into_cgroup(const char *path, const char *msg)
           msg);
 }
 
+static void test_unlink_control_file_order(void)
+{
+    const char *group_path = CGROUP2_PATH "/unlink-order";
+    const char *control_name = "cgroup.procs";
+    struct stat st;
+    int dirfd = -1;
+    int group_created = 0;
+
+    if (geteuid() != 0) {
+        errno = 0;
+        CHECK(0, "unlink order test requires privileged root actor");
+        return;
+    }
+
+    errno = 0;
+    int ret = mkdir(group_path, 0755);
+    if (ret == 0) {
+        group_created = 1;
+    }
+    CHECK(ret == 0, "create isolated cgroup for unlink order test");
+    if (ret != 0) {
+        return;
+    }
+
+    errno = 0;
+    ret = fstatat(AT_FDCWD, CGROUP2_PATH "/unlink-order/cgroup.procs",
+                  &st, 0);
+    CHECK(ret == 0 && S_ISREG(st.st_mode),
+          "cgroup.procs exists as a regular control file");
+    if (ret != 0 || !S_ISREG(st.st_mode)) {
+        goto cleanup;
+    }
+
+    errno = 0;
+    ret = chmod(group_path, 0555);
+    CHECK(ret == 0, "set isolated cgroup parent permissions to 0555");
+    if (ret != 0) {
+        goto cleanup;
+    }
+    errno = 0;
+    ret = stat(group_path, &st);
+    CHECK(ret == 0 && (st.st_mode & 0777) == 0555,
+          "verify isolated cgroup parent permissions are 0555");
+    if (ret != 0 || (st.st_mode & 0777) != 0555) {
+        goto cleanup;
+    }
+
+    errno = 0;
+    dirfd = open(group_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(dirfd >= 0, "open isolated cgroup directory");
+    if (dirfd < 0) {
+        goto cleanup;
+    }
+
+    errno = 0;
+    long unlink_ret = syscall(SYS_unlinkat, dirfd, control_name, AT_REMOVEDIR);
+    int saved_errno = errno;
+    CHECK(unlink_ret == -1 && saved_errno == ENOTDIR,
+          "raw unlinkat AT_REMOVEDIR on cgroup.procs fails with ENOTDIR");
+
+    errno = 0;
+    unlink_ret = syscall(SYS_unlinkat, dirfd, control_name, 0);
+    saved_errno = errno;
+    CHECK(unlink_ret == -1 && saved_errno == EPERM,
+          "raw unlinkat on cgroup.procs fails with EPERM");
+
+    pid_t child = fork();
+    CHECK(child >= 0, "fork nonprivileged unlink order actor");
+    if (child == 0) {
+        uid_t real_uid, effective_uid, saved_uid;
+        gid_t real_gid, effective_gid, saved_gid;
+        int child_errno;
+        long child_ret;
+
+        if (setgroups(0, NULL) != 0) {
+            _exit(10);
+        }
+        if (setresgid(1000, 1000, 1000) != 0) {
+            _exit(11);
+        }
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(12);
+        }
+        if (getresgid(&real_gid, &effective_gid, &saved_gid) != 0 ||
+            getresuid(&real_uid, &effective_uid, &saved_uid) != 0 ||
+            real_uid != 1000 || effective_uid != 1000 || saved_uid != 1000 ||
+            real_gid != 1000 || effective_gid != 1000 || saved_gid != 1000) {
+            _exit(13);
+        }
+        if (getgroups(0, NULL) != 0) {
+            _exit(14);
+        }
+
+        errno = 0;
+        child_ret = syscall(SYS_unlinkat, dirfd, control_name, 0);
+        child_errno = errno;
+        if (child_ret != -1 || child_errno != EACCES) {
+            _exit(15);
+        }
+
+        errno = 0;
+        child_ret = syscall(SYS_unlinkat, dirfd, control_name, AT_REMOVEDIR);
+        child_errno = errno;
+        if (child_ret != -1 || child_errno != EACCES) {
+            _exit(16);
+        }
+        _exit(0);
+    }
+
+    if (child > 0) {
+        int status = 0;
+        pid_t waited = waitpid(child, &status, 0);
+        CHECK(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "uid/gid 1000 with no supplementary groups gets EACCES for both raw unlinkat flags");
+    }
+
+    errno = 0;
+    ret = fstatat(dirfd, control_name, &st, 0);
+    CHECK(ret == 0 && S_ISREG(st.st_mode),
+          "rejected unlinkat calls preserve cgroup.procs regular file");
+    errno = 0;
+    ret = fstatat(AT_FDCWD, group_path, &st, 0);
+    CHECK(ret == 0 && S_ISDIR(st.st_mode),
+          "rejected unlinkat calls preserve isolated cgroup");
+
+cleanup:
+    if (dirfd >= 0) {
+        close(dirfd);
+    }
+    if (group_created) {
+        errno = 0;
+        ret = chmod(group_path, 0755);
+        CHECK(ret == 0, "restore isolated cgroup permissions for cleanup");
+        if (ret == 0) {
+            expect_rmdir_ok(group_path, "cleanup isolated unlink order cgroup");
+        }
+    }
+}
+
 int main(void)
 {
     TEST_START("cgroup-basic");
@@ -300,6 +440,8 @@ int main(void)
 
     expect_mkdir_errno(CGROUP2_PATH, EEXIST,
                        "mkdir cgroup2 mount root fails with EEXIST");
+
+    test_unlink_control_file_order();
 
     char buf[4096];
     ssize_t nread = read_text_file(CGROUP2_PATH "/cgroup.procs", buf, sizeof(buf));
