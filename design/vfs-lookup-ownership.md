@@ -1267,7 +1267,7 @@ memfd 复用已有内存 inode 与执行路径，只修正受影响的对象访�
 
 ### 6.3 当前 inode 尝试
 
-用户元数据修改通过 `Location` 构造私有 `MetadataRequest`，
+用户元数据修改通过 `Location` 受控构造字段私有的 `MetadataRequest`，
 携带 `MetadataChange`、显式 `MutationCredentials` 与已准备的写权利，
 再进入 `NodeOps` 的受控命令能力。inode 修改不伪装成父目录 rename：
 `LockedMetadataAttempt` 借用该 inode 实际所有者的锁，提供当前元数据观察和
@@ -1462,6 +1462,50 @@ AF_UNIX pathname socket 的 bind 后重新 lookup 再补 owner 同样属于文�
 的旧入口；原生 metadata 请求须提供借用已有 admission 的实际写入能力。
 准备切片不以剩余 raw 消费者存在为整体通过依据，全部消费者迁移、必要红绿和
 内部维护边界落实后，删除长期无凭据的公开字段更新入口，再作系统及整体验收。
+
+### 6.9 非空请求与完成入口
+
+没有字段需要修改的时间命令不产生 inode 观察，因此不能要求它返回 `Metadata`。
+普通 `Location::change_metadata` 入口返回 `VfsResult<()>`：先识别
+`Times { atime: Keep, mtime: Keep }` 并直接成功，再为非空命令取得
+`PreparedWrite`、operation admission 和退役责任。ABI 消费者仍须在查找目标前执行
+第 6.6 节的全 OMIT 早返回；已有 `Location` 的普通入口检查是防止内部调用误入，
+不能替代 ABI 的检查顺序。`Chown { uid: None, gid: None }` 不是这里的空命令。
+
+`MetadataRequest` 可以作为跨软件包后端签名中的不透明类型，但其字段和构造函数不公开。
+它拥有原目标 `Location`、非空领域意图及按值复制的凭据视图，借用写权利、实际
+operation admission 和最外层退役集合。普通调用者不能构造 request、替换其目标、
+取回 raw driver 或取得一个可转交给另一 inode 的最终 patch。固定 VFS 分发只将它
+交给原目标的 `NodeOps` 元数据能力；后端在真实 owner 锁内调用原 request 的
+`execute`，当前状态观察、固定授权和提交的借用在该次调用内结束。
+
+分层消费者已经持有外层权利时，走 `NamespaceAdmission` 的元数据入口，借用原
+`PreparedWrite` 和退役集合，不调用会重新 admission 的普通 `Location` 入口。
+该入口返回 `VfsResult<Option<NamespaceCompletion<Metadata>>>`，其中 `None` 只表示
+全 Keep 时间命令：不读取 metadata、不检查后端能力、不构造请求或完成对象，也不
+伪造一份当前 inode 快照。调用者应在取得外层修改权利前先排除这一空命令；该入口
+自身的检查必须位于目标验证和后端分发之前。其它命令的完成对象始终保留真实
+`NamespaceOutcome<Metadata>`，包括尚未产生正常观察的失败。
+
+`NodeOps` 的后端入口只接收受控 request 并返回 `NamespaceCompletion<Metadata>`。
+VFS 的固定分发负责核对同 FS admission 和原目标写权利，绑定真实 owner，并保留
+目标引用直至全部 admission 退出；后端不能自行把完成标成属于另一个 FS。普通入口
+按第 6.6 节的四阶段完成协议处理这个对象，最后才将实际观察转换为普通返回值。
+分层入口只交出类型化完成责任，不提前 pressure、sync、退出 admission 或销毁
+可能重入的目标；外层仍负责全部命名与元数据完成集合的统一退出顺序。
+
+`LockedMetadataAttempt` 的当前时间从实际 owner 的既有时钟读取，单次尝试的
+ctime 和参与的 Now 字段使用同一个时刻。全 Keep 不读取时钟；释放锁作日志推进后，
+下一次尝试重新观察和取时，不复用旧时间。两个 Now 按 Linux `vfs_utimes` 的 touch
+规则授权；一个 Keep 加一个 Now、或任何显式 Set 属于显式时间修改，不能仅因没有
+Set 就采用普通写权限。chmod 对符号链接的拒绝与 chown 清位后派生 mode 的检查
+阶段分别遵循固定 Linux 调用链，不把它们合并成同一个入口前置判断。
+
+本接口先接通 VFS 固定协议与 MemoryFs 的真实 owner，再迁移 Ext4、FAT 和伪文件系统；
+尚未迁移的后端对新命令能力明确返回不支持，不调用旧无凭据 raw 更新兜底。这个
+可审查的中间版本不迁移用户系统调用，也不删除其红测窗口；它不表示其余后端失去
+原有 raw 能力，更不构成最终双轨。原生后端和全部消费者仍按第 6.8 节连续迁移，
+最终移除旧入口后才作完整行为验收。
 
 ## 7. 缓存专用查找
 
