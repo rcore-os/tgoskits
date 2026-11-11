@@ -691,14 +691,16 @@ fn hardlink_metadata_updates_remain_visible_without_global_lock_after_unlink() {
     let alias = root
         .link("alias", &input, &axfs_ng_vfs::MutationCredentials::root())
         .unwrap();
+    // Content changes may clear setid bits. Complete them before applying the
+    // final permissions and owner already normalized by the embedding VFS.
+    alias.entry().as_file().unwrap().set_len(7).unwrap();
     alias
         .update_metadata(MetadataUpdate {
-            mode: Some(NodePermission::from_bits_truncate(0o640)),
+            mode: Some(NodePermission::from_bits_truncate(0o6750)),
             owner: Some((123_456, 234_567)),
             ..Default::default()
         })
         .unwrap();
-    alias.entry().as_file().unwrap().set_len(7).unwrap();
     root.unlink("input", false, &axfs_ng_vfs::MutationCredentials::root())
         .unwrap();
     root.unlink("alias", false, &axfs_ng_vfs::MutationCredentials::root())
@@ -708,7 +710,7 @@ fn hardlink_metadata_updates_remain_visible_without_global_lock_after_unlink() {
 
     for location in [&input, &alias] {
         let metadata = location.metadata().unwrap();
-        assert_eq!(metadata.mode.bits(), 0o640);
+        assert_eq!(metadata.mode.bits(), 0o6750);
         assert_eq!((metadata.uid, metadata.gid), (123_456, 234_567));
         assert_eq!(metadata.nlink, 0);
         assert_eq!(metadata.size, 7);
