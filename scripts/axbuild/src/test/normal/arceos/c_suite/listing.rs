@@ -64,10 +64,6 @@ pub(crate) fn print_plan(
     let mut runs = Vec::new();
     for selection in &selections {
         let bindings = Bindings::new(&catalog, selection);
-        let mut features = build.common.features.clone();
-        features.extend(selection.features());
-        features.sort();
-        features.dedup();
         let request = arceos.prepare_request(
             BuildCliArgs {
                 preset: None,
@@ -82,6 +78,10 @@ pub(crate) fn print_plan(
             None,
             SnapshotPersistence::Discard,
         )?;
+        let mut features = request.config.common.features.clone();
+        features.extend(selection.features());
+        features.sort();
+        features.dedup();
         let cargo = cbuild::prepare_c_app_cargo_config(
             &request,
             arceos.app.workspace_context(),

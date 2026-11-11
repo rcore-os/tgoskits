@@ -131,11 +131,7 @@ async fn build_and_run(
 ) -> anyhow::Result<()> {
     let build_path = arceos_c_test_suit_build_config_path(root, target)?;
     let qemu_path = arceos_c_test_suit_qemu_config_path(root, arch)?;
-    let config = load_c_test_build_config(&build_path)?;
     let mut qemu = load_c_test_qemu_config(&qemu_path)?;
-    let build::ArceosBuildMode::AppC { app_dir, .. } = build::arceos_build_mode(&config)? else {
-        bail!("C suite requires app-c");
-    };
     let request = arceos.prepare_request(
         BuildCliArgs {
             preset: None,
@@ -150,11 +146,17 @@ async fn build_and_run(
         None,
         SnapshotPersistence::Discard,
     )?;
+    // Request resolution makes file-relative paths absolute and applies
+    // environment overrides; execution must use that resolved configuration.
+    let build::ArceosBuildMode::AppC { app_dir, .. } = build::arceos_build_mode(&request.config)?
+    else {
+        bail!("C suite requires app-c");
+    };
     let artifacts = c_test_artifact_paths(arceos.app.target_dir(), selection.id, arch);
     let bindings = Bindings::new(catalog, selection);
     let generated = arceos.app.target_dir().join("axbuild/arceos-c/generated");
     let (include, header) = bindings.write(&generated)?;
-    let mut features = config.common.features.clone();
+    let mut features = request.config.common.features.clone();
     features.extend(selection.features());
     features.sort();
     features.dedup();
