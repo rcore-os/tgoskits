@@ -1440,6 +1440,9 @@ scope 与 context 只借用外部具名准备，不能拥有它之后再保存�
 `CrossesDevices`。创建命令另经私有选择方法取得 Ready/Denied，并校验目标 exact
 mount 确实在准备图内、实际 FS 有匹配 admission；不允许从同 FS 的另一 mount
 冒借准备。`CreateRequest` 保持私有构造和私有权利字段，不重新暴露整份准备对象。
+原来无条件返回 `&PreparedWrite` 的私有 `Context::write` 改为可失败的选择，
+供 Link、Unlink、Rename 等必须写入的接头使用；纯读状态不能以 panic、重新准备或
+从 pins 构造假写准备满足旧签名。
 
 已有 `NamespaceOperationContext` 增加受控 `create` 子命令及对应 scope 根入口。
 请求用小型 `CreateIntent::{Exclusive, Open(ExistingOpen)}` 区分排他创建和已有对象
@@ -1448,6 +1451,11 @@ mount 确实在准备图内、实际 FS 有匹配 admission；不允许从同 FS
 入口先退役完整 parent `Location`，校验目标、名称和已有准入；在任何副作用前取得
 与其他子命令相同的不可复制登记预留。已有对象观察也必须登记其 typed 完成责任，
 不能因 `Unchanged` 或 `created: false` 而丢掉真实 pressure、finish 或退役资源。
+
+目标检查还须复用旧 `DirNode::mutate_namespace` 的父目录命名状态门禁：
+`ensure_linked` 对 `NameState::Unlinked` 返回 `NotFound`，对 `Untrusted` 返回
+`WouldBlock`，不把后者改成 typed `Retry` 或自动重新播放。后端 inode 仍链接的检查
+不代替这个 VFS 别名可信性检查；不能因新入口绕过旧包装层而丢失原错误边界。
 
 原生命令仍走 `start_command → begin_namespace → command.execute → driver.finish
 → request.complete`。Create 不返回延迟 Unlink 观察，也不把普通 `Location::create`
