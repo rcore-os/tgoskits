@@ -336,8 +336,8 @@ impl<'a> NamespaceOperationContext<'a> {
         intent: crate::CreateIntent,
         credentials: &MutationCredentials<'a>,
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
-        self.retired.retire(parent.clone());
         let reservation = Reservation::child(self.children)?;
+        self.retired.retire(parent.clone());
         crate::node::start_create(
             self,
             parent,
