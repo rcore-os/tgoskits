@@ -128,23 +128,8 @@ impl Ext4Filesystem {
 impl NamespaceDriver for Ext4Attempt<'_> {
     fn finish(
         mut self: Box<Self>,
-        mut outcome: NamespaceOutcome<NamespaceEffect>,
+        outcome: NamespaceOutcome<NamespaceEffect>,
     ) -> NamespaceCompletion {
-        // Typed observation/ancestor errors return immediately through core().
-        // Successful observation and ordinary authorization failures cannot
-        // leave that cause behind. Never discard an existing effect or error
-        // merely because its VFS errno happens to resemble journal pressure.
-        if self
-            .error
-            .is_some_and(|error| error.requires_journal_progress())
-            && matches!(
-                outcome.state(),
-                NamespaceState::Retry | NamespaceState::Unchanged
-            )
-            && outcome.observation().is_none()
-        {
-            outcome = NamespaceOutcome::retry();
-        }
         let pressure = Ext4NamespacePressure {
             filesystem: self.filesystem.clone(),
             source: self.source.clone(),
