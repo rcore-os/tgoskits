@@ -68,6 +68,36 @@ pub struct AuthorizedMetadataChange<'a> {
 }
 
 impl AuthorizedMetadataChange<'_> {
+    /// Returns the final permission update, preserving whether it participates.
+    pub const fn mode(&self) -> Option<NodePermission> {
+        self.mode
+    }
+
+    /// Returns the requested UID field, including an explicit same-value update.
+    pub const fn uid(&self) -> Option<u32> {
+        self.uid
+    }
+
+    /// Returns the requested GID field, without filling an omitted group.
+    pub const fn gid(&self) -> Option<u32> {
+        self.gid
+    }
+
+    /// Returns the resolved access time, or None when it must remain untouched.
+    pub const fn atime(&self) -> Option<Duration> {
+        self.atime
+    }
+
+    /// Returns the resolved modification time, preserving field participation.
+    pub const fn mtime(&self) -> Option<Duration> {
+        self.mtime
+    }
+
+    /// Returns the real clock value selected for this locked attempt.
+    pub const fn ctime(&self) -> Duration {
+        self.ctime
+    }
+
     /// Faithfully applies participating fields to the locked inode metadata.
     /// Backends must not add their own implicit chown/setid policy.
     pub fn apply(self, metadata: &mut Metadata) {
@@ -103,6 +133,15 @@ pub struct MetadataRequest<'a> {
 }
 
 impl MetadataRequest<'_> {
+    /// Classifies the original intent for native namespace exclusion.
+    /// Chown(None, None) can still clear setid bits; Times never changes owners.
+    pub const fn changes_permissions_or_ownership(&self) -> bool {
+        matches!(
+            self.change,
+            MetadataChange::Chmod(_) | MetadataChange::Chown { .. }
+        )
+    }
+
     /// One fresh observe/authorize/commit attempt. Retrying backends must end
     /// this borrow, release their locks, and call again with a fresh attempt.
     pub fn execute(&self, attempt: &mut dyn LockedMetadataAttempt) -> NamespaceOutcome<Metadata> {

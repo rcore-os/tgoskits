@@ -212,6 +212,7 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
     struct PressureProbe {
         calls: Arc<AtomicUsize>,
         finish: FinishProbe,
+        error: Option<VfsError>,
     }
     impl<T> NamespacePressure<T> for PressureProbe {
         fn pressure(
@@ -219,8 +220,10 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
             outcome: &mut NamespaceOutcome<T>,
         ) -> Option<Box<dyn NamespaceFinish>> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            let original = core::mem::replace(outcome, NamespaceOutcome::unchanged(Ok(())));
-            *outcome = original.with_completion(Err(VfsError::Io));
+            if let Some(error) = self.error {
+                let original = core::mem::replace(outcome, NamespaceOutcome::unchanged(Ok(())));
+                *outcome = original.with_completion(Err(error));
+            }
             Some(Box::new(self.finish))
         }
     }
@@ -242,6 +245,7 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
                 calls: finish_calls.clone(),
                 _owner: owner.clone(),
             },
+            error: Some(VfsError::Io),
         }))
     };
     let namespace: NamespaceCompletion = NamespaceCompletion::new(
@@ -251,7 +255,9 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
     .bind(directory.0.filesystem());
     let snapshot = backend.metadata().unwrap();
     let metadata = NamespaceCompletion::new(
-        NamespaceOutcome::applied(snapshot.clone(), Err(VfsError::PermissionDenied)),
+        // The same errno as the Retry marker is still a real operation error
+        // when the state is Applied; later failures must not replace it.
+        NamespaceOutcome::applied(snapshot.clone(), Err(VfsError::WouldBlock)),
         work().map(|work| work as Box<dyn NamespacePressure<Metadata>>),
     )
     .bind(directory.0.filesystem());
@@ -308,7 +314,7 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
     assert_eq!(observed.inode, snapshot.inode);
     assert_eq!(observed.mode.bits(), snapshot.mode.bits());
     assert_eq!(observed.uid, snapshot.uid);
-    assert_eq!(metadata.into_result(), Err(VfsError::PermissionDenied));
+    assert_eq!(metadata.into_result(), Err(VfsError::WouldBlock));
     assert_eq!(finish_calls.load(Ordering::Relaxed), 2);
     assert_eq!(Arc::strong_count(&owner), 3);
     // Abandoning mismatches releases responsibility, never runs completion.
@@ -316,6 +322,46 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
     assert_eq!(Arc::strong_count(&owner), 1);
     assert_eq!(pressure_calls.load(Ordering::Relaxed), 2);
     assert_eq!(finish_calls.load(Ordering::Relaxed), 2);
+
+    // Retry's WouldBlock is control flow, not the first real failure. Exercise
+    // both finish-only failure and an earlier pressure failure through the
+    // actual typed completion phases, after releasing every admission.
+    for (pressure_error, expected_error) in [
+        (None, VfsError::InvalidInput),
+        (Some(VfsError::Io), VfsError::Io),
+    ] {
+        let retired = MutationRetire::new();
+        retired.retire(owner.clone());
+        let admissions = crate::NamespaceAdmissions::acquire(&write).unwrap();
+        let retry: NamespaceCompletion<Metadata> = NamespaceCompletion::new(
+            NamespaceOutcome::retry(),
+            Some(Box::new(PressureProbe {
+                calls: pressure_calls.clone(),
+                finish: FinishProbe {
+                    calls: finish_calls.clone(),
+                    _owner: owner.clone(),
+                },
+                error: pressure_error,
+            })),
+        )
+        .bind(directory.0.filesystem());
+        let mut remaining = admissions
+            .pressure(vec![retry])
+            .unwrap_or_else(|_| panic!("retry completion must match its real owner"));
+        drop(admissions);
+        drop(retired);
+        let outcome = remaining.pop().unwrap().finish();
+        assert_eq!(
+            outcome.state(),
+            NamespaceState::Unchanged,
+            "a real completion failure must stop Retry"
+        );
+        assert!(outcome.observation().is_none());
+        assert_eq!(outcome.into_result(), Err(expected_error));
+        assert_eq!(Arc::strong_count(&owner), 1);
+    }
+    assert_eq!(pressure_calls.load(Ordering::Relaxed), 4);
+    assert_eq!(finish_calls.load(Ordering::Relaxed), 4);
 }
 
 fn fixture() -> (Arc<TestDirectory>, Arc<ScriptedDirectory>) {

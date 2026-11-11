@@ -82,6 +82,7 @@ mod inode_load;
 mod inode_writeback;
 mod lifetime;
 mod metadata;
+mod metadata_change;
 mod namespace;
 mod persistence;
 mod read;
