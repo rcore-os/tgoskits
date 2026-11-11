@@ -135,7 +135,11 @@ async fn test_with_context(
     }
 }
 
-pub(crate) fn run_loader_check(workspace_root: &Path, target_dir: &Path, target: &str) -> anyhow::Result<()> {
+pub(crate) fn run_loader_check(
+    workspace_root: &Path,
+    target_dir: &Path,
+    target: &str,
+) -> anyhow::Result<()> {
     let plan = LoaderBuildPlan::for_target(target)?;
     let mut args = vec![
         "check".to_string(),
@@ -158,7 +162,8 @@ pub(crate) fn run_loader_check(workspace_root: &Path, target_dir: &Path, target:
     command.exec()
 }
 
-pub(crate) fn run_loader_build(    workspace_root: &Path,
+pub(crate) fn run_loader_build(
+    workspace_root: &Path,
     target_dir: &Path,
     target: &str,
     release: bool,

@@ -343,6 +343,7 @@ spinning_top = { version = "0.3", default-features = false }
 log = "0.4"
 loom = "0.7.2"
 # FIT ramdisks need a load property for Rockchip U-Boot (drivercraft/ostool#207).
+# HTTP Boot uploads must use the v7 protocol expected by ostool-server 0.10.
 ostool = { version = "0.32.0" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }

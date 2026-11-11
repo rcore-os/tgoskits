@@ -35,4 +35,3 @@ pub(crate) async fn test_qemu(
     };
     ota_qemu::test_direct_ota(workspace, &args.target, args.server_only, firmware).await
 }
-
