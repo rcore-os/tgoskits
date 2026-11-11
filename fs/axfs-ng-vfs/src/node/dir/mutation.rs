@@ -101,11 +101,6 @@ impl<'a> RenameRequest<'a> {
         self.options
     }
 
-    /// Borrows the outer operation's already-prepared backing write leases.
-    pub fn write_authority(&self) -> &PreparedWrite {
-        self.write
-    }
-
     /// Executes exactly one attempt while the backend retains real exclusion.
     /// Every retry calls this again with a newly acquired backend attempt.
     pub fn execute(

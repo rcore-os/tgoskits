@@ -496,19 +496,20 @@ whiteout、目录物化、元数据变更及 overlay VFS 发布。
 
 ### 4.7 分层操作结果
 
-分层后端必须能知道一次内部命令是否已经改变状态。当前
-`Location::rename_with_write` 和 `DirNodeOps::mutate_namespace` 的
-`VfsResult<()>` 会丢掉原生 `NamespaceOutcome`，因此不能作为 Overlay 的完成协议。
-受控内部入口保留现有 `NamespaceOutcome` 的状态、实际观察和最终错误；
-只有最外层便捷入口在发布或失效完成后消费为普通 `VfsResult`。
-这是一条结果链，不另建“已执行”布尔值或第二套事务登记。
+分层后端必须能知道一次内部命令是否已经改变状态，单独的 `VfsResult<()>`
+不足以表达这种差别。原生命名子命令通过 `NamespaceOperationContext` 交回
+`NamespaceObservation<NamespaceEffect>`，同时把完成责任留在同一 Scope；
+最外层 `NamespaceOperationScope::finish` 才交出保留状态、实际观察和最终错误的
+`NamespaceOutcome`。只有最外层便捷入口在发布或失效及全部完成责任结束后，才消费为
+普通 `VfsResult`。非原生 fallback 的 `DirNodeOps::mutate_namespace` 也保留 typed
+结果，但不能作为原生分层命令绕过 Scope 的入口。
 
-rename 切片先让现有 hook 和借权利入口返回
-`NamespaceOutcome<RenameEffect>`。`RenameRequest::execute` 仍在真实后端锁内
-发布；后端退出锁后的持久化错误只改变 completion，不丢失已经发布的状态。
-后续 create、link、unlink 与元数据命令沿同一泛型结果协议携带各自的实际对象，
-不把尚未迁移的旧入口当作可用于分层提交的能力。无凭据的公开 raw 修改入口在消费者
-迁移中删除，不以 `Unchanged(Unsupported)` 默认实现代替已有真实写能力。
+`RenameRequest::execute` 仍在真实后端锁内授权及发布，并形成
+`NamespaceOutcome<RenameEffect>`；后端退出锁后的持久化错误只改变 completion，
+不丢失已经发布的状态。这是一条结果链，不另建“已执行”布尔值或第二套事务登记。
+其他命令沿同一泛型协议携带各自的实际对象，尚未迁移的 create/restore 等入口不能
+被当作分层提交能力；无凭据的公开 raw 修改入口在消费者迁移中删除，
+不以 `Unchanged(Unsupported)` 代替已有真实写能力。
 
 Overlay 的结果使用 Overlay 逻辑实体，不能直接转发 upper 的 inode/effect。
 外层当前槽位授权后，每个内部命令独立形成原生 attempt。内部 `Unchanged` 且此前
@@ -1241,6 +1242,9 @@ Ext4 复用既有日志重试/撤权与 Applied completion 用例，证明退出
 pressure/finish 的入口。不能在其中补 admission、重新 `enter`，也不能从 Read
 角色合成写权利。它不授予 mounter 凭据，不替代 Overlay 私有适配器的可写 roots
 核验；逻辑授权到 backing 授权的投影仍按第 4.10 节单独落实。
+`RenameRequest` 等后端可见命令只在私有字段中保留固定授权所需的准备引用，不提供
+取回整份 `PreparedWrite` 的 getter；否则后端可借公开 factory 另建准入或 Scope，
+绕过这条借用边界。后端查询已有租约与发起子命令仍统一通过请求的 context。
 
 scope 与请求的关系是操作所有者向内借出能力，而非每层各自创建一次操作。关系图中的
 完成集合属于这一轮栈上操作；真实后端的压力对象仍拥有自己的 FS、inode 与 typed 原因。
