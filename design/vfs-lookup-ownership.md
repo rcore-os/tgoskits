@@ -1354,6 +1354,115 @@ Linux 的全 OMIT 早返回顺序；只有已确认有效的命令进入 inode �
 `AT_SYMLINK_NOFOLLOW` 操作链接自身时仍按目标和后端能力判断，
 不能误当成已经跟随到目标，也不能由字符串拼写选择另一套权限检查。
 
+### 6.6 领域命令与类型化完成
+
+`MetadataChange` 只表达当前调用者的领域意图，不接受由 syscall 在锁外生成的整份
+`MetadataUpdate`。本轮细化原生命令准备接口，后续 Starry、匿名对象与内部维护消费者
+按第 6.8 节接通；原生接口出现并不表示这些消费者已经迁移或系统行为已经通过。
+
+命令区分 `Chmod(NodePermission)`、`Chown { uid: Option<u32>, gid: Option<u32> }`
+和 `Times { atime: TimeChange, mtime: TimeChange }`。`TimeChange` 只有 `Keep`、
+`Now`、`Set(Duration)`；不把创建时刻、调用前快照或零时间充作 `Now`。ABI 层继续负责
+未知 flags、非法纳秒、保留 ID、O_PATH 入口差异，以及两个 `UTIME_OMIT` 在查找前
+早返回的顺序。两个 `Keep` 不进入实际修改尝试，不能为了获得一个无操作结果而先
+取得写权利、查找路径或读取 inode。
+
+`MetadataRequest` 拥有目标 `Location` 和领域命令，按值保存凭据视图，实际借用
+已准备的写入权利、同 FS operation admission 与最外层退役集合。固定分发选择原目标
+`NodeOps` 的受控元数据入口；后端只在该目标的真实 owner 锁内构造栈上
+`LockedMetadataAttempt`。它提供当前状态观察和已授权更新的提交，不返回 raw driver，
+不接受外部拼装的最终 owner/mode，不能把另一个 inode 的授权令牌转交进来。
+`MetadataRequest::execute` 实际借用该 attempt，内部授权对象与这条借用一起结束。
+
+授权器先针对当前 inode 检查被请求的字段，再生成只含实际参与字段的
+`AuthorizedMetadataChange`。`Chown` 的 `None` 不触发对应 UID/GID 检查，也不以旧值
+代替；`Some` 即使与当前值相同仍按 Linux `chown_ok`、`chgrp_ok` 检查。
+非目录清位以及由清位派生的 mode 更新，继续经过固定 Linux `notify_change` 与
+`setattr_prepare` 对实际 flags 的检查，不能假定 `(-1,-1)` 恒为无操作或恒需 owner。
+特别是 `chown_common` 使用 `setattr_should_drop_sgid`；不能套用另一个
+`setattr_should_drop_suidgid` 的 regular-file/CAP_FSETID 总括规则，免除 chown 的 SUID 清理。
+
+锁内快照、修改与返回的 metadata 属于同一真实 inode。Memory、cgroup 和 SimpleFS
+使用各自第 6.3 节的实际 owner 同步域；Ext4 使用 operation admission、所需的
+namespace 排他、content 排他和 state 的既定顺序。因日志推进释放这些权利时，
+本轮授权结束，下一轮重新观察所有权限字段、待更新字段和当前时间。
+提交后的快照来自实际 owner，不由上层把旧 metadata 与请求字段自行拼接出来。
+
+当前 `NamespaceOutcome<T>` 已能表示不同观察类型，完成责任也按同一个类型参数扩展。
+`NamespaceCompletion<T = NamespaceEffect>`、`NamespaceDeferred<T = NamespaceEffect>`
+及 `NamespacePressure<T = NamespaceEffect>` 保留 namespace 的默认类型；metadata
+使用 `T = Metadata`。不增加第二套提交状态，不把 inode metadata 塞进
+`NamespaceEffect` 假装成名称修改，也不以 `Any`、字符串或丢弃观察的普通 `Result`
+擦除结果类型。`NamespaceFinish` 仍只处理不改变领域观察的锁外 reap/sync。
+
+`NamespaceAdmissions::pressure<T>` 对相应类型的完成集合做原有 owner 校验和压力处理。
+混合命名与元数据的最外层操作可以保留两个类型化集合，但必须先处理两者的全部
+pressure/abort，再释放所有 FS admission，最后退出所有退役 owner 和显式 finish；
+不能对第一组做完就释放其 owner、同步或开始析构。该扩展只复用已有四阶段完成核心，
+不建立通用异构事务框架、共享结果注册表或新的后台调度器。
+
+原生命名 driver 与发布代码继续限定 `NamespaceEffect`；metadata attempt 的完成
+结果是 `NamespaceOutcome<Metadata>`，不调用 `publish_locked_command`。
+`Applied` 后完成失败保留实际快照和原错误，`Uncertain` 不把提交前快照标为当前值，
+只有 typed journal-progress 且确知未提交的尝试才重试。没有正常观察的 Staging
+或观察失败也须保存 typed 完成责任，不能提前转成一个无状态错误。
+
+### 6.7 已归一化的物理提交
+
+`rsext4::InodeMetadataUpdate` 的公开说明已经把它定义为 embedding VFS 已授权、已
+归一化的字段更新，但当前 `ext4/owned/inode.rs::update_inode_metadata` 仍把
+`owner.is_some()` 转成隐式清除 SUID/SGID。外部调用者既不能单独更新 UID/GID，也
+不能阻止这次二次清位；不能因私有 `Ext4InodeMetadataUpdate` 有独立字段，就宣称
+公开接口已经支持部分 owner。
+
+公开 owned DTO 将成对 `owner` 替换为各自可选的 `uid`、`gid`，并增加可选的实际
+`ctime`。当前授权器决定参与字段和最终权限位；owned 提交只忠实应用它们，不再按
+UID/GID 字段存在与否自动清位。显式 ctime 使 `Chown { None, None }` 在需要时仍能
+更新时间，而不是给 mode 或 owner 填一个旧值以绕过 default-no-op。ctime 由真实
+owner 在尝试中从现有时钟取得，不使用测试常量或从旧 inode 读出的 ctime。
+
+owned 接口对未指定字段保持不更新。没有任何字段参与时保留原 default-no-op；
+其它现有调用未显式提供 ctime 时，保留该 owned 入口原有的自动 ctime 行为，
+不顺带改变 flags、project ID、mtime 等用途。`permissions` 是已经完成授权与
+清位决策的最终权限位，不在 owned 映射或更底层重新套一份 chown 策略。
+
+这一改动只影响公开 owned 更新的投影：保留 rsext4 原生创建、内容写入、截断、
+链接以及非 owned chown 路径原有的清位机制，不修改全局 `finalize_inode_update`
+或 `clear_setid_bits_for_content_change` 来为 owned 路径兜底。工作区内实际生产
+消费者是 ax-fs-ng 的 Ext4 adapter；同步迁移其 public DTO 使用及 rsext4/AX 对应
+owned 测试，不保留永久 owner-pair 兼容字段。工作区外属于 Rust 源码接口变化，
+提交和 PR 中说明，不借本任务发布新版本。
+
+验证先增强现有真实 owned metadata 功能测试，在旧隐式清位实现上，已归一化的
+permissions 与 owner 更新不能保持所请求的最终位；先取得明确断言红，再修
+owned 投影并验证相同规则转绿。接口字段迁移只改变输入构造，不改变 oracle、
+真实后端和完成状态。部分字段、当前 owner 授权、同名别名共享以及日志重试的
+并发证明归入真实 inode 领域命令的完整功能回归，不用 DTO 字段回读替代。
+
+### 6.8 消费者迁移边界
+
+新的领域命令不能成为一层外观，仍由 syscall 先读旧 metadata、填满 owner/mode
+后调用原始更新。Starry 的 chmod、chown 和时间入口迁移时只处理 ABI 与路径/FD
+入口差异，再把原意图与成对凭据交给实际 inode owner；删除这些入口的重复授权
+和旧快照回写。`fops::File::set_times` 是显式时间修改 API，也必须取得正确的调用
+身份，不能误当自动 atime 或默认为 root。
+
+内部时间维护与初始化不是用户权限命令。`File::drop` 的访问/写入时间维护、
+rsext4 自己的读取 atime、initramfs/归档恢复、Overlay work 暂存、挂载根和 PTY
+对象初始化仍须保留各自的真实 owner 与发布边界；不得为了删除 raw 方法丢掉这些
+能力、借 root 回退，或开放一个可任意写 uid/gid/mode 的“内部”公共替代入口。
+相应受控维护及未发布构造能力在各消费者迁移前单独明确。
+
+AF_UNIX pathname socket 的 bind 后重新 lookup 再补 owner 同样属于文件系统创建
+消费链，需要把实际文件创建身份接到原子创建；不扩展网络或 IPC 业务身份分配。
+本轮原生领域接口准备不授权顺带改变 socket 协议或设备行为。
+
+在这一可审查迁移序列中，旧 raw 更新仅保留给尚未迁移的明确消费者和系统红测
+窗口，不作为最终双轨。新 Overlay 的持锁路径不能因此回到会自行 admission
+的旧入口；原生 metadata 请求须提供借用已有 admission 的实际写入能力。
+准备切片不以剩余 raw 消费者存在为整体通过依据，全部消费者迁移、必要红绿和
+内部维护边界落实后，删除长期无凭据的公开字段更新入口，再作系统及整体验收。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。
