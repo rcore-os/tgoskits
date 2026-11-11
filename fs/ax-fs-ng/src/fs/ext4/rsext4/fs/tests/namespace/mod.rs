@@ -98,7 +98,7 @@ fn real_checkpoint_pressure_retries_without_holding_namespace_rights() {
 fn symlink_and_hardlink_staging_release_namespace_rights() {
     let (filesystem, native_root, mount) = fixture();
     let root = mount.root_location();
-    let witness = root.lookup("witness").unwrap();
+    let witness = root.lookup_no_follow("witness").unwrap();
     let probe = lookup_during_staging(&filesystem, &native_root);
     let symlink = native_root
         .create_symlink(
@@ -179,7 +179,7 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
         .unwrap();
     drop(write);
     assert_eq!(
-        root.lookup("scoped-final").unwrap().inode(),
+        root.lookup_no_follow("scoped-final").unwrap().inode(),
         witness.inode()
     );
     assert_eq!(witness.metadata().unwrap().nlink, 3);
@@ -249,7 +249,10 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
     );
     probe.finish();
     progress.finish();
-    assert_eq!(root.lookup("denied").unwrap_err(), VfsError::NotFound);
+    assert_eq!(
+        root.lookup_no_follow("denied").unwrap_err(),
+        VfsError::NotFound
+    );
     assert_eq!(witness.metadata().unwrap().nlink, 2);
     assert_admission_released(&filesystem);
 }
