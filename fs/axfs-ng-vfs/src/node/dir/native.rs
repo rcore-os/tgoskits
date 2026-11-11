@@ -1,4 +1,7 @@
 //! Controlled native commands and the closed continuation of an unlink observation.
+//!
+//! Scope/context entries retain complete inputs before reservation or validation;
+//! these private startup helpers must not perform duplicate input retirement.
 
 use alloc::boxed::Box;
 
@@ -201,9 +204,7 @@ pub(crate) fn start_unlink<'a>(
     reservation: Reservation<'a>,
 ) -> VfsResult<NamespaceStart<'a>> {
     let parent = prepared.parent_owner();
-    let target = super::command::MutationTarget::new(&parent, prepared.name(), credentials);
-    context.retired().retire(parent.clone());
-    let target = target?;
+    let target = super::command::MutationTarget::new(&parent, prepared.name(), credentials)?;
     context.write_for(&parent)?.check_location(&parent)?;
     let command = NamespaceMutation::Unlink(UnlinkRequest::new(
         target,
@@ -222,10 +223,6 @@ pub(crate) fn start_link<'a>(
     credentials: &MutationCredentials<'a>,
     reservation: Reservation<'a>,
 ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
-    // Full Locations retain exact mounts as well as backend owners, including
-    // all validation failures and callbacks under an enclosing backend gate.
-    context.retired().retire(parent.clone());
-    context.retired().retire(source.clone());
     if !Arc::ptr_eq(parent.mountpoint(), source.mountpoint()) {
         return Err(VfsError::CrossesDevices);
     }
@@ -251,7 +248,6 @@ pub(crate) fn start_create<'a>(
     credentials: &MutationCredentials<'a>,
     reservation: Reservation<'a>,
 ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
-    context.retired().retire(parent.clone());
     let target = super::command::MutationTarget::new(parent, name, credentials)?;
     parent.entry().as_dir()?.ensure_linked()?;
     let write = context.creation_write(parent)?;
@@ -267,8 +263,6 @@ pub(crate) fn start_rename<'a>(
     credentials: &'a MutationCredentials<'a>,
     reservation: Reservation<'a>,
 ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
-    context.retired().retire(source.0.clone());
-    context.retired().retire(destination.0.clone());
     if !Arc::ptr_eq(source.0.mountpoint(), destination.0.mountpoint()) {
         return Err(VfsError::CrossesDevices);
     }

@@ -13,6 +13,8 @@ use core::{
 };
 use std::sync::{Mutex, MutexGuard};
 
+mod reservation_failure;
+
 use super::*;
 use crate::{
     AuthorizedMutation, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, Filesystem,
@@ -96,6 +98,7 @@ struct ProbeFs {
     root: Mutex<NamespaceOutcome<Metadata>>,
     root_work: bool,
     phase_errors: bool,
+    backend_calls: AtomicUsize,
 }
 
 impl ProbeFs {
@@ -156,6 +159,7 @@ impl FilesystemOps for ProbeFs {
         Ok(NamespaceRead::Metadata(snapshot()))
     }
     fn begin_namespace<'a>(&'a self, request: NamespaceDriverRequest<'a>) -> NamespaceStart<'a> {
+        self.backend_calls.fetch_add(1, Ordering::Relaxed);
         let guard = self.gate.lock().unwrap();
         let parent = request.command().parents().0.clone();
         let target = self.entry(Reference::new(Some(parent), "victim".into()));
@@ -195,6 +199,7 @@ impl NodeOps for ProbeNode {
         self
     }
     fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
+        self.0.backend_calls.fetch_add(1, Ordering::Relaxed);
         if let Some(backing) = self.0.roots.first() {
             let observed = request
                 .context()
@@ -422,6 +427,7 @@ fn filesystem(
         }),
         root_work,
         phase_errors,
+        backend_calls: AtomicUsize::new(0),
     });
     let mount = Mountpoint::new_root(&Filesystem::new(filesystem.clone()));
     (filesystem, mount.root_location())
@@ -579,6 +585,7 @@ pub(crate) fn exercise_scope() {
     }
     exercise_incomplete_and_preflight();
     exercise_creation();
+    reservation_failure::exercise();
 }
 
 fn creation_attributes() -> crate::CreateAttributes<'static> {

@@ -181,6 +181,7 @@ impl NamespaceOperationScope<'_, Metadata> {
             return Ok(None);
         }
         self.check_context(context)?;
+        context.retired.retire(target.clone());
         context.dispatch_metadata(
             target,
             change,
@@ -203,6 +204,7 @@ impl NamespaceOperationScope<'_, NamespaceEffect> {
         credentials: &MutationCredentials<'a>,
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
         self.check_context(context)?;
+        context.retired.retire(parent.clone());
         crate::node::start_create(
             context,
             parent,
@@ -224,6 +226,7 @@ impl NamespaceOperationScope<'_, NamespaceEffect> {
         initialization: &crate::TrustedInitialization,
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
         self.check_context(context)?;
+        context.retired.retire(parent.clone());
         crate::node::start_create(
             context,
             parent,
@@ -246,6 +249,8 @@ impl NamespaceOperationScope<'_, NamespaceEffect> {
         credentials: &MutationCredentials<'a>,
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
         self.check_context(context)?;
+        context.retired.retire(parent.clone());
+        context.retired.retire(source.clone());
         crate::node::start_link(
             context,
             parent,
@@ -266,6 +271,8 @@ impl NamespaceOperationScope<'_, NamespaceEffect> {
         credentials: &'a MutationCredentials<'a>,
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
         self.check_context(context)?;
+        context.retired.retire(source.0.clone());
+        context.retired.retire(destination.0.clone());
         crate::node::start_rename(
             context,
             source,
@@ -286,6 +293,7 @@ impl NamespaceOperationScope<'_, NamespaceEffect> {
         credentials: &MutationCredentials<'a>,
     ) -> VfsResult<NamespaceStart<'a>> {
         self.check_context(context)?;
+        context.retired.retire(prepared.parent_owner());
         context.dispatch_unlink(
             prepared,
             directory,
@@ -309,6 +317,8 @@ impl<T> Drop for NamespaceOperationScope<'_, T> {
 ///
 /// Registry borrows never cover a backend invocation. This view is stack-local
 /// and does not add a lock, Send/Sync requirement, fallback right or re-entry.
+/// Command inputs retire before fallible reservation, including attempts that
+/// never enter the backend. Private dispatch helpers rely on this retention.
 pub struct NamespaceOperationContext<'a> {
     admissions: &'a NamespaceAdmissions<'a>,
     retired: &'a MutationRetire,
@@ -326,6 +336,7 @@ impl<'a> NamespaceOperationContext<'a> {
         intent: crate::CreateIntent,
         credentials: &MutationCredentials<'a>,
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        self.retired.retire(parent.clone());
         let reservation = Reservation::child(self.children)?;
         crate::node::start_create(
             self,
@@ -380,6 +391,7 @@ impl<'a> NamespaceOperationContext<'a> {
         if change.is_empty() {
             return Ok(None);
         }
+        self.retired.retire(target.clone());
         let reservation = Reservation::child(self.children)?;
         self.dispatch_metadata(target, change, credentials, reservation)
     }
@@ -390,6 +402,7 @@ impl<'a> NamespaceOperationContext<'a> {
         directory: bool,
         credentials: &MutationCredentials<'a>,
     ) -> VfsResult<NamespaceStart<'a>> {
+        self.retired.retire(prepared.parent_owner());
         let reservation = Reservation::child(self.children)?;
         self.dispatch_unlink(prepared, directory, credentials, reservation)
     }
@@ -403,6 +416,8 @@ impl<'a> NamespaceOperationContext<'a> {
         source: &'a Location,
         credentials: &MutationCredentials<'a>,
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        self.retired.retire(parent.clone());
+        self.retired.retire(source.clone());
         let reservation = Reservation::child(self.children)?;
         crate::node::start_link(self, parent, name, source, credentials, reservation)
     }
@@ -415,6 +430,8 @@ impl<'a> NamespaceOperationContext<'a> {
         options: RenameOptions,
         credentials: &'a MutationCredentials<'a>,
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        self.retired.retire(source.0.clone());
+        self.retired.retire(destination.0.clone());
         let reservation = Reservation::child(self.children)?;
         crate::node::start_rename(self, source, destination, options, credentials, reservation)
     }
@@ -451,7 +468,6 @@ impl<'a> NamespaceOperationContext<'a> {
         credentials: &MutationCredentials<'_>,
         mut reservation: Reservation<'_>,
     ) -> VfsResult<Option<NamespaceObservation<Metadata>>> {
-        self.retired.retire(target.clone());
         self.write_for(target)?.check_location(target)?;
         let admission = self.admission(target)?;
         reservation.start();
