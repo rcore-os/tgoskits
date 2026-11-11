@@ -112,6 +112,15 @@ impl DirNodeOps for Inode {
         self.lookup_entry(name)
     }
 
+    fn prepare_unlink(&self) {
+        let has_pending_reaps = self.fs().lock().has_pending_reaps();
+        if has_pending_reaps {
+            // Cache retirement can drop inodes and reenter admission/reap, so
+            // neither filesystem state nor native admission may be held here.
+            crate::file::prune_cached_files();
+        }
+    }
+
     fn mutate_namespace(
         &self,
         command: &axfs_ng_vfs::NamespaceMutation<'_>,

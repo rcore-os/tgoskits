@@ -9,7 +9,7 @@ pub use access::{ExecutableFile, WriteAccess};
 pub(crate) use cache::BusyDirtyCachedFile;
 #[cfg(feature = "ext4")]
 pub(crate) use cache::forget_cached_file_key;
-#[cfg(feature = "fat")]
+#[cfg(any(feature = "fat", feature = "ext4"))]
 pub(crate) use cache::prune_cached_files;
 #[cfg(feature = "ext4")]
 pub(crate) use cache::prune_cached_files_retiring;
