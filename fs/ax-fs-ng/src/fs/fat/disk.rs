@@ -587,39 +587,31 @@ mod tests {
         // then make progress without weakening FAT's active-holder rule.
         let write = axfs_ng_vfs::PreparedWrite::acquire(&parent).unwrap();
         let prepared = parent.prepare_unlink("data").unwrap();
-        let retired = axfs_ng_vfs::MutationRetire::new();
-        let admissions = axfs_ng_vfs::NamespaceAdmissions::acquire(&write).unwrap();
-        let observed = match admissions.for_location(&parent).unwrap().unlink(
-            prepared,
-            false,
-            &credentials,
-            &write,
-            &retired,
-        ) {
+        let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+        let operation = scope.context();
+        let observed = match scope
+            .unlink(&operation, prepared, false, &credentials)
+            .unwrap()
+        {
             axfs_ng_vfs::NamespaceStart::Observed(observed) => observed,
             axfs_ng_vfs::NamespaceStart::Complete(_) => panic!("expected actual FAT observation"),
         };
         let cancelled = observed.cancel();
-        let mut remaining = admissions
-            .pressure(vec![cancelled])
+        assert_eq!(cancelled.state(), axfs_ng_vfs::NamespaceState::Unchanged);
+        let cancelled = scope
+            .finish()
             .unwrap_or_else(|_| panic!("wrong FAT admission"));
-        drop(admissions);
-        drop(retired);
-        let cancelled = remaining.pop().unwrap().finish();
         assert_eq!(cancelled.state(), axfs_ng_vfs::NamespaceState::Unchanged);
         assert_eq!(cancelled.into_result(), Ok(()));
         assert!(parent.lookup_no_follow("data").is_ok());
 
         let prepared = parent.prepare_unlink("data").unwrap();
-        let retired = axfs_ng_vfs::MutationRetire::new();
-        let admissions = axfs_ng_vfs::NamespaceAdmissions::acquire(&write).unwrap();
-        let observed = match admissions.for_location(&parent).unwrap().unlink(
-            prepared,
-            false,
-            &credentials,
-            &write,
-            &retired,
-        ) {
+        let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+        let operation = scope.context();
+        let observed = match scope
+            .unlink(&operation, prepared, false, &credentials)
+            .unwrap()
+        {
             axfs_ng_vfs::NamespaceStart::Observed(observed) => observed,
             axfs_ng_vfs::NamespaceStart::Complete(_) => panic!("expected actual FAT observation"),
         };
@@ -629,14 +621,11 @@ mod tests {
             parent.mountpoint().clone(),
             observed.target().entry.clone(),
         );
-        retired.retire(wrapper);
-        let completion = observed.resume();
-        let mut remaining = admissions
-            .pressure(vec![completion])
+        operation.retired().retire(wrapper);
+        let _ = observed.resume();
+        let completed = scope
+            .finish()
             .unwrap_or_else(|_| panic!("wrong FAT admission"));
-        drop(admissions);
-        drop(retired);
-        let completed = remaining.pop().unwrap().finish();
         assert_eq!(completed.state(), axfs_ng_vfs::NamespaceState::Applied);
         let removed_file = completed.into_result();
         drop(write);

@@ -6,8 +6,8 @@ use core::time::Duration;
 
 use crate::{
     Location, Metadata, MutationCredentials, MutationRetire, NamespaceAdmission,
-    NamespaceAdmissions, NamespaceCompletion, NamespaceOutcome, NamespaceState, NodePermission,
-    PreparedWrite, VfsResult,
+    NamespaceCompletion, NamespaceOperationContext, NamespaceOperationScope, NamespaceOutcome,
+    NamespaceState, NodePermission, PreparedWrite, VfsResult,
 };
 
 /// An inode timestamp intention, resolved only inside the real owner lock.
@@ -127,9 +127,7 @@ pub struct MetadataRequest<'a> {
     target: Location,
     change: MetadataChange,
     credentials: MutationCredentials<'a>,
-    write: &'a PreparedWrite,
-    admission: &'a NamespaceAdmission<'a>,
-    retired: &'a MutationRetire,
+    context: &'a NamespaceOperationContext<'a>,
 }
 
 impl MetadataRequest<'_> {
@@ -156,52 +154,37 @@ impl MetadataRequest<'_> {
         }
     }
 
-    /// Borrows the already-prepared backing write rights for layered owners.
-    pub fn write_authority(&self) -> &PreparedWrite {
-        self.write
+    /// Borrows fixed backing commands, never the operation's completion owner.
+    pub fn context(&self) -> &NamespaceOperationContext<'_> {
+        self.context
     }
 
     /// Borrows the same operation admission, without entering it again.
     pub fn admission(&self) -> &NamespaceAdmission<'_> {
-        self.admission
+        self.context
+            .admission(&self.target)
+            .expect("validated receiver")
     }
 
     /// Borrows the outer retirement bag; inner owners cannot clear it.
     pub fn retired(&self) -> &MutationRetire {
-        self.retired
+        self.context.retired()
     }
 }
 
-impl NamespaceAdmission<'_> {
-    /// Executes using existing rights and returns typed completion responsibility.
-    /// Empty times return None before even validating or retaining the target.
-    /// All nonempty targets survive validation failures and backend failures
-    /// until the outer retirement bag is dropped after every admission.
-    pub fn change_metadata(
-        &self,
-        target: &Location,
-        change: MetadataChange,
-        credentials: &MutationCredentials<'_>,
-        write: &PreparedWrite,
-        retired: &MutationRetire,
-    ) -> VfsResult<Option<NamespaceCompletion<Metadata>>> {
-        if change.is_empty() {
-            return Ok(None);
-        }
-        retired.retire(target.clone());
-        write.write_for(target)?.check_location(target)?;
-        self.check_owner(target.filesystem())?;
-        let request = MetadataRequest {
-            target: target.clone(),
-            change,
-            credentials: *credentials,
-            write,
-            admission: self,
-            retired,
-        };
-        let completion = request.target.entry().change_metadata(&request);
-        Ok(Some(completion.bind(self.owner)))
-    }
+pub(crate) fn dispatch(
+    context: &NamespaceOperationContext<'_>,
+    target: &Location,
+    change: MetadataChange,
+    credentials: &MutationCredentials<'_>,
+) -> NamespaceCompletion<Metadata> {
+    let request = MetadataRequest {
+        target: target.clone(),
+        change,
+        credentials: *credentials,
+        context,
+    };
+    request.target.entry().change_metadata(&request)
 }
 
 impl Location {
@@ -220,20 +203,14 @@ impl Location {
         }
         let write = PreparedWrite::acquire(self)?;
         loop {
-            let retired = MutationRetire::new();
-            let admissions = NamespaceAdmissions::acquire(&write)?;
-            let completion = admissions
-                .for_location(self)?
-                .change_metadata(self, change, credentials, &write, &retired)?
-                .expect("nonempty metadata command");
-            let mut deferred = admissions
-                .pressure(alloc::vec![completion])
-                .unwrap_or_else(|_| {
-                    unreachable!("fixed metadata dispatch binds the admitted owner")
-                });
-            drop(admissions);
-            drop(retired);
-            let outcome = deferred.pop().expect("one metadata completion").finish();
+            let scope = NamespaceOperationScope::<Metadata>::acquire(&write)?;
+            {
+                let context = scope.context();
+                scope.change_metadata(&context, self, change, credentials)?;
+            }
+            let outcome = scope.finish().unwrap_or_else(|_| {
+                unreachable!("fixed metadata dispatch binds the admitted owner")
+            });
             if outcome.state() != NamespaceState::Retry {
                 return outcome.into_result();
             }

@@ -3,7 +3,7 @@
 use core::cell::RefCell;
 
 use axfs_ng_vfs::{
-    Location, MetadataChange, MutationCredentials, MutationRetire, NamespaceAdmissions,
+    Location, Metadata, MetadataChange, MutationCredentials, NamespaceOperationScope,
     NamespaceState, NodePermission, NodeType, PreparedWrite,
 };
 use rsext4::{FilePermissions, InodeFlags, InodeMetadataUpdate};
@@ -17,6 +17,14 @@ std::thread_local! {
 }
 
 struct ProgressProbe;
+
+struct BeforeFinish(Option<Box<dyn FnOnce()>>);
+
+impl Drop for BeforeFinish {
+    fn drop(&mut self) {
+        self.0.take().unwrap()();
+    }
+}
 
 pub(in super::super) fn after_journal_progress() {
     let action = AFTER_PROGRESS.with_borrow_mut(Option::take);
@@ -139,22 +147,19 @@ fn metadata_completion_failures_stop_retry_and_preserve_applied_observation() {
     super::sync_policy::set_inode_flags(&filesystem, &input, InodeFlags::NO_ATIME);
     prepare_checkpoint_pressure(&filesystem, &input);
     let write = PreparedWrite::acquire(&alias).unwrap();
-    let retired = MutationRetire::new();
-    let admissions = NamespaceAdmissions::acquire(&write).unwrap();
-    let completion = admissions
-        .for_location(&alias)
-        .unwrap()
+    let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let context = scope.context();
+    let completion = scope
         .change_metadata(
+            &context,
             &alias,
             MetadataChange::Chmod(mode(0o777)),
             &privileged,
-            &write,
-            &retired,
         )
         .unwrap()
         .unwrap();
-    assert_eq!(completion.outcome().state(), NamespaceState::Retry);
-    assert!(completion.outcome().observation().is_none());
+    assert_eq!(completion.state(), NamespaceState::Retry);
+    assert!(completion.observation().is_none());
     let failing = filesystem.clone();
     let content = filesystem.inode_access(number(&input));
     let root_number = number(&root);
@@ -165,13 +170,12 @@ fn metadata_completion_failures_stop_retry_and_preserve_applied_observation() {
         assert_eq!(failing.admission.active_count(), 1);
         Err(BlockError::Io)
     });
-    let mut deferred = admissions
-        .pressure(alloc::vec![completion])
+    context
+        .retired()
+        .retire(BeforeFinish(Some(Box::new(move || probe.finish()))));
+    let outcome = scope
+        .finish()
         .unwrap_or_else(|_| panic!("metadata completion lost its actual owner"));
-    probe.finish();
-    drop(admissions);
-    drop(retired);
-    let outcome = deferred.pop().unwrap().finish();
     assert_eq!(outcome.state(), NamespaceState::Unchanged);
     assert!(outcome.observation().is_none());
     assert_eq!(outcome.into_result(), Err(VfsError::Io));
@@ -203,39 +207,33 @@ fn metadata_completion_failures_stop_retry_and_preserve_applied_observation() {
         InodeFlags::SYNC | InodeFlags::NO_ATIME,
     );
     let write = PreparedWrite::acquire(&alias).unwrap();
-    let retired = MutationRetire::new();
-    let admissions = NamespaceAdmissions::acquire(&write).unwrap();
-    let completion = admissions
-        .for_location(&alias)
-        .unwrap()
+    let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let context = scope.context();
+    let completion = scope
         .change_metadata(
+            &context,
             &alias,
             MetadataChange::Chmod(mode(0o640)),
             &privileged,
-            &write,
-            &retired,
         )
         .unwrap()
         .unwrap();
-    assert_eq!(completion.outcome().state(), NamespaceState::Applied);
-    assert_eq!(
-        completion.outcome().observation().unwrap().mode.bits(),
-        0o640
-    );
+    assert_eq!(completion.state(), NamespaceState::Applied);
+    assert_eq!(completion.observation().unwrap().mode.bits(), 0o640);
     assert!(
         filesystem.lock().dirty,
         "canonical publication must schedule writeback"
     );
-    let mut deferred = admissions
-        .pressure(alloc::vec![completion])
-        .unwrap_or_else(|_| panic!("metadata completion lost its actual owner"));
-    drop(admissions);
-    drop(retired);
-    assert_eq!(
-        filesystem.admission.active_count(),
-        0,
-        "outer operation must exit before finish"
-    );
+    let weak_fs = Arc::downgrade(&filesystem);
+    context
+        .retired()
+        .retire(BeforeFinish(Some(Box::new(move || {
+            assert_eq!(
+                weak_fs.upgrade().unwrap().admission.active_count(),
+                0,
+                "outer operation must exit before finish"
+            );
+        }))));
     let failing = filesystem.clone();
     let content = filesystem.inode_access(number(&input));
     let root_number = number(&root);
@@ -248,7 +246,9 @@ fn metadata_completion_failures_stop_retry_and_preserve_applied_observation() {
         drop(failing.namespace.lookup(root_number).unwrap());
         Err(BlockError::Io)
     });
-    let outcome = deferred.pop().unwrap().finish();
+    let outcome = scope
+        .finish()
+        .unwrap_or_else(|_| panic!("metadata completion lost its actual owner"));
     probe.finish();
     assert_eq!(outcome.state(), NamespaceState::Applied);
     let observed = outcome.observation().unwrap();

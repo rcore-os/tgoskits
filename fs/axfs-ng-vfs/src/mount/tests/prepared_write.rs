@@ -119,9 +119,7 @@ impl NodeOps for WriteLayerRoot {
 
 #[test]
 fn metadata_dispatch_retains_failed_targets_and_empty_times_need_no_rights() {
-    use crate::{
-        MetadataChange, MutationCredentials, MutationRetire, NamespaceAdmissions, TimeChange,
-    };
+    use crate::{MetadataChange, MutationCredentials, NamespaceOperationScope, TimeChange};
 
     struct RetiredTarget {
         probe: Arc<OperationProbe>,
@@ -138,6 +136,20 @@ fn metadata_dispatch_retains_failed_targets_and_empty_times_need_no_rights() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
+    struct RetirementBoundary {
+        probe: Arc<OperationProbe>,
+        dropped: Arc<core::sync::atomic::AtomicUsize>,
+    }
+    impl Drop for RetirementBoundary {
+        fn drop(&mut self) {
+            let events = self.probe.events.lock().unwrap();
+            assert_eq!(
+                events.iter().filter(|(_, enter)| *enter).count(),
+                events.iter().filter(|(_, enter)| !*enter).count()
+            );
+            assert_eq!(self.dropped.load(Ordering::Relaxed), 0);
+        }
+    }
     let probe = Arc::new(OperationProbe::default());
     let root = probed_layer(0, vec![], Some(probe.clone()));
     let credentials = MutationCredentials::root();
@@ -152,10 +164,13 @@ fn metadata_dispatch_retains_failed_targets_and_empty_times_need_no_rights() {
     root.mountpoint().set_readonly(false).unwrap();
 
     let write = PreparedWrite::acquire(&root).unwrap();
-    let retired = MutationRetire::new();
-    let admissions = NamespaceAdmissions::acquire(&write).unwrap();
-    let admission = admissions.for_location(&root).unwrap();
+    let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let context = scope.context();
     let dropped = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    context.retired().retire(RetirementBoundary {
+        probe: probe.clone(),
+        dropped: dropped.clone(),
+    });
     let target = || {
         // A real, uncached VFS alias with no mount-root reference to it.
         let entry = root.filesystem().root_dir();
@@ -166,59 +181,47 @@ fn metadata_dispatch_retains_failed_targets_and_empty_times_need_no_rights() {
         Location::new(root.mountpoint().clone(), entry)
     };
     let unsupported = target();
-    let completion = admission
+    let completion = scope
         .change_metadata(
+            &context,
             &unsupported,
             MetadataChange::Chown {
                 uid: None,
                 gid: None,
             },
             &credentials,
-            &write,
-            &retired,
         )
         .unwrap()
         .unwrap();
-    assert_eq!(
-        completion.outcome().state(),
-        crate::NamespaceState::Unchanged
-    );
-    assert!(completion.outcome().observation().is_none());
+    assert_eq!(completion.state(), crate::NamespaceState::Unchanged);
+    assert!(completion.observation().is_none());
     drop(unsupported);
 
     let backend = root.entry().downcast::<WriteLayerRoot>().unwrap();
     let alias_mount = Mountpoint::new_root(&Filesystem::new(backend.filesystem.clone()));
     let uncovered = Location::new(alias_mount, target().entry().clone());
     assert!(
-        admission
-            .change_metadata(&uncovered, empty, &credentials, &write, &retired)
+        context
+            .change_metadata(&uncovered, empty, &credentials)
             .unwrap()
             .is_none()
     );
     assert!(matches!(
-        admission.change_metadata(
+        context.change_metadata(
             &uncovered,
             MetadataChange::Chmod(NodePermission::default()),
-            &credentials,
-            &write,
-            &retired
+            &credentials
         ),
         Err(VfsError::CrossesDevices)
     ));
     drop(uncovered);
     assert_eq!(dropped.load(Ordering::Relaxed), 0);
     assert_eq!(probe.metadata_reads.load(Ordering::Relaxed), 0);
-    let mut deferred = admissions
-        .pressure(vec![completion])
+    let outcome = scope
+        .finish()
         .unwrap_or_else(|_| panic!("fixed metadata owner"));
-    drop(admissions);
-    assert_eq!(dropped.load(Ordering::Relaxed), 0);
-    drop(retired);
     assert_eq!(dropped.load(Ordering::Relaxed), 2);
-    assert_eq!(
-        deferred.pop().unwrap().finish().into_result(),
-        Err(VfsError::OperationNotSupported)
-    );
+    assert_eq!(outcome.into_result(), Err(VfsError::OperationNotSupported));
 }
 
 #[inherit_methods(from = "self.node")]

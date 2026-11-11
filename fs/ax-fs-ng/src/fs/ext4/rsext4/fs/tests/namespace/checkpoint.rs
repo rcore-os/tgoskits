@@ -1,11 +1,19 @@
 //! Real dirty-inode eviction must classify an observation before pressure runs.
 
 use axfs_ng_vfs::{
-    MutationCredentials, MutationRetire, NameState, NamespaceAdmissions, NamespaceEffect,
-    NamespaceStart, NamespaceState, PreparedWrite,
+    MutationCredentials, NameState, NamespaceEffect, NamespaceOperationScope, NamespaceStart,
+    NamespaceState, PreparedWrite,
 };
 
 use super::*;
+
+struct BeforeFinish(Option<Box<dyn FnOnce()>>);
+
+impl Drop for BeforeFinish {
+    fn drop(&mut self) {
+        self.0.take().unwrap()();
+    }
+}
 
 pub(super) fn retry_observation_after_checkpoint_pressure() {
     for flush_result in [Ok(()), Err(BlockError::Io)] {
@@ -19,15 +27,12 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
         let root_number = inode_number(&root);
         let inode_owners = Arc::strong_count(&root);
         let filesystem_owners = Arc::strong_count(&filesystem);
-        let retired = MutationRetire::new();
-        let admissions = NamespaceAdmissions::acquire(&write).unwrap();
-        let completion = match admissions.for_location(&parent).unwrap().unlink(
-            prepared,
-            false,
-            &credentials,
-            &write,
-            &retired,
-        ) {
+        let scope = NamespaceOperationScope::acquire(&write).unwrap();
+        let context = scope.context();
+        let completion = match scope
+            .unlink(&context, prepared, false, &credentials)
+            .unwrap()
+        {
             NamespaceStart::Complete(completion) => completion,
             NamespaceStart::Observed(_) => {
                 panic!("cold target observation must fail before commit");
@@ -35,8 +40,8 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
         };
         // This is the backend handoff, before any pressure callback. Removing
         // finish()'s early classification must fail here, not at final unlink.
-        assert_eq!(completion.outcome().state(), NamespaceState::Retry);
-        assert!(completion.outcome().observation().is_none());
+        assert_eq!(completion.state(), NamespaceState::Retry);
+        assert!(completion.observation().is_none());
         assert!(filesystem.lock().ext4.writeback_checkpoint_pending());
         assert!(!filesystem.lock().staging);
 
@@ -48,18 +53,23 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
             assert_eq!(flushing.admission.active_count(), 1);
             flush_result
         });
-        let mut deferred = admissions
-            .pressure(alloc::vec![completion])
-            .unwrap_or_else(|_| panic!("observation completion lost its actual owner"));
-        probe.finish();
-        drop(admissions);
-        drop(retired);
-        assert_eq!(filesystem.admission.active_count(), 0);
         // The pressure object must transfer its real FS and both parent owners
         // to finish even after an observation failure or a pressure I/O error.
-        assert!(Arc::strong_count(&root) > inode_owners);
-        assert!(Arc::strong_count(&filesystem) > filesystem_owners);
-        let outcome = deferred.pop().unwrap().finish();
+        // Weak probes add no owners; this runs after ordinary retirement and
+        // all admission exits, immediately before scope invokes phase four.
+        let weak_root = Arc::downgrade(&root);
+        let weak_fs = Arc::downgrade(&filesystem);
+        context
+            .retired()
+            .retire(BeforeFinish(Some(Box::new(move || {
+                probe.finish();
+                assert!(weak_root.strong_count() > inode_owners);
+                assert!(weak_fs.strong_count() > filesystem_owners);
+                assert_eq!(weak_fs.upgrade().unwrap().admission.active_count(), 0);
+            }))));
+        let outcome = scope
+            .finish()
+            .unwrap_or_else(|_| panic!("observation completion lost its actual owner"));
         assert_eq!(Arc::strong_count(&root), inode_owners);
         assert_eq!(Arc::strong_count(&filesystem), filesystem_owners);
         assert!(outcome.observation().is_none());
@@ -86,15 +96,12 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
             // A fresh request must observe and authorize again; the first
             // completion carried neither an observed target nor old authority.
             let prepared = parent.prepare_unlink("witness").unwrap();
-            let retired = MutationRetire::new();
-            let admissions = NamespaceAdmissions::acquire(&write).unwrap();
-            let observed = match admissions.for_location(&parent).unwrap().unlink(
-                prepared,
-                false,
-                &credentials,
-                &write,
-                &retired,
-            ) {
+            let scope = NamespaceOperationScope::acquire(&write).unwrap();
+            let context = scope.context();
+            let observed = match scope
+                .unlink(&context, prepared, false, &credentials)
+                .unwrap()
+            {
                 NamespaceStart::Observed(observed) => observed,
                 NamespaceStart::Complete(_) => {
                     panic!("checkpoint progress must allow a fresh target observation");
@@ -102,17 +109,15 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
             };
             assert_eq!(observed.target().entry.inode(), witness.inode());
             let completion = observed.resume();
-            assert_eq!(completion.outcome().state(), NamespaceState::Applied);
+            assert_eq!(completion.state(), NamespaceState::Applied);
             assert!(matches!(
-                completion.outcome().observation(),
+                completion.observation(),
                 Some(NamespaceEffect::Unlink(entry)) if entry.entry.inode() == witness.inode()
             ));
-            let mut deferred = admissions
-                .pressure(alloc::vec![completion])
+            drop(completion);
+            let outcome = scope
+                .finish()
                 .unwrap_or_else(|_| panic!("retried unlink lost its actual owner"));
-            drop(admissions);
-            drop(retired);
-            let outcome = deferred.pop().unwrap().finish();
             assert_eq!(outcome.state(), NamespaceState::Applied);
             assert_eq!(outcome.into_result(), Ok(()));
             assert_eq!(root.lookup("witness").unwrap_err(), VfsError::NotFound);

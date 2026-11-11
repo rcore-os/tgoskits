@@ -4,7 +4,8 @@ use alloc::boxed::Box;
 
 use super::{cache::NameChange, *};
 use crate::{
-    Location, Metadata, MutationCredentials, NamespaceAdmission, PreparedUnlink, PreparedWrite,
+    Metadata, MutationCredentials, NamespaceAdmission, NamespaceObservation,
+    NamespaceOperationContext, PreparedUnlink, namespace_operation::registration::Reservation,
 };
 
 /// Backend implementation boundary, never returned by a public raw factory.
@@ -18,12 +19,12 @@ pub trait NamespaceDriver: LockedAttempt {
 #[must_use = "resume or cancel observations, then complete outside every gate"]
 pub enum NamespaceStart<'a> {
     Observed(Box<ObservedUnlink<'a>>),
-    Complete(NamespaceCompletion),
+    Complete(NamespaceObservation<NamespaceEffect>),
 }
 
 impl NamespaceStart<'_> {
     /// Ordinary native operations immediately consume the same fixed core.
-    pub fn resume(self) -> NamespaceCompletion {
+    pub fn resume(self) -> NamespaceObservation<NamespaceEffect> {
         match self {
             Self::Observed(observed) => observed.resume(),
             Self::Complete(completion) => completion,
@@ -35,8 +36,8 @@ impl NamespaceStart<'_> {
 /// it; supplying a different parent, observation or commit is not an option.
 pub struct NamespaceDriverRequest<'a> {
     command: NamespaceMutation<'a>,
-    admission: &'a NamespaceAdmission<'a>,
-    retired: &'a MutationRetire,
+    context: &'a NamespaceOperationContext<'a>,
+    reservation: Reservation<'a>,
 }
 
 impl<'a> NamespaceDriverRequest<'a> {
@@ -45,20 +46,25 @@ impl<'a> NamespaceDriverRequest<'a> {
     }
 
     pub fn admission(&self) -> &NamespaceAdmission<'a> {
-        self.admission
+        self.context
+            .admission_for_owner(self.command.parents().0.filesystem())
+            .expect("validated receiver")
     }
 
     pub fn retired(&self) -> &'a MutationRetire {
-        self.retired
+        self.context.retired()
+    }
+
+    pub fn context(&self) -> &NamespaceOperationContext<'a> {
+        self.context
     }
 
     /// Completes a Staging or pre-observation failure with its real typed cause.
     pub fn complete(self, completion: NamespaceCompletion) -> NamespaceStart<'a> {
-        NamespaceStart::Complete(
-            completion
-                .retain_parents(self.command.parents())
-                .bind(self.admission.owner),
-        )
+        let completion = completion
+            .retain_parents(self.command.parents())
+            .bind(self.admission().owner);
+        NamespaceStart::Complete(self.reservation.namespace(completion))
     }
 
     pub fn fail(self, error: VfsError) -> NamespaceStart<'a> {
@@ -72,10 +78,13 @@ impl<'a> NamespaceDriverRequest<'a> {
     /// the bound FS receiver. No raw driver is returned to the operation caller.
     pub fn observe(self, mut driver: Box<dyn NamespaceDriver + 'a>) -> NamespaceStart<'a> {
         if !matches!(self.command, NamespaceMutation::Unlink(_)) {
-            let outcome = self.command.execute(&mut *driver, self.retired);
+            let outcome = self.command.execute(&mut *driver, self.context.retired());
             return self.complete(driver.finish(outcome));
         }
-        let observed = match self.command.observe_locked(&mut *driver, self.retired) {
+        let observed = match self
+            .command
+            .observe_locked(&mut *driver, self.context.retired())
+        {
             Ok(observed) => observed,
             Err(error) => {
                 return self.complete(driver.finish(NamespaceOutcome::unchanged(Err(error))));
@@ -83,7 +92,7 @@ impl<'a> NamespaceDriverRequest<'a> {
         };
         // FAT has sampled old holders and retained this round's candidate.
         // Establish the writer boundary immediately, before any publication.
-        let change = self.command.begin_observed_change(self.retired);
+        let change = self.command.begin_observed_change(self.context.retired());
         NamespaceStart::Observed(Box::new(ObservedUnlink {
             request: Some(self),
             driver: Some(driver),
@@ -109,13 +118,12 @@ impl<'a> NamespaceDriverRequest<'a> {
 /// fn escape<'a>(
 ///     root: &'a axfs_ng_vfs::Location,
 ///     write: &'a axfs_ng_vfs::PreparedWrite,
-///     retired: &'a axfs_ng_vfs::MutationRetire,
+///     credentials: &'a axfs_ng_vfs::MutationCredentials<'a>,
 /// ) -> axfs_ng_vfs::NamespaceStart<'a> {
 ///     let prepared = root.prepare_unlink("entry").unwrap();
-///     let admissions = axfs_ng_vfs::NamespaceAdmissions::acquire(write).unwrap();
-///     admissions.for_location(root).unwrap().unlink(
-///         prepared, false, &axfs_ng_vfs::MutationCredentials::root(), write, retired,
-///     )
+///     let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(write).unwrap();
+///     let context = scope.context();
+///     scope.unlink(&context, prepared, false, credentials).unwrap()
 /// }
 /// ```
 pub struct ObservedUnlink<'a> {
@@ -138,31 +146,34 @@ impl ObservedUnlink<'_> {
         }
     }
 
-    pub fn resume(mut self: Box<Self>) -> NamespaceCompletion {
+    pub fn resume(mut self: Box<Self>) -> NamespaceObservation<NamespaceEffect> {
         let request = self.request.take().expect("unconsumed request");
         let mut driver = self.driver.take().expect("unconsumed driver");
         let outcome = request.command.resume_locked(
             &mut *driver,
-            request.retired,
+            request.context.retired(),
             self.observed.take().expect("unconsumed observation"),
             self.change.take().expect("open publication"),
         );
-        driver
+        let completion = driver
             .finish(outcome)
             .retain_parents(request.command.parents())
-            .bind(request.admission.owner)
+            .bind(request.admission().owner);
+        request.reservation.namespace(completion)
     }
 
-    pub fn cancel(mut self: Box<Self>) -> NamespaceCompletion {
+    pub fn cancel(mut self: Box<Self>) -> NamespaceObservation<NamespaceEffect> {
         let request = self.request.take().expect("unconsumed request");
-        self.retire_observation(request.retired);
+        self.retire_observation(request.context.retired());
         drop(self.change.take());
-        self.driver
+        let completion = self
+            .driver
             .take()
             .expect("unconsumed driver")
             .finish(NamespaceOutcome::unchanged(Ok(())))
             .retain_parents(request.command.parents())
-            .bind(request.admission.owner)
+            .bind(request.admission().owner);
+        request.reservation.namespace(completion)
     }
 
     fn retire_observation(&mut self, retired: &MutationRetire) {
@@ -175,95 +186,36 @@ impl ObservedUnlink<'_> {
 impl Drop for ObservedUnlink<'_> {
     fn drop(&mut self) {
         if let Some(request) = self.request.take() {
-            self.retire_observation(request.retired);
+            self.retire_observation(request.context.retired());
         }
         // Drop only releases publication and gate rights. Explicit cancellation
         // returns typed completion; Drop never progresses a journal or reaps.
     }
 }
 
-impl NamespaceAdmission<'_> {
-    /// Executes a data command with the existing same-FS admission. This is also
-    /// the boundary for subsequent create/whiteout commands in one outer gate.
-    pub fn start<'a>(
-        &'a self,
-        command: NamespaceMutation<'a>,
-        retired: &'a MutationRetire,
-    ) -> NamespaceStart<'a> {
-        let (source, destination) = command.parents();
-        // Validation failures also retire potentially cross-FS parent owners.
-        retired.retire(source.clone());
-        retired.retire(destination.clone());
-        if let Err(error) = self
-            .check_owner(source.filesystem())
-            .and_then(|()| self.check_owner(destination.filesystem()))
-        {
-            return NamespaceStart::Complete(
-                NamespaceCompletion::new(NamespaceOutcome::unchanged(Err(error)), None)
-                    .retain_parents(command.parents())
-                    .bind(self.owner),
-            );
-        }
-        // Borrowed commands and drivers cannot be put in the Any retirement bag.
-        // Retain only their owned parent nodes until all admissions have ended.
-        self.owner.begin_namespace(NamespaceDriverRequest {
-            command,
-            admission: self,
-            retired,
-        })
-    }
-
-    /// Starts one prepared unlink without observing the target in advance.
-    pub fn unlink<'a>(
-        &'a self,
-        prepared: PreparedUnlink,
-        directory: bool,
-        credentials: &MutationCredentials<'a>,
-        write: &'a PreparedWrite,
-        retired: &'a MutationRetire,
-    ) -> NamespaceStart<'a> {
-        let parent = prepared.parent_owner();
-        let target = super::command::MutationTarget::new(&parent, prepared.name(), credentials);
-        // Preparation owns another parent reference; keep that reference out
-        // of all nested destructors even on failed input validation.
-        retired.retire(parent);
-        match target {
-            Ok(target) => self.start(
-                NamespaceMutation::Unlink(UnlinkRequest::new(target, directory, prepared, write)),
-                retired,
-            ),
-            Err(error) => NamespaceStart::Complete(
-                NamespaceCompletion::new(NamespaceOutcome::unchanged(Err(error)), None)
-                    .bind(self.owner),
-            ),
-        }
-    }
-
-    /// Creates using the fixed existing authorizer and the same operation right.
-    pub fn create<'a>(
-        &'a self,
-        parent: &Location,
-        name: &str,
-        attributes: CreateAttributes<'a>,
-        credentials: &MutationCredentials<'a>,
-        write: &'a PreparedWrite,
-        retired: &'a MutationRetire,
-    ) -> NamespaceStart<'a> {
-        match super::command::MutationTarget::new(parent, name, credentials) {
-            Ok(target) => self.start(
-                NamespaceMutation::Create(CreateRequest::new(
-                    target,
-                    attributes,
-                    None,
-                    None,
-                    CreationWrite::Ready(write),
-                )),
-                retired,
-            ),
-            Err(error) => NamespaceStart::Complete(
-                NamespaceCompletion::new(NamespaceOutcome::unchanged(Err(error)), None)
-                    .bind(self.owner),
-            ),
-        }
-    }
+pub(crate) fn start_unlink<'a>(
+    context: &'a NamespaceOperationContext<'a>,
+    prepared: PreparedUnlink,
+    directory: bool,
+    credentials: &MutationCredentials<'a>,
+    mut reservation: Reservation<'a>,
+) -> VfsResult<NamespaceStart<'a>> {
+    let parent = prepared.parent_owner();
+    let target = super::command::MutationTarget::new(&parent, prepared.name(), credentials);
+    context.retired().retire(parent.clone());
+    let target = target?;
+    context.write_for(&parent)?.check_location(&parent)?;
+    let admission = context.admission(&parent)?;
+    let command = NamespaceMutation::Unlink(UnlinkRequest::new(
+        target,
+        directory,
+        prepared,
+        context.write(),
+    ));
+    reservation.start();
+    Ok(admission.owner.begin_namespace(NamespaceDriverRequest {
+        command,
+        context,
+        reservation,
+    }))
 }

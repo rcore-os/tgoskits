@@ -1544,24 +1544,16 @@ impl Location {
         if self.filesystem().has_native_namespace() {
             loop {
                 let prepared = self.prepare_unlink(name)?;
-                let retired = crate::MutationRetire::new();
-                let admissions = crate::NamespaceAdmissions::acquire(&write)?;
-                let completion = admissions
-                    .for_location(self)?
-                    .unlink(prepared, is_dir, credentials, &write, &retired)
-                    .resume();
-                // The observation, publication and backend driver have ended.
-                // Pressure for every FS precedes release of *all* rights; only
-                // then may retired inode owners run their existing destructors.
-                let mut remaining =
-                    admissions
-                        .pressure(alloc::vec![completion])
-                        .unwrap_or_else(|_| {
-                            unreachable!("fixed native factory binds the admitted owner")
-                        });
-                drop(admissions);
-                drop(retired);
-                let outcome = remaining.pop().expect("one native completion").finish();
+                let scope = crate::NamespaceOperationScope::acquire(&write)?;
+                {
+                    let context = scope.context();
+                    scope
+                        .unlink(&context, prepared, is_dir, credentials)?
+                        .resume();
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
                 if outcome.state() == crate::NamespaceState::Retry {
                     continue;
                 }

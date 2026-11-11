@@ -84,7 +84,7 @@ pub enum NamespaceEffect {
 ///
 /// VFS must publish `Applied`, or invalidate `Uncertain`, before returning the
 /// completion error. `Retry` never carries permission to replay an old attempt.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[must_use = "publish or invalidate the namespace effect before returning its completion result"]
 pub struct NamespaceOutcome<T> {
     state: NamespaceState,
@@ -139,6 +139,11 @@ impl<T> NamespaceOutcome<T> {
 
     pub fn observation(&self) -> Option<&T> {
         self.observation.as_ref()
+    }
+
+    /// Returns the original attempt result without consuming its observation.
+    pub fn result(&self) -> VfsResult<()> {
+        self.result
     }
 
     /// Merges lock-external completion, preserving the first real error.

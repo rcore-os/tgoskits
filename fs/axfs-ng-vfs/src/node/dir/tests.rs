@@ -389,6 +389,7 @@ fn completion_pressure_preserves_typed_results_and_mismatched_owners() {
     }
     assert_eq!(pressure_calls.load(Ordering::Relaxed), 6);
     assert_eq!(finish_calls.load(Ordering::Relaxed), 6);
+    crate::namespace_operation::tests::exercise_scope();
 }
 
 fn fixture() -> (Arc<TestDirectory>, Arc<ScriptedDirectory>) {
