@@ -32,8 +32,9 @@ pub struct CreateAttributes<'a> {
 pub enum CreateOwnerPolicy {
     /// Use the caller's identity with the current parent's SGID inheritance.
     ParentSetgid,
-    /// Use the caller's UID/GID and the kernfs directory creation mode mask.
-    Caller,
+    /// Apply the kernfs mode mask and inherit the parent's group only when
+    /// SGID and logical explicit attributes were observed in the same attempt.
+    Kernfs { parent_has_explicit_attrs: bool },
 }
 
 impl CreateOwnerPolicy {
@@ -44,17 +45,25 @@ impl CreateOwnerPolicy {
         credentials: &MutationCredentials<'_>,
     ) -> (NodePermission, (u32, u32)) {
         let mut permission = attributes.permission;
-        if self == Self::Caller && attributes.content.node_type() == NodeType::Directory {
+        let directory = attributes.content.node_type() == NodeType::Directory;
+        if matches!(self, Self::Kernfs { .. }) && directory {
             permission = NodePermission::from_bits_truncate(permission.bits() & 0o1777);
         }
-        let gid = if self == Self::ParentSetgid && parent.mode.contains(NodePermission::SET_GID) {
-            if attributes.content.node_type() == NodeType::Directory {
+        let mut gid = credentials.fsgid;
+        if parent.mode.contains(NodePermission::SET_GID) {
+            if directory {
                 permission.insert(NodePermission::SET_GID);
             }
-            parent.gid
-        } else {
-            credentials.fsgid
-        };
+            if matches!(
+                self,
+                Self::ParentSetgid
+                    | Self::Kernfs {
+                        parent_has_explicit_attrs: true
+                    }
+            ) {
+                gid = parent.gid;
+            }
+        }
         (permission, (credentials.fsuid, gid))
     }
 }
@@ -298,6 +307,13 @@ impl AuthorizedCreate<'_> {
     }
     pub fn owner(&self) -> (u32, u32) {
         self.owner
+    }
+
+    /// The original request's filesystem identity, before backend inheritance.
+    /// This is not a new write authority or a replaceable credentials object.
+    pub fn creator_owner(&self) -> (u32, u32) {
+        let credentials = self.request.target.credentials;
+        (credentials.fsuid, credentials.fsgid)
     }
 }
 
@@ -695,22 +711,63 @@ mod tests {
             fsgid: 1001,
             ..MutationCredentials::root()
         };
-        let observations = [
-            (CreateOwnerPolicy::ParentSetgid, 0o755),
-            (CreateOwnerPolicy::Caller, 0o7755),
-        ]
-        .map(|(policy, mode)| {
-            let (permission, owner) = policy.initial_attributes(
-                CreateAttributes {
-                    content: CreateContent::Node(NodeType::Directory, DeviceId::default()),
-                    permission: NodePermission::from_bits_truncate(mode),
-                },
-                &parent,
-                &credentials,
-            );
-            (permission.bits(), owner)
-        });
+        let create = super::super::tests::create_with_policy;
+        let (unix, unix_actor) = create(
+            parent.clone(),
+            CreateOwnerPolicy::ParentSetgid,
+            &credentials,
+        );
+        // Ordinary Unix creation keeps the caller's special bits as before.
+        assert_eq!((unix.mode.bits(), unix.uid, unix.gid), (0o7755, 1000, 23));
+        assert_eq!(unix_actor, (1000, 1001));
 
-        assert_eq!(observations, [(0o2755, (1000, 23)), (0o1755, (1000, 1001))]);
+        let explicit = CreateOwnerPolicy::Kernfs {
+            parent_has_explicit_attrs: true,
+        };
+        let default = CreateOwnerPolicy::Kernfs {
+            parent_has_explicit_attrs: false,
+        };
+        let (inherited, actor) = create(parent.clone(), explicit, &credentials);
+        assert_eq!(
+            (inherited.mode.bits(), inherited.uid, inherited.gid),
+            (0o3755, 1000, 23)
+        );
+        assert_eq!(actor, (1000, 1001));
+        let (unallocated, _) = create(parent.clone(), default, &credentials);
+        assert_eq!(
+            (unallocated.mode.bits(), unallocated.uid, unallocated.gid),
+            (0o3755, 1000, 1001)
+        );
+        let (plain, _) = create(
+            Metadata {
+                mode: NodePermission::from_bits_retain(0o777),
+                ..parent.clone()
+            },
+            explicit,
+            &credentials,
+        );
+        assert_eq!(
+            (plain.mode.bits(), plain.uid, plain.gid),
+            (0o1755, 1000, 1001)
+        );
+
+        // A zero-owned inherited SGID directory stays logically default across
+        // generations. Its visible zero group must not replace the next actor.
+        let root_actor = MutationCredentials::root();
+        let (zero, _) = create(Metadata { gid: 0, ..parent }, explicit, &root_actor);
+        assert_eq!((zero.uid, zero.gid, zero.mode.bits()), (0, 0, 0o3755));
+        let (zero_child, _) = create(zero, default, &root_actor);
+        let next_actor = MutationCredentials {
+            fsgid: 1002,
+            ..root_actor
+        };
+        let (next, original) = create(zero_child.clone(), default, &next_actor);
+        assert_eq!((next.uid, next.gid, next.mode.bits()), (0, 1002, 0o3755));
+        let (after_explicit_update, original_explicit) = create(zero_child, explicit, &next_actor);
+        assert_eq!(
+            (after_explicit_update.uid, after_explicit_update.gid),
+            (0, 0)
+        );
+        assert_eq!((original, original_explicit), ((0, 1002), (0, 1002)));
     }
 }

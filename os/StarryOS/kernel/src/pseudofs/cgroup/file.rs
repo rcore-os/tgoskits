@@ -3,8 +3,8 @@ use core::any::Any;
 
 use ax_cgroup::{CgroupFileKind, CgroupFsTarget, CgroupNode};
 use axfs_ng_vfs::{
-    FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeIdentity, NodeOps,
-    VfsError, VfsResult,
+    FileNodeOps, FilesystemOps, Metadata, MetadataRequest, MetadataUpdate, NamespaceCompletion,
+    NodeFlags, NodeIdentity, NodeOps, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 
@@ -57,6 +57,15 @@ impl NodeOps for CgroupFile {
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         update_inode_metadata(&self.cgroup, CgroupFsTarget::File(self.kind), update)
+    }
+
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
+        super::metadata::change_inode_metadata(
+            &self.fs,
+            &self.cgroup,
+            CgroupFsTarget::File(self.kind),
+            request,
+        )
     }
 
     fn filesystem(&self) -> &dyn FilesystemOps {

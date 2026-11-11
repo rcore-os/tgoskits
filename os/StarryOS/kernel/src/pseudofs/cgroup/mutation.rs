@@ -1,7 +1,9 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
-use ax_cgroup::{CgroupFileKind, CgroupFsInit, CgroupFsTarget, CgroupMutationGuard};
+use ax_cgroup::{
+    CgroupFileKind, CgroupFsCreate, CgroupFsInit, CgroupFsTarget, CgroupMutationGuard,
+};
 use ax_runtime::hal::time::wall_time;
 use axfs_ng_vfs::{
     AuthorizedCreate, AuthorizedMutation, AuthorizedUnlink, CreateContent, CreateEffect,
@@ -102,11 +104,14 @@ impl CgroupAttempt<'_> {
             .create_child(
                 &self.directory.cgroup,
                 name,
-                CgroupFsInit {
-                    uid,
-                    gid,
-                    mode: authorized.permission().bits(),
-                    now: self.now,
+                CgroupFsCreate {
+                    directory: CgroupFsInit {
+                        uid,
+                        gid,
+                        mode: authorized.permission().bits(),
+                        now: self.now,
+                    },
+                    creator: authorized.creator_owner(),
                 },
             )
             .map_err(cgroup_error_to_vfs_error)?;
@@ -182,7 +187,12 @@ impl LockedAttempt for CgroupAttempt<'_> {
         match request {
             NamespaceMutation::Create(_) => Ok(MutationObservation::Create {
                 target: current,
-                owner_policy: CreateOwnerPolicy::Caller,
+                owner_policy: CreateOwnerPolicy::Kernfs {
+                    parent_has_explicit_attrs: self
+                        .guard
+                        .directory_has_explicit_attrs(&self.directory.cgroup)
+                        .map_err(cgroup_error_to_vfs_error)?,
+                },
             }),
             NamespaceMutation::Unlink(_) => current
                 .map(MutationObservation::Unlink)

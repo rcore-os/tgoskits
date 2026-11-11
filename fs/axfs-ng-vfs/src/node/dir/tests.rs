@@ -470,6 +470,34 @@ enum CachePolicy {
     Mixed,
 }
 
+// Reuse the directory fixture to exercise the fixed authorizer, not a second
+// test implementation of the creation policy.
+pub(super) fn create_with_policy(
+    parent: Metadata,
+    policy: CreateOwnerPolicy,
+    credentials: &crate::MutationCredentials<'_>,
+) -> (Metadata, (u32, u32)) {
+    let backend = Arc::new(ScriptedDirectory {
+        creation_parent: Some(parent),
+        creation_policy: policy,
+        ..Default::default()
+    });
+    let directory = TestDirectory::new(backend.clone());
+    let created = directory
+        .0
+        .create_initialized(
+            "policy-child",
+            CreateAttributes {
+                content: CreateContent::Node(NodeType::Directory, crate::DeviceId::default()),
+                permission: NodePermission::from_bits_retain(0o7755),
+            },
+            credentials,
+        )
+        .unwrap();
+    let actor = backend.creator.lock().unwrap();
+    (created.metadata().unwrap(), actor)
+}
+
 struct ScriptedDirectory {
     mutation: std::sync::Mutex<()>,
     entries: RawSpinLock<HashMap<String, DirEntry>>,
@@ -479,6 +507,9 @@ struct ScriptedDirectory {
     fail_after_create: AtomicBool,
     policy: CachePolicy,
     generation: RawSpinLock<VfsResult<Option<u64>>>,
+    creation_parent: Option<Metadata>,
+    creation_policy: CreateOwnerPolicy,
+    creator: RawSpinLock<Option<(u32, u32)>>,
 }
 
 impl Default for ScriptedDirectory {
@@ -492,6 +523,9 @@ impl Default for ScriptedDirectory {
             fail_after_create: AtomicBool::new(false),
             policy: CachePolicy::default(),
             generation: RawSpinLock::new(Ok(Some(0))),
+            creation_parent: None,
+            creation_policy: CreateOwnerPolicy::ParentSetgid,
+            creator: RawSpinLock::new(None),
         }
     }
 }
@@ -501,6 +535,9 @@ impl NodeOps for ScriptedDirectory {
         1
     }
     fn metadata(&self) -> VfsResult<Metadata> {
+        if let Some(parent) = &self.creation_parent {
+            return Ok(parent.clone());
+        }
         Ok(Metadata {
             inode: 1,
             device: 0,
@@ -584,12 +621,23 @@ impl ScriptedDirectory {
         &self,
         name: &str,
         _: NodeType,
-        _: NodePermission,
-        _: u32,
-        _: u32,
+        mode: NodePermission,
+        uid: u32,
+        gid: u32,
     ) -> NamespaceOutcome<DirEntry> {
+        let creation_parent = self.creation_parent.as_ref().map(|parent| Metadata {
+            mode,
+            uid,
+            gid,
+            ..parent.clone()
+        });
         let entry = DirEntry::new_dir(
-            |_| DirNode::new(Arc::new(Self::default())),
+            |_| {
+                DirNode::new(Arc::new(Self {
+                    creation_parent,
+                    ..Self::default()
+                }))
+            },
             Reference::root(),
         );
         self.entries.lock().insert(name.into(), entry.clone());
@@ -653,7 +701,7 @@ impl LockedAttempt for ScriptedAttempt<'_> {
         };
         Ok(MutationObservation::Create {
             target,
-            owner_policy: CreateOwnerPolicy::ParentSetgid,
+            owner_policy: self.backend.creation_policy,
         })
     }
     fn is_ancestor(&mut self, _: &NamespaceNode, _: u64) -> VfsResult<bool> {
@@ -669,6 +717,7 @@ impl LockedAttempt for ScriptedAttempt<'_> {
         };
         let request = authorized.request();
         let (uid, gid) = authorized.owner();
+        *self.backend.creator.lock() = Some(authorized.creator_owner());
         self.backend
             .create_locked(
                 request.name(),

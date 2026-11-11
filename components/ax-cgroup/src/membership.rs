@@ -565,7 +565,7 @@ mod tests {
     use std::sync::{LazyLock, Mutex, MutexGuard, Once};
 
     use super::*;
-    use crate::TEST_FS_INIT;
+    use crate::{TEST_FS_CREATE, TEST_FS_INIT};
 
     static INIT: Once = Once::new();
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -592,9 +592,10 @@ mod tests {
     fn published_guard_rolls_back_until_scheduler_commit() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
         let target = root
-            .create_child("published-rollback-target", TEST_FS_INIT)
+            .create_child("published-rollback-target", TEST_FS_CREATE)
             .unwrap();
         let pid = process_id(4001);
 
@@ -633,13 +634,16 @@ mod tests {
     fn migration_moves_all_tasks_without_double_charging_common_ancestors() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
-        let parent = root
-            .create_child("owned-migration-parent", TEST_FS_INIT)
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
             .unwrap();
-        parent.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
-        let source = parent.create_child("source", TEST_FS_INIT).unwrap();
-        let target = parent.create_child("target", TEST_FS_INIT).unwrap();
+        let parent = root
+            .create_child("owned-migration-parent", TEST_FS_CREATE)
+            .unwrap();
+        parent
+            .write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let source = parent.create_child("source", TEST_FS_CREATE).unwrap();
+        let target = parent.create_child("target", TEST_FS_CREATE).unwrap();
         let pid = process_id(4010);
         let tid = process_id(4011);
         let mut membership = commit_process(&source, pid);
@@ -653,7 +657,9 @@ mod tests {
         assert_eq!(source.pids_peak_text().unwrap(), "2\n");
         assert_eq!(parent.pids_current_text().unwrap(), "2\n");
         assert_eq!(parent.pids_peak_text().unwrap(), "2\n");
-        let dead = parent.create_child("removed-target", TEST_FS_INIT).unwrap();
+        let dead = parent
+            .create_child("removed-target", TEST_FS_CREATE)
+            .unwrap();
         parent
             .remove_child("removed-target", TEST_FS_INIT.now)
             .unwrap();
@@ -696,12 +702,13 @@ mod tests {
     fn pending_thread_blocks_process_migration_and_releases_its_charge() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
         let source = root
-            .create_child("owned-pending-source", TEST_FS_INIT)
+            .create_child("owned-pending-source", TEST_FS_CREATE)
             .unwrap();
         let target = root
-            .create_child("owned-pending-target", TEST_FS_INIT)
+            .create_child("owned-pending-target", TEST_FS_CREATE)
             .unwrap();
         let pid = process_id(4020);
         let tid = process_id(4021);
@@ -733,9 +740,10 @@ mod tests {
     fn pending_thread_blocks_final_process_exit() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
         let target = root
-            .create_child("owned-pending-exit-target", TEST_FS_INIT)
+            .create_child("owned-pending-exit-target", TEST_FS_CREATE)
             .unwrap();
         let pid = process_id(4025);
         let tid = process_id(4026);
@@ -762,12 +770,13 @@ mod tests {
     fn explicit_process_reservation_charges_only_its_target() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
         let source = root
-            .create_child("owned-explicit-source", TEST_FS_INIT)
+            .create_child("owned-explicit-source", TEST_FS_CREATE)
             .unwrap();
         let target = root
-            .create_child("owned-explicit-target", TEST_FS_INIT)
+            .create_child("owned-explicit-target", TEST_FS_CREATE)
             .unwrap();
         let parent = process_id(4030);
         let child = process_id(4031);
@@ -801,12 +810,13 @@ mod tests {
     fn pids_limit_denies_clone_but_not_organizational_migration() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
         let source = root
-            .create_child("owned-limit-source", TEST_FS_INIT)
+            .create_child("owned-limit-source", TEST_FS_CREATE)
             .unwrap();
         let target = root
-            .create_child("owned-limit-target", TEST_FS_INIT)
+            .create_child("owned-limit-target", TEST_FS_CREATE)
             .unwrap();
         let pid = process_id(4040);
         let tid = process_id(4041);
@@ -831,12 +841,15 @@ mod tests {
         let _guard = setup();
         let root = crate::root();
         let parent = root
-            .create_child("peak-rollback-parent", TEST_FS_INIT)
+            .create_child("peak-rollback-parent", TEST_FS_CREATE)
             .unwrap();
-        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
-        parent.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        parent
+            .write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
         let child = parent
-            .create_child("peak-rollback-child", TEST_FS_INIT)
+            .create_child("peak-rollback-child", TEST_FS_CREATE)
             .unwrap();
         let pid = process_id(1034);
         let tid = process_id(1035);
@@ -867,9 +880,10 @@ mod tests {
     fn de_thread_rename_preserves_the_last_task_charge() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids", TEST_FS_INIT).unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
         let target = root
-            .create_child("owned-rename-target", TEST_FS_INIT)
+            .create_child("owned-rename-target", TEST_FS_CREATE)
             .unwrap();
         let pid = process_id(4050);
         let tid = process_id(4051);

@@ -6,9 +6,9 @@ use ax_cgroup::{
 };
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, Filesystem,
-    FilesystemOps, Location, Metadata, MetadataUpdate, MutationRetire, NamespaceEffect,
-    NamespaceMutation, NamespaceOutcome, NodeIdentity, NodeOps, NodePermission, NodeType,
-    Reference, VfsError, VfsResult, WeakDirEntry,
+    FilesystemOps, Location, Metadata, MetadataRequest, MetadataUpdate, MutationRetire,
+    NamespaceCompletion, NamespaceEffect, NamespaceMutation, NamespaceOutcome, NodeIdentity,
+    NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 
@@ -16,6 +16,7 @@ use self::file::CgroupFile;
 use super::{DirMaker, SimpleFs};
 
 mod file;
+mod metadata;
 mod mutation;
 
 const CGROUP2_SUPER_MAGIC: u32 = 0x6367_7270;
@@ -76,6 +77,10 @@ impl NodeOps for CgroupDir {
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         update_inode_metadata(&self.cgroup, CgroupFsTarget::Directory, update)
+    }
+
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
+        metadata::change_inode_metadata(&self.fs, &self.cgroup, CgroupFsTarget::Directory, request)
     }
 
     fn filesystem(&self) -> &dyn FilesystemOps {
@@ -210,8 +215,8 @@ fn update_inode_metadata(
     if update.rdev.is_some() {
         return Err(VfsError::OperationNotSupported);
     }
-    // The current raw VFS entry supplies these fields. Authorization against
-    // the current inode belongs to the later VFS MetadataChange migration.
+    // Transitional raw consumers still supply these fields. Native requests
+    // use the real-owner attempt and must never fall back to this bridge.
     node.update_fs_attributes(
         target,
         CgroupFsUpdate {

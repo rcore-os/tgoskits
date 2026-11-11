@@ -12,8 +12,8 @@ use core::{
 use ax_sync::RawSpinLockIrqSaveGuard;
 
 use crate::{
-    CgroupError, CgroupFileKind, CgroupFsInit, CgroupFsTarget, CgroupResult, ProcessId,
-    fs::CgroupFsState, pids::PidsState, sync::RawSpinLock,
+    CgroupError, CgroupFileKind, CgroupFsCreate, CgroupFsInit, CgroupFsTarget, CgroupResult,
+    ProcessId, fs::CgroupFsState, pids::PidsState, sync::RawSpinLock,
 };
 
 mod attributes;
@@ -114,7 +114,14 @@ impl CgroupNode {
                 pins: 0,
                 reservations: 0,
             }),
-            fs: RawSpinLock::new(CgroupFsState::new(id, init, false)),
+            fs: RawSpinLock::new(CgroupFsState::new(
+                id,
+                CgroupFsCreate {
+                    directory: init,
+                    creator: (init.uid, init.gid),
+                },
+                false,
+            )),
         }))
     }
 
@@ -208,9 +215,9 @@ impl CgroupNode {
     pub fn create_child(
         self: &Arc<Self>,
         name: &str,
-        init: CgroupFsInit,
+        create: CgroupFsCreate,
     ) -> CgroupResult<Arc<Self>> {
-        self.domain.lock().create_child(self, name, init)
+        self.domain.lock().create_child(self, name, create)
     }
 
     /// Look up a direct child.
@@ -295,7 +302,7 @@ impl CgroupMutationGuard<'_> {
         &self,
         parent: &Arc<CgroupNode>,
         name: &str,
-        init: CgroupFsInit,
+        create: CgroupFsCreate,
     ) -> CgroupResult<Arc<CgroupNode>> {
         self.check_live(parent)?;
         if name.is_empty() || name == "." || name == ".." || name.contains('/') {
@@ -304,7 +311,7 @@ impl CgroupMutationGuard<'_> {
         if CgroupFileKind::from_name(name).is_some() {
             return Err(CgroupError::AlreadyExists);
         }
-        init.validate()?;
+        create.directory.validate()?;
 
         let mut children = parent.children.lock_irqsave();
         let entry = match children.entry(name.to_string()) {
@@ -329,14 +336,17 @@ impl CgroupMutationGuard<'_> {
             }),
             fs: RawSpinLock::new(CgroupFsState::new(
                 id,
-                init,
+                create,
                 parent.pids_enabled_for_children.load(Ordering::Relaxed),
             )),
         });
         // The checked vacant entry cannot retire an old node under the gate.
         entry.insert(Arc::clone(&child));
         drop(children);
-        parent.fs.lock_irqsave().touch_directory(init.now);
+        parent
+            .fs
+            .lock_irqsave()
+            .touch_directory(create.directory.now);
         Ok(child)
     }
 
@@ -504,14 +514,14 @@ impl Drop for CgroupReservation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CgroupFsAttributes, CgroupFsUpdate, TEST_FS_INIT};
+    use crate::{CgroupFsAttributes, CgroupFsUpdate, TEST_FS_CREATE, TEST_FS_INIT};
 
     #[test]
     fn renders_paths_relative_to_namespace_root() {
         let root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
-        let parent = root.create_child("parent", TEST_FS_INIT).unwrap();
-        let child = parent.create_child("child", TEST_FS_INIT).unwrap();
-        let sibling = root.create_child("sibling", TEST_FS_INIT).unwrap();
+        let parent = root.create_child("parent", TEST_FS_CREATE).unwrap();
+        let child = parent.create_child("child", TEST_FS_CREATE).unwrap();
+        let sibling = root.create_child("sibling", TEST_FS_CREATE).unwrap();
 
         assert_eq!(relative_path(&parent, &parent), "/");
         assert_eq!(relative_path(&parent, &child), "/child");
@@ -522,7 +532,7 @@ mod tests {
     #[test]
     fn rejects_removal_while_node_is_pinned() {
         let root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
-        let child = root.create_child("child", TEST_FS_INIT).unwrap();
+        let child = root.create_child("child", TEST_FS_CREATE).unwrap();
         let incidental_reference = child.clone();
         let pin = child.try_pin().unwrap();
         let namespace = crate::CgroupNamespace::new(Arc::clone(&child)).unwrap();
@@ -540,7 +550,7 @@ mod tests {
         assert_eq!(root.remove_child("child", TEST_FS_INIT.now), Ok(()));
         assert_eq!(incidental_reference.name(), "child");
         let late_create = incidental_reference
-            .create_child("late", TEST_FS_INIT)
+            .create_child("late", TEST_FS_CREATE)
             .map(|_| ());
         let still_absent = root.lookup_child("child").map(|_| ());
         assert_eq!(
@@ -559,6 +569,13 @@ mod tests {
         let before = incidental_reference
             .fs_attributes(CgroupFsTarget::Directory)
             .unwrap();
+        {
+            let guard = incidental_reference.mutation_domain().lock();
+            assert_eq!(
+                guard.directory_has_explicit_attrs(&incidental_reference),
+                Ok(false)
+            );
+        }
         incidental_reference
             .update_fs_attributes(
                 CgroupFsTarget::Directory,
@@ -572,22 +589,60 @@ mod tests {
             .fs_attributes(CgroupFsTarget::Directory)
             .unwrap();
         assert_eq!(after, CgroupFsAttributes { uid: 42, ..before });
+        let guard = incidental_reference.mutation_domain().lock();
+        assert_eq!(
+            guard.directory_has_explicit_attrs(&incidental_reference),
+            Ok(true)
+        );
     }
 
     #[test]
     fn exposes_pids_only_after_the_parent_enables_it() {
         let root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
+        let dir = CgroupFsTarget::Directory;
+        let explicit = |node: &CgroupNode| {
+            node.mutation_domain()
+                .lock()
+                .directory_has_explicit_attrs(node)
+                .unwrap()
+        };
         let creator = CgroupFsInit {
             uid: 1001,
             gid: 1002,
             mode: 0o1700,
             now: Duration::from_secs(5),
         };
-        let child = root.create_child("child", creator).unwrap();
+        let create = CgroupFsCreate {
+            directory: CgroupFsInit {
+                gid: 2002,
+                mode: 0o3700,
+                ..creator
+            },
+            creator: (creator.uid, creator.gid),
+        };
+        let child = root.create_child("child", create).unwrap();
+        let plain = root
+            .create_child(
+                "plain",
+                CgroupFsCreate {
+                    directory: CgroupFsInit {
+                        gid: 7002,
+                        mode: 0o700,
+                        ..creator
+                    },
+                    creator: (creator.uid, creator.gid),
+                },
+            )
+            .unwrap();
         let alias = Arc::clone(&root.lookup_child("child").unwrap());
         let directory = child.fs_attributes(CgroupFsTarget::Directory).unwrap();
         let procs_target = CgroupFsTarget::File(CgroupFileKind::Procs);
         let procs = child.fs_attributes(procs_target).unwrap();
+        let plain_procs = plain.fs_attributes(procs_target).unwrap();
+        assert_eq!(
+            (plain_procs.uid, plain_procs.gid, plain_procs.mode),
+            (creator.uid, creator.gid, 0o644)
+        );
         assert_eq!(
             (
                 directory.uid,
@@ -595,17 +650,160 @@ mod tests {
                 directory.mode,
                 directory.ctime
             ),
-            (creator.uid, creator.gid, creator.mode, creator.now)
+            (creator.uid, 2002, 0o3700, creator.now)
         );
         assert_eq!(
             (procs.uid, procs.gid, procs.mode, procs.ctime),
-            (
-                creator.uid,
-                creator.gid,
-                CgroupFileKind::Procs.mode(),
-                creator.now
-            )
+            (creator.uid, 2002, CgroupFileKind::Procs.mode(), creator.now)
         );
+        assert!(explicit(&child));
+
+        // These are final directory attributes, not an imitation of VFS
+        // inheritance. The VFS policy test supplies the creation-side oracle.
+        let zero_create = CgroupFsCreate {
+            directory: CgroupFsInit {
+                mode: 0o2777,
+                now: creator.now,
+                ..TEST_FS_INIT
+            },
+            creator: (0, creator.gid),
+        };
+        let default = root.create_child("default", zero_create).unwrap();
+        let zero_child = default.create_child("zero-child", zero_create).unwrap();
+        let zero_grandchild = zero_child
+            .create_child("zero-grandchild", zero_create)
+            .unwrap();
+        for node in [&default, &zero_child, &zero_grandchild] {
+            let attributes = node.fs_attributes(dir).unwrap();
+            let file = node.fs_attributes(procs_target).unwrap();
+            assert_eq!(
+                (attributes.uid, attributes.gid, attributes.mode),
+                (0, 0, 0o2777)
+            );
+            assert_eq!((file.uid, file.gid, file.mode), (0, 1002, 0o644));
+            assert!(!explicit(node)); // Reads and child insertion did not mark it.
+        }
+        let before = default.fs_attributes(dir).unwrap();
+        default
+            .update_fs_attributes(dir, CgroupFsUpdate::default())
+            .unwrap();
+        assert_eq!(
+            default.update_fs_attributes(
+                dir,
+                CgroupFsUpdate {
+                    uid: Some(99),
+                    mode: Some(0o10000),
+                    ..Default::default()
+                },
+            ),
+            Err(CgroupError::InvalidInput)
+        );
+        assert_eq!(default.fs_attributes(dir).unwrap(), before);
+        assert_eq!(
+            default.update_fs_attributes(
+                CgroupFsTarget::File(CgroupFileKind::PidsMax),
+                CgroupFsUpdate {
+                    uid: Some(99),
+                    ..Default::default()
+                },
+            ),
+            Err(CgroupError::NotFound)
+        );
+        default
+            .update_fs_attributes(
+                procs_target,
+                CgroupFsUpdate {
+                    gid: Some(3002),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(!explicit(&default)); // Empty, failed and file updates do not mark it.
+
+        let same_value = root.create_child("same-value", zero_create).unwrap();
+        same_value
+            .update_fs_attributes(
+                dir,
+                CgroupFsUpdate {
+                    mode: Some(0o2777),
+                    uid: Some(0),
+                    gid: Some(0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(explicit(&same_value));
+        let ctime_only = root.create_child("ctime-only", zero_create).unwrap();
+        ctime_only
+            .update_fs_attributes(
+                dir,
+                CgroupFsUpdate {
+                    ctime: Some(creator.now),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(explicit(&ctime_only)); // Same-value ctime still participates.
+        let sgid = root
+            .create_child(
+                "sgid",
+                CgroupFsCreate {
+                    directory: CgroupFsInit {
+                        gid: 6002,
+                        ..zero_create.directory
+                    },
+                    creator: (0, creator.gid),
+                },
+            )
+            .unwrap();
+        sgid.update_fs_attributes(
+            dir,
+            CgroupFsUpdate {
+                uid: Some(0),
+                gid: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(explicit(&sgid)); // Returning to 0:0 never clears the source.
+        sgid.update_fs_attributes(
+            dir,
+            CgroupFsUpdate {
+                gid: Some(6002),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The write parent deliberately has a different SGID group.
+        root.update_fs_attributes(
+            dir,
+            CgroupFsUpdate {
+                gid: Some(9002),
+                mode: Some(0o2777),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let foreign = CgroupNode::new_root(TEST_FS_INIT).unwrap();
+        {
+            let guard = root.mutation_domain().lock();
+            assert_eq!(
+                guard.directory_has_explicit_attrs(&foreign),
+                Err(CgroupError::InvalidInput)
+            );
+            assert_eq!(
+                guard.update_fs_attributes(
+                    &foreign,
+                    dir,
+                    CgroupFsUpdate {
+                        uid: Some(99),
+                        ..Default::default()
+                    }
+                ),
+                Err(CgroupError::InvalidInput)
+            );
+        }
+        assert!(!explicit(&foreign));
         alias
             .update_fs_attributes(
                 CgroupFsTarget::Directory,
@@ -673,7 +871,53 @@ mod tests {
             now: Duration::from_secs(11),
             ..TEST_FS_INIT
         };
-        root.write_subtree_control("+pids", enabler).unwrap();
+        root.write_subtree_control("+pids", (enabler.uid, enabler.gid), enabler.now)
+            .unwrap();
+        let installed_directory = child.fs_attributes(dir).unwrap();
+        assert_eq!(
+            installed_directory,
+            CgroupFsAttributes {
+                mtime: enabler.now,
+                ctime: enabler.now,
+                ..changed
+            }
+        );
+        // Each file's group comes from its own target directory, never root.
+        for (node, gid) in [
+            (&default, 4002),
+            (&same_value, 0),
+            (&ctime_only, 0),
+            (&sgid, 6002),
+            (&plain, 4002),
+        ] {
+            let attributes = node
+                .fs_attributes(CgroupFsTarget::File(CgroupFileKind::PidsMax))
+                .unwrap();
+            assert_eq!(
+                (
+                    attributes.uid,
+                    attributes.gid,
+                    attributes.mode,
+                    attributes.atime
+                ),
+                (enabler.uid, gid, 0o644, enabler.now)
+            );
+        }
+        let default_after_install = default.fs_attributes(dir).unwrap();
+        assert_eq!(
+            (default_after_install.mtime, default_after_install.ctime),
+            (enabler.now, enabler.now)
+        );
+        assert!(!explicit(&default)); // Installation touch is not an explicit update.
+        assert_eq!(default.fs_attributes(procs_target).unwrap().gid, 3002);
+        assert_eq!(
+            child.fs_attributes(procs_target).unwrap(),
+            CgroupFsAttributes {
+                uid: 3001,
+                atime: Duration::from_secs(9),
+                ..procs
+            }
+        );
 
         assert!(child.has_pids_interface());
         assert_eq!(child.pids_max_text(), Ok(String::from("max\n")));
@@ -700,7 +944,8 @@ mod tests {
                     },
                 )
                 .unwrap();
-            root.write_subtree_control("+pids", creator).unwrap();
+            root.write_subtree_control("+pids", (creator.uid, creator.gid), creator.now)
+                .unwrap();
             assert_eq!(
                 child.fs_attributes(target).unwrap(),
                 CgroupFsAttributes {
@@ -709,7 +954,10 @@ mod tests {
                 }
             );
         }
-        let late = root.create_child("late", creator).unwrap();
+        assert_eq!(child.fs_attributes(dir).unwrap(), installed_directory);
+        assert_eq!(default.fs_attributes(dir).unwrap(), default_after_install);
+        assert!(!explicit(&default));
+        let late = root.create_child("late", create).unwrap();
         let late_pids = late
             .fs_attributes(CgroupFsTarget::File(CgroupFileKind::PidsMax))
             .unwrap();
@@ -722,7 +970,7 @@ mod tests {
             ),
             (
                 creator.uid,
-                creator.gid,
+                2002,
                 CgroupFileKind::PidsMax.mode(),
                 creator.now
             )
@@ -732,14 +980,37 @@ mod tests {
     #[test]
     fn removes_empty_child_from_dynamic_parent() {
         let root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
-        let parent = root.create_child("parent", TEST_FS_INIT).unwrap();
+        let parent = root.create_child("parent", TEST_FS_CREATE).unwrap();
         let created = Duration::from_secs(13);
+        let before = parent.fs_attributes(CgroupFsTarget::Directory).unwrap();
+        assert_eq!(
+            parent
+                .create_child(
+                    "invalid",
+                    CgroupFsCreate {
+                        directory: CgroupFsInit {
+                            mode: 0o4000,
+                            ..TEST_FS_INIT
+                        },
+                        creator: (0, 0),
+                    }
+                )
+                .map(|_| ()),
+            Err(CgroupError::InvalidInput)
+        );
+        assert_eq!(
+            parent.fs_attributes(CgroupFsTarget::Directory).unwrap(),
+            before
+        );
         let child = parent
             .create_child(
                 "child",
-                CgroupFsInit {
-                    now: created,
-                    ..TEST_FS_INIT
+                CgroupFsCreate {
+                    directory: CgroupFsInit {
+                        now: created,
+                        ..TEST_FS_INIT
+                    },
+                    creator: (0, 0),
                 },
             )
             .unwrap();
@@ -759,5 +1030,7 @@ mod tests {
                 ..after_create
             }
         );
+        let guard = parent.mutation_domain().lock();
+        assert_eq!(guard.directory_has_explicit_attrs(&parent), Ok(false));
     }
 }

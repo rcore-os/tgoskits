@@ -2,8 +2,9 @@ use core::time::Duration;
 
 use crate::{CgroupError, CgroupResult};
 
-/// Initialization data for a new directory and its initial interfaces.
-/// The IDs are inode owners, not authorization credentials.
+/// Final directory attributes, after the caller's creation policy.
+/// The IDs are inode owners, not authorization credentials. Creation permits
+/// inherited SGID but not SUID; user input must be masked before authorization.
 #[derive(Clone, Copy, Debug)]
 pub struct CgroupFsInit {
     pub uid: u32,
@@ -14,11 +15,19 @@ pub struct CgroupFsInit {
 
 impl CgroupFsInit {
     pub(crate) fn validate(self) -> CgroupResult<()> {
-        if self.mode & !0o1777 != 0 {
+        if self.mode & !0o3777 != 0 {
             return Err(CgroupError::InvalidInput);
         }
         Ok(())
     }
+}
+
+/// A runtime creation's final directory and original control-file actor.
+/// Directory inheritance must not replace the original actor's UID/GID.
+#[derive(Clone, Copy, Debug)]
+pub struct CgroupFsCreate {
+    pub directory: CgroupFsInit,
+    pub creator: (u32, u32),
 }
 
 /// A snapshot of one directory or control-file inode's attributes.
@@ -44,16 +53,27 @@ pub struct CgroupFsUpdate {
     pub ctime: Option<Duration>,
 }
 
+impl CgroupFsUpdate {
+    fn is_empty(self) -> bool {
+        self.uid.is_none()
+            && self.gid.is_none()
+            && self.mode.is_none()
+            && self.atime.is_none()
+            && self.mtime.is_none()
+            && self.ctime.is_none()
+    }
+}
+
 impl CgroupFsAttributes {
-    fn new(inode: u64, init: CgroupFsInit, mode: u16) -> Self {
+    fn new(inode: u64, owner: (u32, u32), mode: u16, now: Duration) -> Self {
         Self {
             inode,
-            uid: init.uid,
-            gid: init.gid,
+            uid: owner.0,
+            gid: owner.1,
             mode,
-            atime: init.now,
-            mtime: init.now,
-            ctime: init.now,
+            atime: now,
+            mtime: now,
+            ctime: now,
         }
     }
 
@@ -172,38 +192,78 @@ impl CgroupFsTarget {
 
 pub(crate) struct CgroupFsState {
     directory: CgroupFsAttributes,
+    directory_has_explicit_attrs: bool,
     files: [Option<CgroupFsAttributes>; CgroupFileKind::ALL.len()],
 }
 
 impl CgroupFsState {
-    pub(crate) fn new(node_id: u64, init: CgroupFsInit, pids: bool) -> Self {
-        Self {
+    pub(crate) fn new(node_id: u64, create: CgroupFsCreate, pids: bool) -> Self {
+        let init = create.directory;
+        let mut state = Self {
             directory: CgroupFsAttributes::new(
                 CgroupFsTarget::Directory.inode(node_id),
-                init,
+                (init.uid, init.gid),
                 init.mode,
+                init.now,
             ),
-            files: CgroupFileKind::ALL.map(|kind| {
-                (!kind.requires_pids() || pids).then(|| Self::file_attributes(node_id, kind, init))
-            }),
+            directory_has_explicit_attrs: (init.uid, init.gid) != (0, 0),
+            files: [None; CgroupFileKind::ALL.len()],
+        };
+        let file_owner = state.file_owner(create.creator);
+        for kind in CgroupFileKind::ALL {
+            if !kind.requires_pids() || pids {
+                state.files[kind as usize] =
+                    Some(Self::file_attributes(node_id, kind, file_owner, init.now));
+            }
         }
+        state
     }
 
-    pub(crate) fn install_pids(&mut self, node_id: u64, init: CgroupFsInit) {
+    pub(crate) fn directory_has_explicit_attrs(&self) -> bool {
+        self.directory_has_explicit_attrs
+    }
+
+    fn file_owner(&self, creator: (u32, u32)) -> (u32, u32) {
+        (
+            creator.0,
+            if self.directory.mode & 0o2000 != 0 && self.directory_has_explicit_attrs {
+                self.directory.gid
+            } else {
+                creator.1
+            },
+        )
+    }
+
+    pub(crate) fn install_pids(&mut self, node_id: u64, creator: (u32, u32), now: Duration) {
+        let file_owner = self.file_owner(creator);
+        let mut installed = false;
         for kind in CgroupFileKind::ALL
             .into_iter()
             .filter(|kind| kind.requires_pids())
         {
-            self.files[kind as usize] = Some(Self::file_attributes(node_id, kind, init));
+            let slot = &mut self.files[kind as usize];
+            if slot.is_none() {
+                *slot = Some(Self::file_attributes(node_id, kind, file_owner, now));
+                installed = true;
+            }
+        }
+        if installed {
+            self.touch_directory(now);
         }
     }
 
     fn file_attributes(
         node_id: u64,
         kind: CgroupFileKind,
-        init: CgroupFsInit,
+        owner: (u32, u32),
+        now: Duration,
     ) -> CgroupFsAttributes {
-        CgroupFsAttributes::new(CgroupFsTarget::File(kind).inode(node_id), init, kind.mode())
+        CgroupFsAttributes::new(
+            CgroupFsTarget::File(kind).inode(node_id),
+            owner,
+            kind.mode(),
+            now,
+        )
     }
 
     pub(crate) fn attributes(&self, target: CgroupFsTarget) -> CgroupResult<CgroupFsAttributes> {
@@ -224,7 +284,12 @@ impl CgroupFsState {
                 .as_mut()
                 .ok_or(CgroupError::NotFound)?,
         };
-        attributes.update(update)
+        // The target and the entire patch are validated before the marker moves.
+        attributes.update(update)?;
+        if target == CgroupFsTarget::Directory && !update.is_empty() {
+            self.directory_has_explicit_attrs = true;
+        }
+        Ok(())
     }
 
     pub(crate) fn touch_directory(&mut self, now: Duration) {

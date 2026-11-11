@@ -17,7 +17,10 @@ use alloc::sync::Arc;
 use core::{fmt, num::NonZeroU64};
 
 use ax_lazyinit::LazyInit;
-pub use fs::{CgroupFileKind, CgroupFsAttributes, CgroupFsInit, CgroupFsTarget, CgroupFsUpdate};
+pub use fs::{
+    CgroupFileKind, CgroupFsAttributes, CgroupFsCreate, CgroupFsInit, CgroupFsTarget,
+    CgroupFsUpdate,
+};
 pub use membership::{CgroupChildKind, CgroupForkGuard, CgroupTaskExit, ProcessMembership};
 pub use namespace::CgroupNamespace;
 pub use node::{CgroupMutationDomain, CgroupMutationGuard, CgroupNode, CgroupPin};
@@ -101,6 +104,12 @@ const TEST_FS_INIT: CgroupFsInit = CgroupFsInit {
     gid: 0,
     mode: 0o755,
     now: core::time::Duration::ZERO,
+};
+
+#[cfg(test)]
+const TEST_FS_CREATE: CgroupFsCreate = CgroupFsCreate {
+    directory: TEST_FS_INIT,
+    creator: (0, 0),
 };
 
 /// Return a strong handle to the global cgroup root.

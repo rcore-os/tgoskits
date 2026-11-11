@@ -132,16 +132,8 @@ pub(crate) fn write_subtree_control(
 ) -> Result<(), StarryError> {
     let data = core::str::from_utf8(data).map_err(|_| StarryError::InvalidInput)?;
     let credentials = caller.credentials();
-    node.write_subtree_control(
-        data,
-        CgroupFsInit {
-            uid: credentials.fsuid,
-            gid: credentials.fsgid,
-            mode: 0, // Each installed control file supplies its own mode.
-            now: wall_time(),
-        },
-    )
-    .map_err(StarryError::from)
+    node.write_subtree_control(data, (credentials.fsuid, credentials.fsgid), wall_time())
+        .map_err(StarryError::from)
 }
 
 pub fn pids_max_text(node: &CgroupNode) -> Result<String, StarryError> {
