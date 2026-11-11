@@ -29,8 +29,8 @@ impl MemoryNode {
             // entries while holding metadata: that would close a three-way cycle.
             // The gate keeps this attempt-local directory size stable through
             // observation and commit; no owner fields are sampled outside metadata.
-            let directory_size = self.directory_size();
             let mut metadata = self.inode.metadata.lock_irqsave();
+            let directory_size = self.directory_size();
             let mut attempt = MemoryMetadataAttempt {
                 node: self,
                 metadata: &mut metadata,
