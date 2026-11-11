@@ -31,10 +31,11 @@ use linux_raw_sys::{
     net::{AF_INET, ifreq},
 };
 
-use super::{FileLike, Kstat};
+use super::{AnonInodeMeta, FileLike, Kstat};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
+    sync::Mutex,
     mm::{VmMutPtr, vm_read_slice, vm_write_slice},
     task::{
         UserTaskRef, current_pid_view, current_user_task,
@@ -78,15 +79,23 @@ pub struct Socket {
     ip_domain: u32,
     async_mode: AtomicBool,
     owner: AtomicI32,
+    /// Socket inode metadata (`Socket::stat`), committed by
+    /// `fchmod`/`fchown` under one lock like Linux's `sockfs` inode under
+    /// the inode lock.
+    inode_meta: Mutex<AnonInodeMeta>,
 }
 
 impl Socket {
-    pub fn new(inner: SocketInner, ip_domain: u32) -> Self {
+    /// Creates a socket file-like. `uid`/`gid` are the creating task's
+    /// fsuid/fsgid, mirroring how Linux `sock_alloc` initializes the sockfs
+    /// inode owner.
+    pub fn new(inner: SocketInner, ip_domain: u32, uid: u32, gid: u32) -> Self {
         Self {
             inner,
             ip_domain,
             async_mode: AtomicBool::new(false),
             owner: AtomicI32::new(0),
+            inode_meta: Mutex::new(AnonInodeMeta::new(S_IFSOCK | 0o777, uid, gid)),
         }
     }
 
@@ -272,7 +281,12 @@ fn allocate_socket_staging(len: usize) -> StarryResult<Vec<u8>> {
 pub(super) fn in_root_net_ns() -> bool {
     let current = current_user_task();
     let namespace = current.as_thread().proc_data.namespace_snapshot();
-    namespace.net_ns.lock_irqsave().ns_id == 0
+    // Identity by Arc pointer, mirroring Linux net_eq(): lock-free, and
+    // immune to the numeric ns id assignment order (this kernel starts ns
+    // ids at 1 so NsFd st_ino identities stay nonzero). A stale literal here
+    // would make every AF_PACKET socket creation fail with EACCES for
+    // processes in the root namespace.
+    Arc::ptr_eq(&namespace.net_ns, &*crate::namespace::ROOT_NET_NS)
 }
 
 pub(super) fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
@@ -818,11 +832,29 @@ impl FileLike for Socket {
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
+        let meta = self.inode_meta.lock();
         Ok(Kstat {
-            mode: S_IFSOCK | 0o777u32,
+            mode: meta.mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
             blksize: 4096,
             ..Default::default()
         })
+    }
+
+    fn update_inode_metadata(
+        &self,
+        mode: Option<u32>,
+        owner: Option<(Option<u32>, Option<u32>)>,
+        authorize: &dyn Fn(u32, u32, u32) -> StarryResult<()>,
+    ) -> StarryResult<()> {
+        // One lock spans authorization and the whole request: the permission
+        // decision is taken against the metadata this commit replaces, so a
+        // concurrent owner change through another shared fd cannot authorize a
+        // stale request, and a concurrent `fchmod` cannot be lost between the
+        // mode update and the owner commit.
+        let mut meta = self.inode_meta.lock();
+        meta.update_authorized(authorize, S_IFSOCK, mode, owner)
     }
 
     fn nonblocking(&self) -> bool {

@@ -24,7 +24,7 @@ use ringbuf::{
 };
 use starry_signal::{SignalInfo, Signo};
 
-use super::{FileLike, InodeKey, Kstat};
+use super::{AnonInodeMeta, FileLike, InodeKey, Kstat};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
@@ -545,6 +545,10 @@ struct Shared {
     wait_tx: PipeWaitSet,
     poll_usage: AtomicBool,
     open_wait: WaitQueue,
+    /// Anonymous-pipe inode metadata (`Pipe::stat`). Both ends share it and
+    /// `fchmod`/`fchown` commit it under one lock, like Linux's pipe inode
+    /// under the inode lock.
+    inode_meta: Mutex<AnonInodeMeta>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -613,6 +617,7 @@ impl Shared {
             wait_tx: PipeWaitSet::new(),
             poll_usage: AtomicBool::new(false),
             open_wait: WaitQueue::new(),
+            inode_meta: Mutex::new(AnonInodeMeta::new(S_IFIFO | 0o600, 0, 0)),
         }
     }
 
@@ -854,6 +859,13 @@ impl Drop for Pipe {
 }
 
 impl Pipe {
+    /// Sets the anonymous pipe inode's owner. Linux `get_pipe_inode` assigns
+    /// the creating task's fsuid/fsgid; both ends share one `Shared`, so this
+    /// identity is visible through `fstat` on either end.
+    pub(crate) fn set_inode_owner(&self, uid: u32, gid: u32) {
+        self.shared.inode_meta.lock().set_owner(uid, gid);
+    }
+
     pub fn new() -> (Pipe, Pipe) {
         let mut state = PipeState::empty();
         state.add_endpoint(PipeAccess::ReadWrite);
@@ -1366,10 +1378,33 @@ impl FileLike for Pipe {
         if let Some(file) = self.named_file() {
             return file.stat();
         }
+        let meta = self.shared.inode_meta.lock();
         Ok(Kstat {
-            mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
+            mode: meta.mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
             ..Default::default()
         })
+    }
+
+    fn update_inode_metadata(
+        &self,
+        mode: Option<u32>,
+        owner: Option<(Option<u32>, Option<u32>)>,
+        authorize: &dyn Fn(u32, u32, u32) -> StarryResult<()>,
+    ) -> StarryResult<()> {
+        // Named FIFOs persist on their filesystem inode through the regular
+        // location path; only anonymous pipes use the shared inode state.
+        if self.named.is_some() {
+            return Err(StarryError::OperationNotSupported);
+        }
+        // One lock spans authorization and the whole request: the permission
+        // decision is taken against the metadata this commit replaces, so a
+        // concurrent `fchown` through another shared fd cannot authorize a
+        // request against an owner it has already changed, and a concurrent
+        // `fchmod` cannot be lost between the mode update and the owner commit.
+        let mut meta = self.shared.inode_meta.lock();
+        meta.update_authorized(authorize, S_IFIFO, mode, owner)
     }
 
     fn inode_key(&self) -> Option<InodeKey> {

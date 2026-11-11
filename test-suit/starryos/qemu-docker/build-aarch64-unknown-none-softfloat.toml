@@ -1,0 +1,20 @@
+# Build config for the Debian container-host QEMU cases. The image carries its
+# own BusyBox `/sbin/init` + `/etc/inittab` instead of Starry's OpenRC assets,
+# so the unified init chain boots it through `DEFAULT_INITS`: BusyBox init runs
+# `rcS` and respawns a console login shell. The per-case overlay installs
+# `/etc/profile.d/starry-prompt.sh` so that shell shows the conventional
+# `root@starry:` prompt the cases wait for.
+features = [
+  "ax-runtime/display",
+  "ax-runtime/rtc",
+  "ax-driver/serial",
+  "ax-driver/nvme",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "ax-driver/xhci-pci",
+]
+max_cpu_num = 4
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"
