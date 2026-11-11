@@ -2,8 +2,8 @@ use alloc::{sync::Arc, vec};
 use core::any::Any;
 
 use axfs_ng_vfs::{
-    FileNode, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeIdentity,
-    NodeOps, NodeType, VfsError, VfsResult,
+    FileNode, FileNodeOps, FilesystemOps, Metadata, MetadataRequest, MetadataUpdate,
+    NamespaceCompletion, NodeFlags, NodeIdentity, NodeOps, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use fatfs::{Read, Seek, SeekFrom, Write};
@@ -12,7 +12,7 @@ use super::{
     ff,
     fs::FatFilesystemGuard,
     state::{FatHandle, FatInode},
-    util::{file_metadata, into_vfs_err, update_file_metadata},
+    util::{into_vfs_err, update_file_times},
 };
 
 pub struct FatFileNode {
@@ -59,19 +59,16 @@ impl NodeOps for FatFileNode {
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
-        let guard = self.state.fs.lock();
-        let file = match self.state.handle.borrow(&guard).as_ref() {
-            Some(FatHandle::File(file)) => file,
-            _ => return Err(VfsError::BadState),
-        };
-        let mut metadata = file_metadata(&guard, file, NodeType::RegularFile);
-        metadata.inode = self.inode();
-        Ok(metadata)
+        self.state.metadata(&self.state.fs.lock())
+    }
+
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
+        self.state.change_metadata(request)
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         let mut guard = self.state.fs.lock();
-        update_file_metadata(self.file(&mut guard)?, update);
+        update_file_times(self.file(&mut guard)?, update.atime, update.mtime);
         Ok(())
     }
 

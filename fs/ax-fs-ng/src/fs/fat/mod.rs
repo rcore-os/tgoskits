@@ -3,6 +3,7 @@ mod disk;
 mod ff;
 mod file;
 mod fs;
+mod metadata;
 mod state;
 mod util;
 

@@ -3,8 +3,8 @@ use core::any::Any;
 
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps, Metadata,
-    MetadataUpdate, NamespaceOutcome, NodeFlags, NodeIdentity, NodeOps, NodeType, Reference,
-    RenameEffect, VfsError, VfsResult, WeakDirEntry,
+    MetadataRequest, MetadataUpdate, NamespaceCompletion, NamespaceOutcome, NodeFlags,
+    NodeIdentity, NodeOps, NodeType, Reference, RenameEffect, VfsError, VfsResult, WeakDirEntry,
 };
 
 use super::{ff, file::FatFileNode, fs::FatFilesystemGuard, state::FatInode, util::into_vfs_err};
@@ -89,6 +89,9 @@ impl NodeOps for FatDirNode {
     }
     fn metadata(&self) -> VfsResult<Metadata> {
         self.state.metadata(&self.state.fs.lock())
+    }
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
+        self.state.change_metadata(request)
     }
     fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
         Ok(())

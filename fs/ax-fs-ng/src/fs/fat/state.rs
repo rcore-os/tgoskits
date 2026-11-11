@@ -49,8 +49,15 @@ impl FatInode {
             metadata.inode = self.inode;
             return Ok(metadata);
         }
-        let dir = self.directory(guard)?;
-        if let Some(file) = dir.as_file() {
+        let handle = self.handle.borrow(guard);
+        let dir = match handle.as_ref() {
+            Some(FatHandle::Dir(dir)) => dir,
+            _ => return Err(VfsError::BadState),
+        };
+        // Borrow the canonical Dir: cloning it would flush its File on Drop.
+        // Even FAT32's root File has no persistent directory-entry editor.
+        if self.inode != self.fs.root_inode {
+            let file = dir.as_file().ok_or(VfsError::BadState)?;
             let mut result = super::util::file_metadata(guard, file, NodeType::Directory);
             result.inode = self.inode;
             return Ok(result);
