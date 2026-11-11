@@ -302,5 +302,16 @@ impl Starry {
         )
         .await
     }
+}
 
+fn format_app_run_progress(
+    index: usize,
+    total: usize,
+    app_name: &str,
+    arch: Option<&str>,
+) -> String {
+    match arch {
+        Some(arch) => format!("RUN\t{index}/{total}\t{app_name}\tarch={arch}"),
+        None => format!("RUN\t{index}/{total}\t{app_name}"),
+    }
 }

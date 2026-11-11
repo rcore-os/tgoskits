@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
     arceos::{ArceOS, build, cbuild, rootfs},
-    context::SnapshotPersistence,
+    context::{BuildCliArgs, SnapshotPersistence},
     execution::{host_http::HostHttpServerGuard, qemu as qemu_test},
 };
 
@@ -47,12 +47,17 @@ pub(crate) fn arceos_c_test_suit_qemu_config_path(
 ) -> anyhow::Result<PathBuf> {
     qemu_config_path(root, arch, "ArceOS C test suite")
 }
-fn load_c_test_build_config(path: &Path) -> anyhow::Result<build::ArceosBuildConfig> {
-    let config = build::load_arceos_build_config(path)?;
+fn load_c_test_build_config(path: &Path) -> anyhow::Result<build::ArceosConfig> {
+    let config = crate::build::load_config_input::<crate::arceos::config::ArceosConfig>(
+        &crate::context::workspace_root_path()?,
+        Some(path),
+        None,
+    )?
+    .config;
     if config.app_c.is_none() {
         bail!("ArceOS C build config must set app-c source directory");
     }
-    Ok(())
+    Ok(config)
 }
 fn load_c_test_qemu_config(path: &Path) -> anyhow::Result<QemuConfig> {
     toml::from_str(&fs::read_to_string(path)?).context("parse C QEMU configuration")
@@ -128,12 +133,12 @@ async fn build_and_run(
     let qemu_path = arceos_c_test_suit_qemu_config_path(root, arch)?;
     let config = load_c_test_build_config(&build_path)?;
     let mut qemu = load_c_test_qemu_config(&qemu_path)?;
-    let build::ArceosBuildMode::AppC { app_dir, .. } = build::arceos_build_mode(&config)?
-    else {
+    let build::ArceosBuildMode::AppC { app_dir, .. } = build::arceos_build_mode(&config)? else {
         bail!("C suite requires app-c");
     };
     let request = arceos.prepare_request(
         BuildCliArgs {
+            preset: None,
             config: Some(build_path.clone()),
             package: Some("ax-libc".into()),
             arch: None,

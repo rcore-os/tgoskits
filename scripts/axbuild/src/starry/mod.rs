@@ -5,17 +5,14 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::{
-    context::{
-        AppContext, RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
-        board_run_request,
-    },
+use crate::context::{
+    AppContext, RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
+    board_run_request,
 };
 
 pub(crate) mod apk;
 pub use crate::app::starry as app;
 mod args;
-pub mod board;
 pub(crate) mod boot_entropy;
 pub mod build;
 pub mod config;

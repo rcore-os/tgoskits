@@ -1,11 +1,17 @@
 mod build_config;
-mod qemu; use qemu::*;
-mod board; use board::*;
-mod discovery; use discovery::*;
-mod cargo; use cargo::*;
-mod coverage; use coverage::*;
-mod contract; use contract::*;
-mod runtime; use runtime::*;
+mod qemu;
+use qemu::*;
+mod board;
+use board::*;
+mod discovery;
+use discovery::*;
+mod cargo;
+use cargo::*;
+mod coverage;
+use coverage::*;
+mod contract;
+use contract::*;
+mod runtime;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
@@ -24,6 +30,7 @@ use ostool::{
     ovmf::Arch,
     run::{ShellCheckStep, qemu::QemuConfig},
 };
+use runtime::*;
 use serde::Deserialize;
 
 use self::plan::{
@@ -222,7 +229,6 @@ pub(crate) enum KtestTargetKind {
     Other,
 }
 
-
 #[derive(Debug, Clone, Copy)]
 struct KtestBuildContext<'a> {
     runtime: KtestRuntime,
@@ -232,7 +238,6 @@ struct KtestBuildContext<'a> {
     target: &'a str,
     config: &'a KtestBuildConfig,
 }
-
 
 /// The build and run configuration owned by one axtest execution unit.
 #[derive(Debug, Clone, Copy)]
@@ -244,7 +249,6 @@ struct KtestUnitConfig<'a> {
     config: &'a KtestBuildConfig,
 }
 
-
 pub(crate) async fn run(args: ArgsKtest) -> anyhow::Result<()> {
     match args.command {
         Command::Qemu(args) => run_qemu(args).await,
@@ -252,3 +256,15 @@ pub(crate) async fn run(args: ArgsKtest) -> anyhow::Result<()> {
     }
 }
 
+impl ArgsKtestQemu {
+    fn qemu_selector(&self) -> QemuPlanSelector {
+        QemuPlanSelector {
+            workspace: self.workspace,
+            packages: self.packages.clone(),
+            excludes: self.excludes.clone(),
+            tests: self.tests.clone(),
+            arch: self.arch.clone(),
+            target: self.target.clone(),
+        }
+    }
+}

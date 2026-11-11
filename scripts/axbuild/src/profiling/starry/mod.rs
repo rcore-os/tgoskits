@@ -13,9 +13,11 @@ mod toolchain;
 
 use anyhow::bail;
 
-use crate::starry::{ArgsBuild, ArgsPerf, PerfFlamegraphKind, PerfFormat, Starry, build, rootfs};
-use crate::context::{
-    RequestEnvironment, SnapshotPersistence, StarryCliArgs, starry_target_for_arch_checked,
+use crate::{
+    context::{
+        RequestEnvironment, SnapshotPersistence, StarryCliArgs, starry_target_for_arch_checked,
+    },
+    starry::{ArgsBuild, ArgsPerf, PerfFlamegraphKind, PerfFormat, Starry, build, rootfs},
 };
 
 pub(crate) async fn run(starry: &mut Starry, args: ArgsPerf) -> anyhow::Result<()> {

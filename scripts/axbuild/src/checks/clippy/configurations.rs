@@ -64,14 +64,18 @@ fn board_suite_configurations(
         if batch.package != package.name.as_str() {
             continue;
         }
-        let build: crate::arceos::build::ArceosBuildFile =
-            crate::arceos::board::load_build_file(&root.join(&batch.build_config))?;
+        let build = crate::build::load_config_input::<crate::arceos::config::ArceosConfig>(
+            &crate::context::workspace_root_path()?,
+            Some(&root.join(&batch.build_config)),
+            None,
+        )?
+        .config;
         ensure!(
-            build.config.freestanding == (batch.image == Image::Freestanding),
+            build.freestanding == (batch.image == Image::Freestanding),
             "board Clippy runtime mismatch"
         );
         let target = if batch.image == Image::Freestanding {
-            build.target.context("board target")?
+            build.common.target.context("board target")?
         } else {
             match batch.arch.as_str() {
                 "aarch64" => "aarch64-unknown-linux-musl",
@@ -83,11 +87,7 @@ fn board_suite_configurations(
             .to_owned()
         };
         let mut env = catalog::build_env(&path, id, "all");
-        let cpus = build
-            .config
-            .build_info
-            .max_cpu_num
-            .context("board CPU count")?;
+        let cpus = build.common.max_cpu_num.context("board CPU count")?;
         env.insert("SMP".into(), cpus.to_string());
         configurations.push(PackageClippyConfiguration {
             name: format!("board-{}-{id}", catalog.board),

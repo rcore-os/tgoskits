@@ -49,7 +49,6 @@ pub(super) async fn run_qemu(args: ArgsKtestQemu) -> anyhow::Result<()> {
     finish_qemu_plan(failures)
 }
 
-
 pub(super) async fn run_qemu_unit(
     app: &mut AppContext,
     args: &ArgsKtestQemu,
@@ -109,7 +108,7 @@ pub(super) async fn run_qemu_unit(
     // Opt-in resource sidecars next to the run configuration prepare guest
     // sources and shared resources; their outputs must be complete before the
     // kernel build and before anything reads the packed payload.
-    crate::axvisor::test::prepare_guest_builds(app, &qemu_config).await?;
+    crate::axvisor::guest_build::prepare(app, &qemu_config).await?;
 
     let report_session =
         maybe_start_starry_future_incompat_report(unit.runtime, app.target_dir(), &unit.arch)?;
@@ -187,7 +186,6 @@ pub(super) async fn run_qemu_unit(
     Ok(())
 }
 
-
 pub(super) fn validate_unique_config_overrides(
     args: &ArgsKtestQemu,
     plan: &[KtestExecutionUnit],
@@ -197,7 +195,6 @@ pub(super) fn validate_unique_config_overrides(
     }
     Ok(())
 }
-
 
 pub(super) fn finish_qemu_plan(failures: Vec<PlanFailure>) -> anyhow::Result<()> {
     if failures.is_empty() {
@@ -213,7 +210,6 @@ pub(super) fn finish_qemu_plan(failures: Vec<PlanFailure>) -> anyhow::Result<()>
     }
     bail!("{} axtest QEMU execution unit(s) failed", failures.len())
 }
-
 
 pub(super) async fn patch_x86_64_uefi_kernel_loader(
     qemu: &mut QemuConfig,
@@ -237,7 +233,6 @@ pub(super) async fn patch_x86_64_uefi_kernel_loader(
     Ok(())
 }
 
-
 pub(super) fn apply_x86_64_uefi_kernel_loader(qemu: &mut QemuConfig, code: &Path, vars: &Path) {
     // Keep ostool's BIN conversion and QEMU kernel loader while supplying
     // the shared OVMF cache as explicit pflash drives.
@@ -254,7 +249,6 @@ pub(super) fn apply_x86_64_uefi_kernel_loader(qemu: &mut QemuConfig, code: &Path
     ]);
 }
 
-
 pub(super) async fn prepare_axvisor_ktest_payload(
     app: &mut AppContext,
     cargo: &Cargo,
@@ -268,7 +262,7 @@ pub(super) async fn prepare_axvisor_ktest_payload(
             unit.run_config.display()
         )
     })?;
-    crate::test::qemu::prepare_host_initramfs_payload(
+    crate::execution::qemu::prepare_host_initramfs_payload(
         app.workspace_root(),
         app.target_dir(),
         case_dir,
@@ -286,7 +280,6 @@ pub(super) async fn prepare_axvisor_ktest_payload(
     )
     .await
 }
-
 
 pub(super) async fn ensure_runtime_qemu_assets(
     runtime: KtestRuntime,
@@ -308,4 +301,3 @@ pub(super) async fn ensure_runtime_qemu_assets(
     }
     Ok(None)
 }
-

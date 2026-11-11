@@ -17,8 +17,8 @@ use super::{
 use crate::{
     build::{append_cargo_rustflags, env_truthy},
     context::{RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence},
-    starry::{Starry, build, rootfs},
     execution::{case, qemu as qemu_test, timing},
+    starry::{Starry, build, rootfs},
 };
 
 const AXTEST_RUSTFLAGS: &[&str] = &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];

@@ -32,13 +32,11 @@ pub(super) fn prepare_ktest_cargo(
     }
 }
 
-
 pub(super) fn ensure_feature(cargo: &mut Cargo, feature: &str) {
     if !cargo.features.iter().any(|candidate| candidate == feature) {
         cargo.features.push(feature.to_string());
     }
 }
-
 
 pub(super) fn apply_qemu_cargo_options(cargo: &mut Cargo, args: &ArgsKtestQemu) {
     for feature in &args.features {
@@ -74,13 +72,11 @@ pub(super) fn apply_qemu_cargo_options(cargo: &mut Cargo, args: &ArgsKtestQemu) 
     }
 }
 
-
 pub(super) fn ensure_cargo_arg(args: &mut Vec<String>, arg: &str) {
     if !args.iter().any(|candidate| candidate == arg) {
         args.push(arg.to_string());
     }
 }
-
 
 pub(super) fn remove_cargo_value_arg(args: &mut Vec<String>, name: &str) {
     let equals_prefix = format!("{name}=");
@@ -99,7 +95,6 @@ pub(super) fn remove_cargo_value_arg(args: &mut Vec<String>, name: &str) {
     *args = filtered;
 }
 
-
 pub(super) fn remove_cargo_target_selector_args(args: &mut Vec<String>) {
     let mut filtered = Vec::with_capacity(args.len());
     let mut iter = args.iter();
@@ -115,4 +110,3 @@ pub(super) fn remove_cargo_target_selector_args(args: &mut Vec<String>) {
     }
     *args = filtered;
 }
-

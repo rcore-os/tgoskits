@@ -66,7 +66,7 @@ pub(super) async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     )?;
     prepare_ktest_cargo(&mut cargo, target, runtime, false);
 
-    crate::axvisor::test::prepare_guest_builds(&mut app, &board_config_path).await?;
+    crate::axvisor::guest_build::prepare(&mut app, &board_config_path).await?;
 
     let mut board_config = app
         .read_board_run_config_from_path_for_cargo(&cargo, &board_config_path)
@@ -122,4 +122,3 @@ pub(super) async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     )
     .await
 }
-

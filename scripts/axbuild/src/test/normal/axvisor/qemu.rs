@@ -716,7 +716,7 @@ mod tests {
     };
     use crate::{
         context::{ResolvedAxvisorRequest, WorkspaceContext},
-        test::qemu as test_qemu,
+        execution::qemu as test_qemu,
     };
 
     #[test]
@@ -798,7 +798,7 @@ mod tests {
             assert_eq!(cached, (selected.clone(), cargo.clone()));
             cases.push(PreparedAxvisorQemuCase {
                 case: AxvisorQemuCase {
-                    case: crate::test::case::TestQemuCase {
+                    case: crate::execution::case::TestQemuCase {
                         name: name.into(),
                         display_name: name.into(),
                         case_dir: root.path().join(name),

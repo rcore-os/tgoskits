@@ -6,7 +6,6 @@ struct AxtestTargetFlagsWire {
     board_only: bool,
 }
 
-
 #[derive(Deserialize)]
 struct AxtestMetadataWire {
     #[serde(default)]
@@ -16,7 +15,6 @@ struct AxtestMetadataWire {
     #[serde(default)]
     targets: BTreeMap<String, AxtestTargetFlagsWire>,
 }
-
 
 /// Typed, validated view of the metadata ktest owns for one package.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -28,11 +26,9 @@ pub(super) struct AxtestMetadata {
     board_only: BTreeMap<String, bool>,
 }
 
-
 pub(super) fn is_harness_false_test(target: &KtestTarget) -> bool {
     target.kind == KtestTargetKind::Test && !target.harness
 }
-
 
 pub(super) fn load_discovered_ktest_package(
     metadata: &Metadata,
@@ -44,8 +40,9 @@ pub(super) fn load_discovered_ktest_package(
         .ok_or_else(|| anyhow!("workspace package `{package}` not found"))
 }
 
-
-pub(super) fn discover_workspace_ktests(metadata: &Metadata) -> anyhow::Result<Vec<DiscoveredKtestPackage>> {
+pub(super) fn discover_workspace_ktests(
+    metadata: &Metadata,
+) -> anyhow::Result<Vec<DiscoveredKtestPackage>> {
     let workspace_members = metadata
         .workspace_members
         .iter()
@@ -86,8 +83,10 @@ pub(super) fn discover_workspace_ktests(metadata: &Metadata) -> anyhow::Result<V
     Ok(packages)
 }
 
-
-pub(super) fn axtest_metadata(package: &str, metadata: &serde_json::Value) -> anyhow::Result<AxtestMetadata> {
+pub(super) fn axtest_metadata(
+    package: &str,
+    metadata: &serde_json::Value,
+) -> anyhow::Result<AxtestMetadata> {
     let wire: AxtestMetadataWire = match metadata.get("axtest") {
         Some(axtest) => serde_json::from_value(axtest.clone()).with_context(|| {
             format!("package `{package}` has an invalid [package.metadata.axtest] table")
@@ -118,7 +117,6 @@ pub(super) fn axtest_metadata(package: &str, metadata: &serde_json::Value) -> an
     })
 }
 
-
 pub(super) fn runtime_from_name(package: &str, runtime: &str) -> anyhow::Result<KtestRuntime> {
     match runtime {
         "arceos" => Ok(KtestRuntime::Arceos),
@@ -130,7 +128,6 @@ pub(super) fn runtime_from_name(package: &str, runtime: &str) -> anyhow::Result<
         ),
     }
 }
-
 
 pub(super) fn docs_rs_targets(
     package: &str,
@@ -157,7 +154,6 @@ pub(super) fn docs_rs_targets(
         .collect::<anyhow::Result<Vec<_>>>()
         .map(Some)
 }
-
 
 pub(super) fn ktest_package_from_metadata(
     package: &Package,
@@ -194,7 +190,6 @@ pub(super) fn ktest_package_from_metadata(
     })
 }
 
-
 pub(super) fn test_harness_flags(manifest_path: &Path) -> anyhow::Result<HashMap<String, bool>> {
     let content = fs::read_to_string(manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
@@ -218,7 +213,6 @@ pub(super) fn test_harness_flags(manifest_path: &Path) -> anyhow::Result<HashMap
     }
     Ok(flags)
 }
-
 
 pub(super) fn select_ktest_target<'a>(
     package: &'a KtestPackage,
@@ -270,3 +264,64 @@ pub(super) fn select_ktest_target<'a>(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{super::plan::AARCH64_TARGET, *};
+    #[test]
+    fn declared_ktest_targets_win_over_the_docs_rs_fallback() {
+        let metadata = serde_json::json!({
+            "axtest": { "runtime": "axvisor", "target_triples": [AARCH64_TARGET], "targets": { "remote": { "board_only": true } } },
+            "docs": { "rs": { "targets": ["x86_64-unknown-linux-gnu"] } },
+        });
+
+        let axtest = axtest_metadata("declared", &metadata).unwrap();
+
+        assert_eq!(axtest.runtime, Some(KtestRuntime::Axvisor));
+        assert_eq!(axtest.board_only.get("remote"), Some(&true));
+        assert_eq!(
+            axtest.test_targets.as_deref(),
+            Some(&[AARCH64_TARGET.to_string()][..])
+        );
+
+        // Without a declared list the host-doc targets stay the fallback, and the
+        // per-target flag table does not declare a target list of its own.
+        let metadata = serde_json::json!({
+            "axtest": { "targets": { "remote": { "board_only": true } } },
+            "docs": { "rs": { "targets": [AARCH64_TARGET] } },
+        });
+
+        let axtest = axtest_metadata("fallback", &metadata).unwrap();
+
+        assert_eq!(axtest.runtime, None);
+        assert_eq!(
+            axtest.test_targets.as_deref(),
+            Some(&[AARCH64_TARGET.to_string()][..])
+        );
+        assert_eq!(axtest.board_only.get("remote"), Some(&true));
+        assert_eq!(axtest.board_only.get("local"), None);
+
+        // A package that declares neither list runs on the default architecture.
+        assert_eq!(
+            axtest_metadata("generic", &serde_json::json!({})).unwrap(),
+            AxtestMetadata::default()
+        );
+    }
+
+    #[test]
+    fn malformed_axtest_metadata_is_rejected_instead_of_guessed() {
+        for metadata in [
+            serde_json::json!({ "axtest": { "targets": AARCH64_TARGET } }),
+            serde_json::json!({ "axtest": { "target_triples": [1] } }),
+            serde_json::json!({ "axtest": { "targets": { "remote": { "board_only": "yes" } } } }),
+            serde_json::json!({ "axtest": { "runtime": "kernel" } }),
+            serde_json::json!({ "docs": { "rs": { "targets": "x86_64-unknown-none" } } }),
+        ] {
+            let error = axtest_metadata("broken", &metadata).unwrap_err();
+
+            assert!(
+                error.to_string().contains("broken"),
+                "unexpected error for {metadata}: {error}"
+            );
+        }
+    }
+}

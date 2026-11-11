@@ -34,9 +34,16 @@ pub(super) fn collect(root: &Path) -> anyhow::Result<Vec<ArceosBoardTestGroup>> 
     for (order, id) in suite.run_order.iter().enumerate() {
         let batch = &suite.batches[id];
         let build_path = root.join(&batch.build_config);
-        let build = crate::arceos::board::load_build_file(&build_path)?;
+        let build_input = crate::build::load_config_input::<crate::arceos::config::ArceosConfig>(
+            &crate::context::workspace_root_path()?,
+            Some(&build_path),
+            None,
+        )?;
+        let build = &build_input.config;
         let target = build
+            .common
             .target
+            .clone()
             .context("declared board build requires target")?;
         ensure!(
             build.package.as_deref() == Some(&batch.package)
@@ -44,7 +51,7 @@ pub(super) fn collect(root: &Path) -> anyhow::Result<Vec<ArceosBoardTestGroup>> 
             "declared board package or architecture differs from build configuration"
         );
         ensure!(
-            build.config.freestanding == (batch.image == Image::Freestanding),
+            build.freestanding == (batch.image == Image::Freestanding),
             "declared board runtime differs from build configuration"
         );
         ensure!(
@@ -63,6 +70,7 @@ pub(super) fn collect(root: &Path) -> anyhow::Result<Vec<ArceosBoardTestGroup>> 
             arch: batch.arch.clone(),
             target,
             build_config_path: build_path,
+            build_input,
             board_test_config_path: root.join(&batch.board_config),
             declaration: Some(BoardSelection {
                 suite: path.clone(),
@@ -132,10 +140,8 @@ pub(super) fn configure(
         cargo.package == group.package && request.arch == group.arch,
         "board declaration and resolved build identity disagree"
     );
-    let build: crate::arceos::build::ArceosBuildFile =
-        crate::arceos::board::load_build_file(&request.build_info_path)?;
     ensure!(
-        build.config.freestanding == (declaration.image == Image::Freestanding),
+        request.config.freestanding == (declaration.image == Image::Freestanding),
         "board image and build runtime disagree"
     );
     cargo.features.extend(declaration.features.clone());
@@ -178,7 +184,6 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::context::ResolvedBuildRequest;
 
     const BUILD: &str = r#"package = "fixture"
 target = "aarch64-unknown-none-softfloat"
@@ -247,16 +252,12 @@ features = ["delivery-feature"]
         );
         assert!(select(groups, &["unknown".into()]).is_err());
         let group = &single[0];
-        let request = ResolvedBuildRequest {
-            package: group.package.clone(),
-            arch: group.arch.clone(),
-            target: group.target.clone(),
-            smp: None,
-            debug: false,
-            build_info_path: group.build_config_path.clone(),
-            qemu_config: None,
-            uboot_config: None,
-        };
+        let mut request = crate::context::test_support::arceos_request(
+            &group.build_config_path,
+            &group.package,
+            &group.arch,
+            &group.target,
+        );
         let mut cargo = ostool::build::config::Cargo {
             package: group.package.clone(),
             target: group.target.clone(),
@@ -270,11 +271,7 @@ features = ["delivery-feature"]
         assert_eq!(cargo.features, before.features);
         assert_ne!(cargo.env, before.env);
         assert_eq!(cargo.env[catalog::CASES_ENV], "");
-        fs::write(
-            &request.build_info_path,
-            format!("{BUILD}freestanding = true\n"),
-        )
-        .unwrap();
+        request.config.freestanding = true;
         let error = configure(group, &request, &mut cargo).unwrap_err();
         assert!(
             error

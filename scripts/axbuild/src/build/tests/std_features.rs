@@ -18,8 +18,7 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         "virtio-net".into(),
         "smp".into(),
     ];
-    let features = resolved_std_build_features(&info, &app_features, &axstd_features)
-        .unwrap();
+    let features = resolved_std_build_features(&info, &app_features, &axstd_features).unwrap();
     assert!(features.contains(&"ax-std/smp".to_string()));
     info.max_cpu_num = Some(1);
     assert!(
@@ -28,10 +27,7 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
             .contains(&"ax-std/smp".to_string())
     );
     info.max_cpu_num = Some(0);
-    assert!(
-        resolved_std_build_features(&info, &app_features, &axstd_features)
-            .is_err()
-    );
+    assert!(resolved_std_build_features(&info, &app_features, &axstd_features).is_err());
 
     assert!(features.contains(&"ax-std/dns".to_string()));
     assert!(features.contains(&"ax-std/nvme".to_string()));

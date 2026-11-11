@@ -8,8 +8,8 @@ use object::{Object as _, ObjectSection as _};
 
 use super::ArgsTestQemu;
 use crate::{
-    execution::qemu as qemu_test,
     context::{RequestEnvironment, SnapshotPersistence, StarryCliArgs, axbuild_tmp_dir},
+    execution::qemu as qemu_test,
     rootfs::qemu::{RootfsPatchMode, RootfsPatchOptions, RootfsWritePolicy},
     starry::{Starry, rootfs},
 };

@@ -6,9 +6,8 @@ use ostool::{
     build::config::Cargo,
 };
 
-use crate::context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence};
-
 pub use crate::app::axvisor as app;
+use crate::context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence};
 pub mod build;
 pub(crate) mod bundle;
 pub mod config;

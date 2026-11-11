@@ -64,12 +64,13 @@ pub(crate) fn print_plan(
     let mut runs = Vec::new();
     for selection in &selections {
         let bindings = Bindings::new(&catalog, selection);
-        let mut features = build.build_info.features.clone();
+        let mut features = build.common.features.clone();
         features.extend(selection.features());
         features.sort();
         features.dedup();
         let request = arceos.prepare_request(
             BuildCliArgs {
+                preset: None,
                 config: Some(build_path.clone()),
                 package: Some("ax-libc".into()),
                 arch: None,

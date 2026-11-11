@@ -9,7 +9,7 @@ use ostool::{
 
 use crate::{
     context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
-    test::host_http::HostHttpServerGuard,
+    execution::host_http::HostHttpServerGuard,
 };
 
 pub mod build;

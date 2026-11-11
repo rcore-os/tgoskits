@@ -7,11 +7,9 @@ pub(super) fn apply_axtest_qemu_markers(qemu: &mut QemuConfig) {
     require_final_suite_gate(&mut qemu.shell_check_steps);
 }
 
-
 pub(super) fn suite_gate_regex() -> String {
     format!(r"(?s)AXTEST_CASE status=pass(?-u:\b).*{AXTEST_SUMMARY_GATE}.*{AXTEST_SUITE_OK}")
 }
-
 
 pub(super) fn require_final_suite_gate(steps: &mut Vec<ShellCheckStep>) {
     if let Some(last) = steps.last_mut()
@@ -38,14 +36,12 @@ pub(super) fn require_final_suite_gate(steps: &mut Vec<ShellCheckStep>) {
     });
 }
 
-
 pub(super) fn apply_axtest_board_markers(board: &mut BoardRunConfig) {
     for pattern in [PANIC_FAIL, AXTEST_SUITE_FAIL, AXTEST_CASE_FAIL] {
         ensure_regex(&mut board.fail_regex, pattern);
     }
     require_final_suite_gate(&mut board.shell_check_steps);
 }
-
 
 pub(super) fn apply_ktest_timeout(qemu: &mut QemuConfig, runtime: KtestRuntime, coverage: bool) {
     if qemu.timeout.is_some() {
@@ -60,10 +56,8 @@ pub(super) fn apply_ktest_timeout(qemu: &mut QemuConfig, runtime: KtestRuntime, 
     });
 }
 
-
 pub(super) fn ensure_regex(regexes: &mut Vec<String>, regex: &str) {
     if !regexes.iter().any(|candidate| candidate == regex) {
         regexes.push(regex.to_string());
     }
 }
-

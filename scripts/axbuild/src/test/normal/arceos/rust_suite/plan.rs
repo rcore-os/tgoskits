@@ -120,7 +120,11 @@ fn plan_run(
         .keys()
         .cloned()
         .collect::<Vec<_>>();
-    let mut cargo_features = crate::build::resolved_std_build_features(&build_config.common, &app_features, axstd_features)?;
+    let mut cargo_features = crate::build::resolved_std_build_features(
+        &build_config.common,
+        &app_features,
+        axstd_features,
+    )?;
     cargo_features.extend(case.features.iter().cloned());
     cargo_features.sort();
     cargo_features.dedup();

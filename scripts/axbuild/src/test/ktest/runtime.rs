@@ -9,7 +9,6 @@ pub(super) fn runtime_name(runtime: KtestRuntime) -> &'static str {
     }
 }
 
-
 pub(super) fn maybe_postprocess_starry_artifact(
     ctx: KtestBuildContext<'_>,
     cargo: &Cargo,
@@ -24,7 +23,6 @@ pub(super) fn maybe_postprocess_starry_artifact(
     starry::build::postprocess_starry_artifact(ctx.workspace_root, &request, cargo, output)
 }
 
-
 pub(super) fn maybe_start_starry_future_incompat_report(
     runtime: KtestRuntime,
     target_dir: &Path,
@@ -36,7 +34,6 @@ pub(super) fn maybe_start_starry_future_incompat_report(
     crate::build::start_future_incompat_report_session(target_dir).map(Some)
 }
 
-
 pub(super) fn default_qemu_build_config(package_dir: &Path, target: &str) -> Option<PathBuf> {
     let package_config = package_dir.join(format!("build-{target}.toml"));
     if package_config.exists() {
@@ -45,7 +42,6 @@ pub(super) fn default_qemu_build_config(package_dir: &Path, target: &str) -> Opt
         None
     }
 }
-
 
 pub(super) fn default_qemu_run_config(
     workspace_root: &Path,
@@ -61,8 +57,10 @@ pub(super) fn default_qemu_run_config(
     }
 }
 
-
-pub(super) fn default_board_build_config(package_dir: &Path, board: &str) -> anyhow::Result<Option<PathBuf>> {
+pub(super) fn default_board_build_config(
+    package_dir: &Path,
+    board: &str,
+) -> anyhow::Result<Option<PathBuf>> {
     let package_config = package_dir.join(format!("build-{board}.toml"));
     if package_config.exists() {
         return Ok(Some(package_config));
@@ -84,7 +82,6 @@ pub(super) fn default_board_build_config(package_dir: &Path, board: &str) -> any
     Ok(None)
 }
 
-
 pub(super) fn default_board_run_config(
     workspace_root: &Path,
     package_dir: &Path,
@@ -99,7 +96,6 @@ pub(super) fn default_board_run_config(
     root.join(format!("configs/board/{board}-board.toml"))
 }
 
-
 pub(super) fn runtime_config_root(workspace_root: &Path, runtime: KtestRuntime) -> PathBuf {
     match runtime {
         KtestRuntime::Arceos | KtestRuntime::Board => workspace_root.join("os/arceos"),
@@ -107,4 +103,3 @@ pub(super) fn runtime_config_root(workspace_root: &Path, runtime: KtestRuntime) 
         KtestRuntime::Axvisor => workspace_root.join("os/axvisor"),
     }
 }
-

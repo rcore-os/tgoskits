@@ -11,7 +11,6 @@ pub(super) fn generate_ktest_coverage_report(
     }
 }
 
-
 pub(super) fn generate_ktest_coverage_html(
     workspace_root: &Path,
     cargo: &Cargo,
@@ -77,8 +76,11 @@ pub(super) fn generate_ktest_coverage_html(
     Ok(())
 }
 
-
-pub(super) fn llvm_cov_html_args(elf_path: &Path, profdata_path: &Path, html_dir: &Path) -> Vec<OsString> {
+pub(super) fn llvm_cov_html_args(
+    elf_path: &Path,
+    profdata_path: &Path,
+    html_dir: &Path,
+) -> Vec<OsString> {
     vec![
         OsString::from("show"),
         elf_path.as_os_str().to_os_string(),
@@ -90,7 +92,6 @@ pub(super) fn llvm_cov_html_args(elf_path: &Path, profdata_path: &Path, html_dir
         )),
     ]
 }
-
 
 pub(super) fn find_llvm_tool(tool: &str) -> PathBuf {
     if let Ok(output) = ProcessCommand::new("rustc")
@@ -112,7 +113,6 @@ pub(super) fn find_llvm_tool(tool: &str) -> PathBuf {
     PathBuf::from(tool)
 }
 
-
 pub(super) fn run_tool<I>(tool: &Path, args: I) -> anyhow::Result<()>
 where
     I: IntoIterator<Item = OsString>,
@@ -126,4 +126,3 @@ where
     }
     Ok(())
 }
-

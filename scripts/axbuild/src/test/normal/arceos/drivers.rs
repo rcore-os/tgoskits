@@ -140,11 +140,13 @@ pub(crate) fn print_plan(
     let mut rows = Vec::new();
     for selection in &selected {
         let path = root.join(&selection.batch.build_config);
-        let config = crate::arceos::board::load_build_file(&path)?;
-        anyhow::ensure!(
-            config.config.freestanding,
-            "drivers require freestanding image"
-        );
+        let config = crate::build::load_config_input::<crate::arceos::config::ArceosConfig>(
+            &crate::context::workspace_root_path()?,
+            Some(&path),
+            None,
+        )?
+        .config;
+        anyhow::ensure!(config.freestanding, "drivers require freestanding image");
         let runtime: toml::Value = toml::from_str(&std::fs::read_to_string(
             root.join(&selection.batch.qemu_config),
         )?)

@@ -16,8 +16,8 @@ use crate::{
         RequestEnvironment, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
         arch_for_target_checked, board_run_request,
     },
-    starry::{Starry, build},
     execution::{board as board_test, qemu as qemu_test},
+    starry::{Starry, build},
 };
 
 struct PreparedBoardBuild {

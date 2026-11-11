@@ -897,16 +897,6 @@ fn enable_package_smp_feature(
     Ok(())
 }
 
-pub(super) fn resolve_std_features(config: &mut CommonConfig) {
-    config.features = config
-        .features
-        .iter()
-        .map(|feature| normalize_std_feature(feature))
-        .collect();
-    config.features.sort();
-    config.features.dedup();
-}
-
 fn normalize_mmu_feature_aliases(
     config: &mut CommonConfig,
     package: &str,
