@@ -63,6 +63,39 @@ impl NamespaceAdmission<'_> {
         self.owner.query_namespace(self, query, retired)
     }
 
+    /// Looks up one backend component using this existing same-FS admission.
+    ///
+    /// The result retains the parent's exact mount without following mounts or
+    /// links. Like `query`, this must not run under a native driver/backend gate.
+    /// All owned inputs and candidates survive failures until outer retirement.
+    /// The caller still performs its own search and backing-identity checks.
+    pub fn lookup_backing(
+        &self,
+        parent: &Location,
+        name: &str,
+        retired: &MutationRetire,
+    ) -> VfsResult<Location> {
+        retired.retire(parent.clone());
+        match self.query(
+            NamespaceQuery::Lookup {
+                parent: parent.entry(),
+                name,
+            },
+            retired,
+        )? {
+            NamespaceRead::Entry(Some(entry)) => {
+                retired.retire(entry.clone());
+                self.check_owner(entry.filesystem())?;
+                Ok(Location::new(parent.mountpoint().clone(), entry))
+            }
+            NamespaceRead::Entry(None) => Err(VfsError::NotFound),
+            other => {
+                retired.retire(other);
+                Err(VfsError::BadState)
+            }
+        }
+    }
+
     /// Validates the receiver without entering operation admission again.
     pub fn check_owner(&self, owner: &dyn FilesystemOps) -> VfsResult<()> {
         if owner_address(owner) == owner_address(self.owner) {

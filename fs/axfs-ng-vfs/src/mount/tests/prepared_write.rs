@@ -8,6 +8,7 @@ struct WriteLayer {
     depth: u32,
     roots: Vec<Location>,
     operations: Option<Arc<OperationProbe>>,
+    lookup_response: std::sync::Mutex<Option<crate::NamespaceRead>>,
 }
 
 #[derive(Default)]
@@ -34,6 +35,23 @@ struct WriteLayerRoot {
 }
 
 impl FilesystemOps for WriteLayer {
+    fn query_namespace(
+        &self,
+        _admission: &crate::NamespaceAdmission<'_>,
+        query: crate::NamespaceQuery<'_>,
+        _retired: &crate::MutationRetire,
+    ) -> VfsResult<crate::NamespaceRead> {
+        // Supply only the response; VFS must do validation and retirement.
+        if !matches!(query, crate::NamespaceQuery::Lookup { .. }) {
+            return Err(VfsError::OperationNotSupported);
+        }
+        self.lookup_response
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(VfsError::OperationNotSupported)
+    }
+
     fn enter_namespace(&self) -> VfsResult<Box<dyn crate::NamespaceOperation + '_>> {
         let Some(probe) = &self.operations else {
             return Ok(Box::new(()));
@@ -221,6 +239,7 @@ fn probed_layer(
         depth,
         roots,
         operations,
+        lookup_response: std::sync::Mutex::new(None),
     }));
     Mountpoint::new_root(&filesystem).root_location()
 }
@@ -393,4 +412,168 @@ fn prepared_write_retains_exact_mounts_across_dependencies_and_releases_failed_p
         invalid.mountpoint().set_readonly(true).unwrap();
         invalid.mountpoint().set_filesystem_readonly(true).unwrap();
     }
+}
+
+#[test]
+fn admitted_backing_lookup_validates_provider_results_and_retires_all_owners_after_exit() {
+    use crate::{MutationRetire, NamespaceAdmissions, NamespaceRead};
+
+    struct RetiredLookupOwner {
+        name: &'static str,
+        probe: Arc<OperationProbe>,
+        dropped: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    impl Drop for RetiredLookupOwner {
+        fn drop(&mut self) {
+            let events = self.probe.events.lock().unwrap();
+            assert_eq!(
+                events.iter().filter(|(_, enter)| *enter).count(),
+                events.iter().filter(|(_, enter)| !*enter).count(),
+                "last lookup owner was destroyed under operation admission"
+            );
+            self.dropped.lock().unwrap().push(self.name);
+        }
+    }
+
+    let probe = Arc::new(OperationProbe::default());
+    let dropped = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let marker = |name| RetiredLookupOwner {
+        name,
+        probe: probe.clone(),
+        dropped: dropped.clone(),
+    };
+    let root = probed_layer(0, vec![], Some(probe.clone()));
+    let provider = root
+        .entry()
+        .downcast::<WriteLayerRoot>()
+        .unwrap()
+        .filesystem
+        .clone();
+    let owner = core::ptr::from_ref(provider.as_ref()) as usize;
+    let weak_provider = Arc::downgrade(&provider);
+    let weak_root_mount = Arc::downgrade(root.mountpoint());
+
+    // Same FS, different exact mount: PreparedWrite owns only root's mount.
+    // The retired full parent must be what keeps this alias mount alive.
+    let alias = Mountpoint::new_root(&Filesystem::new(provider.clone())).root_location();
+    let weak_alias_mount = Arc::downgrade(alias.mountpoint());
+    alias.user_data().insert(marker("parent"));
+
+    let foreign_parent = layer(0, vec![]);
+    let weak_foreign_mount = Arc::downgrade(foreign_parent.mountpoint());
+    let weak_foreign_parent = Arc::downgrade(
+        &foreign_parent
+            .entry()
+            .downcast::<WriteLayerRoot>()
+            .unwrap()
+            .filesystem,
+    );
+    foreign_parent.user_data().insert(marker("foreign-parent"));
+
+    // The rejected candidate has no mount-root/cache owner after setup.
+    let foreign = layer(0, vec![]);
+    let weak_foreign_candidate = Arc::downgrade(
+        &foreign
+            .entry()
+            .downcast::<WriteLayerRoot>()
+            .unwrap()
+            .filesystem,
+    );
+    let candidate = foreign.filesystem().root_dir();
+    candidate.user_data().insert(marker("candidate"));
+    drop(foreign);
+
+    let write = PreparedWrite::acquire(&root).unwrap();
+    let retired = MutationRetire::new();
+    let admissions = NamespaceAdmissions::acquire(&write).unwrap();
+    let admission = admissions.for_location(&root).unwrap();
+
+    *provider.lookup_response.lock().unwrap() = Some(NamespaceRead::Entry(None));
+    assert!(matches!(
+        admission.lookup_backing(&foreign_parent, "bad/name", &retired),
+        Err(VfsError::CrossesDevices)
+    ));
+    assert!(provider.lookup_response.lock().unwrap().is_some());
+    assert!(matches!(
+        admission.lookup_backing(&alias, "bad/name", &retired),
+        Err(VfsError::InvalidInput)
+    ));
+    assert!(provider.lookup_response.lock().unwrap().is_some());
+    assert!(matches!(
+        admission.lookup_backing(&alias, "missing", &retired),
+        Err(VfsError::NotFound)
+    ));
+    assert!(provider.lookup_response.lock().unwrap().is_none());
+
+    *provider.lookup_response.lock().unwrap() = Some(NamespaceRead::Xattr(vec![1]));
+    assert!(matches!(
+        admission.lookup_backing(&alias, "wrong-shape", &retired),
+        Err(VfsError::BadState)
+    ));
+    assert!(provider.lookup_response.lock().unwrap().is_none());
+
+    *provider.lookup_response.lock().unwrap() = Some(NamespaceRead::Entry(Some(candidate)));
+    assert!(matches!(
+        admission.lookup_backing(&alias, "foreign-child", &retired),
+        Err(VfsError::CrossesDevices)
+    ));
+    assert!(provider.lookup_response.lock().unwrap().is_none());
+
+    let child = provider.root_dir();
+    child.user_data().insert(marker("success"));
+    let weak_child = child.downgrade();
+    *provider.lookup_response.lock().unwrap() = Some(NamespaceRead::Entry(Some(child)));
+    let selected = admission.lookup_backing(&alias, "child", &retired).unwrap();
+    assert!(Arc::ptr_eq(selected.mountpoint(), alias.mountpoint()));
+    assert!(selected.entry().ptr_eq(&weak_child.upgrade().unwrap()));
+    drop(selected);
+    drop(alias);
+    drop(foreign_parent);
+    drop(root);
+    drop(provider);
+
+    assert_eq!(
+        *probe.events.lock().unwrap(),
+        vec![(owner, true)],
+        "lookup must use the existing admission without reentering"
+    );
+    assert!(dropped.lock().unwrap().is_empty());
+    assert!(weak_alias_mount.upgrade().is_some());
+    assert!(weak_foreign_mount.upgrade().is_some());
+    assert!(weak_foreign_parent.upgrade().is_some());
+    assert!(weak_foreign_candidate.upgrade().is_some());
+    assert!(weak_child.upgrade().is_some());
+
+    drop(admissions);
+    assert_eq!(
+        *probe.events.lock().unwrap(),
+        vec![(owner, true), (owner, false)]
+    );
+    assert!(dropped.lock().unwrap().is_empty());
+    assert!(weak_alias_mount.upgrade().is_some());
+    assert!(weak_foreign_mount.upgrade().is_some());
+    assert!(weak_foreign_parent.upgrade().is_some());
+    assert!(weak_foreign_candidate.upgrade().is_some());
+    assert!(weak_child.upgrade().is_some());
+
+    drop(retired);
+    let mut released = dropped.lock().unwrap().clone();
+    released.sort_unstable();
+    assert_eq!(
+        released,
+        vec!["candidate", "foreign-parent", "parent", "success"]
+    );
+    assert!(weak_alias_mount.upgrade().is_none());
+    assert!(weak_foreign_mount.upgrade().is_none());
+    assert!(weak_foreign_parent.upgrade().is_none());
+    assert!(weak_foreign_candidate.upgrade().is_none());
+    assert!(weak_child.upgrade().is_none());
+
+    // PreparedWrite still owns the actual receiver, unlike the retired alias.
+    assert!(weak_root_mount.upgrade().is_some());
+    assert!(weak_provider.upgrade().is_some());
+    drop(write);
+    assert!(weak_root_mount.upgrade().is_none());
+    assert!(weak_provider.upgrade().is_none());
 }

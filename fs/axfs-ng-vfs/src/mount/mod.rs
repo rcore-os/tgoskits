@@ -1203,6 +1203,22 @@ impl Location {
         })
     }
 
+    /// Looks up one backend component without crossing mounts or following links.
+    ///
+    /// Call only outside backend gates/drivers and outer operation admissions.
+    /// This may block and uses normal directory caching; it does not perform
+    /// path search authorization or provide a cache-only lookup capability.
+    pub fn lookup_backing(&self, name: &str) -> VfsResult<Self> {
+        crate::path::verify_entry_name(name)?;
+        let entry = self.entry.as_dir()?.lookup(name)?;
+        if crate::namespace_admission::owner_address(entry.filesystem())
+            != crate::namespace_admission::owner_address(self.filesystem())
+        {
+            return Err(VfsError::CrossesDevices);
+        }
+        Ok(Self::new(self.mountpoint.clone(), entry))
+    }
+
     pub fn create(
         &self,
         name: &str,
