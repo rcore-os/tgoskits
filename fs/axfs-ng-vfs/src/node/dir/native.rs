@@ -97,7 +97,7 @@ impl<'a> NamespaceDriverRequest<'a> {
 /// are exposed; the original driver and unconsumed input remain private.
 ///
 /// ```compile_fail
-/// fn twice(observed: axfs_ng_vfs::ObservedUnlink<'_>) {
+/// fn twice(observed: Box<axfs_ng_vfs::ObservedUnlink<'_>>) {
 ///     let _first = observed.resume();
 ///     let _second = observed.resume();
 /// }
@@ -138,7 +138,7 @@ impl ObservedUnlink<'_> {
         }
     }
 
-    pub fn resume(mut self) -> NamespaceCompletion {
+    pub fn resume(mut self: Box<Self>) -> NamespaceCompletion {
         let request = self.request.take().expect("unconsumed request");
         let mut driver = self.driver.take().expect("unconsumed driver");
         let outcome = request.command.resume_locked(
@@ -153,7 +153,7 @@ impl ObservedUnlink<'_> {
             .bind(request.admission.owner)
     }
 
-    pub fn cancel(mut self) -> NamespaceCompletion {
+    pub fn cancel(mut self: Box<Self>) -> NamespaceCompletion {
         let request = self.request.take().expect("unconsumed request");
         self.retire_observation(request.retired);
         drop(self.change.take());

@@ -23,12 +23,8 @@ fn unlink_reaps_a_closed_clean_cached_inode_before_the_next_unlink() {
         )
         .unwrap();
     let number = InodeNumber::new(first.inode() as u32).unwrap();
-    let cached = CachedFile::get_or_create(first.clone()).unwrap();
-    drop(cached);
-    drop(first);
-    root.unlink("first", false, &axfs_ng_vfs::MutationCredentials::root())
-        .unwrap();
-
+    // A create between the unlinks would independently retire pending reaps
+    // and hide a missing unlink preparation step.
     let second = root
         .create(
             "second",
@@ -43,6 +39,12 @@ fn unlink_reaps_a_closed_clean_cached_inode_before_the_next_unlink() {
             },
         )
         .unwrap();
+    let cached = CachedFile::get_or_create(first.clone()).unwrap();
+    drop(cached);
+    drop(first);
+    root.unlink("first", false, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
+
     drop(second);
     root.unlink("second", false, &axfs_ng_vfs::MutationCredentials::root())
         .unwrap();
