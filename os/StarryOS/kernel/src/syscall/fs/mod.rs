@@ -16,7 +16,7 @@ mod timerfd;
 mod xattr;
 
 use axfs_ng_vfs::MutationCredentials;
-use linux_raw_sys::general::CAP_MKNOD;
+use linux_raw_sys::general::{CAP_CHOWN, CAP_FSETID, CAP_MKNOD};
 
 use crate::task::FsCredentialsSnapshot;
 
@@ -35,6 +35,8 @@ pub(crate) fn mutation_credentials(snapshot: &FsCredentialsSnapshot) -> Mutation
         cap_dac_read_search: initial_namespace && cred.has_cap_dac_read_search(),
         cap_fowner: initial_namespace && cred.has_cap_fowner(),
         cap_mknod: initial_namespace && cred.has_cap(CAP_MKNOD),
+        cap_chown: initial_namespace && cred.has_cap(CAP_CHOWN),
+        cap_fsetid: initial_namespace && cred.has_cap(CAP_FSETID),
     }
 }
 

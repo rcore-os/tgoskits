@@ -952,6 +952,8 @@ mod tests {
             cap_dac_override: false,
             cap_dac_read_search: false,
             cap_fowner: false,
+            cap_chown: false,
+            cap_fsetid: false,
         };
         let _reset = ResetHook;
         let filesystem = MemoryFs::new();

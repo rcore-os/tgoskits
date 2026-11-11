@@ -128,6 +128,12 @@ pub struct MutationCredentials<'a> {
     pub cap_fowner: bool,
     /// Result of the caller's `capable(CAP_MKNOD)` check, not a raw namespace bit.
     pub cap_mknod: bool,
+    /// CAP_CHOWN checked for the current flat, non-idmapped VFS domain, not a
+    /// raw namespace bit and not inferred from uid 0.
+    pub cap_chown: bool,
+    /// CAP_FSETID checked for the current flat, non-idmapped VFS domain, not a
+    /// raw namespace bit and not inferred from uid 0.
+    pub cap_fsetid: bool,
 }
 
 impl MutationCredentials<'static> {
@@ -141,6 +147,8 @@ impl MutationCredentials<'static> {
             cap_dac_read_search: true,
             cap_fowner: true,
             cap_mknod: true,
+            cap_chown: true,
+            cap_fsetid: true,
         }
     }
 }

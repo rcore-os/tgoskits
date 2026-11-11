@@ -485,6 +485,8 @@ fn directory_exchange_preserves_both_cached_file_owners() {
         cap_dac_override: false,
         cap_dac_read_search: false,
         cap_fowner: false,
+        cap_chown: false,
+        cap_fsetid: false,
     };
     let observations =
         [(0o555, 0o777), (0o777, 0o555), (0o777, 0o777)].map(|(source_mode, target_mode)| {
