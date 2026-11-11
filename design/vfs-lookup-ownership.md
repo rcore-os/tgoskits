@@ -1231,8 +1231,9 @@ Ext4 复用既有日志重试/撤权与 Applied completion 用例，证明退出
 
 最外层使用 VFS crate 定义、字段私有的 `NamespaceOperationScope` 拥有本轮
 `NamespaceAdmissions`、`MutationRetire`、根完成对象及所有已登记的子完成对象。
-它借用外部具名 `PreparedWrite`，不把借用自身字段的视图存回自己，也不延长任何
-借用为静态寿命。准备对象仍由最外层保留到 scope 的全部显式完成之后。
+它借用外部具名 `PreparedWrite`，创建式打开另可借用第 4.16 节的 `PreparedCreation`；
+不把借用自身字段的视图存回自己，也不延长任何借用为静态寿命。准备对象仍由最外层
+保留到 scope 的全部显式完成之后。
 合法的跨软件包最外层调用者可通过受控 factory 取得这个拥有者，以保留单次尝试及
 显式完成的验证入口；后端请求拿到的借用 context 不因此取得 scope 的所有权。
 
@@ -1353,9 +1354,9 @@ Rename、existing-open、restore 和 Overlay 消费者继续按实际差异逐�
 `Unsupported` 或只补参数冒充接通。
 
 创建式打开必须保留 `CreationWrite::Denied` 下先观察已存在对象的顺序；已有对象的
-合法打开不能因为新 scope 无条件要求成功写准备而提前变成只读错误。其读准备和真正
-创建时才兑现写权利的接头须在迁移该入口前补齐，不把当前原生 exclusive-create
-入口直接作为 existing-open 或 restore 的替代。
+合法打开不能因为新 scope 无条件要求成功写准备而提前变成只读错误。第 4.16 节补齐
+只读准备和真正创建时才兑现写权利的接头，不把 exclusive-create 入口直接作为
+existing-open 或恢复完整属性的替代。
 
 复用 `completion_pressure_preserves_typed_results_and_mismatched_owners` 和现有
 admission、退役探针，增强完整跨层交回功能：至少两个真实 owner、两种 typed 子责任，
@@ -1367,6 +1368,133 @@ admission、退役探针，增强完整跨层交回功能：至少两个真实 o
 这一步不新增磁盘格式或后台工作，可按代码提交回滚；普通原生操作新增的 scope、
 登记存储与观察复制成本纳入最终同环境性能比较，不能宣称零分配或零退化。未完成
 上下文、完成交回或任一消费者迁移时，不把本节设计或组件通过当作整体 Overlay 完成。
+
+### 4.16 创建式打开的准备
+
+创建式打开在同一受保护名称观察中决定“选择已有对象”或“新建对象”，因此写准备
+失败不等于整个操作必须立即失败。当前 `Location::open_file_with_status` 已用
+`CreationWrite::Denied` 保留这种区别，但仍经旧 `run_create` 完成；直接换成只接受
+成功 `PreparedWrite` 的 scope 会破坏已有只读打开。这里扩展已有准备和操作所有者，
+不另建只读事务、后端回退或完成队列；本节在独立设计核对通过后实施。
+
+#### 4.16.1 名称观察与错误顺序
+
+Linux v7.1 的
+[`open_last_lookups` 与 `lookup_open`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L4413-L4630)
+先尝试挂载写权利，失败后仍在最后组件的同一打开流程中观察名称，避免先查存在性再
+另行创建的竞争。VFS 的 `CommandGuard::observe`、`CommandSlot::authorize` 和
+`CommandAuthorization::Existing` 保留这一语义分流，而非把所有 `O_CREAT` 都视为写入。
+
+在已经完成父路径搜索、末名及父类型校验的前提下，创建命令按下表处理当前槽位。
+表中的准备错误仅指保存的创建写权利错误，不包括读准备、准入或真实后端观察失败。
+
+| 当前槽位与意图 | 本轮授权和结果 | 写准备错误的作用 |
+| --- | --- | --- |
+| 已有，排他创建 | `AlreadyExists`，不提交 | 不覆盖该结果 |
+| 已有，非排他打开 | 在真实当前对象上检查所需访问权限，返回 `created: false` | 不要求创建权或父目录写权限 |
+| 缺失，需要创建 | 先要求对应真实写准备，再检查当前父目录创建权限和节点类型等条件 | 无写准备时返回保存的原错误，不产生授权提交能力 |
+| 父目录不可搜索或观察失败 | 保留本轮真实错误 | 不提前覆盖搜索或观察错误 |
+
+已有对象的独立写打开、截断及文件类型检查仍由后续打开流程负责；本节不让只读
+准备通过这些检查，也不重写链接跟随、尾斜杠、受限解析或 protected-sticky 规则。
+`Location::create_initialized`、`restore_create` 原本在观察前要求成功写准备的边界
+保持不变，不能把创建式打开的延迟规则不加区分地扩到这些入口并宣称 ABI 已对齐。
+
+#### 4.16.2 完整准备与只读依赖
+
+VFS 新增字段私有的领域对象 `PreparedCreation`，专门拥有创建式打开的一次准备结果。
+`PreparedCreation::acquire(parent)` 在任何准入或 backend gate 之前尝试现有完整
+`PreparedWrite::acquire`。成功则拥有该写准备；失败则先完整释放部分写准备，再保存
+原错误并仅以只读角色准备可见 parent 及其全部不可变 backing 图。不能只保存错误、
+保住外层 parent 就假定 lower/upper/work 已经准入。
+
+两种状态在私有枚举中互斥，不能由调用者拼装。它们共享现有准备代码的私有 backing
+存储和遍历规则，不新增公开“角色参数”、准备 trait、可变图或一份重复登记表。
+
+| 准备状态 | 拥有的资源 | 可以向命令借出的创建权利 |
+| --- | --- | --- |
+| 写准备成功 | 原 `PreparedWrite` 的真实 exact-mount 写租约及只读依赖 | `CreationWrite::Ready` |
+| 写准备失败、读准备成功 | 保存的原写错误及全部只读强 `Location` | `CreationWrite::Denied` |
+| 读准备也失败 | 无可发布的准备对象，局部资源在锁外释放 | 无 |
+
+只读准备从可见 parent 开始，把每层两组 backing 都降为 Read，不调用 `acquire_write`。
+每条边在去重前验证深度不超过 2 且严格下降，按 exact mount 去重；FS admission 则
+按真实 receiver 排序去重。与第 4.9 节一样，强引用不是 `MountUseGuard`，不保证阻止
+卸载或关闭，也不承诺没有后端内部 I/O。完整写准备失败后不能保留一部分写租约，
+更不能在只读状态下按需升级某条边。
+
+读准备的分配、图声明校验和准入可能失败，这些是真正无法继续观察的错误，应直接
+返回，不伪造一个“无准入也能打开”的兜底。只有读准备成功后，原写错误才延迟到
+当前槽位确实缺失时兑现。此区别不把资源耗尽或畸形 backend 声明误写为 Linux
+普通只读挂载场景。准备对象没有公开字段、整体写准备 getter 或读转写入口。
+
+#### 4.16.3 同一操作所有者
+
+`NamespaceOperationScope::acquire_creation(&PreparedCreation)` 复用现有 scope 状态、
+登记存储、owner 预检和四阶段处理。`NamespaceAdmissions` 的内部收集逻辑只扩展输入
+为已完成的准备视图；正常 `acquire(&PreparedWrite)` 及其合法最外层调用不变。
+scope 与 context 只借用外部具名准备，不能拥有它之后再保存指向自身字段的借用。
+
+只有 VFS 私有准备视图知道成功写准备或保存的创建拒绝。`Context::write_for` 仍只
+返回真正已有的 exact-mount 写租约：纯读状态不能返回租约，无匹配权利为
+`CrossesDevices`。创建命令另经私有选择方法取得 Ready/Denied，并校验目标 exact
+mount 确实在准备图内、实际 FS 有匹配 admission；不允许从同 FS 的另一 mount
+冒借准备。`CreateRequest` 保持私有构造和私有权利字段，不重新暴露整份准备对象。
+
+已有 `NamespaceOperationContext` 增加受控 `create` 子命令及对应 scope 根入口。
+请求用小型 `CreateIntent::{Exclusive, Open(ExistingOpen)}` 区分排他创建和已有对象
+打开；不把 restore-owner 或任意元数据补丁放进这个普通意图。`CreateRequest` 可以
+公开意图的只读值供分层后端解释，但不能让后端替换原请求的目标、凭据或权利。
+入口先退役完整 parent `Location`，校验目标、名称和已有准入；在任何副作用前取得
+与其他子命令相同的不可复制登记预留。已有对象观察也必须登记其 typed 完成责任，
+不能因 `Unchanged` 或 `created: false` 而丢掉真实 pressure、finish 或退役资源。
+
+原生命令仍走 `start_command → begin_namespace → command.execute → driver.finish
+→ request.complete`。Create 不返回延迟 Unlink 观察，也不把普通 `Location::create`
+当成借用 context 内的子操作；后者会重新准入。子命令返回的仍是已登记后的只读
+`NamespaceObservation<NamespaceEffect>`，而不是可由内层提前完成的对象。禁止在
+现有 gate 内重新准备、补准入、取得 mounter 身份或通过错误码推断可重放。
+
+#### 4.16.4 入口迁移与证明
+
+普通 native `create_initialized`、创建式 `open_file_with_status` 和归档
+`restore_create` 都通过同一个 processor 完成本轮责任；前两种普通意图使用相同
+Create 接头，归档创建仅在 VFS 私有入口保留原显式 `TrustedInitialization` 和初始
+owner 语义，不把它作为 Overlay copy-up 或 syscall 授权失败的回退。完整属性、
+xattr 恢复和 mounter 双身份授权仍需单独落实，迁移归档创建不等于完成它们。
+
+每轮使用新的 scope、context、请求、观察和授权；保留同一外部准备直到该操作的所有
+显式完成结束。只有最终 typed outcome 为 `Retry` 且结果允许重试，才能重新观察；
+释放 gate 已结束旧授权。`Applied`、`Uncertain`、既存对象选择以及真实 pressure
+或 finish 错误不能按 errno 自动重放。Create 的 selected entry、实际 created 标记、
+规范名称、exact mount 和首真错在最终完成后才交给便利入口；不能取到 observation
+就先以成功返回。异常 scope Drop 及 owner 错配沿用第 4.15 节，不另开完成协议。
+
+没有外部调用者的公开 `create_with_write` 在迁移中收回。旧 `run_create` 仅作为非
+native 的私有 fallback，并断言不能用于 native 后端；不留声称“已准入”却仍自行
+运行 pressure/finish 的公开旁路。非 native 既有拒绝和能力不扩，不以统一
+`Unsupported` 消除未迁移后端；也不更换 inode owner、格式或缓存权威。
+
+组件证明优先增强现有 `readonly_reconfiguration_preserves_writers_until_description_and_mapping_release`
+及 scope 完成交回测试，而非为每个 errno 新增测试。真实只读 mount 上的已有对象、
+排他和缺失分流须保留 identity、内容、created 标记及无写租约/无名称副作用；补充
+只读 backing 的真实 receiver 准入、只读角色不升级和最终全部释放。增强现有 Ext4
+namespace 功能测试，在安全的 journal-progress 返回边界撤销创建权限，证明普通
+Create 自动新一轮观察授权，而非手动两次调用。不能把 writeback gate 内的回调用作
+再次写入的注入点；复用既有安全 progress hook，保留其他命令原判定。
+
+错误实现应在相同通用功能测试上产生真实行为红：例如提前返回保存的写错误，会使
+已有对象的创建式只读打开失败。恢复后通过 `cargo xtask test --since <已提交引用>`
+取得命中目标和全部末判定的证据，编译失败不算红。Rust 静态检查按受影响软件包及
+组合选择；纯本节文档修改不运行构建。组件绿不能升级成 syscall ABI 正确，
+`bugfix-bug-dir-mutation-permissions`、`test-remount-flags` 等现有系统行为证明在
+Starry 消费者和构建恢复后补齐，普通 open、openat、openat2 各自入口不能相互冒充。
+
+这里复用现有边界的小型扩展优于提前强制写准备或长期保留旧 native 双轨；独立新建
+读事务/完成器则重复生命周期并增加锁序。准备失败后的纯读遍历只发生在失败分支，
+正常成功分支不重复遍历，仍须将新增枚举、scope 和失败分支分配成本纳入同环境
+性能比较。不增加后台线程、持久状态或磁盘格式，可按代码提交回滚；回滚不依赖
+Drop 撤销已公布名称或修复磁盘。
 
 ## 5. 对象型链接
 
