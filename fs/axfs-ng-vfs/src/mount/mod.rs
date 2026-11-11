@@ -1413,17 +1413,38 @@ impl Location {
         credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<Self> {
         let write = crate::PreparedWrite::acquire(self)?;
-        let retired = crate::MutationRetire::new();
-        match self
-            .link_with_write(name, node, credentials, &write, &retired)
-            .into_observation()?
-        {
+        // Preserve write preparation before the exact-mount/name checks.
+        let outcome = if self.filesystem().has_native_namespace() {
+            if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
+                return Err(VfsError::CrossesDevices);
+            }
+            verify_entry_name(name)?;
+            self.entry.as_dir()?;
+            loop {
+                let scope = crate::NamespaceOperationScope::acquire(&write)?;
+                {
+                    let context = scope.context();
+                    scope.link(&context, self, name, node, credentials)?;
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
+                if outcome.state() == crate::NamespaceState::Retry {
+                    continue;
+                }
+                break outcome;
+            }
+        } else {
+            let retired = crate::MutationRetire::new();
+            self.link_fallback(name, node, credentials, &write, &retired)
+        };
+        match outcome.into_observation()? {
             crate::NamespaceEffect::Link(alias) => Ok(self.wrap(alias.entry)),
             _ => Err(VfsError::BadState),
         }
     }
 
-    pub fn link_with_write(
+    fn link_fallback(
         &self,
         name: &str,
         node: &Self,
@@ -1431,6 +1452,7 @@ impl Location {
         write: &crate::PreparedWrite,
         retired: &crate::MutationRetire,
     ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        assert!(!self.filesystem().has_native_namespace());
         if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
             return crate::NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
         }
@@ -1476,8 +1498,39 @@ impl Location {
             return Err(VfsError::CrossesDevices);
         }
         let write = crate::PreparedWrite::acquire(self)?;
+        if self.filesystem().has_native_namespace() {
+            // Keep static request validation before operation admission, as in
+            // the legacy entry. Every attempt still builds its own command.
+            crate::RenameRequest::new(
+                (self, src_name),
+                (dst_dir, dst_name),
+                options,
+                credentials,
+                &write,
+            )?;
+            loop {
+                let scope = crate::NamespaceOperationScope::acquire(&write)?;
+                {
+                    let context = scope.context();
+                    scope.rename(
+                        &context,
+                        (self, src_name),
+                        (dst_dir, dst_name),
+                        options,
+                        credentials,
+                    )?;
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
+                if outcome.state() == crate::NamespaceState::Retry {
+                    continue;
+                }
+                return outcome.into_result();
+            }
+        }
         let retired = crate::MutationRetire::new();
-        self.rename_with_write(
+        self.rename_fallback(
             src_name,
             (dst_dir, dst_name),
             options,
@@ -1488,9 +1541,8 @@ impl Location {
         .into_result()
     }
 
-    /// Borrows rights and retirement from an outer command. All backing write
-    /// leases must already exist before its outermost backend gate is entered.
-    pub fn rename_with_write(
+    /// Legacy capability for non-native receivers only, never a child command.
+    fn rename_fallback(
         &self,
         src_name: &str,
         destination: (&Self, &str),
@@ -1499,6 +1551,7 @@ impl Location {
         write: &crate::PreparedWrite,
         retired: &crate::MutationRetire,
     ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        assert!(!self.filesystem().has_native_namespace());
         let (dst_dir, dst_name) = destination;
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return crate::NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));

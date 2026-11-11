@@ -1,4 +1,4 @@
-//! A closed continuation of one actual native unlink observation.
+//! Controlled native commands and the closed continuation of an unlink observation.
 
 use alloc::boxed::Box;
 
@@ -198,20 +198,81 @@ pub(crate) fn start_unlink<'a>(
     prepared: PreparedUnlink,
     directory: bool,
     credentials: &MutationCredentials<'a>,
-    mut reservation: Reservation<'a>,
+    reservation: Reservation<'a>,
 ) -> VfsResult<NamespaceStart<'a>> {
     let parent = prepared.parent_owner();
     let target = super::command::MutationTarget::new(&parent, prepared.name(), credentials);
     context.retired().retire(parent.clone());
     let target = target?;
     context.write_for(&parent)?.check_location(&parent)?;
-    let admission = context.admission(&parent)?;
     let command = NamespaceMutation::Unlink(UnlinkRequest::new(
         target,
         directory,
         prepared,
         context.write(),
     ));
+    start_command(context, &parent, command, reservation)
+}
+
+pub(crate) fn start_link<'a>(
+    context: &'a NamespaceOperationContext<'a>,
+    parent: &'a crate::Location,
+    name: &str,
+    source: &'a crate::Location,
+    credentials: &MutationCredentials<'a>,
+    reservation: Reservation<'a>,
+) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+    // Full Locations retain exact mounts as well as backend owners, including
+    // all validation failures and callbacks under an enclosing backend gate.
+    context.retired().retire(parent.clone());
+    context.retired().retire(source.clone());
+    if !Arc::ptr_eq(parent.mountpoint(), source.mountpoint()) {
+        return Err(VfsError::CrossesDevices);
+    }
+    let target = super::command::MutationTarget::new(parent, name, credentials)?;
+    let write = context.write_for(parent)?;
+    write.check_location(parent)?;
+    let owner = write.filesystem() as *const dyn crate::FilesystemOps as *const ();
+    for input in [parent, source] {
+        if input.filesystem() as *const dyn crate::FilesystemOps as *const () != owner {
+            return Err(VfsError::CrossesDevices);
+        }
+    }
+    let command = NamespaceMutation::Link(LinkRequest::new(target, source, context.write()));
+    Ok(start_command(context, parent, command, reservation)?.resume())
+}
+
+pub(crate) fn start_rename<'a>(
+    context: &'a NamespaceOperationContext<'a>,
+    source: (&'a crate::Location, &'a str),
+    destination: (&'a crate::Location, &'a str),
+    options: RenameOptions,
+    credentials: &'a MutationCredentials<'a>,
+    reservation: Reservation<'a>,
+) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+    context.retired().retire(source.0.clone());
+    context.retired().retire(destination.0.clone());
+    if !Arc::ptr_eq(source.0.mountpoint(), destination.0.mountpoint()) {
+        return Err(VfsError::CrossesDevices);
+    }
+    let command = NamespaceMutation::Rename(RenameRequest::new(
+        source,
+        destination,
+        options,
+        credentials,
+        context.write(),
+    )?);
+    Ok(start_command(context, source.0, command, reservation)?.resume())
+}
+
+/// The only native startup path: no registry borrow spans a backend callback.
+fn start_command<'a>(
+    context: &'a NamespaceOperationContext<'a>,
+    receiver: &crate::Location,
+    command: NamespaceMutation<'a>,
+    mut reservation: Reservation<'a>,
+) -> VfsResult<NamespaceStart<'a>> {
+    let admission = context.admission(receiver)?;
     reservation.start();
     Ok(admission.owner.begin_namespace(NamespaceDriverRequest {
         command,

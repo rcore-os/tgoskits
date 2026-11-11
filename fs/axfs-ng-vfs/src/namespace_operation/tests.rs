@@ -155,10 +155,16 @@ impl FilesystemOps for ProbeFs {
         let guard = self.gate.lock().unwrap();
         let parent = request.command().parents().0.clone();
         let target = self.entry(Reference::new(Some(parent), "victim".into()));
+        let name = match request.command() {
+            NamespaceMutation::Link(_) => "link",
+            NamespaceMutation::Rename(_) => "rename",
+            _ => "namespace",
+        };
         request.observe(Box::new(Driver {
             filesystem: self,
             _guard: guard,
             target,
+            name,
         }))
     }
 }
@@ -202,6 +208,36 @@ impl NodeOps for ProbeNode {
             // The processor must not promote that old error into a phase error.
             assert_eq!(observed.state(), NamespaceState::Unchanged);
             assert_eq!(observed.result(), Err(VfsError::AlreadyExists));
+            let context = request.context();
+            let linked = context
+                .link(backing, "alias", backing, &MutationCredentials::root())
+                .unwrap();
+            // A directory source must be rejected by the real fixed authorizer,
+            // yet its backend still hands back typed completion responsibility.
+            assert_eq!(linked.state(), NamespaceState::Unchanged);
+            assert_eq!(linked.result(), Err(VfsError::OperationNotPermitted));
+            let renamed = context
+                .rename(
+                    (backing, "victim"),
+                    (backing, "moved"),
+                    RenameOptions::REPLACE,
+                    &MutationCredentials::root(),
+                )
+                .unwrap();
+            assert_eq!(renamed.state(), NamespaceState::Applied);
+            assert_eq!(renamed.result(), Ok(()));
+            let Some(NamespaceEffect::Rename(effect)) = renamed.observation() else {
+                panic!("rename observation lost its typed effect");
+            };
+            assert_eq!(effect.source_name, "victim");
+            assert_eq!(effect.destination_name, "moved");
+            assert!(
+                self.0.events.lock().unwrap().iter().all(|event| !matches!(
+                    event,
+                    Event::Pressure(_) | Event::Exit(_) | Event::Finish(_)
+                )),
+                "child commands must not run their own completion phases"
+            );
         }
         let pending = core::mem::take(&mut *self.0.pending.lock().unwrap());
         for prepared in pending {
@@ -260,6 +296,7 @@ struct Driver<'a> {
     filesystem: &'a ProbeFs,
     _guard: MutexGuard<'a, ()>,
     target: DirEntry,
+    name: &'static str,
 }
 impl LockedAttempt for Driver<'_> {
     fn parents(&mut self) -> VfsResult<(Metadata, Metadata)> {
@@ -267,38 +304,52 @@ impl LockedAttempt for Driver<'_> {
     }
     fn observe(
         &mut self,
-        _: &NamespaceMutation<'_>,
+        command: &NamespaceMutation<'_>,
         _: &MutationRetire,
     ) -> VfsResult<MutationObservation> {
-        Ok(MutationObservation::Unlink(RenameNode {
+        let target = RenameNode {
             entry: self.target.clone(),
             metadata: snapshot(),
             canonical_name: "victim".into(),
             cacheable: false,
             empty: true,
-        }))
+        };
+        Ok(match command {
+            NamespaceMutation::Unlink(_) => MutationObservation::Unlink(target),
+            NamespaceMutation::Link(_) => MutationObservation::Link {
+                source: target,
+                target: None,
+            },
+            NamespaceMutation::Rename(_) => MutationObservation::Rename(crate::RenameObservation {
+                source: target,
+                target: None,
+            }),
+            _ => panic!("unexpected command"),
+        })
     }
     fn is_ancestor(&mut self, _: &NamespaceNode, _: u64) -> VfsResult<bool> {
         Ok(false)
     }
     fn commit(
         &mut self,
-        _: &AuthorizedMutation<'_>,
+        authorized: &AuthorizedMutation<'_>,
         _: &MutationRetire,
     ) -> NamespaceOutcome<NamespaceEffect> {
-        NamespaceOutcome::applied(
-            NamespaceEffect::Unlink(crate::NamespaceEntry {
+        let effect = match authorized {
+            AuthorizedMutation::Unlink(_) => NamespaceEffect::Unlink(crate::NamespaceEntry {
                 entry: self.target.clone(),
                 canonical_name: "victim".into(),
                 cacheable: false,
             }),
-            Ok(()),
-        )
+            AuthorizedMutation::Rename(rename) => NamespaceEffect::Rename(rename.effect()),
+            _ => panic!("unexpected authorization"),
+        };
+        NamespaceOutcome::applied(effect, Ok(()))
     }
 }
 impl NamespaceDriver for Driver<'_> {
     fn finish(self: Box<Self>, outcome: NamespaceOutcome<NamespaceEffect>) -> NamespaceCompletion {
-        let work = self.filesystem.work("namespace");
+        let work = self.filesystem.work(self.name);
         drop(self);
         NamespaceCompletion::new(outcome, Some(Box::new(work)))
     }
@@ -472,6 +523,7 @@ pub(crate) fn exercise_scope() {
         assert!(last_exit < retire && retire < first_finish);
         let mut expected_names = vec!["namespace"; 12];
         expected_names.push("metadata");
+        expected_names.extend(["link", "rename"]);
         if root_work {
             expected_names.push("root");
         }

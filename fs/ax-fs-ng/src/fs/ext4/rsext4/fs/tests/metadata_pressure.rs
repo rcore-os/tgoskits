@@ -16,7 +16,7 @@ std::thread_local! {
     static AFTER_PROGRESS: RefCell<Option<ProgressAction>> = const { RefCell::new(None) };
 }
 
-struct ProgressProbe;
+pub(super) struct ProgressProbe;
 
 struct BeforeFinish(Option<Box<dyn FnOnce()>>);
 
@@ -34,7 +34,7 @@ pub(in super::super) fn after_journal_progress() {
 }
 
 impl ProgressProbe {
-    fn install(action: impl FnOnce() + 'static) -> Self {
+    pub(super) fn install(action: impl FnOnce() + 'static) -> Self {
         AFTER_PROGRESS.with_borrow_mut(|slot| {
             assert!(slot.is_none());
             *slot = Some(Box::new(action));
@@ -42,7 +42,7 @@ impl ProgressProbe {
         Self
     }
 
-    fn finish(self) {
+    pub(super) fn finish(self) {
         assert!(
             AFTER_PROGRESS.with_borrow(Option::is_none),
             "no successful real typed journal-pressure completion"

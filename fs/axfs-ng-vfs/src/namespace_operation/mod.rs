@@ -13,7 +13,7 @@ use crate::{
     Location, Metadata, MetadataChange, MountWriteGuard, MutationCredentials, MutationRetire,
     NamespaceAdmission, NamespaceAdmissions, NamespaceCompletion, NamespaceEffect,
     NamespaceOutcome, NamespaceQuery, NamespaceRead, NamespaceStart, NamespaceState,
-    PreparedUnlink, PreparedWrite, VfsError, VfsResult,
+    PreparedUnlink, PreparedWrite, RenameOptions, VfsError, VfsResult,
 };
 
 /// An owned snapshot, never a transferable completion or write capability.
@@ -180,6 +180,47 @@ impl NamespaceOperationScope<'_, Metadata> {
 }
 
 impl NamespaceOperationScope<'_, NamespaceEffect> {
+    /// Starts exactly one root native hard-link attempt. Completion remains in
+    /// this scope even when the returned observation reports an error.
+    pub fn link<'a>(
+        &'a self,
+        context: &'a NamespaceOperationContext<'a>,
+        parent: &'a Location,
+        name: &str,
+        source: &'a Location,
+        credentials: &MutationCredentials<'a>,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        self.check_context(context)?;
+        crate::node::start_link(
+            context,
+            parent,
+            name,
+            source,
+            credentials,
+            Reservation::root_namespace(context.children, &self.state().root),
+        )
+    }
+
+    /// Starts exactly one root native rename with both slots in one attempt.
+    pub fn rename<'a>(
+        &'a self,
+        context: &'a NamespaceOperationContext<'a>,
+        source: (&'a Location, &'a str),
+        destination: (&'a Location, &'a str),
+        options: RenameOptions,
+        credentials: &'a MutationCredentials<'a>,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        self.check_context(context)?;
+        crate::node::start_rename(
+            context,
+            source,
+            destination,
+            options,
+            credentials,
+            Reservation::root_namespace(context.children, &self.state().root),
+        )
+    }
+
     /// Starts one root native unlink; the caller retains the named context
     /// through consuming resume/cancel, and ends that borrow before finishing.
     pub fn unlink<'a>(
@@ -275,6 +316,31 @@ impl<'a> NamespaceOperationContext<'a> {
     ) -> VfsResult<NamespaceStart<'a>> {
         let reservation = Reservation::child(self.children)?;
         self.dispatch_unlink(prepared, directory, credentials, reservation)
+    }
+
+    /// Starts a child hard link using only prepared rights. Its typed completion
+    /// is registered before this read-only observation is returned.
+    pub fn link(
+        &'a self,
+        parent: &'a Location,
+        name: &str,
+        source: &'a Location,
+        credentials: &MutationCredentials<'a>,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        let reservation = Reservation::child(self.children)?;
+        crate::node::start_link(self, parent, name, source, credentials, reservation)
+    }
+
+    /// Starts a child rename; neither authorization nor completion escapes.
+    pub fn rename(
+        &'a self,
+        source: (&'a Location, &'a str),
+        destination: (&'a Location, &'a str),
+        options: RenameOptions,
+        credentials: &'a MutationCredentials<'a>,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        let reservation = Reservation::child(self.children)?;
+        crate::node::start_rename(self, source, destination, options, credentials, reservation)
     }
 
     pub(crate) fn admission(&self, target: &Location) -> VfsResult<&'a NamespaceAdmission<'a>> {

@@ -96,10 +96,11 @@ fn real_checkpoint_pressure_retries_without_holding_namespace_rights() {
 
 #[test]
 fn symlink_and_hardlink_staging_release_namespace_rights() {
-    let (filesystem, root, _mount) = fixture();
+    let (filesystem, native_root, mount) = fixture();
+    let root = mount.root_location();
     let witness = root.lookup("witness").unwrap();
-    let probe = lookup_during_staging(&filesystem, &root);
-    let symlink = root
+    let probe = lookup_during_staging(&filesystem, &native_root);
+    let symlink = native_root
         .create_symlink(
             "symbolic",
             "witness",
@@ -116,13 +117,140 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
     probe.finish();
     assert_eq!(symlink.node_type(), NodeType::Symlink);
 
-    let probe = lookup_during_staging(&filesystem, &root);
+    let probe = lookup_during_staging(&filesystem, &native_root);
     let alias = root
         .link("alias", &witness, &axfs_ng_vfs::MutationCredentials::root())
         .unwrap();
     probe.finish();
     assert_eq!(alias.inode(), witness.inode());
     assert_eq!(alias.metadata().unwrap().nlink, 2);
+    assert!(Arc::ptr_eq(alias.mountpoint(), root.mountpoint()));
+    assert_admission_released(&filesystem);
+
+    // Real child Link/Rename requests return observations only; one scope owns
+    // their completion alongside the final root rename.
+    let write = axfs_ng_vfs::PreparedWrite::acquire(&root).unwrap();
+    let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+    {
+        let context = scope.context();
+        let linked = context
+            .link(
+                &root,
+                "scoped",
+                &witness,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
+        assert_eq!(linked.state(), axfs_ng_vfs::NamespaceState::Applied);
+        assert_eq!(linked.result(), Ok(()));
+        let Some(axfs_ng_vfs::NamespaceEffect::Link(alias)) = linked.observation() else {
+            panic!("child link lost its actual alias");
+        };
+        assert_eq!(alias.entry.inode(), witness.inode());
+        assert_eq!(alias.canonical_name, "scoped");
+        let renamed = context
+            .rename(
+                (&root, "scoped"),
+                (&root, "scoped-moved"),
+                RenameOptions::REPLACE,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
+        assert_eq!(renamed.state(), axfs_ng_vfs::NamespaceState::Applied);
+        assert_eq!(renamed.result(), Ok(()));
+        assert!(matches!(
+            renamed.observation(),
+            Some(axfs_ng_vfs::NamespaceEffect::Rename(_))
+        ));
+        scope
+            .rename(
+                &context,
+                (&root, "scoped-moved"),
+                (&root, "scoped-final"),
+                RenameOptions::REPLACE,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
+    }
+    scope
+        .finish()
+        .unwrap_or_else(|_| panic!("actual owner mismatch"))
+        .into_result()
+        .unwrap();
+    drop(write);
+    assert_eq!(
+        root.lookup("scoped-final").unwrap().inode(),
+        witness.inode()
+    );
+    assert_eq!(witness.metadata().unwrap().nlink, 3);
+    root.unlink(
+        "scoped-final",
+        false,
+        &axfs_ng_vfs::MutationCredentials::root(),
+    )
+    .unwrap();
+    assert_eq!(witness.metadata().unwrap().nlink, 2);
+    assert_admission_released(&filesystem);
+
+    // A fresh outer attempt must reauthorize the real source after pressure,
+    // rather than replaying its old owner authorization.
+    root.change_metadata(
+        axfs_ng_vfs::MetadataChange::Chmod(NodePermission::from_bits_truncate(0o777)),
+        &axfs_ng_vfs::MutationCredentials::root(),
+    )
+    .unwrap();
+    witness
+        .change_metadata(
+            axfs_ng_vfs::MetadataChange::Chmod(NodePermission::from_bits_truncate(0o600)),
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
+    filesystem.lock().staging = true;
+    let flushing = filesystem.clone();
+    let parent_number = inode_number(&native_root);
+    let probe = watch_flush(move || {
+        assert!(
+            flushing.inner.try_lock().is_some(),
+            "pressure retained state"
+        );
+        drop(flushing.namespace.lookup(parent_number).unwrap());
+        assert_eq!(flushing.admission.active_count(), 1);
+        Ok(())
+    });
+    let revoking = filesystem.clone();
+    let revoked = witness.clone();
+    let progress = super::metadata_pressure::ProgressProbe::install(move || {
+        assert!(!revoking.lock().staging);
+        assert_eq!(revoking.admission.active_count(), 1);
+        // Only after real pressure returns may a nested operation acquire the
+        // commit gate. Sync also proves this is not the device-flush boundary.
+        revoking.sync_to_disk().unwrap();
+        revoked
+            .change_metadata(
+                axfs_ng_vfs::MetadataChange::Chown {
+                    uid: Some(2000),
+                    gid: None,
+                },
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
+        let current = revoked.metadata().unwrap();
+        assert_eq!(current.uid, 2000);
+        assert_eq!(current.mode.bits() & 0o777, 0o600);
+    });
+    let credentials = axfs_ng_vfs::MutationCredentials {
+        cap_dac_override: false,
+        cap_fowner: false,
+        ..axfs_ng_vfs::MutationCredentials::root()
+    };
+    assert_eq!(
+        root.link("denied", &witness, &credentials).unwrap_err(),
+        VfsError::OperationNotPermitted
+    );
+    probe.finish();
+    progress.finish();
+    assert_eq!(root.lookup("denied").unwrap_err(), VfsError::NotFound);
+    assert_eq!(witness.metadata().unwrap().nlink, 2);
     assert_admission_released(&filesystem);
 }
 
@@ -197,7 +325,7 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
     }
 
     use axfs_ng_vfs::{
-        MutationCredentials, MutationRetire, NameState, NamespaceState, PreparedWrite, RenameAction,
+        MutationCredentials, NameState, NamespaceState, PreparedWrite, RenameAction,
     };
 
     use crate::file::{File, FileBackend, FileFlags};
@@ -245,7 +373,7 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
         filesystem.sync_to_disk().unwrap();
         super::sync_policy::set_inode_flags(&filesystem, &root, rsext4::InodeFlags::DIRECTORY_SYNC);
         let write = PreparedWrite::acquire(&root).unwrap();
-        let retired = MutationRetire::new();
+        let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
         let inspected_root = root.clone();
         let inspected_source = source.clone();
         let inspected_target = target.clone();
@@ -276,14 +404,26 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
             Err(BlockError::Io)
         });
 
-        let outcome = root.rename_with_write(
-            "source",
-            (&root, "target"),
-            options,
-            &MutationCredentials::root(),
-            &write,
-            &retired,
-        );
+        {
+            let context = scope.context();
+            let observed = scope
+                .rename(
+                    &context,
+                    (&root, "source"),
+                    (&root, "target"),
+                    options,
+                    &MutationCredentials::root(),
+                )
+                .unwrap();
+            assert_eq!(observed.state(), NamespaceState::Applied);
+            assert!(matches!(
+                observed.observation(),
+                Some(axfs_ng_vfs::NamespaceEffect::Rename(_))
+            ));
+        }
+        let outcome = scope
+            .finish()
+            .unwrap_or_else(|_| panic!("actual owner mismatch"));
 
         probe.finish();
         assert_eq!(observed_flushes.load(Ordering::Relaxed), 1);
@@ -359,7 +499,6 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
         assert_eq!(target_handle.read_at(&mut bytes[..], 0), Ok(3));
         assert_eq!(&bytes, b"old");
         assert_admission_released(&filesystem);
-        drop(retired);
         drop(write);
     }
 }

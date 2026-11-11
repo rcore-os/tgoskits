@@ -173,12 +173,23 @@ impl NamespacePressure for Ext4NamespacePressure {
             attempt,
             reap,
         } = *self;
+        #[cfg(test)]
+        let journal_progress = matches!(&attempt, Some(MutationAttempt::Staging))
+            || matches!(
+                &attempt,
+                Some(MutationAttempt::Finished(Err(error))) if error.requires_journal_progress()
+            );
         let completion = match attempt {
             Some(attempt) => filesystem
                 .finish_mutation_pressure(attempt)
                 .map_err(into_vfs_err),
             None => Ok(()),
         };
+        #[cfg(test)]
+        if journal_progress && completion.is_ok() && outcome.state() == NamespaceState::Retry {
+            // The real pressure owner has returned and released the commit gate.
+            super::super::super::tests::metadata_pressure::after_journal_progress();
+        }
         let sync_directory = matches!(outcome.state(), NamespaceState::Applied)
             || (outcome.state() == NamespaceState::Unchanged && outcome.observation().is_some());
         let sync_directory = sync_directory
