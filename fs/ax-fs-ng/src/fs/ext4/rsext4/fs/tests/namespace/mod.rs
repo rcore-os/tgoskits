@@ -6,6 +6,7 @@ use axfs_ng_vfs::{DirNodeOps, NodeOps, NodePermission, NodeType, RenameOptions};
 
 use super::*;
 
+mod checkpoint;
 mod revalidation;
 
 type FlushAction = Box<dyn FnOnce() -> BlockResult>;
@@ -89,6 +90,8 @@ fn real_checkpoint_pressure_retries_without_holding_namespace_rights() {
     assert_eq!(root.lookup("pressure").unwrap().inode(), created.inode());
     assert!(!filesystem.lock().ext4.writeback_checkpoint_pending());
     assert_admission_released(&filesystem);
+
+    checkpoint::retry_observation_after_checkpoint_pressure();
 }
 
 #[test]
