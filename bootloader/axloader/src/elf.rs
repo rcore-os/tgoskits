@@ -432,16 +432,29 @@ fn validate_dynamic_relocations(
     for index in 0..section_count {
         let section = Elf64SectionHeader::read(image, table_offset + index * section_size)
             .ok_or(ElfError::RelocationSectionRange)?;
-        if section.flags & SHF_ALLOC == 0 {
+        if section.section_type != SHT_RELA && section.section_type != SHT_RELR {
+            continue;
+        }
+        let section_file_end = section
+            .data_offset
+            .checked_add(section.data_size)
+            .ok_or(ElfError::RelocationSectionRange)?;
+        let file_intersects_load = section.data_size != 0
+            && segments.iter().any(|segment| {
+                segment.file_size != 0
+                    && segment.file_offset < section_file_end
+                    && segment
+                        .file_offset
+                        .checked_add(segment.file_size)
+                        .is_some_and(|segment_file_end| section.data_offset < segment_file_end)
+            });
+        if section.flags & SHF_ALLOC == 0 && !file_intersects_load {
             continue;
         }
         if section.section_type == SHT_RELR {
             if section.data_size != 0 {
                 return Err(ElfError::UnsupportedRelocation);
             }
-            continue;
-        }
-        if section.section_type != SHT_RELA {
             continue;
         }
         if section.entry_size != 0 && section.entry_size != ELF64_RELA_SIZE as u64 {
@@ -625,7 +638,7 @@ fn read_u64(image: &[u8], offset: usize) -> Option<u64> {
 mod tests {
     use alloc::string::ToString;
 
-    use super::{ELF_PF_X, ELF64_RELA_SIZE, ElfError, ElfImage, SHF_ALLOC, SHT_RELA};
+    use super::{ELF_PF_X, ELF64_RELA_SIZE, ElfError, ElfImage, SHF_ALLOC, SHT_RELA, SHT_RELR};
     use crate::target::{LOONGARCH64_EFI, LOONGARCH64_UEFI, TargetSpec, X86_64};
 
     struct TestSegment {
@@ -859,6 +872,15 @@ mod tests {
         image
     }
 
+    fn relocation_section_header_offset(image: &[u8]) -> usize {
+        read_test_u64(image, 40) as usize + 3 * 64
+    }
+
+    fn clear_relocation_section_alloc(image: &mut [u8]) {
+        let relocation_section = relocation_section_header_offset(image);
+        write_u64(image, relocation_section + 8, 0);
+    }
+
     #[test]
     fn native_loong_relocations_allow_only_relative_and_none_entries() {
         for (relocation_type, target_segment_flags, relocation_target, expected) in [
@@ -875,6 +897,40 @@ mod tests {
             let result = ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ());
             assert_eq!(result, expected);
         }
+
+        let mut image = native_loong_relocation_image(3, 6, 0x10_3018, 0x10_3000);
+        clear_relocation_section_alloc(&mut image);
+        assert_eq!(
+            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+            Ok(())
+        );
+
+        let mut image = native_loong_relocation_image(4, 6, 0x10_3000, 0x10_3000);
+        clear_relocation_section_alloc(&mut image);
+        let relocation_section = relocation_section_header_offset(&image);
+        let unloaded_relocation_offset = image.len() as u64;
+        image.extend_from_slice(&[0; ELF64_RELA_SIZE]);
+        write_u64(&mut image, unloaded_relocation_offset as usize, 0x10_3000);
+        write_u64(&mut image, unloaded_relocation_offset as usize + 8, 4u64);
+        write_u64(&mut image, relocation_section + 16, 0x20_0000);
+        write_u64(
+            &mut image,
+            relocation_section + 24,
+            unloaded_relocation_offset,
+        );
+        assert_eq!(
+            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+            Ok(())
+        );
+
+        let mut image = native_loong_relocation_image(3, 6, 0x10_3018, 0x10_3000);
+        let relocation_section = relocation_section_header_offset(&image);
+        write_u32(&mut image, relocation_section + 4, SHT_RELR);
+        clear_relocation_section_alloc(&mut image);
+        assert_eq!(
+            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+            Err(ElfError::UnsupportedRelocation)
+        );
     }
 
     #[test]
@@ -896,6 +952,34 @@ mod tests {
                 Err(ElfError::RelocationTargetRange),
             );
         }
+
+        let mut image = native_loong_relocation_image(3, 6, 0x10_4000, 0x10_3000);
+        clear_relocation_section_alloc(&mut image);
+        assert_eq!(
+            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+            Err(ElfError::RelocationTargetRange),
+        );
+    }
+
+    #[test]
+    fn native_loong_relocations_require_fully_loaded_section_file_ranges() {
+        let mut image = native_loong_relocation_image(3, 6, 0x10_3018, 0x10_3000);
+        clear_relocation_section_alloc(&mut image);
+        let relocation_section = relocation_section_header_offset(&image);
+        write_u64(&mut image, relocation_section + 24, 168);
+        assert_eq!(
+            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+            Err(ElfError::RelocationSectionRange),
+        );
+
+        let mut image = native_loong_relocation_image(3, 6, 0x10_3018, 0x10_3000);
+        clear_relocation_section_alloc(&mut image);
+        let relocation_section = relocation_section_header_offset(&image);
+        write_u64(&mut image, relocation_section + 24, u64::MAX);
+        assert_eq!(
+            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+            Err(ElfError::RelocationSectionRange),
+        );
     }
 
     #[test]
