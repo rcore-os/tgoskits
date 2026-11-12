@@ -41,11 +41,17 @@ impl<'op> BackingQueryContext<'op> {
         let destination = self
             .context
             .admission_for_owner(query.entry().filesystem())?;
+        let source = self.source.owner;
         let depth = destination.owner.stack_depth();
         if self.source.check_owner(destination.owner).is_ok()
             || self.depth > 2
             || depth > 2
             || depth >= self.depth
+            || !source
+                .read_backing_roots()
+                .iter()
+                .chain(source.write_backing_roots())
+                .any(|root| destination.check_owner(root.filesystem()).is_ok())
         {
             return Err(VfsError::BadState);
         }
