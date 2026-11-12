@@ -66,6 +66,31 @@ impl PathHandle {
         &self.location
     }
 
+    /// Keeps ownership in the caller across validation failures. The caller
+    /// must retain its guard before invoking this fallible internal bridge.
+    pub(in crate::mount) fn from_mount_use(
+        location: &Location,
+        guard: &Arc<MountUseGuard>,
+    ) -> VfsResult<Self> {
+        if !Arc::ptr_eq(&location.mountpoint, &guard.mountpoint) {
+            return Err(VfsError::CrossesDevices);
+        }
+        Self::check_filesystem(location)?;
+        Ok(Self {
+            location: location.clone(),
+            guard: guard.clone(),
+        })
+    }
+
+    pub(in crate::mount) fn check_filesystem(location: &Location) -> VfsResult<()> {
+        if owner_address(location.entry.filesystem())
+            != owner_address(location.mountpoint.root.filesystem())
+        {
+            return Err(VfsError::CrossesDevices);
+        }
+        Ok(())
+    }
+
     /// Consumes an exclusive mount-root use to prepare a normal unmount.
     ///
     /// Non-mount-root entries and parentless mounts return
@@ -108,15 +133,6 @@ impl PathHandle {
                 Err(error)
             }
         }
-    }
-
-    fn check_filesystem(location: &Location) -> VfsResult<()> {
-        if owner_address(location.entry.filesystem())
-            != owner_address(location.mountpoint.root.filesystem())
-        {
-            return Err(VfsError::CrossesDevices);
-        }
-        Ok(())
     }
 }
 

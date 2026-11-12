@@ -26,11 +26,15 @@ use crate::{
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
+mod namespace;
 mod propagation;
 
 mod unmount;
 
+pub use namespace::*;
 pub use unmount::*;
+
+type MountCloneMap = Vec<(Arc<Mountpoint>, Arc<Mountpoint>)>;
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -223,6 +227,16 @@ struct MountUseState {
     normally_unmounted: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountRootRole {
+    /// Created parentless and never installed under another mount.
+    Unbound,
+    /// Permanently adopted, even after the namespace entity is released.
+    NamespaceAnchor,
+    /// An ordinary mount, including a lazily detached former child.
+    Ordinary,
+}
+
 /// Owns one counted mount use, released automatically on drop.
 ///
 /// Unlike an ordinary `Arc<Mountpoint>`, this guard prevents normal unmount
@@ -303,6 +317,8 @@ pub struct Mountpoint {
     writes: RawSpinLock<MountWriteState>,
     filesystem_state: Arc<FilesystemMountState>,
     active_uses: RawSpinLock<MountUseState>,
+    /// Permanent node role, bound only while holding the topology gate.
+    root_role: RawSpinLock<MountRootRole>,
     /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
     /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x800000,
     /// MS_STRICTATIME=0x1000000). MS_RDONLY is tracked separately via
@@ -335,6 +351,10 @@ impl Mountpoint {
     /// A resolved path cannot acquire a use after its mount was normally removed.
     pub fn acquire_use(self: &Arc<Self>) -> VfsResult<MountUseGuard> {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        self.acquire_use_locked()
+    }
+
+    fn acquire_use_locked(self: &Arc<Self>) -> VfsResult<MountUseGuard> {
         let mut state = self.active_uses.lock();
         if state.normally_unmounted {
             return Err(VfsError::NotFound);
@@ -398,6 +418,11 @@ impl Mountpoint {
         readonly: bool,
     ) -> Arc<Self> {
         let filesystem_lease = root.filesystem().mount_lease();
+        let root_role = if location_in_parent.is_none() {
+            MountRootRole::Unbound
+        } else {
+            MountRootRole::Ordinary
+        };
         Arc::new(Self {
             root,
             location: RawSpinLock::new(location_in_parent),
@@ -409,6 +434,7 @@ impl Mountpoint {
             writes: RawSpinLock::new(MountWriteState::new(readonly)),
             filesystem_state,
             active_uses: RawSpinLock::new(MountUseState::default()),
+            root_role: RawSpinLock::new(root_role),
             mount_flags: AtomicU32::new(0),
             expired: AtomicBool::new(false),
             propagation: RawSpinLock::new(PropagationType::Private),
@@ -573,12 +599,12 @@ impl Mountpoint {
         }
     }
 
-    fn clone_tree_locked(self: &Arc<Self>, skip_unbindable: bool) -> Arc<Self> {
+    fn clone_tree_locked(self: &Arc<Self>, skip_unbindable: bool) -> (Arc<Self>, MountCloneMap) {
         let result = Self::clone_shallow(self, None);
         let mut clones = vec![(self.clone(), result.clone())];
         Self::clone_children_from(self, &result, skip_unbindable, None, &mut clones);
         Self::rebuild_cloned_relations(&clones);
-        result
+        (result, clones)
     }
 
     /// Clone this mount tree into an independent namespace-local topology.
@@ -587,9 +613,11 @@ impl Mountpoint {
     /// objects, but all `Mountpoint` nodes and parent/child links are private
     /// to the clone.
     pub fn clone_tree(self: &Arc<Self>) -> Arc<Self> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        let result = self.clone_tree_locked(false);
+        let topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let (result, clones) = self.clone_tree_locked(false);
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        drop(topology);
+        drop(clones);
         result
     }
 
@@ -611,6 +639,10 @@ impl Mountpoint {
         self.location.lock().is_none()
     }
 
+    fn root_role(&self) -> MountRootRole {
+        *self.root_role.lock()
+    }
+
     /// Pivot the mount tree: the old root (`self`) is detached and re-attached
     /// at `put_old` under `new_root_mp`, which becomes the global root.
     ///
@@ -626,6 +658,11 @@ impl Mountpoint {
         put_old: &Location,      // directory under new_root_mp where old root goes
     ) -> VfsResult<()> {
         let topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        if self.root_role() == MountRootRole::NamespaceAnchor
+            || new_root_mp.root_role() == MountRootRole::NamespaceAnchor
+        {
+            return Err(VfsError::InvalidInput);
+        }
         let new_root = new_root_mp.root_location();
         if Arc::ptr_eq(self, new_root_mp)
             || !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
@@ -670,6 +707,7 @@ impl Mountpoint {
                 .insert(parent.entry.key(), new_root_mp.clone());
         }
         let previous_new = core::mem::replace(&mut *new_root_mp.location.lock(), old_parent);
+        *self.root_role.lock() = MountRootRole::Ordinary;
         let previous_old = self.location.lock().replace(put_old.clone());
         new_root_mp
             .children
@@ -889,12 +927,14 @@ impl Mountpoint {
     /// Attaches a detached mount tree at `new_location`.
     ///
     /// Unlike [`Self::move_to`], the source has no old parent entry to remove.
-    /// Callers must only expose this operation for mount handles created as
-    /// detached trees; the namespace root also has no parent but is not a
-    /// movable mount handle.
+    /// A permanently bound namespace anchor is not a movable mount handle,
+    /// even after the namespace owner has been released.
     pub fn attach_detached(self: &Arc<Self>, new_location: &Location) -> VfsResult<()> {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        if self.active_uses.lock().normally_unmounted || self.location.lock().is_some() {
+        if self.root_role() == MountRootRole::NamespaceAnchor
+            || self.active_uses.lock().normally_unmounted
+            || self.location.lock().is_some()
+        {
             return Err(VfsError::InvalidInput);
         }
         if new_location.is_mountpoint() {
@@ -911,6 +951,7 @@ impl Mountpoint {
             current = location.parent();
         }
 
+        *self.root_role.lock() = MountRootRole::Ordinary;
         *self.location.lock() = Some(new_location.clone());
         new_location
             .mountpoint
@@ -1942,6 +1983,7 @@ mod tests {
     use super::*;
     use crate::{FileNode, FileNodeOps, StatFs};
 
+    mod namespace;
     mod path_handle;
     mod prepared_write;
 
