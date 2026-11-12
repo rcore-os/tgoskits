@@ -15,11 +15,16 @@ pub const CASES_ENV: &str = "AX_DRIVERS_CASES";
 pub struct Catalog {
     schema_version: u32,
     pub run_order: Vec<String>,
+    #[serde(rename = "execution")]
+    _execution: toml::Value,
     pub batches: BTreeMap<String, Batch>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Batch {
+    pub package: String,
+    pub image: String,
+    pub mode: String,
     pub arch: String,
     pub build_config: PathBuf,
     pub qemu_config: PathBuf,
@@ -188,7 +193,12 @@ mod tests {
     const SOURCE: &str = r#"
 schema_version=1
 run_order=["combined"]
+[execution]
+batch_env="TEST_BATCH"
 [batches.combined]
+package="example-image"
+image="freestanding"
+mode="normal"
 arch="x86_64"
 build_config="config/build.toml"
 qemu_config="config/qemu.toml"

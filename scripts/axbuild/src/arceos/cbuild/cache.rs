@@ -32,26 +32,7 @@ pub(super) fn file_hash(path: &Path) -> anyhow::Result<String> {
     })?))
 }
 pub(super) fn signature(value: &impl Serialize) -> anyhow::Result<String> {
-    fn canonical(value: serde_json::Value) -> serde_json::Value {
-        match value {
-            serde_json::Value::Object(map) => {
-                let mut rows: Vec<_> = map.into_iter().collect();
-                rows.sort_by(|a, b| a.0.cmp(&b.0));
-                serde_json::Value::Object(
-                    rows.into_iter()
-                        .map(|(key, value)| (key, canonical(value)))
-                        .collect(),
-                )
-            }
-            serde_json::Value::Array(rows) => {
-                serde_json::Value::Array(rows.into_iter().map(canonical).collect())
-            }
-            value => value,
-        }
-    }
-    Ok(digest(&serde_json::to_vec(&canonical(
-        serde_json::to_value((CACHE_VERSION, value))?,
-    ))?))
+    crate::support::fingerprint::signature(&(CACHE_VERSION, value))
 }
 // File metadata is not a content identity: in-place writes can share ctime
 // granularity, and callers can restore mtime. Always verify tool bytes.
@@ -147,61 +128,6 @@ pub(super) fn artifact(
     Ok(true)
 }
 
-#[derive(Serialize, Deserialize)]
-struct SymbolMaps {
-    version: u32,
-    key: String,
-    axbt: String,
-    axks: String,
-}
-pub(crate) fn ensure_symbol_maps(elf: &Path) -> anyhow::Result<bool> {
-    let axbt = elf.with_extension("axbt");
-    let axks = elf.with_extension("axks");
-    let metadata = elf.with_extension("symbol-cache.json");
-    // These are fingerprints of the compiled generator, not runtime source inspection.
-    let elf_hash = file_hash(elf)?;
-    let key = signature(&(
-        elf_hash.clone(),
-        digest(include_bytes!("../../build/symbol_map.rs")),
-        digest(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../Cargo.lock"
-        ))),
-        digest(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../rust-toolchain.toml"
-        ))),
-    ))?;
-    if let Ok(bytes) = fs::read(&metadata)
-        && let Ok(saved) = serde_json::from_slice::<SymbolMaps>(&bytes)
-        && saved.version == CACHE_VERSION
-        && saved.key == key
-        && file_hash(&axbt).is_ok_and(|hash| hash == saved.axbt)
-        && file_hash(&axks).is_ok_and(|hash| hash == saved.axks)
-    {
-        println!("[axbuild] C symbol maps reused");
-        return Ok(false);
-    }
-    let temp = tempfile::tempdir_in(elf.parent().context("ELF directory")?)?;
-    let temporary = temp.path().join("symbols.axbt");
-    crate::build::symbol_map::generate_axbt_map(elf, &temporary)?;
-    ensure!(
-        file_hash(elf)? == elf_hash,
-        "ELF changed while generating C symbol maps"
-    );
-    let other = temporary.with_extension("axks");
-    let saved = SymbolMaps {
-        version: CACHE_VERSION,
-        key,
-        axbt: file_hash(&temporary)?,
-        axks: file_hash(&other)?,
-    };
-    fs::rename(temporary, axbt)?;
-    fs::rename(other, axks)?;
-    write_unchanged(&metadata, &serde_json::to_vec(&saved)?)?;
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,30 +165,6 @@ mod tests {
             })
             .unwrap()
         );
-    }
-    #[test]
-    fn symbol_cache_requires_both_outputs_and_rejects_corruption() {
-        use std::process::Command;
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("main.c");
-        let elf = temp.path().join("program");
-        fs::write(&source, "int main(void) { return 0; }\n").unwrap();
-        assert!(
-            Command::new("cc")
-                .arg("-g")
-                .arg(&source)
-                .arg("-o")
-                .arg(&elf)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(ensure_symbol_maps(&elf).unwrap());
-        assert!(!ensure_symbol_maps(&elf).unwrap());
-        fs::remove_file(elf.with_extension("axks")).unwrap();
-        assert!(ensure_symbol_maps(&elf).unwrap());
-        fs::write(elf.with_extension("axbt"), "broken").unwrap();
-        assert!(ensure_symbol_maps(&elf).unwrap());
     }
     #[cfg(unix)]
     #[test]

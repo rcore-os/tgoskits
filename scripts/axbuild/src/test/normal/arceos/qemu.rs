@@ -4,7 +4,7 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{
     assets::test_build_args,
-    types::{ArceosQemuCase, PreparedArceosQemuCase},
+    types::{ArceosQemuCase, PreparedArceosQemuCase, ResolvedArceosQemuCase},
 };
 use crate::{
     arceos::{ArceOS, build, rootfs},
@@ -12,35 +12,72 @@ use crate::{
     execution::{host_http::HostHttpServerGuard, qemu as qemu_test},
 };
 
+/// Resolve build inputs without preparing assets, writing snapshots or starting a target.
+pub(crate) fn resolve_qemu_case(
+    arceos: &ArceOS,
+    target: &str,
+    case: ArceosQemuCase,
+) -> anyhow::Result<ResolvedArceosQemuCase> {
+    qemu_test::validate_test_qemu_rootfs_write_policy(&case.case.qemu_config_path, "ArceOS")?;
+    let request = arceos.prepare_request(
+        test_build_args(&case.package, target, &case.build_config_path),
+        Some(case.case.qemu_config_path.clone()),
+        None,
+        SnapshotPersistence::Discard,
+    )?;
+    let (mut cargo, files) = build::resolve_cargo_config(&request, arceos.app.workspace_context())?;
+    if case.feature.is_some() {
+        for feature in &case.features {
+            add_cargo_feature(&mut cargo, feature);
+        }
+        let case_enables_mmu = crate::build::package_enables_mmu(
+            &request.package,
+            arceos.app.workspace_context().metadata(),
+            &case.features,
+        )?;
+        if case_enables_mmu {
+            crate::build::append_cargo_rustflags_with_files(
+                &mut cargo,
+                &["-Zstack-protector=strong"],
+                &files,
+            );
+        }
+    }
+    Ok(ResolvedArceosQemuCase {
+        files,
+        case,
+        request,
+        cargo,
+    })
+}
+
 pub(crate) async fn prepare_qemu_cases(
     arceos: &mut ArceOS,
     target: &str,
     cases: Vec<ArceosQemuCase>,
     configure: Option<fn(&mut QemuConfig, Option<&str>)>,
 ) -> anyhow::Result<Vec<PreparedArceosQemuCase>> {
+    let resolved = cases
+        .into_iter()
+        .map(|case| resolve_qemu_case(arceos, target, case))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    prepare_resolved_qemu_cases(arceos, resolved, configure).await
+}
+
+pub(crate) async fn prepare_resolved_qemu_cases(
+    arceos: &mut ArceOS,
+    cases: Vec<ResolvedArceosQemuCase>,
+    configure: Option<fn(&mut QemuConfig, Option<&str>)>,
+) -> anyhow::Result<Vec<PreparedArceosQemuCase>> {
     let mut prepared = Vec::with_capacity(cases.len());
-    for case in cases {
-        qemu_test::validate_test_qemu_rootfs_write_policy(&case.case.qemu_config_path, "ArceOS")?;
-        let request = arceos.prepare_request(
-            test_build_args(&case.package, target, &case.build_config_path),
-            Some(case.case.qemu_config_path.clone()),
-            None,
-            SnapshotPersistence::Discard,
-        )?;
-        let mut cargo = build::load_cargo_config(&request, arceos.app.workspace_context())?;
-        if case.feature.is_some() {
-            for feature in &case.features {
-                add_cargo_feature(&mut cargo, feature);
-            }
-            let case_enables_mmu = crate::build::package_enables_mmu(
-                &request.package,
-                arceos.app.workspace_context().metadata(),
-                &case.features,
-            )?;
-            if case_enables_mmu {
-                crate::build::append_cargo_rustflags(&mut cargo, &["-Zstack-protector=strong"]);
-            }
-        }
+    for ResolvedArceosQemuCase {
+        files,
+        case,
+        request,
+        cargo,
+    } in cases
+    {
+        files.materialize()?;
         let mut qemu = arceos
             .load_qemu_config(&request, &cargo)
             .await?

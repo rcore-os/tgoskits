@@ -7,6 +7,19 @@ const CARGO_TARGET_DIR_CHILD: &str = "AXBUILD_TEST_CARGO_TARGET_DIR_CHILD";
 
 #[test]
 fn workspace_context_respects_cargo_config_target_directory() {
+    // Cargo's environment override is tested separately. Isolate this fixture
+    // without changing the process environment of concurrent unit tests.
+    if std::env::var(CARGO_TARGET_DIR_CHILD).as_deref() != Ok("config") {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("context::tests::workspace::workspace_context_respects_cargo_config_target_directory")
+            .env(CARGO_TARGET_DIR_CHILD, "config")
+            .env_remove("CARGO_TARGET_DIR")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
     let root = tempdir().unwrap();
     let _ = test_app_context(root.path());
     fs::create_dir_all(root.path().join(".cargo")).unwrap();
@@ -70,7 +83,7 @@ fn explicit_target_directory_overrides_metadata_and_is_workspace_relative() {
 }
 
 #[test]
-fn workspace_root_path_uses_runtime_workspace_when_compile_time_path_is_unavailable() {
+fn workspace_root_path_uses_runtime_workspace() {
     let root = tempdir().unwrap();
     let nested = root.path().join("scripts/axbuild/src");
     fs::create_dir_all(&nested).unwrap();
@@ -80,9 +93,28 @@ fn workspace_root_path_uses_runtime_workspace_when_compile_time_path_is_unavaila
     )
     .unwrap();
 
-    let missing_compile_manifest_dir = root.path().join("missing/scripts/axbuild");
-
-    let resolved = workspace_root_path_from(&nested, &missing_compile_manifest_dir).unwrap();
+    let resolved = workspace_root_path_from(&nested).unwrap();
 
     assert_eq!(resolved, root.path().canonicalize().unwrap());
+}
+
+#[test]
+fn runtime_discovery_accepts_implicit_workspaces_and_rejects_unrelated_directories() {
+    let root = tempdir().unwrap();
+    assert!(workspace_root_path_from(root.path()).is_err());
+    fs::create_dir_all(root.path().join("src")).unwrap();
+    fs::write(root.path().join("src/lib.rs"), "").unwrap();
+    fs::write(
+        root.path().join("Cargo.toml"),
+        r#"[package]
+name="external-project"
+version="0.0.0"
+edition="2024"
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        workspace_root_path_from(&root.path().join("src")).unwrap(),
+        root.path().canonicalize().unwrap()
+    );
 }

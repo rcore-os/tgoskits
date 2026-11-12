@@ -17,6 +17,10 @@ targets = ["x86_64-unknown-none"]
 features = ["ax-std"]
 
 [build-dependencies]
-anyhow.workspace = true
-serde = { version = "1.0", features = ["derive"] }
-toml = { workspace = true, features = ["parse", "serde"] }
+arceos-test-build = { path = "../build-support" }
+
+[package.metadata.clippy.batch_suite]
+path = "suite.toml"
+
+[package.metadata.axbuild]
+qemu_suite = "suite.toml"

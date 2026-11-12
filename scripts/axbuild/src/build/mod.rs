@@ -19,6 +19,8 @@ use crate::context::axbuild_tmp_dir;
 #[cfg(test)]
 use crate::context::{workspace_manifest_path, workspace_metadata_root_manifest};
 
+mod artifacts;
+pub(crate) use artifacts::BuildFiles;
 mod bare_build;
 mod config_file;
 mod config_source;
@@ -42,12 +44,11 @@ pub(crate) use future_incompat::{
     finish_future_incompat_report_status, start_future_incompat_report_session,
 };
 pub(crate) use info::{
-    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, append_cargo_rustflags, env_truthy,
-    into_prepared_no_std_cargo_config_with_metadata,
+    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, StdBuildInput, append_cargo_rustflags,
+    append_cargo_rustflags_with_files, env_truthy, into_prepared_no_std_cargo_config_with_metadata,
     into_prepared_no_std_cargo_config_with_metadata_and_defaults,
-    into_prepared_std_cargo_config_with_metadata,
-    into_prepared_std_cargo_config_with_metadata_and_defaults, package_enables_mmu,
-    resolve_c_app_features, resolved_std_build_features, toolchain_rustflags, validate_feature,
+    into_prepared_std_cargo_config_with_metadata, package_enables_mmu, resolve_c_app_features,
+    resolve_std_cargo_config, resolved_std_build_features, toolchain_rustflags, validate_feature,
     validate_features,
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};

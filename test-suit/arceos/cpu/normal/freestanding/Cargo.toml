@@ -15,16 +15,14 @@ ax-std = { workspace = true, default-features = false, features = ["alloc", "pag
 ax-alloc = { workspace = true, features = ["global-allocator"] }
 
 [build-dependencies]
-anyhow.workspace = true
-serde = { version = "1.0", features = ["derive"] }
+arceos-test-build = { path = "../../../build-support" }
 toml = { workspace = true, features = ["parse", "serde"] }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat"]
 
-[package.metadata.clippy.cpu_suite]
+[package.metadata.clippy.batch_suite]
 path = "../suite.toml"
-image = "freestanding"
 
 [package.metadata.clippy.board_suite]
 path = "../../../board-orangepi-5-plus/suite.toml"

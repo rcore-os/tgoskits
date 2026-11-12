@@ -260,6 +260,8 @@ Starry QEMU 失败必须传播到 `cargo xtask starry test qemu ...`：封装脚
 
 ## 可发布 Cargo 补丁策略
 
+涉及 `axbuild`、其构建输入或消费者时，按 [独立宿主工具库](../rust-api-design/references/modules-and-dependencies.md#13-独立宿主工具库) 审查源码与数据边界，并核对当前精确提交的独立制品及公开 API 消费者编译日志。制品暂存与 `--no-verify` 本身不是独立编译证据；普通审查仍只读取远端 CI，不在本地运行该验证脚本。
+
 拉取请求触及 `Cargo.toml`、`Cargo.lock`、已提交的 `.cargo/config`/`.cargo/config.toml`、依赖元数据、重复版本、第三方接口或跨依赖类型边界时，检查所有 `[patch]` 和变更的依赖来源。按来源是否能由本仓库或 crates.io 重现、工作区是否可发布来判断；存在 `[patch.crates-io]` 本身不阻塞。
 
 允许但必须通过解析与发布检查的来源：

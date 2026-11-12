@@ -577,20 +577,25 @@ fn package_clippy_configuration_rejects_empty_rustflags() {
 }
 
 #[cfg(test)]
-mod cpu_suite_tests {
+mod batch_suite_tests {
     use crate::checks::clippy::{
         configurations::package_clippy_configurations, tests::common::pkg_with_metadata,
     };
 
     #[test]
-    fn cpu_entry_checks_follow_catalog_features_and_real_build_selection() {
+    fn batch_entry_checks_follow_catalog_features_and_real_build_selection() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         std::fs::create_dir(root.join("entry")).unwrap();
         let declaration = r#"
 schema_version = 1
 run_order = ["cold", "warm"]
+[execution]
+batch_env="DEMO_BATCH"
+members_env="DEMO_MEMBER"
+completion="DEMO_OK batch={batch} selection={selection}"
 [batches.cold]
+package = "entry-demo"
 arch = "riscv64"
 image = "std"
 mode = "normal"
@@ -599,18 +604,21 @@ qemu_config = "run.toml"
 [[batches.cold.tests]]
 id = "transport"
 name = "transport transfer"
-entry = "cpu_tests::transport::run"
+entry = "example::transport::run"
+features = ["transport/receive"]
 [batches.warm]
+package = "entry-demo"
 arch = "riscv64"
 image = "std"
 mode = "normal"
 build_config = "warm.toml"
 qemu_config = "run.toml"
-features = ["cpu-tests/fast-path"]
+features = ["transport/fast-path"]
 [[batches.warm.tests]]
 id = "transport"
 name = "transport transfer"
-entry = "cpu_tests::transport::run"
+entry = "example::transport::run"
+features = ["transport/receive"]
 "#;
         std::fs::write(root.join("matrix.toml"), declaration).unwrap();
         std::fs::write(root.join("cold.toml"), "max_cpu_num = 2").unwrap();
@@ -621,22 +629,22 @@ entry = "cpu_tests::transport::run"
             &[],
             serde_json::json!({
                 "docs.rs": {"targets": ["riscv64gc-unknown-linux-musl"]},
-                "clippy": {"cpu_suite": {"path": "../matrix.toml", "image": "std"}},
+                "clippy": {"batch_suite": {"path": "../matrix.toml"}},
             }),
         );
         package.manifest_path = root.join("entry/Cargo.toml").to_str().unwrap().into();
         let checks = package_clippy_configurations(&package).unwrap();
         assert_eq!(checks.len(), 2);
-        assert_eq!(checks[0].features, ["cpu-tests/transport"]);
+        assert_eq!(checks[0].features, ["transport/receive"]);
         assert!(
             checks[1]
                 .features
-                .contains(&"cpu-tests/fast-path".to_owned())
+                .contains(&"transport/fast-path".to_owned())
         );
         assert!(
             checks[0]
                 .env
-                .contains(&("AX_CPU_TEST_BATCH".to_owned(), "cold".to_owned()))
+                .contains(&("DEMO_BATCH".to_owned(), "cold".to_owned()))
         );
         assert!(checks[0].env.contains(&("SMP".to_owned(), "2".to_owned())));
         assert!(checks[1].env.contains(&("SMP".to_owned(), "4".to_owned())));

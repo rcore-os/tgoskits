@@ -54,3 +54,13 @@ cargo xtask cross-test --arch aarch64 -p task-switch --no-default-features
 cargo test -p qperf --test reg
 python3 tools/qperf/tests/prebuild.py
 '''
+
+[[check]]
+id = "test-axbuild-independent"
+name = "axbuild independent package and consumer"
+fetch_depth = "100"
+timeout_minutes = 45
+cache_key = ""
+command = '''
+python3 scripts/test/check_axbuild_independence.py --since "$SINCE_REF"
+'''

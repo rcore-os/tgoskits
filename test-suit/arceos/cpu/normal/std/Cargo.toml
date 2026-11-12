@@ -15,13 +15,11 @@ ax-std = { workspace = true, features = ["default", "arceos"] }
 ax-alloc = { workspace = true, features = ["global-allocator"] }
 
 [build-dependencies]
-anyhow.workspace = true
-serde = { version = "1.0", features = ["derive"] }
+arceos-test-build = { path = "../../../build-support" }
 toml = { workspace = true, features = ["parse", "serde"] }
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-linux-musl", "riscv64gc-unknown-linux-musl", "loongarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
 
-[package.metadata.clippy.cpu_suite]
+[package.metadata.clippy.batch_suite]
 path = "../suite.toml"
-image = "std"

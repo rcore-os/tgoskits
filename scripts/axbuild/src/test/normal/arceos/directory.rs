@@ -14,19 +14,11 @@ pub(crate) async fn test_generic_qemu(
     group: &str,
     options: GenericQemuRunOptions<'_>,
 ) -> anyhow::Result<()> {
-    if group == "cpu" {
-        return super::cpu::run(
+    if let Some(manifest) = super::declared::manifest_path(arceos.app.workspace_root(), group)? {
+        return super::declared::run(
             arceos,
-            arch,
-            target,
-            options.selected_case,
-            options.allow_empty,
-        )
-        .await;
-    }
-    if group == "drivers" {
-        return super::drivers::run(
-            arceos,
+            &manifest,
+            group,
             arch,
             target,
             options.selected_case,

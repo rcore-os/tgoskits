@@ -58,16 +58,10 @@ pub(crate) fn list_generic_qemu_cases(
     group: &str,
     selected_case: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    if group == "cpu" {
-        return Ok(Some(super::cpu::render_listing(
-            arceos,
-            target.map(|(arch, _)| arch),
-            selected_case,
-        )?));
-    }
-    if group == "drivers" {
-        return Ok(Some(super::drivers::render_listing(
-            arceos,
+    if let Some(manifest) = super::declared::manifest_path(arceos.app.workspace_root(), group)? {
+        return Ok(Some(super::declared::render_listing(
+            &manifest,
+            group,
             target.map(|(arch, _)| arch),
             selected_case,
         )?));
@@ -104,12 +98,19 @@ pub(crate) fn all_qemu_case_groups(
             ARCEOS_RUST_TEST_GROUP => rust_qemu_listed_cases(arceos, selected_case)
                 .ok()
                 .filter(|cases| !cases.is_empty()),
-            "cpu" => super::cpu::listed_cases(arceos, selected_case).ok(),
-            "drivers" => super::drivers::listed_cases(arceos, selected_case).ok(),
             ARCEOS_C_TEST_GROUP => c_qemu_listed_cases(arceos, selected_case)
                 .ok()
                 .filter(|v| !v.is_empty()),
             _ => {
+                if let Some(manifest) =
+                    super::declared::manifest_path(arceos.app.workspace_root(), &group)?
+                {
+                    let cases = super::declared::listed_cases(&manifest, selected_case)?;
+                    if !cases.is_empty() {
+                        groups.push((group, cases));
+                    }
+                    continue;
+                }
                 let dir = arceos_test_group_dir(arceos.app.workspace_root(), &group);
                 match qemu_test::discover_all_qemu_cases_with_archs(
                     &dir,

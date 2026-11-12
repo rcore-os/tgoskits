@@ -24,7 +24,7 @@ x86-q35                         1次启动，2项
 
 suite.toml顶部run_order决定启动顺序，batches下嵌套tests决定批内顺序。tests登记ID、名称、唯一函数入口及追加features；pcm_waveform声明该成员需要宿主验证输出。Cargo维护真实依赖：目前共同包启用两项所需依赖并集，单项选择只改变生成调用，不取消共同运行能力或设备。
 
-axbuild的test/normal/arceos/drivers.rs负责选择、构建、运行及计划；drivers/catalog.rs由宿主和目标build.rs以普通宿主模块共用，不把测试实现源码包含到宿主。AX_DRIVERS_BATCH/CASES进入构建身份，避免单项/整批混用产物；批次顺序和单项名称只有清单一处登记。
+Cargo.toml的package.metadata.axbuild.qemu_suite显式选择axbuild的通用declared执行器，package、features、环境与完成协议由suite.toml提供。目标build.rs通过arceos-test-build构建依赖生成绑定，不引用axbuild私有源码。AX_DRIVERS_BATCH/CASES进入构建身份，避免单项/整批混用产物；批次顺序和单项名称只有清单一处登记。
 
 生成的selected_drivers.rs仅位于target构建目录，不提交Git。每项正常返回后才打印DRIVER_TEST_PASS；panic立即中止后续调用。全部结束才输出DRIVERS_BATCH_OK，宿主只接受当前批次/选择对应的最终标记。HDA内部不直接exit，退出由统一main负责。
 

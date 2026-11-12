@@ -19,7 +19,16 @@ run_order = [
     "loong-boot-trap"
 ]
 
+[execution]
+batch_env = "AX_CPU_TEST_BATCH"
+members_env = "AX_CPU_TEST_CASE"
+all_members_value = ""
+completion = "CPU_BATCH_OK batch={batch} selection={selection}"
+selection_mode = "single"
+feature_scope = "selected"
+
 [batches.arm-el1]
+package = "arceos-cpu-normal-freestanding"
 arch = "aarch64"
 image = "freestanding"
 mode = "normal"
@@ -32,27 +41,32 @@ features = []
 id = "paging"
 name = "页表、缓存与TLB"
 entry = "cpu_tests::paging::run"
+features = ["cpu-tests/paging"]
 aliases = ["paging"]
 
 [[batches.arm-el1.tests]]
 id = "fp-context"
 name = "FP寄存器保存恢复"
 entry = "cpu_tests::fp_context::run"
+features = ["cpu-tests/fp-context"]
 aliases = ["fp-context"]
 
 [[batches.arm-el1.tests]]
 id = "pmu"
 name = "PMU生命周期和中断"
 entry = "cpu_tests::pmu::run"
+features = ["cpu-tests/pmu"]
 aliases = ["pmu"]
 
 [[batches.arm-el1.tests]]
 id = "user-entry"
 name = "ARM用户态进入与恢复"
 entry = "cpu_tests::user_entry::run"
+features = ["cpu-tests/user-entry"]
 aliases = ["user-entry"]
 
 [batches.arm-pmu-max]
+package = "arceos-cpu-normal-std"
 arch = "aarch64"
 image = "std"
 mode = "normal"
@@ -65,9 +79,11 @@ features = []
 id = "pmu"
 name = "PMU生命周期和中断"
 entry = "cpu_tests::pmu::run"
+features = ["cpu-tests/pmu"]
 aliases = ["pmu-max"]
 
 [batches.arm-el2]
+package = "arceos-cpu-normal-std"
 arch = "aarch64"
 image = "std"
 mode = "normal"
@@ -80,21 +96,25 @@ features = ["cpu-tests/hv", "cpu-tests/stage2-tlb"]
 id = "paging"
 name = "页表、缓存与TLB"
 entry = "cpu_tests::paging::run"
+features = ["cpu-tests/paging"]
 aliases = ["paging-el2"]
 
 [[batches.arm-el2.tests]]
 id = "virtualization-lifecycle"
 name = "虚拟化资源生命周期"
 entry = "cpu_tests::virtualization_lifecycle::run"
+features = ["cpu-tests/virtualization-lifecycle"]
 aliases = ["virtualization-lifecycle"]
 
 [[batches.arm-el2.tests]]
 id = "guest-entry"
 name = "实际guest进入退出及宿主状态保持"
 entry = "cpu_tests::guest_entry::run"
+features = ["cpu-tests/guest-entry"]
 aliases = ["guest-entry", "guest-entry-stage2"]
 
 [batches.riscv-standard]
+package = "arceos-cpu-normal-std"
 arch = "riscv64"
 image = "std"
 mode = "normal"
@@ -107,21 +127,25 @@ features = ["cpu-tests/expect-h"]
 id = "paging"
 name = "页表、缓存与TLB"
 entry = "cpu_tests::paging::run"
+features = ["cpu-tests/paging"]
 aliases = ["paging"]
 
 [[batches.riscv-standard.tests]]
 id = "hypervisor-probe"
 name = "H扩展探测及调用环境恢复"
 entry = "cpu_tests::hypervisor_probe::run"
+features = ["cpu-tests/hypervisor-probe"]
 aliases = ["hypervisor-probe"]
 
 [[batches.riscv-standard.tests]]
 id = "guest-entry"
 name = "实际guest进入退出及宿主状态保持"
 entry = "cpu_tests::guest_entry::run"
+features = ["cpu-tests/guest-entry"]
 aliases = ["guest-entry"]
 
 [batches.riscv-nofault]
+package = "arceos-cpu-normal-freestanding"
 arch = "riscv64"
 image = "freestanding"
 mode = "normal"
@@ -134,9 +158,11 @@ features = []
 id = "kernel-access"
 name = "kernel nofault复制及故障恢复"
 entry = "cpu_tests::kernel_access::run"
+features = ["cpu-tests/kernel-access"]
 aliases = ["user-entry", "kernel-access"]
 
 [batches.riscv-no-h]
+package = "arceos-cpu-normal-std"
 arch = "riscv64"
 image = "std"
 mode = "normal"
@@ -149,9 +175,11 @@ features = []
 id = "hypervisor-probe"
 name = "H扩展探测及调用环境恢复"
 entry = "cpu_tests::hypervisor_probe::run"
+features = ["cpu-tests/hypervisor-probe"]
 aliases = ["hypervisor-probe-no-h"]
 
 [batches.riscv-sstc]
+package = "arceos-cpu-normal-std"
 arch = "riscv64"
 image = "std"
 mode = "normal"
@@ -164,9 +192,11 @@ features = ["cpu-tests/sstc"]
 id = "guest-entry"
 name = "实际guest进入退出及宿主状态保持"
 entry = "cpu_tests::guest_entry::run"
+features = ["cpu-tests/guest-entry"]
 aliases = ["guest-entry-sstc"]
 
 [batches.riscv-no-sstc]
+package = "arceos-cpu-normal-std"
 arch = "riscv64"
 image = "std"
 mode = "normal"
@@ -179,9 +209,11 @@ features = ["cpu-tests/expect-no-sstc"]
 id = "guest-entry"
 name = "实际guest进入退出及宿主状态保持"
 entry = "cpu_tests::guest_entry::run"
+features = ["cpu-tests/guest-entry"]
 aliases = ["guest-entry-no-sstc"]
 
 [batches.x86-svm]
+package = "arceos-cpu-normal-std"
 arch = "x86_64"
 image = "std"
 mode = "normal"
@@ -194,27 +226,32 @@ features = ["cpu-tests/hv", "cpu-tests/expect-svm"]
 id = "paging"
 name = "页表、缓存与TLB"
 entry = "cpu_tests::paging::run"
+features = ["cpu-tests/paging"]
 aliases = ["paging"]
 
 [[batches.x86-svm.tests]]
 id = "trap-entry"
 name = "异常现场及寄存器修改返回"
 entry = "cpu_tests::trap_entry::run"
+features = ["cpu-tests/trap-entry"]
 aliases = ["trap-entry"]
 
 [[batches.x86-svm.tests]]
 id = "virtualization-lifecycle"
 name = "虚拟化资源生命周期"
 entry = "cpu_tests::virtualization_lifecycle::run"
+features = ["cpu-tests/virtualization-lifecycle"]
 aliases = ["virtualization-lifecycle"]
 
 [[batches.x86-svm.tests]]
 id = "guest-entry"
 name = "实际guest进入退出及宿主状态保持"
 entry = "cpu_tests::guest_entry::run"
+features = ["cpu-tests/guest-entry"]
 aliases = ["guest-entry"]
 
 [batches.x86-vmx]
+package = "arceos-cpu-normal-std"
 arch = "x86_64"
 image = "std"
 mode = "normal"
@@ -227,27 +264,32 @@ features = ["cpu-tests/hv"]
 id = "paging"
 name = "页表、缓存与TLB"
 entry = "cpu_tests::paging::run"
+features = ["cpu-tests/paging"]
 aliases = ["paging-kvm"]
 
 [[batches.x86-vmx.tests]]
 id = "trap-entry"
 name = "异常现场及寄存器修改返回"
 entry = "cpu_tests::trap_entry::run"
+features = ["cpu-tests/trap-entry"]
 aliases = []
 
 [[batches.x86-vmx.tests]]
 id = "virtualization-lifecycle"
 name = "虚拟化资源生命周期"
 entry = "cpu_tests::virtualization_lifecycle::run"
+features = ["cpu-tests/virtualization-lifecycle"]
 aliases = ["virtualization-lifecycle-vmx"]
 
 [[batches.x86-vmx.tests]]
 id = "guest-entry"
 name = "实际guest进入退出及宿主状态保持"
 entry = "cpu_tests::guest_entry::run"
+features = ["cpu-tests/guest-entry"]
 aliases = ["guest-entry-vmx"]
 
 [batches.x86-fxsave]
+package = "arceos-cpu-normal-std"
 arch = "x86_64"
 image = "std"
 mode = "normal"
@@ -260,9 +302,11 @@ features = ["cpu-tests/hv"]
 id = "guest-entry"
 name = "实际guest进入退出及宿主状态保持"
 entry = "cpu_tests::guest_entry::run"
+features = ["cpu-tests/guest-entry"]
 aliases = ["guest-entry-fxsave"]
 
 [batches.x86-pge]
+package = "arceos-cpu-normal-std"
 arch = "x86_64"
 image = "std"
 mode = "normal"
@@ -275,9 +319,11 @@ features = []
 id = "paging"
 name = "页表、缓存与TLB"
 entry = "cpu_tests::paging::run"
+features = ["cpu-tests/paging"]
 aliases = ["paging-kvm-pge"]
 
 [batches.loong-standard]
+package = "arceos-cpu-normal-std"
 arch = "loongarch64"
 image = "std"
 mode = "normal"
@@ -290,27 +336,32 @@ features = ["cpu-tests/hv"]
 id = "paging"
 name = "页表、缓存与TLB"
 entry = "cpu_tests::paging::run"
+features = ["cpu-tests/paging"]
 aliases = ["paging"]
 
 [[batches.loong-standard.tests]]
 id = "unaligned-fixup"
 name = "非对齐访存异常表恢复"
 entry = "cpu_tests::unaligned_fixup::run"
+features = ["cpu-tests/unaligned-fixup"]
 aliases = ["unaligned-fixup"]
 
 [[batches.loong-standard.tests]]
 id = "virtualization-lifecycle"
 name = "虚拟化资源生命周期"
 entry = "cpu_tests::virtualization_lifecycle::run"
+features = ["cpu-tests/virtualization-lifecycle"]
 aliases = ["virtualization-lifecycle"]
 
 [[batches.loong-standard.tests]]
 id = "guest-entry"
 name = "实际guest进入退出及宿主状态保持"
 entry = "cpu_tests::guest_entry::run"
+features = ["cpu-tests/guest-entry"]
 aliases = ["guest-entry"]
 
 [batches.loong-nofault]
+package = "arceos-cpu-normal-freestanding"
 arch = "loongarch64"
 image = "freestanding"
 mode = "normal"
@@ -323,9 +374,11 @@ features = []
 id = "kernel-access"
 name = "kernel nofault复制及故障恢复"
 entry = "cpu_tests::kernel_access::run"
+features = ["cpu-tests/kernel-access"]
 aliases = ["user-entry", "kernel-access"]
 
 [batches.loong-boot-trap]
+package = "arceos-cpu-normal-std"
 arch = "loongarch64"
 image = "std"
 mode = "expected-fault"
@@ -338,4 +391,5 @@ features = []
 id = "boot-trap"
 name = "真实boot异常向量诊断"
 entry = "cpu_tests::paging::boot_trap"
+features = ["cpu-tests/boot-trap"]
 aliases = ["paging-boot-trap"]

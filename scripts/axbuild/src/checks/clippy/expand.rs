@@ -17,12 +17,12 @@ pub(super) fn expand_clippy_checks(
 ) -> anyhow::Result<Vec<ClippyCheck>> {
     let mut checks = Vec::new();
     for package in packages {
-        // CPU entry points are checked under their actual catalog selections,
+        // Declared entry points are checked under their actual catalog selections,
         // rather than enabling unrelated modules for a synthetic default main.
         if package
             .metadata
             .get("clippy")
-            .and_then(|value| value.get("cpu_suite"))
+            .and_then(|value| value.get("batch_suite"))
             .is_some()
         {
             checks.extend(package_clippy_configurations(package)?.into_iter().map(

@@ -1,8 +1,6 @@
-#[path = "../../../scripts/axbuild/src/test/normal/arceos/board/bindings.rs"]
-mod board_bindings;
-#[path = "../../../scripts/axbuild/src/test/normal/arceos/board/catalog.rs"]
-pub mod board_catalog;
 use std::{env, fs, path::PathBuf};
+
+use arceos_test_build::{board as board_bindings, board::catalog as board_catalog};
 
 fn strings(value: Option<&toml::Value>) -> Vec<&str> {
     value

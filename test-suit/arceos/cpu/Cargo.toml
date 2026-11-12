@@ -45,3 +45,6 @@ trait-ffi.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf", "loongarch64-unknown-none-softfloat", "x86_64-unknown-none"]
+
+[package.metadata.axbuild]
+qemu_suite = "normal/suite.toml"

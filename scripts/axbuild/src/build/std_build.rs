@@ -322,34 +322,34 @@ pub(super) fn std_cargo_config_path(
     target: &str,
     linker: &Path,
     extra_rustflags: &[String],
+    files: &mut super::BuildFiles,
 ) -> anyhow::Result<PathBuf> {
     let config = toml::to_string_pretty(&StdCargoConfig::new(target, linker, extra_rustflags))?;
     // A prepared Cargo invocation must keep its own flags even when another
     // build for the same target is prepared before it runs.
-    let path = std_build_dir(axbuild_dir)?
+    let path = std_build_dir(axbuild_dir, files)
         .join("config")
         .join(short_content_hash(&config))
         .join(format!("config-{target}-dynamic.toml"));
-    write_if_changed(&path, &config)?;
-    Ok(path)
+    Ok(files.file(path, config, false))
 }
 
-pub(super) fn std_fake_lib_dir(axbuild_dir: &Path, target: &str) -> anyhow::Result<PathBuf> {
-    let dir = axbuild_dir.join("std-libs").join(target).join("release");
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create std fake lib dir {}", dir.display()))?;
-    Ok(dir)
+pub(super) fn std_fake_lib_dir(
+    axbuild_dir: &Path,
+    target: &str,
+    files: &mut super::BuildFiles,
+) -> PathBuf {
+    files.directory(axbuild_dir.join("std-libs").join(target).join("release"))
 }
 
 pub(super) fn std_linker_wrapper_path(
     axbuild_dir: &Path,
     target: &str,
     fake_lib_dir: &Path,
+    files: &mut super::BuildFiles,
 ) -> anyhow::Result<PathBuf> {
-    let path = std_build_dir(axbuild_dir)?.join(format!("linker-{target}-dynamic.sh"));
-    write_if_changed(&path, &std_linker_wrapper_script(target, fake_lib_dir)?)?;
-    set_executable(&path)?;
-    Ok(path)
+    let path = std_build_dir(axbuild_dir, files).join(format!("linker-{target}-dynamic.sh"));
+    Ok(files.file(path, std_linker_wrapper_script(target, fake_lib_dir)?, true))
 }
 
 pub(super) fn std_fake_lib_prebuild_script_path(
@@ -357,15 +357,14 @@ pub(super) fn std_fake_lib_prebuild_script_path(
     target_name: &str,
     fake_lib_dir: &Path,
     envs: &HashMap<String, String>,
-) -> anyhow::Result<PathBuf> {
+    files: &mut super::BuildFiles,
+) -> PathBuf {
     let contents = std_fake_lib_prebuild_script(target_name, fake_lib_dir, envs);
     let hash = short_content_hash(&contents);
-    let path = std_build_dir(axbuild_dir)?
+    let path = std_build_dir(axbuild_dir, files)
         .join("prebuild")
         .join(format!("prebuild-{target_name}-{hash}.sh"));
-    write_if_changed(&path, &contents)?;
-    set_executable(&path)?;
-    Ok(path)
+    files.file(path, contents, true)
 }
 
 pub(super) fn std_fake_lib_prebuild_script(
@@ -622,11 +621,8 @@ pub(super) fn set_executable(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(super) fn std_build_dir(axbuild_dir: &Path) -> anyhow::Result<PathBuf> {
-    let dir = axbuild_dir.join("std");
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create std build dir {}", dir.display()))?;
-    Ok(dir)
+fn std_build_dir(axbuild_dir: &Path, files: &mut super::BuildFiles) -> PathBuf {
+    files.directory(axbuild_dir.join("std"))
 }
 
 pub(super) fn write_if_changed(path: &Path, contents: &str) -> anyhow::Result<()> {

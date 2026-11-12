@@ -118,6 +118,7 @@ members = [
     "os/arceos/ulib/*",
     "os/axvisor",
     "scripts/axbuild",
+    "test-suit/arceos/build-support",
     "test-suit/arceos/cpu",
     "test-suit/arceos/cpu/normal/std",
     "test-suit/arceos/cpu/normal/freestanding",

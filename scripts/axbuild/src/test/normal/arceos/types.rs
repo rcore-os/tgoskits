@@ -29,6 +29,14 @@ pub(crate) struct ArceosQemuCase {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ResolvedArceosQemuCase {
+    pub(crate) files: crate::build::BuildFiles,
+    pub(crate) case: ArceosQemuCase,
+    pub(crate) request: ResolvedBuildRequest,
+    pub(crate) cargo: Cargo,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct PreparedArceosQemuCase {
     pub(crate) case: ArceosQemuCase,
     pub(crate) request: ResolvedBuildRequest,

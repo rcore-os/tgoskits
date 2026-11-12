@@ -178,7 +178,10 @@ async fn build_and_run(
     };
     let output = cbuild::build_c_app(arceos.app.workspace_context(), &request, &input)?;
     let map = output.elf_path.with_extension("axbt");
-    cbuild::ensure_symbol_maps(&output.elf_path)?;
+    crate::build::symbol_map::generate_axbt_map(
+        &output.elf_path,
+        &output.elf_path.with_extension("axbt"),
+    )?;
     qemu_test::validate_test_qemu_rootfs_write_policy(&qemu_path, "ArceOS")?;
     rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
     rootfs::isolate_qemu_test_rootfs(&mut qemu)?;

@@ -86,13 +86,14 @@ pub(crate) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
                 super::rust_suite::print_plan(arceos, &arch, &target, selected_case)
             }
             [QemuTestFlow::C] => super::c_suite::print_plan(arceos, &arch, &target, selected_case),
-            [QemuTestFlow::Generic(group)] if group == "drivers" => {
-                super::drivers::print_plan(arceos, &arch, &target, selected_case)
+            [QemuTestFlow::Generic(group)] => {
+                let manifest = super::declared::manifest_path(arceos.app.workspace_root(), group)?
+                    .with_context(|| {
+                        format!("--plan requires package.metadata.axbuild.qemu_suite for {group}")
+                    })?;
+                super::declared::print_plan(arceos, &manifest, &arch, &target, selected_case)
             }
-            [QemuTestFlow::Generic(group)] if group == "cpu" => {
-                super::cpu::print_plan(arceos, &arch, &target, selected_case)
-            }
-            _ => bail!("--plan requires --test-group rust, c, cpu or drivers"),
+            _ => bail!("--plan requires one test group"),
         };
     }
     let allow_rust_case_miss = args.test_group.is_none() && !args.only_rust;

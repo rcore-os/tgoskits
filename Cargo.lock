@@ -322,11 +322,10 @@ dependencies = [
 name = "arceos-cpu-normal-freestanding"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "arceos-cpu-tests",
+ "arceos-test-build",
  "ax-alloc",
  "ax-std",
- "serde",
  "toml 1.1.8+spec-1.1.0",
 ]
 
@@ -334,11 +333,10 @@ dependencies = [
 name = "arceos-cpu-normal-std"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "arceos-cpu-tests",
+ "arceos-test-build",
  "ax-alloc",
  "ax-std",
- "serde",
  "toml 1.1.8+spec-1.1.0",
 ]
 
@@ -362,13 +360,11 @@ name = "arceos-driver-tests"
 version = "0.1.0"
 dependencies = [
  "acpica-interpreter",
- "anyhow",
+ "arceos-test-build",
  "ax-alloc",
  "ax-driver",
  "ax-hal",
  "ax-std",
- "serde",
- "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
@@ -439,11 +435,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-test-build"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
- "anyhow",
  "arceos-cpu-tests",
+ "arceos-test-build",
  "ax-alloc",
  "ax-block",
  "ax-cpu",
@@ -466,7 +471,6 @@ dependencies = [
  "rdif-block",
  "rdif-iommu",
  "rdrive",
- "serde",
  "toml 1.1.8+spec-1.1.0",
  "virtio-drivers",
  "zerocopy",

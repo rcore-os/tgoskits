@@ -118,8 +118,7 @@ mmio-api = { workspace = true, optional = true }
 rdif-iommu = { workspace = true, optional = true }
 
 [build-dependencies]
-anyhow.workspace = true
-serde = { version = "1.0", features = ["derive"] }
+arceos-test-build = { path = "../build-support" }
 toml = { workspace = true, features = ["parse", "serde"] }
 
 [package.metadata.clippy.board_suite]

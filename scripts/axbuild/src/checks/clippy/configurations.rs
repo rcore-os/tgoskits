@@ -26,16 +26,15 @@ struct ClippyMetadata {
     #[serde(default)]
     configurations: Vec<RawClippyConfiguration>,
     #[serde(default)]
-    cpu_suite: Option<CpuSuiteClippy>,
+    batch_suite: Option<BatchSuiteClippy>,
     #[serde(default)]
     board_suite: Option<BoardSuiteClippy>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CpuSuiteClippy {
+struct BatchSuiteClippy {
     path: std::path::PathBuf,
-    image: crate::test::normal::arceos::cpu::catalog::Image,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,24 +103,24 @@ fn board_suite_configurations(
     Ok(configurations)
 }
 
-fn cpu_suite_configurations(
+fn batch_suite_configurations(
     package: &Package,
-    source: CpuSuiteClippy,
+    source: BatchSuiteClippy,
 ) -> anyhow::Result<Vec<PackageClippyConfiguration>> {
-    use crate::test::normal::arceos::cpu::catalog::Catalog;
+    use crate::test::normal::arceos::declared::catalog::Catalog;
     let suite_path = package
         .manifest_path
         .parent()
-        .context("CPU image manifest directory")?
+        .context("batch image manifest directory")?
         .as_std_path()
         .join(source.path);
-    let root = suite_path.parent().context("CPU suite directory")?;
+    let root = suite_path.parent().context("batch suite directory")?;
     let catalog = Catalog::parse(&std::fs::read_to_string(&suite_path)?)?;
     let targets = super::targets::docs_rs_targets(package);
     let mut configurations = Vec::new();
     for id in &catalog.run_order {
         let batch = &catalog.batches[id];
-        if batch.image != source.image {
+        if batch.package != package.name.as_str() {
             continue;
         }
         let selection = catalog.select(&batch.arch, Some(id))?.remove(0);
@@ -130,7 +129,7 @@ fn cpu_suite_configurations(
             .find(|target| target.starts_with(&batch.arch))
             .with_context(|| {
                 format!(
-                    "CPU image {} has no static target for {}",
+                    "batch image {} has no static target for {}",
                     package.name, batch.arch
                 )
             })?;
@@ -140,7 +139,7 @@ fn cpu_suite_configurations(
             .get("max_cpu_num")
             .and_then(toml::Value::as_integer)
             .filter(|cpus| *cpus > 0)
-            .context("CPU batch must declare positive max_cpu_num")?;
+            .context("execution batch must declare positive max_cpu_num")?;
         let mut env = selection.build_env();
         env.insert("SMP".to_owned(), cpus.to_string());
         configurations.push(PackageClippyConfiguration {
@@ -153,7 +152,7 @@ fn cpu_suite_configurations(
     }
     ensure!(
         !configurations.is_empty(),
-        "CPU image {} has no declared batches",
+        "batch image {} has no declared batches",
         package.name
     );
     Ok(configurations)
@@ -181,7 +180,7 @@ pub(super) fn package_clippy_configurations(
     let metadata = serde_json::from_value::<PackageMetadata>(package.metadata.clone())
         .with_context(|| format!("invalid clippy metadata for `{}`", package.name))?;
     let mut names = BTreeSet::new();
-    let cpu_suite = metadata.clippy.cpu_suite;
+    let batch_suite = metadata.clippy.batch_suite;
     let board_suite = metadata.clippy.board_suite;
     let mut configurations = metadata
         .clippy
@@ -189,8 +188,8 @@ pub(super) fn package_clippy_configurations(
         .into_iter()
         .map(|configuration| validate_configuration(package, configuration, &mut names))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    if let Some(source) = cpu_suite {
-        for configuration in cpu_suite_configurations(package, source)? {
+    if let Some(source) = batch_suite {
+        for configuration in batch_suite_configurations(package, source)? {
             ensure!(
                 names.insert(configuration.name.clone()),
                 "duplicate CPU clippy configuration"
