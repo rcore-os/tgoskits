@@ -30,14 +30,19 @@ fn main() {
     not(all(target_arch = "loongarch64", feature = "arceos-efi"))
 ))]
 compile_error!(
-    "axloader supports x86_64/LoongArch UEFI or LoongArch arceos-efi; select a supported backend"
+    "axloader supports x86_64/RISC-V/LoongArch UEFI or LoongArch arceos-efi; select a supported \
+     backend"
 );
 
 #[cfg(all(
     target_os = "uefi",
-    not(any(target_arch = "x86_64", target_arch = "loongarch64"))
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "riscv64",
+        target_arch = "loongarch64"
+    ))
 ))]
-compile_error!("axloader UEFI backend is only implemented for x86_64 and LoongArch64");
+compile_error!("axloader UEFI backend is only implemented for x86_64, riscv64 and LoongArch64");
 
 #[cfg(all(
     any(windows, unix),
@@ -46,8 +51,10 @@ compile_error!("axloader UEFI backend is only implemented for x86_64 and LoongAr
 ))]
 fn main() {}
 
-#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
-#[path = "arch/loongarch64/mod.rs"]
+#[cfg(all(
+    target_os = "uefi",
+    any(target_arch = "riscv64", target_arch = "loongarch64")
+))]
 mod arch;
 
 #[cfg(target_os = "uefi")]

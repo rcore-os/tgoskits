@@ -2,6 +2,9 @@ use std::{collections::HashMap, path::Path};
 
 use crate::context::arch_spec_for_target;
 
+pub(crate) const RISCV64_UEFI_TARGET: &str = "riscv64-unknown-uefi";
+pub(crate) const LOONGARCH64_UEFI_TARGET: &str = "loongarch64-unknown-uefi";
+
 /// Resolved target specification, compiler defaults and build environment.
 pub(crate) struct CargoBuildTarget {
     pub(crate) target: String,
@@ -10,36 +13,8 @@ pub(crate) struct CargoBuildTarget {
     pub(crate) env: HashMap<String, String>,
 }
 
-/// Resolves workspace-owned freestanding and custom UEFI target specifications.
+/// Resolves workspace-owned freestanding target specifications.
 pub(crate) fn bare_build_target_for(target: &str) -> Option<CargoBuildTarget> {
-    if target == "loongarch64-unknown-uefi" {
-        return Some(CargoBuildTarget {
-            target: Path::new("scripts/targets/uefi")
-                .join(format!("{target}.json"))
-                .display()
-                .to_string(),
-            cargo_args: vec![
-                "-Z".to_string(),
-                "json-target-spec".to_string(),
-                "-Z".to_string(),
-                "build-std=core,alloc".to_string(),
-            ],
-            // compiler_builtins otherwise embeds bitcode into object files with
-            // `.llvmbc`/`.llvmcmd` sections that the LoongArch assembler rejects.
-            // The workspace release profile enables fat LTO globally; this
-            // target must disable it locally because embedded bitcode is not
-            // compatible with the ELF linker path.
-            rustflags: vec!["-Cembed-bitcode=no".to_string(), "-Clto=off".to_string()],
-            env: HashMap::from([
-                (
-                    "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
-                    "true".to_string(),
-                ),
-                ("CARGO_PROFILE_DEV_LTO".to_string(), "false".to_string()),
-                ("CARGO_PROFILE_RELEASE_LTO".to_string(), "false".to_string()),
-            ]),
-        });
-    }
     let arch = arch_spec_for_target(target)?;
     Some(CargoBuildTarget {
         target: Path::new("scripts/targets/bare")
@@ -67,12 +42,55 @@ pub(crate) fn bare_build_target_for(target: &str) -> Option<CargoBuildTarget> {
     })
 }
 
+/// Resolves native EFI targets whose PE header is embedded in an ELF link.
+pub(crate) fn uefi_build_target_for(target: &str) -> Option<CargoBuildTarget> {
+    if !matches!(target, RISCV64_UEFI_TARGET | LOONGARCH64_UEFI_TARGET) {
+        return None;
+    }
+    let mut resolved = CargoBuildTarget {
+        target: Path::new("scripts/targets/uefi")
+            .join(format!("{target}.json"))
+            .display()
+            .to_string(),
+        cargo_args: vec![
+            "-Z".to_string(),
+            "json-target-spec".to_string(),
+            "-Z".to_string(),
+            "build-std=core,alloc".to_string(),
+        ],
+        // The compiler requires is-like-windows for os=uefi, but its embedded
+        // bitcode assembly uses COFF section flags that ELF cannot represent.
+        rustflags: vec!["-Cembed-bitcode=no".to_string()],
+        env: HashMap::from([(
+            "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
+            "true".to_string(),
+        )]),
+    };
+    if target == LOONGARCH64_UEFI_TARGET {
+        // Preserve the LoongArch dev/release profile overrides as well as its
+        // rustc LTO override; compiler_builtins cannot embed COFF bitcode in ELF.
+        resolved.rustflags.push("-Clto=off".to_string());
+        resolved.env.extend([
+            ("CARGO_PROFILE_DEV_LTO".to_string(), "false".to_string()),
+            ("CARGO_PROFILE_RELEASE_LTO".to_string(), "false".to_string()),
+        ]);
+    } else {
+        resolved.cargo_args.extend([
+            "--config".to_string(),
+            "profile.release.lto=false".to_string(),
+        ]);
+    }
+    Some(resolved)
+}
+
 /// Resolves a freestanding target while preserving external built-in targets.
 pub(crate) fn freestanding_build_target_for(target: &str) -> CargoBuildTarget {
-    bare_build_target_for(target).unwrap_or_else(|| CargoBuildTarget {
-        target: target.to_string(),
-        cargo_args: vec!["-Z".to_string(), "build-std=core,alloc".to_string()],
-        rustflags: Vec::new(),
-        env: HashMap::new(),
-    })
+    uefi_build_target_for(target)
+        .or_else(|| bare_build_target_for(target))
+        .unwrap_or_else(|| CargoBuildTarget {
+            target: target.to_string(),
+            cargo_args: vec!["-Z".to_string(), "build-std=core,alloc".to_string()],
+            rustflags: Vec::new(),
+            env: HashMap::new(),
+        })
 }

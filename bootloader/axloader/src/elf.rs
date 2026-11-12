@@ -62,9 +62,12 @@ pub enum ElfError {
     SegmentAddressOverflow,
     #[error("ELF symbol table is outside the image or malformed")]
     SymbolTableRange,
-    #[error("ELF relocation section is outside the loaded image")]
+    #[error("ELF relocation section does not match its loaded file range")]
     RelocationSectionRange,
-    #[error("ELF relocation target is outside a writable load segment")]
+    #[error(
+        "ELF relocation target is not an aligned write within a writable load segment disjoint \
+         from relocation records"
+    )]
     RelocationTargetRange,
     #[error("ELF image uses an unsupported dynamic relocation")]
     UnsupportedRelocation,
@@ -399,9 +402,9 @@ fn validate_dynamic_relocations(
     let Some(policy) = policy else {
         return Ok(());
     };
-    // Native LoongArch allocates and copies PT_LOAD ranges by `p_paddr`, while
-    // someboot applies RELA to `r_offset + load_offset`. The current linker ABI
-    // emits identical virtual and physical addresses; other layouts can move a
+    // Native RISC-V and LoongArch allocate and copy PT_LOAD ranges by `p_paddr`,
+    // while someboot applies RELA to `r_offset + load_offset`. Their linker ABIs
+    // emit identical virtual and physical addresses; other layouts can move a
     // checked relocation target outside the populated writable segment.
     if segments
         .iter()
@@ -429,6 +432,7 @@ fn validate_dynamic_relocations(
         return Err(ElfError::RelocationSectionRange);
     }
 
+    let mut relocation_tables = Vec::new();
     for index in 0..section_count {
         let section = Elf64SectionHeader::read(image, table_offset + index * section_size)
             .ok_or(ElfError::RelocationSectionRange)?;
@@ -465,6 +469,18 @@ fn validate_dynamic_relocations(
         if bytes.len() % ELF64_RELA_SIZE != 0 || !section_is_loaded(section, segments) {
             return Err(ElfError::RelocationSectionRange);
         }
+        let end = section
+            .address
+            .checked_add(section.data_size)
+            .ok_or(ElfError::RelocationSectionRange)?;
+        if !bytes.is_empty() {
+            relocation_tables.push((section.address..end, bytes));
+        }
+    }
+
+    // The entry applies these tables in place. A write must not change any
+    // record that it can subsequently read, including records in another table.
+    for (_, bytes) in &relocation_tables {
         for offset in (0..bytes.len()).step_by(ELF64_RELA_SIZE) {
             let info = read_u64(bytes, offset + 8).ok_or(ElfError::RelocationSectionRange)?;
             let relocation_type = info as u32;
@@ -476,7 +492,14 @@ fn validate_dynamic_relocations(
                 return Err(ElfError::UnsupportedRelocation);
             }
             let target = read_u64(bytes, offset).ok_or(ElfError::RelocationSectionRange)?;
-            if !relocation_target_is_writable(target, segments) {
+            let target_end = target
+                .checked_add(ELF64_RELOCATION_SIZE)
+                .ok_or(ElfError::RelocationTargetRange)?;
+            if !relocation_target_is_writable(target, segments)
+                || relocation_tables
+                    .iter()
+                    .any(|(range, _)| target < range.end && range.start < target_end)
+            {
                 return Err(ElfError::RelocationTargetRange);
             }
         }
@@ -485,6 +508,9 @@ fn validate_dynamic_relocations(
 }
 
 fn relocation_target_is_writable(target: u64, segments: &[LoadSegment]) -> bool {
+    if !target.is_multiple_of(ELF64_RELOCATION_SIZE) {
+        return false;
+    }
     let Some(target_end) = target.checked_add(ELF64_RELOCATION_SIZE) else {
         return false;
     };
@@ -517,6 +543,10 @@ fn section_is_loaded(section: Elf64SectionHeader, segments: &[LoadSegment]) -> b
             && virtual_end <= segment_virtual_end
             && section.data_offset >= segment.file_offset
             && file_end <= segment_file_end
+            // Validate the bytes copied to this address, not another file
+            // range that merely happens to fit in the same load segment.
+            && section.address - segment.virtual_address
+                == section.data_offset - segment.file_offset
     })
 }
 
@@ -639,7 +669,7 @@ mod tests {
     use alloc::string::ToString;
 
     use super::{ELF_PF_X, ELF64_RELA_SIZE, ElfError, ElfImage, SHF_ALLOC, SHT_RELA, SHT_RELR};
-    use crate::target::{LOONGARCH64_EFI, LOONGARCH64_UEFI, TargetSpec, X86_64};
+    use crate::target::{LOONGARCH64_EFI, LOONGARCH64_UEFI, RISCV64_EFI, TargetSpec, X86_64};
 
     struct TestSegment {
         flags: u32,
@@ -749,8 +779,8 @@ mod tests {
     }
 
     #[test]
-    fn valid_x86_and_loong_images_parse_link_time_layout() {
-        for spec in [X86_64, LOONGARCH64_EFI, LOONGARCH64_UEFI] {
+    fn target_images_parse_link_time_layout() {
+        for spec in [X86_64, RISCV64_EFI, LOONGARCH64_EFI, LOONGARCH64_UEFI] {
             let image = parse(spec, &[executable_segment(spec)]).unwrap();
             let expected_link = if spec.load_address.is_some() {
                 spec.link_address.unwrap()
@@ -825,13 +855,14 @@ mod tests {
         assert_eq!(error.device_error().code, "efi_entry_missing");
     }
 
-    fn native_loong_relocation_image(
-        relocation_type: u32,
+    fn native_relocation_image(
+        spec: TargetSpec,
+        relocation_info: u64,
         target_segment_flags: u32,
         relocation_target: u64,
         target_physical_address: u64,
     ) -> Vec<u8> {
-        let executable = executable_segment(LOONGARCH64_UEFI);
+        let executable = executable_segment(spec);
         let executable_virtual_address = executable.virtual_address;
         let target = TestSegment {
             flags: target_segment_flags,
@@ -839,16 +870,12 @@ mod tests {
             physical_address: target_physical_address,
             memory_size: 32,
         };
-        let mut image = test_elf(LOONGARCH64_UEFI, &[executable, target]);
+        let mut image = test_elf(spec, &[executable, target]);
         let first_segment = 64;
         write_u64(&mut image, first_segment + 32, ELF64_RELA_SIZE as u64);
         let relocation_offset = 64 + 2 * 56;
         write_u64(&mut image, relocation_offset, relocation_target);
-        write_u64(
-            &mut image,
-            relocation_offset + 8,
-            u64::from(relocation_type),
-        );
+        write_u64(&mut image, relocation_offset + 8, relocation_info);
         write_u64(&mut image, relocation_offset + 16, 0x10_0000);
 
         let section_offset = read_test_u64(&image, 40) as usize;
@@ -882,129 +909,207 @@ mod tests {
     }
 
     #[test]
-    fn native_loong_relocations_allow_only_relative_and_none_entries() {
-        for (relocation_type, target_segment_flags, relocation_target, expected) in [
-            (3, 6, 0x10_3018, Ok(())),
-            (0, 4, u64::MAX, Ok(())),
-            (4, 6, 0x10_3000, Err(ElfError::UnsupportedRelocation)),
-        ] {
-            let image = native_loong_relocation_image(
-                relocation_type,
-                target_segment_flags,
-                relocation_target,
-                0x10_3000,
+    fn native_relocations_allow_only_relative_and_none_entries() {
+        for spec in [LOONGARCH64_UEFI, RISCV64_EFI] {
+            for (relocation_info, target_segment_flags, relocation_target, expected) in [
+                (3, 6, 0x10_3018, Ok(())),
+                (0, 4, u64::MAX, Ok(())),
+                (4, 6, 0x10_3000, Err(ElfError::UnsupportedRelocation)),
+                (
+                    (1 << 32) | 3,
+                    6,
+                    0x10_3000,
+                    Err(ElfError::UnsupportedRelocation),
+                ),
+            ] {
+                let image = native_relocation_image(
+                    spec,
+                    relocation_info,
+                    target_segment_flags,
+                    relocation_target,
+                    0x10_3000,
+                );
+                let result = ElfImage::parse(&image, spec).map(|_| ());
+                assert_eq!(result, expected);
+            }
+
+            let mut image = native_relocation_image(spec, 3, 6, 0x10_3018, 0x10_3000);
+            clear_relocation_section_alloc(&mut image);
+            assert_eq!(ElfImage::parse(&image, spec).map(|_| ()), Ok(()));
+
+            let mut image = native_relocation_image(spec, 4, 6, 0x10_3000, 0x10_3000);
+            clear_relocation_section_alloc(&mut image);
+            let relocation_section = relocation_section_header_offset(&image);
+            let unloaded_relocation_offset = image.len() as u64;
+            image.extend_from_slice(&[0; ELF64_RELA_SIZE]);
+            write_u64(&mut image, unloaded_relocation_offset as usize, 0x10_3000);
+            write_u64(&mut image, unloaded_relocation_offset as usize + 8, 4u64);
+            write_u64(&mut image, relocation_section + 16, 0x20_0000);
+            write_u64(
+                &mut image,
+                relocation_section + 24,
+                unloaded_relocation_offset,
             );
-            let result = ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ());
-            assert_eq!(result, expected);
+            assert_eq!(ElfImage::parse(&image, spec).map(|_| ()), Ok(()));
+
+            let mut image = native_relocation_image(spec, 3, 6, 0x10_3018, 0x10_3000);
+            let relocation_section = relocation_section_header_offset(&image);
+            write_u32(&mut image, relocation_section + 4, SHT_RELR);
+            clear_relocation_section_alloc(&mut image);
+            assert_eq!(
+                ElfImage::parse(&image, spec).map(|_| ()),
+                Err(ElfError::UnsupportedRelocation)
+            );
         }
-
-        let mut image = native_loong_relocation_image(3, 6, 0x10_3018, 0x10_3000);
-        clear_relocation_section_alloc(&mut image);
-        assert_eq!(
-            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
-            Ok(())
-        );
-
-        let mut image = native_loong_relocation_image(4, 6, 0x10_3000, 0x10_3000);
-        clear_relocation_section_alloc(&mut image);
-        let relocation_section = relocation_section_header_offset(&image);
-        let unloaded_relocation_offset = image.len() as u64;
-        image.extend_from_slice(&[0; ELF64_RELA_SIZE]);
-        write_u64(&mut image, unloaded_relocation_offset as usize, 0x10_3000);
-        write_u64(&mut image, unloaded_relocation_offset as usize + 8, 4u64);
-        write_u64(&mut image, relocation_section + 16, 0x20_0000);
-        write_u64(
-            &mut image,
-            relocation_section + 24,
-            unloaded_relocation_offset,
-        );
-        assert_eq!(
-            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
-            Ok(())
-        );
-
-        let mut image = native_loong_relocation_image(3, 6, 0x10_3018, 0x10_3000);
-        let relocation_section = relocation_section_header_offset(&image);
-        write_u32(&mut image, relocation_section + 4, SHT_RELR);
-        clear_relocation_section_alloc(&mut image);
-        assert_eq!(
-            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
-            Err(ElfError::UnsupportedRelocation)
-        );
     }
 
     #[test]
-    fn native_loong_relocations_reject_invalid_write_targets() {
-        for (target_segment_flags, relocation_target) in [
-            (4, 0x10_3000), // read-only segment
-            (6, 0x10_3019), // eight-byte write crosses the segment end
-            (6, 0x10_4000), // target is outside every load segment
-            (6, u64::MAX),  // checked end overflows
-        ] {
-            let image = native_loong_relocation_image(
-                3,
-                target_segment_flags,
-                relocation_target,
-                0x10_3000,
-            );
+    fn native_relocations_reject_invalid_write_targets() {
+        for spec in [LOONGARCH64_UEFI, RISCV64_EFI] {
+            for (target_segment_flags, relocation_target) in [
+                (4, 0x10_3000), // read-only segment
+                (6, 0x10_3001), // unaligned write wholly inside the segment
+                (6, 0x10_3019), // eight-byte write crosses the segment end
+                (6, 0x10_4000), // target is outside every load segment
+                (6, u64::MAX),  // checked end overflows
+            ] {
+                let image = native_relocation_image(
+                    spec,
+                    3,
+                    target_segment_flags,
+                    relocation_target,
+                    0x10_3000,
+                );
+                assert_eq!(
+                    ElfImage::parse(&image, spec).map(|_| ()),
+                    Err(ElfError::RelocationTargetRange),
+                );
+            }
+
+            let mut image = native_relocation_image(spec, 3, 6, 0x10_4000, 0x10_3000);
+            clear_relocation_section_alloc(&mut image);
             assert_eq!(
-                ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
+                ElfImage::parse(&image, spec).map(|_| ()),
+                Err(ElfError::RelocationTargetRange),
+            );
+
+            // A writable RELA table must remain stable while the entry applies
+            // it. The first write would replace the next record's target.
+            let table_address = 0x10_0120;
+            for split_tables in [false, true] {
+                for (target, expected) in [
+                    (
+                        table_address + ELF64_RELA_SIZE as u64,
+                        Err(ElfError::RelocationTargetRange),
+                    ),
+                    (table_address + 2 * ELF64_RELA_SIZE as u64, Ok(())),
+                ] {
+                    let mut image = native_relocation_image(spec, 3, 6, target, 0x10_3000);
+                    let segment = 64;
+                    write_u32(&mut image, segment + 4, 7);
+                    write_u64(&mut image, segment + 16, table_address);
+                    write_u64(&mut image, segment + 24, table_address);
+                    write_u64(&mut image, segment + 32, 2 * ELF64_RELA_SIZE as u64);
+                    let table_offset = read_test_u64(&image, segment + 8) as usize;
+                    write_u64(&mut image, table_offset + 16, 0x10_0000_0000);
+                    write_u64(&mut image, table_offset + ELF64_RELA_SIZE, 0x10_3018);
+                    write_u64(&mut image, table_offset + ELF64_RELA_SIZE + 8, 3);
+                    write_u64(&mut image, table_offset + ELF64_RELA_SIZE + 16, 0x10_0000);
+                    let section = relocation_section_header_offset(&image);
+                    write_u64(&mut image, section + 16, table_address);
+                    write_u64(&mut image, section + 32, 2 * ELF64_RELA_SIZE as u64);
+                    if split_tables {
+                        write_u64(&mut image, section + 32, ELF64_RELA_SIZE as u64);
+                        let next_section = image.len();
+                        image.resize(next_section + 64, 0);
+                        image.copy_within(section..section + 64, next_section);
+                        write_u16(&mut image, 60, 5);
+                        write_u64(
+                            &mut image,
+                            next_section + 16,
+                            table_address + ELF64_RELA_SIZE as u64,
+                        );
+                        write_u64(
+                            &mut image,
+                            next_section + 24,
+                            (table_offset + ELF64_RELA_SIZE) as u64,
+                        );
+                    }
+                    assert_eq!(ElfImage::parse(&image, spec).map(|_| ()), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_relocations_require_consistent_loaded_sections() {
+        for spec in [LOONGARCH64_UEFI, RISCV64_EFI] {
+            let mut image = native_relocation_image(spec, 3, 6, 0x10_3018, 0x10_3000);
+            clear_relocation_section_alloc(&mut image);
+            let relocation_section = relocation_section_header_offset(&image);
+            write_u64(&mut image, relocation_section + 24, 168);
+            assert_eq!(
+                ElfImage::parse(&image, spec).map(|_| ()),
+                Err(ElfError::RelocationSectionRange),
+            );
+
+            let mut image = native_relocation_image(spec, 3, 6, 0x10_3018, 0x10_3000);
+            clear_relocation_section_alloc(&mut image);
+            let relocation_section = relocation_section_header_offset(&image);
+            write_u64(&mut image, relocation_section + 24, u64::MAX);
+            assert_eq!(
+                ElfImage::parse(&image, spec).map(|_| ()),
+                Err(ElfError::RelocationSectionRange),
+            );
+
+            for (address_offset, file_offset, target) in [
+                (0, 32, 0x10_4000), // substitute zero bytes for the invalid RELA
+                (8, 0, 0x10_3018),  // shift only the virtual address of valid RELA
+            ] {
+                let mut image = native_relocation_image(spec, 3, 6, target, 0x10_3000);
+                let segment = 64;
+                let loaded_file_offset = read_test_u64(&image, segment + 8);
+                let loaded_address = read_test_u64(&image, segment + 16);
+                // Extend the file-backed range to include the existing null
+                // symbol entry, whose zero bytes resemble R_*_NONE. Both
+                // section ranges fit, but refer to different loaded bytes.
+                write_u64(&mut image, segment + 32, 56);
+                let section = relocation_section_header_offset(&image);
+                write_u64(&mut image, section + 16, loaded_address + address_offset);
+                write_u64(&mut image, section + 24, loaded_file_offset + file_offset);
+                assert_eq!(
+                    ElfImage::parse(&image, spec).map(|_| ()),
+                    Err(ElfError::RelocationSectionRange),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_relocations_reject_inconsistent_physical_layout() {
+        for spec in [LOONGARCH64_UEFI, RISCV64_EFI] {
+            for target_physical_address in [0x10_4000, 0x2_000] {
+                let image = native_relocation_image(spec, 3, 6, 0x10_3018, target_physical_address);
+                assert_eq!(
+                    ElfImage::parse(&image, spec).map(|_| ()),
+                    Err(ElfError::RelocationTargetRange),
+                );
+            }
+
+            let mut executable = executable_segment(spec);
+            executable.physical_address = 0x10_1000;
+            let target = TestSegment {
+                flags: 6,
+                virtual_address: 0x10_3000,
+                physical_address: 0x10_3000,
+                memory_size: 32,
+            };
+            let image = test_elf(spec, &[executable, target]);
+            assert_eq!(
+                ElfImage::parse(&image, spec).map(|_| ()),
                 Err(ElfError::RelocationTargetRange),
             );
         }
-
-        let mut image = native_loong_relocation_image(3, 6, 0x10_4000, 0x10_3000);
-        clear_relocation_section_alloc(&mut image);
-        assert_eq!(
-            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
-            Err(ElfError::RelocationTargetRange),
-        );
-    }
-
-    #[test]
-    fn native_loong_relocations_require_fully_loaded_section_file_ranges() {
-        let mut image = native_loong_relocation_image(3, 6, 0x10_3018, 0x10_3000);
-        clear_relocation_section_alloc(&mut image);
-        let relocation_section = relocation_section_header_offset(&image);
-        write_u64(&mut image, relocation_section + 24, 168);
-        assert_eq!(
-            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
-            Err(ElfError::RelocationSectionRange),
-        );
-
-        let mut image = native_loong_relocation_image(3, 6, 0x10_3018, 0x10_3000);
-        clear_relocation_section_alloc(&mut image);
-        let relocation_section = relocation_section_header_offset(&image);
-        write_u64(&mut image, relocation_section + 24, u64::MAX);
-        assert_eq!(
-            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
-            Err(ElfError::RelocationSectionRange),
-        );
-    }
-
-    #[test]
-    fn native_loong_relocations_reject_inconsistent_physical_layout() {
-        for target_physical_address in [0x10_4000, 0x2_000] {
-            let image = native_loong_relocation_image(3, 6, 0x10_3018, target_physical_address);
-            assert_eq!(
-                ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
-                Err(ElfError::RelocationTargetRange),
-            );
-        }
-
-        let mut executable = executable_segment(LOONGARCH64_UEFI);
-        executable.physical_address = 0x10_1000;
-        let target = TestSegment {
-            flags: 6,
-            virtual_address: 0x10_3000,
-            physical_address: 0x10_3000,
-            memory_size: 32,
-        };
-        let image = test_elf(LOONGARCH64_UEFI, &[executable, target]);
-        assert_eq!(
-            ElfImage::parse(&image, LOONGARCH64_UEFI).map(|_| ()),
-            Err(ElfError::RelocationTargetRange),
-        );
     }
 
     #[test]

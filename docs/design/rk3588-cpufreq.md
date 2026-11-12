@@ -70,7 +70,7 @@ SCMI 写入可能已生效而读回失败，大核实际频率未知时不能再
 ## 2. 芯片筛选与转换
 
 RK3588 驱动以板卡 DTB、OTP 和 PVTM 决定可用 OPP，再让 SoC 转换状态机依次确认
-供电、GRF read margin 与 SCMI 时钟。筛选失败只公布可确认的保守档位，
+供电、GRF read margin 与 SCMI 时钟。筛选失败保留保守硬件状态，未校准域返回 `NotReady`，
 硬件转换失败则关闭后续写入。
 
 ### 2.1 OPP 筛选
@@ -163,7 +163,8 @@ TSADC 初始化七个通道的 120 °C 硬件关机比较器及 CRU 路由；调
 10 °C 启用 750 mV 电压下限，超过
 15 °C 解除；高于 85 °C 将 A55 限到 1.608 GHz、大核限到 2.208 GHz，
 低于 80 °C 恢复。温度丢失时，电压使用 750 mV 下限，频率不超过已确认的
-A55 1008 MHz、大核 1200 MHz；未完成大核分档确认时仅开放 816 MHz。
+A55 1008 MHz、大核 1200 MHz；未完成大核分档确认时只维持 816 MHz 环频，
+不开放该域的调频接口。
 每次工作线程轮询先更新这些限制再处理请求。
 
 直通 Linux 的 thermal 驱动可能重写共享 TSADC 的关机比较值。运行期刷新先检查转换、
@@ -179,7 +180,8 @@ SMC 只有成功状态，没有独立的应用状态读回；返回失败则关�
 
 ### 3.2 失效边界
 
-`check_ready` 只开放读回已确认的调频域；`mark_domain_failed` 在转换状态不再可信时
+`check_ready` 同时检查硬件确认状态和未认证分档标志，只开放已校准的调频域；
+`mark_domain_failed` 在转换状态不再可信时
 关闭三个域，避免大核频率未知后继续按旧 DSU 约束调小核。
 若 A55 的 PVTM/OPP 筛选或域确认失败，`initialize_post_boot` 在 SCMI 读回仍可用时
 先将未筛选的两组大核降至 816 MHz 并读回，再恢复 A55 启动时钟、检查域状态；
@@ -197,8 +199,11 @@ A55 实例仍不能进入需升压的 OPP。板卡 DTB 静态最高 A55 1.8 GHz�
 
 `initialize_post_boot` 对未通过 PVTM 筛选的大核不继续使用 1.2 GHz
 启动环频率：此时尚未确认该芯片的 GRF read margin 和实际送达频率。
-驱动将其降到固件原有的 816 MHz 环频并读回，`LIMITED_FALLBACK` 仅公布
-这一个 750 mV 档位，不再尝试改变未经确认的供电或 GRF。Orange Pi 机器人板的
+驱动将其降到固件原有的 816 MHz 环频并读回，`LIMITED_FALLBACK` 仅为内部
+DSU 依赖计算保留该环频状态，不再尝试改变未经确认的供电或 GRF。
+SCMI 读回的环频不能证明实际送达频率，因此 `available_opps`、`all_opps`、
+`current_opp`、`limits` 和 `set_frequency` 均对该域返回 `NotReady`。
+Orange Pi 机器人板的
 A55 PVTM 档 3 没有高档测量；原先 750 mV 大核轨配 1.2 GHz 环频时，
 机器人测试在第一个 NPU 性能窗口后卡住。将大核轨调整到标准 SKU 的
 675 mV 可恢复流程，但缺少该分档的 GRF read margin 确认，因此不作为生产
@@ -229,6 +234,13 @@ CPUFreq 策略测试。ArceOS 的 `cpufreq` 板卡用例补充三域并发调档
 
 以下数据来自 Orange Pi 5 Plus 实体板运行，包含两种 PVTM 分档。
 频率以绑核 PMU 周期计数与系统计时器换算，轨电压由 PMIC 选择码读回确认。
+
+2026-11-12 的本机板卡分档为 A55 1、A76 big0 3、A76 big1 4。
+未认证的 big1 在 750 mV、816 MHz 环频下，CPU 6/7 实测约 918 MHz。
+修复后该域的档位表、当前档位、限制、快照与固定频率请求均返回 `NotReady`，
+已认证的另外两域完成升降档、并发请求与 PMU 测量，原始板卡用例输出
+`CPU_CPUFREQ_OK` 并通过运行器验收。因一个域未认证，本次未执行三域合成温度验证，
+输出 `CPU_CPUFREQ_THERMAL_SKIP_UNREADY domains=1`；grade 4 的可调 OPP 仍未开放。
 
 2026-09-28 的电源时钟修正后，`OrangePi-5-Plus-2` 和最终差异上的
 `OrangePi-5-Plus-1` 均通过 ArceOS `cpufreq` 用例：两板都是 OTP 标准 SKU、

@@ -29,6 +29,9 @@ bitflags! {
         /// 调制解调器状态中断使能 (MSI)
         /// 当调制解调器信号状态改变（CTS、DSR等）时触发中断
         const MODEM_STATUS = 0x08;
+
+        /// XScale receive timeout interrupt enable (RTOIE).
+        const RECEIVE_TIMEOUT = 0x10;
     }
 }
 

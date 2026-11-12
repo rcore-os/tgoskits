@@ -1426,6 +1426,33 @@ async fn elf_rejection_matrix(
     Ok(())
 }
 
+fn check_protocol_guard(port: u16, epoch: &str) -> anyhow::Result<()> {
+    for version in [None, Some("6"), Some("invalid")] {
+        let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+        let header = version
+            .map(|version| format!("{DEVICE_PROTOCOL_VERSION_HEADER}: {version}\r\n"))
+            .unwrap_or_default();
+        // The advertised body is deliberately withheld: rejection must precede body reads.
+        write!(
+            stream,
+            "POST /api/v1/boot/jobs HTTP/1.1\r\nHost: localhost\r\n{header}X-Boot-Epoch: \
+             {epoch}\r\nContent-Length: 1000\r\n\r\n"
+        )?;
+        let (status, error) = read_http_json_response(&mut stream)
+            .with_context(|| format!("protocol guard response for version {version:?}"))?;
+        ensure!(
+            status == 400,
+            "legacy request was not rejected before its body: status={status}, error={error}"
+        );
+        ensure!(
+            error["code"] == "unsupported_protocol"
+                && error["message"] == "axloader protocol 7 is required",
+            "unexpected protocol error: {error}"
+        );
+    }
+    Ok(())
+}
+
 async fn boot_smoke(
     qemu: &QemuChild,
     client: &reqwest::Client,
@@ -1436,6 +1463,9 @@ async fn boot_smoke(
     let kernel = scenario.kernel;
     let base = format!("http://127.0.0.1:{port}/api/v1/boot/jobs");
     let epoch = epoch(client, port).await?;
+    if scenario.check_retries {
+        check_protocol_guard(port, &epoch)?;
+    }
     let boot_id = if scenario.check_retries {
         QEMU_202_WRITE_FAILURE_BOOT_ID.to_string()
     } else {
@@ -1455,21 +1485,6 @@ async fn boot_smoke(
         manifest["cmdline"] = serde_json::json!(cmdline);
     }
     if scenario.check_retries {
-        let no_protocol = client
-            .post(&base)
-            .header("X-Boot-Epoch", &epoch)
-            .json(&manifest)
-            .send()
-            .await?;
-        ensure!(
-            no_protocol.status() == reqwest::StatusCode::BAD_REQUEST,
-            "mutation without the v7 header was accepted"
-        );
-        let error: Value = no_protocol.json().await?;
-        ensure!(
-            error["code"] == "unsupported_protocol",
-            "missing protocol header produced the wrong error: {error}"
-        );
         let mut legacy_manifest = manifest.clone();
         legacy_manifest["arch"] = serde_json::json!("future-isa");
         let legacy = client

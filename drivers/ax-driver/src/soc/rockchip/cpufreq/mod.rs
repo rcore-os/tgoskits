@@ -233,7 +233,7 @@ const A76_OPPS: &[Opp] = &[
     },
 ];
 
-/// Single confirmed fallback for an unselected big-cluster OPP table.
+/// Internal ring state for DSU accounting when no calibrated OPP is available.
 const A76_LIMITED_FALLBACK: &[Opp] = &[Opp {
     ring_khz: 816_000,
     uv: 750_000,
@@ -379,6 +379,7 @@ fn describe_for(domain: FrequencyDomain, opp: Opp) -> OperatingPoint {
 fn check_ready(domain: FrequencyDomain) -> Result<(), FrequencyError> {
     if !driver_ready()
         || !DOMAIN_READY[domain.index()].load(Ordering::Acquire)
+        || LIMITED_FALLBACK[domain.index()].load(Ordering::Acquire)
         || domain == FrequencyDomain::Little && !A55_RAIL_CONFIRMED.load(Ordering::Acquire)
     {
         Err(FrequencyError::NotReady)

@@ -6,7 +6,7 @@ use ax_plat::mem::{
 };
 use heapless::Vec;
 use someboot::ArchTrait;
-use somehal::mem::MemoryType;
+use somehal::mem::{MemoryType, NoMapRegions, reserved_ram_regions};
 
 // Resource/live-object clipping can create more fragments than a firmware-only
 // map. Every platform list must accept the complete inherited map budget.
@@ -120,12 +120,26 @@ impl MemIf for MemIfImpl {
     fn phys_ram_ranges() -> &'static [RawRange] {
         RAM_LIST.call_once(|| {
             let mut list = Vec::new();
+            let excluded = NoMapRegions::current().expect("invalid FDT no-map exclusions");
             for r in somehal::mem::memory_map() {
                 if matches!(r.memory_type, MemoryType::Free) {
-                    list.push((r.physical_start, r.size_in_bytes)).unwrap();
+                    let end = r
+                        .physical_start
+                        .checked_add(r.size_in_bytes)
+                        .expect("RAM range overflows");
+                    for fragment in excluded
+                        .subtract(r.physical_start..end)
+                        .expect("invalid RAM mapping")
+                    {
+                        list.push((fragment.start, fragment.len()))
+                            .expect("RAM mapping capacity exceeded");
+                    }
                 }
             }
             if let Some(archive) = somehal::initramfs_range().filter(|range| range.reclaimable) {
+                excluded
+                    .ensure_mappable(archive.start..archive.end)
+                    .expect("archive overlaps FDT no-map pages");
                 // The archive is RAM, but the reserved list still excludes it
                 // from the boot allocator until unpacking has finished.
                 push_non_overlapping(&mut list, (archive.start, archive.end - archive.start));
@@ -136,27 +150,41 @@ impl MemIf for MemIfImpl {
 
     fn reserved_phys_ram_ranges() -> &'static [RawRange] {
         RESERVED_LIST.call_once(|| {
-            let mut list = Vec::new();
-            for r in somehal::mem::memory_map() {
-                if matches!(
-                    r.memory_type,
-                    MemoryType::Reserved
-                        | MemoryType::KImage
-                        | MemoryType::PerCpuData
-                        | MemoryType::BootData
-                        | MemoryType::BootReclaimable
-                ) {
-                    push_non_overlapping(&mut list, (r.physical_start, r.size_in_bytes));
-                }
-            }
+            let excluded = NoMapRegions::current().expect("invalid FDT no-map exclusions");
+            let list = reserved_ram_regions(somehal::mem::memory_map(), &excluded)
+                .expect("invalid required RAM mapping");
+            #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+            let mut list = list;
             #[cfg(target_arch = "x86_64")]
             for &range in X86_RESERVED_RAM_RANGES {
-                push_non_overlapping(&mut list, range);
+                for fragment in excluded
+                    .subtract(
+                        range.0
+                            ..range
+                                .0
+                                .checked_add(range.1)
+                                .expect("fixed RAM range overflows"),
+                    )
+                    .expect("invalid fixed RAM mapping")
+                {
+                    push_non_overlapping(&mut list, (fragment.start, fragment.len()));
+                }
             }
             #[cfg(target_arch = "loongarch64")]
             if !someboot::handoff::takeover_completed() {
                 for &range in LOONGARCH_RESERVED_RAM_RANGES {
-                    push_non_overlapping(&mut list, range);
+                    for fragment in excluded
+                        .subtract(
+                            range.0
+                                ..range
+                                    .0
+                                    .checked_add(range.1)
+                                    .expect("fixed RAM range overflows"),
+                        )
+                        .expect("invalid fixed RAM mapping")
+                    {
+                        push_non_overlapping(&mut list, (fragment.start, fragment.len()));
+                    }
                 }
             }
             list

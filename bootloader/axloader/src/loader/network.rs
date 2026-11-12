@@ -2,7 +2,10 @@ extern crate alloc;
 
 use core::{ffi::c_void, ptr, time::Duration};
 
-use axloader::target::CURRENT;
+use axloader::{
+    http_control::{DISCOVERY_PORT, MAX_DISCOVERY_DATAGRAM_BYTES},
+    target::CURRENT,
+};
 use httpboot_protocol::{DEVICE_PROTOCOL_VERSION, LoaderAnnouncement, MacAddress};
 use uefi::{
     Event, Handle, Status, StatusExt,
@@ -18,9 +21,7 @@ const UDP4_PROTOCOL_GUID: uefi::Guid = uefi::guid!("3ad9df29-4501-478d-b1f8-7f7f
 const UDP4_SERVICE_BINDING_GUID: uefi::Guid = uefi::guid!("83f01464-99bd-45e5-b383-af6305d8e9e6");
 const UDP_POLL_STALL: Duration = Duration::from_millis(10);
 const UDP_COMPLETION_POLLS: usize = 200;
-const DISCOVERY_PORT: u16 = 2998;
 const DISCOVERY_CLIENT_PORT: u16 = 2997;
-const MAX_UDP_ANNOUNCEMENT_BYTES: usize = 1400;
 const MAX_DIAGNOSTIC_CONTROLLERS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,7 +204,7 @@ impl Announcer {
         self.announcement.serial_ready = serial.ready;
         let payload =
             serde_json::to_vec(&self.announcement).map_err(|_| NetworkError::MalformedResponse)?;
-        if payload.len() > MAX_UDP_ANNOUNCEMENT_BYTES {
+        if payload.len() > MAX_DISCOVERY_DATAGRAM_BYTES {
             return Err(NetworkError::MalformedResponse);
         }
         self.udp

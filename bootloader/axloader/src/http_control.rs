@@ -14,6 +14,10 @@ use crate::{
     integrity::decode_sha256,
 };
 
+/// Maximum UDP discovery payload shared by native network frontends.
+pub const MAX_DISCOVERY_DATAGRAM_BYTES: usize = 1400;
+pub const DISCOVERY_PORT: u16 = 2998;
+
 pub const MAX_HEADER_BYTES: usize = 4 * 1024;
 pub const MAX_SERIAL_BINDING_BYTES: usize = 1024;
 pub const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
