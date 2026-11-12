@@ -1,0 +1,6 @@
+target = "loongarch64-unknown-none-softfloat"
+features = []
+log = "Info"
+max_cpu_num = 1
+env = { RDRIVE_ACPI_LOAD_AML = "0" }
+vm_configs = ["test-suit/axvisor/normal/board-loongson-3a6000-ll/linux.toml"]

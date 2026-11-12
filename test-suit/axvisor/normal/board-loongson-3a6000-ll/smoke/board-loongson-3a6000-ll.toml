@@ -1,0 +1,47 @@
+board_type = "LoongSon-PC"
+cmdline = "earlycon=ns16550,mmio,0x1fe001e0 axvisor.vm_start=1"
+timeout = 600
+fail_regex = [
+  "(?i)kernel panic",
+  "(?i)\\bpanic(?:ked)?\\b",
+  "efi_handoff_entry_failed:",
+  "jump_error:",
+  "AXVISOR_LOONGSON_LINUX_FAILED",
+]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = """
+if uname -r | grep -q '^7\\.1\\([.-]\\|$\\)' && test "$(uname -m)" = loongarch64 && test "$((17 * 19))" = 323; then
+  uname -a
+  echo AXVISOR_LOONGSON_LINUX_USERSPACE_PASSED
+else
+  echo AXVISOR_LOONGSON_LINUX_FAILED
+fi
+"""
+success_regex = ["(?m)^AXVISOR_LOONGSON_LINUX_USERSPACE_PASSED\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = """
+if printf '%s\\n' AXVISOR_LOONGSON_RAM_PAYLOAD > /tmp/axvisor-board-data && test "$(cat /tmp/axvisor-board-data)" = AXVISOR_LOONGSON_RAM_PAYLOAD && sleep 1; then
+  echo AXVISOR_LOONGSON_LINUX_RAM_TIMER_PASSED
+else
+  echo AXVISOR_LOONGSON_LINUX_FAILED
+fi
+"""
+success_regex = ["(?m)^AXVISOR_LOONGSON_LINUX_RAM_TIMER_PASSED\\s*$"]
+
+[[shell_check_steps]]
+shell_cmd = """
+if mkdir -p /mnt/board && mount -t ext4 -o ro /dev/vda /mnt/board && grep -q ' /mnt/board ext4 ro' /proc/mounts && test "$(cat /mnt/board/axvisor-board-fixture.txt)" = AXVISOR_LOONGSON_BLOCK_FIXTURE_V1; then
+  echo AXVISOR_LOONGSON_LINUX_BLOCK_PASSED
+else
+  echo AXVISOR_LOONGSON_LINUX_FAILED
+fi
+"""
+success_regex = ["(?m)^AXVISOR_LOONGSON_LINUX_BLOCK_PASSED\\s*$"]
+timeout = 60
