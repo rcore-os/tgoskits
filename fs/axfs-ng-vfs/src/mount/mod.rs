@@ -27,12 +27,14 @@ use crate::{
 };
 
 mod namespace;
+mod pivot;
 mod propagation;
 mod publication;
 
 mod unmount;
 
 pub use namespace::*;
+pub use pivot::MountPivotRetirement;
 pub use publication::MountPublicationRetirement;
 pub use unmount::*;
 
@@ -678,89 +680,23 @@ impl Mountpoint {
         Ok(())
     }
 
-    /// Pivot the mount tree: the old root (`self`) is detached and re-attached
-    /// at `put_old` under `new_root_mp`, which becomes the global root.
+    /// Pivots the mount tree without an outer caller protection.
     ///
-    /// This implements the mount-tree portion of Linux `pivot_root(2)`.
-    ///
-    /// The mutation acquires one mount-tree lock at a time: first detach the
-    /// new root from the old root, then attach the old root below `put_old`.
-    /// Do not hold these locks in the inverse order elsewhere, or path walkers
-    /// can deadlock while observing a partially rearranged tree.
+    /// This low-level convenience entry does not authorize a task namespace.
+    /// Temporary owners retire after internal topology exclusion but before
+    /// return. Task callers must use [`MountNamespace::pivot_root`] instead.
     pub fn pivot_mount(
         self: &Arc<Self>,        // old root mountpoint
         new_root_mp: &Arc<Self>, // new root mountpoint
         put_old: &Location,      // directory under new_root_mp where old root goes
     ) -> VfsResult<()> {
-        let topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        self.check_topology_live_locked()?;
-        new_root_mp.check_topology_live_locked()?;
-        put_old.mountpoint.check_topology_live_locked()?;
-        if self.root_role() == MountRootRole::NamespaceAnchor
-            || new_root_mp.root_role() == MountRootRole::NamespaceAnchor
-        {
-            return Err(VfsError::InvalidInput);
-        }
-        let new_root = new_root_mp.root_location();
-        if Arc::ptr_eq(self, new_root_mp)
-            || !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
-            || !put_old.is_descendant_of(&new_root)
-            || !new_root.is_descendant_of(&self.root_location())
-        {
-            return Err(VfsError::InvalidInput);
-        }
-        // put_old must be a directory and not already a mountpoint.
-        put_old.check_is_dir()?;
-        if put_old.is_mountpoint() {
-            return Err(VfsError::ResourceBusy);
-        }
-
-        let new_parent = new_root_mp.location().ok_or(VfsError::InvalidInput)?;
-        let old_parent = self.location();
-        new_parent.mountpoint.check_topology_live_locked()?;
-        if let Some(parent) = &old_parent {
-            parent.mountpoint.check_topology_live_locked()?;
-        }
-        if put_old.mountpoint().is_shared()
-            || new_parent.mountpoint().is_shared()
-            || old_parent
-                .as_ref()
-                .is_some_and(|parent| parent.mountpoint().is_shared())
-        {
-            return Err(VfsError::InvalidInput);
-        }
-        let removed_new = new_parent
-            .mountpoint
-            .children
-            .lock()
-            .remove(&new_parent.entry.key());
-        let removed_old = old_parent.as_ref().and_then(|parent| {
-            parent
-                .mountpoint
-                .children
-                .lock()
-                .remove(&parent.entry.key())
-        });
-        if let Some(parent) = &old_parent {
-            parent
-                .mountpoint
-                .children
-                .lock()
-                .insert(parent.entry.key(), new_root_mp.clone());
-        }
-        let previous_new = core::mem::replace(&mut *new_root_mp.location.lock(), old_parent);
-        *self.root_role.lock() = MountRootRole::Ordinary;
-        let previous_old = self.location.lock().replace(put_old.clone());
-        new_root_mp
-            .children
-            .lock()
-            .insert(put_old.entry.key(), self.clone());
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
-        drop(topology);
-        // Final mount leases can clear caches and release pages; never run
-        // those destructors while serializing topology mutations.
-        drop((removed_new, removed_old, previous_new, previous_old));
-        Ok(())
+        let mut retirement = MountPivotRetirement::raw(self, new_root_mp, put_old);
+        let result = {
+            let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            retirement.pivot_locked(self, new_root_mp, put_old)
+        };
+        drop(retirement);
+        result
     }
 
     /// Returns the effective mountpoint.

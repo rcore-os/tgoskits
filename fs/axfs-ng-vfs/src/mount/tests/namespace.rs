@@ -17,6 +17,46 @@ fn directory(parent: &Arc<Mountpoint>, name: &str) -> Location {
     )
 }
 
+fn pivot_paths(old: &Arc<Mountpoint>, new: &Arc<Mountpoint>, put_old: Location) -> [PathHandle; 3] {
+    [
+        PathHandle::acquire(old.root_location()).unwrap(),
+        PathHandle::acquire(new.root_location()).unwrap(),
+        PathHandle::acquire(put_old).unwrap(),
+    ]
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MountConnections {
+    id: u64,
+    parent: Option<(u64, DirEntryId)>,
+    children: Vec<u64>,
+}
+
+fn tree_shape(namespace: &MountNamespace) -> Vec<MountConnections> {
+    let mut shape: Vec<_> = namespace
+        .walk_tree()
+        .into_iter()
+        .map(|(id, _, mount)| {
+            let parent = mount
+                .location()
+                .map(|parent| (parent.mountpoint().mount_id(), parent.entry().key()));
+            let mut children: Vec<_> = mount
+                .children()
+                .iter()
+                .map(|child| child.mount_id())
+                .collect();
+            children.sort_unstable();
+            MountConnections {
+                id,
+                parent,
+                children,
+            }
+        })
+        .collect();
+    shape.sort_unstable_by_key(|mount| mount.id);
+    shape
+}
+
 #[test]
 fn namespace_anchor_stays_fixed_across_pivot_bind_and_owner_retirement() {
     let anchor = Mountpoint::new_root_with_source_readonly(&mock_filesystem(), "nullfs", true);
@@ -36,7 +76,40 @@ fn namespace_anchor_stays_fixed_across_pivot_bind_and_owner_retirement() {
         Err(VfsError::InvalidInput),
         "even the low-level pivot must not move an adopted anchor"
     );
-    old.pivot_mount(&new, &directory(&new, "old")).unwrap();
+    // The foreign tree is internally valid, private, live and non-anchor at
+    // both roots. Only the actual calling Core can distinguish this rejection.
+    let foreign_anchor = Mountpoint::new_root(&mock_filesystem());
+    let foreign_old = foreign_anchor
+        .root_location()
+        .mount(&mock_filesystem())
+        .unwrap();
+    let foreign_new = directory(&foreign_old, "new")
+        .mount(&mock_filesystem())
+        .unwrap();
+    let foreign = adopt(&foreign_anchor);
+    let paths = pivot_paths(&foreign_old, &foreign_new, directory(&foreign_new, "old"));
+    let before = (tree_shape(&namespace), tree_shape(&foreign));
+    let (result, retirement) = namespace.pivot_root(&paths[0], &paths[1], &paths[2]);
+    assert_eq!(
+        result,
+        Err(VfsError::InvalidInput),
+        "foreign Core must not pivot a valid tree"
+    );
+    assert_eq!((tree_shape(&namespace), tree_shape(&foreign)), before);
+    drop(retirement);
+    let (result, retirement) = foreign.pivot_root(&paths[0], &paths[1], &paths[2]);
+    result.unwrap();
+    assert!(Arc::ptr_eq(
+        foreign_new.location().unwrap().mountpoint(),
+        &foreign_anchor
+    ));
+    assert!(foreign_old.location().unwrap().ptr_eq(paths[2].location()));
+    drop((retirement, paths, foreign));
+
+    let paths = pivot_paths(&old, &new, directory(&new, "old"));
+    let (result, retirement) = namespace.pivot_root(&paths[0], &paths[1], &paths[2]);
+    result.unwrap();
+    drop((retirement, paths));
     let (snapshot, retired) = namespace.snapshot_root();
     let snapshot = snapshot.unwrap();
     assert!(Arc::ptr_eq(namespace.root_mount(), &anchor));
@@ -48,7 +121,10 @@ fn namespace_anchor_stays_fixed_across_pivot_bind_and_owner_retirement() {
     // Preserve the existing same-point stack algorithm: old temporarily
     // covers next until explicitly detached, without changing the anchor.
     let next = directory(&new, "next").mount(&mock_filesystem()).unwrap();
-    new.pivot_mount(&next, &next.root_location()).unwrap();
+    let paths = pivot_paths(&new, &next, next.root_location());
+    let (result, retirement) = namespace.pivot_root(&paths[0], &paths[1], &paths[2]);
+    result.unwrap();
+    drop((retirement, paths));
     let (covered, retired) = namespace.snapshot_root();
     assert!(Arc::ptr_eq(
         covered.unwrap().root().location().mountpoint(),
@@ -102,6 +178,195 @@ fn namespace_anchor_stays_fixed_across_pivot_bind_and_owner_retirement() {
     ));
     assert!(next.location().is_none());
     assert!(next.children().is_empty());
+}
+
+#[test]
+fn namespace_pivot_rechecks_membership_and_keeps_its_gate_through_commit() {
+    use super::super::pivot::test_hook::{self, Stage};
+
+    // Independent writers do not serialize the two real topology operations.
+    // Move-first is scheduled at the last boundary before pivot takes its gate;
+    // pivot-first starts a second writer at its in-gate membership observation.
+    for move_first in [true, false] {
+        let anchor = Mountpoint::new_root(&mock_filesystem());
+        let subtree = directory(&anchor, "subtree")
+            .mount(&mock_filesystem())
+            .unwrap();
+        let old = directory(&subtree, "root")
+            .mount(&mock_filesystem())
+            .unwrap();
+        let middle = directory(&old, "stack").mount(&mock_filesystem()).unwrap();
+        let new = middle.root_location().mount(&mock_filesystem()).unwrap();
+        let namespace = adopt(&anchor);
+        let other_anchor = Mountpoint::new_root(&mock_filesystem());
+        let other = adopt(&other_anchor);
+        let paths = pivot_paths(&old, &new, directory(&new, "old"));
+        let original = tree_shape(&namespace);
+        let target = directory(&other_anchor, "moved");
+        let mover = subtree.clone();
+        let mover_writer = Arc::new(std::sync::Mutex::new(()));
+        let (start, ready) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            ready.recv().unwrap();
+            let _writer = mover_writer.lock().unwrap();
+            mover.move_to(&target).unwrap();
+        });
+        assert!(namespace.contains_mountpoint(&old));
+        assert!(namespace.contains_mountpoint(&new));
+        if move_first {
+            let hook = test_hook::arm(Stage::BeforeLock, move || {
+                assert!(!current_thread_owns_mount_topology_guard());
+                start.send(()).unwrap();
+                thread.join().unwrap();
+            });
+            let writer = std::sync::Mutex::new(());
+            let writer = writer.lock().unwrap();
+            let (result, retirement) = namespace.pivot_root(&paths[0], &paths[1], &paths[2]);
+            assert_eq!(result, Err(VfsError::InvalidInput));
+            assert!(Arc::ptr_eq(old.location().unwrap().mountpoint(), &subtree));
+            assert!(Arc::ptr_eq(new.location().unwrap().mountpoint(), &middle));
+            drop(writer);
+            drop((retirement, hook));
+        } else {
+            let hook = test_hook::arm(Stage::Membership, move || {
+                // This is nonblocking even though the host-test topology gate
+                // is a spinlock. The second writer waits only on its own thread.
+                assert!(current_thread_owns_mount_topology_guard());
+                start.send(()).unwrap();
+            });
+            let writer = std::sync::Mutex::new(());
+            let writer = writer.lock().unwrap();
+            let (result, retirement) = namespace.pivot_root(&paths[0], &paths[1], &paths[2]);
+            result.unwrap();
+            drop(writer);
+            drop((retirement, hook));
+            thread.join().unwrap();
+            assert!(Arc::ptr_eq(new.location().unwrap().mountpoint(), &subtree));
+            assert!(old.location().unwrap().ptr_eq(paths[2].location()));
+        }
+        assert!(namespace.root_mount().children().is_empty());
+        assert!(other.contains_mountpoint(&old));
+        assert!(other.contains_mountpoint(&new));
+        assert_ne!(tree_shape(&namespace), original);
+    }
+}
+
+#[test]
+fn namespace_pivot_success_and_rejection_retire_superseded_name_parents_after_writer() {
+    use super::super::pivot::test_hook::{self, Stage};
+
+    for reject in [false, true] {
+        let anchor = Mountpoint::new_root(&mock_filesystem());
+        let old = anchor.root_location().mount(&mock_filesystem()).unwrap();
+        let new = directory(&old, "new").mount(&mock_filesystem()).unwrap();
+        let namespace = adopt(&anchor);
+        let outer = Arc::new(std::sync::Mutex::new(()));
+        let retired = Arc::new(AtomicUsize::new(0));
+        let violations = Arc::new(AtomicUsize::new(0));
+        let node = Arc::new(PivotObservedDirectory {
+            writer: outer.clone(),
+            retired: retired.clone(),
+            violations: violations.clone(),
+        });
+        let weak_parent = Arc::downgrade(&node);
+        let parent = DirEntry::new_dir(
+            |_| DirNode::new(node),
+            Reference::new((!reject).then(|| new.root.clone()), "observed".to_string()),
+        );
+        let put_old = Location::new(new.clone(), make_child_dir_entry(Some(parent), "old"));
+        let paths = pivot_paths(&old, &new, put_old);
+        let alias = paths[2].location().entry().clone();
+        let replacement_parent = new.root.clone();
+        let hook = test_hook::arm(Stage::Parent, move || {
+            // The real naming publication removes the alias's only parent
+            // owner. The traversal snapshot, not an extra test Arc, owns it.
+            drop(alias.move_to(replacement_parent, "renamed".to_string()));
+        });
+        let writer = outer.lock().unwrap();
+        let before = tree_shape(&namespace);
+        let (result, retirement) = namespace.pivot_root(&paths[0], &paths[1], &paths[2]);
+        if reject {
+            assert_eq!(result, Err(VfsError::InvalidInput));
+            assert_eq!(tree_shape(&namespace), before);
+        } else {
+            result.unwrap();
+            assert!(old.location().unwrap().ptr_eq(paths[2].location()));
+        }
+        assert!(
+            weak_parent.upgrade().is_some(),
+            "actual observation must survive return"
+        );
+        assert_eq!(retired.load(Ordering::Acquire), 0);
+        drop(writer);
+        assert_eq!(retired.load(Ordering::Acquire), 0);
+        drop(retirement);
+        assert!(weak_parent.upgrade().is_none());
+        assert_eq!(retired.load(Ordering::Acquire), 1);
+        assert_eq!(violations.load(Ordering::Acquire), 0);
+        drop(hook);
+    }
+}
+
+/// A directory in the same mock backend as the pivot paths. Only the lifetime
+/// observation is special; real DirEntry naming owns and releases this node.
+struct PivotObservedDirectory {
+    writer: Arc<std::sync::Mutex<()>>,
+    retired: Arc<AtomicUsize>,
+    violations: Arc<AtomicUsize>,
+}
+
+impl Drop for PivotObservedDirectory {
+    fn drop(&mut self) {
+        // Record only: no blocking reentry, backend callback or panic in Drop.
+        if current_thread_owns_mount_topology_guard() || self.writer.try_lock().is_err() {
+            self.violations.fetch_add(1, Ordering::Relaxed);
+        }
+        self.retired.fetch_add(1, Ordering::Release);
+    }
+}
+
+impl NodeOps for PivotObservedDirectory {
+    fn inode(&self) -> u64 {
+        9
+    }
+
+    fn metadata(&self) -> VfsResult<Metadata> {
+        MockNode.metadata()
+    }
+
+    fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
+        MockNode.update_metadata(update)
+    }
+
+    fn filesystem(&self) -> &dyn FilesystemOps {
+        &MOCK_FS
+    }
+
+    fn sync(&self, data_only: bool) -> VfsResult<()> {
+        MockNode.sync(data_only)
+    }
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
+    }
+}
+
+impl DirNodeOps for PivotObservedDirectory {
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        MockNode.read_dir(cursor, sink)
+    }
+
+    fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
+        MockNode.lookup(name)
+    }
+
+    fn mutate_namespace(
+        &self,
+        command: &crate::NamespaceMutation<'_>,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        MockNode.mutate_namespace(command, retired)
+    }
 }
 
 #[test]

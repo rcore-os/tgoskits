@@ -33,6 +33,10 @@ pub(super) struct RetainedLocations {
 }
 
 impl RetainedLocations {
+    pub(super) fn reserve(&mut self, additional: usize) {
+        self.locations.reserve(additional);
+    }
+
     pub(super) fn push(&mut self, location: Location) -> usize {
         let index = self.locations.len();
         self.locations.push(location);
