@@ -1,4 +1,4 @@
 host_prepare = [
   "python3",
-  "test-suit/axvisor/normal/board-loongson-3a6000-ll/resources/prepare.py",
+  "test-suit/axvisor/normal/board-loongson-3a6000-ll/resources/prepare-board.py",
 ]

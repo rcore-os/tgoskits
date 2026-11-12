@@ -1,12 +1,13 @@
 board_type = "LoongSon-PC"
 cmdline = "earlycon=ns16550,mmio,0x1fe001e0 axvisor.vm_start=1"
+initramfs = "${workspace}/target/axbuild/loongson-3a6000/block-host.cpio.gz"
 timeout = 600
 fail_regex = [
   "(?i)kernel panic",
   "(?i)\\bpanic(?:ked)?\\b",
   "efi_handoff_entry_failed:",
   "jump_error:",
-  "AXVISOR_LOONGSON_LINUX_FAILED",
+  "(?m)^AXVISOR_LOONGSON_LINUX_FAILED\\s*$",
 ]
 
 [[shell_check_steps]]
@@ -37,7 +38,7 @@ success_regex = ["(?m)^AXVISOR_LOONGSON_LINUX_RAM_TIMER_PASSED\\s*$"]
 
 [[shell_check_steps]]
 shell_cmd = """
-if mkdir -p /mnt/board && mount -t ext4 -o ro /dev/vda /mnt/board && grep -q ' /mnt/board ext4 ro' /proc/mounts && test "$(cat /mnt/board/axvisor-board-fixture.txt)" = AXVISOR_LOONGSON_BLOCK_FIXTURE_V1; then
+if test "$(cat /sys/class/block/vda/ro)" = 1 && mkdir -p /mnt/board && mount -t ext4 -o ro /dev/vda /mnt/board && grep -q ' /mnt/board ext4 ro' /proc/mounts && test "$(cat /mnt/board/axvisor-board-fixture.txt)" = AXVISOR_LOONGSON_BLOCK_FIXTURE_V1; then
   echo AXVISOR_LOONGSON_LINUX_BLOCK_PASSED
 else
   echo AXVISOR_LOONGSON_LINUX_FAILED

@@ -21,5 +21,6 @@ memory_regions = [
 id = "virtblk0"
 model = "virtio-blk"
 transport = "pci"
-path = "${workspace}/target/axbuild/loongson-3a6000/block.img"
+path = "/guest/loongson-block.img"
 filesystem = "ext4"
+read_only = true
