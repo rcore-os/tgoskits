@@ -16,20 +16,32 @@ mod timerfd;
 mod xattr;
 
 use axfs_ng_vfs::MutationCredentials;
+use linux_raw_sys::general::{CAP_CHOWN, CAP_FSETID, CAP_MKNOD};
 
-use crate::task::Cred;
+use crate::task::FsCredentialsSnapshot;
 
-/// Converts a StarryOS task credential into the VFS access snapshot.
-pub(crate) fn mutation_credentials(cred: &Cred) -> MutationCredentials<'_> {
+/// Borrows the paired identity for the current flat, non-idmapped VFS domain.
+///
+/// Capability exceptions are restricted to the initial user namespace; ordinary
+/// owner and group checks still use the saved IDs in every namespace.
+pub(crate) fn mutation_credentials(snapshot: &FsCredentialsSnapshot) -> MutationCredentials<'_> {
+    let cred = snapshot.credentials();
+    let initial_namespace = snapshot.in_initial_user_ns();
     MutationCredentials {
         fsuid: cred.fsuid,
         fsgid: cred.fsgid,
         supplementary_gids: &cred.groups,
-        cap_dac_override: cred.has_cap_dac_override(),
-        cap_dac_read_search: cred.has_cap_dac_read_search(),
-        cap_fowner: cred.has_cap_fowner(),
+        cap_dac_override: initial_namespace && cred.has_cap_dac_override(),
+        cap_dac_read_search: initial_namespace && cred.has_cap_dac_read_search(),
+        cap_fowner: initial_namespace && cred.has_cap_fowner(),
+        cap_mknod: initial_namespace && cred.has_cap(CAP_MKNOD),
+        cap_chown: initial_namespace && cred.has_cap(CAP_CHOWN),
+        cap_fsetid: initial_namespace && cred.has_cap(CAP_FSETID),
     }
 }
+
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use lock::render_file_lock_metrics;
 
 pub use self::{
     aio::*,
@@ -52,6 +64,3 @@ pub use self::{
     timerfd::*,
     xattr::*,
 };
-
-#[cfg(feature = "qperf-metrics")]
-pub(crate) use lock::render_file_lock_metrics;

@@ -292,16 +292,16 @@ impl CloneArgs {
         };
 
         let parent_pid_ns = curr_thread.active_pid_namespace();
+        let (parent_nsproxy, parent_cred) = {
+            let update = old_proc_data.namespace_update();
+            (update.snapshot(), curr_thread.cred())
+        };
         let target_pid_ns = if flags.contains(CloneFlags::THREAD) {
             parent_pid_ns.clone()
         } else if flags.contains(CloneFlags::NEWPID) {
             crate::namespace::PidNamespace::new_child(parent_pid_ns.clone())
         } else {
-            old_proc_data
-                .nsproxy
-                .lock_irqsave()
-                .pid_ns_for_children
-                .clone()
+            parent_nsproxy.pid_ns_for_children.clone()
         };
         let reservation_kind = if flags.contains(CloneFlags::THREAD) {
             PidReservationKind::Thread
@@ -347,31 +347,33 @@ impl CloneArgs {
             }
         };
         let child_cgroup = cgroup_guard.cgroup();
-        let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD)).then(|| {
-            let mut nsproxy = old_proc_data.nsproxy.lock_irqsave().clone_all();
-            if flags.contains(CloneFlags::NEWUTS) {
-                nsproxy.unshare_uts();
-            }
-            if flags.contains(CloneFlags::NEWIPC) {
-                nsproxy.unshare_ipc();
-            }
-            if flags.contains(CloneFlags::NEWNS) {
-                nsproxy.unshare_mnt();
-            }
-            if flags.contains(CloneFlags::NEWNET) {
-                nsproxy.unshare_net();
-            }
-            if flags.contains(CloneFlags::NEWUSER) {
-                nsproxy.unshare_user();
-            }
-            if flags.contains(CloneFlags::NEWCGROUP) {
-                nsproxy.unshare_cgroup(child_cgroup.clone());
-            }
-            if flags.contains(CloneFlags::NEWPID) {
-                nsproxy.pid_ns_for_children = target_pid_ns.clone();
-            }
-            nsproxy
-        });
+        let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD))
+            .then(|| -> StarryResult<_> {
+                let mut nsproxy = parent_nsproxy.clone_all();
+                if flags.contains(CloneFlags::NEWUTS) {
+                    nsproxy.unshare_uts();
+                }
+                if flags.contains(CloneFlags::NEWIPC) {
+                    nsproxy.unshare_ipc();
+                }
+                if flags.contains(CloneFlags::NEWNS) {
+                    nsproxy.unshare_mnt();
+                }
+                if flags.contains(CloneFlags::NEWNET) {
+                    nsproxy.unshare_net();
+                }
+                if flags.contains(CloneFlags::NEWUSER) {
+                    nsproxy.unshare_user(parent_cred.euid)?;
+                }
+                if flags.contains(CloneFlags::NEWCGROUP) {
+                    nsproxy.unshare_cgroup(child_cgroup.clone())?;
+                }
+                if flags.contains(CloneFlags::NEWPID) {
+                    nsproxy.pid_ns_for_children = target_pid_ns.clone();
+                }
+                Ok(nsproxy)
+            })
+            .transpose()?;
 
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
             old_proc_data.clone()
@@ -483,12 +485,11 @@ impl CloneArgs {
             *FS_CONTEXT.scope_mut(&mut scope) = Some(fs_context.into_shared());
         }
 
-        let parent_cred = Some(curr_thread.cred());
         let thr = Thread::new(
             identity.clone(),
             tid_lease,
             new_proc_data.clone(),
-            parent_cred,
+            Some(parent_cred),
             curr_thread.signal().blocked(),
             scope,
         )?;

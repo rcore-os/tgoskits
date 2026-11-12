@@ -21,7 +21,7 @@ use ax_net::{
 };
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
-    general::{CAP_NET_ADMIN, O_RDWR, S_IFSOCK},
+    general::{CAP_NET_ADMIN, O_RDWR},
     ioctl::{
         FIONREAD, SIOCADDRT, SIOCDELRT, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR,
         SIOCGIFFLAGS, SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU,
@@ -36,6 +36,7 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     mm::{VmMutPtr, vm_read_slice, vm_write_slice},
+    pseudofs::object::ObjectInode,
     task::{
         UserTaskRef, current_pid_view, current_user_task,
         future::{UserWaitOutcome, block_on_user_timeout},
@@ -74,6 +75,7 @@ const RTF_HOST: u16 = 0x0004;
 const SOCKET_RECEIVE_STAGING_LIMIT: usize = 64 * 1024;
 
 pub struct Socket {
+    inode: Arc<ObjectInode>,
     inner: SocketInner,
     ip_domain: u32,
     async_mode: AtomicBool,
@@ -83,11 +85,24 @@ pub struct Socket {
 impl Socket {
     pub fn new(inner: SocketInner, ip_domain: u32) -> Self {
         Self {
+            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777),
             inner,
             ip_domain,
             async_mode: AtomicBool::new(false),
             owner: AtomicI32::new(0),
         }
+    }
+
+    pub(crate) fn location(&self) -> axfs_ng_vfs::Location {
+        self.inode.location(())
+    }
+
+    pub(crate) fn object_display(location: &axfs_ng_vfs::Location) -> Option<Cow<'static, str>> {
+        let node = location
+            .entry()
+            .downcast::<crate::pseudofs::object::ObjectNode<()>>()
+            .ok()?;
+        Some(format!("socket:[{}]", node.inode.inode()).into())
     }
 
     /// Copies a task-owned source into kernel memory before entering ax-net.
@@ -818,11 +833,7 @@ impl FileLike for Socket {
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
-        Ok(Kstat {
-            mode: S_IFSOCK | 0o777u32,
-            blksize: 4096,
-            ..Default::default()
-        })
+        Ok(super::metadata_to_kstat(&self.inode.metadata()?))
     }
 
     fn nonblocking(&self) -> bool {
@@ -861,7 +872,7 @@ impl FileLike for Socket {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        format!("socket:[{}]", self as *const _ as usize).into()
+        format!("socket:[{}]", self.inode.inode()).into()
     }
 
     fn open_flags(&self) -> u32 {

@@ -17,6 +17,9 @@ use crate::{
     sync::RawSpinLock,
 };
 
+mod object;
+pub(crate) use object::{NamespaceKind, NamespaceObject};
+
 /// A file descriptor that references a specific kernel namespace.
 ///
 /// Created by opening a file under `/proc/<pid>/ns/<type>`.  The fd is
@@ -55,34 +58,12 @@ impl FileLike for NsFd {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        match self {
-            NsFd::Uts(_) => "anon_inode:[uts_ns]".into(),
-            NsFd::Ipc(_) => "anon_inode:[ipc_ns]".into(),
-            NsFd::Mnt { .. } => "anon_inode:[mnt_ns]".into(),
-            NsFd::Pid(_) => "anon_inode:[pid_ns]".into(),
-            NsFd::Net(_) => "anon_inode:[net_ns]".into(),
-            NsFd::User(_) => "anon_inode:[user_ns]".into(),
-            NsFd::Cgroup(_) => "anon_inode:[cgroup_ns]".into(),
-        }
+        NamespaceObject::from_fd(self).display().into()
     }
 
     fn stat(&self) -> StarryResult<super::Kstat> {
-        let ino = match self {
-            NsFd::Uts(ns) => ns.lock_irqsave().id,
-            NsFd::Ipc(ns) => ns.lock_irqsave().ns_id,
-            NsFd::Mnt { ns, .. } => ns.lock_irqsave().id(),
-            NsFd::Pid(ns) => ns.id().get(),
-            NsFd::Net(ns) => ns.lock_irqsave().ns_id,
-            NsFd::User(ns) => ns.lock_irqsave().id,
-            NsFd::Cgroup(ns) => ns.lock_irqsave().id(),
-        };
-        Ok(super::Kstat {
-            ino,
-            mode: 0o100_444, // S_IFREG | 0444
-            nlink: 1,
-            blksize: 4096,
-            ..super::Kstat::default()
-        })
+        let location = NamespaceObject::from_fd(self).location();
+        Ok(super::metadata_to_kstat(&location.metadata()?))
     }
 }
 

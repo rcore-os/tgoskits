@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -274,6 +275,477 @@ static void expect_clone_into_cgroup(const char *path, const char *msg)
           msg);
 }
 
+static void test_unlink_control_file_order(void)
+{
+    const char *group_path = CGROUP2_PATH "/unlink-order";
+    const char *control_name = "cgroup.procs";
+    struct stat st;
+    int dirfd = -1;
+    int group_created = 0;
+
+    if (geteuid() != 0) {
+        errno = 0;
+        CHECK(0, "unlink order test requires privileged root actor");
+        return;
+    }
+
+    errno = 0;
+    int ret = mkdir(group_path, 0755);
+    if (ret == 0) {
+        group_created = 1;
+    }
+    CHECK(ret == 0, "create isolated cgroup for unlink order test");
+    if (ret != 0) {
+        return;
+    }
+
+    errno = 0;
+    ret = fstatat(AT_FDCWD, CGROUP2_PATH "/unlink-order/cgroup.procs",
+                  &st, 0);
+    CHECK(ret == 0 && S_ISREG(st.st_mode),
+          "cgroup.procs exists as a regular control file");
+    if (ret != 0 || !S_ISREG(st.st_mode)) {
+        goto cleanup;
+    }
+
+    errno = 0;
+    ret = chmod(group_path, 0555);
+    CHECK(ret == 0, "set isolated cgroup parent permissions to 0555");
+    if (ret != 0) {
+        goto cleanup;
+    }
+    errno = 0;
+    ret = stat(group_path, &st);
+    CHECK(ret == 0 && (st.st_mode & 0777) == 0555,
+          "verify isolated cgroup parent permissions are 0555");
+    if (ret != 0 || (st.st_mode & 0777) != 0555) {
+        goto cleanup;
+    }
+
+    errno = 0;
+    dirfd = open(group_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(dirfd >= 0, "open isolated cgroup directory");
+    if (dirfd < 0) {
+        goto cleanup;
+    }
+
+    errno = 0;
+    long unlink_ret = syscall(SYS_unlinkat, dirfd, control_name, AT_REMOVEDIR);
+    int saved_errno = errno;
+    CHECK(unlink_ret == -1 && saved_errno == ENOTDIR,
+          "raw unlinkat AT_REMOVEDIR on cgroup.procs fails with ENOTDIR");
+
+    errno = 0;
+    unlink_ret = syscall(SYS_unlinkat, dirfd, control_name, 0);
+    saved_errno = errno;
+    CHECK(unlink_ret == -1 && saved_errno == EPERM,
+          "raw unlinkat on cgroup.procs fails with EPERM");
+
+    pid_t child = fork();
+    CHECK(child >= 0, "fork nonprivileged unlink order actor");
+    if (child == 0) {
+        uid_t real_uid, effective_uid, saved_uid;
+        gid_t real_gid, effective_gid, saved_gid;
+        int child_errno;
+        long child_ret;
+
+        if (setgroups(0, NULL) != 0) {
+            _exit(10);
+        }
+        if (setresgid(1000, 1000, 1000) != 0) {
+            _exit(11);
+        }
+        if (setresuid(1000, 1000, 1000) != 0) {
+            _exit(12);
+        }
+        if (getresgid(&real_gid, &effective_gid, &saved_gid) != 0 ||
+            getresuid(&real_uid, &effective_uid, &saved_uid) != 0 ||
+            real_uid != 1000 || effective_uid != 1000 || saved_uid != 1000 ||
+            real_gid != 1000 || effective_gid != 1000 || saved_gid != 1000) {
+            _exit(13);
+        }
+        if (getgroups(0, NULL) != 0) {
+            _exit(14);
+        }
+
+        errno = 0;
+        child_ret = syscall(SYS_unlinkat, dirfd, control_name, 0);
+        child_errno = errno;
+        if (child_ret != -1 || child_errno != EACCES) {
+            _exit(15);
+        }
+
+        errno = 0;
+        child_ret = syscall(SYS_unlinkat, dirfd, control_name, AT_REMOVEDIR);
+        child_errno = errno;
+        if (child_ret != -1 || child_errno != EACCES) {
+            _exit(16);
+        }
+        _exit(0);
+    }
+
+    if (child > 0) {
+        int status = 0;
+        pid_t waited = waitpid(child, &status, 0);
+        CHECK(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "uid/gid 1000 with no supplementary groups gets EACCES for both raw unlinkat flags");
+    }
+
+    errno = 0;
+    ret = fstatat(dirfd, control_name, &st, 0);
+    CHECK(ret == 0 && S_ISREG(st.st_mode),
+          "rejected unlinkat calls preserve cgroup.procs regular file");
+    errno = 0;
+    ret = fstatat(AT_FDCWD, group_path, &st, 0);
+    CHECK(ret == 0 && S_ISDIR(st.st_mode),
+          "rejected unlinkat calls preserve isolated cgroup");
+
+cleanup:
+    if (dirfd >= 0) {
+        close(dirfd);
+    }
+    if (group_created) {
+        errno = 0;
+        ret = chmod(group_path, 0755);
+        CHECK(ret == 0, "restore isolated cgroup permissions for cleanup");
+        if (ret == 0) {
+            expect_rmdir_ok(group_path, "cleanup isolated unlink order cgroup");
+        }
+    }
+}
+
+static int cgroup_attr_matches(int dirfd, int controlfd, const char *group_path,
+                               const char *alias_group_path,
+                               dev_t dir_dev, dev_t alias_dir_dev, ino_t dir_ino,
+                               dev_t control_dev, dev_t alias_control_dev,
+                               ino_t control_ino,
+                               uid_t dir_uid, gid_t dir_gid, mode_t dir_mode,
+                               uid_t control_uid, gid_t control_gid,
+                               mode_t control_mode, const char *stage)
+{
+    struct stat dir_fd_st, dir_lookup_st, dir_alias_st;
+    struct stat control_fd_st, control_lookup_st, control_alias_st;
+    int ok = 1;
+    int ret;
+
+#define VERIFY_ATTR(result, st, type, dev, ino, uid, gid, mode) do {       \
+        int matches = (result) == 0 && S_IS##type((st).st_mode) &&        \
+                      (st).st_dev == (dev) && (st).st_ino == (ino) &&     \
+                      (st).st_uid == (uid) && (st).st_gid == (gid) &&     \
+                      ((st).st_mode & 07777) == (mode);                   \
+        CHECK(matches, stage);                                            \
+        ok &= matches;                                                    \
+    } while (0)
+
+    ret = fstat(dirfd, &dir_fd_st);
+    VERIFY_ATTR(ret, dir_fd_st, DIR, dir_dev, dir_ino,
+                dir_uid, dir_gid, dir_mode);
+
+    ret = stat(group_path, &dir_lookup_st);
+    VERIFY_ATTR(ret, dir_lookup_st, DIR, dir_dev, dir_ino,
+                dir_uid, dir_gid, dir_mode);
+
+    ret = stat(alias_group_path, &dir_alias_st);
+    VERIFY_ATTR(ret, dir_alias_st, DIR, alias_dir_dev, dir_ino,
+                dir_uid, dir_gid, dir_mode);
+
+    ret = fstat(controlfd, &control_fd_st);
+    VERIFY_ATTR(ret, control_fd_st, REG, control_dev, control_ino,
+                control_uid, control_gid, control_mode);
+
+    ret = fstatat(dirfd, "cgroup.procs", &control_lookup_st, 0);
+    VERIFY_ATTR(ret, control_lookup_st, REG, control_dev, control_ino,
+                control_uid, control_gid, control_mode);
+
+    char alias_control_path[sizeof("/tmp/cg-attrs-alias/attrs-owner/cgroup.procs")];
+    snprintf(alias_control_path, sizeof(alias_control_path), "%s/cgroup.procs",
+             alias_group_path);
+    ret = stat(alias_control_path, &control_alias_st);
+    VERIFY_ATTR(ret, control_alias_st, REG, alias_control_dev, control_ino,
+                control_uid, control_gid, control_mode);
+#undef VERIFY_ATTR
+    return ok;
+}
+
+static void test_shared_cgroup_attributes(void)
+{
+    const char *group_path = CGROUP2_PATH "/attrs-owner";
+    const char *alias_mount_path = "/tmp/cg-attrs-alias";
+    const char *alias_group_path = "/tmp/cg-attrs-alias/attrs-owner";
+    const char *control_path = CGROUP2_PATH "/attrs-owner/cgroup.procs";
+    const char *alias_control_path = "/tmp/cg-attrs-alias/attrs-owner/cgroup.procs";
+    struct stat dir_st, control_st;
+    dev_t alias_dir_dev = 0, alias_control_dev = 0;
+    mode_t initial_dir_mode, initial_control_mode;
+    int group_created = 0, alias_dir_created = 0, alias_mounted = 0;
+    int dirfd = -1, controlfd = -1;
+    int ret;
+
+    if (geteuid() != 0) {
+        errno = 0;
+        CHECK(0, "shared cgroup attributes test requires privileged root actor");
+        return;
+    }
+
+    ret = mkdir(group_path, 0755);
+    if (ret == 0) {
+        group_created = 1;
+    }
+    CHECK(ret == 0, "create isolated cgroup for shared attribute test");
+    if (ret != 0) {
+        goto cleanup;
+    }
+
+    ret = stat(group_path, &dir_st);
+    CHECK(ret == 0 && S_ISDIR(dir_st.st_mode),
+          "isolated cgroup is a directory before attribute changes");
+    if (ret != 0 || !S_ISDIR(dir_st.st_mode)) {
+        goto cleanup;
+    }
+    ret = stat(control_path, &control_st);
+    CHECK(ret == 0 && S_ISREG(control_st.st_mode),
+          "cgroup.procs is a regular control file before attribute changes");
+    if (ret != 0 || !S_ISREG(control_st.st_mode)) {
+        goto cleanup;
+    }
+
+    ret = mkdir(alias_mount_path, 0755);
+    if (ret == 0) {
+        alias_dir_created = 1;
+    }
+    CHECK(ret == 0, "create independent cgroup2 alias mountpoint");
+    if (ret != 0) {
+        goto cleanup;
+    }
+    ret = mount("none", alias_mount_path, "cgroup2", 0, NULL);
+    CHECK(ret == 0, "mount independent cgroup2 view for attribute checks");
+    if (ret != 0) {
+        goto cleanup;
+    }
+    alias_mounted = 1;
+
+    ret = open(group_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    dirfd = ret;
+    CHECK(dirfd >= 0, "open isolated cgroup directory descriptor");
+    if (dirfd < 0) {
+        goto cleanup;
+    }
+    ret = open(control_path, O_RDONLY | O_CLOEXEC);
+    controlfd = ret;
+    CHECK(controlfd >= 0, "open cgroup.procs control file descriptor");
+    if (controlfd < 0) {
+        goto cleanup;
+    }
+    ret = fstat(dirfd, &control_st);
+    CHECK(ret == 0 && S_ISDIR(control_st.st_mode),
+          "read retained cgroup directory identity");
+    if (ret != 0 || !S_ISDIR(control_st.st_mode)) {
+        goto cleanup;
+    }
+    ret = stat(alias_group_path, &dir_st);
+    CHECK(ret == 0 && S_ISDIR(dir_st.st_mode) &&
+          dir_st.st_ino == control_st.st_ino,
+          "alias mount resolves the same cgroup directory inode");
+    if (ret != 0 || !S_ISDIR(dir_st.st_mode) ||
+        dir_st.st_ino != control_st.st_ino) {
+        goto cleanup;
+    }
+    alias_dir_dev = dir_st.st_dev;
+    ret = fstat(controlfd, &control_st);
+    CHECK(ret == 0 && S_ISREG(control_st.st_mode),
+          "read retained cgroup.procs identity");
+    if (ret != 0 || !S_ISREG(control_st.st_mode)) {
+        goto cleanup;
+    }
+    ret = stat(alias_control_path, &dir_st);
+    CHECK(ret == 0 && S_ISREG(dir_st.st_mode) &&
+          dir_st.st_ino == control_st.st_ino,
+          "alias mount resolves the same cgroup.procs inode");
+    if (ret != 0 || !S_ISREG(dir_st.st_mode) ||
+        dir_st.st_ino != control_st.st_ino) {
+        goto cleanup;
+    }
+    alias_control_dev = dir_st.st_dev;
+    ret = fstat(dirfd, &dir_st);
+    if (ret != 0) {
+        CHECK(0, "capture initial cgroup directory attributes");
+        goto cleanup;
+    }
+    initial_dir_mode = dir_st.st_mode & 07777;
+    ret = fstat(controlfd, &control_st);
+    if (ret != 0) {
+        CHECK(0, "capture initial cgroup.procs attributes");
+        goto cleanup;
+    }
+    initial_control_mode = control_st.st_mode & 07777;
+
+    ret = (int)syscall(SYS_fchown, dirfd, (uid_t)1000, (gid_t)1001);
+    CHECK(ret == 0, "raw fchown sets cgroup directory owner to 1000:1001");
+    if (ret != 0) {
+        goto cleanup;
+    }
+    if (!cgroup_attr_matches(dirfd, controlfd, group_path, alias_group_path,
+                             dir_st.st_dev, alias_dir_dev, dir_st.st_ino,
+                             control_st.st_dev, alias_control_dev,
+                             control_st.st_ino,
+                             1000, 1001, initial_dir_mode,
+                             control_st.st_uid, control_st.st_gid,
+                             initial_control_mode,
+                             "fchown directory visible through fd and both lookups")) {
+        goto cleanup;
+    }
+
+    ret = (int)syscall(SYS_fchown, controlfd, (uid_t)1000, (gid_t)1001);
+    CHECK(ret == 0, "raw fchown sets cgroup.procs owner to 1000:1001");
+    if (ret != 0) {
+        goto cleanup;
+    }
+    if (!cgroup_attr_matches(dirfd, controlfd, group_path, alias_group_path,
+                             dir_st.st_dev, alias_dir_dev, dir_st.st_ino,
+                             control_st.st_dev, alias_control_dev,
+                             control_st.st_ino,
+                             1000, 1001, initial_dir_mode, 1000, 1001,
+                             initial_control_mode,
+                             "fchown control owner visible through fd and both lookups")) {
+        goto cleanup;
+    }
+    ret = (int)syscall(SYS_fchmod, dirfd, (mode_t)0751);
+    CHECK(ret == 0, "raw fchmod sets cgroup directory mode to 0751");
+    if (ret != 0) {
+        goto cleanup;
+    }
+    if (!cgroup_attr_matches(dirfd, controlfd, group_path, alias_group_path,
+                             dir_st.st_dev, alias_dir_dev, dir_st.st_ino,
+                             control_st.st_dev, alias_control_dev,
+                             control_st.st_ino,
+                             1000, 1001, 0751, 1000, 1001,
+                             initial_control_mode,
+                             "fchmod directory visible through fd and both lookups")) {
+        goto cleanup;
+    }
+    ret = (int)syscall(SYS_fchmod, controlfd, (mode_t)0640);
+    CHECK(ret == 0, "raw fchmod sets cgroup.procs mode to 0640");
+    if (ret != 0) {
+        goto cleanup;
+    }
+    ret = fstat(dirfd, &dir_st);
+    if (ret != 0) {
+        CHECK(0, "read cgroup directory identity after initialization");
+        goto cleanup;
+    }
+    ret = fstat(controlfd, &control_st);
+    if (ret != 0) {
+        CHECK(0, "read cgroup.procs identity after initialization");
+        goto cleanup;
+    }
+    if (!cgroup_attr_matches(dirfd, controlfd, group_path, alias_group_path,
+                             dir_st.st_dev, alias_dir_dev, dir_st.st_ino,
+                             control_st.st_dev, alias_control_dev,
+                             control_st.st_ino,
+                             1000, 1001, 0751, 1000, 1001, 0640,
+                             "initialized attributes visible through fd and both lookups")) {
+        goto cleanup;
+    }
+
+    pid_t child = fork();
+    CHECK(child >= 0, "fork ordinary cgroup attribute owner");
+    if (child == 0) {
+        uid_t real_uid, effective_uid, saved_uid;
+        gid_t real_gid, effective_gid, saved_gid;
+        if (setgroups(0, NULL) != 0 ||
+            setresgid(1001, 1001, 1001) != 0 ||
+            setresuid(1000, 1000, 1000) != 0 ||
+            getresgid(&real_gid, &effective_gid, &saved_gid) != 0 ||
+            getresuid(&real_uid, &effective_uid, &saved_uid) != 0 ||
+            real_gid != 1001 || effective_gid != 1001 || saved_gid != 1001 ||
+            real_uid != 1000 || effective_uid != 1000 || saved_uid != 1000 ||
+            getgroups(0, NULL) != 0) {
+            _exit(20);
+        }
+        if (syscall(SYS_fchmod, controlfd, (mode_t)0600) != 0) {
+            _exit(21);
+        }
+        if (syscall(SYS_fchmod, dirfd, (mode_t)0750) != 0) {
+            _exit(22);
+        }
+        errno = 0;
+        long chown_ret = syscall(SYS_fchown, controlfd, (uid_t)0, (gid_t)-1);
+        int chown_errno = errno;
+        if (chown_ret != -1 || chown_errno != EPERM) {
+            _exit(23);
+        }
+        if (fstat(dirfd, &dir_st) != 0 || !S_ISDIR(dir_st.st_mode) ||
+            dir_st.st_uid != 1000 || dir_st.st_gid != 1001 ||
+            (dir_st.st_mode & 07777) != 0750 ||
+            fstat(controlfd, &control_st) != 0 || !S_ISREG(control_st.st_mode) ||
+            control_st.st_uid != 1000 || control_st.st_gid != 1001 ||
+            (control_st.st_mode & 07777) != 0600) {
+            _exit(24);
+        }
+        _exit(0);
+    }
+    if (child < 0) {
+        goto cleanup;
+    }
+    {
+        int status = 0;
+        pid_t waited = waitpid(child, &status, 0);
+        CHECK(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "ordinary owner chmods both objects; chown is denied without side effects");
+        if (waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            goto cleanup;
+        }
+    }
+    if (!cgroup_attr_matches(dirfd, controlfd, group_path, alias_group_path,
+                             dir_st.st_dev, alias_dir_dev, dir_st.st_ino,
+                             control_st.st_dev, alias_control_dev,
+                             control_st.st_ino,
+                             1000, 1001, 0750, 1000, 1001, 0600,
+                             "child changes and rejected chown persist through fd and both lookups")) {
+        goto cleanup;
+    }
+    {
+        struct stat primary_dir, alias_dir, primary_control, alias_control;
+        int primary_dir_ret = fstat(dirfd, &primary_dir);
+        int alias_dir_ret = stat(alias_group_path, &alias_dir);
+        CHECK(primary_dir_ret == 0 && alias_dir_ret == 0 &&
+              S_ISDIR(primary_dir.st_mode) && S_ISDIR(alias_dir.st_mode) &&
+              primary_dir.st_dev == alias_dir.st_dev,
+              "cgroup directory device number matches across cgroup2 mounts");
+        int primary_control_ret = fstat(controlfd, &primary_control);
+        int alias_control_ret = stat(alias_control_path, &alias_control);
+        CHECK(primary_control_ret == 0 && alias_control_ret == 0 &&
+              S_ISREG(primary_control.st_mode) && S_ISREG(alias_control.st_mode) &&
+              primary_control.st_dev == alias_control.st_dev,
+              "cgroup.procs device number matches across cgroup2 mounts");
+    }
+
+cleanup:
+    if (controlfd >= 0) {
+        ret = close(controlfd);
+        CHECK(ret == 0, "close cgroup.procs attribute test descriptor");
+    }
+    if (dirfd >= 0) {
+        ret = close(dirfd);
+        CHECK(ret == 0, "close cgroup directory attribute test descriptor");
+    }
+    if (alias_mounted) {
+        ret = umount(alias_mount_path);
+        CHECK(ret == 0, "unmount independent cgroup2 alias view");
+        if (ret == 0) {
+            alias_mounted = 0;
+        }
+    }
+    if (group_created) {
+        ret = rmdir(group_path);
+        CHECK(ret == 0, "remove isolated cgroup after shared attribute test");
+    }
+    if (alias_dir_created && !alias_mounted) {
+        ret = rmdir(alias_mount_path);
+        CHECK(ret == 0, "remove independent cgroup2 alias mountpoint");
+    }
+}
+
 int main(void)
 {
     TEST_START("cgroup-basic");
@@ -300,6 +772,9 @@ int main(void)
 
     expect_mkdir_errno(CGROUP2_PATH, EEXIST,
                        "mkdir cgroup2 mount root fails with EEXIST");
+
+    test_unlink_control_file_order();
+    test_shared_cgroup_attributes();
 
     char buf[4096];
     ssize_t nread = read_text_file(CGROUP2_PATH "/cgroup.procs", buf, sizeof(buf));

@@ -122,8 +122,18 @@ impl Ext4Filesystem {
     }
 
     pub(super) fn sync_core(&self, checkpoint: CheckpointPolicy) -> Ext4Result<()> {
-        let _commit = self.writeback.gate.lock();
-        self.sync_with_commit_gate(checkpoint)
+        let persistence = crate::file::observe_filesystem_persistence(self);
+        let result = {
+            let _commit = self.writeback.gate.lock();
+            self.sync_with_commit_gate(checkpoint)
+        };
+        if result.is_ok() {
+            // Only acknowledge versions observed before this successful commit.
+            // Concurrent backing/editor writes retain their pending ownership.
+            // Snapshot owners are released after the commit gate is unlocked.
+            persistence.complete();
+        }
+        result
     }
 
     pub(super) fn persist_latched_abort(&self) {

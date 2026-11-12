@@ -1,135 +1,146 @@
-use alloc::{string::String, sync::Arc};
-use core::{any::Any, mem, ops::Deref, time::Duration};
+use alloc::{borrow::ToOwned, sync::Arc};
+use core::any::Any;
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
-    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference,
-    RenameOptions, VfsError, VfsResult, WeakDirEntry,
+    DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps, Metadata,
+    MetadataRequest, MetadataUpdate, NamespaceCompletion, NamespaceOutcome, NodeFlags,
+    NodeIdentity, NodeOps, NodeType, Reference, RenameEffect, VfsError, VfsResult, WeakDirEntry,
 };
 
-use super::{
-    FsRef, ff,
-    file::FatFileNode,
-    fs::FatFilesystem,
-    util::{file_metadata, into_vfs_err},
-};
+use super::{ff, file::FatFileNode, fs::FatFilesystemGuard, state::FatInode, util::into_vfs_err};
+
+mod rename;
 
 pub struct FatDirNode {
-    fs: Arc<FatFilesystem>,
-    pub(crate) inner: FsRef<ff::Dir<'static>>,
-    inode: u64,
+    state: Arc<FatInode>,
     this: WeakDirEntry,
 }
 
 impl FatDirNode {
-    pub fn new(fs: Arc<FatFilesystem>, dir: ff::Dir, inode: u64, this: WeakDirEntry) -> DirNode {
-        DirNode::new(Arc::new(Self {
-            fs,
-            // SAFETY: FsRef guarantees correct lifetime
-            inner: FsRef::new(unsafe { mem::transmute::<ff::Dir, ff::Dir>(dir) }),
-            inode,
-            this,
-        }))
+    pub(super) fn from_state(state: Arc<FatInode>, this: WeakDirEntry) -> DirNode {
+        DirNode::new(Arc::new(Self { state, this }))
     }
 
-    fn create_entry(&self, entry: ff::DirEntry, name: impl Into<String>, inode: u64) -> DirEntry {
-        let reference = Reference::new(self.this.upgrade(), name.into());
-        if entry.is_file() {
+    fn find(&self, name: &str, guard: &FatFilesystemGuard<'_>) -> VfsResult<ff::DirEntry<'static>> {
+        for entry in self.state.directory(guard)?.iter() {
+            let entry = entry.map_err(into_vfs_err)?;
+            if entry.eq_name(name) {
+                FatInode::canonical_name(&entry)?;
+                return Ok(entry);
+            }
+        }
+        Err(VfsError::NotFound)
+    }
+
+    fn entry(&self, state: Arc<FatInode>, is_dir: bool, name: &str) -> DirEntry {
+        let reference = Reference::new(self.this.upgrade(), name.to_owned());
+        if is_dir {
+            DirEntry::new_dir(|this| Self::from_state(state, this), reference)
+        } else {
             DirEntry::new_file(
-                FatFileNode::new(self.fs.clone(), entry.to_file(), inode),
+                FatFileNode::from_state(state),
                 NodeType::RegularFile,
                 reference,
             )
-        } else {
-            DirEntry::new_dir(
-                |this| FatDirNode::new(self.fs.clone(), entry.to_dir(), inode, this),
-                reference,
-            )
         }
+    }
+
+    fn object(
+        &self,
+        entry: ff::DirEntry<'static>,
+        guard: &mut FatFilesystemGuard<'_>,
+    ) -> VfsResult<DirEntry> {
+        let canonical = FatInode::canonical_name(&entry)?;
+        let is_dir = entry.is_dir();
+        let state = FatInode::get(&self.state, entry, guard)?;
+        Ok(self.entry(state, is_dir, &canonical))
     }
 }
 
-unsafe impl Send for FatDirNode {}
-
-unsafe impl Sync for FatDirNode {}
+fn validate_rename_name(name: &str) -> VfsResult<()> {
+    // starry-fatfs validates this byte limit and character set in write_entry,
+    // after rename_internal has already deleted the source slots. Validate the
+    // complete component before touching a shared editor or namespace state.
+    const MAX_FAT_NAME_BYTES: usize = 255;
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.len() > MAX_FAT_NAME_BYTES
+        || !name.chars().all(|character| {
+            matches!(
+                character,
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '\u{80}'..='\u{ffff}'
+                    | '$' | '%' | '\'' | '-' | '_' | '@' | '~' | '`' | '!' | '(' | ')'
+                    | '{' | '}' | '.' | ' ' | '+' | ',' | ';' | '=' | '[' | ']'
+                    | '^' | '#' | '&'
+            )
+        })
+    {
+        return Err(VfsError::InvalidInput);
+    }
+    Ok(())
+}
 
 impl NodeOps for FatDirNode {
     fn inode(&self) -> u64 {
-        self.inode
+        self.state.inode
     }
-
+    fn identity(&self) -> Option<NodeIdentity> {
+        Some(self.state.identity())
+    }
     fn metadata(&self) -> VfsResult<Metadata> {
-        let fs = self.fs.lock();
-        let dir = self.inner.borrow(&fs);
-        if let Some(file) = dir.as_file() {
-            return Ok(file_metadata(&fs, file, NodeType::Directory));
-        }
-
-        // root directory
-        let block_size = fs.inner.bytes_per_sector() as u64;
-        Ok(Metadata {
-            inode: self.inode(),
-            device: 0,
-            nlink: 1,
-            mode: NodePermission::default(),
-            node_type: NodeType::Directory,
-            uid: 0,
-            gid: 0,
-            size: block_size,
-            block_size,
-            blocks: 1,
-            rdev: DeviceId::default(),
-            atime: Duration::default(),
-            mtime: Duration::default(),
-            ctime: Duration::default(),
-        })
+        self.state.metadata(&self.state.fs.lock())
     }
-
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
+        self.state.change_metadata(request)
+    }
     fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
-        // TODO: update metadata on directory
         Ok(())
     }
-
     fn filesystem(&self) -> &dyn FilesystemOps {
-        self.fs.deref()
+        &*self.state.fs
     }
-
     fn sync(&self, _data_only: bool) -> VfsResult<()> {
         Ok(())
     }
-
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
     }
-
     fn flags(&self) -> NodeFlags {
         NodeFlags::BLOCKING
     }
 }
 
 impl DirNodeOps for FatDirNode {
-    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        let mut fs = self.fs.lock();
-        let dir = self.inner.borrow(&fs);
-        let this_entry = self.this.upgrade().unwrap();
-        let dir_node = this_entry.as_dir()?;
+    fn namespace_domain(&self) -> usize {
+        Arc::as_ptr(&self.state.fs) as usize
+    }
 
+    fn canonical_name(&self, _name: &str, entry: &DirEntry) -> alloc::string::String {
+        entry.name()
+    }
+
+    fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        let mut guard = self.state.fs.lock();
+        let dir = self.state.directory(&guard)?;
         let mut count = 0;
         for entry in dir.iter().skip(cursor.offset() as usize) {
             let entry = entry.map_err(into_vfs_err)?;
-            let name = entry.file_name().to_ascii_lowercase();
-            let node_type = if entry.is_file() {
-                NodeType::RegularFile
-            } else {
+            let name = FatInode::canonical_name(&entry)?;
+            let node_type = if entry.is_dir() {
                 NodeType::Directory
-            };
-            let inode = if let Some(entry) = dir_node.lookup_cache(&name) {
-                entry.inode()
             } else {
-                let entry = self.create_entry(entry, name.clone(), fs.alloc_inode());
-                let inode = entry.inode();
-                dir_node.insert_cache(name.clone(), entry);
-                inode
+                NodeType::RegularFile
+            };
+            let inode = match name.as_str() {
+                "." => self.inode(),
+                ".." => self
+                    .state
+                    .name
+                    .borrow(&guard)
+                    .parent
+                    .as_ref()
+                    .map_or(self.inode(), |parent| parent.inode),
+                _ => FatInode::get(&self.state, entry, &mut guard)?.inode,
             };
             if !sink.accept(
                 name.as_bytes(),
@@ -145,119 +156,38 @@ impl DirNodeOps for FatDirNode {
     }
 
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
-        let mut fs = self.fs.lock();
-        let dir = self.inner.borrow(&fs);
-        dir.iter()
-            .find_map(|entry| entry.ok().filter(|it| it.eq_name(name)))
-            .map(|entry| self.create_entry(entry, name.to_ascii_lowercase(), fs.alloc_inode()))
-            .ok_or(VfsError::NotFound)
-    }
-
-    fn create(
-        &self,
-        name: &str,
-        node_type: NodeType,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        let mut fs = self.fs.lock();
-        let dir = self.inner.borrow(&fs);
-        let reference = Reference::new(self.this.upgrade(), name.to_ascii_lowercase());
-        match node_type {
-            NodeType::RegularFile => dir
-                .create_file(name)
-                .map(|file| {
-                    DirEntry::new_file(
-                        FatFileNode::new(self.fs.clone(), file, fs.alloc_inode()),
-                        NodeType::RegularFile,
-                        reference,
-                    )
-                })
-                .map_err(into_vfs_err),
-            NodeType::Directory => dir
-                .create_dir(name)
-                .map(|dir| {
-                    DirEntry::new_dir(
-                        |this| FatDirNode::new(self.fs.clone(), dir, fs.alloc_inode(), this),
-                        reference,
-                    )
-                })
-                .map_err(into_vfs_err),
-            _ => Err(VfsError::InvalidInput),
-        }
-    }
-
-    fn create_symlink(
-        &self,
-        _name: &str,
-        _target: &str,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotSupported)
-    }
-
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        //  EPERM  The filesystem containing oldpath and newpath does not
-        //         support the creation of hard links.
-        Err(VfsError::PermissionDenied)
-    }
-
-    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        let fs = self.fs.lock();
-        let dir = self.inner.borrow(&fs);
-        let target_is_dir = dir
-            .iter()
-            .find_map(|entry| {
-                entry
-                    .ok()
-                    .filter(|entry| entry.eq_name(name))
-                    .map(|entry| !entry.is_file())
-            })
-            .ok_or(VfsError::NotFound)?;
-        match (target_is_dir, is_dir) {
-            (true, false) => return Err(VfsError::IsADirectory),
-            (false, true) => return Err(VfsError::NotADirectory),
+        match name {
+            "." => return self.this.upgrade().ok_or(VfsError::NotFound),
+            ".." => {
+                return self
+                    .this
+                    .upgrade()
+                    .and_then(|entry| entry.parent())
+                    .ok_or(VfsError::NotFound);
+            }
             _ => {}
         }
-        dir.remove(name).map_err(into_vfs_err)
+        #[cfg(all(test, feature = "host-test"))]
+        if let Some(probe) = self
+            .this
+            .upgrade()
+            .and_then(|entry| entry.as_dir().ok()?.unlink_probe())
+        {
+            probe.reader_entering_backend(self.state.fs.lookup_gate_is_held());
+        }
+        let mut guard = self.state.fs.lock();
+        self.object(self.find(name, &guard)?, &mut guard)
     }
 
-    fn rename(
+    fn prepare_unlink(&self) {
+        crate::file::prune_cached_files();
+    }
+
+    fn mutate_namespace(
         &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: RenameOptions,
-    ) -> VfsResult<()> {
-        if options.exchange() || options.whiteout() {
-            return Err(VfsError::OperationNotSupported);
-        }
-        let fs = self.fs.lock();
-        let dst_dir: Arc<Self> = dst_dir.downcast().map_err(|_| VfsError::InvalidInput)?;
-
-        let dir = self.inner.borrow(&fs);
-
-        if !options.no_replace() {
-            // fatfs rename rejects an existing destination, so ordinary rename
-            // removes it while NOREPLACE leaves the final check to fatfs under
-            // the same filesystem lock.
-            match dst_dir.inner.borrow(&fs).remove(dst_name) {
-                Ok(_) => {}
-                Err(fatfs::Error::NotFound) => {}
-                Err(err) => return Err(into_vfs_err(err)),
-            }
-        }
-
-        dir.rename(src_name, dst_dir.inner.borrow(&fs), dst_name)
-            .map_err(into_vfs_err)
-    }
-}
-
-impl Drop for FatDirNode {
-    fn drop(&mut self) {
-        self.fs.lock().release_inode(self.inode);
+        command: &axfs_ng_vfs::NamespaceMutation<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
+        self.run_namespace(command, retired)
     }
 }

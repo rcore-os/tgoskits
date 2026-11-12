@@ -1,8 +1,9 @@
 mod dir;
 mod file;
+mod link;
+mod name;
 
 use alloc::{
-    borrow::ToOwned,
     string::String,
     sync::{Arc, Weak},
     vec,
@@ -17,8 +18,11 @@ use core::{
 use axpoll::{IoEvents, Pollable};
 use bitflags::bitflags;
 pub use dir::*;
+pub(crate) use dir::{CreateSelection, MutationTarget};
 pub use file::*;
 use inherit_methods_macro::inherit_methods;
+pub use link::*;
+pub use name::*;
 use smallvec::SmallVec;
 
 use crate::{
@@ -74,6 +78,18 @@ pub trait NodeOps: Send + Sync + 'static {
     /// Updates the metadata of the node.
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
+    /// Executes a controlled request on this inode's real metadata owner.
+    /// Unmigrated backends must not fall back to raw metadata updates.
+    fn change_metadata(
+        &self,
+        _request: &crate::MetadataRequest<'_>,
+    ) -> crate::NamespaceCompletion<Metadata> {
+        crate::NamespaceCompletion::new(
+            crate::NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported)),
+            None,
+        )
+    }
+
     /// Gets the filesystem
     fn filesystem(&self) -> &dyn FilesystemOps;
 
@@ -108,6 +124,15 @@ pub trait NodeOps: Send + Sync + 'static {
     /// Returns inode-owned state that survives eviction of directory entries.
     /// Memory filesystems use this for file contents shared by hard links.
     fn inode_user_data(&self) -> Option<&RawSpinLock<TypeMap>> {
+        None
+    }
+
+    /// Identifies a dynamic node independently of a freshly allocated inode.
+    fn identity(&self) -> Option<NodeIdentity> {
+        None
+    }
+
+    fn link_ops(&self) -> Option<&dyn LinkOps> {
         None
     }
 }
@@ -165,32 +190,6 @@ impl fmt::Debug for Node {
     }
 }
 
-pub type ReferenceKey = (usize, String);
-
-#[derive(Debug)]
-pub struct Reference {
-    parent: Option<DirEntry>,
-    name: String,
-}
-
-impl Reference {
-    pub fn new(parent: Option<DirEntry>, name: String) -> Self {
-        Self { parent, name }
-    }
-
-    pub fn root() -> Self {
-        Self::new(None, String::new())
-    }
-
-    pub fn key(&self) -> ReferenceKey {
-        let address = self
-            .parent
-            .as_ref()
-            .map_or(0, |it| Arc::as_ptr(&it.0) as usize);
-        (address, self.name.clone())
-    }
-}
-
 #[derive(Default, Clone)]
 pub struct TypeMap(SmallVec<[(TypeId, Arc<dyn Any + Send + Sync>); 2]>);
 impl TypeMap {
@@ -229,7 +228,9 @@ impl TypeMap {
 struct Inner {
     node: Node,
     node_type: NodeType,
-    reference: Reference,
+    reference: RawSpinLock<NameSnapshot>,
+    identity: Option<NodeIdentity>,
+    backend_key: (usize, u64),
     user_data: RawSpinLock<TypeMap>,
 }
 
@@ -253,6 +254,14 @@ impl WeakDirEntry {
     pub fn upgrade(&self) -> Option<DirEntry> {
         self.0.upgrade().map(DirEntry)
     }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(crate) fn is_alive(&self) -> bool {
+        self.0.strong_count() != 0
+    }
 }
 
 impl From<Node> for Arc<dyn NodeOps> {
@@ -272,6 +281,11 @@ impl DirEntry {
 
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
+    pub(crate) fn change_metadata(
+        &self,
+        request: &crate::MetadataRequest<'_>,
+    ) -> crate::NamespaceCompletion<Metadata>;
+
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> VfsResult<u64>;
 
@@ -284,20 +298,38 @@ impl DirEntry {
 
 impl DirEntry {
     pub fn new_file(node: FileNode, node_type: NodeType, reference: Reference) -> Self {
+        let identity = node.identity();
+        let backend_key = (
+            node.filesystem() as *const dyn FilesystemOps as *const () as usize,
+            node.inode(),
+        );
         Self(Arc::new(Inner {
             node: Node::File(node),
             node_type,
-            reference,
+            reference: RawSpinLock::new(reference.0),
+            identity,
+            backend_key,
             user_data: RawSpinLock::new(TypeMap::default()),
         }))
     }
 
     pub fn new_dir(node_fn: impl FnOnce(WeakDirEntry) -> DirNode, reference: Reference) -> Self {
-        Self(Arc::new_cyclic(|this| Inner {
-            node: Node::Dir(node_fn(WeakDirEntry(this.clone()))),
-            node_type: NodeType::Directory,
-            reference,
-            user_data: RawSpinLock::new(TypeMap::default()),
+        Self(Arc::new_cyclic(|this| {
+            let mut node = node_fn(WeakDirEntry(this.clone()));
+            node.set_owner(WeakDirEntry(this.clone()));
+            let identity = node.identity();
+            let backend_key = (
+                node.filesystem() as *const dyn FilesystemOps as *const () as usize,
+                node.inode(),
+            );
+            Inner {
+                node: Node::Dir(node),
+                node_type: NodeType::Directory,
+                reference: RawSpinLock::new(reference.0),
+                identity,
+                backend_key,
+                user_data: RawSpinLock::new(TypeMap::default()),
+            }
         }))
     }
 
@@ -321,8 +353,109 @@ impl DirEntry {
         WeakDirEntry(Arc::downgrade(&self.0))
     }
 
-    pub fn key(&self) -> ReferenceKey {
-        self.0.reference.key()
+    pub fn key(&self) -> DirEntryId {
+        DirEntryId(self.as_ptr())
+    }
+
+    /// Observes parent, name, and linkage under one lock.
+    ///
+    /// Keep the snapshot alive while borrowing its name:
+    ///
+    /// ```
+    /// use axfs_ng_vfs::DirEntry;
+    /// fn owned_name(entry: &DirEntry) -> String {
+    ///     entry.name_snapshot().name().to_owned()
+    /// }
+    /// ```
+    ///
+    /// A name cannot outlive its snapshot:
+    ///
+    /// ```compile_fail
+    /// use axfs_ng_vfs::DirEntry;
+    /// fn borrowed_name(entry: &DirEntry) -> &str {
+    ///     entry.name_snapshot().name()
+    /// }
+    /// ```
+    pub fn name_snapshot(&self) -> NameSnapshot {
+        self.0.reference.lock().clone()
+    }
+
+    pub fn name_state(&self) -> NameState {
+        self.0.reference.lock().state
+    }
+
+    pub fn identity(&self) -> Option<&NodeIdentity> {
+        self.0.identity.as_ref()
+    }
+
+    pub(crate) fn same_backend_object(&self, other: &Self) -> bool {
+        match (self.identity(), other.identity()) {
+            (Some(left), Some(right)) => left == right,
+            (None, None) => {
+                self.0.backend_key == other.0.backend_key && self.node_type() == other.node_type()
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn move_to(&self, parent: DirEntry, name: String) -> NameSnapshot {
+        {
+            let mut reference = self.0.reference.lock();
+            core::mem::replace(
+                &mut *reference,
+                NameSnapshot {
+                    parent: Some(parent),
+                    name,
+                    state: NameState::Linked,
+                },
+            )
+        }
+    }
+
+    pub(crate) fn exchange_names(
+        left: &Self,
+        left_parent: Self,
+        left_name: String,
+        right: &Self,
+        right_parent: Self,
+        right_name: String,
+    ) -> (NameSnapshot, NameSnapshot) {
+        let (first, second) = if left.as_ptr() < right.as_ptr() {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        {
+            let mut first_state = first.0.reference.lock();
+            let mut second_state = second.0.reference.lock();
+            let (left_state, right_state) = if left.ptr_eq(first) {
+                (&mut *first_state, &mut *second_state)
+            } else {
+                (&mut *second_state, &mut *first_state)
+            };
+            (
+                core::mem::replace(
+                    left_state,
+                    NameSnapshot {
+                        parent: Some(left_parent),
+                        name: left_name,
+                        state: NameState::Linked,
+                    },
+                ),
+                core::mem::replace(
+                    right_state,
+                    NameSnapshot {
+                        parent: Some(right_parent),
+                        name: right_name,
+                        state: NameState::Linked,
+                    },
+                ),
+            )
+        }
+    }
+
+    pub(crate) fn set_name_state(&self, state: NameState) {
+        self.0.reference.lock().state = state;
     }
 
     pub fn node_type(&self) -> NodeType {
@@ -330,16 +463,16 @@ impl DirEntry {
     }
 
     pub fn parent(&self) -> Option<Self> {
-        self.0.reference.parent.clone()
+        self.name_snapshot().parent
     }
 
-    pub fn name(&self) -> &str {
-        &self.0.reference.name
+    pub fn name(&self) -> String {
+        self.name_snapshot().name
     }
 
     /// Checks if the entry is a root of a mount point.
     pub fn is_root_of_mount(&self) -> bool {
-        self.0.reference.parent.is_none()
+        self.name_state() == NameState::Root
     }
 
     pub fn is_ancestor_of(&self, other: &Self) -> VfsResult<bool> {
@@ -348,7 +481,11 @@ impl DirEntry {
             if current.ptr_eq(self) {
                 return Ok(true);
             }
-            if let Some(parent) = current.parent() {
+            let snapshot = current.name_snapshot();
+            if snapshot.state == NameState::Untrusted {
+                return Err(VfsError::WouldBlock);
+            }
+            if let Some(parent) = snapshot.parent {
                 current = parent;
             } else {
                 break;
@@ -360,8 +497,9 @@ impl DirEntry {
     pub(crate) fn collect_absolute_path(&self, components: &mut Vec<String>) {
         let mut current = self.clone();
         loop {
-            components.push(current.name().to_owned());
-            if let Some(parent) = current.parent() {
+            let snapshot = current.name_snapshot();
+            components.push(snapshot.name);
+            if let Some(parent) = snapshot.parent {
                 current = parent;
             } else {
                 break;
@@ -411,10 +549,23 @@ impl DirEntry {
         if self.node_type() != NodeType::Symlink {
             return Err(VfsError::InvalidData);
         }
+        if let Some(link) = self.0.node.link_ops() {
+            return link.read_link();
+        }
         let file = self.as_file()?;
         let mut buf = vec![0; file.len()? as usize];
         file.read_at(&mut buf, 0)?;
         String::from_utf8(buf).map_err(|_| VfsError::InvalidData)
+    }
+
+    pub fn link_target(&self) -> VfsResult<LinkTarget> {
+        if self.node_type() != NodeType::Symlink {
+            return Err(VfsError::InvalidData);
+        }
+        match self.0.node.link_ops() {
+            Some(link) => link.target(),
+            None => self.read_link().map(LinkTarget::Text),
+        }
     }
 
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {

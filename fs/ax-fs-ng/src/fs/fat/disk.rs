@@ -255,6 +255,8 @@ impl SeekableDiskState {
 
 #[cfg(test)]
 mod tests {
+    mod metadata;
+
     use alloc::sync::Arc;
     use std::sync::Mutex;
 
@@ -264,6 +266,7 @@ mod tests {
         storage: Arc<Mutex<Vec<u8>>>,
         fail_flush: bool,
         read_only: bool,
+        flush_control: Option<Arc<Mutex<metadata::FlushControl>>>,
     }
 
     impl FsBlockDevice for MemoryBlockDevice {
@@ -319,6 +322,9 @@ mod tests {
         }
 
         fn flush(&mut self) -> FsBlockResult<()> {
+            if let Some(control) = &self.flush_control {
+                control.lock().unwrap().record_flush()?;
+            }
             if self.fail_flush {
                 Err(FsBlockError::Io)
             } else {
@@ -334,6 +340,7 @@ mod tests {
             storage: storage.clone(),
             fail_flush: false,
             read_only: false,
+            flush_control: None,
         };
         let mut disk = SeekableDisk::new(Box::new(device), BlockRegion::from_num_blocks(1));
 
@@ -350,6 +357,7 @@ mod tests {
             storage: storage.clone(),
             fail_flush: true,
             read_only: false,
+            flush_control: None,
         };
         let mut disk = SeekableDisk::new(Box::new(device), BlockRegion::from_num_blocks(1));
         let flusher = disk.flusher();
@@ -370,6 +378,7 @@ mod tests {
                 storage: storage.clone(),
                 fail_flush: false,
                 read_only: false,
+                flush_control: None,
             }),
             region,
         );
@@ -382,6 +391,7 @@ mod tests {
                     storage: storage.clone(),
                     fail_flush: false,
                     read_only,
+                    flush_control: None,
                 }),
                 region,
                 None,
@@ -399,6 +409,368 @@ mod tests {
                 }
             );
             assert_eq!(filesystem.is_readonly(), read_only);
+            let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+            // Clearing shared write protection must first succeed at the real
+            // FAT/device boundary, and preserve flags when authority is absent.
+            assert_eq!(
+                mount.set_filesystem_readonly(false),
+                if read_only {
+                    Err(VfsError::PermissionDenied)
+                } else {
+                    Ok(())
+                }
+            );
+            assert_eq!(mount.is_filesystem_readonly(), read_only);
+            assert_eq!(mount.is_readonly(), read_only);
         }
+    }
+
+    fn formatted_fat() -> (axfs_ng_vfs::Filesystem, Arc<Mutex<Vec<u8>>>) {
+        formatted_fat_with_flush_control(None)
+    }
+
+    fn formatted_fat_with_flush_control(
+        flush_control: Option<Arc<Mutex<metadata::FlushControl>>>,
+    ) -> (axfs_ng_vfs::Filesystem, Arc<Mutex<Vec<u8>>>) {
+        let storage = Arc::new(Mutex::new(vec![0; 2 * 1024 * 1024]));
+        let region = BlockRegion::from_num_blocks(4096);
+        let device = || {
+            Box::new(MemoryBlockDevice {
+                storage: storage.clone(),
+                fail_flush: false,
+                read_only: false,
+                flush_control: flush_control.clone(),
+            }) as Box<dyn FsBlockDevice>
+        };
+        let mut disk = SeekableDisk::new(device(), region);
+        fatfs::format_volume(&mut disk, fatfs::FormatVolumeOptions::new()).unwrap();
+        drop(disk);
+        let filesystem = super::super::FatFilesystem::new(device(), region, None).unwrap();
+        (filesystem, storage)
+    }
+
+    #[test]
+    fn invalid_fat_rename_preserves_the_source_contents_and_open_handle() {
+        use axfs_ng_vfs::{NameState, NodePermission, NodeType, VfsError};
+
+        let (filesystem, _storage) = formatted_fat();
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().unwrap();
+        let source = axfs_ng_vfs::Location::new(
+            axfs_ng_vfs::Mountpoint::new_root(&filesystem),
+            root.clone(),
+        )
+        .create(
+            "safe.txt",
+            NodeType::RegularFile,
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
+        .map(|location| location.entry().clone())
+        .unwrap();
+        let opened = source.as_file().unwrap();
+        let contents = b"original FAT contents";
+        assert_eq!(opened.write_at(contents, 0).unwrap(), contents.len());
+        opened.sync(false).unwrap();
+        let inode = source.inode();
+
+        let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+        let location = mount.root_location();
+        let result = location.rename(
+            "safe.txt",
+            &location,
+            "bad:name",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        );
+        let mut old_contents = [0; 21];
+        let old_read = opened.read_at(&mut old_contents, 0);
+        directory.clear_cached_entries();
+        let rediscovered = directory.lookup("safe.txt");
+
+        assert_eq!(old_read, Ok(contents.len()));
+        assert_eq!(&old_contents, contents);
+        let rediscovered = rediscovered.expect("invalid rename must leave the source on disk");
+        assert!(rediscovered.ptr_eq(&source));
+        assert_eq!(rediscovered.inode(), inode);
+        assert_eq!(source.name_state(), NameState::Linked);
+        assert_eq!(source.name(), "safe.txt");
+        assert!(source.parent().unwrap().ptr_eq(&root));
+        assert_eq!(result, Err(VfsError::InvalidInput));
+        assert!(matches!(
+            directory.lookup("bad:name"),
+            Err(VfsError::NotFound)
+        ));
+        assert_eq!(opened.write_at(b"still open", 0).unwrap(), 10);
+        opened.sync(false).unwrap();
+        let mut updated = [0; 10];
+        assert_eq!(
+            rediscovered
+                .as_file()
+                .unwrap()
+                .read_at(&mut updated, 0)
+                .unwrap(),
+            updated.len()
+        );
+        assert_eq!(&updated, b"still open");
+    }
+
+    #[test]
+    fn fat_unlink_preserves_active_identity_and_releases_closed_cache_owners() {
+        use axfs_ng_vfs::{
+            Mountpoint, MutationCredentials, NameState, NodePermission, NodeType, VfsError,
+        };
+
+        use crate::{
+            file::{FileBackend, FileFlags, OpenOptions, OpenResult},
+            highlevel::FsContext,
+        };
+
+        let (filesystem, _storage) = formatted_fat();
+        let root = Mountpoint::new_root(&filesystem).root_location();
+        let credentials = MutationCredentials::root();
+        let parent = root
+            .create(
+                "parent",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+                &credentials,
+            )
+            .unwrap();
+        let context = FsContext::new(parent.clone());
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        let file = options
+            .open_with_credentials(&context, "data", &credentials)
+            .and_then(OpenResult::into_file)
+            .unwrap();
+        assert!(matches!(
+            file.access(FileFlags::READ).unwrap(),
+            FileBackend::Cached(_)
+        ));
+        let contents = b"retained FAT contents";
+        assert_eq!(file.write_at(contents.as_slice(), 0), Ok(contents.len()));
+        file.sync(false).unwrap();
+        root.entry().filesystem().flush().unwrap();
+
+        let original = file.location().entry().clone();
+        let key = original.key();
+        assert_eq!(
+            parent.unlink("data", false, &credentials),
+            Err(VfsError::OperationNotSupported)
+        );
+        let current = parent.lookup_no_follow("data").unwrap();
+        assert!(current.entry().ptr_eq(&original));
+        assert_eq!(current.entry().key(), key);
+        assert_eq!(original.name_state(), NameState::Linked);
+        assert_eq!(original.name(), "data");
+        assert!(original.parent().unwrap().ptr_eq(parent.entry()));
+        let mut bytes = [0; 21];
+        assert_eq!(file.read_at(&mut bytes[..], 0), Ok(contents.len()));
+        assert_eq!(&bytes, contents);
+        let mut native_file_present = false;
+        parent
+            .read_dir(
+                axfs_ng_vfs::DirectoryCursor::START,
+                &mut |name: &[u8], _, _, _| {
+                    native_file_present |= name == b"data";
+                    true
+                },
+            )
+            .unwrap();
+        assert!(native_file_present);
+        assert!(
+            root.lookup_no_follow("parent")
+                .unwrap()
+                .entry()
+                .ptr_eq(parent.entry())
+        );
+
+        // Keep the positive and clean content caches intact. Only actual users
+        // leave scope; unlink preparation must release eligible cache owners.
+        drop(current);
+        drop(original);
+        drop(file);
+        drop(context);
+        // Cancelling an observed native target must not commit it or leave a
+        // holder owned only by the cancelled round. The next preparation can
+        // then make progress without weakening FAT's active-holder rule.
+        let write = axfs_ng_vfs::PreparedWrite::acquire(&parent).unwrap();
+        let prepared = parent.prepare_unlink("data").unwrap();
+        let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+        let operation = scope.context();
+        let observed = match scope
+            .unlink(&operation, prepared, false, &credentials)
+            .unwrap()
+        {
+            axfs_ng_vfs::NamespaceStart::Observed(observed) => observed,
+            axfs_ng_vfs::NamespaceStart::Complete(_) => panic!("expected actual FAT observation"),
+        };
+        let cancelled = observed.cancel();
+        assert_eq!(cancelled.state(), axfs_ng_vfs::NamespaceState::Unchanged);
+        let cancelled = scope
+            .finish()
+            .unwrap_or_else(|_| panic!("wrong FAT admission"));
+        assert_eq!(cancelled.state(), axfs_ng_vfs::NamespaceState::Unchanged);
+        assert_eq!(cancelled.into_result(), Ok(()));
+        assert!(parent.lookup_no_follow("data").is_ok());
+
+        let prepared = parent.prepare_unlink("data").unwrap();
+        let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+        let operation = scope.context();
+        let observed = match scope
+            .unlink(&operation, prepared, false, &credentials)
+            .unwrap()
+        {
+            axfs_ng_vfs::NamespaceStart::Observed(observed) => observed,
+            axfs_ng_vfs::NamespaceStart::Complete(_) => panic!("expected actual FAT observation"),
+        };
+        // A logical wrapper acquired *after* this real observation must not
+        // cause a second active sample. The same locked driver resumes once.
+        let wrapper = axfs_ng_vfs::Location::new(
+            parent.mountpoint().clone(),
+            observed.target().entry.clone(),
+        );
+        operation.retired().retire(wrapper);
+        let _ = observed.resume();
+        let completed = scope
+            .finish()
+            .unwrap_or_else(|_| panic!("wrong FAT admission"));
+        assert_eq!(completed.state(), axfs_ng_vfs::NamespaceState::Applied);
+        let removed_file = completed.into_result();
+        drop(write);
+        let file_absent = matches!(parent.lookup_no_follow("data"), Err(VfsError::NotFound));
+        drop(parent);
+        let removed_parent = root.unlink("parent", true, &credentials);
+        assert_eq!((removed_file, removed_parent), (Ok(()), Ok(())));
+        assert!(file_absent);
+        assert!(matches!(
+            root.lookup_no_follow("parent"),
+            Err(VfsError::NotFound)
+        ));
+        let mut native_parent_present = false;
+        root.read_dir(
+            axfs_ng_vfs::DirectoryCursor::START,
+            &mut |name: &[u8], _, _, _| {
+                native_parent_present |= name == b"parent";
+                true
+            },
+        )
+        .unwrap();
+        assert!(!native_parent_present);
+
+        #[cfg(feature = "host-test")]
+        assert_unlink_blocks_new_cache_readers(&root);
+    }
+
+    #[cfg(feature = "host-test")]
+    fn assert_unlink_blocks_new_cache_readers(root: &axfs_ng_vfs::Location) {
+        use axfs_ng_vfs::{
+            MutationCredentials, NodePermission, NodeType, VfsError,
+            testing::UnlinkPublicationProbe,
+        };
+
+        // No reader owns the target before the active sample. The only lookup
+        // starts after the real attempt has published its canonical candidate.
+        drop(
+            root.create(
+                "reader",
+                NodeType::RegularFile,
+                NodePermission::default(),
+                0,
+                0,
+                &MutationCredentials::root(),
+            )
+            .unwrap(),
+        );
+        let probe = Arc::new(UnlinkPublicationProbe::default());
+        let directory = root.entry().as_dir().unwrap();
+        directory.set_unlink_probe(Some(probe.clone()));
+        let writer_root = root.clone();
+        let writer = std::thread::spawn(move || {
+            writer_root.unlink("reader", false, &MutationCredentials::root())
+        });
+        probe.wait_for_publication();
+        let reader_root = root.clone();
+        let reader_probe = probe.clone();
+        let reader = std::thread::spawn(move || {
+            let result = reader_root.lookup_no_follow("reader");
+            reader_probe.reader_completed();
+            result
+        });
+        let blocked = probe.wait_for_reader();
+        probe.resume();
+        let removed = writer.join().unwrap();
+        let observed = reader.join().unwrap();
+        directory.set_unlink_probe(None);
+        assert!(blocked, "lookup bypassed the held native filesystem gate");
+        assert_eq!(removed, Ok(()));
+        assert_eq!(observed.unwrap_err(), VfsError::NotFound);
+    }
+
+    #[test]
+    fn fat_root_rediscovery_preserves_identity_and_releases_the_device_after_its_last_child() {
+        use axfs_ng_vfs::{NodePermission, NodeType};
+
+        let (filesystem, storage) = formatted_fat();
+        let device_lifetime = Arc::downgrade(&storage);
+        let first = filesystem.root_dir();
+        let root_inode = first.inode();
+        let root_identity = first.identity().cloned();
+        let root_lifetime = first.downgrade();
+        drop(first);
+        let root_was_released = root_lifetime.upgrade().is_none();
+
+        for _ in 0..3 {
+            let root = filesystem.root_dir();
+            let alias = filesystem.root_dir();
+            assert!(root.ptr_eq(&alias));
+            assert_eq!(root.inode(), root_inode);
+            assert_eq!(root.identity(), root_identity.as_ref());
+        }
+        let root = filesystem.root_dir();
+        let child = axfs_ng_vfs::Location::new(
+            axfs_ng_vfs::Mountpoint::new_root(&filesystem),
+            root.clone(),
+        )
+        .create(
+            "active-child",
+            NodeType::Directory,
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
+        .map(|location| location.entry().clone())
+        .unwrap();
+        root.as_dir().unwrap().clear_cached_entries();
+        drop(root);
+        drop(filesystem);
+        drop(storage);
+        let device_alive_with_child = device_lifetime.upgrade().is_some();
+        let child_is_usable = child.metadata().is_ok();
+        drop(child);
+        let device_was_released = device_lifetime.upgrade().is_none();
+
+        assert!(
+            root_was_released,
+            "the filesystem must only weakly index its root"
+        );
+        assert!(device_alive_with_child && child_is_usable);
+        assert!(
+            device_was_released,
+            "the last child and root holder must release the FAT device"
+        );
     }
 }

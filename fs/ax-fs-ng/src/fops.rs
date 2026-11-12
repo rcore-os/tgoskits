@@ -187,9 +187,13 @@ pub struct File {
 }
 
 impl File {
-    pub fn open(path: &str, opts: &OpenOptions) -> VfsResult<Self> {
+    pub fn open(
+        path: &str,
+        opts: &OpenOptions,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult<Self> {
         let fs_context = current_fs_context();
-        let inner = opts.to_core().open(&fs_context.lock(), path)?;
+        let inner = opts.to_core().open(&fs_context.lock(), path, credentials)?;
         Ok(Self {
             inner: inner.into_file()?,
         })

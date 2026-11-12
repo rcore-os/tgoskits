@@ -10,7 +10,7 @@ use ax_net::{InterfaceId, InterfaceInfo, InterfaceKind};
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
 use linux_raw_sys::{
-    general::{O_RDWR, S_IFSOCK},
+    general::O_RDWR,
     net::{AF_PACKET, sockaddr},
 };
 
@@ -22,6 +22,7 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     mm::{vm_read_slice, vm_write_slice},
+    pseudofs::object::ObjectInode,
     sync::Mutex,
     task::{
         current_user_task,
@@ -111,6 +112,7 @@ struct PacketSocketState {
 }
 
 pub struct PacketSocket {
+    inode: Arc<ObjectInode>,
     state: Mutex<PacketSocketState>,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
@@ -123,6 +125,7 @@ impl PacketSocket {
         }
         let info = first_visible_ethernet()?;
         Ok(Self {
+            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Socket, 0o777),
             state: Mutex::new(PacketSocketState {
                 bound: SockAddrLl::from_interface(&info, protocol)?,
                 pending: None,
@@ -130,6 +133,10 @@ impl PacketSocket {
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
         })
+    }
+
+    pub(crate) fn location(&self) -> axfs_ng_vfs::Location {
+        self.inode.location(())
     }
 
     pub fn bind_ll(&self, addr: SockAddrLl) -> StarryResult<()> {
@@ -253,15 +260,11 @@ impl FileLike for PacketSocket {
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
-        Ok(Kstat {
-            mode: S_IFSOCK | 0o777u32,
-            blksize: 4096,
-            ..Default::default()
-        })
+        Ok(super::metadata_to_kstat(&self.inode.metadata()?))
     }
 
     fn path(&self) -> Cow<'_, str> {
-        format!("packet:[{}]", self as *const _ as usize).into()
+        format!("socket:[{}]", self.inode.inode()).into()
     }
 
     fn open_flags(&self) -> u32 {

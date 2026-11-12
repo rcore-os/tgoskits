@@ -2,20 +2,34 @@
 extern crate alloc;
 #[cfg(all(test, not(target_os = "none")))]
 extern crate ax_runtime as _;
-#[cfg(test)]
+#[cfg(any(test, feature = "host-test"))]
 extern crate std;
 
 mod fs;
+mod metadata;
 mod mount;
+mod namespace_admission;
+mod namespace_operation;
 mod node;
 pub mod path;
+mod prepared_unlink;
+mod prepared_write;
+#[cfg(feature = "host-test")]
+#[doc(hidden)]
+pub mod testing;
 mod types;
 mod write_admission;
 mod writeback_policy;
 
 pub use fs::*;
+pub use metadata::*;
 pub use mount::*;
+pub use namespace_admission::*;
+pub use namespace_operation::*;
+pub(crate) use node::MutationTarget;
 pub use node::*;
+pub use prepared_unlink::*;
+pub use prepared_write::*;
 pub use types::*;
 pub use write_admission::*;
 pub use writeback_policy::*;

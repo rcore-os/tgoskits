@@ -30,17 +30,16 @@ use crate::{
 // FusionIO/directFS atomic-write toggle used by MySQL.
 const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
-pub fn with_fs<R>(
-    dirfd: c_int,
-    f: impl FnOnce(&mut FsContext) -> StarryResult<R>,
-) -> StarryResult<R> {
+pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&FsContext) -> StarryResult<R>) -> StarryResult<R> {
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mut fs = fs_context.lock();
+    // Never retain the task context mutex across a backend/proc callback.
+    // A clone is an unregistered read view, not a second state owner.
+    let fs = fs_context.lock().clone();
     if dirfd == AT_FDCWD {
-        f(&mut fs)
+        f(&fs)
     } else {
         let dir = Directory::from_fd(dirfd)?.inner.clone();
-        f(&mut fs.with_dirfd(dir)?)
+        f(&fs.with_dirfd(dir)?)
     }
 }
 
@@ -232,8 +231,32 @@ impl File {
 }
 
 fn path_for(loc: &Location) -> Cow<'static, str> {
-    loc.absolute_path()
-        .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
+    display_location(loc).map_or_else(|_| "<error>".into(), Cow::Owned)
+}
+
+/// Renders a retained object; display text is never fed back into lookup.
+pub(crate) fn display_location(loc: &Location) -> VfsResult<alloc::string::String> {
+    if let Some(display) = super::Pipe::object_display(loc) {
+        return Ok(display.into_owned());
+    }
+    if let Some(display) = super::Socket::object_display(loc) {
+        return Ok(display.into_owned());
+    }
+    if let Some(namespace) = super::NamespaceObject::at_location(loc) {
+        return Ok(namespace.display());
+    }
+    let memfd = loc
+        .user_data()
+        .get::<super::memfd::MemfdRef>()
+        .map(|memfd| memfd.0.clone());
+    if let Some(memfd) = memfd {
+        return Ok(memfd.path().into_owned());
+    }
+    let mut path = loc.absolute_path()?.to_string();
+    if loc.entry().name_snapshot().state() == axfs_ng_vfs::NameState::Unlinked {
+        path.push_str(" (deleted)");
+    }
+    Ok(path)
 }
 
 impl FileLike for File {

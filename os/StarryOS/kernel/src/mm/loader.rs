@@ -1,6 +1,6 @@
 //! User address space management.
 
-use alloc::{borrow::ToOwned, collections::VecDeque, string::String, vec, vec::Vec};
+use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, vec, vec::Vec};
 use core::{ffi::CStr, iter, mem::size_of};
 
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
@@ -18,7 +18,8 @@ use crate::{
         UserVirtualAddressLayout,
         aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
     },
-    sync::Mutex,
+    namespace::UserNamespace,
+    sync::{Mutex, RawSpinLock},
     task::Cred,
 };
 
@@ -119,6 +120,11 @@ impl PreparedUserImage {
 }
 
 impl UserImageBuilder {
+    /// Sets the nascent MM's authority before loading or publishing its image.
+    pub(crate) fn set_user_namespace(&mut self, namespace: Arc<RawSpinLock<UserNamespace>>) {
+        self.aspace.set_user_namespace(namespace);
+    }
+
     /// Consumes a successfully loaded attempt after verifying that no later
     /// retry changed the builder contents represented by `loaded`.
     pub fn finish(self, loaded: LoadedUserImage) -> StarryResult<PreparedUserImage> {
@@ -747,7 +753,8 @@ impl ElfLoader {
         // PT_INTERP is protected while loading, but is not mm->exe_file.
         let _interpreter_access;
         let (elf, ldso) = if let Some(ldso) = ldso {
-            let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(ldso)?;
+            let fs = ax_fs_ng::vfs::current_fs_context().lock().clone();
+            let loc = fs.resolve(ldso)?;
             check_executable_access(&loc, cred)?;
             _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
@@ -940,9 +947,8 @@ fn load_user_app_with_depth(
                     .collect();
                 // Open the interpreter by path (Linux's `open_exec` on the
                 // shebang interpreter) and load it as the new executable.
-                let interp = ax_fs_ng::vfs::current_fs_context()
-                    .lock()
-                    .resolve(&new_args[0])?;
+                let fs = ax_fs_ng::vfs::current_fs_context().lock().clone();
+                let interp = fs.resolve(&new_args[0])?;
                 // A script stops being the executable when its interpreter takes over.
                 drop(executable_file);
                 return load_user_app_with_depth(

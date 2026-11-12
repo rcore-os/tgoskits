@@ -3,6 +3,8 @@ mod disk;
 mod ff;
 mod file;
 mod fs;
+mod metadata;
+mod state;
 mod util;
 
 use core::cell::UnsafeCell;
@@ -10,7 +12,7 @@ use core::cell::UnsafeCell;
 use fatfs::SeekFrom;
 
 pub use self::fs::FatFilesystem;
-use self::{disk::SeekableDisk, fs::FatFilesystemInner};
+use self::{disk::SeekableDisk, fs::FatFilesystemGuard};
 
 impl fatfs::IoBase for SeekableDisk {
     type Error = ();
@@ -47,25 +49,39 @@ impl fatfs::Seek for SeekableDisk {
 }
 
 /// A reference to an object within a filesystem.
-pub(crate) struct FsRef<T> {
+struct FsRef<T> {
     inner: UnsafeCell<T>,
+    owner: usize,
 }
 
 impl<T> FsRef<T> {
-    pub fn new(inner: T) -> Self {
+    fn new(owner: &FatFilesystem, inner: T) -> Self {
         Self {
             inner: UnsafeCell::new(inner),
+            owner: core::ptr::from_ref(owner) as usize,
         }
     }
 
-    pub fn borrow<'a>(&self, _fs: &'a FatFilesystemInner) -> &'a T {
-        // SAFETY: The filesystem outlives the reference
+    fn borrow<'a>(&'a self, fs: &'a FatFilesystemGuard<'_>) -> &'a T {
+        assert_eq!(
+            self.owner,
+            fs.owner_id(),
+            "FAT handle belongs to another filesystem"
+        );
+        // SAFETY: this cell owns T. The matching filesystem mutex excludes all
+        // writers; both the cell and guard remain borrowed for the result.
         unsafe { &*self.inner.get() }
     }
 
-    #[allow(clippy::mut_from_ref)]
-    pub fn borrow_mut<'a>(&self, _fs: &'a FatFilesystemInner) -> &'a mut T {
-        // SAFETY: The filesystem outlives the reference
+    fn borrow_mut<'a>(&'a self, fs: &'a mut FatFilesystemGuard<'_>) -> &'a mut T {
+        assert_eq!(
+            self.owner,
+            fs.owner_id(),
+            "FAT handle belongs to another filesystem"
+        );
+        // SAFETY: the only matching guard is exclusively borrowed, preventing
+        // another read/write through any cell for this filesystem until return.
+        // T cannot be destroyed because self is borrowed for the same lifetime.
         unsafe { &mut *self.inner.get() }
     }
 }

@@ -9,12 +9,7 @@ use super::{Inode, into_vfs_err};
 
 impl XattrOps for Inode {
     fn get_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>> {
-        let name = Self::user_xattr_name(name)?;
-        let mut state = self.fs().lock();
-        state
-            .ext4
-            .get_xattr(self.number(), XattrNamespace::User, name)
-            .map_err(Self::xattr_error)
+        self.get_admitted_xattr(name)
     }
 
     fn list_xattrs(&self) -> VfsResult<Vec<Vec<u8>>> {
@@ -57,6 +52,17 @@ impl XattrOps for Inode {
 }
 
 impl Inode {
+    /// The namespace caller already owns operation admission. Only filesystem
+    /// state is acquired here; no independent I/O phase or reentry is hidden.
+    pub(crate) fn get_admitted_xattr(&self, name: &[u8]) -> VfsResult<Vec<u8>> {
+        let name = Self::user_xattr_name(name)?;
+        self.fs()
+            .lock()
+            .ext4
+            .get_xattr(self.number(), XattrNamespace::User, name)
+            .map_err(Self::xattr_error)
+    }
+
     fn user_xattr_name(name: &[u8]) -> VfsResult<&[u8]> {
         const PREFIX: &[u8] = b"user.";
         let component = name

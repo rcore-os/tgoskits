@@ -11,6 +11,7 @@ mod job_control;
 mod ops;
 mod pid;
 pub mod posix_timer;
+mod proc_access;
 mod process;
 mod process_accounting;
 mod process_cgroup;
@@ -50,20 +51,22 @@ use starry_signal::{
 #[cfg(target_arch = "aarch64")]
 pub(crate) use self::process_accounting::PerfSchedulerTickLease;
 pub use self::{
-    cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable, process::*,
+    cred::Cred, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable, process::*,
     process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
     seccomp::*, signal::*, stat::*, thread::Thread, timer::*, user::*,
+};
+pub(crate) use self::{
+    cred::FsCredentialsSnapshot,
+    pid::*,
+    proc_access::authorize_proc_read,
+    process_identity::*,
+    process_memory::{PreparedProcessMemory, scheduler_address_space},
 };
 use self::{
     job_control::ProcessJobControl, process_accounting::ProcessAccountingState,
     process_cgroup::ProcessCgroupState, process_image::ProcessImageState,
     process_memory::ProcessMemoryState, process_policy::ProcessPolicyState,
     process_ptrace::ProcessPtraceState, process_wait::ProcessWaitState,
-};
-pub(crate) use self::{
-    pid::*,
-    process_identity::*,
-    process_memory::{PreparedProcessMemory, scheduler_address_space},
 };
 use crate::{
     mm::MmHandle,
@@ -97,7 +100,7 @@ pub struct ProcessData {
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// Immutable namespace snapshot published under a short IRQ-safe lock.
     pub(crate) nsproxy: RawSpinLock<Arc<NsProxy>>,
-    /// Sleepable writer transaction gate for namespace replacement.
+    /// Sleepable publication gate shared by namespace and credential writers.
     namespace_update: Mutex<()>,
     /// Authoritative cgroup membership and exit serialization.
     cgroup: ProcessCgroupState,
@@ -317,6 +320,7 @@ impl ProcessData {
     /// Serializes one process-wide namespace mutation or replacement.
     pub(crate) fn namespace_update(&self) -> ProcessNamespaceUpdate<'_> {
         ProcessNamespaceUpdate {
+            owner: self,
             publication: &self.nsproxy,
             _guard: self.namespace_update.lock(),
         }
@@ -339,16 +343,45 @@ impl Drop for ProcessData {
 
 /// Serialized copy-on-write namespace publication.
 pub(crate) struct ProcessNamespaceUpdate<'a> {
+    owner: &'a ProcessData,
     publication: &'a RawSpinLock<Arc<NsProxy>>,
     _guard: MutexGuard<'a, ()>,
 }
 
 impl ProcessNamespaceUpdate<'_> {
+    pub(super) fn owns(&self, process: &ProcessData) -> bool {
+        core::ptr::eq(self.owner, process)
+    }
+
+    /// Publishes credentials without recursively acquiring this writer gate.
+    pub(crate) fn set_process_cred(&self, thread: &Thread, cred: Cred) {
+        assert!(self.owns(&thread.proc_data));
+        thread.set_cred_under(self, cred);
+    }
+
     pub(crate) fn snapshot(&self) -> Arc<NsProxy> {
         self.publication.lock_irqsave().clone()
     }
 
     pub(crate) fn publish(self, replacement: NsProxy) {
+        let old = self.snapshot();
+        if !Arc::ptr_eq(&old.user_ns, &replacement.user_ns) {
+            for tid in self.owner.proc.threads() {
+                if let Ok(task) = ops::get_task_by_number(tid) {
+                    let thread = task.as_thread();
+                    if self.owns(&thread.proc_data)
+                        && !proc_access::namespace_preserves_permitted(
+                            &old.user_ns,
+                            &replacement.user_ns,
+                            thread.cred().euid,
+                        )
+                    {
+                        self.owner.set_dumpable(0);
+                        break;
+                    }
+                }
+            }
+        }
         let replacement = Arc::new(replacement);
         let previous = {
             let mut current = self.publication.lock_irqsave();
@@ -428,7 +461,8 @@ pub(crate) mod process_group_probe {
         ARMED.store(true, Ordering::Release);
         ProbeWindow {
             acquisitions: ACQUISITIONS.load(Ordering::Acquire),
-            acquisitions_with_irqs_disabled: ACQUISITIONS_WITH_IRQS_DISABLED.load(Ordering::Acquire),
+            acquisitions_with_irqs_disabled: ACQUISITIONS_WITH_IRQS_DISABLED
+                .load(Ordering::Acquire),
         }
     }
 

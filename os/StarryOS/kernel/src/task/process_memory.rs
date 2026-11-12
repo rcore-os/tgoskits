@@ -192,6 +192,7 @@ impl ProcessMemoryState {
 impl ProcessData {
     /// Ends process ownership; pins and CPU activations defer actual reclaim.
     pub fn retire_mm_owner(&self) {
+        let _publication = self.namespace_update();
         self.memory_share().retire();
     }
 

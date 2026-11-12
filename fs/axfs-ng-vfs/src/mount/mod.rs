@@ -18,19 +18,27 @@ use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, DirectoryReadState,
-    Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps, Metadata,
-    MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions, RawSpinLock,
-    RawSpinLockGuard, Reference, ReferenceKey, RenameOptions, TypeMap, VfsError, VfsResult,
-    WeakDirEntry, XattrSetMode,
+    DeviceId, DirEntry, DirEntryId, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor,
+    DirectoryReadState, Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps,
+    Metadata, MetadataUpdate, MountWriteState, NodeFlags, NodeOps, NodePermission, NodeType,
+    OpenOptions, RawSpinLock, RawSpinLockGuard, Reference, RenameOptions, TypeMap, VfsError,
+    VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
+mod namespace;
+mod pivot;
 mod propagation;
+mod publication;
 
 mod unmount;
 
+pub use namespace::*;
+pub use pivot::MountPivotRetirement;
+pub use publication::MountPublicationRetirement;
 pub use unmount::*;
+
+type MountCloneMap = Vec<(Arc<Mountpoint>, Arc<Mountpoint>)>;
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -200,44 +208,12 @@ impl DirNodeOps for SyntheticMountDir {
         }
     }
 
-    fn create(
+    fn mutate_namespace(
         &self,
-        _name: &str,
-        _node_type: NodeType,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::ReadOnlyFilesystem)
-    }
-
-    fn create_symlink(
-        &self,
-        _name: &str,
-        _target: &str,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::ReadOnlyFilesystem)
-    }
-
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::ReadOnlyFilesystem)
-    }
-
-    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-        Err(VfsError::ReadOnlyFilesystem)
-    }
-
-    fn rename(
-        &self,
-        _src_name: &str,
-        _dst_dir: &DirNode,
-        _dst_name: &str,
-        _options: RenameOptions,
-    ) -> VfsResult<()> {
-        Err(VfsError::ReadOnlyFilesystem)
+        _command: &crate::NamespaceMutation<'_>,
+        _retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        crate::NamespaceOutcome::unchanged(Err(VfsError::ReadOnlyFilesystem))
     }
 }
 
@@ -253,6 +229,16 @@ enum PropagationType {
 struct MountUseState {
     users: usize,
     normally_unmounted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountRootRole {
+    /// Created parentless and never installed under another mount.
+    Unbound,
+    /// Permanently adopted, even after the namespace entity is released.
+    NamespaceAnchor,
+    /// An ordinary mount, including a lazily detached former child.
+    Ordinary,
 }
 
 /// Owns one counted mount use, released automatically on drop.
@@ -275,6 +261,43 @@ impl Drop for MountUseGuard {
     }
 }
 
+/// Owns one write admission on an exact mount and its shared filesystem.
+///
+/// Acquire before entering any backend gate. Keep this guard through the whole
+/// operation, including retries and publication, or share its owner with all
+/// writable descriptions/mappings. Forgetting it conservatively retains counts.
+#[derive(Debug)]
+pub struct MountWriteGuard {
+    mountpoint: Arc<Mountpoint>,
+}
+
+impl MountWriteGuard {
+    pub(crate) fn filesystem(&self) -> &dyn FilesystemOps {
+        self.mountpoint.root.filesystem()
+    }
+
+    /// Checks that a borrowed right belongs to the actual mount being modified.
+    /// A writable alias cannot authorize writes through a read-only mount.
+    pub fn check_location(&self, location: &Location) -> VfsResult<()> {
+        if Arc::ptr_eq(&self.mountpoint, location.mountpoint()) {
+            Ok(())
+        } else {
+            Err(VfsError::CrossesDevices)
+        }
+    }
+}
+
+impl Drop for MountWriteGuard {
+    fn drop(&mut self) {
+        // No sleeping configuration mutex or backend callback in this release.
+        // The final mount/filesystem references drop after both short locks.
+        let mut shared = self.mountpoint.filesystem_state.writes.lock();
+        let mut local = self.mountpoint.writes.lock();
+        shared.writers -= 1;
+        local.writers -= 1;
+    }
+}
+
 #[derive(Debug)]
 pub struct Mountpoint {
     /// Root dir entry in the mountpoint.
@@ -282,7 +305,7 @@ pub struct Mountpoint {
     /// Location in the parent mountpoint. `None` for the global root mount.
     location: RawSpinLock<Option<Location>>,
     /// Children of the mountpoint in this namespace-local mount tree.
-    children: RawSpinLock<HashMap<ReferenceKey, Arc<Self>>>,
+    children: RawSpinLock<HashMap<DirEntryId, Arc<Self>>>,
     /// Device ID (filesystem superblock device — used for major:minor in mountinfo).
     device: u64,
     /// Source name supplied when this mount was created (Linux `mnt_devname`).
@@ -294,10 +317,15 @@ pub struct Mountpoint {
     /// Assigned when `set_shared()` is first called; shared among all mounts in
     /// the same peer group.
     peer_group_id: AtomicU64,
-    /// Read-only flag for this mountpoint.
-    readonly: AtomicBool,
+    /// Mount-local write restriction and active write admissions.
+    writes: RawSpinLock<MountWriteState>,
     filesystem_state: Arc<FilesystemMountState>,
     active_uses: RawSpinLock<MountUseState>,
+    /// Permanent node role, bound only while holding the topology gate.
+    root_role: RawSpinLock<MountRootRole>,
+    /// Monotonic publication shutdown. All reads and writes share topology
+    /// exclusion, so this bit does not publish other memory (Relaxed suffices).
+    retired: AtomicBool,
     /// Mount option flags (Linux MS_* bits: MS_NOSUID=2, MS_NODEV=4,
     /// MS_NOEXEC=8, MS_NOATIME=0x400, MS_RELATIME=0x800000,
     /// MS_STRICTATIME=0x1000000). MS_RDONLY is tracked separately via
@@ -330,12 +358,43 @@ impl Mountpoint {
     /// A resolved path cannot acquire a use after its mount was normally removed.
     pub fn acquire_use(self: &Arc<Self>) -> VfsResult<MountUseGuard> {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        self.acquire_use_locked()
+    }
+
+    fn acquire_use_locked(self: &Arc<Self>) -> VfsResult<MountUseGuard> {
         let mut state = self.active_uses.lock();
         if state.normally_unmounted {
             return Err(VfsError::NotFound);
         }
-        state.users += 1;
+        state.users = state.users.checked_add(1).ok_or(VfsError::ValueOverflow)?;
         Ok(MountUseGuard {
+            mountpoint: self.clone(),
+        })
+    }
+
+    /// Acquires a write lease after checking both local and shared protection.
+    ///
+    /// May sleep behind reconfiguration. Never call while holding a backend
+    /// gate: layered operations acquire every backing lease first, without
+    /// holding admissions for different filesystems simultaneously.
+    pub fn acquire_write(self: &Arc<Self>) -> VfsResult<MountWriteGuard> {
+        let _configuration = self.filesystem_state.reconfiguration.lock();
+        let mut shared = self.filesystem_state.writes.lock();
+        let mut local = self.writes.lock();
+        if shared.readonly || local.readonly {
+            return Err(VfsError::ReadOnlyFilesystem);
+        }
+        let shared_writers = shared
+            .writers
+            .checked_add(1)
+            .ok_or(VfsError::ValueOverflow)?;
+        let local_writers = local
+            .writers
+            .checked_add(1)
+            .ok_or(VfsError::ValueOverflow)?;
+        shared.writers = shared_writers;
+        local.writers = local_writers;
+        Ok(MountWriteGuard {
             mountpoint: self.clone(),
         })
     }
@@ -347,7 +406,14 @@ impl Mountpoint {
         device: u64,
     ) -> Arc<Self> {
         let state = Arc::new(FilesystemMountState::new(root.filesystem().is_readonly()));
-        Self::new_with_root_and_source(root, location_in_parent, device, "none".into(), state)
+        Self::new_with_root_and_source(
+            root,
+            location_in_parent,
+            device,
+            "none".into(),
+            state,
+            false,
+        )
     }
 
     fn new_with_root_and_source(
@@ -356,8 +422,14 @@ impl Mountpoint {
         device: u64,
         source: String,
         filesystem_state: Arc<FilesystemMountState>,
+        readonly: bool,
     ) -> Arc<Self> {
         let filesystem_lease = root.filesystem().mount_lease();
+        let root_role = if location_in_parent.is_none() {
+            MountRootRole::Unbound
+        } else {
+            MountRootRole::Ordinary
+        };
         Arc::new(Self {
             root,
             location: RawSpinLock::new(location_in_parent),
@@ -366,9 +438,11 @@ impl Mountpoint {
             source,
             mount_id: MOUNT_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             peer_group_id: AtomicU64::new(0),
-            readonly: AtomicBool::new(false),
+            writes: RawSpinLock::new(MountWriteState::new(readonly)),
             filesystem_state,
             active_uses: RawSpinLock::new(MountUseState::default()),
+            root_role: RawSpinLock::new(root_role),
+            retired: AtomicBool::new(false),
             mount_flags: AtomicU32::new(0),
             expired: AtomicBool::new(false),
             propagation: RawSpinLock::new(PropagationType::Private),
@@ -406,15 +480,14 @@ impl Mountpoint {
         device: u64,
         source: &str,
     ) -> Arc<Self> {
-        let result = Self::new_with_root_and_source(
+        Self::new_with_root_and_source(
             fs.root_dir(),
             location_in_parent,
             device,
             source.to_owned(),
             fs.mount_state.clone(),
-        );
-        result.readonly.store(fs.is_readonly(), Ordering::Release);
-        result
+            fs.is_readonly(),
+        )
     }
 
     pub fn new_root(fs: &Filesystem) -> Arc<Self> {
@@ -426,23 +499,51 @@ impl Mountpoint {
         Self::new_with_source(fs, None, source)
     }
 
+    /// Constructs a root with initial protection without entering reconfiguration.
+    /// Root discovery retains its backend's synchronization requirements.
+    /// This does not reconfigure the shared filesystem or its native backend.
+    pub fn new_root_with_source_readonly(
+        fs: &Filesystem,
+        source: &str,
+        readonly: bool,
+    ) -> Arc<Self> {
+        Self::new_with_root_and_source(
+            fs.root_dir(),
+            None,
+            DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            source.to_owned(),
+            fs.mount_state.clone(),
+            readonly || fs.is_readonly(),
+        )
+    }
+
     /// Creates a root mountpoint with an explicitly selected filesystem
     /// device number.
     pub fn new_root_with_device_source(fs: &Filesystem, device: u64, source: &str) -> Arc<Self> {
         Self::new_with_device_source(fs, None, device, source)
     }
 
+    #[cfg(test)]
     fn bind(source: &Location, location_in_parent: Location, recursive: bool) -> Arc<Self> {
+        let mut retirement = propagation::RelationRetirement::default();
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        Self::bind_locked(source, location_in_parent, recursive, &mut retirement)
+    }
+
+    fn bind_locked(
+        source: &Location,
+        location_in_parent: Location,
+        recursive: bool,
+        retirement: &mut propagation::RelationRetirement,
+    ) -> Arc<Self> {
         let result = Self::new_with_root_and_source(
             source.entry.clone(),
             Some(location_in_parent),
             source.mountpoint.device(),
             source.mountpoint.source.clone(),
             source.mountpoint.filesystem_state.clone(),
+            source.mountpoint.is_readonly(),
         );
-        result
-            .readonly
-            .store(source.mountpoint.is_readonly(), Ordering::Release);
         result
             .mount_flags
             .store(source.mountpoint.mount_flags(), Ordering::Release);
@@ -451,7 +552,7 @@ impl Mountpoint {
         if recursive {
             let mut clones = Vec::new();
             Self::clone_children_from(&source.mountpoint, &result, true, Some(source), &mut clones);
-            Self::rebuild_cloned_relations(&clones);
+            Self::rebuild_cloned_relations_locked(&clones, retirement);
         }
         result
     }
@@ -463,10 +564,8 @@ impl Mountpoint {
             source.device(),
             source.source.clone(),
             source.filesystem_state.clone(),
+            source.is_readonly(),
         );
-        result
-            .readonly
-            .store(source.is_readonly(), Ordering::Release);
         result
             .mount_flags
             .store(source.mount_flags(), Ordering::Release);
@@ -493,7 +592,7 @@ impl Mountpoint {
             .children
             .lock()
             .iter()
-            .map(|(key, child)| (key.clone(), child.clone()))
+            .map(|(key, child)| (*key, child.clone()))
             .collect();
         let children: Vec<_> = children
             .into_iter()
@@ -520,12 +619,16 @@ impl Mountpoint {
         }
     }
 
-    fn clone_tree_locked(self: &Arc<Self>, skip_unbindable: bool) -> Arc<Self> {
+    fn clone_tree_locked(
+        self: &Arc<Self>,
+        skip_unbindable: bool,
+        retirement: &mut propagation::RelationRetirement,
+    ) -> (Arc<Self>, MountCloneMap) {
         let result = Self::clone_shallow(self, None);
         let mut clones = vec![(self.clone(), result.clone())];
         Self::clone_children_from(self, &result, skip_unbindable, None, &mut clones);
-        Self::rebuild_cloned_relations(&clones);
-        result
+        Self::rebuild_cloned_relations_locked(&clones, retirement);
+        (result, clones)
     }
 
     /// Clone this mount tree into an independent namespace-local topology.
@@ -534,9 +637,12 @@ impl Mountpoint {
     /// objects, but all `Mountpoint` nodes and parent/child links are private
     /// to the clone.
     pub fn clone_tree(self: &Arc<Self>) -> Arc<Self> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        let result = self.clone_tree_locked(false);
+        let mut retirement = propagation::RelationRetirement::default();
+        let topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let (result, clones) = self.clone_tree_locked(false, &mut retirement);
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        drop(topology);
+        drop(clones);
         result
     }
 
@@ -558,76 +664,39 @@ impl Mountpoint {
         self.location.lock().is_none()
     }
 
-    /// Pivot the mount tree: the old root (`self`) is detached and re-attached
-    /// at `put_old` under `new_root_mp`, which becomes the global root.
+    fn root_role(&self) -> MountRootRole {
+        *self.root_role.lock()
+    }
+
+    fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Relaxed)
+    }
+
+    /// Requires the topology gate, shared with final namespace retirement.
+    fn check_topology_live_locked(&self) -> VfsResult<()> {
+        if self.is_retired() {
+            return Err(VfsError::InvalidInput);
+        }
+        Ok(())
+    }
+
+    /// Pivots the mount tree without an outer caller protection.
     ///
-    /// This implements the mount-tree portion of Linux `pivot_root(2)`.
-    ///
-    /// The mutation acquires one mount-tree lock at a time: first detach the
-    /// new root from the old root, then attach the old root below `put_old`.
-    /// Do not hold these locks in the inverse order elsewhere, or path walkers
-    /// can deadlock while observing a partially rearranged tree.
+    /// This low-level convenience entry does not authorize a task namespace.
+    /// Temporary owners retire after internal topology exclusion but before
+    /// return. Task callers must use [`MountNamespace::pivot_root`] instead.
     pub fn pivot_mount(
         self: &Arc<Self>,        // old root mountpoint
         new_root_mp: &Arc<Self>, // new root mountpoint
         put_old: &Location,      // directory under new_root_mp where old root goes
     ) -> VfsResult<()> {
-        let topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        let new_root = new_root_mp.root_location();
-        if Arc::ptr_eq(self, new_root_mp)
-            || !Arc::ptr_eq(put_old.mountpoint(), new_root_mp)
-            || !put_old.is_descendant_of(&new_root)
-            || !new_root.is_descendant_of(&self.root_location())
-        {
-            return Err(VfsError::InvalidInput);
-        }
-        // put_old must be a directory and not already a mountpoint.
-        put_old.check_is_dir()?;
-        if put_old.is_mountpoint() {
-            return Err(VfsError::ResourceBusy);
-        }
-
-        let new_parent = new_root_mp.location().ok_or(VfsError::InvalidInput)?;
-        let old_parent = self.location();
-        if put_old.mountpoint().is_shared()
-            || new_parent.mountpoint().is_shared()
-            || old_parent
-                .as_ref()
-                .is_some_and(|parent| parent.mountpoint().is_shared())
-        {
-            return Err(VfsError::InvalidInput);
-        }
-        let removed_new = new_parent
-            .mountpoint
-            .children
-            .lock()
-            .remove(&new_parent.entry.key());
-        let removed_old = old_parent.as_ref().and_then(|parent| {
-            parent
-                .mountpoint
-                .children
-                .lock()
-                .remove(&parent.entry.key())
-        });
-        if let Some(parent) = &old_parent {
-            parent
-                .mountpoint
-                .children
-                .lock()
-                .insert(parent.entry.key(), new_root_mp.clone());
-        }
-        let previous_new = core::mem::replace(&mut *new_root_mp.location.lock(), old_parent);
-        let previous_old = self.location.lock().replace(put_old.clone());
-        new_root_mp
-            .children
-            .lock()
-            .insert(put_old.entry.key(), self.clone());
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
-        drop(topology);
-        // Final mount leases can clear caches and release pages; never run
-        // those destructors while serializing topology mutations.
-        drop((removed_new, removed_old, previous_new, previous_old));
-        Ok(())
+        let mut retirement = MountPivotRetirement::raw(self, new_root_mp, put_old);
+        let result = {
+            let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            retirement.pivot_locked(self, new_root_mp, put_old)
+        };
+        drop(retirement);
+        result
     }
 
     /// Returns the effective mountpoint.
@@ -728,7 +797,7 @@ impl Mountpoint {
     }
 
     pub fn is_readonly(&self) -> bool {
-        self.readonly.load(Ordering::Acquire)
+        self.writes.lock().readonly
     }
 
     /// Returns the superblock write restriction shared across namespace copies.
@@ -736,13 +805,38 @@ impl Mountpoint {
         self.filesystem_state.is_readonly()
     }
 
-    /// Updates the shared VFS superblock state, not a bind mount's local flags.
-    pub fn set_filesystem_readonly(&self, readonly: bool) {
-        self.filesystem_state.set_readonly(readonly);
+    /// Performs an ordinary remount of the shared filesystem and this mount.
+    ///
+    /// Only a shared read-write to read-only transition rejects active writers
+    /// anywhere on this filesystem with `ResourceBusy`. Keeping shared write
+    /// access may clear this mount's local protection despite other writers.
+    /// Actual shared transitions synchronize or promote native write access
+    /// before publishing either flag, without short state locks. On failure
+    /// both old flags remain intact.
+    /// This may sleep; backend gates must not be held by the caller.
+    pub fn set_filesystem_readonly(&self, readonly: bool) -> VfsResult<()> {
+        let _configuration = self.filesystem_state.reconfiguration.lock();
+        self.filesystem_state
+            .prepare_readonly(self.root.filesystem(), readonly)?;
+        let mut shared = self.filesystem_state.writes.lock();
+        let mut local = self.writes.lock();
+        shared.readonly = readonly;
+        local.readonly = readonly;
+        Ok(())
     }
 
-    pub fn set_readonly(&self, readonly: bool) {
-        self.readonly.store(readonly, Ordering::Release);
+    /// Reconfigures only this mount, as for bind remount/mount attributes.
+    /// May sleep behind another configuration. Only a local read-write to
+    /// read-only transition rejects active local writers with `ResourceBusy`,
+    /// without changing flags. Shared/native state is always unchanged.
+    pub fn set_readonly(&self, readonly: bool) -> VfsResult<()> {
+        let _configuration = self.filesystem_state.reconfiguration.lock();
+        let mut local = self.writes.lock();
+        if readonly && !local.readonly && local.writers != 0 {
+            return Err(VfsError::ResourceBusy);
+        }
+        local.readonly = readonly;
+        Ok(())
     }
 
     pub fn mount_flags(&self) -> u32 {
@@ -766,7 +860,9 @@ impl Mountpoint {
     }
 
     pub fn move_to(self: &Arc<Self>, new_location: &Location) -> VfsResult<()> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        self.check_topology_live_locked()?;
+        new_location.mountpoint.check_topology_live_locked()?;
         if self.is_root() {
             return Err(VfsError::InvalidInput);
         }
@@ -786,63 +882,30 @@ impl Mountpoint {
         let Some(old_location) = self.location.lock().clone() else {
             return Err(VfsError::InvalidInput);
         };
+        old_location.mountpoint.check_topology_live_locked()?;
 
         let removed_child = {
             let mut children = old_location.mountpoint.children.lock();
             children.remove(&old_location.entry.key())
         };
-        drop(removed_child);
 
         let replaced_child = {
             let mut children = new_location.mountpoint.children.lock();
             children.insert(new_location.entry.key(), self.clone())
         };
-        drop(replaced_child);
 
-        let old_location = {
+        let previous_location = {
             let mut location = self.location.lock();
             location.replace(new_location.clone())
         };
-        drop(old_location);
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
-        Ok(())
-    }
-
-    /// Attaches a detached mount tree at `new_location`.
-    ///
-    /// Unlike [`Self::move_to`], the source has no old parent entry to remove.
-    /// Callers must only expose this operation for mount handles created as
-    /// detached trees; the namespace root also has no parent but is not a
-    /// movable mount handle.
-    pub fn attach_detached(self: &Arc<Self>, new_location: &Location) -> VfsResult<()> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        if self.active_uses.lock().normally_unmounted || self.location.lock().is_some() {
-            return Err(VfsError::InvalidInput);
-        }
-        if new_location.is_mountpoint() {
-            return Err(VfsError::ResourceBusy);
-        }
-        new_location.check_is_dir()?;
-
-        let root_location = self.root_location();
-        let mut current = Some(new_location.clone());
-        while let Some(location) = current {
-            if location.ptr_eq(&root_location) {
-                return Err(VfsError::FilesystemLoop);
-            }
-            current = location.parent();
-        }
-
-        *self.location.lock() = Some(new_location.clone());
-        new_location
-            .mountpoint
-            .children
-            .lock()
-            .insert(new_location.entry.key(), self.clone());
-        if new_location.mountpoint.is_shared() {
-            Self::propagate_new_child(new_location.mountpoint(), new_location, self)?;
-        }
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+        drop(topology);
+        drop((
+            removed_child,
+            replaced_child,
+            previous_location,
+            old_location,
+        ));
         Ok(())
     }
 }
@@ -851,6 +914,24 @@ impl Mountpoint {
 pub struct Location {
     mountpoint: Arc<Mountpoint>,
     entry: DirEntry,
+}
+
+use crate::node::CreateSelection;
+
+/// One upward step. A walker checks its root and mount policy before crossing
+/// `Covered`; it must not silently skip the covered mount root.
+#[derive(Debug)]
+pub enum ParentStep {
+    Parent {
+        parent: Location,
+        name: String,
+    },
+    Covered(Location),
+    Root,
+    Unlinked {
+        parent: Option<Location>,
+        name: String,
+    },
 }
 
 #[inherit_methods(from = "self.entry")]
@@ -900,6 +981,13 @@ impl Location {
         self.mountpoint.is_readonly() || self.mountpoint.is_filesystem_readonly()
     }
 
+    /// Acquires operation-scoped write authority for this exact mount.
+    /// Acquire all backing rights before entering any backend gate, then lend
+    /// the existing guards to inner operations rather than admitting recursively.
+    pub fn acquire_write(&self) -> VfsResult<MountWriteGuard> {
+        self.mountpoint.acquire_write()
+    }
+
     pub fn entry(&self) -> &DirEntry {
         &self.entry
     }
@@ -943,15 +1031,41 @@ impl Location {
                 .as_ref()
                 .map_or(Cow::Borrowed(""), |loc| Cow::Owned(loc.name().into_owned()))
         } else {
-            Cow::Borrowed(self.entry.name())
+            Cow::Owned(self.entry.name())
         }
     }
 
     pub fn parent(&self) -> Option<Self> {
         if !self.is_root_of_mount() {
-            return Some(self.wrap(self.entry.parent().unwrap()));
+            return self.entry.parent().map(|parent| self.wrap(parent));
         }
         self.mountpoint.location()?.parent()
+    }
+
+    pub fn parent_step(&self) -> VfsResult<ParentStep> {
+        if self.is_root_of_mount() {
+            return Ok(self
+                .mountpoint
+                .location()
+                .map_or(ParentStep::Root, ParentStep::Covered));
+        }
+        let snapshot = self.entry.name_snapshot();
+        if snapshot.state() == crate::NameState::Untrusted {
+            return Err(VfsError::WouldBlock);
+        }
+        if snapshot.state() == crate::NameState::Unlinked {
+            return Ok(ParentStep::Unlinked {
+                parent: snapshot.parent().cloned().map(|parent| self.wrap(parent)),
+                name: snapshot.name().to_owned(),
+            });
+        }
+        Ok(snapshot
+            .parent()
+            .cloned()
+            .map_or(ParentStep::Root, |parent| ParentStep::Parent {
+                parent: self.wrap(parent),
+                name: snapshot.name().to_owned(),
+            }))
     }
 
     pub fn is_root(&self) -> bool {
@@ -977,8 +1091,9 @@ impl Location {
         let mut cur = self.clone();
         loop {
             while !cur.is_root_of_mount() {
-                components.push(cur.entry.name().to_owned());
-                let parent = cur.entry.parent().ok_or(VfsError::InvalidInput)?;
+                let snapshot = cur.entry.name_snapshot();
+                components.push(snapshot.name().to_owned());
+                let parent = snapshot.parent().cloned().ok_or(VfsError::InvalidInput)?;
                 cur = cur.wrap(parent);
             }
             cur = match cur.mountpoint.location() {
@@ -1008,8 +1123,9 @@ impl Location {
                     .location()
                     .ok_or(VfsError::InvalidInput)?;
             } else {
-                components.push(current.entry.name().to_owned());
-                let parent = current.entry.parent().ok_or(VfsError::InvalidInput)?;
+                let snapshot = current.entry.name_snapshot();
+                components.push(snapshot.name().to_owned());
+                let parent = snapshot.parent().cloned().ok_or(VfsError::InvalidInput)?;
                 current = current.wrap(parent);
             }
         }
@@ -1068,6 +1184,22 @@ impl Location {
         })
     }
 
+    /// Looks up one backend component without crossing mounts or following links.
+    ///
+    /// Call only outside backend gates/drivers and outer operation admissions.
+    /// This may block and uses normal directory caching; it does not perform
+    /// path search authorization or provide a cache-only lookup capability.
+    pub fn lookup_backing(&self, name: &str) -> VfsResult<Self> {
+        crate::path::verify_entry_name(name)?;
+        let entry = self.entry.as_dir()?.lookup(name)?;
+        if crate::namespace_admission::owner_address(entry.filesystem())
+            != crate::namespace_admission::owner_address(self.filesystem())
+        {
+            return Err(VfsError::CrossesDevices);
+        }
+        Ok(Self::new(self.mountpoint.clone(), entry))
+    }
+
     pub fn create(
         &self,
         name: &str,
@@ -1075,15 +1207,152 @@ impl Location {
         permission: NodePermission,
         uid: u32,
         gid: u32,
+        credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<Self> {
-        if self.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
+        // Requested ownership is not a credential or an ownership override.
+        let _ = (uid, gid);
+        self.create_initialized(
+            name,
+            crate::CreateAttributes {
+                content: crate::CreateContent::Node(node_type, crate::DeviceId::default()),
+                permission,
+            },
+            credentials,
+        )
+    }
+
+    /// Creates a node with all initial contents, including rdev, already set.
+    pub fn create_initialized(
+        &self,
+        name: &str,
+        attributes: crate::CreateAttributes<'_>,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<Self> {
+        let write = crate::PreparedWrite::acquire(self)?;
+        let outcome = if self.filesystem().has_native_namespace() {
+            self.run_native_create(
+                name,
+                attributes,
+                crate::CreateIntent::Exclusive,
+                credentials,
+                crate::prepared_write::PreparedView::write(&write),
+            )?
+        } else {
+            let retired = crate::MutationRetire::new();
+            self.run_create(
+                name,
+                attributes,
+                CreateSelection::Ordinary(crate::CreateIntent::Exclusive),
+                credentials,
+                crate::CreationWrite::Ready(&write),
+                &retired,
+            )
+        };
+        let effect = outcome.into_observation()?;
+        match effect {
+            crate::NamespaceEffect::Create(effect) => Ok(self.wrap(effect.selected.entry)),
+            _ => Err(VfsError::BadState),
         }
-        let entry = self
-            .entry
-            .as_dir()?
-            .create(name, node_type, permission, uid, gid)?;
-        Ok(self.wrap(entry))
+    }
+
+    fn run_native_create(
+        &self,
+        name: &str,
+        attributes: crate::CreateAttributes<'_>,
+        intent: crate::CreateIntent,
+        credentials: &crate::MutationCredentials<'_>,
+        prepared: crate::prepared_write::PreparedView<'_>,
+    ) -> VfsResult<crate::NamespaceOutcome<crate::NamespaceEffect>> {
+        loop {
+            let scope = crate::NamespaceOperationScope::acquire_prepared(prepared)?;
+            {
+                let context = scope.context();
+                scope.create(&context, self, name, attributes, intent, credentials)?;
+            }
+            let outcome = scope
+                .finish()
+                .unwrap_or_else(|_| unreachable!("fixed native factory binds the admitted owner"));
+            if outcome.state() == crate::NamespaceState::Retry
+                && matches!(outcome.result(), Ok(()) | Err(VfsError::WouldBlock))
+            {
+                continue;
+            }
+            return Ok(outcome);
+        }
+    }
+
+    fn run_create(
+        &self,
+        name: &str,
+        attributes: crate::CreateAttributes<'_>,
+        selection: CreateSelection,
+        credentials: &crate::MutationCredentials<'_>,
+        write: crate::CreationWrite<'_>,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        assert!(!self.filesystem().has_native_namespace());
+        let target = match crate::MutationTarget::new(self, name, credentials) {
+            Ok(target) => target,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        self.entry
+            .as_dir()
+            .expect("validated parent")
+            .mutate_namespace(
+                &crate::NamespaceMutation::Create(selection.request(target, attributes, write)),
+                retired,
+            )
+    }
+
+    /// Trusted archive initialization only; never use this as a syscall fallback.
+    /// The initialization authority is an explicit input, not inferred from uid.
+    pub fn restore_create(
+        &self,
+        name: &str,
+        attributes: crate::CreateAttributes<'_>,
+        owner: (u32, u32),
+        initialization: &crate::TrustedInitialization,
+    ) -> VfsResult<Self> {
+        let write = crate::PreparedWrite::acquire(self)?;
+        let outcome = if self.filesystem().has_native_namespace() {
+            loop {
+                let scope = crate::NamespaceOperationScope::acquire(&write)?;
+                {
+                    let context = scope.context();
+                    scope.restore_create(
+                        &context,
+                        self,
+                        name,
+                        attributes,
+                        owner,
+                        initialization,
+                    )?;
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
+                if outcome.state() == crate::NamespaceState::Retry
+                    && matches!(outcome.result(), Ok(()) | Err(VfsError::WouldBlock))
+                {
+                    continue;
+                }
+                break outcome;
+            }
+        } else {
+            let retired = crate::MutationRetire::new();
+            self.run_create(
+                name,
+                attributes,
+                CreateSelection::Restore(owner),
+                initialization.credentials(),
+                crate::CreationWrite::Ready(&write),
+                &retired,
+            )
+        };
+        match outcome.into_observation()? {
+            crate::NamespaceEffect::Create(effect) => Ok(self.wrap(effect.selected.entry)),
+            _ => Err(VfsError::BadState),
+        }
     }
 
     pub fn create_symlink(
@@ -1093,15 +1362,17 @@ impl Location {
         permission: NodePermission,
         uid: u32,
         gid: u32,
+        credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<Self> {
-        if self.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
-        }
-        let entry = self
-            .entry
-            .as_dir()?
-            .create_symlink(name, target, permission, uid, gid)?;
-        Ok(self.wrap(entry))
+        let _ = (uid, gid);
+        self.create_initialized(
+            name,
+            crate::CreateAttributes {
+                content: crate::CreateContent::Symlink(target),
+                permission,
+            },
+            credentials,
+        )
     }
 
     /// Creates an in-memory directory entry that exists only as a mount target.
@@ -1153,19 +1424,84 @@ impl Location {
         Ok(self.wrap(entry))
     }
 
-    pub fn link(&self, name: &str, node: &Self) -> VfsResult<Self> {
-        if self.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
+    pub fn link(
+        &self,
+        name: &str,
+        node: &Self,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<Self> {
+        let write = crate::PreparedWrite::acquire(self)?;
+        // Preserve write preparation before the exact-mount/name checks.
+        let outcome = if self.filesystem().has_native_namespace() {
+            if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
+                return Err(VfsError::CrossesDevices);
+            }
+            verify_entry_name(name)?;
+            self.entry.as_dir()?;
+            loop {
+                let scope = crate::NamespaceOperationScope::acquire(&write)?;
+                {
+                    let context = scope.context();
+                    scope.link(&context, self, name, node, credentials)?;
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
+                if outcome.state() == crate::NamespaceState::Retry {
+                    continue;
+                }
+                break outcome;
+            }
+        } else {
+            let retired = crate::MutationRetire::new();
+            self.link_fallback(name, node, credentials, &write, &retired)
+        };
+        match outcome.into_observation()? {
+            crate::NamespaceEffect::Link(alias) => Ok(self.wrap(alias.entry)),
+            _ => Err(VfsError::BadState),
         }
-        if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
-            return Err(VfsError::CrossesDevices);
-        }
-        let entry = self.entry.as_dir()?.link(name, &node.entry)?;
-        Ok(self.wrap(entry))
     }
 
-    pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
-        self.rename_with_options(src_name, dst_dir, dst_name, RenameOptions::REPLACE)
+    fn link_fallback(
+        &self,
+        name: &str,
+        node: &Self,
+        credentials: &crate::MutationCredentials<'_>,
+        write: &crate::PreparedWrite,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        assert!(!self.filesystem().has_native_namespace());
+        if !Arc::ptr_eq(&self.mountpoint, &node.mountpoint) {
+            return crate::NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
+        }
+        let target = match crate::MutationTarget::new(self, name, credentials) {
+            Ok(target) => target,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        self.entry
+            .as_dir()
+            .expect("validated parent")
+            .mutate_namespace(
+                &crate::NamespaceMutation::Link(crate::LinkRequest::new(target, node, write)),
+                retired,
+            )
+    }
+
+    /// Renames with explicit current credentials and exact-mount write authority.
+    pub fn rename(
+        &self,
+        src_name: &str,
+        dst_dir: &Self,
+        dst_name: &str,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        self.rename_with_options(
+            src_name,
+            dst_dir,
+            dst_name,
+            RenameOptions::REPLACE,
+            credentials,
+        )
     }
 
     pub fn rename_with_options(
@@ -1174,50 +1510,171 @@ impl Location {
         dst_dir: &Self,
         dst_name: &str,
         options: RenameOptions,
+        credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<()> {
-        if self.is_readonly() || dst_dir.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
-        }
         if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
             return Err(VfsError::CrossesDevices);
         }
-        let src_loc = self.lookup_no_follow(src_name)?;
-        // Disallow moving a directory into one of its own descendants. Regular
-        // files may still be renamed into child directories (e.g. Redis AOF
-        // `temp-rewriteaof-*.aof` -> `appendonlydir/...`).
-        if src_loc.node_type() == NodeType::Directory
-            && !self.ptr_eq(dst_dir)
-            && src_loc.entry.is_ancestor_of(&dst_dir.entry)?
-        {
-            return Err(VfsError::InvalidInput);
-        }
-        if options.exchange() {
-            let dst_loc = dst_dir.lookup_no_follow(dst_name)?;
-            if dst_loc.node_type() == NodeType::Directory
-                && !self.ptr_eq(dst_dir)
-                && dst_loc.entry.is_ancestor_of(&self.entry)?
-            {
-                return Err(VfsError::InvalidInput);
+        let write = crate::PreparedWrite::acquire(self)?;
+        if self.filesystem().has_native_namespace() {
+            // Keep static request validation before operation admission, as in
+            // the legacy entry. Every attempt still builds its own command.
+            crate::RenameRequest::new(
+                (self, src_name),
+                (dst_dir, dst_name),
+                options,
+                credentials,
+                &write,
+            )?;
+            loop {
+                let scope = crate::NamespaceOperationScope::acquire(&write)?;
+                {
+                    let context = scope.context();
+                    scope.rename(
+                        &context,
+                        (self, src_name),
+                        (dst_dir, dst_name),
+                        options,
+                        credentials,
+                    )?;
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
+                if outcome.state() == crate::NamespaceState::Retry {
+                    continue;
+                }
+                return outcome.into_result();
             }
         }
-        self.entry.as_dir()?.rename_with_options(
+        let retired = crate::MutationRetire::new();
+        self.rename_fallback(
             src_name,
-            dst_dir.entry.as_dir()?,
-            dst_name,
+            (dst_dir, dst_name),
             options,
-        )?;
-        Ok(())
+            credentials,
+            &write,
+            &retired,
+        )
+        .into_result()
     }
 
-    pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        if self.is_readonly() {
-            return Err(VfsError::ReadOnlyFilesystem);
+    /// Legacy capability for non-native receivers only, never a child command.
+    fn rename_fallback(
+        &self,
+        src_name: &str,
+        destination: (&Self, &str),
+        options: RenameOptions,
+        credentials: &crate::MutationCredentials<'_>,
+        write: &crate::PreparedWrite,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        assert!(!self.filesystem().has_native_namespace());
+        let (dst_dir, dst_name) = destination;
+        if !Arc::ptr_eq(&self.mountpoint, &dst_dir.mountpoint) {
+            return crate::NamespaceOutcome::unchanged(Err(VfsError::CrossesDevices));
         }
-        self.entry.as_dir()?.unlink(name, is_dir)
+        let request = match crate::RenameRequest::new(
+            (self, src_name),
+            (dst_dir, dst_name),
+            options,
+            credentials,
+            write,
+        ) {
+            Ok(request) => request,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        let directory = match self.entry.as_dir() {
+            Ok(directory) => directory,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        directory
+            .inner()
+            .mutate_namespace(&crate::NamespaceMutation::Rename(request), retired)
     }
 
-    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<Location> {
-        self.open_file_with_status(name, options)
+    /// Releases direct-child cache retention before native unlink admission.
+    ///
+    /// Call outside all backend gates. This performs no target lookup and
+    /// grants no authority; current state is checked by the eventual attempt.
+    pub fn prepare_unlink(&self, name: &str) -> VfsResult<crate::PreparedUnlink> {
+        crate::path::verify_entry_name(name)?;
+        let directory = self.entry.as_dir()?;
+        directory.prepare_unlink_references();
+        directory.inner().prepare_unlink();
+        Ok(crate::PreparedUnlink::new(self.clone(), name.into()))
+    }
+
+    pub fn unlink(
+        &self,
+        name: &str,
+        is_dir: bool,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        let write = crate::PreparedWrite::acquire(self)?;
+        if self.filesystem().has_native_namespace() {
+            loop {
+                let prepared = self.prepare_unlink(name)?;
+                let scope = crate::NamespaceOperationScope::acquire(&write)?;
+                {
+                    let context = scope.context();
+                    scope
+                        .unlink(&context, prepared, is_dir, credentials)?
+                        .resume();
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
+                if outcome.state() == crate::NamespaceState::Retry {
+                    continue;
+                }
+                return outcome.into_result();
+            }
+        }
+        let prepared = self.prepare_unlink(name)?;
+        let retired = crate::MutationRetire::new();
+        self.unlink_with_write(name, is_dir, credentials, prepared, &write, &retired)
+            .into_result()
+    }
+
+    /// Consumes gate-external preparation matching this exact request.
+    ///
+    /// Does not prepare or release cache owners under a caller's backend gate.
+    pub fn unlink_with_write(
+        &self,
+        name: &str,
+        is_dir: bool,
+        credentials: &crate::MutationCredentials<'_>,
+        prepared: crate::PreparedUnlink,
+        write: &crate::PreparedWrite,
+        retired: &crate::MutationRetire,
+    ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+        if let Err(error) = prepared.check(self, name) {
+            retired.retire(prepared);
+            return crate::NamespaceOutcome::unchanged(Err(error));
+        }
+        let target = match crate::MutationTarget::new(self, name, credentials) {
+            Ok(target) => target,
+            Err(error) => return crate::NamespaceOutcome::unchanged(Err(error)),
+        };
+        self.entry
+            .as_dir()
+            .expect("validated parent")
+            .mutate_namespace(
+                &crate::NamespaceMutation::Unlink(crate::UnlinkRequest::new(
+                    target, is_dir, prepared, write,
+                )),
+                retired,
+            )
+    }
+
+    pub fn open_file(
+        &self,
+        name: &str,
+        options: &OpenOptions,
+        credentials: &crate::MutationCredentials<'_>,
+    ) -> VfsResult<Location> {
+        self.open_file_with_status(name, options, credentials)
             .map(|(location, _)| location)
     }
 
@@ -1226,12 +1683,47 @@ impl Location {
         &self,
         name: &str,
         options: &OpenOptions,
+        credentials: &crate::MutationCredentials<'_>,
     ) -> VfsResult<(Location, bool)> {
-        if self.is_readonly() && (options.create || options.create_new) {
-            return Err(VfsError::ReadOnlyFilesystem);
+        if !options.create && !options.create_new {
+            return self
+                .lookup_no_follow(name)
+                .map(|location| (location, false));
         }
-        let opened = self.entry.as_dir()?.open_file_with_status(name, options)?;
-        Ok((self.wrap(opened.0).resolve_mountpoint(), opened.1))
+        let preparation = crate::PreparedCreation::acquire(self)?;
+        let prepared = crate::prepared_write::PreparedView::creation(&preparation);
+        let attributes = crate::CreateAttributes {
+            content: crate::CreateContent::Node(options.node_type, crate::DeviceId::default()),
+            permission: options.permission,
+        };
+        let intent = if options.create_new {
+            crate::CreateIntent::Exclusive
+        } else {
+            crate::CreateIntent::Open(crate::ExistingOpen {
+                access: options.access,
+            })
+        };
+        let outcome = if self.filesystem().has_native_namespace() {
+            self.run_native_create(name, attributes, intent, credentials, prepared)?
+        } else {
+            let retired = crate::MutationRetire::new();
+            self.run_create(
+                name,
+                attributes,
+                CreateSelection::Ordinary(intent),
+                credentials,
+                prepared.creation_write(self)?,
+                &retired,
+            )
+        };
+        let effect = outcome.into_observation()?;
+        match effect {
+            crate::NamespaceEffect::Create(effect) => Ok((
+                self.wrap(effect.selected.entry).resolve_mountpoint(),
+                effect.created,
+            )),
+            _ => Err(VfsError::BadState),
+        }
     }
 
     pub fn read_dir(
@@ -1263,47 +1755,10 @@ impl Location {
         self.entry.as_dir()?.inner().directory_end_cursor()
     }
 
-    pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
-        self.mount_with_source(fs, "none")
-    }
-
-    /// Mounts a filesystem with the source name exposed through mount metadata.
-    pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
-        self.mount_with_device_source(fs, DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed), source)
-    }
-
-    /// Mounts a filesystem with an explicitly selected device number and
-    /// source name. Bind mounts keep the source mount's device number.
-    pub fn mount_with_device_source(
-        &self,
-        fs: &Filesystem,
-        device: u64,
-        source: &str,
-    ) -> VfsResult<Arc<Mountpoint>> {
-        // Filesystem callbacks may acquire sleepable locks. Prepare the
-        // unpublished mount before entering the non-preemptible topology
-        // transaction; only topology validation and publication belong inside
-        // the global guard.
-        let result = Mountpoint::new_with_device_source(fs, Some(self.clone()), device, source);
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        let should_propagate = self.mountpoint.is_shared();
-        self.check_is_dir()?;
-        {
-            let mut children = self.mountpoint.children.lock();
-            if children.contains_key(&self.entry.key()) {
-                return Err(VfsError::ResourceBusy);
-            }
-            children.insert(self.entry.key(), result.clone());
-        }
-        if should_propagate {
-            Mountpoint::propagate_new_child(self.mountpoint(), self, &result)?;
-        }
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
-        Ok(result)
-    }
-
     pub fn bind_mount(&self, source: &Self, recursive: bool) -> VfsResult<Arc<Mountpoint>> {
+        let mut retirement = propagation::RelationRetirement::default();
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        self.mountpoint.check_topology_live_locked()?;
         if source.mountpoint().is_unbindable() {
             return Err(VfsError::InvalidInput);
         }
@@ -1319,20 +1774,14 @@ impl Location {
         {
             return Err(VfsError::ResourceBusy);
         }
-        let result = Mountpoint::bind(source, self.clone(), recursive);
+        let result = Mountpoint::bind_locked(source, self.clone(), recursive, &mut retirement);
         if source.mountpoint().is_shared() {
-            result.join_shared_group_locked(source.mountpoint());
+            result.join_shared_group_locked(source.mountpoint(), &mut retirement);
         } else if source.mountpoint().is_slave() {
             *result.propagation.lock() = PropagationType::Slave;
-            let masters: Vec<_> = source
-                .mountpoint()
-                .masters
-                .lock()
-                .iter()
-                .filter_map(Weak::upgrade)
-                .collect();
-            for master in masters {
-                Mountpoint::attach_master_locked(&result, &master);
+            let masters = retirement.collect_locked(&source.mountpoint().masters);
+            for index in masters {
+                Mountpoint::attach_master_locked(&result, retirement.owner(index));
             }
         }
         self.mountpoint
@@ -1435,6 +1884,10 @@ mod tests {
     use super::*;
     use crate::{FileNode, FileNodeOps, StatFs};
 
+    mod namespace;
+    mod path_handle;
+    mod prepared_write;
+
     struct MockFs;
     struct ContextCheckingFs;
     struct MockNode;
@@ -1447,11 +1900,13 @@ mod tests {
     }
     struct TopologyChangingFs {
         self_ref: Weak<Self>,
-        topology_change: Box<dyn Fn() + Send + Sync>,
+        topology_change: Box<dyn Fn() -> VfsResult<()> + Send + Sync>,
         flushes: AtomicUsize,
+        on_drop: Option<Box<dyn Fn() + Send + Sync>>,
     }
     struct TopologyChangingNode {
         filesystem: Arc<TopologyChangingFs>,
+        inode: u64,
     }
     struct LifetimeGuard(Arc<AtomicUsize>);
 
@@ -1508,7 +1963,10 @@ mod tests {
                 .self_ref
                 .upgrade()
                 .expect("test filesystem must remain alive");
-            let node: Arc<dyn DirNodeOps> = Arc::new(TopologyChangingNode { filesystem });
+            let node: Arc<dyn DirNodeOps> = Arc::new(TopologyChangingNode {
+                filesystem,
+                inode: 0,
+            });
             DirEntry::new_dir(|_| DirNode::new(node), Reference::root())
         }
 
@@ -1518,9 +1976,17 @@ mod tests {
 
         fn flush(&self) -> VfsResult<()> {
             if self.flushes.fetch_add(1, Ordering::AcqRel) == 0 {
-                (self.topology_change)();
+                (self.topology_change)()?;
             }
             Ok(())
+        }
+    }
+
+    impl Drop for TopologyChangingFs {
+        fn drop(&mut self) {
+            if let Some(on_drop) = &self.on_drop {
+                on_drop();
+            }
         }
     }
 
@@ -1556,46 +2022,19 @@ mod tests {
         fn lookup(&self, _name: &str) -> VfsResult<DirEntry> {
             Err(VfsError::NotFound)
         }
-        fn create(
+
+        fn mutate_namespace(
             &self,
-            _name: &str,
-            _node_type: NodeType,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-        fn create_symlink(
-            &self,
-            _name: &str,
-            _target: &str,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-        fn rename(
-            &self,
-            _src: &str,
-            _dst_dir: &DirNode,
-            _dst: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
+            _: &crate::NamespaceMutation<'_>,
+            _: &crate::MutationRetire,
+        ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+            crate::NamespaceOutcome::unchanged(Err(VfsError::ReadOnlyFilesystem))
         }
     }
 
     impl NodeOps for TopologyChangingNode {
         fn inode(&self) -> u64 {
-            0
+            self.inode
         }
 
         fn metadata(&self) -> VfsResult<Metadata> {
@@ -1632,44 +2071,12 @@ mod tests {
             Err(VfsError::NotFound)
         }
 
-        fn create(
+        fn mutate_namespace(
             &self,
-            _name: &str,
-            _node_type: NodeType,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn create_symlink(
-            &self,
-            _name: &str,
-            _target: &str,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn rename(
-            &self,
-            _src: &str,
-            _dst_dir: &DirNode,
-            _dst: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
+            _: &crate::NamespaceMutation<'_>,
+            _: &crate::MutationRetire,
+        ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+            crate::NamespaceOutcome::unchanged(Err(VfsError::ReadOnlyFilesystem))
         }
     }
 
@@ -1712,7 +2119,20 @@ mod tests {
             Err(VfsError::NotFound)
         }
 
-        fn create(
+        fn mutate_namespace(
+            &self,
+            command: &crate::NamespaceMutation<'_>,
+            retired: &crate::MutationRetire,
+        ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+            let mut attempt = SymlinkAttempt {
+                node: self,
+                _gate: SYMLINK_NAMESPACE_GATE.lock(),
+            };
+            command.execute(&mut attempt, retired)
+        }
+    }
+    impl SymlinkDir {
+        fn create_locked(
             &self,
             _name: &str,
             _node_type: NodeType,
@@ -1724,7 +2144,7 @@ mod tests {
             Err(VfsError::InvalidInput)
         }
 
-        fn create_symlink(
+        fn create_symlink_locked(
             &self,
             name: &str,
             target: &str,
@@ -1741,23 +2161,76 @@ mod tests {
                 Reference::new(None, name.to_string()),
             ))
         }
+    }
 
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+    static SYMLINK_NAMESPACE_GATE: ax_sync::Mutex<()> = ax_sync::Mutex::new(());
+
+    struct SymlinkAttempt<'a> {
+        _gate: ax_sync::MutexGuard<'a, ()>,
+        node: &'a SymlinkDir,
+    }
+
+    impl crate::LockedAttempt for SymlinkAttempt<'_> {
+        fn parents(&mut self) -> VfsResult<(Metadata, Metadata)> {
+            let parent = self.node.metadata()?;
+            Ok((parent.clone(), parent))
+        }
+        fn observe(
+            &mut self,
+            command: &crate::NamespaceMutation<'_>,
+            _: &crate::MutationRetire,
+        ) -> VfsResult<crate::MutationObservation> {
+            match command {
+                crate::NamespaceMutation::Create(_) => Ok(crate::MutationObservation::Create {
+                    target: None,
+                    owner_policy: crate::CreateOwnerPolicy::ParentSetgid,
+                }),
+                _ => Err(VfsError::OperationNotSupported),
+            }
+        }
+        fn is_ancestor(&mut self, _: &crate::NamespaceNode, _: u64) -> VfsResult<bool> {
             Err(VfsError::OperationNotSupported)
         }
-
-        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::OperationNotSupported)
-        }
-
-        fn rename(
-            &self,
-            _src: &str,
-            _dst_dir: &DirNode,
-            _dst: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
-            Err(VfsError::OperationNotSupported)
+        fn commit(
+            &mut self,
+            authorized: &crate::AuthorizedMutation<'_>,
+            retired: &crate::MutationRetire,
+        ) -> crate::NamespaceOutcome<crate::NamespaceEffect> {
+            let crate::AuthorizedMutation::Create(authorized) = authorized else {
+                return crate::NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
+            };
+            let request = authorized.request();
+            let (uid, gid) = authorized.owner();
+            let result = match request.attributes().content {
+                crate::CreateContent::Node(kind, _) => {
+                    self.node
+                        .create_locked(request.name(), kind, authorized.permission(), uid, gid)
+                }
+                crate::CreateContent::Symlink(target) => self.node.create_symlink_locked(
+                    request.name(),
+                    target,
+                    authorized.permission(),
+                    uid,
+                    gid,
+                ),
+            };
+            match result {
+                Ok(entry) => {
+                    retired.retire(entry.clone());
+                    crate::NamespaceOutcome::applied(
+                        crate::NamespaceEffect::Create(crate::CreateEffect {
+                            selected: crate::NamespaceEntry {
+                                entry,
+                                canonical_name: request.name().into(),
+                                cacheable: true,
+                            },
+                            created: true,
+                        }),
+                        Ok(()),
+                    )
+                }
+                Err(error) => crate::NamespaceOutcome::unchanged(Err(error)),
+            }
         }
     }
 
@@ -1884,7 +2357,8 @@ mod tests {
             symlink_create_calls: symlink_create_calls.clone(),
         });
         let root = DirEntry::new_dir(|_| DirNode::new(ops), Reference::root());
-        let directory = root.as_dir().expect("root directory");
+        let location = Location::new(Mountpoint::new_root(&mock_filesystem()), root);
+        let directory = &location;
 
         assert!(matches!(
             directory.create(
@@ -1893,6 +2367,11 @@ mod tests {
                 NodePermission::default(),
                 0,
                 0,
+                &crate::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..crate::MutationCredentials::root()
+                },
             ),
             Err(VfsError::InvalidInput)
         ));
@@ -1905,6 +2384,11 @@ mod tests {
                 NodePermission::default(),
                 1000,
                 1001,
+                &crate::MutationCredentials {
+                    fsuid: 1000,
+                    fsgid: 1001,
+                    ..crate::MutationCredentials::root()
+                },
             )
             .expect("atomic symlink create");
         assert_eq!(
@@ -1953,18 +2437,26 @@ mod tests {
         let unrelated_mount = Mountpoint::new_root(&parent_fs);
         let filesystem_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
             self_ref: self_ref.clone(),
-            topology_change: Box::new(move || unrelated_mount.set_shared()),
+            topology_change: Box::new(move || {
+                unrelated_mount.set_shared();
+                Ok(())
+            }),
             flushes: AtomicUsize::new(0),
+            on_drop: None,
         });
         let mounted_fs = Filesystem::new(filesystem_ops.clone());
         let mounted = target.mount(&mounted_fs).expect("mount succeeds");
 
-        mounted
-            .root_location()
-            .unmount()
+        let handle = PathHandle::acquire(mounted.root_location()).expect("acquire target");
+        let retired = path_handle::cache_retirement_probe(&mounted, &filesystem_ops);
+        handle
+            .prepare_unmount()
+            .expect("prepare exclusive target")
+            .commit()
             .expect("unmount replans after unrelated topology changes");
 
         assert_eq!(filesystem_ops.flushes.load(Ordering::Acquire), 1);
+        assert_eq!(retired.load(Ordering::Acquire), 1);
         assert!(!parent.children.lock().contains_key(&target_entry.key()));
     }
 
@@ -1990,13 +2482,16 @@ mod tests {
             self_ref: self_ref.clone(),
             topology_change: Box::new(move || {
                 peer_parent_for_flush.join_shared_group(&source_parent_for_flush);
+                Ok(())
             }),
             flushes: AtomicUsize::new(0),
+            on_drop: None,
         });
         let peer_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
             self_ref: self_ref.clone(),
-            topology_change: Box::new(|| {}),
+            topology_change: Box::new(|| Ok(())),
             flushes: AtomicUsize::new(0),
+            on_drop: None,
         });
         let source_mount = source_target
             .mount(&Filesystem::new(source_ops.clone()))

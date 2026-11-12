@@ -9,8 +9,8 @@ use core::any::Any;
 
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
-    Metadata, MetadataUpdate, NodeOps, NodePermission, NodeType, Reference, RenameOptions,
-    VfsError, VfsResult, WeakDirEntry,
+    Metadata, MetadataUpdate, MutationRetire, NamespaceEffect, NamespaceMutation, NamespaceOutcome,
+    NodeIdentity, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -20,6 +20,11 @@ use crate::pseudofs::NodeOpsMuxTy;
 
 /// Operations for a simple directory.
 pub trait SimpleDirOps: Send + Sync + 'static {
+    /// Semantic identity for dynamically materialized directories.
+    fn identity(&self) -> Option<NodeIdentity> {
+        None
+    }
+
     /// Get the names of all children in the directory.
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a>;
     /// Look up a child directory or file by name.
@@ -162,6 +167,10 @@ impl<O: SimpleDirOps> SimpleDir<O> {
 
 #[inherit_methods(from = "self.node")]
 impl<O: SimpleDirOps> NodeOps for SimpleDir<O> {
+    fn identity(&self) -> Option<NodeIdentity> {
+        self.ops.identity()
+    }
+
     fn inode(&self) -> u64;
 
     fn metadata(&self) -> VfsResult<Metadata>;
@@ -235,43 +244,11 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
         self.ops.is_cacheable_child(name)
     }
 
-    fn create(
+    fn mutate_namespace(
         &self,
-        _name: &str,
-        _node_type: NodeType,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn create_symlink(
-        &self,
-        _name: &str,
-        _target: &str,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-        Err(VfsError::OperationNotPermitted)
-    }
-
-    fn rename(
-        &self,
-        _src_name: &str,
-        _dst_dir: &DirNode,
-        _dst_name: &str,
-        _options: RenameOptions,
-    ) -> VfsResult<()> {
-        Err(VfsError::OperationNotPermitted)
+        _command: &NamespaceMutation<'_>,
+        _retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        NamespaceOutcome::unchanged(Err(VfsError::OperationNotPermitted))
     }
 }

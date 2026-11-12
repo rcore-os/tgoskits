@@ -1,20 +1,14 @@
-use core::any::Any;
 use std::{
-    string::ToString,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     thread,
     vec::Vec,
 };
 
 use ax_std::os::arceos::sync::{Mutex, RawSpinLock};
-use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FilesystemOps,
-    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference,
-    RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
-};
+use axfs_ng_vfs::{Mountpoint, MutationCredentials, NodePermission, NodeType, VfsError};
 
 const WAIT_UNTIL_RETRY_LIMIT: usize = 10_000_000;
 
@@ -253,172 +247,33 @@ fn mixed_ms_two_task_abba() {
     handle.join().unwrap();
 }
 
-struct TestFs;
-
-impl FilesystemOps for TestFs {
-    fn name(&self) -> &str {
-        "lockdep-vfs-test"
-    }
-
-    fn root_dir(&self) -> DirEntry {
-        panic!("not used by lockdep-vfs-test")
-    }
-
-    fn stat(&self) -> VfsResult<StatFs> {
-        Err(VfsError::Unsupported)
-    }
-}
-
-static TEST_FS: TestFs = TestFs;
-
-struct TestDir {
-    inode: u64,
-    this: WeakDirEntry,
-    renamed: AtomicBool,
-}
-
-impl TestDir {
-    fn new_child(&self, name: &str) -> DirEntry {
-        DirEntry::new_dir(
-            |this| {
-                DirNode::new(Arc::new(Self {
-                    inode: self.inode + 100,
-                    this,
-                    renamed: AtomicBool::new(false),
-                }))
-            },
-            Reference::new(self.this.upgrade(), name.to_string()),
-        )
-    }
-
-    fn new_entry(inode: u64, name: &str) -> DirEntry {
-        DirEntry::new_dir(
-            |this| {
-                DirNode::new(Arc::new(Self {
-                    inode,
-                    this,
-                    renamed: AtomicBool::new(false),
-                }))
-            },
-            Reference::new(None, name.to_string()),
-        )
-    }
-}
-
-impl NodeOps for TestDir {
-    fn inode(&self) -> u64 {
-        self.inode
-    }
-
-    fn metadata(&self) -> VfsResult<Metadata> {
-        Ok(Metadata {
-            device: 0,
-            inode: self.inode,
-            nlink: 1,
-            mode: NodePermission::default(),
-            node_type: NodeType::Directory,
-            uid: 0,
-            gid: 0,
-            size: 0,
-            block_size: 4096,
-            blocks: 0,
-            rdev: DeviceId::default(),
-            atime: Default::default(),
-            mtime: Default::default(),
-            ctime: Default::default(),
-        })
-    }
-
-    fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
-        Ok(())
-    }
-
-    fn filesystem(&self) -> &dyn FilesystemOps {
-        &TEST_FS
-    }
-
-    fn sync(&self, _data_only: bool) -> VfsResult<()> {
-        Ok(())
-    }
-
-    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
-        self
-    }
-
-    fn flags(&self) -> NodeFlags {
-        NodeFlags::empty()
-    }
-}
-
-impl DirNodeOps for TestDir {
-    fn read_dir(&self, _cursor: DirectoryCursor, _sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        Ok(0)
-    }
-
-    fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
-        if name == "new" && !self.renamed.load(Ordering::Acquire) {
-            return Err(VfsError::NotFound);
-        }
-        Ok(self.new_child(name))
-    }
-
-    fn create(
-        &self,
-        _name: &str,
-        _node_type: NodeType,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::Unsupported)
-    }
-
-    fn create_symlink(
-        &self,
-        _name: &str,
-        _target: &str,
-        _permission: NodePermission,
-        _uid: u32,
-        _gid: u32,
-    ) -> VfsResult<DirEntry> {
-        Err(VfsError::Unsupported)
-    }
-
-    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-        Err(VfsError::Unsupported)
-    }
-
-    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-        Err(VfsError::Unsupported)
-    }
-
-    fn rename(
-        &self,
-        _src_name: &str,
-        _dst_dir: &DirNode,
-        dst_name: &str,
-        _options: RenameOptions,
-    ) -> VfsResult<()> {
-        if dst_name == "new" {
-            self.renamed.store(true, Ordering::Release);
-        }
-        Ok(())
-    }
-}
-
 fn vfs_cache_single_task_abba() {
-    let dir = TestDir::new_entry(1, "dir");
+    let filesystem = ax_fs_ng::MemoryFs::new();
+    let mount = Mountpoint::new_root(&filesystem);
+    let dir = mount.root_location();
+    dir.create(
+        "child",
+        NodeType::Directory,
+        NodePermission::default(),
+        0,
+        0,
+    )
+    .unwrap();
+    let old = dir
+        .create("old", NodeType::Directory, NodePermission::default(), 0, 0)
+        .unwrap();
 
     {
-        let _guard = dir.user_data();
-        let _child = dir.as_dir().unwrap().lookup("child").unwrap();
+        let _guard = dir.entry().user_data();
+        let _child = dir.lookup_no_follow("child").unwrap();
     }
 
-    dir.as_dir()
-        .unwrap()
-        .insert_cache("old".to_string(), TestDir::new_entry(2, "old"));
-    dir.as_dir()
-        .unwrap()
-        .rename("old", dir.as_dir().unwrap(), "new")
+    dir.rename("old", &dir, "new", &MutationCredentials::root())
         .unwrap();
+    let renamed = dir.lookup_no_follow("new").unwrap();
+    assert!(renamed.entry().ptr_eq(old.entry()));
+    assert!(matches!(
+        dir.lookup_no_follow("old"),
+        Err(VfsError::NotFound)
+    ));
 }

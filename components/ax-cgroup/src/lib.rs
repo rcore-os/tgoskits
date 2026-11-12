@@ -6,6 +6,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+mod fs;
 mod membership;
 mod namespace;
 mod node;
@@ -16,9 +17,13 @@ use alloc::sync::Arc;
 use core::{fmt, num::NonZeroU64};
 
 use ax_lazyinit::LazyInit;
+pub use fs::{
+    CgroupFileKind, CgroupFsAttributes, CgroupFsCreate, CgroupFsInit, CgroupFsTarget,
+    CgroupFsUpdate,
+};
 pub use membership::{CgroupChildKind, CgroupForkGuard, CgroupTaskExit, ProcessMembership};
 pub use namespace::CgroupNamespace;
-pub use node::{CgroupNode, CgroupPin};
+pub use node::{CgroupMutationDomain, CgroupMutationGuard, CgroupNode, CgroupPin};
 
 /// Stable, non-reusable process generation used by cgroup membership.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -55,6 +60,9 @@ pub enum CgroupError {
     /// The requested cgroup does not exist.
     #[error("cgroup was not found")]
     NotFound,
+    /// The retained cgroup entity has already been removed.
+    #[error("cgroup has been removed")]
+    Removed,
     /// A child cgroup with the requested name already exists.
     #[error("cgroup already exists")]
     AlreadyExists,
@@ -73,6 +81,9 @@ pub enum CgroupError {
     /// The cgroup still contains child cgroups.
     #[error("cgroup directory is not empty")]
     DirectoryNotEmpty,
+    /// The stable cgroup inode number space is exhausted.
+    #[error("cgroup inode space exhausted")]
+    NoSpace,
 }
 
 /// Result returned by cgroup domain operations.
@@ -80,11 +91,26 @@ pub type CgroupResult<T> = Result<T, CgroupError>;
 
 static ROOT: LazyInit<Arc<CgroupNode>> = LazyInit::new();
 
-/// Initialize the global cgroup hierarchy.
-pub fn init() {
-    ROOT.init_once(CgroupNode::new_root());
+/// Initialize the global cgroup hierarchy with explicit root attributes.
+pub fn init(init: CgroupFsInit) -> CgroupResult<()> {
+    ROOT.init_once(CgroupNode::new_root(init)?);
     membership::init();
+    Ok(())
 }
+
+#[cfg(test)]
+const TEST_FS_INIT: CgroupFsInit = CgroupFsInit {
+    uid: 0,
+    gid: 0,
+    mode: 0o755,
+    now: core::time::Duration::ZERO,
+};
+
+#[cfg(test)]
+const TEST_FS_CREATE: CgroupFsCreate = CgroupFsCreate {
+    directory: TEST_FS_INIT,
+    creator: (0, 0),
+};
 
 /// Return a strong handle to the global cgroup root.
 pub fn root() -> Arc<CgroupNode> {

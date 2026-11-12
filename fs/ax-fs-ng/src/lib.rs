@@ -17,7 +17,7 @@ extern crate ax_runtime;
 extern crate log;
 
 use axfs_ng_vfs::Location;
-pub use axfs_ng_vfs::{VfsError, VfsResult};
+pub use axfs_ng_vfs::{CreateAttributes, CreateContent, MutationCredentials, VfsError, VfsResult};
 
 pub mod api;
 pub(crate) mod block;
@@ -69,8 +69,8 @@ fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location
 
     // Keep an immutable namespace anchor; the actual root mount can then be
     // pivoted and detached without invalidating the namespace itself.
-    let anchor = axfs_ng_vfs::Mountpoint::new_root_with_source(&MemoryFs::new(), "nullfs");
-    anchor.set_readonly(true);
+    let anchor =
+        axfs_ng_vfs::Mountpoint::new_root_with_source_readonly(&MemoryFs::new(), "nullfs", true);
     let mp = anchor
         .root_location()
         .mount_with_source(&fs, source)

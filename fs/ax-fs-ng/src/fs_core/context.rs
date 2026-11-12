@@ -18,8 +18,8 @@ use ax_lazyinit::OnceLock;
 #[cfg(feature = "vfs")]
 use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    DirectoryCursor, DirectoryReadState, Location, Metadata, MutationCredentials, NodePermission,
-    NodeType, RenameOptions, VfsError, VfsResult,
+    CreateAttributes, DirectoryCursor, DirectoryReadState, Location, Metadata, MutationCredentials,
+    NodePermission, NodeType, RenameOptions, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
@@ -187,6 +187,24 @@ pub struct FsContext {
 }
 
 impl FsContext {
+    // Convert an already resolved final entry into a naming pair. This is not a
+    // walker step: scoped traversal must inspect each ParentStep itself.
+    fn resolved_parent_name(location: &Location) -> VfsResult<Option<(Location, String)>> {
+        let mut current = location.clone();
+        loop {
+            match current.parent_step()? {
+                axfs_ng_vfs::ParentStep::Parent { parent, name } => {
+                    return Ok(Some((parent, name)));
+                }
+                axfs_ng_vfs::ParentStep::Covered(covered) => current = covered,
+                axfs_ng_vfs::ParentStep::Root => return Ok(None),
+                axfs_ng_vfs::ParentStep::Unlinked { parent, name } => {
+                    return Ok(parent.map(|parent| (parent, name)));
+                }
+            }
+        }
+    }
+
     /// Publishes a shared context to mount-busy and pivot-root tracking.
     ///
     /// Every independently owned context, including an unshared replacement,
@@ -659,13 +677,13 @@ impl FsContext {
             Ok((dir, Cow::Borrowed(name), searched))
         } else if self.is_process_root(&dir) {
             Err(VfsError::InvalidInput)
-        } else if let Some(parent) = dir.parent() {
+        } else if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
             // `parent` is only used to represent the resolved final `.`/`..`
             // entry as `(parent, name)`. It was not traversed by the path
             // walk, so it must not be added to the search trace. This is
             // essential for an already-open dirfd whose own parent is not
             // searchable.
-            Ok((parent, dir.name().into_owned().into(), searched))
+            Ok((parent, name.into(), searched))
         } else {
             Err(VfsError::InvalidInput)
         }
@@ -788,8 +806,8 @@ impl FsContext {
                 Component::RootDir => return Err(VfsError::CrossesDevices),
                 Component::CurDir if is_last => {
                     check_search(&dir)?;
-                    if let Some(parent) = dir.parent() {
-                        return Ok((parent, dir.name().into_owned().into()));
+                    if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
+                        return Ok((parent, name.into()));
                     }
                     return Ok((dir, Cow::Borrowed(".")));
                 }
@@ -802,8 +820,8 @@ impl FsContext {
                     dir = dir.parent().ok_or(VfsError::CrossesDevices)?;
                     depth -= 1;
                     if is_last {
-                        if let Some(parent) = dir.parent() {
-                            return Ok((parent, dir.name().into_owned().into()));
+                        if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
+                            return Ok((parent, name.into()));
                         }
                         return Ok((dir, Cow::Borrowed(".")));
                     }
@@ -840,8 +858,8 @@ impl FsContext {
         } else {
             if self.is_process_root(&dir) {
                 Err(VfsError::InvalidInput)
-            } else if let Some(parent) = dir.parent() {
-                Ok((parent, dir.name().into_owned().into()))
+            } else if let Some((parent, name)) = Self::resolved_parent_name(&dir)? {
+                Ok((parent, name.into()))
             } else {
                 Err(VfsError::InvalidInput)
             }
@@ -888,8 +906,13 @@ impl FsContext {
     ///
     /// This function will create a file if it does not exist, and will entirely
     /// replace its contents if it does.
-    pub fn write(&self, path: impl AsRef<Path>, buf: impl AsRef<[u8]>) -> VfsResult<()> {
-        let file = File::create(self, path.as_ref())?;
+    pub fn write(
+        &self,
+        path: impl AsRef<Path>,
+        buf: impl AsRef<[u8]>,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        let file = File::create(self, path.as_ref(), credentials)?;
         (&file)
             .write_all(buf.as_ref())
             .map_err(crate::io_error_to_vfs_error)?;
@@ -918,35 +941,10 @@ impl FsContext {
         if credentials.cap_dac_override {
             return Ok(());
         }
-
-        // CAP_DAC_READ_SEARCH bypasses read/search checks, but it does not
-        // grant write access to a directory. Keep write bits in the normal
-        // DAC path even when a read/search capability is present.
-        const READ_SEARCH_PERMISSIONS: NodePermission = NodePermission::OWNER_READ
-            .union(NodePermission::GROUP_READ)
-            .union(NodePermission::OTHER_READ)
-            .union(NodePermission::OWNER_EXEC)
-            .union(NodePermission::GROUP_EXEC)
-            .union(NodePermission::OTHER_EXEC);
-        if credentials.cap_dac_read_search
-            && required.difference(READ_SEARCH_PERMISSIONS).is_empty()
-        {
+        if credentials.cap_dac_read_search && required.bits() & !0o555 == 0 {
             return Ok(());
         }
-
-        let metadata = location.metadata()?;
-        let mode = if credentials.fsuid == metadata.uid {
-            metadata.mode.bits() >> 6
-        } else if credentials.in_group(metadata.gid) {
-            metadata.mode.bits() >> 3
-        } else {
-            metadata.mode.bits()
-        };
-        if NodePermission::from_bits_truncate(mode).contains(required) {
-            Ok(())
-        } else {
-            Err(VfsError::PermissionDenied)
-        }
+        credentials.check_permission(&location.metadata()?, required)
     }
 
     /// Check execute/search permission up to the selected path boundary.
@@ -985,16 +983,6 @@ impl FsContext {
         }
     }
 
-    fn check_mutation_parent_with_boundary(
-        &self,
-        directory: &Location,
-        boundary: Option<&Location>,
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<()> {
-        self.check_search_path(directory, boundary, credentials)?;
-        Self::check_permission(directory, credentials, NodePermission::OTHER_WRITE)
-    }
-
     /// Check search permission for every directory visited by path lookup.
     pub(crate) fn check_search_trace(
         &self,
@@ -1006,54 +994,6 @@ impl FsContext {
             self.check_search_path(directory, boundary, credentials)?;
         }
         Ok(())
-    }
-
-    fn check_mutation_parent_with_boundary_and_search(
-        &self,
-        directory: &Location,
-        searched: &[Location],
-        boundary: Option<&Location>,
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<()> {
-        self.check_search_trace(searched, boundary, credentials)?;
-        self.check_mutation_parent_with_boundary(directory, boundary, credentials)
-    }
-
-    /// Check a mutation parent and every directory traversed to reach it.
-    pub(crate) fn check_mutation_parent_with_search(
-        &self,
-        directory: &Location,
-        searched: &[Location],
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<()> {
-        self.check_mutation_parent_with_boundary_and_search(
-            directory,
-            searched,
-            self.permission_root.as_ref(),
-            credentials,
-        )
-    }
-
-    /// Check sticky-directory ownership rules for removing or replacing an entry.
-    fn check_sticky(
-        directory: &Location,
-        target: &Location,
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<()> {
-        let directory_metadata = directory.metadata()?;
-        if !directory_metadata.mode.contains(NodePermission::STICKY) {
-            return Ok(());
-        }
-
-        let target_metadata = target.metadata()?;
-        if credentials.cap_fowner
-            || credentials.fsuid == directory_metadata.uid
-            || credentials.fsuid == target_metadata.uid
-        {
-            Ok(())
-        } else {
-            Err(VfsError::OperationNotPermitted)
-        }
     }
 
     /// Removes a file from the filesystem.
@@ -1075,10 +1015,12 @@ impl FsContext {
         if entry.is_dir() {
             return Err(VfsError::IsADirectory);
         }
-        let directory = entry.parent().ok_or(VfsError::IsADirectory)?;
-        self.check_mutation_parent_with_search(&directory, &searched, credentials)?;
-        Self::check_sticky(&directory, &entry, credentials)?;
-        directory.unlink(&entry.name(), false)
+        let (directory, name) =
+            Self::resolved_parent_name(&entry)?.ok_or(VfsError::IsADirectory)?;
+        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
+        drop(entry);
+        drop(searched);
+        directory.unlink(&name, false, credentials)
     }
 
     /// Removes a directory from the filesystem.
@@ -1121,14 +1063,12 @@ impl FsContext {
         if entry.ptr_eq(&self.root_dir) || entry.is_root_of_mount() {
             return Err(VfsError::ResourceBusy);
         }
-        let directory = entry.parent().ok_or(VfsError::ResourceBusy)?;
-        self.check_mutation_parent_with_search(&directory, &searched, credentials)?;
-        Self::check_sticky(&directory, &entry, credentials)?;
-        let dir = entry.entry().as_dir()?;
-        if dir.has_children()? {
-            return Err(VfsError::DirectoryNotEmpty);
-        }
-        directory.unlink(&entry.name(), true)
+        let (directory, name) =
+            Self::resolved_parent_name(&entry)?.ok_or(VfsError::ResourceBusy)?;
+        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
+        drop(entry);
+        drop(searched);
+        directory.unlink(&name, true, credentials)
     }
 
     /// Renames a file or directory to a new name, replacing the original file
@@ -1227,7 +1167,16 @@ impl FsContext {
         // ENOENT/EEXIST from an inaccessible parent before DAC search checks.
         self.check_search_trace(src_search, src_boundary, credentials)?;
         self.check_search_trace(dst_search, dst_boundary, credentials)?;
-        let source = src_dir.lookup_no_follow(src_name)?;
+        if !Arc::ptr_eq(src_dir.mountpoint(), dst_dir.mountpoint()) {
+            return Err(VfsError::CrossesDevices);
+        }
+        // Already-resolved callers may have no search trace. Validate both
+        // parent paths before probing names, without deciding write access.
+        self.check_search_path(src_dir, src_boundary, credentials)?;
+        self.check_search_path(dst_dir, dst_boundary, credentials)?;
+        // Preserve preflight error ordering; none of these observations grants
+        // permission to commit. The backend attempt rechecks current objects.
+        src_dir.lookup_no_follow(src_name)?;
         let destination = match dst_dir.lookup_no_follow(dst_name) {
             Ok(destination) => Some(destination),
             Err(VfsError::NotFound) => None,
@@ -1240,40 +1189,10 @@ impl FsContext {
             return Err(VfsError::AlreadyExists);
         }
 
-        // Resolve both final entries before checking parent write access. A
-        // missing source must remain ENOENT even when either mutation parent
-        // is searchable but not writable.
-        self.check_mutation_parent_with_boundary_and_search(
-            src_dir,
-            src_search,
-            src_boundary,
-            credentials,
-        )?;
-        self.check_mutation_parent_with_boundary_and_search(
-            dst_dir,
-            dst_search,
-            dst_boundary,
-            credentials,
-        )?;
-
-        // Match the VFS no-op result before applying sticky-directory removal
-        // rules to an unchanged ordinary rename.
-        if options == RenameOptions::REPLACE
-            && Arc::ptr_eq(src_dir.mountpoint(), dst_dir.mountpoint())
-            && destination
-                .as_ref()
-                .is_some_and(|destination| destination.inode() == source.inode())
-        {
-            return Ok(());
-        }
-
-        Self::check_sticky(src_dir, &source, credentials)?;
-        if !options.no_replace()
-            && let Some(destination) = &destination
-        {
-            Self::check_sticky(dst_dir, destination, credentials)?;
-        }
-        src_dir.rename_with_options(src_name, dst_dir, dst_name, options)
+        // Parent write, sticky, and no-op decisions all depend on the locked
+        // current objects. An outer write check could reject a legal no-op
+        // after a competing move, even if these probes saw different inodes.
+        src_dir.rename_with_options(src_name, dst_dir, dst_name, options, credentials)
     }
 
     /// Creates a new, empty directory at the provided path.
@@ -1292,13 +1211,8 @@ impl FsContext {
         let (dir, name, searched) = self.resolve_parent_with_search_checked(path, |directory| {
             self.check_search_path(directory, self.permission_root.as_ref(), credentials)
         })?;
-        match dir.lookup_no_follow(&name) {
-            Ok(_) => return Err(VfsError::AlreadyExists),
-            Err(VfsError::NotFound) => {}
-            Err(error) => return Err(error),
-        }
-        self.check_mutation_parent_with_search(&dir, &searched, credentials)?;
-        dir.create(&name, NodeType::Directory, mode, uid, gid)
+        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
+        dir.create(&name, NodeType::Directory, mode, uid, gid, credentials)
     }
 
     /// Creates a new hard link on the filesystem.
@@ -1377,34 +1291,7 @@ impl FsContext {
         }
         self.check_search_trace(old_search, old_boundary, credentials)?;
         self.check_search_trace(new_search, new_boundary, credentials)?;
-        // An existing target takes precedence over an unwritable parent.
-        match new_dir.lookup_no_follow(new_name) {
-            Ok(_) => return Err(VfsError::AlreadyExists),
-            Err(VfsError::NotFound) => {}
-            Err(error) => return Err(error),
-        }
-        self.check_mutation_parent_with_boundary_and_search(
-            new_dir,
-            new_search,
-            new_boundary,
-            credentials,
-        )?;
-        let old_metadata = old.metadata()?;
-        let can_link_non_owned = credentials.cap_dac_override || {
-            let mode = if credentials.fsuid == old_metadata.uid {
-                old_metadata.mode.bits() >> 6
-            } else if credentials.in_group(old_metadata.gid) {
-                old_metadata.mode.bits() >> 3
-            } else {
-                old_metadata.mode.bits()
-            };
-            let access = NodePermission::from_bits_truncate(mode);
-            access.contains(NodePermission::OTHER_READ.union(NodePermission::OTHER_WRITE))
-        };
-        if !credentials.cap_fowner && credentials.fsuid != old_metadata.uid && !can_link_non_owned {
-            return Err(VfsError::OperationNotPermitted);
-        }
-        new_dir.link(new_name, old)
+        new_dir.link(new_name, old, credentials)
     }
 
     /// Creates a new symbolic link on the filesystem.
@@ -1420,36 +1307,30 @@ impl FsContext {
             self.resolve_parent_with_search_checked(link_path.as_ref(), |directory| {
                 self.check_search_path(directory, self.permission_root.as_ref(), credentials)
             })?;
-        match dir.lookup_no_follow(&name) {
-            Ok(_) => return Err(VfsError::AlreadyExists),
-            Err(VfsError::NotFound) => {}
-            Err(error) => return Err(error),
-        }
-        self.check_mutation_parent_with_search(&dir, &searched, credentials)?;
-        dir.create_symlink(&name, target.as_ref(), NodePermission::default(), uid, gid)
+        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
+        dir.create_symlink(
+            &name,
+            target.as_ref(),
+            NodePermission::default(),
+            uid,
+            gid,
+            credentials,
+        )
     }
 
     /// Create a non-directory node after applying parent-directory DAC.
     pub fn create_node(
         &self,
         path: impl AsRef<Path>,
-        node_type: NodeType,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
+        attributes: CreateAttributes<'_>,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Location> {
         let (dir, name, searched) =
             self.resolve_parent_with_search_checked(path.as_ref(), |directory| {
                 self.check_search_path(directory, self.permission_root.as_ref(), credentials)
             })?;
-        match dir.lookup_no_follow(&name) {
-            Ok(_) => return Err(VfsError::AlreadyExists),
-            Err(VfsError::NotFound) => {}
-            Err(error) => return Err(error),
-        }
-        self.check_mutation_parent_with_search(&dir, &searched, credentials)?;
-        dir.create(&name, node_type, permission, uid, gid)
+        self.check_search_trace(&searched, self.permission_root.as_ref(), credentials)?;
+        dir.create_initialized(&name, attributes, credentials)
     }
 
     /// Returns the canonical, absolute form of a path.

@@ -10,7 +10,10 @@ use core::{
     time::Duration,
 };
 
-use ax_fs_ng::vfs::{FsContext, current_fs_context, sync_all_cached_files};
+use ax_fs_ng::{
+    CreateAttributes, CreateContent,
+    vfs::{FsContext, current_fs_context, sync_all_cached_files},
+};
 use ax_runtime::hal::time::wall_time;
 use axfs_ng_vfs::{
     DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, NodePermission, NodeType,
@@ -29,7 +32,7 @@ use crate::{
         resolve_at_with_boundary_checked, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
-    task::UserTaskRef,
+    task::{FsCredentialsSnapshot, UserTaskRef},
     time::TimeValueLike,
 };
 
@@ -243,10 +246,11 @@ pub fn sys_chdir(current: &UserTaskRef, path: *const c_char) -> StarryResult<isi
     debug_fn!("sys_chdir <= path: {path}");
 
     let fs_context = current_fs_context();
+    let entry = with_fs(AT_FDCWD, |fs| Ok(fs.resolve(path)?))?;
+    let cwd = entry.absolute_path()?.to_string();
     let mut fs = fs_context.lock();
-    let entry = fs.resolve(path)?;
     fs.set_current_dir(entry)?;
-    let cwd = fs.current_dir().absolute_path()?.to_string();
+    drop(fs);
     current.as_thread().proc_data.set_cwd_path(cwd);
     Ok(0)
 }
@@ -279,14 +283,15 @@ pub fn sys_chroot(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
     debug!("sys_chroot <= path: {path}");
 
     let fs_context = current_fs_context();
-    let mut fs = fs_context.lock();
-    let loc = fs.resolve(path)?;
+    let loc = with_fs(AT_FDCWD, |fs| Ok(fs.resolve(path)?))?;
     if loc.node_type() != NodeType::Directory {
         return Err(StarryError::NotADirectory);
     }
-    *fs = FsContext::new(loc);
-    let root = fs.root_dir().absolute_path()?.to_string();
-    let cwd = fs.current_dir().absolute_path()?.to_string();
+    let replacement = FsContext::new(loc);
+    let root = replacement.root_dir().absolute_path()?.to_string();
+    let cwd = replacement.current_dir().absolute_path()?.to_string();
+    let retired = core::mem::replace(&mut *fs_context.lock(), replacement);
+    drop(retired);
     let proc_data = current.as_thread().proc_data.clone();
     proc_data.set_root_path(root);
     proc_data.set_cwd_path(cwd);
@@ -342,10 +347,11 @@ pub fn sys_mkdirat(
 
     let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
-    let cred = thread.cred();
+    let fs_credentials = FsCredentialsSnapshot::capture(thread);
+    let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
+    let mutation_cred = mutation_credentials(&fs_credentials);
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
@@ -408,33 +414,27 @@ pub fn sys_mknodat(
         _ => return Err(StarryError::InvalidInput),
     };
 
-    let cred = thread.cred();
-    let uid = cred.fsuid;
-    let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(thread);
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let resolve_dirfd = if path.starts_with('/') {
         AT_FDCWD
     } else {
         dirfd
     };
+    let device = if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
+        DeviceId(u64::from(dev as u32))
+    } else {
+        DeviceId::default()
+    };
     let res = with_fs(resolve_dirfd, |fs| {
-        let loc = fs.create_node(
+        fs.create_node(
             Path::new(&path),
-            node_type,
-            NodePermission::from_bits_truncate(perm as u16),
-            uid,
-            gid,
+            CreateAttributes {
+                content: CreateContent::Node(node_type, device),
+                permission: NodePermission::from_bits_truncate(perm as u16),
+            },
             &mutation_cred,
         )?;
-
-        // If device node, set rdev via update_metadata
-        if matches!(node_type, NodeType::CharacterDevice | NodeType::BlockDevice) {
-            loc.update_metadata(MetadataUpdate {
-                rdev: Some(DeviceId(dev)),
-                ..Default::default()
-            })?;
-        }
-
         Ok(0)
     })?;
     Ok(res)
@@ -579,8 +579,8 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let mutation_cred = mutation_credentials(&fs_credentials);
     // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the
     // genuinely empty pathname. With a non-empty pathname it is ignored by
     // linkat(), so ordinary path-based linking remains unprivileged.
@@ -657,8 +657,8 @@ pub fn sys_unlinkat(
     flags: i32,
 ) -> StarryResult<isize> {
     let path = vm_load_path_string(current, path)?;
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let mutation_cred = mutation_credentials(&fs_credentials);
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -748,10 +748,11 @@ pub fn sys_symlinkat(
     let linkpath = vm_load_path_string(current, linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
-    let cred = current.as_thread().cred();
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&cred);
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let resolve_dirfd = if linkpath.starts_with('/') {
         AT_FDCWD
     } else {
@@ -1190,8 +1191,8 @@ pub fn sys_renameat2(
     };
     // Check search permissions while resolving each parent, before a missing
     // entry or dangling symlink target can mask EACCES.
-    let cred = current.as_thread().cred();
-    let mutation_cred = mutation_credentials(&cred);
+    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let mutation_cred = mutation_credentials(&fs_credentials);
     let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, |fs| {
         let (old_dir, old_name, searched) = fs
             .resolve_parent_with_search_checked(Path::new(&old_path), |directory| {

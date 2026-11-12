@@ -1,11 +1,7 @@
 //! Directory operations, namespace mutations, and cached name resolution.
 
-use alloc::{borrow::ToOwned, boxed::Box, sync::Arc};
-use core::{
-    any::Any,
-    mem,
-    ops::{Deref, DerefMut},
-};
+use alloc::{borrow::ToOwned, boxed::Box, string::String, sync::Arc};
+use core::{any::Any, ops::Deref};
 
 use super::{DirEntry, FileExtentMap, FileExtentTarget};
 use crate::{
@@ -14,7 +10,18 @@ use crate::{
 };
 
 mod cache;
+mod command;
+mod completion;
+mod mutation;
+mod native;
+mod outcome;
 use cache::DirectoryCache;
+pub use command::*;
+pub(crate) use command::{CreateSelection, MutationTarget};
+pub use completion::*;
+pub use mutation::*;
+pub use native::*;
+pub use outcome::*;
 
 /// A trait for a sink that can receive directory entries.
 pub trait DirEntrySink {
@@ -163,6 +170,13 @@ impl Default for RenameOptions {
 }
 
 pub trait DirNodeOps: NodeOps {
+    /// Identity of the owner that serializes namespace changes. Native shared
+    /// backends override this with their filesystem owner. This key observes
+    /// publication ordering; it does not grant exclusion or authorization.
+    fn namespace_domain(&self) -> usize {
+        core::ptr::from_ref(self) as *const () as usize
+    }
+
     /// Queries allocated mappings for a filesystem-backed directory inode.
     fn map_extents(
         &self,
@@ -207,6 +221,13 @@ pub trait DirNodeOps: NodeOps {
 
     /// Lookups a directory entry by name.
     fn lookup(&self, name: &str) -> VfsResult<DirEntry>;
+
+    /// Canonical key of an authoritative lookup. Exact-name backends use the
+    /// request itself; backends with aliases override this without changing VFS
+    /// matching rules for unrelated filesystems.
+    fn canonical_name(&self, name: &str, _entry: &DirEntry) -> String {
+        name.to_owned()
+    }
 
     /// Returns whether directory entries can be cached.
     ///
@@ -254,55 +275,21 @@ pub trait DirNodeOps: NodeOps {
         Ok(has_children)
     }
 
-    /// Creates a directory entry.
-    fn create(
+    /// Best-effort native reference preparation, called after VFS direct-child
+    /// retention has actually been released and outside all backend gates.
+    /// This hook performs no namespace mutation and grants no commit authority.
+    fn prepare_unlink(&self) {}
+
+    /// Runs a controlled command under the backend's real exclusion. Writable
+    /// backends implement this by lending each locked attempt to the request's
+    /// fixed executor. Read-only/synthetic directories gain no write capability.
+    fn mutate_namespace(
         &self,
-        name: &str,
-        node_type: NodeType,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry>;
-
-    /// Atomically creates a symbolic link with its final target.
-    ///
-    /// Implementations must not publish an empty link before storing `target`.
-    fn create_symlink(
-        &self,
-        name: &str,
-        target: &str,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry>;
-
-    /// Creates a link to a node.
-    fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry>;
-
-    /// Unlinks a directory entry by name.
-    ///
-    /// If the entry is a non-empty directory, it should return `ENOTEMPTY`
-    /// error.
-    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()>;
-
-    /// Renames a directory entry, replacing the original entry (dst) if it
-    /// already exists.
-    ///
-    /// If src and dst link to the same file, this should do nothing and return
-    /// `Ok(())`.
-    ///
-    /// The caller should ensure:
-    /// - If `src` is a directory, `dst` must not exist or be an empty
-    ///   directory.
-    /// - If `src` is not a directory, `dst` must not exist or not be a
-    ///   directory.
-    fn rename(
-        &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: RenameOptions,
-    ) -> VfsResult<()>;
+        _command: &NamespaceMutation<'_>,
+        _retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported))
+    }
 }
 
 /// Options for opening (or creating) a directory entry.
@@ -315,6 +302,8 @@ pub struct OpenOptions {
     pub node_type: NodeType,
     pub permission: NodePermission,
     pub user: Option<(u32, u32)>, // (uid, gid)
+    /// Final-object DAC for an existing entry, empty for a path-only handle.
+    pub access: NodePermission,
 }
 
 impl Default for OpenOptions {
@@ -325,14 +314,16 @@ impl Default for OpenOptions {
             node_type: NodeType::RegularFile,
             permission: NodePermission::default(),
             user: None,
+            access: NodePermission::empty(),
         }
     }
 }
 
 pub struct DirNode {
     ops: Arc<dyn DirNodeOps>,
-    cache: RawSpinLock<DirectoryCache>,
+    cache: RawSpinLock<Box<DirectoryCache>>,
     pub(crate) mountpoint: RawSpinLock<Option<Arc<Mountpoint>>>,
+    owner: Option<crate::WeakDirEntry>,
 }
 
 impl Deref for DirNode {
@@ -353,13 +344,36 @@ impl DirNode {
     pub fn new(ops: Arc<dyn DirNodeOps>) -> Self {
         Self {
             ops,
-            cache: RawSpinLock::new(DirectoryCache::default()),
+            cache: RawSpinLock::new(Box::new(DirectoryCache::default())),
             mountpoint: RawSpinLock::new(None),
+            owner: None,
         }
     }
 
     pub fn inner(&self) -> &Arc<dyn DirNodeOps> {
         &self.ops
+    }
+
+    pub(super) fn set_owner(&mut self, owner: crate::WeakDirEntry) {
+        self.owner = Some(owner);
+    }
+
+    fn owner(&self) -> VfsResult<DirEntry> {
+        self.owner
+            .as_ref()
+            .and_then(crate::WeakDirEntry::upgrade)
+            .ok_or(VfsError::BadState)
+    }
+
+    fn ensure_linked(&self) -> VfsResult<()> {
+        if let Some(owner) = self.owner.as_ref().and_then(crate::WeakDirEntry::upgrade) {
+            match owner.name_state() {
+                crate::NameState::Unlinked => return Err(VfsError::NotFound),
+                crate::NameState::Untrusted => return Err(VfsError::WouldBlock),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     pub fn downcast<T: DirNodeOps>(&self) -> VfsResult<Arc<T>> {
@@ -368,14 +382,6 @@ impl DirNode {
             .into_any()
             .downcast()
             .map_err(|_| VfsError::InvalidInput)
-    }
-
-    fn forget_removed_entry(entry: Option<DirEntry>) {
-        if let Some(entry) = entry
-            && let Ok(dir) = entry.as_dir()
-        {
-            dir.clear_cached_entries();
-        }
     }
 
     /// Looks up a directory entry by name.
@@ -407,252 +413,114 @@ impl DirNode {
         self.ops.read_dir_with_state(state, cursor, sink)
     }
 
-    /// Creates a link to a node.
-    pub fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
-        verify_entry_name(name)?;
-
-        self.ops
-            .link(name, node)
-            .inspect_err(|_| self.invalidate_missing_entries())
-            .inspect(|entry| {
-                // Hard links must share the same page cache (user_data) as the
-                // source node.  Without this, in-memory filesystems like tmpfs
-                // would create a new empty page cache for the link, losing the
-                // file content.
-                let user_data = node.user_data().clone();
-                *entry.user_data() = user_data;
-                drop(self.insert_cache(name.to_owned(), entry.clone()));
-            })
-    }
-
-    /// Unlinks a directory entry by name.
-    pub fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        verify_entry_name(name)?;
-
-        let entry = self.lookup(name)?;
-        match (entry.is_dir(), is_dir) {
-            (true, false) => return Err(VfsError::IsADirectory),
-            (false, true) => return Err(VfsError::NotADirectory),
-            _ => {}
-        }
-
-        self.ops
-            .unlink(name, is_dir)
-            .inspect_err(|_| self.invalidate_missing_entries())?;
-        let removed = self.remove_cache_after_mutation(name);
-        Self::forget_removed_entry(removed);
-        Ok(())
-    }
-
     /// Returns whether the directory contains children.
     pub fn has_children(&self) -> VfsResult<bool> {
         self.ops.has_children()
     }
 
-    fn create_entry(
+    /// Runs only requests privately constructed by a credentialed Location.
+    pub fn mutate_namespace(
         &self,
-        name: &str,
-        node_type: NodeType,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry> {
-        if node_type == NodeType::Symlink {
-            return Err(VfsError::InvalidInput);
+        command: &NamespaceMutation<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        if let Err(error) = self.ensure_linked() {
+            return NamespaceOutcome::unchanged(Err(error));
         }
-        let entry = self
-            .ops
-            .create(name, node_type, permission, uid, gid)
-            .inspect_err(|_| self.invalidate_missing_entries())?;
-        drop(self.insert_cache(name.to_owned(), entry.clone()));
-        Ok(entry)
+        self.ops.mutate_namespace(command, retired)
     }
 
-    /// Creates a directory entry.
-    pub fn create(
+    pub(super) fn publish_locked_command(
         &self,
-        name: &str,
-        node_type: NodeType,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry> {
-        verify_entry_name(name)?;
-        self.create_entry(name, node_type, permission, uid, gid)
-    }
-
-    /// Atomically creates a symbolic link with its final target.
-    pub fn create_symlink(
-        &self,
-        name: &str,
-        target: &str,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry> {
-        verify_entry_name(name)?;
-        let entry = self
-            .ops
-            .create_symlink(name, target, permission, uid, gid)
-            .inspect_err(|_| self.invalidate_missing_entries())?;
-        drop(self.insert_cache(name.to_owned(), entry.clone()));
-        Ok(entry)
-    }
-
-    fn transfer_cached_state(source: DirEntry, destination: &DirEntry) {
-        let user_data = {
-            let mut source_data = source.user_data();
-            mem::take(source_data.deref_mut())
-        };
-        *destination.user_data().deref_mut() = user_data;
-        if let (Ok(source_dir), Ok(destination_dir)) = (source.as_dir(), destination.as_dir()) {
-            // Child entries retain parent references and must be looked up
-            // again, but the mountpoint belongs to the moved directory.
-            let mountpoint = mem::take(source_dir.mountpoint.lock().deref_mut());
-            *destination_dir.mountpoint.lock().deref_mut() = mountpoint;
-        }
-    }
-
-    fn update_cache_after_rename(
-        &self,
-        src_name: &str,
-        dst_dir: &Self,
-        dst_name: &str,
-        options: RenameOptions,
-    ) {
-        let (source_entry, target_entry) = if core::ptr::eq(self, dst_dir)
-            && self.ops.is_cacheable_child(src_name)
-            && self.ops.is_cacheable_child(dst_name)
-        {
-            let mut children = self.cache.lock();
-            children.remove_renamed(src_name, dst_name)
-        } else {
-            (
-                self.remove_cache_after_mutation(src_name),
-                dst_dir.remove_cache_after_mutation(dst_name),
-            )
-        };
-
-        if options.exchange() {
-            if let Some(source) = source_entry
-                && dst_dir.ops.is_cacheable_child(dst_name)
-                && let Ok(fresh_target) = dst_dir.ops.lookup(dst_name)
-            {
-                Self::transfer_cached_state(source, &fresh_target);
-                dst_dir.insert_cache(dst_name.to_owned(), fresh_target);
-            }
-            if let Some(target) = target_entry
-                && self.ops.is_cacheable_child(src_name)
-                && let Ok(fresh_source) = self.ops.lookup(src_name)
-            {
-                Self::transfer_cached_state(target, &fresh_source);
-                self.insert_cache(src_name.to_owned(), fresh_source);
-            }
-            return;
-        }
-
-        Self::forget_removed_entry(target_entry);
-        if let Some(source) = source_entry
-            && dst_dir.ops.is_cacheable_child(dst_name)
-            && let Ok(fresh_destination) = dst_dir.ops.lookup(dst_name)
-        {
-            Self::transfer_cached_state(source, &fresh_destination);
-            dst_dir.insert_cache(dst_name.to_owned(), fresh_destination);
-        }
-    }
-
-    /// Renames a directory entry with ordinary replacement semantics.
-    pub fn rename(&self, src_name: &str, dst_dir: &Self, dst_name: &str) -> VfsResult<()> {
-        self.rename_with_options(src_name, dst_dir, dst_name, RenameOptions::REPLACE)
-    }
-
-    /// Renames a directory entry with typed `renameat2` behavior.
-    pub fn rename_with_options(
-        &self,
-        src_name: &str,
-        dst_dir: &Self,
-        dst_name: &str,
-        options: RenameOptions,
+        effect: &NamespaceEffect,
+        retired: &MutationRetire,
     ) -> VfsResult<()> {
-        verify_entry_name(src_name)?;
-        verify_entry_name(dst_name)?;
-
-        let src = self.lookup(src_name)?;
-        let destination = match dst_dir.lookup(dst_name) {
-            Ok(destination) => Some(destination),
-            Err(VfsError::NotFound) => None,
-            Err(error) => return Err(error),
-        };
-        if options.no_replace() && destination.is_some() {
-            return Err(VfsError::AlreadyExists);
-        }
-        if options.exchange() && destination.is_none() {
-            return Err(VfsError::NotFound);
-        }
-        if !options.exchange()
-            && let Some(destination) = &destination
-        {
-            match (
-                src.node_type() == NodeType::Directory,
-                destination.node_type() == NodeType::Directory,
-            ) {
-                (true, false) => return Err(VfsError::NotADirectory),
-                (false, true) => return Err(VfsError::IsADirectory),
-                (true, true) if destination.as_dir()?.has_children()? => {
-                    return Err(VfsError::DirectoryNotEmpty);
-                }
-                _ => {}
+        match effect {
+            NamespaceEffect::Create(effect) => {
+                self.insert_locked_cache(
+                    effect.selected.canonical_name.clone(),
+                    &effect.selected.entry,
+                    effect.selected.cacheable,
+                    retired,
+                );
             }
+            NamespaceEffect::Link(alias) => {
+                self.insert_locked_cache(
+                    alias.canonical_name.clone(),
+                    &alias.entry,
+                    alias.cacheable,
+                    retired,
+                );
+            }
+            NamespaceEffect::Unlink(removed) => {
+                self.retire_unlinked_alias(&removed.entry, retired);
+            }
+            NamespaceEffect::Rename(_) => return Err(VfsError::BadState),
         }
-        if !options.no_replace()
-            && !options.whiteout()
-            && destination
-                .as_ref()
-                .is_some_and(|target| target.inode() == src.inode())
-        {
+        Ok(())
+    }
+
+    pub(crate) fn publish_locked_rename(
+        &self,
+        destination: &Self,
+        effect: &RenameEffect,
+        retired: &MutationRetire,
+    ) -> VfsResult<()> {
+        if effect.action == RenameAction::Noop {
             return Ok(());
         }
-
-        self.ops
-            .rename(src_name, dst_dir, dst_name, options)
-            .inspect_err(|_| {
-                self.invalidate_missing_entries();
-                dst_dir.invalidate_missing_entries();
-            })
-            .inspect(|_| self.update_cache_after_rename(src_name, dst_dir, dst_name, options))
-    }
-
-    /// Opens (or creates) a file in the directory.
-    pub fn open_file(&self, name: &str, options: &OpenOptions) -> VfsResult<DirEntry> {
-        self.open_file_with_status(name, options)
-            .map(|(entry, _)| entry)
-    }
-
-    /// Opens (or creates) a file and reports whether this call created it.
-    pub fn open_file_with_status(
-        &self,
-        name: &str,
-        options: &OpenOptions,
-    ) -> VfsResult<(DirEntry, bool)> {
-        verify_entry_name(name)?;
-
-        match self.lookup(name) {
-            Ok(val) => {
-                if options.create_new {
-                    return Err(VfsError::AlreadyExists);
-                }
-                return Ok((val, false));
-            }
-            Err(VfsError::NotFound) if options.create => {}
-            Err(err) => return Err(err),
+        let source = self
+            .locked_entry(&effect.source_name)
+            .ok_or(VfsError::BadState)?;
+        retired.retire(source.clone());
+        if !effect.source.matches(&source) {
+            return Err(VfsError::BadState);
         }
-        let (uid, gid) = options.user.unwrap_or((0, 0));
-        let entry = match self.create_entry(name, options.node_type, options.permission, uid, gid) {
-            Ok(entry) => (entry, true),
-            Err(VfsError::AlreadyExists) if !options.create_new => (self.lookup(name)?, false),
-            Err(err) => return Err(err),
-        };
-        Ok(entry)
+        let target = destination.locked_entry(&effect.destination_name);
+        retired.retire(target.clone());
+        if !match (&effect.target, &target) {
+            (Some(actual), Some(entry)) => actual.matches(entry),
+            (None, None) => true,
+            _ => false,
+        } {
+            return Err(VfsError::BadState);
+        }
+        let old_parent = source.name_snapshot();
+        let source_parent = old_parent.parent().cloned().ok_or(VfsError::BadState)?;
+        retired.retire(old_parent);
+        let destination_parent = destination.owner()?;
+        retired.retire(self.remove_cache_after_mutation(&effect.source_name));
+        retired.retire(destination.remove_cache_after_mutation(&effect.destination_name));
+        if effect.action == RenameAction::Exchange {
+            let target = target.as_ref().ok_or(VfsError::BadState)?;
+            retired.retire(DirEntry::exchange_names(
+                &source,
+                destination_parent,
+                effect.destination_name.clone(),
+                target,
+                source_parent,
+                effect.source_name.clone(),
+            ));
+            self.insert_locked_cache(
+                effect.source_name.clone(),
+                target,
+                effect.source_cacheable,
+                retired,
+            );
+        } else {
+            retired.retire(source.move_to(destination_parent, effect.destination_name.clone()));
+            if let Some(target) = &target {
+                target.set_name_state(crate::NameState::Unlinked);
+            }
+            retired.retire(source_parent);
+        }
+        destination.insert_locked_cache(
+            effect.destination_name.clone(),
+            &source,
+            effect.destination_cacheable,
+            retired,
+        );
+        Ok(())
     }
 
     pub fn mountpoint(&self) -> Option<Arc<Mountpoint>> {

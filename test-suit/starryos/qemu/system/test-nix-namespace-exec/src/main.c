@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -121,6 +123,42 @@ static int namespace_child_after_exec(void)
     return 37;
 }
 
+static int check_namespace_link(pid_t child)
+{
+    char path[64], procfd[64], text[64];
+    struct stat target, opened, link, pinned, self;
+    snprintf(path, sizeof(path), "/proc/%d/ns/mnt", child);
+    int fd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+    int linkfd = syscall(SYS_openat, AT_FDCWD, path,
+                         O_PATH | O_NOFOLLOW | O_CLOEXEC, 0);
+    int reopened = -1;
+    int failed = fd < 0 || linkfd < 0 ||
+                 syscall(SYS_readlinkat, AT_FDCWD, path, text, sizeof(text)) <= 0 ||
+                 fstatat(AT_FDCWD, path, &target, 0) != 0 ||
+                 fstat(fd, &opened) != 0 || !S_ISREG(target.st_mode) ||
+                 opened.st_dev != target.st_dev || opened.st_ino != target.st_ino ||
+                 fstatat(AT_FDCWD, path, &link, AT_SYMLINK_NOFOLLOW) != 0 ||
+                 !S_ISLNK(link.st_mode) ||
+                 fstat(linkfd, &pinned) != 0 || !S_ISLNK(pinned.st_mode) ||
+                 pinned.st_dev != link.st_dev || pinned.st_ino != link.st_ino ||
+                 fstatat(AT_FDCWD, "/proc/self/ns/mnt", &self, 0) != 0 ||
+                 (self.st_dev == target.st_dev && self.st_ino == target.st_ino);
+    if (!failed) {
+        snprintf(procfd, sizeof(procfd), "/proc/self/fd/%d", fd);
+        reopened = syscall(SYS_openat, AT_FDCWD, procfd, O_RDONLY | O_CLOEXEC, 0);
+        failed = reopened < 0 || fstat(reopened, &opened) != 0 ||
+                 opened.st_dev != target.st_dev || opened.st_ino != target.st_ino ||
+                 !S_ISREG(opened.st_mode);
+    }
+    if (reopened >= 0) close(reopened);
+    if (linkfd >= 0) close(linkfd);
+    if (fd >= 0) close(fd);
+    if (failed)
+        printf("TEST_NIX_NAMESPACE_EXEC_FAILED stage=namespace-link-identity errno=%d\n",
+               errno);
+    return failed;
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -182,6 +220,8 @@ int main(int argc, char **argv)
     }
     write_proc_file(child, "gid_map", mapping);
 
+    /* The child is held on the pipe; no timing or path-text reconstruction. */
+    int link_failed = check_namespace_link(child);
     write_all(sync_pipe[1], "1", 1, "release-child");
     close(sync_pipe[1]);
 
@@ -198,6 +238,7 @@ int main(int argc, char **argv)
     }
 
     alarm(0);
+    if (link_failed) return 1;
     puts("TEST_NIX_NAMESPACE_EXEC_PASSED");
     return 0;
 }

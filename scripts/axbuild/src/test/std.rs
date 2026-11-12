@@ -102,6 +102,12 @@ const AX_FS_NG_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         no_default_features: false,
         features: &["host-test", "vfs", "fat"],
     },
+    // Cached FAT contents must survive dentry eviction without VFS workers.
+    PackageFeatureProfile {
+        name: "host-test+fat",
+        no_default_features: false,
+        features: &["host-test", "fat"],
+    },
     PackageFeatureProfile {
         name: "host-test+ext4",
         no_default_features: false,

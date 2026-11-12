@@ -115,6 +115,9 @@ impl CachedFile {
         let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
         let file = self.inner.entry().as_file()?;
+        let _backing_change = (!self.in_memory)
+            .then(|| self.shared.backing_persistence.begin())
+            .transpose()?;
         let _layout = self.shared.mapping_layout_lock.lock();
         let _writeback = self.shared.writeback_lock.lock();
         let _io = self.shared.io_lock.lock();
@@ -141,6 +144,9 @@ impl CachedFile {
             return self.preallocate(offset, len, mode);
         }
         let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let _backing_change = (!self.in_memory)
+            .then(|| self.shared.backing_persistence.begin())
+            .transpose()?;
         if matches!(
             operation,
             FileRangeOperation::CollapseRange | FileRangeOperation::InsertRange
@@ -593,6 +599,9 @@ impl CachedFile {
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
         let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
         let file = self.inner.entry().as_file()?;
+        let _backing_change = (!self.in_memory)
+            .then(|| self.shared.backing_persistence.begin())
+            .transpose()?;
         loop {
             let observed_len = self.shared.len();
             // Reserve the infallible publication value before callbacks,

@@ -20,13 +20,17 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
 
     fn bind(&self, path: &str) -> ax_net::NetResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
         use ax_fs_ng::vfs::OpenOptions;
-        use axfs_ng_vfs::NodeType;
+        use axfs_ng_vfs::{MutationCredentials, NodeType};
 
         let loc = OpenOptions::new()
             .write(true)
             .create(true)
             .node_type(NodeType::Socket)
-            .open(&ax_fs_ng::vfs::current_fs_context().lock(), path)
+            .open(
+                &ax_fs_ng::vfs::current_fs_context().lock(),
+                path,
+                &MutationCredentials::root(),
+            )
             .map_err(namespace_vfs_error)?
             .into_location();
 

@@ -1,12 +1,13 @@
 use core::time::Duration;
 
-use axfs_ng_vfs::{DeviceId, Metadata, MetadataUpdate, NodePermission, NodeType, VfsError};
+use axfs_ng_vfs::{DeviceId, Metadata, NodePermission, NodeType, VfsError};
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc};
 
 use super::{ff, fs::FatFilesystemInner};
 
-const FAT_MIN_YEAR: i32 = 1980;
-const FAT_MAX_YEAR: i32 = 2107;
+// Inclusive UTC endpoints of the FAT timestamp range.
+const FAT_MIN_TIME: Duration = Duration::from_secs(315_532_800); // 1980-01-01 00:00:00
+const FAT_MAX_TIME: Duration = Duration::from_secs(4_354_819_199); // 2107-12-31 23:59:59
 
 pub fn dos_to_unix(datetime: fatfs::DateTime) -> Duration {
     // let date: NaiveDateTime = date.into();
@@ -35,24 +36,20 @@ pub fn dos_to_unix(datetime: fatfs::DateTime) -> Duration {
 }
 
 pub fn unix_to_dos(datetime: Duration) -> fatfs::DateTime {
-    let dt = DateTime::UNIX_EPOCH + datetime;
-    let dt = dt.naive_local();
-    let year = dt.year().clamp(FAT_MIN_YEAR, FAT_MAX_YEAR) as u16;
+    // Bound the whole instant before chrono arithmetic, including Duration::MAX.
+    let dt = DateTime::UNIX_EPOCH + datetime.clamp(FAT_MIN_TIME, FAT_MAX_TIME);
+    let dt = dt.naive_utc();
 
     fatfs::DateTime::new(
-        fatfs::Date::new(year, dt.month() as _, dt.day() as _),
-        fatfs::Time::new(
-            dt.hour() as _,
-            dt.minute() as _,
-            dt.second() as _,
-            dt.and_utc().timestamp_subsec_millis() as _,
-        ),
+        fatfs::Date::new(dt.year() as _, dt.month() as _, dt.day() as _),
+        fatfs::Time::new(dt.hour() as _, dt.minute() as _, (dt.second() & !1) as _, 0),
     )
 }
 
 pub fn file_metadata(fs: &FatFilesystemInner, file: &ff::File, node_type: NodeType) -> Metadata {
     let size = file.size().unwrap_or(0) as u64;
     let block_size = fs.inner.bytes_per_sector();
+    let mtime = dos_to_unix(file.modified());
     Metadata {
         // TODO: inode
         inode: 1,
@@ -73,19 +70,22 @@ pub fn file_metadata(fs: &FatFilesystemInner, file: &ff::File, node_type: NodeTy
             file.accessed(),
             fatfs::Time::new(0, 0, 0, 0),
         )),
-        mtime: dos_to_unix(file.modified()),
-        ctime: dos_to_unix(file.created()),
+        mtime,
+        ctime: mtime,
     }
 }
 
-pub fn update_file_metadata(file: &mut ff::File, update: MetadataUpdate) {
-    if let Some(atime) = update.atime {
+pub fn update_file_times(file: &mut ff::File, atime: Option<Duration>, mtime: Option<Duration>) {
+    // Normalize all participating fields before the first editor mutation.
+    let atime = atime.map(|time| unix_to_dos(time).date);
+    let mtime = mtime.map(unix_to_dos);
+    if let Some(atime) = atime {
         #[allow(deprecated)]
-        file.set_accessed(unix_to_dos(atime).date);
+        file.set_accessed(atime);
     }
-    if let Some(mtime) = update.mtime {
+    if let Some(mtime) = mtime {
         #[allow(deprecated)]
-        file.set_modified(unix_to_dos(mtime));
+        file.set_modified(mtime);
     }
 }
 

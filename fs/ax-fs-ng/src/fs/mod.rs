@@ -135,7 +135,6 @@ pub(crate) fn new_from_handle_with_kind_readonly(
             new_fat(backend, region, Some(permissions))?
         }
     };
-    filesystem.set_readonly(readonly || filesystem.is_readonly());
     let mut registry = NATIVE_FILESYSTEMS.lock();
     registry.push(NativeFilesystem {
         device,

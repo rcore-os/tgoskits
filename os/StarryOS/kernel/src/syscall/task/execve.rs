@@ -248,6 +248,7 @@ fn do_execve(
     // pinned now, so the post-teardown commit phase doesn't re-resolve
     // the pathname (the FS could change while siblings are being reaped).
     let mut image_builder = new_user_image_builder()?;
+    image_builder.set_user_namespace(proc_data.namespace_snapshot().user_ns.clone());
     let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, &thr.cred())?;
     let prepared_image = image_builder.finish(loaded_image)?;
     let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
@@ -359,6 +360,7 @@ fn do_execve(
     crate::task::release_robust_futexes(curr);
 
     // Publish only this process's new MM. CLONE_VM peers keep their owner.
+    let security_publication = proc_data.namespace_update();
     commit_address_space_handoff(
         || proc_data.stage_memory_replacement(prepared_memory),
         || curr.switch_address_space(scheduler_address_space),
@@ -372,8 +374,9 @@ fn do_execve(
     if old_cred.keep_capabilities() {
         let mut new_cred = (*old_cred).clone();
         new_cred.set_keep_capabilities(false);
-        thr.set_cred(new_cred);
+        security_publication.set_process_cred(thr, new_cred);
     }
+    drop(security_publication);
 
     curr.set_name(&new_name);
     proc_data.set_exe_path(new_exe_path);

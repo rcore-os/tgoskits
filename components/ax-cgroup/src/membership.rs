@@ -4,7 +4,10 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_lazyinit::LazyInit;
 
-use crate::{CgroupError, CgroupNode, CgroupResult, ProcessId, sync::RawSpinLock};
+use crate::{
+    CgroupError, CgroupMutationGuard, CgroupNode, CgroupResult, ProcessId, node::CgroupReservation,
+    sync::RawSpinLock,
+};
 
 /// Whether a new task is also a new process in `cgroup.procs`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,24 +153,31 @@ impl ProcessMembership {
 
 /// Attach the initial task to the root without applying a configurable limit.
 pub(crate) fn attach_initial_process(root: Arc<CgroupNode>, pid: ProcessId) -> CgroupResult<()> {
+    // Owners are declared before locks, including on every early-return path.
+    let path = ancestry(&root);
+    let retired;
     let mut state = state()?.lock_irqsave();
+    let guard = root.mutation_domain().lock();
+    guard.check_live(&root)?;
     if state.pending_tasks.contains_key(&pid) || state.tasks.contains_key(&pid) {
         return Err(CgroupError::ResourceBusy);
     }
 
-    let path = ancestry(&root);
-    charge_path_unchecked(&path, 1);
-    if !root.add_member(pid) {
-        uncharge_path(&path, 1);
-        return Err(CgroupError::ResourceBusy);
+    charge_path_unchecked(&guard, &path, 1);
+    if let Err(error) = guard.add_member(&root, pid) {
+        uncharge_path(&guard, &path, 1);
+        return Err(error);
     }
-    state.tasks.insert(
+    retired = state.tasks.insert(
         pid,
         TaskMembership {
             process_id: pid,
-            cgroup: root,
+            cgroup: Arc::clone(&root),
         },
     );
+    drop(guard);
+    drop(state);
+    assert!(retired.is_none(), "initial task slot must remain vacant");
     Ok(())
 }
 
@@ -186,6 +196,9 @@ pub struct CgroupForkGuard {
     child_kind: CgroupChildKind,
     charged_path: Vec<Arc<CgroupNode>>,
     publication: ForkPublication,
+    // Released explicitly after ledger/charge cleanup. Keeping this last also
+    // makes automatic field destruction retain liveness through other owners.
+    reservation: Option<CgroupReservation>,
 }
 
 impl CgroupForkGuard {
@@ -203,25 +216,29 @@ impl CgroupForkGuard {
             return Err(CgroupError::ResourceBusy);
         }
 
-        let mut state = state()?.lock_irqsave();
-        if state.pending_tasks.get(&self.task_id) != Some(&self.task_process_id)
-            || state.tasks.contains_key(&self.task_id)
-        {
-            return Err(CgroupError::ResourceBusy);
-        }
-        if matches!(self.child_kind, CgroupChildKind::Process)
-            && !self.cgroup.add_member(self.task_id)
-        {
-            return Err(CgroupError::ResourceBusy);
-        }
-        state.tasks.insert(
-            self.task_id,
-            TaskMembership {
-                process_id: self.task_process_id,
-                cgroup: Arc::clone(&self.cgroup),
-            },
-        );
-        self.publication = ForkPublication::Published;
+        let retired = {
+            let mut state = state()?.lock_irqsave();
+            let guard = self.cgroup.mutation_domain().lock();
+            guard.check_live(&self.cgroup)?;
+            if state.pending_tasks.get(&self.task_id) != Some(&self.task_process_id)
+                || state.tasks.contains_key(&self.task_id)
+            {
+                return Err(CgroupError::ResourceBusy);
+            }
+            if matches!(self.child_kind, CgroupChildKind::Process) {
+                guard.add_member(&self.cgroup, self.task_id)?;
+            }
+            let retired = state.tasks.insert(
+                self.task_id,
+                TaskMembership {
+                    process_id: self.task_process_id,
+                    cgroup: Arc::clone(&self.cgroup),
+                },
+            );
+            self.publication = ForkPublication::Published;
+            retired
+        };
+        assert!(retired.is_none(), "published task slot must remain vacant");
         Ok(())
     }
 
@@ -232,56 +249,67 @@ impl CgroupForkGuard {
             ForkPublication::Published,
             "only published cgroup membership can be committed"
         );
-        let removed = STATE
-            .get()
-            .expect("cgroup membership must be initialized")
-            .lock_irqsave()
-            .pending_tasks
-            .remove(&self.task_id);
-        assert_eq!(
-            removed,
-            Some(self.task_process_id),
-            "committed task must retain its migration reservation"
-        );
-        self.publication = ForkPublication::Committed;
+        {
+            let mut state = STATE
+                .get()
+                .expect("cgroup membership must be initialized")
+                .lock_irqsave();
+            let _guard = self.cgroup.mutation_domain().lock();
+            let removed = state.pending_tasks.remove(&self.task_id);
+            assert_eq!(
+                removed,
+                Some(self.task_process_id),
+                "committed task must retain its migration reservation"
+            );
+            self.publication = ForkPublication::Committed;
+        }
+        // Membership is already visible before its deletion reservation ends.
+        drop(self.reservation.take());
     }
 }
 
 impl Drop for CgroupForkGuard {
     fn drop(&mut self) {
-        match self.publication {
-            ForkPublication::Prepared => {
-                if let Some(state) = STATE.get() {
-                    state.lock_irqsave().pending_tasks.remove(&self.task_id);
-                }
-                uncharge_path(&self.charged_path, 1);
-            }
-            ForkPublication::Published => {
-                if let Some(state) = STATE.get() {
-                    let mut state = state.lock_irqsave();
-                    let pending = state.pending_tasks.remove(&self.task_id);
-                    debug_assert_eq!(
-                        pending,
-                        Some(self.task_process_id),
-                        "published task must retain its migration reservation"
-                    );
-                    let removed = state.tasks.remove(&self.task_id);
-                    debug_assert!(
-                        removed.is_some_and(|membership| {
+        if self.publication != ForkPublication::Committed {
+            let retired;
+            {
+                // A successful begin proves STATE exists for this guard's lifetime.
+                let mut state = STATE
+                    .get()
+                    .expect("reserved task requires its ledger")
+                    .lock_irqsave();
+                let guard = self.cgroup.mutation_domain().lock();
+                let pending = state.pending_tasks.remove(&self.task_id);
+                assert_eq!(
+                    pending,
+                    Some(self.task_process_id),
+                    "reserved task must retain its pending ledger entry"
+                );
+                retired = if self.publication == ForkPublication::Published {
+                    state.tasks.remove(&self.task_id)
+                } else {
+                    None
+                };
+                if self.publication == ForkPublication::Published {
+                    assert!(
+                        retired.as_ref().is_some_and(|membership| {
                             membership.process_id == self.task_process_id
                                 && Arc::ptr_eq(&membership.cgroup, &self.cgroup)
                         }),
                         "published cgroup task must remain owned by its rollback guard"
                     );
+                    if matches!(self.child_kind, CgroupChildKind::Process) {
+                        guard
+                            .remove_member(&self.cgroup, self.task_id)
+                            .expect("published process member must be rolled back");
+                    }
                 }
-                if matches!(self.child_kind, CgroupChildKind::Process) {
-                    let removed = self.cgroup.remove_member(self.task_id);
-                    debug_assert!(removed, "published process member must be rolled back");
-                }
-                uncharge_path(&self.charged_path, 1);
+                uncharge_path(&guard, &self.charged_path, 1);
             }
-            ForkPublication::Committed => {}
+            drop(retired);
         }
+        // Token Drop never takes STATE, and runs after every rollback lock.
+        drop(self.reservation.take());
     }
 }
 
@@ -292,18 +320,24 @@ pub(crate) fn begin_task_at(
     task_id: ProcessId,
     child_kind: CgroupChildKind,
 ) -> CgroupResult<CgroupForkGuard> {
+    let charged_path = ancestry(&target);
+    let reservation;
     let mut state = state()?.lock_irqsave();
+    let guard = target.mutation_domain().lock();
+    guard.check_live(&target)?;
     if state.pending_tasks.contains_key(&task_id) || state.tasks.contains_key(&task_id) {
         return Err(CgroupError::ResourceBusy);
     }
 
-    let charged_path = ancestry(&target);
-    charge_path(&charged_path)?;
+    reservation = guard.reserve(&target)?;
+    charge_path(&guard, &charged_path)?;
     let task_process_id = match child_kind {
         CgroupChildKind::Process => task_id,
         CgroupChildKind::Thread => process_id,
     };
     state.pending_tasks.insert(task_id, task_process_id);
+    drop(guard);
+    drop(state);
     Ok(CgroupForkGuard {
         cgroup: target,
         task_id,
@@ -311,6 +345,7 @@ pub(crate) fn begin_task_at(
         child_kind,
         charged_path,
         publication: ForkPublication::Prepared,
+        reservation: Some(reservation),
     })
 }
 
@@ -319,7 +354,25 @@ fn migrate_process(
     old: &Arc<CgroupNode>,
     target: &Arc<CgroupNode>,
 ) -> CgroupResult<()> {
+    if !old.shares_domain(target) {
+        return Err(CgroupError::InvalidInput);
+    }
+    let old_path = ancestry(old);
+    let target_path = ancestry(target);
+    let mut retired = Vec::new();
     let mut state = state()?.lock_irqsave();
+    let task_ids: Vec<_> = state
+        .tasks
+        .iter()
+        .filter_map(|(task_id, membership)| {
+            (membership.process_id == process_id).then_some(*task_id)
+        })
+        .collect();
+    // Prepare retirement capacity before entering the hierarchy gate. STATE
+    // keeps the task selection stable while the target may still be removed.
+    retired.reserve(task_ids.len());
+    let guard = old.mutation_domain().lock();
+    guard.check_live(target)?;
     if state.has_pending_task(process_id) {
         return Err(CgroupError::ResourceBusy);
     }
@@ -329,14 +382,6 @@ fn migrate_process(
             .then_some(())
             .ok_or(CgroupError::NoSuchProcess);
     }
-
-    let task_ids: Vec<_> = state
-        .tasks
-        .iter()
-        .filter_map(|(task_id, membership)| {
-            (membership.process_id == process_id).then_some(*task_id)
-        })
-        .collect();
     if task_ids.is_empty()
         || task_ids.iter().any(|task_id| {
             !state
@@ -348,34 +393,36 @@ fn migrate_process(
         return Err(CgroupError::NoSuchProcess);
     }
 
-    let old_path = ancestry(old);
-    let target_path = ancestry(target);
     let (old_unique, target_unique) = unique_paths(&old_path, &target_path);
     let task_count = task_ids.len() as u64;
-    charge_path_unchecked(target_unique, task_count);
+    charge_path_unchecked(&guard, target_unique, task_count);
 
-    if !old.remove_member(process_id) {
-        uncharge_path(target_unique, task_count);
-        return Err(CgroupError::NoSuchProcess);
+    if let Err(error) = guard.remove_member(old, process_id) {
+        uncharge_path(&guard, target_unique, task_count);
+        return Err(error);
     }
-    if !target.add_member(process_id) {
-        let restored = old.add_member(process_id);
-        debug_assert!(
-            restored,
-            "cgroup migration rollback must restore membership"
-        );
-        uncharge_path(target_unique, task_count);
-        return Err(CgroupError::ResourceBusy);
+    if let Err(error) = guard.add_member(target, process_id) {
+        guard
+            .add_member(old, process_id)
+            .expect("cgroup migration rollback must restore membership");
+        uncharge_path(&guard, target_unique, task_count);
+        return Err(error);
     }
 
     for task_id in task_ids {
-        state
+        let membership = state
             .tasks
             .get_mut(&task_id)
-            .expect("cgroup task ledger changed while locked")
-            .cgroup = Arc::clone(target);
+            .expect("cgroup task ledger changed while locked");
+        retired.push(core::mem::replace(
+            &mut membership.cgroup,
+            Arc::clone(target),
+        ));
     }
-    uncharge_path(old_unique, task_count);
+    uncharge_path(&guard, old_unique, task_count);
+    drop(guard);
+    drop(state);
+    drop(retired);
     Ok(())
 }
 
@@ -385,7 +432,10 @@ fn exit_task(
     expected_cgroup: &Arc<CgroupNode>,
     exit_kind: CgroupTaskExit,
 ) -> CgroupResult<()> {
+    let path = ancestry(expected_cgroup);
+    let retired;
     let mut state = state()?.lock_irqsave();
+    let guard = expected_cgroup.mutation_domain().lock();
     let Some(membership) = state.tasks.get(&task_id) else {
         return Ok(());
     };
@@ -401,15 +451,19 @@ fn exit_task(
         }
     }
 
-    let membership = state
+    retired = state
         .tasks
         .remove(&task_id)
         .expect("validated cgroup task disappeared while locked");
     if matches!(exit_kind, CgroupTaskExit::LastProcessTask) {
-        let removed = membership.cgroup.remove_member(process_id);
-        debug_assert!(removed, "final task must retain process membership");
+        guard
+            .remove_member(&retired.cgroup, process_id)
+            .expect("final task must retain process membership");
     }
-    uncharge_path(&ancestry(&membership.cgroup), 1);
+    uncharge_path(&guard, &path, 1);
+    drop(guard);
+    drop(state);
+    drop(retired);
     Ok(())
 }
 
@@ -419,7 +473,9 @@ fn rename_task(
     new_task_id: ProcessId,
     expected_cgroup: &Arc<CgroupNode>,
 ) -> CgroupResult<()> {
+    let retired;
     let mut state = state()?.lock_irqsave();
+    let _guard = expected_cgroup.mutation_domain().lock();
     let membership = state
         .tasks
         .get(&old_task_id)
@@ -437,7 +493,10 @@ fn rename_task(
         .tasks
         .remove(&old_task_id)
         .expect("validated cgroup task disappeared while locked");
-    state.tasks.insert(new_task_id, membership);
+    retired = state.tasks.insert(new_task_id, membership);
+    drop(_guard);
+    drop(state);
+    assert!(retired.is_none(), "renamed task slot must remain vacant");
     Ok(())
 }
 
@@ -451,34 +510,37 @@ fn ancestry(node: &Arc<CgroupNode>) -> Vec<Arc<CgroupNode>> {
     nodes
 }
 
-fn charge_path(path: &[Arc<CgroupNode>]) -> CgroupResult<()> {
+fn charge_path(guard: &CgroupMutationGuard<'_>, path: &[Arc<CgroupNode>]) -> CgroupResult<()> {
     for (charged, node) in path.iter().enumerate() {
-        if let Err(error) = node.try_charge_pids() {
-            uncharge_path(&path[..charged], 1);
-            record_max_event(&path[charged..]);
+        if let Err(error) = guard.try_charge_pids(node) {
+            uncharge_path(guard, &path[..charged], 1);
+            record_max_event(guard, &path[charged..]);
             return Err(error);
         }
     }
     Ok(())
 }
 
-fn record_max_event(failed_node_and_ancestors: &[Arc<CgroupNode>]) {
+fn record_max_event(
+    guard: &CgroupMutationGuard<'_>,
+    failed_node_and_ancestors: &[Arc<CgroupNode>],
+) {
     for node in failed_node_and_ancestors {
-        if node.parent().is_some() {
-            node.record_pids_max_event();
+        if node.has_parent() {
+            guard.record_pids_max_event(node);
         }
     }
 }
 
-fn charge_path_unchecked(path: &[Arc<CgroupNode>], count: u64) {
+fn charge_path_unchecked(guard: &CgroupMutationGuard<'_>, path: &[Arc<CgroupNode>], count: u64) {
     for node in path {
-        node.charge_pids_unchecked(count);
+        guard.charge_pids_unchecked(node, count);
     }
 }
 
-fn uncharge_path(path: &[Arc<CgroupNode>], count: u64) {
+fn uncharge_path(guard: &CgroupMutationGuard<'_>, path: &[Arc<CgroupNode>], count: u64) {
     for node in path {
-        node.uncharge_pids(count);
+        guard.uncharge_pids(node, count);
     }
 }
 
@@ -503,13 +565,14 @@ mod tests {
     use std::sync::{LazyLock, Mutex, MutexGuard, Once};
 
     use super::*;
+    use crate::{TEST_FS_CREATE, TEST_FS_INIT};
 
     static INIT: Once = Once::new();
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn setup() -> MutexGuard<'static, ()> {
         let guard = TEST_LOCK.lock().expect("cgroup test lock poisoned");
-        INIT.call_once(crate::init);
+        INIT.call_once(|| crate::init(TEST_FS_INIT).unwrap());
         guard
     }
 
@@ -529,8 +592,11 @@ mod tests {
     fn published_guard_rolls_back_until_scheduler_commit() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let target = root.create_child("published-rollback-target").unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let target = root
+            .create_child("published-rollback-target", TEST_FS_CREATE)
+            .unwrap();
         let pid = process_id(4001);
 
         let mut guard =
@@ -549,22 +615,35 @@ mod tests {
             Some(pid),
             "published membership must remain migration-pending until scheduler commit"
         );
+        assert_eq!(
+            root.remove_child("published-rollback-target", TEST_FS_INIT.now),
+            Err(CgroupError::ResourceBusy)
+        );
 
         drop(guard);
 
         assert!(!target.has_member(pid));
         assert_eq!(target.pids_current_text().unwrap(), "0\n");
+        assert_eq!(
+            root.remove_child("published-rollback-target", TEST_FS_INIT.now),
+            Ok(())
+        );
     }
 
     #[test]
     fn migration_moves_all_tasks_without_double_charging_common_ancestors() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let parent = root.create_child("owned-migration-parent").unwrap();
-        parent.write_subtree_control("+pids").unwrap();
-        let source = parent.create_child("source").unwrap();
-        let target = parent.create_child("target").unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let parent = root
+            .create_child("owned-migration-parent", TEST_FS_CREATE)
+            .unwrap();
+        parent
+            .write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let source = parent.create_child("source", TEST_FS_CREATE).unwrap();
+        let target = parent.create_child("target", TEST_FS_CREATE).unwrap();
         let pid = process_id(4010);
         let tid = process_id(4011);
         let mut membership = commit_process(&source, pid);
@@ -578,6 +657,27 @@ mod tests {
         assert_eq!(source.pids_peak_text().unwrap(), "2\n");
         assert_eq!(parent.pids_current_text().unwrap(), "2\n");
         assert_eq!(parent.pids_peak_text().unwrap(), "2\n");
+        let dead = parent
+            .create_child("removed-target", TEST_FS_CREATE)
+            .unwrap();
+        parent
+            .remove_child("removed-target", TEST_FS_INIT.now)
+            .unwrap();
+        assert_eq!(
+            membership.migrate(pid, Arc::clone(&dead)),
+            Err(CgroupError::Removed)
+        );
+        let unrelated_root = CgroupNode::new_root(TEST_FS_INIT).unwrap();
+        assert_eq!(
+            membership.migrate(pid, unrelated_root),
+            Err(CgroupError::InvalidInput)
+        );
+        assert!(Arc::ptr_eq(&membership.current(), &source));
+        assert!(source.has_member(pid));
+        assert!(!target.has_member(pid));
+        assert_eq!(source.pids_current_text().unwrap(), "2\n");
+        assert_eq!(target.pids_current_text().unwrap(), "0\n");
+        assert_eq!(parent.pids_current_text().unwrap(), "2\n");
         membership.migrate(pid, Arc::clone(&target)).unwrap();
 
         assert_eq!(source.pids_current_text().unwrap(), "0\n");
@@ -602,9 +702,14 @@ mod tests {
     fn pending_thread_blocks_process_migration_and_releases_its_charge() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let source = root.create_child("owned-pending-source").unwrap();
-        let target = root.create_child("owned-pending-target").unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let source = root
+            .create_child("owned-pending-source", TEST_FS_CREATE)
+            .unwrap();
+        let target = root
+            .create_child("owned-pending-target", TEST_FS_CREATE)
+            .unwrap();
         let pid = process_id(4020);
         let tid = process_id(4021);
         let mut membership = commit_process(&source, pid);
@@ -635,8 +740,11 @@ mod tests {
     fn pending_thread_blocks_final_process_exit() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let target = root.create_child("owned-pending-exit-target").unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let target = root
+            .create_child("owned-pending-exit-target", TEST_FS_CREATE)
+            .unwrap();
         let pid = process_id(4025);
         let tid = process_id(4026);
         let mut membership = commit_process(&target, pid);
@@ -662,9 +770,14 @@ mod tests {
     fn explicit_process_reservation_charges_only_its_target() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let source = root.create_child("owned-explicit-source").unwrap();
-        let target = root.create_child("owned-explicit-target").unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let source = root
+            .create_child("owned-explicit-source", TEST_FS_CREATE)
+            .unwrap();
+        let target = root
+            .create_child("owned-explicit-target", TEST_FS_CREATE)
+            .unwrap();
         let parent = process_id(4030);
         let child = process_id(4031);
         let mut parent_membership = commit_process(&source, parent);
@@ -673,8 +786,20 @@ mod tests {
         assert!(Arc::ptr_eq(&pending.cgroup(), &target));
         assert_eq!(source.pids_current_text().unwrap(), "1\n");
         assert_eq!(target.pids_current_text().unwrap(), "1\n");
+        assert_eq!(
+            root.remove_child("owned-explicit-target", TEST_FS_INIT.now),
+            Err(CgroupError::ResourceBusy)
+        );
         drop(pending);
         assert_eq!(target.pids_current_text().unwrap(), "0\n");
+        assert_eq!(
+            root.remove_child("owned-explicit-target", TEST_FS_INIT.now),
+            Ok(())
+        );
+        assert!(matches!(
+            crate::begin_process_at(Arc::clone(&target), child),
+            Err(CgroupError::Removed)
+        ));
 
         parent_membership
             .exit_task(parent, parent, CgroupTaskExit::LastProcessTask)
@@ -685,9 +810,14 @@ mod tests {
     fn pids_limit_denies_clone_but_not_organizational_migration() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let source = root.create_child("owned-limit-source").unwrap();
-        let target = root.create_child("owned-limit-target").unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let source = root
+            .create_child("owned-limit-source", TEST_FS_CREATE)
+            .unwrap();
+        let target = root
+            .create_child("owned-limit-target", TEST_FS_CREATE)
+            .unwrap();
         let pid = process_id(4040);
         let tid = process_id(4041);
         let mut membership = commit_process(&source, pid);
@@ -710,10 +840,17 @@ mod tests {
     fn ancestor_rejection_rolls_back_current_but_retains_leaf_peak() {
         let _guard = setup();
         let root = crate::root();
-        let parent = root.create_child("peak-rollback-parent").unwrap();
-        root.write_subtree_control("+pids").unwrap();
-        parent.write_subtree_control("+pids").unwrap();
-        let child = parent.create_child("peak-rollback-child").unwrap();
+        let parent = root
+            .create_child("peak-rollback-parent", TEST_FS_CREATE)
+            .unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        parent
+            .write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let child = parent
+            .create_child("peak-rollback-child", TEST_FS_CREATE)
+            .unwrap();
         let pid = process_id(1034);
         let tid = process_id(1035);
         let mut membership = commit_process(&child, pid);
@@ -743,8 +880,11 @@ mod tests {
     fn de_thread_rename_preserves_the_last_task_charge() {
         let _test = setup();
         let root = crate::root();
-        root.write_subtree_control("+pids").unwrap();
-        let target = root.create_child("owned-rename-target").unwrap();
+        root.write_subtree_control("+pids", (0, 0), TEST_FS_INIT.now)
+            .unwrap();
+        let target = root
+            .create_child("owned-rename-target", TEST_FS_CREATE)
+            .unwrap();
         let pid = process_id(4050);
         let tid = process_id(4051);
         let mut membership = commit_process(&target, pid);

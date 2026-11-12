@@ -423,7 +423,7 @@ pub fn sys_fsconfig(
                 return Err(StarryError::InvalidInput);
             }
             for mountpoint in &state.mounts {
-                mountpoint.set_readonly(true);
+                mountpoint.set_readonly(true)?;
             }
             state.readonly_reconfigure = false;
         }
@@ -462,7 +462,7 @@ pub fn sys_fsmount(
             ..Default::default()
         })?;
     }
-    mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0);
+    mountpoint.set_readonly(mount_attributes & MOUNT_ATTR_RDONLY != 0)?;
     mountpoint.set_mount_flags(
         mount_attributes & (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC),
     );
@@ -494,9 +494,10 @@ pub fn sys_move_mount(
     }
     let path = vm_load_string(current, to_path)?;
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let context = fs_context.lock().clone();
+    let mount_namespace = context.mount_namespace().clone();
     let target = if path.starts_with('/') {
-        fs_context.lock().resolve(&path)?
+        context.resolve(&path)?
     } else {
         crate::file::with_fs(to_dirfd, |fs| Ok(fs.resolve(&path)?))?
     };
@@ -546,7 +547,7 @@ pub fn sys_mount_setattr(
         .walk_tree()
         .into_iter()
         .any(|(_, _, mountpoint)| Arc::ptr_eq(&mountpoint, directory.inner().mountpoint()));
-    apply_mount_attributes(directory.inner().mountpoint(), &attributes);
+    apply_mount_attributes(directory.inner().mountpoint(), &attributes)?;
     if is_visible {
         crate::file::notify_mount_namespace_changed(&mount_namespace);
     }
@@ -577,11 +578,14 @@ fn validate_mount_attributes(attributes: &MountAttr) -> StarryResult<()> {
     Ok(())
 }
 
-fn apply_mount_attributes(mountpoint: &Arc<Mountpoint>, attributes: &MountAttr) {
+fn apply_mount_attributes(
+    mountpoint: &Arc<Mountpoint>,
+    attributes: &MountAttr,
+) -> StarryResult<()> {
     if attributes.attr_set & MOUNT_ATTR_RDONLY as u64 != 0 {
-        mountpoint.set_readonly(true);
+        mountpoint.set_readonly(true)?;
     } else if attributes.attr_clr & MOUNT_ATTR_RDONLY as u64 != 0 {
-        mountpoint.set_readonly(false);
+        mountpoint.set_readonly(false)?;
     }
 
     let basic_attributes = (MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC) as u64;
@@ -600,6 +604,7 @@ fn apply_mount_attributes(mountpoint: &Arc<Mountpoint>, attributes: &MountAttr) 
         }
     }
     mountpoint.set_mount_flags(mount_flags);
+    Ok(())
 }
 
 pub fn sys_mount(
@@ -628,7 +633,8 @@ pub fn sys_mount(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let context = fs_context.lock().clone();
+    let mount_namespace = context.mount_namespace().clone();
     let propagation = flags & PROPAGATION_FLAGS;
 
     if propagation.count_ones() > 1 {
@@ -641,7 +647,7 @@ pub fn sys_mount(
             return Err(StarryError::InvalidInput);
         }
 
-        let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+        let target = context.resolve(target)?;
         if !target.is_root_of_mount() {
             return Err(StarryError::InvalidInput);
         }
@@ -668,41 +674,33 @@ pub fn sys_mount(
     }
 
     if (flags & MS_REMOUNT) != 0 {
-        let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+        let target = context.resolve(target)?;
         if !target.is_root_of_mount() {
             return Err(StarryError::InvalidInput);
         }
-        // Reconfigure the same backend before publishing VFS write access.
-        // Physical read-only devices and conflicting owners leave flags intact.
-        if flags & MS_BIND == 0 && flags & MS_RDONLY == 0 {
-            target.filesystem().remount_read_write()?;
-        }
         let mp = target.mountpoint();
         if flags & MS_BIND == 0 {
-            mp.set_filesystem_readonly(flags & MS_RDONLY != 0);
+            mp.set_filesystem_readonly(flags & MS_RDONLY != 0)?;
+        } else {
+            mp.set_readonly(flags & MS_RDONLY != 0)?;
         }
-        mp.set_readonly((flags & MS_RDONLY) != 0);
         mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     if (flags & MS_MOVE) != 0 {
-        let ctx = fs_context.lock();
-        let source = ctx.resolve(source)?;
-        let target = ctx.resolve(target)?;
+        let source = context.resolve(source)?;
+        let target = context.resolve(target)?;
         source.move_mount(&target)?;
-        drop(ctx);
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
     if (flags & MS_BIND) != 0 {
-        let ctx = fs_context.lock();
-        let source = ctx.resolve(source)?;
-        let target = ctx.resolve(target)?;
+        let source = context.resolve(source)?;
+        let target = context.resolve(target)?;
         target.bind_mount(&source, (flags & MS_REC) != 0)?;
-        drop(ctx);
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
@@ -710,25 +708,25 @@ pub fn sys_mount(
     match fs_type.as_str() {
         "proc" => {
             let fs = crate::pseudofs::proc::new_procfs(current.as_thread().active_pid_namespace());
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         "sysfs" | "devtmpfs" | "tmpfs" => {
             let fs = MemoryFs::new();
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -737,25 +735,25 @@ pub fn sys_mount(
             // RAMFS_MAGIC through statfs. It shares the in-memory inode/data
             // machinery here, but must not inherit tmpfs's visible identity.
             let fs = MemoryFs::new_ramfs();
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         "devpts" => {
             let fs = new_devptsfs(parse_devpts_options(current, data)?);
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -767,14 +765,14 @@ pub fn sys_mount(
                 (namespace.root(), namespace.pin_root())
             };
             let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let target = context.resolve(target)?;
             if flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
+                mp.set_readonly(true)?;
             }
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
@@ -784,23 +782,21 @@ pub fn sys_mount(
         }
         "overlay" => {
             let (lower_paths, upper_path, work_path) = parse_overlay_options(current, data)?;
-            let fs_context = ax_fs_ng::vfs::current_fs_context();
-            let ctx = fs_context.lock();
             let mut lower_dirs = Vec::new();
             for lower in lower_paths {
-                lower_dirs.push(ctx.resolve(lower)?);
+                lower_dirs.push(context.resolve(lower)?);
             }
-            let upper_dir = upper_path.map(|path| ctx.resolve(path)).transpose()?;
-            let work_dir = work_path.map(|path| ctx.resolve(path)).transpose()?;
+            let upper_dir = upper_path.map(|path| context.resolve(path)).transpose()?;
+            let work_dir = work_path.map(|path| context.resolve(path)).transpose()?;
             let readonly = upper_dir.is_none();
             let fs = crate::pseudofs::overlay::new_overlayfs(OverlayOptions {
                 lower_dirs,
                 upper_dir,
                 work_dir,
             })?;
-            let target = ctx.resolve(target)?;
+            let target = context.resolve(target)?;
             if readonly || flags & MS_RDONLY != 0 {
-                fs.set_readonly(true);
+                fs.set_readonly(true)?;
             }
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
@@ -835,7 +831,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
 
     let (source_location, target_location) = {
         let context = ax_fs_ng::vfs::current_fs_context();
-        let context = context.lock();
+        let context = context.lock().clone();
         (context.resolve(source)?, context.resolve(target)?)
     };
     if source_location.metadata()?.node_type != NodeType::BlockDevice {
@@ -860,7 +856,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
             return Err(StarryError::NoSuchDevice);
         }
         let mount = target_location.mount_with_source(&fs, source)?;
-        mount.set_readonly(readonly || fs.is_readonly());
+        mount.set_readonly(readonly || fs.is_readonly())?;
         mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         return Ok(());
     }
@@ -880,7 +876,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)
     })?;
     let mount = target_location.mount_with_source(&fs, source)?;
-    mount.set_readonly(readonly || fs.is_readonly());
+    mount.set_readonly(readonly || fs.is_readonly())?;
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
     Ok(())
 }
@@ -906,11 +902,12 @@ pub fn sys_umount2(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let context = fs_context.lock().clone();
+    let mount_namespace = context.mount_namespace().clone();
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
-        fs_context.lock().resolve_no_follow(target)?
+        context.resolve_no_follow(target)?
     } else {
-        fs_context.lock().resolve(target)?
+        context.resolve(target)?
     };
 
     if !current.as_thread().cred().has_cap_sys_admin() {
@@ -969,19 +966,19 @@ pub fn sys_pivot_root(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mut ctx = fs_context.lock();
+    let context = fs_context.lock().clone();
 
     // The caller's current root must itself be a mount point (Linux
     // EINVAL if e.g. the process chroot'd into a subdirectory).
-    if !ctx.root_dir().is_root_of_mount() {
+    if !context.root_dir().is_root_of_mount() {
         return Err(StarryError::InvalidInput);
     }
 
     // Resolve both paths before checking their VFS relationship. Linux permits
     // callers to enter new_root and use pivot_root(".", "old").
-    let new_root_loc = ctx.resolve(&new_root)?;
+    let new_root_loc = context.resolve(&new_root)?;
     new_root_loc.check_is_dir()?;
-    let put_old_loc = ctx.resolve(&put_old)?;
+    let put_old_loc = context.resolve(&put_old)?;
     put_old_loc.check_is_dir()?;
 
     if !put_old_loc.is_descendant_of(&new_root_loc) {
@@ -989,7 +986,10 @@ pub fn sys_pivot_root(
     }
 
     // `pivot_root` rearranges mounts rather than arbitrary directories.
-    if new_root_loc.is_root()
+    // Recheck the mutable owner's root after the lock-free path callbacks.
+    let mut ctx = fs_context.lock();
+    if !ctx.root_dir().is_root_of_mount()
+        || new_root_loc.is_root()
         || !new_root_loc.is_root_of_mount()
         || new_root_loc.ptr_eq(ctx.root_dir())
     {

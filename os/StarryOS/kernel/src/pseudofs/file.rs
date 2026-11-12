@@ -2,8 +2,8 @@ use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering};
 
 use axfs_ng_vfs::{
-    FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
-    NodeType, VfsError, VfsResult,
+    FileNodeOps, FilesystemOps, LinkOps, Metadata, MetadataUpdate, NodeFlags, NodeIdentity,
+    NodeOps, NodePermission, NodeType, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
@@ -101,6 +101,8 @@ where
 pub struct SimpleFile {
     node: SimpleFsNode,
     ops: Arc<dyn SimpleFileOps>,
+    link: Option<Arc<dyn LinkOps>>,
+    identity: Option<NodeIdentity>,
 }
 
 impl SimpleFile {
@@ -110,12 +112,32 @@ impl SimpleFile {
         Arc::new(Self {
             node,
             ops: Arc::new(ops),
+            link: None,
+            identity: None,
         })
     }
 
     /// Creates a simple file from given file operations.
     pub fn new_regular(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<Self> {
         Self::new(fs, NodeType::RegularFile, ops)
+    }
+
+    /// Creates a dynamic link without fetching or authorizing its target.
+    pub(crate) fn new_link(
+        fs: Arc<SimpleFs>,
+        identity: NodeIdentity,
+        link: impl LinkOps + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            node: SimpleFsNode::new(
+                fs,
+                NodeType::Symlink,
+                NodePermission::from_bits_truncate(0o777),
+            ),
+            ops: Arc::new(|| Ok(Vec::<u8>::new())),
+            link: Some(Arc::new(link)),
+            identity: Some(identity),
+        })
     }
 
     /// Overwrite the node's stored ownership, permission bits and timestamps.
@@ -156,6 +178,14 @@ impl SimpleFile {
 
 #[inherit_methods(from = "self.node")]
 impl NodeOps for SimpleFile {
+    fn identity(&self) -> Option<NodeIdentity> {
+        self.identity.clone()
+    }
+
+    fn link_ops(&self) -> Option<&dyn LinkOps> {
+        self.link.as_deref()
+    }
+
     fn inode(&self) -> u64;
 
     fn metadata(&self) -> VfsResult<Metadata>;

@@ -230,7 +230,8 @@ fn update_owner(mount: &mut TestMount, number: InodeNumber, uid: u32) {
         .update_inode_metadata(
             number,
             InodeMetadataUpdate {
-                owner: Some((uid, 0)),
+                uid: Some(uid),
+                gid: Some(0),
                 ..Default::default()
             },
         )

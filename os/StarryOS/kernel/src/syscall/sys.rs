@@ -187,14 +187,6 @@ fn uid_valid(id: u32) -> bool {
     id != NOCHG
 }
 
-/// Linux clears `mm->dumpable` from `commit_creds()` when effective or
-/// filesystem credentials change. StarryOS keeps this process-wide flag on
-/// `ProcessData`, so each credential setter checks the committed deltas.
-#[inline]
-fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bool {
-    old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
-}
-
 fn commit_cred_with_id_rules(thread: &crate::task::Thread, new: crate::task::Cred) {
     thread.update_process_creds(|old| {
         let mut target = old.clone();
@@ -357,11 +349,7 @@ pub fn sys_setresuid(
 
     // fsuid always tracks euid.
     new.fsuid = new.euid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -410,11 +398,7 @@ pub fn sys_setresgid(
     }
 
     new.fsgid = new.egid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -446,11 +430,7 @@ pub fn sys_setuid(current: &crate::task::UserTaskRef, uid: u32) -> crate::Starry
     }
 
     new.fsuid = new.euid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -477,11 +457,7 @@ pub fn sys_setgid(current: &crate::task::UserTaskRef, gid: u32) -> crate::Starry
     }
 
     new.fsgid = new.egid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -531,11 +507,7 @@ pub fn sys_setreuid(
     }
 
     new.fsuid = new.euid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -577,11 +549,7 @@ pub fn sys_setregid(
     }
 
     new.fsgid = new.egid;
-    let reset_dumpable = dumpable_should_reset(&old, &new);
     commit_cred_with_id_rules(thread, new);
-    if reset_dumpable {
-        thread.proc_data.set_dumpable(0);
-    }
     Ok(0)
 }
 
@@ -621,11 +589,7 @@ pub fn sys_setfsuid(current: &crate::task::UserTaskRef, fsuid: u32) -> crate::St
     if allowed {
         let mut new = (*old).clone();
         new.fsuid = fsuid;
-        let reset_dumpable = dumpable_should_reset(&old, &new);
         commit_cred_with_id_rules(thread, new);
-        if reset_dumpable {
-            thread.proc_data.set_dumpable(0);
-        }
     }
     // Always return previous fsuid, even when the request was ignored.
     Ok(prev_fsuid as isize)
@@ -651,11 +615,7 @@ pub fn sys_setfsgid(current: &crate::task::UserTaskRef, fsgid: u32) -> crate::St
     if allowed {
         let mut new = (*old).clone();
         new.fsgid = fsgid;
-        let reset_dumpable = dumpable_should_reset(&old, &new);
         commit_cred_with_id_rules(thread, new);
-        if reset_dumpable {
-            thread.proc_data.set_dumpable(0);
-        }
     }
     Ok(prev_fsgid as isize)
 }

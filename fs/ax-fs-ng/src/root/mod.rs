@@ -543,9 +543,6 @@ fn prepare_root(
         axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source)
             .root_location(),
     );
-    if action == RootAction::MountReadOnly {
-        context.root_dir().mountpoint().set_readonly(true);
-    }
     mount_additional_partitions(context.root_dir(), &selected, selected_partition);
     for disk in &disks {
         mount_additional_partitions(context.root_dir(), disk, None);
@@ -1548,7 +1545,14 @@ fn ensure_mountpoint_dir_result(root: &Location, path: &str) -> axfs_ng_vfs::Vfs
         Err(err) => return Err(err),
     }
 
-    match root.create(name, NodeType::Directory, NodePermission::default(), 0, 0) {
+    match root.create(
+        name,
+        NodeType::Directory,
+        NodePermission::default(),
+        0,
+        0,
+        &axfs_ng_vfs::MutationCredentials::root(),
+    ) {
         Ok(location) => Ok(location),
         Err(VfsError::ReadOnlyFilesystem) => create_transient_mountpoint_dir(root, path, name),
         Err(VfsError::AlreadyExists) => root.lookup_no_follow(name),
@@ -1725,8 +1729,8 @@ mod tests {
 
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-        FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, Reference, RenameOptions,
-        StatFs, VfsResult, WeakDirEntry,
+        FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, Reference, StatFs, VfsResult,
+        WeakDirEntry,
     };
     use rdif_block::DeviceInfo;
 
@@ -1743,10 +1747,13 @@ mod tests {
             context
                 .create_node(
                     "/init",
-                    NodeType::RegularFile,
-                    NodePermission::from_bits_truncate(0o644),
-                    0,
-                    0,
+                    crate::CreateAttributes {
+                        content: crate::CreateContent::Node(
+                            NodeType::RegularFile,
+                            axfs_ng_vfs::DeviceId::default(),
+                        ),
+                        permission: NodePermission::from_bits_truncate(0o644),
+                    },
                     &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();
@@ -1770,20 +1777,26 @@ mod tests {
             map_context
                 .create_node(
                     "/symbols",
-                    NodeType::Directory,
-                    NodePermission::from_bits_truncate(0o755),
-                    0,
-                    0,
+                    crate::CreateAttributes {
+                        content: crate::CreateContent::Node(
+                            NodeType::Directory,
+                            axfs_ng_vfs::DeviceId::default(),
+                        ),
+                        permission: NodePermission::from_bits_truncate(0o755),
+                    },
                     &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();
             map_context
                 .create_node(
                     "/symbols/kernel.axbt",
-                    NodeType::RegularFile,
-                    NodePermission::from_bits_truncate(0o644),
-                    0,
-                    0,
+                    crate::CreateAttributes {
+                        content: crate::CreateContent::Node(
+                            NodeType::RegularFile,
+                            axfs_ng_vfs::DeviceId::default(),
+                        ),
+                        permission: NodePermission::from_bits_truncate(0o644),
+                    },
                     &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();
@@ -1955,17 +1968,6 @@ mod tests {
     }
 
     impl DirNodeOps for ReadonlyDir {
-        fn create_symlink(
-            &self,
-            _name: &str,
-            _target: &str,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
         fn read_dir(
             &self,
             _cursor: axfs_ng_vfs::DirectoryCursor,
@@ -2009,33 +2011,12 @@ mod tests {
             }
         }
 
-        fn create(
+        fn mutate_namespace(
             &self,
-            _name: &str,
-            _node_type: NodeType,
-            _permission: NodePermission,
-            _uid: u32,
-            _gid: u32,
-        ) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
-        }
-
-        fn rename(
-            &self,
-            _src_name: &str,
-            _dst_dir: &DirNode,
-            _dst_name: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
-            Err(VfsError::ReadOnlyFilesystem)
+            _: &axfs_ng_vfs::NamespaceMutation<'_>,
+            _: &axfs_ng_vfs::MutationRetire,
+        ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
+            axfs_ng_vfs::NamespaceOutcome::unchanged(Err(VfsError::ReadOnlyFilesystem))
         }
     }
 
@@ -2555,7 +2536,12 @@ mod tests {
                 NodeType::Directory,
                 NodePermission::default(),
                 0,
-                0
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                }
             )
             .unwrap_err(),
             VfsError::ReadOnlyFilesystem

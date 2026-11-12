@@ -103,7 +103,7 @@ fn periodic_writeback_finds_an_open_unlinked_cached_file() {
             .root_dir()
             .as_dir()
             .unwrap()
-            .unlink("input", false)
+            .unlink("input", false, &axfs_ng_vfs::MutationCredentials::root())
             .unwrap();
         file.write_at(b"after".as_slice(), 0).unwrap();
 
@@ -333,6 +333,11 @@ fn cache_on_filesystem(mut filesystem: Ext4Filesystem) -> (Arc<Ext4Filesystem>, 
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     entry.as_file().unwrap().write_at(b"start", 0).unwrap();

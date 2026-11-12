@@ -20,7 +20,7 @@ use ax_std::os::arceos::task::{
     sched::{CpuId, CpuSet},
     thread::ThreadState,
 };
-use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, NodeType, VfsError, VfsResult};
+use axfs_ng_vfs::{DeviceId, Filesystem, NodePermission, VfsError, VfsResult};
 use kernel_elf_parser::{AuxEntry, AuxType};
 use zerocopy::IntoBytes;
 
@@ -37,6 +37,9 @@ use crate::{
         tasks,
     },
 };
+
+mod link;
+use link::ProcLinkKind;
 
 /// Linux `new_idmap_permitted`: without the capability in the initial user
 /// namespace, a writer may map only its own id.
@@ -782,6 +785,15 @@ struct ProcessTaskDir {
 }
 
 impl SimpleDirOps for ProcessTaskDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        let process = self.process.upgrade()?;
+        Some(axfs_ng_vfs::NodeIdentity::new(vec![
+            Arc::as_ptr(&self.fs) as u64,
+            process.identity().id().get(),
+            2,
+        ]))
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let Some(process) = self.process.upgrade() else {
             return Box::new(iter::empty());
@@ -1064,6 +1076,10 @@ struct ThreadFdDir {
 }
 
 impl SimpleDirOps for ThreadFdDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        link::directory_identity(&self.fs, self.task, 3)
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let task = match upgrade_proc_task(&self.task) {
             Ok(Some(task)) => task,
@@ -1084,14 +1100,10 @@ impl SimpleDirOps for ThreadFdDir {
         let task = require_proc_task(&self.task)?;
         let fd = name.parse::<u32>().map_err(|_| VfsError::NotFound)?;
         let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
-        let path = fd_table
-            .read()
-            .get(fd as _)
-            .ok_or(VfsError::NotFound)?
-            .inner
-            .path()
-            .into_owned();
-        Ok(SimpleFile::new(fs, NodeType::Symlink, move || Ok(path.clone())).into())
+        if fd_table.read().get(fd as _).is_none() {
+            return Err(VfsError::NotFound);
+        }
+        Ok(link::node(fs, &task, ProcLinkKind::Fd(fd)).into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1106,6 +1118,10 @@ struct ThreadFdInfoDir {
 }
 
 impl SimpleDirOps for ThreadFdInfoDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        link::directory_identity(&self.fs, self.task, 5)
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         let task = match upgrade_proc_task(&self.task) {
             Ok(Some(task)) => task,
@@ -1170,15 +1186,17 @@ impl SimpleDirOps for ThreadFdInfoDir {
 
 /// The /proc/[pid]/ns directory — namespace entries.
 ///
-/// Each entry is a regular file displaying the namespace identifier.
-/// When opened, the kernel intercepts the open path and creates an
-/// [`NsFd`](crate::file::NsFd) instead of a regular file descriptor.
+/// Entries are links to native namespace objects, not namespace-name text.
 struct NsDir {
     fs: Arc<SimpleFs>,
     task: WeakUserTaskRef,
 }
 
 impl SimpleDirOps for NsDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        link::directory_identity(&self.fs, self.task, 4)
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
             ["uts", "ipc", "mnt", "pid", "net", "user", "cgroup"]
@@ -1193,48 +1211,8 @@ impl SimpleDirOps for NsDir {
         let Some(task) = upgrade_proc_task(&task_ref)? else {
             return Err(VfsError::NotFound);
         };
-        let proc_data = &task.as_thread().proc_data;
-
-        let content: String = match name {
-            "uts" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.uts_ns.lock_irqsave().id;
-                format!("uts:[{}]\n", ns_id)
-            }
-            "ipc" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.ipc_ns.lock_irqsave().ns_id;
-                format!("ipc:[{}]\n", ns_id)
-            }
-            "mnt" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.mnt_ns.lock_irqsave().id();
-                format!("mnt:[{}]\n", ns_id)
-            }
-            "pid" => {
-                let ns_id = proc_data.identity().active_namespace().id().get();
-                format!("pid:[{}]\n", ns_id)
-            }
-            "net" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.net_ns.lock_irqsave().ns_id;
-                format!("net:[{}]\n", ns_id)
-            }
-            "user" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.user_ns.lock_irqsave().id;
-                format!("user:[{}]\n", ns_id)
-            }
-            "cgroup" => {
-                let nsproxy = proc_data.namespace_snapshot();
-                let ns_id = nsproxy.cgroup_ns.lock_irqsave().id();
-                format!("cgroup:[{}]\n", ns_id)
-            }
-            _ => return Err(VfsError::NotFound),
-        };
-
-        let content = content.into_bytes();
-        Ok(SimpleFile::new_regular(fs, move || Ok(content.clone())).into())
+        let kind = crate::file::NamespaceKind::parse(name).ok_or(VfsError::NotFound)?;
+        Ok(link::node(fs, &task, ProcLinkKind::Namespace(kind)).into())
     }
 
     fn is_cacheable(&self) -> bool {
@@ -1485,6 +1463,10 @@ impl DirectRwFsFileOps for ProcMemFile {
 }
 
 impl SimpleDirOps for ThreadDir {
+    fn identity(&self) -> Option<axfs_ng_vfs::NodeIdentity> {
+        link::directory_identity(&self.fs, self.task, 1)
+    }
+
     fn child_names<'a>(&'a self) -> Box<dyn Iterator<Item = Cow<'a, str>> + 'a> {
         Box::new(
             [
@@ -1670,10 +1652,7 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "exe" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.exe_path().to_string())
-            })
-            .into(),
+            "exe" => link::node(fs, &task, ProcLinkKind::Exe).into(),
             "environ" => SimpleFile::new_regular(fs, move || {
                 let envp = task.as_thread().proc_data.envp();
                 let mut buf = Vec::new();
@@ -1684,14 +1663,8 @@ impl SimpleDirOps for ThreadDir {
                 Ok(buf)
             })
             .into(),
-            "root" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.root_path().to_string())
-            })
-            .into(),
-            "cwd" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.cwd_path().to_string())
-            })
-            .into(),
+            "root" => link::node(fs, &task, ProcLinkKind::Root).into(),
+            "cwd" => link::node(fs, &task, ProcLinkKind::Cwd).into(),
             "fd" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(ThreadFdDir {

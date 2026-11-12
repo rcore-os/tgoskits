@@ -16,14 +16,17 @@ use core::{
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
     FileRangeOperation, Filesystem, FilesystemMountLease, FilesystemOps, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference, RenameOptions,
-    StatFs, TypeMap, VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
+    NodeFlags, NodeOps, NodePermission, NodeType, PreallocationMode, Reference, StatFs, TypeMap,
+    VfsError, VfsResult, WeakDirEntry, XattrOps, XattrSetMode,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
 use crate::os::sync::{Mutex, RawSpinLock};
+
+mod metadata;
+mod rename;
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;
@@ -83,6 +86,8 @@ pub struct MemoryFs {
     // Starry has reached a sleepable task context.
     root: RawSpinLock<Option<WeakDirEntry>>,
     mount_lease: RawSpinLock<Weak<MemoryMountLease>>,
+    // Serializes namespace authorization and permission-affecting metadata.
+    mutation: Mutex<()>,
 }
 
 #[derive(Debug)]
@@ -177,6 +182,7 @@ impl MemoryFs {
             inodes: RawSpinLock::new(Slab::new()),
             root: RawSpinLock::new(None),
             mount_lease: RawSpinLock::new(Weak::new()),
+            mutation: Mutex::new(()),
         });
         let root_ino = Inode::new(
             &handle,
@@ -246,6 +252,26 @@ impl MemoryFs {
 }
 
 impl FilesystemOps for MemoryFs {
+    fn query_namespace(
+        &self,
+        admission: &axfs_ng_vfs::NamespaceAdmission<'_>,
+        query: axfs_ng_vfs::NamespaceQuery<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> VfsResult<axfs_ng_vfs::NamespaceRead> {
+        self.query_admitted_namespace(admission, query, retired)
+    }
+
+    fn has_native_namespace(&self) -> bool {
+        true
+    }
+
+    fn begin_namespace<'a>(
+        &'a self,
+        request: axfs_ng_vfs::NamespaceDriverRequest<'a>,
+    ) -> axfs_ng_vfs::NamespaceStart<'a> {
+        self.begin_admitted_namespace(request)
+    }
+
     fn mount_lease(&self) -> Option<Arc<dyn FilesystemMountLease>> {
         let mut installed = self.mount_lease.lock_irqsave();
         if let Some(lease) = installed.upgrade() {
@@ -328,9 +354,8 @@ struct FileContent {
 }
 
 struct DirContent {
-    // VFS dentry-cache operations call tmpfs directory ops while holding
-    // RawSpinLock guards, so this per-directory map must not use a blocking
-    // mutex.
+    // Inode references may be retired during atomic task cleanup. This native
+    // in-memory state uses IRQ-safe exclusion; VFS cache guards never cover it.
     entries: RawSpinLock<HashMap<FileName, InodeRef>>,
     next_cookie: AtomicU64,
 }
@@ -555,17 +580,26 @@ impl MemoryNode {
         })
     }
 
-    fn clear_dir_entries(inode: &Inode) {
+    fn clear_dir_entries(inode: &Inode) -> Option<HashMap<FileName, InodeRef>> {
         // Do this from unlink/rename paths while still in normal syscall
         // context. MemoryNode::drop may run during task cleanup, where a
         // blocking directory-entry mutex would panic in might_sleep().
         if let NodeContent::Dir(dir) = &inode.content {
-            dir.entries.lock_irqsave().clear();
+            Some(core::mem::take(&mut *dir.entries.lock_irqsave()))
+        } else {
+            None
         }
     }
 }
 
 impl NodeOps for MemoryNode {
+    fn change_metadata(
+        &self,
+        request: &axfs_ng_vfs::MetadataRequest<'_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+        self.run_metadata(request)
+    }
+
     fn inode_user_data(&self) -> Option<&axfs_ng_vfs::RawSpinLock<TypeMap>> {
         Some(&self.inode.user_data)
     }
@@ -588,6 +622,11 @@ impl NodeOps for MemoryNode {
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
+        let _mutation = if update.mode.is_some() || update.owner.is_some() {
+            Some(self.fs.mutation.lock())
+        } else {
+            None
+        };
         let mut metadata = self.inode.metadata.lock_irqsave();
         if let Some(mode) = update.mode {
             metadata.mode = mode;
@@ -690,6 +729,12 @@ impl Pollable for MemoryNode {
 }
 
 impl DirNodeOps for MemoryNode {
+    fn namespace_domain(&self) -> usize {
+        #[cfg(all(test, feature = "host-test"))]
+        tests::before_namespace_change();
+        Arc::as_ptr(&self.fs) as usize
+    }
+
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let offset = cursor.offset();
         let dir = self.inode.as_dir()?;
@@ -750,200 +795,12 @@ impl DirNodeOps for MemoryNode {
         self.new_entry(name, node_type, inode)
     }
 
-    fn create(
+    fn mutate_namespace(
         &self,
-        name: &str,
-        node_type: NodeType,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry> {
-        if node_type == NodeType::Symlink {
-            return Err(VfsError::InvalidInput);
-        }
-        let dir = self.inode.as_dir()?;
-        let mut entries = dir.entries.lock_irqsave();
-
-        if entries.contains_key(name) {
-            return Err(VfsError::AlreadyExists);
-        }
-        let inode = Inode::new(
-            &self.fs,
-            Some(self.inode.ino),
-            node_type,
-            permission,
-            uid,
-            gid,
-            TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
-        );
-        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
-        entries.insert(
-            name.into(),
-            InodeRef::new(self.fs.clone(), inode.ino, node_type, cookie),
-        );
-        self.new_entry(name, node_type, inode)
-    }
-
-    fn create_symlink(
-        &self,
-        name: &str,
-        target: &str,
-        permission: NodePermission,
-        uid: u32,
-        gid: u32,
-    ) -> VfsResult<DirEntry> {
-        let target = target.to_owned();
-        let target_len = target.len() as u64;
-        let dir = self.inode.as_dir()?;
-        {
-            let entries = dir.entries.lock_irqsave();
-            if entries.contains_key(name) {
-                return Err(VfsError::AlreadyExists);
-            }
-        }
-        self.fs.resize_usage(0, target_len)?;
-        let inode = Inode::new(
-            &self.fs,
-            Some(self.inode.ino),
-            NodeType::Symlink,
-            permission,
-            uid,
-            gid,
-            TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
-        );
-        let NodeContent::File(file) = &inode.content else {
-            self.fs
-                .used_bytes
-                .fetch_sub(target_len, AtomicOrdering::AcqRel);
-            drop(self.fs.inodes.lock_irqsave().remove(inode.ino as usize - 1));
-            return Err(VfsError::InvalidData);
-        };
-        file.length.store(target_len, AtomicOrdering::Release);
-        // The symlink payload uses a sleepable mutex. Initialize it before taking the
-        // IRQ-safe directory lock so no blocking lock is acquired in atomic context.
-        *file.symlink.lock() = Some(target);
-
-        let entry = DirEntry::new_file(
-            FileNode::new(MemoryNode::new(self.fs.clone(), inode.clone(), None)),
-            NodeType::Symlink,
-            Reference::new(
-                self.this.as_ref().and_then(WeakDirEntry::upgrade),
-                name.to_owned(),
-            ),
-        );
-        let mut entries = dir.entries.lock_irqsave();
-        if entries.contains_key(name) {
-            drop(entries);
-            drop(entry);
-            self.fs
-                .used_bytes
-                .fetch_sub(target_len, AtomicOrdering::AcqRel);
-            release_inode(&self.fs, &inode, 0);
-            return Err(VfsError::AlreadyExists);
-        }
-        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
-        entries.insert(
-            name.into(),
-            InodeRef::new(self.fs.clone(), inode.ino, NodeType::Symlink, cookie),
-        );
-        Ok(entry)
-    }
-
-    fn link(&self, name: &str, target: &DirEntry) -> VfsResult<DirEntry> {
-        let dir = self.inode.as_dir()?;
-        let mut entries = dir.entries.lock_irqsave();
-
-        let target = target.downcast::<Self>()?;
-
-        if entries.contains_key(name) {
-            return Err(VfsError::AlreadyExists);
-        }
-        let inode = target.inode.clone();
-        let node_type = inode.metadata.lock_irqsave().node_type;
-        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
-        entries.insert(
-            name.into(),
-            InodeRef::new(self.fs.clone(), inode.ino, node_type, cookie),
-        );
-        self.new_entry(name, node_type, inode)
-    }
-
-    fn unlink(&self, name: &str, is_dir: bool) -> VfsResult<()> {
-        let dir = self.inode.as_dir()?;
-
-        let (entry, inode) = {
-            let mut entries = dir.entries.lock_irqsave();
-            let Some(entry) = entries.get(name) else {
-                return Err(VfsError::NotFound);
-            };
-            let inode = entry.get();
-            match (&inode.content, is_dir) {
-                (NodeContent::Dir(_), false) => return Err(VfsError::IsADirectory),
-                (NodeContent::Dir(DirContent { entries, .. }), true)
-                    if entries
-                        .lock_irqsave_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS)
-                        .len()
-                        > 2 =>
-                {
-                    return Err(VfsError::DirectoryNotEmpty);
-                }
-                (NodeContent::File(_), true) => return Err(VfsError::NotADirectory),
-                _ => {}
-            }
-            let entry = entries.remove(name).ok_or(VfsError::NotFound)?;
-            (entry, inode)
-        };
-
-        Self::clear_dir_entries(&inode);
-        drop(entry);
-
-        Ok(())
-    }
-
-    // TODO: atomicity
-    fn rename(
-        &self,
-        src_name: &str,
-        dst_dir: &DirNode,
-        dst_name: &str,
-        options: RenameOptions,
-    ) -> VfsResult<()> {
-        if options.exchange() || options.whiteout() {
-            return Err(VfsError::OperationNotSupported);
-        }
-        let dst_node = dst_dir.downcast::<Self>()?;
-        if let Ok(entry) = dst_dir.lookup(dst_name) {
-            let src_entry = self.lookup(src_name)?;
-            if options.no_replace() {
-                return Err(VfsError::AlreadyExists);
-            }
-            if entry.inode() == src_entry.inode() {
-                return Ok(());
-            }
-        }
-
-        let src_entry = {
-            let mut entries = self.inode.as_dir()?.entries.lock_irqsave();
-            entries.remove(src_name).ok_or(VfsError::NotFound)?
-        };
-        let dst_dir = dst_node.inode.as_dir()?;
-        let cookie = dst_dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
-        let moved_entry = InodeRef::new(
-            src_entry.fs.clone(),
-            src_entry.ino,
-            src_entry.node_type,
-            cookie,
-        );
-        let overwritten = {
-            let mut entries = dst_dir.entries.lock_irqsave();
-            entries.insert(dst_name.into(), moved_entry)
-        };
-        drop(src_entry);
-        if let Some(entry) = overwritten {
-            Self::clear_dir_entries(&entry.get());
-            drop(entry);
-        }
-        Ok(())
+        command: &axfs_ng_vfs::NamespaceMutation<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
+        self.run_namespace(command, retired)
     }
 }
 
@@ -955,6 +812,7 @@ impl Drop for MemoryNode {
 
 #[cfg(all(test, axtest))]
 fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool {
+    use tests::MemoryTestDirectory;
     let filesystem = MemoryFs::new_with_size_limit(3);
     let root = filesystem.root_dir();
     let Ok(directory) = root.as_dir() else {
@@ -969,6 +827,11 @@ fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool 
                 NodePermission::from_bits_truncate(0o777),
                 1000,
                 1001,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 1000,
+                    fsgid: 1001,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
             ),
             Err(VfsError::StorageFull)
         ) && matches!(directory.lookup("link"), Err(VfsError::NotFound));
@@ -985,6 +848,11 @@ fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool 
             NodePermission::from_bits_truncate(0o777),
             1000,
             1001,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 1000,
+                fsgid: 1001,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .and_then(|entry| entry.read_link())
         .is_ok_and(|target| target == "target");
@@ -994,6 +862,464 @@ fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    pub(super) trait MemoryTestDirectory {
+        fn test_location(&self) -> axfs_ng_vfs::Location;
+
+        fn create(
+            &self,
+            name: &str,
+            kind: NodeType,
+            mode: NodePermission,
+            uid: u32,
+            gid: u32,
+            credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+        ) -> VfsResult<DirEntry> {
+            self.test_location()
+                .create(name, kind, mode, uid, gid, credentials)
+                .map(|location| location.entry().clone())
+        }
+
+        #[cfg(axtest)]
+        fn create_symlink(
+            &self,
+            name: &str,
+            target: &str,
+            mode: NodePermission,
+            uid: u32,
+            gid: u32,
+            credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+        ) -> VfsResult<DirEntry> {
+            self.test_location()
+                .create_symlink(name, target, mode, uid, gid, credentials)
+                .map(|location| location.entry().clone())
+        }
+
+        fn unlink(
+            &self,
+            name: &str,
+            directory: bool,
+            credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+        ) -> VfsResult<()> {
+            self.test_location().unlink(name, directory, credentials)
+        }
+    }
+
+    impl MemoryTestDirectory for DirNode {
+        fn test_location(&self) -> axfs_ng_vfs::Location {
+            let node = self.downcast::<MemoryNode>().unwrap();
+            let filesystem = Filesystem::new(node.fs.clone());
+            let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+            axfs_ng_vfs::Location::new(
+                mount,
+                node.this
+                    .as_ref()
+                    .and_then(WeakDirEntry::upgrade)
+                    .expect("live test alias"),
+            )
+        }
+    }
+
+    #[cfg(feature = "host-test")]
+    std::thread_local! {
+        pub(super) static BEFORE_NAMESPACE_CHANGE: std::cell::RefCell<Option<alloc::boxed::Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(feature = "host-test")]
+    pub(super) fn before_namespace_change() {
+        let hook = BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn namespace_mutations_recheck_current_parent_and_target_authority_before_commit() {
+        use alloc::boxed::Box;
+
+        use axfs_ng_vfs::{Mountpoint, MutationCredentials, NameState};
+
+        use super::*;
+        use crate::fs_core::FsContext;
+
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                BEFORE_NAMESPACE_CHANGE.with(|slot| drop(slot.borrow_mut().take()));
+            }
+        }
+
+        let credentials = MutationCredentials {
+            cap_mknod: false,
+            fsuid: 1000,
+            fsgid: 1000,
+            supplementary_gids: &[],
+            cap_dac_override: false,
+            cap_dac_read_search: false,
+            cap_fowner: false,
+            cap_chown: false,
+            cap_fsetid: false,
+        };
+        let _reset = ResetHook;
+        let filesystem = MemoryFs::new();
+        let root = Mountpoint::new_root(&filesystem).root_location();
+        root.update_metadata(MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(0o777)),
+            ..Default::default()
+        })
+        .unwrap();
+        let context = FsContext::new(root.clone());
+        let revoked = root.clone();
+        BEFORE_NAMESPACE_CHANGE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // FsContext has checked the writable parent; no backend gate
+                // has been entered. Revoke only write, leaving search allowed.
+                revoked
+                    .update_metadata(MetadataUpdate {
+                        mode: Some(NodePermission::from_bits_truncate(0o555)),
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }));
+        });
+        let created = context.create_dir(
+            "created",
+            NodePermission::from_bits_truncate(0o755),
+            1000,
+            1000,
+            &credentials,
+        );
+        assert!(BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow().is_none()));
+        let current_parent_mode = root.metadata().unwrap().mode;
+        let created_absent = matches!(root.lookup_no_follow("created"), Err(VfsError::NotFound));
+
+        let filesystem = MemoryFs::new();
+        let root = Mountpoint::new_root(&filesystem).root_location();
+        root.update_metadata(MetadataUpdate {
+            mode: Some(NodePermission::from_bits_truncate(0o1777)),
+            owner: Some((0, 0)),
+            ..Default::default()
+        })
+        .unwrap();
+        let victim = root
+            .create(
+                "victim",
+                NodeType::Directory,
+                NodePermission::from_bits_truncate(0o755),
+                1000,
+                1000,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 1000,
+                    fsgid: 1000,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        let context = FsContext::new(root.clone());
+        let revoked = victim.clone();
+        BEFORE_NAMESPACE_CHANGE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // The old sticky probe allowed the caller as victim owner.
+                // The actual target must be authorized again after this change.
+                revoked
+                    .update_metadata(MetadataUpdate {
+                        owner: Some((2000, 2000)),
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }));
+        });
+        let removed = context.remove_dir("victim", &credentials);
+        assert!(BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow().is_none()));
+        let current_owner = victim.metadata().unwrap().uid;
+        let retained = root
+            .lookup_no_follow("victim")
+            .is_ok_and(|entry| entry.entry().ptr_eq(victim.entry()));
+        let name = victim.entry().name_snapshot();
+
+        // Both operations use fresh trees and finish before either oracle can
+        // stop the test, so the failure reports both independently reached calls.
+        assert_eq!(
+            (created.map(|_| ()), removed),
+            (
+                Err(VfsError::PermissionDenied),
+                Err(VfsError::OperationNotPermitted)
+            )
+        );
+        assert_eq!(current_parent_mode.bits(), 0o555);
+        assert!(
+            created_absent,
+            "a rejected creation must not publish its name"
+        );
+        assert_eq!(current_owner, 2000);
+        assert!(
+            retained,
+            "sticky rejection must retain the actual target alias"
+        );
+        assert_eq!(name.state(), NameState::Linked);
+        assert_eq!(name.name(), "victim");
+        assert!(name.parent().unwrap().ptr_eq(root.entry()));
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn unlink_invalidates_the_actual_directory_replaced_after_its_probe() {
+        use alloc::boxed::Box;
+
+        use axfs_ng_vfs::NameState;
+
+        use super::*;
+
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                BEFORE_NAMESPACE_CHANGE.with(|slot| drop(slot.borrow_mut().take()));
+            }
+        }
+
+        let filesystem = MemoryFs::new();
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().unwrap();
+        let original = directory
+            .create(
+                "victim",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        let replacement = directory
+            .create(
+                "replacement",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        let concurrent_root = root.clone();
+        let concurrent_mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+        BEFORE_NAMESPACE_CHANGE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // A has already probed victim=original. B now completes a real
+                // VFS rename before A starts its publication and unlinks it.
+                let directory = axfs_ng_vfs::Location::new(concurrent_mount, concurrent_root);
+                directory
+                    .rename(
+                        "replacement",
+                        &directory,
+                        "victim",
+                        &axfs_ng_vfs::MutationCredentials::root(),
+                    )
+                    .unwrap();
+            }));
+        });
+        let _reset = ResetHook;
+        directory
+            .unlink("victim", true, &axfs_ng_vfs::MutationCredentials::root())
+            .unwrap();
+        assert!(BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow().is_none()));
+        assert!(matches!(
+            directory.lookup("victim"),
+            Err(VfsError::NotFound)
+        ));
+        assert_eq!(original.name_state(), NameState::Unlinked);
+        let actual_state = replacement.name_state();
+        let create_result = replacement.as_dir().unwrap().create(
+            "must-not-be-created",
+            NodeType::RegularFile,
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        );
+        assert!(
+            matches!(actual_state, NameState::Unlinked | NameState::Untrusted),
+            "the actual removed directory must not retain a trusted linked relationship"
+        );
+        assert!(matches!(
+            create_result,
+            Err(VfsError::NotFound | VfsError::WouldBlock)
+        ));
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn rename_revalidates_ancestry_after_a_completed_competing_move() {
+        use alloc::boxed::Box;
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        use super::*;
+
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                BEFORE_NAMESPACE_CHANGE.with(|slot| drop(slot.borrow_mut().take()));
+            }
+        }
+
+        let filesystem = MemoryFs::new();
+        let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+        let root = filesystem.root_dir();
+        let directory = root.as_dir().unwrap();
+        let left = directory
+            .create(
+                "left",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        let right = directory
+            .create(
+                "right",
+                NodeType::Directory,
+                NodePermission::default(),
+                0,
+                0,
+                &axfs_ng_vfs::MutationCredentials {
+                    fsuid: 0,
+                    fsgid: 0,
+                    ..axfs_ng_vfs::MutationCredentials::root()
+                },
+            )
+            .unwrap();
+        let moved = Arc::new(AtomicBool::new(false));
+        let competing_move_completed = moved.clone();
+        let competing_root = root.clone();
+        let competing_mount = mount.clone();
+        let competing_parent = left.clone();
+        BEFORE_NAMESPACE_CHANGE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                // A has selected its source/destination. Complete B's real
+                // move before A enters the backend; no sleep or timing race.
+                axfs_ng_vfs::Location::new(competing_mount.clone(), competing_root)
+                    .rename(
+                        "right",
+                        &axfs_ng_vfs::Location::new(competing_mount, competing_parent),
+                        "right",
+                        &axfs_ng_vfs::MutationCredentials::root(),
+                    )
+                    .unwrap();
+                competing_move_completed.store(true, Ordering::Release);
+            }));
+        });
+        let _reset = ResetHook;
+        let result = axfs_ng_vfs::Location::new(mount.clone(), root.clone()).rename(
+            "left",
+            &axfs_ng_vfs::Location::new(mount, right.clone()),
+            "left",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        );
+        assert!(moved.load(Ordering::Acquire));
+        assert_eq!(result, Err(VfsError::InvalidInput));
+
+        // Inspect only single edges and names. The faulty implementation can
+        // form left -> right -> left, so never traverse its ancestor chain.
+        assert!(directory.lookup("left").unwrap().ptr_eq(&left));
+        assert!(matches!(directory.lookup("right"), Err(VfsError::NotFound)));
+        assert!(left.parent().unwrap().ptr_eq(&root));
+        assert!(right.parent().unwrap().ptr_eq(&left));
+        assert!(
+            left.as_dir()
+                .unwrap()
+                .lookup("right")
+                .unwrap()
+                .ptr_eq(&right)
+        );
+        assert!(matches!(
+            right.as_dir().unwrap().lookup("left"),
+            Err(VfsError::NotFound)
+        ));
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn directory_rename_rejects_self_and_descendant_destinations_without_changing_the_tree() {
+        use axfs_ng_vfs::NameState;
+
+        use super::*;
+
+        let create = |parent: &DirEntry, name: &str| {
+            parent
+                .as_dir()
+                .unwrap()
+                .create(
+                    name,
+                    NodeType::Directory,
+                    NodePermission::default(),
+                    0,
+                    0,
+                    &axfs_ng_vfs::MutationCredentials {
+                        fsuid: 0,
+                        fsgid: 0,
+                        ..axfs_ng_vfs::MutationCredentials::root()
+                    },
+                )
+                .unwrap()
+        };
+        for into_descendant in [false, true] {
+            let filesystem = MemoryFs::new();
+            let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+            let root = filesystem.root_dir();
+            let source = create(&root, "source");
+            let descendant = create(&source, "descendant");
+            let destination = if into_descendant {
+                &descendant
+            } else {
+                &source
+            };
+
+            let result = axfs_ng_vfs::Location::new(mount.clone(), root.clone()).rename(
+                "source",
+                &axfs_ng_vfs::Location::new(mount, destination.clone()),
+                "inside",
+                &axfs_ng_vfs::MutationCredentials::root(),
+            );
+            // Only inspect individual edges: the faulty implementation can have
+            // created a cycle, so path walking or recursive cache clearing is unsafe.
+            let snapshot = source.name_snapshot();
+            let original = root.as_dir().unwrap().lookup("source");
+            let inserted = destination.as_dir().unwrap().lookup("inside");
+
+            assert_eq!(result, Err(VfsError::InvalidInput));
+            assert!(original.is_ok_and(|entry| entry.ptr_eq(&source)));
+            assert!(matches!(inserted, Err(VfsError::NotFound)));
+            assert_eq!(snapshot.state(), NameState::Linked);
+            assert_eq!(snapshot.name(), "source");
+            assert!(snapshot.parent().unwrap().ptr_eq(&root));
+            assert!(descendant.parent().unwrap().ptr_eq(&source));
+        }
+    }
+
     #[cfg(all(test, axtest))]
     #[axtest::axtest]
     fn failed_symlink_capacity_reservation_does_not_publish_name() {

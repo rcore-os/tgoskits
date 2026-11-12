@@ -18,6 +18,7 @@ use super::{
 mod directory;
 mod io;
 mod metadata;
+pub(crate) use metadata::metadata_from_info;
 mod xattr;
 
 pub struct Inode {
@@ -26,19 +27,32 @@ pub struct Inode {
 }
 
 impl Inode {
+    #[cfg(all(test, feature = "host-test"))]
+    pub(crate) fn test_location(&self) -> axfs_ng_vfs::Location {
+        let filesystem = axfs_ng_vfs::Filesystem::new(self.fs().clone());
+        let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
+        axfs_ng_vfs::Location::new(
+            mount,
+            self.this
+                .as_ref()
+                .and_then(WeakDirEntry::upgrade)
+                .expect("live test alias"),
+        )
+    }
+
     pub(crate) fn new(lifetime: InodeLifetime, this: Option<WeakDirEntry>) -> Arc<Self> {
         Arc::new(Self { lifetime, this })
     }
 
-    fn fs(&self) -> &Arc<Ext4Filesystem> {
+    pub(crate) fn fs(&self) -> &Arc<Ext4Filesystem> {
         self.lifetime.filesystem()
     }
 
-    fn number(&self) -> InodeNumber {
+    pub(crate) fn number(&self) -> InodeNumber {
         self.lifetime.number()
     }
 
-    fn content_access(&self) -> &Arc<AccessGate> {
+    pub(super) fn content_access(&self) -> &Arc<AccessGate> {
         self.lifetime.content_access()
     }
 
@@ -56,13 +70,6 @@ impl Inode {
                 .writeback_policy()?
                 .contains(WritebackPolicy::SYNCHRONOUS)
         {
-            self.fs().sync_to_disk()?;
-        }
-        Ok(())
-    }
-
-    fn finish_directory_change(&self) -> VfsResult<()> {
-        if !self.fs().background_writeback_enabled() || self.writeback_policy()?.syncs_directory() {
             self.fs().sync_to_disk()?;
         }
         Ok(())

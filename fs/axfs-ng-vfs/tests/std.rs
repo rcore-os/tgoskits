@@ -1,3 +1,4 @@
+mod fixture_namespace;
 use alloc::{
     borrow::ToOwned,
     string::{String, ToString},
@@ -12,6 +13,8 @@ use core::{
 };
 
 use ax_runtime as _;
+use axfs_ng_vfs::DirNodeOps as _;
+use fixture_namespace::Backend as _;
 
 extern crate alloc;
 
@@ -281,16 +284,19 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
     assert!(!entry.is_dir());
     assert_eq!(entry.node_type(), NodeType::Symlink);
     assert_eq!(entry.name(), "link");
-    assert_eq!(entry.key().1, "link");
     assert_eq!(entry.metadata().unwrap().node_type, NodeType::Symlink);
     assert_eq!(entry.read_link().unwrap(), "target-path");
     assert_eq!(entry.ioctl(0, 0), Err(VfsError::NotATty));
     assert!(matches!(entry.as_dir(), Err(VfsError::NotADirectory)));
     assert!(entry.as_file().is_ok());
     assert!(entry.downcast::<TestFile>().is_ok());
-    assert!(entry.is_root_of_mount());
+    assert!(!entry.is_root_of_mount());
+    assert_eq!(entry.name_state(), axfs_ng_vfs::NameState::Unlinked);
     assert_eq!(entry.absolute_path().unwrap().as_str(), "/link");
     assert!(entry.downgrade().upgrade().unwrap().ptr_eq(&entry));
+    let root = DirEntry::new_file((*file_node).clone(), NodeType::Symlink, Reference::root());
+    assert!(root.is_root_of_mount());
+    assert_eq!(root.absolute_path().unwrap().as_str(), "/");
 
     let mut user_data = entry.user_data();
     user_data.insert(vec![1_u8, 2, 3]);
@@ -309,8 +315,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
         FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission,
-        NodeType, OpenOptions, RawSpinLock, Reference, RenameOptions, VfsError, VfsResult,
-        WeakDirEntry,
+        NodeType, OpenOptions, RawSpinLock, Reference, VfsError, VfsResult, WeakDirEntry,
     };
     use axpoll::{IoEvents, Pollable};
 
@@ -513,7 +518,16 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
                 .ok_or(VfsError::NotFound)
         }
 
-        fn create(
+        fn mutate_namespace(
+            &self,
+            command: &axfs_ng_vfs::NamespaceMutation<'_>,
+            retired: &axfs_ng_vfs::MutationRetire,
+        ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
+            fixture_namespace::run(self, command, retired)
+        }
+    }
+    impl fixture_namespace::Backend for DirTestDir {
+        fn create_locked(
             &self,
             name: &str,
             node_type: NodeType,
@@ -529,7 +543,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
             Ok(entry)
         }
 
-        fn create_symlink(
+        fn symlink_locked(
             &self,
             _name: &str,
             _target: &str,
@@ -540,7 +554,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
             Err(VfsError::Unsupported)
         }
 
-        fn link(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
+        fn link_locked(&self, name: &str, node: &DirEntry) -> VfsResult<DirEntry> {
             if self.lookup(name).is_ok() {
                 return Err(VfsError::AlreadyExists);
             }
@@ -554,7 +568,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
             Ok(entry)
         }
 
-        fn unlink(&self, name: &str, _is_dir: bool) -> VfsResult<()> {
+        fn unlink_locked(&self, name: &str, _is_dir: bool) -> VfsResult<()> {
             let mut children = self.children.lock();
             let Some(index) = children
                 .iter()
@@ -564,16 +578,6 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
             };
             children.remove(index);
             Ok(())
-        }
-
-        fn rename(
-            &self,
-            _src_name: &str,
-            _dst_dir: &DirNode,
-            _dst_name: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
-            Err(VfsError::Unsupported)
         }
     }
 
@@ -589,6 +593,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
         },
         Reference::root(),
     );
+    let location = fixture_namespace::location(root.clone());
     let dir = root.as_dir().unwrap();
     let ops = dir.downcast::<DirTestDir>().unwrap();
 
@@ -616,14 +621,20 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
         Err(VfsError::NameTooLong)
     ));
 
-    let child = dir
+    let child = location
         .create(
             "child",
             NodeType::RegularFile,
             NodePermission::default(),
             1,
             2,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 1,
+                fsgid: 2,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
+        .map(|location| location.entry().clone())
         .unwrap();
     assert!(dir.has_children().unwrap());
     assert_eq!(child.parent().unwrap().as_ptr(), root.as_ptr());
@@ -640,7 +651,14 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
         let mut child_data = child.user_data();
         child_data.insert(123_u32);
     }
-    let hard_link = dir.link("hard", &child).unwrap();
+    let hard_link = location
+        .link(
+            "hard",
+            &axfs_ng_vfs::Location::new(location.mountpoint().clone(), child.clone()),
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .map(|location| location.entry().clone())
+        .unwrap();
     assert_eq!(*hard_link.user_data().get::<u32>().unwrap(), 123);
     assert!(dir.lookup_cache("hard").is_some());
 
@@ -649,19 +667,35 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
         user: Some((11, 12)),
         ..Default::default()
     };
-    let opened = dir.open_file("created-by-open", &options).unwrap();
+    let opened = location
+        .open_file(
+            "created-by-open",
+            &options,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .map(|location| location.entry().clone())
+        .unwrap();
     assert_eq!(opened.name(), "created-by-open");
     let create_new_existing = OpenOptions {
         create_new: true,
         ..Default::default()
     };
     assert!(matches!(
-        dir.open_file("created-by-open", &create_new_existing),
+        location.open_file(
+            "created-by-open",
+            &create_new_existing,
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::AlreadyExists)
     ));
 
-    assert_eq!(dir.unlink("child", true), Err(VfsError::NotADirectory));
-    dir.unlink("child", false).unwrap();
+    assert_eq!(
+        location.unlink("child", true, &axfs_ng_vfs::MutationCredentials::root()),
+        Err(VfsError::NotADirectory)
+    );
+    location
+        .unlink("child", false, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     assert!(dir.lookup_cache("child").is_none());
     assert!(matches!(dir.lookup("child"), Err(VfsError::NotFound)));
 }
@@ -671,8 +705,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode,
         FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mountpoint, NodeOps,
-        NodePermission, NodeType, RawSpinLock, Reference, RenameOptions, StatFs, VfsError,
-        VfsResult,
+        NodePermission, NodeType, RawSpinLock, Reference, StatFs, VfsError, VfsResult,
     };
     use axpoll::{IoEvents, Pollable};
 
@@ -893,7 +926,16 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
                 .ok_or(VfsError::NotFound)
         }
 
-        fn create(
+        fn mutate_namespace(
+            &self,
+            command: &axfs_ng_vfs::NamespaceMutation<'_>,
+            retired: &axfs_ng_vfs::MutationRetire,
+        ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
+            fixture_namespace::run(self, command, retired)
+        }
+    }
+    impl fixture_namespace::Backend for MountTestDir {
+        fn create_locked(
             &self,
             name: &str,
             node_type: NodeType,
@@ -909,7 +951,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
             Ok(entry)
         }
 
-        fn create_symlink(
+        fn symlink_locked(
             &self,
             _name: &str,
             _target: &str,
@@ -920,11 +962,11 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
             Err(VfsError::Unsupported)
         }
 
-        fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+        fn link_locked(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
             Err(VfsError::Unsupported)
         }
 
-        fn unlink(&self, name: &str, _is_dir: bool) -> VfsResult<()> {
+        fn unlink_locked(&self, name: &str, _is_dir: bool) -> VfsResult<()> {
             let mut children = self.children.lock();
             let Some(index) = children
                 .iter()
@@ -934,16 +976,6 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
             };
             children.remove(index);
             Ok(())
-        }
-
-        fn rename(
-            &self,
-            _src_name: &str,
-            _dst_dir: &DirNode,
-            _dst_name: &str,
-            _options: RenameOptions,
-        ) -> VfsResult<()> {
-            Err(VfsError::Unsupported)
         }
     }
 
@@ -981,7 +1013,9 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         let root_dir = root.as_dir().unwrap();
         for name in child_dirs {
             root_dir
-                .create(name, NodeType::Directory, NodePermission::default(), 0, 0)
+                .downcast::<MountTestDir>()
+                .unwrap()
+                .create_locked(name, NodeType::Directory, NodePermission::default(), 0, 0)
                 .unwrap();
         }
         root
@@ -1017,6 +1051,11 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         NodePermission::default(),
         0,
         0,
+        &axfs_ng_vfs::MutationCredentials {
+            fsuid: 0,
+            fsgid: 0,
+            ..axfs_ng_vfs::MutationCredentials::root()
+        },
     )
     .unwrap();
     assert!(root.lookup_no_follow("created").unwrap().is_file());
@@ -1025,7 +1064,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         Err(VfsError::InvalidInput)
     ));
 
-    root_mount.set_readonly(true);
+    root_mount.set_readonly(true).unwrap();
     assert!(matches!(
         root.create(
             "blocked",
@@ -1033,6 +1072,11 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         ),
         Err(VfsError::ReadOnlyFilesystem)
     ));
@@ -1045,7 +1089,7 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         root.lookup_no_follow("transient").unwrap().inode(),
         transient.inode()
     );
-    root_mount.set_readonly(false);
+    root_mount.set_readonly(false).unwrap();
 
     let child_fs = new_fs("childfs", false, 20, &["put-old", "inside"]);
     let mnt = root.lookup_no_follow("mnt").unwrap();
@@ -1239,6 +1283,8 @@ impl axfs_ng_vfs::FileNodeOps for MoreTestFile {
     }
 }
 
+static MORE_NAMESPACE_GATE: ax_sync::Mutex<()> = ax_sync::Mutex::new(());
+
 struct MoreTestDir {
     inode: u64,
     self_ref: axfs_ng_vfs::WeakDirEntry,
@@ -1368,7 +1414,39 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
             .ok_or(axfs_ng_vfs::VfsError::NotFound)
     }
 
-    fn create(
+    fn mutate_namespace(
+        &self,
+        command: &axfs_ng_vfs::NamespaceMutation<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
+        let axfs_ng_vfs::NamespaceMutation::Rename(request) = command else {
+            return fixture_namespace::run_locked(
+                self,
+                command,
+                retired,
+                MORE_NAMESPACE_GATE.lock(),
+            );
+        };
+        let destination = match request
+            .destination_parent()
+            .as_dir()
+            .and_then(|directory| directory.downcast::<Self>())
+        {
+            Ok(destination) => destination,
+            Err(error) => return axfs_ng_vfs::NamespaceOutcome::unchanged(Err(error)),
+        };
+        let mut attempt = MoreRenameAttempt {
+            _gate: MORE_NAMESPACE_GATE.lock(),
+            source: self,
+            destination: &destination,
+        };
+        request
+            .execute(&mut attempt, retired)
+            .map(axfs_ng_vfs::NamespaceEffect::Rename)
+    }
+}
+impl fixture_namespace::Backend for MoreTestDir {
+    fn create_locked(
         &self,
         name: &str,
         node_type: axfs_ng_vfs::NodeType,
@@ -1384,7 +1462,7 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         Ok(entry)
     }
 
-    fn create_symlink(
+    fn symlink_locked(
         &self,
         name: &str,
         target: &str,
@@ -1409,7 +1487,7 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         Ok(entry)
     }
 
-    fn link(
+    fn link_locked(
         &self,
         name: &str,
         node: &axfs_ng_vfs::DirEntry,
@@ -1427,27 +1505,151 @@ impl axfs_ng_vfs::DirNodeOps for MoreTestDir {
         Ok(entry)
     }
 
-    fn unlink(&self, name: &str, _is_dir: bool) -> axfs_ng_vfs::VfsResult<()> {
+    fn unlink_locked(&self, name: &str, _is_dir: bool) -> axfs_ng_vfs::VfsResult<()> {
         self.remove_child(name)?;
         Ok(())
     }
+}
 
-    fn rename(
-        &self,
-        src_name: &str,
-        dst_dir: &axfs_ng_vfs::DirNode,
-        dst_name: &str,
-        _options: axfs_ng_vfs::RenameOptions,
-    ) -> axfs_ng_vfs::VfsResult<()> {
-        let entry = self.remove_child(src_name)?;
-        if let Ok(existing) = dst_dir.lookup(dst_name) {
-            if existing.node_type() == axfs_ng_vfs::NodeType::Directory {
-                return Err(axfs_ng_vfs::VfsError::IsADirectory);
-            }
-            dst_dir.unlink(dst_name, false)?;
+struct MoreRenameAttempt<'a> {
+    _gate: ax_sync::MutexGuard<'a, ()>,
+    source: &'a MoreTestDir,
+    destination: &'a MoreTestDir,
+}
+
+impl axfs_ng_vfs::LockedAttempt for MoreRenameAttempt<'_> {
+    fn parents(
+        &mut self,
+    ) -> axfs_ng_vfs::VfsResult<(axfs_ng_vfs::Metadata, axfs_ng_vfs::Metadata)> {
+        Ok((
+            more_metadata(self.source.inode, axfs_ng_vfs::NodeType::Directory),
+            more_metadata(self.destination.inode, axfs_ng_vfs::NodeType::Directory),
+        ))
+    }
+
+    fn observe(
+        &mut self,
+        command: &axfs_ng_vfs::NamespaceMutation<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> axfs_ng_vfs::VfsResult<axfs_ng_vfs::MutationObservation> {
+        use axfs_ng_vfs::{RenameNode, RenameObservation, VfsError};
+        let axfs_ng_vfs::NamespaceMutation::Rename(request) = command else {
+            return Err(VfsError::BadState);
+        };
+        let source = self
+            .source
+            .children
+            .lock()
+            .iter()
+            .find(|(name, _)| name == request.source_name())
+            .map(|(_, entry)| entry.clone())
+            .ok_or(VfsError::NotFound)?;
+        let target = self
+            .destination
+            .children
+            .lock()
+            .iter()
+            .find(|(name, _)| name == request.destination_name())
+            .map(|(_, entry)| entry.clone());
+        let node =
+            |entry: axfs_ng_vfs::DirEntry, name: &str| -> axfs_ng_vfs::VfsResult<RenameNode> {
+                retired.retire(entry.clone());
+                let empty = if entry.is_dir() {
+                    entry
+                        .as_dir()?
+                        .downcast::<MoreTestDir>()?
+                        .children
+                        .lock()
+                        .is_empty()
+                } else {
+                    false
+                };
+                Ok(RenameNode {
+                    metadata: more_metadata(entry.inode(), entry.node_type()),
+                    entry,
+                    canonical_name: name.into(),
+                    cacheable: true,
+                    empty,
+                })
+            };
+        Ok(axfs_ng_vfs::MutationObservation::Rename(
+            RenameObservation {
+                source: node(source, request.source_name())?,
+                target: target
+                    .map(|entry| node(entry, request.destination_name()))
+                    .transpose()?,
+            },
+        ))
+    }
+
+    fn is_ancestor(
+        &mut self,
+        ancestor: &axfs_ng_vfs::NamespaceNode,
+        directory: u64,
+    ) -> axfs_ng_vfs::VfsResult<bool> {
+        if ancestor.inode == directory {
+            return Ok(true);
         }
-        dst_dir.link(dst_name, &entry)?;
-        Ok(())
+        let mut pending = self.source.children.lock().clone();
+        pending.extend(self.destination.children.lock().clone());
+        let ancestor = pending
+            .iter()
+            .find(|(_, entry)| entry.inode() == ancestor.inode)
+            .map(|(_, entry)| entry.clone());
+        pending.clear();
+        if let Some(ancestor) = ancestor {
+            pending.push((String::new(), ancestor));
+        }
+        while let Some((_, entry)) = pending.pop() {
+            if entry.inode() == directory {
+                return Ok(true);
+            }
+            if entry.is_dir() {
+                pending.extend(
+                    entry
+                        .as_dir()?
+                        .downcast::<MoreTestDir>()?
+                        .children
+                        .lock()
+                        .clone(),
+                );
+            }
+        }
+        Ok(false)
+    }
+
+    fn commit(
+        &mut self,
+        authorization: &axfs_ng_vfs::AuthorizedMutation<'_>,
+        retired: &axfs_ng_vfs::MutationRetire,
+    ) -> axfs_ng_vfs::NamespaceOutcome<axfs_ng_vfs::NamespaceEffect> {
+        use axfs_ng_vfs::{NamespaceOutcome, VfsError};
+        let axfs_ng_vfs::AuthorizedMutation::Rename(authorized) = authorization else {
+            return NamespaceOutcome::unchanged(Err(VfsError::BadState));
+        };
+        let request = authorized.request();
+        if request.options().exchange() || request.options().whiteout() {
+            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotSupported));
+        }
+        let source = self
+            .source
+            .remove_child(request.source_name())
+            .expect("authorized fixture slot");
+        if authorized.observation().target.is_some() {
+            retired.retire(
+                self.destination
+                    .remove_child(request.destination_name())
+                    .expect("authorized fixture target"),
+            );
+        }
+        self.destination
+            .children
+            .lock()
+            .push((request.destination_name().into(), source));
+        NamespaceOutcome::applied(
+            axfs_ng_vfs::NamespaceEffect::Rename(authorized.effect()),
+            Ok(()),
+        )
     }
 }
 
@@ -1485,7 +1687,9 @@ fn new_more_root(inode: u64, child_dirs: &[&str], child_files: &[&str]) -> axfs_
     let root_dir = root.as_dir().unwrap();
     for name in child_dirs {
         root_dir
-            .create(
+            .downcast::<MoreTestDir>()
+            .unwrap()
+            .create_locked(
                 name,
                 axfs_ng_vfs::NodeType::Directory,
                 axfs_ng_vfs::NodePermission::default(),
@@ -1496,7 +1700,9 @@ fn new_more_root(inode: u64, child_dirs: &[&str], child_files: &[&str]) -> axfs_
     }
     for name in child_files {
         root_dir
-            .create(
+            .downcast::<MoreTestDir>()
+            .unwrap()
+            .create_locked(
                 name,
                 axfs_ng_vfs::NodeType::RegularFile,
                 axfs_ng_vfs::NodePermission::default(),
@@ -1607,6 +1813,11 @@ fn axfs_ng_vfs_shared_mount_propagation_rules_hold() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         ),
         Err(VfsError::ReadOnlyFilesystem) | Ok(_)
     ));
@@ -1707,7 +1918,7 @@ fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
 
 #[test]
 fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
-    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, VfsError};
+    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, PathHandle, VfsError};
 
     let root_fs = new_more_fs(
         "move-root",
@@ -1728,6 +1939,51 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
     let busy_target = root.lookup_no_follow("nested-target").unwrap();
     busy_target.mount(&busy_fs).unwrap();
     let child_root = root.lookup_no_follow("first").unwrap();
+
+    let global = PathHandle::acquire(root.clone()).unwrap();
+    assert!(matches!(
+        global.clone().prepare_unmount(),
+        Err(VfsError::InvalidInput)
+    ));
+    drop(global);
+
+    let held = PathHandle::acquire(child_root.clone()).unwrap();
+    let inner = held
+        .rebind(child_root.lookup_no_follow("inner").unwrap())
+        .unwrap();
+    assert!(matches!(
+        inner.clone().prepare_unmount(),
+        Err(VfsError::InvalidInput)
+    ));
+    assert!(matches!(
+        held.clone().prepare_unmount(),
+        Err(VfsError::ResourceBusy)
+    ));
+    assert!(matches!(child_root.unmount(), Err(VfsError::ResourceBusy)));
+    assert!(matches!(
+        held.rebind(root.clone()),
+        Err(VfsError::CrossesDevices)
+    ));
+    // Even a bind of this same actual filesystem is a different exact mount.
+    let bound = root
+        .lookup_no_follow("plain")
+        .unwrap()
+        .bind_mount(&child_root, false)
+        .unwrap();
+    assert!(matches!(
+        held.rebind(bound.root_location()),
+        Err(VfsError::CrossesDevices)
+    ));
+    bound.root_location().unmount().unwrap();
+    drop(inner);
+    let abandoned = held.prepare_unmount().unwrap();
+    assert!(
+        abandoned
+            .targets()
+            .any(|mount| Arc::ptr_eq(mount, &child_mount))
+    );
+    drop(abandoned);
+    assert!(root.lookup_no_follow("first").unwrap().is_root_of_mount());
 
     assert!(matches!(
         root.lookup_no_follow("plain")
@@ -1760,8 +2016,44 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
         moved.parent().unwrap().absolute_path().unwrap().as_str(),
         "/"
     );
+    let detached = PathHandle::acquire(moved.clone()).unwrap();
     moved.detach_mount().unwrap();
     assert!(!root.lookup_no_follow("second").unwrap().is_root_of_mount());
+    assert!(
+        detached
+            .location()
+            .lookup_no_follow("inner")
+            .unwrap()
+            .metadata()
+            .is_ok()
+    );
+    // Lazy detach does not mark the mount normally removed.
+    drop(PathHandle::acquire(detached.location().clone()).unwrap());
+    drop(detached);
+
+    let removable = root
+        .lookup_no_follow("first")
+        .unwrap()
+        .mount(&child_fs)
+        .unwrap();
+    let target = PathHandle::acquire(removable.root_location()).unwrap();
+    let independent = removable.acquire_use().unwrap();
+    assert!(matches!(
+        target.prepare_unmount(),
+        Err(VfsError::ResourceBusy)
+    ));
+    drop(independent);
+    PathHandle::acquire(removable.root_location())
+        .unwrap()
+        .prepare_unmount()
+        .unwrap()
+        .commit()
+        .unwrap();
+    assert!(!root.lookup_no_follow("first").unwrap().is_root_of_mount());
+    assert!(matches!(
+        PathHandle::acquire(removable.root_location()),
+        Err(VfsError::NotFound)
+    ));
 
     let readonly_fs = new_more_fs("readonly-root", true, 1300, &["mnt"], &["file"]);
     let readonly_mount = Mountpoint::new_root(&readonly_fs);
@@ -1778,19 +2070,33 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         ),
         Err(VfsError::ReadOnlyFilesystem)
     ));
     assert!(matches!(
-        readonly_root.link("linked", &root.lookup_no_follow("plain").unwrap()),
+        readonly_root.link(
+            "linked",
+            &root.lookup_no_follow("plain").unwrap(),
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::ReadOnlyFilesystem)
     ));
     assert!(matches!(
-        readonly_root.rename("file", &readonly_root, "renamed"),
+        readonly_root.rename(
+            "file",
+            &readonly_root,
+            "renamed",
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::ReadOnlyFilesystem)
     ));
     assert!(matches!(
-        readonly_root.unlink("file", false),
+        readonly_root.unlink("file", false, &axfs_ng_vfs::MutationCredentials::root()),
         Err(VfsError::ReadOnlyFilesystem)
     ));
 }
@@ -1814,28 +2120,81 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
     let right_root = right_mount.root_location();
 
     let file = left_root.lookup_no_follow("file").unwrap();
-    let linked = left_root.link("linked", &file).unwrap();
+    let linked = left_root
+        .link("linked", &file, &axfs_ng_vfs::MutationCredentials::root())
+        .unwrap();
     assert_eq!(linked.name(), "linked");
     assert!(left_root.lookup_no_follow("linked").unwrap().is_file());
     assert!(matches!(
-        left_root.link("cross", &right_root.lookup_no_follow("file").unwrap()),
+        left_root.link(
+            "cross",
+            &right_root.lookup_no_follow("file").unwrap(),
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::CrossesDevices)
     ));
 
-    left_root.rename("linked", &left_root, "renamed").unwrap();
+    left_root
+        .rename(
+            "linked",
+            &left_root,
+            "renamed",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
     assert!(matches!(
         left_root.lookup_no_follow("linked"),
         Err(VfsError::NotFound)
     ));
-    assert!(left_root.lookup_no_follow("renamed").unwrap().is_file());
-    left_root.rename("renamed", &left_root, "replace").unwrap();
-    assert!(left_root.lookup_no_follow("replace").unwrap().is_file());
+    assert!(
+        left_root
+            .lookup_no_follow("renamed")
+            .unwrap()
+            .entry()
+            .ptr_eq(linked.entry())
+    );
+    let overwritten = left_root.lookup_no_follow("replace").unwrap();
+    let overwritten_inode = overwritten.inode();
+    left_root
+        .rename(
+            "renamed",
+            &left_root,
+            "replace",
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
+    assert!(
+        left_root
+            .lookup_no_follow("replace")
+            .unwrap()
+            .entry()
+            .ptr_eq(linked.entry())
+    );
+    assert_eq!(overwritten.inode(), overwritten_inode);
+    assert_eq!(
+        overwritten.entry().name_state(),
+        axfs_ng_vfs::NameState::Unlinked
+    );
     assert!(matches!(
-        left_root.rename("dir", &left_root, "replace"),
+        left_root.lookup_no_follow("renamed"),
+        Err(VfsError::NotFound)
+    ));
+    assert!(matches!(
+        left_root.rename(
+            "dir",
+            &left_root,
+            "replace",
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::NotADirectory)
     ));
     assert!(matches!(
-        left_root.rename("file", &right_root, "cross"),
+        left_root.rename(
+            "file",
+            &right_root,
+            "cross",
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::CrossesDevices)
     ));
 
@@ -1847,10 +2206,20 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     assert!(matches!(
-        left_root.rename("dir", &subdir, "loop"),
+        left_root.rename(
+            "dir",
+            &subdir,
+            "loop",
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::InvalidInput)
     ));
 
@@ -1859,18 +2228,38 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
         node_type: NodeType::Directory,
         ..Default::default()
     };
-    assert!(left_root.open_file("dir", &options).unwrap().is_dir());
+    assert!(
+        left_root
+            .open_file("dir", &options, &axfs_ng_vfs::MutationCredentials::root())
+            .unwrap()
+            .is_dir()
+    );
     let options = OpenOptions {
         create: true,
         node_type: NodeType::Symlink,
         ..Default::default()
     };
     assert!(matches!(
-        left_root.open_file("new-link", &options),
+        left_root.open_file(
+            "new-link",
+            &options,
+            &axfs_ng_vfs::MutationCredentials::root()
+        ),
         Err(VfsError::InvalidInput)
     ));
     let link = left_root
-        .create_symlink("new-link", "/typed-target", NodePermission::default(), 0, 0)
+        .create_symlink(
+            "new-link",
+            "/typed-target",
+            NodePermission::default(),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
+        )
         .unwrap();
     assert_eq!(link.read_link().unwrap(), "/typed-target");
 

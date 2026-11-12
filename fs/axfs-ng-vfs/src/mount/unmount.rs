@@ -2,6 +2,10 @@ use hashbrown::HashSet;
 
 use super::*;
 
+mod path_handle;
+
+pub use path_handle::{PathHandle, PathUnmount};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnmountKind {
     Normal,
@@ -30,11 +34,42 @@ struct UnmountTarget {
     location: Location,
 }
 
+struct UnmountRetirement {
+    attachments: Vec<Arc<dyn Any + Send + Sync>>,
+    relations: propagation::RelationRetirement,
+}
+
 #[derive(Debug)]
 pub struct UnmountPlan {
     kind: UnmountKind,
     topology_version: u64,
     targets: Vec<UnmountTarget>,
+    target_use: Option<Arc<MountUseGuard>>,
+}
+
+impl MountUseGuard {
+    /// Consumes precisely this lookup's counted use when admitting its target.
+    /// Other open files, snapshots, and in-flight walks continue to count busy.
+    ///
+    /// ```compile_fail
+    /// use axfs_ng_vfs::{Location, MountUseGuard};
+    /// fn consume_twice(guard: MountUseGuard, target: &Location) {
+    ///     let _ = guard.into_unmount_plan(target);
+    ///     let _ = guard.into_unmount_plan(target);
+    /// }
+    /// ```
+    pub fn into_unmount_plan(self, target: &Location) -> VfsResult<UnmountPlan> {
+        if !target.is_root_of_mount() || !Arc::ptr_eq(&self.mountpoint, &target.mountpoint) {
+            return Err(VfsError::InvalidInput);
+        }
+        let mut plan = {
+            let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            self.mountpoint
+                .plan_unmount_locked_with_use(UnmountKind::Normal, Some(&self))?
+        };
+        plan.target_use = Some(Arc::new(self));
+        Ok(plan)
+    }
 }
 
 impl UnmountPlan {
@@ -49,8 +84,15 @@ impl UnmountPlan {
     }
 
     fn has_active_uses(&self) -> bool {
-        self.targets()
-            .any(|mount| mount.active_uses.lock().users != 0)
+        self.has_active_uses_except(self.target_use.as_deref())
+    }
+
+    fn has_active_uses_except(&self, owned: Option<&MountUseGuard>) -> bool {
+        self.targets().any(|mount| {
+            let owned_count =
+                usize::from(owned.is_some_and(|guard| Arc::ptr_eq(&guard.mountpoint, mount)));
+            mount.active_uses.lock().users > owned_count
+        })
     }
 
     fn has_same_targets(&self, expected: &Self) -> bool {
@@ -92,17 +134,17 @@ impl UnmountPlan {
         Ok(())
     }
 
-    fn commit_locked(&self) -> Result<Vec<Arc<dyn Any + Send + Sync>>, UnmountCommitError> {
+    fn commit_locked(&self) -> Result<UnmountRetirement, UnmountCommitError> {
         self.revalidate_locked()?;
         self.detach_targets_locked()
     }
 
-    fn commit_current_locked(&self) -> Result<Vec<Arc<dyn Any + Send + Sync>>, UnmountCommitError> {
+    fn commit_current_locked(&self) -> Result<UnmountRetirement, UnmountCommitError> {
         self.revalidate_targets_locked()?;
         self.detach_targets_locked()
     }
 
-    fn detach_targets_locked(&self) -> Result<Vec<Arc<dyn Any + Send + Sync>>, UnmountCommitError> {
+    fn detach_targets_locked(&self) -> Result<UnmountRetirement, UnmountCommitError> {
         for target in &self.targets {
             Mountpoint::detach_from_parent_locked(&target.mountpoint)
                 .map_err(|_| UnmountCommitError::TopologyChanged)?;
@@ -110,11 +152,16 @@ impl UnmountPlan {
                 target.mountpoint.active_uses.lock().normally_unmounted = true;
             }
         }
-        let mut retired = Vec::new();
+        let mut retired = UnmountRetirement {
+            attachments: Vec::new(),
+            relations: propagation::RelationRetirement::default(),
+        };
         for target in &self.targets {
-            target.mountpoint.leave_propagation_relations_locked();
+            target
+                .mountpoint
+                .leave_propagation_relations_locked(&mut retired.relations);
             if let Some(guard) = target.mountpoint.lifetime_guard.lock().take() {
-                retired.push(guard);
+                retired.attachments.push(guard);
             }
         }
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
@@ -146,7 +193,10 @@ impl Mountpoint {
             let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
             plan.revalidate_targets_locked()?;
             if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != plan.topology_version {
-                let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
+                let current_plan = self.plan_unmount_locked_with_use(
+                    UnmountKind::Normal,
+                    plan.target_use.as_deref(),
+                )?;
                 // A changed propagation set has not passed the caller's busy
                 // checks and cannot join (or leave) this admitted transaction.
                 if !current_plan.has_same_targets(&plan) {
@@ -165,6 +215,14 @@ impl Mountpoint {
     }
 
     fn plan_unmount_locked(self: &Arc<Self>, kind: UnmountKind) -> VfsResult<UnmountPlan> {
+        self.plan_unmount_locked_with_use(kind, None)
+    }
+
+    fn plan_unmount_locked_with_use(
+        self: &Arc<Self>,
+        kind: UnmountKind,
+        owned: Option<&MountUseGuard>,
+    ) -> VfsResult<UnmountPlan> {
         if self.is_root() {
             return Err(VfsError::InvalidInput);
         }
@@ -196,8 +254,11 @@ impl Mountpoint {
             kind,
             topology_version: MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire),
             targets,
+            target_use: None,
         };
-        if kind == UnmountKind::Normal && (plan.has_children() || plan.has_active_uses()) {
+        if kind == UnmountKind::Normal
+            && (plan.has_children() || plan.has_active_uses_except(owned))
+        {
             return Err(VfsError::ResourceBusy);
         }
         Ok(plan)

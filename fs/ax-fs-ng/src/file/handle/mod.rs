@@ -21,11 +21,12 @@ pub use backend::FileBackend;
 
 /// Provides `std::fs::File`-like interface.
 pub struct File {
-    pub(super) write_access: Option<Arc<WriteAccess>>,
     inner: FileBackend,
     flags: AtomicU8,
     position: Option<Mutex<u64>>,
     access_flags: AtomicU8,
+    // Backend/cache destruction must finish before releasing writer authority.
+    pub(super) write_access: Option<Arc<WriteAccess>>,
 }
 
 impl File {
@@ -64,18 +65,26 @@ impl File {
     pub fn open(context: &FsContext, path: impl AsRef<Path>) -> VfsResult<Self> {
         OpenOptions::new()
             .read(true)
-            .open(context, path.as_ref())
+            .open_with_credentials(
+                context,
+                path.as_ref(),
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
             .and_then(OpenResult::into_file)
     }
 
     /// Opens a file for writing, creating it if it does not exist and
     /// truncating it if it does.
-    pub fn create(context: &FsContext, path: impl AsRef<Path>) -> VfsResult<Self> {
+    pub fn create(
+        context: &FsContext,
+        path: impl AsRef<Path>,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult<Self> {
         OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(context, path.as_ref())
+            .open(context, path.as_ref(), credentials)
             .and_then(OpenResult::into_file)
     }
 

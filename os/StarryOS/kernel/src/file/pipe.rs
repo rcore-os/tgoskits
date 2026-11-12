@@ -15,7 +15,7 @@ use ax_std::os::arceos::task::{
 };
 use axpoll::{IoEvents, PollRegistration, PollSource, Pollable, RegistrationMode};
 use linux_raw_sys::{
-    general::{O_RDONLY, O_WRONLY, S_IFIFO},
+    general::{O_RDONLY, O_WRONLY},
     ioctl::FIONREAD,
 };
 use ringbuf::{
@@ -29,6 +29,7 @@ use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
     mm::VmMutPtr,
+    pseudofs::object::{ObjectInode, ObjectNode},
     sync::Mutex,
     task::{current_user_task, send_signal_to_process},
 };
@@ -538,6 +539,7 @@ impl Drop for PipeWaitSet {
 }
 
 struct Shared {
+    inode: Arc<ObjectInode>,
     state: Mutex<PipeState>,
     // One coherent Linux-style READ_ONCE view of data, capacity, and peers.
     readiness: AtomicU64,
@@ -607,6 +609,7 @@ impl Shared {
     fn new(state: PipeState) -> Self {
         let readiness = state.readiness();
         Self {
+            inode: ObjectInode::new(axfs_ng_vfs::NodeType::Fifo, 0o600),
             state: Mutex::new(state),
             readiness: AtomicU64::new(readiness.0),
             wait_rx: PipeWaitSet::new(),
@@ -854,6 +857,21 @@ impl Drop for Pipe {
 }
 
 impl Pipe {
+    pub(crate) fn location(&self) -> axfs_ng_vfs::Location {
+        if let Some(file) = self.named_file() {
+            return file.inner().location().clone();
+        }
+        self.shared.inode.location(self.shared.clone())
+    }
+
+    pub(crate) fn object_display(location: &axfs_ng_vfs::Location) -> Option<Cow<'static, str>> {
+        let node = location
+            .entry()
+            .downcast::<ObjectNode<Arc<Shared>>>()
+            .ok()?;
+        Some(format!("pipe:[{}]", node.inode.inode()).into())
+    }
+
     pub fn new() -> (Pipe, Pipe) {
         let mut state = PipeState::empty();
         state.add_endpoint(PipeAccess::ReadWrite);
@@ -1366,10 +1384,7 @@ impl FileLike for Pipe {
         if let Some(file) = self.named_file() {
             return file.stat();
         }
-        Ok(Kstat {
-            mode: S_IFIFO | if self.is_read() { 0o444 } else { 0o222 },
-            ..Default::default()
-        })
+        Ok(super::metadata_to_kstat(&self.shared.inode.metadata()?))
     }
 
     fn inode_key(&self) -> Option<InodeKey> {
@@ -1380,7 +1395,7 @@ impl FileLike for Pipe {
         if let Some(file) = self.named_file() {
             return file.path();
         }
-        format!("pipe:[{}]", self as *const _ as usize).into()
+        format!("pipe:[{}]", self.shared.inode.inode()).into()
     }
 
     fn open_flags(&self) -> u32 {

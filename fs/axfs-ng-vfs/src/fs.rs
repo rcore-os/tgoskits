@@ -1,9 +1,10 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
+use ax_sync::Mutex;
 use inherit_methods_macro::inherit_methods;
 
-use crate::{CachedWriteAdmission, DirEntry, VfsResult};
+use crate::{CachedWriteAdmission, DirEntry, Location, RawSpinLock, VfsError, VfsResult};
 
 pub struct StatFs {
     pub fs_type: u32,
@@ -28,6 +29,51 @@ pub trait FilesystemMountLease: Send + Sync + core::fmt::Debug {}
 
 /// Trait for filesystem operations
 pub trait FilesystemOps: Send + Sync {
+    /// Whether this owner implements the closed native namespace boundary.
+    fn has_native_namespace(&self) -> bool {
+        false
+    }
+
+    /// Acquires only the existing operation admission, never a backend gate.
+    /// The VFS binds the returned guard to this receiver before exposing it.
+    fn enter_namespace(&self) -> VfsResult<alloc::boxed::Box<dyn crate::NamespaceOperation + '_>> {
+        Ok(alloc::boxed::Box::new(()))
+    }
+
+    /// Backend implementation hook. The request is privately constructed by
+    /// the same-FS admission factory; this is not a public raw-attempt factory.
+    fn begin_namespace<'a>(
+        &'a self,
+        request: crate::NamespaceDriverRequest<'a>,
+    ) -> crate::NamespaceStart<'a> {
+        request.fail(VfsError::OperationNotSupported)
+    }
+
+    /// Fixed admitted read primitive, without reentering operation admission.
+    /// Ordinary callers hold no native driver/backend gate. The private bound
+    /// backing-query path may retain strict ancestor gates, but neither path
+    /// holds this destination's driver/gate. Retire temporary owners on errors
+    /// as well as success; returned snapshots do not authorize later mutation.
+    fn query_namespace(
+        &self,
+        _admission: &crate::NamespaceAdmission<'_>,
+        _query: crate::NamespaceQuery<'_>,
+        _retired: &crate::MutationRetire,
+    ) -> VfsResult<crate::NamespaceRead> {
+        Err(VfsError::OperationNotSupported)
+    }
+
+    /// Dispatches a privately bound read. Composite implementations must check
+    /// `request.admission().check_owner(self)` before taking their own gate and
+    /// use `request.backing_queries()` for each further direct dependency.
+    /// The native default executes the fixed primitive, not an error fallback.
+    fn query_backing_namespace(
+        &self,
+        request: crate::BackingQueryRequest<'_, '_>,
+    ) -> VfsResult<crate::NamespaceRead> {
+        request.execute_native()
+    }
+
     /// Gets the name of the filesystem
     fn name(&self) -> &str;
 
@@ -49,6 +95,27 @@ pub trait FilesystemOps: Send + Sync {
 
     /// Gets the root directory entry of the filesystem
     fn root_dir(&self) -> DirEntry;
+
+    /// Returns the immutable stacking depth, without I/O or backend gates.
+    /// Native filesystems have depth zero; all backing edges must descend.
+    fn stack_depth(&self) -> u32 {
+        0
+    }
+
+    /// Returns immutable writable backing roots without I/O or backend gates.
+    /// Dependencies used only for reading belong in [`Self::read_backing_roots`].
+    fn write_backing_roots(&self) -> &[Location] {
+        &[]
+    }
+
+    /// Returns immutable read-only backing roots without I/O or backend gates.
+    /// Write preparation pins these locations for the operation-admission
+    /// factory without granting mount write authority. Reading a layered root
+    /// also prepares all of its dependencies as read-only, including its
+    /// writable roots.
+    fn read_backing_roots(&self) -> &[Location] {
+        &[]
+    }
 
     /// Retains mount ownership separately from cached inode references.
     /// Bind mounts and namespace copies retain the same filesystem lease.
@@ -83,10 +150,35 @@ pub struct FilesystemId(u64);
 static NEXT_FILESYSTEM_ID: AtomicU64 = AtomicU64::new(1);
 
 /// VFS superblock flags shared by every mount of a filesystem instance.
-#[derive(Debug)]
 pub(crate) struct FilesystemMountState {
     pub(crate) id: FilesystemId,
-    readonly: AtomicBool,
+    /// Lock order: reconfiguration, shared writes, mount-local writes.
+    pub(crate) reconfiguration: Mutex<()>,
+    pub(crate) writes: RawSpinLock<MountWriteState>,
+}
+
+impl core::fmt::Debug for FilesystemMountState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FilesystemMountState")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Flags and counts are observed together during write admission.
+#[derive(Debug)]
+pub(crate) struct MountWriteState {
+    pub(crate) readonly: bool,
+    pub(crate) writers: usize,
+}
+
+impl MountWriteState {
+    pub(crate) fn new(readonly: bool) -> Self {
+        Self {
+            readonly,
+            writers: 0,
+        }
+    }
 }
 
 impl FilesystemMountState {
@@ -96,16 +188,33 @@ impl FilesystemMountState {
             .expect("filesystem identity space exhausted");
         Self {
             id: FilesystemId(id),
-            readonly: AtomicBool::new(readonly),
+            reconfiguration: Mutex::new(()),
+            writes: RawSpinLock::new(MountWriteState::new(readonly)),
         }
     }
 
     pub(crate) fn is_readonly(&self) -> bool {
-        self.readonly.load(Ordering::Acquire)
+        self.writes.lock().readonly
     }
 
-    pub(crate) fn set_readonly(&self, readonly: bool) {
-        self.readonly.store(readonly, Ordering::Release);
+    /// Caller holds reconfiguration, but no state or backend lock across I/O.
+    pub(crate) fn prepare_readonly(
+        &self,
+        ops: &dyn FilesystemOps,
+        readonly: bool,
+    ) -> VfsResult<()> {
+        let previous = {
+            let state = self.writes.lock();
+            if readonly && !state.readonly && state.writers != 0 {
+                return Err(VfsError::ResourceBusy);
+            }
+            state.readonly
+        };
+        match (previous, readonly) {
+            (false, true) => ops.flush(),
+            (true, false) => ops.remount_read_write(),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -158,7 +267,14 @@ impl Filesystem {
 impl Filesystem {
     /// Creates a filesystem instance. Clone this handle to share its mounts.
     pub fn new(ops: Arc<dyn FilesystemOps>) -> Self {
-        let mount_state = Arc::new(FilesystemMountState::new(ops.is_readonly()));
+        Self::new_with_readonly(ops, false)
+    }
+
+    /// Sets initial VFS protection without entering reconfiguration.
+    /// Native write protection cannot be cleared by construction; querying it
+    /// retains the backend's own synchronization requirements.
+    pub fn new_with_readonly(ops: Arc<dyn FilesystemOps>, readonly: bool) -> Self {
+        let mount_state = Arc::new(FilesystemMountState::new(readonly || ops.is_readonly()));
         Self { ops, mount_state }
     }
 
@@ -167,9 +283,17 @@ impl Filesystem {
         self.mount_state.is_readonly()
     }
 
-    /// Configures VFS write protection before publishing a new mount.
-    /// This does not change the capabilities of the backing device.
-    pub fn set_readonly(&self, readonly: bool) {
-        self.mount_state.set_readonly(readonly);
+    /// Reconfigures shared VFS protection. Only a read-write to read-only
+    /// transition rejects active writers with `ResourceBusy`; same-state
+    /// requests do not reconfigure the backend.
+    /// This may sleep and perform synchronization/native I/O.
+    /// Failure leaves VFS flags unchanged. Mount-local flags are not changed;
+    /// use `Mountpoint::set_filesystem_readonly` for an ordinary remount.
+    pub fn set_readonly(&self, readonly: bool) -> VfsResult<()> {
+        let _configuration = self.mount_state.reconfiguration.lock();
+        self.mount_state
+            .prepare_readonly(self.ops.as_ref(), readonly)?;
+        self.mount_state.writes.lock().readonly = readonly;
+        Ok(())
     }
 }

@@ -18,6 +18,11 @@ fn metadata_owner_and_times_remain_durable_after_explicit_sync() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     filesystem.sync_to_disk().unwrap();
@@ -55,6 +60,11 @@ fn read_close_changes_atime_without_forcing_a_filesystem_commit() {
             NodePermission::default(),
             0,
             0,
+            &axfs_ng_vfs::MutationCredentials {
+                fsuid: 0,
+                fsgid: 0,
+                ..axfs_ng_vfs::MutationCredentials::root()
+            },
         )
         .unwrap();
     entry
@@ -143,9 +153,21 @@ fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
                     .unwrap();
             }
         }
-        target.write("/guest/builtin/old", b"old contents").unwrap();
+        target
+            .write(
+                "/guest/builtin/old",
+                b"old contents",
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
         let old_file = crate::file::File::open(&target, "/guest/builtin/old").unwrap();
-        source.write("/guest/builtin/new", b"new contents").unwrap();
+        source
+            .write(
+                "/guest/builtin/new",
+                b"new contents",
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
         assert_eq!(
             crate::bundle::install_directory(&source, &target, "/guest/builtin", |_, _| Err(
                 VfsError::InvalidData

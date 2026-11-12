@@ -1,5 +1,7 @@
 use core::{fmt::Debug, time::Duration};
 
+use crate::VfsResult;
+
 /// Filesystem node type.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -124,6 +126,14 @@ pub struct MutationCredentials<'a> {
     pub cap_dac_read_search: bool,
     /// Whether the caller has `CAP_FOWNER`.
     pub cap_fowner: bool,
+    /// Result of the caller's `capable(CAP_MKNOD)` check, not a raw namespace bit.
+    pub cap_mknod: bool,
+    /// CAP_CHOWN checked for the current flat, non-idmapped VFS domain, not a
+    /// raw namespace bit and not inferred from uid 0.
+    pub cap_chown: bool,
+    /// CAP_FSETID checked for the current flat, non-idmapped VFS domain, not a
+    /// raw namespace bit and not inferred from uid 0.
+    pub cap_fsetid: bool,
 }
 
 impl MutationCredentials<'static> {
@@ -136,6 +146,9 @@ impl MutationCredentials<'static> {
             cap_dac_override: true,
             cap_dac_read_search: true,
             cap_fowner: true,
+            cap_mknod: true,
+            cap_chown: true,
+            cap_fsetid: true,
         }
     }
 }
@@ -144,6 +157,42 @@ impl MutationCredentials<'_> {
     /// Returns whether the credential is a member of `gid`.
     pub fn in_group(&self, gid: u32) -> bool {
         self.fsgid == gid || self.supplementary_gids.contains(&gid)
+    }
+
+    /// Evaluates one DAC class against metadata read under the actual owner lock.
+    pub fn check_permission(&self, metadata: &Metadata, required: NodePermission) -> VfsResult<()> {
+        if self.cap_dac_override {
+            return Ok(());
+        }
+        const READ_SEARCH: NodePermission = NodePermission::from_bits_retain(0o555);
+        if self.cap_dac_read_search && required.difference(READ_SEARCH).is_empty() {
+            return Ok(());
+        }
+        let shift = if self.fsuid == metadata.uid {
+            6
+        } else if self.in_group(metadata.gid) {
+            3
+        } else {
+            0
+        };
+        if NodePermission::from_bits_truncate(metadata.mode.bits() >> shift).contains(required) {
+            Ok(())
+        } else {
+            Err(crate::VfsError::PermissionDenied)
+        }
+    }
+
+    /// Evaluates sticky removal/replacement against current directory/target owners.
+    pub fn check_sticky(&self, directory: &Metadata, target: &Metadata) -> VfsResult<()> {
+        if !directory.mode.contains(NodePermission::STICKY)
+            || self.cap_fowner
+            || self.fsuid == directory.uid
+            || self.fsuid == target.uid
+        {
+            Ok(())
+        } else {
+            Err(crate::VfsError::OperationNotPermitted)
+        }
     }
 }
 
