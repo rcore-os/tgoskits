@@ -610,6 +610,77 @@ creator-userns 数据。这些事实不足以证明子 namespace 中的 inode �
 解释，并按用途拆分必要事实，不能仅把非 initial 的布尔值重新打开。
 启动和测试中没有用户任务的初始化继续使用显式初始化身份，不提供 syscall 的 root 兜底。
 
+### 3.6 查询冲突与同会话续走
+
+普通组件查询需要一个能区分真实失败与内部观察冲突的结果。现有
+`DirNode::lookup`、`Location::lookup_no_follow` 和两组 FsContext helper
+都用 `VfsResult`，无法只凭 `WouldBlock` 判断是否能重做；第 2.6 节的发布
+冲突不能沿这个无差别出口接入，更不能把整个 open/create 包进错误码循环。
+本节确定原因和状态的归属，不重新实现已验的命名 Scope 完成算法。
+
+#### 3.6.1 组件结果
+
+VFS 增加只读结果 `LookupStep<T>`，区分 `Found(T)`、`Missing`、
+`Revalidate(LookupConflict)` 与 `Failed(VfsError)`。
+`LookupConflict` 至少区分本目录候选发布观察失效和父命名观察失效；
+创建者是实际检查这些观察的 VFS 路径，不从 backend 的错误码反推原因。
+它不是授权令牌、命名效果或新的 `NamespaceCompletion`。
+多个条件同时失效时保留较强的重验证要求：观察到 namespace/writer 冲突，
+就不能因先发现 cache generation 不同而降为仅本目录发布冲突。
+该目录内容的 publication 未冲突也不证明其自身的祖先命名关系没有改变。
+
+`DirNode` 的组件入口返回 `LookupStep<DirEntry>`，`Location` 的用户路径组件
+入口保留该分类并执行原覆盖挂载转换。普通 backend lookup 返回的
+NotFound 只有通过负观察发布后才成为 Missing；真实 backend WouldBlock
+始终保留为 Failed(WouldBlock)，不能自动变为 Revalidate。
+`lookup_generation` 或 cache generation 的冲突产生候选发布失效，
+namespace generation 变化或命名 writer 重叠产生父命名观察失效。
+普通无 identity 的成功也经过该结果路径，不能保留跳过检查的直返分支。
+
+`NameObservation`、`ParentStep` 的 Untrusted 和挂载拓扑观察有各自真实来源，
+会话把它们作为拓扑重验证处理，不把它们包装成本目录发布冲突。
+固定 backing query 仍按第 4.9、4.17 节执行，不因同名 Lookup 字样改成
+用户路径组件，不跟挂载和链接，也不重新准备后备权利。
+
+#### 3.6.2 续走状态
+
+`LookupSession` 保存尚未接受的 parent、末名和当前路径帧。
+组件发布失效时丢弃本轮候选，在退出本轮局部 guard 后，以同一 parent、
+名字和原调用身份重新读取搜索权限、重新查询；不重新采样 cwd/root、
+mount namespace 或凭据，不退还已经消费的链接预算。
+只在 Found 被接受且所需使用租约取得后，才推进剩余路径和搜索记录。
+
+搜索记录保存被接受的路径观察，不把每次尝试的 parent clone 无界追加。
+现有 checked helper 的回调只用于纯权限校验；接入重试前须核对所有真实
+调用方没有创建、通知或描述符安装等副作用，不能以 Fn 类型证明它可重放。
+新统一核心直接使用保存身份和确定的搜索规则，不增加任意回调框架。
+
+父命名或拓扑冲突要求重验证会话保存的路径约束，不能只重复同名 query
+就声称 containment 仍成立。普通模式在原会话内重取必要的关系观察；
+scoped 上行不能排除竞争时按第 3.4 节返回 EAGAIN，确定越界仍为 EXDEV。
+任何重新处理的链接继续收费，不新建预算、不降低限制，也不借 retry 追随
+任务后来改变的 root/cwd。Cached 模式不能用这些步骤进入慢路径。
+
+内部重试的调度与终止策略仍须在实施冻结前结合实际运行时明确：
+所有调度点在局部 guard 外，不用固定 sleep，不把暂时冲突伪造成 Missing
+或权限失败，也不声称当前旧 helper 已经具有隐藏的重试循环。
+该接点与第 2.6.4 节一起保留，尚不授权先实施发布冲突再直接暴露给用户。
+
+#### 3.6.3 末组件与副作用
+
+父遍历返回的 Continuation 必须保留同一个会话及未消费的末组件意图。
+它不能退化成 `(parent, name, trace)` 后由 open 再建计数器，
+也不把 `read_link().ok()` 保存的显示文本当作第二次跟随的来源。
+悬空链接创建继续处理原帧中的真实剩余路径；只有到达真正的末名空槽，
+才能进入已有受控创建协议，Missing 本身不授予创建权。
+
+查询候选尚未接受时才能做上述组件重查。进入真实 namespace 提交、truncate、
+device open、fd 安装或通知之后，结果归原操作的 typed outcome/completion
+所有者处理，不从 Failed(WouldBlock) 推出“重新执行 open”。
+`NamespaceState::Retry` 继续只表示原完成协议的重试控制；它不自动消费
+查找会话，也不把已经 applied 的副作用清零。最终作用域重验证仍在原
+实际槽位尝试中完成，不拿早期 trace 或快照当作永久授权。
+
 ## 4. 命名事务
 
 VFS 统一授权与提交协议，真实排他权由文件系统状态所有者落实。
@@ -2071,6 +2142,65 @@ fork 随 MM 复制、exec 构建新 MM 时按调用者空间初始化，用于 n
 不重新按 PID 字符串挑选任务，不缓存授权结果供后续访问复用。
 已有用户命名空间映射或能力发放未完成的入口不因此被宣称完整兼容，
 但读取授权本身不得用宽松替代规则或静默越权兜底。
+
+### 5.4 原调用身份的传递
+
+现有 `LinkOps::target/read_link` 没有身份参数，ProcLink 会重新读取当前任务
+并采样凭据。统一会话不能在目标回调处换成另一次身份观察；同时 VFS 不能
+依赖 Starry 的 Thread、Cred 或 UserNamespace。采用只读、显式传递的调用方
+上下文，保持这两个边界，不复制一套 namespace 权威状态到通用 VFS。
+
+#### 5.4.1 借用的调用方上下文
+
+VFS 定义领域专用的 `LinkCaller: Any + Send + Sync` 只读 marker，以 `core::any::Any` 提供具体
+操作系统适配器的类型识别，不包含任意键值表、回调注册、写入能力或任务查询。
+`LinkOps::target(&self, caller: &dyn LinkCaller)` 与
+`read_link(&self, caller: &dyn LinkCaller)` 都显式接收它；DirEntry 的目标和
+显示入口同样传递，不提供“省略参数就重新读取 current”的用户路径默认值。
+VFS 只转发这份上下文，不解释操作系统的 namespace、能力或线程组规则。
+
+Starry 的私有 `ProcLinkCaller` 保存本次操作的 `FsCredentialsSnapshot` 与用于同线程组
+判断的原 ProcessData 强引用，不保存运行时 UserTaskRef 或 Scope。
+会话借用该适配器及由同一凭据快照派生的 `MutationCredentials`；
+快照由外层调用持有至 Continuation 消费结束，不把自身字段借用存回自身，
+不使用静态延寿、Pin 或任务全局槽。凭据数值、namespace 身份和补充组来自
+同一原始快照，target 的动态安全状态仍在每次获取目标时重新观察。
+
+“本次操作的快照”包括入口按 ABI 明确选择的身份投影，不表示所有入口都
+原样使用未经派生的任务 Cred。普通 open 等使用捕获的文件系统身份；
+access/faccessat/faccessat2 未设 AT_EACCESS 时，由同一次捕获结果调用
+`FsCredentialsSnapshot::for_real_id_access(&self) -> Self`，复用
+`Cred::for_real_id_access` 的 fsuid/fsgid 与 securebits/capability 派生，
+并保留原配对的同一个 user namespace Arc。AT_EACCESS 使用原身份。
+该方法只建立本次拥有型、不可变的操作视图，不写回 Thread，不重新抓取
+namespace，不新增 permitted 能力或扩大第 3.5 节已有的有限身份解释范围。
+目录搜索、最终 access DAC 和 proc READ_FSCREDS caller 都从这同一操作视图派生；
+不能让 DAC 使用 real-ID 视图而 proc 回调继续使用原 fsuid，或反向混用。
+
+ProcLink 只接受可识别的 Starry 调用方类型，按第 5.3 节执行 READ_FSCREDS，
+同线程组判断使用原 ProcessData 身份。未知调用方类型明确不支持，不能重新
+抓 current、补 root 或复用 attach/信号的授权作为兜底。适配器仅在本次解析
+和 readlink 操作中被借用，不存入 ProcEntry、链接内容、长期配方或打开描述。
+文本链接不解释这些操作系统身份；启动等非用户调用使用明确的 native 调用方，
+不能让该 marker 冒充 proc 读取授权。
+Any 和共享借用不冻结内部可变状态；私有适配器只开放身份读取，不通过
+ProcessData 修改任务状态或查询 Scope。适配器及其最后领域引用在局部 guard 外释放，
+不能仅凭 Send/Sync marker 宣称整个查找会话可任意跨任务执行。
+
+#### 5.4.2 统一消费与验证
+
+一次跟随只调用一次带原身份的 target，取得拥有型 Text 或 Object 快照后，
+再按第 5.2 节检查对象跳转策略。显示 readlink 使用同一身份来源的独立显示
+操作，不通过先读文本、再跟文本的方式获取目标，也不让 `NO_MAGICLINKS`
+提前覆盖回调本应返回的权限或目标错误。目标 task/fd/MM/context 锁在返回
+拥有型引用之前释放，不能把调用方快照当成这些目标锁的替代品。
+
+所有 LinkOps 实现、DirEntry 入口、普通 resolver、末组件续走和 Starry readlink
+消费者在同一可审查序列迁移并删除无身份的旧签名；不保留 proc 字符串拦截
+或额外 current 采样的永久兼容路径。验证应以同一会话内改变当前任务可见
+凭据、保持原调用快照的受控交错，证明回调实际使用原身份，同时确认目标
+凭据、fd 关闭复用与目标引用仍按实际拥有者观察。组件证明不能外推为系统
+调用通过；重新打开匿名对象的 I/O 能力仍由正式打开契约落实。
 
 ## 6. 元数据变更
 
