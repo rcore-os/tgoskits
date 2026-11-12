@@ -681,6 +681,152 @@ device open、fd 安装或通知之后，结果归原操作的 typed outcome/com
 查找会话，也不把已经 applied 的副作用清零。最终作用域重验证仍在原
 实际槽位尝试中完成，不拿早期 trace 或快照当作永久授权。
 
+### 3.7 路径使用权与只读视图
+
+会话的稳定引用还需要参加普通卸载的忙碌判定。现有 `MountUseGuard` 已表达
+真实使用权，但只在函数旁边放一个可提前释放的局部变量不足以保护跨函数、
+描述符或映射的路径。本节先确定 VFS 路径句柄与普通卸载转交的边界，
+再列出生产消费者必须满足的持有责任。上下文更新、映射退休与缓存专用取得
+仍须各自闭合后才能迁移；底层句柄交付不等于这些消费者或统一 walker 已完成。
+
+#### 3.7.1 路径句柄
+
+VFS 增加字段私有的 `PathHandle`，共同拥有原 `Location` 与
+`Arc<MountUseGuard>`。其含义仅是 mount 的使用权，不证明名称仍 Linked、
+路径仍位于某个 scoped 根内、权限已通过或文件可写。
+初次取得实际 guard 使用原 `Mountpoint::acquire_use`，必须在缓存 raw lock、
+FsContext mutex、fd 表和 backend gate 外执行，失败不能当成真实末名空槽。
+
+Clone 只共享原 guard 和路径引用，不重新进入挂载拓扑 gate。
+同 mount 内转换到合法 entry 可共享原 guard；构造器核实实际 mount 与 entry
+所属 FS，不能拿一份 guard 配另一个 mount。跨 mount 转换先取得新使用权，
+再交出旧权利。普通卸载已移除的 mount 不能重新 acquire；懒卸载按现有
+detached 规则继续支持已经保留的路径，不把 detach 当作正常移除。
+
+Location 在该句柄中的最终释放先于实际 guard 归还，使 inode/backend 释放
+仍在使用权范围内；guard 自身仍先退出 active-use 锁，再释放 mount/FS owner。
+不增加全局路径登记表，不把所有正项缓存引用也变成 mount 使用权。
+`mem::forget` 至多让使用权继续保留并拒绝卸载，不能因为漏析构开放错误访问。
+
+路径句柄只开放以下拥有与借用操作。`Location` 仍是原有位置对象，
+借到它不代表获得长期使用权；长期消费者必须继续保存或转交 `PathHandle`，
+不能把 `location().clone()` 当作租约。缓存专用视图不导出这个一般路径借用口。
+
+| 入口 | 所有权与失败 |
+| --- | --- |
+| `PathHandle::acquire(location: Location) -> VfsResult<Self>` | 先核实 entry 的实际 FS owner 与 mount root 的实际 FS owner 相同，错配为 `CrossesDevices`；再取得该 exact mount 的原 guard。正常卸载后的 `NotFound` 是取得使用权失败，不是名称查询结果 |
+| `rebind(&self, location: Location) -> VfsResult<Self>` | 仅允许同一个 mount Arc 且 entry FS 匹配，成功共享已有 guard；不同 mount 或 FS 为 `CrossesDevices`，不隐式 acquire 或跨挂载 |
+| `location(&self) -> &Location` | 借用位置供已拥有句柄的普通消费者使用，不导出 guard、可变字段或 `into_raw`；不实现 `Deref` |
+| `Clone` | 共享同一个真实 guard，不另计一次 user，不承诺新的名称、权限或范围观察 |
+
+同一 FS 的两个 bind mount 也必须按 mount Arc 区分，不能以 inode 号、设备号或
+共享页缓存身份替代。新取得 use 的计数采用 checked add，溢出返回
+`ValueOverflow` 且不改变计数；不扩大为新的内存耗尽处理机制。
+上述 acquire 可能等待拓扑 gate，只供普通路径使用，不能作为 CACHED 的后备入口。
+
+#### 3.7.2 上下文与会话
+
+FsContext 的 root、cwd 和需要保留的 dirfd 起点使用同一持有模型。相应状态在
+安装前已取得有效句柄，短持任务 FsContext 锁时只复制这些拥有引用及原 namespace
+引用，不在锁内重新调用 acquire_use。这样取得 FsView 不需要建立
+FsContext 锁到 mount topology gate 的新反向边。
+
+修改 root/cwd 或重绑 namespace 仍由原 FsContext 所有者执行。更新时在锁内
+移出旧句柄与旧 context 引用，最后释放在锁外；不得依赖赋值时隐藏的最后 Drop。
+复制视图不加入 FS_REGISTRY，不成为会被 pivot 修订的另一个任务状态所有者。
+FsView 只保存本次选定的 root/cwd/起点、原 mount namespace 引用、
+借自同一操作身份的 MutationCredentials 和 LinkCaller，不给修改任务状态的出口。
+
+FsView 被 LookupSession 消费，Continuation 再持原会话。待处理链接的目录、
+当前路径和已接受观察继续保有相应 PathHandle；不能从旧句柄仅抽出 Location
+返回，先释放 guard，再让后续打开或挂载使用这份裸路径。
+LinkTarget 的 Object 快照也要在原 fd、MM 或 FsContext 拥有者尚保活时完成
+句柄的转交，不在释放源引用后再靠一次普通路径解析找回目标。
+
+同 mount 步进共享已有 Arc，不要求每个普通路径组件重新分配 guard、
+取得全局拓扑 gate 或登记一份新用户。跨 mount、对象跳转与最终对象转交
+各按真实来源取得或继承权利，仍须分别执行 NO_XDEV 与 scoped 检查。
+取得 use 时发现正常卸载竞争属于拓扑重验证，不能误报为允许创建的 Missing。
+
+#### 3.7.3 描述与映射
+
+打开描述、目录描述、执行文件和仍使用路径的映射须持续拥有相应句柄。
+只给 File 加字段而让 mmap 仅留下 CachedFile 或写租约，不构成完整生命周期；
+dup/fork 保留原描述或句柄，独立 reopen 取得自己的打开状态，不能以共享偏移
+代替新的 open。只读映射同样需要使用权，不以存在 WriteAccess 为前提。
+
+FileBackend 保持缓存端点与实际路径使用权成对；若现有公开 enum 允许 Cached
+与任意路径错配，则收口为字段私有的结构和内部 enum，通过受控构造器绑定。
+backend/cache 的析构先于它所依赖的最后路径 guard，避免清理尚未结束就开放普通卸载。
+这是持有关系，不把低层 File::new 或 backend 访问器冒充打开权限证明；
+第 4.10 节的数据与原生端点能力仍要另行落实。
+
+独立页缓存和后台写回继续保留其真实 inode/backing owner，但不能永久保留
+用户 mount-use，导致所有曾缓存的 mount 都无法普通卸载。映射、打开描述、
+执行文件与后端工作各自实际持有什么，必须沿现有创建和释放链迁移；
+最后 owner 可能在 MM 或文件锁下释放的路径需显式移出后再 Drop，
+不能以“只是增加 Arc”跳过这个核查。
+
+这里的纯缓存包括现有全局 `ELF_LOADER` 的 32 项 LRU：
+`ElfCacheEntry.cache` 当前直接持有 `CachedFile` 包装，而非仅持
+`CachedFileShared`。因此 `CachedFile` 包装本身也不统一升级为活跃路径租约。
+实际执行段与解释器段必须在交给 `MappingOperation::new_cow` 时从本次活跃
+输入取得句柄；主程序 `ExecutableFile` 不能代替另一 mount 上解释器段的使用权。
+共享文件映射当前只向 `MappingOperation::new_file` 传 `CachedFile`，迁移时
+必须补齐实际逻辑路径使用权，不能从低层 cache 猜回 mount。
+
+`AddrSpace::take_file_accesses` 当前只移出 executable/write 租约，
+不移出 VMA backend。`release_retired_mapping_owners` 退出内部 IRQ-safe 锁
+也不证明调用者已退出外层 MM mutex。新路径租约的退休须沿真实 VMA、preimage、
+TLB 退休批次和最后 MM 用户接点闭合；本节不授权把新的最后 Drop 机械放进这些锁。
+named FIFO 已在等待伙伴前持有真实 guard，迁移不得丢掉等待及取消阶段的保护；
+复用已有路径租约后也不为同一责任惯性保留额外 acquisition。
+
+#### 3.7.4 卸载转交与验收
+
+普通卸载自身的目标解析只能消费它确实拥有的临时使用权。若 PathHandle 的
+guard Arc 还由 cwd、另一个描述、映射或外部路径持有，就不能把这份实际使用权
+从忙碌判定中排除。转交时先释放本会话其余临时持有者，只有实际独占的
+guard 才能通过消费式接口进入原 unmount plan；共享时保持忙碌，不能用一个
+布尔值或假设 Arc 数量代表活线程来跳过检查。
+
+`PathHandle::prepare_unmount(self) -> VfsResult<PathUnmount>` 消费本次目标句柄。
+它先验证目标是 mount root，且 mount 不是原 planner 拒绝的无父根
+（`Mountpoint::is_root()`）；不满足时先返回 `InvalidInput`，再考虑共享状态。
+这样全局根即使有共享 owner，也不会被新的独占前置条件改成先返回 Busy。
+该前置观察不替代锁内规划；拓扑 gate 内仍执行原根检查与完整重验证。
+随后用 `Arc::try_unwrap` 实际取得独占 guard；
+不先读 `strong_count` 再假定独占。共享失败为 `ResourceBusy`，本次句柄按正常
+字段顺序释放，其他真实 owner 继续保活；不先归还 use 再重新 acquire。
+计划失败同样先恢复句柄的拥有布局再返回错误，保证位置先于 guard 释放。
+
+成功时，字段私有的 `PathUnmount` 共同拥有目标句柄与原 `UnmountPlan`。
+`UnmountPlan::target_use` 改为私有共享 guard owner；原按值
+`MountUseGuard::into_unmount_plan` 仍消费裸 guard，普通计划仍不排除 use。
+只有通过独占恢复后，受控工厂才能把这一个真实 guard 共享给计划和私有目标句柄。
+这两个内部引用都由同一个消费式对象拥有，没有对外取得句柄或 guard 的出口，
+因此排除的一次 user 不会掩掉任何外部 owner；它不是让任意共享 guard
+获得排除资格的新入口。沿用原 `plan_unmount_locked_with_use`、传播目标集合、
+版本重验证与 post-flush 协议，不重新实现卸载算法。
+
+`PathUnmount` 不实现 Clone，不导出内部 plan 或可复制的目标路径句柄。
+它只提供 `targets()` 供原忙碌补充检查与工作准备，以及消费式
+`commit(self) -> VfsResult<()>`。commit 在目标句柄仍保活时调用原
+`Location::commit_unmount`，覆盖 flush、提交和 cache 清理；原 plan 即使先被
+消费或失败，私有目标句柄仍使 guard 留到最后位置释放。丢弃未提交对象只释放
+这些资源，不执行 flush、detach 或提交。lazy detach 继续沿原独立协议执行，
+无需也不得借此排除正在使用的路径。
+
+验收优先复用真实 mount 生命周期旅程：context、旧描述和只读/可写映射
+保活时正常卸载拒绝，释放对应实际使用权后成功；lazy detach 后旧路径仍可用；
+自解析临时权利不误报忙碌，但不排除任何其他持有者。缓存清理与最后析构
+也要在真实锁边界外观察，不只回读 active-use 计数。
+CachedLookup 需要的非阻塞取得/转交能力须另行证明，不能在 CACHED 路径调用
+可能睡眠的 acquire_use 或普通 metadata/lookup 来补足这份句柄。
+该 VFS 单元的验证先覆盖真实 mount 生命周期、同 mount 转交、错配拒绝、
+共享 owner 不得自排除、独占消费与锁外析构；后续上下文、描述符及真实映射
+接入后再补各自消费者的生命周期证据，不用底层单元通过替代这些证据。
+
 ## 4. 命名事务
 
 VFS 统一授权与提交协议，真实排他权由文件系统状态所有者落实。
