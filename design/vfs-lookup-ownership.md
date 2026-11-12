@@ -317,6 +317,182 @@ trace、SeqObject 等有状态内容 ops 保留原 producer 的创建时机与�
 编译阻塞时，不能绕过模块建立假装配或把组件模型当作系统通过；完成领域接点
 和独立设计核对后再派发生产迁移，后续仍须真实系统入口及受影响目标的证据。
 
+### 2.6 proc 动态实体与观察
+
+proc 的同一条目可能同时被旧文件描述、活跃目录项和新查找持有。当前
+`ThreadDir::lookup_child` 每次建立普通文件，而 `publish_lookup` 对有语义身份的
+目录或链接可能选回旧目录项；它不会合并候选的属性。第 2.5 节的分层因此还需要
+明确动态实体的保留位置，不能把“重新执行 producer”当作已经刷新旧 fd。
+本节先确定实体图和观察边界；第 2.6.4 节列出的领域接点仍须完成独立核对，
+不能把本节当作整个 proc 的实施冻结。
+
+#### 2.6.1 路径实体的保留
+
+采用每个 proc 目录实体自己的弱子项索引，不采用全局按 task 合并属性的登记表。
+私有 `ProcEntry` 保留原 `Arc<SimpleInode>`、条目类别、目标的既有语义身份，
+以及必要的 FS-free 领域引用；目录变体另有按规范化末名记录的弱子项索引。
+同名索引值同时绑定目标身份，任务编号复用、不同线程或不同条目类别不能仅因
+显示名字相同而复用 inode。不新增 PID、消息队列或 namespace 的业务编号。
+规范名沿用后端既有名称规则；当前 proc 没有额外名称规范化，不能把数字解析后
+重新格式化来私自合并 `01`、`1` 或 `+1` 的路径属性。
+活跃包装必须强持选定的整个 `ProcEntry`，不能只取出 `SimpleInode` 而丢掉
+其父锚点和子项索引。普通文件继续不提供 VFS `NodeIdentity`，使属性复用
+不会把原本每次 producer 创建的内容 ops 或缓存规范化成同一个包装。
+
+动态子实体强持其父 `ProcEntry` 作为路径身份的锚点，父只弱索引动态子实体。
+挂载配方保留根实体；这些对象都不持完整 `SimpleFsOwner`、mount、dentry、
+活跃包装或打开描述。这样旧子实体还存在时，父实体及原分配域不会提前消失，
+也不必用可能已复用的裸 inode 数值作长期键。同一任务经不同父目录出现的
+条目仍可有独立属性；bind mount 和同一已解析条目的路径别名复用原实体。
+
+每个 proc 目录的验证互斥边界覆盖目标有效性快照、弱子项选择或取消关联，
+由同一个 FS-free `ProcEntry` 提供，bind 包装不能各建一把。它是可睡眠的
+目录局部互斥，不是名称缓存自旋锁，也不跨整个路径、内容 I/O 或用户回调。
+顺序为该边界、任务/凭据或 fd 表的短快照、实体属性锁；读取属性的 setter
+与 stat 不反向取得目录验证边界。其实现须沿真实调用链核查这个顺序。
+分配候选前可退出该边界；回来必须重新验证目标并选择当前实体，不能使用
+退出前的快照。并发败选候选和被移除的保活对象都在相关锁外释放。
+分配失败不发布半实体。
+索引只保留 Weak，不能使所有动态 inode 常驻；清除死项不需要用户授权或
+后端 I/O。观察到目标不存在时移除对应的当前弱索引关联，已经打开的旧实体
+继续由原持有者保活；不能为了重用槽位而把旧对象改造成新任务的条目。
+
+目录和链接的 VFS 身份同时包含其实际 `SimpleInode` 的原 core/编号 lease，
+不再仅以 task、kind 和 fd 数字槽决定是否复用旧 dentry。目标身份用于领域索引
+的复用校验，inode lease 用于 VFS 候选与旧包装的实际实体匹配；二者职责不同。
+同号 fd 在观察到缺失后重现，若建立了新实体，旧 inode 仍由旧句柄保活且编号
+不可复用，因此 `publish_lookup` 不能把新实体替回旧 dentry。这里复用已有
+inode 分配域，不另增 fd 或 task 的业务代际计数器。
+
+动态 lookup 的 NotFound 还须与旧命名关系的失效一起完成。通用
+`lookup_and_cache` 在调用 backend 前短持缓存锁，保留当时同名活跃 entry、
+cache generation、namespace generation 和私有 `lookup_generation` 的快照。
+最后一项是目录局部的查找发布次序，不是文件或任务的业务代际。所有 backend
+慢查找的成功发布和被接受的 NotFound 都在同一个短缓存锁内核对这三份观察，
+并推进 `lookup_generation`；即使成功选回同一个实际 dentry，也必须推进。
+成功候选不能跨过被接受的负退休再发布，旧负结果也不能撤销同对象的较新成功。
+计数不能 wrapping 后出现 ABA；无法推进时明确返回 `ValueOverflow`，
+不改变这次 VFS 发布的索引、命名状态或发布次序，不声称回滚此前真实领域观察
+与合法属性刷新。普通无 identity 的慢成功也须经过该检查，不能沿旧直接返回
+分支绕开；普通正项缓存命中没有重新验证，不伪称一次新 backend 观察。
+
+后端返回 NotFound 后，另须核对没有命名 writer、当前同名 entry 仍为原快照对象，
+才取消该旧别名的发布并标为 Unlinked；没有原 entry 的负结果同样推进查找发布次序，
+使更早的在途成功候选失效。成功发布发现旧条目属于另一实体时，也将该旧别名
+退休，不仅用新弱指针覆盖它。规范名多键只按相同实际 entry 身份清除。
+所有保活引用和败选候选在缓存锁外释放，不调用 proc 或未知 backend 回调。
+任何观察变化均返回内部重验证结果 WouldBlock，不退休新的胜者；
+其他 backend 错误不产生“目标已消失”的发布。
+
+这里刻意先采用每目录的一项发布次序，覆盖尚未提前知道规范名的别名竞争；
+不再加一份按名字维护的永久时序表。backend 读取仍可并行，只有短时发布互斥。
+同目录独立慢查找也可能互相使候选失效，这是明确的重试成本，后续性能验证
+必须记录，不能隐瞒为完全无影响，也不预先增加一个更复杂的通用时序框架。
+
+ProcEntry 弱索引的取消关联是目录验证边界内对真实缺失观察的处理，不以
+外层 WouldBlock 自动回滚。该顺序防止旧验证结果在较新选择后删掉其关联；
+已被取消的旧实体不再供未来 producer 选择，旧句柄仍可保活它。
+取消前已选中的在途包装由 VFS 的双向发布检查拒绝跨越负退休；
+若负发布因较新 VFS 成功而失效，下一次 producer 仍须重新观察，不能恢复旧弱关联
+来重放结果。新实体的 inode lease 排除被旧 winner 替回，成功替换也退休旧别名。
+
+这个图把属性实体与一次内容 producer 分开。原先每次构造的 `SeqObject`
+或其他内容缓存仍按原 producer 的范围创建；复用属性不等于把这些缓存也合并。
+目录、普通文件和链接的包装都引用选定的同一属性实体，新候选被 VFS 丢弃时，
+也不会丢掉已经作用于该实体的合法字段刷新。无需在 VFS 的名称缓存锁内
+增加 proc 回调，也不以通用 `publish_lookup` 复制整份 Metadata。
+
+#### 2.6.2 属性与状态输出
+
+区分 inode 的权威属性、路径重新验证时的字段刷新和 stat 的一次性输出。
+`NodeOps::metadata()` 继续表达实际 inode 属性，供固定查询、DAC 和受控修改
+观察使用；不能把 Linux `pid_getattr` 的输出投影放进这个公共读取方法，
+否则一次权限检查或修改前观察也会隐式改变其含义。
+
+新增 `NodeOps::stat_metadata(&self) -> VfsResult<Metadata>`，默认调用
+`metadata()`。`DirEntry` 和 `Location` 提供对应转发，保持原 node type 与 mount
+设备投影；Starry 的路径 stat、旧描述符 fstat、statx 及 `FileLike::stat` 使用
+这个专用入口。普通文件系统默认行为不变，原 `NamespaceQuery::Metadata`
+与修改授权仍读取权威属性。所有状态消费者必须在同一迁移序列改完，不能
+只修改 pathname stat 而让旧 fd 继续读取另一套属性。
+
+`ResolveAtResult::stat()` 不能再同时服务状态输出和末项 DAC。现有
+`sys_faccessat2` 在目录搜索检查后调用它，再用返回的 Kstat 判最终权限；
+该调用必须迁到独立的 `access_metadata()`，文件路径分支读取原
+`Location::metadata()`，其他描述类型从自身同一属性 owner 取得原始快照，
+不以投影后的 `FileLike::stat()` 兜底。`FileLike` 相应区分属性权限快照和
+状态输出；审计所有 stat helper 的权限用途，不能只按 syscall 函数名迁移。
+中间目录搜索 DAC、最终 access DAC 和修改前观察都不得调用 `stat_metadata()`。
+
+proc 的重新验证先在任务、凭据、地址空间或 fd 表各自的真实同步边界内
+取得所需快照，释放这些领域锁后才进入实体属性锁。属性锁内只选择并更新
+参与字段；内容读取、可睡眠操作、用户内存及未知回调均在锁外。
+快照不能冒充后续内容操作或链接跟随的授权，也不保证目标在本次返回后仍活着。
+
+Linux v7.1 的下列区别必须保留，不能用一份统一的“刷新所有属性”策略替代。
+实际判断依据是对应 inode/dentry 操作表，不能仅按路径是否带 PID 分类。
+
+| 类别 | lookup 或重新验证 | stat 输出 | setter 与保留字段 |
+| --- | --- | --- | --- |
+| pid/tid 基目录 | `pid_update_inode` 规则刷新 owner 并清 setid，保留其余 mode 和时间 | `pid_getattr` 在本次输出投影 owner，不写回 inode | 保留基目录 immutable 约束，不能把所有请求一律成功或一律只读 |
+| task、fd、fdinfo 目录 | 按各自实际 revalidate 路径处理 | task/fd 各有专用投影，不能套用 `pid_getattr`；fdinfo 没有该 owner 投影 | nochmod 与时间、owner 参与分别判断 |
+| ns 目录 | 按实际目标验证及 owner 刷新 | 使用 `pid_getattr` 的输出规则 | 与普通 ns 链接分开 |
+| 普通 pid 文件 | 保留实际 `pid_revalidate` 的 owner/setid 规则 | 普通 `proc_def_inode_operations` 不增加 `pid_getattr` | nochmod 不等于禁止 owner/time；未参与字段保留原值 |
+| fd 链接 | 验证当前槽并按 `tid_fd_update_inode` 更新 owner 与链接访问 mode | 通用 inode 输出，不套用 `pid_getattr` | O_PATH 不能仅凭 O_ACCMODE 当作 FMODE_READ |
+| cwd/root/exe/ns 链接 | 按实际目标及链接类别验证，不把显示文本当目标 | 保留各自操作表，不统一投影 owner | 显式 symlink mode 与 chown 派生 mode 的检查顺序分开 |
+
+字段刷新不调用用户 chmod/chown，也不按用户提交修改来更新时间或发完成通知。
+修改命令仍通过原 `MetadataRequest`、真实 admission 和同一实体锁执行。
+新增只读 `MetadataRequest::change(&self) -> &MetadataChange`，仅借出原始领域意图，
+供具体 proc 策略识别参与字段；它不导出凭据、写令牌或可变请求，也不授权
+后端绕过固定授权器。nochmod 还须检查授权后实际出现的 mode 参与，不能
+只拒绝原始 Chmod 而遗漏 chown 清 setid 派生的 mode。
+
+#### 2.6.3 内容对象与任务寿命
+
+现有部分 `RwFile` 闭包强持 `UserTaskRef`；任务的 Scope 又可通过 FD_TABLE
+保留该文件。调度器的 external lease 保证这些句柄仍在时不回收任务扩展，
+所以这不是仅靠 Arc 字段名推断的环。私有表正常退出可主动清表，但共享表的
+`close_all_fds` 会跳过，退出也没有移走当前 Scope 的 FD_TABLE，不能依靠
+最终任务析构来证明环已断。这里处理 proc 文件的返回边，不借机修改共享
+fd 表、调度器回收或任务业务身份的算法。
+
+proc 的长期配方和内容 backing 不强持完整运行时任务或其 Scope。每次操作
+确需活任务时，以既有 PID/线程代际引用取得短寿命强句柄，在文件操作外层
+完成后释放；仅有 Weak 升级成功不等于目标业务上仍有效。原先明确持有
+ProcessData、MM 或 namespace 的对象只保留其实际需要的独立领域 owner，
+不得为了统一形式一律换成 Weak 后，把仍应可读的打开对象误报为不存在。
+
+尤其 `uid_map/gid_map/setgroups` 不能机械套用 comm 的逐次活任务读取。
+Linux `proc_id_map_open` 和 `proc_setgroups_open` 在打开阶段取 user namespace，
+随后描述持有 namespace，释放时归还；这与强持整个 task 不同。原 Starry
+映射简化实现和完整 Linux 映射的差距继续单独记录，不以本次所有权迁移
+宣称新增完整 user namespace 支持，也不悄悄改变映射或 namespace 身份。
+需要的按打开状态须接入正式打开契约，不能在 lookup 时伪装成已经 open。
+
+#### 2.6.4 冻结前的领域接点
+
+本节已选择弱子项实体图及独立 stat 入口，仍不能直接派发全量 proc 迁移。
+实施前须补齐具体的 paired owner 快照与 dumpable/MM namespace-root 投影，
+immutable、nochmod、symlink 与 ctime-only 的参与位和错误顺序，
+上述 namespace 文件的按打开状态交接，以及查找发布冲突的真实续走入口。
+当前 `DirNode::lookup`、`Location::lookup_no_follow` 和旧 trace resolver
+直接传播 WouldBlock，没有已经存在的组件重试保证；接入该协议时必须明确
+同一组件的 fresh 查询及必要搜索权限重查，保留原会话和链接总预算。
+在此之前不能把“交原查找重试”当作可实施事实或把内部竞争当用户正常错误。
+这些决定须与第 3.5 节的
+有限凭据能力和后续数据/open 契约一致，不能用默认 root、全 Unsupported、
+新属性镜像或普通 Location 重开作兜底。
+
+验证应从真实旧 fd 与新 lookup 的共享观察出发，覆盖字段刷新保留未参与值、
+getattr 投影不修改 owner、同名目标代际变化、并发候选败选和索引锁外最后析构。
+同号 fd 消失后重现须同时验证新实体不会被旧 winner 替换，旧句柄保留自己的
+实体和真实脱链状态；竞争中的 NotFound 不能撤销新发布对象。另以 raw owner
+与 stat 投影故意不同的情形验证 access DAC 仍读取 raw 属性。
+内容生命周期另证明长期文件不保住目标 Scope，而仍需独立领域 owner 的打开对象
+按其合同继续存活；不能只测 Weak 构造或 Arc 计数。本节设计及这些接点独立核对后，
+再与 devpts、mqueue 的真实 owner 接点共同形成可实施的 SimpleFS 迁移单元。
+
 ## 3. 查找会话
 
 `LookupSession` 负责一次操作的完整解析，不把父遍历与最终打开变成独立操作。
