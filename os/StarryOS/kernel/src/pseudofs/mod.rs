@@ -88,7 +88,8 @@ pub fn mount_all() -> StarryResult<()> {
     info!("Initialize pseudofs...");
 
     let fs_context = current_fs_context();
-    let fs = fs_context.lock();
+    // Backend creation and mount propagation must not retain the context mutex.
+    let fs = fs_context.lock().clone();
     let usbfs = usbfs::new_usbfs()?;
     let root_mount_device = fs.root_dir().mountpoint().device();
     mount_at(&fs, "/dev", dev::new_devfs(root_mount_device))?;
