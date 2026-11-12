@@ -519,7 +519,19 @@ impl Mountpoint {
         Self::new_with_device_source(fs, None, device, source)
     }
 
+    #[cfg(test)]
     fn bind(source: &Location, location_in_parent: Location, recursive: bool) -> Arc<Self> {
+        let mut retirement = propagation::RelationRetirement::default();
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        Self::bind_locked(source, location_in_parent, recursive, &mut retirement)
+    }
+
+    fn bind_locked(
+        source: &Location,
+        location_in_parent: Location,
+        recursive: bool,
+        retirement: &mut propagation::RelationRetirement,
+    ) -> Arc<Self> {
         let result = Self::new_with_root_and_source(
             source.entry.clone(),
             Some(location_in_parent),
@@ -536,7 +548,7 @@ impl Mountpoint {
         if recursive {
             let mut clones = Vec::new();
             Self::clone_children_from(&source.mountpoint, &result, true, Some(source), &mut clones);
-            Self::rebuild_cloned_relations(&clones);
+            Self::rebuild_cloned_relations_locked(&clones, retirement);
         }
         result
     }
@@ -603,11 +615,15 @@ impl Mountpoint {
         }
     }
 
-    fn clone_tree_locked(self: &Arc<Self>, skip_unbindable: bool) -> (Arc<Self>, MountCloneMap) {
+    fn clone_tree_locked(
+        self: &Arc<Self>,
+        skip_unbindable: bool,
+        retirement: &mut propagation::RelationRetirement,
+    ) -> (Arc<Self>, MountCloneMap) {
         let result = Self::clone_shallow(self, None);
         let mut clones = vec![(self.clone(), result.clone())];
         Self::clone_children_from(self, &result, skip_unbindable, None, &mut clones);
-        Self::rebuild_cloned_relations(&clones);
+        Self::rebuild_cloned_relations_locked(&clones, retirement);
         (result, clones)
     }
 
@@ -617,8 +633,9 @@ impl Mountpoint {
     /// objects, but all `Mountpoint` nodes and parent/child links are private
     /// to the clone.
     pub fn clone_tree(self: &Arc<Self>) -> Arc<Self> {
+        let mut retirement = propagation::RelationRetirement::default();
         let topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        let (result, clones) = self.clone_tree_locked(false);
+        let (result, clones) = self.clone_tree_locked(false, &mut retirement);
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         drop(topology);
         drop(clones);
@@ -1899,6 +1916,7 @@ impl Location {
     }
 
     pub fn bind_mount(&self, source: &Self, recursive: bool) -> VfsResult<Arc<Mountpoint>> {
+        let mut retirement = propagation::RelationRetirement::default();
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         self.mountpoint.check_topology_live_locked()?;
         if source.mountpoint().is_unbindable() {
@@ -1916,20 +1934,14 @@ impl Location {
         {
             return Err(VfsError::ResourceBusy);
         }
-        let result = Mountpoint::bind(source, self.clone(), recursive);
+        let result = Mountpoint::bind_locked(source, self.clone(), recursive, &mut retirement);
         if source.mountpoint().is_shared() {
-            result.join_shared_group_locked(source.mountpoint());
+            result.join_shared_group_locked(source.mountpoint(), &mut retirement);
         } else if source.mountpoint().is_slave() {
             *result.propagation.lock() = PropagationType::Slave;
-            let masters: Vec<_> = source
-                .mountpoint()
-                .masters
-                .lock()
-                .iter()
-                .filter_map(Weak::upgrade)
-                .collect();
-            for master in masters {
-                Mountpoint::attach_master_locked(&result, &master);
+            let masters = retirement.collect_locked(&source.mountpoint().masters);
+            for index in masters {
+                Mountpoint::attach_master_locked(&result, retirement.owner(index));
             }
         }
         self.mountpoint

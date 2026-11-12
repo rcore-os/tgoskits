@@ -107,9 +107,10 @@ impl MountNamespace {
     /// Allocation follows the existing infallible tree-clone model. Retain the
     /// preparation object, then move its retirement out of any caller gates.
     pub fn clone_namespace(self: &Arc<Self>) -> NamespaceClone {
+        let mut relations = propagation::RelationRetirement::default();
         let (root, mounts) = {
             let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-            let (root, mounts) = self.root_mount.clone_tree_locked(false);
+            let (root, mounts) = self.root_mount.clone_tree_locked(false, &mut relations);
             *root.root_role.lock() = MountRootRole::NamespaceAnchor;
             MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
             (root, mounts)
@@ -120,6 +121,7 @@ impl MountNamespace {
                 guards: Vec::new(),
                 mounts,
                 source: self.clone(),
+                _relations: relations,
             },
         }
     }
@@ -237,6 +239,7 @@ pub struct MountCloneRetirement {
     guards: Vec<Arc<MountUseGuard>>,
     mounts: MountCloneMap,
     source: Arc<MountNamespace>,
+    _relations: propagation::RelationRetirement,
 }
 
 /// An exact namespace and the covering root selected by one topology observation.

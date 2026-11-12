@@ -3,6 +3,9 @@ use log::warn;
 
 use super::*;
 
+mod relations;
+pub(super) use relations::RelationRetirement;
+
 /// Callers declare this before taking topology exclusion. Even receivers
 /// rejected as retired retain their successful Weak upgrades until gate exit.
 #[derive(Default)]
@@ -10,6 +13,7 @@ pub(super) struct PropagationRetirement {
     locations: Vec<Location>,
     receivers: Vec<Arc<Mountpoint>>,
     mounts: Vec<Arc<Mountpoint>>,
+    relations: RelationRetirement,
 }
 
 impl PropagationRetirement {
@@ -79,10 +83,20 @@ impl Mountpoint {
         Ok(None)
     }
 
+    #[cfg(test)]
     pub(super) fn rebuild_cloned_relations(clones: &[(Arc<Self>, Arc<Self>)]) {
+        let mut retirement = RelationRetirement::default();
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        Self::rebuild_cloned_relations_locked(clones, &mut retirement);
+    }
+
+    pub(super) fn rebuild_cloned_relations_locked(
+        clones: &[(Arc<Self>, Arc<Self>)],
+        retirement: &mut RelationRetirement,
+    ) {
         for (source, cloned) in clones {
             if source.is_shared() {
-                cloned.join_shared_group_locked(source);
+                cloned.join_shared_group_locked(source, retirement);
             }
         }
 
@@ -93,24 +107,20 @@ impl Mountpoint {
             if !source.is_slave() {
                 continue;
             }
-            let masters: Vec<_> = source
-                .masters
-                .lock()
-                .iter()
-                .filter_map(Weak::upgrade)
-                .collect();
+            let masters = retirement.collect_locked(&source.masters);
             #[cfg(test)]
             clone_relation_hook::after_upgrade(
                 source,
                 clone_relation_hook::UpgradeKind::SlaveMasters,
-                &masters,
+                retirement.slice(masters.clone()),
             );
-            for master in masters {
+            for index in masters {
+                let master = retirement.owner(index);
                 let cloned_master = clones
                     .iter()
-                    .find(|(candidate, _)| Arc::ptr_eq(candidate, &master))
+                    .find(|(candidate, _)| Arc::ptr_eq(candidate, master))
                     .map(|(_, clone)| clone)
-                    .unwrap_or(&master);
+                    .unwrap_or(master);
                 Self::attach_master_locked(cloned, cloned_master);
             }
         }
@@ -128,106 +138,37 @@ impl Mountpoint {
         self.propagation() == PropagationType::Unbindable
     }
 
-    fn remove_from_shared_group(self: &Arc<Self>) {
-        let peers = Self::prune_relations(&mut self.peers.lock());
-        for peer in peers {
-            peer.peers.lock().retain(|candidate| {
-                candidate
-                    .upgrade()
-                    .is_some_and(|mountpoint| !Arc::ptr_eq(&mountpoint, self))
-            });
-        }
-        self.peers.lock().clear();
-    }
-
-    fn remove_from_masters(self: &Arc<Self>) {
-        let masters = Self::prune_relations(&mut self.masters.lock());
-        for master in masters {
-            master.slaves.lock().retain(|candidate| {
-                candidate
-                    .upgrade()
-                    .is_some_and(|mountpoint| !Arc::ptr_eq(&mountpoint, self))
-            });
-        }
-        self.masters.lock().clear();
-    }
-
-    fn remove_slaves(self: &Arc<Self>) {
-        let slaves = Self::prune_relations(&mut self.slaves.lock());
-        for slave in slaves {
-            slave.masters.lock().retain(|candidate| {
-                candidate
-                    .upgrade()
-                    .is_some_and(|mountpoint| !Arc::ptr_eq(&mountpoint, self))
-            });
-        }
-        self.slaves.lock().clear();
-    }
-
-    pub(super) fn leave_propagation_relations_locked(self: &Arc<Self>) {
-        self.remove_from_shared_group();
-        self.remove_from_masters();
-        self.remove_slaves();
-    }
-
-    fn prune_relations(relations: &mut Vec<Weak<Self>>) -> Vec<Arc<Self>> {
-        let mut live = Vec::new();
-        relations.retain(|relation| {
-            let Some(mountpoint) = relation.upgrade() else {
-                return false;
-            };
-            if live
-                .iter()
-                .any(|candidate| Arc::ptr_eq(candidate, &mountpoint))
-            {
-                return false;
-            }
-            live.push(mountpoint);
-            true
-        });
-        live
-    }
-
-    fn add_relation(relations: &mut Vec<Weak<Self>>, mountpoint: &Arc<Self>) {
-        let live = Self::prune_relations(relations);
-        if !live
-            .iter()
-            .any(|candidate| Arc::ptr_eq(candidate, mountpoint))
-        {
-            relations.push(Arc::downgrade(mountpoint));
-        }
-    }
-
-    fn has_relation(relations: &RawSpinLock<Vec<Weak<Self>>>, mountpoint: &Arc<Self>) -> bool {
-        relations
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .any(|candidate| Arc::ptr_eq(&candidate, mountpoint))
+    pub(super) fn leave_propagation_relations_locked(
+        self: &Arc<Self>,
+        retirement: &mut RelationRetirement,
+    ) {
+        retirement.unlink_locked(self, &self.peers, |peer| &peer.peers);
+        retirement.unlink_locked(self, &self.masters, |master| &master.slaves);
+        retirement.unlink_locked(self, &self.slaves, |slave| &slave.masters);
     }
 
     fn attach_peer_locked(left: &Arc<Self>, right: &Arc<Self>) {
         if Arc::ptr_eq(left, right) || left.is_retired() || right.is_retired() {
             return;
         }
-        Self::add_relation(&mut left.peers.lock(), right);
-        Self::add_relation(&mut right.peers.lock(), left);
-        debug_assert!(Self::has_relation(&left.peers, right));
-        debug_assert!(Self::has_relation(&right.peers, left));
+        relations::add_relation(&left.peers, right);
+        relations::add_relation(&right.peers, left);
+        debug_assert!(relations::has_relation(&left.peers, right));
+        debug_assert!(relations::has_relation(&right.peers, left));
     }
 
     pub(super) fn attach_master_locked(slave: &Arc<Self>, master: &Arc<Self>) {
         if slave.is_retired() || master.is_retired() {
             return;
         }
-        Self::add_relation(&mut slave.masters.lock(), master);
-        Self::add_relation(&mut master.slaves.lock(), slave);
-        debug_assert!(Self::has_relation(&slave.masters, master));
-        debug_assert!(Self::has_relation(&master.slaves, slave));
+        relations::add_relation(&slave.masters, master);
+        relations::add_relation(&master.slaves, slave);
+        debug_assert!(relations::has_relation(&slave.masters, master));
+        debug_assert!(relations::has_relation(&master.slaves, slave));
     }
 
-    pub(super) fn set_shared_locked(self: &Arc<Self>) {
-        self.leave_propagation_relations_locked();
+    pub(super) fn set_shared_locked(self: &Arc<Self>, retirement: &mut RelationRetirement) {
+        self.leave_propagation_relations_locked(retirement);
         *self.propagation.lock() = PropagationType::Shared;
         if self.peer_group_id.load(Ordering::Acquire) == 0 {
             self.peer_group_id.store(
@@ -237,58 +178,68 @@ impl Mountpoint {
         }
     }
 
-    fn set_private_locked(self: &Arc<Self>) {
-        self.leave_propagation_relations_locked();
+    fn set_private_locked(self: &Arc<Self>, retirement: &mut RelationRetirement) {
+        self.leave_propagation_relations_locked(retirement);
         *self.propagation.lock() = PropagationType::Private;
         self.peer_group_id.store(0, Ordering::Release);
     }
 
-    fn set_slave_locked(self: &Arc<Self>) {
-        let mut masters = Vec::new();
-        if self.is_shared() {
-            masters.extend(self.peers.lock().iter().filter_map(Weak::upgrade));
-        }
+    fn set_slave_locked(self: &Arc<Self>, retirement: &mut RelationRetirement) {
+        let masters = if self.is_shared() {
+            retirement.collect_locked(&self.peers)
+        } else {
+            0..0
+        };
 
-        self.leave_propagation_relations_locked();
+        self.leave_propagation_relations_locked(retirement);
         *self.propagation.lock() = PropagationType::Slave;
         self.peer_group_id.store(0, Ordering::Release);
-        for master in masters {
-            Self::attach_master_locked(self, &master);
+        for index in masters {
+            Self::attach_master_locked(self, retirement.owner(index));
         }
     }
 
-    fn set_unbindable_locked(self: &Arc<Self>) {
-        self.leave_propagation_relations_locked();
+    fn set_unbindable_locked(self: &Arc<Self>, retirement: &mut RelationRetirement) {
+        self.leave_propagation_relations_locked(retirement);
         *self.propagation.lock() = PropagationType::Unbindable;
         self.peer_group_id.store(0, Ordering::Release);
     }
 
-    fn set_propagation_locked(self: &Arc<Self>, propagation: PropagationType) {
+    fn set_propagation_locked(
+        self: &Arc<Self>,
+        propagation: PropagationType,
+        retirement: &mut RelationRetirement,
+    ) {
         match propagation {
-            PropagationType::Private => self.set_private_locked(),
-            PropagationType::Shared => self.set_shared_locked(),
-            PropagationType::Slave => self.set_slave_locked(),
-            PropagationType::Unbindable => self.set_unbindable_locked(),
+            PropagationType::Private => self.set_private_locked(retirement),
+            PropagationType::Shared => self.set_shared_locked(retirement),
+            PropagationType::Slave => self.set_slave_locked(retirement),
+            PropagationType::Unbindable => self.set_unbindable_locked(retirement),
         }
     }
 
-    fn set_propagation_recursive_locked(self: &Arc<Self>, propagation: PropagationType) {
+    fn set_propagation_recursive_locked(
+        self: &Arc<Self>,
+        propagation: PropagationType,
+        retirement: &mut RelationRetirement,
+    ) {
         let mut frontier = vec![self.clone()];
         while let Some(mountpoint) = frontier.pop() {
-            mountpoint.set_propagation_locked(propagation);
+            mountpoint.set_propagation_locked(propagation, retirement);
             frontier.extend(mountpoint.children());
         }
     }
 
     fn set_propagation(self: &Arc<Self>, propagation: PropagationType, recursive: bool) {
+        let mut retirement = RelationRetirement::default();
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         if self.is_retired() {
             return;
         }
         if recursive {
-            self.set_propagation_recursive_locked(propagation);
+            self.set_propagation_recursive_locked(propagation, &mut retirement);
         } else {
-            self.set_propagation_locked(propagation);
+            self.set_propagation_locked(propagation, &mut retirement);
         }
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
     }
@@ -329,32 +280,37 @@ impl Mountpoint {
         self.set_propagation(PropagationType::Unbindable, true);
     }
 
-    pub(super) fn join_shared_group_locked(self: &Arc<Self>, source: &Arc<Self>) {
+    pub(super) fn join_shared_group_locked(
+        self: &Arc<Self>,
+        source: &Arc<Self>,
+        retirement: &mut RelationRetirement,
+    ) {
         if self.is_retired() || source.is_retired() {
             return;
         }
-        let mut group = vec![source.clone()];
-        group.extend(Self::prune_relations(&mut source.peers.lock()));
+        let group = retirement.collect_locked(&source.peers);
         #[cfg(test)]
         clone_relation_hook::after_upgrade(
             source,
             clone_relation_hook::UpgradeKind::SharedPeers,
-            &group,
+            retirement.slice(group.clone()),
         );
 
-        self.set_shared_locked();
+        self.set_shared_locked(retirement);
         let source_group = source.peer_group_id.load(Ordering::Acquire);
         if source_group != 0 {
             self.peer_group_id.store(source_group, Ordering::Release);
         }
-        for member in group {
-            Self::attach_peer_locked(self, &member);
+        Self::attach_peer_locked(self, source);
+        for index in group {
+            Self::attach_peer_locked(self, retirement.owner(index));
         }
     }
 
     pub fn join_shared_group(self: &Arc<Self>, source: &Arc<Self>) {
+        let mut retirement = RelationRetirement::default();
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        self.join_shared_group_locked(source);
+        self.join_shared_group_locked(source, &mut retirement);
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -428,18 +384,18 @@ impl Mountpoint {
             retirement.mounts.push(propagated.clone());
             if target_parent.is_slave() {
                 if !child.is_shared() {
-                    child.set_shared_locked();
+                    child.set_shared_locked(&mut retirement.relations);
                 }
-                propagated.join_shared_group_locked(child);
-                propagated.leave_propagation_relations_locked();
+                propagated.join_shared_group_locked(child, &mut retirement.relations);
+                propagated.leave_propagation_relations_locked(&mut retirement.relations);
                 *propagated.propagation.lock() = PropagationType::Slave;
                 propagated.peer_group_id.store(0, Ordering::Release);
                 Self::attach_master_locked(&propagated, child);
             } else {
                 if !child.is_shared() {
-                    child.set_shared_locked();
+                    child.set_shared_locked(&mut retirement.relations);
                 }
-                propagated.join_shared_group_locked(child);
+                propagated.join_shared_group_locked(child, &mut retirement.relations);
             }
             Self::attach_child(&location, &propagated, retirement)?;
             let resolved = retirement.resolve_locked(&target_parent, &path_components)?;
