@@ -726,8 +726,10 @@ Location 在该句柄中的最终释放先于实际 guard 归还，使 inode/bac
 
 #### 3.7.2 上下文与会话
 
-FsContext 的 root、cwd 和需要保留的 dirfd 起点使用同一持有模型。相应状态在
-安装前已取得有效句柄，短持任务 FsContext 锁时只复制这些拥有引用及原 namespace
+FsContext 的 root、cwd 与本次操作需要的 dirfd 起点使用同一持有模型。
+dirfd 起点及其搜索权限边界只属于操作视图，不写回任务状态或随 fork/unshare
+复制为持久字段。相应状态在安装前已取得有效句柄，短持任务 FsContext 锁时
+只复制这些拥有引用及原 namespace
 引用，不在锁内重新调用 acquire_use。这样取得 FsView 不需要建立
 FsContext 锁到 mount topology gate 的新反向边。
 
@@ -736,6 +738,26 @@ FsContext 锁到 mount topology gate 的新反向边。
 复制视图不加入 FS_REGISTRY，不成为会被 pivot 修订的另一个任务状态所有者。
 FsView 只保存本次选定的 root/cwd/起点、原 mount namespace 引用、
 借自同一操作身份的 MutationCredentials 和 LinkCaller，不给修改任务状态的出口。
+
+状态更新按 Linux 7.1 的具体动作分开。`chroot` 在查找、最终目录搜索权限、
+当前 user namespace 的 `CAP_SYS_CHROOT` 与相应安全检查通过后只替换 root；
+保留原 cwd 和 mount namespace，不用 `FsContext::new` 替换整个状态。
+`fs/open.c::chroot` 的 `set_fs_root` 是该语义依据。显示用的 root/cwd 字符串
+不能成为实体状态的第二权威，也不能因旧 cwd 无法生成绝对显示路径而使换根失败。
+
+普通完整 mount namespace 克隆沿旧、新 mount 的实际对应关系转交 root/cwd，
+保留原 dentry；旧路径的 mount 不在复制集合内时保留原路径句柄及使用权，
+不能自行按名字寻找替代实体。
+对应关系只属于本次克隆，不新增永久路径或业务身份登记表。`copy_mnt_ns`
+普通复制分支是依据；本任务不由此增加 `CLONE_EMPTY_MNTNS` 能力。
+加入既有 mount namespace 则沿 `mntns_install` 的独立安装协议，在权限、
+namespace 有效性与真实 fs 共享条件检查后，选定目标 namespace 的实际覆盖根，
+再一起更新 root/cwd。克隆与加入不能继续共用按旧 absolute_path 重查的实现。
+
+这些更新还需冻结具体的状态所有者、共享检查和原子安装接口。
+临时读取引用、查找视图与任务共享的含义不同，不能把 Arc 强引用数当任务数量。
+在该接口和全部调用者的锁外退休接点闭合前，不先机械迁移这些 setter，
+也不将第 3.7.1、3.7.4 节底层单元的通过外推为上下文更新已经完成。
 
 FsView 被 LookupSession 消费，Continuation 再持原会话。待处理链接的目录、
 当前路径和已接受观察继续保有相应 PathHandle；不能从旧句柄仅抽出 Location
@@ -826,6 +848,216 @@ CachedLookup 需要的非阻塞取得/转交能力须另行证明，不能在 CA
 该 VFS 单元的验证先覆盖真实 mount 生命周期、同 mount 转交、错配拒绝、
 共享 owner 不得自排除、独占消费与锁外析构；后续上下文、描述符及真实映射
 接入后再补各自消费者的生命周期证据，不用底层单元通过替代这些证据。
+
+### 3.8 任务持有与读取引用
+
+现有 `Arc<Mutex<FsContext>>` 同时承担任务状态、临时读取和可修改容器三种职责，
+不能用其强引用数判断 Linux `fs_struct::users` 的共享条件。本节选择显式任务
+持有与临时引用分离的方向，复用现有 scope 和弱 registry；具体发布、namespace
+克隆映射及所有消费者仍须一并核对后冻结实施，不由类型名称宣告接口已齐。
+
+#### 3.8.1 状态所有者
+
+AX 增加字段私有的 `FsContextOwner` 与 `FsContextSnapshot`。共享状态只保存
+root/cwd 的 `PathHandle` 和实际 owner 份额；namespace Arc 属于每个 owner 的绑定，
+不放进共享路径状态。两个 owner 可以共享 root/cwd，却绑定不同的 mount namespace。
+这是 Linux `fs_struct` 与 `task->nsproxy->mnt_ns` 的区别，也是 pidfd 多 flag
+setns 的实际需要，不能用“所有共享 FS 的任务必属同一 namespace”作为不变量。
+份额包含已经准备给新 scope 的 owner，不是线程数，也不以 Arc 强引用数或 registry
+条目数代替。
+
+`FsContextOwner` 不实现 Clone；明确的 `share_for_child(&mut self)` 在受检增加份额后，
+返回共享同一状态的新 owner，失败不增加份额。已安装 owner 的分享只能通过当前任务的
+scope 写入口取得这份独占借用；远程读取接点不提供 owner 或这个操作。独占借用仅覆盖
+计数与内部引用的复制，不取得拓扑 gate、调用后端或分配新的共享状态。
+scope 退出或替换后释放这个 owner
+才归还其份额。独立 fork 从选定快照复制 root/cwd 到新状态，其份额从一开始，
+并继承源 owner 的 namespace；不复制 inode 内容或挂载树。
+
+共享状态用一把短时 IRQ-safe 锁共同保护 root/cwd 和份额；锁内只复制或移出
+已有引用、比较实际身份和更新计数，不做后端操作、等待、分配或最终资源释放。
+增加使用 checked add，溢出为 `ValueOverflow` 且不创建 owner；归还先退出计数锁，
+再释放状态引用。构造后到交给 child scope 之前的 owner 已占一份，后续准备失败、
+取消或未启动 child 时也由同一拥有值恰好归还一次。移动不改计数；临时引用的复制和
+最后释放都不改计数；不提供从计数零恢复原状态 owner 的入口。不为普通查找增加
+独立的份额锁、份额变更或挂载使用权 acquisition。
+
+`snapshot(&self) -> FsContextSnapshot` 在这个短锁内复制 root/cwd，并保存所借 owner
+的 namespace Arc；结果可 Clone，不增加任务份额，也不能提升为原共享状态的 owner。
+快照只持这些选定路径和 namespace，来源状态用 Weak 记录实际分配身份，不强持一份
+会继续变化的共享状态。Weak 防止来源分配被回收复用；它不授权复活 owner。
+创建独立状态使用快照内容，不升级该 Weak 来复用原状态。
+
+`FS_CONTEXT` 保存 owner；当前访问在 `LocalItem::with` 的条目 lease 内调用上述
+短快照操作。远程 proc/nsfd 等读取沿 Thread 的 access gate 取得同一 scope 中的
+owner 与 Mnt 适配，再在共享状态短锁内复制所需路径；不克隆整个 owner，不在
+scope/pin 内取得可睡眠的上下文锁，不导出 Scope、锁守卫或内部地址。
+先选一个可变状态引用、退出 scope 后再读取 root/cwd 会拼出不同时间的绑定，
+不能用该做法代替一次一致快照。实际非安全接点仍须独立证明。
+
+cwd/root 更新先在锁外完成类型及调用层授权检查，当前任务更新入口再验证快照来源
+仍是当前 owner 的共享状态和 namespace，锁内只替换已拥有句柄，旧值带出后释放。
+只换 root 保留 cwd 与 owner 的 namespace；只换 cwd 保留 root。namespace 的
+替换只作用于当前 scope 的 owner 绑定，不改其他 owner 的 namespace；是否复制
+路径状态则按第 3.8.3 节的具体动作决定。
+
+弱 registry 跟踪的是共享路径状态，不能把 namespace 放回这个状态来筛选 pivot 修订。
+Linux `fs/fs_struct.c::chroot_fs_refs` 按 exact mount 与 dentry 替换 root/pwd，
+没有 namespace 身份过滤；共享状态跨 namespace、或路径保留在原树外时也要遵守这个
+规则。每个共享状态只修订一次，快照仍保留本次选定的旧路径，不登记为待修订状态。
+最后 owner、路径快照或 namespace 引用都可能触发文件系统析构，旧资源须移出
+pin、scope lease、路径锁、registry 锁及外层 namespace writer gate 后才最终释放。
+
+#### 3.8.2 挂载命名空间实体
+
+真实 mount namespace 的根与拓扑属于 VFS。将现有 AX `MountNamespace` 下移到
+VFS，由 AX 重新导出；保留同一个对象身份与诊断 ID，不另造业务身份登记表。
+实体本身不实现 Clone，只复制 Arc；新实体须经创建或实际树克隆工厂产生，
+不能复制同一树指针和诊断 ID 后换一个分配地址冒充 namespace 克隆。
+namespace 保留稳定的树根锚点，任务 root/cwd 和从锚点向下取得的覆盖根是另外的路径。
+`finish_filesystem_init` 已创建只读、source 名为 `nullfs` 的 MemoryFs 挂载 A，
+再把实际根 R 覆盖在 A 下；`FsContext::new` 追到 A 后保存它。普通 pivot 后为
+A → N → R@put_old，namespace 的根仍是 A，不需要把它替换成可见根 N。
+这里的 `nullfs` 是挂载 source 名，不把 MemoryFs 冒充 Linux 的独立 nullfs 实现。
+固定 Linux `fs/namespace.c::init_mount_tree`、`pivot_root` 和 `mntns_install`
+也分别保存底层 namespace 根、变换其下的任务可见根、向下取得目标覆盖根。
+
+完整 namespace 克隆保留锚点及其整棵覆盖树，不只复制当前任务可见根。
+同点 `new_root=put_old` 与堆叠继续复用现有 `pivot_mount` 和覆盖解析；
+同点操作后旧根可能暂时覆盖在新根上，不能提前把任意一次向下观察当作最终新根。
+`PreparedRoot::commit` 现有的 bind、同点 pivot、传播和 detach 顺序必须保留。
+准备磁盘根、解包、启动探针等无额外锚点的临时 context 不直接安装为任务
+namespace；从它发布的是所选实际子树，不能为加锚点而原地重挂共享输入树。
+
+namespace-aware pivot 必须拒绝移动 namespace 锚点；该限制也要落实到底层
+`pivot_mount`、`attach_detached` 等重新安装父节点的入口，不能仅靠高层调用者遵守。
+`move_to` 已有 parentless 拒绝仍需保留。锚点角色随节点存活，不因 context 释放而开放移动；
+完整 namespace 克隆为新树根建立这个角色，普通 bind 产生的节点不继承该角色。
+无稳定锚点的旧临时 context 若直接 pivot，确有 root 引用仍留在旧 mount 的风险，
+但未发现上述临时生产消费者执行该操作，不能把这个条件推导写成启动路径故障。
+具体创建、覆盖根观察和锚点保护入口仍须与临时消费者一起核对后冻结。
+
+完整克隆产生本次操作拥有的旧、新 mount 对应关系，保留实际 source owner，
+用于 root/cwd 的实体转交；映射不进入永久索引，也不从路径显示文本重建。
+被复制的路径使用新 mount 和原 dentry，未落入复制集合的路径保留原句柄。
+根观察、对应关系、错误时资源归属及具体返回签名仍须在该单元实施前冻结。
+
+Starry 的 `MntNamespace` 保留为不可变的 OS 适配对象，只共同持有这个实际 namespace
+与创建它的 user namespace 引用。它不另分配 ID、不保存第二棵树，其诊断身份来自
+实际 namespace；nsfs inode 索引继续锚定实际 namespace 的分配对象，不能改用
+ProcessData token、任务编号或显示字符串。已创建 namespace 的 owner 不随调用者
+后来改变 user namespace 而重新采样；权限所需 owner 与 inode 索引的弱分配 owner
+是不同含义，不能混用。
+
+同一个 Core Arc 还不足以证明 creator 唯一。新 namespace 的创建结果须保留不可复制、
+只能消费一次、内部绑定确切 Core 的创建凭据，Starry 工厂消费它并绑定当次选定的
+creator user namespace，不另收可与凭据错配的任意 Core 参数；
+之后只复制已有适配 Arc，不开放从任意既存 Core Arc 重新指定 creator 的构造器。
+初始适配由全局 ROOT namespace 和初始 user namespace 一次建立。原生临时 context
+不因存在 Core 引用而自动获得任务适配；nsfs 缓存因此不会为同一 Core 固化不同 creator。
+
+#### 3.8.3 任务安装与操作视图
+
+mount namespace 的 Starry 适配引用随任务 scope 保存，退出 ProcessData 的
+进程范围 NsProxy；其他 namespace 的身份分配与消息、网络和 IPC 行为不因此修改。
+准备对象以字段私有的 `PreparedFsBinding` 共同保存预期来源、FS 变更和适配引用。
+同一 Core 的要求只约束当前 owner 的 namespace 绑定与其 Mnt 适配，不约束共享
+root/cwd 所指 mount 必在该树中，也不要求其他 owner 的 namespace 相同。
+scope 提交在同一既有写入口修改当前 owner 绑定和适配，旧值带出后释放；
+读取也从同一次受保护的 scope 选择取得绑定，不分别重采进程 token 与目标 FS。
+
+CLONE_FS 显式分享原状态份额及原适配引用；独立 FS 复制保留同一个 namespace
+适配引用。NEWNS 创建实际克隆、新的独立路径状态与对应适配。加入既有 namespace
+则保留原共享路径状态及份额，只改变当前 owner 的 namespace，并按下节决定共享
+限制与 root/cwd 的写回；不能把所有 setns 实现成隐含 unshare。
+普通 root/cwd 更新不创建或更换 namespace 身份。移除原 `NsProxy::mnt_ns`
+和 `{ns, fs_ns}` 的无校验拼装须与这些消费者在同一可审查序列中迁移完成。
+
+目标 user namespace 的能力检查使用成对保存的真实调用身份和目标 owner；
+不能沿用仅检查调用者 initial namespace 的 `may_join` 来冒充目标检查，
+也不能把 proc READ_FSCREDS 的完整 ptrace 授权当作通用能力。若复用现有 lineage
+机制，只能复用经固定 Linux commoncap 核实的 namespace 能力子机制；
+第 3.5 节的 inode 映射限制、现有凭据权限来源与 user namespace 业务创建边界仍保留，
+不因准备文件系统绑定而伪造能力或补齐整套 UID/GID 映射。
+
+`FsContextSnapshot` 构造只读 `FsView<'op>`，保存 root/cwd/namespace
+与本次确实需要的起点，借用同一操作身份的凭据和 LinkCaller。视图不持任务份额、
+不登记、不导出状态修改或 owner 提升入口；session 消费视图，续走持原 session。
+初始 dirfd 取得顺序、完整构造签名、内部重试调度和 CACHED 的真实非阻塞快照
+仍需与各入口错误顺序一起冻结，不能用普通可阻塞快照或新占位错误先行接入 CACHED。
+
+#### 3.8.4 加入命名空间
+
+Linux 的共享检查对象由 fd 来源和实际 flag 集合决定。依据固定提交的
+[`prepare_nsset`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nsproxy.c#L354)、
+[`validate_nsset`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nsproxy.c#L398)、
+[`commit_nsset`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/nsproxy.c#L535)
+及 `mntns_install`，不能把单一挂载 namespace 的检查推广为统一前置门禁。
+
+| 请求路径 | 检查与成功效果 |
+| --- | --- |
+| mnt NsFd，或 pidfd 仅选 `CLONE_NEWNS` | MNT 权限与有效性检查后，原共享状态须恰有一份 owner；否则 `EINVAL`。成功把原 root/cwd 设为目标覆盖根，并改变当前 owner 的 namespace |
+| pidfd 选 `CLONE_NEWNS` 和其他已支持 flag，不含 `CLONE_NEWUSER` | 以准备路径承载 MNT 验证结果，后续安装器仍可拒绝；全部成功后把 root/cwd 写回原共享状态，不切断共享，不对原 owner 数额外施加单 NEWNS 限制 |
+| pidfd 同时选 `CLONE_NEWUSER`、`CLONE_NEWNS` | USER 先验证，并独立要求原共享状态的 owner 数为一；其失败发生在 MNT 安装之前，不能由临时准备对象的独占性绕过 |
+
+NsFd 的非零类型必须精确匹配一个 namespace 类型，组合 flag 只能走 pidfd。
+pidfd 先按 Linux `PTRACE_MODE_READ_REALCREDS` 的目标授权取得目标快照；不能复用
+proc 链接的 READ_FSCREDS 结果或仅检查 initial-userns 的 `may_join`。
+各安装器按固定 Linux 的顺序验证；MNT 从实际目标 namespace 取覆盖根，绝不按
+旧 root/cwd 的显示路径重找。即使目标 Core 与当前相同，成功也要重设 root/cwd，
+不能因身份相同直接返回。后续安装器失败时，准备路径、准备凭据和其他准备引用一起
+退休，原路径状态及 namespace 发布均不提交。
+
+MNT 检查调用身份在目标 creator user namespace 的 `CAP_SYS_ADMIN`，以及在
+准备凭据所选 user namespace 的 `CAP_SYS_CHROOT` 与 `CAP_SYS_ADMIN`，然后检查
+namespace 有效性和适用的共享条件。请求 USER 时，准备凭据选定的 user namespace
+可能已改变；执行能力判断的调用身份仍是原操作身份，不能把未提交的新凭据当作当前
+权限。clone/unshare 同时创建 USER、MNT 时，新 MNT 的 creator 则来自当次准备完成
+的新 USER 对象；不按现有旧调用顺序提前采样。
+
+只加入 MNT 及 USER 所需的原状态独占条件，在准备阶段按各安装器顺序检查，并在
+scope 提交点再次核实。此时须同时持有当前 scope 的写访问权，验证来源状态 Weak
+与 owner 的实际分配相同、来源 namespace/适配未变，再核份额一。已安装 owner 的
+独占借用排除它同时分享；若计数一则没有另一个 owner 可分享，快照又不能提升成原
+owner，因此退出计数短锁后直到本次 scope 提交仍保持独占。不能仅在准备时读一次
+计数、用 Arc 强计数或进程线程数代替该证明。多 flag 的合法共享路径不套用此独占
+条件，但仍须验证来源绑定，并在共享状态短锁内一起替换 root/cwd。
+
+这些规则只改变文件系统共享与当前任务的 MNT 绑定。现有其他 namespace 的身份
+分配、消息及 IPC 行为不扩展；ProcessData 范围与 Linux task 范围尚有差异的入口
+须如实列出，不因文件系统安装通过而把整个多 flag ABI 标为正确。
+
+#### 3.8.5 发布与退休
+
+一致性从 scope 初始化开始。两个默认条目分别取全局 ROOT 的同一 Core 和初始 MNT
+适配；FS 份额独立创建，不从正在运行的 parent scope 分别采样默认值。clone 根据
+实际 flag 准备并覆盖 child 的完整绑定，准备的 owner 已计份额，child 未启动也不
+丢失释放责任。退出在一次 scope 写入口同时清空两项；两项都空表示已退休，一项为空
+是内部不一致，不回退到全局 root 或重新构造默认绑定。
+
+读取先验证条目完整性和 owner/适配的 Core，再复制拥有快照。普通 proc 目标、
+尚未删除的绝对 nsfd 快捷入口和 pidfd 的目标取得都使用同一个接点；其他 namespace
+仍需进程快照时，按目标 writer gate → scope access gate → FS 状态短锁的顺序取值。
+取得目标后先释放目标 gates，再进入调用者的 writer gate，不同时持两个进程 gates。
+返回值已拥有所需资源，之后不依靠仍保活的 Thread 再次读取可变字段来拼接。
+
+准备时可分配资源和观察拓扑，scope 发布区仅做来源/份额复核与引用替换；不取得
+可睡眠锁、拓扑 gate，执行后端操作或分配。root/cwd 及 namespace 的变更分支在准备
+对象中区分“替换为独立状态”和“保留共享状态加入 namespace”，不靠布尔值暗中混用。
+所有可能失败的检查必须先完成，提交后不再调用可失败的安装器。
+
+成功移出的旧 owner、旧路径、旧 namespace 及适配，和失败时尚未安装的准备资源，
+都交给外层退休值。不得在 scope 闭包内用 `?` 或消费闭包捕获值而隐式丢弃准备对象；
+即使只是刚复制的快照，其他共享者也可能已替换原路径，使它成为最后一个持有者。
+先退出条目 lease、FS 短锁、pin 和 scope access gate，再完成或放弃外层
+`ProcessNamespaceUpdate`，最后才释放退休值。准备函数中途失败也遵守这个顺序，
+不能只处理成功安装后的旧值。最后 Drop 不承担 fsync 或失败回滚。
+
+全局 ROOT 的 `PreparedRoot::commit` 同样先取快照，在状态锁外完成目录准备、bind
+和 pivot，再按 exact 路径修订状态；不能保留现有持上下文 mutex 执行后端操作的
+调用形状。原拓扑与 registry 算法仍复用内部持锁接点，不能持有拓扑 gate 后再调用
+自行取同一 gate 的公开 clone/pivot/acquire_use。克隆的旧新 mount 表、快照与失败
+中间值的最终释放也须带到相关 gates 外；这些接点的具体签名仍待独立核对后实施。
 
 ## 4. 命名事务
 
