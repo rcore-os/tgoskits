@@ -86,7 +86,7 @@ impl UnmountPlan {
         self.targets().any(|mount| {
             let owned_count =
                 usize::from(owned.is_some_and(|guard| Arc::ptr_eq(&guard.mountpoint, mount)));
-            mount.active_uses.lock().users > owned_count
+            mount.active_uses.lock().users > owned_count * 2
         })
     }
 
