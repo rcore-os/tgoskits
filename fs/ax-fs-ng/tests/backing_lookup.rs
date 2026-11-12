@@ -5,8 +5,9 @@ use std::sync::Arc;
 use ax_fs_ng::MemoryFs;
 use ax_runtime as _;
 use axfs_ng_vfs::{
-    Location, Mountpoint, MutationCredentials, MutationRetire, NamespaceAdmissions, NodePermission,
-    NodeType, PreparedWrite, VfsError,
+    Location, Mountpoint, MutationCredentials, MutationRetire, NamespaceAdmissions,
+    NamespaceOperationScope, NamespaceQuery, NamespaceRead, NodePermission, NodeType,
+    PreparedWrite, VfsError,
 };
 
 fn create(parent: &Location, name: &str, kind: NodeType) -> Location {
@@ -166,6 +167,46 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
     ));
     drop(admissions);
     drop(retired);
+    // Exercise the full-context first hop and its native default request path
+    // against the same MemoryFs and already cached/covered backing entries.
+    // Pure queries register no fake root or child completion.
+    let scope = NamespaceOperationScope::<axfs_ng_vfs::NamespaceEffect>::acquire(&write).unwrap();
+    {
+        let context = scope.context();
+        let selected = context.lookup_backing(&root, "covered").unwrap();
+        let nested = context.lookup_backing(&selected, "nested").unwrap();
+        let terminal = context.lookup_backing(&selected, "link").unwrap();
+        for (actual, expected) in [
+            (&selected, &covered),
+            (&nested, &fixed_nested),
+            (&terminal, &link),
+        ] {
+            assert!(Arc::ptr_eq(actual.mountpoint(), root.mountpoint()));
+            assert_eq!(actual.inode(), expected.inode());
+            assert_eq!(actual.node_type(), expected.node_type());
+        }
+        assert_eq!(terminal.node_type(), NodeType::Symlink);
+        assert_eq!(
+            context.lookup_backing(&nested, "leaf").unwrap().inode(),
+            leaf.inode()
+        );
+        assert!(matches!(
+            context.query(NamespaceQuery::Lookup {
+                parent: selected.entry(),
+                name: "absent"
+            }),
+            Ok(NamespaceRead::Entry(None))
+        ));
+        assert!(matches!(
+            context.lookup_backing(&selected, "absent"),
+            Err(VfsError::NotFound)
+        ));
+        assert!(matches!(
+            context.lookup_backing(&selected, "different"),
+            Err(VfsError::NotFound)
+        ));
+    }
+    drop(scope);
     drop(write);
     assert_eq!(admitted_link.node_type(), NodeType::Symlink);
     assert_eq!(admitted_link.read_link().unwrap(), "underlying");

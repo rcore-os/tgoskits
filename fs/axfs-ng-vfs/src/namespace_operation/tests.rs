@@ -13,6 +13,7 @@ use core::{
 };
 use std::sync::{Mutex, MutexGuard};
 
+mod backing_queries;
 mod reservation_failure;
 
 use super::*;
@@ -99,6 +100,7 @@ struct ProbeFs {
     root_work: bool,
     phase_errors: bool,
     backend_calls: AtomicUsize,
+    queries: Option<backing_queries::QueryProbe>,
 }
 
 impl ProbeFs {
@@ -141,10 +143,17 @@ impl FilesystemOps for ProbeFs {
         self.entry(Reference::root())
     }
     fn stack_depth(&self) -> u32 {
-        u32::from(!self.roots.is_empty())
+        self.queries
+            .as_ref()
+            .map_or(u32::from(!self.roots.is_empty()), |query| query.depth)
     }
     fn write_backing_roots(&self) -> &[Location] {
         &self.roots
+    }
+    fn read_backing_roots(&self) -> &[Location] {
+        self.queries
+            .as_ref()
+            .map_or(&[], |query| query.reads.as_slice())
     }
     fn enter_namespace(&self) -> VfsResult<Box<dyn NamespaceOperation + '_>> {
         self.events.lock().unwrap().push(Event::Enter(self.id));
@@ -152,14 +161,27 @@ impl FilesystemOps for ProbeFs {
     }
     fn query_namespace(
         &self,
-        _: &NamespaceAdmission<'_>,
-        _: NamespaceQuery<'_>,
-        _: &MutationRetire,
+        admission: &NamespaceAdmission<'_>,
+        query: NamespaceQuery<'_>,
+        retired: &MutationRetire,
     ) -> VfsResult<NamespaceRead> {
+        if let Some(probe) = &self.queries {
+            admission.check_owner(self)?;
+            let _guard = self.gate.lock().unwrap();
+            return probe.read(query, retired);
+        }
         Ok(NamespaceRead::Metadata(snapshot()))
     }
+    fn query_backing_namespace(
+        &self,
+        request: crate::BackingQueryRequest<'_, '_>,
+    ) -> VfsResult<NamespaceRead> {
+        backing_queries::dispatch(self, request)
+    }
     fn begin_namespace<'a>(&'a self, request: NamespaceDriverRequest<'a>) -> NamespaceStart<'a> {
+        request.admission().check_owner(self).unwrap();
         self.backend_calls.fetch_add(1, Ordering::Relaxed);
+        let queries = self.queries.as_ref().map(|_| request.backing_queries());
         let guard = self.gate.lock().unwrap();
         let parent = request.command().parents().0.clone();
         let target = self.entry(Reference::new(Some(parent), "victim".into()));
@@ -174,6 +196,7 @@ impl FilesystemOps for ProbeFs {
             _guard: guard,
             target,
             name,
+            queries,
         }))
     }
 }
@@ -200,6 +223,15 @@ impl NodeOps for ProbeNode {
     }
     fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
         self.0.backend_calls.fetch_add(1, Ordering::Relaxed);
+        if let Some(probe) = &self.0.queries {
+            request.admission().check_owner(self.0.as_ref()).unwrap();
+            let _guard = self.0.gate.lock().unwrap();
+            probe.exercise(request.backing_queries());
+            return NamespaceCompletion::new(
+                NamespaceOutcome::unchanged_observed(snapshot(), Ok(())),
+                None,
+            );
+        }
         if let Some(backing) = self.0.roots.first() {
             let observed = request
                 .context()
@@ -322,9 +354,13 @@ struct Driver<'a> {
     _guard: MutexGuard<'a, ()>,
     target: DirEntry,
     name: &'static str,
+    queries: Option<crate::BackingQueryContext<'a>>,
 }
 impl LockedAttempt for Driver<'_> {
     fn parents(&mut self) -> VfsResult<(Metadata, Metadata)> {
+        if let Some(queries) = self.queries.take() {
+            self.filesystem.queries.as_ref().unwrap().exercise(queries);
+        }
         Ok((snapshot(), snapshot()))
     }
     fn observe(
@@ -428,6 +464,7 @@ fn filesystem(
         root_work,
         phase_errors,
         backend_calls: AtomicUsize::new(0),
+        queries: None,
     });
     let mount = Mountpoint::new_root(&Filesystem::new(filesystem.clone()));
     (filesystem, mount.root_location())

@@ -1,5 +1,7 @@
 //! One stack-local owner for recursively returned, typed completion work.
 
+mod backing_query;
+pub use backing_query::{BackingQueryContext, BackingQueryRequest};
 pub(crate) mod registration;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -353,28 +355,23 @@ impl<'a> NamespaceOperationContext<'a> {
     /// As with `NamespaceAdmission::query`, no native driver or backend gate may
     /// be held; the snapshot does not authorize a later backing mutation.
     pub fn query(&self, query: NamespaceQuery<'_>) -> VfsResult<NamespaceRead> {
-        let admission = match self.admissions.for_owner(query.entry().filesystem()) {
-            Ok(admission) => admission,
-            Err(error) => {
-                self.retired.retire(query.entry().clone());
-                return Err(error);
-            }
-        };
-        admission.query(query, self.retired)
+        self.retired.retire(query.entry().clone());
+        let admission = self.admission_for_owner(query.entry().filesystem())?;
+        BackingQueryRequest::new(self, admission, query).dispatch()
     }
 
     /// Looks up one exact-mount backing component, without following mounts or
     /// links. Call outside native drivers/backend gates and apply the caller's
     /// own search and backing-identity checks.
     pub fn lookup_backing(&self, parent: &Location, name: &str) -> VfsResult<Location> {
-        let admission = match self.admission(parent) {
-            Ok(admission) => admission,
-            Err(error) => {
-                self.retired.retire(parent.clone());
-                return Err(error);
-            }
-        };
-        admission.lookup_backing(parent, name, self.retired)
+        self.retired.retire(parent.clone());
+        backing_query::fixed_lookup(
+            parent,
+            self.query(NamespaceQuery::Lookup {
+                parent: parent.entry(),
+                name,
+            })?,
+        )
     }
 
     /// Returns only a real exact-mount write lease; read pins cannot satisfy it.

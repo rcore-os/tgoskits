@@ -8,7 +8,8 @@ use crate::{
 };
 
 /// Native snapshots for a following step using the same operation right.
-/// Call only with no native driver/gate held; query other backings first.
+/// Ordinary query entries require no native driver/gate. Only the privately
+/// bound backing-query path permits retaining strict ancestor gates.
 /// These snapshots never authorize a later namespace modification.
 pub enum NamespaceQuery<'a> {
     Metadata(&'a DirEntry),
@@ -49,6 +50,7 @@ pub struct NamespaceAdmission<'a> {
 
 impl NamespaceAdmission<'_> {
     /// Uses native helpers without implicitly entering operation admission.
+    /// Call with no native driver/backend gate held.
     /// Returned and temporary owners retire with the whole outer operation.
     pub fn query(
         &self,

@@ -62,6 +62,18 @@ impl<'a> NamespaceDriverRequest<'a> {
         self.context
     }
 
+    /// Borrows direct backing reads bound to this request's actual receiver.
+    /// The view borrows the operation, so the request can still be consumed by
+    /// `observe`/`complete`; it is not a driver or authorization capability.
+    pub fn backing_queries(&self) -> crate::BackingQueryContext<'a> {
+        crate::BackingQueryContext::new(
+            self.context,
+            self.context
+                .admission_for_owner(self.command.parents().0.filesystem())
+                .expect("validated receiver"),
+        )
+    }
+
     /// Completes a Staging or pre-observation failure with its real typed cause.
     pub fn complete(self, completion: NamespaceCompletion) -> NamespaceStart<'a> {
         let completion = completion

@@ -130,7 +130,18 @@ pub struct MetadataRequest<'a> {
     context: &'a NamespaceOperationContext<'a>,
 }
 
-impl MetadataRequest<'_> {
+impl<'a> MetadataRequest<'a> {
+    /// Borrows direct backing reads bound to the original target's receiver,
+    /// not to this request's address or to a caller-selected filesystem.
+    pub fn backing_queries(&self) -> crate::BackingQueryContext<'a> {
+        crate::BackingQueryContext::new(
+            self.context,
+            self.context
+                .admission(&self.target)
+                .expect("validated receiver"),
+        )
+    }
+
     /// Classifies the original intent for native namespace exclusion.
     /// Chown(None, None) can still clear setid bits; Times never changes owners.
     pub const fn changes_permissions_or_ownership(&self) -> bool {

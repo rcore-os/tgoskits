@@ -49,8 +49,11 @@ pub trait FilesystemOps: Send + Sync {
         request.fail(VfsError::OperationNotSupported)
     }
 
-    /// Admitted native reads, without ordinary entry points that may reenter
-    /// operation admission. The caller holds no native backend gate.
+    /// Fixed admitted read primitive, without reentering operation admission.
+    /// Ordinary callers hold no native driver/backend gate. The private bound
+    /// backing-query path may retain strict ancestor gates, but neither path
+    /// holds this destination's driver/gate. Retire temporary owners on errors
+    /// as well as success; returned snapshots do not authorize later mutation.
     fn query_namespace(
         &self,
         _admission: &crate::NamespaceAdmission<'_>,
@@ -58,6 +61,17 @@ pub trait FilesystemOps: Send + Sync {
         _retired: &crate::MutationRetire,
     ) -> VfsResult<crate::NamespaceRead> {
         Err(VfsError::OperationNotSupported)
+    }
+
+    /// Dispatches a privately bound read. Composite implementations must check
+    /// `request.admission().check_owner(self)` before taking their own gate and
+    /// use `request.backing_queries()` for each further direct dependency.
+    /// The native default executes the fixed primitive, not an error fallback.
+    fn query_backing_namespace(
+        &self,
+        request: crate::BackingQueryRequest<'_, '_>,
+    ) -> VfsResult<crate::NamespaceRead> {
+        request.execute_native()
     }
 
     /// Gets the name of the filesystem
