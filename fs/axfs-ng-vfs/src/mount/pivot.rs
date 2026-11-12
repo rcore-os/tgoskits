@@ -169,7 +169,9 @@ impl MountPivotRetirement {
             let new_belongs = self.belongs_locked(1);
             #[cfg(test)]
             test_hook::after_membership(old);
-            let _ = (old_belongs, new_belongs);
+            if !old_belongs || !new_belongs {
+                return Err(VfsError::InvalidInput);
+            }
         }
         if !self.descendant_locked(2, 1) || !self.descendant_locked(1, 0) {
             return Err(VfsError::InvalidInput);
