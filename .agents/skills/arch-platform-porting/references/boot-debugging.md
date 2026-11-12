@@ -549,6 +549,13 @@ LS2K FDT 的独立 ISR 默认地址。使用严格固件位图，不把未覆盖
 核对真实启动物理核、LIO/EIO 级联冲突，以及域和 CPU interface 发布早于启用。
 只看到 `runtime console active` 或 `irq=None, polling=true` 不能证明中断输入。
 
+固件 UART 可能只为轮询输出配置，运行时 adopt 保留线路和 FIFO 时仍须由驱动
+`rearm()` 打开设备自身的 IRQ 输出门控；NS16550 应保留其他 MCR 位，仅使能
+OUT2 与所需 IER 来源，不能为此调用完整 startup 或重设波特率。串口停止在某个
+字符不代表主任务停在同一源码位置：先把已输出内容与 banner、shell 欢迎语及
+后台输出队列区分，再检查 TX 背压、中断和调度。诊断寄存器在现有所有者范围内
+采样；紧急接管只作终结性取证，不与普通运行时并行访问。
+
 #### LoongArch EFI 目标启动与通用交接
 
 - PE 数据段的文件区间须满足 FileAlignment，并实际包含全部 RawData 字节。

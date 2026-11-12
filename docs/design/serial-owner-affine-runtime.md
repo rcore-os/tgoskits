@@ -93,6 +93,12 @@ Early -> Preparing -> Runtime
 adopt 该状态：只 mask device-local source、启用已注册的 IRQ action 并发布 runtime 输出路由，
 不调用普通串口的 `startup()`，也不清 `UARTEN` 或等待正在按线速排空的 TX FIFO。只有这些
 步骤全部成功后才提交 `Runtime`；其他非 console UART 仍在显式 open 时执行 startup/config。
+保留固件线路状态不等于继承其轮询中断配置。设备来源的 `UartPort::rearm()` 必须完成
+该驱动所需的中断输出使能；NS16550 在请求启用非空 IER 来源时，以读改写设置
+`MCR.OUT2`，保留其他 MCR 位，不改 LCR、除数、FIFO 或 RX 内容。没有设备来源的
+重新使能请求不改变该门控；来源已经就绪时仍按原规则立即重新屏蔽并交给 worker，
+不能靠保留虚假的 TX 就绪状态推进。`mask_all()` 和 emergency 接管继续屏蔽全部 IER
+来源，不操作共享控制器线路，也不要求关闭不影响线路配置的 OUT2。
 一旦为已探测的 runtime UART 进入 `Preparing`，提交前任何失败都进入 `FailedClosed`；公共层
 不会把一次 runtime 启动失败重新解释为“未探测到 driver”并回退到 raw HAL。该状态吞掉普通
 输出并禁止输入，避免双 owner 再次触碰未知硬件状态。`FailedClosed` 同时是被选中 UART
