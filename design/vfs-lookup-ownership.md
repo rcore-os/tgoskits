@@ -957,7 +957,8 @@ namespace-aware pivot 必须拒绝移动 namespace 锚点；该限制也要落�
 完整 namespace 克隆为新树根建立这个角色，普通 bind 产生的节点不继承该角色。
 无稳定锚点的旧临时 context 若直接 pivot，确有 root 引用仍留在旧 mount 的风险，
 但未发现上述临时生产消费者执行该操作，不能把这个条件推导写成启动路径故障。
-具体创建、覆盖根观察和锚点保护入口按第 3.8.7 至 3.8.8 节实施，并同序迁移临时消费者。
+具体创建、覆盖根观察和锚点保护入口按第 3.8.7 至 3.8.8 节实施；pivot 的实际
+namespace 授权和退休交接按第 3.8.13 节实施，并同序迁移临时消费者。
 
 完整克隆产生本次操作拥有的旧、新 mount 对应关系，保留实际 source owner，
 用于 root/cwd 的实体转交；映射不进入永久索引，也不从路径显示文本重建。
@@ -1183,7 +1184,8 @@ chdir、chroot 或共享 setns，否则会切断 CLONE_FS 共享。`PreparedFsUp
 | `MountNamespace::snapshot_root(self: &Arc<Self>) -> (VfsResult<NamespaceRootSnapshot>, MountRootRetirement)` | 在拓扑边界从稳定锚点向下选择目标覆盖根，取得其 PH；私有结果同时拥有确切 Core 和该根，所有中间引用、守卫及失败残留由 retirement 返回 |
 | `FsContextSnapshot::prepare_join(&self, target: NamespaceRootSnapshot, sharing: FsSharingRequirement) -> PreparedFsUpdate` | 消费实际目标根快照，准备成对 root/cwd 写回及本 owner.namespace 替换；无目录 I/O、分配或新的可失败步骤 |
 | `FsContextOwner::apply_update(&mut self, update: PreparedFsUpdate) -> (VfsResult<()>, FsUpdateRetirement)` | 在提交点复核来源和适用份额，原子替换所需共享路径，并按命令替换当前 owner 的 namespace；成功旧值及拒绝输入都移入返回的 retirement |
-| `FsContextOwner::propagate_pivot_root(old: &PathHandle, new: &PathHandle) -> FsRegistryRetirement` | 按 exact mount+dentry 修订登记状态，不按 namespace 过滤；返回整个扫描强引用集合及每项旧路径，不在方法尾部销毁它们 |
+| `FsContextSnapshot::pivot_root(&self, new_root: &PathHandle, put_old: &PathHandle) -> (VfsResult<()>, FsPivotRetirement)` | 以本次冻结的 root 与实际 Core 执行拓扑移动及 exact registry 修订；由 AX 维护二者的全局先后顺序，成败均交回退休值 |
+| AX 私有 `propagate_pivot_root(old: &PathHandle, new: &PathHandle) -> FsRegistryRetirement` | 仅由上述 pivot 聚合入口调用；按 exact mount+dentry 修订登记状态，不按 namespace 过滤，返回整个扫描强引用集合及每项旧路径 |
 
 `FsSharingRequirement` 只区分 `AnyOwner` 和 `SoleOwner`。它表达本次已选 Linux
 安装路径的条件，不授予权限：单 MNT 与 USER 的独占检查仍按第 3.8.4 节的权限和
@@ -1223,9 +1225,10 @@ Scope 条目再校验。具体条目借用按现有 `scope_mut` 规则顺序结�
 registry 扫描在可睡眠 registry 锁下收集每个 State 的一个强引用，随后退出该锁。
 在进入任何 State 短锁前，为每个扫描项准备固定的两个旧 PH 槽位；锁内只比较并移动，
 不向 Vec 扩容。扫描项连同强引用及两个退休槽位一起返回 `FsRegistryRetirement`，
-不能逐项循环结束便释放 State。ROOT 和 Kernel pivot 在退出拓扑 gate 后调用这个
-修订出口，并在各自外层 gates 退出后释放其结果；保留既有 bind、同点 pivot、修订、
-detach 顺序，不把扫描或后端工作移入路径锁。
+不能逐项循环结束便释放 State。ROOT 和 Kernel 通过同一个 AX pivot 聚合入口
+在退出 topology 后执行该修订，并在各自外层 gates 退出后释放聚合退休值；
+拓扑移动与扫描之间的全局保序按第 3.8.13 节落实。保留既有 bind、同点 pivot、
+修订、detach 顺序，不把扫描或后端工作移入路径锁。
 
 #### 3.8.9 预构造发布
 
@@ -1480,6 +1483,160 @@ writer 期安装或后续 Owner 迁移必须用受控出口；不能只改接口
 不能因探针重入同一锁而挂死。跨线程要区分本操作的提前释放与另一线程自己的
 合法清理，不能把“别的线程析构时 writer 仍被占用”本身当成错误；同时检查
 资源在远端清理后仍由返回退休值保活，避免只看析构线程而漏掉提前丢弃引用。
+
+#### 3.8.13 根切换的拓扑授权
+
+共享路径状态与任务的 namespace 是不同对象。第 3.8.4 节允许两个 owner 共享
+同一个 State，但分别属于 M0、M1；M1 的多 flag setns 写回共享 root/cwd 后，
+M0 的 owner 可以合法观察到 M1 的路径。因此，root/new/put_old 之间的祖先关系、
+非锚点角色和存活检查，均不能证明调用者有权重排该树。当前
+`FsContext::pivot_root` 到 `Mountpoint::pivot_mount` 的调用没有传入实际 Core；
+这个缺口必须在 Owner 迁移前补上，不能以读取快照自动继承拓扑修改权限。
+
+固定 Linux 7.1 的
+[`path_pivot_root`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4663)
+在排他的 `namespace_sem` 内核验 fs root 和 new mount 的
+[`check_mnt`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L946)，
+并一直保留该边界到移动完成。身份来自当前任务的实际 mount namespace，不来自
+fs root、cwd、设备号或诊断 ID；cwd 不参与这个授权检查，put_old 通过从 new
+出发的可达性受到约束。不匹配返回 EINVAL，以更早的安装位置、shared 等检查
+已经通过为前提，不能把 membership 错误提升为覆盖所有其他失败的首要错误。
+
+采用实际 Core 上的领域入口，不增加公开 topology guard 或通用控制器。它借用
+三个已有 PH，不消费调用者的路径，不取得新的 mount use，也不修改共享 State。
+返回的退休值只拥有本次资源；任务路径修订仍由 AX 的 exact registry 入口负责。
+
+| 入口或类型 | 冻结职责 |
+| --- | --- |
+| `MountNamespace::pivot_root(self: &Arc<Self>, old_root: &PathHandle, new_root: &PathHandle, put_old: &PathHandle) -> (VfsResult<()>, MountPivotRetirement)` | 在同一次 topology 事务中核实际归属、检查并重接挂载；成败均交出退休值 |
+| `MountPivotRetirement` | 字段私有、不可 Clone；Core-aware 分支保留所选 Core、输入 PH 的共享副本，以及全部遍历观察和移出的连接资源，无提交、回滚或可变 State 出口 |
+| 私有持锁 pivot 接点 | Core-aware 入口与 raw 便捷入口共用移动算法；由入口取得一次 gate，不递归调用会自行取 gate 的 public 方法 |
+| `Mountpoint::pivot_mount` | 保留既有低层便捷签名，只保证内部 topology 外退休，不提供当前任务的 namespace 授权；不得作为 Owner/Kernel 根切换的替代入口 |
+
+不采用 `contains_mountpoint` 预检后再调用 raw pivot：前者返回的布尔值不保留
+拓扑授权，两次调用之间可以把包含新旧根的普通子树移到另一 Core。
+也不将诊断 ID 变成 membership 缓存或给 State 加 namespace 字段；这些做法
+不能表达共享路径与任务成员资格分离后的事实。已有 anchor 和双向挂载连接足以
+回答本次归属问题，无需复制整棵树或建立第二套永久登记。
+
+入口先建立退休值，再取得生产环境的可睡眠 topology mutex。在这一次 gate 内，
+分别沿 old_root 和 new_root 的真实 mount 父连接回溯，以 `Arc::ptr_eq` 到达本
+Core 的稳定 anchor 才算属于本树；到达另一个 anchor 或无父的普通节点则拒绝。
+这里使用 `Mountpoint::location()` 的直接 mount 父连接，不用可能跳过覆盖层的
+`Location::parent()`。遍历每次得到的 Location 先归退休值，再借用它继续前进；不调用未持 topology 的
+`walk_tree` 或 `contains_mountpoint`。复杂度随两条 mount 祖先链长度增长，不随
+namespace 全部节点数增长。Core 自己保活 anchor，路径 PH 保活各自实体和 use，
+但两者都不能代替这次锁内归属复核。
+
+原有退休关闭和 anchor 不可移动的检查继续适用。Core-aware 入口还需核 old_root
+和 new_root 确为各自 mount 根；目录、shared、put_old 的安装位置和可达性等
+检查继续由同一持锁接点完成，不把锁外路径查找的结果当成当前拓扑证明。
+shared 检查先于本次 membership 拒绝；归属复核和首次连接写入之间不得退 gate。
+所有可失败检查和必要的子表容量准备都在首次连接写入之前完成，之后只移动
+预备引用、更新双向连接和拓扑版本。子表增长在其短锁外完成，移出的旧表继续
+归退休值；不在子表或位置短锁里分配、调用后端或最终释放拥有资源。
+
+这项局部合同补齐的是授权与资源交接，不把 raw pivot 的现有检查顺序提升为
+Linux ABI 规范。Linux 入口先用 `LOOKUP_FOLLOW | LOOKUP_DIRECTORY` 依次解析
+new_root、put_old，随后权限、LSM、冻结 fs root 和安装位置，再依次处理 shared、
+membership、MNT_LOCKED、unlink、同旧根 mount 的 EBUSY、mount 根及 parent、
+两项可达性。Kernel 同序迁移须对照这个顺序核验实际支持路径，不能沿用当前
+`sys_pivot_root` 在解析之前检查权限和进程根的顺序，也不能以本节组件批准宣称
+完整 ABI 一致。现有模型未表示的 Linux flag 或安装语义保留为兼容性缺口，
+不凭空增加 flag、错误回退或声称已经通过；出现影响本次安全保证的差异须由根
+先裁决，不能由实现者放宽 membership 或祖先约束。
+
+两个入口的私有接点都使用保留式路径遍历。可复用 `RetainedLocations` 的拥有
+机制，但不复用 `MountPublicationRetirement` 的安装业务身份。每个名称观察、
+覆盖位置、父连接副本、被 remove/replace/insert 移出的引用和扩容旧表，均由
+`MountPivotRetirement` 持有到调用者指定的退休边界。先保留观察再继续可失败
+步骤；即使失败时挂载连接尚未改变，名称快照也可能因另一命名发布而成为最后
+拥有者，不能在失败分支、循环尾或 callee 返回前直接销毁。
+
+raw 分支只保留其实际输入和观察，不为凑齐 carrier 字段伪造 Core、创建任务
+绑定或 acquire 新 PH。公共退休值可在私有表示中区分这些保活来源；两种入口
+的共同要求是把所有实际拥有资源完整带出内部 gate，不要求 raw 拥有不存在的
+任务身份。
+
+Core-aware 入口在退出 topology 后原样返回结果和退休值，不在尾部释放其中
+资源。raw 便捷入口通过同一个接点取得二者，在内部 gate 外释放退休值后返回，
+因而只适用于无外层保护的低层调用。二者均不得在 Scope、pin 或 IRQ-safe
+State 短锁内执行；具备退休出口只允许在已确认可睡眠的 writer 准备期调用，
+不允许在不可睡眠保护区等待 topology。最后 Drop 不执行拓扑修复、磁盘回滚、
+fsync 或后端成功判断，泄漏退休值也不会产生一次尚未提交的移动。
+
+Kernel 的根切换使用普通视图解析所得的新根与 put_old PH；结束目标读取 gates
+后，按第 3.8.9 节取得调用者 writer。权限依据这次选择的 Mnt 适配 creator，
+所选适配与 Owner.namespace 必须在同一次 Scope 读取中配对核实。权限检查后
+短锁冻结包含本次 old_root 的快照；随后退出 Scope、pin、State 短锁，再通过
+下述 AX 聚合入口调用该 Core。允许共享者随后修改 State，这与 Linux 在 topology 前冻结 fs root
+一致；不能为阻止这种合法变化而把 State 锁跨越整个 pivot。
+
+退出 topology 后扫描仍须与拓扑移动保序。Linux 的 `namespace_sem` 在
+`chroot_fs_refs` 完成后才释放；若我们只把扫描移到 topology 外，而允许另一
+pivot 先移动、先扫描，则同一 old_root 的两次 exact 替换可能逆序。两个调用
+均已冻结 R，第一次移动 R→N 后停在扫描前，第二次对 R 下的 P 移动 R→P；
+若第二次先把 State 的 R 换成 P，第一次将不再命中。按拓扑顺序扫描时，该 State
+应先变成 N，第二次不命中；这里的不同最终路径是实际语义差异。
+
+AX 因此维护一把私有的可睡眠 pivot 序列 mutex，所有 Kernel 与 ROOT 根切换共用。
+它只串行“VFS pivot 移动→AX exact registry 扫描”，普通 lookup、chdir、
+chroot、setns、State 快照及其他挂载操作不取得它；不把全路径查找串行化。
+不同 Core 的共享 State 也可能经 exact 修订相互关联，因此不能改成每 Core
+独立序列门。锁顺序为 caller writer → AX pivot 序列门 → topology，释放
+topology 后才取 registry 锁、再逐 State 短锁；Scope/pin 不跨任何可睡眠门。
+序列门期间不调用 Kernel 回调、通知或其他进程 writer。
+
+第 3.8.8 节的 `FsContextSnapshot::pivot_root` 是唯一的 AX 聚合接点：先建立
+`FsPivotRetirement`，再取得序列门，借用本次冻结的 root 和 Core 调 VFS 入口，
+立即将返回的 `MountPivotRetirement` 归入聚合退休值，再检查结果。失败跳过
+registry，成功在 topology 外调用私有 `propagate_pivot_root`，以本次 old_root
+和输入 new_root 的 exact mount+dentry 修订所有登记 State，不按 Core 过滤、
+不重新向下追覆盖根；完整 `FsRegistryRetirement` 也先归聚合值。随后退出
+序列门，成败都返回 `(VfsResult<()>, FsPivotRetirement)`，不在聚合入口尾部
+销毁任意一半。Kernel 不再自行拼接两个可逆序的调用；VFS 仍不依赖 AX。
+
+`FsPivotRetirement` 字段私有、不可 Clone，只拥有 VFS 与 registry 的退休资源，
+不持序列门、不提交 State 命令、不回滚。调用前为 `NamespaceChange` 准备其
+固定槽位，返回后先保存它，再检查错误；失败不发 namespace 通知，成功在退出
+AX 序列门后发送既定通知。普通 pivot 不替换 Owner 或 Mnt 适配，不重新发布
+NsProxy。最后退出 caller writer，才释放聚合退休值及路径、快照、适配等输入。
+Snapshot 仍不能提升为原 State 的 owner；这里明确命名的操作只通过实际 Core
+移动拓扑，再通过受序列保护的 registry 规则修订 exact 路径，不开放任意 State
+写入口，也不以再次取 live-State 作为旧根来源。
+
+AX 不增加一个从共享 State 推断 namespace 的 pivot 方法。旧
+`FsContext::pivot_root` 随 Owner 及消费者迁移删除；Native 的
+`PreparedRoot::commit` 同样从 ROOT 的冻结绑定选择实际 Core，在状态锁外调用
+同一个 AX 聚合入口，保留 bind、同点 pivot、exact 修订、detach 的原顺序。未安装为任务
+namespace 的临时 context 不因此得到任意既存 Core 的授权。普通根准备和探针
+不使用 raw pivot 绕过 ROOT 的 Core；低层 raw 入口仍供无外层保护的组件操作，
+不能留作生产根切换的永久旁路。
+
+本节的组件回归增强现有 namespace pivot 旅程：M0 的入口对 M1 内部合法的
+R1/N1/put_old 返回 `InvalidInput`，并核两棵树的完整父子关系保持；再由 M1 的
+入口成功完成同一移动，保留同点覆盖与稳定 anchor 判定。删除 membership
+检查必须让同一外树拒绝断言失败。移树交错使用真实 `move_to` 及受控阶段，
+允许 pivot 整体先提交，或移树先提交后 pivot 拒绝，不允许检查 M0 后修改 M1；
+不以 lazy detach 破坏祖先关系后的其他错误充当该信号。
+
+AX 层在已有 root/cwd 修订旅程中覆盖两次真实 pivot 的保序：预先冻结同一旧根，
+在第一次拓扑提交后、registry 修订前暂停，确认真实序列门仍被持有，再启动
+第二次实际操作；恢复后核验拓扑提交顺序、两次扫描和最终 exact root/cwd。
+去掉序列门或在拓扑后提前释放它，必须让同一持有范围或最终状态判定失败。
+只观察私有 mutex 可构造、另写替身顺序模型或通过超时猜测第二次被阻塞均不够。
+测试 hook 只控制真实边界，阶段协调在可睡眠上下文完成，不为测试公开序列门。
+AX 组件测试不另套共同 caller writer；真实 Kernel 交错使用不同进程的 writer，
+避免已有外层串行化掩盖被验证的 AX 顺序缺口。
+
+退休验证纳入同一根切换功能，分别覆盖成功与拒绝：真实中间观察或移出连接
+成为最后拥有者时，在返回后仍由退休值保活，退出 topology 和模拟可睡眠
+caller writer、释放退休值后才结束。探针非阻塞记录，阶段使用通知，不用
+sleep 或在持测试自旋锁时等待。仅检查 carrier 可构造或输入 Core 仍由测试
+保活不足以证明此保证。真实 Kernel 对 CLONE_FS 跨 Core 共享路径的建立、
+正确 Core 传递、原始 errno、失败拓扑不变及 exact registry 修订，仍由后续
+定向系统用例证明，不能用组件红绿替代。代码回滚以该局部提交为单位，无磁盘
+格式变化；既有独立 namespace 退休单元的有效证据不因本设计增量失效。
 
 ## 4. 命名事务
 
