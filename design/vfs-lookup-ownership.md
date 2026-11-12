@@ -1702,6 +1702,114 @@ Starry 消费者和构建恢复后补齐，普通 open、openat、openat2 各自
 性能比较。不增加后台线程、持久状态或磁盘格式，可按代码提交回滚；回滚不依赖
 Drop 撤销已公布名称或修复磁盘。
 
+### 4.17 分层尝试中的后备查询
+
+现有普通 `NamespaceAdmission::query` 与 `NamespaceOperationContext::query` 的
+调用合同是不持任何 native driver 或 backend gate。这个入口继续保留原约束；
+不能把“所有查询都可持任意外层锁”当成落实第 4.6 节的方式。
+分层后端需要在自己的真实尝试中读下一层，另以绑定当前 receiver 的
+`BackingQueryContext` 表达这一有限能力，不改变查询返回值为授权令牌。
+
+#### 4.17.1 绑定与严格下降
+
+`NamespaceDriverRequest<'op>::backing_queries(&self) -> BackingQueryContext<'op>` 和
+`MetadataRequest<'op>::backing_queries(&self) -> BackingQueryContext<'op>` 从各自请求的
+实际 receiver 派生只读上下文。构造器私有，绑定原操作 Context、源 FS receiver
+和构造后不变的 stack depth；调用方不能传入另一个 source、可写根或自选深度。
+返回值借用原操作 Context 和 source admission，而不是借请求对象自身的地址；
+两者均由原 Scope 保活，不能延长到 Scope 之外。这样 namespace 请求可以按原协议
+移动进 `observe/complete`，driver 仍能保存这个只读视图，不形成自引用。
+视图不是尝试、槽位或授权的证据；请求交回后它至多仍能在未结束的原操作中读取，
+不能延续旧授权、重新启动已消费的根命令或越过实际 guard 的调用限制。
+它不拥有或结束 Scope、admission、后端 guard 或退役集合，
+也不导出整份准备对象、原始 driver、可替换凭据或写入能力。
+
+该上下文只提供已有 `query(NamespaceQuery) -> VfsResult<NamespaceRead>` 与
+`lookup_backing(&Location, &str) -> VfsResult<Location>` 两种读取；
+此单元不顺带增加 list-xattrs、read-dir、数据 I/O 或修改命令。
+目标必须已在原准备图及 admissions 中，且是绑定 source 的已声明后备依赖，
+真实 FS 与 source 不同，深度严格小于 source 且不超过 2。
+同层、回到自身、向上或非声明依赖在调用后端前返回 `VfsError::BadState`；
+缺少实际 receiver admission 仍按原匹配规则返回 `CrossesDevices`。
+只读依赖不取得写租约；不能因另一条边恰好给同 mount 提供写权就写 lower。
+
+源和后备依赖关系复用 `FilesystemOps::read_backing_roots/write_backing_roots`
+的不可变声明，不给 `PreparedWrite` 另加可变图或假定它已经存边。
+这两份声明和 depth 已在原准备遍历中校验，并保证构造后不变、读取无 I/O/gate；
+查询时只扫描 source 的声明，以真实 FS receiver 判定直接目标；
+实际拒绝的优先级按下一节固定，不提前用关系错误盖过 admission 缺失。
+不重新解析 Location、取得租约或发现依赖，不按名字、
+inode/device 或调用方提供的数字推断。跨多层时每次请求重新绑定其自己的源，
+不能把祖先查询上下文交给下一层用来回查祖先或绕过它的直接依赖边。
+Overlay 私有适配仍须按第 4.9 节验证目标来自绑定 roots 或本实例受控物化结果；
+通用下沉查询不代替这个 root 来源校验，也不扩大 mount 的可见范围。
+
+调用时只可保留严格祖先层的 gate，不得持有目的 FS 的 driver/gate，
+也不得仍持有尚未 resume/cancel/finish 的子 driver 后再查同一子层。
+这些实际 guard 约束仍须由后端实现及独立审查证明；一个借用原操作的查询类型
+不能凭名字证明任意调用点已经持锁，或阻止所有不合规手工重入。
+绑定与依赖检查负责拒绝可运行时识别的自身、同层和反向目标，
+不引入任务全局“持锁栈”、任意回调框架或新的全局串行锁。
+
+后端 `query_namespace` 的执行规则相应区分两种合法来源：普通调用无后端 gate，
+或经此私有绑定路径持有严格祖先 gate。两者都不持目的 FS 自己的 gate，
+不隐式重新 enter operation admission。公开普通 query 不降级为这个新入口，
+也不接受一个布尔值或任意源 FS 参数来声称调用方符合下沉条件。
+
+为接通 A→B→C 的纯查询链，新增字段私有的
+`BackingQueryRequest<'op, 'query>`，由 VFS 在实际派发前绑定目的 admission、
+原操作 Context 和当前 `NamespaceQuery`；源 A 的直接边在进入 B 前已验证。
+它只读借出 query、自己的 admission 和共同 retire，并通过
+`backing_queries(&self) -> BackingQueryContext<'op>` 重新绑定当前接收者 B，
+不能取回 A 的身份来绕过 B→C 检查。
+`FilesystemOps::query_backing_namespace(&self, request: BackingQueryRequest<'_, '_>)
+-> VfsResult<NamespaceRead>` 是这一请求的派发点。
+原生终点默认消费请求并调用原 admitted `query_namespace` primitive，不重新 enter；
+复合后端实现该新 hook，向下一层传 B-bound 视图，而不伪造命名或元数据修改请求。
+固定原生执行方法为 `BackingQueryRequest::execute_native(self)
+-> VfsResult<NamespaceRead>`，只向请求已绑定的实际 owner 派发原读取 primitive，
+不接受另一 receiver。复合实现取得自己的 gate 之前，先用请求 admission 核对
+当前 `self` 确是原派发 receiver，不能把转发到任意另一个 FS 的 `self` 当作新 source。
+
+普通 `NamespaceOperationContext::query/lookup_backing` 也从完整原 Context
+派发这种只读请求，但它们的调用点仍不得持 backend gate，首次查询没有祖先边要求；
+嵌套后每一跳都执行新的直接下降检查。原单 FS 的
+`NamespaceAdmission::query/lookup_backing` 保留既有入口和单 receiver 合同，
+不假装它能借出不存在的后备 Context。分层消费者必须使用完整 Context 路径，
+不能从单 FS 口调用普通 Location 来偷偷补入后备 admission。
+新 hook 的原生默认路径是同一读取 primitive，不是失败后的 ordinary fallback。
+
+#### 4.17.2 生命周期与证明
+
+下沉查询先将输入 entry、完整 parent 保留到原退役集合，再按固定顺序检查：
+目标 receiver admission、source 的直接声明/自身与深度关系、Lookup 末名，
+全部通过后才调用后端。缺 admission 即使同时关系非法仍先 `CrossesDevices`；
+已 admitted 的非法关系即使末名也非法仍先 `BadState`，合法关系才按原名称规则报错。
+源的声明扫描用于关系判定，不提前覆盖 admission 缺失错误。
+
+后端返回的任何 Entry 候选，包括错误响应类型中的候选，先留在共同 retire，
+再校验新下沉 query 的响应 variant 与发出的 Metadata/Lookup/Xattr 一致；
+错配返回 `BadState`。合法 Lookup 响应中的候选必须属于目的真实 FS，
+否则 `CrossesDevices`；`query(Lookup)` 仍可返回 `Entry(None)`，
+只有 `lookup_backing` 将它解释为 `NotFound` 并包回原 parent 的 exact mount。
+普通完整 Context 首跳也执行新请求路径的响应校验与候选退役，不在进入新 hook 后
+绕过这些规则。普通单 FS raw query 原本不承诺通用 variant 检查，不以“复用”声称它已有这个保证，
+也不借此修改其既有成功/错误语义。后端临时 owner 同样交共同 retire。
+固定查询仍不跟末链接或覆盖挂载，失败不提前析构。
+全部层的 gate 和 admissions 退出后才释放最后 owner，不能在 inner 返回后清袋。
+
+验证优先增强真实准备图、admitted 查询和退役的既有完整旅程：合法声明下降能读到
+真实 backing；同层、自身、向上、未声明但恰好也有 admission 的对象都必须在
+后端调用前拒绝；只读角色不能借此写入。用真实 receiver、候选 Drop 见证和
+受控后端 gate 观察证明调用与释放边界，不只测深度整数比较或构造器字段回读。
+可恢复的错误变异是去掉下降/依赖检查后非法目标实际进入后端，同一判定必须红；
+原普通 query 的无 gate 合同和已验完成顺序不因此重测成另一套算法。
+
+这是后备读取能力的独立准备单元，不宣称 Overlay 已接通或可编译。
+完整 copy-up 仍须另行明确数据/open、属性恢复、xattr、跨全部 gate 的准备交接、
+败选与残留清理，以及每个逻辑阶段的真实效果；不能用此查询上下文执行普通 File
+打开、raw 修改或把读取快照当作跨 gate 仍有效的旧授权。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。
