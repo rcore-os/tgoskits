@@ -10,13 +10,85 @@ pub(super) use relations::RelationRetirement;
 /// rejected as retired retain their successful Weak upgrades until gate exit.
 #[derive(Default)]
 pub(super) struct PropagationRetirement {
-    locations: Vec<Location>,
+    locations: RetainedLocations,
+    source_path: RetainedLocations,
     receivers: Vec<Arc<Mountpoint>>,
     mounts: Vec<Arc<Mountpoint>>,
     relations: RelationRetirement,
 }
 
+/// Traversal owns each observation before following another edge. In
+/// particular, a name snapshot can own a parent no longer held by its alias.
+#[derive(Default)]
+pub(super) struct RetainedLocations {
+    locations: Vec<Location>,
+    snapshots: Vec<crate::NameSnapshot>,
+}
+
+impl RetainedLocations {
+    pub(super) fn push(&mut self, location: Location) -> usize {
+        let index = self.locations.len();
+        self.locations.push(location);
+        index
+    }
+
+    pub(super) fn get(&self, index: usize) -> &Location {
+        &self.locations[index]
+    }
+
+    /// Same parent step as `Location::parent`, retaining covered locations and
+    /// naming observations that the ordinary convenience traversal discards.
+    pub(super) fn parent(&mut self, mut index: usize) -> Option<usize> {
+        loop {
+            let current = self.get(index);
+            if current.is_root_of_mount() {
+                let covered = current.mountpoint.location()?;
+                index = self.push(covered);
+            } else {
+                let snapshot = current.entry.name_snapshot();
+                self.snapshots.push(snapshot);
+                let parent = self.snapshots.last()?.parent()?.clone();
+                let parent = self.get(index).wrap(parent);
+                return Some(self.push(parent));
+            }
+        }
+    }
+
+    fn lookup(&mut self, index: usize, name: &str) -> VfsResult<usize> {
+        match name {
+            DOT => Ok(index),
+            DOTDOT => Ok(self.parent(index).unwrap_or(index)),
+            _ => {
+                let current = self.get(index);
+                let entry = current.entry.as_dir()?.lookup(name)?;
+                let location = current.wrap(entry);
+                let mut index = self.push(location);
+                loop {
+                    let current = self.get(index);
+                    let child = current
+                        .mountpoint
+                        .children
+                        .lock()
+                        .get(&current.entry.key())
+                        .cloned();
+                    let Some(child) = child else {
+                        return Ok(index);
+                    };
+                    index = self.push(child.root_location());
+                }
+            }
+        }
+    }
+}
+
 impl PropagationRetirement {
+    #[cfg(test)]
+    pub(super) fn has_receiver(&self, receiver: &Weak<Mountpoint>) -> bool {
+        self.receivers
+            .iter()
+            .any(|mount| Arc::as_ptr(mount) == receiver.as_ptr())
+    }
+
     fn collect_receivers_locked(&mut self, source: &Mountpoint) {
         for relations in [&source.peers, &source.slaves] {
             let count = relations.lock().len();
@@ -34,34 +106,37 @@ impl PropagationRetirement {
         target: &Arc<Mountpoint>,
         components: &[String],
     ) -> VfsResult<Location> {
-        self.locations.push(target.root_location());
+        let mut index = self.locations.push(target.root_location());
         for component in components {
-            let next = self
-                .locations
-                .last()
-                .expect("propagation root is retained")
-                .lookup_no_follow(component)?;
-            self.locations.push(next);
+            index = self.locations.lookup(index, component)?;
         }
-        Ok(self
-            .locations
-            .last()
-            .expect("propagation location is retained")
-            .clone())
+        Ok(self.locations.get(index).clone())
     }
 }
 
 impl Mountpoint {
-    fn relative_path_from_mount_root(location: &Location) -> VfsResult<Vec<String>> {
+    fn relative_path_from_mount_root(
+        location: &Location,
+        mut retirement: Option<&mut RetainedLocations>,
+    ) -> VfsResult<Vec<String>> {
         let mut components = Vec::new();
         let mut current = location.clone();
+        if let Some(retirement) = retirement.as_mut() {
+            retirement.push(current.clone());
+        }
         while !current.is_root_of_mount() {
             let snapshot = current.entry.name_snapshot();
+            if let Some(retirement) = retirement.as_mut() {
+                retirement.snapshots.push(snapshot.clone());
+            }
             if snapshot.state() == crate::NameState::Untrusted {
                 return Err(VfsError::WouldBlock);
             }
             components.push(snapshot.name().to_owned());
             current = current.wrap(snapshot.parent().cloned().ok_or(VfsError::InvalidInput)?);
+            if let Some(retirement) = retirement.as_mut() {
+                retirement.push(current.clone());
+            }
         }
         components.reverse();
         Ok(components)
@@ -71,12 +146,12 @@ impl Mountpoint {
         parent: &Arc<Self>,
         source_location: &Location,
     ) -> VfsResult<Option<Arc<Self>>> {
-        let source_path = Self::relative_path_from_mount_root(source_location)?;
+        let source_path = Self::relative_path_from_mount_root(source_location, None)?;
         for child in parent.children() {
             let Some(location) = child.location() else {
                 continue;
             };
-            if Self::relative_path_from_mount_root(&location)? == source_path {
+            if Self::relative_path_from_mount_root(&location, None)? == source_path {
                 return Ok(Some(child));
             }
         }
@@ -355,7 +430,10 @@ impl Mountpoint {
         source_parent.check_topology_live_locked()?;
         source_location.mountpoint.check_topology_live_locked()?;
         child.check_topology_live_locked()?;
-        let path_components = Self::relative_path_from_mount_root(source_location)?;
+        let path_components = Self::relative_path_from_mount_root(
+            source_location,
+            Some(&mut retirement.source_path),
+        )?;
 
         // Walk the entire downstream propagation graph so the child reaches
         // slaves-of-peers and slaves-of-slaves too. Linux requires transitive

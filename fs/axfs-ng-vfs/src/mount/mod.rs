@@ -28,10 +28,12 @@ use crate::{
 
 mod namespace;
 mod propagation;
+mod publication;
 
 mod unmount;
 
 pub use namespace::*;
+pub use publication::MountPublicationRetirement;
 pub use unmount::*;
 
 type MountCloneMap = Vec<(Arc<Mountpoint>, Arc<Mountpoint>)>;
@@ -970,55 +972,6 @@ impl Mountpoint {
         ));
         Ok(())
     }
-
-    /// Attaches a detached mount tree at `new_location`.
-    ///
-    /// Unlike [`Self::move_to`], the source has no old parent entry to remove.
-    /// A permanently bound namespace anchor is not a movable mount handle,
-    /// even after the namespace owner has been released.
-    pub fn attach_detached(self: &Arc<Self>, new_location: &Location) -> VfsResult<()> {
-        let mut propagation_retirement = propagation::PropagationRetirement::default();
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        self.check_topology_live_locked()?;
-        new_location.mountpoint.check_topology_live_locked()?;
-        if self.root_role() == MountRootRole::NamespaceAnchor
-            || self.active_uses.lock().normally_unmounted
-            || self.location.lock().is_some()
-        {
-            return Err(VfsError::InvalidInput);
-        }
-        if new_location.is_mountpoint() {
-            return Err(VfsError::ResourceBusy);
-        }
-        new_location.check_is_dir()?;
-
-        let root_location = self.root_location();
-        let mut current = Some(new_location.clone());
-        while let Some(location) = current {
-            if location.ptr_eq(&root_location) {
-                return Err(VfsError::FilesystemLoop);
-            }
-            current = location.parent();
-        }
-
-        *self.root_role.lock() = MountRootRole::Ordinary;
-        *self.location.lock() = Some(new_location.clone());
-        new_location
-            .mountpoint
-            .children
-            .lock()
-            .insert(new_location.entry.key(), self.clone());
-        if new_location.mountpoint.is_shared() {
-            Self::propagate_new_child_locked(
-                new_location.mountpoint(),
-                new_location,
-                self,
-                &mut propagation_retirement,
-            )?;
-        }
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1864,55 +1817,6 @@ impl Location {
 
     pub fn directory_end_cursor(&self) -> VfsResult<DirectoryCursor> {
         self.entry.as_dir()?.inner().directory_end_cursor()
-    }
-
-    pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
-        self.mount_with_source(fs, "none")
-    }
-
-    /// Mounts a filesystem with the source name exposed through mount metadata.
-    pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
-        self.mount_with_device_source(fs, DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed), source)
-    }
-
-    /// Mounts a filesystem with an explicitly selected device number and
-    /// source name. Bind mounts keep the source mount's device number.
-    pub fn mount_with_device_source(
-        &self,
-        fs: &Filesystem,
-        device: u64,
-        source: &str,
-    ) -> VfsResult<Arc<Mountpoint>> {
-        // Filesystem callbacks may acquire sleepable locks. Prepare the
-        // unpublished mount before entering the non-preemptible topology
-        // transaction; only topology validation and publication belong inside
-        // the global guard.
-        let result = Mountpoint::new_with_device_source(fs, Some(self.clone()), device, source);
-        let mut propagation_retirement = propagation::PropagationRetirement::default();
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        // Revalidate after preparation: the last Core may have retired while
-        // root discovery or lease acquisition ran outside topology exclusion.
-        // Both owning locals precede the gate and also retire outside on error.
-        self.mountpoint.check_topology_live_locked()?;
-        let should_propagate = self.mountpoint.is_shared();
-        self.check_is_dir()?;
-        {
-            let mut children = self.mountpoint.children.lock();
-            if children.contains_key(&self.entry.key()) {
-                return Err(VfsError::ResourceBusy);
-            }
-            children.insert(self.entry.key(), result.clone());
-        }
-        if should_propagate {
-            Mountpoint::propagate_new_child_locked(
-                self.mountpoint(),
-                self,
-                &result,
-                &mut propagation_retirement,
-            )?;
-        }
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
-        Ok(result)
     }
 
     pub fn bind_mount(&self, source: &Self, recursive: bool) -> VfsResult<Arc<Mountpoint>> {

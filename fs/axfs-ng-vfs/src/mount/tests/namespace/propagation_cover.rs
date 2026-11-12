@@ -170,9 +170,13 @@ fn propagation_preserves_preexisting_cover_order_and_complete_tree_retirement() 
         c.set_lifetime_guard(Arc::new(c_counts.probe(&c_counts.attachment, &outer)));
         d.set_lifetime_guard(Arc::new(d_counts.probe(&d_counts.attachment, &outer)));
         q.join_shared_group(&p);
+        let publication;
         let writer = outer.lock();
-        let x = p.root_location().mount(&mock_filesystem()).unwrap();
+        let (result, retirement) = p.root_location().mount_retiring(&mock_filesystem());
+        publication = retirement;
         drop(writer);
+        drop(publication);
+        let x = result.unwrap();
         let xq = q
             .walk_tree()
             .into_iter()
