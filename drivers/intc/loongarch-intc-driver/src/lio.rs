@@ -39,12 +39,19 @@ register_structs! {
 const ROUTE_CPU0: u8 = 1 << 0;
 const ROUTE_INT_SHIFT: usize = 4;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LioRoutePolicy {
+    FdtFallback,
+    FirmwareExplicit,
+}
+
 /// Validated LIOINTC parent-line and input-route configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LioIntcConfig {
     parent_lines: [Option<CpuIrqLine>; LIO_PARENT_COUNT],
     parent_input_maps: [u32; LIO_PARENT_COUNT],
     effective_parent_input_maps: [u32; LIO_PARENT_COUNT],
+    route_policy: LioRoutePolicy,
 }
 
 impl LioIntcConfig {
@@ -63,6 +70,35 @@ impl LioIntcConfig {
         parent_lines: [Option<CpuIrqLine>; LIO_PARENT_COUNT],
         parent_input_maps: [u32; LIO_PARENT_COUNT],
     ) -> Result<Self, IntcError> {
+        Self::from_routes(parent_lines, parent_input_maps, LioRoutePolicy::FdtFallback)
+    }
+
+    /// Creates routes using only the explicitly mapped firmware inputs.
+    ///
+    /// Slot N must name CPU line 2+N and have a nonzero, nonoverlapping input
+    /// bitmap. Absent slots must have zero maps. Uncovered inputs remain
+    /// disconnected, including the CPU selection bits in their route bytes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty route set, a parent in the wrong slot, a map without
+    /// a parent, a parent without a map, or overlapping input maps.
+    pub const fn from_firmware_routes(
+        parent_lines: [Option<CpuIrqLine>; LIO_PARENT_COUNT],
+        parent_input_maps: [u32; LIO_PARENT_COUNT],
+    ) -> Result<Self, IntcError> {
+        Self::from_routes(
+            parent_lines,
+            parent_input_maps,
+            LioRoutePolicy::FirmwareExplicit,
+        )
+    }
+
+    const fn from_routes(
+        parent_lines: [Option<CpuIrqLine>; LIO_PARENT_COUNT],
+        parent_input_maps: [u32; LIO_PARENT_COUNT],
+        route_policy: LioRoutePolicy,
+    ) -> Result<Self, IntcError> {
         let mut slot = 0;
         let mut first_parent_slot = LIO_PARENT_COUNT;
         while slot < LIO_PARENT_COUNT {
@@ -78,6 +114,11 @@ impl LioIntcConfig {
                             expected,
                             actual: line.raw(),
                         });
+                    }
+                    if matches!(route_policy, LioRoutePolicy::FirmwareExplicit)
+                        && parent_input_maps[slot] == 0
+                    {
+                        return Err(IntcError::LioParentWithoutMap { slot });
                     }
                 }
                 None if parent_input_maps[slot] != 0 => {
@@ -99,18 +140,28 @@ impl LioIntcConfig {
         slot = 0;
         while slot < LIO_PARENT_COUNT {
             if parent_lines[slot].is_some() {
+                let overlap = parent_input_maps[slot] & routed_inputs;
+                if matches!(route_policy, LioRoutePolicy::FirmwareExplicit) && overlap != 0 {
+                    return Err(IntcError::OverlappingLioMaps {
+                        slot,
+                        inputs: overlap,
+                    });
+                }
                 let selected_inputs = parent_input_maps[slot] & !routed_inputs;
                 effective_parent_input_maps[slot] = selected_inputs;
                 routed_inputs |= selected_inputs;
             }
             slot += 1;
         }
-        effective_parent_input_maps[first_parent_slot] |= !routed_inputs;
+        if matches!(route_policy, LioRoutePolicy::FdtFallback) {
+            effective_parent_input_maps[first_parent_slot] |= !routed_inputs;
+        }
 
         Ok(Self {
             parent_lines,
             parent_input_maps,
             effective_parent_input_maps,
+            route_policy,
         })
     }
 
@@ -121,27 +172,30 @@ impl LioIntcConfig {
 
     /// Returns the firmware-provided input bitmap for each parent slot.
     ///
-    /// The controller resolves overlaps and fallback inputs when it constructs
-    /// the effective hardware routes used by [`LioIntcCpuInterface::claim`].
+    /// [`Self::new`] resolves overlaps and fallback inputs; strict firmware
+    /// routes retain these maps exactly for [`LioIntcCpuInterface::claim`].
     pub const fn parent_input_maps(self) -> [u32; LIO_PARENT_COUNT] {
         self.parent_input_maps
     }
 
-    /// Returns the route byte programmed for one local input.
-    pub fn route_value(self, input: LioInput) -> u8 {
-        let parent = self.parent_slot_for_input(input);
-        ROUTE_CPU0 | (1 << (ROUTE_INT_SHIFT + parent))
+    /// Returns whether an input has an effective parent route.
+    pub fn is_input_routed(self, input: LioInput) -> bool {
+        self.parent_slot_for_input(input).is_some()
     }
 
-    fn parent_slot_for_input(self, input: LioInput) -> usize {
+    /// Returns the CPU0 route byte, or zero for a disconnected input.
+    pub fn route_value(self, input: LioInput) -> u8 {
+        self.parent_slot_for_input(input)
+            .map_or(0, |parent| ROUTE_CPU0 | (1 << (ROUTE_INT_SHIFT + parent)))
+    }
+
+    fn parent_slot_for_input(self, input: LioInput) -> Option<usize> {
         let mask = 1u32 << input.raw();
         self.effective_parent_input_maps
             .iter()
             .enumerate()
             .find(|(_, map)| (**map & mask) != 0)
             .map(|(slot, _)| slot)
-            // `new` routes every input to exactly one present parent.
-            .unwrap_or(0)
     }
 
     fn effective_parent_input_map(self, line: CpuIrqLine) -> Option<u32> {
@@ -152,7 +206,7 @@ impl LioIntcConfig {
     }
 
     fn validate(self) -> Result<(), IntcError> {
-        Self::new(self.parent_lines, self.parent_input_maps).map(|_| ())
+        Self::from_routes(self.parent_lines, self.parent_input_maps, self.route_policy).map(|_| ())
     }
 }
 
@@ -210,12 +264,20 @@ impl LioIntcController {
         self.config
     }
 
+    /// Returns the physical address used as the ACPI controller identity.
+    pub fn controller_address(&self) -> u64 {
+        self.regs.phys_addr().as_usize() as u64
+    }
+
     /// Enables or disables one input using the LIOINTC write-one protocol.
     ///
     /// Enable writes hardware before Release-publishing the input. Disable
     /// removes it from the CPU snapshot with AcqRel before writing hardware,
     /// so hard IRQ never observes a task-owned controller transition through
     /// a lock.
+    ///
+    /// This register-level operation leaves route validation to the caller.
+    /// The CPU interface always excludes inputs without an effective route.
     pub fn set_enabled(&mut self, input: LioInput, enabled: bool) {
         let mask = 1u32 << input.raw();
         if enabled {

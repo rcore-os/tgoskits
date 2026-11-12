@@ -354,8 +354,8 @@ mod tests {
         assert_eq!(
             device_id_from_bootargs_with(
                 Some(
-                    "console=uart,mmio,0x1fe001e0 console=uart8250,mmio,0x1fe001e8,115200n8 \
-                     console=tty1"
+                    "console=ttyS2 console=uart,mmio,0x1fe001e0 \
+                     console=uart8250,mmio,0x1fe001e8,115200n8 console=tty1"
                 ),
                 |index| (index == 2).then_some(serial_device),
                 |_| None,
@@ -383,6 +383,15 @@ mod tests {
         assert_eq!(
             device_id_from_bootargs_with(
                 Some("console=ttyS2 console=uart8250,mmio,0x0"),
+                |index| (index == 2).then_some(serial_device),
+                |_| None,
+                |_| Some(acpi_device),
+            ),
+            Err(ConsoleDeviceIdError::DeviceNotFound)
+        );
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyS2 console=uart,mmio32,0x1fe001e0"),
                 |index| (index == 2).then_some(serial_device),
                 |_| None,
                 |_| Some(acpi_device),

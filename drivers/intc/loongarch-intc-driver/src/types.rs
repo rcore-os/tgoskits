@@ -231,6 +231,20 @@ pub enum IntcError {
         /// Rejected input bitmap.
         map: u32,
     },
+    /// A strict firmware parent has no explicitly routed inputs.
+    #[error("LIOINTC parent slot {slot} has a CPU line but no input map")]
+    LioParentWithoutMap {
+        /// INT0..INT3 slot.
+        slot: usize,
+    },
+    /// A strict firmware map routes inputs already assigned to another slot.
+    #[error("LIOINTC parent slot {slot} overlaps earlier input maps on {inputs:#x}")]
+    OverlappingLioMaps {
+        /// Conflicting INT0..INT3 slot.
+        slot: usize,
+        /// Inputs already routed through an earlier slot.
+        inputs: u32,
+    },
     /// A firmware interrupt specifier contains no cells.
     #[error("{controller} interrupt specifier is empty")]
     EmptySpecifier {

@@ -52,13 +52,14 @@ checksum = "bd8b2abd55bf1f9cffbf00fd594566c51a9d31402553284920c1309ca8351086"
 [[package]]
 name = "acpi"
 version = "6.1.1"
-source = "git+https://github.com/rust-osdev/acpi?rev=36f349539e15a9aeaf57f0c4428f75b046491572#36f349539e15a9aeaf57f0c4428f75b046491572"
+source = "git+https://github.com/rust-osdev/acpi?rev=5cda8c3699529174756b0afc32fefee6fd17744b#5cda8c3699529174756b0afc32fefee6fd17744b"
 dependencies = [
  "bit_field",
  "bitflags 2.13.2",
  "byteorder",
  "log",
  "pci_types",
+ "smallvec",
  "spinning_top",
 ]
 

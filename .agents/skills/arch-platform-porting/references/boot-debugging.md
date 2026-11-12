@@ -516,8 +516,8 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 - LoongArch QEMU 只使用显式设置的 `AXBUILD_QEMU_SYSTEM_LOONGARCH64`，否则按
   `qemu-system-loongarch64` 从 `PATH` 查找；不探测固定 `/opt` 路径或读取环境
   专用别名。显式路径错误由进程启动失败直接报告，不能静默换用其他模拟器。
-- LoongArch 回归使用 ArceOS payload 验证目标执行、命令行、initramfs 和 OTA；
-  本轮实机范围为原生 UEFI loader 直接启动 ArceOS Hello，不启动 AxVisor。
+- LoongArch loader 回归使用 ArceOS payload 验证目标执行、命令行、initramfs 和 OTA；
+  Hello 实机入口不承担 Axvisor 或 Linux 客户机验收。
   QEMU 网络固件须具备 RNG 和 Hash2 生产者，可用成对的
   `--firmware-code`/`--firmware-vars` 选择隔离构建的测试固件。
 - A/B 回归用一个待试槽不可加载镜像覆盖真实 `LoadImage` 失败，要求提交失败结果、
@@ -531,6 +531,23 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
   最小 Hello 使用单核、`RDRIVE_ACPI_LOAD_AML=0`、上游 ACPI 和 earlycon；
   不启用 PCI、网络、文件系统或虚拟化。应核对自动串口绑定、目标命令行和
   `Hello, world!`，不能把 `ready_to_handoff` 计作目标启动成功。
+
+没有 SPCR 不等于没有 UART。先区分默认控制台声明、DSDT 中的 `PNP0501`
+设备资源与 earlycon 输出；Hello 在 AML 关闭时成功，只证明早期输出。
+需要交互时恢复命名空间枚举，核对实际 MMIO 与 GSI，再由 `somehal::boot_console`
+使用 `console=uart8250,mmio,0x<addr>` 精确选择已经注册的 ACPI 设备。
+该参数只选择设备，不创建资源或重新配置线路；无效或未匹配的显式选择必须拒绝，
+不能回退到其他串口。`ttyS0` 的 FDT 别名或 SPCR 解析不能替代按地址选择。
+Loongson 3A6000 的资源和独立客户机板测契约见
+[`design/axvisor-loongson-3a6000-linux.md`](../../../../design/axvisor-loongson-3a6000-linux.md)。
+
+UART GSI 不在 PCH 覆盖范围时，继续核对真实 MADT 的 LIOPIC，而不是套用 PCH
+输入编号或猜 CPU 线。Linux LoongArch 的 GSI 16 起对应 LIO 本地输入，仍须受
+32 输入边界与固件 cascade map 覆盖约束；CPU 父线来自命中位图的 cascade。
+版本 1 的 ISR 布局是控制器基址加 `0x40 + physical_core_id * 8`，不能沿用
+LS2K FDT 的独立 ISR 默认地址。使用严格固件位图，不把未覆盖输入补到首个父线；
+核对真实启动物理核、LIO/EIO 级联冲突，以及域和 CPU interface 发布早于启用。
+只看到 `runtime console active` 或 `irq=None, polling=true` 不能证明中断输入。
 
 #### LoongArch EFI 目标启动与通用交接
 
@@ -830,6 +847,13 @@ BootData/KImage 或部分覆盖冲突。需要独立页表 MMIO 映射的其他�
 LoongArch 的 AML 初始化失败时，保留原始错误并离线提取 DSDT/SSDT，
 通过真实解释器入口复现；不要把 tables-only 模式当成无损替代，也不要永久保留
 全表转储框架。解释器缺陷应在上游 ACPI 仓库修复，项目只保留平台适配。
+离线验证必须使用真实解释器和同一样本、同一判定；真实表访问芯片寄存器而
+离线 Handler 不具备硬件能力时，应停在第一处访问并报告，不能返回猜测的零值。
+接入上游修复要核对实际生产入口的失败语义：部分版本的
+`Interpreter::new_from_platform()` 会记录表错误后继续返回成功，不能用单独
+`load_table()` 的红绿结果证明其严格失败。rdrive 的严格装配使用公开
+`Interpreter::new()` 与逐表 `load_table()`，同时保留 `Fatal` 的终止策略；
+不发布部分命名空间，也不把丢弃解释器当成已执行 AML 硬件写入的回滚。
 UEFI 实机在 `VM Load Offset` 后、`Memory Map` 前异常时，也要检查启动内存图
 排序是否间接申请了全局堆。`sort_by_key` 的稳定排序可能在描述符较多时分配
 scratch buffer；此时全局堆尚未初始化，应使用不分配堆的 `sort_unstable_by_key`。

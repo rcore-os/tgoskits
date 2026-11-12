@@ -194,14 +194,17 @@ fn lio_claims_only_inputs_routed_to_the_triggering_parent() {
     let line3 = CpuIrqLine::new(3).unwrap();
     let config = LioIntcConfig::new(
         [Some(line2), Some(line3), None, None],
-        [1 << 5, 1 << 6, 0, 0],
+        [1 << 5, (1 << 5) | (1 << 6), 0, 0],
     )
     .unwrap();
-    let mut parts = LioIntcParts::new(regs, isr.clone(), config).unwrap();
+    let mut parts = LioIntcParts::new(regs.clone(), isr.clone(), config).unwrap();
     let input5 = LioInput::new(5).unwrap();
     let input6 = LioInput::new(6).unwrap();
     let fallback_input = LioInput::new(7).unwrap();
 
+    assert_eq!(regs.read::<u8>(5), 0x11);
+    assert_eq!(regs.read::<u8>(6), 0x21);
+    assert_eq!(regs.read::<u8>(7), 0x11);
     parts.controller.set_enabled(input5, true);
     parts.controller.set_enabled(input6, true);
     parts.controller.set_enabled(fallback_input, true);
@@ -210,6 +213,11 @@ fn lio_claims_only_inputs_routed_to_the_triggering_parent() {
     assert_eq!(parts.cpu_interface.claim(line2), Some(input5));
     assert_eq!(parts.cpu_interface.claim(line3), Some(input6));
 
+    // Overlapping FDT maps keep the input on the lowest parent slot.
+    isr.write(0, 1u32 << 5);
+    assert_eq!(parts.cpu_interface.claim(line2), Some(input5));
+    assert_eq!(parts.cpu_interface.claim(line3), None);
+
     isr.write(0, 1u32 << 6);
     assert_eq!(parts.cpu_interface.claim(line2), None);
     assert_eq!(parts.cpu_interface.claim(line3), Some(input6));
@@ -217,6 +225,92 @@ fn lio_claims_only_inputs_routed_to_the_triggering_parent() {
     isr.write(0, 1u32 << fallback_input.raw());
     assert_eq!(parts.cpu_interface.claim(line2), Some(fallback_input));
     assert_eq!(parts.cpu_interface.claim(line3), None);
+}
+
+#[test]
+fn lio_firmware_routes_leave_unmapped_inputs_disconnected_and_filter_claims() {
+    let mut registers = [u64::MAX; 8];
+    let mut isr_backing = [0u32; 1];
+    let regs = test_mmio(0x2000_0000, &mut registers);
+    let isr = test_mmio(0x2100_0000, &mut isr_backing);
+    let line3 = CpuIrqLine::new(3).unwrap();
+    let line5 = CpuIrqLine::new(5).unwrap();
+    let config = LioIntcConfig::from_firmware_routes(
+        [None, Some(line3), None, Some(line5)],
+        [0, (1 << 5) | (1 << 31), 0, 1 << 6],
+    )
+    .unwrap();
+    let mut parts = LioIntcParts::new(regs.clone(), isr.clone(), config).unwrap();
+
+    for raw in 0..32 {
+        let expected = match raw {
+            5 | 31 => 0x21,
+            6 => 0x81,
+            _ => 0,
+        };
+        assert_eq!(regs.read::<u8>(raw), expected);
+        assert_eq!(
+            config.is_input_routed(LioInput::new(raw).unwrap()),
+            expected != 0
+        );
+    }
+    assert!(parts.cpu_interface.is_parent(line3));
+    assert!(parts.cpu_interface.is_parent(line5));
+    assert!(!parts.cpu_interface.is_parent(CpuIrqLine::new(2).unwrap()));
+
+    let input5 = LioInput::new(5).unwrap();
+    let input6 = LioInput::new(6).unwrap();
+    let unrouted = LioInput::new(7).unwrap();
+    parts.controller.set_enabled(input5, true);
+    parts.controller.set_enabled(input6, true);
+    // Even a direct core enable cannot make an unmapped input claimable.
+    parts.controller.set_enabled(unrouted, true);
+    isr.write(0, (1u32 << 5) | (1 << 6) | (1 << 7) | (1 << 31));
+    assert_eq!(parts.cpu_interface.claim(line3), Some(input5));
+    assert_eq!(parts.cpu_interface.claim(line5), Some(input6));
+
+    parts.controller.set_enabled(input5, false);
+    assert_eq!(parts.cpu_interface.claim(line3), None);
+    assert_eq!(parts.cpu_interface.claim(line5), Some(input6));
+    isr.write(0, 1u32 << 7);
+    assert_eq!(parts.cpu_interface.claim(line3), None);
+    assert_eq!(parts.cpu_interface.claim(line5), None);
+}
+
+#[test]
+fn lio_firmware_routes_reject_missing_or_ambiguous_parent_maps() {
+    let line2 = CpuIrqLine::new(2).unwrap();
+    let line3 = CpuIrqLine::new(3).unwrap();
+    assert_eq!(
+        LioIntcConfig::from_firmware_routes([None; 4], [0; 4]),
+        Err(IntcError::MissingLioParent)
+    );
+    assert!(matches!(
+        LioIntcConfig::from_firmware_routes([Some(line3), None, None, None], [1, 0, 0, 0]),
+        Err(IntcError::InvalidLioParentSlot { .. })
+    ));
+    assert!(matches!(
+        LioIntcConfig::from_firmware_routes([Some(line2), None, None, None], [1, 2, 0, 0]),
+        Err(IntcError::LioMapWithoutParent { .. })
+    ));
+    assert_eq!(
+        LioIntcConfig::from_firmware_routes([Some(line2), None, None, None], [0; 4]),
+        Err(IntcError::LioParentWithoutMap { slot: 0 })
+    );
+    assert_eq!(
+        LioIntcConfig::from_firmware_routes([Some(line2), Some(line3), None, None], [1, 0, 0, 0]),
+        Err(IntcError::LioParentWithoutMap { slot: 1 })
+    );
+    assert_eq!(
+        LioIntcConfig::from_firmware_routes(
+            [Some(line2), Some(line3), None, None],
+            [1 << 5, (1 << 5) | (1 << 6), 0, 0]
+        ),
+        Err(IntcError::OverlappingLioMaps {
+            slot: 1,
+            inputs: 1 << 5
+        })
+    );
 }
 
 #[test]

@@ -67,6 +67,7 @@ fn resolve_acpi_gsi(gsi: u32) -> Result<IrqId, IrqError> {
 fn resolve_acpi_route(route: AcpiGsiRoute) -> Result<IrqId, IrqError> {
     match route.controller {
         AcpiGsiController::PchPic => pch_pic::resolve_acpi_route(&route),
+        AcpiGsiController::LioPic => liointc::resolve_acpi_route(&route),
         AcpiGsiController::IoApic => Err(IrqError::Unsupported),
     }
 }
@@ -78,6 +79,7 @@ fn route_to_rdif(route: irq_framework::AcpiGsiRoute) -> AcpiGsiRoute {
         controller: match route.controller {
             irq_framework::AcpiGsiController::IoApic => rdif_intc::AcpiGsiController::IoApic,
             irq_framework::AcpiGsiController::PchPic => rdif_intc::AcpiGsiController::PchPic,
+            irq_framework::AcpiGsiController::LioPic => rdif_intc::AcpiGsiController::LioPic,
         },
         controller_id: route.controller_id,
         controller_address: route.controller_address,
