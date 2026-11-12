@@ -1259,6 +1259,92 @@ drop，不能原样留在这条提交链。需要多目标更新时，准备期�
 显式成功路径和普通 Drop 统一保持：退出 Scope/pin/State 短锁，完成所有既定发布，
 结束 writer，最后释放准备和退休资源；提交拒绝则跳过发布，其余清理顺序相同。
 
+#### 3.8.10 命名空间拓扑退休
+
+namespace 还拥有已安装挂载之间的连接，不能只靠丢弃 Core 的根 Arc 释放它。
+当前 `Mountpoint.children` 强持子节点，而子节点的 `location` 经 `Location`
+强持父节点；含子挂载的树存在拓扑强环。克隆准备对象即使把全部强映射表正确带出，
+若放弃时没有断开这类连接，仍会永久保留新树和后备文件系统。仅验证无子节点根的
+最后引用释放，不能证明完整 namespace 的取消、退出或销毁能够回收。
+
+`MountNamespace` 是这份拓扑的唯一生命周期所有者。最后一个 Core 强引用结束时，
+其私有清理路径负责在 topology gate 内解除当前仍属于本树的父子连接和传播关系，
+再在 gate 外释放全部拥有资源。`CreatedMountNamespace` 未被消费、完整
+`NamespaceClone` 被放弃和已安装 namespace 的最后引用退出，都通过同一 Core
+清理，不新增单独的“未提交树”事实源。`mem::forget` 等漏析构仍只允许保留资源，
+不承诺运行清理，也不开放新的采用或移动权限。
+
+这个责任对应固定 Linux 的
+[`put_mnt_ns`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L6271)
+在最后引用后执行 `umount_tree(ns->root, 0)`：
+[`umount_tree`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L1771)
+从 namespace 撤下自身节点，并清理其传播成员关系；普通节点按
+[`disconnect_mount`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L1738)
+断开，不等价于请求一个可失败的同步普通卸载。本项目在已有挂载能力范围内落实这个
+生命周期边界，不借此新增 Linux 的 locked-mount、RCU 或延后工作队列机制。
+
+清理是内部的不失败本地释放，不调用 public unmount、detach 或可失败传播安装器，
+不检查普通卸载的 busy 门禁，不 flush、fsync 或执行后端操作，也不向其他存活
+namespace 的 peer/slave 树传播卸载。根的永久 anchor 角色保持，不因 Core 退出而
+恢复为可采用根；普通子节点也不重新变为 fresh 根。已经被移出本树的节点不重新
+找回销毁，已独立克隆或 bind 到其他树的节点和文件系统内容不能连带清理。
+
+退休还必须关闭原节点的拓扑发布资格，保留 PH 不等于可以向无人拥有的旧树添加
+挂载。每个被本次清理接管的节点在同一 topology gate 内先单调标记为已退休，再
+断开连接；这个内部状态与永久根角色、`normally_unmounted` 和实体使用计数分开，
+以后不能复活。mount、bind、move、attach、pivot 及传播创建的实际提交点都不得向
+已退休目标发布连接；move/attach/pivot 也不能重新发布原已退休节点，拒绝为
+`InvalidInput`。检查与发布共用同一 gate，不能只在准备或目录验证前读一次状态。
+
+这条关闭规则只覆盖拓扑连接，不撤销读写文件、目录和元数据的既有实体能力。
+从保留实体向活树创建新的 bind/克隆节点，若原入口允许，仍由活目标的生命周期
+负责；新节点不继承原节点的退休状态。fresh Native 初始化的未采用树和普通 detach
+后仍有合法拥有者的节点也不因 parentless 被一律拒绝，不能用 `location=None`
+代替退休状态。传播清理同时撤下本地成员身份及指向本树的反向边，保留对端与其他
+存活成员的关系；已退休节点不再是接收者。
+
+这与固定 Linux
+[`check_mnt`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L946)
+和
+[`do_add_mount`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L3720)
+区分“持有路径”与“可向该 namespace 发布挂载”一致；本项不替代 Kernel 的当前
+membership、权限及逐系统调用错误顺序。若准备的 mount 在进入 gate 前已分配，而
+目标先退休，拒绝时也必须先退出 gate，再释放未发布节点和准备引用，不能把新的
+拒绝分支变成最后引用的锁内释放。
+
+内部清理先在同一 topology 边界收集完整的本树强引用，并为每项被移出的父位置、
+子表、lifetime guard 及传播对端强引用保留退休位置，再修改关系。短锁内只移动
+已有引用；容器容量准备在对应短锁外完成。移出的连接和所有扫描强引用一直保留到
+topology gate 退出之后，不能在逐项循环尾部或传播 helper 内成为最后一次释放。
+旧 `leave_propagation_relations_locked` 若临时升级对端 Weak 后就局部销毁，必须由
+这次清理的拥有保活集合覆盖，或同步迁移为能带出这些引用的受控内部出口；不能
+因为自身树已保活便推断其他 namespace 的最后对端引用也安全。
+
+成功销毁 Core 只取消 namespace 对拓扑的拥有，不撤销仍由外部 PH、打开对象或
+树外 cwd/root 保持的实际文件实体与挂载使用权。这些路径继续保留原 dentry、inode
+及文件系统，最终由各自引用释放；不能强制清空计数或标成正常卸载后拒绝合法保留
+路径。断开的 mount 上行关系按已有 detached 语义处理，不沿已退休 Core 重建名字。
+Core 清理完成前后都不复制或切换任何任务的 membership。
+
+清理协议不主动调用后端；gate 外最后 mount/lease 的通常析构仍执行它已有的缓存
+退休责任，不能为了字面上的“不 flush”把这些资源永久保留。现有
+`_filesystem_lease` 继续随 mount 最后寿命，不因 Core 退出而提前取走；
+`lifetime_guard` 等附着期资源则移出后外退，不连带撤销其他 bind/clone 的拥有副本。
+
+`MountNamespace` 的最终释放可以取得 topology gate，因此所有前述准备、发布和
+退休出口仍必须把可能最后的 Core Arc 带到 writer、Scope、pin 和各短锁外。实现
+可以用私有 `Drop` 完成这项唯一责任，但不能在 dentry 析构里安装同类树修改，也
+不能让 `NamespaceClone::into_parts` 隐式销毁仍供调用者提交的新 Core。
+
+验证复用完整克隆/退休旅程，加入真实覆盖树的放弃和最后引用退出：无需手工先把
+所有子挂载卸载，便应能观察本次新树及其独立文件系统最后持有者在相关 gates 外
+释放；若保留一个 PH，则只保活该路径所需实体，直到最后 PH 释放。另核 source
+树、存活 peer/bind 树及其数据未被卸载。错误实现保留父子环时，同一旅程必须稳定
+失败；不能通过测试清理先 detach 全树或只观察 Core 的 Weak 消失来掩盖泄漏。
+Core 清理后再经保留 PH 尝试挂接，也必须拒绝且不形成新强环；既有测试中在
+模拟 writer 内丢弃 Created、或在最后 Core 退出后再手工卸载原孩子的用法须同步
+调整，不能把现在不成立的清理顺序保留为测试前提。
+
 ## 4. 命名事务
 
 VFS 统一授权与提交协议，真实排他权由文件系统状态所有者落实。
