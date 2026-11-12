@@ -957,12 +957,12 @@ namespace-aware pivot 必须拒绝移动 namespace 锚点；该限制也要落�
 完整 namespace 克隆为新树根建立这个角色，普通 bind 产生的节点不继承该角色。
 无稳定锚点的旧临时 context 若直接 pivot，确有 root 引用仍留在旧 mount 的风险，
 但未发现上述临时生产消费者执行该操作，不能把这个条件推导写成启动路径故障。
-具体创建、覆盖根观察和锚点保护入口仍须与临时消费者一起核对后冻结。
+具体创建、覆盖根观察和锚点保护入口按第 3.8.7 至 3.8.8 节实施，并同序迁移临时消费者。
 
 完整克隆产生本次操作拥有的旧、新 mount 对应关系，保留实际 source owner，
 用于 root/cwd 的实体转交；映射不进入永久索引，也不从路径显示文本重建。
 被复制的路径使用新 mount 和原 dentry，未落入复制集合的路径保留原句柄。
-根观察、对应关系、错误时资源归属及具体返回签名仍须在该单元实施前冻结。
+根观察、对应关系、错误时资源归属及返回签名由第 3.8.7 至 3.8.8 节统一约束。
 
 Starry 的 `MntNamespace` 保留为不可变的 OS 适配对象，只共同持有这个实际 namespace
 与创建它的 user namespace 引用。它不另分配 ID、不保存第二棵树，其诊断身份来自
@@ -1079,7 +1079,7 @@ owner，因此退出计数短锁后直到本次 scope 提交仍保持独占。�
 和 pivot，再按 exact 路径修订状态；不能保留现有持上下文 mutex 执行后端操作的
 调用形状。原拓扑与 registry 算法仍复用内部持锁接点，不能持有拓扑 gate 后再调用
 自行取同一 gate 的公开 clone/pivot/acquire_use。克隆的旧新 mount 表、快照与失败
-中间值的最终释放也须带到相关 gates 外；这些接点的具体签名仍待独立核对后实施。
+中间值的最终释放也须带到相关 gates 外；具体拥有出口按第 3.8.7 至 3.8.9 节实施。
 
 #### 3.8.6 只读视图构造
 
@@ -1163,8 +1163,101 @@ writer 所在字段排在这些拥有字段之前；显式提交或丢弃时都�
 预留份额。new USER/MNT 的 creator、CLONE_FS 互斥和各入口的错误顺序继续按前文
 处理，不能因为准备载体统一就统一这些业务条件。
 
-上述接口还需以全部生产消费者、既有分配/锁模型及失败退休链独立核对；本节不把
-尚未完成的迁移、CACHED、统一会话或系统级回归列为已实现。
+上述接口连同第 3.8.8 至 3.8.9 节作为持有与绑定单元的实施合同，必须覆盖全部直接
+生产消费者、既有分配/锁模型及失败退休链；本节不把尚未完成的迁移、CACHED、
+统一会话或系统级回归列为已实现。
+
+#### 3.8.8 受控路径修改
+
+AX 拥有路径状态，Kernel 拥有任务绑定，二者通过准备命令和拥有退休值连接。
+`&mut FsContextOwner` 不授予访问 AX 私有字段的能力；也不能以新建 owner 代替
+chdir、chroot 或共享 setns，否则会切断 CLONE_FS 共享。`PreparedFsUpdate`
+字段私有、不可 Clone，只由下面的领域准备入口产生；不公开 State 或短锁 guard。
+
+| 入口 | 行为与拥有结果 |
+| --- | --- |
+| `FsContextOwner::namespace(&self) -> &Arc<MountNamespace>` | 只借用本 owner 的 Core，供 Kernel 与同次 Scope 选择的适配核对；不返回共享 State |
+| `FsContextOwner::check_source(&self, source: &FsContextSnapshot, sharing: FsSharingRequirement) -> VfsResult<()>` | 核来源实际 Weak 分配与本 owner.namespace，再在短锁内核适用份额；只观察、不升级 Weak，不比较来源 root/cwd 的内容 |
+| `FsContextSnapshot::prepare_cwd(&self, path: PathHandle) -> (VfsResult<PreparedFsUpdate>, FsUpdateRetirement)` | 锁外检查输入目录，准备仅修改 cwd 的命令；拒绝时把输入路径和任何临时拥有值交回 retirement |
+| `FsContextSnapshot::prepare_root(&self, path: PathHandle) -> (VfsResult<PreparedFsUpdate>, FsUpdateRetirement)` | 同样准备仅修改 root 的命令，保留原 cwd 和 namespace；不新建共享 State |
+| `MountNamespace::snapshot_root(self: &Arc<Self>) -> (VfsResult<NamespaceRootSnapshot>, MountRootRetirement)` | 在拓扑边界从稳定锚点向下选择目标覆盖根，取得其 PH；私有结果同时拥有确切 Core 和该根，所有中间引用、守卫及失败残留由 retirement 返回 |
+| `FsContextSnapshot::prepare_join(&self, target: NamespaceRootSnapshot, sharing: FsSharingRequirement) -> PreparedFsUpdate` | 消费实际目标根快照，准备成对 root/cwd 写回及本 owner.namespace 替换；无目录 I/O、分配或新的可失败步骤 |
+| `FsContextOwner::apply_update(&mut self, update: PreparedFsUpdate) -> (VfsResult<()>, FsUpdateRetirement)` | 在提交点复核来源和适用份额，原子替换所需共享路径，并按命令替换当前 owner 的 namespace；成功旧值及拒绝输入都移入返回的 retirement |
+| `FsContextOwner::propagate_pivot_root(old: &PathHandle, new: &PathHandle) -> FsRegistryRetirement` | 按 exact mount+dentry 修订登记状态，不按 namespace 过滤；返回整个扫描强引用集合及每项旧路径，不在方法尾部销毁它们 |
+
+`FsSharingRequirement` 只区分 `AnyOwner` 和 `SoleOwner`。它表达本次已选 Linux
+安装路径的条件，不授予权限：单 MNT 与 USER 的独占检查仍按第 3.8.4 节的权限和
+安装顺序，在准备阶段调用 `check_source`，提交再检查；合法多 flag 共享路径选择
+`AnyOwner`。普通 root/cwd 修改也选 `AnyOwner`，无需为读快照或普通查找读份额。
+来源不匹配为 `BadState`，不修改输入状态、不转成 lookup conflict 或隐式重试；
+适用的份额不为一时为 `InvalidInput`，在 ABI 边界保持 EINVAL。
+
+命令只复制来源的 Weak 与 namespace 身份，不复制可变 State、不重新读取源路径，
+不要求提交时 root/cwd 仍等于准备快照：其他共享 owner 或 exact registry 修订可能
+已合法改变它们。`apply_update` 先在同一短锁内完成所有拒绝条件，再移动固定引用；
+cwd 命令只换 cwd，root 命令只换 root，join 命令在同一锁区一起换 root/cwd，并只
+换当前 owner 的 namespace。join 的两项路径来自同一个目标 PH 的 Clone，共享使用权。
+即使目标 Core 相同，join 也执行重设，不能短路成功。
+
+`NamespaceRootSnapshot` 的字段私有，无公开任意 Core 与 PH 拼装构造器。
+`snapshot_root` 不修改 namespace 锚点；选择的是本次拓扑观察到的覆盖根，结果拥有
+实际路径，后续不靠显示文本重查。它在 Scope、pin、State 短锁外运行；允许在 writer
+准备期调用，但返回的 `MountRootRetirement` 必须先归入 `NamespaceChange`，
+再检查结果或继续其他可失败安装器。方法内部不能在仍持 topology gate 时通过
+public acquire-use 重取同一 gate，所有中间资源也不能在 writer 内隐式最终释放。
+
+`FsUpdateRetirement`、`MountRootRetirement` 和 `FsRegistryRetirement` 都是不透明
+拥有值，只承担普通资源释放，不提供提交或原 State 的修改出口。准备 helper 的
+结果和 retirement 必须一起回到外层；`apply_update` 消费命令后，成功旧 PH、旧 Core
+及命令剩余身份，或者拒绝时的全部原输入，均由返回值继续拥有。Kernel 在 Scope
+闭包中先把 retirement 移回载体，再传播纯错误；不能 `?` 丢掉这一半结果。
+不能在 Scope 内检查结果之前把整个返回元组当临时表达式销毁。
+
+Kernel 的 `PreparedFsBinding` 同时保存源快照和源 Mnt 适配，先验证两者与当前
+Scope 的完整性和 Core，再调用 AX 写端。提交独立 owner 时也先用 `check_source`
+复核原绑定及适用份额，再依次交换 owner 和适配；加入 namespace 则使用原 owner 的
+`apply_update`，不交换共享 State。第一次修改后只剩无失败的引用移动；不能先取走
+Scope 条目再校验。具体条目借用按现有 `scope_mut` 规则顺序结束，不同时保留冲突
+的可变借用，所有移出值进入载体。
+
+registry 扫描在可睡眠 registry 锁下收集每个 State 的一个强引用，随后退出该锁。
+在进入任何 State 短锁前，为每个扫描项准备固定的两个旧 PH 槽位；锁内只比较并移动，
+不向 Vec 扩容。扫描项连同强引用及两个退休槽位一起返回 `FsRegistryRetirement`，
+不能逐项循环结束便释放 State。ROOT 和 Kernel pivot 在退出拓扑 gate 后调用这个
+修订出口，并在各自外层 gates 退出后释放其结果；保留既有 bind、同点 pivot、修订、
+detach 顺序，不把扫描或后端工作移入路径锁。
+
+#### 3.8.9 预构造发布
+
+现有 `ProcessNamespaceUpdate::publish(NsProxy)` 在内部 `Arc::new`，无法同时满足
+Scope 前完成分配与 Scope 后才发布。该私有接点改为准备拥有发布值和无分配交换，
+不让 AX 依赖 Kernel 的 `NamespaceChange`，也不扩展现有凭据更新的业务对象范围。
+
+| Kernel 私有入口 | 责任与顺序 |
+| --- | --- |
+| `NamespaceChange::prepare_process_publication(&mut self)` | 在 Scope 前把最终 NsProxy 包为 Arc，形成私有 `PreparedNamespacePublication`；保存旧聚合、所需任务/凭据引用及 dumpable 决策所需资源到载体，不提前发布 |
+| `ProcessNamespaceUpdate::publish_prepared(&mut self, prepared: &mut PreparedNamespacePublication) -> Arc<NsProxy>` | 在 Scope 成功后，先执行既定 dumpable 降级，再在原 raw publication 锁内交换已分配 Arc；返回旧聚合，不分配、不枚举任务、不销毁旧值，也不消费 writer |
+| `NamespaceChange::prepare_credentials(&mut self)` | 仅在本次原业务确需更新凭据时，在 Scope 前完成新 Cred Arc、目标任务集合及每目标退休槽位；不将本任务改为新的进程凭据传播协议 |
+| `Thread::replace_cred_under(&self, update: &ProcessNamespaceUpdate<'_>, new: Arc<Cred>) -> Arc<Cred>` | 复用原 writer 所有者核对和凭据锁，在交换前保持原 dumpable 降级条件，返回旧 Arc；不在此分配或丢弃旧凭据 |
+
+发布准备类型字段私有、不可 Clone，准备值始终保留在载体中。进入 Scope 前检查
+所有将使用的准备项已经齐备；成功后没有需要安装器重验、分配或失败返回的阶段。
+`publish_prepared` 只移动预备引用，消耗内部待发布项并将旧值交回载体；不能用
+`publish(NsProxy)` 的旧封装在 Scope 后重新做 Arc 分配。它借用 writer 的目的，是
+让 namespace 和必要凭据都发布完毕后，再由外层统一结束 writer、退休所有旧资源。
+
+现有 `set_cred_under` 的 Arc 创建和任务枚举，以及 `set_cred_single` 的旧值直接
+drop，不能原样留在这条提交链。需要多目标更新时，准备期收集并保留目标任务，
+按现有调用者范围为每项预留一个退休位置；发布期逐项调用 `replace_cred_under`，
+把旧值移动到已有槽位，不在循环里扩容或释放任务。namespace owner 对 permitted 的
+影响和凭据变化对 dumpable 的影响保持现有发布前降级顺序；准备决策须使用该顺序下
+将被观察的身份，不能因预构造而误用尚未生效或已过时的 Cred。
+
+普通凭据入口可以复用这些私有交换原语，但必须先在相应外层载体中保存拥有资源；
+本次只改变预分配和退休位置，不扩大谁被更新、能力来源或其他 namespace 业务身份。
+任务集合、旧聚合、旧凭据、准备失败输入和未发布 Arc 均在 writer 外释放。
+显式成功路径和普通 Drop 统一保持：退出 Scope/pin/State 短锁，完成所有既定发布，
+结束 writer，最后释放准备和退休资源；提交拒绝则跳过发布，其余清理顺序相同。
 
 ## 4. 命名事务
 
