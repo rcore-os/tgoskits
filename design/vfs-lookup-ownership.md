@@ -1336,6 +1336,14 @@ Core 清理完成前后都不复制或切换任何任务的 membership。
 可以用私有 `Drop` 完成这项唯一责任，但不能在 dentry 析构里安装同类树修改，也
 不能让 `NamespaceClone::into_parts` 隐式销毁仍供调用者提交的新 Core。
 
+这也约束 `clone_namespace` 调用的完整传播关系重建链，而不只约束 Core 的最后
+清理。旧新 mount 表和源 Core 只能保活本树节点，不能保活由传播 Weak 指向的
+树外 peer/master。`rebuild_cloned_relations`、共享组加入及其关系去重/存在性
+扫描中，所有成功升级的强引用都必须由准备对象带到外部退休边界；不能只保留
+外层 `group`/`masters`，却让深层 helper 的临时 `live` 或判定候选在短锁或
+topology gate 内成为最后引用。纯身份比较可复用 Weak 的实际 allocation 身份，
+不为比较额外升级无关候选；确需升级的对象随 `MountCloneRetirement` 外退。
+
 验证复用完整克隆/退休旅程，加入真实覆盖树的放弃和最后引用退出：无需手工先把
 所有子挂载卸载，便应能观察本次新树及其独立文件系统最后持有者在相关 gates 外
 释放；若保留一个 PH，则只保活该路径所需实体，直到最后 PH 释放。另核 source
@@ -1344,6 +1352,46 @@ Core 清理完成前后都不复制或切换任何任务的 membership。
 Core 清理后再经保留 PH 尝试挂接，也必须拒绝且不形成新强环；既有测试中在
 模拟 writer 内丢弃 Created、或在最后 Core 退出后再手工卸载原孩子的用法须同步
 调整，不能把现在不成立的清理顺序保留为测试前提。
+
+#### 3.8.11 传播安装的覆盖冲突
+
+拓扑退休只能清理从 Core 根仍可到达的节点，因此发布新挂载时就必须保持完整的
+覆盖连接，不能等最后 Core 退出再修复孤立子树。`propagate_new_child_locked`
+为接收者选出 exact `Location` 后，`attach_child` 若发现该位置已有覆盖挂载，
+不能仅以新副本替换 child slot，再把被替换 Arc 丢到锁外；旧挂载的 parent
+Location 和子树仍在，单纯延后 Drop 既不保留可见覆盖栈，也不能打破父子强环。
+
+固定 Linux 的
+[`attach_recursive_mnt`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2575-L2585)
+先为新树最上层覆盖根准备挂载点，再在
+[`提交循环`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2634-L2663)
+保存该接收位置的旧 cover，发布新副本，并通过 `mnt_change_mountpoint` 把旧 cover
+重接到新副本最上层覆盖根。接收者已有普通 cover 并不自动禁止传播；
+[`need_secondary`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pnode.c#L260-L271)
+没有这种排除条件。合法 private 目标加入共享组也不因普通 cover 被拒绝，见
+[`do_set_group`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L3429-L3480)。
+这里只核定本项目已有传播与覆盖能力，不新增 Linux 的 locked-mount、匿名
+namespace 或 `MOVE_MOUNT_SET_GROUP` 系统调用支持。
+
+最小场景中，P 和 Q 从同一实际 root dentry 派生，在 Q 为 private 时先形成
+`Q → C → D`，然后使 Q 加入 shared P 的组。P 根的新挂载 X 传播后，Q 的正确
+顺序是 `Q → Xq → C → D`：Xq 插在原覆盖层下面，C/D 的内容仍在上方可见。
+不能拒绝这个普通覆盖场景，也不能通过先跟随到最上层 cover 再追加 Xq，变成
+`Q → C → D → Xq`；后者虽然可能避免泄漏，却改变了 Linux 的覆盖顺序。
+
+本地安装在一个 topology gate 内完成上述冲突重接：原位置的 child map 指向新
+副本，旧 cover 的 parent Location 改指新副本的最上层覆盖根，对应 child map
+重新持有旧 cover。新树若已有自身覆盖层，应先选定它的最上层根，不能把其中
+已有连接再次覆盖掉。全部受影响节点先完成活性、角色及目录等适用检查和容量
+准备，再改变第一条连接；重接过程不调用后端，不在连接不一致时执行新的可失败
+检查。移出的旧 Location、child slot 强引用及遍历中间引用都随既有退休载体在
+短锁、topology 和外层 writer 之外释放，不改变普通传播的其他错误与回滚范围。
+
+验证增强已有传播/完整树退休旅程：通过公开入口先构造覆盖、再加入组、再传播，
+断言原 C/D 仍可见、各 parent/child 链顺序正确，并在最后 Core 退出后观察全部
+实际 mount 和独占后备资源释放，不先手工卸载来掩盖断链。错误实现应在传播后
+的结构或可见性断言处稳定失败；没有直接 Starry 系统调用回归时，此组件证据
+不升级为 mount、move_mount 或 namespace 系统调用的兼容性批准。
 
 ## 4. 命名事务
 
