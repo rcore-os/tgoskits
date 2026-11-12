@@ -1,5 +1,5 @@
 board_type = "LoongSon-PC"
-cmdline = "earlycon=ns16550,mmio,0x1fe001e0 axvisor.vm_start=1"
+cmdline = "earlycon=ns16550,mmio,0x1fe001e0 console=uart8250,mmio,0x1fe001e0 axvisor.vm_start=1"
 initramfs = "${workspace}/target/axbuild/loongson-3a6000/block-host.cpio.gz"
 timeout = 600
 fail_regex = [

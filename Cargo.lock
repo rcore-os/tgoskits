@@ -52,8 +52,7 @@ checksum = "bd8b2abd55bf1f9cffbf00fd594566c51a9d31402553284920c1309ca8351086"
 [[package]]
 name = "acpi"
 version = "6.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b763acdc1d85c36d61acf97a59938f23202d0e8efe45e8759de10c02db242744"
+source = "git+https://github.com/rust-osdev/acpi?rev=36f349539e15a9aeaf57f0c4428f75b046491572#36f349539e15a9aeaf57f0c4428f75b046491572"
 dependencies = [
  "bit_field",
  "bitflags 2.13.2",

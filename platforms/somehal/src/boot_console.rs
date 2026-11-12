@@ -1,9 +1,10 @@
-use rdrive::{DeviceId, Fdt};
+use rdrive::{DeviceId, Fdt, probe::acpi::AcpiResourceAddress};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConsoleSpec {
     HardwareSerial(usize),
     RockchipFiq(usize),
+    AcpiSerial(Option<AcpiResourceAddress>),
     VirtualTty,
 }
 
@@ -31,6 +32,7 @@ fn device_id_from_bootargs(cmdline: Option<&str>) -> Result<DeviceId, ConsoleDev
         cmdline,
         device_id_from_serial_index,
         device_id_from_rockchip_fiq_index,
+        rdrive::acpi_resource_address_to_device_id,
     )
 }
 
@@ -38,6 +40,7 @@ fn device_id_from_bootargs_with(
     cmdline: Option<&str>,
     serial_device_id: impl Fn(usize) -> Option<DeviceId>,
     rockchip_fiq_device_id: impl Fn(usize) -> Option<DeviceId>,
+    acpi_address_device_id: impl Fn(AcpiResourceAddress) -> Option<DeviceId>,
 ) -> Result<DeviceId, ConsoleDeviceIdError> {
     let cmdline = cmdline.ok_or(ConsoleDeviceIdError::NotSpecified)?;
     let mut has_console_spec = false;
@@ -51,6 +54,9 @@ fn device_id_from_bootargs_with(
             }
             ConsoleSpec::RockchipFiq(index) => {
                 last_hardware_device = Some(rockchip_fiq_device_id(index));
+            }
+            ConsoleSpec::AcpiSerial(address) => {
+                last_hardware_device = Some(address.and_then(&acpi_address_device_id));
             }
             ConsoleSpec::VirtualTty => {}
         }
@@ -73,6 +79,10 @@ fn console_specs(cmdline: &str) -> impl Iterator<Item = ConsoleSpec> + '_ {
 
 fn parse_console_spec(spec: &str) -> Option<ConsoleSpec> {
     let name = spec.split(',').next().unwrap_or(spec);
+    if name == "uart" || name == "uart8250" {
+        return Some(ConsoleSpec::AcpiSerial(parse_acpi_serial_address(spec)));
+    }
+
     if name == "tty"
         || name == "ttynull"
         || name
@@ -86,6 +96,34 @@ fn parse_console_spec(spec: &str) -> Option<ConsoleSpec> {
         .or_else(|| parse_number_suffix(name, "ttyAMA"))
         .map(ConsoleSpec::HardwareSerial)
         .or_else(|| parse_number_suffix(name, "ttyFIQ").map(ConsoleSpec::RockchipFiq))
+}
+
+fn parse_acpi_serial_address(spec: &str) -> Option<AcpiResourceAddress> {
+    let mut fields = spec.split(',');
+    let name = fields.next()?;
+    if name != "uart" && name != "uart8250" {
+        return None;
+    }
+
+    let space = fields.next()?;
+    let address = fields.next()?;
+    if !address.starts_with("0x") || address.len() <= 2 {
+        return None;
+    }
+    let digits = &address[2..];
+    if !digits.bytes().all(|digit| digit.is_ascii_hexdigit()) {
+        return None;
+    }
+    let base = u64::from_str_radix(digits, 16).ok()?;
+    if base == 0 || usize::try_from(base).is_err() {
+        return None;
+    }
+
+    match space {
+        "io" => Some(AcpiResourceAddress::io(base)),
+        "mmio" => Some(AcpiResourceAddress::memory(base)),
+        _ => None,
+    }
 }
 
 fn parse_number_suffix(name: &str, prefix: &str) -> Option<usize> {
@@ -226,6 +264,7 @@ mod tests {
                 Some("console=ttyS2,1500000 console=tty1"),
                 |index| (index == 2).then_some(serial2_device),
                 |_| None,
+                |_| None,
             ),
             Ok(serial2_device)
         );
@@ -239,6 +278,7 @@ mod tests {
             device_id_from_bootargs_with(
                 Some("console=ttyS2,1500000 console=tty1 console=ttyAMA3,115200"),
                 |index| (index == 3).then_some(serial3_device),
+                |_| None,
                 |_| None,
             ),
             Ok(serial3_device)
@@ -254,6 +294,7 @@ mod tests {
                 Some("console=ttyS2,1500000 console=ttyS3,115200 console=tty1"),
                 |index| (index == 2).then_some(serial2_device),
                 |_| None,
+                |_| None,
             ),
             Err(ConsoleDeviceIdError::DeviceNotFound)
         );
@@ -261,6 +302,7 @@ mod tests {
             device_id_from_bootargs_with(
                 Some("console=ttyS2,1500000 console=ttyS3,115200"),
                 |index| (index == 2).then_some(serial2_device),
+                |_| None,
                 |_| None,
             ),
             Err(ConsoleDeviceIdError::DeviceNotFound)
@@ -276,6 +318,7 @@ mod tests {
                 Some("console=ttyFIQ0,1500000"),
                 |_| None,
                 |index| (index == 0).then_some(fiq_device),
+                |_| None,
             ),
             Ok(fiq_device)
         );
@@ -299,6 +342,82 @@ mod tests {
             device_id_from_serial_index_with(2, |_| None, || Some(spcr_device)),
             None
         );
+    }
+
+    #[test]
+    fn explicit_acpi_address_selects_registered_device_and_fails_without_fallback() {
+        let serial_device = DeviceId::from(42);
+        let acpi_device = DeviceId::from(45);
+        let first_address = AcpiResourceAddress::memory(0x1fe0_01e0);
+        let address = AcpiResourceAddress::memory(0x1fe0_01e8);
+
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some(
+                    "console=uart,mmio,0x1fe001e0 console=uart8250,mmio,0x1fe001e8,115200n8 \
+                     console=tty1"
+                ),
+                |index| (index == 2).then_some(serial_device),
+                |_| None,
+                |selected| {
+                    if selected == address {
+                        Some(acpi_device)
+                    } else if selected == first_address {
+                        Some(serial_device)
+                    } else {
+                        None
+                    }
+                },
+            ),
+            Ok(acpi_device)
+        );
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyS2 console=uart,mmio,0x1fe001e0"),
+                |index| (index == 2).then_some(serial_device),
+                |_| None,
+                |_| None,
+            ),
+            Err(ConsoleDeviceIdError::DeviceNotFound)
+        );
+        assert_eq!(
+            device_id_from_bootargs_with(
+                Some("console=ttyS2 console=uart8250,mmio,0x0"),
+                |index| (index == 2).then_some(serial_device),
+                |_| None,
+                |_| Some(acpi_device),
+            ),
+            Err(ConsoleDeviceIdError::DeviceNotFound)
+        );
+    }
+
+    #[test]
+    fn parses_acpi_address_spaces_and_rejects_unsupported_forms() {
+        assert_eq!(
+            parse_console_spec("uart,io,0x3f8"),
+            Some(ConsoleSpec::AcpiSerial(Some(AcpiResourceAddress::io(
+                0x3f8
+            ))))
+        );
+        assert_eq!(
+            parse_console_spec("uart8250,mmio,0x1fe001e0,115200n8"),
+            Some(ConsoleSpec::AcpiSerial(Some(AcpiResourceAddress::memory(
+                0x1fe0_01e0
+            ))))
+        );
+        for spec in [
+            "uart,mmio32,0x1000",
+            "uart,mmio,1000",
+            "uart,mmio,0x",
+            "uart,mmio,0x+1",
+            "uart,mmio,0x10000000000000000",
+        ] {
+            assert_eq!(
+                parse_console_spec(spec),
+                Some(ConsoleSpec::AcpiSerial(None)),
+                "{spec}"
+            );
+        }
     }
 
     #[test]

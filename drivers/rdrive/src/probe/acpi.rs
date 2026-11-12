@@ -5,10 +5,10 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use core::{ptr::NonNull, str::FromStr};
+use core::{mem::size_of, ptr::NonNull, str::FromStr};
 
 use acpi::{
-    AcpiError, AcpiTables, Handler, PhysicalMapping,
+    AcpiError, AcpiTables, AmlTable, Handler, PhysicalMapping,
     address::{AddressSpace, GenericAddress},
     aml::{
         AmlError, Interpreter,
@@ -26,7 +26,12 @@ use acpi::{
         interrupt::{InterruptModel, Polarity, TriggerMode},
         pci::PciConfigRegions,
     },
-    sdt::spcr::{Spcr, SpcrInterfaceType},
+    sdt::{
+        SdtHeader,
+        facs::Facs,
+        fadt::Fadt,
+        spcr::{Spcr, SpcrInterfaceType},
+    },
 };
 use ax_lazyinit::OnceLock;
 use ax_sync::RawSpinLock;
@@ -339,6 +344,75 @@ mod tests {
                 pm1b: None,
             },
         })
+    }
+
+    #[test]
+    fn aml_tables_load_in_order_and_stop_on_error() {
+        let table_bytes = |aml: &[u8]| {
+            let mut bytes = vec![0; core::mem::size_of::<acpi::sdt::SdtHeader>()];
+            bytes.extend_from_slice(aml);
+            bytes
+        };
+        let first = table_bytes(&[0x08, b'O', b'U', b'T', b'0', 0x01]);
+        let malformed = table_bytes(&[0xfe]);
+        let last = table_bytes(&[0x08, b'L', b'A', b'T', b'E', 0x01]);
+        let descriptor = |bytes: &[u8]| acpi::AmlTable {
+            phys_address: bytes.as_ptr() as usize,
+            length: bytes.len().try_into().unwrap(),
+            revision: 2,
+        };
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        let expected = interpreter.load_table(&[0xfe]).unwrap_err();
+        // SAFETY: The initialized buffers are immutable and remain allocated
+        // until after the interpreter drops. Identity mapping borrows them.
+        let result = unsafe {
+            super::load_aml_tables(
+                &interpreter,
+                &handler,
+                [
+                    descriptor(&first),
+                    descriptor(&malformed),
+                    descriptor(&last),
+                ],
+            )
+        };
+        assert!(matches!(
+            result,
+            Err(crate::error::DriverError::Unknown(message))
+                if message == format!("{:?}", acpi::AcpiError::Aml(expected))
+        ));
+        let value = interpreter
+            .evaluate(AmlName::from_str("\\OUT0").unwrap(), Vec::new())
+            .unwrap();
+        assert!(matches!(*value, Object::Integer(1)));
+        assert!(
+            interpreter
+                .evaluate(AmlName::from_str("\\LATE").unwrap(), Vec::new())
+                .is_err()
+        );
+
+        // A truncated header is rejected before mapping or executing its AML.
+        let mut short = descriptor(&last);
+        short.length = core::mem::size_of::<acpi::sdt::SdtHeader>() as u32 - 1;
+        // SAFETY: `last` remains immutable and outlives the interpreter.
+        assert!(matches!(
+            unsafe { super::load_aml_tables(&interpreter, &handler, [short]) },
+            Err(crate::error::DriverError::Unsupported(
+                "invalid AML table range"
+            ))
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "Fatal AML error")]
+    fn aml_fatal_stops_execution() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        // Fatal (type 1, code 2, argument One) must not inherit a log-only handler.
+        let _ = interpreter.load_table(&[0x5b, 0x32, 0x01, 0x02, 0x00, 0x00, 0x00, 0x01]);
     }
 
     fn interpreter_with_devices(handler: AcpiHandler) -> Interpreter<AcpiHandler> {
@@ -1340,6 +1414,81 @@ impl Handler for AcpiHandler {
     }
 
     fn release(&self, _mutex: acpi::Handle) {}
+
+    fn handle_fatal_error(&self, fatal_type: u8, fatal_code: u32, fatal_arg: u64) {
+        panic!(
+            "Fatal AML error: type={fatal_type:#x}, code={fatal_code:#x}, argument={fatal_arg:#x}"
+        );
+    }
+}
+
+fn load_aml_interpreter(
+    platform: &AcpiPlatform<AcpiHandler>,
+) -> Result<Interpreter<AcpiHandler>, DriverError> {
+    let dsdt = platform.tables.dsdt().map_err(acpi_error)?;
+    let facs = platform
+        .tables
+        .find_table::<Fadt>()
+        .and_then(|fadt| fadt.facs_address().ok())
+        .map(|address| {
+            // SAFETY: The platform's FADT identifies firmware-owned FACS memory.
+            // AcpiHandler uses a permanent mapping, retained by the interpreter.
+            unsafe {
+                platform
+                    .handler
+                    .map_physical_region::<Facs>(address, size_of::<Facs>())
+            }
+        });
+    let interpreter = Interpreter::new(
+        platform.handler.clone(),
+        dsdt.revision,
+        platform.registers.clone(),
+        facs,
+    );
+    // SAFETY: These descriptors originate from this platform's firmware tables.
+    // The ACPI root reserves their immutable backing for the whole load.
+    unsafe {
+        load_aml_tables(
+            &interpreter,
+            &platform.handler,
+            core::iter::once(dsdt).chain(platform.tables.ssdts()),
+        )?;
+    }
+    Ok(interpreter)
+}
+
+/// Loads firmware tables in order, stopping at the first malformed table.
+///
+/// # Safety
+///
+/// For an accepted range, each table must describe initialized, immutable firmware
+/// memory accessible through `handler` until this call returns. This is a backing
+/// and mapping precondition, not a claim that the table checksum was validated.
+unsafe fn load_aml_tables(
+    interpreter: &Interpreter<AcpiHandler>,
+    handler: &AcpiHandler,
+    tables: impl IntoIterator<Item = AmlTable>,
+) -> Result<(), DriverError> {
+    let header_length = size_of::<SdtHeader>();
+    for table in tables {
+        let length = table.length as usize;
+        if length < header_length
+            || length > isize::MAX as usize
+            || table.phys_address.checked_add(length).is_none()
+        {
+            return Err(DriverError::Unsupported("invalid AML table range"));
+        }
+        // SAFETY: The caller guarantees live immutable firmware backing.
+        // The checked extent includes the header and fits a Rust slice.
+        let mapping = unsafe { handler.map_physical_region::<u8>(table.phys_address, length) };
+        // SAFETY: The mapping covers `length` initialized bytes; byte alignment is
+        // sufficient. The mapping remains live until load_table returns.
+        let bytes = unsafe { core::slice::from_raw_parts(mapping.virtual_start.as_ptr(), length) };
+        interpreter
+            .load_table(&bytes[header_length..])
+            .map_err(|error| acpi_error(AcpiError::Aml(error)))?;
+    }
+    Ok(())
 }
 
 impl AcpiRoot {
@@ -1403,7 +1552,7 @@ impl System {
         let (interpreter, pci) = if load_aml {
             let platform =
                 AcpiPlatform::new(tables, namespace_handler.clone()).map_err(acpi_error)?;
-            let interpreter = Interpreter::new_from_platform(&platform).map_err(acpi_error)?;
+            let interpreter = load_aml_interpreter(&platform)?;
             interpreter.initialize_namespace();
             let pci = match read_pci_namespace(&interpreter) {
                 Ok(pci) => Some(pci),
