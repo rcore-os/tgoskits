@@ -1,5 +1,8 @@
 use super::*;
 
+mod clone_relations;
+mod propagation_cover;
+
 fn adopt(root: &Arc<Mountpoint>) -> Arc<MountNamespace> {
     MountNamespace::from_tree(root.clone())
         .unwrap()

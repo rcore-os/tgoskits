@@ -99,6 +99,12 @@ impl Mountpoint {
                 .iter()
                 .filter_map(Weak::upgrade)
                 .collect();
+            #[cfg(test)]
+            clone_relation_hook::after_upgrade(
+                source,
+                clone_relation_hook::UpgradeKind::SlaveMasters,
+                &masters,
+            );
             for master in masters {
                 let cloned_master = clones
                     .iter()
@@ -329,6 +335,12 @@ impl Mountpoint {
         }
         let mut group = vec![source.clone()];
         group.extend(Self::prune_relations(&mut source.peers.lock()));
+        #[cfg(test)]
+        clone_relation_hook::after_upgrade(
+            source,
+            clone_relation_hook::UpgradeKind::SharedPeers,
+            &group,
+        );
 
         self.set_shared_locked();
         let source_group = source.peer_group_id.load(Ordering::Acquire);
@@ -451,5 +463,86 @@ impl Mountpoint {
         let mut targets: Vec<_> = self.peers.lock().iter().filter_map(Weak::upgrade).collect();
         targets.extend(self.slaves.lock().iter().filter_map(Weak::upgrade));
         targets
+    }
+}
+
+#[cfg(test)]
+pub(super) mod clone_relation_hook {
+    use core::marker::PhantomData;
+
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::mount) enum UpgradeKind {
+        SharedPeers,
+        SlaveMasters,
+    }
+
+    struct ReleasePoint {
+        source: Weak<Mountpoint>,
+        kind: UpgradeKind,
+        counterpart: Option<Arc<Mountpoint>>,
+        hits: Arc<core::sync::atomic::AtomicUsize>,
+    }
+
+    std::thread_local! {
+        static RELEASE_POINT: core::cell::RefCell<Option<ReleasePoint>> =
+            const { core::cell::RefCell::new(None) };
+    }
+
+    /// Registration belongs to this host-test thread and one exact source.
+    pub(in crate::mount) struct ArmedRelease {
+        _thread_bound: PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Drop for ArmedRelease {
+        fn drop(&mut self) {
+            let remaining = RELEASE_POINT.with(|slot| slot.borrow_mut().take());
+            drop(remaining);
+        }
+    }
+
+    pub(in crate::mount) fn arm(
+        source: &Arc<Mountpoint>,
+        kind: UpgradeKind,
+        counterpart: Arc<Mountpoint>,
+        hits: Arc<core::sync::atomic::AtomicUsize>,
+    ) -> ArmedRelease {
+        RELEASE_POINT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none(), "clone release point is already armed");
+            *slot = Some(ReleasePoint {
+                source: Arc::downgrade(source),
+                kind,
+                counterpart: Some(counterpart),
+                hits,
+            });
+        });
+        ArmedRelease {
+            _thread_bound: PhantomData,
+        }
+    }
+
+    pub(in crate::mount) fn after_upgrade(
+        source: &Arc<Mountpoint>,
+        kind: UpgradeKind,
+        upgraded: &[Arc<Mountpoint>],
+    ) {
+        let external = RELEASE_POINT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let point = slot.as_mut()?;
+            if point.source.as_ptr() != Arc::as_ptr(source) || point.kind != kind {
+                return None;
+            }
+            let counterpart = point.counterpart.as_ref()?;
+            if !upgraded.iter().any(|mount| Arc::ptr_eq(mount, counterpart)) {
+                return None;
+            }
+            // The real algorithm now owns the upgraded Arc. Move only the
+            // external owner out, and end the TLS borrow before releasing it.
+            point.hits.fetch_add(1, Ordering::Relaxed);
+            point.counterpart.take()
+        });
+        drop(external);
     }
 }
