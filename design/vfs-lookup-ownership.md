@@ -661,10 +661,32 @@ scoped 上行不能排除竞争时按第 3.4 节返回 EAGAIN，确定越界仍�
 任何重新处理的链接继续收费，不新建预算、不降低限制，也不借 retry 追随
 任务后来改变的 root/cwd。Cached 模式不能用这些步骤进入慢路径。
 
-内部重试的调度与终止策略仍须在实施冻结前结合实际运行时明确：
-所有调度点在局部 guard 外，不用固定 sleep，不把暂时冲突伪造成 Missing
-或权限失败，也不声称当前旧 helper 已经具有隐藏的重试循环。
-该接点与第 2.6.4 节一起保留，尚不授权先实施发布冲突再直接暴露给用户。
+普通内部冲突在本轮候选和局部 guard 完全退休后合作让出一次，再继续原会话。
+复用 `ax-fs-ng::os` 已接入的 `BlockRuntimeOps`，增加必需的
+`yield_now(&self) -> BlockResult<()>`；不提供默认空实现，不新增全局回调登记，
+也不为这一步给通用 FS 增加原生调度器依赖。原生适配先明确拒绝 atomic context
+为 `WouldBlock`，再核实当前 thread/runtime；后者失败沿现有
+`task_error_to_block_error` 保留为 `InvalidState` 等领域分类，不把 `can_block=false`
+的所有原因都解释成暂时阻塞。检查通过后调用现有 `yield_current_cpu` 并沿同一转换
+传递失败；host 适配使用实际 `std::thread::yield_now`；
+其余 writeback/prefetch 测试实现也须迁移，不能只补两处生产适配。
+初始化未完成、上下文不能让出及调度失败均终止本次尝试并保留真实错误分类，
+不把这些失败吞掉后自旋。`RuntimeUnavailable`/`InvalidState` 在 FS 边界为
+`BadState`，`WouldBlock` 保留为最终失败而非另一轮 `Revalidate`，其他已定义的
+资源或 I/O 错误按现有领域含义转换。
+
+让出前不得仍持 namespace/admission/topology/metadata guard、scope lease、
+pin 或需要先退休的最后引用；让出后不重新采样调用身份和路径起点。
+普通查找不新增任意次数上限、固定 sleep、模拟 EINTR 或以 `pending_exit()` 判断
+取消；它是退出事务完成标志。持续竞争可持续合作重查，不承诺有限次完成；
+成功、已接受的 Missing、真实错误、链接总预算耗尽及既定 scoped 竞争错误仍是
+实际终止条件。这个选择对应固定 Linux 普通慢查询和并行 dentry 等待没有统一
+killable 保证的事实，不把它写成新增信号取消支持。
+
+CACHED 冲突直接按其非阻塞策略返回，不调用此方法。正常原生初始化先建立
+scheduler、释放 bootstrap preemption，再安装 FS runtime ops 和初始化 FS；
+host 测试须明确安装相应 adapter，不能因 mutex provider 存在就宣称可让出。
+接口与全部实现、错误转换和真实运行验证仍须独立核对，旧 helper 当前没有该能力。
 
 #### 3.6.3 末组件与副作用
 
@@ -1058,6 +1080,91 @@ owner，因此退出计数短锁后直到本次 scope 提交仍保持独占。�
 调用形状。原拓扑与 registry 算法仍复用内部持锁接点，不能持有拓扑 gate 后再调用
 自行取同一 gate 的公开 clone/pivot/acquire_use。克隆的旧新 mount 表、快照与失败
 中间值的最终释放也须带到相关 gates 外；这些接点的具体签名仍待独立核对后实施。
+
+#### 3.8.6 只读视图构造
+
+普通视图从已选定的 `FsContextSnapshot` 和一个借用调用方构造，构造器不读取任务、
+fd 表或用户参数。`FsView::current(snapshot, caller)` 选择快照 cwd 作为相对起点；
+`FsView::at_directory(snapshot, caller, start: PathHandle) -> VfsResult<Self>`
+在锁外检查目录类型，并把显式起点及其搜索检查边界存入视图。两者都消费快照，
+不修改任务 root/cwd，不登记状态，不重新取得已有路径的 mount-use。
+进程根约束与 dirfd 搜索起点继续分开，`at_directory` 不隐式执行 chroot。
+
+视图不另收可与 caller 错配的凭据参数。第 5.4 节的 `LinkCaller::credentials`
+从同一个只读对象返回 `MutationCredentials<'_>`；视图保存这个借用投影和原
+caller，二者直到会话及 Continuation 结束都来自同一操作身份。补充组借用 caller
+持有的凭据数据，不构造自引用结构，也不要求本次 `&dyn LinkCaller` 为静态借用。
+非用户初始化提供显式 native 调用方，不能在类型未知或快照缺失时补 root。
+
+各系统调用先按自己的 Linux 参数与错误顺序选定是否需要 dirfd，再调用相应构造器。
+普通绝对路径忽略 dirfd，IN_ROOT 的绝对路径仍需要选定起点，BENEATH 的绝对路径
+按策略拒绝；空路径、AT_EMPTY_PATH、O_PATH 及 fd 类型检查不能被一个统一构造器
+提前执行或合并。会话使用视图选定的起点和根策略，末链接与缺失创建继续消费原会话。
+具体入口选择顺序和完整 session/Continuation 签名仍需逐入口冻结，不能仅凭这两个
+构造器的存在宣称解析器已统一。
+
+CACHED 不经过会等待的 scope/状态/凭据读取入口来创建普通视图后再包装。
+它需要同一来源的实际 try-snapshot 和 fd/cache 能力；拿不到必要非阻塞观察就返回
+EAGAIN，不初始化缺失状态、不进入普通后端或合作让出。缓存视图的封闭出口、
+跨 mount 使用权转交和最终打开仍待该能力单元冻结，不借普通构造器先行冒充。
+
+#### 3.8.7 拥有接口与准备载体
+
+接口以真实拥有值约束准备、读取与提交。原有 `FsContext::new(Location)` 不能继续
+在任意已有父链上分配另一个 namespace；新树创建与从既存快照复制状态分别进入
+不同入口。Native 临时上下文仍可有 parentless 的实际 FS 根，绑定为 namespace
+根后同样禁止移动它；它被递归 bind 发布时，新 bind 节点不继承根角色。
+
+| 所有者与入口 | 输入、返回与边界 |
+| --- | --- |
+| `FsContextOwner::new_root(namespace: Arc<MountNamespace>, root: PathHandle) -> VfsResult<Self>` | 初始化独立状态，root/cwd 共用输入路径的使用权，份额一；目录检查、分配和一次 registry 登记均在 scope/pin/writer 外 |
+| `FsContextOwner::snapshot(&self) -> FsContextSnapshot` | 在短锁内复制路径、该 owner 的 namespace 和来源 Weak；不分配、不读后端，结果拥有其选定路径 |
+| `FsContextOwner::share_for_child(&mut self) -> VfsResult<Self>` | checked 增加原共享状态的份额，继承该 owner 的 namespace；失败不产生半份 owner |
+| `FsContextSnapshot::fork_owner(&self) -> FsContextOwner` | 从冻结内容建立新状态一份，不升级来源 Weak，不重新查询名字；分配和登记发生在临界区外 |
+| `FsContextSnapshot::remap(&self, clone: &mut NamespaceClone) -> VfsResult<Self>` | 先核快照 namespace 是此次克隆的实际来源，再经 mapper 转交 root/cwd 并选新 Core；结果不保留可匹配旧 owner 的来源 Weak，供独立 fork，不冒充当前任务快照 |
+| `Thread::snapshot_fs_binding() -> StarryResult<Option<FsBindingSnapshot>>` | Kernel 受控成对读取；返回冻结 FS 快照和对应 Mnt 适配，双空返回 None，单空或 Core 错配为内部错误；对外不返回 Scope/guard |
+| `MountNamespace::from_tree(root: Arc<Mountpoint>) -> VfsResult<CreatedMountNamespace>` | 仅在新建独立树的普通初始化阶段采用未绑定的 parentless 根；同一拓扑边界验证并绑定根角色，禁止从已绑定根再建另一 Core |
+| `MountNamespace::clone_namespace(self: &Arc<Self>) -> NamespaceClone` | 复用完整 clone-tree 及旧新强引用表，创建新的 Core 和根角色；保持既有分配模型，不在本任务引入新的 OOM 机制 |
+| `NamespaceClone::map_path(&mut self, source: &PathHandle) -> VfsResult<PathHandle>` | 只用实际旧新 mount 对应转交；未映射时复制原 PH，同一个新 mount 的多条路径共享本次取得的 guard，不执行显示路径查询 |
+| `NamespaceClone::into_parts(self) -> (CreatedMountNamespace, MountCloneRetirement)` | 消费克隆准备对象；创建凭据与需外退的映射资源分开返回，不在本方法中丢弃可能最后持有的旧新 mount 表 |
+
+这些类型字段私有。Snapshot 的路径与 namespace 只有共享借用出口，没有可变字段、
+可变共享状态或 owner 提升。`CreatedMountNamespace` 内部拥有确切 Core，不能 Clone；
+Native 消费为其上下文引用，Kernel 则消费为一次 creator 绑定。初始 Kernel 适配
+只允许从全局 ROOT Core 与初始 user namespace 的固定一次初始化建立。
+不能为已有 Core 重新指定 creator，也不能把 map retirement 藏进永久适配对象。
+具体私有 helper 可以拆分，但不能通过新增公开 raw 出口绕过这些边界。
+
+mapper 在本次克隆对象内保留已经取得的 guard，后续同 mount 映射共享它；映射失败
+时局部副本不会成为最后持有者，保留资源随 `MountCloneRetirement` 外退。
+共享状态的 registry 仅供普通创建与扫描，使用可睡眠短锁，允许在正常任务上下文
+准备存储；不得在 scope/pin 或路径短锁内登记、扩容或扫描。扫描先取得拥有引用集合，
+退出 registry 锁后修订状态，最后集合也交给外层退休。普通 snapshot 不访问 registry。
+独立 fork 的分配、登记可以在准备载体持 writer 时执行，但其任何可能最后持有的
+残留必须由载体保留；这里的短临界区不包含这个允许睡眠的准备阶段。
+
+Kernel 使用私有的 `NamespaceChange<'task>` 持有一次 writer 和全部准备、退休资源。
+writer 所在字段排在这些拥有字段之前；显式提交或丢弃时都先结束 writer，再释放
+资源。它不是另一份 namespace 状态源，也不成为全局事务登记表。准备方法只借用
+该载体，可能最终持有的路径、创建凭据、映射表、快照和旧绑定在后续可失败调用前
+就归入载体；会创建新残留的 helper 必须把成功或失败的残留一并交回。
+不能在借了 writer 的下层函数里先造若干拥有局部值，再靠 `?` 在 gate 内销毁它们。
+
+载体的消费式 `commit(self)` 先完成所有检查及非 scope 分配，再在一次
+`with_current_scope_mut` 中执行来源/适用份额复核和固定引用替换。闭包内部不消费
+整个载体，不保留两份互相冲突的长期条目可变借用；依次操作条目，并把旧值移回载体。
+拒绝时保留原 scope，准备资源仍由载体拥有。成功时，原有其他 namespace 和凭据
+发布在 scope 闭包外完成，随后释放 writer，最后统一释放源快照、旧值和 map retirement。
+该固定顺序同时覆盖准备失败、提交拒绝与未调用 commit 的放弃路径。
+
+为 child 准备绑定时，载体只移交已经计数的 owner 与匹配的 Mnt 适配，不改变 parent
+的 scope。移交前释放 writer，并把剩余准备资源在 gate 外退休；child scope 的默认
+绑定也要移出后释放。child 之后准备失败或从未启动，已移交 owner 的通常析构仍归还
+预留份额。new USER/MNT 的 creator、CLONE_FS 互斥和各入口的错误顺序继续按前文
+处理，不能因为准备载体统一就统一这些业务条件。
+
+上述接口还需以全部生产消费者、既有分配/锁模型及失败退休链独立核对；本节不把
+尚未完成的迁移、CACHED、统一会话或系统级回归列为已实现。
 
 ## 4. 命名事务
 
@@ -2530,8 +2637,11 @@ fork 随 MM 复制、exec 构建新 MM 时按调用者空间初始化，用于 n
 
 #### 5.4.1 借用的调用方上下文
 
-VFS 定义领域专用的 `LinkCaller: Any + Send + Sync` 只读 marker，以 `core::any::Any` 提供具体
-操作系统适配器的类型识别，不包含任意键值表、回调注册、写入能力或任务查询。
+VFS 定义领域专用的 `LinkCaller: Any + Send + Sync` 只读身份接口，以 `core::any::Any`
+提供具体操作系统适配器的类型识别。它的必需方法
+`credentials(&self) -> MutationCredentials<'_>` 只从自身保存的同次身份返回 DAC
+投影，不分配、不查询 current/Scope、不调用后端，不接受独立可错配的凭据参数；
+同次操作中投影保持不变。不包含任意键值表、回调注册、写入能力或任务查询。
 `LinkOps::target(&self, caller: &dyn LinkCaller)` 与
 `read_link(&self, caller: &dyn LinkCaller)` 都显式接收它；DirEntry 的目标和
 显示入口同样传递，不提供“省略参数就重新读取 current”的用户路径默认值。
@@ -2543,6 +2653,13 @@ Starry 的私有 `ProcLinkCaller` 保存本次操作的 `FsCredentialsSnapshot` 
 快照由外层调用持有至 Continuation 消费结束，不把自身字段借用存回自身，
 不使用静态延寿、Pin 或任务全局槽。凭据数值、namespace 身份和补充组来自
 同一原始快照，target 的动态安全状态仍在每次获取目标时重新观察。
+
+proc 授权提供固定的已采样入口，输入为保存的 `FsCredentialsSnapshot`、
+原 ProcessData 身份和实际目标任务；复用现有目标动态快照及纯授权判断。
+链接回调不得再调用会从 caller UserTaskRef 采样的旧入口，ProcLink 也不再调用
+`current_user_task()`。同线程组捷径使用保存的 ProcessData 分配身份，目标的
+dumpable、凭据与 MM owner 仍在获取目标时检查。pidfd 的 READ_REALCREDS 选择
+与这里的 READ_FSCREDS 分开，不能拿 real-ID access 投影替代其能力集合规则。
 
 “本次操作的快照”包括入口按 ABI 明确选择的身份投影，不表示所有入口都
 原样使用未经派生的任务 Cred。普通 open 等使用捕获的文件系统身份；
@@ -2560,7 +2677,7 @@ ProcLink 只接受可识别的 Starry 调用方类型，按第 5.3 节执行 REA
 抓 current、补 root 或复用 attach/信号的授权作为兜底。适配器仅在本次解析
 和 readlink 操作中被借用，不存入 ProcEntry、链接内容、长期配方或打开描述。
 文本链接不解释这些操作系统身份；启动等非用户调用使用明确的 native 调用方，
-不能让该 marker 冒充 proc 读取授权。
+不能让这个通用身份投影冒充 proc 读取授权。
 Any 和共享借用不冻结内部可变状态；私有适配器只开放身份读取，不通过
 ProcessData 修改任务状态或查询 Scope。适配器及其最后领域引用在局部 guard 外释放，
 不能仅凭 Send/Sync marker 宣称整个查找会话可任意跨任务执行。
