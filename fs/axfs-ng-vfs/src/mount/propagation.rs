@@ -3,6 +3,50 @@ use log::warn;
 
 use super::*;
 
+/// Callers declare this before taking topology exclusion. Even receivers
+/// rejected as retired retain their successful Weak upgrades until gate exit.
+#[derive(Default)]
+pub(super) struct PropagationRetirement {
+    locations: Vec<Location>,
+    receivers: Vec<Arc<Mountpoint>>,
+    mounts: Vec<Arc<Mountpoint>>,
+}
+
+impl PropagationRetirement {
+    fn collect_receivers_locked(&mut self, source: &Mountpoint) {
+        for relations in [&source.peers, &source.slaves] {
+            let count = relations.lock().len();
+            self.receivers.reserve(count);
+            for relation in relations.lock().iter() {
+                if let Some(mount) = relation.upgrade() {
+                    self.receivers.push(mount);
+                }
+            }
+        }
+    }
+
+    fn resolve_locked(
+        &mut self,
+        target: &Arc<Mountpoint>,
+        components: &[String],
+    ) -> VfsResult<Location> {
+        self.locations.push(target.root_location());
+        for component in components {
+            let next = self
+                .locations
+                .last()
+                .expect("propagation root is retained")
+                .lookup_no_follow(component)?;
+            self.locations.push(next);
+        }
+        Ok(self
+            .locations
+            .last()
+            .expect("propagation location is retained")
+            .clone())
+    }
+}
+
 impl Mountpoint {
     fn relative_path_from_mount_root(location: &Location) -> VfsResult<Vec<String>> {
         let mut components = Vec::new();
@@ -157,7 +201,7 @@ impl Mountpoint {
     }
 
     fn attach_peer_locked(left: &Arc<Self>, right: &Arc<Self>) {
-        if Arc::ptr_eq(left, right) {
+        if Arc::ptr_eq(left, right) || left.is_retired() || right.is_retired() {
             return;
         }
         Self::add_relation(&mut left.peers.lock(), right);
@@ -167,6 +211,9 @@ impl Mountpoint {
     }
 
     pub(super) fn attach_master_locked(slave: &Arc<Self>, master: &Arc<Self>) {
+        if slave.is_retired() || master.is_retired() {
+            return;
+        }
         Self::add_relation(&mut slave.masters.lock(), master);
         Self::add_relation(&mut master.slaves.lock(), slave);
         debug_assert!(Self::has_relation(&slave.masters, master));
@@ -229,6 +276,9 @@ impl Mountpoint {
 
     fn set_propagation(self: &Arc<Self>, propagation: PropagationType, recursive: bool) {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        if self.is_retired() {
+            return;
+        }
         if recursive {
             self.set_propagation_recursive_locked(propagation);
         } else {
@@ -274,6 +324,9 @@ impl Mountpoint {
     }
 
     pub(super) fn join_shared_group_locked(self: &Arc<Self>, source: &Arc<Self>) {
+        if self.is_retired() || source.is_retired() {
+            return;
+        }
         let mut group = vec![source.clone()];
         group.extend(Self::prune_relations(&mut source.peers.lock()));
 
@@ -293,20 +346,47 @@ impl Mountpoint {
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
     }
 
-    fn attach_child(parent: &Arc<Self>, location: Location, child: &Arc<Self>) -> VfsResult<()> {
+    fn attach_child(
+        location: &Location,
+        child: &Arc<Self>,
+        retirement: &mut PropagationRetirement,
+    ) -> VfsResult<()> {
+        location.mountpoint.check_topology_live_locked()?;
+        child.check_topology_live_locked()?;
         location.check_is_dir()?;
-        parent
+        // Path resolution may have crossed a covering mount. Publish at that
+        // exact location, not the receiver at which resolution began.
+        let displaced = location
+            .mountpoint
             .children
             .lock()
             .insert(location.entry.key(), child.clone());
+        if let Some(displaced) = displaced {
+            retirement.mounts.push(displaced);
+        }
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn propagate_new_child(
         source_parent: &Arc<Self>,
         source_location: &Location,
         child: &Arc<Self>,
     ) -> VfsResult<()> {
+        let mut retirement = PropagationRetirement::default();
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        Self::propagate_new_child_locked(source_parent, source_location, child, &mut retirement)
+    }
+
+    pub(super) fn propagate_new_child_locked(
+        source_parent: &Arc<Self>,
+        source_location: &Location,
+        child: &Arc<Self>,
+        retirement: &mut PropagationRetirement,
+    ) -> VfsResult<()> {
+        source_parent.check_topology_live_locked()?;
+        source_location.mountpoint.check_topology_live_locked()?;
+        child.check_topology_live_locked()?;
         let path_components = Self::relative_path_from_mount_root(source_location)?;
 
         // Walk the entire downstream propagation graph so the child reaches
@@ -316,23 +396,24 @@ impl Mountpoint {
         // visited set is mandatory to stop peers from echoing the event back.
         let mut visited: HashSet<u64> = HashSet::new();
         visited.insert(source_parent.mount_id());
-        let mut frontier: Vec<Arc<Self>> = source_parent.propagation_targets();
-
-        while let Some(target_parent) = frontier.pop() {
-            if !visited.insert(target_parent.mount_id()) {
+        retirement.collect_receivers_locked(source_parent);
+        let mut index = 0;
+        while index < retirement.receivers.len() {
+            let target_parent = retirement.receivers[index].clone();
+            index += 1;
+            if target_parent.is_retired() || !visited.insert(target_parent.mount_id()) {
                 continue;
             }
 
-            for receiver in target_parent.propagation_targets() {
-                frontier.push(receiver);
-            }
+            retirement.collect_receivers_locked(&target_parent);
 
-            let mut location = target_parent.root_location();
-            for component in &path_components {
-                location = location.lookup_no_follow(component)?;
+            let location = retirement.resolve_locked(&target_parent, &path_components)?;
+            if location.mountpoint.is_retired() {
+                continue;
             }
             let inserted_key = location.entry.key();
             let propagated = Self::clone_shallow(child, Some(location.clone()));
+            retirement.mounts.push(propagated.clone());
             if target_parent.is_slave() {
                 if !child.is_shared() {
                     child.set_shared_locked();
@@ -348,11 +429,8 @@ impl Mountpoint {
                 }
                 propagated.join_shared_group_locked(child);
             }
-            Self::attach_child(&target_parent, location, &propagated)?;
-            let mut resolved = target_parent.root_location();
-            for component in &path_components {
-                resolved = resolved.lookup_no_follow(component)?;
-            }
+            Self::attach_child(&location, &propagated, retirement)?;
+            let resolved = retirement.resolve_locked(&target_parent, &path_components)?;
             if !Arc::ptr_eq(resolved.mountpoint(), &propagated) {
                 warn!(
                     "mount propagation mismatch path={:?} inserted_key={:?} resolved_key={:?} \

@@ -1,5 +1,7 @@
 use super::*;
 
+mod retirement;
+
 // Diagnostic numbering only; namespace identity is its actual Arc allocation.
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -7,6 +9,9 @@ static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 ///
 /// Copy the `Arc`, not the entity. The anchor is not necessarily the currently
 /// visible root: root coverings and pivot operations remain below it.
+/// Final release disconnects only this namespace's remaining topology; retained
+/// paths keep their entities and uses. It may wait for the topology gate, so
+/// callers must move the last reference out of their own protected regions.
 ///
 /// ```compile_fail,E0599
 /// use axfs_ng_vfs::MountNamespace;
@@ -54,6 +59,7 @@ impl MountNamespace {
     pub fn from_tree(root: Arc<Mountpoint>) -> VfsResult<CreatedMountNamespace> {
         {
             let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+            root.check_topology_live_locked()?;
             if root.location.lock().is_some()
                 || root.active_uses.lock().normally_unmounted
                 || root.root_role() != MountRootRole::Unbound
