@@ -25,7 +25,7 @@ StarryOS 上的 TCP 文本协议、跨连接存储和删除行为。四个 `qemu
 
 原 PR 中独立的 `nc` 回环探针已移除：这里每一步协议交互都经过真实 TCP
 回环，已经包含连通性检查。应用不再单独维护基础网络探针，也不增加重复的
-LTP 系统调用用例；现有入口仍是 `test-suit/starryos/qemu/system/ltp-syscalls`。
+LTP 系统调用用例；现有入口仍是 `test-suit/starryos/qemu/standard/system/ltp`。
 
 ## 2. QEMU 运行
 

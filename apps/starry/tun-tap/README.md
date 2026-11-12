@@ -7,7 +7,7 @@ endpoint, and no package fetch at runtime.
 
 Scope: this carpet covers end-to-end traffic and device lifecycle. Exact ioctl
 return values, flag semantics and error codes are covered by the system test
-`test-suit/starryos/qemu/system/bugfix-bug-tun-tap-abi`.
+`test-suit/starryos/qemu/standard/system/network`.
 
 ## TUN (layer 3) - `programs/tun-echo.c`
 

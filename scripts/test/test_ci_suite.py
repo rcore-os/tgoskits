@@ -377,5 +377,104 @@ pcm_waveform=true
             runtime.write_text('args=[]\n')
             with self.assertRaises(ci_suite.SuiteRouteError):ci_suite.validate_suite_catalog(root,checks)
 
+class ClassifiedStarryRoutingTests(unittest.TestCase):
+    def test_removed_arm_boot_path_routes_to_the_retained_composite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wrapper = root / "test-suit/starryos/qemu/standard"
+            composite = wrapper / "openrc"
+            composite.mkdir(parents=True)
+            (wrapper / "build-aarch64-unknown-none-softfloat.toml").write_text('target="aarch64-unknown-none-softfloat"\n')
+            (composite / "qemu-aarch64.toml").write_text('args=[]\n')
+            sibling = wrapper / "independent-probe"
+            sibling.mkdir()
+            (sibling / "qemu-aarch64.toml").write_text('args=[]\n')
+            checks = [{"id": "fixture-arm", "name": "Fixture", "command": "fixture",
+                "suite": [{"kind": "starry-qemu", "arch": "aarch64"}]}]
+            paths = ["test-suit/starryos/qemu/gicv2-boot/qemu-aarch64.toml",
+                "test-suit/starryos/qemu/standard/gicv2-boot/qemu-aarch64.toml",
+                "test-suit/starryos/qemu/standard/openrc/qemu-aarch64.toml"]
+            rows = ci_suite.resolve_suite_selections(root, checks, paths)
+            self.assertEqual(len(rows), 1)
+            self.assertIn("--test-case qemu/openrc", rows[0].command)
+
+    def test_board_wrapper_routes_keep_public_ids_after_layout_moves(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wrapper = root / "test-suit/starryos/board/fixture/probe"
+            wrapper.mkdir(parents=True)
+            (wrapper / "build-x86_64-unknown-none.toml").write_text('target="x86_64-unknown-none"\n')
+            (wrapper / "board-fixture.toml").write_text('board_type="Fixture"\n')
+            checks = [{"id": "fixture-board", "name": "Fixture", "command": "fixture",
+                "suite": [{"kind": "starry-board", "board": "fixture", "cases": ["board-fixture/probe"]}]}]
+            ci_suite.validate_suite_catalog(root, checks)
+            for path in ["board-fixture/probe", "board/fixture/probe"]:
+                rows = ci_suite.resolve_suite_selections(root, checks, [f"test-suit/starryos/{path}/board-fixture.toml"])
+                self.assertEqual(len(rows), 1)
+                self.assertIn("--test-case board-fixture/probe", rows[0].command)
+
+    def test_classified_project_routes_old_and_new_paths_to_one_selection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wrapper = root / "test-suit/starryos/qemu/standard"
+            project = wrapper / "system/memory/buffer-check"
+            project.mkdir(parents=True)
+            (wrapper / "build-x86_64-unknown-none.toml").write_text('target="x86_64-unknown-none"\n')
+            (wrapper / "system/qemu-x86_64.toml").write_text('test_commands=["exec runner"]\n')
+            (project / "CMakeLists.txt").write_text('add_executable(buffer-check src/main.c)\n')
+            (project / "vendor").mkdir()
+            (project / "vendor/CMakeLists.txt").write_text('project(dependency C)\n')
+            checks = [{"id": "fixture-starry", "name": "Fixture", "command": "fixture",
+                "suite": [{"kind": "starry-qemu", "arch": "x86_64"}]}]
+            ci_suite.validate_suite_catalog(root, checks)
+            selections = ci_suite.resolve_suite_selections(root, checks, [
+                "test-suit/starryos/qemu/standard/system/memory/buffer-check/src/main.c",
+                "test-suit/starryos/qemu/system/buffer-check/src/main.c",
+                "test-suit/starryos/qemu/standard/system/memory/buffer-check/vendor/source.c",
+            ])
+            self.assertEqual(len(selections), 1)
+            self.assertIn("--test-case qemu/buffer-check", selections[0].command)
+
+    def test_shared_c_project_also_routes_the_board_that_builds_its_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suite = root / "test-suit/starryos"
+            wrapper = suite / "qemu/standard"
+            project = wrapper / "system/devices/device-check"
+            (project / "src").mkdir(parents=True)
+            (project / "src/main.c").write_text("fixture")
+            (project / "CMakeLists.txt").write_text("project(device-check C)\n")
+            (wrapper / "build-aarch64-unknown-none-softfloat.toml").write_text('target="aarch64-unknown-none-softfloat"\n')
+            (wrapper / "system/qemu-aarch64.toml").write_text('test_commands=["exec runner"]\n')
+            board = suite / "board/fixture"
+            case = board / "probe"
+            (case / "c").mkdir(parents=True)
+            (board / "build-aarch64-unknown-none-softfloat.toml").write_text('target="aarch64-unknown-none-softfloat"\n')
+            (case / "board-fixture.toml").write_text('board_type="Fixture"\n')
+            (case / "c/CMakeLists.txt").write_text('add_executable(check ../../../../qemu/standard/system/devices/device-check/src/main.c)\n')
+            checks = [
+                {"id": "fixture-qemu", "name": "Fixture", "command": "fixture", "suite": [{"kind": "starry-qemu", "arch": "aarch64"}]},
+                {"id": "fixture-board", "name": "Fixture", "command": "fixture", "suite": [{"kind": "starry-board", "board": "fixture"}]},
+            ]
+            rows = ci_suite.resolve_suite_selections(root, checks, ["test-suit/starryos/qemu/standard/system/devices/device-check/src/main.c"])
+            self.assertEqual({row.template_id for row in rows}, {"fixture-qemu", "fixture-board"})
+            self.assertTrue(any("--test-case probe" in row.command for row in rows))
+
+    def test_common_network_sources_route_only_to_registered_board_consumers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wrapper = root / "test-suit/starryos/board/fixture"
+            case = wrapper / "probe"
+            case.mkdir(parents=True)
+            (wrapper / "build-aarch64-unknown-none-softfloat.toml").write_text('target="aarch64-unknown-none-softfloat"\n')
+            (case / "board-fixture.toml").write_text('board_type="Fixture"\n')
+            checks = [{"id": "fixture-board", "name": "Fixture", "command": "fixture",
+                "suite": [{"kind": "starry-board", "board": "fixture"}]}]
+            source = "test-suit/starryos/common/network/upload.c"
+            (root / source).parent.mkdir(parents=True)
+            (root / source).write_text("fixture")
+            selections = ci_suite.resolve_suite_selections(root, checks, [source])
+            self.assertEqual({item.template_id for item in selections}, {"fixture-board"})
+
 if __name__ == "__main__":
     unittest.main()

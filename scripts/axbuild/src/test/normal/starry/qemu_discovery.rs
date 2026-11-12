@@ -32,6 +32,23 @@ pub(crate) fn discover_qemu_cases(
     selected_case: Option<&str>,
 ) -> anyhow::Result<Vec<StarryQemuCase>> {
     let test_suite_dir = require_test_suite_dir(workspace_root)?;
+    if let Some(selected) = selected_case {
+        qemu_test::validate_selected_case_name(selected, "Starry", "qemu")?;
+        if super::layout::is_gicv2_boot_alias(selected) {
+            if arch != "aarch64" {
+                bail!("Starry GICv2 boot test requires aarch64, requested `{arch}`");
+            }
+            return load_qemu_cases_for_selection(
+                workspace_root,
+                &test_suite_dir,
+                arch,
+                target,
+                Some("qemu/openrc"),
+                None,
+                None,
+            );
+        }
+    }
     let selection = parse_starry_qemu_case_selection(selected_case);
     if let Some(direct_case) = selection.prefer_direct_case.as_deref()
         && direct_starry_qemu_case_exists(&test_suite_dir, direct_case)?
@@ -67,26 +84,48 @@ fn load_qemu_cases_for_selection(
     grouped_subcase_filter: Option<BTreeSet<String>>,
     ltp_case_id: Option<&str>,
 ) -> anyhow::Result<Vec<StarryQemuCase>> {
-    let cases = qemu_test::discover_qemu_cases(
-        test_suite_dir,
-        arch,
-        target,
-        selected_case,
-        "Starry",
-        "qemu",
-    )?
-    .into_iter()
-    .map(|case| {
-        load_qemu_case(
-            workspace_root,
-            case,
+    let cases =
+        qemu_test::discover_qemu_cases(test_suite_dir, arch, target, None, "Starry", "qemu")
+            .or_else(|error| {
+                if selected_case.is_some() {
+                    qemu_test::discover_qemu_cases(
+                        test_suite_dir,
+                        arch,
+                        target,
+                        selected_case,
+                        "Starry",
+                        "qemu",
+                    )
+                } else {
+                    Err(error)
+                }
+            })?
+            .into_iter()
+            .filter(|case| {
+                selected_case.is_none_or(|selected| {
+                    super::layout::matches_case(&case.display_name, selected)
+                        || super::layout::matches_case(&case.name, selected)
+                })
+            })
+            .map(|case| load_qemu_case(workspace_root, case, arch, target, grouped_subcase_filter.clone(), ltp_case_id))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+    if cases.is_empty() {
+        // Preserve the existing missing-architecture diagnostic where possible.
+        let _ = qemu_test::discover_qemu_cases(
+            test_suite_dir,
             arch,
             target,
-            grouped_subcase_filter.clone(),
-            ltp_case_id,
-        )
-    })
-    .collect::<anyhow::Result<Vec<_>>>()?;
+            selected_case,
+            "Starry",
+            "qemu",
+        )?;
+        bail!(
+            "unknown Starry qemu test case `{}` for arch `{arch}`",
+            selected_case.unwrap_or("")
+        );
+    }
+    let mut cases = cases;
+    cases.sort_by(|left, right| left.case.display_name.cmp(&right.case.display_name));
     let mut expanded = Vec::new();
     for case in cases {
         expanded.extend(super::qemu_profiles::expand(case)?);
@@ -98,9 +137,11 @@ pub(crate) fn direct_starry_qemu_case_exists(
     test_suite_dir: &Path,
     selected_case: &str,
 ) -> anyhow::Result<bool> {
-    match qemu_test::discover_all_qemu_cases(test_suite_dir, Some(selected_case), "Starry", "qemu")
-    {
-        Ok(cases) => Ok(!cases.is_empty()),
+    qemu_test::validate_selected_case_name(selected_case, "Starry", "qemu")?;
+    match qemu_test::discover_all_qemu_cases_with_archs(test_suite_dir, None, "Starry", "qemu") {
+        Ok(cases) => Ok(cases
+            .iter()
+            .any(|case| super::layout::matches_case(&case.name, selected_case))),
         Err(err) if err.kind() == qemu_test::ListQemuCasesErrorKind::UnknownSelectedCase => {
             Ok(false)
         }
@@ -119,6 +160,8 @@ pub(crate) struct StarryQemuCaseSelection {
 pub(crate) fn parse_starry_qemu_case_selection(
     selected_case: Option<&str>,
 ) -> StarryQemuCaseSelection {
+    let canonical = selected_case.map(super::layout::case_id);
+    let selected_case = canonical.as_deref();
     let Some(selected_case) = selected_case else {
         return StarryQemuCaseSelection {
             parent_case: None,
@@ -129,12 +172,15 @@ pub(crate) fn parse_starry_qemu_case_selection(
     };
 
     let parts = selected_case.split('/').collect::<Vec<_>>();
-    if let ["qemu", "system", "ltp-syscalls", ltp_case_id] = parts.as_slice() {
+    if parts.starts_with(&["qemu", "system"]) && parts.len() >= 3 {
+        let ltp_case_id = (parts.len() >= 4 && parts[parts.len() - 2] == "ltp-syscalls")
+            .then(|| parts[parts.len() - 1].to_string());
+        let project_end = parts.len() - usize::from(ltp_case_id.is_some());
         return StarryQemuCaseSelection {
             parent_case: Some("qemu/system".to_string()),
-            grouped_subcase_filter: Some(BTreeSet::from(["ltp-syscalls".to_string()])),
+            grouped_subcase_filter: Some(BTreeSet::from([parts[2..project_end].join("/")])),
             prefer_direct_case: None,
-            ltp_case_id: Some((*ltp_case_id).to_string()),
+            ltp_case_id,
         };
     }
     let mapped = match parts.as_slice() {
@@ -184,7 +230,7 @@ fn load_qemu_case(
     grouped_subcase_filter: Option<BTreeSet<String>>,
     ltp_case_id: Option<&str>,
 ) -> anyhow::Result<StarryQemuCase> {
-    let build_group = case.build_group;
+    let build_group = super::layout::case_id(&case.build_group);
     let build_config_path = if case.build_config_path.is_absolute() {
         case.build_config_path
     } else {
@@ -203,8 +249,8 @@ fn load_qemu_case(
         );
     }
     let mut test_case = qemu_test::load_test_qemu_case_fields(
-        case.display_name,
-        case.name,
+        super::layout::case_id(&case.display_name),
+        super::layout::case_id(&case.name),
         case.case_dir,
         case.qemu_config_path,
         "Starry",
@@ -235,7 +281,12 @@ fn validate_ltp_case_id(case: &TestQemuCase, arch: &str, ltp_case_id: &str) -> a
         bail!("invalid LTP testcase id `{ltp_case_id}`; expected letters, digits or underscores");
     }
 
-    let ltp_dir = case.case_dir.join("ltp-syscalls");
+    let ltp_dir = &case
+        .subcases
+        .iter()
+        .find(|subcase| subcase.name == "ltp-syscalls")
+        .context("grouped suite has no ltp-syscalls project")?
+        .case_dir;
     let common = ltp_dir.join("cases.txt");
     let arch_cases = ltp_dir.join(format!("cases-{arch}.txt"));
     for manifest in [&common, &arch_cases] {
@@ -309,6 +360,13 @@ fn grouped_subcase_selector_aliases(
     let mut aliases = BTreeMap::new();
     for subcase in &case.subcases {
         add_grouped_subcase_selector_alias(&mut aliases, &subcase.name, &subcase.name);
+        if let Ok(relative) = subcase.case_dir.strip_prefix(&case.case_dir) {
+            add_grouped_subcase_selector_alias(
+                &mut aliases,
+                &relative.to_string_lossy().replace('\\', "/"),
+                &subcase.name,
+            );
+        }
         for alias in grouped_subcase_binary_aliases(subcase)? {
             add_grouped_subcase_selector_alias(&mut aliases, &alias, &subcase.name);
         }

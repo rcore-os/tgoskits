@@ -1,0 +1,2 @@
+# Enumeration is finite and uses an absolute temporary output path.
+shared_boot = true

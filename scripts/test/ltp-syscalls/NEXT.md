@@ -48,7 +48,7 @@ x86_64 修复前日志为 `/tmp/starry-ltp-next-evidence/` 中本轮基线输出
 
 ### 2.10 fcntl14 暂时退出 x86_64 正式集合
 
-截至 2026-09-24，[#2512](https://github.com/rcore-os/tgoskits/issues/2512) 记录 `fcntl14` 暂时退出 StarryOS x86_64 正式测试。本轮从两处活跃清单删除该条目：LTP 正式集合 `test-suit/starryos/qemu/system/ltp-syscalls/cases-x86_64.txt`，以及 syscall app 跨架构共用的完整执行清单 `apps/starry/qemu/syscall-test/syscalls/fcntl.txt`。正式集合的影响仅限于 x86_64，`cases.txt` 与另外三架构的正式集合从未包含该用例；app 清单由各架构共享，默认 `RUN.txt` 不含 fcntl 分组，手动完整运行时启用该分组的架构都会跳过该条目，其中 `fcntl14_64` 保留，没有它也不稳定的证据。`minimum-passes.txt` 的 `fcntl14 2` 完成契约和 `probe-cases.txt` 的候选条目按原样保留。
+截至 2026-09-24，[#2512](https://github.com/rcore-os/tgoskits/issues/2512) 记录 `fcntl14` 暂时退出 StarryOS x86_64 正式测试。本轮从两处活跃清单删除该条目：LTP 正式集合 `test-suit/starryos/qemu/standard/system/ltp/ltp-syscalls/cases-x86_64.txt`，以及 syscall app 跨架构共用的完整执行清单 `apps/starry/qemu/syscall-test/syscalls/fcntl.txt`。正式集合的影响仅限于 x86_64，`cases.txt` 与另外三架构的正式集合从未包含该用例；app 清单由各架构共享，默认 `RUN.txt` 不含 fcntl 分组，手动完整运行时启用该分组的架构都会跳过该条目，其中 `fcntl14_64` 保留，没有它也不稳定的证据。`minimum-passes.txt` 的 `fcntl14 2` 完成契约和 `probe-cases.txt` 的候选条目按原样保留。
 
 该用例提供的覆盖是跨进程随机正长度 POSIX 锁区间竞争、`F_GETLK` 返回的持锁 pid 与类型，以及冲突时 `F_SETLK` 返回 `EWOULDBLOCK`。退出后这部分暂时没有替代项：正式集合里仍保留的 `fcntl15`、`fcntl17`、`fcntl34`、`fcntl36` 与 `flock02`、`flock04`、`flock06`、`flock07` 只提供路径级部分覆盖，不能承接随机区间竞争。2.9 节与 4.1 节记录的 2 TPASS 和完整 system `511/511` 属于 PR #2472 接入阶段的证据，不构成本轮门禁覆盖。
 

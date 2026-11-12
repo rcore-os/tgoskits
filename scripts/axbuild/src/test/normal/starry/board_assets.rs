@@ -217,7 +217,7 @@ pub(crate) fn collect_upload_paths(upload_root: &Path) -> anyhow::Result<Vec<Pat
     Ok(relative_paths)
 }
 
-fn validate_relative_path(path: &Path) -> anyhow::Result<()> {
+pub(super) fn validate_relative_path(path: &Path) -> anyhow::Result<()> {
     ensure!(
         !path.as_os_str().is_empty() && !path.is_absolute(),
         "session file path `{}` must be a non-empty relative path",

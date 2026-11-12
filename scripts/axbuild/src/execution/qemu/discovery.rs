@@ -641,7 +641,7 @@ pub(super) fn is_case_asset_dir(path: &Path) -> bool {
     )
 }
 
-pub(super) fn validate_selected_case_name(
+pub(crate) fn validate_selected_case_name(
     case_name: &str,
     suite_name: &str,
     group_label: &str,

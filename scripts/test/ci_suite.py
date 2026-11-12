@@ -60,6 +60,64 @@ STARRY_APP_SUITE_ROOT = Path("benchmarks/starry")
 STARRY_APP_SUITE_KINDS = frozenset({"starry-app-qemu", "starry-app-board"})
 
 
+def _starry_case_id(path: str) -> str:
+    """Keep CLI selectors stable when source wrappers move."""
+    for directory, selector in (
+        ("qemu/standard", "qemu"),
+        ("qemu/x86_64/ahci-single", "ahci-single"),
+        ("qemu/x86_64/timer-preemption", "timer-preemption-x86"),
+        ("qemu/x86_64/e1000", "qemu-e1000"),
+    ):
+        if path == directory:
+            return selector
+        if path.startswith(directory + "/"):
+            return selector + path[len(directory):]
+    return path
+
+
+def _starry_board_case_id(path: str) -> str:
+    return "board-" + path.removeprefix("board/") if path.startswith("board/") else path
+
+
+def _relocated_starry_path(root: Path, path: Path) -> Path:
+    """Route removed source paths in a migration diff to their current owner."""
+    if path.exists() or not _is_prefix(path, root):
+        return path
+    relative = path.relative_to(root)
+    parts = relative.parts
+    # Removed ARM boot configurations are now owned by the OpenRC composite.
+    for prefix in (("qemu", "gicv2-boot"), ("qemu", "standard", "gicv2-boot")):
+        if parts[:len(prefix)] == prefix:
+            return root.joinpath("qemu/standard/openrc", *parts[len(prefix):])
+    if parts[:2] in {("qemu", "standard"), ("qemu", "x86_64")}:
+        return path
+    system = root / "qemu/standard/system"
+    if len(parts) >= 3 and parts[:2] == ("qemu", "system") and system.is_dir():
+        project = parts[2]
+        for category in system.iterdir():
+            candidate = category / project
+            if (candidate / "CMakeLists.txt").is_file():
+                return candidate.joinpath(*parts[3:])
+        if project == "common":
+            return root / "common"
+    if parts[:2] == ("board-common", "network-test"):
+        return root.joinpath("common/network", *parts[2:])
+    if len(parts) >= 2 and parts[:2] == ("qemu", "tty-console-input-burst"):
+        return root.joinpath("qemu/standard/openrc", *parts[2:])
+    if parts and parts[0] == "qemu" and (root / "qemu/standard").is_dir():
+        return root.joinpath("qemu/standard", *parts[1:])
+    for directory, destination in (
+        ("ahci-single", "qemu/x86_64/ahci-single"),
+        ("timer-preemption-x86", "qemu/x86_64/timer-preemption"),
+        ("qemu-e1000", "qemu/x86_64/e1000"),
+    ):
+        if parts and parts[0] == directory:
+            return root.joinpath(destination, *parts[1:])
+    if parts and parts[0].startswith("board-"):
+        return root.joinpath("board", parts[0].removeprefix("board-"), *parts[1:])
+    return path
+
+
 class SuiteRouteError(ValueError):
     """Raised when a changed test suite cannot map to one registered CI row."""
 
@@ -572,15 +630,29 @@ def _discovered_selections(
     absolute_root = workspace_root / _owning_suite_root(path, os_name)
     cases = _discover_os_runtime_cases(workspace_root, os_name)
 
+    if os_name == "starry":
+        absolute_path = _relocated_starry_path(absolute_root, absolute_path)
+        if _is_prefix(absolute_path, absolute_root / "common"):
+            shared_cases = cases
+            if _is_prefix(absolute_path, absolute_root / "common/network"):
+                shared_cases = [case for case in cases if case.kind == "starry-board"]
+            return _runtime_selections(registrations, path, shared_cases)
+
     grouped = _starry_grouped_subcase(absolute_root, absolute_path, cases)
     if grouped is not None:
         matching_cases, selector = grouped
-        return _runtime_selections(
+        selections = _runtime_selections(
             registrations,
             path,
             matching_cases,
             selector_override=selector,
         )
+        if os_name == "starry":
+            selections.extend(_runtime_selections(
+                registrations, path,
+                _starry_project_board_consumers(absolute_path, cases),
+            ))
+        return selections
 
     matching_cases = _matching_runtime_cases(cases, absolute_path)
     return _runtime_selections(registrations, path, matching_cases)
@@ -806,7 +878,7 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             continue
         wrapper_dir = build_config.parent
         if os_name == "starry":
-            case = runtime_config.parent.relative_to(root).as_posix()
+            case = _starry_case_id(runtime_config.parent.relative_to(root).as_posix())
         else:
             base_case = (
                 wrapper_dir.name
@@ -853,6 +925,8 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             case = runtime_config.parent.relative_to(case_root).as_posix()
         if os_name == "arceos":
             case = runtime_config.parent.name
+        if os_name == "starry":
+            case = _starry_board_case_id(case)
         cases.append(
             _RuntimeCase(
                 kind=board_kind,
@@ -914,21 +988,53 @@ def _starry_grouped_subcase(
     path: Path,
     cases: Sequence[_RuntimeCase],
 ) -> tuple[list[_RuntimeCase], str] | None:
-    system_root = root / "qemu/system"
+    system_root = root / "qemu/standard/system"
+    if not system_root.is_dir():
+        system_root = root / "qemu/system"
     if not _is_prefix(path, system_root):
         return None
     relative = path.relative_to(system_root)
     if len(relative.parts) < 2:
         return None
     subcase = relative.parts[0]
-    if not (system_root / subcase).is_dir():
-        return None
+    for directory in (path.parent, *path.parents):
+        if directory == system_root:
+            break
+        if _is_prefix(directory, system_root) and (directory / "CMakeLists.txt").is_file():
+            subcase = directory.name
+            # Nested dependency projects belong to the outer suite project.
     matching = [
         runtime_case
         for runtime_case in cases
         if runtime_case.kind == "starry-qemu" and runtime_case.case == "qemu/system"
     ]
     return matching, f"qemu/{subcase}"
+
+
+def _starry_project_board_consumers(
+    path: Path, cases: Sequence[_RuntimeCase]
+) -> list[_RuntimeCase]:
+    """Follow explicit CMake source reuse instead of copying project names."""
+    project = next((directory for directory in (path.parent, *path.parents)
+        if (directory / "CMakeLists.txt").is_file()), None)
+    if project is None:
+        return []
+    consumers = []
+    for case in cases:
+        if case.kind != "starry-board":
+            continue
+        for cmake in case.case_dir.rglob("CMakeLists.txt"):
+            content = cmake.read_text(encoding="utf-8")
+            references = re.findall(
+                r'(?:\$\{CMAKE_CURRENT_(?:LIST|SOURCE)_DIR\}/|\.\./)[^\s"\x27;)<>]+',
+                content,
+            )
+            if any(_is_prefix((cmake.parent / re.sub(
+                r'^\$\{CMAKE_CURRENT_(?:LIST|SOURCE)_DIR\}/', '', reference
+            )).resolve(), project) for reference in references):
+                consumers.append(case)
+                break
+    return consumers
 
 
 def _nearest_qemu_build_config(

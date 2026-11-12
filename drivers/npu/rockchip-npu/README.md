@@ -297,4 +297,4 @@ extern "C" fn npu_irq_handler(core_index: usize) {
 
 `gem::tests` 用可计数的 DMA 分配后端和较小账户上限验证真实 `GemPool` 的字节边界、对象边界、失败回滚及最后 retainer 回收，不需要耗尽实体内存。AArch64 用户态执行命令为 `cargo xtask cross-test --arch aarch64 --package rockchip-npu --lib gem::tests::`；标准库检查使用 `cargo xtask test`。
 
-真实文件生命周期回归位于 [rknpu-resources](../../../test-suit/starryos/board-orangepi-5-plus/rknpu-resources/c/main.c)，通过 `cargo xtask starry test board --board orangepi-5-plus -c rknpu-resources` 执行。它以 4 KiB 分配达到对象配额，正常实现最多占用 16 MiB DMA，验证独立打开、共享描述符、映射及 PRIME 导出保活和最后关闭后的额度恢复。该检查需要空闲的 OrangePi-5-Plus，不能以宿主测试或 C 编译结果代替。
+真实文件生命周期回归位于 [rknpu-resources](../../../test-suit/starryos/board/orangepi-5-plus/rknpu-resources/c/main.c)，通过 `cargo xtask starry test board --board orangepi-5-plus -c rknpu-resources` 执行。它以 4 KiB 分配达到对象配额，正常实现最多占用 16 MiB DMA，验证独立打开、共享描述符、映射及 PRIME 导出保活和最后关闭后的额度恢复。该检查需要空闲的 OrangePi-5-Plus，不能以宿主测试或 C 编译结果代替。

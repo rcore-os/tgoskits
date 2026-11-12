@@ -402,7 +402,7 @@ cargo starry board \
   --port "${OSTOOL_PORT:?set OSTOOL_PORT}"
 ```
 
-车板用 `aka-00-sg2002-board.toml`，荔枝派 Nano 把 `--board-config` 换成 `os/StarryOS/configs/board/licheerv-nano-sg2002-board.toml`。板级测试的写法是 `cargo starry test board --board aka-00-sg2002`，荔枝派对应 `--board licheerv-nano-sg2002`，配置分别在 `test-suit/starryos/board-aka-00-sg2002` 和 `test-suit/starryos/board-licheerv-nano-sg2002` 下。两份板卡的 `shell_prefix` 都是 `root@starry:`，和 5.2 里的提示符一致。
+车板用 `aka-00-sg2002-board.toml`，荔枝派 Nano 把 `--board-config` 换成 `os/StarryOS/configs/board/licheerv-nano-sg2002-board.toml`。板级测试的写法是 `cargo starry test board --board aka-00-sg2002`，荔枝派对应 `--board licheerv-nano-sg2002`，配置分别在 `test-suit/starryos/board/aka-00-sg2002` 和 `test-suit/starryos/board/licheerv-nano-sg2002` 下。两份板卡的 `shell_prefix` 都是 `root@starry:`，和 5.2 里的提示符一致。
 
 和 6.3 里 `cargo xtask starry app board -t benchmark/aka00-tennis-yolo -b AKA-00-SG2002` 那条应用级测试是两回事：这里跑的是内核启动验证，那里跑的是用户程序。
 

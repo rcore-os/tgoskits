@@ -1,6 +1,6 @@
 # Use the guest built from this checkout, not an unversioned image on the board.
 # Prepare it with:
-# cargo xtask starry build --config test-suit/starryos/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml --smp 1
+# cargo xtask starry build --config test-suit/starryos/board/orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml --smp 1
 # VM base information.
 [base]
 id = 1

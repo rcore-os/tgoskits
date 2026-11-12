@@ -86,3 +86,31 @@ fn rejects_missing_mapped_board_build_config() {
     assert!(err.contains("not under a build wrapper"));
     assert!(err.contains("smoke"));
 }
+#[test]
+fn board_wrappers_keep_public_ids_after_layout_moves() {
+    for directory in ["board-fixture/probe", "board/fixture/probe"] {
+        let root = tempdir().unwrap();
+        let wrapper = root.path().join("test-suit/starryos").join(directory);
+        fs::create_dir_all(&wrapper).unwrap();
+        write_starry_board_build_config(root.path(), directory, "x86_64-unknown-none");
+        fs::write(
+            wrapper.join("board-fixture.toml"),
+            "board_type = \"Fixture\"\n",
+        )
+        .unwrap();
+        let groups = discover_board_test_groups(
+            root.path(),
+            &["board-fixture/probe".into()],
+            Some("fixture"),
+        )
+        .unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "board-fixture/probe");
+        assert_eq!(
+            discover_board_test_groups(root.path(), &[directory.into()], Some("fixture"))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}

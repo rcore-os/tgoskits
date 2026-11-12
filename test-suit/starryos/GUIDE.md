@@ -35,119 +35,51 @@ feature，等待客户机写入测试专用 `/proc/starry-test-coverage`，由�
 `coverage/starryos-<target>.profraw` 后再结束 QEMU。这个入口不参与
 `test-suit/starryos` 的用例发现或 CI case 路由。
 
-## 发现规则
+## 发现规则与当前目录
 
-StarryOS test-suit 不再使用 `normal`、`stress` 等一级测试组。QEMU 和 board
-用例都直接从 `test-suit/starryos/` 根目录发现：
+当前目录职责、命令、CI范围和增删改约束见[README](README.md)。实体目录按QEMU/板端和功能分类，公开测试ID保持稳定：`qemu/system`对应`qemu/standard/system`，`qemu/<subcase>`对应分类内的同名项目；原AHCI、timer、E1000选择保持。旧TTY选择进入OpenRC/TTY复合case。
 
-```text
-test-suit/starryos/<case>/<runtime-config>.toml
-test-suit/starryos/<build_wrapper>/<case>/<runtime-config>.toml
-```
-
-- QEMU 用例通过 `<case>/qemu-<arch>.toml` 发现。
-- Board 用例通过 `<case>/board-<board>.toml` 发现。
-- `<build_wrapper>` 用于共享构建配置，例如 `qemu`、`board-orangepi-5-plus`。
-- 构建配置位于 case 或最近的 build wrapper 中，文件名为 `build-<target>.toml`。
-- 如果目录自身同时包含 `build-*` 和 `qemu-*` / `board-*`，它本身也可以作为 case 被发现。
-- 批量运行时，没有当前 arch/runtime config 的目录会被跳过。
-- 显式 `-c/--test-case` 时，case 必须存在，且必须提供当前 arch 对应的 runtime config。
-- Starry QEMU 支持 `qemu/<subcase>` 作为 `qemu/system` 聚合 case 的单子测例
-  选择器；也可以写成 `qemu/system/<subcase>`。
-- `<subcase>` 优先使用 `system/` 下的子目录名；如果某个子测例安装的
-  `usr/bin/starry-test-suit` binary / CMake target 名与目录名不同，也可以使用唯一的
-  binary / target 名，例如 `qemu/test-prlimit64` 会映射到
-  `qemu/system/syscall-test-prlimit64`。
-- `-l/--list` 列出根目录下发现的 Starry case；`qemu` 这类仅含 build config 的 wrapper 不会作为 root case 出现。
-
-旧的 Starry `--test-group` 和 `--stress` 入口已经移除。需要运行迁出的压力、K230、
-visual 或 golden 类用例时，使用 `cargo xtask starry app ...` 或对应脚本。
-
-## CI 精确路由
-
-### 执行选择
-
-CI 路由不改变上述 xtask 发现规则。`.github/ci/checks/starry.toml` 通过 check 下的
-`[[check.suite]]` 注册当前可用的 QEMU 架构或 board runner；planner 再以实际存在的
-`qemu-<arch>.toml`、`board-<board>.toml` 和最近的 `build-<target>.toml` 解析 case。
-不要从目录名字手工拼接 CI job，也不要为未在 CI 中运行的板卡借用其他 runner。
-
-PR 的有效改动全部位于 `test-suit/**` 时，只运行匹配的已注册 case。多个 case 取
-稳定去重并集；共享 build wrapper 变更展开到该 wrapper 下所有已注册 case。
-`qemu/system/<subcase>` 源码变更会生成 `qemu/<subcase>` selector。若新增 case 或
-board 尚未在 manifest 注册，`Plan CI` 会明确失败，而不是静默跳过或自动启用真机。
-
-### 启动扩容夹具
-
-分组 QEMU 配置可用 `rootfs_growth_bytes` 声明给原始整盘 ext4 镜像追加的稀疏空间，必须为正的 4096 字节整数倍。`RootGrowthFixture` 先把目标容量通过 `STARRY_ROOT_EXPECTED_BYTES` 注入分组命令，生成并缓存测试资源后，仅扩大本次运行的临时镜像副本；共享镜像与缓存中的 ext4 保留原容量。不能用于没有临时副本的 plain 用例，也不用于分区镜像的容量推导。
-
-`system/root-growth-aarch64.toml` 为 `bugfix-fstatvfs-directory` 追加 256 MiB。该用例通过真实 `statfs` 和 `fstatfs` 查询根，比较文件系统容量与夹具目标；启动流程若跳过扩容，原容量仍合法但测试必须失败。使用 `cargo xtask starry test qemu --arch aarch64 -c qemu/system/bugfix-fstatvfs-directory` 执行同一个 CI 分组配置，不需要额外内核参数或手工验收脚本。
-
-### 挂载权限转换
-
-`system/readonly-mount-aarch64.toml` 将 `test-remount-flags` 放到真实只读 VirtIO 设备与可写 ext4 根的配置中，验证拒绝物理只读介质的写挂载、原生超级块复用、首次只读挂载后的可写提升及文件持久化。
-
-同一配置通过 `fat_root_init` 指定已注入镜像的测试程序。`FatRootFixture` 复用该产物，使用已有宿主 FAT 库创建独占临时根镜像，再用相同内核运行两个首次只读 FAT 根场景：可写介质允许提升并通过写入、`fsync` 和回读；物理只读介质返回 `EACCES`，之后创建文件仍返回 `EROFS`。程序放在附加 ext4 分区执行，以避免混入 FAT 执行权限策略。所有镜像在场景结束或失败时清理，客户机写入使用快照，不修改共享镜像或缓存。
-
-使用 `cargo xtask starry test qemu --arch aarch64 -c qemu/system/test-remount-flags` 执行完整挂载权限验证，常规 AArch64 CI 通过相同入口运行。夹具只额外使用原有 `debugfs` 和 `mkfs.ext4`，不需要独立 Python 脚本、交叉编译步骤、`mtools` 或分区工具。任一场景失败直接使该分组失败；成功判定由对应场景的输出标记驱动。
-
-## 当前目录概览
+- QEMU先发现匹配目标的`build-<target>.toml`构建包装，再发现`qemu-<arch>.toml`运行case；`qemu/`总容器不含build。
+- 构建包装可多层嵌套，例如`qemu/standard`和`qemu/x86_64/e1000`，不能让上层build遮蔽下层独立配置。
+- 板测通过`board-<selector>.toml`发现，解析最近的build配置；selector不等于真实board_type。
+- system根CMake跨功能分类收集项目，项目ID由叶目录名确定，必须唯一；CMakeLists和src一起放，不把功能分类当成独立启动。
+- 显式case选择必须存在并支持对应架构，未知或空选择报错。`--list`显示公开ID；没有新增plan或suite清单。
+- 板端requirements中的环境缺失明确记skipped，不构建/占板。shared_boot或shared_boot_selectors声明已验证的共享生命周期；仅首成员允许多步，后续单步沿用各自命令上限并共享首成员总截止时间。OrangePi普通五项、虚拟流程/UVC各一次启动，DTB优先环境预设；AKA在原无线条件齐备时boot/YOLO/USB/VDEC/Wi-Fi五项一次启动，保留原设备树与安全熵注入；真实机器人nightly保持独立。详细条件见[README](README.md#板端共享启动)。
+- 原`--test-group`、`--stress`不恢复。大型应用、压力、K230和图形工作负载仍在apps，性能采样在benchmarks。
 
 ```text
-test-suit/starryos/
+starryos/
+  common/{runner,cmake,include,network}/
   qemu/
-    build-aarch64-unknown-none-softfloat.toml
-    build-loongarch64-unknown-none-softfloat.toml
-    build-riscv64gc-unknown-none-elf.toml
-    build-x86_64-unknown-none.toml
-    system/
-      CMakeLists.txt
-      prebuild.sh
-      qemu-aarch64.toml
-      qemu-loongarch64.toml
-      qemu-riscv64.toml
-      qemu-x86_64.toml
-      syscall-test-brk/
+    standard/
+      build-<target>.toml
+      system/
         CMakeLists.txt
-        src/
-      bugfix-bug-futex-wait-wake/
-        CMakeLists.txt
-        src/
-      c-regression-test-msync/
-        CMakeLists.txt
-        src/
-      drm-test-drm-perbuf-dumb/
-        CMakeLists.txt
-        src/
-      evdev-test-evdev-minor/
-        CMakeLists.txt
-        src/
-      usb-audio-iso/
-        CMakeLists.txt
-        src/
-      usb-storage/
-        CMakeLists.txt
-        src/
-  board-orangepi-5-plus/
-    build-aarch64-unknown-none-softfloat.toml
-    native-hardware-smoke/
-      board-orangepi-5-plus.toml
-    native-network-smoke/
-      board-orangepi-5-plus.toml
-      network-smoke.sh
+        prebuild.sh
+        qemu-<arch>.toml
+        <功能分类>/<subcase>/
+          CMakeLists.txt
+          src/
+      pid1*/
+      openrc/
+      host-initramfs*/
+    x86_64/{ahci-single,timer-preemption,e1000}/
+  board/<板型>/
+    build-<target>.toml
+    <case>/board-<selector>.toml
 ```
 
-`qemu/system` 是统一的 SMP4 聚合 QEMU case。`qemu/` 根目录只放四架构 build
-config，不放 `qemu-*.toml`。
+### AArch64特殊执行环境
 
-### AArch64 CI 启动 smoke
+GICv2/SMP4启动检查已并入ARM OpenRC；旧`qemu/gicv2-boot`选择仅在aarch64运行完整OpenRC复合case，其他架构拒绝。OpenRC显式指定`virt,gic-version=2`，保留原boot命令/标记及后续TTY/服务/终端/关机，原独立目录已移除；普通system仍用GICv3，二者共享内核构建。ARM system仍展开perf icount、根扩容和只读挂载profile；后者额外运行两种FAT根场景。普通QEMU默认36次（ARM14），只有配置实际兼容才共享启动，不能按目录或list行数计算启动。
 
-AArch64 的 GICv2/SMP4 启动 smoke 位于
-`qemu/gicv2-boot/qemu-aarch64.toml`，由
-`cargo xtask starry test qemu --arch aarch64` 自动发现。它与
-`qemu/system` 的 GICv3 case 使用同一个 AArch64 build wrapper，等待四个 CPU
-进入 shell 后输出 `STARRY_AARCH64_GICV2_BOOT_PASSED`，因此不会再触发独立的
-kernel 构建。
+### CI路径路由
+
+`ci_suite.py`解析当前物理配置与稳定ID；分类中的单项目变更选择同名项目，公共helper选择其已注册消费者。迁移diff中的旧路径也解析到当前责任项目。手动/未注册case不会因为归位自动接入CI。
+
+### 根扩容与挂载夹具
+
+`system/root-growth-aarch64.toml`仅扩大本次临时rootfs，向被测程序传入目标容量，不修改共享归档或源镜像。`readonly-mount-aarch64.toml`复用相同测试程序，并额外构造FAT根分别检查物理可写/物理只读，三次启动均保留。
 
 ## qemu/system 聚合
 
@@ -155,7 +87,7 @@ kernel 构建。
 子测例。子测例目录直接放在 `system/` 下，每个子测例只保留自己的资产目录：
 
 ```text
-qemu/system/<subcase>/
+qemu/standard/system/<功能分类>/<subcase>/
   CMakeLists.txt
   src/
 ```
@@ -259,7 +191,7 @@ probe 并保存完整日志，再运行：
 ```bash
 scripts/test/ltp-syscalls/generate-common.sh \
   scripts/test/ltp-syscalls/probe-cases.txt \
-  test-suit/starryos/qemu/system/ltp-syscalls/cases.txt \
+  test-suit/starryos/qemu/standard/system/ltp/ltp-syscalls/cases.txt \
   x86_64.log aarch64.log riscv64.log loongarch64.log
 ```
 
@@ -498,7 +430,7 @@ xtask 对 CMake configure、build 和 install 的成功输出默认静默，只�
   <subcase-b>/c/CMakeLists.txt
 ```
 
-`qemu/system` 是特殊的大型 system grouped case：`system/CMakeLists.txt` 是唯一
+公开ID `qemu/system` 是特殊的大型 system grouped case：`system/CMakeLists.txt` 是唯一
 configure 入口，自动 `add_subdirectory()` 各个 subcase；每个 subcase 直接在目录根放
 `CMakeLists.txt` 和 `src/`。如果所有 system subcase 需要共享 rootfs 准备步骤，把脚本
 放在 `system/prebuild.sh`，不要给单个 subcase 增加 `prebuild.sh`。

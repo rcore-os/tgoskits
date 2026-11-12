@@ -1,0 +1,2 @@
+# Runs before the functional checks in the same verified SG2002 boot.
+shared_boot = true

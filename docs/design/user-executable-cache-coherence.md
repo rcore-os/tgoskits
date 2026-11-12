@@ -20,7 +20,7 @@ Linux 基准是 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。arm64 的 [`__set_p
 
 ### 2.1 实机回归
 
-[`syscall-test-exec-cache`](../../test-suit/starryos/qemu/system/syscall-test-exec-cache/src/main.c) 建立 memfd 的共享可执行映射，执行返回 42 的指令，解除映射，通过 pwrite 写入返回 99 的指令并验证文件读回内容，然后在原虚拟地址重新映射并执行。第二次执行前不由用户程序清缓存：内容由内核写入，新的可执行文件映射必须观察已经完成的文件写入。这不同于要求用户程序自行同步的任意 JIT 自修改代码。
+[`syscall-test-exec-cache`](../../test-suit/starryos/qemu/standard/system/process/syscall-test-exec-cache/src/main.c) 建立 memfd 的共享可执行映射，执行返回 42 的指令，解除映射，通过 pwrite 写入返回 99 的指令并验证文件读回内容，然后在原虚拟地址重新映射并执行。第二次执行前不由用户程序清缓存：内容由内核写入，新的可执行文件映射必须观察已经完成的文件写入。这不同于要求用户程序自行同步的任意 JIT 自修改代码。
 
 同一 OrangePi-5-Plus-1 实机、同一程序获得以下结果。修复只增加缓存维护，没有改变文件页身份、内容、映射选择或测试判据。
 
@@ -29,7 +29,7 @@ Linux 基准是 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。arm64 的 [`__set_p
 | `857f05f59c`，未修复 | `expected=99 actual=42`；`STARRY_EXEC_CACHE_FAILED errno=0` | 会话 `21987e27-2ad2-4e17-852a-9e0a09da4c08` |
 | 本次缓存修复 | `expected=99 actual=99`；`STARRY_EXEC_CACHE_OK errno=0` | 会话 `43e6431f-b5c3-425d-8086-2399519f6a31` |
 
-板卡用例通过会话文件下发静态程序，不修改 Linux 根文件系统。现有 OrangePi CI 命令 `cargo xtask starry test board --board orangepi-5-plus` 自动发现 [`exec-cache`](../../test-suit/starryos/board-orangepi-5-plus/exec-cache/board-orangepi-5-plus.toml)。QEMU 的 system 聚合用例发现同一 C 源码，验证实际 mmap/缺页/执行路径；QEMU 通过不能单独证明物理缓存维护正确。
+板卡用例通过会话文件下发静态程序，不修改 Linux 根文件系统。现有 OrangePi CI 命令 `cargo xtask starry test board --board orangepi-5-plus` 自动发现 [`exec-cache`](../../test-suit/starryos/board/orangepi-5-plus/exec-cache/board-orangepi-5-plus.toml)。QEMU 的 system 聚合用例发现同一 C 源码，验证实际 mmap/缺页/执行路径；QEMU 通过不能单独证明物理缓存维护正确。
 
 ### 2.2 原始停滞与未证明事项
 
