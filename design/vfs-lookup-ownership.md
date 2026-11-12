@@ -1393,6 +1393,94 @@ namespace 或 `MOVE_MOUNT_SET_GROUP` 系统调用支持。
 的结构或可见性断言处稳定失败；没有直接 Starry 系统调用回归时，此组件证据
 不升级为 mount、move_mount 或 namespace 系统调用的兼容性批准。
 
+#### 3.8.12 安装结果与调用者退休出口
+
+传播连接即使正确重接，也不能推断临时引用只会在内部 topology gate 内成为最后
+拥有者。接收者可能属于另一 Core；本次发布退出 gate 后，另一执行者可以立即
+完成该 Core 的最后清理，使本次扫描或旧位置引用成为资源的最后拥有者。因此，
+`PropagationRetirement` 仅在挂载函数内部延后到 topology 外释放，还不足以允许
+该函数在外层 writer、Scope、pin 或状态短锁内调用。这是实际返回值的能力缺口，
+不能以“树已经重接”或“调用者仍持源 namespace”代替树外接收者的寿命证明。
+
+安装提供显式的拥有出口 `MountPublicationRetirement`。它字段私有、不可 Clone，
+只拥有本次准备和传播留下的资源，不是新的 namespace、永久索引或延后工作队列，
+也不在 Drop 中提交或回滚拓扑。核心入口返回 `(VfsResult<T>,
+MountPublicationRetirement)`，而不是 `VfsResult<(T, MountPublicationRetirement)>`：
+失败同样可能留下最后拥有者，不能在返回错误之前于 callee 内释放它们。
+
+下列入口与原安装参数保持对应，改变的是资源交接，不改变挂载身份、权限、
+错误顺序或传播的部分完成范围。普通便捷形式仍由同一个实现处理，不保留两套
+发布算法。
+
+| 受控入口 | 返回与职责 |
+| --- | --- |
+| `Location::mount_retiring(&self, fs: &Filesystem)` | 返回 `(VfsResult<Arc<Mountpoint>>, MountPublicationRetirement)`；source 与设备号分配沿用 `mount` |
+| `Location::mount_with_source_retiring(&self, fs: &Filesystem, source: &str)` | 同上；沿用 `mount_with_source` 的设备号分配 |
+| `Location::mount_with_device_source_retiring(&self, fs: &Filesystem, device: u64, source: &str)` | 同上；唯一的文件系统挂载准备与发布实现 |
+| `Mountpoint::attach_detached_retiring(self: &Arc<Self>, target: &Location)` | 返回 `(VfsResult<()>, MountPublicationRetirement)`；唯一的 detached 安装实现 |
+
+退休值在任何内部 gate 之前建立。后端 root/lease 等准备产生的未发布 mount，
+成功安装的新 mount 保活副本、attach 的实际 source、传播接收者、必要关系升级、
+遍历位置和覆盖冲突移出的 Location/slot 引用，都先归它拥有，再进入后续可失败
+步骤。局部临时值可以借用这些拥有对象，但不能通过局部 `?`、循环尾或函数尾，
+把可能最后的输入、中间结果或未发布 mount 提前销毁。成功和失败返回都先退出
+全部内部 gates，再把完整退休值交给调用者；成功返回的 mount Arc 不自动替代
+这个退休值的责任。
+
+调用者在取得 writer 等外层保护之前准备退休槽，入口返回后先把退休值移入槽，
+再检查结果或执行后续可失败步骤。槽在退出所有相关保护之后释放，不能在一个
+`?` 的错误转换中遗漏，不能在 writer 内覆盖一个已占用的槽，也不能用仅留在
+callee 的局部变量冒充交接。第 3.8.9 节规定的 `NamespaceChange` 载体复用固定退休槽接收它，
+不为这一安装接口增加第二套 namespace 登记或永久保活连接。
+
+拥有出口只解决析构边界，不授权在原本禁止回调或阻塞的保护区执行安装。root、
+lease、目录检查及分配等准备仍可能调用后端，不能因为返回了退休值，就把安装
+放进 Scope access、pin、IRQ-safe 状态短锁或其他不允许这些操作的临界区。
+实际需要在可睡眠 namespace writer 期间安装时，使用受控出口；其他保护仍须
+按原准备/提交协议在操作前退出。退休值则始终在全部相关保护结束之后释放。
+
+原 `mount`、`mount_with_source`、`mount_with_device_source` 和 `attach_detached`
+保留签名，作为无外层保护时的便捷入口：调用受控实现，取得结果和退休值，在
+函数返回前释放退休值。因此它们只保证内部 topology 外释放，明确不能在上述
+外层保护内使用。当前 Starry `sys_mount`、`sys_move_mount` 已在短锁外使用读取
+副本，Native `finish_filesystem_init` 在发布全局初始上下文前安装根；此次不为
+这些已核实的无外层保护调用制造机械迁移。新增
+writer 期安装或后续 Owner 迁移必须用受控出口；不能只改接口说明，却保留已核
+实的受保护调用者继续使用便捷入口。bind、move、pivot、传播 flag 与卸载不因
+这个局部出口自动取得 writer 期能力，各自仍按本任务已冻结的准备和退休边界
+迁移，不将此类型扩大为通用事务框架。
+
+已核实的例外消费者是 Starry `pseudofs::mount_all`：它取得旧 `FsContext` mutex
+后，经 `mount_at` 连续调用便捷安装入口，直到整批结束才退锁。本序列将它改为
+在短锁内取得当前只读副本，立即退出 mutex，再创建后端、解析、安装与释放
+副本；不因新增退休出口而继续持上下文锁进入后端。这里沿用当前已存在的读取
+副本边界，不增加 State 拥有份额或登记；后续 Owner/Snapshot 生产迁移须把它与
+`sys_mount` 等消费者一同换为冻结快照，不把旧读取类型保留为第二套永久通道。
+该局部解锁迁移不改变安装清单、root/cwd、权限、设备号或初始化发布顺序。
+
+覆盖传播回归中的 writer 期调用应改为受控入口，并在退出 writer 后才释放返回
+的退休值；原覆盖顺序、可见内容、自动回收及失败清理判定保持不变。接口接桥
+本身不能顺便修复 R2：先在仍保留错误覆盖安装的版本上执行这份调整后的旅程，
+确认同一结构断言仍红，再恢复正确重接并执行同源绿。先前便捷入口的真实红仍
+保留为历史证据，但不能代替新入口的失败敏感度证明。准备后因目标退休而拒绝
+时，也要通过真实未发布 mount/独占后备资源的最终释放，证明错误返回携带退休
+值而非只在成功路径保活；不靠空 carrier、访问器或编译通过代替行为证明。
+
+成功出口还需独立的最后拥有者信号，不能仅在两个 Core 都由测试持有时检查覆盖
+顺序。沿用本次安装/退休旅程，受控安排树外接收 Core 在“本次已退出 topology、
+尚未交回调用者”阶段由另一执行者最后清理，使本次扫描或移出引用实际承担最后
+保活。分别观察返回前和 caller 释放退休值前资源仍在，以及 caller 退出 writer
+并释放退休值后资源确实结束；若成功路径错误地在 callee 尾部销毁或丢弃 carrier，
+同一判定必须失败。钩子仅限测试，匹配确切 source/接收对象且不成为额外 Core
+拥有者；不改变生产公共接口来注入测试行为。
+
+交错使用明确阶段通知，不用 sleep 或调度概率。测试等待远端清理时，本操作
+已经退出 topology，模拟外层 writer 应使用可睡眠锁，不能持测试用自旋锁等待
+另一线程。最终释放探针非阻塞记录，在所有参与者正常收束之后断言；错误候选
+不能因探针重入同一锁而挂死。跨线程要区分本操作的提前释放与另一线程自己的
+合法清理，不能把“别的线程析构时 writer 仍被占用”本身当成错误；同时检查
+资源在远端清理后仍由返回退休值保活，避免只看析构线程而漏掉提前丢弃引用。
+
 ## 4. 命名事务
 
 VFS 统一授权与提交协议，真实排他权由文件系统状态所有者落实。
