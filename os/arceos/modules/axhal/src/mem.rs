@@ -15,8 +15,16 @@ pub use ax_plat::mem::{
 use ax_plat::mem::{check_sorted_ranges_overlap, ranges_difference};
 use heapless::Vec;
 
-#[allow(unused_imports)]
-const MAX_REGIONS: usize = 128;
+cfg_if::cfg_if! {
+    if #[cfg(all(
+        any(target_arch = "aarch64", target_arch = "riscv64"),
+        not(any(test, feature = "host-test"))
+    ))] {
+        const MAX_REGIONS: usize = axplat_dyn::MAX_PHYS_MEMORY_REGIONS;
+    } else {
+        const MAX_REGIONS: usize = 128;
+    }
+}
 
 static ALL_MEM_REGIONS: LazyLock<Vec<PhysMemRegion, MAX_REGIONS>> = LazyLock::new(|| {
     let mut all_regions = Vec::new();

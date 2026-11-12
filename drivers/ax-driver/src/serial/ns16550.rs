@@ -1,4 +1,5 @@
 use alloc::format;
+use core::ptr::NonNull;
 
 use log::info;
 #[cfg(target_arch = "x86_64")]
@@ -32,7 +33,10 @@ model_register!(
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["snps,dw-apb-uart", "ns16550a", "ns16550"],
+            compatibles: &[
+                "snps,dw-apb-uart", "spacemit,k1-uart", "spacemit,k3-uart",
+                "intel,xscale-uart", "ns16550a", "ns16550",
+            ],
             on_probe: probe
         },
         ProbeKind::Acpi {
@@ -98,8 +102,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = crate::mmio::iomap(base_reg.address as usize, mmio_size)?;
     let node = info.node.as_node();
     let reg_width = prop_u32(node, "reg-io-width").unwrap_or(1) as usize;
-    let reg_shift = prop_u32(node, "reg-shift").map(|shift| 1usize << shift);
-    let ns16550_width = reg_shift.unwrap_or(reg_width);
     let mut serial: Option<ProbedUart> = None;
 
     for compatible in node.compatibles() {
@@ -118,9 +120,40 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             break;
         }
 
-        if matches!(compatible, "ns16550a" | "ns16550") {
+        if matches!(
+            compatible,
+            "spacemit,k1-uart" | "spacemit,k3-uart" | "intel,xscale-uart" | "ns16550a" | "ns16550"
+        ) {
             let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(24_000_000);
-            let raw = serial_ns16550::Ns16550::new_mmio(mmio_base, clock_freq, ns16550_width);
+            let xscale = node.compatibles().any(|compatible| {
+                matches!(
+                    compatible,
+                    "spacemit,k1-uart" | "spacemit,k3-uart" | "intel,xscale-uart"
+                )
+            });
+            let variant = if xscale {
+                serial_ns16550::UartVariant::XScale
+            } else {
+                serial_ns16550::UartVariant::Standard
+            };
+            let stride = match prop_u32(node, "reg-shift") {
+                Some(shift) => 1usize.checked_shl(shift).ok_or_else(|| {
+                    OnProbeError::other("NS16550 reg-shift exceeds address width")
+                })?,
+                None if xscale => 4,
+                None => reg_width,
+            };
+            let window = NonNull::slice_from_raw_parts(mmio_base, mmio_size);
+            // SAFETY: iomap retains the UART MMIO window for the lifetime of
+            // the registered device, and its layout comes from the UART node.
+            let raw = unsafe {
+                serial_ns16550::Ns16550::new_mmio_with_variant(
+                    window, clock_freq, stride, reg_width, variant,
+                )
+            }
+            .map_err(|error| {
+                OnProbeError::other(format!("invalid NS16550 MMIO layout: {error}"))
+            })?;
             serial = Some(erase_uart(raw));
             break;
         }

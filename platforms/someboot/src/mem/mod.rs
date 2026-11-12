@@ -7,10 +7,12 @@ use num_align::NumAlign;
 use ranges_ext::*;
 
 pub mod mmu;
+pub(crate) mod no_map;
 pub(crate) mod ram;
 pub(crate) mod region;
 
 pub use mmu::{MemAttributes, PteConfig};
+pub use no_map::{NoMapError, NoMapRegions, reserved_ram_regions};
 pub use page_table_generic::*;
 
 use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};
@@ -95,7 +97,21 @@ static mut KIMAGE_START: Option<PhysAddr> = None;
 /// Load address of the kernel end
 static mut KIMAGE_END: PhysAddr = PhysAddr::from_usize(0);
 
-const MEMORY_MAP_CAPACITY: usize = 512;
+const BOOT_INPUT_MAP_CAPACITY: usize = 512;
+#[cfg(any(all(efi, target_arch = "riscv64"), test))]
+// The FDT copy, per-CPU areas, and boot page tables consume three
+// successive prefixes of a free bank. Early-console MMIO can split
+// the remaining free range into two, adding up to two more entries.
+const EFI_LATE_BOOT_SLOTS: usize = 5;
+#[cfg(any(all(efi, target_arch = "riscv64"), test))]
+pub(crate) const MEMORY_MAP_CAPACITY: usize = BOOT_INPUT_MAP_CAPACITY + EFI_LATE_BOOT_SLOTS;
+#[cfg(not(any(all(efi, target_arch = "riscv64"), test)))]
+pub(crate) const MEMORY_MAP_CAPACITY: usize = BOOT_INPUT_MAP_CAPACITY;
+
+/// Bound for the normalized mappings without architecture-specific additions.
+/// Each disjoint no-map range splits at most one descriptor, and reclaimable
+/// initramfs backing can also appear in the RAM view.
+pub const MAX_PHYS_MEMORY_REGIONS: usize = MEMORY_MAP_CAPACITY + no_map::MAX_REGIONS + 1;
 
 pub type MemoryMap = heapless::Vec<MemoryDescriptor, MEMORY_MAP_CAPACITY>;
 
@@ -197,17 +213,16 @@ pub(crate) fn _fixmap_io(paddr: usize) -> *mut u8 {
 }
 
 pub(crate) fn early_init() {
+    let excluded = NoMapRegions::current().expect("invalid FDT no-map exclusions");
+    required_boot_mappings(&excluded, kimage_range(), 0..0)
+        .expect("kernel mapping overlaps FDT no-map pages");
     #[cfg(efi)]
     crate::efi_stub::init_boot_memory_map();
     #[cfg(not(efi))]
     crate::fdt::init_memory_map();
 
     let kernel_range = kimage_range();
-    let result = add_memory_descriptor(MemoryDescriptor {
-        physical_start: kernel_range.start,
-        size_in_bytes: kernel_range.end - kernel_range.start,
-        memory_type: MemoryType::KImage,
-    });
+    let result = add_memory_descriptor(kimage_descriptor(kernel_range.clone()));
     if let Err(error) = result {
         #[cfg(target_arch = "loongarch64")]
         println!(
@@ -218,24 +233,47 @@ pub(crate) fn early_init() {
     }
     reserve_arch_early_ranges();
 
-    // This runs before the global heap exists, so sorting must not allocate.
-    unsafe { MEMORY_MAP.update(|m| m.sort_unstable_by_key(|a| a.physical_start)) };
+    check_required_memory(memory_map(), &excluded).expect("invalid required boot mapping");
 
-    print_memory_map();
+    let free_range = ram::select_range(memory_map(), |_| true).expect("No free memory");
+    begin_early_allocation(free_range, &excluded);
+}
 
-    let mut free_range = None;
-
-    for desc in memory_map().iter() {
-        if desc.memory_type == MemoryType::Free && desc.size_in_bytes > 8 * MB {
-            free_range = Some(desc.physical_start..(desc.physical_start + desc.size_in_bytes));
-            break;
+fn check_required_memory(
+    map: &[MemoryDescriptor],
+    excluded: &NoMapRegions,
+) -> Result<(), NoMapError> {
+    for descriptor in map {
+        if matches!(
+            descriptor.memory_type,
+            MemoryType::KImage
+                | MemoryType::PerCpuData
+                | MemoryType::BootData
+                | MemoryType::BootReclaimable
+        ) {
+            let end = descriptor
+                .physical_start
+                .checked_add(descriptor.size_in_bytes)
+                .ok_or(NoMapError::InvalidRange)?;
+            excluded.ensure_mappable(descriptor.physical_start..end)?;
         }
     }
+    Ok(())
+}
 
-    ram::init(free_range.expect("No free memory"));
+pub(crate) fn begin_early_allocation(free_range: Range<usize>, excluded: &NoMapRegions) {
+    print_memory_map();
 
-    crate::fdt::save_fdt();
+    ram::init(free_range);
+    crate::fdt::save_fdt(excluded);
     crate::smp::alloc_percpu();
+
+    // Allocation reservations can split RAM descriptors and move the new
+    // pieces to the end. Keep the mapping walk in the same order as preflight.
+    #[cfg(all(efi, target_arch = "riscv64"))]
+    unsafe {
+        MEMORY_MAP.update(|map| map.sort_unstable_by_key(|entry| entry.physical_start));
+    }
 }
 
 fn reserve_arch_early_ranges() {
@@ -291,6 +329,49 @@ fn kimage_reservation_end(end: usize) -> usize {
     end.align_up(crate::consts::PAGE_SIZE)
 }
 
+fn kimage_descriptor(range: Range<usize>) -> MemoryDescriptor {
+    MemoryDescriptor::new_with_range(
+        range.start..kimage_reservation_end(range.end),
+        MemoryType::KImage,
+    )
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn kimage_is_initialized() -> bool {
+    // SAFETY: primary setup publishes these immutable image bounds before
+    // starting other CPUs. The EFI entry can query them before publication.
+    let image_start = unsafe { KIMAGE_START };
+    image_start.is_some()
+}
+
+/// Includes the entire large-page tail mapped by the RISC-V bootstrap.
+pub(crate) fn required_boot_mappings(
+    excluded: &NoMapRegions,
+    range: Range<usize>,
+    percpu: Range<usize>,
+) -> Result<Range<usize>, NoMapError> {
+    let size = range
+        .end
+        .checked_sub(range.start)
+        .ok_or(NoMapError::InvalidRange)?;
+    let size = size
+        .checked_next_multiple_of(KIMAGE_MAP_ALIGN)
+        .ok_or(NoMapError::InvalidRange)?;
+    let kernel = range.start
+        ..range
+            .start
+            .checked_add(size)
+            .ok_or(NoMapError::InvalidRange)?;
+    excluded.ensure_mappable(kernel.clone())?;
+    if percpu.start > percpu.end {
+        return Err(NoMapError::InvalidRange);
+    }
+    if !percpu.is_empty() {
+        excluded.ensure_mappable(percpu)?;
+    }
+    Ok(kernel)
+}
+
 pub fn page_size() -> usize {
     unsafe extern "C" {
         static PAGE_SIZE: usize;
@@ -341,10 +422,19 @@ pub(crate) fn add_memory_descriptor(
     unsafe { MEMORY_MAP.update(|mem| insert_memory_descriptor(mem, desc)) }
 }
 
-fn insert_memory_descriptor(
+pub(crate) fn insert_memory_descriptor(
     map: &mut MemoryMap,
-    desc: MemoryDescriptor,
+    mut desc: MemoryDescriptor,
 ) -> Result<(), RangeError<MemoryDescriptor>> {
+    let range = desc.range();
+    if let Some(neighbor) = map.iter().find(|entry| {
+        let existing = entry.range();
+        entry.mergeable(&desc) && existing.end >= range.start && range.end >= existing.start
+    }) {
+        // Cover an existing slot so merge_add can reuse it on a full map.
+        let existing = neighbor.range();
+        desc = desc.clone_with_range(range.start.min(existing.start)..range.end.max(existing.end));
+    }
     map.merge_add(desc)
 }
 
@@ -381,6 +471,76 @@ fn insert_loongarch_console_memory_descriptor(
     map.merge_add(desc)
 }
 
+pub(crate) fn reserve_fdt_memory(fdt: &fdt_raw::Fdt<'_>) -> Result<(), NoMapError> {
+    let archive = if crate::boot_payload::initramfs_range().is_none() {
+        crate::fdt::direct_boot_initramfs(fdt)?
+    } else {
+        None
+    };
+    // SAFETY: FDT reservation runs once on the boot CPU before RAM allocation.
+    let (_, archive) = unsafe { MEMORY_MAP.update(|map| reserve_fdt_layout(map, fdt, archive)) }?;
+    if let Some(archive) = archive {
+        crate::boot_payload::publish(archive.start, archive.end, archive.reclaimable);
+    }
+    Ok(())
+}
+
+fn reserve_fdt_layout(
+    map: &mut MemoryMap,
+    fdt: &fdt_raw::Fdt<'_>,
+    archive: Option<crate::boot_payload::InitramfsRange>,
+) -> Result<(NoMapRegions, Option<crate::boot_payload::InitramfsRange>), NoMapError> {
+    let excluded = crate::fdt::reserve_static_memory(map, fdt)?;
+    let archive = archive
+        .map(|archive| crate::fdt::reserve_fdt_initramfs(map, archive))
+        .transpose()?;
+    Ok((excluded, archive))
+}
+
+#[cfg(any(all(efi, target_arch = "riscv64"), test))]
+#[derive(Debug)]
+pub(crate) struct PreparedBootMemory {
+    pub(crate) excluded: NoMapRegions,
+    pub(crate) free_range: Range<usize>,
+    pub(crate) archive: Option<crate::boot_payload::InitramfsRange>,
+}
+
+#[cfg(any(all(efi, target_arch = "riscv64"), test))]
+pub(crate) fn check_fdt_boot_map(
+    map: &mut MemoryMap,
+    fdt: &fdt_raw::Fdt<'_>,
+    kernel: Range<usize>,
+    boot_reservations: impl IntoIterator<Item = MemoryDescriptor>,
+    archive: Option<crate::boot_payload::InitramfsRange>,
+    select_free_range: impl FnOnce(
+        &[MemoryDescriptor],
+        &NoMapRegions,
+        Range<usize>,
+    ) -> Result<Range<usize>, NoMapError>,
+) -> Result<PreparedBootMemory, NoMapError> {
+    let reservation_error = |error| match error {
+        RangeError::Capacity => NoMapError::Capacity,
+        RangeError::Conflict { .. } => NoMapError::ReservationConflict,
+    };
+    for reservation in boot_reservations {
+        insert_memory_descriptor(map, reservation).map_err(reservation_error)?;
+    }
+    let (excluded, archive) = reserve_fdt_layout(map, fdt, archive)?;
+    insert_memory_descriptor(map, kimage_descriptor(kernel.clone())).map_err(reservation_error)?;
+    if map.len() > BOOT_INPUT_MAP_CAPACITY {
+        return Err(NoMapError::Capacity);
+    }
+    let kernel = required_boot_mappings(&excluded, kernel, 0..0)?;
+    check_required_memory(map, &excluded)?;
+    map.sort_unstable_by_key(|entry| entry.physical_start);
+    let free_range = select_free_range(map, &excluded, kernel)?;
+    Ok(PreparedBootMemory {
+        excluded,
+        free_range,
+        archive,
+    })
+}
+
 pub fn virtual_address_space() -> Result<VirtualAddressSpaceLayout, VirtualAddressSpaceError> {
     Arch::virtual_address_space()
 }
@@ -398,7 +558,7 @@ pub unsafe fn complete_boot_takeover() {
 /// Same early-boot boundary as the inherited EFI implementation.
 pub unsafe fn complete_boot_takeover() {}
 
-#[cfg(all(efi, target_arch = "loongarch64"))]
+#[cfg(all(efi, any(target_arch = "riscv64", target_arch = "loongarch64")))]
 pub(crate) fn replace_boot_map(map: MemoryMap) {
     // SAFETY: the receiver calls once before any platform memory cache is built.
     // Early bootstrap readers no longer retain a borrowed map.
@@ -408,6 +568,222 @@ pub(crate) fn replace_boot_map(map: MemoryMap) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fdt_boot_map_accounts_for_kernel_and_initramfs_splits() {
+        use fdt_edit::{Fdt, Node, Property};
+
+        use crate::consts::PAGE_SIZE;
+
+        let bytes = Fdt::new().encode();
+        let fdt = fdt_raw::Fdt::from_bytes(bytes.as_ref()).unwrap();
+        let kernel_start = BOOT_INPUT_MAP_CAPACITY * 2 * PAGE_SIZE;
+        let kernel = kernel_start..kernel_start + PAGE_SIZE;
+        let mut map = MemoryMap::new();
+        for index in 0..BOOT_INPUT_MAP_CAPACITY - 2 {
+            let start = index * 2 * PAGE_SIZE;
+            map.push(MemoryDescriptor::new_with_range(
+                start..start + PAGE_SIZE,
+                MemoryType::Reserved,
+            ))
+            .unwrap();
+        }
+        map.push(MemoryDescriptor::new_with_range(
+            kernel.start - 4 * PAGE_SIZE..kernel.end + 16 * MB,
+            MemoryType::Free,
+        ))
+        .unwrap();
+        let select_ram = |map: &[MemoryDescriptor], _: &NoMapRegions, _: Range<usize>| {
+            ram::select_range(map, |_| true).ok_or(NoMapError::Capacity)
+        };
+        let mut preview = map.clone();
+        assert_eq!(
+            check_fdt_boot_map(&mut preview, &fdt, kernel.clone(), [], None, select_ram)
+                .unwrap_err(),
+            NoMapError::Capacity
+        );
+        map.remove(0);
+        let mut without_initramfs = map.clone();
+        let prepared = check_fdt_boot_map(
+            &mut without_initramfs,
+            &fdt,
+            kernel.clone(),
+            [],
+            None,
+            select_ram,
+        )
+        .unwrap();
+        assert_eq!(without_initramfs.len(), BOOT_INPUT_MAP_CAPACITY);
+        assert!(prepared.archive.is_none());
+        assert!(prepared.excluded.ranges().is_empty());
+        assert_eq!(prepared.free_range, kernel.end..kernel.end + 16 * MB);
+
+        let initramfs_start = kernel.start - 3 * PAGE_SIZE;
+        let initramfs = MemoryDescriptor::new_aligned(
+            initramfs_start,
+            PAGE_SIZE - 1,
+            MemoryType::BootData,
+            PAGE_SIZE,
+        );
+        let mut preview = map.clone();
+        assert_eq!(
+            check_fdt_boot_map(
+                &mut preview,
+                &fdt,
+                kernel.clone(),
+                [initramfs.clone()],
+                None,
+                select_ram
+            )
+            .unwrap_err(),
+            NoMapError::Capacity
+        );
+
+        let mut tree = Fdt::new();
+        let root = tree.root_id();
+        let chosen = tree.add_node(root, Node::new("chosen"));
+        let chosen = tree.node_mut(chosen).unwrap();
+        for (name, value) in [
+            ("linux,initrd-start", initramfs_start),
+            ("linux,initrd-end", initramfs_start + PAGE_SIZE - 1),
+        ] {
+            chosen.set_property(Property::new(name, (value as u64).to_be_bytes().to_vec()));
+        }
+        let bytes = tree.encode();
+        let fallback = fdt_raw::Fdt::from_bytes(bytes.as_ref()).unwrap();
+        assert!(crate::fdt::direct_boot_initramfs(&fallback).is_err());
+        #[cfg(any(efi, not(target_arch = "riscv64")))]
+        let archive = {
+            use uefi::boot::{MemoryDescriptor as EfiDescriptor, MemoryType as EfiType};
+
+            let loader_ram = EfiDescriptor {
+                phys_start: initramfs_start as u64,
+                page_count: 1,
+                ty: EfiType::LOADER_DATA,
+                ..Default::default()
+            };
+            let from_map = |entry| {
+                crate::fdt::initramfs_from_fdt(fallback.clone(), |range| {
+                    crate::efi_memory_map::covers_initramfs_ram(core::iter::once(entry), range)
+                })
+            };
+            assert!(
+                from_map(EfiDescriptor {
+                    ty: EfiType::UNUSABLE,
+                    ..loader_ram
+                })
+                .is_err()
+            );
+            assert!(
+                from_map(EfiDescriptor {
+                    phys_start: loader_ram.phys_start + PAGE_SIZE as u64,
+                    ..loader_ram
+                })
+                .is_err()
+            );
+            from_map(loader_ram).unwrap()
+        };
+        #[cfg(all(not(efi), target_arch = "riscv64"))]
+        let archive = crate::fdt::initramfs_from_fdt(fallback.clone(), |_| true).unwrap();
+        assert_eq!(
+            check_fdt_boot_map(
+                &mut map.clone(),
+                &fallback,
+                kernel.clone(),
+                [],
+                archive,
+                select_ram
+            )
+            .unwrap_err(),
+            NoMapError::Capacity
+        );
+
+        map.remove(0);
+        map.remove(0);
+        check_fdt_boot_map(
+            &mut map,
+            &fdt,
+            kernel.clone(),
+            [initramfs.clone()],
+            None,
+            select_ram,
+        )
+        .unwrap();
+        assert_eq!(map.len(), BOOT_INPUT_MAP_CAPACITY);
+        assert!(map.iter().any(|entry| *entry == initramfs));
+        assert!(
+            map.iter().any(|entry| {
+                entry.memory_type == MemoryType::KImage && entry.range() == kernel
+            })
+        );
+
+        // The early allocator consumes prefixes from the remaining free bank.
+        // A console window in its interior can split the tail into two.
+        for (offset, kind) in [
+            (0, MemoryType::Reserved),
+            (1, MemoryType::PerCpuData),
+            (2, MemoryType::BootData),
+            (4, MemoryType::Mmio),
+        ] {
+            let start = kernel.end + offset * PAGE_SIZE;
+            insert_memory_descriptor(
+                &mut map,
+                MemoryDescriptor::new_with_range(start..start + PAGE_SIZE, kind),
+            )
+            .unwrap();
+        }
+        assert_eq!(map.len(), MEMORY_MAP_CAPACITY);
+    }
+
+    #[test]
+    fn early_ram_selection_requires_room_for_aligned_boot_allocations() {
+        use core::alloc::Layout;
+
+        let page_bytes = crate::consts::PAGE_SIZE;
+        let first = 32 * MB..41 * MB;
+        let second = 64 * MB..96 * MB;
+        let map = [first.clone(), second.clone()]
+            .map(|range| MemoryDescriptor::new_with_range(range, MemoryType::Free));
+        let allocations = [
+            Layout::from_size_align(10 * MB, 8).unwrap(),
+            Layout::from_size_align(MB, MB).unwrap(),
+            Layout::from_size_align(page_bytes, page_bytes).unwrap(),
+        ];
+
+        let fits = |range: &Range<usize>| {
+            allocations
+                .iter()
+                .try_fold(ram::initial_cursor(range.start), |cursor, layout| {
+                    ram::planned_allocation(cursor, *layout, page_bytes).map(|range| range.end)
+                })
+                .is_some_and(|end| end <= range.end)
+        };
+        assert_eq!(ram::select_range(&map, fits), Some(second));
+        assert_eq!(ram::select_range(&map[..1], fits), None);
+        assert_eq!(ram::select_range(&map, |_| true), Some(first));
+    }
+
+    #[test]
+    fn memory_descriptor_can_extend_a_full_map() {
+        let mut map = MemoryMap::new();
+        for index in 0..MEMORY_MAP_CAPACITY {
+            let start = index * 3 * crate::consts::PAGE_SIZE;
+            map.push(MemoryDescriptor::new_with_range(
+                start..start + crate::consts::PAGE_SIZE,
+                MemoryType::Reserved,
+            ))
+            .unwrap();
+        }
+        let end = map.last().unwrap().range().end;
+        let new_end = end + crate::consts::PAGE_SIZE;
+        let continuation = MemoryDescriptor::new_with_range(end..new_end, MemoryType::Reserved);
+        insert_memory_descriptor(&mut map, continuation).unwrap();
+        assert_eq!(map.len(), MEMORY_MAP_CAPACITY);
+        assert_eq!(
+            map.iter().map(|entry| entry.range().end).max(),
+            Some(new_end)
+        );
+    }
 
     #[test]
     fn loongarch_console_mmio_inside_reserved_keeps_map_unchanged() {

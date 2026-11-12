@@ -132,8 +132,7 @@ pub struct Ns16550EmergencyTx<T: Kind> {
 
 impl<T: Kind> Ns16550EmergencyTx<T> {
     fn mask_interrupts(&self) {
-        self.base
-            .write_flags(UART_IER, InterruptEnableFlags::empty());
+        self.base.write_reg(UART_IER, 0);
         // Flush a posted MMIO write before the emergency path touches TX.
         let _: InterruptEnableFlags = self.base.read_flags(UART_IER);
     }
@@ -357,7 +356,7 @@ impl<T: Kind> UartPort for Ns16550<T> {
     }
 
     fn mask_all(&mut self) {
-        self.write_flags(UART_IER, InterruptEnableFlags::empty());
+        self.base.write_reg(UART_IER, 0);
     }
 
     fn rearm(&mut self, sources: SerialEventSet) -> SerialEventSet {
@@ -868,6 +867,11 @@ mod tests {
             let value = REGS[reg as usize].load(Ordering::SeqCst);
             if reg == UART_LSR {
                 LSR_READS.fetch_add(1, Ordering::SeqCst);
+                // DW programmable THRE mode reports FIFO-full rather than empty.
+                // An empty FIFO must not look writable until PTIME is cleared.
+                if REGS[UART_IER as usize].load(Ordering::SeqCst) & 0x80 != 0 {
+                    return value & !LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits();
+                }
             }
             if reg == UART_RBR {
                 RBR_READS.fetch_add(1, Ordering::SeqCst);
@@ -1097,11 +1101,15 @@ mod tests {
     #[test]
     fn split_adopts_firmware_fifo_before_irq_ownership() {
         let (_guard, uart) = serial();
+        // Adopting a standard UART must clear inherited modes, including PTIME.
+        REGS[UART_IER as usize].store(0xff, Ordering::SeqCst);
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits(),
             Ordering::SeqCst,
         );
         let mut parts = uart.split();
+        parts.control.mask_all();
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);
         REGS[UART_LSR as usize].store(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
@@ -1344,7 +1352,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = uart.split();
         let gate = UartRegisterGate::new(parts.emergency_tx);
-        let enabled = UART_IER_RDI | UART_IER_RLSI | UART_IER_THRI;
+        let enabled = 0xff;
         REGS[UART_IER as usize].store(enabled, Ordering::SeqCst);
         REGS[UART_LSR as usize].store(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),

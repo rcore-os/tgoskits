@@ -213,6 +213,13 @@ mod intervals;
 pub use allocation::Allocation;
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub use allocation::allocate;
+#[cfg(all(
+    feature = "boot-resources",
+    efi,
+    target_arch = "riscv64",
+    not(target_os = "uefi")
+))]
+pub(crate) use allocation::discard_static_plan;
 #[cfg(all(feature = "boot-resources", not(target_os = "uefi")))]
 pub use allocation::initial_contents;
 #[cfg(all(

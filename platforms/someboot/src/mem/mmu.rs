@@ -41,6 +41,38 @@ pub(crate) fn new_boot_table() -> ArchPageTable<Ram> {
     ArchPageTable::<Ram>::new(Ram).unwrap()
 }
 
+#[cfg(any(all(efi, target_arch = "riscv64"), test))]
+pub(crate) fn mapping_table_frames<T: page_table_generic::TableMeta>(
+    mapping: &page_table_generic::MapConfig<PteConfig>,
+) -> Option<usize> {
+    use page_table_generic::Frame;
+
+    let start = mapping.vaddr.as_usize();
+    if mapping.size == 0 {
+        return Some(0);
+    }
+    let end = start.checked_add(mapping.size)?;
+    let last = end - 1;
+    let mut count = 0usize;
+    for level in 2..=T::LEVEL_BITS.len() {
+        let span = Frame::<T, Ram>::level_size(level);
+        let touched = last / span - start / span + 1;
+        // Each touched entry needs a child unless it can be a block leaf.
+        // A complete block at a higher level also covers only complete
+        // blocks at the lower levels, so those contribute no children.
+        let leaves = if mapping.allow_huge
+            && level <= T::MAX_BLOCK_LEVEL
+            && start % span == mapping.paddr.as_usize() % span
+        {
+            (end / span).saturating_sub(start.div_ceil(span))
+        } else {
+            0
+        };
+        count = count.checked_add(touched - leaves)?;
+    }
+    Some(count)
+}
+
 pub fn new_page_table<A: page_table_generic::FrameAllocator>(
     allocator: A,
 ) -> Result<ArchPageTable<A>, PagingError> {
@@ -65,10 +97,6 @@ pub fn is_mmu_enabled() -> bool {
 }
 
 pub(crate) fn is_kernel_relocated() -> bool {
-    if crate::consts::VM_LOAD_ADDRESS == crate::consts::KERNEL_LOAD_ADDRESS {
-        return true;
-    }
-
     <crate::arch::Arch as crate::ArchTrait>::is_kernel_relocated_at(
         is_kernel_relocated as *const () as usize,
     )
@@ -80,4 +108,58 @@ pub trait PageTableOp {
 
     fn unmap(&mut self, start_vaddr: page_table_generic::VirtAddr, size: usize)
     -> PagingResult<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use page_table_generic::{MapConfig, TableMeta, VirtAddr};
+
+    use super::{PteConfig, mapping_table_frames};
+    use crate::mem::{GB, MB, MemoryDescriptor, MemoryType, ram};
+
+    #[derive(Clone, Copy)]
+    struct ThreeLevelPages;
+
+    impl TableMeta for ThreeLevelPages {
+        type P = super::ArchPte;
+
+        const PAGE_SIZE: usize = crate::consts::PAGE_SIZE;
+        const LEVEL_BITS: &[usize] = &[9, 9, 9];
+        const MAX_BLOCK_LEVEL: usize = 1;
+
+        fn flush(_vaddr: Option<VirtAddr>) {}
+    }
+
+    #[test]
+    fn boot_page_table_frames_fit_the_selected_ram_bank() {
+        let page = crate::consts::PAGE_SIZE;
+        let mapping = MapConfig {
+            vaddr: (GB - page).into(),
+            paddr: (GB - page).into(),
+            size: 2 * page,
+            pte: PteConfig::default(),
+            allow_huge: true,
+            flush: false,
+        };
+        // The root is separate. This mapping straddles a boundary at each of
+        // the two lower levels and requires four new child tables.
+        let frames = 1 + mapping_table_frames::<ThreeLevelPages>(&mapping).unwrap();
+        let first = 32 * MB..42 * MB;
+        let second = 64 * MB..96 * MB;
+        let payload = first.len() - page;
+        let map = [first.clone(), second.clone()]
+            .map(|range| MemoryDescriptor::new_with_range(range, MemoryType::Free));
+        let layouts = [payload, frames * page]
+            .map(|bytes| core::alloc::Layout::from_size_align(bytes, page).unwrap());
+
+        let fits = |range: &core::ops::Range<usize>| {
+            let dtb = ram::planned_allocation(range.start, layouts[0], page).unwrap();
+            ram::planned_allocation(dtb.end, layouts[1], page)
+                .is_some_and(|table| table.end <= range.end)
+        };
+
+        assert_eq!(ram::select_range(&map, fits), Some(second));
+        assert_eq!(ram::select_range(&map[..1], fits), None);
+        assert_eq!(frames, 5);
+    }
 }

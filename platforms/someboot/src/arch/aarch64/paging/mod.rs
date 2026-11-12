@@ -78,12 +78,9 @@ fn setup_page_table() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    for memory in crate::fdt::memories() {
+    crate::fdt::for_each_memory(|memory| {
         let start = memory.start;
         let size = memory.len();
-        if size == 0 {
-            continue;
-        }
 
         print_mapping("Ram", __va(start) as _, start, size);
 
@@ -95,7 +92,8 @@ fn setup_page_table() -> anyhow::Result<()> {
             allow_huge: true,
             flush: false,
         })?;
-    }
+        Ok(())
+    })?;
     let v_start = __kimage_va(k_start);
     let size = crate::mem::kimage_range().len().align_up(2 * MB);
 

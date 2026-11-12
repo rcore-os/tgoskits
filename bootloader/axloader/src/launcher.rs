@@ -4,13 +4,26 @@
 #[cfg(not(target_os = "uefi"))]
 fn main() {}
 
-#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
-#[path = "arch/loongarch64/mod.rs"]
+#[cfg(all(
+    target_os = "uefi",
+    any(target_arch = "riscv64", target_arch = "loongarch64")
+))]
 mod arch;
 
-#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
+#[cfg(all(
+    target_os = "uefi",
+    any(target_arch = "riscv64", target_arch = "loongarch64")
+))]
 #[path = "uefi_runtime.rs"]
 mod uefi_runtime;
+
+#[cfg(all(
+    target_os = "uefi",
+    target_arch = "riscv64",
+    feature = "qemu-riscv64-fdt"
+))]
+#[path = "launcher/qemu_fdt.rs"]
+mod qemu_fdt;
 
 #[cfg(target_os = "uefi")]
 mod firmware {
@@ -32,6 +45,14 @@ mod firmware {
             uefi::println!("axloader launcher watchdog disable failed: {status:?}");
             return status;
         }
+        #[cfg(all(target_arch = "riscv64", feature = "qemu-riscv64-fdt"))]
+        let _fdt = match super::qemu_fdt::install() {
+            Ok(fdt) => fdt,
+            Err(error) => {
+                uefi::println!("axloader QEMU DTB installation failed: {error:?}");
+                return error.status();
+            }
+        };
         match launch() {
             Ok(()) => Status::SUCCESS,
             Err(status) => {

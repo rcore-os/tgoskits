@@ -19,11 +19,11 @@ pub(super) struct CpuIdIter {
 
 impl CpuIdIter {
     fn new() -> Self {
-        Self::from_sources(
-            Arch::cpu_current_hartid(),
-            crate::acpi::cpu_id_list(),
-            crate::fdt::cpu_id_list,
-        )
+        Self::for_boot_hart(Arch::cpu_current_hartid())
+    }
+
+    pub(super) fn for_boot_hart(hart_id: usize) -> Self {
+        Self::from_sources(hart_id, crate::acpi::cpu_id_list(), crate::fdt::cpu_id_list)
     }
 
     fn from_sources<FdtIds: Iterator<Item = usize>>(

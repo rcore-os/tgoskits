@@ -2,11 +2,20 @@ mod capacity;
 pub(crate) use capacity::{CPU_CAPACITY_SCALE, CpuCapacities};
 mod earlycon;
 mod memory;
-
 pub use earlycon::setup_earlycon;
 use kernutil::StaticCell;
+#[cfg(all(efi, target_arch = "riscv64"))]
+pub(crate) use memory::for_each_efi_ram_region;
+#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+pub(crate) use memory::for_each_memory;
 #[allow(unused)]
-pub use memory::{init_memory_map, memories};
+pub use memory::init_memory_map;
+#[cfg(any(all(efi, target_arch = "riscv64"), test))]
+pub(crate) use memory::initramfs_from_fdt;
+pub(crate) use memory::{
+    checked_memory_tree, direct_boot_initramfs, no_map_regions, reserve_fdt_initramfs,
+    reserve_static_memory,
+};
 
 use crate::mem::phys_to_virt;
 
@@ -51,12 +60,14 @@ pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
 }
 
 pub(crate) fn fdt_base() -> Option<fdt_raw::Fdt<'static>> {
+    fdt_raw::Fdt::from_bytes(fdt_bytes()?).ok()
+}
+
+pub(crate) fn fdt_bytes() -> Option<&'static [u8]> {
     let fdt_addr = fdt_addr()?;
     // SAFETY: the global FDT address points to firmware memory or the saved
     // early RAM copy, both of which stay valid for the boot lifetime.
-    let slice = unsafe { validated_fdt_slice(fdt_addr)? };
-    let fdt = fdt_raw::Fdt::from_bytes(slice).ok()?;
-    Some(fdt)
+    unsafe { validated_fdt_slice(fdt_addr) }
 }
 
 pub(crate) fn boot_entropy() -> Option<[u8; 32]> {
@@ -94,7 +105,7 @@ pub fn set_cmdline() -> Option<()> {
     Some(())
 }
 
-pub(crate) fn save_fdt() {
+pub(crate) fn save_fdt(excluded: &crate::mem::NoMapRegions) {
     let Some(src) = fdt_addr() else {
         return;
     };
@@ -109,8 +120,19 @@ pub(crate) fn save_fdt() {
         crate::mem::ram::alloc(core::alloc::Layout::from_size_align(size, 8).unwrap()).unwrap()
     };
 
+    // Firmware can place its input DTB inside a no-map reservation. Read it
+    // through the inherited mapping, but keep only the RAM copy in our maps.
+    let copy_end = fdt_buff
+        .checked_add(size)
+        .expect("FDT copy range overflows");
+    excluded
+        .ensure_mappable(fdt_buff..copy_end)
+        .expect("saved FDT overlaps no-map pages");
+
+    // SAFETY: early RAM owns the destination and no other CPU is running.
+    // The readable input can overlap that allocation, so use a memmove.
     unsafe {
-        core::ptr::copy_nonoverlapping(slice.as_ptr(), phys_to_virt(fdt_buff), size);
+        core::ptr::copy(slice.as_ptr(), phys_to_virt(fdt_buff), size);
         FDT_ADDR = fdt_buff;
     }
 }
@@ -233,7 +255,7 @@ mod tests {
         crate::mem::ram::init(saved_start..saved_start + saved_memory.len());
 
         assert!(set_fdt_addr_phys_if_valid(fdt_data.as_mut_ptr() as usize));
-        save_fdt();
+        save_fdt(&crate::mem::NoMapRegions::default());
 
         let saved_ptr = fdt_addr().expect("saved fdt address");
         let saved_slice = unsafe { core::slice::from_raw_parts(saved_ptr.cast_const(), fdt_size) };

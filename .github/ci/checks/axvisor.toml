@@ -270,6 +270,14 @@ python3 bootloader/axloader/scripts/loong-qemu-smoke.py
 '''
 
 [[check]]
+id = "test-axloader-riscv64-efi"
+impact_packages = ["axloader", "someboot"]
+impact_targets = ["arceos:riscv64"]
+name = "UEFI riscv64 · AxLoader HTTP boot and OTA"
+timeout_minutes = 60
+command = "cargo xtask axloader test qemu --target riscv64-unknown-uefi"
+
+[[check]]
 id = "test-starry-self-hosted-board-orangepi-5-plus"
 impact_targets = ["axvisor:aarch64", "starry:aarch64"]
 name = "Board OrangePi 5 Plus · StarryOS board suites"

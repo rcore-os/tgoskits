@@ -70,6 +70,40 @@ impl CpuBootInfoV1 {
     }
 }
 
+/// Installs the primary record in the slot reserved by the EFI entry wrapper.
+///
+/// # Safety
+///
+/// The caller must own the primary linker stack and reserve its final
+/// `STACK_SIZE` bytes above the current stack pointer. No previous boot record
+/// may remain borrowed, and this must precede any shared CPU identity access.
+#[cfg(efi)]
+pub(super) unsafe fn initialize_efi_primary(hart_id: usize) {
+    let record_addr = ext_sym_addr!(__cpu0_stack_top) - STACK_SIZE;
+    let record = CpuBootInfoV1 {
+        abi_magic: ABI_MAGIC,
+        abi_version: ABI_VERSION,
+        record_size: RECORD_SIZE as u16,
+        hart_id,
+        cpu_meta_paddr: 0,
+        early_trap_cause: 0,
+        early_trap_pc: 0,
+        early_trap_value: 0,
+    };
+    // SAFETY: the EFI assembly reserves this aligned private stack slot before
+    // any Rust call, and the slot remains above all subsequent call frames.
+    unsafe { (record_addr as *mut CpuBootInfoV1).write(record) };
+    // SAFETY: the record is fully initialized and remains live until the
+    // ordinary platform binder takes ownership of the CPU context registers.
+    unsafe {
+        asm!(
+            "csrw sscratch, {record}",
+            record = in(reg) record_addr,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+}
+
 /// Reads and validates a boot record from an address that is mapped in the
 /// current address space.
 ///

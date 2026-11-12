@@ -33,6 +33,7 @@ impl TargetSpec {
         match self.machine {
             62 => 0x8664,
             258 => 0x6264,
+            243 => 0x5064,
             _ => 0,
         }
     }
@@ -40,7 +41,10 @@ impl TargetSpec {
     /// Returns the relocation policy for targets whose entry applies a load
     /// bias itself. Fixed-placement targets return `None`.
     pub const fn relocation(self) -> Option<RelocationSpec> {
-        if self.machine == 258 && self.load_address.is_none() && self.link_address.is_none() {
+        if matches!(self.machine, 243 | 258)
+            && self.load_address.is_none()
+            && self.link_address.is_none()
+        {
             Some(RelocationSpec { relative: 3 })
         } else {
             None
@@ -57,6 +61,15 @@ pub const X86_64: TargetSpec = TargetSpec {
     arch_name: "x86_64",
     machine: 62,
     entry_symbol: "__x86_64_efi_pe_entry",
+    load_address: None,
+    link_address: None,
+};
+
+/// RISC-V kernels enter through their EFI stub while Boot Services are active.
+pub const RISCV64_EFI: TargetSpec = TargetSpec {
+    arch_name: "riscv64",
+    machine: 243,
+    entry_symbol: "efi_pe_entry",
     load_address: None,
     link_address: None,
 };
@@ -81,6 +94,9 @@ pub const LOONGARCH64_UEFI: TargetSpec = TargetSpec {
     link_address: None,
 };
 
+#[cfg(all(target_os = "uefi", target_arch = "riscv64"))]
+pub const CURRENT: TargetSpec = RISCV64_EFI;
+
 #[cfg(all(target_os = "uefi", target_arch = "x86_64"))]
 pub const CURRENT: TargetSpec = X86_64;
 
@@ -95,7 +111,7 @@ pub const CURRENT: TargetSpec = X86_64;
 
 #[cfg(test)]
 mod tests {
-    use super::{LOONGARCH64_EFI, LOONGARCH64_UEFI, X86_64};
+    use super::{LOONGARCH64_EFI, LOONGARCH64_UEFI, RISCV64_EFI, X86_64};
 
     #[test]
     fn target_contracts_keep_local_machine_and_entry_abis() {
@@ -105,6 +121,13 @@ mod tests {
         assert_eq!(X86_64.entry_symbol, "__x86_64_efi_pe_entry");
         assert_eq!(X86_64.load_address, None);
         assert_eq!(X86_64.relocation(), None);
+        assert_eq!(RISCV64_EFI.arch_name, "riscv64");
+        assert_eq!(RISCV64_EFI.machine, 243);
+        assert_eq!(RISCV64_EFI.pe_machine(), 0x5064);
+        assert_eq!(RISCV64_EFI.entry_symbol, "efi_pe_entry");
+        assert_eq!(RISCV64_EFI.load_address, None);
+        assert_eq!(RISCV64_EFI.link_address, None);
+        assert_eq!(RISCV64_EFI.relocation().unwrap().relative, 3);
         assert_eq!(LOONGARCH64_EFI.arch_name, "loongarch64");
         assert_eq!(LOONGARCH64_EFI.machine, 258);
         assert_eq!(LOONGARCH64_EFI.pe_machine(), 0x6264);

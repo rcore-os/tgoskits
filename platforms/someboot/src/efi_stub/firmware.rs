@@ -1,4 +1,4 @@
-//! Standard firmware entry path shared by x86_64 and AArch64.
+//! Standard firmware entry path shared by x86_64, AArch64 and RISC-V.
 
 use core::ffi::c_void;
 
@@ -45,6 +45,20 @@ pub(super) fn inherited_handoff() -> bool {
 
 pub(super) fn runtime_system_table(system_table: *mut SystemTable) -> *mut SystemTable {
     crate::mem::__va(system_table as usize).cast()
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(super) fn retire_boot_page_tables() {
+    // SAFETY: the EFI entry retained identity mappings for all current code,
+    // stack and boot data, with local IRQs masked. Boot Services and the last
+    // physical Runtime Services call have completed. Bare mode needs no root;
+    // retiring firmware translations now lets the allocator reuse those pages.
+    unsafe {
+        ax_cpu::mmu::install_page_table(
+            ax_cpu::mmu::SatpMode::Bare,
+            ax_cpu::mmu::HardwareAddressSpace::new(0usize.into(), 0),
+        );
+    }
 }
 
 // Standard firmware boots need no reservations beyond the shared EFI map and archive.

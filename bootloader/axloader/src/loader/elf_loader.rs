@@ -7,7 +7,7 @@ use axloader::{
     target::CURRENT,
 };
 use httpboot_protocol::DeviceOperationError;
-use someboot::boot_resources::{self, Allocation, Placement, ResourceId, ResourceRequest};
+use uefi::boot::{self, AllocateType, MemoryType};
 
 const UEFI_PAGE_SIZE: usize = 4096;
 
@@ -35,7 +35,30 @@ pub struct LoadedElf {
     pub entry_point: u64,
     pub load_addr: u64,
     pub load_end: u64,
-    _allocation: Allocation,
+    _allocation: ImagePages,
+}
+
+/// Owns executable firmware pages until return or ExitBootServices.
+#[derive(Debug)]
+struct ImagePages {
+    pointer: NonNull<u8>,
+    count: usize,
+}
+
+impl Drop for ImagePages {
+    fn drop(&mut self) {
+        let active = uefi::table::system_table_raw().is_some_and(|table| {
+            // SAFETY: UEFI retains its system table after EBS and clears the
+            // Boot Services pointer when those services become unavailable.
+            !unsafe { table.as_ref() }.boot_services.is_null()
+        });
+        if active {
+            // SAFETY: this guard exclusively owns the complete allocation;
+            // no loaded-image reference survives its owner's destruction.
+            unsafe { boot::free_pages(self.pointer, self.count) }
+                .expect("failed to release ELF image pages");
+        }
+    }
 }
 
 pub(super) fn load_elf(image: &[u8]) -> Result<LoadedElf, ElfLoadError> {
@@ -44,8 +67,8 @@ pub(super) fn load_elf(image: &[u8]) -> Result<LoadedElf, ElfLoadError> {
     let entry = parsed.entry_point();
     let page_count = parsed.page_count();
     let allocation = allocate_load_region(link_load_address, page_count)?;
-    let actual_load_addr = allocation.range().start;
-    let target = NonNull::new(actual_load_addr as *mut u8).ok_or(ElfLoadError::AllocateFailed)?;
+    let target = allocation.pointer;
+    let actual_load_addr = target.as_ptr() as u64;
 
     let allocation_bytes = page_count
         .checked_mul(UEFI_PAGE_SIZE)
@@ -55,7 +78,7 @@ pub(super) fn load_elf(image: &[u8]) -> Result<LoadedElf, ElfLoadError> {
     // SAFETY: the allocation guard owns `allocation_bytes` at `target`.
     unsafe { core::ptr::write_bytes(target.as_ptr(), 0, allocation_bytes) };
     copy_segments(image, parsed.segments(), link_load_address, target)?;
-    super::cache::flush_instruction_cache();
+    super::arch::flush_instruction_cache();
 
     let actual_load_end = actual_load_addr
         .checked_add(allocation_bytes as u64)
@@ -79,14 +102,12 @@ fn biased_addr(addr: u64, original_base: u64, actual_base: u64) -> Option<u64> {
 fn allocate_load_region(
     preferred_load_addr: u64,
     page_count: usize,
-) -> Result<Allocation, ElfLoadError> {
-    let bytes = (page_count as u64)
-        .checked_mul(UEFI_PAGE_SIZE as u64)
-        .ok_or(ElfLoadError::SegmentAddressOverflow)?;
-    let request =
-        |placement| ResourceRequest::new(ResourceId(1), bytes, UEFI_PAGE_SIZE as u64, placement);
-    match boot_resources::reserve(request(Placement::At(preferred_load_addr))) {
-        Ok(allocation) => Ok(allocation),
+) -> Result<ImagePages, ElfLoadError> {
+    // The image is entered before EBS, while firmware page permissions still
+    // apply. Generic boot-resource reservations are LoaderData and may be NX.
+    let allocate = |placement| boot::allocate_pages(placement, MemoryType::LOADER_CODE, page_count);
+    let pointer = match allocate(AllocateType::Address(preferred_load_addr)) {
+        Ok(pointer) => pointer,
         Err(_) => {
             // Relocatable EFI targets apply their own load bias at entry.
             crate::logln!(
@@ -94,10 +115,13 @@ fn allocate_load_region(
                 preferred_load_addr,
                 page_count
             );
-            boot_resources::reserve(request(Placement::Anywhere))
-                .map_err(|_| ElfLoadError::AllocateFailed)
+            allocate(AllocateType::AnyPages).map_err(|_| ElfLoadError::AllocateFailed)?
         }
-    }
+    };
+    Ok(ImagePages {
+        pointer,
+        count: page_count,
+    })
 }
 
 fn copy_segments(

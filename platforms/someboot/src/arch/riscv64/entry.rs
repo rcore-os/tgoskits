@@ -101,15 +101,39 @@ fn primary_entry(fdt_addr: usize) -> ! {
     <<super::Arch as crate::ArchTrait>::Console as crate::console::ArchConsoleOps>::init();
     println!("RISC-V64 SBI kernel entry.");
 
-    let kernel_code_start_lma = ext_sym_addr!(_head);
-    let kernel_code_end_lma = ext_sym_addr!(__kernel_code_end);
+    primary_init()
+}
 
-    crate::entry::primary_init_early(PrimaryCpuInitInfo {
-        kernel_start: kernel_code_start_lma.into(),
-        kernel_end: kernel_code_end_lma.into(),
-        kernel_start_link: crate::consts::VM_LOAD_ADDRESS.into(),
-    });
+#[cfg(efi)]
+pub(super) fn enter_with_efi_boot_state() -> ! {
+    early_trap_init();
+    println!("RISC-V64 UEFI kernel entry.");
+    primary_init()
+}
+
+#[cfg(efi)]
+pub(super) fn enter_after_efi_exit(
+    image: &PrimaryCpuInitInfo,
+    memory: crate::mem::PreparedBootMemory,
+) -> ! {
+    early_trap_init();
+    crate::entry::setup_primary_console();
+    crate::entry::log_primary_init(image);
+    crate::mem::begin_early_allocation(memory.free_range, &memory.excluded);
     super::paging::enable_mmu()
+}
+
+fn primary_init() -> ! {
+    crate::entry::primary_init_early(primary_init_info());
+    super::paging::enable_mmu()
+}
+
+pub(super) fn primary_init_info() -> PrimaryCpuInitInfo {
+    PrimaryCpuInitInfo {
+        kernel_start: ext_sym_addr!(_head).into(),
+        kernel_end: ext_sym_addr!(__kernel_code_end).into(),
+        kernel_start_link: crate::consts::VM_LOAD_ADDRESS.into(),
+    }
 }
 
 /// Re-establishes the standard global pointer after entering the high virtual

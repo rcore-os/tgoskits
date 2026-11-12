@@ -26,6 +26,7 @@ pub use boot::{
     initramfs_range, take_initramfs_range,
 };
 pub use generic_timer::try_init_epoch_offset;
+pub use mem::MAX_PHYS_MEMORY_REGIONS;
 pub use somehal::{ExecutionSnapshot, HandoffError, PhysicalRange};
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()

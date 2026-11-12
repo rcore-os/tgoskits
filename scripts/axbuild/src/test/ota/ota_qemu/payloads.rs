@@ -195,7 +195,7 @@ async fn attach_guest_console(qemu: &QemuChild, root: &Path, vm_id: u32) -> anyh
     while Instant::now() < deadline {
         let log = fs::read_to_string(root.join("ota-qemu.log")).unwrap_or_default();
         if log.contains("axvisor:/$") {
-            let mut child = qemu.0.lock().expect("QEMU process lock poisoned");
+            let mut child = qemu.process.lock().expect("QEMU process lock poisoned");
             let input = child
                 .stdin
                 .as_mut()
