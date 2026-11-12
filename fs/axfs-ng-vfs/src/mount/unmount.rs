@@ -2,6 +2,10 @@ use hashbrown::HashSet;
 
 use super::*;
 
+mod path_handle;
+
+pub use path_handle::{PathHandle, PathUnmount};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnmountKind {
     Normal,
@@ -35,7 +39,7 @@ pub struct UnmountPlan {
     kind: UnmountKind,
     topology_version: u64,
     targets: Vec<UnmountTarget>,
-    target_use: Option<MountUseGuard>,
+    target_use: Option<Arc<MountUseGuard>>,
 }
 
 impl MountUseGuard {
@@ -58,7 +62,7 @@ impl MountUseGuard {
             self.mountpoint
                 .plan_unmount_locked_with_use(UnmountKind::Normal, Some(&self))?
         };
-        plan.target_use = Some(self);
+        plan.target_use = Some(Arc::new(self));
         Ok(plan)
     }
 }
@@ -75,7 +79,7 @@ impl UnmountPlan {
     }
 
     fn has_active_uses(&self) -> bool {
-        self.has_active_uses_except(self.target_use.as_ref())
+        self.has_active_uses_except(self.target_use.as_deref())
     }
 
     fn has_active_uses_except(&self, owned: Option<&MountUseGuard>) -> bool {
@@ -179,8 +183,10 @@ impl Mountpoint {
             let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
             plan.revalidate_targets_locked()?;
             if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != plan.topology_version {
-                let current_plan = self
-                    .plan_unmount_locked_with_use(UnmountKind::Normal, plan.target_use.as_ref())?;
+                let current_plan = self.plan_unmount_locked_with_use(
+                    UnmountKind::Normal,
+                    plan.target_use.as_deref(),
+                )?;
                 // A changed propagation set has not passed the caller's busy
                 // checks and cannot join (or leave) this admitted transaction.
                 if !current_plan.has_same_targets(&plan) {

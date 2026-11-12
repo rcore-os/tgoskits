@@ -1918,7 +1918,7 @@ fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
 
 #[test]
 fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
-    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, VfsError};
+    use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, PathHandle, VfsError};
 
     let root_fs = new_more_fs(
         "move-root",
@@ -1939,6 +1939,51 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
     let busy_target = root.lookup_no_follow("nested-target").unwrap();
     busy_target.mount(&busy_fs).unwrap();
     let child_root = root.lookup_no_follow("first").unwrap();
+
+    let global = PathHandle::acquire(root.clone()).unwrap();
+    assert!(matches!(
+        global.clone().prepare_unmount(),
+        Err(VfsError::InvalidInput)
+    ));
+    drop(global);
+
+    let held = PathHandle::acquire(child_root.clone()).unwrap();
+    let inner = held
+        .rebind(child_root.lookup_no_follow("inner").unwrap())
+        .unwrap();
+    assert!(matches!(
+        inner.clone().prepare_unmount(),
+        Err(VfsError::InvalidInput)
+    ));
+    assert!(matches!(
+        held.clone().prepare_unmount(),
+        Err(VfsError::ResourceBusy)
+    ));
+    assert!(matches!(child_root.unmount(), Err(VfsError::ResourceBusy)));
+    assert!(matches!(
+        held.rebind(root.clone()),
+        Err(VfsError::CrossesDevices)
+    ));
+    // Even a bind of this same actual filesystem is a different exact mount.
+    let bound = root
+        .lookup_no_follow("plain")
+        .unwrap()
+        .bind_mount(&child_root, false)
+        .unwrap();
+    assert!(matches!(
+        held.rebind(bound.root_location()),
+        Err(VfsError::CrossesDevices)
+    ));
+    bound.root_location().unmount().unwrap();
+    drop(inner);
+    let abandoned = held.prepare_unmount().unwrap();
+    assert!(
+        abandoned
+            .targets()
+            .any(|mount| Arc::ptr_eq(mount, &child_mount))
+    );
+    drop(abandoned);
+    assert!(root.lookup_no_follow("first").unwrap().is_root_of_mount());
 
     assert!(matches!(
         root.lookup_no_follow("plain")
@@ -1971,8 +2016,44 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
         moved.parent().unwrap().absolute_path().unwrap().as_str(),
         "/"
     );
+    let detached = PathHandle::acquire(moved.clone()).unwrap();
     moved.detach_mount().unwrap();
     assert!(!root.lookup_no_follow("second").unwrap().is_root_of_mount());
+    assert!(
+        detached
+            .location()
+            .lookup_no_follow("inner")
+            .unwrap()
+            .metadata()
+            .is_ok()
+    );
+    // Lazy detach does not mark the mount normally removed.
+    drop(PathHandle::acquire(detached.location().clone()).unwrap());
+    drop(detached);
+
+    let removable = root
+        .lookup_no_follow("first")
+        .unwrap()
+        .mount(&child_fs)
+        .unwrap();
+    let target = PathHandle::acquire(removable.root_location()).unwrap();
+    let independent = removable.acquire_use().unwrap();
+    assert!(matches!(
+        target.prepare_unmount(),
+        Err(VfsError::ResourceBusy)
+    ));
+    drop(independent);
+    PathHandle::acquire(removable.root_location())
+        .unwrap()
+        .prepare_unmount()
+        .unwrap()
+        .commit()
+        .unwrap();
+    assert!(!root.lookup_no_follow("first").unwrap().is_root_of_mount());
+    assert!(matches!(
+        PathHandle::acquire(removable.root_location()),
+        Err(VfsError::NotFound)
+    ));
 
     let readonly_fs = new_more_fs("readonly-root", true, 1300, &["mnt"], &["file"]);
     let readonly_mount = Mountpoint::new_root(&readonly_fs);

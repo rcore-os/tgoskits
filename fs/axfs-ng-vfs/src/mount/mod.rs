@@ -339,7 +339,7 @@ impl Mountpoint {
         if state.normally_unmounted {
             return Err(VfsError::NotFound);
         }
-        state.users += 1;
+        state.users = state.users.checked_add(1).ok_or(VfsError::ValueOverflow)?;
         Ok(MountUseGuard {
             mountpoint: self.clone(),
         })
@@ -1942,6 +1942,7 @@ mod tests {
     use super::*;
     use crate::{FileNode, FileNodeOps, StatFs};
 
+    mod path_handle;
     mod prepared_write;
 
     struct MockFs;
@@ -1956,11 +1957,13 @@ mod tests {
     }
     struct TopologyChangingFs {
         self_ref: Weak<Self>,
-        topology_change: Box<dyn Fn() + Send + Sync>,
+        topology_change: Box<dyn Fn() -> VfsResult<()> + Send + Sync>,
         flushes: AtomicUsize,
+        on_drop: Option<Box<dyn Fn() + Send + Sync>>,
     }
     struct TopologyChangingNode {
         filesystem: Arc<TopologyChangingFs>,
+        inode: u64,
     }
     struct LifetimeGuard(Arc<AtomicUsize>);
 
@@ -2017,7 +2020,10 @@ mod tests {
                 .self_ref
                 .upgrade()
                 .expect("test filesystem must remain alive");
-            let node: Arc<dyn DirNodeOps> = Arc::new(TopologyChangingNode { filesystem });
+            let node: Arc<dyn DirNodeOps> = Arc::new(TopologyChangingNode {
+                filesystem,
+                inode: 0,
+            });
             DirEntry::new_dir(|_| DirNode::new(node), Reference::root())
         }
 
@@ -2027,9 +2033,17 @@ mod tests {
 
         fn flush(&self) -> VfsResult<()> {
             if self.flushes.fetch_add(1, Ordering::AcqRel) == 0 {
-                (self.topology_change)();
+                (self.topology_change)()?;
             }
             Ok(())
+        }
+    }
+
+    impl Drop for TopologyChangingFs {
+        fn drop(&mut self) {
+            if let Some(on_drop) = &self.on_drop {
+                on_drop();
+            }
         }
     }
 
@@ -2077,7 +2091,7 @@ mod tests {
 
     impl NodeOps for TopologyChangingNode {
         fn inode(&self) -> u64 {
-            0
+            self.inode
         }
 
         fn metadata(&self) -> VfsResult<Metadata> {
@@ -2480,18 +2494,26 @@ mod tests {
         let unrelated_mount = Mountpoint::new_root(&parent_fs);
         let filesystem_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
             self_ref: self_ref.clone(),
-            topology_change: Box::new(move || unrelated_mount.set_shared()),
+            topology_change: Box::new(move || {
+                unrelated_mount.set_shared();
+                Ok(())
+            }),
             flushes: AtomicUsize::new(0),
+            on_drop: None,
         });
         let mounted_fs = Filesystem::new(filesystem_ops.clone());
         let mounted = target.mount(&mounted_fs).expect("mount succeeds");
 
-        mounted
-            .root_location()
-            .unmount()
+        let handle = PathHandle::acquire(mounted.root_location()).expect("acquire target");
+        let retired = path_handle::cache_retirement_probe(&mounted, &filesystem_ops);
+        handle
+            .prepare_unmount()
+            .expect("prepare exclusive target")
+            .commit()
             .expect("unmount replans after unrelated topology changes");
 
         assert_eq!(filesystem_ops.flushes.load(Ordering::Acquire), 1);
+        assert_eq!(retired.load(Ordering::Acquire), 1);
         assert!(!parent.children.lock().contains_key(&target_entry.key()));
     }
 
@@ -2517,13 +2539,16 @@ mod tests {
             self_ref: self_ref.clone(),
             topology_change: Box::new(move || {
                 peer_parent_for_flush.join_shared_group(&source_parent_for_flush);
+                Ok(())
             }),
             flushes: AtomicUsize::new(0),
+            on_drop: None,
         });
         let peer_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
             self_ref: self_ref.clone(),
-            topology_change: Box::new(|| {}),
+            topology_change: Box::new(|| Ok(())),
             flushes: AtomicUsize::new(0),
+            on_drop: None,
         });
         let source_mount = source_target
             .mount(&Filesystem::new(source_ops.clone()))
