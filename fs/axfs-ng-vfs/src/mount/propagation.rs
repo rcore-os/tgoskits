@@ -14,7 +14,14 @@ pub(super) struct PropagationRetirement {
     source_path: RetainedLocations,
     receivers: Vec<Arc<Mountpoint>>,
     mounts: Vec<Arc<Mountpoint>>,
+    child_maps: Vec<HashMap<DirEntryId, Arc<Mountpoint>>>,
     relations: RelationRetirement,
+}
+
+enum PreparedChildSlot {
+    Replace(Arc<Mountpoint>),
+    Insert(Arc<Mountpoint>),
+    Grow(usize),
 }
 
 /// Traversal owns each observation before following another edge. In
@@ -82,6 +89,97 @@ impl RetainedLocations {
 }
 
 impl PropagationRetirement {
+    fn topmost_root_locked(&mut self, child: &Arc<Mountpoint>) -> VfsResult<usize> {
+        let mut index = self.locations.push(child.root_location());
+        loop {
+            let root = self.locations.get(index);
+            root.mountpoint.check_topology_live_locked()?;
+            if root.mountpoint.root_role() == MountRootRole::NamespaceAnchor {
+                return Err(VfsError::InvalidInput);
+            }
+            let covering = root
+                .mountpoint
+                .children
+                .lock()
+                .get(&root.entry.key())
+                .cloned();
+            let Some(covering) = covering else {
+                return Ok(index);
+            };
+            index = self.locations.push(covering.root_location());
+        }
+    }
+
+    /// Topology exclusion keeps the key and available capacity stable through
+    /// commit. Only growth snapshots sibling owners, with geometric capacity.
+    fn prepare_child_slot(
+        &mut self,
+        location: &Location,
+        child: &Arc<Mountpoint>,
+    ) -> PreparedChildSlot {
+        let (occupied, count, capacity) = {
+            let children = location.mountpoint.children.lock();
+            (
+                children.contains_key(&location.entry.key()),
+                children.len(),
+                children.capacity(),
+            )
+        };
+        if occupied {
+            return PreparedChildSlot::Replace(child.clone());
+        }
+        if count < capacity {
+            return PreparedChildSlot::Insert(child.clone());
+        }
+
+        // Allocate before taking the node lock. Doubling makes a sequence of
+        // distinct-slot insertions amortized linear in copied sibling owners.
+        let capacity = capacity.saturating_mul(2).max(count.saturating_add(1));
+        let index = self.child_maps.len();
+        self.child_maps.push(HashMap::with_capacity(capacity));
+        let replacement = &mut self.child_maps[index];
+        for (key, mount) in location.mountpoint.children.lock().iter() {
+            replacement.insert(*key, mount.clone());
+        }
+        if let Some(displaced) = replacement.insert(location.entry.key(), child.clone()) {
+            self.mounts.push(displaced);
+        }
+        PreparedChildSlot::Grow(index)
+    }
+
+    /// Prepared capacity and retirement slots make every branch allocation-free.
+    /// Replaced owners leave the node lock before entering the carrier.
+    fn publish_child_slot_locked(&mut self, location: &Location, prepared: PreparedChildSlot) {
+        match prepared {
+            PreparedChildSlot::Replace(mut child) => {
+                {
+                    let mut children = location.mountpoint.children.lock();
+                    let slot = children
+                        .get_mut(&location.entry.key())
+                        .expect("prepared occupied slot is stable under topology exclusion");
+                    core::mem::swap(slot, &mut child);
+                }
+                self.mounts.push(child);
+            }
+            PreparedChildSlot::Insert(child) => {
+                let displaced = location
+                    .mountpoint
+                    .children
+                    .lock()
+                    .insert(location.entry.key(), child);
+                if let Some(displaced) = displaced {
+                    self.mounts.push(displaced);
+                }
+            }
+            PreparedChildSlot::Grow(index) => {
+                core::mem::swap(
+                    &mut *location.mountpoint.children.lock(),
+                    &mut self.child_maps[index],
+                );
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn has_receiver(&self, receiver: &Weak<Mountpoint>) -> bool {
         self.receivers
@@ -397,15 +495,56 @@ impl Mountpoint {
         location.mountpoint.check_topology_live_locked()?;
         child.check_topology_live_locked()?;
         location.check_is_dir()?;
-        // Path resolution may have crossed a covering mount. Publish at that
-        // exact location, not the receiver at which resolution began.
-        let displaced = location
+        let covered = location
             .mountpoint
             .children
             .lock()
-            .insert(location.entry.key(), child.clone());
-        if let Some(displaced) = displaced {
-            retirement.mounts.push(displaced);
+            .get(&location.entry.key())
+            .cloned();
+        let cover_target = if let Some(covered) = &covered {
+            retirement.mounts.push(covered.clone());
+            covered.check_topology_live_locked()?;
+            if covered.root_role() == MountRootRole::NamespaceAnchor {
+                return Err(VfsError::InvalidInput);
+            }
+            let previous = covered.location().ok_or(VfsError::InvalidInput)?;
+            let previous = retirement.locations.push(previous);
+            if !retirement.locations.get(previous).ptr_eq(location) {
+                return Err(VfsError::InvalidInput);
+            }
+            let topmost = retirement.topmost_root_locked(child)?;
+            retirement.locations.get(topmost).check_is_dir()?;
+            Some(retirement.locations.get(topmost).clone())
+        } else {
+            None
+        };
+
+        // Keep the exact resolved target below the old cover. If the new
+        // tree has its own root covers, preserve those below the old cover too.
+        let target_slot = retirement.prepare_child_slot(location, child);
+        let cover_slot = covered
+            .as_ref()
+            .zip(cover_target.as_ref())
+            .map(|(covered, target)| {
+                let prepared = retirement.prepare_child_slot(target, covered);
+                (covered, target, prepared)
+            });
+        if cover_slot.is_some() {
+            retirement.locations.locations.reserve(1);
+        }
+        retirement
+            .mounts
+            .reserve(1 + usize::from(cover_slot.is_some()));
+
+        // Everything fallible and every capacity preparation precedes this
+        // first connection change. Topology exclusion covers all three writes.
+        retirement.publish_child_slot_locked(location, target_slot);
+        if let Some((covered, target, prepared)) = cover_slot {
+            let previous = covered.location.lock().replace(target.clone());
+            if let Some(previous) = previous {
+                retirement.locations.push(previous);
+            }
+            retirement.publish_child_slot_locked(target, prepared);
         }
         Ok(())
     }
