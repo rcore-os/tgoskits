@@ -24,6 +24,10 @@ pub enum VirtualizationError {
     /// The exception vector address violates architectural alignment.
     #[error("exception vector is misaligned")]
     InvalidVector,
+    /// Vector register buffers do not describe a complete standard V bank.
+    #[error("invalid guest vector register state")]
+    #[cfg(target_arch = "riscv64")]
+    InvalidVectorState,
     /// Hardware control memory has insufficient size or invalid alignment/range.
     #[error("invalid hardware control memory")]
     #[cfg(target_arch = "x86_64")]

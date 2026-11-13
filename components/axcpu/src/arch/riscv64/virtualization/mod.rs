@@ -3,7 +3,7 @@
 pub(super) mod context;
 
 pub use context::{
-    Exit, GuestCpuState, GuestVirtualHsCsrs, GuestVsCsrs, HypervisorCpuState, Vcpu,
+    Exit, GuestCpuState, GuestVirtualHsCsrs, GuestVsCsrs, HypervisorCpuState, NoVectorMemory, Vcpu,
     guest_page_fault_addr,
 };
 
@@ -16,6 +16,9 @@ use crate::virtualization::VirtualizationError;
 
 mod binding;
 pub use binding::GuestBinding;
+
+mod vector;
+pub(super) use vector::{VectorBank, VectorCsrs, VectorEntry};
 
 mod memory;
 pub use memory::{

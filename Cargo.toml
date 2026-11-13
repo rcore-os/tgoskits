@@ -223,6 +223,7 @@ impl-simple-traits = { version = "0.3", path = "components/crate_interface/test_
 impl-weak-partial = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-partial" }
 impl-weak-traits = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-traits" }
 arm-gic-driver = { version = "0.18.1", path = "drivers/intc/arm-gic-driver" }
+riscv-aia-driver = { version = "0.1.0", path = "drivers/intc/riscv-aia-driver" }
 loongarch-intc-driver = { version = "0.1", path = "drivers/intc/loongarch-intc-driver" }
 x86-apic-driver = { version = "0.2", path = "drivers/intc/x86-apic-driver" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }

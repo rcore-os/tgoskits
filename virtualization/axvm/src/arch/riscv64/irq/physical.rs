@@ -1,4 +1,4 @@
-//! Deferred physical PLIC claims backing guest-owned vPLIC sources.
+//! Deferred physical external IRQ claims backing guest-owned vPLIC sources.
 
 use std::{
     boxed::Box,
@@ -24,7 +24,7 @@ const CLAIM_IDLE: u8 = 0;
 const CLAIM_INGRESS: u8 = 1;
 const CLAIM_ACTIVE: u8 = 2;
 
-static PHYSICAL_PLIC_ROUTES: [PhysicalRouteSlot; PLIC_NUM_SOURCES] =
+static PHYSICAL_EXTERNAL_ROUTES: [PhysicalRouteSlot; PLIC_NUM_SOURCES] =
     [const { PhysicalRouteSlot::new() }; PLIC_NUM_SOURCES];
 
 pub(super) fn publish_physical_claim_from_irq(source: u32) -> bool {
@@ -32,7 +32,7 @@ pub(super) fn publish_physical_claim_from_irq(source: u32) -> bool {
     if source == 0 || source >= PLIC_NUM_SOURCES {
         return false;
     }
-    PHYSICAL_PLIC_ROUTES[source].with_binding(PhysicalSourceBinding::publish_from_irq)
+    PHYSICAL_EXTERNAL_ROUTES[source].with_binding(PhysicalSourceBinding::publish_from_irq)
 }
 
 pub(super) struct PhysicalIrqBridge {
@@ -67,7 +67,7 @@ impl PhysicalIrqBridge {
                 return ax_err!(
                     InvalidInput,
                     std::format!(
-                        "RISC-V physical PLIC source {} is outside 1..{PLIC_NUM_SOURCES}",
+                        "RISC-V physical external IRQ source {} is outside 1..{PLIC_NUM_SOURCES}",
                         route.source
                     )
                 );
@@ -78,15 +78,19 @@ impl PhysicalIrqBridge {
             {
                 return ax_err!(
                     AlreadyExists,
-                    std::format!("RISC-V physical PLIC source {source} is configured twice")
+                    std::format!(
+                        "RISC-V physical external IRQ source {source} is configured twice"
+                    )
                 );
             }
             bindings.push(Arc::new(PhysicalSourceBinding {
                 source,
                 trigger: route.trigger,
                 target_cpu,
+                controller_trigger: route.controller_trigger,
                 shared: shared.clone(),
                 accepting: AtomicBool::new(false),
+                activated: AtomicBool::new(false),
                 claim_state: AtomicU8::new(CLAIM_IDLE),
             }));
         }
@@ -130,12 +134,15 @@ impl PhysicalIrqBridge {
 
         let mut first_error = None;
         for binding in &self.bindings {
+            if !binding.activated.swap(false, Ordering::AcqRel) {
+                continue;
+            }
             if let Err(error) =
-                ax_plat::irq::riscv64_hv::deactivate_guest_plic_source(binding.source as u32)
+                ax_plat::irq::riscv64_hv::deactivate_guest_external_source(binding.source as u32)
                 && first_error.is_none()
             {
                 first_error = Some(AxVmError::interrupt(
-                    "deactivate RISC-V guest PLIC source",
+                    "deactivate RISC-V guest external IRQ source",
                     std::format!("{error:?}"),
                 ));
             }
@@ -172,9 +179,10 @@ impl PhysicalIrqBridge {
             return;
         }
         binding.lower_virtual_input();
-        if !ax_plat::irq::riscv64_hv::complete_guest_plic_source(source as u32) {
+        if !ax_plat::irq::riscv64_hv::complete_guest_external_source(source as u32) {
             warn!(
-                "VM[{}] completed physical PLIC source {source} without a retained host claim",
+                "VM[{}] completed physical external IRQ source {source} without a retained host \
+                 claim",
                 self.shared.vm_id
             );
         }
@@ -205,16 +213,18 @@ impl PhysicalIrqBridge {
 
         for binding in &self.bindings {
             binding.accepting.store(true, Ordering::Release);
-            if let Err(error) = ax_plat::irq::riscv64_hv::activate_guest_plic_source(
+            if let Err(error) = ax_plat::irq::riscv64_hv::activate_guest_external_source(
                 binding.source as u32,
                 binding.target_cpu,
+                binding.controller_trigger,
             ) {
                 binding.accepting.store(false, Ordering::Release);
                 return Err(AxVmError::interrupt(
-                    "activate RISC-V guest PLIC source",
+                    "activate RISC-V guest external IRQ source",
                     std::format!("{error:?}"),
                 ));
             }
+            binding.activated.store(true, Ordering::Release);
         }
         Ok(())
     }
@@ -222,7 +232,11 @@ impl PhysicalIrqBridge {
     fn rollback_start(&self) -> AxVmResult {
         for binding in &self.bindings {
             binding.accepting.store(false, Ordering::Release);
-            let _ = ax_plat::irq::riscv64_hv::deactivate_guest_plic_source(binding.source as u32);
+            if binding.activated.swap(false, Ordering::AcqRel) {
+                let _ = ax_plat::irq::riscv64_hv::deactivate_guest_external_source(
+                    binding.source as u32,
+                );
+            }
         }
         self.registrations.lock_unpoisoned().clear();
         let stop_result = self.stop_worker();
@@ -260,7 +274,7 @@ impl PhysicalIrqBridge {
                 continue;
             }
             binding.clear_virtual_input();
-            if !ax_plat::irq::riscv64_hv::complete_guest_plic_source(binding.source as u32) {
+            if !ax_plat::irq::riscv64_hv::complete_guest_external_source(binding.source as u32) {
                 trace!(
                     "VM[{}] found no retained host claim while releasing PLIC source {}",
                     self.shared.vm_id, binding.source
@@ -281,7 +295,7 @@ impl Drop for PhysicalIrqBridge {
     fn drop(&mut self) {
         if self.running.load(Ordering::Acquire) {
             warn!(
-                "VM[{}] physical PLIC bridge dropped while active",
+                "VM[{}] physical external IRQ bridge dropped while active",
                 self.shared.vm_id
             );
         }
@@ -301,8 +315,10 @@ struct PhysicalSourceBinding {
     source: usize,
     trigger: InterruptTriggerMode,
     target_cpu: usize,
+    controller_trigger: Option<ax_plat::irq::ControllerIrqTrigger>,
     shared: Arc<PhysicalBridgeShared>,
     accepting: AtomicBool,
+    activated: AtomicBool,
     claim_state: AtomicU8,
 }
 
@@ -348,9 +364,9 @@ impl PhysicalSourceBinding {
         };
         if let Err(error) = inject_result {
             self.claim_state.store(CLAIM_IDLE, Ordering::Release);
-            let _ = ax_plat::irq::riscv64_hv::complete_guest_plic_source(self.source as u32);
+            let _ = ax_plat::irq::riscv64_hv::complete_guest_external_source(self.source as u32);
             warn!(
-                "VM[{}] failed to publish physical PLIC source {} into vPLIC: {error}",
+                "VM[{}] failed to publish physical external IRQ source {} into vPLIC: {error}",
                 self.shared.vm_id, self.source
             );
             return;
@@ -359,7 +375,8 @@ impl PhysicalSourceBinding {
             // The vPLIC pending state is visible before this task-context wake.
             if let Err(error) = self.shared.kick.kick(vcpu_id) {
                 warn!(
-                    "VM[{}] failed to wake vCPU {vcpu_id} for physical PLIC source {}: {error:?}",
+                    "VM[{}] failed to wake vCPU {vcpu_id} for physical external IRQ source {}: \
+                     {error:?}",
                     self.shared.vm_id, self.source
                 );
             }
@@ -371,7 +388,7 @@ impl PhysicalSourceBinding {
             && let Err(error) = self.shared.vplic.set_irq_line_level(self.source, false)
         {
             warn!(
-                "VM[{}] failed to lower completed physical PLIC source {}: {error}",
+                "VM[{}] failed to lower completed physical external IRQ source {}: {error}",
                 self.shared.vm_id, self.source
             );
         }
@@ -388,7 +405,7 @@ impl PhysicalSourceBinding {
         };
         if let Err(error) = result {
             warn!(
-                "VM[{}] failed to clear physical PLIC source {} during teardown: {error}",
+                "VM[{}] failed to clear physical external IRQ source {} during teardown: {error}",
                 self.shared.vm_id, self.source
             );
         }
@@ -432,7 +449,7 @@ impl PhysicalRouteRegistration {
     fn install(binding: &Arc<PhysicalSourceBinding>) -> AxVmResult<Self> {
         let source = binding.source;
         let raw = Arc::into_raw(binding.clone()) as *mut PhysicalSourceBinding;
-        if PHYSICAL_PLIC_ROUTES[source]
+        if PHYSICAL_EXTERNAL_ROUTES[source]
             .binding
             .compare_exchange(ptr::null_mut(), raw, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -441,7 +458,7 @@ impl PhysicalRouteRegistration {
             // not published because the compare-exchange failed.
             drop(unsafe { Arc::from_raw(raw) });
             return Err(AxVmError::resource_conflict(
-                "RISC-V physical PLIC route",
+                "RISC-V physical external IRQ route",
                 std::format!("source {source} is already assigned to another VM"),
             ));
         }
@@ -454,7 +471,7 @@ impl PhysicalRouteRegistration {
 
 impl Drop for PhysicalRouteRegistration {
     fn drop(&mut self) {
-        let route = &PHYSICAL_PLIC_ROUTES[self.source];
+        let route = &PHYSICAL_EXTERNAL_ROUTES[self.source];
         let expected = self.binding as *mut PhysicalSourceBinding;
         if route
             .binding
@@ -467,7 +484,7 @@ impl Drop for PhysicalRouteRegistration {
             .is_err()
         {
             warn!(
-                "RISC-V physical PLIC route {} changed before its owner released it",
+                "RISC-V physical external IRQ route {} changed before its owner released it",
                 self.source
             );
             return;
@@ -496,7 +513,11 @@ mod tests {
             vplic,
             Arc::new(RunKickBinding::new()),
             1,
-            &[crate::config::PassthroughInterrupt { source: 8, trigger }],
+            &[crate::config::PassthroughInterrupt {
+                source: 8,
+                trigger,
+                controller_trigger: None,
+            }],
             0,
         )
         .unwrap()
@@ -524,8 +545,8 @@ mod tests {
         binding.accepting.store(true, Ordering::Release);
         let registration = PhysicalRouteRegistration::install(&binding).unwrap();
 
-        assert!(PHYSICAL_PLIC_ROUTES[8].with_binding(PhysicalSourceBinding::publish_from_irq));
+        assert!(PHYSICAL_EXTERNAL_ROUTES[8].with_binding(PhysicalSourceBinding::publish_from_irq));
         drop(registration);
-        assert!(!PHYSICAL_PLIC_ROUTES[8].with_binding(PhysicalSourceBinding::publish_from_irq));
+        assert!(!PHYSICAL_EXTERNAL_ROUTES[8].with_binding(PhysicalSourceBinding::publish_from_irq));
     }
 }

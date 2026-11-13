@@ -361,8 +361,18 @@ impl<T: Kind> UartPort for Ns16550<T> {
     }
 
     fn rearm(&mut self, sources: SerialEventSet) -> SerialEventSet {
+        let enabled = interrupt_enable_for_events(sources);
+        // Firmware consoles may have used polling with OUT2 clear. Open the
+        // IRQ output gate without resetting their line settings or FIFOs.
+        if !enabled.is_empty() {
+            let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
+            if !mcr.contains(ModemControlFlags::OUT_2) {
+                mcr.insert(ModemControlFlags::OUT_2);
+                self.write_flags(UART_MCR, mcr);
+            }
+        }
         let mut ier: InterruptEnableFlags = self.read_flags(UART_IER);
-        ier.insert(interrupt_enable_for_events(sources));
+        ier.insert(enabled);
         self.write_flags(UART_IER, ier);
 
         let lsr = self.read_lsr_preserving();

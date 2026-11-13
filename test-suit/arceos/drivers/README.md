@@ -1,6 +1,6 @@
 # ArceOS驱动集成测试
 
-本目录是normal方式的驱动测试程序，实际驱动实现位于仓库根drivers目录。当前仅x86_64 QEMU；Q35、cpu=max、UEFI、512MiB、SMP1、freestanding/无内核TLS。默认一次启动执行两项功能，保留两个单项诊断名称。
+本目录是normal方式的驱动测试程序，实际驱动实现位于仓库根drivers目录。x86_64 使用 Q35、cpu=max、UEFI、512MiB、SMP1，一次启动执行 ACPICA 和 HDA；RISC-V 使用 virt APLIC/IMSIC、256MiB、SMP2，一次启动执行 APLIC。两个架构共用 freestanding/无内核TLS 测试包，按当前架构选择批次。
 
 ```text
 drivers/
@@ -10,21 +10,28 @@ drivers/
 ├── src/
 │   ├── main.rs                 唯一薄入口，整批结束后退出
 │   ├── acpica.rs               原ACPICA测试，run入口
-│   └── intel_hda.rs            原HDA测试，run入口
+│   ├── intel_hda.rs            原HDA测试，run入口
+│   └── aplic.rs                APLIC真实IRQ与完成令牌，run入口
 ├── build-x86_64-unknown-none.toml
 ├── qemu-x86_64.toml             共同运行环境及波形捕获
+├── build-riscv64gc-unknown-none-elf.toml
+├── qemu-riscv64.toml             双核APLIC/IMSIC运行环境
+├── APLIC.md                     来源生命周期与证明边界
 └── README.md
 
 x86-q35                         1次启动，2项
 ├── acpica-interpreter           AML解释、通知、退出同步
 └── intel-hda                    播放、取消、关闭及4096帧输出
+
+riscv-aia                       1次启动，1项
+└── aplic                        完成令牌、延期屏蔽与来源退休
 ```
 
 ## 登记与执行
 
 suite.toml顶部run_order决定启动顺序，batches下嵌套tests决定批内顺序。tests登记ID、名称、唯一函数入口及追加features；pcm_waveform声明该成员需要宿主验证输出。Cargo维护真实依赖：目前共同包启用两项所需依赖并集，单项选择只改变生成调用，不取消共同运行能力或设备。
 
-Cargo.toml的package.metadata.axbuild.qemu_suite显式选择axbuild的通用declared执行器，package、features、环境与完成协议由suite.toml提供。目标build.rs通过arceos-test-build构建依赖生成绑定，不引用axbuild私有源码。AX_DRIVERS_BATCH/CASES进入构建身份，避免单项/整批混用产物；批次顺序和单项名称只有清单一处登记。
+Cargo.toml的package.metadata.axbuild.qemu_suite显式选择axbuild的通用declared执行器，package、features、环境与完成协议由suite.toml提供。目标build.rs通过arceos-test-build构建依赖生成绑定，不引用axbuild私有源码。AX_DRIVERS_BATCH/CASES进入构建身份，避免单项/整批混用产物；批次顺序和单项名称只有清单一处登记。架构模块和依赖在编译边界选择，RISC-V 的 `ax-std` 依赖追加 `hv`、`smp`，不改变 x86 批次的运行条件。
 
 生成的selected_drivers.rs仅位于target构建目录，不提交Git。每项正常返回后才打印DRIVER_TEST_PASS；panic立即中止后续调用。全部结束才输出DRIVERS_BATCH_OK，宿主只接受当前批次/选择对应的最终标记。HDA内部不直接exit，退出由统一main负责。
 
@@ -33,6 +40,8 @@ Cargo.toml的package.metadata.axbuild.qemu_suite显式选择axbuild的通用decl
 ACPICA运行真实解释器和ArceOS线程/分配器/计时，输入为合成ACPI表/AML，检查初始化唯一性、设备ID/资源解析、Notify回调与退出排空。它不验证真实主板固件或实际ACPI IO/PCI/SCI操作。Engine退出及后台工作排空完成后才开始HDA。
 
 HDA通过公共Playback接口运行QEMU设备，保留配置、提交拷贝、完成顺序、排空、取消和shutdown后的状态检查。原48kHz、双声道、1024帧/周期、4周期保持。内核打印INTEL_HDA_QEMU_OK后，宿主还须检查完整4096帧WAV的格式、声道、内容和顺序，输出PCM_WAVEFORM_OK；只看内核标记不能认定整项成功。
+
+APLIC 的 `src/aplic.rs::run()` 保留双核真实中断、opaque claim 析构与槽冲突、延期屏蔽、禁用后完成及退休后迟到完成断言，正常返回后才发布整批完成标记；详见 [APLIC 来源生命周期](APLIC.md)。RISC-V APLIC/IMSIC 与 x86 Q35 音频设备不能在同一架构镜像内运行，因此保留两个架构批次。迁移后共有三项测试、两个批次，各目标默认仍只启动一次，未增加该目标的启动数。
 
 单项ACPICA仍保留共同音频设备和捕获后端，但不调用HDA，不要求不存在的音频输出；选择HDA或整批必须有有效host_pcm_waveform配置并验证。临时WAV在target下独占创建，成功/失败后均清理，不手写第二个-audiodev。波形验证不代表物理声卡可听效果，无需扬声器。
 
@@ -54,6 +63,10 @@ cargo xtask arceos test qemu --arch x86_64 --test-group drivers --test-case inte
 
 cargo xtask arceos test qemu --arch x86_64 --test-group drivers --list
 cargo xtask arceos test qemu --arch x86_64 --test-group drivers --plan
+
+# RISC-V 单项仍由统一声明执行器选择，与默认 riscv-aia 批次均只启动一次
+cargo xtask arceos test qemu --arch riscv64 --test-group drivers --test-case aplic
+cargo xtask arceos test qemu --arch riscv64 --test-group drivers --plan
 ```
 
 plan输出JSON，展示架构、所选成员、features、生成环境/构建身份、配置及是否验证波形。保存文件请写已忽略的target目录。未知、空和不支持架构的显式选择报错，不静默跳过。

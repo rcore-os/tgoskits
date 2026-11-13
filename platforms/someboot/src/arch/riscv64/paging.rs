@@ -5,7 +5,9 @@ use page_table_generic::MapConfig;
 
 use crate::{
     console::print_mapping,
-    mem::{__kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt},
+    mem::{
+        __io, __kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig, cpu_area_phys_to_virt,
+    },
     smp::PerCpuMeta,
 };
 
@@ -115,6 +117,29 @@ fn setup_page_table() -> anyhow::Result<()> {
                 size,
                 pte: ram_pte,
                 allow_huge: true,
+                flush: false,
+            })?;
+        }
+    }
+
+    if let Some(console) = crate::console::debug_to_memory_desc() {
+        let start = console.physical_start;
+        let io_vaddr = __io(start) as usize;
+        // Keep the current register window across SATP, and map the window
+        // that earlycon will use after entering the relocated kernel.
+        for vaddr in core::iter::once(start).chain((io_vaddr != start).then_some(io_vaddr)) {
+            print_mapping("Console", vaddr, start, console.size_in_bytes);
+            table.map(&MapConfig {
+                vaddr: vaddr.into(),
+                paddr: start.into(),
+                size: console.size_in_bytes,
+                pte: PteConfig {
+                    read: true,
+                    writable: true,
+                    mem_attr: MemAttributes::Device,
+                    ..Default::default()
+                },
+                allow_huge: false,
                 flush: false,
             })?;
         }

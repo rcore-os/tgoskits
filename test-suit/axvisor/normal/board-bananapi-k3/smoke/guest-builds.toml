@@ -1,0 +1,10 @@
+# Validate the cached board root before building or allocating the board.
+# This check does not download images or build guests.
+# host_prepare runs from the workspace root; match the board initramfs path.
+host_prepare = ["sh", "-ec", '''
+root="$PWD/target/axbuild/board-assets/bananapi-k3/host-root.cpio.gz"
+test -s "$root" || {
+    echo "Missing K3 root cache: $root; copy /guest/axvisor-host.cpio.gz from the board first" >&2
+    exit 1
+}
+''']

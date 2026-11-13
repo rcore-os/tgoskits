@@ -28,10 +28,195 @@ fail_regex = [
   "(?i)permission denied",
   "(?m)^(?:echo|cat|rm):\\s",
   "(?i)IPI extension is not available",
+  '(?m)^✓ VM\[1\] (?:suspended|stopped successfully|reset and started successfully|deleted completely|started successfully)\s*$',
 ]
-shell_check_steps = [
-  { shell_prefix = "axvisor:/$", shell_cmd = "vm console 1" },
-  { shell_prefix = "~ #", shell_cmd = "mount -t proc proc /proc 2>/dev/null || true; [ \"$(nproc)\" -ge 3 ] && dmesg | grep -q 'SBI IPI extension detected' && grep -Eq 'IPI[^:]*:.*[1-9]' /proc/interrupts && echo 'guest smp ipi pass!' || exit 1", success_regex = ['(?m)^guest smp ipi pass!\s*$'], fail_regex = ['(?m)^(?:echo|cat|rm):', '(?i)IPI extension is not available'] },
-]
+timeout = 180
 to_bin = true
 uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = '''
+mount -t proc proc /proc 2>/dev/null || true
+ipi_count() {
+    awk '/^[[:space:]]*IPI[0-9]*:/ { for (i = 2; $i ~ /^[0-9]+$/; i++) total += $i } END { print total + 0 }' /proc/interrupts
+}
+check_guest_smp_ipi() {
+    [ "$(nproc)" -ge 3 ] || return 1
+    dmesg | grep -q 'SBI IPI extension detected' || return 1
+    before=$(ipi_count) || return 1
+    # Linux refreshes VM statistics synchronously on every online CPU.
+    echo 1 > /proc/sys/vm/stat_refresh || return 1
+    after=$(ipi_count) || return 1
+    printf 'GUEST_SMP_IPI_COUNTS=%s,%s\n' "$before" "$after"
+    [ "$after" -gt "$before" ]
+}
+check_guest_smp_ipi && echo 'guest smp ipi pass!' || echo 'GUEST_SMP_IPI_FAILED'
+'''
+success_regex = ['(?m)^guest smp ipi pass!\s*$']
+fail_regex = ['(?m)^GUEST_SMP_IPI_FAILED\s*$']
+timeout = 60
+
+# The guest owns a real virtio-mmio block device. Refused management requests
+# must preserve this shell, its memory, disk access and all online guest CPUs.
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "lifecycle_cookie=retained; echo PASSTHROUGH_READY"
+success_regex = ['(?m)^PASSTHROUGH_READY\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ['detached VM\[1\] console']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm suspend 1"
+success_regex = ['(?m)^✗ Failed to suspend VM\[1\]: .*has no DMA retirement capability\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "vm list"
+success_regex = ['(?m)^1\s+linux-qemu-smp3-ipi\s+running\s+0,1,2\s+128MB\s+']
+
+[[shell_check_steps]]
+shell_cmd = "vm console 1"
+
+# Reattaching does not redraw the old guest prompt. The attachment message
+# establishes the input lane before sending the next guest command.
+[[shell_check_steps]]
+shell_prefix = "Attached VM[1] console"
+shell_cmd = '''
+test "$lifecycle_cookie" = retained &&
+    echo 3 > /proc/sys/vm/drop_caches &&
+    dd if=/dev/vda of=/dev/null bs=4096 count=1 &&
+    check_guest_smp_ipi && echo PASSTHROUGH_RUNNING || echo PASSTHROUGH_FAILED
+'''
+success_regex = ['(?m)^PASSTHROUGH_RUNNING\s*$']
+fail_regex = ['(?m)^PASSTHROUGH_FAILED\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ['detached VM\[1\] console']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm stop --force 1"
+success_regex = ['(?m)^✗ Failed to stop VM\[1\]: .*has no DMA retirement capability\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "vm list"
+success_regex = ['(?m)^1\s+linux-qemu-smp3-ipi\s+running\s+0,1,2\s+128MB\s+']
+
+[[shell_check_steps]]
+shell_cmd = "vm console 1"
+
+# Reattaching does not redraw the old guest prompt. The attachment message
+# establishes the input lane before sending the next guest command.
+[[shell_check_steps]]
+shell_prefix = "Attached VM[1] console"
+shell_cmd = '''
+test "$lifecycle_cookie" = retained &&
+    echo 3 > /proc/sys/vm/drop_caches &&
+    dd if=/dev/vda of=/dev/null bs=4096 count=1 &&
+    check_guest_smp_ipi && echo PASSTHROUGH_RUNNING || echo PASSTHROUGH_FAILED
+'''
+success_regex = ['(?m)^PASSTHROUGH_RUNNING\s*$']
+fail_regex = ['(?m)^PASSTHROUGH_FAILED\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ['detached VM\[1\] console']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm reset 1"
+success_regex = ['(?m)^✗ VM\[1\] reset failed: .*has no DMA retirement capability\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "vm list"
+success_regex = ['(?m)^1\s+linux-qemu-smp3-ipi\s+running\s+0,1,2\s+128MB\s+']
+
+[[shell_check_steps]]
+shell_cmd = "vm console 1"
+
+# Reattaching does not redraw the old guest prompt. The attachment message
+# establishes the input lane before sending the next guest command.
+[[shell_check_steps]]
+shell_prefix = "Attached VM[1] console"
+shell_cmd = '''
+test "$lifecycle_cookie" = retained &&
+    echo 3 > /proc/sys/vm/drop_caches &&
+    dd if=/dev/vda of=/dev/null bs=4096 count=1 &&
+    check_guest_smp_ipi && echo PASSTHROUGH_RUNNING || echo PASSTHROUGH_FAILED
+'''
+success_regex = ['(?m)^PASSTHROUGH_RUNNING\s*$']
+fail_regex = ['(?m)^PASSTHROUGH_FAILED\s*$']
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "\u0018h"
+success_regex = ['detached VM\[1\] console']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm delete --force 1"
+success_regex = ['(?m)^✗ Failed to remove VM\[1\] from list: .*has no DMA retirement capability\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "vm list"
+success_regex = ['(?m)^1\s+linux-qemu-smp3-ipi\s+running\s+0,1,2\s+128MB\s+']
+
+[[shell_check_steps]]
+shell_cmd = "vm console 1"
+
+# Reattaching does not redraw the old guest prompt. The attachment message
+# establishes the input lane before sending the next guest command.
+[[shell_check_steps]]
+shell_prefix = "Attached VM[1] console"
+shell_cmd = '''
+test "$lifecycle_cookie" = retained &&
+    echo 3 > /proc/sys/vm/drop_caches &&
+    dd if=/dev/vda of=/dev/null bs=4096 count=1 &&
+    check_guest_smp_ipi && echo PASSTHROUGH_RUNNING || echo PASSTHROUGH_FAILED
+'''
+success_regex = ['(?m)^PASSTHROUGH_RUNNING\s*$']
+fail_regex = ['(?m)^PASSTHROUGH_FAILED\s*$']
+
+# Guest SBI shutdown joins all three vCPU tasks but cannot authorize DMA
+# reclamation. The host must keep its NPT and RAM, and refuse reuse.
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = "poweroff -f"
+success_regex = ['VM\[1\] guest execution stopped; retaining physical device resources until host reset']
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm show --full 1"
+success_regex = ['(?ms)^  Status: +\[STOP\] stopped\s*$.*^  NPT Root: +0x[1-9a-f][0-9a-f]*\s*$.*^  Summary: Free: 3\s*$.*Region 0: GPA=GPA:0x[1-9a-f][0-9a-f]* HVA=VA:0x[1-9a-f][0-9a-f]* Size=128MB Type=Allocated \[identical\]']
+
+[[shell_check_steps]]
+shell_cmd = "vm start 1"
+success_regex = ['(?m)^✗ VM\[1\] failed to start: .*has no DMA retirement capability\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "vm reset 1"
+success_regex = ['(?m)^✗ VM\[1\] reset failed: .*has no DMA retirement capability\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "vm delete --force 1"
+success_regex = ['(?m)^✗ Failed to remove VM\[1\] from list: .*has no DMA retirement capability\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "vm list"
+success_regex = ['(?m)^1\s+linux-qemu-smp3-ipi\s+stopped\s+0,1,2\s+128MB\s+Free:3\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "echo PASSTHROUGH_LIFECYCLE_PASSED"
+success_regex = ['(?m)^PASSTHROUGH_LIFECYCLE_PASSED\s*$']

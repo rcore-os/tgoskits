@@ -22,4 +22,5 @@ memory_regions = [
 
 [devices]
 passthrough = []
-disabled = []
+# Keep QEMU's machine power control in the host; Linux should power off via SBI.
+disabled = [{ path = "/poweroff" }, { path = "/reboot" }, { path = "/soc/test@100000" }]

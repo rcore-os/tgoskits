@@ -2,8 +2,8 @@ use ax_cpu::{
     PhysAddr,
     paging::{EptEntry, EptFlags, EptMemoryType, PageTableEntry},
     virtualization::{
-        ControlMemory, PerCpu, VmcsControl32, VmcsControl64, VmcsGuest16, VmcsGuest32, VmcsGuest64,
-        VmcsGuestNW, VmxControlMemory, VmxControls, VmxExitReason, VmxInterruptInfo,
+        ControlMemory, PerCpu, StateMemory, VmcsControl32, VmcsControl64, VmcsGuest16, VmcsGuest32,
+        VmcsGuest64, VmcsGuestNW, VmxControlMemory, VmxControls, VmxExitReason, VmxInterruptInfo,
         VmxInterruptionType,
     },
 };

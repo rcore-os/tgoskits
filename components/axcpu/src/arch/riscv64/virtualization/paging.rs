@@ -1,7 +1,7 @@
 //! RISC-V G-stage root encoding and geometry.
 
-use super::{Vcpu, VirtualizationError};
-use crate::PhysAddr;
+use super::{GuestBinding, Vcpu, VirtualizationError};
+use crate::{PhysAddr, virtualization::StateMemory};
 
 /// Implemented G-stage translation mode, including the widened root index.
 #[repr(usize)]
@@ -30,7 +30,7 @@ impl GStageMode {
     }
 }
 
-impl Vcpu {
+impl<M: StateMemory> Vcpu<M> {
     /// Encodes a G-stage root using VMID zero, without installing it.
     /// Rejects roots that violate 16-KiB alignment or the 44-bit PPN field.
     /// Memory ownership, mode support and mapping lifetime belong to the binder.
@@ -45,6 +45,33 @@ impl Vcpu {
         }
         self.virtual_hs_csrs.hgatp = ((mode as usize) << 60) | (address >> 12);
         Ok(())
+    }
+}
+
+impl GuestBinding {
+    /// Installs the saved G-stage root into the currently bound guest bank.
+    ///
+    /// # Safety
+    /// Execute on this binding's original hart with the CPU pin and exclusive
+    /// HS guest-bank ownership held, and the H extension enabled. `registers`
+    /// must be this binding's validated image with a supported G-stage mode.
+    /// Retain the new root and its backing through every subsequent use, and
+    /// the old root until all harts have retired its translations.
+    pub unsafe fn sync_page_table<M: StateMemory>(&mut self, registers: &Vcpu<M>) {
+        let _irqs = super::binding::LocalIrqs::disable();
+        // SAFETY: the binding retains exclusive access to this hart's guest CSR
+        // bank; the caller retains the validated root and all referenced memory.
+        unsafe {
+            core::arch::asm!(
+                ".option push",
+                ".option arch, +h",
+                "csrw hgatp, {root}",
+                "hfence.gvma",
+                ".option pop",
+                root = in(reg) registers.virtual_hs_csrs.hgatp,
+                options(nostack)
+            );
+        }
     }
 }
 

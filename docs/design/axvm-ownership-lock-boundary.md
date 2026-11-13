@@ -164,6 +164,10 @@ x86 EPT 使用真实 INVEPT。SVM 的失效采用逻辑退休：静默期间没�
 
 stop 先关闭 guest-entry 与 IRQ 准入，再发布停止并 kick/wake，随后屏蔽注销 producer，确认 vCPU、回调、worker/DMA 静默，join 并退休，最后发布 `Stopped`。kick 必须先于远端退出或注销的等待。
 
+`AxVM::host_dma_blocker` 根据最终 `VmAddressLayout` 中仍可直接访问宿主的 `Passthrough` 映射和宿主 PIO 分配判断回收限制，错误包含实际 GPA、HPA、长度或端口范围。设备规划已完全移除的替换范围不再因原始配置而被拒绝；部分替换后的物理范围、默认恒等映射窗口和缺失的最终布局仍阻止回收。`HostReplacement` 标签本身不提供物理 DMA 已停止的证明，实际转发物理寄存器的设备仍须遵守其物理资源与生命周期契约。
+
+`Owner::require_host_dma_quiescence` 在已经启动的运行代次上检查该限制；拒绝 pause、stop、reset、destroy 或重启时不改变运行状态或资源归属。客户机自主关机走 `shutdown_run`，停止 vCPU 和虚拟 producer 后保留运行、页表与 backing，此时 `Stopped` 只表示客户机执行已停止，物理资源尚不可重用。内存撤销和 IVC 回收使用同一资源判断。具体直通设备尚未提供停止、复位或隔离能力时，关闭中断和客户机退出均不能代替 DMA 静默证明，仍需宿主复位后重用。
+
 IVC 通道表归 manager，内部发布者键使用 `VmKey`，通知绑定目标 `RunId`，guest ABI 仍使用 VM ID/channel key。通道锁外通知。回收遵循关闭端点、撤销自身 GPA 并确认翻译退休、释放 aperture、提交通道移除、最后 backing owner 释放共享页。一个 VM 退出不能释放另一个 VM 仍持有的页。
 
 ### 4.3 受控内存入口

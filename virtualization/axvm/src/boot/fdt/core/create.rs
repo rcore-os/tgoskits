@@ -254,36 +254,23 @@ fn is_ancestor_of_passthrough_device(node_path: &str, passthrough_device_names: 
     })
 }
 
-fn cpu_node_id(node_path: &str) -> Option<usize> {
-    node_path
-        .strip_prefix("/cpus/cpu@")
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|id| usize::from_str_radix(id, 16).ok())
-}
-
-fn cpu_reg_address(fdt: &Fdt, node_id: NodeId) -> Option<usize> {
-    fdt.view_typed(node_id)
-        .and_then(|node| node.regs().first().map(|reg| reg.address as usize))
-}
-
 pub(crate) fn need_cpu_node(
     phys_cpu_ids: &[usize],
     fdt: &Fdt,
     node_id: NodeId,
     node_path: &str,
 ) -> bool {
-    if !node_path.starts_with("/cpus/cpu@") {
+    let Some(suffix) = node_path.strip_prefix("/cpus/cpu@") else {
         return true;
-    }
+    };
 
-    if let Some(cpu_id) = cpu_node_id(node_path) {
-        return phys_cpu_ids.contains(&cpu_id);
-    }
-
-    cpu_reg_address(fdt, node_id).is_some_and(|cpu_address| {
-        debug!("Checking CPU node {node_path} with address 0x{cpu_address:x}");
-        phys_cpu_ids.contains(&cpu_address)
-    })
+    let cpu_id = match suffix.find('/') {
+        Some(end) => fdt.get_by_path_id(&node_path[..node_path.len() - suffix.len() + end]),
+        None => Some(node_id),
+    };
+    cpu_id
+        .and_then(|cpu_id| super::tree::cpu_reg_address(fdt, cpu_id))
+        .is_some_and(|hardware_cpu_id| phys_cpu_ids.contains(&hardware_cpu_id))
 }
 
 fn guest_memory_specs(
@@ -1099,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_fdt_filters_cpu_nodes_by_unit_address() {
+    fn generated_fdt_filters_cpu_nodes_by_hardware_identity() {
         let fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
         let cfg = GuestConfig {
             base: axvmconfig::VMBaseConfig {
@@ -1111,9 +1098,9 @@ mod tests {
         let dtb = super::create_guest_fdt(&fdt, &[], &cfg, &[]).unwrap();
         let reparsed = Fdt::from_bytes(&dtb).unwrap();
 
-        assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
+        assert!(reparsed.get_by_path_id("/cpus/cpu@101").is_some());
         assert!(reparsed.get_by_path_id("/cpus/cpu@0").is_none());
-        assert!(reparsed.get_by_path_id("/cpus/cpu@101").is_none());
+        assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_none());
     }
 
     #[test]
@@ -1240,6 +1227,7 @@ mod tests {
             &mut vm_cfg,
             &GuestConfig::default(),
             fdt.encode().as_ref(),
+            None,
         )
         .unwrap();
         assert!(
@@ -1470,17 +1458,60 @@ mod tests {
 
     #[test]
     fn generated_fdt_over_subscription_keeps_cpu_phandles_unique_and_drops_host_cpu_map() {
-        let host = host_fdt_with_cpu_map_phandles();
+        let mut host = host_fdt_with_cpu_map_phandles();
+        let root = host.root_id();
+        let (compatible, interrupt_cells, specifier): (&str, u32, &[u32]) =
+            if cfg!(target_arch = "aarch64") {
+                ("arm,gic-v3", 3, &[0, 45, 4])
+            } else {
+                ("riscv,plic0", 1, &[45])
+            };
+        let controller = host.add_node(root, Node::new("interrupt-controller"));
+        let node = host.node_mut(controller).unwrap();
+        node.set_property(prop_string("compatible", compatible));
+        node.set_property(Property::new("interrupt-controller", std::vec![]));
+        node.set_property(prop_u32("#interrupt-cells", interrupt_cells));
+        node.set_property(prop_u32("phandle", 9));
+        let device = host.add_node(root, Node::new("device@1000"));
+        let node = host.node_mut(device).unwrap();
+        node.set_property(prop_string("compatible", "example,physical-device"));
+        node.set_property(prop_u32("interrupt-parent", 9));
+        let mut interrupts = Property::new("interrupts", std::vec![]);
+        interrupts.set_u32_ls(specifier);
+        node.set_property(interrupts);
+        host.view_typed_mut(device)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x1000, Some(0x100))]);
         let cfg = GuestConfig {
             base: axvmconfig::VMBaseConfig {
+                cpu_num: 3,
                 phys_cpu_ids: Some(std::vec![0, 1, 2]),
+                phys_cpu_sets: Some(std::vec![1, 2, 2]),
                 ..Default::default()
             },
             ..Default::default()
         };
 
-        let dtb = super::create_guest_fdt(&host, &[], &cfg, &[]).unwrap();
-        let guest = Fdt::from_bytes(&dtb).unwrap();
+        let passthrough_vm = || {
+            AxVMConfig::new(AxVMConfigParams {
+                pass_through_devices: std::vec![HostDeviceAssignment {
+                    name: "/".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+        };
+        let mut vm_cfg = passthrough_vm();
+        let selected = find_all_passthrough_devices(&vm_cfg, &host).unwrap();
+        let dtb = super::create_guest_fdt(&host, &selected, &cfg, &[]).unwrap();
+        let mut guest = Fdt::from_bytes(&dtb).unwrap();
+
+        // Guest firmware can name a physical device without adding resources.
+        let aliases = guest.add_node(guest.root_id(), Node::new("aliases"));
+        guest
+            .node_mut(aliases)
+            .unwrap()
+            .set_property(prop_string("device0", "/device@1000"));
 
         // `cpu@1` and `cpu@2` have no host CPU node, so they are cloned from
         // `cpu@0` and must not inherit its phandle.
@@ -1504,5 +1535,41 @@ mod tests {
         // CPU projection drops the host-only `cpu-map`; guest startup
         // enumerates the projected CPU nodes by their `reg` values instead.
         assert!(guest.get_by_path_id("/cpus/cpu-map").is_none());
+
+        // Synthesized guest CPU identities have no physical IRQ owner, while
+        // the selected physical device still resolves its IRQ from the host.
+        super::super::parser::parse_vm_interrupt(
+            &mut vm_cfg,
+            &cfg,
+            guest.encode().as_ref(),
+            Some(host.encode().as_ref()),
+        )
+        .unwrap();
+        assert_eq!(vm_cfg.pass_through_irqs().len(), 1);
+        assert_eq!(vm_cfg.pass_through_irqs()[0].source, 45);
+
+        // A physical device absent from the host remains an invalid assignment.
+        let missing = guest.add_node(guest.root_id(), Node::new("device@2000"));
+        guest
+            .node_mut(missing)
+            .unwrap()
+            .set_property(prop_string("compatible", "example,physical-device"));
+        guest
+            .view_typed_mut(missing)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x2000, Some(0x100))]);
+        let error = super::super::parser::parse_vm_interrupt(
+            &mut passthrough_vm(),
+            &cfg,
+            guest.encode().as_ref(),
+            Some(host.encode().as_ref()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            crate::AxVmError::invalid_config(
+                "passthrough device /device@2000 is absent from host firmware"
+            )
+        );
     }
 }

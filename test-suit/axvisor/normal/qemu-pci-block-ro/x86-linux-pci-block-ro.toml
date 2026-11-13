@@ -2,7 +2,7 @@
 [base]
 id = 1
 name = "linux-x86-pci-block-ro"
-guest_type = "passthrough"
+guest_type = "virtualized"
 cpu_num = 1
 phys_cpu_ids = [1]
 

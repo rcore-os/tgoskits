@@ -491,11 +491,11 @@ impl HostPlatform for ArceOsHost {
     }
 
     fn enable_virtualization_on_all_cpus(&self) -> AxVmResult {
-        static CORES: AtomicUsize = AtomicUsize::new(0);
+        static COMPLETED_CPUS: AtomicUsize = AtomicUsize::new(0);
 
         crate::arch::current::prepare_host_virtualization()?;
         info!("Enabling hardware virtualization support on all cores...");
-        CORES.store(0, Ordering::Release);
+        COMPLETED_CPUS.store(0, Ordering::Release);
         crate::percpu::reset_enabled_cpu_mask();
 
         let cpu_count = self.cpu_count();
@@ -503,7 +503,7 @@ impl HostPlatform for ArceOsHost {
         info!("Core {current_cpu} is initializing hardware virtualization support...");
         self.enable_virtualization_on_current_cpu()?;
         info!("Hardware virtualization support enabled on core {current_cpu}");
-        CORES.store(1, Ordering::Release);
+        COMPLETED_CPUS.store(1, Ordering::Release);
 
         for cpu_id in 0..cpu_count {
             if cpu_id == current_cpu {
@@ -519,10 +519,30 @@ impl HostPlatform for ArceOsHost {
                     .spawn(move || {
                         let host = arceos_host();
                         info!("Core {cpu_id} is initializing hardware virtualization support...");
-                        host.enable_virtualization_on_current_cpu()
-                            .expect("failed to enable hardware virtualization");
-                        info!("Hardware virtualization support enabled on core {cpu_id}");
-                        let _ = CORES.fetch_add(1, Ordering::Release);
+                        match host.enable_virtualization_on_current_cpu() {
+                            Ok(()) => {
+                                info!("Hardware virtualization support enabled on core {cpu_id}");
+                            }
+                            Err(
+                                error @ AxVmError::Backend {
+                                    source: axvm_types::VmBackendError::Unsupported,
+                                    ..
+                                },
+                            ) => {
+                                warn!(
+                                    "Hardware virtualization unavailable on core {cpu_id}: {error}"
+                                );
+                            }
+                            Err(error) => {
+                                panic!(
+                                    "failed to enable hardware virtualization on core {cpu_id}: \
+                                     {error}"
+                                );
+                            }
+                        }
+                        // Completion includes unsupported CPUs. Only successful
+                        // enables publish an entry in the capability mask.
+                        let _ = COMPLETED_CPUS.fetch_add(1, Ordering::Release);
                     })
             }
             .unwrap_or_else(|error| {
@@ -533,10 +553,10 @@ impl HostPlatform for ArceOsHost {
             }
         }
 
-        info!("Waiting for all cores to enable hardware virtualization...");
+        info!("Waiting for all cores to complete virtualization discovery...");
         let start = self.monotonic_time();
         let mut wait_rounds = 0usize;
-        while CORES.load(Ordering::Acquire) != cpu_count {
+        while COMPLETED_CPUS.load(Ordering::Acquire) != cpu_count {
             thread::yield_now();
             wait_rounds = wait_rounds.wrapping_add(1);
             if wait_rounds.is_multiple_of(256) {
@@ -547,14 +567,21 @@ impl HostPlatform for ArceOsHost {
             }
         }
         crate::arch::current::register_platform_irq_injector();
-        let enabled_count = CORES.load(Ordering::Acquire);
+        let completed_count = COMPLETED_CPUS.load(Ordering::Acquire);
+        if completed_count != cpu_count {
+            warn!(
+                "Only {completed_count}/{cpu_count} cores completed virtualization discovery \
+                 before timeout"
+            );
+        }
+        let enabled_mask = crate::percpu::enabled_cpu_mask();
+        let enabled_count = enabled_mask.count_ones() as usize;
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");
         } else {
             warn!(
-                "Only {enabled_count}/{cpu_count} cores enabled hardware virtualization before \
-                 timeout; continuing with host CPU mask {:#x}",
-                crate::percpu::enabled_cpu_mask()
+                "Hardware virtualization enabled on {enabled_count}/{cpu_count} cores; available \
+                 host CPU mask {enabled_mask:#x}"
             );
         }
         Ok(())

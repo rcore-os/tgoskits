@@ -284,7 +284,8 @@ pub struct VMBaseConfig {
     pub cpu_num: usize,
     /// The physical CPU ids.
     /// - if `phys_cpu_sets` is `Some`, these are the guest-visible vCPU ids.
-    /// - otherwise, these select host CPU identities and also become the guest IDs.
+    /// - otherwise, these select host hardware CPU identities and also become the guest IDs.
+    ///   FDT-backed paths use the CPU node's `reg`, independently of its node name.
     ///
     /// Some ARM platforms will provide a specified cpu hw id in the device tree, which is
     /// read from `MPIDR_EL1` register (probably for clustering).

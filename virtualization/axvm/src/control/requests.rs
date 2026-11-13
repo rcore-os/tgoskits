@@ -452,13 +452,14 @@ impl Owner {
                 current: Some(run.id),
             });
         }
-        if !self.vm.config().pass_through_devices().is_empty() && self.state != VmStatus::Stopping {
+        if let Some(blocker) = self.vm.host_dma_blocker() {
             // The manager retains the closed endpoint and aperture; the VM's
             // mapping lease retains its backing. Stop/reset/delete must refuse
             // before teardown until assigned DMA quiescence can be proven.
             detach.retain_closed_mapping()?;
             warn!(
-                "IVC endpoint closed; mapping retained until board reset for VM[{}] GPA={:#x}",
+                "IVC endpoint closed; mapping retained until board reset for VM[{}] GPA={:#x}: \
+                 {blocker:?}",
                 self.shared.key().vm_id(),
                 detach.range().start().as_usize(),
             );

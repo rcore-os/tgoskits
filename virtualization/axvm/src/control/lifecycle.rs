@@ -102,6 +102,9 @@ impl Owner {
     }
 
     pub(super) fn start(&mut self, operation: OperationId) -> AxVmResult<RunId> {
+        // A guest shutdown may retain a stopped run whose physical devices
+        // still own its backing. It must not start another activation.
+        self.require_host_dma_quiescence()?;
         if self.run.is_none() {
             let generation = next_generation(&mut self.run_generation, "VM run")?;
             let id = RunId::new(self.shared.key(), generation);
@@ -111,6 +114,11 @@ impl Owner {
                 Arc::downgrade(&self.shared),
                 self.cpu_freq_backend.clone(),
             );
+            // Publish a non-stopped snapshot before provisioning replacement
+            // backends; lifecycle observers must not close their new generation
+            // using the previous run's Stopped state.
+            self.state = VmStatus::Ready;
+            self.publish();
             if let Err(error) = self.prepare_run(id, signals, ports) {
                 self.record_failure(error.clone());
                 return Err(error);
@@ -168,6 +176,13 @@ impl Owner {
         if self.state == VmStatus::Paused {
             return Ok(());
         }
+        self.require_host_dma_quiescence()?;
+        self.pause_run(operation)
+    }
+
+    // Quiesce CPU and modeled producers without claiming physical DMA is idle.
+    // Callers must enforce DMA policy before revoking mappings or backing.
+    pub(super) fn pause_run(&mut self, operation: OperationId) -> AxVmResult {
         self.state = VmStatus::Pausing;
         self.publish();
         let quiet = self.park_participants(operation).and_then(|()| {
@@ -248,17 +263,65 @@ impl Owner {
         Ok(())
     }
 
-    pub(super) fn require_stop_supported(&self) -> AxVmResult {
-        if !self.vm.config().pass_through_devices().is_empty()
-            && let Some(run) = &self.run
-        {
-            self.shared.ivc.require_no_endpoints(run.id)?;
+    pub(super) fn require_host_dma_quiescence(&self) -> AxVmResult {
+        // Host assignments do not participate in DeviceLifecycle yet. An empty
+        // lifecycle-device list therefore cannot prove their DMA has stopped.
+        // Keep the running owner and its backing intact on policy rejection.
+        if let Some(blocker) = self.host_dma_blocker() {
+            return Err(blocker.into_error("quiesce VM devices"));
         }
         Ok(())
     }
 
+    fn host_dma_blocker(&self) -> Option<crate::vm::HostDmaBlocker> {
+        if self
+            .run
+            .as_ref()
+            .is_some_and(|run| self.last_run == Some(run.id))
+        {
+            self.vm.host_dma_blocker()
+        } else {
+            None
+        }
+    }
+
+    /// Stops guest execution while retaining assignments that cannot be reclaimed.
+    pub(super) fn shutdown_run(&mut self, operation: OperationId) -> AxVmResult {
+        if self.host_dma_blocker().is_none() {
+            return self.stop(operation);
+        }
+        // Architecture teardown can have partially failed. Retrying must not
+        // turn an unproven physical retirement into a successful shutdown.
+        if self.state == VmStatus::Failed {
+            return Err(self
+                .last_failure
+                .clone()
+                .unwrap_or_else(|| AxVmError::invalid_state("shut down guest", "run has failed")));
+        }
+        if self.state == VmStatus::Stopped {
+            return Ok(());
+        }
+        if let Err(error) = self.halt_run(operation) {
+            self.record_failure(error.clone());
+            return Err(error);
+        }
+        // No guest or virtual worker can access these ports now. Keep the
+        // run, page tables, DMA backing and IVC mappings until board reset.
+        self.run
+            .as_ref()
+            .expect("retained shutdown run")
+            .ports
+            .close();
+        self.state = VmStatus::Stopped;
+        info!(
+            "VM[{}] guest execution stopped; retaining physical device resources until host reset",
+            self.vm.id()
+        );
+        Ok(())
+    }
+
     pub(super) fn stop(&mut self, operation: OperationId) -> AxVmResult {
-        self.require_stop_supported()?;
+        self.require_host_dma_quiescence()?;
         let result = self.stop_run(operation);
         if let Err(error) = &result {
             self.record_failure(error.clone());
@@ -266,7 +329,7 @@ impl Owner {
         result
     }
 
-    pub(super) fn stop_run(&mut self, operation: OperationId) -> AxVmResult {
+    fn stop_run(&mut self, operation: OperationId) -> AxVmResult {
         self.last_stop_reason
             .get_or_insert(crate::StopReason::Clean);
         self.shared.publish_run_services(None);
@@ -285,6 +348,28 @@ impl Owner {
             self.state = VmStatus::Stopped;
             return Ok(());
         }
+        self.halt_run(operation)?;
+        self.retire_failed_memory_update()?;
+        self.teardown_ivc(operation)?;
+        self.invalidate_root(self.vm.resources.nested_paging)?;
+        self.run
+            .as_ref()
+            .expect("retire stopped memory")
+            .services
+            .memory()
+            .retire()?;
+        self.shared.publish_run_services(None);
+        // Device routes, decode views and workers are now quiet. New starts
+        // prepare fresh controllers and fresh ports for another RunId.
+        self.run.as_ref().expect("close stopped run").ports.close();
+        self.run = None;
+        self.state = VmStatus::Stopped;
+        Ok(())
+    }
+
+    /// Closes execution and joins its owners without releasing guest memory.
+    fn halt_run(&mut self, operation: OperationId) -> AxVmResult {
+        self.shared.publish_run_services(None);
         // Retire the exact run generation before teardown. If a later teardown
         // step fails, this retired run must still be unable to influence host
         // CPU-frequency policy. The binding is released from `close()` once
@@ -355,21 +440,6 @@ impl Owner {
         if let Some(error) = failure {
             return Err(error);
         }
-        self.retire_failed_memory_update()?;
-        self.teardown_ivc(operation)?;
-        self.invalidate_root(self.vm.resources.nested_paging)?;
-        self.run
-            .as_ref()
-            .expect("retire stopped memory")
-            .services
-            .memory()
-            .retire()?;
-        self.shared.publish_run_services(None);
-        // Device routes, decode views and workers are now quiet. New starts
-        // prepare fresh controllers and fresh ports for another RunId.
-        self.run.as_ref().expect("close stopped run").ports.close();
-        self.run = None;
-        self.state = VmStatus::Stopped;
         Ok(())
     }
 }

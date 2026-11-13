@@ -468,11 +468,21 @@ impl Axvisor {
         let (mut qemu, prepared_assets) = self
             .load_qemu_case_config(request, case, asset_config, web_ui_dist)
             .await?;
-        crate::execution::qemu::append_backtrace_map(
-            &mut qemu,
+        // Management probes need the bundle's companion directory, whose path
+        // is independent of the temporary boot payload containing symbols.
+        let builtin_configs = qemu
+            .boot
+            .initramfs
+            .as_ref()
+            .map(|archive| Path::new(archive).with_extension("configs"));
+        let symbol_initramfs = crate::execution::qemu::prepare_qemu_initramfs_with_symbols(
+            &qemu,
             &kernel.with_extension("axbt"),
             &request.target,
         )?;
+        if let Some(archive) = &symbol_initramfs {
+            qemu.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+        }
 
         // Optional host->guest TCP probe over QEMU user-mode networking. When
         // `[host_http_probe]` is configured, the host acts as a *client* that
@@ -527,11 +537,6 @@ impl Axvisor {
             let probe_owned = probe_config.clone();
             let probe_case_dir = case.case.case.case_dir.clone();
             let probe_stop = stop.clone();
-            let builtin_configs = qemu
-                .boot
-                .initramfs
-                .as_ref()
-                .map(|archive| Path::new(archive).with_extension("configs"));
             let probe: host_probe::HostHttpProbeFn = Box::new(move || {
                 super::http_probe::run(
                     &probe_addr,

@@ -1,6 +1,6 @@
 //! Task-side SBI console service over leased guest RAM.
 
-use axvm_types::MappingFlags;
+use axvm_types::{HostPhysAddr, MappingFlags};
 use sbi_spec::{binary::SbiRet, legacy};
 
 use super::{
@@ -10,7 +10,12 @@ use super::{
         console_write,
     },
 };
-use crate::services::RunServices;
+use crate::{
+    host::{HostMemory, default_host},
+    services::RunServices,
+};
+
+const CONSOLE_TRANSFER_SIZE: usize = 512;
 
 pub(super) fn is_console_call(call: RiscvSbiCall) -> bool {
     matches!(
@@ -51,10 +56,9 @@ fn copy_console(call: RiscvSbiCall, services: &RunServices) -> SbiRet {
     if length == 0 {
         return SbiRet::success(0);
     }
-    // DBCN permits partial transfers. One bounded transfer avoids guest-driven
-    // heap allocation while reporting the exact number consumed to the guest.
-    let mut buffer = [0u8; 512];
-    let count = length.min(buffer.len());
+    // DBCN permits partial transfers. Keep the buffer size independent of the
+    // guest request and report the exact number consumed.
+    let count = length.min(CONSOLE_TRANSFER_SIZE);
     let address = axvm_types::GuestPhysAddr::from_usize(address);
     let required = if call.function == FID_CONSOLE_WRITE {
         MappingFlags::READ
@@ -64,6 +68,10 @@ fn copy_console(call: RiscvSbiCall, services: &RunServices) -> SbiRet {
     services
         .memory()
         .with_access_range(address, length, required, |memory| {
+            let Some(mut allocation) = ConsoleBuffer::allocate() else {
+                return SbiRet::failed();
+            };
+            let buffer = allocation.bytes();
             if call.function == FID_CONSOLE_WRITE {
                 if memory.read(address, &mut buffer[..count]).is_err() {
                     return SbiRet::invalid_param();
@@ -94,6 +102,36 @@ fn copy_console(call: RiscvSbiCall, services: &RunServices) -> SbiRet {
             | axdevice_base::DeviceError::WriteOnly => SbiRet::invalid_param(),
             _ => SbiRet::failed(),
         })
+}
+
+/// Owns direct-mapped RAM for the synchronous firmware buffer ABI.
+/// Task stacks use vmap and cannot use the host's linear VA-to-PA conversion.
+struct ConsoleBuffer {
+    physical: HostPhysAddr,
+}
+
+impl ConsoleBuffer {
+    fn allocate() -> Option<Self> {
+        let physical = default_host().alloc_contiguous_frames(1, ax_memory_addr::PAGE_SIZE_4K)?;
+        let pointer = default_host().phys_to_virt(physical).as_mut_ptr();
+        // SAFETY: the newly allocated 4 KiB frame is exclusively owned and
+        // permanently direct-mapped. Initialize the entire exposed byte range.
+        unsafe { pointer.write_bytes(0, CONSOLE_TRANSFER_SIZE) };
+        Some(Self { physical })
+    }
+
+    fn bytes(&mut self) -> &mut [u8] {
+        let pointer = default_host().phys_to_virt(self.physical).as_mut_ptr();
+        // SAFETY: this owner retains the initialized frame for the complete
+        // borrow. Firmware accesses it synchronously before this borrow ends.
+        unsafe { core::slice::from_raw_parts_mut(pointer, CONSOLE_TRANSFER_SIZE) }
+    }
+}
+
+impl Drop for ConsoleBuffer {
+    fn drop(&mut self) {
+        default_host().dealloc_contiguous_frames(self.physical, 1);
+    }
 }
 
 fn legacy_console(extension: usize, argument: usize) -> usize {

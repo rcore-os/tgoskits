@@ -10,6 +10,8 @@ DTSpec v0.3 的 [phandle 定义](https://devicetree-specification.readthedocs.io
 
 `interrupt::phandle::controller_node()` 根据当前单一机器控制器角色选择 GIC 或 PLIC，多个候选直接报错。`phandle::install()` 保留所选客户机节点的编号，宿主 profile 的编号只作为缺少客户机编号时的分配提示。新设备的中断引用由 `fdt_interrupt_binding()` 从最终客户机树取得，运行时控制器 ID 仍由设备图校验。
 
+客户机控制器身份与物理 IRQ 属性分别取自各自的树。`parse_vm_interrupt()` 从宿主 DTB 中按已选择的物理设备路径解析来源及触发方式，保存到 `PassthroughInterrupt::controller_trigger`；客户机虚拟 PLIC 的单单元说明符不提供 APLIC 的电平或边沿信息。宿主树中找不到已选择的物理路径时应报错，不能根据客户机虚拟节点推断宿主资源；没有宿主 DTB 时保留原有解析入口。 物理匹配复用 `device::owns_device_resources()` 的资源判定；只有携带非空 `reg`、`ranges`、`interrupts` 或 `interrupts-extended` 的节点才进入该匹配，`/aliases` 等客户机独有描述节点不要求存在宿主同路径。 `/cpus` 及其子节点描述客户机执行拓扑，由机器模型处理，不参与物理 IRQ 路径匹配；根直通选择不能使超额分配时合成的 CPU 节点必须对应宿主节点。
+
 ITS 允许多实例。`its::install_registers()` 先按 profile 路径绑定；路径不同时，只接受唯一的相同寄存器区间，不按遍历顺序或相同 compatible 猜测。路径已被另一类设备占用、重复绑定或客户机 ITS 缺少对应实例均拒绝。`timer::install_machine_timer()` 通过唯一的 Arm architectural timer 角色保留客户机路径与 phandle，再更新宿主提供的定时器资源。串口继续使用已有 console identity 和 `replacement_phandle()`。
 
 ### 1.2 跨树导入
@@ -25,6 +27,8 @@ ITS 允许多实例。`its::install_registers()` 先按 profile 路径绑定；�
 ### 2.1 CPU 投影
 
 未配置显式 `phys_cpu_sets` 时，按 `phys_cpu_ids` 选择宿主 CPU，并只投影执行所需的标量属性；配置显式 affinity 时，`phys_cpu_ids` 只表示客户机 CPU 身份，宿主选择由最终 mask 决定。已有客户机 CPU 优先按相同硬件地址对应；宿主选中集合与客户机均为单 CPU 时允许唯一角色对应，并保留客户机 phandle。其他无法确定的对应关系直接报错。投影不复制宿主 OPP、供电、idle-state、cache provider 引用，也不保留整机 `cpu-map`，避免描述未分配的硬件与拓扑。
+
+宿主 CPU 的硬件身份以 `reg` 为准，节点名称只用于定位。`tree::cpu_reg_address()` 为默认亲和解析、`need_cpu_node()` 过滤及 `ensure_guest_cpu_nodes()` 补齐提供同一解释，避免把固件的 `cpu@10` 标签误当成硬件编号 `0x10`，或者为已有的硬件线程重复生成 CPU 节点。配置仍使用硬件线程标识，再由运行时拓扑转换为宿主逻辑 CPU；显式 `phys_cpu_sets` 的客户机身份与宿主亲和分离规则保持不变。
 
 这一限制作用于显式 DTB 的 CPU 替换路径。宿主完整派生设备树的 `create_guest_fdt()` 也会删除选中 CPU 上的 OPP、时钟、供电、PVTM、NVMEM 和 thermal cooling 绑定；Axvisor 继续转发 SCMI mailbox，以便客户机使用分配设备所需的时钟和供电服务。由于客户机 CPU 节点不再引用宿主 CPU 的 SCMI clock、OPP 和 regulator，标准 cpufreq 驱动没有宿主 CPU 调频入口，不会成为 CPU 电源轨的第二个所有者。本次不新增独立客户机直通设备的任意路径或 GPA 重定位配置；既有直通资源映射仍需遵循已有配置契约，不能把本次身份修复解释为该能力已经可用。
 
