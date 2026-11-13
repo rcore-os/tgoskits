@@ -1,9 +1,7 @@
 #![cfg(any(test, target_arch = "loongarch64", target_arch = "riscv64"))]
 
 #[cfg(any(test, target_arch = "riscv64"))]
-use crate::irq::{CPU_LOCAL_IRQ_DOMAIN, IrqSource};
-#[cfg(any(test, target_arch = "riscv64"))]
-use crate::irq::{HwIrq, IrqError, IrqId};
+use crate::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqError, IrqId};
 
 #[cfg(any(test, target_arch = "loongarch64"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,29 +198,10 @@ pub(crate) fn riscv_source_from_plic_hwirq(
     Ok(source)
 }
 
-#[cfg(any(test, target_arch = "riscv64"))]
-pub(crate) fn riscv_resolve_controller_line(
-    source: IrqSource,
-    is_plic_domain: impl FnOnce() -> bool,
-) -> Result<(), IrqError> {
-    match source {
-        IrqSource::ControllerLine { domain, hwirq } if domain == CPU_LOCAL_IRQ_DOMAIN => {
-            if riscv_cpu_local_hwirq_is_runtime_irq(hwirq) {
-                Ok(())
-            } else {
-                Err(IrqError::InvalidIrq)
-            }
-        }
-        IrqSource::ControllerLine { .. } if is_plic_domain() => Ok(()),
-        IrqSource::ControllerLine { .. } => Err(IrqError::InvalidIrq),
-        IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => Err(IrqError::Unsupported),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqDomainId, IrqError, IrqId, IrqSource};
+    use crate::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqDomainId, IrqError, IrqId};
 
     #[test]
     fn acpi_routing_span_does_not_override_pch_hardware_input_count() {
@@ -396,36 +375,5 @@ mod tests {
         let irq = riscv_cpu_local_irq_from_raw(10);
 
         assert_eq!(irq, None);
-    }
-
-    #[test]
-    fn riscv_resolve_controller_line_keeps_cpu_local_and_plic_domains_separate() {
-        let cpu_local = IrqSource::ControllerLine {
-            domain: CPU_LOCAL_IRQ_DOMAIN,
-            hwirq: HwIrq(RISCV_S_TIMER_CAUSE as u32),
-        };
-        let invalid_cpu_local = IrqSource::ControllerLine {
-            domain: CPU_LOCAL_IRQ_DOMAIN,
-            hwirq: HwIrq(10),
-        };
-        let plic = IrqSource::ControllerLine {
-            domain: IrqDomainId(7),
-            hwirq: HwIrq(10),
-        };
-        let other = IrqSource::ControllerLine {
-            domain: IrqDomainId(8),
-            hwirq: HwIrq(10),
-        };
-
-        assert_eq!(riscv_resolve_controller_line(cpu_local, || false), Ok(()));
-        assert_eq!(
-            riscv_resolve_controller_line(invalid_cpu_local, || false),
-            Err(IrqError::InvalidIrq)
-        );
-        assert_eq!(riscv_resolve_controller_line(plic, || true), Ok(()));
-        assert_eq!(
-            riscv_resolve_controller_line(other, || false),
-            Err(IrqError::InvalidIrq)
-        );
     }
 }

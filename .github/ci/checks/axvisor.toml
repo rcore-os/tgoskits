@@ -140,23 +140,36 @@ cases = [
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-ipi"
 impact_targets = ["axvisor:riscv64"]
-name = "QEMU riscv64 · Smoke + IPI"
+name = "QEMU riscv64 · Smoke + APLIC passthrough + IPI"
 timeout_minutes = 30
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
-echo "==> axvisor riscv64 smoke"
-cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
+echo "==> axvisor riscv64 smoke + APLIC passthrough + guest SMP IPI"
+cargo xtask axvisor test qemu --arch riscv64 --test-case smoke,qemu-riscv-aplic,qemu-aplic-passthrough,smp-ipi
 echo "==> axvisor riscv64 IPI cross-test"
 cargo xtask cross-test --arch riscv64 \
   --package axvm \
   --features axvm/host-test --no-default-features --lib ipi
+echo "==> axvisor riscv64 physical IRQ route lifetime"
+physical_output="$(cargo xtask cross-test --arch riscv64 \
+  --package axvm \
+  --features axvm/host-test --no-default-features \
+  --lib arch::riscv64::irq::physical::tests 2>&1)" || {
+  printf '%s\n' "$physical_output"
+  exit 1
+}
+printf '%s\n' "$physical_output"
+printf '%s\n' "$physical_output" | grep -Eq 'test result: ok\. [1-9][0-9]* passed;' || {
+  echo "physical IRQ route filter matched no passing test" >&2
+  exit 1
+}
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "riscv64"
-cases = ["smoke"]
+cases = ["smoke", "qemu-riscv-aplic", "qemu-aplic-passthrough", "smp-ipi"]
 
 [[check]]
 id = "test-axvisor-loongarch64-qemu"

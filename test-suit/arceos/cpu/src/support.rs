@@ -6,7 +6,10 @@ use core::{
 };
 
 use ax_alloc::GlobalPage;
-use ax_cpu::{PhysAddr, virtualization::ControlMemory};
+use ax_cpu::{
+    PhysAddr,
+    virtualization::{ControlMemory, StateMemory},
+};
 
 pub(crate) static LIVE_PAGES: AtomicUsize = AtomicUsize::new(0);
 
@@ -47,10 +50,7 @@ impl ControlPages {
 // constructor verifies their physical contiguity through the permanent direct
 // map. No Clone or external owner exists; forgetting this lease also forgets
 // GlobalPage, so the allocation remains alive after failed hardware retirement.
-unsafe impl ControlMemory for ControlPages {
-    fn physical_address(&self) -> PhysAddr {
-        self.physical + self.offset
-    }
+unsafe impl StateMemory for ControlPages {
     fn virtual_address(&self) -> NonNull<u8> {
         NonNull::new((self.pages.start_vaddr() + self.offset).as_mut_ptr()).unwrap()
     }
@@ -62,5 +62,14 @@ unsafe impl ControlMemory for ControlPages {
 impl Drop for ControlPages {
     fn drop(&mut self) {
         LIVE_PAGES.fetch_sub(self.pages.size() / 4096, Ordering::Relaxed);
+    }
+}
+
+// SAFETY: the allocator supplies coherent WB pages; physical contiguity and
+// permanent mappings are established at allocation, and CPU retirement owns
+// the lease until all hardware references have been removed.
+unsafe impl ControlMemory for ControlPages {
+    fn physical_address(&self) -> PhysAddr {
+        self.physical + self.offset
     }
 }

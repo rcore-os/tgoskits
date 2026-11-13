@@ -7,6 +7,7 @@ const RISCV_LINUX_IMAGE_FLAGS: usize = 0;
 const RISCV_LINUX_IMAGE_VERSION: usize = 0x0000_0002;
 const RISCV_LINUX_IMAGE_MAGIC: usize = 0x0056_4353_4952;
 const RISCV_LINUX_IMAGE_MAGIC2: usize = 0x0543_5352;
+const SSTATUS_FS_INITIAL: usize = 1 << 13;
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -47,6 +48,10 @@ pub unsafe extern "C" fn _head() -> ! {
 #[unsafe(naked)]
 pub unsafe extern "C" fn kernel_entry(_hart_id: usize, _fdt_addr: usize) -> ! {
     naked_asm!(
+        // The RV64GC Rust ABI may use F/D before the runtime initializes FP.
+        // Firmware and VS-mode reset may leave FS Off, so enable it first.
+        "li t0, {fs_initial}",
+        "csrs sstatus, t0",
         ".option push",
         ".option norelax",
         "lla gp, __global_pointer$",
@@ -71,6 +76,7 @@ pub unsafe extern "C" fn kernel_entry(_hart_id: usize, _fdt_addr: usize) -> ! {
         "lla t1, {primary_head_entry}",
         "jr t1",
         primary_head_entry = sym primary_head_entry,
+        fs_initial = const SSTATUS_FS_INITIAL,
         abi_magic = const super::boot::ABI_MAGIC_VALUE,
         abi_version = const super::boot::ABI_VERSION_VALUE,
         record_size = const super::boot::RECORD_SIZE,
@@ -194,6 +200,9 @@ pub(crate) unsafe extern "C" fn _secondary_entry(_hartid: usize, _cpu_meta_paddr
     naked_asm!(
         "csrci sstatus, 2",
         "csrw sie, zero",
+        // SBI HSM does not promise an enabled floating-point unit on entry.
+        "li t0, {fs_initial}",
+        "csrs sstatus, t0",
         ".option push",
         ".option norelax",
         "lla gp, __global_pointer$",
@@ -220,6 +229,7 @@ pub(crate) unsafe extern "C" fn _secondary_entry(_hartid: usize, _cpu_meta_paddr
         "lla t1, {secondary_start}",
         "jr t1",
         secondary_start = sym secondary_start,
+        fs_initial = const SSTATUS_FS_INITIAL,
         secondary_early_trap = sym secondary_early_trap,
         stack_top_offset = const offset_of!(PerCpuMeta, stack_top),
         abi_magic = const super::boot::ABI_MAGIC_VALUE,

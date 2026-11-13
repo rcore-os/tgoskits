@@ -103,6 +103,32 @@ pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::current::ArchPerCpu>;
 
 #[cfg(test)]
 mod host_link_symbols {
+    // Linux host tests link without the kernel runtime linker script and never
+    // execute supervisor trap recovery. Keep each empty table aligned and its
+    // start/end at the same non-null address; separate Rust statics would not
+    // guarantee those bounds describe an empty range.
+    #[cfg(all(target_os = "linux", target_arch = "riscv64"))]
+    core::arch::global_asm!(
+        ".pushsection .rodata.axvm_host_exception_tables, \"a\"",
+        ".balign 4",
+        ".global _ex_table_start, _ex_table_end",
+        ".global _nofault_ex_table_start, _nofault_ex_table_end",
+        "_ex_table_start:",
+        "_ex_table_end:",
+        "_nofault_ex_table_start:",
+        "_nofault_ex_table_end:",
+        ".byte 0",
+        ".popsection",
+    );
+
+    #[cfg(all(target_os = "linux", target_arch = "riscv64"))]
+    #[test]
+    fn host_image_links_cpu_trap_dependencies() {
+        // Taking the address retains the real trap entry and its recovery
+        // dependencies without executing privileged code under qemu-user.
+        std::hint::black_box(ax_cpu::boot::init_trap as fn());
+    }
+
     #[unsafe(no_mangle)]
     static STACK_SIZE: usize = 0;
     #[unsafe(no_mangle)]

@@ -365,9 +365,15 @@ dependencies = [
  "acpica-interpreter",
  "arceos-test-build",
  "ax-alloc",
+ "ax-crate-interface",
  "ax-driver",
  "ax-hal",
+ "ax-mm",
+ "ax-plat",
  "ax-std",
+ "ax-sync",
+ "rdrive",
+ "somehal",
 ]
 
 [[package]]
@@ -1810,6 +1816,7 @@ dependencies = [
  "fdt-raw",
  "irq-framework",
  "log",
+ "loom",
  "mmio-api",
  "page-table-generic",
  "paste",
@@ -7073,6 +7080,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "riscv-aia-driver"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "riscv-decode"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8005,6 +8019,7 @@ dependencies = [
  "rdif-msi",
  "rdrive",
  "riscv",
+ "riscv-aia-driver",
  "sbi-rt",
  "someboot",
  "somehal-macros",

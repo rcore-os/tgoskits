@@ -401,10 +401,14 @@ impl ArceOS {
                     .load_board_config(&cargo, board_config_path.as_deref())
                     .await?;
                 let output = self.build_c_app_request(&request, app_dir, app_name)?;
-                crate::execution::qemu::append_backtrace_map_to_initramfs(
-                    &mut board_config.boot.initramfs,
+                let symbol_initramfs = crate::execution::qemu::prepare_initramfs_with_symbols(
+                    board_config.boot.initramfs.as_deref().map(Path::new),
                     &output.elf_path.with_extension("axbt"),
                 )?;
+                if let Some(archive) = &symbol_initramfs {
+                    board_config.boot.initramfs =
+                        Some(archive.path().to_string_lossy().into_owned());
+                }
                 self.app
                     .board_prepared_elf(
                         output.elf_path,
@@ -539,11 +543,14 @@ impl ArceOS {
         // See `run_qemu_request_with_cargo`: default ArceOS QEMU keeps a FAT32 rootfs.
         crate::execution::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
         rootfs::prepare_default_qemu_fat32_rootfs(self.app.workspace_root(), &qemu)?;
-        crate::execution::qemu::append_backtrace_map(
-            &mut qemu,
+        let symbol_initramfs = crate::execution::qemu::prepare_qemu_initramfs_with_symbols(
+            &qemu,
             &output.elf_path.with_extension("axbt"),
             &request.target,
         )?;
+        if let Some(archive) = &symbol_initramfs {
+            qemu.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+        }
         self.app
             .prepare_elf_artifact(output.elf_path, qemu.to_bin)
             .await?;
@@ -570,10 +577,13 @@ impl ArceOS {
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
         let mut uboot = uboot;
-        crate::execution::qemu::append_backtrace_map_to_initramfs(
-            &mut uboot.boot.initramfs,
+        let symbol_initramfs = crate::execution::qemu::prepare_initramfs_with_symbols(
+            uboot.boot.initramfs.as_deref().map(Path::new),
             &output.elf_path.with_extension("axbt"),
         )?;
+        if let Some(archive) = &symbol_initramfs {
+            uboot.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+        }
         self.app.prepare_elf_artifact(output.elf_path, true).await?;
         self.app.run_prepared_uboot(uboot).await
     }

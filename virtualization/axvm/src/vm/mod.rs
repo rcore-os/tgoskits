@@ -21,6 +21,8 @@ use crate::{
 };
 
 pub(crate) mod boot;
+mod host_access;
+pub(crate) use host_access::HostDmaBlocker;
 pub(crate) mod memory;
 pub(crate) mod prepare;
 #[cfg(any(test, target_arch = "aarch64"))]
@@ -217,6 +219,9 @@ impl AxVM {
     pub(crate) fn config_mut(&mut self) -> &mut AxVMConfig {
         &mut self.config
     }
+    pub(crate) fn host_dma_blocker(&self) -> Option<HostDmaBlocker> {
+        host_access::host_dma_blocker(&self.config, self.resources.address_layout.as_ref())
+    }
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn uses_passthrough_address_space(&self) -> bool {
         self.config.uses_passthrough_address_space()
@@ -398,7 +403,8 @@ impl AxVM {
         let configs = self.config.memory_regions().to_vec();
         let layout = memory::MemoryLayoutBuilder::new(self, &configs).prepare()?;
         let main = layout.main_memory();
-        boot::BootImagePlan::new(main.gpa, main.is_identical()).apply_to_config(&mut self.config);
+        boot::BootImagePlan::new(main.gpa, main.is_identical())
+            .apply_to_config(&mut self.config)?;
         Ok(layout)
     }
 
@@ -446,9 +452,17 @@ fn copy_owner_memory(
         .ok_or_else(|| ax_err_type!(InvalidInput, "guest copy range overflows"))?;
     let mut offset = 0;
     while offset < length {
-        let address = space
-            .translate(start + offset)
-            .ok_or_else(|| ax_err_type!(InvalidInput, "unmapped guest copy"))?;
+        let address = space.translate(start + offset).ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                std::format!(
+                    "unmapped guest copy at GPA {:#x} (start={:#x}, length={:#x})",
+                    (start + offset).as_usize(),
+                    start.as_usize(),
+                    length
+                )
+            )
+        })?;
         let count = (0x1000 - address.as_usize() % 0x1000).min(length - offset);
         let pointer = default_host().phys_to_virt(address).as_mut_ptr();
         for index in 0..count {

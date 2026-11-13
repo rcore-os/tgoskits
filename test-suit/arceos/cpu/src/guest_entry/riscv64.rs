@@ -1,7 +1,9 @@
+use core::cell::UnsafeCell;
+
 use ax_cpu::{
     interrupt,
     registers::{self, FpState},
-    virtualization::{GuestBinding, PerCpu, Vcpu, VirtualizationError, enter_guest},
+    virtualization::{GuestBinding, PerCpu, StateMemory, Vcpu, VirtualizationError, enter_guest},
 };
 
 core::arch::global_asm!(
@@ -17,9 +19,180 @@ core::arch::global_asm!(
     "li a0, 0x456",
     "fmv.d.x f0, a0",
     "ecall",
+    ".option push",
+    ".option arch, +v",
+    ".balign 4",
+    ".global cpu_test_vector_guest",
+    "cpu_test_vector_guest:",
+    "csrr a3, vstart",
+    "csrr a4, vl",
+    "csrr a5, vtype",
+    "csrr a6, vcsr",
+    "csrw vstart, zero",
+    "vsetvli t0, zero, e8, m1, ta, ma",
+    "vmv.x.s a1, v0",
+    "vmv.x.s a2, v31",
+    "vmv.v.x v0, a0",
+    "addi t0, a0, 1",
+    "vmv.v.x v31, t0",
+    "li t0, 1",
+    "csrw vstart, t0",
+    "li t0, 3",
+    "csrw vcsr, t0",
+    "ecall",
+    "j cpu_test_vector_guest",
+    ".option pop",
 );
 unsafe extern "C" {
     fn cpu_test_guest();
+    fn cpu_test_vector_guest();
+}
+
+#[derive(Debug)]
+struct VectorMemory {
+    words: UnsafeCell<std::vec::Vec<usize>>,
+    offset: usize,
+}
+
+impl VectorMemory {
+    fn new(bytes: usize, offset: usize) -> Self {
+        assert!(offset <= bytes);
+        Self {
+            words: UnsafeCell::new(
+                std::vec![usize::MAX; bytes.div_ceil(core::mem::size_of::<usize>())],
+            ),
+            offset,
+        }
+    }
+}
+
+impl Clone for VectorMemory {
+    fn clone(&self) -> Self {
+        // SAFETY: this private !Sync lease cannot be accessed concurrently;
+        // guest entry requires the exclusive owning Vcpu borrow.
+        Self {
+            words: UnsafeCell::new(unsafe { &*self.words.get() }.clone()),
+            offset: self.offset,
+        }
+    }
+}
+
+// SAFETY: each Vec owns initialized writable storage. The fixed byte offset
+// stays in range and is preserved by deep Clone, as are length, contents and
+// the allocator's usize alignment. Forgetting retains the allocation; accessors
+// never allocate, block or change the range. UnsafeCell permits the mutable
+// buffer pointer under a shared lease borrow and makes the lease !Sync.
+unsafe impl StateMemory for VectorMemory {
+    fn virtual_address(&self) -> core::ptr::NonNull<u8> {
+        core::ptr::NonNull::new(
+            // SAFETY: this private !Sync lease excludes concurrent Vec access.
+            // as_mut_ptr does not materialize a reference to the register bank.
+            unsafe { &mut *self.words.get() }
+                .as_mut_ptr()
+                .cast::<u8>()
+                .wrapping_add(self.offset),
+        )
+        .unwrap()
+    }
+    fn byte_len(&self) -> usize {
+        // SAFETY: no operation changes this Vec length after construction and
+        // the private !Sync lease excludes concurrent access.
+        unsafe { &*self.words.get() }.len() * core::mem::size_of::<usize>() - self.offset
+    }
+}
+
+fn check_owned_vector_state(bytes: usize) {
+    // Valid leases can still be unsuitable for a vector bank. Reject both
+    // insufficient capacity and a byte-offset range without usize alignment.
+    for (size, offset) in [(bytes * 32 - 8, 0), (bytes * 32 + 8, 1)] {
+        assert!(matches!(
+            Vcpu::with_vector_memory(
+                bytes,
+                VectorMemory::new(size, offset),
+                VectorMemory::new(bytes * 32, 0)
+            ),
+            Err(VirtualizationError::InvalidVectorState)
+        ));
+    }
+    // Excess capacity must not change the explicit architectural VLEN.
+    let mut state = Vcpu::with_vector_memory(
+        bytes,
+        VectorMemory::new(bytes * 32 + 64, 0),
+        VectorMemory::new(bytes * 32 + 64, 0),
+    )
+    .unwrap();
+    assert_eq!(state.vector_register_bytes(), bytes);
+    state.initialize_supervisor();
+    state.guest_regs.sepc = ax_hal::mem::virt_to_phys(ax_cpu::VirtAddr::from_usize(
+        cpu_test_vector_guest as *const () as usize,
+    ))
+    .as_usize();
+    state.vs_csrs.vsstatus = (3 << 13) | (3 << 9);
+    let run = |state: &mut Vcpu<VectorMemory>, seed: usize, previous: usize| {
+        state.guest_regs.gprs.a0 = seed;
+        // SAFETY: the caller holds this single hart's H owner with IRQs off.
+        // The trusted guest uses no memory; both vector banks are owned by
+        // state and match this CPU. Host vector use is confined to this scope.
+        unsafe {
+            let status: usize;
+            core::arch::asm!(
+                ".option push", ".option arch, +v",
+                "csrr {status}, sstatus", "li t0, 0x600", "csrs sstatus, t0",
+                "vsetvli t0, zero, e16, m1, ta, ma",
+                "li t0, 64", "vmv.v.x v0, t0",
+                "li t0, 65", "vmv.v.x v31, t0",
+                "li t0, 2", "csrw vstart, t0",
+                "li t0, 5", "csrw vcsr, t0",
+                ".option pop", status = out(reg) status, out("t0") _,
+                out("v0") _, out("v31") _, options(nostack),
+            );
+            let binding = GuestBinding::load(state).unwrap();
+            enter_guest(state);
+            let (first, last, start, length, kind, control): (
+                usize,
+                usize,
+                usize,
+                usize,
+                usize,
+                usize,
+            );
+            core::arch::asm!(
+                ".option push", ".option arch, +v",
+                "csrr {start}, vstart", "csrr {length}, vl",
+                "csrr {kind}, vtype", "csrr {control}, vcsr",
+                "csrw vstart, zero", "vmv.x.s {first}, v0", "vmv.x.s {last}, v31",
+                "csrw sstatus, {status}", ".option pop",
+                first = out(reg) first, last = out(reg) last,
+                start = out(reg) start, length = out(reg) length,
+                kind = out(reg) kind, control = out(reg) control,
+                status = in(reg) status, options(nostack),
+            );
+            binding.unload(state);
+            assert_eq!(
+                (first, last, start, length, kind, control),
+                (64, 65, 2, bytes / 2, 0xc8, 5)
+            );
+        }
+        assert_eq!(state.trap_csrs.scause, 10);
+        assert_eq!(state.guest_regs.gprs.a1, previous);
+        assert_eq!(
+            state.guest_regs.gprs.a2,
+            if previous == 0 { 0 } else { previous + 1 }
+        );
+        if previous != 0 {
+            assert_eq!(state.guest_regs.gprs.a3, 1);
+            assert_eq!(state.guest_regs.gprs.a4, bytes);
+            assert_eq!(state.guest_regs.gprs.a5, 0xc0);
+            assert_eq!(state.guest_regs.gprs.a6, 3);
+        }
+        state.guest_regs.sepc += 4;
+    };
+    run(&mut state, 7, 0);
+    let mut cloned = state.clone();
+    run(&mut state, 11, 7);
+    run(&mut cloned, 19, 7);
+    run(&mut state, 23, 11);
+    std::println!("CPU_GUEST_VECTOR_OK");
 }
 
 pub fn run() {
@@ -36,7 +209,7 @@ pub fn run() {
         unsafe { cpu.enable() },
         Err(VirtualizationError::AlreadyEnabled)
     );
-    let mut state = Vcpu::default();
+    let mut state: Vcpu = Vcpu::default();
     state.initialize_supervisor();
     state.guest_regs.sepc = ax_hal::mem::virt_to_phys(ax_cpu::VirtAddr::from_usize(
         cpu_test_guest as *const () as usize,
@@ -158,6 +331,14 @@ pub fn run() {
             restored, host_vsscratch,
             "aborted binding restores the host"
         );
+        let vector_bytes = ax_cpu::capability::vector_register_bytes();
+        assert!(
+            cfg!(feature = "sstc") || vector_bytes.is_some(),
+            "the default guest-entry configuration must exercise vector state"
+        );
+        if let Some(bytes) = vector_bytes {
+            check_owned_vector_state(bytes);
+        }
         core::arch::asm!("csrw sie, {}", in(reg) saved_sie, options(nostack));
         original_fp.restore();
         registers::sstatus::set_fs(saved_status.fs());

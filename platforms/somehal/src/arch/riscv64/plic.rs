@@ -1,3 +1,4 @@
+//! PLIC discovery, source control, and context-bound claim completion.
 use alloc::{format, vec, vec::Vec};
 use core::{num::NonZeroU32, ptr::NonNull};
 
@@ -9,21 +10,15 @@ use rdrive::{
     probe::{OnProbeError, fdt::NodeType},
     register::{FdtInfo, ProbeFdt},
 };
-use riscv::register::{sie, sip};
-use sbi_rt::HartMask;
 
 use crate::{
     common::ioremap,
-    irq_routing::{
-        RISCV_S_EXT_IRQ, RISCV_S_SOFT_IRQ, RISCV_S_TIMER_IRQ, RiscvTrapIrq, classify_riscv_trap,
-        riscv_plic_hwirq_from_source, riscv_source_from_plic_hwirq,
-    },
+    irq_routing::{riscv_plic_hwirq_from_source, riscv_source_from_plic_hwirq},
 };
 
 const SUPERVISOR_EXTERNAL_INTERRUPT: u32 = 9;
 const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
-
 static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
 
 module_driver!(
@@ -39,61 +34,6 @@ module_driver!(
         on_probe: probe_plic
     }],
 );
-
-pub fn systick_irq() -> rdrive::IrqId {
-    RISCV_S_TIMER_IRQ.into()
-}
-
-pub fn local_irq_set_enable(irq: rdrive::IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
-    let raw: usize = irq.into();
-    match raw {
-        RISCV_S_TIMER_IRQ => unsafe {
-            if enable {
-                sie::set_stimer();
-            } else {
-                sie::clear_stimer();
-            }
-            Ok(())
-        },
-        RISCV_S_SOFT_IRQ => unsafe {
-            if enable {
-                sie::set_ssoft();
-            } else {
-                sie::clear_ssoft();
-            }
-            Ok(())
-        },
-        RISCV_S_EXT_IRQ => unsafe {
-            if enable {
-                sie::set_sext();
-            } else {
-                sie::clear_sext();
-            }
-            Ok(())
-        },
-        other => {
-            warn!("unsupported RISC-V local IRQ {other:#x}");
-            Err(crate::irq::IrqError::InvalidIrq)
-        }
-    }
-}
-
-pub fn irq_set_affinity(
-    hwirq: rdif_intc::HwIrq,
-    affinity: crate::irq::IrqAffinity,
-) -> Result<(), crate::irq::IrqError> {
-    let source = NonZeroU32::new(hwirq.0).ok_or(crate::irq::IrqError::InvalidIrq)?;
-    with_plic("setting PLIC IRQ affinity", |plic| {
-        plic.set_source_affinity(source, affinity)
-    })
-    .flatten()
-    .ok_or(crate::irq::IrqError::InvalidIrq)
-}
-
-enum Completion {
-    None,
-    Plic(PlicClaim),
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PlicClaim {
@@ -111,69 +51,43 @@ impl PlicClaim {
     }
 }
 
-pub struct ActiveIrq {
-    irq: rdrive::IrqId,
-    completion: Completion,
+struct RiscvPlic {
+    inner: Plic,
+    context_by_cpu: Vec<Option<usize>>,
+    affinity_by_source: Vec<crate::irq::IrqAffinity>,
+    enabled_by_source: Vec<bool>,
+    sources: usize,
 }
 
-impl ActiveIrq {
-    pub fn id(&self) -> rdrive::IrqId {
-        self.irq
-    }
-
-    pub(super) fn take_plic_claim(&mut self) -> Option<PlicClaim> {
-        match core::mem::replace(&mut self.completion, Completion::None) {
-            Completion::None => None,
-            Completion::Plic(claim) => Some(claim),
-        }
-    }
+struct RiscvPlicIrqHandler {
+    inner: PlicIrqHandler,
+    context_by_cpu: Vec<Option<usize>>,
 }
 
-impl Drop for ActiveIrq {
-    fn drop(&mut self) {
-        if let Some(claim) = self.take_plic_claim() {
-            complete_external_irq_claim(claim);
-        }
-    }
-}
-
-pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
-    match classify_riscv_trap(raw) {
-        RiscvTrapIrq::Timer => Some(ActiveIrq {
-            irq: RISCV_S_TIMER_IRQ.into(),
-            completion: Completion::None,
-        }),
-        RiscvTrapIrq::Ipi => {
-            unsafe {
-                sip::clear_ssoft();
-            }
-            Some(ActiveIrq {
-                irq: RISCV_S_SOFT_IRQ.into(),
-                completion: Completion::None,
-            })
-        }
-        RiscvTrapIrq::External => begin_external_irq(),
-        RiscvTrapIrq::UnknownInterrupt { cause } => {
-            warn!("unsupported RISC-V interrupt cause {cause}");
-            None
-        }
-        RiscvTrapIrq::BareSource(source) => {
-            warn!("ignore bare RISC-V PLIC source {source} outside external interrupt claim path");
-            None
-        }
-    }
-}
-
-fn begin_external_irq() -> Option<ActiveIrq> {
-    let claim = claim_external_irq()?;
-    let (_, source) = claim.into_parts();
-    Some(ActiveIrq {
-        irq: (source.get() as usize).into(),
-        completion: Completion::Plic(claim),
+pub(super) fn irq_set_affinity(
+    hwirq: rdif_intc::HwIrq,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), crate::irq::IrqError> {
+    let source = NonZeroU32::new(hwirq.0).ok_or(crate::irq::IrqError::InvalidIrq)?;
+    with_plic("setting PLIC IRQ affinity", |plic| {
+        plic.set_source_affinity(source, affinity)
     })
+    .flatten()
+    .ok_or(crate::irq::IrqError::InvalidIrq)
 }
 
-fn complete_external_irq_claim(claim: PlicClaim) {
+pub(super) fn source_from_hwirq(hwirq: rdif_intc::HwIrq) -> Result<usize, crate::irq::IrqError> {
+    with_plic("validating PLIC hardware IRQ", |plic| {
+        plic.source_from_hwirq(hwirq)
+    })
+    .ok_or(crate::irq::IrqError::Controller)?
+}
+
+pub(super) fn claim_external_irq() -> Option<PlicClaim> {
+    get_irq_handler()?.claim_current()
+}
+
+pub(super) fn complete_claim(claim: PlicClaim) {
     if let Some(handler) = get_irq_handler() {
         handler.complete_claim(claim);
     } else {
@@ -181,24 +95,18 @@ fn complete_external_irq_claim(claim: PlicClaim) {
     }
 }
 
-pub fn secondary_init_intc(cpu_idx: usize) {
-    if let Some(handler) = get_irq_handler() {
-        handler.init_context(cpu_idx);
-    }
-    enable_local_interrupts();
+pub(super) fn complete_deferred_claim(context: usize, source: NonZeroU32) -> bool {
+    let Some(handler) = get_irq_handler() else {
+        warn!("RISC-V PLIC IRQ handler is not registered when completing a deferred claim");
+        return false;
+    };
+    handler.complete_claim(PlicClaim::new(context, source));
+    true
 }
 
-pub fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), crate::irq::IrqError> {
-    let hart_id = someboot::smp::cpu_idx_to_id(cpu_id).ok_or(crate::irq::IrqError::InvalidCpu)?;
-    // An SBI IPI is only a doorbell. Complete the shared-memory publication
-    // before entering firmware, whose later MMIO/IMSIC operation may otherwise
-    // become visible to the target hart first under RVWMO.
-    ax_cpu::barrier::data_fence();
-    let res = sbi_rt::send_ipi(HartMask::from_mask_base(1, hart_id));
-    if res.is_ok() {
-        Ok(())
-    } else {
-        Err(crate::irq::IrqError::Controller)
+pub(super) fn init_cpu_context(cpu_idx: usize) {
+    if let Some(handler) = get_irq_handler() {
+        handler.init_context(cpu_idx);
     }
 }
 
@@ -249,7 +157,7 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         enabled_by_source: vec![false; ndev.saturating_add(1)],
         sources: ndev,
     };
-    enable_local_interrupts();
+    super::irq::enable_local_irq_inputs();
 
     let domain = crate::irq::alloc_irq_domain(
         dev.descriptor.device_id(),
@@ -296,66 +204,6 @@ fn cpu_idx_from_cpu_node(cpu: &NodeType<'_>) -> Option<usize> {
     someboot::smp::cpu_id_to_idx(hart_id)
 }
 
-fn enable_local_interrupts() {
-    unsafe {
-        sie::set_ssoft();
-        sie::set_stimer();
-        sie::set_sext();
-    }
-}
-
-fn claim_external_irq() -> Option<PlicClaim> {
-    let Some(handler) = get_irq_handler() else {
-        warn!("RISC-V PLIC IRQ handler is not registered for external IRQ");
-        return None;
-    };
-    handler.claim_current()
-}
-
-fn with_plic<R>(op: &str, f: impl FnOnce(&mut RiscvPlic) -> R) -> Option<R> {
-    let Some(intc) = get_plic() else {
-        warn!("RISC-V PLIC is not registered when {op}");
-        return None;
-    };
-    let Ok(mut intc) = intc.lock() else {
-        warn!("failed to lock RISC-V PLIC when {op}");
-        return None;
-    };
-    let Some(plic) = intc.typed_mut::<RiscvPlic>() else {
-        warn!("registered interrupt controller is not RISC-V PLIC when {op}");
-        return None;
-    };
-    Some(f(plic))
-}
-
-fn get_plic() -> Option<Device<rdif_intc::Intc>> {
-    if !rdrive::is_initialized() {
-        return None;
-    }
-    rdrive::get_one()
-}
-
-fn get_irq_handler() -> Option<&'static RiscvPlicIrqHandler> {
-    if IRQ_HANDLER.is_init() {
-        Some(&IRQ_HANDLER)
-    } else {
-        None
-    }
-}
-
-struct RiscvPlic {
-    inner: Plic,
-    context_by_cpu: Vec<Option<usize>>,
-    affinity_by_source: Vec<crate::irq::IrqAffinity>,
-    enabled_by_source: Vec<bool>,
-    sources: usize,
-}
-
-struct RiscvPlicIrqHandler {
-    inner: PlicIrqHandler,
-    context_by_cpu: Vec<Option<usize>>,
-}
-
 impl RiscvPlicIrqHandler {
     fn current_context(&self) -> Option<usize> {
         current_context(&self.context_by_cpu)
@@ -400,15 +248,6 @@ impl RiscvPlicIrqHandler {
     fn complete_claim(&self, claim: PlicClaim) {
         self.inner.complete(claim.context, claim.source);
     }
-}
-
-pub(super) fn complete_deferred_claim(context: usize, source: NonZeroU32) -> bool {
-    let Some(handler) = get_irq_handler() else {
-        warn!("RISC-V PLIC IRQ handler is not registered when completing a deferred claim");
-        return false;
-    };
-    handler.complete_claim(PlicClaim::new(context, source));
-    true
 }
 
 impl RiscvPlic {
@@ -502,26 +341,6 @@ impl RiscvPlic {
     }
 }
 
-fn current_context(context_by_cpu: &[Option<usize>]) -> Option<usize> {
-    let cpu_idx = crate::cpu::current_cpu_idx()?;
-    context_by_cpu.get(cpu_idx).and_then(|ctx| *ctx)
-}
-
-fn warn_missing_current_context() {
-    if let Some(cpu_idx) = crate::cpu::current_cpu_idx() {
-        warn!("PLIC supervisor context for logical CPU {cpu_idx} is not found");
-    } else {
-        warn!("PLIC supervisor context for current logical CPU is not found");
-    }
-}
-
-pub fn source_from_hwirq(hwirq: rdif_intc::HwIrq) -> Result<usize, crate::irq::IrqError> {
-    with_plic("validating PLIC hardware IRQ", |plic| {
-        plic.source_from_hwirq(hwirq)
-    })
-    .ok_or(crate::irq::IrqError::Controller)?
-}
-
 impl DriverGeneric for RiscvPlic {
     fn name(&self) -> &str {
         "RISC-V PLIC"
@@ -554,5 +373,49 @@ impl Interface for RiscvPlic {
         } else {
             self.disable_source(source)
         }
+    }
+}
+
+fn with_plic<R>(op: &str, f: impl FnOnce(&mut RiscvPlic) -> R) -> Option<R> {
+    let Some(intc) = get_plic() else {
+        warn!("RISC-V PLIC is not registered when {op}");
+        return None;
+    };
+    let Ok(mut intc) = intc.lock() else {
+        warn!("failed to lock RISC-V PLIC when {op}");
+        return None;
+    };
+    let Some(plic) = intc.typed_mut::<RiscvPlic>() else {
+        warn!("registered interrupt controller is not RISC-V PLIC when {op}");
+        return None;
+    };
+    Some(f(plic))
+}
+
+fn get_plic() -> Option<Device<rdif_intc::Intc>> {
+    if !rdrive::is_initialized() {
+        return None;
+    }
+    rdrive::get_one()
+}
+
+fn get_irq_handler() -> Option<&'static RiscvPlicIrqHandler> {
+    if IRQ_HANDLER.is_init() {
+        Some(&IRQ_HANDLER)
+    } else {
+        None
+    }
+}
+
+fn current_context(context_by_cpu: &[Option<usize>]) -> Option<usize> {
+    let cpu_idx = crate::cpu::current_cpu_idx()?;
+    context_by_cpu.get(cpu_idx).and_then(|ctx| *ctx)
+}
+
+fn warn_missing_current_context() {
+    if let Some(cpu_idx) = crate::cpu::current_cpu_idx() {
+        warn!("PLIC supervisor context for logical CPU {cpu_idx} is not found");
+    } else {
+        warn!("PLIC supervisor context for current logical CPU is not found");
     }
 }

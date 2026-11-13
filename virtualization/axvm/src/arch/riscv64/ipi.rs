@@ -108,15 +108,19 @@ mod tests {
 
     #[ax_plat::impl_plat_interface]
     impl RiscvHvIrqIf for TestRiscvHvIrqIf {
-        fn activate_guest_plic_source(_source: u32, _target_cpu: usize) -> Result<(), IrqError> {
+        fn activate_guest_external_source(
+            _source: u32,
+            _target_cpu: usize,
+            _trigger: Option<ax_plat::irq::ControllerIrqTrigger>,
+        ) -> Result<(), IrqError> {
             Err(IrqError::Unsupported)
         }
 
-        fn deactivate_guest_plic_source(_source: u32) -> Result<(), IrqError> {
+        fn deactivate_guest_external_source(_source: u32) -> Result<(), IrqError> {
             Err(IrqError::Unsupported)
         }
 
-        fn complete_guest_plic_source(_source: u32) -> bool {
+        fn complete_guest_external_source(_source: u32) -> bool {
             false
         }
     }

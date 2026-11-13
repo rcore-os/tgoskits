@@ -1,0 +1,16 @@
+// Regenerate from the workspace root:
+// dtc -I dts -O dtb -o test-suit/axvisor/normal/qemu-aplic-passthrough/guest.dtb \
+//     test-suit/axvisor/normal/qemu-aplic-passthrough/guest.dts
+/include/ "../qemu-riscv-aplic/riscv-plic-guest.dts"
+
+&{/soc} {
+    // Matches the physical device on virtio-mmio-bus.0. The host APLIC
+    // describes this source as <1 4>; the guest virtual PLIC uses <1>.
+    virtio_mmio@10001000 {
+        compatible = "virtio,mmio";
+        reg = <0 0x10001000 0 0x1000>;
+        interrupt-parent = <&plic>;
+        interrupts = <1>;
+        dma-coherent;
+    };
+};

@@ -1,12 +1,14 @@
-use core::ptr::NonNull;
-
-use acpi::{AcpiError, Handler, PhysicalMapping, address::AddressSpace, sdt::spcr::Spcr};
+use acpi::{
+    AcpiError, Handler, PhysicalMapping,
+    address::{AddressSpace, StandardAccessSize},
+    sdt::spcr::Spcr,
+};
+#[cfg(target_arch = "x86_64")]
 use some_serial::ns16550::Ns16550;
 
-use crate::{
-    console::{EarlySerial, EarlySerialRaw},
-    mem::_fixmap_io,
-};
+#[cfg(target_arch = "x86_64")]
+use crate::console::{EarlySerial, EarlySerialRaw};
+use crate::mem::_fixmap_io;
 
 pub(crate) fn acpi_setup_earlycon() -> Result<bool, AcpiError> {
     setup_earlycon_from_spcr()
@@ -65,15 +67,29 @@ fn deal_with_spsr(spsr: &PhysicalMapping<impl Handler, Spcr>) -> Option<()> {
             }
             AddressSpace::SystemMemory => {
                 let mapped = _fixmap_io(base_address.address as _);
-                let mut uart = Ns16550::new_mmio(
-                    NonNull::new(mapped).unwrap(),
+                // GAS access_size is an encoding (3 means 32 bits), not a
+                // byte count. SPCR has no separate register-spacing field.
+                let width = match base_address.standard_access_size().ok()? {
+                    StandardAccessSize::Undefined => match base_address.bit_width {
+                        0 | 8 => 1,
+                        16 => 2,
+                        32 => 4,
+                        _ => return None,
+                    },
+                    StandardAccessSize::ByteAccess => 1,
+                    StandardAccessSize::WordAccess => 2,
+                    StandardAccessSize::DWordAccess => 4,
+                    StandardAccessSize::QWordAccess => return None,
+                };
+                // SPCR identifies this interface as Full16550 or Generic16550.
+                crate::console::bind_earlycon_ns16550(
+                    base_address.address as _,
                     clock,
-                    base_address.access_size as _,
-                );
-                uart.open();
-                crate::console::set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(
-                    uart,
-                )));
+                    width,
+                    width,
+                    some_serial::ns16550::UartVariant::Standard,
+                )
+                .ok()?;
                 (Some(mapped), true)
             }
             space => {

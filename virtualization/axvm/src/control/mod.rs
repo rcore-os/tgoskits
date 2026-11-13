@@ -239,7 +239,7 @@ pub(crate) fn run(
                         owner.guest_stop = None;
                         drop(observer);
                         completion.accept();
-                        let result = owner.stop(completion.id());
+                        let result = owner.shutdown_run(completion.id());
                         owner.finish(result, completion);
                     }
                     Err(error) => {
@@ -282,7 +282,7 @@ impl Owner {
                 | Command::Reset(..)
                 | Command::GuestReset { .. }
                 | Command::Destroy(..)
-        ) && let Err(error) = self.require_stop_supported()
+        ) && let Err(error) = self.require_host_dma_quiescence()
         {
             command.reject(error);
             return false;

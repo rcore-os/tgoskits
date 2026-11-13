@@ -732,6 +732,7 @@ fn riscv_result<T>(result: RiscvVcpuResult<T>) -> BackendResult<T> {
 
 fn riscv_error_to_backend(err: RiscvVcpuError) -> BackendError {
     match err {
+        RiscvVcpuError::OutOfMemory => BackendError::OutOfMemory,
         RiscvVcpuError::InvalidInput => BackendError::InvalidInput,
         RiscvVcpuError::Unsupported => BackendError::Unsupported,
         RiscvVcpuError::BadState => BackendError::InvalidState,
@@ -834,9 +835,9 @@ mod tests {
 fn cpu_virtualization_error(error: ax_cpu::virtualization::VirtualizationError) -> BackendError {
     use ax_cpu::virtualization::VirtualizationError;
     match error {
-        VirtualizationError::InvalidRoot | VirtualizationError::InvalidVector => {
-            BackendError::InvalidInput
-        }
+        VirtualizationError::InvalidRoot
+        | VirtualizationError::InvalidVector
+        | VirtualizationError::InvalidVectorState => BackendError::InvalidInput,
         VirtualizationError::Unavailable
         | VirtualizationError::UnsupportedPaging
         | VirtualizationError::UnsupportedTimer => BackendError::Unsupported,

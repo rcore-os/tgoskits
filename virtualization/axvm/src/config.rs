@@ -23,6 +23,8 @@ pub use axvm_types::{
     HostPortAssignment, ReservedAddressConfig, VMBootProtocol, VmMemConfig, VmMemMappingType,
 };
 use axvmconfig::VirtualDeviceRequest;
+/// Electrical trigger semantics retained for physical-controller activation.
+pub use rdif_intc::Trigger as ControllerIrqTrigger;
 
 use crate::{arch::current::CurrentArch, architecture::MachinePlatform, machine::*};
 
@@ -77,6 +79,8 @@ pub struct PassthroughInterrupt {
     pub source: u32,
     /// Trigger mode declared by firmware for the physical device.
     pub trigger: InterruptTriggerMode,
+    /// Electrical trigger retained from the physical controller firmware.
+    pub controller_trigger: Option<ControllerIrqTrigger>,
 }
 
 /// Runtime configuration for one VM.
@@ -319,11 +323,20 @@ impl AxVMConfig {
     }
 
     /// Adds a physical interrupt source forwarded to the guest.
-    pub fn add_pass_through_irq(&mut self, source: u32, trigger: InterruptTriggerMode) {
+    pub fn add_pass_through_irq(
+        &mut self,
+        source: u32,
+        trigger: InterruptTriggerMode,
+        controller_trigger: Option<ControllerIrqTrigger>,
+    ) {
         if self.excluded_passthrough_irq_sources.contains(&source) {
             return;
         }
-        let route = PassthroughInterrupt { source, trigger };
+        let route = PassthroughInterrupt {
+            source,
+            trigger,
+            controller_trigger,
+        };
         if let Some(existing) = self
             .passthrough_irq_list
             .iter_mut()

@@ -145,6 +145,7 @@ pub trait HostPlatform {
     /// Enable virtualization on the current host CPU.
     fn enable_virtualization_on_current_cpu(&self) -> AxVmResult;
 
-    /// Enable virtualization on every usable host CPU.
+    /// Attempts to enable virtualization on every host CPU. Unsupported
+    /// secondary CPUs stay available to the host, but cannot execute vCPUs.
     fn enable_virtualization_on_all_cpus(&self) -> AxVmResult;
 }

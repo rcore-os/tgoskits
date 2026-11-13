@@ -1,0 +1,71 @@
+// Regenerate from the workspace root:
+// dtc -I dts -O dtb -o test-suit/axvisor/normal/qemu-riscv-aplic/riscv-plic-guest.dtb \
+//     test-suit/axvisor/normal/qemu-riscv-aplic/riscv-plic-guest.dts
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    compatible = "riscv-virtio";
+    model = "AxVisor RISC-V Linux guest";
+
+    aliases {
+        serial0 = &uart;
+    };
+
+    chosen {
+        stdout-path = "serial0:115200n8";
+    };
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        timebase-frequency = <10000000>;
+
+        cpu@0 {
+            device_type = "cpu";
+            reg = <0>;
+            status = "okay";
+            compatible = "riscv";
+            riscv,isa = "rv64imafdc_zicsr_zifencei_sstc";
+            mmu-type = "riscv,sv39";
+
+            cpu_intc: interrupt-controller {
+                #address-cells = <0>;
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+    };
+
+    memory@90000000 {
+        device_type = "memory";
+        reg = <0 0x90000000 0 0x40000000>;
+    };
+
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        compatible = "simple-bus";
+        ranges;
+
+        plic: plic@c000000 {
+            #address-cells = <0>;
+            #interrupt-cells = <1>;
+            interrupt-controller;
+            compatible = "riscv,plic0";
+            reg = <0 0xc000000 0 0x600000>;
+            riscv,ndev = <1023>;
+            interrupts-extended = <&cpu_intc 0xffffffff &cpu_intc 9>;
+        };
+
+        uart: serial@10000000 {
+            compatible = "ns16550a";
+            reg = <0 0x10000000 0 0x100>;
+            clock-frequency = <3686400>;
+            interrupt-parent = <&plic>;
+            interrupts = <10>;
+        };
+    };
+};

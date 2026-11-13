@@ -54,16 +54,16 @@ impl PageTableEntry for RiscvPte {
         if config.is_empty() {
             return Self(Pte::default());
         }
-        // G-stage uses the same descriptor layout as S-stage. The VM selects
-        // its own A/D and user-access policy, without S-stage vendor defaults.
-        let mut flags = DescriptorFlags::V | DescriptorFlags::A | DescriptorFlags::D;
+        // G-stage checks every access as U-mode, including VS-mode accesses.
+        // Guest privilege isolation belongs to VS-stage; G-stage enforces RWX.
+        let mut flags =
+            DescriptorFlags::V | DescriptorFlags::A | DescriptorFlags::D | DescriptorFlags::U;
         flags.set(
             DescriptorFlags::R,
             config.intersects(MappingFlags::READ | MappingFlags::WRITE),
         );
         flags.set(DescriptorFlags::W, config.contains(MappingFlags::WRITE));
         flags.set(DescriptorFlags::X, config.contains(MappingFlags::EXECUTE));
-        flags.set(DescriptorFlags::U, config.contains(MappingFlags::USER));
         Self(Pte::from_parts(paddr, flags))
     }
 

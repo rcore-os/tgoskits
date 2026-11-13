@@ -177,7 +177,7 @@ fn provider_nodes(fdt: &Fdt, provider: NodeId, reference: &str) -> Vec<NodeId> {
     nodes
 }
 
-fn owns_device_resources(node: &fdt_edit::Node) -> bool {
+pub(super) fn owns_device_resources(node: &fdt_edit::Node) -> bool {
     ["reg", "ranges", "interrupts", "interrupts-extended"]
         .iter()
         .any(|name| node.get_property(name).is_some_and(|p| !p.data.is_empty()))

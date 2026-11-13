@@ -1,0 +1,22 @@
+[base]
+id = 1
+name = "linux-aplic-passthrough"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0]
+phys_cpu_sets = [2]
+
+[kernel]
+entry_point = 0x9020_0000
+kernel_path = "${workspace}/target/axbuild/images/qemu-riscv64/linux/linux-qemu"
+kernel_load_addr = 0x9020_0000
+dtb_path = "${workspace}/test-suit/axvisor/normal/qemu-aplic-passthrough/guest.dtb"
+dtb_load_addr = 0x9300_0000
+ramdisk_path = "${workspace}/target/axbuild/images/initramfs-riscv64-busybox.cpio.gz/initramfs-riscv64-busybox.cpio.gz"
+ramdisk_load_addr = 0x9400_0000
+cmdline = "console=ttyS0,115200 rdinit=/init devtmpfs.mount=1"
+# The physical block device uses identity-mapped RAM for DMA.
+memory_regions = [[0x9000_0000, 0x2000_0000, 0x7, 1]]
+
+[devices]
+passthrough = [{ path = "/soc/virtio_mmio@10001000" }]

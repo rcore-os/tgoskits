@@ -32,7 +32,14 @@ model_register!(
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["snps,dw-apb-uart", "ns16550a", "ns16550"],
+            compatibles: &[
+                "snps,dw-apb-uart",
+                "spacemit,k1-uart",
+                "spacemit,k3-uart",
+                "intel,xscale-uart",
+                "ns16550a",
+                "ns16550",
+            ],
             on_probe: probe
         },
         ProbeKind::Acpi {
@@ -98,8 +105,6 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = crate::mmio::iomap(base_reg.address as usize, mmio_size)?;
     let node = info.node.as_node();
     let reg_width = prop_u32(node, "reg-io-width").unwrap_or(1) as usize;
-    let reg_shift = prop_u32(node, "reg-shift").map(|shift| 1usize << shift);
-    let ns16550_width = reg_shift.unwrap_or(reg_width);
     let mut serial: Option<ProbedUart> = None;
 
     for compatible in node.compatibles() {
@@ -118,9 +123,32 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             break;
         }
 
-        if matches!(compatible, "ns16550a" | "ns16550") {
+        if matches!(
+            compatible,
+            "spacemit,k1-uart" | "spacemit,k3-uart" | "intel,xscale-uart" | "ns16550a" | "ns16550"
+        ) {
             let clock_freq = prop_u32(node, "clock-frequency").unwrap_or(24_000_000);
-            let raw = serial_ns16550::Ns16550::new_mmio(mmio_base, clock_freq, ns16550_width);
+            let xscale = node.compatibles().any(|compatible| {
+                matches!(
+                    compatible,
+                    "spacemit,k1-uart" | "spacemit,k3-uart" | "intel,xscale-uart"
+                )
+            });
+            let variant = if xscale {
+                serial_ns16550::UartVariant::XScale
+            } else {
+                serial_ns16550::UartVariant::Standard
+            };
+            let shift = prop_u32(node, "reg-shift").unwrap_or(if xscale { 2 } else { 0 });
+            let stride = 1usize
+                .checked_shl(shift)
+                .ok_or_else(|| OnProbeError::other("NS16550 reg-shift exceeds address width"))?;
+            let raw = serial_ns16550::Ns16550::new_mmio(
+                mmio_base, clock_freq, stride, reg_width, variant,
+            )
+            .map_err(|error| {
+                OnProbeError::other(format!("invalid NS16550 MMIO layout: {error}"))
+            })?;
             serial = Some(erase_uart(raw));
             break;
         }
@@ -213,8 +241,14 @@ fn acpi_mmio_serial(info: &AcpiInfo<'_>) -> Result<AcpiSerialResource, OnProbeEr
     })?;
     let mmio_size = usize::try_from(range.size).unwrap_or(0x1000).max(0x1000);
     let mmio_base = crate::mmio::iomap(paddr, mmio_size)?;
-    let raw =
-        serial_ns16550::Ns16550::new_mmio(mmio_base, ACPI_NS16550_CLOCK, ACPI_NS16550_REG_WIDTH);
+    let raw = serial_ns16550::Ns16550::new_mmio(
+        mmio_base,
+        ACPI_NS16550_CLOCK,
+        ACPI_NS16550_REG_WIDTH,
+        1,
+        serial_ns16550::UartVariant::Standard,
+    )
+    .map_err(|error| OnProbeError::other(format!("invalid ACPI NS16550 MMIO layout: {error}")))?;
     let serial = erase_uart(raw);
     Ok(AcpiSerialResource { serial, paddr })
 }

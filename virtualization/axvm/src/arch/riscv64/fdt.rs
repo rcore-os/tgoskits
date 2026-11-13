@@ -8,7 +8,7 @@ pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
     core::GuestFdtPolicy {
         patch_runtime: super::capabilities::patch_runtime_fdt,
         patch_provided: super::capabilities::patch_provided_fdt,
-        decode_interrupt: super::capabilities::decode_plic_source,
+        decode_interrupt: super::capabilities::decode_external_source,
         resolve_cpu_index: super::capabilities::resolve_cpu_index,
         host_cpu_count: super::capabilities::host_cpu_count,
         guest_cpu_execution_property,

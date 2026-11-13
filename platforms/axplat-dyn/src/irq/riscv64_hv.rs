@@ -1,150 +1,129 @@
-//! Split host PLIC completion for RISC-V passthrough devices.
-
-use core::sync::atomic::{AtomicUsize, Ordering};
+//! Retained physical external-IRQ completions for RISC-V passthrough devices.
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-use ax_plat::irq::{HwIrq, IrqError, IrqId, RiscvHvIrqIf};
+use ax_plat::irq::{ControllerIrqTrigger, HwIrq, IrqError, IrqId, RiscvHvIrqIf};
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+use somehal::irq::{RiscvExternalIrqClaim, RiscvExternalIrqClaimSlot};
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-use super::IrqIfImpl;
+use super::{IrqIfImpl, RISCV_EXTERNAL_SOURCE_COUNT};
+
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-use super::RISCV_PLIC_SOURCE_COUNT;
+static HOST_EXTERNAL_CLAIMS: [RiscvExternalIrqClaimSlot; RISCV_EXTERNAL_SOURCE_COUNT] =
+    [const { RiscvExternalIrqClaimSlot::new() }; RISCV_EXTERNAL_SOURCE_COUNT];
 
-const NO_CLAIM_CONTEXT: usize = 0;
-
-struct ClaimContextSlot {
-    encoded_context: AtomicUsize,
-}
-
-impl ClaimContextSlot {
-    const fn new() -> Self {
-        Self {
-            encoded_context: AtomicUsize::new(NO_CLAIM_CONTEXT),
-        }
-    }
-
-    fn reserve(&self, context: usize) -> bool {
-        let Some(encoded) = context.checked_add(1) else {
-            return false;
-        };
-        self.encoded_context
-            .compare_exchange(
-                NO_CLAIM_CONTEXT,
-                encoded,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-    }
-
-    fn take(&self) -> Option<usize> {
-        let encoded = self
-            .encoded_context
-            .swap(NO_CLAIM_CONTEXT, Ordering::AcqRel);
-        (encoded != NO_CLAIM_CONTEXT).then(|| encoded - 1)
-    }
+/// Completes a detached claim unless successful guest publication transfers it.
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+pub(super) struct GuestExternalClaim {
+    completion: GuestExternalCompletion,
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-static HOST_PLIC_CLAIMS: [ClaimContextSlot; RISCV_PLIC_SOURCE_COUNT] =
-    [const { ClaimContextSlot::new() }; RISCV_PLIC_SOURCE_COUNT];
-
-/// Completes a detached claim after host dispatch unless guest publication
-/// disarms the guard.
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-pub(super) struct GuestPlicClaim {
-    completion: GuestPlicCompletion,
-}
-
-#[cfg(all(target_arch = "riscv64", feature = "hv"))]
-enum GuestPlicCompletion {
-    Direct { context: usize, source: u32 },
+enum GuestExternalCompletion {
+    Direct(RiscvExternalIrqClaim),
     Stored { source: u32 },
     Deferred,
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-impl GuestPlicClaim {
+impl GuestExternalClaim {
     pub(super) fn detach(active: &mut somehal::irq::ActiveIrq, irq: IrqId) -> Option<Self> {
-        let claim = active.defer_riscv_plic_completion()?;
-        let (context, source) = claim.into_parts();
+        let claim = active.defer_riscv_external_completion()?;
+        let source = claim.source();
         debug_assert_eq!(irq.hwirq.0, source);
-        let completion = claim_slot(source)
-            .filter(|slot| slot.reserve(context))
-            .map_or(GuestPlicCompletion::Direct { context, source }, |_| {
-                GuestPlicCompletion::Stored { source }
-            });
+        let completion = match claim_slot(source) {
+            Some(slot) => match slot.try_store(claim) {
+                Ok(()) => GuestExternalCompletion::Stored { source },
+                Err(claim) => GuestExternalCompletion::Direct(claim),
+            },
+            None => GuestExternalCompletion::Direct(claim),
+        };
         Some(Self { completion })
     }
 
     pub(super) fn publish_to_guest(&mut self) -> bool {
-        let GuestPlicCompletion::Stored { source } = self.completion else {
+        let GuestExternalCompletion::Stored { source } = self.completion else {
             return false;
         };
-        if !ax_plat::irq::riscv64_hv::publish_physical_plic_claim(source) {
+        if !ax_plat::irq::riscv64_hv::publish_physical_external_claim(source) {
             return false;
         }
-        self.completion = GuestPlicCompletion::Deferred;
+        self.completion = GuestExternalCompletion::Deferred;
         true
     }
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-impl Drop for GuestPlicClaim {
+impl Drop for GuestExternalClaim {
     fn drop(&mut self) {
-        match self.completion {
-            GuestPlicCompletion::Direct { context, source } => {
-                complete_claim(context, source);
+        match core::mem::replace(&mut self.completion, GuestExternalCompletion::Deferred) {
+            GuestExternalCompletion::Direct(claim) => complete_claim(claim),
+            GuestExternalCompletion::Stored { source } => {
+                complete_guest_external_source(source);
             }
-            GuestPlicCompletion::Stored { source } => {
-                complete_guest_plic_source(source);
-            }
-            GuestPlicCompletion::Deferred => {}
+            GuestExternalCompletion::Deferred => {}
         }
     }
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn claim_slot(source: u32) -> Option<&'static ClaimContextSlot> {
-    let source = source as usize;
+fn claim_slot(source: u32) -> Option<&'static RiscvExternalIrqClaimSlot> {
     (source != 0)
-        .then(|| HOST_PLIC_CLAIMS.get(source))
+        .then(|| HOST_EXTERNAL_CLAIMS.get(source as usize))
         .flatten()
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn complete_claim(context: usize, source: u32) {
-    if let Err(error) = somehal::irq::complete_deferred_riscv_plic_claim(context, source) {
-        warn!(
-            "failed to complete RISC-V host PLIC source {source} in context {context}: {error:?}"
-        );
+fn complete_claim(claim: RiscvExternalIrqClaim) {
+    if let Err(error) = claim.complete() {
+        warn!("failed to complete retained RISC-V external IRQ: {error:?}");
     }
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn complete_guest_plic_source(source: u32) -> bool {
-    let Some(context) = claim_slot(source).and_then(ClaimContextSlot::take) else {
+fn complete_guest_external_source(source: u32) -> bool {
+    let Some(claim) = claim_slot(source).and_then(RiscvExternalIrqClaimSlot::take) else {
         return false;
     };
-    complete_claim(context, source);
+    complete_claim(claim);
     true
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-fn resolve_plic_irq(source: u32) -> Result<IrqId, IrqError> {
-    if source == 0 || source as usize >= RISCV_PLIC_SOURCE_COUNT {
+fn resolve_external_irq(source: u32) -> Result<IrqId, IrqError> {
+    if source == 0 || source as usize >= RISCV_EXTERNAL_SOURCE_COUNT {
         return Err(IrqError::InvalidIrq);
     }
-    let domain = somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvPlic)
-        .ok_or(IrqError::Unsupported)?;
+    let plic = somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvPlic);
+    let aplic = somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvAplic);
+    // The existing route configuration has source numbers, not domain IDs.
+    // Never let an ambiguous number consume another controller's completion.
+    let domain = match (plic, aplic) {
+        (Some(domain), None) | (None, Some(domain)) => domain,
+        _ => return Err(IrqError::Unsupported),
+    };
     Ok(IrqId::new(domain, HwIrq(source)))
 }
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 #[impl_plat_interface]
 impl RiscvHvIrqIf for IrqIfImpl {
-    fn activate_guest_plic_source(source: u32, target_cpu: usize) -> Result<(), IrqError> {
-        let irq = resolve_plic_irq(source)?;
+    fn activate_guest_external_source(
+        source: u32,
+        target_cpu: usize,
+        trigger: Option<ControllerIrqTrigger>,
+    ) -> Result<(), IrqError> {
+        let irq = resolve_external_irq(source)?;
+        if !ax_plat::irq::is_cpu_online(target_cpu) {
+            return Err(IrqError::CpuOffline);
+        }
+        if somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::RiscvAplic) {
+            return somehal::irq::activate_guest_aplic_source(
+                source,
+                target_cpu,
+                trigger.ok_or(IrqError::Unsupported)?,
+            );
+        }
         somehal::irq::irq_set_affinity(
             irq,
             somehal::irq::IrqAffinity::Fixed { cpu_id: target_cpu },
@@ -156,38 +135,16 @@ impl RiscvHvIrqIf for IrqIfImpl {
         Ok(())
     }
 
-    fn deactivate_guest_plic_source(source: u32) -> Result<(), IrqError> {
-        let irq = resolve_plic_irq(source)?;
+    fn deactivate_guest_external_source(source: u32) -> Result<(), IrqError> {
+        let irq = resolve_external_irq(source)?;
+        if somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::RiscvAplic) {
+            return somehal::irq::retire_guest_aplic_source(source);
+        }
         somehal::irq::irq_set_enable(irq, false)?;
         somehal::irq::irq_set_affinity(irq, somehal::irq::IrqAffinity::Any)
     }
 
-    fn complete_guest_plic_source(source: u32) -> bool {
-        complete_guest_plic_source(source)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn claim_context_is_consumed_exactly_once_and_can_be_reused() {
-        let slot = ClaimContextSlot::new();
-
-        assert!(slot.reserve(7));
-        assert!(!slot.reserve(9));
-        assert_eq!(slot.take(), Some(7));
-        assert_eq!(slot.take(), None);
-        assert!(slot.reserve(9));
-        assert_eq!(slot.take(), Some(9));
-    }
-
-    #[test]
-    fn claim_context_rejects_unencodable_context() {
-        let slot = ClaimContextSlot::new();
-
-        assert!(!slot.reserve(usize::MAX));
-        assert_eq!(slot.take(), None);
+    fn complete_guest_external_source(source: u32) -> bool {
+        complete_guest_external_source(source)
     }
 }

@@ -68,15 +68,22 @@ some-serial = "0.1.0"
 concrete 驱动直接持有寄存器和状态；allocator 初始化前的 early console 通过
 `PollingUart` 轮询收发，不需要 `Box`、trait object、软件队列或内部锁。
 
+`Ns16550::new_mmio()` 通过最后一个 `UartVariant` 参数选择硬件差异：普通串口使用
+`Standard`，需要保持 IER.UUE 的 XScale 兼容串口使用 `XScale`。该参数不决定运行时
+采用轮询还是中断；中断接管时，`rearm()` 会打开 MCR.OUT2 输出门控，同时保留固件的
+波特率、FIFO 和其他 MCR 位。
+
+构造参数 `register_stride` 表示相邻寄存器的字节间隔，`access_width` 表示每次总线访问的字节数（1、2 或 4），两者独立。设备树的 `reg-shift` 决定前者，`reg-io-width` 决定后者；例如 K3 使用步长 4 和宽度 4，字节访问但四字节间隔的 UART 则使用步长 4 和宽度 1。不支持的宽度、未对齐地址或步长通过 `InvalidMmioLayout` 返回，构造失败前不访问硬件。
+
 ```rust
 use core::ptr::NonNull;
 use some_serial::{
     Config, DataBits, Parity, PollingUart as _, StopBits, UartPort as _,
-    ns16550::Ns16550,
+    ns16550::{Ns16550, UartVariant},
 };
 
 let base_addr = NonNull::new(0x9000000 as *mut u8).unwrap();
-let mut uart = Ns16550::new_mmio(base_addr, 1_843_200, 1);
+let mut uart = Ns16550::new_mmio(base_addr, 1_843_200, 1, 1, UartVariant::Standard).unwrap();
 
 let config = Config::new()
     .baudrate(115200)
@@ -134,7 +141,9 @@ let mut uart = some_serial::ns16550::Ns16550::new_mmio(
     NonNull::new(0x40000000 as *mut u8).unwrap(),
     16_000_000,
     1,
-);
+    1,
+    some_serial::ns16550::UartVariant::Standard,
+).unwrap();
 ```
 
 ### 高级功能
@@ -181,13 +190,15 @@ queue 和 poll source 均由 OS runtime 提供；`some-serial` 不包含这些�
 ```rust
 use core::ptr::NonNull;
 use rdif_serial::{Config, SplitUart as _, UartPort as _};
-use some_serial::ns16550::Ns16550;
+use some_serial::ns16550::{Ns16550, UartVariant};
 
 let uart = Ns16550::new_mmio(
     NonNull::new(0x40000000 as *mut u8).unwrap(),
     16_000_000,
     1,
-);
+    1,
+    UartVariant::Standard,
+).unwrap();
 let parts = uart.split();
 let mut control = parts.control;
 control

@@ -43,13 +43,14 @@ fn guest_fdt_policy() -> core::GuestFdtPolicy {
     core::GuestFdtPolicy {
         patch_provided: test_provided_patch,
         decode_interrupt: |specifier| {
-            specifier
+            Ok(specifier
                 .first()
                 .copied()
                 .map(|source| core::DecodedInterrupt {
                     source,
                     trigger: axdevice_base::InterruptTriggerMode::LevelTriggered,
-                })
+                    controller_trigger: None,
+                }))
         },
         guest_cpu_execution_property: core::tree::is_guest_cpu_execution_property,
     }

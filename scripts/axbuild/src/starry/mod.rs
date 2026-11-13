@@ -334,11 +334,14 @@ impl Starry {
         mut qemu: ostool::run::qemu::QemuConfig,
     ) -> anyhow::Result<()> {
         let output = self.build_artifact(request, cargo.clone()).await?;
-        crate::execution::qemu::append_backtrace_map(
-            &mut qemu,
+        let symbol_initramfs = crate::execution::qemu::prepare_qemu_initramfs_with_symbols(
+            &qemu,
             &output.elf_path().with_extension("axbt"),
             &request.target,
         )?;
+        if let Some(archive) = &symbol_initramfs {
+            qemu.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+        }
         self.app.run_qemu(&cargo, qemu).await
     }
 
@@ -353,10 +356,13 @@ impl Starry {
             None => self.app.ensure_uboot_config_for_cargo(&cargo).await?,
         };
         let output = self.build_artifact(request, cargo).await?;
-        crate::execution::qemu::append_backtrace_map_to_initramfs(
-            &mut uboot.boot.initramfs,
+        let symbol_initramfs = crate::execution::qemu::prepare_initramfs_with_symbols(
+            uboot.boot.initramfs.as_deref().map(Path::new),
             &output.elf_path().with_extension("axbt"),
         )?;
+        if let Some(archive) = &symbol_initramfs {
+            uboot.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+        }
         self.app.run_prepared_uboot(uboot).await
     }
 
@@ -371,10 +377,13 @@ impl Starry {
     ) -> anyhow::Result<()> {
         let _boot_entropy = boot_entropy::prepare_for_secure_wifi(&mut board_config)?;
         let output = self.build_artifact(request, cargo.clone()).await?;
-        crate::execution::qemu::append_backtrace_map_to_initramfs(
-            &mut board_config.boot.initramfs,
+        let symbol_initramfs = crate::execution::qemu::prepare_initramfs_with_symbols(
+            board_config.boot.initramfs.as_deref().map(Path::new),
             &output.elf_path().with_extension("axbt"),
         )?;
+        if let Some(archive) = &symbol_initramfs {
+            board_config.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+        }
         let board_request = match session_assets {
             Some(assets) => {
                 println!(

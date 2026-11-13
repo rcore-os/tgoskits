@@ -88,18 +88,25 @@ group = "cpu"
 [[check]]
 id = "test-arceos-cpu-riscv64"
 impact_targets = ["arceos:riscv64"]
-name = "CPU riscv64 · Hardware contracts"
+name = "CPU riscv64 · Hardware + APLIC contracts"
 runner = "qcs"
 timeout_minutes = 30
 cache_key = ""
 command = '''
 cargo xtask arceos test qemu --arch riscv64 --test-group cpu
+cargo xtask arceos test qemu --arch riscv64 --test-group drivers --test-case riscv-aia
 '''
 
 [[check.suite]]
 kind = "arceos-qemu"
 arch = "riscv64"
 group = "cpu"
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "riscv64"
+group = "drivers"
+cases = ["riscv-aia"]
 
 [[check]]
 id = "test-arceos-cpu-loongarch64"

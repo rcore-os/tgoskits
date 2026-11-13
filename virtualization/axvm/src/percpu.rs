@@ -21,6 +21,17 @@ static CPU_GPA_BITS: [AtomicUsize; MAX_TRACKED_CPUS] =
     [const { AtomicUsize::new(0) }; MAX_TRACKED_CPUS];
 static CPU_TIMER_FREQUENCY_HZ: [AtomicU64; MAX_TRACKED_CPUS] =
     [const { AtomicU64::new(0) }; MAX_TRACKED_CPUS];
+#[cfg(target_arch = "riscv64")]
+static CPU_VECTOR_REGISTER_BYTES: [AtomicUsize; MAX_TRACKED_CPUS] =
+    [const { AtomicUsize::new(0) }; MAX_TRACKED_CPUS];
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn cpu_vector_register_bytes(cpu_id: usize) -> Option<usize> {
+    cpu_enabled(cpu_id)?;
+    CPU_VECTOR_REGISTER_BYTES
+        .get(cpu_id)
+        .map(|bytes| bytes.load(Ordering::Acquire))
+}
 
 pub(crate) fn reset_enabled_cpu_mask() {
     ENABLED_CPU_MASK.store(0, Ordering::Release);
@@ -72,6 +83,13 @@ pub(crate) fn enable_current_cpu() -> AxVmResult {
     with_current_percpu_mut(|percpu| {
         percpu.hardware_enable()?;
         let cpu_id = default_host().this_cpu_id();
+        #[cfg(target_arch = "riscv64")]
+        if let Some(bytes) = CPU_VECTOR_REGISTER_BYTES.get(cpu_id) {
+            bytes.store(
+                ax_cpu::capability::vector_register_bytes().unwrap_or(0),
+                Ordering::Release,
+            );
+        }
         if let Some(levels) = CPU_MAX_GPT_LEVELS.get(cpu_id) {
             levels.store(
                 percpu.arch_checked().max_guest_page_table_levels(),

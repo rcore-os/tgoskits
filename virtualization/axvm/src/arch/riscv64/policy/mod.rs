@@ -46,6 +46,10 @@ pub struct RiscvVcpuCreateConfig {
     /// The physical address of the device tree blob.
     /// Default to `0x9000_0000`.
     pub dtb_addr: usize,
+    /// Bytes per vector register on the fixed target CPU, or zero without V.
+    pub vector_register_bytes: usize,
+    /// Fixed physical CPU owning the vector execution contract.
+    pub vector_host_cpu_id: Option<usize>,
 }
 
 impl Default for RiscvVcpuCreateConfig {
@@ -53,6 +57,8 @@ impl Default for RiscvVcpuCreateConfig {
         Self {
             hart_id: 0,
             dtb_addr: 0x9000_0000,
+            vector_register_bytes: 0,
+            vector_host_cpu_id: None,
         }
     }
 }

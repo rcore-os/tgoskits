@@ -3,23 +3,44 @@ use crate::{
     irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqError, IrqId, IrqSource},
 };
 
+mod aia;
+mod irq;
 mod plic;
+
+pub(crate) use irq::ExternalIrqClaim;
 
 use crate::irq_routing::{
     RISCV_INTERRUPT_BIT, RISCV_S_SOFT_CAUSE, riscv_cpu_local_hwirq_is_runtime_irq,
-    riscv_cpu_local_irq_from_raw, riscv_local_irq_raw, riscv_resolve_controller_line,
+    riscv_cpu_local_irq_from_raw, riscv_local_irq_raw,
 };
 
 pub struct Plat;
 
-pub(crate) fn take_plic_claim(
-    active: &mut plic::ActiveIrq,
-) -> Option<(usize, core::num::NonZeroU32)> {
-    active.take_plic_claim().map(plic::PlicClaim::into_parts)
+pub(crate) fn take_external_claim(
+    active: &mut irq::ActiveIrq,
+) -> Option<crate::irq::RiscvExternalIrqClaim> {
+    active.take_external_claim()
 }
 
-pub(crate) fn complete_deferred_plic_claim(context: usize, source: core::num::NonZeroU32) -> bool {
-    plic::complete_deferred_claim(context, source)
+pub(crate) fn complete_external_claim(claim: ExternalIrqClaim) -> bool {
+    match claim {
+        ExternalIrqClaim::Plic { context, source } => {
+            plic::complete_deferred_claim(context, source)
+        }
+        ExternalIrqClaim::Aplic { source } => aia::finish_deferred(source),
+    }
+}
+
+pub(crate) fn activate_guest_aplic_source(
+    source: core::num::NonZeroU32,
+    target_cpu: usize,
+    trigger: rdif_intc::Trigger,
+) -> Result<(), IrqError> {
+    aia::activate_guest_source(source, target_cpu, trigger)
+}
+
+pub(crate) fn retire_guest_aplic_source(source: core::num::NonZeroU32) -> Result<(), IrqError> {
+    aia::retire_guest_source(source)
 }
 
 fn plic_irq_id_from_claimed_source(source: usize) -> Result<IrqId, IrqError> {
@@ -32,6 +53,11 @@ fn plic_irq_id_from_claimed_source(source: usize) -> Result<IrqId, IrqError> {
     Ok(IrqId::new(domain, HwIrq(source)))
 }
 
+fn is_riscv_external_domain(domain: crate::irq::IrqDomainId) -> bool {
+    crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvPlic)
+        || crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvAplic)
+}
+
 fn checked_cpu_local_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
     if riscv_cpu_local_hwirq_is_runtime_irq(hwirq) {
         Ok(IrqId::new(CPU_LOCAL_IRQ_DOMAIN, hwirq))
@@ -41,13 +67,13 @@ fn checked_cpu_local_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
 }
 
 impl PlatOp for Plat {
-    type ActiveIrq = plic::ActiveIrq;
+    type ActiveIrq = irq::ActiveIrq;
 
     fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
         if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
-            return plic::local_irq_set_enable(riscv_local_irq_raw(irq)?.into(), enable);
+            return irq::local_irq_set_enable(riscv_local_irq_raw(irq)?.into(), enable);
         }
-        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
+        if is_riscv_external_domain(irq.domain) {
             return crate::irq::set_controller_irq_enabled(irq, enable);
         }
         Err(IrqError::InvalidIrq)
@@ -60,14 +86,20 @@ impl PlatOp for Plat {
         if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
             return plic::irq_set_affinity(irq.hwirq, affinity);
         }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvAplic) {
+            return aia::irq_set_affinity(irq.hwirq, affinity);
+        }
         Err(IrqError::InvalidIrq)
     }
 
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
-        plic::begin_irq(raw)
+        irq::begin_irq(raw)
     }
 
     fn active_irq_id(active: &Self::ActiveIrq) -> IrqId {
+        if let Some(irq) = active.framework_id() {
+            return irq;
+        }
         let raw: usize = active.id().into();
         if raw & RISCV_INTERRUPT_BIT != 0 {
             riscv_cpu_local_irq_from_raw(raw).expect("active RISC-V local IRQ must be validated")
@@ -82,27 +114,23 @@ impl PlatOp for Plat {
     }
 
     fn systick_irq() -> IrqId {
-        riscv_cpu_local_irq_from_raw(plic::systick_irq().into())
+        riscv_cpu_local_irq_from_raw(irq::systick_irq().into())
             .expect("RISC-V systick IRQ must be a CPU-local timer cause")
     }
 
     fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
-        riscv_resolve_controller_line(source, || {
-            matches!(
-                source,
-                IrqSource::ControllerLine { domain, .. }
-                    if crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvPlic)
-            )
-        })?;
         match source {
             IrqSource::ControllerLine { domain, hwirq } if domain == CPU_LOCAL_IRQ_DOMAIN => {
                 checked_cpu_local_irq(hwirq)
             }
-            IrqSource::ControllerLine { domain, hwirq } => {
-                plic::source_from_hwirq(hwirq)?;
+            IrqSource::ControllerLine { domain, hwirq } if is_riscv_external_domain(domain) => {
+                if crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvPlic) {
+                    plic::source_from_hwirq(hwirq)?;
+                }
                 Ok(IrqId::new(domain, hwirq))
             }
-            IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => unreachable!(),
+            IrqSource::ControllerLine { .. } => Err(IrqError::InvalidIrq),
+            IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => Err(IrqError::Unsupported),
         }
     }
 
@@ -111,7 +139,7 @@ impl PlatOp for Plat {
     fn init_boot_irq_cpu(cpu_idx: usize, role: crate::irq::CpuBootRole) {
         match role {
             crate::irq::CpuBootRole::Primary => {}
-            crate::irq::CpuBootRole::Secondary => plic::secondary_init_intc(cpu_idx),
+            crate::irq::CpuBootRole::Secondary => irq::init_secondary_cpu(cpu_idx),
         }
     }
 
@@ -122,9 +150,9 @@ impl PlatOp for Plat {
         match target {
             crate::irq::IpiTarget::Current => {
                 let cpu = crate::cpu::current_cpu_idx().ok_or(IrqError::InvalidCpu)?;
-                plic::send_ipi_to_cpu(cpu)
+                irq::send_ipi_to_cpu(cpu)
             }
-            crate::irq::IpiTarget::Cpu(cpu) => plic::send_ipi_to_cpu(cpu.0),
+            crate::irq::IpiTarget::Cpu(cpu) => irq::send_ipi_to_cpu(cpu.0),
         }
     }
 
@@ -133,6 +161,6 @@ impl PlatOp for Plat {
     }
 
     fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
-        plic::send_ipi_to_cpu(cpu_id)
+        irq::send_ipi_to_cpu(cpu_id)
     }
 }

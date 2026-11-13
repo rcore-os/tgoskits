@@ -71,18 +71,24 @@ pub(super) fn host_cpu_count() -> usize {
 
 pub(super) fn decode_gic_spi(
     specifier: &[u32],
-) -> Option<crate::boot::fdt::core::DecodedInterrupt> {
+) -> AxVmResult<Option<crate::boot::fdt::core::DecodedInterrupt>> {
     if specifier.first().copied() != Some(0) {
-        return None;
+        return Ok(None);
     }
-    let source = specifier.get(1).copied()?;
+    let Some(source) = specifier.get(1).copied() else {
+        return Ok(None);
+    };
     let flags = specifier.get(2).copied().unwrap_or(4);
     let trigger = if flags & 0b11 != 0 {
         axdevice_base::InterruptTriggerMode::EdgeTriggered
     } else {
         axdevice_base::InterruptTriggerMode::LevelTriggered
     };
-    Some(crate::boot::fdt::core::DecodedInterrupt { source, trigger })
+    Ok(Some(crate::boot::fdt::core::DecodedInterrupt {
+        source,
+        trigger,
+        controller_trigger: None,
+    }))
 }
 
 pub(super) fn patch_runtime_fdt(

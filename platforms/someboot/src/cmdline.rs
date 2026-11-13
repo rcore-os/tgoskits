@@ -49,6 +49,7 @@ pub fn var(key: &str) -> Option<&'static str> {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EarlyconConfig {
+    /// Console driver name; `xscale` selects an MMIO 16550 with IER.UUE set.
     pub uart_type: &'static str,
     pub io_type: &'static str,
     pub base_addr: Option<usize>,

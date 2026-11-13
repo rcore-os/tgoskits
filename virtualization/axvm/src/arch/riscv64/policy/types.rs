@@ -8,6 +8,9 @@ pub type RiscvVcpuResult<T = ()> = Result<T, RiscvVcpuError>;
 /// Errors reported by the RISC-V vCPU core.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RiscvVcpuError {
+    /// Vector bank allocation failed before binding a physical CPU.
+    #[error("RISC-V vCPU allocation failed")]
+    OutOfMemory,
     /// Caller supplied an invalid value.
     #[error("invalid RISC-V vCPU input")]
     InvalidInput,
