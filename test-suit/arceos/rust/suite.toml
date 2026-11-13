@@ -73,7 +73,7 @@ category = "mem"
 
 [[batches.general.tests]]
 id = "net-http"
-name = "Rust std host HTTP round trip"
+name = "Rust std host HTTP and UDP round trips"
 entry = "crate::net::http::run"
 category = "net"
 

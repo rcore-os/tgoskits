@@ -170,6 +170,9 @@ fn plan_run(
     if profile == "serial-rx" {
         host_fixtures.push("serial-rx");
     }
+    if crate::execution::host_udp::HostUdpEchoGuard::is_configured(&runtime)? {
+        host_fixtures.push("udp-echo");
+    }
     if runtime.get("host_pcm_waveform").is_some() {
         host_fixtures.push("pcm-waveform");
     }

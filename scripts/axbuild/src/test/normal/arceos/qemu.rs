@@ -9,7 +9,7 @@ use super::{
 use crate::{
     arceos::{ArceOS, build, rootfs},
     context::SnapshotPersistence,
-    execution::{host_http::HostHttpServerGuard, qemu as qemu_test},
+    execution::{host_http::HostHttpServerGuard, host_udp::HostUdpEchoGuard, qemu as qemu_test},
 };
 
 /// Resolve build inputs without preparing assets, writing snapshots or starting a target.
@@ -135,6 +135,7 @@ pub(crate) async fn run_qemu_case(
         .map(|config| HostHttpServerGuard::start(config, case_name))
         .transpose()?;
 
+    let host_udp_echo = HostUdpEchoGuard::start_for_case(&case.case.case.qemu_config_path)?;
     let mut qemu = case.qemu.clone();
     let pcm_waveform = super::pcm_waveform::PcmWaveform::start(
         &case.case.case.qemu_config_path,
@@ -152,10 +153,12 @@ pub(crate) async fn run_qemu_case(
         .run_qemu_with_axtest_coverage(&case.cargo, qemu)
         .await
         .with_context(|| format!("failed to run ArceOS rust qemu test case `{case_name}`"));
+    let udp_result = host_udp_echo.map(HostUdpEchoGuard::finish).transpose();
     if let Some(fixture) = serial_rx {
         fixture.finish().await?;
     }
     result?;
+    udp_result?;
     if case.verify_pcm_output
         && let Some(recording) = pcm_waveform
     {

@@ -46,7 +46,7 @@ cargo xtask arceos test qemu --test-group rust --arch riscv64 --test-case task-m
 
 `--plan` 只读取声明与配置，输出逻辑项、执行次数、实际feature组合、构建身份、启动次数、运行检查和宿主辅助设施，不构建镜像或启动目标。默认四架构启动数为RISC-V 6、AArch64 9、x86_64 7、LoongArch64 6；CI另保留RISC-V宿主CPU0绑定的IPI专项。JSON可重定向至 `target/` 等已忽略目录，输出不是源码。测试通过仍要求对应成功标志和外层退出码。
 
-`task-priority` 在同一CPU竞争并核对Fair权重的完成顺序；`task-rt-policy` 包含两个已就绪RR线程不主动yield的轮转检查；`task-yield` 强制两线程的真实FP状态重叠后比较硬件寄存器。`mem-stage1-transition` 同时检查远端写保护、TLB失效、重映射和未映射页故障恢复。网络组 `net-http` 验证真实HTTP往返，不把数字IP解析或仅bind称为DNS/收包测试。
+`task-priority` 在同一CPU竞争并核对Fair权重的完成顺序；`task-rt-policy` 包含两个已就绪RR线程不主动yield的轮转检查；`task-yield` 强制两线程的真实FP状态重叠后比较硬件寄存器。`mem-stage1-transition` 同时检查远端写保护、TLB失效、重映射和未映射页故障恢复。网络组 `net-http` 在同一次启动验证真实HTTP与UDP往返。UDP临时端口及固定5555端口均发送两个不同数据报，核对回显来源、长度和二进制内容；POSIX poll等待读写事件、非阻塞收发，3秒期限到达即失败，不用send_to返回长度冒充送达。四架构原QEMU配置显式启用通用host_udp_echo夹具，与HTTP使用相同端口号的不同传输协议；退出或失败时停止回显线程并释放端口。该用例不声称DNS覆盖。
 
 ### 2.2 回归证据
 

@@ -36,7 +36,7 @@ task-scheduler-irq-window = ["task-runtime", "ax-std/ipi", "ax-std/qperf-metrics
 task-sleep = ["task-runtime"]
 task-stack-guard-page = ["task-runtime", "ax-std/paging"]
 task-mutex = ["task-runtime", "ax-std/alloc", "dep:libc"]
-net-http = ["ax-std", "ax-driver/virtio-net", "ax-std/net"]
+net-http = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "dep:libc"]
 # Owns the Unix namespace provider; run separately from the filesystem suite.
 net-unix-path = ["task-runtime", "ax-driver/virtio-net", "ax-std/net"]
 # Owns raw block controllers; must run outside the filesystem-enabled general kernel.
