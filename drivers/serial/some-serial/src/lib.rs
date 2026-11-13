@@ -30,14 +30,25 @@
 //! ```rust,no_run
 //! use core::ptr::NonNull;
 //!
-//! use some_serial::{Config, PollingUart as _, UartPort as _, ns16550::Ns16550, pl011::Pl011};
+//! use some_serial::{
+//!     Config, PollingUart as _, UartPort as _,
+//!     ns16550::{Ns16550, UartVariant},
+//!     pl011::Pl011,
+//! };
 //!
 //! // 选择合适的驱动
 //! #[cfg(target_arch = "aarch64")]
 //! let mut uart = Pl011::new(NonNull::new(0x9000000 as *mut u8).unwrap(), 24_000_000);
 //!
 //! #[cfg(not(target_arch = "aarch64"))]
-//! let mut uart = Ns16550::new_mmio(NonNull::new(0x9000000 as *mut u8).unwrap(), 1_843_200, 1);
+//! let mut uart = Ns16550::new_mmio(
+//!     NonNull::new(0x9000000 as *mut u8).unwrap(),
+//!     1_843_200,
+//!     1,
+//!     1,
+//!     UartVariant::Standard,
+//! )
+//! .unwrap();
 //!
 //! // 配置串口
 //! let config = Config::new()

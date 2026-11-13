@@ -14,8 +14,14 @@
 
 use core::mem::offset_of;
 
-use super::super::virtualization::context::{GuestCpuState, HypervisorCpuState, Vcpu};
-use crate::registers::{FpState, GprIndex};
+use super::super::virtualization::{
+    VectorBank, VectorCsrs, VectorEntry,
+    context::{GuestCpuState, HypervisorCpuState, Vcpu},
+};
+use crate::{
+    registers::{FpState, GprIndex},
+    virtualization::StateMemory,
+};
 
 const fn hyp_gpr_offset(index: GprIndex) -> usize {
     offset_of!(Vcpu, hyp_regs) + offset_of!(HypervisorCpuState, gprs) + index.byte_offset()
@@ -39,7 +45,16 @@ macro_rules! guest_csr_offset {
 
 core::arch::global_asm!(
     include_fp_asm_macros!(),
+    include_str!("vector.S"),
     include_str!("guest.S"),
+    vector_entry = const offset_of!(Vcpu, vector_entry),
+    vector_guest = const offset_of!(VectorEntry, guest),
+    vector_host = const offset_of!(VectorEntry, host),
+    vector_registers = const offset_of!(VectorBank, registers),
+    vector_vstart = const offset_of!(VectorBank, csrs) + offset_of!(VectorCsrs, vstart),
+    vector_vl = const offset_of!(VectorBank, csrs) + offset_of!(VectorCsrs, vl),
+    vector_vtype = const offset_of!(VectorBank, csrs) + offset_of!(VectorCsrs, vtype),
+    vector_vcsr = const offset_of!(VectorBank, csrs) + offset_of!(VectorCsrs, vcsr),
     trap_pc = const offset_of!(Vcpu, trap_csrs) + offset_of!(super::super::virtualization::context::Exit, pc),
     guest_fp = const offset_of!(Vcpu, fp),
     host_fp = const offset_of!(Vcpu, host_fp),
@@ -117,7 +132,11 @@ core::arch::global_asm!(
 );
 
 unsafe extern "C" {
-    fn __ax_cpu_riscv_run_guest(state: *mut Vcpu);
+    // Assembly accesses only the fixed repr(C) register prefix. Its offsets
+    // computed from Vcpu<NoVectorMemory> hold for every M: only the final field
+    // depends on M. The actual Vcpu<M> pointer is passed directly as c_void;
+    // no reference to a different Rust monomorphization is ever formed.
+    fn __ax_cpu_riscv_run_guest(state: *mut core::ffi::c_void, vector: *mut VectorEntry);
 }
 
 /// Enters the guest and restores host integer, floating-point and CSR state.
@@ -129,12 +148,37 @@ unsafe extern "C" {
 /// call. The target must implement the F/D extensions used by this image.
 /// Guest memory must not permit modifying host code, page tables or this image.
 /// Host trap, stack, TLS and scratch bindings must be valid for restoration.
-pub unsafe fn enter_guest(registers: &mut Vcpu) -> super::super::virtualization::context::Exit {
-    // SAFETY: the caller owns all machine state consumed by this transaction.
-    // Assembly restores host FP, TLS and CSR state before any Rust runs again.
+/// When vectors are enabled, the register length must equal this hart's `vlenb`
+/// and all harts on which the guest executes must have a compatible vector ISA.
+/// The host must not use vector instructions outside separately managed scopes.
+pub unsafe fn enter_guest<M: StateMemory>(
+    registers: &mut Vcpu<M>,
+) -> super::super::virtualization::context::Exit {
+    const VS_MASK: usize = 3 << 9;
+    let mut vector = registers.vector.as_mut().map(|vector| vector.entry());
+    let vector_entry = match vector.as_mut() {
+        Some(entry) => {
+            if registers.guest_regs.sstatus & VS_MASK == 0 {
+                registers.guest_regs.sstatus |= 1 << 9;
+            }
+            entry as *mut VectorEntry
+        }
+        None => {
+            // A guest without an owned bank must never execute vector state.
+            registers.guest_regs.sstatus &= !VS_MASK;
+            core::ptr::null_mut()
+        }
+    };
+    // SAFETY: the exclusive Vcpu borrow keeps both owned vector banks live and
+    // stable. The descriptor lives on this stack for the synchronous call;
+    // assembly clears its temporary pointer before Rust can move or clone Vcpu.
+    // The caller supplies the pinned CPU, translations and trap bindings.
     unsafe {
         super::super::virtualization::invalidate_gstage_translations();
-        __ax_cpu_riscv_run_guest(registers);
+        __ax_cpu_riscv_run_guest((registers as *mut Vcpu<M>).cast(), vector_entry);
+    }
+    if let (Some(state), Some(entry)) = (&mut registers.vector, vector) {
+        state.controls = entry.guest.csrs;
     }
     registers.trap_csrs
 }

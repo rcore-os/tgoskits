@@ -138,6 +138,8 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - 重定位或切换高地址后，使用运行时安全符号地址辅助函数，不直接使用编译期地址。
 - x86_64 直接位置无关可执行启动在进入 Rust 前，由裸函数和相对指令指针入口应用受支持的 `R_X86_64_RELATIVE`。统一可扩展固件接口头可以共用头部节，但原始入口符号仍是直接加载入口，加载偏移后其物理地址保持有效。
 - AArch64 需要在 Rust 全局保存异常级转换状态时，把它传入重定位后入口，不能在重定位前写可重定位静态变量。统一可扩展固件接口入口按通用固件重定位契约适配 `relocate::apply`，在公共异常级设置前初始化统一可扩展固件接口、扁平设备树和高级配置与电源接口，不能重进会清理未初始化数据段或覆盖已取得设备树地址的直接启动路径。
+- RISC-V RV64GC 裸机入口在进入任何 Rust 代码前启用 `sstatus.FS`，主核和 SBI HSM 次核入口均须建立该条件；不能依赖固件或 VS 客户机复位状态。早期内存大小格式化可能使用 F/D，`FS=Off` 会在最终陷阱向量安装前触发非法指令，并表现为客户机随后从地址 0 取指失败。Axvisor 的宿主 `sstatus.FS` 与客户机 `vsstatus.FS` 所有权保持独立，由客户机启动代码建立自身浮点状态。
+- RISC-V Axvisor 的 SBI DBCN 缓冲区由 [`console::ConsoleBuffer`](../../../virtualization/axvm/src/arch/riscv64/console.rs) 持有直映物理页，限制每次传输为 512 字节并在同步固件调用后释放。运行时任务栈位于 vmap，不能把栈缓冲区传给只处理直映地址的 `HostMemory::virt_to_phys()`。Linux `earlycon=sbi` 在支持 DBCN 的 QEMU 固件上可能首先触发此路径；固件读取错误物理地址后可能在异常输出时再次等待控制台锁。此时检查 GDB 的 M-mode `mepc`、`mcause`、`mtval`，并对缓冲区的宿主页表映射作物理地址核对，不能仅凭客户机无输出或 CPU0 失去响应就归因于 vCPU 亲和性。
 - 未初始化数据段只清理一次，且先保存其中的入口数据。
 - `tls` 与 `uspace` 同时启用时采用 `uspace` 的寄存器所有权，不启用内核 TLS。相关软件包在 `build.rs` 由 `CARGO_FEATURE_TLS` 存在且 `CARGO_FEATURE_USPACE` 不存在派生内部 `kernel_tls` cfg；Cargo feature 必须完整转发到 `cpu-local` 和启动层，自定义 cfg 不跨包传播。`someboot::Build::kernel_tls` 与源码 cfg 消费同一次计算结果，不能使用 AArch64 启动调整后的 `Build::uspace` 反推内核 TLS。
 - 线程局部存储与无线程局部存储使用不同链接布局。后者拒绝 `.tdata` 和 `.tbss` 并省略 `PT_TLS`；前者保留线程局部存储程序头和启动数据。
@@ -153,6 +155,30 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - LoongArch 的四级 4 KiB 页表 walker 是构建期契约，CPUCFG `VALEN` 是运行期 canonical 地址能力，两者不能混为动态页表层数。平台按 Linux 的 `vm_map_base = 0 - (1 << cpu_vabits)` 原理发布类型化 lower/upper half：CPUCFG wrapper 返回的 `VALEN` 先减一得到 `cpu_vabits`；PGDL/PGDH 由 `VA[VALEN-1]` 选择。用户 `TASK_SIZE` 和 page-table-backed kernel allocator 必须消费同一不可变布局，不得用板卡 feature 维护第二套地址常量；位宽超出 walker 时返回类型化不支持并停止启动。DMW 的 `PABITS`、缓存属性和物理直映所有权保持独立，不能随 `VALEN` 裁剪。
 - LoongArch 的 someboot 和运行期通过 `ax_cpu::boot::tlb_refill_entry()` 引用唯一填充入口，不能从普通异常向量表加固定偏移推导 refill 地址。入口地址通过 PC-relative 方式取得，平台按自身映射转换为 TLBRENTRY 要求的物理地址。遇到零中间目录项立即停止并写入两个零 `TLBRELO`，使原始装载、存储或取指错误进入虚拟内存处理器。不得从物理地址零继续 `lddir` 或 `ldpte`，也不得把含错误虚拟页号的 `TLBREHI` 当作 EntryLo。以延迟 `mmap` 后第一次存储回归和分配器测试验证。
 - `ExitBootServices` 之后不得调用启动服务。退出前重试必须使用正确内存映射键序列。
+
+## RISC-V 虚拟化启动
+
+RISC-V 虚拟化移植分别核对宿主物理中断控制器、客户机固件与逐核能力。QEMU AIA 回归入口及 K3 固件、串口、发行版、板卡资源和历史诊断记录按需读取[启动调试参考](references/boot-debugging.md)中的“QEMU AIA 回归”和“Banana Pi BPI-SM10 K3”；板卡地址、核心分布和厂商镜像约束不作为其他平台的默认值。
+
+AIA 路由遵循 [RISC-V AIA 外部中断路由](../../../docs/design/riscv-aia-interrupt-routing.md)：先探测 IMSIC，再探测 APLIC；按 `interrupts-extended` 与中断文件物理布局映射逻辑 CPU，不能把逻辑编号直接写入 Hart Index。每核在本地中断关闭范围内清理并预开本驱动独占的 EIID，运行期由 APLIC 屏蔽来源和选择目标，不在调用核临时改写 IMSIC EIE。固定来源号作为 EIID，超过 IMSIC 容量立即报错；电平配置和完成后重采样，边沿不补发。监管者驱动不写 SBI 所有的机器域或 MSI 地址配置；已发出的 MSI 仍可能在旧核完成，本路径不提供同步迁移或原生 PCI MSI 分配。
+
+RISC-V 中断职责按模块区分：`somehal::arch::irq` 统一持有 `ActiveIrq`、陷阱分类与完成、本地中断输入、SBI IPI 和次核初始化；`somehal::arch::plic` 仅提供 PLIC 来源及上下文操作，`somehal::arch::aia` 提供 APLIC/IMSIC 操作。次核通过 `irq::init_secondary_cpu()` 设置已探测的控制器，再开放本地中断输入；移动代码时保留 PLIC claim 的原始上下文和 SBI IPI 前的发布屏障。
+
+客户机物理 IRQ 复用现有外部中断桥。APLIC 延期完成先屏蔽来源，完成按期望启用状态重采样；延期期间 enable 不得绕过屏蔽。首次配置必须先 SOURCECFG 再 TARGET，保留宿主 DTB 中的完整电气触发方式，不从客户机虚拟 PLIC 说明符补默认值。没有在途 MSI 排空协议时，来源首次激活后固定亲和，停止后退休到板级复位。控制器寄存器顺序使用 I/O 屏障。DMA 恒等不代表隔离，显式客户机树须保留物理总线的 `dma-noncoherent`，以及驱动实际需要的时钟、复位和引脚依赖。
+
+Linux 客户机声明 Zicbom/Zicboz/Svpbmt 时，`ax-cpu::GuestBinding` 必须开放硬件已有的 `henvcfg` CBO/PBMT 权限，并保存恢复 HS/VS 共用的 `senvcfg`。Smstateen 存在时还要开放 `hstateen0.ENVCFG`；可选 CSR 通过已有临时陷阱探测，不在缺少扩展的 CPU 上直接读写。只开放实际管理的状态，其他权限保持原值。PBMTE 变化后需同步 VS 翻译，恢复 `henvcfg` 应先于最终 HFENCE；SSTC 不支持的提前返回不能留下 PBMTE 变化。动态 `MapIdentical` RAM 调整内核地址时，同步移动属于同一主 RAM 的 initramfs，其他固定区域保持原地址，加载时仍检查完整映像边界。
+
+相同目标的不同 AxVisor 配置共用最终构建产物；构建到镜像准备完成前不要并发运行这些配置。板卡日志应核对客户机内核版本、命令行和设备，防止把另一配置的运行当作当前验证结果。
+
+显式 RISC-V 客户机设备树不会自动按配置投影 CPU 节点。`phys_cpu_ids`、进入客户机时的 hart ID、`/cpus/cpu@*/reg` 和 PLIC 的 `interrupts-extended` 上下文顺序必须一致。双核验证使用 hart 0、1，每个 hart 按机器上下文占位与监管者上下文排列；仅把单核客户机绑到宿主 CPU1，却保留只有 hart 0 的设备树，会导致客户机没有正常启动输出。
+
+CPU 身份必须从 `reg` 取得，不能把节点名称中的数字再次当作硬件编号解析。QEMU 与部分板卡固件使用 `cpu@10` 标签描述 hart 10，而不是 hart 16；AxVM 的默认亲和解析、派生树 CPU 过滤和缺失 CPU 补齐共用 `tree::cpu_reg_address()`，显式 `phys_cpu_sets` 仍只表达最终宿主亲和。
+
+`ArceOsHost::enable_virtualization_on_all_cpus()` 将不支持的次核记为探测完成并保留给宿主，不因该结果 panic；成功能力仍只发布到 `percpu` 的可用掩码。客户机目标必须通过 `minimum_recorded_target_cpu_capability()` 验证，不能通过缩小宿主核心数掩盖能力差异。其余初始化错误保持失败语义。
+
+文件后端位于宿主 initramfs 时，客户机写入不会跨板级复位保留；持久化验收需要实际存储后端及重启回读。Linux 与 StarryOS 验收均须进入客户机 Shell，执行文件同步回读并切回验证交互；显式客户机串口配置须提供与 `console=ttyS0` 匹配的 `serial0` 别名。
+
+文件后端性能排查同时记录 vCPU 与 `FileBackend::pin_worker()` 的宿主亲和性，区分工作线程排队和实际后端 I/O 耗时。控制台接入不会重绘既有提示符，自动检查应在接入完成后发送命令验证，不延长超时掩盖进展问题。
 
 ## CPU 启动容量
 

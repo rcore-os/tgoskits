@@ -3,8 +3,8 @@ mod fp;
 mod vmx;
 
 use ax_cpu::virtualization::{
-    Backend, ControlMemory, PerCpu, Readable, SvmControlMemory, SvmControls, SvmExitCode,
-    SvmIntercept, VmcbTlbControl, Writeable, set_vmcb_segment,
+    Backend, ControlMemory, PerCpu, Readable, StateMemory, SvmControlMemory, SvmControls,
+    SvmExitCode, SvmIntercept, VmcbTlbControl, Writeable, set_vmcb_segment,
 };
 use support::ControlPages;
 

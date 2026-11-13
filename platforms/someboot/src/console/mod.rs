@@ -366,6 +366,30 @@ pub(crate) fn bind_earlycon_pl011(paddr: usize, clock: u32) -> Result<(), Pl011B
     Ok(())
 }
 
+/// Initializes a physical MMIO UART once; relocation only replaces its window.
+pub(crate) fn bind_earlycon_ns16550(
+    paddr: usize,
+    clock: u32,
+    register_stride: usize,
+    access_width: usize,
+    variant: ns16550::UartVariant,
+) -> Result<(), &'static str> {
+    let registers =
+        NonNull::new(_fixmap_io(paddr)).ok_or("Invalid base address for ns16550 earlycon")?;
+    let Some(_access) = handoff::try_enter_early() else {
+        return Ok(());
+    };
+    let serial = Ns16550::new_mmio(registers, clock, register_stride, access_width, variant)
+        .map_err(|_| "Invalid ns16550 MMIO register layout")?;
+    EARLYCON
+        .0
+        .with_lock(|earlycon| earlycon.bind_ns16550(paddr, serial));
+    // SAFETY: the static early console owns the newly bound serial, and the
+    // handoff guard prevents publishing it after runtime ownership begins.
+    unsafe { set_out(&EARLYCON) };
+    Ok(())
+}
+
 pub fn read_byte() -> Option<u8> {
     let _access = handoff::try_enter_early()?;
     if let Some(byte) = <crate::arch::Arch as crate::ArchTrait>::Console::read_byte() {
@@ -455,6 +479,8 @@ struct EarlyconState {
     /// whose initialization failed has no entry here, so a later selection of
     /// the same device still initializes the UART.
     initialized_pl011_paddr: Option<usize>,
+    /// Physical MMIO UART whose initialization must survive address rebinding.
+    initialized_ns16550_mmio_paddr: Option<usize>,
 }
 
 impl EarlyconState {
@@ -462,6 +488,7 @@ impl EarlyconState {
         Self {
             serial: None,
             initialized_pl011_paddr: None,
+            initialized_ns16550_mmio_paddr: None,
         }
     }
 
@@ -486,6 +513,16 @@ impl EarlyconState {
         }
         self.serial = Some(EarlySerial::new(EarlySerialRaw::Pl011(serial)));
         Ok(())
+    }
+
+    fn bind_ns16550(&mut self, paddr: usize, mut serial: Ns16550<Mmio>) {
+        if self.initialized_ns16550_mmio_paddr != Some(paddr) {
+            serial.open();
+            self.initialized_ns16550_mmio_paddr = Some(paddr);
+        }
+        // Construction only sets software state. Reopening the same UART
+        // would clear pending TX/RX bytes and rewrite IER/MCR across the MMU.
+        self.serial = Some(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(serial)));
     }
 }
 
@@ -717,10 +754,14 @@ pub fn set_earlycon_by_cmdline() -> Result<(), &'static str> {
                 }
             }
             _ => {
-                set_16550_mmio(&config)?;
+                set_16550_mmio(&config, ns16550::UartVariant::Standard)?;
                 true
             }
         },
+        "xscale" => {
+            set_16550_mmio(&config, ns16550::UartVariant::XScale)?;
+            true
+        }
         "pl011" => {
             set_pl011(&config)?;
             true
@@ -744,22 +785,18 @@ fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
     bind_earlycon_pl011(base_addr, 0).map_err(Pl011BindError::message)
 }
 
-fn set_16550_mmio(config: &EarlyconConfig) -> Result<(), &'static str> {
-    let base_addr = earlycon_base_addr(config, "No base address specified for ns16550 earlycon")?;
-    let base_addr =
-        NonNull::new(_fixmap_io(base_addr)).ok_or("Invalid base address for ns16550 earlycon")?;
+fn set_16550_mmio(
+    config: &EarlyconConfig,
+    variant: ns16550::UartVariant,
+) -> Result<(), &'static str> {
     let width = match config.io_type {
         "mmio" => 1,
         "mmio16" => 2,
         "mmio32" => 4,
         _ => return Err("Invalid io_type for ns16550 earlycon"),
     };
-
-    let mut serial = ns16550::Ns16550::new_mmio(base_addr, 0, width);
-    serial.open();
-    set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Ns16550Mmio(serial)));
-
-    Ok(())
+    let base_addr = earlycon_base_addr(config, "No base address specified for ns16550 earlycon")?;
+    bind_earlycon_ns16550(base_addr, 0, width, width, variant)
 }
 
 fn earlycon_base_addr(

@@ -912,11 +912,11 @@ pub(crate) fn model(
     }))
 }
 
-struct RiscvPhysicalPlicIngress;
+struct RiscvPhysicalExternalIngress;
 
 #[ax_crate_interface::impl_interface]
-impl ax_plat::irq::riscv64_hv::RiscvHvIrqSink for RiscvPhysicalPlicIngress {
-    fn publish_physical_plic_claim(source: u32) -> bool {
+impl ax_plat::irq::riscv64_hv::RiscvHvIrqSink for RiscvPhysicalExternalIngress {
+    fn publish_physical_external_claim(source: u32) -> bool {
         physical::publish_physical_claim_from_irq(source)
     }
 }

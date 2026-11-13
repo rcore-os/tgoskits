@@ -1,0 +1,6 @@
+package = "arceos-driver-tests"
+target = "riscv64gc-unknown-none-elf"
+freestanding = true
+features = ["ax-std"]
+max_cpu_num = 2
+log = "Info"

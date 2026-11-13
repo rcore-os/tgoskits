@@ -16,6 +16,8 @@ pub mod loongarch64_hv;
 pub use loongarch64_hv::LoongArchHvIrqIf;
 #[cfg(target_arch = "riscv64")]
 pub mod riscv64_hv;
+/// Full electrical trigger semantics of a physical interrupt controller.
+pub use rdif_intc::Trigger as ControllerIrqTrigger;
 #[cfg(target_arch = "riscv64")]
 pub use riscv64_hv::RiscvHvIrqIf;
 

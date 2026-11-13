@@ -18,6 +18,8 @@ pub struct DecodedInterrupt {
     pub source: u32,
     /// Trigger mode declared by firmware.
     pub trigger: InterruptTriggerMode,
+    /// Full physical-controller trigger, when required by the architecture.
+    pub controller_trigger: Option<crate::config::ControllerIrqTrigger>,
 }
 
 /// Architecture operations required by common guest FDT processing.
@@ -26,7 +28,7 @@ pub struct GuestFdtPolicy {
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     pub patch_runtime: RuntimeFdtPatch,
     pub patch_provided: ProvidedFdtPatch,
-    pub decode_interrupt: fn(&[u32]) -> Option<DecodedInterrupt>,
+    pub decode_interrupt: fn(&[u32]) -> AxVmResult<Option<DecodedInterrupt>>,
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
     pub resolve_cpu_index: fn(usize) -> Option<usize>,
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]

@@ -35,10 +35,26 @@ impl Riscv64Arch {
         vm.prepare_resources_with(|resources, config| {
             let placements = resources.vcpu_placements(config);
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
+            let vector_register_bytes = guest_vector_register_bytes(config)?;
             let mut vcpus = PreparedVcpus::create(vm_id, &placements, |placement| {
+                let vector_host_cpu_id = if vector_register_bytes == 0 {
+                    None
+                } else {
+                    let mask = placement
+                        .phys_cpu_set
+                        .filter(|mask| mask.count_ones() == 1)
+                        .ok_or_else(|| {
+                            AxVmError::invalid_config(
+                                "vector vCPUs require fixed single-CPU affinity",
+                            )
+                        })?;
+                    Some(mask.trailing_zeros() as usize)
+                };
                 Ok(RiscvVcpuCreateConfig {
                     hart_id: placement.phys_cpu_id,
                     dtb_addr: dtb_addr.as_usize(),
+                    vector_register_bytes,
+                    vector_host_cpu_id,
                 })
             })?;
             let devices = PreparedDevices::build_planned(resources, ports)?;
@@ -51,6 +67,28 @@ impl Riscv64Arch {
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
         })
     }
+}
+
+fn guest_vector_register_bytes(config: &AxVMConfig) -> AxVmResult<usize> {
+    let mappings = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
+    let capabilities = crate::architecture::capabilities::recorded_target_cpu_capabilities(
+        "RISC-V vector register bytes",
+        &mappings,
+        |cpu_id| crate::percpu::cpu_vector_register_bytes(cpu_id).map(|bytes| bytes as u64),
+    )
+    .map_err(|error| {
+        crate::architecture::unsupported_target_cpu_capability(
+            "select vector CPU capability",
+            error,
+        )
+    })?;
+    let bytes = capabilities[0].1;
+    if capabilities.iter().any(|(_, value)| *value != bytes) {
+        return Err(AxVmError::invalid_config(
+            "RISC-V VM target CPUs have incompatible vector lengths",
+        ));
+    }
+    Ok(bytes as usize)
 }
 
 fn plan_devices(config: &AxVMConfig) -> AxVmResult<RiscvVmPlan> {

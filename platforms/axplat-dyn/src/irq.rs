@@ -8,7 +8,7 @@ mod loongarch64_hv;
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 mod riscv64_hv;
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
-const RISCV_PLIC_SOURCE_COUNT: usize = 1024;
+const RISCV_EXTERNAL_SOURCE_COUNT: usize = 1024;
 
 struct IrqIfImpl;
 
@@ -63,13 +63,13 @@ impl IrqIf for IrqIfImpl {
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
             let mut guest_claim = is_guest_forwardable(irq)
-                .then(|| riscv64_hv::GuestPlicClaim::detach(&mut active, irq))
+                .then(|| riscv64_hv::GuestExternalClaim::detach(&mut active, irq))
                 .flatten();
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
             if guest_claim
                 .as_mut()
-                .is_some_and(riscv64_hv::GuestPlicClaim::publish_to_guest)
+                .is_some_and(riscv64_hv::GuestExternalClaim::publish_to_guest)
             {
                 return Some(irq);
             }
@@ -146,7 +146,9 @@ fn current_irq_cpu() -> CpuId {
 
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 fn is_guest_forwardable(irq: IrqId) -> bool {
-    somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::RiscvPlic)
+    let plic = somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvPlic);
+    let aplic = somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvAplic);
+    matches!((plic, aplic), (Some(domain), None) | (None, Some(domain)) if irq.domain == domain)
 }
 
 #[cfg(test)]
@@ -155,7 +157,7 @@ fn riscv_plic_source_index(irq: IrqId) -> Option<usize> {
         return None;
     }
     let source = irq.hwirq.0 as usize;
-    (1..RISCV_PLIC_SOURCE_COUNT)
+    (1..RISCV_EXTERNAL_SOURCE_COUNT)
         .contains(&source)
         .then_some(source)
 }
@@ -210,7 +212,7 @@ mod tests {
         let reserved = IrqId::new(irq.domain, HwIrq(0));
         assert_eq!(super::riscv_plic_source_index(reserved), None);
 
-        let out_of_range = IrqId::new(irq.domain, HwIrq(super::RISCV_PLIC_SOURCE_COUNT as u32));
+        let out_of_range = IrqId::new(irq.domain, HwIrq(super::RISCV_EXTERNAL_SOURCE_COUNT as u32));
         assert_eq!(super::riscv_plic_source_index(out_of_range), None);
     }
 }

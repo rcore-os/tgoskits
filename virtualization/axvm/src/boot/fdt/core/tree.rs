@@ -325,10 +325,12 @@ impl FdtTree {
         let existing = self
             .node_paths()
             .into_iter()
-            .filter_map(|(_, path)| {
-                path.strip_prefix("/cpus/cpu@")
-                    .and_then(|id| id.split('/').next())
-                    .and_then(|id| usize::from_str_radix(id, 16).ok())
+            .filter_map(|(node_id, path)| {
+                let suffix = path.strip_prefix("/cpus/cpu@")?;
+                if suffix.contains('/') {
+                    return None;
+                }
+                cpu_reg_address(self.inner(), node_id)
             })
             .collect::<BTreeSet<_>>();
 
@@ -395,6 +397,11 @@ impl FdtTree {
             self.fdt.remove_by_path(&path);
         }
     }
+}
+
+pub(super) fn cpu_reg_address(fdt: &Fdt, node_id: NodeId) -> Option<usize> {
+    let address = fdt.view_typed(node_id)?.regs().first()?.address;
+    usize::try_from(address).ok()
 }
 
 pub(super) fn checked_node_phandle(node: &Node) -> AxVmResult<Option<u32>> {

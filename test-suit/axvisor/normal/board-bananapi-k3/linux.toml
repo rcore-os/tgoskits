@@ -1,0 +1,21 @@
+[base]
+id = 1
+name = "k3-linux"
+guest_type = "virtualized"
+cpu_num = 2
+phys_cpu_ids = [1, 2]
+phys_cpu_sets = [0x2, 0x4]
+
+[kernel]
+entry_point = 0x9020_0000
+kernel_path = "/guest/linux/Image"
+kernel_load_addr = 0x9020_0000
+dtb_path = "/guest/linux/guest.dtb"
+dtb_load_addr = 0x9300_0000
+ramdisk_path = "/guest/linux/initramfs.cpio.gz"
+ramdisk_load_addr = 0x9400_0000
+cmdline = "earlycon=sbi console=ttyS0,115200 rdinit=/init"
+memory_regions = [[0x9000_0000, 0x2000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []

@@ -1,5 +1,5 @@
 schema_version = 1
-run_order = ["x86-q35"]
+run_order = ["x86-q35", "riscv-aia"]
 
 [execution]
 batch_env = "AX_DRIVERS_BATCH"
@@ -26,3 +26,17 @@ id = "intel-hda"
 name = "Intel HDA播放、取消与输出波形"
 entry = "crate::intel_hda::run"
 pcm_waveform = true
+
+[batches.riscv-aia]
+package = "arceos-driver-tests"
+image = "freestanding"
+mode = "normal"
+arch = "riscv64"
+build_config = "build-riscv64gc-unknown-none-elf.toml"
+qemu_config = "qemu-riscv64.toml"
+features = ["ax-std"]
+
+[[batches.riscv-aia.tests]]
+id = "aplic"
+name = "APLIC延期完成与来源退休"
+entry = "crate::aplic::run"

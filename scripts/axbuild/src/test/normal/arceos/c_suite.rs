@@ -185,7 +185,10 @@ async fn build_and_run(
     qemu_test::validate_test_qemu_rootfs_write_policy(&qemu_path, "ArceOS")?;
     rootfs::prepare_default_qemu_fat32_rootfs(arceos.app.workspace_root(), &qemu)?;
     rootfs::isolate_qemu_test_rootfs(&mut qemu)?;
-    qemu_test::append_backtrace_map(&mut qemu, &map, target)?;
+    let symbol_initramfs = qemu_test::prepare_qemu_initramfs_with_symbols(&qemu, &map, target)?;
+    if let Some(archive) = &symbol_initramfs {
+        qemu.boot.initramfs = Some(archive.path().to_string_lossy().into_owned());
+    }
     crate::support::qemu_success::replace_configured_success_regex(
         &mut qemu,
         vec![format!(

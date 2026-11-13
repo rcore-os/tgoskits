@@ -598,7 +598,8 @@ impl VmManager {
     /// # Errors
     ///
     /// Returns an error when the host lacks hardware virtualization support or
-    /// host virtualization cannot be enabled on every CPU.
+    /// virtualization cannot be enabled on the initializing CPU. Secondary CPUs
+    /// without virtualization support remain excluded from vCPU placement.
     pub fn new() -> AxVmResult<Self> {
         let host = default_host();
         if !host.has_hardware_support() {

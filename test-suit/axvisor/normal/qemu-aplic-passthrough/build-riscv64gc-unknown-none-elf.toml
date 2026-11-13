@@ -1,0 +1,5 @@
+features = ["ax-driver/nvme", "sstc"]
+log = "Info"
+target = "riscv64gc-unknown-none-elf"
+vm_configs = ["test-suit/axvisor/normal/qemu-aplic-passthrough/linux.toml"]
+max_cpu_num = 2

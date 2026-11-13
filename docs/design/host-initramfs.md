@@ -46,6 +46,15 @@ initramfs；StarryOS 还追加同次构建的 `/symbols/kernel.axks` 类型化�
 kernel、DTB、firmware 和 initrd 迁移到相同路径，验证或发布失败时不提交
 `PreparedRoot`，因此旧根和旧资源包仍保持可用。
 
+`axbuild::test::qemu::prepare_initramfs_with_symbols()` 通过 `InitramfsBuilder`
+将本次 AXBT、AXKS 打包为一个 newc 归档，再创建最终 ELF 目录下名称唯一的临时文件，
+依次写入只读输入的内容、补齐到 4 字节边界的零填充和符号归档。
+没有配置输入时只写符号归档；没有 sidecar 时返回 `None`，调用方保持原有输入。
+函数返回 `Option<NamedTempFile>`，由 QEMU、U-Boot 和板卡运行入口显式设置
+`BootPayloadConfig::initramfs`，并持有文件直到异步运行结束；成功或错误返回时
+通过析构删除临时文件。每次运行都从配置输入重新生成启动载荷，避免原地追加
+积累旧符号、使 FIT 超过上传限制，也避免固定输出名在不同运行间互相覆盖。
+
 运行配置统一复用 ostool 的 `BootPayloadConfig`。`.qemu.toml` 和
 `.board.toml` 都在顶层填写两个可选字段，路径继续支持 `${workspace}`、
 `${package}` 等变量：

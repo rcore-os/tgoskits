@@ -59,14 +59,48 @@ pub(super) fn host_cpu_count() -> usize {
     ax_std::os::arceos::modules::ax_hal::cpu_num()
 }
 
-pub(super) fn decode_plic_source(
+pub(super) fn decode_external_source(
     specifier: &[u32],
-) -> Option<crate::boot::fdt::core::DecodedInterrupt> {
-    let source = specifier.first().copied().filter(|source| *source != 0)?;
-    Some(crate::boot::fdt::core::DecodedInterrupt {
+) -> AxVmResult<Option<crate::boot::fdt::core::DecodedInterrupt>> {
+    use ax_plat::irq::ControllerIrqTrigger;
+    let (source, controller_trigger) = match specifier {
+        [source] => (*source, None),
+        [source, flags] => {
+            let trigger = match flags {
+                1 => ControllerIrqTrigger::EdgeRising,
+                2 => ControllerIrqTrigger::EdgeFailling,
+                4 => ControllerIrqTrigger::LevelHigh,
+                8 => ControllerIrqTrigger::LevelLow,
+                _ => {
+                    return Err(crate::AxVmError::invalid_config(format!(
+                        "unsupported RISC-V physical interrupt flags {flags:#x}"
+                    )));
+                }
+            };
+            (*source, Some(trigger))
+        }
+        _ => {
+            return Err(crate::AxVmError::invalid_config(
+                "RISC-V external interrupt requires a PLIC or APLIC specifier",
+            ));
+        }
+    };
+    if source == 0 {
+        return Err(crate::AxVmError::invalid_config(
+            "RISC-V physical interrupt source is zero",
+        ));
+    }
+    let trigger = match controller_trigger {
+        Some(ControllerIrqTrigger::EdgeRising | ControllerIrqTrigger::EdgeFailling) => {
+            axdevice_base::InterruptTriggerMode::EdgeTriggered
+        }
+        _ => axdevice_base::InterruptTriggerMode::LevelTriggered,
+    };
+    Ok(Some(crate::boot::fdt::core::DecodedInterrupt {
         source,
-        trigger: axdevice_base::InterruptTriggerMode::LevelTriggered,
-    })
+        trigger,
+        controller_trigger,
+    }))
 }
 
 pub(super) fn patch_runtime_fdt(
@@ -245,13 +279,60 @@ pub(super) fn patch_provided_fdt(
 
 #[cfg(test)]
 mod tests {
+    use ax_plat::irq::ControllerIrqTrigger;
+    use axdevice_base::InterruptTriggerMode;
+
+    use super::decode_external_source;
+    use crate::{AxVmError, boot::fdt::core::DecodedInterrupt};
+
     #[test]
-    fn plic_interrupt_uses_first_nonzero_fdt_cell() {
+    fn external_interrupt_decodes_plic_and_aplic_specifiers() {
         assert_eq!(
-            super::decode_plic_source(&[8]).map(|interrupt| interrupt.source),
-            Some(8)
+            decode_external_source(&[8]).unwrap(),
+            Some(DecodedInterrupt {
+                source: 8,
+                trigger: InterruptTriggerMode::LevelTriggered,
+                controller_trigger: None,
+            })
         );
-        assert_eq!(super::decode_plic_source(&[0]), None);
-        assert_eq!(super::decode_plic_source(&[]), None);
+
+        for (flags, trigger, controller_trigger) in [
+            (
+                1,
+                InterruptTriggerMode::EdgeTriggered,
+                ControllerIrqTrigger::EdgeRising,
+            ),
+            (
+                2,
+                InterruptTriggerMode::EdgeTriggered,
+                ControllerIrqTrigger::EdgeFailling,
+            ),
+            (
+                4,
+                InterruptTriggerMode::LevelTriggered,
+                ControllerIrqTrigger::LevelHigh,
+            ),
+            (
+                8,
+                InterruptTriggerMode::LevelTriggered,
+                ControllerIrqTrigger::LevelLow,
+            ),
+        ] {
+            assert_eq!(
+                decode_external_source(&[8, flags]).unwrap(),
+                Some(DecodedInterrupt {
+                    source: 8,
+                    trigger,
+                    controller_trigger: Some(controller_trigger),
+                })
+            );
+        }
+
+        for specifier in [&[][..], &[0], &[0, 4], &[8, 0], &[8, 3], &[8, 4, 1]] {
+            assert!(matches!(
+                decode_external_source(specifier),
+                Err(AxVmError::InvalidConfig { .. })
+            ));
+        }
     }
 }

@@ -40,9 +40,8 @@ shell_prefix = "axvisor:/$"
 shell_cmd = "vm console 1"
 success_regex = ["(?m)^AXVISOR_X86_PCI_BLOCK_RO_PASSED\\s*$"]
 
-# The first passthrough start releases the host filesystem. Recreate the
-# builtin guest afterwards to prove its immutable boot assets remain available
-# from the retained initramfs namespace while the host disk stays released.
+# Recreate this fully virtualized guest from the builtin initramfs assets and
+# verify that its replacement PCI block device remains read-only.
 [[shell_check_steps]]
 shell_prefix = "~ #"
 shell_cmd = "\u0018h"
@@ -58,3 +57,7 @@ timeout = 120
 shell_cmd = "vm start 1"
 success_regex = ["(?m)^✓ VM\\[1\\] started successfully\\s*$"]
 timeout = 120
+
+[[shell_check_steps]]
+shell_cmd = "vm console 1"
+success_regex = ["(?m)^AXVISOR_X86_PCI_BLOCK_RO_PASSED\\s*$"]

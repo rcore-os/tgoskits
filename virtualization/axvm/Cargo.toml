@@ -53,6 +53,7 @@ sstc = ["ax-cpu/riscv-sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
 
 [dependencies]
+rdif-intc.workspace = true
 ax-block.workspace = true
 log = "0.4"
 bit_field = "0.10"
@@ -125,7 +126,6 @@ arm_vgic = { workspace = true }
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 axklib.workspace = true
 mmio-api.workspace = true
-rdif-intc.workspace = true
 rdrive.workspace = true
 rdif-clk.workspace = true
 

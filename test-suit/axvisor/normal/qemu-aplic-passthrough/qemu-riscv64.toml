@@ -1,0 +1,82 @@
+args = [
+  "-nographic",
+  "-cpu", "rv64",
+  "-machine", "virt,aia=aplic-imsic",
+  "-bios", "default",
+  "-smp", "2",
+  "-m", "4G",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img,snapshot=on",
+  "-device", "virtio-blk-device,drive=guest,bus=virtio-mmio-bus.0",
+  # Guest writes go into a private QEMU snapshot of the shared input image.
+  "-drive", "id=guest,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img,snapshot=on",
+  "-append", "root=/dev/nvme0n1 rw init=/bin/sh axvisor.vm_start=1",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "failed to start selected builtin VMs",
+  "vCPU hardware attempt failed",
+  '(?m)^APLIC_PASSTHROUGH_FAILED\s*$',
+]
+timeout = 180
+to_bin = true
+uefi = false
+
+# A PLIC-host fallback must not accidentally satisfy this regression.
+[[shell_check_steps]]
+success_regex = ['RISC-V APLIC registered:']
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+shell_prefix = "~ #"
+shell_cmd = '''
+irq_count() {
+    awk '/virtio[0-9]+/ { for (i = 2; $i ~ /^[0-9]+$/; i++) total += $i } END { print total + 0 }' /proc/interrupts
+}
+check_aplic_disk() {
+    test "$(awk '/virtio[0-9]+/ { n++ } END { print n + 0 }' /proc/interrupts)" -eq 1 || return 1
+    mkdir -p /mnt/disk || return 1
+    mount -t ext4 /dev/vda /mnt/disk || return 1
+    test "$(cat /mnt/disk/etc/alpine-release)" = 3.23.6 || return 1
+    mkdir -p /mnt/disk/tmp || return 1
+    before=$(irq_count) || return 1
+    for round in 1 2 3; do
+        # Each round needs new device IRQs after the preceding guest EOI.
+        dd if=/dev/zero of=/mnt/disk/tmp/aplic-irq.bin bs=1048576 count=16 || return 1
+        sync || return 1
+        echo 3 > /proc/sys/vm/drop_caches || return 1
+        echo '080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e  /mnt/disk/tmp/aplic-irq.bin' | sha256sum -c - || return 1
+        after=$(irq_count) || return 1
+        printf 'APLIC_GUEST_IRQ round=%s before=%s after=%s\n' "$round" "$before" "$after"
+        test "$after" -gt "$before" || return 1
+        before=$after
+    done
+    rm /mnt/disk/tmp/aplic-irq.bin && sync && umount /mnt/disk
+}
+check_aplic_disk && echo APLIC_PASSTHROUGH_IO_PASSED || echo APLIC_PASSTHROUGH_FAILED
+'''
+success_regex = ['(?m)^APLIC_PASSTHROUGH_IO_PASSED\s*$']
+timeout = 60
+
+# SBI shutdown retires the guest's physical source and joins its vCPU.
+[[shell_check_steps]]
+shell_cmd = "poweroff -f"
+success_regex = ['VM\[1\] guest execution stopped; retaining physical device resources until host reset']
+timeout = 30
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:/$"
+shell_cmd = "vm list"
+success_regex = ['(?m)^1\s+linux-aplic-passthrough\s+stopped\s+0\s+512MB\s+Free:1\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "vm start 1"
+success_regex = ['(?m)^✗ VM\[1\] failed to start: .*has no DMA retirement capability\s*$']
+
+[[shell_check_steps]]
+shell_cmd = "echo APLIC_PASSTHROUGH_PASSED"
+success_regex = ['(?m)^APLIC_PASSTHROUGH_PASSED\s*$']

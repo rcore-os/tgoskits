@@ -31,41 +31,71 @@ use riscv::register::{
 /// scratch register, vector and interrupt-enable state before returning.
 /// This reports the current execution environment, not an ISA firmware claim.
 pub fn has_hypervisor_extension() -> bool {
-    with_detect_trap() == 0
+    with_detect_trap::<0x680>().0 == 0
 }
 
-/// Probes the H-extension CSR while preserving the kernel register contract.
+/// Returns this hart's standard vector register length in bytes, if available.
+/// The probe preserves the vector bank and the original supervisor status.
+#[cfg(feature = "virtualization")]
+pub fn vector_register_bytes() -> Option<usize> {
+    riscv::interrupt::supervisor::free(|| {
+        let saved = sstatus::read().bits();
+        // SAFETY: local IRQ exclusion prevents migration. Only the VS gate is
+        // changed; reading vlenb neither reads nor modifies the vector bank.
+        unsafe {
+            asm!("csrs sstatus, {}", in(reg) 3usize << 9, options(nostack));
+        }
+        let (cause, value) = with_detect_trap::<0xc22>();
+        // SAFETY: restore the exact entry status before IRQ exclusion ends.
+        unsafe {
+            asm!("csrw sstatus, {}", in(reg) saved, options(nostack));
+        }
+        (cause == 0 && (16..=8192).contains(&value) && value.is_power_of_two()).then_some(value)
+    })
+}
+
+/// Reads the optional H state-enable CSR without assuming Smstateen exists.
+#[cfg(feature = "virtualization")]
+pub(crate) fn read_hstateen0() -> Option<usize> {
+    let (cause, value) = with_detect_trap::<0x60c>();
+    (cause == 0).then_some(value)
+}
+
+/// Probes a CSR while preserving the kernel register contract.
 ///
 /// The caller owns the meaning of `sscratch`. The probe temporarily points
 /// it at stack-owned state only for
 /// the three-instruction assembly window that can trap; both the success path
 /// and the trap vector restore the exact entry value before Rust runs again.
 #[inline]
-fn with_detect_trap() -> usize {
+fn with_detect_trap<const CSR: usize>() -> (usize, usize) {
     let (sie, stvec) = init_detect_trap();
     let mut state = DetectState::new(super::registers::read_sscratch());
-    run_h_extension_probe(&mut state);
+    let value = run_csr_probe::<CSR>(&mut state);
     restore_detect_trap(sie, stvec);
-    state.result
+    (state.result, value)
 }
 
 #[inline]
-fn run_h_extension_probe(state: &mut DetectState) {
+fn run_csr_probe<const CSR: usize>(state: &mut DetectState) -> usize {
     let saved_sscratch = state.saved_sscratch;
+    let mut value = 0;
     // SAFETY: init_detect_trap installed the matching direct vector with local
     // interrupts disabled. `state` remains live across the complete assembly
     // window, and both normal and exceptional paths restore the entry CSR.
     unsafe {
         asm!(
             "csrw sscratch, {state}",
-            "csrr {probe_value}, 0x680",
+            "csrr {probe_value}, {csr}",
             "csrw sscratch, {saved_sscratch}",
             state = in(reg) state,
             saved_sscratch = in(reg) saved_sscratch,
-            probe_value = out(reg) _,
+            probe_value = inout(reg) value,
+            csr = const CSR,
             options(nostack)
         )
     }
+    value
 }
 
 // Initialize environment for trap detection and filter in exception only
@@ -129,7 +159,7 @@ impl DetectState {
     }
 }
 
-/// Trap vector used only by the fixed-width H-extension CSR probe.
+/// Trap vector used only by the fixed-width CSR probe.
 ///
 /// Local interrupts are disabled while this vector is installed. It records
 /// the exception cause, advances past the four-byte CSR instruction, and

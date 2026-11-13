@@ -2,7 +2,10 @@
 
 use core::ptr::NonNull;
 
-use ax_cpu::{PhysAddr, virtualization::ControlMemory};
+use ax_cpu::{
+    PhysAddr,
+    virtualization::{ControlMemory, StateMemory},
+};
 use axvm_types::{VmBackendError, VmBackendResult};
 
 use crate::host::{HostMemory, default_host};
@@ -37,11 +40,7 @@ impl ControlPages {
 // initializes the complete range. This non-Clone token is their sole release
 // owner; its direct map is permanent, and forgetting the token keeps the pages
 // allocated. CPU retirement must return or drop the token before reclamation.
-unsafe impl ControlMemory for ControlPages {
-    fn physical_address(&self) -> PhysAddr {
-        self.physical
-    }
-
+unsafe impl StateMemory for ControlPages {
     fn virtual_address(&self) -> NonNull<u8> {
         NonNull::new(default_host().phys_to_virt(self.physical).as_mut_ptr())
             .expect("allocated host pages have a non-null direct-map alias")
@@ -59,5 +58,14 @@ impl Drop for ControlPages {
         } else {
             default_host().dealloc_contiguous_frames(self.physical, self.count);
         }
+    }
+}
+
+// SAFETY: the allocator supplies coherent WB pages; physical contiguity and
+// permanent mappings are established at allocation, and CPU retirement owns
+// the lease until all hardware references have been removed.
+unsafe impl ControlMemory for ControlPages {
+    fn physical_address(&self) -> PhysAddr {
+        self.physical
     }
 }

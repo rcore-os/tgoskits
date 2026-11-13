@@ -80,11 +80,13 @@ fn create_serial(
                 detail: "architecture has no default wired interrupt domain".into(),
             })?;
     let profile = configured_profile(request, options, context.serial_profile())?;
-    let backend = match options.backend {
-        Some(SerialBackendOptions::Null) => Arc::new(NullSerialBackend) as Arc<dyn SerialBackend>,
-        Some(SerialBackendOptions::HostConsole) => context.serial_backend_factory().create(),
-        None if context.host_console_by_default() => context.serial_backend_factory().create(),
-        None => Arc::new(NullSerialBackend),
+    let backend_factory = match options.backend {
+        Some(SerialBackendOptions::Null) => {
+            Arc::new(NullSerialBackendFactory) as Arc<dyn SerialBackendFactory>
+        }
+        Some(SerialBackendOptions::HostConsole) => context.serial_backend_factory(),
+        None if context.host_console_by_default() => context.serial_backend_factory(),
+        None => Arc::new(NullSerialBackendFactory),
     };
     let explicit_address = options
         .address
@@ -109,7 +111,7 @@ fn create_serial(
         controller,
         fixed: context.fixed_bindings().clone(),
         explicit_address,
-        backend,
+        backend_factory,
     });
     let mut node = if matches!(context.firmware_binding(), DeviceFirmwareBinding::None) {
         DeviceNodeSpec::virtual_device(id, model)
@@ -195,7 +197,7 @@ struct SerialDeviceModel {
     controller: InterruptControllerId,
     fixed: crate::FixedDeviceBindings,
     explicit_address: Option<u64>,
-    backend: Arc<dyn SerialBackend>,
+    backend_factory: Arc<dyn SerialBackendFactory>,
 }
 
 impl DeviceModel for SerialDeviceModel {
@@ -290,7 +292,7 @@ impl DeviceModel for SerialDeviceModel {
         let bundle = match (self.profile.model, self.profile.transport) {
             (GuestSerialModel::Uart16550, GuestSerialTransport::Port { .. }) => {
                 let (base, length) = context.pio(REGISTERS_SLOT)?;
-                build_16550_port(base, length, irq_id, self.backend.clone(), irq)
+                build_16550_port(base, length, irq_id, self.backend_factory.create(), irq)
             }
             (GuestSerialModel::Uart16550, GuestSerialTransport::Mmio { register_shift, .. }) => {
                 let (base, length) = context.mmio(REGISTERS_SLOT)?;
@@ -299,7 +301,7 @@ impl DeviceModel for SerialDeviceModel {
                     usize::try_from(length).map_err(serial_range_conversion_error)?,
                     register_shift,
                     irq_id,
-                    self.backend.clone(),
+                    self.backend_factory.create(),
                     irq,
                 )
             }
@@ -309,7 +311,7 @@ impl DeviceModel for SerialDeviceModel {
                     usize::try_from(base).map_err(serial_range_conversion_error)?,
                     usize::try_from(length).map_err(serial_range_conversion_error)?,
                     irq_id,
-                    self.backend.clone(),
+                    self.backend_factory.create(),
                     irq,
                 )
             }

@@ -1,0 +1,21 @@
+[base]
+id = 2
+name = "k3-starryos"
+guest_type = "virtualized"
+cpu_num = 2
+phys_cpu_ids = [3, 4]
+phys_cpu_sets = [0x8, 0x10]
+
+[kernel]
+entry_point = 0x9020_0000
+kernel_path = "/guest/starry/starryos.bin"
+kernel_load_addr = 0x9020_0000
+dtb_path = "/guest/starry/guest.dtb"
+dtb_load_addr = 0x9300_0000
+ramdisk_path = "/guest/starry/initramfs.cpio.gz"
+ramdisk_load_addr = 0x9400_0000
+cmdline = "earlycon=sbi console=ttyS0,115200 rdinit=/init"
+memory_regions = [[0x9000_0000, 0x2000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []

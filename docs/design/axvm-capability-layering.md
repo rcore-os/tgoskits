@@ -165,6 +165,18 @@ flowchart TB
 
 任何一步失败，都按既有事务边界回滚；配置格式和 guest ABI 保持兼容；运行资源的退休和生命周期提交采用 [所有权契约](axvm-ownership-lock-boundary.md) 中的确认协议。
 
+### RISC-V 向量状态所有权
+
+`ax_cpu::virtualization::Vcpu<M>` 拥有固定布局的整数、浮点和 CSR 镜像，以及可选的向量状态租约。AxVM 的私有 `VectorMemory` 包装 `Vec<usize>`，在创建 vCPU 时分配两份独立且已初始化的银行，再交给 `Vcpu::with_vector_memory(vlenb, host, guest)`。分配失败由 AxVM 返回 `RiscvVcpuError::OutOfMemory`；CPU 层只验证长度、容量、地址范围及 `usize` 对齐，初始化所用字节，不依赖 `alloc`。`vlenb` 显式保留，不从可能较大的租约容量反推。零向量配置使用默认构造，不分配银行；默认类型参数 `NoVectorMemory` 是不可实例化的枚举。
+
+共享的 `StateMemory` 契约保证虚拟地址稳定、独占、可写、已初始化，遗忘租约仍保留分配和映射，访问方法不阻塞也不分配。向量保存只需虚拟连续内存，不要求物理连续。x86 的 `ControlMemory: StateMemory` 额外要求物理连续、一致的 WB 属性和硬件退休顺序，分配仍由宿主完成。
+
+`enter_guest(&mut vcpu)` 从租约生成栈上的 `VectorEntry`，仅在本次同步汇编调用期间使用其指针。汇编只访问 `repr(C)` 固定前缀，偏移由默认具体类型的 `offset_of!` 计算；只有最后的向量字段依赖 `M`，不会改变前缀偏移。实际 `Vcpu<M>` 指针直接转为 `c_void`，不构造其他具体类型的 Rust 引用。退出后先清除临时入口指针，再由 Rust 回写客户机向量 CSR。独占借用保证银行在切换过程中不会扩容、移动或释放。
+
+`Vcpu<M>` 仅在 `M: Clone` 时可克隆。`StateMemory` 的克隆契约要求独立 backing，并保持内容、长度、最低保证对齐和生命周期；源地址满足 `usize` 对齐时，克隆地址也必须满足该对齐，即使类型的最低保证更弱。AxVM 与集成用例的 Vec 包装显式深复制以满足这些要求；内部通过 `UnsafeCell<Vec<usize>>` 的 `as_mut_ptr()` 取得可写指针，类型不实现 `Sync`，硬件写入只发生在拥有者的独占入口借用期间。入口描述符每次重新生成，不缓存跨克隆的裸指针。`Vec::clone` 的分配失败遵循其自身行为。AxVM 继续在绑定时核对固定 CPU 身份和 `Vcpu::vector_register_bytes()`，ISA 同构要求保持不变。
+
+所有工作区调用方统一使用单参数入口，不保留 CPU 内部分配的旧构造路径。回滚需整体恢复租约接口、状态所有者及调用方。现有 RISC-V `guest-entry` QEMU 用例验证宿主向量恢复、客户机重入和克隆后交替执行的独立性，并验证短银行和失配对齐被拒绝、额外容量不改变 VLEN；无向量配置继续验证整数和浮点路径。
+
 ## 类型化启动策略
 
 旧的内部判断用一个真假值表达“是否为六十四位 x86 的直启客户机内核镜像”。真假值只告诉调用者走哪条分支，却没有说清策略的含义。

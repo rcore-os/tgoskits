@@ -135,13 +135,13 @@ cases = [
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-ipi"
 impact_targets = ["axvisor:riscv64"]
-name = "QEMU riscv64 · Smoke + IPI"
+name = "QEMU riscv64 · Smoke + APLIC passthrough + IPI"
 timeout_minutes = 30
 # The unified QEMU smoke build carries `web-ui`, so axbuild runs npm.
 node_version = "24"
 command = '''
-echo "==> axvisor riscv64 smoke"
-cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
+echo "==> axvisor riscv64 smoke + APLIC passthrough + guest SMP IPI"
+cargo xtask axvisor test qemu --arch riscv64 --test-case smoke,qemu-riscv-aplic,qemu-aplic-passthrough,smp-ipi
 echo "==> axvisor riscv64 IPI cross-test"
 cargo xtask cross-test --arch riscv64 \
   --package axvm \
@@ -151,7 +151,7 @@ cargo xtask cross-test --arch riscv64 \
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "riscv64"
-cases = ["smoke"]
+cases = ["smoke", "qemu-riscv-aplic", "qemu-aplic-passthrough", "smp-ipi"]
 
 [[check]]
 id = "test-axvisor-loongarch64-qemu"
