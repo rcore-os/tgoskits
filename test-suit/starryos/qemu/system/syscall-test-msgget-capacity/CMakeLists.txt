@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-msgget-capacity C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-msgget-capacity src/main.c)
+target_include_directories(
+    test-msgget-capacity
+    PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../common
+)
+target_compile_options(test-msgget-capacity PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(test-msgget-capacity PRIVATE pthread)
+install(TARGETS test-msgget-capacity RUNTIME DESTINATION usr/bin/starry-test-suit)

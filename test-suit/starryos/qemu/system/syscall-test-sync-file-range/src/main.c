@@ -8,9 +8,18 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#ifndef POSIX_FADV_NORMAL
+#define POSIX_FADV_NORMAL 0
+#endif
+
 static int call_sync_file_range(int fd, off_t offset, off_t nbytes, unsigned int flags)
 {
     return (int)syscall(SYS_sync_file_range, fd, offset, nbytes, flags);
+}
+
+static int call_fadvise64(int fd, off_t offset, off_t len, int advice)
+{
+    return (int)syscall(SYS_fadvise64, fd, offset, len, advice);
 }
 
 int main(void)
@@ -36,6 +45,33 @@ int main(void)
                       "nbytes=0 表示到 EOF，返回 0");
             CHECK_ERR(call_sync_file_range(fd, 0, 10, 0xff), EINVAL,
                       "合法文件 fd + 非法 flags 返回 EINVAL");
+            close(fd);
+            unlink(tmpl);
+        }
+    }
+
+    /*
+     * Linux validates the descriptor and rejects negative length or unknown
+     * advice. generic_fadvise performs unsigned end-byte arithmetic and has no
+     * negative-offset rejection, so a valid non-FIFO descriptor accepts it.
+     */
+    {
+        char tmpl[] = "/tmp/test-fadvise64-range-XXXXXX";
+        int fd = mkstemp(tmpl);
+        CHECK(fd >= 0, "mkstemp creates fadvise64 test file");
+        if (fd >= 0) {
+            CHECK_RET(write(fd, "0123456789", 10), 10,
+                      "write fadvise64 test data");
+            CHECK_RET(call_fadvise64(fd, 0, 10, POSIX_FADV_NORMAL), 0,
+                      "fadvise64 accepts a valid range");
+            CHECK_RET(call_fadvise64(fd, -1, 10, POSIX_FADV_NORMAL), 0,
+                      "fadvise64 accepts a negative offset");
+            CHECK_ERR(call_fadvise64(fd, 0, -1, POSIX_FADV_NORMAL), EINVAL,
+                      "fadvise64 rejects a negative length with EINVAL");
+            CHECK_ERR(call_fadvise64(fd, 0, 10, 6), EINVAL,
+                      "fadvise64 rejects unknown advice with EINVAL");
+            CHECK_ERR(call_fadvise64(-1, -1, 10, POSIX_FADV_NORMAL), EBADF,
+                      "fadvise64 checks the descriptor before a negative offset");
             close(fd);
             unlink(tmpl);
         }

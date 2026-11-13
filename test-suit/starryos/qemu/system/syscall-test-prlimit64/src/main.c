@@ -26,14 +26,14 @@
  *   pid parameter:
  *     pid=0      — self (get-only, set-only, get+set)
  *     pid=getpid() — explicit self (verify same as pid=0)
- *     pid=invalid — ESRCH
+ *     pid=invalid — EFAULT first if new_limit cannot be copied, else ESRCH
  *     pid=1        — may fail ESRCH or EPERM
  *
  *   error conditions:
  *     - invalid resource   → EINVAL
  *     - soft > hard        → EINVAL
  *     - raise hard limit   → EPERM (no CAP_SYS_RESOURCE)
- *     - invalid pid + bad res → ESRCH (pid first on Linux)
+ *     - valid new_limit + invalid pid + bad res → ESRCH (pid before res)
  */
 
 #define _GNU_SOURCE
@@ -50,6 +50,7 @@
 #include <string.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/syscall.h>
 
 /* RLIMIT constants not declared on all libc implementations */
 #ifndef RLIMIT_RTTIME
@@ -71,9 +72,377 @@
 
 int test_rttime_soft_limit(void);
 
+struct credential_ids {
+    uid_t ruid;
+    uid_t euid;
+    uid_t suid;
+    gid_t rgid;
+    gid_t egid;
+    gid_t sgid;
+};
+
+static long raw_prlimit64(pid_t pid, unsigned int resource,
+                          const struct rlimit *new_limit,
+                          struct rlimit *old_limit)
+{
+    return syscall(SYS_prlimit64, pid, resource, new_limit, old_limit);
+}
+
+static int set_credential_ids(const struct credential_ids *ids)
+{
+    if (setresgid(ids->rgid, ids->egid, ids->sgid) != 0) {
+        return -1;
+    }
+    return setresuid(ids->ruid, ids->euid, ids->suid);
+}
+
+static int read_exact(int fd, void *buf, size_t len)
+{
+    unsigned char *out = buf;
+    size_t done = 0;
+
+    while (done < len) {
+        ssize_t n = read(fd, out + done, len - done);
+        if (n > 0) {
+            done += (size_t)n;
+        } else if (n == 0) {
+            return 0;
+        } else if (errno != EINTR) {
+            return -1;
+        }
+    }
+    return 1;
+}
+
+static int write_exact(int fd, const void *buf, size_t len)
+{
+    const unsigned char *in = buf;
+    size_t done = 0;
+
+    while (done < len) {
+        ssize_t n = write(fd, in + done, len - done);
+        if (n > 0) {
+            done += (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+struct identity_case {
+    struct credential_ids target;
+    struct credential_ids caller;
+    int allowed;
+    const char *description;
+};
+
+static int exercise_allowed_prlimit(pid_t target)
+{
+    struct rlimit current = {0};
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &current) != 0 ||
+        current.rlim_cur < 4) {
+        return 1;
+    }
+
+    struct rlimit first = {
+        .rlim_cur = current.rlim_cur - 1,
+        .rlim_max = current.rlim_max,
+    };
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &first, NULL) != 0) {
+        return 2;
+    }
+
+    struct rlimit second = {
+        .rlim_cur = current.rlim_cur - 2,
+        .rlim_max = current.rlim_max,
+    };
+    struct rlimit aliased = second;
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &aliased, &aliased) != 0 ||
+        aliased.rlim_cur != first.rlim_cur ||
+        aliased.rlim_max != first.rlim_max) {
+        return 3;
+    }
+
+    struct rlimit verified = {0};
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &verified) != 0 ||
+        verified.rlim_cur != second.rlim_cur ||
+        verified.rlim_max != second.rlim_max) {
+        return 4;
+    }
+
+    struct rlimit third = {
+        .rlim_cur = current.rlim_cur - 3,
+        .rlim_max = current.rlim_max,
+    };
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &third,
+                      (struct rlimit *)-1) != -1 ||
+        errno != EFAULT) {
+        return 5;
+    }
+
+    verified.rlim_cur = 0;
+    verified.rlim_max = 0;
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &verified) != 0 ||
+        verified.rlim_cur != third.rlim_cur ||
+        verified.rlim_max != third.rlim_max) {
+        return 6;
+    }
+    return 0;
+}
+
+static int exercise_denied_prlimit(pid_t target,
+                                   const struct rlimit *target_limit)
+{
+    int failures = 0;
+
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, (struct rlimit *)-1, NULL) != -1 ||
+        errno != EFAULT) {
+        failures |= 1;
+    }
+
+    struct rlimit old = {.rlim_cur = 0x1234, .rlim_max = 0x5678};
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &old) != -1 ||
+        errno != EPERM ||
+        old.rlim_cur != 0x1234 || old.rlim_max != 0x5678) {
+        failures |= 2;
+    }
+
+    struct rlimit replacement = {
+        .rlim_cur = target_limit->rlim_cur > 1
+                        ? target_limit->rlim_cur - 1
+                        : target_limit->rlim_cur,
+        .rlim_max = target_limit->rlim_max,
+    };
+    old.rlim_cur = 0x9abc;
+    old.rlim_max = 0xdef0;
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &replacement, &old) != -1 ||
+        errno != EPERM ||
+        old.rlim_cur != 0x9abc || old.rlim_max != 0xdef0) {
+        failures |= 4;
+    }
+
+    old.rlim_cur = 0x1111;
+    old.rlim_max = 0x2222;
+    errno = 0;
+    if (raw_prlimit64(target, RLIM_NLIMITS, NULL, &old) != -1 ||
+        errno != EPERM ||
+        old.rlim_cur != 0x1111 || old.rlim_max != 0x2222) {
+        failures |= 8;
+    }
+    return failures;
+}
+
+static void run_identity_case(const struct identity_case *test_case)
+{
+    int ready[2];
+    int release[2];
+    pid_t target;
+    pid_t inspector;
+    int status;
+    char byte = 1;
+    struct rlimit target_before = {0};
+    int ready_result = 0;
+
+    if (pipe(ready) != 0) {
+        CHECK(0, "create prlimit identity ready pipe");
+        return;
+    }
+    if (pipe(release) != 0) {
+        close(ready[0]);
+        close(ready[1]);
+        CHECK(0, "create prlimit identity release pipe");
+        return;
+    }
+
+    target = fork();
+    CHECK(target >= 0, "fork prlimit identity target");
+    if (target == 0) {
+        close(ready[0]);
+        close(release[1]);
+        if (set_credential_ids(&test_case->target) != 0) {
+            _exit(10);
+        }
+        if (write_exact(ready[1], &byte, 1) != 0) {
+            _exit(11);
+        }
+        (void)read_exact(release[0], &byte, 1);
+        _exit(0);
+    }
+    if (target < 0) {
+        close(ready[0]);
+        close(ready[1]);
+        close(release[0]);
+        close(release[1]);
+        return;
+    }
+
+    close(ready[1]);
+    close(release[0]);
+    ready_result = read_exact(ready[0], &byte, 1);
+    close(ready[0]);
+    if (ready_result == 1) {
+        errno = 0;
+        ready_result =
+            raw_prlimit64(target, RLIMIT_NOFILE, NULL, &target_before) == 0;
+    }
+    CHECK(ready_result == 1, "prlimit identity target reaches its wait point");
+
+    inspector = ready_result == 1 ? fork() : -1;
+    if (inspector == 0) {
+        close(release[1]);
+        if (set_credential_ids(&test_case->caller) != 0) {
+            _exit(20);
+        }
+
+        /*
+         * CAP_KILL is cleared and the caller's effective UID matches one of
+         * the target ID slots, so kill permission succeeds even in the mixed
+         * identity cases that prlimit must deny.
+         */
+        errno = 0;
+        if (kill(target, 0) != 0) {
+            _exit(30);
+        }
+
+        int result = test_case->allowed
+                         ? exercise_allowed_prlimit(target)
+                         : exercise_denied_prlimit(target, &target_before);
+        _exit(result);
+    }
+
+    if (inspector >= 0) {
+        do {
+            status = 0;
+        } while (waitpid(inspector, &status, 0) == -1 && errno == EINTR);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              test_case->description);
+    } else {
+        CHECK(0, "fork prlimit identity inspector");
+    }
+
+    if (!test_case->allowed && ready_result == 1) {
+        struct rlimit target_after = {0};
+        errno = 0;
+        CHECK(raw_prlimit64(target, RLIMIT_NOFILE, NULL, &target_after) == 0 &&
+                  target_after.rlim_cur == target_before.rlim_cur &&
+                  target_after.rlim_max == target_before.rlim_max,
+              "denied cross-identity prlimit leaves target unchanged");
+    }
+
+    byte = 1;
+    (void)write_exact(release[1], &byte, 1);
+    close(release[1]);
+    do {
+        status = 0;
+    } while (waitpid(target, &status, 0) == -1 && errno == EINTR);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "prlimit identity target exits cleanly");
+}
+
+static void test_prlimit_identity_matrix(void)
+{
+    static const struct identity_case cases[] = {
+        {
+            .target = {1000, 1000, 1000, 2000, 2000, 2000},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 1,
+            .description = "all real/effective/saved IDs match for cross-process prlimit",
+        },
+        {
+            .target = {1000, 1001, 1002, 2000, 2001, 2002},
+            .caller = {0, 0, 0, 0, 0, 0},
+            .allowed = 1,
+            .description = "CAP_SYS_RESOURCE permits cross-identity prlimit",
+        },
+        {
+            /* kill matches effective/saved UID 1000; prlimit also needs real UID 1001. */
+            .target = {1001, 1000, 1000, 2000, 2000, 2000},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 0,
+            .description = "target real UID mismatch is denied despite kill permission",
+        },
+        {
+            /* kill matches real/saved UID 1000; prlimit also needs effective UID 1001. */
+            .target = {1000, 1001, 1000, 2000, 2000, 2000},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 0,
+            .description = "target effective UID mismatch is denied despite kill permission",
+        },
+        {
+            .target = {1000, 1000, 1001, 2000, 2000, 2000},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 0,
+            .description = "target saved UID mismatch is denied despite kill permission",
+        },
+        {
+            .target = {1000, 1000, 1000, 2000, 2001, 2000},
+            .caller = {1000, 1000, 1000, 2001, 2001, 2001},
+            .allowed = 0,
+            .description = "target real GID mismatch is denied despite kill permission",
+        },
+        {
+            .target = {1000, 1000, 1000, 2001, 2000, 2001},
+            .caller = {1000, 1000, 1000, 2001, 2001, 2001},
+            .allowed = 0,
+            .description = "target effective GID mismatch is denied despite kill permission",
+        },
+        {
+            .target = {1000, 1000, 1000, 2000, 2000, 2001},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 0,
+            .description = "target saved GID mismatch is denied despite kill permission",
+        },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        run_identity_case(&cases[i]);
+    }
+}
+
+static void test_prlimit_pointer_order(void)
+{
+    struct rlimit current = {0};
+    pid_t missing = (pid_t)0x7fffffff;
+
+    CHECK_RET(getrlimit(RLIMIT_NOFILE, &current), 0,
+              "query NOFILE for prlimit pointer-order checks");
+
+    errno = 0;
+    CHECK(raw_prlimit64(missing, RLIMIT_NOFILE, (struct rlimit *)-1,
+                        NULL) == -1 &&
+              errno == EFAULT,
+          "prlimit copies new_limit before resolving the pid");
+
+    errno = 0;
+    CHECK(raw_prlimit64(missing, RLIMIT_NOFILE, &current, NULL) == -1 &&
+              errno == ESRCH,
+          "valid new_limit reaches missing-pid resolution and returns ESRCH");
+
+    errno = 0;
+    CHECK(raw_prlimit64(getpid(), RLIM_NLIMITS, (struct rlimit *)-1,
+                        NULL) == -1 &&
+              errno == EFAULT,
+          "invalid new_limit is reported before resource validation");
+}
+
 int main(void)
 {
     TEST_START("prlimit64 enforcement");
+    signal(SIGPIPE, SIG_IGN);
+    test_prlimit_pointer_order();
+    test_prlimit_identity_matrix();
     CHECK(test_rttime_soft_limit() == 0,
           "RTTIME advances the shared limit and queues a process SIGXCPU");
 

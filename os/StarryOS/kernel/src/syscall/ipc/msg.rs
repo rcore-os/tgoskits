@@ -421,13 +421,12 @@ pub fn sys_msgget(
 
     let mut msg_manager = MSG_MANAGER.lock();
 
-    // Check system limit
-    if msg_manager.queue_count() >= MSGMNI {
-        return Err(StarryError::from(Errno::ENOSPC)); // ENOSPC
-    }
-
     // Handle IPC_PRIVATE (always create new queue)
     if key == IPC_PRIVATE {
+        if msg_manager.queue_count() >= MSGMNI {
+            return Err(StarryError::from(Errno::ENOSPC)); // ENOSPC
+        }
+
         let msqid = next_ipc_id();
         let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
             key,
@@ -475,6 +474,10 @@ pub fn sys_msgget(
     // Create new message queue
     if (msgflg & IPC_CREAT) == 0 {
         return Err(StarryError::from(Errno::ENOENT)); // ENOENT
+    }
+
+    if msg_manager.queue_count() >= MSGMNI {
+        return Err(StarryError::from(Errno::ENOSPC)); // ENOSPC
     }
 
     let msqid = next_ipc_id();
