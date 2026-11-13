@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 
-_REPO_PATH = Path(__file__).with_name("repo.py")
+_REPO_PATH = Path(__file__).parents[1] / "repo" / "repo.py"
 _REPO_SPEC = importlib.util.spec_from_file_location("repo_under_test", _REPO_PATH)
 if _REPO_SPEC is None or _REPO_SPEC.loader is None:
     raise RuntimeError(f"Unable to load {_REPO_PATH}")
