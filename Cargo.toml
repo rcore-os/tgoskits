@@ -118,20 +118,12 @@ members = [
     "os/arceos/ulib/*",
     "os/axvisor",
     "scripts/axbuild",
-    "test-suit/arceos/loongarch/unaligned-fixup",
-    "test-suit/arceos/cpu/pmu",
-    "test-suit/arceos/cpu/cpufreq",
-    "test-suit/arceos/cpu/user-entry",
-    "test-suit/arceos/cpu/paging",
-    "test-suit/arceos/cpu/hypervisor-probe",
-    "test-suit/arceos/cpu/guest-entry",
-    "test-suit/arceos/cpu/fp-context",
-    "test-suit/arceos/cpu/virtualization-lifecycle",
-    "test-suit/arceos/cpu/trap-entry",
-    "test-suit/arceos/axtest/sg2002-usb-msc",
+    "test-suit/arceos/build-support",
+    "test-suit/arceos/cpu",
+    "test-suit/arceos/cpu/normal/std",
+    "test-suit/arceos/cpu/normal/freestanding",
     "test-suit/arceos/rust",
-    "test-suit/arceos/drivers/intel-hda",
-    "test-suit/arceos/drivers/acpica-interpreter",
+    "test-suit/arceos/drivers",
     "apps/arceos/*",
     "apps/axvisor/normal/board-ballpick-robot/kernel-types/arceos/guest",
     "benchmarks/axvisor/board-orangepi-5-plus/vcpu-perf/guest",
@@ -352,6 +344,7 @@ spinning_top = { version = "0.3", default-features = false }
 log = "0.4"
 loom = "0.7.2"
 # FIT ramdisks need a load property for Rockchip U-Boot (drivercraft/ostool#207).
+# HTTP Boot uploads must use the v7 protocol expected by ostool-server 0.10.
 ostool = { version = "0.32.0" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }

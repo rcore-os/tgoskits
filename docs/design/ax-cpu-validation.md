@@ -1,6 +1,6 @@
 # ax-cpu 重构验证记录
 
-本记录区分已取得的目标执行证据与仍需完成的验收。CPU 用例位于 `test-suit/arceos/cpu`，板卡入口位于 `test-suit/arceos/board-orangepi-5-plus/pmu`；ax-cpu 本身不包含测试入口或硬件替身。
+本记录区分已取得的目标执行证据与仍需完成的验收。CPU 用例位于 `test-suit/arceos/cpu`，板卡入口位于 `test-suit/arceos/board-orangepi-5-plus/kernel`（`--test-case pmu`保留为单项诊断）；ax-cpu 本身不包含测试入口或硬件替身。
 
 ## 1. 验证基线
 

@@ -103,7 +103,7 @@ exclusive 套件行禁用 artifact 依赖并直接调用 `cargo xtask`。自托�
 
 ### 3.1 发现与构建
 
-`scripts/axbuild/src/test/qemu/discovery.rs` 的 `discover_qemu_cases()` 发现配置并查找最近的构建包装文件，`group_cases_by_build_config()` 按构建配置归组，`prepare_case_build_groups()` 为各组准备构建。共享框架尽量复用相同构建，但不同配置和独立矩阵 job 并不自动共用一次编译。
+`scripts/axbuild/src/execution/qemu/discovery.rs` 的 `discover_qemu_cases()` 发现配置并查找最近的构建包装文件，`group_cases_by_build_config()` 按构建配置归组，`prepare_case_build_groups()` 为各组准备构建。共享框架尽量复用相同构建，但不同配置和独立矩阵 job 并不自动共用一次编译。
 
 Starry、AxVisor 的资产层还会选择 `CasePipeline` 并准备 rootfs、overlay 和测试程序；ArceOS 使用自己的 feature-based runner。完整实现与系统差异见[测试基础设施](../../build/test_infra.md)、[ArceOS 测试](../../build/arceos/test.md)、[StarryOS 测试](../../build/starry/test.md)及[AxVisor 测试](../../build/axvisor/test.md)。
 

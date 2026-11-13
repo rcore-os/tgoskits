@@ -162,38 +162,91 @@ pub(super) fn link_c_app(
     libc: &Path,
     app_objects: &[PathBuf],
     libgcc: Option<PathBuf>,
-) -> anyhow::Result<()> {
-    let mut command = Command::new("rust-lld");
-    command
-        .arg("-flavor")
-        .arg("gnu")
-        .arg("-m")
-        .arg(lld_machine(arch)?)
-        .arg("-nostdlib")
-        .arg("-static")
-        .arg("--gc-sections")
-        .arg("-znostart-stop-gc");
+) -> anyhow::Result<bool> {
+    let mut args = vec![
+        "-flavor".to_owned(),
+        "gnu".into(),
+        "-m".into(),
+        lld_machine(arch)?.into(),
+        "-nostdlib".into(),
+        "-static".into(),
+        "--gc-sections".into(),
+        "-znostart-stop-gc".into(),
+    ];
     for dir in &link_scripts.search_dirs {
-        command.arg(format!("-L{}", dir.display()));
+        args.push(format!("-L{}", dir.display()));
     }
-    command.arg(format!("-T{}", link_scripts.script.display()));
-    if link_scripts.pie {
-        command.arg("-pie");
+    args.push(format!("-T{}", link_scripts.script.display()));
+    args.push(if link_scripts.pie {
+        "-pie".into()
     } else {
-        command.arg("-no-pie");
+        "-no-pie".into()
+    });
+    let mut inputs = linker_script_inputs(link_scripts)?;
+    if let Some(path) = libgcc {
+        args.push(path.to_string_lossy().into_owned());
+        inputs.push(path);
     }
-    if let Some(libgcc) = libgcc {
-        command.arg(libgcc);
+    for path in app_objects
+        .iter()
+        .chain([libc.to_path_buf(), rust_lib.to_path_buf()].iter())
+    {
+        args.push(path.to_string_lossy().into_owned());
+        inputs.push(path.clone());
     }
-    command
-        .args(app_objects)
-        .arg(libc)
-        .arg(rust_lib)
-        .arg("-o")
-        .arg(elf_path);
-    command
-        .exec()
-        .with_context(|| format!("failed to link {}", elf_path.display()))
+    let tool = super::cache::tool("rust-lld")?;
+    let key = super::cache::signature(&(
+        &tool,
+        &args,
+        super::cache::input_hashes(&inputs)?,
+        super::cache::environment(),
+    ))?;
+    super::cache::artifact(elf_path, key, |output| {
+        Command::new(&tool.path)
+            .args(&args)
+            .arg("-o")
+            .arg(output)
+            .exec()
+    })
+}
+
+fn linker_script_inputs(scripts: &LinkScripts) -> anyhow::Result<Vec<PathBuf>> {
+    let includes = regex::Regex::new(r#"(?m)^\s*INCLUDE\s+(?:"([^"]+)"|([^\s;]+))"#)?;
+    let mut pending = vec![scripts.script.clone()];
+    let mut visited = BTreeSet::new();
+    while let Some(path) = pending.pop() {
+        let path = path
+            .canonicalize()
+            .with_context(|| format!("linker script {}", path.display()))?;
+        if !visited.insert(path.clone()) {
+            continue;
+        }
+        for captures in includes.captures_iter(&fs::read_to_string(&path)?) {
+            let name = PathBuf::from(
+                captures
+                    .get(1)
+                    .or_else(|| captures.get(2))
+                    .context("linker INCLUDE path")?
+                    .as_str(),
+            );
+            let candidates = if name.is_absolute() {
+                vec![name]
+            } else {
+                std::iter::once(path.parent().context("linker script parent")?.to_path_buf())
+                    .chain(scripts.search_dirs.clone())
+                    .chain(std::iter::once(std::env::current_dir()?))
+                    .map(|dir| dir.join(&name))
+                    .collect()
+            };
+            let found: Vec<_> = candidates
+                .into_iter()
+                .filter(|path| path.is_file())
+                .collect();
+            anyhow::ensure!(!found.is_empty(), "unresolved linker INCLUDE");
+            pending.extend(found);
+        }
+    }
+    Ok(visited.into_iter().collect())
 }
 
 fn lld_machine(arch: &str) -> anyhow::Result<&'static str> {
@@ -226,4 +279,34 @@ pub(super) fn platform_name(env: &HashMap<String, String>) -> String {
     env.get("AX_PLATFORM")
         .cloned()
         .unwrap_or_else(|| "qemu".to_string())
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    #[test]
+    fn linker_cache_tracks_transitive_include_contents_and_missing_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root.x");
+        let child = temp.path().join("child.x");
+        fs::write(&root, "INCLUDE child.x\n").unwrap();
+        fs::write(&child, "SECTIONS {}\n").unwrap();
+        let scripts = LinkScripts {
+            script: root,
+            search_dirs: vec![temp.path().to_path_buf()],
+            pie: true,
+        };
+        let before = super::super::cache::signature(
+            &super::super::cache::input_hashes(&linker_script_inputs(&scripts).unwrap()).unwrap(),
+        )
+        .unwrap();
+        fs::write(&child, "SECTIONS { .text : { *(.text) } }\n").unwrap();
+        let after = super::super::cache::signature(
+            &super::super::cache::input_hashes(&linker_script_inputs(&scripts).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(before, after);
+        fs::remove_file(child).unwrap();
+        assert!(linker_script_inputs(&scripts).is_err());
+    }
 }

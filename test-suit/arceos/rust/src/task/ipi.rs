@@ -401,11 +401,37 @@ fn verify_fixed_ipi_preserves_local_irq_state(sender_cpu: usize, target_cpu: usi
 
 pub fn run() -> crate::TestResult {
     let cpu_num = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
-    if cpu_num < 2 {
-        println!("task_ipi: skipped on single CPU");
-        return Ok(());
-    }
+    assert!(cpu_num >= 2, "IPI contract requires SMP >= 2");
 
+    // Hard-IRQ delivery alone does not prove that each online CPU can run a
+    // normal scheduled task. Keep both halves of the former online-CPU check.
+    let workers = (0..cpu_num)
+        .map(|cpu| thread::spawn(move || pin_current_to_cpu(cpu)))
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker
+            .join()
+            .expect("every online CPU must run a normal task");
+    }
+    pin_current_to_cpu(0);
+    for destination in 1..cpu_num {
+        let before = EXECUTED_HARD_CALLS.load(Ordering::Acquire);
+        // SAFETY: synchronous bounded callback; destination lives until it returns.
+        unsafe {
+            ax_ipi::call_on_cpu(
+                CpuId(destination),
+                counting_hard_call,
+                core::ptr::from_ref(&destination).cast_mut().cast(),
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            EXECUTED_HARD_CALLS.load(Ordering::Acquire),
+            before + 1,
+            "every online remote CPU must acknowledge its call"
+        );
+    }
+    println!("task_ipi: verified normal tasks and hard calls across {cpu_num} online CPUs");
     let target_cpu = cpu_num - 1;
     let sender_cpus = (0..target_cpu)
         .take(min(MAX_SENDER_CPUS, cpu_num - 1))

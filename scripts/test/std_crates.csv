@@ -86,3 +86,4 @@ acpica-interpreter
 drm-kapi
 kdrm-core
 ax-drm
+arceos-test-build

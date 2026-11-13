@@ -6,11 +6,11 @@ use anyhow::{Context, ensure};
 use ostool::board::config::BoardRunConfig;
 
 #[derive(Debug)]
-pub(super) struct PreparedBootEntropy {
+pub(crate) struct PreparedBootEntropy {
     _directory: tempfile::TempDir,
 }
 
-pub(super) fn prepare_for_secure_wifi(
+pub(crate) fn prepare_for_secure_wifi(
     board_config: &mut BoardRunConfig,
 ) -> anyhow::Result<Option<PreparedBootEntropy>> {
     let requested = secure_wifi_requested(

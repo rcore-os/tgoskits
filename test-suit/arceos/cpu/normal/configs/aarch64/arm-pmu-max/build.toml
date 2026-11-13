@@ -1,0 +1,4 @@
+freestanding = false
+features = []
+log = "Info"
+max_cpu_num = 4

@@ -319,84 +319,50 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-cpu-cpufreq"
+name = "arceos-cpu-normal-freestanding"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
- "ax-driver",
- "ax-runtime",
+ "arceos-cpu-tests",
+ "arceos-test-build",
+ "ax-alloc",
  "ax-std",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
-name = "arceos-cpu-fp-context"
+name = "arceos-cpu-normal-std"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
+ "arceos-cpu-tests",
+ "arceos-test-build",
+ "ax-alloc",
  "ax-std",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
-name = "arceos-cpu-guest-entry"
+name = "arceos-cpu-tests"
 version = "0.1.0"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
+ "ax-driver",
  "ax-hal",
+ "ax-mm",
+ "ax-runtime",
  "ax-std",
+ "someboot",
  "trait-ffi",
 ]
 
 [[package]]
-name = "arceos-cpu-hypervisor-probe"
+name = "arceos-driver-tests"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-paging"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-hal",
- "ax-mm",
- "ax-std",
- "someboot",
-]
-
-[[package]]
-name = "arceos-cpu-pmu"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-trap-entry"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-user-entry"
-version = "0.1.0"
-dependencies = [
+ "acpica-interpreter",
+ "arceos-test-build",
  "ax-alloc",
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-virtualization-lifecycle"
-version = "0.1.0"
-dependencies = [
- "ax-alloc",
- "ax-cpu",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -454,14 +420,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-loongarch-unaligned-fixup"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
 name = "arceos-scheduler-latency-bench"
 version = "0.1.0"
 dependencies = [
@@ -477,29 +435,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-test-acpica-interpreter"
+name = "arceos-test-build"
 version = "0.1.0"
 dependencies = [
- "acpica-interpreter",
- "ax-alloc",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-test-intel-hda"
-version = "0.1.0"
-dependencies = [
- "ax-alloc",
- "ax-driver",
- "ax-hal",
- "ax-std",
+ "anyhow",
+ "serde",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
+ "arceos-cpu-tests",
+ "arceos-test-build",
  "ax-alloc",
  "ax-block",
  "ax-cpu",
@@ -516,14 +465,13 @@ dependencies = [
  "axfs-ng-vfs",
  "axklib",
  "dma-api",
- "embedded-graphics",
  "intel-itco-watchdog",
  "libc",
  "mmio-api",
- "rand 0.8.8",
  "rdif-block",
  "rdif-iommu",
  "rdrive",
+ "toml 1.1.8+spec-1.1.0",
  "virtio-drivers",
  "zerocopy",
 ]
@@ -1901,12 +1849,6 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
 ]
-
-[[package]]
-name = "az"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b7e4c2464d97fe331d41de9d5db0def0a96f4d823b8b32a2efd503578988973"
 
 [[package]]
 name = "bare-metal"
@@ -3334,29 +3276,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
-name = "embedded-graphics"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e8da660bb0c829b34a56a965490597f82a55e767b91f9543be80ce8ccb416fe"
-dependencies = [
- "az",
- "byteorder",
- "embedded-graphics-core",
- "float-cmp",
- "micromath",
-]
-
-[[package]]
-name = "embedded-graphics-core"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95743bef3ff70fcba3930246c4e6872882bbea0dcc6da2ca860112e0cd4bd09f"
-dependencies = [
- "az",
- "byteorder",
-]
-
-[[package]]
 name = "embedded-hal"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3785,15 +3704,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f7719d63de27ac93e7cd2c8e0c03083f8b0ff7f842fdb6280b8cdcac21b4baf"
 dependencies = [
  "bitmaps",
-]
-
-[[package]]
-name = "float-cmp"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]
@@ -5375,12 +5285,6 @@ checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
 ]
-
-[[package]]
-name = "micromath"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
 
 [[package]]
 name = "mime"

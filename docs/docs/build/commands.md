@@ -78,6 +78,7 @@ cargo xtask test
 ```bash
 cargo xtask ktest qemu --workspace --arch x86_64
 cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64
+# 程序已归入apps/arceos/sg2002-usb-msc，保留板卡测试目标
 cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc --test axtest -b aka-00-sg2002
 ```
 

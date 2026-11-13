@@ -7,7 +7,7 @@ concrete requests and assertions — and can evolve independently of the axbuild
 runner.
 
 The generic axbuild probe runner
-(`scripts/axbuild/src/axvisor/test/http_probe.rs`) executes this script after
+(`scripts/axbuild/src/test/normal/axvisor/http_probe.rs`) executes this script after
 the QEMU hostfwd port is reachable, then treats the exit code as the verdict:
 0 = all assertions passed, nonzero = a step failed. The script dials the axum
 management API running *inside* the AxVisor guest through QEMU user-mode
@@ -485,8 +485,16 @@ class WebSocket:
         self.stream = stream
         self.buffered = buffered
 
-    def recv_exact(self, length):
+    def recv_exact(self, length, deadline):
         while len(self.buffered) < length:
+            # The upgrade response or the previous read may already contain
+            # frame bytes. Wait on the socket only for bytes still missing.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for WebSocket frame")
+            ready, _, _ = select.select([self.stream], [], [], remaining)
+            if not ready:
+                raise TimeoutError("timed out waiting for WebSocket frame")
             chunk = self.stream.recv(length - len(self.buffered))
             if not chunk:
                 raise AssertionError("WebSocket closed while receiving a frame")
@@ -495,22 +503,22 @@ class WebSocket:
         self.buffered = self.buffered[length:]
         return output
 
-    def recv_frame(self):
-        first, second = self.recv_exact(2)
+    def recv_frame(self, deadline):
+        first, second = self.recv_exact(2, deadline)
         opcode = first & 0x0F
         length = second & 0x7F
         if length == 126:
-            length = struct.unpack("!H", self.recv_exact(2))[0]
+            length = struct.unpack("!H", self.recv_exact(2, deadline))[0]
         elif length == 127:
-            length = struct.unpack("!Q", self.recv_exact(8))[0]
+            length = struct.unpack("!Q", self.recv_exact(8, deadline))[0]
         if second & 0x80:
-            mask = self.recv_exact(4)
+            mask = self.recv_exact(4, deadline)
             payload = bytes(
                 byte ^ mask[index % 4]
-                for index, byte in enumerate(self.recv_exact(length))
+                for index, byte in enumerate(self.recv_exact(length, deadline))
             )
         else:
-            payload = self.recv_exact(length)
+            payload = self.recv_exact(length, deadline)
         return opcode, payload
 
     def close(self):
@@ -559,26 +567,13 @@ def expect_websocket(path):
 
 
 def read_json_frame(websocket, deadline):
-    """Return the next frame decoded as JSON, or fail once `deadline` passes.
-
-    Waiting for readability with a short `select` rather than relying on the
-    socket timeout keeps a quiet channel a clear `TimeoutError` at the frame
-    boundary: the caller reports "no event arrived" instead of a transport
-    error, and a frame cannot be truncated by a timeout in the middle of it.
-    """
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError()
-        ready, _, _ = select.select([websocket.stream], [], [], min(remaining, 1.0))
-        if not ready:
-            continue
-        opcode, payload = websocket.recv_frame()
-        if opcode == 8:
-            raise AssertionError("event socket closed while waiting for a frame")
-        if opcode not in (1, 2):
-            raise AssertionError("event socket sent unexpected opcode %d" % opcode)
-        return json.loads(payload.decode("utf-8"))
+    """Read buffered or incoming frame bytes under one absolute deadline."""
+    opcode, payload = websocket.recv_frame(deadline)
+    if opcode == 8:
+        raise AssertionError("event socket closed while waiting for a frame")
+    if opcode not in (1, 2):
+        raise AssertionError("event socket sent unexpected opcode %d" % opcode)
+    return json.loads(payload.decode("utf-8"))
 
 
 def expect_frame(predicate, description):

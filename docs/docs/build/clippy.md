@@ -53,17 +53,18 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 
 | 代码位置 | 作用 |
 |----------|------|
-| `scripts/axbuild/src/clippy/mod.rs` | CLI 入口、模块级常量（如 `AXSTD_STD_*`、`AX_HAL_PACKAGE`） |
-| `scripts/axbuild/src/clippy/selection.rs` | 参数校验、包选择（全量 / `--package` / `--since` 增量）、不支持的包过滤 |
-| `scripts/axbuild/src/clippy/check.rs` | `ClippyCheck` / `ClippyCheckKind` 数据模型与 `cargo_args` 构造 |
-| `scripts/axbuild/src/clippy/configurations.rs` | 解析并校验 package metadata 中声明的命名 target 配置 |
-| `scripts/axbuild/src/clippy/expand.rs` | 把每个包按 feature × target 展开为 `ClippyCheck` 列表 |
-| `scripts/axbuild/src/clippy/env.rs` | 为特殊 check 计算所需环境变量；普通包当前不额外注入环境变量 |
-| `scripts/axbuild/src/clippy/targets.rs` | 从 docs.rs metadata 提取包支持的 target，以及 feature↔target 兼容性判断 |
-| `scripts/axbuild/src/clippy/runner.rs` | `CargoRunner` trait 与 `ProcessCargoRunner`，fail-fast 执行 |
-| `scripts/axbuild/src/clippy/report.rs` | `ClippyRunReport` 聚合与人类可读报告 |
-| `scripts/axbuild/src/clippy/timing.rs` | 起止时间记录与耗时打印 |
-| `scripts/axbuild/src/clippy/tests.rs`, `tests/` | 展开与选择逻辑的回归测试 |
+| `scripts/axbuild/src/cli/mod.rs` | `ClippyArgs` 参数定义与命令分派 |
+| `scripts/axbuild/src/checks/clippy/mod.rs` | 检查入口、模块级常量（如 `AXSTD_STD_*`、`AX_HAL_PACKAGE`） |
+| `scripts/axbuild/src/checks/clippy/selection.rs` | 参数校验、包选择（全量 / `--package` / `--since` 增量）、不支持的包过滤 |
+| `scripts/axbuild/src/checks/clippy/check.rs` | `ClippyCheck` / `ClippyCheckKind` 数据模型与 `cargo_args` 构造 |
+| `scripts/axbuild/src/checks/clippy/configurations.rs` | 解析并校验 package metadata 中声明的命名 target 配置 |
+| `scripts/axbuild/src/checks/clippy/expand.rs` | 把每个包按 feature × target 展开为 `ClippyCheck` 列表 |
+| `scripts/axbuild/src/checks/clippy/env.rs` | 为特殊 check 计算所需环境变量；普通包当前不额外注入环境变量 |
+| `scripts/axbuild/src/checks/clippy/targets.rs` | 从 docs.rs metadata 提取包支持的 target，以及 feature↔target 兼容性判断 |
+| `scripts/axbuild/src/checks/clippy/runner.rs` | `CargoRunner` trait 与 `ProcessCargoRunner`，fail-fast 执行 |
+| `scripts/axbuild/src/checks/clippy/report.rs` | `ClippyRunReport` 聚合与人类可读报告 |
+| `scripts/axbuild/src/checks/clippy/timing.rs` | 起止时间记录与耗时打印 |
+| `scripts/axbuild/src/checks/clippy/tests.rs`, `tests/` | 展开与选择逻辑的回归测试 |
 
 ## 3. 包选择
 

@@ -145,6 +145,32 @@ fn wait_for_phase(phase: &AtomicUsize, expected: usize) {
     panic!("remote stage-1 observer did not reach phase {expected}");
 }
 
+static TRANSLATION_BACKING: AtomicUsize = AtomicUsize::new(0);
+
+fn handle_unmapped_test_page(vaddr: VirtAddr, flags: PageFaultFlags) -> bool {
+    if vaddr.as_usize() != EXPECTED_WRITE_FAULT_ADDR.load(Ordering::Acquire)
+        || !flags.contains(PageFaultFlags::WRITE)
+        || flags.contains(PageFaultFlags::USER)
+        || REMOTE_WRITE_FAULT_STATE.load(Ordering::Acquire) != REMOTE_WRITE_FAULT_ARMED
+    {
+        return delegate_page_fault(vaddr, flags);
+    }
+    let frame = ax_memory_addr::PhysAddr::from_usize(TRANSLATION_BACKING.load(Ordering::Acquire));
+    if map_kernel_range(
+        vaddr.align_down_4k(),
+        frame,
+        PAGE_SIZE,
+        MappingFlags::READ | MappingFlags::WRITE,
+    )
+    .is_err()
+    {
+        REMOTE_WRITE_FAULT_STATE.store(REMOTE_WRITE_FAULT_FAILED, Ordering::Release);
+        return false;
+    }
+    REMOTE_WRITE_FAULT_STATE.store(REMOTE_WRITE_FAULT_HANDLED, Ordering::Release);
+    true
+}
+
 pub fn run() -> crate::TestResult {
     let cpu_count = thread::available_parallelism().unwrap().get();
     if cpu_count < 2 {
@@ -260,5 +286,32 @@ pub fn run() -> crate::TestResult {
     unmap_kernel_range(mapping, PAGE_SIZE)
         .expect("failed to release the replacement kernel mapping");
     pin_current_to_cpu(controller_cpu);
+    // The original alias was synchronously unmapped. Reusing its reserved
+    // address now requires translation-fault delivery, not just permission.
+    TRANSLATION_BACKING.store(replacement_frame.paddr().as_usize(), Ordering::Release);
+    EXPECTED_WRITE_FAULT_ADDR.store(mapping.as_usize(), Ordering::Release);
+    REMOTE_WRITE_FAULT_STATE.store(REMOTE_WRITE_FAULT_ARMED, Ordering::Release);
+    let previous = set_page_fault_handler(handle_unmapped_test_page);
+    PREVIOUS_PAGE_FAULT_HANDLER.store(previous as usize, Ordering::Release);
+    // SAFETY: a synchronous hardware fault maps this owned live frame before
+    // retry; the frame remains owned and this dedicated kernel mapping test is
+    // the sole allocator of aliases in its high-address test window.
+    unsafe {
+        mapping.as_mut_ptr().write_volatile(0x5a);
+    }
+    assert_eq!(
+        REMOTE_WRITE_FAULT_STATE.load(Ordering::Acquire),
+        REMOTE_WRITE_FAULT_HANDLED,
+        "unmapped access did not reach the registered translation-fault handler"
+    );
+    // SAFETY: the successful handler mapped the still-owned replacement page;
+    // this controller is its only remaining accessor after the remote join.
+    assert_eq!(unsafe { mapping.as_ptr().read_volatile() }, 0x5a);
+    set_page_fault_handler(previous);
+    PREVIOUS_PAGE_FAULT_HANDLER.store(0, Ordering::Release);
+    EXPECTED_WRITE_FAULT_ADDR.store(0, Ordering::Release);
+    REMOTE_WRITE_FAULT_STATE.store(REMOTE_WRITE_FAULT_IDLE, Ordering::Release);
+    unmap_kernel_range(mapping, PAGE_SIZE).unwrap();
+    TRANSLATION_BACKING.store(0, Ordering::Release);
     Ok(())
 }

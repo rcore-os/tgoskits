@@ -222,5 +222,160 @@ class KtestQemuSuiteTests(unittest.TestCase):
         self.assertEqual(selections[0].template_id, DEMO_CHECK_ID)
 
 
+
+class CpuManifestRoutingTests(unittest.TestCase):
+    def make_workspace(self, root: Path) -> list[dict]:
+        cpu = root / "test-suit/arceos/cpu"
+        (cpu / "normal").mkdir(parents=True)
+        (cpu / "Cargo.toml").write_text('[package]\nname = "cpu-fixture"\n[features]\nio = []\n')
+        declarations = ['schema_version = 1', 'run_order = ["alpha", "beta"]']
+        checks = []
+        for name, arch in [("alpha", "aarch64"), ("beta", "x86_64")]:
+            directory = cpu / "normal/configs" / arch / name
+            directory.mkdir(parents=True)
+            (directory / "build.toml").write_text('features = []\n')
+            (directory / "qemu.toml").write_text('args = []\n')
+            declarations.append(f"""
+[batches.{name}]
+arch = "{arch}"
+image = "std"
+mode = "normal"
+build_config = "configs/{arch}/{name}/build.toml"
+qemu_config = "configs/{arch}/{name}/qemu.toml"
+[[batches.{name}.tests]]
+id = "io"
+name = "real I/O capability"
+entry = "cpu_tests::io::run"
+""")
+            checks.append({"id": f"cpu-{arch}", "name": f"CPU {arch}", "command": "fixture", "suite": [
+                {"kind": "arceos-qemu", "arch": arch, "group": "cpu"}]})
+        (cpu / "normal/suite.toml").write_text("\n".join(declarations))
+        board = root / "test-suit/arceos/board-demo/probe"
+        board.mkdir(parents=True)
+        (board / "build-aarch64-unknown-none-softfloat.toml").write_text(
+            'package = "arceos-cpu-normal-std"\ntarget = "aarch64-unknown-none-softfloat"\n')
+        (board / "board-demo.toml").write_text('board_type = "Demo"\n')
+        (board.parent / "suite.toml").write_text('''
+schema_version = 1
+board = "demo"
+run_order = ["probe"]
+[batches.probe]
+arch = "aarch64"
+image = "std"
+executor = "cpu"
+package = "arceos-cpu-normal-std"
+build_config = "probe/build-aarch64-unknown-none-softfloat.toml"
+board_config = "probe/board-demo.toml"
+[[batches.probe.tests]]
+id = "io"
+name = "board I/O capability"
+entry = "cpu_tests::io::run"
+returns = "unit"
+features = ["cpu-tests/io"]
+''')
+        checks.append({"id": "board-io", "name": "Board I/O", "command": "fixture", "suite": [
+            {"kind": "arceos-board", "board": "demo", "cases": ["probe"]}]})
+        return checks
+
+    def test_shared_capability_selects_declared_qemu_and_board_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            ci_suite.validate_suite_catalog(root, checks)
+            selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/src/io.rs"])
+            self.assertEqual({item.template_id for item in selections}, {"cpu-aarch64", "cpu-x86_64", "board-io"})
+            self.assertTrue(any("--test-case alpha" in item.command for item in selections))
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/retired-platform/io.rs"])
+            scoped = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/configs/x86_64/beta/qemu.toml"])
+            self.assertEqual([item.template_id for item in scoped], ["cpu-x86_64"])
+            entry = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/main.rs"])
+            self.assertEqual({item.template_id for item in entry}, {"cpu-aarch64", "cpu-x86_64", "board-io"})
+            std_entry = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/normal/std/Cargo.toml"])
+            self.assertIn("board-io", {item.template_id for item in std_entry})
+
+    def test_board_scoped_source_routes_only_its_board_consumers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            for source in ["src/board/demo/io.rs", "src/board/demo/mod.rs", "src/board/mod.rs"]:
+                selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/" + source])
+                self.assertEqual({item.template_id for item in selections}, {"board-io"})
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/src/board/other/io.rs"])
+
+    def test_board_manifest_routes_shared_changes_without_directory_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            source = "test-suit/arceos/board-demo/suite.toml"
+            selections = ci_suite.resolve_suite_selections(root, checks, [source])
+            self.assertEqual(len(selections), 1)
+            self.assertIn("--test-case probe", selections[0].command)
+            manifest = root / source
+            original = manifest.read_text()
+            for invalid in [original.replace('run_order = ["probe"]', 'run_order = []'),
+                    original.replace('returns = "unit"', 'returns = "result"'),
+                    original.replace('features = ["cpu-tests/io"]', 'features = "cpu-tests/io"')]:
+                manifest.write_text(invalid)
+                with self.assertRaises(ci_suite.SuiteRouteError):
+                    ci_suite.validate_suite_catalog(root, checks)
+
+    def test_rust_member_source_routes_board_batch_while_unrelated_sources_do_not(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            manifest = root / "test-suit/arceos/board-demo/suite.toml"
+            manifest.write_text(manifest.read_text().replace('executor = "cpu"', 'executor = "rust"')
+                .replace('entry = "cpu_tests::io::run"', 'entry = "crate::task::delivery::run"')
+                .replace('returns = "unit"', 'returns = "result"'))
+            selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/rust/src/task/delivery.rs"])
+            self.assertEqual([item.template_id for item in selections], ["board-io"])
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/rust/src/task/unrelated.rs"])
+
+    def test_missing_cpu_runtime_is_rejected_and_arch_specific_sources_stay_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checks = self.make_workspace(root)
+            selections = ci_suite.resolve_suite_selections(root, checks, ["test-suit/arceos/cpu/src/io/aarch64.rs"])
+            self.assertEqual({item.template_id for item in selections}, {"cpu-aarch64", "board-io"})
+            (root / "test-suit/arceos/cpu/normal/configs/x86_64/beta/qemu.toml").unlink()
+            with self.assertRaises(ci_suite.SuiteRouteError):
+                ci_suite.validate_suite_catalog(root, checks)
+
+class DriverBatchRoutingTests(unittest.TestCase):
+    def test_shared_driver_image_routes_members_and_rejects_missing_output_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            suite=root/"test-suit/arceos/drivers"
+            suite.mkdir(parents=True)
+            (suite/"build.toml").write_text('freestanding = true\n')
+            runtime=suite/"qemu.toml"
+            runtime.write_text('[host_pcm_waveform]\nframes=64\n')
+            manifest=suite/"suite.toml"
+            manifest.write_text('''
+schema_version=1
+run_order=["combined"]
+[batches.combined]
+arch="x86_64"
+build_config="build.toml"
+qemu_config="qemu.toml"
+[[batches.combined.tests]]
+id="parse"
+entry="crate::parse::run"
+[[batches.combined.tests]]
+id="play"
+entry="crate::play::run"
+pcm_waveform=true
+''')
+            checks=[{"id":"driver-fixture","name":"Driver fixture","command":"fixture","suite":[{"kind":"arceos-qemu","arch":"x86_64","group":"drivers"}]}]
+            ci_suite.validate_suite_catalog(root,checks)
+            rows=ci_suite.resolve_suite_selections(root,checks,["test-suit/arceos/drivers/src/parse.rs","test-suit/arceos/drivers/src/play.rs"])
+            self.assertEqual(len(rows),1)
+            self.assertIn("--test-group drivers --test-case combined",rows[0].command)
+            runtime.write_text('args=[]\n')
+            with self.assertRaises(ci_suite.SuiteRouteError):ci_suite.validate_suite_catalog(root,checks)
+
 if __name__ == "__main__":
     unittest.main()

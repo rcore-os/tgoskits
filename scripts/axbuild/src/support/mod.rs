@@ -1,5 +1,6 @@
 pub(crate) mod axtest_coverage;
 pub(crate) mod download;
+pub(crate) mod fingerprint;
 pub(crate) mod git;
 pub(crate) mod logging;
 pub(crate) mod ovmf;

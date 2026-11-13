@@ -206,19 +206,21 @@ const BENIGN_QEMU_STOP_ERROR: &str = "QEMU stopped without matching a configured
 const INCOMPLETE_SHELL_SEQUENCE_PREFIX: &str =
     "shell check sequence ended before shell_check_steps[";
 
-fn is_incomplete_shell_sequence_error(message: &str) -> bool {
-    let Some(rest) = message.strip_prefix(INCOMPLETE_SHELL_SEQUENCE_PREFIX) else {
-        return false;
-    };
-    let Some((index, suffix)) = rest.split_once(']') else {
-        return false;
-    };
-    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()) && suffix == " completed"
+fn incomplete_shell_sequence_step(message: &str) -> Option<usize> {
+    let rest = message.strip_prefix(INCOMPLETE_SHELL_SEQUENCE_PREFIX)?;
+    let (index, suffix) = rest.split_once(']')?;
+    if suffix != " completed"
+        || index.is_empty()
+        || !index.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    index.parse().ok()
 }
 
 fn is_benign_qemu_stop_error(err: &anyhow::Error) -> bool {
     let message = err.to_string();
-    if message == BENIGN_QEMU_STOP_ERROR || is_incomplete_shell_sequence_error(&message) {
+    if message == BENIGN_QEMU_STOP_ERROR {
         return true;
     }
 
@@ -227,6 +229,26 @@ fn is_benign_qemu_stop_error(err: &anyhow::Error) -> bool {
         .and_then(|suffix| suffix.strip_prefix("; transcript tail:"))
         .is_some_and(|transcript| transcript.is_empty() || transcript.starts_with('\n'))
 }
+/// Host profile collection can finish after QEMU stops. Only that explicitly
+/// verified completion may replace an unfinished guest shell sequence.
+pub(crate) fn verify_qemu_host_completion_contract(
+    run_result: Result<()>,
+    success_output: Option<&QemuSuccessOutput>,
+    verified_host_step: Option<usize>,
+) -> Result<()> {
+    let run_result = match run_result {
+        Err(error)
+            if success_output.is_some()
+                && verified_host_step.is_some()
+                && incomplete_shell_sequence_step(&error.to_string()) == verified_host_step =>
+        {
+            Ok(())
+        }
+        result => result,
+    };
+    verify_qemu_success_contract(run_result, success_output)
+}
+
 pub(crate) fn verify_qemu_success_contract(
     run_result: Result<()>,
     success_output: Option<&QemuSuccessOutput>,
@@ -281,7 +303,7 @@ pub(crate) fn combine_qemu_and_coverage_results(
 mod tests {
     use super::{
         QemuSuccessOutput, TRANSCRIPT_TAIL_BYTES, combine_qemu_and_coverage_results,
-        verify_qemu_success_contract,
+        verify_qemu_host_completion_contract, verify_qemu_success_contract,
     };
 
     fn captured_output(patterns: &[&str], chunks: &[&[u8]]) -> QemuSuccessOutput {
@@ -334,16 +356,76 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_guest_sequence_is_not_overridden_by_its_last_marker() {
+        let output = captured_output(&["DONE"], &[b"DONE\n"]);
+        let error = verify_qemu_success_contract(
+            Err(anyhow::anyhow!(
+                "shell check sequence ended before shell_check_steps[1] completed"
+            )),
+            Some(&output),
+        );
+        assert!(
+            error.is_err(),
+            "missing earlier guest steps must remain a failure"
+        );
+    }
+
+    #[test]
     fn incomplete_shell_sequence_is_accepted_after_host_completion() {
         let output = captured_output(&["AXTEST_COVERAGE_DONE"], &[b"AXTEST_COVERAGE_DONE\n"]);
 
-        verify_qemu_success_contract(
+        verify_qemu_host_completion_contract(
             Err(anyhow::anyhow!(
                 "shell check sequence ended before shell_check_steps[0] completed"
             )),
             Some(&output),
+            Some(0),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn unverified_host_completion_cannot_override_a_missing_guest_step() {
+        let output = captured_output(&["DONE"], &[b"DONE\n"]);
+        assert!(
+            verify_qemu_host_completion_contract(
+                Err(anyhow::anyhow!(
+                    "shell check sequence ended before shell_check_steps[0] completed"
+                )),
+                Some(&output),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            verify_qemu_host_completion_contract(
+                Err(anyhow::anyhow!("guest step matched fail_regex")),
+                Some(&output),
+                Some(0),
+            )
+            .is_err()
+        );
+        assert!(
+            verify_qemu_host_completion_contract(
+                Err(anyhow::anyhow!(
+                    "shell check sequence ended before shell_check_steps[0] completed"
+                )),
+                Some(&output),
+                Some(1),
+            )
+            .is_err(),
+            "host profile completion cannot replace an earlier guest step"
+        );
+        assert!(
+            verify_qemu_host_completion_contract(
+                Err(anyhow::anyhow!(
+                    "shell check sequence ended before shell_check_steps[0] completed"
+                )),
+                None,
+                Some(0),
+            )
+            .is_err()
+        );
     }
 
     #[test]

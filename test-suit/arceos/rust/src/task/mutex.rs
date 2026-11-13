@@ -1,3 +1,5 @@
+mod futex;
+
 use std::{
     sync::{Arc, Barrier, Condvar, Mutex, TryLockError, mpsc},
     thread,
@@ -8,6 +10,7 @@ const ITERATIONS: usize = 256;
 
 /// Exercise std synchronization through the libc thread and futex boundary.
 pub fn run() -> crate::TestResult {
+    futex::run()?;
     contended_workers_make_progress();
     unlock_wakes_a_waiting_task();
     condvar_publishes_the_predicate();

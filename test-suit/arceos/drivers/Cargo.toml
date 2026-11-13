@@ -1,0 +1,26 @@
+[package]
+name = "arceos-driver-tests"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+[features]
+default = ["ax-std"]
+ax-std = ["dep:ax-std"]
+[dependencies]
+acpica-interpreter.workspace = true
+ax-alloc = { workspace = true, features = ["global-allocator"] }
+ax-driver = { workspace = true, features = ["intel-hda", "list-pci-devices"] }
+ax-hal.workspace = true
+ax-std = { workspace = true, optional = true, default-features = false, features = ["alloc", "ipi", "paging"] }
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-none"]
+features = ["ax-std"]
+
+[build-dependencies]
+arceos-test-build = { path = "../build-support" }
+
+[package.metadata.clippy.batch_suite]
+path = "suite.toml"
+
+[package.metadata.axbuild]
+qemu_suite = "suite.toml"

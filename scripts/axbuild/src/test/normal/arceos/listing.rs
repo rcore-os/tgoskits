@@ -1,0 +1,223 @@
+use anyhow::bail;
+
+use super::{
+    ARCEOS_AXTEST_GROUP, ARCEOS_C_TEST_GROUP, ARCEOS_RUST_TEST_GROUP, ARCEOS_TEST_SUITE_OS,
+    assets::{
+        arceos_c_test_dir, arceos_rust_test_dir, arceos_test_group_dir, arceos_test_suit_qemu_archs,
+    },
+    c_suite::{arceos_c_test_suit_build_config_path, arceos_c_test_suit_qemu_config_path},
+    discovery::{
+        arceos_test_suit_build_config_path, arceos_test_suit_qemu_config_path,
+        discover_qemu_cases_in_dir,
+    },
+    rust_suite::rust_qemu_features_for_list,
+};
+use crate::{
+    arceos::ArceOS,
+    execution::{qemu as qemu_test, suite as test_suite},
+};
+
+pub(crate) fn list_rust_qemu_cases(
+    arceos: &ArceOS,
+    target: Option<(&str, &str)>,
+    selected_case: Option<&str>,
+    allow_missing_selected_case: bool,
+) -> anyhow::Result<Option<String>> {
+    let cases = rust_qemu_case_names(arceos, target, selected_case, allow_missing_selected_case)?;
+    if cases.is_empty() {
+        return Ok(None);
+    }
+    let catalog = super::rust_suite::load_catalog()?;
+    Ok(Some(super::rust_suite::render_listing(
+        &catalog,
+        target.map(|(arch, _)| arch),
+        &cases,
+    )))
+}
+
+pub(crate) fn list_c_qemu_cases(
+    arceos: &ArceOS,
+    target: Option<(&str, &str)>,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    if let Some((arch, target)) = target {
+        let root = arceos_c_test_dir(arceos);
+        arceos_c_test_suit_build_config_path(&root, target)?;
+        arceos_c_test_suit_qemu_config_path(&root, arch)?;
+    }
+    Ok(Some(super::c_suite::render_listing(
+        &arceos_c_test_dir(arceos),
+        target.map(|(arch, _)| arch),
+        selected_case,
+    )?))
+}
+
+pub(crate) fn list_generic_qemu_cases(
+    arceos: &ArceOS,
+    target: Option<(&str, &str)>,
+    group: &str,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    if let Some(manifest) = super::declared::manifest_path(arceos.app.workspace_root(), group)? {
+        return Ok(Some(super::declared::render_listing(
+            &manifest,
+            group,
+            target.map(|(arch, _)| arch),
+            selected_case,
+        )?));
+    }
+    let dir = arceos_test_group_dir(arceos.app.workspace_root(), group);
+    let cases: Vec<String> = match target {
+        Some((arch, target)) => {
+            discover_qemu_cases_in_dir(&dir, arch, target, selected_case, group)?
+                .into_iter()
+                .map(|case| case.case.name)
+                .collect()
+        }
+        None => qemu_test::discover_all_qemu_cases(&dir, selected_case, "ArceOS", group)
+            .map_err(anyhow::Error::new)?,
+    };
+    if cases.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(qemu_test::render_case_tree(group, cases)))
+}
+
+pub(crate) fn all_qemu_case_groups(
+    arceos: &ArceOS,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<(String, Vec<qemu_test::ListedQemuCase>)>> {
+    let mut groups = Vec::new();
+    for group in
+        test_suite::discover_group_names(arceos.app.workspace_root(), ARCEOS_TEST_SUITE_OS)?
+    {
+        if group == ARCEOS_AXTEST_GROUP {
+            continue;
+        }
+        let cases: Option<Vec<qemu_test::ListedQemuCase>> = match group.as_str() {
+            ARCEOS_RUST_TEST_GROUP => rust_qemu_listed_cases(arceos, selected_case)
+                .ok()
+                .filter(|cases| !cases.is_empty()),
+            ARCEOS_C_TEST_GROUP => c_qemu_listed_cases(arceos, selected_case)
+                .ok()
+                .filter(|v| !v.is_empty()),
+            _ => {
+                if let Some(manifest) =
+                    super::declared::manifest_path(arceos.app.workspace_root(), &group)?
+                {
+                    let cases = super::declared::listed_cases(&manifest, selected_case)?;
+                    if !cases.is_empty() {
+                        groups.push((group, cases));
+                    }
+                    continue;
+                }
+                let dir = arceos_test_group_dir(arceos.app.workspace_root(), &group);
+                match qemu_test::discover_all_qemu_cases_with_archs(
+                    &dir,
+                    selected_case,
+                    "ArceOS",
+                    &group,
+                ) {
+                    Ok(cases) if !cases.is_empty() => Some(cases),
+                    Ok(_) => None,
+                    Err(err) if qemu_list_error_is_ignorable(err.kind()) => None,
+                    Err(err) => return Err(anyhow::Error::new(err)),
+                }
+            }
+        };
+        if let Some(cases) = cases {
+            groups.push((group, cases));
+        }
+    }
+    if groups.is_empty()
+        && let Some(case) = selected_case
+    {
+        bail!("unknown ArceOS qemu test case `{case}`");
+    }
+    Ok(groups)
+}
+
+fn qemu_list_error_is_ignorable(kind: qemu_test::ListQemuCasesErrorKind) -> bool {
+    matches!(
+        kind,
+        qemu_test::ListQemuCasesErrorKind::EmptyGroup
+            | qemu_test::ListQemuCasesErrorKind::UnknownSelectedCase
+    )
+}
+
+fn rust_qemu_listed_cases(
+    arceos: &ArceOS,
+    selected_case: Option<&str>,
+) -> anyhow::Result<Vec<qemu_test::ListedQemuCase>> {
+    let catalog = super::rust_suite::load_catalog()?;
+    let root = arceos_rust_test_dir(arceos);
+    let archs = arceos_test_suit_qemu_archs(&root)?;
+    if archs.is_empty() {
+        bail!("no ArceOS rust qemu configs found under {}", root.display());
+    }
+    Ok(rust_qemu_features_for_list(&catalog, selected_case, false)?
+        .into_iter()
+        .map(|feature| qemu_test::ListedQemuCase {
+            name: feature.to_string(),
+            archs: archs
+                .iter()
+                .filter(|arch| super::rust_qemu_feature_supports_arch(&catalog, &feature, arch))
+                .cloned()
+                .collect(),
+        })
+        .collect())
+}
+
+fn rust_qemu_case_names(
+    arceos: &ArceOS,
+    target: Option<(&str, &str)>,
+    selected_case: Option<&str>,
+    allow_missing_selected_case: bool,
+) -> anyhow::Result<Vec<String>> {
+    let catalog = super::rust_suite::load_catalog()?;
+    match target {
+        Some((arch, target)) => {
+            let root = arceos_rust_test_dir(arceos);
+            arceos_test_suit_build_config_path(&root, target)?;
+            arceos_test_suit_qemu_config_path(&root, arch)?;
+            Ok(
+                rust_qemu_features_for_list(&catalog, selected_case, allow_missing_selected_case)?
+                    .into_iter()
+                    .filter(|feature| {
+                        super::rust_qemu_feature_supports_arch(&catalog, feature, arch)
+                    })
+                    .map(|feature| feature.to_string())
+                    .collect(),
+            )
+        }
+        None => {
+            Ok(
+                rust_qemu_features_for_list(&catalog, selected_case, allow_missing_selected_case)?
+                    .into_iter()
+                    .map(|feature| feature.to_string())
+                    .collect(),
+            )
+        }
+    }
+}
+
+fn c_qemu_listed_cases(
+    arceos: &ArceOS,
+    selected_case: Option<&str>,
+) -> qemu_test::ListQemuCasesResult<Vec<qemu_test::ListedQemuCase>> {
+    let root = arceos_c_test_dir(arceos);
+    let archs = arceos_test_suit_qemu_archs(&root).map_err(qemu_test::ListQemuCasesError::from)?;
+    if archs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Ok(features) = super::c_suite::c_qemu_batch_listing(&root, selected_case) else {
+        return Ok(Vec::new());
+    };
+    Ok(features
+        .into_iter()
+        .map(|feature| qemu_test::ListedQemuCase {
+            name: feature.to_string(),
+            archs: archs.clone(),
+        })
+        .collect())
+}

@@ -1,0 +1,152 @@
+use anyhow::bail;
+use clap::{Args, Subcommand};
+
+#[derive(Args)]
+pub struct ArgsTest {
+    #[command(subcommand)]
+    pub command: TestCommand,
+}
+
+#[derive(Subcommand)]
+pub enum TestCommand {
+    /// Run ArceOS QEMU test suites (Rust + C by default)
+    Qemu(ArgsTestQemu),
+    /// Run ArceOS remote board test suite
+    Board(ArgsTestBoard),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ArgsTestQemu {
+    #[arg(long, value_name = "ARCH", help = "ArceOS architecture to test")]
+    pub arch: Option<String>,
+    #[arg(
+        short = 't',
+        long,
+        value_name = "TARGET",
+        help = "ArceOS target triple to test"
+    )]
+    pub target: Option<String>,
+    #[arg(
+        short = 'g',
+        long = "test-group",
+        value_name = "GROUP",
+        help = "Run ArceOS QEMU test cases from one test group (rust, c, cpu, drivers or another \
+                directory suite)"
+    )]
+    pub test_group: Option<String>,
+    #[arg(
+        short = 'c',
+        long = "test-case",
+        value_name = "CASE",
+        help = "Run one ArceOS QEMU batch or test case"
+    )]
+    pub test_case: Option<String>,
+    #[arg(short = 'l', long, help = "List discovered ArceOS QEMU test cases")]
+    pub list: bool,
+    /// Print the Rust, C, CPU or driver startup plan without building or starting a machine.
+    #[arg(long, conflicts_with = "list")]
+    pub plan: bool,
+    /// Removed: Rust tests are selected with `--test-case`.
+    #[arg(
+        short,
+        long,
+        value_name = "PACKAGE",
+        conflicts_with = "only_c",
+        hide = true
+    )]
+    pub package: Vec<String>,
+    /// Only run Rust tests; prefer `--test-group rust`
+    #[arg(long, conflicts_with = "only_c", hide = true)]
+    pub only_rust: bool,
+    /// Only run C tests; prefer `--test-group c`
+    #[arg(long, conflicts_with = "only_rust", hide = true)]
+    pub only_c: bool,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct ArgsTestBoard {
+    #[arg(
+        short = 'c',
+        long = "test-case",
+        value_name = "CASE",
+        value_delimiter = ',',
+        help = "Run one or more ArceOS board test cases"
+    )]
+    pub test_case: Vec<String>,
+
+    #[arg(
+        long,
+        value_name = "BOARD",
+        help = "Run all ArceOS board test cases for one board"
+    )]
+    pub board: Option<String>,
+
+    #[arg(short = 'b', long = "board-type", value_name = "BOARD_TYPE")]
+    pub board_type: Option<String>,
+
+    #[arg(long)]
+    pub server: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u16>,
+
+    #[arg(short = 'l', long, help = "List discovered ArceOS board test cases")]
+    pub list: bool,
+}
+
+pub(crate) fn reject_removed_rust_package_filter(args: &ArgsTestQemu) -> anyhow::Result<()> {
+    if args.package.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "ArceOS rust qemu tests no longer support --package; use --test-case <case> to select a \
+         feature-gated test, or omit it to run the `all` feature in one QEMU boot"
+    )
+}
+
+pub(crate) fn reject_missing_qemu_target(args: &ArgsTestQemu) -> anyhow::Result<()> {
+    if args.list || args.arch.is_some() || args.target.is_some() {
+        return Ok(());
+    }
+    bail!("ArceOS qemu tests require --arch <ARCH> or --target <TARGET>")
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct BoardCli {
+        #[command(flatten)]
+        board: ArgsTestBoard,
+    }
+
+    #[test]
+    fn board_case_selector_accepts_repeated_and_comma_separated_values() {
+        let cli =
+            BoardCli::try_parse_from(["test", "--test-case", "smoke,pmu", "--test-case", "ipi"])
+                .unwrap();
+
+        assert_eq!(cli.board.test_case, ["smoke", "pmu", "ipi"]);
+    }
+
+    #[test]
+    fn regular_qemu_run_still_requires_arch_or_target() {
+        let args = ArgsTestQemu {
+            arch: None,
+            target: None,
+            test_group: Some("rust".into()),
+            test_case: None,
+            list: false,
+            plan: false,
+            package: Vec::new(),
+            only_rust: false,
+            only_c: false,
+        };
+
+        let err = reject_missing_qemu_target(&args).unwrap_err();
+        assert!(err.to_string().contains("require --arch"));
+    }
+}

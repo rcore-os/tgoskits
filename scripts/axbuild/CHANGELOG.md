@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- 按CLI、共用执行、测试机制、应用、性能分析及工具职责组织模块，保留原公开入口和命令语义。
+- ArceOS Rust使用显式run_order和具名批次嵌套测试的单一声明，general替代all；按架构展开单项features，list显示启动边界，plan/run与目标函数表同源维护成员及顺序。
+
 ## [0.9.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.9.0...axbuild-v0.9.1) - 2026-09-22
 
 ### Added

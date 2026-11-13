@@ -280,7 +280,7 @@ EFI 镜像上限 32 MiB。待试槽确认前拒绝内核启动；启动失败、
 A/B 均写入 native loader，旧 `BOOTLOONGARCH64.EFI` 只保存为
 `BOOTLOONGARCH64.PREVIOUS.EFI`，不进入 OTA 回退槽。
 
-QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/axbuild/src/axloader/ota_qemu.rs` 属于宿主测试编排层，负责创建 ESP、启动 QEMU、调用设备 HTTP 接口并跨多次启动复用同一磁盘。
+QEMU 验证使用真实 FAT 磁盘、OVMF VARS 和 SLiRP `hostfwd`。`scripts/axbuild/src/test/ota/ota_qemu.rs` 属于宿主测试编排层，负责创建 ESP、启动 QEMU、调用设备 HTTP 接口并跨多次启动复用同一磁盘。
 
 ### 3.1 执行链
 

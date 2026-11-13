@@ -15,7 +15,7 @@ use anyhow::Context;
 use ostool::run::qemu::QemuConfig;
 
 use super::{ArceOS, build};
-use crate::{context::ResolvedBuildRequest, test::qemu as qemu_test};
+use crate::{context::ResolvedBuildRequest, execution::qemu as qemu_test};
 
 const DEFAULT_FAT32_ROOTFS_SIZE: &str = "64M";
 

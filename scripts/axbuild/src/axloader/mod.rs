@@ -8,15 +8,13 @@ use std::{
 use anyhow::{Context, bail, ensure};
 use clap::{Args, Subcommand};
 
-use crate::support::{ovmf::OvmfFirmware, process::ProcessExt};
+use crate::support::process::ProcessExt;
 
-mod ota_qemu;
-
-const AXLOADER_PACKAGE: &str = "axloader";
-const AXLOADER_BIN: &str = "axloader";
-const LAUNCHER_BIN: &str = "axloader-launcher";
-const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
-const LOONGARCH64_UEFI_TARGET: &str = "loongarch64-unknown-uefi";
+pub(crate) const AXLOADER_PACKAGE: &str = "axloader";
+pub(crate) const AXLOADER_BIN: &str = "axloader";
+pub(crate) const LAUNCHER_BIN: &str = "axloader-launcher";
+pub(crate) const DEFAULT_UEFI_TARGET: &str = "x86_64-unknown-uefi";
+pub(crate) const LOONGARCH64_UEFI_TARGET: &str = "loongarch64-unknown-uefi";
 const PE_MACHINE_X86_64: u16 = 0x8664;
 const PE_MACHINE_LOONGARCH64: u16 = 0x6264;
 const PE32_PLUS_MAGIC: u16 = 0x020b;
@@ -133,37 +131,15 @@ async fn test_with_context(
     args: ArgsTest,
 ) -> anyhow::Result<()> {
     match args.command {
-        TestCommand::Qemu(args) => test_qemu(workspace, args).await,
+        TestCommand::Qemu(args) => crate::test::ota::test_qemu(workspace, args).await,
     }
 }
 
-async fn test_qemu(
-    workspace: &crate::context::WorkspaceContext,
-    args: ArgsTestQemu,
+pub(crate) fn run_loader_check(
+    workspace_root: &Path,
+    target_dir: &Path,
+    target: &str,
 ) -> anyhow::Result<()> {
-    run_cargo(
-        workspace.root(),
-        workspace.target_dir(),
-        ["test", "-p", AXLOADER_PACKAGE, "--all-targets"],
-    )?;
-    run_loader_check(workspace.root(), workspace.target_dir(), &args.target)?;
-
-    run_loader_build(
-        workspace.root(),
-        workspace.target_dir(),
-        &args.target,
-        true,
-        true,
-    )?;
-    let firmware = match (args.firmware_code, args.firmware_vars) {
-        (Some(code), Some(vars)) => Some(OvmfFirmware::from_paths(code, vars)?),
-        (None, None) => None,
-        _ => bail!("--firmware-code and --firmware-vars must be supplied together"),
-    };
-    ota_qemu::test_direct_ota(workspace, &args.target, args.server_only, firmware).await
-}
-
-fn run_loader_check(workspace_root: &Path, target_dir: &Path, target: &str) -> anyhow::Result<()> {
     let plan = LoaderBuildPlan::for_target(target)?;
     let mut args = vec![
         "check".to_string(),
@@ -186,7 +162,7 @@ fn run_loader_check(workspace_root: &Path, target_dir: &Path, target: &str) -> a
     command.exec()
 }
 
-fn run_loader_build(
+pub(crate) fn run_loader_build(
     workspace_root: &Path,
     target_dir: &Path,
     target: &str,
@@ -723,7 +699,7 @@ fn read_u64(image: &[u8], offset: usize) -> anyhow::Result<u64> {
     Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
 }
 
-fn run_cargo<'a>(
+pub(crate) fn run_cargo<'a>(
     workspace_root: &Path,
     target_dir: &Path,
     args: impl IntoIterator<Item = &'a str>,

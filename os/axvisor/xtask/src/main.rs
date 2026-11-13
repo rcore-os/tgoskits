@@ -320,7 +320,8 @@ fn normalize_command_paths(
             }
             TestCommand::Qemu(_) | TestCommand::Board(_) => {}
         },
-        Command::Defconfig(_) | Command::Config(_) => {}
+        // App selectors belong to the application namespace, not host paths.
+        Command::App(_) | Command::Defconfig(_) | Command::Config(_) => {}
     }
 }
 

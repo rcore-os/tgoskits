@@ -1,68 +1,56 @@
-#[path = "basic/display.rs"]
-mod display;
-
-use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_10X20},
-    pixelcolor::Rgb888,
-    prelude::*,
-    primitives::{Circle, PrimitiveStyle, Rectangle, Triangle},
-    text::{Alignment, Text},
-};
-
-use self::display::Display;
-
-const INIT_X: i32 = 80;
-const INIT_Y: i32 = 400;
-const RECT_SIZE: u32 = 150;
-
-struct DrawingBoard {
-    disp: Display,
-    latest_pos: Point,
-}
-
-impl DrawingBoard {
-    fn new() -> Self {
-        Self {
-            disp: Display::new(),
-            latest_pos: Point::new(INIT_X, INIT_Y),
-        }
-    }
-
-    fn paint(&mut self) {
-        Rectangle::with_center(self.latest_pos, Size::new(RECT_SIZE, RECT_SIZE))
-            .into_styled(PrimitiveStyle::with_stroke(Rgb888::RED, 10))
-            .draw(&mut self.disp)
-            .ok();
-        Circle::new(self.latest_pos + Point::new(-70, -300), 150)
-            .into_styled(PrimitiveStyle::with_fill(Rgb888::BLUE))
-            .draw(&mut self.disp)
-            .ok();
-        Triangle::new(
-            self.latest_pos + Point::new(0, 150),
-            self.latest_pos + Point::new(80, 200),
-            self.latest_pos + Point::new(-120, 300),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(Rgb888::GREEN, 10))
-        .draw(&mut self.disp)
-        .ok();
-        Text::with_alignment(
-            "ArceOS",
-            self.latest_pos + Point::new(0, 300),
-            MonoTextStyle::new(&FONT_10X20, Rgb888::YELLOW),
-            Alignment::Center,
-        )
-        .draw(&mut self.disp)
-        .ok();
-    }
-}
+//! Small ArceOS framebuffer facade contract, not a drawing demonstration.
+use ax_std::os::arceos::api::display as api;
 
 pub fn run() -> crate::TestResult {
-    let mut board = DrawingBoard::new();
-    board.disp.clear(Rgb888::BLACK).unwrap();
-    for _ in 0..5 {
-        board.latest_pos.x += RECT_SIZE as i32 + 20;
-        board.paint();
-        board.disp.flush();
+    let info = api::ax_framebuffer_info().expect("display output is required");
+    assert!(info.width > 1 && info.height > 0);
+    let last = (info.height as usize - 1)
+        .checked_mul(info.stride)
+        .and_then(|row| {
+            (info.width as usize - 1)
+                .checked_mul(4)
+                .and_then(|column| row.checked_add(column))
+        })
+        .expect("framebuffer offset overflow");
+    let offsets = [0, last];
+    let colors = [[0x21, 0x62, 0xe3, 0], [0xa1, 0x32, 0x73, 0]];
+    let mut previous = None;
+    // SAFETY: this test exclusively accesses the boot framebuffer; flushes
+    // complete before the next CPU access, with no userspace mapping/writer.
+    unsafe {
+        api::ax_with_framebuffer(&mut |bytes, _| {
+            let mut saved = [[0u8; 4]; 2];
+            for (index, offset) in offsets.into_iter().enumerate() {
+                let pixel = bytes
+                    .get_mut(offset..offset.checked_add(4).unwrap())
+                    .expect("invalid framebuffer stride/length");
+                saved[index].copy_from_slice(pixel);
+                pixel.copy_from_slice(&colors[index]);
+            }
+            previous = Some(saved);
+        })
     }
+    .expect("framebuffer write failed");
+    let previous = previous.expect("framebuffer callback was not called");
+    api::ax_framebuffer_flush().expect("framebuffer flush failed");
+    let mut observed = None;
+    // SAFETY: the same exclusive mapping remains live after flush completion.
+    unsafe {
+        api::ax_with_framebuffer(&mut |bytes, _| {
+            let mut pixels = [[0u8; 4]; 2];
+            for (index, offset) in offsets.into_iter().enumerate() {
+                pixels[index].copy_from_slice(&bytes[offset..offset + 4]);
+                bytes[offset..offset + 4].copy_from_slice(&previous[index]);
+            }
+            observed = Some(pixels);
+        })
+    }
+    .expect("framebuffer readback failed");
+    assert_eq!(
+        observed,
+        Some(colors),
+        "framebuffer API discarded or corrupted CPU writes"
+    );
+    api::ax_framebuffer_flush().expect("framebuffer restoration failed");
     Ok(())
 }

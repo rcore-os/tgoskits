@@ -33,3 +33,8 @@ body = "ArceOS rust test suite host fixture\n"
 
 [[shell_check_steps]]
 success_regex = ["ArceOS test suite run OK!"]
+
+# TCP HTTP and UDP echo intentionally share a port number, not a transport.
+[host_udp_echo]
+bind = "127.0.0.1"
+port = 18183

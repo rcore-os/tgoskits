@@ -6,7 +6,7 @@ use anyhow::{Context, ensure};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-use crate::{rootfs::inject, test::case::copy_file_fast};
+use crate::{execution::case::copy_file_fast, rootfs::inject};
 
 const MARKER: &str = "/etc/starry-openrc-assets";
 const REQUIRED_PACKAGES: &[(&str, &str)] = &[

@@ -19,6 +19,25 @@ pub(crate) fn load_cargo_config_with_default_features(
     workspace: &WorkspaceContext,
     include_default_features: bool,
 ) -> anyhow::Result<Cargo> {
+    let (cargo, files) =
+        resolve_cargo_config_with_defaults(request, workspace, include_default_features)?;
+    files.materialize()?;
+    Ok(cargo)
+}
+
+pub(crate) fn resolve_cargo_config(
+    request: &ResolvedBuildRequest,
+    workspace: &WorkspaceContext,
+) -> anyhow::Result<(Cargo, build::BuildFiles)> {
+    resolve_cargo_config_with_defaults(request, workspace, true)
+}
+
+fn resolve_cargo_config_with_defaults(
+    request: &ResolvedBuildRequest,
+    workspace: &WorkspaceContext,
+    include_default_features: bool,
+) -> anyhow::Result<(Cargo, build::BuildFiles)> {
+    let mut files = build::BuildFiles::default();
     let metadata = workspace.metadata();
     let axbuild_dir = workspace.axbuild_artifact_dir();
     let config = config_with_makefile_features(request, &[])?;
@@ -41,18 +60,21 @@ pub(crate) fn load_cargo_config_with_default_features(
             request.runtime,
         )?
     } else {
-        build::into_prepared_std_cargo_config_with_metadata_and_defaults(
+        build::resolve_std_cargo_config(
             build_info,
-            &request.package,
-            &request.target,
-            metadata,
-            &axbuild_dir,
-            include_default_features,
-            request.runtime,
+            build::StdBuildInput {
+                package: &request.package,
+                target: &request.target,
+                metadata,
+                axbuild_dir: &axbuild_dir,
+                include_default_features,
+                runtime: request.runtime,
+            },
+            &mut files,
         )?
     };
     cargo.to_bin |= to_bin;
-    Ok(cargo)
+    Ok((cargo, files))
 }
 
 pub(crate) fn load_c_app_cargo_config(
