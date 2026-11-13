@@ -1218,6 +1218,23 @@ mod vlapic_tests {
         assert_ne!(vlapic.regs().ESR.get(), 0);
     }
 
+    /// LVT_ERROR vectors 16..=31 are deliverable fixed vectors on the local
+    /// APIC; the vLAPIC must send them so the injection queue contract
+    /// (vectors 16..=255) is exercised below vector 32 as well.
+    #[test]
+    fn set_err_delivers_error_vector_below_32() {
+        let _serial = TEST_SERIAL.lock().unwrap();
+        TestHost::reset_injections();
+        let mut vlapic = new_vlapic(0);
+        vlapic.regs().LVT_ERROR.set(0x1f);
+
+        vlapic.set_err(ERROR_STATUS::SendIllegalVector::SET);
+
+        let injected = TestHost::injected();
+        assert_eq!(injected.as_slice(), &[(0, 0x1f)]);
+        assert_eq!(vlapic.esr_firing, 0);
+    }
+
     /// x2APIC carries a full 32-bit physical destination; an ID outside the
     /// dmask width must match no vCPU instead of shifting out of bounds.
     #[test]
