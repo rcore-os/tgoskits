@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.5](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.10.4...axplat-dyn-v0.10.5) - 2026-11-14
+
+### Added
+
+- *(axloader)* add LoongArch EFI with shared someboot capabilities ([#2620](https://github.com/rcore-os/tgoskits/pull/2620))
+- *(initramfs)* unify host image boot flow ([#2528](https://github.com/rcore-os/tgoskits/pull/2528))
+
+### Other
+
+- *(ax-config)* unify build inputs and runtime configuration ([#2780](https://github.com/rcore-os/tgoskits/pull/2780))
+- *(axvisor)* install guest assets from initramfs ([#2567](https://github.com/rcore-os/tgoskits/pull/2567))
+- *(page-table-generic)* batch range unmaps with deferred retirement ([#2522](https://github.com/rcore-os/tgoskits/pull/2522))
+
 ## [0.10.4](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.10.3...axplat-dyn-v0.10.4) - 2026-09-22
 
 ### Other
