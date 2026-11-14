@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.12...axbacktrace-v0.5.0) - 2026-11-14
+
+### Added
+
+- *(backtrace)* move symbolization into target runtime ([#2589](https://github.com/rcore-os/tgoskits/pull/2589))
+
+### Other
+
+- *(test)* consolidate ArceOS suites and reduce test boots ([#2793](https://github.com/rcore-os/tgoskits/pull/2793))
+
 ### Fixed
 
 - 支持调用方登记永久保留启动栈可读范围，检查完整Frame记录与地址溢出，避免遗漏内核映射区外的有效启动栈。

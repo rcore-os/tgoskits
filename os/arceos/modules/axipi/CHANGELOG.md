@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.6.5...ax-ipi-v0.6.6) - 2026-11-14
+
+### Fixed
+
+- *(ax-ipi)* preserve fixed IPI destinations across sender migration ([#2789](https://github.com/rcore-os/tgoskits/pull/2789))
+
 ## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-ipi-v0.6.4...ax-ipi-v0.6.5) - 2026-09-22
 
 ### Other
