@@ -165,8 +165,9 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
     /// FI;
     fn find_isrv(&self) -> u32 {
         let mut isrv = 0;
-        // i ranges effectively from 7 to 1
-        for i in (1..8).rev() {
+        // i ranges effectively from 7 to 0; ISR[0] must be covered because
+        // vectors 16-31 (e.g. legacy PIC lines) can be accepted into service.
+        for i in (0..8).rev() {
             let val = self.regs().ISR[i].get() as u32;
             if val != 0 {
                 isrv = ((i as u32) << 5) | fls32(val) as u32;
@@ -233,25 +234,26 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
         broadcast_eoi.then_some(vector as u8)
     }
 
-    /// Post an interrupt to the vcpu running on 'hostcpu'.
-    /// This will use a hardware assist if available (e.g. Posted Interrupt)
-    /// or fall back to sending an 'ipinum' to interrupt the 'hostcpu'.
+    /// 11.5.3 Error Handling: latch `mask` into the pending ESR bits and
+    /// deliver the interrupt programmed in LVT_ERROR. `esr_firing` guards
+    /// against reentry while the error vector itself is being sent.
     fn set_err(&mut self, mask: ErrorStatusRegisterValue) {
         self.esr_pending.modify(mask);
 
-        self.esr_firing = 1;
-        if self.esr_firing == 0 {
-            self.esr_firing = 1;
-            let _lvt = self.regs().LVT_ERROR.get();
-            //  if ((lvt & APIC_LVT_M) == 0U) {
-            //     vec = lvt & APIC_LVT_VECTOR;
-            //     if (vec >= 16U) {
-            //         vlapic_accept_intr(vlapic, vec, LAPIC_TRIG_EDGE);
-            //     }
-            // }
-            unimplemented!("vlapic_accept_intr(vlapic, vec, LAPIC_TRIG_EDGE)");
-            // self.esr_firing = 0;
+        if self.esr_firing != 0 {
+            return;
         }
+        self.esr_firing = 1;
+
+        let lvt = self.regs().LVT_ERROR.get();
+        if (lvt & APIC_LVT_M) == 0 {
+            let vec = lvt & APIC_LVT_VECTOR;
+            if vec >= 16 {
+                self.set_intr(self.vapic_id, vec, LAPIC_TRIG_EDGE);
+            }
+        }
+
+        self.esr_firing = 0;
     }
 
     fn is_dest_field_matched(&self, dest: u32) -> X86VlapicResult<bool> {
@@ -310,7 +312,9 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
         } else if is_phys {
             // Physical mode: "dest" is local APIC ID.
             // Todo: distinguish between APIC ID and vCPU ID.
-            dmask = 1 << dest;
+            // x2APIC destinations are full 32-bit ICR_HI values; an ID outside
+            // the dmask width matches no vCPU instead of shifting out of bounds.
+            dmask = if dest < u64::BITS { 1u64 << dest } else { 0 };
         } else if lowprio {
             // lowprio is not supported.
             // Refer to 11.6.2.4 Lowest Priority Delivery Mode.
@@ -1024,5 +1028,227 @@ mod interrupt_priority_tests {
         assert!(!interrupt_priority_above_ppr(0x4f, 0x50));
         assert!(interrupt_priority_above_ppr(0x6f, 0x5f));
         assert!(interrupt_priority_above_ppr(0x50, 0x4f));
+    }
+}
+
+#[cfg(test)]
+mod vlapic_tests {
+    extern crate std;
+
+    use self::std::{
+        alloc::{Layout, alloc_zeroed, dealloc},
+        sync::Mutex,
+        vec::Vec,
+    };
+    use super::*;
+    use crate::{
+        X86HostVirtAddr, X86InterruptVector, X86TimerCallback, X86VlapicHostOps,
+        X86VlapicRuntimeOps, host::X86_PAGE_SIZE_4K,
+    };
+
+    static INJECTED_INTERRUPTS: Mutex<Vec<(X86VcpuId, X86InterruptVector)>> =
+        Mutex::new(Vec::new());
+    static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+    struct TestHost;
+
+    #[derive(Clone)]
+    struct TestRuntime {
+        vm_id: X86VmId,
+        vcpu_id: X86VcpuId,
+    }
+
+    impl TestHost {
+        fn reset_injections() {
+            INJECTED_INTERRUPTS.lock().unwrap().clear();
+        }
+
+        fn injected() -> Vec<(X86VcpuId, X86InterruptVector)> {
+            INJECTED_INTERRUPTS.lock().unwrap().clone()
+        }
+    }
+
+    impl X86VlapicHostOps for TestHost {
+        type TimerHandle = usize;
+        type Runtime = TestRuntime;
+
+        fn alloc_frame() -> Option<X86HostPhysAddr> {
+            let layout = Layout::from_size_align(X86_PAGE_SIZE_4K, X86_PAGE_SIZE_4K).unwrap();
+            // SAFETY: one 4-KiB frame; `dealloc_frame` returns it with the
+            // same layout.
+            let ptr = unsafe { alloc_zeroed(layout) };
+            (!ptr.is_null()).then(|| X86HostPhysAddr::from_usize(ptr as usize))
+        }
+
+        fn dealloc_frame(paddr: X86HostPhysAddr) {
+            let layout = Layout::from_size_align(X86_PAGE_SIZE_4K, X86_PAGE_SIZE_4K).unwrap();
+            // SAFETY: the frame came from `alloc_frame` with this layout.
+            unsafe { dealloc(paddr.as_usize() as *mut u8, layout) };
+        }
+
+        fn phys_to_virt(paddr: X86HostPhysAddr) -> X86HostVirtAddr {
+            X86HostVirtAddr::from_usize(paddr.as_usize())
+        }
+
+        fn virt_to_phys(vaddr: X86HostVirtAddr) -> X86HostPhysAddr {
+            X86HostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            0
+        }
+
+        fn unbound_runtime(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self::Runtime {
+            Self::Runtime { vm_id, vcpu_id }
+        }
+    }
+
+    impl X86VlapicRuntimeOps for TestRuntime {
+        type TimerHandle = usize;
+
+        fn vm_id(&self) -> X86VmId {
+            self.vm_id
+        }
+
+        fn vcpu_id(&self) -> X86VcpuId {
+            self.vcpu_id
+        }
+
+        fn vcpu_count(&self) -> usize {
+            2
+        }
+
+        fn active_vcpu_mask(&self) -> usize {
+            0b11
+        }
+
+        fn inject_interrupt(
+            &self,
+            target_vcpu_id: X86VcpuId,
+            vector: X86InterruptVector,
+        ) -> X86VlapicResult {
+            INJECTED_INTERRUPTS
+                .lock()
+                .unwrap()
+                .push((target_vcpu_id, vector));
+            Ok(())
+        }
+
+        fn inject_pit_irq(&self) -> X86VlapicResult {
+            Ok(())
+        }
+
+        fn register_timer(
+            &self,
+            _deadline_nanos: u64,
+            _callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            Err(crate::X86VlapicError::TimerUnavailable)
+        }
+
+        unsafe fn register_hard_timer(
+            &self,
+            deadline_nanos: u64,
+            callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            self.register_timer(deadline_nanos, callback)
+        }
+
+        fn wait_timer_progress(&self) {}
+
+        fn cancel_timer(&self, _handle: Self::TimerHandle) -> X86VlapicResult {
+            Ok(())
+        }
+    }
+
+    fn new_vlapic(vcpu_id: X86VcpuId) -> VirtualApicRegs<TestHost> {
+        let runtime = <TestHost as X86VlapicHostOps>::unbound_runtime(0, vcpu_id);
+        VirtualApicRegs::new(runtime, 0, vcpu_id)
+    }
+
+    /// Vectors below 32 live in ISR[0]; accepting one must become the
+    /// in-service vector, and its EOI must report the vector (level
+    /// triggered, EOI broadcast not suppressed) and clear the ISR bit.
+    #[test]
+    fn accepted_low_vector_updates_isrv_and_completes_eoi() {
+        let mut vlapic = new_vlapic(0);
+
+        vlapic.accept_interrupt(0x1f, true);
+
+        assert_eq!(vlapic.isrv, 0x1f);
+        assert_eq!(vlapic.regs().ISR[0].get(), 1 << 31);
+        assert_eq!(vlapic.process_eoi(), Some(0x1f));
+        assert_eq!(vlapic.regs().ISR[0].get(), 0);
+        assert_eq!(vlapic.isrv, 0);
+    }
+
+    /// An unmasked LVT_ERROR vector must be delivered as an edge interrupt,
+    /// with the ESR bits latched for the next ESR read and the reentrancy
+    /// guard released afterwards.
+    #[test]
+    fn set_err_delivers_unmasked_error_vector_and_latches_esr() {
+        let _serial = TEST_SERIAL.lock().unwrap();
+        TestHost::reset_injections();
+        let mut vlapic = new_vlapic(0);
+        vlapic.regs().LVT_ERROR.set(0x32);
+
+        vlapic.set_err(ERROR_STATUS::SendIllegalVector::SET);
+
+        let injected = TestHost::injected();
+        assert_eq!(injected.as_slice(), &[(0, 0x32)]);
+        assert_eq!(vlapic.esr_firing, 0);
+        vlapic.write_esr();
+        assert_ne!(vlapic.regs().ESR.get(), 0);
+    }
+
+    /// A masked LVT_ERROR entry records the pending ESR bits without
+    /// injecting the error vector, and still leaves the guard released.
+    #[test]
+    fn set_err_with_masked_lvt_records_pending_without_injecting() {
+        let _serial = TEST_SERIAL.lock().unwrap();
+        TestHost::reset_injections();
+        let mut vlapic = new_vlapic(0);
+        vlapic.regs().LVT_ERROR.set(APIC_LVT_M | 0x32);
+
+        vlapic.set_err(ERROR_STATUS::SendIllegalVector::SET);
+
+        assert!(TestHost::injected().is_empty());
+        assert_eq!(vlapic.esr_firing, 0);
+        vlapic.write_esr();
+        assert_ne!(vlapic.regs().ESR.get(), 0);
+    }
+
+    /// LVT_ERROR vectors 16..=31 are deliverable fixed vectors on the local
+    /// APIC; the vLAPIC must send them so the injection queue contract
+    /// (vectors 16..=255) is exercised below vector 32 as well.
+    #[test]
+    fn set_err_delivers_error_vector_below_32() {
+        let _serial = TEST_SERIAL.lock().unwrap();
+        TestHost::reset_injections();
+        let mut vlapic = new_vlapic(0);
+        vlapic.regs().LVT_ERROR.set(0x1f);
+
+        vlapic.set_err(ERROR_STATUS::SendIllegalVector::SET);
+
+        let injected = TestHost::injected();
+        assert_eq!(injected.as_slice(), &[(0, 0x1f)]);
+        assert_eq!(vlapic.esr_firing, 0);
+    }
+
+    /// x2APIC carries a full 32-bit physical destination; an ID outside the
+    /// dmask width must match no vCPU instead of shifting out of bounds.
+    #[test]
+    fn physical_destination_beyond_dmask_width_matches_no_vcpu() {
+        let vlapic = new_vlapic(0);
+
+        let in_range = vlapic
+            .calculate_dest_no_shorthand(false, 0, true, false)
+            .unwrap();
+        let out_of_range = vlapic
+            .calculate_dest_no_shorthand(false, u64::BITS, true, false)
+            .unwrap();
+
+        assert_eq!(in_range, 1);
+        assert_eq!(out_of_range, 0);
     }
 }
