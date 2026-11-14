@@ -132,8 +132,7 @@ pub struct Ns16550EmergencyTx<T: Kind> {
 
 impl<T: Kind> Ns16550EmergencyTx<T> {
     fn mask_interrupts(&self) {
-        self.base
-            .write_flags(UART_IER, InterruptEnableFlags::empty());
+        mask_interrupt_enables(&self.base);
         // Flush a posted MMIO write before the emergency path touches TX.
         let _: InterruptEnableFlags = self.base.read_flags(UART_IER);
     }
@@ -357,7 +356,7 @@ impl<T: Kind> UartPort for Ns16550<T> {
     }
 
     fn mask_all(&mut self) {
-        self.write_flags(UART_IER, InterruptEnableFlags::empty());
+        mask_interrupt_enables(&self.base);
     }
 
     fn rearm(&mut self, sources: SerialEventSet) -> SerialEventSet {
@@ -773,6 +772,13 @@ fn rx_errors_from_sample(sample: RxSample) -> RxErrorFlags {
     errors
 }
 
+fn mask_interrupt_enables(base: &impl Kind) {
+    let mut ier: InterruptEnableFlags = base.read_flags(UART_IER);
+    // Include XScale RTOIE while preserving firmware control bits such as UUE.
+    ier.remove(InterruptEnableFlags::all());
+    base.write_flags(UART_IER, ier);
+}
+
 fn interrupt_enable_for_events(events: SerialEventSet) -> InterruptEnableFlags {
     let mut ier = InterruptEnableFlags::empty();
     if events.intersects(SerialEventSet::RX) {
@@ -1087,11 +1093,21 @@ mod tests {
     #[test]
     fn split_adopts_firmware_fifo_before_irq_ownership() {
         let (_guard, uart) = serial();
+        // XScale-compatible UARTs use IER bit 6 as a unit-enable control.
+        // Adopting a live console must mask IRQs without disabling the UART.
+        const UNIT_ENABLE: u8 = 1 << 6;
+        const RECEIVE_TIMEOUT_ENABLE: u8 = 1 << 4;
+        REGS[UART_IER as usize].store(
+            UNIT_ENABLE | RECEIVE_TIMEOUT_ENABLE | 0x0f,
+            Ordering::SeqCst,
+        );
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits(),
             Ordering::SeqCst,
         );
         let mut parts = uart.split();
+        parts.control.mask_all();
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), UNIT_ENABLE);
         REGS[UART_LSR as usize].store(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
@@ -1334,7 +1350,10 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = uart.split();
         let gate = UartRegisterGate::new(parts.emergency_tx);
-        let enabled = UART_IER_RDI | UART_IER_RLSI | UART_IER_THRI;
+        const UNIT_ENABLE: u8 = 1 << 6;
+        const RECEIVE_TIMEOUT_ENABLE: u8 = 1 << 4;
+        let enabled =
+            UNIT_ENABLE | RECEIVE_TIMEOUT_ENABLE | UART_IER_RDI | UART_IER_RLSI | UART_IER_THRI;
         REGS[UART_IER as usize].store(enabled, Ordering::SeqCst);
         REGS[UART_LSR as usize].store(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
@@ -1345,12 +1364,12 @@ mod tests {
         assert_eq!(access.try_write(b"x"), 1);
         assert_eq!(
             THR_WRITE_IER.load(Ordering::SeqCst),
-            0,
+            UNIT_ENABLE,
             "a gate-busy IRQ must observe a device-masked emergency transaction"
         );
         assert_eq!(
             REGS[UART_IER as usize].load(Ordering::SeqCst),
-            0,
+            UNIT_ENABLE,
             "terminal emergency ownership must not rearm the UART source"
         );
     }

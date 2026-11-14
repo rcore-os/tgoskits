@@ -4,11 +4,16 @@
 #[cfg(not(target_os = "uefi"))]
 fn main() {}
 
-#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
-#[path = "arch/loongarch64/mod.rs"]
+#[cfg(all(
+    target_os = "uefi",
+    any(target_arch = "riscv64", target_arch = "loongarch64")
+))]
 mod arch;
 
-#[cfg(all(target_os = "uefi", target_arch = "loongarch64"))]
+#[cfg(all(
+    target_os = "uefi",
+    any(target_arch = "riscv64", target_arch = "loongarch64")
+))]
 #[path = "uefi_runtime.rs"]
 mod uefi_runtime;
 

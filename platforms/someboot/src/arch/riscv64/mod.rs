@@ -4,6 +4,8 @@ mod _macros;
 mod addrspace;
 mod boot;
 mod console;
+#[cfg(efi)]
+mod efi;
 mod entry;
 pub(crate) mod irq;
 mod paging;
@@ -91,6 +93,14 @@ impl ArchTrait for Arch {
 
     fn is_mmu_enabled() -> bool {
         current_satp_mode() != 0
+    }
+
+    fn is_kernel_relocated_at(_address: usize) -> bool {
+        // EFI can place a flat-linked PIE above its linked address. An active
+        // firmware SATP or an address above VM_LOAD_ADDRESS is not sufficient
+        // evidence that the kernel has entered its own virtual image mapping.
+        crate::mem::kimage_is_initialized()
+            && sym_addr!(entry::_head) == crate::consts::VM_LOAD_ADDRESS
     }
 
     fn kernel_page_table() -> PageTableInfo {
@@ -184,6 +194,12 @@ impl ArchTrait for Arch {
             let _ = (op, addr, size);
             riscv_dma_fence();
         }
+    }
+
+    #[cfg(efi)]
+    unsafe fn efi_enter_kernel(system_table: *const core::ffi::c_void) -> bool {
+        crate::efi_stub::setup_service(system_table);
+        entry::enter_with_efi_boot_state()
     }
 }
 

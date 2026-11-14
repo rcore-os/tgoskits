@@ -10,15 +10,19 @@ use crate::{
 };
 mod ota_qemu;
 
-pub(crate) async fn test_qemu(
-    workspace: &crate::context::WorkspaceContext,
-    args: ArgsTestQemu,
-) -> anyhow::Result<()> {
+pub(crate) fn test_host(workspace: &crate::context::WorkspaceContext) -> anyhow::Result<()> {
     run_cargo(
         workspace.root(),
         workspace.target_dir(),
         ["test", "-p", AXLOADER_PACKAGE, "--all-targets"],
-    )?;
+    )
+}
+
+pub(crate) async fn test_qemu(
+    workspace: &crate::context::WorkspaceContext,
+    args: ArgsTestQemu,
+) -> anyhow::Result<()> {
+    test_host(workspace)?;
     run_loader_check(workspace.root(), workspace.target_dir(), &args.target)?;
 
     run_loader_build(

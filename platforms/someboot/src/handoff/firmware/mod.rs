@@ -66,6 +66,28 @@ impl PreparedHandoff {
         let entry: extern "efiapi" fn(Handle, *const c_void) -> Status =
             unsafe { core::mem::transmute(address) };
         let status = entry(boot::image_handle(), system.as_ptr().cast());
+        if !boot_services_active() {
+            // A child violating the return contract must not reach logging or
+            // the caller's resource destructors after ExitBootServices.
+            // SAFETY: the entry contract still requires a valid firmware
+            // execution environment and the original system/runtime tables.
+            if let Some(runtime) = unsafe { system.as_ref().runtime_services.as_ref() } {
+                // SAFETY: runtime services remain callable after EBS, and no
+                // published buffer or firmware allocation has been released.
+                unsafe {
+                    (runtime.reset_system)(
+                        uefi::runtime::ResetType::COLD,
+                        Status::ABORTED,
+                        0,
+                        core::ptr::null(),
+                    );
+                }
+            }
+            // Retain every owner even if firmware offers no reset service.
+            loop {
+                core::hint::spin_loop();
+            }
+        }
         log::info!("uefi_entry_returned: {status:?}");
         if status == Status::SUCCESS {
             Ok(())
