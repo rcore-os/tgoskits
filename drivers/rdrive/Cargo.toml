@@ -13,7 +13,7 @@ version = "0.25.0"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
-acpi = "6.1.1"
+acpi.workspace = true
 ax-sync = { workspace = true }
 ax-lazyinit.workspace = true
 fdt-edit.workspace = true

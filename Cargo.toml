@@ -139,6 +139,7 @@ exclude = [
 ]
 
 [workspace.dependencies]
+acpi = { version = "6.1.1", git = "https://github.com/rust-osdev/acpi", rev = "5cda8c3699529174756b0afc32fefee6fd17744b" }
 cc = "1"
 ax-sched = { path = "components/axsched", version = "0.5.11" }
 # Local workspace crates

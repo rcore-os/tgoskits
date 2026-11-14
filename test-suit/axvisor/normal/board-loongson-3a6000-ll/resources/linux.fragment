@@ -1,0 +1,56 @@
+# Apply to Linux 7.1 loongson64_defconfig; keep the virtual platform built in.
+CONFIG_LOCALVERSION=""
+# CONFIG_LOCALVERSION_AUTO is not set
+# CONFIG_NUMA is not set
+# CONFIG_SMP is not set
+# CONFIG_KVM is not set
+# CONFIG_KEXEC is not set
+# CONFIG_KEXEC_FILE is not set
+# CONFIG_CRASH_DUMP is not set
+# CONFIG_RELOCATABLE is not set
+# CONFIG_RANDOMIZE_BASE is not set
+CONFIG_EFI=y
+# CONFIG_EFI_STUB is not set
+CONFIG_ACPI=y
+CONFIG_ACPI_SPCR_TABLE=y
+CONFIG_OF=y
+CONFIG_PCI=y
+CONFIG_PCI_HOST_GENERIC=y
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_TMPFS=y
+CONFIG_TTY=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_PNP=y
+CONFIG_SERIAL_OF_PLATFORM=y
+CONFIG_SERIAL_EARLYCON=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_EXT4_FS=y
+# Unused physical peripherals and desktop stacks from the upstream defconfig.
+# CONFIG_NET is not set
+# CONFIG_DRM is not set
+# CONFIG_FB is not set
+# CONFIG_SOUND is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_USB_SUPPORT is not set
+# CONFIG_HID is not set
+# CONFIG_SCSI is not set
+# CONFIG_ATA is not set
+# CONFIG_MD is not set
+# CONFIG_MTD is not set
+# CONFIG_MMC is not set
+# CONFIG_INFINIBAND is not set
+# CONFIG_COMEDI is not set
+# CONFIG_STAGING is not set
+# CONFIG_IKHEADERS is not set
+# CONFIG_DEBUG_INFO is not set
+CONFIG_DEBUG_INFO_NONE=y
+# CONFIG_DEBUG_INFO_BTF is not set
+# CONFIG_SYSTEM_TRUSTED_KEYRING is not set
+# CONFIG_MODULE_SIG is not set

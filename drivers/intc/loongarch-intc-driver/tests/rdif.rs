@@ -132,6 +132,138 @@ fn lio_rdif_returns_local_hwirq_and_rejects_empty_range_and_domain_mismatch() {
     );
 }
 
+#[test]
+fn lio_rdif_validates_acpi_identity_local_routes_and_level_high_configuration() {
+    let mut registers = [0u64; 8];
+    let mut isr_backing = [0u32; 1];
+    let regs = test_mmio(0x2000_0000, &mut registers);
+    let isr = test_mmio(0x2100_0000, &mut isr_backing);
+    let config = LioIntcConfig::from_firmware_routes(
+        [Some(CpuIrqLine::new(2).unwrap()), None, None, None],
+        [(1 << 5) | (1 << 31), 0, 0, 0],
+    )
+    .unwrap();
+    let parts = LioIntcParts::new(regs.clone(), isr, config).unwrap();
+    let mut controller = parts.controller;
+    // GSI/vector are deliberately independent of the controller-local input.
+    let route = AcpiGsiRoute {
+        gsi: 99,
+        vector: 137,
+        controller: AcpiGsiController::LioPic,
+        controller_id: 0,
+        controller_address: 0x2000_0000,
+        controller_input: 5,
+        trigger: AcpiIrqTrigger::Level,
+        polarity: AcpiIrqPolarity::ActiveHigh,
+    };
+    let domain = IrqDomainId(31);
+    let translation = IrqTranslation::new(IrqId::new(domain, HwIrq(5)));
+    assert!(controller.supports_acpi_gsi(&route));
+    assert_eq!(controller.translate_acpi(&route).unwrap().hwirq, HwIrq(5));
+    Interface::configure_acpi(&mut controller, &translation, &route).unwrap();
+    Interface::configure(
+        &mut controller,
+        &IrqTranslation::with_trigger(translation.id, Trigger::LevelHigh),
+    )
+    .unwrap();
+
+    let boundary_route = AcpiGsiRoute {
+        controller_input: 31,
+        ..route
+    };
+    let boundary_translation = IrqTranslation::new(IrqId::new(domain, HwIrq(31)));
+    assert_eq!(
+        controller.translate_acpi(&boundary_route).unwrap().hwirq,
+        HwIrq(31)
+    );
+    Interface::configure_acpi(&mut controller, &boundary_translation, &boundary_route).unwrap();
+    Interface::set_enabled(&mut controller, HwIrq(31), true).unwrap();
+    assert_eq!(regs.read::<u32>(0x28), 1 << 31);
+
+    // Exercise the driver's own boundary; Intc also checks translation IDs.
+    let mismatched = IrqTranslation::new(IrqId::new(domain, HwIrq(31)));
+    assert_eq!(
+        Interface::configure_acpi(&mut controller, &mismatched, &route),
+        Err(IrqError::InvalidIrq)
+    );
+    for rejected in [
+        AcpiGsiRoute {
+            controller: AcpiGsiController::PchPic,
+            ..route
+        },
+        AcpiGsiRoute {
+            controller: AcpiGsiController::IoApic,
+            ..route
+        },
+        AcpiGsiRoute {
+            controller_address: route.controller_address + 0x1000,
+            ..route
+        },
+        AcpiGsiRoute {
+            controller_id: 1,
+            ..route
+        },
+        AcpiGsiRoute {
+            controller_input: 32,
+            ..route
+        },
+        AcpiGsiRoute {
+            controller_input: 6,
+            ..route
+        },
+    ] {
+        assert!(!controller.supports_acpi_gsi(&rejected));
+        assert_eq!(
+            controller.translate_acpi(&rejected),
+            Err(IrqError::Unsupported)
+        );
+        assert_eq!(
+            Interface::configure_acpi(&mut controller, &translation, &rejected),
+            Err(IrqError::Unsupported)
+        );
+    }
+    for unsupported in [
+        AcpiGsiRoute {
+            trigger: AcpiIrqTrigger::Edge,
+            ..route
+        },
+        AcpiGsiRoute {
+            polarity: AcpiIrqPolarity::ActiveLow,
+            ..route
+        },
+    ] {
+        assert_eq!(
+            Interface::configure_acpi(&mut controller, &translation, &unsupported),
+            Err(IrqError::Unsupported)
+        );
+    }
+    let unsupported_translation = IrqTranslation::with_trigger(translation.id, Trigger::EdgeRising);
+    assert_eq!(
+        Interface::configure_acpi(&mut controller, &unsupported_translation, &route),
+        Err(IrqError::Unsupported)
+    );
+    for input in [6, 32] {
+        let invalid = IrqTranslation::new(IrqId::new(domain, HwIrq(input)));
+        assert_eq!(
+            Interface::configure(&mut controller, &invalid),
+            Err(IrqError::InvalidIrq)
+        );
+        for enabled in [true, false] {
+            assert_eq!(
+                Interface::set_enabled(&mut controller, HwIrq(input), enabled),
+                Err(IrqError::InvalidIrq)
+            );
+        }
+    }
+    // Rejected operations must not touch either W1 port or trigger registers.
+    assert_eq!(regs.read::<u32>(0x28), 1 << 31);
+    assert_eq!(regs.read::<u32>(0x2c), u32::MAX);
+    assert_eq!(regs.read::<u32>(0x30), 0);
+    assert_eq!(regs.read::<u32>(0x34), 0);
+    Interface::set_enabled(&mut controller, HwIrq(31), false).unwrap();
+    assert_eq!(regs.read::<u32>(0x2c), 1 << 31);
+}
+
 fn pch_route(controller_id: u16, address: u64, input: u8) -> AcpiGsiRoute {
     AcpiGsiRoute {
         gsi: 64 + u32::from(input),
