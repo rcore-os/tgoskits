@@ -4,16 +4,16 @@
 
 use alloc::{boxed::Box, string::String};
 use core::{
+    cell::UnsafeCell,
     ffi::{c_char, c_void},
     mem::{MaybeUninit, offset_of, size_of},
     ptr,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
 use ax_gpu::rdif_gpu::{Completion, CompletionStatus, GpuError};
 use ax_lazyinit::LazyInit;
-use ax_task::sync::WaitQueue;
 use drm_kapi::{
     config::GFP_KERNEL,
     dma_fence::{
@@ -23,7 +23,8 @@ use drm_kapi::{
     dma_resv::{dma_resv_add_fence, dma_resv_reserve_fences},
     memory::{kfree, kmalloc},
     task_runtime,
-    types::{DmaFence, DmaFenceOps, Spinlock, WorkStruct},
+    types::{DmaFence, DmaFenceOps, ListHead, Spinlock, WaitQueueHead, WorkStruct},
+    wait::{init_waitqueue_head, wake_up},
     workqueue::{SYSTEM_DFL_WQ, init_work_c, queue_work},
 };
 use kdrm_core::{
@@ -114,20 +115,94 @@ impl CompletionQueue {
 
 static COMPLETIONS: LazyInit<CompletionQueue> = LazyInit::new();
 
-/// Wake channel for the background completion pump thread. Notified from
-/// `schedule_completion_worker`, which only runs in task context (submits,
+/// Wake channel for the background completion pump thread, built from the
+/// shared Linux-style wait primitives so this driver reaches the scheduler
+/// exclusively through drm-kapi. Producers run in task context only (submits,
 /// fence-signaling arming, and the ax-gpu completion notifier), so the queue
-/// never sees hard-IRQ callers. The native queue keeps a notification
-/// generation, so a notify that lands between two pump passes is not lost.
-static PUMP_WAKE: WaitQueue = WaitQueue::new();
+/// never sees hard-IRQ callers. The generation counter preserves the
+/// not-lost-wakeup property across pump passes: every notify bumps it, so a
+/// notify that lands between two passes makes the next park return at once
+/// instead of being lost.
+struct PumpWake {
+    queue: UnsafeCell<WaitQueueHead>,
+    generation: AtomicU64,
+}
+
+// SAFETY: the wait queue serializes its own list through the embedded
+// spinlock, and the generation is a plain atomic. Only the pump thread parks
+// entries on the queue; producers only walk already-linked entries.
+unsafe impl Sync for PumpWake {}
+
+static PUMP_WAKE: PumpWake = PumpWake {
+    // SAFETY: the null-linked list head is never walked before `fence::init`
+    // runs `PumpWake::init`: no pump thread exists before that call spawns
+    // one, and producers reach the queue only through
+    // `schedule_completion_worker`, which returns early until `COMPLETIONS`
+    // is initialized — strictly after the queue became valid.
+    queue: UnsafeCell::new(WaitQueueHead {
+        lock: Spinlock::new(),
+        head: ListHead {
+            next: ptr::null_mut(),
+            prev: ptr::null_mut(),
+        },
+    }),
+    generation: AtomicU64::new(0),
+};
+
+impl PumpWake {
+    /// Link the queue while it has no waiters or producers yet.
+    fn init(&self) {
+        // SAFETY: callers hold exclusive access: `fence::init` runs this
+        // before the pump thread exists, and a failed spawn leaves no thread
+        // that could park on or wake the queue before a retry.
+        unsafe { init_waitqueue_head(&mut *self.queue.get()) };
+    }
+
+    /// Publish one notification for the pump.
+    fn notify(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+        // SAFETY: `fence::init` linked the queue before any producer or
+        // waiter could reach it; the wake walks only registered entries.
+        unsafe { wake_up(self.queue.get()) };
+    }
+
+    /// Park the calling pump pass until a notification generation newer than
+    /// the caller's last observed one arrives, or `jiffies` elapse.
+    fn wait_for_notification(&self, jiffies: i64) {
+        let seen = self.generation.load(Ordering::Acquire);
+        let _ = drm_kapi::wait_event_timeout!(
+            self.queue.get(),
+            self.generation.load(Ordering::Acquire) != seen,
+            jiffies
+        );
+    }
+}
+
+/// Convert a park duration to jiffies of the shared wait channel, rounding up
+/// so a wait never ends before the requested duration.
+const fn duration_to_jiffies(duration: Duration) -> i64 {
+    let nanos = duration.as_nanos();
+    let scaled = nanos.saturating_mul(drm_kapi::config::CONFIG_HZ as u128);
+    let jiffies = scaled.saturating_add(999_999_999) / 1_000_000_000;
+    // `Ord::min` is not const-callable on this toolchain.
+    if jiffies > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        jiffies as i64
+    }
+}
 
 /// Poll cadence of the completion pump while fenced work is in flight. The
 /// interval doubles on each pass that confirms nothing, up to
-/// [`PUMP_IDLE_POLL`], and resets as soon as any fence retires.
+/// [`PUMP_IDLE_POLL_JIFFIES`], and resets as soon as any fence retires.
 const PUMP_ACTIVE_POLL: Duration = Duration::from_micros(250);
 /// Upper bound of the pump's backoff, and its re-check period while parked
 /// with an empty queue.
 const PUMP_IDLE_POLL: Duration = Duration::from_millis(50);
+/// Jiffy budgets of the two park shapes above. The shared wait channel is
+/// tick-granular (`CONFIG_HZ` = 100), so the finest park is one tick.
+const PUMP_ACTIVE_POLL_JIFFIES: i64 = duration_to_jiffies(PUMP_ACTIVE_POLL);
+const PUMP_IDLE_POLL_JIFFIES: i64 = duration_to_jiffies(PUMP_IDLE_POLL);
 
 static FENCE_OPS: DmaFenceOps = DmaFenceOps {
     get_driver_name: Some(driver_name),
@@ -139,35 +214,52 @@ static FENCE_OPS: DmaFenceOps = DmaFenceOps {
     set_deadline: None,
 };
 
-pub(crate) fn init() {
+/// Name of the background pump thread started by [`init`].
+const PUMP_THREAD_NAME: &str = "gpu-completion-pump";
+
+pub(crate) fn init() -> Result<(), i32> {
+    init_with(Box::new(completion_pump), completion_worker)
+}
+
+/// Bring up the completion infrastructure in the order the fence contract
+/// needs: wake channel, pump thread, then the published completion queue.
+///
+/// Spawning the pump BEFORE publishing the queue keeps a spawn failure free
+/// of half-initialized state, so retrying this function stays meaningful, and
+/// lets callers fail their device probe instead of publishing a DRM node
+/// whose fence waits would hang forever on a platform whose GPU delivers no
+/// interrupt. The pump may begin polling before the queue exists;
+/// `poll_pending_completions` treats an unpublished queue as empty and the
+/// idle re-check bounds that race.
+///
+/// The entry and worker are parameters so the host test can drive this
+/// sequence with no-op bodies instead of linking the pump's device call
+/// graph into the test binary.
+fn init_with(
+    entry: task_runtime::TaskEntry,
+    worker: unsafe extern "C" fn(*mut WorkStruct),
+) -> Result<(), i32> {
     if COMPLETIONS.is_inited() {
-        return;
+        return Ok(());
     }
+    PUMP_WAKE.init();
+    // R4: a compositor's render thread parks in
+    // `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` (WAIT_FOR_SUBMIT, INT64_MAX) holding
+    // its userspace GL lock, and every other GPU ioctl caller freezes with
+    // it. The completion worker is one-shot per schedule, and on a platform
+    // whose GPU delivers no interrupt there is nothing left to re-poll once
+    // the submit-time pass misses the (already retired) host response, so
+    // out-syncobj fences never signal and the waiter sleeps forever. A
+    // dedicated pump keeps re-polling while fences are pending — the same
+    // shape the previous StarryOS card0 backend used for its retire pump.
+    task_runtime::spawn(String::from(PUMP_THREAD_NAME), entry)?;
     COMPLETIONS.init_once(CompletionQueue::new());
     let queue = COMPLETIONS.get().expect("completion queue was initialized");
     // SAFETY: The LazyInit static gives the work record a stable address for
     // the queue's entire lifetime. The runtime workqueue provider is installed
     // before this function is called by ax-drm initialization.
-    unsafe { init_work_c(&mut *queue.work.get(), completion_worker) };
-    // R4: a compositor's render thread parks in
-    // `DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT` (WAIT_FOR_SUBMIT, INT64_MAX) holding
-    // its userspace GL lock, and every other GPU ioctl caller freezes with
-    // it. The completion worker above is one-shot per schedule, and on a
-    // platform whose GPU delivers no interrupt there is nothing left to
-    // re-poll once the submit-time pass misses the (already retired) host
-    // response, so out-syncobj fences never signal and the waiter sleeps
-    // forever. A dedicated pump keeps re-polling while fences are pending —
-    // the same shape the previous StarryOS card0 backend used for its
-    // retire pump.
-    if let Err(error) = task_runtime::spawn(
-        String::from("gpu-completion-pump"),
-        Box::new(completion_pump),
-    ) {
-        log::warn!(
-            "failed to start the GPU completion pump ({error}); fence completion now relies on \
-             GPU interrupts and ioctl-time pumps only"
-        );
-    }
+    unsafe { init_work_c(&mut *queue.work.get(), worker) };
+    Ok(())
 }
 
 /// This is installed as ax-gpu's sole notifier. It runs while the GPU owner
@@ -406,7 +498,7 @@ fn schedule_completion_worker() {
     // SAFETY: `work` is initialized by `init`, lives in a static LazyInit, and
     // queue_work is safe to call from the notifier's short callback context.
     unsafe { queue_work(SYSTEM_DFL_WQ, queue.work.get()) };
-    PUMP_WAKE.notify_all();
+    PUMP_WAKE.notify();
 }
 
 /// Poll every queued completion token once and return how many reached a
@@ -452,18 +544,18 @@ fn completions_pending() -> bool {
 /// exponentially to [`PUMP_IDLE_POLL`] when a host stalls, and park until
 /// scheduled (or for the idle period) once the queue drains.
 fn completion_pump() {
-    let mut poll = PUMP_ACTIVE_POLL;
+    let mut poll = PUMP_ACTIVE_POLL_JIFFIES;
     loop {
         let confirmed = poll_pending_completions();
         if confirmed > 0 {
-            poll = PUMP_ACTIVE_POLL;
+            poll = PUMP_ACTIVE_POLL_JIFFIES;
         }
         if !completions_pending() {
-            poll = PUMP_ACTIVE_POLL;
-            PUMP_WAKE.wait_timeout(PUMP_IDLE_POLL);
+            poll = PUMP_ACTIVE_POLL_JIFFIES;
+            PUMP_WAKE.wait_for_notification(PUMP_IDLE_POLL_JIFFIES);
         } else {
-            PUMP_WAKE.wait_timeout(poll);
-            poll = poll.saturating_mul(2).min(PUMP_IDLE_POLL);
+            PUMP_WAKE.wait_for_notification(poll);
+            poll = poll.saturating_mul(2).min(PUMP_IDLE_POLL_JIFFIES);
         }
     }
 }
@@ -656,5 +748,38 @@ mod tests {
                 dma_fence_put(fence);
             }
         }
+    }
+
+    /// Test-body replacement for `completion_worker`: never queued, only its
+    /// address is recorded by `init_work_c`.
+    unsafe extern "C" fn noop_work(_work: *mut WorkStruct) {}
+
+    #[test]
+    fn fence_init_propagates_pump_spawn_failure_and_stays_retryable() {
+        crate::backend::presentation::tests::init_host_services();
+        // Without a task runtime provider the pump spawn fails, and the
+        // failure must propagate without publishing the completion queue:
+        // the spawn runs before the queue exists, so a retry after the host
+        // gains a provider still performs the full sequence.
+        assert!(init_with(Box::new(|| {}), noop_work).is_err());
+        assert!(!COMPLETIONS.is_inited());
+
+        // A runtime stub that accepts the spawn without starting the thread:
+        // the retry succeeds, publishes the queue, and stays idempotent.
+        static SPAWN_ACCEPTING_RUNTIME: drm_kapi::task_runtime::TaskRuntimeOps =
+            drm_kapi::task_runtime::TaskRuntimeOps {
+                current_task_id: || None,
+                current_need_resched: || false,
+                can_block_current: || false,
+                yield_now: || {},
+                sleep_ns: |_| Ok(()),
+                spawn_with_policy: |_, _, _| Ok(()),
+                cpu_count: || 1,
+            };
+        drm_kapi::task_runtime::install_task_runtime_ops(&SPAWN_ACCEPTING_RUNTIME)
+            .expect("task runtime provider slot was still free");
+        assert!(init_with(Box::new(|| {}), noop_work).is_ok());
+        assert!(COMPLETIONS.is_inited());
+        assert!(init_with(Box::new(|| {}), noop_work).is_ok());
     }
 }

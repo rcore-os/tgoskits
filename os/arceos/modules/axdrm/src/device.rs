@@ -402,6 +402,22 @@ pub(crate) fn init() -> Result<(), i32> {
         unsafe { drm_dev_put(drm) };
         return Err(init_result);
     }
+
+    // Start the completion pump and install the only GPU completion notifier
+    // BEFORE registering the DRM node: on a platform whose GPU delivers no
+    // interrupt, a registered node without the pump parks fence waiters
+    // forever, so a spawn failure must fail this probe and roll the device
+    // back instead of publishing the node. The notifier is strictly
+    // wake/enqueue only; the work item inspects RDIF tokens after ax-gpu
+    // releases its lock, and no userspace can arm fences before
+    // registration.
+    if let Err(error) = fence::init() {
+        // SAFETY: `drm` was allocated above and must be freed via `drm_dev_put` on initialization error.
+        unsafe { drm_dev_put(drm) };
+        return Err(error);
+    }
+    ax_gpu::set_completion_notifier(fence::on_gpu_completion);
+
     // SAFETY: `drm` is fully initialized and ready to be registered with the system.
     let register_result = unsafe { drm_dev_register(drm, 0) };
     if register_result != 0 {
@@ -412,10 +428,6 @@ pub(crate) fn init() -> Result<(), i32> {
     // SAFETY: `drm` is registered and `init_drm_device` initialized the connector.
     unsafe { probe_initial_modes(drm, private.connector.get()) };
 
-    // Install the only GPU completion notifier. It is strictly wake/enqueue
-    // only; the work item inspects RDIF tokens after ax-gpu releases its lock.
-    fence::init();
-    ax_gpu::set_completion_notifier(fence::on_gpu_completion);
     DEVICE.init_once(Arc::new(DeviceOwner {
         drm,
         _private: private,
