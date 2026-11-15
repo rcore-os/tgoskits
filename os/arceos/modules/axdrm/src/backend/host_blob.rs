@@ -153,9 +153,10 @@ pub(super) struct HostMapping {
 /// is queued or RDIF confirms that device loss has stopped all device access,
 /// bounded by [`super::CLEANUP_BUDGET_NS`]: a host whose submission queue
 /// stays wedged gets bounded patience instead of a permanent waiter on the
-/// closer's thread. Past the budget this warns once and lets the caller
-/// release the resource anyway — the host may keep the BAR mapping (and leak
-/// the slot's mapping) until reset.
+/// closer's thread. Past the budget this warns once and escalates via
+/// `ax_gpu::mark_lost_for_cleanup()`: the device reset drops the host-side
+/// mapping with the device itself, so recycling the BAR slot cannot alias
+/// a mapping the wedged host still holds.
 pub(super) fn unmap_before_release(resource: BufferHandle) {
     let deadline = super::cleanup_deadline();
     loop {
@@ -175,9 +176,10 @@ pub(super) fn unmap_before_release(resource: BufferHandle) {
             }
         }
         if drm_kapi::clock::now_ns() >= deadline {
+            ax_gpu::mark_lost_for_cleanup();
             log::warn!(
-                "ax-drm: host blob unmap for resource {} exceeded the cleanup budget; releasing \
-                 without the unmap (the host may keep the mapping until reset)",
+                "ax-drm: host blob unmap for resource {} exceeded the cleanup budget; resetting \
+                 the device so the BAR slot can be recycled without aliasing its mapping",
                 resource.id().get()
             );
             return;

@@ -400,6 +400,27 @@ pub fn with_gpu_for_cleanup<R>(
     Ok(access(runtime.device.gpu()))
 }
 
+/// Terminal escalation for close-path cleanup: resets the device, which
+/// stops all device DMA and fails every later operation fast with
+/// [`GpuError::DeviceLost`].
+///
+/// A close-path cleanup whose bounded wait budget expired without a
+/// completion proof calls this before releasing backing or recycling host
+/// BAR slots — the reset is the proof that the device stopped touching
+/// that memory, the same escalation the driver applies to an
+/// unconfirmable drain. The remaining teardown then walks the fast-fail
+/// exits instead of paying the wait budget again.
+pub fn mark_lost_for_cleanup() {
+    if !has_gpu() {
+        return;
+    }
+    let mut runtime = MAIN_GPU.lock();
+    runtime.device.gpu().mark_lost();
+    // Wake sleeping completion waiters so they observe the loss through
+    // their next condition check instead of riding out their timeout.
+    notify_completions();
+}
+
 /// Accesses the display capability of the same registered GPU.
 pub fn with_display<R>(access: impl FnOnce(&mut dyn GpuDisplay) -> R) -> Result<R, DisplayError> {
     if !has_gpu() {

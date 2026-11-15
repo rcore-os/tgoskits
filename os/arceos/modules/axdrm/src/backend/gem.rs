@@ -1215,12 +1215,12 @@ impl Drop for BoxedPrivate {
 ///
 /// The whole release — submission retries and completion observation alike —
 /// is bounded by [`super::CLEANUP_BUDGET_NS`]: a host that wedges the
-/// submission queue or never retires the completion (a completion token the
-/// host never pops) must not turn the closer's thread into a permanent
-/// waiter. Past the budget this warns once and releases the object anyway;
-/// the host may then keep (leak) its side of the resource until reset — the
-/// bounded degradation the driver's own waits choose too (guest recovery
-/// beats waiting on an unrecoverably stalled host).
+/// submission queue or never pops the unref's completion token must not
+/// turn the closer's thread into a permanent waiter. Past the budget this
+/// warns once and escalates via `ax_gpu::mark_lost_for_cleanup()`: the
+/// device reset stops all DMA, which is what makes the caller's imminent
+/// backing release safe without any host proof — the same proof-or-reset
+/// boundary the driver applies to unconfirmable drains.
 pub(crate) fn release_resource(resource: BufferHandle) {
     let mut last_retry_error = None;
     let deadline = super::cleanup_deadline();
@@ -1244,10 +1244,10 @@ pub(crate) fn release_resource(resource: BufferHandle) {
                     }
                 }
                 if drm_kapi::clock::now_ns() >= deadline {
+                    ax_gpu::mark_lost_for_cleanup();
                     log::warn!(
                         "ax-drm: GEM release for resource {} exceeded the cleanup budget; \
-                         releasing without the unref completion (the host may leak the resource \
-                         until reset)",
+                         resetting the device to stop its DMA before the backing is released",
                         resource.id().get()
                     );
                     return;
@@ -1272,9 +1272,10 @@ pub(crate) fn release_resource(resource: BufferHandle) {
             }
         }
         if drm_kapi::clock::now_ns() >= deadline {
+            ax_gpu::mark_lost_for_cleanup();
             log::warn!(
-                "ax-drm: GEM release for resource {} exceeded the cleanup budget; releasing \
-                 without the unref completion (the host may leak the resource until reset)",
+                "ax-drm: GEM release for resource {} exceeded the cleanup budget; resetting the \
+                 device to stop its DMA before the backing is released",
                 resource.id().get()
             );
             return;

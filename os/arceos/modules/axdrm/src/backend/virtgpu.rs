@@ -591,10 +591,11 @@ fn attach_resource(
 /// The retry loop is bounded by [`super::CLEANUP_BUDGET_NS`]: a host that
 /// wedges the submission queue (Busy forever) or stalls the teardown drain
 /// gets bounded patience instead of a permanent waiter on the closer's
-/// thread. Past the budget this warns once and gives up — the attached GEM
-/// refs are then dropped anyway, so a still-live host context may reference
-/// freed backing until reset; the driver prefers unwedging the guest over
-/// preserving a teardown proof no defective host will ever deliver.
+/// thread. Past the budget this warns once and escalates via
+/// `ax_gpu::mark_lost_for_cleanup()`: the device reset stops all DMA, so
+/// dropping the attached GEM refs and their backing afterwards cannot hand
+/// the wedged host memory it may still DMA — the same proof-or-reset
+/// boundary the driver applies to unconfirmable drains.
 fn destroy_context_before_drop(context: ContextHandle) {
     let mut logged = None;
     let deadline = super::cleanup_deadline();
@@ -630,9 +631,10 @@ fn destroy_context_before_drop(context: ContextHandle) {
             }
         }
         if drm_kapi::clock::now_ns() >= deadline {
+            ax_gpu::mark_lost_for_cleanup();
             log::warn!(
                 "ax-drm: VirtGPU context cleanup for context {} exceeded the cleanup budget; \
-                 dropping the context without the destroy proof (the host may keep it until reset)",
+                 resetting the device to stop its DMA before the attached GEM refs are dropped",
                 context.id().get()
             );
             return;

@@ -702,6 +702,48 @@ fn stalled_release_submits_without_resetting_the_device() {
     assert!(weak.upgrade().is_none());
 }
 
+/// The OS layer's budget-expiry escalation. With the buffer-release drain
+/// moved to the caller, a close path whose bounded budget expires on a
+/// stalled host must still release backing safely: it escalates through the
+/// `GpuDevice::mark_lost` primitive, whose reset stops all DMA (observable
+/// as the transport reset), fails every later operation fast with
+/// `DeviceLost`, and drops the resource tables that pin caller backing.
+#[test]
+fn budget_expiry_escalation_resets_the_device_and_stops_all_dma() {
+    let host = Arc::new(Mutex::new(Host::default()));
+    let mut device = make_device(&host, frozen_clock);
+    let backing = TestBacking::new();
+    let weak = Arc::downgrade(&backing);
+    let buffer = device
+        .create_buffer(
+            BufferDescriptor::Image2d {
+                width: WIDTH,
+                height: HEIGHT,
+                stride: WIDTH * 4,
+                format: PixelFormat::Xrgb8888,
+            },
+            backing.clone(),
+        )
+        .unwrap();
+    drop(backing);
+
+    host.lock().unwrap().stall = true;
+    // The budget expired without the unref token ever popping: escalate.
+    device.mark_lost();
+
+    // The reset stopped all DMA and completed the virtio reset protocol.
+    {
+        let host = host.lock().unwrap();
+        assert!(host.status.is_empty());
+        assert!(host.reset_readback);
+    }
+    // Remaining cleanup walks fast-fail exits instead of paying the budget.
+    assert_eq!(device.release_buffer(buffer), Err(GpuError::DeviceLost));
+    // The reset dropped the driver's resource table, so the backing is
+    // reclaimable under the reset's quiescence proof.
+    assert!(weak.upgrade().is_none());
+}
+
 /// Wire contract (Linux `virtio_gpu_cmd_resource_unref` alignment): the unref
 /// must be submitted WITHOUT `VIRTIO_GPU_FLAG_FENCE`. The completion proof is
 /// the used-ring pop, not a host fence object: a venus-only host has no virgl
