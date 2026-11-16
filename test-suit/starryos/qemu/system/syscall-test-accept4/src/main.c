@@ -27,14 +27,26 @@
 
 #include "test_framework.h"
 
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/syscall.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
+
+#ifndef SYS_listen
+#ifdef __NR_listen
+#define SYS_listen __NR_listen
+#endif
+#endif
+
+#ifndef SYS_listen
+#error "SYS_listen is not available on this target"
+#endif
 
 static void alarm_handler(int s)
 {
@@ -64,6 +76,71 @@ static int make_listener_with_pending(int type, const char *name, int name_len, 
     if (connect(cs, (struct sockaddr *)&addr, alen) != 0) { close(ls); close(cs); return -1; }
     *client_out = cs;
     return ls;
+}
+
+/*
+ * Linux passes the signed backlog through an unsigned comparison against
+ * somaxconn. Every negative i32 therefore clamps to somaxconn instead of
+ * being rejected with EINVAL.
+ */
+static int test_negative_backlog(void)
+{
+    static const int backlogs[] = {-2, INT_MIN};
+    char name[] = "\0accept4-negative-backlog";
+    const int name_len = (int)sizeof(name) - 1;
+
+    TEST_START("A0. listen accepts and clamps every negative backlog");
+
+    for (size_t i = 0; i < sizeof(backlogs) / sizeof(backlogs[0]); i++) {
+        int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+        CHECK(listener >= 0, "create AF_UNIX listener for negative backlog");
+        if (listener < 0) {
+            continue;
+        }
+
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        memcpy(addr.sun_path, name, (size_t)name_len);
+        socklen_t addr_len =
+            (socklen_t)offsetof(struct sockaddr_un, sun_path) + (socklen_t)name_len;
+        int bind_result = bind(listener, (struct sockaddr *)&addr, addr_len);
+        CHECK_RET(bind_result, 0, "bind listener for negative backlog");
+        if (bind_result != 0) {
+            close(listener);
+            continue;
+        }
+
+        errno = 0;
+        int listen_result = (int)syscall(SYS_listen, listener, backlogs[i]);
+        CHECK(listen_result == 0,
+              backlogs[i] == INT_MIN
+                  ? "listen(INT_MIN) succeeds after unsigned clamp"
+                  : "listen(-2) succeeds after unsigned clamp");
+
+        if (i == 0 && listen_result == 0) {
+            int client = socket(AF_UNIX, SOCK_STREAM, 0);
+            CHECK(client >= 0, "create client for negative-backlog listener");
+            if (client >= 0) {
+                int connect_result =
+                    connect(client, (struct sockaddr *)&addr, addr_len);
+                CHECK_RET(connect_result, 0,
+                          "negative-backlog listener accepts connections");
+                if (connect_result == 0) {
+                    int accepted = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+                    CHECK(accepted >= 0,
+                          "listener with negative backlog is operational");
+                    if (accepted >= 0) {
+                        close(accepted);
+                    }
+                }
+                close(client);
+            }
+        }
+        close(listener);
+    }
+
+    TEST_DONE();
 }
 
 /* ===== A. accept4 基础 + flag 语义 ===== */
@@ -328,6 +405,7 @@ int main(void)
     signal(SIGALRM, alarm_handler);
     alarm(60);
     int fail = 0;
+    fail |= test_negative_backlog();
     fail |= test_flags();
     fail |= test_peer_addr();
     fail |= test_errno();

@@ -4,9 +4,34 @@
 #include <fcntl.h>
 #include <sched.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef SYS_clone3
+#define SYS_clone3 435
+#endif
+
+enum {
+    USER_NAMESPACE_LEVELS = 33,
+    DEPTH_CLONE_STACK_SIZE = 64 * 1024,
+};
+
+struct clone3_args {
+    unsigned long long flags;
+    unsigned long long pidfd;
+    unsigned long long child_tid;
+    unsigned long long parent_tid;
+    unsigned long long exit_signal;
+    unsigned long long stack;
+    unsigned long long stack_size;
+    unsigned long long tls;
+    unsigned long long set_tid;
+    unsigned long long set_tid_size;
+    unsigned long long cgroup;
+};
 
 struct initial_ns {
     int uts;
@@ -25,6 +50,206 @@ static int write_file(const char *path, const char *text)
     close(fd);
     errno = saved;
     return n == (ssize_t)strlen(text) ? 0 : -1;
+}
+
+static int configure_self_user_namespace(void)
+{
+    if (write_file("/proc/self/uid_map", "0 0 1") != 0)
+        return 1;
+    if (write_file("/proc/self/setgroups", "deny") != 0)
+        return 2;
+    return write_file("/proc/self/gid_map", "0 0 1") != 0 ? 3 : 0;
+}
+
+static int user_namespace_inode(unsigned long long *inode)
+{
+    struct stat status;
+    int fd = open("/proc/self/ns/user", O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    int result = fstat(fd, &status);
+    int saved = errno;
+    close(fd);
+    errno = saved;
+    if (result != 0)
+        return -1;
+    *inode = (unsigned long long)status.st_ino;
+    return 0;
+}
+
+static int depth_clone_child(void *argument)
+{
+    (void)argument;
+    _exit(0);
+}
+
+static int prepare_low_nofile_hard_limit(void)
+{
+    const rlim_t safe_hard_limit = 256;
+    struct rlimit current;
+    struct rlimit lowered;
+
+    errno = 0;
+    if (syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, NULL, &current) != 0)
+        return 1;
+    lowered.rlim_max =
+        current.rlim_max > safe_hard_limit ? safe_hard_limit : current.rlim_max;
+    lowered.rlim_cur =
+        current.rlim_cur > lowered.rlim_max ? lowered.rlim_max : current.rlim_cur;
+    errno = 0;
+    if (syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &lowered, NULL) != 0)
+        return 2;
+    return 0;
+}
+
+static void expect_deep_hard_limit_raise_denied(const char *context)
+{
+    struct rlimit before;
+    struct rlimit requested;
+    struct rlimit old = {
+        .rlim_cur = 0x13579bdf,
+        .rlim_max = 0x2468ace0,
+    };
+    struct rlimit after;
+    char message[160];
+
+    errno = 0;
+    if (syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, NULL, &before) != 0) {
+        snprintf(message, sizeof(message),
+                 "%s: query the lowered RLIMIT_NOFILE", context);
+        CHECK(0, message);
+        return;
+    }
+    if (before.rlim_max == RLIM_INFINITY) {
+        snprintf(message, sizeof(message),
+                 "%s: hard limit remains finite and safely below nr_open",
+                 context);
+        CHECK(0, message);
+        return;
+    }
+
+    requested.rlim_cur = before.rlim_cur;
+    requested.rlim_max = before.rlim_max + 1;
+    errno = 0;
+    long result =
+        syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, &requested, &old);
+    int raise_errno = errno;
+
+    memset(&after, 0, sizeof(after));
+    errno = 0;
+    int after_result =
+        syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, NULL, &after);
+    int after_errno = errno;
+
+    snprintf(message, sizeof(message),
+             "%s: hard-limit raise is denied without initial-namespace capability",
+             context);
+    CHECK(result == -1 && raise_errno == EPERM &&
+              old.rlim_cur == 0x13579bdf &&
+              old.rlim_max == 0x2468ace0,
+          message);
+
+    snprintf(message, sizeof(message),
+             "%s: denied hard-limit raise leaves RLIMIT_NOFILE unchanged",
+             context);
+    CHECK(after_result == 0 && after.rlim_cur == before.rlim_cur &&
+              after.rlim_max == before.rlim_max,
+          message);
+    if (after_result != 0)
+        errno = after_errno;
+}
+
+static void user_namespace_depth_limit(const struct initial_ns *unused)
+{
+    _Alignas(16) static unsigned char clone_stack[DEPTH_CLONE_STACK_SIZE];
+    unsigned long long namespace_before = 0;
+    unsigned long long namespace_after = 0;
+    char message[128];
+
+    (void)unused;
+    CHECK(geteuid() == 0,
+          "user-namespace depth fixture starts in the initial namespace");
+
+    for (int level = 1; level <= USER_NAMESPACE_LEVELS; level++) {
+        errno = 0;
+        int result = unshare(CLONE_NEWUSER);
+        snprintf(message, sizeof(message),
+                 "create user namespace level %d", level);
+        CHECK(result == 0, message);
+        if (result != 0)
+            return;
+
+        int mapping_result = configure_self_user_namespace();
+        snprintf(message, sizeof(message),
+                 "map uid/gid 0 to 0 at user namespace level %d", level);
+        CHECK(mapping_result == 0, message);
+        if (mapping_result != 0)
+            return;
+    }
+
+    CHECK(user_namespace_inode(&namespace_before) == 0,
+          "capture the level-33 user namespace identity");
+    CHECK(prepare_low_nofile_hard_limit() == 0,
+          "lower RLIMIT_NOFILE hard limit before deep namespace probes");
+
+    /*
+     * This probe intentionally does not return early: a flat-capability
+     * implementation must still reach and fail the independent clone,
+     * clone3, unshare, and namespace-identity assertions below.
+     */
+    expect_deep_hard_limit_raise_denied("before depth-limit failures");
+
+    errno = 0;
+    pid_t child = clone(depth_clone_child,
+                        clone_stack + sizeof(clone_stack),
+                        CLONE_NEWUSER | SIGCHLD, NULL);
+    int clone_errno = errno;
+    CHECK(child == -1 && clone_errno == ENOSPC,
+          "legacy clone(CLONE_NEWUSER) at level 33 returns ENOSPC");
+    if (child > 0) {
+        int status = 0;
+        while (waitpid(child, &status, 0) == -1 && errno == EINTR) {
+        }
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "reap child unexpectedly created by legacy clone");
+    }
+    CHECK(user_namespace_inode(&namespace_after) == 0 &&
+              namespace_after == namespace_before,
+          "legacy clone failure leaves the current user namespace unchanged");
+
+    struct clone3_args args = {
+        .flags = CLONE_NEWUSER,
+        .exit_signal = SIGCHLD,
+    };
+    errno = 0;
+    long clone3_result = syscall(SYS_clone3, &args, sizeof(args));
+    int clone3_errno = errno;
+    if (clone3_result == 0)
+        _exit(0);
+    CHECK(clone3_result == -1 && clone3_errno == ENOSPC,
+          "raw clone3(CLONE_NEWUSER) at level 33 returns ENOSPC");
+    if (clone3_result > 0) {
+        int status = 0;
+        while (waitpid((pid_t)clone3_result, &status, 0) == -1 &&
+               errno == EINTR) {
+        }
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "reap child unexpectedly created by raw clone3");
+    }
+    CHECK(user_namespace_inode(&namespace_after) == 0 &&
+              namespace_after == namespace_before,
+          "raw clone3 failure leaves the current user namespace unchanged");
+
+    errno = 0;
+    int unshare_result = unshare(CLONE_NEWUSER);
+    int unshare_errno = errno;
+    CHECK(unshare_result == -1 && unshare_errno == ENOSPC,
+          "unshare(CLONE_NEWUSER) at level 33 returns ENOSPC");
+    CHECK(user_namespace_inode(&namespace_after) == 0 &&
+              namespace_after == namespace_before,
+          "failed depth-limited unshare leaves the current user namespace unchanged");
+
+    expect_deep_hard_limit_raise_denied("after depth-limit failures");
 }
 
 /* Runs `body` in a child so dropped privileges and new namespaces stay contained. */
@@ -125,5 +350,6 @@ int main(void)
     in_child("rootless writer cannot map root", rootless_writer_cannot_map_root, &ns);
     in_child("rootless task mapped to its own uid", rootless_mapped_to_own_uid, &ns);
     in_child("root after entering a child user namespace", root_after_entering_child_user_ns, &ns);
+    in_child("user namespace parent-chain depth limit", user_namespace_depth_limit, &ns);
     TEST_DONE();
 }

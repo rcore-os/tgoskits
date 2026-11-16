@@ -11,6 +11,8 @@
  *     writes issued after sealing with EPERM
  *   - F_SEAL_SEAL blocks all subsequent F_ADD_SEALS with EPERM
  *   - Without MFD_ALLOW_SEALING, F_ADD_SEALS is rejected with EPERM
+ *   - copy_file_range and pipe-to-memfd splice honor explicit output offsets
+ *     and reject F_SEAL_WRITE destinations without publishing changes
  *
  * Note: enforcing F_SEAL_WRITE against pre-existing writable mappings
  * (post-mmap revoke) is deferred to a later kernel change and is not
@@ -18,11 +20,15 @@
  */
 
 #define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
 #include "test_framework.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #ifndef POSIX_FADV_NORMAL
@@ -51,8 +57,212 @@
 #define MFD_ALLOW_SEALING 0x0002
 #endif
 
+#ifndef SYS_copy_file_range
+#ifdef __NR_copy_file_range
+#define SYS_copy_file_range __NR_copy_file_range
+#endif
+#endif
+#ifndef SYS_copy_file_range
+#error "SYS_copy_file_range is not available on this target"
+#endif
+
+#ifndef SYS_splice
+#ifdef __NR_splice
+#define SYS_splice __NR_splice
+#endif
+#endif
+#ifndef SYS_splice
+#error "SYS_splice is not available on this target"
+#endif
+
 static int memfd_create_sys(const char *name, unsigned int flags) {
     return (int)syscall(SYS_memfd_create, name, flags);
+}
+
+static int memfd_fixture(const char *name, size_t size,
+                         const char *initial, size_t initial_len) {
+    int fd = memfd_create_sys(name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    if (fd < 0) {
+        return -1;
+    }
+    if (ftruncate(fd, (off_t)size) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    if (initial_len != 0 &&
+        pwrite(fd, initial, initial_len, 0) != (ssize_t)initial_len) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    return fd;
+}
+
+static int bytes_equal_at(int fd, const char *expected, size_t len, off_t offset) {
+    char actual[64];
+    if (len > sizeof(actual)) {
+        return 0;
+    }
+    return pread(fd, actual, len, offset) == (ssize_t)len &&
+           memcmp(actual, expected, len) == 0;
+}
+
+static long raw_copy_file_range(int fd_in, off_t *off_in, int fd_out,
+                                off_t *off_out, size_t len) {
+    return syscall(SYS_copy_file_range, fd_in, off_in, fd_out, off_out, len, 0);
+}
+
+static long raw_splice(int fd_in, off_t *off_in, int fd_out, off_t *off_out,
+                       size_t len, unsigned int flags) {
+    return syscall(SYS_splice, fd_in, off_in, fd_out, off_out, len, flags);
+}
+
+static void test_memfd_transfer_offsets(void) {
+    enum { FIXTURE_SIZE = 64 };
+    static const char payload[] = "memfd-transfer";
+    const size_t payload_len = sizeof(payload) - 1;
+
+    /* copy_file_range: memfd source and memfd explicit output offset. */
+    int copy_src = memfd_fixture("copy-src", FIXTURE_SIZE, payload, payload_len);
+    int copy_dst = memfd_fixture("copy-dst", FIXTURE_SIZE, NULL, 0);
+    CHECK(copy_src >= 0 && copy_dst >= 0, "create memfd copy_file_range fixtures");
+    if (copy_src >= 0 && copy_dst >= 0) {
+        CHECK_RET(lseek(copy_src, 7, SEEK_SET), 7,
+                  "set source cursor away from explicit copy offset");
+        CHECK_RET(lseek(copy_dst, 3, SEEK_SET), 3,
+                  "set destination cursor away from explicit copy offset");
+
+        off_t off_in = 0;
+        off_t off_out = 16;
+        ssize_t copied = (ssize_t)raw_copy_file_range(
+            copy_src, &off_in, copy_dst, &off_out, payload_len);
+        CHECK(copied == (ssize_t)payload_len,
+              "copy_file_range copies into memfd at explicit output offset");
+        CHECK(off_in == (off_t)payload_len,
+              "copy_file_range advances explicit input offset");
+        CHECK(off_out == 16 + (off_t)payload_len,
+              "copy_file_range advances explicit output offset");
+        CHECK(lseek(copy_src, 0, SEEK_CUR) == 7,
+              "copy_file_range preserves source implicit position");
+        CHECK(lseek(copy_dst, 0, SEEK_CUR) == 3,
+              "copy_file_range preserves destination implicit position");
+        CHECK(bytes_equal_at(copy_dst, payload, payload_len, 16),
+              "copy_file_range writes payload at explicit destination offset");
+    }
+    if (copy_src >= 0) {
+        close(copy_src);
+    }
+    if (copy_dst >= 0) {
+        close(copy_dst);
+    }
+
+    /* splice: real pipe source and memfd explicit output offset. */
+    int pipefd[2] = {-1, -1};
+    int splice_dst = memfd_fixture("splice-dst", FIXTURE_SIZE, NULL, 0);
+    int pipe_result = pipe(pipefd);
+    CHECK_RET(pipe_result, 0, "create pipe for memfd splice");
+    CHECK(splice_dst >= 0, "create memfd splice destination");
+    if (splice_dst >= 0 && pipe_result == 0) {
+        ssize_t written = write(pipefd[1], payload, payload_len);
+        CHECK(written == (ssize_t)payload_len, "fill pipe for memfd splice");
+        if (written == (ssize_t)payload_len) {
+            CHECK_RET(lseek(splice_dst, 5, SEEK_SET), 5,
+                      "set splice destination implicit position");
+
+            off_t off_out = 24;
+            ssize_t spliced =
+                (ssize_t)raw_splice(pipefd[0], NULL, splice_dst, &off_out, payload_len, 0);
+            CHECK(spliced == (ssize_t)payload_len,
+                  "splice copies from pipe into memfd at explicit output offset");
+            CHECK(off_out == 24 + (off_t)payload_len,
+                  "splice advances explicit memfd output offset");
+            CHECK(lseek(splice_dst, 0, SEEK_CUR) == 5,
+                  "splice preserves memfd implicit position");
+            CHECK(bytes_equal_at(splice_dst, payload, payload_len, 24),
+                  "splice writes payload at explicit memfd output offset");
+        }
+    }
+    if (splice_dst >= 0) {
+        close(splice_dst);
+    }
+    if (pipefd[0] >= 0) {
+        close(pipefd[0]);
+    }
+    if (pipefd[1] >= 0) {
+        close(pipefd[1]);
+    }
+
+    /* Sealed destinations reject both transfer implementations without
+     * publishing offset or content changes. Pipe consumption is intentionally
+     * not asserted because it is outside this regression's contract. */
+    char protected_data[FIXTURE_SIZE];
+    memset(protected_data, 'Q', sizeof(protected_data));
+    int sealed_dst = memfd_fixture("sealed-dst", FIXTURE_SIZE,
+                                   protected_data, sizeof(protected_data));
+    int sealed_src = memfd_fixture("sealed-src", FIXTURE_SIZE,
+                                   payload, payload_len);
+    CHECK(sealed_dst >= 0 && sealed_src >= 0,
+          "create fixtures for sealed transfer destinations");
+    if (sealed_dst >= 0 && sealed_src >= 0 &&
+        fcntl(sealed_dst, F_ADD_SEALS, F_SEAL_WRITE) == 0) {
+        CHECK_RET(lseek(sealed_dst, 11, SEEK_SET), 11,
+                  "set sealed destination implicit position");
+
+        off_t off_in = 0;
+        off_t off_out = 16;
+        errno = 0;
+        CHECK(raw_copy_file_range(sealed_src, &off_in, sealed_dst,
+                                  &off_out, payload_len) == -1 &&
+                  errno == EPERM,
+              "copy_file_range rejects F_SEAL_WRITE memfd output with EPERM");
+        CHECK(off_out == 16,
+              "failed copy_file_range leaves memfd output offset unchanged");
+        CHECK(lseek(sealed_dst, 0, SEEK_CUR) == 11,
+              "failed copy_file_range preserves memfd implicit position");
+        CHECK(bytes_equal_at(sealed_dst, protected_data, sizeof(protected_data), 0),
+              "failed copy_file_range leaves sealed destination content unchanged");
+
+        pipefd[0] = -1;
+        pipefd[1] = -1;
+        CHECK_RET(pipe(pipefd), 0, "create pipe for sealed memfd splice");
+        if (pipefd[0] >= 0 && pipefd[1] >= 0) {
+            ssize_t written = write(pipefd[1], payload, payload_len);
+            CHECK(written == (ssize_t)payload_len,
+                  "fill pipe for sealed memfd splice");
+            if (written == (ssize_t)payload_len) {
+                off_out = 16;
+                errno = 0;
+                CHECK(raw_splice(pipefd[0], NULL, sealed_dst, &off_out,
+                                 payload_len, 0) == -1 &&
+                          errno == EPERM,
+                      "splice rejects F_SEAL_WRITE memfd output with EPERM");
+                CHECK(off_out == 16,
+                      "failed splice leaves memfd output offset unchanged");
+                CHECK(lseek(sealed_dst, 0, SEEK_CUR) == 11,
+                      "failed splice preserves memfd implicit position");
+                CHECK(bytes_equal_at(sealed_dst, protected_data,
+                                     sizeof(protected_data), 0),
+                      "failed splice leaves sealed destination content unchanged");
+            }
+        }
+        if (pipefd[0] >= 0) {
+            close(pipefd[0]);
+        }
+        if (pipefd[1] >= 0) {
+            close(pipefd[1]);
+        }
+    } else {
+        CHECK(0, "seal transfer destination with F_SEAL_WRITE");
+    }
+    if (sealed_dst >= 0) {
+        close(sealed_dst);
+    }
+    if (sealed_src >= 0) {
+        close(sealed_src);
+    }
 }
 
 int main(void) {
@@ -314,6 +524,8 @@ int main(void) {
                   "posix_fadvise(memfd) accepted");
         close(sfd);
     }
+
+    test_memfd_transfer_offsets();
 
     TEST_DONE();
 }

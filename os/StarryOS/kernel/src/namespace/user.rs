@@ -9,6 +9,8 @@ pub static ROOT_USER_NS: ax_lazyinit::LazyLock<Arc<RawSpinLock<UserNamespace>>> 
     ax_lazyinit::LazyLock::new(|| Arc::new(RawSpinLock::new(UserNamespace::new_root())));
 
 static NEXT_USER_NS_ID: AtomicU64 = AtomicU64::new(1);
+/// Highest parent level allowed by Linux's level-33 child limit.
+const MAX_PARENT_LEVEL: u32 = 32;
 
 /// Per-process user namespace.
 ///
@@ -42,7 +44,7 @@ pub struct UserNamespace {
 #[derive(Clone)]
 pub(crate) struct UserNamespaceLineage {
     pub(crate) parent: Option<Arc<RawSpinLock<UserNamespace>>>,
-    pub(crate) level: usize,
+    pub(crate) level: u32,
     /// Creator's effective UID in the parent namespace.
     pub(crate) owner_uid: u32,
 }
@@ -69,7 +71,7 @@ impl UserNamespace {
         let parent_level = parent.lock_irqsave().lineage.level;
         // Linux create_user_ns permits a level-32 parent to create level 33.
         // Reject before assigning an identity or retaining another parent link.
-        if parent_level > 32 {
+        if parent_level > MAX_PARENT_LEVEL {
             return Err(StarryError::StorageFull);
         }
         Ok(Self {

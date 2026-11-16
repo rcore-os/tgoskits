@@ -221,11 +221,12 @@ pub fn sys_connect(
 pub fn sys_listen(fd: i32, backlog: i32) -> StarryResult<isize> {
     debug!("sys_listen <= fd: {fd}, backlog: {backlog}");
 
-    if backlog < 0 && backlog != -1 {
-        return Err(StarryError::InvalidInput);
-    }
-
-    Socket::from_fd(fd)?.listen(backlog as usize)?;
+    let socket = Socket::from_fd(fd)?;
+    // The listen table owns LISTEN_QUEUE_SIZE and clamps both negative and
+    // oversized values. Use an above-limit sentinel so every negative backlog
+    // takes the same clamp path as a positive oversized request.
+    let backlog = usize::try_from(backlog).unwrap_or(usize::MAX);
+    socket.listen(backlog)?;
 
     Ok(0)
 }
