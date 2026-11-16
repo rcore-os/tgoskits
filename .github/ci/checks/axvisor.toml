@@ -278,6 +278,22 @@ kind = "axvisor-board"
 board = "orangepi-5-plus-triple-guest-functional"
 
 [[check]]
+id = "test-axvisor-self-hosted-board-loongson-3a6000-ll-linux"
+impact_targets = ["axvisor:loongarch64"]
+name = "Board Loongson-3A6000-LL · Linux guest"
+runner = "board"
+timeout_minutes = 90
+cache_key = ""
+command = '''
+cargo xtask axvisor test board --board loongson-3a6000-ll --test-case smoke
+'''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "loongson-3a6000-ll"
+cases = ["smoke"]
+
+[[check]]
 id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board ROC-RK3568-PC · Linux guest"

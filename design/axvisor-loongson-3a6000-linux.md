@@ -51,15 +51,17 @@ system table、memory map 与 FDT，再设置 Linux LoongArch 启动参数
 
 ### 2.2 构建输入
 
-客户机内核来自固定 Linux 7.1 提交
-`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。本地源码位置由明确环境参数
-选择，编译使用独立输出目录，不能修改用户源码和既有构建。准备步骤记录源码
-提交、有效配置、编译器及产物 SHA-256；输入变化后不得继续使用旧产物。
+客户机内核复用受管理的 `qemu-loongarch64/linux/linux-qemu`，与现有 LoongArch
+QEMU 用例使用相同发布包；BusyBox 复用 `initramfs-loongarch64-busybox.cpio.gz`。
+当前 registry 提供 v0.0.14，实际内核为 `7.1.0-rc2+`，保留 Linux 7.1 与
+LoongArch 架构判定。`ensure_guest_image_bundles()` 校验镜像摘要与所需文件，
+builtin bundle 按内容打包；CI 不依赖本地 Linux 源码或额外内核编译工具链。
 
-BusyBox 与动态加载器复用现有镜像准备能力。块设备夹具由测试独立生成，
-仅包含已知内容，不使用板卡原系统磁盘。`guest_build::prepare()` 中的
-`host_prepare` 必须成功后，才允许构建并打包宿主。缺失源码、编译工具或镜像时
-应报告真实失败，不静默改用 Linux 6.16 或其他未标明来源的内核。
+块设备夹具由 `resources/prepare-board.py` 独立生成，仅包含已知内容，不使用
+板卡原系统磁盘。`block-manifest.json` 绑定脚本、夹具、ext4 配置、工具及产物
+摘要；`SOURCE_DATE_EPOCH` 使用正整数，缺省为 1。`guest_build::prepare()` 中的
+`host_prepare` 必须成功后，才允许构建并打包宿主。缺失镜像、夹具工具或校验
+失败时应报告真实失败，不回退到本地源码构建或未标明来源的内核。
 
 内核与 initrd 由既有 builtin bundle 按内容摘要打包；设备的文件后端路径不属于
 启动镜像字段，不由该 bundle 展开或重写。块夹具通过现有
@@ -285,3 +287,8 @@ LVZ 路径时增加相应 QEMU 或 CPU 集成验证。错误修复优先复用�
 交付记录分别说明实板通过、定向检查和未覆盖范围。QEMU 或历史 ArceOS Hello
 只能作为各自边界的证据；板卡不可用、硬件不支持或必要检查受阻时，开发 PR
 保留为草稿并明确当前阻塞，不宣称实机验收完成。
+
+默认板卡 CI 在 AxVisor 分组注册 `loongson-3a6000-ll/smoke`，替换 ArceOS Hello
+的独立 CI 启动，仍只有一次默认板级启动。Hello 保留为手动诊断入口。
+CI 使用发布镜像执行同一完整验收；镜像资源准备与板卡输入的改动必须能选中
+这一注册，不能仅让 QEMU 检查代替真实 3A6000 路径。

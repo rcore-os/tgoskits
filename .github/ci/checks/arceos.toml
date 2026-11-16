@@ -167,19 +167,3 @@ cargo xtask arceos test board --board orangepi-5-plus --test-case kernel,pmu-use
 kind = "arceos-board"
 board = "orangepi-5-plus"
 cases = ["kernel", "pmu-user"]
-
-[[check]]
-id = "test-arceos-board-loongson-3a6000-ll"
-impact_targets = ["arceos:loongarch64"]
-name = "Board Loongson-3A6000-LL · Native UEFI ArceOS Hello"
-runner = "board"
-timeout_minutes = 90
-cache_key = ""
-command = '''
-cargo xtask arceos test board --board loongson-3a6000-ll --test-case http-boot
-'''
-
-[[check.suite]]
-kind = "arceos-board"
-board = "loongson-3a6000-ll"
-cases = ["http-boot"]
