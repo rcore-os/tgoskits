@@ -145,7 +145,7 @@ Kernel 的 `MntNamespace` 已持实际 VFS Core 与不可变 creator，创建入
 - lookup 成功与 NotFound 的代际接受、锁外退休和现有解析器/字符串捷径清理。
 - proc typed link 及全部消费者、SimpleFS/proc producer、per-open userns、devpts 与 mqueue 接入。
 - Overlay 的稳定 inode、root、固定 backing、依赖及 mounter 已接入；继续完成 copyup、outcome、open/data/restore/xattr/cleanup 及命令准备的实际消费，消除剩余 5 个旧目录方法。
-- chmod/chown/time 已提交意图命令，SimpleFs 已使用真实 metadata 锁；继续完成全部后端及 fd 类、Native 自动时间与 archive restore 去 raw，并取得直接 syscall 证明。AF_UNIX pathname 按原 caller 原子创建，不扩网络身份。
+- chmod/chown/time 已提交意图命令，SimpleFs 已使用真实 metadata 锁；继续完成全部后端及 fd 类、Native 自动时间及其余内部 raw 入口，并取得直接 syscall 证明；initramfs 已迁入显式初始化恢复。AF_UNIX pathname 按原 caller 原子创建，不扩网络身份。
 - Native Uncertain 与跨文件系统最后 Owner 的释放边界。
 - 修正 `test-unshare-fs` 中“删除 cwd 后 unshare 应 ENOENT”的错误 Linux 前提，保留成功路径及真实失败回滚。
 
@@ -356,3 +356,39 @@ fs-basic 证据仍属于 cb65，不能提升为本轮结果。源码 `05cacb742b
 首项与标准库单包检查均只剩 5 个 E0407；其余 71 项 Clippy 仍未执行。主线引入的
 seccomp 测试冗余导入已移除，没有增加 allow。详细日志摘要记录在生产证据的
 `metadata_and_overlay_foundation` 与 `namespace_command_preparation`。
+
+### 9.9 初始化属性的受控恢复
+
+源码 `2648e697c3` 让 initramfs 的 root 和条目属性使用
+`TrustedInitialization::restore_metadata`，删除这两处 raw 更新。VFS 私有的
+MetadataIntent 区分普通用户命令与显式初始化来源，继续借用真实写准备和
+Command/Scope，并在实际 inode 尝试中更新字段。初始化保持请求中的所有者、
+SUID/SGID、符号链接权限、设备号及时间，仍接受只读和后端能力拒绝；用户系统调用
+没有新增选择初始化来源的参数。Memory/SimpleFs 的共享 apply 和 Ext4 原生字段
+投影支持设备号，FAT 保留其实际能力边界。此能力不能用于 Overlay 的运行期 root 回退。
+
+现有归档、设备及 Ext4 元数据完成旅程增强初始化判定，没有新增测试入口或启动。
+错误源码 `669fc32475` 把普通 chown 的清位策略套到初始化字段，五个 AX profile 的
+同一归档旅程都将预期 06755 得到 0755，Ext4 元数据旅程也将 06750 得到 0750。
+恢复源码后相同旅程通过，并验证符号链接 mtime、设备号及只读失败后的原字段。
+错误变异只存在本地，没有推送。
+
+该源码的 9 项 VFS/AX Clippy、x86_64 fs-basic 及 Axvisor AArch64 125 项均通过。
+标准库入口依旧为 18 包中 17 包通过，唯一失败仍为 Kernel 的 5 个旧 Overlay 方法。
+Overlay 的封闭暂存、运行期恢复来源、最终 caller/mounter 属性传递及其余内部 raw
+消费者仍待迁移，不能据此宣称 Starry 可运行或系统调用已兼容。证据位于
+`initialization_metadata_restoration`，后续继续从第 4、5 节和主设计推进。
+
+### 9.10 恢复时的时间字段参与
+
+原初始化接入还继承了用户命令隐含的 ctime 更新。`ac5c4edbfc` 在既有确定性时钟
+旅程中追加一次只参与 mtime 的恢复，同一源码在五个 AX profile 均将应保留的
+ctime 10005s 改成 10006s。`865d2a7db3` 将授权字段的 ctime 改为 Option，普通
+用户命令仍在实际尝试中取时钟并传 Some；初始化保持 None，并且不取时钟。
+Memory/SimpleFs、Ext4 和 Cgroup 的消费者同时适配，不从低精度旧快照重造 ctime。
+
+修复后同一时钟、归档、设备和元数据旅程通过；VFS/AX 9 项 Clippy、x86_64
+fs-basic 与 Axvisor AArch64 125 项通过。标准库仍选中 18 包、通过 17 包，Kernel
+定向 Clippy 首项和标准库仍只失败于 5 个旧 Overlay 方法，其余 71 项 Clippy 没有
+执行。主线已再次核实仍为 1b3，工具链未变。字段参与的红绿和最终源码检查保存在
+`initialization_metadata_restoration.ctime_omission_followup`，此前 9.9 的初次证据保留原版本。

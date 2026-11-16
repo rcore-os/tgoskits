@@ -3343,7 +3343,8 @@ Command/Scope、MetadataRequest、LockedMetadataAttempt 及四阶段完成提交
 VFS 私有 MetadataIntent 区分 User 与 Initialization；syscall 仍只能提交公开的
 MetadataChange，不新增“跳过权限”flag，也不把普通 uid 0 识别成初始化来源。
 恢复分支原样保留参与字段，允许初始化符号链接权限及 SUID/SGID，不再套用用户
-chown 的清位或 chmod 的组过滤。设备号仍须与实际特殊 inode 类型匹配，后端的
+chown 的清位或 chmod 的组过滤。未参与的时间字段保持原生值及精度，初始化不取时钟；
+只有用户命令隐含 ctime 更新，授权字段与原生消费者以 Option 明确区分。设备号仍须与实际特殊 inode 类型匹配，后端的
 能力拒绝、错误、持久化及 Applied/Uncertain 不因初始化来源改变。
 
 initramfs 的 root 和普通条目属性恢复使用该显式入口，创建设备号继续由

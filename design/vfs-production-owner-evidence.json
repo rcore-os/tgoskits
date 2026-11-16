@@ -869,5 +869,188 @@
       "The red mutation was a detached local commit and was not pushed. The nonblocking witness avoids secondary destructor panics and checks complete recording.",
       "Only x86_64 fs-basic and AArch64 Axvisor were rerun here; earlier other-architecture fs-basic proofs remain at cb65. Kernel still fails its old five Overlay trait methods."
     ]
+  },
+  "initialization_metadata_restoration": {
+    "source_commit": "2648e697c3f7baa3c6234e5d5ca81e296c5938a8",
+    "source_files": {
+      "design/vfs-lookup-ownership.md": "edef350daa8929fd5f678aa91cfd9e8a4e0f88623b02144e6f4c0efdb9a6b50c",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/metadata.rs": "96b9bbb1700dc0ce6056403e2e02767adf59f28527b68a8e8e3b22f06e65767e",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/metadata_pressure.rs": "65ddcb048198c4bced4605c253c89206b0d272f698da23e9f120caed7310f5b2",
+      "fs/ax-fs-ng/src/fs/fat/metadata.rs": "ce03302ece8585424ebb26153e950bb160986f1d687f1bfdf98dd75dcd42f41a",
+      "fs/ax-fs-ng/src/initramfs.rs": "e31635440c851caa10058aac90766168e7855229d8d14e117b595704ff7f8d9f",
+      "fs/ax-fs-ng/tests/ownership.rs": "1151ca2c53eff7e1193482a566bf810ed1140b02fcaaa855d71da1722c12e69c",
+      "fs/axfs-ng-vfs/src/metadata/authorize.rs": "6574ff419090056900dc9229e344bf4a83dcd6e17f0688f2181f53276c1a6b8a",
+      "fs/axfs-ng-vfs/src/metadata/mod.rs": "1111f193f54c8ac94cc47c2d139d86893d59e5bab948eebe946e78d055ff0513",
+      "fs/axfs-ng-vfs/src/metadata/restore.rs": "898e7662a1a95f9e251e2500cecf80069c2bf5efa0f22db17a234e4330192b61",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "ed1bb1bf283ce905e1171dd64bc9e2f4f98edb1cb3ca77432830bfb63ac34beb"
+    },
+    "implemented": [
+      "Private User/Initialization intent; only explicit TrustedInitialization factory selects initialization origin.",
+      "Real inode attempts, field participation, native device-number projection and complete command/scope retirement.",
+      "initramfs root and entry restoration no longer uses raw update_metadata.",
+      "Initialization preserves setid/symlink attributes and respects real mount read-only and backend capabilities."
+    ],
+    "mutation": {
+      "branch": "codex/continue-pr2800",
+      "green": "2648e697c3f7baa3c6234e5d5ca81e296c5938a8",
+      "red": "669fc32475a8598ea0156f7459bd6725da4de923",
+      "file": "fs/axfs-ng-vfs/src/metadata/authorize.rs",
+      "mutation": "apply ordinary non-directory chown setid clearing to approved initialization mode"
+    },
+    "behavioral_red": {
+      "source_commit": "669fc32475a8598ea0156f7459bd6725da4de923",
+      "command": "PATH=<task-local-e2fsprogs>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 2648e697c3",
+      "exit_code": 1,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-red.log",
+      "sha256": "720d5a30cf2808469290ff1911ded17fd2197fee4b33b046113ea2a3c21a0b23",
+      "terminal_evidence": [
+        "concatenation_links_permissions_and_overlay ... FAILED",
+        "left: 493",
+        "right: 3565",
+        "metadata_completion_failures_stop_retry_and_preserve_applied_observation ... FAILED",
+        "std tests failed for 2 package(s): ax-fs-ng, starry-kernel"
+      ]
+    },
+    "restored_green": {
+      "source_commit": "2648e697c3f7baa3c6234e5d5ca81e296c5938a8",
+      "command": "PATH=<task-local-e2fsprogs>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since d7587ffa85",
+      "exit_code": 1,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-green.log",
+      "sha256": "194a41c667e5f49263a857b4c81496380f47d1c5d44601628e7f58cbe7bd8b7c",
+      "terminal_evidence": [
+        "concatenation_links_permissions_and_overlay ... ok",
+        "device_creation_checks_capability_and_retains_device_metadata ... ok",
+        "metadata_completion_failures_stop_retry_and_preserve_applied_observation ... ok",
+        "std tests failed for 1 package(s): starry-kernel"
+      ]
+    },
+    "std_packages": {
+      "selected": 18,
+      "passed": 17,
+      "failed": [
+        "starry-kernel"
+      ]
+    },
+    "checks": [
+      {
+        "source_commit": "2648e697c3f7baa3c6234e5d5ca81e296c5938a8",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package axfs-ng-vfs --package ax-fs-ng",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-clippy.log",
+        "sha256": "85f0cf5da3bc2e008886f391ebcf52fbbc2b3af5032b8ff4cdee7da8ddd093fd",
+        "terminal_evidence": [
+          "passed checks: 9, failed checks: 0, skipped checks: 0"
+        ]
+      },
+      {
+        "source_commit": "2648e697c3f7baa3c6234e5d5ca81e296c5938a8",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case fs-basic",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-fs-basic-x86.log",
+        "sha256": "f522545e854f0864ab34abbaaaf1563e945fe9da028e88149e7c4897ca261a0b",
+        "terminal_evidence": [
+          "status=pass",
+          "all arceos rust qemu tests passed"
+        ]
+      },
+      {
+        "source_commit": "2648e697c3f7baa3c6234e5d5ca81e296c5938a8",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 --config os/axvisor/tests/build-memory-root-aarch64.toml --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-axvisor-ktest.log",
+        "sha256": "c93f73d07b8a51e902f958d8b7cd4eb04ad550212b1d63fac9444b39c89cbf04",
+        "terminal_evidence": [
+          "AXTEST_SUMMARY pass=125 fail=0 skip=0 total=125",
+          "AXTEST_SUITE_OK"
+        ]
+      }
+    ],
+    "limitations": [
+      "The detached setid-policy mutation was not pushed. Existing archive/device/metadata journeys were enhanced without a new test or QEMU boot.",
+      "Kernel initialization authority is not a runtime Overlay copy-up capability. Closed staging, runtime restoration provenance and final caller/mounter semantics remain incomplete.",
+      "Kernel still fails the five old Overlay trait methods; no Starry direct syscall was run. Backend capability refusals remain in force, including FAT fixed attributes."
+    ],
+    "ctime_omission_followup": {
+      "red_source": "ac5c4edbfc9f9614791627a0f35efd43820c5b16",
+      "green_source": "865d2a7db3af81c983c0ccbfc22df06ad0be24b0",
+      "source_files": {
+        "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/metadata.rs": "1dbb0805c52043544999b0eabf84cd006fa6aeb6a342b5873f32419d58d4bb99",
+        "fs/ax-fs-ng/tests/ownership.rs": "63a1298fb4194777392059d76fad658fc997f040ff05fd3d154abd92fdcfe99e",
+        "fs/axfs-ng-vfs/src/metadata/authorize.rs": "7792907652d934d240145cad8988f1b6bb0aaecc927a8aa5e87d73d58e68ff70",
+        "fs/axfs-ng-vfs/src/metadata/mod.rs": "c87753b08ea860f875fc5f8e2a3961e125cd7c115f996d4c0584cbb8e8493c18",
+        "fs/axfs-ng-vfs/src/metadata/restore.rs": "d94ffa535d34ab6deba29ee57c85c4f4e8b0e3f1ca4d84188a023e1b2e254030",
+        "os/StarryOS/kernel/src/pseudofs/cgroup/metadata.rs": "4a3c5f97e4fcbfe68f4202a227d913db1353ce8ce2021d74f368e6199c4fe1c0"
+      },
+      "behavioral_red": {
+        "source_commit": "ac5c4edbfc9f9614791627a0f35efd43820c5b16",
+        "command": "PATH=<task-local-e2fsprogs>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 2648e697c3",
+        "exit_code": 1,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-ctime-red.log",
+        "sha256": "fd785632e5abae57053fb724ef314a5f3f4dbfc7e2827bb60b18dd57d8fef4ca",
+        "terminal_evidence": [
+          "metadata_times_distinguish_touch_explicit_times_and_omission ... FAILED",
+          "initialization must preserve timestamps which did not participate",
+          "left: (123s, 321s, 10006s)",
+          "right: (123s, 321s, 10005s)"
+        ]
+      },
+      "restored_green": {
+        "source_commit": "865d2a7db3af81c983c0ccbfc22df06ad0be24b0",
+        "command": "PATH=<task-local-e2fsprogs>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since d7587ffa85",
+        "exit_code": 1,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-final-green.log",
+        "sha256": "ec57caf198be91d97a5e0d6fd34c6378de53cadb417e383d2ed3d8c98e98246f",
+        "terminal_evidence": [
+          "metadata_times_distinguish_touch_explicit_times_and_omission ... ok",
+          "std tests failed for 1 package(s): starry-kernel"
+        ]
+      },
+      "checks": [
+        {
+          "source_commit": "865d2a7db3af81c983c0ccbfc22df06ad0be24b0",
+          "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package axfs-ng-vfs --package ax-fs-ng",
+          "exit_code": 0,
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-final-clippy.log",
+          "sha256": "f447c7fc25bf1e3c451d3def0673fd933829c8397abb784f10abb8b9ce5f9ef0",
+          "terminal_evidence": [
+            "passed checks: 9, failed checks: 0, skipped checks: 0"
+          ]
+        },
+        {
+          "source_commit": "865d2a7db3af81c983c0ccbfc22df06ad0be24b0",
+          "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package starry-kernel",
+          "exit_code": 1,
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-final-kernel-clippy.log",
+          "sha256": "0cbbbcb8e2b4df914c4e59d727944e989c2e130a12d7589efa3404ef86530686",
+          "terminal_evidence": [
+            "due to 5 previous errors",
+            "71 check(s) remaining"
+          ]
+        },
+        {
+          "source_commit": "865d2a7db3af81c983c0ccbfc22df06ad0be24b0",
+          "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case fs-basic",
+          "exit_code": 0,
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-final-fs-basic-x86.log",
+          "sha256": "47a79f617d9bc468cadf2b9ada505a117e55885bceab231a53bda14c6fd20e2b",
+          "terminal_evidence": [
+            "status=pass",
+            "all arceos rust qemu tests passed"
+          ]
+        },
+        {
+          "source_commit": "865d2a7db3af81c983c0ccbfc22df06ad0be24b0",
+          "command": "CARGO_INCREMENTAL=0 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 --config os/axvisor/tests/build-memory-root-aarch64.toml --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml",
+          "exit_code": 0,
+          "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/initialization-restoration-final-axvisor-ktest.log",
+          "sha256": "6f83ef3070e995f01d1895dc847e189d10b90a69f1cbbd820af614f503eca1b8",
+          "terminal_evidence": [
+            "AXTEST_SUMMARY pass=125 fail=0 skip=0 total=125",
+            "AXTEST_SUITE_OK"
+          ]
+        }
+      ],
+      "behavior": "Only user commands imply ctime. Initialization preserves absent fields and does not sample a clock; all native consumers accept optional ctime without reconstructing it from a coarse metadata observation."
+    }
   }
 }
