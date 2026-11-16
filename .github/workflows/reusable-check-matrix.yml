@@ -146,7 +146,11 @@ jobs:
         run: |
           set -euo pipefail
           command -v git
-          git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --is-inside-work-tree
+          # actions/checkout writes its safe.directory entry under a temporary
+          # HOME for container jobs. Persist the exact checkout path in this
+          # container's HOME so later steps and their Git subprocesses see it.
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          git rev-parse --is-inside-work-tree
           for emulator in \
             qemu-aarch64-static \
             qemu-riscv64-static \

@@ -55,6 +55,7 @@ impl Aarch64VmPlan {
             &replacement_ranges,
             super::resource_pools::create(vgic.config())?,
             provider(&controller_id)?,
+            super::resource_pools::PCI_AUTO_MMIO_SEARCH_EXTENSION.clone(),
         )?;
         let firmware = Aarch64FirmwarePlan::new(config, vgic.config(), devices.graph())?;
         Ok(Self { devices, firmware })

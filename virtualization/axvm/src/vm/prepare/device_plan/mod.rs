@@ -24,7 +24,10 @@ enum PciHostRegistration {
     /// Architectures that only expose virtual PCI when a configured endpoint
     /// selects the host key register it on first reference.
     #[cfg(target_arch = "aarch64")]
-    IfReferenced(PciHostProvider),
+    IfReferenced {
+        provider: PciHostProvider,
+        auto_mmio_extension: Range<u64>,
+    },
 }
 
 impl VmDevicePlan {
@@ -62,13 +65,17 @@ impl VmDevicePlan {
         replacement_ranges: &[Range<u64>],
         mut pools: ResourcePools,
         pci_host: PciHostProvider,
+        pci_auto_mmio_extension: Range<u64>,
     ) -> AxVmResult<Self> {
         Self::build(
             config,
             nodes,
             replacement_ranges,
             &mut pools,
-            Some(PciHostRegistration::IfReferenced(pci_host)),
+            Some(PciHostRegistration::IfReferenced {
+                provider: pci_host,
+                auto_mmio_extension: pci_auto_mmio_extension,
+            }),
         )
     }
 
@@ -92,9 +99,13 @@ impl VmDevicePlan {
                 builder.requests().map_err(DeviceManagerError::from)?
             }
             #[cfg(target_arch = "aarch64")]
-            Some(PciHostRegistration::IfReferenced(provider)) => {
+            Some(PciHostRegistration::IfReferenced {
+                provider,
+                auto_mmio_extension,
+            }) => {
                 let requests = builder.requests().map_err(DeviceManagerError::from)?;
                 if pci_host_is_referenced(&requests, provider.key()) {
+                    pools.add_auto_mmio(auto_mmio_extension)?;
                     builder
                         .register_pci_host(provider)
                         .map_err(DeviceManagerError::from)?;

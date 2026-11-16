@@ -47,6 +47,9 @@ run_axvm_cross_test() {
 }
 run_axvm_cross_test --arch aarch64 --package axvm \
   --features axvm/host-test --no-default-features --lib arch::aarch64::fdt
+echo "==> axvm aarch64 ECAM automatic MMIO pool boundary regression"
+run_axvm_cross_test --arch aarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib arch::aarch64::pci_plan
 echo "==> axvm aarch64 cloned CPU identity regression"
 run_axvm_cross_test --arch aarch64 --package axvm \
   --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles

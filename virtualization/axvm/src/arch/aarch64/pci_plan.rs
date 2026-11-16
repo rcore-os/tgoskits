@@ -207,6 +207,7 @@ mod tests {
     };
 
     struct TestEndpointModel;
+    struct TestAutoMmioModel;
     struct TestFunction;
 
     impl DeviceModel for TestEndpointModel {
@@ -231,6 +232,28 @@ mod tests {
             let mut bundle = DeviceBundle::new();
             bundle.add_pci_function(Arc::new(TestFunction))?;
             Ok(bundle)
+        }
+    }
+
+    impl DeviceModel for TestAutoMmioModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            DeviceRequirements::new().with_mmio(
+                ResourceSlot::new("registers")?,
+                0x1000,
+                0x1000,
+                ResourceRequest::Auto,
+            )
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            Ok(DeviceBundle::new())
         }
     }
 
@@ -291,8 +314,8 @@ mod tests {
         })
     }
 
-    fn auto_mmio_search() -> core::ops::Range<u64> {
-        super::super::resource_pools::AUTO_MMIO_SEARCH.clone()
+    fn pci_auto_mmio_search_end() -> u64 {
+        super::super::resource_pools::PCI_AUTO_MMIO_SEARCH_EXTENSION.end
     }
 
     fn resolve_plan(
@@ -307,25 +330,51 @@ mod tests {
         with_endpoint: bool,
         reservations: &[(&str, core::ops::Range<u64>)],
     ) -> AxVmResult<VmDevicePlan> {
+        let extra_nodes = with_endpoint
+            .then(|| {
+                DeviceNodeSpec::virtual_device(
+                    DeviceNodeId::new("endpoint0").unwrap(),
+                    Arc::new(TestEndpointModel),
+                )
+            })
+            .into_iter()
+            .collect();
+        device_plan_with_nodes(&config(with_endpoint), extra_nodes, reservations)
+    }
+
+    fn auto_mmio_device_plan(
+        config: &AxVMConfig,
+        reservations: &[(&str, core::ops::Range<u64>)],
+    ) -> AxVmResult<VmDevicePlan> {
+        device_plan_with_nodes(
+            config,
+            std::vec![DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new("auto-mmio0").unwrap(),
+                Arc::new(TestAutoMmioModel),
+            )],
+            reservations,
+        )
+    }
+
+    fn device_plan_with_nodes(
+        config: &AxVMConfig,
+        extra_nodes: std::vec::Vec<DeviceNodeSpec>,
+        reservations: &[(&str, core::ops::Range<u64>)],
+    ) -> AxVmResult<VmDevicePlan> {
         let controller = DeviceNodeId::new("vgic").unwrap();
         let mut nodes = std::vec![DeviceNodeSpec::firmware_only(controller.clone())];
-        if with_endpoint {
-            nodes.push(DeviceNodeSpec::virtual_device(
-                DeviceNodeId::new("endpoint0").unwrap(),
-                Arc::new(TestEndpointModel),
-            ));
-        }
-        let mut pools = ResourcePools::new();
-        pools.add_auto_mmio(auto_mmio_search())?;
+        nodes.extend(extra_nodes);
+        let mut pools = super::super::resource_pools::create_auto_mmio_pools()?;
         for (owner, range) in reservations {
             pools.reserve_mmio((*owner).to_string(), range.clone())?;
         }
         VmDevicePlan::with_optional_pci_host_for_vm(
-            &config(with_endpoint),
+            config,
             nodes,
             &[],
             pools,
             provider(&controller)?,
+            super::super::resource_pools::PCI_AUTO_MMIO_SEARCH_EXTENSION.clone(),
         )
     }
 
@@ -372,6 +421,44 @@ mod tests {
     }
 
     #[test]
+    fn vm_without_pci_host_limits_auto_mmio_to_legacy_window() {
+        const PROVIDED_DTB_STATIC_MMIO_BASE: u64 = 0x1000_0000;
+
+        // This planning-level test intentionally does not parse provided DTB
+        // bytes. A static device at 0x1000_0000 is outside memory_regions(),
+        // so occupying the legacy window models that unregistered reservation.
+        let plan = auto_mmio_device_plan(
+            &config(true),
+            &[(
+                "provided-dtb-low-mmio-occupant",
+                0x0b00_0000..PROVIDED_DTB_STATIC_MMIO_BASE,
+            )],
+        );
+        let error = match plan {
+            Ok(devices) => {
+                let resources = devices
+                    .graph()
+                    .resources_for(&DeviceNodeId::new("auto-mmio0").unwrap())
+                    .unwrap();
+                let (base, _) = resources
+                    .mmio(&ResourceSlot::new("registers").unwrap())
+                    .unwrap();
+                panic!(
+                    "non-PCI VM allocated automatic MMIO at {base:#x}, beyond the legacy window \
+                     ending at {PROVIDED_DTB_STATIC_MMIO_BASE:#x}"
+                );
+            }
+            Err(error) => error,
+        };
+
+        let AxVmError::Device { detail, .. } = error else {
+            panic!("unexpected error: {error:?}");
+        };
+        assert!(detail.contains("mmio auto pool is exhausted"));
+        assert!(detail.contains("slot registers for auto-mmio0"));
+    }
+
+    #[test]
     fn endpoint_aperture_skips_active_low_mmio_reservations() {
         let devices = device_plan(
             true,
@@ -396,7 +483,10 @@ mod tests {
     fn endpoint_aperture_fails_when_no_aligned_window_exists_below_four_gib() {
         let error = device_plan(
             true,
-            &[("occupied-32-bit-mmio", 0x0c00_0000..auto_mmio_search().end)],
+            &[(
+                "occupied-32-bit-mmio",
+                0x0c00_0000..pci_auto_mmio_search_end(),
+            )],
         )
         .err()
         .expect("the PCI aperture must not move above 4 GiB");
