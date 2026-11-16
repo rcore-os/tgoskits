@@ -6645,7 +6645,6 @@ version = "0.3.3"
 dependencies = [
  "ax-runtime",
  "dma-api",
- "futures",
  "rdif-eth",
 ]
 
@@ -8161,7 +8160,6 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "derive_more",
- "event-listener",
  "extern-trait",
  "linux-raw-sys 0.12.1",
  "log",

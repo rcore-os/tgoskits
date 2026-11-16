@@ -30,7 +30,7 @@ wake-ipi = ["dep:ax-ipi", "ax-hal/ipi"]
 qperf-metrics = ["ax-task/qperf-metrics"]
 fp-simd = ["ax-hal/fp-simd"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
-rtc = ["ax-hal/rtc", "ax-driver/rtc"]
+rtc = ["dep:chrono", "ax-hal/rtc", "ax-driver/rtc"]
 efi = ["ax-hal/efi"]
 efi-handoff = ["ax-hal/efi-handoff"]
 smp = ["ax-hal/smp", "ax-task/smp", "wake-ipi"]
@@ -97,7 +97,7 @@ axpoll-set.workspace = true
 axklib.workspace = true
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
-chrono = {version = "0.4", default-features = false}
+chrono = {version = "0.4", default-features = false, optional = true}
 dma-api.workspace = true
 indoc = "2"
 irq-framework = { workspace = true }

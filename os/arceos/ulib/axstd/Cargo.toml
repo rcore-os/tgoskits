@@ -36,7 +36,7 @@ host-test = [
 ]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
-std-compat = ["dep:ax-posix-api", "ax-alloc/global-allocator", "ax-runtime/std-compat"]
+std-compat = ["dep:ax-posix-api", "dep:syscalls", "ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
 smp = ["ax-runtime/smp", "ax-posix-api?/smp"]
@@ -133,5 +133,5 @@ ax-percpu.workspace = true
 ax-posix-api = { workspace = true, optional = true }
 ax-runtime.workspace = true
 libc.workspace = true
-syscalls.workspace = true
+syscalls = { workspace = true, optional = true }
 thiserror.workspace = true
