@@ -62,7 +62,7 @@ impl Hie {
     /// Sets the status of the virtual supervisor software interrupt enable.
     #[inline]
     pub fn set_vssie(&mut self, val: bool) {
-        self.bits.set_bit(2, val);
+        BitField::set_bit(&mut self.bits, 2, val);
     }
     /// Returns the status of the virtual supervisor timer interrupt enable.
     #[inline]
@@ -72,7 +72,7 @@ impl Hie {
     /// Sets the status of the virtual supervisor timer interrupt enable.
     #[inline]
     pub fn set_vstie(&mut self, val: bool) {
-        self.bits.set_bit(6, val);
+        BitField::set_bit(&mut self.bits, 6, val);
     }
     /// Returns the status of the virtual supervisor external interrupt enable.
     #[inline]
@@ -82,7 +82,7 @@ impl Hie {
     /// Sets the status of the virtual supervisor external interrupt enable.
     #[inline]
     pub fn set_vseie(&mut self, val: bool) {
-        self.bits.set_bit(10, val);
+        BitField::set_bit(&mut self.bits, 10, val);
     }
     /// Returns the status of the supervisor guest external interrupt enable.
     #[inline]
@@ -92,7 +92,7 @@ impl Hie {
     /// Sets the status of the supervisor guest external interrupt enable.
     #[inline]
     pub fn set_sgeie(&mut self, val: bool) {
-        self.bits.set_bit(12, val);
+        BitField::set_bit(&mut self.bits, 12, val);
     }
 }
 

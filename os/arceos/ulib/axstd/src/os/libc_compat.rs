@@ -1081,6 +1081,54 @@ pub unsafe extern "C" fn lstat64(path: *const c_char, buf: *mut libc::stat64) ->
 /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn fstatat(
+    dirfd: c_int,
+    path: *const c_char,
+    buf: *mut libc::stat,
+    flags: c_int,
+) -> c_int {
+    let supported_flags = libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH | libc::AT_NO_AUTOMOUNT;
+    if flags & !supported_flags != 0 {
+        return fail(Errno::EINVAL);
+    }
+    if flags & libc::AT_EMPTY_PATH != 0 {
+        match path_from_c(path) {
+            Ok(ref s) if s.is_empty() => return unsafe { fstat(dirfd, buf) },
+            Ok(_) => {}
+            Err(err) => return fail(err),
+        }
+    }
+    let path = match resolve_at_path(dirfd, path) {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let path = c_string_from_string(path);
+    if flags & libc::AT_SYMLINK_NOFOLLOW != 0 {
+        unsafe { lstat(path.as_ptr(), buf) }
+    } else {
+        unsafe { stat(path.as_ptr(), buf) }
+    }
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(feature = "fs")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fstatat64(
+    dirfd: c_int,
+    path: *const c_char,
+    buf: *mut libc::stat64,
+    flags: c_int,
+) -> c_int {
+    unsafe { fstatat(dirfd, path, buf.cast(), flags) }
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(feature = "fs")]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn getcwd(buf: *mut c_char, size: SizeT) -> *mut c_char {
     ax_posix_api::sys_getcwd(buf, size)
 }
@@ -1092,6 +1140,30 @@ pub unsafe extern "C" fn getcwd(buf: *mut c_char, size: SizeT) -> *mut c_char {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rename(old: *const c_char, new: *const c_char) -> c_int {
     ok_or_errno(ax_posix_api::sys_rename(old, new))
+}
+
+/// # Safety
+///
+/// Callers must uphold the Linux/musl ABI contract for this libc symbol.
+#[cfg(feature = "fs")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn renameat(
+    olddirfd: c_int,
+    oldpath: *const c_char,
+    newdirfd: c_int,
+    newpath: *const c_char,
+) -> c_int {
+    let old = match resolve_at_path(olddirfd, oldpath) {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let new = match resolve_at_path(newdirfd, newpath) {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let old = c_string_from_string(old);
+    let new = c_string_from_string(new);
+    unsafe { rename(old.as_ptr(), new.as_ptr()) }
 }
 
 #[cfg(feature = "fs")]
@@ -1639,7 +1711,10 @@ mod fs_stubs {
         fn fstat64(fd: c_int, buf: *mut libc::stat64) -> c_int => { fail(Errno::ENOSYS) }
         fn lstat(path: *const c_char, buf: *mut libc::stat) -> c_int => { fail(Errno::ENOSYS) }
         fn lstat64(path: *const c_char, buf: *mut libc::stat64) -> c_int => { fail(Errno::ENOSYS) }
+        fn fstatat(dirfd: c_int, path: *const c_char, buf: *mut libc::stat, flags: c_int) -> c_int => { fail(Errno::ENOSYS) }
+        fn fstatat64(dirfd: c_int, path: *const c_char, buf: *mut libc::stat64, flags: c_int) -> c_int => { fail(Errno::ENOSYS) }
         fn rename(old: *const c_char, new: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
+        fn renameat(olddirfd: c_int, oldpath: *const c_char, newdirfd: c_int, newpath: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
         fn unlink(path: *const c_char) -> c_int => { fail(Errno::ENOSYS) }
         fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int => { fail(Errno::ENOSYS) }
         fn mkdir(path: *const c_char, mode: ModeT) -> c_int => { fail(Errno::ENOSYS) }

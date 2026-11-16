@@ -77,7 +77,7 @@ impl Vsstatus {
     /// Sets the MXR (Make eXecutable Readable) bit.
     #[inline]
     pub fn set_mxr(&mut self, val: bool) {
-        self.bits.set_bit(19, val);
+        BitField::set_bit(&mut self.bits, 19, val);
     }
     /// Returns the status of the supervisor user memory access bit.
     #[inline]
@@ -87,7 +87,7 @@ impl Vsstatus {
     /// Sets the status of the supervisor user memory access bit.
     #[inline]
     pub fn set_sum(&mut self, val: bool) {
-        self.bits.set_bit(18, val);
+        BitField::set_bit(&mut self.bits, 18, val);
     }
     /// Returns the status of the extension state fields.
     #[inline]
@@ -117,7 +117,7 @@ impl Vsstatus {
     /// Sets the supervisor previous privilege.
     #[inline]
     pub fn set_spp(&mut self, val: bool) {
-        self.bits.set_bit(8, val);
+        BitField::set_bit(&mut self.bits, 8, val);
     }
     /// Returns the user binary endianness.
     #[inline]
@@ -127,7 +127,7 @@ impl Vsstatus {
     /// Sets the user binary endianness.
     #[inline]
     pub fn set_ube(&mut self, val: bool) {
-        self.bits.set_bit(6, val);
+        BitField::set_bit(&mut self.bits, 6, val);
     }
     /// Returns the supervisor previous interrupt enable.
     #[inline]
@@ -137,7 +137,7 @@ impl Vsstatus {
     /// Sets the supervisor previous interrupt enable.
     #[inline]
     pub fn set_spie(&mut self, val: bool) {
-        self.bits.set_bit(5, val);
+        BitField::set_bit(&mut self.bits, 5, val);
     }
     /// Returns the supervisor interrupt enable.
     #[inline]
@@ -147,7 +147,7 @@ impl Vsstatus {
     /// Sets the supervisor interrupt enable.
     #[inline]
     pub fn set_sie(&mut self, val: bool) {
-        self.bits.set_bit(1, val);
+        BitField::set_bit(&mut self.bits, 1, val);
     }
 }
 

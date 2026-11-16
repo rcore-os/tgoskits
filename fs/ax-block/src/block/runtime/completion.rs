@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn completion_future_delivers_published_result() {
         let (subscription, sender) = pair();
-        let mut future = Box::pin(subscription.recv_async());
+        let mut future = core::pin::pin!(subscription.recv_async());
         let mut context = Context::from_waker(Waker::noop());
 
         assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
@@ -766,9 +766,9 @@ mod tests {
 
         let (subscription, sender) = pair();
         let async_progress = Arc::new(AtomicUsize::new(0));
-        let mut completion = Box::pin(subscription.recv_async());
+        let mut completion = core::pin::pin!(subscription.recv_async());
         let progress_count = Arc::clone(&async_progress);
-        let mut progress = Box::pin(core::future::poll_fn(move |_| {
+        let mut progress = core::pin::pin!(core::future::poll_fn(move |_| {
             progress_count.fetch_add(1, Ordering::AcqRel);
             Poll::Ready(())
         }));
@@ -794,7 +794,7 @@ mod tests {
     fn completion_before_first_poll_is_observed() {
         let (subscription, sender) = pair();
         sender.complete(completed(11));
-        let mut future = Box::pin(subscription.recv_async());
+        let mut future = core::pin::pin!(subscription.recv_async());
         let counter = Arc::new(WakeCounter::default());
         let waker = Waker::from(counter.clone());
         let mut context = Context::from_waker(&waker);
@@ -812,7 +812,7 @@ mod tests {
         subscription
             .cell
             .set_poll_hook(move || sender.complete(completed(13)));
-        let mut future = Box::pin(subscription.recv_async());
+        let mut future = core::pin::pin!(subscription.recv_async());
         let counter = Arc::new(WakeCounter::default());
         let waker = Waker::from(counter.clone());
         let mut context = Context::from_waker(&waker);
@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn repeated_poll_replaces_the_registered_waker() {
         let (subscription, sender) = pair();
-        let mut future = Box::pin(subscription.recv_async());
+        let mut future = core::pin::pin!(subscription.recv_async());
         let first = Arc::new(WakeCounter::default());
         let first_waker = Waker::from(first.clone());
         let mut first_context = Context::from_waker(&first_waker);
@@ -864,7 +864,7 @@ mod tests {
         let second_subscription = subscriptions.next().unwrap();
         let first_sender = senders.pop_front().unwrap();
         let second_sender = senders.pop_front().unwrap();
-        let mut first_future = Box::pin(first_subscription.recv_async());
+        let mut first_future = core::pin::pin!(first_subscription.recv_async());
         let counter = Arc::new(WakeCounter::default());
         let waker = Waker::from(counter.clone());
         let mut context = Context::from_waker(&waker);
@@ -899,7 +899,7 @@ mod tests {
         });
         let waker = Waker::from(wake.clone());
         let mut context = Context::from_waker(&waker);
-        let mut future = Box::pin(subscription.recv_async());
+        let mut future = core::pin::pin!(subscription.recv_async());
 
         assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
         sender.complete(completed(29));

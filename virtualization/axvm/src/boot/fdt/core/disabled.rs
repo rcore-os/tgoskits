@@ -76,7 +76,7 @@ pub(super) fn apply(tree: &mut FdtTree, config: &GuestConfig) -> AxVmResult {
             node.as_node()
                 .properties()
                 .iter()
-                .filter(|property| property.as_str().is_some_and(&excluded))
+                .filter(|property| property.as_str().is_some_and(excluded))
                 .map(|p| String::from(p.name()))
                 .collect::<Vec<_>>()
         })

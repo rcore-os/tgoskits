@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn async_waiter_wake_allows_reentrant_registration() {
         let waiters = Arc::new(AsyncWaiters::new());
-        let mut listener = Box::pin(waiters.listen());
+        let mut listener = core::pin::pin!(waiters.listen());
         let (done_tx, done_rx) = mpsc::channel();
         let waker = Waker::from(Arc::new(ReentrantWake {
             waiters: Arc::clone(&waiters),

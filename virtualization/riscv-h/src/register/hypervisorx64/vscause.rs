@@ -53,7 +53,7 @@ impl Vscause {
     /// Sets the interrupt cause status.
     #[inline]
     pub fn set_interrupt(&mut self, val: bool) {
-        self.bits.set_bit(63, val);
+        BitField::set_bit(&mut self.bits, 63, val);
     }
     /// Returns the exception code.
     #[inline]

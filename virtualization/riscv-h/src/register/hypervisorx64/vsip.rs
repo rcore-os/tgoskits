@@ -53,7 +53,7 @@ impl Vsip {
     /// Sets the supervisor software interrupt pending.
     #[inline]
     pub fn set_ssip(&mut self, val: bool) {
-        self.bits.set_bit(1, val);
+        BitField::set_bit(&mut self.bits, 1, val);
     }
     /// Returns the supervisor timer interrupt pending.
     #[inline]
@@ -63,7 +63,7 @@ impl Vsip {
     /// Sets the supervisor timer interrupt pending.
     #[inline]
     pub fn set_stip(&mut self, val: bool) {
-        self.bits.set_bit(5, val);
+        BitField::set_bit(&mut self.bits, 5, val);
     }
     /// Returns the supervisor external interrupt pending.
     #[inline]
@@ -73,7 +73,7 @@ impl Vsip {
     /// Sets the supervisor external interrupt pending.
     #[inline]
     pub fn set_seip(&mut self, val: bool) {
-        self.bits.set_bit(9, val);
+        BitField::set_bit(&mut self.bits, 9, val);
     }
 }
 

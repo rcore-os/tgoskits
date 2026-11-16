@@ -208,7 +208,7 @@ impl Semaphore {
                 return false;
             }
             if replacement.capacity() > state.waiters.len() {
-                replacement.extend(state.waiters.drain(..));
+                replacement.append(&mut state.waiters);
                 core::mem::swap(&mut state.waiters, &mut replacement);
                 state.waiters.push_back(Arc::clone(waiter));
                 return false;

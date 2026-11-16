@@ -73,7 +73,7 @@ impl Hstatus {
     /// Sets the TSR for VS-mode.
     #[inline]
     pub fn set_vtsr(&mut self, val: bool) {
-        self.bits.set_bit(22, val);
+        BitField::set_bit(&mut self.bits, 22, val);
     }
     /// Returns the TW for VS-mode.
     #[inline]
@@ -83,7 +83,7 @@ impl Hstatus {
     /// Sets the TW for VS-mode.
     #[inline]
     pub fn set_vtw(&mut self, val: bool) {
-        self.bits.set_bit(21, val);
+        BitField::set_bit(&mut self.bits, 21, val);
     }
     /// Returns the TVM for VS-mode.
     #[inline]
@@ -93,7 +93,7 @@ impl Hstatus {
     /// Sets the TVM for VS-mode.
     #[inline]
     pub fn set_vtvm(&mut self, val: bool) {
-        self.bits.set_bit(20, val);
+        BitField::set_bit(&mut self.bits, 20, val);
     }
     /// Returns the virtual guest external interrupt number.
     #[inline]
@@ -113,7 +113,7 @@ impl Hstatus {
     /// Sets the hypervisor user mode status.
     #[inline]
     pub fn set_hu(&mut self, val: bool) {
-        self.bits.set_bit(9, val);
+        BitField::set_bit(&mut self.bits, 9, val);
     }
     /// Returns the supervisor previous virtual privilege.
     #[inline]
@@ -123,7 +123,7 @@ impl Hstatus {
     /// Sets the supervisor previous virtual privilege.
     #[inline]
     pub fn set_spvp(&mut self, val: bool) {
-        self.bits.set_bit(8, val);
+        BitField::set_bit(&mut self.bits, 8, val);
     }
     /// Returns the supervisor previous virtualization mode.
     #[inline]
@@ -133,7 +133,7 @@ impl Hstatus {
     /// Sets the supervisor previous virtualization mode.
     #[inline]
     pub fn set_spv(&mut self, val: bool) {
-        self.bits.set_bit(7, val);
+        BitField::set_bit(&mut self.bits, 7, val);
     }
     /// Returns the guest virtual address status.
     #[inline]
@@ -143,7 +143,7 @@ impl Hstatus {
     /// Sets the guest virtual address status.
     #[inline]
     pub fn set_gva(&mut self, val: bool) {
-        self.bits.set_bit(6, val);
+        BitField::set_bit(&mut self.bits, 6, val);
     }
     /// Returns the VS-mode memory access endianness.
     #[inline]
@@ -153,7 +153,7 @@ impl Hstatus {
     /// Sets the VS-mode memory access endianness.
     #[inline]
     pub fn set_vsbe(&mut self, val: bool) {
-        self.bits.set_bit(5, val);
+        BitField::set_bit(&mut self.bits, 5, val);
     }
 }
 
