@@ -367,12 +367,18 @@ fn request_bound_queries_relay_direct_readonly_edges_and_retire_all_candidates()
             receiver: Arc::downgrade(&b),
             kind: CaseKind::Directory,
             response: Ok(NamespaceRead::Directory(
-                crate::DirectoryBatch::new(vec![crate::DirectoryRecord {
-                    name: b"stuck".to_vec(),
-                    inode: 1,
-                    node_type: NodeType::Directory,
-                    next: crate::DirectoryCursor::START,
-                }])
+                crate::DirectoryBatch::new(
+                    [1, 2, 1]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, next)| crate::DirectoryRecord {
+                            name: alloc::format!("cycle-{index}").into_bytes(),
+                            inode: 1,
+                            node_type: NodeType::Directory,
+                            next: crate::DirectoryCursor::new(next),
+                        })
+                        .collect(),
+                )
                 .unwrap(),
             )),
             temporary: None,
