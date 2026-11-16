@@ -1604,7 +1604,7 @@
     ]
   },
   "overlay_namespace_runtime": {
-    "recorded_at": "2026-11-16T22:12:02.989067+00:00",
+    "recorded_at": "2026-11-16T22:24:15.660969+00:00",
     "source_commit": "0f2a1a3dd23e559c5c51091c5bc77add7d846bc1",
     "source_tree": "647160a376aab4a81cf67194b55515f7801a7aec",
     "comparison_base": "583719183d1767852c440ae52326867d68a3dd52",
@@ -1759,23 +1759,42 @@
         },
         "aarch64": {
           "file": "ownership-statx-qemu-aarch64.log",
-          "sha256": "4abb0044ac0c710d62cae53bc626e0f17999c543b318eb6f0fd500c2f26e67c8",
-          "bytes": 19665,
-          "status": "not_passed_or_running"
+          "sha256": "9b5516aebb94ab87c605fe12903a099b545718a189bbf4a69447b7a617f57cfb",
+          "bytes": 48034,
+          "status": "passed",
+          "exit_code": 0
         },
         "riscv64": {
           "file": "ownership-statx-qemu-riscv64.log",
-          "status": "not_run"
+          "sha256": "9814843610fac698fb1310c6fa8696c5146e7513b97d916241c9a5db42561beb",
+          "bytes": 50146,
+          "status": "passed",
+          "exit_code": 0
         },
         "loongarch64": {
           "file": "ownership-statx-qemu-loongarch64.log",
-          "status": "not_run"
+          "sha256": "6673b9825496ab50d6be54fd53ca14b491b6fc88a7b8fde7c6bc4d7387df7e7f",
+          "bytes": 36745,
+          "status": "passed",
+          "exit_code": 0
         }
       },
-      "x86_64_checks": {
-        "passed": 92,
-        "failed": 0
+      "visible_check_counts": {
+        "x86_64": {
+          "passed": 92,
+          "failed": 0
+        },
+        "aarch64": {
+          "passed": 92,
+          "failed": 0
+        },
+        "riscv64": {
+          "passed": 92,
+          "failed": 0
+        }
       },
+      "loongarch64_output": "The existing --capture-failures runner suppresses successful program stdout. The log contains the exact selected ownership program BEGIN/PASSED and total=1 passed=1 failed=0, followed by xtask 1/1 and exit 0. No internal 92-check count is claimed as printed evidence.",
+      "restoration": "Both incorrect Rust changes were removed by restoring the original branch; git diff --exit-code 0ade408bf7..0f2a1a3dd2 -- *.rs succeeds. The restored 18-package std entry and the same x86_64 syscall journey pass again.",
       "suite_entry": "The existing ownership subcase is selected, built, installed and executed. Its failure propagates through STARRY_SYSTEM_TEST_FAILED and STARRY_GROUPED_TEST_FAILED to xtask exit 1; green has 1/1 terminal success.",
       "boot_count": "One selected ownership boot per architecture/run; no new suite entry or independent boot was added.",
       "compilation_diagnostics": "Initial missing constant and Arc borrow errors in the new link query were compiler errors and do not count as behavioral red proof."
@@ -1813,7 +1832,7 @@
         "bytes": 46072,
         "status": "recorded"
       },
-      "runtime_mutant_commit": "184df01a5a",
+      "runtime_mutant_commit": "184df01a5a1d1c773f40a3f9c27e64f32cdafb54",
       "runtime_exit_code": 1,
       "runtime_result": "91 pass / 1 fail at the controlled sibling identity assertion",
       "purpose": "Replace current-thread publication with actual process-wide publication and bypass only the command nonce guard; retain all role, mount and backend checks. The pipe/join handoff must detect sibling identity corruption.",
