@@ -476,21 +476,29 @@ timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；�
 同一 guest-entry 用例还应在取消 timer 前核对 live TI，并屏蔽宿主 timer 线后
 验证 `HVC ECODE + TI pending` 仍为同步退出，最后由 timer 所有者清理。
 
-LVZ refill 的中间目录缺失不能只恢复页表根后直接跳分页宿主。先核对
+LVZ 缺目录不能直接把旧 `ESTAT/BADI` 当成本次访问返回 Rust。按
 [`design/loongarch-lvz-refill-exit.md`](../../../../design/loongarch-lvz-refill-exit.md)
-中的实时宿主模式检查、保存现场与 live IsTLBR/DA/PG 归还顺序；用真实缺页、
-补映射和同指令重入验证，不把该静态缺陷自动当成任意重入停顿的根因。
+清零两个 `TLBRELO`，保留 fault VPPN 并设置 4 KiB PS，经 `TLBFILL/ERTN`
+重试，由普通 page-invalid 异常报告真实 load/store/fetch 与 BADI。普通异常
+再归还客户机 ID、页表和宿主现场，不手工从 refill 模式跳分页 Rust。
+增强 `cpu/guest-entry` 的同一缺目录读取，要求真实 LD.D、原 PC/BADV 与补映射
+后读取结果；旧 HVCL 状态必须使断言失败，不能只证明“有同步退出”。
 
-`TLBRENTRY` 是物理向量，LA64 高于 PALEN 的位只读零；不能向它写入高位
-直映别名后就假定 refill PC 也有高位。由内存所有者分别提供物理入口和
-可执行直映别名，在仍为 `DA=1/PG=0` 时显式跳入直映续行，再开启分页。
-测试应核实实际从物理入口进入，不能只依赖保留 CSR 高位的 QEMU 模型。
+`TLBRENTRY` 是物理向量，LA64 高于 PALEN 的位只读零，不能依赖 QEMU 保留
+高位别名。`CSRWR` 会回填旧 CSR，安装相同根到 PGDL/PGDH 时先复制原输入。
+需要机器边界证明时，在实际分页 wrapper 核对 TGID，在直映入口核对传入根和
+写完的两侧根；停点由当前 ELF 和实际字节确认，协议失败不计为 red。
 
-返回 Rust 后的寄存器断言可能被后续宿主异常恢复掩盖。需要证明 refill 出口
-本身的状态时，用同一 ELF 的实际符号和入口别名在退出 trampoline 首指令处
-核对 CRMD、live IsTLBR 与保存的原 fault，再撤除断点、detach 并继续完整用例。
-观测身份或协议失败不算回归 red；只有确认停点上的契约断言失败才是缺陷证据。
-默认测试入口没有自动装配观察器时，明确记录额外装配及其退出状态，不冒充 CI 覆盖。
+`GTLBC.TGID` 的客户机目标选择必须晚于进入直映汇编入口，返回分页 Rust 前
+必须清零。不能在 `Vcpu::run()` 的分页 Rust 路径提前写客户机 ID：一次普通
+宿主填充就可能被标成客户机条目，造成无法命中的重复填充。该故障会随布局
+改变停点。对照 Linux 7.1 `arch/loongarch/kvm/switch.S`，先确认翻译缓存
+失效、浮点切换及真实机器入口，再诊断客户机 walker。
+
+可信 CPU 用例通过但 AxVM 在首条已映射指令上反复缺目录时，核对二阶段目录。
+`LDDIR` 的目录值是下一级表的物理基址，不能添加叶子 `V/P/MAT`；AxVM 复用
+CPU `Pte::new_table()` 与 `present()` 的地址目录判定。软件查询和模拟器通过
+不能替代硬件基址契约，修复后仍以实际指令前进和 Linux 全部功能断言验收。
 
 嵌套翻译下的调试内存读取也要核对地址空间：某些 LVZ QEMU 的
 `get_phys_page_debug()` 只做 guest 第一阶段，直接读取低 guest PC 可能得到

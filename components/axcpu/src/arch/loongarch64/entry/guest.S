@@ -33,9 +33,8 @@
 .equ CSR_GSTAT_PVM,    0x2
 .equ CSR_TLBRPRMD_PGM, 0x8
 .equ CSR_GTLBC_TGID,   0xff0000
+.equ CSR_GTLBC_USETGID, 0x1000
 .equ CSR_CRMD_IE,      0x4
-.equ CSR_CRMD_DA_PG,   0x18
-.equ CSR_CRMD_PG,      0x10
 .equ CSR_PRMD_PIE,     0x4
 .equ STAGE2_PWCL,      0x13e4d52c
 .equ STAGE2_PWCH,      0x267
@@ -60,11 +59,25 @@
     csrwr   $t0, CSR_PWCH
     li.d    $t0, STAGE2_STLBPS
     csrwr   $t0, CSR_STLBPS
+    // CSRWR exchanges its operand with the old CSR value.
+    move    $t0, $a1
     csrwr   $a1, CSR_PGDL
-    csrwr   $a1, CSR_PGDH
+    csrwr   $t0, CSR_PGDH
     li.d    $t0, STAGE2_ASID
     csrwr   $t0, CSR_ASID
     invtlb  0x0, $r0, $r0
+
+    // This entry executes through DMW: only now may root TLB fills target
+    // the guest. Paged host code must always run with TGID zero.
+    csrrd   $t1, CSR_GTLBC
+    li.d    $t0, CSR_GTLBC_TGID
+    andn    $t1, $t1, $t0
+    csrrd   $t2, CSR_GSTAT
+    and     $t2, $t2, $t0
+    or      $t1, $t1, $t2
+    li.d    $t0, CSR_GTLBC_USETGID
+    or      $t1, $t1, $t0
+    csrwr   $t1, CSR_GTLBC
 .endm
 
 .macro RESTORE_HOST_TRANSLATION
@@ -512,47 +525,27 @@ __ax_cpu_lvz_guest_exit:
 .global __ax_cpu_lvz_guest_tlb_refill_vector
 .hidden __ax_cpu_lvz_guest_tlb_refill_vector
 __ax_cpu_lvz_guest_tlb_refill_vector:
-.Lguest_refill_begin:
     csrwr   $t0, CSR_TLBRSAVE
     csrrd   $t0, CSR_PGD
 
     AX_CPU_WALK_4K .Lguest_stage2_tlb_invalid
+    b       .Lguest_stage2_tlb_fill
+
+.Lguest_stage2_tlb_invalid:
+    // Linux's invalid-table sentinels reach zero leaf entries. Do the same
+    // for a missing directory: retry through a page-invalid exception so
+    // ESTAT, BADV and BADI describe this access, not an older guest exit.
+    csrwr   $zero, CSR_TLBRELO0
+    csrwr   $zero, CSR_TLBRELO1
+    csrrd   $t0, CSR_TLBREHI
+    bstrins.d $t0, $zero, 5, 0
+    ori     $t0, $t0, STAGE2_STLBPS
+    csrwr   $t0, CSR_TLBREHI
+
+.Lguest_stage2_tlb_fill:
     tlbfill
     csrrd   $t0, CSR_TLBRSAVE
     ertn
-
-.Lguest_stage2_tlb_invalid:
-    csrrd   $t0, CSR_TLBRSAVE
-    csrwr   $t0, HOST_VCPU_TMP_KS
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
-    SAVE_GUEST_REGS
-    ENTER_HOST_MODE
-    RESTORE_HOST_TRANSLATION
-    // Hardware enters refill at a physical PC, even if its CSR was given a
-    // high alias. Move to the owner's executable DMW before enabling paging.
-    ld.d    $t0, $sp, {guest_refill_alias}
-    la.pcrel $t1, .Lguest_refill_host_mode
-    la.pcrel $t2, .Lguest_refill_begin
-    sub.d   $t1, $t1, $t2
-    add.d   $t0, $t0, $t1
-    jirl    $zero, $t0, 0
-.global __ax_cpu_lvz_refill_host_mode
-.hidden __ax_cpu_lvz_refill_host_mode
-__ax_cpu_lvz_refill_host_mode:
-.Lguest_refill_host_mode:
-    // The owned fault snapshot retains IsTLBR. Only the live refill bank is
-    // retired here, after its last use and while code and context use DMW aliases.
-    csrrd   $t1, CSR_TLBRERA
-    li.d    $t0, -2
-    and     $t1, $t1, $t0
-    csrwr   $t1, CSR_TLBRERA
-    // Restore paged root mode atomically; do not touch IE, WE, TI or host LIE.
-    li.d    $t0, CSR_CRMD_DA_PG
-    li.d    $t1, CSR_CRMD_PG
-    csrxchg $t1, $t0, CSR_CRMD
-    b       __ax_cpu_lvz_guest_exit
 
 .section .text.ax_cpu_lvz_vectors, "ax"
 .align 12

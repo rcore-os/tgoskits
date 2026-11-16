@@ -23,8 +23,8 @@ unsafe extern "C" {
 /// binding and must never be restored from the bind-time snapshot.
 const ECFG_VS_MASK: usize = 0x70000;
 
-// PLV0, IRQ-off, DA=0/PG=1, DATF=01/DATM=01 and WE=0. Refill can
-// return to this mode without reconstructing state that the ISA does not save.
+// The paged host entry contract: PLV0, IRQ-off, coherent instruction/data
+// access and Watch disabled. Refill itself returns through the hardware ERTN.
 const HOST_CRMD_RETURN_MASK: usize = 0x3ff;
 const HOST_CRMD_RETURN_STATE: usize = 0xb0;
 
@@ -44,7 +44,6 @@ pub fn entry_addresses() -> [VirtAddr; 3] {
 #[derive(Clone, Copy, Debug)]
 pub struct EntryAddresses {
     run: usize,
-    refill: usize,
     refill_phys: PhysAddr,
     vectors: usize,
 }
@@ -73,7 +72,6 @@ impl EntryAddresses {
         }
         Ok(Self {
             run,
-            refill,
             refill_phys,
             vectors,
         })
@@ -217,7 +215,6 @@ impl Vcpu {
             self.context.host_ecfg = read::<4>();
         }
         self.context.guest_tlbrentry = entries.refill_phys.as_usize();
-        self.context.guest_refill_alias = entries.refill;
         self.context.guest_eentry = entries.vectors;
         self.entry = entries.run;
         // SAFETY: this binding owns the local bank; physical IRQ passthrough
@@ -252,7 +249,6 @@ impl Vcpu {
                 return Err(VirtualizationError::UnsupportedHostState { crmd });
             }
             update::<0x50>(0xff0004, ((guest_id as usize) << 16) | 4);
-            update::<0x15>(0xff1000, ((guest_id as usize) << 16) | 0x1000);
             // Preserve the existing LVZ interception configuration: guest CSR,
             // CPUCFG and IOCSR traps are handled by the VM owner after exit.
             update::<0x51>(

@@ -1,185 +1,124 @@
-# LoongArch LVZ refill 错误退出
+# LoongArch LVZ 世界切换与二阶段缺页
 
-## 1. 问题与取舍
+## 1. 问题与依据
 
-CPU 层负责从客户机机器状态安全返回宿主，AxVM 再解释已经卸载的退出。
-本设计只修复二阶段页表的中间目录缺失时返回 Rust 的机器边界，不改变客户机
-地址解析、缺页所有权或软件设备模拟，也不宣称它已经解释了某次实板停顿。
+3A6000 的可信 `cpu/guest-entry` 和 AxVM Linux 启动分别暴露了世界切换、
+目录编码及缺页退出问题。QEMU 中已有通过结果没有覆盖全部实机语义，
+因此验证须同时保留真实寄存器边界和 Linux 用户态行为。
 
-### 1.1 已核实缺口
+### 1.1 三个故障阶段
 
-`entry/walker.S::AX_CPU_WALK_4K` 在目录项为零时转入
-`entry/guest.S::.Lguest_stage2_tlb_invalid`。该出口既要归还 refill 硬件改变的
-`CRMD.DA=1, PG=0`，也要在开启分页前改变 PC 的地址形式。只恢复页表根不
-恢复分页模式；只恢复 DA/PG 而仍从低物理 PC 取指，同样不能保证安全返回。
+`Vcpu::run()` 在分页 Rust 路径提前写 `GTLBC.TGID`，会把后续宿主 TLB
+填充标成客户机条目，造成宿主无法命中的重复填充。停点随代码布局变化，
+测试打印“进入客户机”不代表已经执行 `ERTN`。
 
-依据是 [LoongArch Reference Manual - Volume 1](https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html)
-1.10 的 6.3.4、7.4.1、7.5.13 和 7.5.17 节。refill 还会关闭 IE，并在实现
-Watch 功能时关闭 WE；`TLBRERA.IsTLBR` 为可写字段，决定 refill 专用寄存器
-组的使用。不能只修 DA/PG 而忽略其余返回前提。
+AxVM 的 `LoongArchPTE::new_table()` 原来给目录基址附加 `V/P/MAT` 叶子
+属性。真实 `LDDIR` 把目录值作为下一级表的物理基址，因此从错误偏移继续
+遍历；Linux 在首条已映射指令上反复发生缺目录退出。
 
-同手册 7.5.11 明确 `TLBRENTRY` 保存物理入口地址，LA64 的
-`[63:PALEN]` 为只读零、写入忽略。因此把可执行直映别名写入该 CSR，不能
-证明硬件会保留 PC 的高位。当前 LVZ QEMU 保留完整写值的行为不能替代这条
-ISA 约束，也不能用其高位入口通过外推真实物理入口安全。
+缺目录直接返回宿主还会保留旧 `ESTAT/BADI`。Linux 首次 UART 访问因而可能
+携带上一条 CPUCFG 指令，无法按真实 load/store 解码 MMIO。单独清除
+`IsTLBR` 和恢复 `DA/PG` 不能补足这条指令信息。
 
-### 1.2 方案选择
+### 1.2 权威参照与取舍
 
-保留现有保存现场与直接退出协议，在直映别名内显式归还 refill 改变的地址
-翻译状态，比引入新的异常返回协议更小。基本 ISA 允许软件写 DA/PG 与
-IsTLBR；一次掩码写保证 DA/PG 始终处于合法组合，不需要新增 `ERTN`。
+固定对照 Linux 7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`：
+`arch/loongarch/kvm/switch.S` 在直映代码中切换共享页表与 TGID；
+`kvm/mmu.c::kvm_populate_gpa()` 用 `__pa(child)` 发布目录；
+`mm/tlbex.S::handle_tlb_refill` 遍历到无效叶子后重试，由普通异常报告访问类型，
+`kvm/exit.c::kvm_handle_rdwr_fault()` 再消费该异常的 BADI。
 
-新增 refill `ERTN` 虽能由硬件恢复分页，却还需要完整证明虚拟化扩展中
-PGM/PVM 的返回模式选择，现有基础手册不足以单独完成该证明。填无效 TLB 项、
-返回客户机再进入普通页异常则会改变 AxVM 的 fault 分类、注入选择和地址解释。
-这两者均不作为本次无语义扩张修复。
+项目选择恢复同一硬件契约，复用已有 CPU 描述符与普通退出路径。不为缺目录
+增加客户机指令复制、第二份 RAM 视图或专用 MMIO 后备；不从物理地址零继续
+取表，不把旧 BADI 当成本次访问，也不通过改变超时或轮询处理停顿。
 
-## 2. 机器状态契约
+## 2. 机器状态与所有权
 
-`Vcpu` 继续是本地 LVZ 寄存器组的唯一借用者。支持条件由每次运行的实时状态
-检查决定，不用 bind 时快照替代，也不引入第二份模式恢复状态。
+`ax-cpu` 拥有本核 LVZ 寄存器切换及页表描述符编码；AxVM 拥有 VM 的映射、
+设备与故障处理。内存所有者提供入口地址和物理页表根，不能由 CPU 层猜测
+宿主布局、板卡地址或设备归属。
 
-### 2.1 支持的宿主状态
+### 2.1 入口与翻译根
 
-`Vcpu::run()` 在任何本次运行的 CSR 写入、客户机现场修改或翻译失效之前，
-读取 CRMD 并确认 PLV0、IE=0、DA=0、PG=1、DATF=01、DATM=01、WE=0。
-现有调用方的固定 CPU、
-独占 LVZ 和 IRQ-off 安全前提仍然适用；分页及 WE 条件由函数检查，不能把
-可检查条件全部转交为调用方新的 unsafe 义务。
+`EntryAddresses::new()` 接受所有者准备的执行别名及真实物理 refill 地址。
+`TLBRENTRY` 必须写物理地址，高于 PALEN 的位不能作为可用 PC 高位；
+`run_guest()` 及普通退出向量通过保留的直映别名执行。`Vcpu::run()` 仍在进入前
+拒绝不符合当前分页 PLV0、IRQ-off、coherent DATF/DATM 和 Watch 关闭契约的宿主。
 
-不满足时返回 LoongArch 专属的
-`VirtualizationError::UnsupportedHostState { crmd }`，在直接 CPU API 的返回值中
-保留原始寄存器供诊断，
-不执行客户机或修改运行状态。错误变体只在 LoongArch 暴露，不改变其他架构
-的支持矩阵。direct mode 与 Watch-enabled root 不属于本入口支持范围，不
-自动清 WE 或开启分页来“修正”调用环境。
+`Vcpu::set_root()` 选择四级 4 KiB 根，`SWITCH_TO_GUEST_TRANSLATION` 安装
+相同根到 root `PGDL/PGDH`。`CSRWR` 会把旧 CSR 值回填源寄存器，因此必须
+先复制输入，再分别写入；第二次写入不能消费第一次交换出的旧根。
+宿主两侧根仍分别保存和恢复。
 
-DATF/DATM 的建立仍由宿主内存所有者负责。基础手册对软件 refill 后开启
-分页的这两个值有专门约束；本次入口只接受当前 someboot 已建立的 01/01，
-不声称支持其他地址翻译与内存类型组合。refill 不改变它们，恢复路径保留
-live 值。当前 someboot 的分页 root 为 `CRMD=0xb0`，与该支持条件一致。
-AxVM 当前将机器运行错误折为 `BadState`，不保留这份原始 CRMD；本设计不
-扩大其错误协议，也不承诺最终控制 owner 能取得该寄存器诊断。
+### 2.2 客户机填充目标
 
-### 2.2 入口地址形式
+`Vcpu::run()` 在分页 Rust 中选择 `GSTAT.GID`、配置拦截并失效旧客户机翻译，
+保持 `GTLBC.TGID=0`。`run_guest()` 完成浮点现场切换后跳入直映机器入口，
+该入口安装客户机根及 walker，最后从 `GSTAT.GID` 选择 `GTLBC.TGID` 并
+启用 `USETGID`。
 
-宿主内存所有者分别提供硬件使用的物理向量和软件使用的可执行直映别名，
-CPU 层不从任意虚拟地址猜测或掩码生成物理地址。LoongArch 的
-`EntryAddresses::new(aliases: [VirtAddr; 3], refill_phys: PhysAddr)` 保留三项
-入口别名，并单独接收 refill 物理入口；构造时检查既有入口对齐和物理 refill
-的 4 KiB 对齐。调用方须对 `entry_addresses()` 返回的原始、当前已装载
-refill 符号使用其有效 `virt_to_phys` 转换，提供恰好与 refill 别名对应的物理
-地址。该真实装载地址的可达范围及别名映射由内存所有者证明，不能仅因其类型
-为 `PhysAddr` 就推定已满足当前 CPU 的物理位宽。两种地址必须按同一份保留
-代码对应，别名在相关模式下可执行，代码、上下文与映射的寿命覆盖整个绑定。
+从设置 TGID 到 `ERTN`，代码、上下文和后续 refill 均不依赖宿主分页填充。
+普通退出先由 `ENTER_HOST_MODE` 清零 TGID，再恢复宿主根和分页 Rust 上下文。
+guest ID 继续由原有 vCPU 所有者提供，不增加第二份状态或配置。
 
-`GuestContext::guest_tlbrentry` 保存要写入硬件 CSR 的物理值，
-`guest_refill_alias` 保存不会被硬件字段截断的直映入口别名；后者追加到机器
-镜像，汇编一律从 Rust `offset_of!` 和 `size_of!` 生成偏移及大小，不另设
-手写布局。普通 `guest_eentry` 继续使用分页下的可执行向量别名。
-`SWITCH_TO_GUEST_TRANSLATION` 只向 `TLBRENTRY` 写物理入口，使 QEMU 与实机
-都能走同一低物理入口路径。
+### 2.3 二阶段目录
 
-ArceOS 的可信用例与 AxVM 的 LoongArch 绑定分别通过现有 `virt_to_phys`
-能力取得 refill 物理地址，再构造入口集合；不新增平台地址掩码，也不要求
-调用方补低地址身份映射。这是现有可执行代码所有权的两种地址表达，不产生
-第二份寄存器恢复状态。
+`LoongArchPTE::new_table()` 复用 CPU `Pte::new_table()`，只保存对齐物理地址。
+最终叶子仍由 AxVM 的 `MappingFlags` 决定权限、内存属性与大页位。
+`LoongArchPTE::present()` 同步复用 CPU 判定，接受合法地址目录和有效叶子，
+不再要求目录带叶子 `V` 位。
 
-这会调整 LoongArch 公开构造函数及 `repr(C)` 机器镜像布局，工作区两个消费方
-必须同时迁移，并与 CPU 汇编一起重新编译；不保留从别名猜物理地址的旧构造
-入口。外部调用方也须显式提供这对地址并重编译，不能把本次布局变更视为
-跨版本二进制兼容。
+软件查询和硬件 walker 使用同一描述符规则，不在 `LDDIR` 后额外掩码来兼容
+错误目录。页表没有持久化格式；更新代码后重建 VM，按既有映射发布及客户机
+翻译失效协议启用新表。
 
-### 2.3 refill 错误出口
+### 2.4 缺目录后的访问异常
 
-`SAVE_GUEST_REGS` 必须先把原始 TLBRERA、TLBRBADV、ESTAT、ERA 与客户机
-现场保存到 `GuestContext`。软件保存的 `host_tlbrera.IsTLBR` 及原 fault PC
-不能因修复硬件返回状态而被覆盖；`Vcpu::run()` 和 AxVM 仍按这份拥有值解释
-同一次退出。
+`__ax_cpu_lvz_guest_tlb_refill_vector` 继续使用 `AX_CPU_WALK_4K`，在每层检查
+空目录。缺目录时把两个 `TLBRELO` 清零，保留原 `TLBREHI.VPPN`，只把页大小
+设为 4 KiB，随后与正常叶子共用 `TLBFILL -> 恢复 t0 -> ERTN`。
 
-完成 `ENTER_HOST_MODE`、宿主页表根、walker、ASID、向量和现有失效操作后，
-PC 仍可能是物理入口的低地址。保持 `DA=1/PG=0`，从已保存的上下文取得
-`guest_refill_alias`，再通过已有 `la.pcrel` 原语分别取得同一 refill 段的入口
-与内部续行 `__ax_cpu_lvz_refill_host_mode` 在当前执行地址形式下的位置。
-二者相减得到续行距入口的距离；将该距离加到所有者的直映入口后，以间接
-跳转显式进入对应直映续行。两次 PC 相对定位采用同一执行别名，求差会消去
-其共同装载偏移，不需要将标签差编码为单条立即数，也不固定某次构建的
-字节偏移。该续行符号只标识真实的机器转换边界，不构成 Rust API 或测试
-回调；不得以当前 PC 已有高位或 CSR 保留高位省略显式转移。
+无效条目让同一客户机指令重试，CPU 产生 load/store/fetch page-invalid
+普通异常。该异常提供当前 `ESTAT.ECODE`、`BADV`、`BADI` 和 ERA，再经唯一
+`VS=0` 普通入口保存现场、归还 TGID 和宿主翻译。AxVM 的既有普通缺页与
+MMIO 分派消费这份拥有值现场，只有设备实际接管后才推进 PC。
 
-只有在该直映续行内才清 live IsTLBR，随后不得再执行依赖 refill 寄存器组的
-操作；用一次 `CSRXCHG` 只更新 CRMD.DA/PG 为 0/1，再进入原退出 trampoline。
-上下文栈在跳转前已经使用既有直映别名；续行、trampoline 和恢复后的栈映射
-仍由绑定安全契约保证，不依赖低地址身份映射。
+refill 不再直接跳回宿主 Rust，也不再手工清 `IsTLBR` 或重建 `DA/PG`；硬件
+`ERTN` 完成 refill 模式退出。删除专用 refill-to-host trampoline 和
+`GuestContext.guest_refill_alias`，机器偏移仍由 Rust 生成。调用方须重新编译，
+不能依赖旧 `GuestContext` 二进制布局或缺目录必然返回 `IsTLBR=1` 的旧假设。
 
-这条序列不执行 `ERTN`，不依赖 PVM/PGM 选择返回模式；既有
-`ENTER_HOST_MODE` 对这些位的写入保持不变。不增加 LLBit 操作，不
-清 TI，也不修改 LIE。IE、PLV 与 WE 已由入口和运行支持条件保证为零，
-DATF/DATM 及其余 live 位保持不变。trampoline 仍在返回 Rust 前保存客户机
-FP、恢复宿主 FP、TLS、CPU anchor 与栈。普通退出和成功 refill 保持原路径；
-本设计不提供机器错误恢复或对不支持宿主模式的静默回退。
+## 3. 验证与边界
 
-## 3. 定向验证
+验证使用项目入口，并区分功能回归、额外机器观察和 Linux 板测。调试插桩只用于
+定位与取证，最终运行恢复原超时、成功标记及客户机全部断言。
 
-现有 `cpu/guest-entry` 已覆盖有效映射、替换 backing、宿主 timer、pending TI
-下的同步退出和解绑，缺少的是“中间目录未建立”的真实故障返回。增强同一
-可信用例，不新建替身或按寄存器拆分小测试。
+### 3.1 CPU 与机器边界
 
-### 3.1 缺页与修复
+增强同一个 `cpu/guest-entry` 用例：缺目录读取必须返回 load page-invalid、
+保留原 load PC 与 BADV，并报告实际 `LD.D`，不能报告残留 HVCL。补上映射后
+同指令读取新 backing；原有 FP、CPU anchor、TLS、IRQ/LIE、映射替换、宿主
+定时器抢占、pending TI、重入与解绑判定继续保留。
 
-保留有效代码页，用既有 guest load 访问位于未建立中间目录分支的数据地址。
-第一次运行必须返回同步退出，原 PC 与保存的 TLBRBADV 精确匹配该 load；
-保存的 IsTLBR 为一，live IsTLBR 已清零。宿主 CRMD 的分页、内存类型、
-IRQ-off 与 WE 状态保持约定，ECFG.LIE 不变；若 TI 先前已经 pending，退出
-不得清除它。
+额外只读 RSP 观察在真实运行的分页 wrapper 与直映入口核对 TGID，以及两侧
+根是否等于传入根。停点由当前 ELF 符号与实际指令定位并核对字节；分别恢复
+提前切 TGID 和串联 CSRWR 时，同一观察器必须因契约断言失败。修复后撤断点、
+detach，并让原 CPU 用例继续完成。协议、构建或身份失败不计为 red。
 
-随后为同一数据地址映射已有 backing，并按现有生产失效路径再次进入同一
-load，必须读到 sentinel 并正常以 HVCL 返回。继续执行既有映射替换、timer
-与解绑判定，不削弱其断言。CPU 用例只证明原始 PC/BADV 与机器恢复，不复制
-AxVM 地址转换公式冒充完整 GPA 解释证明。
+这些观察器没有自动接入默认 CI，不能把手工机器检查说成默认门禁覆盖。
+最终无调试器 QEMU 与 3A6000 CPU 用例仍须独立执行；普通宿主 QEMU 缺少 LVZ
+时使用项目固定 LVZ 环境，不能把环境错误算作回归。
 
-### 3.2 返回前的机器边界
+### 3.2 Linux 实板验收
 
-只在 `Vcpu::run()` 返回 Rust 后读取 CSR 不足以证明出口正确。已核实的
-LVZ QEMU 运行中，旧实现能通过这些后置断言，但在实际直映别名下的
-`__ax_cpu_lvzvmexit_trampoline` 首指令处仍为 `CRMD=0xa8`、
-`TLBRERA.IsTLBR=1`。后续何种宿主路径使最终检查通过尚未定位，不能把普通
-用例通过当成该缺口的敏感度证明，也不预定为某个 QEMU 模型错误。
+Linux 用例按[3A6000 设计](axvisor-loongson-3a6000-linux.md)运行。
+目录问题的定位记录须区分首条指令反复缺页、修复后的实际指令前进，以及后续
+设备故障；局部进展或诊断用例退出零不能替代 Linux 用户态通过。
 
-为本修复补充外部 RSP 机器边界检查，不增加 CPU 公共接口、测试 hook 或
-替身。观察器必须使用本次运行的同一 ELF，在真实 `Vcpu::run()` 调用中
-确认目标 load 引发的 root refill 与原始 fault PC、地址，再于 trampoline
-首指令处要求 `CRMD & 0x3ff == 0xb0` 且 live `IsTLBR=0`。此时保存的
-`GuestContext::host_tlbrera` 仍须保留该 fault 的 `IsTLBR=1`，不能把清硬件位
-误写成清软件现场。
+最终保留同一版本两次独立板级启动，实际进入 shell，核对 Linux 7.1 与
+LoongArch、确定性计算、RAM 文件写读、定时等待、只读 VirtIO 块设备和 ext4
+夹具内容。每轮记录源提交、上传 ELF 和宿主归档摘要、完整日志及本次租约释放。
+运行中的 Axvisor 不会因构建机测试进程结束自动回到 axloader，下一次启动需要
+通过本任务已取得的板卡租约执行板级重启，不操作其他会话。
 
-检查还须确认实际 refill PC 与 live `TLBRENTRY` 等于所有者给出的物理值，
-并在改变 DA/PG 的指令执行前确认 PC 已进入对应直映续行；只从模型保留的
-高位 CSR 入口开始观察不覆盖这项前提。在同一物理入口装配下，移除显式
-地址跳转的错误实现应在这项 PC 判定上明确失败，不能靠等待超时作为判定。
-
-符号与寄存器编号从实际 ELF 和目标 XML 取得，两种入口地址来自运行中的
-上下文；接受停点前核对该地址形式下的实际指令字节。不能固定某次构建的
-绝对地址、符号偏移或寄存器编号，也不将 guest 低地址的调试内存读值冒充
-二阶段翻译后的代码。
-停止、单步与采样保持有界，不写客户机内存或寄存器，不延长原用例超时。
-观测能力缺失、身份或字节不匹配、未到达目标停点属于验证受阻，不能伪装成
-缺陷 red；已确认停点上的契约断言不满足才是错误实现的失败证据。
-
-同一观察器应先在旧实现的真实运行中因上述断言失败，再验证修复后该边界
-通过；通过后撤掉断点并 detach，让原用例继续完成补映射重入、timer、
-pending TI 与解绑判定。机器边界断言结果和原用例结果分别记录，任一失败
-都不得报告整项通过。当前默认 QEMU 入口并未自动装配该观察器，必须保留
-额外装配、失败传播和精确运行身份，不能把一次调试日志冒充默认持续集成门禁。
-不在任意 Rust 函数调用图上制造直映别名来锁存状态；现有入口契约没有保证
-所有代码、静态数据、间接调用和栈均支持这种执行方式。
-
-### 3.3 证据适用范围
-
-构建或环境失败、零测试以及只有页表查询结果都不是有效红绿。修改通用 LVZ
-路径后运行相应 LVZ QEMU 与真实目标板卡；调试时单步可能改变 IRQ 和 timer
-推进，边界检查不替代无调试器运行的 timer、重入和实板证据。
-
-独立领域核对先检查支持条件与完整恢复序列，再审查实现。正式交付前移除所有
-临时 phase/control 探针，保留可复现命令、精确源版本、镜像摘要和真实失败
-边界。IOCSR 软件隔离与最终 Linux 双次独立板级启动仍是另外的必要证据。
+CPU 与页表修复不外推客户机 SMP、多 VM、设备直通、性能或完整发行版兼容。

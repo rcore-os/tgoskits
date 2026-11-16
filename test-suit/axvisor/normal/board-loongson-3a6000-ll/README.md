@@ -66,5 +66,16 @@ LoongArch 架构、确定性计算、RAM 文件写读和定时等待，以及 `/
 完整交付还要求同一最终版本第二次独立板级启动，并记录两轮上传镜像摘要、
 完整日志和板卡租约释放。当前开发记录在
 [#2798](https://github.com/rcore-os/tgoskits/issues/2798) 和
-[草稿 PR #2799](https://github.com/rcore-os/tgoskits/pull/2799)；
+[PR #2799](https://github.com/rcore-os/tgoskits/pull/2799)；
 其中的局部静态检查、Hello 或诊断采集结果不能替代这两轮 Linux 验收。
+
+### 2.3 虚拟化入口回归
+
+客户机启动依赖[LVZ 世界切换与缺页契约](../../../../design/loongarch-lvz-refill-exit.md)：
+只在直映入口切换 `GTLBC.TGID`，以独立输入写入两侧根，目录只保存物理基址。
+缺目录先填入无效条目，再由普通 page-invalid 异常报告真实指令，供虚拟串口
+和其他 MMIO 解码使用。可信 `cpu/guest-entry` 验证这些入口行为，Linux 用例
+继续验证完整装配；前者通过不能替代后者。
+
+最小 BusyBox initramfs 不保证已有 `/tmp`。RAM 用例先创建测试目录，再执行
+写入、内容校验和定时等待，任何准备或功能失败仍输出原失败标记。

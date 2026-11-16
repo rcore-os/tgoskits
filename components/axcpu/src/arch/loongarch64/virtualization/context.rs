@@ -173,8 +173,6 @@ pub struct GuestContext {
     pub guest_tlbrentry: usize,
     /// Saved `guest_eentry` register value.
     pub guest_eentry: usize,
-    /// Executable direct-map alias of the physical root refill entry.
-    pub guest_refill_alias: usize,
 }
 
 impl GuestContext {

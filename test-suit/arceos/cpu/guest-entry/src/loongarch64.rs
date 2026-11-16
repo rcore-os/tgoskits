@@ -170,16 +170,24 @@ pub fn run() {
             exit.pc, load_pc,
             "refill exit must retain the faulting load"
         );
-        assert_ne!(
+        assert_eq!(
+            (exit.status >> 16) & 0x3f,
+            1,
+            "missing backing must report a load page-invalid exception"
+        );
+        assert_eq!(
+            exit.instruction, 0x28c0_00c4,
+            "page-invalid exit must capture the faulting LD.D, not stale HVCL"
+        );
+        assert_eq!(
             state.context.host_tlbrera & 1,
             0,
-            "saved refill state must retain IsTLBR"
+            "the refill must finish before the page-invalid exit"
         );
-        assert_eq!(state.context.host_tlbrera & !1, load_pc);
         assert_eq!(
-            state.context.host_tlbrbadv,
+            state.context.host_badv,
             refill_address.as_usize(),
-            "refill exit must retain the raw fault address"
+            "page-invalid exit must retain the fault address"
         );
         assert_eq!(
             registers::read_csr::<0x8a>() & 1,
