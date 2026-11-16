@@ -427,3 +427,39 @@ Ext4 尚未取得工厂本身的专属运行旅程。复合数据/open、xattr�
 效果汇总尚待接入 Overlay，不能把这一原生组件结果写成完整 copy-up 或 ABI 通过。
 新增宿主页提供者含明确所有权/布局证明的少量 unsafe，仍需最终独立审查。精确源码和
 日志摘要见 `native_copy_up_staging`；后续仍按第 4、5 节继续。
+
+
+### 9.13 原生数据端点
+
+`b064cb685d` 将 `FileIoRequest` 接到已有原生暂存复制，沿每层实际保存的 mounter
+选择 canonical cache 的真实 owner，并保留全部中间 PathHandle。写端点要求原
+PreparedWrite 的 exact-mount 权利及声明写边；读边不能补写权。Overlay 的 hook
+只选择已有 upper，物化仍须先由命令完成。
+
+错误变异 `9aaafb59d4` 允许读边用于写端点，在同一 VFS 组件旅程中绕过预期的
+CrossesDevices；正确源码通过 71 项及集成、文档测试。该源码的 9 项 Clippy、
+x86_64 fs-basic 与 Axvisor AArch64 125 项通过；标准库为 18 包中 17 过，Kernel
+标准库及 Clippy 首项仍只失败于 5 个旧 Overlay 方法。普通描述的动态端点、打开前
+物化、全部 native writer 与映射仍待接入；接受过的 fd 权限不能被每次 I/O 重新
+授权。证据为 `native_file_io_selection`。
+
+### 9.14 后备读取的完成责任
+
+`51e1a68dc0` 将 Metadata/Lookup/Xattr 的读取完成登记到同一 Scope，调用者只取得
+Ready/Retry 快照。Ext4 保留真实 staging 或核心 journal-progress 原因，全部 gate
+结束后才执行压力，所有 admission 退出及 retire 结束后才释放 finish 所有者。
+`522b8c9c1a` 的 PreparedRead 借用实际 receiver，在 callback 前按只读角色准备
+全部依赖，继续使用同一完成流程；普通 WouldBlock 不触发重试。
+
+错误变异 `6878e1eeb5` 丢掉 Ext4 读取压力；既有 staging 旅程在两个启用 Ext4 的
+AX profile 中都未发生真实设备刷新，稳定失败。恢复后同一 Metadata/Lookup/Xattr
+旅程通过，并验证压力阶段不持 state/namespace gate、admission 仍活动，以及下一轮
+读取成功。原 admission 图旅程另验证只读挂载、零写租约、exact mount 和完整退出后
+重试。增强夹具曾因保留返回路径而使最终释放断言失败，`b3e4668cce` 在该断言前
+显式结束返回路径；这不是产品红证据，也没有放宽原断言。
+
+最终源码 `b3e4668cce` 的五个 AX profile、VFS 71 项及集成、文档通过，标准库仍为
+18 包中 17 过，唯一失败是 Kernel 的 5 个旧 Overlay 方法。9 项 VFS/AX Clippy、
+最后 3 项 VFS Clippy、x86_64 fs-basic 和 Axvisor AArch64 125 项通过。Kernel
+Clippy 首项因同样 5 个方法失败，其余 71 项未执行。普通 Overlay owner、目录批次、
+统一 lookup 和完整 ABI 验收仍待继续；证据为 `typed_backing_read_completion`。

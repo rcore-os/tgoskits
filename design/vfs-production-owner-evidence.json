@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-11-16T19:33:32.336283+08:00",
+  "recorded_at": "2026-11-17T01:45:44.403289+08:00",
   "repository": "rcore-os/tgoskits",
   "pull_request": 2800,
   "scope": "Owner/Snapshot production migration, paired Kernel FS/MNT bindings, open paths and mappings; syscall compatibility remains unverified",
@@ -1188,6 +1188,158 @@
       "Composite data/open endpoints, actual xattr owner integration, complete ancestor staging, logical effect aggregation and final syscall validation are still pending.",
       "Ext4 reuses the native unlink/rename mechanisms but a dedicated real Ext4 staging journey has not run yet.",
       "The initial integration fixture added small allocator unsafe blocks; final qualified independent review remains required."
+    ]
+  },
+  "native_file_io_selection": {
+    "source_commit": "b064cb685d953c859ea524b4fdd869817964bbba",
+    "source_tree": "15c7fae8301be3b2512d0a0e88999b1cf90109f4",
+    "source_files": {
+      "design/vfs-lookup-ownership.md": "b0ce38d48e4655da887c2367dc90adce59611a16f4d8756d05cec8d4ea68aa04",
+      "fs/ax-fs-ng/src/file/staging.rs": "b14705ae1d6770040fd80d36d37a9c32d1d47b43090e6c10e88c7aa5a99915ce",
+      "fs/axfs-ng-vfs/src/file_io.rs": "d557388f85a61b423300675271f4809fde56b3350e08503de5ff0c8f38d60be2",
+      "fs/axfs-ng-vfs/src/lib.rs": "574c976ef37131dec93d1cd9fe749d3c7d9ced73a3a27e9c818f959561c4802d",
+      "fs/axfs-ng-vfs/src/metadata/forward.rs": "d6cf0cb3246c5edf6bb5425b52ad72d3d043246fbbb54ae8742a7c413d2ef0a8",
+      "fs/axfs-ng-vfs/src/node/file.rs": "b30d759d84b05e4f1095c34685180f04d15e6c834c47729747bbc6f14fc61be7",
+      "fs/axfs-ng-vfs/src/staging.rs": "fe18e01a632a3f5849b3ef48b512875d1367d0be2a581cd229a725c4473aa0fc",
+      "os/StarryOS/kernel/src/pseudofs/overlay/mod.rs": "0880c83f204a6e13cf1317d60a3ff4ccb310587f0c89178341710bc5e15931af"
+    },
+    "implemented": [
+      "FileIoRequest privately binds the initial PathHandle and optional original PreparedWrite, then validates actual native identity or strict saved-mounter backing descent.",
+      "Every selected endpoint retains all intermediate PathHandles. Write descent requires a declared writable edge and the original exact-mount lease; read edges never upgrade into writes.",
+      "Actual staging data now selects native canonical cache endpoints through this chain. The Overlay hook selects its existing upper for writes; ordinary descriptors, materialization and mappings remain pending."
+    ],
+    "behavioral_red": {
+      "green": "b064cb685d953c859ea524b4fdd869817964bbba",
+      "red": "9aaafb59d4bd17b57ea2084e15398ae649e59250",
+      "mutation": "Check only original root lease and admit read edges for writable endpoint selection.",
+      "pushed": false,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/file-io-red.log",
+        "sha256": "7154c5b50adf2289b1123676118bd52465512a952d89e94d21bfe3bb1e3d291e",
+        "bytes": 272920
+      },
+      "result": "The same VFS component journey rejected the mutant: allowing writable selection through a read edge bypassed expected CrossesDevices. The correct version passed all 71 VFS unit tests."
+    },
+    "validation": {
+      "file-io-final-green.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/file-io-final-green.log",
+        "sha256": "ee74d159fb4d90430f4df2f5f0b5fdf14aa532546b301b26819d620f79d7211a",
+        "bytes": 274673
+      },
+      "file-io-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/file-io-clippy.log",
+        "sha256": "c20b301027df2008ee31508566ec723eb8e2a9ef4424b26490ea14dbc84630fc",
+        "bytes": 4238
+      },
+      "file-io-kernel-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/file-io-kernel-clippy.log",
+        "sha256": "4208b97d0029f876084d58723174f4a93f223256712805245bd5d3288ae72966",
+        "bytes": 3975
+      },
+      "file-io-fs-basic-x86.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/file-io-fs-basic-x86.log",
+        "sha256": "a75be5970eca3a4a93bd45ec57c5f92d753a85230ae65069eda489cae22948c3",
+        "bytes": 28671
+      },
+      "file-io-axvisor-ktest.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/file-io-axvisor-ktest.log",
+        "sha256": "5bab73c371a66f014eccdb55e7b74d0752c6e9e0eb0d104725d59b973bef4d2a",
+        "bytes": 75699
+      }
+    },
+    "result": "VFS/AX Clippy 9/9, x86_64 fs-basic and Axvisor AArch64 125/125 passed. Std selected 18 packages, 17 passed; Kernel and its first Clippy check still failed on five legacy Overlay methods.",
+    "limitations": [
+      "Component probes are not complete Overlay or syscall proof.",
+      "Descriptor access accepted before chmod must not be reauthorized on each subsequent native endpoint use; this consumer migration remains incomplete."
+    ]
+  },
+  "typed_backing_read_completion": {
+    "source_commit": "b3e4668cce7fef4045e3eddbe1de999fe4a2fc82",
+    "source_tree": "801980dbc62ab49a7f2c2cf5cf105f82558b6382",
+    "source_files": {
+      "design/vfs-lookup-ownership.md": "0e727583f0c87c4fec010ad23b5bc2ad7ff6420ae3e226cd66784cf34f5dba5e",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/mod.rs": "06602a1011caf2dbe28827188645887b525e42eaa8632e9757c4712d383c398a",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/namespace/rename/admitted.rs": "103d978bddd42d28fb9649a7c2788e313cbde83226605f993fcfb021429c4305",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/namespace/mod.rs": "48bdc5c4025716d9a424c7e5e1d55f6ae9008e5de34858ecb6431dc23a5cbc21",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/inode/xattr.rs": "d214796fac2e7f70d6a182f944b6bcad8f3ab6489e5a619e359f5cb9abdc3351",
+      "fs/ax-fs-ng/tests/backing_lookup.rs": "1a667d1f32827cdc8a44e608dff1e574b034dc7f01e999cf666228430efac866",
+      "fs/axfs-ng-vfs/src/fs.rs": "3c68bedcec31111b862d3dadb72ff266ac164e400f978a2faba8261c9cae8436",
+      "fs/axfs-ng-vfs/src/mount/tests/prepared_write/read_backing.rs": "51dbaadaec3285d22eff1801dbd28b65842938f15a1e43fe00ed60c3ab691b91",
+      "fs/axfs-ng-vfs/src/namespace_admission.rs": "16461ce781d3078bff2d11f6ead321e076bfb0c31e1956469f8c8bca011df063",
+      "fs/axfs-ng-vfs/src/namespace_operation/backing_query.rs": "a9b19ded5fbf7472b165a0a8522dc15120d25ed97cc73775fbc309db00c182d8",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "7343e8554a5b2fd60af0bdac08a1068993b7755bc9e9b6df407236826dca3cea",
+      "fs/axfs-ng-vfs/src/namespace_operation/read_result.rs": "dbb93b2b90f34813e648e2693489b8b59568d56fb17c807204e2b990717358e7",
+      "fs/axfs-ng-vfs/src/namespace_operation/registration.rs": "a740fc8df6c5e08337e6bd62e6ddacdd3499a6478e8c1f63faaa4281dae16ee1",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests.rs": "9776c74531d4eba5e4a4f2d3b0ff56e4411d7b65f62230dedc052888b8df9826",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests/backing_queries.rs": "a275409e3b38c9209a32f7bf705a7a2c848c7ddba8e3be79c116575cc6cd830c",
+      "fs/axfs-ng-vfs/src/node/dir/completion.rs": "d5d543f6568948ffccfa4b690c442b3dcfeb08d8e171f2ac4eb3764eb3aa209a",
+      "fs/axfs-ng-vfs/src/prepared_write.rs": "b613357276d69854b802a86c2299c287d876269e3d085efb6f02e425a1abc5e5"
+    },
+    "implemented": [
+      "Privately bound backing reads return NamespaceCompletion<NamespaceRead>. The original reservation, retirement collection and Scope own all typed read pressure and finish phases.",
+      "Callers receive only Ready(VfsResult<T>) or Retry. Ext4 captures actual staging or typed core journal progress, rather than inferring restart from an errno.",
+      "PreparedRead borrows the actual root receiver without a synthetic mount and prepares all declared dependencies read-only. Its pure callback receives only a receiver-bound backing-query view.",
+      "The existing admission graph journey proves exact mounts, all receiver admissions, no writer leases, fresh attempts after explicit Retry and no replay of ordinary WouldBlock."
+    ],
+    "behavioral_red": {
+      "green": "51e1a68dc02905adc8645047bbad862e6458aa59",
+      "red": "6878e1eeb55cc8c2508cef101a6b625907a9ed33",
+      "mutation": "Discard the actual Ext4 backing-read pressure cause without running its native pressure phase.",
+      "pushed": false,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/read-completion-red.log",
+        "sha256": "6d5fefe7a727391e26a257e3e6e7704810424f92f61e68c45217ae2c033564ed",
+        "bytes": 273502
+      },
+      "result": "Skipping the real Ext4 read pressure phase made the existing namespace staging journey fail in both ext4-enabled AX profiles: no actual device flush occurred. Other AX profiles do not enable Ext4. The mutation was not pushed."
+    },
+    "fixture_corrections": [
+      {
+        "source_commit": "522b8c9c1a",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/read-completion-final-green.log",
+          "sha256": "d8c140182ba1488741fffb73ff86763a19e257f5698af6b81e2ac27bf766ede5",
+          "bytes": 273788
+        },
+        "reason": "The extended graph test retained its returned Location until after the existing final mount-retirement assertion. The selected path is now explicitly dropped before that assertion; this fixture lifetime failure is not product RED evidence."
+      }
+    ],
+    "validation": {
+      "read-completion-verified-green.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/read-completion-verified-green.log",
+        "sha256": "d394f3b29b6baa8f646554f098a91a5e7ba2667490d91a23a11a72044ca692d4",
+        "bytes": 272269
+      },
+      "read-preparation-clippy-final.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/read-preparation-clippy-final.log",
+        "sha256": "c4e0d4412f5829ee977d3cbf0e1a66282e766c57eba6ef649a81e897f980fa21",
+        "bytes": 4970
+      },
+      "read-completion-vfs-clippy-final.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/read-completion-vfs-clippy-final.log",
+        "sha256": "e8228eb169ddbce7c5291df70aab9e08e044df26a8a4abfa641eada5f8e17bed",
+        "bytes": 1646
+      },
+      "read-completion-kernel-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/read-completion-kernel-clippy.log",
+        "sha256": "20da5006f9aab51b0fc08ed89992a21ddf460c096be25fd2bb4fc7dacadbb37a",
+        "bytes": 3975
+      },
+      "read-completion-fs-basic-x86.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/read-completion-fs-basic-x86.log",
+        "sha256": "bc4b124f89b23be63dd76cba06476036dd834b2aa502f25db62592bdf37d108d",
+        "bytes": 28567
+      },
+      "read-completion-axvisor-ktest.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/read-completion-axvisor-ktest.log",
+        "sha256": "d0fe455397128d43a496e2cb3dded3e1776543ac0efbe25222ccd147d279e0d3",
+        "bytes": 75645
+      }
+    },
+    "result": "All five AX std profiles and 71 VFS unit tests plus integration/doctests passed. Std selected 18 packages: 17 passed, only Kernel failed on five legacy Overlay methods. VFS/AX Clippy 9/9, final VFS Clippy 3/3, x86_64 fs-basic and Axvisor AArch64 125/125 passed. Kernel Clippy executed only its first check, which failed on those five methods; the other 71 did not run.",
+    "limitations": [
+      "The ordinary Overlay owner, unified lookup and bounded directory read consumers still require migration.",
+      "The PR remains draft and incomplete; full Starry ABI, performance, independent review and final HEAD CI have not been established."
     ]
   }
 }
