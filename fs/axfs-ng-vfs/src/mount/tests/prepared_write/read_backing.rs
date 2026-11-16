@@ -131,6 +131,7 @@ fn namespace_admissions_order_real_receivers_once_and_release_partial_acquisitio
     assert_eq!(attempts, 2);
     assert!(Arc::ptr_eq(selected.mountpoint(), lower.mountpoint()));
     assert_eq!(selected.inode(), lower.inode());
+    drop(selected);
     let events = core::mem::take(&mut *probe.events.lock().unwrap());
     assert_eq!(events.len(), receivers.len() * 4);
     for attempt in events.chunks_exact(receivers.len() * 2) {
