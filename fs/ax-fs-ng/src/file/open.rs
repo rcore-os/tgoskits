@@ -548,6 +548,119 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach() {
+        use alloc::boxed::Box;
+
+        use axfs_ng_vfs::UnmountKind;
+
+        for kind in [
+            "direct",
+            "buffered",
+            "path",
+            "directory",
+            "dirfd",
+            "iterator",
+        ] {
+            let tree = Mountpoint::new_root(&crate::MemoryFs::new());
+            let view = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+            let point = view
+                .create_dir(
+                    "/mount",
+                    NodePermission::default(),
+                    0,
+                    0,
+                    &MutationCredentials::root(),
+                )
+                .unwrap();
+            let mounted = point.mount(&crate::MemoryFs::new()).unwrap();
+            let root = mounted.root_location();
+            let location = root
+                .create(
+                    "file",
+                    NodeType::RegularFile,
+                    NodePermission::default(),
+                    0,
+                    0,
+                    &MutationCredentials::root(),
+                )
+                .unwrap();
+            let open = || -> Box<dyn Any> {
+                match kind {
+                    "direct" => Box::new(File::new(
+                        FileBackend::new_direct(location.clone()),
+                        FileFlags::READ,
+                    )),
+                    "buffered" | "path" => {
+                        let mut options = OpenOptions::new();
+                        options.read(true);
+                        options.path = kind == "path";
+                        Box::new(
+                            options
+                                ._open(location.clone(), &MutationCredentials::root(), false)
+                                .unwrap()
+                                .into_file()
+                                .unwrap(),
+                        )
+                    }
+                    "directory" => {
+                        Box::new(crate::fops::Directory::from_location(root.clone()).unwrap())
+                    }
+                    "dirfd" => Box::new(
+                        crate::fops::Directory::from_location(root.clone())
+                            .unwrap()
+                            .dir_handle(),
+                    ),
+                    "iterator" => Box::new(view.read_dir("/mount").unwrap()),
+                    _ => unreachable!(),
+                }
+            };
+            let held = Arc::new(open());
+            assert!(
+                matches!(
+                    mounted.plan_unmount(UnmountKind::Normal),
+                    Err(VfsError::ResourceBusy)
+                ),
+                "{kind}: an open path must pin its exact mount"
+            );
+            let duplicate = held.clone();
+            drop(held);
+            assert!(
+                matches!(
+                    mounted.plan_unmount(UnmountKind::Normal),
+                    Err(VfsError::ResourceBusy)
+                ),
+                "{kind}: duplicate ownership keeps the use"
+            );
+            drop(duplicate);
+            let admitted = mounted.plan_unmount(UnmountKind::Normal).unwrap();
+            let mut held = open();
+            assert_eq!(
+                root.commit_unmount(admitted),
+                Err(VfsError::ResourceBusy),
+                "{kind}: commit rechecks a newly opened path"
+            );
+            root.detach_mount().unwrap();
+            if let Some(file) = held.downcast_ref::<File>() {
+                assert_eq!(
+                    file.location().metadata().unwrap().node_type,
+                    NodeType::RegularFile
+                );
+            } else if let Some(directory) = held.downcast_ref::<crate::fops::Directory>() {
+                assert_eq!(directory.get_attr().unwrap().node_type, NodeType::Directory);
+            } else if let Some(directory) = held.downcast_ref::<crate::fops::DirHandle>() {
+                assert_eq!(
+                    directory.location().metadata().unwrap().node_type,
+                    NodeType::Directory
+                );
+            } else if let Some(iterator) = held.downcast_mut::<crate::fs_core::ReadDir>() {
+                assert!(iterator.any(|entry| entry.unwrap().name == "file"));
+            } else {
+                unreachable!("known open path kind");
+            }
+        }
+    }
+
     #[derive(Clone, Copy)]
     struct TestFilesystem;
 
