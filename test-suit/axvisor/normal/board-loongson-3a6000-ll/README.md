@@ -27,10 +27,16 @@ IRQ 仍须来自真实 ACPI 描述和平台控制器。
 由 Axvisor 的镜像准备流程下载、校验 SHA-256 并打包；当前发布包为 v0.0.14，
 Linux 版本为 `7.1.0-rc2+`。运行记录必须保留实际镜像版本、内核和归档摘要。
 
-`resources/prepare-board.py` 只准备独立的 ext4 块夹具，再通过
-`cargo xtask image pack-initramfs` 把它装入宿主基底归档。
-`block-manifest.json` 绑定夹具内容、脚本、ext4 配置、工具及产物摘要；缓存中任一
-产物不匹配时重新生成。`SOURCE_DATE_EPOCH` 使用正整数，缺省为 1，用于固定夹具时间戳。
+`resources/prepare-board.py` 从发布 initramfs 提取 BusyBox 和原 `/init`，去掉其中
+重复携带的 Linux 镜像，通过 `cargo xtask image pack-initramfs` 生成
+`busybox.cpio.gz`。`resources/init` 先挂载 devtmpfs、重新打开控制台，再执行
+发布版初始化脚本，避免精简归档依赖构建机创建设备节点。这样宿主上传包可保持在
+板卡服务的 64 MiB 限制内。
+
+脚本同时准备独立的 ext4 块夹具，再通过同一打包入口装入宿主基底归档。
+`board-manifest.json` 绑定发布 initramfs、夹具内容、脚本、ext4 配置、工具及
+产物摘要；缓存中任一产物不匹配时重新生成。`SOURCE_DATE_EPOCH` 使用正整数，
+缺省为 1，用于固定夹具时间戳。
 运行时后端为 `/guest/loongson-block.img`，不是构建机路径；内核、BusyBox initrd
 和 VM 配置随后由既有 builtin bundle 附加。块镜像仅包含测试文件
 `/axvisor-board-fixture.txt`，内容为 `AXVISOR_LOONGSON_BLOCK_FIXTURE_V1`。
@@ -39,7 +45,7 @@ Linux 版本为 `7.1.0-rc2+`。运行记录必须保留实际镜像版本、内�
 
 推荐直接使用正式板卡入口，由 `smoke/guest-builds.toml` 的 `host_prepare`
 准备资源，再构建和运行宿主。构建机需要项目固定的 Rust 工具链、LoongArch
-编译工具以及 `mke2fs`、`debugfs` 等 ext4 镜像工具；板卡服务应已配置且目标可租用。
+编译工具，以及 `cpio`、`mke2fs`、`debugfs`；板卡服务应已配置且目标可租用。
 
 ### 2.1 执行入口
 
@@ -53,7 +59,7 @@ AXBUILD_NO_SNAPSHOT=1 cargo xtask axvisor test board \
   --board loongson-3a6000-ll --test-case smoke
 ```
 
-如果只需提前准备块夹具，可设置实际 Cargo target 根目录为 `AXBUILD_TARGET_DIR`，再运行
+如果只需提前准备 initrd 和块夹具，可设置实际 Cargo target 根目录为 `AXBUILD_TARGET_DIR`，再运行
 `python3 -B test-suit/axvisor/normal/board-loongson-3a6000-ll/resources/prepare-board.py`。
 不要把缺少文件、准备失败或资源缓存命中当作客户机运行成功。
 
@@ -63,6 +69,12 @@ AXBUILD_NO_SNAPSHOT=1 cargo xtask axvisor test board \
 和空 `cache_key`，默认每次执行一次 Linux 完整验收。它替换了龙芯 ArceOS Hello
 的默认实板 CI；原 `cargo xtask arceos test board --board loongson-3a6000-ll --test-case http-boot`
 仍可用于手动检查加载器与早期控制台。QEMU 的两个 Linux 客户机检查独立保留。
+
+镜像下载沿用 `Storage::pull_image()` 和 `download_file_verified_sha256()`：自托管
+宿主的 `/tmp/tgosimages` 保留下载归档，每次以 registry 的 SHA-256 校验；内容未变
+就复用缓存，仅缺失或摘要不匹配时下载。可用 `TGOS_IMAGE_DOWNLOAD_DIR` 指定持久
+目录。checkout 清理后即使需要重新解包，也不会重新下载相同归档；不启用 Rust
+cache，也不向板卡原系统分区部署文件。
 
 ### 2.3 成功判定
 

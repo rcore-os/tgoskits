@@ -611,6 +611,14 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 Loongson 3A6000 的资源和独立客户机板测契约见
 [`design/axvisor-loongson-3a6000-linux.md`](../../../../design/axvisor-loongson-3a6000-linux.md)。
 
+默认龙芯板卡 CI 使用 `cargo xtask axvisor test board --board loongson-3a6000-ll --test-case smoke`，
+原 ArceOS Hello 入口保留为手动诊断。Linux 与 BusyBox 来自受管理的发布镜像，
+`image pull` 复用自托管宿主的持久下载缓存并校验 SHA-256；不要每轮清空缓存或
+改为编译本地 Linux。发布 initramfs 内还包含客户机内核，板测的 `prepare-board.py`
+只提取 BusyBox 和原 `/init` 后重新打包，避免重复内核使 HTTP 上传超过 64 MiB。
+精简归档由 `resources/init` 挂载 devtmpfs、重开控制台后执行发布初始化脚本，
+不能依赖构建机创建设备节点。缓存命中和上传成功都不替代实际客户机命令断言。
+
 UART GSI 不在 PCH 覆盖范围时，继续核对真实 MADT 的 LIOPIC，而不是套用 PCH
 输入编号或猜 CPU 线。Linux LoongArch 的 GSI 16 起对应 LIO 本地输入，仍须受
 32 输入边界与固件 cascade map 覆盖约束；CPU 父线来自命中位图的 cascade。
