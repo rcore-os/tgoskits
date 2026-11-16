@@ -1602,5 +1602,230 @@
       "Current ancestry, copied ancestors, anonymous directories, racing copy-up and errors after partial publication need deterministic system-level verification.",
       "Full direct-syscall compatibility, four-architecture runtime coverage, performance/resource comparison and independent qualified review remain outstanding."
     ]
+  },
+  "overlay_namespace_runtime": {
+    "recorded_at": "2026-11-16T22:12:02.989067+00:00",
+    "source_commit": "0f2a1a3dd23e559c5c51091c5bc77add7d846bc1",
+    "source_tree": "647160a376aab4a81cf67194b55515f7801a7aec",
+    "comparison_base": "583719183d1767852c440ae52326867d68a3dd52",
+    "source_files": {
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/namespace/rename/admitted.rs": "dbe3a44ec71413962124b9d803596ba311bdd387eda89b8559f3c3fb68981dce",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/namespace/mod.rs": "dc3b73a90259506d8c99ceeff86b4831f1eddb08efb5ccb000832d7dda589e45",
+      "fs/ax-fs-ng/src/fs/fat/dir/rename.rs": "07b9d9ed6bc11325e5f6d43f5d598f9e4257c6fc50aa06e91704af85a9f98e98",
+      "fs/ax-fs-ng/src/fs/memory/rename.rs": "fa44194b60685ebc29213efa999482e89f4e89ecc829f8e389304d2bdb611137",
+      "fs/axfs-ng-vfs/src/namespace_admission.rs": "12d905439c2cdd015eeaa433cea21cb907a1f6fa8ce71a73ec18bd55be2716b4",
+      "fs/axfs-ng-vfs/src/namespace_operation/backing_query.rs": "478e3fc2881bf0e2b1f715c0fe261e4d519fa8fb6a6057ebfb7a52fdafa9fcfb",
+      "fs/axfs-ng-vfs/src/namespace_operation/backing_unlink.rs": "dd603d49cc828c230fbcc16424acdf51d0e7b703930ade5864eb89a21eaacfaa",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "f964ff6a6152c82cc39ab4cfe6b3683e722b535060294765f365febfa810a940",
+      "fs/axfs-ng-vfs/src/namespace_operation/preparation.rs": "da85cda49c7aeae978ce5b823544a4967dc0a8952851689b372c9089695bba81",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests/backing_queries.rs": "87982cacf326a4f08dda6fbaef533cdc232f86780d830700d25359efd42738dc",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests/preparation.rs": "596ee8f441a8c8f0dfb41afdb61d8e5a8fd7965405bd2ca2c37527f96b5152d5",
+      "fs/axfs-ng-vfs/src/node/dir/command.rs": "c19c79d0d123a49e6cc2bba60942a944461f8d421b8d033a02ee6fc4de6ef65c",
+      "fs/axfs-ng-vfs/src/node/dir/mutation.rs": "aa8fc14762dda5be0b1a0fae494d1d8ae0597868c076b8fdee7d9e1dcba62bba",
+      "fs/axfs-ng-vfs/src/node/dir/native.rs": "8efaa9e2991bd73c009cd01aca5b8b390cadefe26765e0f51034015dd39e77de",
+      "net/ax-net/src/unix/mod.rs": "2b5764ffd97f1369460f01650ebabe78b11b9d41e6a01cd6e9779289b3a40917",
+      "os/StarryOS/kernel/src/file/fs.rs": "57347404a345eef314259d3a8ed679c207e932c7acf806349d50fbf7059965c0",
+      "os/StarryOS/kernel/src/namespace/mnt.rs": "b44f67974f9bb8e52ee51fb98974180902b57fe5d463d9da7ed77932d60317bf",
+      "os/StarryOS/kernel/src/namespace/mod.rs": "e2aed786408006a2de7037c3e4e4d5c30650c705ceeecf7e2117eb75719fb7e0",
+      "os/StarryOS/kernel/src/namespace/user.rs": "65068e202ca152331b6c2a9436ec9b2f7bc01975562009e60f67e481194dc821",
+      "os/StarryOS/kernel/src/namespace/uts.rs": "0e95b241341a3f1a8474f919f8347596ec8af61c64fef50279434f70c1f678eb",
+      "os/StarryOS/kernel/src/pseudofs/dev/log.rs": "2cab55b311abd6241ff33b93e22cbffa2c743af4daf3d0ee96ed6a8c9d92d4e2",
+      "os/StarryOS/kernel/src/pseudofs/dir.rs": "6a587d91a38f5209dade4d7a6836c96c03596887f9c5faac29868d7241a9018e",
+      "os/StarryOS/kernel/src/pseudofs/fs.rs": "b5fb79da91b7df2ab4a83939c0ec7912e7a0704ec3de6027616e2d60ea23068e",
+      "os/StarryOS/kernel/src/pseudofs/overlay/copy_up.rs": "37c561af4aaea3369fe3d346405223b63604fef731e88f075758cd791e447d5d",
+      "os/StarryOS/kernel/src/pseudofs/overlay/metadata.rs": "f9490fa61968d61044cb59e0838d513e4d17d89731bd1c3932d3ee52d19490f6",
+      "os/StarryOS/kernel/src/pseudofs/overlay/mod.rs": "5f044e5cc4fa0e68325f13d3ab8570cba4c25773fd3fe020fa90add7b5f338f7",
+      "os/StarryOS/kernel/src/pseudofs/overlay/namespace/commit.rs": "d3207d88921642d5b600e7aea0430c925c46e7c2acb1b68e48595dda3360e536",
+      "os/StarryOS/kernel/src/pseudofs/overlay/namespace/mod.rs": "8f415203ed3d79b32c461bae202ec56bdd97a191a6605fdef4ee8273f1c9fcdd",
+      "os/StarryOS/kernel/src/pseudofs/overlay/preparation.rs": "43a6a71daa5db6767dc1265e66c114724555051fe0af467e3c8ca57c7c6a655d",
+      "os/StarryOS/kernel/src/pseudofs/overlay/read.rs": "009b04051907545e06125cbae894d386dd8e3670452152cc361aa2d0b9e270f0",
+      "os/StarryOS/kernel/src/pseudofs/proc.rs": "1058b558f7bd845d385739620b746671e278eaf0c491d29ed9d1500f4a01d993",
+      "os/StarryOS/kernel/src/syscall/net/socket.rs": "43d90e308c10b5962bebf87eddc55bfb4b3707c3c171dab4dfae655815b6c1bd",
+      "os/StarryOS/kernel/src/syscall/sys.rs": "f4832551041c237ac5497956a180deacebf86caf8e4f256333aae895efc48719",
+      "os/StarryOS/kernel/src/task/cred.rs": "e9aba4b9cc7b8fb19f31809455f70156bcb9f0d62d44219f539168b0ec892cb1",
+      "os/StarryOS/kernel/src/task/pid.rs": "f2489c111bc263c0450f25fbacb6178c3327f363e400adae4963e93cd547ed62",
+      "os/StarryOS/kernel/src/task/proc_access.rs": "05cc2ec5618d143f45735c4651650f21eebde2288e2a7e57acd2774bc5debcc0",
+      "os/StarryOS/kernel/src/task/thread.rs": "0046c1ec518c1c70d19f1363152ed62be938fc7f99345f8e6f71a82795011274",
+      "test-suit/starryos/qemu/system/test-vfs-ownership/CMakeLists.txt": "e9e5df494b297e95e642cef3c3250cb28c60b1ef73f7644e29caef908b6f7dc9",
+      "test-suit/starryos/qemu/system/test-vfs-ownership/src/main.c": "ee63c3951c3392bf60fcaa3dcd16d1676795f6f2fa43e1d2fc7bf2e8bed23db5"
+    },
+    "implementation": [
+      "Replace the five removed Overlay naming methods with the real fixed-authorizer driver under the instance namespace gate.",
+      "Bind lock-external native unlink preparations to the actual outer command identity, receiver, exact mounts and declared write edges.",
+      "Prepare missing ancestors, whiteout removal and opaque-marker pruning outside every attempt; retain actual applied or uncertain child effects.",
+      "Read symbolic-link text through typed native/backing snapshots and the original pressure/completion owner, without opening a regular-file backend.",
+      "Bind AF_UNIX pathnames using one paired FS/MNT, credentials and umask snapshot; create ownership before publication and return the actual inode BindSlot.",
+      "Apply CAP_FS_SET transitions and publish fsuid/fsgid to the current thread only; a pipe-controlled sibling observation proves isolation.",
+      "Select existing immutable SimpleDir entries through the fixed authorizer; opening an existing static device with O_CREAT commits no creation.",
+      "Reject first copy-up of an ordinary unlinked lower with AlreadyExists after source preparation; preserve native lower metadata and content."
+    ],
+    "linux": {
+      "source_commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "runtime_kernel": "6.8.0-149-generic",
+      "runtime_condition": "The same C source runs as root in a temporary network-disabled Docker container; Overlay only adds SYS_ADMIN and container-local seccomp/AppArmor exceptions. No host mount is changed.",
+      "overlay": {
+        "file": "ownership-linux-final-overlay.log",
+        "sha256": "999687898dbaf75d45beadbff7cbdebb1a43adf47d9be7f86e68d565a793723b",
+        "bytes": 4530,
+        "status": "passed",
+        "exit_code": 0
+      },
+      "unix_thread": {
+        "file": "ownership-linux-final-unix.log",
+        "sha256": "33970148ea78544a8e1b59e8377cf11128412bd08269875cb17efb89923cf8c6",
+        "bytes": 2545,
+        "status": "passed",
+        "exit_code": 0
+      },
+      "oracle_correction": "The earlier anonymous-upper expectation was disproved by native Linux (fchmod=-1, errno=17, nlink=1, mode=0600) and fixed copy_up.c. The original source-copy and cleanup assertions were retained.",
+      "raw_observation": {
+        "file": "overlay-linux-anonymous-trace.log",
+        "sha256": "cf2588509e20b0ff38a6f9af46e7abc71b14849eb3d6eec778de7e8ee5df4d8d",
+        "bytes": 3868,
+        "status": "recorded"
+      },
+      "sources": [
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/copy_up.c#L853-L911",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/copy_up.c#L1201-L1283",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1350-L1417",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/security/commoncap.c#L1159-L1193",
+        "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/capability.h#L57-L68"
+      ]
+    },
+    "red": {
+      "base_commit": "c8bd7acd09",
+      "patch": {
+        "file": "ownership-runtime-red.patch",
+        "sha256": "b75991399a524bf78010c3d65f01d36a0757388d6137dcc678319f6a0a11e8c5",
+        "bytes": 7328,
+        "status": "recorded"
+      },
+      "runtime": {
+        "file": "ownership-combined-qemu-red.log",
+        "sha256": "6fb440e9a2fd901aa4e272d9d7addaf5ff2c37b39f3ed08d1febf9aaa0f81909",
+        "bytes": 43559,
+        "status": "recorded"
+      },
+      "exit_code": 1,
+      "checks": {
+        "passed": 73,
+        "failed": 6
+      },
+      "failures": [
+        "O_CREAT on the existing /dev/null returned EPERM.",
+        "AF_UNIX creation did not preserve the caller/SGID/masked-socket attributes.",
+        "Denied AF_UNIX creation succeeded and published an inode.",
+        "Deleted lower fchmod incorrectly returned success and replaced its actual metadata."
+      ],
+      "followup": {
+        "file": "ownership-combined-qemu-green-attempt.log",
+        "sha256": "82705428b447315b84badff4cef75444892dd9832874dd594793c9936e26bb58",
+        "bytes": 44456,
+        "status": "recorded"
+      },
+      "followup_failures": "83 pass / 3 fail: FS capabilities were retained after setfsuid and Overlay symlink reads still opened a file backend. These are product failures, not green evidence."
+    },
+    "verification": {
+      "std_command": "PATH=<e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 583719183d1767852c440ae52326867d68a3dd52",
+      "std": {
+        "file": "ownership-runtime-std-restored.log",
+        "sha256": "5040cd493d1f4096b1420546cf7d3b696fecb788320aefabd3f8479a8cc6bc62",
+        "bytes": 311623,
+        "status": "passed",
+        "exit_code": 0
+      },
+      "selected_std_packages": 18,
+      "std_source_commit": "0f2a1a3dd23e559c5c51091c5bc77add7d846bc1",
+      "clippy_source_commit": "0ade408bf75c272c0dfec4a071532cf404819fcd",
+      "rust_unchanged_in_statx_commit": true,
+      "clippy_command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package axfs-ng-vfs --package ax-fs-ng --package ax-net --package starry-kernel",
+      "clippy": {
+        "file": "ownership-runtime-clippy-final.log",
+        "sha256": "f1874f561186faaf758d5a1d980a3399894a280729676187ef99be1dd69b6aa4",
+        "bytes": 162284,
+        "status": "passed",
+        "exit_code": 0
+      },
+      "selected_clippy_checks": 90,
+      "qemu_command": "cargo xtask starry test qemu --arch <arch> -c qemu/system/test-vfs-ownership",
+      "qemu_storage": "A private user/mount namespace overlays target with tmpfs and retains original build-cache paths. Other-architecture release outputs use a private RAM overlay; this avoids ENOSPC without deleting shared caches or source.",
+      "qemu": {
+        "x86_64": {
+          "file": "ownership-statx-qemu-x86_64.log",
+          "sha256": "83a0516d83f1cfddf82a1e3f62b079393a9bcc20ecc384eed1b6aae2f0acc453",
+          "bytes": 46104,
+          "status": "passed",
+          "exit_code": 0
+        },
+        "aarch64": {
+          "file": "ownership-statx-qemu-aarch64.log",
+          "sha256": "4abb0044ac0c710d62cae53bc626e0f17999c543b318eb6f0fd500c2f26e67c8",
+          "bytes": 19665,
+          "status": "not_passed_or_running"
+        },
+        "riscv64": {
+          "file": "ownership-statx-qemu-riscv64.log",
+          "status": "not_run"
+        },
+        "loongarch64": {
+          "file": "ownership-statx-qemu-loongarch64.log",
+          "status": "not_run"
+        }
+      },
+      "x86_64_checks": {
+        "passed": 92,
+        "failed": 0
+      },
+      "suite_entry": "The existing ownership subcase is selected, built, installed and executed. Its failure propagates through STARRY_SYSTEM_TEST_FAILED and STARRY_GROUPED_TEST_FAILED to xtask exit 1; green has 1/1 terminal success.",
+      "boot_count": "One selected ownership boot per architecture/run; no new suite entry or independent boot was added.",
+      "compilation_diagnostics": "Initial missing constant and Arc borrow errors in the new link query were compiler errors and do not count as behavioral red proof."
+    },
+    "architecture_test_correction": {
+      "first_loongarch_log": {
+        "file": "ownership-runtime-qemu-loongarch64.log",
+        "sha256": "1a8169b488c06efeaafd293807818d855c64d611520a26d87486fef8b462ba6e",
+        "bytes": 24822,
+        "status": "recorded"
+      },
+      "exit_code": 1,
+      "phase": "C fixture compilation before guest launch",
+      "cause": "LoongArch omits fstat/newfstatat; use direct statx and the same uid/gid/mode/nlink assertions on every architecture. No Rust source changed."
+    },
+    "isolation_sensitivity": {
+      "mutant_commit": "253a6c3209dbbf140bf70224e9944f689249d024",
+      "patch": {
+        "file": "ownership-command-and-thread-mutant.patch",
+        "sha256": "e7e235acb7bca05f84d2d9ec489f591e12f664cd4f82cb5efabf315f804f4bfa",
+        "bytes": 1367,
+        "status": "recorded"
+      },
+      "std_red": {
+        "file": "ownership-command-mutant-std.log",
+        "sha256": "15909ca22299e7c5fc65771b74daf253049f183f4d489ed26e55d3c4f690d190",
+        "bytes": 309992,
+        "status": "recorded"
+      },
+      "std_exit_code": 1,
+      "vfs_result": "70 pass / 1 fail, foreign command was not rejected before its native backend",
+      "runtime_red": {
+        "file": "ownership-thread-mutant-qemu-final.log",
+        "sha256": "cc5dc2fc1b780f42645dc39d2f3ff0bfc78b5aac2dc3d9bfd169f1f01561255d",
+        "bytes": 46072,
+        "status": "recorded"
+      },
+      "runtime_mutant_commit": "184df01a5a",
+      "runtime_exit_code": 1,
+      "runtime_result": "91 pass / 1 fail at the controlled sibling identity assertion",
+      "purpose": "Replace current-thread publication with actual process-wide publication and bypass only the command nonce guard; retain all role, mount and backend checks. The pipe/join handoff must detect sibling identity corruption.",
+      "disposition": "temporary detached commit, never pushed"
+    },
+    "remaining_limitations": [
+      "Ordinary Overlay open/data writers and remaining raw metadata consumers still need the common owner boundary; concurrent writer compatibility is not established.",
+      "Merged FAT target observations still need closed holder classification; public active holders must remain protected.",
+      "Nested source xattr enumeration, work directory collision/recovery, mount traps, copy-up races and partial installation relationships remain incomplete.",
+      "Ext4 native read-link pressure is covered by the existing host namespace journey; the full Ext4 staging factory still needs its own real storage journey.",
+      "Unified lookup/session continuation, typed proc-object links and consumers, full SimpleFs ownership, mount F1-F8 authorization/anonymous lifetime, full syscall table, performance and final independent review remain required.",
+      "No final-head CI completion or merge approval is claimed; PR remains draft."
+    ]
   }
 }

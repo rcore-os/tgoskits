@@ -3118,7 +3118,7 @@ lower，普通原生命令能力不改变。实际数据和 xattr 仍必须接�
 [`ovl_copy_xattr`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/copy_up.c#L75-L168)
 同样在安装前复制后端提供的属性；本项目当前原生提供者与用户入口的能力边界仍保留。
 
-`SealedStaging::detach` 为已删除的逻辑对象生成实际原生孤儿对象，接收原 Context，
+`SealedStaging::detach` 为具备显式脱链合同的新建暂存生成实际原生孤儿对象，接收原 Context，
 在真实 observed-unlink 中核对工厂新建目标的身份，然后才移出隐藏工作名。seal 在
 全部 gate/admission 外准备该私有父目录；只有这个已关闭准备 I/O、且后端明确支持
 活跃脱链的新建实体可以在其同一逻辑 detach 的未应用重试中复用模板。一般
@@ -3126,8 +3126,12 @@ PreparedUnlink 仍不可复制，普通独立删除仍需重新准备，FAT 不�
 
 Applied 与完成错误分别保留；只有已知移出的实际对象才能绑定为逻辑 upper。
 Detached 状态结束隐藏名称的清理责任，后续 cleanup 不删除后来占用旧工作名的对象；
-Uncertain 继续保留诊断与清理责任，Drop 不推进文件系统。使用这一原语的 Overlay
-仍须在 fresh caller 授权和 owner gate 内绑定真实孤儿，不能重建旧可见名称。
+Uncertain 继续保留诊断与清理责任，Drop 不推进文件系统。这项原生能力不等于普通
+Overlay 已删除 lower 的复制语义。固定 Linux 的
+[`ovl_copy_up_flags`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/copy_up.c#L1201-L1283)
+仅为 disconnected alias 选择无父目录的 index 路径；普通已删除别名仍尝试原父目录
+中的名字。`index=off` 时，该位置的 whiteout 使安装返回 `EEXIST`。本项目不把
+普通 fd 转为 NFS disconnected alias，也不通过匿名安装绕过这个错误。
 验证增强原工厂旅程，覆盖实际脱链后读写、零链接、属性、替代对象拒绝及原写准备
 寿命；这一旅程独占其集成进程的页提供者，没有新增内核启动。
 
@@ -3135,9 +3139,8 @@ Uncertain 继续保留诊断与清理责任，Drop 不推进文件系统。使�
 
 `OverlayFs::change_inode_metadata` 核对实际 receiver 和逻辑 inode，在该实例的
 `namespace` gate 内借 `MetadataRequest::execute` 重新观察并授权。已有 upper 时
-直接传递已接受意图；缺少 upper 时，`MetadataAttempt::ancestry` 只采用当前别名
-关系，为缺失实体及祖先登记 `CopyPreparation`。未链接的实体或祖先使用匿名原生
-目标，不依赖历史名称重新创建可见对象。每份别名快照、实体和失败候选都随原 Scope
+直接传递已接受意图；缺少 upper 时，`CopyForest::add` 只采用当前别名
+关系，为缺失实体及祖先登记 `EntityPreparation`。每份别名快照、实体和失败候选都随原 Scope
 退休；准备项不保留本轮授权、gate、admission 或 Context。
 
 `CopyPreparation::prepare` 在原轮次全部完成后创建命令私有的 `0700` 工作目录，
@@ -3147,15 +3150,18 @@ Uncertain 继续保留诊断与清理责任，Drop 不推进文件系统。使�
 嵌套 lower 的属性枚举尚未接通，需在创建隐藏工作前拒绝，避免静默遗漏 xattr；
 FAT 的活跃脱链限制和暂存能力保持原状。
 
-新一轮先重新授权，将接受的元数据意图应用到最终隐藏目标，再按当前祖先关系
+新一轮先重新授权，在准备成功后由 `CopyForest::require_destinations` 拒绝已脱链
+且没有 upper 的普通别名，返回 `AlreadyExists`，保留原 lower 属性和内容。这样保留
+caller 授权、源内容复制及恢复错误在前、安装冲突在后的顺序。已有且已脱链的 upper
+仍接受 fd 元数据命令。通过目的地检查后，将接受的意图应用到最终隐藏目标，再按当前祖先关系
 安装并绑定实际 upper。已知 Applied 即使伴随完成错误也保留真实 backing；
 一旦有可见安装，后续错误或 pressure 不能把整轮改为 Retry。安装后的 metadata
-从实际 owner 重新读取，包含 rename 或脱链后的时间和链接数。工作目录创建、
-任意深度祖先安装、并发败选、匿名对象及错误后名称仍需实际 Overlay 系统旅程证明。
+从实际 owner 重新读取，包含 rename 后的时间和链接数。任意深度祖先安装、
+并发败选及部分失败后的关系仍需独立运行证明。
 
-这部分已连接生产源码，但五个旧命名方法仍阻止 Starry 构建，尚无实际 Overlay
-运行证据。已有组件红绿只能证明原生暂存的身份、内容和生命周期，不证明这里的
-并发、错误顺序或系统调用兼容性。全部 writer 和余下 raw 消费者必须使用共同 owner
+五个旧命名方法已由第 4.18.7 节的 driver 替换，Starry 已实际构建并进入系统用例。
+组件证明、直接 syscall 结果和错误实现的失败分别记入生产证据，不能相互替代。
+全部 writer 和余下 raw 消费者必须使用共同 owner
 边界后，才可作整体结论。
 
 #### 4.18.6 同命令的删除引用准备
@@ -3179,6 +3185,32 @@ FAT 的活跃脱链限制和暂存能力保持原状。
 这种绑定避免在 owner gate 内刷新缓存，也避免把每轮重新获取的独立删除当作原
 观察的续走。既有完成旅程验证同命令成功、外命令在进入后端前拒绝、追加准备阶段
 及完整退休顺序；实际 Overlay 和 FAT holder 的判定另需运行证明。
+
+#### 4.18.7 合并命名空间提交
+
+`OverlayFs::begin_merged_namespace` 在实例 `namespace` gate 内构造
+`NamespaceAttempt`，以当前合并父目录和目标观察进入固定 authorizer。接受后，
+create、link、unlink、rename 与 symlink 都通过原 `NamespaceOperationContext`
+下沉，并使用保存的 mounter。新建对象的 uid/gid 采用外层接受的属主，mounter 的
+补充组和能力仍保留；没有重新发起 root 命令或在发布后补写属主。
+
+`CopyForest` 合并多个父目录和来源实体的当前祖先，所有缺失复制及 marker 删除
+准备完成后才发布。删除通过 `PreparedBackingUnlink` 开始真实原生观察，核对期望
+实体或内部 marker 后才 resume；lower 的隐藏由实际 whiteout 表示。空目录清理只
+删除已观察到的内部 marker，目录移动需要时建立 opaque marker。后端 Applied 或
+Uncertain 后保存已发生的效果，后续失败不能转为无副作用 Retry。
+
+普通数据/open writer 尚未全部迁到这个 gate，FAT 的合并层观察持有者仍需封闭
+分类，不能据此宣称所有并发 writer 已经一致。EXCHANGE、显式 WHITEOUT rename、
+lower/merged 目录移动及嵌套源属性枚举继续保留各自明确的支持边界。私有 work 目录
+碰撞与恢复、安装竞争和所有部分失败关系仍须验证。
+
+`NamespaceQuery::ReadLink` 和 `NamespaceRead::LinkText` 让合并链接在原
+PreparedRead、admission 与退休责任内返回一份拥有的文本。MemoryFs 读取实际
+symlink 内容；Ext4 在原生状态锁内读取，并将日志推进交回原压力阶段；FAT 明确
+拒绝它不支持的链接类型。`OverlayFile::link_ops` 借 `LayerRead::link_text` 递归到
+声明的 backing，不把链接当作普通文件重新打开。结果类型与请求类型不符时，核心
+拒绝该响应。对象型 proc link 的跟随授权仍属于第 5 节，不能用这项文本能力代替。
 
 ### 4.19 属性意图的逐层传递
 
@@ -3713,8 +3745,29 @@ rsext4 自己的读取 atime、initramfs/归档恢复、Overlay work 暂存、�
 相应受控维护及未发布构造能力在各消费者迁移前单独明确。
 
 AF_UNIX pathname socket 的 bind 后重新 lookup 再补 owner 同样属于文件系统创建
-消费链，需要把实际文件创建身份接到原子创建；不扩展网络或 IPC 业务身份分配。
-本轮原生领域接口准备不授权顺带改变 socket 协议或设备行为。
+消费链。`sys_bind` 现在在同一 process writer 下保存 FS/MNT binding、凭据与 umask，
+退出 writer 后把原 caller 交给 `FsContext::create_node`。新节点的 mode 来自实际
+匿名 socket inode，再应用 umask；父目录 SGID 和属主由固定创建 authorizer 决定。
+实际返回 inode 的 BindSlot 直接交给 transport，不重新 lookup 或补写 owner。
+`UnixSocket::bind_path_with` 仅提供可睡眠的路径工厂边界，保留调用方错误类型，
+并串行本 socket 的本地地址发布。既有 pathname 返回 `EADDRINUSE`，拒绝创建时
+不发布 inode。固定 Linux 的
+[`unix_bind_bsd`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/unix/af_unix.c#L1350-L1417)
+定义 mode、创建凭据和 EEXIST 转换；不扩展网络或 IPC 业务身份分配。
+
+启动期 `/dev/log` 由 devfs 构造器预先建立，`bind_dev_log` 直接将该实际 inode 的
+BindSlot 交给同一 transport 边界，不把预建对象当作新的用户创建。不可修改的
+`SimpleDir` 则由 `ExistingOpenAttempt` 在共享 FS gate 下观察既有条目，经固定
+authorizer 接受 O_CREAT 的 existing-open；缺失目标仍拒绝修改。这恢复 shell 对
+既有 `/dev/null` 的重定向，不扩大静态伪文件系统的命名修改能力。
+`sys_setfsuid` 和 `sys_setfsgid` 经 `Thread::update_thread_cred` 在同一 writer 中
+完成权限判断和当前线程的发布，不修改兄弟线程。fsuid 离开零时清除有效集中的
+Linux `CAP_FS_SET`，回到零时只从 permitted 恢复对应位；
+`SECBIT_NO_SETUID_FIXUP` 保留原有效集。固定
+[`cap_task_fix_setuid`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/security/commoncap.c#L1159-L1193)
+和 [`CAP_FS_SET`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/linux/capability.h#L57-L68)
+限定这些状态变化。回归使用同一 ownership 进程中的管道与 pthread_join 控制
+交接，在调用者恢复身份前观察兄弟线程，不能用睡眠或普通 fork 代替线程共享证明。
 
 在这一可审查迁移序列中，旧 raw 更新仅保留给尚未迁移的明确消费者和系统红测
 窗口，不作为最终双轨。新 Overlay 的持锁路径不能因此回到会自行 admission

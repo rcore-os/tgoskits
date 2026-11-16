@@ -543,3 +543,58 @@ profile 全部通过，VFS/AX 9 项 Clippy 通过；标准库仍是 18 包中 17
 工具链下本地同一原用例为 1/1 通过，显示正确 guard 范围，未改源码或成功正则。
 原因尚未确认，这次本地通过没有记为修复。精确源码、命令、日志摘要及限制见
 `overlay_metadata_copy_up`，后续仍需处理全部旧方法与完整目标验收。
+
+### 9.19 合并命名空间与系统调用运行
+
+`4020af975f` 用 `NamespaceAttempt` 替换五个旧命名方法，create、symlink、link、
+unlink、rename 经实例 gate 和固定 authorizer 下沉；`EntityPreparation` 合并复制
+与同命令删除引用准备。该源码的 Kernel 72 项 Clippy 全部通过；`d4dde74ca5` 修正
+测试中已删除的影子 ID 引用后，18 个标准库包全部通过，实际身份断言仍保留。
+这些检查解决了旧构建阻塞，后续仍以直接系统旅程核对行为。
+
+Linux 原生运行否决了第 9.18 节当时采用的普通已删除 lower 匿名安装假设。固定
+v7.1 `copy_up.c` 的普通别名路径仍安装原父目录中的名称；`index=off` 时 whiteout
+导致 EEXIST。相同 C 输入在宿主 Linux 6.8 中得到 fchmod=-1/errno=17、nlink=1、
+mode=0600。`c8bd7acd09` 据此修正预期，内容、旧名不重建和清理判定均保留；
+原生工厂 detach 能力没有删除，也没有被当作普通 Overlay 的兼容证明。
+
+真实 Starry 启动先在 `/dev/log` 的旧 O_CREAT 路径被 EPERM 阻塞。修正预建 inode
+绑定后，同一 ownership 旅程稳定得到 73 pass、6 fail，暴露静态设备 existing-open、
+pathname socket 的创建身份/拒绝状态和已删除 lower 的错误。首次修复后的 83 pass、
+3 fail 又揭示 fsuid 切换未清除 FS 特权，以及合并链接被当作普通文件读取。
+这些是实际客户机失败；磁盘 ENOSPC、网络隔离准备失败和夹具编译错误均另行记录。
+
+生产源码 `0ade408bf75c272c0dfec4a071532cf404819fcd` 原子保存 bind 的 FS/MNT、
+凭据与 umask，创建实际 inode 后直接绑定其 BindSlot；只在当前线程发布 fsuid/fsgid，
+并按 CAP_FS_SET 规则降权与恢复。`SimpleDir` 的 existing-open 走固定 authorizer，
+缺失目标仍拒绝修改。`ReadLink/LinkText` 连接原生与嵌套读取完成，Ext4 保留真实
+staging Retry、压力和错误；Overlay 在源准备成功后拒绝普通已脱链 lower 的首次复制。
+
+该源码的 18 包标准库及 VFS/AX/ax-net/Kernel 共 90 项 Clippy 全部通过。
+x86_64、AArch64 的 `cargo xtask starry test qemu --arch <arch> -c
+qemu/system/test-vfs-ownership` 均为 92 pass、0 fail，最外层 1/1 通过；回归使用
+管道与 pthread_join，在调用者恢复身份前观察真实兄弟线程，未增加独立启动。
+Linux 的 Overlay 与线程/socket 对照分别为 35/35、17/17 通过。其余架构和后续
+错误候选的结果见生产证据 `overlay_namespace_runtime`；运行中的任务不记作通过。
+
+本地测试使用任务私有的用户/挂载命名空间，镜像与其他架构 release 的新输出放在
+RAM 层，并复用原路径下的构建缓存；宿主挂载和共享缓存保持原状。普通 Overlay
+open/data writer、FAT 合并观察 holder、嵌套 xattr、工作目录恢复、安装竞态与部分
+失败仍待完成。统一查找、proc/SimpleFs 完整所有权、F1–F8、完整系统调用表、性能、
+最终独立审查和精确 head 的完整 CI 继续按原计划推进，PR 保持草稿。
+
+### 9.20 隔离判定与统计入口
+
+错误候选 `253a6c3209dbbf140bf70224e9944f689249d024` 只绕过 command nonce，
+并把当前线程的凭据发布替换为真实进程发布；其余 backing 角色、mount 和原生
+检查仍保留。VFS 同一完成旅程稳定为 70 pass、1 fail，外部 command 未被拒绝，
+标准库最外层退出 1。线程错误源码 `184df01a5a` 在客户机为 91 pass、1 fail，
+唯一失败是管道控制的兄弟线程身份观察；该错误修改没有推送。
+
+LoongArch 不提供 fstat/newfstatat，最初系统用例在 C 编译阶段失败，没有进入
+客户机。测试改用四架构共有的直接 statx 及 libc 自带声明，保持 uid/gid/mode/nlink
+判定一致；缺少 linux/stat.h 的夹具错误也没有计为行为红证据。正确测试源码
+`0f2a1a3dd23e559c5c51091c5bc77add7d846bc1` 的 Rust 文件与 `0ade408bf7` 逐字相同。
+恢复后 18 包标准库再次全部通过，statx 版本的 x86_64 为 92 pass、0 fail，最外层
+1/1 通过；其余架构的最终状态与原始日志摘要由生产证据记录。源码仍包含最新
+`dev` 的 `1b3ad93187`，原工作树 stash 保留。
