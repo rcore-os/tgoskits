@@ -53,7 +53,6 @@ impl FsContextSnapshot {
             let _sequence = PIVOT_SEQUENCE.lock();
             let (result, topology) = self.namespace.pivot_root(&self.root, new_root, put_old);
             retired._topology = Some(topology);
-            drop(_sequence);
             if result.is_ok() {
                 #[cfg(test)]
                 tests::run(tests::Stage::AfterTopology);
