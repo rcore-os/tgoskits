@@ -9,11 +9,11 @@ sidebar_label: "Task Stack Guard Page"
 
 ## 1. 分配与释放
 
-`components/ax-task` 只持有 opaque `StackHandle`，不参与 VMA 或物理页分配。`axruntime/src/task/resources.rs` 的 `RuntimeStack` 持有 heap 或 virtual backing，线程 resource reaper 负责在上下文停止使用后消费 handle。
+`components/ax-task` 只持有 opaque `StackHandle`，不参与 VMA 或物理页分配。`axruntime/src/thread/resources.rs` 的 `RuntimeStack` 持有 heap 或 virtual backing，线程 resource reaper 负责在上下文停止使用后消费 handle。
 
 ### 1.1 虚拟栈布局
 
-启用 `paging` 时，`allocate_runtime_stack()` 将 `StackRequest::guard_size` 设为一页，`allocate_virtual_stack()` 预留 guard 和 usable 范围。`vmap-task-stack` 仍是显式虚拟 backing 能力，但不再控制是否启用保护页；没有 `paging` 时才使用原有 heap 路径。
+启用 `paging` 时，运行时 `thread::builder()` 将默认 guard 大小设为一页，`allocate_runtime_stack()` 按请求选择 backing，`allocate_virtual_stack()` 预留 guard 和 usable 范围。`vmap-task-stack` 仍是显式虚拟 backing 能力，但不再控制默认保护页；未请求 guard 且未启用该能力时使用 heap 路径。
 
 ```mermaid
 flowchart LR
@@ -46,7 +46,7 @@ token 的普通 `Drop` 只发布退休状态。显式 `release()` 或 `retry_ker
 
 ## 2. 保护范围与诊断
 
-诊断属于 runtime stack owner，调用方不需要查找第二个全局栈登记表。`diagnose_current_stack_guard_page_fault()` 从当前线程的 `RuntimeStack` 读取 reservation 和 usable 边界。
+诊断属于 runtime stack owner，调用方不需要查找第二个全局栈登记表。`diagnose_current_stack_guard_page_fault()` 屏蔽本地 IRQ 后从当前线程的 `RuntimeStack` 复制 reservation 和 usable 边界，返回拥有地址值的 `Option<StackGuardPageFault>`，恢复原 IRQ 状态后由调用方格式化。
 
 ### 2.1 覆盖边界
 
@@ -63,7 +63,7 @@ canary 继续检查没有触及 guard 的栈内破坏。guard 不替代 canary�
 
 ### 2.2 故障输出
 
-ArceOS 和 Starry fault handler 先检查当前任务 guard；命中后输出以下字段，再进入原有 fatal fault 路径。
+ArceOS 和 Starry fault handler 先检查当前任务 guard；命中后以该诊断触发 panic，使以下字段与致命错误进入同一条紧急记录。独立的 panic 前输出可能因 UART gate 忙而返回 0，不能把唯一的栈范围诊断放在该输出中。
 
 ```text
 task stack guard page hit: fault_addr=0x..., stack=[0x.....0x...), guard=[0x.....0x...)
