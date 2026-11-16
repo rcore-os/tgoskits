@@ -7,6 +7,12 @@ sidebar_label: "板卡管理"
 
 `cargo xtask board` 是顶层板卡管理命令，封装了与 `ostool-server` 的交互。`ostool-server` 运行在连接物理板卡的宿主机上，提供板卡分配、固件部署和串口交互的 API。本命令用于**分配/查看/连接**远程板卡，与 `cargo xtask <os> board`（在板卡上运行 OS，详见 [Axvisor 运行](./axvisor/runtime) 或 [StarryOS 运行](./starry/runtime)）是两个不同层次：前者管板子，后者把编译产物刷到板子上跑。
 
+HTTP Boot 使用仓库锁定的 `ostool 0.32` 客户端，配套 `ostool-server 0.10`
+和设备协议 v7 的 axloader。旧客户端可能在上传阶段收到协议版本拒绝；
+应核对客户端、服务端和设备端版本，不能把上传失败当作内核启动失败。
+U-Boot 命令发送使用锁定的 `uboot-shell 0.2.10`，遇到错误回显时只对尚未提交的命令安全恢复，
+不会重发已经用换行提交的命令。持续出现串口乱码时仍需检查实际链路，不能靠无限重试通过。
+
 公网开发板租赁平台涉及普通用户账号、OAuth 浏览器授权、租赁和管理员后台操作，相关说明见[开发板租赁平台](../bbdsp/overview.md)；本文仍是 TGOSKits `cargo xtask board` 的命令参考。
 
 ## 1. 服务架构
@@ -128,7 +134,7 @@ cargo xtask board ls --server board-host.local --port 1234
 
 | 代码位置 | 作用 |
 |----------|------|
-| `scripts/axbuild/src/board.rs` | CLI 入口：`Command` 枚举、`ArgsConnect` / `BoardServerArgs` 参数定义、子命令分发 |
+| `scripts/axbuild/src/tools/board.rs` | CLI 入口：`Command` 枚举、`ArgsConnect` / `BoardServerArgs` 参数定义、子命令分发 |
 | `ostool::board`（外部 crate） | 板卡管理的底层实现：`BoardGlobalConfig`（全局配置）、`fetch_board_types`（HTTP 查询）、`connect_board`（分配 + 串口透传）、`render_board_table`（表格输出）、`config`（配置编辑） |
 
 axbuild 的 `board.rs` 是薄封装层，仅负责 CLI 解析和参数透传，全部业务逻辑在 `ostool::board` 中实现。这种分层使得 ostool 可独立于 axbuild 用于其他场景（如直接命令行调用 ostool CLI）。

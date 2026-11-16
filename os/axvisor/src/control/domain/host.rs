@@ -42,9 +42,9 @@ pub struct HostFacts {
     pub version: &'static str,
     /// Target architecture (`AX_ARCH`), empty when the build did not set it.
     pub arch: &'static str,
-    /// Board the build targets (`AX_PLATFORM`), empty when unset.
+    /// Runtime platform name reported by the HAL.
     pub platform: &'static str,
-    /// Host CPUs the build was configured for (`AX_SMP`), `1` when unset.
+    /// Build-time runtime CPU capacity; `1` without SMP support.
     pub smp: usize,
     /// Physical CPUs the runtime reports: `axvm::host::cpu::count()`.
     pub phys_cpu_count: usize,
@@ -63,12 +63,8 @@ pub fn facts() -> HostFacts {
     HostFacts {
         version: option_env!("CARGO_PKG_VERSION").unwrap_or("unknown"),
         arch: option_env!("AX_ARCH").unwrap_or(""),
-        platform: option_env!("AX_PLATFORM").unwrap_or(""),
-        // `AX_SMP` is a build-time string; a build that left it out ran on one
-        // CPU, which is also what the runtime's own default is.
-        smp: option_env!("AX_SMP")
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(1),
+        platform: ax_hal::platform_name(),
+        smp: ax_runtime::CPU_CAPACITY,
         phys_cpu_count: axvm::host::cpu::count(),
         uptime_secs: uptime_secs(),
         features: features(),

@@ -1,4 +1,7 @@
-#![cfg_attr(feature = "virtio-block-lifecycle", feature(used_with_arg))]
+#![cfg_attr(
+    all(feature = "virtio-block-lifecycle", target_arch = "aarch64"),
+    feature(used_with_arg)
+)]
 
 #[cfg(feature = "cpu-capacity")]
 mod cpu_capacity;
@@ -6,11 +9,15 @@ mod cpu_capacity;
 #[cfg(feature = "ax-std")]
 use ax_std as _;
 
-#[cfg(feature = "serial-rx")]
+#[cfg(all(feature = "serial-rx", target_arch = "aarch64"))]
 pub mod serial_rx;
 
-#[cfg(feature = "virtio-block-lifecycle")]
+#[cfg(all(feature = "virtio-block-lifecycle", target_arch = "aarch64"))]
 mod virtio_block_lifecycle;
+
+// Board bindings are generated only for an explicitly selected board batch.
+#[cfg(feature = "board-cpu-tests")]
+use cpu_tests as _;
 
 pub type TestResult = Result<(), &'static str>;
 
@@ -28,7 +35,7 @@ impl TestCase {
 }
 
 pub fn selected_tests() -> &'static [TestCase] {
-    SELECTED_TESTS
+    suite::SELECTED_TESTS
 }
 
 #[cfg(all(
@@ -38,15 +45,10 @@ pub fn selected_tests() -> &'static [TestCase] {
 pub mod debug;
 #[cfg(all(feature = "display-basic", feature = "ax-std"))]
 pub mod display;
-#[cfg(all(
-    feature = "ax-std",
-    any(feature = "exception-breakpoint", feature = "exception-page-fault")
-))]
+#[cfg(all(feature = "ax-std", feature = "exception-breakpoint"))]
 pub mod exception;
 #[cfg(all(feature = "fs-basic", feature = "ax-std"))]
 pub mod fs;
-#[cfg(all(feature = "futex-errno-order", feature = "ax-std"))]
-pub mod futex;
 #[cfg(all(
     feature = "intel-itco-qemu",
     feature = "ax-std",
@@ -55,7 +57,7 @@ pub mod futex;
 pub mod intel_itco;
 #[cfg(all(feature = "eventfd-epoll", feature = "ax-std"))]
 pub mod io_mpx;
-#[cfg(all(feature = "iommu-dma", feature = "ax-std"))]
+#[cfg(all(feature = "iommu-dma", feature = "ax-std", target_arch = "aarch64"))]
 pub mod iommu_dma;
 #[cfg(all(
     feature = "ax-std",
@@ -68,7 +70,7 @@ pub mod lockdep;
 ))]
 pub mod mem;
 #[cfg(all(
-    any(feature = "net-loopback", feature = "net-unix-path"),
+    any(feature = "net-http", feature = "net-unix-path"),
     feature = "ax-std"
 ))]
 pub mod net;
@@ -77,8 +79,6 @@ pub mod nvme;
 #[cfg(all(
     feature = "ax-std",
     any(
-        feature = "sched-cfs",
-        feature = "sched-rr",
         feature = "task-affinity",
         feature = "task-cpu-lifecycle",
         feature = "task-fair-idle-pull",
@@ -88,15 +88,12 @@ pub mod nvme;
         feature = "task-kernel-timer",
         feature = "task-executor",
         feature = "task-mutex",
-        feature = "task-parallel",
         feature = "task-pi-mutex",
         feature = "task-preempt-guard",
         feature = "task-priority",
         feature = "task-rt-policy",
         feature = "task-scheduler-irq-window",
         feature = "task-sleep",
-        feature = "task-scheduler-local-rearm",
-        feature = "task-smp-online",
         feature = "task-stack-guard-page",
         feature = "task-tls",
         feature = "task-wait-queue",
@@ -106,357 +103,5 @@ pub mod nvme;
 ))]
 pub mod task;
 
-macro_rules! test_runner {
-    ($feature:literal, $runner:ident, $body:path) => {
-        #[cfg(all(feature = $feature, feature = "ax-std"))]
-        fn $runner() -> TestResult {
-            $body()
-        }
-    };
-}
-
-test_runner!("cpu-capacity", run_cpu_capacity, cpu_capacity::run);
-
-test_runner!(
-    "debug-backtrace",
-    run_debug_backtrace,
-    debug::backtrace::run
-);
-test_runner!(
-    "debug-panic-path",
-    run_debug_panic_path,
-    debug::panic_path::run
-);
-test_runner!("display-basic", run_display_basic, display::basic::run);
-test_runner!("eventfd-epoll", run_eventfd_epoll, io_mpx::run);
-test_runner!(
-    "exception-breakpoint",
-    run_exception_breakpoint,
-    exception::breakpoint::run
-);
-test_runner!(
-    "exception-page-fault",
-    run_exception_page_fault,
-    exception::page_fault::run
-);
-test_runner!(
-    "virtio-block-lifecycle",
-    run_virtio_block_lifecycle,
-    virtio_block_lifecycle::run
-);
-test_runner!("fs-basic", run_fs_basic, fs::basic::run);
-#[cfg(target_arch = "x86_64")]
-test_runner!("nvme-qemu", run_nvme_qemu, nvme::run);
-test_runner!("iommu-dma", run_iommu_dma, iommu_dma::run);
-#[cfg(target_arch = "x86_64")]
-test_runner!("intel-itco-qemu", run_intel_itco_qemu, intel_itco::run);
-test_runner!("futex-errno-order", run_futex_errno_order, futex::run);
-test_runner!(
-    "lockdep-baseline",
-    run_lockdep_baseline,
-    lockdep::baseline::run
-);
-test_runner!("lockdep-detect", run_lockdep_detect, lockdep::detect::run);
-test_runner!("memtest", run_memtest, mem::test::run);
-test_runner!(
-    "mem-stage1-transition",
-    run_mem_stage1_transition,
-    mem::stage1_transition::run
-);
-test_runner!("net-loopback", run_net_loopback, net::loopback::run);
-test_runner!("net-unix-path", run_net_unix_path, net::unix_path::run);
-test_runner!("sched-cfs", run_sched_cfs, task::priority::run_cfs);
-test_runner!("sched-rr", run_sched_rr, task::priority::run_rr);
-test_runner!("task-affinity", run_task_affinity, task::affinity::run);
-test_runner!(
-    "task-cpu-lifecycle",
-    run_task_cpu_lifecycle,
-    task::cpu_lifecycle::run
-);
-test_runner!(
-    "task-fair-idle-pull",
-    run_task_fair_idle_pull,
-    task::fair_idle_pull::run
-);
-test_runner!(
-    "task-fair-wake-idle-sibling",
-    run_task_fair_wake_idle_sibling,
-    task::fair_wake_idle_sibling::run
-);
-test_runner!("task-ipi", run_task_ipi, task::ipi::run);
-test_runner!("task-irq", run_task_irq, task::irq::run);
-test_runner!(
-    "task-kernel-timer",
-    run_task_kernel_timer,
-    task::kernel_timer::run
-);
-test_runner!("task-executor", run_task_executor, task::executor::run);
-test_runner!("task-mutex", run_task_mutex, task::mutex::run);
-test_runner!("task-parallel", run_task_parallel, task::parallel::run);
-test_runner!("task-pi-mutex", run_task_pi_mutex, task::pi_mutex::run);
-test_runner!(
-    "task-scheduler-local-rearm",
-    run_task_scheduler_local_rearm,
-    task::scheduler_local_rearm::run
-);
-test_runner!(
-    "task-preempt-guard",
-    run_task_preempt_guard,
-    task::preempt_guard::run
-);
-test_runner!(
-    "task-priority",
-    run_task_priority,
-    task::priority::run_priority
-);
-test_runner!("task-rt-policy", run_task_rt_policy, task::rt_policy::run);
-test_runner!(
-    "task-scheduler-irq-window",
-    run_task_scheduler_irq_window,
-    task::scheduler_irq_window::run
-);
-test_runner!("task-sleep", run_task_sleep, task::sleep::run);
-test_runner!(
-    "task-smp-online",
-    run_task_smp_online,
-    task::smp_online::run
-);
-test_runner!(
-    "task-stack-guard-page",
-    run_task_stack_guard_page,
-    task::stack_guard_page::run
-);
-test_runner!("task-tls", run_task_tls, task::tls::run);
-test_runner!(
-    "task-wait-queue",
-    run_task_wait_queue,
-    task::wait_queue::run
-);
-test_runner!(
-    "task-wait-queue-remote-wake",
-    run_task_wait_queue_remote_wake,
-    task::wait_queue_remote_wake::run
-);
-test_runner!("task-yield", run_task_yield, task::yield_now::run);
-
-test_runner!("serial-rx", run_serial_rx, serial_rx::run);
-
-const SELECTED_TESTS: &[TestCase] = &[
-    #[cfg(feature = "virtio-block-lifecycle")]
-    TestCase::new(
-        "virtio-block-lifecycle",
-        "confirmed reset and DMA ownership",
-        run_virtio_block_lifecycle,
-    ),
-    #[cfg(feature = "cpu-capacity")]
-    TestCase::new(
-        "cpu-capacity",
-        "published CPU capacity across online CPUs",
-        run_cpu_capacity,
-    ),
-    #[cfg(feature = "serial-rx")]
-    TestCase::new("serial-rx", "serial IRQ receive continuity", run_serial_rx),
-    #[cfg(feature = "debug-backtrace")]
-    TestCase::new("debug-backtrace", "capture backtrace", run_debug_backtrace),
-    #[cfg(feature = "debug-panic-path")]
-    TestCase::new(
-        "debug-panic-path",
-        "panic backtrace path",
-        run_debug_panic_path,
-    ),
-    #[cfg(feature = "display-basic")]
-    TestCase::new(
-        "display-basic",
-        "draw framebuffer primitives",
-        run_display_basic,
-    ),
-    #[cfg(feature = "eventfd-epoll")]
-    TestCase::new(
-        "eventfd-epoll",
-        "eventfd semantics and epoll wake smoke",
-        run_eventfd_epoll,
-    ),
-    #[cfg(feature = "exception-breakpoint")]
-    TestCase::new(
-        "exception-breakpoint",
-        "raise breakpoint exception",
-        run_exception_breakpoint,
-    ),
-    #[cfg(feature = "exception-page-fault")]
-    TestCase::new(
-        "exception-page-fault",
-        "expected page fault handler",
-        run_exception_page_fault,
-    ),
-    #[cfg(feature = "fs-basic")]
-    TestCase::new("fs-basic", "bounded filesystem operations", run_fs_basic),
-    #[cfg(all(feature = "nvme-qemu", target_arch = "x86_64"))]
-    TestCase::new(
-        "nvme-qemu",
-        "QEMU NVMe 4 KiB LBA I/O with cold-cache readback",
-        run_nvme_qemu,
-    ),
-    #[cfg(feature = "iommu-dma")]
-    TestCase::new(
-        "iommu-dma",
-        "SMMUv3 PCI DMA translation and isolation",
-        run_iommu_dma,
-    ),
-    #[cfg(all(feature = "intel-itco-qemu", target_arch = "x86_64"))]
-    TestCase::new(
-        "intel-itco-qemu",
-        "Q35 ICH9 iTCO v2 watchdog state transitions",
-        run_intel_itco_qemu,
-    ),
-    #[cfg(feature = "futex-errno-order")]
-    TestCase::new(
-        "futex-errno-order",
-        "futex value mismatch error precedence",
-        run_futex_errno_order,
-    ),
-    #[cfg(feature = "lockdep-baseline")]
-    TestCase::new(
-        "lockdep-baseline",
-        "lockdep baseline locking",
-        run_lockdep_baseline,
-    ),
-    #[cfg(feature = "lockdep-detect")]
-    TestCase::new(
-        "lockdep-detect",
-        "lockdep order inversion detection",
-        run_lockdep_detect,
-    ),
-    #[cfg(feature = "memtest")]
-    TestCase::new("memtest", "memory allocator and collections", run_memtest),
-    #[cfg(feature = "mem-stage1-transition")]
-    TestCase::new(
-        "mem-stage1-transition",
-        "SMP kernel stage-1 mapping transition",
-        run_mem_stage1_transition,
-    ),
-    #[cfg(feature = "net-loopback")]
-    TestCase::new(
-        "net-loopback",
-        "finite network address smoke",
-        run_net_loopback,
-    ),
-    #[cfg(feature = "net-unix-path")]
-    TestCase::new(
-        "net-unix-path",
-        "sleepable Unix pathname namespace",
-        run_net_unix_path,
-    ),
-    #[cfg(feature = "sched-cfs")]
-    TestCase::new("sched-cfs", "CFS scheduling priority smoke", run_sched_cfs),
-    #[cfg(feature = "sched-rr")]
-    TestCase::new(
-        "sched-rr",
-        "round-robin scheduling priority smoke",
-        run_sched_rr,
-    ),
-    #[cfg(feature = "task-cpu-lifecycle")]
-    TestCase::new(
-        "task-cpu-lifecycle",
-        "CPU offline and activation reservations",
-        run_task_cpu_lifecycle,
-    ),
-    #[cfg(feature = "task-affinity")]
-    TestCase::new("task-affinity", "task CPU affinity", run_task_affinity),
-    #[cfg(feature = "task-fair-idle-pull")]
-    TestCase::new(
-        "task-fair-idle-pull",
-        "late Fair backlog kicks an idle CPU",
-        run_task_fair_idle_pull,
-    ),
-    #[cfg(feature = "task-fair-wake-idle-sibling")]
-    TestCase::new(
-        "task-fair-wake-idle-sibling",
-        "Fair wake selects an idle sibling",
-        run_task_fair_wake_idle_sibling,
-    ),
-    #[cfg(feature = "task-ipi")]
-    TestCase::new("task-ipi", "IPI wake and hard-call delivery", run_task_ipi),
-    #[cfg(feature = "task-irq")]
-    TestCase::new("task-irq", "task IRQ state", run_task_irq),
-    #[cfg(feature = "task-executor")]
-    TestCase::new("task-executor", "Task executor", run_task_executor),
-    #[cfg(feature = "task-kernel-timer")]
-    TestCase::new(
-        "task-kernel-timer",
-        "shared kernel timer callbacks",
-        run_task_kernel_timer,
-    ),
-    #[cfg(feature = "task-mutex")]
-    TestCase::new("task-mutex", "mutex contention and wakeup", run_task_mutex),
-    #[cfg(feature = "task-parallel")]
-    TestCase::new("task-parallel", "parallel computation", run_task_parallel),
-    #[cfg(feature = "task-pi-mutex")]
-    TestCase::new(
-        "task-pi-mutex",
-        "PI mutex late wake after waiter exit",
-        run_task_pi_mutex,
-    ),
-    #[cfg(feature = "task-scheduler-local-rearm")]
-    TestCase::new(
-        "task-scheduler-local-rearm",
-        "local scheduler rearm without physical IPI",
-        run_task_scheduler_local_rearm,
-    ),
-    #[cfg(feature = "task-preempt-guard")]
-    TestCase::new(
-        "task-preempt-guard",
-        "nested preemption exit stays on the decrement-only path",
-        run_task_preempt_guard,
-    ),
-    #[cfg(all(
-        feature = "task-priority",
-        not(any(feature = "sched-cfs", feature = "sched-rr"))
-    ))]
-    TestCase::new(
-        "task-priority",
-        "task priority scheduling smoke",
-        run_task_priority,
-    ),
-    #[cfg(feature = "task-rt-policy")]
-    TestCase::new(
-        "task-rt-policy",
-        "default FIFO bypasses disabled RT bandwidth",
-        run_task_rt_policy,
-    ),
-    #[cfg(feature = "task-scheduler-irq-window")]
-    TestCase::new(
-        "task-scheduler-irq-window",
-        "IRQ-return scheduler passes reopen local interrupts",
-        run_task_scheduler_irq_window,
-    ),
-    #[cfg(feature = "task-sleep")]
-    TestCase::new("task-sleep", "bounded task sleeps", run_task_sleep),
-    #[cfg(feature = "task-smp-online")]
-    TestCase::new(
-        "task-smp-online",
-        "SMP online CPU and IPI readiness",
-        run_task_smp_online,
-    ),
-    #[cfg(feature = "task-stack-guard-page")]
-    TestCase::new(
-        "task-stack-guard-page",
-        "task stack guard page fault",
-        run_task_stack_guard_page,
-    ),
-    #[cfg(feature = "task-tls")]
-    TestCase::new("task-tls", "thread local storage", run_task_tls),
-    #[cfg(feature = "task-wait-queue")]
-    TestCase::new(
-        "task-wait-queue",
-        "wait queue wake and timeout",
-        run_task_wait_queue,
-    ),
-    #[cfg(feature = "task-wait-queue-remote-wake")]
-    TestCase::new(
-        "task-wait-queue-remote-wake",
-        "remote wait queue wake",
-        run_task_wait_queue_remote_wake,
-    ),
-    #[cfg(feature = "task-yield")]
-    TestCase::new("task-yield", "task yield scheduling", run_task_yield),
-];
+/// Feature-gated target bindings generated from the suite declaration.
+pub mod suite;

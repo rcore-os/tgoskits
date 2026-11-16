@@ -4,7 +4,6 @@
  */
 
 INCLUDE "link.x"
-__SMP = {{SMP}};
 AX_LINKER_LOAD_OFFSET = 0;
 
 PROVIDE(_sbss = __bss_start);

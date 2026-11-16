@@ -648,8 +648,9 @@ def cmd_pull(args: argparse.Namespace) -> int:
             return 1
         repos = [repo]
 
-    # Track skipped repos
+    # Track skipped repos and errors
     skipped = []
+    error_count = 0
 
     for repo in repos:
         if not repo.target_dir:
@@ -666,10 +667,12 @@ def cmd_pull(args: argparse.Namespace) -> int:
             git_manager.pull_subtree(repo.url, repo.target_dir, branch, force=args.force)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
+            error_count += 1
             if not args.all:
                 return 1
         except subprocess.CalledProcessError as e:
             print(f"Error pulling {repo.repo_name}: {e}", file=sys.stderr)
+            error_count += 1
             if not args.all:
                 return 1
 
@@ -678,7 +681,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
         for s in skipped:
             print(f"  - {s}")
 
-    return 0
+    return 0 if error_count == 0 else 1
 
 
 def cmd_push(args: argparse.Namespace) -> int:
@@ -702,8 +705,9 @@ def cmd_push(args: argparse.Namespace) -> int:
             return 1
         repos = [repo]
 
-    # Track skipped repos
+    # Track skipped repos and errors
     skipped = []
+    error_count = 0
 
     for repo in repos:
         if not repo.target_dir:
@@ -721,6 +725,7 @@ def cmd_push(args: argparse.Namespace) -> int:
                 branch = git_manager.detect_remote_branch(repo.url, repo.target_dir)
             except ValueError as e:
                 print(f"Error resolving branch for {repo.repo_name}: {e}", file=sys.stderr)
+                error_count += 1
                 if not args.all:
                     return 1
                 continue
@@ -736,6 +741,7 @@ def cmd_push(args: argparse.Namespace) -> int:
             git_manager.push_subtree(repo.url, repo.target_dir, branch, force=args.force)
         except (subprocess.CalledProcessError, ValueError) as e:
             print(f"Error pushing {repo.repo_name}: {e}", file=sys.stderr)
+            error_count += 1
             if not args.all:
                 return 1
 
@@ -744,7 +750,7 @@ def cmd_push(args: argparse.Namespace) -> int:
         for s in skipped:
             print(f"  - {s}")
 
-    return 0
+    return 0 if error_count == 0 else 1
 
 
 def cmd_list(args: argparse.Namespace) -> int:

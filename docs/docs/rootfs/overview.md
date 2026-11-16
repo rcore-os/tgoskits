@@ -283,7 +283,7 @@ ArceOS 默认 QEMU rootfs 不走 managed Alpine 镜像，而是由 `prepare_defa
 
 ## 6. 测试资产
 
-QEMU case 的 rootfs 处理位于 `scripts/axbuild/src/test/case/`，被 StarryOS 和 Axvisor 测试复用。它把“case 资产构建”和“QEMU 写入隔离”分开：前者决定是否生成 per-case rootfs，后者由 rootfs patcher 设置 drive snapshot。
+QEMU case 的 rootfs 处理位于 `scripts/axbuild/src/execution/case/`，被 StarryOS 和 Axvisor 测试复用。它把“case 资产构建”和“QEMU 写入隔离”分开：前者决定是否生成 per-case rootfs，后者由 rootfs patcher 设置 drive snapshot。
 
 ### 6.1 Pipeline 选择
 

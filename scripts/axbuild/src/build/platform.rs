@@ -133,11 +133,11 @@ pub(crate) fn makefile_features_from_env() -> Vec<String> {
 }
 
 pub(crate) fn apply_makefile_features(
-    build_info: &mut BuildInfo,
+    build_info: &mut CommonConfig,
     makefile_features: &[String],
 ) -> anyhow::Result<()> {
     for feature in makefile_features {
-        build_info.validate_feature(feature)?;
+        validate_feature(feature)?;
         let mapped = normalize_std_feature(feature);
         if !build_info
             .features

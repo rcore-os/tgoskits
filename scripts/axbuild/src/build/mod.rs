@@ -8,20 +8,22 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use ax_config::RuntimeValues;
+pub use ax_config::{CommonConfig, LogLevel};
 use cargo_metadata::{Metadata, Package};
-use log::info;
 use ostool::build::config::Cargo;
-pub use ostool::build::config::LogLevel;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::context::axbuild_tmp_dir;
 #[cfg(test)]
 use crate::context::{workspace_manifest_path, workspace_metadata_root_manifest};
 
+mod artifacts;
+pub(crate) use artifacts::BuildFiles;
 mod bare_build;
 mod config_file;
+mod config_source;
 mod future_incompat;
 mod info;
 mod platform;
@@ -30,18 +32,28 @@ pub(crate) mod symbol_map;
 
 pub(crate) use bare_build::{bare_build_target_for, freestanding_build_target_for};
 pub(crate) use config_file::{
-    ensure_build_info, load_build_info, load_toml_with_rejector, read_toml_with_rejector,
-    reject_arceos_app_c_field, reject_removed_std_field,
+    BuildConfiguration, invalid_config_value, reject_extra_fields, validate_config_target,
+    validate_resource_path,
 };
+#[cfg(test)]
+pub(crate) use config_file::{load_build_config, parse_build_config};
+pub use config_source::ConfigSource;
+pub(crate) use config_source::{ConfigInput, FileFields, load_config_input, show_config};
 pub(crate) use future_incompat::{
     FutureIncompatReportSession, finish_future_incompat_report_session,
     finish_future_incompat_report_status, start_future_incompat_report_session,
 };
 pub(crate) use info::{
-    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags, env_truthy,
-    package_enables_mmu, toolchain_rustflags,
+    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, StdBuildInput, append_cargo_rustflags,
+    append_cargo_rustflags_with_files, env_truthy, into_prepared_no_std_cargo_config_with_metadata,
+    into_prepared_no_std_cargo_config_with_metadata_and_defaults,
+    into_prepared_std_cargo_config_with_metadata, package_enables_mmu, resolve_c_app_features,
+    resolve_std_cargo_config, resolved_std_build_features, toolchain_rustflags, validate_feature,
+    validate_features,
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
+#[cfg(test)]
+pub(crate) use info::{into_base_cargo_config, into_prepared_base_cargo_config_with_metadata};
 #[cfg(test)]
 pub(crate) use platform::workspace_metadata;
 use platform::*;

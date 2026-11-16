@@ -18,20 +18,18 @@ Axvisor 命令在固定 hypervisor package 上叠加 VM 描述选择；Build Con
 | `uboot` / `board` | 通过 U-Boot 或远程板卡启动 |
 | `test qemu` / `test board` | QEMU 与板卡回归 |
 | `test uboot` | Axvisor 专属的 U-Boot 真实板卡测试 |
-| `defconfig <board>` / `config ls` | 选择或列出 `os/axvisor/configs/board/` 模板 |
+| `defconfig <preset>` / `config ls/show` | 导出、列出或展示内置 Rust 配方 |
 
-通用参数是 `--config`、`--arch`、`--target`、`--smp`、`--debug`；`--vmconfig <PATH>（兼容 `--vmconfigs`）` 可以重复传入。QEMU 另有 `--qemu-config` 和 `--rootfs`。
+通用参数是 `--preset`、`--config`、`--arch`、`--target`、`--smp`、`--debug`；`--vmconfig <PATH>`（兼容 `--vmconfigs`）可以重复传入。QEMU 另有 `--qemu-config` 和 `--rootfs`。
 
 ## 2. 配置布局
 
 ### 2.1 文件组织
 
-host board/QEMU 配置与 guest VM 配置分目录存放，这让 target 能力、host 启动和 guest 引导协议可独立演进。下列路径与 `axvisor/board.rs` 的发现规则一致。
+host 构建配方、QEMU 配置与 guest VM 配置分别维护，使 target 能力、host 启动和 guest 引导协议可独立演进。`axvisor/config/presets/` 的静态 registry 替代旧 board 文件扫描，`ConfigSource` 记录来源而不是伪造文件路径。
 
 ```text
 os/axvisor/configs/
-├── board/                 # target + BuildInfo + 可选 vm_configs
-│   └── qemu-x86_64.toml
 ├── qemu/                  # host QEMU boot contract
 │   └── qemu-x86_64.toml
 └── vms/                   # guest VM 描述，按 qemu/或具体板卡组织
@@ -68,15 +66,15 @@ Smoke 显式使用 NVMe 磁盘根，并验证宿主文件读写和双 VM 磁盘�
 
 ## 4. 默认配置
 
-`cargo xtask axvisor defconfig <board>` 将 board TOML 写到：
+`cargo xtask axvisor defconfig <preset>` 将 Rust 配方展开后原子写到：
 
 ```text
 tmp/axbuild/config/axvisor/build-<target>.toml
 ```
 
-并更新 Snapshot 的 arch、target、config，清除旧 QEMU/U-Boot 路径。它保留已有 Snapshot 中的 `vmconfigs`，因此 CLI 选择的 guest 不会因切换 defconfig 被无意丢弃。
+写出成功后更新 Snapshot 的文件选择，清除旧 SMP、VM 和 QEMU/U-Boot 路径，避免切换预设后混入旧资源；失败不更新快照。`config ls/show` 不写快照，既有 `config vm` 编辑入口保留。
 
-首次读取一个缺失的默认 Build Config 时，Axvisor 也会查找同 target 且名称以 `qemu-` 开头的 board 配置；找到即复制，找不到才写入空的默认 BuildInfo。
+无文件来源时按 target 的明确映射展开标准 QEMU 预设，不隐式生成文件。`--config` 可以选择完整自定义 TOML 或在 preset 上应用稀疏覆盖；显式缺失文件报错。
 
 ## 5. 命令示例
 

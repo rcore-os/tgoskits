@@ -1,8 +1,0 @@
-target = "loongarch64-unknown-none-softfloat"
-log = "Info"
-features = [
-  "ax-driver/serial",
-  "ax-driver/rtc",
-  "ax-driver/ls2k1000-ahci",
-  "ax-driver/ls2k1000-gmac",
-]

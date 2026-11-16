@@ -17,7 +17,7 @@ pub use error::{ApiError, ApiResult};
 /// Platform-specific constants and parameters.
 pub mod config {
     /// Stack size used when callers do not provide an explicit task stack.
-    pub const TASK_STACK_SIZE: usize = 0x40000;
+    pub const TASK_STACK_SIZE: usize = ax_runtime::thread::default_task_stack_size();
 }
 
 /// System operations.

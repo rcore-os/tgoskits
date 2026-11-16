@@ -24,6 +24,7 @@ cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64
 cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64
 
 # SG2002 board-only test
+# Package lives in apps/arceos/sg2002-usb-msc and keeps its board test target.
 cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc \
   --test axtest -b aka-00-sg2002
 ```

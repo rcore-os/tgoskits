@@ -1,12 +1,4 @@
-app-c = "c"
-features = [
-    "alloc",
-    "paging",
-    "fd",
-    "pipe",
-    "epoll",
-    "net",
-    "ax-driver/virtio-net",
-]
+app-c = "src"
+features = []
 log = "Info"
 max_cpu_num = 4

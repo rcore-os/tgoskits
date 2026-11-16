@@ -1,0 +1,6 @@
+package = "arceos-helloworld"
+target = "loongarch64-unknown-none-softfloat"
+features = ["loong-efi-cmdline-smoke"]
+log = "Info"
+max_cpu_num = 1
+env = { RDRIVE_ACPI_LOAD_AML = "0" }

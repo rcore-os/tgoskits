@@ -59,8 +59,8 @@ marker; there is no shell benchmark fallback.
 
 The legacy shared AArch64 kernel build TOML remains available for existing
 direct invocations. New board runs should pass an explicit board profile:
-axbuild resolves `board-<name>.toml` to
-`os/StarryOS/configs/board/<name>.toml`, so boards with the same Rust target do
+axbuild resolves `board-<name>.toml` to the matching Rust preset in
+`scripts/axbuild/src/starry/config/presets/`, so boards with the same Rust target do
 not accidentally inherit each other's SoC features. The available profiles
 cover OrangePi 5 Plus, LicheeRV Nano SG2002, AKA-00 SG2002, VisionFive2,
 PhytiumPi, ROC-RK3568-PC DWCMSHC eMMC, Rock 4D RK3576 DWCMSHC eMMC, and

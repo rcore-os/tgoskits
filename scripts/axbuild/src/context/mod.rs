@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     env,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
@@ -26,6 +25,8 @@ mod board_elf;
 mod resolve;
 mod snapshot;
 #[cfg(test)]
+pub(crate) mod test_support;
+#[cfg(test)]
 mod tests;
 mod types;
 mod workspace;
@@ -38,7 +39,9 @@ pub(crate) use arch::{
     starry_arch_for_target_checked, starry_target_for_arch_checked, supported_arches,
     supported_targets, validate_supported_target,
 };
-pub(crate) use resolve::{AxvisorRequestPaths, snapshot_path_value};
+pub(crate) use resolve::snapshot_path_value;
+pub(crate) use snapshot::export_config_with_snapshot;
+pub(crate) use types::RequestEnvironment;
 pub use types::{
     ARCEOS_SNAPSHOT_FILE, AXVISOR_SNAPSHOT_FILE, ArceosCommandSnapshot, ArceosQemuSnapshot,
     ArceosUbootSnapshot, AxvisorCliArgs, AxvisorCommandSnapshot, AxvisorQemuSnapshot,
@@ -50,8 +53,8 @@ pub use types::{
 };
 pub(crate) use workspace::{
     WorkspaceContext, axbuild_tmp_dir, resolve_axbuild_artifact_path, workspace_manifest_path,
-    workspace_member_dir as resolve_workspace_member_dir, workspace_metadata_root_manifest,
-    workspace_metadata_root_manifest_with_deps, workspace_root_path,
+    workspace_metadata_root_manifest, workspace_metadata_root_manifest_with_deps,
+    workspace_root_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +81,6 @@ pub struct AppContext {
     invocation: Invocation,
     build_config_path: Option<PathBuf>,
     workspace: WorkspaceContext,
-    member_dirs: HashMap<String, PathBuf>,
     original_path: OsString,
     debug: bool,
 }
@@ -116,7 +118,6 @@ impl AppContext {
             invocation,
             build_config_path: None,
             workspace,
-            member_dirs: HashMap::new(),
             original_path: env::var_os("PATH").unwrap_or_default(),
             debug: false,
         })
@@ -138,30 +139,13 @@ impl AppContext {
         &self.workspace
     }
 
-    pub(crate) fn workspace_member_dir(&mut self, package: &str) -> anyhow::Result<&Path> {
-        if !self.member_dirs.contains_key(package) {
-            let member_dir = resolve_workspace_member_dir(package)?;
-            info!(
-                "Workspace member dir for {package}: {}",
-                member_dir.display()
-            );
-            self.member_dirs.insert(package.to_string(), member_dir);
-        }
-
-        self.member_dirs
-            .get(package)
-            .map(PathBuf::as_path)
-            .context("workspace member dir should be initialized")
-    }
-
     pub(crate) async fn build(
         &mut self,
         cargo: Cargo,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
     ) -> anyhow::Result<ostool_build::CargoBuildOutput> {
         reject_raw_target_dir_args(&cargo)?;
         self.set_build_config_path(build_config_path);
-        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let build_config_path = self.build_config_path.clone();
         let stage = StageLog::start(format!(
             "cargo build package={} target={} config={}",
@@ -200,11 +184,10 @@ impl AppContext {
     pub(crate) async fn qemu(
         &mut self,
         cargo: Cargo,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         qemu: Option<QemuConfig>,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
-        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         let _path_guard = self.scoped_qemu_path(&cargo)?;
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
@@ -227,12 +210,10 @@ impl AppContext {
             cargo.target,
             display_optional_path(build_config_path.as_deref())
         ));
-        let output = self
-            .build(cargo.clone(), build_config_path.unwrap_or_default())
-            .await?;
+        let output = self.build(cargo.clone(), build_config_path).await?;
         self.prepare_elf_artifact(output.elf_path().to_path_buf(), qemu.to_bin)
             .await?;
-        crate::test::qemu::append_backtrace_map(
+        crate::execution::qemu::append_backtrace_map(
             &mut qemu,
             &output.elf_path().with_extension("axbt"),
             &cargo.target,
@@ -327,13 +308,15 @@ impl AppContext {
             "qemu run package={} target={}",
             cargo.package, cargo.target
         ));
+        let host_completion_step = qemu.shell_check_steps.len().checked_sub(1);
         let result = self
             .run_qemu_captured(cargo, qemu, Some(success_output.clone()))
             .await;
         let coverage_result = capture.finish();
-        let qemu_result = crate::support::qemu_success::verify_qemu_success_contract(
+        let qemu_result = crate::support::qemu_success::verify_qemu_host_completion_contract(
             result,
             Some(&success_output),
+            coverage_result.as_ref().ok().and(host_completion_step),
         );
         let result = crate::support::qemu_success::combine_qemu_and_coverage_results(
             qemu_result,
@@ -388,11 +371,10 @@ impl AppContext {
     pub(crate) async fn uboot(
         &mut self,
         cargo: Cargo,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         mut uboot: Option<UbootConfig>,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
-        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
         let to_bin = cargo.to_bin;
@@ -403,10 +385,8 @@ impl AppContext {
             display_optional_path(build_config_path.as_deref())
         ));
         let mut uboot = uboot.take().unwrap_or_default();
-        let output = self
-            .build(cargo.clone(), build_config_path.unwrap_or_default())
-            .await?;
-        crate::test::qemu::append_backtrace_map_to_initramfs(
+        let output = self.build(cargo.clone(), build_config_path).await?;
+        crate::execution::qemu::append_backtrace_map_to_initramfs(
             &mut uboot.boot.initramfs,
             &output.elf_path().with_extension("axbt"),
         )?;
@@ -422,33 +402,28 @@ impl AppContext {
     pub(crate) async fn board(
         &mut self,
         cargo: Cargo,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         mut board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         reject_raw_target_dir_args(&cargo)?;
-        let _env_guard = EnvRestoreGuard::set(&cargo.env);
         self.set_build_config_path(build_config_path);
         let build_config_path = self.build_config_path.clone();
-        let to_bin = cargo.to_bin;
         let stage = StageLog::start(format!(
             "board build+run package={} target={} config={}",
             cargo.package,
             cargo.target,
             display_optional_path(build_config_path.as_deref())
         ));
-        let output = self
-            .build(cargo.clone(), build_config_path.unwrap_or_default())
-            .await?;
-        crate::test::qemu::append_backtrace_map_to_initramfs(
+        let output = self.build(cargo.clone(), build_config_path).await?;
+        crate::execution::qemu::append_backtrace_map_to_initramfs(
             &mut board_config.boot.initramfs,
             &output.elf_path().with_extension("axbt"),
         )?;
         let result = self
             .board_prepared_elf(
                 output.elf_path().to_path_buf(),
-                to_bin,
-                self.build_config_path.clone().unwrap_or_default(),
+                self.build_config_path.clone(),
                 board_config,
                 options,
             )
@@ -462,22 +437,20 @@ impl AppContext {
     pub(crate) async fn board_prepared_elf(
         &mut self,
         elf_path: PathBuf,
-        to_bin: bool,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         board_config: BoardRunConfig,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         let prepare_stage = StageLog::start(format!(
-            "prepare runtime artifact elf={} to_bin={}",
-            elf_path.display(),
-            to_bin
+            "prepare runtime artifact elf={}",
+            elf_path.display()
         ));
         let runtime_elf =
             board_elf::BoardElf::prepare(&elf_path, &self.workspace.axbuild_artifact_dir())?;
         ostool_build::prepare_runtime_artifact(
             &mut self.invocation,
-            RuntimeArtifactInput::new(runtime_elf.path(), to_bin),
+            RuntimeArtifactInput::new(runtime_elf.path(), false),
         )?;
         prepare_stage.done();
 
@@ -494,21 +467,19 @@ impl AppContext {
     pub(crate) async fn board_prepared_elf_with_request(
         &mut self,
         elf_path: PathBuf,
-        to_bin: bool,
-        build_config_path: PathBuf,
+        build_config_path: impl Into<Option<PathBuf>>,
         board_request: BoardRunRequest,
     ) -> anyhow::Result<()> {
         self.set_build_config_path(build_config_path);
         let prepare_stage = StageLog::start(format!(
-            "prepare runtime artifact elf={} to_bin={}",
-            elf_path.display(),
-            to_bin
+            "prepare runtime artifact elf={}",
+            elf_path.display()
         ));
         let runtime_elf =
             board_elf::BoardElf::prepare(&elf_path, &self.workspace.axbuild_artifact_dir())?;
         ostool_build::prepare_runtime_artifact(
             &mut self.invocation,
-            RuntimeArtifactInput::new(runtime_elf.path(), to_bin),
+            RuntimeArtifactInput::new(runtime_elf.path(), false),
         )?;
         prepare_stage.done();
 
@@ -579,8 +550,8 @@ impl AppContext {
         ostool_board::ensure_run_config_in_dir_for_cargo(&self.invocation, cargo, dir).await
     }
 
-    fn set_build_config_path(&mut self, path: PathBuf) {
-        self.build_config_path = Some(path);
+    fn set_build_config_path(&mut self, path: impl Into<Option<PathBuf>>) {
+        self.build_config_path = path.into();
     }
 
     fn activate_cargo_build_context(&mut self, cargo: &Cargo) -> anyhow::Result<()> {
@@ -677,43 +648,6 @@ fn display_optional_path(path: Option<&Path>) -> String {
 
 pub(crate) fn cargo_bin_path_for_elf(elf_path: &Path) -> PathBuf {
     elf_path.with_extension("bin")
-}
-
-struct EnvRestoreGuard {
-    vars: Vec<(OsString, Option<OsString>)>,
-}
-
-impl EnvRestoreGuard {
-    fn set(vars: &HashMap<String, String>) -> Self {
-        let mut saved = Vec::with_capacity(vars.len());
-        for (key, value) in vars {
-            let key = OsString::from(key);
-            let previous = env::var_os(&key);
-            // SAFETY: axbuild runs each cargo build/run flow serially in this CLI process.
-            // These variables must be visible to ostool's short-lived child cargo probes
-            // (for example `cargo tree`) before the final cargo command is constructed.
-            unsafe {
-                env::set_var(&key, value);
-            }
-            saved.push((key, previous));
-        }
-        Self { vars: saved }
-    }
-}
-
-impl Drop for EnvRestoreGuard {
-    fn drop(&mut self) {
-        for (key, previous) in self.vars.iter().rev() {
-            // SAFETY: see `EnvRestoreGuard::set`; this restores the process environment
-            // immediately after the scoped ostool cargo operation completes.
-            unsafe {
-                match previous {
-                    Some(value) => env::set_var(key, value),
-                    None => env::remove_var(key),
-                }
-            }
-        }
-    }
 }
 
 struct PathRestoreGuard {

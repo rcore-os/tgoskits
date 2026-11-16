@@ -17,7 +17,7 @@ use anyhow::{Context, bail, ensure};
 use walkdir::WalkDir;
 
 /// Cargo feature that turns on the dashboard build and the serving routes.
-pub(super) const WEB_UI_FEATURE: &str = "web-ui";
+pub(crate) const WEB_UI_FEATURE: &str = "web-ui";
 
 /// Minimum tool majors from `web-ui/package.json` `engines`. The CI bootstrap
 /// provisions Node 24.11.1, whose bundled npm is 11.x but older than the
@@ -30,13 +30,13 @@ const MIN_NPM_MAJOR: u32 = 11;
 const STALE_OUTPUT_DIRS: [&str; 2] = ["node_modules", "dist"];
 
 /// Returns the dashboard feature state of a loaded cargo build config.
-pub(super) fn enabled(features: &[String]) -> bool {
+pub(crate) fn enabled(features: &[String]) -> bool {
     features.iter().any(|feature| feature == WEB_UI_FEATURE)
 }
 
 /// Builds the dashboard when the feature is enabled and returns its `dist`
 /// tree for the initramfs packer; `None` means this build carries no UI.
-pub(super) fn build_dist(
+pub(crate) fn build_dist(
     features: &[String],
     axvisor_dir: &Path,
     target_dir: &Path,

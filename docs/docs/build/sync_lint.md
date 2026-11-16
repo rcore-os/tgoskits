@@ -56,11 +56,12 @@ flowchart LR
 
 | 代码位置 | 作用 |
 |----------|------|
-| `scripts/axbuild/src/sync_lint/mod.rs` | CLI 入口、`SyncLintArgs`、结果打印与退出码 |
-| `scripts/axbuild/src/sync_lint/git.rs` | 通过 cargo metadata 枚举 workspace 包和 Rust 源文件；`--since` 增量选择 |
-| `scripts/axbuild/src/sync_lint/parser.rs` | `syn` 语法分析与 `Analyzer` 访问者，产生 `Finding` |
-| `scripts/axbuild/src/sync_lint/rules.rs` | 规则枚举、`AtomicAccess` / `AccessSummary` / `AnalysisResult` 数据模型 |
-| `scripts/axbuild/src/sync_lint/tests.rs` | 每条规则的回归用例 |
+| `scripts/axbuild/src/cli/mod.rs` | `SyncLintArgs` 参数定义与命令分派 |
+| `scripts/axbuild/src/checks/sync_lint/mod.rs` | 检查入口、结果打印与退出码 |
+| `scripts/axbuild/src/checks/sync_lint/git.rs` | 通过 cargo metadata 枚举 workspace 包和 Rust 源文件；`--since` 增量选择 |
+| `scripts/axbuild/src/checks/sync_lint/parser.rs` | `syn` 语法分析与 `Analyzer` 访问者，产生 `Finding` |
+| `scripts/axbuild/src/checks/sync_lint/rules.rs` | 规则枚举、`AtomicAccess` / `AccessSummary` / `AnalysisResult` 数据模型 |
+| `scripts/axbuild/src/checks/sync_lint/tests.rs` | 每条规则的回归用例 |
 
 ## 语法分析架构
 

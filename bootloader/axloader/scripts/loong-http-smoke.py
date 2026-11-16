@@ -10,12 +10,17 @@ import struct
 import time
 from pathlib import Path
 
+QEMU_202_WRITE_FAILURE_BOOT_ID = "qemu-202-write-failure"
 
-def request(host, port, method, path, body=b"", headers=None, allow_empty=False):
+
+def request(host, port, method, path, body=b"", headers=None, allow_empty=False,
+            protocol=True, declared_length=None, shutdown_write=False):
     headers = dict(headers or {})
     headers.setdefault("Host", "localhost")
     headers.setdefault("Connection", "close")
-    headers["Content-Length"] = str(len(body))
+    if method != "GET" and protocol:
+        headers.setdefault("X-Axloader-Protocol-Version", "7")
+    headers["Content-Length"] = str(len(body) if declared_length is None else declared_length)
     payload = [f"{method} {path} HTTP/1.1\r\n".encode()]
     payload.extend(f"{key}: {value}\r\n".encode() for key, value in headers.items())
     payload.append(b"\r\n")
@@ -23,6 +28,8 @@ def request(host, port, method, path, body=b"", headers=None, allow_empty=False)
     with socket.create_connection((host, port), timeout=8) as stream:
         stream.settimeout(8)
         stream.sendall(b"".join(payload))
+        if shutdown_write:
+            stream.shutdown(socket.SHUT_WR)
         chunks = []
         while True:
             try:
@@ -102,6 +109,48 @@ def stage_trial(args, epoch, image, digest):
     )
 
 
+def expect_injected_start_failure(args, epoch, boot_id, binding_id):
+    if args.qemu_log is None:
+        raise RuntimeError("response-write regression requires --qemu-log")
+    log_offset = len(args.qemu_log.read_bytes())
+    stream = socket.create_connection((args.host, args.port), timeout=8)
+    request_body = (
+        f"POST /api/v1/boot/jobs/{boot_id}/start HTTP/1.1\r\n"
+        f"Host: localhost\r\nConnection: close\r\n"
+        f"X-Axloader-Protocol-Version: 7\r\n"
+        f"X-Boot-Epoch: {epoch}\r\n"
+        f"X-Serial-Binding: {binding_id}\r\n"
+        f"Content-Length: 0\r\n\r\n"
+    ).encode()
+    stream.sendall(request_body)
+    try:
+        stream.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+    stream.close()
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        recent = args.qemu_log.read_bytes()[log_offset:]
+        if b"elf_loaded:" in recent:
+            raise RuntimeError("injected 202 write failure handed off the kernel")
+        if b"loader_http_error:" in recent:
+            break
+        time.sleep(0.025)
+    else:
+        raise RuntimeError("injected 202 write failure did not reach the write-error path")
+
+    status, value, _ = request(
+        args.host,
+        args.port,
+        "GET",
+        f"/api/v1/boot/jobs/{boot_id}",
+    )
+    expect(status, 200, "failed 202 write leaves the job queryable", value)
+    expect(value["phase"], "ready", "failed 202 write keeps job ready", value)
+    expect(value["kernel_received"], True, "failed 202 write retains source bytes", value)
+
+
 def returning_efi_image(efi_status):
     """A cooperative EFI entry which preserves the caller and returns a status."""
     # Assembled and disassembled for LoongArch: ori $a0, $zero, imm12; ret.
@@ -136,8 +185,8 @@ def exercise_returned_target(args, status, efi_status):
     image = returning_efi_image(efi_status)
     digest = hashlib.sha256(image).hexdigest()
     manifest = {
-        "boot_id": "loong-returning-efi", "arch": "loongarch64", "image_format": "elf64",
-        "kernel": {"size": len(image), "sha256": digest}, "entry_symbol": "efi_pe_entry",
+        "boot_id": "loong-returning-efi",
+        "kernel": {"size": len(image), "sha256": digest},
     }
     headers = {"X-Boot-Epoch": epoch}
     response = request(args.host, args.port, "POST", "/api/v1/boot/jobs",
@@ -199,17 +248,32 @@ def main():
         headers={"X-Boot-Epoch": epoch, "x-boot-epoch": epoch},
     )
     expect(response[0], 400, "ambiguous control headers rejected", response[1])
+    for version_headers, protocol_enabled in (
+        (None, False),
+        ({"X-Axloader-Protocol-Version": "6"}, True),
+    ):
+        response = request(
+            args.host, args.port, "POST", "/api/v1/boot/jobs",
+            b"{not-json", {"X-Boot-Epoch": epoch, **(version_headers or {})},
+            protocol=protocol_enabled,
+        )
+        expect(response[0], 400, "non-v7 mutation rejected", response[1])
+        expect(response[1], {
+            "code": "unsupported_protocol",
+            "message": "axloader protocol 7 is required",
+        }, "non-v7 mutation reason")
+    response = request(
+        args.host, args.port, "GET", "/api/v1/boot/jobs/protocol-gate",
+    )
+    expect(response[0], 404, "protocol gate had no transaction side effect", response[1])
     headers = {"X-Boot-Epoch": epoch, "Content-Type": "application/json"}
     bad_kernel = b"\x07"
     manifest = {
         "boot_id": "loong-http-smoke",
-        "arch": "loongarch64",
-        "image_format": "elf64",
         "kernel": {
             "size": len(bad_kernel),
             "sha256": hashlib.sha256(bad_kernel).hexdigest(),
         },
-        "entry_symbol": "efi_pe_entry",
     }
     encoded = json.dumps(manifest, separators=(",", ":")).encode()
     response = request(args.host, args.port, "POST", "/api/v1/boot/jobs", encoded, headers)
@@ -239,7 +303,7 @@ def main():
         headers={"X-Boot-Epoch": epoch},
     )
     expect(response[0], 409, "unbound start rejected", response[1])
-    expect(response[1], {"error": "serial_binding_required"}, "unbound start reason")
+    expect(response[1]["code"], "serial_binding_required", "unbound start reason", response[1])
     binding = {
         "serial_id": epoch,
         "binding_id": "0" * 32,
@@ -261,8 +325,57 @@ def main():
         "/api/v1/boot/jobs/loong-http-smoke/start",
         headers={**headers, "X-Serial-Binding": binding["binding_id"]},
     )
-    expect(response[0], 409, "invalid ELF handoff rejected", response[1])
-    expect(response[1], {"error": "kernel_load_failed"}, "invalid ELF handoff reason")
+    expect(response[0], 422, "invalid ELF handoff rejected", response[1])
+    expect(response[1]["code"], "invalid_elf", "invalid ELF handoff reason", response[1])
+    response = request(
+        args.host, args.port, "GET", "/api/v1/boot/jobs/loong-http-smoke",
+    )
+    expect(response[0], 200, "failed boot job remains queryable", response[1])
+    expect(response[1]["phase"], "failed", "failed boot job phase", response[1])
+    expect(response[1]["last_error"]["code"], "invalid_elf",
+           "failed boot job preserves first error", response[1])
+    response = request(
+        args.host, args.port, "PUT",
+        "/api/v1/boot/jobs/loong-http-smoke/kernel",
+        b"\x00",
+        {"X-Boot-Epoch": "previous-generation"},
+    )
+    expect(response[0], 409, "stale epoch precedes failed replay", response[1])
+    expect(response[1]["code"], "boot_epoch_mismatch",
+           "stale failed PUT reason", response[1])
+    response = request(
+        args.host, args.port, "POST",
+        "/api/v1/boot/jobs/loong-http-smoke/start",
+        headers={
+            "X-Boot-Epoch": "previous-generation",
+            "X-Serial-Binding": binding["binding_id"],
+        },
+    )
+    expect(response[0], 409, "stale epoch precedes failed start replay", response[1])
+    expect(response[1]["code"], "boot_epoch_mismatch",
+           "stale failed start reason", response[1])
+    response = request(
+        args.host, args.port, "PUT",
+        "/api/v1/boot/jobs/loong-http-smoke/kernel",
+        b"\x00",
+        {"X-Boot-Epoch": epoch},
+    )
+    expect(response[0], 422, "failed PUT replays before length validation", response[1])
+    expect(response[1]["code"], "invalid_elf",
+           "failed PUT preserves first error", response[1])
+    response = request(
+        args.host, args.port, "POST",
+        "/api/v1/boot/jobs/loong-http-smoke/start",
+        headers={**headers, "X-Serial-Binding": binding["binding_id"]},
+    )
+    expect(response[0], 422, "failed boot start replays terminal error", response[1])
+    expect(response[1]["code"], "invalid_elf",
+           "failed boot start preserves first error", response[1])
+    response = request(
+        args.host, args.port, "POST", "/api/v1/boot/jobs", encoded, headers,
+    )
+    expect(response[0], 200, "failed manifest retry returns current status", response[1])
+    expect(response[1]["phase"], "failed", "manifest retry does not clear failure", response[1])
     response = request(
         args.host,
         args.port,
@@ -271,6 +384,49 @@ def main():
         headers={"X-Boot-Epoch": epoch},
     )
     expect(response[0], 204, "boot transaction cancellation", response[1])
+
+    short_kernel = b"short-upload-body"
+    short_digest = hashlib.sha256(short_kernel).hexdigest()
+    short_id = "loong-short-upload"
+    short_manifest = {
+        "boot_id": short_id,
+        "kernel": {"size": len(short_kernel), "sha256": short_digest},
+    }
+    response = request(
+        args.host, args.port, "POST", "/api/v1/boot/jobs",
+        json.dumps(short_manifest, separators=(",", ":")).encode(), headers,
+    )
+    expect(response[0], 201, "short upload manifest", response[1])
+    response = request(
+        args.host, args.port, "PUT", f"/api/v1/boot/jobs/{short_id}/kernel",
+        short_kernel[:1],
+        {
+            "X-Boot-Epoch": epoch,
+            "X-Image-Sha256": short_digest,
+        },
+        declared_length=len(short_kernel),
+        shutdown_write=True,
+    )
+    expect(response[0], 422, "short upload rejected", response[1])
+    expect(response[1]["code"], "image_size_mismatch",
+           "short upload reason", response[1])
+    response = request(args.host, args.port, "GET", f"/api/v1/boot/jobs/{short_id}")
+    expect(response[0], 200, "short upload failure remains queryable", response[1])
+    expect(response[1]["phase"], "failed", "short upload failure phase", response[1])
+    expect(response[1]["last_error"]["code"], "image_size_mismatch",
+           "short upload first error", response[1])
+    response = request(
+        args.host, args.port, "POST", f"/api/v1/boot/jobs/{short_id}/start",
+        headers={**headers, "X-Serial-Binding": binding["binding_id"]},
+    )
+    expect(response[0], 422, "short upload start replays failure", response[1])
+    expect(response[1]["code"], "image_size_mismatch",
+           "short upload start reason", response[1])
+    response = request(
+        args.host, args.port, "DELETE", f"/api/v1/boot/jobs/{short_id}",
+        headers={"X-Boot-Epoch": epoch},
+    )
+    expect(response[0], 204, "short upload transaction cancellation", response[1])
 
     response = request(
         args.host,
@@ -284,6 +440,7 @@ def main():
         },
     )
     expect(response[0], 422, "invalid OTA image rejected", response[1])
+    expect(response[1]["code"], "invalid_ota_image", "invalid OTA image reason", response[1])
 
     image = bytearray(args.image.read_bytes())
     # Give the trial a distinct file identity without changing executable code.
@@ -300,7 +457,7 @@ def main():
             {"X-Boot-Epoch": epoch, "X-Image-Sha256": image_digest},
         )
         expect(response[0], 409, "full FAT storage failure", response[1])
-        expect(response[1], {"error": "ota_storage_failed"}, "storage failure reason")
+        expect(response[1]["code"], "ota_storage_failed", "storage failure reason", response[1])
         unchanged = wait_status(args.host, args.port, lambda value: value["boot_epoch"] == epoch)
         expect(unchanged["ota"], status["ota"], "failed upload preserves OTA state")
         print("loong axloader full FAT: storage failure is 409 and stable state is preserved")
@@ -390,9 +547,7 @@ def main():
         positive_cmdline += "".join(f" reclaim-image={start:x}:{end - start:x}" for start, end in images)
         print(f"loong axloader: require ordinary page reuse from {len(images)} loader images", flush=True)
     positive_manifest = {
-        "boot_id": "loong-valid-elf",
-        "arch": "loongarch64",
-        "image_format": "elf64",
+        "boot_id": QEMU_202_WRITE_FAILURE_BOOT_ID,
         "kernel": {
             "size": len(elf_image),
             "sha256": hashlib.sha256(elf_image).hexdigest(),
@@ -402,7 +557,6 @@ def main():
             "sha256": hashlib.sha256(initramfs).hexdigest(),
         },
         "cmdline": positive_cmdline,
-        "entry_symbol": "efi_pe_entry",
     }
     positive_headers = {
         "X-Boot-Epoch": positive_epoch,
@@ -425,7 +579,7 @@ def main():
             args.host,
             args.port,
             "PUT",
-            f"/api/v1/boot/jobs/loong-valid-elf/{kind}",
+            f"/api/v1/boot/jobs/{QEMU_202_WRITE_FAILURE_BOOT_ID}/{kind}",
             image,
             {"X-Boot-Epoch": positive_epoch, "X-Image-Sha256": digest},
         )
@@ -444,11 +598,17 @@ def main():
         positive_headers,
     )
     expect(response[0], 200, "valid Loong ELF direct serial continue", response[1])
+    expect_injected_start_failure(
+        args,
+        positive_epoch,
+        QEMU_202_WRITE_FAILURE_BOOT_ID,
+        binding["binding_id"],
+    )
     response = request(
         args.host,
         args.port,
         "POST",
-        "/api/v1/boot/jobs/loong-valid-elf/start",
+        f"/api/v1/boot/jobs/{QEMU_202_WRITE_FAILURE_BOOT_ID}/start",
         headers={
             "X-Boot-Epoch": positive_epoch,
             "X-Serial-Binding": binding["binding_id"],

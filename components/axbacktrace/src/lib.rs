@@ -19,6 +19,8 @@ use ax_lazyinit::OnceLock;
 
 static IP_RANGE: OnceLock<Range<usize>> = OnceLock::new();
 static FP_RANGE: OnceLock<Range<usize>> = OnceLock::new();
+#[cfg(feature = "alloc")]
+static BOOT_STACK_RANGES: OnceLock<Box<[Range<usize>]>> = OnceLock::new();
 
 /// Magic bytes at the beginning of an AXBT symbol map.
 pub const AXBT_MAGIC: [u8; 4] = *b"AXBT";
@@ -766,6 +768,44 @@ pub fn init(ip_range: Range<usize>, fp_range: Range<usize>) {
     FP_RANGE.call_once(|| fp_range);
 }
 
+/// Registers boot stacks outside the page-table-backed kernel window.
+///
+/// # Safety
+///
+/// Every supplied range must remain mapped and readable for the lifetime of
+/// this kernel. Register only reserved stack storage, not arbitrary address
+/// space spanning unmapped gaps. Call after the allocator is available and
+/// before exposing diagnostics that may walk these stacks.
+#[cfg(feature = "alloc")]
+pub unsafe fn init_boot_stack_ranges(ranges: Box<[Range<usize>]>) {
+    assert!(ranges.iter().all(|range| range.start < range.end));
+    BOOT_STACK_RANGES.call_once(|| ranges);
+}
+
+fn frame_fits_range(fp: usize, range: &Range<usize>) -> bool {
+    let Some(start) = fp.checked_sub(Frame::OFFSET * core::mem::size_of::<Frame>()) else {
+        return false;
+    };
+    start >= range.start
+        && start
+            .checked_add(core::mem::size_of::<Frame>())
+            .is_some_and(|end| end <= range.end)
+}
+
+fn frame_is_readable(fp: usize, kernel: &Range<usize>) -> bool {
+    #[cfg(feature = "alloc")]
+    {
+        frame_fits_range(fp, kernel)
+            || BOOT_STACK_RANGES
+                .get()
+                .is_some_and(|ranges| ranges.iter().any(|range| frame_fits_range(fp, range)))
+    }
+    #[cfg(not(feature = "alloc"))]
+    {
+        frame_fits_range(fp, kernel)
+    }
+}
+
 /// Returns the initialized kernel instruction range.
 pub fn ip_range() -> Option<Range<usize>> {
     IP_RANGE.get().cloned()
@@ -959,7 +999,7 @@ fn unwind_core_with_max_depth(
     let ip_range = IP_RANGE.get();
     let mut depth = 0;
 
-    while fp_range.contains(&fp)
+    while frame_is_readable(fp, fp_range)
         && depth < max_depth
         && let Some(frame) = Frame::read(fp)
     {
@@ -1464,6 +1504,25 @@ mod tests {
 
     fn init_for_tests() {
         init(0..usize::MAX, 0..usize::MAX);
+    }
+
+    #[test]
+    fn frame_bounds_require_the_entire_record_and_reject_address_overflow() {
+        let offset = Frame::OFFSET * core::mem::size_of::<Frame>();
+        let range = 0x1000..0x1100;
+        assert!(frame_fits_range(range.start + offset, &range));
+        assert!(frame_fits_range(
+            range.end - core::mem::size_of::<Frame>() + offset,
+            &range
+        ));
+        assert!(!frame_fits_range(
+            range.end - core::mem::size_of::<Frame>() + offset + 1,
+            &range
+        ));
+        assert!(!frame_fits_range(usize::MAX, &(usize::MAX - 1..usize::MAX)));
+        if offset != 0 {
+            assert!(!frame_fits_range(offset - 1, &(0..usize::MAX)));
+        }
     }
 
     fn boxed_frame_chain(ips: &[usize]) -> (Box<[Frame]>, usize) {

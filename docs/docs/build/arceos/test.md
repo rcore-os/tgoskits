@@ -7,7 +7,7 @@ sidebar_label: "测试"
 
 ArceOS 的 suite 测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-test-suit`，单个用例由 crate feature 控制）和 **C 用例**（通过 Makefile 构建的 C 语言程序，由 `test_cmd` 文件定义测试序列）。Cargo `[[test]]` 形式的 crate axtest 不再由本命令发现，统一使用 [`cargo xtask ktest qemu`](../ktest)。
 
-测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**——具有相同构建配置的用例归入同一 build wrapper，组内共享一次内核编译，然后逐 case 准备资产、运行 QEMU、匹配结果。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 ArceOS 特有的测试目录结构和两类用例的处理差异。
+普通测试适配位于 `scripts/axbuild/src/test/normal/`，共用构建/运行能力位于 `scripts/axbuild/src/execution/`。具有相同有效构建身份的用例共享编译；Rust每个批次启动一次，批次内逐项执行并判定结果。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 ArceOS 特有的测试目录结构和两类用例的处理差异。
 
 ## 命令
 
@@ -17,7 +17,7 @@ ArceOS 的 suite 测试覆盖两类用例：**Rust 用例**（统一入口为 `a
 cargo xtask arceos test qemu --arch <arch> [--test-group <group>] [--test-case <case>]
 ```
 
-ArceOS 测试命令支持通过 `--test-group` 选择测试组（`rust`、`c` 或自定义组），通过 `--test-case` 过滤特定用例。不指定 `--test-group` 时默认运行 Rust、C 和自定义组。Rust 组中 `--test-case` 直接使用 feature 名，例如 `task-yield`；不指定时运行 `all` feature。旧的 `--test-group axtest` 只返回迁移提示，不再做目录发现。
+ArceOS 测试命令支持通过 `--test-group` 选择测试组（`rust`、`c` 或自定义组），通过 `--test-case` 过滤特定用例。不指定 `--test-group` 时默认运行 Rust、C 和自定义组。Rust组中`--test-case`选择测试ID（如`task-yield`）或批次ID（如`general`）；省略时按suite.toml顶部run_order运行当前架构支持的全部批次。原Rust all批次已改名general。旧的 `--test-group axtest` 只返回迁移提示，不再做目录发现。
 
 ## 测试组
 
@@ -33,13 +33,13 @@ Rust 组和 C 组是预定义的标准组，分别用于验证 ArceOS 的 Rust �
 
 ### 组分发逻辑
 
-`runner.rs::selected_qemu_test_groups()` 根据 `--test-group` 决定要执行的 `QemuTestFlow` 集合。不指定 `--test-group` 时默认执行 `rust`、`c` 和所有自定义组。每个 flow 映射到独立的处理函数：
+`discovery.rs::selected_qemu_test_groups()` 根据 `--test-group` 决定要执行的 `QemuTestFlow` 集合。不指定 `--test-group` 时默认执行 `rust`、`c` 和所有自定义组。每个 flow 映射到独立的处理函数：
 
 | QemuTestFlow | 处理函数 | 说明 |
 |--------------|----------|------|
-| `Rust` | `rust_qemu::test_rust_qemu()` | feature-based runner，共享编译 |
-| `C` | `c_qemu::test_c_qemu()` | 每个 feature 独立 CMake 编译 |
-| `Generic(group)` | `generic_qemu::test_generic_qemu()` | 自定义组，走共享发现流程 |
+| `Rust` | `rust_suite::test_rust_qemu()` | feature-based runner，共享编译 |
+| `C` | `c_suite::test_c_qemu()` | 每个 feature 独立 CMake 编译 |
+| `Generic(group)` | `directory::test_generic_qemu()` | 自定义组，走共享发现流程 |
 
 分发后，每个 flow 独立打印进度（`[N/M] arceos <flow> qemu <case>`）和结果汇总（`QemuTestSummary`），最终由 `summary.finish_with_total_detail()` 统一判定退出码。
 
@@ -50,6 +50,8 @@ Rust 组只保留一个 Cargo 项目，测例按模块分层存放，并通过 f
 ```text
 test-suit/arceos/rust/
 ├── Cargo.toml
+├── suite.toml         # run_order列启动顺序，具名batches登记tests
+├── build.rs           # 按声明顺序生成目标函数表
 ├── src/
 ├── build-{target}.toml
 └── qemu-{arch}.toml
@@ -57,17 +59,17 @@ test-suit/arceos/rust/
 
 ### 执行流程
 
-Rust 用例的执行链位于 `arceos/test/runner.rs::test_qemu()` → `rust_qemu.rs::test_rust_qemu()` → `rust_qemu.rs::prepare_rust_qemu_cases()` → `runner.rs::run_prepared_qemu_groups()`。下图和步骤描述从 CLI 到 QEMU 运行的完整数据流。
+Rust执行链位于 `test/normal/arceos/runner.rs::test_qemu()` → `rust_suite::test_rust_qemu()` → `discovery.rs::discover_rust_qemu_cases()` → `qemu.rs::prepare_qemu_cases()` → `runner.rs::run_prepared_qemu_groups()`。下图和步骤描述从 CLI 到 QEMU 运行的完整数据流。
 
 ```mermaid
 flowchart TD
     A["test_qemu(CLI args)"] --> B["parse_test_target<br/>解析 arch/target"]
     B --> C["selected_qemu_test_groups<br/>选择要执行的 flow"]
-    C --> D["discover_rust_qemu_cases<br/>枚举可选 feature"]
-    D --> E["prepare_rust_qemu_cases<br/>逐 feature 装配 Cargo + QEMU"]
-    E --> F["group_arceos_qemu_cases_by_build_identity<br/>按 (build config, feature) 分组"]
+    C --> D["discover_rust_qemu_cases<br/>读取嵌套批次并展开features"]
+    D --> E["prepare_qemu_cases<br/>逐批次装配Cargo + QEMU"]
+    E --> F["group_arceos_qemu_cases_by_build_identity<br/>按构建配置和实际features分组"]
     F --> G["逐 build group：<br/>app.build() 编译一次内核"]
-    G --> H["逐 case：run_rust_qemu_case"]
+    G --> H["逐批次：run_qemu_case"]
     H --> I["run_qemu_with_axtest_coverage<br/>启动 QEMU"]
     I --> J{"success_regex 匹配?"}
     J -->|是| K["ok: case_name"]
@@ -80,36 +82,35 @@ flowchart TD
 
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
-| 用例枚举 | `discovery.rs::discover_rust_qemu_cases()` | 枚举 `ARCEOS_RUST_QEMU_FEATURES`；`--test-case` 选中单个 feature，省略时选 `all`；未匹配当前架构支持的 feature 时返回空集（跳过） |
-| 请求装配 | `rust_qemu.rs::prepare_rust_qemu_cases()` | 对每个 feature 调用 `arceos.prepare_request()`（`SnapshotPersistence::Discard`，测试不写回快照），加载 `build-<target>.toml` 与 `qemu-<arch>.toml` |
-| Feature 注入 | `rust_qemu.rs::add_cargo_feature()` | 把 feature 名追加到 `cargo.features` 并排序去重 |
-| SMP | `rust_qemu.rs` | `request.smp` → Build Config `max_cpu_num` → 默认 `1`，调用 `apply_smp_qemu_arg()` 写入 `-smp` |
-| 构建分组 | `runner.rs::group_arceos_qemu_cases_by_build_identity()` | 按 `(build_config_path, package, feature)` 元组分组；**相同 feature 的多个 case 共享一次内核编译** |
+| 用例枚举 | `discovery.rs::discover_rust_qemu_cases()` | 读取schema3的run_order和具名batches/tests；按批次和成员arches过滤，默认按run_order运行全部有效批次；显式未知或不支持的选择报错 |
+| 请求装配 | `qemu.rs::prepare_qemu_cases()` | 对每个 feature 调用 `arceos.prepare_request()`（`SnapshotPersistence::Discard`，测试不写回快照），加载 `build-<target>.toml` 与 `qemu-<arch>.toml` |
+| Feature 注入 | `qemu.rs::add_cargo_feature()` | 把 feature 名追加到 `cargo.features` 并排序去重 |
+| SMP | `qemu.rs` | `request.smp` → Build Config `max_cpu_num` → 默认 `1`，调用 `apply_smp_qemu_arg()` 写入 `-smp` |
+| 构建分组 | `runner.rs::group_arceos_qemu_cases_by_build_identity()` | 按构建配置、软件包和实际features分组；相同有效构建身份共享内核编译 |
 | 内核编译 | `runner.rs::run_prepared_qemu_groups()` → `app.build()` | 每个 build group 调用一次 `ostool_build::cargo_build()`，产物为 ELF |
 
 ### Feature 专属覆盖
 
-`apply_rust_qemu_feature_overrides()` 为部分 feature 覆盖 QEMU 最后一个 shell-check 步骤的 `success_regex`，并覆盖根 `fail_regex` 和 `timeout`，因为它们的判定语义与默认的 "内核启动成功" 不同：
+`apply_rust_qemu_feature_overrides()` 为部分 feature 覆盖 QEMU 最后一个 shell-check 步骤的 `success_regex`，并覆盖根 `fail_regex` 和 `timeout`，因为它们的判定语义与普通测试正常返回并输出套件成功标记的语义不同：
 
 | Feature | 覆盖行为 |
 |---------|----------|
-| `debug-panic-path` | 成功条件改为 `BACKTRACE_BEGIN ... kind=panic`；失败 `ARCEOS_TEST_FAIL`；timeout ≤30s |
-| `exception-page-fault` | 成功 `Page fault test OK!`；失败含 `panic` 或 "handler did not stop"；timeout ≤30s |
+| `debug-panic-path` | 成功要求预期panic正文、`BACKTRACE_BEGIN ... kind=panic`及符号/行号；失败 `ARCEOS_TEST_FAIL`；timeout ≤30s |
 | `lockdep-detect` | 成功 "lockdep: lock order inversion detected"；失败 "did not report"；timeout ≤30s |
 | `task-stack-guard-page` | 成功匹配 guard page hit；失败 "was not hit"；timeout ≤30s |
 | `task-wait-queue-remote-wake` (riscv64) | 追加 `-accel tcg,thread=single`，强制单线程 TCG 以保证唤醒顺序确定性 |
 
 ### 单个 case 运行
 
-`run_rust_qemu_case()` 在 QEMU 运行前准备测试资产。启用 `BACKTRACE=y` 或 `DWARF=y` 的构建会生成 ELF 旁的 AXBT map；带 host-initramfs 的用例把 map 放入 `/symbols/kernel.axbt`，目标输出直接包含函数名和 `file:line`。map 尚未就绪时保留地址级回溯，测试只应断言目标实际输出的协议和符号字段。
+`qemu.rs::run_qemu_case()` 在 QEMU 运行前准备测试资产。启用 `BACKTRACE=y` 或 `DWARF=y` 的构建会生成 ELF 旁的 AXBT map；带 host-initramfs 的用例把 map 放入 `/symbols/kernel.axbt`，目标输出直接包含函数名和 `file:line`。map 尚未就绪时保留地址级回溯，测试只应断言目标实际输出的协议和符号字段。
 
 1. **Host HTTP fixture**：若用例 QEMU TOML 声明了 `[host_http_server]`，启动 `HostHttpServerGuard`（见 [测试基础设施](../test_infra#10-host-http-fixture)）。
 2. **覆盖率**：`run_qemu_with_axtest_coverage()` 在启用 `AXTEST_COVERAGE` 时额外配置 QEMU monitor 和覆盖率正则。
-3. **目标侧断言**：`debug-backtrace` feature 要求目标回溯包含特定函数链和 `file:line`；测试不依赖宿主 ELF、DWARF 或 `addr2line`。
+3. **目标侧断言**：`debug-backtrace`要求目标回溯有有效帧和符号；`debug-panic-path`另要求预期panic正文及符号/行号；测试不依赖宿主 ELF、DWARF 或 `addr2line`。
 
 ### FAT32 rootfs 准备
 
-`rootfs::prepare_default_qemu_fat32_rootfs()` 为需要磁盘的 feature（如 `fs-basic`、`all`）在 `tmp/axbuild/runtime-assets/arceos/rust/` 下生成临时 FAT32 镜像，并补丁到 QEMU 的 `-drive`。这与 StarryOS/Axvisor 的 managed rootfs 注入是不同的路径——ArceOS 不经过共享的 `test/case/` 资产注入层。
+`rootfs::prepare_default_qemu_fat32_rootfs()` 为需要磁盘的 feature（如 `fs-basic`、`general`）在 `tmp/axbuild/runtime-assets/arceos/rust/` 下生成临时 FAT32 镜像，并补丁到 QEMU 的 `-drive`。这与 StarryOS/Axvisor 的 managed rootfs 注入是不同的路径——ArceOS 不经过共享的 `test/case/` 资产注入层。
 
 ## C 用例
 

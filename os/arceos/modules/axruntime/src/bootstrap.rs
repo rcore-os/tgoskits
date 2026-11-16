@@ -142,6 +142,24 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
                 end: fp_range_end,
             },
         );
+        #[cfg(feature = "fs")]
+        {
+            // Some architectures keep firmware boot stacks in a direct map,
+            // separate from the final page-table-backed kernel window. These
+            // reserved per-CPU stacks survive for the complete kernel lifetime.
+            let ranges = (0..ax_hal::cpu_num())
+                .filter_map(|cpu| {
+                    let (start, size) = ax_hal::mem::boot_stack_bounds(cpu);
+                    (size != 0).then(|| {
+                        let start = start.as_usize();
+                        start..start.checked_add(size).expect("boot stack range overflow")
+                    })
+                })
+                .collect::<alloc::vec::Vec<_>>();
+            // SAFETY: HAL publishes only reserved, mapped boot stack storage;
+            // all ranges remain alive after the owned bounds array is installed.
+            unsafe { axbacktrace::init_boot_stack_ranges(ranges.into_boxed_slice()) };
+        }
     }
 
     info!(

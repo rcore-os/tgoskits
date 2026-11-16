@@ -22,7 +22,7 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 3. 从 QEMU 参数一直追踪到内核入口的完整启动契约。固件、目标二进制接口、加载器和运行时平台不一致时，只改 QEMU 配置不能解决问题。
 4. ArceOS、StarryOS 和 Axvisor 优先使用 `cargo xtask`。特殊 QEMU 或容器环境必须用原生命令时，先检查 `xtask` 路径并保持参数一致。
 5. 最终补丁不得留下临时调试标记，除非用户明确要求保留。
-6. 修改 axloader UEFI 网络发现、HTTP 启动或 QEMU smoke 时，按 `references/boot-debugging.md` 的“axloader UEFI 网络启动”检查同网卡协议束、串口边界、发现响应注入和 `ExitBootServices` 前资源释放。
+6. 修改 axloader UEFI 网络发现、HTTP 启动或 QEMU smoke 时，按 `references/boot-debugging.md` 的“axloader UEFI 网络启动”检查唯一 v7 门禁、设备本地 `TargetSpec` 的 EFI 入口、同网卡协议束、串口边界、公告注入和交接前资源释放。主机不选择架构或入口，传输 ELF 必须保留符号表；`202` 不能代替目标内核输出。
 
 ## Axvisor 客户机设备树身份
 
@@ -91,6 +91,7 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - **网络队列运行时顺序**：物理网卡初始化是对称多处理后的全有或全无事务。探测可在之前发布一次性 `TakenNetDevice`，但 `axruntime` 必须等待全部目标处理器的调度器、本地中断和同步处理器间中断就绪，才能选择亲和域、固定队列与协议执行任务或注册设备中断。全部动作以禁用、`NonReentrant`、共享线路语义和 `IrqAffinity::Fixed(owner_cpu)` 注册；匹配工作任务完成亲和性与队列初始化握手后才启用。工作任务固定、中断路由、共享亲和性或重新使能失败时回滚整个物理网络初始化，禁止退回 `IrqAffinity::Any`、远端中断继续执行或周期轮询。
 - **运行时处理器间中断身份**：动态平台通过 `somehal::irq::ipi_irq()`、`axplat-dyn` 和 `ax_hal::irq::ipi_irq()` 以 `IrqId` 暴露处理器间中断。不得通过 `ax-config` 注册动态处理器间中断。RISC-V 中该中断是处理器局部域中带标志的监管者软件中断原因，不是平台级中断控制器的裸来源 `1`。
 - **运行时处理器上限**：生成的 `CPU_CAPACITY` 与 `SMP` 配置值是常量泛型和固定容量调度结构的构建上限，不是复制可执行与可链接格式逐处理器模板的指令。实际在线或可用处理器数和动态区域分配来自平台发现数量，并在操作系统容量适用时受 `ax_hal::cpu_num()` 限制。
+- **构建参数所有权**：宿主 `ax-config` 统一拥有 CPU 容量、任务栈和调度 tick 的默认值与校验；runtime/HAL 的 build.rs 使用同一 helper，axbuild 只向本次 Cargo 子进程传递有效环境。保持 `max_cpu_num=None` 与显式数值的区别，不能因环境容量存在就自动启用 SMP。任务栈在有无 fs 时共用同一生成值；someboot 启动栈保持独立。axplat-dyn 不再解析 SMP 或生成 `__SMP`。契约见 [分层配置设计](../../../design/layered-build-config.md)。
 - **中断命名空间**：处理器陷阱向量、平台 `IrqId { domain, hwirq }`、固件来源、控制器本地 `HwIrq` 和客户机全局系统中断或向量保持分离。新运行时注册使用 `IrqId`，不能使用 `usize`；旧 `IrqNumber(raw)` 只留在静态或尚未迁移的平台边界，并位于 `ax-plat`、`ax-hal` 或 `axklib` 等操作系统或硬件抽象层，不进入 `irq-framework` 或 `somehal`。`irq-framework` 只负责通用登记、亲和性、执行和装箱回调分派。动态外部控制器域在探测时分配，通过 `alloc_irq_domain`、`domain_by_kind`、`domain_by_owner` 或 `domain_is_kind` 查找，不能在动态平台代码中构造固定数字域。不得通过 `0x20 + gsi`、`PCI_INTX_VECTOR_BASE + gsi` 等算术推导宿主中断。固件来源经 `ax_hal::irq::resolve_irq_source(...)` 或平台解析器变成 `IrqId`。高级配置与电源接口的触发、电平和控制器元数据应保留为 `IrqSource::AcpiGsiRoute`；扁平设备树绑定保留原始说明符与父控制器到操作系统或平台层解析。`rdif_intc` 控制器提供可失败的 `translate_fdt` 与 `translate_acpi`，返回控制器本地线路和触发元数据。缺失控制器、锁失败、不支持亲和性、类型不匹配、空、畸形、越界或不支持说明符都返回错误，不能静默忽略、返回中断 0、基向量或猜测旧编号。
 - **各平台中断域**：x86 本地高级可编程中断控制器定时器与输入输出中断控制器属于不同域，陷阱向量 `0x20` 不是 `AcpiGsi(0)`。AArch64 通用中断控制器的中断标识是该控制器域内的 `HwIrq`；RISC-V 平台级中断控制器来源是该控制器域内的 `HwIrq`；LoongArch 的扩展输入输出中断控制器与外围设备控制器中断控制器保持不同域。无法解析时返回 `IrqError::Unsupported`。
 - **x86 64 位 trap 现场**：同特权级异常也由硬件保存 `SS:RSP`；不得按短帧结束地址推算中断前栈指针，IST 和栈对齐会使这种推算错误。`KernelTrapFrame::snapshot` 复制完整机器返回帧，普通 trap 与客户机入口共用 `ax_cpu::registers::GeneralRegisters`；Linux 信号和 ptrace 格式转换留在 Starry。通过 ArceOS `cpu/trap-entry` 的实际断点和软件 IRQ 检查 PC/SP/FP 与修改 GPR 后返回。
@@ -125,7 +126,9 @@ Starry perf 使用 `ax_cpu::pmu::Pmu` 的有作用域会话；Linux event/cache 
 - **StarryNixOS x86_64 诊断**：从 `apps/starry/nixos/flake.lock` 原生构建应用所有映像，再运行 `cargo xtask starry app qemu -t nixos --arch x86_64`。只有相邻清单通过锁文件、闭包、目标、ext4 和映像散列检查的已发布映像才能设置 `STARRY_NIXOS_REUSE_ROOTFS=1`。不得重建或切换宿主 NixOS，也不得在 `.ci-cache/{cargo,rustup,tmp}` 外创建仓库本地缓存。按有序阶段定位最早分歧，并在改变系统调用、procfs、挂载或文件系统语义前添加定向 `qemu/system/<behavior>`；后续 systemd 连锁错误不是第一根因。
 - **x86 调度基准启动**：`apps/arceos/scheduler-latency-bench/qemu-x86_64.toml` 对动态平台 PIE 使用 `uefi = true`、`to_bin = true`，与 ArceOS Rust 套件一致。直接把没有 PVH note 的映像交给 QEMU `-kernel` 会在进入内核前失败；比较旧提交与新提交时两侧使用同一份有效启动配置，不把启动失败计作性能数据。
 - **Starry 夜测应用启动契约**：参与当前夜测的 x86_64 PIE 应用使用 `uefi = true`、`to_bin = true`，避免直接 ELF 加载的 PVH note 错误；LoongArch64 携带宿主 initramfs 或命令行时也使用 UEFI，直接启动不支持此交接。AArch64/RISC-V 保留各自支持的直接启动方式。默认受管 Alpine 镜像无论由运行器隐式选择还是在 QEMU 配置中显式引用，都须完成 Starry OpenRC 和控制台准备；Debian、NixOS 等其他镜像按其自己的初始化契约处理。启动方式恢复后，仍须用应用自身的成功标记验收，不能只以进入 shell 为通过依据。
-- **操作系统配置与测试用例**：只为已验证体系结构更新 ArceOS、StarryOS 和 Axvisor 配置。`qemu-<arch>.toml` 运行配置与 `build-*.toml` 构建配置分离。Starry 应用板卡用例默认使用匹配的 `os/StarryOS/configs/board/<board>.toml`；只有共享同一目标的全部板卡都能安全使用相同处理器、内存管理单元和片上系统功能集时，才加入应用局部 `build-<target>.toml`。板卡需要扫描输出桌面（card0/fb0 链路）时，构建特性必须同时包含 `ax-runtime/display` 与 `ax-driver/virtio-gpu`：`ax_runtime::devices::init_display` 由 `ax-runtime/display` 特性门控，缺配时 ax_display 永不初始化——`/dev/fb0` 不创建、card0 连接器模式回退 640x480、`present_fb` 静默空操作，用户态合成器整条管线正常但屏幕恒黑；对齐 `qemu-riscv64` 板卡与同目标 clippy 配置的特性集即可。
+- **操作系统配置与测试用例**：只为已验证体系结构更新 ArceOS、StarryOS 和 Axvisor 配置。`qemu-<arch>.toml` 运行配置与 `build-*.toml` 用户构建配置分离。内置配方在 `scripts/axbuild/src/<os>/config/presets/`，用 `--preset <name>` 直接选择，不再复制 `configs/board` 编译 TOML。Starry 应用板卡用例默认使用同名静态预设；只有共享同一目标的全部板卡都能安全使用相同处理器、内存管理单元和片上系统功能集时，才加入应用局部 `build-<target>.toml`。板卡需要扫描输出桌面（card0/fb0 链路）时，构建特性必须同时包含 `ax-runtime/display` 与 `ax-driver/virtio-gpu`：`ax_runtime::devices::init_display` 由 `ax-runtime/display` 特性门控，缺配时 ax_display 永不初始化——`/dev/fb0` 不创建、card0 连接器模式回退 640x480、`present_fb` 静默空操作，用户态合成器整条管线正常但屏幕恒黑；对齐 `qemu-riscv64` 预设与同目标 clippy 配置的特性集即可。
+
+静态板卡身份在 `components/ax-config/src/boards/<board>.rs`，OS 配方在 `scripts/axbuild/src/<os>/config/presets/<board>.rs`，均由相应 `mod.rs` 统一导出和登记。每个物理板卡独立文件，QEMU 按目标架构分文件；同板用途变体放在同一板文件，不重建集中 `entries.rs` 或家族混合配置。修改时保留 registry 顺序，确有跨 OS 复用的驱动片段归 `boards/features.rs`，板卡策略仍归 OS 配方。
 
 ## someboot 必备条件
 
@@ -204,7 +207,7 @@ cargo xtask clippy --package someboot
 
 Axvisor x86 默认 Linux 客户机由 `os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml` 和 Web API 的 `FORM_CMDLINE_DEFAULT` 提供启动参数。不要预设 `tsc=unstable`：Linux v7.1 的 `arch/x86/kernel/tsc.c::tsc_setup()` 会因此主动停用 TSC，退到 `drivers/clocksource/acpi_pm.c::read_pmtmr()` 的 PIO 读时钟；嵌套虚拟化中每次读取都会进入设备模拟，可能导致启动阶段超时。保留 Linux 自身的校准和不稳定检测，不用 `tsc=reliable` 强行跳过检测。修改两处默认值时，复用 `web-ui-vmx` 的真实 Linux 时钟源、命令交互、删除与重建检查，并在可用的 AMD 运行器上核验共享客户机基线；不能通过增加 `GUEST_BOOT_DEADLINE` 掩盖时钟开销。
 
-Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项时，使用根级 `BuildInfo.rustflags` 数组，不通过 `[env] RUSTFLAGS` 整体替换来源；后者会遮蔽自动栈保护及 `DWARF`/`BACKTRACE` 参数。核对真实 rustc argv 与 ELF，而不只检查生成的 TOML。提取 ELF section 时为 `llvm-objcopy --dump-section` 显式指定独立输出 ELF，并核对输入摘要不变，避免取证过程重写原产物。
+Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项时，使用根级 `CommonConfig.rustflags` 数组，不通过 `[env] RUSTFLAGS` 整体替换来源；后者会遮蔽自动栈保护及 `DWARF`/`BACKTRACE` 参数。核对真实 rustc argv 与 ELF，而不只检查导出的 TOML。提取 ELF section 时为 `llvm-objcopy --dump-section` 显式指定独立输出 ELF，并核对输入摘要不变，避免取证过程重写原产物。
 
 1. 定位最后一个可靠输出或机器状态转移：统一可扩展固件接口入口、内存映射、`ExitBootServices`、重定位、启用内存管理单元、安装陷阱向量、释放次处理器、第一条内核输出。
 2. 在转移前后加入临时单字节串口或设备映射标记，找到根因后删除。
@@ -215,13 +218,14 @@ Build Config 需要在 axbuild 默认参数上追加 CPU 或代码生成选项�
 7. RISC-V 平台级中断控制器平台在启用 `sie.SEXT` 前取得全部监管者上下文所有权：清除固件或启动加载器遗留来源启用位、初始化阈值，并维护软件“来源已启用”状态，不从非零优先级推断。中断框架可以在动作禁用时设置亲和性，但亲和性变化不得提前启用来源。
 8. 可行时把根因转化为回归测试或定向 QEMU 用例。
 
-当前 `.vscode` 的 AArch64 调试路径按 axbuild 后端区分：ArceOS 与 Axvisor 的 `std` PIE ELF 位于 `target/aarch64-unknown-linux-musl/debug/`，StarryOS 的 bare ELF 位于 `target/aarch64-unknown-none-softfloat/debug/starryos`。Axvisor 调试固定使用 `os/axvisor/configs/board/qemu-aarch64.toml`（`vm_configs = []`）和 `os/axvisor/configs/qemu/qemu-aarch64.toml`，不依赖可变的 `.build.toml`。
+当前 `.vscode` 的 AArch64 调试路径按 axbuild 后端区分：ArceOS 与 Axvisor 的 `std` PIE ELF 位于 `target/aarch64-unknown-linux-musl/debug/`，StarryOS 的 bare ELF 位于 `target/aarch64-unknown-none-softfloat/debug/starryos`。Axvisor 调试固定使用 `--preset qemu-aarch64`（`vm_configs = []`）和 `os/axvisor/configs/qemu/qemu-aarch64.toml`，不依赖可变的默认文件或旧快照。
 
 ## 常见失败信号
 
 - 停在 `Exiting UEFI boot services...`：检查陈旧内存映射键、退出后仍调用启动服务、退出后控制台、错误交接地址、内存管理单元切换或陷阱向量有效前异常。
 - 高地址取指、装载或存储错误：检查内核高地址映射、直接映射、直接映射窗口、重定位偏移和符号地址基准。
 - 地址转换缓存填充递归或静默复位：检查填充入口物理地址、陷阱向量映射、栈映射和地址转换缓存刷新。
+- panic无帧而符号图已经加载：核对真实FP所处的永久boot stack是否在回溯器可读范围；LoongArch DMW boot stack可能不在最终高地址内核区。通过HAL实际boot_stack_bounds精确登记保留栈范围并检查整条Frame边界，不扩大成含未映射空洞的全地址范围。panic profile须完成AXBT文件系统加载，严格检查符号与行号。
 - 次处理器没有输出：检查固件标识映射、启动参数缓存可见性、次处理器栈、逐处理器基址、页表根和逐处理器陷阱设置。
 - Starry 启动但交互或系统测试失败：检查根文件系统准备、输入与控制台功能、终端尺寸假设和成功匹配规则。
 - 非易失性存储或根文件系统缺失：检查外围部件互连总线命令启用、设备映射、直接内存访问转换、消息信号扩展中断或传统中断注册、启动硬件上下文和根文件系统修补路径；不得重新启用 `virtio-blk` 掩盖失败。

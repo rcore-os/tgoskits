@@ -451,7 +451,10 @@ mod tests {
     fn null_pthread_attributes_use_the_runtime_default_stack_size() {
         // SAFETY: null requests the documented default options.
         let options = unsafe { PthreadCreateOptions::from_attr(core::ptr::null()) };
-        assert_eq!(options.stack_size, crate::config::TASK_STACK_SIZE);
+        assert_eq!(
+            options.stack_size,
+            ax_runtime::thread::default_task_stack_size()
+        );
     }
 
     #[test]

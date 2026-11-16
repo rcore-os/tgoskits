@@ -1,0 +1,262 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use anyhow::{Context, ensure};
+use cargo_metadata::Package;
+use serde::Deserialize;
+
+use super::targets::normalize_clippy_target;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PackageClippyConfiguration {
+    pub(super) name: String,
+    pub(super) target: String,
+    pub(super) features: Vec<String>,
+    pub(super) rustflags: Vec<String>,
+    pub(super) env: Vec<(String, String)>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PackageMetadata {
+    #[serde(default)]
+    clippy: ClippyMetadata,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClippyMetadata {
+    #[serde(default)]
+    configurations: Vec<RawClippyConfiguration>,
+    #[serde(default)]
+    batch_suite: Option<BatchSuiteClippy>,
+    #[serde(default)]
+    board_suite: Option<BoardSuiteClippy>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchSuiteClippy {
+    path: std::path::PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoardSuiteClippy {
+    path: std::path::PathBuf,
+}
+
+fn board_suite_configurations(
+    package: &Package,
+    source: BoardSuiteClippy,
+) -> anyhow::Result<Vec<PackageClippyConfiguration>> {
+    use crate::test::normal::arceos::board::catalog::{self, Catalog, Image};
+    let path = package
+        .manifest_path
+        .parent()
+        .context("package directory")?
+        .as_std_path()
+        .join(source.path)
+        .canonicalize()?;
+    let root = path.parent().context("board suite directory")?;
+    let catalog = Catalog::load(&path)?;
+    let mut configurations = Vec::new();
+    for id in &catalog.run_order {
+        let batch = &catalog.batches[id];
+        if batch.package != package.name.as_str() {
+            continue;
+        }
+        let build = crate::build::load_config_input::<crate::arceos::config::ArceosConfig>(
+            &crate::context::workspace_root_path()?,
+            Some(&root.join(&batch.build_config)),
+            None,
+        )?
+        .config;
+        ensure!(
+            build.freestanding == (batch.image == Image::Freestanding),
+            "board Clippy runtime mismatch"
+        );
+        let target = if batch.image == Image::Freestanding {
+            build.common.target.context("board target")?
+        } else {
+            match batch.arch.as_str() {
+                "aarch64" => "aarch64-unknown-linux-musl",
+                "riscv64" => "riscv64gc-unknown-linux-musl",
+                "x86_64" => "x86_64-unknown-linux-musl",
+                "loongarch64" => "loongarch64-unknown-linux-musl",
+                _ => anyhow::bail!("unsupported board Clippy architecture"),
+            }
+            .to_owned()
+        };
+        let mut env = catalog::build_env(&path, id, "all");
+        let cpus = build.common.max_cpu_num.context("board CPU count")?;
+        env.insert("SMP".into(), cpus.to_string());
+        configurations.push(PackageClippyConfiguration {
+            name: format!("board-{}-{id}", catalog.board),
+            target,
+            features: batch.features(),
+            rustflags: Vec::new(),
+            env: env.into_iter().collect(),
+        });
+    }
+    ensure!(
+        !configurations.is_empty(),
+        "package has no matching board suite batches"
+    );
+    Ok(configurations)
+}
+
+fn batch_suite_configurations(
+    package: &Package,
+    source: BatchSuiteClippy,
+) -> anyhow::Result<Vec<PackageClippyConfiguration>> {
+    use crate::test::normal::arceos::declared::catalog::Catalog;
+    let suite_path = package
+        .manifest_path
+        .parent()
+        .context("batch image manifest directory")?
+        .as_std_path()
+        .join(source.path);
+    let root = suite_path.parent().context("batch suite directory")?;
+    let catalog = Catalog::parse(&std::fs::read_to_string(&suite_path)?)?;
+    let targets = super::targets::docs_rs_targets(package);
+    let mut configurations = Vec::new();
+    for id in &catalog.run_order {
+        let batch = &catalog.batches[id];
+        if batch.package != package.name.as_str() {
+            continue;
+        }
+        let selection = catalog.select(&batch.arch, Some(id))?.remove(0);
+        let target = targets
+            .iter()
+            .find(|target| target.starts_with(&batch.arch))
+            .with_context(|| {
+                format!(
+                    "batch image {} has no static target for {}",
+                    package.name, batch.arch
+                )
+            })?;
+        let build: toml::Value =
+            toml::from_str(&std::fs::read_to_string(root.join(&batch.build_config))?)?;
+        let cpus = build
+            .get("max_cpu_num")
+            .and_then(toml::Value::as_integer)
+            .filter(|cpus| *cpus > 0)
+            .context("execution batch must declare positive max_cpu_num")?;
+        let mut env = selection.build_env();
+        env.insert("SMP".to_owned(), cpus.to_string());
+        configurations.push(PackageClippyConfiguration {
+            name: id.clone(),
+            target: target.clone(),
+            features: selection.features(),
+            rustflags: Vec::new(),
+            env: env.into_iter().collect(),
+        });
+    }
+    ensure!(
+        !configurations.is_empty(),
+        "batch image {} has no declared batches",
+        package.name
+    );
+    Ok(configurations)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawClippyConfiguration {
+    name: String,
+    target: String,
+    #[serde(default)]
+    features: Vec<String>,
+    #[serde(default)]
+    rustflags: Vec<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+pub(super) fn package_clippy_configurations(
+    package: &Package,
+) -> anyhow::Result<Vec<PackageClippyConfiguration>> {
+    if package.metadata.is_null() {
+        return Ok(Vec::new());
+    }
+    let metadata = serde_json::from_value::<PackageMetadata>(package.metadata.clone())
+        .with_context(|| format!("invalid clippy metadata for `{}`", package.name))?;
+    let mut names = BTreeSet::new();
+    let batch_suite = metadata.clippy.batch_suite;
+    let board_suite = metadata.clippy.board_suite;
+    let mut configurations = metadata
+        .clippy
+        .configurations
+        .into_iter()
+        .map(|configuration| validate_configuration(package, configuration, &mut names))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if let Some(source) = batch_suite {
+        for configuration in batch_suite_configurations(package, source)? {
+            ensure!(
+                names.insert(configuration.name.clone()),
+                "duplicate CPU clippy configuration"
+            );
+            configurations.push(configuration);
+        }
+    }
+    if let Some(source) = board_suite {
+        for configuration in board_suite_configurations(package, source)? {
+            ensure!(
+                names.insert(configuration.name.clone()),
+                "duplicate board Clippy configuration"
+            );
+            configurations.push(configuration);
+        }
+    }
+    configurations.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(configurations)
+}
+
+fn validate_configuration(
+    package: &Package,
+    configuration: RawClippyConfiguration,
+    names: &mut BTreeSet<String>,
+) -> anyhow::Result<PackageClippyConfiguration> {
+    ensure!(
+        !configuration.name.is_empty() && configuration.name.trim() == configuration.name,
+        "clippy configuration name for `{}` must be non-empty and trimmed",
+        package.name
+    );
+    ensure!(
+        names.insert(configuration.name.clone()),
+        "duplicate clippy configuration `{}` for `{}`",
+        configuration.name,
+        package.name
+    );
+    ensure!(
+        !configuration.target.is_empty() && configuration.target.trim() == configuration.target,
+        "clippy configuration `{}` target for `{}` must be non-empty and trimmed",
+        configuration.name,
+        package.name
+    );
+
+    let mut features = BTreeSet::new();
+    for feature in configuration.features {
+        ensure!(
+            !feature.is_empty() && feature.trim() == feature,
+            "clippy configuration `{}` feature for `{}` must be non-empty and trimmed",
+            configuration.name,
+            package.name
+        );
+        features.insert(feature);
+    }
+    for rustflag in &configuration.rustflags {
+        ensure!(
+            !rustflag.is_empty() && rustflag.trim() == rustflag,
+            "clippy configuration `{}` rustflag for `{}` must be non-empty and trimmed",
+            configuration.name,
+            package.name
+        );
+    }
+
+    Ok(PackageClippyConfiguration {
+        name: configuration.name,
+        target: normalize_clippy_target(&configuration.target).to_string(),
+        features: features.into_iter().collect(),
+        rustflags: configuration.rustflags,
+        env: configuration.env.into_iter().collect(),
+    })
+}

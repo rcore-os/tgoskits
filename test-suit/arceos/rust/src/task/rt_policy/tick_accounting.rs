@@ -60,6 +60,17 @@ pub(super) fn run(cpu_count: usize) {
             // current CPU leaves no concurrent writer after this call returns.
             gate.set_enabled(false);
             let before = accounting.realtime_ticks().unwrap();
+            if let Some(configured) = option_env!("AX_SCHEDULER_TICK_MS") {
+                let milliseconds = configured
+                    .parse::<u64>()
+                    .expect("axbuild must pass the normalized scheduler tick");
+                assert_eq!(
+                    before.1.get(),
+                    milliseconds.checked_mul(1_000_000).unwrap(),
+                    "real IRQ accounting lost the configured scheduler tick"
+                );
+                std::println!("Scheduler tick configured milliseconds: {milliseconds}");
+            }
             let system_before = accounting.snapshot().system_ns();
             let started = Instant::now();
             // CPU-time accounting remains active independently of RT interest.

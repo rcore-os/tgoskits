@@ -1,0 +1,51 @@
+mod args;
+mod assets;
+mod board;
+mod board_assets;
+mod external;
+mod host_http;
+mod mount;
+mod nixos;
+mod qemu_discovery;
+mod qemu_profiles;
+mod qemu_run;
+mod root_growth;
+mod rootfs_scope;
+mod suite;
+mod types;
+
+#[cfg(test)]
+mod tests;
+
+pub use args::{ArgsTest, ArgsTestBoard, ArgsTestNixos, ArgsTestQemu, TestCommand};
+pub(crate) use assets::starry_case_asset_config;
+pub(crate) use board::collect_board_test_groups;
+pub(crate) use board_assets::{
+    BoardSessionAssetRequest, PreparedBoardSessionAssets, prepare_board_session_assets,
+};
+pub(crate) use host_http::start_qemu_case_host_http_server;
+pub(crate) use nixos::{run as run_nixos, supported_cases};
+pub(crate) use qemu_discovery::{
+    direct_starry_qemu_case_exists, discover_qemu_cases, parse_starry_qemu_case_selection,
+    parse_test_target,
+};
+pub(crate) use suite::{
+    discover_all_qemu_cases_with_archs, discover_board_test_groups, finalize_qemu_case_run,
+    require_test_suite_dir,
+};
+pub(crate) use types::{
+    PreparedStarryQemuCase, StarryBoardTestGroup, StarryQemuCase, StarryQemuCaseOutcome,
+    StarryQemuCaseReport, StarryQemuCaseRequirements, StarryQemuRunReport,
+};
+
+use crate::starry::Starry;
+
+pub(crate) async fn test(starry: &mut Starry, args: ArgsTest) -> anyhow::Result<()> {
+    match args.command {
+        TestCommand::Qemu(args) => starry.test_qemu(args).await,
+        TestCommand::Board(args) => starry.test_board(args).await,
+        TestCommand::Nixos(args) => nixos::run(starry, args).await,
+    }
+}
+
+pub(crate) const STARRY_TEST_SUITE_OS: &str = "starryos";

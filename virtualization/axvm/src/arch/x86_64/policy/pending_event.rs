@@ -15,8 +15,12 @@ pub(crate) enum PendingEventKind {
 }
 
 pub(crate) const fn is_valid_fixed_apic_vector(vector: u8) -> bool {
-    // The architecture reserves vectors 0..=31 for exceptions and interrupts.
-    vector >= 32
+    // The local APIC rejects only 0..=15 as illegal vectors (SDM 10.5.1,
+    // ESR "send illegal vector"). Vectors 16..=31 are deliverable fixed
+    // vectors even though conventionally reserved for architecture
+    // exceptions, so they must be accepted here to keep the injection
+    // contract aligned with the vLAPIC LVT acceptance (vector >= 16).
+    vector >= 16
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,8 +71,10 @@ impl PendingEvent {
 }
 
 pub(crate) fn queue_pending_event(queue: &mut VecDeque<PendingEvent>, event: PendingEvent) {
+    // Valid fixed vectors coalesce: the local APIC keeps one pending
+    // request per vector, so a duplicate external interrupt is dropped.
     if event.is_external_interrupt()
-        && event.vector >= 32
+        && is_valid_fixed_apic_vector(event.vector)
         && queue
             .iter()
             .any(|pending| pending.vector == event.vector && pending.kind == event.kind)
@@ -159,10 +165,13 @@ mod tests {
         queue_pending_event(&mut queue, external_event(0x31));
         queue_pending_event(&mut queue, external_event(0x31));
         queue_pending_event(&mut queue, external_event(0x32));
+        queue_pending_event(&mut queue, external_event(0x1f));
+        queue_pending_event(&mut queue, external_event(0x1f));
 
-        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.len(), 3);
         assert_eq!(queue[0].vector, 0x31);
         assert_eq!(queue[1].vector, 0x32);
+        assert_eq!(queue[2].vector, 0x1f);
     }
 
     #[test]
@@ -207,8 +216,9 @@ mod tests {
 
         let low_fixed = VecDeque::from([external_event(0x20)]);
         assert!(!super::is_valid_fixed_apic_vector(0));
-        assert!(!super::is_valid_fixed_apic_vector(16));
-        assert!(!super::is_valid_fixed_apic_vector(31));
+        assert!(!super::is_valid_fixed_apic_vector(15));
+        assert!(super::is_valid_fixed_apic_vector(16));
+        assert!(super::is_valid_fixed_apic_vector(31));
         assert!(super::is_valid_fixed_apic_vector(32));
         assert!(super::is_valid_fixed_apic_vector(u8::MAX));
         assert!(select_pending_event(&low_fixed, true, |_| false).is_none());

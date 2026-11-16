@@ -1,0 +1,28 @@
+schema_version = 1
+run_order = ["x86-q35"]
+
+[execution]
+batch_env = "AX_DRIVERS_BATCH"
+members_env = "AX_DRIVERS_CASES"
+completion = "DRIVERS_BATCH_OK batch={batch} selection={selection}"
+feature_scope = "batch"
+
+[batches.x86-q35]
+package = "arceos-driver-tests"
+image = "freestanding"
+mode = "normal"
+arch = "x86_64"
+build_config = "build-x86_64-unknown-none.toml"
+qemu_config = "qemu-x86_64.toml"
+features = ["ax-std"]
+
+[[batches.x86-q35.tests]]
+id = "acpica-interpreter"
+name = "ACPICA解释、通知与退出同步"
+entry = "crate::acpica::run"
+
+[[batches.x86-q35.tests]]
+id = "intel-hda"
+name = "Intel HDA播放、取消与输出波形"
+entry = "crate::intel_hda::run"
+pcm_waveform = true

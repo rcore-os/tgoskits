@@ -22,6 +22,25 @@ fn init_kernel_test_services() {
 #[axtest::tests(setup = init_kernel_test_services)]
 mod tests {}
 
+#[cfg(target_arch = "x86_64")]
+#[axtest::axtest]
+fn ioapic_masking_does_not_wait_for_task_registries() {
+    use somehal::irq::{HwIrq, IrqDomainKind, IrqError, IrqId, domain_by_kind, intc_by_domain};
+
+    let domain = domain_by_kind(IrqDomainKind::X86IoApic)
+        .expect("the x86 test platform must register an IOAPIC");
+    // Keep the controller busy so the call cannot modify a live IRQ line.
+    let controller = intc_by_domain(domain.id).unwrap().try_lock().unwrap();
+    let result = rdrive::with_registry_locked_for_test(|| {
+        somehal::irq::with_irq_domains_locked_for_test(|| {
+            somehal::irq::irq_set_enable(IrqId::new(domain.id, HwIrq(0)), false)
+        })
+    });
+    drop(controller);
+
+    assert_eq!(result, Err(IrqError::Busy));
+}
+
 #[cfg(target_arch = "loongarch64")]
 #[axtest::axtest]
 fn pch_route_lookup_ignores_unrelated_controller_borrows() {

@@ -18,46 +18,44 @@ ArceOS 的命令围绕 app 选择和运行目标展开，所有命令最终共�
 | `uboot` | 构建并通过显式或自动发现的 U-Boot 配置启动 |
 | `board` | 构建并部署到远程板卡 |
 | `test qemu` / `test board` | 运行 Rust/C QEMU 测试或板级测试 |
-| `defconfig <board>` | 将 checked-in board build config 写为默认配置并更新 Snapshot |
-| `config ls` | 列出 `os/arceos/configs/board/` 下的 board 名称 |
+| `defconfig <preset>` | 原子导出内置预设，成功后更新 Snapshot 的文件选择 |
+| `config ls` / `config show` | 列出内置预设或展示解析结果，不写 Snapshot |
 
-共享参数为 `--config`、`--package`、`--arch`、`--target`、`--smp`、`--debug`；QEMU 额外接受 `--qemu-config`、`--rootfs`，U-Boot 接受 `--uboot-config`，板卡运行接受 `--board-config`、`--board-type`、`--server`、`--port`。
+共享参数为 `--preset`、`--config`、`--package`、`--arch`、`--target`、`--smp`、`--debug`；QEMU 额外接受 `--qemu-config`、`--rootfs`，U-Boot 接受 `--uboot-config`，板卡运行接受 `--board-config`、`--board-type`、`--server`、`--port`。
 
 ## 2. 应用选择
 
-常规 `build`、`uboot`、`board` 需要通过 CLI、配置或 Snapshot 选定 package。ArceOS 有一个仅适用于 `qemu` 的便利规则：当调用方既没有 package，也没有 config 时，`ArceOS::qemu()` 会寻找 target 对应的 `os/arceos/configs/board/qemu-<arch>.toml`。该文件目前选择 `arceos-helloworld`，因此可直接执行：
+常规 `build`、`uboot`、`board` 需要通过 CLI、预设、配置或 Snapshot 选定 package。ArceOS 有一个仅适用于裸 `qemu` 的便利规则：恢复有效快照后仍没有应用来源时，`prepare_arceos_qemu_request()` 按 target 的明确映射展开 Hello 预设，因此可直接执行：
 
 ```bash
 cargo xtask arceos qemu
 ```
 
-一旦传入 `--package` 或 `--config`，该默认值不参与解析；显式选择永远优先。
+一旦传入 `--package`、`--preset` 或 `--config`，按该来源解析，不再自动套用 Hello 预设。显式更换这些选择器或 arch/target 也会切断旧 SMP 和运行配置。
 
 ## 3. 配置布局
 
-checked-in board 配置负责默认能力选择，QEMU 配置负责启动细节；两者不应混合维护。目录布局与 `arceos/config.rs` 和 `arceos/mod.rs` 中的默认路径一致。
+`arceos/config/presets/` 中的 Rust 配方负责默认能力选择，`ax_config::boards` 保存跨 OS 复用的板卡身份与 target。QEMU TOML 只负责启动细节，两者不应混合维护。
 
 ```text
-os/arceos/configs/
-├── board/                 # package + target + BuildInfo；供 defconfig 和缺失配置初始化
-│   └── qemu-aarch64.toml
-└── qemu/                  # QEMU 启动契约
-    └── qemu-aarch64.toml
+scripts/axbuild/src/arceos/config/presets/  # 静态构建配方
+components/ax-config/src/boards/          # 公共板卡身份
+os/arceos/configs/qemu/                   # QEMU 启动 TOML
 ```
 
-`defconfig` 将指定 board 文件复制到：
+`defconfig` 将指定预设展开后原子写入：
 
 ```text
 tmp/axbuild/config/<package>/build-<target>.toml
 ```
 
-并把 package、arch、target、smp 和 config 写入 `tmp/axbuild/.arceos.toml`，同时清空旧 QEMU/U-Boot 路径。对于 `build` 和 `qemu`，若这个目标配置不存在，axbuild 会优先用同 target、同 package 的 `qemu-*` board 文件补齐它；隐式创建不会改变 Snapshot。
+成功后将新文件选择写入 `tmp/axbuild/.arceos.toml`，清空旧 SMP 和 QEMU/U-Boot 路径。普通构建不生成配置文件；可直接使用 `--preset qemu-aarch64`，也可通过 `--config` 提供稀疏覆盖或完全自定义输入。
 
 ## 4. 构建路径
 
 ### 4.1 Rust 应用
 
-普通 app 走 `arceos/build/cargo_config.rs`，使用共享的 `BuildInfo::into_prepared_base_cargo_config_with_metadata()`。它以 `ax-std` 的 Cargo metadata 为准拆分 feature，使用 musl PIE JSON target 编译 std，并默认保留 ELF。
+普通 app 走 `arceos/build/cargo_config.rs`，由共享的 `into_prepared_base_cargo_config_with_metadata()` 消费请求中的 `CommonConfig`。它以 `ax-std` 的 Cargo metadata 为准拆分 feature，使用 musl PIE JSON target 编译 std，并默认保留 ELF。
 
 ### 4.2 C 应用
 
@@ -67,7 +65,7 @@ C app 使用 `arceos/cbuild/` 中的 CMake/musl 工具链构建 ELF。`resolve_c
 
 ## 5. 能力约束
 
-ArceOS 的 Rust app 使用共享 std-aware 构建路径和动态平台链接配置。`BuildInfo::validate_features()` 与 `reject_removed_std_field()` 对 feature 和 TOML 根字段执行验证；具体字段与转发规则见 [参数与配置](../configuration)。
+ArceOS 的 Rust app 使用共享 std-aware 构建路径和动态平台链接配置。`validate_features()` 与 `ArceosConfig::validate()` 对 feature 和配置字段执行验证；具体字段与转发规则见 [参数与配置](../configuration)。
 
 ## 6. 命令示例
 

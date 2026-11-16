@@ -3,6 +3,10 @@ features = [
 log = "Info"
 max_cpu_num = 4
 
+[runtime]
+task_stack_size = 0x50000
+scheduler_tick_ms = 5
+
 [env]
 BACKTRACE = "y"
 DWARF = "y"

@@ -35,7 +35,7 @@ flowchart LR
 
 ### 2.1 构建能力
 
-共享 `BuildInfo` 包含 `features`、`log`、`max_cpu_num` 和 `[env]`。板卡 build config 可以再携带 target、package 或 VM 配置，但 QEMU machine、CPU、firmware 和设备不属于这里。
+共享宿主库 `ax-config` 的 `CommonConfig` 拥有 target、features、log、max_cpu_num、env、rustflags 和 runtime。各 OS 组合 package、ITS 或 VM 等专属字段；Rust 静态预设可直接使用，也可由稀疏用户 TOML 覆盖，但 QEMU machine、CPU、firmware 和设备不属于编译配置。
 
 ### 2.2 启动语义
 
@@ -43,7 +43,7 @@ flowchart LR
 
 ### 2.3 特性所有权
 
-`BuildInfo::validate_features()` 验证 feature 名称，`into_prepared_base_cargo_config_with_metadata()` 再根据应用与 `ax-std` 的 Cargo metadata 分发 feature。SMP、驱动、文件系统和虚拟化后端均由 Build Config 中的显式 feature 决定。
+axbuild 的 `validate_features()` 验证 feature 名称，`into_prepared_base_cargo_config_with_metadata()` 根据应用与 `ax-std` 的 Cargo metadata 分发 feature。SMP、驱动和文件系统由配置及其特性推导规则选择；Axvisor x86 虚拟化后端由运行时 CPUID 选择，不使用同名 Cargo feature。
 
 ### 2.4 构建产物
 
@@ -63,7 +63,7 @@ flowchart LR
 scripts/axbuild/src/
 ├── lib.rs                 # 顶层 CLI 与命令分派
 ├── context/               # arch/target、workspace、Snapshot、请求解析
-├── build/                 # BuildInfo、feature 验证、std PIE target/linker
+├── build/                 # 输入装配、feature 验证、Cargo std/bare target/linker
 ├── arceos/                # app/C app 构建、运行与测试
 ├── starry/                # 内核、rootfs、app、perf、kmod 与测试
 ├── axvisor/               # hypervisor、VM 配置、rootfs 与测试
@@ -79,7 +79,7 @@ scripts/axbuild/src/
 其中：
 
 - `context/resolve.rs` 是 CLI、Snapshot 和配置选择器的合并入口。
-- `build/info.rs` 定义 BuildInfo 到 Cargo 配置的转换。
+- `build/config_source.rs` 负责来源与一次解析，`build/info.rs` 的自由函数消费 CommonConfig 生成 Cargo 配置。
 - `build/std_build.rs` 准备 musl PIE JSON target、交叉 C 环境、占位库和 linker wrapper。
 - `test/qemu/boot.rs` 处理 SMP、timeout 等测试运行控制。
 - `rootfs/qemu` 处理 QEMU rootfs drive 选择与 `RootfsWritePolicy` 写入策略。

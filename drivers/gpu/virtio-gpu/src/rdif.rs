@@ -713,12 +713,14 @@ impl<H: Hal + 'static, T: Transport + Send + 'static> GpuDevice for VirtIoGpuDev
             }
             self.resources.get_mut(&key).unwrap().attached = false;
         }
-        // The fenced UNREF submission carries its own completion proof: the
-        // caller observes the returned fence outside the device lock before
-        // freeing the backing (the used ring is FIFO, so the fenced pop
-        // implies every earlier command's pop too). A submission failure is
-        // ambiguous — reset stops all DMA before the caller can release the
-        // backing.
+        // The UNREF submission carries its own completion proof: the caller
+        // observes the returned token outside the device lock before freeing
+        // the backing (the used ring is FIFO, so the unref's pop implies
+        // every earlier command's pop too; the command is unfenced on the
+        // wire like Linux's `virtio_gpu_cmd_resource_unref`, so a host that
+        // merely answers it — even with an error — still pops it). A
+        // submission failure is ambiguous — reset stops all DMA before the
+        // caller can release the backing.
         match self.raw.resource_unref(id) {
             Ok(fence) => {
                 // The fence counter starts at 1 and only increases, so the

@@ -2,13 +2,13 @@
 
 ## 1. 配置所有权
 
-`BuildInfo` 是 ArceOS、StarryOS 与 Axvisor 共享的构建输入。固定 CPU 客户机需要选择代码生成参数，但不能为此复制或遮蔽 axbuild 自动生成的栈保护、调试与链接参数。
+`ax_config::CommonConfig` 是 ArceOS、StarryOS 与 Axvisor 共享的构建输入，按[分层配置契约](layered-build-config.md)接替 axbuild 内的 `BuildInfo` 数据定义。固定 CPU 客户机需要选择代码生成参数，但不能为此复制或遮蔽 axbuild 自动生成的栈保护、调试与链接参数。
 
 ### 1.1 追加参数
 
-Build Config 根级 `rustflags: Vec<String>` 缺省为空，每项是一个完整 rustc 参数。参数保持输入顺序，不做 shell 展开，不按空白拆分数组元素。空列表不改变旧配置的构建结果；系统包装配置继续通过共享 `BuildInfo` 消费该字段。
+Build Config 根级 `rustflags: Vec<String>` 缺省为空，每项是一个完整 rustc 参数。参数保持输入顺序，不做 shell 展开，不按空白拆分数组元素。空列表不改变旧配置的构建结果；系统组合配置继续通过共享 `CommonConfig` 消费该字段。
 
-`BuildInfo` 的 std 与 no_std 构建入口先完成目标、工具链与链接配置，再使用已有 `append_cargo_rustflags()` 向当前有效来源追加。该 helper 继续拥有来源选择、完整序列去重和参数边界，不引入第二套合并规则。参数是否适合目标由 rustc 验证，错误沿既有构建结果传播，不静默丢弃。
+axbuild 的 std 与 no_std 构建适配函数先完成目标、工具链与链接配置，再使用已有 `append_cargo_rustflags()` 向当前有效来源追加。该 helper 继续拥有来源选择、完整序列去重和参数边界，不引入第二套合并规则。参数是否适合目标由 rustc 验证，错误沿既有构建结果传播，不静默丢弃。
 
 ### 1.2 来源优先级
 

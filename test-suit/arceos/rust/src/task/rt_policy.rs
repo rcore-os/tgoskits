@@ -1,3 +1,4 @@
+mod round_robin;
 mod tick_accounting;
 
 use std::{
@@ -310,6 +311,7 @@ fn promoted_fifo_keeps_running_after_one_period() -> crate::TestResult {
 }
 
 pub fn run() -> crate::TestResult {
+    round_robin::run()?;
     let cpu_count = ax_std::os::arceos::task::sched::cpu_topology_len().unwrap();
     assert!(
         cpu_count >= 3,

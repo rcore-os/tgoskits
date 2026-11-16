@@ -372,10 +372,10 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         // device from using the backing before freeing it: detach first, then
         // unref. `detached` must mean the host has actually finished the
         // teardown: `resource_unref` only enqueues the unref (fire-and-forget
-        // with a fence), so this cold rollback path drains explicitly — the
-        // FIFO pop covers the detach and the unref alike. On
-        // TimedOut/QueueBroken the DMA is kept alive here and released by a
-        // later retry or the device reset in `Drop`.
+        // with a driver-local completion token), so this cold rollback path
+        // drains explicitly — the FIFO pop covers the detach and the unref
+        // alike. On TimedOut/QueueBroken the DMA is kept alive here and
+        // released by a later retry or the device reset in `Drop`.
         if let Err(err) = self.set_scanout(rect, SCANOUT_ID, FRAMEBUFFER_RESOURCE_ID) {
             let detached = self
                 .resource_detach_backing(FRAMEBUFFER_RESOURCE_ID)
@@ -418,10 +418,11 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         self.resource_unref(FRAMEBUFFER_RESOURCE_ID)?;
         // The device must be provably done with the backing before it is
         // handed back to the allocator: `resource_unref` only enqueues the
-        // unref (fire-and-forget with a fence), so this cold teardown path
-        // drains explicitly — the FIFO pop covers the stop-scanout, the
-        // detach and the unref alike. On failure the `?` keeps the DMA in
-        // `self.frame_buffer_dma` for a later retry or the reset in `Drop`.
+        // unref (fire-and-forget with a driver-local completion token), so
+        // this cold teardown path drains explicitly — the FIFO pop covers
+        // the stop-scanout, the detach and the unref alike. On failure the
+        // `?` keeps the DMA in `self.frame_buffer_dma` for a later retry or
+        // the reset in `Drop`.
         self.wait_idle()?;
         self.frame_buffer_dma = None;
         Ok(())
@@ -666,9 +667,9 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// ranges that were attached. Fire-and-forget: the caller is responsible
     /// for the completion proof — drain ([`VirtIoGpu::wait_idle`]) or observe
     /// a later fenced command's fence — before releasing the memory. The
-    /// driver's teardown paths pair this command with the fenced
+    /// driver's teardown paths pair this command with the completion-tokened
     /// `resource_unref` and drain explicitly; the OS layer waits on the
-    /// unref's fence.
+    /// unref's token.
     pub fn resource_detach_backing(&mut self, resource_id: u32) -> Result<(), Error> {
         self.ctrl
             .enqueue(
@@ -687,21 +688,35 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
     /// Releases a resource.
     ///
     /// The protocol has a single `RESOURCE_UNREF` for 2D and 3D resources, so
-    /// this is also the only way to destroy a 3D resource. The command is
-    /// submitted fire-and-forget with a fence and delivered; this returns the
-    /// fence id as soon as it is on the ring. The fence's completion is the
-    /// proof that the host stopped touching the released backing: the used
-    /// ring is FIFO, so the pop of the fenced unref implies the pop of every
-    /// earlier command (the same implicit ordering submits rely on). The
-    /// guest memory previously attached to the resource may only be freed
-    /// after the OS layer observes that fence outside the device lock.
-    /// Cold recovery paths inside this crate that must not return without
-    /// the proof drain explicitly via [`VirtIoGpu::wait_idle`].
+    /// this is also the only way to destroy a 3D resource. Like Linux's
+    /// `virtio_gpu_cmd_resource_unref` the command carries no
+    /// `VIRTIO_GPU_FLAG_FENCE` on the wire: a conforming host answers (or
+    /// rejects) it right away, so the used entry pops without waiting for any
+    /// host-side fence object. A plain-fenced control command instead asks
+    /// the host to create a virgl fence before answering, and a venus-only
+    /// host has no virgl fence support — it parks such a command on its fence
+    /// queue forever, and during teardown, when no later EXECBUFFER fence
+    /// sweeps that queue, nothing ever pops it again (observed as a permanent
+    /// guest wedge in the unref's completion waiter).
+    ///
+    /// The submission is still fire-and-forget with a *driver-local*
+    /// completion token: the returned id is only bookkeeping for the
+    /// completion pump, which folds the locally recorded token into its
+    /// watermark when the used entry pops ([`ControlQueue::pump_completions`]
+    /// reads its own enqueue record, never the response header). The pop is
+    /// the proof that the host stopped touching the released backing: the
+    /// used ring is FIFO, so the pop of this unref implies the pop of every
+    /// earlier command (the same implicit ordering fire-and-forget submits
+    /// rely on). The guest memory previously attached to the resource may
+    /// only be freed after the OS layer observes that token outside the
+    /// device lock. Cold recovery paths inside this crate that must not
+    /// return without the proof drain explicitly via
+    /// [`VirtIoGpu::wait_idle`].
     pub fn resource_unref(&mut self, resource_id: u32) -> Result<u64, Error> {
         let fence_id = self.alloc_fence()?;
         self.enqueue_fenced(
             &ResourceUnref {
-                header: CtrlHeader::with_fence(Command::RESOURCE_UNREF, 0, fence_id),
+                header: CtrlHeader::with_type(Command::RESOURCE_UNREF),
                 resource_id,
                 _padding: 0,
             },
@@ -712,10 +727,15 @@ impl<H: Hal, T: Transport> VirtIoGpu<H, T> {
         Ok(fence_id)
     }
 
-    /// Enqueues a fenced fire-and-forget command. On an enqueue failure the
-    /// pre-allocated fence id is retired immediately
-    /// ([`ControlQueue::cancel_fence`]): a fence the queue never saw would
-    /// otherwise pin the contiguous completion watermark forever.
+    /// Enqueues a fire-and-forget command with a driver-local completion
+    /// token. Whether the *wire* header also carries the FENCE flag is the
+    /// caller's choice (encoded in the request it passes): the flag makes the
+    /// host delay its response until a host fence fires, while the token here
+    /// only drives the driver-side completion bookkeeping, which is fed by
+    /// the used-ring pop either way. On an enqueue failure the pre-allocated
+    /// fence id is retired immediately ([`ControlQueue::cancel_fence`]): a
+    /// fence the queue never saw would otherwise pin the contiguous
+    /// completion watermark forever.
     fn enqueue_fenced<Req: zerocopy::IntoBytes + zerocopy::Immutable>(
         &mut self,
         req: &Req,

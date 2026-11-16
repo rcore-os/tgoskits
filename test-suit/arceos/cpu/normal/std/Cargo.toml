@@ -1,0 +1,25 @@
+[package]
+name = "arceos-cpu-normal-std"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+build = "../build.rs"
+
+[[bin]]
+name = "arceos-cpu-normal-std"
+path = "../main.rs"
+
+[dependencies]
+cpu-tests = { package = "arceos-cpu-tests", path = "../.." }
+ax-std = { workspace = true, features = ["default", "arceos"] }
+ax-alloc = { workspace = true, features = ["global-allocator"] }
+
+[build-dependencies]
+arceos-test-build = { path = "../../../build-support" }
+toml = { workspace = true, features = ["parse", "serde"] }
+
+[package.metadata.docs.rs]
+targets = ["aarch64-unknown-linux-musl", "riscv64gc-unknown-linux-musl", "loongarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+
+[package.metadata.clippy.batch_suite]
+path = "../suite.toml"

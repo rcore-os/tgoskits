@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use ax_lazyinit::OnceLock;
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
     module_driver,
@@ -31,6 +32,8 @@ use vector::{
 const IRQ_ROUTE_VALID: u64 = 1 << 63;
 
 static IOAPIC_CPU_IF: X86IoApicCpuInterface = X86IoApicCpuInterface::new();
+// Publish during probe: hard-IRQ masking must not look up either registry.
+static IOAPIC_INTC: OnceLock<rdrive::Device<rdif_intc::Intc>> = OnceLock::new();
 
 pub struct Plat;
 
@@ -123,6 +126,11 @@ fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
         .collect();
     let intc = unsafe { IoApicIntc::new(&infos) };
     dev.register(rdif_intc::Intc::new(domain, intc));
+    IOAPIC_INTC
+        .get_or_try_init(|| rdrive::get::<rdif_intc::Intc>(owner))
+        .map_err(|err| {
+            OnProbeError::other(format!("failed to publish IOAPIC controller: {err:?}"))
+        })?;
     let msi = msi::X86MsiProvider::new(owner).map_err(|err| {
         OnProbeError::other(format!("failed to register x86 MSI domain: {err:?}"))
     })?;
@@ -151,7 +159,7 @@ impl PlatOp for Plat {
         }
 
         if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
-            let intc = crate::irq::intc_by_domain(irq.domain)?;
+            let intc = IOAPIC_INTC.get().ok_or(IrqError::Unsupported)?;
             let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
             return match intc.set_enabled(irq.hwirq, enable) {
                 // The GSI was never routed through configure_acpi; resolve

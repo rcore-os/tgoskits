@@ -47,9 +47,14 @@ impl OvmfFirmware {
         &self.vars
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_paths(code: PathBuf, vars: PathBuf) -> Self {
-        Self { code, vars }
+    pub(crate) fn from_paths(code: PathBuf, vars: PathBuf) -> anyhow::Result<Self> {
+        ensure!(
+            code.is_file() && vars.is_file(),
+            "explicit UEFI firmware pair is missing: code={}, vars={}",
+            code.display(),
+            vars.display()
+        );
+        Ok(Self { code, vars })
     }
 }
 

@@ -1,90 +1,85 @@
+use ax_config::ConfigError;
+
 use super::*;
 
-pub(crate) fn ensure_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<()>
-where
-    T: Serialize,
-{
-    println!("Using build config: {}", path.display());
+/// The OS owns validation of the final flattened input, not the merge engine.
+pub(crate) trait BuildConfiguration: Default + Serialize + DeserializeOwned {
+    const CLEARABLE_FIELDS: &'static [&'static str];
 
-    if path.exists() {
-        info!("Found build config at {}", path.display());
-        return Ok(());
+    fn preset(name: &str) -> Option<Self>;
+
+    fn default_qemu_preset(target: &str) -> Option<&'static str>;
+
+    fn common(&self) -> &CommonConfig;
+
+    /// Reject legacy ambiguous resource selection before the source is discarded.
+    fn check_source(&self, _overlay: &ax_config::Overlay) -> anyhow::Result<()> {
+        Ok(())
     }
 
-    info!(
-        "Build config not found at {}, writing default config",
-        path.display()
-    );
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let default = default();
-    std::fs::write(path, toml::to_string_pretty(&default)?)?;
-    Ok(())
+    fn extra_fields(&self) -> &toml::Table;
+
+    /// Validate the final values after CLI target/package/runtime selection.
+    fn validate_input(&self) -> Result<(), ConfigError>;
 }
 
-pub(crate) fn load_build_info<T>(path: &Path) -> anyhow::Result<T>
-where
-    T: DeserializeOwned,
-{
-    load_toml_with_rejector(path, "build info", reject_removed_std_field)
-}
-
-pub(crate) fn load_toml_with_rejector<T>(
+#[cfg(test)]
+pub(crate) fn parse_build_config<T: BuildConfiguration>(
     path: &Path,
-    description: &str,
-    rejector: impl FnOnce(&Path, &str) -> anyhow::Result<()>,
-) -> anyhow::Result<T>
-where
-    T: DeserializeOwned,
-{
-    let contents = read_toml_with_rejector(path, description, rejector)?;
-    toml::from_str::<T>(&contents)
-        .with_context(|| format!("failed to parse {description} {}", path.display()))
+    contents: &str,
+) -> anyhow::Result<T> {
+    Ok(super::config_source::parse_config_input::<T>(Some((path, contents)), None)?.config)
 }
 
-pub(crate) fn read_toml_with_rejector(
-    path: &Path,
-    description: &str,
-    rejector: impl FnOnce(&Path, &str) -> anyhow::Result<()>,
-) -> anyhow::Result<String> {
+#[cfg(test)]
+pub(crate) fn load_build_config<T: BuildConfiguration>(path: &Path) -> anyhow::Result<T> {
     let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {description} {}", path.display()))?;
-    rejector(path, &contents)?;
-    Ok(contents)
+        .with_context(|| format!("failed to read build config {}", path.display()))?;
+    parse_build_config(path, &contents)
+        .with_context(|| format!("failed to parse build config {}", path.display()))
 }
 
-pub(crate) fn reject_removed_std_field(path: &Path, contents: &str) -> anyhow::Result<()> {
-    if let Ok(table) = toml::from_str::<toml::Table>(contents) {
-        if table.contains_key("std") {
-            bail!(
-                "build config {} uses removed `std` field; std-aware Rust builds are now the \
-                 default, remove `std = ...`",
-                path.display()
-            );
-        }
-        if table.contains_key("plat_dyn") {
-            bail!(
-                "build config {} uses removed `plat_dyn` field; dynamic platform builds are now \
-                 the only supported platform mode, remove `plat_dyn = ...`",
-                path.display()
-            );
-        }
+pub(crate) fn reject_extra_fields(extra: &toml::Table) -> Result<(), ConfigError> {
+    if let Some((field, _)) = extra.iter().next() {
+        return Err(ConfigError::UnknownField {
+            origin: None,
+            field: field.clone(),
+            source: None,
+            hint: match field.as_str() {
+                "std" => Some("std-aware Rust builds are the default; remove `std`"),
+                "plat_dyn" => Some("dynamic platform selection is automatic; remove `plat_dyn`"),
+                _ => None,
+            },
+        });
     }
-
     Ok(())
 }
 
-pub(crate) fn reject_arceos_app_c_field(path: &Path, contents: &str) -> anyhow::Result<()> {
-    if let Ok(table) = toml::from_str::<toml::Table>(contents)
-        && table.contains_key("app-c")
-    {
-        bail!(
-            "build config {} uses ArceOS-only `app-c` field; remove it or use an ArceOS build \
-             command",
-            path.display()
-        );
+pub(crate) fn invalid_config_value(
+    field: &str,
+    value: impl ToString,
+    expected: &'static str,
+) -> ConfigError {
+    ConfigError::InvalidValue {
+        origin: None,
+        field: field.to_string(),
+        value: value.to_string(),
+        expected,
     }
+}
 
+pub(crate) fn validate_config_target(common: &CommonConfig) -> Result<(), ConfigError> {
+    let target = common.target.as_deref().ok_or_else(|| {
+        invalid_config_value("target", "<unspecified>", "a resolved build target")
+    })?;
+    crate::context::arch_for_target_checked(target)
+        .map_err(|_| invalid_config_value("target", target, "a supported kernel build target"))?;
+    Ok(())
+}
+
+pub(crate) fn validate_resource_path(field: &str, path: &Path) -> Result<(), ConfigError> {
+    if path.as_os_str().is_empty() {
+        return Err(invalid_config_value(field, "", "a nonempty resource path"));
+    }
     Ok(())
 }

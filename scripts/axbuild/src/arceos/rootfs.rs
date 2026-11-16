@@ -15,7 +15,7 @@ use anyhow::Context;
 use ostool::run::qemu::QemuConfig;
 
 use super::{ArceOS, build};
-use crate::{context::ResolvedBuildRequest, test::qemu as qemu_test};
+use crate::{context::ResolvedBuildRequest, execution::qemu as qemu_test};
 
 const DEFAULT_FAT32_ROOTFS_SIZE: &str = "64M";
 
@@ -179,6 +179,10 @@ pub(super) async fn qemu_with_explicit_rootfs(
     qemu_test::apply_smp_qemu_arg(&mut qemu, request.smp);
     arceos
         .app
-        .qemu(cargo, request.build_info_path, Some(qemu))
+        .qemu(
+            cargo,
+            request.config_path().map(Path::to_path_buf),
+            Some(qemu),
+        )
         .await
 }

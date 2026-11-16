@@ -37,7 +37,7 @@ struct VmKernelRootfsProbe {
     uefi_firmware_path: Option<String>,
 }
 
-pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
+pub(crate) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
     let mut request = axvisor.prepare_request(
         (&args.build).into(),
         args.qemu_config,
@@ -100,7 +100,11 @@ pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow
     cargo.to_bin = qemu_to_bin_requested(&qemu)?;
     axvisor
         .app
-        .qemu(cargo, request.build_info_path, Some(qemu))
+        .qemu(
+            cargo,
+            request.config_path().map(Path::to_path_buf),
+            Some(qemu),
+        )
         .await
 }
 
@@ -114,7 +118,7 @@ fn qemu_to_bin_requested(qemu: &QemuConfig) -> anyhow::Result<bool> {
     Ok(qemu.to_bin)
 }
 
-pub(super) async fn load_patched_qemu_config(
+pub(crate) async fn load_patched_qemu_config(
     axvisor: &mut Axvisor,
     request: &ResolvedAxvisorRequest,
     cargo: &Cargo,
@@ -143,7 +147,7 @@ pub(super) async fn load_patched_qemu_config(
     Ok(qemu)
 }
 
-pub(super) fn diskless_explicit_qemu(
+pub(crate) fn diskless_explicit_qemu(
     qemu: &QemuConfig,
     explicit_config: bool,
     explicit_rootfs: bool,
@@ -204,7 +208,7 @@ struct GuestImageReference {
     required_path: PathBuf,
 }
 
-pub(super) async fn ensure_guest_image_bundles(
+pub(crate) async fn ensure_guest_image_bundles(
     request: &ResolvedAxvisorRequest,
     workspace_root: &Path,
     target_dir: &Path,
@@ -518,14 +522,28 @@ mod tests {
     }
 
     fn request(root: &Path, vmconfigs: Vec<PathBuf>) -> ResolvedAxvisorRequest {
+        let target = "aarch64-unknown-none-softfloat";
+        let mut config = crate::axvisor::config::AxvisorConfig::default();
+        config.common.target = Some(target.to_string());
+        let runtime_env = ax_config::RuntimeEnv::default();
+        let runtime = ax_config::resolve_runtime(
+            config.common.max_cpu_num,
+            config.common.runtime,
+            &runtime_env,
+        )
+        .unwrap();
         ResolvedAxvisorRequest {
             package: crate::axvisor::build::AXVISOR_PACKAGE.to_string(),
             axvisor_dir: root.join("os/axvisor"),
             arch: "aarch64".to_string(),
-            target: "aarch64-unknown-none-softfloat".to_string(),
+            target: target.to_string(),
             smp: None,
             debug: false,
-            build_info_path: root.join(".build.toml"),
+            source: crate::build::ConfigSource::Custom,
+            config,
+            runtime,
+            runtime_env,
+            environment_features: Vec::new(),
             qemu_config: None,
             uboot_config: None,
             vmconfigs,

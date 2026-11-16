@@ -7,12 +7,12 @@ cd "$workspace"
 case "${1:-}" in
     "")
         vcpus_mode=0
-        board_config=os/axvisor/configs/board/qemu-aarch64-virtio-net-peer.toml
+        preset=qemu-aarch64-virtio-net-peer
         qemu_config=os/axvisor/configs/qemu/qemu-aarch64-virtio-net-peer.toml
         ;;
     --vcpus)
         vcpus_mode=1
-        board_config=os/axvisor/configs/board/qemu-aarch64-vcpus.toml
+        preset=qemu-aarch64-vcpus
         qemu_config=os/axvisor/configs/qemu/qemu-aarch64-vcpus.toml
         ;;
     *)
@@ -120,5 +120,5 @@ build_guest vm3
 build_guest vm4
 
 exec cargo xtask axvisor qemu \
-    --config "$board_config" \
+    --preset "$preset" \
     --qemu-config "$qemu_config"

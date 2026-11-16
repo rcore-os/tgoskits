@@ -1,0 +1,144 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{Context, bail, ensure};
+use ostool::board::config::BoardRunConfig;
+
+use super::{
+    StarryAppBoardCase,
+    build_config::{
+        collect_prefixed_toml_files, default_build_config_for_board_config,
+        discover_case_build_config,
+    },
+    discovery::{resolve_case_dir, resolve_case_relative_path, validate_case_name},
+};
+
+pub(crate) fn resolve_board_case(
+    workspace_root: &Path,
+    case_name: &str,
+    explicit_board_config: Option<&Path>,
+) -> anyhow::Result<StarryAppBoardCase> {
+    let case_name = validate_case_name(case_name)?;
+    let case_dir = resolve_case_dir(workspace_root, case_name)?;
+
+    let init_path = case_dir.join("init.sh");
+    ensure!(
+        init_path.is_file(),
+        "Starry app case `{case_name}` is missing `{}`",
+        init_path.display()
+    );
+    let init_cmd = fs::read_to_string(&init_path)
+        .with_context(|| format!("failed to read {}", init_path.display()))?;
+    let init_cmd = init_cmd.trim().to_string();
+    ensure!(
+        !init_cmd.is_empty(),
+        "Starry app case `{case_name}` has an empty init script `{}`",
+        init_path.display()
+    );
+
+    let board_config_path = match explicit_board_config {
+        Some(path) => resolve_explicit_board_config(&case_dir, path),
+        None => discover_case_board_config(&case_dir)?,
+    };
+    let (build_input, target) =
+        match default_build_config_for_board_config(workspace_root, &case_dir, &board_config_path)?
+        {
+            Some((board_build_config, target)) => (board_build_config, target),
+            None => discover_case_build_config(workspace_root, &case_dir, None)?,
+        };
+
+    Ok(StarryAppBoardCase {
+        name: case_name.to_string(),
+        case_dir,
+        init_path,
+        init_cmd,
+        build_input,
+        board_config_path,
+        target,
+    })
+}
+
+pub(crate) fn configure_board_init_step(
+    board: &mut BoardRunConfig,
+    init_cmd: &str,
+) -> anyhow::Result<()> {
+    match board.shell_check_steps.as_mut_slice() {
+        [step] => {
+            ensure!(
+                step.shell_prefix.is_some(),
+                "Starry app board shell check step requires `shell_prefix`"
+            );
+            step.shell_cmd = Some(merge_board_init_command(
+                init_cmd,
+                step.shell_cmd.as_deref(),
+            ));
+        }
+        [] => {
+            bail!("Starry app board config must define `shell_check_steps` before board init");
+        }
+        _ => bail!("Starry app board config must define at most one shell check step"),
+    }
+    Ok(())
+}
+
+pub(crate) fn merge_board_init_command(init_cmd: &str, board_prelude: Option<&str>) -> String {
+    let script = match board_prelude
+        .map(str::trim)
+        .filter(|prelude| !prelude.is_empty())
+    {
+        Some(prelude) => format!("{prelude}\n{init_cmd}"),
+        None => init_cmd.to_string(),
+    };
+
+    // ostool sends shell_cmd to an interactive serial shell. If every
+    // script line is sent as an interactive command, early commands may start
+    // producing console output while later chunks are still arriving. Keep
+    // the complete script inert in one quoted argument and execute it only
+    // after the terminating newline reaches the shell.
+    format!(
+        "printf %b {} | sh",
+        shell_single_quote(&encode_printf_script(&script))
+    )
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn encode_printf_script(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => encoded.push_str("\\\\"),
+            '\n' => encoded.push_str("\\n"),
+            '\r' => encoded.push_str("\\r"),
+            _ => encoded.push(character),
+        }
+    }
+    encoded
+}
+
+fn discover_case_board_config(case_dir: &Path) -> anyhow::Result<PathBuf> {
+    let mut configs = collect_prefixed_toml_files(case_dir, "board-")?;
+    match configs.len() {
+        0 => bail!(
+            "Starry app case `{}` does not provide a board-<board>.toml config",
+            case_dir.display()
+        ),
+        1 => Ok(configs.remove(0)),
+        _ => bail!(
+            "Starry app case `{}` provides multiple board configs; pass --board-config",
+            case_dir.display()
+        ),
+    }
+}
+
+fn resolve_explicit_board_config(case_dir: &Path, path: &Path) -> PathBuf {
+    resolve_case_relative_path(case_dir, path)
+}
+
+#[cfg(test)]
+#[path = "tests/board.rs"]
+mod tests;

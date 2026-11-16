@@ -1,28 +1,32 @@
 use super::*;
 use crate::build::info::{
-    BuildInfo, package_enables_mmu, package_enables_mmu_with_defaults, package_mmu_enabled,
+    package_enables_mmu, package_enables_mmu_with_defaults, package_mmu_enabled,
     toolchain_rustflags, toolchain_rustflags_for_mmu,
 };
 
 fn prepare_rustflags_cargo(
-    info: BuildInfo,
+    info: CommonConfig,
     std_build: bool,
     metadata: &cargo_metadata::Metadata,
     axbuild_dir: &std::path::Path,
 ) -> Cargo {
     if std_build {
-        info.into_prepared_std_cargo_config_with_metadata(
+        into_prepared_std_cargo_config_with_metadata(
+            info,
             "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             metadata,
             axbuild_dir,
+            default_runtime(),
         )
     } else {
-        info.into_prepared_no_std_cargo_config_with_metadata(
+        into_prepared_no_std_cargo_config_with_metadata(
+            info,
             "arceos-helloworld",
             "aarch64-unknown-none-softfloat",
             metadata,
             BareKernelLinkMode::Pie,
+            default_runtime(),
         )
     }
     .unwrap()
@@ -77,9 +81,9 @@ fn build_config_rustflags_extend_std_and_no_std_defaults() {
                 vec!["--cfg", "label=\"hello world\"", "-Ctarget-cpu=cortex-a76"],
             ),
         ] {
-            let config: crate::arceos::build::ArceosBuildConfig = toml::from_str(source).unwrap();
-            let cargo =
-                prepare_rustflags_cargo(config.build_info, std_build, &metadata, root.path());
+            let config: crate::arceos::build::ArceosConfig =
+                parse_build_config(Path::new("flags.toml"), source).unwrap();
+            let cargo = prepare_rustflags_cargo(config.common, std_build, &metadata, root.path());
             let inline = inline_target_rustflags(&cargo);
             let defaults = if std_build {
                 let source = fs::read_to_string(cargo.extra_config.as_ref().unwrap()).unwrap();
@@ -128,12 +132,16 @@ fn build_config_rustflags_extend_only_the_active_environment_source() {
     let root = tempfile::tempdir().unwrap();
     for std_build in [false, true] {
         for encoded in [false, true] {
-            let mut info: BuildInfo = toml::from_str(concat!(
-                "features = []\nlog = 'Warn'\n",
-                "rustflags = ['--cfg', 'label=\"hello world\"']\n",
-                "[env]\nRUSTFLAGS = '-Copt-level=1'\nDWARF = '1'\n",
-            ))
+            let config: crate::arceos::config::ArceosConfig = parse_build_config(
+                Path::new("flags.toml"),
+                concat!(
+                    "features = []\nlog = 'Warn'\n",
+                    "rustflags = ['--cfg', 'label=\"hello world\"']\n",
+                    "[env]\nRUSTFLAGS = '-Copt-level=1'\nDWARF = '1'\n",
+                ),
+            )
             .unwrap();
+            let mut info = config.common;
             if encoded {
                 info.env
                     .insert("CARGO_ENCODED_RUSTFLAGS".into(), "--cfg\x1fexisting".into());
@@ -197,14 +205,14 @@ fn package_metadata_resolves_mmu_capability_through_defaults_and_aliases() {
 fn package_mmu_detection_does_not_mutate_feature_selection() {
     let metadata = repo_metadata();
 
-    let libc = BuildInfo {
+    let libc = CommonConfig {
         features: vec!["fs".to_string()],
-        ..BuildInfo::default()
+        ..CommonConfig::default()
     };
     assert!(package_mmu_enabled("ax-libc", &metadata, &libc.features, true).unwrap());
     assert_eq!(libc.features, vec!["fs".to_string()]);
 
-    let app = BuildInfo::default();
+    let app = CommonConfig::default();
     assert!(package_mmu_enabled("arceos-helloworld", &metadata, &app.features, true).unwrap());
     assert!(app.features.is_empty());
 
@@ -214,46 +222,49 @@ fn package_mmu_detection_does_not_mutate_feature_selection() {
 #[test]
 fn package_mmu_rustflags_follow_metadata_without_injecting_features() {
     let metadata = repo_metadata();
-    let cargo = BuildInfo::default()
-        .into_prepared_no_std_cargo_config_with_metadata_and_defaults(
-            "arceos-helloworld",
-            "x86_64-unknown-none",
-            &metadata,
-            BareKernelLinkMode::Default,
-            true,
-        )
-        .unwrap();
+    let cargo = into_prepared_no_std_cargo_config_with_metadata_and_defaults(
+        CommonConfig::default(),
+        "arceos-helloworld",
+        "x86_64-unknown-none",
+        &metadata,
+        BareKernelLinkMode::Default,
+        true,
+        default_runtime(),
+    )
+    .unwrap();
     assert!(cargo.features.is_empty());
     assert!(cargo.args.join("\n").contains("-Zstack-protector=strong"));
 
-    let cargo = BuildInfo::default()
-        .into_prepared_no_std_cargo_config_with_metadata_and_defaults(
-            "arceos-helloworld",
-            "x86_64-unknown-none",
-            &metadata,
-            BareKernelLinkMode::Default,
-            false,
-        )
-        .unwrap();
+    let cargo = into_prepared_no_std_cargo_config_with_metadata_and_defaults(
+        CommonConfig::default(),
+        "arceos-helloworld",
+        "x86_64-unknown-none",
+        &metadata,
+        BareKernelLinkMode::Default,
+        false,
+        default_runtime(),
+    )
+    .unwrap();
     assert!(!cargo.args.join("\n").contains("-Zstack-protector=strong"));
 }
 
 #[test]
 fn axlibc_paging_alias_is_normalized_before_cargo_feature_resolution() {
     let metadata = repo_metadata();
-    let app = BuildInfo {
+    let app = CommonConfig {
         features: vec!["axlibc/paging".to_string()],
-        ..BuildInfo::default()
+        ..CommonConfig::default()
     };
 
-    let cargo = app
-        .into_prepared_no_std_cargo_config_with_metadata(
-            "arceos-helloworld",
-            "x86_64-unknown-none",
-            &metadata,
-            BareKernelLinkMode::Default,
-        )
-        .unwrap();
+    let cargo = into_prepared_no_std_cargo_config_with_metadata(
+        app,
+        "arceos-helloworld",
+        "x86_64-unknown-none",
+        &metadata,
+        BareKernelLinkMode::Default,
+        default_runtime(),
+    )
+    .unwrap();
 
     assert_eq!(cargo.features, vec!["ax-std/paging".to_string()]);
 }
@@ -417,12 +428,12 @@ fn build_info_rejects_uspace_and_tls_register_modes_before_cargo() {
         vec!["uspace".to_string(), "tls".to_string()],
         vec!["ax-std/uspace".to_string(), "ax-std/tls".to_string()],
     ] {
-        let info = BuildInfo {
+        let info = CommonConfig {
             features,
-            ..BuildInfo::default()
+            ..CommonConfig::default()
         };
 
-        let error = info.validate_features().unwrap_err();
+        let error = validate_features(&info).unwrap_err();
         assert!(
             error
                 .to_string()

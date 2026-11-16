@@ -3,7 +3,6 @@
 //! 参考 Linux kernel arch/loongarch/mm/tlb.c 和 arch/loongarch/include/asm/loongarch.h
 //! 实现页表寄存器初始化和相关数据类型定义。
 
-use num_align::NumAlign;
 use page_table_generic::{MapConfig, TableMeta, VirtAddr};
 
 // 导入 tock-registers 风格的页表项
@@ -12,7 +11,7 @@ use crate::{
     arch::addrspace::to_phys,
     console::print_mapping,
     consts::PAGE_SIZE,
-    mem::{__kimage_va, __va, MB, MemAttributes, PageTableInfo, PteConfig},
+    mem::{__kimage_va, __va, MemAttributes, PageTableInfo, PteConfig},
     smp::PerCpuMeta,
 };
 
@@ -78,7 +77,8 @@ impl TableMeta for Generic {
 }
 
 pub fn relocate_kernel_to_vm_code() -> ! {
-    let k_start = crate::mem::kimage_range().start;
+    let kimage = crate::mem::kimage_mapping_range();
+    let k_start = kimage.start;
     let mut table = crate::mem::mmu::new_boot_table();
 
     let pte = PteConfig {
@@ -92,8 +92,7 @@ pub fn relocate_kernel_to_vm_code() -> ! {
     println!("Page table entry flags: {:?}", pte);
 
     let v_start = __kimage_va(k_start);
-    let v_end = v_start as usize + crate::mem::kimage_range().len();
-    let size = v_end.align_up(2 * MB) - v_start as usize;
+    let size = kimage.len();
 
     print_mapping("KImage", v_start as _, k_start, size);
     println!(

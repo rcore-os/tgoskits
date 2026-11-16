@@ -1,9 +1,6 @@
-pub(crate) mod board;
-pub(crate) mod build;
-pub(crate) mod case;
+//! Test mechanisms; runtime assets and process execution live in `execution`.
 pub(crate) mod cross;
-pub(crate) mod host_http;
-pub(crate) mod qemu;
+pub(crate) mod ktest;
+pub(crate) mod normal;
+pub(crate) mod ota;
 pub(crate) mod std;
-pub(crate) mod suite;
-pub(crate) mod timing;

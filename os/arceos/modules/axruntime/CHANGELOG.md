@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 锁依赖致命诊断使用不可阻塞控制台，IRQ窗口指标仅记录真实硬件开中断状态。
+- 回溯初始化精确登记HAL保留boot stack，支持LoongArch DMW启动栈。
+
 ## [0.13.5](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.13.4...ax-runtime-v0.13.5) - 2026-09-22
 
 ### Fixed

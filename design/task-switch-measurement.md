@@ -52,7 +52,7 @@ Linux v7.1 `drivers/gpio/gpio-rockchip.c` 的 `rockchip_gpio_writel_bit()` 对 V
 
 性能模式保留 `-Zstack-protector=strong`、`-Ctarget-feature=-neon`、共享目标 JSON 中的 `+strict-align` 和既有 soft-float ABI，并采用裸机路径已经使用的 `-Cllvm-args=--max-store-memcpy=16` 短复制代价策略。后者不改变访问对齐是否合法，也不新增运行期分支，相关约束见 [短复制内联设计](../docs/design/aarch64-inline-copy.md)。不在命令行重复传递会触发不稳定特性警告的 `+strict-align`。
 
-两份客户机构建配置通过根级 `BuildInfo.rustflags` 数组追加 CPU、NEON 与短复制参数，不使用 `[env] RUSTFLAGS` 替换 axbuild 生成的 target 参数。栈保护由 `toolchain_rustflags_for_mmu()` 提供，`DWARF=y` 的调试信息和帧指针、`BACKTRACE=y` 的帧指针保持生效；显式环境覆盖仍遵守 Cargo 的既有优先级。共享接口及兼容边界见 [构建参数追加契约](axbuild-rustflags.md)。
+两份客户机构建配置通过根级 `CommonConfig.rustflags` 数组追加 CPU、NEON 与短复制参数，不使用 `[env] RUSTFLAGS` 替换 axbuild 生成的 target 参数。栈保护由 `toolchain_rustflags_for_mmu()` 提供，`DWARF=y` 的调试信息和帧指针、`BACKTRACE=y` 的帧指针保持生效；显式环境覆盖仍遵守 Cargo 的既有优先级。共享接口及兼容边界见 [构建参数追加契约](axbuild-rustflags.md)。
 
 编译器可能改变原子操作的指令选择，但该构建模式不改变 Rust 原子内存序、调度策略、rq 所有权与 IRQ 协议。
 

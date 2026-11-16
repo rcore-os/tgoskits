@@ -2,8 +2,6 @@ use core::ffi::c_int;
 
 use crate::{PosixError, ctypes};
 
-const DEFAULT_TASK_STACK_SIZE: usize = 0x40000;
-
 /// Get resource limitations
 ///
 /// TODO: support more resource types
@@ -21,8 +19,8 @@ pub unsafe fn sys_getrlimit(resource: c_int, rlimits: *mut ctypes::rlimit) -> c_
         }
         match resource as u32 {
             ctypes::RLIMIT_STACK => unsafe {
-                (*rlimits).rlim_cur = DEFAULT_TASK_STACK_SIZE as _;
-                (*rlimits).rlim_max = DEFAULT_TASK_STACK_SIZE as _;
+                (*rlimits).rlim_cur = crate::config::TASK_STACK_SIZE as _;
+                (*rlimits).rlim_max = crate::config::TASK_STACK_SIZE as _;
             },
             #[cfg(feature = "fd")]
             ctypes::RLIMIT_NOFILE => unsafe {

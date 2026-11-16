@@ -1,4 +1,4 @@
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "loongarch64", target_arch = "x86_64"))]
 use core::arch::naked_asm;
 use core::{
     ffi::c_void,
@@ -23,7 +23,7 @@ use uefi::{
         },
         rng::Rng,
     },
-    runtime::{self, set_virtual_address_map},
+    runtime,
     system::with_config_table,
     table::{self, cfg::ConfigTableEntry},
 };
@@ -49,7 +49,8 @@ cfg_select! {
 
 const EFI_IMAGE_HANDLE_UNSET: usize = usize::MAX;
 const EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE: usize = 128 * 1024;
-const EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY: usize = 1024;
+const EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY: usize =
+    EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE / size_of::<MemoryDescriptor>();
 const EXIT_BOOT_MEMORY_MAP_RETRIES: usize = 3;
 const FDT_TABLE_GUID: Guid = guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
 const LINUX_EFI_INITRD_MEDIA_GUID: Guid = guid!("5568e427-68fc-4f3d-ac74-ca555231cc68");
@@ -71,6 +72,11 @@ static mut EXIT_BOOT_MEMORY_MAP_DESCRIPTORS: [MaybeUninit<MemoryDescriptor>;
     EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY] =
     [const { MaybeUninit::uninit() }; EXIT_BOOT_MEMORY_MAP_DESCRIPTOR_CAPACITY];
 static EFI_IMAGE_HANDLE: AtomicUsize = AtomicUsize::new(EFI_IMAGE_HANDLE_UNSET);
+#[cfg(target_arch = "loongarch64")]
+unsafe extern "C" {
+    fn __bss_start();
+    fn __bss_stop();
+}
 
 pub(crate) fn setup_service(system_table: *const ::core::ffi::c_void) {
     let system_table = platform::normalize_system_table(system_table);
@@ -130,7 +136,7 @@ unsafe extern "C" fn efi_pe_entry_main(
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
 #[unsafe(export_name = "efi_pe_entry")]
 #[unsafe(link_section = ".text")]
 pub unsafe extern "efiapi" fn efi_pe_entry(
@@ -143,6 +149,53 @@ pub unsafe extern "efiapi" fn efi_pe_entry(
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
+#[unsafe(naked)]
+#[unsafe(export_name = "efi_pe_entry")]
+#[unsafe(link_section = ".text")]
+pub unsafe extern "efiapi" fn efi_pe_entry(
+    _image_handle: Handle,
+    _system_table: *const ::core::ffi::c_void,
+) -> Status {
+    naked_asm!(
+        "
+        move        $t0, $sp
+        bstrins.d   $sp, $zero, 3, 0
+        addi.d      $sp, $sp, -32
+        st.d        $ra, $sp, 0
+        st.d        $a0, $sp, 8
+        st.d        $a1, $sp, 16
+        st.d        $t0, $sp, 24
+
+        la.pcrel    $t0, {bss_start}
+        la.pcrel    $t1, {bss_stop}
+    1:
+        bgeu        $t0, $t1, 2f
+        st.d        $zero, $t0, 0
+        addi.d      $t0, $t0, 8
+        b           1b
+    2:
+        dbar        0
+
+        ld.d        $a0, $sp, 8
+        ld.d        $a1, $sp, 16
+        bl          {relocate}
+        ld.d        $a0, $sp, 8
+        ld.d        $a1, $sp, 16
+        bl          {entry}
+
+        ld.d        $t0, $sp, 24
+        ld.d        $ra, $sp, 0
+        move        $sp, $t0
+        ret
+        ",
+        bss_start = sym __bss_start,
+        bss_stop = sym __bss_stop,
+        relocate = sym relocate,
+        entry = sym efi_pe_entry_main,
+    )
+}
+
 pub(crate) fn exit_boot_services() {
     if platform::inherited_handoff() {
         return;
@@ -150,7 +203,6 @@ pub(crate) fn exit_boot_services() {
     println!("Exiting UEFI boot services...");
     UEFI_SERVICE_EXIT.store(true, core::sync::atomic::Ordering::Relaxed);
     let mem_map = unsafe { exit_boot_services_no_alloc() };
-    println!("Exited boot services, memory map obtained.");
 
     if let Some((start, end)) = crate::boot_payload::staged_uefi() {
         let allocation_end = end
@@ -170,29 +222,36 @@ pub(crate) fn exit_boot_services() {
         );
     }
 
-    let mut new_map: heapless::Vec<MemoryDescriptor, 32> = heapless::Vec::new();
-
-    for entry in mem_map.entries() {
-        match entry.ty {
-            MemoryType::RUNTIME_SERVICES_CODE | MemoryType::RUNTIME_SERVICES_DATA => {
-                let mut en = *entry;
-                en.virt_start = __va(entry.phys_start as _) as usize as _;
-                new_map.push(en).unwrap();
-            }
-            MemoryType::MMIO => {
-                let mut en = *entry;
-                en.virt_start = __io(entry.phys_start as _) as usize as _;
-                new_map.push(en).unwrap();
-            }
-            _ => {}
-        }
-    }
+    // The firmware map has already been copied to separate static storage.
+    // Reuse the original buffer for an in-place compacted virtual map, retaining
+    // the firmware's descriptor stride, version, and trailing descriptor bytes.
+    let map_ptr = unsafe { addr_of_mut!(EXIT_BOOT_MEMORY_MAP_BUFFER.0) }.cast::<u8>();
+    let virtual_map_size = unsafe {
+        build_virtual_address_map(
+            mem_map.entries,
+            map_ptr.cast_const(),
+            map_ptr,
+            mem_map.desc_size,
+        )
+    };
 
     unsafe {
         if let Some(st) = uefi::table::system_table_raw() {
             let virtual_system_table = platform::runtime_system_table(st.as_ptr());
-            set_virtual_address_map(&mut new_map, virtual_system_table)
-                .expect("Failed to set virtual address map");
+            let runtime_services =
+                st.as_ref().runtime_services.as_ref().unwrap_or_else(|| {
+                    reset_on_exit_boot_services_failure(Status::INVALID_PARAMETER)
+                });
+            let status = (runtime_services.set_virtual_address_map)(
+                virtual_map_size,
+                mem_map.desc_size,
+                mem_map.desc_version,
+                map_ptr.cast::<MemoryDescriptor>(),
+            );
+            if status != Status::SUCCESS {
+                reset_on_exit_boot_services_failure(status);
+            }
+            table::set_system_table(virtual_system_table);
         }
     }
 
@@ -436,6 +495,8 @@ pub(crate) fn boot_entropy() -> Option<[u8; 32]> {
 
 struct ExitBootMemoryMap {
     entries: &'static [MemoryDescriptor],
+    desc_size: usize,
+    desc_version: u32,
 }
 
 impl ExitBootMemoryMap {
@@ -493,11 +554,57 @@ unsafe fn exit_boot_services_no_alloc() -> ExitBootMemoryMap {
         if status == Status::SUCCESS {
             let entries =
                 unsafe { copy_exit_boot_memory_map(map_ptr.cast_const(), map_size, desc_size) };
-            return ExitBootMemoryMap { entries };
+            return ExitBootMemoryMap {
+                entries,
+                desc_size,
+                desc_version,
+            };
         }
     }
 
     reset_on_exit_boot_services_failure(status);
+}
+
+unsafe fn build_virtual_address_map(
+    entries: &[MemoryDescriptor],
+    source: *const u8,
+    output: *mut u8,
+    descriptor_size: usize,
+) -> usize {
+    assert!(
+        descriptor_size >= size_of::<MemoryDescriptor>(),
+        "UEFI memory descriptor size is too small"
+    );
+    assert!(
+        entries
+            .len()
+            .checked_mul(descriptor_size)
+            .is_some_and(|size| size <= EXIT_BOOT_MEMORY_MAP_BUFFER_SIZE),
+        "UEFI virtual address map exceeds the exit-map buffer"
+    );
+    let mut count = 0;
+    for (index, entry) in entries.iter().enumerate() {
+        let virt_start = match entry.ty {
+            MemoryType::RUNTIME_SERVICES_CODE | MemoryType::RUNTIME_SERVICES_DATA => {
+                __va(entry.phys_start as _) as usize as u64
+            }
+            MemoryType::MMIO => __io(entry.phys_start as _) as usize as u64,
+            _ => continue,
+        };
+        let source_entry = unsafe { source.add(index * descriptor_size) };
+        let output_entry = unsafe { output.add(count * descriptor_size) };
+        // SAFETY: `source_entry` covers one firmware descriptor and
+        // `output_entry` stays within the same original map buffer. `copy`
+        // permits the in-place, forward compaction used by the caller.
+        unsafe { core::ptr::copy(source_entry, output_entry, descriptor_size) };
+        unsafe {
+            addr_of_mut!((*output_entry.cast::<MemoryDescriptor>()).virt_start)
+                .write_unaligned(virt_start as _);
+        }
+        count += 1;
+    }
+
+    count * descriptor_size
 }
 
 unsafe fn copy_exit_boot_memory_map(
@@ -681,6 +788,82 @@ mod tests {
     #[test]
     fn boot_entropy_is_unavailable_without_uefi_system_table() {
         assert_eq!(boot_entropy(), None);
+    }
+
+    #[test]
+    fn virtual_address_map_accepts_more_than_32_filtered_descriptors() {
+        const DESCRIPTOR_SIZE: usize = size_of::<MemoryDescriptor>() + 8;
+        let mut entries = [MemoryDescriptor::default(); 45];
+        for (index, entry) in entries.iter_mut().enumerate() {
+            entry.phys_start = 0x1000 * (index as u64 + 1);
+            entry.page_count = index as u64 + 1;
+            entry.ty = match index {
+                3 => MemoryType::LOADER_DATA,
+                11 => MemoryType::CONVENTIONAL,
+                23 => MemoryType::MMIO_PORT_SPACE,
+                31 => MemoryType::ACPI_RECLAIM,
+                39 => MemoryType::RESERVED,
+                0..=15 => MemoryType::RUNTIME_SERVICES_CODE,
+                16..=31 => MemoryType::RUNTIME_SERVICES_DATA,
+                32..=38 => MemoryType::MMIO,
+                40..=42 => MemoryType::RUNTIME_SERVICES_CODE,
+                43..=44 => MemoryType::RUNTIME_SERVICES_DATA,
+                _ => unreachable!(),
+            };
+        }
+        let mut raw_map = [0u8; 45 * DESCRIPTOR_SIZE];
+        let mut selected_indices = [0usize; 40];
+        let mut selected_count = 0;
+        let mut source_markers = [0u8; 45];
+        for (index, entry) in entries.iter().enumerate() {
+            let offset = index * DESCRIPTOR_SIZE;
+            let destination =
+                unsafe { raw_map.as_mut_ptr().add(offset).cast::<MemoryDescriptor>() };
+            unsafe { destination.write_unaligned(*entry) };
+            let marker = 0x40u8.wrapping_add(index as u8);
+            raw_map[offset + DESCRIPTOR_SIZE - 1] = marker;
+            source_markers[index] = marker;
+            if matches!(
+                entry.ty,
+                MemoryType::RUNTIME_SERVICES_CODE
+                    | MemoryType::RUNTIME_SERVICES_DATA
+                    | MemoryType::MMIO
+            ) {
+                selected_indices[selected_count] = index;
+                selected_count += 1;
+            }
+        }
+        assert_eq!(selected_count, 40);
+
+        let mapped_size = unsafe {
+            let map = raw_map.as_mut_ptr();
+            build_virtual_address_map(&entries, map, map, DESCRIPTOR_SIZE)
+        };
+
+        assert_eq!(mapped_size, 40 * DESCRIPTOR_SIZE);
+        for (output_index, source_index) in selected_indices.into_iter().enumerate() {
+            let source = &entries[source_index];
+            let offset = output_index * DESCRIPTOR_SIZE;
+            let mapped = unsafe {
+                raw_map
+                    .as_ptr()
+                    .add(offset)
+                    .cast::<MemoryDescriptor>()
+                    .read_unaligned()
+            };
+            assert_eq!(mapped.ty, source.ty);
+            assert_eq!(mapped.phys_start, source.phys_start);
+            assert_eq!(mapped.page_count, source.page_count);
+            let expected: u64 = match source.ty {
+                MemoryType::MMIO => __io(source.phys_start as _) as usize as u64,
+                _ => __va(source.phys_start as _) as usize as u64,
+            };
+            assert_eq!(mapped.virt_start, expected);
+            assert_eq!(
+                raw_map[offset + DESCRIPTOR_SIZE - 1],
+                source_markers[source_index]
+            );
+        }
     }
 }
 

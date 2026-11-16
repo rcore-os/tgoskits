@@ -195,7 +195,7 @@ git clone https://github.com/rcore-os/tgoskits.git
 cd tgoskits
 git checkout bananapi
 cargo xtask starry build \
-  --config os/StarryOS/configs/board/bananapi-bpi-sm10.toml
+  --preset bananapi-bpi-sm10
 ```
 
 构建成功时，任务工具会打印 `[axbuild] starry artifact elf=...`，该路径是下一步要使用的 StarryOS ELF。如果没有看到这行或命令返回非零状态，先处理构建错误，不要继续申请板卡会话。
@@ -358,7 +358,7 @@ DHCP 决定板卡如何获取 IP、掩码等网络参数，TFTP 负责传输 FIT
 
 ```bash
 cargo xtask starry board \
-  --config os/StarryOS/configs/board/bananapi-bpi-sm10.toml \
+  --preset bananapi-bpi-sm10 \
   --board-config tmp/starry-bananapi-board.toml
 ```
 

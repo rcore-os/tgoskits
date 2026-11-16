@@ -16,6 +16,7 @@ from pathlib import Path
 WORKSPACE = Path(__file__).resolve().parents[3]
 AXLOADER = Path("bootloader/axloader")
 BUILD = AXLOADER / "build-loongarch64-unknown-none-softfloat.toml"
+TEST_FAILURE_FEATURE = "qemu-fail-202-write"
 ARTIFACTS = WORKSPACE / "target/loongarch64-unknown-linux-musl/release"
 IMAGE = ARTIFACTS / "axloader.bin"
 ELF = ARTIFACTS / "arceos-helloworld"
@@ -27,7 +28,7 @@ def run(*args, **kwargs):
     return subprocess.run(list(map(str, args)), cwd=WORKSPACE, check=True, **kwargs)
 
 
-def build():
+def build(config):
     # The resource-only application shares the helloworld output path. Run it
     # before building the independent payload uploaded by the HTTP regression.
     run("cargo", "xtask", "arceos", "qemu", "--package", "arceos-helloworld",
@@ -43,7 +44,18 @@ def build():
         run("cargo", "xtask", "image", "pack-initramfs", fixture, INITRAMFS)
     run("cargo", "xtask", "arceos", "build", "--package", "arceos-helloworld",
         "--config", AXLOADER / "build-loongarch64-helloworld-efi.toml")
-    run("cargo", "xtask", "arceos", "build", "--package", "axloader", "--config", BUILD)
+    run("cargo", "xtask", "arceos", "build", "--package", "axloader", "--config", config)
+
+
+def write_test_build_config(directory):
+    template = BUILD.read_text()
+    features = 'features = ["arceos-efi"]'
+    if template.count(features) != 1:
+        raise RuntimeError("axloader build config must contain exactly one arceos-efi feature list")
+    replacement = f'features = ["arceos-efi", "{TEST_FAILURE_FEATURE}"]'
+    path = directory / "build-loongarch64-qemu-failure.toml"
+    path.write_text(template.replace(features, replacement))
+    return path
 
 
 def create_fat(path, storage_full):
@@ -128,7 +140,7 @@ def check_log(log, qemu, markers):
         time.sleep(0.25)
 
 
-def run_case(root, storage_full):
+def run_case(root, storage_full, config):
     name = "full-fat" if storage_full else "http-rollback"
     directory = root / name
     directory.mkdir()
@@ -137,7 +149,7 @@ def run_case(root, storage_full):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    config, qmp = configuration(directory, fat, port)
+    qemu_config, qmp = configuration(directory, fat, port)
     log = directory / "qemu.log"
     qemu = None
     client = None
@@ -145,7 +157,7 @@ def run_case(root, storage_full):
         with log.open("w") as output:
             qemu = subprocess.Popen(
                 ["cargo", "xtask", "arceos", "qemu", "--package", "axloader",
-                 "--config", str(BUILD), "--qemu-config", str(config)],
+                 "--config", str(config), "--qemu-config", str(qemu_config)],
                 cwd=WORKSPACE, stdout=output, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
@@ -185,18 +197,20 @@ def main():
     parser.add_argument("--output-dir", type=Path,
                         help="retain a fresh run directory here, including FAT images and logs")
     args = parser.parse_args()
-    build()
-    if args.output_dir:
-        args.output_dir.mkdir(parents=True, exist_ok=True)
-        root = Path(tempfile.mkdtemp(prefix="run-", dir=args.output_dir)).resolve()
-        print(f"LoongArch EFI evidence: {root}", flush=True)
-        run_case(root, storage_full=True)
-        run_case(root, storage_full=False)
-    else:
-        with tempfile.TemporaryDirectory(prefix="loong-efi-") as temporary:
-            root = Path(temporary)
-            run_case(root, storage_full=True)
-            run_case(root, storage_full=False)
+    with tempfile.TemporaryDirectory(prefix="loong-efi-build-") as config_directory:
+        config = write_test_build_config(Path(config_directory))
+        build(config)
+        if args.output_dir:
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+            root = Path(tempfile.mkdtemp(prefix="run-", dir=args.output_dir)).resolve()
+            print(f"LoongArch EFI evidence: {root}", flush=True)
+            run_case(root, storage_full=True, config=config)
+            run_case(root, storage_full=False, config=config)
+        else:
+            with tempfile.TemporaryDirectory(prefix="loong-efi-") as temporary:
+                root = Path(temporary)
+                run_case(root, storage_full=True, config=config)
+                run_case(root, storage_full=False, config=config)
 
 
 if __name__ == "__main__":

@@ -91,7 +91,7 @@ cargo xtask sync-lint
 
 主要入口：
 
-- `scripts/axbuild/src/sync_lint/mod.rs`
+- `scripts/axbuild/src/checks/sync_lint/mod.rs`
 - [`docs/docs/build/sync_lint.md`](/docs/build/sync_lint)
 - `.github/workflows/ci.yml`
 

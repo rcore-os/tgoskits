@@ -1,16 +1,17 @@
-use anyhow::anyhow;
+use ax_config::ConfigError;
 
-pub(super) fn reject_unsupported_nested_platform_features(
+pub(crate) fn reject_unsupported_nested_platform_features(
     features: &[String],
     known_platforms: &[String],
-) -> anyhow::Result<()> {
+) -> Result<(), ConfigError> {
     if let Some(feature) = features
         .iter()
         .find(|feature| is_removed_dynamic_platform_feature(feature))
     {
-        return Err(anyhow!(
-            "Axvisor depends on an ax-std surface with dynamic platform support enabled; remove \
-             dynamic platform features from `features`; found `{feature}`"
+        return Err(crate::build::invalid_config_value(
+            "features",
+            feature,
+            "Axvisor has dynamic platform support enabled; remove dynamic platform features",
         ));
     }
 
@@ -18,9 +19,10 @@ pub(super) fn reject_unsupported_nested_platform_features(
         .iter()
         .find(|feature| matches!(feature.as_str(), "vmx" | "svm"))
     {
-        return Err(anyhow!(
-            "x86 virtualization backend is selected from CPU capabilities at runtime; remove \
-             `{feature}` from `features`"
+        return Err(crate::build::invalid_config_value(
+            "features",
+            feature,
+            "x86 virtualization backend is selected from CPU capabilities at runtime",
         ));
     }
 
@@ -28,8 +30,10 @@ pub(super) fn reject_unsupported_nested_platform_features(
         nested_platform_feature_name(feature, known_platforms).is_some()
             || known_platforms.iter().any(|platform| platform == *feature)
     }) {
-        return Err(anyhow!(
-            "Axvisor build configs must use ax-hal platform features directly; found `{feature}`"
+        return Err(crate::build::invalid_config_value(
+            "features",
+            feature,
+            "Axvisor build configs must use ax-hal platform features directly",
         ));
     }
     Ok(())

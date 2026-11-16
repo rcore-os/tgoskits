@@ -138,7 +138,7 @@ LS2K1000 启动链路由早期引导、动态平台、中断控制器、设备�
 | 网络 | `ax-driver`、`rd-net`、`ax-net` | `ax-driver` feature `ls2k1000-gmac`；`drivers/ax-driver/src/net/loongson_gmac.rs` | 驱动板载 GMAC 并注册 `eth0` |
 | 根文件系统 | `ax-fs-ng`、`rsext4` | — | 扫描 SATA 分区并挂载 ext4 rootfs |
 
-板卡配置位于 `os/StarryOS/configs/board/ls2k1000.toml`。LS2K1000 AHCI 的 FDT/MMIO、寄存器状态机、owned-DMA 队列和最小 IRQ top-half 位于 `drivers/ax-driver/src/block/ahci/`。EIOINTC、PCH-PIC 与 LIOINTC 的寄存器核心位于 `loongarch-intc-driver`，`somehal` 只保留平台 glue；GMAC、RTC 和 NS16550 的 FDT 适配也位于 `ax-driver`。
+板卡构建选择 `--preset ls2k1000`，静态配方位于 `scripts/axbuild/src/starry/config/presets/ls2k1000.rs`。LS2K1000 AHCI 的 FDT/MMIO、寄存器状态机、owned-DMA 队列和最小 IRQ top-half 位于 `drivers/ax-driver/src/block/ahci/`。EIOINTC、PCH-PIC 与 LIOINTC 的寄存器核心位于 `loongarch-intc-driver`，`somehal` 只保留平台 glue；GMAC、RTC 和 NS16550 的 FDT 适配也位于 `ax-driver`。
 
 #### 3.1.2 构建镜像
 
@@ -153,7 +153,7 @@ cargo starry build
 
 ```bash
 cargo starry build \
-  --config os/StarryOS/configs/board/ls2k1000.toml
+  --preset ls2k1000
 ```
 
 `ls2k1000.toml` 中的 `loongarch64-unknown-none-softfloat` 是 StarryOS 用于选择架构和平台配置的逻辑 target。实际构建时，`axbuild` 会将它映射到 `scripts/targets/std/pie/loongarch64-unknown-linux-musl.json`，因此默认 release 产物位于 `target/loongarch64-unknown-linux-musl/release/`。该目录包含 `starryos` ELF 和 `starryos.bin`，U-Boot/TFTP 使用其中的 `starryos.bin`。
@@ -254,7 +254,7 @@ SG2002 路径需要 someboot 完成固件交接，并由板级支持、串口和
 | SG2002 SD | `ax-driver`、`cv181x-sdhci`、`sdhci-host`、`sdmmc-protocol`、`rdif-block` | `ax-driver` feature `cv181x-sdhci` | 使用 CV181x SDHCI、ADMA2 和 IRQ 驱动的 block runtime |
 | 根文件系统 | `ax-fs-ng`、`rsext4` | — | 挂载 `/dev/mmcblk0p2` 上的 ext4 rootfs |
 
-板卡构建配置位于 `os/StarryOS/configs/board/licheerv-nano-sg2002.toml`。其中 `cv181x-sdhci` feature 会启用 CV181x SDHCI、SD/MMC 协议和块设备接口，`sg2002` feature 提供 StarryOS 所需的 SG2002 板级支持。
+板卡构建选择 `--preset licheerv-nano-sg2002`，静态配方位于 `scripts/axbuild/src/starry/config/presets/licheerv_nano_sg2002.rs`。其中 `cv181x-sdhci` feature 会启用 CV181x SDHCI、SD/MMC 协议和块设备接口，`sg2002` feature 提供 StarryOS 所需的 SG2002 板级支持；ITS 由配方显式关联，不猜测或复制同名文件。
 
 #### 3.2.2 构建准备
 
@@ -276,7 +276,7 @@ cargo starry build
 
 ```bash
 cargo starry build \
-  --config os/StarryOS/configs/board/licheerv-nano-sg2002.toml
+  --preset licheerv-nano-sg2002
 ```
 
 该配置使用 `riscv64gc-unknown-none-elf` 目标，并启用 SG2002 板级支持、T-Head MAE、SD 卡和串口驱动。后面的 `cargo starry uboot` 或 `cargo starry board` 都会自动构建，因此只想快速启动时可以跳过这里的 `cargo starry build`。

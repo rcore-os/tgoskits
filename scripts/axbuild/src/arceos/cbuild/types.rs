@@ -13,6 +13,8 @@ pub(crate) struct ArceosCBuildInput {
     pub(crate) target_dir: PathBuf,
     pub(crate) out_dir: PathBuf,
     pub(crate) features: Vec<String>,
+    pub(crate) include_dirs: Vec<PathBuf>,
+    pub(crate) source_flags: std::collections::BTreeMap<PathBuf, Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

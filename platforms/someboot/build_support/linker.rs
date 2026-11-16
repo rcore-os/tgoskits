@@ -100,7 +100,13 @@ const LOONGARCH64_REPLACEMENTS: &[(&str, &str)] = &[
     ("${tdata_align}", ""),
     ("${tdata_output}", ":text :tls"),
     ("${post_tdata_sections}", ""),
-    ("${edata_align}", ". = ALIGN(8);"),
+    (
+        "${edata_align}",
+        r#"    .pe_data_file_align : {
+        BYTE(0);
+        . = ALIGN(PECOFF_FILE_ALIGN);
+    } :text"#,
+    ),
     ("${bss_start_before_tbss}", "__bss_start = .;"),
     ("${bss_start_after_tbss}", ""),
     ("${tbss_align}", ""),

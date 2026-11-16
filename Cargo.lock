@@ -319,84 +319,50 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-cpu-cpufreq"
+name = "arceos-cpu-normal-freestanding"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
- "ax-driver",
- "ax-runtime",
+ "arceos-cpu-tests",
+ "arceos-test-build",
+ "ax-alloc",
  "ax-std",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
-name = "arceos-cpu-fp-context"
+name = "arceos-cpu-normal-std"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
+ "arceos-cpu-tests",
+ "arceos-test-build",
+ "ax-alloc",
  "ax-std",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
-name = "arceos-cpu-guest-entry"
+name = "arceos-cpu-tests"
 version = "0.1.0"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
+ "ax-driver",
  "ax-hal",
+ "ax-mm",
+ "ax-runtime",
  "ax-std",
+ "someboot",
  "trait-ffi",
 ]
 
 [[package]]
-name = "arceos-cpu-hypervisor-probe"
+name = "arceos-driver-tests"
 version = "0.1.0"
 dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-paging"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-hal",
- "ax-mm",
- "ax-std",
- "someboot",
-]
-
-[[package]]
-name = "arceos-cpu-pmu"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-trap-entry"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-user-entry"
-version = "0.1.0"
-dependencies = [
+ "acpica-interpreter",
+ "arceos-test-build",
  "ax-alloc",
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-cpu-virtualization-lifecycle"
-version = "0.1.0"
-dependencies = [
- "ax-alloc",
- "ax-cpu",
+ "ax-driver",
  "ax-hal",
  "ax-std",
 ]
@@ -454,14 +420,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-loongarch-unaligned-fixup"
-version = "0.1.0"
-dependencies = [
- "ax-cpu",
- "ax-std",
-]
-
-[[package]]
 name = "arceos-scheduler-latency-bench"
 version = "0.1.0"
 dependencies = [
@@ -477,29 +435,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-test-acpica-interpreter"
+name = "arceos-test-build"
 version = "0.1.0"
 dependencies = [
- "acpica-interpreter",
- "ax-alloc",
- "ax-hal",
- "ax-std",
-]
-
-[[package]]
-name = "arceos-test-intel-hda"
-version = "0.1.0"
-dependencies = [
- "ax-alloc",
- "ax-driver",
- "ax-hal",
- "ax-std",
+ "anyhow",
+ "serde",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
+ "arceos-cpu-tests",
+ "arceos-test-build",
  "ax-alloc",
  "ax-block",
  "ax-cpu",
@@ -516,14 +465,13 @@ dependencies = [
  "axfs-ng-vfs",
  "axklib",
  "dma-api",
- "embedded-graphics",
  "intel-itco-watchdog",
  "libc",
  "mmio-api",
- "rand 0.8.8",
  "rdif-block",
  "rdif-iommu",
  "rdrive",
+ "toml 1.1.8+spec-1.1.0",
  "virtio-drivers",
  "zerocopy",
 ]
@@ -895,6 +843,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-config"
+version = "0.1.0"
+dependencies = [
+ "figment",
+ "schemars",
+ "serde",
+ "thiserror 2.0.21",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
 name = "ax-cpu"
 version = "0.10.3"
 dependencies = [
@@ -1110,6 +1069,7 @@ name = "ax-hal"
 version = "0.8.4"
 dependencies = [
  "ax-alloc",
+ "ax-config",
  "ax-cpu",
  "ax-lazyinit",
  "ax-memory-addr",
@@ -1343,6 +1303,7 @@ version = "0.13.5"
 dependencies = [
  "ax-alloc",
  "ax-block",
+ "ax-config",
  "ax-cpu",
  "ax-crate-interface",
  "ax-ctor-bare",
@@ -1476,6 +1437,7 @@ version = "0.9.1"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
+ "ax-config",
  "axvmconfig",
  "cargo_metadata",
  "chrono",
@@ -1487,6 +1449,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "getrandom 0.3.4",
+ "httpboot-protocol",
  "indicatif",
  "jkconfig 0.1.8",
  "libc",
@@ -1599,7 +1562,7 @@ dependencies = [
  "anyhow",
  "ax-net",
  "ax-std",
- "httpboot-protocol 0.5.0",
+ "httpboot-protocol",
  "object 0.38.1",
  "serde",
  "serde_json",
@@ -1886,12 +1849,6 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
 ]
-
-[[package]]
-name = "az"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b7e4c2464d97fe331d41de9d5db0def0a96f4d823b8b32a2efd503578988973"
 
 [[package]]
 name = "bare-metal"
@@ -2400,7 +2357,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3319,29 +3276,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
-name = "embedded-graphics"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e8da660bb0c829b34a56a965490597f82a55e767b91f9543be80ce8ccb416fe"
-dependencies = [
- "az",
- "byteorder",
- "embedded-graphics-core",
- "float-cmp",
- "micromath",
-]
-
-[[package]]
-name = "embedded-graphics-core"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95743bef3ff70fcba3930246c4e6872882bbea0dcc6da2ca860112e0cd4bd09f"
-dependencies = [
- "az",
- "byteorder",
-]
-
-[[package]]
 name = "embedded-hal"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3504,7 +3438,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3682,6 +3616,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "figment"
+version = "0.10.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cb01cd46b0cf372153850f4c6c272d9cbea2da513e07538405148f95bd789f3"
+dependencies = [
+ "atomic",
+ "serde",
+ "uncased",
+ "version_check",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3758,15 +3704,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f7719d63de27ac93e7cd2c8e0c03083f8b0ff7f842fdb6280b8cdcac21b4baf"
 dependencies = [
  "bitmaps",
-]
-
-[[package]]
-name = "float-cmp"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]
@@ -4222,19 +4159,9 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpboot-protocol"
-version = "0.4.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "076fcc75bfc4540d58f6fa135dcf0a4efb95bc6afbb7fffdd3a8f125d99eb6fa"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "httpboot-protocol"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e763493125efcacde753b2728c1f9617123fd82d2b04da76a75d75a4f24e947a"
+checksum = "1982bade76003cda8ffe8fb0c86f435c241c205e7135aa3babadeeb603d69233"
 dependencies = [
  "serde",
  "serde_json",
@@ -5360,12 +5287,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "micromath"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5443,7 +5364,7 @@ dependencies = [
  "mio",
  "nix 0.31.3",
  "serialport",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5503,6 +5424,18 @@ dependencies = [
 
 [[package]]
 name = "nix"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
@@ -5550,7 +5483,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5799,14 +5732,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "ostool"
-version = "0.30.3"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2eb5adff9cc6e134316ff354178c34d29327cafff9931a51506c6d3e60fc0ee"
+checksum = "cfcad4c810374799bff42e1b96d0dabc734e3175c8db4264e57f066a451849f3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5821,7 +5754,7 @@ dependencies = [
  "fitimage",
  "fs4",
  "futures",
- "httpboot-protocol 0.4.1",
+ "httpboot-protocol",
  "indicatif",
  "jkconfig 0.2.5",
  "keyring",
@@ -5829,6 +5762,7 @@ dependencies = [
  "lzma-rs",
  "network-interface",
  "object 0.39.1",
+ "ostool-serial",
  "ratatui",
  "regex",
  "reqwest",
@@ -5849,6 +5783,24 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "uboot-shell",
  "url",
+]
+
+[[package]]
+name = "ostool-serial"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6a4436e8d5515b7edf89ff82c77fe2ac8e3567769318dfef6693ef99f24d4bb"
+dependencies = [
+ "futures-util",
+ "httpboot-protocol",
+ "libc",
+ "log",
+ "nix 0.30.1",
+ "serde",
+ "serialport",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-serial",
 ]
 
 [[package]]
@@ -6419,7 +6371,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7302,7 +7254,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7361,7 +7313,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8009,6 +7961,7 @@ dependencies = [
  "anyhow",
  "arm-gic-driver",
  "ax-cpu",
+ "ax-lazyinit",
  "ax-percpu",
  "ax-riscv-plic",
  "ax-sync",
@@ -8445,7 +8398,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8477,7 +8430,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9135,9 +9088,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "uboot-shell"
-version = "0.2.9"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d152a2dc9ea4a3133498f85edae500ba7564e9406dda8f66915f8114747db1d"
+checksum = "0e0258eb9334ec3241ef86decd81c37ea7c545e0daf3eed7df3c75d05b6adfbc"
 dependencies = [
  "colored",
  "futures",
@@ -9222,6 +9175,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c8a2469e56e6e5095c82ccd3afb98dad95f7af7929aab6d8ba8d6e0f73657da"
 dependencies = [
  "arrayvec",
+]
+
+[[package]]
+name = "uncased"
+version = "0.9.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1b88fcfe09e89d3866a5c11019378088af2d24c3fbd4f0543f96b479ec90697"
+dependencies = [
+ "version_check",
 ]
 
 [[package]]
@@ -9796,7 +9758,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

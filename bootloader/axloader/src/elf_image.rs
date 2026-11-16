@@ -24,7 +24,6 @@ pub struct ElfImageReport {
     pub entry_offset: u64,
     pub entry_paddr: u64,
     pub start_symbol: Option<u64>,
-    pub httpboot_entry_symbol: Option<u64>,
     pub main_symbol: Option<u64>,
     pub load_segments: Vec<SegmentInfo>,
 }
@@ -52,27 +51,7 @@ impl ElfImageReport {
         }
 
         println!("_start: {}", option_hex(self.start_symbol));
-        println!("httpboot_entry: {}", option_hex(self.httpboot_entry_symbol));
         println!("main: {}", option_hex(self.main_symbol));
-        if self.httpboot_entry_symbol.is_some() {
-            println!("phase0_status: ready");
-            println!(
-                "phase0_note: image has a compact physical load span and exposes a direct HTTP \
-                 Boot entry wrapper."
-            );
-        } else {
-            println!("phase0_status: partial");
-            println!(
-                "phase0_note: image has a compact physical load span, but the current x86_64 \
-                 entry is the Multiboot _start path. A direct HTTP Boot entry wrapper or \
-                 Multiboot context synthesis is still required before jump."
-            );
-        }
-        println!(
-            "manifest_v1_candidate: kernel_load_addr={} entry_point={}",
-            hex(self.load_addr),
-            hex(self.entry_paddr)
-        );
     }
 }
 
@@ -158,26 +137,14 @@ fn inspect_elf_bytes(path: &Path, bytes: &[u8]) -> anyhow::Result<ElfImageReport
         .paddr
         .checked_add(entry_offset)
         .ok_or_else(|| anyhow!("entry physical address overflows u64"))?;
-    let httpboot_entry_symbol = find_symbol(&elf, "httpboot_entry");
-    let manifest_entry_paddr = match httpboot_entry_symbol {
-        Some(symbol) => first
-            .paddr
-            .checked_add(symbol.checked_sub(first.vaddr).ok_or_else(|| {
-                anyhow!("httpboot_entry is below first load segment virtual address")
-            })?)
-            .ok_or_else(|| anyhow!("httpboot_entry physical address overflows u64"))?,
-        None => entry_paddr,
-    };
-
     Ok(ElfImageReport {
         entry,
         load_addr,
         image_file_size: image_file_end - load_addr,
         image_mem_size: image_mem_end - load_addr,
         entry_offset,
-        entry_paddr: manifest_entry_paddr,
+        entry_paddr,
         start_symbol: find_symbol(&elf, "_start"),
-        httpboot_entry_symbol,
         main_symbol: find_symbol(&elf, "main"),
         load_segments,
     })

@@ -19,42 +19,39 @@ StarryOS 的固定内核构建单元使其命令围绕运行资产和扩展工�
 | `app list/qemu/board` | 发现并运行 `apps/starry/` 的声明式应用用例，以及 `benchmarks/starry/` 的 nightly 性能用例 |
 | `perf` | qperf 性能采集和报告 |
 | `kmod build` | 构建 Rust 或 C 可加载模块，并可注入 rootfs |
-| `defconfig <board>` / `config ls` | 选择或列出 checked-in board build config |
+| `defconfig <preset>` / `config ls/show` | 导出、列出或展示内置 Rust 配方 |
 | `quick-start` | 常用平台的便捷构建和运行入口 |
 
-默认 arch 是 `riscv64`。共享参数为 `--config`、`--arch`、`--target`、`--smp`、`--debug`；QEMU 额外接受 `--qemu-config` 与 `--rootfs`。
+默认 arch 是 `riscv64`。共享参数为 `--preset`、`--config`、`--arch`、`--target`、`--smp`、`--debug`；QEMU 额外接受 `--qemu-config` 与 `--rootfs`。
 
 ## 2. 配置选择
 
 ### 2.1 配置布局
 
-Starry 的 board 文件为 build/qemu/kmod 提供 target 与能力基线，QEMU 文件单独描述启动。该布局也解释了为什么缺失默认配置时必须能找到对应 `qemu-*` board 文件。
+Starry 的 Rust 预设为 build/qemu/kmod 提供 target 与能力基线，用户 TOML 可以稀疏覆盖或完全自定义；QEMU 文件单独描述启动。`StarryConfig` 保存最终公共字段和显式 ITS 关联，资源不参与 Cargo 身份。
 
 ```text
-os/StarryOS/configs/
-├── board/                 # target + BuildInfo；部分 board 配有同名 .its
-│   ├── qemu-riscv64.toml
-│   └── orangepi-5-plus.toml
-└── qemu/                  # QEMU boot contract
-    └── qemu-riscv64.toml
+scripts/axbuild/src/starry/config/presets/  # Rust 构建配方
+os/StarryOS/configs/board/                 # 保留 ITS/DTB 和板卡运行 TOML
+os/StarryOS/configs/qemu/                  # QEMU 启动 TOML
 ```
 
 ### 2.2 默认配置
 
-`build`、`qemu` 和 `kmod build` 调用 `ensure_default_build_config_for_target()`。默认路径缺失时，必须找到 target 对应的 `qemu-*` board 文件，复制到：
+`prepare_starry_request()` 在无文件来源时按 target 的明确映射展开标准 QEMU 预设，不复制或生成配置文件。只有显式 `defconfig <preset>` 原子导出到：
 
 ```text
 tmp/axbuild/config/starryos/build-<target>.toml
 ```
 
-若 board 配置有同名 `.its`，复制时也会复制到构建配置旁，供 Starry 的 uImage 生成流程使用。`defconfig <board>` 完成同样的复制并更新 Snapshot；隐式补齐默认配置不会修改 Snapshot。
+三个 SG2002 预设显式关联 ITS，导出保存 `fit_its` 路径而不复制资源。`defconfig` 写出成功后更新文件选择，失败不改快照；`config ls/show` 不持久化选择。旧快照指向已删除编译模板时会给出迁移提示。
 
 ## 3. 构建后处理
 
-Starry 先用共享 std-aware Cargo 逻辑构建 ELF，之后 `postprocess_starry_artifact()` 进行两项处理：
+Starry 先用共享 bare JSON、core/alloc PIE Cargo 逻辑构建 ELF，之后 `postprocess_starry_artifact()` 进行两项处理：
 
 1. 从最终 ELF 生成同名 `.axbt` sidecar，包含函数区间、build-id、文件名和行号；QEMU host-initramfs 测试将它放入 `/symbols/kernel.axbt`，目标侧统一读取。
-2. 当 Build Config 旁存在 `.its` 时，以 `mkimage` 生成 uImage；ITS 文件提供镜像的启动描述。
+2. 当最终 `StarryConfig.fit_its` 指定模板时，以 `mkimage` 生成 uImage；资源缺失或打包失败传播为错误，不猜测同名文件。
 
 最终的构建产物依然是 ELF；运行配置的 `to_bin` 决定需要启动时是否额外准备 BIN。
 

@@ -13,10 +13,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 #[derive(Default, Deserialize)]
-pub(super) struct ResourceInputs {
-    pub(super) vm_configs: Option<Vec<PathBuf>>,
-    pub(super) busybox_initramfs: Option<String>,
-    pub(super) ovmf_firmware: Option<String>,
+pub(crate) struct ResourceInputs {
+    pub(crate) vm_configs: Option<Vec<PathBuf>>,
+    pub(crate) busybox_initramfs: Option<String>,
+    pub(crate) ovmf_firmware: Option<String>,
 }
 /// ostool-server rejects session-file uploads above 64 MiB, and board FIT
 /// images also carry the host kernel. Once the payload approaches that
@@ -39,7 +39,7 @@ fn append_guest_bundle(output: &mut fs::File, bundle: &Path) -> std::io::Result<
     encoder.finish()?;
     Ok(())
 }
-pub(super) fn case_inputs(case_dir: &Path) -> anyhow::Result<ResourceInputs> {
+pub(crate) fn case_inputs(case_dir: &Path) -> anyhow::Result<ResourceInputs> {
     let manifest = case_dir.join("host-initramfs.toml");
     if !manifest.is_file() {
         return Ok(ResourceInputs::default());
@@ -54,7 +54,7 @@ pub(super) fn case_inputs(case_dir: &Path) -> anyhow::Result<ResourceInputs> {
 /// `web_ui_dist` is the dashboard `dist` tree built by [`super::web_ui`] (or
 /// `None` when the build carries no UI) and is packed into the builtin package
 /// next to the guest assets.
-pub(super) fn attach(
+pub(crate) fn attach(
     vmconfigs: &[PathBuf],
     empty_package: bool,
     web_ui_dist: Option<&Path>,
@@ -78,7 +78,7 @@ pub(super) fn attach(
 /// target.  Any image that is available to axbuild is copied into the
 /// immutable builtin package and its path is rewritten; unavailable images
 /// remain external and are checked on the prepared root before publication.
-pub(super) fn attach_with_external_assets(
+pub(crate) fn attach_with_external_assets(
     vmconfigs: &[PathBuf],
     empty_package: bool,
     web_ui_dist: Option<&Path>,

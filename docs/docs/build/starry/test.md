@@ -84,7 +84,7 @@ flowchart TD
 | 步骤 | 源码位置 | 行为 |
 |------|----------|------|
 | 用例发现 | `qemu_discovery.rs::discover_qemu_cases()` | 递归扫描 `test-suit/starryos/`，通过 `nearest_build_wrapper()` 关联每个用例到最近的 `build-*.toml` |
-| 默认 board | `board::default_board_for_target()` | 从 `os/StarryOS/configs/board/` 查找 target 匹配的 `qemu-*` board，缺失时报错 |
+| 默认预设 | `config::presets::default_qemu_preset()` | 在 `scripts/axbuild/src/starry/config/presets/mod.rs` 中按 target 显式映射到静态 QEMU 编译预设；不支持的 target 返回错误 |
 | 构建分组 | `qemu_test::prepare_case_build_groups()` | 先按 `build_config_path` 发现，再按 Cargo 编译身份合并；每组共享 `(request, cargo)` |
 | 内核编译 | `build_artifact()` | 调用共享 Cargo 装配 + `postprocess_starry_artifact()`，生成 AXBT map 并按需处理 uImage |
 | QEMU config | `read_qemu_config_from_path_for_cargo()` | 从用例的 `qemu-<arch>.toml` 加载，替换 managed rootfs 路径 |
