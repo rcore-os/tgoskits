@@ -31,6 +31,10 @@ pub mod initramfs;
 pub mod migration;
 pub use fs::memory::MemoryFs;
 mod fs_core;
+pub use fs_core::{
+    FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement, FsUpdateRetirement,
+    PreparedFsUpdate,
+};
 mod highlevel;
 mod mounts;
 pub mod os;
