@@ -662,13 +662,30 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
-    struct TestFilesystem;
+    struct TestFilesystem {
+        this: alloc::sync::Weak<Self>,
+        depth: u32,
+        reads: alloc::vec::Vec<Location>,
+        writes: alloc::vec::Vec<Location>,
+    }
+
+    impl TestFilesystem {
+        const fn native() -> Self {
+            Self {
+                this: alloc::sync::Weak::new(),
+                depth: 0,
+                reads: alloc::vec::Vec::new(),
+                writes: alloc::vec::Vec::new(),
+            }
+        }
+    }
 
     struct TestFile {
         metadata: Metadata,
+        filesystem: Option<Arc<TestFilesystem>>,
     }
 
-    static TEST_FILESYSTEM: TestFilesystem = TestFilesystem;
+    static TEST_FILESYSTEM: TestFilesystem = TestFilesystem::native();
 
     impl FilesystemOps for TestFilesystem {
         fn name(&self) -> &str {
@@ -676,7 +693,22 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            test_entry(metadata(0, 0, 0, NodePermission::default()))
+            test_entry_on(
+                metadata(0, 0, 0, NodePermission::default()),
+                self.this.upgrade(),
+            )
+        }
+
+        fn stack_depth(&self) -> u32 {
+            self.depth
+        }
+
+        fn read_backing_roots(&self) -> &[Location] {
+            &self.reads
+        }
+
+        fn write_backing_roots(&self) -> &[Location] {
+            &self.writes
         }
 
         fn stat(&self) -> VfsResult<StatFs> {
@@ -698,7 +730,7 @@ mod tests {
         }
 
         fn filesystem(&self) -> &dyn FilesystemOps {
-            &TEST_FILESYSTEM
+            self.filesystem.as_deref().unwrap_or(&TEST_FILESYSTEM)
         }
 
         fn sync(&self, _data_only: bool) -> VfsResult<()> {
@@ -761,15 +793,22 @@ mod tests {
     }
 
     fn test_entry(metadata: Metadata) -> DirEntry {
+        test_entry_on(metadata, None)
+    }
+
+    fn test_entry_on(metadata: Metadata, filesystem: Option<Arc<TestFilesystem>>) -> DirEntry {
         DirEntry::new_file(
-            FileNode::new(Arc::new(TestFile { metadata })),
+            FileNode::new(Arc::new(TestFile {
+                metadata,
+                filesystem,
+            })),
             NodeType::RegularFile,
             Reference::root(),
         )
     }
 
     fn test_location(metadata: Metadata) -> Location {
-        let filesystem = Filesystem::new(Arc::new(TestFilesystem));
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem::native()));
         Location::new(Mountpoint::new_root(&filesystem), test_entry(metadata))
     }
 
@@ -870,6 +909,76 @@ mod tests {
             options._open(location, &credentials, false),
             Err(VfsError::PermissionDenied)
         ));
+    }
+
+    #[cfg(feature = "host-test")]
+    fn check_backing_write_rights() {
+        use alloc::{vec, vec::Vec};
+
+        // Only the dependency declarations are a fixture. Every mount lease,
+        // open description, duplicate and remount uses the real implementation.
+        fn layer(depth: u32, reads: Vec<Location>, writes: Vec<Location>) -> Location {
+            let filesystem = Filesystem::new(Arc::new_cyclic(|this| TestFilesystem {
+                this: this.clone(),
+                depth,
+                reads,
+                writes,
+            }));
+            Mountpoint::new_root(&filesystem).root_location()
+        }
+
+        let lower_fs = crate::MemoryFs::new();
+        let lower = Mountpoint::new_root(&lower_fs).root_location();
+        lower.mountpoint().set_readonly(true).unwrap();
+        let upper_fs = crate::MemoryFs::new();
+        let upper = Mountpoint::new_root(&upper_fs).root_location();
+        let middle = layer(1, vec![lower.clone()], vec![upper.clone()]);
+        let visible = layer(2, Vec::new(), vec![middle.clone()]);
+        let credentials = MutationCredentials::root();
+        let mut writable = OpenOptions::new();
+        writable.write(true).direct = true;
+        let description = Arc::new(
+            writable
+                ._open(visible.clone(), &credentials, false)
+                .and_then(OpenResult::into_file)
+                .unwrap(),
+        );
+        let duplicate = description.clone();
+        let mapping = description.write_access().unwrap().clone();
+        let reject_readonly = || {
+            for location in [&visible, &middle, &upper] {
+                assert_eq!(
+                    location.mountpoint().set_readonly(true),
+                    Err(VfsError::ResourceBusy),
+                    "writable descriptions and mappings must retain every write dependency"
+                );
+            }
+            assert_eq!(
+                upper.mountpoint().set_filesystem_readonly(true),
+                Err(VfsError::ResourceBusy)
+            );
+        };
+        reject_readonly();
+        drop(description);
+        reject_readonly();
+        drop(duplicate);
+        reject_readonly();
+        drop(mapping);
+
+        for location in [&visible, &middle, &upper] {
+            location.mountpoint().set_readonly(true).unwrap();
+        }
+        // Refusing a later backing must release the earlier visible/middle
+        // leases too. The read-only lower remains a read dependency throughout.
+        visible.mountpoint().set_readonly(false).unwrap();
+        middle.mountpoint().set_readonly(false).unwrap();
+        assert!(matches!(
+            writable._open(visible.clone(), &credentials, false),
+            Err(VfsError::ReadOnlyFilesystem)
+        ));
+        visible.mountpoint().set_readonly(true).unwrap();
+        middle.mountpoint().set_readonly(true).unwrap();
+        assert!(lower.is_readonly());
     }
 
     #[cfg(feature = "host-test")]
@@ -996,6 +1105,8 @@ mod tests {
             drop(reader);
             drop(path_file);
         }
+
+        check_backing_write_rights();
 
         let filesystem = crate::MemoryFs::new();
         let mount = Mountpoint::new_root(&filesystem);
