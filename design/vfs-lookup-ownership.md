@@ -3108,6 +3108,28 @@ Chown 的自动清位，也不使用 `TrustedInitialization::kernel`。源为符
 lower，普通原生命令能力不改变。实际数据和 xattr 仍必须接现有缓存及 owner 接口，
 不能因存在暂存类型就把普通 root File 打开算作已完成的准备传输。
 
+#### 4.18.4 匿名暂存与扩展属性
+
+新建目标在恢复所有者之前由 `StagingNode::copy_xattrs` 复制实际 source 能力公开的
+属性。源没有 list 能力时没有可复制项；实际读取或目标写入错误仍归原暂存所有者，
+由命令显式清理。该方法不开放新的用户 xattr namespace、ACL 或 LSM 能力，也不把
+普通调用者的任意目标转换成恢复权限。Linux 的
+[`ovl_copy_xattr`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/copy_up.c#L75-L168)
+同样在安装前复制后端提供的属性；本项目当前原生提供者与用户入口的能力边界仍保留。
+
+`SealedStaging::detach` 为已删除的逻辑对象生成实际原生孤儿对象，接收原 Context，
+在真实 observed-unlink 中核对工厂新建目标的身份，然后才移出隐藏工作名。seal 在
+全部 gate/admission 外准备该私有父目录；只有这个已关闭准备 I/O、且后端明确支持
+活跃脱链的新建实体可以在其同一逻辑 detach 的未应用重试中复用模板。一般
+PreparedUnlink 仍不可复制，普通独立删除仍需重新准备，FAT 不因这一来源获得能力。
+
+Applied 与完成错误分别保留；只有已知移出的实际对象才能绑定为逻辑 upper。
+Detached 状态结束隐藏名称的清理责任，后续 cleanup 不删除后来占用旧工作名的对象；
+Uncertain 继续保留诊断与清理责任，Drop 不推进文件系统。使用这一原语的 Overlay
+仍须在 fresh caller 授权和 owner gate 内绑定真实孤儿，不能重建旧可见名称。
+验证增强原工厂旅程，覆盖实际脱链后读写、零链接、属性、替代对象拒绝及原写准备
+寿命；这一旅程独占其集成进程的页提供者，没有新增内核启动。
+
 ### 4.19 属性意图的逐层传递
 
 `AuthorizedMetadataChange::forward_to` 只借当前实际尝试内的授权，向已声明的可写

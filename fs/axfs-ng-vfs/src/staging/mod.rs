@@ -11,6 +11,8 @@ use crate::{
     metadata::MetadataIntent,
 };
 
+mod cleanup;
+
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(1);
 
 struct Binding {
@@ -38,6 +40,7 @@ pub struct StagingNode {
 pub struct SealedStaging {
     binding: Binding,
     target: Location,
+    unlink: crate::PreparedUnlink,
     state: StageState,
 }
 
@@ -68,6 +71,7 @@ impl StagingIo<'_> {
 enum StageState {
     Hidden,
     Installed,
+    Detached,
     Uncertain,
     Cleaned,
 }
@@ -218,6 +222,29 @@ impl StagingNode {
         }))
     }
 
+    /// Copies the attributes exposed by the source's native capability before
+    /// restoring ownership. Missing list support means no source attributes;
+    /// real list/read/write errors retain this stage for explicit cleanup.
+    pub fn copy_xattrs(&self, mounter: &MutationCredentials<'_>) -> VfsResult<()> {
+        if self.restored {
+            return Err(VfsError::BadState);
+        }
+        let target = self.target()?;
+        mounter.check_permission(&target.metadata()?, NodePermission::OTHER_WRITE)?;
+        let names = match self.source.entry().list_xattrs() {
+            Ok(names) => names,
+            Err(VfsError::OperationNotSupported) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        for name in names {
+            let value = self.source.entry().get_xattr(&name)?;
+            target
+                .entry()
+                .set_xattr(&name, &value, crate::XattrSetMode::Upsert)?;
+        }
+        Ok(())
+    }
+
     /// Restores only this factory's captured source fields with saved-mounter
     /// authorization, never boot/root fallback or ordinary chown kill policy.
     pub fn restore(&mut self, mounter: &MutationCredentials<'_>) -> VfsResult<()> {
@@ -257,9 +284,14 @@ impl StagingNode {
                 Err(error) => return Err((error, Box::new(self))),
             }
         }
+        let unlink = match self.binding.work.prepare_unlink(&self.binding.name) {
+            Ok(unlink) => unlink,
+            Err(error) => return Err((error, Box::new(self))),
+        };
         Ok(SealedStaging {
             binding: self.binding,
             target: self.target.expect("restored target"),
+            unlink,
             state: StageState::Hidden,
         })
     }
@@ -314,8 +346,49 @@ impl SealedStaging {
         Ok(result)
     }
 
+    /// Unlinks this hidden stage while retaining its actual orphan inode.
+    ///
+    /// Bind the resulting location only after a fresh logical authorization.
+    /// Seal prepared this private work parent outside every gate. Only this
+    /// factory-owned, active-unlink-capable target may reuse that preparation;
+    /// ordinary unlink preparation remains non-Clone. Retry observes and checks
+    /// the native target again, without reacquiring the prepared write graph.
+    pub fn detach<'a>(
+        &'a mut self,
+        context: &'a NamespaceOperationContext<'a>,
+        mounter: &MutationCredentials<'a>,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        if !matches!(self.state, StageState::Hidden) {
+            return Err(VfsError::BadState);
+        }
+        let expected = identity(&self.target);
+        let prepared =
+            crate::PreparedUnlink::new(self.unlink.parent_owner(), self.unlink.name().into());
+        let result = match context.unlink(prepared, self.target.is_dir(), mounter)? {
+            NamespaceStart::Observed(observed) if expected.matches(&observed.target().entry) => {
+                observed.resume()
+            }
+            NamespaceStart::Observed(observed) => {
+                let cancelled = observed.cancel();
+                NamespaceObservation::capture(&NamespaceOutcome::unchanged(
+                    cancelled.result().and(Err(VfsError::BadState)),
+                ))
+            }
+            NamespaceStart::Complete(result) => result,
+        };
+        match result.state() {
+            NamespaceState::Applied => self.state = StageState::Detached,
+            NamespaceState::Uncertain => self.state = StageState::Uncertain,
+            NamespaceState::Unchanged | NamespaceState::Retry => {}
+        }
+        Ok(result)
+    }
+
     pub fn cleanup(&mut self, mounter: &MutationCredentials<'_>) -> VfsResult<()> {
-        if matches!(self.state, StageState::Installed | StageState::Cleaned) {
+        if matches!(
+            self.state,
+            StageState::Installed | StageState::Detached | StageState::Cleaned
+        ) {
             return Ok(());
         }
         let outcome = self.binding.cleanup(&self.target, mounter)?;
@@ -331,59 +404,5 @@ fn identity(target: &Location) -> NamespaceNode {
         inode: target.inode(),
         node_type: target.node_type(),
         identity: target.entry().identity().cloned(),
-    }
-}
-
-impl Binding {
-    fn cleanup(
-        &self,
-        target: &Location,
-        mounter: &MutationCredentials<'_>,
-    ) -> VfsResult<NamespaceOutcome<NamespaceEffect>> {
-        let expected = identity(target);
-        let outcome = NamespaceCommandScope::run_write(&self.write, |command| {
-            loop {
-                let scope = command.attempt()?;
-                let mut mismatched = false;
-                {
-                    let context = scope.context();
-                    match scope.unlink(
-                        &context,
-                        self.work.prepare_unlink(&self.name)?,
-                        target.is_dir(),
-                        mounter,
-                    )? {
-                        NamespaceStart::Observed(observed) => {
-                            if expected.matches(&observed.target().entry) {
-                                observed.resume();
-                            } else {
-                                observed.cancel();
-                                mismatched = true;
-                            }
-                        }
-                        NamespaceStart::Complete(_) => {}
-                    }
-                }
-                let outcome = scope
-                    .finish()
-                    .unwrap_or_else(|_| unreachable!("bound stage cleanup"));
-                if mismatched {
-                    return Ok(NamespaceOutcome::unchanged(
-                        outcome.result().and(Err(VfsError::BadState)),
-                    ));
-                }
-                if outcome.state() != NamespaceState::Retry {
-                    return Ok(outcome);
-                }
-                command.prepare()?;
-            }
-        })?;
-        if outcome.result() == Err(VfsError::NotFound)
-            && outcome.state() == NamespaceState::Unchanged
-        {
-            Ok(NamespaceOutcome::unchanged(Ok(())))
-        } else {
-            Ok(outcome)
-        }
     }
 }
