@@ -174,6 +174,7 @@ static void overlay_ownership(void) {
     struct statx st;
     int fd = -1, orphan = -1, created = -1;
     void *mapping = MAP_FAILED;
+    void *private_mapping = MAP_FAILED;
     int backing_mounted = 0, overlay_mounted = 0;
     for (size_t i = 0; i < sizeof(content); ++i) content[i] = (unsigned char)(i * 29 + 3);
 #define OVL_REQUIRE(condition, message) do { \
@@ -233,8 +234,17 @@ static void overlay_ownership(void) {
                 "the accepted writable fd updates the native upper across a cache-page boundary");
     mapping = (void *)syscall(SYS_mmap, NULL, sizeof(content), PROT_READ | PROT_WRITE, MAP_SHARED, created, 0);
     OVL_REQUIRE(mapping != MAP_FAILED, "map the writable Overlay description through its native cache");
+    private_mapping = (void *)syscall(SYS_mmap, NULL, sizeof(content), PROT_READ | PROT_WRITE, MAP_PRIVATE, created, 0);
+    OVL_REQUIRE(private_mapping != MAP_FAILED && ((volatile unsigned char *)private_mapping)[4096] == 'e',
+                "a private mapping first reads the accepted native cache page");
+    ((volatile unsigned char *)private_mapping)[4096] = 'P';
+    OVL_REQUIRE(((volatile unsigned char *)private_mapping)[4096] == 'P' &&
+                ((volatile unsigned char *)mapping)[4096] == 'e',
+                "private mapping writes copy the page without changing the shared native cache");
     close(created); created = -1;
     ((volatile unsigned char *)mapping)[4096] = 'M';
+    OVL_REQUIRE(((volatile unsigned char *)private_mapping)[4096] == 'P',
+                "a private copied page remains isolated after native shared writes");
     errno = 0;
     OVL_REQUIRE(syscall(SYS_umount2, merged, 0) == -1 && errno == EBUSY,
                 "a writable mapping retains the original merged mount after closing its fd");
@@ -242,6 +252,8 @@ static void overlay_ownership(void) {
     OVL_REQUIRE(fd >= 0 && syscall(SYS_pread64, fd, observed, 3, 4095) == 3 && memcmp(observed, "nMw", 3) == 0,
                 "shared mapping updates the same native upper cache after fd close");
     close(fd); fd = -1;
+    OVL_REQUIRE(syscall(SYS_munmap, private_mapping, sizeof(content)) == 0, "retire the private copied mapping");
+    private_mapping = MAP_FAILED;
     OVL_REQUIRE(syscall(SYS_munmap, mapping, sizeof(content)) == 0, "retire the mapped native endpoint explicitly");
     mapping = MAP_FAILED;
     snprintf(path, sizeof(path), "%s/deep/write-open", lower);
@@ -305,6 +317,7 @@ static void overlay_ownership(void) {
                 syscall(SYS_unlinkat, AT_FDCWD, other, AT_REMOVEDIR) == 0,
                 "rename an upper directory and prune its private opaque marker on rmdir");
 cleanup:
+    if (private_mapping != MAP_FAILED) syscall(SYS_munmap, private_mapping, sizeof(content));
     if (mapping != MAP_FAILED) syscall(SYS_munmap, mapping, sizeof(content));
     if (fd >= 0) close(fd);
     if (orphan >= 0) close(orphan);
