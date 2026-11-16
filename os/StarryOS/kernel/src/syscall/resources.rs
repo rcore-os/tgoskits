@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use core::mem::offset_of;
 
 use ax_memory_addr::PAGE_SIZE_4K;
@@ -7,9 +8,89 @@ use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, RLIMIT_RTTIME, 
 use crate::{
     StarryError, StarryResult,
     mm::{UserPtr, VmPtr},
-    task::{ProcessData, Rlimit, TgidNumber, Thread, UserTaskRef, get_user_process_data_by_number},
+    namespace::{ROOT_USER_NS, UserNamespace},
+    sync::RawSpinLock,
+    task::{
+        Cred, ProcessData, Rlimit, TgidNumber, Thread, UserTaskRef, get_user_process_data_by_number,
+    },
     time::TimeValueLike,
 };
+
+fn user_namespace_cap_sys_resource(
+    caller: &Cred,
+    caller_ns: &Arc<RawSpinLock<UserNamespace>>,
+    target_ns: &Arc<RawSpinLock<UserNamespace>>,
+) -> bool {
+    if Arc::ptr_eq(target_ns, caller_ns) {
+        return caller.has_cap_sys_resource();
+    }
+
+    // A parent namespace owns a child namespace even after the owner's
+    // effective capability has been cleared.
+    let caller_level = caller_ns.lock_irqsave().level();
+    let target_level = target_ns.lock_irqsave().level();
+    if target_level <= caller_level {
+        return false;
+    }
+
+    let mut namespace = target_ns.clone();
+    loop {
+        let (parent, owner_uid, namespace_level) = {
+            let namespace = namespace.lock_irqsave();
+            (namespace.parent(), namespace.owner_uid(), namespace.level())
+        };
+        let Some(parent) = parent else {
+            return false;
+        };
+        if Arc::ptr_eq(&parent, caller_ns) {
+            return owner_uid == caller.euid || caller.has_cap_sys_resource();
+        }
+        if namespace_level <= caller_level + 1 {
+            return false;
+        }
+        namespace = parent;
+    }
+}
+
+fn has_initial_user_namespace_cap_sys_resource(
+    caller: &Cred,
+    caller_ns: &Arc<RawSpinLock<UserNamespace>>,
+) -> bool {
+    Arc::ptr_eq(caller_ns, &ROOT_USER_NS) && caller.has_cap_sys_resource()
+}
+
+fn check_prlimit_permission(
+    current: &UserTaskRef,
+    caller: &Cred,
+    caller_ns: &Arc<RawSpinLock<UserNamespace>>,
+    target: &Arc<ProcessData>,
+    target_ns: &Arc<RawSpinLock<UserNamespace>>,
+) -> StarryResult<()> {
+    if Arc::ptr_eq(&current.as_thread().proc_data, target) {
+        return Ok(());
+    }
+
+    let target_identity = target.identity();
+    let target = if let Some(task) = target_identity.live_task() {
+        task.as_thread().cred()
+    } else {
+        target_identity
+            .zombie_snapshot(|zombie| zombie.cred.clone())
+            .ok_or(StarryError::NoSuchProcess)?
+    };
+    let ids_match = caller.uid == target.uid
+        && caller.uid == target.euid
+        && caller.uid == target.suid
+        && caller.gid == target.gid
+        && caller.gid == target.egid
+        && caller.gid == target.sgid;
+
+    if ids_match || user_namespace_cap_sys_resource(caller, caller_ns, target_ns) {
+        Ok(())
+    } else {
+        Err(StarryError::OperationNotPermitted)
+    }
+}
 
 pub fn sys_prlimit64(
     current: &UserTaskRef,
@@ -18,46 +99,63 @@ pub fn sys_prlimit64(
     new_limit: *const rlimit64,
     old_limit: *mut rlimit64,
 ) -> StarryResult<isize> {
-    // pid lookup first — match Linux error priority (ESRCH before EINVAL)
+    // Linux copies the new value before resolving the target. Keeping this
+    // first also preserves aliasing when new_limit and old_limit are equal.
+    let new_limit = if new_limit.is_null() {
+        None
+    } else {
+        // SAFETY: the user-memory provider validates the complete rlimit64
+        // range before exposing initialized storage. Every rlimit64 bit
+        // pattern is valid because it consists only of unsigned integers.
+        let new_limit = unsafe { new_limit.vm_read_uninit(current)?.assume_init() };
+        Some(new_limit)
+    };
+
     let proc_data = if pid == 0 {
         current.as_thread().proc_data.clone()
     } else {
         get_user_process_data_by_number(TgidNumber::try_from(pid)?)?
     };
 
+    let caller_thread = current.as_thread();
+    let caller = caller_thread.cred();
+    let caller_ns = caller_thread.proc_data.namespace_snapshot().user_ns.clone();
+    let target_ns = proc_data.namespace_snapshot().user_ns.clone();
+    check_prlimit_permission(current, caller.as_ref(), &caller_ns, &proc_data, &target_ns)?;
+
     if resource >= RLIM_NLIMITS {
         return Err(StarryError::InvalidInput);
     }
 
-    if let Some(old_limit) = old_limit.nullable() {
-        let limit = proc_data.rlimit(resource);
-        let old_limit = UserPtr::<rlimit64>::from(old_limit);
-        old_limit.write_field(current, offset_of!(rlimit64, rlim_cur), limit.current)?;
-        old_limit.write_field(current, offset_of!(rlimit64, rlim_max), limit.max)?;
-    }
-
-    if let Some(new_limit) = new_limit.nullable() {
-        // FIXME: AnyBitPattern
-        let new_limit = unsafe { new_limit.vm_read_uninit(current)?.assume_init() };
+    let previous = if let Some(new_limit) = new_limit {
         if new_limit.rlim_cur > new_limit.rlim_max {
             return Err(StarryError::InvalidInput);
         }
 
-        let limit = proc_data.rlimit_update(resource);
-        let previous = limit.snapshot();
-        // Raising the hard limit requires CAP_SYS_RESOURCE.
-        // TODO: has_cap_sys_resource() is currently euid==0 until a
-        // fine-grained capability bitmap is implemented (see cred.rs).
-        if new_limit.rlim_max > previous.max {
-            let cred = current.as_thread().cred();
-            if !cred.has_cap_sys_resource() {
-                return Err(StarryError::OperationNotPermitted);
-            }
+        let update = proc_data.rlimit_update(resource);
+        let previous = update.snapshot();
+        // Raising the hard limit requires CAP_SYS_RESOURCE, matching Linux
+        // do_prlimit() while the per-resource writer lock is held.
+        if new_limit.rlim_max > previous.max
+            && !has_initial_user_namespace_cap_sys_resource(caller.as_ref(), &caller_ns)
+        {
+            return Err(StarryError::OperationNotPermitted);
         }
-        limit.replace(Rlimit::new(new_limit.rlim_cur, new_limit.rlim_max));
+        update.replace(Rlimit::new(new_limit.rlim_cur, new_limit.rlim_max));
         if resource == RLIMIT_RTTIME {
             proc_data.publish_rttime_watchdog_limit();
         }
+        previous
+    } else {
+        proc_data.rlimit(resource)
+    };
+
+    // Output is copied only after a successful validation/update. An output
+    // fault therefore reports EFAULT without rolling back a committed limit.
+    if let Some(old_limit) = old_limit.nullable() {
+        let old_limit = UserPtr::<rlimit64>::from(old_limit);
+        old_limit.write_field(current, offset_of!(rlimit64, rlim_cur), previous.current)?;
+        old_limit.write_field(current, offset_of!(rlimit64, rlim_max), previous.max)?;
     }
 
     Ok(0)

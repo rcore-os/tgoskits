@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::sync::RawSpinLock;
+use crate::{StarryError, StarryResult, sync::RawSpinLock};
 
 /// The initial root user namespace, shared by all processes until
 /// they call `unshare(CLONE_NEWUSER)` or `clone(CLONE_NEWUSER)`.
@@ -9,6 +9,8 @@ pub static ROOT_USER_NS: ax_lazyinit::LazyLock<Arc<RawSpinLock<UserNamespace>>> 
     ax_lazyinit::LazyLock::new(|| Arc::new(RawSpinLock::new(UserNamespace::new_root())));
 
 static NEXT_USER_NS_ID: AtomicU64 = AtomicU64::new(1);
+/// Highest parent level allowed by Linux's level-33 child limit.
+const MAX_PARENT_LEVEL: u32 = 32;
 
 /// Per-process user namespace.
 ///
@@ -26,8 +28,12 @@ static NEXT_USER_NS_ID: AtomicU64 = AtomicU64::new(1);
 pub struct UserNamespace {
     /// Globally unique namespace identifier (exposed via /proc/PID/ns/user).
     pub id: u64,
+    /// Immutable parent namespace. The root namespace has no parent.
+    parent: Option<Arc<RawSpinLock<UserNamespace>>>,
+    /// Depth in the user-namespace tree; the root namespace is level zero.
+    level: u32,
     /// Effective UID of the namespace creator (0 for root namespace).
-    pub owner_uid: u32,
+    owner_uid: u32,
     /// Whether this is the initial root user namespace or a child
     /// namespace that had both uid_map and gid_map configured.  Kept
     /// for compatibility; new code should use `uid_mapped` /
@@ -43,6 +49,8 @@ impl UserNamespace {
     pub fn new_root() -> Self {
         Self {
             id: NEXT_USER_NS_ID.fetch_add(1, Ordering::Relaxed),
+            parent: None,
+            level: 0,
             owner_uid: 0,
             is_root: true,
             uid_mapped: true,
@@ -50,13 +58,38 @@ impl UserNamespace {
         }
     }
 
-    pub fn clone_ns(&self) -> Self {
-        Self {
+    pub(crate) fn new_child(
+        parent: Arc<RawSpinLock<UserNamespace>>,
+        owner_uid: u32,
+    ) -> StarryResult<Self> {
+        let parent_level = parent.lock_irqsave().level;
+        if parent_level > MAX_PARENT_LEVEL {
+            return Err(StarryError::StorageFull);
+        }
+
+        Ok(Self {
             id: NEXT_USER_NS_ID.fetch_add(1, Ordering::Relaxed),
-            owner_uid: self.owner_uid,
+            parent: Some(parent),
+            level: parent_level + 1,
+            owner_uid,
             is_root: false,
             uid_mapped: false,
             gid_mapped: false,
-        }
+        })
+    }
+
+    /// Return a strong snapshot of the parent namespace.
+    pub(crate) fn parent(&self) -> Option<Arc<RawSpinLock<UserNamespace>>> {
+        self.parent.clone()
+    }
+
+    /// Return this namespace's immutable tree depth.
+    pub(crate) const fn level(&self) -> u32 {
+        self.level
+    }
+
+    /// Return the creator's effective UID captured at construction.
+    pub(crate) const fn owner_uid(&self) -> u32 {
+        self.owner_uid
     }
 }

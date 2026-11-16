@@ -719,7 +719,16 @@ fn copy_user_iov_read_buf(source: IoVectorBuf<'_>) -> StarryResult<Vec<u8>> {
     Ok(data)
 }
 
-enum SendFile {
+/// Input side of an in-kernel file transfer.
+enum SendFileSource {
+    Direct(Arc<dyn FileLike>),
+    /// `*mut u64` is the user offset pointer; the `u64` is the kernel file position (not written
+    /// back to userspace until a corresponding destination write succeeds).
+    Offset(Arc<File>, *mut u64, u64),
+}
+
+/// Output side of an in-kernel file transfer.
+enum SendFileDestination {
     Direct(Arc<dyn FileLike>),
     /// `*mut u64` is the user offset pointer; the `u64` is the kernel file position (not written
     /// back to userspace until a corresponding destination write succeeds).
@@ -732,53 +741,52 @@ enum SendFile {
     OffsetMemfd(Arc<crate::file::memfd::Memfd>, *mut u64),
 }
 
-/// Build the `SendFile` for the *output* end of sendfile / copy_file_range /
-/// splice with an explicit offset. When the fd points at a memfd, route
-/// writes through the seal-aware [`crate::file::memfd::Memfd`] wrapper
-/// instead of unwrapping it to its inner `File` (which would bypass
-/// `F_SEAL_WRITE` and `F_SEAL_GROW`).
-fn send_offset_out(current: &UserTaskRef, fd: c_int, offset: *mut u64) -> StarryResult<SendFile> {
+/// Build the output-only representation for sendfile / copy_file_range /
+/// splice with an explicit offset. When the fd points at a memfd, route writes
+/// through the seal-aware [`crate::file::memfd::Memfd`] wrapper instead of
+/// unwrapping it to its inner `File` (which would bypass `F_SEAL_WRITE` and
+/// `F_SEAL_GROW`).
+fn send_offset_out(
+    current: &UserTaskRef,
+    fd: c_int,
+    offset: *mut u64,
+) -> StarryResult<SendFileDestination> {
     let fl = get_file_like(fd)?;
     if let Ok(memfd) = fl.clone().downcast_arc::<crate::file::memfd::Memfd>() {
-        return Ok(SendFile::OffsetMemfd(memfd, offset));
+        return Ok(SendFileDestination::OffsetMemfd(memfd, offset));
     }
-    Ok(SendFile::Offset(
+    Ok(SendFileDestination::Offset(
         File::from_fd(fd)?,
         offset,
         offset.vm_read(current)?,
     ))
 }
 
-impl SendFile {
+impl SendFileSource {
     fn has_data(&self) -> bool {
         match self {
-            SendFile::Direct(file) => file.poll(),
-            SendFile::Offset(file, ..) => file.poll(),
-            SendFile::OffsetMemfd(memfd, ..) => memfd.poll(),
+            SendFileSource::Direct(file) => file.poll(),
+            SendFileSource::Offset(file, ..) => file.poll(),
         }
         .contains(IoEvents::IN)
     }
 
-    fn read(&mut self, current: &UserTaskRef, mut buf: &mut [u8]) -> StarryResult<usize> {
+    fn read(&mut self, mut buf: &mut [u8]) -> StarryResult<usize> {
         match self {
-            SendFile::Direct(file) => file.read(&mut buf),
-            SendFile::Offset(file, _, pos) => Ok(file.inner().read_at(&mut buf, *pos)?),
-            SendFile::OffsetMemfd(memfd, offset) => {
-                let off = offset.vm_read(current)?;
-                let bytes_read = memfd.inner().inner().read_at(&mut buf, off)?;
-                offset.vm_write(current, off + bytes_read as u64)?;
-                Ok(bytes_read)
-            }
+            SendFileSource::Direct(file) => file.read(&mut buf),
+            SendFileSource::Offset(file, _, pos) => Ok(file.inner().read_at(&mut buf, *pos)?),
         }
     }
+}
 
+impl SendFileDestination {
     fn write(&mut self, current: &UserTaskRef, mut buf: &[u8]) -> StarryResult<usize> {
         match self {
-            SendFile::Direct(file) => {
+            SendFileDestination::Direct(file) => {
                 super::memfd::memfd_checks_before_stream_write(file, buf.len() as u64)?;
                 file.write(&mut buf)
             }
-            SendFile::Offset(file, user, pos) => {
+            SendFileDestination::Offset(file, user, pos) => {
                 let file_like: Arc<dyn FileLike> = file.clone();
                 super::memfd::memfd_checks_before_write_at(&file_like, *pos, buf.len() as u64)?;
                 let bytes_written = file.inner().write_at(buf, *pos)?;
@@ -786,7 +794,7 @@ impl SendFile {
                 user.vm_write(current, *pos)?;
                 Ok(bytes_written)
             }
-            SendFile::OffsetMemfd(memfd, offset) => {
+            SendFileDestination::OffsetMemfd(memfd, offset) => {
                 let off = offset.vm_read(current)?;
                 let bytes_written = memfd.write_at(buf, off)?;
                 offset.vm_write(current, off + bytes_written as u64)?;
@@ -798,8 +806,8 @@ impl SendFile {
 
 fn do_send(
     current: &UserTaskRef,
-    mut src: SendFile,
-    mut dst: SendFile,
+    mut src: SendFileSource,
+    mut dst: SendFileDestination,
     len: usize,
     nonblock: bool,
 ) -> StarryResult<usize> {
@@ -821,7 +829,7 @@ fn do_send(
             }
         }
         let to_read = buf.len().min(remaining);
-        let bytes_read = match src.read(current, &mut buf[..to_read]) {
+        let bytes_read = match src.read(&mut buf[..to_read]) {
             Ok(n) => n,
             Err(StarryError::WouldBlock) if total_written > 0 => break,
             Err(e) => return Err(e),
@@ -841,7 +849,7 @@ fn do_send(
         };
         // Advance source offset by bytes actually transferred (partial dst.write
         // must not skip unread source data).
-        if let SendFile::Offset(_, user, pos) = &mut src {
+        if let SendFileSource::Offset(_, user, pos) = &mut src {
             *pos += bytes_written as u64;
             user.vm_write(current, *pos)?;
         }
@@ -875,21 +883,21 @@ pub fn sys_sendfile(
         return Err(StarryError::InvalidInput);
     }
 
-    let src: SendFile = if !offset.is_null() {
+    let src: SendFileSource = if !offset.is_null() {
         let pos = offset.vm_read(current)?;
 
         if pos > u32::MAX as u64 {
             return Err(StarryError::InvalidInput);
         }
 
-        SendFile::Offset(File::from_fd(in_fd)?, offset, pos)
+        SendFileSource::Offset(File::from_fd(in_fd)?, offset, pos)
     } else {
         // 拒绝 pipe 输入：File::from_fd 对 pipe 会失败，但 get_file_like 会成功，后续 read 会返回 EPIPE。Linux sendfile 对 pipe 输入也是 EPIPE。
         let _in_file = File::from_fd(in_fd)?;
-        SendFile::Direct(get_file_like(in_fd)?)
+        SendFileSource::Direct(get_file_like(in_fd)?)
     };
 
-    let dst: SendFile = SendFile::Direct(out_file);
+    let dst: SendFileDestination = SendFileDestination::Direct(out_file);
 
     do_send(current, src, dst, len, false).map(|n: usize| n as _)
 }
@@ -974,16 +982,16 @@ pub fn sys_copy_file_range(
         }
     }
 
-    let src: SendFile = if !off_in.is_null() {
-        SendFile::Offset(file_in, off_in, pos_in)
+    let src: SendFileSource = if !off_in.is_null() {
+        SendFileSource::Offset(file_in, off_in, pos_in)
     } else {
-        SendFile::Direct(file_in)
+        SendFileSource::Direct(file_in)
     };
 
-    let dst: SendFile = if !off_out.is_null() {
+    let dst: SendFileDestination = if !off_out.is_null() {
         send_offset_out(current, fd_out, off_out)?
     } else {
-        SendFile::Direct(get_file_like(fd_out)?)
+        SendFileDestination::Direct(get_file_like(fd_out)?)
     };
 
     do_send(current, src, dst, len, false).map(|n: usize| n as isize)
@@ -1112,14 +1120,14 @@ pub fn sys_splice(
 
     // 11. 构造输入端。
     let src = if let Some(pos) = in_pos {
-        SendFile::Offset(File::from_fd(fd_in)?, off_in.cast(), pos)
+        SendFileSource::Offset(File::from_fd(fd_in)?, off_in.cast(), pos)
     } else if let Some(file) = in_file {
-        SendFile::Direct(file)
+        SendFileSource::Direct(file)
     } else {
-        SendFile::Direct(get_file_like(fd_in)?)
+        SendFileSource::Direct(get_file_like(fd_in)?)
     };
     // 12. 构造输出端。
-    let dst: SendFile = if out_pos.is_some() {
+    let dst: SendFileDestination = if out_pos.is_some() {
         // Route memfd output through the seal-aware wrapper rather
         // than `File::from_fd`'s auto-unwrap.
         send_offset_out(current, fd_out, off_out.cast())?
@@ -1132,7 +1140,7 @@ pub fn sys_splice(
 
         f.write(&mut b"".as_slice())?;
 
-        SendFile::Direct(f)
+        SendFileDestination::Direct(f)
     };
 
     let n = do_send(current, src, dst, len, flags & SPLICE_F_NONBLOCK != 0)?;

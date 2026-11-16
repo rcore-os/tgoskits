@@ -42,26 +42,34 @@ pub fn sys_rt_sigprocmask(
 ) -> StarryResult<isize> {
     check_sigset_size(sigsetsize)?;
 
-    let curr = current;
-    let sig = curr.as_thread().signal();
-    let old = sig.blocked();
-
-    if let Some(oldset) = oldset.nullable() {
-        oldset.vm_write(current, old)?;
-    }
-
-    if let Some(set) = set.nullable() {
+    let set = if set.is_null() {
+        None
+    } else {
+        // SAFETY: the user-memory provider validates the complete SignalSet
+        // range before exposing initialized storage. SignalSet is a
+        // transparent u64, so every bit pattern is valid.
         let set = unsafe { set.vm_read_uninit(current)?.assume_init() };
+        Some(set)
+    };
 
+    let sig = current.as_thread().signal();
+    let old = if let Some(set) = set {
+        let blocked = sig.blocked();
         let set = match how as u32 {
-            SIG_BLOCK => old | set,
-            SIG_UNBLOCK => old & !set,
+            SIG_BLOCK => blocked | set,
+            SIG_UNBLOCK => blocked & !set,
             SIG_SETMASK => set,
             _ => return Err(StarryError::InvalidInput),
         };
 
         debug!("sys_rt_sigprocmask <= {set:?}");
-        sig.set_blocked(set);
+        sig.set_blocked(set)
+    } else {
+        sig.blocked()
+    };
+
+    if let Some(oldset) = oldset.nullable() {
+        oldset.vm_write(current, old)?;
     }
 
     Ok(0)

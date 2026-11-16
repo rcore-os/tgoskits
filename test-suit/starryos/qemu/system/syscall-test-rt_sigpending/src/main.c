@@ -16,6 +16,16 @@
 #error "SYS_rt_sigpending is not available on this target"
 #endif
 
+#ifndef SYS_rt_sigprocmask
+#ifdef __NR_rt_sigprocmask
+#define SYS_rt_sigprocmask __NR_rt_sigprocmask
+#endif
+#endif
+
+#ifndef SYS_rt_sigprocmask
+#error "SYS_rt_sigprocmask is not available on this target"
+#endif
+
 #ifndef _NSIG
 #ifdef NSIG
 #define _NSIG NSIG
@@ -38,6 +48,13 @@ static long raw_rt_sigpending(sigset_t *set, size_t sigsetsize)
 {
     errno = 0;
     return syscall(SYS_rt_sigpending, set, sigsetsize);
+}
+
+static long raw_rt_sigprocmask(int how, const sigset_t *set, sigset_t *oldset,
+                               size_t sigsetsize)
+{
+    errno = 0;
+    return syscall(SYS_rt_sigprocmask, how, set, oldset, sigsetsize);
 }
 
 static void wait_for_handler_count(sig_atomic_t count)
@@ -152,6 +169,93 @@ static void test_invalid_pending_pointer(void)
           "rt_sigpending invalid sigset pointer returns EFAULT");
 }
 
+/*
+ * The raw syscall exchanges only the 8-byte kernel sigset_t, while the libc
+ * sigset_t can be larger. Initialize every byte, but only compare the ABI
+ * range the syscall writes.
+ */
+static void test_sigprocmask_semantics(void)
+{
+    sigset_t original;
+    sigset_t current;
+    sigset_t set;
+    sigset_t output;
+    sigset_t expected_output;
+    const int invalid_how = 0x40000000;
+    const size_t sigset_bytes = LTP_SIGSET_SIZE;
+
+    memset(&original, 0xa5, sizeof(original));
+    memset(&current, 0xa5, sizeof(current));
+    if (raw_rt_sigprocmask(SIG_SETMASK, NULL, &original,
+                           sigset_bytes) != 0) {
+        CHECK(0, "capture current mask before rt_sigprocmask semantics");
+        return;
+    }
+    CHECK(1, "capture current mask before rt_sigprocmask semantics");
+
+    sigemptyset(&set);
+    CHECK_RET(sigaddset(&set, SIGUSR1), 0,
+              "prepare valid input for invalid rt_sigprocmask");
+
+    memset(&output, 0xa5, sizeof(output));
+    for (size_t i = 0; i < sigset_bytes; i++) {
+        ((unsigned char *)&output)[i] =
+            (unsigned char)~((const unsigned char *)&original)[i];
+    }
+    expected_output = output;
+
+    CHECK(raw_rt_sigprocmask(invalid_how, &set, &output,
+                             sigset_bytes) == -1 &&
+              errno == EINVAL,
+          "rt_sigprocmask rejects invalid how with EINVAL");
+    CHECK(memcmp(&output, &expected_output, sigset_bytes) == 0,
+          "invalid rt_sigprocmask does not write oldset");
+
+    errno = 0;
+    CHECK(syscall(SYS_rt_sigprocmask, invalid_how, &set, (sigset_t *)-1,
+                  sigset_bytes) == -1 &&
+              errno == EINVAL,
+          "invalid how is reported before an invalid oldset pointer");
+
+    memset(&output, 0xa5, sizeof(output));
+    errno = 0;
+    CHECK(raw_rt_sigprocmask(invalid_how, (sigset_t *)-1, &output,
+                             sigset_bytes) == -1 &&
+              errno == EFAULT,
+          "rt_sigprocmask copies the input set before validating how");
+    CHECK(((unsigned char *)&output)[0] == 0xa5,
+          "input EFAULT does not write the old mask");
+
+    memset(&output, 0xa5, sizeof(output));
+    errno = 0;
+    CHECK(raw_rt_sigprocmask(invalid_how, NULL, &output,
+                             sigset_bytes) == 0,
+          "rt_sigprocmask ignores how when set is NULL");
+    CHECK(memcmp(&output, &original, sigset_bytes) == 0,
+          "set=NULL still returns the current mask");
+
+    sigemptyset(&set);
+    CHECK_RET(sigaddset(&set, SIGUSR1), 0,
+              "add SIGUSR1 for committed-mask EFAULT test");
+    CHECK_RET(sigaddset(&set, SIGUSR2), 0,
+              "add SIGUSR2 for committed-mask EFAULT test");
+
+    errno = 0;
+    CHECK(raw_rt_sigprocmask(SIG_SETMASK, &set, (sigset_t *)-1,
+                             sigset_bytes) == -1 &&
+              errno == EFAULT,
+          "rt_sigprocmask reports oldset EFAULT after committing the new mask");
+
+    CHECK(raw_rt_sigprocmask(SIG_SETMASK, NULL, &current,
+                             sigset_bytes) == 0 &&
+              memcmp(&current, &set, sigset_bytes) == 0,
+          "oldset EFAULT keeps the successfully committed signal mask");
+
+    CHECK(raw_rt_sigprocmask(SIG_SETMASK, &original, NULL,
+                             sigset_bytes) == 0,
+          "restore original signal mask after rt_sigprocmask semantics");
+}
+
 static void test_short_sigset_sizes(void)
 {
     unsigned char pending[LTP_SIGSET_SIZE];
@@ -207,6 +311,7 @@ int main(void)
 
     test_pending_masked_usr_signals();
     test_invalid_pending_pointer();
+    test_sigprocmask_semantics();
     test_short_sigset_sizes();
 
     TEST_DONE();

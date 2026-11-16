@@ -1,13 +1,13 @@
 use alloc::boxed::Box;
 
 use ax_fs_ng::vfs::current_fs_context;
-use ax_net::vsock::VsockSocket;
 use ax_net::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
+    vsock::VsockSocket,
 };
 use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use linux_raw_sys::{
@@ -222,11 +222,12 @@ pub fn sys_connect(
 pub fn sys_listen(fd: i32, backlog: i32) -> StarryResult<isize> {
     debug!("sys_listen <= fd: {fd}, backlog: {backlog}");
 
-    if backlog < 0 && backlog != -1 {
-        return Err(StarryError::InvalidInput);
-    }
-
-    Socket::from_fd(fd)?.listen(backlog as usize)?;
+    let socket = Socket::from_fd(fd)?;
+    // The listen table owns LISTEN_QUEUE_SIZE and clamps both negative and
+    // oversized values. Use an above-limit sentinel so every negative backlog
+    // takes the same clamp path as a positive oversized request.
+    let backlog = usize::try_from(backlog).unwrap_or(usize::MAX);
+    socket.listen(backlog)?;
 
     Ok(0)
 }

@@ -26,14 +26,14 @@
  *   pid parameter:
  *     pid=0      — self (get-only, set-only, get+set)
  *     pid=getpid() — explicit self (verify same as pid=0)
- *     pid=invalid — ESRCH
+ *     pid=invalid — EFAULT first if new_limit cannot be copied, else ESRCH
  *     pid=1        — may fail ESRCH or EPERM
  *
  *   error conditions:
  *     - invalid resource   → EINVAL
  *     - soft > hard        → EINVAL
  *     - raise hard limit   → EPERM (no CAP_SYS_RESOURCE)
- *     - invalid pid + bad res → ESRCH (pid first on Linux)
+ *     - valid new_limit + invalid pid + bad res → ESRCH (pid before res)
  */
 
 #define _GNU_SOURCE
@@ -45,16 +45,33 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <fcntl.h>
+#include <sched.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/syscall.h>
 
 /* RLIMIT constants not declared on all libc implementations */
 #ifndef RLIMIT_RTTIME
 #define RLIMIT_RTTIME 15
 #endif
+
+#define PRLIMIT_CAPABILITY_VERSION_3 0x20080522U
+#define PRLIMIT_CAP_SYS_RESOURCE 24
+
+struct prlimit_cap_header {
+    uint32_t version;
+    int32_t pid;
+};
+
+struct prlimit_cap_data {
+    uint32_t effective;
+    uint32_t permitted;
+    uint32_t inheritable;
+};
 
 /*
  * save_restore — run a mutator block with automatic restore.
@@ -71,9 +88,1108 @@
 
 int test_rttime_soft_limit(void);
 
+struct credential_ids {
+    uid_t ruid;
+    uid_t euid;
+    uid_t suid;
+    gid_t rgid;
+    gid_t egid;
+    gid_t sgid;
+};
+
+static long raw_prlimit64(pid_t pid, unsigned int resource,
+                          const struct rlimit *new_limit,
+                          struct rlimit *old_limit)
+{
+    return syscall(SYS_prlimit64, pid, resource, new_limit, old_limit);
+}
+
+static int set_credential_ids(const struct credential_ids *ids)
+{
+    if (setresgid(ids->rgid, ids->egid, ids->sgid) != 0) {
+        return -1;
+    }
+    return setresuid(ids->ruid, ids->euid, ids->suid);
+}
+
+static int read_exact(int fd, void *buf, size_t len)
+{
+    unsigned char *out = buf;
+    size_t done = 0;
+
+    while (done < len) {
+        ssize_t n = read(fd, out + done, len - done);
+        if (n > 0) {
+            done += (size_t)n;
+        } else if (n == 0) {
+            return 0;
+        } else if (errno != EINTR) {
+            return -1;
+        }
+    }
+    return 1;
+}
+
+static int write_exact(int fd, const void *buf, size_t len)
+{
+    const unsigned char *in = buf;
+    size_t done = 0;
+
+    while (done < len) {
+        ssize_t n = write(fd, in + done, len - done);
+        if (n > 0) {
+            done += (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int cap_read(struct prlimit_cap_data data[2])
+{
+    struct prlimit_cap_header header = {
+        .version = PRLIMIT_CAPABILITY_VERSION_3,
+        .pid = 0,
+    };
+    memset(data, 0, sizeof(*data) * 2);
+    return (int)syscall(SYS_capget, &header, data);
+}
+
+static int cap_has_sys_resource(const struct prlimit_cap_data data[2],
+                                int permitted)
+{
+    uint32_t mask =
+        permitted ? data[0].permitted : data[0].effective;
+    return (mask & (1U << PRLIMIT_CAP_SYS_RESOURCE)) != 0;
+}
+
+static int cap_set_sys_resource_effective(int enabled)
+{
+    struct prlimit_cap_header header = {
+        .version = PRLIMIT_CAPABILITY_VERSION_3,
+        .pid = 0,
+    };
+    struct prlimit_cap_data data[2];
+    uint32_t bit = 1U << PRLIMIT_CAP_SYS_RESOURCE;
+
+    if (cap_read(data) != 0) {
+        return -1;
+    }
+    if (enabled) {
+        data[0].effective |= bit;
+    } else {
+        data[0].effective &= ~bit;
+    }
+    return (int)syscall(SYS_capset, &header, data);
+}
+
+static int send_sync(int fd)
+{
+    char byte = 1;
+    return write_exact(fd, &byte, 1);
+}
+
+static int receive_sync(int fd)
+{
+    char byte = 0;
+    return read_exact(fd, &byte, 1) == 1 && byte == 1 ? 0 : -1;
+}
+
+static int write_pid_proc_file(pid_t pid, const char *name,
+                               const char *value)
+{
+    char path[96];
+    int length = snprintf(path, sizeof(path), "/proc/%d/%s", pid, name);
+    if (length < 0 || (size_t)length >= sizeof(path)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    int result = write_exact(fd, value, strlen(value));
+    int saved = errno;
+    close(fd);
+    errno = saved;
+    return result;
+}
+
+static int configure_user_namespace(pid_t pid, const char *range,
+                                    int deny_setgroups)
+{
+    if (write_pid_proc_file(pid, "uid_map", range) != 0) {
+        return -1;
+    }
+    if (deny_setgroups &&
+        write_pid_proc_file(pid, "setgroups", "deny\n") != 0) {
+        return -1;
+    }
+    return write_pid_proc_file(pid, "gid_map", range);
+}
+
+static int wait_for_child(pid_t child, int *status)
+{
+    pid_t result;
+    do {
+        errno = 0;
+        result = waitpid(child, status, 0);
+    } while (result == -1 && errno == EINTR);
+    return result == child ? 0 : -1;
+}
+
+static int prlimit_read_matches(pid_t target, unsigned int resource,
+                                const struct rlimit *expected)
+{
+    struct rlimit actual = {0};
+    errno = 0;
+    return raw_prlimit64(target, resource, NULL, &actual) == 0 &&
+                   actual.rlim_cur == expected->rlim_cur &&
+                   actual.rlim_max == expected->rlim_max
+               ? 0
+               : -1;
+}
+
+static int expect_cross_prlimit_denied(pid_t target)
+{
+    struct rlimit old = {.rlim_cur = 0x1357, .rlim_max = 0x2468};
+    struct rlimit replacement = {.rlim_cur = 1, .rlim_max = 1};
+    int failures = 0;
+
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &old) != -1 ||
+        errno != EPERM || old.rlim_cur != 0x1357 ||
+        old.rlim_max != 0x2468) {
+        failures |= 1;
+    }
+
+    old.rlim_cur = 0x3579;
+    old.rlim_max = 0x468a;
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &replacement, &old) != -1 ||
+        errno != EPERM || old.rlim_cur != 0x3579 ||
+        old.rlim_max != 0x468a) {
+        failures |= 2;
+    }
+    return failures;
+}
+
+static int expect_child_hard_limit_raise_denied(void)
+{
+    struct rlimit current = {0};
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, NULL, &current) != 0 ||
+        current.rlim_max == RLIM_INFINITY) {
+        return 1;
+    }
+
+    if (current.rlim_max > 8) {
+        struct rlimit lower = {
+            .rlim_cur = current.rlim_cur > 8 ? 8 : current.rlim_cur,
+            .rlim_max = 8,
+        };
+        errno = 0;
+        if (raw_prlimit64(0, RLIMIT_NOFILE, &lower, NULL) != 0) {
+            return 2;
+        }
+    }
+
+    struct rlimit before = {0};
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, NULL, &before) != 0 ||
+        before.rlim_max == RLIM_INFINITY) {
+        return 3;
+    }
+
+    struct rlimit raise = {
+        .rlim_cur = before.rlim_cur,
+        .rlim_max = before.rlim_max + 1,
+    };
+    struct rlimit old = {.rlim_cur = 0x579b, .rlim_max = 0x68ac};
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, &raise, &old) != -1 ||
+        errno != EPERM || old.rlim_cur != 0x579b ||
+        old.rlim_max != 0x68ac) {
+        return 4;
+    }
+
+    struct rlimit after = {0};
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, NULL, &after) != 0 ||
+        after.rlim_cur != before.rlim_cur ||
+        after.rlim_max != before.rlim_max) {
+        return 5;
+    }
+    return 0;
+}
+
+static int expect_initial_hard_limit_raise_allowed(void)
+{
+    struct rlimit original = {0};
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, NULL, &original) != 0) {
+        return 1;
+    }
+
+    const rlim_t safe_hard_limit = 1024;
+    rlim_t raised_max =
+        original.rlim_max == RLIM_INFINITY ||
+                original.rlim_max > safe_hard_limit
+            ? safe_hard_limit
+            : original.rlim_max;
+    if (raised_max == 0) {
+        return 2;
+    }
+    rlim_t lowered_max = raised_max > 1 ? raised_max / 2 : 0;
+    struct rlimit lower = {
+        .rlim_cur = original.rlim_cur > lowered_max ? lowered_max
+                                                    : original.rlim_cur,
+        .rlim_max = lowered_max,
+    };
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, &lower, NULL) != 0) {
+        return 3;
+    }
+    struct rlimit lowered = {0};
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, NULL, &lowered) != 0 ||
+        lowered.rlim_cur != lower.rlim_cur ||
+        lowered.rlim_max != lower.rlim_max) {
+        return 4;
+    }
+
+    struct rlimit raise = {
+        .rlim_cur = lower.rlim_cur,
+        .rlim_max = raised_max,
+    };
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, &raise, NULL) != 0) {
+        return 5;
+    }
+    struct rlimit verified = {0};
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, NULL, &verified) != 0 ||
+        verified.rlim_cur != raise.rlim_cur ||
+        verified.rlim_max != raise.rlim_max) {
+        return 6;
+    }
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, &original, NULL) != 0) {
+        return 7;
+    }
+    errno = 0;
+    if (raw_prlimit64(0, RLIMIT_NOFILE, NULL, &verified) != 0 ||
+        verified.rlim_cur != original.rlim_cur ||
+        verified.rlim_max != original.rlim_max) {
+        return 8;
+    }
+    return 0;
+}
+
+enum caller_namespace_failure {
+    CALLER_FAIL_INITIAL_ANCESTOR = 1U << 0,
+    CALLER_FAIL_CHILD_HARD_LIMIT = 1U << 1,
+    CALLER_FAIL_SAME_NAMESPACE = 1U << 2,
+    CALLER_FAIL_DESCENDANT = 1U << 3,
+    CALLER_FAIL_SIBLING = 1U << 4,
+    CALLER_FAIL_ID_MATCH = 1U << 5,
+    CALLER_FAIL_DROP_CAPABILITY = 1U << 6,
+};
+
+struct caller_namespace_context {
+    int created_fd;
+    int mapped_fd;
+    int ready_fd;
+    int go_fd;
+    int result_fd;
+    pid_t initial_target;
+    pid_t sibling_target;
+    struct rlimit sibling_limit;
+};
+
+static int exercise_allowed_prlimit(pid_t target);
+
+static int caller_namespace_main(
+    const struct caller_namespace_context *context)
+{
+    int local_ready[2];
+    int local_release[2];
+    int nested_ready[2];
+    int nested_map[2];
+    int nested_release[2];
+    char byte = 1;
+
+    if (unshare(CLONE_NEWUSER) != 0 || send_sync(context->created_fd) != 0 ||
+        receive_sync(context->mapped_fd) != 0) {
+        return 10;
+    }
+
+    if (pipe(local_ready) != 0 || pipe(local_release) != 0) {
+        return 11;
+    }
+    pid_t local = fork();
+    if (local == 0) {
+        close(local_ready[0]);
+        close(local_release[1]);
+        close(context->created_fd);
+        close(context->mapped_fd);
+        close(context->ready_fd);
+        close(context->go_fd);
+        close(context->result_fd);
+        struct credential_ids ids = {0};
+        if (set_credential_ids(&ids) != 0 ||
+            send_sync(local_ready[1]) != 0 ||
+            read_exact(local_release[0], &byte, 1) != 1) {
+            _exit(12);
+        }
+        close(local_ready[1]);
+        _exit(0);
+    }
+    close(local_ready[1]);
+    close(local_release[0]);
+    if (local < 0 || receive_sync(local_ready[0]) != 0) {
+        return 13;
+    }
+
+    if (pipe(nested_ready) != 0 || pipe(nested_map) != 0 ||
+        pipe(nested_release) != 0) {
+        return 14;
+    }
+    pid_t nested = fork();
+    if (nested == 0) {
+        close(nested_ready[0]);
+        close(nested_map[1]);
+        close(nested_release[1]);
+        close(context->created_fd);
+        close(context->mapped_fd);
+        close(context->ready_fd);
+        close(context->go_fd);
+        close(context->result_fd);
+        close(local_ready[0]);
+        close(local_release[1]);
+        if (unshare(CLONE_NEWUSER) != 0 ||
+            send_sync(nested_ready[1]) != 0 ||
+            receive_sync(nested_map[0]) != 0 ||
+            send_sync(nested_ready[1]) != 0 ||
+            read_exact(nested_release[0], &byte, 1) != 1) {
+            _exit(15);
+        }
+        close(nested_ready[1]);
+        _exit(0);
+    }
+    close(nested_ready[1]);
+    close(nested_map[0]);
+    close(nested_release[0]);
+    if (nested < 0 || receive_sync(nested_ready[0]) != 0 ||
+        configure_user_namespace(nested, "0 0 1\n", 1) != 0 ||
+        send_sync(nested_map[1]) != 0 ||
+        receive_sync(nested_ready[0]) != 0) {
+        return 16;
+    }
+    close(local_ready[0]);
+    close(nested_ready[0]);
+    close(nested_map[1]);
+
+    /*
+     * Keep real/saved UID 0 but make the caller EUID 1000. This differs from
+     * the nested namespace owner (0), so descendant authorization must use
+     * the restored effective CAP_SYS_RESOURCE rather than the owner rule.
+     */
+    struct credential_ids ids = {
+        .ruid = 0,
+        .euid = 1000,
+        .suid = 0,
+        .rgid = 1000,
+        .egid = 1000,
+        .sgid = 1000,
+    };
+    if (set_credential_ids(&ids) != 0) {
+        return 17;
+    }
+    uid_t ruid;
+    uid_t euid;
+    uid_t suid;
+    gid_t rgid;
+    gid_t egid;
+    gid_t sgid;
+    if (getresuid(&ruid, &euid, &suid) != 0 ||
+        getresgid(&rgid, &egid, &sgid) != 0 ||
+        ruid != 0 || euid != 1000 || suid != 0 ||
+        rgid != 1000 || egid != 1000 || sgid != 1000) {
+        return 18;
+    }
+    if (cap_set_sys_resource_effective(1) != 0) {
+        return 19;
+    }
+    struct prlimit_cap_data capabilities[2];
+    if (cap_read(capabilities) != 0 ||
+        !cap_has_sys_resource(capabilities, 0) ||
+        !cap_has_sys_resource(capabilities, 1)) {
+        return 20;
+    }
+    if (send_sync(context->ready_fd) != 0 ||
+        receive_sync(context->go_fd) != 0) {
+        return 21;
+    }
+
+    unsigned int failures = 0;
+    if (expect_cross_prlimit_denied(context->initial_target) != 0) {
+        failures |= CALLER_FAIL_INITIAL_ANCESTOR;
+    }
+    if (expect_child_hard_limit_raise_denied() != 0) {
+        failures |= CALLER_FAIL_CHILD_HARD_LIMIT;
+    }
+    if (exercise_allowed_prlimit(local) != 0) {
+        failures |= CALLER_FAIL_SAME_NAMESPACE;
+    }
+    if (exercise_allowed_prlimit(nested) != 0) {
+        failures |= CALLER_FAIL_DESCENDANT;
+    }
+    int sibling_denied_failure =
+        expect_cross_prlimit_denied(context->sibling_target);
+    if (sibling_denied_failure != 0) {
+        /*
+         * A broken flat-capability implementation can mutate the sibling
+         * while failing the denial oracle. Restore the known baseline while
+         * the erroneous capability is still effective so the independent
+         * UID/GID-match scenario starts from the same state.
+         */
+        struct rlimit restore = context->sibling_limit;
+        (void)raw_prlimit64(context->sibling_target, RLIMIT_NOFILE,
+                            &restore, NULL);
+        failures |= CALLER_FAIL_SIBLING;
+    }
+
+    if (setresuid(0, 0, 0) != 0 ||
+        setresgid(0, 0, 0) != 0 ||
+        cap_set_sys_resource_effective(0) != 0 ||
+        getresuid(&ruid, &euid, &suid) != 0 ||
+        getresgid(&rgid, &egid, &sgid) != 0 ||
+        ruid != 0 || euid != 0 || suid != 0 ||
+        rgid != 0 || egid != 0 || sgid != 0 ||
+        cap_read(capabilities) != 0 ||
+        cap_has_sys_resource(capabilities, 0)) {
+        failures |= CALLER_FAIL_DROP_CAPABILITY;
+    }
+    if (prlimit_read_matches(context->sibling_target, RLIMIT_NOFILE,
+                             &context->sibling_limit) != 0) {
+        failures |= CALLER_FAIL_ID_MATCH;
+    }
+
+    int result_written =
+        write_exact(context->result_fd, &failures, sizeof(failures));
+    byte = 1;
+    (void)write_exact(nested_release[1], &byte, 1);
+    (void)write_exact(local_release[1], &byte, 1);
+    close(nested_release[1]);
+    close(local_release[1]);
+    int status = 0;
+    if (wait_for_child(nested, &status) != 0 || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0 || wait_for_child(local, &status) != 0 ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
+        result_written != 0) {
+        return 22;
+    }
+    return 0;
+}
+
+struct identity_case {
+    struct credential_ids target;
+    struct credential_ids caller;
+    int allowed;
+    const char *description;
+};
+
+static int exercise_allowed_prlimit(pid_t target)
+{
+    struct rlimit current = {0};
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &current) != 0 ||
+        current.rlim_cur < 4) {
+        return 1;
+    }
+
+    struct rlimit first = {
+        .rlim_cur = current.rlim_cur - 1,
+        .rlim_max = current.rlim_max,
+    };
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &first, NULL) != 0) {
+        return 2;
+    }
+
+    struct rlimit second = {
+        .rlim_cur = current.rlim_cur - 2,
+        .rlim_max = current.rlim_max,
+    };
+    struct rlimit aliased = second;
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &aliased, &aliased) != 0 ||
+        aliased.rlim_cur != first.rlim_cur ||
+        aliased.rlim_max != first.rlim_max) {
+        return 3;
+    }
+
+    struct rlimit verified = {0};
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &verified) != 0 ||
+        verified.rlim_cur != second.rlim_cur ||
+        verified.rlim_max != second.rlim_max) {
+        return 4;
+    }
+
+    struct rlimit third = {
+        .rlim_cur = current.rlim_cur - 3,
+        .rlim_max = current.rlim_max,
+    };
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &third,
+                      (struct rlimit *)-1) != -1 ||
+        errno != EFAULT) {
+        return 5;
+    }
+
+    verified.rlim_cur = 0;
+    verified.rlim_max = 0;
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &verified) != 0 ||
+        verified.rlim_cur != third.rlim_cur ||
+        verified.rlim_max != third.rlim_max) {
+        return 6;
+    }
+    return 0;
+}
+
+static int exercise_denied_prlimit(pid_t target,
+                                   const struct rlimit *target_limit)
+{
+    int failures = 0;
+
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, (struct rlimit *)-1, NULL) != -1 ||
+        errno != EFAULT) {
+        failures |= 1;
+    }
+
+    struct rlimit old = {.rlim_cur = 0x1234, .rlim_max = 0x5678};
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, NULL, &old) != -1 ||
+        errno != EPERM ||
+        old.rlim_cur != 0x1234 || old.rlim_max != 0x5678) {
+        failures |= 2;
+    }
+
+    struct rlimit replacement = {
+        .rlim_cur = target_limit->rlim_cur > 1
+                        ? target_limit->rlim_cur - 1
+                        : target_limit->rlim_cur,
+        .rlim_max = target_limit->rlim_max,
+    };
+    old.rlim_cur = 0x9abc;
+    old.rlim_max = 0xdef0;
+    errno = 0;
+    if (raw_prlimit64(target, RLIMIT_NOFILE, &replacement, &old) != -1 ||
+        errno != EPERM ||
+        old.rlim_cur != 0x9abc || old.rlim_max != 0xdef0) {
+        failures |= 4;
+    }
+
+    old.rlim_cur = 0x1111;
+    old.rlim_max = 0x2222;
+    errno = 0;
+    if (raw_prlimit64(target, RLIM_NLIMITS, NULL, &old) != -1 ||
+        errno != EPERM ||
+        old.rlim_cur != 0x1111 || old.rlim_max != 0x2222) {
+        failures |= 8;
+    }
+    return failures;
+}
+
+static void run_identity_case(const struct identity_case *test_case)
+{
+    int ready[2];
+    int release[2];
+    pid_t target;
+    pid_t inspector;
+    int status;
+    char byte = 1;
+    struct rlimit target_before = {0};
+    int ready_result = 0;
+
+    if (pipe(ready) != 0) {
+        CHECK(0, "create prlimit identity ready pipe");
+        return;
+    }
+    if (pipe(release) != 0) {
+        close(ready[0]);
+        close(ready[1]);
+        CHECK(0, "create prlimit identity release pipe");
+        return;
+    }
+
+    target = fork();
+    CHECK(target >= 0, "fork prlimit identity target");
+    if (target == 0) {
+        close(ready[0]);
+        close(release[1]);
+        if (set_credential_ids(&test_case->target) != 0) {
+            _exit(10);
+        }
+        if (write_exact(ready[1], &byte, 1) != 0) {
+            _exit(11);
+        }
+        (void)read_exact(release[0], &byte, 1);
+        _exit(0);
+    }
+    if (target < 0) {
+        close(ready[0]);
+        close(ready[1]);
+        close(release[0]);
+        close(release[1]);
+        return;
+    }
+
+    close(ready[1]);
+    close(release[0]);
+    ready_result = read_exact(ready[0], &byte, 1);
+    close(ready[0]);
+    if (ready_result == 1) {
+        errno = 0;
+        ready_result =
+            raw_prlimit64(target, RLIMIT_NOFILE, NULL, &target_before) == 0;
+    }
+    CHECK(ready_result == 1, "prlimit identity target reaches its wait point");
+
+    inspector = ready_result == 1 ? fork() : -1;
+    if (inspector == 0) {
+        close(release[1]);
+        if (set_credential_ids(&test_case->caller) != 0) {
+            _exit(20);
+        }
+
+        /*
+         * CAP_KILL is cleared and the caller's effective UID matches one of
+         * the target ID slots, so kill permission succeeds even in the mixed
+         * identity cases that prlimit must deny.
+         */
+        errno = 0;
+        if (kill(target, 0) != 0) {
+            _exit(30);
+        }
+
+        int result = test_case->allowed
+                         ? exercise_allowed_prlimit(target)
+                         : exercise_denied_prlimit(target, &target_before);
+        _exit(result);
+    }
+
+    if (inspector >= 0) {
+        do {
+            status = 0;
+        } while (waitpid(inspector, &status, 0) == -1 && errno == EINTR);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              test_case->description);
+    } else {
+        CHECK(0, "fork prlimit identity inspector");
+    }
+
+    if (!test_case->allowed && ready_result == 1) {
+        struct rlimit target_after = {0};
+        errno = 0;
+        CHECK(raw_prlimit64(target, RLIMIT_NOFILE, NULL, &target_after) == 0 &&
+                  target_after.rlim_cur == target_before.rlim_cur &&
+                  target_after.rlim_max == target_before.rlim_max,
+              "denied cross-identity prlimit leaves target unchanged");
+    }
+
+    byte = 1;
+    (void)write_exact(release[1], &byte, 1);
+    close(release[1]);
+    do {
+        status = 0;
+    } while (waitpid(target, &status, 0) == -1 && errno == EINTR);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "prlimit identity target exits cleanly");
+}
+
+static void test_prlimit_identity_matrix(void)
+{
+    static const struct identity_case cases[] = {
+        {
+            .target = {1000, 1000, 1000, 2000, 2000, 2000},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 1,
+            .description = "all real/effective/saved IDs match for cross-process prlimit",
+        },
+        {
+            .target = {1000, 1001, 1002, 2000, 2001, 2002},
+            .caller = {0, 0, 0, 0, 0, 0},
+            .allowed = 1,
+            .description = "CAP_SYS_RESOURCE permits cross-identity prlimit",
+        },
+        {
+            /* kill matches effective/saved UID 1000; prlimit also needs real UID 1001. */
+            .target = {1001, 1000, 1000, 2000, 2000, 2000},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 0,
+            .description = "target real UID mismatch is denied despite kill permission",
+        },
+        {
+            /* kill matches real/saved UID 1000; prlimit also needs effective UID 1001. */
+            .target = {1000, 1001, 1000, 2000, 2000, 2000},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 0,
+            .description = "target effective UID mismatch is denied despite kill permission",
+        },
+        {
+            .target = {1000, 1000, 1001, 2000, 2000, 2000},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 0,
+            .description = "target saved UID mismatch is denied despite kill permission",
+        },
+        {
+            .target = {1000, 1000, 1000, 2000, 2001, 2000},
+            .caller = {1000, 1000, 1000, 2001, 2001, 2001},
+            .allowed = 0,
+            .description = "target real GID mismatch is denied despite kill permission",
+        },
+        {
+            .target = {1000, 1000, 1000, 2001, 2000, 2001},
+            .caller = {1000, 1000, 1000, 2001, 2001, 2001},
+            .allowed = 0,
+            .description = "target effective GID mismatch is denied despite kill permission",
+        },
+        {
+            .target = {1000, 1000, 1000, 2000, 2000, 2001},
+            .caller = {1000, 1000, 1000, 2000, 2000, 2000},
+            .allowed = 0,
+            .description = "target saved GID mismatch is denied despite kill permission",
+        },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        run_identity_case(&cases[i]);
+    }
+}
+
+static void test_prlimit_user_namespace_capabilities(void)
+{
+    int initial_ready[2];
+    int initial_release[2];
+    int sibling_created[2];
+    int sibling_map[2];
+    int sibling_ready[2];
+    int sibling_release[2];
+    int caller_created[2];
+    int caller_map[2];
+    int caller_ready[2];
+    int caller_go[2];
+    int caller_result[2];
+    pid_t initial_target = -1;
+    pid_t sibling_target = -1;
+    pid_t caller = -1;
+    int status = 0;
+    char byte = 1;
+    struct rlimit initial_limit = {0};
+    struct rlimit sibling_limit = {0};
+    struct rlimit caller_limit = {0};
+    struct prlimit_cap_data capabilities[2];
+    unsigned int caller_failures = 0;
+    int setup_ok = 1;
+    int caller_ready_for_go = 0;
+
+    CHECK(geteuid() == 0,
+          "user-namespace prlimit capability matrix starts as initial root");
+    CHECK(cap_read(capabilities) == 0 &&
+              cap_has_sys_resource(capabilities, 0) &&
+              cap_has_sys_resource(capabilities, 1),
+          "initial root holds effective and permitted CAP_SYS_RESOURCE");
+    if (geteuid() != 0 || cap_read(capabilities) != 0 ||
+        !cap_has_sys_resource(capabilities, 0) ||
+        !cap_has_sys_resource(capabilities, 1)) {
+        return;
+    }
+
+    if (pipe(initial_ready) != 0 || pipe(initial_release) != 0) {
+        CHECK(0, "create initial-namespace prlimit target pipes");
+        return;
+    }
+    initial_target = fork();
+    if (initial_target == 0) {
+        close(initial_ready[0]);
+        close(initial_release[1]);
+        struct credential_ids ids = {
+            .ruid = 1000,
+            .euid = 1000,
+            .suid = 1000,
+            .rgid = 2000,
+            .egid = 2000,
+            .sgid = 2000,
+        };
+        if (set_credential_ids(&ids) != 0 ||
+            send_sync(initial_ready[1]) != 0 ||
+            read_exact(initial_release[0], &byte, 1) != 1) {
+            _exit(30);
+        }
+        _exit(0);
+    }
+    CHECK(initial_target >= 0, "fork initial-namespace prlimit target");
+    if (initial_target < 0) {
+        close(initial_ready[0]);
+        close(initial_ready[1]);
+        close(initial_release[0]);
+        close(initial_release[1]);
+        return;
+    }
+    close(initial_ready[1]);
+    close(initial_release[0]);
+    setup_ok &= receive_sync(initial_ready[0]) == 0;
+    if (setup_ok) {
+        setup_ok &=
+            raw_prlimit64(initial_target, RLIMIT_NOFILE, NULL,
+                          &initial_limit) == 0;
+    }
+    CHECK(setup_ok,
+          "initial-namespace target reaches its identity wait point");
+
+    if (pipe(sibling_created) != 0 || pipe(sibling_map) != 0 ||
+        pipe(sibling_ready) != 0 || pipe(sibling_release) != 0) {
+        CHECK(0, "create sibling user-namespace pipes");
+        setup_ok = 0;
+    }
+    if (setup_ok) {
+        sibling_target = fork();
+        if (sibling_target == 0) {
+            close(initial_ready[0]);
+            close(initial_release[1]);
+            close(sibling_created[0]);
+            close(sibling_map[1]);
+            close(sibling_ready[0]);
+            close(sibling_release[1]);
+            if (unshare(CLONE_NEWUSER) != 0 ||
+                send_sync(sibling_created[1]) != 0 ||
+                receive_sync(sibling_map[0]) != 0 ||
+                send_sync(sibling_ready[1]) != 0 ||
+                read_exact(sibling_release[0], &byte, 1) != 1) {
+                _exit(31);
+            }
+            _exit(0);
+        }
+        CHECK(sibling_target >= 0, "fork sibling user-namespace target");
+        if (sibling_target < 0) {
+            setup_ok = 0;
+        } else {
+            close(sibling_created[1]);
+            close(sibling_map[0]);
+            close(sibling_ready[1]);
+            close(sibling_release[0]);
+            int created = receive_sync(sibling_created[0]) == 0;
+            int mapped =
+                created &&
+                configure_user_namespace(sibling_target, "0 0 1001\n", 1) ==
+                    0;
+            int map_sent = send_sync(sibling_map[1]) == 0;
+            int ready = map_sent && receive_sync(sibling_ready[0]) == 0;
+            setup_ok &= created && mapped && ready;
+            if (setup_ok) {
+                setup_ok &=
+                    raw_prlimit64(sibling_target, RLIMIT_NOFILE, NULL,
+                                  &sibling_limit) == 0;
+            }
+            CHECK(setup_ok,
+                  "sibling user-namespace target maps and reaches its wait point");
+        }
+    }
+
+    if (setup_ok &&
+        (pipe(caller_created) != 0 || pipe(caller_map) != 0 ||
+         pipe(caller_ready) != 0 || pipe(caller_go) != 0 ||
+         pipe(caller_result) != 0)) {
+        CHECK(0, "create caller user-namespace pipes");
+        setup_ok = 0;
+    }
+    if (setup_ok) {
+        caller = fork();
+        if (caller == 0) {
+            close(initial_ready[0]);
+            close(initial_release[1]);
+            close(sibling_created[0]);
+            close(sibling_map[1]);
+            close(sibling_ready[0]);
+            close(sibling_release[1]);
+            close(caller_created[0]);
+            close(caller_map[1]);
+            close(caller_ready[0]);
+            close(caller_go[1]);
+            close(caller_result[0]);
+            struct caller_namespace_context context = {
+                .created_fd = caller_created[1],
+                .mapped_fd = caller_map[0],
+                .ready_fd = caller_ready[1],
+                .go_fd = caller_go[0],
+                .result_fd = caller_result[1],
+                .initial_target = initial_target,
+                .sibling_target = sibling_target,
+                .sibling_limit = sibling_limit,
+            };
+            _exit(caller_namespace_main(&context));
+        }
+        CHECK(caller >= 0, "fork user-namespace prlimit caller");
+        if (caller < 0) {
+            setup_ok = 0;
+        } else {
+            close(caller_created[1]);
+            close(caller_map[0]);
+            close(caller_ready[1]);
+            close(caller_go[0]);
+            close(caller_result[1]);
+            int created = receive_sync(caller_created[0]) == 0;
+            int mapped =
+                created &&
+                configure_user_namespace(caller, "0 0 1001\n", 1) == 0;
+            int map_sent = send_sync(caller_map[1]) == 0;
+            int ready = map_sent && receive_sync(caller_ready[0]) == 0;
+            caller_ready_for_go = ready;
+            setup_ok &= created && mapped && ready;
+            CHECK(setup_ok,
+                  "caller user namespace maps and reaches its capability matrix");
+        }
+    }
+
+    if (setup_ok) {
+        setup_ok &=
+            raw_prlimit64(caller, RLIMIT_NOFILE, NULL, &caller_limit) == 0;
+        CHECK(setup_ok,
+              "capture the caller target limit before authorization probes");
+    }
+    if (setup_ok) {
+        CHECK(prlimit_read_matches(caller, RLIMIT_NOFILE, &caller_limit) == 0,
+              "initial-namespace CAP_SYS_RESOURCE reaches a descendant target");
+
+        int cleared = cap_set_sys_resource_effective(0);
+        CHECK(cleared == 0,
+              "clear initial root effective CAP_SYS_RESOURCE for owner-rule probe");
+        if (cleared == 0) {
+            CHECK(prlimit_read_matches(caller, RLIMIT_NOFILE,
+                                       &caller_limit) == 0,
+                  "direct user-namespace owner retains CAP_SYS_RESOURCE authority");
+        }
+        int restored = cap_set_sys_resource_effective(1);
+        CHECK(restored == 0,
+              "restore initial root effective CAP_SYS_RESOURCE");
+        setup_ok &= cleared == 0 && restored == 0;
+    }
+
+    if (caller >= 0 && caller_ready_for_go) {
+        setup_ok &= send_sync(caller_go[1]) == 0;
+    }
+    if (caller >= 0) {
+        if (setup_ok) {
+            setup_ok &=
+                read_exact(caller_result[0], &caller_failures,
+                           sizeof(caller_failures)) == 1;
+        }
+        if (wait_for_child(caller, &status) != 0 || !WIFEXITED(status) ||
+            WEXITSTATUS(status) != 0) {
+            setup_ok = 0;
+        }
+        CHECK(setup_ok, "user-namespace prlimit caller completes its matrix");
+        if (setup_ok) {
+            CHECK((caller_failures & CALLER_FAIL_INITIAL_ANCESTOR) == 0,
+                  "child-namespace capability cannot reach the initial namespace");
+            CHECK((caller_failures & CALLER_FAIL_CHILD_HARD_LIMIT) == 0,
+                  "child-namespace capability cannot raise its own hard limit");
+            CHECK((caller_failures & CALLER_FAIL_SAME_NAMESPACE) == 0,
+                  "same-user-namespace capability permits cross-identity prlimit");
+            CHECK((caller_failures & CALLER_FAIL_DESCENDANT) == 0,
+                  "ancestor user-namespace capability reaches a nested target");
+            CHECK((caller_failures & CALLER_FAIL_SIBLING) == 0,
+                  "sibling user-namespace capability cannot reach its peer");
+            CHECK((caller_failures & CALLER_FAIL_ID_MATCH) == 0,
+                  "matching UID/GID families permit cross-user-namespace prlimit");
+            CHECK((caller_failures & CALLER_FAIL_DROP_CAPABILITY) == 0,
+                  "caller capability fixture clears its effective CAP_SYS_RESOURCE");
+        }
+    }
+
+    if (initial_target > 0) {
+        CHECK(prlimit_read_matches(initial_target, RLIMIT_NOFILE,
+                                   &initial_limit) == 0,
+              "denied descendant access leaves the initial-namespace target unchanged");
+        (void)send_sync(initial_release[1]);
+        CHECK(wait_for_child(initial_target, &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "initial-namespace prlimit target exits cleanly");
+    }
+    if (sibling_target > 0) {
+        CHECK(prlimit_read_matches(sibling_target, RLIMIT_NOFILE,
+                                   &sibling_limit) == 0,
+              "denied sibling access leaves the sibling target unchanged");
+        (void)send_sync(sibling_release[1]);
+        CHECK(wait_for_child(sibling_target, &status) == 0 &&
+                  WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "sibling user-namespace target exits cleanly");
+    }
+
+    CHECK(expect_initial_hard_limit_raise_allowed() == 0,
+          "initial-namespace CAP_SYS_RESOURCE may raise a hard limit");
+
+    if (initial_target > 0) {
+        close(initial_ready[0]);
+        close(initial_release[1]);
+    }
+    if (sibling_target > 0) {
+        close(sibling_created[0]);
+        close(sibling_map[1]);
+        close(sibling_ready[0]);
+        close(sibling_release[1]);
+    }
+    if (caller > 0) {
+        close(caller_created[0]);
+        close(caller_map[1]);
+        close(caller_ready[0]);
+        close(caller_go[1]);
+        close(caller_result[0]);
+    }
+}
+
+static void test_prlimit_pointer_order(void)
+{
+    struct rlimit current = {0};
+    pid_t missing = (pid_t)0x7fffffff;
+
+    CHECK_RET(getrlimit(RLIMIT_NOFILE, &current), 0,
+              "query NOFILE for prlimit pointer-order checks");
+
+    errno = 0;
+    CHECK(raw_prlimit64(missing, RLIMIT_NOFILE, (struct rlimit *)-1,
+                        NULL) == -1 &&
+              errno == EFAULT,
+          "prlimit copies new_limit before resolving the pid");
+
+    errno = 0;
+    CHECK(raw_prlimit64(missing, RLIMIT_NOFILE, &current, NULL) == -1 &&
+              errno == ESRCH,
+          "valid new_limit reaches missing-pid resolution and returns ESRCH");
+
+    errno = 0;
+    CHECK(raw_prlimit64(getpid(), RLIM_NLIMITS, (struct rlimit *)-1,
+                        NULL) == -1 &&
+              errno == EFAULT,
+          "invalid new_limit is reported before resource validation");
+}
+
 int main(void)
 {
     TEST_START("prlimit64 enforcement");
+    signal(SIGPIPE, SIG_IGN);
+    test_prlimit_pointer_order();
+    test_prlimit_identity_matrix();
+    test_prlimit_user_namespace_capabilities();
     CHECK(test_rttime_soft_limit() == 0,
           "RTTIME advances the shared limit and queues a process SIGXCPU");
 

@@ -125,9 +125,11 @@ impl NsProxy {
         self.net_ns = Arc::new(RawSpinLock::new(new_inner));
     }
 
-    pub fn unshare_user(&mut self) {
-        let new_inner = self.user_ns.lock_irqsave().clone_ns();
+    pub fn unshare_user(&mut self, owner_uid: u32) -> crate::StarryResult<()> {
+        let parent = self.user_ns.clone();
+        let new_inner = UserNamespace::new_child(parent, owner_uid)?;
         self.user_ns = Arc::new(RawSpinLock::new(new_inner));
+        Ok(())
     }
 
     pub fn unshare_cgroup(&mut self, root: Arc<CgroupNode>) {
