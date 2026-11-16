@@ -134,6 +134,17 @@ int main(void) {
     CHECK(syscall(SYS_ioctl, fd, 0x5634, 0) == 0);
     CHECK(syscall(SYS_ioctl, fd, 0x5630, 0) == 0); /* DESTROY_CHN */
     CHECK(close(fd) == 0);
-    puts("STARRY_VDEC_PASSED");
+    static const char passed[] = "\nSTARRY_VDEC_PASSED\n";
+    size_t sent = 0;
+    while (sent < sizeof(passed) - 1) {
+        ssize_t n = write(STDOUT_FILENO, passed + sent, sizeof(passed) - 1 - sent);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            CHECK(0);
+        }
+        sent += (size_t)n;
+    }
     return 0;
 }

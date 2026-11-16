@@ -36,10 +36,10 @@ host-test = [
 ]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
-std-compat = ["ax-alloc/global-allocator", "ax-runtime/std-compat"]
+std-compat = ["dep:ax-posix-api", "ax-alloc/global-allocator", "ax-runtime/std-compat"]
 
 # Multicore
-smp = ["ax-runtime/smp", "ax-posix-api/smp"]
+smp = ["ax-runtime/smp", "ax-posix-api?/smp"]
 
 # Floating point/SIMD
 fp-simd = ["ax-hal/fp-simd", "ax-runtime/fp-simd"]
@@ -59,13 +59,13 @@ wake-ipi = ["ax-runtime/wake-ipi"]
 ext-ld = ["ax-runtime/ext-ld"]
 
 # Memory
-alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
+alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api?/alloc"]
 paging = ["alloc", "ax-runtime/paging"]
 # Request kernel TLS; `uspace` takes precedence and disables kernel TLS.
 tls = ["ax-runtime/tls"]
 
 # Scheduler configuration
-lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep"]
+lockdep = ["ax-posix-api?/lockdep", "ax-runtime/lockdep"]
 qperf-metrics = ["ax-runtime/qperf-metrics"]
 task-ext = []
 tracepoint-hooks = []
@@ -73,7 +73,7 @@ tracepoint-hooks = []
 # File system
 fs = [
     "ax-api/fs",
-    "ax-posix-api/fs",
+    "ax-posix-api?/fs",
     "ax-runtime/fs",
     "fd",
 ]
@@ -83,7 +83,7 @@ fatfs = ["fs", "ax-runtime/fatfs"]
 # Networking
 net = [
     "ax-api/net",
-    "ax-posix-api/net",
+    "ax-posix-api?/net",
     "ax-runtime/net",
     "ax-driver/virtio-net",
     "fd",
@@ -93,11 +93,11 @@ dns = ["net"]
 
 # libc compatibility surface used when ax-std is linked as fake libc for Rust std.
 fd = [
-  "ax-posix-api/fd",
-  "ax-posix-api/poll",
-  "ax-posix-api/pipe",
-  "ax-posix-api/epoll",
-  "ax-posix-api/eventfd",
+  "ax-posix-api?/fd",
+  "ax-posix-api?/poll",
+  "ax-posix-api?/pipe",
+  "ax-posix-api?/epoll",
+  "ax-posix-api?/eventfd",
 ]
 
 # Driver feature forwards used by std-aware apps that depend on `axstd` directly.
@@ -130,7 +130,7 @@ ax-hal.workspace = true
 ax-io.workspace = true
 ax-lazyinit.workspace = true
 ax-percpu.workspace = true
-ax-posix-api.workspace = true
+ax-posix-api = { workspace = true, optional = true }
 ax-runtime.workspace = true
 libc.workspace = true
 syscalls.workspace = true

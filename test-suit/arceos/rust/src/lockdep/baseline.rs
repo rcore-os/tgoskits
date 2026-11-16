@@ -248,6 +248,7 @@ fn mixed_ms_two_task_abba() {
 }
 
 fn vfs_cache_single_task_abba() {
+    let credentials = MutationCredentials::root();
     let filesystem = ax_fs_ng::MemoryFs::new();
     let mount = Mountpoint::new_root(&filesystem);
     let dir = mount.root_location();
@@ -257,10 +258,18 @@ fn vfs_cache_single_task_abba() {
         NodePermission::default(),
         0,
         0,
+        &credentials,
     )
     .unwrap();
     let old = dir
-        .create("old", NodeType::Directory, NodePermission::default(), 0, 0)
+        .create(
+            "old",
+            NodeType::Directory,
+            NodePermission::default(),
+            0,
+            0,
+            &credentials,
+        )
         .unwrap();
 
     {
@@ -268,8 +277,7 @@ fn vfs_cache_single_task_abba() {
         let _child = dir.lookup_no_follow("child").unwrap();
     }
 
-    dir.rename("old", &dir, "new", &MutationCredentials::root())
-        .unwrap();
+    dir.rename("old", &dir, "new", &credentials).unwrap();
     let renamed = dir.lookup_no_follow("new").unwrap();
     assert!(renamed.entry().ptr_eq(old.entry()));
     assert!(matches!(

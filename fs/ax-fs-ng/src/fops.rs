@@ -3,12 +3,13 @@ use core::time::Duration;
 
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{
-    FileRangeOperation, Metadata, MetadataUpdate, NodePermission, NodeType, PreallocationMode,
-    VfsError, VfsResult,
+    FileRangeOperation, Location, Metadata, MetadataUpdate, NodePermission, NodeType,
+    PreallocationMode, VfsError, VfsResult,
 };
 
 use crate::{
-    highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context},
+    fs_core::ReadDir,
+    highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, OpenResult, current_fs_context},
     io_error_to_vfs_error,
 };
 
@@ -256,7 +257,44 @@ impl File {
     }
 }
 
+/// Result of opening a path through [`open_at`].
+pub enum OpenEntry {
+    /// Opened regular file or character/block/FIFO node.
+    File(File),
+    /// Opened directory handle.
+    Directory(Directory),
+}
+
+/// Immutable, cloneable handle to an open VFS directory.
+#[derive(Clone)]
+pub struct DirHandle(Location);
+
+impl DirHandle {
+    pub(crate) fn location(&self) -> &Location {
+        &self.0
+    }
+}
+
+/// Opens a file or directory relative to `dir` (or the current working directory when `None`).
+pub fn open_at(
+    dir: Option<&DirHandle>,
+    path: &str,
+    opts: &OpenOptions,
+    directory_only: bool,
+    credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+) -> VfsResult<OpenEntry> {
+    let mut core_opts = opts.to_core();
+    core_opts.directory(directory_only);
+    let result =
+        crate::api::with_at_context(dir, path, |ctx| core_opts.open(ctx, path, credentials))?;
+    match result {
+        OpenResult::File(inner) => Ok(OpenEntry::File(File { inner })),
+        OpenResult::Dir(location) => Ok(OpenEntry::Directory(Directory::from_location(location)?)),
+    }
+}
+
 pub struct Directory {
+    location: Location,
     entries: Vec<DirEntry>,
     cursor: usize,
 }
@@ -272,22 +310,37 @@ impl Directory {
         {
             return Err(VfsError::InvalidInput);
         }
-        let entries = {
-            let fs_context = current_fs_context();
-            let ctx = fs_context.lock();
-            let mut entries = Vec::new();
-            for entry in ctx.read_dir(path)? {
-                let entry = entry?;
-                entries.push(DirEntry {
-                    name: entry.name,
-                    ty: entry.node_type,
-                    ino: entry.ino,
-                    next_offset: entry.offset,
-                });
-            }
-            Ok::<_, VfsError>(entries)
-        }?;
-        Ok(Self { entries, cursor: 0 })
+        let location = current_fs_context().lock().resolve(path)?;
+        Self::from_location(location)
+    }
+
+    pub(crate) fn from_location(location: Location) -> VfsResult<Self> {
+        location.check_is_dir()?;
+        let mut entries = Vec::new();
+        for entry in ReadDir::from_location(location.clone())? {
+            let entry = entry?;
+            entries.push(DirEntry {
+                name: entry.name,
+                ty: entry.node_type,
+                ino: entry.ino,
+                next_offset: entry.offset,
+            });
+        }
+        Ok(Self {
+            location,
+            entries,
+            cursor: 0,
+        })
+    }
+
+    /// Returns metadata for the underlying directory object.
+    pub fn get_attr(&self) -> VfsResult<FileAttr> {
+        self.location.metadata()
+    }
+
+    /// Returns a cloneable handle to the underlying VFS directory location.
+    pub fn dir_handle(&self) -> DirHandle {
+        DirHandle(self.location.clone())
     }
 
     pub fn read_dir(&mut self, dirents: &mut [DirEntry]) -> VfsResult<usize> {
@@ -393,9 +446,14 @@ mod directory_tests {
         }
     }
 
+    fn test_location() -> Location {
+        axfs_ng_vfs::Mountpoint::new_root(&crate::MemoryFs::new()).root_location()
+    }
+
     #[test]
     fn peek_does_not_advance_until_output_is_committed() {
         let mut directory = Directory {
+            location: test_location(),
             entries: vec![entry("first", 1), entry("second", 2)],
             cursor: 0,
         };
@@ -418,6 +476,7 @@ mod directory_tests {
     #[test]
     fn seek_to_shared_htree_cookie_restarts_the_collision_chain() {
         let mut directory = Directory {
+            location: test_location(),
             entries: vec![
                 entry("before", 10),
                 entry("collision-a", 10),

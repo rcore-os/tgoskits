@@ -68,8 +68,9 @@ impl NodeOps for FatFileNode {
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         let mut guard = self.state.fs.lock();
-        update_file_times(self.file(&mut guard)?, update.atime, update.mtime);
-        Ok(())
+        let file = self.file(&mut guard)?;
+        update_file_times(file, update.atime, update.mtime);
+        file.flush().map_err(into_vfs_err)
     }
 
     fn filesystem(&self) -> &dyn FilesystemOps {
@@ -128,6 +129,9 @@ impl FileNodeOps for FatFileNode {
             total += count;
             buf = &buf[count..];
         }
+        if total > 0 {
+            file.flush().map_err(into_vfs_err)?;
+        }
         Ok(total)
     }
 
@@ -136,6 +140,9 @@ impl FileNodeOps for FatFileNode {
         let file = self.file(&mut guard)?;
         file.seek(SeekFrom::End(0)).map_err(into_vfs_err)?;
         let written = file.write(buf).map_err(into_vfs_err)?;
+        if written > 0 {
+            file.flush().map_err(into_vfs_err)?;
+        }
         Ok((written, file.size().unwrap_or(0) as u64))
     }
 
@@ -145,10 +152,11 @@ impl FileNodeOps for FatFileNode {
         let file = self.file(&mut guard)?;
         if len <= file.size().unwrap_or(0) as u64 {
             file.seek(SeekFrom::Start(len)).map_err(into_vfs_err)?;
-            file.truncate().map_err(into_vfs_err)
+            file.truncate().map_err(into_vfs_err)?;
         } else {
-            grow_file(block_size, file, len)
+            grow_file(block_size, file, len)?;
         }
+        file.flush().map_err(into_vfs_err)
     }
 }
 

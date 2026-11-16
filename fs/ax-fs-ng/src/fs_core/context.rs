@@ -921,15 +921,7 @@ impl FsContext {
 
     /// Returns an iterator over the entries in a directory.
     pub fn read_dir(&self, path: impl AsRef<Path>) -> VfsResult<ReadDir> {
-        let dir = self.resolve(path)?;
-        let state = dir.open_directory_read_state()?;
-        Ok(ReadDir {
-            dir,
-            state,
-            buf: VecDeque::new(),
-            cursor: DirectoryCursor::START,
-            ended: false,
-        })
+        ReadDir::from_location(self.resolve(path)?)
     }
 
     /// Check one DAC permission class for a filesystem location.
@@ -1440,6 +1432,17 @@ impl ReadDir {
     /// Maximum number of entries to buffer per `read_dir` syscall.
     // TODO: tune this
     pub const BUF_SIZE: usize = 128;
+
+    pub(crate) fn from_location(dir: Location) -> VfsResult<Self> {
+        let state = dir.open_directory_read_state()?;
+        Ok(Self {
+            dir,
+            state,
+            buf: VecDeque::new(),
+            cursor: DirectoryCursor::START,
+            ended: false,
+        })
+    }
 }
 
 impl Iterator for ReadDir {

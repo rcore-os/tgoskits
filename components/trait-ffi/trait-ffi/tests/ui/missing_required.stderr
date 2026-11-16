@@ -8,5 +8,3 @@ error[E0046]: not all trait items implemented, missing: `read`
 3 | struct Provider;
 4 | interface::impl_trait! { impl Interface for Provider {} }
   | --------------------------------------------------------- in this macro invocation
-  |
-  = note: this error originates in the macro `interface::impl_trait` (in Nightly builds, run with -Z macro-backtrace for more info)

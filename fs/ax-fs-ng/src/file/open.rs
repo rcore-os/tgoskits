@@ -146,7 +146,6 @@ impl OpenOptions {
     }
 
     /// Sets the option to open directory instead.
-    #[cfg(feature = "vfs")]
     pub fn directory(&mut self, directory: bool) -> &mut Self {
         self.directory = directory;
         self

@@ -2,7 +2,7 @@
 
 set -eu
 
-TOOLCHAIN="nightly-2026-09-04"
+TOOLCHAIN="nightly-2026-11-13"
 HOST_TRIPLE="x86_64-unknown-linux-musl"
 TOOLCHAIN_DIR_NAME="${TOOLCHAIN}-${HOST_TRIPLE}"
 RUSTUP_TOOLCHAIN="starry-selfhost-${TOOLCHAIN#nightly-}-${HOST_TRIPLE}"
