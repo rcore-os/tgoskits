@@ -260,12 +260,15 @@ fn apply_entry(
         if ty != NodeType::Directory {
             return Err(InitramfsError::InvalidPath);
         }
-        context.root_dir().update_metadata(MetadataUpdate {
-            mode: Some(mode),
-            owner: Some((entry.uid, entry.gid)),
-            mtime: Some(Duration::from_secs(entry.mtime as u64)),
-            ..MetadataUpdate::default()
-        })?;
+        axfs_ng_vfs::TrustedInitialization::kernel().restore_metadata(
+            context.root_dir(),
+            MetadataUpdate {
+                mode: Some(mode),
+                owner: Some((entry.uid, entry.gid)),
+                mtime: Some(Duration::from_secs(entry.mtime as u64)),
+                ..MetadataUpdate::default()
+            },
+        )?;
         return Ok(());
     }
     let (parent_path, leaf) = path.rsplit_once('/').ok_or(InitramfsError::InvalidPath)?;
@@ -334,14 +337,17 @@ fn apply_entry(
     if linked_from.is_some() && ty == NodeType::RegularFile && !entry.data.is_empty() {
         write_file(context, &path, entry.data, true)?;
     }
-    location.update_metadata(MetadataUpdate {
-        mode: Some(mode),
-        owner: Some((entry.uid, entry.gid)),
-        rdev: matches!(ty, NodeType::CharacterDevice | NodeType::BlockDevice)
-            .then(|| DeviceId::new(entry.rdev_major, entry.rdev_minor)),
-        mtime: Some(Duration::from_secs(entry.mtime as u64)),
-        ..MetadataUpdate::default()
-    })?;
+    axfs_ng_vfs::TrustedInitialization::kernel().restore_metadata(
+        &location,
+        MetadataUpdate {
+            mode: Some(mode),
+            owner: Some((entry.uid, entry.gid)),
+            rdev: matches!(ty, NodeType::CharacterDevice | NodeType::BlockDevice)
+                .then(|| DeviceId::new(entry.rdev_major, entry.rdev_minor)),
+            mtime: Some(Duration::from_secs(entry.mtime as u64)),
+            ..MetadataUpdate::default()
+        },
+    )?;
     Ok(())
 }
 
@@ -574,15 +580,15 @@ mod tests {
                 b"linked",
                 false,
             );
-            add_entry(&mut built_in, "bin/init", 0o100755, 3, 2, b"hello", false);
-            add_entry(&mut built_in, "bin/init-copy", 0o100755, 3, 2, &[], false);
+            add_entry(&mut built_in, "bin/init", 0o106755, 3, 2, b"hello", false);
+            add_entry(&mut built_in, "bin/init-copy", 0o106755, 3, 2, &[], false);
             add_entry(&mut built_in, "short-a", 0o100644, 8, 2, b"ABCDEFGH", false);
             add_entry(&mut built_in, "short-b", 0o100644, 8, 2, b"WXYZ", false);
             finish(&mut built_in, false);
 
             let mut external = Vec::new();
             add_entry(&mut external, "bin", 0o100644, 9, 1, b"blocked", true);
-            add_entry(&mut external, "bin/init", 0o100755, 5, 1, b"updated", true);
+            add_entry(&mut external, "bin/init", 0o106755, 5, 1, b"updated", true);
             add_entry(&mut external, "init", 0o120777, 4, 1, b"bin/init", true);
             finish(&mut external, true);
             let mut combined = built_in.clone();
@@ -603,7 +609,7 @@ mod tests {
             let copy = context.metadata("/bin/init-copy").unwrap();
             assert_eq!(init.inode, copy.inode);
             assert_eq!(init.nlink, 2);
-            assert_eq!(init.mode.bits() & 0o777, 0o755);
+            assert_eq!(init.mode.bits() & 0o7777, 0o6755);
             assert_eq!((init.uid, init.gid), (12, 34));
             assert!(context.resolve("/bin").unwrap().is_dir());
             let short = OpenOptions::new()
@@ -631,6 +637,20 @@ mod tests {
             let alias = context.resolve_no_follow("/bin-alias-2").unwrap();
             assert_eq!(alias.metadata().unwrap().node_type, NodeType::Symlink);
             assert_eq!(alias.read_link().unwrap(), "bin");
+            assert_eq!(alias.metadata().unwrap().mtime, Duration::from_secs(42));
+            fs.set_readonly(true).unwrap();
+            assert_eq!(
+                axfs_ng_vfs::TrustedInitialization::kernel().restore_metadata(
+                    &alias,
+                    MetadataUpdate {
+                        owner: Some((90, 91)),
+                        ..Default::default()
+                    },
+                ),
+                Err(VfsError::ReadOnlyFilesystem),
+            );
+            let actual = alias.metadata().unwrap();
+            assert_eq!((actual.uid, actual.gid), (12, 34));
         });
     }
 

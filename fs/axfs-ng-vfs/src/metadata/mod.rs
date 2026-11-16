@@ -1,13 +1,14 @@
 //! Current-inode metadata intentions and the fixed authorization protocol.
 
 mod authorize;
+mod restore;
 
 use core::time::Duration;
 
 use crate::{
-    Location, Metadata, MutationCredentials, MutationRetire, NamespaceAdmission,
-    NamespaceCompletion, NamespaceOperationContext, NamespaceOutcome, NamespaceState,
-    NodePermission, PreparedWrite, VfsResult,
+    DeviceId, Location, Metadata, MetadataUpdate, MutationCredentials, MutationRetire,
+    NamespaceAdmission, NamespaceCompletion, NamespaceOperationContext, NamespaceOutcome,
+    NamespaceState, NodePermission, PreparedWrite, VfsResult,
 };
 
 /// An inode timestamp intention, resolved only inside the real owner lock.
@@ -30,6 +31,28 @@ pub enum MetadataChange {
         atime: TimeChange,
         mtime: TimeChange,
     },
+}
+
+/// Internal origin is selected by a capability-bearing factory, never a flag.
+#[derive(Clone)]
+pub(crate) enum MetadataIntent {
+    User(MetadataChange),
+    Initialization(MetadataUpdate),
+}
+
+impl MetadataIntent {
+    pub(crate) fn is_empty(&self) -> bool {
+        match self {
+            Self::User(change) => change.is_empty(),
+            Self::Initialization(update) => {
+                update.mode.is_none()
+                    && update.owner.is_none()
+                    && update.rdev.is_none()
+                    && update.atime.is_none()
+                    && update.mtime.is_none()
+            }
+        }
+    }
 }
 
 impl MetadataChange {
@@ -64,6 +87,7 @@ pub struct AuthorizedMetadataChange<'a> {
     gid: Option<u32>,
     atime: Option<Duration>,
     mtime: Option<Duration>,
+    rdev: Option<DeviceId>,
     ctime: Duration,
 }
 
@@ -93,6 +117,11 @@ impl AuthorizedMetadataChange<'_> {
         self.mtime
     }
 
+    /// Returns the approved initialization of a special inode's device number.
+    pub const fn rdev(&self) -> Option<DeviceId> {
+        self.rdev
+    }
+
     /// Returns the real clock value selected for this locked attempt.
     pub const fn ctime(&self) -> Duration {
         self.ctime
@@ -116,6 +145,9 @@ impl AuthorizedMetadataChange<'_> {
         if let Some(mtime) = self.mtime {
             metadata.mtime = mtime;
         }
+        if let Some(rdev) = self.rdev {
+            metadata.rdev = rdev;
+        }
         metadata.ctime = self.ctime;
     }
 }
@@ -125,7 +157,7 @@ impl AuthorizedMetadataChange<'_> {
 /// receiver's real owner, not a substituted inode.
 pub struct MetadataRequest<'a> {
     target: Location,
-    change: MetadataChange,
+    intent: MetadataIntent,
     credentials: MutationCredentials<'a>,
     context: &'a NamespaceOperationContext<'a>,
 }
@@ -150,10 +182,15 @@ impl<'a> MetadataRequest<'a> {
     /// Classifies the original intent for native namespace exclusion.
     /// Chown(None, None) can still clear setid bits; Times never changes owners.
     pub const fn changes_permissions_or_ownership(&self) -> bool {
-        matches!(
-            self.change,
-            MetadataChange::Chmod(_) | MetadataChange::Chown { .. }
-        )
+        match &self.intent {
+            MetadataIntent::User(change) => matches!(
+                change,
+                MetadataChange::Chmod(_) | MetadataChange::Chown { .. }
+            ),
+            MetadataIntent::Initialization(update) => {
+                update.mode.is_some() || update.owner.is_some() || update.rdev.is_some()
+            }
+        }
     }
 
     /// One fresh observe/authorize/commit attempt. Retrying backends must end
@@ -191,12 +228,12 @@ impl<'a> MetadataRequest<'a> {
 pub(crate) fn dispatch(
     context: &NamespaceOperationContext<'_>,
     target: &Location,
-    change: MetadataChange,
+    intent: MetadataIntent,
     credentials: &MutationCredentials<'_>,
 ) -> NamespaceCompletion<Metadata> {
     let request = MetadataRequest {
         target: target.clone(),
-        change,
+        intent,
         credentials: *credentials,
         context,
     };
@@ -214,7 +251,15 @@ impl Location {
         change: MetadataChange,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<()> {
-        if change.is_empty() {
+        self.run_metadata(MetadataIntent::User(change), credentials)
+    }
+
+    fn run_metadata(
+        &self,
+        intent: MetadataIntent,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        if intent.is_empty() {
             return Ok(());
         }
         let write = PreparedWrite::acquire(self)?;
@@ -223,7 +268,7 @@ impl Location {
                 let scope = command.attempt::<Metadata>()?;
                 {
                     let context = scope.context();
-                    scope.change_metadata(&context, self, change, credentials)?;
+                    scope.apply_metadata_intent(&context, self, intent.clone(), credentials)?;
                 }
                 let outcome = scope.finish().unwrap_or_else(|_| {
                     unreachable!("fixed metadata dispatch binds the admitted owner")

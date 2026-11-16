@@ -3337,6 +3337,21 @@ Linux 的全 OMIT 早返回顺序；只有已确认有效的命令进入 inode �
 后者仍用当前访问者和 mounter 双层语义检查；不默认 root。
 `MetadataUpdate` 不能作为对外长期无凭据修改接口留存。
 
+初始化分支由 `TrustedInitialization::restore_metadata(target, update)` 接收，
+调用者必须显式持有现有初始化能力。它借用真实 PreparedWrite，并通过同一
+Command/Scope、MetadataRequest、LockedMetadataAttempt 及四阶段完成提交。
+VFS 私有 MetadataIntent 区分 User 与 Initialization；syscall 仍只能提交公开的
+MetadataChange，不新增“跳过权限”flag，也不把普通 uid 0 识别成初始化来源。
+恢复分支原样保留参与字段，允许初始化符号链接权限及 SUID/SGID，不再套用用户
+chown 的清位或 chmod 的组过滤。设备号仍须与实际特殊 inode 类型匹配，后端的
+能力拒绝、错误、持久化及 Applied/Uncertain 不因初始化来源改变。
+
+initramfs 的 root 和普通条目属性恢复使用该显式入口，创建设备号继续由
+CreateContent 在名称发布前设置。初始化能力可作用于获准导入中已有的 inode，
+因此不冒充未发布对象证明。Overlay 不能调用 kernel 初始化能力处理运行期请求；
+它仍需由真实分层 owner 派生并绑定新暂存实体的独立恢复来源。当前迁移不为它
+提供 root 回退，也不因迁移初始化分支宣称 raw 接口已全部删除。
+
 ### 6.5 路径句柄的入口差异
 
 `O_PATH` 描述保留路径引用，不具有普通 fd 操作能力；但使用该路径发起另一次

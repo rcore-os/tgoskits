@@ -129,6 +129,45 @@ fn metadata_completion_failures_stop_retry_and_preserve_applied_observation() {
     // A real pressure I/O error replaces only Retry's internal WouldBlock.
     let (filesystem, root, _) = super::sync_policy::background_mount();
     let privileged = MutationCredentials::root();
+    let device = root
+        .create_initialized(
+            "restored-device",
+            axfs_ng_vfs::CreateAttributes {
+                content: axfs_ng_vfs::CreateContent::Node(
+                    NodeType::CharacterDevice,
+                    axfs_ng_vfs::DeviceId::new(1, 3),
+                ),
+                permission: mode(0o600),
+            },
+            &privileged,
+        )
+        .unwrap();
+    axfs_ng_vfs::TrustedInitialization::kernel()
+        .restore_metadata(
+            &device,
+            axfs_ng_vfs::MetadataUpdate {
+                mode: Some(mode(0o6750)),
+                owner: Some((77, 88)),
+                rdev: Some(axfs_ng_vfs::DeviceId::new(1, 5)),
+                atime: Some(core::time::Duration::from_secs(42)),
+                mtime: Some(core::time::Duration::from_secs(43)),
+            },
+        )
+        .unwrap();
+    let restored = device.metadata().unwrap();
+    assert_eq!(
+        (
+            restored.uid,
+            restored.gid,
+            restored.mode.bits(),
+            restored.rdev
+        ),
+        (77, 88, 0o6750, axfs_ng_vfs::DeviceId::new(1, 5))
+    );
+    assert_eq!(
+        (restored.atime.as_secs(), restored.mtime.as_secs()),
+        (42, 43)
+    );
     let input = root
         .create(
             "input",

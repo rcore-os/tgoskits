@@ -535,6 +535,28 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
     for (kind, device, result) in permitted {
         assert_eq!(result, Ok((device, 1000, 1000, permission.bits(), kind)));
     }
+    let restored = context.resolve("/devices/whiteout").unwrap();
+    axfs_ng_vfs::TrustedInitialization::kernel()
+        .restore_metadata(
+            &restored,
+            axfs_ng_vfs::MetadataUpdate {
+                mode: Some(NodePermission::from_bits_truncate(0o6750)),
+                owner: Some((77, 88)),
+                rdev: Some(DeviceId::new(1, 5)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let metadata = restored.metadata().unwrap();
+    assert_eq!(
+        (
+            metadata.uid,
+            metadata.gid,
+            metadata.mode.bits(),
+            metadata.rdev
+        ),
+        (77, 88, 0o6750, DeviceId::new(1, 5))
+    );
 }
 
 #[test]

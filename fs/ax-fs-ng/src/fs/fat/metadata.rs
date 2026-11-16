@@ -42,6 +42,9 @@ impl FatInode {
 
 impl FatMetadataAttempt<'_> {
     fn preflight(current: &Metadata, change: &AuthorizedMetadataChange<'_>) -> VfsResult<()> {
+        if change.rdev().is_some_and(|rdev| rdev != current.rdev) {
+            return Err(VfsError::OperationNotSupported);
+        }
         if change.uid().is_some_and(|uid| uid != current.uid)
             || change.gid().is_some_and(|gid| gid != current.gid)
         {

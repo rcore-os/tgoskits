@@ -19,7 +19,7 @@ use crate::{
     Location, Metadata, MetadataChange, MountWriteGuard, MutationCredentials, MutationRetire,
     NamespaceAdmission, NamespaceAdmissions, NamespaceCompletion, NamespaceEffect,
     NamespaceOutcome, NamespaceQuery, NamespaceRead, NamespaceStart, NamespaceState,
-    PreparedUnlink, PreparedWrite, RenameOptions, VfsError, VfsResult,
+    PreparedUnlink, PreparedWrite, RenameOptions, VfsError, VfsResult, metadata::MetadataIntent,
     prepared_write::PreparedView,
 };
 
@@ -176,14 +176,24 @@ impl NamespaceOperationScope<'_, Metadata> {
         change: MetadataChange,
         credentials: &MutationCredentials<'_>,
     ) -> VfsResult<Option<NamespaceObservation<Metadata>>> {
-        if change.is_empty() {
+        self.apply_metadata_intent(context, target, MetadataIntent::User(change), credentials)
+    }
+
+    pub(crate) fn apply_metadata_intent(
+        &self,
+        context: &NamespaceOperationContext<'_>,
+        target: &Location,
+        intent: MetadataIntent,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<Option<NamespaceObservation<Metadata>>> {
+        if intent.is_empty() {
             return Ok(None);
         }
         self.check_context(context)?;
         context.retired.retire(target.clone());
         context.dispatch_metadata(
             target,
-            change,
+            intent,
             credentials,
             Reservation::root_metadata(context.children, &self.state().root),
         )
@@ -395,7 +405,12 @@ impl<'a> NamespaceOperationContext<'a> {
         }
         self.retired.retire(target.clone());
         let reservation = Reservation::child(self.children)?;
-        self.dispatch_metadata(target, change, credentials, reservation)
+        self.dispatch_metadata(
+            target,
+            MetadataIntent::User(change),
+            credentials,
+            reservation,
+        )
     }
 
     pub fn unlink(
@@ -466,7 +481,7 @@ impl<'a> NamespaceOperationContext<'a> {
     fn dispatch_metadata(
         &self,
         target: &Location,
-        change: MetadataChange,
+        intent: MetadataIntent,
         credentials: &MutationCredentials<'_>,
         mut reservation: Reservation<'_>,
     ) -> VfsResult<Option<NamespaceObservation<Metadata>>> {
@@ -474,7 +489,7 @@ impl<'a> NamespaceOperationContext<'a> {
         let admission = self.admission(target)?;
         reservation.start();
         let completion =
-            crate::metadata::dispatch(self, target, change, credentials).bind(admission.owner);
+            crate::metadata::dispatch(self, target, intent, credentials).bind(admission.owner);
         Ok(Some(reservation.metadata(completion)))
     }
 

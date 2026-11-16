@@ -9,8 +9,8 @@ use axfs_ng_vfs::{
     NamespacePressureResult, NamespaceState, VfsError, VfsResult,
 };
 use rsext4::{
-    DirectoryEntryType, Ext4Error, Ext4Result, Ext4Timestamp, FilePermissions, InodeFlags,
-    InodeMetadataUpdate,
+    DeviceNumber, DirectoryEntryType, Ext4Error, Ext4Result, Ext4Timestamp, FilePermissions,
+    InodeFlags, InodeMetadataUpdate,
 };
 
 use super::{
@@ -228,6 +228,10 @@ fn native_update(change: AuthorizedMetadataChange<'_>) -> Ext4Result<InodeMetada
             .transpose()?,
         uid: change.uid(),
         gid: change.gid(),
+        device_number: change
+            .rdev()
+            .map(|device| DeviceNumber::new(device.major(), device.minor()))
+            .transpose()?,
         atime: change.atime().map(timestamp).transpose()?,
         mtime: change.mtime().map(timestamp).transpose()?,
         ctime: Some(timestamp(change.ctime())?),

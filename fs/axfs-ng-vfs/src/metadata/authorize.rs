@@ -2,7 +2,9 @@
 
 use core::time::Duration;
 
-use super::{AuthorizedMetadataChange, MetadataChange, MetadataRequest, TimeChange};
+use super::{
+    AuthorizedMetadataChange, MetadataChange, MetadataIntent, MetadataRequest, TimeChange,
+};
 use crate::{Metadata, NodePermission, NodeType, VfsError, VfsResult};
 
 impl MetadataRequest<'_> {
@@ -27,9 +29,32 @@ impl MetadataRequest<'_> {
             gid: None,
             atime: None,
             mtime: None,
+            rdev: None,
             ctime: now,
         };
-        match self.change {
+        let change = match &self.intent {
+            MetadataIntent::User(change) => *change,
+            MetadataIntent::Initialization(update) => {
+                if update.rdev.is_some()
+                    && !matches!(
+                        current.node_type,
+                        NodeType::CharacterDevice | NodeType::BlockDevice
+                    )
+                {
+                    return Err(VfsError::OperationNotSupported);
+                }
+                authorized.mode = update.mode;
+                authorized.uid = update.owner.map(|(uid, _)| uid);
+                authorized.gid = update.owner.map(|(_, gid)| gid);
+                authorized.atime = update.atime;
+                authorized.mtime = update.mtime;
+                authorized.rdev = update.rdev;
+                // This factory already consumed explicit initialization
+                // authority. User chown/setgid filtering is a different policy.
+                return Ok(authorized);
+            }
+        };
+        match change {
             MetadataChange::Chmod(mode) => {
                 // notify_change rejects explicit ATTR_MODE before setattr_prepare.
                 // This is deliberately NOT applied to chown's derived ATTR_MODE.
