@@ -70,11 +70,11 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
                 }
             }
             NamespaceQuery::Metadata(entry) => {
-                let inode = Self::inode(entry)?;
+                let inode = self.filesystem.inode_for(entry)?;
                 self.metadata(&inode).map(NamespaceRead::Metadata)
             }
             NamespaceQuery::Xattr { entry, name } => {
-                let inode = Self::inode(entry)?;
+                let inode = self.filesystem.inode_for(entry)?;
                 let current = inode.current()?;
                 ready(self.queries.query(NamespaceQuery::Xattr {
                     entry: current.entry(),
@@ -260,14 +260,6 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
                     );
                 }
             }
-        }
-    }
-
-    fn inode(entry: &DirEntry) -> ReadResult<alloc::sync::Arc<OverlayInode>> {
-        if entry.is_dir() {
-            Ok(entry.downcast::<OverlayDir>()?.inode.clone())
-        } else {
-            Ok(entry.downcast::<OverlayFile>()?.inode.clone())
         }
     }
 

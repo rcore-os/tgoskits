@@ -171,6 +171,12 @@ pub struct MetadataRequest<'a> {
 }
 
 impl<'a> MetadataRequest<'a> {
+    /// Borrows the actual receiver alias retained by the original command.
+    /// Naming relationships must still be observed afresh under its owner gate.
+    pub fn target(&self) -> &Location {
+        &self.target
+    }
+
     /// Borrows direct backing reads bound to the original target's receiver,
     /// not to this request's address or to a caller-selected filesystem.
     pub fn backing_queries(&self) -> crate::BackingQueryContext<'a> {

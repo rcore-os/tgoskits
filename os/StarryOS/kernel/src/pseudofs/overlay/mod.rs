@@ -10,7 +10,9 @@
 //! rename is rejected, and index/redirect_dir are handled by mount option
 //! validation rather than by full semantic support here.
 
+mod copy_up;
 mod inode;
+mod metadata;
 mod read;
 
 use alloc::{
@@ -121,6 +123,7 @@ pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         this: this.clone(),
         lower_dirs: options.lower_dirs,
         upper_dir: options.upper_dir,
+        work_dir: options.work_dir,
         mounter: options.mounter,
         write_roots,
         depth,
@@ -167,6 +170,7 @@ struct OverlayFs {
     this: Weak<Self>,
     lower_dirs: Vec<Location>,
     upper_dir: Option<Location>,
+    work_dir: Option<Location>,
     mounter: FsCredentialsSnapshot,
     write_roots: Vec<Location>,
     depth: u32,
@@ -182,6 +186,17 @@ struct OverlayFs {
 impl OverlayFs {
     fn credentials(&self) -> MutationCredentials<'_> {
         self.mounter.as_mutation_credentials()
+    }
+
+    fn inode_for(&self, entry: &DirEntry) -> VfsResult<Arc<OverlayInode>> {
+        if !core::ptr::addr_eq(entry.filesystem(), self) {
+            return Err(VfsError::BadState);
+        }
+        if entry.is_dir() {
+            Ok(entry.downcast::<OverlayDir>()?.inode.clone())
+        } else {
+            Ok(entry.downcast::<OverlayFile>()?.inode.clone())
+        }
     }
 }
 
@@ -606,6 +621,13 @@ impl OverlayDir {
 }
 
 impl NodeOps for OverlayDir {
+    fn change_metadata(
+        &self,
+        request: &axfs_ng_vfs::MetadataRequest<'_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+        self.fs.change_inode_metadata(&self.inode, request)
+    }
+
     fn inode(&self) -> u64 {
         self.inode.number
     }
@@ -874,6 +896,13 @@ impl OverlayFile {
 }
 
 impl NodeOps for OverlayFile {
+    fn change_metadata(
+        &self,
+        request: &axfs_ng_vfs::MetadataRequest<'_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+        self.fs.change_inode_metadata(&self.inode, request)
+    }
+
     fn inode(&self) -> u64 {
         self.inode.number
     }
