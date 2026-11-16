@@ -392,3 +392,38 @@ fs-basic 与 Axvisor AArch64 125 项通过。标准库仍选中 18 包、通过 
 定向 Clippy 首项和标准库仍只失败于 5 个旧 Overlay 方法，其余 71 项 Clippy 没有
 执行。主线已再次核实仍为 1b3，工具链未变。字段参与的红绿和最终源码检查保存在
 `initialization_metadata_restoration.ctime_omission_followup`，此前 9.9 的初次证据保留原版本。
+
+
+### 9.11 分层属性意图
+
+`918401f144` 增加实际授权借用的 `forward_to`。每层按自身 mounter 重新授权，
+保留外层过滤的 Chmod、首次 Chown 的 kill 意图以及 Keep/Now/Set；最终原生 owner
+重新取 NOW。只允许原 exact-mount 写权对应的声明下降边，原 retire 和完成登记继续
+共用。Overlay 私有适配仍负责选择其固定 upper，不能以可变祖先链代替实体来源。
+
+同一两层组件旅程在 `ab6c7bffdb` 重放原始 chmod 时稳定得到 02644，而非 0644，
+VFS 为 70 过、1 败；恢复后 71 项及相应集成、文档通过。VFS 三组合 Clippy 通过，
+完整标准库为 18 包中 17 过，Kernel 仍为 5 个旧 Overlay 方法。组件探针不是实际
+Overlay 或系统调用证明。证据为 `layered_metadata_forwarding`。
+
+### 9.12 原生暂存所有权
+
+`d9be25a23a` 接入 `StagingNode` 与消费式封存：只从实际排他创建取得新对象，
+属性来自实际 source，恢复仍检查保存的 mounter，seal 检查完整长度并结束恢复能力。
+原生 rename 核对两个槽位，observed-unlink 核对对象后才清理，实际移出与完成错误
+分别保留。暂存共享原不可变准备图的寿命，没有再次取得写租约。原生数据复制使用
+既有 canonical cache，不使用 root OpenOptions；所有端点在恢复/封存前结束。
+
+`65043f0377` 为新增的公开 API 集成进程安装现有 OS 接口所需的宿主页提供者，
+首次缺该能力的 NoMemory 是夹具问题。真正错误变异 `987cea61da` 跳过原生 rename
+来源身份，同一 MemoryFs 旅程在五个 AX profile 均错误安装替代对象，返回 Applied/Ok；
+预期为 Unchanged/BadState。恢复后同一旅程全部通过，并证明内容、06755/属主/时间、
+mounter 拒绝、未复制内容拒绝封存、安装/清理身份、放弃清理及最后准备寿命。
+
+最终源码 65043 的 VFS/AX 9 项 Clippy、x86_64 fs-basic 与 Axvisor AArch64 125 项
+均通过。标准库仍为 18 包中 17 过，唯一失败为 Kernel 的 5 个旧 Overlay 方法。
+MemoryFs 与 Ext4 使用既有活跃脱链机制；FAT 保留 holder 保护，暂存前明确拒绝。
+Ext4 尚未取得工厂本身的专属运行旅程。复合数据/open、xattr、祖先完整暂存和逻辑
+效果汇总尚待接入 Overlay，不能把这一原生组件结果写成完整 copy-up 或 ABI 通过。
+新增宿主页提供者含明确所有权/布局证明的少量 unsafe，仍需最终独立审查。精确源码和
+日志摘要见 `native_copy_up_staging`；后续仍按第 4、5 节继续。

@@ -1052,5 +1052,142 @@
       ],
       "behavior": "Only user commands imply ctime. Initialization preserves absent fields and does not sample a clock; all native consumers accept optional ctime without reconstructing it from a coarse metadata observation."
     }
+  },
+  "layered_metadata_forwarding": {
+    "source_commit": "918401f14493e63b6fbeca3d1933c8bacf591304",
+    "source_files": {
+      "design/vfs-lookup-ownership.md": "5a5f49c9d91e8854feaab6e4b9333db3ffc76bce38fa9b410558be7a0089cfcd",
+      "fs/axfs-ng-vfs/src/metadata/authorize.rs": "41f5246408f2681466ecd3990fa79d37b6cf1a1eefb14a79cb5e1fff9be43a1c",
+      "fs/axfs-ng-vfs/src/metadata/forward.rs": "9a643c73de52035f7298ccb5ba24d6104ba5e88b3d2e9f1ef24ceea3f54aa782",
+      "fs/axfs-ng-vfs/src/metadata/mod.rs": "a385623c36e6b4ea8330077c3acffc64c8f1be5ea1d26bb8ab5e5e10dcbd4c16",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "9c92e6758eb38e2f3c398370997935c25b00f2dcc6d5055d4030d051508359c4"
+    },
+    "implemented": [
+      "AuthorizedMetadataChange::forward_to retains filtered chmod mode, original chown kill flags, omitted fields and NOW intent; each actual owner reauthorizes using saved mounter.",
+      "Forwarding validates original exact-mount rights, declared writable receiver edge and strict stack descent, sharing original retirement and typed completion.",
+      "A component adapter exercises actual VFS scopes/authorizer/dispatch through two layers. It is not an Overlay or syscall runtime test."
+    ],
+    "behavioral_red": {
+      "green": "918401f14493e63b6fbeca3d1933c8bacf591304",
+      "red": "ab6c7bffdb2ee286d6c79eb863db730e6df6108a",
+      "mutation": "Forward the original unfiltered user chmod bits instead of the current authorization mode.",
+      "pushed": false,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/metadata-forward-red.log",
+        "sha256": "881b8c31b0817b0e5ebdb6ed2b5c404a7e8c4b245e16e85780caca308a25600f",
+        "bytes": 272542
+      },
+      "result": "71 VFS unit tests: 70 passed, 1 failed. Unfiltered chmod produced 02644 instead of 0644."
+    },
+    "restored_green": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/metadata-forward-green.log",
+        "sha256": "edb719bcfd1c5a55348131042c10ad9dc53ae8d9df3f64bc258ecedef0a54615",
+        "bytes": 274206
+      },
+      "result": "71 VFS unit tests and associated integration/doctests passed; 18 selected std packages, 17 passed, Kernel failed only at the five legacy Overlay methods."
+    },
+    "clippy": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/metadata-forward-clippy.log",
+        "sha256": "b093a36002805c90eb035b57c8c4c072ff36a258c7972f0d269accb8cf9f7f75",
+        "bytes": 2369
+      },
+      "result": "VFS base/lockdep/host-test: 3/3 checks passed."
+    },
+    "limitations": [
+      "Actual Overlay mutation/data/open/xattr integration remains incomplete.",
+      "User ABI and final HEAD CI have not been established."
+    ]
+  },
+  "native_copy_up_staging": {
+    "source_commit": "65043f03771890c9128a74325865cb253ccf2161",
+    "source_files": {
+      "design/vfs-lookup-ownership.md": "e47f006dcff31ebfb91e9e1a96718d8ff1fea341c19f995350a8bff072cce87e",
+      "fs/ax-fs-ng/src/file/mod.rs": "cf7130a0267f08216589cf24cf676079de503fc06d64af9101991f16af6f4963",
+      "fs/ax-fs-ng/src/file/staging.rs": "0a488ea5300f5cb7a41db26b085e6ee7eecacc8e73742a41136728a642d480a7",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/mod.rs": "5ba824e59cb3c19491d919a130fa57638f2d04c2f6ffd414e84e1f5d3387357f",
+      "fs/ax-fs-ng/src/fs/memory.rs": "dd86f0f411a7f37eeaa6a9b18cf5cfd194b1dc8f9809d81c30c3f0a08bf79cb5",
+      "fs/ax-fs-ng/tests/ownership.rs": "cd8df25549f77d22ee304c4bb4977c30cfbd30075f6a0059dc49fb882300e53b",
+      "fs/axfs-ng-vfs/src/fs.rs": "25d1ca89007f2605e803bc5d7e446c0a7edd93d513b2d94b9d2eea5ca2f334ef",
+      "fs/axfs-ng-vfs/src/lib.rs": "455390ba51926a88f6c2f0981e74350b80f3479f43778016afbc07c12f0ca7e1",
+      "fs/axfs-ng-vfs/src/metadata/authorize.rs": "a2b065dd9779987b16f7845fe0719681950c8c052962ddd3c570cfa3dd33af1c",
+      "fs/axfs-ng-vfs/src/metadata/forward.rs": "f00547b7cbfc062ec86840e8469c9a3f3937304f5f32ac1578576e3db7bbd581",
+      "fs/axfs-ng-vfs/src/metadata/mod.rs": "3db2f06eecd81e0eafb02a5a65a6c4d869f566f7d42f0ea789971e530d441038",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "851b650dc4dbfde85760536838b779c0e1c385bcb98b4e5416a2ddc912ea481e",
+      "fs/axfs-ng-vfs/src/node/dir/mod.rs": "6cf0da15dfee30ec46e036161cc9c162cf3fd4229e2bd3c6bdbb9d3df6192415",
+      "fs/axfs-ng-vfs/src/node/dir/mutation.rs": "6c8dee38c4597fbe3c77ce70100fc9ce7c1a9cf607e741e96f96f569d591b113",
+      "fs/axfs-ng-vfs/src/node/dir/native.rs": "3fc3f5b5220416cd89af8af6f04d4ca9814a8d7492bd547aba797eed41736280",
+      "fs/axfs-ng-vfs/src/prepared_write.rs": "cd827ec4b5e8ad639829cb70bafd2bd07df1e3c5ce212304e0309068eb2e782b",
+      "fs/axfs-ng-vfs/src/staging.rs": "37e978b49f88def49c2752c67397547cca877c197d2e90a34b1983ffa170d0f5"
+    },
+    "implemented": [
+      "StagingNode reserves its own work name, obtains proof only from actual exclusive creation, captures actual source metadata, restores using constrained saved-mounter credentials, and consumes restoration authority on seal.",
+      "PreparedWrite retains one immutable graph through private staging ownership without obtaining additional write leases; it remains non-Clone to ordinary callers.",
+      "Sealed installation checks the actual source and destination slots under native rename ownership. Cleanup checks observed unlink identity and preserves effects independently from completion errors; Drop performs no disk rollback.",
+      "MemoryFs and Ext4 advertise their existing active-unlink lifetime support. FAT retains its active-holder restriction and refuses staging before creating it.",
+      "Native staging data uses existing canonical caches while borrowing the original full preparation, with no root OpenOptions or second graph acquisition. Composite endpoint selection and xattr integration remain pending."
+    ],
+    "fixture_correction": {
+      "source_commit": "65043f0377",
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-initial-green.log",
+        "sha256": "f9841b08fe312e5ed881c98c9bef8b8b9fc2e6a98cf400d5f3eb24131b6c80fd",
+        "bytes": 274400
+      },
+      "reason": "The new integration process initially had no FsPageProvider. This was fixture NoMemory before staging and is not product regression evidence. A real owned, page-aligned host provider was installed through the existing public OS capability."
+    },
+    "behavioral_red": {
+      "green": "65043f03771890c9128a74325865cb253ccf2161",
+      "red": "987cea61da5a92e5ebc71f138995d4f72a653086",
+      "mutation": "Skip exact staged source identity during native rename authorization; retain expected destination check.",
+      "pushed": false,
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-red.log",
+        "sha256": "a8fc3b804b0804dcff9ca3fa58ca457fc94dffccb1ac6943252850ad88b125d7",
+        "bytes": 274595
+      },
+      "result": "The same real MemoryFs journey failed in all five AX profiles: skipping staged source identity installed the replacement and returned Applied/Ok instead of Unchanged/BadState."
+    },
+    "restored_green": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-final-green.log",
+        "sha256": "7600b817fd925e22c4ac152ebf38f910842f2db9a6512bac5e426ec90d185873",
+        "bytes": 274976
+      },
+      "result": "The same journey passed in all five AX profiles, covering content, 06755/owner/time restoration, mounter denial, premature seal, installation identity, replacement-safe cleanup, abandonment and retained graph release. 18 selected std packages: 17 passed, Kernel five E0407 failed."
+    },
+    "checks": {
+      "clippy": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-final-clippy.log",
+          "sha256": "842a6466d7d209698bf25b51e98e8089789ba62af446a209d7c5631b2e6cea90",
+          "bytes": 4714
+        },
+        "result": "9/9 VFS/AX checks passed."
+      },
+      "arceos_x86_64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-fs-basic-x86.log",
+          "sha256": "e8332ac6c9e6ca46b22c1d5553ec9f82abda513864b6a2f30a05e4304b4b1c9d",
+          "bytes": 28564
+        },
+        "result": "fs-basic passed."
+      },
+      "axvisor_aarch64": {
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-axvisor-ktest.log",
+          "sha256": "0eeb5b9133e41f2e6a51bf5cd62b5f7b8ee328eeb6152c7b30fa962936975a81",
+          "bytes": 75699
+        },
+        "result": "125 passed, zero failed/skipped, AXTEST_SUITE_OK."
+      }
+    },
+    "limitations": [
+      "The staging factory is not yet connected to the full Overlay command driver.",
+      "Composite data/open endpoints, actual xattr owner integration, complete ancestor staging, logical effect aggregation and final syscall validation are still pending.",
+      "Ext4 reuses the native unlink/rename mechanisms but a dedicated real Ext4 staging journey has not run yet.",
+      "The initial integration fixture added small allocator unsafe blocks; final qualified independent review remains required."
+    ]
   }
 }
