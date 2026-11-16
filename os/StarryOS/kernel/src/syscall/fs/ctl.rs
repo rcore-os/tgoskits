@@ -26,8 +26,8 @@ use super::mutation_credentials;
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, FileLike, current_fd_table, get_file_like, resolve_at,
-        resolve_at_with_boundary_checked, with_fs,
+        Directory, FileLike, current_fd_table, get_file_like, resolve_at_with_boundary_checked,
+        with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
     task::{FsCredentialsSnapshot, NamespaceChange, UserTaskRef, current_user_task},

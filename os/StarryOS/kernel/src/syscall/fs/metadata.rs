@@ -4,7 +4,6 @@ use core::ffi::c_char;
 #[cfg(target_arch = "x86_64")]
 use core::time::Duration;
 
-use ax_fs_ng::vfs::FsContext;
 use axfs_ng_vfs::{MetadataChange, MutationCredentials, NodePermission, PathHandle, TimeChange};
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_PATH, UTIME_NOW, UTIME_OMIT, timespec,
@@ -53,7 +52,7 @@ fn at_target(
         return fd_target(dirfd, DescriptorMode::Path);
     }
     let target = resolve_at_checked(dirfd, path.as_deref(), flags, |directory| {
-        FsContext::check_permission(directory, credentials, NodePermission::OTHER_EXEC)
+        credentials.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
     })?
     .into_file()
     .ok_or(StarryError::BadFileDescriptor)?;
