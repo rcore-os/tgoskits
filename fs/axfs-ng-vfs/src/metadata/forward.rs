@@ -203,6 +203,20 @@ mod tests {
         }
     }
     impl FileNodeOps for Node {
+        fn resolve_file_io(
+            &self,
+            request: crate::FileIoRequest<'_>,
+        ) -> VfsResult<crate::FileIoTarget> {
+            assert!(
+                self.0.gate.try_lock().is_ok(),
+                "endpoint selection ran under an owner gate"
+            );
+            match &self.0.backing {
+                Some(backing) => request.forward_to(backing.clone(), &self.0.mounter),
+                None => request.native(self),
+            }
+        }
+
         fn read_at(&self, _: &mut [u8], _: u64) -> VfsResult<usize> {
             Err(VfsError::Unsupported)
         }
@@ -364,6 +378,18 @@ mod tests {
             outer_path.change_metadata(change, &caller).unwrap();
             assert_eq!(native.state.lock().unwrap().mode.bits(), expected);
             assert_eq!(native.commits.load(Ordering::Relaxed), 1);
+            let endpoint =
+                crate::FileIoRequest::read(crate::PathHandle::acquire(outer_path.clone()).unwrap())
+                    .unwrap()
+                    .resolve()
+                    .unwrap();
+            assert_eq!(endpoint.paths().len(), 3);
+            assert!(
+                endpoint
+                    .location()
+                    .entry()
+                    .same_backend_object(native_path.entry())
+            );
         }
         let (native, native_path) = owner(None, true, 0o644, MutationCredentials::root(), 300);
         let (_, outer_path) = owner(
@@ -407,6 +433,28 @@ mod tests {
             );
             assert_eq!(native.state.lock().unwrap().mode.bits(), 0o644);
             assert_eq!(native.commits.load(Ordering::Relaxed), 0);
+        }
+
+        for (writable, mounter, expected) in [
+            (true, credentials(66, 6), VfsError::PermissionDenied),
+            (false, MutationCredentials::root(), VfsError::CrossesDevices),
+        ] {
+            let (_, backing) = owner(None, true, 0o644, MutationCredentials::root(), 300);
+            let (_, outer) = owner(Some(backing.clone()), writable, 0o644, mounter, 100);
+            let write = PreparedWrite::acquire(&outer).unwrap();
+            let root = crate::PathHandle::acquire(outer.clone()).unwrap();
+            assert!(
+                matches!(crate::FileIoRequest::write(root, &write).unwrap().resolve(), Err(error) if error == expected)
+            );
+            // The same read dependency remains usable without a writer lease.
+            let root = crate::PathHandle::acquire(outer).unwrap();
+            let endpoint = crate::FileIoRequest::read(root).unwrap().resolve().unwrap();
+            assert!(
+                endpoint
+                    .location()
+                    .entry()
+                    .same_backend_object(backing.entry())
+            );
         }
     }
 }

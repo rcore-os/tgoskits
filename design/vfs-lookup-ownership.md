@@ -3135,6 +3135,28 @@ inode 重算派生 MODE，并执行该层属主与 SGID 权限判断；Times 保
 非声明和只读来源拒绝以及原完成顺序；真实 Overlay 另需系统证明。热路径增加的声明边
 检查随整体性能比较记录，高风险授权实现仍纳入最终独立审查。
 
+### 4.20 原生数据端点选择
+
+`FileIoRequest` 从已经取得的 PathHandle 和适用的原 PreparedWrite 开始。请求不做
+copy-up、不进入 namespace admission，也不发布打开描述；整个选择过程不持 backend
+gate。分层 FileNodeOps 通过 `resolve_file_io` 选择自己的绑定对象，并在每一跳使用
+该实例保存的 mounter 检查访问。`forward_to` 核验实际 receiver、exact mount、声明
+边和严格下降；写选择还必须有原准备中的真实写租约，不能把 lower 读角色升级。
+
+`FileIoTarget` 只由已绑定的 native 完成或下一跳产生，保留从根到原生文件的全部
+PathHandle。native 完成核对实际 NodeOps 的 owner、inode 与身份；深度非零的
+默认实现明确拒绝，避免误把合并对象当成原生 cache owner。AX 暂存复制选择两个
+固定目标后继续使用既有 canonical cache，不重开 root File、不创建第二份缓存，
+数据 I/O 结束前保留中间路径和原准备。Overlay 的写端点只接受已有 upper，物化
+必须先由第 4.18 节的命令完成。
+
+这一选择原语先接到实际暂存数据复制和 Overlay 文件的下沉 hook。普通描述的动态
+读缓存、写打开前物化、全部 native writer/映射寿命仍需继续接入；没有把该原语
+当成它们已经实现的证据。复用现有路径使用权优于保存文字重查，固定原生端点优于
+在合并层建内容镜像；全部临时引用在锁外退休。组件验证沿同一实际两层 owner 旅程
+检查 mounter、下降和读写角色，真实缓存内容仍由暂存集成证明。额外路径保活与选择
+成本纳入整体同环境性能比较，接口回滚不涉及磁盘格式。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。

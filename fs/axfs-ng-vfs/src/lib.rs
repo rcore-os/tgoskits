@@ -5,6 +5,7 @@ extern crate ax_runtime as _;
 #[cfg(any(test, feature = "host-test"))]
 extern crate std;
 
+mod file_io;
 mod fs;
 mod metadata;
 mod mount;
@@ -22,6 +23,7 @@ mod types;
 mod write_admission;
 mod writeback_policy;
 
+pub use file_io::{FileIoRequest, FileIoTarget};
 pub use fs::*;
 pub use metadata::*;
 pub use mount::*;

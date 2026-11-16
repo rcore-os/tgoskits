@@ -44,18 +44,18 @@ pub struct SealedStaging {
 /// One lock-external data copy, borrowing the original graph and new target.
 /// Native cache adapters must finish and close their endpoints before restore.
 pub struct StagingIo<'a> {
-    source: &'a Location,
-    target: &'a Location,
+    source: crate::FileIoTarget,
+    target: crate::FileIoTarget,
     len: u64,
     _write: &'a PreparedWrite,
 }
 
 impl StagingIo<'_> {
     pub fn source(&self) -> &Location {
-        self.source
+        self.source.location()
     }
     pub fn target(&self) -> &Location {
-        self.target
+        self.target.location()
     }
     pub fn len(&self) -> u64 {
         self.len
@@ -192,25 +192,27 @@ impl StagingNode {
         self.metadata.as_ref().ok_or(VfsError::BadState)
     }
 
-    /// Borrows fixed native endpoints for one prepared data copy. Composite
-    /// endpoints require their own downward selection and are not raw native
-    /// files. Non-regular nodes have no byte-copy phase.
+    /// Selects fixed native endpoints for one prepared data copy, preserving
+    /// every intermediate path and saved-mounter check. Non-regular nodes have
+    /// no byte-copy phase.
     pub fn native_data(&self) -> VfsResult<Option<StagingIo<'_>>> {
         let metadata = self.source_metadata()?;
         if metadata.node_type != NodeType::RegularFile {
             return Ok(None);
         }
         let target = self.target()?;
-        if self.source.filesystem().stack_depth() != 0 || target.filesystem().stack_depth() != 0 {
-            return Err(VfsError::OperationNotSupported);
-        }
         self.binding
             .write
             .write_for(target)?
             .check_location(target)?;
         Ok(Some(StagingIo {
-            source: &self.source,
-            target,
+            source: crate::FileIoRequest::read(crate::PathHandle::acquire(self.source.clone())?)?
+                .resolve()?,
+            target: crate::FileIoRequest::write(
+                crate::PathHandle::acquire(target.clone())?,
+                &self.binding.write,
+            )?
+            .resolve()?,
             len: metadata.size,
             _write: &self.binding.write,
         }))

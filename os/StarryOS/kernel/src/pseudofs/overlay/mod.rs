@@ -943,6 +943,23 @@ impl NodeOps for OverlayFile {
 }
 
 impl FileNodeOps for OverlayFile {
+    fn resolve_file_io(
+        &self,
+        request: axfs_ng_vfs::FileIoRequest<'_>,
+    ) -> VfsResult<axfs_ng_vfs::FileIoTarget> {
+        if !core::ptr::addr_eq(request.location().filesystem(), self.fs.as_ref())
+            || request.location().inode() != self.inode.number
+        {
+            return Err(VfsError::BadState);
+        }
+        let target = if request.is_write() {
+            self.inode.upper().ok_or(VfsError::BadState)?
+        } else {
+            self.inode.current()?
+        };
+        request.forward_to(target, &self.fs.credentials())
+    }
+
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
         open_read(self.current()?)?.read_at(buf, offset)
     }

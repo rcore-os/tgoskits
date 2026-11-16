@@ -9,7 +9,8 @@ use super::FileBackend;
 /// The borrowed stage retains the original full write preparation. This does
 /// not open as root, acquire another graph, or publish a logical name. Close
 /// every cache endpoint before metadata restoration, sealing, or cleanup.
-/// Composite sources/targets need downward endpoint selection first.
+/// Composite sources/targets select each actual backing with its saved mounter
+/// before the native endpoint opens. All intermediate path uses survive I/O.
 pub fn copy_staging_data(stage: &StagingNode) -> VfsResult<()> {
     let Some(io) = stage.native_data()? else {
         return Ok(());
