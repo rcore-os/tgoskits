@@ -112,9 +112,9 @@ impl RetiredPageBatch {
 impl CachedFile {
     /// Reserves backing storage and keeps the cached length coherent.
     pub fn preallocate(&self, offset: u64, len: u64, mode: PreallocationMode) -> VfsResult<()> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
         let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
-        let file = self.inner.entry().as_file()?;
+        let file = self.inner.location().entry().as_file()?;
         let _backing_change = (!self.in_memory)
             .then(|| self.shared.backing_persistence.begin())
             .transpose()?;
@@ -143,7 +143,7 @@ impl CachedFile {
         if let FileRangeOperation::Allocate(mode) = operation {
             return self.preallocate(offset, len, mode);
         }
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
         let _backing_change = (!self.in_memory)
             .then(|| self.shared.backing_persistence.begin())
             .transpose()?;
@@ -154,7 +154,7 @@ impl CachedFile {
             return self.operate_shifted_range(offset, len, operation);
         }
         let end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
-        let file = self.inner.entry().as_file()?;
+        let file = self.inner.location().entry().as_file()?;
 
         loop {
             // Fault invalidation callbacks may re-enter the page cache through
@@ -236,7 +236,7 @@ impl CachedFile {
         len: u64,
         operation: FileRangeOperation,
     ) -> VfsResult<()> {
-        let file = self.inner.entry().as_file()?;
+        let file = self.inner.location().entry().as_file()?;
         let start_page = offset / PAGE_SIZE as u64;
         let range_end = offset.checked_add(len).ok_or(VfsError::FileTooLarge)?;
         if len == 0 {
@@ -597,8 +597,8 @@ impl CachedFile {
 
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
-        let file = self.inner.entry().as_file()?;
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
+        let file = self.inner.location().entry().as_file()?;
         let _backing_change = (!self.in_memory)
             .then(|| self.shared.backing_persistence.begin())
             .transpose()?;

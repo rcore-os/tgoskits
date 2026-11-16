@@ -158,7 +158,10 @@ fn add_to_fd(
                         Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
                     );
                     let loc = Location::new(file.location().mountpoint().clone(), entry);
-                    file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
+                    file = ax_fs_ng::vfs::File::new(
+                        FileBackend::Direct(axfs_ng_vfs::PathHandle::acquire(loc)?),
+                        file.flags(),
+                    );
                 } else if inner.is::<tty::CurrentTty>() {
                     // Linux tty_open_current_tty() reports ENXIO when there is none.
                     let term = current
@@ -176,7 +179,10 @@ fn add_to_fd(
                             ax_fs_ng::vfs::current_fs_context().resolve(&path)?
                         }
                     };
-                    file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
+                    file = ax_fs_ng::vfs::File::new(
+                        FileBackend::Direct(axfs_ng_vfs::PathHandle::acquire(loc)?),
+                        file.flags(),
+                    );
                 }
             }
             // Pair one final device open with the last close of the shared file.

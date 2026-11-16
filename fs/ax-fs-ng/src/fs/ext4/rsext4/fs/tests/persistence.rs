@@ -81,7 +81,10 @@ fn read_close_changes_atime_without_forcing_a_filesystem_commit() {
         .unwrap();
     filesystem.sync_to_disk().unwrap();
     let before = flushes.load(Ordering::Relaxed);
-    let file = File::new(FileBackend::new_direct(entry.clone()), FileFlags::READ);
+    let file = File::new(
+        FileBackend::new_direct(entry.clone()).unwrap(),
+        FileFlags::READ,
+    );
     let mut bytes = [0; 5];
 
     assert_eq!(file.read(&mut bytes[..]).unwrap(), bytes.len());

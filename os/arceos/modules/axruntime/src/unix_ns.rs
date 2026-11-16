@@ -31,13 +31,22 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
                 &MutationCredentials::root(),
             )
             .map_err(namespace_vfs_error)?
-            .into_location();
+            .into_path();
 
-        if loc.metadata().map_err(namespace_vfs_error)?.node_type != NodeType::Socket {
+        if loc
+            .location()
+            .metadata()
+            .map_err(namespace_vfs_error)?
+            .node_type
+            != NodeType::Socket
+        {
             return Err(ax_net::NetError::NotASocket);
         }
 
-        Ok(loc.user_data().get_or_insert_with(Default::default))
+        Ok(loc
+            .location()
+            .user_data()
+            .get_or_insert_with(Default::default))
     }
 
     fn unbind(&self, path: &str) -> ax_net::NetResult<()> {

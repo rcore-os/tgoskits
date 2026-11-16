@@ -87,7 +87,9 @@ pub fn sys_memfd_create(
     // Like Linux alloc_file_pseudo(), the initial anonymous file does not
     // acquire pathname-open write access. A later open of its procfs fd does.
     let file = ax_fs_ng::File::new(
-        FileBackend::Cached(CachedFile::get_or_create(loc.clone())?),
+        FileBackend::Cached(CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(loc.clone())?,
+        )?),
         FileFlags::READ | FileFlags::WRITE,
     );
 

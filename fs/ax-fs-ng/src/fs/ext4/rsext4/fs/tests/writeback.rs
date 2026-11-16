@@ -134,7 +134,10 @@ fn failed_final_mount_writeback_keeps_dirty_cache_for_retry() {
         let retained = entry.upgrade().expect("dirty dentry owner was discarded");
 
         let new_mount = Mountpoint::new_root(&Filesystem::new(filesystem.clone()));
-        let reopened = CachedFile::get_or_create(Location::new(new_mount, retained)).unwrap();
+        let reopened = CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(Location::new(new_mount, retained)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(reopened.identity(), identity);
         assert_eq!(reopened.dirty_pages_in_range(0, 1).unwrap(), [0]);
 
@@ -343,7 +346,10 @@ fn cache_on_filesystem(mut filesystem: Ext4Filesystem) -> (Arc<Ext4Filesystem>, 
     entry.as_file().unwrap().write_at(b"start", 0).unwrap();
     filesystem.sync_to_disk().unwrap();
     filesystem.lock().dirty = false;
-    let file = CachedFile::get_or_create(Location::new(mount, entry)).unwrap();
+    let file = CachedFile::get_or_create(
+        axfs_ng_vfs::PathHandle::acquire(Location::new(mount, entry)).unwrap(),
+    )
+    .unwrap();
     (filesystem, file)
 }
 

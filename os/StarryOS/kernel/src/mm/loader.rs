@@ -665,7 +665,7 @@ struct ElfCacheEntry {
 
 impl ElfCacheEntry {
     fn load(loc: Location) -> StarryResult<Result<Self, Vec<u8>>> {
-        let cache = CachedFile::get_or_create(loc)?;
+        let cache = CachedFile::get_or_create(axfs_ng_vfs::PathHandle::acquire(loc)?)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;

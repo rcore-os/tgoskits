@@ -581,7 +581,8 @@ pub fn sys_mmap(
                                 // TODO(mivik): file mmap page size
                                 MappingOperation::new_file(start, cache, flags, offset, true)?
                             }
-                            FileBackend::Direct(loc) => {
+                            FileBackend::Direct(path) => {
+                                let loc = path.location();
                                 let device = loc
                                     .entry()
                                     .downcast::<Device>()
@@ -596,38 +597,24 @@ pub fn sys_mmap(
                                             return Err(StarryError::InvalidInput);
                                         }
                                         length = device_map_len(length, range.size(), page_size)?;
-                                        match retain {
-                                            Some(retain) => MappingOperation::new_linear_anchored(
-                                                start,
-                                                range.start,
-                                                true,
-                                                retain,
-                                            ),
-                                            None => MappingOperation::new_linear(
-                                                start,
-                                                range.start,
-                                                true,
-                                            ),
-                                        }
+                                        MappingOperation::new_linear_anchored(
+                                            start,
+                                            range.start,
+                                            true,
+                                            Arc::new((retain, path.clone())),
+                                        )
                                     }
                                     DeviceMmap::PhysicalCached(range, retain) => {
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }
                                         length = device_map_len(length, range.size(), page_size)?;
-                                        match retain {
-                                            Some(retain) => MappingOperation::new_linear_anchored(
-                                                start,
-                                                range.start,
-                                                true,
-                                                retain,
-                                            ),
-                                            None => MappingOperation::new_linear(
-                                                start,
-                                                range.start,
-                                                true,
-                                            ),
-                                        }
+                                        MappingOperation::new_linear_anchored(
+                                            start,
+                                            range.start,
+                                            true,
+                                            Arc::new((retain, path.clone())),
+                                        )
                                     }
                                     DeviceMmap::PhysicalResolved(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
@@ -635,38 +622,24 @@ pub fn sys_mmap(
                                             return Err(StarryError::InvalidInput);
                                         }
                                         length = device_map_len(length, range.size(), page_size)?;
-                                        match retain {
-                                            Some(retain) => MappingOperation::new_linear_anchored(
-                                                start,
-                                                range.start,
-                                                true,
-                                                retain,
-                                            ),
-                                            None => MappingOperation::new_linear(
-                                                start,
-                                                range.start,
-                                                true,
-                                            ),
-                                        }
+                                        MappingOperation::new_linear_anchored(
+                                            start,
+                                            range.start,
+                                            true,
+                                            Arc::new((retain, path.clone())),
+                                        )
                                     }
                                     DeviceMmap::PhysicalCachedResolved(range, retain) => {
                                         if range.is_empty() {
                                             return Err(StarryError::InvalidInput);
                                         }
                                         length = device_map_len(length, range.size(), page_size)?;
-                                        match retain {
-                                            Some(retain) => MappingOperation::new_linear_anchored(
-                                                start,
-                                                range.start,
-                                                true,
-                                                retain,
-                                            ),
-                                            None => MappingOperation::new_linear(
-                                                start,
-                                                range.start,
-                                                true,
-                                            ),
-                                        }
+                                        MappingOperation::new_linear_anchored(
+                                            start,
+                                            range.start,
+                                            true,
+                                            Arc::new((retain, path.clone())),
+                                        )
                                     }
                                     #[cfg(feature = "rknpu")]
                                     DeviceMmap::PhysicalResolvedPageCapped(range, retain) => {
@@ -678,19 +651,12 @@ pub fn sys_mmap(
                                             range.size(),
                                             page_size,
                                         )?;
-                                        match retain {
-                                            Some(retain) => MappingOperation::new_linear_anchored(
-                                                start,
-                                                range.start,
-                                                true,
-                                                retain,
-                                            ),
-                                            None => MappingOperation::new_linear(
-                                                start,
-                                                range.start,
-                                                true,
-                                            ),
-                                        }
+                                        MappingOperation::new_linear_anchored(
+                                            start,
+                                            range.start,
+                                            true,
+                                            Arc::new((retain, path.clone())),
+                                        )
                                     }
                                     #[cfg(feature = "rknpu")]
                                     DeviceMmap::PhysicalCachedResolvedPageCapped(range, retain) => {
@@ -702,19 +668,12 @@ pub fn sys_mmap(
                                             range.size(),
                                             page_size,
                                         )?;
-                                        match retain {
-                                            Some(retain) => MappingOperation::new_linear_anchored(
-                                                start,
-                                                range.start,
-                                                true,
-                                                retain,
-                                            ),
-                                            None => MappingOperation::new_linear(
-                                                start,
-                                                range.start,
-                                                true,
-                                            ),
-                                        }
+                                        MappingOperation::new_linear_anchored(
+                                            start,
+                                            range.start,
+                                            true,
+                                            Arc::new((retain, path.clone())),
+                                        )
                                     }
                                     DeviceMmap::PhysicalPages(pages, retain) => {
                                         length = length.min(pages.len() * PAGE_SIZE_4K);
@@ -723,12 +682,16 @@ pub fn sys_mmap(
                                             Arc::new(SharedMemoryObject::borrowed(
                                                 pages,
                                                 PAGE_SIZE_4K,
-                                                retain,
+                                                Some(Arc::new((retain, path.clone()))),
                                             )?),
                                         )
                                     }
-                                    DeviceMmap::Cache(cache) => MappingOperation::new_file(
-                                        start, cache, flags, offset, true,
+                                    DeviceMmap::Cache(cache) => MappingOperation::new_device_file(
+                                        start,
+                                        cache,
+                                        flags,
+                                        offset,
+                                        path.clone(),
                                     )?,
                                 }
                             }

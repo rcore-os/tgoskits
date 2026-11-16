@@ -25,7 +25,7 @@ use core::{
 };
 
 use ax_io::prelude::*;
-use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
+use axfs_ng_vfs::{FileNode, FilesystemOps, Location, PathHandle, VfsError, VfsResult};
 use pages::CachedPages;
 pub(crate) use prefetch::start_background_readahead;
 use readahead::ReadAheadState;
@@ -580,10 +580,11 @@ impl Drop for CachedFileShared {
 
 /// A file handle with an LRU page cache for buffered I/O.
 pub struct CachedFile {
-    inner: Location,
     shared: Arc<CachedFileShared>,
     readahead: Arc<Mutex<ReadAheadState>>,
     in_memory: bool,
+    // Backing/cache owners retire before the mount use retained by this handle.
+    inner: PathHandle,
 }
 
 impl Clone for CachedFile {
@@ -614,8 +615,10 @@ fn filesystem_uses_unbounded_page_cache(name: &str) -> bool {
 }
 
 impl CachedFile {
-    /// Returns an existing cached file for `location`, or creates a new one.
-    pub fn get_or_create(location: Location) -> VfsResult<Self> {
+    /// Shares or creates the inode cache while retaining this exact path use.
+    /// Path acquisition belongs outside all cache and backend locks.
+    pub fn get_or_create(path: PathHandle) -> VfsResult<Self> {
+        let location = path.location();
         let in_memory = filesystem_uses_unbounded_page_cache(location.filesystem().name());
 
         let existing = {
@@ -630,7 +633,7 @@ impl CachedFile {
                 reclaim::register_cached_file(&shared);
             }
             return Ok(Self {
-                inner: location,
+                inner: path,
                 shared,
                 readahead: Arc::new(Mutex::new(ReadAheadState::new())),
                 in_memory,
@@ -639,7 +642,7 @@ impl CachedFile {
 
         let len = location.len()?;
         let inode_key =
-            should_share_cached_file_by_inode(&location).then(|| cached_file_key(&location));
+            should_share_cached_file_by_inode(location).then(|| cached_file_key(location));
         let candidate = if in_memory {
             Arc::new(CachedFileShared::new_unbounded(len))
         } else {
@@ -674,7 +677,7 @@ impl CachedFile {
         }
 
         Ok(Self {
-            inner: location,
+            inner: path,
             shared,
             readahead: Arc::new(Mutex::new(ReadAheadState::new())),
             in_memory,
@@ -716,7 +719,7 @@ impl CachedFile {
 
     /// Returns the current length (in bytes) of the backing file.
     pub fn file_len(&self) -> VfsResult<u64> {
-        self.inner.len()
+        self.inner.location().len()
     }
 
     /// Current generation of the file's page-to-offset mapping.
@@ -1008,7 +1011,7 @@ impl CachedFile {
 
     /// Marks one cached mmap page dirty through the shared cached-I/O protocol.
     pub fn mark_mmap_dirty_page(&self, pn: u32) -> VfsResult<()> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
         if self.in_memory {
             return Ok(());
         }
@@ -1047,7 +1050,7 @@ impl CachedFile {
         {
             return Err(VfsError::ResourceBusy);
         }
-        self.populate_page_window(self.inner.entry().as_file()?, pn, 1)?;
+        self.populate_page_window(self.inner.location().entry().as_file()?, pn, 1)?;
         if self
             .shared
             .mapping_update_in_progress
@@ -1132,7 +1135,7 @@ impl CachedFile {
         let _backing_change = (!self.in_memory)
             .then(|| self.shared.backing_persistence.begin())
             .transpose()?;
-        let file = self.inner.entry().as_file()?;
+        let file = self.inner.location().entry().as_file()?;
         let end = offset.saturating_add(buf.remaining() as u64);
         let old_len = self.shared.len();
         if end > old_len {
@@ -1204,7 +1207,7 @@ impl CachedFile {
         offset: u64,
         complete: impl FnOnce(usize) -> VfsResult<()>,
     ) -> VfsResult<usize> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
         let written = {
             let _layout = self.shared.mapping_layout_lock.lock();
             let mut update = self.shared.lock_for_update();
@@ -1225,7 +1228,7 @@ impl CachedFile {
         buf: impl Read + IoBuf,
         complete: impl FnOnce(usize) -> VfsResult<()>,
     ) -> VfsResult<(usize, u64)> {
-        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.filesystem())?;
+        let _write = axfs_ng_vfs::CachedWriteGuard::acquire(self.inner.location().filesystem())?;
         let (written, end) = {
             let _layout = self.shared.mapping_layout_lock.lock();
             let mut update = self.shared.lock_for_update();
@@ -1284,6 +1287,11 @@ impl CachedFile {
 
     /// Returns a reference to the underlying [`Location`].
     pub fn location(&self) -> &Location {
+        self.inner.location()
+    }
+
+    /// Borrows the mount use owned by this cache handle, shared with its clones.
+    pub fn path_handle(&self) -> &PathHandle {
         &self.inner
     }
 }

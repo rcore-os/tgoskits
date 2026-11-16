@@ -3,7 +3,7 @@ use core::io::BorrowedCursor;
 
 use ax_io::prelude::*;
 use axfs_ng_vfs::{
-    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, NodeType,
+    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, NodeType, PathHandle,
     PreallocationMode, VfsError, VfsResult, WritebackPolicy,
 };
 
@@ -18,23 +18,25 @@ pub enum FileBackend {
     /// File I/O goes through the page cache.
     Cached(CachedFile),
     /// File I/O bypasses the page cache and hits the VFS directly.
-    Direct(Location),
+    Direct(PathHandle),
 }
 
 impl FileBackend {
-    pub(crate) fn new_direct(location: Location) -> Self {
-        Self::Direct(location)
+    pub(crate) fn new_direct(location: Location) -> VfsResult<Self> {
+        Ok(Self::Direct(PathHandle::acquire(location)?))
     }
 
     pub(crate) fn new_cached(location: Location) -> VfsResult<Self> {
-        Ok(Self::Cached(CachedFile::get_or_create(location)?))
+        Ok(Self::Cached(CachedFile::get_or_create(
+            PathHandle::acquire(location)?,
+        )?))
     }
 
     /// Returns the backend-visible file length.
     pub fn len(&self) -> VfsResult<u64> {
         match self {
             Self::Cached(cached) => Ok(cached.len()),
-            Self::Direct(loc) => loc.len(),
+            Self::Direct(path) => path.location().len(),
         }
     }
 
@@ -47,7 +49,8 @@ impl FileBackend {
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
-            Self::Direct(loc) => {
+            Self::Direct(path) => {
+                let loc = path.location();
                 let packet = loc.flags().contains(NodeFlags::PACKET);
                 let mut total = 0;
                 while !dst.is_full() {
@@ -102,7 +105,8 @@ impl FileBackend {
             Self::Cached(cached) => cached.write_at_with_completion(src, offset, |written| {
                 Self::finish_cached_write(cached, written)
             }),
-            Self::Direct(loc) => {
+            Self::Direct(path) => {
+                let loc = path.location();
                 if loc.flags().contains(NodeFlags::PACKET) {
                     let len = src.remaining();
                     if len > MAX_PACKET_RECORD {
@@ -149,7 +153,8 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached
                 .append_with_completion(src, |written| Self::finish_cached_write(cached, written)),
-            Self::Direct(loc) => {
+            Self::Direct(path) => {
+                let loc = path.location();
                 let mut total = 0;
                 let mut end = loc.entry().as_file()?.len()?;
                 while src.remaining() > 0 {
@@ -208,7 +213,15 @@ impl FileBackend {
     pub fn location(&self) -> &Location {
         match self {
             Self::Cached(cached) => cached.location(),
-            Self::Direct(loc) => loc,
+            Self::Direct(path) => path.location(),
+        }
+    }
+
+    /// Borrows the exact mount use retained by this I/O endpoint.
+    pub fn path_handle(&self) -> &PathHandle {
+        match self {
+            Self::Cached(cached) => cached.path_handle(),
+            Self::Direct(path) => path,
         }
     }
 
@@ -216,7 +229,7 @@ impl FileBackend {
     pub fn sync(&self, data_only: bool) -> VfsResult<()> {
         match self {
             Self::Cached(cached) => cached.sync(data_only),
-            Self::Direct(loc) => loc.entry().as_file()?.sync(data_only),
+            Self::Direct(path) => path.location().entry().as_file()?.sync(data_only),
         }
     }
 
@@ -224,7 +237,7 @@ impl FileBackend {
     pub fn set_len(&self, len: u64) -> VfsResult<()> {
         match self {
             Self::Cached(cached) => cached.set_len(len),
-            Self::Direct(loc) => loc.entry().as_file()?.set_len(len),
+            Self::Direct(path) => path.location().entry().as_file()?.set_len(len),
         }
     }
 
@@ -242,7 +255,11 @@ impl FileBackend {
     ) -> VfsResult<()> {
         match self {
             Self::Cached(cached) => cached.operate_range(offset, len, operation),
-            Self::Direct(loc) => loc.entry().as_file()?.operate_range(offset, len, operation),
+            Self::Direct(path) => path
+                .location()
+                .entry()
+                .as_file()?
+                .operate_range(offset, len, operation),
         }
     }
 

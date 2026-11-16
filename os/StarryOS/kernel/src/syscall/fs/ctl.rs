@@ -272,10 +272,10 @@ pub fn sys_fchdir(dirfd: i32) -> StarryResult<isize> {
 
     let current = current_user_task();
     let credentials = FsCredentialsSnapshot::capture(current.as_thread());
-    let entry = Directory::from_fd(dirfd)?.inner().clone();
+    let directory = Directory::from_fd(dirfd)?;
     mutation_credentials(&credentials)
-        .check_permission(&entry.metadata()?, NodePermission::OTHER_EXEC)?;
-    let entry = PathHandle::acquire(entry)?;
+        .check_permission(&directory.inner().metadata()?, NodePermission::OTHER_EXEC)?;
+    let entry = directory.path_handle().clone();
     let mut change = NamespaceChange::new(current.as_thread())?;
     change.prepare_cwd(entry)?;
     change.commit()?;

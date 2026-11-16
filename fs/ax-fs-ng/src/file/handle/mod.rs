@@ -5,8 +5,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_io::{SeekFrom, prelude::*};
 use axfs_ng_vfs::{
-    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PreallocationMode,
-    VfsError, VfsResult, path::Path,
+    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, PathHandle,
+    PreallocationMode, VfsError, VfsResult, path::Path,
 };
 use axpoll::{IoEvents, Pollable};
 
@@ -27,6 +27,8 @@ pub struct File {
     access_flags: AtomicU8,
     // Backend/cache destruction must finish before releasing writer authority.
     pub(super) write_access: Option<Arc<WriteAccess>>,
+    // Keep mount use through backend, cache, and inode writer-lease retirement.
+    path: PathHandle,
 }
 
 impl File {
@@ -35,6 +37,7 @@ impl File {
     /// Use [`OpenOptions`] for ordinary opens. Anonymous pseudo files such as
     /// newly created memfds deliberately bypass executable/write exclusion.
     pub fn new(inner: FileBackend, flags: FileFlags) -> Self {
+        let path = inner.path_handle().clone();
         // man 2 open: "The file offset is set to the beginning of the file"
         // — initial position is always 0, regardless of O_APPEND.
         // O_APPEND only relocates the offset BEFORE EACH WRITE (handled in
@@ -52,6 +55,7 @@ impl File {
             flags: AtomicU8::new(flags.bits()),
             position,
             access_flags: AtomicU8::new(0),
+            path,
         }
     }
 
@@ -137,7 +141,12 @@ impl File {
 
     /// Returns a reference to the underlying [`Location`].
     pub fn location(&self) -> &Location {
-        self.inner.location()
+        self.path.location()
+    }
+
+    /// Borrows this description's path use, including after lazy detachment.
+    pub fn path_handle(&self) -> &PathHandle {
+        &self.path
     }
 
     /// Reads a number of bytes starting from a given offset.
@@ -537,7 +546,7 @@ mod tests {
             ))),
         );
 
-        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+        let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
         let mut byte = [0];
         assert_eq!(file.read(&mut byte[..]).unwrap(), 1);
         drop(file);
@@ -566,7 +575,7 @@ mod tests {
             ))),
         );
 
-        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+        let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
         let mut byte = [0];
         assert_eq!(file.read(&mut byte[..]).unwrap(), 1);
         drop(file);
@@ -588,7 +597,7 @@ mod tests {
             Mountpoint::new_root(&filesystem),
             test_entry(Arc::new(node)),
         );
-        let file = File::new(FileBackend::new_direct(location), FileFlags::READ);
+        let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
 
         // A first-record error must remain an error and leave the cursor intact.
         let mut small = [b'?'; 16];

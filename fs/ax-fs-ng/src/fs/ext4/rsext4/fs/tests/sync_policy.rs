@@ -75,7 +75,7 @@ fn synchronous_inode_metadata_and_directory_flags_force_commit() {
             .contains(WritebackPolicy::SYNCHRONOUS)
     );
 
-    let handle = File::new(FileBackend::new_direct(file), FileFlags::WRITE);
+    let handle = File::new(FileBackend::new_direct(file).unwrap(), FileFlags::WRITE);
     let before = flushes.load(Ordering::Relaxed);
     assert_eq!(handle.write_at(b"persist".as_slice(), 0), Ok(7));
     assert!(flushes.load(Ordering::Relaxed) > before);
@@ -86,7 +86,10 @@ fn synchronous_inode_cached_mutations_hold_admission_until_commit() {
     crate::os::memory::test_support::with_test_page_provider(true, |_| {
         let (filesystem, root, flushes) = background_mount();
         let file = create_file(&root, "cached-sync");
-        let initial = File::new(FileBackend::new_direct(file.clone()), FileFlags::WRITE);
+        let initial = File::new(
+            FileBackend::new_direct(file.clone()).unwrap(),
+            FileFlags::WRITE,
+        );
         assert_eq!(initial.write_at(b"initial".as_slice(), 0), Ok(7));
         filesystem.sync_to_disk().unwrap();
         set_inode_flags(&filesystem, &file, InodeFlags::SYNC);
@@ -180,14 +183,20 @@ fn open_unlinked_hardlink_reuses_dirty_cache_until_final_inode_retirement() {
         let alias = root
             .link("alias", &file, &axfs_ng_vfs::MutationCredentials::root())
             .unwrap();
-        let cached = crate::file::CachedFile::get_or_create(file.clone()).unwrap();
+        let cached = crate::file::CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(file.clone()).unwrap(),
+        )
+        .unwrap();
         cached.write_at(b"retained".as_slice(), 0).unwrap();
         root.unlink("original", false, &axfs_ng_vfs::MutationCredentials::root())
             .unwrap();
         root.unlink("alias", false, &axfs_ng_vfs::MutationCredentials::root())
             .unwrap();
 
-        let reopened = crate::file::CachedFile::get_or_create(alias).unwrap();
+        let reopened = crate::file::CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(alias).unwrap(),
+        )
+        .unwrap();
         assert!(cached.ptr_eq(&reopened));
         let mut bytes = [0; 8];
         assert_eq!(reopened.read_at(&mut bytes[..], 0), Ok(8));

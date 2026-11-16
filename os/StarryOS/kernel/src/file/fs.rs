@@ -39,7 +39,7 @@ pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&FsContext) -> StarryResult<R>) -
     if dirfd == AT_FDCWD {
         f(&fs)
     } else {
-        let dir = Directory::from_fd(dirfd)?.inner.clone();
+        let dir = Directory::from_fd(dirfd)?.inner().clone();
         f(&fs.with_dirfd(dir)?)
     }
 }
@@ -430,7 +430,6 @@ impl Pollable for File {
 
 /// Directory wrapper for `ax_fs_ng::fops::Directory`.
 pub struct Directory {
-    inner: Location,
     // Serialize the complete getdents/lseek transition for one open file
     // description. This is a sleepable mutex because filesystem reads may
     // block; dup/fork share the Directory and therefore this position.
@@ -442,6 +441,8 @@ pub struct Directory {
     /// Whether this is the original handle returned by fsmount(2).
     /// Reopening it as a normal directory deliberately drops this authority.
     detached_mount_handle: bool,
+    // Directory cursor/backend state retires before this exact mount use.
+    inner: axfs_ng_vfs::PathHandle,
 }
 
 pub(crate) struct DirectoryPosition {
@@ -450,7 +451,7 @@ pub(crate) struct DirectoryPosition {
 }
 
 impl Directory {
-    pub fn new(inner: Location, open_flags: u32) -> Self {
+    pub fn new(inner: axfs_ng_vfs::PathHandle, open_flags: u32) -> Self {
         Self {
             inner,
             position: Mutex::new(DirectoryPosition {
@@ -462,20 +463,24 @@ impl Directory {
         }
     }
 
-    pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> Self {
-        Self {
-            inner,
+    pub(crate) fn new_detached_mount(inner: Location, open_flags: u32) -> VfsResult<Self> {
+        Ok(Self {
+            inner: axfs_ng_vfs::PathHandle::acquire(inner)?,
             position: Mutex::new(DirectoryPosition {
                 cursor: DirectoryCursor::START,
                 read_state: None,
             }),
             open_flags,
             detached_mount_handle: true,
-        }
+        })
     }
 
     /// Get the inner node of the directory.
     pub fn inner(&self) -> &Location {
+        self.inner.location()
+    }
+
+    pub(crate) fn path_handle(&self) -> &axfs_ng_vfs::PathHandle {
         &self.inner
     }
 
@@ -505,11 +510,11 @@ impl FileLike for Directory {
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
-        Ok(metadata_to_kstat(&self.inner.metadata()?))
+        Ok(metadata_to_kstat(&self.inner().metadata()?))
     }
 
     fn inode_key(&self) -> Option<InodeKey> {
-        Some(InodeKey::for_location(&self.inner))
+        Some(InodeKey::for_location(self.inner()))
     }
 
     fn open_flags(&self) -> u32 {
@@ -517,7 +522,7 @@ impl FileLike for Directory {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        path_for(&self.inner)
+        path_for(self.inner())
     }
 
     fn from_fd(fd: c_int) -> StarryResult<Arc<Self>> {

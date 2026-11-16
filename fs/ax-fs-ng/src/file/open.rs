@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
 
 use axfs_ng_vfs::{
-    Location, MutationCredentials, NodeFlags, NodePermission, NodeType, VfsError, VfsResult,
-    path::Path,
+    Location, MutationCredentials, NodeFlags, NodePermission, NodeType, PathHandle, VfsError,
+    VfsResult, path::Path,
 };
 
 use super::{
@@ -33,7 +33,7 @@ pub enum OpenResult {
     /// The opened path is a regular file.
     File(File),
     /// The opened path is a directory.
-    Dir(Location),
+    Dir(PathHandle),
 }
 
 impl OpenResult {
@@ -50,18 +50,18 @@ impl OpenResult {
 
     /// Converts into a [`Location`], returning an error if this is a file.
     #[cfg(feature = "vfs")]
-    pub fn into_dir(self) -> VfsResult<Location> {
+    pub fn into_dir(self) -> VfsResult<PathHandle> {
         match self {
             Self::Dir(dir) => Ok(dir),
             Self::File(_) => Err(VfsError::NotADirectory),
         }
     }
 
-    /// Extracts the underlying [`Location`] regardless of variant.
+    /// Keeps the selected path use regardless of the opened object type.
     #[cfg(feature = "vfs")]
-    pub fn into_location(self) -> Location {
+    pub fn into_path(self) -> PathHandle {
         match self {
-            Self::File(file) => file.location().clone(),
+            Self::File(file) => file.path_handle().clone(),
             Self::Dir(dir) => dir,
         }
     }
@@ -248,7 +248,7 @@ impl OpenOptions {
             if !newly_created {
                 self.check_open_access(&loc, &flags, credentials)?;
             }
-            OpenResult::Dir(loc)
+            OpenResult::Dir(PathHandle::acquire(loc)?)
         } else {
             if !newly_created {
                 self.check_open_access(&loc, &flags, credentials)?;
@@ -276,7 +276,7 @@ impl OpenOptions {
             let backend = if !direct || loc.flags().contains(NodeFlags::ALWAYS_CACHE) {
                 FileBackend::new_cached(loc)?
             } else {
-                FileBackend::new_direct(loc)
+                FileBackend::new_direct(loc)?
             };
             if self.truncate && !self.path {
                 backend.set_len(0)?;
@@ -588,7 +588,7 @@ mod tests {
             let open = || -> Box<dyn Any> {
                 match kind {
                     "direct" => Box::new(File::new(
-                        FileBackend::new_direct(location.clone()),
+                        FileBackend::new_direct(location.clone()).unwrap(),
                         FileFlags::READ,
                     )),
                     "buffered" | "path" => {
@@ -615,7 +615,7 @@ mod tests {
                     _ => unreachable!(),
                 }
             };
-            let held = Arc::new(open());
+            let held = Rc::new(open());
             assert!(
                 matches!(
                     mounted.plan_unmount(UnmountKind::Normal),

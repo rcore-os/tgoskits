@@ -39,7 +39,9 @@ fn unlink_reaps_a_closed_clean_cached_inode_before_the_next_unlink() {
             },
         )
         .unwrap();
-    let cached = CachedFile::get_or_create(first.clone()).unwrap();
+    let cached =
+        CachedFile::get_or_create(axfs_ng_vfs::PathHandle::acquire(first.clone()).unwrap())
+            .unwrap();
     drop(cached);
     drop(first);
     root.unlink("first", false, &axfs_ng_vfs::MutationCredentials::root())

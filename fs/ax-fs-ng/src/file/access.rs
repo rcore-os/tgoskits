@@ -1,6 +1,6 @@
 use alloc::collections::BTreeMap;
 
-use axfs_ng_vfs::{FilesystemOps, Location, MountWriteGuard, VfsError, VfsResult};
+use axfs_ng_vfs::{FilesystemOps, Location, MountWriteGuard, PathHandle, VfsError, VfsResult};
 
 use crate::os::sync::Mutex;
 
@@ -38,7 +38,7 @@ pub struct ExecutableFile {
 impl ExecutableFile {
     /// Path pinned by this execution lease, shared by forked address spaces.
     pub fn location(&self) -> &Location {
-        &self._lease._location
+        self._lease._location.location()
     }
 
     /// Acquires execution access, failing with `TextFileBusy` if writers exist.
@@ -67,7 +67,7 @@ struct AccessCount {
 static ACCESS: Mutex<BTreeMap<(usize, u64), AccessCount>> = Mutex::new(BTreeMap::new());
 
 struct AccessLease {
-    _location: Location,
+    _location: PathHandle,
     key: (usize, u64),
 }
 
@@ -75,6 +75,7 @@ impl AccessLease {
     fn acquire(location: Location, kind: AccessKind) -> VfsResult<Self> {
         let filesystem = location.filesystem() as *const dyn FilesystemOps as *const () as usize;
         let key = (filesystem, location.inode());
+        let location = PathHandle::acquire(location)?;
         {
             let mut access = ACCESS.lock();
             let state = access.entry(key).or_insert(AccessCount { kind, count: 0 });

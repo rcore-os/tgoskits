@@ -464,7 +464,7 @@ pub fn sys_fsmount(
     );
     state.mounts.push(mountpoint);
 
-    Directory::new_detached_mount(root, O_PATH)
+    Directory::new_detached_mount(root, O_PATH)?
         .add_to_fd_table(flags & FSMOUNT_CLOEXEC != 0)
         .map(|fd| fd as isize)
 }
@@ -869,7 +869,11 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     // The filesystem owns the lease, including across lazy detach and open files.
     // No filesystem-context lock is held during superblock or backing-file I/O.
     let fs = loop_device.mounted_filesystem(readonly, || {
-        new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)
+        new_filesystem_from_file(
+            FileBackend::Direct(axfs_ng_vfs::PathHandle::acquire(source_location)?),
+            readonly,
+            lease,
+        )
     })?;
     let mount = target_location.mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly())?;

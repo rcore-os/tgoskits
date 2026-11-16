@@ -1164,8 +1164,8 @@ impl FsContext {
 
 /// Iterator returned by [`FsContext::read_dir`].
 pub struct ReadDir {
-    dir: Location,
     state: Box<dyn DirectoryReadState>,
+    dir: PathHandle,
     buf: VecDeque<ReadDirEntry>,
     cursor: DirectoryCursor,
     ended: bool,
@@ -1177,7 +1177,8 @@ impl ReadDir {
     pub const BUF_SIZE: usize = 128;
 
     pub(crate) fn from_location(dir: Location) -> VfsResult<Self> {
-        let state = dir.open_directory_read_state()?;
+        let dir = PathHandle::acquire(dir)?;
+        let state = dir.location().open_directory_read_state()?;
         Ok(Self {
             dir,
             state,
@@ -1199,7 +1200,7 @@ impl Iterator for ReadDir {
         if self.buf.is_empty() {
             self.buf.clear();
             let mut invalid_name = false;
-            let result = self.dir.read_dir_with_state(
+            let result = self.dir.location().read_dir_with_state(
                 &mut *self.state,
                 self.cursor,
                 &mut |name: &[u8], ino: u64, node_type: NodeType, cursor: DirectoryCursor| {

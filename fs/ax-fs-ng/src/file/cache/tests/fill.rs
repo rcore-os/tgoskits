@@ -118,7 +118,10 @@ fn speculative_fill_skips_resident_prefix_and_retries_mapping_contention() {
             assert_eq!(queue.start(), Err(crate::BlockError::NoMemory));
             let backing = Arc::new(CacheTestFile::new(vec![0x5a; PAGE_SIZE * 64]));
             let cached = reopen_cached_file(backing.clone());
-            let other = CachedFile::get_or_create(cached.location().clone()).unwrap();
+            let other = CachedFile::get_or_create(
+                axfs_ng_vfs::PathHandle::acquire(cached.location().clone()).unwrap(),
+            )
+            .unwrap();
             for page in 0..3 {
                 read_bytes(&cached, (page * PAGE_SIZE) as u64, PAGE_SIZE);
             }
@@ -306,7 +309,7 @@ fn mapped_cache_trim_preserves_unrelated_inflight_fill() {
         }));
 
         cached
-            .populate_page_window(cached.inner.entry().as_file().unwrap(), 64, 1)
+            .populate_page_window(cached.inner.location().entry().as_file().unwrap(), 64, 1)
             .unwrap();
         assert!(cached.is_page_cached(64));
         assert_eq!(backing.state.lock().unwrap().read_calls, 3);
@@ -358,7 +361,7 @@ fn readahead_smaller_cache_keeps_the_demand_page_resident() {
         // Inspect publication directly: the demand must survive its own run,
         // independently of a timeout or a repeatedly faulting read loop.
         cached
-            .populate_page_window(cached.inner.entry().as_file().unwrap(), 0, 4)
+            .populate_page_window(cached.inner.location().entry().as_file().unwrap(), 0, 4)
             .unwrap();
         assert!(cached.shared.page_cache.lock().contains(&0));
         assert_eq!(read_bytes(&cached, 0, 1), vec![0x33]);

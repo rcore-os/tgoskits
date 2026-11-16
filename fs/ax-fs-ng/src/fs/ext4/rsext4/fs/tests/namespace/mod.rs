@@ -414,11 +414,11 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
             )
             .unwrap();
         let source_handle = File::new(
-            FileBackend::new_direct(source.clone()),
+            FileBackend::new_direct(source.clone()).unwrap(),
             FileFlags::READ | FileFlags::WRITE,
         );
         let target_handle = File::new(
-            FileBackend::new_direct(target.clone()),
+            FileBackend::new_direct(target.clone()).unwrap(),
             FileFlags::READ | FileFlags::WRITE,
         );
         assert_eq!(source_handle.write_at(b"new".as_slice(), 0), Ok(3));
