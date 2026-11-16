@@ -518,5 +518,50 @@
     "No Starry direct syscall runtime result; ArceOS and Axvisor passes do not establish Starry Linux compatibility.",
     "Overlay, F1-F8 mount authorization, unified lookup/proc/metadata consumers, performance/resource comparison and qualified final review remain incomplete.",
     "origin/dev advanced to 1b3ad931870097e2e2a295d7da20508f3f2102e5 while this unit was validated; it is not included in this source checkpoint."
-  ]
+  ],
+  "followup_mainline_merge": {
+    "source_commit": "be5915967bfeb4d1e98de6b62f5e4751e434eae0",
+    "parents": [
+      "f61ba4fe8f337c351812843b1f30eab0649a3f4b",
+      "1b3ad931870097e2e2a295d7da20508f3f2102e5"
+    ],
+    "mainline_commit": "1b3ad931870097e2e2a295d7da20508f3f2102e5",
+    "rust_toolchain_changed": false,
+    "cargo_lock_conflicted": false,
+    "conflicts": [
+      "os/StarryOS/kernel/src/namespace/mod.rs",
+      "os/StarryOS/kernel/src/namespace/user.rs",
+      "os/StarryOS/kernel/src/syscall/task/clone.rs",
+      "os/StarryOS/kernel/src/syscall/task/namespace.rs"
+    ],
+    "resolution": "Keep paired FS/MNT owner publication and saved creator euid, preserve level-33 ENOSPC semantics, and route upstream prlimit namespace capability checks through the shared commoncap ancestry operation. Retain all other upstream fixes and regression tests.",
+    "clippy": {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package starry-kernel",
+      "source_commit": "be5915967bfeb4d1e98de6b62f5e4751e434eae0",
+      "exit_code": 1,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-2808-kernel-clippy.log",
+      "sha256": "223ba6b97bd569b1b2c8bb7f013c84917a80583b0fa6782c5d87931023dcc5d8",
+      "terminal_evidence": [
+        "due to 15 previous errors",
+        "aborting (fail-fast, 71 check(s) remaining)"
+      ]
+    },
+    "std": {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask test --since f61ba4fe8f",
+      "source_commit": "be5915967bfeb4d1e98de6b62f5e4751e434eae0",
+      "exit_code": 1,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/merge-2808-std.log",
+      "sha256": "de90e88da1bc13101c41527e518a189e76a2331c02f90454505df3fe8e69ad92",
+      "terminal_evidence": [
+        "running std tests for 1 package(s)",
+        "due to 15 previous errors",
+        "std tests failed for 1 package(s): starry-kernel"
+      ]
+    },
+    "limits": [
+      "Kernel checks remain blocked by the same Overlay E0407 x5 and E0061 x10 compile errors.",
+      "The upstream unused alloc::vec import in the seccomp host-test helper is also reported; no allow attribute was added.",
+      "No Starry syscall test was executed. Earlier AX/ArceOS/Axvisor results are preserved at source cb65d894c1; their source files did not change in this merge."
+    ]
+  }
 }

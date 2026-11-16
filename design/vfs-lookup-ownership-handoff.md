@@ -286,3 +286,11 @@ Kernel 的设备映射把原文件路径放入实际映射保留对象，缓存�
 本轮按相同源码串行运行四架构 `fs-basic`，x86_64、AArch64、RISC-V 和 LoongArch 均取得逐项 `status=pass`、最终套件标记及外层零退出。Axvisor AArch64 的 memory-root `axtest` 实际运行 125 项，结果 `pass=125 fail=0 skip=0`，输出 `AXTEST_SUITE_OK`。原生运行证据覆盖了本轮路径接入，不提升 Starry 系统调用兼容性结论。
 
 Kernel Clippy 的 72 项计划在前四项因同一 Overlay 错误失败，其余 68 项未执行。完整 Overlay 迁移、统一查找、proc/metadata 消费、直接 syscall 红绿与四架构回归、性能及资源比较、最终独立审查仍未完成。验证期间 `dev` 又推进至 `1b3ad931870097e2e2a295d7da20508f3f2102e5`，该提交不属于本节源码及结果，后续合入必须另记冲突和受影响验证。
+
+### 9.4 主线权限修复同步
+
+合并提交 `be5915967bfeb4d1e98de6b62f5e4751e434eae0` 随后合入 `dev@1b3ad93187` 的 #2808。四处内容冲突为 namespace 模块、user namespace、clone 和 unshare/setns：保留本分支的成对绑定及 writer 外退休，使用准备时取得的 creator euid 创建子 user namespace，保留主线允许 level-32 父创建 level-33 子、下一次返回 `ENOSPC` 的边界。`prlimit64` 消费共同的 `has_namespace_capability`，避免为同一不可变祖先关系保留第二套遍历；初始 user namespace 的 hard-limit 提升门禁仍独立存在。
+
+其余主线权限、信号、IPC、文件传输修复和系统回归完整保留。此合并没有改变工具链或锁文件；AX、ArceOS 及 Axvisor 源码也与本节运行版本相同。合并后 Kernel 定向 Clippy 在首项仍因 Overlay 的同一 15 处错误失败，余下 71 项未执行；标准库增量选择器准确选中 Kernel 一包，同样失败。宿主测试另报告上游 seccomp helper 中未使用的 `alloc::vec` 导入，尚未把这些失败记为通过。
+
+能力继承的源码对照固定于 Linux v7.1 的 [`cap_capable_helper`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/security/commoncap.c#L68-L106)。本次同步只证明冲突处理和当前类型检查的边界，直接 syscall 验收仍须在 Overlay 迁移完成后执行；对应日志摘要附在同一生产证据的 `followup_mainline_merge` 中。
