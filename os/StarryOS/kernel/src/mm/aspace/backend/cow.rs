@@ -233,10 +233,11 @@ impl CowBackend {
     }
 
     fn cache_epoch(&self) -> StarryResult<u64> {
-        match &self.file {
-            Some((FileBackend::Cached(cache), ..)) => Ok(cache.mapping_epoch()),
-            _ => Err(StarryError::BadState),
-        }
+        self.file
+            .as_ref()
+            .and_then(|(file, ..)| file.cached_file())
+            .map(|cache| cache.mapping_epoch())
+            .ok_or(StarryError::BadState)
     }
 
     /// Uses the existing shared-file endpoint for private read-only pages.
@@ -252,7 +253,10 @@ impl CowBackend {
         if self.shared || leaf_size != PAGE_SIZE_4K || access.contains(MappingFlags::WRITE) {
             return Ok(None);
         }
-        let Some((FileBackend::Cached(cache), base, start, end)) = &self.file else {
+        let Some((file, base, start, end)) = &self.file else {
+            return Ok(None);
+        };
+        let Some(cache) = file.cached_file() else {
             return Ok(None);
         };
         let Some(relative) = vaddr.as_usize().checked_sub(base.as_usize()) else {
@@ -303,7 +307,7 @@ impl CowBackend {
         let Some(source) = page.frame().provider::<CachedFilePage>() else {
             return publish().map(Some);
         };
-        let Some((FileBackend::Cached(cache), ..)) = &self.file else {
+        let Some(cache) = self.file.as_ref().and_then(|(file, ..)| file.cached_file()) else {
             return Ok(None);
         };
         cache.with_current_read_backing(
@@ -412,8 +416,10 @@ impl CowBackend {
     }
 
     pub(crate) fn page_cache_resident(&self, va: VirtAddr) -> bool {
-        let Some((FileBackend::Cached(cache), file_vaddr_base, file_start, file_end)) = &self.file
-        else {
+        let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
+            return false;
+        };
+        let Some(cache) = file.cached_file() else {
             return false;
         };
         let relative = va.as_usize().saturating_sub(file_vaddr_base.as_usize()) as u64;
@@ -810,7 +816,7 @@ impl CowBackend {
             && self.page_size == PAGE_SIZE_4K
             && !access_flags.contains(MappingFlags::WRITE)
             && self.file.as_ref().is_some_and(|(file, base, start, _)| {
-                matches!(file, FileBackend::Cached(_))
+                file.cached_file().is_some()
                     && run[0]
                         .checked_sub_addr(*base)
                         .and_then(|relative| start.checked_add(relative as u64))

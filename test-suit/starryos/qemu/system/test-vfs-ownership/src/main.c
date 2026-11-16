@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/syscall.h>
@@ -172,6 +173,7 @@ static void overlay_ownership(void) {
     unsigned char content[8193], observed[sizeof(content)];
     struct statx st;
     int fd = -1, orphan = -1, created = -1;
+    void *mapping = MAP_FAILED;
     int backing_mounted = 0, overlay_mounted = 0;
     for (size_t i = 0; i < sizeof(content); ++i) content[i] = (unsigned char)(i * 29 + 3);
 #define OVL_REQUIRE(condition, message) do { \
@@ -229,12 +231,24 @@ static void overlay_ownership(void) {
     OVL_REQUIRE(syscall(SYS_pwrite64, created, "new", 3, 4095) == 3 &&
                 syscall(SYS_pread64, created, observed, 3, 4095) == 3 && memcmp(observed, "new", 3) == 0,
                 "the accepted writable fd updates the native upper across a cache-page boundary");
+    mapping = (void *)syscall(SYS_mmap, NULL, sizeof(content), PROT_READ | PROT_WRITE, MAP_SHARED, created, 0);
+    OVL_REQUIRE(mapping != MAP_FAILED, "map the writable Overlay description through its native cache");
+    close(created); created = -1;
+    ((volatile unsigned char *)mapping)[4096] = 'M';
+    errno = 0;
+    OVL_REQUIRE(syscall(SYS_umount2, merged, 0) == -1 && errno == EBUSY,
+                "a writable mapping retains the original merged mount after closing its fd");
+    fd = syscall(SYS_openat, AT_FDCWD, other, O_RDONLY, 0);
+    OVL_REQUIRE(fd >= 0 && syscall(SYS_pread64, fd, observed, 3, 4095) == 3 && memcmp(observed, "nMw", 3) == 0,
+                "shared mapping updates the same native upper cache after fd close");
+    close(fd); fd = -1;
+    OVL_REQUIRE(syscall(SYS_munmap, mapping, sizeof(content)) == 0, "retire the mapped native endpoint explicitly");
+    mapping = MAP_FAILED;
     snprintf(path, sizeof(path), "%s/deep/write-open", lower);
     fd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
     OVL_REQUIRE(fd >= 0 && syscall(SYS_pread64, fd, observed, sizeof(observed), 0) == (long)sizeof(observed) &&
                 memcmp(content, observed, sizeof(content)) == 0, "ordinary writes preserve the original lower content");
     close(fd); fd = -1;
-    close(created); created = -1;
     snprintf(path, sizeof(path), "%s/deep/seed", merged);
     fd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
     OVL_REQUIRE(fd >= 0, "retain lower-backed readonly fd");
@@ -291,6 +305,7 @@ static void overlay_ownership(void) {
                 syscall(SYS_unlinkat, AT_FDCWD, other, AT_REMOVEDIR) == 0,
                 "rename an upper directory and prune its private opaque marker on rmdir");
 cleanup:
+    if (mapping != MAP_FAILED) syscall(SYS_munmap, mapping, sizeof(content));
     if (fd >= 0) close(fd);
     if (orphan >= 0) close(orphan);
     if (created >= 0) close(created);

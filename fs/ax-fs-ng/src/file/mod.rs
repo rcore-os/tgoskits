@@ -31,7 +31,7 @@ pub(crate) use cache::{
 pub use cache::{page_cache_reclaim, sync_all_cached_files, sync_filesystem_cached_files};
 #[cfg(feature = "fat")]
 pub(crate) use cache::{prepare_fat_unlink_cache, sync_fat_cached_files};
-pub use handle::{File, FileBackend};
+pub use handle::{File, FileBackend, LayeredFile};
 pub use open::{FileFlags, OpenOptions, OpenResult};
 pub use page::{CachedPageBacking, CachedPageBytes, PageCache};
 pub use staging::copy_staging_data;

@@ -259,7 +259,7 @@ impl OpenOptions {
                 && loc.node_type() == NodeType::RegularFile
                 && (flags.contains(FileFlags::WRITE) || self.truncate)
             {
-                Some(WriteAccess::acquire(loc.clone())?)
+                Some(Arc::new(WriteAccess::acquire(loc.clone())?))
             } else {
                 None
             };
@@ -283,7 +283,11 @@ impl OpenOptions {
                 || self.path
                 || self.direct
                 || loc.flags().contains(NodeFlags::NON_CACHEABLE);
-            let backend = if !direct || loc.flags().contains(NodeFlags::ALWAYS_CACHE) {
+            let mut backend = if loc.filesystem().stack_depth() != 0
+                && let Some(write) = &write_access
+            {
+                FileBackend::new_layered(loc, write, self.direct)?
+            } else if !direct || loc.flags().contains(NodeFlags::ALWAYS_CACHE) {
                 FileBackend::new_cached(loc)?
             } else {
                 FileBackend::new_direct(loc)?
@@ -291,9 +295,12 @@ impl OpenOptions {
             if self.truncate && !self.path {
                 backend.set_len(0)?;
             }
+            if !flags.contains(FileFlags::WRITE) {
+                backend.finish_readonly_open();
+            }
             let mut file = File::new(backend, flags);
             if flags.contains(FileFlags::WRITE) {
-                file.write_access = write_access.map(Arc::new);
+                file.write_access = write_access;
             }
             OpenResult::File(file)
         })
@@ -696,6 +703,51 @@ mod tests {
 
     static TEST_FILESYSTEM: TestFilesystem = TestFilesystem::native();
 
+    impl TestFile {
+        fn backing_file(&self) -> VfsResult<Location> {
+            let backing = self
+                .filesystem
+                .as_ref()
+                .and_then(|filesystem| filesystem.writes.first())
+                .ok_or(VfsError::BadState)?;
+            if backing.is_dir() {
+                backing.lookup_no_follow("writer")
+            } else {
+                Ok(backing.clone())
+            }
+        }
+    }
+
+    struct TestOpenAttempt<'a>(&'a TestFile);
+
+    impl axfs_ng_vfs::LockedFileOpenAttempt for TestOpenAttempt<'_> {
+        fn observe(&mut self) -> VfsResult<Metadata> {
+            self.0.metadata()
+        }
+
+        fn commit(
+            &mut self,
+            open: axfs_ng_vfs::AuthorizedFileOpen<'_>,
+        ) -> axfs_ng_vfs::NamespaceOutcome<Metadata> {
+            let result = (|| {
+                let backing = self.0.backing_file()?;
+                let selected = open.forward_to(&backing, &MutationCredentials::root())?;
+                selected.result()?;
+                Ok(match selected.state() {
+                    axfs_ng_vfs::NamespaceState::Retry => axfs_ng_vfs::NamespaceOutcome::retry(),
+                    axfs_ng_vfs::NamespaceState::Unchanged => {
+                        axfs_ng_vfs::NamespaceOutcome::unchanged_observed(
+                            self.0.metadata()?,
+                            Ok(()),
+                        )
+                    }
+                    _ => axfs_ng_vfs::NamespaceOutcome::uncertain(None, Err(VfsError::BadState)),
+                })
+            })();
+            result.unwrap_or_else(|error| axfs_ng_vfs::NamespaceOutcome::unchanged(Err(error)))
+        }
+    }
+
     impl FilesystemOps for TestFilesystem {
         fn name(&self) -> &str {
             "open-permission-test"
@@ -765,6 +817,24 @@ mod tests {
     }
 
     impl FileNodeOps for TestFile {
+        fn prepare_write_open(
+            &self,
+            request: &axfs_ng_vfs::FileOpenRequest<'_>,
+        ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+            axfs_ng_vfs::NamespaceCompletion::new(request.execute(&mut TestOpenAttempt(self)), None)
+        }
+
+        fn resolve_file_io(
+            &self,
+            request: axfs_ng_vfs::FileIoRequest<'_>,
+        ) -> VfsResult<axfs_ng_vfs::FileIoTarget> {
+            if self.filesystem().stack_depth() == 0 {
+                request.native(self)
+            } else {
+                request.forward_to(self.backing_file()?, &MutationCredentials::root())
+            }
+        }
+
         fn read_at(&self, _buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
             Ok(0)
         }
@@ -941,11 +1011,21 @@ mod tests {
         lower.mountpoint().set_readonly(true).unwrap();
         let upper_fs = crate::MemoryFs::new();
         let upper = Mountpoint::new_root(&upper_fs).root_location();
+        upper
+            .create(
+                "writer",
+                NodeType::RegularFile,
+                NodePermission::from_bits_truncate(0o600),
+                0,
+                0,
+                &MutationCredentials::root(),
+            )
+            .unwrap();
         let middle = layer(1, vec![lower.clone()], vec![upper.clone()]);
         let visible = layer(2, Vec::new(), vec![middle.clone()]);
         let credentials = MutationCredentials::root();
         let mut writable = OpenOptions::new();
-        writable.write(true).direct = true;
+        writable.read(true).write(true).direct = true;
         let description = Arc::new(
             writable
                 ._open(visible.clone(), &credentials, false)
@@ -954,7 +1034,28 @@ mod tests {
         );
         let duplicate = description.clone();
         let mapping = description.write_access().unwrap().clone();
+        // The logical node owns no bytes. Ordinary I/O must use the selected
+        // MemoryFs cache and retain that accepted endpoint after DAC changes.
+        assert_eq!(description.write_at(b"original".as_slice(), 0), Ok(8));
+        let native = upper.lookup_no_follow("writer").unwrap();
+        native
+            .change_metadata(
+                axfs_ng_vfs::MetadataChange::Chmod(NodePermission::empty()),
+                &credentials,
+            )
+            .unwrap();
+        assert_eq!(description.write_at(b"updated".as_slice(), 0), Ok(7));
+        let mut observed = [0; 8];
+        assert_eq!(description.read_at(observed.as_mut_slice(), 0), Ok(8));
+        assert_eq!(&observed, b"updatedl");
         let reject_readonly = || {
+            assert!(
+                matches!(
+                    crate::file::ExecutableFile::acquire(native.clone()),
+                    Err(VfsError::TextFileBusy)
+                ),
+                "backing execution stays excluded through the last mapping lease"
+            );
             for location in [&visible, &middle, &upper] {
                 assert_eq!(
                     location.mountpoint().set_readonly(true),
@@ -973,6 +1074,22 @@ mod tests {
         drop(duplicate);
         reject_readonly();
         drop(mapping);
+        let executable = crate::file::ExecutableFile::acquire(native.clone()).unwrap();
+        assert!(matches!(
+            writable._open(visible.clone(), &credentials, false),
+            Err(VfsError::TextFileBusy)
+        ));
+        drop(executable);
+        let mut truncate = OpenOptions::new();
+        truncate.read(true).truncate(true).direct = true;
+        let reader = truncate
+            ._open(visible.clone(), &credentials, false)
+            .and_then(OpenResult::into_file)
+            .unwrap();
+        assert!(reader.write_access().is_none());
+        let executable = crate::file::ExecutableFile::acquire(native).unwrap();
+        drop(executable);
+        drop(reader);
 
         for location in [&visible, &middle, &upper] {
             location.mountpoint().set_readonly(true).unwrap();

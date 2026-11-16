@@ -17,7 +17,7 @@ use super::{
 use crate::{fs_core::FsContext, os::sync::Mutex, vfs_error_to_io_error};
 
 mod backend;
-pub use backend::FileBackend;
+pub use backend::{FileBackend, LayeredFile};
 
 /// Provides `std::fs::File`-like interface.
 pub struct File {
@@ -337,7 +337,7 @@ impl Drop for File {
             if flags & 2 != 0 {
                 update.mtime = Some(crate::os::wall_time());
             }
-            if let Err(err) = self.inner.location().update_metadata(update) {
+            if let Err(err) = self.inner.data_path().location().update_metadata(update) {
                 warn!("Failed to update file times on drop: {err:?}");
             }
         }

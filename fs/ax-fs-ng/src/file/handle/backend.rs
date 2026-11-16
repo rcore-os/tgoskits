@@ -1,12 +1,14 @@
 //! Positioned data I/O and page-cache integration.
+use alloc::sync::Arc;
 use core::io::BorrowedCursor;
 
 use ax_io::prelude::*;
 use axfs_ng_vfs::{
-    FileExtentMap, FileExtentTarget, FileRangeOperation, Location, NodeFlags, NodeType, PathHandle,
-    PreallocationMode, VfsError, VfsResult, WritebackPolicy,
+    FileExtentMap, FileExtentTarget, FileIoRequest, FileIoTarget, FileRangeOperation, Location,
+    NodeFlags, NodeType, PathHandle, PreallocationMode, VfsError, VfsResult, WritebackPolicy,
 };
 
+use super::super::access::WriteAccess;
 use crate::{file::cache::CachedFile, io_error_to_vfs_error, vfs_error_to_io_error};
 
 /// Bounds the kernel copy of one write to a packet node.
@@ -19,9 +21,74 @@ pub enum FileBackend {
     Cached(CachedFile),
     /// File I/O bypasses the page cache and hits the VFS directly.
     Direct(PathHandle),
+    /// A layered writable description bound to its accepted native endpoint.
+    Layered(Arc<LayeredFile>),
+}
+
+/// Keeps the original path graph and native cache through writable I/O.
+/// Fields are private so a layered backend cannot select another logical root
+/// or replace its writer lease after the description has been published.
+pub struct LayeredFile {
+    native: FileBackend,
+    target: FileIoTarget,
+    // Native caches and path uses retire before the original writer authority.
+    write: Option<Arc<WriteAccess>>,
 }
 
 impl FileBackend {
+    pub(crate) fn new_layered(
+        location: Location,
+        write: &Arc<WriteAccess>,
+        direct: bool,
+    ) -> VfsResult<Self> {
+        let target = FileIoRequest::write(PathHandle::acquire(location)?, write.prepared_write())?
+            .resolve()?;
+        write.bind_backing(&target)?;
+        let location = target.location().clone();
+        let node_flags = location.flags();
+        let native = if node_flags.contains(NodeFlags::ALWAYS_CACHE)
+            || !(direct || node_flags.contains(NodeFlags::NON_CACHEABLE))
+        {
+            Self::new_cached(location)?
+        } else {
+            Self::new_direct(location)?
+        };
+        Ok(Self::Layered(Arc::new(LayeredFile {
+            native,
+            target,
+            write: Some(write.clone()),
+        })))
+    }
+
+    pub(crate) fn finish_readonly_open(&mut self) {
+        if let Self::Layered(file) = self {
+            // The backend has not escaped OpenOptions, including on O_TRUNC.
+            let access = Arc::get_mut(file)
+                .expect("unpublished file backend")
+                .write
+                .take();
+            drop(access);
+        }
+    }
+
+    /// Borrows the actual native cache selected by this description.
+    /// Mapping consumers must retain the description's writer lease separately.
+    pub fn cached_file(&self) -> Option<&CachedFile> {
+        match self {
+            Self::Cached(cached) => Some(cached),
+            Self::Direct(_) => None,
+            Self::Layered(file) => file.native.cached_file(),
+        }
+    }
+
+    /// Native data endpoint; `path_handle` continues to identify the logical fd.
+    pub fn data_path(&self) -> &PathHandle {
+        match self {
+            Self::Layered(file) => file.native.data_path(),
+            _ => self.path_handle(),
+        }
+    }
+
     pub(crate) fn new_direct(location: Location) -> VfsResult<Self> {
         Ok(Self::Direct(PathHandle::acquire(location)?))
     }
@@ -37,6 +104,7 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => Ok(cached.len()),
             Self::Direct(path) => path.location().len(),
+            Self::Layered(file) => file.native.len(),
         }
     }
 
@@ -49,6 +117,7 @@ impl FileBackend {
     pub fn read_at(&self, mut dst: impl Write + IoBufMut, mut offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_at(dst, offset),
+            Self::Layered(file) => file.native.read_at(dst, offset),
             Self::Direct(path) => {
                 let loc = path.location();
                 let packet = loc.flags().contains(NodeFlags::PACKET);
@@ -95,6 +164,7 @@ impl FileBackend {
     pub fn read_buf_at(&self, dst: BorrowedCursor<'_, u8>, offset: u64) -> VfsResult<usize> {
         match self {
             Self::Cached(cached) => cached.read_buf_at(dst, offset),
+            Self::Layered(file) => file.native.read_buf_at(dst, offset),
             Self::Direct(_) => self.read_at(dst, offset),
         }
     }
@@ -105,6 +175,7 @@ impl FileBackend {
             Self::Cached(cached) => cached.write_at_with_completion(src, offset, |written| {
                 Self::finish_cached_write(cached, written)
             }),
+            Self::Layered(file) => file.native.write_at(src, offset),
             Self::Direct(path) => {
                 let loc = path.location();
                 if loc.flags().contains(NodeFlags::PACKET) {
@@ -153,6 +224,7 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached
                 .append_with_completion(src, |written| Self::finish_cached_write(cached, written)),
+            Self::Layered(file) => file.native.append(src),
             Self::Direct(path) => {
                 let loc = path.location();
                 let mut total = 0;
@@ -214,6 +286,7 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.location(),
             Self::Direct(path) => path.location(),
+            Self::Layered(file) => file.target.paths()[0].location(),
         }
     }
 
@@ -222,6 +295,7 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.path_handle(),
             Self::Direct(path) => path,
+            Self::Layered(file) => &file.target.paths()[0],
         }
     }
 
@@ -230,6 +304,7 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.sync(data_only),
             Self::Direct(path) => path.location().entry().as_file()?.sync(data_only),
+            Self::Layered(file) => file.native.sync(data_only),
         }
     }
 
@@ -238,6 +313,7 @@ impl FileBackend {
         match self {
             Self::Cached(cached) => cached.set_len(len),
             Self::Direct(path) => path.location().entry().as_file()?.set_len(len),
+            Self::Layered(file) => file.native.set_len(len),
         }
     }
 
@@ -255,6 +331,7 @@ impl FileBackend {
     ) -> VfsResult<()> {
         match self {
             Self::Cached(cached) => cached.operate_range(offset, len, operation),
+            Self::Layered(file) => file.native.operate_range(offset, len, operation),
             Self::Direct(path) => path
                 .location()
                 .entry()
@@ -271,9 +348,11 @@ impl FileBackend {
         target: FileExtentTarget,
         extent_limit: usize,
     ) -> VfsResult<FileExtentMap> {
-        self.location()
-            .entry()
-            .as_file()?
-            .map_extents(offset, len, target, extent_limit)
+        self.data_path().location().entry().as_file()?.map_extents(
+            offset,
+            len,
+            target,
+            extent_limit,
+        )
     }
 }

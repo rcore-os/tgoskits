@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_fs_ng::vfs::{FileBackend, FileFlags};
+use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_2M, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_memory_set::MappingError;
 use ax_runtime::hal::paging::MappingFlags;
@@ -576,124 +576,122 @@ pub fn sys_mmap(
                         {
                             return Err(StarryError::PermissionDenied);
                         }
-                        match backend.clone() {
-                            FileBackend::Cached(cache) => {
-                                // TODO(mivik): file mmap page size
-                                MappingOperation::new_file(start, cache, flags, offset, true)?
-                            }
-                            FileBackend::Direct(path) => {
-                                let loc = path.location();
-                                let device = loc
-                                    .entry()
-                                    .downcast::<Device>()
-                                    .map_err(|_| crate::StarryError::NoSuchDevice)?;
-                                match device.mmap(offset as u64, length as u64) {
-                                    DeviceMmap::None => {
-                                        return Err(crate::StarryError::NoSuchDevice);
-                                    }
-                                    DeviceMmap::Physical(range, retain) => {
-                                        mapping_flags |= MappingFlags::UNCACHED;
-                                        if range.is_empty() {
-                                            return Err(StarryError::InvalidInput);
-                                        }
-                                        length = device_map_len(length, range.size(), page_size)?;
-                                        MappingOperation::new_linear_anchored(
-                                            start,
-                                            range.start,
-                                            true,
-                                            Arc::new((retain, path.clone())),
-                                        )
-                                    }
-                                    DeviceMmap::PhysicalCached(range, retain) => {
-                                        if range.is_empty() {
-                                            return Err(StarryError::InvalidInput);
-                                        }
-                                        length = device_map_len(length, range.size(), page_size)?;
-                                        MappingOperation::new_linear_anchored(
-                                            start,
-                                            range.start,
-                                            true,
-                                            Arc::new((retain, path.clone())),
-                                        )
-                                    }
-                                    DeviceMmap::PhysicalResolved(range, retain) => {
-                                        mapping_flags |= MappingFlags::UNCACHED;
-                                        if range.is_empty() {
-                                            return Err(StarryError::InvalidInput);
-                                        }
-                                        length = device_map_len(length, range.size(), page_size)?;
-                                        MappingOperation::new_linear_anchored(
-                                            start,
-                                            range.start,
-                                            true,
-                                            Arc::new((retain, path.clone())),
-                                        )
-                                    }
-                                    DeviceMmap::PhysicalCachedResolved(range, retain) => {
-                                        if range.is_empty() {
-                                            return Err(StarryError::InvalidInput);
-                                        }
-                                        length = device_map_len(length, range.size(), page_size)?;
-                                        MappingOperation::new_linear_anchored(
-                                            start,
-                                            range.start,
-                                            true,
-                                            Arc::new((retain, path.clone())),
-                                        )
-                                    }
-                                    #[cfg(feature = "rknpu")]
-                                    DeviceMmap::PhysicalResolvedPageCapped(range, retain) => {
-                                        if range.is_empty() {
-                                            return Err(StarryError::InvalidInput);
-                                        }
-                                        length = page_capped_device_map_len(
-                                            length,
-                                            range.size(),
-                                            page_size,
-                                        )?;
-                                        MappingOperation::new_linear_anchored(
-                                            start,
-                                            range.start,
-                                            true,
-                                            Arc::new((retain, path.clone())),
-                                        )
-                                    }
-                                    #[cfg(feature = "rknpu")]
-                                    DeviceMmap::PhysicalCachedResolvedPageCapped(range, retain) => {
-                                        if range.is_empty() {
-                                            return Err(StarryError::InvalidInput);
-                                        }
-                                        length = page_capped_device_map_len(
-                                            length,
-                                            range.size(),
-                                            page_size,
-                                        )?;
-                                        MappingOperation::new_linear_anchored(
-                                            start,
-                                            range.start,
-                                            true,
-                                            Arc::new((retain, path.clone())),
-                                        )
-                                    }
-                                    DeviceMmap::PhysicalPages(pages, retain) => {
-                                        length = length.min(pages.len() * PAGE_SIZE_4K);
-                                        MappingOperation::new_shared(
-                                            start,
-                                            Arc::new(SharedMemoryObject::borrowed(
-                                                pages,
-                                                PAGE_SIZE_4K,
-                                                Some(Arc::new((retain, path.clone()))),
-                                            )?),
-                                        )
-                                    }
-                                    DeviceMmap::Cache(cache) => MappingOperation::new_device_file(
-                                        start,
-                                        cache,
-                                        flags,
-                                        offset,
-                                        path.clone(),
-                                    )?,
+                        if let Some(cache) = backend.cached_file() {
+                            // TODO(mivik): file mmap page size
+                            MappingOperation::new_file(start, cache.clone(), flags, offset, true)?
+                        } else {
+                            let path = backend.data_path();
+                            let loc = path.location();
+                            let device = loc
+                                .entry()
+                                .downcast::<Device>()
+                                .map_err(|_| crate::StarryError::NoSuchDevice)?;
+                            match device.mmap(offset as u64, length as u64) {
+                                DeviceMmap::None => {
+                                    return Err(crate::StarryError::NoSuchDevice);
                                 }
+                                DeviceMmap::Physical(range, retain) => {
+                                    mapping_flags |= MappingFlags::UNCACHED;
+                                    if range.is_empty() {
+                                        return Err(StarryError::InvalidInput);
+                                    }
+                                    length = device_map_len(length, range.size(), page_size)?;
+                                    MappingOperation::new_linear_anchored(
+                                        start,
+                                        range.start,
+                                        true,
+                                        Arc::new((retain, path.clone())),
+                                    )
+                                }
+                                DeviceMmap::PhysicalCached(range, retain) => {
+                                    if range.is_empty() {
+                                        return Err(StarryError::InvalidInput);
+                                    }
+                                    length = device_map_len(length, range.size(), page_size)?;
+                                    MappingOperation::new_linear_anchored(
+                                        start,
+                                        range.start,
+                                        true,
+                                        Arc::new((retain, path.clone())),
+                                    )
+                                }
+                                DeviceMmap::PhysicalResolved(range, retain) => {
+                                    mapping_flags |= MappingFlags::UNCACHED;
+                                    if range.is_empty() {
+                                        return Err(StarryError::InvalidInput);
+                                    }
+                                    length = device_map_len(length, range.size(), page_size)?;
+                                    MappingOperation::new_linear_anchored(
+                                        start,
+                                        range.start,
+                                        true,
+                                        Arc::new((retain, path.clone())),
+                                    )
+                                }
+                                DeviceMmap::PhysicalCachedResolved(range, retain) => {
+                                    if range.is_empty() {
+                                        return Err(StarryError::InvalidInput);
+                                    }
+                                    length = device_map_len(length, range.size(), page_size)?;
+                                    MappingOperation::new_linear_anchored(
+                                        start,
+                                        range.start,
+                                        true,
+                                        Arc::new((retain, path.clone())),
+                                    )
+                                }
+                                #[cfg(feature = "rknpu")]
+                                DeviceMmap::PhysicalResolvedPageCapped(range, retain) => {
+                                    if range.is_empty() {
+                                        return Err(StarryError::InvalidInput);
+                                    }
+                                    length = page_capped_device_map_len(
+                                        length,
+                                        range.size(),
+                                        page_size,
+                                    )?;
+                                    MappingOperation::new_linear_anchored(
+                                        start,
+                                        range.start,
+                                        true,
+                                        Arc::new((retain, path.clone())),
+                                    )
+                                }
+                                #[cfg(feature = "rknpu")]
+                                DeviceMmap::PhysicalCachedResolvedPageCapped(range, retain) => {
+                                    if range.is_empty() {
+                                        return Err(StarryError::InvalidInput);
+                                    }
+                                    length = page_capped_device_map_len(
+                                        length,
+                                        range.size(),
+                                        page_size,
+                                    )?;
+                                    MappingOperation::new_linear_anchored(
+                                        start,
+                                        range.start,
+                                        true,
+                                        Arc::new((retain, path.clone())),
+                                    )
+                                }
+                                DeviceMmap::PhysicalPages(pages, retain) => {
+                                    length = length.min(pages.len() * PAGE_SIZE_4K);
+                                    MappingOperation::new_shared(
+                                        start,
+                                        Arc::new(SharedMemoryObject::borrowed(
+                                            pages,
+                                            PAGE_SIZE_4K,
+                                            Some(Arc::new((retain, path.clone()))),
+                                        )?),
+                                    )
+                                }
+                                DeviceMmap::Cache(cache) => MappingOperation::new_device_file(
+                                    start,
+                                    cache,
+                                    flags,
+                                    offset,
+                                    path.clone(),
+                                )?,
                             }
                         }
                     }

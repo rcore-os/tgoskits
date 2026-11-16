@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use axfs_ng_vfs::{FilesystemOps, Location, PathHandle, PreparedWrite, VfsError, VfsResult};
 
@@ -9,6 +9,7 @@ use crate::os::sync::Mutex;
 /// Share this lease through `Arc` when an open file description is retained by
 /// a mapping. The last owner releases write access, including on failed opens.
 pub struct WriteAccess {
+    backing: Mutex<Option<BackingWriteAccess>>,
     _lease: AccessLease,
     // Release inode access before the complete graph's write authority; keep
     // the selected path use through retirement of every preparation owner.
@@ -16,7 +17,46 @@ pub struct WriteAccess {
     _path: PathHandle,
 }
 
+struct BackingWriteAccess {
+    _leases: Vec<AccessLease>,
+    _paths: Vec<PathHandle>,
+}
+
 impl WriteAccess {
+    pub(crate) fn bind_backing(&self, target: &axfs_ng_vfs::FileIoTarget) -> VfsResult<()> {
+        let paths = &target.paths()[1..];
+        let mut retained = Vec::new();
+        let mut leases = Vec::new();
+        retained
+            .try_reserve_exact(paths.len())
+            .map_err(|_| VfsError::NoMemory)?;
+        leases
+            .try_reserve_exact(paths.len())
+            .map_err(|_| VfsError::NoMemory)?;
+        for path in paths {
+            self._write
+                .write_for(path.location())?
+                .check_location(path.location())?;
+            retained.push(path.clone());
+            leases.push(AccessLease::acquire(path, AccessKind::Write)?);
+        }
+        let backing = BackingWriteAccess {
+            _leases: leases,
+            _paths: retained,
+        };
+        let mut selected = self.backing.lock();
+        if selected.is_some() {
+            drop(selected);
+            return Err(VfsError::BadState);
+        }
+        *selected = Some(backing);
+        Ok(())
+    }
+
+    pub(crate) fn prepared_write(&self) -> &PreparedWrite {
+        &self._write
+    }
+
     pub(crate) fn prepare_open(
         &self,
         access: axfs_ng_vfs::NodePermission,
@@ -37,6 +77,7 @@ impl WriteAccess {
         let path = PathHandle::acquire(location)?;
         let write = PreparedWrite::acquire(path.location())?;
         Ok(Self {
+            backing: Mutex::new(None),
             _lease: AccessLease::acquire(&path, AccessKind::Write)?,
             _write: write,
             _path: path,

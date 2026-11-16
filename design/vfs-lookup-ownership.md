@@ -3254,8 +3254,8 @@ PathHandle。native 完成核对实际 NodeOps 的 owner、inode 与身份；深
 数据 I/O 结束前保留中间路径和原准备。Overlay 的写端点只接受已有 upper，物化
 必须先由第 4.18 节的命令完成。
 
-这一选择原语先接到实际暂存数据复制和 Overlay 文件的下沉 hook。普通描述的动态
-读缓存、全部 native writer/映射寿命仍需继续接入。复用现有路径使用权优于保存文字重查，固定原生端点优于
+这一选择原语接到实际暂存数据复制、Overlay 文件的下沉 hook 和普通写描述。
+动态只读描述与其余 native writer 仍需继续接入。复用现有路径使用权优于保存文字重查，固定原生端点优于
 在合并层建内容镜像；全部临时引用在锁外退休。组件验证沿同一实际两层 owner 旅程
 检查 mounter、下降和读写角色，真实缓存内容仍由暂存集成证明。额外路径保活与选择
 成本纳入整体同环境性能比较，接口回滚不涉及磁盘格式。
@@ -3275,9 +3275,26 @@ chmod 或 chown，打开本身不会产生这类属性副作用。隐藏文件�
 可见安装后的读取或完成错误保留实际副作用，不能转成 Retry。已创建的新文件
 已有上层创建授权和 upper，不在此处重新执行创建者的最终 DAC 检查。
 
+`FileBackend::Layered` 保存打开时接受的 `FileIoTarget` 和原生 backend，逻辑 fd
+身份继续来自最外层 PathHandle。写打开完成物化后，只选择一次原生数据端点，
+后续 read/write/append/truncate/range/sync 使用该端点的 canonical cache 或 direct
+实现，不重新用 root 打开 backing。缓存选择采用原生节点的实际 flags，MemoryFs
+的 `ALWAYS_CACHE` 因而仍有效；不会给合并 inode 建第二份内容缓存。
+
+`WriteAccess::bind_backing` 只在发布前绑定一次已选择的 backing inode 访问租约，
+继续借用原 `PreparedWrite` 核对每个实际 mount，不重新取得写图。
+`BackingWriteAccess` 把实际路径保留到全部 inode 租约退休之后；它由原
+`Arc<WriteAccess>` 拥有，因此 writable mapping 在 fd 关闭后仍阻止原生 backing
+执行和只读重配置。`O_RDONLY|O_TRUNC` 在截断结束后、描述发布前释放临时逻辑及
+backing writer。`cached_file` 和 `data_path` 让 mmap、CoW 和 loop 的现有消费者
+取得这个端点，原有映射所有者继续保存描述的 writer，所有路径在 backend gate 外退休。
+
 现有 ownership 系统旅程增加 lower 首次写打开、拒绝不创建 upper、fd 返回前完成
-复制、跨缓存页写入和 lower 内容不变的判定。动态读端点和旧的数据 hook 仍需迁移，
-因此这里只证明打开前物化，不据此宣称所有 writer 已经过统一 gate。新增接口复用
+复制、跨缓存页写入和 lower 内容不变的判定，并通过共享映射在关闭 fd 后修改同一
+upper cache、阻止 merged 卸载和最终显式退休。现有组件租约旅程同时证明两层
+原生数据访问、DAC 改变后的已接受 I/O、映射后的 backing 执行互斥、失败清理和
+只读截断的临时 writer 释放。动态只读端点和旧的数据 hook 消费者仍需迁移，
+不能据此宣称所有 writer 已经过统一 gate。新增接口复用
 已有 Scope 和准备所有者，不引入持久格式或第二份内容缓存，可以通过源码回滚；
 每次打开增加的观察和准备成本纳入同环境性能验收。
 
