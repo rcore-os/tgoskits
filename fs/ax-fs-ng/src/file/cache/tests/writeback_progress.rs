@@ -94,7 +94,10 @@ fn explicit_empty_sync_releases_io_and_failed_sync_releases_the_round() {
             cached.sync(false).unwrap();
         }
 
-        static DISK_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "vfat" };
+        static DISK_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem {
+            name: "vfat",
+            root: None,
+        };
         for entry in entries() {
             let backing = Arc::new(CacheTestFile::new_on(vec![0; PAGE_SIZE], &DISK_FILESYSTEM));
             let cached = reopen_cached_file(backing.clone());

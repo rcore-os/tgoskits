@@ -58,12 +58,22 @@ where
 
 struct CacheTestFilesystem {
     name: &'static str,
+    root: Option<DirEntry>,
 }
 
-static CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "cache-test" };
-static TMPFS_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "tmpfs" };
+static CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem {
+    name: "cache-test",
+    root: None,
+};
+static TMPFS_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem {
+    name: "tmpfs",
+    root: None,
+};
 #[cfg(all(feature = "ext4", feature = "vfs"))]
-static EXT4_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem { name: "ext4" };
+static EXT4_CACHE_TEST_FILESYSTEM: CacheTestFilesystem = CacheTestFilesystem {
+    name: "ext4",
+    root: None,
+};
 
 impl FilesystemOps for CacheTestFilesystem {
     fn name(&self) -> &str {
@@ -71,12 +81,7 @@ impl FilesystemOps for CacheTestFilesystem {
     }
 
     fn root_dir(&self) -> DirEntry {
-        let backing = Arc::new(CacheTestFile::new(Vec::new()));
-        DirEntry::new_file(
-            FileNode::new(backing),
-            NodeType::RegularFile,
-            Reference::root(),
-        )
+        self.root.clone().expect("a mounted fixture needs its root")
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
@@ -375,12 +380,16 @@ impl FileNodeOps for CacheTestFile {
 }
 
 fn reopen_cached_file(backing: Arc<CacheTestFile>) -> CachedFile {
+    let name = backing.filesystem.name;
     let entry = DirEntry::new_file(
         FileNode::new(backing),
         NodeType::RegularFile,
         Reference::root(),
     );
-    let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "cache-test" }));
+    let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem {
+        name,
+        root: Some(entry.clone()),
+    }));
     let mountpoint = Mountpoint::new_root(&filesystem);
     CachedFile::get_or_create(
         axfs_ng_vfs::PathHandle::acquire(Location::new(mountpoint, entry)).unwrap(),
@@ -1343,7 +1352,10 @@ fn retirement_waits_for_periodic_writeback_before_registry_removal() {
             NodeType::RegularFile,
             Reference::root(),
         );
-        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "ext4" }));
+        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem {
+            name: "ext4",
+            root: Some(entry.clone()),
+        }));
         let mountpoint = Mountpoint::new_root(&filesystem);
         let cached = CachedFile::get_or_create(
             axfs_ng_vfs::PathHandle::acquire(Location::new(mountpoint, entry)).unwrap(),
@@ -1414,7 +1426,10 @@ fn failed_retirement_keeps_dirty_file_registered_for_retry() {
             NodeType::RegularFile,
             Reference::root(),
         );
-        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem { name: "ext4" }));
+        let filesystem = Filesystem::new(Arc::new(CacheTestFilesystem {
+            name: "ext4",
+            root: Some(entry.clone()),
+        }));
         let mountpoint = Mountpoint::new_root(&filesystem);
         let cached = CachedFile::get_or_create(
             axfs_ng_vfs::PathHandle::acquire(Location::new(mountpoint, entry)).unwrap(),

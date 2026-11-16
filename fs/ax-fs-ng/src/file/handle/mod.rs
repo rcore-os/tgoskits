@@ -364,16 +364,19 @@ mod tests {
     struct TestFilesystem {
         name: &'static str,
         readonly: bool,
+        root: Option<DirEntry>,
     }
 
     static READONLY_TEST_FILESYSTEM: TestFilesystem = TestFilesystem {
         name: "readonly-file-drop-test",
         readonly: true,
+        root: None,
     };
 
     static WRITABLE_TEST_FILESYSTEM: TestFilesystem = TestFilesystem {
         name: "writable-file-drop-test",
         readonly: false,
+        root: None,
     };
 
     static DROP_METADATA_UPDATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -388,10 +391,7 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            test_entry(Arc::new(MetadataTrackingTestFile::new(
-                &READONLY_TEST_FILESYSTEM,
-                Arc::new(AtomicUsize::new(0)),
-            )))
+            self.root.clone().expect("a mounted fixture needs its root")
         }
 
         fn stat(&self) -> VfsResult<StatFs> {
@@ -533,18 +533,17 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_drop_metadata_update_attempts();
         let metadata_updates = Arc::new(AtomicUsize::new(0));
+        let entry = test_entry(Arc::new(MetadataTrackingTestFile::new(
+            &READONLY_TEST_FILESYSTEM,
+            metadata_updates.clone(),
+        )));
         let filesystem = Filesystem::new(Arc::new(TestFilesystem {
             name: "readonly-file-drop-test",
             readonly: true,
+            root: Some(entry.clone()),
         }));
         let mountpoint = Mountpoint::new_root(&filesystem);
-        let location = Location::new(
-            mountpoint,
-            test_entry(Arc::new(MetadataTrackingTestFile::new(
-                &READONLY_TEST_FILESYSTEM,
-                metadata_updates.clone(),
-            ))),
-        );
+        let location = Location::new(mountpoint, entry);
 
         let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
         let mut byte = [0];
@@ -562,18 +561,17 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_drop_metadata_update_attempts();
         let metadata_updates = Arc::new(AtomicUsize::new(0));
+        let entry = test_entry(Arc::new(MetadataTrackingTestFile::new(
+            &WRITABLE_TEST_FILESYSTEM,
+            metadata_updates.clone(),
+        )));
         let filesystem = Filesystem::new(Arc::new(TestFilesystem {
             name: "writable-file-drop-test",
             readonly: false,
+            root: Some(entry.clone()),
         }));
         let mountpoint = Mountpoint::new_root(&filesystem);
-        let location = Location::new(
-            mountpoint,
-            test_entry(Arc::new(MetadataTrackingTestFile::new(
-                &WRITABLE_TEST_FILESYSTEM,
-                metadata_updates.clone(),
-            ))),
-        );
+        let location = Location::new(mountpoint, entry);
 
         let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
         let mut byte = [0];
@@ -586,17 +584,16 @@ mod tests {
 
     #[test]
     fn direct_read_preserves_progress_before_a_later_error() {
-        let filesystem = Filesystem::new(Arc::new(TestFilesystem {
-            name: "direct-read-progress-test",
-            readonly: true,
-        }));
         let mut node =
             MetadataTrackingTestFile::new(&READONLY_TEST_FILESYSTEM, Arc::new(AtomicUsize::new(0)));
         node.read_record_size = Some(32);
-        let location = Location::new(
-            Mountpoint::new_root(&filesystem),
-            test_entry(Arc::new(node)),
-        );
+        let entry = test_entry(Arc::new(node));
+        let filesystem = Filesystem::new(Arc::new(TestFilesystem {
+            name: "direct-read-progress-test",
+            readonly: true,
+            root: Some(entry.clone()),
+        }));
+        let location = Location::new(Mountpoint::new_root(&filesystem), entry);
         let file = File::new(FileBackend::new_direct(location).unwrap(), FileFlags::READ);
 
         // A first-record error must remain an error and leave the cursor intact.
