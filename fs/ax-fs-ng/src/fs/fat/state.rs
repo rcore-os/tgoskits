@@ -29,6 +29,9 @@ pub(super) struct FatInode {
     pub generation: u64,
     pub handle: FsRef<Option<FatHandle>>,
     pub name: FsRef<FatName>,
+    // Only clones owned by FatFilesystemGuard's retirement collection count
+    // here. Public nodes, open descriptions and other owners remain active.
+    pub retained: FsRef<usize>,
 }
 
 // SAFETY: fatfs is accessed only through a matching filesystem mutex guard,
@@ -36,7 +39,8 @@ pub(super) struct FatInode {
 // their owning Arc<FatFilesystem> outlives every access and handle destructor.
 unsafe impl Send for FatInode {}
 // SAFETY: FsRef requires a matching guard for reads and its exclusive borrow for
-// writes. Neither the raw fatfs handle nor an unchecked mutable cell is public.
+// writes, including the private retirement count. Neither a raw fatfs handle
+// nor an unchecked mutable cell is public.
 unsafe impl Sync for FatInode {}
 
 impl FatInode {
@@ -106,6 +110,7 @@ impl FatInode {
         // Drop takes and destroys the handle before releasing the owning Arc.
         let dir = unsafe { mem::transmute::<ff::Dir<'_>, ff::Dir<'static>>(dir) };
         Arc::new(Self {
+            retained: FsRef::new(&fs, 0),
             handle: FsRef::new(&fs, Some(FatHandle::Dir(dir))),
             name: FsRef::new(
                 &fs,
@@ -154,6 +159,7 @@ impl FatInode {
         };
         let fs = parent.fs.clone();
         let result = Arc::new(Self {
+            retained: FsRef::new(&fs, 0),
             handle: FsRef::new(&fs, Some(handle)),
             name: FsRef::new(
                 &fs,

@@ -77,13 +77,49 @@ pub(super) struct FatFilesystemGuard<'a> {
     retired: Option<&'a axfs_ng_vfs::MutationRetire>,
 }
 
+/// One known-private set. Its counts change under the same owner gate as the
+/// unlink sample; actual inode destructors run only after that gate is gone.
+struct RetainedInodes(Vec<Arc<FatInode>>);
+
+impl Drop for RetainedInodes {
+    fn drop(&mut self) {
+        let Some(first) = self.0.first() else {
+            return;
+        };
+        let mut guard = first.fs.lock();
+        for inode in &self.0 {
+            let retained = inode.retained.borrow_mut(&mut guard);
+            *retained = retained
+                .checked_sub(1)
+                .expect("FAT retained owner underflow");
+        }
+        // `guard` ends before the Vec fields release any inode or FS owner.
+    }
+}
+
 impl FatFilesystemGuard<'_> {
     pub(super) fn owner_id(&self) -> usize {
         core::ptr::from_ref(self.owner) as usize
     }
 
     pub(super) fn retain(&mut self, inode: &Arc<FatInode>) {
+        let retained = inode.retained.borrow_mut(self);
+        *retained = retained
+            .checked_add(1)
+            .expect("FAT retained owner overflow");
         self.retained.push(inode.clone());
+    }
+
+    pub(super) fn has_external_holders(&mut self, inode: &Weak<FatInode>) -> bool {
+        let Some(inode) = inode.upgrade() else {
+            return false;
+        };
+        // The temporary upgrade adds exactly one owner. Retained counts are
+        // stable under this gate; a new public holder requires the same gate.
+        let retained = *inode.retained.borrow(self);
+        let active = Arc::strong_count(&inode) - 1 > retained;
+        self.retain(&inode);
+        active
     }
 }
 
@@ -105,10 +141,11 @@ impl Drop for FatFilesystemGuard<'_> {
         // An inode destructor acquires this mutex. Never become its last owner
         // while still holding the filesystem guard.
         drop(self.held.take());
+        let retained = RetainedInodes(core::mem::take(&mut self.retained));
         if let Some(retired) = self.retired {
-            retired.retire(core::mem::take(&mut self.retained));
+            retired.retire(retained);
         } else {
-            self.retained.clear();
+            drop(retained);
         }
     }
 }

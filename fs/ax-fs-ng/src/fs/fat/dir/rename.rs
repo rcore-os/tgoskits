@@ -295,11 +295,9 @@ impl LockedAttempt for FatAttempt<'_> {
                 let raw = self.source.find(request.name(), &self.guard)?;
                 let key = (self.source.state.inode, FatInode::canonical_name(&raw)?);
                 // Record activity before adding this attempt's own retained owner.
-                self.unlink_active = self
-                    .guard
-                    .active
-                    .get(&key)
-                    .is_some_and(|holder| holder.strong_count() != 0);
+                let holder = self.guard.active.get(&key).cloned();
+                self.unlink_active =
+                    holder.is_some_and(|holder| self.guard.has_external_holders(&holder));
                 let (node, holder) = self.observe_node(&source_parent, request.name(), retired)?;
                 self.source_holder = Some(holder);
                 return Ok(MutationObservation::Unlink(node));
