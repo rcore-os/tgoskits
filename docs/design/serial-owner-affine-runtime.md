@@ -127,6 +127,12 @@ panic/FIQ 不反向调用 platform/runtime callback，也不借用 control endpo
 则返回 0。该语义优先保留完整 panic/backtrace 诊断，硬件永久不 ready 时可能停在 fatal
 输出，属于同步 emergency console 的明确边界。
 
+致命错误的必要上下文应进入同一条 panic 记录。栈保护页故障由
+`diagnose_current_stack_guard_page_fault()` 在屏蔽本地 IRQ 的范围内复制当前栈边界，
+返回拥有地址值的 `StackGuardPageFault`，再由运行时页故障处理器触发包含该诊断的
+panic。不能先单独写出栈范围、忽略返回 0，再只输出不含这些范围的通用 panic；
+普通 UART 事务短暂占用 gate 时会因此丢失唯一的栈保护判定信息。
+
 ## IRQ 与 worker 协议
 
 hard IRQ 只允许：

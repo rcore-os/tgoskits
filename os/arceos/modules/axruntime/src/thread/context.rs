@@ -1,7 +1,9 @@
 use alloc::boxed::Box;
 use core::{
     cell::UnsafeCell,
+    fmt,
     mem::offset_of,
+    ops::Range,
     pin::Pin,
     ptr::{self, NonNull},
 };
@@ -26,20 +28,47 @@ use super::{
     runtime_status_error, with_current_cpu_pin,
 };
 
-/// Reports whether a kernel page fault hit the current runtime stack guard.
-pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) -> bool {
+/// Owned diagnostic for a fault in the current task's unmapped stack guard.
+pub struct StackGuardPageFault {
+    address: ax_memory_addr::VirtAddr,
+    stack: Range<usize>,
+    guard: Range<usize>,
+}
+
+impl fmt::Display for StackGuardPageFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "task stack guard page hit: fault_addr={:#x}, stack=[{:#x}..{:#x}), \
+             guard=[{:#x}..{:#x})",
+            self.address.as_usize(),
+            self.stack.start,
+            self.stack.end,
+            self.guard.start,
+            self.guard.end,
+        )
+    }
+}
+
+/// Captures a stack-guard fault without emitting a separate emergency record.
+pub fn diagnose_current_stack_guard_page_fault(
+    fault: ax_memory_addr::VirtAddr,
+) -> Option<StackGuardPageFault> {
     #[cfg(feature = "paging")]
     {
-        // SAFETY: trap execution cannot migrate before returning through its
-        // architecture epilogue.
-        unsafe {
+        // The page-fault slow path may restore the faulting task's IRQ state.
+        // Mask IRQs while borrowing current-context and stack ownership, then
+        // restore them before the caller formats the owned diagnostic.
+        let irqs_enabled = ax_cpu::interrupt::irqs_enabled();
+        ax_cpu::interrupt::disable_irqs();
+        // SAFETY: masked local IRQs exclude migration and context reclamation.
+        // Only owned addresses escape this CPU-pinned callback.
+        let diagnostic = unsafe {
             with_current_cpu_pin(|cpu_pin| {
-                let Ok(context) = current_runtime_context(cpu_pin) else {
-                    return false;
-                };
+                let context = current_runtime_context(cpu_pin).ok()?;
                 let stack = context.stack.into_raw();
                 if stack == 0 {
-                    return false;
+                    return None;
                 }
                 // SAFETY: the scheduler owns the stack until this context can
                 // no longer run, and the current header keeps it on-CPU.
@@ -47,30 +76,29 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
                 let super::resources::StackBacking::VirtualPages { allocation, .. } =
                     &stack.backing
                 else {
-                    return false;
+                    return None;
                 };
                 let guard_start = allocation.reservation_range().start.as_usize();
                 let guard_end = allocation.usable_range().start.as_usize();
                 if !(guard_start..guard_end).contains(&fault.as_usize()) {
-                    return false;
+                    return None;
                 }
-                let _ = crate::emergency_console::write_fmt(format_args!(
-                    "task stack guard page hit: fault_addr={:#x}, stack=[{:#x}..{:#x}), \
-                     guard=[{:#x}..{:#x})\n",
-                    fault.as_usize(),
-                    guard_end,
-                    stack.usable_top,
-                    guard_start,
-                    guard_end,
-                ));
-                true
+                Some(StackGuardPageFault {
+                    address: fault,
+                    stack: guard_end..stack.usable_top,
+                    guard: guard_start..guard_end,
+                })
             })
+        };
+        if irqs_enabled {
+            ax_cpu::interrupt::enable_irqs();
         }
+        diagnostic
     }
     #[cfg(not(feature = "paging"))]
     {
         let _ = fault;
-        false
+        None
     }
 }
 
