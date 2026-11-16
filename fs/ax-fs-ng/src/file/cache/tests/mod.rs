@@ -1384,8 +1384,9 @@ fn retirement_waits_for_periodic_writeback_before_registry_removal() {
             .shared
             .set_retirement_observer(Some(Arc::new(move || attempt_tx.send(()).unwrap())));
         let retiring = cached.clone();
-        let retirement =
-            std::thread::spawn(move || retire_filesystem_cache(retiring.inner.filesystem()));
+        let retirement = std::thread::spawn(move || {
+            retire_filesystem_cache(retiring.inner.location().filesystem())
+        });
 
         let lock_attempt = attempt_rx.recv_timeout(Duration::from_secs(1));
         assert!(!cached.shared.retired.load(Ordering::Acquire));
