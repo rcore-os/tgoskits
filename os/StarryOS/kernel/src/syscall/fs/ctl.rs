@@ -731,6 +731,11 @@ pub fn sys_getcwd(current: &UserTaskRef, buf: *mut u8, size: usize) -> StarryRes
     let cwd = {
         let fs = current_fs_context();
         let current_dir = fs.current_dir();
+        // getcwd requires a linked cwd even when it equals the process root.
+        // Retained names remain available to descriptor/proc display paths.
+        if current_dir.entry().name_state() == axfs_ng_vfs::NameState::Unlinked {
+            return Err(StarryError::NotFound);
+        }
         match current_dir.path_from(fs.root_dir()) {
             Ok(path) => path,
             Err(VfsError::InvalidInput) => {
