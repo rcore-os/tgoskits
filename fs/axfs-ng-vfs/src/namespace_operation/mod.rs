@@ -413,6 +413,17 @@ impl<'a> NamespaceOperationContext<'a> {
         )
     }
 
+    pub(crate) fn forward_metadata(
+        &self,
+        target: &Location,
+        intent: MetadataIntent,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<NamespaceObservation<Metadata>> {
+        let reservation = Reservation::child(self.children)?;
+        self.dispatch_metadata(target, intent, credentials, reservation)?
+            .ok_or(VfsError::BadState)
+    }
+
     pub fn unlink(
         &'a self,
         prepared: PreparedUnlink,

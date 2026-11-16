@@ -3,6 +3,7 @@
 use super::{
     AuthorizedMetadataChange, LockedMetadataAttempt, MetadataChange, MetadataIntent,
     MetadataRequest, TimeChange,
+    forward::{ForwardedChange, SetidRemoval},
 };
 use crate::{Metadata, NodePermission, NodeType, VfsError, VfsResult};
 
@@ -30,9 +31,18 @@ impl MetadataRequest<'_> {
             mtime: None,
             rdev: None,
             ctime: None,
+            removal: SetidRemoval::default(),
         };
         let change = match &self.intent {
             MetadataIntent::User(change) => *change,
+            MetadataIntent::Forwarded(change) => match *change {
+                ForwardedChange::Chmod(mode) => MetadataChange::Chmod(mode),
+                ForwardedChange::Chown { uid, gid, removal } => {
+                    authorized.removal = removal;
+                    MetadataChange::Chown { uid, gid }
+                }
+                ForwardedChange::Times { atime, mtime } => MetadataChange::Times { atime, mtime },
+            },
             MetadataIntent::Initialization(update) => {
                 if update.rdev.is_some()
                     && !matches!(
@@ -80,20 +90,26 @@ impl MetadataRequest<'_> {
                 }
                 authorized.uid = uid;
                 authorized.gid = gid;
-                if current.node_type != NodeType::Directory {
-                    let mut mode = current.mode;
+                if current.node_type != NodeType::Directory
+                    && !matches!(self.intent, MetadataIntent::Forwarded(_))
+                {
                     // chown_common has no CAP_FSETID exemption for SUID.
+                    authorized.removal.suid = true;
+                    authorized.removal.sgid = current.mode.contains(NodePermission::SET_GID)
+                        && (current.mode.contains(NodePermission::GROUP_EXEC)
+                            || !(credentials.in_group(current.gid) || credentials.cap_fsetid));
+                }
+                let mut mode = current.mode;
+                if authorized.removal.suid {
                     mode.remove(NodePermission::SET_UID);
-                    if mode.contains(NodePermission::SET_GID)
-                        && (mode.contains(NodePermission::GROUP_EXEC)
-                            || !(credentials.in_group(current.gid) || credentials.cap_fsetid))
-                    {
-                        mode.remove(NodePermission::SET_GID);
-                    }
-                    // notify_change adds ATTR_MODE only when a bit is killed.
-                    if mode.bits() != current.mode.bits() {
-                        authorized.mode = Some(mode);
-                    }
+                }
+                if authorized.removal.sgid {
+                    mode.remove(NodePermission::SET_GID);
+                }
+                // notify_change adds derived MODE only when a bit is killed.
+                // Each backing owner reinterprets the original kill flags.
+                if mode.bits() != current.mode.bits() {
+                    authorized.mode = Some(mode);
                 }
             }
             MetadataChange::Times { atime, mtime } => {

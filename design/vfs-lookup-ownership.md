@@ -3086,6 +3086,33 @@ copy-up 竞争和错误后名称由系统用例证明。通用 Command/Scope 的
 依赖及 mounter。原生封闭暂存、数据/open、恢复、安装和 xattr 尚未接通，
 不能据此宣称完整 Overlay 已实现或 Starry 可以构建。
 
+### 4.19 属性意图的逐层传递
+
+`AuthorizedMetadataChange::forward_to` 只借当前实际尝试内的授权，向已声明的可写
+backing 发起子请求。它核对原 exact-mount 写准备、实际 receiver 及声明的严格下降边；
+Overlay 私有适配选择其绑定的 upper 实体，包括已脱链实体，不能以可变名称祖先链
+代替来源。完整目标由原 retire 保活，子完成进入同一 Scope。每一层使用自己的真实 metadata
+尝试和该实例保存的 mounter，不能传回可供重放的授权或可替换目标的 raw driver。
+
+固定 Linux 的 [`ovl_setattr`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/inode.c#L21-L89)
+先对当前 caller 执行 `setattr_prepare`，有 kill flags 时再清除派生 MODE 后下沉。
+[`notify_change`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/attr.c#L466-L515)
+会在目的 inode 重新取 NOW，并按保留的 kill flags 生成派生 MODE。直接重放最初的
+Chmod 会恢复外层已经过滤的 SGID；重做普通 Chown 则会让另一组凭据重新选择清位。
+传递最终快照又会丢掉遗漏字段和目的 inode 的时间语义。这些替代方案都不满足边界。
+
+VFS 私有 `ForwardedChange` 因此保留三类命令：Chmod 传递已过滤的权限；Chown
+传递原 UID/GID 参与字段及首次实际观察确定的 SUID/SGID kill 意图，在每层当前
+inode 重算派生 MODE，并执行该层属主与 SGID 权限判断；Times 保留 Keep/Now/Set，
+不用外层已解析的时钟值。普通用户不能构造这一来源。既有显式初始化保持其参与字段
+和无隐含 ctime 的合同，不因逐层传递转换成用户 Chown。转发本身不提供 copy-up、
+运行期恢复或 xattr 权限，Overlay 仍须完成第 4.18 节的实际暂存和安装。
+
+本次能力复用现有 authorizer、Context 登记和 Scope，不新增锁、持久状态或全局表，
+可按源码回滚。验证覆盖不同 caller/mounter 的权限过滤、kill 意图、NOW/省略字段、
+非声明和只读来源拒绝以及原完成顺序；真实 Overlay 另需系统证明。热路径增加的声明边
+检查随整体性能比较记录，高风险授权实现仍纳入最终独立审查。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。

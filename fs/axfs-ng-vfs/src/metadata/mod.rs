@@ -1,6 +1,7 @@
 //! Current-inode metadata intentions and the fixed authorization protocol.
 
 mod authorize;
+mod forward;
 mod restore;
 
 use core::time::Duration;
@@ -37,6 +38,7 @@ pub enum MetadataChange {
 #[derive(Clone)]
 pub(crate) enum MetadataIntent {
     User(MetadataChange),
+    Forwarded(forward::ForwardedChange),
     Initialization(MetadataUpdate),
 }
 
@@ -44,6 +46,7 @@ impl MetadataIntent {
     pub(crate) fn is_empty(&self) -> bool {
         match self {
             Self::User(change) => change.is_empty(),
+            Self::Forwarded(_) => false,
             Self::Initialization(update) => {
                 update.mode.is_none()
                     && update.owner.is_none()
@@ -89,6 +92,7 @@ pub struct AuthorizedMetadataChange<'a> {
     mtime: Option<Duration>,
     rdev: Option<DeviceId>,
     ctime: Option<Duration>,
+    removal: forward::SetidRemoval,
 }
 
 impl AuthorizedMetadataChange<'_> {
@@ -190,6 +194,7 @@ impl<'a> MetadataRequest<'a> {
                 change,
                 MetadataChange::Chmod(_) | MetadataChange::Chown { .. }
             ),
+            MetadataIntent::Forwarded(change) => change.changes_permissions_or_ownership(),
             MetadataIntent::Initialization(update) => {
                 update.mode.is_some() || update.owner.is_some() || update.rdev.is_some()
             }
