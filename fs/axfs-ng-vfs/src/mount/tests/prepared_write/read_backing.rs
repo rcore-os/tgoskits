@@ -103,6 +103,67 @@ fn namespace_admissions_order_real_receivers_once_and_release_partial_acquisitio
     drop(creation);
     let fallback_events = core::mem::take(&mut *probe.events.lock().unwrap());
     assert_eq!(fallback_events.len(), receivers.len() * 2);
+
+    // Ordinary layered reads borrow the actual receiver, even on a read-only
+    // mount, and include both dependency roles without preparing any writer.
+    visible.mountpoint().set_readonly(true).unwrap();
+    let read = crate::PreparedRead::acquire(visible.filesystem()).unwrap();
+    let mut attempts = 0;
+    let selected = read
+        .run(|queries| {
+            attempts += 1;
+            for location in [&visible, &higher, &alias, &lower, &read_only, &read_alias] {
+                assert_eq!(location.mountpoint().writes.lock().writers, 0);
+            }
+            let provider = lower.entry().downcast::<WriteLayerRoot>().unwrap();
+            *provider.filesystem.lookup_response.lock().unwrap() = Some(
+                crate::NamespaceRead::Entry(Some(provider.filesystem.root_dir())),
+            );
+            let selected = queries.lookup_backing(&lower, "selected")?;
+            if attempts == 1 {
+                assert!(matches!(selected, crate::NamespaceReadResult::Ready(Ok(_))));
+                Ok(crate::NamespaceReadResult::Retry)
+            } else {
+                Ok(selected)
+            }
+        })
+        .unwrap();
+    assert_eq!(attempts, 2);
+    assert!(Arc::ptr_eq(selected.mountpoint(), lower.mountpoint()));
+    assert_eq!(selected.inode(), lower.inode());
+    let events = core::mem::take(&mut *probe.events.lock().unwrap());
+    assert_eq!(events.len(), receivers.len() * 4);
+    for attempt in events.chunks_exact(receivers.len() * 2) {
+        assert_eq!(
+            &attempt[..receivers.len()],
+            receivers
+                .iter()
+                .map(|owner| (*owner, true))
+                .collect::<Vec<_>>(),
+        );
+        let mut exited: Vec<_> = attempt[receivers.len()..].to_vec();
+        exited.sort_unstable();
+        assert_eq!(
+            exited,
+            receivers
+                .iter()
+                .map(|owner| (*owner, false))
+                .collect::<Vec<_>>()
+        );
+    }
+    let mut attempts = 0;
+    assert_eq!(
+        read.run::<()>(|_| {
+            attempts += 1;
+            Ok(crate::NamespaceReadResult::Ready(Err(VfsError::WouldBlock)))
+        }),
+        Err(VfsError::WouldBlock)
+    );
+    assert_eq!(attempts, 1, "an ordinary error must not replay the read");
+    let events = core::mem::take(&mut *probe.events.lock().unwrap());
+    assert_eq!(events.len(), receivers.len() * 2);
+    drop(read);
+    visible.mountpoint().set_readonly(false).unwrap();
     higher.mountpoint().set_readonly(false).unwrap();
     let write = PreparedWrite::acquire(&visible).unwrap();
     let ready = crate::prepared_write::PreparedView::write(&write);

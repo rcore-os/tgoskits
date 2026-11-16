@@ -3177,10 +3177,21 @@ Registration 为真实读取增加 typed pressure/deferred 分支，继续满足
 规则处理，不重放已应用命令。单 FS 的 admitted read primitive 保留纯原生读取职责，
 完整 Context 的 typed hook 承担跨层完成，不以错误后的普通 Location 回退补权。
 
-普通分层读取随后由只读准备协调：完整枚举 receiver 和只读依赖，不取得写租约；
-最外层在无 gate 时取得 admissions，owner 在其中完成具体只读操作。聚合根只表达
-只读控制，重入仅发生在所有 typed 读取完成之后。该扩展先完成实际调用链和原生
-压力证据，再接统一 lookup、目录批次及 Overlay owner，不宣称这些消费者已经迁移。
+`PreparedRead` 借用实际 receiver，并用同一 `BackingPreparation` 枚举全部依赖，
+把两类 backing 都按只读处理。根 receiver 没有虚构的挂载或条目，也不要求最后一个
+逻辑 dentry 仍存在。`PreparedView` 将该实际 owner 与依赖共同交给既有 admission
+工厂；原有写入及创建准备的 owner 来源保持不变。
+
+`PreparedRead::run` 在 callback 前取得完整 admissions。callback 只得到根 owner
+绑定的 `BackingQueryContext`，在其中取得该层 gate 并完成纯观察；返回前必须结束
+全部 gate。根完成只聚合 Ready/Retry，重试发生在该轮全部读取压力、admission
+退出、retire 和 finish 之后。普通错误即使为 WouldBlock 也不重试。借用不能带出
+Context 或写授权，也不新增只读事务处理器。统一 lookup、目录批次及 Overlay owner
+仍待接入，不能从这一基础能力推导这些消费者已经迁移。
+
+原 Ext4 staging 旅程同时覆盖 Metadata/Lookup/Xattr 的真实压力、锁外设备刷新与
+下一轮读取；原 admission 图旅程覆盖只读根、两类依赖、exact mount、全体退出后
+重试及普通 WouldBlock 返回。两者继续使用现有测试入口，没有新增内核启动。
 
 ## 5. 对象型链接
 

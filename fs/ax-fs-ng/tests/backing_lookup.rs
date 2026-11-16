@@ -180,7 +180,8 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
     drop(retired);
     // Exercise the full-context first hop and its native default request path
     // against the same MemoryFs and already cached/covered backing entries.
-    // Pure queries register no fake root or child completion.
+    // Each read transfers its own typed completion to the shared scope; no
+    // mutating root command is manufactured for this lookup-only journey.
     let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
     let scope = command.attempt::<axfs_ng_vfs::NamespaceEffect>().unwrap();
     {

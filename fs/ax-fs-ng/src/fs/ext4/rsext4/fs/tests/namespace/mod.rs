@@ -284,7 +284,10 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
         .unwrap_or_else(|_| panic!("read owner mismatch"));
     assert_eq!(aborted.state(), axfs_ng_vfs::NamespaceState::Uncertain);
     assert_eq!(aborted.result(), Err(VfsError::BadState));
-    command.finish(Ok(aborted)).unwrap();
+    assert_eq!(
+        command.finish(Ok(aborted)).unwrap().into_result(),
+        Err(VfsError::BadState)
+    );
     probe.finish();
     assert!(!filesystem.lock().staging);
     assert_admission_released(&filesystem);
@@ -333,7 +336,7 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
         .unwrap_or_else(|_| panic!("read owner mismatch"));
     assert_eq!(outcome.state(), axfs_ng_vfs::NamespaceState::Unchanged);
     assert_eq!(outcome.result(), Ok(()));
-    command.finish(Ok(outcome)).unwrap();
+    command.finish(Ok(outcome)).unwrap().into_result().unwrap();
     drop(write);
     assert_admission_released(&filesystem);
 

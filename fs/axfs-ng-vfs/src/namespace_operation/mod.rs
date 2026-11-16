@@ -25,6 +25,43 @@ use crate::{
     prepared_write::PreparedView,
 };
 
+impl<'a> NamespaceCommandScope<'a> {
+    pub(crate) fn run_read<T>(
+        receiver: &'a dyn crate::FilesystemOps,
+        prepared: PreparedView<'a>,
+        mut operation: impl FnMut(BackingQueryContext<'_>) -> VfsResult<NamespaceReadResult<T>>,
+    ) -> VfsResult<T> {
+        Self::run_prepared(prepared, |command| {
+            loop {
+                let scope = command.attempt::<T>()?;
+                {
+                    let context = scope.context();
+                    let admission = context.admission_for_owner(receiver)?;
+                    let result = operation(BackingQueryContext::new(&context, admission));
+                    let outcome = match result {
+                        Ok(NamespaceReadResult::Retry) => NamespaceOutcome::retry(),
+                        Ok(NamespaceReadResult::Ready(Ok(value))) => {
+                            NamespaceOutcome::unchanged_observed(value, Ok(()))
+                        }
+                        Ok(NamespaceReadResult::Ready(Err(error))) | Err(error) => {
+                            NamespaceOutcome::unchanged(Err(error))
+                        }
+                    };
+                    // This root only aggregates a pure read. No callback receives
+                    // the mutable Context, a write capability or a root factory.
+                    *scope.state().root.borrow_mut() =
+                        Some(NamespaceCompletion::new(outcome, None).bind(receiver));
+                }
+                let outcome = scope.finish().map_err(|_| VfsError::BadState)?;
+                if outcome.state() != NamespaceState::Retry {
+                    return Ok(outcome);
+                }
+            }
+        })?
+        .into_observation()
+    }
+}
+
 /// An owned snapshot, never a transferable completion or write capability.
 #[derive(Debug, Clone)]
 pub struct NamespaceObservation<T> {

@@ -2,7 +2,44 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::{Location, MountWriteGuard, VfsError, VfsResult};
+use crate::{FilesystemOps, Location, MountWriteGuard, VfsError, VfsResult};
+
+/// Prepares all read dependencies of one externally borrowed receiver.
+///
+/// No synthetic mount or dentry is created for the receiver. Dependencies retain
+/// their exact locations, including writable backing roots in a read-only role;
+/// preparation never acquires a write lease or waits under a backend gate.
+pub struct PreparedRead<'a> {
+    receiver: &'a dyn FilesystemOps,
+    backing: BackingPreparation,
+}
+
+impl<'a> PreparedRead<'a> {
+    pub fn acquire(receiver: &'a dyn FilesystemOps) -> VfsResult<Self> {
+        let mut backing = BackingPreparation::default();
+        let depth = receiver.stack_depth();
+        if depth > 2 {
+            return Err(VfsError::InvalidInput);
+        }
+        backing.acquire_dependencies(receiver, depth, BackingRole::Read)?;
+        Ok(Self { receiver, backing })
+    }
+
+    /// Runs a pure observation with all admissions acquired before its callback.
+    ///
+    /// The callback may take this receiver's gate and use only its bound direct
+    /// backing queries. Every callback exit must release all gates. Typed Retry
+    /// restarts only after pressure, admission exit, retirement and finish;
+    /// ordinary errors, including WouldBlock, are returned without replay.
+    pub fn run<T>(
+        &self,
+        operation: impl FnMut(
+            crate::BackingQueryContext<'_>,
+        ) -> VfsResult<crate::NamespaceReadResult<T>>,
+    ) -> VfsResult<T> {
+        crate::NamespaceCommandScope::run_read(self.receiver, PreparedView::read(self), operation)
+    }
+}
 
 /// Prepares write authority and read dependencies before entering backend gates.
 ///
@@ -96,6 +133,7 @@ pub(crate) struct PreparedView<'a> {
     backing: &'a BackingPreparation,
     write: Option<&'a PreparedWrite>,
     denial: Option<VfsError>,
+    receiver: Option<&'a dyn FilesystemOps>,
 }
 
 impl<'a> PreparedView<'a> {
@@ -104,6 +142,7 @@ impl<'a> PreparedView<'a> {
             backing: &write.backing,
             write: Some(write),
             denial: None,
+            receiver: None,
         }
     }
 
@@ -114,12 +153,22 @@ impl<'a> PreparedView<'a> {
                 backing,
                 write: None,
                 denial: Some(*error),
+                receiver: None,
             },
         }
     }
 
+    fn read(read: &'a PreparedRead<'_>) -> Self {
+        Self {
+            backing: &read.backing,
+            write: None,
+            denial: None,
+            receiver: Some(read.receiver),
+        }
+    }
+
     pub(crate) fn filesystems(self) -> impl Iterator<Item = &'a dyn crate::FilesystemOps> {
-        self.backing.filesystems()
+        self.receiver.into_iter().chain(self.backing.filesystems())
     }
 
     pub(crate) fn require_write(self) -> VfsResult<&'a PreparedWrite> {
@@ -202,6 +251,15 @@ impl BackingPreparation {
                 // An earlier read pin does not cover this root's write subtree.
             }
         }
+        self.acquire_dependencies(filesystem, depth, role)
+    }
+
+    fn acquire_dependencies(
+        &mut self,
+        filesystem: &dyn FilesystemOps,
+        depth: u32,
+        role: BackingRole,
+    ) -> VfsResult<()> {
         for backing in filesystem.read_backing_roots() {
             self.acquire_backing(backing, Some(depth), BackingRole::Read)?;
         }

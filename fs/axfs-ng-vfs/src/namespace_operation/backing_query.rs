@@ -31,6 +31,12 @@ impl<'op> BackingQueryContext<'op> {
         }
     }
 
+    /// Retains logical candidates until every enclosing gate and admission ends.
+    /// This view cannot clear the outer operation's retirement collection.
+    pub fn retired(&self) -> &'op MutationRetire {
+        self.context.retired()
+    }
+
     /// Reads an admitted direct dependency with strictly smaller stack depth.
     ///
     /// Missing admission precedes relationship errors, which precede Lookup
