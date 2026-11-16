@@ -82,12 +82,6 @@ struct DirEntryBuf {
     d_type: u8,
 }
 
-#[cfg(feature = "fs")]
-struct FdPath {
-    path: String,
-    is_dir: bool,
-}
-
 #[unsafe(no_mangle)]
 #[allow(non_upper_case_globals)]
 pub static mut errno: c_int = 0;
@@ -703,8 +697,6 @@ pub unsafe extern "C" fn writev(fd: c_int, iov: *const libc::iovec, iocnt: c_int
 #[cfg(feature = "fd")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn close(fd: c_int) -> c_int {
-    #[cfg(feature = "fs")]
-    FD_PATHS.lock().remove(&fd);
     ok_or_errno(ax_posix_api::sys_close(fd))
 }
 
@@ -967,21 +959,7 @@ pub unsafe extern "C" fn open(path: *const c_char, flags: c_int, mut args: ...) 
     } else {
         0
     };
-    open_with_mode(path, flags, mode)
-}
-
-#[cfg(feature = "fs")]
-fn open_with_mode(path: *const c_char, flags: c_int, mode: ModeT) -> c_int {
-    let path_string = ax_posix_api::utils::char_ptr_to_str(path)
-        .ok()
-        .map(ToString::to_string);
-    let fd = ok_or_errno(ax_posix_api::sys_open(path, flags, mode));
-    if fd >= 0
-        && let Some(path) = path_string
-    {
-        track_fd_path(fd, path, flags & libc::O_DIRECTORY != 0);
-    }
-    fd
+    ok_or_errno(ax_posix_api::sys_open(path, flags, mode))
 }
 
 /// # Safety
@@ -995,7 +973,7 @@ pub unsafe extern "C" fn open64(path: *const c_char, flags: c_int, mut args: ...
     } else {
         0
     };
-    open_with_mode(path, flags, mode)
+    ok_or_errno(ax_posix_api::sys_open(path, flags, mode))
 }
 
 /// # Safety
@@ -1087,27 +1065,9 @@ pub unsafe extern "C" fn fstatat(
     buf: *mut libc::stat,
     flags: c_int,
 ) -> c_int {
-    let supported_flags = libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH | libc::AT_NO_AUTOMOUNT;
-    if flags & !supported_flags != 0 {
-        return fail(Errno::EINVAL);
-    }
-    if flags & libc::AT_EMPTY_PATH != 0 {
-        match path_from_c(path) {
-            Ok(ref s) if s.is_empty() => return unsafe { fstat(dirfd, buf) },
-            Ok(_) => {}
-            Err(err) => return fail(err),
-        }
-    }
-    let path = match resolve_at_path(dirfd, path) {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let path = c_string_from_string(path);
-    if flags & libc::AT_SYMLINK_NOFOLLOW != 0 {
-        unsafe { lstat(path.as_ptr(), buf) }
-    } else {
-        unsafe { stat(path.as_ptr(), buf) }
-    }
+    let mut ax_stat = AxStat::default();
+    let ret = unsafe { ax_posix_api::sys_fstatat(dirfd, path, &mut ax_stat, flags) };
+    stat_ret_to_libc(ret, ax_stat, buf)
 }
 
 /// # Safety
@@ -1153,17 +1113,9 @@ pub unsafe extern "C" fn renameat(
     newdirfd: c_int,
     newpath: *const c_char,
 ) -> c_int {
-    let old = match resolve_at_path(olddirfd, oldpath) {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let new = match resolve_at_path(newdirfd, newpath) {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let old = c_string_from_string(old);
-    let new = c_string_from_string(new);
-    unsafe { rename(old.as_ptr(), new.as_ptr()) }
+    ok_or_errno(ax_posix_api::sys_renameat(
+        olddirfd, oldpath, newdirfd, newpath,
+    ))
 }
 
 #[cfg(feature = "fs")]
@@ -1171,45 +1123,6 @@ fn path_from_c(path: *const c_char) -> Result<String, Errno> {
     Ok(ax_posix_api::utils::char_ptr_to_str(path)
         .map_err(ax_posix_api::PosixError::errno)?
         .to_string())
-}
-
-#[cfg(feature = "fs")]
-fn resolve_at_path(dirfd: c_int, path: *const c_char) -> Result<String, Errno> {
-    let path = path_from_c(path)?;
-    if path.starts_with('/') || dirfd == libc::AT_FDCWD {
-        return Ok(path);
-    }
-    let paths = FD_PATHS.lock();
-    let Some(parent) = paths.get(&dirfd) else {
-        return Err(Errno::EBADF);
-    };
-    if !parent.is_dir {
-        return Err(Errno::ENOTDIR);
-    }
-    Ok(join_paths(&parent.path, &path))
-}
-
-#[cfg(feature = "fs")]
-fn join_paths(base: &str, child: &str) -> String {
-    let base = base.trim_end_matches('/');
-    if base.is_empty() {
-        alloc::format!("/{child}")
-    } else {
-        alloc::format!("{base}/{child}")
-    }
-}
-
-#[cfg(feature = "fs")]
-fn track_fd_path(fd: c_int, path: String, is_dir: bool) {
-    FD_PATHS.lock().insert(fd, FdPath { path, is_dir });
-}
-
-#[cfg(feature = "fs")]
-fn c_string_from_string(mut value: String) -> Vec<c_char> {
-    value.retain(|ch| ch != '\0');
-    let mut bytes = value.into_bytes();
-    bytes.push(0);
-    bytes.into_iter().map(|byte| byte as c_char).collect()
 }
 
 /// # Safety
@@ -1238,21 +1151,7 @@ pub unsafe extern "C" fn unlink(path: *const c_char) -> c_int {
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int {
-    let path = match resolve_at_path(dirfd, path) {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    if flags & libc::AT_REMOVEDIR != 0 {
-        match ax_api::fs::ax_remove_dir(&path) {
-            Ok(()) => 0,
-            Err(err) => fail(api_error_to_errno(err)),
-        }
-    } else {
-        match ax_api::fs::ax_remove_file(&path) {
-            Ok(()) => 0,
-            Err(err) => fail(api_error_to_errno(err)),
-        }
-    }
+    ok_or_errno(ax_posix_api::sys_unlinkat(dirfd, path, flags))
 }
 
 /// # Safety
@@ -1271,12 +1170,7 @@ pub unsafe extern "C" fn openat(
     } else {
         0
     };
-    let path = match resolve_at_path(dirfd, path) {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let path = c_string_from_string(path);
-    open_with_mode(path.as_ptr(), flags, mode)
+    ok_or_errno(ax_posix_api::sys_openat(dirfd, path, flags, mode))
 }
 
 /// # Safety
@@ -1295,12 +1189,7 @@ pub unsafe extern "C" fn openat64(
     } else {
         0
     };
-    let path = match resolve_at_path(dirfd, path) {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let path = c_string_from_string(path);
-    open_with_mode(path.as_ptr(), flags, mode)
+    ok_or_errno(ax_posix_api::sys_openat(dirfd, path, flags, mode))
 }
 
 /// # Safety
@@ -1325,12 +1214,7 @@ pub unsafe extern "C" fn mkdir(path: *const c_char, _mode: ModeT) -> c_int {
 #[cfg(feature = "fs")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mkdirat(dirfd: c_int, path: *const c_char, mode: ModeT) -> c_int {
-    let path = match resolve_at_path(dirfd, path) {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let path = c_string_from_string(path);
-    unsafe { mkdir(path.as_ptr(), mode) }
+    ok_or_errno(ax_posix_api::sys_mkdirat(dirfd, path, mode))
 }
 
 /// # Safety
@@ -1404,7 +1288,6 @@ pub unsafe extern "C" fn fdopendir(fd: c_int) -> *mut libc::DIR {
         Ok(entries) => entries,
         Err(err) => {
             set_errno(err.into_raw());
-            FD_PATHS.lock().remove(&fd);
             return ptr::null_mut();
         }
     };
@@ -1468,7 +1351,6 @@ pub unsafe extern "C" fn closedir(dirp: *mut libc::DIR) -> c_int {
         return fail(Errno::EINVAL);
     }
     let stream = unsafe { alloc::boxed::Box::from_raw(dirp.cast::<DirStream>()) };
-    FD_PATHS.lock().remove(&stream.fd);
     unsafe { close(stream.fd) }
 }
 
@@ -2116,8 +1998,6 @@ unsafe fn futex_timeout(
 static FUTEX_QUEUES: RawSpinLock<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>> =
     RawSpinLock::new(BTreeMap::new());
 static MMAP_ALLOCS: RawSpinLock<BTreeMap<usize, SizeT>> = RawSpinLock::new(BTreeMap::new());
-#[cfg(feature = "fs")]
-static FD_PATHS: RawSpinLock<BTreeMap<c_int, FdPath>> = RawSpinLock::new(BTreeMap::new());
 
 mod pthread {
     use super::*;
