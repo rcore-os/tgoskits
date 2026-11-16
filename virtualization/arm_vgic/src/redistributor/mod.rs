@@ -412,14 +412,14 @@ impl RedistributorState {
             return None;
         }
         // Move the current record and delivery storage into the reserved
-        // buffers. `drain` keeps the displaced buffers allocated so they can be
-        // dropped after the raw guard is released.
+        // buffers. `append` keeps the displaced buffers allocated so they can
+        // be dropped after the raw guard is released.
         let mut old_records = core::mem::take(&mut self.lpis);
         self.lpis = core::mem::take(&mut capacity.records);
         self.lpis.append(&mut old_records);
         let mut old_queued = core::mem::take(&mut self.queued_deliveries);
         self.queued_deliveries = core::mem::take(&mut capacity.queued);
-        self.queued_deliveries.extend(old_queued.drain(..));
+        self.queued_deliveries.append(&mut old_queued);
         let old_priorities = core::mem::replace(
             &mut self.refill_priorities,
             core::mem::take(&mut capacity.priorities),

@@ -61,7 +61,7 @@ impl Hedeleg {
     /// Sets the instruction address misaligned exception delegation.
     #[inline]
     pub fn set_ex0(&mut self, val: bool) {
-        self.bits.set_bit(0, val);
+        BitField::set_bit(&mut self.bits, 0, val);
     }
     /// Returns the instruction access fault exception delegation.
     #[inline]
@@ -71,7 +71,7 @@ impl Hedeleg {
     /// Sets the instruction access fault exception delegation.
     #[inline]
     pub fn set_ex1(&mut self, val: bool) {
-        self.bits.set_bit(1, val);
+        BitField::set_bit(&mut self.bits, 1, val);
     }
     /// Returns the illegal instruction exception delegation.
     #[inline]
@@ -81,7 +81,7 @@ impl Hedeleg {
     /// Sets the illegal instruction exception delegation.
     #[inline]
     pub fn set_ex2(&mut self, val: bool) {
-        self.bits.set_bit(2, val);
+        BitField::set_bit(&mut self.bits, 2, val);
     }
     /// Returns the breakpoint exception delegation.
     #[inline]
@@ -91,7 +91,7 @@ impl Hedeleg {
     /// Sets the breakpoint exception delegation.
     #[inline]
     pub fn set_ex3(&mut self, val: bool) {
-        self.bits.set_bit(3, val);
+        BitField::set_bit(&mut self.bits, 3, val);
     }
     /// Returns the load address misaligned exception delegation.
     #[inline]
@@ -101,7 +101,7 @@ impl Hedeleg {
     /// Sets the load address misaligned exception delegation.
     #[inline]
     pub fn set_ex4(&mut self, val: bool) {
-        self.bits.set_bit(4, val);
+        BitField::set_bit(&mut self.bits, 4, val);
     }
     /// Returns the load access fault exception delegation.
     #[inline]
@@ -111,7 +111,7 @@ impl Hedeleg {
     /// Sets the load access fault exception delegation.
     #[inline]
     pub fn set_ex5(&mut self, val: bool) {
-        self.bits.set_bit(5, val);
+        BitField::set_bit(&mut self.bits, 5, val);
     }
     /// Returns the store/AMO address misaligned exception delegation.
     #[inline]
@@ -121,7 +121,7 @@ impl Hedeleg {
     /// Sets the store/AMO address misaligned exception delegation.
     #[inline]
     pub fn set_ex6(&mut self, val: bool) {
-        self.bits.set_bit(6, val);
+        BitField::set_bit(&mut self.bits, 6, val);
     }
     /// Returns the store/AMO access fault exception delegation.
     #[inline]
@@ -131,7 +131,7 @@ impl Hedeleg {
     /// Sets the store/AMO access fault exception delegation.
     #[inline]
     pub fn set_ex7(&mut self, val: bool) {
-        self.bits.set_bit(7, val);
+        BitField::set_bit(&mut self.bits, 7, val);
     }
     /// Returns the environment call exception delegation.
     #[inline]
@@ -141,7 +141,7 @@ impl Hedeleg {
     /// Sets the environment call exception delegation.
     #[inline]
     pub fn set_ex8(&mut self, val: bool) {
-        self.bits.set_bit(8, val);
+        BitField::set_bit(&mut self.bits, 8, val);
     }
     /// Returns the instruction page fault exception delegation.
     #[inline]
@@ -151,7 +151,7 @@ impl Hedeleg {
     /// Sets the instruction page fault exception delegation.
     #[inline]
     pub fn set_ex12(&mut self, val: bool) {
-        self.bits.set_bit(12, val);
+        BitField::set_bit(&mut self.bits, 12, val);
     }
     /// Returns the load page fault exception delegation.
     #[inline]
@@ -161,7 +161,7 @@ impl Hedeleg {
     /// Sets the load page fault exception delegation.
     #[inline]
     pub fn set_ex13(&mut self, val: bool) {
-        self.bits.set_bit(13, val);
+        BitField::set_bit(&mut self.bits, 13, val);
     }
     /// Returns the store/AMO page fault exception delegation.
     #[inline]
@@ -171,7 +171,7 @@ impl Hedeleg {
     /// Sets the store/AMO page fault exception delegation.
     #[inline]
     pub fn set_ex15(&mut self, val: bool) {
-        self.bits.set_bit(15, val);
+        BitField::set_bit(&mut self.bits, 15, val);
     }
 }
 

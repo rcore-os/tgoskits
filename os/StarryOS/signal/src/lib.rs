@@ -1,5 +1,5 @@
 #![no_std]
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 
 #[macro_use]
 extern crate log;

@@ -4,7 +4,7 @@
 //! [`runtime::TaskSystem`] and one pinned [`runtime::cpu::CpuLocal`] object for every online CPU.
 
 #![no_std]
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 
 extern crate alloc;
 extern crate self as ax_task;

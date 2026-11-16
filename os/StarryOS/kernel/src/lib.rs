@@ -14,7 +14,7 @@
 #![no_std]
 #![cfg_attr(not(axtest), feature(core_io, core_io_borrowed_buf))]
 #![cfg_attr(not(axtest), feature(likely_unlikely))]
-#![cfg_attr(not(axtest), feature(allocator_api))]
+#![cfg_attr(not(axtest), feature(allocator_ext))]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 

@@ -53,7 +53,7 @@ impl Hip {
     /// Sets the virtual supervisor software interrupt pending.
     #[inline]
     pub fn set_vssip(&mut self, val: bool) {
-        self.bits.set_bit(2, val);
+        BitField::set_bit(&mut self.bits, 2, val);
     }
     /// Returns the virtual supervisor timer interrupt pending.
     #[inline]
@@ -63,7 +63,7 @@ impl Hip {
     /// Sets the virtual supervisor timer interrupt pending.
     #[inline]
     pub fn set_vstip(&mut self, val: bool) {
-        self.bits.set_bit(6, val);
+        BitField::set_bit(&mut self.bits, 6, val);
     }
     /// Returns the virtual supervisor external interrupt pending.
     #[inline]
@@ -73,7 +73,7 @@ impl Hip {
     /// Sets the virtual supervisor external interrupt pending.
     #[inline]
     pub fn set_vseip(&mut self, val: bool) {
-        self.bits.set_bit(10, val);
+        BitField::set_bit(&mut self.bits, 10, val);
     }
     /// Returns the supervisor guest external interrupt pending.
     #[inline]
@@ -83,7 +83,7 @@ impl Hip {
     /// Sets the supervisor guest external interrupt pending.
     #[inline]
     pub fn set_sgeip(&mut self, val: bool) {
-        self.bits.set_bit(12, val);
+        BitField::set_bit(&mut self.bits, 12, val);
     }
 }
 

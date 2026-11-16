@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(core_io, core_io_borrowed_buf)]
 #![feature(likely_unlikely)]
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 #![allow(missing_docs)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 

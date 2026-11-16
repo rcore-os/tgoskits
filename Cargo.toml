@@ -361,6 +361,6 @@ sg200x-bsp = { version = "0.7.1", default-features = false }
 sg200x-jpu = { version = "0.1", path = "drivers/vpu/sg200x-jpu" }
 syscalls = { version = "0.8.1", default-features = false }
 x86 = "0.52"
-x2apic = "0.5"
+x2apic = "0.5.1"
 kmod-tools = "0.3"
 kprobe = "0.6"

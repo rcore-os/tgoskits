@@ -53,7 +53,7 @@ impl Hideleg {
     /// Sets the status of the supervisor software interrupt delegation.
     #[inline]
     pub fn set_sip(&mut self, val: bool) {
-        self.bits.set_bit(2, val);
+        BitField::set_bit(&mut self.bits, 2, val);
     }
     /// Returns the status of the supervisor timer interrupt delegation.
     #[inline]
@@ -63,7 +63,7 @@ impl Hideleg {
     /// Sets the status of the supervisor timer interrupt delegation.
     #[inline]
     pub fn set_tip(&mut self, val: bool) {
-        self.bits.set_bit(6, val);
+        BitField::set_bit(&mut self.bits, 6, val);
     }
     /// Returns the status of the supervisor external interrupt delegation.
     #[inline]
@@ -73,7 +73,7 @@ impl Hideleg {
     /// Sets the status of the supervisor external interrupt delegation.
     #[inline]
     pub fn set_eip(&mut self, val: bool) {
-        self.bits.set_bit(10, val);
+        BitField::set_bit(&mut self.bits, 10, val);
     }
 }
 

@@ -45,7 +45,7 @@ impl Henvcfg {
     /// Controls direct VS-mode `stimecmp` access.
     #[inline]
     pub fn set_stce(&mut self, enabled: bool) {
-        self.bits.set_bit(63, enabled);
+        BitField::set_bit(&mut self.bits, 63, enabled);
     }
 
     /// Writes this value to `henvcfg`.

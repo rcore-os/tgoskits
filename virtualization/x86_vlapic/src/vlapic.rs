@@ -224,7 +224,7 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
         // Upon acceptance of an interrupt into the IRR, the corresponding TMR bit is cleared for edge-triggered interrupts and set for leveltriggered interrupts.
         // If a TMR bit is set when an EOI cycle for its corresponding interrupt vector is generated, an EOI message is sent to all I/O APICs.
         // (see 11.8.4 Interrupt Acceptance for Fixed Interrupts)
-        let broadcast_eoi = (self.regs().TMR[idx].get() as u32).bit(bitpos)
+        let broadcast_eoi = BitIndex::bit(&(self.regs().TMR[idx].get() as u32), bitpos)
             && !self
                 .regs()
                 .SVR
@@ -351,7 +351,7 @@ impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
                 dmask = self.calculate_dest_no_shorthand(is_broadcast, dest, is_phys, lowprio)?;
             }
             APICDestination::SELF => {
-                dmask.set_bit(self.vapic_id as usize, true);
+                BitIndex::set_bit(&mut dmask, self.vapic_id as usize, true);
             }
             APICDestination::AllIncludingSelf => {
                 dmask = self.runtime.active_vcpu_mask() as u64;

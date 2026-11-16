@@ -13,7 +13,7 @@ impl<T: RangeOp + Send + 'static> VecOp<T> for Vec<T> {
     }
 
     fn len(&self) -> usize {
-        self.as_slice().len()
+        Vec::len(self)
     }
 
     fn remove(&mut self, index: usize) -> T {
