@@ -1,4 +1,4 @@
-//! ArceOS guest smoke test for AxVisor's initial ivshmem PCI endpoint.
+//! ArceOS guest smoke test for AxVisor's private PCI memory test endpoint.
 
 #[cfg(feature = "arceos")]
 use core::ptr::NonNull;
@@ -13,17 +13,19 @@ const PCI_ID_OFFSET: usize = 0x00;
 const PCI_COMMAND_OFFSET: usize = 0x04;
 const PCI_BAR2_OFFSET: usize = 0x18;
 const PCI_COMMAND_MEMORY_ENABLE: u16 = 1 << 1;
-const IVSHMEM_PCI_ID: u32 = 0x1110_1af4;
-const IVSHMEM_BAR_SIZE: usize = 0x1_0000;
+// Repository-internal test placeholder, not a PCI-SIG assignment.
+const PCI_MEMORY_TEST_ID: u32 = 0x5678_1234;
+const LEGACY_IVSHMEM_PCI_ID: u32 = 0x1110_1af4;
+const BAR2_SIZE: usize = 0x1_0000;
 const TEST_OFFSET: usize = 0x120;
-const TEST_VALUE: u64 = 0x4956_5348_4d45_4d31;
+const TEST_VALUE: u64 = 0x3154_5345_544d_5043;
 
 #[cfg(feature = "arceos")]
 fn main() {
-    println!("ARCEOS_IVSHMEM_PCI_START");
+    println!("ARCEOS_PCI_MEMORY_TEST_START");
     match run() {
-        Ok(()) => println!("ARCEOS_IVSHMEM_PCI_PASS"),
-        Err(error) => println!("ARCEOS_IVSHMEM_PCI_FAIL {error}"),
+        Ok(()) => println!("ARCEOS_PCI_MEMORY_TEST_PASS"),
+        Err(error) => println!("ARCEOS_PCI_MEMORY_TEST_FAIL {error}"),
     }
 }
 
@@ -37,13 +39,15 @@ fn run() -> Result<(), String> {
     let mut function_offset = None;
     for device in 0..32 {
         let offset = device << 15;
-        if read_u32(ecam, offset + PCI_ID_OFFSET) == IVSHMEM_PCI_ID
-            && function_offset.replace(offset).is_some()
-        {
-            return Err("multiple ivshmem endpoints found".into());
+        let identity = read_u32(ecam, offset + PCI_ID_OFFSET);
+        if identity == LEGACY_IVSHMEM_PCI_ID {
+            return Err("legacy ivshmem identity 1af4:1110 must not be present".into());
+        }
+        if identity == PCI_MEMORY_TEST_ID && function_offset.replace(offset).is_some() {
+            return Err("multiple PCI memory test endpoints found".into());
         }
     }
-    let function_offset = function_offset.ok_or("ivshmem endpoint not found on bus 0")?;
+    let function_offset = function_offset.ok_or("PCI memory test endpoint not found on bus 0")?;
     let bar2 = u64::from(read_u32(ecam, function_offset + PCI_BAR2_OFFSET) & 0xffff_fff0);
     if bar2 == 0 {
         return Err("BAR2 was not assigned".into());
@@ -52,7 +56,7 @@ fn run() -> Result<(), String> {
         .checked_sub(host.memory_bus)
         .ok_or("BAR2 precedes PCI memory window")?;
     if offset
-        .checked_add(IVSHMEM_BAR_SIZE as u64)
+        .checked_add(BAR2_SIZE as u64)
         .is_none_or(|end| end > host.memory_size)
     {
         return Err("BAR2 exceeds PCI memory window".into());
@@ -69,9 +73,9 @@ fn run() -> Result<(), String> {
         command | PCI_COMMAND_MEMORY_ENABLE,
     );
 
-    let shared_memory = map_device_range(address, IVSHMEM_BAR_SIZE, "ivshmem BAR2")?;
-    write_u64(shared_memory, TEST_OFFSET, TEST_VALUE);
-    let actual = read_u64(shared_memory, TEST_OFFSET);
+    let bar2_memory = map_device_range(address, BAR2_SIZE, "PCI memory test BAR2")?;
+    write_u64(bar2_memory, TEST_OFFSET, TEST_VALUE);
+    let actual = read_u64(bar2_memory, TEST_OFFSET);
     if actual != TEST_VALUE {
         return Err(format!(
             "BAR2 readback mismatch: expected {TEST_VALUE:#018x}, got {actual:#018x}"
@@ -79,7 +83,7 @@ fn run() -> Result<(), String> {
     }
 
     println!(
-        "ivshmem-pci ecam={:#x} identity={IVSHMEM_PCI_ID:#010x} bar2={bar2:#x}",
+        "pci-memory-test ecam={:#x} identity={PCI_MEMORY_TEST_ID:#010x} bar2={bar2:#x}",
         host.ecam_base
     );
     Ok(())

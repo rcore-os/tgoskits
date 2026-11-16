@@ -4,7 +4,7 @@
 # Guest vm id.
 id = 1
 # Guest vm name.
-name = "arceos-ivshmem-pci"
+name = "arceos-pci-memory-test"
 # Virtualization type.
 guest_type = "virtualized"
 # The number of virtual CPUs.
@@ -19,7 +19,7 @@ phys_cpu_ids = [1]
 # The entry point of the kernel image.
 entry_point = 0x8020_0000
 # The file path of the kernel image, built from this workspace by guest-builds.toml.
-kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-ivshmem-pci.bin"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-pci-memory-test.bin"
 # The load address of the kernel image.
 kernel_load_addr = 0x8020_0000
 # The load address of the device tree blob (DTB).
@@ -41,7 +41,7 @@ disabled = [
   { path = "/pcie@10000000" },
 ]
 
-# Private ivshmem test endpoint with one zero-initialized BAR2.
+# Private PCI memory test endpoint with one zero-initialized BAR2.
 [[devices.virtual]]
-id = "ivshmem0"
-model = "ivshmem-pci"
+id = "pci-memory0"
+model = "pci-memory-test"

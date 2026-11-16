@@ -1,5 +1,5 @@
 [package]
-name = "arceos-ivshmem-pci"
+name = "arceos-pci-memory-test"
 version = "0.1.0"
 edition.workspace = true
 publish = false

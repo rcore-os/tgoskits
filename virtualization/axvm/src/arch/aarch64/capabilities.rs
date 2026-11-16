@@ -115,7 +115,7 @@ pub(super) fn patch_runtime_fdt(
             plan.pci_firmware(),
         ))
     })?;
-    let bytes = crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
+    crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
         crate::boot::fdt::core::create::GuestFdtRuntimePatch {
             fdt_bytes,
             memory_regions: &vm.memory_regions(),
@@ -126,12 +126,12 @@ pub(super) fn patch_runtime_fdt(
             additional_serials: &additional_serials,
             gic_profile: Some(&gic_profile),
             plic_profile: None,
+            pci_host: pci_host.as_ref(),
             timer_profile: Some(&timer_profile),
             initrd_start_size: initrd,
             create_chosen: true,
         },
-    )?;
-    crate::boot::fdt::core::pci::install_pci_host(&bytes, pci_host.as_ref())
+    )
 }
 
 pub(super) fn patch_provided_fdt(

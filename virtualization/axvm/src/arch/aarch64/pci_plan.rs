@@ -214,7 +214,7 @@ mod tests {
             let bar = PciMemoryBar::new(PciBarIndex::new(2)?, 0x1_0000)?;
             let function = PciFunctionRequirement::new(
                 host_key(),
-                PciEndpointIdentity::new(0x1af4, 0x1110, PciClass::new(0x05, 0, 0)),
+                PciEndpointIdentity::new(0x1234, 0x5678, PciClass::new(0x05, 0, 0)),
             )
             .with_bar(bar)?;
             DeviceRequirements::new().with_pci_function(function)

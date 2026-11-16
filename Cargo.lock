@@ -420,7 +420,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "arceos-ivshmem-pci"
+name = "arceos-pci-memory-test"
 version = "0.1.0"
 dependencies = [
  "ax-mm",

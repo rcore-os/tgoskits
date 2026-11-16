@@ -1,4 +1,4 @@
-package = "arceos-ivshmem-pci"
+package = "arceos-pci-memory-test"
 target = "aarch64-unknown-none-softfloat"
 features = ["arceos"]
 log = "Info"

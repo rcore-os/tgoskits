@@ -5,7 +5,7 @@ mod registers;
 use core::ops::Range;
 use std::{format, vec::Vec};
 
-use fdt_edit::{Fdt, Node, Property};
+use fdt_edit::{Node, Property};
 
 use super::tree::{FdtTree, prop_string};
 use crate::{AxVmError, AxVmResult};
@@ -88,21 +88,12 @@ impl GuestPciHost {
     }
 }
 
-pub(crate) fn install_pci_host(
-    fdt_bytes: &[u8],
-    host: Option<&GuestPciHost>,
-) -> AxVmResult<Vec<u8>> {
+pub(crate) fn install_pci_host(tree: &mut FdtTree, host: Option<&GuestPciHost>) -> AxVmResult<()> {
     let Some(host) = host.copied() else {
-        return Ok(fdt_bytes.to_vec());
+        return Ok(());
     };
-    let mut tree = FdtTree::from_bytes(fdt_bytes)?;
-    validate_tree(&tree, host)?;
-    add_host_node(&mut tree, host)?;
-    let bytes = tree.finish();
-    Fdt::from_bytes(&bytes).map_err(|error| {
-        AxVmError::invalid_config(format!("invalid FDT after adding PCI host: {error:?}"))
-    })?;
-    Ok(bytes)
+    validate_tree(tree, host)?;
+    add_host_node(tree, host)
 }
 
 fn validate_tree(tree: &FdtTree, host: GuestPciHost) -> AxVmResult {
@@ -264,9 +255,15 @@ mod tests {
         GuestPciHost::new((0x0b00_0000, 0x10_0000), (0x0c00_0000, 0x0400_0000)).unwrap()
     }
 
+    fn install_bytes(bytes: &[u8], host: Option<&GuestPciHost>) -> crate::AxVmResult<Vec<u8>> {
+        let mut tree = super::super::tree::FdtTree::from_bytes(bytes)?;
+        install_pci_host(&mut tree, host)?;
+        Ok(tree.finish())
+    }
+
     #[test]
     fn resolved_host_encodes_generic_ecam_and_one_memory32_range() {
-        let bytes = install_pci_host(&base_fdt(), Some(&host())).unwrap();
+        let bytes = install_bytes(&base_fdt(), Some(&host())).unwrap();
         let fdt = Fdt::from_bytes(&bytes).unwrap();
         let node = fdt
             .find_compatible(&["pci-host-ecam-generic"])
@@ -310,8 +307,7 @@ mod tests {
     #[test]
     fn absent_resolved_host_keeps_the_fdt_without_a_pci_node() {
         let original = base_fdt();
-        let bytes = install_pci_host(&original, None).unwrap();
-        assert_eq!(bytes, original);
+        let bytes = install_bytes(&original, None).unwrap();
         let fdt = Fdt::from_bytes(&bytes).unwrap();
         assert!(fdt.find_compatible(&["pci-host-ecam-generic"]).is_empty());
     }
@@ -326,7 +322,7 @@ mod tests {
         fdt.node_mut(pci).unwrap().set_property(device_type);
         let bytes = fdt.encode().as_ref().to_vec();
 
-        let error = install_pci_host(&bytes, Some(&host())).unwrap_err();
+        let error = install_bytes(&bytes, Some(&host())).unwrap_err();
         assert!(error.to_string().contains("/pcie@20000000"));
     }
 
@@ -344,7 +340,7 @@ mod tests {
                 .set_regs(&[RegInfo::new(base, Some(0x1000))]);
             let bytes = fdt.encode().as_ref().to_vec();
 
-            let error = install_pci_host(&bytes, Some(&host())).unwrap_err();
+            let error = install_bytes(&bytes, Some(&host())).unwrap_err();
             assert!(error.to_string().contains(name));
             assert!(error.to_string().contains("conflicts with PCI host"));
         }
@@ -360,7 +356,7 @@ mod tests {
             .set_regs(&[RegInfo::new(u64::MAX - 0xff, Some(0x200))]);
         let bytes = fdt.encode().as_ref().to_vec();
 
-        let error = install_pci_host(&bytes, Some(&host())).unwrap_err();
+        let error = install_bytes(&bytes, Some(&host())).unwrap_err();
         assert!(error.to_string().contains("overflows"));
     }
 
@@ -374,7 +370,7 @@ mod tests {
         fdt.node_mut(pci).unwrap().set_property(compatible);
         let bytes = fdt.encode().as_ref().to_vec();
 
-        let error = install_pci_host(&bytes, Some(&host())).unwrap_err();
+        let error = install_bytes(&bytes, Some(&host())).unwrap_err();
         assert!(error.to_string().contains("/pcie@20000000"));
     }
 
@@ -408,7 +404,7 @@ mod tests {
                 .set_property(super::cell_property("reg", &[0, 0x1000, 0, 0x1000]));
             let bytes = fdt.encode().as_ref().to_vec();
 
-            let result = install_pci_host(&bytes, Some(&host()));
+            let result = install_bytes(&bytes, Some(&host()));
             if conflicts {
                 let error = result.unwrap_err();
                 assert!(error.to_string().contains("/soc/bridge/uart@1000"));
@@ -422,7 +418,7 @@ mod tests {
     #[test]
     fn unsupported_root_cell_geometry_is_rejected() {
         let bytes = fdt_with_root_cells(3, 2);
-        let error = install_pci_host(&bytes, Some(&host())).unwrap_err();
+        let error = install_bytes(&bytes, Some(&host())).unwrap_err();
         assert!(error.to_string().contains("#address-cells"));
     }
 }

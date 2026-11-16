@@ -1,8 +1,8 @@
-//! Initial configured ivshmem PCI endpoint with one memory BAR.
+//! Configured private PCI memory test endpoint with one memory BAR.
 //!
 //! This model intentionally implements only a private, zero-initialized BAR2
 //! aperture. Shared backing, control registers, peer notification, and MSI-X
-//! remain outside this initial vPCI registration path.
+//! remain outside this test-only vPCI registration path.
 
 use std::{
     sync::{Arc, Mutex},
@@ -15,12 +15,14 @@ use axvmconfig::VirtualDeviceRequest;
 
 use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 
-const MODEL: &str = "ivshmem-pci";
+const MODEL: &str = "pci-memory-test";
 const HOST_KEY: &str = "aarch64-ecam";
-const IVSHMEM_VENDOR_ID: u16 = 0x1af4;
-const IVSHMEM_DEVICE_ID: u16 = 0x1110;
-const SHARED_MEMORY_BAR_INDEX: u8 = 2;
-const SHARED_MEMORY_SIZE: usize = 0x1_0000;
+// These are repository-internal PCI test placeholder IDs, not a PCI-SIG
+// assignment. This endpoint is not ivshmem or any other production device.
+const TEST_VENDOR_ID: u16 = 0x1234;
+const TEST_DEVICE_ID: u16 = 0x5678;
+const PRIVATE_MEMORY_BAR_INDEX: u8 = 2;
+const PRIVATE_MEMORY_SIZE: usize = 0x1_0000;
 
 fn host_key() -> PciHostKey {
     // This module is architecture-neutral while the provider is AArch64-only.
@@ -42,7 +44,7 @@ pub(super) fn register(
 
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct IvshmemPciOptions {}
+struct PciMemoryTestOptions {}
 
 fn create_device_node(
     id: DeviceNodeId,
@@ -50,7 +52,7 @@ fn create_device_node(
     _context: &DeviceInstantiationContext,
 ) -> Result<DeviceNodeSpec, ConfiguredDeviceError> {
     request
-        .deserialize_options::<IvshmemPciOptions>()
+        .deserialize_options::<PciMemoryTestOptions>()
         .map_err(|error| ConfiguredDeviceError::InvalidOptions {
             device: request.id.clone(),
             model: request.model.clone(),
@@ -58,23 +60,23 @@ fn create_device_node(
         })?;
     Ok(DeviceNodeSpec::virtual_device(
         id,
-        Arc::new(IvshmemPciModel),
+        Arc::new(PciMemoryTestModel),
     ))
 }
 
-struct IvshmemPciModel;
+struct PciMemoryTestModel;
 
-impl DeviceModel for IvshmemPciModel {
+impl DeviceModel for PciMemoryTestModel {
     fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
         let bar = PciMemoryBar::new(
-            PciBarIndex::new(SHARED_MEMORY_BAR_INDEX)?,
-            SHARED_MEMORY_SIZE as u64,
+            PciBarIndex::new(PRIVATE_MEMORY_BAR_INDEX)?,
+            PRIVATE_MEMORY_SIZE as u64,
         )?;
         let function = PciFunctionRequirement::new(
             host_key(),
             PciEndpointIdentity::new(
-                IVSHMEM_VENDOR_ID,
-                IVSHMEM_DEVICE_ID,
+                TEST_VENDOR_ID,
+                TEST_DEVICE_ID,
                 PciClass::new(0x05, 0x00, 0x00),
             ),
         )
@@ -87,33 +89,33 @@ impl DeviceModel for IvshmemPciModel {
     }
 
     fn build(&self, _context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
-        let function = Arc::new(IvshmemPciFunction::new()?);
+        let function = Arc::new(PciMemoryTestFunction::new()?);
         let mut bundle = DeviceBundle::new();
         bundle.add_pci_function(function)?;
         Ok(bundle)
     }
 }
 
-struct IvshmemPciFunction {
+struct PciMemoryTestFunction {
     bytes: Mutex<Box<[u8]>>,
 }
 
-impl IvshmemPciFunction {
+impl PciMemoryTestFunction {
     fn new() -> DeviceManagerResult<Self> {
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(SHARED_MEMORY_SIZE).map_err(|_| {
+        bytes.try_reserve_exact(PRIVATE_MEMORY_SIZE).map_err(|_| {
             DeviceManagerError::OutOfMemory {
-                operation: "allocate initial ivshmem BAR2 backing",
+                operation: "allocate private PCI memory test BAR2 backing",
             }
         })?;
-        bytes.resize(SHARED_MEMORY_SIZE, 0);
+        bytes.resize(PRIVATE_MEMORY_SIZE, 0);
         Ok(Self {
             bytes: Mutex::new(bytes.into_boxed_slice()),
         })
     }
 
     fn access_range(access: PciBarAccess) -> DeviceResult<core::ops::Range<usize>> {
-        if access.bar().value() != SHARED_MEMORY_BAR_INDEX {
+        if access.bar().value() != PRIVATE_MEMORY_BAR_INDEX {
             return Err(DeviceError::OutOfRange {
                 addr: access.offset(),
             });
@@ -123,7 +125,7 @@ impl IvshmemPciFunction {
         })?;
         let end = start
             .checked_add(access.width().size())
-            .filter(|end| *end <= SHARED_MEMORY_SIZE)
+            .filter(|end| *end <= PRIVATE_MEMORY_SIZE)
             .ok_or(DeviceError::OutOfRange {
                 addr: access.offset(),
             })?;
@@ -131,7 +133,7 @@ impl IvshmemPciFunction {
     }
 }
 
-impl Device for IvshmemPciFunction {
+impl Device for PciMemoryTestFunction {
     fn name(&self) -> &str {
         MODEL
     }
@@ -142,7 +144,7 @@ impl Device for IvshmemPciFunction {
 
     fn read(&self, _access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
         Err(DeviceError::Unsupported {
-            operation: "access ivshmem PCI endpoint",
+            operation: "access private PCI memory test endpoint",
             detail: "direct access is routed through BAR2".into(),
         })
     }
@@ -154,13 +156,13 @@ impl Device for IvshmemPciFunction {
         _context: &mut dyn DeviceContext,
     ) -> DeviceResult {
         Err(DeviceError::Unsupported {
-            operation: "access ivshmem PCI endpoint",
+            operation: "access private PCI memory test endpoint",
             detail: "direct access is routed through BAR2".into(),
         })
     }
 }
 
-impl PciFunction for IvshmemPciFunction {
+impl PciFunction for PciMemoryTestFunction {
     fn read_bar(
         &self,
         access: PciBarAccess,
@@ -168,7 +170,7 @@ impl PciFunction for IvshmemPciFunction {
     ) -> DeviceResult<u64> {
         let range = Self::access_range(access)?;
         let bytes = self.bytes.lock().map_err(|_| DeviceError::InvalidState {
-            operation: "read ivshmem BAR2",
+            operation: "read private PCI memory test BAR2",
             detail: "BAR backing lock is poisoned".into(),
         })?;
         let mut value = [0u8; 8];
@@ -185,7 +187,7 @@ impl PciFunction for IvshmemPciFunction {
         let range = Self::access_range(access)?;
         let width = range.len();
         let mut bytes = self.bytes.lock().map_err(|_| DeviceError::InvalidState {
-            operation: "write ivshmem BAR2",
+            operation: "write private PCI memory test BAR2",
             detail: "BAR backing lock is poisoned".into(),
         })?;
         bytes[range].copy_from_slice(&value.to_le_bytes()[..width]);
@@ -214,20 +216,16 @@ mod tests {
 
     #[test]
     fn requirements_declare_aarch64_bar2_function() {
-        let requirements = IvshmemPciModel.requirements().unwrap();
+        let requirements = PciMemoryTestModel.requirements().unwrap();
         let function = requirements.pci_function().unwrap();
         let expected = PciFunctionRequirement::new(
             host_key(),
-            PciEndpointIdentity::new(
-                IVSHMEM_VENDOR_ID,
-                IVSHMEM_DEVICE_ID,
-                PciClass::new(0x05, 0, 0),
-            ),
+            PciEndpointIdentity::new(TEST_VENDOR_ID, TEST_DEVICE_ID, PciClass::new(0x05, 0, 0)),
         )
         .with_bar(
             PciMemoryBar::new(
-                PciBarIndex::new(SHARED_MEMORY_BAR_INDEX).unwrap(),
-                SHARED_MEMORY_SIZE as u64,
+                PciBarIndex::new(PRIVATE_MEMORY_BAR_INDEX).unwrap(),
+                PRIVATE_MEMORY_SIZE as u64,
             )
             .unwrap(),
         )
@@ -237,8 +235,8 @@ mod tests {
 
     #[test]
     fn backing_is_zeroed_per_endpoint() {
-        let first = IvshmemPciFunction::new().unwrap();
-        let second = IvshmemPciFunction::new().unwrap();
+        let first = PciMemoryTestFunction::new().unwrap();
+        let second = PciMemoryTestFunction::new().unwrap();
         first.bytes.lock().unwrap()[0] = 0xa5;
         assert_eq!(second.bytes.lock().unwrap()[0], 0);
     }
@@ -268,7 +266,7 @@ mod tests {
                     .pci_host_topology()
                     .cloned()
                     .ok_or(DeviceManagerError::InvalidState {
-                        operation: "build ivshmem test host",
+                        operation: "build private PCI memory test host",
                         detail: "test host topology was not resolved".into(),
                     })?;
             let root = Arc::new(PciRootState::new(topology));
@@ -295,8 +293,8 @@ mod tests {
         builder.register_pci_host(provider).unwrap();
         builder
             .add(DeviceNodeSpec::virtual_device(
-                id("ivshmem0"),
-                Arc::new(IvshmemPciModel),
+                id("pci-memory"),
+                Arc::new(PciMemoryTestModel),
             ))
             .unwrap();
         let mut pools = ResourcePools::new();
@@ -321,10 +319,10 @@ mod tests {
         let function = graph
             .pci_topology(&host_key())
             .unwrap()
-            .function(&id("ivshmem0"))
+            .function(&id("pci-memory"))
             .unwrap();
         let bar = function
-            .bar(PciBarIndex::new(SHARED_MEMORY_BAR_INDEX).unwrap())
+            .bar(PciBarIndex::new(PRIVATE_MEMORY_BAR_INDEX).unwrap())
             .unwrap();
         root.write_config(
             function.bdf(),
@@ -338,17 +336,20 @@ mod tests {
             .write_bar(
                 bar.address() + 0x120,
                 AccessWidth::Qword,
-                0x4956_5348_4d45_4d31,
+                0x3154_5345_544d_5043,
             )
             .unwrap();
         assert_eq!(
             binding
                 .read_bar(bar.address() + 0x120, AccessWidth::Qword)
                 .unwrap(),
-            0x4956_5348_4d45_4d31
+            0x3154_5345_544d_5043
         );
         assert_eq!(
-            binding.read_bar(bar.address() + SHARED_MEMORY_SIZE as u64, AccessWidth::Byte),
+            binding.read_bar(
+                bar.address() + PRIVATE_MEMORY_SIZE as u64,
+                AccessWidth::Byte
+            ),
             Err(DeviceError::NotFound)
         );
     }
