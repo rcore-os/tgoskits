@@ -180,7 +180,8 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
     // Real child Link/Rename requests return observations only; one scope owns
     // their completion alongside the final root rename.
     let write = axfs_ng_vfs::PreparedWrite::acquire(&root).unwrap();
-    let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+    let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+    let scope = command.attempt().unwrap();
     {
         let context = scope.context();
         let linked = context
@@ -426,7 +427,8 @@ fn rename_replace_and_exchange_retain_current_successful_inodes() {
         filesystem.sync_to_disk().unwrap();
         super::sync_policy::set_inode_flags(&filesystem, &root, rsext4::InodeFlags::DIRECTORY_SYNC);
         let write = PreparedWrite::acquire(&root).unwrap();
-        let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+        let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+        let scope = command.attempt().unwrap();
         let inspected_root = root.clone();
         let inspected_source = source.clone();
         let inspected_target = target.clone();

@@ -606,7 +606,8 @@ mod tests {
         // then make progress without weakening FAT's active-holder rule.
         let write = axfs_ng_vfs::PreparedWrite::acquire(&parent).unwrap();
         let prepared = parent.prepare_unlink("data").unwrap();
-        let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+        let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+        let scope = command.attempt().unwrap();
         let operation = scope.context();
         let observed = match scope
             .unlink(&operation, prepared, false, &credentials)
@@ -625,7 +626,8 @@ mod tests {
         assert!(parent.lookup_no_follow("data").is_ok());
 
         let prepared = parent.prepare_unlink("data").unwrap();
-        let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(&write).unwrap();
+        let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+        let scope = command.attempt().unwrap();
         let operation = scope.context();
         let observed = match scope
             .unlink(&operation, prepared, false, &credentials)

@@ -1,8 +1,7 @@
 //! Real dirty-inode eviction must classify an observation before pressure runs.
 
 use axfs_ng_vfs::{
-    MutationCredentials, NameState, NamespaceEffect, NamespaceOperationScope, NamespaceStart,
-    NamespaceState, PreparedWrite,
+    MutationCredentials, NameState, NamespaceEffect, NamespaceStart, NamespaceState, PreparedWrite,
 };
 
 use super::*;
@@ -27,7 +26,8 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
         let root_number = inode_number(&root);
         let inode_owners = Arc::strong_count(&root);
         let filesystem_owners = Arc::strong_count(&filesystem);
-        let scope = NamespaceOperationScope::acquire(&write).unwrap();
+        let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+        let scope = command.attempt().unwrap();
         let context = scope.context();
         let completion = match scope
             .unlink(&context, prepared, false, &credentials)
@@ -96,7 +96,8 @@ pub(super) fn retry_observation_after_checkpoint_pressure() {
             // A fresh request must observe and authorize again; the first
             // completion carried neither an observed target nor old authority.
             let prepared = parent.prepare_unlink("witness").unwrap();
-            let scope = NamespaceOperationScope::acquire(&write).unwrap();
+            let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+            let scope = command.attempt().unwrap();
             let context = scope.context();
             let observed = match scope
                 .unlink(&context, prepared, false, &credentials)

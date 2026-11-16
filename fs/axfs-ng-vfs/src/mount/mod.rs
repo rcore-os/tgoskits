@@ -1263,22 +1263,25 @@ impl Location {
         credentials: &crate::MutationCredentials<'_>,
         prepared: crate::prepared_write::PreparedView<'_>,
     ) -> VfsResult<crate::NamespaceOutcome<crate::NamespaceEffect>> {
-        loop {
-            let scope = crate::NamespaceOperationScope::acquire_prepared(prepared)?;
-            {
-                let context = scope.context();
-                scope.create(&context, self, name, attributes, intent, credentials)?;
+        crate::NamespaceCommandScope::run_prepared(prepared, |command| {
+            loop {
+                let scope = command.attempt()?;
+                {
+                    let context = scope.context();
+                    scope.create(&context, self, name, attributes, intent, credentials)?;
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed native factory binds the admitted owner")
+                });
+                if outcome.state() == crate::NamespaceState::Retry
+                    && matches!(outcome.result(), Ok(()) | Err(VfsError::WouldBlock))
+                {
+                    command.prepare()?;
+                    continue;
+                }
+                return Ok(outcome);
             }
-            let outcome = scope
-                .finish()
-                .unwrap_or_else(|_| unreachable!("fixed native factory binds the admitted owner"));
-            if outcome.state() == crate::NamespaceState::Retry
-                && matches!(outcome.result(), Ok(()) | Err(VfsError::WouldBlock))
-            {
-                continue;
-            }
-            return Ok(outcome);
-        }
+        })
     }
 
     fn run_create(
@@ -1315,29 +1318,32 @@ impl Location {
     ) -> VfsResult<Self> {
         let write = crate::PreparedWrite::acquire(self)?;
         let outcome = if self.filesystem().has_native_namespace() {
-            loop {
-                let scope = crate::NamespaceOperationScope::acquire(&write)?;
-                {
-                    let context = scope.context();
-                    scope.restore_create(
-                        &context,
-                        self,
-                        name,
-                        attributes,
-                        owner,
-                        initialization,
-                    )?;
+            crate::NamespaceCommandScope::run_write(&write, |command| {
+                loop {
+                    let scope = command.attempt()?;
+                    {
+                        let context = scope.context();
+                        scope.restore_create(
+                            &context,
+                            self,
+                            name,
+                            attributes,
+                            owner,
+                            initialization,
+                        )?;
+                    }
+                    let outcome = scope.finish().unwrap_or_else(|_| {
+                        unreachable!("fixed native factory binds the admitted owner")
+                    });
+                    if outcome.state() == crate::NamespaceState::Retry
+                        && matches!(outcome.result(), Ok(()) | Err(VfsError::WouldBlock))
+                    {
+                        command.prepare()?;
+                        continue;
+                    }
+                    return Ok(outcome);
                 }
-                let outcome = scope.finish().unwrap_or_else(|_| {
-                    unreachable!("fixed native factory binds the admitted owner")
-                });
-                if outcome.state() == crate::NamespaceState::Retry
-                    && matches!(outcome.result(), Ok(()) | Err(VfsError::WouldBlock))
-                {
-                    continue;
-                }
-                break outcome;
-            }
+            })?
         } else {
             let retired = crate::MutationRetire::new();
             self.run_create(
@@ -1438,20 +1444,23 @@ impl Location {
             }
             verify_entry_name(name)?;
             self.entry.as_dir()?;
-            loop {
-                let scope = crate::NamespaceOperationScope::acquire(&write)?;
-                {
-                    let context = scope.context();
-                    scope.link(&context, self, name, node, credentials)?;
+            crate::NamespaceCommandScope::run_write(&write, |command| {
+                loop {
+                    let scope = command.attempt()?;
+                    {
+                        let context = scope.context();
+                        scope.link(&context, self, name, node, credentials)?;
+                    }
+                    let outcome = scope.finish().unwrap_or_else(|_| {
+                        unreachable!("fixed native factory binds the admitted owner")
+                    });
+                    if outcome.state() == crate::NamespaceState::Retry {
+                        command.prepare()?;
+                        continue;
+                    }
+                    return Ok(outcome);
                 }
-                let outcome = scope.finish().unwrap_or_else(|_| {
-                    unreachable!("fixed native factory binds the admitted owner")
-                });
-                if outcome.state() == crate::NamespaceState::Retry {
-                    continue;
-                }
-                break outcome;
-            }
+            })?
         } else {
             let retired = crate::MutationRetire::new();
             self.link_fallback(name, node, credentials, &write, &retired)
@@ -1526,26 +1535,30 @@ impl Location {
                 credentials,
                 &write,
             )?;
-            loop {
-                let scope = crate::NamespaceOperationScope::acquire(&write)?;
-                {
-                    let context = scope.context();
-                    scope.rename(
-                        &context,
-                        (self, src_name),
-                        (dst_dir, dst_name),
-                        options,
-                        credentials,
-                    )?;
+            return crate::NamespaceCommandScope::run_write(&write, |command| {
+                loop {
+                    let scope = command.attempt()?;
+                    {
+                        let context = scope.context();
+                        scope.rename(
+                            &context,
+                            (self, src_name),
+                            (dst_dir, dst_name),
+                            options,
+                            credentials,
+                        )?;
+                    }
+                    let outcome = scope.finish().unwrap_or_else(|_| {
+                        unreachable!("fixed native factory binds the admitted owner")
+                    });
+                    if outcome.state() == crate::NamespaceState::Retry {
+                        command.prepare()?;
+                        continue;
+                    }
+                    return Ok(outcome);
                 }
-                let outcome = scope.finish().unwrap_or_else(|_| {
-                    unreachable!("fixed native factory binds the admitted owner")
-                });
-                if outcome.state() == crate::NamespaceState::Retry {
-                    continue;
-                }
-                return outcome.into_result();
-            }
+            })?
+            .into_result();
         }
         let retired = crate::MutationRetire::new();
         self.rename_fallback(
@@ -1613,23 +1626,27 @@ impl Location {
     ) -> VfsResult<()> {
         let write = crate::PreparedWrite::acquire(self)?;
         if self.filesystem().has_native_namespace() {
-            loop {
-                let prepared = self.prepare_unlink(name)?;
-                let scope = crate::NamespaceOperationScope::acquire(&write)?;
-                {
-                    let context = scope.context();
-                    scope
-                        .unlink(&context, prepared, is_dir, credentials)?
-                        .resume();
+            return crate::NamespaceCommandScope::run_write(&write, |command| {
+                loop {
+                    let prepared = self.prepare_unlink(name)?;
+                    let scope = command.attempt()?;
+                    {
+                        let context = scope.context();
+                        scope
+                            .unlink(&context, prepared, is_dir, credentials)?
+                            .resume();
+                    }
+                    let outcome = scope.finish().unwrap_or_else(|_| {
+                        unreachable!("fixed native factory binds the admitted owner")
+                    });
+                    if outcome.state() == crate::NamespaceState::Retry {
+                        command.prepare()?;
+                        continue;
+                    }
+                    return Ok(outcome);
                 }
-                let outcome = scope.finish().unwrap_or_else(|_| {
-                    unreachable!("fixed native factory binds the admitted owner")
-                });
-                if outcome.state() == crate::NamespaceState::Retry {
-                    continue;
-                }
-                return outcome.into_result();
-            }
+            })?
+            .into_result();
         }
         let prepared = self.prepare_unlink(name)?;
         let retired = crate::MutationRetire::new();

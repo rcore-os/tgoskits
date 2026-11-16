@@ -5,9 +5,8 @@ use std::sync::Arc;
 use ax_fs_ng::MemoryFs;
 use ax_runtime as _;
 use axfs_ng_vfs::{
-    Location, Mountpoint, MutationCredentials, MutationRetire, NamespaceAdmissions,
-    NamespaceOperationScope, NamespaceQuery, NamespaceRead, NodePermission, NodeType,
-    PreparedWrite, VfsError,
+    Location, Mountpoint, MutationCredentials, MutationRetire, NamespaceAdmissions, NamespaceQuery,
+    NamespaceRead, NodePermission, NodeType, PreparedWrite, VfsError,
 };
 
 fn create(parent: &Location, name: &str, kind: NodeType) -> Location {
@@ -170,7 +169,8 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
     // Exercise the full-context first hop and its native default request path
     // against the same MemoryFs and already cached/covered backing entries.
     // Pure queries register no fake root or child completion.
-    let scope = NamespaceOperationScope::<axfs_ng_vfs::NamespaceEffect>::acquire(&write).unwrap();
+    let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+    let scope = command.attempt::<axfs_ng_vfs::NamespaceEffect>().unwrap();
     {
         let context = scope.context();
         let selected = context.lookup_backing(&root, "covered").unwrap();

@@ -74,6 +74,11 @@ impl<'a> NamespaceDriverRequest<'a> {
         )
     }
 
+    /// Borrows only this receiver's command-local, lock-external plans.
+    pub fn preparations(&self) -> crate::NamespacePreparationContext<'a> {
+        self.context.preparations_for(self.admission().owner)
+    }
+
     /// Completes a Staging or pre-observation failure with its real typed cause.
     pub fn complete(self, completion: NamespaceCompletion) -> NamespaceStart<'a> {
         let completion = completion
@@ -136,7 +141,8 @@ impl<'a> NamespaceDriverRequest<'a> {
 ///     credentials: &'a axfs_ng_vfs::MutationCredentials<'a>,
 /// ) -> axfs_ng_vfs::NamespaceStart<'a> {
 ///     let prepared = root.prepare_unlink("entry").unwrap();
-///     let scope = axfs_ng_vfs::NamespaceOperationScope::acquire(write).unwrap();
+///     let command = axfs_ng_vfs::NamespaceCommandScope::new(write);
+///     let scope = command.attempt().unwrap();
 ///     let context = scope.context();
 ///     scope.unlink(&context, prepared, false, credentials).unwrap()
 /// }

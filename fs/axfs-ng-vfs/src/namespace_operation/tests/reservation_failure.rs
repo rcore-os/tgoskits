@@ -64,7 +64,8 @@ pub(super) fn exercise() {
     let (native, backing) = filesystem(1, vec![], &events, &owner, true, false);
     let (logical, root) = filesystem(0, vec![backing.clone()], &events, &owner, true, false);
     let write = PreparedWrite::acquire(&root).unwrap();
-    let scope = NamespaceOperationScope::acquire(&write).unwrap();
+    let command = crate::NamespaceCommandScope::new(&write);
+    let scope = command.attempt().unwrap();
     let released = Arc::new(Mutex::new(Vec::new()));
     let names = [
         "create-parent",

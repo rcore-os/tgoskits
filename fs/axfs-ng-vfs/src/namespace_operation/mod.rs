@@ -2,6 +2,10 @@
 
 mod backing_query;
 pub use backing_query::{BackingQueryContext, BackingQueryRequest};
+mod preparation;
+pub use preparation::{
+    NamespaceCommandScope, NamespacePreparation, NamespacePreparationContext, PreparationState,
+};
 pub(crate) mod registration;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -65,30 +69,22 @@ struct OperationState<'a, T> {
     retired: Option<MutationRetire>,
     children: RefCell<Registration>,
     root: RefCell<Option<NamespaceCompletion<T>>>,
-    prepared: PreparedView<'a>,
+    command: &'a NamespaceCommandScope<'a>,
 }
 
 impl<'a, T> NamespaceOperationScope<'a, T> {
-    pub fn acquire(write: &'a PreparedWrite) -> VfsResult<Self> {
-        Self::acquire_prepared(PreparedView::write(write))
-    }
-
-    /// Borrows complete creation preparation, including a fully read-only graph
-    /// when creation write preparation failed. No rights are acquired in gates.
-    pub fn acquire_creation(creation: &'a crate::PreparedCreation) -> VfsResult<Self> {
-        Self::acquire_prepared(PreparedView::creation(creation))
-    }
-
-    pub(crate) fn acquire_prepared(prepared: PreparedView<'a>) -> VfsResult<Self> {
+    pub(super) fn acquire(command: &'a NamespaceCommandScope<'a>) -> VfsResult<Self> {
+        command.check_idle()?;
         let mut state = Vec::new();
         state.try_reserve_exact(1).map_err(|_| VfsError::NoMemory)?;
         state.push(OperationState {
-            admissions: Some(NamespaceAdmissions::acquire_prepared(prepared)?),
+            admissions: Some(NamespaceAdmissions::acquire_prepared(command.prepared)?),
             retired: Some(MutationRetire::new()),
             children: RefCell::new(Registration::new()),
             root: RefCell::new(None),
-            prepared,
+            command,
         });
+        command.start_attempt();
         Ok(Self { state })
     }
 
@@ -103,7 +99,8 @@ impl<'a, T> NamespaceOperationScope<'a, T> {
             admissions: state.admissions.as_ref().expect("live scope"),
             retired: state.retired.as_ref().expect("live scope"),
             children: &state.children,
-            prepared: state.prepared,
+            prepared: state.command.prepared,
+            command: state.command,
         }
     }
 
@@ -312,6 +309,7 @@ impl<T> Drop for NamespaceOperationScope<'_, T> {
         drop(state.retired.take());
         state.children.get_mut().children.clear();
         drop(state.root.get_mut().take());
+        state.command.end_attempt();
     }
 }
 
@@ -326,9 +324,16 @@ pub struct NamespaceOperationContext<'a> {
     retired: &'a MutationRetire,
     children: &'a RefCell<Registration>,
     prepared: PreparedView<'a>,
+    command: &'a NamespaceCommandScope<'a>,
 }
 
 impl<'a> NamespaceOperationContext<'a> {
+    pub(crate) fn preparations_for(
+        &self,
+        owner: &dyn crate::FilesystemOps,
+    ) -> NamespacePreparationContext<'a> {
+        NamespacePreparationContext::new(self.command, owner, self.retired)
+    }
     /// Starts a prepared child create/open without re-entering any admission.
     pub fn create(
         &'a self,

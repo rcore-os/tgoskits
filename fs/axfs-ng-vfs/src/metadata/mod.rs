@@ -6,8 +6,8 @@ use core::time::Duration;
 
 use crate::{
     Location, Metadata, MutationCredentials, MutationRetire, NamespaceAdmission,
-    NamespaceCompletion, NamespaceOperationContext, NamespaceOperationScope, NamespaceOutcome,
-    NamespaceState, NodePermission, PreparedWrite, VfsResult,
+    NamespaceCompletion, NamespaceOperationContext, NamespaceOutcome, NamespaceState,
+    NodePermission, PreparedWrite, VfsResult,
 };
 
 /// An inode timestamp intention, resolved only inside the real owner lock.
@@ -142,6 +142,11 @@ impl<'a> MetadataRequest<'a> {
         )
     }
 
+    /// Borrows only the target receiver's command-local preparation plans.
+    pub fn preparations(&self) -> crate::NamespacePreparationContext<'a> {
+        self.context.preparations_for(self.admission().owner)
+    }
+
     /// Classifies the original intent for native namespace exclusion.
     /// Chown(None, None) can still clear setid bits; Times never changes owners.
     pub const fn changes_permissions_or_ownership(&self) -> bool {
@@ -213,18 +218,22 @@ impl Location {
             return Ok(());
         }
         let write = PreparedWrite::acquire(self)?;
-        loop {
-            let scope = NamespaceOperationScope::<Metadata>::acquire(&write)?;
-            {
-                let context = scope.context();
-                scope.change_metadata(&context, self, change, credentials)?;
+        crate::NamespaceCommandScope::run_write(&write, |command| {
+            loop {
+                let scope = command.attempt::<Metadata>()?;
+                {
+                    let context = scope.context();
+                    scope.change_metadata(&context, self, change, credentials)?;
+                }
+                let outcome = scope.finish().unwrap_or_else(|_| {
+                    unreachable!("fixed metadata dispatch binds the admitted owner")
+                });
+                if outcome.state() != NamespaceState::Retry {
+                    return Ok(outcome);
+                }
+                command.prepare()?;
             }
-            let outcome = scope.finish().unwrap_or_else(|_| {
-                unreachable!("fixed metadata dispatch binds the admitted owner")
-            });
-            if outcome.state() != NamespaceState::Retry {
-                return outcome.into_result();
-            }
-        }
+        })?
+        .into_result()
     }
 }

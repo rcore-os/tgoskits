@@ -260,7 +260,8 @@ fn namespace_admissions_order_real_receivers_once_and_release_partial_acquisitio
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 0);
     };
-    let scope = crate::NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let command = crate::NamespaceCommandScope::new(&write);
+    let scope = command.attempt::<Metadata>().unwrap();
     let context = scope.context();
     let completion = scope
         .change_metadata(

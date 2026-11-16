@@ -3022,6 +3022,67 @@ Overlay 私有适配仍须按第 4.9 节验证目标来自绑定 roots 或本实
 败选与残留清理，以及每个逻辑阶段的真实效果；不能用此查询上下文执行普通 File
 打开、raw 修改或把读取快照当作跨 gate 仍有效的旧授权。
 
+### 4.18 分层准备的跨尝试所有者
+
+copy-up 的数据复制不能在任何祖先 gate 或 operation admission 中执行。
+`NamespaceOperationScope` 继续只拥有一轮观察、授权和四阶段完成；跨轮暂存归
+外部 `NamespaceCommandScope` 所有。后者借用同一 `PreparedWrite` 或
+`PreparedCreation`，不复制写权利，不进入 admission。原有命名和元数据便捷入口
+在本次命令开始时建立它，每轮 Scope 都借用它，全部返回路径最后显式清理暂存。
+不把暂存登记放进可由多个 fd 或映射共享的 `WriteAccess`，也不增加任务全局登记。
+
+#### 4.18.1 暂存请求与重入
+
+`NamespaceDriverRequest::preparations()` 和 `MetadataRequest::preparations()`
+从实际 receiver 取得 `NamespacePreparationContext`。这个视图只能在原操作中
+读取或登记该 receiver 的准备项。索引键为真实 receiver 和该活跃逻辑实体的
+`NodeIdentity`；准备项保留逻辑实体及其实际 source，保证键不会被回收复用。
+它没有目标名称授权，不能提交最终 rename、替换、whiteout 或元数据修改。
+后端只在固定 authorizer 已允许本轮意图、而 commit 发现尚缺准备时登记任务并
+返回无逻辑副作用的 `Retry`。取得任务引用后先退出集合借用，再执行下层命令，
+避免嵌套准备重入同一 `RefCell`。
+
+`NamespacePreparation` 保存不可变计划和私有阶段状态，提供锁外 `prepare`
+与显式 `cleanup`。它不能保留 driver、槽位、授权、admission、Context 或
+借用的用户内存；可以保留实际 source、工作根、成对 mounter 和封闭的暂存对象。
+一个 receiver 对同一实体只登记一项；不同 receiver 即使使用相同局部编号也不能
+拿到彼此的准备。下层需要自己的暂存时，由它在真实下沉请求中重新绑定自己的
+receiver，不能借祖先身份跳过依赖边和层级校验。
+
+最外层先完成本轮所有 pressure，退出全部 admissions，释放本轮 retire，再完成
+所有 finish。只有这一整轮完成成功且最终状态仍允许重试时，才调用外部 command
+的 `prepare`。准备过程中可启动严格下层的独立命令，但此时没有祖先 gate 或
+admission；其实际内容 I/O 仍借用外部准备的写权利和原生缓存端点。
+新的 Scope 重新观察名称、实体、权限及 stage 所在位置，旧授权已经结束。
+若另一轮先安装了 upper，采用该实体当前 upper，败选暂存留给显式清理；不得把
+旧副本覆盖已获胜状态。重试前的准备错误直接终止，不能被解释为新的 Retry。
+
+#### 4.18.2 封闭暂存与效果
+
+原生暂存对象由受控工作目录创建接口产生，构造时绑定实际 native owner、完整
+准备及一个新建而尚未安装的实体。属性恢复能力只作用于这个新实体，不能从任意
+`Location`、uid 0 或调用者自行声明的路径构造。数据、符号链接内容、设备号、
+权限、所有者、时间及已有 xattr 在安装前完成；使用普通 Chown 再 Chmod 不能
+代替内部恢复，因为普通 Chown 的 setid 清理有不同语义。安装后该恢复能力结束。
+
+暂存持有者必须参与真实后端的引用分类。对 FAT，在删除观察前关闭暂存 I/O、
+退出缓存持有者并交回其封闭 holder；不能把仍然持有的公开 Location 当成不存在。
+原生接口需要继续保活脱链对象而后端做不到时，在改变可见名称前返回明确不支持。
+暂存的失败清理同样观察实际对象，不能只按旧名字删除可能已被替换的新对象。
+这些能力复用原生 inode、缓存及孤儿机制，不再维护一份内容或 metadata 镜像。
+
+隐藏暂存的物理创建和写入不等于合并视图名称已修改，但它们仍有明确清理责任。
+一旦安装 upper、切换逻辑 backing 或修改可见名称，复合结果便保留这个实际效果。
+之后的错误不能返回 Retry；不能证明最终关系时返回 Uncertain 并失效相应别名。
+所有终止路径先结束当前 Scope，再显式 cleanup；cleanup 保留第一项原始错误，
+另行记录后续清理失败，不能覆盖已有 Applied/Uncertain，也不在 Drop 中执行 I/O。
+Drop 只释放内存和被动引用，不能充当磁盘回滚。
+
+这一协议是完整 Overlay 接入的实施边界。其验证复用既有完成顺序旅程，加入真实
+准备的锁外执行、同实体重入与清理判定；Overlay 的实际文件内容、权限、打开句柄、
+copy-up 竞争和错误后名称由系统用例证明。当前基础接入仅完成实体、root、固定
+backing、依赖及 mounter，不能据此宣称本节已经实现或 Starry 可以构建。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。

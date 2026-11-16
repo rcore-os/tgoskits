@@ -119,7 +119,7 @@ impl NodeOps for WriteLayerRoot {
 
 #[test]
 fn metadata_dispatch_retains_failed_targets_and_empty_times_need_no_rights() {
-    use crate::{MetadataChange, MutationCredentials, NamespaceOperationScope, TimeChange};
+    use crate::{MetadataChange, MutationCredentials, TimeChange};
 
     struct RetiredTarget {
         probe: Arc<OperationProbe>,
@@ -164,7 +164,8 @@ fn metadata_dispatch_retains_failed_targets_and_empty_times_need_no_rights() {
     root.mountpoint().set_readonly(false).unwrap();
 
     let write = PreparedWrite::acquire(&root).unwrap();
-    let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let command = crate::NamespaceCommandScope::new(&write);
+    let scope = command.attempt::<Metadata>().unwrap();
     let context = scope.context();
     let dropped = Arc::new(core::sync::atomic::AtomicUsize::new(0));
     context.retired().retire(RetirementBoundary {

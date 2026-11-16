@@ -14,6 +14,7 @@ use core::{
 use std::sync::{Mutex, MutexGuard};
 
 mod backing_queries;
+mod preparation;
 mod reservation_failure;
 
 use super::*;
@@ -34,6 +35,9 @@ enum Event {
     Finish(&'static str),
     DropWork(&'static str),
     Release,
+    Prepare(usize),
+    Cleanup(usize),
+    DropPreparation(usize, bool),
 }
 
 type Events = Arc<Mutex<Vec<Event>>>;
@@ -223,6 +227,9 @@ impl NodeOps for ProbeNode {
     }
     fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
         self.0.backend_calls.fetch_add(1, Ordering::Relaxed);
+        if self.0.action.load(Ordering::Relaxed) >= 3 {
+            return preparation::change_metadata(self, request);
+        }
         if let Some(probe) = &self.0.queries {
             request.admission().check_owner(self.0.as_ref()).unwrap();
             let _guard = self.0.gate.lock().unwrap();
@@ -513,7 +520,8 @@ pub(crate) fn exercise_scope() {
             NamespaceOutcome::applied(snapshot(), original)
         };
         let write = PreparedWrite::acquire(&root).unwrap();
-        let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+        let command = crate::NamespaceCommandScope::new(&write);
+        let scope = command.attempt::<Metadata>().unwrap();
         let context = scope.context();
         context.retired().retire(Retired(events.clone()));
         let observed = scope
@@ -622,6 +630,7 @@ pub(crate) fn exercise_scope() {
     }
     exercise_incomplete_and_preflight();
     exercise_creation();
+    preparation::exercise();
     reservation_failure::exercise();
 }
 
@@ -658,7 +667,8 @@ fn exercise_creation() {
         let prepared = crate::PreparedCreation::acquire(&root).unwrap();
         root.mountpoint().set_readonly(true).unwrap();
         let alias = Location::new(root.mountpoint().clone_tree(), root.entry().clone());
-        let scope = NamespaceOperationScope::acquire_creation(&prepared).unwrap();
+        let command = crate::NamespaceCommandScope::for_creation(&prepared);
+        let scope = command.attempt().unwrap();
         {
             let context = scope.context();
             context.retired().retire(Retired(events.clone()));
@@ -808,7 +818,8 @@ fn exercise_incomplete_and_preflight() {
             NamespaceState::Applied
         };
         let write = PreparedWrite::acquire(&root).unwrap();
-        let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+        let command = crate::NamespaceCommandScope::new(&write);
+        let scope = command.attempt::<Metadata>().unwrap();
         let context = scope.context();
         // Unstarted reservation cancellation is not an incomplete operation.
         drop(Reservation::child(context.children).unwrap());
@@ -862,7 +873,8 @@ fn exercise_incomplete_and_preflight() {
     let (native, root) = filesystem(1, vec![], &events, &owner, true, false);
     let (foreign, foreign_root) = filesystem(2, vec![], &events, &owner, true, false);
     let write = PreparedWrite::acquire(&root).unwrap();
-    let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let command = crate::NamespaceCommandScope::new(&write);
+    let scope = command.attempt::<Metadata>().unwrap();
     {
         let context = scope.context();
         context.retired().retire(Retired(events.clone()));
@@ -931,7 +943,8 @@ fn exercise_incomplete_and_preflight() {
     let (native, root) = filesystem(1, vec![], &events, &owner, true, false);
     let weak_native = Arc::downgrade(&native);
     let write = PreparedWrite::acquire(&root).unwrap();
-    let scope = NamespaceOperationScope::acquire(&write).unwrap();
+    let command = crate::NamespaceCommandScope::new(&write);
+    let scope = command.attempt().unwrap();
     {
         let context = scope.context();
         let start = scope

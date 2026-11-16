@@ -4,8 +4,8 @@ use core::time::Duration;
 
 use axfs_ng_vfs::{
     Filesystem, Location, Metadata, MetadataChange, Mountpoint, MutationCredentials,
-    NamespaceOperationScope, NamespaceOutcome, NamespaceState, NodePermission, NodeType,
-    PreparedWrite, TimeChange, VfsError,
+    NamespaceOutcome, NamespaceState, NodePermission, NodeType, PreparedWrite, TimeChange,
+    VfsError,
 };
 use chrono::{TimeZone, Utc};
 
@@ -116,7 +116,8 @@ fn change_once(
     credentials: &MutationCredentials<'_>,
 ) -> NamespaceOutcome<Metadata> {
     let write = PreparedWrite::acquire(target).unwrap();
-    let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+    let scope = command.attempt::<Metadata>().unwrap();
     {
         let context = scope.context();
         scope

@@ -354,7 +354,8 @@ fn request_bound_queries_relay_direct_readonly_edges_and_retire_all_candidates()
             Err(VfsError::CrossesDevices)
         ));
     }
-    let scope = NamespaceOperationScope::acquire(&write).unwrap();
+    let command = crate::NamespaceCommandScope::new(&write);
+    let scope = command.attempt().unwrap();
     {
         let context = scope.context();
         // The real driver stores the 'op view, then request.observe consumes the

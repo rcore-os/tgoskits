@@ -3,8 +3,8 @@
 use core::cell::RefCell;
 
 use axfs_ng_vfs::{
-    Location, Metadata, MetadataChange, MutationCredentials, NamespaceOperationScope,
-    NamespaceState, NodePermission, NodeType, PreparedWrite,
+    Location, Metadata, MetadataChange, MutationCredentials, NamespaceState, NodePermission,
+    NodeType, PreparedWrite,
 };
 use rsext4::{FilePermissions, InodeFlags, InodeMetadataUpdate};
 
@@ -147,7 +147,8 @@ fn metadata_completion_failures_stop_retry_and_preserve_applied_observation() {
     super::sync_policy::set_inode_flags(&filesystem, &input, InodeFlags::NO_ATIME);
     prepare_checkpoint_pressure(&filesystem, &input);
     let write = PreparedWrite::acquire(&alias).unwrap();
-    let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+    let scope = command.attempt::<Metadata>().unwrap();
     let context = scope.context();
     let completion = scope
         .change_metadata(
@@ -207,7 +208,8 @@ fn metadata_completion_failures_stop_retry_and_preserve_applied_observation() {
         InodeFlags::SYNC | InodeFlags::NO_ATIME,
     );
     let write = PreparedWrite::acquire(&alias).unwrap();
-    let scope = NamespaceOperationScope::<Metadata>::acquire(&write).unwrap();
+    let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+    let scope = command.attempt::<Metadata>().unwrap();
     let context = scope.context();
     let completion = scope
         .change_metadata(
