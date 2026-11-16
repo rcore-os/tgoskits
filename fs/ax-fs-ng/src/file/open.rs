@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach() {
-        use alloc::boxed::Box;
+        use alloc::{boxed::Box, rc::Rc};
 
         use axfs_ng_vfs::UnmountKind;
 
