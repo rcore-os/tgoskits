@@ -200,6 +200,7 @@ fn verify_renameat_tracks_moved_directory_fd() -> crate::TestResult {
     assert!(metadata.is_file());
     assert_eq!(metadata.len(), ITEM_CONTENT.len() as u64);
     assert!(entry.file_type().unwrap().is_file());
+    drop(entry);
 
     let mut st_dir: libc::stat = unsafe { mem::zeroed() };
     let ret = unsafe { libc::fstatat(dir_fd, ptr::null(), &mut st_dir, libc::AT_EMPTY_PATH) };
