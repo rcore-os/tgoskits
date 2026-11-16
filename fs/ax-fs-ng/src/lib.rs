@@ -31,7 +31,16 @@ pub mod initramfs;
 pub mod migration;
 pub use fs::memory::MemoryFs;
 mod fs_core;
-pub use fs_core::{
+/// Task filesystem ownership and its actual VFS namespace/path contracts.
+pub mod fs_context {
+    pub use axfs_ng_vfs::{MountNamespace, NamespaceClone, NamespaceRootSnapshot, PathHandle};
+
+    pub use crate::fs_core::{
+        FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement,
+        FsUpdateRetirement, PreparedFsUpdate,
+    };
+}
+pub use fs_context::{
     FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement, FsUpdateRetirement,
     PreparedFsUpdate,
 };
