@@ -36,9 +36,7 @@ enum FsChange {
 #[derive(Debug, Default)]
 pub struct FsUpdateRetirement {
     _update: Option<PreparedFsUpdate>,
-    _root: Option<PathHandle>,
-    _cwd: Option<PathHandle>,
-    _namespace: Option<Arc<MountNamespace>>,
+    _input: Option<PathHandle>,
 }
 
 impl FsContextOwner {
@@ -136,7 +134,7 @@ impl FsContextSnapshot {
             Err(error) => (
                 Err(error),
                 FsUpdateRetirement {
-                    _root: Some(path),
+                    _input: Some(path),
                     ..Default::default()
                 },
             ),

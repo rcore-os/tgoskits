@@ -19,6 +19,12 @@ use crate::os::sync::{Mutex, RawSpinLock};
 /// This value cannot be cloned. Moving it preserves one share; explicitly
 /// sharing it reserves a share even before a child starts. Snapshots cannot
 /// resurrect an owner after its final share has been released.
+///
+/// ```compile_fail,E0599
+/// fn duplicate(owner: ax_fs_ng::FsContextOwner) {
+///     let second = owner.clone();
+/// }
+/// ```
 pub struct FsContextOwner {
     state: Arc<RawSpinLock<FsState>>,
     namespace: Arc<MountNamespace>,
