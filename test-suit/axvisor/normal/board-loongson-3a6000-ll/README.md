@@ -30,8 +30,9 @@ Linux 版本为 `7.1.0-rc2+`。运行记录必须保留实际镜像版本、内�
 `resources/prepare-board.py` 从发布 initramfs 提取 BusyBox 和原 `/init`，去掉其中
 重复携带的 Linux 镜像，通过 `cargo xtask image pack-initramfs` 生成
 `busybox.cpio.gz`。`resources/init` 先挂载 devtmpfs、重新打开控制台，再执行
-发布版初始化脚本，避免精简归档依赖构建机创建设备节点。这样宿主上传包可保持在
-板卡服务的 64 MiB 限制内。
+发布版初始化脚本，避免精简归档依赖构建机创建设备节点，并减少重复传输。
+板卡服务的 `upload_limits.session_file_max_mib` 默认值为 64，可由管理员动态
+调整为 128 等值；这属于服务上传策略。精简归档也能在默认上限下使用。
 
 脚本同时准备独立的 ext4 块夹具，再通过同一打包入口装入宿主基底归档。
 `board-manifest.json` 绑定发布 initramfs、夹具内容、脚本、ext4 配置、工具及

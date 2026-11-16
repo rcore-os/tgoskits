@@ -61,8 +61,9 @@ builtin bundle 按内容打包；CI 不依赖本地 Linux 源码或额外内核�
 自托管宿主的 `/tmp/tgosimages` 不随 checkout 清理；缺失或与 registry 摘要不符时
 才重新下载，也可通过 `TGOS_IMAGE_DOWNLOAD_DIR` 选择持久目录。脚本从发布 initramfs
 提取 BusyBox 和原 `/init`，剔除内嵌的重复 Linux 镜像；`resources/init` 先挂载
-devtmpfs 并重开控制台，再执行原脚本。精简后的 initrd 避免宿主上传包超过
-板卡服务 64 MiB 限制，不需要修改板卡原系统分区。
+devtmpfs 并重开控制台，再执行原脚本。精简后的 initrd 减少重复传输，也能满足
+板卡服务默认 64 MiB 的上传上限。该上限由 `upload_limits.session_file_max_mib`
+动态配置，可调整为 128 等值；客户机运行不需要修改板卡原系统分区。
 
 块设备夹具由同一脚本独立生成，仅包含已知内容。`board-manifest.json` 绑定
 发布 initramfs、脚本、夹具、ext4 配置、工具及产物摘要；`SOURCE_DATE_EPOCH`

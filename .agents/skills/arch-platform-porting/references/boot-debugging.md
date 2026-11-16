@@ -615,7 +615,9 @@ Loongson 3A6000 的资源和独立客户机板测契约见
 原 ArceOS Hello 入口保留为手动诊断。Linux 与 BusyBox 来自受管理的发布镜像，
 `image pull` 复用自托管宿主的持久下载缓存并校验 SHA-256；不要每轮清空缓存或
 改为编译本地 Linux。发布 initramfs 内还包含客户机内核，板测的 `prepare-board.py`
-只提取 BusyBox 和原 `/init` 后重新打包，避免重复内核使 HTTP 上传超过 64 MiB。
+只提取 BusyBox 和原 `/init` 后重新打包，减少重复传输。HTTP 上传默认上限为
+64 MiB，可用服务的 `upload_limits.session_file_max_mib` 动态配置调整；不要将
+默认值误认为硬件限制。
 精简归档由 `resources/init` 挂载 devtmpfs、重开控制台后执行发布初始化脚本，
 不能依赖构建机创建设备节点。缓存命中和上传成功都不替代实际客户机命令断言。
 
