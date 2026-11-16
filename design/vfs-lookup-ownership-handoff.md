@@ -170,7 +170,7 @@ F1–F8 调查涵盖 newmount、bind、MS_MOVE、传播、remount、detached mov
 
 ### 6.2 验证入口与缓存
 
-项目使用固定 nightly-2026-09-04、Rust 2024 和 `python3`。构建、Clippy、标准库测试和系统测试继续使用 `cargo xtask`，不以原生 Cargo 入口替代。合并后 Clippy 实现在 `scripts/axbuild/src/checks/clippy/`，ArceOS 测试在 `scripts/axbuild/src/test/normal/arceos/`；旧路径已经迁移。
+本节历史检查点使用 nightly-2026-09-04；后续主线已升级为 nightly-2026-11-13，接手时以 `rust-toolchain.toml` 为准。项目继续使用 Rust 2024 和 `python3`。构建、Clippy、标准库测试和系统测试继续使用 `cargo xtask`，不以原生 Cargo 入口替代。合并后 Clippy 实现在 `scripts/axbuild/src/checks/clippy/`，ArceOS 测试在 `scripts/axbuild/src/test/normal/arceos/`；旧路径已经迁移。
 
 新的 ArceOS Rust suite 使用 schema 3 声明批次和构建生成流程，`suite.toml` 与 `build.rs` 是正常入口，不恢复旧 all 或旧独立测试 feature。接手者需先确认选择器命中所需测试；当前只记录示例，不代表交接时已运行：
 

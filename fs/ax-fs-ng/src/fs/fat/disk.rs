@@ -593,8 +593,9 @@ mod tests {
                 .ptr_eq(parent.entry())
         );
 
-        // Keep the positive and clean content caches intact. Only actual users
-        // leave scope; unlink preparation must release eligible cache owners.
+        // Leave buffered data dirty after the active-user rejection. Closing
+        // the file must allow later unlink without an explicit user fsync.
+        assert_eq!(file.write_at(contents.as_slice(), 0), Ok(contents.len()));
         drop(current);
         drop(original);
         drop(file);
