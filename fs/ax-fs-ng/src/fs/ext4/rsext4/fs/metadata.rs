@@ -234,7 +234,7 @@ fn native_update(change: AuthorizedMetadataChange<'_>) -> Ext4Result<InodeMetada
             .transpose()?,
         atime: change.atime().map(timestamp).transpose()?,
         mtime: change.mtime().map(timestamp).transpose()?,
-        ctime: Some(timestamp(change.ctime())?),
+        ctime: change.ctime().map(timestamp).transpose()?,
         ..Default::default()
     })
 }

@@ -1,9 +1,8 @@
 //! Flat, non-idmapped Linux setattr authorization, against the locked inode.
 
-use core::time::Duration;
-
 use super::{
-    AuthorizedMetadataChange, MetadataChange, MetadataIntent, MetadataRequest, TimeChange,
+    AuthorizedMetadataChange, LockedMetadataAttempt, MetadataChange, MetadataIntent,
+    MetadataRequest, TimeChange,
 };
 use crate::{Metadata, NodePermission, NodeType, VfsError, VfsResult};
 
@@ -11,7 +10,7 @@ impl MetadataRequest<'_> {
     pub(super) fn authorize<'a>(
         &'a self,
         current: &Metadata,
-        now: Duration,
+        attempt: &mut dyn LockedMetadataAttempt,
     ) -> VfsResult<AuthorizedMetadataChange<'a>> {
         let credentials = self.credentials;
         let owner = credentials.fsuid == current.uid;
@@ -30,7 +29,7 @@ impl MetadataRequest<'_> {
             atime: None,
             mtime: None,
             rdev: None,
-            ctime: now,
+            ctime: None,
         };
         let change = match &self.intent {
             MetadataIntent::User(change) => *change,
@@ -54,6 +53,8 @@ impl MetadataRequest<'_> {
                 return Ok(authorized);
             }
         };
+        let now = attempt.wall_time();
+        authorized.ctime = Some(now);
         match change {
             MetadataChange::Chmod(mode) => {
                 // notify_change rejects explicit ATTR_MODE before setattr_prepare.

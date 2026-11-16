@@ -7,7 +7,8 @@ impl TrustedInitialization {
     /// Restores approved archive or boot metadata on the actual target owner.
     ///
     /// This explicit initialization authority preserves participating fields,
-    /// including setid and symlink modes; it is not ordinary user chown/chmod.
+    /// including setid and symlink modes. It preserves omitted timestamps and
+    /// does not read the clock; it is not ordinary user chown/chmod.
     /// Real mount write preparation, backend support, and all completion phases
     /// still apply. Call outside every admission/backend gate. Runtime syscalls
     /// and layered copy-up must not substitute this kernel authority for their

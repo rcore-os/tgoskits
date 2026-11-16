@@ -88,7 +88,7 @@ pub struct AuthorizedMetadataChange<'a> {
     atime: Option<Duration>,
     mtime: Option<Duration>,
     rdev: Option<DeviceId>,
-    ctime: Duration,
+    ctime: Option<Duration>,
 }
 
 impl AuthorizedMetadataChange<'_> {
@@ -122,8 +122,9 @@ impl AuthorizedMetadataChange<'_> {
         self.rdev
     }
 
-    /// Returns the real clock value selected for this locked attempt.
-    pub const fn ctime(&self) -> Duration {
+    /// Returns the implicit user-command timestamp. Initialization leaves the
+    /// field absent, preserving its existing native precision and value.
+    pub const fn ctime(&self) -> Option<Duration> {
         self.ctime
     }
 
@@ -148,7 +149,9 @@ impl AuthorizedMetadataChange<'_> {
         if let Some(rdev) = self.rdev {
             metadata.rdev = rdev;
         }
-        metadata.ctime = self.ctime;
+        if let Some(ctime) = self.ctime {
+            metadata.ctime = ctime;
+        }
     }
 }
 
@@ -200,8 +203,7 @@ impl<'a> MetadataRequest<'a> {
             Ok(observed) => observed,
             Err(error) => return NamespaceOutcome::unchanged(Err(error)),
         };
-        let now = attempt.wall_time();
-        match self.authorize(&observed, now) {
+        match self.authorize(&observed, attempt) {
             Ok(authorized) => attempt.commit(authorized),
             Err(error) => NamespaceOutcome::unchanged_observed(observed, Err(error)),
         }

@@ -71,7 +71,7 @@ impl LockedMetadataAttempt for CgroupMetadataAttempt<'_> {
             mode: change.mode().map(|mode| mode.bits()),
             atime: change.atime(),
             mtime: change.mtime(),
-            ctime: Some(change.ctime()),
+            ctime: change.ctime(),
         };
         if let Err(error) = self
             .guard
