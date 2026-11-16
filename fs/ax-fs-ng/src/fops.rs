@@ -194,7 +194,7 @@ impl File {
         credentials: &axfs_ng_vfs::MutationCredentials<'_>,
     ) -> VfsResult<Self> {
         let fs_context = current_fs_context();
-        let inner = opts.to_core().open(&fs_context.lock(), path, credentials)?;
+        let inner = opts.to_core().open(&fs_context, path, credentials)?;
         Ok(Self {
             inner: inner.into_file()?,
         })
@@ -310,7 +310,7 @@ impl Directory {
         {
             return Err(VfsError::InvalidInput);
         }
-        let location = current_fs_context().lock().resolve(path)?;
+        let location = current_fs_context().resolve(path)?;
         Self::from_location(location)
     }
 

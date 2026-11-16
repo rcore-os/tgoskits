@@ -323,35 +323,26 @@ impl PreparedRoot {
         let context = crate::highlevel::ROOT_FS_CONTEXT
             .get()
             .ok_or(VfsError::InvalidInput)?
-            .clone();
-        let old_root;
-        let new_root;
-        #[cfg(feature = "vfs")]
-        let namespace;
-        {
-            let mut context_guard = context.lock();
-            old_root = context_guard.root_dir().clone();
-            let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
-            // Preserve the complete tree that resource installation validated,
-            // including mounts on other partitions and their open filesystem owners.
-            let mount = mount_dir.bind_mount(self.context.root_dir(), true)?;
-            new_root = mount.root_location();
-            #[cfg(feature = "vfs")]
-            {
-                namespace = context_guard.mount_namespace().clone();
-            }
-            if let Err(error) = context_guard.pivot_root(new_root.clone(), new_root.clone()) {
-                new_root.detach_mount()?;
+            .snapshot();
+        let old_root = context.root_dir().clone();
+        let mount_dir = ensure_mountpoint_dir_result(&old_root, "/.rootfs")?;
+        // Preserve the complete tree validated by resource installation.
+        let mount = mount_dir.bind_mount(self.context.root_dir(), true)?;
+        let new_root = match axfs_ng_vfs::PathHandle::acquire(mount.root_location()) {
+            Ok(path) => path,
+            Err(error) => {
+                mount.root_location().detach_mount()?;
                 return Err(error);
             }
+        };
+        let (result, retirement) = context.pivot_root(&new_root, &new_root);
+        if let Err(error) = result {
+            new_root.location().detach_mount()?;
+            drop(retirement);
+            return Err(error);
         }
-        crate::highlevel::FsContext::propagate_pivot_root(
-            #[cfg(feature = "vfs")]
-            &namespace,
-            &old_root,
-            &new_root,
-        );
         old_root.detach_mount()?;
+        drop(retirement);
         crate::register_mounted_filesystem(self.filesystem.clone());
         let root_device = RootBlockDevice {
             identity: Arc::new(self.selected.identity.clone()),
@@ -539,10 +530,9 @@ fn prepare_root(
             )?
         }
     };
-    let context = crate::highlevel::FsContext::new(
-        axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source)
-            .root_location(),
-    );
+    let tree =
+        axfs_ng_vfs::Mountpoint::new_root_with_device_source(&filesystem, root_device, &source);
+    let context = crate::highlevel::FsContext::from_tree(tree.clone(), tree.root_location())?;
     mount_additional_partitions(context.root_dir(), &selected, selected_partition);
     for disk in &disks {
         mount_additional_partitions(context.root_dir(), disk, None);
@@ -602,7 +592,7 @@ fn init_root_with_policy(
     }
     let source = crate::highlevel::ROOT_FS_CONTEXT
         .get()
-        .map(|context| context.lock().clone());
+        .map(crate::FsContextOwner::snapshot);
     let prepared = prepare_root(devices, bootargs)
         .unwrap_or_else(|error| panic!("failed to prepare disk root: {error:?}"));
     if let Some(source) = source
@@ -636,20 +626,24 @@ fn should_keep_memory_root(
     if defer {
         return Ok(true);
     }
-    Ok(no_block_devices
-        || memory.is_some_and(|fs| should_use_memory_root(fs, bootargs, early_init)))
+    if no_block_devices {
+        return Ok(true);
+    }
+    match memory {
+        Some(fs) => should_use_memory_root(fs, bootargs, early_init),
+        None => Ok(false),
+    }
 }
 
 fn should_use_memory_root(
     memory: &axfs_ng_vfs::Filesystem,
     bootargs: Option<&str>,
     early_init: Option<&str>,
-) -> bool {
+) -> axfs_ng_vfs::VfsResult<bool> {
     match early_init {
         Some(path) => memory_init_accessible(memory, path),
-        None => {
-            root_value(bootargs.unwrap_or("")).is_none() && !memory_contains_only_kernel_map(memory)
-        }
+        None if root_value(bootargs.unwrap_or("")).is_some() => Ok(false),
+        None => memory_contains_only_kernel_map(memory).map(|only_map| !only_map),
     }
 }
 
@@ -660,29 +654,34 @@ fn should_use_memory_root(
 /// root would hide the device and make writeback tests exercise the wrong
 /// filesystem.  A real initramfs remains the memory root when it contains
 /// any startup or userspace entry.
-fn memory_contains_only_kernel_map(memory: &axfs_ng_vfs::Filesystem) -> bool {
-    let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
-    let context = crate::highlevel::FsContext::new(root);
+fn memory_contains_only_kernel_map(
+    memory: &axfs_ng_vfs::Filesystem,
+) -> axfs_ng_vfs::VfsResult<bool> {
+    let tree = axfs_ng_vfs::Mountpoint::new_root(memory);
+    let context = crate::highlevel::FsContext::from_tree(tree.clone(), tree.root_location())?;
     let has_map = context.resolve("/symbols/kernel.axbt").is_ok()
         || context.resolve("/boot/symbols/kernel.axbt").is_ok();
     if !has_map {
-        return false;
+        return Ok(false);
     }
     let Ok(entries) = context.read_dir("/") else {
-        return false;
+        return Ok(false);
     };
-    entries
+    Ok(entries
         .filter_map(Result::ok)
-        .all(|entry| matches!(entry.name.as_str(), "." | ".." | "symbols" | "boot"))
+        .all(|entry| matches!(entry.name.as_str(), "." | ".." | "symbols" | "boot")))
 }
 
-fn memory_init_accessible(memory: &axfs_ng_vfs::Filesystem, path: &str) -> bool {
+fn memory_init_accessible(
+    memory: &axfs_ng_vfs::Filesystem,
+    path: &str,
+) -> axfs_ng_vfs::VfsResult<bool> {
     if !path.starts_with('/') {
-        return false;
+        return Ok(false);
     }
-    let root = axfs_ng_vfs::Mountpoint::new_root(memory).root_location();
-    let context = crate::highlevel::FsContext::new(root);
-    context.resolve(path).is_ok()
+    let tree = axfs_ng_vfs::Mountpoint::new_root(memory);
+    let context = crate::highlevel::FsContext::from_tree(tree.clone(), tree.root_location())?;
+    Ok(context.resolve(path).is_ok())
 }
 
 /// Returns whether a block handle is the device selected for the root
@@ -1741,9 +1740,9 @@ mod tests {
     fn initramfs_selection_follows_pid1_and_explicit_root_rules() {
         crate::os::memory::test_support::with_test_page_provider(true, |_| {
             let fs = crate::MemoryFs::new_ramfs();
-            let context = crate::highlevel::FsContext::new(
-                axfs_ng_vfs::Mountpoint::new_root(&fs).root_location(),
-            );
+            let tree = axfs_ng_vfs::Mountpoint::new_root(&fs);
+            let context =
+                crate::highlevel::FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
             context
                 .create_node(
                     "/init",
@@ -1758,22 +1757,19 @@ mod tests {
                 )
                 .unwrap();
 
-            assert!(should_use_memory_root(
-                &fs,
-                Some("root=/dev/sda"),
-                Some("/init")
-            ));
+            assert!(should_use_memory_root(&fs, Some("root=/dev/sda"), Some("/init")).unwrap());
             let root = Some("root=/dev/sda rw");
             assert!(should_keep_memory_root(false, Some(&fs), root, Some("/init"), false).unwrap());
             assert!(should_keep_memory_root(false, Some(&fs), root, Some("/init"), true).unwrap());
-            assert!(!should_use_memory_root(&fs, None, Some("/missing")));
-            assert!(should_use_memory_root(&fs, None, None));
-            assert!(!should_use_memory_root(&fs, Some("root=/dev/sda"), None));
+            assert!(!should_use_memory_root(&fs, None, Some("/missing")).unwrap());
+            assert!(should_use_memory_root(&fs, None, None).unwrap());
+            assert!(!should_use_memory_root(&fs, Some("root=/dev/sda"), None).unwrap());
 
             let map_fs = crate::MemoryFs::new_ramfs();
-            let map_context = crate::highlevel::FsContext::new(
-                axfs_ng_vfs::Mountpoint::new_root(&map_fs).root_location(),
-            );
+            let map_tree = axfs_ng_vfs::Mountpoint::new_root(&map_fs);
+            let map_context =
+                crate::highlevel::FsContext::from_tree(map_tree.clone(), map_tree.root_location())
+                    .unwrap();
             map_context
                 .create_node(
                     "/symbols",
@@ -1801,7 +1797,7 @@ mod tests {
                 )
                 .unwrap();
             assert!(map_context.resolve("/symbols/kernel.axbt").is_ok());
-            assert!(!should_use_memory_root(&map_fs, None, None));
+            assert!(!should_use_memory_root(&map_fs, None, None).unwrap());
             assert_eq!(
                 root_value("root=/dev/sda root=PARTUUID=abcd -- root=/ignored"),
                 Some(String::from("PARTUUID=abcd"))

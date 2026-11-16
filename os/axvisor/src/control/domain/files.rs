@@ -486,7 +486,7 @@ pub fn place(id: &str, name: &str) -> Result<SessionView, FileError> {
             session.name = Some(name);
         }
     }
-    if let Err(error) = ax_fs_ng::current_fs_context().lock().rename_with_options(
+    if let Err(error) = ax_fs_ng::current_fs_context().rename_with_options(
         &from,
         &to,
         RenameOptions::NO_REPLACE,

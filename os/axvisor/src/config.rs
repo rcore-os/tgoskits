@@ -24,7 +24,7 @@ use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
 pub fn load_builtin_catalog() -> Result<axvisor::builtin::BuiltinCatalog> {
     init_guest_boot_resources();
     let context = ax_fs_ng::current_fs_context();
-    axvisor::builtin::load_catalog(&context.lock())
+    axvisor::builtin::load_catalog(&context)
 }
 
 pub(crate) struct PreparedGuestVm {

@@ -71,7 +71,6 @@ fn prepare_filesystem() {
         std::fs::create_dir_all(path).expect("prepare memory-root test directory");
     }
     ax_fs_ng::current_fs_context()
-        .lock()
         .symlink(
             "/run",
             "/var/run",
@@ -253,8 +252,8 @@ mod tests {
 
     #[test]
     fn builtin_catalog_ignores_vm_default_and_rejects_invalid_builtin_configs() {
-        let context =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+        let tree = Mountpoint::new_root(&ax_fs_ng::MemoryFs::new());
+        let context = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
         for path in [
             "/guest",
             "/guest/builtin",
@@ -274,7 +273,11 @@ mod tests {
         let builtin = "[base]\nid=1\nname='builtin'\ncpu_num=1\n[kernel]\nentry_point=0\nkernel_load_addr=0\nkernel_path='/guest/builtin/images/kernel'\n[devices]\n";
         let user = builtin.replace("builtin'", "user'").replace("id=1", "id=2");
         context
-            .write("/guest/builtin/configs/default.toml", builtin)
+            .write(
+                "/guest/builtin/configs/default.toml",
+                builtin,
+                &MutationCredentials::root(),
+            )
             .unwrap();
         let catalog = load_catalog(&context).unwrap();
         ax_assert_eq!(
@@ -283,7 +286,11 @@ mod tests {
         );
         ax_assert_eq!(catalog.get(1).unwrap().toml(), builtin);
         context
-            .write("/guest/vm_default/custom.toml", &user)
+            .write(
+                "/guest/vm_default/custom.toml",
+                &user,
+                &MutationCredentials::root(),
+            )
             .unwrap();
         let catalog = load_catalog(&context).unwrap();
         ax_assert_eq!(
@@ -292,17 +299,23 @@ mod tests {
         );
         ax_assert_eq!(catalog.get(1).unwrap().toml(), builtin);
         context
-            .write("/guest/builtin/configs/invalid.toml", "")
+            .write(
+                "/guest/builtin/configs/invalid.toml",
+                "",
+                &MutationCredentials::root(),
+            )
             .unwrap();
         ax_assert!(load_catalog(&context).is_err());
     }
 
     #[test]
     fn package_install_validates_external_assets_before_replacing_defaults() {
+        let source_tree = Mountpoint::new_root(&ax_fs_ng::MemoryFs::new());
         let source =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+            FsContext::from_tree(source_tree.clone(), source_tree.root_location()).unwrap();
+        let target_tree = Mountpoint::new_root(&ax_fs_ng::MemoryFs::new());
         let target =
-            FsContext::new(Mountpoint::new_root(&ax_fs_ng::MemoryFs::new()).root_location());
+            FsContext::from_tree(target_tree.clone(), target_tree.root_location()).unwrap();
         for context in [&source, &target] {
             for path in [
                 "/guest",
@@ -327,24 +340,46 @@ mod tests {
             .replace("installed'", "incoming'")
             .replace("[devices]", "dtb_path='/board/guest.dtb'\n[devices]");
         source
-            .write("/guest/builtin/configs/default.toml", &incoming)
+            .write(
+                "/guest/builtin/configs/default.toml",
+                &incoming,
+                &MutationCredentials::root(),
+            )
             .unwrap();
         source
-            .write("/guest/builtin/images/kernel", "new kernel")
+            .write(
+                "/guest/builtin/images/kernel",
+                "new kernel",
+                &MutationCredentials::root(),
+            )
             .unwrap();
         target
-            .write("/guest/builtin/configs/default.toml", installed)
+            .write(
+                "/guest/builtin/configs/default.toml",
+                installed,
+                &MutationCredentials::root(),
+            )
             .unwrap();
         target
-            .write("/guest/builtin/images/kernel", "old kernel")
+            .write(
+                "/guest/builtin/images/kernel",
+                "old kernel",
+                &MutationCredentials::root(),
+            )
             .unwrap();
         target
-            .write("/guest/builtin/images/obsolete", "old resource")
+            .write(
+                "/guest/builtin/images/obsolete",
+                "old resource",
+                &MutationCredentials::root(),
+            )
             .unwrap();
         let install = || install_builtin(&source, &target);
         for empty_file in [false, true] {
             if empty_file {
-                target.write("/board/guest.dtb", "").unwrap();
+                target
+                    .write("/board/guest.dtb", "", &MutationCredentials::root())
+                    .unwrap();
             }
             let error = install().unwrap_err();
             ax_assert!(alloc::format!("{error:#}").contains("/board/guest.dtb"));
@@ -361,7 +396,13 @@ mod tests {
                 "old kernel"
             );
         }
-        target.write("/board/guest.dtb", "guest DTB").unwrap();
+        target
+            .write(
+                "/board/guest.dtb",
+                "guest DTB",
+                &MutationCredentials::root(),
+            )
+            .unwrap();
         ax_assert!(install().unwrap());
         ax_assert_eq!(
             target

@@ -40,6 +40,40 @@ pub struct FsUpdateRetirement {
 }
 
 impl FsContextOwner {
+    fn check_prepared_source(&self, update: &PreparedFsUpdate) -> VfsResult<()> {
+        if !Weak::ptr_eq(&Arc::downgrade(&self.state), &update.source)
+            || !Arc::ptr_eq(&self.namespace, &update.namespace)
+        {
+            return Err(VfsError::BadState);
+        }
+        Ok(())
+    }
+
+    /// Commits only cwd through an existing owner's shared scope lease. The
+    /// lease excludes replacement of its namespace binding; the state lock
+    /// serializes shared paths. Native global scopes have no mutable slot.
+    pub(crate) fn apply_cwd_update(
+        &self,
+        update: PreparedFsUpdate,
+    ) -> (VfsResult<()>, FsUpdateRetirement) {
+        let mut retired = FsUpdateRetirement {
+            _update: Some(update),
+            ..Default::default()
+        };
+        let result = (|| {
+            let update = retired._update.as_mut().expect("retained input");
+            self.check_prepared_source(update)?;
+            let FsChange::Cwd(cwd) = &mut update.change else {
+                return Err(VfsError::InvalidInput);
+            };
+            let mut state = self.state.lock_irqsave();
+            check_sharing(&state, update.sharing)?;
+            core::mem::swap(&mut state.cwd, cwd);
+            Ok(())
+        })();
+        (result, retired)
+    }
+
     /// Checks actual source allocation, namespace, and the selected ownership
     /// condition. Path contents may have changed legitimately since snapshot.
     pub fn check_source(
@@ -48,7 +82,7 @@ impl FsContextOwner {
         sharing: FsSharingRequirement,
     ) -> VfsResult<()> {
         if !Weak::ptr_eq(&Arc::downgrade(&self.state), &source.source)
-            || !Arc::ptr_eq(&self.namespace, &source.namespace)
+            || !Arc::ptr_eq(&self.namespace, source.namespace())
         {
             return Err(VfsError::BadState);
         }
@@ -67,10 +101,8 @@ impl FsContextOwner {
             ..Default::default()
         };
         let update = retired._update.as_ref().expect("retained input");
-        if !Weak::ptr_eq(&Arc::downgrade(&self.state), &update.source)
-            || !Arc::ptr_eq(&self.namespace, &update.namespace)
-        {
-            return (Err(VfsError::BadState), retired);
+        if let Err(error) = self.check_prepared_source(update) {
+            return (Err(error), retired);
         }
         let result = {
             let mut state = self.state.lock_irqsave();
@@ -163,7 +195,7 @@ impl FsContextSnapshot {
     fn prepare(&self, change: FsChange, sharing: FsSharingRequirement) -> PreparedFsUpdate {
         PreparedFsUpdate {
             source: self.source.clone(),
-            namespace: self.namespace.clone(),
+            namespace: self.namespace().clone(),
             sharing,
             change,
         }

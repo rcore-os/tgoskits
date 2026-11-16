@@ -138,8 +138,12 @@ fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
             BlockRegion::from_num_blocks((TEST_DEVICE_BYTES / TEST_SECTOR_BYTES) as u64),
         )
         .unwrap();
-        let target = FsContext::new(Mountpoint::new_root(&filesystem).root_location());
-        let source = FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location());
+        let target_tree = Mountpoint::new_root(&filesystem);
+        let target =
+            FsContext::from_tree(target_tree.clone(), target_tree.root_location()).unwrap();
+        let source_tree = Mountpoint::new_root(&MemoryFs::new());
+        let source =
+            FsContext::from_tree(source_tree.clone(), source_tree.root_location()).unwrap();
         for context in [&source, &target] {
             for path in ["/guest", "/guest/builtin"] {
                 context

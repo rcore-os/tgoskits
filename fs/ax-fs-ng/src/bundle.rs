@@ -269,7 +269,8 @@ mod tests {
     use crate::MemoryFs;
 
     fn context() -> FsContext {
-        FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location())
+        let tree = Mountpoint::new_root(&MemoryFs::new());
+        FsContext::from_tree(tree.clone(), tree.root_location()).unwrap()
     }
     fn write(context: &FsContext, path: &str, data: &[u8]) {
         File::create(context, path, &axfs_ng_vfs::MutationCredentials::root())
@@ -320,9 +321,8 @@ mod tests {
             remove_tree(&source, "/guest/builtin/kernel").unwrap();
             install_directory(&source, &target, "/guest/builtin", |_, _| Ok(())).unwrap();
             assert!(child_names(&target, "/guest/builtin").unwrap().is_empty());
-            let full = FsContext::new(
-                Mountpoint::new_root(&MemoryFs::new_with_size_limit(4)).root_location(),
-            );
+            let tree = Mountpoint::new_root(&MemoryFs::new_with_size_limit(4));
+            let full = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
             mkdir_parents(&full, "/guest/builtin").unwrap();
             write(&full, "/guest/builtin/old-only", b"old");
             write(&source, "/guest/builtin/kernel", b"new");

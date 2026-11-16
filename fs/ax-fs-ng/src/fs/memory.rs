@@ -971,7 +971,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let context = FsContext::new(root.clone());
+        let context = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
         let revoked = root.clone();
         BEFORE_NAMESPACE_CHANGE.with(|slot| {
             assert!(slot.borrow().is_none());
@@ -1019,7 +1019,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let context = FsContext::new(root.clone());
+        let context = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
         let revoked = victim.clone();
         BEFORE_NAMESPACE_CHANGE.with(|slot| {
             assert!(slot.borrow().is_none());

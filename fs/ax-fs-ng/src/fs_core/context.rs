@@ -1,162 +1,48 @@
-#[cfg(feature = "vfs")]
-use alloc::vec;
 use alloc::{
     borrow::{Cow, ToOwned},
     boxed::Box,
     collections::vec_deque::VecDeque,
     string::String,
-    sync::{Arc, Weak},
+    sync::Arc,
     vec::Vec,
 };
-#[cfg(feature = "vfs")]
-use core::sync::atomic::AtomicU64;
-#[cfg(feature = "vfs")]
-use core::sync::atomic::Ordering;
 
 use ax_io::{Read, Write};
 use ax_lazyinit::OnceLock;
-#[cfg(feature = "vfs")]
-use axfs_ng_vfs::Mountpoint;
 use axfs_ng_vfs::{
-    CreateAttributes, DirectoryCursor, DirectoryReadState, Location, Metadata, MutationCredentials,
-    NodePermission, NodeType, RenameOptions, VfsError, VfsResult,
+    CreateAttributes, DirectoryCursor, DirectoryReadState, Location, Metadata, MountNamespace,
+    Mountpoint, MutationCredentials, NodePermission, NodeType, PathHandle, RenameOptions, VfsError,
+    VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
-use crate::{
-    file::File,
-    os::sync::{Mutex, RawSpinLock},
-};
+use super::{FsContextOwner, FsContextSnapshot};
+use crate::file::File;
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
 
 /// Maximum number of symlinks that will be followed during path resolution.
 pub const SYMLINKS_MAX: usize = 40;
 
-/// Global root filesystem context, initialized once during [`init_filesystems`](crate::init_filesystems).
-pub static ROOT_FS_CONTEXT: OnceLock<Arc<Mutex<FsContext>>> = OnceLock::new();
-
-/// Registry of all live `FsContext` instances (weak references).
-///
-/// Each time a task-local [`FS_CONTEXT`] is created, it registers its
-/// `Arc<Mutex<FsContext>>` here via [`register_fs_context`]. This allows
-/// [`FsContext::propagate_pivot_root`] to iterate over every task's
-/// filesystem context and apply the same root / cwd fixup that Linux
-/// performs in `chroot_fs_refs()` after `pivot_root(2)`.
-static FS_REGISTRY: RawSpinLock<Vec<Weak<Mutex<FsContext>>>> = RawSpinLock::new(Vec::new());
-#[cfg(feature = "vfs")]
-static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Register an `FsContext` in the global [`FS_REGISTRY`].
-fn register_fs_context(ctx: &Arc<Mutex<FsContext>>) {
-    let mut registry = FS_REGISTRY.lock_irqsave();
-    // Prune dead weak references so the registry does not grow unboundedly
-    // in long-running scenarios where pivot_root is never invoked.
-    // Do not temporarily acquire and release a strong reference here. If this
-    // is the last reference, dropping it may tear down filesystem state and
-    // acquire a sleepable lock while the raw registry lock is held.
-    registry.retain(|weak| weak.strong_count() != 0);
-    registry.push(Arc::downgrade(ctx));
-}
-
-/// Returns `true` if any live `FsContext` has its `root_dir` or `current_dir`
-/// inside the given `mountpoint`.
-#[cfg(feature = "vfs")]
-pub fn is_mount_busy(mp: &Arc<Mountpoint>) -> bool {
-    let refs: Vec<Arc<Mutex<FsContext>>> = {
-        let mut registry = FS_REGISTRY.lock_irqsave();
-        // Keep cleanup allocation-free and avoid dropping the last context
-        // while the raw registry lock is held.
-        registry.retain(|weak| weak.strong_count() != 0);
-        registry.iter().filter_map(|weak| weak.upgrade()).collect()
-    };
-    for ctx_arc in refs {
-        let ctx = ctx_arc.lock();
-        if !ctx.mount_namespace_contains(mp) {
-            continue;
-        }
-        if Arc::ptr_eq(ctx.root_dir().mountpoint(), mp)
-            || Arc::ptr_eq(ctx.current_dir().mountpoint(), mp)
-        {
-            return true;
-        }
-    }
-    false
-}
-
-/// Namespace-local mount tree visible to an [`FsContext`].
-#[cfg(feature = "vfs")]
-#[derive(Debug, Clone)]
-pub struct MountNamespace {
-    id: u64,
-    root_mount: Arc<Mountpoint>,
-}
-
-#[cfg(feature = "vfs")]
-impl MountNamespace {
-    fn new(root_mount: Arc<Mountpoint>) -> Self {
-        Self {
-            id: MOUNT_NAMESPACE_ID.fetch_add(1, Ordering::Relaxed),
-            root_mount,
-        }
-    }
-
-    /// Returns a kernel-local identifier for diagnostics.
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    /// Returns the root mountpoint of this namespace.
-    pub fn root_mount(&self) -> &Arc<Mountpoint> {
-        &self.root_mount
-    }
-
-    /// Walk the mount tree of this namespace, returning `(mount_id,
-    /// parent_id, mountpoint)` tuples in DFS order.
-    ///
-    /// Delegates to [`Mountpoint::walk_tree`] on the root mount.
-    pub fn walk_tree(&self) -> Vec<(u64, u64, Arc<Mountpoint>)> {
-        self.root_mount.walk_tree()
-    }
-
-    fn clone_namespace(&self) -> Arc<Self> {
-        Arc::new(Self::new(self.root_mount.clone_tree()))
-    }
-
-    fn contains_mountpoint(&self, mountpoint: &Arc<Mountpoint>) -> bool {
-        let mut stack = vec![self.root_mount.clone()];
-        while let Some(current) = stack.pop() {
-            if Arc::ptr_eq(&current, mountpoint) {
-                return true;
-            }
-            stack.extend(current.children());
-        }
-        false
-    }
-}
+/// The independent boot root owner; ordinary task scopes fork its snapshot.
+pub static ROOT_FS_CONTEXT: OnceLock<FsContextOwner> = OnceLock::new();
 
 scope_local::scope_local! {
-    /// The active task's filesystem owner. `None` means filesystem teardown
-    /// completed; retained task objects must not keep cwd or mounts alive.
-    pub static FS_CONTEXT: Option<Arc<Mutex<FsContext>>> = Some(
-        ROOT_FS_CONTEXT
-            .get()
-            .expect("Root FS context not initialized")
-            .lock()
-            .clone()
-            .into_shared()
+    /// A real task share. None means the scope has retired its filesystem state.
+    pub static FS_CONTEXT: Option<FsContextOwner> = Some(
+        ROOT_FS_CONTEXT.get().expect("Root FS context not initialized").snapshot().fork_owner()
     );
 }
 
-/// Returns an owned reference to the filesystem context of the active scope.
-///
-/// CPU pinning only covers the `Arc` clone. Callers may therefore acquire the
-/// sleepable filesystem lock after preemption has been restored. This entry
-/// must not be used after the task has released its filesystem owner on exit.
-pub fn current_fs_context() -> Arc<Mutex<FsContext>> {
-    FS_CONTEXT
-        .clone_current()
-        .expect("filesystem context already released")
+/// Freezes paths and the exact namespace inside one short scope lease.
+/// Snapshotting neither increments task shares nor acquires the topology gate.
+pub fn current_fs_context() -> FsContextSnapshot {
+    FS_CONTEXT.with(|owner| {
+        owner
+            .as_ref()
+            .expect("filesystem context already released")
+            .snapshot()
+    })
 }
 
 /// A single entry returned by [`FsContext::read_dir`].
@@ -171,13 +57,12 @@ pub struct ReadDirEntry {
     pub offset: u64,
 }
 
-/// Provides `std::fs`-like interface.
+/// Immutable path-resolution view. Task state changes belong to FsContextOwner.
 #[derive(Debug, Clone)]
 pub struct FsContext {
-    #[cfg(feature = "vfs")]
-    mnt_ns: Arc<MountNamespace>,
-    root_dir: Location,
-    current_dir: Location,
+    namespace: alloc::sync::Arc<axfs_ng_vfs::MountNamespace>,
+    root_dir: PathHandle,
+    current_dir: PathHandle,
     /// The directory at which relative-path permission checks must stop.
     ///
     /// A context created for an `*at` call carries its directory fd here. This
@@ -187,6 +72,16 @@ pub struct FsContext {
 }
 
 impl FsContext {
+    /// Creates a native preparation view from an explicitly supplied new tree.
+    /// Existing task trees must be accessed through their owner's snapshot.
+    /// This may allocate, sleep, or release failed inputs; call outside gates.
+    pub fn from_tree(tree: Arc<Mountpoint>, root: Location) -> VfsResult<Self> {
+        root.check_is_dir()?;
+        let root = PathHandle::acquire(root)?;
+        let namespace = MountNamespace::from_tree(tree)?.into_namespace();
+        Ok(Self::from_paths(namespace, root.clone(), root))
+    }
+
     // Convert an already resolved final entry into a naming pair. This is not a
     // walker step: scoped traversal must inspect each ParentStep itself.
     fn resolved_parent_name(location: &Location) -> VfsResult<Option<(Location, String)>> {
@@ -205,131 +100,67 @@ impl FsContext {
         }
     }
 
-    /// Publishes a shared context to mount-busy and pivot-root tracking.
-    ///
-    /// Every independently owned context, including an unshared replacement,
-    /// must enter through this method. Clones of the returned Arc share the
-    /// same registration; its weak entry expires after the last owner leaves.
-    pub fn into_shared(self) -> Arc<Mutex<Self>> {
-        let context = Arc::new(Mutex::new(self));
-        register_fs_context(&context);
-        context
-    }
-
-    /// Creates a new context with `root_dir` as both root and current directory.
-    pub fn new(root_dir: Location) -> Self {
-        #[cfg(feature = "vfs")]
-        {
-            let mut anchor = root_dir.mountpoint().clone();
-            while let Some(parent) = anchor.location() {
-                anchor = parent.mountpoint().clone();
-            }
-            let mnt_ns = Arc::new(MountNamespace::new(anchor));
-            Self::new_in_namespace(mnt_ns, root_dir)
-        }
-        #[cfg(not(feature = "vfs"))]
-        {
-            Self {
-                root_dir: root_dir.clone(),
-                current_dir: root_dir,
-                permission_root: None,
-            }
-        }
-    }
-
-    #[cfg(feature = "vfs")]
-    fn new_in_namespace(mnt_ns: Arc<MountNamespace>, root_dir: Location) -> Self {
+    pub(super) fn from_paths(
+        namespace: alloc::sync::Arc<axfs_ng_vfs::MountNamespace>,
+        root_dir: PathHandle,
+        current_dir: PathHandle,
+    ) -> Self {
         Self {
-            root_dir: root_dir.clone(),
-            current_dir: root_dir,
+            namespace,
+            root_dir,
+            current_dir,
             permission_root: None,
-            mnt_ns,
         }
     }
 
-    /// Returns the mount namespace backing this filesystem context.
-    #[cfg(feature = "vfs")]
-    pub fn mount_namespace(&self) -> &Arc<MountNamespace> {
-        &self.mnt_ns
+    /// Borrows the actual namespace associated with this immutable view.
+    pub fn mount_namespace(&self) -> &alloc::sync::Arc<axfs_ng_vfs::MountNamespace> {
+        &self.namespace
     }
 
-    #[cfg(feature = "vfs")]
-    fn mount_namespace_contains(&self, mountpoint: &Arc<Mountpoint>) -> bool {
-        self.mnt_ns.contains_mountpoint(mountpoint)
-    }
-
-    /// Returns a reference to the root directory.
+    /// Borrows the selected root while its exact mount use remains owned.
     pub fn root_dir(&self) -> &Location {
+        self.root_dir.location()
+    }
+
+    /// Borrows the selected cwd while its exact mount use remains owned.
+    pub fn current_dir(&self) -> &Location {
+        self.current_dir.location()
+    }
+
+    pub(super) fn root_handle(&self) -> &PathHandle {
         &self.root_dir
     }
-
-    /// Returns a reference to the current working directory.
-    pub fn current_dir(&self) -> &Location {
+    pub(super) fn cwd_handle(&self) -> &PathHandle {
         &self.current_dir
     }
 
-    /// Changes the current working directory to `current_dir`.
-    pub fn set_current_dir(&mut self, current_dir: Location) -> VfsResult<()> {
-        current_dir.check_is_dir()?;
-        self.current_dir = current_dir;
-        Ok(())
-    }
-
-    /// Returns a new context that shares the same root but uses `current_dir` as
-    /// the working directory.
+    /// Selects a different relative starting directory without changing task state.
     pub fn with_current_dir(&self, current_dir: Location) -> VfsResult<Self> {
         current_dir.check_is_dir()?;
-        Ok(Self {
-            root_dir: self.root_dir.clone(),
-            current_dir,
-            permission_root: self.permission_root.clone(),
-            #[cfg(feature = "vfs")]
-            mnt_ns: self.mnt_ns.clone(),
-        })
+        let current_dir = if alloc::sync::Arc::ptr_eq(
+            self.current_dir().mountpoint(),
+            current_dir.mountpoint(),
+        ) {
+            self.current_dir.rebind(current_dir)?
+        } else {
+            PathHandle::acquire(current_dir)?
+        };
+        let mut view = Self::from_paths(self.namespace.clone(), self.root_dir.clone(), current_dir);
+        view.permission_root = self.permission_root.clone();
+        Ok(view)
     }
 
-    /// Returns a context whose relative paths and permission checks start at
-    /// an already opened directory.
+    /// Selects a directory fd as a permission boundary, preserving process root.
     pub fn with_dirfd(&self, dirfd: Location) -> VfsResult<Self> {
-        let mut context = self.with_current_dir(dirfd.clone())?;
-        context.permission_root = Some(dirfd);
-        Ok(context)
+        let mut view = self.with_current_dir(dirfd.clone())?;
+        view.permission_root = Some(dirfd);
+        Ok(view)
     }
 
     /// Returns the directory boundary used for relative-path permissions.
     pub fn permission_boundary(&self) -> Option<&Location> {
         self.permission_root.as_ref()
-    }
-
-    /// Rebind this context to a freshly cloned mount namespace.
-    #[cfg(feature = "vfs")]
-    pub fn unshare_mount_namespace(&mut self) -> VfsResult<()> {
-        let new_ns = self.mnt_ns.clone_namespace();
-        self.set_mount_namespace(new_ns)
-    }
-
-    /// Rebind this context to an existing mount namespace.
-    #[cfg(feature = "vfs")]
-    pub fn set_mount_namespace(&mut self, new_ns: Arc<MountNamespace>) -> VfsResult<()> {
-        let root_path = self.root_dir.absolute_path()?;
-        let current_path = self.current_dir.absolute_path()?;
-        let permission_root_path = self
-            .permission_root
-            .as_ref()
-            .map(Location::absolute_path)
-            .transpose()?;
-        let new_root_loc = new_ns.root_mount().root_location().resolve_mountpoint();
-        let resolver = Self::new_in_namespace(new_ns.clone(), new_root_loc);
-        let root_dir = resolver.resolve(root_path)?;
-        let current_dir = resolver.resolve(current_path)?;
-        let permission_root = permission_root_path
-            .map(|path| resolver.resolve(path))
-            .transpose()?;
-        self.mnt_ns = new_ns;
-        self.root_dir = root_dir;
-        self.current_dir = current_dir;
-        self.permission_root = permission_root;
-        Ok(())
     }
 
     /// Attempts to resolve a possible symlink, at the current location (this
@@ -421,7 +252,7 @@ impl FsContext {
     /// Recognizes the saved process root even below covering mounts. A dirfd
     /// only changes permission lookup and must not become a containment root.
     fn is_process_root(&self, directory: &Location) -> bool {
-        if directory.ptr_eq(&self.root_dir) {
+        if directory.ptr_eq(self.root_dir()) {
             return true;
         }
         if !directory.is_root_of_mount() {
@@ -431,7 +262,7 @@ impl FsContext {
         // walk can leave the process root, including stacked covering mounts.
         let mut covered = directory.mountpoint().location();
         while let Some(location) = covered {
-            if location.ptr_eq(&self.root_dir) {
+            if location.ptr_eq(self.root_dir()) {
                 return true;
             }
             if !location.is_root_of_mount() {
@@ -448,18 +279,18 @@ impl FsContext {
         follow_count: &mut usize,
         search: SearchCheck<'_>,
     ) -> VfsResult<Location> {
-        let mut dir = self.current_dir.clone();
+        let mut dir = self.current_dir().clone();
         for comp in components {
             match comp {
                 Component::CurDir => {}
                 Component::ParentDir => {
                     Self::check_search(&dir, search)?;
                     if !self.is_process_root(&dir) {
-                        dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
+                        dir = dir.parent().unwrap_or_else(|| self.root_dir().clone());
                     }
                 }
                 Component::RootDir => {
-                    dir = self.root_dir.clone();
+                    dir = self.root_dir().clone();
                 }
                 Component::Normal(name) => {
                     dir = self.lookup(&dir, name, follow_count, search)?;
@@ -568,7 +399,7 @@ impl FsContext {
         searched: &mut Vec<Location>,
         search: SearchCheck<'_>,
     ) -> VfsResult<Location> {
-        let mut dir = self.current_dir.clone();
+        let mut dir = self.current_dir().clone();
         for comp in components {
             match comp {
                 Component::CurDir => {}
@@ -576,11 +407,11 @@ impl FsContext {
                     searched.push(dir.clone());
                     Self::check_search(&dir, search)?;
                     if !self.is_process_root(&dir) {
-                        dir = dir.parent().unwrap_or_else(|| self.root_dir.clone());
+                        dir = dir.parent().unwrap_or_else(|| self.root_dir().clone());
                     }
                 }
                 Component::RootDir => {
-                    dir = self.root_dir.clone();
+                    dir = self.root_dir().clone();
                 }
                 Component::Normal(name) => {
                     dir = self.lookup_with_trace(&dir, name, follow_count, searched, search)?;
@@ -797,7 +628,7 @@ impl FsContext {
         check_search: impl Fn(&Location) -> VfsResult<()>,
     ) -> VfsResult<(Location, Cow<'a, str>)> {
         let mut components = path.components().peekable();
-        let mut dir = self.current_dir.clone();
+        let mut dir = self.current_dir().clone();
         let mut depth = 0usize;
 
         while let Some(component) = components.next() {
@@ -948,7 +779,7 @@ impl FsContext {
     ) -> VfsResult<()> {
         let is_boundary = |location: &Location| {
             boundary.is_some_and(|boundary| location.ptr_eq(boundary))
-                || location.ptr_eq(&self.root_dir)
+                || location.ptr_eq(self.root_dir())
         };
         let mut current = directory.clone();
         loop {
@@ -998,7 +829,7 @@ impl FsContext {
             self.resolve_no_follow_with_search_checked(path.as_ref(), |directory| {
                 self.check_search_path(directory, self.permission_root.as_ref(), credentials)
             })?;
-        if entry.ptr_eq(&self.root_dir) {
+        if entry.ptr_eq(self.root_dir()) {
             return Err(VfsError::IsADirectory);
         }
         // The final entry is already known to be a directory. Classify this
@@ -1052,7 +883,7 @@ impl FsContext {
         let (entry, searched) = self.resolve_no_follow_with_search_checked(path, |directory| {
             self.check_search_path(directory, self.permission_root.as_ref(), credentials)
         })?;
-        if entry.ptr_eq(&self.root_dir) || entry.is_root_of_mount() {
+        if entry.ptr_eq(self.root_dir()) || entry.is_root_of_mount() {
             return Err(VfsError::ResourceBusy);
         }
         let (directory, name) =
@@ -1328,94 +1159,6 @@ impl FsContext {
     /// Returns the canonical, absolute form of a path.
     pub fn canonicalize(&self, path: impl AsRef<Path>) -> VfsResult<PathBuf> {
         self.resolve(path.as_ref())?.absolute_path()
-    }
-
-    /// Pivot the root filesystem to `new_root`, moving the old root to
-    /// `put_old` (which must be a directory under `new_root`).
-    ///
-    /// This follows Linux `pivot_root(2)` semantics: after the call the old
-    /// root filesystem is accessible at `put_old`, and can be unmounted from
-    /// there.
-    ///
-    /// Note: this method only updates **this** `FsContext`.  The caller must
-    /// invoke [`FsContext::propagate_pivot_root`] afterwards to update every
-    /// other task whose root / cwd still points at the old root, mirroring
-    /// Linux's `chroot_fs_refs()`.
-    pub fn pivot_root(&mut self, new_root: Location, put_old: Location) -> VfsResult<()> {
-        let old_root = self.root_dir.clone();
-        let old_root_mp = self.root_dir.mountpoint().clone();
-        let new_root_mp = new_root.mountpoint().clone();
-        old_root_mp.pivot_mount(&new_root_mp, &put_old)?;
-        let new_root_loc = new_root_mp.root_location();
-        self.root_dir = new_root_loc.clone();
-        // Only replace cwd if it was pointing at the old root — mirrors
-        // Linux's chroot_fs_refs / replace_path semantics.
-        if old_root.ptr_eq(&self.current_dir) {
-            self.current_dir = new_root_loc;
-        }
-        Ok(())
-    }
-
-    /// After a successful [`pivot_root`](Self::pivot_root), propagate the
-    /// root / cwd change to **all** other tasks in the same mount namespace.
-    ///
-    /// This mirrors `chroot_fs_refs()` in Linux's `fs/namespace.c`:
-    /// after `pivot_root(2)` reorganises the mount tree the kernel walks
-    /// every thread's `fs_struct` and switches any `root` / `pwd` that
-    /// pointed at the old root over to the new root.
-    ///
-    /// * `old_root` – the `Location` of the old root **before** the pivot
-    ///   (obtained from `ctx.root_dir().clone()` before calling
-    ///   [`pivot_root`](Self::pivot_root)).
-    /// * `new_root` – the `Location` of the new root **after** the pivot
-    ///   (obtained from `ctx.root_dir()` after calling
-    ///   [`pivot_root`](Self::pivot_root)).
-    ///
-    /// # Linux semantics
-    ///
-    /// For each registered `FsContext`, [`Location::ptr_eq`] is used to
-    /// compare both mountpoint **and** dentry, mirroring the kernel's
-    /// `replace_path()` check `fs->root.mnt == old_root->mnt &&
-    /// fs->root.dentry == old_root->dentry`:
-    /// - If `root_dir` is exactly `old_root` → set to `new_root`.
-    /// - If `current_dir` is exactly `old_root` → set to `new_root`.
-    ///
-    /// This avoids incorrectly updating tasks that have chroot'd into a
-    /// subdirectory of the old root (same mountpoint, different dentry).
-    pub fn propagate_pivot_root(
-        #[cfg(feature = "vfs")] mount_namespace: &Arc<MountNamespace>,
-        old_root: &Location,
-        new_root: &Location,
-    ) {
-        // 1. Collect strong references while holding the registry lock, then
-        //    release it so we never nest two PI mutex guards.
-        let refs: Vec<Arc<Mutex<FsContext>>> = {
-            let mut registry = FS_REGISTRY.lock_irqsave();
-            // Keep cleanup allocation-free and avoid dropping the last context
-            // while the raw registry lock is held.
-            registry.retain(|weak| weak.strong_count() != 0);
-            registry.iter().filter_map(|weak| weak.upgrade()).collect()
-        };
-
-        // 2. Walk every live FsContext and apply the same logic as
-        //    Linux chroot_fs_refs().
-        for ctx_arc in refs {
-            let mut ctx = ctx_arc.lock();
-            #[cfg(feature = "vfs")]
-            if !Arc::ptr_eq(ctx.mount_namespace(), mount_namespace) {
-                continue;
-            }
-
-            let update_root = old_root.ptr_eq(&ctx.root_dir);
-            let update_cwd = old_root.ptr_eq(&ctx.current_dir);
-
-            if update_root {
-                ctx.root_dir = new_root.clone();
-            }
-            if update_cwd {
-                ctx.current_dir = new_root.clone();
-            }
-        }
     }
 }
 

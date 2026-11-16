@@ -7,7 +7,6 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
         use axfs_ng_vfs::NodeType;
 
         let loc = ax_fs_ng::vfs::current_fs_context()
-            .lock()
             .resolve(path)
             .map_err(namespace_vfs_error)?;
         if loc.metadata().map_err(namespace_vfs_error)?.node_type != NodeType::Socket {
@@ -27,7 +26,7 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
             .create(true)
             .node_type(NodeType::Socket)
             .open(
-                &ax_fs_ng::vfs::current_fs_context().lock(),
+                &ax_fs_ng::vfs::current_fs_context(),
                 path,
                 &MutationCredentials::root(),
             )
@@ -45,7 +44,6 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
         use axfs_ng_vfs::MutationCredentials;
 
         ax_fs_ng::vfs::current_fs_context()
-            .lock()
             .remove_file(path, &MutationCredentials::root())
             .map_err(namespace_vfs_error)
     }

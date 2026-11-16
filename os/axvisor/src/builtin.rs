@@ -5,7 +5,6 @@ use alloc::{
     format,
     rc::Rc,
     string::String,
-    sync::Arc,
     vec::Vec,
 };
 use core::cell::RefCell;
@@ -15,7 +14,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 #[cfg(any(target_os = "none", target_env = "musl"))]
 use ax_fs_ng::current_fs_context;
 use ax_fs_ng::{
-    VfsError,
+    FsContextSnapshot, VfsError,
     migration::{MigrationEntry, MigrationPlan, ResourceKind},
     vfs::FsContext,
 };
@@ -30,24 +29,19 @@ pub const BUILTIN_WEB_UI_DIR: &str = "/guest/builtin/web-ui";
 
 /// The initramfs namespace remains available after a disk root is committed so
 /// builtin boot assets can still be read by a later lazy-start request. The
-/// context is deliberately *not* created with [`FsContext::into_shared`]:
-/// shared contexts are registered in `FS_REGISTRY`, and root switching would
-/// then rewrite their root through `propagate_pivot_root`. Keeping this context
-/// out of that registry leaves it anchored at the detached initramfs mount;
-/// the mount owns an immutable memory filesystem and is independent of the
-/// block filesystem released for passthrough.
-static RETAINED_BOOT_CONTEXT: OnceLock<Arc<ax_block::os::sync::Mutex<FsContext>>> = OnceLock::new();
+/// frozen snapshot owns an independent cloned namespace without registering
+/// mutable task state. Root switching cannot retarget these archive paths.
+static RETAINED_BOOT_CONTEXT: OnceLock<FsContextSnapshot> = OnceLock::new();
 
-pub fn retain_boot_context(context: &FsContext) -> Result<()> {
-    let mut retained = FsContext::new(context.root_dir().clone());
-    // A copied `FsContext` still points into the active mount namespace. Clone
-    // that namespace before the root switch so detaching the old root cannot
-    // invalidate this archive owner. Keep the resulting context out of the
-    // global registry: it must not receive the pivot-root propagation update.
-    retained
-        .unshare_mount_namespace()
+/// Clones boot topology during ordinary preparation, outside scope and writer gates.
+pub fn retain_boot_context(context: &FsContextSnapshot) -> Result<()> {
+    let mut cloned = context.namespace().clone_namespace();
+    let retained = context
+        .remap(&mut cloned)
         .context("isolate retained initramfs mount namespace")?;
-    let retained = Arc::new(ax_block::os::sync::Mutex::new(retained));
+    let (created, retirement) = cloned.into_parts();
+    drop(created.into_namespace());
+    drop(retirement);
     RETAINED_BOOT_CONTEXT.get_or_init(|| retained);
     Ok(())
 }
@@ -57,7 +51,7 @@ fn read_retained_builtin_asset(path: &str) -> Option<Result<Vec<u8>>> {
         return None;
     }
     let context = RETAINED_BOOT_CONTEXT.get()?;
-    match context.lock().read(path) {
+    match context.read(path) {
         Ok(bytes) => Some(Ok(bytes)),
         // A disk root may already contain a previously installed builtin
         // package when this boot's archive has no package. Let the normal
@@ -75,8 +69,7 @@ fn read_retained_builtin_asset_exact(path: &str, read_size: usize) -> Option<Res
         return None;
     }
     let context = RETAINED_BOOT_CONTEXT.get()?;
-    let context = context.lock();
-    let file = match ax_fs_ng::file::File::open(&context, path) {
+    let file = match ax_fs_ng::file::File::open(context, path) {
         Ok(file) => file,
         Err(VfsError::NotFound) => return None,
         Err(error) => {
@@ -118,7 +111,6 @@ pub fn boot_asset_size(path: &str) -> Result<Option<usize>> {
     let Some(context) = RETAINED_BOOT_CONTEXT.get() else {
         return Ok(None);
     };
-    let context = context.lock();
     match context.metadata(path) {
         Ok(metadata) => usize::try_from(metadata.size)
             .map(Some)
@@ -134,7 +126,6 @@ pub fn boot_asset_exists(path: &str) -> bool {
     }
     RETAINED_BOOT_CONTEXT.get().is_some_and(|context| {
         context
-            .lock()
             .resolve(path)
             .is_ok_and(|asset| asset.check_is_file().is_ok())
     })
@@ -212,8 +203,7 @@ pub fn prepare_root() -> Result<()> {
         .into_iter()
         .take_while(|arg| arg != "--")
         .any(|arg| arg.starts_with("root="));
-    let source_handle = current_fs_context();
-    let source = source_handle.lock().clone();
+    let source = current_fs_context();
     let has_block_devices = ax_block::block::runtime::BlockRuntime::installed_devices()
         .is_some_and(|devices| !devices.is_empty());
     if !has_root || !has_block_devices {

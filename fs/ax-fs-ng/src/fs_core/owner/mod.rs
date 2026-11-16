@@ -12,6 +12,7 @@ use axfs_ng_vfs::{MountNamespace, NamespaceClone, PathHandle, VfsError, VfsResul
 pub use pivot::FsPivotRetirement;
 pub use update::{FsSharingRequirement, FsUpdateRetirement, PreparedFsUpdate};
 
+use super::FsContext;
 use crate::os::sync::{Mutex, RawSpinLock};
 
 /// One task's share of root/cwd, paired with that task's mount namespace.
@@ -51,10 +52,8 @@ struct FsState {
 /// it neither keeps its mutable state alive nor permits upgrading to an owner.
 #[derive(Debug, Clone)]
 pub struct FsContextSnapshot {
-    root: PathHandle,
-    cwd: PathHandle,
+    view: FsContext,
     source: Weak<RawSpinLock<FsState>>,
-    namespace: Arc<MountNamespace>,
 }
 
 // Each shared paths allocation is registered once, independent of how many
@@ -97,10 +96,12 @@ impl FsContextOwner {
     pub fn snapshot(&self) -> FsContextSnapshot {
         let state = self.state.lock_irqsave();
         FsContextSnapshot {
-            root: state.root.clone(),
-            cwd: state.cwd.clone(),
+            view: FsContext::from_paths(
+                self.namespace.clone(),
+                state.root.clone(),
+                state.cwd.clone(),
+            ),
             source: Arc::downgrade(&self.state),
-            namespace: self.namespace.clone(),
         }
     }
 
@@ -130,38 +131,52 @@ impl Drop for FsContextOwner {
 impl FsContextSnapshot {
     /// Borrows the selected root, retaining its exact mount use.
     pub fn root(&self) -> &PathHandle {
-        &self.root
+        self.view.root_handle()
     }
 
     /// Borrows the selected working directory, retaining its exact mount use.
     pub fn cwd(&self) -> &PathHandle {
-        &self.cwd
+        self.view.cwd_handle()
     }
 
     /// Borrows the namespace selected together with these paths.
     pub fn namespace(&self) -> &Arc<MountNamespace> {
-        &self.namespace
+        self.view.mount_namespace()
     }
 
     /// Copies these frozen paths into a fresh, independently registered state.
     /// This never upgrades the weak source and does not re-resolve names.
     pub fn fork_owner(&self) -> FsContextOwner {
-        FsContextOwner::from_paths(self.namespace.clone(), self.root.clone(), self.cwd.clone())
+        FsContextOwner::from_paths(
+            self.namespace().clone(),
+            self.root().clone(),
+            self.cwd().clone(),
+        )
     }
 
     /// Transfers actual mounts through this clone's mapping. A result has no
     /// update provenance for the original owner and is only suitable for fork.
     /// Keep the clone and its retirement across caller protections on errors.
     pub fn remap(&self, clone: &mut NamespaceClone) -> VfsResult<Self> {
-        if !Arc::ptr_eq(&self.namespace, clone.source_namespace()) {
+        if !Arc::ptr_eq(self.namespace(), clone.source_namespace()) {
             return Err(VfsError::BadState);
         }
         Ok(Self {
-            root: clone.map_path(&self.root)?,
-            cwd: clone.map_path(&self.cwd)?,
-            namespace: clone.namespace().clone(),
+            view: FsContext::from_paths(
+                clone.namespace().clone(),
+                clone.map_path(self.root())?,
+                clone.map_path(self.cwd())?,
+            ),
             source: Weak::new(),
         })
+    }
+}
+
+impl core::ops::Deref for FsContextSnapshot {
+    type Target = FsContext;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
     }
 }
 

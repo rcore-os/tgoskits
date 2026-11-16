@@ -108,7 +108,7 @@ fn serve(fs: &FsContext, entry: &str, cache_control: &'static str) -> Response {
 /// The HTTP thread is spawned after `builtin::prepare_root()`, so the snapshot
 /// already reflects the committed disk root when one was installed.
 fn snapshot_fs_context() -> FsContext {
-    current_fs_context().lock().clone()
+    FsContext::clone(&current_fs_context())
 }
 
 fn shell_available(fs: &FsContext) -> bool {

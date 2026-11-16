@@ -33,16 +33,18 @@ pub use fs::memory::MemoryFs;
 mod fs_core;
 /// Task filesystem ownership and its actual VFS namespace/path contracts.
 pub mod fs_context {
-    pub use axfs_ng_vfs::{MountNamespace, NamespaceClone, NamespaceRootSnapshot, PathHandle};
+    pub use axfs_ng_vfs::{
+        Location, MountNamespace, Mountpoint, NamespaceClone, NamespaceRootSnapshot, PathHandle,
+    };
 
     pub use crate::fs_core::{
-        FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement,
+        FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement,
         FsUpdateRetirement, PreparedFsUpdate,
     };
 }
 pub use fs_context::{
-    FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement, FsUpdateRetirement,
-    PreparedFsUpdate,
+    FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement,
+    FsUpdateRetirement, PreparedFsUpdate,
 };
 mod highlevel;
 mod mounts;
@@ -90,7 +92,13 @@ fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location
         .expect("initial filesystem mount");
     let root = mp.root_location();
     register_mounted_filesystem(fs);
-    highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()).into_shared());
+    highlevel::ROOT_FS_CONTEXT.call_once(|| {
+        let namespace = axfs_ng_vfs::MountNamespace::from_tree(anchor)
+            .expect("initial mount namespace")
+            .into_namespace();
+        let path = axfs_ng_vfs::PathHandle::acquire(root.clone()).expect("initial root use");
+        FsContextOwner::new_root(namespace, path).expect("initial root context")
+    });
     root
 }
 

@@ -570,7 +570,8 @@ mod tests {
     use crate::MemoryFs;
 
     fn context() -> FsContext {
-        FsContext::new(Mountpoint::new_root(&MemoryFs::new()).root_location())
+        let tree = Mountpoint::new_root(&MemoryFs::new());
+        FsContext::from_tree(tree.clone(), tree.root_location()).unwrap()
     }
 
     #[test]

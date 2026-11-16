@@ -544,7 +544,8 @@ mod tests {
                 &credentials,
             )
             .unwrap();
-        let context = FsContext::new(parent.clone());
+        let native_root = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
+        let context = native_root.with_current_dir(parent.clone()).unwrap();
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         let file = options

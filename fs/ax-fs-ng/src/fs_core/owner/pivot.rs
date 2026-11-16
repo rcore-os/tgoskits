@@ -51,12 +51,12 @@ impl FsContextSnapshot {
             #[cfg(test)]
             tests::run(tests::Stage::BeforeSequence);
             let _sequence = PIVOT_SEQUENCE.lock();
-            let (result, topology) = self.namespace.pivot_root(&self.root, new_root, put_old);
+            let (result, topology) = self.namespace().pivot_root(self.root(), new_root, put_old);
             retired._topology = Some(topology);
             if result.is_ok() {
                 #[cfg(test)]
                 tests::run(tests::Stage::AfterTopology);
-                retired._registry = propagate_pivot_root(&self.root, new_root);
+                retired._registry = propagate_pivot_root(self.root(), new_root);
             }
             result
         };

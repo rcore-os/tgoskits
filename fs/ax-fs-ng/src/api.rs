@@ -6,7 +6,7 @@ use axfs_ng_vfs::{
 
 use crate::{
     fops::{DirHandle, FileAttr},
-    fs_core::FsContext,
+    fs_core::{FS_CONTEXT, FsContext},
     highlevel::current_fs_context,
 };
 
@@ -27,7 +27,7 @@ pub(crate) fn with_at_context<R>(
     path: &str,
     f: impl FnOnce(&FsContext) -> VfsResult<R>,
 ) -> VfsResult<R> {
-    let base = current_fs_context().lock().clone();
+    let base = current_fs_context();
     let ctx = context_for_at(&base, dir, path)?;
     f(&ctx)
 }
@@ -80,7 +80,7 @@ pub fn rename_at(
     new_dir: Option<&DirHandle>,
     new_path: &str,
 ) -> VfsResult {
-    let base = current_fs_context().lock().clone();
+    let base = current_fs_context();
     let creds = MutationCredentials::root();
     let src_ctx = context_for_at(&base, old_dir, old_path)?;
     let (src_dir, src_name, src_searched) = src_ctx
@@ -108,23 +108,29 @@ pub fn rename(old: &str, new: &str) -> VfsResult {
 
 pub fn current_dir() -> VfsResult<String> {
     current_fs_context()
-        .lock()
         .current_dir()
         .absolute_path()
         .map(|path| path.to_string())
 }
 
 pub fn set_current_dir(path: &str) -> VfsResult {
-    let fs_context = current_fs_context();
-    let mut ctx = fs_context.lock();
-    let dir = ctx.resolve(path)?;
-    ctx.set_current_dir(dir)?;
-    Ok(())
+    let source = current_fs_context();
+    let path = axfs_ng_vfs::PathHandle::acquire(source.resolve(path)?)?;
+    let (update, prepared_retirement) = source.prepare_cwd(path);
+    let mut update = Some(update?);
+    let (result, committed_retirement) = FS_CONTEXT.with(|owner| match owner.as_ref() {
+        Some(owner) => owner.apply_cwd_update(update.take().expect("prepared cwd")),
+        None => (Err(VfsError::BadState), Default::default()),
+    });
+    drop(committed_retirement);
+    drop(update);
+    drop(prepared_retirement);
+    result
 }
 
 /// Returns metadata for the current working directory.
 pub fn current_dir_metadata() -> VfsResult<FileAttr> {
-    current_fs_context().lock().current_dir().metadata()
+    current_fs_context().current_dir().metadata()
 }
 
 /// Returns metadata for a path resolved relative to `dir` (or cwd when `None`).

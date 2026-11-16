@@ -321,7 +321,9 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
                 .link("alias", &source, &axfs_ng_vfs::MutationCredentials::root())
                 .unwrap();
             #[cfg(feature = "vfs")]
-            let context = ax_fs_ng::FsContext::new(parent.clone());
+            let context =
+                ax_fs_ng::FsContext::from_tree(parent.mountpoint().clone(), parent.clone())
+                    .unwrap();
             let rename = |source_name, destination_name, options| {
                 #[cfg(feature = "vfs")]
                 if via_context {
@@ -420,7 +422,7 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
         &MutationCredentials::root(),
     )
     .unwrap();
-    let context = FsContext::new(root);
+    let context = FsContext::from_tree(mount, root).unwrap();
     let credentials = unprivileged_credentials();
     let permission = NodePermission::from_bits_truncate(0o640);
     let whiteout = context

@@ -907,7 +907,7 @@ mod tests {
             )
             .unwrap();
         let credentials = credentials(1000, 1000, &[]);
-        let context = FsContext::new(root.clone());
+        let context = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
         let mut writable = OpenOptions::new();
         writable.read(true).write(true).direct = true;
         let writer = writable

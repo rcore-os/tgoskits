@@ -923,6 +923,14 @@ cwd/root 更新先在锁外完成类型及调用层授权检查，当前任务�
 替换只作用于当前 scope 的 owner 绑定，不改其他 owner 的 namespace；是否复制
 路径状态则按第 3.8.3 节的具体动作决定。
 
+ArceOS 默认运行时未安装可写任务 Scope，`scope_local` 全局 Scope 发布后只读。
+原生 `api::set_current_dir` 因此借实际当前 owner 执行私有的 cwd-only 提交：
+路径解析、目录检查与使用权取得在 lease 外完成；lease 内复核同一来源与 namespace，
+仅在 State 短锁内交换 cwd，拒绝其他命令，成败拥有资源都带出后释放。
+这个只读 lease 同时排斥 owner 绑定被替换，不需要伪造 `&mut Owner`、升级来源 Weak
+或另建可变状态。Kernel 的任务安装与 namespace join 仍通过成对 Scope writer
+取得 `&mut FsContextOwner`，保持第 3.8.3 至 3.8.9 节的发布合同。
+
 弱 registry 跟踪的是共享路径状态，不能把 namespace 放回这个状态来筛选 pivot 修订。
 Linux `fs/fs_struct.c::chroot_fs_refs` 按 exact mount 与 dentry 替换 root/pwd，
 没有 namespace 身份过滤；共享状态跨 namespace、或路径保留在原树外时也要遵守这个
