@@ -1,0 +1,522 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-11-16T19:33:32.336283+08:00",
+  "repository": "rcore-os/tgoskits",
+  "pull_request": 2800,
+  "scope": "Owner/Snapshot production migration, paired Kernel FS/MNT bindings, open paths and mappings; syscall compatibility remains unverified",
+  "base_commit": "0563a2cbb5723fa6b95d620e3fc8d2aaea9c72ab",
+  "source_commit": "cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7",
+  "source_tree": "93a446d670edb2db681107f6ead75d3ccb854de5",
+  "source_files": [
+    {
+      "path": "design/vfs-lookup-ownership.md",
+      "sha256": "1770c9e8d236f9bc2c4a9d15ab99fef63ca39e6344d3b0d22b231d9777bcf12a"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/api.rs",
+      "sha256": "e427de59c574aae902de19e03aa9eea32194e85b8a088913bda5c110f3d96d37"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/bundle.rs",
+      "sha256": "5b6019b1515c01eb5bb9311b2ad71ab4448cb987722e18047a1caee5abb7eb40"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/access.rs",
+      "sha256": "b14ae15a9f3934ee1a0581cf83dc0dcf6e17a0659da0a405078b30dae3fda639"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/fill/mod.rs",
+      "sha256": "43a3febe92d74501c4060025480a23ea3e4a5626659638b543f995507aefaa1a"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/mapping.rs",
+      "sha256": "6327e9120ee140bfab5444d34c28488969ddea1f30bd44a70dafc98baa0bcf67"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/mod.rs",
+      "sha256": "1529fc1b17991818b92b0a2c8a3a555aef5d24d5a36ca5798caf2b07e5586a6a"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/read.rs",
+      "sha256": "a94e54f3796b63bda27006f7015bd126579d6ee3fcb8b6d34e7401018fdef379"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/resize.rs",
+      "sha256": "d95d3e5597e4ac2c23fcacd5d96e0064625afe76b5098393c773960351bf320b"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/tests/fill.rs",
+      "sha256": "1380d2044a35800a6714629ff0a82103ebe75d547bb460ff1d5acfc7931b7277"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/tests/mod.rs",
+      "sha256": "1ebab2d17576ef863b128c05362f5c71e85592760815b2d85ccd254eaffd8063"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/tests/read.rs",
+      "sha256": "edf65519258605e6f9a58c3ea419d30bc9131fffeae30e3e76297515520a6c84"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/cache/tests/writeback_progress.rs",
+      "sha256": "c24a01d584eb652fdbb4279ebac689a4478b2a8905fbba8d48ac24f2c0a71bea"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/handle/backend.rs",
+      "sha256": "a57a5b181a6686a4ff995916634f0f58358aa3e094851cee5f7b6d4ce6120672"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/handle/mod.rs",
+      "sha256": "790d59a6ee012eb3e2fea4e26d3438e9b8d97bb6209cc9049d4420cd34f6e21c"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/file/open.rs",
+      "sha256": "fc7d0606a7dd2854bf956aac2c2f136a838e9a628bd8e72637d3e90772b55ee6"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fops.rs",
+      "sha256": "2b13c3c0fda7ea1e45f7b5d3be07f8644440bbf4150eb4f2a245b4257ab70039"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/lifetime.rs",
+      "sha256": "3f18e0ba1377e58082f8cd67ca623b5e85adca3f43a6dc04d3b4e56941715284"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/namespace/mod.rs",
+      "sha256": "e7f4524a26e87102de50bac6fa4a2d4b1e96c4336810d92ca939d5cbb3058df6"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/persistence.rs",
+      "sha256": "ad9d22da7679ed229a3a815640c62727128765f8a87a8643d9794b2c7601165f"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/sync_policy.rs",
+      "sha256": "1ec571ea06e7e9cef1fe3b42c54b557d51f509d5d4579332674cf2a5d89b4226"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/writeback.rs",
+      "sha256": "144b2afaabe574161814554493d218b8e9eec6bf4d7b17345b1f9e4f5e28a103"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/fat/disk.rs",
+      "sha256": "b46691d52506ae5c853ddc947cab5abc5b18ac6b4e8392d309a99e74339279b5"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs/memory.rs",
+      "sha256": "b4a266bc5172facad581935113a66ff1e732587a00a8cb49a5b691463f978ad3"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/context.rs",
+      "sha256": "0e10e91a3d94fdf06e52991db9e7ad277702a753b0c92aa4c07ca0a0fbe00411"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/mod.rs",
+      "sha256": "4c55ca7b1e69bd56f6c768052e9d77ae1efd4ffa9d15c37d5c06b1ae83ddabea"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/owner/mod.rs",
+      "sha256": "5babe0847925b98cd3460d74c14ecd16df1e3d60f1f8f78c232823e19f05b777"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/owner/pivot.rs",
+      "sha256": "5a88fccb9b5c39ffed127ccb744356c12a3d6821455e003a194ebf0caafadb81"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/fs_core/owner/update.rs",
+      "sha256": "242e9d96db0371ace2905e328d801ce64f96e573a883e16650fe7a5c7b65c38b"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/initramfs.rs",
+      "sha256": "6bf4657e1fa519b94e79ceee8e7d1a4b960f45e76abe482b4deaa95c3432eeb7"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/lib.rs",
+      "sha256": "06b5e65bfac1ca9fb55eda6a0df95eb2aa7e95d628cfee579e31066357718d6d"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/migration.rs",
+      "sha256": "2246122520c8544b1f7478a6e08d6f3c29baa5cc6a2aa908befb610c2467f5e8"
+    },
+    {
+      "path": "fs/ax-fs-ng/src/root/mod.rs",
+      "sha256": "ff973ec8c765e7b5ddb0f51c0822f7af9bf5dcc068cfbee1579d6700ef85af86"
+    },
+    {
+      "path": "fs/ax-fs-ng/tests/ownership.rs",
+      "sha256": "c28b9461e36ecc270c58e162e42f1e96557e213ee4658162442b696bbd127abd"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/entry.rs",
+      "sha256": "d2c51537fad2dd995a1665e4059ac73151fca889608bd2a8d64ce18283616083"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/file/fs.rs",
+      "sha256": "4aea859019750a5a36c672a64d767510061a1b9dde4d9b1ce7fb59947b814e2e"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/file/mod.rs",
+      "sha256": "f80ce93f14f32c94770115031395fdd44dcf18e3a33de45bec83f548605179a5"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/file/nsfd.rs",
+      "sha256": "12a9ff565723a87adc2bd54700bbadf6614e999ea69128638ed9961519bd9b35"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/file/nsfd/object.rs",
+      "sha256": "143172c8a5442eb9d4b1263c7edcdcd3a4056a9e3bff0e2b2c0827c38f176e79"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/mm/aspace/backend/cow.rs",
+      "sha256": "d08235c7f7be112ee50f79171e72a2ee853e34f93544e4e14e7f60e9e7f3dded"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/mm/aspace/backend/file.rs",
+      "sha256": "e75a9c3d2a4d711af6db79d95be6f4a4b4acd2c606c37a9e84c730e9f6460cdb"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/mm/loader.rs",
+      "sha256": "3c93d4a01a5f3513fb670f445387399bcac2b30c1a2d1a6d6aaf56df6863873c"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/namespace/mnt.rs",
+      "sha256": "5c0e984cd4f070e2102b67634a6c872b10bde7b3c5bae88136f15ba6f4804135"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/namespace/mod.rs",
+      "sha256": "9b95aba578806f26b0ffe49ed2a7b5e6a622f8d7660b67acfcd40fb1aeeb7483"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/namespace/user.rs",
+      "sha256": "a36f9d72366013b74ae169a00a3b3f61766b6295b8e3c57b9be470a4adfe5762"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/pseudofs/mod.rs",
+      "sha256": "d91f06021b5862a82f24a8cf5e0e784710f5fce26c049c4d3888bf8d94b1283c"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/pseudofs/proc.rs",
+      "sha256": "c482d3c7b78c09cff893bf12e7684f31dd06be420dce0db9cb25935a51a5a4dd"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/pseudofs/proc/link.rs",
+      "sha256": "06a793cd556d414589c481ddaed6d4561eef21160404a51fddffc54fb3239a89"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/pseudofs/usbfs/mod.rs",
+      "sha256": "3412daab92ddbe225fbb82af79b1cbeed56e23e227510d74e604fbe8414f7b00"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/fs/ctl.rs",
+      "sha256": "aa89313f9acaee85c69afe10ee4caf5f75947f8b969720a85d46d0557d4c78b2"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+      "sha256": "0c03c764c2555d12f338b17da7ced2264cdb3dc25027b5aec1e36c0ccb098ee7"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/fs/io.rs",
+      "sha256": "b866d2ced71a02c35661858e7d2605a9bdc82f84b316849fe90689db475aaa56"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/fs/memfd.rs",
+      "sha256": "f5de70ff43edf729fa3b1aea0c48e6bdf13b29a7a526f40ba5dcd8fca0585136"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/fs/mount.rs",
+      "sha256": "550e788c74aca80e72ffd0f882e536ea10a80983019426622b36a689e9f183e0"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/fs/mount/tests.rs",
+      "sha256": "95ca2e5125c51d4bfa6583679d522e011e2f019af91b89dce909fb08db9142fe"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/mm/mmap.rs",
+      "sha256": "6405c967e9ab6f22e4aaa53f84f7c56c880f38b5d071499d5f72430e8b73b893"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/net/socket.rs",
+      "sha256": "0f4e26ae8054982dae8d38daa9e495639f8ecffde31990956a401b152d05c197"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/sys.rs",
+      "sha256": "ef55be07d2ca9cba5e5d789104a6834e0ae2dad9121e913009fb7535ed173815"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/task/clone.rs",
+      "sha256": "070a2ddfa9b60e3447d5ef72eaf50ff7506328feb7e109ea9b704b3ca3c2dc4d"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/task/execve.rs",
+      "sha256": "2ac9993a8f24eba54de67075dcae86e7269fabe3b1c80b01520ba1c252ee9f1b"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/syscall/task/namespace.rs",
+      "sha256": "0b7949f9d7304b23269c39ccf9ea3bbea198f4093471fea670e20971c44b91e9"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/task/fs_binding.rs",
+      "sha256": "a6b5abb0d7372172414b9845a1efcfd398c254d6f5b16bdb2828ede83a0c25a3"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/task/mod.rs",
+      "sha256": "026ad44521406ec1a34079cce16b70871404c0653b316adfce26da8b9b9d18e1"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/task/namespace_change.rs",
+      "sha256": "34db2fc4fa5758d0ac7a0a3910ff9dd30a35805cdfc9651cdf8ff6e0c340a300"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/task/ops.rs",
+      "sha256": "9ab69452d542ea6845e19b7c5fd40d06e77a750e58e26d6e3214733b9bbc4fca"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/task/proc_access.rs",
+      "sha256": "6931f1cc6316c2d18af2cf375f04c0ba0e0974dcf6e091efcb1f281037ff78b7"
+    },
+    {
+      "path": "os/StarryOS/kernel/src/task/thread.rs",
+      "sha256": "45bbca61bfa33dba484d48996e608a25efb83586ee825980a0ce589c9dbee98b"
+    },
+    {
+      "path": "os/arceos/modules/axruntime/src/fs/block.rs",
+      "sha256": "caea3b247a05928e27c91602822b724e3d67c4ab75d635144c03ba89acaaf0a5"
+    },
+    {
+      "path": "os/arceos/modules/axruntime/src/unix_ns.rs",
+      "sha256": "ca2c7b68b3f7ee750d1d1a12c125811f029a756cf6c7cb9ed4fac3744b9a0338"
+    },
+    {
+      "path": "os/axvisor/src/builtin.rs",
+      "sha256": "3d2fc4a1e43a0d4a7c948b0e972fb92e9f50a5c320e6910f142ccaee6ceb3b0b"
+    },
+    {
+      "path": "os/axvisor/src/config.rs",
+      "sha256": "797cf2280514f8ab5603bb98225a08fc2c13a946eba40cb13022b34e12095849"
+    },
+    {
+      "path": "os/axvisor/src/control/domain/files.rs",
+      "sha256": "0eb948f9b6f0b177e543a95ca5ea426ead21764fe7c9d06383bc08960cdf32ed"
+    },
+    {
+      "path": "os/axvisor/src/control/web/assets.rs",
+      "sha256": "c267d4e3b8271c36acfe9b9dd3d835459b1ab4b5c3b4c367398702875eb86b8d"
+    },
+    {
+      "path": "os/axvisor/tests/axtest.rs",
+      "sha256": "ed1a279abe7b8c666111e71a995f3a1e3d9277c076f67d7549edc48dfbe03083"
+    }
+  ],
+  "rustc": "rustc 1.102.0-nightly (8eb778d04 2026-11-12)\nbinary: rustc\ncommit-hash: 8eb778d04094d3af4b26580cab327e0413eb1e02\ncommit-date: 2026-11-12\nhost: x86_64-unknown-linux-gnu\nrelease: 1.102.0-nightly\nLLVM version: 23.1.5",
+  "red": {
+    "commit": "ed9d882da4f0cf478957077b5b8975d888870a45",
+    "command": "PATH=<isolated-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 8c718a15db",
+    "exit_code": 1,
+    "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-red.log",
+    "sha256": "99ea8a5d503c469ce70cd4c1939a06d13f069de24d91819edd208d349a503048",
+    "failure": "direct: an open path must pin its exact mount",
+    "failed_ax_profiles": 5,
+    "other_failure": "starry-kernel Overlay baseline"
+  },
+  "green": {
+    "command": "PATH=<isolated-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 8c718a15db",
+    "source_commit": "cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7",
+    "exit_code": 1,
+    "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-green-final.log",
+    "bytes": 280587,
+    "sha256": "e0b982b9a21979365b8385cb369e90842581d8516e3ab4beddceb790ea85f0dc",
+    "terminal_evidence": [
+      "ok: ax-fs-ng",
+      "std tests failed for 1 package(s): starry-kernel"
+    ],
+    "selected_packages": [
+      "[1/18] running 1 std test profile(s) for ax-hal",
+      "[2/18] running 1 std test profile(s) for aic8800",
+      "[3/18] cargo test -p rdif-eth",
+      "[4/18] running 5 std test profile(s) for ax-fs-ng",
+      "[5/18] running 2 std test profile(s) for ax-block",
+      "[6/18] running 1 std test profile(s) for axfs-ng-vfs",
+      "[7/18] running 4 std test profile(s) for ax-driver",
+      "[8/18] running 1 std test profile(s) for ax-runtime",
+      "[9/18] running 1 std test profile(s) for ax-posix-api",
+      "[10/18] running 1 std test profile(s) for ax-net",
+      "[11/18] cargo test -p rd-net",
+      "[12/18] cargo test -p realtek-rtl8125",
+      "[13/18] running 1 std test profile(s) for ax-display",
+      "[14/18] running 1 std test profile(s) for axvm",
+      "[15/18] cargo test -p virtualization-tests",
+      "[16/18] cargo test -p starry-kernel",
+      "[17/18] cargo test -p starry-signal",
+      "[18/18] running 1 std test profile(s) for ax-drm"
+    ],
+    "passed_packages": [
+      "ax-hal",
+      "aic8800",
+      "rdif-eth",
+      "ax-fs-ng",
+      "ax-block",
+      "axfs-ng-vfs",
+      "ax-driver",
+      "ax-runtime",
+      "ax-posix-api",
+      "ax-net",
+      "rd-net",
+      "realtek-rtl8125",
+      "ax-display",
+      "axvm",
+      "virtualization-tests",
+      "starry-signal",
+      "ax-drm"
+    ],
+    "ax_profiles": [
+      {
+        "features": "host-test,vfs,fat,ext4",
+        "results": [
+          "test result: ok. 269 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.16s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+        ],
+        "mount_use_regression": "test file::open::tests::opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach ... ok"
+      },
+      {
+        "features": "host-test,vfs,fat",
+        "results": [
+          "test result: ok. 158 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.41s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "mount_use_regression": "test file::open::tests::opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach ... ok"
+      },
+      {
+        "features": "host-test,fat",
+        "results": [
+          "test result: ok. 138 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.31s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+        ],
+        "mount_use_regression": "test file::open::tests::opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach ... ok"
+      },
+      {
+        "features": "host-test,ext4",
+        "results": [
+          "test result: ok. 239 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.05s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+        ],
+        "mount_use_regression": "test file::open::tests::opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach ... ok"
+      },
+      {
+        "features": "host-test",
+        "results": [
+          "test result: ok. 129 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+          "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+        ],
+        "mount_use_regression": "test file::open::tests::opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach ... ok"
+      }
+    ]
+  },
+  "checks": [
+    {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package ax-fs-ng --package ax-runtime",
+      "source_commit": "cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7",
+      "exit_code": 0,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-clippy-cb65.log",
+      "bytes": 10781,
+      "sha256": "8ea1af0c5ddaa27b3f105f3181e90feb0dbeb52a67799bd980866c18262f51af",
+      "terminal_evidence": [
+        "passed checks: 34, failed checks: 0, skipped checks: 0",
+        "all clippy checks passed"
+      ]
+    },
+    {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case fs-basic",
+      "source_commit": "cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7",
+      "exit_code": 0,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-fs-basic-x86.log",
+      "bytes": 28623,
+      "sha256": "af7c7e3ca8990e610613eb94d38f08eb6a52846492f0c6969cf9a5a6918067e3",
+      "terminal_evidence": [
+        "ARCEOS_TEST_END feature=fs-basic name=bounded filesystem operations status=pass",
+        "result: 1/1 case(s) passed",
+        "all arceos rust qemu tests passed"
+      ]
+    },
+    {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch aarch64 --test-group rust --test-case fs-basic",
+      "source_commit": "cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7",
+      "exit_code": 0,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-fs-basic-aarch64.log",
+      "bytes": 16504,
+      "sha256": "4d997dda9aeb4e7855871c8622e6765ff92e06857e9f99d740feae669d6136d7",
+      "terminal_evidence": [
+        "ARCEOS_TEST_END feature=fs-basic name=bounded filesystem operations status=pass",
+        "result: 1/1 case(s) passed",
+        "all arceos rust qemu tests passed"
+      ]
+    },
+    {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch riscv64 --test-group rust --test-case fs-basic",
+      "source_commit": "cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7",
+      "exit_code": 0,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-fs-basic-riscv64.log",
+      "bytes": 17742,
+      "sha256": "076b38077f1cbada6df02bf5f736074e6ecbfdcfcd1779b9db367f8264b87a34",
+      "terminal_evidence": [
+        "ARCEOS_TEST_END feature=fs-basic name=bounded filesystem operations status=pass",
+        "result: 1/1 case(s) passed",
+        "all arceos rust qemu tests passed"
+      ]
+    },
+    {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch loongarch64 --test-group rust --test-case fs-basic",
+      "source_commit": "cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7",
+      "exit_code": 0,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-fs-basic-loongarch64.log",
+      "bytes": 26078,
+      "sha256": "d2450ce97831cea9860204f8c1a8457454bb3a0c81896c32b3bd4b59d06c9fd9",
+      "terminal_evidence": [
+        "ARCEOS_TEST_END feature=fs-basic name=bounded filesystem operations status=pass",
+        "result: 1/1 case(s) passed",
+        "all arceos rust qemu tests passed"
+      ]
+    },
+    {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 --config os/axvisor/tests/build-memory-root-aarch64.toml --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml",
+      "source_commit": "cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7",
+      "exit_code": 0,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-axvisor-ktest.log",
+      "bytes": 75859,
+      "sha256": "4756694ec332fdec00ae6c3aa144ae25e4e4055d2158e110e8edf6c305b1b640",
+      "terminal_evidence": [
+        "AXTEST_SUMMARY pass=125 fail=0 skip=0 total=125",
+        "AXTEST_SUITE_OK",
+        "[axtest] all QEMU execution units passed"
+      ]
+    }
+  ],
+  "kernel_clippy": {
+    "source_commit": "6d54700f1bcb0898762f3e40d9c8a92917a4005c",
+    "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package starry-kernel",
+    "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-path-mount-use-starry-clippy.log",
+    "sha256": "6b94b56fb8a33cb869fd425d434031fa6d6f03b906c546f4686d4e31ebb0fb2b",
+    "exit_code": 1,
+    "planned_checks": 72,
+    "failed_checks": 4,
+    "skipped_checks": 68,
+    "failure": "15 Overlay legacy-interface compile errors: E0061 x10 and E0407 x5; no direct syscall runtime evidence"
+  },
+  "limitations": [
+    "No Starry direct syscall runtime result; ArceOS and Axvisor passes do not establish Starry Linux compatibility.",
+    "Overlay, F1-F8 mount authorization, unified lookup/proc/metadata consumers, performance/resource comparison and qualified final review remain incomplete.",
+    "origin/dev advanced to 1b3ad931870097e2e2a295d7da20508f3f2102e5 while this unit was validated; it is not included in this source checkpoint."
+  ]
+}

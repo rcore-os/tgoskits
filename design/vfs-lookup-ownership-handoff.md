@@ -96,19 +96,19 @@ namespace 基础的最终 `78aeafbf...` 使用 `cargo xtask test --since 5971181
 
 ## 4. 当前关键缺口
 
-接手者首先需要区分已冻结但未实现的 Owner/pivot 设计，与尚待裁定的新挂载授权设计。不能在迁移时用猜测补齐实际 Core、creator 或匿名来源证明。
+Owner/pivot 的组件及生产连接已在第 7、9 节分步实现；新的挂载授权仍待设计。下面区分当前代码与尚未取得的系统验证，不能用类型迁移推断 syscall 已兼容。
 
 ### 4.1 已冻结的上下文迁移
 
 主设计第 3.8 节要求 `FsContextOwner` 不可 Clone，每个 Owner 保存自己的 namespace，State 只共享 root/cwd 与实际 Owner 份额并由短 IRQ-safe 锁保护。`FsContextSnapshot` 持来源 Weak、冻结 Core 和路径，不计入 Owner 份额，也不升级原 State 的所有权。共享 root/cwd 的 Owner 可以属于不同 namespace，registry 每 State 登记一次 Weak。
 
-Kernel 必须成对读取 FS/MNT Scope：双空表示退休，单空是内部错误，不能 fallback 到 ROOT。clone/unshare/setns/exit、Native 和 Kernel 应同序接入，清除旧 live-State 通道。单 NEWNS、含 USER、多 flag pidfd setns 要分别保持原共享份额、权限与写回规则；已有 IPC 文件对象连接仍在范围，网络/IPC 业务身份分配不在范围。
+Kernel 的 `FsBindingSnapshot` 已成对读取 FS/MNT Scope：双空表示退休，单空返回内部错误。`NamespaceChange` 连接 clone/unshare/setns/exit、实际 Core 及不可变 creator，原 `NsProxy` 的 mount namespace 旁路已删除。单 NEWNS、含 USER、多 flag pidfd setns 已分别迁移共享份额、准备与写回；直接 syscall 回归及最终独立审查仍未完成。已有 IPC 文件对象连接仍在范围，网络/IPC 业务身份分配不在范围。
 
 ### 4.2 已冻结的有序根切换
 
-主设计第 3.8.8、3.8.13 节冻结 AX 聚合 `FsContextSnapshot::pivot_root(&self, new_root: &PathHandle, put_old: &PathHandle) -> (VfsResult<()>, FsPivotRetirement)`，尚未实施。AX 私有可睡眠序列门覆盖“VFS 移动 → topology 外 exact registry 扫描”，避免两次拓扑提交 1→2、修订扫描 2→1 导致最终 State 指向错误路径。
+主设计第 3.8.8、3.8.13 节的 AX 聚合 `FsContextSnapshot::pivot_root(&self, new_root: &PathHandle, put_old: &PathHandle) -> (VfsResult<()>, FsPivotRetirement)` 已实现，并接入 ROOT 与 Kernel。AX 私有可睡眠序列门覆盖“VFS 移动 → topology 外 exact registry 扫描”，避免两次拓扑提交 1→2、修订扫描 2→1 导致最终 State 指向错误路径。
 
-锁序为 caller writer → AX 序列门 → topology；先退 topology 再扫描 registry/逐 State，Scope、pin 和 State 短锁不能跨可睡眠门。修订按 exact mount+dentry，不按 namespace 过滤。成败都保存退休值并在 writer 外释放。普通 pivot 不替换 Owner/Mnt 适配、不重新发布 NsProxy。Kernel 与 ROOT 都必须迁入聚合入口，保留 bind → 同点 pivot → exact 修订 → detach 的顺序；当前生产消费者尚未迁入。
+锁序为 caller writer → AX 序列门 → topology；先退 topology 再扫描 registry/逐 State，Scope、pin 和 State 短锁不能跨可睡眠门。修订按 exact mount+dentry，不按 namespace 过滤。成败都保存退休值并在 writer 外释放。普通 pivot 不替换 Owner/Mnt 适配、不重新发布 NsProxy。ROOT 保留 bind → 同点 pivot → exact 修订 → detach 的顺序；Kernel 的直接 pivot syscall 运行证据仍缺失。
 
 ### 4.3 尚未冻结的挂载授权
 
@@ -125,7 +125,7 @@ F1–F8 调查涵盖 newmount、bind、MS_MOVE、传播、remount、detached mov
 | umount2 | 有早期检查及实际拆树锁内重验；expire 的 busy 先于首次 EAGAIN；保留已有连接/传播/busy 复核 |
 | mount_setattr | 已支持的无传播 fd-empty-path 子集接受 current 或 anonymous 根，不接受任意 foreign/lazy-detached；全零属性有独立参数/查找顺序 |
 
-当前 Kernel 旧 `MntNamespace` 只有诊断 ID，没有实际 VFS Core 或不可变 creator；两套同名 namespace 仍未接通。`PathHandle` 只有 Location/use，anchor 无到 Core 的弱回链；nsfd 缓存是旧 AX namespace Weak 到 inode，不能反查 mount 的 namespace。现有能力 helper 固定于 ptrace，没有可直接复用的目标 userns `CAP_SYS_ADMIN` 判断。
+Kernel 的 `MntNamespace` 已持实际 VFS Core 与不可变 creator，创建入口消费 `CreatedMountNamespace`，nsfd 弱索引也已使用实际 Core。`has_namespace_capability` 提供按目标 user namespace 解释能力的共同判断。`PathHandle` 仍只有 Location/use，anchor 尚无到 Core 的弱回链，这些连接尚未组成 F1–F8 所需的挂载授权能力。
 
 `MountContext` 只有文件系统、选项和 mount 列表，没有 creator 或 anonymous origin。Directory 原始 detached bool 在 attach/lazy-detach 后仍保留；attach 后与 lazy-detach 后均可为 Ordinary，后者 parent=None。Unbound 能区分从未发布，但不是 fsmount 独占来源证明；不能单凭原 fd 标志放行旧树。`open_tree` 当前为 Unsupported/ENOSYS，本计划没有授权顺便扩展新能力。
 
@@ -139,8 +139,8 @@ F1–F8 调查涵盖 newmount、bind、MS_MOVE、传播、remount、detached mov
 
 消费者迁移依赖第 4 节的所有权及挂载授权合同，独立模块仍需按真实依赖完成以下工作。
 
-- Owner/Snapshot、AX、Kernel、Native 同序接入，FS/MNT 成对绑定，以及 clone/unshare/setns/exit 迁移和实际 Core/creator 连接。
-- AX 有序 pivot 聚合、Kernel/ROOT 消费者及 F1–F8 授权与匿名树寿命。
+- 对已迁入的 Owner/Snapshot、FS/MNT 成对绑定、clone/unshare/setns/exit 和 actual Core/creator 执行直接生产回归及独立审查。
+- 验证 Kernel/ROOT 的有序 pivot 消费，并完成 F1–F8 授权与匿名树寿命。
 - 统一 `LookupSession`/`Continuation`、40 次总链接预算、末组件续走、范围限制、真正非阻塞的 CACHED，以及 typed conflict 按原身份续走。
 - lookup 成功与 NotFound 的代际接受、锁外退休和现有解析器/字符串捷径清理。
 - proc typed link 及全部消费者、SimpleFS/proc producer、per-open userns、devpts 与 mqueue 接入。
@@ -258,3 +258,31 @@ PATH=<isolated-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test 
 ```
 
 宿主 `ax-hal` 的条件平台依赖告警，以及 x86 soft-float 下工具链和第三方库的 target-feature future-incompatibility 告警仍有记录，未加 `allow` 属性。生产 Owner/Scope/creator、Overlay、统一查找与 proc 消费迁移、Starry 系统调用回归、性能和独立最终审查仍未完成，第 4、5 节继续有效。
+
+## 9. 生产所有权迁移
+
+本节记录工具链适配后的生产接入，受验证源码为 `cb65d894c1dd45ba0dc77fef36ccdbde36d8f3c7`。源码、原始日志摘要及逐组合结果保存在[生产连接证据](vfs-production-owner-evidence.json)。本节推进第 4、5 节的 Owner 和路径使用权工作，完整 PR 继续保持草稿。
+
+### 9.1 任务路径与命名空间
+
+AX 的 `ROOT_FS_CONTEXT` 和 `FS_CONTEXT` 保存 `FsContextOwner`，读取返回冻结的 `FsContextSnapshot`。`FsContext` 只作为绑定实际 Core 的不可变路径视图，旧 namespace 包装、可变上下文和 registry 旁路已删除。ROOT 根切换借用聚合 pivot，Native 的目录切换通过准备命令及短 Scope 提交；Axvisor 的归档视图使用冻结快照和实际克隆映射。
+
+Kernel 的 [`FsBindingSnapshot`](../os/StarryOS/kernel/src/task/fs_binding.rs) 在同一进程 writer 下取得 FS/MNT，单空组合被拒绝。`MntNamespace::from_created` 消费实际 Core 的创建凭据并保存 creator，nsfd 保持同一 Core 身份。`NamespaceChange` 把 clone、unshare、setns、cwd/root 更新和 pivot 的准备、短 Scope 发布及 writer 外退休连在一起；退出在转入 zombie 前退休 FS/MNT。`NsProxy` 不再另存可独立替换的 mount namespace。
+
+这些连接已消除生产代码中的旧所有者通道，但没有取得 Starry 直接 syscall 运行证明。`setns` 的 mount/user 分支使用目标 user namespace 能力判断，多 flag pidfd 路径按原调用者身份准备；其余 namespace 的既有安装策略仍待逐入口对照。F1–F8、匿名挂载来源及 Core 反向查询也没有因这次迁移自动实现。
+
+### 9.2 打开路径与映射
+
+`FileBackend::Direct`、`CachedFile`、打开的 `File`/目录、`DirHandle` 和 `ReadDir` 保留实际 `PathHandle`，写入及执行互斥租约也保住所选路径。目录的打开结果直接转移拥有型路径，缓存锁、描述表锁和后端 gate 内不重新取得 mount use。缓存及目录读取状态先于最后路径守卫退休。
+
+Kernel 的设备映射把原文件路径放入实际映射保留对象，缓存设备映射同时保留原设备路径及缓存 backing。关闭 fd 后仍活着的映射因此继续承担所选挂载的使用权；此处没有改变映射、页缓存或设备 I/O 算法。
+
+`opened_paths_keep_mount_uses_through_dup_close_and_lazy_detach` 使用真实 MemoryFs 和挂载树，覆盖 direct、buffered、O_PATH、目录、dirfd 及迭代器。持有或复制时普通卸载返回 Busy，最后关闭后可规划卸载；规划后新打开仍使提交失败，lazy detach 后原对象继续可用。错误提交 `ed9d882da4` 的五个 AX profile 均在 direct 路径未保住挂载处失败；修复后相同断言全部通过。测试夹具的挂载根同时修正为被测实际节点，避免把不同文件系统硬包在同一 mount 中。
+
+### 9.3 当前验证结果
+
+源码 `cb65d894c1` 的 AX/runtime Clippy 34 项全部通过。标准库入口选择 18 包，17 包通过；AX 五个 profile 的单元数为 269、158、138、239、129，各自同时通过相应集成和文档测试。唯一失败仍为 Kernel Overlay 的 E0061 十处与 E0407 五处，整个标准库入口退出 1。
+
+本轮按相同源码串行运行四架构 `fs-basic`，x86_64、AArch64、RISC-V 和 LoongArch 均取得逐项 `status=pass`、最终套件标记及外层零退出。Axvisor AArch64 的 memory-root `axtest` 实际运行 125 项，结果 `pass=125 fail=0 skip=0`，输出 `AXTEST_SUITE_OK`。原生运行证据覆盖了本轮路径接入，不提升 Starry 系统调用兼容性结论。
+
+Kernel Clippy 的 72 项计划在前四项因同一 Overlay 错误失败，其余 68 项未执行。完整 Overlay 迁移、统一查找、proc/metadata 消费、直接 syscall 红绿与四架构回归、性能及资源比较、最终独立审查仍未完成。验证期间 `dev` 又推进至 `1b3ad931870097e2e2a295d7da20508f3f2102e5`，该提交不属于本节源码及结果，后续合入必须另记冲突和受影响验证。
