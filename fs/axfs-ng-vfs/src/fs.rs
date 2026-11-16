@@ -77,7 +77,7 @@ pub trait FilesystemOps: Send + Sync {
     fn query_backing_namespace(
         &self,
         request: crate::BackingQueryRequest<'_, '_>,
-    ) -> VfsResult<crate::NamespaceRead> {
+    ) -> crate::NamespaceCompletion<crate::NamespaceRead> {
         request.execute_native()
     }
 

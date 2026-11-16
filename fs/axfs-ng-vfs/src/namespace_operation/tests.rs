@@ -17,6 +17,23 @@ mod backing_queries;
 mod preparation;
 mod reservation_failure;
 
+fn ready<T>(result: VfsResult<NamespaceReadResult<T>>) -> VfsResult<T> {
+    match result? {
+        NamespaceReadResult::Ready(value) => value,
+        NamespaceReadResult::Retry => panic!("this read fixture must be ready"),
+    }
+}
+
+fn read_completion(result: VfsResult<NamespaceRead>) -> NamespaceCompletion<NamespaceRead> {
+    NamespaceCompletion::new(
+        match result {
+            Ok(read) => NamespaceOutcome::unchanged_observed(read, Ok(())),
+            Err(error) => NamespaceOutcome::unchanged(Err(error)),
+        },
+        None,
+    )
+}
+
 use super::*;
 use crate::{
     AuthorizedMutation, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, Filesystem,
@@ -179,7 +196,7 @@ impl FilesystemOps for ProbeFs {
     fn query_backing_namespace(
         &self,
         request: crate::BackingQueryRequest<'_, '_>,
-    ) -> VfsResult<NamespaceRead> {
+    ) -> NamespaceCompletion<NamespaceRead> {
         backing_queries::dispatch(self, request)
     }
     fn begin_namespace<'a>(&'a self, request: NamespaceDriverRequest<'a>) -> NamespaceStart<'a> {
@@ -911,9 +928,7 @@ fn exercise_incomplete_and_preflight() {
     {
         let context = scope.context();
         assert!(matches!(
-            context
-                .query(NamespaceQuery::Metadata(root.entry()))
-                .unwrap(),
+            ready(context.query(NamespaceQuery::Metadata(root.entry()))).unwrap(),
             NamespaceRead::Metadata(_)
         ));
     }

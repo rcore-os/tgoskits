@@ -487,6 +487,13 @@ impl Drop for Ext4Filesystem {
 }
 
 impl FilesystemOps for Ext4Filesystem {
+    fn query_backing_namespace(
+        &self,
+        request: axfs_ng_vfs::BackingQueryRequest<'_, '_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<axfs_ng_vfs::NamespaceRead> {
+        self.read_admitted_namespace(request)
+    }
+
     fn supports_staging(&self) -> bool {
         true
     }

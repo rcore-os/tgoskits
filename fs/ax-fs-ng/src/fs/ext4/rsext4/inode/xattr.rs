@@ -63,7 +63,7 @@ impl Inode {
             .map_err(Self::xattr_error)
     }
 
-    fn user_xattr_name(name: &[u8]) -> VfsResult<&[u8]> {
+    pub(crate) fn user_xattr_name(name: &[u8]) -> VfsResult<&[u8]> {
         const PREFIX: &[u8] = b"user.";
         let component = name
             .strip_prefix(PREFIX)
@@ -74,7 +74,7 @@ impl Inode {
         Ok(component)
     }
 
-    fn xattr_error(error: rsext4::Ext4Error) -> VfsError {
+    pub(crate) fn xattr_error(error: rsext4::Ext4Error) -> VfsError {
         if error.kind() == rsext4::Ext4ErrorKind::NotFound {
             VfsError::DataMissing
         } else {

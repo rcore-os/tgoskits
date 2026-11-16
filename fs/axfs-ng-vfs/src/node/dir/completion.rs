@@ -66,6 +66,11 @@ impl<T> NamespaceCompletion<T> {
         &self.outcome
     }
 
+    pub(crate) fn with_validation(mut self, validation: VfsResult<()>) -> Self {
+        self.outcome = self.outcome.with_completion(validation);
+        self
+    }
+
     pub(crate) fn bind(mut self, owner: &dyn FilesystemOps) -> Self {
         self.owner = Some(owner_address(owner));
         self

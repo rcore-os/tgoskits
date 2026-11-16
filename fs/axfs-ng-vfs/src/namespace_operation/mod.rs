@@ -3,9 +3,11 @@
 mod backing_query;
 pub use backing_query::{BackingQueryContext, BackingQueryRequest};
 mod preparation;
+mod read_result;
 pub use preparation::{
     NamespaceCommandScope, NamespacePreparation, NamespacePreparationContext, PreparationState,
 };
+pub use read_result::NamespaceReadResult;
 pub(crate) mod registration;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -369,7 +371,10 @@ impl<'a> NamespaceOperationContext<'a> {
     /// Reads a prepared receiver without entering another admission.
     /// As with `NamespaceAdmission::query`, no native driver or backend gate may
     /// be held; the snapshot does not authorize a later backing mutation.
-    pub fn query(&self, query: NamespaceQuery<'_>) -> VfsResult<NamespaceRead> {
+    pub fn query(
+        &self,
+        query: NamespaceQuery<'_>,
+    ) -> VfsResult<NamespaceReadResult<NamespaceRead>> {
         self.retired.retire(query.entry().clone());
         let admission = self.admission_for_owner(query.entry().filesystem())?;
         BackingQueryRequest::new(self, admission, query).dispatch()
@@ -378,15 +383,18 @@ impl<'a> NamespaceOperationContext<'a> {
     /// Looks up one exact-mount backing component, without following mounts or
     /// links. Call outside native drivers/backend gates and apply the caller's
     /// own search and backing-identity checks.
-    pub fn lookup_backing(&self, parent: &Location, name: &str) -> VfsResult<Location> {
+    pub fn lookup_backing(
+        &self,
+        parent: &Location,
+        name: &str,
+    ) -> VfsResult<NamespaceReadResult<Location>> {
         self.retired.retire(parent.clone());
-        backing_query::fixed_lookup(
-            parent,
-            self.query(NamespaceQuery::Lookup {
+        Ok(self
+            .query(NamespaceQuery::Lookup {
                 parent: parent.entry(),
                 name,
-            })?,
-        )
+            })?
+            .and_then(|read| backing_query::fixed_lookup(parent, read)))
     }
 
     /// Returns only a real exact-mount write lease; read pins cannot satisfy it.

@@ -1,9 +1,9 @@
 //! Receiver-bound reads through the operation's already admitted backing graph.
 
-use super::NamespaceOperationContext;
+use super::{NamespaceOperationContext, NamespaceReadResult, registration::Reservation};
 use crate::{
-    Location, MutationRetire, NamespaceAdmission, NamespaceQuery, NamespaceRead, VfsError,
-    VfsResult,
+    Location, MutationRetire, NamespaceAdmission, NamespaceCompletion, NamespaceOutcome,
+    NamespaceQuery, NamespaceRead, NamespaceState, VfsError, VfsResult,
 };
 
 /// Borrow-only queries to the current receiver's direct backing filesystems.
@@ -36,7 +36,10 @@ impl<'op> BackingQueryContext<'op> {
     /// Missing admission precedes relationship errors, which precede Lookup
     /// name errors. Read-only backing roles need no write lease. Root/path
     /// provenance remains the layered backend's private adapter responsibility.
-    pub fn query(&self, query: NamespaceQuery<'_>) -> VfsResult<NamespaceRead> {
+    pub fn query(
+        &self,
+        query: NamespaceQuery<'_>,
+    ) -> VfsResult<NamespaceReadResult<NamespaceRead>> {
         self.context.retired().retire(query.entry().clone());
         let destination = self
             .context
@@ -60,15 +63,18 @@ impl<'op> BackingQueryContext<'op> {
 
     /// Looks up one component in the parent's exact mount, without following
     /// covered mounts or final links. All inputs/candidates share outer retire.
-    pub fn lookup_backing(&self, parent: &Location, name: &str) -> VfsResult<Location> {
+    pub fn lookup_backing(
+        &self,
+        parent: &Location,
+        name: &str,
+    ) -> VfsResult<NamespaceReadResult<Location>> {
         self.context.retired().retire(parent.clone());
-        fixed_lookup(
-            parent,
-            self.query(NamespaceQuery::Lookup {
+        Ok(self
+            .query(NamespaceQuery::Lookup {
                 parent: parent.entry(),
                 name,
-            })?,
-        )
+            })?
+            .and_then(|read| fixed_lookup(parent, read)))
     }
 }
 
@@ -117,13 +123,22 @@ impl<'op, 'query> BackingQueryRequest<'op, 'query> {
     /// Consumes the request at its fixed native owner, without reentering
     /// admission or calling the composite hook again. Temporary backend owners,
     /// including error-path owners, must go into the same retirement bag.
-    pub fn execute_native(self) -> VfsResult<NamespaceRead> {
-        self.admission
-            .owner
-            .query_namespace(self.admission, self.query, self.context.retired())
+    pub fn execute_native(self) -> NamespaceCompletion<NamespaceRead> {
+        let result = self.admission.owner.query_namespace(
+            self.admission,
+            self.query,
+            self.context.retired(),
+        );
+        NamespaceCompletion::new(
+            match result {
+                Ok(read) => NamespaceOutcome::unchanged_observed(read, Ok(())),
+                Err(error) => NamespaceOutcome::unchanged(Err(error)),
+            },
+            None,
+        )
     }
 
-    pub(super) fn dispatch(self) -> VfsResult<NamespaceRead> {
+    pub(super) fn dispatch(self) -> VfsResult<NamespaceReadResult<NamespaceRead>> {
         if let NamespaceQuery::Lookup { name, .. } = &self.query {
             crate::path::verify_entry_name(name)?;
         }
@@ -134,21 +149,32 @@ impl<'op, 'query> BackingQueryRequest<'op, 'query> {
         };
         let admission = self.admission;
         let retired = self.context.retired();
-        let result = admission.owner.query_backing_namespace(self)?;
+        let mut reservation = Reservation::child(self.context.children)?;
+        reservation.start();
+        let completion = admission
+            .owner
+            .query_backing_namespace(self)
+            .bind(admission.owner);
+        let outcome = completion.outcome();
         // Even an Entry returned for Metadata/Xattr must survive all gates.
-        if let NamespaceRead::Entry(Some(entry)) = &result {
+        if let Some(NamespaceRead::Entry(Some(entry))) = outcome.observation() {
             retired.retire(entry.clone());
         }
-        match (kind, &result) {
-            (ReadKind::Metadata, NamespaceRead::Metadata(_))
-            | (ReadKind::Xattr, NamespaceRead::Xattr(_))
-            | (ReadKind::Lookup, NamespaceRead::Entry(None)) => {}
-            (ReadKind::Lookup, NamespaceRead::Entry(Some(entry))) => {
-                admission.check_owner(entry.filesystem())?;
-            }
-            _ => return Err(VfsError::BadState),
-        }
-        Ok(result)
+        let validation = match (outcome.state(), outcome.observation()) {
+            (NamespaceState::Retry, None) => Ok(()),
+            (NamespaceState::Unchanged, None) if outcome.result().is_err() => Ok(()),
+            (NamespaceState::Unchanged, Some(read)) => match (kind, read) {
+                (ReadKind::Metadata, NamespaceRead::Metadata(_))
+                | (ReadKind::Xattr, NamespaceRead::Xattr(_))
+                | (ReadKind::Lookup, NamespaceRead::Entry(None)) => Ok(()),
+                (ReadKind::Lookup, NamespaceRead::Entry(Some(entry))) => {
+                    admission.check_owner(entry.filesystem())
+                }
+                _ => Err(VfsError::BadState),
+            },
+            _ => Err(VfsError::BadState),
+        };
+        Ok(reservation.read(completion.with_validation(validation)))
     }
 }
 

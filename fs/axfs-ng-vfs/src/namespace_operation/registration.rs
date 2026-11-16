@@ -6,7 +6,7 @@ use core::cell::RefCell;
 use super::NamespaceObservation;
 use crate::{
     Metadata, NamespaceAdmissions, NamespaceCompletion, NamespaceDeferred, NamespaceEffect,
-    VfsError, VfsResult,
+    NamespaceRead, NamespaceReadResult, VfsError, VfsResult,
 };
 
 pub(super) struct Registration {
@@ -30,6 +30,7 @@ impl Registration {
         self.children.iter().all(|child| match child {
             TypedWork::Namespace(Some(child)) => child.admitted_by(admissions),
             TypedWork::Metadata(Some(child)) => child.admitted_by(admissions),
+            TypedWork::Read(Some(child)) => child.admitted_by(admissions),
             _ => unreachable!("preflight before phase transitions"),
         })
     }
@@ -38,8 +39,10 @@ impl Registration {
 pub(super) enum TypedWork {
     Namespace(Option<NamespaceCompletion>),
     Metadata(Option<NamespaceCompletion<Metadata>>),
+    Read(Option<NamespaceCompletion<NamespaceRead>>),
     NamespaceDeferred(Option<NamespaceDeferred>),
     MetadataDeferred(Option<NamespaceDeferred<Metadata>>),
+    ReadDeferred(Option<NamespaceDeferred<NamespaceRead>>),
     Finished,
 }
 
@@ -54,6 +57,10 @@ impl TypedWork {
                 let (deferred, result) = completion.take().expect("pending child").pressure_step();
                 (Self::MetadataDeferred(Some(deferred)), result)
             }
+            Self::Read(completion) => {
+                let (deferred, result) = completion.take().expect("pending read").pressure_step();
+                (Self::ReadDeferred(Some(deferred)), result)
+            }
             _ => unreachable!("pressure once"),
         };
         *self = next;
@@ -67,6 +74,9 @@ impl TypedWork {
             }
             Self::MetadataDeferred(deferred) => {
                 deferred.take().expect("pressured child").finish_step().1
+            }
+            Self::ReadDeferred(deferred) => {
+                deferred.take().expect("pressured read").finish_step().1
             }
             _ => unreachable!("finish after pressure"),
         };
@@ -193,6 +203,23 @@ impl<'a> Reservation<'a> {
                 )
             }
             Destination::Namespace(_) => unreachable!("typed metadata destination"),
+        }
+    }
+
+    pub(crate) fn read(
+        mut self,
+        completion: NamespaceCompletion<NamespaceRead>,
+    ) -> NamespaceReadResult<NamespaceRead> {
+        assert!(
+            matches!(self.destination, Destination::Child),
+            "read uses a reserved child"
+        );
+        let mut registry = self.registry.borrow_mut();
+        registry.children.push(TypedWork::Read(Some(completion)));
+        self.returned = true;
+        match registry.children.last().expect("registered read") {
+            TypedWork::Read(Some(completion)) => NamespaceReadResult::capture(completion.outcome()),
+            _ => unreachable!("read child"),
         }
     }
 }

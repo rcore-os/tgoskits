@@ -26,12 +26,105 @@ struct Ext4NamespaceFinish {
     sync_directory: bool,
 }
 
+struct Ext4ReadPressure {
+    filesystem: Arc<Ext4Filesystem>,
+    inode: Arc<Inode>,
+    attempt: Option<MutationAttempt<()>>,
+}
+
+struct Ext4ReadFinish {
+    _filesystem: Arc<Ext4Filesystem>,
+    _inode: Arc<Inode>,
+}
+
+impl NamespacePressure<axfs_ng_vfs::NamespaceRead> for Ext4ReadPressure {
+    fn pressure(
+        self: Box<Self>,
+        _: &mut NamespaceOutcome<axfs_ng_vfs::NamespaceRead>,
+    ) -> NamespacePressureResult {
+        let Self {
+            filesystem,
+            inode,
+            attempt,
+        } = *self;
+        let completion = attempt.map_or(Ok(()), |attempt| {
+            filesystem
+                .finish_mutation_pressure(attempt)
+                .map_err(into_vfs_err)
+        });
+        NamespacePressureResult::new(
+            completion,
+            Some(Box::new(Ext4ReadFinish {
+                _filesystem: filesystem,
+                _inode: inode,
+            })),
+        )
+    }
+}
+
+impl NamespaceFinish for Ext4ReadFinish {
+    fn finish(self: Box<Self>) -> VfsResult<()> {
+        Ok(())
+    }
+}
+
 impl Ext4Filesystem {
+    pub(crate) fn read_admitted_namespace(
+        &self,
+        request: axfs_ng_vfs::BackingQueryRequest<'_, '_>,
+    ) -> NamespaceCompletion<axfs_ng_vfs::NamespaceRead> {
+        let inode = match (|| {
+            request.admission().check_owner(self)?;
+            request
+                .admission()
+                .check_owner(request.query().entry().filesystem())?;
+            request.query().entry().downcast::<Inode>()
+        })() {
+            Ok(inode) => inode,
+            Err(error) => {
+                return NamespaceCompletion::new(NamespaceOutcome::unchanged(Err(error)), None);
+            }
+        };
+        let mut progress = None;
+        let result = self.query_admitted_snapshot(
+            request.admission(),
+            *request.query(),
+            request.retired(),
+            &mut progress,
+        );
+        let outcome = if progress.is_some() {
+            NamespaceOutcome::retry()
+        } else {
+            match result {
+                Ok(read) => NamespaceOutcome::unchanged_observed(read, Ok(())),
+                Err(error) => NamespaceOutcome::unchanged(Err(error)),
+            }
+        };
+        NamespaceCompletion::new(
+            outcome,
+            Some(Box::new(Ext4ReadPressure {
+                filesystem: inode.fs().clone(),
+                inode,
+                attempt: progress,
+            })),
+        )
+    }
+
     pub(crate) fn query_admitted_namespace(
         &self,
         admission: &axfs_ng_vfs::NamespaceAdmission<'_>,
         query: axfs_ng_vfs::NamespaceQuery<'_>,
         retired: &MutationRetire,
+    ) -> VfsResult<axfs_ng_vfs::NamespaceRead> {
+        self.query_admitted_snapshot(admission, query, retired, &mut None)
+    }
+
+    fn query_admitted_snapshot(
+        &self,
+        admission: &axfs_ng_vfs::NamespaceAdmission<'_>,
+        query: axfs_ng_vfs::NamespaceQuery<'_>,
+        retired: &MutationRetire,
+        progress: &mut Option<MutationAttempt<()>>,
     ) -> VfsResult<axfs_ng_vfs::NamespaceRead> {
         use axfs_ng_vfs::{NamespaceQuery, NamespaceRead};
         admission.check_owner(self)?;
@@ -39,11 +132,17 @@ impl Ext4Filesystem {
         let parent = query.entry().downcast::<Inode>()?;
         match query {
             NamespaceQuery::Metadata(_) => {
-                let info = self
-                    .lock()
-                    .ext4
-                    .inode(parent.number())
-                    .map_err(into_vfs_err)?;
+                let mut state = self.lock();
+                if state.staging {
+                    *progress = Some(MutationAttempt::Staging);
+                    return Err(VfsError::WouldBlock);
+                }
+                let info = state.ext4.inode(parent.number()).map_err(|error| {
+                    if error.requires_journal_progress() {
+                        *progress = Some(MutationAttempt::Finished(Err(error)));
+                    }
+                    into_vfs_err(error)
+                })?;
                 Ok(NamespaceRead::Metadata(metadata_from_info(
                     parent.number().as_u64(),
                     self.block_size(),
@@ -63,14 +162,39 @@ impl Ext4Filesystem {
                     error: None,
                     reap: None,
                 };
-                match attempt.observe_node(&parent, name, retired) {
+                if attempt.state.staging {
+                    *progress = Some(MutationAttempt::Staging);
+                    return Err(VfsError::WouldBlock);
+                }
+                let result = match attempt.observe_node(&parent, name, retired) {
                     Ok(node) => Ok(NamespaceRead::Entry(Some(node.entry))),
                     Err(VfsError::NotFound) => Ok(NamespaceRead::Entry(None)),
                     Err(error) => Err(error),
+                };
+                if let Some(error) = attempt.error
+                    && error.requires_journal_progress()
+                {
+                    *progress = Some(MutationAttempt::Finished(Err(error)));
                 }
+                result
             }
             NamespaceQuery::Xattr { name, .. } => {
-                parent.get_admitted_xattr(name).map(NamespaceRead::Xattr)
+                let name = Inode::user_xattr_name(name)?;
+                let mut state = self.lock();
+                if state.staging {
+                    *progress = Some(MutationAttempt::Staging);
+                    return Err(VfsError::WouldBlock);
+                }
+                state
+                    .ext4
+                    .get_xattr(parent.number(), rsext4::XattrNamespace::User, name)
+                    .map(NamespaceRead::Xattr)
+                    .map_err(|error| {
+                        if error.requires_journal_progress() {
+                            *progress = Some(MutationAttempt::Finished(Err(error)));
+                        }
+                        Inode::xattr_error(error)
+                    })
             }
         }
     }

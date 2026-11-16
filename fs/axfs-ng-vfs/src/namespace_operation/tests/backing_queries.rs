@@ -53,7 +53,7 @@ impl QueryProbe {
             // additionally proves admission/relationship error precedence.
             for name in ["candidate", "bad/name"] {
                 assert!(matches!(
-                    view.lookup_backing(&target, name),
+                    ready(view.lookup_backing(&target, name)),
                     Err(error) if error == expected
                 ));
             }
@@ -74,25 +74,25 @@ impl QueryProbe {
         self.reject_targets(&view);
         let backing = &self.reads[0];
         assert!(matches!(
-            view.query(NamespaceQuery::Metadata(backing.entry())),
+            ready(view.query(NamespaceQuery::Metadata(backing.entry()))),
             Ok(NamespaceRead::Metadata(_))
         ));
         assert!(matches!(
-            view.query(NamespaceQuery::Lookup {
+            ready(view.query(NamespaceQuery::Lookup {
                 parent: backing.entry(),
                 name: "missing"
-            }),
+            })),
             Ok(NamespaceRead::Entry(None))
         ));
         assert!(matches!(
-            view.lookup_backing(backing, "missing"),
+            ready(view.lookup_backing(backing, "missing")),
             Err(VfsError::NotFound)
         ));
         let backend = backing.entry().downcast::<ProbeNode>().unwrap().0.clone();
         let selected = backend.root_dir();
         *backend.queries.as_ref().unwrap().response.lock().unwrap() =
             Some(Ok(NamespaceRead::Entry(Some(selected.clone()))));
-        let found = view.lookup_backing(backing, "present").unwrap();
+        let found = ready(view.lookup_backing(backing, "present")).unwrap();
         assert!(Arc::ptr_eq(found.mountpoint(), backing.mountpoint()));
         assert!(found.entry().ptr_eq(&selected));
         let calls = backend
@@ -102,7 +102,7 @@ impl QueryProbe {
             .hooks
             .load(Ordering::Relaxed);
         assert!(matches!(
-            view.lookup_backing(backing, "bad/name"),
+            ready(view.lookup_backing(backing, "bad/name")),
             Err(VfsError::InvalidInput)
         ));
         assert_eq!(
@@ -130,7 +130,7 @@ impl QueryProbe {
                     name: b"user.test",
                 },
             };
-            assert!(matches!(view.query(query), Err(error) if error == case.error));
+            assert!(matches!(ready(view.query(query)), Err(error) if error == case.error));
         }
     }
 
@@ -157,9 +157,11 @@ impl QueryProbe {
 pub(super) fn dispatch(
     filesystem: &ProbeFs,
     request: BackingQueryRequest<'_, '_>,
-) -> VfsResult<NamespaceRead> {
+) -> NamespaceCompletion<NamespaceRead> {
     // This must precede the destination gate and the new receiver-bound view.
-    request.admission().check_owner(filesystem)?;
+    if let Err(error) = request.admission().check_owner(filesystem) {
+        return read_completion(Err(error));
+    }
     let Some(probe) = &filesystem.queries else {
         return request.execute_native();
     };
@@ -171,23 +173,26 @@ pub(super) fn dispatch(
         probe.reject_targets(&view);
         return result;
     }
-    let _guard = filesystem.gate.lock().unwrap();
-    let view = request.backing_queries();
-    probe.reject_targets(&view);
-    let next = &probe.reads[0];
-    // This hop must use B's dependency edge, not the original A's view.
-    assert!(matches!(
-        view.query(NamespaceQuery::Metadata(next.entry()))?,
-        NamespaceRead::Metadata(_)
-    ));
-    probe.read(
-        match request.query() {
-            NamespaceQuery::Metadata(entry) => NamespaceQuery::Metadata(entry),
-            NamespaceQuery::Lookup { parent, name } => NamespaceQuery::Lookup { parent, name },
-            NamespaceQuery::Xattr { entry, name } => NamespaceQuery::Xattr { entry, name },
-        },
-        request.retired(),
-    )
+    let result = (|| {
+        let _guard = filesystem.gate.lock().unwrap();
+        let view = request.backing_queries();
+        probe.reject_targets(&view);
+        let next = &probe.reads[0];
+        // This hop must use B's dependency edge, not the original A's view.
+        assert!(matches!(
+            ready(view.query(NamespaceQuery::Metadata(next.entry())))?,
+            NamespaceRead::Metadata(_)
+        ));
+        probe.read(
+            match request.query() {
+                NamespaceQuery::Metadata(entry) => NamespaceQuery::Metadata(entry),
+                NamespaceQuery::Lookup { parent, name } => NamespaceQuery::Lookup { parent, name },
+                NamespaceQuery::Xattr { entry, name } => NamespaceQuery::Xattr { entry, name },
+            },
+            request.retired(),
+        )
+    })();
+    read_completion(result)
 }
 
 fn layer(
@@ -427,37 +432,40 @@ fn request_bound_queries_relay_direct_readonly_edges_and_retire_all_candidates()
             },
         ] {
             *probe.response.lock().unwrap() = Some(Ok(NamespaceRead::Entry(Some(candidate(&c)))));
-            assert!(matches!(context.query(query), Err(VfsError::BadState)));
+            assert!(matches!(
+                ready(context.query(query)),
+                Err(VfsError::BadState)
+            ));
         }
         *probe.response.lock().unwrap() = Some(Ok(NamespaceRead::Xattr(vec![])));
         assert!(matches!(
-            context.lookup_backing(&b_root, "wrong"),
+            ready(context.lookup_backing(&b_root, "wrong")),
             Err(VfsError::BadState)
         ));
         *probe.response.lock().unwrap() = Some(Ok(NamespaceRead::Entry(Some(candidate(&c)))));
         assert!(matches!(
-            context.lookup_backing(&b_root, "foreign"),
+            ready(context.lookup_backing(&b_root, "foreign")),
             Err(VfsError::CrossesDevices)
         ));
         *probe.temporary.lock().unwrap() = Some(candidate(&b));
         *probe.response.lock().unwrap() = Some(Err(VfsError::Io));
         assert!(matches!(
-            context.query(NamespaceQuery::Metadata(b_root.entry())),
+            ready(context.query(NamespaceQuery::Metadata(b_root.entry()))),
             Err(VfsError::Io)
         ));
         assert!(matches!(
-            context.query(NamespaceQuery::Lookup {
+            ready(context.query(NamespaceQuery::Lookup {
                 parent: c_root.entry(),
                 name: "missing"
-            }),
+            })),
             Ok(NamespaceRead::Entry(None))
         ));
         assert!(matches!(
-            context.lookup_backing(&c_root, "missing"),
+            ready(context.lookup_backing(&c_root, "missing")),
             Err(VfsError::NotFound)
         ));
         assert!(
-            matches!(context.query(NamespaceQuery::Xattr { entry: c_root.entry(), name: b"user.test" }), Ok(NamespaceRead::Xattr(value)) if value == vec![7])
+            matches!(ready(context.query(NamespaceQuery::Xattr { entry: c_root.entry(), name: b"user.test" })), Ok(NamespaceRead::Xattr(value)) if value == vec![7])
         );
         assert!(releases.lock().unwrap().is_empty());
     }

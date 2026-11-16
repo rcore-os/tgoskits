@@ -243,6 +243,100 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
     assert_eq!(witness.metadata().unwrap().nlink, 2);
     assert_admission_released(&filesystem);
 
+    // An outer operation may stop before issuing its root command. Reads must
+    // still transfer real pressure ownership, rather than leaving staging set
+    // or flushing while a child lookup retains namespace exclusion.
+    filesystem.lock().staging = true;
+    let flushing = filesystem.clone();
+    let parent_number = inode_number(&native_root);
+    let probe = watch_flush(move || {
+        assert!(flushing.inner.try_lock().is_some(), "read retained state");
+        drop(flushing.namespace.lookup(parent_number).unwrap());
+        assert_eq!(flushing.admission.active_count(), 1);
+        Ok(())
+    });
+    let write = axfs_ng_vfs::PreparedWrite::acquire(&root).unwrap();
+    let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+    let scope = command.attempt::<axfs_ng_vfs::NamespaceEffect>().unwrap();
+    {
+        let context = scope.context();
+        for query in [
+            axfs_ng_vfs::NamespaceQuery::Metadata(witness.entry()),
+            axfs_ng_vfs::NamespaceQuery::Lookup {
+                parent: root.entry(),
+                name: "witness",
+            },
+            axfs_ng_vfs::NamespaceQuery::Xattr {
+                entry: witness.entry(),
+                name: b"user.absent",
+            },
+        ] {
+            assert!(matches!(
+                context.query(query).unwrap(),
+                axfs_ng_vfs::NamespaceReadResult::Retry
+            ));
+        }
+        assert!(filesystem.lock().staging, "read ran pressure in its hook");
+        assert_eq!(filesystem.admission.active_count(), 1);
+    }
+    let aborted = scope
+        .finish()
+        .unwrap_or_else(|_| panic!("read owner mismatch"));
+    assert_eq!(aborted.state(), axfs_ng_vfs::NamespaceState::Uncertain);
+    assert_eq!(aborted.result(), Err(VfsError::BadState));
+    command.finish(Ok(aborted)).unwrap();
+    probe.finish();
+    assert!(!filesystem.lock().staging);
+    assert_admission_released(&filesystem);
+
+    let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
+    let scope = command.attempt().unwrap();
+    {
+        use axfs_ng_vfs::{NamespaceQuery, NamespaceRead, NamespaceReadResult};
+        let context = scope.context();
+        assert!(matches!(
+            context.query(NamespaceQuery::Metadata(witness.entry())).unwrap(),
+            NamespaceReadResult::Ready(Ok(NamespaceRead::Metadata(metadata)))
+                if metadata.nlink == 2
+        ));
+        assert!(matches!(
+            context.query(NamespaceQuery::Lookup {
+                parent: root.entry(),
+                name: "witness",
+            }).unwrap(),
+            NamespaceReadResult::Ready(Ok(NamespaceRead::Entry(Some(entry))))
+                if entry.inode() == witness.inode()
+        ));
+        assert!(matches!(
+            context
+                .query(NamespaceQuery::Xattr {
+                    entry: witness.entry(),
+                    name: b"user.absent",
+                })
+                .unwrap(),
+            NamespaceReadResult::Ready(Err(VfsError::DataMissing))
+        ));
+        let unchanged = scope
+            .rename(
+                &context,
+                (&root, "witness"),
+                (&root, "witness"),
+                RenameOptions::REPLACE,
+                &axfs_ng_vfs::MutationCredentials::root(),
+            )
+            .unwrap();
+        assert_eq!(unchanged.state(), axfs_ng_vfs::NamespaceState::Unchanged);
+        assert_eq!(unchanged.result(), Ok(()));
+    }
+    let outcome = scope
+        .finish()
+        .unwrap_or_else(|_| panic!("read owner mismatch"));
+    assert_eq!(outcome.state(), axfs_ng_vfs::NamespaceState::Unchanged);
+    assert_eq!(outcome.result(), Ok(()));
+    command.finish(Ok(outcome)).unwrap();
+    drop(write);
+    assert_admission_released(&filesystem);
+
     // A fresh outer attempt must reauthorize the real source after pressure,
     // rather than replaying its old owner authorization.
     root.change_metadata(

@@ -2976,11 +2976,11 @@ Overlay 私有适配仍须按第 4.9 节验证目标来自绑定 roots 或本实
 `backing_queries(&self) -> BackingQueryContext<'op>` 重新绑定当前接收者 B，
 不能取回 A 的身份来绕过 B→C 检查。
 `FilesystemOps::query_backing_namespace(&self, request: BackingQueryRequest<'_, '_>)
--> VfsResult<NamespaceRead>` 是这一请求的派发点。
+-> NamespaceCompletion<NamespaceRead>` 是这一请求的派发点。
 原生终点默认消费请求并调用原 admitted `query_namespace` primitive，不重新 enter；
 复合后端实现该新 hook，向下一层传 B-bound 视图，而不伪造命名或元数据修改请求。
 固定原生执行方法为 `BackingQueryRequest::execute_native(self)
--> VfsResult<NamespaceRead>`，只向请求已绑定的实际 owner 派发原读取 primitive，
+-> NamespaceCompletion<NamespaceRead>`，只向请求已绑定的实际 owner 派发原读取 primitive，
 不接受另一 receiver。复合实现取得自己的 gate 之前，先用请求 admission 核对
 当前 `self` 确是原派发 receiver，不能把转发到任意另一个 FS 的 `self` 当作新 source。
 
@@ -3156,6 +3156,31 @@ PathHandle。native 完成核对实际 NodeOps 的 owner、inode 与身份；深
 在合并层建内容镜像；全部临时引用在锁外退休。组件验证沿同一实际两层 owner 旅程
 检查 mounter、下降和读写角色，真实缓存内容仍由暂存集成证明。额外路径保活与选择
 成本纳入整体同环境性能比较，接口回滚不涉及磁盘格式。
+
+### 4.21 后备读取的完成责任
+
+分层观察依赖的 Metadata/Lookup/Xattr 读取也可能遇到真实 Ext4 staging 或 journal
+progress。原 `VfsResult<NamespaceRead>` 会把后端控制原因折叠为 errno，无法让外层
+在结束全部 gate/admission 后完成该轮压力。向上层猜测 WouldBlock 或在 inner 内
+自行刷新都不能保持既有完成和锁序；给这种读取增加另一套事务处理器也重复所有权。
+
+`FilesystemOps::query_backing_namespace` 因此交回 `NamespaceCompletion<NamespaceRead>`。
+VFS 在调用前取得同一不可复制 child reservation，验证响应/实际 receiver 并把读取
+完成登记到原 Scope。调用者只得到 `NamespaceReadResult<T>::Ready(VfsResult<T>)` 或
+`Retry` 的快照，没有原生 driver、旧授权或自行完成的能力。缺少 admission、非法
+下降和无效名称仍在派发前拒绝；候选及失败资源仍归共同 retire。普通查找缺失由
+Ready/NotFound 表达，不能按错误码当成 Retry。
+
+Registration 为真实读取增加 typed pressure/deferred 分支，继续满足全部 pressure、
+全部 admission 退出、retire、全部 finish 的共同顺序。Ext4 由真实核心错误或 staging
+状态构造压力责任；逻辑层把该 Retry 控制向外传递，已有前缀效果仍按 Uncertain
+规则处理，不重放已应用命令。单 FS 的 admitted read primitive 保留纯原生读取职责，
+完整 Context 的 typed hook 承担跨层完成，不以错误后的普通 Location 回退补权。
+
+普通分层读取随后由只读准备协调：完整枚举 receiver 和只读依赖，不取得写租约；
+最外层在无 gate 时取得 admissions，owner 在其中完成具体只读操作。聚合根只表达
+只读控制，重入仅发生在所有 typed 读取完成之后。该扩展先完成实际调用链和原生
+压力证据，再接统一 lookup、目录批次及 Overlay owner，不宣称这些消费者已经迁移。
 
 ## 5. 对象型链接
 

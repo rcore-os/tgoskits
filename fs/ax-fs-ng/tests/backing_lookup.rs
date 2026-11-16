@@ -4,6 +4,18 @@ use std::sync::Arc;
 
 use ax_fs_ng::MemoryFs;
 use ax_runtime as _;
+
+fn ready<T>(
+    result: axfs_ng_vfs::VfsResult<axfs_ng_vfs::NamespaceReadResult<T>>,
+) -> axfs_ng_vfs::VfsResult<T> {
+    match result? {
+        axfs_ng_vfs::NamespaceReadResult::Ready(value) => value,
+        axfs_ng_vfs::NamespaceReadResult::Retry => {
+            panic!("the fixed backing fixture must be ready")
+        }
+    }
+}
+
 use axfs_ng_vfs::{
     Location, Mountpoint, MutationCredentials, MutationRetire, NamespaceAdmissions, NamespaceQuery,
     NamespaceRead, NodePermission, NodeType, PreparedWrite, VfsError,
@@ -173,9 +185,9 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
     let scope = command.attempt::<axfs_ng_vfs::NamespaceEffect>().unwrap();
     {
         let context = scope.context();
-        let selected = context.lookup_backing(&root, "covered").unwrap();
-        let nested = context.lookup_backing(&selected, "nested").unwrap();
-        let terminal = context.lookup_backing(&selected, "link").unwrap();
+        let selected = ready(context.lookup_backing(&root, "covered")).unwrap();
+        let nested = ready(context.lookup_backing(&selected, "nested")).unwrap();
+        let terminal = ready(context.lookup_backing(&selected, "link")).unwrap();
         for (actual, expected) in [
             (&selected, &covered),
             (&nested, &fixed_nested),
@@ -187,22 +199,24 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
         }
         assert_eq!(terminal.node_type(), NodeType::Symlink);
         assert_eq!(
-            context.lookup_backing(&nested, "leaf").unwrap().inode(),
+            ready(context.lookup_backing(&nested, "leaf"))
+                .unwrap()
+                .inode(),
             leaf.inode()
         );
         assert!(matches!(
-            context.query(NamespaceQuery::Lookup {
+            ready(context.query(NamespaceQuery::Lookup {
                 parent: selected.entry(),
                 name: "absent"
-            }),
+            })),
             Ok(NamespaceRead::Entry(None))
         ));
         assert!(matches!(
-            context.lookup_backing(&selected, "absent"),
+            ready(context.lookup_backing(&selected, "absent")),
             Err(VfsError::NotFound)
         ));
         assert!(matches!(
-            context.lookup_backing(&selected, "different"),
+            ready(context.lookup_backing(&selected, "different")),
             Err(VfsError::NotFound)
         ));
     }

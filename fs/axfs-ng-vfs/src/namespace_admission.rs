@@ -11,6 +11,7 @@ use crate::{
 /// Ordinary query entries require no native driver/gate. Only the privately
 /// bound backing-query path permits retaining strict ancestor gates.
 /// These snapshots never authorize a later namespace modification.
+#[derive(Clone, Copy)]
 pub enum NamespaceQuery<'a> {
     Metadata(&'a DirEntry),
     Lookup { parent: &'a DirEntry, name: &'a str },
@@ -26,6 +27,7 @@ impl NamespaceQuery<'_> {
     }
 }
 
+#[derive(Clone)]
 pub enum NamespaceRead {
     Metadata(Metadata),
     Entry(Option<DirEntry>),
