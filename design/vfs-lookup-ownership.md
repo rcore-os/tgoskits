@@ -3199,7 +3199,9 @@ Overlay 不能在原生 `read_dir` 回调内再查同一后端的白化或属性
 真实文件系统锁，嵌套 lookup 会重入它。`NamespaceQuery::Directory` 通过同一
 admitted 读取链取得自有 `DirectoryBatch`，每批最多 128 条，每条保留字节名称、
 原生 inode、类型和完整下一游标。空批表示结束；VFS 核验响应类型、上限和每条游标
-进展，阻止错误提供者让上层停在同一位置。快照不保留后端 iterator 或锁。
+进展，拒绝回到输入游标或同批任一已有游标；Overlay 另记录跨批完整游标，拒绝
+循环。游标包含 offset、continuation 和 change attribute，不假定 opaque cookie
+必须按整数递增。批内检查至多覆盖 128 条，快照不保留后端 iterator 或锁。
 
 MemoryFs 复用现有目录读取；FAT 的 `read_dir_locked` 供普通读取和 admitted 批次
 共用，后者把临时 inode 引用交给原 retire。Ext4 直接使用既有 DirectoryReader、

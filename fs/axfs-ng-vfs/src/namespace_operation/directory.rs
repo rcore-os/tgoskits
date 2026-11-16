@@ -70,19 +70,21 @@ impl DirectoryBatch {
         Ok(Self { records })
     }
 
-    pub(crate) fn validate(&self, mut cursor: DirectoryCursor) -> VfsResult<()> {
+    pub(crate) fn validate(&self, cursor: DirectoryCursor) -> VfsResult<()> {
         if self.records.len() > Self::MAX_ENTRIES {
             return Err(VfsError::BadState);
         }
-        for record in &self.records {
+        for (index, record) in self.records.iter().enumerate() {
             if record.name.is_empty()
                 || record.name.contains(&b'/')
                 || record.name.contains(&0)
                 || record.next == cursor
+                || self.records[..index]
+                    .iter()
+                    .any(|earlier| earlier.next == record.next)
             {
                 return Err(VfsError::BadState);
             }
-            cursor = record.next;
         }
         Ok(())
     }

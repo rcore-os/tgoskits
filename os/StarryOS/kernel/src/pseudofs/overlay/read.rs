@@ -215,7 +215,15 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
             NodePermission::OTHER_READ,
         )?;
         let mut cursor = DirectoryCursor::START;
+        let mut visited = alloc::collections::BTreeSet::new();
         loop {
+            if !visited.insert((
+                cursor.offset(),
+                cursor.continuation(),
+                cursor.observed_change_attribute(),
+            )) {
+                return Err(VfsError::BadState.into());
+            }
             let NamespaceRead::Directory(batch) =
                 ready(self.queries.query(NamespaceQuery::Directory {
                     entry: directory.entry(),
