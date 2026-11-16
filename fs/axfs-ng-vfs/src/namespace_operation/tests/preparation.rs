@@ -25,7 +25,7 @@ impl crate::NamespacePreparation for Plan {
     fn prepare(&self, _: &PreparedWrite) -> VfsResult<()> {
         let filesystem = self.filesystem.upgrade().unwrap();
         assert!(filesystem.gate.try_lock().is_ok());
-        let mut events = self.events.lock().unwrap();
+        let events = self.events.lock().unwrap().clone();
         assert!(
             admissions_ended(&events),
             "prepare retained an ancestor admission"
@@ -41,7 +41,7 @@ impl crate::NamespacePreparation for Plan {
                 .count(),
             2
         );
-        events.push(Event::Prepare(self.id));
+        self.events.lock().unwrap().push(Event::Prepare(self.id));
         if self.behavior == 4 {
             Err(VfsError::NoMemory)
         } else {
@@ -52,12 +52,12 @@ impl crate::NamespacePreparation for Plan {
     fn cleanup(&self, _: &PreparedWrite) -> VfsResult<()> {
         let filesystem = self.filesystem.upgrade().unwrap();
         assert!(filesystem.gate.try_lock().is_ok());
-        let mut events = self.events.lock().unwrap();
+        let events = self.events.lock().unwrap().clone();
         assert!(
             admissions_ended(&events),
             "cleanup retained an ancestor admission"
         );
-        events.push(Event::Cleanup(self.id));
+        self.events.lock().unwrap().push(Event::Cleanup(self.id));
         if self.behavior == 5 {
             Err(VfsError::Io)
         } else {
@@ -72,9 +72,10 @@ impl crate::NamespacePreparation for Plan {
 
 impl Drop for Plan {
     fn drop(&mut self) {
-        let mut events = self.events.lock().unwrap();
-        let ended = admissions_ended(&events);
-        events.push(Event::DropPreparation(self.id, ended));
+        if let Ok(mut events) = self.events.try_lock() {
+            let ended = admissions_ended(&events);
+            events.push(Event::DropPreparation(self.id, ended));
+        }
     }
 }
 
@@ -191,7 +192,7 @@ pub(super) fn exercise() {
             Err(error) => Err(error),
         };
         assert_eq!(actual, expected);
-        let trace = events.lock().unwrap();
+        let trace = events.lock().unwrap().clone();
         assert_eq!(
             trace
                 .iter()
@@ -210,6 +211,13 @@ pub(super) fn exercise() {
             trace
                 .iter()
                 .all(|event| !matches!(event, Event::DropPreparation(_, false)))
+        );
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|event| matches!(event, Event::DropPreparation(..)))
+                .count(),
+            if behavior == 4 { 2 } else { 4 }
         );
         let calls = if behavior == 4 { 1 } else { 2 };
         assert_eq!(native.backend_calls.load(Ordering::Relaxed), calls);
