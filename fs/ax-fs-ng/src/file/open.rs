@@ -661,7 +661,6 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy)]
     struct TestFilesystem {
         this: alloc::sync::Weak<Self>,
         depth: u32,
