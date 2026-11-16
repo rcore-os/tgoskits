@@ -563,5 +563,84 @@
       "The upstream unused alloc::vec import in the seccomp host-test helper is also reported; no allow attribute was added.",
       "No Starry syscall test was executed. Earlier AX/ArceOS/Axvisor results are preserved at source cb65d894c1; their source files did not change in this merge."
     ]
+  },
+  "prepared_write_access": {
+    "source_commit": "fed029e6c98310375909d888c6f5fbb02a3af68e",
+    "scope": "Open descriptions and mappings retain complete immutable backing preparation; access registry releases before preparation and final path use.",
+    "regression_journey": "file::open::tests::readonly_reconfiguration_preserves_writers_until_description_and_mapping_release",
+    "red": {
+      "source_commit": "09b1002e7220c51dbb485cf87b50d9f1275f9307",
+      "command": "PATH=<isolated-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since b2ac7041d2",
+      "exit_code": 1,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-backing-rights-red-verified.log",
+      "sha256": "278c941c655e9a3f13a165afc323634d8192f03d44d314512a18aa3125ee2d6d",
+      "terminal_evidence": [
+        "writable descriptions and mappings must retain every write dependency",
+        "std tests failed for 2 package(s): ax-fs-ng, starry-kernel"
+      ],
+      "failure": "readonly remount returned Ok(()) instead of ResourceBusy while the layered writable description was alive",
+      "failed_ax_profiles": 5
+    },
+    "green": {
+      "source_commit": "fed029e6c98310375909d888c6f5fbb02a3af68e",
+      "command": "PATH=<isolated-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since b2ac7041d2",
+      "exit_code": 1,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-backing-rights-green.log",
+      "sha256": "5a444926a1383c0a553ef5a2dac8c47b8f2d5e320bb45574a61bdcf879b4a683",
+      "terminal_evidence": [
+        "ok: ax-fs-ng",
+        "std tests failed for 1 package(s): starry-kernel"
+      ],
+      "passed_ax_profiles": 5,
+      "std_packages": {
+        "selected": 18,
+        "passed": 17,
+        "failed": [
+          "starry-kernel"
+        ]
+      }
+    },
+    "checks": [
+      {
+        "source_commit": "fed029e6c98310375909d888c6f5fbb02a3af68e",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package ax-fs-ng --package ax-runtime",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-backing-rights-clippy.log",
+        "sha256": "d14987abc23cb82ff875584d47310fc6babf9bf8e12fc46a48ea1ef376cf1122",
+        "terminal_evidence": [
+          "passed checks: 34, failed checks: 0, skipped checks: 0",
+          "all clippy checks passed"
+        ]
+      },
+      {
+        "source_commit": "fed029e6c98310375909d888c6f5fbb02a3af68e",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case fs-basic",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-backing-rights-fs-basic-x86.log",
+        "sha256": "2cc07cf7c9d003ac9bcaa9e20e00cb4f2771a52b8d7dff90555e5d286605e2fe",
+        "terminal_evidence": [
+          "ARCEOS_TEST_END feature=fs-basic name=bounded filesystem operations status=pass",
+          "result: 1/1 case(s) passed",
+          "all arceos rust qemu tests passed"
+        ]
+      },
+      {
+        "source_commit": "fed029e6c98310375909d888c6f5fbb02a3af68e",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 --config os/axvisor/tests/build-memory-root-aarch64.toml --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/open-backing-rights-axvisor-ktest.log",
+        "sha256": "5894d905474992630dc9379af2dc0a4aeccf7b12d6e9d11dc8d05f7864251711",
+        "terminal_evidence": [
+          "AXTEST_SUMMARY pass=125 fail=0 skip=0 total=125",
+          "AXTEST_SUITE_OK",
+          "[axtest] all QEMU execution units passed"
+        ]
+      }
+    ],
+    "limitations": [
+      "The dependency declarations in the host regression are fixtures; real VFS mount rights and real open/dup/mapping-owner lifetimes are tested. No Overlay copy-up is claimed.",
+      "Prepared data/open, restore/xattr and all-gate staging coordination remain incomplete; this ownership connection does not complete the Overlay migration.",
+      "No Starry direct syscall was executed. Earlier four-architecture fs-basic results remain at cb65d894c1."
+    ]
   }
 }

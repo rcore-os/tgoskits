@@ -294,3 +294,11 @@ Kernel Clippy 的 72 项计划在前四项因同一 Overlay 错误失败，其�
 其余主线权限、信号、IPC、文件传输修复和系统回归完整保留。此合并没有改变工具链或锁文件；AX、ArceOS 及 Axvisor 源码也与本节运行版本相同。合并后 Kernel 定向 Clippy 在首项仍因 Overlay 的同一 15 处错误失败，余下 71 项未执行；标准库增量选择器准确选中 Kernel 一包，同样失败。宿主测试另报告上游 seccomp helper 中未使用的 `alloc::vec` 导入，尚未把这些失败记为通过。
 
 能力继承的源码对照固定于 Linux v7.1 的 [`cap_capable_helper`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/security/commoncap.c#L68-L106)。本次同步只证明冲突处理和当前类型检查的边界，直接 syscall 验收仍须在 Overlay 迁移完成后执行；对应日志摘要附在同一生产证据的 `followup_mainline_merge` 中。
+
+### 9.5 打开描述的后备写权利
+
+源码 `fed029e6c98310375909d888c6f5fbb02a3af68e` 进一步让 `WriteAccess` 持有完整 `PreparedWrite`。可见 mount 和声明的写入 backing 都保持真实写租约，只读依赖保留原角色；dup 或映射继续延长同一个打开描述的权利。字段退休顺序为 inode 访问登记、完整准备、所选路径使用权，执行租约也在移除登记后才释放路径。
+
+既有 `readonly_reconfiguration_preserves_writers_until_description_and_mapping_release` 增强为两层声明依赖，并使用真实 VFS lease、描述符复制和 remount 实现。只读 lower 不阻止打开，仍存活的写描述或映射则必须阻止中间层和真实 upper 切为只读；后备拒绝还须释放之前取得的权利。`09b1002e72` 的五个 AX profile 均稳定得到错误的 remount 成功，修复后同一旅程全部通过，没有新增测试启动或放宽断言。
+
+该源码的 AX/runtime Clippy 34 项、x86_64 `fs-basic` 和 Axvisor AArch64 125 项均通过。标准库仍选中 18 包、通过 17 包，唯一失败为既有 Kernel Overlay 15 处接口错误。对应结果记录在生产证据的 `prepared_write_access`；分层数据/open、restore/xattr 和跨全部 gate 的 copy-up 准备协调仍待实现，这一步没有接通完整 Overlay。
