@@ -219,17 +219,18 @@ fn staging_preserves_copied_content_identity_and_explicit_cleanup() {
         work.lookup_no_follow(&anonymous_name),
         Err(VfsError::NotFound)
     ));
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open_loc_with_credentials(anonymous.location().clone(), &credentials)
-        .unwrap()
-        .into_file()
-        .unwrap();
+    // The stage retains the original write graph. Exercise its real native
+    // cache after unlink; this is component I/O, not a userspace fd-open test.
+    let file = ax_fs_ng::file::FileBackend::Cached(
+        ax_fs_ng::file::CachedFile::get_or_create(
+            axfs_ng_vfs::PathHandle::acquire(anonymous.location().clone()).unwrap(),
+        )
+        .unwrap(),
+    );
     let mut contents = [0; 64];
     let read = file.read_at(&mut contents[..], 0).unwrap();
     assert_eq!(&contents[..read], data);
-    assert_eq!(file.write_at(b"orphan", 0).unwrap(), 6);
+    assert_eq!(file.write_at(&b"orphan"[..], 0).unwrap(), 6);
     file.sync(false).unwrap();
     drop(file);
     let replacement = work
