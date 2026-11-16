@@ -167,10 +167,14 @@ pub struct GuestContext {
     /// guest is bound, so the other fields of this snapshot are never written
     /// back.
     pub host_ecfg: usize,
-    /// Saved `guest_tlbrentry` register value.
+    /// Physical root `TLBRENTRY` used while executing this guest.
+    ///
+    /// This is not the guest's own `gcsr_tlbrentry` CSR image.
     pub guest_tlbrentry: usize,
     /// Saved `guest_eentry` register value.
     pub guest_eentry: usize,
+    /// Executable direct-map alias of the physical root refill entry.
+    pub guest_refill_alias: usize,
 }
 
 impl GuestContext {

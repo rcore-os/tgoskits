@@ -1880,6 +1880,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "axvm-kernel-tests"
+version = "0.1.0"
+dependencies = [
+ "ax-hal",
+ "ax-runtime",
+ "ax-std",
+ "axtest",
+ "axvm",
+]
+
+[[package]]
 name = "axvm-types"
 version = "0.7.6"
 dependencies = [

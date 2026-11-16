@@ -48,12 +48,13 @@ host-test = [
     "ax-std/host-test",
     "axdevice/host-test",
 ]
-axtest = ["ax-std/std-compat"]
+axtest = ["ax-std/std-compat", "dep:axtest"]
 sstc = ["ax-cpu/riscv-sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
 
 [dependencies]
 ax-block.workspace = true
+axtest = { workspace = true, optional = true }
 log = "0.4"
 bit_field = "0.10"
 bitflags = "2.9"
@@ -142,3 +143,6 @@ ax-hal.workspace = true
 ax-runtime = { workspace = true, features = ["deferred-rootfs"] }
 ax-driver.workspace = true
 ax-std = { workspace = true, features = ["alloc"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

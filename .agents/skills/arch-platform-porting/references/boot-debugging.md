@@ -414,6 +414,7 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
 
 - 在容器内构建并运行 `cargo xtask`。宿主构建的 `target/debug/tg-xtask` 可能固化容器中不存在的 `CARGO_MANIFEST_DIR`。
 - 只借用容器的 QEMU 时，可由宿主 `cargo xtask arceos test qemu --arch loongarch64 --test-group cpu` 通过 PATH 包装器执行容器内的 QEMU；将工作区产物与 `/tmp/ostool` 按相同绝对路径挂载。此模式不运行容器内的 `xtask`，因此不存在固化工作区路径错配。不要直接复制 QEMU 到宿主运行：容器二进制可能要求宿主缺失的 GLIBC 或 libslirp 符号版本。
+- ArceOS CPU 用例或独立 ktest 包不能假设 Axvisor 专用的 `AXBUILD_QEMU_SYSTEM_LOONGARCH64` 自动选择逻辑同样生效。核对 `context` 的实际包选择分支；使用容器包装器时，把名为 `qemu-system-loongarch64` 的入口目录放到 PATH 最前，并保留实际模拟器命令、版本与容器身份。若普通宿主 QEMU 在进入客户机前就失败于 LVZ 能力断言，这只是环境选择错误，不能计作客户机入口的回归失败。
 - LVZ 在 EFI 交接后看似停止时，先用 QEMU `-d int,guest_errors` 核对是否已进入高地址内核。若在 FP 保存指令触发 Floating Point Disabled，检查 `hv` 是否同时启用了运行期 `fp-simd` 与平台 FP 初始化；不能通过关闭状态保存绕过故障。
 - 认定内核错误前检查 `/opt/qemu-lvz/bin/qemu-system-loongarch64`、`/tmp/ostool/ovmf/loongarch64` 下固件和 musl 工具链。
 - 输出到 `Exiting UEFI boot services...` 后停止时，在 `ExitBootServices`、内存映射交接、退出后第一次控制台调用和内存管理单元或陷阱设置前后立即插桩。
@@ -445,10 +446,58 @@ x86 虚拟 EOI 在已卸载后端的 guest 退出处理阶段完成；可能阻�
 生命周期。排查 Linux 客户机停在某条启动日志时，先检查宿主
 timer 是否 pending、是否仍允许打断 guest，再判断该日志对应的设备是否故障。
 
+LoongArch IOCSR 未建模地址不能默认转发宿主。Linux 初始化 `MISC_FUNC 0x420`
+可能设置宿主中断硬件；先核对 AxVM 的 VM 自有寄存器集合、完整指令解码、
+无副作用拒绝与最终 Fault 诊断，再继续不含直通授权的客户机运行。契约见
+[`design/axvm-loongarch-iocsr.md`](../../../../design/axvm-loongarch-iocsr.md)。
+CPU 可信 guest-entry 的退出调查可独立进行，不受该软件后备路径影响。
+
+依赖真实启动、逐处理器或异常表装配的 AxVM 私有行为测试，若 cross-test 在
+链接阶段失败，应保留首错，不增加符号桩。可按上述设计 4.3 通过独立 ktest
+harness 链接同一库内测试；注册宏、可选普通依赖与 feature 转发必须完整，
+实际日志还须证明全部目标 case 执行，描述符进入 ELF 不等于测试通过。
+无默认输出的 LoongArch 内核测试也要在自己的运行配置中显式指定已核实的
+earlycon；UEFI 交接后无输出不能直接判定内核未执行或已经挂起。
+
+`ExitKind::Synchronous` 不是已执行 HVCL 的证明。失败时保留同一退出的
+ESTAT、PC、BADI 与精确镜像反汇编；ECODE 为零且 IS 含 timer、PC 仍在忙循环时，
+先核对向量来源和分类链。IRQ 的 BADI 可能保留旧同步异常值，不能据此模拟
+HVCL 或认定 RDTIME 发生了特权陷阱，也不能仅按 TI pending 覆盖真实同步异常。
+
 ArceOS `cpu/guest-entry` 的 LoongArch 用例以关闭 guest IE 的有限忙循环验证宿主
 timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；正确入口先返回 timer IRQ，
 且保留 pending 位、恢复宿主 IRQ 屏蔽状态。它提供入口契约的确定性证明，Axvisor
 `normal/smoke` 继续验证 Linux 启动、定时唤醒和块设备访问。
+
+统一 LVZ 普通入口使用 `VS=0`，按保存的 `TLBRERA.IsTLBR` 与 ESTAT.ECODE
+分类，不能只按 IS pending 判断。ISA 的分向量地址计算是 `EENTRY | offset`；
+`VS=5` 的 timer 偏移 `0x2580` 在仅 4 KiB 对齐的实板装载别名下可能折到同步槽。
+提高链接对齐不保证最终运行地址对齐，QEMU 的加法实现也不能替代实机 ISA 证明。
+同一 guest-entry 用例还应在取消 timer 前核对 live TI，并屏蔽宿主 timer 线后
+验证 `HVC ECODE + TI pending` 仍为同步退出，最后由 timer 所有者清理。
+
+LVZ refill 的中间目录缺失不能只恢复页表根后直接跳分页宿主。先核对
+[`design/loongarch-lvz-refill-exit.md`](../../../../design/loongarch-lvz-refill-exit.md)
+中的实时宿主模式检查、保存现场与 live IsTLBR/DA/PG 归还顺序；用真实缺页、
+补映射和同指令重入验证，不把该静态缺陷自动当成任意重入停顿的根因。
+
+`TLBRENTRY` 是物理向量，LA64 高于 PALEN 的位只读零；不能向它写入高位
+直映别名后就假定 refill PC 也有高位。由内存所有者分别提供物理入口和
+可执行直映别名，在仍为 `DA=1/PG=0` 时显式跳入直映续行，再开启分页。
+测试应核实实际从物理入口进入，不能只依赖保留 CSR 高位的 QEMU 模型。
+
+返回 Rust 后的寄存器断言可能被后续宿主异常恢复掩盖。需要证明 refill 出口
+本身的状态时，用同一 ELF 的实际符号和入口别名在退出 trampoline 首指令处
+核对 CRMD、live IsTLBR 与保存的原 fault，再撤除断点、detach 并继续完整用例。
+观测身份或协议失败不算回归 red；只有确认停点上的契约断言失败才是缺陷证据。
+默认测试入口没有自动装配观察器时，明确记录额外装配及其退出状态，不冒充 CI 覆盖。
+
+嵌套翻译下的调试内存读取也要核对地址空间：某些 LVZ QEMU 的
+`get_phys_page_debug()` 只做 guest 第一阶段，直接读取低 guest PC 可能得到
+GPA 对应的宿主物理字节，而非 CPU 实际执行的二阶段 backing。先从已验证的
+root/refill 别名、实时 fault PC/地址和同 ELF 字节取证，不把调试读取的零字节
+判为客户机代码损坏。RSP 寄存器编号从目标 XML 发现，不按架构名称猜编号；
+无法验证所需能力时保留原始响应并停止该项判定。
 
 Linux 已枚举 VirtIO 块设备却停在首次挂载时，还需检查延后队列是否在
 WFI 前提交。`axvm::runtime::vcpus::run` 在后端卸载后通过

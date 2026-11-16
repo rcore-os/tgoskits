@@ -85,6 +85,7 @@ core::arch::global_asm!(
     host_ecfg = const offset_of!(GuestContext, host_ecfg),
     guest_tlbrentry = const offset_of!(GuestContext, guest_tlbrentry),
     guest_eentry = const offset_of!(GuestContext, guest_eentry),
+    guest_refill_alias = const offset_of!(GuestContext, guest_refill_alias),
     gpr0 = const offset_of!(GuestContext, x) + offset_of!(crate::registers::GeneralRegisters, zero),
     gpr1 = const offset_of!(GuestContext, x) + offset_of!(crate::registers::GeneralRegisters, ra),
     gpr2 = const offset_of!(GuestContext, x) + offset_of!(crate::registers::GeneralRegisters, tp),
@@ -124,14 +125,12 @@ core::arch::global_asm!(
 unsafe extern "C" fn __ax_cpu_lvzvmexit_trampoline() -> ! {
     core::arch::naked_asm!(
         "move $s0, $sp",
-        "move $s1, $a0",
         "li.d $a0, {guest_fp}",
         "add.d $a0, $s0, $a0",
         "bl {save_fp}",
         "li.d $a0, {host_fp}",
         "add.d $a0, $s0, $a0",
         "bl {restore_fp}",
-        "move $a0, $s1",
         "addi.d $t0, $s0, {ctx_size}",
         "ld.d $t1, $t0, 0",
         "move $sp, $t1",

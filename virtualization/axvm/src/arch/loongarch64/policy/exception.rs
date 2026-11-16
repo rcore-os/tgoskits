@@ -18,8 +18,8 @@ use super::{
         get_guest_interrupt_status, get_guest_pc, is_host_tlb_refill,
     },
     types::{
-        LoongArchAccessFlags, LoongArchGuestPhysAddr, LoongArchPinnedHost, LoongArchVcpuError,
-        LoongArchVcpuId, LoongArchVcpuResult, LoongArchVmExit, LoongArchVmId,
+        LoongArchAccessFlags, LoongArchEmulationFault, LoongArchGuestPhysAddr, LoongArchPinnedHost,
+        LoongArchVcpuError, LoongArchVcpuId, LoongArchVcpuResult, LoongArchVmExit, LoongArchVmId,
     },
 };
 
@@ -35,8 +35,6 @@ const OPCODE_IDLE: usize = 0b0_0000_1100_1001_0001;
 const OPCODE_IDLE_LEN: usize = 17;
 const OPCODE_CSRX: usize = 0b00000100;
 const OPCODE_CSRX_LEN: usize = 8;
-const OPCODE_IOCSR: usize = 0b0000011001;
-const OPCODE_IOCSR_LEN: usize = 10;
 
 /// The software-emulated GSPR instruction classes.
 ///
@@ -49,7 +47,7 @@ pub(super) enum GsprOp {
     Cacop,
     Idle,
     Csrx,
-    Iocsr { ty: usize, addr: usize },
+    Iocsr,
 }
 
 /// Classifies the faulting software-emulated GSPR instruction.
@@ -70,13 +68,8 @@ pub(super) fn classify_gspr(ctx: &LoongArchContextFrame) -> Option<GsprOp> {
         Some(GsprOp::Idle)
     } else if matches(OPCODE_CSRX, OPCODE_CSRX_LEN) {
         Some(GsprOp::Csrx)
-    } else if matches(OPCODE_IOCSR, OPCODE_IOCSR_LEN) {
-        let ty = extract_field(ins, 10, 3);
-        let rj = extract_field(ins, 5, 5);
-        Some(GsprOp::Iocsr {
-            ty,
-            addr: ctx.x[rj],
-        })
+    } else if (0x19200..=0x19207).contains(&(ins >> 10)) {
+        Some(GsprOp::Iocsr)
     } else {
         None
     }
@@ -127,12 +120,13 @@ fn emulate_gspr<H: LoongArchHostOps>(
         Some(GsprOp::Cacop) => Ok(emulate_cacop(ctx, ins)),
         Some(GsprOp::Idle) => Ok(emulate_idle(ctx, ins)),
         Some(GsprOp::Csrx) => emulate_csrx::<H>(ctx, ins, vm_id, vcpu_id, guest_timer),
-        Some(GsprOp::Iocsr { .. }) => emulate_iocsr::<H>(state, ctx, ins, vm_id, vcpu_id, pinned),
-        None => panic!(
-            "Unhandled LoongArch GSPR instruction: pc={:#x}, badi={:#x}",
-            get_guest_pc(ctx),
-            ins
-        ),
+        Some(GsprOp::Iocsr) => emulate_iocsr(state, ctx, ins, vm_id, vcpu_id),
+        None => Ok(LoongArchVmExit::EmulationFault(
+            LoongArchEmulationFault::InvalidGspr {
+                pc,
+                instruction: ins,
+            },
+        )),
     }
 }
 

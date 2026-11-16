@@ -12,6 +12,13 @@ pub enum VirtualizationError {
     /// Hardware has not been enabled by this owner.
     #[error("virtualization is not enabled")]
     NotEnabled,
+    /// The host mode cannot be safely restored by the LoongArch LVZ entry.
+    #[error("unsupported LoongArch host CRMD state: {crmd:#x}")]
+    #[cfg(target_arch = "loongarch64")]
+    UnsupportedHostState {
+        /// Live CRMD value rejected before any guest-entry state is changed.
+        crmd: usize,
+    },
     /// None of the implemented guest paging modes are supported by this CPU.
     #[error("no implemented guest paging mode is supported")]
     UnsupportedPaging,

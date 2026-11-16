@@ -61,6 +61,7 @@ members = [
     "fs/rsext4",
     "memory/*",
     "virtualization/*",
+    "virtualization/test_crates/axvm-kernel-tests",
     "virtualization/test_crates/virtualization-tests",
     "components/percpu/percpu",
     "components/percpu/percpu_macros",

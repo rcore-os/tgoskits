@@ -84,6 +84,35 @@ CPU 层拥有 LVZ 机器状态及进出客户机时的宿主恢复；AxVM 拥有
 第一处可靠错误与必要寄存器，不把随后的控制台或 panic 故障自动视为根因。
 具体底层修复若改变共享契约，应先同步对应设计再实施。
 
+LVZ 普通退出使用 `ECFG.VS=0` 的统一入口，不依赖装载地址满足分向量表的
+额外对齐。ISA 以 `EENTRY | offset` 选择分向量入口；只保证最终地址 4 KiB
+对齐不足以容纳 `VS=5` 的全部 IRQ 偏移，不能把链接期对齐外推到物理直映别名。
+依据是 [LoongArch Reference Manual - Volume 1](https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html)
+1.10 的 6.3.1、7.4.9 节。选择统一入口与固定 Linux 7.1 KVM 的策略一致，
+不扩大 axloader 的装载契约。
+
+`ax_cpu::virtualization::Vcpu::run()` 按同一保存现场分类：有效
+`TLBRERA.IsTLBR` 优先为同步翻译退出；其余 `ESTAT.ECODE != 0` 为同步退出，
+即使 IS 同时含 timer pending；ECODE 为零则为 IRQ。汇编入口提示和 BADI
+均不能覆盖这个原因。`Exit.instruction` 保留原始 BADI 供诊断，但 IRQ 时
+不具有本次指令有效性，消费者不得据它解码或推进 PC。
+
+进出客户机仍只借用并归还宿主 VS，保留 live LIE，返回前恢复宿主状态且保持
+IRQ 关闭；不清 pending TI，不重放旧 ESTAT。现有可信 `cpu/guest-entry`
+用例保留忙循环被宿主 timer 打断的判定，并在取消 timer 前检查 live pending，
+再屏蔽宿主 timer 线，证明 TI 仍 pending 时真正的 HVCL 仍是同步退出。
+清理由该测试的 timer 所有者完成，不能削弱既有 FP、映射、重入及解绑断言。
+
+中间目录缺失时的 refill 错误退出与每次运行的宿主模式检查，遵循
+[LVZ refill 错误退出设计](loongarch-lvz-refill-exit.md)。该缺陷的修复不能
+直接当作已定位实板重入停顿，仍须独立验证实际执行路径。
+
+客户机 IOCSR 不属于默认硬件直通资源。已核实的未知地址宿主读写后备违反本任务
+隔离边界，恢复 Linux 上板前须按
+[IOCSR 隔离设计](axvm-loongarch-iocsr.md) 删除后备、完成模型与拒绝闭环验证。
+独立的可信 CPU guest-entry 用例不经过该路径，可以继续提供机器退出证据；
+它不等于允许尚未封闭的 Linux 客户机运行。
+
 ### 3.2 板卡恢复
 
 板卡会话独占串口及启动事务，完成或失败后确认进程退出并释放租约。

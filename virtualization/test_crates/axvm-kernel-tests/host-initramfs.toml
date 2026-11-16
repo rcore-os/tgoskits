@@ -1,0 +1,2 @@
+# Publish an empty builtin catalog so this harness boots a diskless memory root.
+vm_configs = []

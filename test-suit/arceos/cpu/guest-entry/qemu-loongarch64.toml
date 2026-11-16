@@ -1,3 +1,4 @@
+cmdline = "earlycon=ns16550,mmio,0x1fe001e0"
 args = ["-cpu", "la464", "-m", "2G", "-no-reboot", "-smp", "1", "-display", "none", "-serial", "mon:stdio"]
 timeout = 60
 uefi = true

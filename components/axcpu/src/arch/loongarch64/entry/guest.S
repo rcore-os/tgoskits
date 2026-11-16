@@ -34,13 +34,14 @@
 .equ CSR_TLBRPRMD_PGM, 0x8
 .equ CSR_GTLBC_TGID,   0xff0000
 .equ CSR_CRMD_IE,      0x4
+.equ CSR_CRMD_DA_PG,   0x18
+.equ CSR_CRMD_PG,      0x10
 .equ CSR_PRMD_PIE,     0x4
 .equ STAGE2_PWCL,      0x13e4d52c
 .equ STAGE2_PWCH,      0x267
 .equ STAGE2_STLBPS,    12
 .equ STAGE2_ASID,      1
 .equ ECFG_VS_MASK,     0x70000
-.equ ECFG_VS_5,        0x50000
 
 .macro SWITCH_TO_GUEST_TRANSLATION
     ld.d    $t0, $sp, {guest_tlbrentry}
@@ -49,9 +50,8 @@
     csrwr   $t0, CSR_EENTRY
     csrrd   $t1, CSR_ECFG
     li.d    $t0, ECFG_VS_MASK
+    // VS=0 sends all ordinary exits to one entry without changing live LIE.
     andn    $t1, $t1, $t0
-    li.d    $t0, ECFG_VS_5
-    or      $t1, $t1, $t0
     csrwr   $t1, CSR_ECFG
 
     li.d    $t0, STAGE2_PWCL
@@ -512,6 +512,7 @@ __ax_cpu_lvz_guest_exit:
 .global __ax_cpu_lvz_guest_tlb_refill_vector
 .hidden __ax_cpu_lvz_guest_tlb_refill_vector
 __ax_cpu_lvz_guest_tlb_refill_vector:
+.Lguest_refill_begin:
     csrwr   $t0, CSR_TLBRSAVE
     csrrd   $t0, CSR_PGD
 
@@ -529,7 +530,28 @@ __ax_cpu_lvz_guest_tlb_refill_vector:
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     RESTORE_HOST_TRANSLATION
-    li.d    $a0, 0
+    // Hardware enters refill at a physical PC, even if its CSR was given a
+    // high alias. Move to the owner's executable DMW before enabling paging.
+    ld.d    $t0, $sp, {guest_refill_alias}
+    la.pcrel $t1, .Lguest_refill_host_mode
+    la.pcrel $t2, .Lguest_refill_begin
+    sub.d   $t1, $t1, $t2
+    add.d   $t0, $t0, $t1
+    jirl    $zero, $t0, 0
+.global __ax_cpu_lvz_refill_host_mode
+.hidden __ax_cpu_lvz_refill_host_mode
+__ax_cpu_lvz_refill_host_mode:
+.Lguest_refill_host_mode:
+    // The owned fault snapshot retains IsTLBR. Only the live refill bank is
+    // retired here, after its last use and while code and context use DMW aliases.
+    csrrd   $t1, CSR_TLBRERA
+    li.d    $t0, -2
+    and     $t1, $t1, $t0
+    csrwr   $t1, CSR_TLBRERA
+    // Restore paged root mode atomically; do not touch IE, WE, TI or host LIE.
+    li.d    $t0, CSR_CRMD_DA_PG
+    li.d    $t1, CSR_CRMD_PG
+    csrxchg $t1, $t0, CSR_CRMD
     b       __ax_cpu_lvz_guest_exit
 
 .section .text.ax_cpu_lvz_vectors, "ax"
@@ -537,129 +559,7 @@ __ax_cpu_lvz_guest_tlb_refill_vector:
 .global __ax_cpu_lvz_exception_vectors
 .hidden __ax_cpu_lvz_exception_vectors
 __ax_cpu_lvz_exception_vectors:
-    .org 0x0
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x80
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x100
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x180
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x200
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x280
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x400
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x480
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x500
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x580
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x600
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x680
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x700
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x780
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x800
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x880
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x900
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0x980
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xa00
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xa80
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xb00
-    b       __ax_cpu_lvz_hvc_handler_vector
-    .org 0xb80
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xc00
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xc80
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xd00
-    b       __ax_cpu_lvz_sync_handler_vector
-    .org 0xd80
-    b       __ax_cpu_lvz_sync_handler_vector
-
-    /*
-     * Hardware interrupts use EENTRY + (64 + vector) * vec_size.  With VS=5
-     * each slot is 0x80 bytes, so local interrupt 11 (timer) lands at 0x2580.
-     */
-    .org 0x2000
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2080
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2100
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2180
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2200
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2280
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2300
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2380
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2400
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2480
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2500
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2580
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2600
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2680
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2700
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2780
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2800
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2880
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2900
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2980
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2a00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2a80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2b00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2b80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2c00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2c80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2d00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2d80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2e00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2e80
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2f00
-    b       __ax_cpu_lvz_irq_handler_vector
-    .org 0x2f80
-    b       __ax_cpu_lvz_irq_handler_vector
-
-__ax_cpu_lvz_irq_handler_vector:
+    // IRQs and synchronous exceptions share the same state-saving path.
     csrwr   $t0, HOST_VCPU_TMP_KS
     csrwr   $sp, 0x502
     csrrd   $sp, HOST_VCPU_KS
@@ -667,27 +567,4 @@ __ax_cpu_lvz_irq_handler_vector:
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     RESTORE_HOST_TRANSLATION
-    li.d    $a0, 1
-    b       __ax_cpu_lvz_guest_exit
-
-__ax_cpu_lvz_sync_handler_vector:
-    csrwr   $t0, HOST_VCPU_TMP_KS
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
-    SAVE_GUEST_REGS
-    ENTER_HOST_MODE
-    RESTORE_HOST_TRANSLATION
-    li.d    $a0, 0
-    b       __ax_cpu_lvz_guest_exit
-
-__ax_cpu_lvz_hvc_handler_vector:
-    csrwr   $t0, HOST_VCPU_TMP_KS
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
-    SAVE_GUEST_REGS
-    ENTER_HOST_MODE
-    RESTORE_HOST_TRANSLATION
-    li.d    $a0, 0
     b       __ax_cpu_lvz_guest_exit
