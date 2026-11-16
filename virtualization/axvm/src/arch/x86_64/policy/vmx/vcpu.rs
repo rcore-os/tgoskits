@@ -417,7 +417,7 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
 
     fn queue_fixed_apic_interrupt(&mut self, vector: u8, level_triggered: bool) -> X86VcpuResult {
         if !is_valid_fixed_apic_vector(vector) {
-            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 16..=255");
         }
         self.queue_event(PendingEvent::external_interrupt(
             vector,
@@ -2439,8 +2439,8 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
     }
 
     pub fn inject_interrupt(&mut self, vector: usize) -> X86VcpuResult {
-        if !(32..=u8::MAX as usize).contains(&vector) {
-            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
+        if vector > u8::MAX as usize || !is_valid_fixed_apic_vector(vector as u8) {
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 16..=255");
         }
         self.queue_fixed_apic_interrupt(vector as u8, false)
     }
@@ -2450,8 +2450,8 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
         vector: usize,
         level_triggered: bool,
     ) -> X86VcpuResult {
-        if !(32..=u8::MAX as usize).contains(&vector) {
-            return x86_err!(InvalidInput, "fixed APIC vector must be in 32..=255");
+        if vector > u8::MAX as usize || !is_valid_fixed_apic_vector(vector as u8) {
+            return x86_err!(InvalidInput, "fixed APIC vector must be in 16..=255");
         }
         self.queue_fixed_apic_interrupt(vector as u8, level_triggered)
     }

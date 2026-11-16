@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 支持调用方登记永久保留启动栈可读范围，检查完整Frame记录与地址溢出，避免遗漏内核映射区外的有效启动栈。
+
 ## [0.4.12](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.11...axbacktrace-v0.4.12) - 2026-09-13
 
 ### Added

@@ -68,7 +68,7 @@ pub(super) fn write_pthread_mutex_header(
     fs::create_dir_all(include_dir)
         .with_context(|| format!("failed to create {}", include_dir.display()))?;
     let path = include_dir.join("ax_pthread_mutex.h");
-    fs::write(&path, pthread_mutex_header_contents(features))
+    super::cache::write_unchanged(&path, pthread_mutex_header_contents(features).as_bytes())
         .with_context(|| format!("failed to write {}", path.display()))
 }
 

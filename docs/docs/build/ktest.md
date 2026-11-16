@@ -146,6 +146,7 @@ cargo xtask ktest qemu -p axvisor --test axtest \
   --qemu-config path/to/qemu.toml --coverage
 
 # SG2002 板卡专用测试
+# 程序已归入apps/arceos/sg2002-usb-msc，保留板卡测试目标
 cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc \
   --test axtest -b aka-00-sg2002
 ```

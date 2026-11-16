@@ -5,10 +5,10 @@ sidebar_label: "测试基础设施"
 
 # 测试基础设施
 
-`scripts/axbuild/src/test/` 是三套系统共享的 QEMU/板卡测试编排框架，分为两层：
+`scripts/axbuild/src/execution/` 提供测试与应用共用的执行能力，普通测试组织位于 `test/normal/`，Cargo/axtest机制位于 `test/ktest/`。共用执行分为两层：
 
-- **发现与分组层**（`test/qemu/`）：用例发现、build wrapper 分组、QEMU 启动控制、结果聚合和 `--list` 渲染。ArceOS、StarryOS、Axvisor 三者共享。
-- **资产注入层**（`test/case/`）：rootfs 副本、overlay 注入、rootfs 缓存、grouped runner 协议和六种 pipeline 类型。StarryOS 和 Axvisor 共享；ArceOS 使用自己的 feature-based runner（见 [ArceOS 测试](./arceos/test)），不经过 rootfs 注入。
+- **发现与分组层**（`execution/qemu/`）：用例发现、build wrapper 分组、QEMU 启动控制、结果聚合和 `--list` 渲染。ArceOS、StarryOS、Axvisor 三者共享。
+- **资产注入层**（`execution/case/`）：rootfs 副本、overlay 注入、rootfs 缓存、grouped runner 协议和六种 pipeline 类型。StarryOS 和 Axvisor 共享；ArceOS 使用自己的 feature-based runner（见 [ArceOS 测试](./arceos/test)），不经过 rootfs 注入。
 
 本文从源码角度描述这套共享框架的核心契约，作为 [Std 白名单测试](./test)、[内核测试](./ktest) 和各系统测试文档（[ArceOS](./arceos/test)、[StarryOS](./starry/test)、[Axvisor](./axvisor/test)）的底层参考。
 
@@ -33,26 +33,26 @@ flowchart LR
 
 | 代码位置 | 作用 |
 |----------|------|
-| `scripts/axbuild/src/test/mod.rs` | 模块根，声明 `board`/`build`/`case`/`qemu`/`std`/`suite`/`timing`/`host_http` 子模块 |
-| `scripts/axbuild/src/test/suite.rs` | suite/group 根目录解析：`suite_root()`、`group_dir()`、`discover_group_names()` |
-| `scripts/axbuild/src/test/qemu/discovery.rs` | QEMU 用例发现：`discover_qemu_cases()`、`nearest_build_wrapper()`、build wrapper 解析 |
-| `scripts/axbuild/src/test/qemu/grouping.rs` | build group 分组：`group_cases_by_build_config()`、`prepare_case_build_groups()` |
-| `scripts/axbuild/src/test/qemu/config.rs` | 用例 TOML 字段加载：`test_commands`、`host_http_server`、subcase 发现 |
-| `scripts/axbuild/src/test/qemu/boot.rs` | QEMU 启动控制：`apply_smp_qemu_arg()`、`smp_from_qemu_arg()`、`apply_timeout_scale()`、`qemu_timeout_summary()` |
+| `scripts/axbuild/src/execution/mod.rs` | 共用执行模块根，声明 `board`/`build`/`case`/`qemu`/`suite`/`timing`/`host_http` |
+| `scripts/axbuild/src/execution/suite.rs` | suite/group 根目录解析：`suite_root()`、`group_dir()`、`discover_group_names()` |
+| `scripts/axbuild/src/execution/qemu/discovery.rs` | QEMU 用例发现：`discover_qemu_cases()`、`nearest_build_wrapper()`、build wrapper 解析 |
+| `scripts/axbuild/src/execution/qemu/grouping.rs` | build group 分组：`group_cases_by_build_config()`、`prepare_case_build_groups()` |
+| `scripts/axbuild/src/execution/qemu/config.rs` | 用例 TOML 字段加载：`test_commands`、`host_http_server`、subcase 发现 |
+| `scripts/axbuild/src/execution/qemu/boot.rs` | QEMU 启动控制：`apply_smp_qemu_arg()`、`smp_from_qemu_arg()`、`apply_timeout_scale()`、`qemu_timeout_summary()` |
 | `scripts/axbuild/src/rootfs/qemu/` | QEMU rootfs drive 补丁与 `RootfsWritePolicy` 写入策略 |
-| `scripts/axbuild/src/test/qemu/tree.rs` | `--list` 输出的用例树渲染 |
-| `scripts/axbuild/src/test/qemu/summary.rs` | `QemuTestSummary` 结果聚合 |
-| `scripts/axbuild/src/test/case/types.rs` | 核心数据模型：`TestQemuCase`、`CasePipeline`、`CaseAssetLayout`、`GroupedCaseRunnerConfig` |
-| `scripts/axbuild/src/test/case/assets.rs` | 资产准备入口：`prepare_case_assets()`、`resolve_case_pipeline()`、rootfs 缓存 |
-| `scripts/axbuild/src/test/case/hash.rs` | rootfs 缓存键计算：`case_asset_cache_key()` |
-| `scripts/axbuild/src/test/case/layout.rs` | 每个 case 的工作目录布局：`case_asset_layout()` |
-| `scripts/axbuild/src/test/case/grouped_runner.rs` | grouped runner 脚本生成与 marker 协议 |
-| `scripts/axbuild/src/test/case/cache.rs` | rootfs 缓存镜像读写与有效性判断 |
-| `scripts/axbuild/src/test/case/shell.rs` | Shell pipeline 资产准备 |
-| `scripts/axbuild/src/test/build/` | C/Python/Rust pipeline 的交叉编译编排（CMake、toolchain、wrappers） |
-| `scripts/axbuild/src/test/host_http.rs` | `HostHttpServerGuard`：测试期 host 侧 HTTP fixture |
-| `scripts/axbuild/src/test/timing.rs` | `AXBUILD_TIMING:` 阶段计时 |
-| `scripts/axbuild/src/test/board.rs` | 板级测试的共享发现与运行 |
+| `scripts/axbuild/src/execution/qemu/tree.rs` | `--list` 输出的用例树渲染 |
+| `scripts/axbuild/src/execution/qemu/summary.rs` | `QemuTestSummary` 结果聚合 |
+| `scripts/axbuild/src/execution/case/types.rs` | 核心数据模型：`TestQemuCase`、`CasePipeline`、`CaseAssetLayout`、`GroupedCaseRunnerConfig` |
+| `scripts/axbuild/src/execution/case/assets.rs` | 资产准备入口：`prepare_case_assets()`、`resolve_case_pipeline()`、rootfs 缓存 |
+| `scripts/axbuild/src/execution/case/hash.rs` | rootfs 缓存键计算：`case_asset_cache_key()` |
+| `scripts/axbuild/src/execution/case/layout.rs` | 每个 case 的工作目录布局：`case_asset_layout()` |
+| `scripts/axbuild/src/execution/case/grouped_runner.rs` | grouped runner 脚本生成与 marker 协议 |
+| `scripts/axbuild/src/execution/case/cache.rs` | rootfs 缓存镜像读写与有效性判断 |
+| `scripts/axbuild/src/execution/case/shell.rs` | Shell pipeline 资产准备 |
+| `scripts/axbuild/src/execution/build/` | C/Python/Rust pipeline 的交叉编译编排（CMake、toolchain、wrappers） |
+| `scripts/axbuild/src/execution/host_http.rs` | `HostHttpServerGuard`：测试期 host 侧 HTTP fixture |
+| `scripts/axbuild/src/execution/timing.rs` | `AXBUILD_TIMING:` 阶段计时 |
+| `scripts/axbuild/src/execution/board.rs` | 板级测试的共享发现与运行 |
 | `scripts/axbuild/src/test/std.rs` | host 端 std 白名单测试（独立流程，见 [Std 白名单测试](./test)） |
 
 ## 3. Suite 与 group 发现
@@ -132,7 +132,7 @@ pub(crate) fn group_cases_by_build_config<T: BuildConfigRef>(
 
 ## 6. Pipeline 类型与解析
 
-> 本节描述的资产注入层（`test/case/`）由 **StarryOS 和 Axvisor** 共享。ArceOS 的 Rust/C 用例使用 feature-based runner（每次启动选一个 feature 运行），不经过 rootfs 注入和 pipeline 解析，详见 [ArceOS 测试](./arceos/test)。
+> 本节描述的资产注入层（`execution/case/`）由 **StarryOS 和 Axvisor** 共享。ArceOS 的 Rust/C 用例使用 feature-based runner（每次启动选一个 feature 运行），不经过 rootfs 注入和 pipeline 解析，详见 [ArceOS 测试](./arceos/test)。
 
 每个 QEMU 用例在资产准备阶段由 `resolve_case_pipeline(case)` 判定其 pipeline 类型。判定基于用例目录下的特征文件，**同一目录同时命中多个 pipeline 会直接报错**：
 

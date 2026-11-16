@@ -1,0 +1,42 @@
+schema_version = 1
+run_order = ["general"]
+
+[batches.general]
+name = "C/POSIX通用功能"
+aliases = ["all"]
+features = ["alloc", "paging", "fd", "pipe", "epoll", "net", "ax-driver/virtio-net"]
+
+[[batches.general.tests]]
+id = "mem"
+name = "memory allocation APIs"
+entry = "arceos_c_test_mem"
+
+[[batches.general.tests]]
+id = "pthread-basic"
+name = "pthread create join exit mutex APIs"
+entry = "arceos_c_test_pthread_basic"
+
+[[batches.general.tests]]
+id = "pthread-parallel"
+name = "pthread parallel compute APIs"
+entry = "arceos_c_test_pthread_parallel"
+
+[[batches.general.tests]]
+id = "pthread-sleep"
+name = "pthread sleep and clock APIs"
+entry = "arceos_c_test_pthread_sleep"
+
+[[batches.general.tests]]
+id = "pipe"
+name = "pipe read write close APIs"
+entry = "arceos_c_test_pipe"
+
+[[batches.general.tests]]
+id = "epoll"
+name = "epoll pipe readiness APIs"
+entry = "arceos_c_test_epoll"
+
+[[batches.general.tests]]
+id = "net-http"
+name = "socket host HTTP APIs"
+entry = "arceos_c_test_net_http"

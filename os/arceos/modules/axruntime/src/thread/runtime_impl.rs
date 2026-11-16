@@ -362,10 +362,6 @@ impl_task_runtime! {
         fn notify_scheduler_cpu(cpu: RuntimeCpuId) -> RuntimeStatus {
             #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
             {
-                #[cfg(feature = "fault-injection")]
-                if super::creation_probe::scheduler_ipi_disabled() {
-                    return RuntimeStatus::Unsupported;
-                }
                 let cpu_id = cpu.as_u32() as usize;
                 if cpu_id >= ax_hal::cpu_num() {
                     return RuntimeStatus::InvalidArgument;
@@ -609,7 +605,7 @@ impl_task_runtime! {
         }
 
         fn emergency_console_write(message: &str) {
-            ax_hal::console::write_bytes(message.as_bytes());
+            crate::emergency_console::write_fmt(format_args!("{message}"));
         }
 
         fn fatal_invariant(code: u32, argument: usize) -> ! {

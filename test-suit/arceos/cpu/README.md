@@ -1,106 +1,114 @@
-# CPU 集成用例
+# ArceOS CPU测试
 
-本组通过真实 ArceOS 分配器、页表遍历器、CPU 初始化和 QEMU 硬件模型验证 ax-cpu。CPU 包内不建立测试、伪寄存器或测试 feature；本组结果只覆盖实际运行的行为。
+本套件验证真实CPU、异常入口、页表、PMU及虚拟化接口。统一使用`cargo xtask arceos test`构建和运行；普通用例按顺序执行，成功继续，失败中止当前启动。测试内保留真实断言，不能用启动成功代替功能成功。
 
-## 1. 用例契约
+## 1. 文件职责
 
-用例直接调用功能命名空间，不依赖私有 `ax_cpu::arch`。`qemu-<arch>.toml` 指定机器、CPU、启动方式与成功标记；恐慌始终判为失败。
+```text
+cpu/
+├── Cargo.toml、src/              公共no_std测试库，每个功能一份实现
+│   └── board/orangepi-5-plus/   此板专项，目前为cpufreq
+├── normal/
+│   ├── suite.toml               QEMU/板端启动顺序、批次和成员登记
+│   ├── build.rs                 为选中批次生成顺序调用
+│   ├── main.rs                  QEMU和板端共用的唯一main
+│   ├── std/Cargo.toml           std-compat / kernel TLS构建声明
+│   ├── freestanding/Cargo.toml  core/alloc / 无kernel TLS构建声明
+│   └── configs/<arch>/<batch>/  build.toml、qemu.toml
+└── README.md
+```
 
-### 1.1 页表描述符
+宿主选择、list/plan以及启动适配位于`scripts/axbuild/src/test/normal/arceos/cpu/`；构建和QEMU执行复用其上层的`qemu.rs`、`runner.rs`。函数实现不放在宿主脚本中，也不通过`#[path]`复制或包含其他项目实现。
 
-`paging/src/main.rs` 通过 `ax_hal::paging::PagingAllocator` 分配通用页表，映射两页、查询页内偏移、解除映射并重新映射到不同物理地址。测试结束后释放中间表，避免以伪分配器替代运行期。
+两个构建声明都通过bin.path引用normal/main.rs，只装配运行时，并依赖同一测试库。入口只声明运行时，测试成员features由`suite.toml`和本次选择启用，不在入口默认编入其他测试。公共库不固定启用std-compat或uspace；需要FP的单项feature同步启用CPU/HAL/runtime支持。两个构建声明的Clippy也读取同一清单，包括板端8核批次，按真实批次和SMP逐项展开，不提供无选择的空main或隐式测试批次。
 
-内存属性检查按硬件格式判断。x86 的 `DEVICE` 和 `UNCACHED` 请求均编码为 UC；普通 RISC-V Sv 描述符不带内存属性位，因此基础镜像仅检查普通内存。AArch64 与 LoongArch 分别检查普通、设备和非缓存属性。
+## 2. 登记与启动
 
-`paging/src/ept.rs` 为同一个运行期分配器选择 `EptEntry`，检查 4 KiB 与 2 MiB 页、五种合法内存类型、保留编码和无效大页的地址保留。表不装入 EPTP，因此此用例证明描述符与 walker 对接，不证明客户机 EPT 执行或 INVEPT 生命周期。
+`normal/suite.toml`格式：
 
-AArch64 的 `check_stage2_permissions` 使用 CPU 的 `Stage2Pte` 检查独立读写执行权限、无效项和内存属性。迁入的旧实现分别出现只读项被查询为可写、非缓存项查询 panic，以及零项被查询为可执行设备页；三个失败分别记录后，以相同 ArceOS 入口验证修复。非 FWB 模式的 Normal Non-cacheable 使用 Linux `MT_S2_NORMAL_NC` 的 `0b0101` 编码；此回归仍不代表客户机二阶段失效已验证。
+- `run_order`：默认QEMU批次顺序，每个QEMU批次恰好出现一次。
+- 板端成员与启动顺序登记在对应板目录的`suite.toml`，本清单只负责CPU QEMU。
+- `[batches.<id>]`：`arch`、`image`、`mode`、构建/运行配置及额外features。
+- `[[batches.<id>.tests]]`：按顺序登记`id`、`name`、`entry`和旧名称`aliases`。
+- 同一批次内ID唯一；同一功能可被不同硬件批次复用。QEMU别名在同一架构下唯一；板端按原board/case选择，不需要功能专属Cargo包装包。
+- `id`对应库的单项feature，宿主自动启用`cpu-tests/<id>`；批次`features`补充hv、SSTC等能力，不另外维护成员清单。
 
-启动描述符通过 someboot 已有的 `mem::mmu::ArchPte` 接口检查。AArch64 的只读和可写请求必须原样查询，执行权限独立检查；LoongArch 的有效项仍必须遵守禁止读位。两个回归分别在旧实现上确定性失败：AArch64 将 `AP_RO=1` 解读为可写，LoongArch 将有效项一律解读为可读。修正后保持同一断言，不以启动成功代替属性检查。
+普通测试入口必须是可调用的`fn() -> ()`，在函数内使用assert/expect判定。生成器强制检查返回类型，不能返回Result后被忽略。名称不强制叫run；`entry`必须指向真实库函数。
 
-x86 的 `paging/src/tlb.rs` 创建两个私有内核别名，预热真实 TLB，使用非拥有页表视图更换第二页，再显式失效并读取该地址。页框在恢复 PTE、完成失效和同步解除映射之后才释放；IPI 是此用例的必要运行期能力。非对齐范围从第一页最后一个字节开始、长度为 2，原实现错误地保留第二页的旧值 `0x31`，修正后读取替换页的 `0x72`。
+每项开始/返回时输出`CPU_TEST_BEGIN`、`CPU_TEST_PASS`；只有全部正常返回后才输出`CPU_BATCH_OK batch=<批次> selection=<all或成员>`。普通QEMU配置只有一个被动检查步骤，板端保留原功能/热控判定并在最后等待同一个runner的batch完成标记，panic判失败，卡死超时判失败。每项在返回前恢复其借用的IRQ、异常钩子、FP、页表或虚拟化状态；成员内部不得process::exit，不捕获panic后继续执行。
 
-同一程序另检查 global 翻译的全量失效。TCG 会过度失效，旧实现也能通过这一断言，因此它不能提供这个缺陷的红绿证据。`paging-kvm` 在真实硬件上确认旧 CR3 重载路径仍读到 `0x31`；修正后读到 `0x72`。`paging-kvm-pge` 隐藏 INVPCID，验证翻转并恢复 CR4.PGE 的路径。两个 KVM 配置使用同一 Rust 程序，不使用 CPU 测试 feature，要求宿主提供可访问的 `/dev/kvm`。
+`mode = "expected-fault"`只允许一个终止式功能，独立启动；成功规则只接受指定异常，异常未发生必须失败。不得把预期panic与普通批次混用同一个成功/失败规则。
 
-### 1.2 PMU 生命周期
+当前默认启动数：
 
-`pmu/src/main.rs` 在 IRQ 关闭期间独占本核 PMU。它校验计数器数量和非法索引，向停用的计数器写入哨兵值，重复启用全局计数并核对值没有被清除，再验证 cycle counter 预装载、溢出状态、清除和停用。
+| 架构 | 启动 | 保留的环境 |
+| --- | ---: | --- |
+| aarch64 | 3 | A53 EL1普通、max PMU、A53 EL2 |
+| riscv64 | 5 | std普通、无TLS nofault、H关闭、SSTC支持、SSTC拒绝 |
+| x86_64 | 4 | SVM、VMX/KVM、FXSAVE、KVM PGE回退 |
+| loongarch64 | 3 | std普通、无TLS nofault、独立boot-trap |
 
-旧实现的确定性失败是第二次全局启用写入 PMCR.P，导致 `0x12345678` 被读成零。修复去掉全局启用的复位副作用后，同一断言通过；后续迁移为 `Pmu` 会话仍保留此断言。x86 页表用例早期出现的 DEVICE/UNCACHED 预期错误属于测试模型修正，不计作 CPU 缺陷的红绿证据。
+合计15次；OrangePi另计2次（kernel含PMU/IPI/cpufreq，pmu-user独立）。成员与配置以list/plan为准。ARM stage2入口已经包含完整基础guest，不应再额外调用一次。RISC-V/Loong的nofault批次只验证kernel_access，不代表进入用户态。
 
-### 1.3 虚拟化能力探测
+## 3. 使用
 
-`hypervisor-probe/src/main.rs` 在单 hart QEMU 的 `rv64,h=true` 和 `rv64,h=false` 环境中调用实际 H 扩展探测。前者必须报告支持，后者必须从非法指令异常返回并报告不支持；两者分别在 IRQ 开启、关闭时检查原中断状态、STVEC、SSCRATCH 与 TLS。重复调用检查临时向量没有残留。此用例防止探测异常破坏宿主入口绑定，不能以普通启动或固件 ISA 字符串检查替代。
+```bash
+cargo xtask arceos test qemu --arch aarch64 --test-group cpu --list
+cargo xtask arceos test qemu --arch aarch64 --test-group cpu --plan
+cargo xtask arceos test qemu --arch aarch64 --test-group cpu
 
-### 1.4 客户机机器入口
+# 整个批次
+cargo xtask arceos test qemu --arch x86_64 --test-group cpu --test-case x86-svm
 
-`guest-entry` 使用单 hart、H 扩展开启的 QEMU，进入固定的可信 VS 代码，两次通过 `ecall` 返回。用例检查 GPR 结果、宿主 TLS 与 scratch、宿主 FP 不受客户机污染、客户机 FP 跨重入保存，以及退出快照不受随后 live CSR 覆盖影响。同一用例通过 CPU `PerCpu` 启用并探测 G-stage 几何，检查重复启用拒绝，以及关闭后重复关闭拒绝。该代码不访问客户机内存，使用 Bare 地址翻译，不能证明二阶段权限隔离或完整绑定生命周期。
+# 兼容旧单项名，或明确指定批次/成员
+cargo xtask arceos test qemu --arch x86_64 --test-group cpu --test-case paging-kvm
+cargo xtask arceos test qemu --arch x86_64 --test-group cpu --test-case x86-vmx/paging
+```
 
-迁入旧入口的 FP 回归确定性读到客户机值 `0x123`，而宿主原值为 `0x789`。复用 CPU FP 保存恢复片段后同一用例通过。退出快照回归在模拟 live CSR 被覆盖后读到零，入口保存快照后保持 VS ecall 原因 10；最终实现将 FP 和快照操作都放入机器汇编窗口，宿主状态完整恢复后才返回 Rust。
+`--plan`不构建、不启动，输出选择、成员、请求features、入口包、构建配置、环境和启动次数。默认写stdout；需要文件时保存到已忽略的`target/axbuild/cpu/`，不向源码目录写JSON。单项选择和整批选择具有不同构建环境及完成标记，不能混用产物。
 
-### 1.5 x86 异常现场与返回
+x86完整组要求Intel KVM、可访问的`/dev/kvm`及嵌套VMX；SVM/FXSAVE使用TCG。Loong guest使用CI固定的LVZ QEMU，不能用普通Loong QEMU替代。工具链/QEMU可按CI更新，不修改模拟器语义或放宽测试。
 
-`trap-entry/src/main.rs` 在单 CPU、硬件 IRQ 关闭期间临时安装 trap 回调，执行实际 `int3` 和软件 IRQ 向量 `int 0xf0`。汇编在触发前保留 PC、SP、FP，回调读取按值现场；断点回调还通过 `GeneralRegisters::set_r10d` 修改保存的 GPR，返回后验证硬件恢复了修改值及 32 位写入的零扩展语义。恢复原回调和 IRQ 状态后才执行断言。
+板端配置仍在`../board-orangepi-5-plus/`：
 
-原实现把内核 trap 当作不含 RSP/SS 的短帧，报告的 SP 比实际值小 16 字节；同一用例确定性失败。64 位模式始终保存 SS:RSP，修正后两个入口均通过。该用例覆盖 CPU 入口与现场复制，不替代中断控制器投递、用户态 IRQ 或上层嵌套作用域的验证。
+```bash
+cargo xtask arceos test board --board orangepi-5-plus --test-case kernel
+cargo xtask arceos test board --board orangepi-5-plus --test-case pmu-user
+cargo xtask arceos test board --board orangepi-5-plus --test-case ipi
+```
 
-### 1.6 无故障内核拷贝
+PMU与cpufreq由Rust标准库kernel批次复用CPU库，IPI复用原Rust实现及runner；pmu-user继续通过normal/freestanding和原main。板目录suite.toml统一登记两批次与成员，所需features取整批并集，AX_BOARD_TEST_SUITE/BATCH/CASES参与构建身份；单项选择不额外执行其他成员。旧包装包及boot独立测试已删除，Hello应用保留。完整维护方法见[OrangePi README](../board-orangepi-5-plus/README.md)。
 
-`user-entry/src/kernel_access.rs` 调用 `ax_cpu::kernel_access::copy_from_kernel_nofault`，验证两个已映射区间整段拷贝成功且内容一致，以及任一侧不可访问时返回 `KernelAccessError::Fault`：源不可访问时不复制任何字节，目的地保持原内容。
+人工指定服务时显式增加`--server <host> --port <port>`，不修改共享默认值。运行前确认可用性，结束确认租约释放。QEMU通过不替代板卡验收。
 
-不可访问地址取位 63:57 不是位 56 符号扩展的地址：任何翻译宽度都不覆盖它，各架构据此产生各自的故障类别（AArch64 地址长度故障、LoongArch 访存地址错误、RISC-V 页错误），与当前页表映射了什么无关。
+## 4. 添加测试
 
-AArch64 另做一次翻译故障探测：在真实 EL1 下装入空用户页表，使整个用户地址段无映射，探查期间由 `user-entry/src/empty_user_table.rs` 持有该表并在释放之前恢复 TTBR0，`user-entry/src/fixup.rs` 的既有缺页恢复断言改用同一守卫。
+1. 先确认现有测试未以同等成本覆盖目标错误，确定实际断言和运行条件。
+2. 在`src/`增加普通模块，注册到`lib.rs`；在库Cargo.toml增加对应单项feature和必要依赖。架构专属实现用cfg限定，不提供空实现或恒成功返回。
+3. 在匹配批次末尾或合适位置登记`id/name/entry`；宿主会启用该单项feature，无须在main中补第二份调用表。
+4. 优先复用同一环境的批次。只有硬件能力、特权级、运行时或退出契约确实不兼容时，才新增批次与配置，并加入run_order。
+5. 验证list/plan中的成员、features和启动数，再运行单项及所在完整批次。修复缺陷时必须证明同一测试在错误实现上失败、恢复后通过。
 
-### 1.7 x86 控制区生命周期
+新增或调整测试必须先遵守[启动复用约束](../../../.agents/skills/test-quality/SKILL.md#36-优先复用启动)：加入兼容批次、统一开启所需feature并集；无法合批须说明运行条件或判定差异。板端复用功能在对应board目录suite.toml登记，不新增功能专属main或包装包。CI按真实成员依赖与架构映射源码；新增配置或功能必须核对路由及实际启动数。
 
-`virtualization-lifecycle` 的默认 x86 配置使用 SVM TCG，`virtualization-lifecycle-vmx` 使用嵌套 VMX/KVM。内存由 ArceOS 实际分配器提供 `ControlMemory` 租约，验证错位拒绝、重复启停、活动状态不允许回收，以及关闭后恢复原始 CR0/CR4/EFER。SVM 用例保留另一块实际 HSAVE 页，旧关闭操作错误地清零原 HSAVE 指针，修复后恢复原地址。
+## 5. 修改、移除与合批
 
-VMX 配置验证 `VmxControls` 的绑定、类型化读写、解绑、重绑定及完整控制区释放；错位 I/O 位图导致构造失败时，四份实际内存租约均回收。SVM 配置通过 `Vmcb::save_current_state` 执行实际 VMSAVE，再比较硬件写入的 STAR/LSTAR/CSTAR/SFMASK/KERNEL_GS_BASE 与宿主寄存器值。VMX 还以无效 VMCS 触发真实 VMfailValid，检查失败路径恢复宿主栈和 syscall MSR bank。正常客户机入口由下面的独立用例验证。
+- 修改判定：保留明确故障信号；不得扩大成功正则、把失败改成skip或增加无限重试。
+- 修改配置：核对CPU型号、SMP、EL、H/SSTC、KVM/LVZ及TLS模式；单纯改名不能作为删环境的依据。
+- 移除成员：先证明其他测试承接其独特信号，再移除清单登记；检查别名、feature、模块、依赖和板端消费者。最后一个成员移除后，连同批次及run_order项一起移除。
+- 合并批次：必须实跑全部成员，确认状态恢复、顺序、失败传播和超时。只从函数列表删一项，不等于减少一次启动。
+- 板端case和QEMU旧case别名有实际消费者，调整时同步迁移其配置、CI和文档；QEMU与板端使用同一入口源码但分别登记运行环境。
 
-x86 `guest-entry` 在 SVM TCG 中使用实际分配的 VMCB、I/O 位图与 MSR 位图执行可信代码。除 VMRUN/VMMCALL 和宿主 FS/GS 恢复外，还执行实际 IN 与 RDMSR，验证位图拦截，检查非法 VMCB 退出及随后重新初始化。`guest-entry-vmx` 使用嵌套 VMX/KVM 和四级 EPT 映射执行 VMLAUNCH/VMCALL，并在 VMCLEAR、重绑定后重新进入。
+正式修改后运行cargo fmt、受影响`cargo xtask clippy --package <包>`、定向QEMU/板卡及CI路由检查。公共执行器还需宿主回归，尤其确保中间步骤未完成不能被最后标记覆盖。不要为固定生产名称和数量增加镜像单元测试；运行器测试使用合成配置，清单迁移通过前后执行计划和运行证据核对。
 
-VMX 的 CR2 回归让客户机写入 `0x12345000`，旧入口返回后宿主错误地保留这一值；修复后返回原始宿主 CR2，并将客户机值留在 CPU 上下文。客户机还实际写入 LSTAR；入口在汇编窗口内保存、恢复 STAR/LSTAR/CSTAR/FMASK/KERNEL_GS_BASE，宿主五个 MSR 保持原值，客户机 LSTAR 跨重入保持。
 
-两个客户机入口都检查实际 x87 与 YMM 状态隔离：宿主装入 π 和全一 YMM0，客户机装入 1.0 并清零 YMM0；退出后宿主值恢复，重入后客户机将原值写回映射页。AVX 在保护模式下执行，不能在实模式中用 #UD 结果证明保存恢复。`guest-entry-fxsave` 隐藏 XSAVE，验证 FXSAVE/FXRSTOR 的 x87 路径。旧后端仅切换 XCR0/XSS，确定性地将客户机 1.0 留在宿主；CPU `GuestXstate` 迁移后相同宿主断言通过。
+板卡专项实现放在`src/board/<实际板名>/`，当前调频实现为`src/board/orangepi-5-plus/cpufreq.rs`；Rust模块路径为`cpu_tests::board::orangepi_5_plus::cpufreq::run`。目录名中的连字符仅在本crate内用普通模块路径映射为合法Rust标识符，不包含其他项目生产源码。PMU和user-entry同时被QEMU及实板使用，继续保留在共享模块。移动专项路径时必须同步清单与CI路由，确保该板源码不触发无关QEMU批次。
 
-扩展状态内存由 ArceOS 分配，CPU 按 CPUID.0DH 计算标准或紧凑格式所需空间；不沿用任务上下文的固定 1024 字节上限。VMX/SVM 共用扩展状态汇编，在返回 Rust 前恢复宿主。每次 AxVM 绑定核对目标 CPU 的保存机制和组件布局，CPUID 模拟直接从客户机配置计算尺寸，不再临时安装客户机 XCR0/XSS。
+## LoongArch非对齐恢复入口
 
-## 2. 执行记录
+非对齐恢复测试唯一实现位于`src/unaligned_fixup.rs`，在`normal/suite.toml`的loong-standard批次登记，默认与该批次其他成员共用一次启动。旧独立loongarch目录及测试组已移除，统一使用：
 
-2026-09-10 后续基线更新至 `5163723577f6fc2c4d0ef255f0cf8d62075614ba`。x86 的 VMX/SVM 控制区、共享 GPR、CR2、syscall MSR 与扩展状态迁移先后通过定向静态矩阵和上述真实客户机用例。YMM 用例分别在 SVM TCG 与 VMX/KVM 通过，另覆盖无 XSAVE 配置；这些结果仍不能替代完整操作系统客户机、跨核迁移或全部 supervisor xstate 的验收。
-
-2026-09-10 早期基线更新至 `3e751a68b84646b352185b18b9840b288c7cf98b`，保留新 dev 的 `uspace` 优先 `tls` 模式及发布版本。CPU、CPU-local、HAL、runtime、someboot 的 93 项静态检查通过，实际 feature 切换脚本通过，RISC-V 与 AArch64 CPU 组通过。随后 RISC-V 入口和每核状态迁移通过 42 项静态检查、Axvisor 构建与上述 `guest-entry` 红绿验证；这些记录对应阶段变化，完整四架构虚拟化验收仍未完成。
-
-2026-09-09 在重构工作树执行这些用例，实施基线为 `d7756853790d85a8ffe42ffa039fd232616b6cd3`。记录对应当时的阶段代码，不代表全部重构验收已完成。
-
-同日同步至 `504808b73b1d6e0643ee46e57f7cd0370c04783a` 后重新运行四架构 CPU 用例，并对新增 AArch64 二阶段回归单独完成红绿验证。运行期寄存器迁移还通过四架构 `task-tls`、`task-scheduler-irq-window` 与 `task-ipi`。旧基线的 IRQ 窗口用例在工作线程就绪阶段失败；新版 dev 已通过 #2332 修正其准备流程，本次只迁移 CPU 调用路径。
-
-RISC-V 共享 GPR 镜像后重新通过 `task-tls`、`task-irq` 和 Axvisor 构建；客户机入口的寄存器访存偏移保持一致，反汇编差异仅为链接位置改变后的 GOT 寻址。H 探测迁移后，两种 `hypervisor-probe` 配置均通过，并再次通过 Axvisor 构建。临时反转关闭 H 时的预期值，确认真实 panic 使最外层 `xtask` 失败，随后恢复同一用例并通过；这是测试失败传播验证，不是已有产品缺陷的红绿回归。
-
-### 2.1 QEMU 结果
-
-通过 `cargo xtask arceos test qemu --arch <arch> --test-group cpu` 执行各目标，使用每个用例自己的启动配置。
-
-| 目标 | 启动 | 已通过用例 |
-| --- | --- | --- |
-| AArch64 | direct；PMU 使用 `cortex-a53,pmu=on`、GICv2、SMP 4 | paging、pmu |
-| x86_64 | UEFI、q35、SMP 4 | paging |
-| x86_64 KVM | UEFI、q35、host CPU、SMP 4；另覆盖 `-invpcid` | paging-kvm、paging-kvm-pge |
-| RISC-V | direct、SMP 4 | paging |
-| RISC-V | direct、单 hart、H 开启及关闭 | hypervisor-probe、hypervisor-probe-no-h |
-| LoongArch | UEFI、SMP 4 | paging |
-
-x86 运行使用迁移后的 `TrapStorageProvider`，GDT、TSS 和双重故障栈由 ax-hal 每核区域持有。最终镜像保留唯一的 `__CPU_LOCAL_TSS_OFFSET`，指向同一 TSS。反汇编中，`commit_current_context` 返回后仅赋值两个参数寄存器，随后进入 `context_switch_raw`。
-
-四架构的启动描述符共享 CPU 编码后，以上五个用例再次通过。LoongArch 独立 refill 迁移后重新通过 UEFI SMP 4 `paging`，链接符号表中仅有一个 64 字节的 `__ax_cpu_tlb_refill`。AArch64 比较器迁移后，另通过 ArceOS `rust` 分组的 `task-kernel-timer` 和 `task-sleep`，覆盖回调触发、重复编程、取消及休眠唤醒；这些结果不代表 EL2 比较器或客户机进出已验证。
-
-### 2.2 证据限制
-
-描述符查询不能证明硬件权限和执行限制；新增 x86 用例仅证明所列的本地 TLB 行为，尚未验证远端 CPU 保有旧翻译时的并发 shootdown。AArch64 的 `guest-entry-stage2` 已验证远端 CPU 替换映射后的真实客体读取。`pmu` 已验证四核 QEMU 和八核 OrangePi 的计数、真实溢出 IRQ、同步撤销及每核独立状态；用户入口用例单独记录。TCG 事件数值不能证明实体 CPU 性能事件精度。
-
-后续仍需 ArceOS 覆盖实际页表切换、任务与客户机 FP 状态、用户进入返回、PMU IRQ 与 SMP，以及虚拟化控制区失败和解绑生命周期。x86 已取得上述 VMX/KVM 和 SVM TCG 控制区证据；完整 x86 操作系统客户机、迁核、AMX/CET 等扩展状态和 T-Head 扩展仍需独立验证。OrangePi 5 Plus 的本核 PMU 与 IRQ 已取得实机记录。LoongArch LVZ 与 RISC-V SSTC 的客户机入口证据以各配置运行记录为准，不能由普通 CPU 启动结果代替。
-
-### 2.3 当前接口验证
-
-最新阶段记录集中在 [ax-cpu 验证记录](../../../../docs/design/ax-cpu-validation.md)，包括精确 dev 基线、OrangePi 会话、双核客体 TLB 红绿证据，以及哪些结果尚未覆盖最终提交。PMU 用户入口通过 `UserExecutionContext` 和持有真实页表的 `TaskAddressSpace`，验证授权读取、权限撤销和真实用户 IRQ 的 PC/SP/FP，不通过原始入口跳过运行期校验。
+```bash
+cargo xtask arceos test qemu --arch loongarch64 --test-group cpu
+cargo xtask arceos test qemu --arch loongarch64 --test-group cpu --test-case unaligned-fixup
+```

@@ -213,7 +213,7 @@ impl AppContext {
         let output = self.build(cargo.clone(), build_config_path).await?;
         self.prepare_elf_artifact(output.elf_path().to_path_buf(), qemu.to_bin)
             .await?;
-        crate::test::qemu::append_backtrace_map(
+        crate::execution::qemu::append_backtrace_map(
             &mut qemu,
             &output.elf_path().with_extension("axbt"),
             &cargo.target,
@@ -308,13 +308,15 @@ impl AppContext {
             "qemu run package={} target={}",
             cargo.package, cargo.target
         ));
+        let host_completion_step = qemu.shell_check_steps.len().checked_sub(1);
         let result = self
             .run_qemu_captured(cargo, qemu, Some(success_output.clone()))
             .await;
         let coverage_result = capture.finish();
-        let qemu_result = crate::support::qemu_success::verify_qemu_success_contract(
+        let qemu_result = crate::support::qemu_success::verify_qemu_host_completion_contract(
             result,
             Some(&success_output),
+            coverage_result.as_ref().ok().and(host_completion_step),
         );
         let result = crate::support::qemu_success::combine_qemu_and_coverage_results(
             qemu_result,
@@ -384,7 +386,7 @@ impl AppContext {
         ));
         let mut uboot = uboot.take().unwrap_or_default();
         let output = self.build(cargo.clone(), build_config_path).await?;
-        crate::test::qemu::append_backtrace_map_to_initramfs(
+        crate::execution::qemu::append_backtrace_map_to_initramfs(
             &mut uboot.boot.initramfs,
             &output.elf_path().with_extension("axbt"),
         )?;
@@ -414,7 +416,7 @@ impl AppContext {
             display_optional_path(build_config_path.as_deref())
         ));
         let output = self.build(cargo.clone(), build_config_path).await?;
-        crate::test::qemu::append_backtrace_map_to_initramfs(
+        crate::execution::qemu::append_backtrace_map_to_initramfs(
             &mut board_config.boot.initramfs,
             &output.elf_path().with_extension("axbt"),
         )?;

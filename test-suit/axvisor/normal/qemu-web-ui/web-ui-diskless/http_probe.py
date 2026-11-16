@@ -4,7 +4,7 @@
 Case asset for the `qemu-web-ui/web-ui-diskless` test case
 (`test-suit/axvisor/normal/qemu-web-ui/web-ui-diskless/`). It owns the test
 content and can evolve independently of the axbuild runner; the generic probe
-runner (`scripts/axbuild/src/axvisor/test/http_probe.rs`) executes it after the
+runner (`scripts/axbuild/src/test/normal/axvisor/http_probe.rs`) executes it after the
 QEMU hostfwd port is reachable and treats the exit code as the verdict.
 
 This case runs the same `web-ui` feature build as the NVMe-root case but with

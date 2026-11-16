@@ -285,6 +285,23 @@ pub(crate) fn toolchain_rustflags_for_mmu(
 /// target-specific so linker, relocation, and platform flags continue to merge
 /// with command-specific test, coverage, or profiling arguments.
 pub(crate) fn append_cargo_rustflags(cargo: &mut Cargo, flags: &[&str]) {
+    append_cargo_rustflags_from(cargo, flags, None);
+}
+
+pub(crate) fn append_cargo_rustflags_with_files(
+    cargo: &mut Cargo,
+    flags: &[&str],
+    files: &BuildFiles,
+) {
+    let source = cargo
+        .extra_config
+        .as_deref()
+        .and_then(|path| files.contents(Path::new(path)))
+        .map(str::to_owned);
+    append_cargo_rustflags_from(cargo, flags, source.as_deref());
+}
+
+fn append_cargo_rustflags_from(cargo: &mut Cargo, flags: &[&str], source: Option<&str>) {
     const ENCODED_KEY: &str = "CARGO_ENCODED_RUSTFLAGS";
     const PLAIN_KEY: &str = "RUSTFLAGS";
     const BUILD_KEY: &str = "CARGO_BUILD_RUSTFLAGS";
@@ -333,7 +350,7 @@ pub(crate) fn append_cargo_rustflags(cargo: &mut Cargo, flags: &[&str]) {
         return;
     }
 
-    if let Some(active) = extra_config_rustflags(cargo, target_scope) {
+    if let Some(active) = extra_config_rustflags(cargo, target_scope, source) {
         append_config_rustflags_overlay(cargo, target_scope, Some(active), flags);
         return;
     }
@@ -347,7 +364,7 @@ pub(crate) fn append_cargo_rustflags(cargo: &mut Cargo, flags: &[&str]) {
         return;
     }
 
-    if let Some(active) = extra_config_rustflags(cargo, build_scope) {
+    if let Some(active) = extra_config_rustflags(cargo, build_scope, source) {
         append_config_rustflags_overlay(cargo, build_scope, Some(active), flags);
         return;
     }
@@ -520,12 +537,18 @@ impl RustflagsValue {
     }
 }
 
-fn extra_config_rustflags(cargo: &Cargo, scope: RustflagsScope<'_>) -> Option<RustflagsValue> {
+fn extra_config_rustflags(
+    cargo: &Cargo,
+    scope: RustflagsScope<'_>,
+    source: Option<&str>,
+) -> Option<RustflagsValue> {
     let config = cargo.extra_config.as_deref()?;
     if config.starts_with("http://") || config.starts_with("https://") {
         return None;
     }
-    let source = fs::read_to_string(config).ok()?;
+    let source = source
+        .map(str::to_owned)
+        .or_else(|| fs::read_to_string(config).ok())?;
     let table = toml::from_str::<toml::Table>(&source).ok()?;
     RustflagsValue::parse(scope.find(&table)?)
 }
@@ -695,7 +718,7 @@ pub(crate) fn into_prepared_base_cargo_config_with_metadata(
 }
 
 pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
-    mut config: CommonConfig,
+    config: CommonConfig,
     package: &str,
     target: &str,
     metadata: &Metadata,
@@ -703,6 +726,45 @@ pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
     include_default_features: bool,
     runtime: RuntimeValues,
 ) -> anyhow::Result<Cargo> {
+    let mut files = BuildFiles::default();
+    let cargo = resolve_std_cargo_config(
+        config,
+        StdBuildInput {
+            package,
+            target,
+            metadata,
+            axbuild_dir,
+            include_default_features,
+            runtime,
+        },
+        &mut files,
+    )?;
+    files.materialize()?;
+    Ok(cargo)
+}
+
+pub(crate) struct StdBuildInput<'a> {
+    pub(crate) package: &'a str,
+    pub(crate) target: &'a str,
+    pub(crate) metadata: &'a Metadata,
+    pub(crate) axbuild_dir: &'a Path,
+    pub(crate) include_default_features: bool,
+    pub(crate) runtime: RuntimeValues,
+}
+
+pub(crate) fn resolve_std_cargo_config(
+    mut config: CommonConfig,
+    input: StdBuildInput<'_>,
+    files: &mut BuildFiles,
+) -> anyhow::Result<Cargo> {
+    let StdBuildInput {
+        package,
+        target,
+        metadata,
+        axbuild_dir,
+        include_default_features,
+        runtime,
+    } = input;
     normalize_mmu_feature_aliases(&mut config, package, metadata)?;
     let mmu_enabled = package_mmu_enabled(
         package,
@@ -712,20 +774,13 @@ pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
     )?;
     config.validate()?;
     validate_features(&config)?;
-    resolve_std_features(&mut config);
-    // `max_cpu_num` is an explicit build setting. Propagate SMP only when
-    // the caller requested more than one CPU; package metadata never adds
-    // features implicitly.
-    if config
-        .max_cpu_num
-        .is_some_and(|max_cpu_num| max_cpu_num > 1)
-    {
-        config.features.push("smp".to_string());
-        resolve_std_features(&mut config);
-    }
+    let app_features = package_feature_names(package, metadata)?;
+    let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
+    config.features = resolved_std_build_features(&config, &app_features, &axstd_features)?;
     let std_target = std_build_target_for(target)?;
-    let fake_lib_dir = std_fake_lib_dir(axbuild_dir, &std_target.target_name)?;
-    let wrapper = std_linker_wrapper_path(axbuild_dir, &std_target.target_name, &fake_lib_dir)?;
+    let fake_lib_dir = std_fake_lib_dir(axbuild_dir, &std_target.target_name, files);
+    let wrapper =
+        std_linker_wrapper_path(axbuild_dir, &std_target.target_name, &fake_lib_dir, files)?;
     let extra_rustflags = std::mem::take(&mut config.rustflags);
     let mut cargo = into_base_cargo_config(
         config,
@@ -740,31 +795,36 @@ pub(crate) fn into_prepared_base_cargo_config_with_metadata_and_defaults(
     cargo
         .env
         .insert("AX_TARGET".to_string(), target.to_string());
-    let app_features = package_feature_names(package, metadata)?;
-    let axstd_features = package_feature_names(AXSTD_STD_PACKAGE, metadata)?;
-    pass_std_build_nested_features(&mut cargo.features, &app_features, &axstd_features);
     cargo.pre_build_cmds.push(
         std_fake_lib_prebuild_script_path(
             axbuild_dir,
             &std_target.target_name,
             &fake_lib_dir,
             &cargo.env,
-        )?
+            files,
+        )
         .display()
         .to_string(),
     );
     let rustflags = toolchain_rustflags_for_mmu(&cargo.env, mmu_enabled);
     cargo.extra_config = Some(
-        std_cargo_config_path(axbuild_dir, &std_target.target_name, &wrapper, &rustflags)?
-            .display()
-            .to_string(),
+        std_cargo_config_path(
+            axbuild_dir,
+            &std_target.target_name,
+            &wrapper,
+            &rustflags,
+            files,
+        )?
+        .display()
+        .to_string(),
     );
-    append_cargo_rustflags(
+    append_cargo_rustflags_with_files(
         &mut cargo,
         &extra_rustflags
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
+        files,
     );
     Ok(cargo)
 }
@@ -784,26 +844,6 @@ pub(crate) fn into_prepared_std_cargo_config_with_metadata(
         target,
         metadata,
         axbuild_dir,
-        runtime,
-    )
-}
-
-pub(crate) fn into_prepared_std_cargo_config_with_metadata_and_defaults(
-    config: CommonConfig,
-    package: &str,
-    target: &str,
-    metadata: &Metadata,
-    axbuild_dir: &Path,
-    include_default_features: bool,
-    runtime: RuntimeValues,
-) -> anyhow::Result<Cargo> {
-    into_prepared_base_cargo_config_with_metadata_and_defaults(
-        config,
-        package,
-        target,
-        metadata,
-        axbuild_dir,
-        include_default_features,
         runtime,
     )
 }
@@ -906,16 +946,6 @@ fn enable_package_smp_feature(
         config.features.dedup();
     }
     Ok(())
-}
-
-pub(super) fn resolve_std_features(config: &mut CommonConfig) {
-    config.features = config
-        .features
-        .iter()
-        .map(|feature| normalize_std_feature(feature))
-        .collect();
-    config.features.sort();
-    config.features.dedup();
 }
 
 fn normalize_mmu_feature_aliases(
@@ -1029,4 +1059,19 @@ fn rustflags_cargo_args(target: &str, extra_rustflags: &[String]) -> Vec<String>
 }
 fn bare_target_requires_bin(target: &str) -> bool {
     target.starts_with("aarch64-") || target.starts_with("riscv64")
+}
+
+/// Resolves features identically for suite planning and real std builds.
+pub(crate) fn resolved_std_build_features(
+    config: &CommonConfig,
+    app_features: &[String],
+    axstd_features: &[String],
+) -> anyhow::Result<Vec<String>> {
+    config.validate()?;
+    let mut features = config.features.clone();
+    if config.max_cpu_num.is_some_and(|cpus| cpus > 1) {
+        features.push("smp".to_owned());
+    }
+    pass_std_build_nested_features(&mut features, app_features, axstd_features);
+    Ok(features)
 }

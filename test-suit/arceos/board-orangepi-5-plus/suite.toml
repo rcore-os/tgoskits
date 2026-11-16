@@ -1,0 +1,49 @@
+schema_version = 1
+board = "orangepi-5-plus"
+run_order = ["kernel", "pmu-user"]
+
+[batches.kernel]
+arch = "aarch64"
+image = "std"
+executor = "rust"
+package = "arceos-test-suit"
+build_config = "kernel/build-aarch64-unknown-none-softfloat.toml"
+board_config = "kernel/board-orangepi-5-plus.toml"
+features = []
+
+[[batches.kernel.tests]]
+id = "pmu"
+name = "八核PMU生命周期与中断"
+entry = "cpu_tests::pmu::run"
+returns = "unit"
+features = ["board-cpu-tests", "cpu-tests/pmu"]
+
+[[batches.kernel.tests]]
+id = "ipi"
+name = "跨核投递、应答与唤醒"
+entry = "crate::task::ipi::run"
+returns = "result"
+features = ["task-ipi"]
+
+[[batches.kernel.tests]]
+id = "cpufreq"
+name = "八核CPU调频及热控"
+entry = "cpu_tests::board::orangepi_5_plus::cpufreq::run"
+returns = "unit"
+features = ["board-cpu-tests", "cpu-tests/cpufreq"]
+
+[batches.pmu-user]
+arch = "aarch64"
+image = "freestanding"
+executor = "cpu"
+package = "arceos-cpu-normal-freestanding"
+build_config = "pmu-user/build-aarch64-unknown-none-softfloat.toml"
+board_config = "pmu-user/board-orangepi-5-plus.toml"
+features = []
+
+[[batches.pmu-user.tests]]
+id = "user-entry"
+name = "用户态PMU权限与现场恢复"
+entry = "cpu_tests::user_entry::run"
+returns = "unit"
+features = ["cpu-tests/user-entry"]

@@ -174,4 +174,4 @@ someboot 不读取 scheduler online 来完成启动握手，OS 也不把 `SHOULD
 - owner 单元测试验证第二次 start 立即失败、错误 CPU 不能释放 owner、只有显式匹配 release 后下一个 CPU 才能获取 transport。
 - `cargo test -p someboot` 覆盖状态、layout 和现有启动契约。
 - `cargo xtask clippy --package someboot --package axplat-dyn` 覆盖修改 crate 的 feature 组合。
-- 四架构 ArceOS `task-smp-online` QEMU 用例验证实际 secondary handoff，以及 someboot alive 与 runtime entered 两个状态源都能推进。
+- 四架构 ArceOS `task-ipi` QEMU 用例承接原 `task-smp-online`，逐CPU执行普通任务并核对每个远端硬调用应答，验证实际secondary handoff后运行时可调度及IPI就绪；someboot alive/release状态转换仍由其状态机测试负责。

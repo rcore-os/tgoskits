@@ -37,7 +37,7 @@ struct VmKernelRootfsProbe {
     uefi_firmware_path: Option<String>,
 }
 
-pub(super) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
+pub(crate) async fn qemu(axvisor: &mut Axvisor, args: super::ArgsQemu) -> anyhow::Result<()> {
     let mut request = axvisor.prepare_request(
         (&args.build).into(),
         args.qemu_config,
@@ -118,7 +118,7 @@ fn qemu_to_bin_requested(qemu: &QemuConfig) -> anyhow::Result<bool> {
     Ok(qemu.to_bin)
 }
 
-pub(super) async fn load_patched_qemu_config(
+pub(crate) async fn load_patched_qemu_config(
     axvisor: &mut Axvisor,
     request: &ResolvedAxvisorRequest,
     cargo: &Cargo,
@@ -147,7 +147,7 @@ pub(super) async fn load_patched_qemu_config(
     Ok(qemu)
 }
 
-pub(super) fn diskless_explicit_qemu(
+pub(crate) fn diskless_explicit_qemu(
     qemu: &QemuConfig,
     explicit_config: bool,
     explicit_rootfs: bool,
@@ -208,7 +208,7 @@ struct GuestImageReference {
     required_path: PathBuf,
 }
 
-pub(super) async fn ensure_guest_image_bundles(
+pub(crate) async fn ensure_guest_image_bundles(
     request: &ResolvedAxvisorRequest,
     workspace_root: &Path,
     target_dir: &Path,

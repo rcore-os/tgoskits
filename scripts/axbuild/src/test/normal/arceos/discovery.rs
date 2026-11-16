@@ -1,0 +1,294 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::bail;
+
+use super::{
+    ARCEOS_AXTEST_GROUP, ARCEOS_C_TEST_GROUP, ARCEOS_RUST_TEST_BUILD_GROUP, ARCEOS_RUST_TEST_GROUP,
+    ARCEOS_RUST_TEST_PACKAGE, ARCEOS_TEST_SUITE_OS,
+    args::ArgsTestQemu,
+    assets::{
+        arceos_rust_test_dir, build_config_path, qemu_config_path, read_manifest_package_name,
+    },
+    rust_suite::rust_qemu_features_for_run,
+    types::{ArceosQemuCase, QemuTestFlow},
+};
+use crate::{
+    arceos::ArceOS,
+    execution::{case::TestQemuCase, qemu as qemu_test, suite as test_suite},
+};
+
+pub(crate) fn discover_rust_qemu_cases(
+    arceos: &ArceOS,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    allow_missing_selected_case: bool,
+    catalog: &super::rust_suite::SuiteCatalog,
+) -> anyhow::Result<Vec<ArceosQemuCase>> {
+    let profiles = rust_qemu_features_for_run(catalog, selected_case, allow_missing_selected_case)?;
+    if let Some(feature) = selected_case
+        && !super::rust_qemu_feature_supports_arch(catalog, feature, arch)
+        && !allow_missing_selected_case
+    {
+        bail!("ArceOS test {feature} does not support {arch}");
+    }
+    let root = arceos_rust_test_dir(arceos);
+    profiles
+        .into_iter()
+        .filter(|feature| super::rust_qemu_feature_supports_arch(catalog, feature, arch))
+        .map(|profile| {
+            let mut case = load_arceos_test_suit_qemu_case(
+                &root,
+                arch,
+                target,
+                if root
+                    .join("cases")
+                    .join(&profile)
+                    .join(qemu_test::qemu_config_name(arch))
+                    .is_file()
+                {
+                    &profile
+                } else {
+                    catalog.runtime_for(&profile)
+                },
+            )?;
+            case.case.name = profile.clone();
+            case.case.display_name = profile.clone();
+            case.feature = Some(profile.clone());
+            case.features = catalog.features_for(&profile, arch);
+            Ok(case)
+        })
+        .collect()
+}
+
+pub(crate) fn discover_qemu_cases_in_dir(
+    dir: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    group: &str,
+) -> anyhow::Result<Vec<ArceosQemuCase>> {
+    qemu_test::discover_qemu_cases(dir, arch, target, selected_case, "ArceOS", group)?
+        .into_iter()
+        .map(load_rust_qemu_case)
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+pub(crate) fn discover_qemu_cases_in_dir_allow_empty(
+    dir: &Path,
+    arch: &str,
+    target: &str,
+    selected_case: Option<&str>,
+    group: &str,
+) -> anyhow::Result<Vec<ArceosQemuCase>> {
+    qemu_test::discover_qemu_cases_allow_empty(dir, arch, target, selected_case, "ArceOS", group)?
+        .into_iter()
+        .map(load_rust_qemu_case)
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+fn load_rust_qemu_case(case: qemu_test::DiscoveredQemuCase) -> anyhow::Result<ArceosQemuCase> {
+    let package = read_manifest_package_name(&case.case_dir.join("Cargo.toml"))?;
+    let host_http_server = qemu_test::load_qemu_case_host_http_server(&case.qemu_config_path)?;
+    Ok(ArceosQemuCase {
+        case: TestQemuCase {
+            name: case.name,
+            display_name: case.display_name,
+            case_dir: case.case_dir,
+            qemu_config_path: case.qemu_config_path,
+            test_commands: Vec::new(),
+            grouped_command_selection: Default::default(),
+            host_http_server,
+            subcases: Vec::new(),
+            grouped_subcase_filter: None,
+            ltp_case_id: None,
+        },
+        build_group: case.build_group,
+        build_config_path: case.build_config_path,
+        package,
+        feature: None,
+        features: Vec::new(),
+    })
+}
+
+pub(crate) fn load_arceos_test_suit_qemu_case(
+    root: &Path,
+    arch: &str,
+    target: &str,
+    feature: &str,
+) -> anyhow::Result<ArceosQemuCase> {
+    let build_config_path = arceos_test_suit_build_config_path(root, target)?;
+    let qemu_config_path = arceos_test_suit_case_qemu_config_path(root, arch, feature)?;
+    let host_http_server = qemu_test::load_qemu_case_host_http_server(&qemu_config_path)?;
+    Ok(ArceosQemuCase {
+        case: TestQemuCase {
+            name: feature.to_string(),
+            display_name: feature.to_string(),
+            case_dir: root.to_path_buf(),
+            qemu_config_path,
+            test_commands: Vec::new(),
+            grouped_command_selection: Default::default(),
+            host_http_server,
+            subcases: Vec::new(),
+            grouped_subcase_filter: None,
+            ltp_case_id: None,
+        },
+        build_group: ARCEOS_RUST_TEST_BUILD_GROUP.to_string(),
+        build_config_path,
+        package: ARCEOS_RUST_TEST_PACKAGE.to_string(),
+        feature: Some(feature.to_string()),
+        features: vec![feature.to_string()],
+    })
+}
+
+pub(crate) fn arceos_test_suit_build_config_path(
+    root: &Path,
+    target: &str,
+) -> anyhow::Result<PathBuf> {
+    build_config_path(root, target, "ArceOS rust test suite")
+}
+
+pub(crate) fn arceos_test_suit_qemu_config_path(
+    root: &Path,
+    arch: &str,
+) -> anyhow::Result<PathBuf> {
+    qemu_config_path(root, arch, "ArceOS rust test suite")
+}
+
+pub(crate) fn arceos_test_suit_case_qemu_config_path(
+    root: &Path,
+    arch: &str,
+    case: &str,
+) -> anyhow::Result<PathBuf> {
+    let case_path = root
+        .join("cases")
+        .join(case)
+        .join(qemu_test::qemu_config_name(arch));
+    if case_path.is_file() {
+        Ok(case_path)
+    } else {
+        arceos_test_suit_qemu_config_path(root, arch)
+    }
+}
+
+pub(crate) fn selected_qemu_test_groups(
+    workspace_root: &Path,
+    args: &ArgsTestQemu,
+) -> anyhow::Result<Vec<QemuTestFlow>> {
+    if args.only_c {
+        return Ok(vec![QemuTestFlow::C]);
+    }
+    if args.only_rust {
+        return Ok(vec![QemuTestFlow::Rust]);
+    }
+
+    match args.test_group.as_deref() {
+        None => {
+            let mut flows = vec![QemuTestFlow::Rust, QemuTestFlow::C];
+            for group in test_suite::discover_group_names(workspace_root, ARCEOS_TEST_SUITE_OS)? {
+                if group != ARCEOS_RUST_TEST_GROUP
+                    && group != ARCEOS_C_TEST_GROUP
+                    && group != ARCEOS_AXTEST_GROUP
+                {
+                    flows.push(QemuTestFlow::Generic(group));
+                }
+            }
+            Ok(flows)
+        }
+        Some(ARCEOS_RUST_TEST_GROUP) => Ok(vec![QemuTestFlow::Rust]),
+        Some(ARCEOS_C_TEST_GROUP) => Ok(vec![QemuTestFlow::C]),
+        Some(ARCEOS_AXTEST_GROUP) => bail!(
+            "ArceOS directory-style axtest discovery was removed; use `cargo xtask ktest qemu`"
+        ),
+        Some(group) => {
+            let dir = test_suite::group_dir(workspace_root, ARCEOS_TEST_SUITE_OS, group);
+            if dir.is_dir() {
+                Ok(vec![QemuTestFlow::Generic(group.to_string())])
+            } else {
+                bail!(
+                    "unsupported ArceOS qemu test group `{group}`; supported groups are: {}",
+                    test_suite::supported_group_names(workspace_root, ARCEOS_TEST_SUITE_OS)
+                        .unwrap_or_else(|_| {
+                            format!("{ARCEOS_RUST_TEST_GROUP}, {ARCEOS_C_TEST_GROUP}")
+                        })
+                )
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn qemu_args(only_rust: bool, only_c: bool, package: Vec<String>) -> ArgsTestQemu {
+        ArgsTestQemu {
+            arch: None,
+            target: Some("x86_64-unknown-none".to_string()),
+            test_group: None,
+            test_case: None,
+            list: false,
+            plan: false,
+            package,
+            only_rust,
+            only_c,
+        }
+    }
+
+    #[test]
+    fn selected_qemu_test_groups_default_runs_rust_then_c() {
+        let dir = tempdir().unwrap();
+        let flows =
+            selected_qemu_test_groups(dir.path(), &qemu_args(false, false, Vec::new())).unwrap();
+
+        assert_eq!(flows, &[QemuTestFlow::Rust, QemuTestFlow::C]);
+
+        let root = dir.path().join("test-suit/arceos");
+        fs::create_dir_all(root.join("fixture-platform")).unwrap();
+        let mut args = qemu_args(false, false, Vec::new());
+        args.test_group = Some("fixture-platform".to_owned());
+        assert_eq!(
+            selected_qemu_test_groups(dir.path(), &args).unwrap(),
+            [QemuTestFlow::Generic("fixture-platform".to_owned())]
+        );
+        fs::remove_dir(root.join("fixture-platform")).unwrap();
+        let error = selected_qemu_test_groups(dir.path(), &args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported ArceOS qemu test group")
+        );
+    }
+
+    #[test]
+    fn arceos_rust_case_prefers_its_qemu_config() {
+        let root = tempdir().unwrap();
+        let suite_config = root.path().join("qemu-riscv64.toml");
+        fs::write(&suite_config, "timeout = 120\n").unwrap();
+        let case_dir = root.path().join("cases/task-ipi");
+        fs::create_dir_all(&case_dir).unwrap();
+        let case_config = case_dir.join("qemu-riscv64.toml");
+        fs::write(&case_config, "timeout = 5\n").unwrap();
+
+        let selected =
+            arceos_test_suit_case_qemu_config_path(root.path(), "riscv64", "task-ipi").unwrap();
+
+        assert_eq!(selected, case_config);
+    }
+
+    #[test]
+    fn arceos_rust_case_falls_back_to_suite_qemu_config() {
+        let root = tempdir().unwrap();
+        let suite_config = root.path().join("qemu-riscv64.toml");
+        fs::write(&suite_config, "timeout = 120\n").unwrap();
+
+        let selected =
+            arceos_test_suit_case_qemu_config_path(root.path(), "riscv64", "task-yield").unwrap();
+
+        assert_eq!(selected, suite_config);
+    }
+}

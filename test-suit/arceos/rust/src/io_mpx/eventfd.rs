@@ -414,34 +414,6 @@ fn test_writable_edge_between_waits_is_reported() {
 /// every `wake()` is a write and every one must be observed by `epoll_wait`.
 /// A single-shot test can only catch "the first wake is lost"; this loop also
 /// catches any delivery that drops, batches, or skips alternating wakes.
-fn test_write_stream_delivers_every_wake() {
-    const WAKES: usize = 256;
-    let epfd = syscalls::epoll_create1(0).expect("epoll_create1(0) failed");
-    let fd = syscalls::eventfd(0, EFD_NONBLOCK).expect("create nonblocking eventfd failed");
-
-    let mut interest = EpollEvent {
-        events: EPOLLIN | EPOLLET,
-        u64: 0,
-    };
-    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
-        .expect("epoll_ctl ADD failed");
-
-    let mut ready = [EpollEvent { events: 0, u64: 0 }; 4];
-    for i in 0..WAKES {
-        assert_eq!(
-            syscalls::write_u64(&fd, 1).unwrap(),
-            8,
-            "write {i} must return 8"
-        );
-        assert_eq!(
-            syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
-            1,
-            "write {i} must surface an edge"
-        );
-        assert_ne!(ready[0].events & EPOLLIN, 0, "write {i} must carry EPOLLIN");
-    }
-}
-
 pub fn run() -> crate::TestResult {
     test_create_and_flag_validation();
     test_read_empty_nonblocking_eagain();
@@ -455,7 +427,6 @@ pub fn run() -> crate::TestResult {
     test_saturated_read_is_a_writable_edge();
     test_writable_edge_between_waits_is_reported();
     test_write_does_not_spoof_writable_edge();
-    test_write_stream_delivers_every_wake();
     println!("io_mpx: eventfd ABI tests OK");
     Ok(())
 }

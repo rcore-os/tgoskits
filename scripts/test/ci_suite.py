@@ -173,7 +173,7 @@ def validate_suite_catalog(
             arch = registration["arch"]
             group = registration.get("group")
             if group in ARCEOS_GENERIC_QEMU_GROUPS:
-                cases = _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"] / group, "arceos")
+                cases = _generic_arceos_runtime_cases(workspace_root, group)
                 present = {case.case for case in cases if case.arch == arch}
                 required = set(registration.get("cases", present))
                 if not required or required - present:
@@ -268,6 +268,154 @@ def check_matches_input(check: dict[str, Any], selection: str) -> bool:
     return False
 
 
+def _generic_arceos_runtime_cases(workspace_root: Path, group: str) -> list[_RuntimeCase]:
+    root = workspace_root / SUITE_ROOTS["arceos"] / group
+    if group == "cpu" and (root / "normal/suite.toml").is_file():
+        return _cpu_runtime_cases(workspace_root)
+    if group == "drivers" and (root / "suite.toml").is_file():
+        return _driver_runtime_cases(root)
+    return _discover_runtime_cases(root, "arceos")
+
+
+def _driver_runtime_cases(root: Path) -> list[_RuntimeCase]:
+    suite = _toml_document(root / "suite.toml")
+    order, batches = suite.get("run_order", []), suite.get("batches", {})
+    if (suite.get("schema_version") != 1 or not order or len(order) != len(set(order))
+            or set(order) != set(batches)):
+        raise SuiteRouteError("invalid drivers startup declaration")
+    result, members = [], set()
+    for name in order:
+        batch = batches[name]
+        if (not re.fullmatch(r"[A-Za-z0-9_-]+", name) or batch.get("arch") not in ARCH_TARGETS
+                or not batch.get("tests")):
+            raise SuiteRouteError("invalid driver batch")
+        for field in ("build_config", "qemu_config"):
+            path = Path(batch.get(field, ""))
+            if not path.parts or path.is_absolute() or ".." in path.parts or not (root / path).is_file():
+                raise SuiteRouteError("driver configuration missing or outside suite")
+        for test in batch["tests"]:
+            if (not re.fullmatch(r"[A-Za-z0-9_-]+", test.get("id", ""))
+                    or test["id"] in members or test["id"] in batches
+                    or not re.fullmatch(r"crate(?:::[A-Za-z0-9_]+)+", test.get("entry", ""))):
+                raise SuiteRouteError("invalid or ambiguous driver member")
+            members.add(test["id"])
+        build, runtime = root / batch["build_config"], root / batch["qemu_config"]
+        if not _toml_document(build).get("freestanding", False):
+            raise SuiteRouteError("driver batch requires freestanding runtime")
+        if any(test.get("pcm_waveform", False) for test in batch["tests"]) and not _toml_document(runtime).get("host_pcm_waveform"):
+            raise SuiteRouteError("driver waveform member requires host verification")
+        result.append(_RuntimeCase("arceos-qemu", batch["arch"], None, name, root, root, runtime, build))
+    return result
+
+
+def _cpu_runtime_cases(workspace_root: Path) -> list[_RuntimeCase]:
+    root = workspace_root / SUITE_ROOTS["arceos"] / "cpu/normal"
+    catalog = _toml_document(root / "suite.toml")
+    order, batches = catalog.get("run_order", []), catalog.get("batches", {})
+    if (catalog.get("schema_version") != 1 or not order or len(order) != len(set(order))
+            or set(order) != set(batches)):
+        raise SuiteRouteError("invalid CPU batch declaration or startup order")
+    result = []
+    for name in order:
+        batch = batches[name]
+        if (not re.fullmatch(r"[A-Za-z0-9_-]+", name) or batch.get("arch") not in ARCH_TARGETS
+                or batch.get("image") not in {"std", "freestanding"}
+                or batch.get("mode") not in {"normal", "expected-fault"} or not batch.get("tests")):
+            raise SuiteRouteError(f"CPU batch {name!r} has invalid identity, runtime or members")
+        if batch["mode"] == "expected-fault" and len(batch["tests"]) != 1:
+            raise SuiteRouteError(f"CPU diagnostic batch {name!r} must have one member")
+        for field in ("build_config", "qemu_config"):
+            relative = Path(batch[field])
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                raise SuiteRouteError(f"CPU batch {name!r} configuration escapes its suite")
+        build, runtime = root / batch["build_config"], root / batch["qemu_config"]
+        if not build.is_file() or not runtime.is_file():
+            raise SuiteRouteError(f"CPU batch {name!r} references missing configurations")
+        result.append(_RuntimeCase("arceos-qemu", batch["arch"], None, name,
+            runtime.parent, build.parent, runtime, build))
+    return result
+
+
+def _cpu_feature_closure(features: Sequence[str], graph: dict[str, Any]) -> set[str]:
+    pending, result = list(features), set()
+    while pending:
+        feature = pending.pop()
+        if feature in result:
+            continue
+        result.add(feature)
+        pending.extend(item for item in graph.get(feature, []) if item in graph)
+    return result
+
+
+def _cpu_selections(workspace_root: Path, registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
+        path: Path) -> list[SuiteSelection]:
+    root = workspace_root / SUITE_ROOTS["arceos"] / "cpu"
+    normal = root / "normal"
+    catalog = _toml_document(normal / "suite.toml")
+    graph = _toml_document(root / "Cargo.toml").get("features", {})
+    absolute = workspace_root / path
+    relative = absolute.relative_to(root)
+    module = None
+    board_source = len(relative.parts) >= 2 and relative.parts[:2] == ("src", "board")
+    board_name = relative.parts[2] if board_source and len(relative.parts) >= 4 else None
+    if len(relative.parts) >= 2 and relative.parts[0] == "src" and relative.name != "lib.rs":
+        # A board-specific capability may be a leaf file below src/board/<board>.
+        # Select its actual feature rather than treating the whole subtree as
+        # a common helper and scheduling unrelated QEMU cases.
+        module = next((Path(part).stem.replace("_", "-") for part in relative.parts[1:]
+            if Path(part).stem.replace("_", "-") in graph), None)
+    arch = next((part for part in (Path(item).stem for item in relative.parts) if part in ARCH_TARGETS), None)
+    # A helper without its own capability is shared: conservatively select
+    # all consumers instead of silently dropping its source change.
+    if module not in graph:
+        module = None
+    matches = []
+    for case in _cpu_runtime_cases(workspace_root):
+        batch = catalog["batches"][case.case]
+        if board_source or (arch and case.arch != arch):
+            continue
+        if _is_prefix(absolute, normal / "configs"):
+            if _is_prefix(absolute, case.case_dir):
+                matches.append(case)
+            continue
+        if module:
+            roots = [test["id"] for test in batch["tests"]]
+            roots.extend(feature.removeprefix("cpu-tests/") for feature in batch.get("features", []))
+            if module not in _cpu_feature_closure(roots, graph):
+                continue
+        elif _is_prefix(absolute, normal / "std") and batch["image"] != "std":
+            continue
+        elif _is_prefix(absolute, normal / "freestanding") and batch["image"] != "freestanding":
+            continue
+        matches.append(case)
+    selections = _runtime_selections(registrations, path, matches, suite_group="cpu")
+    board_cases = []
+    discovered = _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"], "arceos")
+    for board_root, board, name, declaration in _board_suite_batches(workspace_root / SUITE_ROOTS["arceos"]):
+        if board_name and board != board_name:
+            continue
+        if arch and declaration["arch"] != arch:
+            continue
+        if _is_prefix(absolute, normal / "configs"):
+            continue
+        if _is_prefix(absolute, normal):
+            if declaration["executor"] != "cpu":
+                continue
+            if _is_prefix(absolute, normal / "std") and declaration["image"] != "std":
+                continue
+            if _is_prefix(absolute, normal / "freestanding") and declaration["image"] != "freestanding":
+                continue
+        roots = [feature.removeprefix("cpu-tests/")
+            for feature in declaration.get("features", []) + [feature for test in declaration["tests"] for feature in test["features"]]
+            if feature.startswith("cpu-tests/")]
+        if module and module not in _cpu_feature_closure(roots, graph):
+            continue
+        board_cases.extend(case for case in discovered
+            if case.kind == "arceos-board" and case.board == board and case.case == name
+            and case.build_config == board_root / declaration["build_config"])
+    return selections + _runtime_selections(registrations, path, board_cases)
+
+
 def _selections_for_path(
     workspace_root: Path,
     registrations: Sequence[tuple[dict[str, Any], dict[str, Any]]],
@@ -278,15 +426,27 @@ def _selections_for_path(
         return ktest
     if _is_prefix(path, SUITE_ROOTS["arceos"]):
         relative = path.relative_to(SUITE_ROOTS["arceos"])
+        if (relative.parts and relative.parts[0] == "cpu"
+                and (workspace_root / SUITE_ROOTS["arceos"] / "cpu/normal/suite.toml").is_file()):
+            return _cpu_selections(workspace_root, registrations, path)
         if relative.parts and relative.parts[0] in ARCEOS_GENERIC_QEMU_GROUPS:
             group = relative.parts[0]
             root = workspace_root / SUITE_ROOTS["arceos"] / group
-            cases = _discover_runtime_cases(root, "arceos")
+            cases = _generic_arceos_runtime_cases(workspace_root, group)
             return _runtime_selections(registrations, path,
                 _matching_runtime_cases(cases, workspace_root / path), suite_group=group)
         if relative.parts and relative.parts[0].startswith("board-"):
+            board_root = workspace_root / SUITE_ROOTS["arceos"] / relative.parts[0]
+            if (board_root / "suite.toml").is_file():
+                cases = [case for case in _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"], "arceos")
+                    if _is_prefix(case.runtime_config, board_root)]
+                return _runtime_selections(registrations, path,
+                    _matching_runtime_cases(cases, workspace_root / path) or cases)
             return _discovered_selections(workspace_root, registrations, path, "arceos")
-        return _arceos_selections(registrations, path)
+        selections = _arceos_selections(registrations, path)
+        if relative.parts and relative.parts[0] == "rust":
+            selections += _rust_board_selections(workspace_root, registrations, path)
+        return selections
     if _is_prefix(path, STARRY_APP_SUITE_ROOT):
         return _starry_app_selections(registrations, path)
     for os_name in ("starry", "axvisor"):
@@ -339,7 +499,7 @@ def _arceos_selections(
         return _arceos_all_selections(registrations, path)
 
     group = relative.parts[0]
-    if group not in {"rust", "c", "loongarch"}:
+    if group not in {"rust", "c"}:
         return []
 
     case = None
@@ -347,13 +507,8 @@ def _arceos_selections(
     if group == "rust" and len(relative.parts) >= 3 and relative.parts[1] == "cases":
         case = relative.parts[2]
         display_case = f"rust/{case}"
-    elif group == "loongarch" and len(relative.parts) >= 2:
-        case = relative.parts[1]
-        display_case = f"loongarch/{case}"
 
     arches = _arches_for_path(path)
-    if not arches and group == "loongarch":
-        arches = {"loongarch64"}
     if not arches:
         arches = {
             registration["arch"]
@@ -563,10 +718,79 @@ def _runtime_selections(
     return selections
 
 
+def _board_suite_batches(root: Path) -> list[tuple[Path, str, str, dict[str, Any]]]:
+    result = []
+    for path in sorted(root.glob("board-*/suite.toml")):
+        suite = _toml_document(path)
+        order, batches = suite.get("run_order", []), suite.get("batches", {})
+        if (suite.get("schema_version") != 1
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", suite.get("board", "")) or not order
+                or len(order) != len(set(order)) or set(order) != set(batches)):
+            raise SuiteRouteError(f"invalid board suite startup order: {path}")
+        members, builds = set(), set()
+        for name in order:
+            batch = batches[name]
+            if (not re.fullmatch(r"[A-Za-z0-9_-]+", name)
+                    or batch.get("arch") not in ARCH_TARGETS or batch.get("image") not in {"std", "freestanding"}
+                    or batch.get("executor") not in {"rust", "cpu"} or not batch.get("tests")
+                    or (batch["executor"] == "rust" and batch["image"] != "std")):
+                raise SuiteRouteError(f"invalid board batch {name!r}")
+            for field in ("build_config", "board_config"):
+                config = Path(batch.get(field, ""))
+                if not config.parts or config.is_absolute() or ".." in config.parts or not (path.parent / config).is_file():
+                    raise SuiteRouteError(f"invalid board batch configuration: {field}")
+            if batch["build_config"] in builds:
+                raise SuiteRouteError("board batches must own distinct build configurations")
+            builds.add(batch["build_config"])
+            build = _toml_document(path.parent / batch["build_config"])
+            if (build.get("package") != batch.get("package")
+                    or bool(build.get("freestanding", False)) != (batch["image"] == "freestanding")):
+                raise SuiteRouteError("board build package or runtime disagrees with its batch")
+            for test in batch["tests"]:
+                if (not re.fullmatch(r"[A-Za-z0-9_-]+", test.get("id", "")) or test["id"] in members
+                        or not re.fullmatch(r"(?:crate|cpu_tests)(?:::[A-Za-z0-9_]+)+", test.get("entry", ""))
+                        or test.get("returns") not in {"unit", "result"}
+                        or not isinstance(test.get("features"), list)
+                        or (batch["executor"] == "cpu" and (test["returns"] != "unit"
+                            or not test["entry"].startswith("cpu_tests::")))):
+                    raise SuiteRouteError("invalid or duplicate board member")
+                if test["id"] in batches and not (test["id"] == name and len(batch["tests"]) == 1):
+                    raise SuiteRouteError("ambiguous board batch/member selector")
+                members.add(test["id"])
+            for feature in batch.get("features", []) + [feature for test in batch["tests"] for feature in test["features"]]:
+                if not isinstance(feature, str) or not re.fullmatch(r"[A-Za-z0-9_/?:-]+", feature):
+                    raise SuiteRouteError("invalid board Cargo feature")
+            result.append((path.parent, suite["board"], name, batch))
+    return result
+
+
+def _rust_board_selections(workspace_root: Path, registrations, path: Path) -> list[SuiteSelection]:
+    root = workspace_root / SUITE_ROOTS["arceos"]
+    relative = path.relative_to(SUITE_ROOTS["arceos"] / "rust")
+    shared = relative.parts[0] != "src" or relative.name in {"main.rs", "lib.rs", "runner.rs", "suite.rs"}
+    parts = list(relative.with_suffix("").parts[1:])
+    if parts and parts[-1] == "mod":
+        parts.pop()
+    module = "crate::" + "::".join(parts)
+    declarations = {(board, name) for _, board, name, batch in _board_suite_batches(root)
+        if batch["executor"] == "rust" and (shared or any(
+            test["entry"].startswith(module + "::") for test in batch["tests"]))}
+    cases = [case for case in _discover_runtime_cases(root, "arceos")
+        if case.kind == "arceos-board" and (case.board, case.case) in declarations]
+    return _runtime_selections(registrations, path, cases)
+
+
 def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
     cases = []
     qemu_kind = f"{os_name}-qemu"
     board_kind = f"{os_name}-board"
+    declared_roots = set()
+    if os_name == "arceos":
+        for board_root, board, name, batch in _board_suite_batches(root):
+            declared_roots.add(board_root)
+            runtime = board_root / batch["board_config"]
+            build = board_root / batch["build_config"]
+            cases.append(_RuntimeCase(board_kind, None, board, name, runtime.parent, build.parent, runtime, build))
     for runtime_config in sorted(root.rglob("qemu-*.toml")):
         parsed = _parse_qemu_config_name(runtime_config.stem)
         if parsed is None:
@@ -607,6 +831,8 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
         )
 
     for runtime_config in sorted(root.rglob("board-*.toml")):
+        if any(_is_prefix(runtime_config, declared_root) for declared_root in declared_roots):
+            continue
         build_config = _nearest_board_build_config(runtime_config.parent, root)
         if build_config is None:
             continue

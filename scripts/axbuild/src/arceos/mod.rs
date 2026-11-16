@@ -9,14 +9,14 @@ use ostool::{
 
 use crate::{
     context::{AppContext, BuildCliArgs, ResolvedBuildRequest, SnapshotPersistence},
-    test::host_http::HostHttpServerGuard,
+    execution::host_http::HostHttpServerGuard,
 };
 
 pub mod build;
 pub mod cbuild;
 pub mod config;
 pub mod rootfs;
-pub mod test;
+pub use crate::test::normal::arceos as test;
 
 fn start_qemu_host_http_server(
     request: &ResolvedBuildRequest,
@@ -24,7 +24,7 @@ fn start_qemu_host_http_server(
     request
         .qemu_config
         .as_deref()
-        .map(crate::test::qemu::load_qemu_case_host_http_server)
+        .map(crate::execution::qemu::load_qemu_case_host_http_server)
         .transpose()?
         .flatten()
         .map(|config| HostHttpServerGuard::start(&config, &request.package))
@@ -308,7 +308,7 @@ impl ArceOS {
         Ok(qemu)
     }
 
-    async fn load_uboot_config(
+    pub(crate) async fn load_uboot_config(
         &mut self,
         request: &ResolvedBuildRequest,
         cargo: &Cargo,
@@ -323,7 +323,7 @@ impl ArceOS {
         }
     }
 
-    async fn load_board_config(
+    pub(crate) async fn load_board_config(
         &mut self,
         cargo: &Cargo,
         board_config_path: Option<&Path>,
@@ -401,7 +401,7 @@ impl ArceOS {
                     .load_board_config(&cargo, board_config_path.as_deref())
                     .await?;
                 let output = self.build_c_app_request(&request, app_dir, app_name)?;
-                crate::test::qemu::append_backtrace_map_to_initramfs(
+                crate::execution::qemu::append_backtrace_map_to_initramfs(
                     &mut board_config.boot.initramfs,
                     &output.elf_path.with_extension("axbt"),
                 )?;
@@ -437,7 +437,7 @@ impl ArceOS {
         // ArceOS currently boots its default QEMU path from a fresh FAT32 image.
         // Keep this distinct from the image-managed rootfs used by StarryOS and
         // Axvisor until their runtime filesystem contracts are unified.
-        crate::test::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
+        crate::execution::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
         rootfs::prepare_default_qemu_fat32_rootfs(self.app.workspace_root(), &qemu)?;
         let _host_http_server = start_qemu_host_http_server(&request)?;
         self.app
@@ -494,7 +494,7 @@ impl ArceOS {
         }
     }
 
-    fn build_c_app_request(
+    pub(crate) fn build_c_app_request(
         &mut self,
         request: &ResolvedBuildRequest,
         app_dir: PathBuf,
@@ -508,6 +508,8 @@ impl ArceOS {
             target_dir: paths.target_dir,
             out_dir: paths.out_dir,
             features: config.common.features,
+            include_dirs: Vec::new(),
+            source_flags: Default::default(),
         };
 
         let output = cbuild::build_c_app(self.app.workspace_context(), request, &input)?;
@@ -535,9 +537,9 @@ impl ArceOS {
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
         // See `run_qemu_request_with_cargo`: default ArceOS QEMU keeps a FAT32 rootfs.
-        crate::test::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
+        crate::execution::qemu::apply_smp_qemu_arg(&mut qemu, request.smp);
         rootfs::prepare_default_qemu_fat32_rootfs(self.app.workspace_root(), &qemu)?;
-        crate::test::qemu::append_backtrace_map(
+        crate::execution::qemu::append_backtrace_map(
             &mut qemu,
             &output.elf_path.with_extension("axbt"),
             &request.target,
@@ -568,7 +570,7 @@ impl ArceOS {
             })?;
         let output = self.build_c_app_request(&request, app_dir, app_name)?;
         let mut uboot = uboot;
-        crate::test::qemu::append_backtrace_map_to_initramfs(
+        crate::execution::qemu::append_backtrace_map_to_initramfs(
             &mut uboot.boot.initramfs,
             &output.elf_path.with_extension("axbt"),
         )?;

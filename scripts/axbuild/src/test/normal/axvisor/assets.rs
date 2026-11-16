@@ -1,0 +1,18 @@
+use crate::execution::case as test_case;
+
+pub(crate) fn axvisor_case_asset_config() -> test_case::CaseAssetConfig {
+    test_case::CaseAssetConfig {
+        grouped_execution: test_case::GroupedCaseExecution::External,
+        script_env: test_case::CaseScriptEnvConfig {
+            staging_root: "AXVISOR_TEST_STAGING_ROOT".to_string(),
+            case_dir: "AXVISOR_TEST_CASE_DIR".to_string(),
+            case_c_dir: "AXVISOR_TEST_CASE_C_DIR".to_string(),
+            case_work_dir: "AXVISOR_TEST_CASE_WORK_DIR".to_string(),
+            case_build_dir: "AXVISOR_TEST_CASE_BUILD_DIR".to_string(),
+            case_overlay_dir: "AXVISOR_TEST_CASE_OVERLAY_DIR".to_string(),
+        },
+        cache_env_vars: Vec::new(),
+        prepare_staging_root: |_| Ok(()),
+        prepare_guest_package_env: None,
+    }
+}

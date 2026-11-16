@@ -6,15 +6,15 @@ use ostool::{
     build::config::Cargo,
 };
 
+pub use crate::app::axvisor as app;
 use crate::context::{AppContext, AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence};
-
-pub mod app;
 pub mod build;
-mod bundle;
+pub(crate) mod bundle;
 pub mod config;
+pub(crate) mod guest_build;
 pub mod rootfs;
-pub mod test;
-mod web_ui;
+pub use crate::test::normal::axvisor as test;
+pub(crate) mod web_ui;
 
 /// Axvisor host-side commands
 #[derive(Subcommand)]
@@ -231,7 +231,7 @@ pub enum ConfigCommand {
 }
 
 pub struct Axvisor {
-    app: AppContext,
+    pub(crate) app: AppContext,
 }
 
 impl From<&ArgsBuild> for AxvisorCliArgs {
@@ -367,7 +367,7 @@ impl Axvisor {
         Ok(request)
     }
 
-    async fn load_uboot_config(
+    pub(crate) async fn load_uboot_config(
         &mut self,
         request: &ResolvedAxvisorRequest,
         cargo: &Cargo,
@@ -382,7 +382,7 @@ impl Axvisor {
         }
     }
 
-    async fn load_board_config(
+    pub(crate) async fn load_board_config(
         &mut self,
         cargo: &Cargo,
         board_config_path: Option<&Path>,

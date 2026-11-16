@@ -24,7 +24,7 @@ AArch64 裸机构建通过 `CargoBuildTarget.rustflags` 调整短复制的内联
 
 ### 2.1 参数流向
 
-[`build_cargo_args()`](../../scripts/axbuild/src/build/info.rs) 先加入目标默认值，再加入调用方参数，通过 Cargo 的目标 `rustflags` 传给 rustc。[`ClippyCheck::cargo_invocation()`](../../scripts/axbuild/src/clippy/check.rs) 则把同一组默认值放在 `--` 后、已有 rustc 参数之前。位置无关代码、链接脚本和调用方配置沿原有流程保留。
+[`build_cargo_args()`](../../scripts/axbuild/src/build/info.rs) 先加入目标默认值，再加入调用方参数，通过 Cargo 的目标 `rustflags` 传给 rustc。[`ClippyCheck::cargo_invocation()`](../../scripts/axbuild/src/checks/clippy/check.rs) 则把同一组默认值放在 `--` 后、已有 rustc 参数之前。位置无关代码、链接脚本和调用方配置沿原有流程保留。
 
 两条入口共享参数所有者，图中的分叉只表示 Cargo 构建参数与 Clippy 参数的不同装配位置。
 

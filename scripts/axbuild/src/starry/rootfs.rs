@@ -20,9 +20,9 @@ pub use crate::rootfs::qemu::RootfsWritePolicy;
 pub(crate) use crate::rootfs::qemu::{RootfsPatchMode, RootfsPatchOptions, patch_rootfs};
 use crate::{
     context::{DEFAULT_STARRY_ARCH, ResolvedStarryRequest, starry_target_for_arch_checked},
+    execution::qemu as qemu_test,
     image::{config::ImageConfig, spec::ImageSpecRef, storage::Storage},
     rootfs::inject,
-    test::qemu as qemu_test,
 };
 
 #[derive(Args)]
@@ -31,7 +31,7 @@ pub struct ArgsRootfs {
     pub arch: Option<String>,
 }
 
-pub(super) async fn rootfs(starry: &mut Starry, args: ArgsRootfs) -> anyhow::Result<()> {
+pub(crate) async fn rootfs(starry: &mut Starry, args: ArgsRootfs) -> anyhow::Result<()> {
     let arch = args.arch.unwrap_or_else(|| DEFAULT_STARRY_ARCH.to_string());
     let target = starry_target_for_arch_checked(&arch)?.to_string();
     let disk_img = ensure_rootfs_in_tmp_dir(
@@ -45,7 +45,7 @@ pub(super) async fn rootfs(starry: &mut Starry, args: ArgsRootfs) -> anyhow::Res
     Ok(())
 }
 
-pub(super) async fn ensure_quick_start_qemu_rootfs(
+pub(crate) async fn ensure_quick_start_qemu_rootfs(
     workspace_root: &Path,
     target_dir: &Path,
     arch: &str,
@@ -54,7 +54,7 @@ pub(super) async fn ensure_quick_start_qemu_rootfs(
     ensure_rootfs_in_tmp_dir(workspace_root, target_dir, arch, &target).await
 }
 
-pub(super) async fn qemu_with_explicit_rootfs(
+pub(crate) async fn qemu_with_explicit_rootfs(
     starry: &mut Starry,
     request: ResolvedStarryRequest,
     rootfs: PathBuf,
@@ -81,7 +81,7 @@ pub(super) async fn qemu_with_explicit_rootfs(
     starry.run_qemu_artifact(&request, cargo, qemu).await
 }
 
-pub(super) async fn qemu(
+pub(crate) async fn qemu(
     starry: &mut Starry,
     request: ResolvedStarryRequest,
     write_policy: RootfsWritePolicy,
@@ -115,7 +115,7 @@ fn diskless_explicit_qemu(qemu: &QemuConfig, explicit_config: bool) -> bool {
     explicit_config && crate::rootfs::qemu::host_initramfs_without_rootfs_drive(qemu)
 }
 
-pub(super) async fn load_patched_qemu_config(
+pub(crate) async fn load_patched_qemu_config(
     starry: &mut Starry,
     request: &ResolvedStarryRequest,
     cargo: &Cargo,
