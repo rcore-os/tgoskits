@@ -183,3 +183,226 @@ impl Location {
         .into_result()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::{
+        sync::{Arc, Weak},
+        vec,
+    };
+    use core::{
+        any::Any,
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+    use std::sync::{Mutex, mpsc};
+
+    use axpoll::{IoEvents, Pollable};
+
+    use super::*;
+    use crate::{
+        DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, MetadataUpdate, Mountpoint,
+        NamespacePreparation, NodeIdentity, NodeType, Reference, StatFs,
+    };
+
+    // Models only owner exclusion and hidden preparation. The production scope
+    // and authorizer decide whether a fresh attempt may publish an accepted open.
+    struct Owner {
+        this: Weak<Self>,
+        metadata: Mutex<Metadata>,
+        preparation: Arc<Preparation>,
+        opened: AtomicBool,
+    }
+
+    struct Preparation {
+        ready: AtomicBool,
+        begin: mpsc::Sender<()>,
+        done: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl NamespacePreparation for Preparation {
+        fn prepare(&self, _: &PreparedWrite) -> VfsResult<()> {
+            self.begin.send(()).unwrap();
+            self.done
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+            self.ready.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+        fn cleanup(&self, _: &PreparedWrite) -> VfsResult<()> {
+            Ok(())
+        }
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl FilesystemOps for Owner {
+        fn name(&self) -> &str {
+            "open-preparation-owner"
+        }
+        fn root_dir(&self) -> DirEntry {
+            DirEntry::new_file(
+                FileNode::new(Arc::new(Node(self.this.upgrade().unwrap()))),
+                NodeType::RegularFile,
+                Reference::root(),
+            )
+        }
+        fn stat(&self) -> VfsResult<StatFs> {
+            Err(VfsError::Unsupported)
+        }
+    }
+
+    struct Node(Arc<Owner>);
+
+    impl NodeOps for Node {
+        fn inode(&self) -> u64 {
+            1
+        }
+        fn metadata(&self) -> VfsResult<Metadata> {
+            Ok(self.0.metadata.lock().unwrap().clone())
+        }
+        fn update_metadata(&self, _: MetadataUpdate) -> VfsResult<()> {
+            Err(VfsError::Unsupported)
+        }
+        fn filesystem(&self) -> &dyn FilesystemOps {
+            self.0.as_ref()
+        }
+        fn sync(&self, _: bool) -> VfsResult<()> {
+            Ok(())
+        }
+        fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+    }
+
+    impl Pollable for Node {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN | IoEvents::OUT
+        }
+        unsafe fn register_shared(&self, _: &mut dyn axpoll::SharedRegistrationSink, _: IoEvents) {}
+    }
+
+    impl FileNodeOps for Node {
+        fn prepare_write_open(
+            &self,
+            request: &FileOpenRequest<'_>,
+        ) -> NamespaceCompletion<Metadata> {
+            request.admission().check_owner(self.0.as_ref()).unwrap();
+            let metadata = self.0.metadata.lock().unwrap();
+            NamespaceCompletion::new(
+                request.execute(&mut Attempt {
+                    owner: &self.0,
+                    metadata: &metadata,
+                    request,
+                }),
+                None,
+            )
+        }
+        fn read_at(&self, _: &mut [u8], _: u64) -> VfsResult<usize> {
+            Err(VfsError::Unsupported)
+        }
+        fn write_at(&self, _: &[u8], _: u64) -> VfsResult<usize> {
+            Err(VfsError::Unsupported)
+        }
+        fn append(&self, _: &[u8]) -> VfsResult<(usize, u64)> {
+            Err(VfsError::Unsupported)
+        }
+        fn set_len(&self, _: u64) -> VfsResult<()> {
+            Err(VfsError::Unsupported)
+        }
+    }
+
+    struct Attempt<'owner, 'request, 'op> {
+        owner: &'owner Owner,
+        metadata: &'owner Metadata,
+        request: &'request FileOpenRequest<'op>,
+    }
+
+    impl LockedFileOpenAttempt for Attempt<'_, '_, '_> {
+        fn observe(&mut self) -> VfsResult<Metadata> {
+            Ok(self.metadata.clone())
+        }
+        fn commit(&mut self, _: AuthorizedFileOpen<'_>) -> NamespaceOutcome<Metadata> {
+            if !self.owner.preparation.ready.load(Ordering::Relaxed) {
+                let result = self
+                    .request
+                    .preparations()
+                    .insert(NodeIdentity::new(vec![1]), self.owner.preparation.clone());
+                return match result {
+                    Ok(_) => NamespaceOutcome::retry(),
+                    Err(error) => NamespaceOutcome::unchanged(Err(error)),
+                };
+            }
+            self.owner.opened.store(true, Ordering::Relaxed);
+            NamespaceOutcome::unchanged_observed(self.metadata.clone(), Ok(()))
+        }
+    }
+
+    #[test]
+    fn preparation_retries_reauthorize_before_open_publication() {
+        let (begin, changing) = mpsc::channel();
+        let (changed, done) = mpsc::channel();
+        let preparation = Arc::new(Preparation {
+            ready: AtomicBool::new(false),
+            begin,
+            done: Mutex::new(done),
+        });
+        let owner = Arc::new_cyclic(|this| Owner {
+            this: this.clone(),
+            preparation,
+            opened: AtomicBool::new(false),
+            metadata: Mutex::new(Metadata {
+                device: 1,
+                inode: 1,
+                nlink: 1,
+                mode: NodePermission::from_bits_truncate(0o600),
+                node_type: NodeType::RegularFile,
+                uid: 1000,
+                gid: 1000,
+                size: 0,
+                block_size: 4096,
+                blocks: 0,
+                rdev: crate::DeviceId::default(),
+                atime: Duration::ZERO,
+                mtime: Duration::ZERO,
+                ctime: Duration::ZERO,
+            }),
+        });
+        let location = Mountpoint::new_root(&Filesystem::new(owner.clone())).root_location();
+        let write = PreparedWrite::acquire(&location).unwrap();
+        let credentials = MutationCredentials {
+            fsuid: 1000,
+            fsgid: 1000,
+            cap_dac_override: false,
+            cap_dac_read_search: false,
+            ..MutationCredentials::root()
+        };
+        let actor = {
+            let owner = owner.clone();
+            std::thread::spawn(move || {
+                changing.recv_timeout(Duration::from_secs(10)).unwrap();
+                // This separate actor changes visible metadata only after the
+                // first owner gate and admission have ended for preparation.
+                owner.metadata.lock().unwrap().mode = NodePermission::from_bits_truncate(0o400);
+                changed.send(()).unwrap();
+            })
+        };
+        let result = location.prepare_write_open(&write, NodePermission::OTHER_WRITE, &credentials);
+        actor.join().unwrap();
+        assert_eq!(result, Err(VfsError::PermissionDenied));
+        assert!(
+            !owner.opened.load(Ordering::Relaxed),
+            "revoked permission must prevent publication"
+        );
+        owner.metadata.lock().unwrap().mode = NodePermission::from_bits_truncate(0o600);
+        location
+            .prepare_write_open(&write, NodePermission::OTHER_WRITE, &credentials)
+            .unwrap();
+        assert!(owner.opened.load(Ordering::Relaxed));
+        drop(write);
+        location.mountpoint().set_readonly(true).unwrap();
+    }
+}
