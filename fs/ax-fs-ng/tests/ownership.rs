@@ -1047,6 +1047,35 @@ fn staging_preserves_copied_content_identity_and_explicit_cleanup() {
         StagingNode, TimeChange, TrustedInitialization,
     };
 
+    struct HostPages;
+    impl ax_fs_ng::os::FsPageProvider for HostPages {
+        fn alloc_page(&self) -> axfs_ng_vfs::VfsResult<ax_fs_ng::os::FsPage> {
+            let size = ax_fs_ng::os::memory::PAGE_SIZE;
+            let layout = std::alloc::Layout::from_size_align(size, size).unwrap();
+            // SAFETY: the nonzero layout is page-sized and page-aligned.
+            // On success the allocation is exclusively transferred to FsPage.
+            let address = unsafe { std::alloc::alloc_zeroed(layout) };
+            if address.is_null() {
+                return Err(VfsError::NoMemory);
+            }
+            // SAFETY: this unique, writable allocation has exactly one page
+            // and remains owned by the token until this provider deallocates it.
+            Ok(unsafe { ax_fs_ng::os::FsPage::from_raw(address as usize) })
+        }
+        fn dealloc_page(&self, page: ax_fs_ng::os::FsPage) {
+            let size = ax_fs_ng::os::memory::PAGE_SIZE;
+            let layout = std::alloc::Layout::from_size_align(size, size).unwrap();
+            // SAFETY: the provider receives its own unique page token once;
+            // its allocation used the identical size/alignment above.
+            unsafe { std::alloc::dealloc(page.addr() as *mut u8, layout) };
+        }
+        fn virt_to_phys(&self, _: usize) -> Option<usize> {
+            None
+        }
+    }
+    static PAGES: HostPages = HostPages;
+    ax_fs_ng::os::install_page_provider(&PAGES);
+
     let credentials = MutationCredentials::root();
     let filesystem = MemoryFs::new();
     let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
