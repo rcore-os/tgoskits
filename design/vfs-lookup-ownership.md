@@ -3158,6 +3158,28 @@ FAT 的活跃脱链限制和暂存能力保持原状。
 并发、错误顺序或系统调用兼容性。全部 writer 和余下 raw 消费者必须使用共同 owner
 边界后，才可作整体结论。
 
+#### 4.18.6 同命令的删除引用准备
+
+复合命令在一轮结束后可能需要释放原生目录缓存或完成写回，下一轮仍需重新观察
+并授权。`NamespacePreparationContext::unlink_origin` 仅为实际 receiver 保存
+`BackingUnlinkOrigin`，以外层 command 的惰性唯一身份、真实 Location 和声明的
+可写 backing 边绑定来源。锁外 `prepare` 核对原写准备后生成
+`PreparedBackingUnlink`；它保存真正执行过引用准备的父目录与原始名称，没有提交
+权限、admission 或 driver。
+
+`NamespaceOperationContext::unlink_backing` 只允许原 command 使用该准备，重新
+核对租约和严格下降边，再执行新的原生 observed-unlink。内层 authorizer 继续判断
+当前权限、实体、类型和活跃持有者；其他 command 即使持有同一写图，也必须重新
+准备。普通 PreparedUnlink 仍不可 Clone，不能用一般模板复制绕过引用准备。
+`EntityPreparation` 在每个活跃逻辑实体下协调复制与原生删除准备。若空闲期间另一
+轮赢得 copy-up，或本轮授权后发现还缺 marker 引用准备，`defer` 将这一实体的任务
+重新置为待准备；只有本轮没有可见效果才返回 Retry。旧准备随原 Scope 退休，
+旧授权结束后再进入新一轮。
+
+这种绑定避免在 owner gate 内刷新缓存，也避免把每轮重新获取的独立删除当作原
+观察的续走。既有完成旅程验证同命令成功、外命令在进入后端前拒绝、追加准备阶段
+及完整退休顺序；实际 Overlay 和 FAT holder 的判定另需运行证明。
+
 ### 4.19 属性意图的逐层传递
 
 `AuthorizedMetadataChange::forward_to` 只借当前实际尝试内的授权，向已声明的可写
@@ -3277,6 +3299,28 @@ inode 引用。unlink 在取得候选前从真实 strong count 中只排除这�
 这些读取消费者已经接入，命名和元数据修改的共同 writer 边界仍待完成，不能宣称
 完整 Overlay 并发语义或系统调用已经通过。FAT 的更高层包装器仍须按真实来源和
 原生观察组织引用；该局部修复没有放开 FAT 的活跃脱链或暂存能力。
+
+### 4.23 合并命名的受控提交
+
+Overlay 的 `begin_merged_namespace` 在实例 `namespace` gate 内借原 Context 和
+receiver-bound LayerRead，向固定 VFS authorizer 提供当前父目录、源和目标观察。
+Create、symlink、link、unlink、rename 都从 `AuthorizedMutation` 进入提交；旧的
+五个 DirNodeOps 写接口及其 raw 名称辅助函数已删除。不同别名的
+`namespace_domain` 使用同一实例 owner。`CopyForest` 与元数据路径共用
+`EntityPreparation`，在任何可见安装之前完成全部祖先与源实体准备；准备期间不保存
+本轮命名授权。
+
+实际子命令使用原 Context 登记完成责任。删除先核对原生 observed-unlink 的目标
+身份；whiteout 与 opaque marker 使用保存的 mounter，创建还采用已授权的属主
+覆盖 fsuid/fsgid，保留 mounter 的组和能力。源仍为 lower 的目录 rename、exchange
+及显式 whiteout rename 保留现有不支持范围。已有部分安装或 marker 修改时，后续
+失败保留 Uncertain 并禁止重放。普通目录 sink 仍在全部 owner/admission 之外调用。
+
+这次连接尚不代表完整运行验收。特别是 FAT 的合并查询仍可能先生成公开目标包装，
+使随后的原生删除把本轮临时引用识别为活跃持有者；该问题必须通过封闭原生观察
+解决，不能从实际 strong count 中排除任意 Location。marker 清理、并发败选及错误
+后名称仍需直接系统证明。常规数据、打开及余下 raw 元数据消费者尚未迁入这一
+边界，嵌套复制源和工作目录碰撞/恢复也尚未完成。
 
 ## 5. 对象型链接
 

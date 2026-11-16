@@ -1591,7 +1591,7 @@ impl SimpleDirOps for ThreadDir {
                         .snapshot_fs_binding()?
                         .ok_or(VfsError::NotFound)?;
                     let ctx = &ctx_arc.fs;
-                    Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
+                    Ok(crate::pseudofs::proc_mountinfo::render_mounts(ctx))
                 })
                 .into()
             }
@@ -1604,7 +1604,7 @@ impl SimpleDirOps for ThreadDir {
                         .snapshot_fs_binding()?
                         .ok_or(VfsError::NotFound)?;
                     let ctx = &ctx_arc.fs;
-                    Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
+                    Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(ctx))
                 })
                 .into()
             }
@@ -2504,7 +2504,7 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
 #[cfg(all(test, axtest))]
 fn proc_mountinfo_lines_match_linux_layout() -> bool {
     let ctx = current_fs_context();
-    let text = crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx);
+    let text = crate::pseudofs::proc_mountinfo::render_mountinfo(ctx);
     !text.is_empty()
         && text.lines().any(|line| line.contains(" / / "))
         && text.lines().all(|line| {

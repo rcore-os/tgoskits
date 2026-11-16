@@ -40,6 +40,7 @@ pub struct NamespaceCommandScope<'a> {
     pub(super) prepared: PreparedView<'a>,
     tasks: RefCell<Vec<Preparation>>,
     active: Cell<bool>,
+    identity: RefCell<Option<Arc<()>>>,
 }
 
 impl<'a> NamespaceCommandScope<'a> {
@@ -56,6 +57,7 @@ impl<'a> NamespaceCommandScope<'a> {
             prepared,
             tasks: RefCell::new(Vec::new()),
             active: Cell::new(false),
+            identity: RefCell::new(None),
         }
     }
 
@@ -73,6 +75,20 @@ impl<'a> NamespaceCommandScope<'a> {
 
     pub(super) fn end_attempt(&self) {
         self.active.set(false);
+    }
+
+    pub(super) fn identity(&self) -> Arc<()> {
+        self.identity
+            .borrow_mut()
+            .get_or_insert_with(|| Arc::new(()))
+            .clone()
+    }
+
+    pub(super) fn has_identity(&self, identity: &Arc<()>) -> bool {
+        self.identity
+            .borrow()
+            .as_ref()
+            .is_some_and(|own| Arc::ptr_eq(own, identity))
     }
 
     /// Enters a fresh attempt, reusing no driver or authorization from a prior one.
@@ -161,6 +177,34 @@ pub enum PreparationState<T> {
 }
 
 impl<'a> NamespacePreparationContext<'a> {
+    /// Binds lock-external backing-unlink preparation to this exact command
+    /// and receiver. This is a reference-preparation origin, not authorization.
+    pub fn unlink_origin(
+        &self,
+        receiver: &crate::Location,
+    ) -> VfsResult<super::BackingUnlinkOrigin> {
+        self.retired.retire(receiver.clone());
+        if super::super::namespace_admission::owner_address(receiver.filesystem()) != self.owner {
+            return Err(VfsError::BadState);
+        }
+        Ok(super::BackingUnlinkOrigin::new(
+            self.command.identity(),
+            receiver.clone(),
+        ))
+    }
+
+    /// Requests another lock-external phase after a fresh authorized attempt
+    /// discovered more preparation. The task keeps no authorization across it.
+    pub fn defer(&self, key: &NodeIdentity) -> VfsResult<()> {
+        let mut tasks = self.command.tasks.borrow_mut();
+        let task = tasks
+            .iter_mut()
+            .find(|task| task.owner == self.owner && task.key == *key)
+            .ok_or(VfsError::BadState)?;
+        task.ready = false;
+        Ok(())
+    }
+
     pub(super) fn new(
         command: &'a NamespaceCommandScope<'a>,
         owner: &dyn FilesystemOps,

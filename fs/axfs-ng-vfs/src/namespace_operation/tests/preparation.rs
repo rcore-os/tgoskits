@@ -122,7 +122,16 @@ pub(super) fn change_metadata(
         }
         crate::PreparationState::Ready(plan) => {
             assert_eq!(plan.id, node.0.id);
-            node.0.root.lock().unwrap().clone()
+            if node.0.action.load(Ordering::Relaxed) == 6 {
+                request
+                    .preparations()
+                    .defer(&crate::NodeIdentity::new([7].as_slice()))
+                    .unwrap();
+                node.0.action.store(3, Ordering::Relaxed);
+                NamespaceOutcome::retry()
+            } else {
+                node.0.root.lock().unwrap().clone()
+            }
         }
     };
     let name = if node.0.roots.is_empty() {
@@ -134,8 +143,10 @@ pub(super) fn change_metadata(
 }
 
 pub(super) fn exercise() {
+    backing_unlink_origin();
     for (behavior, original, expected) in [
         (3, Ok(()), Ok(())),
+        (6, Ok(()), Ok(())),
         (4, Ok(()), Err(VfsError::NoMemory)),
         (5, Ok(()), Err(VfsError::Io)),
         (
@@ -155,7 +166,8 @@ pub(super) fn exercise() {
         *logical.root.lock().unwrap() = NamespaceOutcome::applied(snapshot(), original);
         let write = PreparedWrite::acquire(&root).unwrap();
         let result = crate::NamespaceCommandScope::run_write(&write, |command| {
-            for round in 0..2 {
+            let rounds = if behavior == 6 { 3 } else { 2 };
+            for round in 0..rounds {
                 let scope = command.attempt::<Metadata>()?;
                 {
                     let context = scope.context();
@@ -173,7 +185,7 @@ pub(super) fn exercise() {
                 let outcome = scope
                     .finish()
                     .unwrap_or_else(|_| panic!("actual owner mismatch"));
-                if round == 0 {
+                if round + 1 < rounds {
                     assert_eq!(outcome.state(), NamespaceState::Retry);
                     command.prepare()?;
                 } else {
@@ -198,7 +210,7 @@ pub(super) fn exercise() {
                 .iter()
                 .filter(|event| matches!(event, Event::Prepare(_)))
                 .count(),
-            2
+            if behavior == 6 { 3 } else { 2 }
         );
         assert_eq!(
             trace
@@ -217,9 +229,21 @@ pub(super) fn exercise() {
                 .iter()
                 .filter(|event| matches!(event, Event::DropPreparation(..)))
                 .count(),
-            if behavior == 4 { 2 } else { 4 }
+            if behavior == 4 {
+                2
+            } else if behavior == 6 {
+                6
+            } else {
+                4
+            }
         );
-        let calls = if behavior == 4 { 1 } else { 2 };
+        let calls = if behavior == 4 {
+            1
+        } else if behavior == 6 {
+            3
+        } else {
+            2
+        };
         assert_eq!(native.backend_calls.load(Ordering::Relaxed), calls);
         assert_eq!(logical.backend_calls.load(Ordering::Relaxed), calls);
         drop(trace);
@@ -231,4 +255,73 @@ pub(super) fn exercise() {
         drop(owner);
         assert!(weak_owner.upgrade().is_none());
     }
+}
+
+fn backing_unlink_origin() {
+    let events = Events::default();
+    let owner = Arc::new(Owner(events.clone()));
+    let (native, backing) = filesystem(1, vec![], &events, &owner, false, false);
+    let (logical, root) = filesystem(0, vec![backing.clone()], &events, &owner, false, false);
+    let write = PreparedWrite::acquire(&root).unwrap();
+    let command = crate::NamespaceCommandScope::new(&write);
+    let retired = MutationRetire::new();
+    // This factory grants reference preparation only. Both attempts below
+    // still execute the actual native observe/authorize/resume protocol.
+    let preparation = crate::NamespacePreparationContext::new(&command, logical.as_ref(), &retired);
+    assert!(matches!(
+        preparation.unlink_origin(&backing),
+        Err(VfsError::BadState)
+    ));
+    let origin = preparation.unlink_origin(&root).unwrap();
+    assert!(matches!(
+        origin.prepare(&write, &root, "victim"),
+        Err(VfsError::BadState)
+    ));
+    let prepared = origin.prepare(&write, &backing, "victim").unwrap();
+    let foreign = crate::NamespaceCommandScope::new(&write);
+    for (command, wrong) in [(&foreign, true), (&command, false)] {
+        let scope = command.attempt::<()>().unwrap();
+        {
+            let context = scope.context();
+            let calls = native.backend_calls.load(Ordering::Relaxed);
+            let started = context.unlink_backing(&prepared, true, &MutationCredentials::root());
+            if wrong {
+                assert!(matches!(started, Err(VfsError::BadState)));
+                assert_eq!(native.backend_calls.load(Ordering::Relaxed), calls);
+            } else {
+                let result = started.unwrap().resume();
+                assert_eq!(
+                    (result.state(), result.result()),
+                    (NamespaceState::Applied, Ok(()))
+                );
+                assert!(matches!(
+                    result.observation(),
+                    Some(NamespaceEffect::Unlink(_))
+                ));
+            }
+            // The modeled logical prefix is intentionally effect-free. This
+            // component journey proves child admission/completion and binding,
+            // not Overlay permissions or userspace namespace semantics.
+            *scope.state().root.borrow_mut() = Some(
+                NamespaceCompletion::new(NamespaceOutcome::unchanged(Ok(())), None)
+                    .bind(logical.as_ref()),
+            );
+        }
+        scope
+            .finish()
+            .unwrap_or_else(|_| panic!("bound unlink completion"))
+            .into_result()
+            .unwrap();
+        assert!(admissions_ended(&events.lock().unwrap()));
+    }
+    foreign
+        .finish::<()>(Ok(NamespaceOutcome::unchanged(Ok(()))))
+        .unwrap()
+        .into_result()
+        .unwrap();
+    command
+        .finish::<()>(Ok(NamespaceOutcome::unchanged(Ok(()))))
+        .unwrap()
+        .into_result()
+        .unwrap();
 }

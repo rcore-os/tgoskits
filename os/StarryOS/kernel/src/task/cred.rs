@@ -116,7 +116,7 @@ impl FsCredentialsSnapshot {
             cap_dac_read_search: initial_namespace && cred.has_cap_dac_read_search(),
             cap_fowner: initial_namespace && cred.has_cap_fowner(),
             cap_mknod: initial_namespace && cred.has_cap(CAP_MKNOD),
-            cap_chown: initial_namespace && cred.has_cap(CAP_CHOWN),
+            cap_chown: initial_namespace && cred.has_cap_chown(),
             cap_fsetid: initial_namespace && cred.has_cap(CAP_FSETID),
         }
     }

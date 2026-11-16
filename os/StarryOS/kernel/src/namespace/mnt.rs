@@ -48,8 +48,4 @@ impl MntNamespace {
     pub(crate) fn creator(&self) -> &Arc<RawSpinLock<UserNamespace>> {
         &self.creator
     }
-
-    pub fn id(&self) -> u64 {
-        self.core.id()
-    }
 }

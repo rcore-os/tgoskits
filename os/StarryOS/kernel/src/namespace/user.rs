@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{StarryError, StarryResult, sync::RawSpinLock};
 
@@ -8,7 +7,6 @@ use crate::{StarryError, StarryResult, sync::RawSpinLock};
 pub static ROOT_USER_NS: ax_lazyinit::LazyLock<Arc<RawSpinLock<UserNamespace>>> =
     ax_lazyinit::LazyLock::new(|| Arc::new(RawSpinLock::new(UserNamespace::new_root())));
 
-static NEXT_USER_NS_ID: AtomicU64 = AtomicU64::new(1);
 /// Highest parent level allowed by Linux's level-33 child limit.
 const MAX_PARENT_LEVEL: u32 = 32;
 
@@ -26,8 +24,6 @@ const MAX_PARENT_LEVEL: u32 = 32;
 /// `gid_mapped`, so the two sides are independent — a half-configured
 /// namespace correctly returns 65534 for the unmapped side.
 pub struct UserNamespace {
-    /// Globally unique namespace identifier (exposed via /proc/PID/ns/user).
-    pub id: u64,
     lineage: UserNamespaceLineage,
     /// Whether this is the initial root user namespace or a child
     /// namespace that had both uid_map and gid_map configured.  Kept
@@ -52,7 +48,6 @@ pub(crate) struct UserNamespaceLineage {
 impl UserNamespace {
     pub fn new_root() -> Self {
         Self {
-            id: NEXT_USER_NS_ID.fetch_add(1, Ordering::Relaxed),
             lineage: UserNamespaceLineage {
                 parent: None,
                 level: 0,
@@ -75,7 +70,6 @@ impl UserNamespace {
             return Err(StarryError::StorageFull);
         }
         Ok(Self {
-            id: NEXT_USER_NS_ID.fetch_add(1, Ordering::Relaxed),
             lineage: UserNamespaceLineage {
                 parent: Some(parent),
                 level: parent_level + 1,

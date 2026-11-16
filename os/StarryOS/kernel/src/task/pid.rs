@@ -169,10 +169,6 @@ impl PidNamespaceId {
         let id = NEXT_NAMESPACE_ID.fetch_add(1, Ordering::Relaxed);
         Self(NonZeroU64::new(id).expect("PID namespace generation overflow"))
     }
-
-    pub const fn get(self) -> u64 {
-        self.0.get()
-    }
 }
 
 pub type PidNamespaceRef = Arc<PidNamespace>;

@@ -54,6 +54,10 @@ pub struct RenameRequest<'a> {
 }
 
 impl<'a> RenameRequest<'a> {
+    pub(super) fn parent_locations(&self) -> (&Location, &Location) {
+        (self.source.0, self.destination.0)
+    }
+
     pub(crate) fn new(
         source: (&'a Location, &'a str),
         destination: (&'a Location, &'a str),

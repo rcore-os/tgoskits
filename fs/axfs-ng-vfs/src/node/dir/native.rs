@@ -58,7 +58,7 @@ impl<'a> NamespaceDriverRequest<'a> {
         self.context.retired()
     }
 
-    pub fn context(&self) -> &NamespaceOperationContext<'a> {
+    pub fn context(&self) -> &'a NamespaceOperationContext<'a> {
         self.context
     }
 

@@ -4,7 +4,9 @@ mod backing_query;
 pub use backing_query::{BackingQueryContext, BackingQueryRequest};
 mod directory;
 pub use directory::{DirectoryBatch, DirectoryRecord};
+mod backing_unlink;
 mod preparation;
+pub use backing_unlink::{BackingUnlinkOrigin, PreparedBackingUnlink};
 mod read_result;
 pub use preparation::{
     NamespaceCommandScope, NamespacePreparation, NamespacePreparationContext, PreparationState,

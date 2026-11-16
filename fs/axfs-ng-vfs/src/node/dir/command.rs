@@ -346,14 +346,21 @@ impl AuthorizedUnlink<'_> {
 }
 
 impl<'request> NamespaceMutation<'request> {
+    /// Exact parent locations retained by the privately constructed command.
+    /// Composite preparation must preserve their mounts as well as their nodes.
+    pub fn parent_locations(&self) -> (&Location, &Location) {
+        match self {
+            Self::Create(request) => (&request.target.parent, &request.target.parent),
+            Self::Link(request) => (&request.target.parent, &request.target.parent),
+            Self::Unlink(request) => (&request.target.parent, &request.target.parent),
+            Self::Rename(request) => request.parent_locations(),
+        }
+    }
+
     /// Immutable parent references for backend owner validation before locking.
     pub fn parents(&self) -> (&DirEntry, &DirEntry) {
-        match self {
-            Self::Create(request) => (request.parent(), request.parent()),
-            Self::Link(request) => (request.parent(), request.parent()),
-            Self::Unlink(request) => (request.parent(), request.parent()),
-            Self::Rename(request) => (request.source_parent(), request.destination_parent()),
-        }
+        let (source, destination) = self.parent_locations();
+        (source.entry(), destination.entry())
     }
 
     pub fn execute(

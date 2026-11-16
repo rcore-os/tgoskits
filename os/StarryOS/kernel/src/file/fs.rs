@@ -37,7 +37,7 @@ pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&FsContext) -> StarryResult<R>) -
         .ok_or(StarryError::BadState)?;
     let fs = &binding.fs;
     if dirfd == AT_FDCWD {
-        f(&fs)
+        f(fs)
     } else {
         let dir = Directory::from_fd(dirfd)?.inner().clone();
         f(&fs.with_dirfd(dir)?)

@@ -210,6 +210,53 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
         directory: &Location,
         names: &mut alloc::collections::BTreeMap<alloc::string::String, DirentInfo>,
     ) -> ReadResult<()> {
+        self.visit_records(directory, |record| {
+            let Ok(name) = core::str::from_utf8(&record.name) else {
+                return Ok(());
+            };
+            if matches!(name, "." | "..") || name == OPAQUE_MARKER_NAME {
+                return Ok(());
+            }
+            if record.node_type == NodeType::CharacterDevice
+                && self
+                    .child_snapshot(directory, name)?
+                    .as_ref()
+                    .is_some_and(|(_, metadata)| Self::whiteout(metadata))
+            {
+                names.remove(name);
+            } else {
+                names.insert(
+                    name.into(),
+                    DirentInfo {
+                        ino: record.inode,
+                        node_type: record.node_type,
+                    },
+                );
+            }
+            Ok(())
+        })
+    }
+
+    pub(super) fn raw_names(
+        &self,
+        directory: &Location,
+    ) -> ReadResult<alloc::vec::Vec<alloc::string::String>> {
+        let mut names = alloc::vec::Vec::new();
+        self.visit_records(directory, |record| {
+            let name = core::str::from_utf8(&record.name).map_err(|_| VfsError::InvalidData)?;
+            if !matches!(name, "." | "..") {
+                names.push(name.into());
+            }
+            Ok(())
+        })?;
+        Ok(names)
+    }
+
+    fn visit_records(
+        &self,
+        directory: &Location,
+        mut visit: impl FnMut(&DirectoryRecord) -> ReadResult<()>,
+    ) -> ReadResult<()> {
         self.filesystem.credentials().check_permission(
             &self.backing_metadata(directory)?,
             NodePermission::OTHER_READ,
@@ -237,28 +284,7 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
             }
             for record in batch.records() {
                 cursor = record.next;
-                let Ok(name) = core::str::from_utf8(&record.name) else {
-                    continue;
-                };
-                if matches!(name, "." | "..") || name == OPAQUE_MARKER_NAME {
-                    continue;
-                }
-                if record.node_type == NodeType::CharacterDevice
-                    && self
-                        .child_snapshot(directory, name)?
-                        .as_ref()
-                        .is_some_and(|(_, metadata)| Self::whiteout(metadata))
-                {
-                    names.remove(name);
-                } else {
-                    names.insert(
-                        name.into(),
-                        DirentInfo {
-                            ino: record.inode,
-                            node_type: record.node_type,
-                        },
-                    );
-                }
+                visit(record)?;
             }
         }
     }
@@ -280,7 +306,7 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
         self.child_snapshot(parent, name)
     }
 
-    fn child_snapshot(
+    pub(super) fn child_snapshot(
         &self,
         parent: &Location,
         name: &str,
@@ -294,13 +320,13 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
         Ok(Some((entry, metadata)))
     }
 
-    fn opaque(&self, directory: &Location) -> ReadResult<bool> {
+    pub(super) fn opaque(&self, directory: &Location) -> ReadResult<bool> {
         Ok(self
             .child_snapshot(directory, OPAQUE_MARKER_NAME)?
             .is_some())
     }
 
-    fn lower_children(
+    pub(super) fn lower_children(
         &self,
         parents: &[Location],
         name: &str,
