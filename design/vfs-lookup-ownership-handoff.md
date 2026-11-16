@@ -182,3 +182,33 @@ cargo xtask arceos test qemu --test-group rust --arch riscv64 --plan
 本次清理已完成：当前工作树根目录 `target` 在收尾核对时已不存在，未把历史清理量计入本次结果。删除本任务 e2fsprogs-1.47.3 临时源码、构建目录、工具副本和下载归档，移除实占 95,031,296 字节，约 90.6 MiB；文件系统可用空间同期增加 94,830,592 字节，约 90.4 MiB。删除前确认没有进程持用该临时树，构建目录中的 `config.log` 与 `parse-types.log` 另行复制并核验摘要，原日志目录和验证报告保留。
 
 清理前后 HEAD、源码 tree 和干净工作区状态一致；实际记录为本会话 `artifacts/cleanup-result.json`，后续提交只补充此清理结果。源码、提交、设计、报告、原始日志、Cargo 全局缓存、邻居工作树及未知工具未删除。接手时应预期需要重新构建并重新取得临时 e2fsprogs 工具，原运行证据仍按本文件所列版本保留。
+
+## 7. 接续实现
+
+本节记录从交接提交 `b64f42bdbb0ccc41e15df7df6c8f10a359f7097e` 继续实施的结果。新增 AX 所有权组件对应主设计第 3.8.1、3.8.7、3.8.8 和 3.8.13 节；生产消费者迁移仍在后续范围，PR 保持草稿。
+
+### 7.1 路径状态所有者
+
+[`FsContextOwner`](../fs/ax-fs-ng/src/fs_core/owner/mod.rs) 明确保存任务份额，`FsContextSnapshot` 只保留本次选定的路径、真实 VFS Core 和来源 Weak。`share_for_child` 受检增加份额；`fork_owner` 从冻结路径创建独立状态，能够保留已经脱链的 cwd。namespace 属于各 owner 的绑定，共享 State 只保存 root/cwd 和份额。公开入口集中于 `ax_fs_ng::fs_context`，同时重新导出本接口使用的 VFS namespace、克隆映射和路径类型，避免把旧 AX namespace 误认为实际 Core。
+
+[`PreparedFsUpdate`](../fs/ax-fs-ng/src/fs_core/owner/update.rs) 把 cwd、root 和 join 分为不同命令。提交先复核来源分配、namespace 及适用的 `SoleOwner` 条件，再在同一个 IRQ-safe 短锁内移动引用；成功旧值与拒绝输入都交回 `FsUpdateRetirement`。join 保持原共享路径状态，重设 root/cwd，只修改当前 owner 的 namespace；同 Core 的 join 也执行重设。路径内容已经合法变化时，原快照仍可准备仅修改 root 或 cwd 的命令。
+
+[`FsContextSnapshot::pivot_root`](../fs/ax-fs-ng/src/fs_core/owner/pivot.rs) 通过实际 VFS Core 移动拓扑，再按 exact mount+dentry 修订登记的共享 State。全局可睡眠序列门覆盖这两个阶段，registry 修订不按 namespace 过滤。扫描时取得的 State 强引用与移出的路径继续交给 `FsPivotRetirement`，退出调用者 writer 后再释放。普通快照和路径修改不取此序列门。
+
+### 7.2 确定性证明
+
+5 个组件旅程使用真实 MemoryFs、VFS 挂载树及两个宿主线程，分别覆盖共享路径与任务 namespace 分离、冻结快照 fork 和实际克隆映射、成败更新的最后路径退休、两次真实 pivot 的顺序，以及 registry 最后 State 的退休。它们不执行 Starry 系统调用，也不替代真实内核运行时验证。
+
+错误提交 `ca8a095c38` 仅在 VFS 拓扑移动后提前释放序列门。相同的 `pivots_order_real_topology_and_exact_shared_path_revisions` 在全部 5 个功能组合中都因生产序列门未覆盖修订阶段而失败；恢复提交 `55894fad2e` 通过同一旅程。红绿使用同一个项目入口和选择基线：
+
+```sh
+cargo xtask test --since b64f42bdbb0ccc41e15df7df6c8f10a359f7097e
+```
+
+恢复后的 `ax-fs-ng` 5 个 profile 全部通过，单元数量依次为 268、157、137、238、128；每个 profile 还执行相应集成测试和禁止复制 Owner 的 compile-fail doctest。初版曾因测试并发扫描同一 registry 而误判 State 寿命，已对共享该全局资源的测试使用同一隔离门；这次用例修正不计作产品回归红证据。公开重导出整理后的最终代码检查记录另保存在 [本轮证据](vfs-context-owner-evidence.json)。
+
+### 7.3 生产迁移边界
+
+`FS_CONTEXT`、ROOT、Kernel clone/unshare/setns/exit 和现有 `FsContext` 尚未迁入这些新类型。旧 AX namespace 与新 VFS Core 的生产连接、creator、Scope 中 FS/MNT 成对安装，以及全部调用者保护外退休，仍须在下一实现单元中完成。当前类型测试与组件红绿没有解决这些系统调用路径，也没有取得独立审查批准或性能结论。
+
+本轮重新执行的 Kernel Clippy 复现原有 Overlay 15 处旧接口编译错误，首项失败后 71 项未运行。标准库选择器选中 18 包，恢复后的 17 包通过，唯一失败仍为 `starry-kernel`，整体退出码为 1。未执行 QEMU、四架构系统调用回归或性能比较；第 4 节与第 5 节其余未完成项继续有效。
