@@ -407,7 +407,7 @@ find "$PWD" "$PWD/.." "$HOME" /home -maxdepth 4 -type f -name Makefile \
 ```bash
 docker run --rm -v "$PWD:/workspace" -w /workspace \
   ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest \
-  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case smoke'
+  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case qemu/loongarch64/smoke'
 ```
 
 注意：
@@ -682,7 +682,7 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
   bash -lc 'cargo xtask axvisor test qemu --list --arch loongarch64'
 docker run --rm -v "$PWD:/workspace" -w /workspace \
   ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest \
-  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case smoke'
+  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case qemu/loongarch64/smoke'
 ```
 
 修改相关 Rust 逻辑时，在格式化后执行定向静态检查：
@@ -843,7 +843,7 @@ FIT 或 FDT initramfs 在 `VM Load` 后、`Memory Map` 前停住时，核对
 `someboot/tests/aarch64_pre_mmu_entropy.rs` 同时检查熵与宿主归档的早期发布。
 QEMU 定向回归使用 `cargo xtask starry test qemu --arch aarch64 --test-case
 qemu/host-initramfs`、`qemu/host-initramfs-disk-fallback`，以及 `cargo xtask
-axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs`。
+axvisor test qemu --arch aarch64 --test-group normal --test-case qemu/aarch64/memory-web/memory-root`。
 axbuild 读取 case 下的 `host-initramfs.toml` 生成归档，内存根用例不接磁盘，
 磁盘回退用例保留主 rootfs drive。ArceOS 的内建和外部镜像测试命令见设计文档。
 Axvisor 宿主 archive 可以与明确命名的 guest drive 并存；判断是否准备宿主根盘时

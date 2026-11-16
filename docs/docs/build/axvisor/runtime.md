@@ -132,8 +132,8 @@ QEMU 或板卡命令行加入 `axvisor.vm_start=<id>[,<id>...]` 才会开机创�
 
 ```bash
 cargo xtask axvisor qemu \
-  -c test-suit/axvisor/normal/qemu-web-ui/build-aarch64-unknown-none-softfloat.toml \
-  --qemu-config test-suit/axvisor/normal/qemu-web-ui/web-ui/qemu-aarch64-hostfwd.toml \
+  -c test-suit/axvisor/normal/qemu/aarch64/web-ui/build-aarch64-unknown-none-softfloat.toml \
+  --qemu-config test-suit/axvisor/manual/common/web-ui/qemu-aarch64-hostfwd.toml \
   --arch aarch64
 ```
 
@@ -162,18 +162,13 @@ management HTTP server (axum) listening on 127.0.0.1:8080
 | 浏览器无法连接 | QEMU 配置没有 `hostfwd` | 加入端口转发参数 |
 | 界面看不到终端面板 | 该构建没有启用 `web` | 启用该特性 |
 | 构建进程被杀、失败信息与代码无关 | 内存不足时 OOM killer 静默终止 cargo | 用 `CARGO_BUILD_JOBS=2` 限制并行度 |
-| `--qemu-config` 报No such file | 该参数相对**仓库根**，而用例注释里写的是相对用例目录 | 用 `test-suit/axvisor/normal/qemu-web-ui/web-ui/qemu-<arch>-hostfwd.toml` |
+| `--qemu-config` 报No such file | 该参数相对**仓库根**，而用例注释里写的是相对用例目录 | 用 `test-suit/axvisor/manual/common/web-ui/qemu-<arch>-hostfwd.toml` |
 
 这些现象分别落在工具链、端口、特性配置和构建环境四类，按处理栏逐项排查即可。
 
 ### 1.5 本地演示配置
 
-`test-suit/axvisor/normal/qemu-web-ui/` 下有两类配置，用途不同：
-
-| 配置 | 用途 |
-| :-- | :-- |
-| `build-<target>.toml` | **测试用例**。命名匹配用例发现规则，会出现在 `cargo xtask axvisor test` 的运行里 |
-| `demo-fs-build*.toml` | **本地演示**。命名不匹配发现规则，因此不会出现在任何测试运行中 |
+自动测试的构建和启动配置位于`normal/qemu/<arch>/<启动组>`；公共Web实现位于`normal/qemu/common/web-ui`。手动演示配方`demo-fs-build.toml`与hostfwd配置一起放在`test-suit/axvisor/manual/common/web-ui/`，不匹配自动测试构建入口命名，因此不会增加测试启动。
 
 当前演示配置启用 `web-ui` + `web` + `ax-driver/nvme`，并且**故意不带
 `vm_configs`**：启动时不建立 builtin 客户机，页面上的每一个客户机都来自操作者
@@ -185,8 +180,8 @@ management HTTP server (axum) listening on 127.0.0.1:8080
 ```bash
 # aarch64
 cargo xtask axvisor qemu \
-  -c test-suit/axvisor/normal/qemu-web-ui/demo-fs-build.toml \
-  --qemu-config test-suit/axvisor/normal/qemu-web-ui/web-ui/qemu-aarch64-hostfwd.toml \
+  -c test-suit/axvisor/manual/common/web-ui/demo-fs-build.toml \
+  --qemu-config test-suit/axvisor/manual/common/web-ui/qemu-aarch64-hostfwd.toml \
   --arch aarch64
 
 ```
@@ -238,7 +233,7 @@ cargo xtask axvisor qemu \
   --vmconfigs os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml
 
 # x86 UEFI/VMX case 验证宿主启动与宿主 NVMe 文件读写
-cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/vmx/smoke
 
 # LoongArch LVZ
 cargo xtask axvisor qemu --arch loongarch64 \

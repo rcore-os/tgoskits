@@ -170,3 +170,5 @@ cargo xtask axvisor test qemu --arch riscv64 --test-group normal --test-case smp
 
 若需要回滚，应整体移除 RISC-V IPI 请求处理、独立 QEMU 用例和本设计文档；不得保留公共层
 架构分支或恢复当前 vCPU 直接注入的特殊路径。
+
+当前维护入口为`test-suit/axvisor/normal/qemu/riscv64/smp-ipi`，客户机配置为本目录`guest.toml`。该入口使用已验证的虚拟化Linux/initramfs/virtio块设备启动合同，保留3个vCPU及原SBI IPI和中断计数断言，整组预算120秒；旧OS目录配置不再被此测试引用。

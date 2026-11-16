@@ -1,0 +1,2 @@
+vm_configs = ["test-suit/axvisor/normal/qemu/x86_64/common/guests/acpi-off/guest.toml"]
+busybox_initramfs = "tmp/axbuild/axvisor/qemu-acpi-off/initramfs-x86_64.cpio.gz"

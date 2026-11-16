@@ -1,0 +1,35 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "rv64",
+    "-machine",
+    "virt",
+    "-bios",
+    "default",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-riscv64-alpine.img",
+    "-append",
+    "root=/dev/nvme0n1 rw init=/bin/sh axvisor.vm_start=1,2",
+    "-m",
+    "4G",
+]
+fail_regex = [
+    "(?m)^VIRTIO_BLK_MOUNT_FAIL:",
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+    "(?i)login incorrect",
+    "(?i)permission denied",
+    "(?m)^(?:echo|cat|rm):\\s",
+]
+timeout = 300
+to_bin = true
+uefi = false
+
+[axbuild]
+checks = [
+    "tests/shell-and-block.toml",
+]

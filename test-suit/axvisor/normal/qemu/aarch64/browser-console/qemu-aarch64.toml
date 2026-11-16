@@ -1,0 +1,23 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "2",
+    "-m",
+    "512M",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)kernel panic",
+]
+timeout = 180
+to_bin = true
+uefi = false
+
+[axbuild]
+checks = [
+    "tests/browser-console.toml",
+]

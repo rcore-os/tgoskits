@@ -9,8 +9,18 @@ use std::{
 
 use anyhow::{Context, ensure};
 use axvmconfig::{BOOT_IMAGE_PATH_FIELDS, BUILTIN_GUEST_DIR, GuestConfig};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// Machine-readable handoff for callers building an OS in a child process.
+pub(crate) const BUNDLE_REPORT_PREFIX: &str = "AXBUILD_GUEST_BUNDLE: ";
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GuestBundleArtifact {
+    pub(crate) path: PathBuf,
+    pub(crate) sha256: String,
+}
 
 #[derive(Default, Deserialize)]
 pub(crate) struct ResourceInputs {
@@ -49,7 +59,9 @@ pub(crate) fn case_inputs(case_dir: &Path) -> anyhow::Result<ResourceInputs> {
 }
 
 /// Appends a newc bundle to an existing archive, using Linux's archive stream
-/// semantics. No boot payload address or kernel compilation state is changed.
+/// semantics. `output` supplies the directory and name prefix; the returned
+/// initramfs path identifies immutable content, so pending boots cannot be replaced.
+/// No boot payload address or kernel compilation state is changed.
 ///
 /// `web_ui_dist` is the dashboard `dist` tree built by [`super::web_ui`] (or
 /// `None` when the build carries no UI) and is packed into the builtin package
@@ -203,22 +215,45 @@ pub(crate) fn attach_with_external_assets(
     }
     append_guest_bundle(output_file.as_file_mut(), archive.path())?;
     output_file.flush()?;
-    output_file.persist(output).map_err(|error| error.error)?;
-    // Keep the exact packaged configurations available to management clients
-    // and host probes that create a VM again after the archive has been freed.
+    // A board may wait for a lease after packaging. Another invocation must
+    // never replace that pending boot's archive or guest catalog.
+    let digest = Sha256::digest(fs::read(output_file.path())?);
+    let stem = output
+        .file_stem()
+        .context("archive output has no stem")?
+        .to_string_lossy();
+    let output = output.with_file_name(format!("{stem}-{digest:x}.cpio"));
+    output_file.persist(&output).map_err(|error| error.error)?;
+    // Publish the matching catalog atomically, including when two invocations
+    // package identical content. Readers only observe complete directories.
     let configs = output.with_extension("configs");
-    if configs.exists() {
-        fs::remove_dir_all(&configs)?;
-    }
-    fs::create_dir_all(&configs)?;
+    let staged_configs = tempfile::tempdir_in(configs.parent().context("catalog parent")?)?;
     for entry in fs::read_dir(builtin.join("configs"))? {
         let entry = entry?;
-        fs::copy(entry.path(), configs.join(entry.file_name()))?;
+        fs::copy(entry.path(), staged_configs.path().join(entry.file_name()))?;
     }
-    let digest = Sha256::digest(fs::read(output)?);
+    if let Err(error) = fs::rename(staged_configs.path(), &configs) {
+        if !configs.is_dir() {
+            return Err(error.into());
+        }
+        for entry in fs::read_dir(staged_configs.path())? {
+            let entry = entry?;
+            ensure!(
+                fs::read(entry.path())? == fs::read(configs.join(entry.file_name()))?,
+                "published guest catalog differs from its content-addressed archive"
+            );
+        }
+    }
     println!(
         "Axvisor host initramfs {} sha256={digest:x}",
         output.display()
+    );
+    println!(
+        "{BUNDLE_REPORT_PREFIX}{}",
+        serde_json::to_string(&GuestBundleArtifact {
+            path: output.clone(),
+            sha256: format!("{digest:x}"),
+        })?
     );
     *initramfs = Some(output.to_string_lossy().into_owned());
     Ok(())
@@ -253,6 +288,42 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn later_packaging_does_not_replace_an_already_returned_boot_payload() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("host.cpio");
+        let config = directory.path().join("guest.toml");
+        let mut first_archive = None;
+        let mut guest = GuestConfig::default();
+        guest.base.id = 1;
+        guest.kernel.kernel_path = "/external/first-kernel".into();
+        fs::write(&config, toml::to_string(&guest).unwrap()).unwrap();
+        attach_with_external_assets(
+            std::slice::from_ref(&config),
+            false,
+            None,
+            &output,
+            &mut first_archive,
+            true,
+        )
+        .unwrap();
+        let first = PathBuf::from(first_archive.unwrap());
+        let original = fs::read(&first).unwrap();
+        guest.base.id = 2;
+        guest.kernel.kernel_path = "/external/second-kernel".into();
+        fs::write(&config, toml::to_string(&guest).unwrap()).unwrap();
+        let mut second_archive = None;
+        attach_with_external_assets(&[config], false, None, &output, &mut second_archive, true)
+            .unwrap();
+        assert_eq!(
+            Sha256::digest(fs::read(&first).unwrap()),
+            Sha256::digest(original),
+            "a pending boot must retain its original guest catalog"
+        );
+        assert_ne!(first.to_string_lossy(), second_archive.unwrap());
+        assert!(first.with_extension("configs").join("vm-1.toml").is_file());
+    }
 
     #[test]
     fn package_rewrites_all_boot_assets_and_keeps_writable_disks_external() {
@@ -292,7 +363,7 @@ mod tests {
             &mut archive,
         )
         .unwrap();
-        let entries = parse_newc_entries(&fs::read(&output).unwrap());
+        let entries = parse_newc_entries(&fs::read(archive.as_ref().unwrap()).unwrap());
         let contents = String::from_utf8(
             entries[&format!("guest/builtin/configs/vm-{}.toml", guest.base.id)].clone(),
         )
@@ -311,10 +382,10 @@ mod tests {
         }
         assert!(contents.contains("/guest/writable.img"));
         assert!(!entries.contains_key("guest/writable.img"));
-        let prior = fs::read(&output).unwrap();
+        let prior = fs::read(archive.as_ref().unwrap()).unwrap();
         fs::remove_file(directory.path().join("kernel_path")).unwrap();
         assert!(attach(&[config], false, None, &output, &mut None).is_err());
-        assert_eq!(fs::read(&output).unwrap(), prior);
+        assert_eq!(fs::read(archive.as_ref().unwrap()).unwrap(), prior);
     }
 
     #[test]
@@ -343,7 +414,7 @@ mod tests {
 
         attach(&[config], false, None, &output, &mut archive).unwrap();
 
-        let payload = fs::read(&output).unwrap();
+        let payload = fs::read(archive.as_ref().unwrap()).unwrap();
         assert_eq!(&payload[..2], &[0x1f, 0x8b]);
         assert!(payload.len() < SESSION_UPLOAD_COMPRESS_THRESHOLD as usize);
         let mut inflated = Vec::new();
@@ -373,7 +444,7 @@ mod tests {
         let mut archive = None;
 
         attach_with_external_assets(&[config], false, None, &output, &mut archive, true).unwrap();
-        let entries = parse_newc_entries(&fs::read(&output).unwrap());
+        let entries = parse_newc_entries(&fs::read(archive.as_ref().unwrap()).unwrap());
         let contents = String::from_utf8(
             entries[&format!(
                 "guest/builtin/configs/vm-{}.toml",
@@ -403,15 +474,15 @@ mod tests {
 
         attach(&[], false, Some(&dist), &output, &mut archive).unwrap();
 
-        let entries = parse_newc_entries(&fs::read(&output).unwrap());
+        let entries = parse_newc_entries(&fs::read(archive.as_ref().unwrap()).unwrap());
         assert_eq!(entries["guest/builtin/web-ui/index.html"], b"shell");
         assert_eq!(
             entries["guest/builtin/web-ui/assets/index-abc123.js"],
             b"bundle"
         );
         assert_eq!(
-            archive.as_deref(),
-            Some(output.as_os_str().to_str().unwrap())
+            Path::new(archive.as_ref().unwrap()).parent(),
+            output.parent()
         );
 
         // Without guests and without a dashboard the bundle is a no-op, so a

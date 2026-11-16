@@ -1,0 +1,30 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "2",
+    "-append",
+    "root=/dev/nvme0n1 rw",
+    "-snapshot",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-m",
+    "4g",
+]
+fail_regex = [
+    "(?i)\bpanic(?:ked)?\b",
+    "(?i)kernel panic",
+]
+timeout = 600
+to_bin = true
+uefi = false
+
+[axbuild]
+checks = [
+    "tests/control-plane.toml",
+]

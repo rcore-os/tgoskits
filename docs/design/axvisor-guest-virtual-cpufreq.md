@@ -1,6 +1,6 @@
 # AxVisor 客户机虚拟调频
 
-AxVisor 通过 `qemu,virtual-cpufreq` 为 Linux 客户机提供归一化性能提示，同时保持 RK3588 CPUFreq、SCMI、PMIC、DSU 和 thermal 的宿主所有权。当前 OrangePi 生产镜像仍使用独立的 `robot-linux/perf30` host-performance profile；只有带 Linux backport 的镜像才声明该设备。这样 Linux 6.1.99 没有前端时不会把宿主高性能误报成客户机调频已经可用。
+AxVisor 通过 `qemu,virtual-cpufreq` 为 Linux 客户机提供归一化性能提示，同时保持 RK3588 CPUFreq、SCMI、PMIC、DSU 和 thermal 的宿主所有权。普通CI机器人仍使用生产Linux镜像。未加入CI的调频/性能场景已整合到 `apps/suite/axvisor/board/orangepi-5-plus/robot-linux-perf30`，明确要求带Linux backport的客户机内核，并声明虚拟调频设备；前端缺失时失败，不能以宿主高性能代替客户机调频。该整合入口本轮未运行验收。
 
 ## 1. 运行时边界
 
@@ -55,12 +55,12 @@ MMIO 读错误会经设备模型变成 vCPU Fault 并停止整个 VM run，因�
 
 ## 2. 配置和客户机资产
 
-普通 Linux 配置继续使用 `orangepi-5-plus-6.1.99`，不声明 virtual-cpufreq。`test-suit/axvisor/normal/board-orangepi-5-plus/robot-linux/perf30/` 是立即可用的 host-performance profile：Linux vCPU 固定到 CPU4（`phys_cpu_ids = [0x400]`、`phys_cpu_sets = [0x10]`），宿主 U-Boot bootargs 增加 `cpufreq.default_governor=performance`，客户机脚本只对确认属于 Linux 的 RKNPU/DMC `devfreq` 节点设置 `performance`，缺节点或写入失败立即失败。
+普通CI Linux配置继续使用 `orangepi-5-plus-6.1.99`，不声明virtual-cpufreq。手动应用 `apps/suite/axvisor/board/orangepi-5-plus/robot-linux-perf30/` 使用带驱动的 `orangepi-5-plus-6.1.99-virtcpufreq`，将vCPU固定到CPU4（`phys_cpu_ids=[0x400]`、`phys_cpu_sets=[0x10]`），保留宿主 `cpufreq.default_governor=performance`。`tests/guest-cpufreq.toml`先检查驱动、写入/读回performance governor及读取非零当前频率；随后复用原NPU/DMC配置、机器人29.5门槛和60秒benchmark。DMC节点缺失按原固件边界记录，NPU缺失或配置失败仍失败。CPU5 A/B输入随应用保留，默认不引用。
 
 双客户机机器人入口也固定 Linux 到 CPU4、Zephyr 到 A55 CPU2（分别为
 `0x400/0x10` 与 `0x200/0x4`），继续保留 `/usbdrd3_0`、USB PHY 和 PCIe PHY
 排除项；Linux 独占摄像头/RKNPU，Zephyr 独占 UART6/IVC。该入口仍保持自己的
-宿主 bootargs 配置；普通单客户机 smoke 继续保持原来的 CPU0/默认 governor 基线。
+宿主 bootargs 配置；普通单客户机机器人验证 继续保持原来的 CPU0/默认 governor 基线。
 
 ### 2.1 virtual-cpufreq 请求
 
@@ -96,7 +96,9 @@ kernel 的验收必须同时检查 `scaling_driver=virt-cpufreq` 和
 
 ## 3. 验收与回滚
 
-QEMU/AArch64 只验证 FDT、MMIO bank、非法值和 Linux driver probe；RK3588 OPP、NPU devfreq、摄像头吞吐和温度必须在实体板卡验证。`robot-linux/perf30` 的当前 gate 是两个约 10 秒窗口和现有视觉脚本的 `29.5 FPS` 入口；实体板完整交付还需 60 秒 `rknn_yolov8_bench` 的 `capture_fps >= 29.5`、零解码/推理错误、IVC/执行器 PASS，并记录实际 OPP、温度、commit 和资产 SHA256。当前 OrangePi 板卡的 ATF 不提供受信 DMC devfreq，入口会记录 `DMC_DEVFREQ_UNAVAILABLE_FIRMWARE`，但不会把缺失能力伪装成已启用；当前 session `fda87432-169a-4b24-b736-6cfb2fbb229a` 的 CPU4 + host-performance + NPU 实机运行通过 30 FPS 门槛（视觉汇总 `29.97 FPS`，60 秒 benchmark `capture_fps=29.90`）。
+QEMU/AArch64只验证FDT、MMIO bank、非法值和Linux driver probe；RK3588 OPP、NPU devfreq、摄像头吞吐和温度必须在实体板卡验证。新手动应用将前端检查、原机器人脚本29.5门槛与原60秒benchmark放入同一次启动；benchmark保持采集29.5门槛、推理数>0和解码/推理错误0，不要求推理30FPS。客户机前端检查不能单独证明物理频率切换或热控；这些仍需宿主OPP和温度证据。
+
+历史stock Linux＋host-performance板卡记录见应用的 `HISTORY.md`，包括视觉29.97FPS、60秒采集29.90FPS；这不证明新的virtual-cpufreq整合入口通过。原profile/measure及配置模板旧入口已删除，本轮不运行测试。
 
 ### 3.1 负向检查
 
@@ -106,7 +108,7 @@ QEMU/AArch64 只验证 FDT、MMIO bank、非法值和 Linux driver probe；RK358
 - `SET_PERF` 为 `0` 或大于 `1024`、未对齐访问、未知寄存器和越界 bank 必须返回 typed device error。
 - 两个 VM 的 hint 必须按 domain 取最大值；retire 旧 generation 后，旧请求不能在 worker 下一轮重新出现，该 generation 随后的 `SET_PERF` 也不能重新抬高宿主下限。
 - 热控收紧后，客户机读到的 `CUR_PERF` 按完整参考表下降；宿主策略瞬时失败时仍返回上一次确认值，VM 继续运行。retired 但尚未解除绑定的 run 在 vCPU 停止前仍服务 `CUR_PERF` 读；越界 `SET_PERF` 和未绑定 run 仍返回 typed device error。
-- 缺少 Linux virtual-cpufreq 前端时只报告 `CPUFREQ_VIRT_UNAVAILABLE_HOST_PERF`，回滚到 stock 6.1.99 + host-performance profile 不需要该设备。
+- 新应用缺少Linux virtual-cpufreq前端时必须失败，不降级为host-performance成功。若需回滚stock内核，须同时移除虚拟设备声明并另行恢复对应配置，不能继续声称虚拟调频验证通过。
 
 ### 3.2 实体板入口
 
@@ -115,7 +117,8 @@ QEMU/AArch64 只验证 FDT、MMIO bank、非法值和 Linux driver probe；RK358
 把性能回归与客户机镜像或板卡温度变化区分开。
 
 ```text
-cargo xtask axvisor test board --board orangepi-5-plus-robot-linux-perf30
+cargo xtask axvisor app board --app-root apps/suite/axvisor \
+  --group board --app orangepi-5-plus/robot-linux-perf30
 ```
 
-板卡运行前应保存 AxVisor、Linux、initramfs/rootfs、模型和 RKNN runtime 的 SHA256，以及板卡编号、启动参数、CPU4/CPU5 亲和性、三个 CPUFreq domain 的 available/current/max OPP、RKNPU/DMC governor、温度和每个 FPS 窗口的原始输出。实体板卡运行记录保存在 `test-suit/axvisor/normal/board-orangepi-5-plus/robot-linux/perf30/README.md`；带 DMC 的固件仍需按上述 gate 重新验收。
+板卡运行前应保存 AxVisor、Linux、initramfs/rootfs、模型和 RKNN runtime 的 SHA256，以及板卡编号、启动参数、CPU4/CPU5 亲和性、三个 CPUFreq domain 的 available/current/max OPP、RKNPU/DMC governor、温度和每个 FPS 窗口的原始输出。实体板卡运行记录保存在 `apps/suite/axvisor/board/orangepi-5-plus/robot-linux-perf30/HISTORY.md`；带 DMC 的固件仍需按上述 gate 重新验收。

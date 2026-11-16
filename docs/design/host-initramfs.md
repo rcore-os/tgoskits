@@ -92,7 +92,7 @@ guest/data drive 不要求额外准备宿主根盘。显式 QEMU 配置未接宿
 ```bash
 cargo xtask starry test qemu --arch aarch64 --test-case qemu/host-initramfs
 cargo xtask starry test qemu --arch aarch64 --test-case qemu/host-initramfs-disk-fallback
-cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-host-initramfs
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu/aarch64/memory-web/memory-root
 FEATURES=initramfs-smoke cargo xtask arceos qemu -p arceos-helloworld --arch aarch64 --qemu-config apps/arceos/helloworld/qemu-host-initramfs-aarch64.toml
 AX_BUILTIN_INITRAMFS="$PWD/target/axbuild/host-initramfs/host-test.cpio" FEATURES=initramfs-smoke cargo xtask arceos qemu -p arceos-helloworld --arch aarch64 --qemu-config apps/arceos/helloworld/qemu-initramfs-aarch64.toml
 FEATURES=initramfs-smoke cargo xtask arceos qemu -p arceos-helloworld --arch x86_64 --qemu-config apps/arceos/helloworld/qemu-host-initramfs-x86_64.toml

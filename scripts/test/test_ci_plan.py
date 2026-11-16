@@ -371,7 +371,12 @@ command = "cargo xtask clippy --all"
                     "--board orangepi-5-plus-linux,orangepi-5-plus-starry",
                     commands,
                 )
-                self.assertIn("--test-case qemu-ivc", commands)
+                active_commands = "\n".join(
+                    line for line in commands.splitlines()
+                    if not line.lstrip().startswith("#")
+                )
+                self.assertRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/ivc-arceos(?:[,\s]|$)")
+                self.assertNotRegex(active_commands, r"--test-case[^\n]*qemu/aarch64/ivc(?:[,\s]|$)")
                 # The ordinary CI check keeps the native StarryOS board suite but no
                 # longer registers the single-guest AxVisor smokes.
                 self.assertIn(
@@ -1211,14 +1216,28 @@ command = "true"
             benchmark_rows,
         )
 
+    def test_ovmf_guest_markers_remain_anchored_in_the_actual_check_definitions(self) -> None:
+        root = MODULE_PATH.parents[2] / "test-suit/axvisor/normal/qemu/x86_64"
+        marker = "AXVISOR_X86_OVMF_ACPI_PASSED"
+        for backend in ("vmx", "svm"):
+            config_path = root / backend / "ovmf-acpi" / ("qemu-x86_64-vmx.toml" if backend == "vmx" else "qemu-x86_64.toml")
+            config = tomllib.loads(config_path.read_text())
+            steps = [step for relative in config["axbuild"]["checks"]
+                     for step in tomllib.loads((config_path.parent / relative).read_text())["shell_check_steps"]]
+            patterns = [pattern for step in steps for pattern in step.get("success_regex", [])]
+            self.assertTrue(patterns)
+            for output in (f"error: {marker} was not observed\n", f"{marker} failed\n"):
+                self.assertFalse(any(re.search(pattern, output) for pattern in patterns))
+            self.assertTrue(any(re.search(pattern, marker + "\r\n") for pattern in patterns))
+
     def test_dualguest_robot_board_markers_cannot_match_command_echo(self) -> None:
         root = MODULE_PATH.parents[2]
         configs = (
             root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr"
+            / "test-suit/axvisor/normal/board/orangepi-5-plus/robot/dual-linux-zephyr"
             / "board-orangepi-5-plus-dualguest-robot.toml",
             root
-            / "test-suit/axvisor/normal/board-orangepi-5-plus/dual-starry-zephyr"
+            / "test-suit/axvisor/normal/board/orangepi-5-plus/robot/dual-starry-zephyr"
             / "board-orangepi-5-plus-dualguest-robot.toml",
         )
 
@@ -1228,6 +1247,10 @@ command = "true"
                 self.assertEqual(
                     config["board_type"], "OrangePi-5-Plus-Robot-UART6"
                 )
+                if "axbuild" in config:
+                    config["shell_check_steps"] = [step
+                        for relative in config["axbuild"]["checks"]
+                        for step in tomllib.loads((path.parent / relative).read_text()).get("shell_check_steps", [])]
                 step = config["shell_check_steps"][-1]
                 for pattern in step["success_regex"] + step["fail_regex"]:
                     self.assertIsNone(re.search(pattern, step["shell_cmd"]))

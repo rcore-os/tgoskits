@@ -107,7 +107,16 @@ fn load_qemu_cases_for_selection(
                         || super::layout::matches_case(&case.name, selected)
                 })
             })
-            .map(|case| load_qemu_case(workspace_root, case, arch, target, grouped_subcase_filter.clone(), ltp_case_id))
+            .map(|case| {
+                load_qemu_case(
+                    workspace_root,
+                    case,
+                    arch,
+                    target,
+                    grouped_subcase_filter.clone(),
+                    ltp_case_id,
+                )
+            })
             .collect::<anyhow::Result<Vec<_>>>()?;
     if cases.is_empty() {
         // Preserve the existing missing-architecture diagnostic where possible.

@@ -492,14 +492,14 @@ def _selections_for_path(
             root = workspace_root / SUITE_ROOTS["arceos"] / group
             cases = _generic_arceos_runtime_cases(workspace_root, group)
             return _runtime_selections(registrations, path,
-                _matching_runtime_cases(cases, workspace_root / path), suite_group=group)
+                _matching_runtime_cases(cases, workspace_root / path, workspace_root), suite_group=group)
         if relative.parts and relative.parts[0].startswith("board-"):
             board_root = workspace_root / SUITE_ROOTS["arceos"] / relative.parts[0]
             if (board_root / "suite.toml").is_file():
                 cases = [case for case in _discover_runtime_cases(workspace_root / SUITE_ROOTS["arceos"], "arceos")
                     if _is_prefix(case.runtime_config, board_root)]
                 return _runtime_selections(registrations, path,
-                    _matching_runtime_cases(cases, workspace_root / path) or cases)
+                    _matching_runtime_cases(cases, workspace_root / path, workspace_root) or cases)
             return _discovered_selections(workspace_root, registrations, path, "arceos")
         selections = _arceos_selections(registrations, path)
         if relative.parts and relative.parts[0] == "rust":
@@ -654,7 +654,7 @@ def _discovered_selections(
             ))
         return selections
 
-    matching_cases = _matching_runtime_cases(cases, absolute_path)
+    matching_cases = _matching_runtime_cases(cases, absolute_path, workspace_root)
     return _runtime_selections(registrations, path, matching_cases)
 
 
@@ -889,6 +889,11 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
         if os_name == "axvisor" and root.parent.name == "apps":
             group_root = root / runtime_config.relative_to(root).parts[0]
             case = runtime_config.parent.relative_to(group_root).as_posix()
+        references = _toml_document(runtime_config).get("axbuild", {})
+        if os_name == "axvisor" and "checks" in references and root.parent.name != "apps":
+            group_root = root / runtime_config.relative_to(root).parts[0]
+            case = runtime_config.parent.relative_to(group_root).as_posix()
+        case = references.get("id", case)
         cases.append(
             _RuntimeCase(
                 kind=qemu_kind,
@@ -927,6 +932,10 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
             case = runtime_config.parent.name
         if os_name == "starry":
             case = _starry_board_case_id(case)
+        references = _toml_document(runtime_config).get("axbuild", {})
+        if os_name == "axvisor" and "checks" in references:
+            case = runtime_config.parent.relative_to(case_root).as_posix()
+        case = references.get("id", case)
         cases.append(
             _RuntimeCase(
                 kind=board_kind,
@@ -942,9 +951,56 @@ def _discover_runtime_cases(root: Path, os_name: str) -> list[_RuntimeCase]:
     return cases
 
 
+def _references_runtime_input(case: _RuntimeCase, changed: Path, workspace_root: Path) -> bool:
+    """Route shared declared files to every consumer, independent of folder names."""
+    pending = [case.runtime_config, case.build_config]
+    sidecar = case.case_dir / "host-initramfs.toml"
+    if sidecar.is_file():
+        pending.append(sidecar)
+    seen: set[Path] = set()
+    while pending:
+        source = pending.pop().resolve()
+        if source in seen:
+            continue
+        seen.add(source)
+        if source.is_dir():
+            if _is_prefix(changed.resolve(), source):
+                return True
+            continue
+        if not source.is_file():
+            continue
+        if changed.resolve() == source:
+            return True
+        if source.suffix != ".toml":
+            # A probe may import helpers alongside itself. Conservatively keep
+            # that explicitly referenced helper directory in its consumer set.
+            if _is_prefix(changed.resolve(), source.parent):
+                return True
+            continue
+        document = _toml_document(source)
+        for entry in document.get("axbuild", {}).get("checks", []):
+            pending.append(source.parent / entry)
+        for entry in document.get("requires", []):
+            pending.append(source.parent / entry)
+        for entry in document.get("vm_configs", []):
+            pending.append(workspace_root / str(entry).replace("${workspace}/", ""))
+        probe = document.get("host_http_probe", {}).get("probe_script")
+        if probe:
+            pending.append(source.parent / probe)
+        assets = document.get("host_http_probe", {}).get("asset_dir")
+        if assets:
+            pending.append(source.parent / assets)
+    return False
+
+
 def _matching_runtime_cases(
-    cases: Sequence[_RuntimeCase], path: Path
+    cases: Sequence[_RuntimeCase], path: Path, workspace_root: Path | None = None,
 ) -> list[_RuntimeCase]:
+    if workspace_root is not None:
+        dependencies = [case for case in cases if _references_runtime_input(case, path, workspace_root)]
+        if dependencies:
+            return dependencies
+
     exact = [
         runtime_case
         for runtime_case in cases
@@ -1327,6 +1383,9 @@ def _kind_os(kind: str) -> str:
 
 
 def _case_variant(case: str) -> str | None:
+    for component in Path(case).parts:
+        if component in {"vmx", "svm"}:
+            return component
     suffix = case.rsplit("-", maxsplit=1)[-1]
     return suffix if suffix in {"vmx", "svm"} else None
 

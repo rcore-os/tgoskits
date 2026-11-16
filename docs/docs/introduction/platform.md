@@ -131,7 +131,7 @@ cargo axvisor qemu
 
 ### 3.1 Axvisor 开发板
 
-Axvisor 板测由 `test-suit/axvisor/normal/board-<platform>/` 自动发现，不再使用硬编码板卡白名单。目录中的 `build-<target>.toml` 定义 host 构建参数，具体 case 的 `board-*.toml` 定义板卡类型、Guest shell、成功/失败正则和超时。
+Axvisor 板测由 `test-suit/axvisor/normal/board/<platform>/` 自动发现，不再使用硬编码板卡白名单。目录中的 `build-<target>.toml` 定义 host 构建参数，具体 case 的 `board-*.toml` 定义板卡类型、Guest shell、成功/失败正则和超时。
 
 | 开发板 | 架构或 SoC | 构建配置 | 板测用例 | Self-hosted CI |
 | --- | --- | --- | --- | --- |

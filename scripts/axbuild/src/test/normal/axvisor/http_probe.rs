@@ -58,16 +58,35 @@ const MAX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
 /// fixtures). `stop` is the shared abort flag: when the runner marks the case
 /// over (QEMU failure, timeout), a still-running asset is killed instead of
 /// waiting it out.
-pub(crate) fn run(
+#[cfg(test)]
+fn run(
     addr: &str,
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
     builtin_configs: Option<&Path>,
     stop: Arc<AtomicBool>,
 ) -> HostHttpProbeOutcome {
+    run_bounded(addr, config, case_dir, builtin_configs, stop, None)
+}
+
+pub(crate) fn run_bounded(
+    addr: &str,
+    config: &AxvisorHttpProbeConfig,
+    case_dir: &Path,
+    builtin_configs: Option<&Path>,
+    stop: Arc<AtomicBool>,
+    timeout: Option<Duration>,
+) -> HostHttpProbeOutcome {
     let script = case_dir.join(&config.probe_script);
     let captured = (|| -> anyhow::Result<(Vec<u8>, Option<ExitStatus>)> {
         ensure_probe_asset(&script)?;
+        let deadline = timeout
+            .map(|duration| {
+                std::time::Instant::now()
+                    .checked_add(duration)
+                    .context("host check timeout exceeds the host clock range")
+            })
+            .transpose()?;
         if stop.load(Ordering::Acquire) {
             bail!(
                 "probe asset {} was not started because the case had already stopped",
@@ -76,7 +95,7 @@ pub(crate) fn run(
         }
         let (mut child, output_capture) =
             spawn_probe_asset(&script, addr, config, case_dir, builtin_configs)?;
-        let status = wait_probe_asset(&mut child, &stop);
+        let status = wait_probe_asset(&mut child, &stop, deadline);
         let bytes = output_capture.finish()?;
         Ok((bytes, status))
     })();
@@ -206,7 +225,13 @@ fn spawn_probe_asset(
     }
     command
         .env("AXVISOR_HTTP_BASE", format!("http://{addr}"))
-        .env("AXVISOR_HTTP_CASE_DIR", case_dir)
+        .env(
+            "AXVISOR_HTTP_CASE_DIR",
+            config
+                .asset_dir
+                .as_ref()
+                .map_or_else(|| case_dir.to_path_buf(), |path| case_dir.join(path)),
+        )
         .env(
             "AXVISOR_HTTP_CONNECT_TIMEOUT",
             config.connect_timeout_secs.to_string(),
@@ -225,9 +250,15 @@ fn spawn_probe_asset(
 
 /// Wait for the probe asset to exit, killing it if the runner marks the case
 /// over. Returns `Some(status)` on a normal exit and `None` if it was killed.
-fn wait_probe_asset(child: &mut Child, stop: &AtomicBool) -> Option<ExitStatus> {
+fn wait_probe_asset(
+    child: &mut Child,
+    stop: &AtomicBool,
+    deadline: Option<std::time::Instant>,
+) -> Option<ExitStatus> {
     loop {
-        if stop.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire)
+            || deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
             let _ = child.kill();
             let _ = child.wait();
             return None;
@@ -277,7 +308,31 @@ mod tests {
             connect_timeout_secs: 120,
             request_timeout_secs: 5,
             probe_script,
+            asset_dir: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_probe_reaps_a_running_child_and_does_not_report_success() {
+        let dir = fixture_dir();
+        let script = write_blocking_fixture_probe(dir.path(), "blocking.sh");
+        let config = test_config(script);
+        let outcome = run_bounded(
+            "127.0.0.1:1",
+            &config,
+            dir.path(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Some(Duration::from_millis(50)),
+        );
+        assert!(
+            outcome
+                .verdict
+                .unwrap_err()
+                .to_string()
+                .contains("was killed")
+        );
     }
 
     /// Write an executable probe asset that records its environment and exits

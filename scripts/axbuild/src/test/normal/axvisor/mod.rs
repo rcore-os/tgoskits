@@ -1,6 +1,7 @@
 mod assets;
 mod board;
 pub(crate) mod discovery;
+mod host_checks;
 mod host_probe;
 mod http_probe;
 mod initramfs;

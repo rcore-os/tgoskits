@@ -1,0 +1,29 @@
+# Dashboard build for the `qemu-web-ui` case group.
+#
+# `web-ui` turns on the React dashboard: axbuild builds the frontend with npm
+# into the workspace target tree (no manual step, nothing lands in the source
+# tree) and packs the resulting `dist` into the host initramfs under
+# `/guest/builtin/web-ui`. The kernel serves the dashboard from there — from
+# the initramfs memory root in the diskless case, from the installed disk root
+# in the NVMe case. Startup remains at zero VMs unless the host command line
+# carries `axvisor.vm_start=<id>[,<id>...]`; the probe creates the builtin VM
+# through HTTP start when needed.
+#
+# The filesystem-backed kernel and disk paths plus `ax-driver/nvme` make the disk
+# case's guest possible: the guest kernel, and the ext4 image the guest roots
+# from, are files in the hypervisor's own filesystem on the QEMU NVMe disk.
+# Nothing is embedded in the hypervisor binary, so a case that wants a different
+# guest only has to place files; the diskless case overrides `vm_configs` to
+# none in its own manifest.
+features = [
+    "web-ui",
+    "ax-driver/nvme",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/qemu/aarch64/linux-virtio-blk-fs.toml"]
+
+# Bind contract: the probe reaches the in-guest listener through QEMU hostfwd, so
+# the listener has to accept connections from the QEMU network.
+[env]
+AXVM_HTTP_BIND = "0.0.0.0:8080"

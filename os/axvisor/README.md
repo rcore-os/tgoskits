@@ -54,7 +54,7 @@ AxVisor is built based on the Rust ecosystem, providing complete project build, 
 
 ## Build Environment
 
-> **Quick Start**: Run `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` from the workspace root.
+> **Quick Start**: Run `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu/aarch64/smoke` from the workspace root.
 
 First, in a Linux environment, you need to install basic development tool packages such as `libssl-dev gcc libudev-dev pkg-config`.
 
@@ -96,7 +96,7 @@ AxVisor uses the xtask tool for build management, supporting multiple hardware p
 
 3. **Execute Build**: Use `cargo xtask axvisor build --preset <name>` directly, add `--config local.toml` for sparse overrides, or use `--config full.toml` for a custom configuration. Builds do not generate implicit input files.
 
-4. **Run on QEMU**: From the workspace root, use `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` to run the maintained smoke case.
+4. **Run on QEMU**: From the workspace root, use `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu/aarch64/smoke` to run the maintained smoke case.
 
 # Contributing
 

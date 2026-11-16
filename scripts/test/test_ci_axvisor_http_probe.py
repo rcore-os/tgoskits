@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 PROBE_PATH = (
     Path(__file__).resolve().parents[2]
-    / "test-suit/axvisor/normal/qemu-vm-pool-http/http_probe.py"
+    / "test-suit/axvisor/normal/qemu/aarch64/vm-pool-http/pool/http_probe.py"
 )
 SPEC = importlib.util.spec_from_file_location("pool_http_probe", PROBE_PATH)
 probe = importlib.util.module_from_spec(SPEC)

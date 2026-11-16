@@ -159,7 +159,7 @@ cargo xtask axvisor test qemu --arch x86_64 --test-group normal \
   --test-case ovmf-acpi-svm
 ```
 
-两者共用 `test-suit/axvisor/normal/qemu-acpi-ovmf/x86-linux-acpi-ovmf.toml`、同一 BusyBox initramfs 和同一 4 MiB guest firmware 输出。build config 不选择 `vmx` 或 `svm` Cargo feature；唯一的 backend 差异是外层 QEMU 的 `-cpu` 能力：VMX 暴露 EPT、unrestricted guest 和 flexpriority，SVM 暴露 SVM、NPT 和 NRIP save。因此应分别在 Intel/VMX 与 AMD/SVM KVM 宿主上运行对应 case。
+两者共用 `test-suit/axvisor/normal/qemu/x86_64/common/guests/acpi-ovmf/guest.toml`、同一 BusyBox initramfs 和同一 4 MiB guest firmware 输出。build config 不选择 `vmx` 或 `svm` Cargo feature；唯一的 backend 差异是外层 QEMU 的 `-cpu` 能力：VMX 暴露 EPT、unrestricted guest 和 flexpriority，SVM 暴露 SVM、NPT 和 NRIP save。因此应分别在 Intel/VMX 与 AMD/SVM KVM 宿主上运行对应 case。
 
 两个 case 均已加入 CI 运行：`ovmf-acpi-vmx` 在 self-hosted Intel/KVM 宿主上运行（见 `.github/workflows/ci.yml` 中 "Test axvisor x86_64 ACPI direct and OVMF boot (vmx)" 任务），`ovmf-acpi-svm` 在 self-hosted AMD/KVM 宿主上运行（见单个 `kvm-amd` SVM 任务）。
 

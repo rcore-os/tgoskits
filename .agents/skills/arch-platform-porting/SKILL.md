@@ -181,7 +181,7 @@ cargo xtask ktest qemu --package <package> --arch <arch>
 cargo xtask arceos test qemu --arch <arch> --test-group <group> --test-case <case>
 cargo xtask starry test qemu --arch <arch> -c <case>
 cargo xtask axvisor test qemu --list --arch <arch>
-cargo xtask axvisor test qemu --arch <arch> --test-group normal --test-case smoke
+cargo xtask axvisor test qemu --arch <arch> --test-group normal --test-case qemu/<arch>/smoke
 ```
 
 `ktest qemu --arch <arch>` 按 `[package.metadata.docs.rs].targets` 中匹配的裸机目标筛选 Cargo 元数据执行计划。没有文档目标的软件包有意只在 x86_64 执行，`[package.metadata.axtest] runtime = "board"` 从 QEMU 排除。同一体系结构中选中的 ArceOS 内核测试软件包可放在一次串行 `ktest` 调用中；它不能替代受影响的 ArceOS Rust 与 C 测试套件用例。
@@ -191,7 +191,7 @@ LoongArch Axvisor 虚拟化扩展验证使用仓库容器，并在容器内构�
 ```bash
 docker run --rm -v "$PWD:/workspace" -w /workspace \
   ghcr.io/rcore-os/tgoskits-container-axvisor-lvz:latest \
-  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case smoke'
+  bash -lc 'cargo xtask axvisor test qemu --arch loongarch64 --test-group normal --test-case qemu/loongarch64/smoke'
 ```
 
 修改 Rust 逻辑后再运行相应格式化和定向静态检查：

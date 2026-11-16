@@ -476,5 +476,36 @@ class ClassifiedStarryRoutingTests(unittest.TestCase):
             selections = ci_suite.resolve_suite_selections(root, checks, [source])
             self.assertEqual({item.template_id for item in selections}, {"fixture-board"})
 
+class ExplicitAxvisorCheckRoutingTests(unittest.TestCase):
+    def test_declared_ids_and_shared_inputs_route_every_registered_consumer(self):
+        import os
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shared = root / 'test-suit/axvisor/normal/common'
+            shared.mkdir(parents=True)
+            guest = shared / 'guest.toml'
+            guest.write_text('[base]\nid=1\n')
+            probe = shared / 'probe.py'
+            probe.write_text('# fixture\n')
+            preparation = shared / 'enter.toml'
+            preparation.write_text("[[shell_check_steps]]\nshell_cmd='prepare'\n")
+            checks = []
+            for identity in ('behavior-a', 'behavior-b'):
+                group = root / 'test-suit/axvisor/normal/qemu/aarch64' / identity
+                (group / 'operation').mkdir(parents=True)
+                (group / 'build-aarch64-unknown-none-softfloat.toml').write_text(
+                    "target='aarch64-unknown-none-softfloat'\nvm_configs=['test-suit/axvisor/normal/common/guest.toml']\n")
+                (group / 'qemu-aarch64.toml').write_text(
+                    f"args=[]\nuefi=false\nfail_regex=[]\n[axbuild]\nid='{identity}'\nchecks=['operation/test.toml']\n")
+                relative = os.path.relpath(probe, group / 'operation')
+                (group / 'operation/test.toml').write_text(f"requires=['{os.path.relpath(preparation, group / 'operation')}']\n[host_http_probe]\nprobe_script='{relative}'\n")
+                checks.append({'id': identity, 'name': identity, 'command': 'fixture', 'suite': [
+                    {'kind': 'axvisor-qemu', 'arch': 'aarch64', 'cases': [identity]}]})
+            ci_suite.validate_suite_catalog(root, checks)
+            for source in (guest, probe, preparation):
+                rows = ci_suite.resolve_suite_selections(root, checks, [source.relative_to(root).as_posix()])
+                self.assertEqual({row.template_id for row in rows}, {'behavior-a', 'behavior-b'})
+
+
 if __name__ == "__main__":
     unittest.main()

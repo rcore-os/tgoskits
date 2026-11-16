@@ -1100,15 +1100,149 @@ fn lists_qemu_cases_in_the_selected_namespace() {
 /// unexpected error must surface so listing never hides part of the tree.
 #[test]
 fn list_qemu_case_error_classification_never_ignores_unexpected() {
-    use crate::execution::qemu::ListQemuCasesErrorKind;
+    let root = tempdir().unwrap();
+    write_qemu_build_config(
+        root.path(),
+        "normal",
+        "synthetic",
+        "aarch64-unknown-none-softfloat",
+    );
+    let config = write_qemu_config_in_group(
+        root.path(),
+        "normal",
+        "synthetic",
+        "valid",
+        "aarch64",
+        "args=[]\nuefi=false\nfail_regex=[]\n",
+    );
+    let cases =
+        discovery::list_all_qemu_cases_with_archs(CaseSource::Tests, root.path(), "normal", None)
+            .unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].archs, ["aarch64"]);
+    assert!(
+        discovery::list_all_qemu_cases_with_archs(
+            CaseSource::Tests,
+            root.path(),
+            "normal",
+            Some("absent")
+        )
+        .is_err()
+    );
+    fs::write(config, "invalid = [").unwrap();
+    assert!(
+        discovery::list_all_qemu_cases_with_archs(CaseSource::Tests, root.path(), "normal", None)
+            .is_err()
+    );
+}
 
-    assert!(discovery::qemu_list_error_is_ignorable(
-        ListQemuCasesErrorKind::EmptyGroup
-    ));
-    assert!(discovery::qemu_list_error_is_ignorable(
-        ListQemuCasesErrorKind::UnknownSelectedCase
-    ));
-    assert!(!discovery::qemu_list_error_is_ignorable(
-        ListQemuCasesErrorKind::Unexpected
-    ));
+#[test]
+fn explicit_suite_root_uses_declared_identity_and_checks_without_repository_layout() {
+    let root = tempdir().unwrap();
+    let suite = root.path().join("caller-data");
+    let group = suite.join("custom").join("physical-environment");
+    fs::create_dir_all(group.join("behavior")).unwrap();
+    fs::write(
+        group.join("build-aarch64-unknown-none-softfloat.toml"),
+        "target='aarch64-unknown-none-softfloat'\nfeatures=[]\n",
+    )
+    .unwrap();
+    fs::write(
+        group.join("qemu-aarch64.toml"),
+        "args=[]\nuefi=false\nfail_regex=[]\n[axbuild]\nid='public-behavior'\nchecks=['behavior/\
+         test.toml']\n",
+    )
+    .unwrap();
+    fs::write(
+        group.join("behavior/test.toml"),
+        "[[shell_check_steps]]\nshell_cmd='echo VERIFIED'\nsuccess_regex=['VERIFIED']\n",
+    )
+    .unwrap();
+    let cases = discovery::discover_qemu_cases(
+        CaseSource::External(&suite),
+        root.path(),
+        "custom",
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+        Some("public-behavior"),
+    )
+    .unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].case.name, "public-behavior");
+    assert_eq!(cases[0].case.case_dir, group);
+    let directory_checks = "[axbuild]\nchecks=['behavior/test.toml']\n";
+    fs::write(
+        group.join("qemu-aarch64.toml"),
+        format!("args=[]\nuefi=false\nfail_regex=[]\n{directory_checks}"),
+    )
+    .unwrap();
+    fs::write(
+        group.join("board-fixture.toml"),
+        format!("board_type='Fixture'\n{directory_checks}"),
+    )
+    .unwrap();
+    for (source, selector) in [
+        (CaseSource::External(&suite), "physical-environment"),
+        (CaseSource::ExternalApps(&suite), "physical-environment"),
+    ] {
+        let cases = discovery::discover_qemu_cases(
+            source,
+            root.path(),
+            "custom",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some(selector),
+        )
+        .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].case.name, "physical-environment");
+        let boards = discovery::discover_board_test_groups(
+            source,
+            root.path(),
+            "custom",
+            &[selector.to_string()],
+            &["fixture".to_string()],
+        )
+        .unwrap();
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].name, "physical-environment");
+    }
+    for source in [
+        CaseSource::External(&suite),
+        CaseSource::ExternalApps(&suite),
+    ] {
+        let cases = discovery::discover_qemu_cases(
+            source,
+            root.path(),
+            "custom",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some("test"),
+        )
+        .unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].selected_checks, Some(vec!["test".to_string()]));
+        let boards = discovery::discover_board_test_groups(
+            source,
+            root.path(),
+            "custom",
+            &["test".to_string()],
+            &["fixture".to_string()],
+        )
+        .unwrap();
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].selected_checks, Some(vec!["test".to_string()]));
+    }
+    fs::remove_file(group.join("behavior/test.toml")).unwrap();
+    assert!(
+        discovery::discover_qemu_cases(
+            CaseSource::External(&suite),
+            root.path(),
+            "custom",
+            "aarch64",
+            "aarch64-unknown-none-softfloat",
+            Some("public-behavior")
+        )
+        .is_err()
+    );
 }

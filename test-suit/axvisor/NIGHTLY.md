@@ -130,5 +130,5 @@ python3 -m unittest discover -s scripts/test -p 'test_ci*.py'
 Existing commands remain available for local test execution, for example:
 
 ```sh
-cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+cargo xtask axvisor test qemu --arch aarch64 --test-case qemu/aarch64/smoke
 ```

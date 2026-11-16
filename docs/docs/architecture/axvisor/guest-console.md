@@ -403,7 +403,7 @@ disabled = [
 
 受控 A/B 测试中，只保护 PCIe PHY 后，网页能够越过 Linux 早期初始化，但仍在 systemd 的 `Manage USB device functions` 附近永久失联；继续排除 `/usbdrd3_0` 与 `/phy@fed80000` 后，eMMC 完成 300 次、SD 完成 229 次连续 HTTP `200` 探测，三路 WebSocket 和完整机器人流程均通过。该证据确认的是设备组冲突；尚未把最终失联归因到单个 CRU、GRF、复位或 IRQ 位。
 
-可直接运行的 eMMC/SD 配置、网络 Shell 注释开关和机器人验收步骤保存在 `test-suit/axvisor/normal/board-orangepi-5-plus/dual-linux-zephyr/README.md`。`clk_ignore_unused` 和 `pd_ignore_unused` 只能阻止 Linux 启动末尾清理未使用资源，不能阻止已绑定驱动主动复位设备或关闭时钟，不能替代上述 `disabled` 集合。
+可直接运行的 eMMC/SD 配置、网络 Shell 注释开关和机器人验收步骤保存在 `test-suit/axvisor/normal/board/orangepi-5-plus/robot/dual-linux-zephyr/README.md`。`clk_ignore_unused` 和 `pd_ignore_unused` 只能阻止 Linux 启动末尾清理未使用资源，不能阻止已绑定驱动主动复位设备或关闭时钟，不能替代上述 `disabled` 集合。
 
 ## 9. 故障定位
 

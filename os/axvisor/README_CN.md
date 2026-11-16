@@ -54,7 +54,7 @@ AxVisor 基于 Rust 生态系统构建，通过扩展的 xtask 工具链提供�
 
 ## 构建环境
 
-> **快速开始**：在工作区根目录运行 `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke`。
+> **快速开始**：在工作区根目录运行 `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu/aarch64/smoke`。
 
 首先，在 Linux 环境下，需要安装 `libssl-dev gcc libudev-dev pkg-config` 等基本开发工具包。
 
@@ -104,7 +104,7 @@ AxVisor 使用 xtask 工具进行构建管理，支持多种硬件平台和配�
 
 3. **执行构建**：使用 `cargo xtask axvisor build --preset <name>` 直接构建；`--preset <name> --config local.toml` 应用稀疏覆盖，`--config full.toml` 可提供完全自定义输入。普通构建不隐式生成配置文件。
 
-4. **运行 QEMU**：在工作区根目录使用 `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case smoke` 运行维护中的 smoke 用例。
+4. **运行 QEMU**：在工作区根目录使用 `cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu/aarch64/smoke` 运行维护中的 smoke 用例。
 
 # 贡献
 

@@ -22,7 +22,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 ```
 
 用例构建配置
-`test-suit/axvisor/normal/qemu-http-control-plane/build-aarch64-unknown-none-softfloat.toml`
+`test-suit/axvisor/normal/qemu/aarch64/http-control-plane/build-aarch64-unknown-none-softfloat.toml`
 打开 `web`，并通过 `vm_configs` 把 guest 资源打包到 `/guest/builtin`。启动时
 不创建任何 VM；探针通过 `POST /api/vms/1/start` 按 builtin ID 延迟创建并启动。
 需要开机启动时，把 `axvisor.vm_start=1,2` 放入宿主 QEMU/板卡 cmdline。

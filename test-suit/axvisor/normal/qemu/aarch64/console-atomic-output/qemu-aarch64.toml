@@ -1,0 +1,33 @@
+args = [
+    "-nographic",
+    "-snapshot",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/target/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-append",
+    "root=/dev/nvme0n1 rw init=/bin/sh axvisor.vm_start=1",
+    "-m",
+    "8g",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)I/O error",
+    "sleeping or rescheduling is not allowed in atomic context",
+    "Axvisor host console output worker stopped",
+    "Axvisor host console output stopped",
+]
+timeout = 300
+to_bin = true
+uefi = false
+
+[axbuild]
+checks = [
+    "tests/atomic-output.toml",
+]

@@ -60,7 +60,7 @@ shell 按需创建。`/guest` 下的动态池不覆盖 builtin ID，`/guest/vm_d
 
 ## 3. 虚拟化后端
 
-x86 后端由 CPUID 在运行时选择；QEMU TOML 暴露 VMX 或 SVM 扩展，Build Config 不选择同名 Cargo feature。SVM 六个用例共用 `test-suit/axvisor/normal/qemu-svm/build-x86_64-unknown-none.toml`，每个子目录提供自己的 VM 打包输入及 QEMU 配置。
+x86 后端由 CPUID 在运行时选择；QEMU TOML 暴露 VMX 或 SVM 扩展，Build Config 不选择同名 Cargo feature。SVM 六个用例共用 `test-suit/axvisor/normal/qemu/x86_64/svm/direct-acpi/build-x86_64-unknown-none.toml`，每个子目录提供自己的 VM 打包输入及 QEMU 配置。
 
 Smoke 显式使用 NVMe 磁盘根，并验证宿主文件读写和双 VM 磁盘隔离。其余 SVM 用例从各自的宿主 initramfs 加载客户机。没有显式 `root=` 时保持内存根，不切根；没有块设备驱动或磁盘根也可直接运行客户机。
 
@@ -86,8 +86,8 @@ cargo xtask axvisor qemu \
   --vmconfigs os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml
 
 # x86 VMX 和 SVM smoke 验证宿主 NVMe 与双 VM 磁盘隔离
-cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/vmx/smoke
+cargo xtask axvisor test qemu --arch x86_64 --test-case qemu/x86_64/svm/smoke
 
 # 板卡配置
 cargo xtask axvisor config ls

@@ -127,9 +127,31 @@ pub(crate) async fn load_patched_qemu_config(
     let config_path = request.qemu_config.clone().unwrap_or_else(|| {
         super::default_qemu_config_template_path(&request.axvisor_dir, &request.arch)
     });
+    // External checks are axbuild data: never silently pass references to
+    // ostool. Host probes require the test entry that owns their lifecycle.
+    let expanded = if config_path.is_file() {
+        let plan = crate::execution::case::load_runtime_checks(&config_path)?;
+        anyhow::ensure!(
+            !plan
+                .checks
+                .iter()
+                .any(|check| check.document.contains_key("host_http_probe")),
+            "this configuration declares host checks; use `cargo xtask axvisor test qemu` to run \
+             them"
+        );
+        crate::execution::case::materialize_runtime_checks(
+            &config_path,
+            &axvisor.app.target_dir().join("axbuild/runtime-configs"),
+        )?
+    } else {
+        None
+    };
+    let runtime_path = expanded
+        .as_ref()
+        .map_or(config_path.as_path(), |file| file.path());
     let mut qemu = axvisor
         .app
-        .read_qemu_config_from_path_for_cargo(cargo, &config_path)
+        .read_qemu_config_from_path_for_cargo(cargo, runtime_path)
         .await?;
     if !diskless_explicit_qemu(
         &qemu,

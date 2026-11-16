@@ -1,0 +1,6 @@
+requires = ["performance.toml"]
+
+[[shell_check_steps]]
+shell_prefix = "orangepi@orangepi5plus:~"
+shell_cmd = "cd \"$d\" && printf \"%s\\n\" orangepi | sudo -S env FTDI_TRANSPORT=tty ./run_vision_usb_ci_once.sh 29.5"
+success_regex = ["(?m)^\\[VISION_USB_CI\\] RESULT=PASS attempts=1(?:[ \\t\\r]*$|\\[\\s*\\d+\\.\\d+\\].*$)"]

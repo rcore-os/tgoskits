@@ -226,6 +226,8 @@ mod tests {
                     arch: "aarch64".into(),
                     target: "aarch64-unknown-none-softfloat".into(),
                     build_config_path: PathBuf::from("build.toml"),
+                    build_input: crate::build::load_config_input(Path::new("."), None, None)
+                        .unwrap(),
                     board_test_config_path: PathBuf::from(format!("{name}.toml")),
                     required_env: Vec::new(),
                     shared_boot: true,
@@ -288,6 +290,7 @@ mod tests {
                 arch: "aarch64".into(),
                 target: "aarch64-unknown-none-softfloat".into(),
                 build_config_path: PathBuf::from("build.toml"),
+                build_input: crate::build::load_config_input(Path::new("."), None, None).unwrap(),
                 board_test_config_path: PathBuf::from(format!("{name}.toml")),
                 required_env: Vec::new(),
                 shared_boot: true,

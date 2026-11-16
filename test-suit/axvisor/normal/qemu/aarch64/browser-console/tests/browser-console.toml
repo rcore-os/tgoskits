@@ -1,0 +1,6 @@
+timeout = 180
+
+[host_http_probe]
+asset_dir = ".."
+request_timeout_secs = 15
+probe_script = "../console/http_probe.py"
