@@ -4,8 +4,8 @@ use core::any::Any;
 use ax_fs_ng::vfs::CachedFile;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{
-    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, VfsError, VfsResult,
+    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataRequest, MetadataUpdate,
+    NamespaceCompletion, NodeFlags, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
@@ -168,6 +168,8 @@ impl NodeOps for Device {
     fn metadata(&self) -> VfsResult<Metadata>;
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata>;
 
     fn filesystem(&self) -> &dyn FilesystemOps;
 

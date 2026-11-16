@@ -9,8 +9,9 @@ use core::any::Any;
 
 use axfs_ng_vfs::{
     DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
-    Metadata, MetadataUpdate, MutationRetire, NamespaceEffect, NamespaceMutation, NamespaceOutcome,
-    NodeIdentity, NodeOps, NodePermission, NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
+    Metadata, MetadataRequest, MetadataUpdate, MutationRetire, NamespaceCompletion,
+    NamespaceEffect, NamespaceMutation, NamespaceOutcome, NodeIdentity, NodeOps, NodePermission,
+    NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -176,6 +177,8 @@ impl<O: SimpleDirOps> NodeOps for SimpleDir<O> {
     fn metadata(&self) -> VfsResult<Metadata>;
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata>;
 
     fn filesystem(&self) -> &dyn FilesystemOps;
 

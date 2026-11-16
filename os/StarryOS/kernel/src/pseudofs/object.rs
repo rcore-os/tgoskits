@@ -137,6 +137,12 @@ impl<T: Send + Sync + 'static> NodeOps for ObjectNode<T> {
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
         self.inode.node.update_metadata(update)
     }
+    fn change_metadata(
+        &self,
+        request: &axfs_ng_vfs::MetadataRequest<'_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+        self.inode.node.change_metadata(request)
+    }
     fn filesystem(&self) -> &dyn FilesystemOps {
         self.inode.node.filesystem()
     }

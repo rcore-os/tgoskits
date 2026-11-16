@@ -2,8 +2,10 @@ use alloc::{string::String, sync::Arc};
 use core::{any::Any, time::Duration};
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps, Metadata, MetadataUpdate, NodeOps,
-    NodePermission, NodeType, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
+    AuthorizedMetadataChange, DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps,
+    LockedMetadataAttempt, Metadata, MetadataRequest, MetadataUpdate, NamespaceCompletion,
+    NamespaceOutcome, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsResult,
+    path::MAX_NAME_LEN,
 };
 use slab::Slab;
 
@@ -167,6 +169,20 @@ impl NodeOps for SimpleFsNode {
         Ok(())
     }
 
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata> {
+        if let Err(error) = request.admission().check_owner(self.fs.as_ref()) {
+            return NamespaceCompletion::new(NamespaceOutcome::unchanged(Err(error)), None);
+        }
+        let outcome = {
+            let mut metadata = self.metadata.lock_irqsave();
+            let mut attempt = SimpleMetadataAttempt {
+                metadata: &mut metadata,
+            };
+            request.execute(&mut attempt)
+        };
+        NamespaceCompletion::new(outcome, None)
+    }
+
     fn filesystem(&self) -> &dyn FilesystemOps {
         self.fs.as_ref()
     }
@@ -177,5 +193,25 @@ impl NodeOps for SimpleFsNode {
 
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
+    }
+}
+
+struct SimpleMetadataAttempt<'a> {
+    metadata: &'a mut Metadata,
+}
+
+impl LockedMetadataAttempt for SimpleMetadataAttempt<'_> {
+    fn observe(&mut self) -> VfsResult<Metadata> {
+        Ok(self.metadata.clone())
+    }
+
+    fn wall_time(&mut self) -> Duration {
+        // The prewarmed platform clock only reads counters and cached atomics.
+        ax_runtime::hal::time::wall_time()
+    }
+
+    fn commit(&mut self, change: AuthorizedMetadataChange<'_>) -> NamespaceOutcome<Metadata> {
+        change.apply(self.metadata);
+        NamespaceOutcome::applied(self.metadata.clone(), Ok(()))
     }
 }

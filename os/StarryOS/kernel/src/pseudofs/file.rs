@@ -2,8 +2,9 @@ use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, cmp::Ordering};
 
 use axfs_ng_vfs::{
-    FileNodeOps, FilesystemOps, LinkOps, Metadata, MetadataUpdate, NodeFlags, NodeIdentity,
-    NodeOps, NodePermission, NodeType, VfsError, VfsResult,
+    FileNodeOps, FilesystemOps, LinkOps, Metadata, MetadataRequest, MetadataUpdate,
+    NamespaceCompletion, NodeFlags, NodeIdentity, NodeOps, NodePermission, NodeType, VfsError,
+    VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
@@ -192,6 +193,8 @@ impl NodeOps for SimpleFile {
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
 
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata>;
+
     fn filesystem(&self) -> &dyn FilesystemOps;
 
     fn sync(&self, data_only: bool) -> VfsResult<()>;
@@ -315,6 +318,8 @@ impl<T: DirectRwFsFileOps> NodeOps for SpecialFsFile<T> {
     fn metadata(&self) -> VfsResult<Metadata>;
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()>;
+
+    fn change_metadata(&self, request: &MetadataRequest<'_>) -> NamespaceCompletion<Metadata>;
 
     fn filesystem(&self) -> &dyn FilesystemOps;
 
