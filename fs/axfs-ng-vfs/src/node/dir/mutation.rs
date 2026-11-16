@@ -50,6 +50,7 @@ pub struct RenameRequest<'a> {
     credentials: &'a MutationCredentials<'a>,
     write: &'a PreparedWrite,
     domain: usize,
+    expected: Option<(NamespaceNode, Option<NamespaceNode>)>,
 }
 
 impl<'a> RenameRequest<'a> {
@@ -81,7 +82,12 @@ impl<'a> RenameRequest<'a> {
             credentials,
             write,
             domain,
+            expected: None,
         })
+    }
+
+    pub(crate) fn expect_staging(&mut self, source: NamespaceNode, target: Option<NamespaceNode>) {
+        self.expected = Some((source, target));
     }
 
     /// Immutable parent identity; never call ordinary metadata/lookup under a gate.
@@ -321,6 +327,16 @@ impl<'attempt, 'request> MutationGuard<'attempt, 'request> {
 impl<'slot, 'attempt, 'request> ParentSlot<'slot, 'attempt, 'request> {
     fn authorize(self) -> VfsResult<AuthorizedSlot<'slot, 'attempt, 'request>> {
         let request = self.guard.request;
+        if let Some((source, target)) = &request.expected
+            && (!source.matches(&self.observed.source.entry)
+                || match (target, &self.observed.target) {
+                    (None, None) => false,
+                    (Some(expected), Some(observed)) => !expected.matches(&observed.entry),
+                    _ => true,
+                })
+        {
+            return Err(VfsError::BadState);
+        }
         request
             .write
             .write_for(request.source.0)?

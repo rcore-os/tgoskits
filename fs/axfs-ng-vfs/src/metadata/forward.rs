@@ -68,6 +68,11 @@ impl AuthorizedMetadataChange<'_> {
             MetadataIntent::Initialization(update) => {
                 MetadataIntent::Initialization(update.clone())
             }
+            MetadataIntent::StagingRestoration(update) => {
+                let mut update = update.clone();
+                update.mode = self.mode;
+                MetadataIntent::StagingRestoration(update)
+            }
             MetadataIntent::User(MetadataChange::Chmod(_))
             | MetadataIntent::Forwarded(ForwardedChange::Chmod(_)) => MetadataIntent::Forwarded(
                 ForwardedChange::Chmod(self.mode.expect("authorized explicit chmod")),

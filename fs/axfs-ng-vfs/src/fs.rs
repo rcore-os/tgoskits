@@ -29,6 +29,13 @@ pub trait FilesystemMountLease: Send + Sync + core::fmt::Debug {}
 
 /// Trait for filesystem operations
 pub trait FilesystemOps: Send + Sync {
+    /// Whether a new hidden inode can remain owned through unlink/cleanup.
+    /// This immutable capability includes native identity-checked rename and
+    /// observed unlink; it never reclassifies an ordinary active holder.
+    fn supports_staging(&self) -> bool {
+        false
+    }
+
     /// Whether this owner implements the closed native namespace boundary.
     fn has_native_namespace(&self) -> bool {
         false

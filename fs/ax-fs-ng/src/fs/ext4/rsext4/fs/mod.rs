@@ -487,6 +487,10 @@ impl Drop for Ext4Filesystem {
 }
 
 impl FilesystemOps for Ext4Filesystem {
+    fn supports_staging(&self) -> bool {
+        true
+    }
+
     fn query_namespace(
         &self,
         admission: &axfs_ng_vfs::NamespaceAdmission<'_>,

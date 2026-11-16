@@ -20,6 +20,7 @@ pub use command::*;
 pub(crate) use command::{CreateSelection, MutationTarget};
 pub use completion::*;
 pub use mutation::*;
+pub(crate) use native::start_rename_expected;
 pub use native::*;
 pub use outcome::*;
 

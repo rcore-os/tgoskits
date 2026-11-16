@@ -14,7 +14,7 @@ use crate::{Location, MountWriteGuard, VfsError, VfsResult};
 /// releases all earlier leases and pins outside backend gates.
 #[derive(Debug)]
 pub struct PreparedWrite {
-    backing: BackingPreparation,
+    backing: Arc<BackingPreparation>,
 }
 
 #[derive(Debug, Default)]
@@ -32,13 +32,19 @@ impl PreparedWrite {
     /// own writable backing roots. A later write role also prepares that root's
     /// writable subtree. Write-admission errors are returned unchanged.
     pub fn acquire(location: &Location) -> VfsResult<Self> {
-        let mut prepared = Self {
-            backing: BackingPreparation::default(),
-        };
-        prepared
-            .backing
-            .acquire_backing(location, None, BackingRole::Write)?;
-        Ok(prepared)
+        let mut backing = BackingPreparation::default();
+        backing.acquire_backing(location, None, BackingRole::Write)?;
+        Ok(Self {
+            backing: Arc::new(backing),
+        })
+    }
+
+    /// Retains exactly the original authority for a privately created stage.
+    /// This is not public Clone and does not acquire any additional lease.
+    pub(crate) fn retain_staging(&self) -> Self {
+        Self {
+            backing: self.backing.clone(),
+        }
     }
 
     /// Borrows a lease already owned for exactly this mount.

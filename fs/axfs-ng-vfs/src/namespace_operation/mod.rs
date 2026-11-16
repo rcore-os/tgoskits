@@ -464,6 +464,27 @@ impl<'a> NamespaceOperationContext<'a> {
         crate::node::start_rename(self, source, destination, options, credentials, reservation)
     }
 
+    pub(crate) fn install_staging(
+        &'a self,
+        source: (&'a Location, &'a str),
+        destination: (&'a Location, &'a str),
+        expected: (crate::NamespaceNode, Option<crate::NamespaceNode>),
+        credentials: &'a MutationCredentials<'a>,
+    ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+        self.retired.retire(source.0.clone());
+        self.retired.retire(destination.0.clone());
+        let reservation = Reservation::child(self.children)?;
+        crate::node::start_rename_expected(
+            self,
+            source,
+            destination,
+            RenameOptions::REPLACE,
+            credentials,
+            Some(expected),
+            reservation,
+        )
+    }
+
     pub(crate) fn admission(&self, target: &Location) -> VfsResult<&'a NamespaceAdmission<'a>> {
         self.admissions.for_location(target)
     }

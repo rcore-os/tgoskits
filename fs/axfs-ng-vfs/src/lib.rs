@@ -14,6 +14,7 @@ mod node;
 pub mod path;
 mod prepared_unlink;
 mod prepared_write;
+mod staging;
 #[cfg(feature = "host-test")]
 #[doc(hidden)]
 pub mod testing;
@@ -30,6 +31,7 @@ pub(crate) use node::MutationTarget;
 pub use node::*;
 pub use prepared_unlink::*;
 pub use prepared_write::*;
+pub use staging::{SealedStaging, StagingIo, StagingNode};
 pub use types::*;
 pub use write_admission::*;
 pub use writeback_policy::*;

@@ -3086,6 +3086,28 @@ copy-up 竞争和错误后名称由系统用例证明。通用 Command/Scope 的
 依赖及 mounter。原生封闭暂存、数据/open、恢复、安装和 xattr 尚未接通，
 不能据此宣称完整 Overlay 已实现或 Starry 可以构建。
 
+#### 4.18.3 新建暂存的原生来源
+
+`StagingNode` 的保留工厂接受实际 source、绑定 work 根及完整写准备，由工厂自行
+分配临时名称，并通过排他 Create 的真实返回取得新对象。它不能从旧 Location 或
+调用者构造的 CreateEffect 恢复目标证明。创建后的完成错误仍保存实际对象，未能
+证明创建结果的 Uncertain 保存残留诊断责任。准备对象只共享已有不可变准备图的
+寿命，不重新获取写权或准入；普通 PreparedWrite 仍不可 Clone。
+
+暂存的恢复字段来自该工厂保存的 source 属性。恢复入口按保存的 mounter 核验
+UID/GID、mode 和时间权限，保留 Chmod-before-Chown 的 SGID 判断，不执行普通
+Chown 的自动清位，也不使用 `TrustedInitialization::kernel`。源为符号链接时
+不发送显式 MODE。恢复完成后才可消费式 seal，seal 后不再提供恢复能力；安装按
+真实原生 Rename 观察核对暂存身份和目标槽位，不能仅用旧工作名覆盖新对象。
+
+暂存清理先停止数据和缓存端点，再在真实 observed-unlink 中核对原对象，错配只
+取消，不删除替代对象。安装、物理移出和完成错误分别保留其实际状态，Drop 不执行
+磁盘操作。后端必须明确支持活跃暂存对象的脱链寿命；MemoryFs 与 Ext4 复用现有
+孤儿/引用机制，FAT 当前保留活跃 holder 拒绝，不能把封闭 holder 当成不存在。
+不具备该能力的后端在创建暂存及改变合并名称之前返回明确不支持。它仍可作为只读
+lower，普通原生命令能力不改变。实际数据和 xattr 仍必须接现有缓存及 owner 接口，
+不能因存在暂存类型就把普通 root File 打开算作已完成的准备传输。
+
 ### 4.19 属性意图的逐层传递
 
 `AuthorizedMetadataChange::forward_to` 只借当前实际尝试内的授权，向已声明的可写

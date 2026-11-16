@@ -3,6 +3,7 @@ mod cache;
 mod handle;
 mod open;
 mod page;
+mod staging;
 
 pub use access::{ExecutableFile, WriteAccess};
 #[cfg(all(test, feature = "vfs"))]
@@ -33,3 +34,4 @@ pub(crate) use cache::{prepare_fat_unlink_cache, sync_fat_cached_files};
 pub use handle::{File, FileBackend};
 pub use open::{FileFlags, OpenOptions, OpenResult};
 pub use page::{CachedPageBacking, CachedPageBytes, PageCache};
+pub use staging::copy_staging_data;

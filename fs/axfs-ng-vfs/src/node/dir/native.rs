@@ -281,16 +281,35 @@ pub(crate) fn start_rename<'a>(
     credentials: &'a MutationCredentials<'a>,
     reservation: Reservation<'a>,
 ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
-    if !Arc::ptr_eq(source.0.mountpoint(), destination.0.mountpoint()) {
-        return Err(VfsError::CrossesDevices);
-    }
-    let command = NamespaceMutation::Rename(RenameRequest::new(
+    start_rename_expected(
+        context,
         source,
         destination,
         options,
         credentials,
-        context.write()?,
-    )?);
+        None,
+        reservation,
+    )
+}
+
+pub(crate) fn start_rename_expected<'a>(
+    context: &'a NamespaceOperationContext<'a>,
+    source: (&'a crate::Location, &'a str),
+    destination: (&'a crate::Location, &'a str),
+    options: RenameOptions,
+    credentials: &'a MutationCredentials<'a>,
+    expected: Option<(NamespaceNode, Option<NamespaceNode>)>,
+    reservation: Reservation<'a>,
+) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
+    if !Arc::ptr_eq(source.0.mountpoint(), destination.0.mountpoint()) {
+        return Err(VfsError::CrossesDevices);
+    }
+    let mut request =
+        RenameRequest::new(source, destination, options, credentials, context.write()?)?;
+    if let Some((source, target)) = expected {
+        request.expect_staging(source, target);
+    }
+    let command = NamespaceMutation::Rename(request);
     Ok(start_command(context, source.0, command, reservation)?.resume())
 }
 

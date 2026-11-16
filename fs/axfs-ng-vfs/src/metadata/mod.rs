@@ -39,6 +39,7 @@ pub enum MetadataChange {
 pub(crate) enum MetadataIntent {
     User(MetadataChange),
     Forwarded(forward::ForwardedChange),
+    StagingRestoration(MetadataUpdate),
     Initialization(MetadataUpdate),
 }
 
@@ -47,7 +48,7 @@ impl MetadataIntent {
         match self {
             Self::User(change) => change.is_empty(),
             Self::Forwarded(_) => false,
-            Self::Initialization(update) => {
+            Self::Initialization(update) | Self::StagingRestoration(update) => {
                 update.mode.is_none()
                     && update.owner.is_none()
                     && update.rdev.is_none()
@@ -195,7 +196,7 @@ impl<'a> MetadataRequest<'a> {
                 MetadataChange::Chmod(_) | MetadataChange::Chown { .. }
             ),
             MetadataIntent::Forwarded(change) => change.changes_permissions_or_ownership(),
-            MetadataIntent::Initialization(update) => {
+            MetadataIntent::Initialization(update) | MetadataIntent::StagingRestoration(update) => {
                 update.mode.is_some() || update.owner.is_some() || update.rdev.is_some()
             }
         }
@@ -270,7 +271,19 @@ impl Location {
             return Ok(());
         }
         let write = PreparedWrite::acquire(self)?;
-        crate::NamespaceCommandScope::run_write(&write, |command| {
+        self.run_metadata_prepared(intent, credentials, &write)
+    }
+
+    pub(crate) fn run_metadata_prepared(
+        &self,
+        intent: MetadataIntent,
+        credentials: &MutationCredentials<'_>,
+        write: &PreparedWrite,
+    ) -> VfsResult<()> {
+        if intent.is_empty() {
+            return Ok(());
+        }
+        crate::NamespaceCommandScope::run_write(write, |command| {
             loop {
                 let scope = command.attempt::<Metadata>()?;
                 {

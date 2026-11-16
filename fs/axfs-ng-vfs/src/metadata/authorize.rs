@@ -34,6 +34,37 @@ impl MetadataRequest<'_> {
             removal: SetidRemoval::default(),
         };
         let change = match &self.intent {
+            MetadataIntent::StagingRestoration(update) => {
+                // These fields come from the private newly-created stage
+                // factory. Unlike boot initialization, saved mounter DAC and
+                // capabilities still constrain restoration.
+                if update.owner.is_some_and(|(uid, _)| {
+                    !credentials.cap_chown && !(owner && uid == current.uid)
+                }) || update.owner.is_some_and(|(_, gid)| {
+                    !credentials.cap_chown
+                        && !(owner && (gid == current.gid || credentials.in_group(gid)))
+                }) {
+                    return Err(VfsError::OperationNotPermitted);
+                }
+                if update.mode.is_some() || update.atime.is_some() || update.mtime.is_some() {
+                    owner_or_capable()?;
+                }
+                authorized.mode = update.mode;
+                // copy-up sets mode before ownership. The group used for
+                // SGID filtering is the newly created inode's current group.
+                if let Some(mode) = &mut authorized.mode
+                    && !credentials.in_group(current.gid)
+                    && !credentials.cap_fsetid
+                {
+                    mode.remove(NodePermission::SET_GID);
+                }
+                authorized.uid = update.owner.map(|(uid, _)| uid);
+                authorized.gid = update.owner.map(|(_, gid)| gid);
+                authorized.atime = update.atime;
+                authorized.mtime = update.mtime;
+                authorized.ctime = Some(attempt.wall_time());
+                return Ok(authorized);
+            }
             MetadataIntent::User(change) => *change,
             MetadataIntent::Forwarded(change) => match *change {
                 ForwardedChange::Chmod(mode) => MetadataChange::Chmod(mode),
