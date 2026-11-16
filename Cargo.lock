@@ -7911,7 +7911,6 @@ name = "some-serial"
 version = "0.7.8"
 dependencies = [
  "bitflags 2.13.2",
- "enum_dispatch",
  "heapless",
  "log",
  "rdif-serial",
