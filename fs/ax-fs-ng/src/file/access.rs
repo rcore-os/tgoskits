@@ -1,6 +1,6 @@
 use alloc::collections::BTreeMap;
 
-use axfs_ng_vfs::{FilesystemOps, Location, MountWriteGuard, PathHandle, VfsError, VfsResult};
+use axfs_ng_vfs::{FilesystemOps, Location, PathHandle, PreparedWrite, VfsError, VfsResult};
 
 use crate::os::sync::Mutex;
 
@@ -10,21 +10,26 @@ use crate::os::sync::Mutex;
 /// a mapping. The last owner releases write access, including on failed opens.
 pub struct WriteAccess {
     _lease: AccessLease,
-    // Release inode ownership before the mount's write authority.
-    _mount_write: MountWriteGuard,
+    // Release inode access before the complete graph's write authority; keep
+    // the selected path use through retirement of every preparation owner.
+    _write: PreparedWrite,
+    _path: PathHandle,
 }
 
 impl WriteAccess {
-    /// Acquires mount write authority and inode write access.
+    /// Acquires the complete backing graph's rights and inode write access.
     /// Fails with `ReadOnlyFilesystem` for local/shared protection or
     /// `TextFileBusy` if execution holds the inode. Acquire before backend gates.
     /// Acquisition may sleep behind reconfiguration; destruction releases the
-    /// inode registry before releasing the mount writer count.
+    /// inode registry before releasing any mount writer counts. Read-only
+    /// dependencies retain their read role and require no write authority.
     pub fn acquire(location: Location) -> VfsResult<Self> {
-        let mount_write = location.acquire_write()?;
+        let path = PathHandle::acquire(location)?;
+        let write = PreparedWrite::acquire(path.location())?;
         Ok(Self {
-            _lease: AccessLease::acquire(location, AccessKind::Write)?,
-            _mount_write: mount_write,
+            _lease: AccessLease::acquire(&path, AccessKind::Write)?,
+            _write: write,
+            _path: path,
         })
     }
 }
@@ -33,19 +38,22 @@ impl WriteAccess {
 /// drops its lease. Share through `Arc` when an address space is copied.
 pub struct ExecutableFile {
     _lease: AccessLease,
+    path: PathHandle,
 }
 
 impl ExecutableFile {
     /// Path pinned by this execution lease, shared by forked address spaces.
     pub fn location(&self) -> &Location {
-        self._lease._location.location()
+        self.path.location()
     }
 
     /// Acquires execution access, failing with `TextFileBusy` if writers exist.
     /// Acquisition and destruction may block on the access registry mutex.
     pub fn acquire(location: Location) -> VfsResult<Self> {
+        let path = PathHandle::acquire(location)?;
         Ok(Self {
-            _lease: AccessLease::acquire(location, AccessKind::Execute)?,
+            _lease: AccessLease::acquire(&path, AccessKind::Execute)?,
+            path,
         })
     }
 }
@@ -62,20 +70,19 @@ struct AccessCount {
 }
 
 // The registry only stores counts. No filesystem callback or Location drop runs
-// under its mutex. Each lease pins the filesystem and inode, so pointer/inode
+// under its mutex. Each owner retains its path after the lease, so pointer/inode
 // reuse cannot alias a live key; hard links and bind mounts share the same key.
 static ACCESS: Mutex<BTreeMap<(usize, u64), AccessCount>> = Mutex::new(BTreeMap::new());
 
 struct AccessLease {
-    _location: PathHandle,
     key: (usize, u64),
 }
 
 impl AccessLease {
-    fn acquire(location: Location, kind: AccessKind) -> VfsResult<Self> {
+    fn acquire(path: &PathHandle, kind: AccessKind) -> VfsResult<Self> {
+        let location = path.location();
         let filesystem = location.filesystem() as *const dyn FilesystemOps as *const () as usize;
         let key = (filesystem, location.inode());
-        let location = PathHandle::acquire(location)?;
         {
             let mut access = ACCESS.lock();
             let state = access.entry(key).or_insert(AccessCount { kind, count: 0 });
@@ -84,10 +91,7 @@ impl AccessLease {
             }
             state.count = state.count.checked_add(1).ok_or(VfsError::ValueOverflow)?;
         }
-        Ok(Self {
-            _location: location,
-            key,
-        })
+        Ok(Self { key })
     }
 }
 
@@ -100,6 +104,7 @@ impl Drop for AccessLease {
         if state.count == 0 {
             access.remove(&self.key);
         }
-        // `location` is dropped after this mutex guard, outside the registry.
+        // The owning WriteAccess/ExecutableFile retires its path after this
+        // lease, outside the registry and after any backing write authority.
     }
 }
