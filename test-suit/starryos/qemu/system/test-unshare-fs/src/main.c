@@ -7,11 +7,12 @@
  * Scenarios:
  *   1. unshare(CLONE_FS) on independent task → returns 0.
  *   2. unshare(CLONE_FILES) in one thread leaves sibling fd tables unchanged.
- *   3. a failed combined unshare leaves FD, FS, and namespace state unchanged.
- *   4. a pending CLONE_NEWPID survives a later namespace unshare.
- *   5. clone(CLONE_FS) → share cwd → child unshare(CLONE_FS) → cwd
+ *   3. missing namespace authority leaves FD, FS, and namespace state unchanged.
+ *   4. combined unshare preserves deleted cwd and isolates sibling state.
+ *   5. a pending CLONE_NEWPID survives a later namespace unshare.
+ *   6. clone(CLONE_FS) → share cwd → child unshare(CLONE_FS) → cwd
  *      isolation: child chdir must not affect parent cwd.
- *   6. Low- and high-word unknown unshare flags → EINVAL.
+ *   7. Low- and high-word unknown unshare flags → EINVAL.
  *
  * Note: uses clone(CLONE_FS | SIGCHLD), NOT fork().  In this kernel
  * fork() does NOT share FS_CONTEXT, so a fork-based test would pass
@@ -23,6 +24,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,7 +50,7 @@
 /* Minimal stack for clone(CLONE_FS) child — 64KiB should be enough for
    chdir / getcwd / _exit; SIGCHLD so waitpid works. */
 #define STACK_SIZE (64 * 1024)
-#define ROLLBACK_SYNC_TIMEOUT_SECONDS 5
+#define UNSHARE_SYNC_TIMEOUT_SECONDS 5
 
 struct clone_arg {
     int *shared;
@@ -62,24 +64,32 @@ struct files_unshare_arg {
     int close_rc;
 };
 
-struct rollback_arg {
+struct unshare_observer {
     pthread_mutex_t mutex;
     pthread_cond_t condition;
     int fd;
     int ready;
-    int check_fd;
-    int fd_is_closed;
+    int check_state;
+    int fd_state;
+    int close_rc;
+    char cwd[256];
+    int cwd_ok;
+    int cwd_errno;
     int observer_wait_error;
 };
 
-static int wait_for_rollback_flag(pthread_cond_t *condition,
+/* Linux capability ABI v3; minimal guest sysroots omit Linux UAPI headers. */
+struct cap_header { uint32_t version; int32_t pid; };
+struct cap_data { uint32_t effective, permitted, inheritable; };
+
+static int wait_for_observer_flag(pthread_cond_t *condition,
                                   pthread_mutex_t *mutex,
                                   const int *flag)
 {
     struct timespec deadline;
     if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0)
         return errno != 0 ? errno : EIO;
-    deadline.tv_sec += ROLLBACK_SYNC_TIMEOUT_SECONDS;
+    deadline.tv_sec += UNSHARE_SYNC_TIMEOUT_SECONDS;
 
     while (*flag == 0) {
         int error = pthread_cond_timedwait(condition, mutex, &deadline);
@@ -128,101 +138,137 @@ static void test_thread_unshare_files_isolation(void) {
     printf("UNSHARE_FILES_THREAD_ISOLATION_PASSED\n");
 }
 
-static void *check_shared_fd_after_failed_unshare(void *opaque) {
-    struct rollback_arg *arg = opaque;
+static void *observe_shared_state_after_unshare(void *opaque) {
+    struct unshare_observer *arg = opaque;
 
     pthread_mutex_lock(&arg->mutex);
     arg->ready = 1;
     pthread_cond_signal(&arg->condition);
-    arg->observer_wait_error = wait_for_rollback_flag(
-        &arg->condition, &arg->mutex, &arg->check_fd);
+    arg->observer_wait_error = wait_for_observer_flag(
+        &arg->condition, &arg->mutex, &arg->check_state);
     pthread_mutex_unlock(&arg->mutex);
 
     if (arg->observer_wait_error != 0)
         return NULL;
 
     errno = 0;
-    arg->fd_is_closed = fcntl(arg->fd, F_GETFD) == -1 && errno == EBADF;
+    int flags = fcntl(arg->fd, F_GETFD);
+    arg->fd_state = flags >= 0 ? 1 : errno == EBADF ? 0 : -1;
+    arg->close_rc = flags >= 0 ? close(arg->fd) : 0;
+    errno = 0;
+    arg->cwd_ok = getcwd(arg->cwd, sizeof(arg->cwd)) != NULL;
+    arg->cwd_errno = errno;
     return NULL;
 }
 
-static ino_t current_uts_inode(void) {
-    int fd = open("/proc/self/ns/uts", O_RDONLY | O_CLOEXEC);
-    check(fd >= 0, "open current UTS namespace");
+static ino_t current_namespace_inode(const char *name) {
+    char path[64];
+    int length = snprintf(path, sizeof(path), "/proc/self/ns/%s", name);
+    check(length > 0 && (size_t)length < sizeof(path), "build namespace path");
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    check(fd >= 0, "open current %s namespace", name);
     struct stat st;
-    check(fstat(fd, &st) == 0, "stat current UTS namespace");
+    check(fstat(fd, &st) == 0, "stat current %s namespace", name);
     close(fd);
     return st.st_ino;
 }
 
-static void test_failed_unshare_rolls_back_all_state(void) {
-    ino_t original_uts_inode = current_uts_inode();
-    int fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
-    check(fd >= 0, "open fd shared across failed unshare");
+static void test_combined_unshare_state(void) {
+    for (int expect_success = 0; expect_success <= 1; ++expect_success) {
+        ino_t original_uts_inode = current_namespace_inode("uts");
+        ino_t original_mnt_inode = current_namespace_inode("mnt");
+        int fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        check(fd >= 0, "open fd shared across combined unshare");
 
-    struct rollback_arg arg = {
-        .mutex = PTHREAD_MUTEX_INITIALIZER,
-        .fd = fd,
-    };
-    pthread_condattr_t condition_attr;
-    check(pthread_condattr_init(&condition_attr) == 0,
-          "initialize rollback observer condition attributes");
-    check(pthread_condattr_setclock(&condition_attr, CLOCK_MONOTONIC) == 0,
-          "select monotonic rollback observer timeout clock");
-    check(pthread_cond_init(&arg.condition, &condition_attr) == 0,
-          "initialize rollback observer condition");
-    check(pthread_condattr_destroy(&condition_attr) == 0,
-          "destroy rollback observer condition attributes");
-    pthread_t worker;
-    check(pthread_create(&worker, NULL, check_shared_fd_after_failed_unshare, &arg) == 0,
-          "create failed-unshare rollback observer");
+        struct unshare_observer arg = {
+            .mutex = PTHREAD_MUTEX_INITIALIZER,
+            .fd = fd,
+        };
+        pthread_condattr_t condition_attr;
+        check(pthread_condattr_init(&condition_attr) == 0,
+              "initialize unshare observer condition attributes");
+        check(pthread_condattr_setclock(&condition_attr, CLOCK_MONOTONIC) == 0,
+              "select monotonic unshare observer timeout clock");
+        check(pthread_cond_init(&arg.condition, &condition_attr) == 0,
+              "initialize unshare observer condition");
+        check(pthread_condattr_destroy(&condition_attr) == 0,
+              "destroy unshare observer condition attributes");
+        pthread_t worker;
+        check(pthread_create(&worker, NULL, observe_shared_state_after_unshare, &arg) == 0,
+              "create combined-unshare state observer");
 
-    pthread_mutex_lock(&arg.mutex);
-    int observer_ready_error = wait_for_rollback_flag(
-        &arg.condition, &arg.mutex, &arg.ready);
-    pthread_mutex_unlock(&arg.mutex);
-    check(observer_ready_error == 0,
-          "rollback observer reaches ready phase (wait_error=%d, ready=%d)",
-          observer_ready_error, arg.ready);
+        pthread_mutex_lock(&arg.mutex);
+        int observer_ready_error = wait_for_observer_flag(
+            &arg.condition, &arg.mutex, &arg.ready);
+        pthread_mutex_unlock(&arg.mutex);
+        check(observer_ready_error == 0,
+              "unshare observer reaches ready phase (wait_error=%d, ready=%d)",
+              observer_ready_error, arg.ready);
 
-    char deleted_cwd[128];
-    int length = snprintf(deleted_cwd, sizeof(deleted_cwd),
-                          "/tmp/unshare-rollback-%ld", (long)getpid());
-    check(length > 0 && (size_t)length < sizeof(deleted_cwd),
-          "build deleted cwd path");
-    rmdir(deleted_cwd);
-    check(mkdir(deleted_cwd, 0700) == 0, "create cwd for failed mount unshare");
-    check(chdir(deleted_cwd) == 0, "enter cwd before deleting it");
-    check(rmdir(deleted_cwd) == 0, "delete current cwd to force ENOENT");
+        struct cap_header header = {.version = 0x20080522, .pid = 0};
+        struct cap_data original_caps[2], restricted_caps[2];
+        if (expect_success) {
+            char deleted_cwd[] = "/tmp/unshare-deleted-cwd-XXXXXX";
+            check(mkdtemp(deleted_cwd) != NULL, "create cwd for successful mount unshare");
+            check(chdir(deleted_cwd) == 0, "enter cwd before deleting it");
+            check(rmdir(deleted_cwd) == 0, "unlink cwd while both threads retain it");
+        } else {
+            const uint32_t admin_bit = 1U << 21; /* CAP_SYS_ADMIN */
+            check(syscall(SYS_capget, &header, original_caps) == 0 &&
+                  (original_caps[0].effective & admin_bit), "retain original namespace capability");
+            memcpy(restricted_caps, original_caps, sizeof(original_caps));
+            restricted_caps[0].effective &= ~admin_bit;
+            check(syscall(SYS_capset, &header, restricted_caps) == 0,
+                  "remove effective namespace authority without dropping permitted capabilities");
+        }
 
-    errno = 0;
-    int rc = unshare(CLONE_FILES | CLONE_NEWNS | CLONE_NEWUTS);
-    int unshare_errno = errno;
-    check(rc == -1 && unshare_errno == ENOENT,
-          "combined unshare fails with ENOENT before commit");
-    check(chdir("/tmp") == 0, "leave deleted cwd after failed unshare");
+        errno = 0;
+        int rc = syscall(SYS_unshare, CLONE_FILES | CLONE_NEWNS | CLONE_NEWUTS);
+        int unshare_errno = errno;
+        if (!expect_success) {
+            check(syscall(SYS_capset, &header, original_caps) == 0, "restore original namespace capability");
+            check(rc == -1 && unshare_errno == EPERM,
+                  "combined unshare without CAP_SYS_ADMIN fails before publication (rc=%d, errno=%d)",
+                  rc, unshare_errno);
+        } else {
+            check(rc == 0, "combined unshare preserves an already deleted cwd (rc=%d, errno=%d)", rc, unshare_errno);
+            char cwd[256];
+            errno = 0;
+            check(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT,
+                  "successful unshare retains the nameless cwd instead of rebinding its pathname");
+        }
+        check(chdir("/tmp") == 0, "change cwd after combined unshare");
 
-    check(close(fd) == 0, "close fd after failed unshare");
-    pthread_mutex_lock(&arg.mutex);
-    arg.check_fd = 1;
-    pthread_cond_signal(&arg.condition);
-    pthread_mutex_unlock(&arg.mutex);
-    int join_error = pthread_join(worker, NULL);
-    check(join_error == 0,
-          "join failed-unshare rollback observer (rc=%d)", join_error);
-    check(arg.observer_wait_error == 0,
-          "rollback observer receives fd-check release (wait_error=%d, check_fd=%d)",
-          arg.observer_wait_error, arg.check_fd);
-    check(arg.fd_is_closed,
-          "failed unshare keeps caller and sibling on the shared fd table");
+        check(close(fd) == 0, "close fd after combined unshare");
+        pthread_mutex_lock(&arg.mutex);
+        arg.check_state = 1;
+        pthread_cond_signal(&arg.condition);
+        pthread_mutex_unlock(&arg.mutex);
+        int join_error = pthread_join(worker, NULL);
+        check(join_error == 0,
+              "join combined-unshare state observer (rc=%d)", join_error);
+        check(arg.observer_wait_error == 0,
+              "unshare observer receives fd-check release (wait_error=%d, check_state=%d)",
+              arg.observer_wait_error, arg.check_state);
+        check(arg.fd_state == (expect_success ? 1 : 0) && arg.close_rc == 0,
+              "combined unshare publishes the fd table only on success (success=%d, sibling_fd=%d)",
+              expect_success, arg.fd_state);
+        check(expect_success ? !arg.cwd_ok && arg.cwd_errno == ENOENT
+                             : arg.cwd_ok && strcmp(arg.cwd, "/tmp") == 0,
+              "combined unshare publishes the FS context only on success (success=%d, sibling_errno=%d)",
+              expect_success, arg.cwd_errno);
 
-    ino_t current_inode = current_uts_inode();
-    check(current_inode == original_uts_inode,
-          "failed unshare preserves the original UTS namespace");
-    pthread_cond_destroy(&arg.condition);
-    pthread_mutex_destroy(&arg.mutex);
+        ino_t current_inode = current_namespace_inode("uts");
+        check(expect_success ? current_inode != original_uts_inode : current_inode == original_uts_inode,
+              "combined unshare publishes the UTS namespace only on success");
+        current_inode = current_namespace_inode("mnt");
+        check(expect_success ? current_inode != original_mnt_inode : current_inode == original_mnt_inode,
+              "combined unshare publishes the mount namespace only on success");
+        pthread_cond_destroy(&arg.condition);
+        pthread_mutex_destroy(&arg.mutex);
 
-    printf("UNSHARE_FAILURE_ROLLBACK_PASSED\n");
+        printf("%s\n", expect_success ? "UNSHARE_DELETED_CWD_ISOLATION_PASSED" : "UNSHARE_FAILURE_ROLLBACK_PASSED");
+    }
 }
 
 static void test_unshare_preserves_pending_pid_namespace(void) {
@@ -372,7 +418,7 @@ static void test_unshare_invalid_flags(void) {
 
 int main(void) {
     test_thread_unshare_files_isolation();
-    test_failed_unshare_rolls_back_all_state();
+    test_combined_unshare_state();
     test_unshare_preserves_pending_pid_namespace();
     test_unshare_fs_basic();
     test_clone_fs_unshare_isolation();
