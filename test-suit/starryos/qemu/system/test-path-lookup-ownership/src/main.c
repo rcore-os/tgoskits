@@ -195,7 +195,7 @@ static void rename_identity(int rootfd)
     moved = open_at(rootfd, "old/moved", O_RDONLY | O_DIRECTORY);
     child = open_at(rootfd, "old/moved/child", O_RDONLY | O_DIRECTORY);
     REQUIRE(oldparent >= 0 && newparent >= 0 && moved >= 0 && child >= 0);
-    REQUIRE(syscall(SYS_renameat, oldparent, "moved", newparent, "moved") == 0);
+    REQUIRE(syscall(SYS_renameat2, oldparent, "moved", newparent, "moved", 0) == 0);
     expect_same(open_at(moved, "..", O_RDONLY | O_DIRECTORY), newparent,
                 "rename updates held directory fd parent");
     expect_same(open_at(child, "../..", O_RDONLY | O_DIRECTORY), newparent,
@@ -207,7 +207,7 @@ static void rename_identity(int rootfd)
     victim = open_at(rootfd, "victim", O_CREAT | O_EXCL | O_RDWR);
     REQUIRE(source >= 0 && victim >= 0);
     REQUIRE(write(source, "source", 6) == 6 && write(victim, "victim", 6) == 6);
-    REQUIRE(syscall(SYS_renameat, rootfd, "source", rootfd, "victim") == 0);
+    REQUIRE(syscall(SYS_renameat2, rootfd, "source", rootfd, "victim", 0) == 0);
     REQUIRE(pread(victim, data, 6, 0) == 6);
     CHECK(memcmp(data, "victim", 6) == 0,
           "rename replacement keeps old target fd content");
