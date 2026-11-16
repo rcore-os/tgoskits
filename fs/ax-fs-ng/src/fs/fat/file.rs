@@ -68,7 +68,7 @@ impl NodeOps for FatFileNode {
         let fs = self.fs.lock();
         let file = self.inner.borrow_mut(&fs);
         update_file_metadata(file, update);
-        Ok(())
+        file.flush().map_err(into_vfs_err)
     }
 
     fn filesystem(&self) -> &dyn FilesystemOps {
@@ -125,11 +125,15 @@ impl FileNodeOps for FatFileNode {
         loop {
             let n = file.write(buf).map_err(into_vfs_err)?;
             if n == 0 {
-                return Ok(written);
+                break;
             }
             written += n;
             buf = &buf[n..];
         }
+        if written > 0 {
+            file.flush().map_err(into_vfs_err)?;
+        }
+        Ok(written)
     }
 
     fn append(&self, buf: &[u8]) -> VfsResult<(usize, u64)> {
@@ -137,6 +141,9 @@ impl FileNodeOps for FatFileNode {
         let file = self.inner.borrow_mut(&fs);
         file.seek(SeekFrom::End(0)).map_err(into_vfs_err)?;
         let written = file.write(buf).map_err(into_vfs_err)?;
+        if written > 0 {
+            file.flush().map_err(into_vfs_err)?;
+        }
         Ok((written, file.size().unwrap_or(0) as u64))
     }
 
@@ -145,10 +152,11 @@ impl FileNodeOps for FatFileNode {
         let file = self.inner.borrow_mut(&fs);
         if len <= file.size().unwrap_or(0) as u64 {
             file.seek(SeekFrom::Start(len)).map_err(into_vfs_err)?;
-            file.truncate().map_err(into_vfs_err)
+            file.truncate().map_err(into_vfs_err)?;
         } else {
-            grow_file(&fs, file, len)
+            grow_file(&fs, file, len)?;
         }
+        file.flush().map_err(into_vfs_err)
     }
 }
 

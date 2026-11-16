@@ -53,7 +53,7 @@ impl Vsie {
     /// Sets the supervisor software interrupt enable.
     #[inline]
     pub fn set_ssie(&mut self, val: bool) {
-        self.bits.set_bit(1, val);
+        BitField::set_bit(&mut self.bits, 1, val);
     }
     /// Returns the supervisor timer interrupt enable.
     #[inline]
@@ -63,7 +63,7 @@ impl Vsie {
     /// Sets the supervisor timer interrupt enable.
     #[inline]
     pub fn set_stie(&mut self, val: bool) {
-        self.bits.set_bit(5, val);
+        BitField::set_bit(&mut self.bits, 5, val);
     }
     /// Returns the supervisor external interrupt enable.
     #[inline]
@@ -73,7 +73,7 @@ impl Vsie {
     /// Sets the supervisor external interrupt enable.
     #[inline]
     pub fn set_seie(&mut self, val: bool) {
-        self.bits.set_bit(9, val);
+        BitField::set_bit(&mut self.bits, 9, val);
     }
 }
 

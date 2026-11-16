@@ -89,7 +89,7 @@ fn dequeue_wakes_capacity_listener_after_releasing_submission_registry_lock() {
         lock_failures: AtomicUsize::new(0),
     });
     let waker = Waker::from(Arc::clone(&wake));
-    let mut listener = Box::pin(channel.listen_for_space());
+    let mut listener = core::pin::pin!(channel.listen_for_space());
     assert!(matches!(
         listener.as_mut().poll(&mut Context::from_waker(&waker)),
         Poll::Pending
@@ -137,7 +137,7 @@ fn single_dequeue_wakes_after_releasing_submission_registry_lock() {
         lock_failures: AtomicUsize::new(0),
     });
     let waker = Waker::from(Arc::clone(&wake));
-    let mut listener = Box::pin(channel.listen_for_space());
+    let mut listener = core::pin::pin!(channel.listen_for_space());
     assert!(matches!(
         listener.as_mut().poll(&mut Context::from_waker(&waker)),
         Poll::Pending

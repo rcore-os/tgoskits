@@ -1947,9 +1947,9 @@ impl<H: X86HostOps, M: ControlMemory> VmxVcpu<H, M> {
                 let mut res = cpuid!(regs_clone.rax, regs_clone.rcx);
                 if regs_clone.rcx == 0 {
                     // Bit 05: WAITPKG.
-                    res.ecx.set_bit(5, false); // clear waitpkg
+                    BitField::set_bit(&mut res.ecx, 5, false); // clear waitpkg
                     // Bit 16: LA57. Supports 57-bit linear addresses and five-level paging if 1.
-                    res.ecx.set_bit(16, false); // clear LA57
+                    BitField::set_bit(&mut res.ecx, 16, false); // clear LA57
                 }
 
                 res

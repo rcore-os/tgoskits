@@ -134,55 +134,6 @@ impl PciIntxRouter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use axdevice_base::{
-        ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger,
-    };
-
-    use super::*;
-    use crate::{DeviceNodeId, PciSegment};
-
-    #[test]
-    fn conventional_swizzle_maps_all_pins_and_rejects_non_root_buses() {
-        let router = PciIntxRouter::new(
-            InterruptControllerId::new(0),
-            [
-                ControllerInputId::new(16),
-                ControllerInputId::new(17),
-                ControllerInputId::new(18),
-                ControllerInputId::new(19),
-            ],
-            [16, 17, 18, 19],
-            InterruptTrigger::LevelTriggered,
-            InterruptSharing::Shared,
-        );
-        let function = DeviceNodeId::new("endpoint").unwrap();
-        for (pin, input) in [
-            (PciIntxPin::A, 17),
-            (PciIntxPin::B, 18),
-            (PciIntxPin::C, 19),
-            (PciIntxPin::D, 16),
-        ] {
-            assert_eq!(
-                router
-                    .resolve(&function, PciBdf::bus_zero(1), pin)
-                    .unwrap()
-                    .input(),
-                ControllerInputId::new(input)
-            );
-        }
-        assert!(matches!(
-            router.resolve(
-                &function,
-                PciBdf::new(PciSegment::new(0), 1, 1, 0).unwrap(),
-                PciIntxPin::A,
-            ),
-            Err(PciError::IntxRouteUnavailable { .. })
-        ));
-    }
-}
-
 /// Resolved endpoint INTx route shared by runtime, config space and firmware.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResolvedPciIntx {
@@ -405,5 +356,54 @@ impl PciHostProvider {
     pub fn with_intx_router(mut self, router: PciIntxRouter) -> Self {
         self.intx_router = Some(router);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axdevice_base::{
+        ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger,
+    };
+
+    use super::*;
+    use crate::{DeviceNodeId, PciSegment};
+
+    #[test]
+    fn conventional_swizzle_maps_all_pins_and_rejects_non_root_buses() {
+        let router = PciIntxRouter::new(
+            InterruptControllerId::new(0),
+            [
+                ControllerInputId::new(16),
+                ControllerInputId::new(17),
+                ControllerInputId::new(18),
+                ControllerInputId::new(19),
+            ],
+            [16, 17, 18, 19],
+            InterruptTrigger::LevelTriggered,
+            InterruptSharing::Shared,
+        );
+        let function = DeviceNodeId::new("endpoint").unwrap();
+        for (pin, input) in [
+            (PciIntxPin::A, 17),
+            (PciIntxPin::B, 18),
+            (PciIntxPin::C, 19),
+            (PciIntxPin::D, 16),
+        ] {
+            assert_eq!(
+                router
+                    .resolve(&function, PciBdf::bus_zero(1), pin)
+                    .unwrap()
+                    .input(),
+                ControllerInputId::new(input)
+            );
+        }
+        assert!(matches!(
+            router.resolve(
+                &function,
+                PciBdf::new(PciSegment::new(0), 1, 1, 0).unwrap(),
+                PciIntxPin::A,
+            ),
+            Err(PciError::IntxRouteUnavailable { .. })
+        ));
     }
 }

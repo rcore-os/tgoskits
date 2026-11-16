@@ -274,7 +274,7 @@ fn flush_drain_notification_between_check_and_wait_is_observed() {
         publisher.request_completed(RequestOp::Read);
     });
 
-    let mut future = Box::pin(inner.acquire_flush_async(false));
+    let mut future = core::pin::pin!(inner.acquire_flush_async(false));
     let permit = match poll_once(future.as_mut()) {
         Poll::Ready(Ok(permit)) => permit,
         Poll::Pending => panic!("data-drain notification was lost before awaiting the listener"),
@@ -330,7 +330,7 @@ fn nowait_and_cancelled_mutation_admission_preserve_gate_count() {
         assert_eq!(inner.lifecycle_gate.lock_irqsave().active_data, 0);
         drop(future);
         inner.lifecycle_gate.lock_irqsave().flush_active = false;
-        let mut admitted = Box::pin(inner.acquire_data_async(op, 1, false));
+        let mut admitted = core::pin::pin!(inner.acquire_data_async(op, 1, false));
         let Poll::Ready(Ok(permit)) = poll_once(admitted.as_mut()) else {
             panic!("unblocked mutation must acquire admission");
         };
@@ -404,7 +404,7 @@ fn permit_release_wakes_sync_and_async_admission_waiters() {
 
     let counter = Arc::new(WakeCounter::default());
     let waker = Waker::from(Arc::clone(&counter));
-    let mut async_waiter = Box::pin(inner.acquire_data_async(RequestOp::Read, 1, false));
+    let mut async_waiter = core::pin::pin!(inner.acquire_data_async(RequestOp::Read, 1, false));
     assert!(matches!(
         poll_with_waker(async_waiter.as_mut(), &waker),
         Poll::Pending
@@ -468,7 +468,7 @@ fn admission_publisher_invokes_waker_after_releasing_gate_lock() {
         lock_failures: AtomicUsize::new(0),
     });
     let waker = Waker::from(Arc::clone(&wake));
-    let mut future = Box::pin(inner.acquire_data_async(RequestOp::Read, 1, false));
+    let mut future = core::pin::pin!(inner.acquire_data_async(RequestOp::Read, 1, false));
     assert!(matches!(
         poll_with_waker(future.as_mut(), &waker),
         Poll::Pending
@@ -494,7 +494,7 @@ fn admission_notification_between_check_and_wait_is_observed() {
         publisher.undo_submission_admission(RequestOp::Flush, 1);
     });
 
-    let mut future = Box::pin(inner.acquire_data_async(RequestOp::Read, 1, false));
+    let mut future = core::pin::pin!(inner.acquire_data_async(RequestOp::Read, 1, false));
     let permit = match poll_once(future.as_mut()) {
         Poll::Ready(Ok(permit)) => permit,
         Poll::Pending => panic!("admission notification was lost before awaiting the listener"),
@@ -519,7 +519,7 @@ fn flush_gate_notification_between_check_and_wait_is_observed() {
     drop(owner_future);
     inner.set_admission_wait_hook(move || drop(owner));
 
-    let mut future = Box::pin(inner.acquire_flush_async(false));
+    let mut future = core::pin::pin!(inner.acquire_flush_async(false));
     let permit = match poll_once(future.as_mut()) {
         Poll::Ready(Ok(permit)) => permit,
         Poll::Pending => panic!("flush gate notification was lost before awaiting the listener"),
@@ -574,7 +574,7 @@ fn channel_capacity_publisher_invokes_waker_after_releasing_state_lock() {
         lock_failures: AtomicUsize::new(0),
     });
     let waker = Waker::from(Arc::clone(&wake));
-    let mut listener = Box::pin(channel.listen_for_space());
+    let mut listener = core::pin::pin!(channel.listen_for_space());
     assert!(matches!(
         poll_with_waker(listener.as_mut(), &waker),
         Poll::Pending
@@ -602,7 +602,7 @@ fn released_capacity_wakes_sync_and_async_channel_waiters() {
 
     let counter = Arc::new(WakeCounter::default());
     let waker = Waker::from(Arc::clone(&counter));
-    let mut listener = Box::pin(channel.listen_for_space());
+    let mut listener = core::pin::pin!(channel.listen_for_space());
     assert!(matches!(
         poll_with_waker(listener.as_mut(), &waker),
         Poll::Pending
@@ -715,8 +715,8 @@ fn channel_close_wakes_every_async_capacity_waiter() {
     let channel = BoundedChannel::with_item_notification(1, notification).unwrap();
     assert!(matches!(channel.try_enqueue_no_notify(1), Ok(0)));
 
-    let mut first = Box::pin(channel.listen_for_space());
-    let mut second = Box::pin(channel.listen_for_space());
+    let mut first = core::pin::pin!(channel.listen_for_space());
+    let mut second = core::pin::pin!(channel.listen_for_space());
     assert!(matches!(poll_once(first.as_mut()), Poll::Pending));
     assert!(matches!(poll_once(second.as_mut()), Poll::Pending));
 
@@ -731,7 +731,7 @@ fn async_flush_nowait_rolls_back_gate_after_data_drain_rejection() {
     let inner = barrier_test_inner();
     inner.lifecycle_gate.lock_irqsave().active_data = 1;
 
-    let mut future = Box::pin(inner.acquire_flush_async(true));
+    let mut future = core::pin::pin!(inner.acquire_flush_async(true));
     assert!(matches!(
         poll_once(future.as_mut()),
         Poll::Ready(Err(BlkError::Retry))
@@ -747,7 +747,7 @@ fn async_admission_returns_io_after_teardown_begins() {
     let inner = barrier_test_inner();
     inner.lifecycle_gate.lock_irqsave().phase = DevicePhase::Stopping;
 
-    let mut future = Box::pin(inner.acquire_data_async(RequestOp::Read, 1, false));
+    let mut future = core::pin::pin!(inner.acquire_data_async(RequestOp::Read, 1, false));
     assert!(matches!(
         poll_once(future.as_mut()),
         Poll::Ready(Err(BlkError::Io))
@@ -1074,8 +1074,9 @@ fn async_submit_nowait_never_waits_on_channel_owner() {
     let (poll_started_tx, poll_started_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
     let contender = std::thread::spawn(move || {
-        let mut future =
-            Box::pin(contender_handle.submit_owned_async(flush_request(RequestFlags::NOWAIT)));
+        let mut future = core::pin::pin!(
+            contender_handle.submit_owned_async(flush_request(RequestFlags::NOWAIT))
+        );
         poll_started_tx.send(()).unwrap();
         let result = match poll_once(future.as_mut()) {
             Poll::Ready(Err(error)) => Ok((error.error, error.into_request().op)),
@@ -1264,14 +1265,14 @@ fn async_reads_respect_single_hardware_inflight_slot_and_return_dma() {
 
     let first_wake = Arc::new(WakeCounter::default());
     let first_waker = Waker::from(Arc::clone(&first_wake));
-    let mut first_completion = Box::pin(first_subscription.recv_async());
+    let mut first_completion = core::pin::pin!(first_subscription.recv_async());
     assert!(matches!(
         poll_with_waker(first_completion.as_mut(), &first_waker),
         Poll::Pending
     ));
     let second_wake = Arc::new(WakeCounter::default());
     let second_waker = Waker::from(Arc::clone(&second_wake));
-    let mut second_completion = Box::pin(second_subscription.recv_async());
+    let mut second_completion = core::pin::pin!(second_subscription.recv_async());
     assert!(matches!(
         poll_with_waker(second_completion.as_mut(), &second_waker),
         Poll::Pending

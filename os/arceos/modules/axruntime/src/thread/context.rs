@@ -54,15 +54,15 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
                 if !(guard_start..guard_end).contains(&fault.as_usize()) {
                     return false;
                 }
-                error!(
+                let _ = crate::emergency_console::write_fmt(format_args!(
                     "task stack guard page hit: fault_addr={:#x}, stack=[{:#x}..{:#x}), \
-                     guard=[{:#x}..{:#x})",
+                     guard=[{:#x}..{:#x})\n",
                     fault.as_usize(),
                     guard_end,
                     stack.usable_top,
                     guard_start,
                     guard_end,
-                );
+                ));
                 true
             })
         }

@@ -1,6 +1,8 @@
 error[E0053]: method `read` has an incompatible type for trait
  --> tests/ui/wrong_provider.rs:4:69
   |
+1 | #[trait_ffi::def_extern_trait]
+...
 4 | interface::impl_trait! { impl Interface for Provider { fn read() -> u16 { 1 } } }
   |                                                                     ^^^ expected `u8`, found `u16`
   |

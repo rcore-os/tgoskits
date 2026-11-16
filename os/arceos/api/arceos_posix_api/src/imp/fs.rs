@@ -5,7 +5,7 @@ use core::{
     time::Duration,
 };
 
-use ax_fs_ng::fops::OpenOptions;
+use ax_fs_ng::fops::{DirHandle, OpenEntry, OpenOptions};
 use ax_io::{PollState, SeekFrom};
 
 use super::fd_ops::{FileLike, get_file_like};
@@ -13,6 +13,11 @@ use crate::{PosixError, PosixResult, ctypes, sync::Mutex, utils::char_ptr_to_str
 
 const UTIME_NOW: i64 = (1 << 30) - 1;
 const UTIME_OMIT: i64 = (1 << 30) - 2;
+const AT_FDCWD: c_int = -100;
+const AT_SYMLINK_NOFOLLOW: c_int = 0x100;
+const AT_REMOVEDIR: c_int = 0x200;
+const AT_NO_AUTOMOUNT: c_int = 0x800;
+const AT_EMPTY_PATH: c_int = 0x1000;
 
 pub struct File {
     inner: Mutex<ax_fs_ng::fops::File>,
@@ -149,6 +154,10 @@ impl Directory {
             .downcast::<Self>()
             .map_err(|_| PosixError::ENOTDIR)
     }
+
+    fn dir_handle(&self) -> DirHandle {
+        self.inner.lock().dir_handle()
+    }
 }
 
 impl FileLike for File {
@@ -193,18 +202,7 @@ impl FileLike for Directory {
     }
 
     fn stat(&self) -> PosixResult<ctypes::stat> {
-        let st_mode = 0o040755;
-        Ok(ctypes::stat {
-            st_ino: 1,
-            st_nlink: 1,
-            st_mode,
-            st_uid: 1000,
-            st_gid: 1000,
-            st_size: 0,
-            st_blocks: 0,
-            st_blksize: 512,
-            ..Default::default()
-        })
+        Ok(metadata_to_stat(self.inner.lock().get_attr()?))
     }
 
     fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
@@ -252,24 +250,41 @@ fn flags_to_options(flags: c_int, _mode: ctypes::mode_t) -> OpenOptions {
     options
 }
 
+fn dir_handle_for_at(dirfd: c_int, path: &str) -> PosixResult<Option<DirHandle>> {
+    if path.starts_with('/') || dirfd == AT_FDCWD {
+        return Ok(None);
+    }
+    Ok(Some(Directory::from_fd(dirfd)?.dir_handle()))
+}
+
+/// Open a file or directory relative to `dirfd` and insert it into the file
+/// descriptor table.
+pub fn sys_openat(
+    dirfd: c_int,
+    filename: *const c_char,
+    flags: c_int,
+    mode: ctypes::mode_t,
+) -> c_int {
+    let filename = char_ptr_to_str(filename);
+    debug!("sys_openat <= {dirfd} {filename:?} {flags:#o} {mode:#o}");
+    syscall_body!(sys_openat, {
+        let options = flags_to_options(flags, mode);
+        let filename = filename?;
+        let dir = dir_handle_for_at(dirfd, filename)?;
+        let directory_only = (flags as u32) & ctypes::O_DIRECTORY != 0;
+        match ax_fs_ng::fops::open_at(dir.as_ref(), filename, &options, directory_only)? {
+            OpenEntry::File(file) => File::new(file).add_to_fd_table(),
+            OpenEntry::Directory(dir) => Directory::new(dir).add_to_fd_table(),
+        }
+    })
+}
+
 /// Open a file by `filename` and insert it into the file descriptor table.
 ///
 /// Return its index in the file table (`fd`). Return `EMFILE` if it already
 /// has the maximum number of files open.
 pub fn sys_open(filename: *const c_char, flags: c_int, mode: ctypes::mode_t) -> c_int {
-    let filename = char_ptr_to_str(filename);
-    debug!("sys_open <= {filename:?} {flags:#o} {mode:#o}");
-    syscall_body!(sys_open, {
-        let options = flags_to_options(flags, mode);
-        let filename = filename?;
-        if (flags as u32) & ctypes::O_DIRECTORY != 0 {
-            let dir = ax_fs_ng::fops::Directory::open_dir(filename, &options)?;
-            Directory::new(dir).add_to_fd_table()
-        } else {
-            let file = ax_fs_ng::fops::File::open(filename, &options)?;
-            File::new(file).add_to_fd_table()
-        }
-    })
+    sys_openat(AT_FDCWD, filename, flags, mode)
 }
 
 /// Read directory entries from `fd` into Linux-style linux_dirent64 buffer.
@@ -457,16 +472,122 @@ pub fn sys_getcwd(buf: *mut c_char, size: usize) -> *mut c_char {
     })
 }
 
+/// Get file metadata relative to `dirfd` and write into `buf`.
+///
+/// Supports `AT_SYMLINK_NOFOLLOW` and `AT_EMPTY_PATH` (including `NULL` or
+/// empty `path`, and `AT_FDCWD` for the current working directory).
+pub unsafe fn sys_fstatat(
+    dirfd: c_int,
+    path: *const c_char,
+    buf: *mut ctypes::stat,
+    flags: c_int,
+) -> c_int {
+    debug!(
+        "sys_fstatat <= {dirfd} {:#x} {:#x} {flags:#x}",
+        path as usize, buf as usize
+    );
+    syscall_body!(sys_fstatat, {
+        let allowed = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT;
+        if flags & !allowed != 0 {
+            return Err(PosixError::EINVAL);
+        }
+        if buf.is_null() {
+            return Err(PosixError::EFAULT);
+        }
+
+        let empty_path_ok = flags & AT_EMPTY_PATH != 0;
+        let stat_by_fd = |fd: c_int| -> PosixResult<ctypes::stat> {
+            if fd == AT_FDCWD {
+                Ok(metadata_to_stat(ax_fs_ng::api::current_dir_metadata()?))
+            } else {
+                get_file_like(fd)?.stat()
+            }
+        };
+
+        let st = if path.is_null() {
+            if empty_path_ok {
+                stat_by_fd(dirfd)?
+            } else {
+                return Err(PosixError::EFAULT);
+            }
+        } else {
+            let path = char_ptr_to_str(path)?;
+            if path.is_empty() {
+                if empty_path_ok {
+                    stat_by_fd(dirfd)?
+                } else {
+                    return Err(PosixError::ENOENT);
+                }
+            } else {
+                let dir = dir_handle_for_at(dirfd, path)?;
+                let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
+                metadata_to_stat(ax_fs_ng::api::metadata_at(dir.as_ref(), path, follow)?)
+            }
+        };
+
+        unsafe { *buf = st };
+        Ok(0)
+    })
+}
+
+/// Rename `old` (relative to `olddirfd`) to `new` (relative to `newdirfd`).
+/// If `new` exists, it is replaced.
+///
+/// Return 0 if the operation succeeds, otherwise return -1.
+pub fn sys_renameat(
+    olddirfd: c_int,
+    old: *const c_char,
+    newdirfd: c_int,
+    new: *const c_char,
+) -> c_int {
+    let old_path = char_ptr_to_str(old);
+    let new_path = char_ptr_to_str(new);
+    debug!("sys_renameat <= {olddirfd} {old_path:?} -> {newdirfd} {new_path:?}");
+    syscall_body!(sys_renameat, {
+        let old_path = old_path?;
+        let new_path = new_path?;
+        let old_dir = dir_handle_for_at(olddirfd, old_path)?;
+        let new_dir = dir_handle_for_at(newdirfd, new_path)?;
+        ax_fs_ng::api::rename_at(old_dir.as_ref(), old_path, new_dir.as_ref(), new_path)?;
+        Ok(0)
+    })
+}
+
 /// Rename `old` to `new`
 /// If new exists, it is first removed.
 ///
 /// Return 0 if the operation succeeds, otherwise return -1.
 pub fn sys_rename(old: *const c_char, new: *const c_char) -> c_int {
-    syscall_body!(sys_rename, {
-        let old_path = char_ptr_to_str(old)?;
-        let new_path = char_ptr_to_str(new)?;
-        debug!("sys_rename <= old: {old_path:?}, new: {new_path:?}");
-        ax_fs_ng::api::rename(old_path, new_path)?;
+    sys_renameat(AT_FDCWD, old, AT_FDCWD, new)
+}
+
+/// Create a directory at `path` relative to `dirfd`.
+pub fn sys_mkdirat(dirfd: c_int, path: *const c_char, mode: ctypes::mode_t) -> c_int {
+    let path = char_ptr_to_str(path);
+    debug!("sys_mkdirat <= {dirfd} {path:?} {mode:#o}");
+    syscall_body!(sys_mkdirat, {
+        let path = path?;
+        let dir = dir_handle_for_at(dirfd, path)?;
+        ax_fs_ng::api::create_dir_at(dir.as_ref(), path)?;
+        Ok(0)
+    })
+}
+
+/// Remove a file or directory at `path` relative to `dirfd`.
+pub fn sys_unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int {
+    let path = char_ptr_to_str(path);
+    debug!("sys_unlinkat <= {dirfd} {path:?} {flags:#x}");
+    syscall_body!(sys_unlinkat, {
+        if flags & !AT_REMOVEDIR != 0 {
+            return Err(PosixError::EINVAL);
+        }
+        let path = path?;
+        let dir = dir_handle_for_at(dirfd, path)?;
+        if flags & AT_REMOVEDIR != 0 {
+            ax_fs_ng::api::remove_dir_at(dir.as_ref(), path)?;
+        } else {
+            ax_fs_ng::api::remove_file_at(dir.as_ref(), path)?;
+        }
         Ok(0)
     })
 }

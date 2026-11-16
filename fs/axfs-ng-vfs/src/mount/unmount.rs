@@ -172,17 +172,17 @@ impl Mountpoint {
         let mut visited = HashSet::new();
         let mut mounts = Vec::new();
         Self::collect_corresponding_roots(self, &mut visited, &mut mounts)?;
-        match kind {
-            UnmountKind::Normal => {}
+        let mounts = match kind {
+            UnmountKind::Normal => mounts,
             UnmountKind::Detach => {
-                let roots = mounts;
                 visited.clear();
-                mounts = Vec::new();
-                for root in roots {
-                    Self::collect_subtree_child_first(&root, &mut visited, &mut mounts);
+                let mut subtree = Vec::new();
+                for root in mounts {
+                    Self::collect_subtree_child_first(&root, &mut visited, &mut subtree);
                 }
+                subtree
             }
-        }
+        };
 
         let mut targets = Vec::with_capacity(mounts.len());
         for mountpoint in mounts {

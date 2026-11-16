@@ -53,7 +53,7 @@ impl Hcounteren {
     /// Sets the status of the cycle counter.
     #[inline]
     pub fn set_cy(&mut self, val: bool) {
-        self.bits.set_bit(0, val);
+        BitField::set_bit(&mut self.bits, 0, val);
     }
     /// Returns the status of the timer counter.
     #[inline]
@@ -63,7 +63,7 @@ impl Hcounteren {
     /// Sets the status of the timer counter.
     #[inline]
     pub fn set_tm(&mut self, val: bool) {
-        self.bits.set_bit(1, val);
+        BitField::set_bit(&mut self.bits, 1, val);
     }
     /// Returns the status of the interrupt counter.
     #[inline]
@@ -73,7 +73,7 @@ impl Hcounteren {
     /// Sets the status of the interrupt counter.
     #[inline]
     pub fn set_ir(&mut self, val: bool) {
-        self.bits.set_bit(2, val);
+        BitField::set_bit(&mut self.bits, 2, val);
     }
     /// Returns the status of the hypervisor performance monitor 3.
     #[inline]
@@ -83,7 +83,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 3.
     #[inline]
     pub fn set_hpm3(&mut self, val: bool) {
-        self.bits.set_bit(3, val);
+        BitField::set_bit(&mut self.bits, 3, val);
     }
     /// Returns the status of the hypervisor performance monitor 4.
     #[inline]
@@ -93,7 +93,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 4.
     #[inline]
     pub fn set_hpm4(&mut self, val: bool) {
-        self.bits.set_bit(4, val);
+        BitField::set_bit(&mut self.bits, 4, val);
     }
     /// Returns the status of the hypervisor performance monitor 5.
     #[inline]
@@ -103,7 +103,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 5.
     #[inline]
     pub fn set_hpm5(&mut self, val: bool) {
-        self.bits.set_bit(5, val);
+        BitField::set_bit(&mut self.bits, 5, val);
     }
     /// Returns the status of the hypervisor performance monitor 6.
     #[inline]
@@ -113,7 +113,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 6.
     #[inline]
     pub fn set_hpm6(&mut self, val: bool) {
-        self.bits.set_bit(6, val);
+        BitField::set_bit(&mut self.bits, 6, val);
     }
     /// Returns the status of the hypervisor performance monitor 7.
     #[inline]
@@ -123,7 +123,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 7.
     #[inline]
     pub fn set_hpm7(&mut self, val: bool) {
-        self.bits.set_bit(7, val);
+        BitField::set_bit(&mut self.bits, 7, val);
     }
     /// Returns the status of the hypervisor performance monitor 8.
     #[inline]
@@ -133,7 +133,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 8.
     #[inline]
     pub fn set_hpm8(&mut self, val: bool) {
-        self.bits.set_bit(8, val);
+        BitField::set_bit(&mut self.bits, 8, val);
     }
     /// Returns the status of the hypervisor performance monitor 9.
     #[inline]
@@ -143,7 +143,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 9.
     #[inline]
     pub fn set_hpm9(&mut self, val: bool) {
-        self.bits.set_bit(9, val);
+        BitField::set_bit(&mut self.bits, 9, val);
     }
     /// Returns the status of the hypervisor performance monitor 10.
     #[inline]
@@ -153,7 +153,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 10.
     #[inline]
     pub fn set_hpm10(&mut self, val: bool) {
-        self.bits.set_bit(10, val);
+        BitField::set_bit(&mut self.bits, 10, val);
     }
     /// Returns the status of the hypervisor performance monitor 11.
     #[inline]
@@ -163,7 +163,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 11.
     #[inline]
     pub fn set_hpm11(&mut self, val: bool) {
-        self.bits.set_bit(11, val);
+        BitField::set_bit(&mut self.bits, 11, val);
     }
     /// Returns the status of the hypervisor performance monitor 12.
     #[inline]
@@ -173,7 +173,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 12.
     #[inline]
     pub fn set_hpm12(&mut self, val: bool) {
-        self.bits.set_bit(12, val);
+        BitField::set_bit(&mut self.bits, 12, val);
     }
     /// Returns the status of the hypervisor performance monitor 13.
     #[inline]
@@ -183,7 +183,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 13.
     #[inline]
     pub fn set_hpm13(&mut self, val: bool) {
-        self.bits.set_bit(13, val);
+        BitField::set_bit(&mut self.bits, 13, val);
     }
     /// Returns the status of the hypervisor performance monitor 14.
     #[inline]
@@ -193,7 +193,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 14.
     #[inline]
     pub fn set_hpm14(&mut self, val: bool) {
-        self.bits.set_bit(14, val);
+        BitField::set_bit(&mut self.bits, 14, val);
     }
     /// Returns the status of the hypervisor performance monitor 15.
     #[inline]
@@ -203,7 +203,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 15.
     #[inline]
     pub fn set_hpm15(&mut self, val: bool) {
-        self.bits.set_bit(15, val);
+        BitField::set_bit(&mut self.bits, 15, val);
     }
     /// Returns the status of the hypervisor performance monitor 16.
     #[inline]
@@ -213,7 +213,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 16.
     #[inline]
     pub fn set_hpm16(&mut self, val: bool) {
-        self.bits.set_bit(16, val);
+        BitField::set_bit(&mut self.bits, 16, val);
     }
     /// Returns the status of the hypervisor performance monitor 17.
     #[inline]
@@ -223,7 +223,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 17.
     #[inline]
     pub fn set_hpm17(&mut self, val: bool) {
-        self.bits.set_bit(17, val);
+        BitField::set_bit(&mut self.bits, 17, val);
     }
     /// Returns the status of the hypervisor performance monitor 18.
     #[inline]
@@ -233,7 +233,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 18.
     #[inline]
     pub fn set_hpm18(&mut self, val: bool) {
-        self.bits.set_bit(18, val);
+        BitField::set_bit(&mut self.bits, 18, val);
     }
     /// Returns the status of the hypervisor performance monitor 19.
     #[inline]
@@ -243,7 +243,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 19.
     #[inline]
     pub fn set_hpm19(&mut self, val: bool) {
-        self.bits.set_bit(19, val);
+        BitField::set_bit(&mut self.bits, 19, val);
     }
     /// Returns the status of the hypervisor performance monitor 20.
     #[inline]
@@ -253,7 +253,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 20.
     #[inline]
     pub fn set_hpm20(&mut self, val: bool) {
-        self.bits.set_bit(20, val);
+        BitField::set_bit(&mut self.bits, 20, val);
     }
     /// Returns the status of the hypervisor performance monitor 21.
     #[inline]
@@ -263,7 +263,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 21.
     #[inline]
     pub fn set_hpm21(&mut self, val: bool) {
-        self.bits.set_bit(21, val);
+        BitField::set_bit(&mut self.bits, 21, val);
     }
     /// Returns the status of the hypervisor performance monitor 22.
     #[inline]
@@ -273,7 +273,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 22.
     #[inline]
     pub fn set_hpm22(&mut self, val: bool) {
-        self.bits.set_bit(22, val);
+        BitField::set_bit(&mut self.bits, 22, val);
     }
     /// Returns the status of the hypervisor performance monitor 23.
     #[inline]
@@ -283,7 +283,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 23.
     #[inline]
     pub fn set_hpm23(&mut self, val: bool) {
-        self.bits.set_bit(23, val);
+        BitField::set_bit(&mut self.bits, 23, val);
     }
     /// Returns the status of the hypervisor performance monitor 24.
     #[inline]
@@ -293,7 +293,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 24.
     #[inline]
     pub fn set_hpm24(&mut self, val: bool) {
-        self.bits.set_bit(24, val);
+        BitField::set_bit(&mut self.bits, 24, val);
     }
     /// Returns the status of the hypervisor performance monitor 25.
     #[inline]
@@ -303,7 +303,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 25.
     #[inline]
     pub fn set_hpm25(&mut self, val: bool) {
-        self.bits.set_bit(25, val);
+        BitField::set_bit(&mut self.bits, 25, val);
     }
     /// Returns the status of the hypervisor performance monitor 26.
     #[inline]
@@ -313,7 +313,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 26.
     #[inline]
     pub fn set_hpm26(&mut self, val: bool) {
-        self.bits.set_bit(26, val);
+        BitField::set_bit(&mut self.bits, 26, val);
     }
     /// Returns the status of the hypervisor performance monitor 27.
     #[inline]
@@ -323,7 +323,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 27.
     #[inline]
     pub fn set_hpm27(&mut self, val: bool) {
-        self.bits.set_bit(27, val);
+        BitField::set_bit(&mut self.bits, 27, val);
     }
     /// Returns the status of the hypervisor performance monitor 28.
     #[inline]
@@ -333,7 +333,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 28.
     #[inline]
     pub fn set_hpm28(&mut self, val: bool) {
-        self.bits.set_bit(28, val);
+        BitField::set_bit(&mut self.bits, 28, val);
     }
     /// Returns the status of the hypervisor performance monitor 29.
     #[inline]
@@ -343,7 +343,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 29.
     #[inline]
     pub fn set_hpm29(&mut self, val: bool) {
-        self.bits.set_bit(29, val);
+        BitField::set_bit(&mut self.bits, 29, val);
     }
     /// Returns the status of the hypervisor performance monitor 30.
     #[inline]
@@ -353,7 +353,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 30.
     #[inline]
     pub fn set_hpm30(&mut self, val: bool) {
-        self.bits.set_bit(30, val);
+        BitField::set_bit(&mut self.bits, 30, val);
     }
     /// Returns the status of the hypervisor performance monitor 31.
     #[inline]
@@ -363,7 +363,7 @@ impl Hcounteren {
     /// Sets the status of the hypervisor performance monitor 31.
     #[inline]
     pub fn set_hpm31(&mut self, val: bool) {
-        self.bits.set_bit(31, val);
+        BitField::set_bit(&mut self.bits, 31, val);
     }
 }
 
