@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <linux/stat.h>
 #include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -87,7 +88,7 @@ static void unix_ownership(void) {
     char scratch[] = "/tmp/vfs-unix-XXXXXX";
     char path[108];
     struct sockaddr_un address = { .sun_family = AF_UNIX };
-    struct stat st;
+    struct statx st;
     int bound = -1, peer = -1;
     int gate[2] = { -1, -1 }, started = 0;
     pthread_t reporter;
@@ -127,9 +128,9 @@ static void unix_ownership(void) {
     errno = saved_errno;
     CHECK_RET(result, 0, "bind with the original filesystem identity");
     if (result != 0) goto cleanup;
-    CHECK(syscall(SYS_newfstatat, AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW) == 0 &&
-          S_ISSOCK(st.st_mode) && st.st_uid == 77 && st.st_gid == 90 &&
-          (st.st_mode & 07777) == 0740,
+    CHECK(syscall(SYS_statx, AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &st) == 0 &&
+          S_ISSOCK(st.stx_mode) && st.stx_uid == 77 && st.stx_gid == 90 &&
+          (st.stx_mode & 07777) == 0740,
           "pathname atomically inherits caller uid, parent gid and masked socket mode");
     close(bound); bound = -1;
     CHECK_ERR(syscall(SYS_bind, peer, &address, sizeof(address)), EADDRINUSE,
@@ -145,7 +146,7 @@ static void unix_ownership(void) {
     errno = saved_errno;
     CHECK(result == -1 && saved_errno == EACCES,
           "pathname binding cannot borrow the kernel root identity");
-    CHECK_ERR(syscall(SYS_newfstatat, AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW), ENOENT,
+    CHECK_ERR(syscall(SYS_statx, AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &st), ENOENT,
               "denied pathname binding publishes no inode");
 cleanup:
     syscall(SYS_setfsuid, 0);
@@ -170,7 +171,7 @@ static void overlay_ownership(void) {
     char lower[128], upper[128], work[128], merged[128];
     char source[256], path[256], other[256], options[768];
     unsigned char content[8193], observed[sizeof(content)];
-    struct stat st;
+    struct statx st;
     int fd = -1, orphan = -1, created = -1;
     int backing_mounted = 0, overlay_mounted = 0;
     for (size_t i = 0; i < sizeof(content); ++i) content[i] = (unsigned char)(i * 29 + 3);
@@ -213,17 +214,17 @@ static void overlay_ownership(void) {
                 memcmp(content, observed, sizeof(content)) == 0, "retained fd reads the complete copied content");
     OVL_REQUIRE(syscall(SYS_fchmod, fd, 06755) == 0 && syscall(SYS_fchown, fd, 77, 88) == 0,
                 "forward chmod and chown as accepted intentions");
-    OVL_REQUIRE(syscall(SYS_fstat, fd, &st) == 0 && st.st_uid == 77 && st.st_gid == 88 &&
-                (st.st_mode & 07777) == 0755, "actual copied owner and chown setid removal");
-    OVL_REQUIRE(stat(source, &st) == 0 && st.st_uid == 0 && (st.st_mode & 07777) == 06755,
+    OVL_REQUIRE(syscall(SYS_statx, fd, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &st) == 0 && st.stx_uid == 77 && st.stx_gid == 88 &&
+                (st.stx_mode & 07777) == 0755, "actual copied owner and chown setid removal");
+    OVL_REQUIRE(syscall(SYS_statx, AT_FDCWD, source, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &st) == 0 && st.stx_uid == 0 && (st.stx_mode & 07777) == 06755,
                 "copy-up preserves the original lower inode");
     snprintf(other, sizeof(other), "%s/deep/seed", upper);
     OVL_REQUIRE(syscall(SYS_getxattr, other, "user.overlay", observed, sizeof(observed)) == 8 &&
                 memcmp(observed, "retained", 8) == 0, "actual upper preserves source xattr");
     OVL_REQUIRE(syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0, "unlink copied file and hide lower with whiteout");
     CHECK_ERR(syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0), ENOENT, "whiteout hides the lower pathname");
-    OVL_REQUIRE(syscall(SYS_fchmod, fd, 0640) == 0 && syscall(SYS_fstat, fd, &st) == 0 &&
-                st.st_nlink == 0 && (st.st_mode & 07777) == 0640, "metadata still addresses the actual unlinked upper");
+    OVL_REQUIRE(syscall(SYS_fchmod, fd, 0640) == 0 && syscall(SYS_statx, fd, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &st) == 0 &&
+                st.stx_nlink == 0 && (st.stx_mode & 07777) == 0640, "metadata still addresses the actual unlinked upper");
     close(fd); fd = -1;
     snprintf(path, sizeof(path), "%s/orphan", merged);
     orphan = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
@@ -231,8 +232,8 @@ static void overlay_ownership(void) {
                 "unlink lower-only object while retaining its fd");
     CHECK_ERR(syscall(SYS_fchmod, orphan, 0640), EEXIST,
               "index=off rejects first copy-up of an already unlinked lower inode");
-    OVL_REQUIRE(syscall(SYS_fstat, orphan, &st) == 0 && st.st_nlink == 1 &&
-                (st.st_mode & 07777) == 0600, "rejected copy-up preserves the actual lower inode metadata");
+    OVL_REQUIRE(syscall(SYS_statx, orphan, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &st) == 0 && st.stx_nlink == 1 &&
+                (st.stx_mode & 07777) == 0600, "rejected copy-up preserves the actual lower inode metadata");
     OVL_REQUIRE(syscall(SYS_pread64, orphan, observed, 4, 0) == 4 && memcmp(observed, "kept", 4) == 0,
                 "retained lower inode still provides its original content");
     CHECK_ERR(syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0), ENOENT, "rejected copy-up never recreates the old visible name");
@@ -243,7 +244,7 @@ static void overlay_ownership(void) {
     snprintf(other, sizeof(other), "%s/alias", merged);
     OVL_REQUIRE(syscall(SYS_linkat, AT_FDCWD, path, AT_FDCWD, other, 0) == 0 &&
                 syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0, "link and unlink retain the shared native inode");
-    OVL_REQUIRE(syscall(SYS_fstat, created, &st) == 0 && st.st_nlink == 1, "retained fd observes the surviving native link");
+    OVL_REQUIRE(syscall(SYS_statx, created, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &st) == 0 && st.stx_nlink == 1, "retained fd observes the surviving native link");
     snprintf(path, sizeof(path), "%s/renamed", merged);
     OVL_REQUIRE(syscall(SYS_renameat2, AT_FDCWD, other, AT_FDCWD, path, 0) == 0,
                 "rename through the original operation context");
