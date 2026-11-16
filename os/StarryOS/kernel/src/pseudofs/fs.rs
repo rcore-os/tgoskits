@@ -10,7 +10,7 @@ use axfs_ng_vfs::{
 use slab::Slab;
 
 use super::DirMaker;
-use crate::sync::RawSpinLock;
+use crate::sync::{Mutex, MutexGuard, RawSpinLock};
 
 /// Returns a dummy filesystem statistics.
 pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
@@ -36,6 +36,7 @@ pub struct SimpleFs {
     fs_type: u32,
     inodes: RawSpinLock<Slab<()>>,
     root: RawSpinLock<Option<DirEntry>>,
+    namespace: Mutex<()>,
 }
 
 impl SimpleFs {
@@ -50,6 +51,7 @@ impl SimpleFs {
             fs_type,
             inodes: RawSpinLock::new(Slab::new()),
             root: RawSpinLock::new(None),
+            namespace: Mutex::new(()),
         });
         let root = root(fs.clone());
         fs.set_root(DirEntry::new_dir(
@@ -97,6 +99,10 @@ pub struct SimpleFsNode {
 }
 
 impl SimpleFsNode {
+    pub(super) fn lock_namespace(&self) -> MutexGuard<'_, ()> {
+        self.fs.namespace.lock()
+    }
+
     /// Creates a new filesystem node.
     pub fn new(fs: Arc<SimpleFs>, node_type: NodeType, mode: NodePermission) -> Self {
         let ino = fs.alloc_inode();

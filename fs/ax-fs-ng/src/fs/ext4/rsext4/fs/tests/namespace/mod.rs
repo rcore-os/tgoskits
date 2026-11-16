@@ -242,6 +242,16 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
     .unwrap();
     assert_eq!(witness.metadata().unwrap().nlink, 2);
     assert_admission_released(&filesystem);
+    let link = root
+        .create_symlink(
+            "link",
+            "witness",
+            NodePermission::from_bits_truncate(0o777),
+            0,
+            0,
+            &axfs_ng_vfs::MutationCredentials::root(),
+        )
+        .unwrap();
 
     // An outer operation may stop before issuing its root command. Reads must
     // still transfer real pressure ownership, rather than leaving staging set
@@ -262,6 +272,7 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
         let context = scope.context();
         for query in [
             axfs_ng_vfs::NamespaceQuery::Metadata(witness.entry()),
+            axfs_ng_vfs::NamespaceQuery::ReadLink(link.entry()),
             axfs_ng_vfs::NamespaceQuery::Directory {
                 entry: root.entry(),
                 cursor: axfs_ng_vfs::DirectoryCursor::START,
@@ -305,6 +316,10 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
             context.query(NamespaceQuery::Metadata(witness.entry())).unwrap(),
             NamespaceReadResult::Ready(Ok(NamespaceRead::Metadata(metadata)))
                 if metadata.nlink == 2
+        ));
+        assert!(matches!(
+            context.query(NamespaceQuery::ReadLink(link.entry())).unwrap(),
+            NamespaceReadResult::Ready(Ok(NamespaceRead::LinkText(text))) if text == "witness"
         ));
         assert!(matches!(
             context.query(NamespaceQuery::Lookup {

@@ -1001,6 +1001,22 @@ impl Thread {
         self.set_cred_single(&update, Arc::new(new_cred));
     }
 
+    /// Authorizes and replaces this thread's credentials in one publication.
+    /// None leaves the actual allocation and all sibling threads unchanged.
+    pub(crate) fn update_thread_cred<R>(
+        &self,
+        update: impl FnOnce(&Cred) -> (Option<Cred>, R),
+    ) -> R {
+        let publication = self.proc_data.namespace_update();
+        let old = self.cred();
+        let (replacement, result) = update(&old);
+        if let Some(replacement) = replacement {
+            self.set_cred_single(&publication, Arc::new(replacement));
+        }
+        drop(publication);
+        result
+    }
+
     /// Replaces credentials for every thread in this process.
     pub fn set_cred(&self, new_cred: Cred) {
         let update = self.proc_data.namespace_update();

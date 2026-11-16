@@ -150,6 +150,7 @@ impl<'op, 'query> BackingQueryRequest<'op, 'query> {
         }
         let kind = match &self.query {
             NamespaceQuery::Metadata(_) => ReadKind::Metadata,
+            NamespaceQuery::ReadLink(_) => ReadKind::ReadLink,
             NamespaceQuery::Lookup { .. } => ReadKind::Lookup,
             NamespaceQuery::Xattr { .. } => ReadKind::Xattr,
             NamespaceQuery::Directory { cursor, .. } => ReadKind::Directory(*cursor),
@@ -172,6 +173,7 @@ impl<'op, 'query> BackingQueryRequest<'op, 'query> {
             (NamespaceState::Unchanged, None) if outcome.result().is_err() => Ok(()),
             (NamespaceState::Unchanged, Some(read)) => match (kind, read) {
                 (ReadKind::Metadata, NamespaceRead::Metadata(_))
+                | (ReadKind::ReadLink, NamespaceRead::LinkText(_))
                 | (ReadKind::Xattr, NamespaceRead::Xattr(_))
                 | (ReadKind::Lookup, NamespaceRead::Entry(None)) => Ok(()),
                 (ReadKind::Lookup, NamespaceRead::Entry(Some(entry))) => {
@@ -190,6 +192,7 @@ impl<'op, 'query> BackingQueryRequest<'op, 'query> {
 
 enum ReadKind {
     Metadata,
+    ReadLink,
     Lookup,
     Xattr,
     Directory(crate::DirectoryCursor),

@@ -12,18 +12,27 @@ use axfs_ng_vfs::MutationCredentials;
 use linux_raw_sys::general::CAP_SYS_RAWIO;
 use linux_raw_sys::general::{
     CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH, CAP_FOWNER, CAP_FSETID, CAP_IPC_LOCK,
-    CAP_KILL, CAP_LAST_CAP, CAP_MKNOD, CAP_NET_RAW, CAP_PERFMON, CAP_SETGID, CAP_SETPCAP,
-    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PTRACE,
-    CAP_SYS_RESOURCE, CAP_SYS_TIME,
+    CAP_KILL, CAP_LAST_CAP, CAP_LINUX_IMMUTABLE, CAP_MAC_OVERRIDE, CAP_MKNOD, CAP_NET_RAW,
+    CAP_PERFMON, CAP_SETGID, CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE,
+    CAP_SYS_NICE, CAP_SYS_PTRACE, CAP_SYS_RESOURCE, CAP_SYS_TIME,
 };
 
-use super::Thread;
+use super::{ProcessNamespaceUpdate, Thread};
 use crate::{
     namespace::{ROOT_USER_NS, UserNamespace},
     sync::RawSpinLock,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
+// Linux CAP_FS_SET, including capabilities not currently consumed by the VFS.
+const CAP_FS_SET: u64 = (1u64 << CAP_CHOWN)
+    | (1u64 << CAP_DAC_OVERRIDE)
+    | (1u64 << CAP_DAC_READ_SEARCH)
+    | (1u64 << CAP_FOWNER)
+    | (1u64 << CAP_FSETID)
+    | (1u64 << CAP_MKNOD)
+    | (1u64 << CAP_MAC_OVERRIDE)
+    | (1u64 << CAP_LINUX_IMMUTABLE);
 const SECBIT_NO_SETUID_FIXUP: u32 = 1 << 2;
 const SECBIT_KEEP_CAPS: u32 = 1 << 4;
 
@@ -90,6 +99,12 @@ impl FsCredentialsSnapshot {
     /// be retained while resolving paths or calling filesystem backends.
     pub(crate) fn capture(thread: &Thread) -> Self {
         let update = thread.proc_data.namespace_update();
+        Self::capture_under(thread, &update)
+    }
+
+    /// Selects identity alongside other state under the same process writer.
+    pub(crate) fn capture_under(thread: &Thread, update: &ProcessNamespaceUpdate<'_>) -> Self {
+        assert!(update.owns(&thread.proc_data));
         Self {
             cred: thread.cred(),
             user_ns: update.snapshot().user_ns.clone(),
@@ -197,6 +212,18 @@ impl Cred {
     /// Check whether a capability is present in the effective set.
     pub fn has_cap(&self, cap: u32) -> bool {
         self.cap_effective & cap_bit(cap) != 0
+    }
+
+    /// Applies Linux's LSM_SETID_FS transition without changing other sets.
+    pub(crate) fn apply_fsuid_change_capability_rules(&mut self, old: &Self) {
+        if old.securebits & SECBIT_NO_SETUID_FIXUP != 0 {
+            return;
+        }
+        if old.fsuid == 0 && self.fsuid != 0 {
+            self.cap_effective &= !CAP_FS_SET;
+        } else if old.fsuid != 0 && self.fsuid == 0 {
+            self.cap_effective |= self.cap_permitted & CAP_FS_SET;
+        }
     }
 
     /// Recompute capability state after UID/GID credential changes.
@@ -419,6 +446,23 @@ fn credential_capability_rules_hold_for_test() -> bool {
     unprivileged.cap_ambient = !0;
     unprivileged.sanitize_capabilities();
 
+    let mut filesystem_user = root.clone();
+    filesystem_user.fsuid = 77;
+    filesystem_user.apply_fsuid_change_capability_rules(&root);
+    let filesystem_drop = filesystem_user.cap_effective == root.cap_effective & !CAP_FS_SET
+        && filesystem_user.cap_permitted == root.cap_permitted
+        && filesystem_user.euid == root.euid;
+    filesystem_user.cap_permitted = cap_bit(CAP_DAC_OVERRIDE) | cap_bit(CAP_NET_RAW);
+    filesystem_user.cap_effective &= filesystem_user.cap_permitted;
+    let mut restored_filesystem_user = filesystem_user.clone();
+    restored_filesystem_user.fsuid = 0;
+    restored_filesystem_user.apply_fsuid_change_capability_rules(&filesystem_user);
+    let mut suppressed = root.clone();
+    suppressed.securebits = SECBIT_NO_SETUID_FIXUP;
+    let mut unchanged = suppressed.clone();
+    unchanged.fsuid = 77;
+    unchanged.apply_fsuid_change_capability_rules(&suppressed);
+
     // Exercise every has_cap_* helper at least once on a root credential so
     // the bit checks are covered. All of these must be true for root.
     #[cfg(any(feature = "rga", feature = "rknpu"))]
@@ -472,6 +516,9 @@ fn credential_capability_rules_hold_for_test() -> bool {
 
     // The original root/unprivileged rules must still hold.
     root_capability_helpers
+        && filesystem_drop
+        && restored_filesystem_user.cap_effective == filesystem_user.cap_permitted
+        && unchanged.cap_effective == suppressed.cap_effective
         && root_ptrace
         && !Cred::unprivileged(1000, 100).has_cap_setuid()
         && selective_capability_helpers

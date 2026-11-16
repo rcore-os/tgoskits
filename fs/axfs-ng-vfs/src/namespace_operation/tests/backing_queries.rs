@@ -23,6 +23,7 @@ struct ReadCase {
 
 enum CaseKind {
     Metadata,
+    ReadLink,
     Lookup,
     Xattr,
     Directory,
@@ -79,6 +80,10 @@ impl QueryProbe {
             Ok(NamespaceRead::Metadata(_))
         ));
         assert!(matches!(
+            ready(view.query(NamespaceQuery::ReadLink(backing.entry()))),
+            Ok(NamespaceRead::LinkText(text)) if text == "native-target"
+        ));
+        assert!(matches!(
             ready(view.query(NamespaceQuery::Lookup {
                 parent: backing.entry(),
                 name: "missing"
@@ -126,6 +131,7 @@ impl QueryProbe {
             *probe.temporary.lock().unwrap() = case.temporary;
             let query = match case.kind {
                 CaseKind::Metadata => NamespaceQuery::Metadata(backing.entry()),
+                CaseKind::ReadLink => NamespaceQuery::ReadLink(backing.entry()),
                 CaseKind::Lookup => NamespaceQuery::Lookup {
                     parent: backing.entry(),
                     name: "candidate",
@@ -157,6 +163,7 @@ impl QueryProbe {
         }
         Ok(match query {
             NamespaceQuery::Metadata(_) => NamespaceRead::Metadata(snapshot()),
+            NamespaceQuery::ReadLink(_) => NamespaceRead::LinkText("native-target".into()),
             NamespaceQuery::Lookup { .. } => NamespaceRead::Entry(None),
             NamespaceQuery::Xattr { .. } => NamespaceRead::Xattr(vec![7]),
             NamespaceQuery::Directory { .. } => {
@@ -353,6 +360,13 @@ fn request_bound_queries_relay_direct_readonly_edges_and_retire_all_candidates()
             receiver: Arc::downgrade(&b),
             kind: CaseKind::Lookup,
             response: Ok(NamespaceRead::Metadata(snapshot())),
+            temporary: None,
+            error: VfsError::BadState,
+        },
+        ReadCase {
+            receiver: Arc::downgrade(&b),
+            kind: CaseKind::ReadLink,
+            response: Ok(NamespaceRead::Xattr(vec![])),
             temporary: None,
             error: VfsError::BadState,
         },

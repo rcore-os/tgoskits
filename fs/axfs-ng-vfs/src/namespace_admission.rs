@@ -1,6 +1,6 @@
 //! Operation rights for the immutable, already write-admitted backing graph.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use crate::{
     DirEntry, FilesystemOps, Location, Metadata, MutationRetire, NamespaceCompletion,
@@ -14,6 +14,8 @@ use crate::{
 #[derive(Clone, Copy)]
 pub enum NamespaceQuery<'a> {
     Metadata(&'a DirEntry),
+    /// One owned symlink-text snapshot, without opening a file description.
+    ReadLink(&'a DirEntry),
     Lookup {
         parent: &'a DirEntry,
         name: &'a str,
@@ -31,9 +33,10 @@ pub enum NamespaceQuery<'a> {
 impl NamespaceQuery<'_> {
     pub fn entry(&self) -> &DirEntry {
         match self {
-            Self::Metadata(entry) | Self::Xattr { entry, .. } | Self::Directory { entry, .. } => {
-                entry
-            }
+            Self::Metadata(entry)
+            | Self::ReadLink(entry)
+            | Self::Xattr { entry, .. }
+            | Self::Directory { entry, .. } => entry,
             Self::Lookup { parent, .. } => parent,
         }
     }
@@ -42,6 +45,7 @@ impl NamespaceQuery<'_> {
 #[derive(Clone)]
 pub enum NamespaceRead {
     Metadata(Metadata),
+    LinkText(String),
     Entry(Option<DirEntry>),
     Xattr(Vec<u8>),
     Directory(crate::DirectoryBatch),

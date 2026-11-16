@@ -5,11 +5,14 @@
 #include "test_framework.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -61,6 +64,103 @@ static int check_owner_fd(int fd, uid_t expected_uid, gid_t expected_gid) {
         return -1;
     }
     return 0;
+}
+
+struct fs_identity_probe {
+    int reader;
+    uid_t uid;
+    gid_t gid;
+};
+
+static void *observe_fs_identity(void *argument) {
+    struct fs_identity_probe *probe = argument;
+    char ready;
+    if (syscall(SYS_read, probe->reader, &ready, 1) == 1) {
+        probe->uid = syscall(SYS_setfsuid, (uid_t)-1);
+        probe->gid = syscall(SYS_setfsgid, (gid_t)-1);
+    }
+    return NULL;
+}
+
+/* Pathname creation uses the original filesystem identity and socket mode. */
+static void unix_ownership(void) {
+    char scratch[] = "/tmp/vfs-unix-XXXXXX";
+    char path[108];
+    struct sockaddr_un address = { .sun_family = AF_UNIX };
+    struct stat st;
+    int bound = -1, peer = -1;
+    int gate[2] = { -1, -1 }, started = 0;
+    pthread_t reporter;
+    struct fs_identity_probe probe = { .reader = -1, .uid = (uid_t)-1, .gid = (gid_t)-1 };
+    mode_t old_mask = umask(0027);
+    int workspace = mkdtemp(scratch) != NULL;
+    CHECK(workspace, "create Unix socket ownership workspace");
+    if (!workspace) goto cleanup;
+    CHECK_RET(chown(scratch, 0, 90), 0, "set parent group for socket inheritance");
+    CHECK_RET(chmod(scratch, 02777), 0, "enable socket parent SGID inheritance");
+    snprintf(path, sizeof(path), "%s/socket", scratch);
+    memcpy(address.sun_path, path, strlen(path) + 1);
+    bound = syscall(SYS_socket, AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    peer = syscall(SYS_socket, AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    CHECK(bound >= 0 && peer >= 0, "create anonymous sockets before pathname binding");
+    if (bound < 0 || peer < 0) goto cleanup;
+    CHECK_RET(syscall(SYS_fchmod, bound, 0767), 0, "set mode on the actual anonymous socket inode");
+    int ready = syscall(SYS_pipe2, gate, O_CLOEXEC) == 0;
+    CHECK(ready, "prepare the sibling identity handoff");
+    if (!ready) goto cleanup;
+    probe.reader = gate[0];
+    started = pthread_create(&reporter, NULL, observe_fs_identity, &probe) == 0;
+    CHECK(started, "retain a sibling thread before changing filesystem identity");
+    if (!started) goto cleanup;
+    syscall(SYS_setfsgid, 88);
+    syscall(SYS_setfsuid, 77);
+    int result = syscall(SYS_bind, bound, &address, sizeof(address));
+    int saved_errno = errno;
+    CHECK_RET(syscall(SYS_write, gate[1], "x", 1), 1, "release sibling after caller identity publication");
+    close(gate[1]); gate[1] = -1;
+    int joined = pthread_join(reporter, NULL) == 0;
+    CHECK(joined && probe.uid == 0 && probe.gid == 0,
+          "raw filesystem ID setters leave the sibling thread identity unchanged");
+    if (joined) started = 0;
+    syscall(SYS_setfsuid, 0);
+    syscall(SYS_setfsgid, 0);
+    errno = saved_errno;
+    CHECK_RET(result, 0, "bind with the original filesystem identity");
+    if (result != 0) goto cleanup;
+    CHECK(syscall(SYS_newfstatat, AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+          S_ISSOCK(st.st_mode) && st.st_uid == 77 && st.st_gid == 90 &&
+          (st.st_mode & 07777) == 0740,
+          "pathname atomically inherits caller uid, parent gid and masked socket mode");
+    close(bound); bound = -1;
+    CHECK_ERR(syscall(SYS_bind, peer, &address, sizeof(address)), EADDRINUSE,
+              "closing a socket retains its occupied pathname");
+    CHECK_RET(syscall(SYS_unlinkat, AT_FDCWD, path, 0), 0, "unlink the retained pathname explicitly");
+    CHECK_RET(chmod(scratch, 0500), 0, "deny caller access to the socket parent");
+    syscall(SYS_setfsgid, 88);
+    syscall(SYS_setfsuid, 77);
+    result = syscall(SYS_bind, peer, &address, sizeof(address));
+    saved_errno = errno;
+    syscall(SYS_setfsuid, 0);
+    syscall(SYS_setfsgid, 0);
+    errno = saved_errno;
+    CHECK(result == -1 && saved_errno == EACCES,
+          "pathname binding cannot borrow the kernel root identity");
+    CHECK_ERR(syscall(SYS_newfstatat, AT_FDCWD, path, &st, AT_SYMLINK_NOFOLLOW), ENOENT,
+              "denied pathname binding publishes no inode");
+cleanup:
+    syscall(SYS_setfsuid, 0);
+    syscall(SYS_setfsgid, 0);
+    if (gate[1] >= 0) close(gate[1]);
+    if (started) pthread_join(reporter, NULL);
+    if (gate[0] >= 0) close(gate[0]);
+    umask(old_mask);
+    if (bound >= 0) close(bound);
+    if (peer >= 0) close(peer);
+    if (workspace) {
+        snprintf(path, sizeof(path), "%s/socket", scratch);
+        unlink(path);
+        rmdir(scratch);
+    }
 }
 
 /* This journey uses a real MemoryFs backing and real syscall entry points.
@@ -172,10 +272,18 @@ cleanup:
 
 int main(int argc, char **argv) {
     TEST_START("vfs-ownership");
-    overlay_ownership();
     if (argc == 2 && strcmp(argv[1], "--overlay-only") == 0) {
+        overlay_ownership();
         TEST_DONE();
     }
+    int null_fd = syscall(SYS_openat, AT_FDCWD, "/dev/null", O_CREAT | O_WRONLY, 0666);
+    CHECK(null_fd >= 0, "O_CREAT opens an existing static device without modifying its parent");
+    if (null_fd >= 0) close(null_fd);
+    unix_ownership();
+    if (argc == 2 && strcmp(argv[1], "--unix-only") == 0) {
+        TEST_DONE();
+    }
+    overlay_ownership();
 
     char path_buf[256];
     int fd;

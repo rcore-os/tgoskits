@@ -53,7 +53,7 @@ impl EntityPreparation {
     pub(super) fn install<'a>(
         &self,
         context: &'a NamespaceOperationContext<'a>,
-        destination: Option<(&'a Location, &'a str)>,
+        destination: (&'a Location, &'a str),
     ) -> VfsResult<axfs_ng_vfs::NamespaceObservation<axfs_ng_vfs::NamespaceEffect>> {
         self.copy
             .as_ref()
@@ -238,28 +238,32 @@ impl CopyForest {
         Ok(())
     }
 
+    /// Plain unlinked lower aliases cannot be installed with index disabled.
+    /// Validate only after preparation, so source-copy failures keep priority.
+    pub(super) fn require_destinations(&self) -> VfsResult<()> {
+        if self.edges.iter().any(|edge| edge.parent.is_none()) {
+            return Err(VfsError::AlreadyExists);
+        }
+        Ok(())
+    }
+
     pub(super) fn publish(
         &self,
         fs: &OverlayFs,
         context: &NamespaceOperationContext<'_>,
     ) -> NamespaceOutcome<()> {
+        if let Err(error) = self.require_destinations() {
+            return NamespaceOutcome::unchanged(Err(error));
+        }
         let mut published = false;
         for edge in &self.edges {
             let result = (|| {
                 let upper = edge.copy.target()?;
                 context.retired().retire(upper.clone());
-                let parent = edge
-                    .parent
-                    .as_ref()
-                    .map(|parent| parent.upper().ok_or(VfsError::BadState))
-                    .transpose()?;
-                if let Some(parent) = &parent {
-                    context.retired().retire(parent.clone());
-                }
-                let result = edge.copy.install(
-                    context,
-                    parent.as_ref().map(|parent| (parent, edge.name.as_str())),
-                )?;
+                let parent = edge.parent.as_ref().ok_or(VfsError::AlreadyExists)?;
+                let parent = parent.upper().ok_or(VfsError::BadState)?;
+                context.retired().retire(parent.clone());
+                let result = edge.copy.install(context, (&parent, &edge.name))?;
                 if result.state() == NamespaceState::Applied {
                     fs.inodes.bind_upper(&edge.inode, &upper);
                     context.retired().retire(edge.inode.replace_upper(upper));

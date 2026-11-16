@@ -8,10 +8,11 @@ use alloc::{
 use core::any::Any;
 
 use axfs_ng_vfs::{
-    DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FilesystemOps,
-    Metadata, MetadataRequest, MetadataUpdate, MutationRetire, NamespaceCompletion,
-    NamespaceEffect, NamespaceMutation, NamespaceOutcome, NodeIdentity, NodeOps, NodePermission,
-    NodeType, Reference, VfsError, VfsResult, WeakDirEntry,
+    AuthorizedMutation, CreateOwnerPolicy, DirEntry, DirEntrySink, DirNode, DirNodeOps,
+    DirectoryCursor, FileNode, FilesystemOps, LockedAttempt, Metadata, MetadataRequest,
+    MetadataUpdate, MutationObservation, MutationRetire, NamespaceCompletion, NamespaceEffect,
+    NamespaceMutation, NamespaceNode, NamespaceOutcome, NodeIdentity, NodeOps, NodePermission,
+    NodeType, Reference, RenameNode, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT},
 };
 use inherit_methods_macro::inherit_methods;
@@ -190,6 +191,10 @@ impl<O: SimpleDirOps> NodeOps for SimpleDir<O> {
 }
 
 impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
+    fn namespace_domain(&self) -> usize {
+        self.filesystem() as *const dyn FilesystemOps as *const () as usize
+    }
+
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let children = [DOT, DOTDOT]
             .into_iter()
@@ -249,8 +254,73 @@ impl<O: SimpleDirOps> DirNodeOps for SimpleDir<O> {
 
     fn mutate_namespace(
         &self,
-        _command: &NamespaceMutation<'_>,
-        _retired: &MutationRetire,
+        command: &NamespaceMutation<'_>,
+        retired: &MutationRetire,
+    ) -> NamespaceOutcome<NamespaceEffect> {
+        if !matches!(command, NamespaceMutation::Create(_)) {
+            return NamespaceOutcome::unchanged(Err(VfsError::OperationNotPermitted));
+        }
+        let (parent, _) = command.parents();
+        if !parent
+            .downcast::<Self>()
+            .is_ok_and(|directory| core::ptr::eq(directory.as_ref(), self))
+        {
+            return NamespaceOutcome::unchanged(Err(VfsError::BadState));
+        }
+        let _gate = self.node.lock_namespace();
+        command.execute(&mut ExistingOpenAttempt { directory: self }, retired)
+    }
+}
+
+/// The fixed authorizer can select an existing entry, but this immutable
+/// directory never commits a create. All aliases share the actual FS gate.
+struct ExistingOpenAttempt<'a, O> {
+    directory: &'a SimpleDir<O>,
+}
+
+impl<O: SimpleDirOps> LockedAttempt for ExistingOpenAttempt<'_, O> {
+    fn parents(&mut self) -> VfsResult<(Metadata, Metadata)> {
+        let parent = self.directory.metadata()?;
+        Ok((parent.clone(), parent))
+    }
+
+    fn observe(
+        &mut self,
+        request: &NamespaceMutation<'_>,
+        retired: &MutationRetire,
+    ) -> VfsResult<MutationObservation> {
+        let NamespaceMutation::Create(request) = request else {
+            return Err(VfsError::OperationNotPermitted);
+        };
+        let name = request.name();
+        let target = match self.directory.lookup(name) {
+            Ok(entry) => {
+                retired.retire(entry.clone());
+                Some(RenameNode {
+                    metadata: entry.metadata()?,
+                    entry,
+                    canonical_name: name.into(),
+                    cacheable: self.directory.is_cacheable_child(name),
+                    empty: false,
+                })
+            }
+            Err(VfsError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        Ok(MutationObservation::Create {
+            target,
+            owner_policy: CreateOwnerPolicy::ParentSetgid,
+        })
+    }
+
+    fn is_ancestor(&mut self, _: &NamespaceNode, _: u64) -> VfsResult<bool> {
+        Err(VfsError::OperationNotPermitted)
+    }
+
+    fn commit(
+        &mut self,
+        _: &AuthorizedMutation<'_>,
+        _: &MutationRetire,
     ) -> NamespaceOutcome<NamespaceEffect> {
         NamespaceOutcome::unchanged(Err(VfsError::OperationNotPermitted))
     }

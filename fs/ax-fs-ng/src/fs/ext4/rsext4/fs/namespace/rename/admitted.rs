@@ -131,6 +131,46 @@ impl Ext4Filesystem {
         admission.check_owner(query.entry().filesystem())?;
         let parent = query.entry().downcast::<Inode>()?;
         match query {
+            NamespaceQuery::ReadLink(entry) => {
+                if entry.node_type() != NodeType::Symlink {
+                    return Err(VfsError::InvalidInput);
+                }
+                let mut state = self.lock();
+                if state.staging {
+                    *progress = Some(MutationAttempt::Staging);
+                    return Err(VfsError::WouldBlock);
+                }
+                let mut core_error = |error: Ext4Error| {
+                    if error.requires_journal_progress() {
+                        *progress = Some(MutationAttempt::Finished(Err(error)));
+                    }
+                    into_vfs_err(error)
+                };
+                let length = state
+                    .ext4
+                    .inode(parent.number())
+                    .map_err(&mut core_error)?
+                    .size;
+                let length = usize::try_from(length).map_err(|_| VfsError::InvalidData)?;
+                if length as u64 > self.block_size() {
+                    return Err(VfsError::InvalidData);
+                }
+                let mut bytes = alloc::vec::Vec::new();
+                bytes
+                    .try_reserve_exact(length)
+                    .map_err(|_| VfsError::NoMemory)?;
+                bytes.resize(length, 0);
+                let read = state
+                    .ext4
+                    .read_inode(parent.number(), 0, &mut bytes)
+                    .map_err(core_error)?;
+                if read != length {
+                    return Err(VfsError::InvalidData);
+                }
+                alloc::string::String::from_utf8(bytes)
+                    .map(NamespaceRead::LinkText)
+                    .map_err(|_| VfsError::InvalidData)
+            }
             NamespaceQuery::Metadata(_) => {
                 let mut state = self.lock();
                 if state.staging {

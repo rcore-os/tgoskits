@@ -137,6 +137,7 @@ impl MetadataAttempt<'_, '_, '_> {
         if forest.pending() {
             return Ok(NamespaceOutcome::retry());
         }
+        forest.require_destinations()?;
         let key = self.inode.identity(self.fs);
         let Some(PreparationState::Ready(target)) = preparations.get::<EntityPreparation>(&key)?
         else {

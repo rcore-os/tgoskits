@@ -87,17 +87,14 @@ impl CopyPreparation {
     pub(super) fn install<'a>(
         &self,
         context: &'a NamespaceOperationContext<'a>,
-        destination: Option<(&'a Location, &'a str)>,
+        destination: (&'a Location, &'a str),
     ) -> VfsResult<NamespaceObservation<NamespaceEffect>> {
         let credentials = self.owner.credentials();
         let mut state = self.state.lock();
         let CopyStage::Ready(stage) = &mut state.stage else {
             return Err(VfsError::BadState);
         };
-        match destination {
-            Some(destination) => stage.install(context, destination, None, &credentials),
-            None => stage.detach(context, &credentials),
-        }
+        stage.install(context, destination, None, &credentials)
     }
 
     fn create_work(&self, write: &PreparedWrite, state: &mut CopyState) -> VfsResult<()> {

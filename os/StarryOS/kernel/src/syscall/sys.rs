@@ -567,57 +567,33 @@ pub fn sys_setregid(
 
 pub fn sys_setfsuid(current: &crate::task::UserTaskRef, fsuid: u32) -> crate::StarryResult<isize> {
     debug!("sys_setfsuid <= fsuid: {fsuid}");
-    let thread = current;
-    let thread = thread.as_thread();
-    let old = thread.cred();
-    let prev_fsuid = old.fsuid;
-
-    // (uid_t)-1 = query-only: don't change, just return prev.
-    if fsuid == NOCHG {
-        return Ok(prev_fsuid as isize);
-    }
-
-    // Linux: setfsuid silently ignores an invalid fsuid but always returns the
-    // previous fsuid (never reports error). Unprivileged callers may only set
-    // fsuid to one of {uid, euid, suid, fsuid}; CAP_SETUID allows arbitrary.
-    let allowed = old.has_cap_setuid()
-        || fsuid == old.uid
-        || fsuid == old.euid
-        || fsuid == old.suid
-        || fsuid == old.fsuid;
-
-    if allowed {
-        let mut new = (*old).clone();
+    Ok(current.as_thread().update_thread_cred(|old| {
+        let previous = old.fsuid as isize;
+        let allowed =
+            old.has_cap_setuid() || [old.uid, old.euid, old.suid, old.fsuid].contains(&fsuid);
+        if fsuid == NOCHG || !allowed {
+            return (None, previous);
+        }
+        let mut new = old.clone();
         new.fsuid = fsuid;
-        commit_cred_with_id_rules(thread, new);
-    }
-    // Always return previous fsuid, even when the request was ignored.
-    Ok(prev_fsuid as isize)
+        new.apply_fsuid_change_capability_rules(old);
+        (Some(new), previous)
+    }))
 }
 
 pub fn sys_setfsgid(current: &crate::task::UserTaskRef, fsgid: u32) -> crate::StarryResult<isize> {
     debug!("sys_setfsgid <= fsgid: {fsgid}");
-    let thread = current;
-    let thread = thread.as_thread();
-    let old = thread.cred();
-    let prev_fsgid = old.fsgid;
-
-    if fsgid == NOCHG {
-        return Ok(prev_fsgid as isize);
-    }
-
-    let allowed = old.has_cap_setgid()
-        || fsgid == old.gid
-        || fsgid == old.egid
-        || fsgid == old.sgid
-        || fsgid == old.fsgid;
-
-    if allowed {
-        let mut new = (*old).clone();
+    Ok(current.as_thread().update_thread_cred(|old| {
+        let previous = old.fsgid as isize;
+        let allowed =
+            old.has_cap_setgid() || [old.gid, old.egid, old.sgid, old.fsgid].contains(&fsgid);
+        if fsgid == NOCHG || !allowed {
+            return (None, previous);
+        }
+        let mut new = old.clone();
         new.fsgid = fsgid;
-        commit_cred_with_id_rules(thread, new);
-    }
-    Ok(prev_fsgid as isize)
+        (Some(new), previous)
+    }))
 }
 
 pub fn sys_getgroups(

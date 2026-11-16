@@ -127,6 +127,7 @@ impl super::super::fs::FatFilesystem {
                 .map(NamespaceRead::Directory)
             }
             NamespaceQuery::Xattr { .. } => Err(VfsError::OperationNotSupported),
+            NamespaceQuery::ReadLink(_) => Err(VfsError::InvalidInput),
         }
     }
 

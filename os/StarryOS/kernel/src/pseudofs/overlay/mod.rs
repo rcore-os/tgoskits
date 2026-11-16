@@ -18,6 +18,7 @@ mod preparation;
 mod read;
 
 use alloc::{
+    string::String,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -29,9 +30,9 @@ use core::{
 use ax_fs_ng::vfs::OpenOptions;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNodeOps,
-    FileRangeOperation, Filesystem, FilesystemOps, Location, Metadata, MetadataUpdate,
-    MutationCredentials, NameState, NodeFlags, NodeIdentity, NodeOps, NodeType, Reference, StatFs,
-    VfsError, VfsResult, WeakDirEntry,
+    FileRangeOperation, Filesystem, FilesystemOps, LinkOps, LinkTarget, Location, Metadata,
+    MetadataUpdate, MutationCredentials, NameState, NodeFlags, NodeIdentity, NodeOps, NodeType,
+    Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use inode::{InodeIndex, OverlayInode};
@@ -604,6 +605,10 @@ impl OverlayFile {
 }
 
 impl NodeOps for OverlayFile {
+    fn link_ops(&self) -> Option<&dyn LinkOps> {
+        (self.inode.kind == NodeType::Symlink).then_some(self)
+    }
+
     fn change_metadata(
         &self,
         request: &axfs_ng_vfs::MetadataRequest<'_>,
@@ -643,6 +648,16 @@ impl NodeOps for OverlayFile {
         self.current().map_or(NodeFlags::NON_CACHEABLE, |loc| {
             (loc.flags() & !NodeFlags::ALWAYS_CACHE) | NodeFlags::NON_CACHEABLE
         })
+    }
+}
+
+impl LinkOps for OverlayFile {
+    fn target(&self) -> VfsResult<LinkTarget> {
+        self.read_link().map(LinkTarget::Text)
+    }
+
+    fn read_link(&self) -> VfsResult<String> {
+        self.fs.read(|read| read.link_text(&self.inode))
     }
 }
 

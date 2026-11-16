@@ -213,6 +213,33 @@ pub struct UnixSocket {
     owns_bind: AtomicBool,
 }
 impl UnixSocket {
+    /// Binds a pathname using the caller's filesystem creation authority.
+    ///
+    /// The factory runs in sleepable context after the socket's unbound state
+    /// has been checked, with only this socket's local-address mutex held. It
+    /// must return the slot attached to the selected inode, without a second
+    /// pathname lookup. Its domain error is preserved. The path remains in the
+    /// filesystem after the socket closes, including a failed transport bind.
+    pub fn bind_path_with<E>(
+        &self,
+        path: Arc<str>,
+        create: impl FnOnce(&str) -> Result<Arc<BindSlot>, E>,
+    ) -> Result<(), E>
+    where
+        E: From<NetError>,
+    {
+        let mut local = self.local_addr.lock();
+        if !matches!(&*local, UnixSocketAddr::Unnamed) {
+            return Err(NetError::InvalidInput.into());
+        }
+        let slot = create(&path)?;
+        let address = UnixSocketAddr::Path(path);
+        self.transport.bind(&slot, &address).map_err(E::from)?;
+        *local = address;
+        self.owns_bind.store(true, Ordering::Release);
+        Ok(())
+    }
+
     /// Create a new Unix socket with the given transport.
     pub fn new(transport: impl Into<Transport>) -> Self {
         Self {

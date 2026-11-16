@@ -59,6 +59,21 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
         Ok(metadata)
     }
 
+    pub(super) fn link_text(&self, inode: &OverlayInode) -> ReadResult<alloc::string::String> {
+        if inode.kind != NodeType::Symlink {
+            return Err(VfsError::InvalidInput.into());
+        }
+        let current = inode.current()?;
+        self.queries.retired().retire(current.clone());
+        match ready(
+            self.queries
+                .query(NamespaceQuery::ReadLink(current.entry())),
+        )? {
+            NamespaceRead::LinkText(text) => Ok(text),
+            _ => Err(VfsError::BadState.into()),
+        }
+    }
+
     pub(super) fn query(&self, query: NamespaceQuery<'_>) -> ReadResult<NamespaceRead> {
         match query {
             NamespaceQuery::Lookup { parent, name } => {
@@ -72,6 +87,10 @@ impl<'fs, 'op> LayerRead<'fs, 'op> {
             NamespaceQuery::Metadata(entry) => {
                 let inode = self.filesystem.inode_for(entry)?;
                 self.metadata(&inode).map(NamespaceRead::Metadata)
+            }
+            NamespaceQuery::ReadLink(entry) => {
+                let inode = self.filesystem.inode_for(entry)?;
+                self.link_text(&inode).map(NamespaceRead::LinkText)
             }
             NamespaceQuery::Xattr { entry, name } => {
                 let inode = self.filesystem.inode_for(entry)?;

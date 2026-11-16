@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 
-use ax_fs_ng::vfs::current_fs_context;
 use ax_net::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
@@ -9,7 +8,7 @@ use ax_net::{
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
     vsock::VsockSocket,
 };
-use axfs_ng_vfs::{MetadataUpdate, NodeType};
+use axfs_ng_vfs::{CreateAttributes, CreateContent, DeviceId, NodePermission, NodeType, VfsError};
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
@@ -27,6 +26,7 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
+    task::FsCredentialsSnapshot,
 };
 
 const SOCK_TYPE_MASK: u32 = 0xf;
@@ -173,28 +173,43 @@ pub fn sys_bind(
     }
     debug!("sys_bind <= fd: {fd}, addr: {addr:?}");
 
-    let unix_path = match &addr {
-        SocketAddrEx::Unix(UnixSocketAddr::Path(path)) => Some(path.clone()),
-        _ => None,
-    };
-    let cred = current.as_thread().cred();
-
-    socket.bind(addr)?;
-
-    if let Some(path) = unix_path
-        && let Err(err) = current_fs_context()
-            .resolve_no_follow(path.as_ref())
-            .and_then(|loc| {
-                if loc.metadata()?.node_type == NodeType::Socket {
-                    loc.update_metadata(MetadataUpdate {
-                        owner: Some((cred.fsuid, cred.fsgid)),
-                        ..Default::default()
-                    })?;
-                }
-                Ok(())
-            })
+    if let (SocketInner::Unix(unix), SocketAddrEx::Unix(UnixSocketAddr::Path(path))) =
+        (&**socket, &addr)
     {
-        warn!("failed to update AF_UNIX socket owner for {path}: {err:?}");
+        let thread = current.as_thread();
+        let (binding, identity, mask) = {
+            let update = thread.proc_data.namespace_update();
+            (
+                thread
+                    .snapshot_fs_binding_under(&update)?
+                    .ok_or(StarryError::BadState)?,
+                FsCredentialsSnapshot::capture_under(thread, &update),
+                thread.proc_data.umask(),
+            )
+        };
+        let permission = NodePermission::from_bits_truncate(
+            socket.location().metadata()?.mode.bits() & !(mask as u16),
+        );
+        let credentials = identity.as_mutation_credentials();
+        unix.bind_path_with(path.clone(), |path| -> StarryResult<_> {
+            let location = binding
+                .fs
+                .create_node(
+                    path,
+                    CreateAttributes {
+                        content: CreateContent::Node(NodeType::Socket, DeviceId::default()),
+                        permission,
+                    },
+                    &credentials,
+                )
+                .map_err(|error| match error {
+                    VfsError::AlreadyExists => StarryError::from(ax_net::NetError::AddrInUse),
+                    error => StarryError::from(error),
+                })?;
+            Ok(location.user_data().get_or_insert_with(Default::default))
+        })?;
+    } else {
+        socket.bind(addr)?;
     }
 
     Ok(0)

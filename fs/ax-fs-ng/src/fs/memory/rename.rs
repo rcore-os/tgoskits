@@ -81,6 +81,14 @@ impl MemoryFs {
                 // This concrete reader only takes inode spinlocks.
                 source.metadata().map(NamespaceRead::Metadata)
             }
+            NamespaceQuery::ReadLink(_) => source
+                .inode
+                .as_file()?
+                .symlink
+                .lock()
+                .clone()
+                .map(NamespaceRead::LinkText)
+                .ok_or(VfsError::InvalidInput),
             NamespaceQuery::Lookup { name, .. } => {
                 match attempt.observe_node(&source, name, retired) {
                     Ok(node) => Ok(NamespaceRead::Entry(Some(node.entry))),
