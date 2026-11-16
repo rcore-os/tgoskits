@@ -212,3 +212,49 @@ cargo xtask test --since b64f42bdbb0ccc41e15df7df6c8f10a359f7097e
 `FS_CONTEXT`、ROOT、Kernel clone/unshare/setns/exit 和现有 `FsContext` 尚未迁入这些新类型。旧 AX namespace 与新 VFS Core 的生产连接、creator、Scope 中 FS/MNT 成对安装，以及全部调用者保护外退休，仍须在下一实现单元中完成。当前类型测试与组件红绿没有解决这些系统调用路径，也没有取得独立审查批准或性能结论。
 
 本轮重新执行的 Kernel Clippy 复现原有 Overlay 15 处旧接口编译错误，首项失败后 71 项未运行。标准库选择器选中 18 包，恢复后的 17 包通过，唯一失败仍为 `starry-kernel`，整体退出码为 1。未执行 QEMU、四架构系统调用回归或性能比较；第 4 节与第 5 节其余未完成项继续有效。
+
+## 8. 工具链升级接续
+
+本节记录合入 `dev@f55295b7890ee6ec6984222a840d55355cadfd27` 后的适配。受验证的最终源码为 `827e40092cd245875c98b51f9e0a121974802cdf`，精确工具版本、文件摘要、命令、逐包结果和原始日志摘要保存在[工具链证据](vfs-rust-toolchain-evidence.json)。前节使用旧工具链的结果继续作为历史记录，不由本节覆盖或改写。
+
+### 8.1 编译器契约
+
+合并提交 `3e596259d6` 引入主线 #2807 的 `nightly-2026-11-13`。实际 rustc 从 `1.100.0-nightly/a69a63265`、LLVM 23.1.1 升至 `1.102.0-nightly/8eb778d04`、LLVM 23.1.5。版本以 [`rust-toolchain.toml`](../rust-toolchain.toml) 和证据中的 `rustc -Vv` 为准；本轮按两个精确版本的标准库源码核对调用契约。
+
+| 变化 | 对本分支的影响与处理 |
+| --- | --- |
+| `Allocator` 稳定化后拆分 `allocator_ext`，删除内部 `Unique` | 保留主线对应 feature gates 与 x2apic 0.5.1；未在受影响本地代码发现直接使用 `Unique` 或 `ptr_internals` 的消费者 |
+| musl `DirEntry::metadata` 改用目录句柄 | 保留 `DirHandle` 与各 `*at` 接口，按实际目录对象解析相对名；不能恢复 fd 到旧路径文字的缓存 |
+| 整数新增固有 `bit`、`set_bit` | 保留主线虚拟中断与 hypervisor 寄存器中的 trait 显式调用，避免把原地修改误改成返回新整数 |
+| Clippy 建议栈固定、容器移动与清空 | 保留依赖提前析构的取消测试中的 `Box::pin`；栈固定仅用于不以提前析构取消的调用 |
+| 非增量宿主测试的链接边界 | 保留 runtime、axvm 的 exception table 与 TSS 宿主定义，实际使用 `CARGO_INCREMENTAL=0` 检查；不把该项目观察归因为未经核实的 LLVM 保证 |
+
+分配接口变化可对照 [Allocator 稳定化](https://github.com/rust-lang/rust/pull/156882)及[内部指针类型移除](https://github.com/rust-lang/rust/pull/164146)。目录项行为直接比较[旧版实现](https://github.com/rust-lang/rust/blob/a69a63265cfd9e006d43137f98301b8d274ad4c9/library/std/src/sys/fs/unix.rs#L1019-L1063)和[新版实现](https://github.com/rust-lang/rust/blob/8eb778d04094d3af4b26580cab327e0413eb1e02/library/std/src/sys/fs/unix.rs#L1050-L1076)，不从更早的目录 API 拉取请求推断本次 musl 消费迁移的时间。
+
+### 8.2 冲突与真实消费者
+
+两个内容冲突位于 `fs/ax-fs-ng/src/fs/fat/file.rs` 和 `os/arceos/api/arceos_posix_api/src/imp/fs.rs`。前者保留本分支 `FatInode` 的规范持有者及同一 filesystem guard，把主线的 metadata、write、append、truncate flush 接到实际文件句柄。后者保留 `sys_open` 转入 `sys_openat` 的句柄式路径，由 `fops::open_at` 显式接收当前原生调用凭据。
+
+实际 `fs-basic` 运行还暴露关闭后的 FAT 脏缓存阻止删除。`prepare_fat_unlink_cache` 在后端 gate 外写回同一 FAT 中仅由 registry 与本次写回快照持有的缓存，再沿既有 prune 路径释放。并发重新打开仍可使真实 FAT 尝试拒绝操作；准备阶段不授予删除权限。`DirNodeOps::prepare_unlink` 改为返回 `VfsResult`，把写回错误传回外层，未丢弃脏页或放松活跃句柄保护。
+
+Cargo 新诊断暴露的依赖按实际功能边界启用；无消费者的 `rd-net/futures` 与 `starry-signal/event-listener` 删除。`Cargo.lock` 在合并时没有冲突，后续由 `cargo update --workspace --offline` 自动更新这两项依赖边，没有手工拼接。Git 测试明确初始化夹具分支；Ext4 增长成功夹具明确关闭当前增长实现不支持的 mkfs 默认功能，保留容量、内容及中断恢复断言。
+
+### 8.3 确定性回归
+
+既有 `fat_unlink_preserves_active_identity_and_releases_closed_cache_owners` 增强为关闭前仍有未写回数据。`f9c0162731` 中三个 FAT profile 都在预期 `Applied` 处稳定得到 `Unchanged`；修复后同一旅程全部通过，活跃句柄拒绝、原身份与内容保留、关闭后的回收及真实删除仍一起验证。
+
+既有 `fs-basic` 增强为保留 `DirEntry`，关闭迭代器并重命名父目录后读取元数据。临时错误实现把目录 fd 绑定到 cwd，同一测试稳定于 `metadata()` 返回 `ENOENT`，最外层退出 1；逐字恢复生产源码后退出 0。错误变异未推送。元数据断言后显式释放保留项，使后续清理不额外要求 FAT 支持删除仍打开的目录。
+
+该成员继续复用原 suite 和批次，没有新增默认启动。定向验收在 x86_64、AArch64、RISC-V、LoongArch 各实际选择一次 `fs-basic`，均取得逐项 `status=pass`、套件最终成功标记和外层零退出。这些是 ArceOS 标准库适配证据，不替代 Starry 直接系统调用验证。
+
+### 8.4 验证终态与剩余边界
+
+9 包 134 项定向 Clippy 通过；后续测试改动另通过套件 43 项及 AX/Rsext4 9 项检查。最终非增量标准库入口实际选择 21 包，20 包通过，唯一失败为 `starry-kernel` 原有 Overlay 的 E0061 十处与 E0407 五处，整体退出码为 1。AX 五个 profile、VFS、Rsext4、axbuild、axvm 与宿主虚拟化装配均实际完成，不能把局部通过写成 PR 全绿。
+
+本机 e2fsprogs 1.46.5 不识别已有增长夹具的 feature 参数。本轮从 kernel.org 获取并核对 SHA256 后构建 1.47.3，只以命令局部 PATH 选用本任务二进制，没有替换宿主工具或修改 Git 全局配置。标准库入口为：
+
+```sh
+PATH=<isolated-e2fsprogs-1.47.3>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since origin/dev
+```
+
+宿主 `ax-hal` 的条件平台依赖告警，以及 x86 soft-float 下工具链和第三方库的 target-feature future-incompatibility 告警仍有记录，未加 `allow` 属性。生产 Owner/Scope/creator、Overlay、统一查找与 proc 消费迁移、Starry 系统调用回归、性能和独立最终审查仍未完成，第 4、5 节继续有效。
