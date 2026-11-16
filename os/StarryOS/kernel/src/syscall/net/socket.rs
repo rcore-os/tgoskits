@@ -1,13 +1,13 @@
 use alloc::boxed::Box;
 
 use ax_fs_ng::vfs::current_fs_context;
-use ax_net::vsock::VsockSocket;
 use ax_net::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
+    vsock::VsockSocket,
 };
 use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use linux_raw_sys::{
@@ -183,7 +183,6 @@ pub fn sys_bind(
 
     if let Some(path) = unix_path
         && let Err(err) = current_fs_context()
-            .lock()
             .resolve_no_follow(path.as_ref())
             .and_then(|loc| {
                 if loc.metadata()?.node_type == NodeType::Socket {

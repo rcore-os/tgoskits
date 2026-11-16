@@ -31,10 +31,11 @@ use crate::{
 const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
 pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&FsContext) -> StarryResult<R>) -> StarryResult<R> {
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
-    // Never retain the task context mutex across a backend/proc callback.
-    // A clone is an unregistered read view, not a second state owner.
-    let fs = fs_context.lock().clone();
+    let binding = current_user_task()
+        .as_thread()
+        .snapshot_fs_binding()?
+        .ok_or(StarryError::BadState)?;
+    let fs = &binding.fs;
     if dirfd == AT_FDCWD {
         f(&fs)
     } else {
@@ -94,8 +95,7 @@ pub fn resolve_at_checked(
     check_search: impl Fn(&Location) -> VfsResult<()>,
 ) -> StarryResult<ResolveAtResult> {
     let check = |_: &FsContext, directory: &Location| check_search(directory);
-    resolve_at_with_search(dirfd, path, flags, Some(&check))
-        .map(|(result, _, _)| result)
+    resolve_at_with_search(dirfd, path, flags, Some(&check)).map(|(result, ..)| result)
 }
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&FsContext, &Location) -> VfsResult<()>>;
@@ -113,7 +113,11 @@ fn resolve_at_with_search(
             }
             if dirfd == AT_FDCWD {
                 return with_fs(dirfd, |fs| {
-                    Ok((ResolveAtResult::File(fs.current_dir().clone()), None, Vec::new()))
+                    Ok((
+                        ResolveAtResult::File(fs.current_dir().clone()),
+                        None,
+                        Vec::new(),
+                    ))
                 });
             }
             Ok((resolve_fd(dirfd)?, None, Vec::new()))
@@ -167,7 +171,7 @@ pub fn resolve_at_with_boundary_checked(
 }
 
 pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
-    resolve_at_with_boundary(dirfd, path, flags).map(|(result, _, _)| result)
+    resolve_at_with_boundary(dirfd, path, flags).map(|(result, ..)| result)
 }
 
 pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {

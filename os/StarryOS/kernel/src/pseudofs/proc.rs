@@ -9,7 +9,7 @@ use alloc::{
 };
 use core::{ffi::CStr, fmt::Write, iter, mem::size_of, sync::atomic::Ordering};
 
-use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
+use ax_fs_ng::vfs::current_fs_context;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
@@ -1588,9 +1588,9 @@ impl SimpleDirOps for ThreadDir {
                     let task = require_proc_task(&task)?;
                     let ctx_arc = task
                         .as_thread()
-                        .clone_scope_item(&FS_CONTEXT)
+                        .snapshot_fs_binding()?
                         .ok_or(VfsError::NotFound)?;
-                    let ctx = ctx_arc.lock();
+                    let ctx = &ctx_arc.fs;
                     Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
                 })
                 .into()
@@ -1601,9 +1601,9 @@ impl SimpleDirOps for ThreadDir {
                     let task = require_proc_task(&task)?;
                     let ctx_arc = task
                         .as_thread()
-                        .clone_scope_item(&FS_CONTEXT)
+                        .snapshot_fs_binding()?
                         .ok_or(VfsError::NotFound)?;
-                    let ctx = ctx_arc.lock();
+                    let ctx = &ctx_arc.fs;
                     Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
                 })
                 .into()
@@ -2086,7 +2086,7 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
         "mounts",
         SimpleFile::new_regular(fs.clone(), || {
             let fs_context = current_fs_context();
-            let ctx = fs_context.lock();
+            let ctx = fs_context;
             Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
         }),
     );
@@ -2094,7 +2094,7 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
         "mountinfo",
         SimpleFile::new_regular(fs.clone(), || {
             let fs_context = current_fs_context();
-            let ctx = fs_context.lock();
+            let ctx = fs_context;
             Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
         }),
     );
@@ -2503,8 +2503,7 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
 
 #[cfg(all(test, axtest))]
 fn proc_mountinfo_lines_match_linux_layout() -> bool {
-    let ctx_arc = current_fs_context();
-    let ctx = ctx_arc.lock();
+    let ctx = current_fs_context();
     let text = crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx);
     !text.is_empty()
         && text.lines().any(|line| line.contains(" / / "))

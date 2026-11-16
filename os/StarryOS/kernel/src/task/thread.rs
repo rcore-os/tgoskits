@@ -54,7 +54,7 @@ struct ThreadPidOwnership {
 }
 
 /// Scope-local resources and their task-context serialization.
-struct ThreadScope {
+pub(super) struct ThreadScope {
     scope: UnsafeCell<Scope>,
     access: Mutex<()>,
 }
@@ -66,6 +66,13 @@ struct ThreadScope {
 unsafe impl Sync for ThreadScope {}
 
 impl ThreadScope {
+    pub(super) fn read<R>(&self, operation: impl FnOnce(&Scope) -> R) -> R {
+        let _access = self.access.lock();
+        // SAFETY: this mutex excludes the only mutation. Active-scope reads
+        // may overlap because payloads are Sync; no reference escapes the call.
+        operation(unsafe { &*self.scope.get() })
+    }
+
     fn new(scope: Scope) -> Self {
         Self {
             scope: UnsafeCell::new(scope),
@@ -332,7 +339,7 @@ pub struct Thread {
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
 
-    scope: ThreadScope,
+    pub(super) scope: ThreadScope,
     accounting: ThreadAccounting,
     lifecycle: ThreadLifecycle,
     work: ThreadWork,

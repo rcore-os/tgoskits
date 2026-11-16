@@ -108,7 +108,7 @@ pub fn sys_execve(
                 .clone(),
         }
     } else {
-        current_fs_context().lock().resolve(&path)?
+        current_fs_context().resolve(&path)?
     };
     do_execve(current, uctx, loc, path, argv, envp)
 }

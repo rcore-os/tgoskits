@@ -1,7 +1,6 @@
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
-use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
@@ -180,9 +179,6 @@ fn fd_points_to_mount(fd: &dyn FileLike, mp: &Arc<axfs_ng_vfs::Mountpoint>) -> b
 }
 
 fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
-    if fs_is_mount_busy(mp) {
-        return true;
-    }
     let tasks = tasks();
     for task in tasks {
         let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
@@ -494,7 +490,7 @@ pub fn sys_move_mount(
     }
     let path = vm_load_string(current, to_path)?;
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let context = fs_context.lock().clone();
+    let context = fs_context;
     let mount_namespace = context.mount_namespace().clone();
     let target = if path.starts_with('/') {
         context.resolve(&path)?
@@ -542,7 +538,7 @@ pub fn sys_mount_setattr(
         return Err(StarryError::InvalidInput);
     }
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let mount_namespace = fs_context.lock().mount_namespace().clone();
+    let mount_namespace = fs_context.mount_namespace().clone();
     let is_visible = mount_namespace
         .walk_tree()
         .into_iter()
@@ -633,7 +629,7 @@ pub fn sys_mount(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let context = fs_context.lock().clone();
+    let context = fs_context;
     let mount_namespace = context.mount_namespace().clone();
     let propagation = flags & PROPAGATION_FLAGS;
 
@@ -831,7 +827,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
 
     let (source_location, target_location) = {
         let context = ax_fs_ng::vfs::current_fs_context();
-        let context = context.lock().clone();
+        let context = context;
         (context.resolve(source)?, context.resolve(target)?)
     };
     if source_location.metadata()?.node_type != NodeType::BlockDevice {
@@ -902,7 +898,7 @@ pub fn sys_umount2(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let context = fs_context.lock().clone();
+    let context = fs_context;
     let mount_namespace = context.mount_namespace().clone();
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
         context.resolve_no_follow(target)?
@@ -954,71 +950,26 @@ pub fn sys_pivot_root(
     new_root: *const c_char,
     put_old: *const c_char,
 ) -> crate::StarryResult<isize> {
-    let new_root = vm_load_string(current, new_root)?;
-    let put_old = vm_load_string(current, put_old)?;
-    debug!(
-        "sys_pivot_root <= new_root: {:?}, put_old: {:?}",
-        new_root, put_old
-    );
-
-    if !current.as_thread().cred().has_cap_sys_admin() {
-        return Err(crate::StarryError::OperationNotPermitted);
-    }
-
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let context = fs_context.lock().clone();
-
-    // The caller's current root must itself be a mount point (Linux
-    // EINVAL if e.g. the process chroot'd into a subdirectory).
-    if !context.root_dir().is_root_of_mount() {
-        return Err(StarryError::InvalidInput);
-    }
-
-    // Resolve both paths before checking their VFS relationship. Linux permits
-    // callers to enter new_root and use pivot_root(".", "old").
-    let new_root_loc = context.resolve(&new_root)?;
-    new_root_loc.check_is_dir()?;
-    let put_old_loc = context.resolve(&put_old)?;
-    put_old_loc.check_is_dir()?;
-
-    if !put_old_loc.is_descendant_of(&new_root_loc) {
-        return Err(StarryError::InvalidInput);
-    }
-
-    // `pivot_root` rearranges mounts rather than arbitrary directories.
-    // Recheck the mutable owner's root after the lock-free path callbacks.
-    let mut ctx = fs_context.lock();
-    if !ctx.root_dir().is_root_of_mount()
-        || new_root_loc.is_root()
-        || !new_root_loc.is_root_of_mount()
-        || new_root_loc.ptr_eq(ctx.root_dir())
-    {
-        warn!(
-            "sys_pivot_root: new_root {:?} is not a distinct non-global mount root",
-            new_root
-        );
-        return Err(StarryError::InvalidInput);
-    }
-
-    // Capture the old root Location BEFORE the pivot, so that we can
-    // propagate the change to every other task afterwards (Linux
-    // chroot_fs_refs semantics).  We save the full Location (mountpoint +
-    // dentry) rather than just the mountpoint, so that tasks chroot'd
-    // into a subdirectory of the old root are not incorrectly updated.
-    let old_root = ctx.root_dir().clone();
-    let mount_namespace = ctx.mount_namespace().clone();
-
-    // Perform pivot: swap the root mount (updates this task's FsContext).
-    ctx.pivot_root(new_root_loc, put_old_loc)?;
-
-    let new_root_loc = ctx.root_dir().clone();
-    drop(ctx); // Release this task's lock before touching others.
-
-    // Propagate root / cwd to all other tasks whose root_dir or current_dir
-    // exactly matches the old root Location — mirroring Linux
-    // chroot_fs_refs() in fs/namespace.c.
-    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&mount_namespace, &old_root, &new_root_loc);
-    crate::file::notify_mount_namespace_changed(&mount_namespace);
-
+    let credentials = crate::task::FsCredentialsSnapshot::capture(current.as_thread());
+    let cred = super::mutation_credentials(&credentials);
+    let binding = current
+        .as_thread()
+        .snapshot_fs_binding()?
+        .ok_or(StarryError::BadState)?;
+    let resolve_directory = |path: &str| -> StarryResult<axfs_ng_vfs::PathHandle> {
+        let location = binding.fs.resolve_checked(path, |directory| {
+            cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+        })?;
+        location.check_is_dir()?;
+        Ok(axfs_ng_vfs::PathHandle::acquire(location)?)
+    };
+    // Match path_pivot_root: new lookup and directory validation precede any
+    // observation of put_old, and both precede namespace capability checking.
+    let new_root_path = vm_load_string(current, new_root)?;
+    let new_root = resolve_directory(&new_root_path)?;
+    let put_old_path = vm_load_string(current, put_old)?;
+    let put_old = resolve_directory(&put_old_path)?;
+    let change = crate::task::NamespaceChange::new(current.as_thread())?;
+    change.pivot_root(new_root, put_old)?;
     Ok(0)
 }

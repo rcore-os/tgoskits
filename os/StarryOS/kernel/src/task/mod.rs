@@ -4,10 +4,12 @@ mod allocation;
 mod bounded_stack;
 mod cgroup_exit_invariant;
 mod cred;
+mod fs_binding;
 pub mod futex;
 pub mod future;
 mod interruption;
 mod job_control;
+mod namespace_change;
 mod ops;
 mod pid;
 pub mod posix_timer;
@@ -38,7 +40,7 @@ mod user_cpu_features;
 mod user_memory_access;
 mod user_wait;
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use core::any::Any;
 
 pub(crate) use process_ptrace::{PtraceAttachMode, PtraceWaitAction, PtraceWaitStop};
@@ -57,8 +59,10 @@ pub use self::{
 };
 pub(crate) use self::{
     cred::FsCredentialsSnapshot,
+    fs_binding::FsBindingSnapshot,
+    namespace_change::NamespaceChange,
     pid::*,
-    proc_access::authorize_proc_read,
+    proc_access::{authorize_pidfd_namespace_read, authorize_proc_read},
     process_identity::*,
     process_memory::{PreparedProcessMemory, scheduler_address_space},
 };
@@ -348,6 +352,14 @@ pub(crate) struct ProcessNamespaceUpdate<'a> {
     _guard: MutexGuard<'a, ()>,
 }
 
+/// All publication inputs are retained until the outer writer has ended.
+pub(crate) struct PreparedNamespacePublication {
+    replacement: Option<Arc<NsProxy>>,
+    _source: Arc<NsProxy>,
+    _targets: Vec<(UserTaskRef, Arc<Cred>)>,
+    clear_dumpable: bool,
+}
+
 impl ProcessNamespaceUpdate<'_> {
     pub(super) fn owns(&self, process: &ProcessData) -> bool {
         core::ptr::eq(self.owner, process)
@@ -363,32 +375,55 @@ impl ProcessNamespaceUpdate<'_> {
         self.publication.lock_irqsave().clone()
     }
 
-    pub(crate) fn publish(self, replacement: NsProxy) {
+    pub(crate) fn prepare_publication(&self, replacement: NsProxy) -> PreparedNamespacePublication {
         let old = self.snapshot();
+        let mut targets = Vec::new();
+        let mut clear_dumpable = false;
         if !Arc::ptr_eq(&old.user_ns, &replacement.user_ns) {
             for tid in self.owner.proc.threads() {
                 if let Ok(task) = ops::get_task_by_number(tid) {
                     let thread = task.as_thread();
+                    let cred = thread.cred();
                     if self.owns(&thread.proc_data)
                         && !proc_access::namespace_preserves_permitted(
                             &old.user_ns,
                             &replacement.user_ns,
-                            thread.cred().euid,
+                            cred.euid,
                         )
                     {
-                        self.owner.set_dumpable(0);
-                        break;
+                        clear_dumpable = true;
                     }
+                    targets.push((task, cred));
                 }
             }
         }
-        let replacement = Arc::new(replacement);
-        let previous = {
-            let mut current = self.publication.lock_irqsave();
-            core::mem::replace(&mut *current, replacement)
-        };
+        PreparedNamespacePublication {
+            replacement: Some(Arc::new(replacement)),
+            _source: old,
+            _targets: targets,
+            clear_dumpable,
+        }
+    }
+
+    /// Moves preallocated references after scope commit, without a fallible
+    /// stage or releasing any displaced namespace while the writer is held.
+    pub(crate) fn publish_prepared(
+        &mut self,
+        prepared: &mut PreparedNamespacePublication,
+    ) -> Arc<NsProxy> {
+        if prepared.clear_dumpable {
+            self.owner.set_dumpable(0);
+        }
+        let replacement = prepared.replacement.take().expect("prepared publication");
+        let mut current = self.publication.lock_irqsave();
+        core::mem::replace(&mut *current, replacement)
+    }
+
+    pub(crate) fn publish(mut self, replacement: NsProxy) {
+        let mut prepared = self.prepare_publication(replacement);
+        let previous = self.publish_prepared(&mut prepared);
         drop(self);
-        drop(previous);
+        drop((previous, prepared));
     }
 }
 

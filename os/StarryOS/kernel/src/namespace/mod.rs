@@ -10,8 +10,10 @@ use alloc::sync::Arc;
 pub use ax_cgroup::{CgroupNamespace, CgroupNode};
 pub use cgroup::{ROOT_CGROUP_NS, new_cgroup_namespace};
 pub use ipc::{IpcNamespace, ROOT_IPC_NS};
-pub use mnt::{MntNamespace, ROOT_MNT_NS};
+pub(crate) use mnt::MNT_NAMESPACE;
+pub use mnt::MntNamespace;
 pub use net::{NetNamespace, ROOT_NET_NS};
+pub(crate) use user::has_namespace_capability;
 pub use user::{ROOT_USER_NS, UserNamespace};
 pub use uts::{ROOT_UTS_NS, UtNamespace, build_utsname};
 
@@ -28,8 +30,6 @@ pub(crate) struct NsProxy {
     pub(crate) uts_ns: Arc<RawSpinLock<UtNamespace>>,
     /// The IPC namespace (System V IPC objects).
     pub(crate) ipc_ns: Arc<RawSpinLock<IpcNamespace>>,
-    /// The mount namespace (filesystem mount points).
-    pub(crate) mnt_ns: Arc<RawSpinLock<MntNamespace>>,
     /// PID namespace used by future children.
     ///
     /// Linux keeps this choice until another `unshare(CLONE_NEWPID)` or
@@ -49,7 +49,6 @@ impl NsProxy {
         Self {
             uts_ns: ROOT_UTS_NS.clone(),
             ipc_ns: ROOT_IPC_NS.clone(),
-            mnt_ns: ROOT_MNT_NS.clone(),
             pid_ns_for_children: ROOT_PID_NS.clone(),
             net_ns: ROOT_NET_NS.clone(),
             user_ns: ROOT_USER_NS.clone(),
@@ -71,7 +70,6 @@ impl NsProxy {
         Self {
             uts_ns: self.uts_ns.clone(),
             ipc_ns: self.ipc_ns.clone(),
-            mnt_ns: self.mnt_ns.clone(),
             pid_ns_for_children: self.pid_ns_for_children.clone(),
             net_ns: self.net_ns.clone(),
             user_ns: self.user_ns.clone(),
@@ -88,7 +86,6 @@ impl NsProxy {
         Self {
             uts_ns: self.uts_ns.clone(),
             ipc_ns: self.ipc_ns.clone(),
-            mnt_ns: self.mnt_ns.clone(),
             pid_ns_for_children: self.pid_ns_for_children.clone(),
             net_ns: self.net_ns.clone(),
             user_ns: self.user_ns.clone(),
@@ -104,11 +101,6 @@ impl NsProxy {
     pub fn unshare_ipc(&mut self) {
         let new_inner = self.ipc_ns.lock_irqsave().clone_ns();
         self.ipc_ns = Arc::new(RawSpinLock::new(new_inner));
-    }
-
-    pub fn unshare_mnt(&mut self) {
-        let new_inner = self.mnt_ns.lock_irqsave().clone_ns();
-        self.mnt_ns = Arc::new(RawSpinLock::new(new_inner));
     }
 
     /// Prepare a new PID namespace for the next child of this process.
@@ -146,11 +138,6 @@ impl NsProxy {
     /// Replace the IPC namespace with an existing one (used by `setns(2)`).
     pub fn set_ns_ipc(&mut self, ns: Arc<RawSpinLock<IpcNamespace>>) {
         self.ipc_ns = ns;
-    }
-
-    /// Replace the mount namespace with an existing one (used by `setns(2)`).
-    pub fn set_ns_mnt(&mut self, ns: Arc<RawSpinLock<MntNamespace>>) {
-        self.mnt_ns = ns;
     }
 
     /// Stage a PID namespace for the next child (used by `setns(2)`).
@@ -262,7 +249,6 @@ mod tests {
         assert!(Arc::ptr_eq(&nsproxy.user_ns, &before.user_ns));
         assert!(Arc::ptr_eq(&nsproxy.uts_ns, &before.uts_ns));
         assert!(Arc::ptr_eq(&nsproxy.ipc_ns, &before.ipc_ns));
-        assert!(Arc::ptr_eq(&nsproxy.mnt_ns, &before.mnt_ns));
         assert!(Arc::ptr_eq(
             &nsproxy.pid_ns_for_children,
             &before.pid_ns_for_children,

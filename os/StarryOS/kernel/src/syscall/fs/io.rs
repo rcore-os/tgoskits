@@ -257,7 +257,7 @@ pub fn sys_truncate(
     if length < 0 {
         return Err(StarryError::InvalidInput);
     }
-    let location = ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?;
+    let location = ax_fs_ng::vfs::current_fs_context().resolve(&path)?;
     if location.node_type() == axfs_ng_vfs::NodeType::Directory {
         return Err(StarryError::IsADirectory);
     }

@@ -1027,7 +1027,7 @@ pub fn close_all_fds() {
 pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
     assert_eq!(fd_table.count(), 0);
     let fs_context = current_fs_context();
-    let cx = fs_context.lock().clone();
+    let cx = fs_context;
     // Stdio is opened before the init thread exists, using its boot identity.
     let credentials = ax_fs_ng::MutationCredentials::root();
     let open = |options: &mut OpenOptions, flags| {

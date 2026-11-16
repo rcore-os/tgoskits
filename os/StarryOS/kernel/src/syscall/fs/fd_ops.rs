@@ -5,7 +5,7 @@ use core::{
     ops::DerefMut,
 };
 
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, MountNamespace, OpenOptions, OpenResult};
+use ax_fs_ng::vfs::{FileBackend, MountNamespace, OpenOptions, OpenResult};
 use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
 use bitflags::bitflags;
@@ -151,9 +151,7 @@ fn add_to_fd(
                     // Opening /dev/ptmx creates a new pseudo-terminal
                     let (master, pty_number) = ptmx.create_pty()?;
                     // TODO: this is cursed
-                    let pts = ax_fs_ng::vfs::current_fs_context()
-                        .lock()
-                        .resolve("/dev/pts")?;
+                    let pts = ax_fs_ng::vfs::current_fs_context().resolve("/dev/pts")?;
                     let entry = DirEntry::new_file(
                         FileNode::new(master),
                         NodeType::CharacterDevice,
@@ -175,7 +173,7 @@ fn add_to_fd(
                     let loc = match target {
                         tty::TerminalDevice::Location(location) => location,
                         tty::TerminalDevice::Path(path) => {
-                            ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?
+                            ax_fs_ng::vfs::current_fs_context().resolve(&path)?
                         }
                     };
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
@@ -236,8 +234,8 @@ fn mount_table_namespace(
     };
 
     let task = get_user_task_by_number(tid).ok()?;
-    let fs_context = task.as_thread().clone_scope_item(&FS_CONTEXT)?;
-    Some(fs_context.lock().mount_namespace().clone())
+    let binding = task.as_thread().snapshot_fs_binding().ok()??;
+    Some(binding.mnt.core().clone())
 }
 
 fn self_fd_number(path: &str) -> Option<c_int> {
@@ -411,15 +409,17 @@ fn try_open_nsfd(
         Err(_) => return Some(Err(StarryError::NotFound)),
     };
 
-    let mnt_fs_ns = if ns_type_str == "mnt" {
+    let mount_namespace = if ns_type_str == "mnt" {
         let task = match get_user_task_by_number(TidNumber::from(tgid.pid_number())) {
             Ok(task) => task,
             Err(_) => return Some(Err(StarryError::NotFound)),
         };
-        let Some(fs_context) = task.as_thread().clone_scope_item(&FS_CONTEXT) else {
-            return Some(Err(StarryError::NotFound));
+        let binding = match task.as_thread().snapshot_fs_binding() {
+            Ok(Some(binding)) => binding,
+            Ok(None) => return Some(Err(StarryError::NotFound)),
+            Err(error) => return Some(Err(error)),
         };
-        Some(fs_context.lock().mount_namespace().clone())
+        Some(binding.mnt)
     } else {
         None
     };
@@ -429,10 +429,7 @@ fn try_open_nsfd(
     let nsfd: NsFd = match ns_type_str {
         "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
         "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
-        "mnt" => NsFd::Mnt {
-            ns: nsproxy.mnt_ns.clone(),
-            fs_ns: mnt_fs_ns.unwrap(),
-        },
+        "mnt" => NsFd::Mnt(mount_namespace.expect("selected mount binding")),
         "pid" => NsFd::Pid(proc_data.identity().active_namespace()),
         "net" => NsFd::Net(nsproxy.net_ns.clone()),
         "user" => NsFd::User(nsproxy.user_ns.clone()),

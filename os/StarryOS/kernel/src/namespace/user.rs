@@ -90,6 +90,34 @@ impl UserNamespace {
     }
 }
 
+/// Linux commoncap capability inheritance uses immutable namespace ancestry,
+/// never display IDs, mapping flags, or a procfs ptrace authorization result.
+pub(crate) fn has_namespace_capability(
+    cred: &crate::task::Cred,
+    caller: &Arc<RawSpinLock<UserNamespace>>,
+    target: &Arc<RawSpinLock<UserNamespace>>,
+    capability: u32,
+) -> bool {
+    let caller_level = caller.lock_irqsave().lineage().level;
+    let mut namespace = target.clone();
+    loop {
+        if Arc::ptr_eq(&namespace, caller) {
+            return cred.has_cap(capability);
+        }
+        let lineage = namespace.lock_irqsave().lineage();
+        if lineage.level <= caller_level {
+            return false;
+        }
+        let Some(parent) = lineage.parent else {
+            return false;
+        };
+        if Arc::ptr_eq(&parent, caller) && lineage.owner_uid == cred.euid {
+            return true;
+        }
+        namespace = parent;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

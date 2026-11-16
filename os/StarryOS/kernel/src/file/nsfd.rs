@@ -1,6 +1,5 @@
 use alloc::{borrow::Cow, sync::Arc};
 
-use ax_fs_ng::MountNamespace as FsMountNamespace;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER,
@@ -11,8 +10,7 @@ use super::FileLike;
 use crate::{
     StarryResult,
     namespace::{
-        CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace,
-        UserNamespace, UtNamespace,
+        CgroupNamespace, IpcNamespace, MntNamespace, NetNamespace, UserNamespace, UtNamespace,
     },
     sync::RawSpinLock,
 };
@@ -27,10 +25,7 @@ pub(crate) use object::{NamespaceKind, NamespaceObject};
 pub enum NsFd {
     Uts(Arc<RawSpinLock<UtNamespace>>),
     Ipc(Arc<RawSpinLock<IpcNamespace>>),
-    Mnt {
-        ns: Arc<RawSpinLock<ProxyMntNamespace>>,
-        fs_ns: Arc<FsMountNamespace>,
-    },
+    Mnt(Arc<MntNamespace>),
     Pid(crate::namespace::PidNamespaceRef),
     Net(Arc<RawSpinLock<NetNamespace>>),
     User(Arc<RawSpinLock<UserNamespace>>),
@@ -43,7 +38,7 @@ impl NsFd {
         match self {
             NsFd::Uts(_) => CLONE_NEWUTS,
             NsFd::Ipc(_) => CLONE_NEWIPC,
-            NsFd::Mnt { .. } => CLONE_NEWNS,
+            NsFd::Mnt(_) => CLONE_NEWNS,
             NsFd::Pid(_) => CLONE_NEWPID,
             NsFd::Net(_) => CLONE_NEWNET,
             NsFd::User(_) => CLONE_NEWUSER,

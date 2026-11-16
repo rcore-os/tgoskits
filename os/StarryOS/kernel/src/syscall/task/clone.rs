@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
 
-use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::user::UserContext;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
@@ -14,9 +13,9 @@ use crate::{
     mm::{MmHandle, VmMutPtr, copy_from_kernel},
     sync::RawSpinLock,
     task::{
-        PidIdentity, PidReservation, PidReservationKind, ProcessData, ProcessDataInit,
-        ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadInitialSchedulerState,
-        UserThreadOptions, new_user_task, prepare_user_thread,
+        NamespaceChange, PidIdentity, PidReservation, PidReservationKind, ProcessData,
+        ProcessDataInit, ProcessImage, Tgid, Thread, Tid, TidNumber,
+        UserThreadInitialSchedulerState, UserThreadOptions, new_user_task, prepare_user_thread,
     },
 };
 
@@ -172,7 +171,12 @@ impl CloneArgs {
         if flags.contains(CloneFlags::PIDFD | CloneFlags::DETACHED) {
             return Err(StarryError::InvalidInput);
         }
-        if flags.contains(CloneFlags::NEWNS | CloneFlags::FS) {
+        if flags.contains(CloneFlags::FS)
+            && flags.intersects(CloneFlags::NEWNS | CloneFlags::NEWUSER)
+        {
+            return Err(StarryError::InvalidInput);
+        }
+        if flags.contains(CloneFlags::NEWUSER | CloneFlags::THREAD) {
             return Err(StarryError::InvalidInput);
         }
         // A thread must remain in the PID namespace of its thread group.
@@ -266,9 +270,6 @@ impl CloneArgs {
         let curr = current;
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
-        if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
-            return Err(StarryError::OperationNotPermitted);
-        }
         let (child_policy, child_reset_on_fork) =
             fork_schedule_policy(curr.base_policy(), curr.reset_on_fork())?;
         let child_nice = match child_policy {
@@ -292,10 +293,38 @@ impl CloneArgs {
         };
 
         let parent_pid_ns = curr_thread.active_pid_namespace();
-        let (parent_nsproxy, parent_cred) = {
-            let update = old_proc_data.namespace_update();
-            (update.snapshot(), curr_thread.cred())
-        };
+        let mut namespace_change = NamespaceChange::new(curr_thread)?;
+        let parent_nsproxy = namespace_change.original_proxy().clone_all();
+        let parent_cred = namespace_change.caller_credentials().clone();
+        if !flags.contains(CloneFlags::THREAD) {
+            let nsproxy = namespace_change.proxy_mut();
+            if flags.contains(CloneFlags::NEWUSER) {
+                nsproxy.unshare_user(parent_cred.euid)?;
+            }
+            if flags.contains(CloneFlags::NEWUTS) {
+                nsproxy.unshare_uts();
+            }
+            if flags.contains(CloneFlags::NEWIPC) {
+                nsproxy.unshare_ipc();
+            }
+            if flags.contains(CloneFlags::NEWNET) {
+                nsproxy.unshare_net();
+            }
+        }
+        if flags.intersects(CloneFlags::NEWNS | CloneFlags::NEWCGROUP)
+            && !namespace_change
+                .has_capability(namespace_change.selected_user_namespace(), CAP_SYS_ADMIN)
+        {
+            return Err(StarryError::OperationNotPermitted);
+        }
+        if flags.contains(CloneFlags::FS) {
+            namespace_change.prepare_shared_child()?;
+        } else if flags.contains(CloneFlags::NEWNS) {
+            namespace_change.prepare_namespace_clone()?;
+        } else {
+            namespace_change.prepare_fork();
+        }
+        let (child_fs_binding, mut prepared_nsproxy) = namespace_change.into_child()?;
         let target_pid_ns = if flags.contains(CloneFlags::THREAD) {
             parent_pid_ns.clone()
         } else if flags.contains(CloneFlags::NEWPID) {
@@ -347,33 +376,14 @@ impl CloneArgs {
             }
         };
         let child_cgroup = cgroup_guard.cgroup();
-        let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD))
-            .then(|| -> StarryResult<_> {
-                let mut nsproxy = parent_nsproxy.clone_all();
-                if flags.contains(CloneFlags::NEWUTS) {
-                    nsproxy.unshare_uts();
-                }
-                if flags.contains(CloneFlags::NEWIPC) {
-                    nsproxy.unshare_ipc();
-                }
-                if flags.contains(CloneFlags::NEWNS) {
-                    nsproxy.unshare_mnt();
-                }
-                if flags.contains(CloneFlags::NEWNET) {
-                    nsproxy.unshare_net();
-                }
-                if flags.contains(CloneFlags::NEWUSER) {
-                    nsproxy.unshare_user(parent_cred.euid)?;
-                }
-                if flags.contains(CloneFlags::NEWCGROUP) {
-                    nsproxy.unshare_cgroup(child_cgroup.clone())?;
-                }
-                if flags.contains(CloneFlags::NEWPID) {
-                    nsproxy.pid_ns_for_children = target_pid_ns.clone();
-                }
-                Ok(nsproxy)
-            })
-            .transpose()?;
+        if let Some(nsproxy) = &mut prepared_nsproxy {
+            if flags.contains(CloneFlags::NEWCGROUP) {
+                nsproxy.unshare_cgroup(child_cgroup.clone())?;
+            }
+            if flags.contains(CloneFlags::NEWPID) {
+                nsproxy.pid_ns_for_children = target_pid_ns.clone();
+            }
+        }
 
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
             old_proc_data.clone()
@@ -472,18 +482,7 @@ impl CloneArgs {
                 .clone_from(&crate::file::clone_file_table_scope(&current_fd_table));
         }
 
-        let current_fs_context = ax_fs_ng::vfs::current_fs_context();
-        if flags.contains(CloneFlags::FS) {
-            FS_CONTEXT
-                .scope_mut(&mut scope)
-                .clone_from(&Some(current_fs_context));
-        } else {
-            let mut fs_context = current_fs_context.lock().clone();
-            if flags.contains(CloneFlags::NEWNS) {
-                fs_context.unshare_mount_namespace()?;
-            }
-            *FS_CONTEXT.scope_mut(&mut scope) = Some(fs_context.into_shared());
-        }
+        child_fs_binding.install(&mut scope);
 
         let thr = Thread::new(
             identity.clone(),

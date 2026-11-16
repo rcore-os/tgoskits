@@ -166,7 +166,6 @@ fn writable_remount_preserves_concurrent_file_admission() {
     use axfs_ng_vfs::CachedWriteGuard;
 
     let root = ax_fs_ng::vfs::current_fs_context()
-        .lock()
         .root_dir()
         .filesystem()
         .root_dir();

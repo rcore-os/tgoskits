@@ -2,7 +2,6 @@
 
 use alloc::{string::String, sync::Arc, vec};
 
-use ax_fs_ng::vfs::FS_CONTEXT;
 use axfs_ng_vfs::{LinkOps, LinkTarget, Location, NodeIdentity, VfsError, VfsResult};
 
 use super::{SimpleFile, SimpleFs, require_proc_task};
@@ -112,15 +111,10 @@ impl ProcLink {
                 TargetSnapshot::Location(executable.location().clone())
             }
             ProcLinkKind::Cwd | ProcLinkKind::Root => {
-                let context = thread
-                    .clone_scope_item(&FS_CONTEXT)
-                    .ok_or(VfsError::NotFound)?;
-                let location = {
-                    let context = context.lock();
-                    match self.kind {
-                        ProcLinkKind::Cwd => context.current_dir().clone(),
-                        _ => context.root_dir().clone(),
-                    }
+                let context = thread.snapshot_fs_binding()?.ok_or(VfsError::NotFound)?;
+                let location = match self.kind {
+                    ProcLinkKind::Cwd => context.fs.current_dir().clone(),
+                    _ => context.fs.root_dir().clone(),
                 };
                 TargetSnapshot::Location(location)
             }

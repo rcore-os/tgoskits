@@ -55,7 +55,7 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
 
     let mut selected = None;
     for candidate in paths {
-        let Ok(loc) = current_fs_context().lock().resolve(candidate) else {
+        let Ok(loc) = current_fs_context().resolve(candidate) else {
             continue;
         };
         let mut builder =

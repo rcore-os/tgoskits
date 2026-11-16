@@ -8,7 +8,7 @@ use super::{Cred, Thread, UserTaskRef};
 use crate::{
     StarryError, StarryResult,
     mm::CloneUserRefError,
-    namespace::{ROOT_USER_NS, UserNamespace},
+    namespace::{ROOT_USER_NS, UserNamespace, has_namespace_capability},
     sync::RawSpinLock,
 };
 
@@ -35,6 +35,29 @@ pub(crate) fn authorize_proc_read(current: &UserTaskRef, target: &UserTaskRef) -
     authorize_thread_read(current.as_thread(), target.as_thread())
 }
 
+/// pidfd setns uses real IDs and the permitted capability set, unlike procfs
+/// object links. Keep the two policies explicit even though they share views.
+pub(crate) fn authorize_pidfd_namespace_read(
+    current: &UserTaskRef,
+    target: &UserTaskRef,
+) -> StarryResult<()> {
+    let current = current.as_thread();
+    let target = target.as_thread();
+    if Arc::ptr_eq(&current.proc_data, &target.proc_data) {
+        return Ok(());
+    }
+    let caller = ProcReadCredentials::snapshot(current);
+    let target = ProcReadTarget::snapshot(target)?;
+    authorize_credential_views(&caller, &target, ProcReadMode::Real)
+        .map_err(|_| StarryError::OperationNotPermitted)
+}
+
+#[derive(Clone, Copy)]
+enum ProcReadMode {
+    Filesystem,
+    Real,
+}
+
 fn authorize_thread_read(current: &Thread, target: &Thread) -> StarryResult<()> {
     if Arc::ptr_eq(&current.proc_data, &target.proc_data) {
         return Ok(());
@@ -57,26 +80,7 @@ impl ProcReadCredentials {
     }
 
     fn has_ptrace_cap(&self, target_ns: &UserNamespaceRef) -> bool {
-        // Linux commoncap::cap_capable_helper: identity is the Arc, never the
-        // display ID or the mutable mapping-completeness flag.
-        let caller_level = self.user_ns.lock_irqsave().lineage().level;
-        let mut ns = target_ns.clone();
-        loop {
-            if Arc::ptr_eq(&ns, &self.user_ns) {
-                return self.cred.has_cap(CAP_SYS_PTRACE);
-            }
-            let lineage = ns.lock_irqsave().lineage();
-            if lineage.level <= caller_level {
-                return false;
-            }
-            let Some(parent) = lineage.parent else {
-                return false;
-            };
-            if Arc::ptr_eq(&parent, &self.user_ns) && lineage.owner_uid == self.cred.euid {
-                return true;
-            }
-            ns = parent;
-        }
+        has_namespace_capability(&self.cred, &self.user_ns, target_ns, CAP_SYS_PTRACE)
     }
 }
 
@@ -113,16 +117,28 @@ impl ProcReadTarget {
 }
 
 fn authorize_views(caller: &ProcReadCredentials, target: &ProcReadTarget) -> StarryResult<()> {
+    authorize_credential_views(caller, target, ProcReadMode::Filesystem)
+}
+
+fn authorize_credential_views(
+    caller: &ProcReadCredentials,
+    target: &ProcReadTarget,
+    mode: ProcReadMode,
+) -> StarryResult<()> {
     let cred = &caller.cred;
     let target_cred = &target.credentials.cred;
     let target_ns = &target.credentials.user_ns;
     let ptrace_cap = caller.has_ptrace_cap(target_ns);
-    let ids_match = cred.fsuid == target_cred.uid
-        && cred.fsuid == target_cred.euid
-        && cred.fsuid == target_cred.suid
-        && cred.fsgid == target_cred.gid
-        && cred.fsgid == target_cred.egid
-        && cred.fsgid == target_cred.sgid;
+    let (uid, gid, capabilities) = match mode {
+        ProcReadMode::Filesystem => (cred.fsuid, cred.fsgid, cred.cap_effective),
+        ProcReadMode::Real => (cred.uid, cred.gid, cred.cap_permitted),
+    };
+    let ids_match = uid == target_cred.uid
+        && uid == target_cred.euid
+        && uid == target_cred.suid
+        && gid == target_cred.gid
+        && gid == target_cred.egid
+        && gid == target_cred.sgid;
     if !ids_match && !ptrace_cap {
         return Err(StarryError::PermissionDenied);
     }
@@ -136,9 +152,8 @@ fn authorize_views(caller: &ProcReadCredentials, target: &ProcReadTarget) -> Sta
         }
     }
 
-    // commoncap uses the caller's effective, not permitted set for FSCREDS.
-    if (Arc::ptr_eq(&caller.user_ns, target_ns)
-        && target_cred.cap_permitted & !cred.cap_effective == 0)
+    // commoncap selects effective for FSCREDS and permitted for REALCREDS.
+    if (Arc::ptr_eq(&caller.user_ns, target_ns) && target_cred.cap_permitted & !capabilities == 0)
         || ptrace_cap
     {
         Ok(())

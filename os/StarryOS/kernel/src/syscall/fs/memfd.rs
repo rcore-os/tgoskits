@@ -9,9 +9,9 @@ pub(crate) use crate::file::memfd::{
     check_write_seal_for_shared_file_backend as memfd_check_write_seal_for_shared_file_backend,
     collect_metas_touching_mprotect_range as memfd_collect_metas_touching_mprotect_range,
     on_after_map as memfd_on_after_map,
-    prepare_new_mapping_delta as memfd_prepare_new_mapping_delta,
     prepare_aspace_replace_deltas as memfd_prepare_aspace_replace_deltas,
     prepare_aspace_unmap_deltas as memfd_prepare_aspace_unmap_deltas,
+    prepare_new_mapping_delta as memfd_prepare_new_mapping_delta,
     resync_shared_writable_counts_after_mprotect as memfd_resync_shared_writable_counts_after_mprotect,
 };
 use crate::{
@@ -66,7 +66,7 @@ pub fn sys_memfd_create(
     let tmpfs = tmpfs.ok_or(StarryError::NotFound)?;
 
     let fs_context = current_fs_context();
-    let fs = fs_context.lock();
+    let fs = fs_context;
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
     let cred = current.as_thread().cred();
     // Linux shmem_file_setup creates an executable anonymous inode; the
@@ -98,7 +98,7 @@ pub fn sys_memfd_create(
 }
 
 fn fs_has_dir(path: &str) -> bool {
-    current_fs_context().lock().resolve(path).is_ok()
+    current_fs_context().resolve(path).is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {

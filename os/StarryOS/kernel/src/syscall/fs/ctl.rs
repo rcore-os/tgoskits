@@ -12,12 +12,12 @@ use core::{
 
 use ax_fs_ng::{
     CreateAttributes, CreateContent,
-    vfs::{FsContext, current_fs_context, sync_all_cached_files},
+    vfs::{current_fs_context, sync_all_cached_files},
 };
 use ax_runtime::hal::time::wall_time;
 use axfs_ng_vfs::{
     DeviceId, DirectoryCursor, FileExtentTarget, MetadataUpdate, NodePermission, NodeType,
-    RenameOptions, VfsError, path::Path,
+    PathHandle, RenameOptions, VfsError, path::Path,
 };
 use linux_raw_sys::{
     general::*,
@@ -32,7 +32,7 @@ use crate::{
         resolve_at_with_boundary_checked, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
-    task::{FsCredentialsSnapshot, UserTaskRef},
+    task::{FsCredentialsSnapshot, NamespaceChange, UserTaskRef, current_user_task},
     time::TimeValueLike,
 };
 
@@ -245,21 +245,40 @@ pub fn sys_chdir(current: &UserTaskRef, path: *const c_char) -> StarryResult<isi
     let path = vm_load_path_string(current, path)?;
     debug_fn!("sys_chdir <= path: {path}");
 
-    let fs_context = current_fs_context();
-    let entry = with_fs(AT_FDCWD, |fs| Ok(fs.resolve(path)?))?;
-    let cwd = entry.absolute_path()?.to_string();
-    let mut fs = fs_context.lock();
-    fs.set_current_dir(entry)?;
-    drop(fs);
-    current.as_thread().proc_data.set_cwd_path(cwd);
+    let credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let cred = mutation_credentials(&credentials);
+    let binding = current
+        .as_thread()
+        .snapshot_fs_binding()?
+        .ok_or(StarryError::BadState)?;
+    let entry = binding.fs.resolve_checked(path, |directory| {
+        cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+    })?;
+    entry.check_is_dir()?;
+    cred.check_permission(&entry.metadata()?, NodePermission::OTHER_EXEC)?;
+    let cwd = entry.absolute_path().ok().map(|path| path.to_string());
+    let entry = PathHandle::acquire(entry)?;
+    let mut change = NamespaceChange::new(current.as_thread())?;
+    change.prepare_cwd(entry)?;
+    change.commit()?;
+    if let Some(cwd) = cwd {
+        current.as_thread().proc_data.set_cwd_path(cwd);
+    }
     Ok(0)
 }
 
 pub fn sys_fchdir(dirfd: i32) -> StarryResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
-    let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
-    current_fs_context().lock().set_current_dir(entry)?;
+    let current = current_user_task();
+    let credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let entry = Directory::from_fd(dirfd)?.inner().clone();
+    mutation_credentials(&credentials)
+        .check_permission(&entry.metadata()?, NodePermission::OTHER_EXEC)?;
+    let entry = PathHandle::acquire(entry)?;
+    let mut change = NamespaceChange::new(current.as_thread())?;
+    change.prepare_cwd(entry)?;
+    change.commit()?;
     Ok(0)
 }
 
@@ -282,19 +301,28 @@ pub fn sys_chroot(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
     let path = vm_load_path_string(current, path)?;
     debug!("sys_chroot <= path: {path}");
 
-    let fs_context = current_fs_context();
-    let loc = with_fs(AT_FDCWD, |fs| Ok(fs.resolve(path)?))?;
-    if loc.node_type() != NodeType::Directory {
-        return Err(StarryError::NotADirectory);
+    let credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let cred = mutation_credentials(&credentials);
+    let binding = current
+        .as_thread()
+        .snapshot_fs_binding()?
+        .ok_or(StarryError::BadState)?;
+    let loc = binding.fs.resolve_checked(path, |directory| {
+        cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+    })?;
+    loc.check_is_dir()?;
+    cred.check_permission(&loc.metadata()?, NodePermission::OTHER_EXEC)?;
+    if !credentials.credentials().has_cap(CAP_SYS_CHROOT) {
+        return Err(StarryError::OperationNotPermitted);
     }
-    let replacement = FsContext::new(loc);
-    let root = replacement.root_dir().absolute_path()?.to_string();
-    let cwd = replacement.current_dir().absolute_path()?.to_string();
-    let retired = core::mem::replace(&mut *fs_context.lock(), replacement);
-    drop(retired);
-    let proc_data = current.as_thread().proc_data.clone();
-    proc_data.set_root_path(root);
-    proc_data.set_cwd_path(cwd);
+    let root = loc.absolute_path().ok().map(|path| path.to_string());
+    let path = PathHandle::acquire(loc)?;
+    let mut change = NamespaceChange::new(current.as_thread())?;
+    change.prepare_root(path)?;
+    change.commit()?;
+    if let Some(root) = root {
+        current.as_thread().proc_data.set_root_path(root);
+    }
     Ok(0)
 }
 
@@ -704,8 +732,7 @@ pub fn sys_unlink(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
 
 pub fn sys_getcwd(current: &UserTaskRef, buf: *mut u8, size: usize) -> StarryResult<isize> {
     let cwd = {
-        let fs_context = current_fs_context();
-        let fs = fs_context.lock();
+        let fs = current_fs_context();
         let current_dir = fs.current_dir();
         match current_dir.path_from(fs.root_dir()) {
             Ok(path) => path,
@@ -1265,7 +1292,7 @@ pub fn sys_sync() -> StarryResult<isize> {
             Ok(())
         },
         || {
-            current_fs_context().lock().root_dir().sync(false)?;
+            current_fs_context().root_dir().sync(false)?;
             Ok(())
         },
         || {

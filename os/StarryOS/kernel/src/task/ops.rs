@@ -592,8 +592,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     // Linux exit_fs() precedes zombie publication. A retained runtime task
     // must not keep cwd/root references alive after waitpid can observe exit.
-    let retired_fs =
-        thr.with_current_scope_mut(|scope| ax_fs_ng::vfs::FS_CONTEXT.scope_mut(scope).take());
+    let retired_fs = thr.retire_fs_binding().expect("consistent exit FS binding");
     // Final mount/device teardown may sleep; leave the pinned scope mutation first.
     drop(retired_fs);
 

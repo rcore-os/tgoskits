@@ -8,7 +8,6 @@ use alloc::{
     vec::Vec,
 };
 
-use ax_fs_ng::vfs::FS_CONTEXT;
 use axfs_ng_vfs::Location;
 
 use super::NsFd;
@@ -66,10 +65,7 @@ impl NamespaceKind {
 pub(crate) enum NamespaceObject {
     Uts(Arc<crate::sync::RawSpinLock<crate::namespace::UtNamespace>>),
     Ipc(Arc<crate::sync::RawSpinLock<crate::namespace::IpcNamespace>>),
-    Mnt {
-        ns: Arc<crate::sync::RawSpinLock<crate::namespace::MntNamespace>>,
-        fs_ns: Arc<ax_fs_ng::MountNamespace>,
-    },
+    Mnt(Arc<crate::namespace::MntNamespace>),
     Pid(crate::task::PidNamespaceRef),
     Net(Arc<crate::sync::RawSpinLock<crate::namespace::NetNamespace>>),
     User(Arc<crate::sync::RawSpinLock<crate::namespace::UserNamespace>>),
@@ -188,21 +184,16 @@ impl NamespaceInodes {
 impl NamespaceObject {
     pub(crate) fn for_task(task: &UserTaskRef, kind: NamespaceKind) -> StarryResult<Self> {
         let thread = task.as_thread();
+        if matches!(kind, NamespaceKind::Mnt) {
+            let binding = thread.snapshot_fs_binding()?.ok_or(StarryError::NotFound)?;
+            return Ok(Self::Mnt(binding.mnt));
+        }
         let update = thread.proc_data.namespace_update();
         let proxy = update.snapshot();
         Ok(match kind {
             NamespaceKind::Uts => Self::Uts(proxy.uts_ns.clone()),
             NamespaceKind::Ipc => Self::Ipc(proxy.ipc_ns.clone()),
-            NamespaceKind::Mnt => {
-                let context = thread
-                    .clone_scope_item(&FS_CONTEXT)
-                    .ok_or(StarryError::NotFound)?;
-                let fs_ns = context.lock().mount_namespace().clone();
-                Self::Mnt {
-                    ns: proxy.mnt_ns.clone(),
-                    fs_ns,
-                }
-            }
+            NamespaceKind::Mnt => unreachable!("mount binding selected above"),
             NamespaceKind::Pid => Self::Pid(thread.proc_data.identity().active_namespace()),
             NamespaceKind::Net => Self::Net(proxy.net_ns.clone()),
             NamespaceKind::User => Self::User(proxy.user_ns.clone()),
@@ -214,10 +205,7 @@ impl NamespaceObject {
         match fd {
             NsFd::Uts(ns) => Self::Uts(ns.clone()),
             NsFd::Ipc(ns) => Self::Ipc(ns.clone()),
-            NsFd::Mnt { ns, fs_ns } => Self::Mnt {
-                ns: ns.clone(),
-                fs_ns: fs_ns.clone(),
-            },
+            NsFd::Mnt(ns) => Self::Mnt(ns.clone()),
             NsFd::Pid(ns) => Self::Pid(ns.clone()),
             NsFd::Net(ns) => Self::Net(ns.clone()),
             NsFd::User(ns) => Self::User(ns.clone()),
@@ -229,7 +217,7 @@ impl NamespaceObject {
         match self {
             Self::Uts(ns) => NsFd::Uts(ns),
             Self::Ipc(ns) => NsFd::Ipc(ns),
-            Self::Mnt { ns, fs_ns } => NsFd::Mnt { ns, fs_ns },
+            Self::Mnt(ns) => NsFd::Mnt(ns),
             Self::Pid(ns) => NsFd::Pid(ns),
             Self::Net(ns) => NsFd::Net(ns),
             Self::User(ns) => NsFd::User(ns),
@@ -241,7 +229,7 @@ impl NamespaceObject {
         match self {
             Self::Uts(_) => NamespaceKind::Uts,
             Self::Ipc(_) => NamespaceKind::Ipc,
-            Self::Mnt { .. } => NamespaceKind::Mnt,
+            Self::Mnt(_) => NamespaceKind::Mnt,
             Self::Pid(_) => NamespaceKind::Pid,
             Self::Net(_) => NamespaceKind::Net,
             Self::User(_) => NamespaceKind::User,
@@ -253,9 +241,7 @@ impl NamespaceObject {
         match self {
             Self::Uts(ns) => NamespaceOwner::Uts(Arc::downgrade(ns)),
             Self::Ipc(ns) => NamespaceOwner::Ipc(Arc::downgrade(ns)),
-            // The filesystem namespace owns the actual mount tree. The proxy
-            // namespace reference is retained separately for setns compatibility.
-            Self::Mnt { fs_ns, .. } => NamespaceOwner::Mnt(Arc::downgrade(fs_ns)),
+            Self::Mnt(ns) => NamespaceOwner::Mnt(Arc::downgrade(ns.core())),
             Self::Pid(ns) => NamespaceOwner::Pid(Arc::downgrade(ns)),
             Self::Net(ns) => NamespaceOwner::Net(Arc::downgrade(ns)),
             Self::User(ns) => NamespaceOwner::User(Arc::downgrade(ns)),

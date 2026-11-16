@@ -18,12 +18,12 @@ pub(crate) mod usbfs;
 
 use alloc::{boxed::Box, sync::Arc};
 
+pub use ax_fs_ng::MemoryFs;
 use ax_fs_ng::vfs::{FsContext, current_fs_context};
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{
     DirNodeOps, FileNodeOps, Filesystem, MutationCredentials, NodePermission, WeakDirEntry,
 };
-pub use ax_fs_ng::MemoryFs;
 
 pub use self::{device::*, dir::*, file::*, fs::*};
 use crate::StarryResult;
@@ -87,9 +87,7 @@ fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> StarryResult<()
 pub fn mount_all() -> StarryResult<()> {
     info!("Initialize pseudofs...");
 
-    let fs_context = current_fs_context();
-    // Backend creation and mount propagation must not retain the context mutex.
-    let fs = fs_context.lock().clone();
+    let fs = current_fs_context();
     let usbfs = usbfs::new_usbfs()?;
     let root_mount_device = fs.root_dir().mountpoint().device();
     mount_at(&fs, "/dev", dev::new_devfs(root_mount_device))?;

@@ -1,18 +1,17 @@
 use alloc::sync::Arc;
-use core::ops::DerefMut;
 
-use ax_fs_ng::{FS_CONTEXT, FsContext};
+use ax_fs_ng::FsSharingRequirement;
 use linux_raw_sys::general::{
-    CLONE_FILES, CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID,
-    CLONE_NEWUSER, CLONE_NEWUTS,
+    CAP_SYS_ADMIN, CLONE_FILES, CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
+    CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
 };
 
 use crate::{
-    StarryError,
-    file::{FD_TABLE, FileTable, NsFd, PidFd, get_file_like},
+    StarryError, StarryResult,
+    file::{FileTable, NsFd, PidFd, get_file_like},
     namespace::NsProxy,
     sync::RawSpinRwLock,
-    task::{ProcessNamespaceUpdate, Thread},
+    task::{NamespaceChange, UserTaskRef, authorize_pidfd_namespace_read},
 };
 
 const UNSHARE_NAMESPACE_FLAGS: u32 = CLONE_NEWUTS
@@ -22,340 +21,218 @@ const UNSHARE_NAMESPACE_FLAGS: u32 = CLONE_NEWUTS
     | CLONE_NEWIPC
     | CLONE_NEWUSER
     | CLONE_NEWCGROUP;
-
 const SUPPORTED_NS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS | CLONE_FS | CLONE_FILES;
+const SUPPORTED_SETNS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS;
 
-const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
-
-/// Capabilities are not scoped to user namespaces yet, so only CAP_SYS_ADMIN
-/// held in the initial user namespace may join a namespace.
-fn may_join(thread: &Thread) -> bool {
-    thread.cred().has_cap_sys_admin() && thread.proc_data.namespace_snapshot().in_initial_user_ns()
+// Other namespace installers retain their current initial-userns policy.
+// Mount and user installation use the actual caller/target lineage below.
+fn may_join_other_namespace(change: &NamespaceChange<'_>) -> bool {
+    change.caller().has_cap_sys_admin() && change.original_proxy().in_initial_user_ns()
 }
 
-type SharedFileTable = Arc<RawSpinRwLock<FileTable>>;
-
-struct PreparedUnshare {
-    file_table: Option<SharedFileTable>,
-    fs_context: Option<Arc<ax_block::os::sync::Mutex<FsContext>>>,
-    nsproxy: Option<NsProxy>,
-}
-
-impl PreparedUnshare {
-    fn prepare(
-        flags: u32,
-        thread: &Thread,
-        namespace_update: Option<&ProcessNamespaceUpdate<'_>>,
-    ) -> crate::StarryResult<Self> {
-        let file_table = (flags & CLONE_FILES != 0).then(|| {
-            Arc::new(RawSpinRwLock::new(
-                crate::file::current_fd_table().read().clone(),
-            ))
-        });
-
-        let mut nsproxy = namespace_update
-            .map(ProcessNamespaceUpdate::snapshot)
-            .map(|snapshot| snapshot.clone_for_unshare());
-        if let Some(nsproxy) = &mut nsproxy {
-            if flags & CLONE_NEWUTS != 0 {
-                nsproxy.unshare_uts();
-            }
-            if flags & CLONE_NEWPID != 0 {
-                nsproxy.prepare_pid_ns_for_children(thread.active_pid_namespace());
-            }
-            if flags & CLONE_NEWNET != 0 {
-                nsproxy.unshare_net();
-            }
-            if flags & CLONE_NEWIPC != 0 {
-                nsproxy.unshare_ipc();
-            }
-            if flags & CLONE_NEWUSER != 0 {
-                nsproxy.unshare_user(thread.cred().euid)?;
-            }
-            if flags & CLONE_NEWCGROUP != 0 {
-                nsproxy.unshare_cgroup(thread.proc_data.cgroup_node())?;
-            }
-        }
-
-        let want_mount_namespace = flags & CLONE_NEWNS != 0;
-        let fs_context = if want_mount_namespace || flags & CLONE_FS != 0 {
-            let mut fs_context = ax_fs_ng::vfs::current_fs_context().lock().clone();
-            if want_mount_namespace {
-                fs_context.unshare_mount_namespace()?;
-                if let Some(nsproxy) = &mut nsproxy {
-                    nsproxy.unshare_mnt();
-                }
-            }
-            Some(fs_context.into_shared())
-        } else {
-            None
-        };
-
-        Ok(Self {
-            file_table,
-            fs_context,
-            nsproxy,
-        })
-    }
-
-    fn commit(self, thread: &Thread, namespace_update: Option<ProcessNamespaceUpdate<'_>>) {
-        let Self {
-            file_table,
-            fs_context,
-            nsproxy,
-        } = self;
-
-        let file_table = file_table.map(crate::file::new_file_table_scope);
-        if file_table.is_some() || fs_context.is_some() {
-            let retired = thread.with_current_scope_mut(|scope| {
-                let files = file_table.map(|replacement| {
-                    core::mem::replace(FD_TABLE.scope_mut(scope).deref_mut(), replacement)
-                });
-                let fs =
-                    fs_context.map(|replacement| FS_CONTEXT.scope_mut(scope).replace(replacement));
-                (files, fs)
-            });
-            // Releasing files or the last filesystem reference can perform I/O.
-            drop(retired);
-        }
-        match (nsproxy, namespace_update) {
-            (Some(nsproxy), Some(update)) => update.publish(nsproxy),
-            (None, None) => {}
-            _ => unreachable!("namespace update token and replacement must agree"),
-        }
-    }
-}
-
-/// unshare(2) — disassociate parts of the process execution context.
-pub fn sys_unshare(current: &crate::task::UserTaskRef, flags: usize) -> crate::StarryResult<isize> {
+/// unshare(2): prepare private resources before changing either scope entry.
+pub fn sys_unshare(current: &UserTaskRef, flags: usize) -> StarryResult<isize> {
     if flags & !(SUPPORTED_NS_FLAGS as usize) != 0 {
-        warn!("sys_unshare: unsupported flags {:#x}", flags);
         return Err(StarryError::InvalidInput);
     }
     let flags = flags as u32;
-    let curr = current;
-    let thread = curr.as_thread();
-    let want_privileged_ns = flags & (CLONE_NEWNS | CLONE_NEWCGROUP) != 0;
-
-    if want_privileged_ns && !thread.cred().has_cap_sys_admin() {
-        return Err(StarryError::OperationNotPermitted);
-    }
-
-    // Starry currently stores namespaces per process rather than per Linux
-    // task. Serialize writers while all allocation and namespace cloning occur
-    // outside the short raw publication lock.
-    let namespace_update =
-        (flags & UNSHARE_NAMESPACE_FLAGS != 0).then(|| thread.proc_data.namespace_update());
-    let prepared = PreparedUnshare::prepare(flags, thread, namespace_update.as_ref())?;
-    prepared.commit(thread, namespace_update);
-
-    Ok(0)
-}
-
-/// setns(2) — reassociate the calling thread with an existing namespace.
-///
-/// `fd` is a file descriptor that references a namespace (obtained by
-/// opening `/proc/<pid>/ns/<type>`).  `nstype` is the expected namespace
-/// type (`CLONE_NEW*`); `0` means allow any type.
-///
-/// # Errors
-///
-/// * `EBADF` — `fd` is not a valid file descriptor or not a namespace fd
-/// * `EINVAL` — `nstype` does not match the namespace type, or multi-threaded
-///   process attempts to change PID namespace
-/// * `EPERM` — insufficient privileges (e.g. user namespace restrictions)
-pub fn sys_setns(
-    current: &crate::task::UserTaskRef,
-    fd: u32,
-    nstype: u32,
-) -> crate::StarryResult<isize> {
-    if nstype != 0 && nstype & !SUPPORTED_SETNS_FLAGS != 0 {
-        warn!("sys_setns: unsupported nstype {:#x}", nstype);
-        return Err(StarryError::InvalidInput);
-    }
-
-    let file_like = get_file_like(fd as i32)?;
-
-    // ── 方式一: NsFd (from /proc/<pid>/ns/<type>) ────────────────────
-    if let Some(nsfd) = file_like.downcast_ref::<NsFd>() {
-        return setns_via_nsfd(current, nsfd, nstype);
-    }
-
-    // ── 方式二: PidFd (from pidfd_open) ─────────────────────────────
-    if let Some(pidfd) = file_like.downcast_ref::<PidFd>() {
-        return setns_via_pidfd(current, pidfd, nstype);
-    }
-
-    Err(StarryError::BadFileDescriptor)
-}
-
-/// setns via an NsFd (from `/proc/<pid>/ns/<type>`).
-///
-/// An NsFd always references exactly one namespace type, so `nstype`
-/// must either be `0` or match the fd's type.
-fn setns_via_nsfd(
-    current: &crate::task::UserTaskRef,
-    nsfd: &NsFd,
-    nstype: u32,
-) -> crate::StarryResult<isize> {
-    let fd_type = nsfd.ns_type();
-
-    if nstype != 0 && nstype != fd_type {
-        warn!(
-            "sys_setns: nstype {:#x} does not match fd type {:#x}",
-            nstype, fd_type
-        );
-        return Err(StarryError::InvalidInput);
-    }
-
-    let curr = current;
-    let thread = curr.as_thread();
-    let proc_data = &thread.proc_data;
-    if !may_join(thread) {
-        return Err(StarryError::OperationNotPermitted);
-    }
-
-    // PID namespace: calling process stays in its current PID ns;
-    // the target ns replaces the persistent pid_ns_for_children selection.
-    // Must be single-threaded (Linux check).
-    if fd_type == CLONE_NEWPID {
-        let thread_count = proc_data.proc.threads().len();
-        if thread_count > 1 {
-            warn!(
-                "sys_setns: cannot change PID namespace in multi-threaded process ({} threads)",
-                thread_count
-            );
+    let thread = current.as_thread();
+    let mut change = NamespaceChange::new(thread)?;
+    if flags & CLONE_NEWUSER != 0 {
+        if thread.proc_data.proc.threads().len() > 1 {
             return Err(StarryError::InvalidInput);
         }
+        let euid = change.caller().euid;
+        change.proxy_mut().unshare_user(euid)?;
     }
-    if matches!(nsfd, NsFd::User(_)) {
-        let thread_count = proc_data.proc.threads().len();
-        if thread_count > 1 {
-            warn!(
-                "sys_setns: cannot change user namespace in multi-threaded process ({} threads)",
-                thread_count
-            );
-            return Err(crate::StarryError::OperationNotPermitted);
+    if flags & (CLONE_NEWNS | CLONE_NEWCGROUP) != 0 {
+        let user = change.proxy_mut().user_ns.clone();
+        if !change.has_capability(&user, CAP_SYS_ADMIN) {
+            return Err(StarryError::OperationNotPermitted);
         }
     }
-
-    let update = proc_data.namespace_update();
-    let mut nsproxy = update.snapshot().clone_for_unshare();
-
-    match nsfd {
-        NsFd::Uts(ns) => nsproxy.set_ns_uts(ns.clone()),
-        NsFd::Ipc(ns) => nsproxy.set_ns_ipc(ns.clone()),
-        NsFd::Mnt { ns, fs_ns } => {
-            ax_fs_ng::vfs::current_fs_context()
-                .lock()
-                .set_mount_namespace(fs_ns.clone())?;
-            nsproxy.set_ns_mnt(ns.clone());
-        }
-        NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
-        NsFd::Net(ns) => nsproxy.set_ns_net(ns.clone()),
-        NsFd::Cgroup(ns) => nsproxy.set_ns_cgroup(ns.clone()),
-        NsFd::User(ns) => nsproxy.set_ns_user(ns.clone()),
+    if flags & CLONE_NEWUTS != 0 {
+        change.proxy_mut().unshare_uts();
     }
-    update.publish(nsproxy);
-
-    debug!(
-        "sys_setns: successfully joined namespace type {:#x}",
-        fd_type
-    );
+    if flags & CLONE_NEWPID != 0 {
+        change
+            .proxy_mut()
+            .prepare_pid_ns_for_children(thread.active_pid_namespace());
+    }
+    if flags & CLONE_NEWNET != 0 {
+        change.proxy_mut().unshare_net();
+    }
+    if flags & CLONE_NEWIPC != 0 {
+        change.proxy_mut().unshare_ipc();
+    }
+    if flags & CLONE_NEWCGROUP != 0 {
+        change
+            .proxy_mut()
+            .unshare_cgroup(thread.proc_data.cgroup_node())?;
+    }
+    if flags & CLONE_FILES != 0 {
+        let files: Arc<RawSpinRwLock<FileTable>> = Arc::new(RawSpinRwLock::new(
+            crate::file::current_fd_table().read().clone(),
+        ));
+        change.replace_files(crate::file::new_file_table_scope(files));
+    }
+    if flags & CLONE_NEWNS != 0 {
+        change.prepare_namespace_clone()?;
+    } else if flags & (CLONE_FS | CLONE_NEWUSER) != 0 {
+        // Linux unshare NEWUSER also requests a private fs_struct.
+        change.prepare_fork();
+    }
+    change.commit()?;
     Ok(0)
 }
 
-/// setns via a PidFd (from `pidfd_open(2)`).
-///
-/// `nstype` is a bitmask of `CLONE_NEW*` flags specifying which
-/// namespaces to join from the target process.  Unlike the NsFd path,
-/// this can join multiple namespaces in a single call.
-fn setns_via_pidfd(
-    current: &crate::task::UserTaskRef,
-    pidfd: &PidFd,
-    nstype: u32,
-) -> crate::StarryResult<isize> {
-    if nstype == 0 {
-        warn!("sys_setns: nstype must be non-zero for pidfd");
+/// Namespace descriptors select one type; pidfds accept the supported bitmask.
+/// Descriptor lookup precedes flag validation, matching Linux setns's fdget.
+pub fn sys_setns(current: &UserTaskRef, fd: u32, nstype: u32) -> StarryResult<isize> {
+    let file = get_file_like(fd as i32)?;
+    if let Some(nsfd) = file.downcast_ref::<NsFd>() {
+        if nstype != 0 && nstype != nsfd.ns_type() {
+            return Err(StarryError::InvalidInput);
+        }
+        return setns_via_nsfd(current, nsfd);
+    }
+    if let Some(pidfd) = file.downcast_ref::<PidFd>() {
+        if nstype == 0 || nstype & !SUPPORTED_SETNS_FLAGS != 0 {
+            return Err(StarryError::InvalidInput);
+        }
+        return setns_via_pidfd(current, pidfd, nstype);
+    }
+    Err(StarryError::InvalidInput)
+}
+
+fn prepare_user_join(
+    change: &mut NamespaceChange<'_>,
+    target: Arc<crate::sync::RawSpinLock<crate::namespace::UserNamespace>>,
+    current: &UserTaskRef,
+) -> StarryResult<()> {
+    // userns_install checks identity, thread group, fs shares, then capability.
+    if Arc::ptr_eq(&change.original_proxy().user_ns, &target)
+        || current.as_thread().proc_data.proc.threads().len() > 1
+    {
         return Err(StarryError::InvalidInput);
     }
-    if nstype & !SUPPORTED_SETNS_FLAGS != 0 {
-        warn!("sys_setns: unsupported nstype flags {:#x}", nstype);
-        return Err(StarryError::InvalidInput);
-    }
-
-    let target_proc = pidfd.process_data()?;
-    let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
-        let task = pidfd
-            .process_identity()
-            .live_task()
-            .ok_or(StarryError::NoSuchProcess)?;
-        let fs_context = task
-            .as_thread()
-            .clone_scope_item(&FS_CONTEXT)
-            .ok_or(StarryError::NoSuchProcess)?;
-        Some(fs_context.lock().mount_namespace().clone())
-    } else {
-        None
-    };
-    let target_nsproxy = target_proc.namespace_snapshot();
-
-    let curr = current;
-    let thread = curr.as_thread();
-    let proc_data = &thread.proc_data;
-    if !may_join(thread) {
+    change.require_sole_owner()?;
+    if !change.has_capability(&target, CAP_SYS_ADMIN) {
         return Err(StarryError::OperationNotPermitted);
     }
+    change.proxy_mut().set_ns_user(target);
+    Ok(())
+}
 
-    // Check multi-threaded restrictions before making any changes.
-    let thread_count = proc_data.proc.threads().len();
-    if nstype & CLONE_NEWPID != 0 && thread_count > 1 {
-        warn!(
-            "sys_setns: cannot change PID namespace in multi-threaded process ({} threads)",
-            thread_count
-        );
-        return Err(StarryError::InvalidInput);
-    }
-    if nstype & CLONE_NEWUSER != 0 && thread_count > 1 {
-        warn!(
-            "sys_setns: cannot change user namespace in multi-threaded process ({} threads)",
-            thread_count
-        );
+fn setns_via_nsfd(current: &UserTaskRef, nsfd: &NsFd) -> StarryResult<isize> {
+    let thread = current.as_thread();
+    let mut change = NamespaceChange::new(thread)?;
+    if !matches!(nsfd, NsFd::Mnt(_) | NsFd::User(_)) && !may_join_other_namespace(&change) {
         return Err(StarryError::OperationNotPermitted);
     }
+    match nsfd {
+        NsFd::User(ns) => prepare_user_join(&mut change, ns.clone(), current)?,
+        NsFd::Mnt(ns) => {
+            change.prepare_mount_join(ns.clone(), FsSharingRequirement::SoleOwner)?;
+        }
+        NsFd::Uts(ns) => change.proxy_mut().set_ns_uts(ns.clone()),
+        NsFd::Ipc(ns) => change.proxy_mut().set_ns_ipc(ns.clone()),
+        NsFd::Pid(ns) => {
+            if thread.proc_data.proc.threads().len() > 1 {
+                return Err(StarryError::InvalidInput);
+            }
+            change.proxy_mut().set_ns_pid(ns.clone());
+        }
+        NsFd::Net(ns) => change.proxy_mut().set_ns_net(ns.clone()),
+        NsFd::Cgroup(ns) => change.proxy_mut().set_ns_cgroup(ns.clone()),
+    }
+    change.commit()?;
+    Ok(0)
+}
 
-    let update = proc_data.namespace_update();
-    let mut nsproxy = update.snapshot().clone_for_unshare();
+struct TargetNamespaces {
+    proxy: Option<Arc<NsProxy>>,
+    binding: Option<crate::task::FsBindingSnapshot>,
+    pid: crate::namespace::PidNamespaceRef,
+}
 
-    if nstype & CLONE_NEWUTS != 0 {
-        nsproxy.set_ns_uts(target_nsproxy.uts_ns.clone());
+impl TargetNamespaces {
+    fn snapshot(target: &UserTaskRef, flags: u32) -> StarryResult<Self> {
+        let thread = target.as_thread();
+        // Construct the owning carrier before the writer so failure drops the
+        // writer first; the same gate covers proxy and paired FS selection.
+        let mut snapshot = Self {
+            proxy: None,
+            binding: None,
+            pid: thread.active_pid_namespace(),
+        };
+        let update = thread.proc_data.namespace_update();
+        snapshot.proxy = Some(update.snapshot());
+        if flags & CLONE_NEWNS != 0 {
+            snapshot.binding = thread.snapshot_fs_binding_under(&update)?;
+            if snapshot.binding.is_none() {
+                return Err(StarryError::NoSuchProcess);
+            }
+        }
+        drop(update);
+        Ok(snapshot)
     }
-    if nstype & CLONE_NEWIPC != 0 {
-        nsproxy.set_ns_ipc(target_nsproxy.ipc_ns.clone());
-    }
-    if nstype & CLONE_NEWNS != 0 {
-        ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .set_mount_namespace(target_mnt_fs_ns.expect("target mount namespace captured"))?;
-        nsproxy.set_ns_mnt(target_nsproxy.mnt_ns.clone());
-    }
-    if nstype & CLONE_NEWPID != 0 {
-        nsproxy.set_ns_pid(target_proc.identity().active_namespace());
-    }
-    if nstype & CLONE_NEWNET != 0 {
-        nsproxy.set_ns_net(target_nsproxy.net_ns.clone());
-    }
-    if nstype & CLONE_NEWUSER != 0 {
-        nsproxy.set_ns_user(target_nsproxy.user_ns.clone());
-    }
-    if nstype & CLONE_NEWCGROUP != 0 {
-        nsproxy.set_ns_cgroup(target_nsproxy.cgroup_ns.clone());
-    }
-    update.publish(nsproxy);
+}
 
-    debug!(
-        "sys_setns: successfully joined namespaces {:#x} via pidfd",
-        nstype
-    );
+fn setns_via_pidfd(current: &UserTaskRef, pidfd: &PidFd, flags: u32) -> StarryResult<isize> {
+    let target_task = pidfd
+        .process_identity()
+        .live_task()
+        .ok_or(StarryError::NoSuchProcess)?;
+    authorize_pidfd_namespace_read(current, &target_task)?;
+    let target = TargetNamespaces::snapshot(&target_task, flags)?;
+    let proxy = target.proxy.as_ref().expect("selected target proxy");
+    let thread = current.as_thread();
+    // The target's gates have ended before entering this caller's writer.
+    let mut change = NamespaceChange::new(thread)?;
+
+    // validate_nsset installs USER, MNT, UTS, IPC, PID, CGROUP, NET in order.
+    if flags & CLONE_NEWUSER != 0 {
+        prepare_user_join(&mut change, proxy.user_ns.clone(), current)?;
+    }
+    if flags & CLONE_NEWNS != 0 {
+        let sharing = if flags == CLONE_NEWNS {
+            FsSharingRequirement::SoleOwner
+        } else {
+            FsSharingRequirement::AnyOwner
+        };
+        change.prepare_mount_join(
+            target
+                .binding
+                .as_ref()
+                .expect("selected mount binding")
+                .mnt
+                .clone(),
+            sharing,
+        )?;
+    }
+    let other_flags = flags & !(CLONE_NEWUSER | CLONE_NEWNS);
+    if other_flags != 0 && !may_join_other_namespace(&change) {
+        return Err(StarryError::OperationNotPermitted);
+    }
+    if flags & CLONE_NEWUTS != 0 {
+        change.proxy_mut().set_ns_uts(proxy.uts_ns.clone());
+    }
+    if flags & CLONE_NEWIPC != 0 {
+        change.proxy_mut().set_ns_ipc(proxy.ipc_ns.clone());
+    }
+    if flags & CLONE_NEWPID != 0 {
+        if thread.proc_data.proc.threads().len() > 1 {
+            return Err(StarryError::InvalidInput);
+        }
+        change.proxy_mut().set_ns_pid(target.pid.clone());
+    }
+    if flags & CLONE_NEWCGROUP != 0 {
+        change.proxy_mut().set_ns_cgroup(proxy.cgroup_ns.clone());
+    }
+    if flags & CLONE_NEWNET != 0 {
+        change.proxy_mut().set_ns_net(proxy.net_ns.clone());
+    }
+    change.commit()?;
     Ok(0)
 }

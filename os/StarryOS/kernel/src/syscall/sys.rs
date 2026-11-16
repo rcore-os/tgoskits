@@ -974,7 +974,7 @@ pub fn sys_getrandom(
     let len = len.min(GETRANDOM_MAX_LEN);
     (buf as usize).checked_add(len).ok_or(Errno::EFAULT)?;
 
-    let f = ax_fs_ng::vfs::current_fs_context().lock().resolve(path)?;
+    let f = ax_fs_ng::vfs::current_fs_context().resolve(path)?;
     let file = f.entry().as_file()?;
     let mut kbuf = [0u8; GETRANDOM_CHUNK_SIZE];
     let mut written = 0;
