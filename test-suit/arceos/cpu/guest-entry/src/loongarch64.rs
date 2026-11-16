@@ -30,11 +30,23 @@ core::arch::global_asm!(
     "rdtime.d $a0, $zero",
     "bltu $a0, $a1, 2b",
     "hvcl 0",
+    ".global cpu_test_lvz_timer_guest",
+    "cpu_test_lvz_timer_guest:",
+    "csrwr $a0, 0x41",
+    "hvcl 0",
+    "hvcl 0",
+    ".global cpu_test_lvz_timer_ack_guest",
+    "cpu_test_lvz_timer_ack_guest:",
+    "li.d $a0, 1",
+    "csrwr $a0, 0x44",
+    "hvcl 0",
 );
 
 unsafe extern "C" {
     fn cpu_test_lvz_guest();
     fn cpu_test_lvz_busy_guest();
+    fn cpu_test_lvz_timer_guest();
+    fn cpu_test_lvz_timer_ack_guest();
 }
 
 fn direct_alias(address: VirtAddr) -> VirtAddr {
@@ -269,6 +281,60 @@ pub fn run() {
                 page.0[0] as usize,
                 "guest reused a retired nested mapping"
             );
+        }
+        // A guest timer must keep its deadline across frequent world switches,
+        // including time spent in the host. Guest IE stays masked so the test
+        // can inspect the pending latch without installing a guest IRQ handler.
+        let timer_offset = cpu_test_lvz_timer_guest as *const () as usize
+            - cpu_test_lvz_guest as *const () as usize;
+        let period = (ax_cpu::timer::counter_frequency() / 100) & !3;
+        for periodic in [false, true] {
+            state.context.sepc = guest_address.as_usize() + timer_offset;
+            state.context.gcsr_era = state.context.sepc;
+            state
+                .context
+                .set_a0(period as usize | 1 | (usize::from(periodic) << 1));
+            let exit = state.run(1, state_address).unwrap();
+            assert_eq!((exit.status >> 16) & 0x3f, 0x17);
+            state.context.advance_guest_pc();
+            let sample_pc = state.context.sepc;
+            let started = ax_cpu::timer::read_counter();
+            let mut next_entry = started;
+            while ax_cpu::timer::read_counter().wrapping_sub(started) < period * 2 {
+                while ax_cpu::timer::read_counter().wrapping_sub(next_entry) < period / 8 {
+                    core::hint::spin_loop();
+                }
+                next_entry = ax_cpu::timer::read_counter();
+                state.context.sepc = sample_pc;
+                state.context.gcsr_era = sample_pc;
+                let exit = state.run(1, state_address).unwrap();
+                assert_eq!((exit.status >> 16) & 0x3f, 0x17);
+            }
+            assert_ne!(
+                state.context.gcsr_estat & (1 << 11),
+                0,
+                "guest timer deadline must survive repeated entries; periodic={periodic}"
+            );
+            if !periodic {
+                let ack_offset = cpu_test_lvz_timer_ack_guest as *const () as usize
+                    - cpu_test_lvz_guest as *const () as usize;
+                state.context.sepc = guest_address.as_usize() + ack_offset;
+                state.context.gcsr_era = state.context.sepc;
+                state.run(1, state_address).unwrap();
+                state.context.sepc = state.context.host_era;
+                state.context.gcsr_era = state.context.sepc;
+                state.run(1, state_address).unwrap();
+                assert_eq!(
+                    state.context.gcsr_estat & (1 << 11),
+                    0,
+                    "an acknowledged one-shot must not fire again on re-entry"
+                );
+            }
+            registers::write_guest_csr::<0x41>(0);
+            registers::write_guest_csr::<0x44>(1);
+            state.context.gcsr_tcfg = 0;
+            state.context.gcsr_tval = 0;
+            state.context.gcsr_estat &= !(1 << 11);
         }
         // A guest with interrupts masked must still be preemptible by the
         // host clockevent. The finite loop exits by HVCL on a broken entry,

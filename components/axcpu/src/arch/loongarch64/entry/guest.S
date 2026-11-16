@@ -162,8 +162,6 @@
     st.d    $t0, $sp, {gcsr_misc}
     gcsrrd  $t0, 0x4
     st.d    $t0, $sp, {gcsr_ectl}
-    gcsrrd  $t0, 0x5
-    st.d    $t0, $sp, {gcsr_estat}
     gcsrrd  $t0, 0x6
     st.d    $t0, $sp, {gcsr_era}
     gcsrrd  $t0, 0x7
@@ -240,11 +238,16 @@
     st.d    $t0, $sp, {gcsr_tid}
     gcsrrd  $t0, 0x41
     st.d    $t0, $sp, {gcsr_tcfg}
-    /*
-     * Keep the software timer's logical TVAL in the Rust context. QEMU-LVZ
-     * reuses GCSR_TVAL as a pause/resume remaining-ticks value while the guest
-     * is stopped, so snapshotting it here pollutes the emulated guest timer.
-     */
+    rdtime.d $t0, $zero
+    st.d    $t0, $sp, {timer_counter}
+    gcsrrd  $t0, 0x42
+    st.d    $t0, $sp, {gcsr_tval}
+    // The register bank is borrowed only while this guest executes.
+    gcsrwr  $zero, 0x41
+    // Capture TI after stopping the countdown: expiration may have raced with
+    // the earlier register saves or the TVAL sample.
+    gcsrrd  $t0, 0x5
+    st.d    $t0, $sp, {gcsr_estat}
     gcsrrd  $t0, 0x43
     st.d    $t0, $sp, {gcsr_cntc}
     gcsrrd  $t0, 0x44
@@ -338,6 +341,10 @@
     gcsrwr  $t0, 0x3
     ld.d    $t0, $sp, {gcsr_ectl}
     gcsrwr  $t0, 0x4
+    // Retire the previous bank's timer before restoring this guest's TI.
+    gcsrwr  $zero, 0x41
+    li.d    $t0, 1
+    gcsrwr  $t0, 0x44
     gcsrrd  $t1, 0x5
     li.d    $t2, 0x0fff
     and     $t1, $t1, $t2
@@ -419,16 +426,29 @@
     ld.d    $t0, $sp, {gcsr_tid}
     gcsrwr  $t0, 0x40
     ld.d    $t0, $sp, {gcsr_tcfg}
+    move    $t1, $t0
     gcsrwr  $t0, 0x41
-    /*
-     * QEMU-LVZ stores GCSR_TVAL as remaining ticks while guest mode is
-     * paused.  Rewriting it on every VM entry re-bases the relative guest
-     * timer and can keep pushing one-shot deadlines into the future.
-     */
+    andi    $t1, $t1, 1
+    beqz    $t1, .Lguest_timer_restored
+    // Rust has deducted host time from the saved remaining ticks. Restoring
+    // TCFG alone would restart the full period on every world switch.
+    ld.d    $t0, $sp, {gcsr_tval}
+    move    $t2, $t0
+    gcsrwr  $t0, 0x42
+    ld.d    $t0, $sp, {gcsr_tcfg}
+    andi    $t1, $t0, 2
+    bnez    $t1, .Lguest_timer_restored
+    bgeu    $t0, $t2, .Lguest_timer_restored
+    ld.d    $t0, $sp, {gcsr_estat}
+    andi    $t0, $t0, 0x800
+    bnez    $t0, .Lguest_timer_restored
+    // Reloading a very short, already acknowledged one-shot can transiently
+    // raise TI before TVAL receives its expired sentinel. It is not a new IRQ.
+    li.d    $t0, 1
+    gcsrwr  $t0, 0x44
+.Lguest_timer_restored:
     ld.d    $t0, $sp, {gcsr_cntc}
     gcsrwr  $t0, 0x43
-    ld.d    $t0, $sp, {gcsr_ticlr}
-    gcsrwr  $t0, 0x44
     ld.d    $t0, $sp, {gcsr_llbctl}
     gcsrwr  $t0, 0x60
     ld.d    $t0, $sp, {gcsr_tlbrentry}

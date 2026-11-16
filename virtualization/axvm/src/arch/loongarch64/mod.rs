@@ -513,11 +513,20 @@ impl ArchOps for LoongArch64Arch {
         _entry: &Self::Entry,
         wait: &VcpuWait,
     ) -> AxVmResult {
+        vcpu.backend
+            .arm_idle_timer()
+            .map_err(|error| AxVmError::vcpu("arm LoongArch idle timer", error))?;
         // The predicate only reads this vCPU's own pending-interrupt state, so
         // the backend borrow is hoisted out and shared by the `Fn` closure.
         let backend = vcpu;
         wait.wait_until(|| backend.has_enabled_pending_interrupt());
-        Ok(())
+        // Retire the producer before re-entry, including an external wake or
+        // stop request racing with the deadline. Already-published TI remains
+        // in the canonical run queue and is consumed by the next attempt.
+        backend
+            .backend
+            .quiet_timer()
+            .map_err(|error| AxVmError::vcpu("retire LoongArch idle timer", error))
     }
 }
 

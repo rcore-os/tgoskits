@@ -53,6 +53,8 @@ core::arch::global_asm!(
     gcsr_save15 = const offset_of!(GuestContext, gcsr_save15),
     gcsr_tid = const offset_of!(GuestContext, gcsr_tid),
     gcsr_tcfg = const offset_of!(GuestContext, gcsr_tcfg),
+    gcsr_tval = const offset_of!(GuestContext, gcsr_tval),
+    timer_counter = const offset_of!(GuestContext, timer_counter),
     gcsr_cntc = const offset_of!(GuestContext, gcsr_cntc),
     gcsr_ticlr = const offset_of!(GuestContext, gcsr_ticlr),
     gcsr_llbctl = const offset_of!(GuestContext, gcsr_llbctl),

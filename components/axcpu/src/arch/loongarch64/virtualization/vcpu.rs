@@ -263,6 +263,7 @@ impl Vcpu {
                 (1 << 4) | (2 << 20),
             );
             super::invalidate_guest_translations();
+            self.context.update_timer();
             run_guest(state_address.as_usize() as *mut core::ffi::c_void);
         }
         // IsTLBR is cleared before entry and saved on exit, so it identifies a

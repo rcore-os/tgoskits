@@ -396,6 +396,24 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
                 != 0
     }
 
+    /// Arms the existing run-bound producer while IDLE parks the vCPU task.
+    /// The CPU entry owns the hardware timer only while the guest executes.
+    pub(crate) fn arm_idle_timer(&mut self) -> LoongArchVcpuResult {
+        self.guest_timer.cancel()?;
+        let ctx = &mut self.machine.context;
+        ctx.update_timer();
+        let period = ctx.gcsr_tcfg & !3;
+        if ctx.gcsr_tcfg & 1 == 0
+            || ctx.gcsr_estat & (1 << 11) != 0
+            || (ctx.gcsr_tcfg & 2 == 0 && ctx.gcsr_tval > period)
+        {
+            return Ok(());
+        }
+        let deadline =
+            H::current_time_nanos().saturating_add(H::ticks_to_nanos(ctx.gcsr_tval as u64));
+        self.guest_timer.arm(deadline, self.vm_id, self.vcpu_id)
+    }
+
     /// Cancels the outstanding guest timer in task context.
     ///
     /// This is the explicit shutdown step: it must run on the task-phase owner,

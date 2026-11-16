@@ -476,6 +476,19 @@ timer 退出。旧入口必然执行到 HVCL 并在退出类别断言失败；�
 同一 guest-entry 用例还应在取消 timer 前核对 live TI，并屏蔽宿主 timer 线后
 验证 `HVC ECODE + TI pending` 仍为同步退出，最后由 timer 所有者清理。
 
+客户机长定时器在频繁宿主退出后不再唤醒时，核对 `TCFG/TVAL` 成对保存、
+退出采样的 root 常量计数器及宿主经过 ticks。只恢复 `TCFG` 会反复重装初值；
+只恢复未扣除宿主时间的 `TVAL` 也会推迟截止时间。保留已确认的一次性过期
+哨兵，周期过期按原相位结转，不能在每次重入清掉属于客户机的 pending TI。
+进入先停旧硬件计数器并清旧 TI，再恢复当前客户机。`cpu/guest-entry` 以短于
+客户机周期的间隔反复 HVCL，验证到期与确认后不重新触发。
+
+`IDLE` 让 vCPU 任务休眠时，CPU 保存并停用的硬件定时器不能自行唤醒宿主。
+AxVM 在 `wait_for_event()` 的任务上下文以保存的剩余时间武装现有 run-bound
+宿主注册；回调只发布 TI 并唤醒同一 run。等待因截止、外部中断或停止返回后，
+先通过完成屏障撤销注册，再允许下一次硬件进入；已发布的 TI 仍由 run 队列拥有。
+不在 CPU 绑定、关抢占或 IRQ-off 路径调用注册与取消服务，不用轮询代替休眠。
+
 LVZ 缺目录不能直接把旧 `ESTAT/BADI` 当成本次访问返回 Rust。按
 [`design/loongarch-lvz-refill-exit.md`](../../../../design/loongarch-lvz-refill-exit.md)
 清零两个 `TLBRELO`，保留 fault VPPN 并设置 4 KiB PS，经 `TLBFILL/ERTN`

@@ -544,6 +544,7 @@ fn register_guest_timer<H: LoongArchHostOps>(
     }
 
     let init_ticks = guest_timer_init_ticks(ctx);
+    ctx.timer_counter = ax_cpu::timer::read_counter();
     if init_ticks == 0 {
         ctx.gcsr_tval = 0;
         ctx.gcsr_estat |= TIMER_BIT;
@@ -591,6 +592,7 @@ fn write_guest_timer_csr<H: LoongArchHostOps>(
         }
         CSR_TVAL => {
             ctx.gcsr_tval = value;
+            ctx.timer_counter = ax_cpu::timer::read_counter();
         }
         CSR_TICLR => {
             ctx.gcsr_ticlr = value;

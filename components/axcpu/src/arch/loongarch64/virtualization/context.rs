@@ -101,6 +101,11 @@ pub struct GuestContext {
     pub gcsr_tcfg: usize,
     /// Saved `gcsr_tval` register value.
     pub gcsr_tval: usize,
+    /// Root constant-counter sample paired with `gcsr_tval`.
+    ///
+    /// Entry subtracts elapsed host ticks before restoring the countdown.
+    /// An emulator replacing `gcsr_tval` must also resample this counter.
+    pub timer_counter: u64,
     /// Saved `gcsr_cntc` register value.
     pub gcsr_cntc: usize,
     /// Saved `gcsr_ticlr` register value.
@@ -176,6 +181,40 @@ pub struct GuestContext {
 }
 
 impl GuestContext {
+    /// Accounts for elapsed root constant-counter ticks in the saved timer.
+    ///
+    /// The guest must be stopped. Due timers set the saved TI bit; periodic
+    /// timers retain their phase, and expired one-shots stay expired.
+    pub fn update_timer(&mut self) {
+        let counter = crate::timer::read_counter();
+        let elapsed = if self.timer_counter == 0 {
+            0
+        } else {
+            counter.wrapping_sub(self.timer_counter)
+        };
+        self.timer_counter = counter;
+        if self.gcsr_tcfg & 1 == 0 {
+            return;
+        }
+        let period = self.gcsr_tcfg & !3;
+        let periodic = self.gcsr_tcfg & 2 != 0;
+        // An expired one-shot retains the all-ones TVAL sentinel even after
+        // its interrupt has been acknowledged; it must never be re-armed.
+        if !periodic && self.gcsr_tval > period {
+            return;
+        }
+        if elapsed < self.gcsr_tval as u64 {
+            self.gcsr_tval -= elapsed as usize;
+        } else {
+            self.gcsr_estat |= 1 << 11;
+            self.gcsr_tval = if periodic && period != 0 {
+                period - ((elapsed - self.gcsr_tval as u64) % period as u64) as usize
+            } else {
+                0
+            };
+        }
+    }
+
     /// Sets the first argument register.
     pub fn set_argument(&mut self, arg: usize) {
         self.x[4] = arg;
