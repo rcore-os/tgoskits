@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-11-17T02:34:26.723050+08:00",
+  "recorded_at": "2026-11-17T03:46:02.223678+08:00",
   "repository": "rcore-os/tgoskits",
   "pull_request": 2800,
   "scope": "Owner/Snapshot production migration, paired Kernel FS/MNT bindings, open paths and mappings; syscall compatibility remains unverified",
@@ -1482,6 +1482,125 @@
       "FAT 仍拒绝真实活跃脱链及暂存；计数只排除确知的 guard 退休引用，不能把任意 Overlay 包装器当成无活跃用户。",
       "目录批次限制返回对象大小；原生 MemoryFs 内部扫描和 Overlay 合并名称表仍需同环境性能与资源验证。",
       "既有 fd 接受权限后的原生绑定、统一 lookup、proc、F1-F8、最终独立审查与最终 HEAD CI 仍未完成。"
+    ]
+  },
+  "anonymous_staging_and_xattrs": {
+    "source_commit": "2b8e4b20f13691cba50fd5612546ed4ac5735d54",
+    "implemented": [
+      "Factory-owned SealedStaging.detach consumes a fresh observed native unlink under the original Context, validates expected identity and keeps the actual orphan backing.",
+      "Detached cleanup preserves any replacement at the old work name. Stage copy_xattrs copies the native source capability before metadata restoration.",
+      "The existing complete staging journey moved to its own integration process and real page provider; it retains all existing predicates and now checks xattrs, orphan cache I/O, nlink zero and both install/detach replacement refusal."
+    ],
+    "behavioral_red": {
+      "source_commit": "fedd310618bcb3d1fce535ac1ece083e01b9999e",
+      "pushed": false,
+      "mutation": "Remove only the expected native identity check from SealedStaging.detach.",
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-orphan-red.log",
+        "sha256": "d6501ca8250877769d893aa4c358a9c1694d3ad9ce5d955d5d980ef78ee8d1b2",
+        "bytes": 277410
+      },
+      "result": "All five AX profiles fail staging.rs:320: actual (Applied, Ok(())); expected (Unchanged, Err(BadState)). Independent Kernel failures remain the same five old Overlay methods."
+    },
+    "green": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-orphan-green.log",
+        "sha256": "8a83097ce4b1832cf0c7fc2d2ddc3c10dd1ae5f67ce8f48cbb806149e7c720f3",
+        "bytes": 274560
+      },
+      "result": "All five AX staging profiles pass; VFS 71 unit tests plus integration/doc tests pass. Selected 18 packages, passed 17, failed starry-kernel with five E0407."
+    },
+    "clippy": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/staging-orphan-clippy-verified.log",
+        "sha256": "282625bd30b024abc9ae2dd701be546a0d525a21e8b077fbc19520bee283ec1e",
+        "bytes": 4178
+      },
+      "result": "VFS/AX: 2 packages, 9 checks passed."
+    },
+    "fixture_errors_not_behavioral_red": [
+      "Cleanup helper visibility E0624.",
+      "open_loc_with_credentials exists only with vfs; the same native cached backend is used in all five profiles.",
+      "IoBuf write requires a slice."
+    ],
+    "limitations": [
+      "Native MemoryFs component evidence does not prove Overlay syscall behavior.",
+      "Ext4 staging factory journey remains unverified; FAT staging remains unsupported.",
+      "No new kernel boot/test entry was added."
+    ]
+  },
+  "overlay_metadata_copy_up": {
+    "source_commit": "45b68934f72cc4f152ad223b7dad401f14c70d24",
+    "source_files": {
+      "fs/axfs-ng-vfs/src/metadata/mod.rs": "59236332337a963d6be3e27fcd71253a9054dbf85de83b7ae9dd1a28d1edcd17",
+      "os/StarryOS/kernel/src/pseudofs/overlay/mod.rs": "85fa1c3f1bf982568d36924feb4af87d26fe38ebdac1b0b04678b898b94ba719",
+      "os/StarryOS/kernel/src/pseudofs/overlay/read.rs": "00f890f5c64f84aa37f61e050ee0838de9b2a96e3b59e19e9b0e1008673fb140",
+      "os/StarryOS/kernel/src/pseudofs/overlay/copy_up.rs": "7c77272141af758286b7017f083a72d8beaca72a0b5ac3075cff857a6fb52705",
+      "os/StarryOS/kernel/src/pseudofs/overlay/metadata.rs": "15f0307ba3ea84c0ca7674d6db0aac0a892921b20d2bcf5d6e91777f67b2dadb"
+    },
+    "implemented": [
+      "Both Overlay node kinds now dispatch MetadataRequest through the actual owner gate and fixed current-inode authorizer; an existing upper receives the preserved accepted intention.",
+      "Current alias snapshots select command-owned preparations for missing ancestors. Hidden work is prepared after attempts finish; each command creates a private 0700 directory and clears inherited SGID before copying data/xattrs and restoring metadata.",
+      "A fresh authorization applies the intention to the hidden final target before installing current ancestors or detaching an orphan. Known Applied bindings survive completion errors; publication prevents root Retry.",
+      "Installed metadata is read from the actual owner rather than synthesizing link count or timestamps. Explicit identity-checked cleanup preserves first errors and diagnoses residual hidden work."
+    ],
+    "std": {
+      "command": "PATH=<isolated e2fsprogs>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 2b8e4b20f13691cba50fd5612546ed4ac5735d54",
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/overlay-metadata-std.log",
+        "sha256": "1cc3167b45ffac0061dd41c2cab06d6e89b67173621290f3bc42aa81a82a2834",
+        "bytes": 275686
+      },
+      "result": "Selected 18 packages, passed 17, failed only starry-kernel with five old Overlay E0407. All five existing AX staging journeys pass again."
+    },
+    "vfs_clippy": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/overlay-metadata-vfs-clippy.log",
+        "sha256": "e25f08717b92ae2c3feb94e33453d850a97c858a35a2fbc0731522be71b6df65",
+        "bytes": 1896
+      },
+      "result": "3 checks passed."
+    },
+    "kernel_clippy": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/overlay-metadata-kernel-clippy-final.log",
+        "sha256": "ce9c73168c5e791cc0cd0727803f4c6dfc65255f6be83707f182595c97b2af36",
+        "bytes": 3365
+      },
+      "result": "First aarch64 bare base profile diagnoses only the five old DirNodeOps methods; failed, 71 checks unexecuted. This is not whole-crate compilation or runtime evidence."
+    },
+    "ci_investigation": {
+      "head": "018e350d652bdfc69a6feee766375a0b910fd5aa",
+      "run": "https://github.com/rcore-os/tgoskits/actions/runs/43930453445",
+      "failed_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-directory-head-failed.log",
+        "sha256": "f6b129edbdaf27cd3459cc4dc83e5ad643ee4f027ed0847709653c7313ba2dba",
+        "bytes": 2652668
+      },
+      "compiler_result": "All reported compiler failures are the same five Kernel Overlay E0407.",
+      "independent_failure": "AArch64 task-stack-guard-page faults at the guard address but lacks its expected guard diagnostic in CI; root cause unconfirmed.",
+      "local_probe": {
+        "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch aarch64 --test-group rust --test-case task-stack-guard-page",
+        "plan": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-aarch64-plan.json",
+          "sha256": "c288525c2f832ef6f5802902f7acff92a2f6ec0fbf9c141d568416c216a0c1ea",
+          "bytes": 3866
+        },
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/stack-guard-aarch64-investigation.log",
+          "sha256": "271ee67c1a306112d0304a28f850d05fa5bc98757c2b2ef518474a0f9bf0c7df",
+          "bytes": 15085
+        },
+        "result": "1/1 passed without source/matcher changes. This does not prove a fix for the CI observation."
+      }
+    },
+    "limitations": [
+      "No real Overlay execution while the five old namespace methods still prevent Kernel compilation; this is production wiring awaiting behavioral validation.",
+      "All namespace/data/open writers and remaining raw metadata consumers still need the common owner boundary.",
+      "Nested copy sources are rejected before hidden work; typed attribute enumeration and complete support remain pending.",
+      "FAT closed-holder protocol, private-work collision/recovery policy, all overlap/in-use traps and Ext4 staging factory behavior still need completion and proof.",
+      "Current ancestry, copied ancestors, anonymous directories, racing copy-up and errors after partial publication need deterministic system-level verification.",
+      "Full direct-syscall compatibility, four-architecture runtime coverage, performance/resource comparison and independent qualified review remain outstanding."
     ]
   }
 }

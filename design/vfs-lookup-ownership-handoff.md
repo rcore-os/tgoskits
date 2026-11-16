@@ -505,3 +505,41 @@ Overlay 另记录跨批 offset/continuation/change-attribute，拒绝循环而�
 VFS cfg(test) 夹具变化，分配来源尚未取得确定证据；最终同入口没有复现，但这项
 观察没有被写成已修复。精确版本、全部日志及其局限见 `owned_directory_observation`。
 后续仍先完成五个旧命名操作及 writer，再继续第 4、5 节和完整 ABI 验收。
+
+### 9.17 原生匿名暂存
+
+源码 `2b8e4b20f1` 的 `SealedStaging::detach` 从实际 observed-unlink 核对新建目标，
+在同一 Context 中脱链并保留原生孤儿。seal 在 gate/admission 外准备私有父目录，
+这一模板只用于同一工厂 detach 的未应用重试；普通 PreparedUnlink 仍不可 Clone。
+`StagingNode::copy_xattrs` 在恢复所有者之前复制原生 source 提供的属性。既有暂存
+旅程移到 `fs/ax-fs-ng/tests/staging.rs`，独占页提供者，保留内容、时间、属主、清理、
+拒绝与写准备寿命，并覆盖孤儿缓存读写、零链接和安装/脱链的替代对象拒绝。
+
+错误变异 `fedd310618` 只移除 detach 身份核对，五个 AX profile 均在同一断言稳定
+返回 Applied/Ok，预期 Unchanged/BadState；错误变异未推送。正确实现的五个
+profile 全部通过，VFS/AX 9 项 Clippy 通过；标准库仍是 18 包中 17 过，Kernel
+五个旧方法失败。早期私有方法可见性、非 vfs 配置调用 vfs-only 方法及切片传参
+错误是夹具编译问题，没有记作行为红证据。精确版本与日志见生产证据
+`anonymous_staging_and_xattrs`，仍缺 Ext4 工厂及实际 Overlay 的运行证明。
+
+### 9.18 元数据复制连接
+
+`45b68934f7` 将 Overlay 两种节点的 `change_metadata` 接入实例 owner gate、
+当前 inode 的固定 authorizer 和保留意图的下沉。缺少 upper 时按当前别名发现祖先，
+以真实逻辑身份登记 `CopyPreparation`；准备阶段创建私有 `0700` 工作目录并清除
+继承 SGID，再执行实际缓存复制、xattr、恢复及 seal。下一轮重新授权，在隐藏目标
+应用意图后安装祖先或脱链匿名对象；已知 Applied 更新真实 backing，后续错误
+保留效果并禁止整轮 Retry。最终属性从实际 owner 读取，显式清理退出全部 Scope 后
+运行，并核对实际对象身份、保存第一项错误及报告残留。
+
+本提交的标准库入口选中 18 包，17 包通过，五个 AX 暂存 profile 再次通过；VFS
+3 项 Clippy 通过。Kernel Clippy 首项只报告原五个 E0407，其余 71 项未执行，
+不能据此宣称整个 Kernel 或新 Overlay 路径已经验证。命名 writer、打开和普通数据
+路径仍待接入共同边界，嵌套复制源在隐藏创建之前拒绝，完整挂载陷阱、工作目录
+碰撞/恢复及竞态、部分安装和直接 syscall 证明尚未完成。
+
+同时读取 `018e350d65` 的 CI run `43930453445` 失败日志，编译失败仍来自同五个
+方法。AArch64 `task-stack-guard-page` 另有一次页异常缺少 guard 诊断而失败；当前
+工具链下本地同一原用例为 1/1 通过，显示正确 guard 范围，未改源码或成功正则。
+原因尚未确认，这次本地通过没有记为修复。精确源码、命令、日志摘要及限制见
+`overlay_metadata_copy_up`，后续仍需处理全部旧方法与完整目标验收。
