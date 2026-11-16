@@ -7,8 +7,8 @@ use axfs_ng_vfs::{LinkOps, LinkTarget, Location, NodeIdentity, VfsError, VfsResu
 use super::{SimpleFile, SimpleFs, require_proc_task};
 use crate::{
     file::{
-        Directory, FD_TABLE, File, FileLike, MountTableFile, NamespaceKind, NamespaceObject, NsFd,
-        PacketSocket, Pipe, Socket, display_location, memfd::Memfd, netlink::NetlinkSocket,
+        Directory, FD_TABLE, File, FileLike, MountTableFile, NamespaceKind, NamespaceObject,
+        descriptor_path, display_location,
     },
     task::{UserTaskRef, WeakUserTaskRef, authorize_proc_read, current_user_task},
 };
@@ -128,7 +128,7 @@ impl ProcLink {
 impl LinkOps for ProcLink {
     fn target(&self) -> VfsResult<LinkTarget> {
         let location = match self.snapshot()? {
-            TargetSnapshot::File(file) => file_location(&file)?,
+            TargetSnapshot::File(file) => descriptor_path(&file)?.location().clone(),
             TargetSnapshot::Location(location) => location,
             TargetSnapshot::Namespace(namespace) => namespace.location(),
         };
@@ -151,31 +151,5 @@ impl LinkOps for ProcLink {
             TargetSnapshot::Namespace(namespace) => Ok(namespace.display()),
             TargetSnapshot::Location(location) => display_location(&location),
         }
-    }
-}
-
-fn file_location(file: &Arc<dyn FileLike>) -> VfsResult<Location> {
-    if let Some(file) = file.downcast_ref::<File>() {
-        Ok(file.inner().location().clone())
-    } else if let Some(directory) = file.downcast_ref::<Directory>() {
-        Ok(directory.inner().clone())
-    } else if let Some(memfd) = file.downcast_ref::<Memfd>() {
-        Ok(memfd.inner().inner().location().clone())
-    } else if let Some(table) = file.downcast_ref::<MountTableFile>() {
-        Ok(table.inner().inner().location().clone())
-    } else if let Some(pipe) = file.downcast_ref::<Pipe>() {
-        Ok(pipe.location())
-    } else if let Some(socket) = file.downcast_ref::<Socket>() {
-        Ok(socket.location())
-    } else if let Some(socket) = file.downcast_ref::<PacketSocket>() {
-        Ok(socket.location())
-    } else if let Some(socket) = file.downcast_ref::<NetlinkSocket>() {
-        Ok(socket.location())
-    } else if let Some(namespace) = file.downcast_ref::<NsFd>() {
-        Ok(NamespaceObject::from_fd(namespace).location())
-    } else {
-        // Other descriptor classes still need native vnode adapters; never
-        // resolve their descriptive path text as if it were a pathname.
-        Err(VfsError::OperationNotSupported)
     }
 }

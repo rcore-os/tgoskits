@@ -7,6 +7,7 @@ mod io;
 mod io_uring;
 mod lock;
 mod memfd;
+mod metadata;
 mod mount;
 mod pidfd;
 mod pipe;
@@ -56,6 +57,7 @@ pub use self::{
         wake_flock_waiters, wake_lock_waiters,
     },
     memfd::*,
+    metadata::*,
     mount::*,
     pidfd::*,
     pipe::*,

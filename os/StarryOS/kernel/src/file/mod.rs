@@ -19,6 +19,8 @@ mod nsfd;
 pub(crate) use fs::display_location;
 pub(crate) use nsfd::{NamespaceKind, NamespaceObject};
 mod packet;
+mod path;
+pub(crate) use path::descriptor_path;
 mod pidfd;
 mod pipe;
 pub mod signalfd;
