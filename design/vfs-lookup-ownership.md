@@ -1843,7 +1843,7 @@ initramfs、bundle 和 `root::ensure_mountpoint_dir_result` 等启动调用显�
 初始化身份，仍遵守真实尝试和只读限制；该身份不成为运行期 syscall 的默认提权回退。
 `SimpleDir`、合成挂载目录及只读测试后端不因适配 trait 而获得写能力。
 
-Starry 的 `pseudofs/overlay.rs` 是复合后端，不是单次 upper rename 的透明转发。
+Starry 的 `pseudofs/overlay/` 是复合后端，不是单次 upper rename 的透明转发。
 每个 OverlayFs 拥有自己的 mutation gate，覆盖合并视图的观察、授权、copy-up、
 whiteout、目录物化、元数据变更及 overlay VFS 发布。
 外层使用调用者凭据授权，底层内部操作使用挂载时核准并保存的 backend 凭据和
@@ -2840,10 +2840,11 @@ VFS 新增字段私有的领域对象 `PreparedCreation`，专门拥有创建式
 
 #### 4.16.3 同一操作所有者
 
-`NamespaceOperationScope::acquire_creation(&PreparedCreation)` 复用现有 scope 状态、
-登记存储、owner 预检和四阶段处理。`NamespaceAdmissions` 的内部收集逻辑只扩展输入
-为已完成的准备视图；正常 `acquire(&PreparedWrite)` 及其合法最外层调用不变。
-scope 与 context 只借用外部具名准备，不能拥有它之后再保存指向自身字段的借用。
+`NamespaceCommandScope::for_creation(&PreparedCreation)` 保存外部准备的借用，
+每轮 `attempt()` 复用现有 Scope 的登记存储、owner 预检和四阶段处理。
+`NamespaceAdmissions` 的内部收集逻辑只接受已完成的准备视图；普通写命令通过
+`NamespaceCommandScope::new(&PreparedWrite)` 使用同一入口。Command、Scope
+与 Context 均借用外部具名准备，不拥有准备后再保存指向自身字段的借用。
 
 只有 VFS 私有准备视图知道成功写准备或保存的创建拒绝。`Context::write_for` 仍只
 返回真正已有的 exact-mount 写租约：纯读状态不能返回租约，无匹配权利为
@@ -3018,7 +3019,7 @@ Overlay 私有适配仍须按第 4.9 节验证目标来自绑定 roots 或本实
 原普通 query 的无 gate 合同和已验完成顺序不因此重测成另一套算法。
 
 这是后备读取能力的独立准备单元，不宣称 Overlay 已接通或可编译。
-完整 copy-up 仍须另行明确数据/open、属性恢复、xattr、跨全部 gate 的准备交接、
+完整 copy-up 仍须按第 4.18 节接入数据/open、属性恢复、xattr、跨全部 gate 的准备交接、
 败选与残留清理，以及每个逻辑阶段的真实效果；不能用此查询上下文执行普通 File
 打开、raw 修改或把读取快照当作跨 gate 仍有效的旧授权。
 
@@ -3080,8 +3081,10 @@ Drop 只释放内存和被动引用，不能充当磁盘回滚。
 
 这一协议是完整 Overlay 接入的实施边界。其验证复用既有完成顺序旅程，加入真实
 准备的锁外执行、同实体重入与清理判定；Overlay 的实际文件内容、权限、打开句柄、
-copy-up 竞争和错误后名称由系统用例证明。当前基础接入仅完成实体、root、固定
-backing、依赖及 mounter，不能据此宣称本节已经实现或 Starry 可以构建。
+copy-up 竞争和错误后名称由系统用例证明。通用 Command/Scope 的准备协调已接入
+命名和元数据便捷入口，并取得组件红绿；Overlay 已连接实体、root、固定 backing、
+依赖及 mounter。原生封闭暂存、数据/open、恢复、安装和 xattr 尚未接通，
+不能据此宣称完整 Overlay 已实现或 Starry 可以构建。
 
 ## 5. 对象型链接
 

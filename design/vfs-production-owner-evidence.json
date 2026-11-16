@@ -642,5 +642,232 @@
       "Prepared data/open, restore/xattr and all-gate staging coordination remain incomplete; this ownership connection does not complete the Overlay migration.",
       "No Starry direct syscall was executed. Earlier four-architecture fs-basic results remain at cb65d894c1."
     ]
+  },
+  "metadata_and_overlay_foundation": {
+    "source_commit": "05cacb742bc9cbd5a759a4a8581d24f0891c668d",
+    "overlay_identity_source": "67bedf0655211174a8cc803dc2bd9c48acf18e16",
+    "source_files": {
+      "design/vfs-lookup-ownership.md": "6871a63bcb3f044b5d7923d2a505bd120a418b67748fc7ec34620e028c509c2a",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/metadata_pressure.rs": "d5b07263b4564dbd9e1790842ae55b9be932fa8ec16d67030d659901f94d7e61",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/namespace/checkpoint.rs": "a5453976363615adcf4eb694d07bd409d7bfcd5e580b1e0628d095a0fad38c7e",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/namespace/mod.rs": "e2c61ab63f21f191d16753f34cff93a9919af3ffe845d9b59637f0c5063b9652",
+      "fs/ax-fs-ng/src/fs/fat/disk.rs": "02d4f4a2d46504db7bf9ee615adb3c374721a788f276f3245db5716ab529654e",
+      "fs/ax-fs-ng/src/fs/fat/disk/tests/metadata.rs": "64522cdeb40313bba957e80257d48928c0ed6bddc31431c9c2a4bd9da6447b24",
+      "fs/ax-fs-ng/tests/backing_lookup.rs": "894282151ef9a8c1974baf31531a4f6629113070d3de9f4bdf25c4247b1e2c79",
+      "fs/axfs-ng-vfs/src/metadata/mod.rs": "53db6f929e53b6495c6215781b18aba516a6cebc95527476e12a16af593b7261",
+      "fs/axfs-ng-vfs/src/mount/mod.rs": "b3f487b8472d24768f9a51e0c1c31b48857dc1040bbb5b423c16162bbcaba24e",
+      "fs/axfs-ng-vfs/src/mount/tests/prepared_write.rs": "93eb055a52dd2f7fa78e4db1ba761618ec1b35c12faabe2cd726bb93e3d67cbd",
+      "fs/axfs-ng-vfs/src/mount/tests/prepared_write/read_backing.rs": "b45bbf9d6f3c9eb1dc960d7a53f9abf445515e8963ae61f8c3617ea719ffc29e",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "9f00ac9c79458da23db7175804a3170eb631557f56427c59a2b680bc0b8a7d62",
+      "fs/axfs-ng-vfs/src/namespace_operation/preparation.rs": "eb818f14f459a51ebb98d10a63ce4cb92e25998f9ca579ae0960a3f957aba7b7",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests.rs": "7959ec548b52a280025f0d085a8b142da5ab075164ab81ba38f39c2e492d1294",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests/backing_queries.rs": "6bcbdaf9d405565befb64c7095c6261c99e77890b2bab062838f5c7edc82ae49",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests/preparation.rs": "1ab962853fc590aedbcd6f62836e2591b7af64f5b24d861b54b7f6f83817c599",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests/reservation_failure.rs": "a8477fc696abdd13d98abdc3c974162b5d24d20d9353ebc86a5846d295acd311",
+      "fs/axfs-ng-vfs/src/node/dir/native.rs": "5ddb7e15ea4a2053a5cf0e91d13c7b046df3ebd06542015b7f66d854add20c7a",
+      "os/StarryOS/kernel/src/file/mod.rs": "9c87b3aa4e0d9b0624a77b5f7eaafe03d252de9313007a6e6fb927a5cd37ddb8",
+      "os/StarryOS/kernel/src/file/path.rs": "59aa9e87b7d4b3bd90f9c6e6e718f9cbf9a18a24ff5ba1cf4e96a18a750e43b8",
+      "os/StarryOS/kernel/src/pseudofs/device.rs": "c5563e0ecc2be1e9b1f72b21260e623ab1d86bc238a4b40a935f90daa36a988f",
+      "os/StarryOS/kernel/src/pseudofs/dir.rs": "23a67832fa3b53c837de37c6ffdd7bd3cdf8f16fe10f2fe90064e66d5264a361",
+      "os/StarryOS/kernel/src/pseudofs/file.rs": "3172613ebfb10fc5202b778dcdd9ae0a8c7c1a7d707e9bdacd64a8605dce8fd2",
+      "os/StarryOS/kernel/src/pseudofs/fs.rs": "d6fc76c452b8223ba754d1d97e0970497012a4873a58884c9ff501d1073bf9b8",
+      "os/StarryOS/kernel/src/pseudofs/object.rs": "e39f06ce4558601f7d8851ecfa796671540455699d137cf8f6119584cdf77aaa",
+      "os/StarryOS/kernel/src/pseudofs/overlay/inode.rs": "e4c7e5b9fbe3882e8705156a7c9c49efde8b9edc2fe8985486aaf490ba41b07b",
+      "os/StarryOS/kernel/src/pseudofs/overlay/mod.rs": "3430b0726beaef0166f4d2a119f30e75c05312fb37525a99612387c2f95572f8",
+      "os/StarryOS/kernel/src/pseudofs/proc/link.rs": "bd9ca465694e7e9987bba017e4c0bbf563e3d4ca1d09759c44de79bc96f197f0",
+      "os/StarryOS/kernel/src/syscall/fs/ctl.rs": "ecd0349c04eb378891fff3275212c2ba515307badf3e4fab5bc588e01d608f4e",
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": "907cdc7147a5300899b737797a3dc03912b1bd447b69b669dd5031db02737acf",
+      "os/StarryOS/kernel/src/syscall/fs/metadata.rs": "0d0eafa04942ab78daf00f472de67c2ec63d00475283c47ad59ededfaf7fc379",
+      "os/StarryOS/kernel/src/syscall/fs/mod.rs": "6e068190698cdf2efcce7570c8e58ed04c730ee61835f702ef8e8df0c83f029c",
+      "os/StarryOS/kernel/src/syscall/fs/mount.rs": "522b0ffe09d56faad87072a62ff4be7d4a527243085c634a89aee6a4e40d8fab",
+      "os/StarryOS/kernel/src/task/cred.rs": "3d55580feaba47b58c7329dc219938b8ccfb48e477189ef718c95168ec96b597",
+      "os/StarryOS/kernel/src/task/seccomp.rs": "6d59503041f14554519dfd16231b8c3e6902f86ca96b4fa3ffe570d1c30896db",
+      "test-suit/starryos/qemu/system/syscall-test-utimensat/src/main.c": "e7eb73e3aaa5aa18275b6c16f369dd54e2a51eaf569a39e30ff1369e8e7619ce"
+    },
+    "implemented": [
+      "SimpleFs metadata owner lock and forwarded MetadataRequest",
+      "Raw metadata intentions submitted through native descriptor PathHandles and paired credentials",
+      "Stable Overlay logical inodes, weak root and canonical index, exact backing queries and immutable dependency graph",
+      "Saved mounter credentials and namespace, with directory search checks at mount entry"
+    ],
+    "checks": [
+      {
+        "source_commit": "1e3732044c110b26c5ea26c317ac9601c58ce87f",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package starry-kernel",
+        "exit_code": 1,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/metadata-owner-kernel-clippy-fixed.log",
+        "sha256": "788cde66f51288cbee473d7326f45458c83647ed2443fb51a4371cdc1528ceed",
+        "terminal_evidence": [
+          "due to 15 previous errors",
+          "71 check(s) remaining"
+        ]
+      },
+      {
+        "source_commit": "67bedf0655211174a8cc803dc2bd9c48acf18e16",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask test --since 313344abc0",
+        "exit_code": 1,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/metadata-overlay-foundation-std.log",
+        "sha256": "ad5f90d2e540c0adca29635f9d50f1f50983c7bfe00edb7cff50490cd3656d52",
+        "terminal_evidence": [
+          "running std tests for 1 package(s)",
+          "due to 5 previous errors"
+        ]
+      },
+      {
+        "source_commit": "67bedf0655211174a8cc803dc2bd9c48acf18e16",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package starry-kernel",
+        "exit_code": 1,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/metadata-overlay-foundation-clippy.log",
+        "sha256": "c9bcea515d4654642a65c39b1a7cc96ada84dfac4d6bf3dd5b6c9d362f22da6a",
+        "terminal_evidence": [
+          "due to 5 previous errors",
+          "71 check(s) remaining"
+        ]
+      },
+      {
+        "source_commit": "05cacb742bc9cbd5a759a4a8581d24f0891c668d",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package starry-kernel",
+        "exit_code": 1,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/metadata-overlay-checkpoint-kernel-clippy.log",
+        "sha256": "566b5a2c1c56f1f5d6d7955d402e5dc3774193e83c263e5c2a487f7c3064b24b",
+        "terminal_evidence": [
+          "due to 5 previous errors",
+          "71 check(s) remaining"
+        ]
+      },
+      {
+        "source_commit": "05cacb742bc9cbd5a759a4a8581d24f0891c668d",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask test --since e3ecb0ebbb",
+        "exit_code": 1,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/metadata-overlay-checkpoint-kernel-std.log",
+        "sha256": "9bff6f46627b448b60f53a5cb527708f0d463e6369f83b73674168e6a442711d",
+        "terminal_evidence": [
+          "running std tests for 1 package(s)",
+          "due to 5 previous errors"
+        ]
+      }
+    ],
+    "linux_timestamp_oracle": {
+      "source_commit": "8786f2c86b4699d323455cc7a09da9f1d431560c",
+      "source_file": "test-suit/starryos/qemu/system/syscall-test-utimensat/src/main.c",
+      "source_sha256": "e7eb73e3aaa5aa18275b6c16f369dd54e2a51eaf569a39e30ff1369e8e7619ce",
+      "environment": "Linux 6.8.0-149-generic x86_64; GCC 11.4.0",
+      "command": "cc -std=c11 -Wall -Wextra -Werror -I test-suit/starryos/qemu/system/syscall-test-utimensat/src test-suit/starryos/qemu/system/syscall-test-utimensat/src/main.c -o <task-artifact>/utimensat-linux-baseline && <task-artifact>/utimensat-linux-baseline",
+      "execution": {
+        "source_commit": "05cacb742bc9cbd5a759a4a8581d24f0891c668d",
+        "command": "<task-artifact>/utimensat-linux-baseline",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/utimensat-linux-baseline.log",
+        "sha256": "52889d955f11a1ddcf164c500074eec9f96266b4783bab6f3ef925322b2fd515",
+        "terminal_evidence": [
+          "UTIMENSAT_TESTS_PASSED"
+        ]
+      },
+      "passed_cases": 11,
+      "semantic_source": "https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/utimes.c"
+    },
+    "limitations": [
+      "Remaining E0407 errors are the old Overlay create/create_symlink/link/unlink/rename methods; no Starry build or syscall run passed.",
+      "Controlled staging, open/data endpoints, metadata restore and xattr/cleanup are incomplete. The generic command coordinator alone does not complete Overlay.",
+      "Signed pre-epoch timestamps and remaining fd/proc/raw metadata consumers have not been completed."
+    ]
+  },
+  "namespace_command_preparation": {
+    "source_commit": "e3ecb0ebbbc962c38f70f851904b1039cf8d41d0",
+    "initial_source_commit": "c52ef18f20cf39491fc9b8fd0d7808d207f275aa",
+    "mutation": {
+      "branch": "codex/continue-pr2800",
+      "green": "e3ecb0ebbbc962c38f70f851904b1039cf8d41d0",
+      "red": "91125ca99e2fdeecaa9f5ed9b41390b44fa3e67a",
+      "file": "fs/axfs-ng-vfs/src/namespace_operation/preparation.rs",
+      "mutation": "remove outer retirement of the plan candidate before duplicate selection"
+    },
+    "production_source_files": {
+      "fs/axfs-ng-vfs/src/namespace_operation/preparation.rs": "eb818f14f459a51ebb98d10a63ce4cb92e25998f9ca579ae0960a3f957aba7b7",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "9f00ac9c79458da23db7175804a3170eb631557f56427c59a2b680bc0b8a7d62",
+      "fs/axfs-ng-vfs/src/node/dir/native.rs": "5ddb7e15ea4a2053a5cf0e91d13c7b046df3ebd06542015b7f66d854add20c7a",
+      "fs/axfs-ng-vfs/src/metadata/mod.rs": "53db6f929e53b6495c6215781b18aba516a6cebc95527476e12a16af593b7261",
+      "fs/axfs-ng-vfs/src/mount/mod.rs": "b3f487b8472d24768f9a51e0c1c31b48857dc1040bbb5b423c16162bbcaba24e"
+    },
+    "behavioral_red": {
+      "source_commit": "91125ca99e2fdeecaa9f5ed9b41390b44fa3e67a",
+      "command": "PATH=<task-local-e2fsprogs>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since e3ecb0ebbb",
+      "exit_code": 1,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/namespace-command-preparation-red-verified.log",
+      "sha256": "7d4c98c052b33c5a83d6caa8a8738908e931946f2bc3bcd013c8eb954bd366de",
+      "terminal_evidence": [
+        "completion_pressure_preserves_typed_results_and_mismatched_owners ... FAILED",
+        "69 passed; 1 failed",
+        "Event::DropPreparation(_, false)"
+      ]
+    },
+    "restored_green": {
+      "source_commit": "e3ecb0ebbbc962c38f70f851904b1039cf8d41d0",
+      "command": "PATH=<task-local-e2fsprogs>/bin:$PATH CARGO_INCREMENTAL=0 cargo xtask test --since 67bedf0655",
+      "exit_code": 1,
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/namespace-command-preparation-green.log",
+      "sha256": "c6ca41866118df6e4ece55701103430cf880faaad03010be00213ec0a606ca8d",
+      "terminal_evidence": [
+        "completion_pressure_preserves_typed_results_and_mismatched_owners ... ok",
+        "ok: axfs-ng-vfs",
+        "std tests failed for 1 package(s): starry-kernel"
+      ]
+    },
+    "std_packages": {
+      "selected": 18,
+      "passed": 17,
+      "failed": [
+        "starry-kernel"
+      ]
+    },
+    "checks": [
+      {
+        "source_commit": "c52ef18f20cf39491fc9b8fd0d7808d207f275aa",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package axfs-ng-vfs --package ax-fs-ng --package rsext4",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/namespace-command-preparation-clippy.log",
+        "sha256": "1ef84b764f4de0886b841dc5f083c45b0000781e06df2cd0b120f536485ca7fd",
+        "terminal_evidence": [
+          "passed checks: 12, failed checks: 0, skipped checks: 0"
+        ]
+      },
+      {
+        "source_commit": "e3ecb0ebbbc962c38f70f851904b1039cf8d41d0",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package axfs-ng-vfs",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/namespace-command-preparation-final-clippy.log",
+        "sha256": "02c29c005b66aea817f5c3a9012835204e2b78961fc1898717488bf6265c1284",
+        "terminal_evidence": [
+          "passed checks: 3, failed checks: 0, skipped checks: 0"
+        ]
+      },
+      {
+        "source_commit": "e3ecb0ebbbc962c38f70f851904b1039cf8d41d0",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask arceos test qemu --arch x86_64 --test-group rust --test-case fs-basic",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/namespace-command-preparation-fs-basic-x86.log",
+        "sha256": "66e5d8dcb637240ac48999851fe3094fe46ebe9a68cf200f409b7b9985c0384f",
+        "terminal_evidence": [
+          "status=pass",
+          "all arceos rust qemu tests passed"
+        ]
+      },
+      {
+        "source_commit": "e3ecb0ebbbc962c38f70f851904b1039cf8d41d0",
+        "command": "CARGO_INCREMENTAL=0 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 --config os/axvisor/tests/build-memory-root-aarch64.toml --qemu-config os/axvisor/tests/qemu-memory-root-aarch64.toml",
+        "exit_code": 0,
+        "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/namespace-command-preparation-axvisor-ktest.log",
+        "sha256": "7bb1f99df265adc21ab82ac2de105fc84e299db8b1ba0ceffb235a2cd4de4700",
+        "terminal_evidence": [
+          "AXTEST_SUMMARY pass=125 fail=0 skip=0 total=125",
+          "AXTEST_SUITE_OK"
+        ]
+      }
+    ],
+    "limitations": [
+      "The preparation probes exercise the real VFS command/scope lifecycle, not physical Overlay copy-up or Native staging I/O.",
+      "The red mutation was a detached local commit and was not pushed. The nonblocking witness avoids secondary destructor panics and checks complete recording.",
+      "Only x86_64 fs-basic and AArch64 Axvisor were rerun here; earlier other-architecture fs-basic proofs remain at cb65. Kernel still fails its old five Overlay trait methods."
+    ]
   }
 }

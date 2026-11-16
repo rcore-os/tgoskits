@@ -144,8 +144,8 @@ Kernel 的 `MntNamespace` 已持实际 VFS Core 与不可变 creator，创建入
 - 统一 `LookupSession`/`Continuation`、40 次总链接预算、末组件续走、范围限制、真正非阻塞的 CACHED，以及 typed conflict 按原身份续走。
 - lookup 成功与 NotFound 的代际接受、锁外退休和现有解析器/字符串捷径清理。
 - proc typed link 及全部消费者、SimpleFS/proc producer、per-open userns、devpts 与 mqueue 接入。
-- Overlay 稳定 inode、copyup、outcome、open/data/restore/xattr/cleanup 的完整迁移，消除 Kernel 15 处旧接口错误。
-- chmod/chown/time、Native 自动时间与 archive restore 去 raw；AF_UNIX pathname 按原 caller 原子创建，不扩网络身份。
+- Overlay 的稳定 inode、root、固定 backing、依赖及 mounter 已接入；继续完成 copyup、outcome、open/data/restore/xattr/cleanup 及命令准备的实际消费，消除剩余 5 个旧目录方法。
+- chmod/chown/time 已提交意图命令，SimpleFs 已使用真实 metadata 锁；继续完成全部后端及 fd 类、Native 自动时间与 archive restore 去 raw，并取得直接 syscall 证明。AF_UNIX pathname 按原 caller 原子创建，不扩网络身份。
 - Native Uncertain 与跨文件系统最后 Owner 的释放边界。
 - 修正 `test-unshare-fs` 中“删除 cwd 后 unshare 应 ENOENT”的错误 Linux 前提，保留成功路径及真实失败回滚。
 
@@ -302,3 +302,57 @@ Kernel Clippy 的 72 项计划在前四项因同一 Overlay 错误失败，其�
 既有 `readonly_reconfiguration_preserves_writers_until_description_and_mapping_release` 增强为两层声明依赖，并使用真实 VFS lease、描述符复制和 remount 实现。只读 lower 不阻止打开，仍存活的写描述或映射则必须阻止中间层和真实 upper 切为只读；后备拒绝还须释放之前取得的权利。`09b1002e72` 的五个 AX profile 均稳定得到错误的 remount 成功，修复后同一旅程全部通过，没有新增测试启动或放宽断言。
 
 该源码的 AX/runtime Clippy 34 项、x86_64 `fs-basic` 和 Axvisor AArch64 125 项均通过。标准库仍选中 18 包、通过 17 包，唯一失败为既有 Kernel Overlay 15 处接口错误。对应结果记录在生产证据的 `prepared_write_access`；分层数据/open、restore/xattr 和跨全部 gate 的 copy-up 准备协调仍待实现，这一步没有接通完整 Overlay。
+
+### 9.6 元数据的实际所有者
+
+`638f4416cb` 到 `1e3732044c` 将 SimpleFs 的字段修改放入真实 metadata 锁，并让
+`syscall/fs/metadata.rs` 的 chmod/chown/time 直接提交原始意图。Chown 的省略字段
+保留为 None，NOW 在 inode 尝试内取时钟，普通 fd 的 O_PATH 拒绝与 *at 的空路径
+区分处理。`file/path.rs::descriptor_path` 从保留的打开描述选择原生 PathHandle，
+proc 与元数据入口共用该投影；不把显示文字当作授权路径。全部 fd 类型、typed link
+流水线及 raw 自动维护接口仍未迁完，SimpleFs/proc 的根引用环也仍待处理。
+
+`8786f2c86b` 增强已有 utimensat 旅程，通过原始 syscall 验证两项 OMIT 早返回、
+NULL 的 fd 分支、O_PATH 与空路径、flags 和时间参数的错误顺序及拒绝后时间保留。
+测试保留原 11 项、原分组及启动，使用独立 mkdtemp 目录。相同源码在宿主
+Linux 6.8.0-149-generic x86_64/GCC 11.4 运行 11 项通过；语义源码仍固定于
+Linux v7.1 的 [`fs/utimes.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/utimes.c)。
+这不是 Linux 7.1 或 Starry 的运行结果。负 epoch 时间的既有 Duration 表示限制
+也没有因本轮迁移解决，直接系统调用兼容性仍为无法确认。
+
+### 9.7 分层实体及后备身份
+
+`67bedf0655` 将 Overlay 拆为 `pseudofs/overlay/mod.rs` 与 `inode.rs`。wrapper
+保留稳定逻辑实体，upper 切换不重新按旧文件名查找，metadata 的 inode/device
+投影到本实例。弱索引使用实际 backing owner、实体身份或保活 inode，以及
+index=off 的 lower 硬链接别名身份；root 实体不反向持有 FS，root dentry 为弱引用。
+当前目录关系来自 VFS 的同步名称快照，旧 path/parent_path 字符串已删除。
+
+挂载入口在解析 backing 前保存成对 FsCredentialsSnapshot，并检查路径搜索权限。
+转换后的 VFS 凭据由该快照统一借出，能力仍限定在已支持的初始 user namespace。
+内部单名读取使用固定 backing 查找；upper/work 必须是同一 exact mount 的互不包含
+目录。读写依赖及不超过两层的深度不可变，普通 poll/flags 不执行 copy-up。
+完整 owner gate、原生暂存及复合结果尚未接通；这些源码连接不构成完整 Overlay 验收。
+
+### 9.8 跨尝试准备的命令所有者
+
+`c52ef18f20` 与 `e3ecb0ebbb` 将 NamespaceCommandScope 接入所有原生命名和
+元数据便捷入口。每轮 NamespaceOperationScope 借用它，结束全部 pressure、
+admission、retire 及 finish 后才允许 prepare；下一轮重新观察及授权。准备项按
+实际 receiver 与实体身份分开，落败候选交同一 retire，终止时显式 cleanup，原始
+错误与 Applied/Uncertain 继续保留。没有新增全局任务登记或 Drop 磁盘回滚。
+
+既有 `completion_pressure_preserves_typed_results_and_mismatched_owners` 扩充同一
+递归旅程：实际 Scope/请求/准备图负责派发，计划探针只记录 prepare/cleanup/析构，
+验证同局部键的跨 FS 隔离、全部完成后的准备、重新进入、失败清理及最后引用。
+临时错误源码 `91125ca99e` 移除准备候选的外层退休，同一用例稳定记录 admission
+退出前析构，VFS 为 69 过、1 败。该变异未推送。恢复 `e3ecb0ebbb` 后 VFS 70 项
+单元及相应集成/文档通过；完整标准库仍为 18 包中 17 过，唯一失败为 Kernel 的
+5 个 Overlay 旧目录方法。探针使用非阻塞记录并断言记录完整，失败不再引发额外析构恐慌。
+
+源码 `c52ef18f20` 的 VFS/AX/Rsext4 12 项 Clippy 通过，探针调整后 VFS 3 项再通过。
+恢复源码的 x86_64 fs-basic 与 Axvisor AArch64 125 项均通过。其余三架构的最近
+fs-basic 证据仍属于 cb65，不能提升为本轮结果。源码 `05cacb742b` 的 Kernel Clippy
+首项与标准库单包检查均只剩 5 个 E0407；其余 71 项 Clippy 仍未执行。主线引入的
+seccomp 测试冗余导入已移除，没有增加 allow。详细日志摘要记录在生产证据的
+`metadata_and_overlay_foundation` 与 `namespace_command_preparation`。
