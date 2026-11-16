@@ -188,6 +188,9 @@ mod tests {
 
     #[test]
     fn pivots_order_real_topology_and_exact_shared_path_revisions() {
+        let _serial = OWNER_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let tree = tree();
         let owner = FsContextOwner::new_root(tree.namespace.clone(), tree.root.clone()).unwrap();
         let frozen = owner.snapshot();
@@ -292,6 +295,9 @@ mod tests {
 
     #[test]
     fn pivot_retains_selected_states_until_after_the_caller_releases_protection() {
+        let _serial = OWNER_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let tree = tree();
         let owner = FsContextOwner::new_root(tree.namespace.clone(), tree.root.clone()).unwrap();
         let snapshot = owner.snapshot();

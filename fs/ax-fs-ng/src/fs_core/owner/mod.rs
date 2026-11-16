@@ -56,6 +56,9 @@ pub struct FsContextSnapshot {
 // lease, CPU pin, or FsState critical section.
 static FS_STATES: Mutex<Vec<Weak<RawSpinLock<FsState>>>> = Mutex::new(Vec::new());
 
+#[cfg(test)]
+static OWNER_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl FsContextOwner {
     /// Creates independent root/cwd state. May perform directory I/O and
     /// allocate; call outside scope, pin and namespace writer protections.
@@ -201,6 +204,9 @@ mod tests {
 
     #[test]
     fn shared_paths_preserve_task_namespace_and_explicit_owner_shares() {
+        let _serial = OWNER_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut parent = owner();
         let source = parent.snapshot();
         let dir = child(source.root(), "cwd");
@@ -304,6 +310,9 @@ mod tests {
 
     #[test]
     fn snapshots_fork_frozen_paths_without_resurrecting_source_state() {
+        let _serial = OWNER_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut original = owner();
         let source = original.snapshot();
         let cwd = child(source.root(), "removed");
@@ -374,6 +383,9 @@ mod tests {
 
     #[test]
     fn updates_return_rejected_inputs_and_replaced_last_path_owners() {
+        let _serial = OWNER_TESTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut current = owner();
         let source = current.snapshot();
         let file = source
