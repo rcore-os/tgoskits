@@ -11,7 +11,6 @@ use axfs_ng_vfs::{DirEntry, FileNode, Location, NodeType, Reference, VfsError};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
-use super::mutation_credentials;
 use crate::{
     StarryError, StarryResult,
     file::{
@@ -314,7 +313,7 @@ fn try_reopen_self_file(
 
     let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
     let cred = fs_credentials.credentials();
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
     let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
     Some(
         options
@@ -551,7 +550,7 @@ pub fn sys_openat(
 
     let fs_credentials = FsCredentialsSnapshot::capture(thread);
     let cred = fs_credentials.credentials();
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
     let options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let should_notify_create = uflags & O_CREAT != 0
         && uflags & O_PATH == 0
@@ -650,7 +649,7 @@ pub fn sys_openat2(
     let mode = mode & !thread.proc_data.umask();
     let fs_credentials = FsCredentialsSnapshot::capture(thread);
     let cred = fs_credentials.credentials();
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
     let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
     let result = with_fs(dirfd, |fs| {
         let path_ref = axfs_ng_vfs::path::Path::new(&path);

@@ -7,12 +7,14 @@
 
 use alloc::sync::Arc;
 
+use axfs_ng_vfs::MutationCredentials;
 #[cfg(any(feature = "rga", feature = "rknpu"))]
 use linux_raw_sys::general::CAP_SYS_RAWIO;
 use linux_raw_sys::general::{
-    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH, CAP_FOWNER, CAP_IPC_LOCK, CAP_KILL,
-    CAP_LAST_CAP, CAP_NET_RAW, CAP_PERFMON, CAP_SETGID, CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN,
-    CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PTRACE, CAP_SYS_RESOURCE, CAP_SYS_TIME,
+    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH, CAP_FOWNER, CAP_FSETID, CAP_IPC_LOCK,
+    CAP_KILL, CAP_LAST_CAP, CAP_MKNOD, CAP_NET_RAW, CAP_PERFMON, CAP_SETGID, CAP_SETPCAP,
+    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PTRACE,
+    CAP_SYS_RESOURCE, CAP_SYS_TIME,
 };
 
 use super::Thread;
@@ -97,6 +99,26 @@ impl FsCredentialsSnapshot {
     /// Borrows the immutable credential, including its supplementary groups.
     pub(crate) fn credentials(&self) -> &Cred {
         &self.cred
+    }
+
+    /// Borrows the paired identity for the current flat, non-idmapped VFS domain.
+    ///
+    /// Capability exceptions are restricted to the initial user namespace; ordinary
+    /// owner and group checks still use the saved IDs in every namespace.
+    pub(crate) fn as_mutation_credentials(&self) -> MutationCredentials<'_> {
+        let cred = self.credentials();
+        let initial_namespace = self.in_initial_user_ns();
+        MutationCredentials {
+            fsuid: cred.fsuid,
+            fsgid: cred.fsgid,
+            supplementary_gids: &cred.groups,
+            cap_dac_override: initial_namespace && cred.has_cap_dac_override(),
+            cap_dac_read_search: initial_namespace && cred.has_cap_dac_read_search(),
+            cap_fowner: initial_namespace && cred.has_cap_fowner(),
+            cap_mknod: initial_namespace && cred.has_cap(CAP_MKNOD),
+            cap_chown: initial_namespace && cred.has_cap(CAP_CHOWN),
+            cap_fsetid: initial_namespace && cred.has_cap(CAP_FSETID),
+        }
     }
 
     /// Tests the saved namespace's identity, never its mutable mapping flags.

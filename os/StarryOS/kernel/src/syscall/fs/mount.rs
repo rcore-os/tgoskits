@@ -777,18 +777,29 @@ pub fn sys_mount(
             mount_ext4(&source, &target, flags)?;
         }
         "overlay" => {
+            let mounter = crate::task::FsCredentialsSnapshot::capture(current.as_thread());
+            let credentials = mounter.as_mutation_credentials();
+            let resolve_backing = |path: &str| -> StarryResult<_> {
+                let (root, _) = context.resolve_with_search_checked(path, |directory| {
+                    credentials.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+                })?;
+                root.check_is_dir()?;
+                credentials.check_permission(&root.metadata()?, NodePermission::OTHER_EXEC)?;
+                Ok(root)
+            };
             let (lower_paths, upper_path, work_path) = parse_overlay_options(current, data)?;
             let mut lower_dirs = Vec::new();
             for lower in lower_paths {
-                lower_dirs.push(context.resolve(lower)?);
+                lower_dirs.push(resolve_backing(&lower)?);
             }
-            let upper_dir = upper_path.map(|path| context.resolve(path)).transpose()?;
-            let work_dir = work_path.map(|path| context.resolve(path)).transpose()?;
+            let upper_dir = upper_path.as_deref().map(resolve_backing).transpose()?;
+            let work_dir = work_path.as_deref().map(resolve_backing).transpose()?;
             let readonly = upper_dir.is_none();
             let fs = crate::pseudofs::overlay::new_overlayfs(OverlayOptions {
                 lower_dirs,
                 upper_dir,
                 work_dir,
+                mounter,
             })?;
             let target = context.resolve(target)?;
             if readonly || flags & MS_RDONLY != 0 {
@@ -955,7 +966,7 @@ pub fn sys_pivot_root(
     put_old: *const c_char,
 ) -> crate::StarryResult<isize> {
     let credentials = crate::task::FsCredentialsSnapshot::capture(current.as_thread());
-    let cred = super::mutation_credentials(&credentials);
+    let cred = credentials.as_mutation_credentials();
     let binding = current
         .as_thread()
         .snapshot_fs_binding()?

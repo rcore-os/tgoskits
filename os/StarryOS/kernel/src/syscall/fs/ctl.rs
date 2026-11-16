@@ -22,7 +22,6 @@ use linux_raw_sys::{
     ioctl::{FIOASYNC, FIONBIO, FS_IOC_FIEMAP},
 };
 
-use super::mutation_credentials;
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
@@ -243,7 +242,7 @@ pub fn sys_chdir(current: &UserTaskRef, path: *const c_char) -> StarryResult<isi
     debug_fn!("sys_chdir <= path: {path}");
 
     let credentials = FsCredentialsSnapshot::capture(current.as_thread());
-    let cred = mutation_credentials(&credentials);
+    let cred = credentials.as_mutation_credentials();
     let binding = current
         .as_thread()
         .snapshot_fs_binding()?
@@ -270,7 +269,8 @@ pub fn sys_fchdir(dirfd: i32) -> StarryResult<isize> {
     let current = current_user_task();
     let credentials = FsCredentialsSnapshot::capture(current.as_thread());
     let directory = Directory::from_fd(dirfd)?;
-    mutation_credentials(&credentials)
+    credentials
+        .as_mutation_credentials()
         .check_permission(&directory.inner().metadata()?, NodePermission::OTHER_EXEC)?;
     let entry = directory.path_handle().clone();
     let mut change = NamespaceChange::new(current.as_thread())?;
@@ -299,7 +299,7 @@ pub fn sys_chroot(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
     debug!("sys_chroot <= path: {path}");
 
     let credentials = FsCredentialsSnapshot::capture(current.as_thread());
-    let cred = mutation_credentials(&credentials);
+    let cred = credentials.as_mutation_credentials();
     let binding = current
         .as_thread()
         .snapshot_fs_binding()?
@@ -376,7 +376,7 @@ pub fn sys_mkdirat(
     let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
@@ -440,7 +440,7 @@ pub fn sys_mknodat(
     };
 
     let fs_credentials = FsCredentialsSnapshot::capture(thread);
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
     let resolve_dirfd = if path.starts_with('/') {
         AT_FDCWD
     } else {
@@ -605,7 +605,7 @@ pub fn sys_linkat(
     };
 
     let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
     // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the
     // genuinely empty pathname. With a non-empty pathname it is ignored by
     // linkat(), so ordinary path-based linking remains unprivileged.
@@ -683,7 +683,7 @@ pub fn sys_unlinkat(
 ) -> StarryResult<isize> {
     let path = vm_load_path_string(current, path)?;
     let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -776,7 +776,7 @@ pub fn sys_symlinkat(
     let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
     let resolve_dirfd = if linkpath.starts_with('/') {
         AT_FDCWD
     } else {
@@ -885,7 +885,7 @@ pub fn sys_renameat2(
     // Check search permissions while resolving each parent, before a missing
     // entry or dangling symlink target can mask EACCES.
     let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
-    let mutation_cred = mutation_credentials(&fs_credentials);
+    let mutation_cred = fs_credentials.as_mutation_credentials();
     let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, |fs| {
         let (old_dir, old_name, searched) = fs
             .resolve_parent_with_search_checked(Path::new(&old_path), |directory| {

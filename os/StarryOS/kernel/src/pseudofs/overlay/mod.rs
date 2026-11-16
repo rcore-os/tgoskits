@@ -10,45 +10,49 @@
 //! rename is rejected, and index/redirect_dir are handled by mount option
 //! validation rather than by full semantic support here.
 
+mod inode;
+
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
-    sync::Arc,
+    sync::{Arc, Weak},
     vec::Vec,
 };
-use core::any::Any;
+use core::{
+    any::Any,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use ax_fs_ng::vfs::OpenOptions;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor, FileNode, FileNodeOps,
-    FileRangeOperation, Filesystem, FilesystemOps, Location, Metadata, MetadataUpdate, NodeFlags,
-    NodeOps, NodePermission, NodeType, Reference, RenameOptions, StatFs, VfsError, VfsResult,
-    WeakDirEntry,
+    FileRangeOperation, Filesystem, FilesystemOps, Location, Metadata, MetadataUpdate,
+    MutationCredentials, NameState, NodeFlags, NodeIdentity, NodeOps, NodePermission, NodeType,
+    Reference, RenameOptions, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
+use inode::{InodeIndex, OverlayInode};
 
-use crate::{
-    pseudofs::dummy_stat_fs,
-    sync::{Mutex, RawSpinLock},
-};
+use crate::{pseudofs::dummy_stat_fs, sync::RawSpinLock, task::FsCredentialsSnapshot};
 
 const COPY_BUF_SIZE: usize = 4096;
 const OVERLAY_MAGIC: u32 = 0x794c7630;
 const WHITEOUT_DEVICE: DeviceId = DeviceId::new(0, 0);
 const OPAQUE_MARKER_NAME: &str = ".wh..wh..opq";
+static NEXT_OVERLAY_DEVICE: AtomicU32 = AtomicU32::new(1);
 
-#[derive(Clone)]
-pub struct OverlayOptions {
+pub(crate) struct OverlayOptions {
     /// Lower layers ordered from topmost to bottommost.
     pub lower_dirs: Vec<Location>,
     /// Writable upper layer. `None` creates a read-only lower-only overlay.
     pub upper_dir: Option<Location>,
     /// Work directory required by the mount ABI when an upper layer exists.
     pub work_dir: Option<Location>,
+    pub mounter: FsCredentialsSnapshot,
 }
 
 /// Build an overlay filesystem from resolved lower, upper, and work dirs.
-pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
+pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
     if options.lower_dirs.is_empty() {
         return Err(VfsError::InvalidInput);
     }
@@ -61,24 +65,57 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
     if let Some(work_dir) = &options.work_dir {
         work_dir.check_is_dir()?;
     }
+    if let (Some(upper), Some(work)) = (&options.upper_dir, &options.work_dir) {
+        if !Arc::ptr_eq(upper.mountpoint(), work.mountpoint()) {
+            return Err(VfsError::CrossesDevices);
+        }
+        if upper.is_descendant_of(work) || work.is_descendant_of(upper) {
+            return Err(VfsError::InvalidInput);
+        }
+    }
     for lower in &options.lower_dirs {
         lower.check_is_dir()?;
     }
 
-    let fs = Arc::new(OverlayFs {
+    let write_roots: Vec<_> = options
+        .upper_dir
+        .iter()
+        .chain(options.work_dir.iter())
+        .cloned()
+        .collect();
+    let depth = options
+        .lower_dirs
+        .iter()
+        .chain(write_roots.iter())
+        .map(|root| root.filesystem().stack_depth())
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .filter(|depth| *depth <= 2)
+        .ok_or(VfsError::InvalidInput)?;
+    let device = NEXT_OVERLAY_DEVICE
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .map_err(|_| VfsError::NoMemory)?;
+    let inodes = InodeIndex::new();
+    let root = inodes.select(
+        options.upper_dir.clone(),
+        options.lower_dirs.clone(),
+        options.upper_dir.is_some(),
+    )?;
+    let fs = Arc::new_cyclic(|this| OverlayFs {
+        this: this.clone(),
         lower_dirs: options.lower_dirs,
         upper_dir: options.upper_dir,
-        _work_dir: options.work_dir,
-        root: RawSpinLock::new(None),
+        mounter: options.mounter,
+        write_roots,
+        depth,
+        device: DeviceId::new(0, device).0,
+        inodes,
+        root,
+        root_entry: RawSpinLock::new(None),
     });
-    let root = OverlayDir::entry(
-        fs.clone(),
-        fs.upper_dir.clone(),
-        fs.lower_dirs.clone(),
-        Vec::new(),
-        None,
-    );
-    *fs.root.lock_irqsave() = Some(root);
     Ok(Filesystem::new(fs))
 }
 
@@ -113,11 +150,23 @@ pub(crate) fn ensure_copy_up_target(loc: &Location) -> VfsResult<Location> {
 }
 
 struct OverlayFs {
+    this: Weak<Self>,
     lower_dirs: Vec<Location>,
     upper_dir: Option<Location>,
-    _work_dir: Option<Location>,
+    mounter: FsCredentialsSnapshot,
+    write_roots: Vec<Location>,
+    depth: u32,
+    device: u64,
+    inodes: InodeIndex,
+    root: Arc<OverlayInode>,
     // root_dir() may be called from VFS mount paths with preemption disabled.
-    root: RawSpinLock<Option<DirEntry>>,
+    root_entry: RawSpinLock<Option<WeakDirEntry>>,
+}
+
+impl OverlayFs {
+    fn credentials(&self) -> MutationCredentials<'_> {
+        self.mounter.as_mutation_credentials()
+    }
 }
 
 impl FilesystemOps for OverlayFs {
@@ -126,7 +175,47 @@ impl FilesystemOps for OverlayFs {
     }
 
     fn root_dir(&self) -> DirEntry {
-        self.root.lock_irqsave().clone().unwrap()
+        if let Some(root) = self
+            .root_entry
+            .lock_irqsave()
+            .as_ref()
+            .and_then(WeakDirEntry::upgrade)
+        {
+            return root;
+        }
+        // No backend callback or sleeping gate is needed to rebuild this alias.
+        let candidate = OverlayDir::entry(
+            self.this.upgrade().expect("live overlay receiver"),
+            self.root.clone(),
+            Reference::root(),
+        );
+        let mut root = self.root_entry.lock_irqsave();
+        let selected = root
+            .as_ref()
+            .and_then(WeakDirEntry::upgrade)
+            .unwrap_or_else(|| {
+                *root = Some(candidate.downgrade());
+                candidate.clone()
+            });
+        drop(root);
+        drop(candidate);
+        selected
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.upper_dir.is_none()
+    }
+
+    fn stack_depth(&self) -> u32 {
+        self.depth
+    }
+
+    fn write_backing_roots(&self) -> &[Location] {
+        &self.write_roots
+    }
+
+    fn read_backing_roots(&self) -> &[Location] {
+        &self.lower_dirs
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
@@ -143,7 +232,7 @@ fn is_whiteout(loc: &Location) -> VfsResult<bool> {
 
 /// Check whether an upper directory hides all lower entries under the same dir.
 fn is_opaque(dir: &Location) -> VfsResult<bool> {
-    match dir.lookup_no_follow(OPAQUE_MARKER_NAME) {
+    match dir.lookup_backing(OPAQUE_MARKER_NAME) {
         Ok(_) => Ok(true),
         Err(VfsError::NotFound) => Ok(false),
         Err(err) => Err(err),
@@ -151,23 +240,25 @@ fn is_opaque(dir: &Location) -> VfsResult<bool> {
 }
 
 /// Create the Linux overlayfs whiteout marker: char device with rdev 0:0.
-fn create_whiteout(dir: &Location, name: &str) -> VfsResult<()> {
-    let whiteout = dir.create(
+fn create_whiteout(
+    dir: &Location,
+    name: &str,
+    credentials: &MutationCredentials<'_>,
+) -> VfsResult<()> {
+    dir.create_initialized(
         name,
-        NodeType::CharacterDevice,
-        NodePermission::from_bits_truncate(0),
-        0,
-        0,
+        axfs_ng_vfs::CreateAttributes {
+            content: axfs_ng_vfs::CreateContent::Node(NodeType::CharacterDevice, WHITEOUT_DEVICE),
+            permission: NodePermission::from_bits_truncate(0),
+        },
+        credentials,
     )?;
-    whiteout.update_metadata(MetadataUpdate {
-        rdev: Some(WHITEOUT_DEVICE),
-        ..Default::default()
-    })
+    Ok(())
 }
 
 /// Mark an upper directory as opaque by creating the `.wh..wh..opq` marker.
-fn mark_opaque(dir: &Location) -> VfsResult<()> {
-    match dir.lookup_no_follow(OPAQUE_MARKER_NAME) {
+fn mark_opaque(dir: &Location, credentials: &MutationCredentials<'_>) -> VfsResult<()> {
+    match dir.lookup_backing(OPAQUE_MARKER_NAME) {
         Ok(_) => Ok(()),
         Err(VfsError::NotFound) => {
             dir.create(
@@ -176,6 +267,7 @@ fn mark_opaque(dir: &Location) -> VfsResult<()> {
                 NodePermission::from_bits_truncate(0),
                 0,
                 0,
+                credentials,
             )?;
             Ok(())
         }
@@ -197,7 +289,7 @@ fn lookup_upper(dir: &Location, name: &str) -> VfsResult<UpperLookup> {
     if name == OPAQUE_MARKER_NAME {
         return Ok(UpperLookup::Whiteout);
     }
-    match dir.lookup_no_follow(name) {
+    match dir.lookup_backing(name) {
         Ok(loc) if is_whiteout(&loc)? => Ok(UpperLookup::Whiteout),
         Ok(loc) => Ok(UpperLookup::Present(loc)),
         Err(VfsError::NotFound) => Ok(UpperLookup::Missing),
@@ -216,7 +308,7 @@ fn lookup_visible_upper(dir: &Location, name: &str) -> VfsResult<Option<Location
 
 /// Lookup raw upper entries, including whiteout markers.
 fn lookup_any_upper(dir: &Location, name: &str) -> VfsResult<Option<Location>> {
-    match dir.lookup_no_follow(name) {
+    match dir.lookup_backing(name) {
         Ok(loc) => Ok(Some(loc)),
         Err(VfsError::NotFound) => Ok(None),
         Err(err) => Err(err),
@@ -226,7 +318,7 @@ fn lookup_any_upper(dir: &Location, name: &str) -> VfsResult<Option<Location>> {
 /// Lookup lower layers from topmost to bottommost.
 fn lookup_lower(dirs: &[Location], name: &str) -> VfsResult<Option<Location>> {
     for dir in dirs {
-        match dir.lookup_no_follow(name) {
+        match dir.lookup_backing(name) {
             Ok(loc) if is_whiteout(&loc)? => return Ok(None),
             Ok(loc) => return Ok(Some(loc)),
             Err(VfsError::NotFound) => {}
@@ -250,7 +342,7 @@ fn read_names(dir: &Location, names: &mut BTreeMap<String, DirentInfo>) -> VfsRe
             if name == "." || name == ".." || name == OPAQUE_MARKER_NAME {
                 return true;
             }
-            let Ok(loc) = dir.lookup_no_follow(name) else {
+            let Ok(loc) = dir.lookup_backing(name) else {
                 return true;
             };
             if is_whiteout(&loc).unwrap_or(false) {
@@ -311,14 +403,26 @@ fn copy_metadata(src: &Location, dst: &Location) -> VfsResult<()> {
 }
 
 /// Copy a lower entry into an upper directory.
-fn copy_entry(src: &Location, dst_dir: &Location, name: &str) -> VfsResult<Location> {
+fn copy_entry(
+    src: &Location,
+    dst_dir: &Location,
+    name: &str,
+    credentials: &MutationCredentials<'_>,
+) -> VfsResult<Location> {
     let meta = src.metadata()?;
     let dst = match meta.node_type {
         NodeType::Symlink => {
             let target = src.read_link()?;
-            dst_dir.create_symlink(name, &target, meta.mode, meta.uid, meta.gid)?
+            dst_dir.create_symlink(name, &target, meta.mode, meta.uid, meta.gid, credentials)?
         }
-        _ => dst_dir.create(name, meta.node_type, meta.mode, meta.uid, meta.gid)?,
+        _ => dst_dir.create(
+            name,
+            meta.node_type,
+            meta.mode,
+            meta.uid,
+            meta.gid,
+            credentials,
+        )?,
     };
     match meta.node_type {
         NodeType::RegularFile => copy_file_contents(src, &dst)?,
@@ -335,11 +439,12 @@ fn ensure_upper_from_lower(
     upper_dir: &Location,
     lower: &Location,
     name: &str,
+    credentials: &MutationCredentials<'_>,
 ) -> VfsResult<Location> {
     if let Some(upper) = lookup_visible_upper(upper_dir, name)? {
         return Ok(upper);
     }
-    copy_entry(lower, upper_dir, name)
+    copy_entry(lower, upper_dir, name, credentials)
 }
 
 #[derive(Clone)]
@@ -350,43 +455,20 @@ struct DirentInfo {
 
 struct OverlayDir {
     fs: Arc<OverlayFs>,
-    /// Materialized upper directory for this overlay path, if it exists.
-    upper_dir: Mutex<Option<Location>>,
-    /// Lower directories that still participate in this overlay directory.
-    lower_dirs: Vec<Location>,
-    /// Path from overlay root to this directory, used for deferred copy-up.
-    path: Vec<String>,
-    this: Option<WeakDirEntry>,
+    inode: Arc<OverlayInode>,
+    this: WeakDirEntry,
 }
 
 impl OverlayDir {
-    /// Build an overlay directory entry with the corresponding upper/lower set.
-    fn entry(
-        fs: Arc<OverlayFs>,
-        upper_dir: Option<Location>,
-        lower_dirs: Vec<Location>,
-        path: Vec<String>,
-        parent: Option<DirEntry>,
-    ) -> DirEntry {
+    fn entry(fs: Arc<OverlayFs>, inode: Arc<OverlayInode>, reference: Reference) -> DirEntry {
         DirEntry::new_dir(
-            |this| {
-                DirNode::new(Arc::new(Self {
-                    fs,
-                    upper_dir: Mutex::new(upper_dir),
-                    lower_dirs,
-                    path,
-                    this: Some(this),
-                }))
-            },
-            parent.map_or_else(Reference::root, |p| Reference::new(Some(p), String::new())),
+            |this| DirNode::new(Arc::new(Self { fs, inode, this })),
+            reference,
         )
     }
 
     fn child_reference(&self, name: &str) -> Reference {
-        Reference::new(
-            self.this.as_ref().and_then(WeakDirEntry::upgrade),
-            name.to_string(),
-        )
+        Reference::new(self.this.upgrade(), name.to_string())
     }
 
     /// Collect lower child directories that should be visible below `name`.
@@ -396,7 +478,7 @@ impl OverlayDir {
     fn lower_dirs_for_child_in(dirs: &[Location], name: &str) -> Vec<Location> {
         let mut result = Vec::new();
         for lower_dir in dirs {
-            if let Ok(child) = lower_dir.lookup_no_follow(name) {
+            if let Ok(child) = lower_dir.lookup_backing(name) {
                 if is_whiteout(&child).unwrap_or(false) {
                     break;
                 }
@@ -409,55 +491,41 @@ impl OverlayDir {
     }
 
     fn lower_dirs_for_child(&self, name: &str) -> Vec<Location> {
-        Self::lower_dirs_for_child_in(&self.lower_dirs, name)
-    }
-
-    fn child_path(&self, name: &str) -> Vec<String> {
-        let mut path = self.path.clone();
-        path.push(name.to_string());
-        path
+        Self::lower_dirs_for_child_in(&self.inode.lower, name)
     }
 
     fn existing_upper_dir(&self) -> Option<Location> {
-        self.upper_dir.lock().clone()
+        self.inode.upper()
     }
 
-    /// Ensure this overlay directory has a real upper directory.
-    ///
-    /// Lower-only lookups should not create upper state. This is called only by
-    /// operations that must write into upper or need an upper parent for a
-    /// copied-up child.
+    /// Use the live alias relationship; a renamed parent keeps its entity.
     fn materialize_upper_dir(&self) -> VfsResult<Location> {
-        if let Some(upper_dir) = self.existing_upper_dir() {
-            return Ok(upper_dir);
+        if let Some(upper) = self.existing_upper_dir() {
+            return Ok(upper);
         }
-
-        let mut upper_dir = self
-            .fs
-            .upper_dir
-            .clone()
-            .ok_or(VfsError::ReadOnlyFilesystem)?;
-        let mut lower_dirs = self.fs.lower_dirs.clone();
-        for name in &self.path {
-            if let Some(existing) = lookup_visible_upper(&upper_dir, name)? {
-                existing.check_is_dir()?;
-                upper_dir = existing;
-            } else {
-                let lower = lookup_lower(&lower_dirs, name)?.ok_or(VfsError::NotFound)?;
-                lower.check_is_dir()?;
-                upper_dir = copy_entry(&lower, &upper_dir, name)?;
-            }
-            lower_dirs = Self::lower_dirs_for_child_in(&lower_dirs, name);
+        let entry = self.this.upgrade().ok_or(VfsError::NotFound)?;
+        let snapshot = entry.name_snapshot();
+        if snapshot.state() != NameState::Linked {
+            return Err(VfsError::OperationNotSupported);
         }
-
-        *self.upper_dir.lock() = Some(upper_dir.clone());
-        Ok(upper_dir)
+        let parent = snapshot
+            .parent()
+            .ok_or(VfsError::BadState)?
+            .downcast::<Self>()?;
+        let lower = self.inode.lower.first().ok_or(VfsError::NotFound)?;
+        let upper = ensure_upper_from_lower(
+            &parent.materialize_upper_dir()?,
+            lower,
+            snapshot.name(),
+            &self.fs.credentials(),
+        )?;
+        self.fs.inodes.bind_upper(&self.inode, &upper);
+        drop(self.inode.replace_upper(upper.clone()));
+        Ok(upper)
     }
 
     fn current_dir(&self) -> VfsResult<Location> {
-        self.existing_upper_dir()
-            .or_else(|| self.lower_dirs.first().cloned())
-            .ok_or(VfsError::NotFound)
+        self.inode.current()
     }
 
     fn lookup_visible_upper_child(&self, name: &str) -> VfsResult<Option<Location>> {
@@ -496,40 +564,27 @@ impl OverlayDir {
             .as_ref()
             .or(lower.as_ref())
             .ok_or(VfsError::NotFound)?;
-        let node_type = source.node_type();
-        let reference = self.child_reference(name);
-        if node_type == NodeType::Directory {
-            if let Some(upper) = &upper {
-                upper.check_is_dir()?;
-            }
-            let lower_dirs = self.lower_dirs_for_child(name);
-            let path = self.child_path(name);
-            let fs = self.fs.clone();
-            Ok(DirEntry::new_dir(
-                |this| {
-                    DirNode::new(Arc::new(Self {
-                        fs,
-                        upper_dir: Mutex::new(upper),
-                        lower_dirs,
-                        path,
-                        this: Some(this),
-                    }))
-                },
-                reference,
-            ))
+        let lower = if source.node_type() == NodeType::Directory {
+            self.lower_dirs_for_child(name)
         } else {
-            Ok(DirEntry::new_file(
-                FileNode::new(Arc::new(OverlayFile {
-                    fs: self.fs.clone(),
-                    upper_dir: Mutex::new(self.existing_upper_dir()),
-                    parent_path: self.path.clone(),
-                    name: name.to_string(),
-                    upper,
-                    lower,
-                })),
-                node_type,
-                reference,
-            ))
+            lower.into_iter().collect()
+        };
+        let inode = self
+            .fs
+            .inodes
+            .select(upper, lower, self.fs.upper_dir.is_some())?;
+        let reference = self.child_reference(name);
+        if inode.kind == NodeType::Directory {
+            Ok(Self::entry(self.fs.clone(), inode, reference))
+        } else {
+            let file = Arc::new(OverlayFile {
+                fs: self.fs.clone(),
+                inode,
+                this: RawSpinLock::new(None),
+            });
+            let entry = DirEntry::new_file(FileNode::new(file.clone()), file.inode.kind, reference);
+            *file.this.lock_irqsave() = Some(entry.downgrade());
+            Ok(entry)
         }
     }
 
@@ -538,7 +593,7 @@ impl OverlayDir {
             UpperLookup::Present(_) => Err(VfsError::AlreadyExists),
             UpperLookup::Whiteout => Ok(()),
             UpperLookup::Missing => {
-                if lookup_lower(&self.lower_dirs, name)?.is_some() {
+                if lookup_lower(&self.inode.lower, name)?.is_some() {
                     return Err(VfsError::AlreadyExists);
                 }
                 Ok(())
@@ -553,7 +608,7 @@ impl OverlayDir {
             && is_whiteout(&upper)?
             && let Some(upper_dir) = self.existing_upper_dir()
         {
-            upper_dir.unlink(name, upper.is_dir())?;
+            upper_dir.unlink(name, upper.is_dir(), &self.fs.credentials())?;
         }
         Ok(())
     }
@@ -561,11 +616,15 @@ impl OverlayDir {
 
 impl NodeOps for OverlayDir {
     fn inode(&self) -> u64 {
-        self.current_dir().map_or(0, |loc| loc.inode())
+        self.inode.number
+    }
+
+    fn identity(&self) -> Option<NodeIdentity> {
+        Some(self.inode.identity(self.fs.as_ref()))
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
-        self.current_dir()?.metadata()
+        self.inode.metadata(self.fs.device)
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
@@ -619,7 +678,7 @@ impl DirNodeOps for OverlayDir {
             None => false,
         };
         if !is_opaque {
-            for lower in self.lower_dirs.iter().rev() {
+            for lower in self.inode.lower.iter().rev() {
                 read_names(lower, &mut entries)?;
             }
         }
@@ -661,7 +720,7 @@ impl DirNodeOps for OverlayDir {
                 {
                     return Err(VfsError::NotFound);
                 }
-                let lower = lookup_lower(&self.lower_dirs, name)?.ok_or(VfsError::NotFound)?;
+                let lower = lookup_lower(&self.inode.lower, name)?.ok_or(VfsError::NotFound)?;
                 self.build_entry(name, None, Some(lower))
             }
         }
@@ -684,9 +743,14 @@ impl DirNodeOps for OverlayDir {
         }
         self.ensure_no_visible_entry(name)?;
         self.remove_existing_whiteout(name)?;
-        let upper = self
-            .materialize_upper_dir()?
-            .create(name, node_type, permission, uid, gid)?;
+        let upper = self.materialize_upper_dir()?.create(
+            name,
+            node_type,
+            permission,
+            uid,
+            gid,
+            &self.fs.credentials(),
+        )?;
         self.build_entry(name, Some(upper), None)
     }
 
@@ -700,9 +764,14 @@ impl DirNodeOps for OverlayDir {
     ) -> VfsResult<DirEntry> {
         self.ensure_no_visible_entry(name)?;
         self.remove_existing_whiteout(name)?;
-        let upper = self
-            .materialize_upper_dir()?
-            .create_symlink(name, target, permission, uid, gid)?;
+        let upper = self.materialize_upper_dir()?.create_symlink(
+            name,
+            target,
+            permission,
+            uid,
+            gid,
+            &self.fs.credentials(),
+        )?;
         self.build_entry(name, Some(upper), None)
     }
 
@@ -712,7 +781,9 @@ impl DirNodeOps for OverlayDir {
         self.remove_existing_whiteout(name)?;
 
         let target = node.downcast::<OverlayFile>()?.ensure_upper()?;
-        let linked = self.materialize_upper_dir()?.link(name, &target)?;
+        let linked = self
+            .materialize_upper_dir()?
+            .link(name, &target, &self.fs.credentials())?;
         self.build_entry(name, Some(linked), None)
     }
 
@@ -722,10 +793,10 @@ impl DirNodeOps for OverlayDir {
         if let Some(upper) = self.lookup_visible_upper_child(name)?
             && let Some(upper_dir) = self.existing_upper_dir()
         {
-            upper_dir.unlink(name, upper.is_dir())?;
+            upper_dir.unlink(name, upper.is_dir(), &self.fs.credentials())?;
         }
-        if lookup_lower(&self.lower_dirs, name)?.is_some() {
-            create_whiteout(&self.materialize_upper_dir()?, name)?;
+        if lookup_lower(&self.inode.lower, name)?.is_some() {
+            create_whiteout(&self.materialize_upper_dir()?, name, &self.fs.credentials())?;
             return Ok(());
         }
         Ok(())
@@ -757,11 +828,16 @@ impl DirNodeOps for OverlayDir {
         let src = match self.lookup_visible_upper_child(src_name)? {
             Some(upper) => upper,
             None => {
-                let lower = lookup_lower(&self.lower_dirs, src_name)?.ok_or(VfsError::NotFound)?;
+                let lower = lookup_lower(&self.inode.lower, src_name)?.ok_or(VfsError::NotFound)?;
                 if lower.is_dir() {
                     return Err(VfsError::CrossesDevices);
                 }
-                ensure_upper_from_lower(&self.materialize_upper_dir()?, &lower, src_name)?
+                ensure_upper_from_lower(
+                    &self.materialize_upper_dir()?,
+                    &lower,
+                    src_name,
+                    &self.fs.credentials(),
+                )?
             }
         };
         dst.remove_existing_whiteout(dst_name)?;
@@ -770,14 +846,19 @@ impl DirNodeOps for OverlayDir {
             &dst.materialize_upper_dir()?,
             dst_name,
             options,
+            &self.fs.credentials(),
         )?;
-        if lookup_lower(&self.lower_dirs, src_name)?.is_some() {
-            create_whiteout(&self.materialize_upper_dir()?, src_name)?;
+        if lookup_lower(&self.inode.lower, src_name)?.is_some() {
+            create_whiteout(
+                &self.materialize_upper_dir()?,
+                src_name,
+                &self.fs.credentials(),
+            )?;
         }
         if src.is_dir()
             && let Some(moved) = dst.lookup_visible_upper_child(dst_name)?
         {
-            mark_opaque(&moved)?;
+            mark_opaque(&moved, &self.fs.credentials())?;
         }
         Ok(())
     }
@@ -785,82 +866,57 @@ impl DirNodeOps for OverlayDir {
 
 struct OverlayFile {
     fs: Arc<OverlayFs>,
-    /// Materialized upper parent directory, if one exists.
-    upper_dir: Mutex<Option<Location>>,
-    /// Parent path from overlay root, used to materialize the upper parent.
-    parent_path: Vec<String>,
-    name: String,
-    /// Upper file captured when the entry was built.
-    upper: Option<Location>,
-    /// Lower file captured when the entry was built.
-    lower: Option<Location>,
+    inode: Arc<OverlayInode>,
+    this: RawSpinLock<Option<WeakDirEntry>>,
 }
 
 impl OverlayFile {
-    fn existing_upper_dir(&self) -> Option<Location> {
-        self.upper_dir.lock().clone()
-    }
-
-    /// Ensure the parent directory for this file exists in upper.
-    fn materialize_upper_dir(&self) -> VfsResult<Location> {
-        if let Some(upper_dir) = self.existing_upper_dir() {
-            return Ok(upper_dir);
-        }
-
-        let mut upper_dir = self
-            .fs
-            .upper_dir
-            .clone()
-            .ok_or(VfsError::ReadOnlyFilesystem)?;
-        let mut lower_dirs = self.fs.lower_dirs.clone();
-        for name in &self.parent_path {
-            if let Some(existing) = lookup_visible_upper(&upper_dir, name)? {
-                existing.check_is_dir()?;
-                upper_dir = existing;
-            } else {
-                let lower = lookup_lower(&lower_dirs, name)?.ok_or(VfsError::NotFound)?;
-                lower.check_is_dir()?;
-                upper_dir = copy_entry(&lower, &upper_dir, name)?;
-            }
-            lower_dirs = OverlayDir::lower_dirs_for_child_in(&lower_dirs, name);
-        }
-
-        *self.upper_dir.lock() = Some(upper_dir.clone());
-        Ok(upper_dir)
-    }
-
-    /// Return the currently visible backing file.
     fn current(&self) -> VfsResult<Location> {
-        if let Some(upper_dir) = self.existing_upper_dir()
-            && let Some(upper) = lookup_visible_upper(&upper_dir, &self.name)?
-        {
-            return Ok(upper);
-        }
-        self.lower.clone().ok_or(VfsError::NotFound)
+        self.inode.current()
     }
 
-    /// Ensure this file has a writable upper backing file.
     fn ensure_upper(&self) -> VfsResult<Location> {
-        if let Some(upper_dir) = self.existing_upper_dir()
-            && let Some(upper) = lookup_visible_upper(&upper_dir, &self.name)?
-        {
+        if let Some(upper) = self.inode.upper() {
             return Ok(upper);
         }
-        let lower = self.lower.as_ref().ok_or(VfsError::NotFound)?;
-        ensure_upper_from_lower(&self.materialize_upper_dir()?, lower, &self.name)
+        let entry = self
+            .this
+            .lock_irqsave()
+            .as_ref()
+            .and_then(WeakDirEntry::upgrade)
+            .ok_or(VfsError::NotFound)?;
+        let snapshot = entry.name_snapshot();
+        if snapshot.state() != NameState::Linked {
+            return Err(VfsError::OperationNotSupported);
+        }
+        let parent = snapshot
+            .parent()
+            .ok_or(VfsError::BadState)?
+            .downcast::<OverlayDir>()?;
+        let lower = self.inode.lower.first().ok_or(VfsError::NotFound)?;
+        let upper = ensure_upper_from_lower(
+            &parent.materialize_upper_dir()?,
+            lower,
+            snapshot.name(),
+            &self.fs.credentials(),
+        )?;
+        self.fs.inodes.bind_upper(&self.inode, &upper);
+        drop(self.inode.replace_upper(upper.clone()));
+        Ok(upper)
     }
 }
 
 impl NodeOps for OverlayFile {
     fn inode(&self) -> u64 {
-        self.upper
-            .as_ref()
-            .or(self.lower.as_ref())
-            .map_or(0, Location::inode)
+        self.inode.number
+    }
+
+    fn identity(&self) -> Option<NodeIdentity> {
+        Some(self.inode.identity(self.fs.as_ref()))
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
-        self.current()?.metadata()
+        self.inode.metadata(self.fs.device)
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {

@@ -9,7 +9,6 @@ use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_PATH, UTIME_NOW, UTIME_OMIT, timespec,
 };
 
-use super::mutation_credentials;
 use crate::{
     StarryError, StarryResult,
     file::{descriptor_path, get_file_like, resolve_at_checked, with_fs},
@@ -64,7 +63,7 @@ fn change_fd(current: &UserTaskRef, fd: i32, change: MetadataChange) -> StarryRe
     let identity = FsCredentialsSnapshot::capture(current.as_thread());
     target
         .location()
-        .change_metadata(change, &mutation_credentials(&identity))?;
+        .change_metadata(change, &identity.as_mutation_credentials())?;
     Ok(0)
 }
 
@@ -76,7 +75,7 @@ fn change_at(
     change: MetadataChange,
 ) -> StarryResult<isize> {
     let identity = FsCredentialsSnapshot::capture(current.as_thread());
-    let credentials = mutation_credentials(&identity);
+    let credentials = identity.as_mutation_credentials();
     let target = at_target(current, dirfd, path, flags, &credentials)?;
     target.location().change_metadata(change, &credentials)?;
     Ok(0)
@@ -254,7 +253,7 @@ pub fn sys_utimensat(
         return Err(StarryError::InvalidInput);
     }
     let identity = FsCredentialsSnapshot::capture(current.as_thread());
-    let credentials = mutation_credentials(&identity);
+    let credentials = identity.as_mutation_credentials();
     let target = if descriptor {
         fd_target(dirfd, DescriptorMode::Ordinary)?
     } else {
