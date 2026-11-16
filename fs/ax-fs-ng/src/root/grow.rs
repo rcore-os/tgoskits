@@ -488,6 +488,8 @@ mod tests {
                     "4096",
                     "-g",
                     "1024",
+                    "-O",
+                    "^orphan_file,^metadata_csum_seed",
                     root_path.to_str().unwrap(),
                 ],
             );
