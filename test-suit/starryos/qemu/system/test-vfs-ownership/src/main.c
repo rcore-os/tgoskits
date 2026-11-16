@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static int switch_user(uid_t uid, gid_t gid) {
@@ -61,8 +63,117 @@ static int check_owner_fd(int fd, uid_t expected_uid, gid_t expected_gid) {
     return 0;
 }
 
-int main(void) {
+/* This journey uses a real MemoryFs backing and real syscall entry points.
+ * It shares the existing ownership process/boot and restores both mounts. */
+static void overlay_ownership(void) {
+    char scratch[] = "/tmp/vfs-overlay-XXXXXX";
+    char lower[128], upper[128], work[128], merged[128];
+    char source[256], path[256], other[256], options[768];
+    unsigned char content[8193], observed[sizeof(content)];
+    struct stat st;
+    int fd = -1, orphan = -1, created = -1;
+    int backing_mounted = 0, overlay_mounted = 0;
+    for (size_t i = 0; i < sizeof(content); ++i) content[i] = (unsigned char)(i * 29 + 3);
+#define OVL_REQUIRE(condition, message) do { \
+    int ok = !!(condition); CHECK(ok, message); if (!ok) goto cleanup; \
+} while (0)
+    OVL_REQUIRE(mkdtemp(scratch) != NULL, "create isolated Overlay workspace");
+    OVL_REQUIRE(syscall(SYS_mount, "tmpfs", scratch, "tmpfs", 0, "size=16777216") == 0,
+                "mount native MemoryFs backing");
+    backing_mounted = 1;
+    snprintf(lower, sizeof(lower), "%s/lower", scratch);
+    snprintf(upper, sizeof(upper), "%s/upper", scratch);
+    snprintf(work, sizeof(work), "%s/work", scratch);
+    snprintf(merged, sizeof(merged), "%s/merged", scratch);
+    OVL_REQUIRE(mkdir(lower, 0755) == 0 && mkdir(upper, 0755) == 0 &&
+                mkdir(work, 02777) == 0 && mkdir(merged, 0755) == 0,
+                "create lower, upper, SGID work and merged roots");
+    OVL_REQUIRE(chmod(work, 02777) == 0, "retain SGID on the public work root");
+    snprintf(path, sizeof(path), "%s/deep", lower);
+    OVL_REQUIRE(mkdir(path, 0755) == 0, "create lower-only ancestor");
+    snprintf(source, sizeof(source), "%s/deep/seed", lower);
+    fd = syscall(SYS_openat, AT_FDCWD, source, O_CREAT | O_EXCL | O_RDWR, 0755);
+    OVL_REQUIRE(fd >= 0, "create native source");
+    OVL_REQUIRE(syscall(SYS_write, fd, content, sizeof(content)) == (long)sizeof(content), "write source across native cache pages");
+    OVL_REQUIRE(syscall(SYS_fchmod, fd, 06755) == 0, "initialize source setid permissions");
+    OVL_REQUIRE(syscall(SYS_setxattr, source, "user.overlay", "retained", 8, 0) == 0, "initialize native source xattr");
+    close(fd); fd = -1;
+    snprintf(path, sizeof(path), "%s/orphan", lower);
+    orphan = syscall(SYS_openat, AT_FDCWD, path, O_CREAT | O_EXCL | O_RDWR, 0600);
+    OVL_REQUIRE(orphan >= 0 && syscall(SYS_write, orphan, "kept", 4) == 4, "create source for anonymous copy-up");
+    close(orphan); orphan = -1;
+    snprintf(options, sizeof(options), "lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work);
+    OVL_REQUIRE(syscall(SYS_mount, "overlay", merged, "overlay", 0, options) == 0, "mount the merged filesystem");
+    overlay_mounted = 1;
+    snprintf(path, sizeof(path), "%s/deep/seed", merged);
+    fd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
+    OVL_REQUIRE(fd >= 0, "retain lower-backed readonly fd");
+    OVL_REQUIRE(syscall(SYS_fchmod, fd, 0600) == 0, "metadata copy-up prepares ancestor and data");
+    OVL_REQUIRE(syscall(SYS_pread64, fd, observed, sizeof(observed), 0) == (long)sizeof(observed) &&
+                memcmp(content, observed, sizeof(content)) == 0, "retained fd reads the complete copied content");
+    OVL_REQUIRE(syscall(SYS_fchmod, fd, 06755) == 0 && syscall(SYS_fchown, fd, 77, 88) == 0,
+                "forward chmod and chown as accepted intentions");
+    OVL_REQUIRE(syscall(SYS_fstat, fd, &st) == 0 && st.st_uid == 77 && st.st_gid == 88 &&
+                (st.st_mode & 07777) == 0755, "actual copied owner and chown setid removal");
+    OVL_REQUIRE(stat(source, &st) == 0 && st.st_uid == 0 && (st.st_mode & 07777) == 06755,
+                "copy-up preserves the original lower inode");
+    snprintf(other, sizeof(other), "%s/deep/seed", upper);
+    OVL_REQUIRE(syscall(SYS_getxattr, other, "user.overlay", observed, sizeof(observed)) == 8 &&
+                memcmp(observed, "retained", 8) == 0, "actual upper preserves source xattr");
+    OVL_REQUIRE(syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0, "unlink copied file and hide lower with whiteout");
+    CHECK_ERR(syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0), ENOENT, "whiteout hides the lower pathname");
+    OVL_REQUIRE(syscall(SYS_fchmod, fd, 0640) == 0 && syscall(SYS_fstat, fd, &st) == 0 &&
+                st.st_nlink == 0 && (st.st_mode & 07777) == 0640, "metadata still addresses the actual unlinked upper");
+    close(fd); fd = -1;
+    snprintf(path, sizeof(path), "%s/orphan", merged);
+    orphan = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
+    OVL_REQUIRE(orphan >= 0 && syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0,
+                "unlink lower-only object while retaining its fd");
+    OVL_REQUIRE(syscall(SYS_fchmod, orphan, 0640) == 0 && syscall(SYS_fstat, orphan, &st) == 0 &&
+                st.st_nlink == 0 && (st.st_mode & 07777) == 0640, "deleted lower copy-up creates an actual anonymous upper");
+    OVL_REQUIRE(syscall(SYS_pread64, orphan, observed, 4, 0) == 4 && memcmp(observed, "kept", 4) == 0,
+                "anonymous copied inode retains its content");
+    CHECK_ERR(syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0), ENOENT, "anonymous copy-up never recreates the old visible name");
+    close(orphan); orphan = -1;
+    snprintf(path, sizeof(path), "%s/new", merged);
+    created = syscall(SYS_openat, AT_FDCWD, path, O_CREAT | O_EXCL | O_RDWR, 0640);
+    OVL_REQUIRE(created >= 0 && syscall(SYS_write, created, "alias", 5) == 5, "create through the merged command owner");
+    snprintf(other, sizeof(other), "%s/alias", merged);
+    OVL_REQUIRE(syscall(SYS_linkat, AT_FDCWD, path, AT_FDCWD, other, 0) == 0 &&
+                syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0, "link and unlink retain the shared native inode");
+    OVL_REQUIRE(syscall(SYS_fstat, created, &st) == 0 && st.st_nlink == 1, "retained fd observes the surviving native link");
+    snprintf(path, sizeof(path), "%s/renamed", merged);
+    OVL_REQUIRE(syscall(SYS_renameat2, AT_FDCWD, other, AT_FDCWD, path, 0) == 0,
+                "rename through the original operation context");
+    snprintf(other, sizeof(other), "%s/through", merged);
+    OVL_REQUIRE(syscall(SYS_symlinkat, "renamed", AT_FDCWD, other) == 0 &&
+                syscall(SYS_readlinkat, AT_FDCWD, other, observed, sizeof(observed)) == 7 &&
+                memcmp(observed, "renamed", 7) == 0, "create and read a merged symbolic link");
+    OVL_REQUIRE(syscall(SYS_unlinkat, AT_FDCWD, other, 0) == 0 &&
+                syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0, "remove both merged aliases");
+    close(created); created = -1;
+    snprintf(path, sizeof(path), "%s/directory", merged);
+    snprintf(other, sizeof(other), "%s/moved-directory", merged);
+    OVL_REQUIRE(syscall(SYS_mkdirat, AT_FDCWD, path, 0755) == 0 &&
+                syscall(SYS_renameat2, AT_FDCWD, path, AT_FDCWD, other, 0) == 0 &&
+                syscall(SYS_unlinkat, AT_FDCWD, other, AT_REMOVEDIR) == 0,
+                "rename an upper directory and prune its private opaque marker on rmdir");
+cleanup:
+    if (fd >= 0) close(fd);
+    if (orphan >= 0) close(orphan);
+    if (created >= 0) close(created);
+    if (overlay_mounted) CHECK_RET(syscall(SYS_umount2, merged, 0), 0, "unmount the merged view after closing its fds");
+    if (backing_mounted) CHECK_RET(syscall(SYS_umount2, scratch, 0), 0, "unmount the isolated native backing");
+    rmdir(scratch);
+#undef OVL_REQUIRE
+}
+
+int main(int argc, char **argv) {
     TEST_START("vfs-ownership");
+    overlay_ownership();
+    if (argc == 2 && strcmp(argv[1], "--overlay-only") == 0) {
+        TEST_DONE();
+    }
 
     char path_buf[256];
     int fd;

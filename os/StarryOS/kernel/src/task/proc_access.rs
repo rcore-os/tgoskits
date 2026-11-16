@@ -298,12 +298,14 @@ mod tests {
         let child_capable = credentials(owned.clone(), 41, 1 << CAP_SYS_PTRACE);
         assert!(!child_capable.has_ptrace_cap(&root));
         assert!(!child_capable.has_ptrace_cap(&sibling));
-        // Neither mapped-root status nor a colliding display ID confers caps.
-        sibling.lock_irqsave().is_root = true;
-        let owned_id = owned.lock_irqsave().id;
-        sibling.lock_irqsave().id = owned_id;
-        assert!(!child_capable.has_ptrace_cap(&sibling));
-        let different_ns = credentials(sibling.clone(), 41, 0);
+        // A mapped-root peer with the same creator UID is still a different
+        // namespace allocation; numeric identity cannot confer ancestry.
+        let peer = Arc::new(RawSpinLock::new(
+            UserNamespace::new_child(root.clone(), 41).unwrap(),
+        ));
+        peer.lock_irqsave().is_root = true;
+        assert!(!child_capable.has_ptrace_cap(&peer));
+        let different_ns = credentials(peer, 41, 0);
         denied(authorize_views(&different_ns, &target(owned.clone())));
         assert!(namespace_preserves_permitted(&root, &descendant, 41));
         assert!(!namespace_preserves_permitted(&root, &sibling, 41));

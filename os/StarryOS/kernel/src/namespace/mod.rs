@@ -235,13 +235,12 @@ mod tests {
         let parent = nsproxy.user_ns.clone();
         nsproxy.unshare_user(99).unwrap();
         assert!(!Arc::ptr_eq(&nsproxy.user_ns, &parent));
-        let child_id = {
+        {
             let mut user = nsproxy.user_ns.lock_irqsave();
             user.is_root = true;
             user.uid_mapped = true;
             user.gid_mapped = true;
-            user.id
-        };
+        }
         let before = nsproxy.clone_all();
 
         let error = nsproxy.unshare_user(100).unwrap_err();
@@ -260,7 +259,6 @@ mod tests {
         assert_eq!(lineage.level, 33);
         assert_eq!(lineage.owner_uid, 99);
         assert!(Arc::ptr_eq(lineage.parent.as_ref().unwrap(), &parent));
-        assert_eq!(user.id, child_id);
         assert!(user.is_root && user.uid_mapped && user.gid_mapped);
     }
 }

@@ -131,7 +131,6 @@ mod tests {
         let child = Arc::new(RawSpinLock::new(
             UserNamespace::new_child(parent.clone(), 99).unwrap(),
         ));
-        let child_id = child.lock_irqsave().id;
         let error = UserNamespace::new_child(child.clone(), 100)
             .err()
             .expect("a level-33 parent must reject another child");
@@ -142,7 +141,6 @@ mod tests {
         assert_eq!(lineage.level, 33);
         assert_eq!(lineage.owner_uid, 99);
         assert!(Arc::ptr_eq(lineage.parent.as_ref().unwrap(), &parent));
-        assert_eq!(state.id, child_id);
         assert!(!state.is_root && !state.uid_mapped && !state.gid_mapped);
     }
 }
