@@ -611,6 +611,13 @@ staging、case 和工作目录执行 `prebuild.sh`。排查时区分启动、网
 Loongson 3A6000 的资源和独立客户机板测契约见
 [`design/axvisor-loongson-3a6000-linux.md`](../../../../design/axvisor-loongson-3a6000-linux.md)。
 
+ACPI 统一使用发布的 `7.0.0-pre2`。适配 `Handler` 时返回
+`RawPhysicalMapping`，直接读取表的调用方用 `PhysicalMapping::new()` 保留
+RAII 生命周期；CPU 迭代器持有 MADT 映射直到遍历结束，不能只保存 `as_ptr()`。
+永久固件直映的 unmap 不释放物理 backing。PM1 事件块的状态与使能寄存器分别
+映射；GPIO/SerialBus 连接不能作为 GSI 发布。继续严格加载全部 DSDT/SSDT、
+传播 AML 错误并终止 Fatal，依赖升级不能退回只记录错误后继续的装配入口。
+
 默认龙芯板卡 CI 使用 `cargo xtask axvisor test board --board loongson-3a6000-ll --test-case smoke`，
 原 ArceOS Hello 入口保留为手动诊断。Linux 与 BusyBox 来自受管理的发布镜像，
 `image pull` 复用自托管宿主的持久下载缓存并校验 SHA-256；不要每轮清空缓存或

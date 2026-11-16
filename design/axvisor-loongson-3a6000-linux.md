@@ -186,27 +186,36 @@ NS16550 的来源重新使能遵循
 
 ### 3.4 AML 解释器修复
 
-当前 crates.io `acpi 6.1.1` 在模块级执行合法的
+旧发布版 `acpi 6.1.1` 在模块级执行合法的
 `DerefOf(Index(Package))` 时错误拒绝对子 Package 的引用，实板首先报告
 `ObjectNotOfExpectedType { expected: Reference, got: Package }`。
 官方 `rust-osdev/acpi` 已通过 PR #286 修复，精确提交为
 `36f349539e15a9aeaf57f0c4428f75b046491572`。项目采用官方修复，不复制解释器、
-修改 registry 缓存、吞掉 AML 错误或宽泛升级到 7.0 预发布版。
+修改 registry 缓存或吞掉 AML 错误。
 
 恢复加载后的实板又触发单项 IRQ 假设的断言：GPO0 `_CRS` 包含五个 Extended
-Interrupt。正式接入点因此推进到同时包含引用修复与官方 PR #331 的
-`5cda8c3699529174756b0afc32fefee6fd17744b`，包版本仍为 6.1.1。
-该版本把 `IrqDescriptor.irq` 改为数字列表 `irqs`，并增加 `smallvec`；
-所有消费者须按真实 API 差异迁移，不能仅因包号未变就外推兼容。
+Interrupt。官方 PR #331 把 `IrqDescriptor.irq` 改为数字列表 `irqs`，并增加
+`smallvec`，从而能完整保留这组固件资源。
 
-在包含修复的稳定版本发布前，由根 `workspace.dependencies` 统一固定官方 Git
-来源和完整 revision，`rdrive` 与 `someboot` 使用同一依赖身份，Cargo 生成锁文件。
-这是一项明确的未发布上游修复接入，不是任意 6.1.1 的兼容承诺；该提交还改变了
-部分整数转换与 BufferField 接口，须核对两消费者的实际 API、默认功能、许可证与
-目标编译。未来回到发布版本时应以包含该修复及通过同样验证为条件，而非只比较包
-版本号。回滚同时恢复依赖、锁文件及板卡配置，不涉及持久固件或磁盘迁移。
+根 `workspace.dependencies` 统一使用已发布的 `acpi = "=7.0.0-pre2"`，
+`rdrive` 与 `someboot` 使用同一个 crates.io 依赖身份，锁文件由 Cargo 生成。
+该预发布版包含上述两项修复；精确版本约束使下一次预发布升级仍需显式验证。
+不保留 Git 来源或旧版兼容分支，许可证仍为 MIT/Apache-2.0。
 
-固定版本的 `Interpreter::new_from_platform()` 会在表加载错误后记录日志并继续，
+新版 `Handler` 返回 `RawPhysicalMapping`，由 `PhysicalMapping::new()` 持有
+handler 并在析构时调用实例方法 `unmap_physical_region()`。两处平台 handler
+继续借用已预留的永久固件映射，不转移物理内存的释放责任。FACS 和逐表 AML
+装配保留 RAII 包装，MADT 通过 `as_ptr()` 与 `raw().region_length()` 读取；
+四个架构的 CPU 迭代器始终持有映射，不能只留下脱离所有者的裸指针。
+
+`Pm1EventRegisterBlock` 已拆分状态与使能寄存器，测试夹具按四字节事件块的
+两个独立十六位端口范围构造，并向 `MappedGas::map_gas()` 传入拥有的 handler。
+新版资源枚举新增 GPIO 和 SerialBus 连接；`read_device_resources()` 只发布
+已有的 MMIO、端口 I/O 和 GSI 资源，不把 GPIO pin 或总线连接当成 GSI。
+新版仍不能把 BufferField 隐式存入 FieldUnit，因此现有 PCI 链路的精确错误
+识别与已知 PIRQ 字段处理仍有实际调用条件，不因升级删除。
+
+`7.0.0-pre2` 的 `Interpreter::new_from_platform()` 会在表加载错误后记录日志并继续，
 不能直接作为本项目的成功判定。`rdrive` 改用公开的 `Interpreter::new()` 和
 `load_table()` 装配：复用 `AcpiPlatform` 的固定寄存器与 FACS，先装载 DSDT，
 再按固件顺序装载 SSDT，每张表检查头部长度及地址范围后映射。任一表加载失败即
@@ -218,7 +227,7 @@ Interrupt。正式接入点因此推进到同时包含引用修复与官方 PR #
 则保持整个解释器寿命，并继续由平台内存所有者预留。失败时丢弃解释器不能撤销
 模块级 AML 已执行的硬件写入，因此不自动重试，后续诊断仍使用新的板级启动。
 
-`AcpiHandler` 显式保留原发布版遇到 AML `Fatal` 即终止的行为，不继承固定版本
+`AcpiHandler` 显式保留原发布版遇到 AML `Fatal` 即终止的行为，不继承新版
 仅记录日志的默认处理。该约束不把原有可选设备求值或 PCI 命名空间诊断改成新的
 全局失败策略；其余初始化顺序和资源所有权保持不变。合成的合法及非法 AML
 须证明严格装配能接受正常表、拒绝坏表并保留错误，真实 DSDT 及板测继续证明

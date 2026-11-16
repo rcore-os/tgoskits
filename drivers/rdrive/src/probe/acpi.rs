@@ -8,7 +8,7 @@ use alloc::{
 use core::{mem::size_of, ptr::NonNull, str::FromStr};
 
 use acpi::{
-    AcpiError, AcpiTables, AmlTable, Handler, PhysicalMapping,
+    AcpiError, AcpiTables, AmlTable, Handler, PhysicalMapping, RawPhysicalMapping,
     address::{AddressSpace, GenericAddress},
     aml::{
         AmlError, Interpreter,
@@ -683,18 +683,16 @@ impl Handler for AcpiHandler {
         &self,
         physical_address: usize,
         size: usize,
-    ) -> PhysicalMapping<Self, T> {
-        PhysicalMapping {
-            physical_start: physical_address,
-            virtual_start: NonNull::new(self.virt_addr(physical_address) as *mut T)
-                .expect("ACPI physical mapping must not be null"),
-            region_length: size,
-            mapped_length: size,
-            handler: self.clone(),
-        }
+    ) -> RawPhysicalMapping<T> {
+        let virtual_start = NonNull::new(self.virt_addr(physical_address) as *mut T)
+            .expect("ACPI physical mapping must not be null");
+        // SAFETY: The caller supplies a valid T and its complete extent. The
+        // root reserves permanent firmware backing; this descriptor transfers
+        // the borrowed mapping to ACPI without allocating or freeing memory.
+        unsafe { RawPhysicalMapping::new(physical_address, virtual_start, size, size) }
     }
 
-    fn unmap_physical_region<T>(_region: &PhysicalMapping<Self, T>) {}
+    unsafe fn unmap_physical_region<T>(&self, _region: RawPhysicalMapping<T>) {}
 
     fn read_u8(&self, address: usize) -> u8 {
         unsafe { (self.virt_addr(address) as *const u8).read_volatile() }
@@ -836,11 +834,7 @@ fn load_aml_interpreter(
         .map(|address| {
             // SAFETY: The platform's FADT identifies firmware-owned FACS memory.
             // AcpiHandler uses a permanent mapping, retained by the interpreter.
-            unsafe {
-                platform
-                    .handler
-                    .map_physical_region::<Facs>(address, size_of::<Facs>())
-            }
+            unsafe { PhysicalMapping::new(address, size_of::<Facs>(), platform.handler.clone()) }
         });
     let interpreter = Interpreter::new(
         platform.handler.clone(),
@@ -883,10 +877,10 @@ unsafe fn load_aml_tables(
         }
         // SAFETY: The caller guarantees live immutable firmware backing.
         // The checked extent includes the header and fits a Rust slice.
-        let mapping = unsafe { handler.map_physical_region::<u8>(table.phys_address, length) };
+        let mapping = unsafe { PhysicalMapping::<_, u8>::new(table.phys_address, length, handler) };
         // SAFETY: The mapping covers `length` initialized bytes; byte alignment is
         // sufficient. The mapping remains live until load_table returns.
-        let bytes = unsafe { core::slice::from_raw_parts(mapping.virtual_start.as_ptr(), length) };
+        let bytes = unsafe { core::slice::from_raw_parts(mapping.as_ptr(), length) };
         interpreter
             .load_table(&bytes[header_length..])
             .map_err(|error| acpi_error(AcpiError::Aml(error)))?;
@@ -1464,8 +1458,9 @@ fn read_loongarch_interrupt_routing(
         return Ok(());
     };
 
-    let base = madt.virtual_start.as_ptr().cast::<u8>();
-    let length = madt.region_length;
+    // SAFETY: The MADT mapping owns its firmware backing for this entire scan.
+    let base = unsafe { madt.as_ptr().cast::<u8>() };
+    let length = madt.raw().region_length();
     if length > isize::MAX as usize || (base as usize).checked_add(length).is_none() {
         return Err(DriverError::Unsupported("invalid MADT mapping range"));
     }
@@ -1726,7 +1721,9 @@ fn read_device_resources(
                     }
                 }
             }
-            Resource::Dma(_) => {}
+            // DMA and controller connections are not scalar MMIO, port-I/O or
+            // GSI resources. Do not reinterpret their channels or pins as GSIs.
+            Resource::Dma(_) | Resource::SerialBus(_) | Resource::GPIO(_) => {}
         }
     }
     Ok(out)
@@ -2898,10 +2895,14 @@ mod tests {
     fn test_fixed_registers(handler: &AcpiHandler) -> Arc<FixedRegisters<AcpiHandler>> {
         let event_gas = GenericAddress {
             address_space: AddressSpace::SystemIo,
-            bit_width: 32,
+            bit_width: 16,
             bit_offset: 0,
-            access_size: 3,
+            access_size: 2,
             address: 0x1000,
+        };
+        let event_enable_gas = GenericAddress {
+            address: 0x1002,
+            ..event_gas
         };
         let control_gas = GenericAddress {
             address_space: AddressSpace::SystemIo,
@@ -2913,11 +2914,21 @@ mod tests {
         Arc::new(FixedRegisters {
             pm1_event_registers: Pm1EventRegisterBlock {
                 pm1_event_length: 4,
-                pm1a: unsafe { acpi::address::MappedGas::map_gas(event_gas, handler).unwrap() },
-                pm1b: None,
+                // SAFETY: These distinct 16-bit port ranges model the two
+                // halves of the four-byte PM1 event block in this test handler.
+                pm1a_sts: unsafe {
+                    acpi::address::MappedGas::map_gas(event_gas, handler.clone()).unwrap()
+                },
+                pm1a_en: unsafe {
+                    acpi::address::MappedGas::map_gas(event_enable_gas, handler.clone()).unwrap()
+                },
+                pm1b_sts: None,
+                pm1b_en: None,
             },
             pm1_control_registers: Pm1ControlRegisterBlock {
-                pm1a: unsafe { acpi::address::MappedGas::map_gas(control_gas, handler).unwrap() },
+                pm1a: unsafe {
+                    acpi::address::MappedGas::map_gas(control_gas, handler.clone()).unwrap()
+                },
                 pm1b: None,
             },
         })

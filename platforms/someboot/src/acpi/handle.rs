@@ -10,20 +10,16 @@ impl acpi::Handler for AcpiHandle {
         &self,
         physical_address: usize,
         size: usize,
-    ) -> acpi::PhysicalMapping<Self, T> {
-        acpi::PhysicalMapping {
-            physical_start: physical_address,
-            virtual_start: NonNull::new(phys_to_virt(physical_address) as _)
-                .expect("Physical address should not be null"),
-            region_length: size,
-            mapped_length: size,
-            handler: self.clone(),
-        }
+    ) -> acpi::RawPhysicalMapping<T> {
+        let virtual_start = NonNull::new(phys_to_virt(physical_address) as _)
+            .expect("Physical address should not be null");
+        // SAFETY: The caller supplies a valid T and its complete extent. The
+        // boot memory owner retains the permanent firmware mapping, and ACPI
+        // owns this descriptor until its matching unmap callback.
+        unsafe { acpi::RawPhysicalMapping::new(physical_address, virtual_start, size, size) }
     }
 
-    fn unmap_physical_region<T>(region: &acpi::PhysicalMapping<Self, T>) {
-        let _ = region;
-    }
+    unsafe fn unmap_physical_region<T>(&self, _region: acpi::RawPhysicalMapping<T>) {}
 
     fn read_u8(&self, address: usize) -> u8 {
         unsafe { *(address as *const u8) }
