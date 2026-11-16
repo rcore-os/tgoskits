@@ -2,6 +2,8 @@
 
 mod backing_query;
 pub use backing_query::{BackingQueryContext, BackingQueryRequest};
+mod directory;
+pub use directory::{DirectoryBatch, DirectoryRecord};
 mod preparation;
 mod read_result;
 pub use preparation::{

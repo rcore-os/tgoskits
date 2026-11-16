@@ -16,6 +16,9 @@ use super::{
 };
 
 mod directory;
+pub(crate) use directory::{
+    core_to_vfs_directory_cursor, normalize_directory_cursor, vfs_to_core_directory_cursor,
+};
 mod io;
 mod metadata;
 pub(crate) use metadata::metadata_from_info;

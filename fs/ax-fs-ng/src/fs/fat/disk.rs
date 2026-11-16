@@ -609,6 +609,18 @@ mod tests {
         let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
         let scope = command.attempt().unwrap();
         let operation = scope.context();
+        let axfs_ng_vfs::NamespaceReadResult::Ready(Ok(axfs_ng_vfs::NamespaceRead::Directory(
+            batch,
+        ))) = operation
+            .query(axfs_ng_vfs::NamespaceQuery::Directory {
+                entry: parent.entry(),
+                cursor: axfs_ng_vfs::DirectoryCursor::START,
+            })
+            .unwrap()
+        else {
+            panic!("lost actual FAT directory snapshot");
+        };
+        assert!(batch.records().iter().any(|record| record.name == b"data"));
         let observed = match scope
             .unlink(&operation, prepared, false, &credentials)
             .unwrap()
@@ -629,6 +641,18 @@ mod tests {
         let command = axfs_ng_vfs::NamespaceCommandScope::new(&write);
         let scope = command.attempt().unwrap();
         let operation = scope.context();
+        let axfs_ng_vfs::NamespaceReadResult::Ready(Ok(axfs_ng_vfs::NamespaceRead::Directory(
+            batch,
+        ))) = operation
+            .query(axfs_ng_vfs::NamespaceQuery::Directory {
+                entry: parent.entry(),
+                cursor: axfs_ng_vfs::DirectoryCursor::START,
+            })
+            .unwrap()
+        else {
+            panic!("lost actual FAT directory snapshot");
+        };
+        assert!(batch.records().iter().any(|record| record.name == b"data"));
         let observed = match scope
             .unlink(&operation, prepared, false, &credentials)
             .unwrap()

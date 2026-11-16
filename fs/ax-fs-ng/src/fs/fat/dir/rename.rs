@@ -118,6 +118,14 @@ impl super::super::fs::FatFilesystem {
                         .map(NamespaceRead::Metadata)
                 }
             }
+            NamespaceQuery::Directory { entry, cursor } => {
+                let parent = entry.as_dir()?.downcast::<FatDirNode>()?;
+                let mut guard = self.lock_retiring(retired);
+                axfs_ng_vfs::DirectoryBatch::collect(|sink| {
+                    parent.read_dir_locked(&mut guard, cursor, sink)
+                })
+                .map(NamespaceRead::Directory)
+            }
             NamespaceQuery::Xattr { .. } => Err(VfsError::OperationNotSupported),
         }
     }

@@ -25,6 +25,7 @@ enum CaseKind {
     Metadata,
     Lookup,
     Xattr,
+    Directory,
 }
 
 impl QueryProbe {
@@ -88,6 +89,10 @@ impl QueryProbe {
             ready(view.lookup_backing(backing, "missing")),
             Err(VfsError::NotFound)
         ));
+        assert!(matches!(
+            ready(view.query(NamespaceQuery::Directory { entry: backing.entry(), cursor: crate::DirectoryCursor::START })),
+            Ok(NamespaceRead::Directory(batch)) if batch.records().is_empty()
+        ));
         let backend = backing.entry().downcast::<ProbeNode>().unwrap().0.clone();
         let selected = backend.root_dir();
         *backend.queries.as_ref().unwrap().response.lock().unwrap() =
@@ -129,6 +134,10 @@ impl QueryProbe {
                     entry: backing.entry(),
                     name: b"user.test",
                 },
+                CaseKind::Directory => NamespaceQuery::Directory {
+                    entry: backing.entry(),
+                    cursor: crate::DirectoryCursor::START,
+                },
             };
             assert!(matches!(ready(view.query(query)), Err(error) if error == case.error));
         }
@@ -150,6 +159,9 @@ impl QueryProbe {
             NamespaceQuery::Metadata(_) => NamespaceRead::Metadata(snapshot()),
             NamespaceQuery::Lookup { .. } => NamespaceRead::Entry(None),
             NamespaceQuery::Xattr { .. } => NamespaceRead::Xattr(vec![7]),
+            NamespaceQuery::Directory { .. } => {
+                NamespaceRead::Directory(crate::DirectoryBatch::new(vec![]).unwrap())
+            }
         })
     }
 }
@@ -183,14 +195,7 @@ pub(super) fn dispatch(
             ready(view.query(NamespaceQuery::Metadata(next.entry())))?,
             NamespaceRead::Metadata(_)
         ));
-        probe.read(
-            match request.query() {
-                NamespaceQuery::Metadata(entry) => NamespaceQuery::Metadata(entry),
-                NamespaceQuery::Lookup { parent, name } => NamespaceQuery::Lookup { parent, name },
-                NamespaceQuery::Xattr { entry, name } => NamespaceQuery::Xattr { entry, name },
-            },
-            request.retired(),
-        )
+        probe.read(*request.query(), request.retired())
     })();
     read_completion(result)
 }
@@ -352,6 +357,27 @@ fn request_bound_queries_relay_direct_readonly_edges_and_retire_all_candidates()
             error: VfsError::BadState,
         },
     ];
+    a.queries
+        .as_ref()
+        .unwrap()
+        .cases
+        .lock()
+        .unwrap()
+        .push(ReadCase {
+            receiver: Arc::downgrade(&b),
+            kind: CaseKind::Directory,
+            response: Ok(NamespaceRead::Directory(
+                crate::DirectoryBatch::new(vec![crate::DirectoryRecord {
+                    name: b"stuck".to_vec(),
+                    inode: 1,
+                    node_type: NodeType::Directory,
+                    next: crate::DirectoryCursor::START,
+                }])
+                .unwrap(),
+            )),
+            temporary: None,
+            error: VfsError::BadState,
+        });
     let write = PreparedWrite::acquire(&a_root).unwrap();
     for target in [&b_root, &c_root, &extra_root] {
         assert!(matches!(

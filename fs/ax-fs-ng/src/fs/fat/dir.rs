@@ -32,6 +32,46 @@ impl FatDirNode {
         Err(VfsError::NotFound)
     }
 
+    fn read_dir_locked(
+        &self,
+        guard: &mut FatFilesystemGuard<'_>,
+        cursor: DirectoryCursor,
+        sink: &mut dyn DirEntrySink,
+    ) -> VfsResult<usize> {
+        let dir = self.state.directory(guard)?;
+        let mut count = 0;
+        for entry in dir.iter().skip(cursor.offset() as usize) {
+            let entry = entry.map_err(into_vfs_err)?;
+            let name = FatInode::canonical_name(&entry)?;
+            let node_type = if entry.is_dir() {
+                NodeType::Directory
+            } else {
+                NodeType::RegularFile
+            };
+            let inode = match name.as_str() {
+                "." => self.inode(),
+                ".." => self
+                    .state
+                    .name
+                    .borrow(guard)
+                    .parent
+                    .as_ref()
+                    .map_or(self.inode(), |parent| parent.inode),
+                _ => FatInode::get(&self.state, entry, guard)?.inode,
+            };
+            if !sink.accept(
+                name.as_bytes(),
+                inode,
+                node_type,
+                DirectoryCursor::new(cursor.offset() + count + 1),
+            ) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count as usize)
+    }
+
     fn entry(&self, state: Arc<FatInode>, is_dir: bool, name: &str) -> DirEntry {
         let reference = Reference::new(self.this.upgrade(), name.to_owned());
         if is_dir {
@@ -121,38 +161,7 @@ impl DirNodeOps for FatDirNode {
 
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let mut guard = self.state.fs.lock();
-        let dir = self.state.directory(&guard)?;
-        let mut count = 0;
-        for entry in dir.iter().skip(cursor.offset() as usize) {
-            let entry = entry.map_err(into_vfs_err)?;
-            let name = FatInode::canonical_name(&entry)?;
-            let node_type = if entry.is_dir() {
-                NodeType::Directory
-            } else {
-                NodeType::RegularFile
-            };
-            let inode = match name.as_str() {
-                "." => self.inode(),
-                ".." => self
-                    .state
-                    .name
-                    .borrow(&guard)
-                    .parent
-                    .as_ref()
-                    .map_or(self.inode(), |parent| parent.inode),
-                _ => FatInode::get(&self.state, entry, &mut guard)?.inode,
-            };
-            if !sink.accept(
-                name.as_bytes(),
-                inode,
-                node_type,
-                DirectoryCursor::new(cursor.offset() + count + 1),
-            ) {
-                break;
-            }
-            count += 1;
-        }
-        Ok(count as usize)
+        self.read_dir_locked(&mut guard, cursor, sink)
     }
 
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {

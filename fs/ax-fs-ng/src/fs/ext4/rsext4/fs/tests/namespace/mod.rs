@@ -262,6 +262,10 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
         let context = scope.context();
         for query in [
             axfs_ng_vfs::NamespaceQuery::Metadata(witness.entry()),
+            axfs_ng_vfs::NamespaceQuery::Directory {
+                entry: root.entry(),
+                cursor: axfs_ng_vfs::DirectoryCursor::START,
+            },
             axfs_ng_vfs::NamespaceQuery::Lookup {
                 parent: root.entry(),
                 name: "witness",
@@ -318,6 +322,11 @@ fn symlink_and_hardlink_staging_release_namespace_rights() {
                 })
                 .unwrap(),
             NamespaceReadResult::Ready(Err(VfsError::DataMissing))
+        ));
+        assert!(matches!(
+            context.query(NamespaceQuery::Directory { entry: root.entry(), cursor: axfs_ng_vfs::DirectoryCursor::START }).unwrap(),
+            NamespaceReadResult::Ready(Ok(NamespaceRead::Directory(batch)))
+                if batch.records().iter().any(|record| record.name == b"witness")
         ));
         let unchanged = scope
             .rename(

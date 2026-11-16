@@ -152,6 +152,7 @@ impl<'op, 'query> BackingQueryRequest<'op, 'query> {
             NamespaceQuery::Metadata(_) => ReadKind::Metadata,
             NamespaceQuery::Lookup { .. } => ReadKind::Lookup,
             NamespaceQuery::Xattr { .. } => ReadKind::Xattr,
+            NamespaceQuery::Directory { cursor, .. } => ReadKind::Directory(*cursor),
         };
         let admission = self.admission;
         let retired = self.context.retired();
@@ -176,6 +177,9 @@ impl<'op, 'query> BackingQueryRequest<'op, 'query> {
                 (ReadKind::Lookup, NamespaceRead::Entry(Some(entry))) => {
                     admission.check_owner(entry.filesystem())
                 }
+                (ReadKind::Directory(cursor), NamespaceRead::Directory(batch)) => {
+                    batch.validate(cursor)
+                }
                 _ => Err(VfsError::BadState),
             },
             _ => Err(VfsError::BadState),
@@ -188,6 +192,7 @@ enum ReadKind {
     Metadata,
     Lookup,
     Xattr,
+    Directory(crate::DirectoryCursor),
 }
 
 pub(super) fn fixed_lookup(parent: &Location, result: NamespaceRead) -> VfsResult<Location> {

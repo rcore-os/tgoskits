@@ -42,6 +42,13 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
     let underlying = create(&covered, "underlying", NodeType::RegularFile);
     let nested = create(&covered, "nested", NodeType::Directory);
     let leaf = create(&nested, "leaf", NodeType::RegularFile);
+    let mut expected_directory_names = std::collections::BTreeSet::new();
+    expected_directory_names.insert(b"leaf".to_vec());
+    for index in 0..axfs_ng_vfs::DirectoryBatch::MAX_ENTRIES + 3 {
+        let name = format!("batch-{index:04}");
+        create(&nested, &name, NodeType::RegularFile);
+        expected_directory_names.insert(name.into_bytes());
+    }
     let link = covered
         .create_symlink(
             "link",
@@ -189,6 +196,38 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
         let selected = ready(context.lookup_backing(&root, "covered")).unwrap();
         let nested = ready(context.lookup_backing(&selected, "nested")).unwrap();
         let terminal = ready(context.lookup_backing(&selected, "link")).unwrap();
+        let mut cursor = axfs_ng_vfs::DirectoryCursor::START;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut batches = 0;
+        loop {
+            let NamespaceRead::Directory(batch) = ready(context.query(NamespaceQuery::Directory {
+                entry: nested.entry(),
+                cursor,
+            }))
+            .unwrap() else {
+                panic!("lost directory snapshot");
+            };
+            assert!(batch.records().len() <= axfs_ng_vfs::DirectoryBatch::MAX_ENTRIES);
+            if batch.records().is_empty() {
+                break;
+            }
+            batches += 1;
+            for record in batch.records() {
+                cursor = record.next;
+                if record.name == b"." || record.name == b".." {
+                    continue;
+                }
+                assert!(
+                    seen.insert(record.name.clone()),
+                    "repeated a directory entry"
+                );
+            }
+        }
+        assert!(
+            batches > 1,
+            "the native directory was not read across the batch boundary"
+        );
+        assert_eq!(seen, expected_directory_names);
         for (actual, expected) in [
             (&selected, &covered),
             (&nested, &fixed_nested),
@@ -221,7 +260,14 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
             Err(VfsError::NotFound)
         ));
     }
-    drop(scope);
+    let outcome = scope
+        .finish()
+        .unwrap_or_else(|_| panic!("read owner mismatch"));
+    assert_eq!(outcome.state(), axfs_ng_vfs::NamespaceState::Uncertain);
+    assert_eq!(
+        command.finish(Ok(outcome)).unwrap().into_result(),
+        Err(VfsError::BadState)
+    );
     drop(write);
     assert_eq!(admitted_link.node_type(), NodeType::Symlink);
     assert_eq!(admitted_link.read_link().unwrap(), "underlying");

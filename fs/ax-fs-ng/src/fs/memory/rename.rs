@@ -88,6 +88,10 @@ impl MemoryFs {
                     Err(error) => Err(error),
                 }
             }
+            NamespaceQuery::Directory { cursor, .. } => {
+                axfs_ng_vfs::DirectoryBatch::collect(|sink| source.read_dir(cursor, sink))
+                    .map(NamespaceRead::Directory)
+            }
             NamespaceQuery::Xattr { name, .. } => {
                 source.inode.get_xattr(name).map(NamespaceRead::Xattr)
             }

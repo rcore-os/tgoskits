@@ -11,10 +11,10 @@
 //! validation rather than by full semantic support here.
 
 mod inode;
+mod read;
 
 use alloc::{
-    collections::BTreeMap,
-    string::{String, ToString},
+    string::ToString,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -33,7 +33,11 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable};
 use inode::{InodeIndex, OverlayInode};
 
-use crate::{pseudofs::dummy_stat_fs, sync::RawSpinLock, task::FsCredentialsSnapshot};
+use crate::{
+    pseudofs::dummy_stat_fs,
+    sync::{Mutex, RawSpinLock},
+    task::FsCredentialsSnapshot,
+};
 
 const COPY_BUF_SIZE: usize = 4096;
 const OVERLAY_MAGIC: u32 = 0x794c7630;
@@ -99,10 +103,19 @@ pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         })
         .map_err(|_| VfsError::NoMemory)?;
     let inodes = InodeIndex::new();
+    let root_metadata = options
+        .upper_dir
+        .as_ref()
+        .or_else(|| options.lower_dirs.first())
+        .ok_or(VfsError::InvalidInput)?
+        .metadata()?;
+    let retired = axfs_ng_vfs::MutationRetire::new();
     let root = inodes.select(
         options.upper_dir.clone(),
         options.lower_dirs.clone(),
         options.upper_dir.is_some(),
+        &root_metadata,
+        &retired,
     )?;
     let fs = Arc::new_cyclic(|this| OverlayFs {
         this: this.clone(),
@@ -113,6 +126,7 @@ pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         depth,
         device: DeviceId::new(0, device).0,
         inodes,
+        namespace: Mutex::new(()),
         root,
         root_entry: RawSpinLock::new(None),
     });
@@ -158,6 +172,8 @@ struct OverlayFs {
     depth: u32,
     device: u64,
     inodes: InodeIndex,
+    // Order: prepared admissions -> this owner -> strictly lower backing gates.
+    namespace: Mutex<()>,
     root: Arc<OverlayInode>,
     // root_dir() may be called from VFS mount paths with preemption disabled.
     root_entry: RawSpinLock<Option<WeakDirEntry>>,
@@ -170,6 +186,13 @@ impl OverlayFs {
 }
 
 impl FilesystemOps for OverlayFs {
+    fn query_backing_namespace(
+        &self,
+        request: axfs_ng_vfs::BackingQueryRequest<'_, '_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<axfs_ng_vfs::NamespaceRead> {
+        self.read_backing(request)
+    }
+
     fn name(&self) -> &str {
         "overlay"
     }
@@ -228,15 +251,6 @@ fn is_whiteout(loc: &Location) -> VfsResult<bool> {
         return Ok(false);
     }
     Ok(loc.metadata()?.rdev == WHITEOUT_DEVICE)
-}
-
-/// Check whether an upper directory hides all lower entries under the same dir.
-fn is_opaque(dir: &Location) -> VfsResult<bool> {
-    match dir.lookup_backing(OPAQUE_MARKER_NAME) {
-        Ok(_) => Ok(true),
-        Err(VfsError::NotFound) => Ok(false),
-        Err(err) => Err(err),
-    }
 }
 
 /// Create the Linux overlayfs whiteout marker: char device with rdev 0:0.
@@ -326,34 +340,6 @@ fn lookup_lower(dirs: &[Location], name: &str) -> VfsResult<Option<Location>> {
         }
     }
     Ok(None)
-}
-
-/// Merge one directory's names into a read_dir map.
-///
-/// Whiteouts remove earlier lower names from the merged view, while opaque
-/// markers are hidden from users.
-fn read_names(dir: &Location, names: &mut BTreeMap<String, DirentInfo>) -> VfsResult<()> {
-    dir.read_dir(
-        DirectoryCursor::START,
-        &mut |name: &[u8], ino, node_type, _| {
-            let Ok(name) = core::str::from_utf8(name) else {
-                return true;
-            };
-            if name == "." || name == ".." || name == OPAQUE_MARKER_NAME {
-                return true;
-            }
-            let Ok(loc) = dir.lookup_backing(name) else {
-                return true;
-            };
-            if is_whiteout(&loc).unwrap_or(false) {
-                names.remove(name);
-            } else {
-                names.insert(name.to_string(), DirentInfo { ino, node_type });
-            }
-            true
-        },
-    )?;
-    Ok(())
 }
 
 /// Copy regular file contents from lower to a newly-created upper file.
@@ -564,15 +550,20 @@ impl OverlayDir {
             .as_ref()
             .or(lower.as_ref())
             .ok_or(VfsError::NotFound)?;
+        let source_metadata = source.metadata()?;
         let lower = if source.node_type() == NodeType::Directory {
             self.lower_dirs_for_child(name)
         } else {
             lower.into_iter().collect()
         };
-        let inode = self
-            .fs
-            .inodes
-            .select(upper, lower, self.fs.upper_dir.is_some())?;
+        let retired = axfs_ng_vfs::MutationRetire::new();
+        let inode = self.fs.inodes.select(
+            upper,
+            lower,
+            self.fs.upper_dir.is_some(),
+            &source_metadata,
+            &retired,
+        )?;
         let reference = self.child_reference(name);
         if inode.kind == NodeType::Directory {
             Ok(Self::entry(self.fs.clone(), inode, reference))
@@ -624,7 +615,7 @@ impl NodeOps for OverlayDir {
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
-        self.inode.metadata(self.fs.device)
+        self.fs.read(|read| read.metadata(&self.inode))
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
@@ -672,19 +663,7 @@ impl DirNodeOps for OverlayDir {
     /// override them. Whiteouts delete lower names, and opaque upper dirs skip
     /// lower merging entirely.
     fn read_dir(&self, cursor: DirectoryCursor, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
-        let mut entries = BTreeMap::new();
-        let is_opaque = match self.existing_upper_dir() {
-            Some(upper_dir) => is_opaque(&upper_dir)?,
-            None => false,
-        };
-        if !is_opaque {
-            for lower in self.inode.lower.iter().rev() {
-                read_names(lower, &mut entries)?;
-            }
-        }
-        if let Some(upper_dir) = self.existing_upper_dir() {
-            read_names(&upper_dir, &mut entries)?;
-        }
+        let entries = self.fs.read(|read| read.names(self))?;
 
         let mut emitted = 0;
         for (idx, (name, info)) in entries
@@ -711,19 +690,7 @@ impl DirNodeOps for OverlayDir {
     /// upper missing so path lookup cannot re-expose lower files hidden by
     /// unlink or opaque directory semantics.
     fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
-        match self.lookup_upper_child(name)? {
-            UpperLookup::Present(upper) => self.build_entry(name, Some(upper), None),
-            UpperLookup::Whiteout => Err(VfsError::NotFound),
-            UpperLookup::Missing => {
-                if let Some(upper_dir) = self.existing_upper_dir()
-                    && is_opaque(&upper_dir)?
-                {
-                    return Err(VfsError::NotFound);
-                }
-                let lower = lookup_lower(&self.inode.lower, name)?.ok_or(VfsError::NotFound)?;
-                self.build_entry(name, None, Some(lower))
-            }
-        }
+        self.fs.read(|read| read.lookup(self, name))
     }
 
     fn is_cacheable(&self) -> bool {
@@ -916,7 +883,7 @@ impl NodeOps for OverlayFile {
     }
 
     fn metadata(&self) -> VfsResult<Metadata> {
-        self.inode.metadata(self.fs.device)
+        self.fs.read(|read| read.metadata(&self.inode))
     }
 
     fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {

@@ -7,7 +7,8 @@ use alloc::{
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use axfs_ng_vfs::{
-    DirEntryId, FilesystemOps, Location, Metadata, NodeIdentity, NodeType, VfsError, VfsResult,
+    DirEntryId, FilesystemOps, Location, Metadata, MutationRetire, NodeIdentity, NodeType,
+    VfsError, VfsResult,
 };
 
 use crate::sync::{Mutex, RawSpinLock};
@@ -48,13 +49,6 @@ impl OverlayInode {
     /// Return the displaced owner to be retired after every enclosing gate.
     pub(super) fn replace_upper(&self, upper: Location) -> Option<Location> {
         self.upper.lock_irqsave().replace(upper)
-    }
-
-    pub(super) fn metadata(&self, device: u64) -> VfsResult<Metadata> {
-        let mut metadata = self.current()?.metadata()?;
-        metadata.inode = self.number;
-        metadata.device = device;
-        Ok(metadata)
     }
 
     pub(super) fn identity(&self, owner: &dyn FilesystemOps) -> NodeIdentity {
@@ -110,6 +104,8 @@ impl InodeIndex {
         upper: Option<Location>,
         lower: Vec<Location>,
         writable: bool,
+        metadata: &Metadata,
+        retired: &MutationRetire,
     ) -> VfsResult<Arc<OverlayInode>> {
         let source = upper
             .as_ref()
@@ -118,7 +114,7 @@ impl InodeIndex {
         let separate_alias = writable
             && upper.is_none()
             && source.node_type() != NodeType::Directory
-            && source.metadata()?.nlink > 1;
+            && metadata.nlink > 1;
         let key = BackingKey::new(source, separate_alias);
         let number = self
             .next
@@ -143,8 +139,10 @@ impl InodeIndex {
             candidate.clone()
         };
         drop(entries);
-        // A losing candidate can own the last backing/FS reference.
-        drop(candidate);
+        // Both a losing candidate and a selected weak-index winner can become
+        // the last backing/FS owner before the caller leaves an ancestor gate.
+        retired.retire(candidate);
+        retired.retire(selected.clone());
         Ok(selected)
     }
 

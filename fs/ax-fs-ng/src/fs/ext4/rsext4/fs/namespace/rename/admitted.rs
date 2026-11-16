@@ -196,6 +196,61 @@ impl Ext4Filesystem {
                         Inode::xattr_error(error)
                     })
             }
+            NamespaceQuery::Directory { cursor, .. } => {
+                use crate::fs::ext4::rsext4::{
+                    inode::{
+                        core_to_vfs_directory_cursor, normalize_directory_cursor,
+                        vfs_to_core_directory_cursor,
+                    },
+                    util::directory_entry_type_to_vfs,
+                };
+                let _namespace = self.namespace.lookup(parent.number())?;
+                let mut state = self.lock();
+                if state.staging {
+                    *progress = Some(MutationAttempt::Staging);
+                    return Err(VfsError::WouldBlock);
+                }
+                let mut core_error = |error: Ext4Error| {
+                    if error.requires_journal_progress() {
+                        *progress = Some(MutationAttempt::Finished(Err(error)));
+                    }
+                    into_vfs_err(error)
+                };
+                let inode = state.ext4.inode(parent.number()).map_err(&mut core_error)?;
+                let cursor = normalize_directory_cursor(cursor, inode.change_attribute);
+                let core_cursor = vfs_to_core_directory_cursor(
+                    cursor,
+                    inode.flags.contains(rsext4::InodeFlags::DIRECTORY_INDEX),
+                )?;
+                let mut reader = state
+                    .ext4
+                    .open_directory_reader(parent.number())
+                    .map_err(&mut core_error)?;
+                let entries = state
+                    .ext4
+                    .read_directory_with_reader(
+                        &mut reader,
+                        core_cursor,
+                        axfs_ng_vfs::DirectoryBatch::MAX_ENTRIES,
+                    )
+                    .map_err(&mut core_error)?;
+                let mut records = Vec::new();
+                records
+                    .try_reserve_exact(entries.len())
+                    .map_err(|_| VfsError::NoMemory)?;
+                for entry in entries {
+                    records.push(axfs_ng_vfs::DirectoryRecord {
+                        name: entry.name,
+                        inode: entry.inode.as_u64(),
+                        node_type: directory_entry_type_to_vfs(entry.file_type),
+                        next: core_to_vfs_directory_cursor(
+                            entry.next_cursor,
+                            Some(inode.change_attribute),
+                        ),
+                    });
+                }
+                axfs_ng_vfs::DirectoryBatch::new(records).map(NamespaceRead::Directory)
+            }
         }
     }
 

@@ -14,14 +14,26 @@ use crate::{
 #[derive(Clone, Copy)]
 pub enum NamespaceQuery<'a> {
     Metadata(&'a DirEntry),
-    Lookup { parent: &'a DirEntry, name: &'a str },
-    Xattr { entry: &'a DirEntry, name: &'a [u8] },
+    Lookup {
+        parent: &'a DirEntry,
+        name: &'a str,
+    },
+    Xattr {
+        entry: &'a DirEntry,
+        name: &'a [u8],
+    },
+    Directory {
+        entry: &'a DirEntry,
+        cursor: crate::DirectoryCursor,
+    },
 }
 
 impl NamespaceQuery<'_> {
     pub fn entry(&self) -> &DirEntry {
         match self {
-            Self::Metadata(entry) | Self::Xattr { entry, .. } => entry,
+            Self::Metadata(entry) | Self::Xattr { entry, .. } | Self::Directory { entry, .. } => {
+                entry
+            }
             Self::Lookup { parent, .. } => parent,
         }
     }
@@ -32,6 +44,7 @@ pub enum NamespaceRead {
     Metadata(Metadata),
     Entry(Option<DirEntry>),
     Xattr(Vec<u8>),
+    Directory(crate::DirectoryBatch),
 }
 
 /// A backend's existing operation guard. No namespace gate is held by this right.

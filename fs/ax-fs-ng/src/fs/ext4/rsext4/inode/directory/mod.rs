@@ -12,11 +12,11 @@ use rsext4::{FileName, InodeFlags};
 use super::{super::util::directory_entry_type_to_vfs, Inode, LocatedInode, into_vfs_err};
 
 mod cursor;
-use cursor::{
+pub(crate) use cursor::{
     core_to_vfs_directory_cursor, normalize_directory_cursor, vfs_to_core_directory_cursor,
 };
 
-const DIRECTORY_READ_BATCH_ENTRIES: usize = 128;
+const DIRECTORY_READ_BATCH_ENTRIES: usize = axfs_ng_vfs::DirectoryBatch::MAX_ENTRIES;
 
 struct Ext4DirectoryReadState {
     reader: rsext4::DirectoryReader,

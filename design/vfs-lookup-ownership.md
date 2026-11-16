@@ -3193,6 +3193,32 @@ Context 或写授权，也不新增只读事务处理器。统一 lookup、目�
 下一轮读取；原 admission 图旅程覆盖只读根、两类依赖、exact mount、全体退出后
 重试及普通 WouldBlock 返回。两者继续使用现有测试入口，没有新增内核启动。
 
+### 4.22 分层目录快照
+
+Overlay 不能在原生 `read_dir` 回调内再查同一后端的白化或属性：FAT 回调仍持
+真实文件系统锁，嵌套 lookup 会重入它。`NamespaceQuery::Directory` 通过同一
+admitted 读取链取得自有 `DirectoryBatch`，每批最多 128 条，每条保留字节名称、
+原生 inode、类型和完整下一游标。空批表示结束；VFS 核验响应类型、上限和每条游标
+进展，阻止错误提供者让上层停在同一位置。快照不保留后端 iterator 或锁。
+
+MemoryFs 复用现有目录读取；FAT 的 `read_dir_locked` 供普通读取和 admitted 批次
+共用，后者把临时 inode 引用交给原 retire。Ext4 直接使用既有 DirectoryReader、
+游标与 change attribute 转换，在原 state/namespace 边界中捕获 staging 和真实
+journal-progress。批次是返回值上限；它不声称所有原生后端内部扫描和合并名称表
+都有固定成本，相关内存与重复扫描仍须进入整体性能比较。
+
+Overlay 的 `LayerRead` 共用读取、元数据和固定单组件查找，在实际 owner gate 内
+消费批次，再探测白化；对外 `read_dir` 在 gate 与全部 admission 结束后才调用 sink。
+普通调用使用 PreparedRead，嵌套调用使用原请求的 receiver-bound 视图，Retry 交给
+最外层完成。观察从当前 backing 投影逻辑属性，索引接收已取得的元数据，不在索引
+或 owner gate 中发起另一份普通 metadata；落败和可能成为最后引用的胜出实体都
+交给原 retire。下层目录合并遇白化、不再是目录或 opaque 时停止。
+
+这些读取消费者已经接入，命名和元数据修改的共同 writer 边界仍待完成，不能宣称
+完整 Overlay 并发语义或系统调用已经通过。还需验证 FAT 批次的退休引用是否被后续
+同 Scope 删除误算为活跃用户；修复时只可排除真实私有引用，保留公开条目、缓存及
+打开句柄的原保护，不按名称或计数阈值猜测引用来源。
+
 ## 5. 对象型链接
 
 普通符号链接的内容是路径文本；proc 的特殊链接指向已经存在的对象。
