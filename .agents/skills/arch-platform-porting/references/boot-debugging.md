@@ -621,6 +621,14 @@ Loongson 3A6000 的资源和独立客户机板测契约见
 精简归档由 `resources/init` 挂载 devtmpfs、重开控制台后执行发布初始化脚本，
 不能依赖构建机创建设备节点。缓存命中和上传成功都不替代实际客户机命令断言。
 
+更新固定 Rust 工具链时，比较旧、新 rustc 的 LoongArch 裸机与 musl
+`--print target-spec-json`。从 `nightly-2026-09-04` 到 `nightly-2026-11-13`，
+裸机目标不变；musl 新增的 `-Wl,--no-rosegment` 属于 CC 驱动参数。
+内核自定义目标直接使用 `gnu-lld`，someboot 的 LoongArch 链接脚本已有显式
+`PHDRS`；保持 LP64S、禁用 F/D/非对齐指令与内核 TLS 契约，不照搬用户态目标。
+编译器变化后重新执行 `loong-standard` 全批次和 Linux 实板验收，以新 ELF 的
+真实运行检查汇编字段偏移、FP/TLS、缺页指令与定时器，不能复用旧编译器产物。
+
 UART GSI 不在 PCH 覆盖范围时，继续核对真实 MADT 的 LIOPIC，而不是套用 PCH
 输入编号或猜 CPU 线。Linux LoongArch 的 GSI 16 起对应 LIO 本地输入，仍须受
 32 输入边界与固件 cascade map 覆盖约束；CPU 父线来自命中位图的 cascade。

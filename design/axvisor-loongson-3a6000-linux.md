@@ -77,6 +77,23 @@ devtmpfs 并重开控制台，再执行原脚本。精简后的 initrd 减少重
 板卡 `initramfs` 选择该归档，随后附加 builtin 包。客户机磁盘配置使用这一
 板端绝对路径，不将构建机路径泄漏给宿主运行时。
 
+### 2.3 编译器与链接契约
+
+工作区现使用 `nightly-2026-11-13`，即 rustc `1.102.0-nightly` 与 LLVM `23.1.5`。
+从旧工具链升级时，保留主线对 `allocator_ext`、整数位操作方法消歧、musl
+`fstatat` 和 `x2apic 0.5.1` 的迁移。本用例直接使用新实现，不增加旧工具链分支。
+
+两版 rustc 的 `--print target-spec-json` 对照显示，LoongArch 裸机目标没有变化；
+普通 musl 目标新增的 `-Wl,--no-rosegment` 位于 CC 驱动链接参数中。内核的
+`scripts/targets/std/pie/loongarch64-unknown-linux-musl.json` 使用 `gnu-lld`，
+由 `someboot/src/arch/loongarch64/link.ld` 显式定义 `PT_LOAD` 和 TLS 段，继续保持
+LP64S、禁用 F/D/非对齐指令与 `initial-exec` TLS，不能直接替换成普通用户态目标。
+
+`GuestContext` 与汇编的字段位置仍由 `global_asm!` 中的 `offset_of!`、`size_of!`
+共同生成。升级后的验证须重新构建并执行 `loong-standard` 完整 CPU 批次，核对
+缺页、故障指令、FP/TLS、宿主 IRQ 和客户机定时器，再执行两轮 Linux 验收；
+旧编译器生成的 ELF 不能作为新工具链的运行证据。
+
 ## 3. 失败归属
 
 首次上板须保留完整串口日志、宿主及客户机产物身份，按最后可靠状态判断失败
