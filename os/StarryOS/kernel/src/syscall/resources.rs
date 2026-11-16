@@ -8,16 +8,63 @@ use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, RLIMIT_RTTIME, 
 use crate::{
     StarryError, StarryResult,
     mm::{UserPtr, VmPtr},
+    namespace::{ROOT_USER_NS, UserNamespace},
+    sync::RawSpinLock,
     task::{
         Cred, ProcessData, Rlimit, TgidNumber, Thread, UserTaskRef, get_user_process_data_by_number,
     },
     time::TimeValueLike,
 };
 
+fn user_namespace_cap_sys_resource(
+    caller: &Cred,
+    caller_ns: &Arc<RawSpinLock<UserNamespace>>,
+    target_ns: &Arc<RawSpinLock<UserNamespace>>,
+) -> bool {
+    if Arc::ptr_eq(target_ns, caller_ns) {
+        return caller.has_cap_sys_resource();
+    }
+
+    // A parent namespace owns a child namespace even after the owner's
+    // effective capability has been cleared.
+    let caller_level = caller_ns.lock_irqsave().level();
+    let target_level = target_ns.lock_irqsave().level();
+    if target_level <= caller_level {
+        return false;
+    }
+
+    let mut namespace = target_ns.clone();
+    loop {
+        let (parent, owner_uid, namespace_level) = {
+            let namespace = namespace.lock_irqsave();
+            (namespace.parent(), namespace.owner_uid(), namespace.level())
+        };
+        let Some(parent) = parent else {
+            return false;
+        };
+        if Arc::ptr_eq(&parent, caller_ns) {
+            return owner_uid == caller.euid || caller.has_cap_sys_resource();
+        }
+        if namespace_level <= caller_level + 1 {
+            return false;
+        }
+        namespace = parent;
+    }
+}
+
+fn has_initial_user_namespace_cap_sys_resource(
+    caller: &Cred,
+    caller_ns: &Arc<RawSpinLock<UserNamespace>>,
+) -> bool {
+    Arc::ptr_eq(caller_ns, &ROOT_USER_NS) && caller.has_cap_sys_resource()
+}
+
 fn check_prlimit_permission(
     current: &UserTaskRef,
     caller: &Cred,
+    caller_ns: &Arc<RawSpinLock<UserNamespace>>,
     target: &Arc<ProcessData>,
+    target_ns: &Arc<RawSpinLock<UserNamespace>>,
 ) -> StarryResult<()> {
     if Arc::ptr_eq(&current.as_thread().proc_data, target) {
         return Ok(());
@@ -38,7 +85,7 @@ fn check_prlimit_permission(
         && caller.gid == target.egid
         && caller.gid == target.sgid;
 
-    if ids_match || caller.has_cap_sys_resource() {
+    if ids_match || user_namespace_cap_sys_resource(caller, caller_ns, target_ns) {
         Ok(())
     } else {
         Err(StarryError::OperationNotPermitted)
@@ -70,8 +117,11 @@ pub fn sys_prlimit64(
         get_user_process_data_by_number(TgidNumber::try_from(pid)?)?
     };
 
-    let caller = current.as_thread().cred();
-    check_prlimit_permission(current, caller.as_ref(), &proc_data)?;
+    let caller_thread = current.as_thread();
+    let caller = caller_thread.cred();
+    let caller_ns = caller_thread.proc_data.namespace_snapshot().user_ns.clone();
+    let target_ns = proc_data.namespace_snapshot().user_ns.clone();
+    check_prlimit_permission(current, caller.as_ref(), &caller_ns, &proc_data, &target_ns)?;
 
     if resource >= RLIM_NLIMITS {
         return Err(StarryError::InvalidInput);
@@ -86,7 +136,9 @@ pub fn sys_prlimit64(
         let previous = update.snapshot();
         // Raising the hard limit requires CAP_SYS_RESOURCE, matching Linux
         // do_prlimit() while the per-resource writer lock is held.
-        if new_limit.rlim_max > previous.max && !caller.has_cap_sys_resource() {
+        if new_limit.rlim_max > previous.max
+            && !has_initial_user_namespace_cap_sys_resource(caller.as_ref(), &caller_ns)
+        {
             return Err(StarryError::OperationNotPermitted);
         }
         update.replace(Rlimit::new(new_limit.rlim_cur, new_limit.rlim_max));
