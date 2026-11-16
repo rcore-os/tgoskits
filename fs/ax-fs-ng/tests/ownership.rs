@@ -928,6 +928,21 @@ fn metadata_times_distinguish_touch_explicit_times_and_omission() {
         (chowned.atime, chowned.mtime),
         (explicit.atime, explicit.mtime)
     );
+    axfs_ng_vfs::TrustedInitialization::kernel()
+        .restore_metadata(
+            &input,
+            axfs_ng_vfs::MetadataUpdate {
+                mtime: Some(Duration::from_secs(321)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let restored = alias.metadata().unwrap();
+    assert_eq!(
+        (restored.atime, restored.mtime, restored.ctime),
+        (chowned.atime, Duration::from_secs(321), chowned.ctime),
+        "initialization must preserve timestamps which did not participate",
+    );
     input.mountpoint().set_readonly(true).unwrap();
     let ticks = TICKS.with(core::cell::Cell::get);
     input
