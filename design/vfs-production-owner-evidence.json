@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-11-17T01:45:44.403289+08:00",
+  "recorded_at": "2026-11-17T02:34:26.723050+08:00",
   "repository": "rcore-os/tgoskits",
   "pull_request": 2800,
   "scope": "Owner/Snapshot production migration, paired Kernel FS/MNT bindings, open paths and mappings; syscall compatibility remains unverified",
@@ -1340,6 +1340,148 @@
     "limitations": [
       "The ordinary Overlay owner, unified lookup and bounded directory read consumers still require migration.",
       "The PR remains draft and incomplete; full Starry ABI, performance, independent review and final HEAD CI have not been established."
+    ]
+  },
+  "owned_directory_observation": {
+    "source_commit": "87ff1178b7734842ee749a35c1c0a4e1ceffd545",
+    "source_tree": "8e090e85e65a5a7a6c5afc67d629ee375f869e79",
+    "source_files": {
+      "design/vfs-lookup-ownership.md": "b542dd6f1b64a4cd93d9332e16371e23c677af674a03cc511619e237e93bddd5",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/namespace/rename/admitted.rs": "0788fe496ff9d13149a8b0f829c9917d3895b194c4fd89529f8a422d86053813",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/fs/tests/namespace/mod.rs": "6fa4dc8394ce3fb5301abbc83678d2af15c25411bce44f9a83d3d6fb8120c5e2",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/inode/directory/cursor.rs": "c5c2cd4f357b1bdc91a579330286268788d2929ebed9e515ac2024224fca3bd6",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/inode/directory/mod.rs": "526029f1b5d108ce7dfcdf014ea6a7471e252bbf74148454cb06d1e0b095fda4",
+      "fs/ax-fs-ng/src/fs/ext4/rsext4/inode/mod.rs": "a2f634f2bd0c02319078fdbfe8312161a454498b64829c94168d2181f1a14366",
+      "fs/ax-fs-ng/src/fs/fat/dir.rs": "b1acfa63b7ebf52bfa58ec104de36e65f8dfb3f75df77a29324796caf5df49ee",
+      "fs/ax-fs-ng/src/fs/fat/dir/rename.rs": "215bdb5552bbd409c3035b6df24b3b8b3d6ce40bf77207036c938bf09aef86a5",
+      "fs/ax-fs-ng/src/fs/fat/disk.rs": "698cabed191252aec9a629c01c03628a84d6b25911c4df30da4ededaf7429cd2",
+      "fs/ax-fs-ng/src/fs/fat/fs.rs": "64e95c1f575db5ba17dbc96bfb7032003b498c4ae482c122a881367f985f2ea9",
+      "fs/ax-fs-ng/src/fs/fat/state.rs": "151cd42e963c4e9555e3b5f7b09d9eb08c42433612d85ea17adf7bd64931eebb",
+      "fs/ax-fs-ng/src/fs/memory/rename.rs": "6dd66f6c57120a675bdfa8d5e0a51f2a6a747c7c22a729cec9803f6172adc28f",
+      "fs/ax-fs-ng/tests/backing_lookup.rs": "47779b7df03952b05a662edff3a26239d1dec80a12f1d5cd9408a69b7e26274f",
+      "fs/axfs-ng-vfs/src/namespace_admission.rs": "6776ec78de857dac0cf51698e1ec65f15d1302956222312929d321b389961709",
+      "fs/axfs-ng-vfs/src/namespace_operation/backing_query.rs": "70c9481984605933c92256e53aa1ab700159826c747928251d1685489c1e60ec",
+      "fs/axfs-ng-vfs/src/namespace_operation/directory.rs": "e888da6ef794a9ebd4a28b4637a19b2c6e37a86ecbf1224ed7521c6e2c724c9d",
+      "fs/axfs-ng-vfs/src/namespace_operation/mod.rs": "e725443860ed6049ad68b6af44014f9a4f5ca9a45f2f37d0bdbb01e553f70d28",
+      "fs/axfs-ng-vfs/src/namespace_operation/tests/backing_queries.rs": "9c5b8c04452eaf71105b60de22122e2eefa767226cb2aae7dc59ba588c237240",
+      "os/StarryOS/kernel/src/pseudofs/overlay/inode.rs": "a932d9350c36dee7e7f4f001ad679ef7877628619a01607ee472cf9c7051c9b6",
+      "os/StarryOS/kernel/src/pseudofs/overlay/mod.rs": "d3a2f54c3a892e3fba0d4aab2d5e1b15615bd6f67b7c9aa3cfb5911eafd2f86c",
+      "os/StarryOS/kernel/src/pseudofs/overlay/read.rs": "c9c3201f63a3b8c1df65f590b92d8e7988b6cfff59881bc2e9c490e320f87d1e"
+    },
+    "implemented": [
+      "NamespaceQuery::Directory 使用同一 typed read 完成流程，返回自有 DirectoryBatch，每批至多 128 条，保留完整原生游标并验证响应、名称和循环。",
+      "MemoryFs 复用原目录读取；FAT 普通与 admitted 读取共用 read_dir_locked，后者将所有 guard 临时引用交给原 retire；Ext4 使用原 DirectoryReader、cookie/change-attribute 转换和真实 staging/journal-progress。",
+      "Overlay 普通 metadata/lookup/read_dir 使用 PreparedRead，嵌套读取使用原请求的绑定视图；在 per-owner reader gate 内消费批次，退出全部 gate 和 admission 后才调用外部目录 sink。索引使用实际已读 metadata，并将胜出及落败候选交给原 retire。",
+      "FAT 仅为 guard.retained 自己克隆的实际 Arc 登记同 gate 计数。退休集合在原 FS gate 内归还计数，退出 gate 后释放实际 inode。unlink 只排除该集合及本次 Weak upgrade，保留公开条目、缓存及其他活跃持有者。"
+    ],
+    "fat_regression": {
+      "red": "a0f4eba6ab1ee1a49c04a679cba9adb833784566",
+      "green": "7e78506f56796c72ebd2c148014aafe9d7bcbba0",
+      "test": "fat_unlink_preserves_active_identity_and_releases_closed_cache_owners",
+      "trigger": "Read a real FAT directory in the same original Scope before observed cancellation and later unlink, after the real cached file was closed.",
+      "red_result": "Three FAT-enabled AX profiles returned Unchanged instead of expected Applied.",
+      "weakening": false,
+      "red_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-batch-fat-red.log",
+        "sha256": "150cab24867ccdf107bfc3543b46fc1a95be1878474bf1a8953160bfdd2c631a",
+        "bytes": 271719
+      },
+      "green_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-batch-fat-green.log",
+        "sha256": "b88c68740b417aab942fafcb129937a5526af1e56d0f7baf58bc11835d2813d0",
+        "bytes": 273093
+      },
+      "result": "三个启用 FAT 的 AX profile 修复前均返回 Unchanged，预期 Applied；修复后同一旅程全部通过，保留活跃拒绝、内容、名称身份、取消、观察后包装及最终删除断言。"
+    },
+    "cursor_regression": {
+      "red": "ce961c3b56f6f5eefa67d612853257d4fb792142",
+      "green": "87ff1178b7734842ee749a35c1c0a4e1ceffd545",
+      "test": "request_bound_queries_relay_direct_readonly_edges_and_retire_all_candidates",
+      "trigger": "A bound backend returns the complete cookie sequence 1, 2, 1 inside one directory batch.",
+      "red_result": "VFS 70 passed, 1 failed: an invalid cyclic snapshot was accepted instead of BadState.",
+      "other_failures": "The same run also observed an AX empty/EOF page-provider allocation-count assertion of 2 versus 0; this is not attributed to this cursor change and is not counted as product RED evidence.",
+      "red_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-cycle-red.log",
+        "sha256": "74af1873400a0a07e2f4d4ab710d984ca7dac64cb02554aea3cc4f133b9206fd",
+        "bytes": 269709
+      },
+      "green_log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-batch-final-std.log",
+        "sha256": "62fd3bfeeec4ce7f0a8ec6b66bae89698ebf0f09b8b2de7ddf7fb84acf4461e0",
+        "bytes": 275236
+      },
+      "result": "同一提供者旅程在接受 1,2,1 时为 VFS 70 过 1 败；修复后 VFS 71 项及相应集成、文档通过。跨批防循环已接入实际 Overlay reader，运行验收仍受 Kernel 旧命名方法阻塞。"
+    },
+    "validation": {
+      "std": {
+        "source_commit": "87ff1178b7734842ee749a35c1c0a4e1ceffd545",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-batch-final-std.log",
+          "sha256": "62fd3bfeeec4ce7f0a8ec6b66bae89698ebf0f09b8b2de7ddf7fb84acf4461e0",
+          "bytes": 275236
+        },
+        "result": "选中 18 包，17 包通过；AX 五个 profile、真实 MemoryFs 跨批旅程、两个 Ext4 staging profile 和 VFS 71 项及集成、文档通过。唯一失败为 Kernel E0407 五个旧 Overlay 方法，整体退出码 1。"
+      },
+      "native_clippy": {
+        "source_commit": "7e78506f56796c72ebd2c148014aafe9d7bcbba0",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-batch-clippy-final.log",
+          "sha256": "4a1c9886c73c3f5ce32561db40b1f37b5b835f0ee81eede88ee5be42f3847c0e",
+          "bytes": 3921
+        },
+        "result": "VFS/AX 9 项通过。"
+      },
+      "final_vfs_clippy": {
+        "source_commit": "87ff1178b7734842ee749a35c1c0a4e1ceffd545",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-cycle-vfs-clippy.log",
+          "sha256": "8cd10e5c32ef710227b2a02b8537cd736a62c2965db5363f114b19d624e0e07e",
+          "bytes": 2481
+        },
+        "result": "VFS base/lockdep/host-test 3 项通过。"
+      },
+      "kernel_clippy": {
+        "source_commit": "87ff1178b7734842ee749a35c1c0a4e1ceffd545",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-cycle-kernel-clippy.log",
+          "sha256": "a356cba8d54be3df4695f02f632a1f7f025832897564d7d91cb03c38c84babe7",
+          "bytes": 3974
+        },
+        "result": "首项仍只报五个旧 Overlay 方法，未执行余下 71 项。"
+      },
+      "runtime": {
+        "source_commit": "7e78506f56796c72ebd2c148014aafe9d7bcbba0",
+        "logs": [
+          {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-batch-fs-basic-x86.log",
+            "sha256": "d9dbdc7e6e0d0c913797661850f744744937e855d8cf7da05253b0fa089f354d",
+            "bytes": 28512
+          },
+          {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-batch-axvisor-ktest.log",
+            "sha256": "2c2c217cc8621b296345aa19c7d446498b267b78e035de077a21e25f1cc5d838",
+            "bytes": 75645
+          }
+        ],
+        "result": "x86_64 fs-basic 通过；Axvisor AArch64 pass=125 fail=0 skip=0。后续仅增强游标契约测试、批次校验及 Overlay 防循环，没有再次修改这两项运行覆盖的原生 FAT 读取与引用实现。此证据不覆盖实际 Starry Overlay。"
+      }
+    },
+    "unresolved_observation": {
+      "log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/directory-cycle-red.log",
+        "sha256": "74af1873400a0a07e2f4d4ab710d984ca7dac64cb02554aea3cc4f133b9206fd",
+        "bytes": 269709
+      },
+      "source_difference": [
+        "fs/axfs-ng-vfs/src/namespace_operation/tests/backing_queries.rs"
+      ],
+      "result": "该轮还出现 AX empty_and_eof_reads_do_not_allocate_or_touch_storage 的页计数 2 对 0。两版本仅 VFS cfg(test) 夹具不同，尚未取得其分配来源的确定证据；不计入游标产品 RED，也不据最终同入口通过宣称已修复该计数隔离问题。"
+    },
+    "limitations": [
+      "当前只读 owner 已接入，共同命名及元数据 writer 仍待迁移；Kernel 不能编译，尚无实际 Overlay 或直接 syscall 运行证明。",
+      "FAT 仍拒绝真实活跃脱链及暂存；计数只排除确知的 guard 退休引用，不能把任意 Overlay 包装器当成无活跃用户。",
+      "目录批次限制返回对象大小；原生 MemoryFs 内部扫描和 Overlay 合并名称表仍需同环境性能与资源验证。",
+      "既有 fd 接受权限后的原生绑定、统一 lookup、proc、F1-F8、最终独立审查与最终 HEAD CI 仍未完成。"
     ]
   }
 }

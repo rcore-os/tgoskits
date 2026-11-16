@@ -463,3 +463,45 @@ AX profile 中都未发生真实设备刷新，稳定失败。恢复后同一 Me
 最后 3 项 VFS Clippy、x86_64 fs-basic 和 Axvisor AArch64 125 项通过。Kernel
 Clippy 首项因同样 5 个方法失败，其余 71 项未执行。普通 Overlay owner、目录批次、
 统一 lookup 和完整 ABI 验收仍待继续；证据为 `typed_backing_read_completion`。
+
+
+### 9.15 分层目录观察
+
+`a0f4eba6ab` 将 Overlay 普通 metadata、单组件 lookup 与目录读取接入 PreparedRead
+及同一 LayerRead；嵌套读取沿原 receiver-bound 请求下沉。reader gate 内消费原生
+自有批次，所有 gate/admission 结束后才向普通目录 sink 交付名称，删除旧回调中
+lookup 的重入路径。索引使用已读 metadata，胜出及落败候选进入共同 retire。
+命名与元数据 writer 的共同边界尚未完成，不能据此宣称 Overlay 并发实现完成。
+
+DirectoryBatch 每批最多 128 条。MemoryFs 使用既有读取，FAT 共用实际 locked
+读取并保留临时引用，Ext4 使用原游标和 DirectoryReader，保留实际 staging/journal
+progress。既有 MemoryFs 挂载旅程覆盖跨批完整名称、无重复和 exact mount；既有
+Ext4 staging 旅程同时检查目录 Retry 与后续原生快照，没有新增测试入口或启动。
+批次不代表原生内部扫描及 Overlay 合并名称表具有固定空间或时间成本。
+
+同一真实 FAT 旅程在 `a0f4eba6ab` 的三个 FAT profile 均因 guard 退休引用而返回
+Unchanged，预期 Applied。`7e78506f56` 对确知的 guard 克隆登记同 FS gate 计数，
+只从 unlink 实际 strong count 中排除这些引用及本次 Weak upgrade；退休先归还
+计数、退出 gate，再释放实际 inode。修复后相同旅程全部通过，保留真实活跃句柄
+拒绝、内容、名称身份、取消及最后删除。更高层任意包装器仍不被一律视为私有引用，
+FAT 活跃脱链和暂存能力未放开。新增计数沿用已有 FsRef/Send/Sync 的同 owner 证明，
+仍纳入最终独立审查。
+
+### 9.16 目录游标循环
+
+`ce961c3b56` 在既有提供者旅程中把非法游标改为 1、2、1；原校验只比较相邻值，
+VFS 为 70 过 1 败。`87ff1178b7` 拒绝回到输入游标或同批任何已有完整游标；
+Overlay 另记录跨批 offset/continuation/change-attribute，拒绝循环而不假定 cookie
+整数递增。最终 VFS 71 项及集成、文档通过；跨批 Overlay 的实际运行仍待 Kernel
+旧方法迁移后验收。
+
+最终源码 `87ff1178b7` 标准库选中 18 包、通过 17 包，唯一失败是 Kernel 的 5 个
+旧 Overlay 方法。原生源码 `7e78506f56` 的 VFS/AX 9 项 Clippy、x86_64 fs-basic
+与 Axvisor AArch64 125 项通过；最终 VFS 3 项 Clippy 通过，Kernel Clippy 首项仍
+因同样 5 个方法失败，其余 71 项未执行。两次 QEMU 后仅改游标契约与校验，没有
+再次修改所覆盖的原生 FAT 实现；不把这些运行记为实际 Starry Overlay 证明。
+
+游标红轮另外出现一次 AX empty/EOF 测试的全局页计数 2 对 0。相对前一源码只有
+VFS cfg(test) 夹具变化，分配来源尚未取得确定证据；最终同入口没有复现，但这项
+观察没有被写成已修复。精确版本、全部日志及其局限见 `owned_directory_observation`。
+后续仍先完成五个旧命名操作及 writer，再继续第 4、5 节和完整 ABI 验收。
