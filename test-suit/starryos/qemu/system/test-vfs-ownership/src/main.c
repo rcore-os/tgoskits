@@ -102,7 +102,7 @@ static void overlay_ownership(void) {
     orphan = syscall(SYS_openat, AT_FDCWD, path, O_CREAT | O_EXCL | O_RDWR, 0600);
     OVL_REQUIRE(orphan >= 0 && syscall(SYS_write, orphan, "kept", 4) == 4, "create source for anonymous copy-up");
     close(orphan); orphan = -1;
-    snprintf(options, sizeof(options), "lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work);
+    snprintf(options, sizeof(options), "lowerdir=%s,upperdir=%s,workdir=%s,index=off", lower, upper, work);
     OVL_REQUIRE(syscall(SYS_mount, "overlay", merged, "overlay", 0, options) == 0, "mount the merged filesystem");
     overlay_mounted = 1;
     snprintf(path, sizeof(path), "%s/deep/seed", merged);
@@ -129,11 +129,13 @@ static void overlay_ownership(void) {
     orphan = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
     OVL_REQUIRE(orphan >= 0 && syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0,
                 "unlink lower-only object while retaining its fd");
-    OVL_REQUIRE(syscall(SYS_fchmod, orphan, 0640) == 0 && syscall(SYS_fstat, orphan, &st) == 0 &&
-                st.st_nlink == 0 && (st.st_mode & 07777) == 0640, "deleted lower copy-up creates an actual anonymous upper");
+    CHECK_ERR(syscall(SYS_fchmod, orphan, 0640), EEXIST,
+              "index=off rejects first copy-up of an already unlinked lower inode");
+    OVL_REQUIRE(syscall(SYS_fstat, orphan, &st) == 0 && st.st_nlink == 1 &&
+                (st.st_mode & 07777) == 0600, "rejected copy-up preserves the actual lower inode metadata");
     OVL_REQUIRE(syscall(SYS_pread64, orphan, observed, 4, 0) == 4 && memcmp(observed, "kept", 4) == 0,
-                "anonymous copied inode retains its content");
-    CHECK_ERR(syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0), ENOENT, "anonymous copy-up never recreates the old visible name");
+                "retained lower inode still provides its original content");
+    CHECK_ERR(syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0), ENOENT, "rejected copy-up never recreates the old visible name");
     close(orphan); orphan = -1;
     snprintf(path, sizeof(path), "%s/new", merged);
     created = syscall(SYS_openat, AT_FDCWD, path, O_CREAT | O_EXCL | O_RDWR, 0640);
