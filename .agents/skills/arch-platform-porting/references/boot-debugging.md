@@ -636,6 +636,11 @@ RAII 生命周期；CPU 迭代器持有 MADT 映射直到遍历结束，不能�
 编译器变化后重新执行 `loong-standard` 全批次和 Linux 实板验收，以新 ELF 的
 真实运行检查汇编字段偏移、FP/TLS、缺页指令与定时器，不能复用旧编译器产物。
 
+SMP 的 `task-stack-guard-page` 保留跨核创建与迁移，但按 QEMU profile 的串口
+所有权在主核 0 触发故障。先用 `ax_console_flush()` 排空说明输出，再屏蔽该核
+本地 IRQ，使普通 worker/IRQ 不能与紧急接管竞争；同步 page fault 仍可发生。
+紧急输出允许有界接管失败，不能靠增加重试预算、睡眠或放宽正则稳定该用例。
+
 UART GSI 不在 PCH 覆盖范围时，继续核对真实 MADT 的 LIOPIC，而不是套用 PCH
 输入编号或猜 CPU 线。Linux LoongArch 的 GSI 16 起对应 LIO 本地输入，仍须受
 32 输入边界与固件 cascade map 覆盖约束；CPU 父线来自命中位图的 cascade。
