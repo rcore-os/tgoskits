@@ -275,10 +275,12 @@ pub trait DirNodeOps: NodeOps {
         Ok(has_children)
     }
 
-    /// Best-effort native reference preparation, called after VFS direct-child
-    /// retention has actually been released and outside all backend gates.
-    /// This hook performs no namespace mutation and grants no commit authority.
-    fn prepare_unlink(&self) {}
+    /// Prepares reclaimable backing references after VFS direct-child retention
+    /// is released, outside all backend gates. Writeback failures abort before
+    /// admission. This performs no namespace mutation and grants no authority.
+    fn prepare_unlink(&self) -> VfsResult<()> {
+        Ok(())
+    }
 
     /// Runs a controlled command under the backend's real exclusion. Writable
     /// backends implement this by lending each locked attempt to the request's

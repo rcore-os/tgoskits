@@ -179,8 +179,8 @@ impl DirNodeOps for FatDirNode {
         self.object(self.find(name, &guard)?, &mut guard)
     }
 
-    fn prepare_unlink(&self) {
-        crate::file::prune_cached_files();
+    fn prepare_unlink(&self) -> VfsResult<()> {
+        crate::file::prepare_fat_unlink_cache(self.state.fs.as_ref())
     }
 
     fn mutate_namespace(

@@ -29,7 +29,7 @@ use axfs_ng_vfs::{FileNode, FilesystemOps, Location, VfsError, VfsResult};
 use pages::CachedPages;
 pub(crate) use prefetch::start_background_readahead;
 use readahead::ReadAheadState;
-#[cfg(any(feature = "fat", feature = "ext4"))]
+#[cfg(feature = "ext4")]
 pub(crate) use reclaim::prune_cached_files;
 #[cfg(feature = "ext4")]
 pub(crate) use reclaim::prune_cached_files_retiring;
@@ -1301,6 +1301,21 @@ pub(crate) fn sync_fat_cached_files(filesystem: &dyn FilesystemOps) -> VfsResult
     reclaim::writeback_cached_files(Some(filesystem), |file| file.sync(false))
 }
 
+/// Releases closed FAT caches before the backend samples active inode users.
+#[cfg(feature = "fat")]
+pub(crate) fn prepare_fat_unlink_cache(filesystem: &dyn FilesystemOps) -> VfsResult<()> {
+    reclaim::writeback_cached_files(Some(filesystem), |file| {
+        // The registry and this writeback snapshot account for two owners.
+        // A concurrent opener may acquire another owner after this check;
+        // normal writeback remains safe and the locked FAT attempt rejects it.
+        if Arc::strong_count(file) == 2 {
+            file.sync(false)
+        } else {
+            Ok(())
+        }
+    })
+}
+
 fn filesystem_key(filesystem: &dyn FilesystemOps) -> usize {
     filesystem as *const dyn FilesystemOps as *const () as usize
 }
@@ -1390,5 +1405,5 @@ fn writeback_filesystem_pages_with(
     filesystem: &dyn FilesystemOps,
     writeback: fn(&CachedFileShared) -> VfsResult<()>,
 ) -> VfsResult<()> {
-    reclaim::writeback_cached_files(Some(filesystem), writeback)
+    reclaim::writeback_cached_files(Some(filesystem), |file| writeback(file))
 }

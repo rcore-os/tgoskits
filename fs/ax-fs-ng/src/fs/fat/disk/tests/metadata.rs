@@ -442,7 +442,6 @@ fn fat_metadata_journey_preserves_identity_authorization_and_persistent_times() 
     // Positive retention is independent of the mount. Release this journey's
     // cached children as well as its explicit handles before reopening storage.
     root.entry().as_dir().unwrap().clear_cached_entries();
-    drop(opened);
     drop(alias);
     drop(file);
     drop(directory);

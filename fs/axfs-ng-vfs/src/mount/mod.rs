@@ -1601,7 +1601,7 @@ impl Location {
         crate::path::verify_entry_name(name)?;
         let directory = self.entry.as_dir()?;
         directory.prepare_unlink_references();
-        directory.inner().prepare_unlink();
+        directory.inner().prepare_unlink()?;
         Ok(crate::PreparedUnlink::new(self.clone(), name.into()))
     }
 

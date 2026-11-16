@@ -261,13 +261,13 @@ pub(super) fn release_cached_file(file: &Arc<CachedFileShared>) {
 
 #[cfg(feature = "vfs")]
 pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
-    writeback_cached_files(None, CachedFileShared::writeback_dirty_for_global_sync)
+    writeback_cached_files(None, |file| file.writeback_dirty_for_global_sync())
 }
 
 #[cfg(any(feature = "vfs", feature = "ext4", feature = "fat"))]
 pub(super) fn writeback_cached_files(
     filesystem: Option<&dyn axfs_ng_vfs::FilesystemOps>,
-    writeback: fn(&CachedFileShared) -> VfsResult<()>,
+    writeback: impl Fn(&Arc<CachedFileShared>) -> VfsResult<()>,
 ) -> VfsResult<()> {
     let files = GLOBAL_CACHED_FILES.files.read().clone();
     let mut first_error = None;
@@ -294,10 +294,9 @@ pub(super) fn writeback_cached_files(
 /// Writes back cached files belonging to one filesystem before its unmount.
 #[cfg(feature = "vfs")]
 pub fn sync_filesystem_cached_files(filesystem: &dyn axfs_ng_vfs::FilesystemOps) -> VfsResult<()> {
-    writeback_cached_files(
-        Some(filesystem),
-        CachedFileShared::writeback_dirty_for_global_sync,
-    )
+    writeback_cached_files(Some(filesystem), |file| {
+        file.writeback_dirty_for_global_sync()
+    })
 }
 
 pub(crate) fn prune_cached_files() {
