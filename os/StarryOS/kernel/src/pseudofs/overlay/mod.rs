@@ -14,6 +14,7 @@ mod copy_up;
 mod inode;
 mod metadata;
 mod namespace;
+mod open;
 mod preparation;
 mod read;
 
@@ -662,6 +663,13 @@ impl LinkOps for OverlayFile {
 }
 
 impl FileNodeOps for OverlayFile {
+    fn prepare_write_open(
+        &self,
+        request: &axfs_ng_vfs::FileOpenRequest<'_>,
+    ) -> axfs_ng_vfs::NamespaceCompletion<Metadata> {
+        self.fs.prepare_inode_open(&self.inode, request)
+    }
+
     fn resolve_file_io(
         &self,
         request: axfs_ng_vfs::FileIoRequest<'_>,

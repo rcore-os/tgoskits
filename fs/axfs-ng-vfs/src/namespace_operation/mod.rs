@@ -210,6 +210,23 @@ impl<'a, T> NamespaceOperationScope<'a, T> {
 }
 
 impl NamespaceOperationScope<'_, Metadata> {
+    pub(crate) fn prepare_file_open(
+        &self,
+        context: &NamespaceOperationContext<'_>,
+        target: &Location,
+        access: crate::NodePermission,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<NamespaceObservation<Metadata>> {
+        self.check_context(context)?;
+        context.retired.retire(target.clone());
+        context.dispatch_file_open(
+            target,
+            access,
+            credentials,
+            Reservation::root_metadata(context.children, &self.state().root),
+        )
+    }
+
     /// Starts exactly one root metadata attempt using this scope's borrowed view.
     /// Empty times produce neither a root nor an observation.
     pub fn change_metadata(
@@ -572,6 +589,31 @@ impl<'a> NamespaceOperationContext<'a> {
         let completion =
             crate::metadata::dispatch(self, target, intent, credentials).bind(admission.owner);
         Ok(Some(reservation.metadata(completion)))
+    }
+
+    pub(crate) fn forward_file_open(
+        &self,
+        target: &Location,
+        access: crate::NodePermission,
+        credentials: &MutationCredentials<'_>,
+    ) -> VfsResult<NamespaceObservation<Metadata>> {
+        let reservation = Reservation::child(self.children)?;
+        self.dispatch_file_open(target, access, credentials, reservation)
+    }
+
+    fn dispatch_file_open(
+        &self,
+        target: &Location,
+        access: crate::NodePermission,
+        credentials: &MutationCredentials<'_>,
+        mut reservation: Reservation<'_>,
+    ) -> VfsResult<NamespaceObservation<Metadata>> {
+        self.write_for(target)?.check_location(target)?;
+        let admission = self.admission(target)?;
+        reservation.start();
+        let completion =
+            crate::file_open::dispatch(self, target, access, credentials)?.bind(admission.owner);
+        Ok(reservation.metadata(completion))
     }
 
     fn dispatch_unlink(

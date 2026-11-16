@@ -17,6 +17,16 @@ pub struct WriteAccess {
 }
 
 impl WriteAccess {
+    pub(crate) fn prepare_open(
+        &self,
+        access: axfs_ng_vfs::NodePermission,
+        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
+    ) -> VfsResult<()> {
+        self._path
+            .location()
+            .prepare_write_open(&self._write, access, credentials)
+    }
+
     /// Acquires the complete backing graph's rights and inode write access.
     /// Fails with `ReadOnlyFilesystem` for local/shared protection or
     /// `TextFileBusy` if execution holds the inode. Acquire before backend gates.

@@ -6,6 +6,7 @@ extern crate ax_runtime as _;
 extern crate std;
 
 mod file_io;
+mod file_open;
 mod fs;
 mod metadata;
 mod mount;
@@ -24,6 +25,7 @@ mod write_admission;
 mod writeback_policy;
 
 pub use file_io::{FileIoRequest, FileIoTarget};
+pub use file_open::{AuthorizedFileOpen, FileOpenRequest, LockedFileOpenAttempt};
 pub use fs::*;
 pub use metadata::*;
 pub use mount::*;

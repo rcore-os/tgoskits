@@ -198,6 +198,11 @@ static void overlay_ownership(void) {
     OVL_REQUIRE(syscall(SYS_fchmod, fd, 06755) == 0, "initialize source setid permissions");
     OVL_REQUIRE(syscall(SYS_setxattr, source, "user.overlay", "retained", 8, 0) == 0, "initialize native source xattr");
     close(fd); fd = -1;
+    snprintf(path, sizeof(path), "%s/deep/write-open", lower);
+    created = syscall(SYS_openat, AT_FDCWD, path, O_CREAT | O_EXCL | O_RDWR, 0644);
+    OVL_REQUIRE(created >= 0 && syscall(SYS_write, created, content, sizeof(content)) == (long)sizeof(content),
+                "prepare lower content for the first writable open");
+    close(created); created = -1;
     snprintf(path, sizeof(path), "%s/orphan", lower);
     orphan = syscall(SYS_openat, AT_FDCWD, path, O_CREAT | O_EXCL | O_RDWR, 0600);
     OVL_REQUIRE(orphan >= 0 && syscall(SYS_write, orphan, "kept", 4) == 4, "create source for anonymous copy-up");
@@ -205,6 +210,31 @@ static void overlay_ownership(void) {
     snprintf(options, sizeof(options), "lowerdir=%s,upperdir=%s,workdir=%s,index=off", lower, upper, work);
     OVL_REQUIRE(syscall(SYS_mount, "overlay", merged, "overlay", 0, options) == 0, "mount the merged filesystem");
     overlay_mounted = 1;
+    snprintf(path, sizeof(path), "%s/deep/write-open", merged);
+    snprintf(other, sizeof(other), "%s/deep/write-open", upper);
+    syscall(SYS_setfsgid, 88);
+    syscall(SYS_setfsuid, 77);
+    int denied = syscall(SYS_openat, AT_FDCWD, path, O_RDWR, 0);
+    int denied_errno = errno;
+    syscall(SYS_setfsuid, 0);
+    syscall(SYS_setfsgid, 0);
+    CHECK(denied == -1 && denied_errno == EACCES, "deny writable open using the original caller identity");
+    if (denied >= 0) close(denied);
+    CHECK_ERR(syscall(SYS_statx, AT_FDCWD, other, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &st), ENOENT,
+              "denied writable open publishes no upper object");
+    created = syscall(SYS_openat, AT_FDCWD, path, O_RDWR, 0);
+    OVL_REQUIRE(created >= 0, "open the untouched lower file for writing");
+    OVL_REQUIRE(syscall(SYS_statx, AT_FDCWD, other, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS, &st) == 0 &&
+                st.stx_size == sizeof(content), "writable open finishes data copy-up before publishing its fd");
+    OVL_REQUIRE(syscall(SYS_pwrite64, created, "new", 3, 4095) == 3 &&
+                syscall(SYS_pread64, created, observed, 3, 4095) == 3 && memcmp(observed, "new", 3) == 0,
+                "the accepted writable fd updates the native upper across a cache-page boundary");
+    snprintf(path, sizeof(path), "%s/deep/write-open", lower);
+    fd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
+    OVL_REQUIRE(fd >= 0 && syscall(SYS_pread64, fd, observed, sizeof(observed), 0) == (long)sizeof(observed) &&
+                memcmp(content, observed, sizeof(content)) == 0, "ordinary writes preserve the original lower content");
+    close(fd); fd = -1;
+    close(created); created = -1;
     snprintf(path, sizeof(path), "%s/deep/seed", merged);
     fd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
     OVL_REQUIRE(fd >= 0, "retain lower-backed readonly fd");

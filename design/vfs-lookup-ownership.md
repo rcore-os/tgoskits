@@ -3255,11 +3255,31 @@ PathHandle。native 完成核对实际 NodeOps 的 owner、inode 与身份；深
 必须先由第 4.18 节的命令完成。
 
 这一选择原语先接到实际暂存数据复制和 Overlay 文件的下沉 hook。普通描述的动态
-读缓存、写打开前物化、全部 native writer/映射寿命仍需继续接入；没有把该原语
-当成它们已经实现的证据。复用现有路径使用权优于保存文字重查，固定原生端点优于
+读缓存、全部 native writer/映射寿命仍需继续接入。复用现有路径使用权优于保存文字重查，固定原生端点优于
 在合并层建内容镜像；全部临时引用在锁外退休。组件验证沿同一实际两层 owner 旅程
 检查 mounter、下降和读写角色，真实缓存内容仍由暂存集成证明。额外路径保活与选择
 成本纳入整体同环境性能比较，接口回滚不涉及磁盘格式。
+
+普通既存文件的写打开通过 `FileOpenRequest` 完成物化。
+`OpenOptions::_open` 在调用者访问检查后取得 `WriteAccess`，借其中同一个
+`PreparedWrite` 运行 `Location::prepare_write_open`，最后才构造打开描述。
+`FileOpenRequest::execute` 在实际 owner gate 内重新观察并授权；
+`AuthorizedFileOpen::forward_to` 只能沿原写图声明的 exact-mount backing 下降，
+并用实例保存的 mounter 执行下一层检查。原生提供者通过原 admission 的 Metadata
+查询接受已有文件，查询产生的 pressure 仍由外层 Scope 完成。
+
+`OverlayFs::prepare_inode_open` 与 namespace、metadata 使用同一个 `namespace`
+锁；缺少 upper 时，`OpenAttempt` 复用 `CopyForest`，在完成本轮全部 gate、
+admission、retire、finish 后准备内容，下一轮重新授权后安装。它不发起伪造的
+chmod 或 chown，打开本身不会产生这类属性副作用。隐藏文件检查失败不安装，
+可见安装后的读取或完成错误保留实际副作用，不能转成 Retry。已创建的新文件
+已有上层创建授权和 upper，不在此处重新执行创建者的最终 DAC 检查。
+
+现有 ownership 系统旅程增加 lower 首次写打开、拒绝不创建 upper、fd 返回前完成
+复制、跨缓存页写入和 lower 内容不变的判定。动态读端点和旧的数据 hook 仍需迁移，
+因此这里只证明打开前物化，不据此宣称所有 writer 已经过统一 gate。新增接口复用
+已有 Scope 和准备所有者，不引入持久格式或第二份内容缓存，可以通过源码回滚；
+每次打开增加的观察和准备成本纳入同环境性能验收。
 
 ### 4.21 后备读取的完成责任
 

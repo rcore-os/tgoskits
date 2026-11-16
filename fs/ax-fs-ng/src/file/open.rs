@@ -263,6 +263,16 @@ impl OpenOptions {
             } else {
                 None
             };
+            if !newly_created
+                && loc.filesystem().stack_depth() != 0
+                && let Some(write) = &write_access
+            {
+                let mut access = NodePermission::OTHER_WRITE;
+                if flags.contains(FileFlags::READ) {
+                    access.insert(NodePermission::OTHER_READ);
+                }
+                write.prepare_open(access, credentials)?;
+            }
             // TODO(mivik): is this correct?
             let non_cacheable_type = matches!(
                 loc.metadata()?.node_type,
