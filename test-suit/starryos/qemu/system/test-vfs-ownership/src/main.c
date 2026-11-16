@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <linux/stat.h>
 #include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/un.h>
