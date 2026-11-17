@@ -16,6 +16,11 @@ inputs:
     required: false
     default: ""
 
+outputs:
+  image_ref:
+    description: Published image pinned to its content digest.
+    value: ${{ steps.prep.outputs.image }}@${{ steps.build.outputs.digest }}
+
 runs:
   using: composite
   steps:
@@ -39,6 +44,7 @@ runs:
           type=raw,value=latest
 
     - name: Build and push container image
+      id: build
       uses: docker/build-push-action@v7
       with:
         context: .
