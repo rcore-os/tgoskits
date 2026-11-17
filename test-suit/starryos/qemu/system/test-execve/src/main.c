@@ -25,6 +25,7 @@
 #include <sched.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -192,6 +193,53 @@ static void test_exec_permission_and_format_rejection(void)
 /* The shell command whose exit status proves the new image really ran. */
 #define EXECVEAT_OK_STATUS 42
 static char *const SH_ARGV[] = {"sh", "-c", "exit 42", NULL};
+
+/* Descriptor spellings still traverse the caller's mounted procfs view. */
+static void test_execve_descriptor_paths_obey_mount_view(void)
+{
+    int fd = open("/bin/sh", O_PATH | O_CLOEXEC);
+    CHECK(fd >= 0, "retain executable through an O_PATH description");
+    if (fd < 0) {
+        return;
+    }
+    const char *prefixes[] = {"/proc/self/fd/", "/dev/fd/"};
+    for (unsigned index = 0; index < sizeof(prefixes) / sizeof(prefixes[0]); index++) {
+        char path[64];
+        snprintf(path, sizeof(path), "%s%d", prefixes[index], fd);
+        for (int covered = 0; covered < 2; covered++) {
+            pid_t pid = fork();
+            CHECK(pid >= 0, "fork descriptor-path executable actor");
+            if (pid < 0) {
+                continue;
+            }
+            if (pid == 0) {
+                if (covered &&
+                    (unshare(CLONE_NEWNS) != 0 ||
+                     mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) != 0 ||
+                     mount("tmpfs", "/proc", "tmpfs", MS_NOSUID | MS_NODEV, NULL) != 0)) {
+                    perror("cover procfs in executable actor");
+                    _exit(125);
+                }
+                errno = 0;
+                long result = syscall(SYS_execve, path, SH_ARGV, environ);
+                int saved_errno = errno;
+                if (covered && result == -1 && saved_errno == ENOENT) {
+                    _exit(123);
+                }
+                dprintf(STDERR_FILENO, "execve(%s) covered=%d ret=%ld errno=%d\n",
+                        path, covered, result, saved_errno);
+                _exit(126);
+            }
+            int status = 0;
+            CHECK(waitpid(pid, &status, 0) == pid,
+                  "collect descriptor-path executable actor");
+            CHECK(WIFEXITED(status) && WEXITSTATUS(status) ==
+                      (covered ? 123 : EXECVEAT_OK_STATUS),
+                  "descriptor-path exec follows the mounted view and preserves rejection");
+        }
+    }
+    close(fd);
+}
 
 static long do_execveat(int dirfd, const char *path, int flags)
 {
@@ -544,6 +592,7 @@ int main(void)
     test_execve_missing_path_reports_enoent();
     test_exec_permission_and_format_rejection();
 
+    test_execve_descriptor_paths_obey_mount_view();
     test_execveat_relative_path_via_dirfd();
     test_execveat_absolute_path_ignores_dirfd();
     test_execveat_relative_path_via_fdcwd();
