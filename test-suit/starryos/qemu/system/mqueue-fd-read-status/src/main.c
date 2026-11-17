@@ -3,13 +3,155 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <mqueue.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 #define QUEUE_NAME "/mqueue_fd_read_status"
+
+static int check_readonly_path(void)
+{
+    const char directory[] = "/tmp/mqueue-fd-readonly";
+    const char path[] = "/tmp/mqueue-fd-readonly" QUEUE_NAME;
+    int descriptor = -1;
+    int mounted = 0;
+    int result = -1;
+
+    if (mkdir(directory, 0700) != 0
+        || syscall(SYS_mount, "/dev/mqueue", directory, NULL, MS_BIND, NULL) != 0) {
+        perror("prepare readonly mqueue view");
+        goto cleanup;
+    }
+    mounted = 1;
+    if (syscall(SYS_mount, NULL, directory, NULL,
+                MS_REMOUNT | MS_BIND | MS_RDONLY, NULL) != 0) {
+        perror("remount mqueue bind readonly");
+        goto cleanup;
+    }
+    descriptor = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDONLY, 0);
+    if (descriptor < 0) {
+        perror("open readonly mqueue path");
+        goto cleanup;
+    }
+    errno = 0;
+    if (syscall(SYS_fchmod, descriptor, 0600) != -1 || errno != EROFS) {
+        fprintf(stderr, "mqueue descriptor lost its readonly mount (errno=%d)\n", errno);
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    if (descriptor >= 0) close(descriptor);
+    if (mounted) syscall(SYS_umount2, directory, MNT_DETACH);
+    rmdir(directory);
+    return result;
+}
+
+static int check_path_descriptor(int queue, const char *expected)
+{
+    const char path[] = "/dev/mqueue" QUEUE_NAME;
+    const char payload[] = "path";
+    char status[128] = { 0 };
+    char received[32] = { 0 };
+    unsigned int priority = 0;
+    struct mq_attr attributes = { 0 };
+    int failures = 0;
+    int duplicate = -1;
+    int descriptor = (int)syscall(SYS_openat, AT_FDCWD, path, O_RDWR | O_NONBLOCK, 0);
+    if (descriptor < 0) {
+        perror("open mqueue pathname");
+        return -1;
+    }
+
+    if (syscall(SYS_fcntl, descriptor, F_GETFD) != 0
+        || (syscall(SYS_fcntl, queue, F_GETFD) & FD_CLOEXEC) == 0) {
+        fputs("pathname and mq_open descriptors lost their distinct CLOEXEC rules\n", stderr);
+        failures++;
+    }
+    if (syscall(SYS_mq_getsetattr, descriptor, NULL, &attributes) != 0
+        || (attributes.mq_flags & O_NONBLOCK) == 0 || attributes.mq_curmsgs != 1) {
+        fputs("pathname fd did not expose its real message queue\n", stderr);
+        failures++;
+    }
+
+    if (read(descriptor, status, 8) != 8 || (duplicate = dup(descriptor)) < 0) {
+        fputs("prepare shared pathname status offset\n", stderr);
+        failures++;
+    } else {
+        ssize_t length = read(duplicate, status + 8, sizeof(status) - 9);
+        if (length <= 0 || strcmp(status, expected) != 0) {
+            fputs("duplicated pathname fd did not share the status offset\n", stderr);
+            failures++;
+        }
+        attributes.mq_flags = 0;
+        if (syscall(SYS_mq_getsetattr, duplicate, &attributes, NULL) != 0
+            || syscall(SYS_mq_getsetattr, descriptor, NULL, &attributes) != 0
+            || (attributes.mq_flags & O_NONBLOCK) != 0
+            || syscall(SYS_mq_getsetattr, queue, NULL, &attributes) != 0
+            || (attributes.mq_flags & O_NONBLOCK) != 0) {
+            fputs("mq_setattr did not preserve shared and independent descriptions\n", stderr);
+            failures++;
+        }
+    }
+
+    if (syscall(SYS_mq_timedsend, descriptor, payload, sizeof(payload) - 1, 5, NULL) != 0
+        || syscall(SYS_mq_timedreceive, queue, received, sizeof(received), &priority, NULL)
+            != (long)sizeof(payload) - 1
+        || priority != 5 || memcmp(received, payload, sizeof(payload) - 1) != 0) {
+        fputs("pathname and mq_open descriptors did not operate on the same queue\n", stderr);
+        failures++;
+    }
+    errno = 0;
+    if (syscall(SYS_write, descriptor, "X", 1) != -1 || errno != EINVAL) {
+        fprintf(stderr, "pathname queue write did not return EINVAL (errno=%d)\n", errno);
+        failures++;
+    }
+
+    struct sigevent notification = { .sigev_notify = SIGEV_NONE };
+    if (duplicate >= 0) {
+        if (syscall(SYS_mq_notify, descriptor, &notification) != 0) {
+            fputs("register notification through pathname fd\n", stderr);
+            failures++;
+        }
+        close(duplicate);
+        duplicate = -1;
+        if (syscall(SYS_mq_notify, queue, &notification) != 0) {
+            fputs("closing a pathname duplicate did not flush its notification\n", stderr);
+            failures++;
+        }
+        syscall(SYS_mq_notify, queue, NULL);
+    }
+
+    if (lseek(descriptor, 0, SEEK_END) != 80) {
+        fputs("pathname SEEK_END did not use the fixed inode size\n", stderr);
+        failures++;
+    }
+    const struct timespec times[2] = {
+        { .tv_sec = 123456, .tv_nsec = 123 },
+        { .tv_sec = 654321, .tv_nsec = 456 },
+    };
+    struct stat before, after;
+    if (syscall(SYS_utimensat, descriptor, NULL, times, 0) != 0
+        || fstat(descriptor, &before) != 0 || read(descriptor, status, 1) != 0
+        || fstat(descriptor, &after) != 0
+        || before.st_atim.tv_sec != after.st_atim.tv_sec
+        || before.st_atim.tv_nsec != after.st_atim.tv_nsec
+        || before.st_ctim.tv_sec != after.st_ctim.tv_sec
+        || before.st_ctim.tv_nsec != after.st_ctim.tv_nsec) {
+        fputs("EOF pathname status read changed inode timestamps\n", stderr);
+        failures++;
+    }
+    if (check_readonly_path() != 0) failures++;
+
+    if (duplicate >= 0) close(duplicate);
+    close(descriptor);
+    return failures == 0 ? 0 : -1;
+}
 
 static int check_shared_inode(int descriptor)
 {
@@ -120,7 +262,9 @@ int main(void)
         goto cleanup;
     }
 
-    result = check_shared_inode((int)queue) == 0 ? 0 : 1;
+    int path_result = check_path_descriptor((int)queue, expected);
+    int inode_result = check_shared_inode((int)queue);
+    result = path_result == 0 && inode_result == 0 ? 0 : 1;
 
 cleanup:
     if (write_only != (mqd_t)-1) {
