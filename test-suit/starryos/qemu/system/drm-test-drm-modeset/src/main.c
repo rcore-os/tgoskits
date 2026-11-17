@@ -1172,6 +1172,11 @@ int main(void)
     clock_gettime(CLOCK_MONOTONIC, &reenable_end);
     uint64_t reenabled_ns = (uint64_t)(reenable_end.tv_sec - reenable_start.tv_sec)
                             * 1000000000ULL + reenable_end.tv_nsec - reenable_start.tv_nsec;
+    printf("  INFO | re-enable frozen=(seq=%llu ns=%lld) after=(seq=%llu ns=%lld) "
+           "elapsed_ns=%llu period_ns=%llu\n",
+           (unsigned long long)resumed_event.sequence, (long long)resumed_event.tv_ns,
+           (unsigned long long)after_enable.sequence, (long long)after_enable.sequence_ns,
+           (unsigned long long)reenabled_ns, (unsigned long long)period_ns);
     CHECK(after_enable.sequence >= resumed_event.sequence &&
           after_enable.sequence - resumed_event.sequence <=
           1 + reenabled_ns / period_ns,
