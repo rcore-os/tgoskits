@@ -561,6 +561,44 @@ scoped 向上过程中不能证明没有竞争时返回 `EAGAIN`，
 最终创建必须在槽位实际排他范围内完成必要的作用域重验证。
 普通查找不长期持有全局写锁，缓存专用查找不能等待慢路径来修复观察。
 
+#### 3.4.1 普通会话策略
+
+`LookupPolicy` 用 `LookupScope::{ProcessRoot, Beneath, InRoot}` 表达互斥根策略，
+`LookupRestrictions` 表达 `NO_XDEV`、`NO_MAGICLINKS` 和 `NO_SYMLINKS`。
+`FsView::with_lookup_policy` 只选择本次策略，不改变原快照的进程根或 dirfd。
+普通绝对输入忽略 dirfd；`IN_ROOT` 的绝对输入仍选择 dirfd，`BENEATH` 在取得
+无关 dirfd 前拒绝绝对输入。链接中的绝对目标继续消费原会话，受同一根与 mount
+限制；初始绝对输入本身不会因 `NO_XDEV` 而被当作一次挂载跳转。
+
+会话在 scoped 模式保存 `PathObservation`。它组合现有 `NameObservation` 与
+`MountObservation`：前者检查全局名称发布的在途写者和完成版本，后者同时在
+capture、validate 时 try-acquire 实际 mount topology gate，再核对完成版本。
+因此 mount 写者还未递增最终版本时也不能通过验证，无需另建挂载写者登记表。
+两类观察交叉重验，覆盖向上遍历、组件转交、最终祖先检查和返回前的变化；无法
+排除交错时返回 `WouldBlock/EAGAIN`，确定越界返回 `CrossesDevices/EXDEV`。
+这些观察只提供失效检测，不授予权限、不重采样调用者，也不代表 `CachedLookup`。
+
+对象链接先调用原身份下的目标回调，保留其权限和目标错误，再检查 magic-link、
+scoped 与挂载限制。`NO_SYMLINKS` 则在跟随任何链接前拒绝；没有跟随的
+`O_PATH|O_NOFOLLOW` 末链接仍可返回自身。Linux 依据分别是固定版本的
+[`nd_jump_link`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L1163)、
+[`handle_dots`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namei.c#L2223)
+和 `complete_walk`，不把普通文本 symlink 当成 magic link。
+
+#### 3.4.2 槽位创建重验
+
+scoped 创建在父路径确认后，把原 `PathObservation` 放入 VFS `OpenOptions`，
+再由 `CreateIntent` 保留到 native 或 composite 的实际槽位尝试。
+`NamespaceMutation::begin_observed_change` 在真实 owner 排他范围内调用
+`NamePublication::begin_checked`，同一名称短锁中先检查原观察，再登记本次发布。
+随后重验 mount 观察，使两类检查在发布开始点重合。已有条目和缺失条目均走这条
+命令边界；失败输入及已观察候选交给原 `MutationRetire`，不在 gate 内释放最后引用。
+
+本次命令自身会改变名称版本，结果出来后会话取得新的完成观察，核验最终路径与
+原 scoped 根的真实祖先关系。该重验不重启查找、不恢复链接预算，也不把已提交创建
+回滚成未发生；后续打开失败仍按实际命名结果处理。`RESOLVE_CACHED` 的输入校验
+和独立非阻塞入口继续按第 7 节实施，不能经过普通 `FsView` 后再包装成缓存查询。
+
 ### 3.5 调用身份与能力范围
 
 文件系统调用的身份不仅是 `Cred` 中的 UID/GID 和 effective capability 位，

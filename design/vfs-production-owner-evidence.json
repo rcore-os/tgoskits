@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "object_open_and_native_consumer_validation",
+  "latest_evidence_section": "scoped_lookup_policy",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -2908,5 +2908,109 @@
       }
     },
     "remaining_scope_unchanged": true
+  },
+  "scoped_lookup_policy": {
+    "recorded_at": "2026-11-17T07:19:29.960805+00:00",
+    "implementation_commit": "ca468249a1b7a6d2af7226666c4d9a8a185a0d19",
+    "policy": [
+      "ProcessRoot",
+      "Beneath",
+      "InRoot",
+      "NO_XDEV",
+      "NO_MAGICLINKS",
+      "NO_SYMLINKS"
+    ],
+    "component_clippy": {
+      "checks": 9,
+      "outer_exit": 0
+    },
+    "kernel_clippy": {
+      "checks": 72,
+      "architectures": 4,
+      "outer_exit": 0
+    },
+    "std_before_negative": {
+      "packages": 18,
+      "outer_exit": 0
+    },
+    "path_system_qemu": {
+      "source": "ca468249a1b7a6d2af7226666c4d9a8a185a0d19",
+      "same_system_program_as_prior_17_failures": true,
+      "test_sha256": "745fb972fa60cb24df37510cb6bb89c8390e6baa2b5d571bc83515a95b0bf96b",
+      "arch": "x86_64",
+      "project_passed": 1,
+      "project_failed": 0,
+      "outer_exit": 0,
+      "elf_sha256": "e1e59b42eef4244cb3475b53a44ff7b666fa01a87cf8f26ea928ce3692b17ec4",
+      "log_sha256": "4550df0c90c6f74d5bfd5a00bc13c595763296c7746a2318dd88b2eee4a1e441",
+      "baseline_failure_log": "/home/zhourui/.codex/artifacts/pr2800-continuation/link-caller-path-qemu.log",
+      "linux_baseline": "fixed v7.1 source; prior runtime used Linux 6.8, not v7.1",
+      "assertions_passed": 45,
+      "assertions_failed": 0
+    },
+    "negative": {
+      "created_at": "2026-11-17T07:05:20.842506+00:00",
+      "positive": "ca468249a1b7a6d2af7226666c4d9a8a185a0d19",
+      "negative": "6858290c64da82a3c4c06f3ad0f512d70171b2e6",
+      "tree": "80171e45191a587b8b80a7c20b87c71befb9b321",
+      "mutations": [
+        "accept a mount version while its real publication gate is held",
+        "start the actual create-slot publication without checking the saved naming observation"
+      ],
+      "changed_sources": [
+        "fs/axfs-ng-vfs/src/mount/observation.rs",
+        "fs/axfs-ng-vfs/src/node/name.rs",
+        "fs/ax-fs-ng/src/fs_core/lookup.rs"
+      ],
+      "test_sha256": {
+        "fs/ax-fs-ng/tests/lookup.rs": "40ee0bcbea36825eaa5cdf1f1679084fad616f4b496b2214e9733aae70e8350d",
+        "fs/axfs-ng-vfs/src/mount/tests/path_handle.rs": "1030bcc138363f1535f86b2a53d6a01f7ced2dd43f0f7b99a94c522936715c90",
+        "test-suit/starryos/qemu/system/test-path-lookup-ownership/src/main.c": "745fb972fa60cb24df37510cb6bb89c8390e6baa2b5d571bc83515a95b0bf96b"
+      },
+      "published": false,
+      "outer_exit": 1,
+      "failed_packages": [
+        "ax-fs-ng",
+        "axfs-ng-vfs"
+      ],
+      "fixture_failures": 0,
+      "source_restored": true
+    },
+    "restored_std": {
+      "state": "passed",
+      "packages": 18,
+      "outer_exit": 0,
+      "source": "ca468249a1b7a6d2af7226666c4d9a8a185a0d19",
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/scoped-restored-std.log",
+      "log_sha256": "944588cce917f913709e5563c6186d92eba14a547ba8f299f38803ad64487df9"
+    },
+    "remaining": [
+      "true nonblocking CACHED",
+      "typed special final components",
+      "owned result exports",
+      "remaining full plan"
+    ],
+    "logs": {
+      "scoped-components-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/scoped-components-clippy.log",
+        "sha256": "e14d6ccb940e5110909c1584975713c6ab8f88ce89d246669a6fb8f104fa118e"
+      },
+      "scoped-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/scoped-std.log",
+        "sha256": "c164dc94693399bed675b191ae95d3b5d89108fd8426aac9287716a5e5a9c56f"
+      },
+      "scoped-kernel-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/scoped-kernel-clippy.log",
+        "sha256": "e986008dbae6235b9b975d825e446e00ff898a00218f0d09b6c2862884ca7286"
+      },
+      "scoped-path-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/scoped-path-qemu.log",
+        "sha256": "4550df0c90c6f74d5bfd5a00bc13c595763296c7746a2318dd88b2eee4a1e441"
+      },
+      "scoped-guards-negative-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/scoped-guards-negative-std.log",
+        "sha256": "5e621497a7b75f49585f13337ced0b88dc249289fe98f69527a8fc63ca2c9008"
+      }
+    }
   }
 }

@@ -903,3 +903,36 @@ namespace 链接沿 `LookupSession` 取得实际对象，再由已有 `add_to_fd
 前置依赖，固定 rustc 和目标契约不变。容器脚本的两个单元测试通过。完整路径用例
 仍有 17 项 scoped openat2 断言失败，非阻塞 CACHED、拥有型出口与第 4、5 节其余
 计划继续实施。上述本地结果分别绑定实际源码；远端最终 head 的 CI 另行核实。
+
+
+### 9.31 受限路径策略
+
+`ca468249a1` 让普通、受限和打开继续使用同一 `LookupSession`，删除只支持
+`BENEATH|NO_SYMLINKS` 的独立解析器。`LookupScope` 区分普通根、BENEATH 和
+IN_ROOT；正交限制在真实组件、挂载转换与链接目标上执行。初始绝对路径按入口规则
+选起点，绝对链接沿原会话跳转；对象链接先取得动态目标和授权结果，再检查
+NO_MAGICLINKS、scoped 与 NO_XDEV，不解析其显示文字。
+
+`MountObservation` 在 capture 与 validate 时 try-acquire 实际 topology gate，
+再读取完成版本；仅比较写后版本会漏掉在途发布。`PathObservation` 组合已有名称
+写者与版本，组件转交、向上遍历和最终祖先检查均使用原观察。创建把观察交给实际
+`CreateIntent`，槽位尝试在同一 naming 短锁内验证旧观察并开始自身发布，再复核
+mount。native 与 composite 使用相同命令边界，失效候选交给原退休载体。
+
+本节源码的 VFS/AX 9 项、Kernel 四目标 72 项 Clippy 全部通过，18 包标准库通过。
+原完整 path-lookup C 程序保持 SHA-256 不变，x86_64 从 28 pass、17 fail 变成
+全部 45 项断言通过，xtask 1/1、外层 0；内核 SHA-256 为
+`e1e59b42eef4244cb3475b53a44ff7b666fa01a87cf8f26ea928ce3692b17ec4`。
+这同时保留总链接预算、rename 后父身份、挂载穿越及 nofollow 的原判定。
+
+新增组件旅程受控执行真实 MemoryFs rename，在同一操作跟随 `..` 前移动父目录，
+观察 EAGAIN；另把失效观察直接送入真实创建槽位，验证不创建 escaped 条目。
+挂载旅程持有真实写 gate 时核对 capture/validate 拒绝，完成真实安装后旧观察仍失效。
+私有错误候选 `6858290c64` 同时删除 mount gate 排除和槽位原观察检查，同一测试
+在 AX 五个 profile 及 VFS 分别失败，标准库外层退出 1；其余 16 包通过。
+该候选没有推送；恢复生产源码后，同一 18 包标准库再次全部通过，外层退出 0。
+
+`openat2` 的 BENEATH/IN_ROOT 互斥与 CACHED 变更类 flag 校验按固定 Linux
+`build_open_flags` 排序；普通 cache-only 请求仍未实现，明确不把这一分支计为
+CACHED 完成。特殊末组件、拥有型结果、整体 proc/SimpleFs、其余第 4、5 节范围
+继续保留。本次仅有 x86_64 scoped 系统运行证据，其他目标的静态检查不能代替运行。
