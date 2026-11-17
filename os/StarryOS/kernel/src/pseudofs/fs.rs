@@ -225,3 +225,88 @@ impl LockedMetadataAttempt for SimpleMetadataAttempt<'_> {
         NamespaceOutcome::applied(self.metadata.clone(), Ok(()))
     }
 }
+
+#[cfg(all(test, axtest))]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use ax_fs_ng::{FsContext, FsView};
+    use axfs_ng_vfs::{
+        MetadataUpdate, Mountpoint, NativeLinkCaller, NodePermission, TrustedInitialization,
+    };
+
+    use super::SimpleFs;
+    use crate::pseudofs::{DirMapping, SimpleDir, SimpleFile};
+
+    struct BackingRetirement(Arc<AtomicBool>);
+
+    impl Drop for BackingRetirement {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[axtest::axtest]
+    fn simple_filesystem_paths_preserve_metadata_and_retire_the_actual_owner() {
+        let retired = Arc::new(AtomicBool::new(false));
+        let backing_retirement = BackingRetirement(retired.clone());
+        let (filesystem, owner) =
+            SimpleFs::new_with_handle("simple-owner-test".into(), 0x53494d50, move |fs| {
+                let mut children = DirMapping::new();
+                children.add(
+                    "retained",
+                    SimpleFile::new_regular(fs.clone(), move || {
+                        let _ = &backing_retirement;
+                        Ok("retained object contents")
+                    }),
+                );
+                SimpleDir::new_maker(fs, Arc::new(children))
+            });
+        let weak_owner = Arc::downgrade(&owner);
+        drop(owner);
+        let mount = Mountpoint::new_root(&filesystem);
+        let context = FsContext::from_tree(mount.clone(), mount.root_location()).unwrap();
+        let caller = NativeLinkCaller::root();
+        let view = FsView::native(context, &caller);
+        let path = view.resolve("/retained").unwrap();
+        let inode = path.location().metadata().unwrap().inode;
+        TrustedInitialization::kernel()
+            .restore_metadata(
+                path.location(),
+                MetadataUpdate {
+                    mode: Some(NodePermission::from_bits_truncate(0o620)),
+                    owner: Some((101, 202)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        drop(view);
+        drop(mount);
+        drop(filesystem);
+        assert!(
+            weak_owner.upgrade().is_some(),
+            "an external path owns the real filesystem"
+        );
+        assert!(!retired.load(Ordering::Acquire));
+        let metadata = path.location().metadata().unwrap();
+        assert_eq!(
+            (
+                metadata.inode,
+                metadata.uid,
+                metadata.gid,
+                metadata.mode.bits()
+            ),
+            (inode, 101, 202, 0o620)
+        );
+        drop(path);
+        assert!(
+            weak_owner.upgrade().is_none(),
+            "the filesystem must not retain its own wrappers"
+        );
+        assert!(
+            retired.load(Ordering::Acquire),
+            "retiring the last owner retires its static backing"
+        );
+    }
+}
