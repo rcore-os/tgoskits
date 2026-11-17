@@ -1157,3 +1157,38 @@ fs_context 授权顺序、PTY 锁状态、statx 与其余未证实入口的实�
 最外层均为 0。标准库日志中的缺失 value.h 诊断来自既有 C 编译失效夹具的预期
 拒绝，不是被忽略的构建失败。结果记录于实例证据中的 followup_mainline_merge。
 最终 CI 仍以发布 head 的实际任务终态核对。
+
+### 9.39 执行链的统一视图
+
+`85b526ad02` 增强原 exec family 程序，分别检查 `/proc/self/fd` 与 `/dev/fd`
+成功执行和遮住 procfs 后的 ENOENT。同一完整 C 在 Linux 私有命名空间为
+82 pass、0 fail；旧 Starry 路径前缀分流使两个遮盖判据失败，80 pass、2 fail，
+最外层退出 1。`09ccf6cb2c` 删除该执行捷径，两个 syscall 和启动候选将一次选择
+的 FsView 传至主映像、shebang 与 PT_INTERP；执行权限投影取自同一 view。
+execveat 的操作数 dirfd 不替换解释器所使用的原 root/cwd。
+
+原生装载测试用真实 MemoryFs、独立视图与未发布地址空间，要求在给定视图发现
+解释器并因权限拒绝，再写入脚本确认执行访问退休。临时把 shebang 查找恢复为旧
+隐式全局根时，同一测试错误返回 Vfs(NotFound)，内核测试与最外层均失败。诊断
+变动已与提交及备份逐字核对恢复；测试模块摘要在红绿两轮相同。
+
+干净 `09ccf6cb2c` 的一包标准库、Kernel 四目标 72 项 Clippy、x86 内核
+264 pass/0 fail/0 skip 和完整 system 541/541 均通过。首轮 Clippy 与 x86
+内核编译共享 target 目录，AArch64 报告隔离期间混入 x86 bitmaps 的 SSE 告警，
+被严格门禁拒绝；编译结束后串行重跑通过，未放宽包清单、报告匹配或警告。
+该准备失败保留在独立日志，不能算成功检查或源码修复。
+
+执行链证据记录于 `executable_lookup_view`，包括 Linux 对照、两种红证据、
+实际 source、ELF 及日志摘要。直接 CLONE_FS 并发根切换、AT_EXECVE_CHECK、
+ELF 头缓存写后失效及同条件性能仍未闭合；openat 的两个 fd 前缀捷径也仍待迁移。
+
+上一发布 `b6755f03ec` 已取得四架构 Starry CI 的实际日志：x86 完整 541/541，
+RISC-V 与 LoongArch 完整各 538/538，AArch64 分组 513、23、1、1 项全部通过，
+内核测试分别为 263、262、263、273 项且零失败。该轮总计 43 项成功、5 项跳过、
+1 项 Axvisor OrangePi UVC/NPU/FT232 硬件任务失败。失败在 Starry robot-flow
+启动内核前等待 U-Boot shell 900 秒超时，同任务随后 UVC 成功采集 5 帧，不能
+把后续成功当作 robot-flow 或未执行 Axvisor 分支通过。ArceOS AArch64 的实际
+栈保护页用例已输出 guard page hit 并通过，原诊断缺失未再出现。五项跳过属于
+同一 head 的重复 PR workflow，实际矩阵在 push run 执行；四架构日志与终态记录
+于实例证据的 followup_current_ci。
+该轮没有执行链的新测试与实现，不改写为 09ccf6cb2c 的四架构证据。

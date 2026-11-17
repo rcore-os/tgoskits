@@ -95,8 +95,8 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| execve；x86_64 59；其余三架构 221 | v7.1 [do_execveat_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | 选定执行文件及解释器后，以实际 file/path 保持映像身份，退出后释放活动执行引用 | sys_execve → FsView.resolve → load_user_app(PathHandle) → ExecutableFile/ELF_CACHE/CachedFile → AddrSpace；exec 在 publication 外同步无活动访问的旧 MM | 部分正确 | 271ba070e1 的普通、bind、unlinked 对象检查和退出后卸载在四架构通过；解释器同一视图、缓存写后失效等仍未闭合 |
-| execveat；x86_64 322；其余三架构 281 | v7.1 [execveat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c) | dirfd、AT_EMPTY_PATH 与 nofollow 决定实际执行对象及错误，保留描述和路径至装载 | sys_execveat → resolve_at 或 retained memfd path_handle → load_user_app → loader/MM → publication 外退休旧 MM | 无法确认 | 已迁移实际 PathHandle 消费；本阶段没有直接覆盖所有 fd 类型、flags 及错误优先级的系统回归 |
+| execve；x86_64 59；其余三架构 221 | v7.1 [do_open_execat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L764) | 主映像与解释器保留实际对象，proc fd 路径必须经过真实挂载与链接授权，失败释放执行访问 | sys_execve → one FsView.resolve → load_user_app(PathHandle, FsView) → shebang/PT_INTERP resolve in supplied view → ExecutableFile/ELF_CACHE/CachedFile → AddrSpace | 部分正确 | 09ccf6cb2c 的 x86 完整 system 541/541、原 exec family 程序及私有解释器内核测试通过；同一 C 在 Linux 82/0，旧前缀分流两项失败；CLONE_FS 受控并发与 ELF 缓存写后失效仍未闭合 |
+| execveat；x86_64 322；其余三架构 281 | v7.1 [do_open_execat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L764) | dirfd、AT_EMPTY_PATH、nofollow 和 AT_EXECVE_CHECK 决定对象与行为，解释器按调用者文件系统视图解析 | sys_execveat → one FsView → resolve_at_from_view or retained memfd path_handle → load_user_app borrowing original view → loader/MM → publication 外退休旧 MM | 部分正确 | 09ccf6cb2c 的原 exec family 程序直接覆盖 dirfd、空路径、nofollow、无效 fd 和参数预算，x86 完整批次通过；AT_EXECVE_CHECK 未实现，全部 fd 类型与错误优先级尚未证明 |
 
 
 ## 5. 类型化末组件
@@ -209,7 +209,9 @@ LoongArch64 的完整 system 为 538/538，包含 cgroup-basic、cgroup-ns、dev
 
 该版 18 包标准库与 VFS/AX/Kernel 81 项 Clippy 全部通过。LoongArch64 使用
 匿名捕获完成 538 个程序；原生成功断言输出按既有策略抑制，程序与最外层汇总
-均为零失败。其余三架构的最终 head 运行证据继续由后续 CI 核实，不能用旧 ELF
-改写为本版结果。Linux devpts 对照因宿主单 GID 映射使用 gid=0，Starry 仍验证
+均为零失败。后续发布 b6755f03ec 的四架构 CI 均已通过：x86 为 541/541，
+RISC-V 与 LoongArch 为 538/538，AArch64 分组为 513、23、1、1 项，均零失败。
+该提交尚不包含 09ccf6cb2c 的执行链视图改动，不能当作后者的运行结果。
+Linux devpts 对照因宿主单 GID 映射使用 gid=0，Starry 仍验证
 gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条件，不能替代
 完整 root 到 uid/gid 1000 的凭据转换证明。

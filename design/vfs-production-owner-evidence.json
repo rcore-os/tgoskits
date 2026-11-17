@@ -4249,6 +4249,291 @@
           "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         }
       }
+    },
+    "followup_current_ci": {
+      "recorded_at": "2026-11-17T13:10:08.418677+00:00",
+      "head": "b6755f03ec339422985f044cb418b0a1ad642616",
+      "run_id": 44083185634,
+      "status_counts": {
+        "SUCCESS": 43,
+        "SKIPPED": 5,
+        "FAILURE": 1
+      },
+      "starry": {
+        "x86_64": {
+          "job_id": 134043607685,
+          "system_groups": [
+            {
+              "total": 1,
+              "passed": 1,
+              "failed": 0
+            },
+            {
+              "total": 541,
+              "passed": 541,
+              "failed": 0
+            }
+          ],
+          "ktest_passed": 263,
+          "conclusion": "SUCCESS",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-b6755f03ec-starry-x86_64.log",
+            "sha256": "80bc99dff10f533b36d61acdbd94dfb296a3670e4238b191c3b611c48ca5c1c2"
+          }
+        },
+        "aarch64": {
+          "job_id": 134043608153,
+          "system_groups": [
+            {
+              "total": 513,
+              "passed": 513,
+              "failed": 0
+            },
+            {
+              "total": 23,
+              "passed": 23,
+              "failed": 0
+            },
+            {
+              "total": 1,
+              "passed": 1,
+              "failed": 0
+            },
+            {
+              "total": 1,
+              "passed": 1,
+              "failed": 0
+            }
+          ],
+          "ktest_passed": 273,
+          "conclusion": "SUCCESS",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-b6755f03ec-starry-aarch64.log",
+            "sha256": "f448f90e89bc68372555ac19dcec7f8db03e855fb8d36f652a038689a4372800"
+          }
+        },
+        "riscv64": {
+          "job_id": 134043608268,
+          "system_groups": [
+            {
+              "total": 538,
+              "passed": 538,
+              "failed": 0
+            }
+          ],
+          "ktest_passed": 262,
+          "conclusion": "SUCCESS",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-b6755f03ec-starry-riscv64.log",
+            "sha256": "e6c4d0450d9de2fd61c09654a417f29dad51d8fb879cac43951acc233d3049ef"
+          }
+        },
+        "loongarch64": {
+          "job_id": 134043607645,
+          "system_groups": [
+            {
+              "total": 538,
+              "passed": 538,
+              "failed": 0
+            }
+          ],
+          "ktest_passed": 263,
+          "conclusion": "SUCCESS",
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-b6755f03ec-starry-loongarch64.log",
+            "sha256": "78f3a45eb7d2af01999dd188cd5161e0d089886ba787286cd5e773ecc2e5aa60"
+          }
+        }
+      },
+      "failure": {
+        "job_id": 134043609383,
+        "stage": "Starry board-orangepi-5-plus/robot-flow, waiting for U-Boot shell before kernel boot",
+        "timeout_seconds": 900,
+        "later_uvc": "same job subsequently boots the UVC case and records STARRY_UVC_V4L2_OK frames=5 bytes=49056; robot-flow and later Axvisor branch remain unproven",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-b6755f03ec-axvisor-board-uvc.log",
+          "sha256": "9860ec2e4a102de3b091d300c637f0c16d6115235c39f1f275de6271326ce9b9"
+        }
+      },
+      "arceos_aarch64": {
+        "job_id": 134043608285,
+        "qemu_cases_passed": 9,
+        "stack_guard": "task-stack-guard-page really executes, prints task stack guard page hit, and passes",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-b6755f03ec-arceos-aarch64.log",
+          "sha256": "7f1e3239d6b95bb786ebc07dfe1c7ac691afd6b06a03f00f6cd543c388937438"
+        }
+      },
+      "duplicate_skip": {
+        "run_id": 44083198097,
+        "jobs": [
+          "Preflight",
+          "Workspace",
+          "ArceOS",
+          "Starry",
+          "AxVisor"
+        ],
+        "reason": "PR duplicate route intentionally skips five wrapper jobs while the same-head push run executes their actual matrix",
+        "plan_log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-b6755f03ec-duplicate-plan.log",
+          "sha256": "b45943e559fcdcb58f5b195c78534dc2ada1348f79a9e0bfb2dfbd0f883cf0b8"
+        }
+      },
+      "snapshot": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/pr2800-b6755f03ec-progress4.json",
+        "sha256": "b15095eff8f39803ce96772cc1a28a9cef73233bfb018dd4324c5cc11e36836b"
+      },
+      "limitation": "This CI predates executable_lookup_view source 09ccf6cb2c; it is evidence for the filesystem instance/unlink/capture phase, not the later exec migration."
     }
+  },
+  "executable_lookup_view": {
+    "recorded_at": "2026-11-17T13:08:40.338899+00:00",
+    "source": "09ccf6cb2c92c404da6f09ea46723b079f98f2d8",
+    "merged_dev": "9bc2ee14117539dffc82e6c65f66be69f78f252d",
+    "same_system_test": {
+      "path": "test-suit/starryos/qemu/system/test-execve/src/main.c",
+      "sha256": "04289f16c5b7980f0d42bd88e12ca41bb33a9efa69ce28953ddd82021c6d8fd1",
+      "before_source": "85b526ad020690da5309c76926eb65082e228425",
+      "after_source": "09ccf6cb2c92c404da6f09ea46723b079f98f2d8",
+      "linux_source_byte_identical": true
+    },
+    "before": {
+      "production_source": "85b526ad020690da5309c76926eb65082e228425",
+      "checks_passed": 80,
+      "checks_failed": 2,
+      "outer_exit": 1,
+      "failure": "both masked /proc/self/fd and /dev/fd executable paths bypass the mounted proc view"
+    },
+    "native_before": {
+      "production_evidence": false,
+      "fault": "force script interpreter through the old implicit current filesystem lookup with the native root identity used by this test",
+      "fault_patch": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-native-fault.patch",
+      "fault_loader_sha256": "54a5f5cd41fa4daa250e4908ac912ab443d9273e6e37ff172446889296e88f54",
+      "test_module_sha256": "9311c20b9c862c890222ee7323a7d9ca5cc2a572ad098fd7675551407fbf8250",
+      "outer_exit": 1,
+      "failure": "supplied-view interpreter is not found after forcing the old implicit current-root lookup; Some(Vfs(NotFound)) instead of PermissionDenied",
+      "correct_source_restored_byte_identical": true
+    },
+    "ownership": {
+      "entries": "sys_execve/sys_execveat and boot candidate choose the view once",
+      "loader": "load_user_app, recursive shebang and PT_INTERP borrow the provided FsView; execution credentials are view.credentials()",
+      "at": "resolve_at_from_view selects each dirfd operand from the captured base without replacing interpreter root/cwd",
+      "descriptor_paths": "actual LookupSession and proc object-link authorization; no exec prefix parser",
+      "failure": "UserImageBuilder abort and execution leases retain their existing rollback; native test rewrites the script after denied interpreter execution"
+    },
+    "std": {
+      "packages_passed": 1,
+      "main_unit_tests_passed": 315,
+      "all_selected_integration_and_doc_tests_passed": true,
+      "outer_exit": 0,
+      "command": "CARGO_INCREMENTAL=0 cargo xtask test --since 85b526ad02"
+    },
+    "clippy": {
+      "checks_passed": 72,
+      "targets": 4,
+      "outer_exit": 0,
+      "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package starry-kernel",
+      "initial_attempt": {
+        "outer_exit": 1,
+        "reason": "concurrent x86 ktest compilation wrote its SSE bitmaps report into the target directory while the AArch64 invocation isolated its report; strict gate rejected that foreign report",
+        "resolution": "rerun serially after x86 compilation finished, retaining strict report validation and all upstream warning diagnostics"
+      }
+    },
+    "native_ktest": {
+      "pass": 264,
+      "fail": 0,
+      "skip": 0,
+      "outer_exit": 0,
+      "test": "script_interpreter_uses_the_supplied_view_and_releases_failed_exec_access",
+      "test_module_sha256": "9311c20b9c862c890222ee7323a7d9ca5cc2a572ad098fd7675551407fbf8250"
+    },
+    "x86_64_system": {
+      "programs": 541,
+      "passed": 541,
+      "failed": 0,
+      "outer_exit": 0
+    },
+    "linux": {
+      "kernel": "6.8.0-149-generic",
+      "checks_passed": 82,
+      "checks_failed": 0,
+      "outer_exit": 0,
+      "namespace": "private user, PID, mount and tmpfs fixture; same complete C exec-family program"
+    },
+    "format_exit": 0,
+    "source_sha256": {
+      "test-suit/starryos/qemu/system/test-execve/src/main.c": "04289f16c5b7980f0d42bd88e12ca41bb33a9efa69ce28953ddd82021c6d8fd1",
+      "os/StarryOS/kernel/src/entry.rs": "dc1803aa5482567e7a00f3029ab78f1dfb29253b282c2f625eeec2d3437c57b9",
+      "os/StarryOS/kernel/src/file/fs.rs": "1306ee91e2a0877e7670f4c45711485e114247cffe09865fee14e176f22a907c",
+      "os/StarryOS/kernel/src/file/mod.rs": "130cf51520893b8e6a3e67dee7f13275cf74909f898fc40c830475de05c9bbb5",
+      "os/StarryOS/kernel/src/mm/loader.rs": "58a35b490978cc3a31f2902bed982735d605876e53fed41215d439dda6f94dbb",
+      "os/StarryOS/kernel/src/syscall/task/execve.rs": "73f9d8beb08152a0b999e2a6469f26399c4b375c23b7db8538188ba068a39c1b"
+    },
+    "elfs": {
+      "axtest-x86_64-09ccf6cb2c.elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/axtest-x86_64-09ccf6cb2c.elf",
+        "sha256": "62e388eb4847ad3e3454da8903f844b20177062cf915008657ea8d2f4e759bbf"
+      },
+      "x86_64-09ccf6cb2c.elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-09ccf6cb2c.elf",
+        "sha256": "3aa43acaa62a70eeb8b199db6a97a95793ddfade1226fc0fe6bd0c7c4df5961c"
+      }
+    },
+    "logs": {
+      "exec-view-before-qemu": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-before-qemu.log",
+        "sha256": "65f9150ff6707a44803e9ffc64649cd52c5741883be7187cc09eb3ef23219ad2",
+        "outer_exit": 1
+      },
+      "exec-view-native-before-ktest": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-native-before-ktest.log",
+        "sha256": "61c74af5150c80d4f6812d9834af189f0133b843b8014b509cf8a49e12d8e412",
+        "outer_exit": 1
+      },
+      "exec-view-native-after-ktest": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-native-after-ktest.log",
+        "sha256": "027897cda887553c576a73dd8f5dd013c1f3cac78b089d614fcb5289d8fc22d2",
+        "outer_exit": 0
+      },
+      "exec-view-std": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-std.log",
+        "sha256": "cc023a3e63edd24b9dae7b162b57d08f6ff0211aa0f9f7d59830db6930328136",
+        "outer_exit": 0
+      },
+      "exec-view-clippy": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-clippy.log",
+        "sha256": "06c22d31e1c5279604dafc2c0c8023f7e1d6f4e53e4926bb24e1a4bd751d0ccf",
+        "outer_exit": 1
+      },
+      "exec-view-clippy-serial": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-clippy-serial.log",
+        "sha256": "6d864a89aba8616ac83fb62fe83f2ba0f3e8334a03b97f6de768eaa5a8803fa6",
+        "outer_exit": 0
+      },
+      "exec-view-x86_64-system": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-x86_64-system.log",
+        "sha256": "82b1225e12c7d52efb79bd00c1bfe9f7e8f5cf6ab3cf80657debf83da55be175",
+        "outer_exit": 0
+      },
+      "exec-view-linux": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-linux.log",
+        "sha256": "7ca8c443eabbf7648b6cd4f0a4f5c06d741abfa1cbf178c7984680894eb7f0c4",
+        "outer_exit": 0
+      },
+      "exec-view-format": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/exec-view-format.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outer_exit": 0
+      }
+    },
+    "limitations": [
+      "direct controlled CLONE_FS root/cwd mutation during exec is not yet proven by a system regression",
+      "other three targets need the matching current-head runtime evidence; prior ELF runs are not relabeled",
+      "Linux v7.1 AT_EXECVE_CHECK is not implemented",
+      "ELF-header cache invalidation after file writes is not yet implemented or verified",
+      "same-condition performance is not measured",
+      "openat descriptor-prefix shortcuts remain for the next consumer migration; no global elimination is claimed",
+      "remaining original VFS scope and independent design/implementation review remain required"
+    ]
   }
 }
