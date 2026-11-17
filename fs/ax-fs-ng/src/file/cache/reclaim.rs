@@ -74,7 +74,66 @@ impl CachedFileRegistry {
         inode_index: &Mutex<InodeCacheIndex>,
         retired: &axfs_ng_vfs::MutationRetire,
     ) {
-        self.prune_with_candidate_observer(inode_index, || {}, |_| {}, Some(retired));
+        self.prune_retiring_with_contention(inode_index, retired, || {});
+    }
+
+    #[cfg(any(feature = "ext4", all(test, feature = "vfs")))]
+    fn prune_retiring_with_contention(
+        &self,
+        inode_index: &Mutex<InodeCacheIndex>,
+        retired: &axfs_ng_vfs::MutationRetire,
+        on_contention: impl FnOnce(),
+    ) {
+        // Namespace preparation may wait here, before taking a backend gate.
+        // Index owners never enter a backend or registry while holding it.
+        // Freeze Weak upgrades before the registry; pressure reclaim retains
+        // its opposite-order, nonblocking try-lock protocol below.
+        let mut removed = AllocVec::new();
+        let mut on_contention = Some(on_contention);
+        loop {
+            let capacity = self.files.read().len();
+            removed.reserve(capacity);
+            let index = match inode_index.try_lock() {
+                Some(index) => index,
+                None => {
+                    if let Some(notify) = on_contention.take() {
+                        notify();
+                    }
+                    inode_index.lock()
+                }
+            };
+            let mut registry = self.files.write();
+            if registry.len() > removed.capacity() {
+                // Reserve outside both locks if registration overtook us.
+                drop(registry);
+                drop(index);
+                continue;
+            }
+            let mut position = 0;
+            while position < registry.len() {
+                let cached = &registry[position];
+                let closed_and_clean = Arc::strong_count(cached) == 1
+                    && cached.backing_persistence.is_persisted()
+                    && cached
+                        .page_cache
+                        .try_lock()
+                        .is_some_and(|pages| !pages.iter().any(|(_, page)| page.dirty));
+                if closed_and_clean {
+                    cached.retired.store(true, Ordering::Release);
+                    removed.push(registry.swap_remove(position));
+                } else {
+                    position += 1;
+                }
+            }
+            drop(registry);
+            drop(index);
+            break;
+        }
+        // Inode destruction may acquire the backend gate. The original
+        // command owns retirement past all of its outer protections too.
+        for cached in removed {
+            retired.retire(cached);
+        }
     }
 
     fn prune_with_candidate_observer(
@@ -481,8 +540,6 @@ mod tests {
 
     #[test]
     fn pruning_keeps_a_cache_reopened_during_ownership_claim() {
-        // Unrelated inode publication must not affect this registry's lifetime checks.
-        let _unrelated_index = super::super::CACHED_FILE_BY_INODE.lock();
         let inode_index = Mutex::new(InodeCacheIndex::new());
         let registry = CachedFileRegistry::new();
         let cached = Arc::new(CachedFileShared::new_unbounded(0));
@@ -518,6 +575,32 @@ mod tests {
         assert!(
             weak.upgrade().is_none(),
             "a closed clean cache is reclaimable"
+        );
+
+        // Namespace retirement must wait out a busy index rather than silently
+        // skip the closed cache. Signal after the failed try-lock so the same
+        // interleaving rejects an implementation that merely returns here.
+        let registry = Arc::new(registry);
+        let inode_index = Arc::new(inode_index);
+        let cached = Arc::new(CachedFileShared::new_unbounded(0));
+        let weak = Arc::downgrade(&cached);
+        registry.files.write().push(cached);
+        let index_guard = inode_index.lock();
+        let worker_registry = registry.clone();
+        let worker_index = inode_index.clone();
+        let (blocked, waiting) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let retired = axfs_ng_vfs::MutationRetire::new();
+            worker_registry.prune_retiring_with_contention(&worker_index, &retired, || {
+                blocked.send(()).unwrap();
+            });
+        });
+        waiting.recv().unwrap();
+        drop(index_guard);
+        worker.join().unwrap();
+        assert!(
+            weak.upgrade().is_none(),
+            "namespace preparation skipped a closed cache"
         );
 
         let cached = Arc::new(CachedFileShared::new_unbounded(0));
