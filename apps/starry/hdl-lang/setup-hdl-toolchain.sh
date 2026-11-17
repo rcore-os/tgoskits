@@ -11,7 +11,7 @@
 # Pinned versions (must match prebuild.sh's documented toolchain):
 #   verilator 5.008   (github.com/verilator/verilator  tag v5.008)
 #   iverilog  12       (github.com/steveicarus/iverilog tag v12_0)
-#   yosys     0.58     (github.com/YosysHQ/yosys        tag 0.58)
+#   yosys     0.58     (github.com/YosysHQ/yosys        tag v0.58)
 #   bsc       2026.01  (github.com/B-Lang-org/bsc       release 2026.01)
 #   musl-cross         (musl.cc prebuilt cross toolchains, per arch)
 #   qemu-<arch>-static (distro package, for prebuild's foreign-arch apk step)
@@ -26,23 +26,24 @@ BSC_DIR="${BSC_DIR:-/usr/local/bsc}"
 MUSL_ROOT="${MUSL_ROOT:-/opt}"
 JOBS="${JOBS:-$(nproc)}"
 WORK="${WORK:-$(mktemp -d)}"
+mkdir -p "$WORK"
 VERILATOR_TAG="v5.008"
 IVERILOG_TAG="v12_0"
-YOSYS_TAG="0.58"
+YOSYS_TAG="v0.58"
 BSC_VER="2026.01"
 MUSL_ARCHES="${MUSL_ARCHES:-aarch64 riscv64 loongarch64 x86_64}"
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
 # ---------------------------------------------------------------- apt build deps
-if command -v apt-get >/dev/null 2>&1; then
+if [[ "${INSTALL_SYSTEM_DEPS:-1}" = 1 ]] && command -v apt-get >/dev/null 2>&1; then
   log "apt build deps"
   apt-get update -qq
   apt-get install -y --no-install-recommends \
     git build-essential autoconf flex bison libfl-dev help2man \
     gperf libreadline-dev tcl-dev libffi-dev zlib1g-dev \
     ca-certificates curl xz-utils python3 \
-    qemu-user-static || true
+    qemu-user-static
 fi
 
 # ------------------------------------------------------------------- verilator

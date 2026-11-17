@@ -5,6 +5,7 @@ FROM ${BASE_IMAGE}
 ARG QEMU_LVZ_REPO=https://github.com/Hengyu-Yu/QEMU-LVZ
 ARG QEMU_LVZ_REF=1d24ba8819fb5eb073dcaf2484e4634bb7b0d78f
 ARG QEMU_TARGET_LIST=loongarch64-softmmu
+ARG BUILD_JOBS=4
 
 ENV AXBUILD_QEMU_SYSTEM_LOONGARCH64=/opt/qemu-lvz/bin/qemu-system-loongarch64 \
     PATH=/opt/qemu-lvz/bin:${PATH}
@@ -24,9 +25,11 @@ RUN set -eux; \
       --disable-gtk \
       --disable-sdl \
       --disable-vte; \
-    make -j"$(nproc)"; \
+    make -j"${BUILD_JOBS}"; \
     make install; \
     rm -rf /tmp/qemu-lvz-src /tmp/qemu-lvz.tar.gz
+
+RUN "${AXBUILD_QEMU_SYSTEM_LOONGARCH64}" --version
 
 WORKDIR /workspace
 

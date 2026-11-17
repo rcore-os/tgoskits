@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - ".cargo/**"
+      - "container/**"
       - ".github/actions/publish-container/action.yml"
       - ".github/actions/ci-plan/**"
       - ".github/actions/ci-result/**"
