@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -29,7 +30,7 @@
 
 struct case_args {
     const char *path;
-    const char *output_path;
+    int output_fd;
 };
 
 enum test_phase {
@@ -122,14 +123,16 @@ static int kill_and_reap_namespace_init(pid_t namespace_init)
     return -1;
 }
 
-static void redirect_output(const char *output_path)
+static void redirect_output(int output_fd)
 {
-    if (output_path == NULL) {
+    if (output_fd < 0) {
         return;
     }
-    int fd = open(output_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    /* Keep the source distinct from stdout/stderr even if the runner started
+     * with a closed standard descriptor. dup2 must also clear CLOEXEC. */
+    int fd = fcntl(output_fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
     if (fd < 0) {
-        perror("open system test output");
+        perror("duplicate system test output");
         _exit(RUNNER_ERROR_STATUS);
     }
     if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
@@ -166,7 +169,7 @@ static int supervise_case_namespace(void *opaque)
         return RUNNER_ERROR_STATUS;
     }
     if (child == 0) {
-        redirect_output(args->output_path);
+        redirect_output(args->output_fd);
         execl(args->path, args->path, (char *)NULL);
         perror("exec system test");
         _exit(127);
@@ -197,9 +200,16 @@ static int exit_status_from_wait_status(int status)
     return RUNNER_ERROR_STATUS;
 }
 
-static int run_isolated_case(const char *path, const char *output_path,
+static int run_isolated_case(const char *path, int output_fd,
                              unsigned timeout_seconds)
 {
+    /* Reset before namespace creation so setup failures cannot replay the
+     * previous program's output. The case and runner share this description. */
+    if (output_fd >= 0 &&
+        (ftruncate(output_fd, 0) != 0 || lseek(output_fd, 0, SEEK_SET) < 0)) {
+        perror("reset system test output");
+        return RUNNER_ERROR_STATUS;
+    }
     void *case_stack = malloc(SUPERVISOR_STACK_SIZE);
     if (case_stack == NULL) {
         perror("allocate system test namespace-init stack");
@@ -207,7 +217,7 @@ static int run_isolated_case(const char *path, const char *output_path,
     }
     struct case_args args = {
         .path = path,
-        .output_path = output_path,
+        .output_fd = output_fd,
     };
     pid_t namespace_init = clone(supervise_case_namespace,
                                  (char *)case_stack + SUPERVISOR_STACK_SIZE,
@@ -379,18 +389,30 @@ static double elapsed_seconds(struct timespec start)
     return (double)seconds + (double)nanoseconds / 1000000000.0;
 }
 
-static void replay_output(const char *output_path)
+static int replay_output(int output_fd)
 {
-    FILE *output = fopen(output_path, "r");
-    if (output == NULL) {
-        return;
+    if (lseek(output_fd, 0, SEEK_SET) < 0) {
+        perror("seek captured system test output");
+        return -1;
     }
     char buffer[4096];
-    size_t length;
-    while ((length = fread(buffer, 1, sizeof(buffer), output)) != 0) {
-        (void)fwrite(buffer, 1, length, stdout);
+    for (;;) {
+        ssize_t length = read(output_fd, buffer, sizeof(buffer));
+        if (length < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("read captured system test output");
+            return -1;
+        }
+        if (length == 0) {
+            return 0;
+        }
+        if (fwrite(buffer, 1, (size_t)length, stdout) != (size_t)length) {
+            perror("replay captured system test output");
+            return -1;
+        }
     }
-    fclose(output);
 }
 
 int main(int argc, char **argv)
@@ -402,21 +424,22 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s [--capture-failures]\n", argv[0]);
         return 2;
     }
-    char output_path[] = "/tmp/starry-system-test-output.XXXXXX";
+    int output_fd = -1;
     if (capture_failures != 0) {
-        int output_fd = mkstemp(output_path);
+        /* A writable capture file on /tmp prevents the tests themselves from
+         * remounting that filesystem read-only. Keep output off tested mounts. */
+        output_fd = memfd_create("starry-system-test-output", MFD_CLOEXEC);
         if (output_fd < 0) {
             perror("create system test output");
             return RUNNER_ERROR_STATUS;
         }
-        close(output_fd);
     }
 
     size_t name_count = 0;
     char **names = NULL;
     if (collect_test_names(&names, &name_count) != 0) {
-        if (capture_failures != 0) {
-            (void)unlink(output_path);
+        if (output_fd >= 0) {
+            close(output_fd);
         }
         return RUNNER_ERROR_STATUS;
     }
@@ -461,14 +484,15 @@ int main(int argc, char **argv)
         printf("STARRY_SYSTEM_TEST_BEGIN: %s\n", path);
         fflush(stdout);
         unsigned timeout_seconds = case_timeout_seconds(names[index]);
-        int exit_status = run_isolated_case(
-            path, capture_failures != 0 ? output_path : NULL, timeout_seconds);
+        int exit_status = run_isolated_case(path, output_fd, timeout_seconds);
         double elapsed = elapsed_seconds(start);
 
         /* LTP completion contracts need TPASS evidence even for successful tests. */
         if (capture_failures != 0 &&
             (exit_status != 0 || current_phase == TEST_PHASE_LTP_SYSCALLS)) {
-            replay_output(output_path);
+            if (replay_output(output_fd) != 0) {
+                exit_status = RUNNER_ERROR_STATUS;
+            }
         }
         if (exit_status == 0) {
             passed += 1;
@@ -493,8 +517,8 @@ int main(int argc, char **argv)
     if (current_phase != TEST_PHASE_NONE) {
         printf("STARRY_SYSTEM_PHASE_END: %s\n", test_phase_name(current_phase));
     }
-    if (capture_failures != 0) {
-        (void)unlink(output_path);
+    if (output_fd >= 0) {
+        close(output_fd);
     }
 
     printf("STARRY_SYSTEM_TEST_SUMMARY: total=%d passed=%d failed=%d elapsed_s=%.3f\n",
