@@ -5313,5 +5313,366 @@
       "sha256": "6de4b7282c775922e90647539c07134466e6a09cf8340a4a8fb77d518628e2db",
       "claim": "actual task passed; no causal claim for prior APK download failure"
     }
-  }
+  },
+  "ci_4f16858e51_terminal": {
+    "source": "4f16858e510c386b7f398aab274ddfa1da9cfd89",
+    "run_id": 44119808401,
+    "counts": {
+      "success": 44,
+      "skipped": 5,
+      "failure": 0,
+      "pending": 0
+    },
+    "check_snapshot": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-4f16858e51-progress.json",
+    "check_snapshot_sha256": "dc2e926daa829ee5173f896dde0adf70dad40c3bb5d0c690624980f093644b9b",
+    "arceos_aarch64": {
+      "job_id": 134173352695,
+      "job_url": "https://github.com/rcore-os/tgoskits/actions/runs/44119808401/job/134173352695",
+      "log": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-4f16858e51-arceos-aarch64.log",
+      "sha256": "e06fb1b28817befbf4956dfca81e38543593452351dde8aa8c5e89f8f3f7baee",
+      "actual_guard_diagnostic": true,
+      "suites_result": "9/9"
+    },
+    "skipped_reason": "the same five duplicate pull-request wrapper jobs as the preceding run; workflow routing files are unchanged from 3dfc6f4a42",
+    "scope": "terminal evidence for 4f16858e51 only; it does not certify the subsequent SimpleFs migration"
+  },
+  "simplefs_entity_lifetime": {
+    "implementation_source": "dd31444ae5b735a0078baf27abea3adc1a3e3acb",
+    "validation_source": "a30875d6249706bcdebcdd9f428efdd5c402ce66",
+    "source_files": [
+      {
+        "path": "os/StarryOS/kernel/src/file/fs.rs",
+        "sha256": "13c3a3ce13125c8f8ba0c648eeef110ace6f00a42890875937ead77616bb993f"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/mod.rs",
+        "sha256": "bb25e7676244b6c23fdf9443b5674c4ee70ffdf7f8bc60fa49054ebdab808396"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/net.rs",
+        "sha256": "44e196506cdb3b862aa17ae6beb46933edc283d26f2e63e00c421b0552657ac1"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/netlink.rs",
+        "sha256": "ee8e42ff7c206bed4929f29324caf13c0eb81e9b28ab055b7cbb6ea819909c20"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/nsfd.rs",
+        "sha256": "b3ca34c1e40386c61c952c652e1c6074b6076326043dcf382fcb771b74186bd4"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/nsfd/object.rs",
+        "sha256": "b4a5bc28fe3388bdb3dcef0f5cb0420f3619a88c44a72b889d349477e94b104e"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/packet.rs",
+        "sha256": "21e16939a34ace1f0e8c4fc7fbaf39237889da08f52c6827e491f1809435c41b"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/path.rs",
+        "sha256": "eadd609b6b5f48603bcf9496d124eb2f5592bbaf2293b1a65616548fe75e6296"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/pipe.rs",
+        "sha256": "d43cebd48d271b2432658ae336692bd53d5dcfaba74715bb4066fc2b9f056802"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/file/pipe/named.rs",
+        "sha256": "14039bf0676f18cdcb2e83610dc487805712a760410859a0d8fd0de3452c56d7"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/ipc/mqueue.rs",
+        "sha256": "fcc60ea889eff167895cd4a4ba8b3e7f537779554fa55eebaffb55f4e75276ae"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/cgroup/file.rs",
+        "sha256": "af72db51e9bba6e4289d502457d5603b2059a961b5f19bdd6b445dc5d33ec940"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/cgroup/mod.rs",
+        "sha256": "eda450da9ab2cc2608a461276ac07d54682c97e6fd17de4179ce45209f977ab4"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/debug.rs",
+        "sha256": "8818091735fa53f4e22339e7c21f34406d4021bc4e219c8661227f312c2a845e"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dev/axivc.rs",
+        "sha256": "780284a8d1355b88517371a1739d5cde3932c546552210a91e987ce11cecb453"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dev/event.rs",
+        "sha256": "c72d2978d0ed93e05ba22b4a629f2617c1d7c1817c1abd5162814b63a213981d"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dev/mod.rs",
+        "sha256": "663f92a37947410a3d0fc3091ed025d6ec11fcd4a3350475ce35ca05341ec72e"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dev/net/mod.rs",
+        "sha256": "33e5ab145c403284f35b777cf34eb59dca2f69571aef6766cf0582b3d4c34339"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dev/pwm.rs",
+        "sha256": "1a48beaf659841e877553addd18fce96312cf0ca5dc775b0b43ef51fac0646dd"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dev/tty/ptm.rs",
+        "sha256": "1a3bdee90b812886cdd1a6599b79fa67019b13a43e86257ce654724253c51404"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dev/tty/pts.rs",
+        "sha256": "3bed818767c081e80cd1dcd0c99e358a1d639ff704f5de5bd9a2c38d4adf444e"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dev/video_dir.rs",
+        "sha256": "1b440bd5fe30f78504f3eb9a2084eafd2ceadfd318ed60f8b2dcc31339abea5c"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/device.rs",
+        "sha256": "d574e76711fe09b7a32b99f7e2ca0d8dcefb4ee9d90c0fa68dd852506fa17477"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dir.rs",
+        "sha256": "8eba4ec53119bbbed8c517bcf3c3c265f368f5195420acc796dcb34ca313e703"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/dyn_debug.rs",
+        "sha256": "5640eea84678958bd13361302bbd6cbaf633be79dfc1a27ddebf9473656da518"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/file.rs",
+        "sha256": "07b8c9d077d7921d00d389d8e96c7b20e217738b968f9f8a6be5568fc4f3701a"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/fs.rs",
+        "sha256": "96cb4f17499b2dbb15a34ca7f1ec9f13fd8885207dfe1df0d1a74a02b5edf2fd"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/mod.rs",
+        "sha256": "a944c6f8422a297e68dbb1dd596c250af051a3153ff73f038cc3cd8d2a4d1b81"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/mqueue.rs",
+        "sha256": "91ff8246236e9e311d65b3c1d94a9cc007252bd8fd992d321e6e4046d6b97a41"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/object.rs",
+        "sha256": "4f229701f40866179b30f76eb1788257808d1873f2e703a951fe03fdddf6377f"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/proc.rs",
+        "sha256": "50e02e8c376e2bb1384a7f5789c1af5a043e9419c5df0f3d2612b6c45e449aae"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/proc/link.rs",
+        "sha256": "85cb2fc3ac47b5ff9d8411dd78c87ca8eb57f142ddb0e55bc33bd3fc42be2978"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/proc/self_link.rs",
+        "sha256": "bd6e1a547780c2034d7e72d87083ff7022ff89a47469d68fe910cefd88396b5e"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/recipe.rs",
+        "sha256": "dcb8ba6f012244f6b2477b7609c1d87893443a0783e2da70e9fc877755eeb229"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/sysfs.rs",
+        "sha256": "faa14d8f3e06be51b5ce1fbba04aee0bfb4d99b0eeb84be25010ee7271c22193"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/usbfs/mod.rs",
+        "sha256": "e98dc56231d47b33fe6291986e7fd094e7b338562de580a121c7904db0938101"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/usbfs/sysfs.rs",
+        "sha256": "d3444c74e7492ca2082fad241d82e70e7146508a4e45cfb1852847139c8d8670"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/pseudofs/usbfs/tree.rs",
+        "sha256": "0454e0e5e93c950288c97d13706639290facd75d9d4e30a9e0277157ddf21a89"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs",
+        "sha256": "574e0cd64610bcfc38f56903bcd1cfe0f7fb96704413ab304bce3d7b44ec2444"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/fs/mount.rs",
+        "sha256": "2732605f17ff6604198da89ab89bfcfd4ad86a69b6e924cd64e2955b779b2994"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/fs/pipe.rs",
+        "sha256": "83447256337558367a7de46ed4aa635e5b57850759a57238af7dabd3dd935209"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/ipc/mqueue.rs",
+        "sha256": "d6399e7fff8b5b280666458dc1f26cfa79e92ddd77c26401b5881a8252bd61d2"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/net/socket.rs",
+        "sha256": "56bce2f754033a00ad984d44612fed736e3ec988c6b8c0850768ff3bc24eb511"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/syscall/task/namespace.rs",
+        "sha256": "b772879b72a0b2f5fd97c3f1a433344a4a5fe278a5233fea0882181e5bf38a8b"
+      },
+      {
+        "path": "os/StarryOS/kernel/src/tracepoint/mod.rs",
+        "sha256": "68f96de66c0d5ea5e928d2428f34b88b58ffd63a27902704ecf3ca899e0725e2"
+      },
+      {
+        "path": "test-suit/starryos/qemu/system/mqueue-fd-read-status/src/main.c",
+        "sha256": "de9e2ace81d9cdd7f6a86d9f9eb7ce41bc386c9d51ce263d07a0c38b4b0898e7"
+      },
+      {
+        "path": "test-suit/starryos/qemu/system/test-devpts-newinstance/src/main.c",
+        "sha256": "ab39b9a0a476bfc42ba8ebd6d7567a828864d5c2313f330601ed31a869721ccc"
+      }
+    ],
+    "ownership": {
+      "core": "immutable configuration and a checked slab domain; no filesystem/root/wrapper edge",
+      "entity": "one SimpleInode owns each slot and mutable Metadata",
+      "recipe": "FS-free DirMaker/FileMaker; prepared bindings reject a foreign context before materialization",
+      "active_wrapper": "closed SimpleFsOwner retains the actual receiver plus its single generic Filesystem state",
+      "root": "weak canonical index, candidates and losing drops outside the root lock"
+    },
+    "native": {
+      "source": "dd31444ae5b735a0078baf27abea3adc1a3e3acb",
+      "result": {
+        "pass": 265,
+        "fail": 0,
+        "skip": 0
+      },
+      "after": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/simplefs-weak-root-after.log",
+        "sha256": "3b1b6558e843ab332155ed39b5c036789da65fa924c9906d3c2582bb85ef7186",
+        "outer_exit": 0
+      },
+      "elf": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/axtest-x86_64-dd31444ae5.elf",
+      "elf_sha256": "9d29e7d70bd3f15ee08639a490f6ad998e21b91c31dab2827e503d5bd27f8054",
+      "controlled_before": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/simplefs-strong-root-controlled-before.log",
+        "sha256": "632b94776180c9e0eb3bd36a9ddf6c753db21d5cf1c16eab1cbffde47ffd0075",
+        "outer_exit": 1
+      },
+      "controlled_mutation": {
+        "file": "os/StarryOS/kernel/src/pseudofs/fs.rs",
+        "correct_sha256": "96cb4f17499b2dbb15a34ca7f1ec9f13fd8885207dfe1df0d1a74a02b5edf2fd",
+        "mutated_sha256": "12b382290833863abb3a7272968fb1b874137ba53a1bf0d4e2818dcc9a0a29da",
+        "mutation": "restore the pre-fix filesystem-owned strong root while preserving the new producer APIs and exact regression body",
+        "cache_preparation": "the same production DirNode::clear_cached_entries runs before wrapper-retirement assertions in both variants",
+        "elf": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/axtest-x86_64-simplefs-strong-root-controlled-red.elf",
+        "elf_sha256": "abecd6260d5daf3aebc2399a4401b753501898ca6e78b145f23d0549222e29c3",
+        "actual_failure": "inactive root wrappers retire",
+        "outer_exit": 1
+      },
+      "scope": "same enhanced real kernel journey, same explicit positive-cache retirement; only the pre-fix filesystem-owned strong root is temporarily restored; tests metadata/inode preservation across wrapper retirement and actual FS/backing retirement after the final external path",
+      "original_before_limitation": "the original 2303b0bb3d failure did not retire the legitimate positive cache and cannot alone isolate the internal root cycle; the controlled strong-root comparison is the definitive regression"
+    },
+    "mqueue": {
+      "before_source": "552602804479bdf7406c19be8809184ad44d0c32",
+      "before": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-owner-before.log",
+        "sha256": "dbd63588d6607cb92e7181e4b43a0f62721712bad4711a530c10af7176263a95",
+        "outer_exit": 1
+      },
+      "linux": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/mqueue-owner-linux.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outer_exit": 0
+      },
+      "linux_source_sha256": "de9e2ace81d9cdd7f6a86d9f9eb7ce41bc386c9d51ce263d07a0c38b4b0898e7",
+      "after_system": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/simplefs-system-after.log",
+        "sha256": "30549d24d9abf57370f167b6cf16b49722002e23b79715adae1f0b06c87281a7",
+        "outer_exit": 0
+      },
+      "changes": "shared queue inode for path/mqd/stat/permission checks; immutable creator_uid retains charge ownership; no secondary attribute table"
+    },
+    "devpts": {
+      "before_source": "552602804479bdf7406c19be8809184ad44d0c32",
+      "before": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/devpts-owner-before.log",
+        "sha256": "1e72d02176e726e7c398d74861d5e9bcf3da3843314f6f6806acd70b4b9dd5b7",
+        "outer_exit": 1
+      },
+      "linux": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/devpts-owner-linux-container-mount.log",
+        "sha256": "1f478c71494572579562bb4d0038bb2b8948fc78cbb37d0d64f3f679819a2e8e",
+        "outer_exit": 0
+      },
+      "linux_kernel": "6.8.0-149-generic",
+      "linux_source_sha256": "ab39b9a0a476bfc42ba8ebd6d7567a828864d5c2313f330601ed31a869721ccc",
+      "after_system": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/simplefs-system-after.log",
+        "sha256": "30549d24d9abf57370f167b6cf16b49722002e23b79715adae1f0b06c87281a7",
+        "outer_exit": 0
+      },
+      "changes": "persistent FS-free slave/ptmx backings, private instance per fresh mount, bind retains original instance, boot devfs keeps distinct ptmx entities, per-open master I/O retains the selected ptmx path/inode"
+    },
+    "validation": {
+      "std_source": "17e0539e7df9f60114ce6324284d66cd28219732",
+      "std_packages": [
+        "starry-kernel"
+      ],
+      "std": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/simplefs-std.log",
+        "sha256": "620a78e8cdd0e53d5551bd0a2bc5cd57c03c0efabf46de6e2aadf7bbd83bf418",
+        "outer_exit": 0
+      },
+      "clippy_source": "a30875d6249706bcdebcdd9f428efdd5c402ce66",
+      "clippy_checks": 72,
+      "clippy_targets": 4,
+      "clippy": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/simplefs-clippy.log",
+        "sha256": "52a2451b1639089d4b01e7ca4453c12ad1ece8469f6dea6efd09da21611ed653",
+        "outer_exit": 0
+      },
+      "format": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/simplefs-format.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outer_exit": 0
+      },
+      "system_source": "a30875d6249706bcdebcdd9f428efdd5c402ce66",
+      "system_x86_64": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/simplefs-system-after.log",
+        "sha256": "30549d24d9abf57370f167b6cf16b49722002e23b79715adae1f0b06c87281a7",
+        "outer_exit": 0
+      },
+      "system_summary": {
+        "total": 541,
+        "passed": 541,
+        "failed": 0
+      },
+      "system_elf": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-a30875d624.elf",
+        "sha256": "325c4aa822633b74a198851b999a01a3dd77d3896b849f4a68aac6e8cd73a9f6"
+      }
+    },
+    "test_layout": {
+      "native_cases_added": 1,
+      "native_cases_total": 265,
+      "existing_c_programs_enhanced": 2,
+      "discovery_changes": 0,
+      "batch_changes": 0,
+      "additional_default_boots": 0
+    },
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "mqueue_get_tree": 425,
+      "mqueue_get_inode": 281,
+      "mqueue_creator_ucounts": 147,
+      "ptmx_open": 767,
+      "devpts_pty_new": 498
+    },
+    "limitations": [
+      "No claim of complete CACHED, proc metadata-refresh, user-namespace initialization, all native read-only endpoints or the remaining Overlay contracts",
+      "Per-open stat/path retention does not certify every PTY flag, slave-lock transition or concurrent hot-unplug outcome",
+      "UVC candidates retire outside both index and construction gates; raw USB initialization is serialized by a dedicated task-context gate whose callbacks never enter that gate",
+      "Runtime System success uses the existing capture-failures runner; do not infer per-assert counts from hidden output",
+      "The next published head requires its own terminal CI and independent design/implementation review before merge"
+    ],
+    "syscall_rows_after_phase": 113
+  },
+  "updated_at": "2026-11-17T17:45:58.062719+00:00"
 }

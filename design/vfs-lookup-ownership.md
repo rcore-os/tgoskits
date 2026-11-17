@@ -4469,6 +4469,34 @@ fork 与 exec 之间保留写句柄时直接执行脚本触发 ETXTBSY。原功�
 该过程，系统测试判据据此处理模式切换和活动帧数，继续拒绝序号回退与关闭期间
 的错误计数。实际 ioctl 和事件旅程由原 DRM QEMU 用例负责。
 
+### 6.29 实体与包装的退休
+
+`SimpleFsContext` 只持 inode 分配域，`SimpleInode` 保留编号及属性，
+`DirMaker/FileMaker` 形成无完整 FS 返回边的构造配方。活跃包装的
+`SimpleFsOwner` 保留原 receiver 和同一通用挂载状态，根仅作弱规范化。
+普通静态文件、目录、设备、proc/sysfs、debug/trace、USB 与 Cgroup 构造方
+在同一序列迁移，删除接收完整 FS Arc 的旧构造入口。永久对象 FS 在其既有
+初始化边界处理失败，运行期 pipe/socket/nsfd 的 inode 分配错误继续向调用方传播。
+
+真实 kernel 生命周期旅程先释放路径并清理 VFS 正缓存，再验证根和文件包装
+确已退休；从仍存活 FS 重建时，根和文件保留原 inode、uid/gid 与权限。
+保留最后一个外部路径仍保活实际 FS，释放它后 FS 与静态 backing 一并退休。
+原始 2303b0bb3d 用例漏清理合法正缓存，不能独立定位内部环；决定性的对照
+在相同测试和缓存清理下，仅恢复原来的 FS 强根持有，稳定在根包装退休处失败。
+弱根版本 265/265、外层 0，临时改动逐字恢复，未增加默认启动。
+
+mqueue 的路径配方和 mqd 均访问队列的同一实体；创建者 charge 与可修改属主
+分开。devpts 数字表保留设备 backing，实例 ptmx 不因 lookup 重置权限，
+每次打开的 master I/O 保留原 ptmx 路径与属性。内置两个 ptmx 入口保持不同
+属性实体；新 mount 私有化实例，bind 保留原实例。两个既有 C 旅程在旧实现
+失败，原程序在 Linux 和修后 x86 完整 system 中通过。UVC 的索引只持 backing，
+硬件初始化由独立 task mutex 保持原串行顺序，退休项和败选候选在两锁外释放。
+
+Kernel 标准库测试及四目标 72 项 Clippy 通过。源码、受控改动、ELF、原始失败、
+实际系统用例结果及限制记录于 `simplefs_entity_lifetime`。本单元不代表完成
+CACHED、动态 proc 属性刷新、完整 userns 初始化、普通 mqueue fd 的全部操作、
+所有只读端点或剩余 Overlay 契约；它们继续按各自领域边界验收。
+
 ## 7. 缓存专用查找
 
 `RESOLVE_CACHED` 限制路径解析不得依赖慢速查找或重新验证。

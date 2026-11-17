@@ -1320,3 +1320,37 @@ capture-failures，不由隐藏的成功输出猜测逐断言数量。ELF 摘要
 RISC-V 和 LoongArch 各 538/538，AArch64 四组 513/23/1/1。原 statfs
 和 procfd 程序在每个目标均实际执行，统计实现和 C 与 a960991962 逐字相同。
 原始任务和证据索引为 ci_3dfc6f4a42_terminal，不能把该轮 ArceOS 失败改为成功。
+
+### 9.45 实体与包装的退休
+
+`dd31444ae5` 将 SimpleFs 分成 core、实体、配方与活跃 owner；后续提交清理
+剩余 namespace 转换和初始化错误包装，并保留 UVC 原有的串行初始化。
+`SimpleFsOwner` 的具体 Arc 私有，`as_filesystem` 克隆构造时唯一的通用句柄，
+因此设备号与只读状态不因根重建而拆分。所有普通、可选设备与 Cgroup 根使用
+同一构造协议；Cgroup 属性仍由原组件节点拥有。
+
+完整生命周期旅程含两次真实挂载根物化、原属性保留及最后外部路径释放。
+第一次增强运行漏清理合法正缓存而失败，原始 2303b0bb3d 同样不能隔离环。
+补齐真实 `clear_cached_entries` 后，受控恢复原强根持有仍使外层退出 1，
+失败为根包装未退休；弱根实现通过相同断言，kernel suite 265/265、外层 0。
+受控源码逐字恢复，ELF 摘要为
+9d29e7d70bd3f15ee08639a490f6ad998e21b91c31dab2827e503d5bd27f8054。
+
+`5526028044` 的 mqueue 旅程实际观察 mqd/path inode 不一致及两个方向的
+chmod 未共享；devpts 旅程观察重复 lookup 丢失 ptmx 权限，均外层 1。
+同一 C 在宿主 Linux 或隔离 Linux 容器通过，devpts 保留 gid=5 断言。
+首次 mqueue 编译缺少 `_GNU_SOURCE`、宿主旧 unshare 不支持映射选项及
+容器默认 mount 策略拒绝均单独保留，不计为产品红绿。
+
+修后完整 x86 system 中两个程序通过，Kernel 标准库测试与四目标
+72/72 Clippy 通过，格式检查包含 include-backed Rust 文件。
+证据键为 `simplefs_entity_lifetime`，按其中各次 source、文件摘要和实际范围
+解释结果。mqueue 路径与 mqd 共享实体，但普通路径 fd 的全部 mq 操作、
+动态 proc 字段策略、userns 与完整只读行为仍需相应契约；不据本次结果外推。
+
+### 9.46 栈保护持续集成终态
+
+`4f16858e51` 的完整持续集成终态为 44 成功、0 失败、5 个既有重复 PR
+包装跳过。AArch64 原栈保护用例实际输出完整地址诊断并通过，Rust suite
+9/9；旧 3dfc 的失败记录保留。该终态只证明 4f16858e51，后续 SimpleFs
+提交仍须核实自己的完整 CI。原始任务与日志见 `ci_4f16858e51_terminal`。

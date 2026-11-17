@@ -299,3 +299,52 @@ gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条�
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
 | ioctl/CRTC_GET_SEQUENCE 首次活动查询；x86_64 16；其余三架构 29 | v7.1 [drm_crtc_get_sequence_ioctl](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L2006) 与 [drm_update_vblank_count](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/gpu/drm/drm_vblank.c#L339) | 按实际 CRTC 取得引用并读取一致的 count/time；时间戳推导帧数四舍五入，不能用向下取整的耗时上界拒绝合法结果 | sys_ioctl → KapiFile.ioctl → drm_ioctl → drm_crtc_get_sequence_ioctl → vblank_get/enable → drm_update_vblank_count → DrmVblankCrtc seqlock | 部分正确 | 原引用旅程精确断言 3/4 周期的活动时间得到总增量 2 及对应时间戳；实际 C 判据同一回放在 8d412dbfe7 失败、a8cc3944a1 通过，修后仍拒绝增量 102 和序号回退；LoongArch ioctl 程序 1/1，其他目标和真实 Linux DRM 运行对照仍有缺口 |
+
+## 12. 伪文件系统实体
+
+`SimpleInode` 保留普通实体属性，活跃包装绑定原 `SimpleFsOwner`，
+Cgroup 保留组件自己的属性 owner。Native 生命周期证明与 syscall 兼容证明
+分别记录；包装退休不自动证明每个 ABI 的参数、权限和字段策略。
+
+### 12.1 共享属性
+
+mqueue 的路径配方、mqd stat 和后续权限检查共享队列实体。两个既有 C 旅程
+及内核生命周期用例已取得对应红绿；未直接执行的入口保留证据缺口。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| chmod/静态伪实体；x86_64 90 | v7.1 [chmod_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L618) | 修改实际 inode 的权限 | sys_chmod → sys_fchmodat → saved FsView → SimpleFsNode/SimpleInode | 部分正确 | devpts 同一 C 旅程在旧实现丢失 ptmx 权限、修后与 Linux 通过；C 库 chmod 的实际原始入口未单独跟踪 |
+| fchmod/mqd；x86_64 91；其余三架构 52 | v7.1 [chmod_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L618) | 描述与名字共享 inode 属性 | sys_fchmod → descriptor_path(MqDescriptor) → mqueue_location → SimpleFsNode.change_metadata → queue SimpleInode | 部分正确 | mqueue 程序直接 SYS_fchmod；旧实现失败，修后 x86 与 Linux 通过；其余目标及完整权限错误仍待最终 CI/专门证据 |
+| fchmodat/mqueue 路径；x86_64 268；其余三架构 53 | v7.1 [chmod_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L618) | 路径修改对已有描述可见 | sys_fchmodat → change_at → retained path → SimpleFsNode.change_metadata → queue SimpleInode | 部分正确 | 同一 C 直接 SYS_fchmodat 后 fstat(mqd) 核对权限；旧实现失败、修后 x86 与 Linux 通过 |
+| fchmodat2/伪实体；四架构 452 | v7.1 [chmod_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L618) | flags 参与目标选择与授权 | syscall/mod.rs → sys_fchmodat(flags) → owned target → MetadataRequest → SimpleInode | 部分正确 | 共享实体已迁移；未在本单元直接覆盖 AT_EMPTY_PATH/AT_SYMLINK_NOFOLLOW 全部组合 |
+| chown/伪实体；x86_64 92 | v7.1 [chown_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 属主更新作用于原实体，权限由实际凭据决定 | sys_chown → sys_fchownat → change_at → MetadataRequest → actual receiver → SimpleInode 属性锁 | 无法确认 | Native 旅程证明属主在包装重建后保留；本单元未直接证明这些 syscall 的参数、userns、错误顺序与 charge 退还旅程 |
+| lchown/伪实体；x86_64 94 | v7.1 [chown_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 属主更新作用于原实体，权限由实际凭据决定 | sys_lchown → sys_fchownat(AT_SYMLINK_NOFOLLOW) → change_at → MetadataRequest → actual receiver → SimpleInode 属性锁 | 无法确认 | Native 旅程证明属主在包装重建后保留；本单元未直接证明这些 syscall 的参数、userns、错误顺序与 charge 退还旅程 |
+| fchown/伪实体；x86_64 93；其余三架构 55 | v7.1 [chown_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 属主更新作用于原实体，权限由实际凭据决定 | sys_fchown → change_fd → descriptor_path → MetadataRequest → actual receiver → SimpleInode 属性锁 | 无法确认 | Native 旅程证明属主在包装重建后保留；本单元未直接证明这些 syscall 的参数、userns、错误顺序与 charge 退还旅程 |
+| fchownat/伪实体；x86_64 260；其余三架构 54 | v7.1 [chown_common](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 属主更新作用于原实体，权限由实际凭据决定 | sys_fchownat → change_at → MetadataRequest → actual receiver → SimpleInode 属性锁 | 无法确认 | Native 旅程证明属主在包装重建后保留；本单元未直接证明这些 syscall 的参数、userns、错误顺序与 charge 退还旅程 |
+| utime/伪实体；x86_64 132 | v7.1 [do_utimes](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/utimes.c) | 所选 inode 保留提交的时间字段 | sys_utime → sys_utimensat → MetadataRequest → shared SimpleInode | 无法确认 | 属性 owner 已共享，时间范围、精度、权限及 proc 刷新策略未由本单元证明 |
+| utimes/伪实体；x86_64 235 | v7.1 [do_utimes](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/utimes.c) | 所选 inode 保留提交的时间字段 | sys_utimes → sys_utimensat → MetadataRequest → shared SimpleInode | 无法确认 | 属性 owner 已共享，时间范围、精度、权限及 proc 刷新策略未由本单元证明 |
+| utimensat/伪实体；x86_64 280；其余三架构 88 | v7.1 [do_utimes](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/utimes.c) | 所选 inode 保留提交的时间字段 | sys_utimensat → retained fd/path → MetadataRequest → shared SimpleInode | 无法确认 | 属性 owner 已共享，时间范围、精度、权限及 proc 刷新策略未由本单元证明 |
+| fstat/mqd；x86_64 5；其余三架构 80 | v7.1 [vfs_fstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L257) | mqd 与名字报告同一 inode 及属性 | sys_fstat → resolve_fd → MqDescriptor.stat → queue SimpleInode → metadata_to_kstat | 部分正确 | 同一 mqueue C 核对 dev/ino、双向 chmod 和固定 size=80；x86 与 Linux 通过，其他目标及完整字段待最终 CI/专门证据 |
+| newfstatat/fstatat/mqueue；x86_64 262；其余三架构 79 | v7.1 [newfstatat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L498) | 名字查找读到队列的实际属性 | sys_fstatat → resolve_at → SimpleDir → queue-backed FileMaker → SimpleInode | 部分正确 | 同一 C 的 stat 观察队列属性共享；C 库选择的原始 stat 入口未单独跟踪，不外推全部 flags |
+| statx/静态伪实体；x86_64 332；其余三架构 291 | v7.1 [do_statx](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c) | 掩码与 flags 决定原实体的可见字段 | sys_statx → retained path → SimpleFsNode/SimpleInode → statx conversion | 无法确认 | 真实 Native 旅程证明普通根/文件实体寿命；缺少该入口的直接 rematerialization 与字段掩码证明 |
+
+### 12.2 队列与对象
+
+当前队列名字域仍是全局 `MQ_REGISTRY`，共享 FS 与该域对应，不新增业务 ID
+或属性登记表。匿名对象保留既有物理 inode 分配域；类型化失败传播不代表
+已经把全局分配器的终止式 OOM 策略改成可恢复 Linux ENOMEM。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| mq_open；x86_64 240；其余三架构 180 | v7.1 [do_mq_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/mqueue.c#L911) | 已有名字的权限来自队列 inode | sys_mq_open → MQ_REGISTRY → MessageQueue.check_open_access → shared SimpleInode | 部分正确 | 完整 mqueue 状态读取旅程通过；chmod/chown 后跨凭据 reopen 与完整限额错误顺序未在本单元证明 |
+| mq_unlink；x86_64 241；其余三架构 181 | v7.1 [mq_unlink](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/mqueue.c#L940) | sticky 检查使用当前 inode 属主 | sys_mq_unlink → queue.uid → SimpleInode；queue Drop refunds creator_uid | 部分正确 | 共享属主与固定计费创建者已分开；跨属主 unlink/最后描述释放后的 charge 退还尚缺直接旅程 |
+| mq_notify；x86_64 244；其余三架构 184 | v7.1 [do_mq_notify](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/mqueue.c#L1266) | 注册状态变更维护同一 inode 时间 | sys_mq_notify → MessageQueue.register_notify → message mutex → inode time lock | 部分正确 | 原通知功能由完整 system 继续执行；与时间修改的受控交错、字段观察未在本单元证明 |
+| mq_getsetattr；x86_64 245；其余三架构 185 | v7.1 [mq_getsetattr](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/mqueue.c#L1427) | 描述 flags 与共享 inode 时间分别维护 | sys_mq_getsetattr → MqDescriptor flags/MessageQueue.touch_attr → SimpleInode | 部分正确 | 每次打开的 flags/偏移保持独立；新时间 owner 的完整 syscall 字段/竞争证明待补 |
+| read/mqd；x86_64 0；其余三架构 63 | v7.1 [mqueue_read_file](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/mqueue.c) | 状态偏移属于打开描述，成功复制后维护时间 | sys_read → MqDescriptor.read → status snapshot/user copy → queue SimpleInode times | 部分正确 | 既有程序验证分段读、EOF、重新打开的独立偏移、lseek 和只写拒绝；Linux 与修后 x86 通过，完整 EFAULT/时间语义未由此证明 |
+| read/mqueue 普通路径 fd；x86_64 0；其余三架构 63 | v7.1 [mqueue_read_file](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/ipc/mqueue.c) | 普通路径打开同样使用队列文件操作 | sys_read → ordinary File → SimpleFile.read_at → queue.status_line → inode times | 部分正确 | 路径绑定同一属性实体；普通路径仍经内容构造接口，mq_* fd 操作与 EOF/EFAULT 时间维护未闭合 |
+| pipe；x86_64 22 | v7.1 [do_pipe2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c) | 分配共享管道 inode，失败不发布描述 | syscall/mod.rs legacy pipe → sys_pipe2(flags=0) → Pipe::new → Shared::new → ObjectInode::new | 部分正确 | 构造方已全部迁移为返回可报告分配错误；265 项 Native 与完整 x86 system 验证正常对象寿命，低内存及全部 flag/错误优先级未在本单元证明 |
+| pipe2；x86_64 293；其余三架构 59 | v7.1 [do_pipe2](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c) | 两端共享实际管道实体及其寿命 | sys_pipe2 → Pipe::new → Shared::new → ObjectInode::new | 部分正确 | 构造方已全部迁移为返回可报告分配错误；265 项 Native 与完整 x86 system 验证正常对象寿命，低内存及全部 flag/错误优先级未在本单元证明 |
+| socket；x86_64 41；其余三架构 198 | v7.1 [sock_alloc](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/socket.c) | socket 拥有实际 inode，失败清理构造资源 | sys_socket → Socket/PacketSocket/NetlinkSocket::new → ObjectInode::new | 部分正确 | 构造方已全部迁移为返回可报告分配错误；265 项 Native 与完整 x86 system 验证正常对象寿命，低内存及全部 flag/错误优先级未在本单元证明 |
+| socketpair；x86_64 53；其余三架构 199 | v7.1 [socketpair](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/socket.c) | 两个端点分别拥有 inode，部分失败不发布半对 fd | sys_socketpair → Socket::new for both endpoints → ObjectInode::new → fd installation | 部分正确 | 构造方已全部迁移为返回可报告分配错误；265 项 Native 与完整 x86 system 验证正常对象寿命，低内存及全部 flag/错误优先级未在本单元证明 |
+| accept；x86_64 43；其余三架构 202 | v7.1 [accept](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/socket.c) | 新连接取得独立 socket inode | sys_accept → sys_accept4 → listener.accept_user → Socket::new → ObjectInode::new | 部分正确 | 构造方已全部迁移为返回可报告分配错误；265 项 Native 与完整 x86 system 验证正常对象寿命，低内存及全部 flag/错误优先级未在本单元证明 |
+| accept4；x86_64 288；其余三架构 242 | v7.1 [accept4](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/socket.c) | 新描述 flags 与连接资源按操作提交 | sys_accept4 → listener.accept_user → Socket::new → ObjectInode::new → fd installation | 部分正确 | 构造方已全部迁移为返回可报告分配错误；265 项 Native 与完整 x86 system 验证正常对象寿命，低内存及全部 flag/错误优先级未在本单元证明 |
