@@ -37,6 +37,11 @@ ensure_host_packages() {
     fi
 
     echo "[virgl prebuild] 缺少宿主工具: ${missing[*]}"
+    if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+        echo "error: missing host dependencies in prepared container: ${missing[*]}" >&2
+        exit 1
+    fi
+
     if command -v pacman >/dev/null 2>&1; then
         echo "[virgl prebuild] 请安装: sudo pacman -S ${missing[*]}"
     elif command -v apt-get >/dev/null 2>&1; then

@@ -27,21 +27,16 @@ case "$arch" in
     *) echo "prebuild: unsupported arch: $arch" >&2; exit 1 ;;
 esac
 
-GO_VER=1.26.3
 goroot="$cache_root/go"
-if [[ ! -x "$goroot/bin/go" ]]; then
-    # Fetch the official go.dev toolchain for the BUILD host (to cross-compile from),
-    # verified against the published SHA256 so the build is reproducible.
-    case "$(uname -m)" in
-        x86_64)  ha=amd64; sha=2b2cfc7148493da5e73981bffbf3353af381d5f93e789c82c79aff64962eb556 ;;
-        aarch64) ha=arm64; sha=9d89a3ea57d141c2b22d70083f2c8459ba3890f2d9e818e7e933b75614936565 ;;
-        *) echo "prebuild: unsupported build host $(uname -m)" >&2; exit 1 ;;
-    esac
-    mkdir -p "$cache_root"
-    echo "prebuild: fetching go${GO_VER}.linux-${ha} toolchain..."
-    curl -fsSL "https://go.dev/dl/go${GO_VER}.linux-${ha}.tar.gz" -o "$cache_root/go.tgz"
-    echo "${sha}  $cache_root/go.tgz" | sha256sum -c - || { echo "prebuild: go toolchain SHA256 mismatch" >&2; exit 1; }
-    tar -C "$cache_root" -xzf "$cache_root/go.tgz"
+if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+    if ! command -v go >/dev/null 2>&1; then
+        echo "error: prepared container is missing the Go compiler; rebuild the CI image" >&2
+        exit 1
+    fi
+    goroot="$(go env GOROOT)"
+elif [[ ! -x "$goroot/bin/go" ]]; then
+    workspace="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}"
+    bash "$workspace/container/install-go.sh" "$goroot"
 fi
 export GOROOT="$goroot" PATH="$goroot/bin:$PATH" GOTOOLCHAIN=local
 export GOPATH="$cache_root/gopath" GOCACHE="$cache_root/gocache"

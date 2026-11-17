@@ -5,7 +5,10 @@ use clap::Args;
 
 use crate::{
     context::cross_compile_spec_for_arch_checked,
-    support::process::{ProcessExt, find_host_binary_candidates},
+    support::{
+        process::{ProcessExt, find_host_binary_candidates},
+        rustup,
+    },
 };
 
 const STATIC_RUSTFLAGS: &str = "-C target-feature=+crt-static";
@@ -84,7 +87,7 @@ pub(crate) fn run(args: CrossTestArgs) -> anyhow::Result<()> {
     let qemu_runner = find_host_binary_candidates(spec.qemu_user_binaries)?;
     let linker = find_host_binary_candidates(&["rust-lld"])?;
 
-    install_rust_target(spec.rust_musl_target)?;
+    rustup::ensure_target(spec.rust_musl_target)?;
     let plan = CrossTestPlan::new(&args, spec.rust_musl_target, &linker, &qemu_runner);
 
     let mut command = Command::new("cargo");
@@ -100,12 +103,4 @@ pub(crate) fn run(args: CrossTestArgs) -> anyhow::Result<()> {
             qemu_runner.display()
         )
     })
-}
-
-fn install_rust_target(target: &str) -> anyhow::Result<()> {
-    let mut command = Command::new("rustup");
-    command.args(["target", "add", target]);
-    command
-        .exec()
-        .with_context(|| format!("failed to install Rust target `{target}` via rustup"))
 }

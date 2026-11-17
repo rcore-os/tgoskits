@@ -167,6 +167,11 @@ ensure_host_tools() {
         command -v perl  >/dev/null 2>&1 || missing+=(perl)
     fi
     if [[ ${#missing[@]} -gt 0 ]]; then
+        if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+            echo "error: missing host dependencies in prepared container: ${missing[*]}" >&2
+            exit 1
+        fi
+
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update && apt-get install -y --no-install-recommends "${missing[@]}"
         else
@@ -181,6 +186,11 @@ ensure_host_tools() {
 # build-time toolchain dependency — NOT a committed binary).
 ensure_host_jdk() {
     command -v javac >/dev/null 2>&1 && return 0
+    if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+        echo "error: missing host dependencies in prepared container: javac (JDK 17+)" >&2
+        exit 1
+    fi
+
     if command -v apt-get >/dev/null 2>&1; then
         echo "prebuild: no host javac — installing a JDK for the in-prebuild compile"
         apt-get update
