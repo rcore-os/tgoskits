@@ -2,7 +2,7 @@
 
 use alloc::{string::String, sync::Arc, vec};
 
-use axfs_ng_vfs::{LinkOps, LinkTarget, Location, NodeIdentity, VfsError, VfsResult};
+use axfs_ng_vfs::{LinkOps, LinkTarget, NodeIdentity, PathHandle, VfsError, VfsResult};
 
 use super::{SimpleFile, SimpleFs, require_proc_task};
 use crate::{
@@ -76,7 +76,7 @@ struct ProcLink {
 // fd-table, MM and filesystem-context locks have all been released.
 enum TargetSnapshot {
     File(Arc<dyn FileLike>),
-    Location(Location),
+    Path(PathHandle),
     Namespace(NamespaceObject),
 }
 
@@ -108,15 +108,15 @@ impl ProcLink {
                     let executable = mm.lock().executable_file();
                     executable.ok_or(VfsError::NotFound)?
                 };
-                TargetSnapshot::Location(executable.location().clone())
+                TargetSnapshot::Path(executable.path_handle().clone())
             }
             ProcLinkKind::Cwd | ProcLinkKind::Root => {
                 let context = thread.snapshot_fs_binding()?.ok_or(VfsError::NotFound)?;
-                let location = match self.kind {
-                    ProcLinkKind::Cwd => context.fs.current_dir().clone(),
-                    _ => context.fs.root_dir().clone(),
+                let path = match self.kind {
+                    ProcLinkKind::Cwd => context.fs.cwd().clone(),
+                    _ => context.fs.root().clone(),
                 };
-                TargetSnapshot::Location(location)
+                TargetSnapshot::Path(path)
             }
             ProcLinkKind::Namespace(kind) => {
                 TargetSnapshot::Namespace(NamespaceObject::for_task(&target, kind)?)
@@ -127,12 +127,12 @@ impl ProcLink {
 
 impl LinkOps for ProcLink {
     fn target(&self) -> VfsResult<LinkTarget> {
-        let location = match self.snapshot()? {
-            TargetSnapshot::File(file) => descriptor_path(&file)?.location().clone(),
-            TargetSnapshot::Location(location) => location,
-            TargetSnapshot::Namespace(namespace) => namespace.location(),
+        let path = match self.snapshot()? {
+            TargetSnapshot::File(file) => descriptor_path(&file)?,
+            TargetSnapshot::Path(path) => path,
+            TargetSnapshot::Namespace(namespace) => PathHandle::acquire(namespace.location())?,
         };
-        Ok(LinkTarget::Object(location))
+        Ok(LinkTarget::Object(path))
     }
 
     fn read_link(&self) -> VfsResult<String> {
@@ -149,7 +149,7 @@ impl LinkOps for ProcLink {
                 }
             }
             TargetSnapshot::Namespace(namespace) => Ok(namespace.display()),
-            TargetSnapshot::Location(location) => display_location(&location),
+            TargetSnapshot::Path(path) => display_location(path.location()),
         }
     }
 }

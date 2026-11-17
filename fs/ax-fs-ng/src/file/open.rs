@@ -222,6 +222,10 @@ impl OpenOptions {
             loc.check_is_dir()?;
         }
 
+        if loc.node_type() == NodeType::Symlink && !self.path {
+            return Err(VfsError::FilesystemLoop);
+        }
+
         // ENXIO on opening a UNIX-domain-socket file. man 2 open §"ENXIO":
         // "The file is a UNIX domain socket." Two exclusions:
         //   (1) O_PATH bypass: socket file can still be O_PATH-opened to get a
@@ -345,145 +349,40 @@ impl OpenOptions {
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
-
-        // Empty pathname → NotFound. man "ENOENT — O_CREAT is not set and
-        // the named file does not exist." resolve_parent("") would otherwise
-        // return cwd itself which lets open() succeed — wrong per POSIX.
-        // openat() does not accept AT_EMPTY_PATH; only specific *at calls do.
-        // Fixes bug-openat-empty-path-no-enoent.
-        if path.as_ref().as_str().is_empty() {
-            return Err(VfsError::NotFound);
+        let flags = self.to_flags()?;
+        let mut access = NodePermission::empty();
+        if !self.path {
+            if flags.contains(FileFlags::READ) {
+                access.insert(NodePermission::OTHER_READ);
+            }
+            if flags.contains(FileFlags::WRITE) || self.truncate {
+                access.insert(NodePermission::OTHER_WRITE);
+            }
         }
-
-        // Trailing-slash check: man — paths with trailing '/' must refer to
-        // a directory. Components::parse_forward strips the empty trailing
-        // component, so we use Path::has_trailing_slash() to recover the
-        // signal. Captured early; the post-resolution check below enforces
-        // it. Fixes bug-open-trailing-slash.
-        let must_be_dir = path.as_ref().has_trailing_slash();
-
-        let (loc, newly_created) =
-            match context.resolve_parent_with_search_checked(path.as_ref(), |directory| {
-                context.check_search_path(directory, context.permission_boundary(), credentials)
-            }) {
-                Ok((parent, name, searched)) => {
-                    context.check_search_trace(
-                        &searched,
-                        context.permission_boundary(),
-                        credentials,
-                    )?;
-                    // If the path ends with '/', Linux never creates regular
-                    // files via O_CREAT here — the path explicitly requests a
-                    // directory, and open() cannot create directories. Suppress
-                    // create flags BEFORE open_file to avoid creating an inode
-                    // that the post-check would then reject (codex P1: original
-                    // ordering left a stale file on disk for failing calls).
-                    let existing = match parent.lookup_no_follow(&name) {
-                        Ok(_) => true,
-                        Err(VfsError::NotFound) => false,
-                        Err(error) => return Err(error),
-                    };
-                    // A trailing slash prevents creation of a missing regular
-                    // file, but an existing directory must still see the
-                    // original O_CREAT flag so _open() returns EISDIR.
-                    let effective_create = self.create && (!must_be_dir || existing);
-                    let effective_create_new = self.create_new && (!must_be_dir || existing);
-                    let flags = self.to_flags()?;
-                    let mut access = NodePermission::empty();
-                    if !self.path {
-                        if flags.contains(FileFlags::READ) {
-                            access.insert(NodePermission::OTHER_READ);
-                        }
-                        if flags.contains(FileFlags::WRITE) || self.truncate {
-                            access.insert(NodePermission::OTHER_WRITE);
-                        }
-                    }
-                    let (mut loc, newly_created) = parent.open_file_with_status(
-                        &name,
-                        &axfs_ng_vfs::OpenOptions {
-                            create: effective_create,
-                            create_new: effective_create_new,
-                            node_type: self.node_type,
-                            permission: NodePermission::from_bits_truncate(self.mode as _),
-                            user: self.user,
-                            access,
-                        },
-                        credentials,
-                    )?;
-                    if !self.no_follow {
-                        // Save the symlink-target path before resolving, so we can
-                        // recurse into create-at-target if the target is dangling.
-                        let was_symlink = loc.node_type() == NodeType::Symlink;
-                        let symlink_target = if was_symlink && self.create {
-                            loc.read_link().ok()
-                        } else {
-                            None
-                        };
-                        let parent_for_resolve = parent.clone();
-                        match context
-                            .with_current_dir(parent_for_resolve)?
-                            .try_resolve_symlink_checked(loc, &mut 0, |directory| {
-                                context.check_search_path(
-                                    directory,
-                                    context.permission_boundary(),
-                                    credentials,
-                                )
-                            }) {
-                            Ok(resolved) => loc = resolved,
-                            Err(VfsError::NotFound) if self.create && symlink_target.is_some() => {
-                                // O_CREAT on a dangling symlink: man — Linux follows
-                                // the symlink and creates the target file (provided
-                                // its parent directory exists). Recurse with the
-                                // symlink target as the new path.
-                                // Fixes bug-open-creat-dangling-no-create.
-                                let target = symlink_target.unwrap();
-                                return self.open_with_credentials(
-                                    &context.with_current_dir(parent)?,
-                                    &target,
-                                    credentials,
-                                );
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    } else if loc.node_type() == NodeType::Symlink && !self.path {
-                        // O_NOFOLLOW + basename is a symlink + not O_PATH:
-                        // man "If the trailing component (i.e., basename) of
-                        // pathname is a symbolic link, then the open fails,
-                        // with the error ELOOP."
-                        //
-                        // Precedence: a trailing slash on the original path
-                        // forces the resolved entry to be a directory; a
-                        // symlink itself is not a directory, so ENOTDIR
-                        // takes priority over ELOOP (Linux behavior verified
-                        // via host gcc: `open("/tmp/sym/", O_NOFOLLOW)` →
-                        // ENOTDIR, not ELOOP). Without this check, starry
-                        // returns ELOOP and diverges from Linux.
-                        if must_be_dir {
-                            return Err(VfsError::NotADirectory);
-                        }
-                        // Fixes bug-open-nofollow-sym.
-                        return Err(VfsError::FilesystemLoop);
-                    }
-                    (loc, newly_created)
-                }
-                Err(VfsError::InvalidInput) => {
-                    // `resolve_parent()` has no parent to return for either `/` or
-                    // a relative `.` whose current directory is a detached mount
-                    // root. Resolve the path itself so openat(dirfd, ".") keeps
-                    // the supplied directory instead of falling back to `/`.
-                    (context.resolve(path.as_ref())?, false)
-                }
-                Err(err) => return Err(err),
-            };
-
-        // Trailing-slash post-check: if the original pathname ended with '/'
-        // (other than the root itself), the resolved location MUST be a
-        // directory; otherwise return NotADirectory.
-        if must_be_dir && !loc.is_dir() {
-            return Err(VfsError::NotADirectory);
-        }
-
-        self._open(loc, credentials, newly_created)
+        let intent = crate::fs_core::LookupOpenIntent {
+            node: axfs_ng_vfs::OpenOptions {
+                create: self.create,
+                create_new: self.create_new,
+                node_type: self.node_type,
+                permission: NodePermission::from_bits_truncate(self.mode as _),
+                user: self.user,
+                access,
+            },
+            follow: !self.no_follow,
+            path_only: self.path,
+            directory: self.directory,
+        };
+        let resolved =
+            crate::fs_core::LookupSession::new(context, path.as_ref().as_str(), Some(credentials))?
+                .parent()?
+                .finish_open(intent)?;
+        // Keep the accepted mount use until the opened description has acquired
+        // its own path and writer rights, including on every failure path.
+        self._open(
+            resolved.path.location().clone(),
+            credentials,
+            resolved.created,
+        )
     }
 
     fn check_open_access(

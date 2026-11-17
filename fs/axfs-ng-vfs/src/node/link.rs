@@ -2,13 +2,13 @@
 
 use alloc::string::String;
 
-use crate::{Location, VfsResult};
+use crate::{PathHandle, VfsResult};
 
 /// Snapshot acquired only after the walker decides to follow a link.
 #[derive(Debug)]
 pub enum LinkTarget {
     Text(String),
-    Object(Location),
+    Object(PathHandle),
 }
 
 /// Optional link capability, including dynamic authorization and target lookup.

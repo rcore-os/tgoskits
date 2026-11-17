@@ -98,6 +98,11 @@ impl ExecutableFile {
         self.path.location()
     }
 
+    /// Borrows the actual mount use while the execution owner still retains it.
+    pub fn path_handle(&self) -> &PathHandle {
+        &self.path
+    }
+
     /// Acquires execution access, failing with `TextFileBusy` if writers exist.
     /// Acquisition and destruction may block on the access registry mutex.
     pub fn acquire(location: Location) -> VfsResult<Self> {

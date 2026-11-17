@@ -361,12 +361,18 @@ impl FsContext {
 
     /// Resolves a path starting from `current_dir`.
     pub fn resolve(&self, path: impl AsRef<Path>) -> VfsResult<Location> {
-        self.resolve_using(path.as_ref(), true, None)
+        super::LookupSession::new(self, path.as_ref().as_str(), None)?
+            .parent()?
+            .finish_lookup(true)
+            .map(|path| path.location().clone())
     }
 
     /// Resolves a path starting from `current_dir` not following symlinks.
     pub fn resolve_no_follow(&self, path: impl AsRef<Path>) -> VfsResult<Location> {
-        self.resolve_using(path.as_ref(), false, None)
+        super::LookupSession::new(self, path.as_ref().as_str(), None)?
+            .parent()?
+            .finish_lookup(false)
+            .map(|path| path.location().clone())
     }
 
     fn try_resolve_symlink_with_trace(
