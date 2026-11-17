@@ -2,7 +2,7 @@
 
 ## 1. 基准与证据
 
-本记录随所有权迁移逐入口补齐。当前范围是接续记录第 9.31 至 9.40 节的 scoped 查找、proc 自指链接、拥有型结果及文件系统实例，其他元数据、命名、挂载、凭据、映射与套接字入口继续按主计划核对。每行结论仅覆盖注明的参数与对象范围。
+本记录随所有权迁移逐入口补齐。当前范围是接续记录第 9.31 至 9.41 节的 scoped 查找、proc 自指链接、拥有型结果及文件系统实例，其他元数据、命名、挂载、凭据、映射与套接字入口继续按主计划核对。每行结论仅覆盖注明的参数与对象范围。
 
 ### 1.1 固定源码
 
@@ -230,7 +230,7 @@ gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条�
 | openat/procfd 与管道；x86_64 257；其余三架构 56 | v7.1 [fifo_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L1121) | 绝对描述路径遵守实际挂载，保留目录 fd 可继续访问旧 proc 对象；重开允许新访问模式并遵守 nofollow、exclusive 与 directory | `sys_openat` → one `FsView`/`OpenOptions` → proc Object link → `add_to_fd` → `Pipe::open_fifo` → `ObjectNode<Arc<Shared>>` | 部分正确 | d788254e65 的原 procfd 完整程序通过；18ef129e76 的同一 C 错误绕过挂载与 flags，跨模式 EACCES；其他目标等待本版 CI |
 | openat2/procfd；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1190) | how 先严格校验，再对同一对象执行普通或受限解析，不能由描述字符串前缀改变行为 | `sys_openat2` → flag/resolve 校验 → `sys_openat` 或 `FsView` policy → `add_to_fd` with saved view → `Pipe::open_fifo` | 部分正确 | 同一完整程序对 openat/openat2 分别验证；x86 541/541，CACHED、完整 how 边界及其他目标仍有缺口 |
 | fstat/重开管道；x86_64 5；其余三架构 80 | v7.1 [vfs_fstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L257) | 重开改变描述状态，不改变同一管道 inode、device 和类型 | sys_fstat → resolve_fd → `backing_file`/`PathHandle` 或 Pipe.stat → shared ObjectInode | 部分正确 | 原 procfd 程序比较两端、不同访问模式和别名重开的 device/inode/FIFO 类型；完整属性及其他目标仍待证明 |
-| fstatfs/管道；x86_64 138；其余三架构 44 | v7.1 [fd_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/statfs.c#L116) | 按实际 file path 返回 pipefs 等文件系统信息，fd 是否具备命名路径不改变该规则 | sys_fstatfs → File/Directory/Pipe.`backing_file`/Memfd 分类 → location statfs；原匿名 Pipe 仍落入拒绝分支 | 部分正确 | 五处消费者已迁移新的 `backing_file` 名称；本阶段没有直接 fstatfs 判据，原匿名对象消费者仍需处理 |
+| fstatfs/原生伪对象；x86_64 138；其余三架构 44 | v7.1 [fd_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/statfs.c#L116) | 按保留描述的实际 file path 返回 pipefs、sockfs、nsfs 信息，关闭原 fd 不使副本失去该来源 | sys_fstatfs → get_file_like → descriptor_path → owned PathHandle → actual SimpleFs.stat → user output | 部分正确 | b5b8baf659 的同一程序中原始 pipe/socket/namespace fd EINVAL；a960991962 在 x86 67/0，Linux 同一 C 67/0；未提供路径能力的其他匿名描述与其余目标仍待补 |
 
 ### 9.2 描述与端点
 
@@ -251,3 +251,27 @@ gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条�
 | epoll_wait/重开管道；x86_64 232 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 已登记的管道从真实端点状态报告 HUP 与 ERR | sys_epoll_wait → do_epoll_wait → Epoll → Pipe.poll/register_shared | 无法确认 | 本阶段没有新描述的直接 epoll_wait 登记、端点关闭与回放旅程 |
 | epoll_pwait/重开管道；x86_64 281；其余三架构 22 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 在临时信号掩码下等待同一管道端点事件 | sys_epoll_pwait → do_epoll_wait → Epoll → Pipe.poll/register_shared | 无法确认 | 未直接对本版重开描述验证 epoll_pwait 的信号及事件边界 |
 | epoll_pwait2/重开管道；四架构 441 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 按 timespec 超时与临时信号掩码等待管道状态 | sys_epoll_pwait2 → timespec → do_epoll_wait → Epoll → Pipe.poll/register_shared | 无法确认 | 未直接对新描述执行 epoll_pwait2 的精度、信号及事件旅程 |
+
+
+## 10. 文件系统统计
+
+原 statfs 旅程使用真实原生描述、proc 对象链接和 Overlay 层，区分文件系统统计的来源与文件本身的字节长度。固定 Linux 源码决定统计字段与层选择，Linux 6.8 同一 C 提供运行对照。
+
+### 10.1 原生路径
+
+`fstatfs` 使用已经选定描述的 `PathHandle`，`statfs` 经实际挂载与链接取得同一来源。SimpleFs 的零值由 Linux 伪文件系统契约规定，磁盘后端的容量继续来自其实际实现。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| statfs/伪对象几何信息；x86_64 137；其余三架构 43 | v7.1 [simple_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/libfs.c#L43) | 原生伪文件系统使用页大小和名称上限，磁盘容量与文件计数为零；proc 对象链接指向实际原生 FS | sys_statfs → FsView.resolve/proc Object link → selected mount filesystem → SimpleFs.stat | 部分正确 | 旧版页几何与零容量判据失败；a960991962 的原 pipe/socket/namespace 程序及 Linux 同一 C 通过；其他伪文件系统属性和目标继续核对 |
+| fstatfs/memfd；x86_64 138；其余三架构 44 | v7.1 [fd_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/statfs.c#L116) | memfd 查询其 tmpfs 文件系统，proc 路径与副本观察同一 fsid 和几何信息 | sys_fstatfs → descriptor_path → Memfd.inner PathHandle → MemoryFs.stat | 部分正确 | 原完整 C 验证 type、fd/path fsid 和关闭原 fd 后副本，x86 通过；完整容量记账与其余目标尚未证明 |
+
+### 10.2 分层来源
+
+`OverlayFs` 保留装配时的层路径，每次重新查询所选 backing 的当前统计，构造前保存层的最大名称上限。容量证明使用不同几何信息，原有 fsid 表达和其他未验证字段继续保留结论边界。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| statfs/Overlay；x86_64 137；其余三架构 43 | v7.1 [ovl_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L276) | 有 upper 时使用实际 upper 容量，否则使用首个 lower；保留 Overlay 类型和层名称上限 | sys_statfs → selected logical mount → OverlayFs.stat → retained upper/first lower filesystem.stat；logical mount flags | 部分正确 | b5b8baf659 的两个来源判据均失败；a960991962 同一 C 在 x86 与 Linux 通过，upper/lower 几何信息可区分；fsid/UUID 与完整其他目标范围未闭合 |
+| fstatfs/Overlay；x86_64 138；其余三架构 44 | v7.1 [ovl_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L276) | 打开描述按其实际 Overlay filesystem 查询，名称变化不改该统计来源 | sys_fstatfs → descriptor_path → retained logical path → OverlayFs.stat | 无法确认 | 本阶段直接 Overlay 判据使用 statfs；未单独覆盖 Overlay fd 的改名、卸载和统计寿命 |
+| mount/Overlay 名称能力；x86_64 165；其余三架构 40 | v7.1 [ovl_check_namelen](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/overlayfs/super.c#L397) | 构造时核对层统计，名称上限取层最大值，统计失败阻止发布 | sys_mount → resolved layer PathHandles → new_overlayfs layer stat/maximum → Filesystem construction → mount publication | 部分正确 | 同一 C 的 upper-backed 与双 lower-only 装配和结果通过；本轮没有底层 stat EIO 的受控失败及不同名称上限的独立运行证明 |

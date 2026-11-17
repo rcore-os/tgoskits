@@ -1230,3 +1230,30 @@ system 541/541 及格式检查全部通过。Clippy 报告会话在 x86 编译�
 直接证据缺口。创建通知仍使用存在性观察，挂载表 per-open producer、PTY 实例、
 原匿名 fstatfs 与其他 raw 消费者、非阻塞 CACHED、受控共享 FS、性能及独立审查
 仍按原范围完成；本版其他三架构运行由匹配发布提交的 CI 核实。
+
+### 9.41 原生文件系统统计
+
+`a18eedcafa` 在原 statfs 旅程加入原生 pipe/socket/namespace 与 memfd 的 fd、
+proc 链接和关闭原 fd 后的副本查询。初轮在 musl 编译阶段因 f_type 符号类型不同
+而失败，尚未运行，不能作为语义红证据。`b5b8baf659` 统一使用 uint64_t 比较，
+并加入伪文件系统页几何信息和可区分 upper/lower 容量的 Overlay 判据。同一完整
+C 在 Linux 私有命名空间 67/0，旧 Starry 真正运行后为 40 过、17 败，外层退出 1。
+Linux 单 lower 的准备候选被拒绝，最终使用两个 lower；该准备失败独立保留。
+
+`a960991962` 的 fstatfs 复用实际 `descriptor_path`，保留描述与 PathHandle 至
+用户输出完成。SimpleFs 删除 512 字节、100 个块的占位统计，按固定 Linux
+simple_statfs 使用页大小与零容量计数。Overlay 构造前保存实际层的最大名称上限，
+每次从 upper 或首个 lower 取得当前容量并保留 Overlay 类型，逻辑挂载计算 flags，
+错误直接传播；删除旧 `dummy_stat_fs`，不保留固定数据后备路径。
+
+干净 `a960991962` 的同一完整 C 为 67/0、xtask 1/1，最外层 0；Kernel 一包
+标准库、四目标 72 项 Clippy 和格式检查通过。ELF 摘要为
+`97b97ddb854f3d8e966ccc55f8468681cea7c9a9e78b1f405579239da1707125`。
+源码、Linux 基准、各次准备失败和真实红绿日志记录于 `native_filesystem_statistics`。
+原 fsid 表达、未实现 UUID 选项、无原生路径能力的匿名描述及其他三架构运行仍
+保留实际范围；不将 d788254e65 的完整 541/541 改写为本次源码的完整批次结果。
+
+上一发布 `822838d283` 的 CI 另有待处理失败：axbuild 的 rustup 查询夹具返回
+未说明原因的失败、ArceOS AArch64 缺失栈保护页诊断、LoongArch DRM 的禁用期间
+vblank 序号判据失败，以及板卡预构建下载 linux-headers 的 I/O 错误。原始任务日志
+已保存；本阶段本地通过不将这些任务改写为成功，继续按实际调用链处理。

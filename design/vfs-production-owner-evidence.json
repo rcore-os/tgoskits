@@ -4787,5 +4787,151 @@
       "raw anonymous fstatfs and remaining native metadata/data consumers still need migration",
       "same-condition performance and independent design/implementation review remain required"
     ]
+  },
+  "native_filesystem_statistics": {
+    "recorded_at": "2026-11-17T14:49:11.055825+00:00",
+    "source": "a960991962d5690df0cc1069283394a081be8779",
+    "merged_dev": "9bc2ee14117539dffc82e6c65f66be69f78f252d",
+    "same_test": {
+      "path": "test-suit/starryos/qemu/system/bugfix-fstatvfs-directory/src/main.c",
+      "sha256": "2dab662e2160ea525b1d8a6da35c1859bb9c8b1c7e1561f991f179efeaf1266a",
+      "before_source": "b5b8baf65911610993f683b00641dbaeaf9d7dab",
+      "after_source": "a960991962d5690df0cc1069283394a081be8779",
+      "linux_candidate_byte_identical": true
+    },
+    "before": {
+      "checks_passed": 40,
+      "checks_failed": 17,
+      "outer_exit": 1,
+      "failures": [
+        "original pipe/socket/namespace descriptors return EINVAL, including after closing the original fd",
+        "pseudo filesystems use 512-byte blocks and synthetic capacity instead of Linux page geometry with no capacity accounting",
+        "both upper-backed and lower-only Overlay return synthetic capacity instead of their actual backing"
+      ]
+    },
+    "initial_attempts": [
+      {
+        "source": "a18eedcafa",
+        "log": "native-statfs-before-musl-compile",
+        "semantic_red_evidence": false,
+        "reason": "glibc and musl f_type signedness differs; candidate did not compile under musl -Werror; fixed both comparisons with uint64_t"
+      },
+      {
+        "log": "statfs-geometry-linux-setup-compile",
+        "semantic_red_evidence": false,
+        "reason": "an initial geometry comparison mixed signed and unsigned libc fields and produced no binary; both sides now use uint64_t"
+      },
+      {
+        "log": "statfs-geometry-linux-single-lower",
+        "semantic_red_evidence": false,
+        "reason": "Linux lower-only Overlay rejected a single lower; final fixture uses two lowers and verifies the first actual lower is selected"
+      }
+    ],
+    "ownership": {
+      "descriptor": "get_file_like retains the description after dropping the table lock; descriptor_path selects an actual owned path retained through user output",
+      "pseudo": "SimpleFs reports PAGE_SIZE_4K, MAX_NAME_LEN and zero capacity counters as defined by Linux simple_statfs; removed dummy_stat_fs",
+      "overlay": "constructor samples layer name limits before publication; each stat selects actual upper or first lower, preserves Overlay type, and lets the logical mount supply flags; no copy-up or namespace gate",
+      "failure": "native path and backend stat errors propagate; no process-root or fixed-data fallback"
+    },
+    "linux_reference": {
+      "commit": "8cd9520d35a6c38db6567e97dd93b1f11f185dc6",
+      "sources": [
+        "fs/statfs.c:fd_statfs/vfs_statfs",
+        "fs/libfs.c:simple_statfs",
+        "fs/overlayfs/super.c:ovl_statfs/ovl_check_namelen"
+      ]
+    },
+    "std": {
+      "packages_passed": 1,
+      "main_unit_tests_passed": 315,
+      "all_selected_integration_and_doc_tests_passed": true,
+      "outer_exit": 0,
+      "command": "CARGO_INCREMENTAL=0 cargo xtask test --since b5b8baf659"
+    },
+    "clippy": {
+      "checks_passed": 72,
+      "targets": 4,
+      "outer_exit": 0,
+      "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package starry-kernel"
+    },
+    "x86_64": {
+      "checks_passed": 67,
+      "checks_failed": 0,
+      "programs_passed": 1,
+      "outer_exit": 0
+    },
+    "linux": {
+      "kernel": "6.8.0-149-generic",
+      "checks_passed": 67,
+      "checks_failed": 0,
+      "outer_exit": 0,
+      "fixture": "same complete C in private user/PID/mount namespaces; upper in private tmpfs and first lower /bin have distinguishable geometry"
+    },
+    "format_exit": 0,
+    "source_sha256": {
+      "test-suit/starryos/qemu/system/bugfix-fstatvfs-directory/src/main.c": "2dab662e2160ea525b1d8a6da35c1859bb9c8b1c7e1561f991f179efeaf1266a",
+      "os/StarryOS/kernel/src/syscall/fs/stat.rs": "e28a515ffe1701fbd6adeb3728afd484913dc4a51fc6460f2d2cf16abbbd38c0",
+      "os/StarryOS/kernel/src/pseudofs/fs.rs": "cb4decb46860cf68f232e0ae043920de3474e8f4fd907372ea00a8735840114d",
+      "os/StarryOS/kernel/src/pseudofs/overlay/mod.rs": "69266586bbf9d7a025c847c5a7d461bfe7b63314868b073c9c9a264c7fd9555f"
+    },
+    "elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-a960991962.elf",
+      "sha256": "97b97ddb854f3d8e966ccc55f8468681cea7c9a9e78b1f405579239da1707125"
+    },
+    "logs": {
+      "native-statfs-before-musl-compile": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/native-statfs-before-musl-compile.log",
+        "sha256": "c66600c79ee59ce7bb225d73b862c001ef51e1b2c6881e4f14ad826151737a3f",
+        "outer_exit": 1
+      },
+      "statfs-geometry-linux-setup-compile": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/statfs-geometry-linux-setup-compile.log",
+        "sha256": "3ba7753389dcdede0b28eac8ef9eefa573264ea43a4e2ddf37af405d83e7c969",
+        "outer_exit": 1
+      },
+      "statfs-geometry-linux-single-lower": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/statfs-geometry-linux-single-lower.log",
+        "sha256": "174f043a21f4c3af2a7793b9a6835f3a1545615c82393d6da77bebdf1c45255c",
+        "outer_exit": 1
+      },
+      "statfs-geometry-before-qemu": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/statfs-geometry-before-qemu.log",
+        "sha256": "89d50115ea865d36e2fbb950524bbe791c3c22b21a08cb75185f8681aad5488b",
+        "outer_exit": 1
+      },
+      "statfs-geometry-linux": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/statfs-geometry-linux.log",
+        "sha256": "b14b1924433b722387ca4ec9aa2c2dc5cf11e9b5a919772da67e698ba63a2b06",
+        "outer_exit": 0
+      },
+      "statfs-geometry-after-qemu": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/statfs-geometry-after-qemu.log",
+        "sha256": "c6852242b1910b06ead28cf71d231e1ca409a67aa867bf9c77c06397d45cf95f",
+        "outer_exit": 0
+      },
+      "statfs-geometry-std": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/statfs-geometry-std.log",
+        "sha256": "fc8f43dac41d45096032d6cf5aae1e0cb55a0808cb8c582f2bce9102d2d98277",
+        "outer_exit": 0
+      },
+      "statfs-geometry-clippy": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/statfs-geometry-clippy.log",
+        "sha256": "3c11c9b40746661f66323217b6c02836f9489ce43e135360bf69323004ee53bd",
+        "outer_exit": 0
+      },
+      "statfs-geometry-format": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/statfs-geometry-format.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outer_exit": 0
+      }
+    },
+    "limitations": [
+      "other three targets require corresponding new-head runtime proof",
+      "anonymous descriptions without descriptor_path support remain unsupported",
+      "the pre-existing fsid representation and unsupported Overlay UUID options are not claimed compatible by the geometry regression",
+      "SimpleFs owner cycles, per-open endpoints and other original VFS scope remain incomplete",
+      "same-condition performance and independent design/implementation review remain required",
+      "CI on prior 822838d283 has separate std, stack-guard diagnostic, DRM vblank and board APK failures; this local stage does not mark those checks passed"
+    ]
   }
 }
