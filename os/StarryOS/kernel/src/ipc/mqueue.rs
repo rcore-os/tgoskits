@@ -27,13 +27,14 @@ use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, Pollable};
 use axpoll_set::PollSet;
 use linux_raw_sys::general::{
-    O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, SIGEV_NONE, SIGEV_SIGNAL, SIGEV_THREAD,
+    O_ACCMODE, O_APPEND, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, SIGEV_NONE, SIGEV_SIGNAL,
+    SIGEV_THREAD,
 };
 use starry_signal::{SignalInfo, Signo};
 
 use crate::{
     Errno, StarryError, StarryResult,
-    file::{FileLike, IoDst, IoSrc, Kstat},
+    file::{File, FileLike, InodeKey, IoDst, IoSrc, Kstat},
     sync::{Mutex, RawSpinLock},
     task::{
         PidIdentity, PidIdentityId, PidNumber, current_pid_view, current_user_task,
@@ -797,27 +798,10 @@ impl MessageQueue {
         }
     }
 
-    /// Snapshot for `/dev/mqueue/<name>` reporting: `(qsize, notify, signo,
-    /// notify_pid)` in Linux column order. Reading the mqueuefs file also bumps
-    /// atime+ctime, matching `mqueue_read_file` (ipc/mqueue.c:654).
-    pub fn report(&self) -> (usize, u32, u32, u32) {
-        let inner = self.inner.lock();
-        let now = wall_time();
-        self.touch_inode(now);
-        Self::status_fields(&inner)
-    }
-
-    /// Render the status line exposed through `/dev/mqueue/<name>`. The
-    /// padded columns match Linux's `mqueue_read_file` format exactly.
-    pub fn status_line(&self) -> String {
-        let (qsize, notify, signo, notify_pid) = self.report();
-        format_status_line(qsize, notify, signo, notify_pid)
-    }
-
     /// Render one status-line snapshot without changing timestamps. An mqueue
     /// descriptor updates atime+ctime only after a successful non-empty
     /// `read(2)`, so it uses this before writing the caller's buffer.
-    fn status_line_snapshot(&self) -> String {
+    pub(crate) fn status_line(&self) -> String {
         let inner = self.inner.lock();
         let (qsize, notify, signo, notify_pid) = Self::status_fields(&inner);
         format_status_line(qsize, notify, signo, notify_pid)
@@ -1065,6 +1049,9 @@ impl Pollable for MessageQueue {
 /// not change `O_NONBLOCK` on another descriptor of the same queue.
 pub struct MqDescriptor {
     queue: Arc<MessageQueue>,
+    /// An ordinary open retains its original mount and active path owner.
+    /// `mq_open` selects the permanent IPC object mount instead.
+    file: Option<File>,
     /// Per-open-file-description flags. The `O_ACCMODE` bits are fixed at open;
     /// `O_NONBLOCK` is the only bit `mq_setattr` may toggle. Atomic so a
     /// `mq_setattr` here never disturbs a sibling descriptor of the same queue.
@@ -1079,9 +1066,21 @@ impl MqDescriptor {
     pub fn new(queue: Arc<MessageQueue>, flags: u32) -> Self {
         Self {
             queue,
+            file: None,
             flags: AtomicU32::new(flags),
             read_offset: Mutex::new(0),
         }
+    }
+
+    /// Adopts an already authorized pathname open without resolving it again.
+    pub(crate) fn from_file(queue: Arc<MessageQueue>, file: File) -> Self {
+        let mut descriptor = Self::new(queue, file.open_flags());
+        descriptor.file = Some(file);
+        descriptor
+    }
+
+    pub(crate) fn backing_file(&self) -> Option<&File> {
+        self.file.as_ref()
     }
 
     /// The shared queue this descriptor refers to.
@@ -1111,15 +1110,15 @@ impl MqDescriptor {
     /// `mq_setattr` — leaving every other descriptor of the same queue and all
     /// other flag bits untouched.
     pub fn set_nonblocking_flag(&self, non_blocking: bool) {
-        let _ = self
-            .flags
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |f| {
-                Some(if non_blocking {
-                    f | O_NONBLOCK
-                } else {
-                    f & !O_NONBLOCK
-                })
-            });
+        self.set_status_flag(O_NONBLOCK, non_blocking);
+    }
+
+    fn set_status_flag(&self, flag: u32, enabled: bool) {
+        if enabled {
+            self.flags.fetch_or(flag, Ordering::AcqRel);
+        } else {
+            self.flags.fetch_and(!flag, Ordering::AcqRel);
+        }
     }
 
     /// The full per-descriptor flag word, for `mq_getattr`'s `mq_flags`.
@@ -1167,7 +1166,7 @@ impl FileLike for MqDescriptor {
         // the queue snapshot before touching user memory and hold only this
         // descriptor's offset lock across the copy; never hold `inner` while a
         // user-buffer write can fault.
-        let status = self.queue.status_line_snapshot();
+        let status = self.queue.status_line();
         let copied = {
             let mut offset = self.read_offset.lock();
             let start = (*offset as usize).min(status.len());
@@ -1206,6 +1205,19 @@ impl FileLike for MqDescriptor {
         self.flags.load(Ordering::Acquire)
     }
 
+    fn append(&self) -> bool {
+        self.flags.load(Ordering::Acquire) & O_APPEND != 0
+    }
+
+    fn set_append(&self, append: bool) -> StarryResult {
+        self.set_status_flag(O_APPEND, append);
+        Ok(())
+    }
+
+    fn inode_key(&self) -> Option<InodeKey> {
+        self.file.as_ref().and_then(FileLike::inode_key)
+    }
+
     fn on_close(&self, owner: PidIdentityId) {
         // Linux `mqueue_flush_file` clears the notification owned by the
         // closing task's tgid on every fd-closing path (ipc/mqueue.c:658).
@@ -1213,7 +1225,11 @@ impl FileLike for MqDescriptor {
     }
 
     fn path(&self) -> Cow<'_, str> {
-        "anon_inode:[mqueue]".into()
+        if let Some(file) = &self.file {
+            file.path()
+        } else {
+            "anon_inode:[mqueue]".into()
+        }
     }
 }
 

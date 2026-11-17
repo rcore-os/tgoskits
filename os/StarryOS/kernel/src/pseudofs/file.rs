@@ -15,7 +15,7 @@ use super::{
 use crate::sync::Mutex;
 
 /// Operations for a simple file.
-pub trait SimpleFileOps: Send + Sync + 'static {
+pub trait SimpleFileOps: Any + Send + Sync {
     /// Reads all content in the file.
     fn read_all(&self) -> VfsResult<Cow<'_, [u8]>>;
     /// Replaces the file's content with `data`.
@@ -193,6 +193,13 @@ pub struct SimpleFile {
     ops: Arc<dyn SimpleFileOps>,
     link: Option<Arc<dyn LinkOps>>,
     identity: Option<NodeIdentity>,
+}
+
+impl SimpleFile {
+    /// Borrows the retained producer without looking up its current name.
+    pub(super) fn operations(&self) -> &dyn Any {
+        self.ops.as_ref()
+    }
 }
 
 #[inherit_methods(from = "self.node")]

@@ -39,6 +39,9 @@ pub(crate) fn descriptor_path(file: &Arc<dyn FileLike>) -> VfsResult<PathHandle>
     } else if let Some(socket) = file.downcast_ref::<NetlinkSocket>() {
         socket.location()
     } else if let Some(queue) = file.downcast_ref::<crate::ipc::mqueue::MqDescriptor>() {
+        if let Some(backing) = queue.backing_file() {
+            return Ok(backing.inner().path_handle().clone());
+        }
         crate::pseudofs::mqueue_location(queue.queue().clone())
     } else if let Some(namespace) = file.downcast_ref::<NsFd>() {
         namespace.location()

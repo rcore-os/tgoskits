@@ -23,7 +23,9 @@ pub use ax_fs_ng::MemoryFs;
 use ax_fs_ng::vfs::{FsView, current_fs_context};
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{Filesystem, NodePermission, VfsResult};
-pub(crate) use mqueue::{allocate_mqueue_inode, mqueue_device, mqueue_location};
+pub(crate) use mqueue::{
+    allocate_mqueue_inode, mqueue_at_location, mqueue_device, mqueue_location,
+};
 
 pub use self::{
     device::*,

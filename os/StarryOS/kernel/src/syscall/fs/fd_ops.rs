@@ -91,6 +91,11 @@ fn add_to_fd(
             if flags & O_PATH != 0 {
                 return add_file_like(Arc::new(File::new(file, flags)), flags & O_CLOEXEC != 0);
             }
+            if let Some(queue) = crate::pseudofs::mqueue_at_location(file.location()) {
+                let descriptor =
+                    crate::ipc::mqueue::MqDescriptor::from_file(queue, File::new(file, flags));
+                return add_file_like(Arc::new(descriptor), flags & O_CLOEXEC != 0);
+            }
             if let Some(namespace) = crate::file::NamespaceObject::at_location(file.location()) {
                 return namespace.into_fd()?.add_to_fd_table(flags & O_CLOEXEC != 0);
             }

@@ -22,8 +22,8 @@ use axfs_ng_vfs::{
 use crate::{
     ipc::mqueue::{MessageQueue, lookup_by_short_name, registry_names},
     pseudofs::{
-        NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFileBacking, SimpleFs, SimpleFsOwner,
-        SimpleInode,
+        NodeOpsMux, SimpleDir, SimpleDirOps, SimpleFile, SimpleFileBacking, SimpleFileOps,
+        SimpleFs, SimpleFsOwner, SimpleInode,
     },
 };
 
@@ -51,8 +51,22 @@ static MQUEUE_FILESYSTEM: LazyLock<MqueueFilesystem> = LazyLock::new(|| {
 
 struct MqueueDir;
 
+struct QueueStatus(Arc<MessageQueue>);
+
+impl SimpleFileOps for QueueStatus {
+    fn read_all(&self) -> VfsResult<Cow<'_, [u8]>> {
+        Ok(Cow::Owned(self.0.status_line().into_bytes()))
+    }
+}
+
 fn queue_file(queue: Arc<MessageQueue>) -> Arc<SimpleFileBacking> {
-    SimpleFileBacking::from_inode(queue.inode_state(), move || Ok(queue.status_line()))
+    SimpleFileBacking::from_inode(queue.inode_state(), QueueStatus(queue))
+}
+
+/// Selects the queue retained by the opened node, including renamed mount views.
+pub(crate) fn mqueue_at_location(location: &Location) -> Option<Arc<MessageQueue>> {
+    let file = location.entry().downcast::<SimpleFile>().ok()?;
+    Some(file.operations().downcast_ref::<QueueStatus>()?.0.clone())
 }
 
 impl SimpleDirOps for MqueueDir {
