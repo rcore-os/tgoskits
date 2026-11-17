@@ -1192,3 +1192,41 @@ RISC-V 与 LoongArch 完整各 538/538，AArch64 分组 513、23、1、1 项全�
 同一 head 的重复 PR workflow，实际矩阵在 push run 执行；四架构日志与终态记录
 于实例证据的 followup_current_ci。
 该轮没有执行链的新测试与实现，不改写为 09ccf6cb2c 的四架构证据。
+
+随后发布 `96c81261c4` 的执行链 CI 已完整结束，44 项成功，5 项为重复 PR
+workflow 的预期跳过，push run 为 44090328458。四架构完整 system 全部零失败，
+原生装载测试均实际执行，内核汇总为 x86 264、AArch64 274、RISC-V 263、
+LoongArch 264 项。上一轮超时的 robot-flow 本轮通过，UVC 采集 5 帧；没有修改
+板卡恢复或启动超时设置。各原始日志和终态记录在执行链证据的
+followup_terminal_ci，不作为后续描述路径打开改动的运行证据。
+
+### 9.40 描述路径的统一打开
+
+`5f61ab5504` 扩充原 procfd 程序，覆盖普通文件与匿名管道的挂载遮盖、保留 proc
+目录、访问模式、打开标志、描述状态与通道寿命；旧捷径实际失败。`18ef129e76`
+再将 O_TRUNC 不得改变排队内容纳入同一旅程，完整候选在 Linux 私有用户、PID、
+挂载命名空间通过，Starry 旧实现仍失败。相对目录和普通别名上的 O_TRUNC 还暴露
+通用后端错误调用管道 set_len，返回 EINVAL。
+
+`332b0512d2` 删除两个 fd 前缀入口和旧 Pipe::reopen，普通及受限打开在一次
+`with_fs` 视图内完成 fd 分派，终端路径借用保存的视图。相同 C 确认遮盖、flags 与
+跨访问模式已恢复，剩余失败为截断、无 writer 时 HUP 抑制，以及无 reader 时写端
+重开 ENXIO。`e7d17cb3fc` 按实际 `ObjectNode<Arc<Shared>>` 选择匿名行为，保留
+命名 FIFO 的伙伴协议，截断只作用于普通文件。`OpenedPipeFile`/`backing_file` 同时
+描述命名与匿名对象的实际打开路径，保留原 mount use，不重建为 pipefs 根。
+
+首次构建因遗漏五处函数指针形式的 `named_file` 调用而报 E0599。`d788254e65`
+已迁移 resolve_fd、close 通知、锁范围、挂载 fd 识别与 fstatfs 消费者，删除旧名，
+没有兼容别名。该构建失败独立保存，不用作语义红证据。最终 C 与 18ef129e76、
+中间分派版及 Linux 候选逐字相同。
+
+干净 `d788254e65` 的 18 包标准库、AX/Kernel 四目标 78 项 Clippy、x86 完整
+system 541/541 及格式检查全部通过。Clippy 报告会话在 x86 编译结束后才开始，
+没有重现异架构报告混入。ELF 摘要为
+`5535ae74f03a087eb2587e927f6cffbe975484a6c2acfe0a7e46b7e68734d8ad`，
+源码、日志及各阶段退出状态记录于 `descriptor_open_lookup_view`。
+
+系统调用对照扩展至 80 行，分别保留 readv/writev、ppoll、select 和 epoll 的
+直接证据缺口。创建通知仍使用存在性观察，挂载表 per-open producer、PTY 实例、
+原匿名 fstatfs 与其他 raw 消费者、非阻塞 CACHED、受控共享 FS、性能及独立审查
+仍按原范围完成；本版其他三架构运行由匹配发布提交的 CI 核实。

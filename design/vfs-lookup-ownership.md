@@ -4373,20 +4373,20 @@ Starry 的遮盖分支失败。私有装载测试使用真实 MemoryFs、独立 
 openat 与 resolve=0 的 openat2 使用实际 proc 对象链接和普通文本别名解析，删除
 两处按 `/proc/self/fd`、`/dev/fd` 前缀直接取得 File/Pipe 的入口。直接复制旧管道
 访问模式不能表达重开描述，且绕过 nofollow、exclusive、directory、search 与挂载
-遮盖；显示名也不能决定管道对象或权限。新打开由 LookupSession 保留 PathHandle，
-普通文件继续使用既有后端，FIFO 在最终分派中交给 Pipe::open_fifo。
+遮盖；显示名也不能决定管道对象或权限。新打开由 `LookupSession` 保留 `PathHandle`，
+普通文件继续使用既有后端，FIFO 在最终分派中交给 `Pipe::open_fifo`。
 
-匿名管道的 ObjectNode<Arc<Shared>> 已保存实际缓冲与端点状态，不另建登记表。
+匿名管道的 `ObjectNode<Arc<Shared>>` 已保存实际缓冲与端点状态，不另建登记表。
 open_fifo 从该 payload 选择匿名语义：允许新的读、写或双向访问模式，不等待
 named FIFO 的伙伴，不抑制无 writer 时的 HUP；命名 FIFO 仍由现有 registry 与
 generation 完成 rendezvous。端点计数在 shared 状态锁内一次发布，等待与通知在
 锁外；失败、取消和关闭继续由同一 Pipe 析构回退。删除只服务旧捷径的 reopen
-方法。OpenedPipeFile 保留这次打开的实际路径及 mount use，命名文件与匿名对象
-均经 backing_file 交给 descriptor_path，避免把通过 bind 得到的路径还原为 pipefs
-根。OpenOptions 只对普通文件执行内容截断，管道重开保留已排队字节。
+方法。`OpenedPipeFile` 保留这次打开的实际路径及 mount use，命名文件与匿名对象
+均经 `backing_file` 交给 `descriptor_path`，避免把通过 bind 得到的路径还原为 pipefs
+根。`OpenOptions` 只对普通文件执行内容截断，管道重开保留已排队字节。
 
-sys_openat 的创建观察、打开与最终 fd 分派借用同一次 with_fs 视图；受限
-openat2 也在该视图内完成分派。add_to_fd 接收保存的 FsView，终端路径解析不再
+`sys_openat` 的创建观察、打开与最终 fd 分派借用同一次 `with_fs` 视图；受限
+openat2 也在该视图内完成分派。`add_to_fd` 接收保存的 `FsView`，终端路径解析不再
 重新选择当前 FS。创建通知仍使用既有存在性观察，尚未取得后端实际 created
 结果；挂载表 per-open producer、PTY 的实际实例绑定及缓存专用最终交接继续
 按原消费者范围迁移，不能由本节的前缀删除推断它们已完成。

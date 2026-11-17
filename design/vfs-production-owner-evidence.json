@@ -4534,6 +4534,258 @@
       "same-condition performance is not measured",
       "openat descriptor-prefix shortcuts remain for the next consumer migration; no global elimination is claimed",
       "remaining original VFS scope and independent design/implementation review remain required"
+    ],
+    "followup_terminal_ci": {
+      "recorded_at": "2026-11-17T13:57:24.030425+00:00",
+      "head": "96c81261c49d5c71ca7edde7409a9b1c533c6c99",
+      "run_id": 44090328458,
+      "event": "push",
+      "conclusion": "SUCCESS",
+      "status_counts": {
+        "SUCCESS": 44,
+        "SKIPPED": 5
+      },
+      "snapshot": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/pr2800-96c81261c4-progress5.json",
+        "sha256": "c37bcd6c79d9778be9c2a7cd223283c289a64de380584c9dcacf021703cceb01"
+      },
+      "run": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-96c81261c4-run.json",
+        "sha256": "c470f37f576d968052ba3fe3ec28f414f72465591ec75cea2f27262c253d80d1"
+      },
+      "starry": {
+        "x86_64": {
+          "job_id": 134068800778,
+          "conclusion": "SUCCESS",
+          "system_groups": [
+            {
+              "total": 1,
+              "passed": 1,
+              "failed": 0
+            },
+            {
+              "total": 541,
+              "passed": 541,
+              "failed": 0
+            }
+          ],
+          "ktest_passed": 264,
+          "supplied_view_loader_unit_executed": true,
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-96c81261c4-starry-x86_64.log",
+            "sha256": "a50bf8b5f1b5f646649c38de97f08d2ad363ca2af1ce00de477b3cea9c83c978"
+          }
+        },
+        "aarch64": {
+          "job_id": 134068800830,
+          "conclusion": "SUCCESS",
+          "system_groups": [
+            {
+              "total": 513,
+              "passed": 513,
+              "failed": 0
+            },
+            {
+              "total": 23,
+              "passed": 23,
+              "failed": 0
+            },
+            {
+              "total": 1,
+              "passed": 1,
+              "failed": 0
+            },
+            {
+              "total": 1,
+              "passed": 1,
+              "failed": 0
+            }
+          ],
+          "ktest_passed": 274,
+          "supplied_view_loader_unit_executed": true,
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-96c81261c4-starry-aarch64.log",
+            "sha256": "e98e593ac971893545143a733a2e0e194129adae83642a062fe784efbc67e3e4"
+          }
+        },
+        "riscv64": {
+          "job_id": 134068800672,
+          "conclusion": "SUCCESS",
+          "system_groups": [
+            {
+              "total": 538,
+              "passed": 538,
+              "failed": 0
+            }
+          ],
+          "ktest_passed": 263,
+          "supplied_view_loader_unit_executed": true,
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-96c81261c4-starry-riscv64.log",
+            "sha256": "954a1df594a1673e94bed0748cd8f12f8f8e7ed9f900a0c8becb82c3f11d3af3"
+          }
+        },
+        "loongarch64": {
+          "job_id": 134068800960,
+          "conclusion": "SUCCESS",
+          "system_groups": [
+            {
+              "total": 538,
+              "passed": 538,
+              "failed": 0
+            }
+          ],
+          "ktest_passed": 264,
+          "supplied_view_loader_unit_executed": true,
+          "log": {
+            "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-96c81261c4-starry-loongarch64.log",
+            "sha256": "3aac0c837ab8ab836dff34a91c50b55b18ace25cc25266d4e31d86652f06294a"
+          }
+        }
+      },
+      "duplicate_skips": "same-head PR wrapper run is intentionally redundant with the completed push matrix; ci.yml is byte-identical to the prior verified route",
+      "board": {
+        "job_id": 134068802613,
+        "conclusion": "SUCCESS",
+        "log": {
+          "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-96c81261c4-axvisor-board-uvc.log",
+          "sha256": "fe3d5b317c3a57f6af7b63686a803963d211d418fa733fa30ae096c7c1efac7a"
+        },
+        "starry_groups": "robot-flow and uvc-v4l2 both actually pass",
+        "axvisor_groups": "all axvisor board test groups passed"
+      },
+      "scope": "Contains executable_lookup_view source 09ccf6cb2c and its tests; predates descriptor_open_lookup_view source d788254e65."
+    }
+  },
+  "descriptor_open_lookup_view": {
+    "recorded_at": "2026-11-17T13:48:10.050388+00:00",
+    "source": "d788254e6549d3cf7aa0e973ec5c9388e8dd2990",
+    "merged_dev": "9bc2ee14117539dffc82e6c65f66be69f78f252d",
+    "same_test": {
+      "path": "test-suit/starryos/qemu/system/bugfix-procfd-reopen-unlinked-file/src/main.c",
+      "sha256": "6e68e1ff5c68c4ddad819584a3ebef109812b366aff667f80f76f2396ddc31f8",
+      "before_source": "18ef129e7684d7402fd7d46e994a3e0d8ea55ef9",
+      "routed_intermediate_source": "332b0512d2142244b0e0f3aabef8c996b033c534",
+      "after_source": "d788254e6549d3cf7aa0e973ec5c9388e8dd2990",
+      "linux_candidate_byte_identical": true
+    },
+    "before": {
+      "outer_exit": 1,
+      "failure": "old prefix shortcuts bypass covered proc mounts and ignore or misorder open flags; anonymous mode changes return EACCES; generic alias O_TRUNC returns EINVAL"
+    },
+    "intermediate": {
+      "source": "332b0512d2",
+      "outer_exit": 1,
+      "fixed": "descriptor strings use owned lookup and real proc authorization; covered paths and open flags no longer bypass the resolver",
+      "remaining": "anonymous O_TRUNC reaches set_len and returns EINVAL; no-writer HUP is suppressed; no-reader writer reopen returns ENXIO"
+    },
+    "build_correction": {
+      "source": "e7d17cb3fc34ab36dbed04811197263667c1878f",
+      "outer_exit": 1,
+      "failure": "renaming named_file initially omitted five UFCS consumers; E0599 prevented compilation",
+      "correction_source": "d788254e6549d3cf7aa0e973ec5c9388e8dd2990",
+      "all_consumers_migrated_without_alias": true,
+      "semantic_red_evidence": false
+    },
+    "ownership": {
+      "lookup": "sys_openat and sys_openat2 use actual object links and the same frozen view through add_to_fd; no self_fd_number or try_reopen_self_* parser remains",
+      "anonymous_channel": "ObjectNode<Arc<Shared>> supplies the existing channel; each independent open publishes its chosen PipeAccess and uses the existing destructor rollback",
+      "path": "OpenedPipeFile and backing_file retain the actual opened PathHandle and mount use, including when reached through a bind",
+      "special_files": "only regular files invoke length mutation for O_TRUNC; queued pipe bytes are retained",
+      "notifications": "named FIFO rendezvous and HUP generation remain unchanged; anonymous pipes do not wait for a partner or suppress HUP"
+    },
+    "std": {
+      "packages_passed": 18,
+      "outer_exit": 0,
+      "command": "CARGO_INCREMENTAL=0 cargo xtask test --since 18ef129e76",
+      "mkfs": "task-local e2fsprogs 1.47.3"
+    },
+    "clippy": {
+      "packages_passed": 2,
+      "checks_passed": 78,
+      "outer_exit": 0,
+      "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package ax-fs-ng --package starry-kernel",
+      "report_isolation": "started only after the x86 Cargo invocation completed"
+    },
+    "x86_64_system": {
+      "programs": 541,
+      "passed": 541,
+      "failed": 0,
+      "outer_exit": 0,
+      "procfd_program": "PASS: procfd object identity, independent descriptions, mount visibility and slot reuse"
+    },
+    "linux": {
+      "kernel": "6.8.0-149-generic",
+      "outer_exit": 0,
+      "fixture": "same complete C in private user/PID/mount namespaces with private tmpfs; retained proc dir remains usable under an overmount"
+    },
+    "format_exit": 0,
+    "source_sha256": {
+      "fs/ax-fs-ng/src/file/open.rs": "bf2233c5bc4d562afa0ae9dabffeed87ac9cb82cd9291a9701724c0b5cd6a48a",
+      "os/StarryOS/kernel/src/file/fs.rs": "2f3a909699224b1b5658b22e16f6c20721a029a290e15a5e92685c39dc07c2f9",
+      "os/StarryOS/kernel/src/file/mod.rs": "bd642b6e7b5a291f84e2c1acacc1664a3d3fcd9c2449ec03f19040ba0e5d6200",
+      "os/StarryOS/kernel/src/file/path.rs": "0977b567edd607b5cb1d81d6b107168da681cc9121a353c914bcee2a768ed5fa",
+      "os/StarryOS/kernel/src/file/pipe.rs": "dbbb2746e6c27feaeba66ba3786ffa5dcce36b086970d9ae84a891cd3d6a6c64",
+      "os/StarryOS/kernel/src/file/pipe/named.rs": "ece7ccf7e1415ce593b97f265aa7f6fd6afb9a765220144013a2e9512c8592d5",
+      "os/StarryOS/kernel/src/syscall/fs/fd_ops.rs": "07f2caafb618f1d8cdd4320cb5f9a7840bae288f298ec7e6f90e272e26da705f",
+      "os/StarryOS/kernel/src/syscall/fs/lock.rs": "45891628addff5f3846110177cf56ece8ba7d77c14560c3e686e8076c6129879",
+      "os/StarryOS/kernel/src/syscall/fs/mount.rs": "7546b8e534f1c83c25f02d2aaf6c3cfe2442142feb058026cf7c3664fa20a666",
+      "os/StarryOS/kernel/src/syscall/fs/stat.rs": "978651b894d35e1866d63094bb755cdec3b1d1d43b7d49cf491084e65c373a0d",
+      "test-suit/starryos/qemu/system/bugfix-procfd-reopen-unlinked-file/src/main.c": "6e68e1ff5c68c4ddad819584a3ebef109812b366aff667f80f76f2396ddc31f8"
+    },
+    "elf": {
+      "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-d788254e65.elf",
+      "sha256": "5535ae74f03a087eb2587e927f6cffbe975484a6c2acfe0a7e46b7e68734d8ad"
+    },
+    "logs": {
+      "procfd-open-full-before-qemu": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/procfd-open-full-before-qemu.log",
+        "sha256": "1e624f24d67b9add8f2504e973fab008615ae589f91cf8f2bcc2c8c3ab296789",
+        "outer_exit": 1
+      },
+      "procfd-open-routed-qemu": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/procfd-open-routed-qemu.log",
+        "sha256": "21d71b4ad655b201991ebf3f37d8ca436e7687330652c0e9129088c05b00a107",
+        "outer_exit": 1
+      },
+      "procfd-open-build-missing-ufcs": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/procfd-open-build-missing-ufcs.log",
+        "sha256": "db21d7fd2729751bc2aa34e028d0cf64b4ec8dc161627d1d0a619ec6e1d2eb4d",
+        "outer_exit": 1
+      },
+      "procfd-open-linux-full": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/procfd-open-linux-full.log",
+        "sha256": "fd0b76b4dfdef0267f3ebeb5053b0ea179d3d4c146a260eecceb1b6614e12c02",
+        "outer_exit": 0
+      },
+      "procfd-open-std": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/procfd-open-std.log",
+        "sha256": "e1647ee68a354500455f9c58a42c3d90e4bd7775321033aa4e2e765ad390be22",
+        "outer_exit": 0
+      },
+      "procfd-open-clippy": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/procfd-open-clippy.log",
+        "sha256": "02ed198466880a9e26e8890f49146485746950e1fdd2153d0b27b602b5545548",
+        "outer_exit": 0
+      },
+      "procfd-open-format": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/procfd-open-format.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outer_exit": 0
+      },
+      "procfd-open-x86_64-system": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/procfd-open-x86_64-system.log",
+        "sha256": "268ea0e5d9dd09343a5750a6769c6404413b2756088448a224d820518f2a988a",
+        "outer_exit": 0
+      }
+    },
+    "limitations": [
+      "other three architectures require matching new-head runtime evidence",
+      "creation notification still uses a pre-open existence observation rather than the backend created outcome",
+      "mount-table per-open producers and actual PTY instance binding remain unadapted",
+      "CACHED nonblocking final handoff and controlled shared-FS syscall interleavings remain incomplete",
+      "raw anonymous fstatfs and remaining native metadata/data consumers still need migration",
+      "same-condition performance and independent design/implementation review remain required"
     ]
   }
 }

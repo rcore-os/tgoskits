@@ -2,7 +2,7 @@
 
 ## 1. 基准与证据
 
-本记录随所有权迁移逐入口补齐。当前范围是接续记录第 9.31 至 9.37 节的 scoped 查找、proc 自指链接、拥有型结果及文件系统实例，其他元数据、命名、挂载、凭据、映射与套接字入口继续按主计划核对。每行结论仅覆盖注明的参数与对象范围。
+本记录随所有权迁移逐入口补齐。当前范围是接续记录第 9.31 至 9.40 节的 scoped 查找、proc 自指链接、拥有型结果及文件系统实例，其他元数据、命名、挂载、凭据、映射与套接字入口继续按主计划核对。每行结论仅覆盖注明的参数与对象范围。
 
 ### 1.1 固定源码
 
@@ -35,12 +35,12 @@ Linux 基准为 v7.1 提交 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。编号�
 
 ### 2.2 普通打开与链接句柄
 
-普通打开沿用保存的 caller，但原有 self fd reopen 等消费者仍未全部完成对象式转交。自指链接作为普通文本 symlink 参与原会话的总预算。
+普通打开沿用保存的 caller 与 FsView，proc fd 路径经实际对象链接转交至 add_to_fd。自指链接作为普通文本 symlink 参与原会话的总预算；PTY 实例与挂载表的 per-open producer 仍需迁移。
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| open；x86_64 2 | v7.1 [do_sys_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 普通路径参与同一总链接预算，跟随和创建由 flags 决定 | syscall/mod.rs → sys_open → sys_openat → with_fs → OpenOptions → LookupSession；仍有 self fd reopen 特例 | 部分正确 | x86 完整路径旅程含 legacy open 的 40/41 总预算和悬空创建；其余消费者继续迁移 |
-| openat；x86_64 257；其余三架构 56 | v7.1 [do_sys_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 绝对输入忽略 dirfd；O_PATH + O_NOFOLLOW 获取 self/thread-self 链接自身 | sys_openat → flags_to_options → FsView/LookupSession → add_to_fd；保存 caller 和实际 PathHandle | 部分正确 | x86、AArch64 的 self/thread-self 链接 fd 通过；x86 路径预算和创建通过；其他目标与 self fd reopen 的完整迁移待补 |
+| open；x86_64 2 | v7.1 [do_sys_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 普通路径参与同一总链接预算，跟随和创建由 flags 决定 | syscall/mod.rs → sys_open → sys_openat → one with_fs → OpenOptions/LookupSession → add_to_fd；无 fd 前缀分流 | 部分正确 | x86 完整路径旅程含 legacy open 的 40/41 总预算和悬空创建；其余消费者继续迁移 |
+| openat；x86_64 257；其余三架构 56 | v7.1 [do_sys_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 绝对输入忽略 dirfd；O_PATH + O_NOFOLLOW 获取 self/thread-self 链接自身 | sys_openat → flags_to_options → one FsView/LookupSession → add_to_fd borrowing same view；保存 caller 和实际 PathHandle | 部分正确 | d788254e65 的 x86 完整 system 541/541；同一 procfd 程序在旧实现和不完整通用分派上失败，最终通过；PTY、per-open 与非阻塞交接仍待补 |
 | openat2/resolve=0；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1190) | 严格校验 how 后按普通打开行为解析 | sys_openat2 → 参数检查 → sys_openat；同一线程入口 caller，普通查找会话 | 部分正确 | x86 完整路径旅程的 resolve=0、预算、悬空创建和 proc fd 对象通过；结构边界、其余消费者与其他目标运行待补 |
 | creat；x86_64 85 | v7.1 [creat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c) | 按 WRONLY + CREAT + TRUNC 解释路径 | sys_creat → sys_openat → LookupSession；仍受普通创建与截断阶段限制 | 无法确认 | 本阶段未直接调用 legacy creat；不能由 open/openat 的通过直接提升结论 |
 
@@ -215,3 +215,39 @@ RISC-V 与 LoongArch 为 538/538，AArch64 分组为 513、23、1、1 项，均�
 Linux devpts 对照因宿主单 GID 映射使用 gid=0，Starry 仍验证
 gid=5；Linux 的四个 unlink 输入以移除 capability 形成拒绝写入条件，不能替代
 完整 root 到 uid/gid 1000 的凭据转换证明。
+
+
+## 9. 描述路径打开
+
+原 procfd 旅程使用同一 C 核对绝对路径、相对目录、普通别名、原描述与新描述，覆盖重命名、删除和 fd 槽复用。18ef129e76 的旧捷径与 332b0512d2 的不完整通用分派均失败，d788254e65 的 x86 完整 541/541、18 包标准库和 78 项 Clippy 通过。
+
+### 9.1 对象与打开标志
+
+打开由保存的视图完成，再将实际对象交给描述构造；原有 opened path 不因另一个 mount 遮住 procfs 而失效，绝对路径也不能绕过该遮盖。文件系统查询的剩余消费者单独保留结论。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| openat/procfd 与管道；x86_64 257；其余三架构 56 | v7.1 [fifo_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L1121) | 绝对描述路径遵守实际挂载，保留目录 fd 可继续访问旧 proc 对象；重开允许新访问模式并遵守 nofollow、exclusive 与 directory | `sys_openat` → one `FsView`/`OpenOptions` → proc Object link → `add_to_fd` → `Pipe::open_fifo` → `ObjectNode<Arc<Shared>>` | 部分正确 | d788254e65 的原 procfd 完整程序通过；18ef129e76 的同一 C 错误绕过挂载与 flags，跨模式 EACCES；其他目标等待本版 CI |
+| openat2/procfd；四架构 437 | v7.1 [build_open_flags](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L1190) | how 先严格校验，再对同一对象执行普通或受限解析，不能由描述字符串前缀改变行为 | `sys_openat2` → flag/resolve 校验 → `sys_openat` 或 `FsView` policy → `add_to_fd` with saved view → `Pipe::open_fifo` | 部分正确 | 同一完整程序对 openat/openat2 分别验证；x86 541/541，CACHED、完整 how 边界及其他目标仍有缺口 |
+| fstat/重开管道；x86_64 5；其余三架构 80 | v7.1 [vfs_fstat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/stat.c#L257) | 重开改变描述状态，不改变同一管道 inode、device 和类型 | sys_fstat → resolve_fd → `backing_file`/`PathHandle` 或 Pipe.stat → shared ObjectInode | 部分正确 | 原 procfd 程序比较两端、不同访问模式和别名重开的 device/inode/FIFO 类型；完整属性及其他目标仍待证明 |
+| fstatfs/管道；x86_64 138；其余三架构 44 | v7.1 [fd_statfs](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/statfs.c#L116) | 按实际 file path 返回 pipefs 等文件系统信息，fd 是否具备命名路径不改变该规则 | sys_fstatfs → File/Directory/Pipe.`backing_file`/Memfd 分类 → location statfs；原匿名 Pipe 仍落入拒绝分支 | 部分正确 | 五处消费者已迁移新的 `backing_file` 名称；本阶段没有直接 fstatfs 判据，原匿名对象消费者仍需处理 |
+
+### 9.2 描述与端点
+
+`PipeAccess`、状态标志和读写端点计数属于独立打开描述与原 Shared 通道。命名 FIFO 的伙伴等待和首次 HUP 抑制保留；匿名管道按实际 ObjectNode payload 选择打开行为。以下入口按自身的调用链和已有直接证据分别记录。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| read/重开管道；x86_64 0；其余三架构 63 | v7.1 [anon_pipe_read](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L269) | 新读描述访问原缓冲，关闭原两端不使仍存活的重开描述失效 | sys_read → get_file_like → Pipe.read → Shared.state 中的 `PipeState`.buffer/`PipeAccess` | 部分正确 | d788254e65 的 x86 原程序先读保留的 B，再通过新写描述读 P；其他目标等待本版运行 |
+| readv/重开管道；x86_64 19；其余三架构 65 | v7.1 [anon_pipe_read](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L269) | 向量读取使用同一打开描述与管道缓冲，访问模式按本次打开决定 | sys_readv → IoVectorBuf → Pipe.read → Shared | 无法确认 | 未直接对本版重开描述运行 readv 的完整向量与错误旅程 |
+| write/重开管道；x86_64 1；其余三架构 64 | v7.1 [anon_pipe_write](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L431) | 新写描述写入原管道缓冲，端点与访问模式独立于原 fd 的模式 | sys_write → validate_write_access/IoSrc → Pipe.write → Shared.state/`PipeState`.buffer | 部分正确 | x86 同一程序从原读端重新打开 writer，并与从原写端重开的 reader 交换数据；其他目标待证明 |
+| writev/重开管道；x86_64 20；其余三架构 66 | v7.1 [anon_pipe_write](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L431) | 向量写使用同一新描述与原缓冲，按管道写入规则处理部分完成 | sys_writev → IoVectorBuf → Pipe.write → Shared | 无法确认 | 本阶段未对本版重开描述直接验证 writev 的向量、部分完成与错误顺序 |
+| close/重开管道；x86_64 3；其余三架构 57 | v7.1 [pipe_release](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L725) | 最后相应端点关闭后发布对端 HUP 或 ERR，其他独立描述继续保持原通道 | sys_close → close_file_like → FileDescriptor drop → Pipe.drop → shared endpoint counts/notifications | 部分正确 | x86 原程序关闭原两端后继续读写，并在最后 writer/reader 关闭后检查 readiness；其他目标待证明 |
+| fcntl/重开状态；x86_64 72；其余三架构 25 | v7.1 [fifo_open](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L1121) | 独立重开有自己的访问与状态标志，F_SETFL 不改变原打开描述 | sys_fcntl → FileLike.open_flags/set_nonblocking → `PipeAccess`/AtomicBool；dup 仍共享同一描述 | 部分正确 | x86 原程序检查每种访问模式、CLOEXEC 及移除新描述 NONBLOCK 后原描述仍 NONBLOCK；锁与其他命令仍待补 |
+| poll/重开管道；x86_64 7 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 匿名读描述在无 writer 时立即 HUP，匿名写描述无 reader 时可重开并观察 ERR | sys_poll → do_poll → Pipe.poll → Shared.readiness；匿名打开不设置 named FIFO HUP suppression | 正确 | 332b0512d2 的同一 C 两个 readiness 判据失败；d788254e65 的 x86 完整批次通过，Linux 相同完整程序通过 |
+| ppoll/重开管道；x86_64 271；其余三架构 73 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 管道 readiness 相同，timespec、sigmask 及返回时状态按 ppoll 契约处理 | sys_ppoll → timespec/sigmask 校验 → do_poll → Pipe.poll | 无法确认 | 本版 x86 C 的 poll 判据不能替代直接 ppoll 参数、信号和其他架构 ABI 证明 |
+| select/重开管道；x86_64 23 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 无 writer 的空管道可读为 EOF，无 reader 的写端就绪反映错误状态 | sys_select → do_select → FileLike/Pipe.poll → Shared.readiness → fd sets | 无法确认 | 本阶段未对新重开描述执行直接 select 的完整 fd set 判据 |
+| pselect6/重开管道；x86_64 270；其余三架构 72 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 在 pselect6 的时间与信号约束下投影管道 readiness | sys_pselect6 → do_select → sigmask/timeout → Pipe.poll → fd sets | 无法确认 | 未对新描述直接验证 pselect6 的信号、ABI 和 readiness 组合 |
+| epoll_wait/重开管道；x86_64 232 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 已登记的管道从真实端点状态报告 HUP 与 ERR | sys_epoll_wait → do_epoll_wait → Epoll → Pipe.poll/register_shared | 无法确认 | 本阶段没有新描述的直接 epoll_wait 登记、端点关闭与回放旅程 |
+| epoll_pwait/重开管道；x86_64 281；其余三架构 22 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 在临时信号掩码下等待同一管道端点事件 | sys_epoll_pwait → do_epoll_wait → Epoll → Pipe.poll/register_shared | 无法确认 | 未直接对本版重开描述验证 epoll_pwait 的信号及事件边界 |
+| epoll_pwait2/重开管道；四架构 441 | v7.1 [pipe_poll](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/pipe.c#L660) | 按 timespec 超时与临时信号掩码等待管道状态 | sys_epoll_pwait2 → timespec → do_epoll_wait → Epoll → Pipe.poll/register_shared | 无法确认 | 未直接对新描述执行 epoll_pwait2 的精度、信号及事件旅程 |
