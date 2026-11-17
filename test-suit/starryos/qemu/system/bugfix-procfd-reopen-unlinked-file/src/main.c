@@ -3,6 +3,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <poll.h>
+#include <sched.h>
+#include <sys/mount.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +32,152 @@ static int same_object(const struct stat *a, const struct stat *b)
 {
     return a->st_dev == b->st_dev && a->st_ino == b->st_ino
            && S_ISREG(b->st_mode);
+}
+
+static int raw_open(int openat2, int dirfd, const char *path, int flags)
+{
+    struct raw_open_how how = {.flags = (uint64_t)flags};
+    return openat2 ? syscall(SYS_openat2, dirfd, path, &how, sizeof(how))
+                   : syscall(SYS_openat, dirfd, path, flags, 0);
+}
+
+static int reject_open(int dirfd, const char *path, int flags, int expected)
+{
+    int failed = 0;
+    for (int openat2 = 0; openat2 < 2; ++openat2) {
+        errno = 0;
+        int fd = raw_open(openat2, dirfd, path, flags | O_CLOEXEC);
+        int saved = errno;
+        if (fd >= 0) close(fd);
+        if (fd != -1 || saved != expected) {
+            printf("FAIL: openat%s %s flags=%#x result=%d errno=%d expected=%d\n",
+                   openat2 ? "2" : "", path, flags, fd, saved, expected);
+            failed = 1;
+        }
+    }
+    return failed;
+}
+
+/* A retained proc directory stays usable, but an absolute spelling must see
+ * the new mount. This distinguishes object ownership from a path shortcut. */
+static int check_masked_links(int procdir, int original)
+{
+    const char *prefixes[] = {"/proc/self/fd/", "/dev/fd/"};
+    int failed = 0;
+    for (unsigned i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
+        pid_t child = fork();
+        if (child < 0) return fail("fork masked proc lookup");
+        if (child == 0) {
+            if (unshare(CLONE_NEWNS) != 0 ||
+                mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL) != 0 ||
+                mount("tmpfs", "/proc", "tmpfs", MS_NOSUID | MS_NODEV, NULL) != 0)
+            {
+                fail("SETUP cover proc mount");
+                _exit(125);
+            }
+            char path[64], slot[16];
+            snprintf(path, sizeof(path), "%s%d", prefixes[i], original);
+            snprintf(slot, sizeof(slot), "%d", original);
+            int bad = reject_open(AT_FDCWD, path, O_RDONLY | O_NONBLOCK, ENOENT);
+            for (int openat2 = 0; openat2 < 2; ++openat2) {
+                int fd = raw_open(openat2, procdir, slot, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+                struct stat before, after;
+                if (fd < 0 || fstat(original, &before) != 0 || fstat(fd, &after) != 0 ||
+                    before.st_dev != after.st_dev || before.st_ino != after.st_ino)
+                    bad |= fail("retained proc directory still opens the same object");
+                if (fd >= 0) close(fd);
+            }
+            _exit(bad);
+        }
+        int status = 0;
+        if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+            failed |= fail("masked absolute proc link must reject without invalidating retained dirfd");
+    }
+    return failed;
+}
+
+static int check_pipe_route(int dirfd, const char *path, int original)
+{
+    int failed = reject_open(dirfd, path, O_RDONLY | O_NOFOLLOW, ELOOP)
+               | reject_open(dirfd, path, O_RDONLY | O_CREAT | O_EXCL, EEXIST)
+               | reject_open(dirfd, path, O_RDONLY | O_DIRECTORY, ENOTDIR);
+    for (int access = O_RDONLY; access <= O_RDWR; ++access) {
+        for (int openat2 = 0; openat2 < 2; ++openat2) {
+            int fd = raw_open(openat2, dirfd, path, access | O_NONBLOCK | O_CLOEXEC);
+            struct stat before, after;
+            if (fd < 0 || fstat(original, &before) != 0 || fstat(fd, &after) != 0 ||
+                !S_ISFIFO(after.st_mode) || before.st_dev != after.st_dev ||
+                before.st_ino != after.st_ino ||
+                (fcntl(fd, F_GETFL) & O_ACCMODE) != access ||
+                (fcntl(fd, F_GETFD) & FD_CLOEXEC) == 0 ||
+                fcntl(fd, F_SETFL, access) != 0 ||
+                (fcntl(original, F_GETFL) & O_NONBLOCK) == 0) {
+                printf("FAIL: pipe route %s access=%d openat2=%d errno=%d\n",
+                       path, access, openat2, errno);
+                failed = 1;
+            }
+            if (fd >= 0) close(fd);
+        }
+    }
+    return failed;
+}
+
+static int check_pipe_reopen(int procdir, const char *alias)
+{
+    int endpoints[2] = {-1, -1};
+    int reader = -1, writer = -1, extra = -1, failed = 0;
+    if (pipe2(endpoints, O_CLOEXEC | O_NONBLOCK) != 0)
+        return fail("SETUP anonymous pipe");
+    for (int end = 0; end < 2; ++end) {
+        char absolute[64], relative[16], aliased[160];
+        snprintf(absolute, sizeof(absolute), "/proc/self/fd/%d", endpoints[end]);
+        snprintf(relative, sizeof(relative), "%d", endpoints[end]);
+        snprintf(aliased, sizeof(aliased), "%s/%d", alias, endpoints[end]);
+        failed |= check_pipe_route(AT_FDCWD, absolute, endpoints[end]);
+        failed |= check_pipe_route(procdir, relative, endpoints[end]);
+        failed |= check_pipe_route(AT_FDCWD, aliased, endpoints[end]);
+    }
+    failed |= check_masked_links(procdir, endpoints[0]);
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", endpoints[1]);
+    reader = raw_open(0, AT_FDCWD, path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", endpoints[0]);
+    writer = raw_open(1, AT_FDCWD, path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (reader < 0 || writer < 0) {
+        failed |= fail("reopen opposite anonymous pipe access modes");
+        goto cleanup;
+    }
+    close(endpoints[0]); endpoints[0] = -1;
+    close(endpoints[1]); endpoints[1] = -1;
+    char byte = 0;
+    if (write(writer, "P", 1) != 1 || read(reader, &byte, 1) != 1 || byte != 'P')
+        failed |= fail("reopened descriptions keep the original shared pipe buffer");
+    close(writer); writer = -1;
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", reader);
+    extra = raw_open(0, AT_FDCWD, path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    struct pollfd pollfd = {.fd = extra, .events = POLLIN};
+    if (extra < 0 || poll(&pollfd, 1, 0) != 1 || !(pollfd.revents & POLLHUP))
+        failed |= fail("anonymous reopen with no writers immediately observes HUP");
+    if (extra >= 0) close(extra);
+    extra = -1;
+    writer = raw_open(0, AT_FDCWD, path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (writer < 0) {
+        failed |= fail("create writer while a reader remains");
+        goto cleanup;
+    }
+    close(reader); reader = -1;
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", writer);
+    extra = raw_open(1, AT_FDCWD, path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    pollfd = (struct pollfd){.fd = extra, .events = POLLOUT};
+    if (extra < 0 || poll(&pollfd, 1, 0) != 1 || !(pollfd.revents & POLLERR))
+        failed |= fail("anonymous reopen needs no reader and observes broken-pipe readiness");
+cleanup:
+    if (extra >= 0) close(extra);
+    if (reader >= 0) close(reader);
+    if (writer >= 0) close(writer);
+    if (endpoints[0] >= 0) close(endpoints[0]);
+    if (endpoints[1] >= 0) close(endpoints[1]);
+    return failed;
 }
 
 /* One fixture exercises lookup routes, not a mirror of the proc path parser.
@@ -57,6 +207,10 @@ static int check_link(int dirfd, const char *path, const char *text,
     if (linkfd >= 0) close(linkfd);
     if (failed) return fail("O_PATH nofollow pins the link, not its target");
 
+    if (reject_open(dirfd, path, O_RDONLY | O_CREAT | O_EXCL, EEXIST) ||
+        reject_open(dirfd, path, O_RDONLY | O_NOFOLLOW, ELOOP))
+        return 1;
+
     if (lseek(original, 2, SEEK_SET) != 2)
         return fail("set original offset");
     struct raw_open_how how = {.flags = O_RDONLY | O_CLOEXEC};
@@ -83,7 +237,7 @@ int main(void)
     char file[128], renamed[128], alias[128], via_alias[160];
     char absolute[64], slot[16], deleted[160], retained_path[64];
     int original = -1, pathfd = -1, procdir = -1, retained = -1, replacement = -1;
-    int failed = 1;
+    int failed = 1, supplemental_failed = 0;
     setvbuf(stdout, NULL, _IONBF, 0);
     puts("STARRY_SYSTEM_TEST_BEGIN: bugfix-procfd-reopen-unlinked-file");
     if (mkdtemp(dir) == NULL) return fail("SETUP mkdtemp");
@@ -107,6 +261,9 @@ int main(void)
     snprintf(absolute, sizeof(absolute), "/proc/self/fd/%d", pathfd);
     snprintf(slot, sizeof(slot), "%d", pathfd);
     snprintf(via_alias, sizeof(via_alias), "%s/%d", alias, pathfd);
+
+    supplemental_failed |= check_masked_links(procdir, pathfd);
+    supplemental_failed |= check_pipe_reopen(procdir, alias);
 
     for (int phase = 0; phase < 3; ++phase) {
         const char *text = file;
@@ -169,7 +326,7 @@ int main(void)
         fail("reopen reused slot reads the new object");
         goto cleanup;
     }
-    failed = 0;
+    failed = supplemental_failed;
 cleanup:
     if (replacement >= 0) close(replacement);
     if (retained >= 0) close(retained);
@@ -181,6 +338,6 @@ cleanup:
     if (unlink(alias) != 0 && errno != ENOENT) failed |= fail("clean alias");
     if (rmdir(dir) != 0) failed |= fail("clean directory");
     if (!failed)
-        puts("PASS: procfd object identity, independent reopen and slot reuse");
+        puts("PASS: procfd object identity, independent descriptions, mount visibility and slot reuse");
     return failed;
 }
