@@ -629,46 +629,31 @@ pub fn sys_linkat(
             return Err(StarryError::NotFound);
         }
     }
-    let (old, old_boundary, old_search) = resolve_at_with_boundary_checked(
-        &link_caller,
-        old_dirfd,
-        old_path.as_deref(),
-        resolve_flags,
-        |fs, directory| fs.check_search_path(directory, fs.permission_boundary()),
-    )?;
-    let old = old.into_file().ok_or(StarryError::BadFileDescriptor)?;
-    // Linux rejects hard links to directories before checking the source
-    // parent or the destination. Keep this check at the syscall boundary as
-    // well as in the VFS helper, because dirfd/`.` resolution is allowed to
-    // return an already-open directory without a normal parent walk.
-    if old.location().is_dir() {
-        return Err(StarryError::OperationNotPermitted);
-    }
-    // An absolute destination path is rooted at the process filesystem and
-    // ignores new_dirfd, including an invalid or non-directory descriptor.
-    let new_dirfd = if new_path.starts_with('/') {
-        AT_FDCWD
-    } else {
-        new_dirfd
-    };
-    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, &link_caller, |fs| {
-        let (new_dir, new_name, searched) = fs
-            .resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary())
-            })?;
-        Ok((
-            new_dir,
-            new_name,
-            fs.permission_boundary().cloned(),
-            searched,
-        ))
-    })?;
-    with_fs(AT_FDCWD, &link_caller, |fs| {
-        fs.link_locations_with_boundaries_and_search(
-            (&old, &old_search),
-            (&new_dir, &new_name, &new_search),
-            (old_boundary.as_ref(), new_boundary.as_ref()),
+    with_fs(AT_FDCWD, &link_caller, |base| {
+        let (old, old_boundary, old_search) = resolve_at_with_boundary_checked(
+            base,
+            old_dirfd,
+            old_path.as_deref(),
+            resolve_flags,
+            |fs, directory| fs.check_search_path(directory, fs.permission_boundary()),
         )?;
+        let old = old.into_file().ok_or(StarryError::BadFileDescriptor)?;
+        // Reject directory sources before observing the destination dirfd.
+        if old.location().is_dir() {
+            return Err(StarryError::OperationNotPermitted);
+        }
+        let new_dirfd = if new_path.starts_with('/') {
+            AT_FDCWD
+        } else {
+            new_dirfd
+        };
+        let destination_view = crate::file::view_at(base, new_dirfd)?;
+        let destination =
+            destination_view.resolve_parent_checked(Path::new(&new_path), |directory| {
+                destination_view
+                    .check_search_path(directory, destination_view.permission_boundary())
+            })?;
+        base.link_resolved((&old, &old_search, old_boundary.as_ref()), &destination)?;
         Ok(())
     })?;
     Ok(0)
@@ -922,40 +907,18 @@ pub fn sys_renameat2(
     // Check search permissions while resolving each parent, before a missing
     // entry or dangling symlink target can mask EACCES.
     let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
-    let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, &link_caller, |fs| {
-        let (old_dir, old_name, searched) = fs
-            .resolve_parent_with_search_checked(Path::new(&old_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary())
+    with_fs(AT_FDCWD, &link_caller, |base| {
+        let source_view = crate::file::view_at(base, old_dirfd)?;
+        let source = source_view.resolve_parent_checked(Path::new(&old_path), |directory| {
+            source_view.check_search_path(directory, source_view.permission_boundary())
+        })?;
+        let destination_view = crate::file::view_at(base, new_dirfd)?;
+        let destination =
+            destination_view.resolve_parent_checked(Path::new(&new_path), |directory| {
+                destination_view
+                    .check_search_path(directory, destination_view.permission_boundary())
             })?;
-        Ok((
-            old_dir,
-            old_name,
-            fs.permission_boundary().cloned(),
-            searched,
-        ))
-    })?;
-    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, &link_caller, |fs| {
-        let (new_dir, new_name, searched) = fs
-            .resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary())
-            })?;
-        Ok((
-            new_dir,
-            new_name,
-            fs.permission_boundary().cloned(),
-            searched,
-        ))
-    })?;
-
-    // Propagate the filesystem errno directly to match renameat2 callers.
-    with_fs(AT_FDCWD, &link_caller, |fs| {
-        Ok(fs.rename_locations_with_boundaries_and_search(
-            (&old_dir, &old_name),
-            (&new_dir, &new_name),
-            options,
-            (old_boundary.as_ref(), new_boundary.as_ref()),
-            (&old_search, &new_search),
-        )?)
+        Ok(base.rename_resolved(&source, &destination, options)?)
     })?;
     Ok(0)
 }

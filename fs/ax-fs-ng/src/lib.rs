@@ -42,14 +42,15 @@ pub mod fs_context {
     };
 
     pub use crate::fs_core::{
-        FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement,
-        FsUpdateRetirement, FsView, LookupPolicy, LookupRestrictions, LookupScope,
-        PreparedFsUpdate,
+        FinalComponent, FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement,
+        FsSharingRequirement, FsUpdateRetirement, FsView, LookupPolicy, LookupRestrictions,
+        LookupScope, ParentLookup, PreparedFsUpdate,
     };
 }
 pub use fs_context::{
-    FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement,
-    FsUpdateRetirement, FsView, LookupPolicy, LookupRestrictions, LookupScope, PreparedFsUpdate,
+    FinalComponent, FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement,
+    FsSharingRequirement, FsUpdateRetirement, FsView, LookupPolicy, LookupRestrictions,
+    LookupScope, ParentLookup, PreparedFsUpdate,
 };
 mod highlevel;
 mod mounts;

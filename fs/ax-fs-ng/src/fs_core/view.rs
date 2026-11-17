@@ -1,6 +1,6 @@
 //! Operation-local path selection and its one immutable calling identity.
 
-use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 
 use ax_io::{Read, Write};
 use axfs_ng_vfs::{
@@ -9,7 +9,7 @@ use axfs_ng_vfs::{
     path::{Path, PathBuf},
 };
 
-use super::{FsContext, FsContextSnapshot, LookupPolicy, ReadDir};
+use super::{FinalComponent, FsContext, FsContextSnapshot, LookupPolicy, ParentLookup, ReadDir};
 use crate::file::File;
 
 /// Frozen paths and the caller that authorizes this operation.
@@ -167,54 +167,20 @@ impl<'caller> FsView<'caller> {
             .parent()?
             .finish_lookup_with_trace(false)
     }
-    pub fn resolve_parent_with_search<'a>(
-        &self,
-        path: &'a Path,
-    ) -> VfsResult<(PathHandle, Cow<'a, str>, Vec<PathHandle>)> {
-        self.resolve_parent_with_search_checked(path, |_| Ok(()))
+    /// Resolves the parent without consuming or normalizing the last component.
+    pub fn resolve_parent(&self, path: impl AsRef<Path>) -> VfsResult<ParentLookup> {
+        self.resolve_parent_checked(path, |_| Ok(()))
     }
-    pub fn resolve_parent_with_search_checked<'a>(
+
+    pub fn resolve_parent_checked(
         &self,
-        path: &'a Path,
+        path: impl AsRef<Path>,
         check: impl Fn(&Location) -> VfsResult<()>,
-    ) -> VfsResult<(PathHandle, Cow<'a, str>, Vec<PathHandle>)> {
-        let (directory, name, searched) = super::LookupSession::new(self, path.as_str())?
+    ) -> VfsResult<ParentLookup> {
+        super::LookupSession::new(self, path.as_ref().as_str())?
             .with_search(&check)
             .parent()?
-            .finish_parent()?;
-        Ok((directory, Cow::Owned(name), searched))
-    }
-    pub fn resolve_parent<'a>(&self, path: &'a Path) -> VfsResult<(PathHandle, Cow<'a, str>)> {
-        self.resolve_parent_with_search(path)
-            .map(|(directory, name, _)| (directory, name))
-    }
-    // Convert an already resolved final entry into a naming pair. This is not a
-    // walker step: scoped traversal must inspect each ParentStep itself.
-    pub(super) fn resolved_parent_name(
-        path: &PathHandle,
-    ) -> VfsResult<Option<(PathHandle, String)>> {
-        let mut current = path.location().clone();
-        let retain = |location: Location| {
-            if Arc::ptr_eq(location.mountpoint(), path.location().mountpoint()) {
-                path.rebind(location)
-            } else {
-                PathHandle::acquire(location)
-            }
-        };
-        loop {
-            match current.parent_step()? {
-                axfs_ng_vfs::ParentStep::Parent { parent, name } => {
-                    return Ok(Some((retain(parent)?, name)));
-                }
-                axfs_ng_vfs::ParentStep::Covered(covered) => current = covered,
-                axfs_ng_vfs::ParentStep::Root => return Ok(None),
-                axfs_ng_vfs::ParentStep::Unlinked { parent, name } => {
-                    return parent
-                        .map(|parent| retain(parent).map(|parent| (parent, name)))
-                        .transpose();
-                }
-            }
-        }
+            .finish_parent(self.permission_boundary().cloned())
     }
 
     /// Retrieves metadata for the file.
@@ -329,77 +295,59 @@ impl<'caller> FsView<'caller> {
         Ok(())
     }
 
-    /// Removes a file from the filesystem.
+    /// Removes a file from the original parent naming slot.
     pub fn remove_file(&self, path: impl AsRef<Path>) -> VfsResult<()> {
-        let credentials = self.credentials();
-        let (entry, searched) = self
-            .resolve_no_follow_with_search_checked(path.as_ref(), |directory| {
-                self.check_search_path(directory, self.permission_boundary())
-            })?;
-        if entry.location().ptr_eq(self.root_dir()) {
-            return Err(VfsError::IsADirectory);
-        }
-        // The final entry is already known to be a directory. Classify this
-        // before consulting its physical parent: an opened dirfd may remain
-        // usable after that parent loses search permission.
-        if entry.location().is_dir() {
-            return Err(VfsError::IsADirectory);
-        }
-        let (directory, name) =
-            Self::resolved_parent_name(&entry)?.ok_or(VfsError::IsADirectory)?;
-        self.check_search_trace(&searched, self.permission_boundary())?;
-        drop(entry);
-        drop(searched);
-        directory.location().unlink(&name, false, credentials)
-    }
-
-    /// Removes a directory from the filesystem.
-    pub fn remove_dir(&self, path: impl AsRef<Path>) -> VfsResult<()> {
-        let credentials = self.credentials();
-        let path = path.as_ref();
-        // Path components normalize away trailing dots. Linux classifies the
-        // final component before normalization, after resolving its parent.
-        let trimmed = path.as_str().trim_end_matches('/');
-        let last = trimmed.rsplit('/').next().unwrap_or("");
-        if matches!(last, "." | "..") {
-            // For an exact dirfd-relative `.`/`..`, the final object is
-            // determined at the open directory boundary. Do not walk its
-            // physical parent, which may have become unsearchable after the
-            // dirfd was opened.
-            if matches!(trimmed, "." | "..") {
-                return Err(if last == "." {
-                    VfsError::InvalidInput
-                } else {
-                    VfsError::DirectoryNotEmpty
-                });
-            }
-            let (_, searched) = self.resolve_no_follow_with_search_checked(path, |directory| {
-                self.check_search_path(directory, self.permission_boundary())
-            })?;
-            self.check_search_trace(&searched, self.permission_boundary())?;
-            return Err(if last == "." {
-                VfsError::InvalidInput
-            } else {
-                VfsError::DirectoryNotEmpty
-            });
-        }
-
-        let (entry, searched) = self.resolve_no_follow_with_search_checked(path, |directory| {
+        let parent = self.resolve_parent_checked(path, |directory| {
             self.check_search_path(directory, self.permission_boundary())
         })?;
-        if entry.location().ptr_eq(self.root_dir()) || entry.location().is_root_of_mount() {
+        self.check_search_trace(&parent.searched, parent.boundary.as_ref())?;
+        let FinalComponent::Name(name) = &parent.component else {
+            return Err(VfsError::IsADirectory);
+        };
+        let entry = parent.directory.location().lookup_no_follow(name)?;
+        if entry.is_dir() {
+            return Err(VfsError::IsADirectory);
+        }
+        if parent.directory_required {
+            return Err(VfsError::NotADirectory);
+        }
+        if entry.is_root_of_mount() {
             return Err(VfsError::ResourceBusy);
         }
-        let (directory, name) =
-            Self::resolved_parent_name(&entry)?.ok_or(VfsError::ResourceBusy)?;
-        self.check_search_trace(&searched, self.permission_boundary())?;
+        // Native backends classify active inode holders. The preflight entry
+        // must retire before the actual unlink attempt observes that state.
         drop(entry);
-        drop(searched);
-        directory.location().unlink(&name, true, credentials)
+        parent
+            .directory
+            .location()
+            .unlink(name, false, self.credentials())
     }
 
-    /// Renames a file or directory to a new name, replacing the original file
-    /// if `to` already exists.
+    /// Removes an empty directory without following its last component.
+    pub fn remove_dir(&self, path: impl AsRef<Path>) -> VfsResult<()> {
+        let parent = self.resolve_parent_checked(path, |directory| {
+            self.check_search_path(directory, self.permission_boundary())
+        })?;
+        self.check_search_trace(&parent.searched, parent.boundary.as_ref())?;
+        let name = match &parent.component {
+            FinalComponent::Name(name) => name,
+            FinalComponent::Current => return Err(VfsError::InvalidInput),
+            FinalComponent::Parent => return Err(VfsError::DirectoryNotEmpty),
+            FinalComponent::Root => return Err(VfsError::ResourceBusy),
+        };
+        let entry = parent.directory.location().lookup_no_follow(name)?;
+        entry.check_is_dir()?;
+        if entry.ptr_eq(self.root_dir()) || entry.is_root_of_mount() {
+            return Err(VfsError::ResourceBusy);
+        }
+        drop(entry);
+        parent
+            .directory
+            .location()
+            .unlink(name, true, self.credentials())
+    }
+
+    /// Renames a file or directory, replacing an existing destination.
     pub fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> VfsResult<()> {
         self.rename_with_options(from, to, RenameOptions::REPLACE)
     }
@@ -411,113 +359,96 @@ impl<'caller> FsView<'caller> {
         to: impl AsRef<Path>,
         options: RenameOptions,
     ) -> VfsResult<()> {
-        let (src_dir, src_name, src_searched) = self
-            .resolve_parent_with_search_checked(from.as_ref(), |directory| {
-                self.check_search_path(directory, self.permission_boundary())
-            })?;
-        let (dst_dir, dst_name, dst_searched) = self
-            .resolve_parent_with_search_checked(to.as_ref(), |directory| {
-                self.check_search_path(directory, self.permission_boundary())
-            })?;
-        self.rename_locations_with_boundaries_and_search(
-            (&src_dir, &src_name),
-            (&dst_dir, &dst_name),
-            options,
-            (self.permission_boundary(), self.permission_boundary()),
-            (&src_searched, &dst_searched),
-        )
+        let source = self.resolve_parent_checked(from, |directory| {
+            self.check_search_path(directory, self.permission_boundary())
+        })?;
+        let destination = self.resolve_parent_checked(to, |directory| {
+            self.check_search_path(directory, self.permission_boundary())
+        })?;
+        self.rename_resolved(&source, &destination, options)
     }
 
-    /// Rename already resolved entries after applying directory authorization.
-    pub fn rename_locations(
+    /// Commits a rename using the original typed parent selections.
+    pub fn rename_resolved(
         &self,
-        src_dir: &PathHandle,
-        src_name: &str,
-        dst_dir: &PathHandle,
-        dst_name: &str,
+        source: &ParentLookup,
+        destination: &ParentLookup,
         options: RenameOptions,
     ) -> VfsResult<()> {
-        self.rename_locations_with_boundaries(
-            (src_dir, src_name),
-            (dst_dir, dst_name),
-            options,
-            (self.permission_boundary(), self.permission_boundary()),
-        )
-    }
-
-    /// Rename resolved entries with independent source and destination path
-    /// permission boundaries.
-    pub fn rename_locations_with_boundaries(
-        &self,
-        source: (&PathHandle, &str),
-        destination: (&PathHandle, &str),
-        options: RenameOptions,
-        boundaries: (Option<&PathHandle>, Option<&PathHandle>),
-    ) -> VfsResult<()> {
-        let (src_dir, src_name) = source;
-        let (dst_dir, dst_name) = destination;
-        self.rename_locations_with_boundaries_and_search(
-            (src_dir, src_name),
-            (dst_dir, dst_name),
-            options,
-            boundaries,
-            (&[], &[]),
-        )
-    }
-
-    pub fn rename_locations_with_boundaries_and_search(
-        &self,
-        source: (&PathHandle, &str),
-        destination: (&PathHandle, &str),
-        options: RenameOptions,
-        boundaries: (Option<&PathHandle>, Option<&PathHandle>),
-        searches: (&[PathHandle], &[PathHandle]),
-    ) -> VfsResult<()> {
-        let credentials = self.credentials();
-        let (src_dir, src_name) = source;
-        let (dst_dir, dst_name) = destination;
-        let (src_boundary, dst_boundary) = boundaries;
-        let (src_search, dst_search) = searches;
-        // Search permission is a prerequisite for looking up either final
-        // entry. Keep this inside the VFS operation so callers cannot observe
-        // ENOENT/EEXIST from an inaccessible parent before DAC search checks.
-        self.check_search_trace(src_search, src_boundary)?;
-        self.check_search_trace(dst_search, dst_boundary)?;
+        self.check_search_trace(&source.searched, source.boundary.as_ref())?;
+        self.check_search_trace(&destination.searched, destination.boundary.as_ref())?;
         if !Arc::ptr_eq(
-            src_dir.location().mountpoint(),
-            dst_dir.location().mountpoint(),
+            source.directory.location().mountpoint(),
+            destination.directory.location().mountpoint(),
         ) {
             return Err(VfsError::CrossesDevices);
         }
-        // Already-resolved callers may have no search trace. Validate both
-        // parent paths before probing names, without deciding write access.
-        self.check_search_path(src_dir.location(), src_boundary)?;
-        self.check_search_path(dst_dir.location(), dst_boundary)?;
-        // Preserve preflight error ordering; none of these observations grants
-        // permission to commit. The backend attempt rechecks current objects.
-        src_dir.location().lookup_no_follow(src_name)?;
-        let destination = match dst_dir.location().lookup_no_follow(dst_name) {
-            Ok(destination) => Some(destination),
+        let FinalComponent::Name(source_name) = &source.component else {
+            return Err(VfsError::ResourceBusy);
+        };
+        let FinalComponent::Name(destination_name) = &destination.component else {
+            return Err(if options.no_replace() {
+                VfsError::AlreadyExists
+            } else {
+                VfsError::ResourceBusy
+            });
+        };
+        self.check_search_path(source.directory.location(), source.boundary.as_ref())?;
+        self.check_search_path(
+            destination.directory.location(),
+            destination.boundary.as_ref(),
+        )?;
+        let source_type = source
+            .directory
+            .location()
+            .lookup_no_follow(source_name)?
+            .node_type();
+        let destination_type = match destination
+            .directory
+            .location()
+            .lookup_no_follow(destination_name)
+        {
+            Ok(entry) => Some(entry.node_type()),
             Err(VfsError::NotFound) => None,
             Err(error) => return Err(error),
         };
-
-        // Once both final entries have been searched, an existing destination
-        // has priority over destination write permission for NOREPLACE.
-        if options.no_replace() && destination.is_some() {
+        if options.no_replace() && destination_type.is_some() {
             return Err(VfsError::AlreadyExists);
         }
-
-        // Parent write, sticky, and no-op decisions all depend on the locked
-        // current objects. An outer write check could reject a legal no-op
-        // after a competing move, even if these probes saw different inodes.
-        src_dir.location().rename_with_options(
-            src_name,
-            dst_dir.location(),
-            dst_name,
+        if (source.directory_required || destination.directory_required)
+            && source_type != NodeType::Directory
+            || destination.directory_required
+                && destination_type.is_some_and(|ty| ty != NodeType::Directory)
+        {
+            return Err(VfsError::NotADirectory);
+        }
+        // These observations only establish preflight ordering. The backend
+        // still checks the current slot, write permission and sticky ownership.
+        source.directory.location().rename_with_options(
+            source_name,
+            destination.directory.location(),
+            destination_name,
             options,
-            credentials,
+            self.credentials(),
         )
+    }
+
+    fn creation_name<'parent>(
+        &self,
+        parent: &'parent ParentLookup,
+        node_type: NodeType,
+    ) -> VfsResult<&'parent str> {
+        self.check_search_trace(&parent.searched, parent.boundary.as_ref())?;
+        let FinalComponent::Name(name) = &parent.component else {
+            return Err(VfsError::AlreadyExists);
+        };
+        if parent.directory_required && node_type != NodeType::Directory {
+            return match parent.directory.location().lookup_no_follow(name) {
+                Ok(_) => Err(VfsError::AlreadyExists),
+                Err(error) => Err(error),
+            };
+        }
+        Ok(name)
     }
 
     /// Creates a new, empty directory at the provided path.
@@ -528,22 +459,17 @@ impl<'caller> FsView<'caller> {
         uid: u32,
         gid: u32,
     ) -> VfsResult<PathHandle> {
-        let credentials = self.credentials();
-        let path = path.as_ref();
-        if path.as_str().is_empty() {
-            return Err(VfsError::NotFound);
-        }
-        let (dir, name, searched) = self.resolve_parent_with_search_checked(path, |directory| {
+        let parent = self.resolve_parent_checked(path, |directory| {
             self.check_search_path(directory, self.permission_boundary())
         })?;
-        self.check_search_trace(&searched, self.permission_boundary())?;
-        dir.rebind(dir.location().create(
-            &name,
+        let name = self.creation_name(&parent, NodeType::Directory)?;
+        parent.directory.rebind(parent.directory.location().create(
+            name,
             NodeType::Directory,
             mode,
             uid,
             gid,
-            credentials,
+            self.credentials(),
         )?)
     }
 
@@ -553,75 +479,37 @@ impl<'caller> FsView<'caller> {
         old_path: impl AsRef<Path>,
         new_path: impl AsRef<Path>,
     ) -> VfsResult<PathHandle> {
-        let (old, old_searched) = self
-            .resolve_with_search_checked(old_path.as_ref(), |directory| {
-                self.check_search_path(directory, self.permission_boundary())
-            })?;
-        let (new_dir, new_name, new_searched) = self
-            .resolve_parent_with_search_checked(new_path.as_ref(), |directory| {
-                self.check_search_path(directory, self.permission_boundary())
-            })?;
-        self.link_locations_with_boundaries_and_search(
-            (&old, &old_searched),
-            (&new_dir, &new_name, &new_searched),
-            (self.permission_boundary(), self.permission_boundary()),
+        let (old, old_searched) = self.resolve_with_search_checked(old_path, |directory| {
+            self.check_search_path(directory, self.permission_boundary())
+        })?;
+        let destination = self.resolve_parent_checked(new_path, |directory| {
+            self.check_search_path(directory, self.permission_boundary())
+        })?;
+        self.link_resolved(
+            (&old, &old_searched, self.permission_boundary()),
+            &destination,
         )
     }
 
-    /// Create a hard link between already resolved locations.
-    pub fn link_locations(
+    /// Links an owned source into its original typed destination selection.
+    pub fn link_resolved(
         &self,
-        old: &PathHandle,
-        new_dir: &PathHandle,
-        new_name: &str,
+        source: (&PathHandle, &[PathHandle], Option<&PathHandle>),
+        destination: &ParentLookup,
     ) -> VfsResult<PathHandle> {
-        self.link_locations_with_boundaries_and_search(
-            (old, &[]),
-            (new_dir, new_name, &[]),
-            (self.permission_boundary(), self.permission_boundary()),
-        )
-    }
-
-    /// Create a hard link with independent source and destination path
-    /// permission boundaries.
-    pub fn link_locations_with_boundaries(
-        &self,
-        old: &PathHandle,
-        new_dir: &PathHandle,
-        new_name: &str,
-        old_boundary: Option<&PathHandle>,
-        new_boundary: Option<&PathHandle>,
-    ) -> VfsResult<PathHandle> {
-        self.link_locations_with_boundaries_and_search(
-            (old, &[]),
-            (new_dir, new_name, &[]),
-            (old_boundary, new_boundary),
-        )
-    }
-
-    pub fn link_locations_with_boundaries_and_search(
-        &self,
-        source: (&PathHandle, &[PathHandle]),
-        destination: (&PathHandle, &str, &[PathHandle]),
-        boundaries: (Option<&PathHandle>, Option<&PathHandle>),
-    ) -> VfsResult<PathHandle> {
-        let credentials = self.credentials();
-        let (old, old_search) = source;
-        let (new_dir, new_name, new_search) = destination;
-        let (old_boundary, new_boundary) = boundaries;
-        // A directory cannot be hard-linked. Check this before inspecting
-        // the source parent: `linkat(dirfd, ".", ...)` must not re-walk a
-        // parent outside the dirfd permission boundary.
+        let (old, searched, boundary) = source;
         if old.location().is_dir() {
             return Err(VfsError::OperationNotPermitted);
         }
-        self.check_search_trace(old_search, old_boundary)?;
-        self.check_search_trace(new_search, new_boundary)?;
-        new_dir.rebind(
-            new_dir
-                .location()
-                .link(new_name, old.location(), credentials)?,
-        )
+        self.check_search_trace(searched, boundary)?;
+        let name = self.creation_name(destination, old.location().node_type())?;
+        destination
+            .directory
+            .rebind(destination.directory.location().link(
+                name,
+                old.location(),
+                self.credentials(),
+            )?)
     }
 
     /// Creates a new symbolic link on the filesystem.
@@ -632,39 +520,43 @@ impl<'caller> FsView<'caller> {
         uid: u32,
         gid: u32,
     ) -> VfsResult<PathHandle> {
-        let credentials = self.credentials();
-        let (dir, name, searched) = self
-            .resolve_parent_with_search_checked(link_path.as_ref(), |directory| {
-                self.check_search_path(directory, self.permission_boundary())
-            })?;
-        self.check_search_trace(&searched, self.permission_boundary())?;
-        let location = dir.location().create_symlink(
-            &name,
-            target.as_ref(),
-            NodePermission::default(),
-            uid,
-            gid,
-            credentials,
-        )?;
-        dir.rebind(location)
+        let parent = self.resolve_parent_checked(link_path, |directory| {
+            self.check_search_path(directory, self.permission_boundary())
+        })?;
+        let name = self.creation_name(&parent, NodeType::Symlink)?;
+        parent
+            .directory
+            .rebind(parent.directory.location().create_symlink(
+                name,
+                target.as_ref(),
+                NodePermission::default(),
+                uid,
+                gid,
+                self.credentials(),
+            )?)
     }
 
-    /// Create a non-directory node after applying parent-directory DAC.
+    /// Creates a non-directory node after applying parent-directory DAC.
     pub fn create_node(
         &self,
         path: impl AsRef<Path>,
         attributes: CreateAttributes<'_>,
     ) -> VfsResult<PathHandle> {
-        let credentials = self.credentials();
-        let (dir, name, searched) = self
-            .resolve_parent_with_search_checked(path.as_ref(), |directory| {
-                self.check_search_path(directory, self.permission_boundary())
-            })?;
-        self.check_search_trace(&searched, self.permission_boundary())?;
-        dir.rebind(
-            dir.location()
-                .create_initialized(&name, attributes, credentials)?,
-        )
+        let parent = self.resolve_parent_checked(path, |directory| {
+            self.check_search_path(directory, self.permission_boundary())
+        })?;
+        let node_type = match attributes.content {
+            axfs_ng_vfs::CreateContent::Node(node_type, _) => node_type,
+            axfs_ng_vfs::CreateContent::Symlink(_) => NodeType::Symlink,
+        };
+        let name = self.creation_name(&parent, node_type)?;
+        parent
+            .directory
+            .rebind(parent.directory.location().create_initialized(
+                name,
+                attributes,
+                self.credentials(),
+            )?)
     }
 
     /// Returns the canonical, absolute form of a path.

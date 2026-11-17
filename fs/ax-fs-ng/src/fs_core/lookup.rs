@@ -7,7 +7,10 @@ use axfs_ng_vfs::{
     ParentStep, PathHandle, PathObservation, VfsError, VfsResult,
 };
 
-use super::{FsView, LookupPolicy, LookupRestrictions, LookupScope, SYMLINKS_MAX};
+use super::{
+    FinalComponent, FsView, LookupPolicy, LookupRestrictions, LookupScope, ParentLookup,
+    SYMLINKS_MAX,
+};
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
 
@@ -49,6 +52,8 @@ pub(crate) struct LookupSession<'a> {
 
 enum FinalEntry<'a> {
     Name(Cow<'a, str>),
+    Current,
+    Parent,
     Resolved,
 }
 
@@ -110,27 +115,38 @@ impl<'a> LookupSession<'a> {
 
     pub(crate) fn parent(mut self) -> VfsResult<Continuation<'a>> {
         while let Some(component) = self.pending.pop_front() {
-            match component {
-                Component::Root => self.jump_root()?,
-                Component::Current => {
+            let entry = match component {
+                Component::Root => {
+                    self.jump_root()?;
+                    continue;
+                }
+                Component::Directory => {
+                    self.current.location().check_is_dir()?;
+                    continue;
+                }
+                Component::Current => FinalEntry::Current,
+                Component::Parent => FinalEntry::Parent,
+                Component::Name(name) => FinalEntry::Name(name),
+            };
+            if self
+                .pending
+                .iter()
+                .all(|part| matches!(part, Component::Directory))
+            {
+                let directory = !self.pending.is_empty();
+                return Ok(Continuation {
+                    session: self,
+                    entry,
+                    directory,
+                });
+            }
+            match entry {
+                FinalEntry::Current => {
                     self.check_search()?;
                     self.remember_search();
                 }
-                Component::Parent => self.ascend()?,
-                Component::Directory => self.current.location().check_is_dir()?,
-                Component::Name(name) => {
-                    if self
-                        .pending
-                        .iter()
-                        .all(|part| matches!(part, Component::Directory))
-                    {
-                        let directory = !self.pending.is_empty();
-                        return Ok(Continuation {
-                            session: self,
-                            entry: FinalEntry::Name(name),
-                            directory,
-                        });
-                    }
+                FinalEntry::Parent => self.ascend()?,
+                FinalEntry::Name(name) => {
                     let child = self.lookup(&name)?.ok_or(VfsError::NotFound)?;
                     self.remember_search();
                     if child.location().node_type() == NodeType::Symlink {
@@ -139,6 +155,7 @@ impl<'a> LookupSession<'a> {
                         self.current = child;
                     }
                 }
+                FinalEntry::Resolved => unreachable!("a component has an explicit kind"),
             }
         }
         Ok(Continuation {
@@ -376,7 +393,16 @@ impl<'a> Continuation<'a> {
             let credentials = session.credentials;
             session.validate_searches()?;
             let (child, created) = match entry {
-                FinalEntry::Resolved => {
+                special @ (FinalEntry::Current | FinalEntry::Parent | FinalEntry::Resolved) => {
+                    match special {
+                        FinalEntry::Current => {
+                            session.check_search()?;
+                            session.remember_search();
+                        }
+                        FinalEntry::Parent => session.ascend()?,
+                        FinalEntry::Resolved => {}
+                        FinalEntry::Name(_) => unreachable!("special component"),
+                    }
                     if intent.node.create_new {
                         return Err(VfsError::AlreadyExists);
                     }
@@ -440,18 +466,31 @@ impl<'a> Continuation<'a> {
         }
     }
 
-    pub(crate) fn finish_parent(self) -> VfsResult<(PathHandle, String, Vec<PathHandle>)> {
+    pub(crate) fn finish_parent(self, boundary: Option<PathHandle>) -> VfsResult<ParentLookup> {
         self.session.validate_searches()?;
         self.session.validate_result(&self.session.current)?;
-        let (directory, name) = match self.entry {
+        let component = match self.entry {
             FinalEntry::Name(name) => {
                 self.session.check_search()?;
-                (self.session.current, name.into_owned())
+                FinalComponent::Name(name.into_owned())
             }
-            FinalEntry::Resolved => super::FsView::resolved_parent_name(&self.session.current)?
-                .ok_or(VfsError::InvalidInput)?,
+            FinalEntry::Current => {
+                self.session.check_search()?;
+                FinalComponent::Current
+            }
+            FinalEntry::Parent => {
+                self.session.check_search()?;
+                FinalComponent::Parent
+            }
+            FinalEntry::Resolved => FinalComponent::Root,
         };
-        Ok((directory, name, self.session.searched))
+        Ok(ParentLookup {
+            directory: self.session.current,
+            component,
+            directory_required: self.directory,
+            searched: self.session.searched,
+            boundary,
+        })
     }
 
     pub(crate) fn finish_lookup_with_trace(
@@ -466,6 +505,15 @@ impl<'a> Continuation<'a> {
                 directory,
             } = continuation;
             let FinalEntry::Name(name) = entry else {
+                match entry {
+                    FinalEntry::Current => {
+                        session.check_search()?;
+                        session.remember_search();
+                    }
+                    FinalEntry::Parent => session.ascend()?,
+                    FinalEntry::Resolved => {}
+                    FinalEntry::Name(_) => unreachable!("special component"),
+                }
                 session.validate_searches()?;
                 session.validate_result(&session.current)?;
                 return Ok((session.current, session.searched));

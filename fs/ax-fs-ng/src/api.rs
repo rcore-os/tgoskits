@@ -76,22 +76,14 @@ pub fn rename_at(
     let caller = axfs_ng_vfs::NativeLinkCaller::root();
     let base = FsView::current(current_fs_context(), &caller);
     let src_ctx = context_for_at(&base, old_dir, old_path)?;
-    let (src_dir, src_name, src_searched) = src_ctx
-        .resolve_parent_with_search_checked(Path::new(old_path), |directory| {
-            src_ctx.check_search_path(directory, src_ctx.permission_boundary())
-        })?;
+    let source = src_ctx.resolve_parent_checked(Path::new(old_path), |directory| {
+        src_ctx.check_search_path(directory, src_ctx.permission_boundary())
+    })?;
     let dst_ctx = context_for_at(&base, new_dir, new_path)?;
-    let (dst_dir, dst_name, dst_searched) = dst_ctx
-        .resolve_parent_with_search_checked(Path::new(new_path), |directory| {
-            dst_ctx.check_search_path(directory, dst_ctx.permission_boundary())
-        })?;
-    base.rename_locations_with_boundaries_and_search(
-        (&src_dir, &src_name),
-        (&dst_dir, &dst_name),
-        RenameOptions::REPLACE,
-        (src_ctx.permission_boundary(), dst_ctx.permission_boundary()),
-        (&src_searched, &dst_searched),
-    )
+    let destination = dst_ctx.resolve_parent_checked(Path::new(new_path), |directory| {
+        dst_ctx.check_search_path(directory, dst_ctx.permission_boundary())
+    })?;
+    base.rename_resolved(&source, &destination, RenameOptions::REPLACE)
 }
 
 pub fn rename(old: &str, new: &str) -> VfsResult {

@@ -386,9 +386,14 @@ fn create_entry(
             axfs_ng_vfs::CreateContent::Node(ty, DeviceId::new(entry.rdev_major, entry.rdev_minor))
         }
     };
-    let (parent, name) = context.resolve_parent(path.as_ref())?;
-    let location = parent.location().restore_create(
-        &name,
+    let parent = context.resolve_parent(path)?;
+    let crate::FinalComponent::Name(name) = parent.component() else {
+        return Err(InitramfsError::Corrupt(
+            "archive entry has no normal final name",
+        ));
+    };
+    let location = parent.directory().location().restore_create(
+        name,
         axfs_ng_vfs::CreateAttributes {
             content,
             permission: mode,
@@ -399,7 +404,7 @@ fn create_entry(
     if ty == NodeType::RegularFile && !entry.data.is_empty() {
         write_file(context, path, entry.data, false)?;
     }
-    Ok(parent.rebind(location)?)
+    Ok(parent.directory().rebind(location)?)
 }
 
 fn inflate_gzip(input: &[u8]) -> Result<(Vec<u8>, usize), InitramfsError> {

@@ -534,6 +534,19 @@ dirfd 是搜索起点，不自动成为进程根。`IN_ROOT` 将本次起点设�
 不依赖词法归一化之后重新猜测路径原有含义。ABI 标志保持运行时输入，
 不为每个组合生成一套泛型解析器。
 
+`ParentLookup` 保存实际父目录的 PathHandle、`FinalComponent`、尾斜杠要求、
+原搜索记录和权限边界。父解析在末尾 `.`、`..` 之前停止，不能沿物理父关系
+重新取得一个普通名称。lookup/open 完成器才消费这些遍历意图；命名操作按
+fixed Linux 的 filename_create、filename_rmdir、filename_unlinkat 与 rename
+规则解释特殊末项。创建类特殊末项返回 EEXIST，rmdir 分别为 EINVAL、
+ENOTEMPTY、EBUSY，unlink 为 EISDIR；rename 在 mount 身份与两端末项之间
+保留 Linux 的检查顺序。尾斜杠不授权跟随删除操作的最终符号链接。
+
+多操作数入口先取得一个 FsView，再由 `view_at` 选择各自 dirfd；原 root、cwd、
+namespace 和 caller 不重新采样。link 的源空路径仍使用实际描述，rename 的两端
+父选择和最后提交借用同一原始视图。fd 表中的各描述按 Linux 的实际使用阶段
+取得，不把这个规则写成整个可变 fd 表的原子快照。
+
 ### 3.3 链接与末组件
 
 一次解析共用 Linux `MAXSYMLINKS = 40` 的总预算。

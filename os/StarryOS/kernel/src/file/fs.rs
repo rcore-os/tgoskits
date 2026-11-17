@@ -41,13 +41,21 @@ pub(crate) fn with_fs<R>(
         .as_thread()
         .snapshot_fs_binding()?
         .ok_or(StarryError::BadState)?;
-    let view = if dirfd == AT_FDCWD {
-        FsView::current(binding.fs, caller)
-    } else {
-        let directory = Directory::from_fd(dirfd)?.path_handle().clone();
-        FsView::at_directory(binding.fs, caller, directory)?
-    };
+    let view = view_at(&FsView::current(binding.fs, caller), dirfd)?;
     f(&view)
+}
+
+/// Selects a dirfd from the same operation's frozen root, cwd and namespace.
+/// Descriptor lookup retains its original description before leaving the table.
+pub(crate) fn view_at<'caller>(
+    base: &FsView<'caller>,
+    dirfd: c_int,
+) -> StarryResult<FsView<'caller>> {
+    if dirfd == AT_FDCWD {
+        Ok(base.clone())
+    } else {
+        Ok(base.with_dirfd(Directory::from_fd(dirfd)?.path_handle().clone())?)
+    }
 }
 
 pub enum ResolveAtResult {
@@ -102,13 +110,15 @@ pub(crate) fn resolve_at_checked(
     check_search: impl Fn(&Location) -> VfsResult<()>,
 ) -> StarryResult<ResolveAtResult> {
     let check = |_: &FsView<'_>, directory: &Location| check_search(directory);
-    resolve_at_with_search(caller, dirfd, path, flags, Some(&check)).map(|(result, ..)| result)
+    with_fs(AT_FDCWD, caller, |base| {
+        resolve_at_with_search(base, dirfd, path, flags, Some(&check)).map(|(result, ..)| result)
+    })
 }
 
 type SearchCheck<'a> = Option<&'a dyn Fn(&FsView<'_>, &Location) -> VfsResult<()>>;
 
 fn resolve_at_with_search(
-    caller: &crate::task::ProcLinkCaller,
+    base: &FsView<'_>,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
@@ -120,9 +130,7 @@ fn resolve_at_with_search(
                 return Err(StarryError::NotFound);
             }
             if dirfd == AT_FDCWD {
-                return with_fs(dirfd, caller, |fs| {
-                    Ok((ResolveAtResult::File(fs.cwd().clone()), None, Vec::new()))
-                });
+                return Ok((ResolveAtResult::File(base.cwd().clone()), None, Vec::new()));
             }
             Ok((resolve_fd(dirfd)?, None, Vec::new()))
         }
@@ -132,25 +140,24 @@ fn resolve_at_with_search(
             } else {
                 dirfd
             };
-            with_fs(dirfd, caller, |fs| {
-                let boundary = fs.permission_boundary().cloned();
-                if let Some(check) = search {
-                    let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                        fs.resolve_no_follow_with_search_checked(path, |directory| {
-                            check(fs, directory)
-                        })
-                    } else {
-                        fs.resolve_with_search_checked(path, |directory| check(fs, directory))
-                    }?;
-                    return Ok((ResolveAtResult::File(location), boundary, searched));
-                }
+            let fs = view_at(base, dirfd)?;
+            let boundary = fs.permission_boundary().cloned();
+            if let Some(check) = search {
                 let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-                    fs.resolve_no_follow_with_search(path)
+                    fs.resolve_no_follow_with_search_checked(path, |directory| {
+                        check(&fs, directory)
+                    })
                 } else {
-                    fs.resolve_with_search(path)
+                    fs.resolve_with_search_checked(path, |directory| check(&fs, directory))
                 }?;
-                Ok((ResolveAtResult::File(location), boundary, searched))
-            })
+                return Ok((ResolveAtResult::File(location), boundary, searched));
+            }
+            let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+                fs.resolve_no_follow_with_search(path)
+            } else {
+                fs.resolve_with_search(path)
+            }?;
+            Ok((ResolveAtResult::File(location), boundary, searched))
         }
     }
 }
@@ -161,19 +168,21 @@ pub(crate) fn resolve_at_with_boundary(
     path: Option<&str>,
     flags: u32,
 ) -> StarryResult<(ResolveAtResult, Option<PathHandle>, Vec<PathHandle>)> {
-    resolve_at_with_search(caller, dirfd, path, flags, None)
+    with_fs(AT_FDCWD, caller, |base| {
+        resolve_at_with_search(base, dirfd, path, flags, None)
+    })
 }
 
 /// Resolves an `*at` path with a credential-aware search check while retaining
 /// the directory trace needed for dirfd boundary validation.
 pub(crate) fn resolve_at_with_boundary_checked(
-    caller: &crate::task::ProcLinkCaller,
+    base: &FsView<'_>,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
     check_search: impl Fn(&FsView<'_>, &Location) -> VfsResult<()>,
 ) -> StarryResult<(ResolveAtResult, Option<PathHandle>, Vec<PathHandle>)> {
-    resolve_at_with_search(caller, dirfd, path, flags, Some(&check_search))
+    resolve_at_with_search(base, dirfd, path, flags, Some(&check_search))
 }
 
 pub(crate) fn resolve_at(
