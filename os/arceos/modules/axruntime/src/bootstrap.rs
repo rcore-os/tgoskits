@@ -18,9 +18,7 @@ fn runtime_page_fault_handler(
     addr: ax_memory_addr::VirtAddr,
     flags: ax_hal::trap::PageFaultFlags,
 ) -> bool {
-    if crate::diagnostics::diagnose_current_stack_guard_page_fault(addr) {
-        return false;
-    }
+    crate::diagnostics::panic_on_current_stack_guard_page_fault(addr);
 
     crate::kernel_mapping::handle_kernel_page_fault(addr, flags)
 }
