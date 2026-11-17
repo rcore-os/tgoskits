@@ -71,11 +71,15 @@ mod tests {
             ("fixture-unknown-linux-musl\n", 7, false),
         ] {
             let (_directory, executable) = rustup_fixture(output, status);
+            let _script_writer = fs::OpenOptions::new()
+                .write(true)
+                .open(&executable)
+                .unwrap();
             let result = ensure_target_with_rustup(target, true, &executable);
             assert_eq!(
                 result.is_ok(),
                 available,
-                "output={output:?}, status={status}"
+                "output={output:?}, status={status}, result={result:?}"
             );
             let calls = fs::read_to_string(executable.with_extension("calls")).unwrap();
             assert_eq!(calls, "target list --installed\n");
