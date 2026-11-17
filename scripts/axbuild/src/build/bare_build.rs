@@ -52,13 +52,15 @@ pub(crate) fn bare_build_target_for(target: &str) -> Option<CargoBuildTarget> {
             "-Z".to_string(),
             "build-std=core,alloc".to_string(),
         ],
-        // LLVM 23 otherwise limits strict-alignment memcpy lowering to four
-        // stores. Raising only this cost limit preserves early-boot alignment
-        // requirements while keeping ordinary kernel aggregates inline.
-        rustflags: if arch.arch == "aarch64" {
-            vec!["-Cllvm-args=--max-store-memcpy=16".to_string()]
-        } else {
-            Vec::new()
+        rustflags: match arch.arch {
+            // LLVM 23 otherwise limits strict-alignment memcpy lowering to
+            // four stores. Keep early-boot alignment while inlining aggregates.
+            "aarch64" => vec!["-Cllvm-args=--max-store-memcpy=16".to_string()],
+            // The soft-float ABI cannot support the SIMD backends. Runtime
+            // detection already returns false on this target; also exclude
+            // their unsupported target_feature declarations from compilation.
+            "x86_64" => vec!["--cfg".to_string(), "chacha20_backend=\"soft\"".to_string()],
+            _ => Vec::new(),
         },
         env: HashMap::from([(
             "CARGO_UNSTABLE_JSON_TARGET_SPEC".to_string(),
