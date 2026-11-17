@@ -289,6 +289,9 @@ impl OpenOptions {
                 || self.path
                 || self.direct
                 || loc.flags().contains(NodeFlags::NON_CACHEABLE);
+            // O_TRUNC changes regular file contents; opening a pipe or device
+            // must not call its length mutation operation.
+            let truncate = self.truncate && !self.path && loc.node_type() == NodeType::RegularFile;
             let mut backend = if loc.filesystem().stack_depth() != 0
                 && let Some(write) = &write_access
             {
@@ -298,7 +301,7 @@ impl OpenOptions {
             } else {
                 FileBackend::new_direct(loc)?
             };
-            if self.truncate && !self.path {
+            if truncate {
                 backend.set_len(0)?;
             }
             if !flags.contains(FileFlags::WRITE) {

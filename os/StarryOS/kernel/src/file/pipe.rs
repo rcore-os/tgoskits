@@ -827,7 +827,7 @@ pub struct Pipe {
     access: PipeAccess,
     shared: Arc<Shared>,
     non_blocking: AtomicBool,
-    named: Option<named::NamedFile>,
+    opened_file: Option<named::OpenedPipeFile>,
 }
 
 impl Drop for Pipe {
@@ -858,7 +858,7 @@ impl Drop for Pipe {
 
 impl Pipe {
     pub(crate) fn location(&self) -> axfs_ng_vfs::Location {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             return file.inner().location().clone();
         }
         self.shared.inode.location(self.shared.clone())
@@ -880,13 +880,13 @@ impl Pipe {
             access: PipeAccess::Read,
             shared: shared.clone(),
             non_blocking: AtomicBool::new(false),
-            named: None,
+            opened_file: None,
         };
         let write_end = Pipe {
             access: PipeAccess::Write,
             shared,
             non_blocking: AtomicBool::new(false),
-            named: None,
+            opened_file: None,
         };
         (read_end, write_end)
     }
@@ -1104,7 +1104,7 @@ impl Pipe {
             access: PipeAccess::Read,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
-            named: None,
+            opened_file: None,
         }
     }
 
@@ -1116,7 +1116,7 @@ impl Pipe {
             access: PipeAccess::Write,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
-            named: None,
+            opened_file: None,
         }
     }
 
@@ -1355,7 +1355,7 @@ impl FileLike for Pipe {
         let result = self.write_with_broken_pipe_handler(src, raise_pipe);
         if let Ok(bytes) = result
             && bytes > 0
-            && let Some(file) = self.named_file()
+            && let Some(file) = self.backing_file()
         {
             super::inotify::notify_modify_path(file.path().as_ref());
         }
@@ -1363,25 +1363,25 @@ impl FileLike for Pipe {
     }
 
     fn stat(&self) -> StarryResult<Kstat> {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             return file.stat();
         }
         Ok(super::metadata_to_kstat(&self.shared.inode.metadata()?))
     }
 
     fn inode_key(&self) -> Option<InodeKey> {
-        self.named_file().and_then(|file| file.inode_key())
+        self.backing_file().and_then(|file| file.inode_key())
     }
 
     fn path(&self) -> Cow<'_, str> {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             return file.path();
         }
         format!("pipe:[{}]", self.shared.inode.inode()).into()
     }
 
     fn open_flags(&self) -> u32 {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             return file.open_flags()
                 & !(linux_raw_sys::general::O_NONBLOCK | linux_raw_sys::general::O_APPEND);
         }
@@ -1389,11 +1389,11 @@ impl FileLike for Pipe {
     }
 
     fn append(&self) -> bool {
-        self.named_file().is_some_and(|file| file.append())
+        self.backing_file().is_some_and(|file| file.append())
     }
 
     fn set_append(&self, append: bool) -> StarryResult {
-        if let Some(file) = self.named_file() {
+        if let Some(file) = self.backing_file() {
             file.set_append(append)?;
         }
         Ok(())
@@ -1432,9 +1432,9 @@ impl Pollable for Pipe {
         // Linux reports POLLOUT when the pipe has a free PIPE_BUF-sized slot,
         // independently of whether the reader has already closed.
         let (readiness, suppress_hup) = if let Some(generation) = self
-            .named
+            .opened_file
             .as_ref()
-            .and_then(|named| named.initial_writer_generation)
+            .and_then(|opened| opened.initial_writer_generation)
         {
             // Peer presence and its generation must describe the same instant:
             // mixing snapshots could report HUP as the first writer arrives.

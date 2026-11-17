@@ -53,7 +53,7 @@ static FIFOS: Mutex<FifoRegistry> = Mutex::new(FifoRegistry {
     cleanup_after: None,
 });
 
-pub(super) struct NamedFile {
+pub(super) struct OpenedPipeFile {
     pub(super) file: Arc<File>,
     _mount_use: MountUseGuard,
     // Linux suppresses HUP on a nonblocking reader until a writer has opened.
@@ -61,8 +61,8 @@ pub(super) struct NamedFile {
 }
 
 impl Pipe {
-    pub(crate) fn named_file(&self) -> Option<&Arc<File>> {
-        self.named.as_ref().map(|named| &named.file)
+    pub(crate) fn backing_file(&self) -> Option<&Arc<File>> {
+        self.opened_file.as_ref().map(|opened| &opened.file)
     }
 
     /// Opens a FIFO endpoint, publishing it before waiting for its partner.
@@ -87,6 +87,7 @@ impl Pipe {
             .entry()
             .downcast::<ObjectNode<Arc<Shared>>>()
             .ok();
+        let anonymous = object.is_some();
         let shared = if let Some(object) = object {
             object.object.clone()
         } else {
@@ -105,18 +106,22 @@ impl Pipe {
             }
         };
         let (wait_generation, initial_writer_generation) = shared.update_state(|state| {
-            if access == PipeAccess::Write && nonblocking && state.readers == 0 {
+            // Anonymous pipes already name a live channel and never rendezvous on open.
+            // Named FIFOs retain Linux's partner wait and initial HUP suppression.
+            if !anonymous && access == PipeAccess::Write && nonblocking && state.readers == 0 {
                 return Err(StarryError::NoSuchDeviceOrAddress);
             }
             let wait_generation = match access {
-                PipeAccess::Read if !nonblocking && state.writers == 0 => {
+                PipeAccess::Read if !anonymous && !nonblocking && state.writers == 0 => {
                     Some(state.writer_generation)
                 }
-                PipeAccess::Write if state.readers == 0 => Some(state.reader_generation),
+                PipeAccess::Write if !anonymous && state.readers == 0 => {
+                    Some(state.reader_generation)
+                }
                 _ => None,
             };
             let initial_writer_generation =
-                (access == PipeAccess::Read && nonblocking && state.writers == 0)
+                (!anonymous && access == PipeAccess::Read && nonblocking && state.writers == 0)
                     .then_some(state.writer_generation);
             state.add_endpoint(access);
             Ok((wait_generation, initial_writer_generation))
@@ -127,7 +132,7 @@ impl Pipe {
             access,
             shared,
             non_blocking: core::sync::atomic::AtomicBool::new(nonblocking),
-            named: Some(NamedFile {
+            opened_file: Some(OpenedPipeFile {
                 file,
                 _mount_use: mount_use,
                 initial_writer_generation,

@@ -4381,7 +4381,9 @@ open_fifo 从该 payload 选择匿名语义：允许新的读、写或双向访�
 named FIFO 的伙伴，不抑制无 writer 时的 HUP；命名 FIFO 仍由现有 registry 与
 generation 完成 rendezvous。端点计数在 shared 状态锁内一次发布，等待与通知在
 锁外；失败、取消和关闭继续由同一 Pipe 析构回退。删除只服务旧捷径的 reopen
-方法。OpenOptions 只对普通文件执行内容截断，管道重开保留已排队字节。
+方法。OpenedPipeFile 保留这次打开的实际路径及 mount use，命名文件与匿名对象
+均经 backing_file 交给 descriptor_path，避免把通过 bind 得到的路径还原为 pipefs
+根。OpenOptions 只对普通文件执行内容截断，管道重开保留已排队字节。
 
 sys_openat 的创建观察、打开与最终 fd 分派借用同一次 with_fs 视图；受限
 openat2 也在该视图内完成分派。add_to_fd 接收保存的 FsView，终端路径解析不再

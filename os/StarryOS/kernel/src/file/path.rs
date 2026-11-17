@@ -28,8 +28,8 @@ pub(crate) fn descriptor_path(file: &Arc<dyn FileLike>) -> VfsResult<PathHandle>
         return Ok(table.inner().inner().path_handle().clone());
     }
     let location = if let Some(pipe) = file.downcast_ref::<Pipe>() {
-        if let Some(named) = pipe.named_file() {
-            return Ok(named.inner().path_handle().clone());
+        if let Some(backing) = pipe.backing_file() {
+            return Ok(backing.inner().path_handle().clone());
         }
         pipe.location()
     } else if let Some(socket) = file.downcast_ref::<Socket>() {
