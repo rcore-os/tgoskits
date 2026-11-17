@@ -304,19 +304,16 @@ impl<'caller> FsView<'caller> {
         let FinalComponent::Name(name) = &parent.component else {
             return Err(VfsError::IsADirectory);
         };
-        let entry = parent.directory.location().lookup_no_follow(name)?;
-        if entry.is_dir() {
-            return Err(VfsError::IsADirectory);
-        }
         if parent.directory_required {
-            return Err(VfsError::NotADirectory);
+            let entry = parent.directory.location().lookup_no_follow(name)?;
+            return Err(if entry.is_dir() {
+                VfsError::IsADirectory
+            } else {
+                VfsError::NotADirectory
+            });
         }
-        if entry.is_root_of_mount() {
-            return Err(VfsError::ResourceBusy);
-        }
-        // Native backends classify active inode holders. The preflight entry
-        // must retire before the actual unlink attempt observes that state.
-        drop(entry);
+        // The native attempt checks parent DAC and sticky ownership before
+        // target type and mount state, using one observation of the name slot.
         parent
             .directory
             .location()
@@ -335,12 +332,6 @@ impl<'caller> FsView<'caller> {
             FinalComponent::Parent => return Err(VfsError::DirectoryNotEmpty),
             FinalComponent::Root => return Err(VfsError::ResourceBusy),
         };
-        let entry = parent.directory.location().lookup_no_follow(name)?;
-        entry.check_is_dir()?;
-        if entry.ptr_eq(self.root_dir()) || entry.is_root_of_mount() {
-            return Err(VfsError::ResourceBusy);
-        }
-        drop(entry);
         parent
             .directory
             .location()
