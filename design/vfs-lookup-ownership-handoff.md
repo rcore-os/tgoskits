@@ -787,4 +787,48 @@ checked/trace/parent 旧循环、scoped 根与挂载约束、父命名及拓扑�
 独占冷缓存的项目 ktest 入口实际完成 venv、固定 Zephyr 检出、工具链下载、
 客户机编译和 Axvisor QEMU 运行。Fair 与 FIFO 两个策略各确认 300 次定向投递，
 非目标 vCPU 返回为 0；AXTEST 为 1 pass、0 fail、0 skip，最外层退出 0。
-这项结果只证明资源准备与该运行旅程，NUC Linux 客户机启动失败仍需独立定位。
+该修复随后在 `ab86e4910c` 的远端 AArch64 任务通过，日志确认实际下载及
+vcpu_runtime 运行。NUC 本轮也通过；此前启动失败的原因没有确认，不能归因于本项修复。
+
+
+### 9.27 软浮点依赖与内核夹具
+
+固定 rustc 的 [x86 裸机目标](https://github.com/rust-lang/rust/blob/8eb778d04094d3af4b26580cab327e0413eb1e02/compiler/rustc_target/src/spec/targets/x86_64_unknown_none.rs)
+与仓库 JSON 逐字段相同，保留 soft-float ABI 和禁用 SIMD 的契约。
+[Rust #160302](https://github.com/rust-lang/rust/pull/160302) 对软浮点目标显式开启
+SSE/AVX 的接口产生 future-incompatibility 警告；这也包含只声明而未使用的函数。
+`cpufeatures` 0.3.1 在 freestanding 目标上已返回无 SIMD 支持，旧 RNG 实际产物
+也走标量路径，不能据警告宣称已经复现用户 FP 状态破坏。
+
+`dfe068a933` 在共享 `CargoBuildTarget` 中为 x86 裸机选择
+`chacha20_backend="soft"`，构建与 Clippy 使用同一参数。真实依赖编译指纹确认
+该 cfg 已传给 ChaCha，新的报告不再包含 chacha20；core、memchr、bitmaps 的
+无条件 intrinsic 声明警告仍有记录，没有添加 allow 或开启内核 SIMD。
+实际 RNG fill_bytes 的反汇编没有 xmm、ymm 或 zmm 寄存器操作。
+
+首次 Starry 内核 axtest 构建因旧夹具的五处错误退出，尚未执行测试。
+`d58de43286` 迁移 mount 创建凭据、proc 冻结上下文借用，并把两个误用普通
+`#[test]` 的 namespace 身份用例注册到 axtest。修复后的 x86_64 完整内核测试
+为 263 pass、0 fail、0 skip，最外层退出 0；随机设备熵混合、两个 namespace
+身份和 mountinfo 判定都有独立的实际通过标记。
+
+axbuild 标准库一包与其 Clippy 一项通过。首次 Kernel Clippy 日志逐项打印 72 项
+通过，但外层进程返回 143，未作为最终验收；随后发现共享参数只作用于当前 crate，
+需按下一节修正并重新执行。远端 `ab86e4910c` 的完整 CI 为 40 成功、4 失败、
+5 跳过，失败均为 Starry suite，尚未达到最终交付条件。
+
+
+### 9.28 静态检查参数的依赖边界
+
+原 Clippy 适配把 `CargoBuildTarget.rustflags` 放在 `--` 后，目标策略只作用于当前
+crate，依赖仍按另一套参数编译。`33df20205c` 复用已有 Cargo rustflags 来源合并，
+把目标策略传到依赖；每项检查专用的 source cfg 与 warnings 门禁继续留在 `--` 后。
+这也使 AArch64 的复制代价参数在构建和 Clippy 中具有相同的依赖作用域。
+
+同一协议回归在原适配器 `bfa4e20a34` 上为 510 pass、1 fail，因目标策略没有进入
+依赖编译作用域而失败，最外层退出 1。恢复正确适配后 axbuild 标准库一包通过，
+最外层退出 0；两次使用逐字相同的测试文件。实际旧依赖编译指纹也缺少标量 cfg。
+最终 `33df20205c` 的 axbuild/Kernel 共 73 项 Clippy 全部通过，独立退出状态文件
+确认最外层为 0。实际 x86 debug 依赖指纹从没有标量 cfg 变为包含该 cfg，
+当前编译报告不再含 chacha20。标准库回归、实际依赖参数和最外层终态分别记录，
+没有把先前退出 143 的日志作为本次验收。

@@ -2188,7 +2188,7 @@
       "本记录为局部阶段证据；PR 保持草稿，完整目标没有缩减。"
     ]
   },
-  "latest_evidence_section": "ordinary_lookup_session_runtime",
+  "latest_evidence_section": "clippy_dependency_policy",
   "lookup_component_runtime": {
     "source_commit": "e828831525a25bfa702fb679b868be46b9ec1da5",
     "source_hashes": {
@@ -2497,6 +2497,201 @@
     },
     "limitations": [
       "Does not prove the final PR CI or the independent ASUS NUC Linux boot failure."
-    ]
+    ],
+    "remote_ci": {
+      "source_commit": "ab86e4910cdc28a0686779227af19f806da21692",
+      "job_id": 133781104086,
+      "url": "https://github.com/rcore-os/tgoskits/actions/runs/44004841725/job/133781104086",
+      "conclusion": "SUCCESS",
+      "actual_download_url_logged": true,
+      "vcpu_runtime_pass": 1,
+      "vcpu_runtime_fail": 0,
+      "log_sha256": "5cdfe0bbd13163e99aeb48bedc8f4a3dc279c20181efabd98ce9c844a6c3e161"
+    }
+  },
+  "rustc_softfloat_followup": {
+    "recorded_at": "2026-11-17T03:01:57.686155+00:00",
+    "source_commit": "d58de43286c7d305482bfa07b559d8f7b0ec6867",
+    "comparison_base": "ab86e4910cdc28a0686779227af19f806da21692",
+    "source_tree": "feb46e48d43d33d44e0590bf070477db37100dba",
+    "source_files": {
+      ".agents/skills/arch-platform-porting/SKILL.md": "5fcf2310759b22c49f12a32c54ca08a8f70fdd00f75d23e58da2895b7f7fbb7e",
+      "os/StarryOS/kernel/src/file/nsfd/object.rs": "8855d59f45717a79f62052d864bb19bf84b8cdd12f3051355db1e013cdfa0c79",
+      "os/StarryOS/kernel/src/pseudofs/proc.rs": "96a36e802a0889b819047c684eb2d8cd7f2e302796a58f9c392fa3a6851f9c84",
+      "os/StarryOS/kernel/src/syscall/fs/mount/tests.rs": "adad2b202c400fa1f99f869e5558142f976bd389d7ee509da30e1e96c3ce770a",
+      "scripts/axbuild/src/build/bare_build.rs": "45e120d7ac3ccaef3b8037c74c21c43411394ff789bec54b1392569c8560afa8"
+    },
+    "changes": [
+      "The shared x86 bare target policy explicitly selects the supported chacha20 soft backend; host/std target selection stays independent.",
+      "The x86 target JSON exactly matches the fixed compiler built-in target, including the soft-float ABI and disabled SIMD features.",
+      "Two namespace identity tests now register with axtest. Mount fixture creation supplies explicit native credentials; proc mountinfo borrows its frozen context."
+    ],
+    "checks": {
+      "axbuild_clippy": {
+        "checks": 1,
+        "exit_code": 0
+      },
+      "axbuild_std": {
+        "packages": 1,
+        "exit_code": 0
+      },
+      "kernel_clippy": {
+        "status": "superseded",
+        "reported_passed_checks": 72,
+        "outer_exit_code": 143,
+        "reason": "The outer process did not return success; the dependency flag-scope defect was then identified. Not accepted as final validation."
+      },
+      "kernel_axtest": {
+        "arch": "x86_64",
+        "pass": 263,
+        "fail": 0,
+        "skip": 0,
+        "exit_code": 0,
+        "selected_cases": [
+          "pseudofs::dev::tests::random_write_mixes_entropy",
+          "file::nsfd::object::tests::namespace_views_share_unique_allocated_inodes",
+          "file::nsfd::object::tests::namespace_index_canonicalizes_races_and_retires_dead_owners",
+          "pseudofs::proc::tests::proc_mountinfo_lines_match_linux_layout"
+        ]
+      }
+    },
+    "fixture_build_adaptation": {
+      "before_commit": "dfe068a933bbda74cab34b16fcf42376e4d1d894",
+      "before_exit_code": 1,
+      "before_reason": "Five errors in axtest-only fixtures prevented execution. This was not a runtime regression proof.",
+      "after_commit": "d58de43286c7d305482bfa07b559d8f7b0ec6867",
+      "after_exit_code": 0
+    },
+    "codegen": {
+      "kernel": "/home/zhourui/.codex/artifacts/pr2800-continuation/verified-kernels/x86_64-d58de43286-axtest.elf",
+      "sha256": "6f1a2f0bab976d4cfec2c817b667fc6aedfb725ca61a2799ab64e519f33461d1",
+      "symbol": "ffffffff80590c10 0000000000000426 t <rand_core::block::BlockRng<chacha20::ChaChaCore<chacha20::R20, chacha20::variants::Legacy>>>::fill_bytes",
+      "simd_register_operands": 0
+    },
+    "remaining_future_incompatibility_packages": [
+      "bitmaps@3.2.1",
+      "core@0.0.0",
+      "memchr@2.8.3"
+    ],
+    "compiler_reference": "https://github.com/rust-lang/rust/pull/160302",
+    "logs": {
+      "rustc-soft-chacha-axbuild-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-axbuild-clippy.log",
+        "sha256": "26147e52d7da44960d8063d7014afb4818d1471ee59fde9c9e29a47aed367e8d"
+      },
+      "rustc-soft-chacha-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-std.log",
+        "sha256": "ed52afde6753f9ccfbc842ed06dec3c8ddb086f9ecab561df30358b4e7ef6889"
+      },
+      "rustc-soft-chacha-kernel-qemu.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-kernel-qemu.log",
+        "sha256": "f00403a5cfab9b2239960fb9cfa0c55561c9de12442c70ccd2be194b897a0bbb"
+      },
+      "rustc-soft-chacha-kernel-qemu-repaired.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-kernel-qemu-repaired.log",
+        "sha256": "8002e965e54707446269718a54ae22893fbfd8b81af63656ee97656ceb4d574a"
+      },
+      "rustc-soft-chacha-future-report.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-future-report.json",
+        "sha256": "e86bce2382cad937c82ed6c1d396e0c7da7e5fb879694b0c6e0adda3ea91d5ad"
+      },
+      "rustc-soft-chacha-compiler-fingerprint.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-compiler-fingerprint.json",
+        "sha256": "fb2dbe2690f9754665894abcb4fbbbc538a944289b815eee93c5a547db6b48a3"
+      },
+      "rustc-soft-chacha-codegen.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-codegen.json",
+        "sha256": "ba7c946267fe3fc7db024a7b842db5d306e4d5a6a71dfe4276acbfed8469b211"
+      },
+      "rustc-soft-chacha-rng-disassembly.txt": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-rng-disassembly.txt",
+        "sha256": "3a22e71a57b89e4a041d1bcea5c0ff3e29b729e321a8e69b36234a8a57df87a3"
+      },
+      "rustc-soft-chacha-target-comparison.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-soft-chacha-target-comparison.json",
+        "sha256": "6af3aca0feb51136d03ea239ccc9af4353b53bedb01cd1f622fd1c00868c735b"
+      }
+    },
+    "limitations": [
+      "Remaining warnings arise from upstream unconditional SIMD intrinsic interfaces; they have not been suppressed or claimed eliminated.",
+      "The ordinary x86 RNG already chose scalar code through cpufeatures. This change removes compilation of unsupported ChaCha backend declarations rather than claiming a previously proven SIMD runtime failure.",
+      "This targeted kernel result does not prove scoped lookup, CACHED, full syscall compatibility or final PR CI."
+    ],
+    "remote_ci_snapshot": {
+      "source_commit": "ab86e4910cdc28a0686779227af19f806da21692",
+      "run_id": 44004841725,
+      "success": 40,
+      "failure": 4,
+      "skipped": 5,
+      "pending": 0,
+      "failed_scope": "The four Starry architecture suites. Axvisor AArch64 and ASUS NUC both succeeded in this run; no causal claim for the previous NUC failure."
+    }
+  },
+  "clippy_dependency_policy": {
+    "recorded_at": "2026-11-17T03:51:51.549747+00:00",
+    "source_commit": "33df20205c848cc4da538a1bf4a5619fb2a212a5",
+    "red": {
+      "source_commit": "bfa4e20a34df3aa4d3842622beef39235f4ae0b2",
+      "production_base": "d58de43286c7d305482bfa07b559d8f7b0ec6867",
+      "same_test_blob": "94a884331addb72249859e3efa1cb236ef024ac9",
+      "passed_unit_tests": 510,
+      "failed_unit_tests": 1,
+      "std_exit_code": 1,
+      "failure": "target policy must configure Cargo dependencies before the -- boundary"
+    },
+    "green": {
+      "std_packages": 1,
+      "std_exit_code": 0,
+      "clippy_status": "passed",
+      "clippy_checks": 73,
+      "axbuild_clippy_checks": 1,
+      "kernel_clippy_checks": 72,
+      "clippy_exit_code": 0,
+      "dependency_fingerprints_verified": true
+    },
+    "changes": [
+      "Target-wide defaults use the existing Cargo rustflags-source merge; a target config or the active encoded environment reaches dependencies.",
+      "Per-check source cfg and deny-warnings remain after the Clippy -- boundary, local to the selected crate."
+    ],
+    "source_files": {
+      "scripts/axbuild/src/checks/clippy/check.rs": "53f727604f570e133e125d58a055a6d1a2c2a6683d49d78b4b63ba4f301b6d83",
+      "scripts/axbuild/src/checks/clippy/tests/expand.rs": "b6ca21ef3543b73730d5b0c37ddb2252b8b280884e10e53eca63d3e948295d87"
+    },
+    "logs": {
+      "rustc-clippy-dependency-before-final-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-before-final-std.log",
+        "sha256": "5f934c1ed2bafe5212856d4f6fd60137672017e6640936cec3e0b914fac9f7cc"
+      },
+      "rustc-clippy-dependency-after-final-std.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-after-final-std.log",
+        "sha256": "ea730e0cbc3ac9de2df2ee57b3353105d2357f156c80c92a931988115bf9eefa"
+      },
+      "rustc-clippy-dependency-before-fingerprints.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-before-fingerprints.json",
+        "sha256": "3a57de29c0b0461eb858c819a8c5738ea1fbdc932020d58e8636b60d68449614"
+      },
+      "rustc-clippy-dependency-verified-clippy.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-verified-clippy.log",
+        "sha256": "b6824c647a42e250e01d079e0afde3bd89f0e9577003762a5baa06f7bbd0bf56"
+      },
+      "rustc-clippy-dependency-verified-clippy.exit": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-verified-clippy.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "rustc-clippy-dependency-after-fingerprints.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-after-fingerprints.json",
+        "sha256": "8d6dd0a0abe76f553c4b46091469ee3c608b5933e447846b4e8adef8d7995bb1"
+      },
+      "ci-ab86-checks-snapshot.json": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-ab86-checks-snapshot.json",
+        "sha256": "d30bb05c49a1840c5e005ff91b4f7fa6e8bc81213db96b677d6781b091d6fee6"
+      },
+      "ci-ab86-axvisor-aarch64.log": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/ci-ab86-axvisor-aarch64.log",
+        "sha256": "5cdfe0bbd13163e99aeb48bedc8f4a3dc279c20181efabd98ce9c844a6c3e161"
+      }
+    },
+    "validation_status_file": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-verified-clippy.exit",
+    "validation_log": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustc-clippy-dependency-verified-clippy.log"
   }
 }
