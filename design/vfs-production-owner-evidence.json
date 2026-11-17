@@ -4933,5 +4933,52 @@
       "same-condition performance and independent design/implementation review remain required",
       "CI on prior 822838d283 has separate std, stack-guard diagnostic, DRM vblank and board APK failures; this local stage does not mark those checks passed"
     ]
+  },
+  "rustup_fixture_execution": {
+    "test_source_before": "68ce4b0dddb3a66019e00c91f71c343328bd7858",
+    "implementation_source": "dd987ab09aa735bd025edc2415264116c52d372b",
+    "scope": "axbuild Rust target preparation fixture; production rustup argument contract unchanged",
+    "deterministic_condition": "keep a writable script fd open through child execution; direct script exec fails with ETXTBSY, explicit /bin/sh can read it",
+    "before": {
+      "passed": 511,
+      "failed": 1,
+      "outer_exit": 1
+    },
+    "after": {
+      "passed": 512,
+      "failed": 0,
+      "outer_exit": 0
+    },
+    "std_command": "CARGO_INCREMENTAL=0 cargo xtask test --since 68ce4b0ddd",
+    "clippy": {
+      "command": "CARGO_INCREMENTAL=0 cargo xtask clippy --package axbuild",
+      "passed": 1,
+      "failed": 0,
+      "outer_exit": 0
+    },
+    "source_sha256": {
+      "scripts/axbuild/src/support/rustup.rs": "79d990f5496aa2fc0486bc05739f2152d804f7cd06bac12d362e8593c0459bd2"
+    },
+    "logs": {
+      "before": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustup-fixture-before.log",
+        "sha256": "3471b37cc5939f596166cc23dbf7390e72796e46b2cd9ce0cf6202540ba49d07",
+        "outer_exit": 1
+      },
+      "after": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustup-fixture-after.log",
+        "sha256": "639b713acee9324022e7d3256730d0f9544cc04cfa555c5dda589e98a0f68491",
+        "outer_exit": 0
+      },
+      "clippy": {
+        "path": "/home/zhourui/.codex/artifacts/pr2800-continuation/rustup-fixture-clippy.log",
+        "sha256": "747738183fa5fe42a3784a196f88ef484501a5e957fd9f3b8e7752d40f2dd29e",
+        "outer_exit": 0
+      }
+    },
+    "limitations": [
+      "original 822838d283 CI assertion did not expose its underlying error; the controlled ETXTBSY proof does not establish the unique cause of that run",
+      "ArceOS guard diagnostic, LoongArch DRM vblank and board APK failures remain under investigation"
+    ]
   }
 }

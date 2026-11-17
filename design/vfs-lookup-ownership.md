@@ -4567,3 +4567,11 @@ Linux 行为以固定提交源码为准；Rust 与其他 VFS 资料用于解释�
 - [Embedded Rust Book：类型状态](https://docs.rust-embedded.org/book/static-guarantees/typestate-programming.html)
 - [Rustonomicon：析构泄漏](https://doc.rust-lang.org/nomicon/leaking.html)
 - [标准库文件同步与析构错误](https://doc.rust-lang.org/std/fs/struct.File.html#method.sync_all)
+
+### 6.26 目标准备夹具的执行
+
+`ensure_target_with_rustup` 接收宿主命令，预装容器只查询完整匹配的已安装目标，
+普通宿主仍执行 target add。测试通过 /bin/sh 读取临时脚本，避免并行子进程在
+fork 与 exec 之间保留写句柄时直接执行脚本触发 ETXTBSY。原功能测试显式保持
+写句柄，旧执行方式稳定失败，修复后 512/0，axbuild Clippy 1/1。既有 CI 未输出
+底层错误，因此受控证明仅确定夹具缺陷，不将其写成该 CI 的唯一根因。
