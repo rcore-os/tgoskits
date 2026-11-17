@@ -20,9 +20,9 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntryId, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor,
     DirectoryReadState, Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps,
-    Metadata, MetadataUpdate, MountWriteState, NodeFlags, NodeOps, NodePermission, NodeType,
-    OpenOptions, RawSpinLock, RawSpinLockGuard, Reference, RenameOptions, TypeMap, VfsError,
-    VfsResult, WeakDirEntry, XattrSetMode,
+    LookupStep, Metadata, MetadataUpdate, MountWriteState, NodeFlags, NodeOps, NodePermission,
+    NodeType, OpenOptions, RawSpinLock, RawSpinLockGuard, Reference, RenameOptions, TypeMap,
+    VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -1182,6 +1182,21 @@ impl Location {
                 loc.resolve_mountpoint()
             }
         })
+    }
+
+    /// Observes one named user-path component, including covering mounts.
+    ///
+    /// This may block. Call outside backend gates and operation admissions.
+    /// Dot and parent traversal belong to the caller's root policy. A returned
+    /// location still needs the caller's mount-use and topology validation.
+    pub fn lookup_component(&self, name: &str) -> LookupStep<Self> {
+        let directory = match self.entry.as_dir() {
+            Ok(directory) => directory,
+            Err(error) => return LookupStep::Failed(error),
+        };
+        directory
+            .lookup_component(name)
+            .map(|entry| Self::new(self.mountpoint.clone(), entry).resolve_mountpoint())
     }
 
     /// Looks up one backend component without crossing mounts or following links.

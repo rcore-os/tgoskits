@@ -232,6 +232,10 @@ pub(super) mod tests {
             true
         }
 
+        fn yield_now(&self) -> BlockResult<()> {
+            Err(BlockError::Unsupported)
+        }
+
         fn notification(&self) -> Arc<dyn BlockNotification> {
             let notification = Arc::new(QueueNotification {
                 pending: AtomicBool::new(false),

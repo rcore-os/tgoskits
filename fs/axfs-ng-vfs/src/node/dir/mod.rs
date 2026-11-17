@@ -12,6 +12,7 @@ use crate::{
 mod cache;
 mod command;
 mod completion;
+mod lookup;
 mod mutation;
 mod native;
 mod outcome;
@@ -19,6 +20,7 @@ use cache::DirectoryCache;
 pub use command::*;
 pub(crate) use command::{CreateSelection, MutationTarget};
 pub use completion::*;
+pub use lookup::{LookupConflict, LookupStep};
 pub use mutation::*;
 pub(crate) use native::start_rename_expected;
 pub use native::*;
@@ -390,7 +392,28 @@ impl DirNode {
     /// Looks up a directory entry by name.
     pub fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
         verify_entry_name(name)?;
-        self.lookup_and_cache(name)
+        self.lookup_and_cache(name).into_result()
+    }
+
+    /// Observes one ordinary path component without consuming session state.
+    /// Call outside backend gates/admissions. A caller may retry only Revalidate
+    /// after retiring the attempt and checking its saved path constraints.
+    pub fn lookup_component(&self, name: &str) -> LookupStep<DirEntry> {
+        if let Err(error) = verify_entry_name(name) {
+            return LookupStep::Failed(error);
+        }
+        let observation = match crate::NameObservation::capture() {
+            Ok(observation) => observation,
+            Err(_) => return LookupStep::Revalidate(LookupConflict::ParentNaming),
+        };
+        let result = self.lookup_and_cache(name);
+        match result {
+            LookupStep::Failed(_) => result,
+            _ if observation.validate().is_err() => {
+                LookupStep::Revalidate(LookupConflict::ParentNaming)
+            }
+            _ => result,
+        }
     }
 
     pub fn read_dir(

@@ -162,6 +162,14 @@ impl BlockRuntimeOps for RuntimeTaskOps {
             && !crate::guard::in_atomic_context()
     }
 
+    fn yield_now(&self) -> BlockResult<()> {
+        if crate::guard::in_atomic_context() {
+            return Err(BlockError::WouldBlock);
+        }
+        crate::task::thread::current::current_thread_id().map_err(task_error_to_block_error)?;
+        crate::task::thread::current::yield_current_cpu().map_err(task_error_to_block_error)
+    }
+
     fn notification(&self) -> Arc<dyn BlockNotification> {
         Arc::new(RuntimeNotification::new())
     }

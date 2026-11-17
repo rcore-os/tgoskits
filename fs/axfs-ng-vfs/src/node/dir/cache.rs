@@ -4,7 +4,7 @@ use alloc::{borrow::ToOwned, collections::VecDeque, string::String, sync::Arc, v
 
 use hashbrown::{HashMap, HashSet};
 
-use super::{DirEntry, DirNode, VfsError, VfsResult};
+use super::{DirEntry, DirNode, LookupConflict, LookupStep, VfsError};
 use crate::{MutationRetire, NameState, RawSpinLock, WeakDirEntry};
 
 const MAX_NEGATIVE_ENTRIES: usize = 128;
@@ -307,55 +307,95 @@ impl DirNode {
         retired.retire(removed);
     }
 
-    pub(super) fn lookup_and_cache(&self, name: &str) -> VfsResult<DirEntry> {
+    pub(super) fn lookup_and_cache(&self, name: &str) -> LookupStep<DirEntry> {
         let cacheable = self.ops.is_cacheable_child(name);
-        if let Some(entry) = self.lookup_cache(name) {
-            retain(&entry);
-            return Ok(entry);
-        }
         let (generation, namespace_generation) = {
             let cache = self.cache.lock();
+            if cache.writers != 0 {
+                return LookupStep::Revalidate(LookupConflict::ParentNaming);
+            }
             (cache.generation, cache.namespace_generation)
         };
+        if let Some(entry) = self.lookup_cache(name) {
+            if let Some(conflict) = self.lookup_conflict(generation, namespace_generation) {
+                return LookupStep::Revalidate(conflict);
+            }
+            retain(&entry);
+            return LookupStep::Found(entry);
+        }
         let version = if cacheable {
-            self.ops.negative_cache_generation()?
+            match self.ops.negative_cache_generation() {
+                Ok(version) => version,
+                Err(error) => return LookupStep::Failed(error),
+            }
         } else {
             None
         };
         if let Some(version) = version {
             let cache = self.cache.lock();
+            if cache.namespace_generation != namespace_generation || cache.writers != 0 {
+                return LookupStep::Revalidate(LookupConflict::ParentNaming);
+            }
+            if cache.generation != generation {
+                return LookupStep::Revalidate(LookupConflict::CandidatePublication);
+            }
             if cache.generation == generation
                 && cache.missing_version == Some(version)
                 && cache.missing.contains(name)
             {
-                return Err(VfsError::NotFound);
+                return LookupStep::Missing;
             }
         }
         let result = self.ops.lookup(name);
-        let missing_version = if matches!(result, Err(VfsError::NotFound))
-            && version.is_some()
-            && self.ops.negative_cache_generation()? == version
-        {
-            version
-        } else {
-            None
-        };
         match result {
             Ok(candidate) => {
                 // Dynamic entries still execute the backend lookup above. Their
                 // supplied semantic identity only canonicalizes the live alias.
                 if !cacheable && candidate.identity().is_none() {
-                    return Ok(candidate);
+                    return match self.lookup_conflict(generation, namespace_generation) {
+                        Some(conflict) => LookupStep::Revalidate(conflict),
+                        None => LookupStep::Found(candidate),
+                    };
                 }
                 self.publish_lookup(name, candidate, generation, namespace_generation, cacheable)
             }
-            Err(error) => {
+            Err(VfsError::NotFound) => {
+                let latest_version = if version.is_some() {
+                    match self.ops.negative_cache_generation() {
+                        Ok(version) => version,
+                        Err(error) => return LookupStep::Failed(error),
+                    }
+                } else {
+                    None
+                };
                 let mut cache = self.cache.lock();
-                if cache.generation == generation && missing_version.is_some() {
-                    cache.remember_missing(name, missing_version);
+                if cache.namespace_generation != namespace_generation || cache.writers != 0 {
+                    return LookupStep::Revalidate(LookupConflict::ParentNaming);
                 }
-                Err(error)
+                if cache.generation != generation || latest_version != version {
+                    return LookupStep::Revalidate(LookupConflict::CandidatePublication);
+                }
+                if latest_version.is_some() {
+                    cache.remember_missing(name, latest_version);
+                }
+                LookupStep::Missing
             }
+            Err(error) => LookupStep::Failed(error),
+        }
+    }
+
+    fn lookup_conflict(
+        &self,
+        generation: u64,
+        namespace_generation: u64,
+    ) -> Option<LookupConflict> {
+        let cache = self.cache.lock();
+        if cache.namespace_generation != namespace_generation || cache.writers != 0 {
+            Some(LookupConflict::ParentNaming)
+        } else if cache.generation != generation {
+            Some(LookupConflict::CandidatePublication)
+        } else {
+            None
         }
     }
 
@@ -366,13 +406,16 @@ impl DirNode {
         generation: u64,
         namespace_generation: u64,
         cacheable: bool,
-    ) -> VfsResult<DirEntry> {
+    ) -> LookupStep<DirEntry> {
         let canonical = self.ops.canonical_name(name, &candidate);
         let candidate_state = candidate.name_state();
         let (winner, previous, retain_winner) = {
             let mut cache = self.cache.lock();
             if cache.namespace_generation != namespace_generation || cache.writers != 0 {
-                return Err(VfsError::WouldBlock);
+                return LookupStep::Revalidate(LookupConflict::ParentNaming);
+            }
+            if cache.generation != generation {
+                return LookupStep::Revalidate(LookupConflict::CandidatePublication);
             }
             let existing = cache
                 .entries
@@ -403,7 +446,7 @@ impl DirNode {
         if retain_winner {
             retain(&winner);
         }
-        Ok(winner)
+        LookupStep::Found(winner)
     }
 
     pub fn lookup_cache(&self, name: &str) -> Option<DirEntry> {

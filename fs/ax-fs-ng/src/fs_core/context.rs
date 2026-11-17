@@ -10,9 +10,9 @@ use alloc::{
 use ax_io::{Read, Write};
 use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{
-    CreateAttributes, DirectoryCursor, DirectoryReadState, Location, Metadata, MountNamespace,
-    Mountpoint, MutationCredentials, NodePermission, NodeType, PathHandle, RenameOptions, VfsError,
-    VfsResult,
+    CreateAttributes, DirectoryCursor, DirectoryReadState, Location, LookupStep, Metadata,
+    MountNamespace, Mountpoint, MutationCredentials, NodePermission, NodeType, PathHandle,
+    RenameOptions, VfsError, VfsResult,
     path::{Component, Components, Path, PathBuf},
 };
 
@@ -243,10 +243,33 @@ impl FsContext {
         follow_count: &mut usize,
         search: SearchCheck<'_>,
     ) -> VfsResult<Location> {
-        Self::check_search(dir, search)?;
-        let loc = dir.lookup_no_follow(name)?;
+        let loc = Self::lookup_component(dir, name, search)?;
         self.with_current_dir(dir.clone())?
             .try_resolve_symlink_using(loc, follow_count, search)
+    }
+
+    // Only an unpublished component attempt is repeated. The saved directory,
+    // credentials callback and link counter remain owned by the original walk.
+    fn lookup_component(
+        dir: &Location,
+        name: &str,
+        search: SearchCheck<'_>,
+    ) -> VfsResult<Location> {
+        loop {
+            Self::check_search(dir, search)?;
+            match dir.lookup_component(name) {
+                LookupStep::Found(location) => return Ok(location),
+                LookupStep::Missing => return Err(VfsError::NotFound),
+                LookupStep::Failed(error) => return Err(error),
+                LookupStep::Revalidate(_) => {
+                    let runtime =
+                        crate::os::runtime_ops().map_err(crate::block_error_to_vfs_error)?;
+                    runtime
+                        .yield_now()
+                        .map_err(crate::block_error_to_vfs_error)?;
+                }
+            }
+        }
     }
 
     /// Recognizes the saved process root even below covering mounts. A dirfd
@@ -330,10 +353,7 @@ impl FsContext {
             Some(name) if follow_final || requires_directory => {
                 self.lookup(&dir, name, &mut follow_count, search)?
             }
-            Some(name) => {
-                Self::check_search(&dir, search)?;
-                dir.lookup_no_follow(name)?
-            }
+            Some(name) => Self::lookup_component(&dir, name, search)?,
             None => dir,
         };
         Self::finish_checked_path(path, resolved, search)
@@ -385,9 +405,8 @@ impl FsContext {
         searched: &mut Vec<Location>,
         search: SearchCheck<'_>,
     ) -> VfsResult<Location> {
+        let loc = Self::lookup_component(dir, name, search)?;
         searched.push(dir.clone());
-        Self::check_search(dir, search)?;
-        let loc = dir.lookup_no_follow(name)?;
         self.with_current_dir(dir.clone())?
             .try_resolve_symlink_with_trace(loc, follow_count, searched, search)
     }
@@ -472,7 +491,7 @@ impl FsContext {
         let (dir, name) =
             self.resolve_inner_with_trace(path.as_ref(), &mut 0, &mut searched, None)?;
         let location = match name {
-            Some(name) => dir.lookup_no_follow(name)?,
+            Some(name) => Self::lookup_component(&dir, name, None)?,
             None => dir,
         };
         Ok((location, searched))
@@ -576,10 +595,7 @@ impl FsContext {
                 &mut searched,
                 Some(&check_search),
             )?,
-            Some(name) => {
-                Self::check_search(&dir, Some(&check_search))?;
-                dir.lookup_no_follow(name)?
-            }
+            Some(name) => Self::lookup_component(&dir, name, Some(&check_search))?,
             None => dir,
         };
         let location = Self::finish_checked_path(path, location, Some(&check_search))?;

@@ -39,11 +39,14 @@ fn non_not_found_errors_are_never_cached() {
         VfsError::Io,
         VfsError::PermissionDenied,
         VfsError::InvalidData,
+        VfsError::WouldBlock,
     ] {
         *backend.lookup_error.lock() = error;
         let before = backend.lookups.load(Ordering::Relaxed);
         for _ in 0..2 {
-            assert!(matches!(directory.lookup("missing"), Err(actual) if actual == error));
+            assert!(
+                matches!(directory.lookup_and_cache("missing"), LookupStep::Failed(actual) if actual == error)
+            );
         }
         assert_eq!(backend.lookups.load(Ordering::Relaxed), before + 2);
     }
@@ -92,19 +95,32 @@ fn stale_missing_lookup_cannot_hide_a_completed_create() {
     *backend.after_lookup.lock() = Some(Box::new(move || {
         create_directory(&changed, "created");
     }));
-    assert_missing(&directory, "created");
+    assert!(matches!(
+        directory.lookup_and_cache("created"),
+        LookupStep::Revalidate(LookupConflict::ParentNaming)
+    ));
     assert!(directory.lookup("created").is_ok());
 }
 
 #[test]
 fn cache_clear_rejects_an_in_flight_positive_lookup() {
-    let (directory, backend) = fixture();
-    let child = create_directory(&directory, "present");
-    directory.clear_cached_entries();
-    let changed = directory.clone();
-    *backend.after_lookup.lock() = Some(Box::new(move || changed.clear_cached_entries()));
-    assert!(directory.lookup("present").unwrap().ptr_eq(&child));
-    assert!(directory.lookup_cache("present").is_none());
+    for policy in [CachePolicy::PositiveAndNegative, CachePolicy::Disabled] {
+        let backend = Arc::new(ScriptedDirectory {
+            policy,
+            ..Default::default()
+        });
+        let directory = Arc::new(TestDirectory::new(backend.clone()));
+        let child = create_directory(&directory, "present");
+        directory.clear_cached_entries();
+        let changed = directory.clone();
+        *backend.after_lookup.lock() = Some(Box::new(move || changed.clear_cached_entries()));
+        assert!(matches!(
+            directory.lookup_and_cache("present"),
+            LookupStep::Revalidate(LookupConflict::CandidatePublication)
+        ));
+        assert!(directory.lookup_cache("present").is_none());
+        assert!(directory.lookup("present").unwrap().ptr_eq(&child));
+    }
 }
 
 #[test]
@@ -112,7 +128,10 @@ fn cache_clear_rejects_an_in_flight_missing_lookup() {
     let (directory, backend) = fixture();
     let changed = directory.clone();
     *backend.after_lookup.lock() = Some(Box::new(move || changed.clear_cached_entries()));
-    assert_missing(&directory, "missing");
+    assert!(matches!(
+        directory.lookup_and_cache("missing"),
+        LookupStep::Revalidate(LookupConflict::CandidatePublication)
+    ));
     assert_missing(&directory, "missing");
     assert_eq!(backend.lookups.load(Ordering::Relaxed), 2);
 }
@@ -179,7 +198,12 @@ fn an_alias_mutation_during_lookup_prevents_negative_publication() {
     *backend.after_lookup.lock() = Some(Box::new(move || {
         create_directory(&alias, "created");
     }));
-    assert_missing(&directory, "created");
+    // This alias changes the shared provider but not this DirNode's local
+    // namespace generation. The real naming publication must take precedence.
+    assert!(matches!(
+        directory.0.lookup_component("created"),
+        LookupStep::Revalidate(LookupConflict::ParentNaming)
+    ));
     assert!(directory.lookup("created").is_ok());
 }
 
