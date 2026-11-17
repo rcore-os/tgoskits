@@ -95,6 +95,7 @@ pub fn sys_execve(
     argv: *const *const c_char,
     envp: *const *const c_char,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_string(current, path)?;
     let loc = if let Some(fd) = self_fd_number(&path) {
         match resolve_fd(fd)? {
@@ -108,9 +109,9 @@ pub fn sys_execve(
                 .clone(),
         }
     } else {
-        current_fs_context().resolve(&path)?
+        ax_fs_ng::FsView::current(current_fs_context(), &link_caller).resolve(&path)?
     };
-    do_execve(current, uctx, loc, path, argv, envp)
+    do_execve(&link_caller, current, uctx, loc, path, argv, envp)
 }
 
 fn self_fd_number(path: &str) -> Option<c_int> {
@@ -133,6 +134,7 @@ pub fn sys_execveat(
     envp: *const *const c_char,
     flags: u32,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     if flags & !(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) != 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -144,7 +146,7 @@ pub fn sys_execveat(
     // has no path but wraps a tmpfs-backed `Location` we can still load — this
     // is systemd's `execveat(memfd, "", AT_EMPTY_PATH)` path. Other anonymous
     // fds (sockets, eventfd, …) are not executable.
-    let (loc, disp_path) = match resolve_at(dirfd, Some(path.as_str()), flags)? {
+    let (loc, disp_path) = match resolve_at(&link_caller, dirfd, Some(path.as_str()), flags)? {
         ResolveAtResult::File(loc) => {
             let disp = loc.absolute_path().map(|p| p.to_string()).unwrap_or(path);
             (loc, disp)
@@ -160,7 +162,7 @@ pub fn sys_execveat(
         }
     };
 
-    do_execve(current, uctx, loc, disp_path, argv, envp)
+    do_execve(&link_caller, current, uctx, loc, disp_path, argv, envp)
 }
 
 /// Shared execve core (Linux's `do_execveat_common` equivalent): both
@@ -169,6 +171,7 @@ pub fn sys_execveat(
 /// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
 /// the loader's shebang handling), not re-resolved against the FS.
 fn do_execve(
+    link_caller: &crate::task::ProcLinkCaller,
     current: &crate::task::UserTaskRef,
     uctx: &mut UserContext,
     loc: Location,
@@ -249,7 +252,7 @@ fn do_execve(
     // the pathname (the FS could change while siblings are being reaped).
     let mut image_builder = new_user_image_builder()?;
     image_builder.set_user_namespace(proc_data.namespace_snapshot().user_ns.clone());
-    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, &thr.cred())?;
+    let loaded_image = load_user_app(&mut image_builder, loc, &path, &args, &envs, link_caller)?;
     let prepared_image = image_builder.finish(loaded_image)?;
     let (new_aspace, entry_point, user_stack_base, auxv) = prepared_image.into_parts();
 

@@ -304,17 +304,18 @@ pub struct PreparedRoot {
 
 impl PreparedRoot {
     /// Provides file access for installing boot resources before publication.
-    pub fn context(&self) -> &crate::highlevel::FsContext {
-        &self.context
+    pub fn context(&self) -> crate::highlevel::FsView<'_> {
+        static CALLER: axfs_ng_vfs::NativeLinkCaller = axfs_ng_vfs::NativeLinkCaller::root();
+        crate::FsView::native(self.context.clone(), &CALLER)
     }
 
     /// Migrates an explicit resource plan into this root before publication.
     pub fn migrate(
         &self,
-        source: &crate::highlevel::FsContext,
+        source: &crate::highlevel::FsView<'_>,
         plan: &MigrationPlan,
     ) -> axfs_ng_vfs::VfsResult<MigrationReport> {
-        plan.execute(source, &self.context)
+        plan.execute(source, &self.context())
     }
 
     /// Publishes this filesystem and detaches the previous root.
@@ -600,6 +601,8 @@ fn init_root_with_policy(
     {
         let plan = MigrationPlan::boot_resources()
             .unwrap_or_else(|error| panic!("failed to create boot migration plan: {error:?}"));
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let source = crate::FsView::current(source, &caller);
         prepared
             .migrate(&source, &plan)
             .unwrap_or_else(|error| panic!("failed to migrate boot resources: {error:?}"));
@@ -659,6 +662,8 @@ fn memory_contains_only_kernel_map(
 ) -> axfs_ng_vfs::VfsResult<bool> {
     let tree = axfs_ng_vfs::Mountpoint::new_root(memory);
     let context = crate::highlevel::FsContext::from_tree(tree.clone(), tree.root_location())?;
+    let context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let context = crate::FsView::native(context, &context_caller);
     let has_map = context.resolve("/symbols/kernel.axbt").is_ok()
         || context.resolve("/boot/symbols/kernel.axbt").is_ok();
     if !has_map {
@@ -681,6 +686,8 @@ fn memory_init_accessible(
     }
     let tree = axfs_ng_vfs::Mountpoint::new_root(memory);
     let context = crate::highlevel::FsContext::from_tree(tree.clone(), tree.root_location())?;
+    let context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let context = crate::FsView::native(context, &context_caller);
     Ok(context.resolve(path).is_ok())
 }
 
@@ -1743,6 +1750,8 @@ mod tests {
             let tree = axfs_ng_vfs::Mountpoint::new_root(&fs);
             let context =
                 crate::highlevel::FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+            let context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+            let context = crate::FsView::native(context, &context_caller);
             context
                 .create_node(
                     "/init",
@@ -1753,7 +1762,6 @@ mod tests {
                         ),
                         permission: NodePermission::from_bits_truncate(0o644),
                     },
-                    &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();
 
@@ -1770,6 +1778,8 @@ mod tests {
             let map_context =
                 crate::highlevel::FsContext::from_tree(map_tree.clone(), map_tree.root_location())
                     .unwrap();
+            let map_context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+            let map_context = crate::FsView::native(map_context, &map_context_caller);
             map_context
                 .create_node(
                     "/symbols",
@@ -1780,7 +1790,6 @@ mod tests {
                         ),
                         permission: NodePermission::from_bits_truncate(0o755),
                     },
-                    &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();
             map_context
@@ -1793,7 +1802,6 @@ mod tests {
                         ),
                         permission: NodePermission::from_bits_truncate(0o644),
                     },
-                    &axfs_ng_vfs::MutationCredentials::root(),
                 )
                 .unwrap();
             assert!(map_context.resolve("/symbols/kernel.axbt").is_ok());

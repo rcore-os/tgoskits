@@ -26,7 +26,6 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
-    task::FsCredentialsSnapshot,
 };
 
 const SOCK_TYPE_MASK: u32 = 0xf;
@@ -177,30 +176,28 @@ pub fn sys_bind(
         (&**socket, &addr)
     {
         let thread = current.as_thread();
-        let (binding, identity, mask) = {
+        let (binding, caller, mask) = {
             let update = thread.proc_data.namespace_update();
             (
                 thread
                     .snapshot_fs_binding_under(&update)?
                     .ok_or(StarryError::BadState)?,
-                FsCredentialsSnapshot::capture_under(thread, &update),
+                crate::task::ProcLinkCaller::capture_under(thread, &update),
                 thread.proc_data.umask(),
             )
         };
         let permission = NodePermission::from_bits_truncate(
             socket.location().metadata()?.mode.bits() & !(mask as u16),
         );
-        let credentials = identity.as_mutation_credentials();
+        let view = ax_fs_ng::FsView::current(binding.fs, &caller);
         unix.bind_path_with(path.clone(), |path| -> StarryResult<_> {
-            let location = binding
-                .fs
+            let location = view
                 .create_node(
                     path,
                     CreateAttributes {
                         content: CreateContent::Node(NodeType::Socket, DeviceId::default()),
                         permission,
                     },
-                    &credentials,
                 )
                 .map_err(|error| match error {
                     VfsError::AlreadyExists => StarryError::from(ax_net::NetError::AddrInUse),

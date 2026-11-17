@@ -108,7 +108,12 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
     let fixed_link = fixed.lookup_backing("link").unwrap();
     assert!(fixed_link.entry().ptr_eq(link.entry()));
     assert_eq!(fixed_link.node_type(), NodeType::Symlink);
-    assert_eq!(fixed_link.read_link().unwrap(), "underlying");
+    assert_eq!(
+        fixed_link
+            .read_link(&axfs_ng_vfs::NativeLinkCaller::root())
+            .unwrap(),
+        "underlying"
+    );
     assert!(matches!(
         fixed.lookup_backing("absent"),
         Err(VfsError::NotFound)
@@ -270,7 +275,12 @@ fn backing_lookup_keeps_exact_mount_and_backend_contents_under_child_mounts() {
     );
     drop(write);
     assert_eq!(admitted_link.node_type(), NodeType::Symlink);
-    assert_eq!(admitted_link.read_link().unwrap(), "underlying");
+    assert_eq!(
+        admitted_link
+            .read_link(&axfs_ng_vfs::NativeLinkCaller::root())
+            .unwrap(),
+        "underlying"
+    );
     nested_mount.detach().unwrap();
     covering_mount.detach().unwrap();
 }

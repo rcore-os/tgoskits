@@ -2,7 +2,7 @@
 
 use alloc::{string::String, sync::Arc, vec};
 
-use axfs_ng_vfs::{LinkOps, LinkTarget, NodeIdentity, PathHandle, VfsError, VfsResult};
+use axfs_ng_vfs::{LinkCaller, LinkOps, LinkTarget, NodeIdentity, PathHandle, VfsError, VfsResult};
 
 use super::{SimpleFile, SimpleFs, require_proc_task};
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
         Directory, FD_TABLE, File, FileLike, MountTableFile, NamespaceKind, NamespaceObject,
         descriptor_path, display_location,
     },
-    task::{UserTaskRef, WeakUserTaskRef, authorize_proc_read, current_user_task},
+    task::{ProcLinkCaller, UserTaskRef, WeakUserTaskRef, authorize_proc_read},
 };
 
 #[derive(Clone, Copy)]
@@ -81,9 +81,12 @@ enum TargetSnapshot {
 }
 
 impl ProcLink {
-    fn snapshot(&self) -> VfsResult<TargetSnapshot> {
+    fn snapshot(&self, caller: &dyn LinkCaller) -> VfsResult<TargetSnapshot> {
+        let caller = (caller as &dyn core::any::Any)
+            .downcast_ref::<ProcLinkCaller>()
+            .ok_or(VfsError::OperationNotSupported)?;
         let target = require_proc_task(&self.task)?;
-        authorize_proc_read(&current_user_task(), &target)?;
+        authorize_proc_read(caller, &target)?;
         if target.state() == ax_std::os::arceos::task::thread::ThreadState::Exited {
             return Err(VfsError::NotFound);
         }
@@ -126,8 +129,8 @@ impl ProcLink {
 }
 
 impl LinkOps for ProcLink {
-    fn target(&self) -> VfsResult<LinkTarget> {
-        let path = match self.snapshot()? {
+    fn target(&self, caller: &dyn LinkCaller) -> VfsResult<LinkTarget> {
+        let path = match self.snapshot(caller)? {
             TargetSnapshot::File(file) => descriptor_path(&file)?,
             TargetSnapshot::Path(path) => path,
             TargetSnapshot::Namespace(namespace) => PathHandle::acquire(namespace.location())?,
@@ -135,8 +138,8 @@ impl LinkOps for ProcLink {
         Ok(LinkTarget::Object(path))
     }
 
-    fn read_link(&self) -> VfsResult<String> {
-        match self.snapshot()? {
+    fn read_link(&self, caller: &dyn LinkCaller) -> VfsResult<String> {
+        match self.snapshot(caller)? {
             TargetSnapshot::File(file) => {
                 if let Some(file) = file.downcast_ref::<File>() {
                     display_location(file.inner().location())

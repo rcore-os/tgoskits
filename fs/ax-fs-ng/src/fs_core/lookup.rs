@@ -3,11 +3,13 @@
 use alloc::{borrow::Cow, collections::VecDeque, string::String, vec::Vec};
 
 use axfs_ng_vfs::{
-    LinkTarget, Location, LookupStep, MutationCredentials, NodePermission, NodeType, ParentStep,
-    PathHandle, VfsError, VfsResult,
+    LinkCaller, LinkTarget, Location, LookupStep, MutationCredentials, NodePermission, NodeType,
+    ParentStep, PathHandle, VfsError, VfsResult,
 };
 
-use super::{FsContext, SYMLINKS_MAX};
+use super::{FsContext, FsView, SYMLINKS_MAX};
+
+type SearchCheck<'a> = Option<&'a dyn Fn(&Location) -> VfsResult<()>>;
 
 enum Component<'a> {
     Root,
@@ -37,7 +39,9 @@ pub(crate) struct LookupSession<'a> {
     current: PathHandle,
     pending: VecDeque<Component<'a>>,
     searched: Vec<PathHandle>,
-    credentials: Option<&'a MutationCredentials<'a>>,
+    caller: &'a dyn LinkCaller,
+    credentials: MutationCredentials<'a>,
+    search: SearchCheck<'a>,
     budget: LinkBudget,
 }
 
@@ -66,22 +70,25 @@ pub(crate) struct ResolvedOpen {
 }
 
 impl<'a> LookupSession<'a> {
-    pub(crate) fn new(
-        context: &FsContext,
-        path: &'a str,
-        credentials: Option<&'a MutationCredentials<'a>>,
-    ) -> VfsResult<Self> {
+    pub(crate) fn new(view: &FsView<'a>, path: &'a str) -> VfsResult<Self> {
         if path.is_empty() {
             return Err(VfsError::NotFound);
         }
         Ok(Self {
-            context: context.clone(),
-            current: context.cwd_handle().clone(),
+            context: view.context().clone(),
+            current: view.cwd().clone(),
             pending: components(path),
             searched: Vec::new(),
-            credentials,
+            caller: view.caller(),
+            credentials: *view.credentials(),
+            search: None,
             budget: LinkBudget { used: 0 },
         })
+    }
+
+    pub(crate) fn with_search(mut self, search: &'a dyn Fn(&Location) -> VfsResult<()>) -> Self {
+        self.search = Some(search);
+        self
     }
 
     pub(crate) fn parent(mut self) -> VfsResult<Continuation<'a>> {
@@ -125,12 +132,17 @@ impl<'a> LookupSession<'a> {
     }
 
     fn check_search(&self) -> VfsResult<()> {
-        self.current.location().check_is_dir()?;
-        if let Some(credentials) = self.credentials {
-            credentials.check_permission(
-                &self.current.location().metadata()?,
-                NodePermission::OTHER_EXEC,
-            )?;
+        self.check_directory(&self.current)
+    }
+
+    fn check_directory(&self, directory: &PathHandle) -> VfsResult<()> {
+        directory.location().check_is_dir()?;
+        self.credentials.check_permission(
+            &directory.location().metadata()?,
+            NodePermission::OTHER_EXEC,
+        )?;
+        if let Some(check) = self.search {
+            check(directory.location())?;
         }
         Ok(())
     }
@@ -140,13 +152,8 @@ impl<'a> LookupSession<'a> {
     }
 
     fn validate_searches(&self) -> VfsResult<()> {
-        if let Some(credentials) = self.credentials {
-            for directory in &self.searched {
-                credentials.check_permission(
-                    &directory.location().metadata()?,
-                    NodePermission::OTHER_EXEC,
-                )?;
-            }
+        for directory in &self.searched {
+            self.check_directory(directory)?;
         }
         Ok(())
     }
@@ -204,7 +211,7 @@ impl<'a> LookupSession<'a> {
 
     fn follow(&mut self, link: PathHandle) -> VfsResult<()> {
         self.budget.charge()?;
-        match link.location().entry().link_target()? {
+        match link.location().entry().link_target(self.caller)? {
             LinkTarget::Text(target) => {
                 if target.is_empty() {
                     return Err(VfsError::NotFound);
@@ -228,7 +235,7 @@ impl<'a> Continuation<'a> {
                 entry,
                 directory,
             } = continuation;
-            let credentials = session.credentials.ok_or(VfsError::BadState)?;
+            let credentials = session.credentials;
             session.validate_searches()?;
             let (child, created) = match entry {
                 FinalEntry::Resolved => {
@@ -251,7 +258,7 @@ impl<'a> Continuation<'a> {
                         let (location, created) = session
                             .current
                             .location()
-                            .open_file_with_status(&name, &intent.node, credentials)?;
+                            .open_file_with_status(&name, &intent.node, &credentials)?;
                         (session.bind(location)?, created)
                     } else {
                         (session.lookup(&name)?.ok_or(VfsError::NotFound)?, false)
@@ -284,7 +291,42 @@ impl<'a> Continuation<'a> {
         }
     }
 
-    pub(crate) fn finish_lookup(self, follow: bool) -> VfsResult<PathHandle> {
+    pub(crate) fn finish_parent(self) -> VfsResult<(Location, String, Vec<Location>)> {
+        self.session.validate_searches()?;
+        let (directory, name) = match self.entry {
+            FinalEntry::Name(name) => {
+                self.session.check_search()?;
+                (self.session.current.location().clone(), name.into_owned())
+            }
+            FinalEntry::Resolved => {
+                super::FsView::resolved_parent_name(self.session.current.location())?
+                    .ok_or(VfsError::InvalidInput)?
+            }
+        };
+        let searched = self
+            .session
+            .searched
+            .iter()
+            .map(|path| path.location().clone())
+            .collect();
+        Ok((directory, name, searched))
+    }
+
+    pub(crate) fn finish_lookup_with_trace(
+        self,
+        follow: bool,
+    ) -> VfsResult<(Location, Vec<Location>)> {
+        let (path, searched) = self.lookup_with_trace(follow)?;
+        Ok((
+            path.location().clone(),
+            searched
+                .into_iter()
+                .map(|path| path.location().clone())
+                .collect(),
+        ))
+    }
+
+    fn lookup_with_trace(self, follow: bool) -> VfsResult<(PathHandle, Vec<PathHandle>)> {
         let mut continuation = self;
         loop {
             let Self {
@@ -293,7 +335,8 @@ impl<'a> Continuation<'a> {
                 directory,
             } = continuation;
             let FinalEntry::Name(name) = entry else {
-                return Ok(session.current);
+                session.validate_searches()?;
+                return Ok((session.current, session.searched));
             };
             let child = session.lookup(&name)?.ok_or(VfsError::NotFound)?;
             session.remember_search();
@@ -305,7 +348,8 @@ impl<'a> Continuation<'a> {
             if directory {
                 child.location().check_is_dir()?;
             }
-            return Ok(child);
+            session.validate_searches()?;
+            return Ok((child, session.searched));
         }
     }
 }

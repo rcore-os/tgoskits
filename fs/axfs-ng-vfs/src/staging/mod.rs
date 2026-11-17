@@ -122,7 +122,10 @@ impl StagingNode {
             mounter.check_permission(&metadata, NodePermission::OTHER_READ)?;
         }
         let link = (metadata.node_type == NodeType::Symlink)
-            .then(|| self.source.read_link())
+            .then(|| {
+                self.source
+                    .read_link(&crate::NativeLinkCaller::new(*mounter))
+            })
             .transpose()?;
         let content = match &link {
             Some(link) => CreateContent::Symlink(link),

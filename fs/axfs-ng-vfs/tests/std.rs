@@ -285,7 +285,12 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
     assert_eq!(entry.node_type(), NodeType::Symlink);
     assert_eq!(entry.name(), "link");
     assert_eq!(entry.metadata().unwrap().node_type, NodeType::Symlink);
-    assert_eq!(entry.read_link().unwrap(), "target-path");
+    assert_eq!(
+        entry
+            .read_link(&axfs_ng_vfs::NativeLinkCaller::root())
+            .unwrap(),
+        "target-path"
+    );
     assert_eq!(entry.ioctl(0, 0), Err(VfsError::NotATty));
     assert!(matches!(entry.as_dir(), Err(VfsError::NotADirectory)));
     assert!(entry.as_file().is_ok());
@@ -2261,7 +2266,11 @@ fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
             },
         )
         .unwrap();
-    assert_eq!(link.read_link().unwrap(), "/typed-target");
+    assert_eq!(
+        link.read_link(&axfs_ng_vfs::NativeLinkCaller::root())
+            .unwrap(),
+        "/typed-target"
+    );
 
     left_root
         .lookup_no_follow("mount-target")

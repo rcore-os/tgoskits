@@ -6,9 +6,9 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
     fn resolve(&self, path: &str) -> ax_net::NetResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
         use axfs_ng_vfs::NodeType;
 
-        let loc = ax_fs_ng::vfs::current_fs_context()
-            .resolve(path)
-            .map_err(namespace_vfs_error)?;
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
+        let loc = view.resolve(path).map_err(namespace_vfs_error)?;
         if loc.metadata().map_err(namespace_vfs_error)?.node_type != NodeType::Socket {
             return Err(ax_net::NetError::NotASocket);
         }
@@ -19,17 +19,16 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
 
     fn bind(&self, path: &str) -> ax_net::NetResult<alloc::sync::Arc<ax_net::unix::BindSlot>> {
         use ax_fs_ng::vfs::OpenOptions;
-        use axfs_ng_vfs::{MutationCredentials, NodeType};
+        use axfs_ng_vfs::NodeType;
+
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
 
         let loc = OpenOptions::new()
             .write(true)
             .create(true)
             .node_type(NodeType::Socket)
-            .open(
-                &ax_fs_ng::vfs::current_fs_context(),
-                path,
-                &MutationCredentials::root(),
-            )
+            .open(&view, path)
             .map_err(namespace_vfs_error)?
             .into_path();
 
@@ -50,11 +49,9 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
     }
 
     fn unbind(&self, path: &str) -> ax_net::NetResult<()> {
-        use axfs_ng_vfs::MutationCredentials;
-
-        ax_fs_ng::vfs::current_fs_context()
-            .remove_file(path, &MutationCredentials::root())
-            .map_err(namespace_vfs_error)
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
+        view.remove_file(path).map_err(namespace_vfs_error)
     }
 }
 

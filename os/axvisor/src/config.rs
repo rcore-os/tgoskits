@@ -23,7 +23,8 @@ use axvmconfig::{GuestConfig, GuestType, HostDeviceAssignment};
 
 pub fn load_builtin_catalog() -> Result<axvisor::builtin::BuiltinCatalog> {
     init_guest_boot_resources();
-    let context = ax_fs_ng::current_fs_context();
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let context = ax_fs_ng::FsView::current(ax_fs_ng::current_fs_context(), &caller);
     axvisor::builtin::load_catalog(&context)
 }
 

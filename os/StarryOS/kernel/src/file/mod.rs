@@ -51,20 +51,20 @@ use linux_raw_sys::general::{
     STATX_BASIC_STATS, stat, statx, statx_timestamp,
 };
 
-pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
 #[cfg(feature = "qperf-metrics")]
 pub(crate) use self::pipe::qperf_metrics_snapshot as pipe_qperf_metrics_snapshot;
 pub use self::{
-    fs::{
-        Directory, File, ResolveAtResult, metadata_to_kstat, resolve_at, resolve_at_checked,
-        resolve_at_with_boundary_checked, resolve_fd, with_fs,
-    },
+    fs::{Directory, File, ResolveAtResult, metadata_to_kstat, resolve_fd},
     io_uring::IoUring,
     net::Socket,
     nsfd::NsFd,
     packet::{PacketSocket, SockAddrLl},
     pidfd::PidFd,
     pipe::Pipe,
+};
+pub(crate) use self::{
+    fs::{resolve_at, resolve_at_checked, resolve_at_with_boundary_checked, with_fs},
+    mount_table::{MountTableFile, notify_mount_namespace_changed},
 };
 use crate::{
     StarryError, StarryResult,
@@ -1029,14 +1029,12 @@ pub fn close_all_fds() {
 pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
     assert_eq!(fd_table.count(), 0);
     let fs_context = current_fs_context();
-    let cx = fs_context;
+    let caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let cx = ax_fs_ng::FsView::current(fs_context, &caller);
     // Stdio is opened before the init thread exists, using its boot identity.
-    let credentials = ax_fs_ng::MutationCredentials::root();
     let open = |options: &mut OpenOptions, flags| {
         StarryResult::Ok(Arc::new(File::new(
-            options
-                .open(&cx, "/dev/console", &credentials)?
-                .into_file()?,
+            options.open(&cx, "/dev/console")?.into_file()?,
             flags,
         )))
     };

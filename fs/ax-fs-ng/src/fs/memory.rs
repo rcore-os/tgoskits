@@ -858,7 +858,7 @@ fn failed_symlink_capacity_reservation_does_not_publish_name_for_test() -> bool 
                 ..axfs_ng_vfs::MutationCredentials::root()
             },
         )
-        .and_then(|entry| entry.read_link())
+        .and_then(|entry| entry.read_link(&axfs_ng_vfs::NativeLinkCaller::root()))
         .is_ok_and(|target| target == "target");
 
     capacity_failure_is_atomic && successful_create_is_readable
@@ -976,6 +976,8 @@ mod tests {
         })
         .unwrap();
         let context = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
+        let context_caller = axfs_ng_vfs::NativeLinkCaller::new(credentials);
+        let context = crate::FsView::native(context, &context_caller);
         let revoked = root.clone();
         BEFORE_NAMESPACE_CHANGE.with(|slot| {
             assert!(slot.borrow().is_none());
@@ -995,7 +997,6 @@ mod tests {
             NodePermission::from_bits_truncate(0o755),
             1000,
             1000,
-            &credentials,
         );
         assert!(BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow().is_none()));
         let current_parent_mode = root.metadata().unwrap().mode;
@@ -1024,6 +1025,8 @@ mod tests {
             )
             .unwrap();
         let context = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
+        let context_caller = axfs_ng_vfs::NativeLinkCaller::new(credentials);
+        let context = crate::FsView::native(context, &context_caller);
         let revoked = victim.clone();
         BEFORE_NAMESPACE_CHANGE.with(|slot| {
             assert!(slot.borrow().is_none());
@@ -1038,7 +1041,7 @@ mod tests {
                     .unwrap();
             }));
         });
-        let removed = context.remove_dir("victim", &credentials);
+        let removed = context.remove_dir("victim");
         assert!(BEFORE_NAMESPACE_CHANGE.with(|slot| slot.borrow().is_none()));
         let current_owner = victim.metadata().unwrap().uid;
         let retained = root

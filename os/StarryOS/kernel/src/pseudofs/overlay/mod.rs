@@ -369,7 +369,8 @@ fn copy_entry(
     let meta = src.metadata()?;
     let dst = match meta.node_type {
         NodeType::Symlink => {
-            let target = src.read_link()?;
+            let caller = axfs_ng_vfs::NativeLinkCaller::new(*credentials);
+            let target = src.read_link(&caller)?;
             dst_dir.create_symlink(name, &target, meta.mode, meta.uid, meta.gid, credentials)?
         }
         _ => dst_dir.create(
@@ -653,11 +654,11 @@ impl NodeOps for OverlayFile {
 }
 
 impl LinkOps for OverlayFile {
-    fn target(&self) -> VfsResult<LinkTarget> {
-        self.read_link().map(LinkTarget::Text)
+    fn target(&self, caller: &dyn axfs_ng_vfs::LinkCaller) -> VfsResult<LinkTarget> {
+        self.read_link(caller).map(LinkTarget::Text)
     }
 
-    fn read_link(&self) -> VfsResult<String> {
+    fn read_link(&self, _caller: &dyn axfs_ng_vfs::LinkCaller) -> VfsResult<String> {
         self.fs.read(|read| read.link_text(&self.inode))
     }
 }

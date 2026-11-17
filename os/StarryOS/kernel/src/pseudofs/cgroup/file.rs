@@ -9,7 +9,7 @@ use axfs_ng_vfs::{
 use axpoll::{IoEvents, Pollable, SharedRegistrationSink};
 
 use super::{SimpleFs, inode_identity, inode_metadata, update_inode_metadata};
-use crate::task::{FsCredentialsSnapshot, current_user_task};
+use crate::task::current_user_task;
 
 pub(super) struct CgroupFile {
     pub(super) fs: Arc<SimpleFs>,
@@ -119,7 +119,8 @@ impl FileNodeOps for CgroupFile {
             }
             CgroupFileKind::SubtreeControl => {
                 let current = current_user_task();
-                let caller = FsCredentialsSnapshot::capture(current.as_thread());
+                let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+                let caller = link_caller.fs_credentials();
                 crate::cgroup::write_subtree_control(&self.cgroup, buf, &caller)?
             }
             CgroupFileKind::PidsMax => crate::cgroup::write_pids_max(&self.cgroup, buf)?,

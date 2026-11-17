@@ -129,6 +129,26 @@ impl Drop for FsContextOwner {
 }
 
 impl FsContextSnapshot {
+    pub(super) fn native(view: FsContext) -> Self {
+        Self {
+            view,
+            source: Weak::new(),
+        }
+    }
+
+    pub(super) fn with_start_directory(mut self, directory: PathHandle) -> VfsResult<Self> {
+        self.view = self.view.with_directory_handle(directory)?;
+        Ok(self)
+    }
+
+    pub(super) fn with_current_directory(
+        mut self,
+        directory: axfs_ng_vfs::Location,
+    ) -> VfsResult<Self> {
+        self.view = self.view.with_current_dir(directory)?;
+        Ok(self)
+    }
+
     /// Borrows the selected root, retaining its exact mount use.
     pub fn root(&self) -> &PathHandle {
         self.view.root_handle()

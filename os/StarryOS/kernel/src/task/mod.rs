@@ -62,7 +62,7 @@ pub(crate) use self::{
     fs_binding::FsBindingSnapshot,
     namespace_change::NamespaceChange,
     pid::*,
-    proc_access::{authorize_pidfd_namespace_read, authorize_proc_read},
+    proc_access::{ProcLinkCaller, authorize_pidfd_namespace_read, authorize_proc_read},
     process_identity::*,
     process_memory::{PreparedProcessMemory, scheduler_address_space},
 };

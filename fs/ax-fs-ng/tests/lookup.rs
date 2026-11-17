@@ -41,6 +41,8 @@ fn open_keeps_one_link_budget_through_the_final_target_and_creation() {
         .unwrap();
     }
     let context = FsContext::from_tree(mount, root).unwrap();
+    let context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let context = ax_fs_ng::FsView::native(context, &context_caller);
     let mut read = OpenOptions::new();
     read.read(true);
     let mut create = OpenOptions::new();
@@ -50,11 +52,11 @@ fn open_keeps_one_link_budget_through_the_final_target_and_creation() {
     // its target. Both operations use the real native namespace and opener.
     for count in [40, 39] {
         let existing = read
-            .open_with_credentials(&context, format!("parent-{count}/present"), &credentials)
+            .open(&context, format!("parent-{count}/present"))
             .and_then(|opened| opened.into_file())
             .map(|file| file.location().inode());
         let created = create
-            .open_with_credentials(&context, format!("parent-{count}/dangling"), &credentials)
+            .open(&context, format!("parent-{count}/dangling"))
             .and_then(|opened| opened.into_file())
             .map(|file| file.location().inode());
         if count == 40 {

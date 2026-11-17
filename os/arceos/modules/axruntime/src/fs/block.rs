@@ -337,6 +337,8 @@ pub(super) fn init(bootargs: Option<&str>) {
         let tree = Mountpoint::new_root(&fs);
         let context = ax_fs_ng::vfs::FsContext::from_tree(tree.clone(), tree.root_location())
             .unwrap_or_else(|error| panic!("host initramfs context failed: {error:?}"));
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let context = ax_fs_ng::FsView::native(context, &caller);
         for path in ["/symbols/kernel.axbt", "/boot/symbols/kernel.axbt"] {
             match context.read(path) {
                 Ok(bytes) => {

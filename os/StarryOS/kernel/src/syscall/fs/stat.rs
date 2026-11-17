@@ -91,6 +91,7 @@ pub fn sys_fstatat(
     statbuf: *mut stat,
     flags: u32,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     // man 2 fstatat: flags may contain AT_EMPTY_PATH, AT_NO_AUTOMOUNT,
     // AT_SYMLINK_NOFOLLOW. Any other bit is EINVAL.
     const FSTATAT_VALID: u32 = AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW;
@@ -105,7 +106,7 @@ pub fn sys_fstatat(
 
     debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
-    let loc = resolve_at(dirfd, path.as_deref(), flags)?;
+    let loc = resolve_at(&link_caller, dirfd, path.as_deref(), flags)?;
     write_stat(current, statbuf, loc.stat()?.into())?;
 
     Ok(0)
@@ -119,6 +120,7 @@ pub fn sys_statx(
     mask: u32,
     statxbuf: *mut statx,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     // man 2 statx: reject reserved mask bits and the invalid sync-type
     // combination FORCE_SYNC|DONT_SYNC. flags must fit within AT_* and the
     // sync-type field.
@@ -166,7 +168,7 @@ pub fn sys_statx(
         .transpose()?;
     debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
-    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    let resolved = resolve_at(&link_caller, dirfd, path.as_deref(), flags)?;
     let mut status: statx = resolved.stat()?.into();
     if let ResolveAtResult::File(location) = &resolved {
         status.stx_mask |= linux_raw_sys::general::STATX_MNT_ID;
@@ -198,6 +200,7 @@ pub fn sys_faccessat2(
     mode: u32,
     flags: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     // man 2 access: mode is a mask of F_OK(0), R_OK, W_OK, and X_OK;
     // faccessat2 flags are limited to AT_EACCESS, AT_EMPTY_PATH, and
     // AT_SYMLINK_NOFOLLOW. Linux rejects invalid bits before path resolution.
@@ -213,13 +216,13 @@ pub fn sys_faccessat2(
         .transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
-    let current_cred = current.as_thread().cred();
-    let cred = if flags & AT_EACCESS != 0 {
-        (*current_cred).clone()
+    let link_caller = if flags & AT_EACCESS != 0 {
+        link_caller
     } else {
-        current_cred.for_real_id_access()
+        link_caller.for_real_id_access()
     };
-    let file = resolve_at_checked(dirfd, path.as_deref(), flags, |directory| {
+    let cred = link_caller.fs_credentials().credentials();
+    let file = resolve_at_checked(&link_caller, dirfd, path.as_deref(), flags, |directory| {
         let metadata = metadata_to_kstat(&directory.metadata()?);
         check_dac_access(&cred, &metadata, X_OK).map_err(axfs_ng_vfs::VfsError::from)
     })?;
@@ -321,11 +324,13 @@ pub fn sys_statfs(
     path: *const c_char,
     buf: *mut statfs,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_path_string(current, path)?;
     debug!("sys_statfs <= path: {path:?}");
 
-    let location =
-        crate::file::with_fs(linux_raw_sys::general::AT_FDCWD, |fs| Ok(fs.resolve(path)?))?;
+    let location = crate::file::with_fs(linux_raw_sys::general::AT_FDCWD, &link_caller, |fs| {
+        Ok(fs.resolve(path)?)
+    })?;
     write_statfs(
         current,
         buf,
@@ -548,6 +553,7 @@ pub fn sys_name_to_handle_at(
     mount_id: *mut c_int,
     flags: u32,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     const VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_FOLLOW;
     if flags & !VALID_FLAGS != 0 {
         return Err(StarryError::InvalidInput);
@@ -564,7 +570,7 @@ pub fn sys_name_to_handle_at(
     } else {
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
-    let loc = resolve_at(dirfd, path.as_deref(), resolve_flags)?
+    let loc = resolve_at(&link_caller, dirfd, path.as_deref(), resolve_flags)?
         .into_file()
         .ok_or(StarryError::InvalidInput)?;
     let stat = loc.metadata()?;

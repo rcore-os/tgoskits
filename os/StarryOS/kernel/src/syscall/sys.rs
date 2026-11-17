@@ -928,6 +928,7 @@ pub fn sys_getrandom(
     len: usize,
     flags: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     if len == 0 {
         return Ok(0);
     }
@@ -950,7 +951,8 @@ pub fn sys_getrandom(
     let len = len.min(GETRANDOM_MAX_LEN);
     (buf as usize).checked_add(len).ok_or(Errno::EFAULT)?;
 
-    let f = ax_fs_ng::vfs::current_fs_context().resolve(path)?;
+    let f = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &link_caller)
+        .resolve(path)?;
     let file = f.entry().as_file()?;
     let mut kbuf = [0u8; GETRANDOM_CHUNK_SIZE];
     let mut written = 0;

@@ -51,6 +51,8 @@ fn staging_preserves_copied_content_identity_and_explicit_cleanup() {
     let mount = axfs_ng_vfs::Mountpoint::new_root(&filesystem);
     let root = mount.root_location();
     let context = ax_fs_ng::FsContext::from_tree(mount.clone(), root.clone()).unwrap();
+    let context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let context = ax_fs_ng::FsView::native(context, &context_caller);
     let work = root
         .create(
             "work",
@@ -82,7 +84,7 @@ fn staging_preserves_copied_content_identity_and_explicit_cleanup() {
     let data = b"actual native cached staging content";
     let file = OpenOptions::new()
         .write(true)
-        .open(&context, "source", &credentials)
+        .open(&context, "source")
         .unwrap()
         .into_file()
         .unwrap();
@@ -167,7 +169,7 @@ fn staging_preserves_copied_content_identity_and_explicit_cleanup() {
     assert_eq!(installed.entry().key(), identity);
     let file = OpenOptions::new()
         .read(true)
-        .open(&context, "installed", &credentials)
+        .open(&context, "installed")
         .unwrap()
         .into_file()
         .unwrap();

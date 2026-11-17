@@ -20,9 +20,9 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     DeviceId, DirEntry, DirEntryId, DirEntrySink, DirNode, DirNodeOps, DirectoryCursor,
     DirectoryReadState, Filesystem, FilesystemMountLease, FilesystemMountState, FilesystemOps,
-    LookupStep, Metadata, MetadataUpdate, MountWriteState, NodeFlags, NodeOps, NodePermission,
-    NodeType, OpenOptions, RawSpinLock, RawSpinLockGuard, Reference, RenameOptions, TypeMap,
-    VfsError, VfsResult, WeakDirEntry, XattrSetMode,
+    LinkCaller, LookupStep, Metadata, MetadataUpdate, MountWriteState, NodeFlags, NodeOps,
+    NodePermission, NodeType, OpenOptions, RawSpinLock, RawSpinLockGuard, Reference, RenameOptions,
+    TypeMap, VfsError, VfsResult, WeakDirEntry, XattrSetMode,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -951,7 +951,7 @@ impl Location {
 
     pub fn node_type(&self) -> NodeType;
 
-    pub fn read_link(&self) -> VfsResult<String>;
+    pub fn read_link(&self, caller: &dyn LinkCaller) -> VfsResult<String>;
 
     pub fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize>;
 
@@ -2424,7 +2424,8 @@ mod tests {
             )
             .expect("atomic symlink create");
         assert_eq!(
-            link.read_link().expect("read final target"),
+            link.read_link(&crate::NativeLinkCaller::root())
+                .expect("read final target"),
             "/complete-target"
         );
         assert_eq!(symlink_create_calls.load(Ordering::Relaxed), 1);

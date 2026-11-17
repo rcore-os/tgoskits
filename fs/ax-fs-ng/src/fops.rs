@@ -193,8 +193,9 @@ impl File {
         opts: &OpenOptions,
         credentials: &axfs_ng_vfs::MutationCredentials<'_>,
     ) -> VfsResult<Self> {
-        let fs_context = current_fs_context();
-        let inner = opts.to_core().open(&fs_context, path, credentials)?;
+        let caller = axfs_ng_vfs::NativeLinkCaller::new(*credentials);
+        let fs_context = crate::FsView::current(current_fs_context(), &caller);
+        let inner = opts.to_core().open(&fs_context, path)?;
         Ok(Self {
             inner: inner.into_file()?,
         })
@@ -270,8 +271,8 @@ pub enum OpenEntry {
 pub struct DirHandle(PathHandle);
 
 impl DirHandle {
-    pub(crate) fn location(&self) -> &Location {
-        self.0.location()
+    pub(crate) fn path_handle(&self) -> &PathHandle {
+        &self.0
     }
 }
 
@@ -285,8 +286,10 @@ pub fn open_at(
 ) -> VfsResult<OpenEntry> {
     let mut core_opts = opts.to_core();
     core_opts.directory(directory_only);
-    let result =
-        crate::api::with_at_context(dir, path, |ctx| core_opts.open(ctx, path, credentials))?;
+    let caller = axfs_ng_vfs::NativeLinkCaller::new(*credentials);
+    let base = crate::FsView::current(current_fs_context(), &caller);
+    let view = crate::api::context_for_at(&base, dir, path)?;
+    let result = core_opts.open(&view, path)?;
     match result {
         OpenResult::File(inner) => Ok(OpenEntry::File(File { inner })),
         OpenResult::Dir(location) => Ok(OpenEntry::Directory(Directory::from_path(location)?)),
@@ -310,7 +313,9 @@ impl Directory {
         {
             return Err(VfsError::InvalidInput);
         }
-        let location = current_fs_context().resolve(path)?;
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let view = crate::FsView::current(current_fs_context(), &caller);
+        let location = view.resolve(path)?;
         Self::from_location(location)
     }
 

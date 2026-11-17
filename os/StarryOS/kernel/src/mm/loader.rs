@@ -20,7 +20,6 @@ use crate::{
     },
     namespace::UserNamespace,
     sync::{Mutex, RawSpinLock},
-    task::Cred,
 };
 
 /// Largest argv/envp stack image accepted by execve.
@@ -701,7 +700,7 @@ impl ElfLoader {
         &mut self,
         uspace: &mut AddrSpace,
         loc: Location,
-        cred: &Cred,
+        caller: &dyn axfs_ng_vfs::LinkCaller,
     ) -> StarryResult<LoadResult> {
         if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
             match ElfCacheEntry::load(loc)? {
@@ -753,9 +752,9 @@ impl ElfLoader {
         // PT_INTERP is protected while loading, but is not mm->exe_file.
         let _interpreter_access;
         let (elf, ldso) = if let Some(ldso) = ldso {
-            let fs = ax_fs_ng::vfs::current_fs_context();
+            let fs = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), caller);
             let loc = fs.resolve(ldso)?;
-            check_executable_access(&loc, cred)?;
+            check_executable_access(&loc, caller)?;
             _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
             if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
                 let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
@@ -858,10 +857,10 @@ pub fn load_user_app(
     path: &str,
     args: &[String],
     envs: &[String],
-    cred: &Cred,
+    caller: &dyn axfs_ng_vfs::LinkCaller,
 ) -> StarryResult<LoadedUserImage> {
     let result = validate_exec_arg_size(args, envs).and_then(|()| {
-        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, cred, 0)
+        load_user_app_with_depth(&mut builder.aspace, loc, path, args, envs, caller, 0)
     });
     match result {
         Ok((entry, stack, auxv)) => Ok(LoadedUserImage {
@@ -891,23 +890,27 @@ pub fn load_user_app(
 }
 
 /// Checks each executable and interpreter even when its ELF image is cached.
-fn check_executable_access(loc: &Location, cred: &Cred) -> StarryResult<()> {
+fn check_executable_access(
+    loc: &Location,
+    caller: &dyn axfs_ng_vfs::LinkCaller,
+) -> StarryResult<()> {
     let metadata = loc.metadata()?;
     if metadata.node_type != NodeType::RegularFile
         || loc.mountpoint().mount_flags() & linux_raw_sys::general::MS_NOEXEC != 0
     {
         return Err(StarryError::PermissionDenied);
     }
+    let caller = caller.credentials();
     let mode = metadata.mode.bits();
-    let selected = if cred.fsuid == metadata.uid {
+    let selected = if caller.fsuid == metadata.uid {
         mode >> 6
-    } else if cred.fsgid == metadata.gid || cred.groups.contains(&metadata.gid) {
+    } else if caller.fsgid == metadata.gid || caller.supplementary_gids.contains(&metadata.gid) {
         mode >> 3
     } else {
         mode
     };
     // CAP_DAC_OVERRIDE may bypass DAC only if some execute bit is set.
-    if selected & 1 != 0 || (mode & 0o111 != 0 && cred.has_cap_dac_override()) {
+    if selected & 1 != 0 || (mode & 0o111 != 0 && caller.cap_dac_override) {
         Ok(())
     } else {
         Err(StarryError::PermissionDenied)
@@ -920,13 +923,13 @@ fn load_user_app_with_depth(
     path: &str,
     args: &[String],
     envs: &[String],
-    cred: &Cred,
+    caller: &dyn axfs_ng_vfs::LinkCaller,
     interpreter_depth: usize,
 ) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
-    check_executable_access(&loc, cred)?;
+    check_executable_access(&loc, caller)?;
     let executable_file = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
 
-    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, cred)? } {
+    let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, caller)? } {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
@@ -947,7 +950,7 @@ fn load_user_app_with_depth(
                     .collect();
                 // Open the interpreter by path (Linux's `open_exec` on the
                 // shebang interpreter) and load it as the new executable.
-                let fs = ax_fs_ng::vfs::current_fs_context();
+                let fs = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), caller);
                 let interp = fs.resolve(&new_args[0])?;
                 // A script stops being the executable when its interpreter takes over.
                 drop(executable_file);
@@ -957,7 +960,7 @@ fn load_user_app_with_depth(
                     &new_args[0],
                     &new_args,
                     envs,
-                    cred,
+                    caller,
                     interpreter_depth + 1,
                 );
             }

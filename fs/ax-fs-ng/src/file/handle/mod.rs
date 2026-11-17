@@ -14,7 +14,7 @@ use super::{
     access::WriteAccess,
     open::{FileFlags, OpenOptions, OpenResult},
 };
-use crate::{fs_core::FsContext, os::sync::Mutex, vfs_error_to_io_error};
+use crate::{fs_core::FsView, os::sync::Mutex, vfs_error_to_io_error};
 
 mod backend;
 pub use backend::{FileBackend, LayeredFile};
@@ -66,29 +66,21 @@ impl File {
     }
 
     /// Opens an existing file for reading.
-    pub fn open(context: &FsContext, path: impl AsRef<Path>) -> VfsResult<Self> {
+    pub fn open(context: &FsView<'_>, path: impl AsRef<Path>) -> VfsResult<Self> {
         OpenOptions::new()
             .read(true)
-            .open_with_credentials(
-                context,
-                path.as_ref(),
-                &axfs_ng_vfs::MutationCredentials::root(),
-            )
+            .open(context, path.as_ref())
             .and_then(OpenResult::into_file)
     }
 
     /// Opens a file for writing, creating it if it does not exist and
     /// truncating it if it does.
-    pub fn create(
-        context: &FsContext,
-        path: impl AsRef<Path>,
-        credentials: &axfs_ng_vfs::MutationCredentials<'_>,
-    ) -> VfsResult<Self> {
+    pub fn create(context: &FsView<'_>, path: impl AsRef<Path>) -> VfsResult<Self> {
         OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(context, path.as_ref(), credentials)
+            .open(context, path.as_ref())
             .and_then(OpenResult::into_file)
     }
 

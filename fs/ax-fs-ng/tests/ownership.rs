@@ -325,15 +325,14 @@ fn replacement_and_hardlink_noop_preserve_distinct_open_aliases() {
             let context =
                 ax_fs_ng::FsContext::from_tree(parent.mountpoint().clone(), parent.clone())
                     .unwrap();
+            #[cfg(feature = "vfs")]
+            let caller = axfs_ng_vfs::NativeLinkCaller::new(credentials);
+            #[cfg(feature = "vfs")]
+            let context = ax_fs_ng::FsView::native(context, &caller);
             let rename = |source_name, destination_name, options| {
                 #[cfg(feature = "vfs")]
                 if via_context {
-                    return context.rename_with_options(
-                        source_name,
-                        destination_name,
-                        options,
-                        &credentials,
-                    );
+                    return context.rename_with_options(source_name, destination_name, options);
                 }
                 parent.rename_with_options(
                     source_name,
@@ -425,7 +424,10 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
     )
     .unwrap();
     let context = FsContext::from_tree(mount, root).unwrap();
+    let context_paths = context.clone();
     let credentials = unprivileged_credentials();
+    let context_caller = axfs_ng_vfs::NativeLinkCaller::new(credentials);
+    let context = ax_fs_ng::FsView::native(context, &context_caller);
     let permission = NodePermission::from_bits_truncate(0o640);
     let whiteout = context
         .create_node(
@@ -434,7 +436,6 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
                 content: CreateContent::Node(NodeType::CharacterDevice, DeviceId::default()),
                 permission,
             },
-            &credentials,
         )
         .and_then(|location| location.metadata())
         .map(|metadata| {
@@ -465,7 +466,6 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
                 content: CreateContent::Node(kind, device),
                 permission,
             },
-            &credentials,
         );
         (
             result.map(|_| ()),
@@ -476,6 +476,8 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
         cap_mknod: true,
         ..credentials
     };
+    let capable_caller = axfs_ng_vfs::NativeLinkCaller::new(capable);
+    let capable_context = ax_fs_ng::FsView::native(context_paths, &capable_caller);
     let permitted = [
         (
             "/devices/capable-char",
@@ -496,7 +498,6 @@ fn device_creation_checks_capability_and_retains_device_metadata() {
                     content: CreateContent::Node(kind, device),
                     permission,
                 },
-                &capable,
             )
             .and_then(|location| location.metadata())
             .map(|metadata| {

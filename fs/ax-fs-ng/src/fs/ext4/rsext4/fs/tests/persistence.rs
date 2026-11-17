@@ -144,37 +144,23 @@ fn boot_directory_exchange_replaces_assets_and_preserves_open_old_files() {
         let target_tree = Mountpoint::new_root(&filesystem);
         let target =
             FsContext::from_tree(target_tree.clone(), target_tree.root_location()).unwrap();
+        let target_caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let target = crate::FsView::native(target, &target_caller);
         let source_tree = Mountpoint::new_root(&MemoryFs::new());
         let source =
             FsContext::from_tree(source_tree.clone(), source_tree.root_location()).unwrap();
+        let source_caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let source = crate::FsView::native(source, &source_caller);
         for context in [&source, &target] {
             for path in ["/guest", "/guest/builtin"] {
                 context
-                    .create_dir(
-                        path,
-                        NodePermission::from_bits_truncate(0o755),
-                        0,
-                        0,
-                        &MutationCredentials::root(),
-                    )
+                    .create_dir(path, NodePermission::from_bits_truncate(0o755), 0, 0)
                     .unwrap();
             }
         }
-        target
-            .write(
-                "/guest/builtin/old",
-                b"old contents",
-                &axfs_ng_vfs::MutationCredentials::root(),
-            )
-            .unwrap();
+        target.write("/guest/builtin/old", b"old contents").unwrap();
         let old_file = crate::file::File::open(&target, "/guest/builtin/old").unwrap();
-        source
-            .write(
-                "/guest/builtin/new",
-                b"new contents",
-                &axfs_ng_vfs::MutationCredentials::root(),
-            )
-            .unwrap();
+        source.write("/guest/builtin/new", b"new contents").unwrap();
         assert_eq!(
             crate::bundle::install_directory(&source, &target, "/guest/builtin", |_, _| Err(
                 VfsError::InvalidData

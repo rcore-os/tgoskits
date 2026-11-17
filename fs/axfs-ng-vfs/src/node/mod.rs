@@ -545,12 +545,12 @@ impl DirEntry {
         Arc::as_ptr(&self.0) as usize
     }
 
-    pub fn read_link(&self) -> VfsResult<String> {
+    pub fn read_link(&self, caller: &dyn LinkCaller) -> VfsResult<String> {
         if self.node_type() != NodeType::Symlink {
             return Err(VfsError::InvalidData);
         }
         if let Some(link) = self.0.node.link_ops() {
-            return link.read_link();
+            return link.read_link(caller);
         }
         let file = self.as_file()?;
         let mut buf = vec![0; file.len()? as usize];
@@ -558,13 +558,13 @@ impl DirEntry {
         String::from_utf8(buf).map_err(|_| VfsError::InvalidData)
     }
 
-    pub fn link_target(&self) -> VfsResult<LinkTarget> {
+    pub fn link_target(&self, caller: &dyn LinkCaller) -> VfsResult<LinkTarget> {
         if self.node_type() != NodeType::Symlink {
             return Err(VfsError::InvalidData);
         }
         match self.0.node.link_ops() {
-            Some(link) => link.target(),
-            None => self.read_link().map(LinkTarget::Text),
+            Some(link) => link.target(caller),
+            None => self.read_link(caller).map(LinkTarget::Text),
         }
     }
 

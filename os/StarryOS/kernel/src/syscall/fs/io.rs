@@ -249,6 +249,7 @@ pub fn sys_truncate(
     path: *const c_char,
     length: __kernel_off_t,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_path_string(current, path)?;
     debug!("sys_truncate <= {path:?} {length}");
     if path.is_empty() {
@@ -257,7 +258,8 @@ pub fn sys_truncate(
     if length < 0 {
         return Err(StarryError::InvalidInput);
     }
-    let location = ax_fs_ng::vfs::current_fs_context().resolve(&path)?;
+    let location = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &link_caller)
+        .resolve(&path)?;
     if location.node_type() == axfs_ng_vfs::NodeType::Directory {
         return Err(StarryError::IsADirectory);
     }

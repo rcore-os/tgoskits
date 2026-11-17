@@ -4,15 +4,14 @@ use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use core::{str, time::Duration};
 
 use axfs_ng_vfs::{
-    DeviceId, Filesystem, MetadataUpdate, Mountpoint, MutationCredentials, NodePermission,
-    NodeType, VfsError,
+    DeviceId, Filesystem, MetadataUpdate, Mountpoint, NodePermission, NodeType, VfsError,
 };
 use miniz_oxide::{
     DataFormat, MZFlush, MZStatus,
     inflate::stream::{InflateState, inflate},
 };
 
-use crate::{MemoryFs, file::OpenOptions, highlevel::FsContext};
+use crate::{MemoryFs, file::OpenOptions, highlevel::FsView};
 
 const CPIO_HEADER_LEN: usize = 110;
 const MAX_NAME: usize = 4096;
@@ -60,7 +59,9 @@ struct Entry<'a> {
 pub fn unpack_sources(sources: &[&[u8]]) -> Result<(Filesystem, UnpackReport), InitramfsError> {
     let fs = MemoryFs::new_ramfs();
     let tree = Mountpoint::new_root(&fs);
-    let context = FsContext::from_tree(tree.clone(), tree.root_location())?;
+    let context = crate::FsContext::from_tree(tree.clone(), tree.root_location())?;
+    let context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let context = crate::FsView::native(context, &context_caller);
     let mut report = UnpackReport::default();
     for source in sources.iter().copied().filter(|source| !source.is_empty()) {
         unpack_stream(source, &context, &mut report, false)?;
@@ -77,7 +78,7 @@ pub fn unpack(archive: &[u8]) -> Result<(Filesystem, UnpackReport), InitramfsErr
 
 fn unpack_stream(
     input: &[u8],
-    context: &FsContext,
+    context: &FsView<'_>,
     report: &mut UnpackReport,
     compressed: bool,
 ) -> Result<(), InitramfsError> {
@@ -245,7 +246,7 @@ fn archive_path(name: &str) -> Result<String, InitramfsError> {
 }
 
 fn apply_entry(
-    context: &FsContext,
+    context: &FsView<'_>,
     entry: Entry<'_>,
     links: &mut BTreeMap<(u32, u32, u32, u8), String>,
 ) -> Result<(), InitramfsError> {
@@ -255,7 +256,6 @@ fn apply_entry(
         return Err(InitramfsError::Corrupt("unknown cpio file type"));
     }
     let mode = NodePermission::from_bits_truncate(entry.mode as u16);
-    let credentials = MutationCredentials::root();
     if path == "/" {
         if ty != NodeType::Directory {
             return Err(InitramfsError::InvalidPath);
@@ -302,34 +302,18 @@ fn apply_entry(
             existing
         } else {
             if existing.is_dir() {
-                match context.remove_dir(path.as_str(), &credentials) {
+                match context.remove_dir(path.as_str()) {
                     Ok(()) => {}
                     Err(VfsError::DirectoryNotEmpty) => return Ok(()),
                     Err(error) => return Err(error.into()),
                 }
             } else {
-                context.remove_file(path.as_str(), &credentials)?;
+                context.remove_file(path.as_str())?;
             }
-            create_or_link(
-                context,
-                &path,
-                ty,
-                mode,
-                &entry,
-                linked_from.as_deref(),
-                &credentials,
-            )?
+            create_or_link(context, &path, ty, mode, &entry, linked_from.as_deref())?
         }
     } else {
-        create_or_link(
-            context,
-            &path,
-            ty,
-            mode,
-            &entry,
-            linked_from.as_deref(),
-            &credentials,
-        )?
+        create_or_link(context, &path, ty, mode, &entry, linked_from.as_deref())?
     };
     if may_link && linked_from.is_none() {
         links.insert(key, path.clone());
@@ -352,22 +336,21 @@ fn apply_entry(
 }
 
 fn create_or_link(
-    context: &FsContext,
+    context: &FsView<'_>,
     path: &str,
     ty: NodeType,
     mode: NodePermission,
     entry: &Entry<'_>,
     previous: Option<&str>,
-    credentials: &MutationCredentials<'_>,
 ) -> Result<axfs_ng_vfs::Location, InitramfsError> {
     if let Some(previous) = previous {
-        return Ok(context.link(previous, path, credentials)?);
+        return Ok(context.link(previous, path)?);
     }
     create_entry(context, path, ty, mode, entry)
 }
 
 fn write_file(
-    context: &FsContext,
+    context: &FsView<'_>,
     path: &str,
     data: &[u8],
     truncate: bool,
@@ -375,7 +358,7 @@ fn write_file(
     let file = OpenOptions::new()
         .write(true)
         .truncate(truncate)
-        .open(context, path, &MutationCredentials::root())?
+        .open(context, path)?
         .into_file()?;
     let written = file.write_at(data, 0)?;
     if written != data.len() {
@@ -385,7 +368,7 @@ fn write_file(
 }
 
 fn create_entry(
-    context: &FsContext,
+    context: &FsView<'_>,
     path: &str,
     ty: NodeType,
     mode: NodePermission,
@@ -604,7 +587,9 @@ mod tests {
                 }
             );
             let tree = Mountpoint::new_root(&fs);
-            let context = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+            let context = crate::FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+            let context_caller = axfs_ng_vfs::NativeLinkCaller::root();
+            let context = crate::FsView::native(context, &context_caller);
             let init = context.metadata("/bin/init").unwrap();
             let copy = context.metadata("/bin/init-copy").unwrap();
             assert_eq!(init.inode, copy.inode);
@@ -614,11 +599,7 @@ mod tests {
             assert!(context.resolve("/bin").unwrap().is_dir());
             let short = OpenOptions::new()
                 .read(true)
-                .open(
-                    &context,
-                    "/short-a",
-                    &axfs_ng_vfs::MutationCredentials::root(),
-                )
+                .open(&context, "/short-a")
                 .unwrap()
                 .into_file()
                 .unwrap();
@@ -630,13 +611,18 @@ mod tests {
                 context
                     .resolve_no_follow("/init")
                     .unwrap()
-                    .read_link()
+                    .read_link(&axfs_ng_vfs::NativeLinkCaller::root())
                     .unwrap(),
                 "bin/init"
             );
             let alias = context.resolve_no_follow("/bin-alias-2").unwrap();
             assert_eq!(alias.metadata().unwrap().node_type, NodeType::Symlink);
-            assert_eq!(alias.read_link().unwrap(), "bin");
+            assert_eq!(
+                alias
+                    .read_link(&axfs_ng_vfs::NativeLinkCaller::root())
+                    .unwrap(),
+                "bin"
+            );
             assert_eq!(alias.metadata().unwrap().mtime, Duration::from_secs(42));
             fs.set_readonly(true).unwrap();
             assert_eq!(

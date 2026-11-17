@@ -9,7 +9,9 @@ use super::{
     WriteAccess,
     handle::{File, FileBackend},
 };
+#[cfg(test)]
 use crate::fs_core::FsContext;
+use crate::fs_core::FsView;
 
 bitflags::bitflags! {
     /// Flags describing the access mode of an opened file.
@@ -329,23 +331,9 @@ impl OpenOptions {
         self._open(loc, credentials, false)
     }
 
-    /// Opens a file at the given path relative to the provided [`FsContext`].
-    pub fn open(
-        &self,
-        context: &FsContext,
-        path: impl AsRef<Path>,
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<OpenResult> {
-        self.open_with_credentials(context, path, credentials)
-    }
-
-    /// Opens a file while authorizing any file creation against its parent.
-    pub fn open_with_credentials(
-        &self,
-        context: &FsContext,
-        path: impl AsRef<Path>,
-        credentials: &MutationCredentials<'_>,
-    ) -> VfsResult<OpenResult> {
+    /// Opens a path using the identity and paths selected for this operation.
+    pub fn open(&self, context: &FsView<'_>, path: impl AsRef<Path>) -> VfsResult<OpenResult> {
+        let credentials = context.credentials();
         if !self.is_valid() {
             return Err(VfsError::InvalidInput);
         }
@@ -372,10 +360,9 @@ impl OpenOptions {
             path_only: self.path,
             directory: self.directory,
         };
-        let resolved =
-            crate::fs_core::LookupSession::new(context, path.as_ref().as_str(), Some(credentials))?
-                .parent()?
-                .finish_open(intent)?;
+        let resolved = crate::fs_core::LookupSession::new(context, path.as_ref().as_str())?
+            .parent()?
+            .finish_open(intent)?;
         // Keep the accepted mount use until the opened description has acquired
         // its own path and writer rights, including on every failure path.
         self._open(
@@ -405,7 +392,7 @@ impl OpenOptions {
             required.insert(NodePermission::OTHER_WRITE);
         }
         if !required.is_empty() {
-            FsContext::check_permission(location, credentials, required)?;
+            FsView::check_permission(location, credentials, required)?;
         }
         Ok(())
     }
@@ -480,14 +467,10 @@ mod tests {
         ] {
             let tree = Mountpoint::new_root(&crate::MemoryFs::new());
             let view = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+            let view_caller = axfs_ng_vfs::NativeLinkCaller::root();
+            let view = crate::FsView::native(view, &view_caller);
             let point = view
-                .create_dir(
-                    "/mount",
-                    NodePermission::default(),
-                    0,
-                    0,
-                    &MutationCredentials::root(),
-                )
+                .create_dir("/mount", NodePermission::default(), 0, 0)
                 .unwrap();
             let mounted = point.mount(&crate::MemoryFs::new()).unwrap();
             let root = mounted.root_location();
@@ -566,7 +549,12 @@ mod tests {
                 assert_eq!(directory.get_attr().unwrap().node_type, NodeType::Directory);
             } else if let Some(directory) = held.downcast_ref::<crate::fops::DirHandle>() {
                 assert_eq!(
-                    directory.location().metadata().unwrap().node_type,
+                    directory
+                        .path_handle()
+                        .location()
+                        .metadata()
+                        .unwrap()
+                        .node_type,
                     NodeType::Directory
                 );
             } else if let Some(iterator) = held.downcast_mut::<crate::fs_core::ReadDir>() {
@@ -1164,10 +1152,13 @@ mod tests {
             .unwrap();
         let credentials = credentials(1000, 1000, &[]);
         let context = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
+        let context_paths = context.clone();
+        let context_caller = axfs_ng_vfs::NativeLinkCaller::new(credentials);
+        let context = crate::FsView::native(context, &context_caller);
         let mut writable = OpenOptions::new();
         writable.read(true).write(true).direct = true;
         let writer = writable
-            .open_with_credentials(&context, "existing", &credentials)
+            .open(&context, "existing")
             .and_then(OpenResult::into_file)
             .unwrap();
         assert_eq!(writer.write_at(b"retained".as_slice(), 0), Ok(8));
@@ -1189,19 +1180,19 @@ mod tests {
         let mut exclusive = create.clone();
         exclusive.create_new(true);
         let ordinary = read_only
-            .open_with_credentials(&context, "existing", &credentials)
+            .open(&context, "existing")
             .and_then(OpenResult::into_file);
         let path_only = path
-            .open_with_credentials(&context, "existing", &credentials)
+            .open(&context, "existing")
             .and_then(OpenResult::into_file);
         let opened = create
-            .open_with_credentials(&context, "existing", &credentials)
+            .open(&context, "existing")
             .and_then(OpenResult::into_file);
         let excluded = exclusive
-            .open_with_credentials(&context, "existing", &credentials)
+            .open(&context, "existing")
             .and_then(OpenResult::into_file);
         let missing = create
-            .open_with_credentials(&context, "missing", &credentials)
+            .open(&context, "missing")
             .and_then(OpenResult::into_file);
         // OpenResult hides the created marker. Exercise its real existing
         // status-bearing entry as well, without bypassing the creation request.
@@ -1265,8 +1256,10 @@ mod tests {
             fsgid: 2000,
             ..credentials
         };
+        let stranger_caller = axfs_ng_vfs::NativeLinkCaller::new(stranger);
+        let stranger_context = crate::FsView::native(context_paths, &stranger_caller);
         assert!(matches!(
-            create.open_with_credentials(&context, "existing", &stranger),
+            create.open(&stranger_context, "existing"),
             Err(VfsError::PermissionDenied)
         ));
         let path_created = root
@@ -1288,12 +1281,12 @@ mod tests {
         assert!(!path_created.1);
         assert!(path_created.0.entry().ptr_eq(existing.entry()));
         assert!(matches!(
-            exclusive.open_with_credentials(&context, "existing", &stranger),
+            exclusive.open(&context, "existing"),
             Err(VfsError::AlreadyExists)
         ));
         mount.set_readonly(false).unwrap();
         assert!(matches!(
-            create.open_with_credentials(&context, "denied", &credentials),
+            create.open(&context, "denied"),
             Err(VfsError::PermissionDenied)
         ));
         assert!(matches!(
@@ -1307,7 +1300,7 @@ mod tests {
         .unwrap();
         mount.set_readonly(true).unwrap();
         assert!(matches!(
-            create.open_with_credentials(&context, "existing", &credentials),
+            create.open(&context, "existing"),
             Err(VfsError::PermissionDenied)
         ));
         assert_eq!(existing.entry().key(), identity);

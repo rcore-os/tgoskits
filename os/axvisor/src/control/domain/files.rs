@@ -46,7 +46,7 @@ use ax_std::StdError;
 use ax_std::fs::OpenOptions;
 use ax_std::io::Error as IoError;
 use ax_std::io::Write;
-use axfs_ng_vfs::{MutationCredentials, RenameOptions, VfsError};
+use axfs_ng_vfs::{RenameOptions, VfsError};
 
 use crate::sync::MutexExt;
 
@@ -486,12 +486,9 @@ pub fn place(id: &str, name: &str) -> Result<SessionView, FileError> {
             session.name = Some(name);
         }
     }
-    if let Err(error) = ax_fs_ng::current_fs_context().rename_with_options(
-        &from,
-        &to,
-        RenameOptions::NO_REPLACE,
-        &MutationCredentials::root(),
-    ) {
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let view = ax_fs_ng::FsView::current(ax_fs_ng::current_fs_context(), &caller);
+    if let Err(error) = view.rename_with_options(&from, &to, RenameOptions::NO_REPLACE) {
         if error == VfsError::AlreadyExists {
             let mut sessions = SESSIONS.lock_unpoisoned();
             if let Some(session) = sessions.get_mut(id) {

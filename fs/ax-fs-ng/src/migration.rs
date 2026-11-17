@@ -9,7 +9,7 @@ use alloc::{boxed::Box, format, string::String, vec::Vec};
 
 use axfs_ng_vfs::{NodeType, RenameOptions, VfsError, VfsResult};
 
-use crate::{bundle, file::File, highlevel::FsContext};
+use crate::{bundle, file::File, highlevel::FsView};
 
 /// Kinds of resources that may be copied by a [`MigrationPlan`].
 ///
@@ -68,7 +68,7 @@ pub enum OverwritePolicy {
 pub type MigrationOverwritePolicy = OverwritePolicy;
 
 /// A callback that validates a staged resource.
-pub type MigrationValidator = dyn Fn(&FsContext, &str) -> VfsResult<()>;
+pub type MigrationValidator = dyn Fn(&FsView<'_>, &str) -> VfsResult<()>;
 
 /// One source-to-destination migration item.
 pub struct MigrationEntry {
@@ -141,7 +141,7 @@ impl MigrationEntry {
     /// Installs an additional validator, called with the staged destination.
     pub fn with_validator<F>(mut self, validator: F) -> Self
     where
-        F: Fn(&FsContext, &str) -> VfsResult<()> + 'static,
+        F: Fn(&FsView<'_>, &str) -> VfsResult<()> + 'static,
     {
         self.validator = Some(Box::new(validator));
         self
@@ -259,7 +259,7 @@ impl MigrationPlan {
     /// staging and validation happens before the first publication.  A
     /// publication or flush error restores destinations already published by
     /// this call and removes remaining staging files.
-    pub fn execute(&self, source: &FsContext, target: &FsContext) -> VfsResult<MigrationReport> {
+    pub fn execute(&self, source: &FsView<'_>, target: &FsView<'_>) -> VfsResult<MigrationReport> {
         let mut pending = Vec::with_capacity(self.entries.len());
 
         // Recover interrupted per-entry transactions before staging.  This
@@ -268,7 +268,7 @@ impl MigrationPlan {
             let stage = format_path(&entry.target, ".new");
             let backup = format_path(&entry.target, ".old");
             let recovered_validator =
-                |context: &FsContext, path: &str| validate_entry_contents(entry, context, path);
+                |context: &FsView<'_>, path: &str| validate_entry_contents(entry, context, path);
             if let Err(error) = bundle::recover(
                 target,
                 &entry.target,
@@ -415,7 +415,7 @@ impl MigrationPlan {
 
     /// Compatibility spelling for callers that treat migration as a commit
     /// operation on a prepared root.
-    pub fn migrate(&self, source: &FsContext, target: &FsContext) -> VfsResult<MigrationReport> {
+    pub fn migrate(&self, source: &FsView<'_>, target: &FsView<'_>) -> VfsResult<MigrationReport> {
         self.execute(source, target)
     }
 }
@@ -446,7 +446,7 @@ fn format_path(path: &str, suffix: &str) -> String {
 
 fn validate_entry_contents(
     entry: &MigrationEntry,
-    context: &FsContext,
+    context: &FsView<'_>,
     path: &str,
 ) -> VfsResult<()> {
     let location = context.resolve_no_follow(path)?;
@@ -473,7 +473,7 @@ fn validate_entry_contents(
 }
 
 /// Computes the FNV-1a hash used by [`MigrationEntry::with_expected_hash`].
-pub fn content_hash(context: &FsContext, path: &str) -> VfsResult<u64> {
+pub fn content_hash(context: &FsView<'_>, path: &str) -> VfsResult<u64> {
     let file = File::open(context, path)?;
     let mut buffer = alloc::vec![0; crate::os::memory::PAGE_SIZE];
     let mut offset = 0;
@@ -492,7 +492,7 @@ pub fn content_hash(context: &FsContext, path: &str) -> VfsResult<u64> {
     Ok(hash)
 }
 
-fn content_size_and_hash(context: &FsContext, path: &str) -> VfsResult<(u64, u64)> {
+fn content_size_and_hash(context: &FsView<'_>, path: &str) -> VfsResult<(u64, u64)> {
     let location = context.resolve_no_follow(path)?;
     match location.node_type() {
         NodeType::RegularFile => Ok((location.len()?, content_hash(context, path)?)),
@@ -534,7 +534,7 @@ fn paths_overlap(left: &str, right: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-fn cleanup_staging(target: &FsContext, pending: &[Pending<'_>], extra: Option<&str>) {
+fn cleanup_staging(target: &FsView<'_>, pending: &[Pending<'_>], extra: Option<&str>) {
     for item in pending {
         let _ = bundle::remove_tree(target, &item.stage);
     }
@@ -543,7 +543,7 @@ fn cleanup_staging(target: &FsContext, pending: &[Pending<'_>], extra: Option<&s
     }
 }
 
-fn rollback(target: &FsContext, published: &[Pending<'_>], remaining: &[Pending<'_>]) {
+fn rollback(target: &FsView<'_>, published: &[Pending<'_>], remaining: &[Pending<'_>]) {
     cleanup_staging(target, remaining, None);
     for item in published.iter().rev() {
         if !item.published {
@@ -569,9 +569,13 @@ mod tests {
     use super::*;
     use crate::MemoryFs;
 
-    fn context() -> FsContext {
+    fn context() -> FsView<'static> {
+        static CALLER: axfs_ng_vfs::NativeLinkCaller = axfs_ng_vfs::NativeLinkCaller::root();
         let tree = Mountpoint::new_root(&MemoryFs::new());
-        FsContext::from_tree(tree.clone(), tree.root_location()).unwrap()
+        crate::FsView::native(
+            crate::FsContext::from_tree(tree.clone(), tree.root_location()).unwrap(),
+            &CALLER,
+        )
     }
 
     #[test]
@@ -602,20 +606,8 @@ mod tests {
             let target = context();
             crate::bundle::mkdir_parents(&source, "/symbols").unwrap();
             crate::bundle::mkdir_parents(&target, "/symbols").unwrap();
-            source
-                .write(
-                    "/symbols/kernel.map",
-                    b"new",
-                    &axfs_ng_vfs::MutationCredentials::root(),
-                )
-                .unwrap();
-            target
-                .write(
-                    "/symbols/kernel.map",
-                    b"old",
-                    &axfs_ng_vfs::MutationCredentials::root(),
-                )
-                .unwrap();
+            source.write("/symbols/kernel.map", b"new").unwrap();
+            target.write("/symbols/kernel.map", b"old").unwrap();
             let hash = {
                 let mut plan = MigrationPlan::new();
                 plan.add(MigrationEntry::new(
@@ -648,20 +640,8 @@ mod tests {
             let target = context();
             crate::bundle::mkdir_parents(&source, "/symbols").unwrap();
             crate::bundle::mkdir_parents(&target, "/symbols").unwrap();
-            source
-                .write(
-                    "/symbols/kernel.map",
-                    b"new",
-                    &axfs_ng_vfs::MutationCredentials::root(),
-                )
-                .unwrap();
-            target
-                .write(
-                    "/symbols/kernel.map",
-                    b"old",
-                    &axfs_ng_vfs::MutationCredentials::root(),
-                )
-                .unwrap();
+            source.write("/symbols/kernel.map", b"new").unwrap();
+            target.write("/symbols/kernel.map", b"old").unwrap();
             let mut plan = MigrationPlan::new();
             plan.add(
                 MigrationEntry::new(
@@ -685,20 +665,8 @@ mod tests {
             let target = context();
             crate::bundle::mkdir_parents(&target, "/pkg").unwrap();
             crate::bundle::mkdir_parents(&target, "/pkg.old").unwrap();
-            target
-                .write(
-                    "/pkg/incomplete",
-                    b"bad",
-                    &axfs_ng_vfs::MutationCredentials::root(),
-                )
-                .unwrap();
-            target
-                .write(
-                    "/pkg.old/required",
-                    b"old",
-                    &axfs_ng_vfs::MutationCredentials::root(),
-                )
-                .unwrap();
+            target.write("/pkg/incomplete", b"bad").unwrap();
+            target.write("/pkg.old/required", b"old").unwrap();
 
             let mut plan = MigrationPlan::new();
             plan.add(

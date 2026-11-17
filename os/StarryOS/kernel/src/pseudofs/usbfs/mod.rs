@@ -2192,6 +2192,8 @@ mod reap_tests {
         let fs = create_filesystem(manager.clone());
         let tree = Mountpoint::new_root(&fs);
         let context = FsContext::from_tree(tree.clone(), tree.root_location()).unwrap();
+        let caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let context = ax_fs_ng::FsView::native(context, &caller);
         let base = KernelFile::new(
             ax_fs_ng::File::open(&context, "/001/001").unwrap(),
             O_RDONLY,

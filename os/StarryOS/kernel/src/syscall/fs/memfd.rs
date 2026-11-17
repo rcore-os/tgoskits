@@ -44,6 +44,7 @@ pub fn sys_memfd_create(
     name: *const c_char,
     flags: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
     if flags & !valid_flags != 0 || flags & MFD_HUGETLB != 0 {
         return Err(StarryError::InvalidInput);
@@ -58,7 +59,7 @@ pub fn sys_memfd_create(
         return Err(StarryError::InvalidInput);
     }
 
-    let (mount_path, tmpfs) = if fs_has_dir("/dev/shm") {
+    let (mount_path, tmpfs) = if fs_has_dir(&link_caller, "/dev/shm") {
         ("/dev/shm", pseudofs::shm_tmpfs())
     } else {
         ("/tmp", pseudofs::tmp_tmpfs())
@@ -66,7 +67,7 @@ pub fn sys_memfd_create(
     let tmpfs = tmpfs.ok_or(StarryError::NotFound)?;
 
     let fs_context = current_fs_context();
-    let fs = fs_context;
+    let fs = ax_fs_ng::FsView::current(fs_context, &link_caller);
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
     let cred = current.as_thread().cred();
     // Linux shmem_file_setup creates an executable anonymous inode; the
@@ -99,8 +100,10 @@ pub fn sys_memfd_create(
     add_file_like(memfd, cloexec).map(|fd| fd as _)
 }
 
-fn fs_has_dir(path: &str) -> bool {
-    current_fs_context().resolve(path).is_ok()
+fn fs_has_dir(link_caller: &crate::task::ProcLinkCaller, path: &str) -> bool {
+    ax_fs_ng::FsView::current(current_fs_context(), link_caller)
+        .resolve(path)
+        .is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {

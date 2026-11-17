@@ -477,6 +477,7 @@ pub fn sys_move_mount(
     to_path: *const c_char,
     flags: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     if flags != MOVE_MOUNT_F_EMPTY_PATH || !vm_load_string(current, from_path)?.is_empty() {
         return Err(crate::StarryError::InvalidInput);
     }
@@ -490,12 +491,12 @@ pub fn sys_move_mount(
     }
     let path = vm_load_string(current, to_path)?;
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let context = fs_context;
+    let context = ax_fs_ng::FsView::current(fs_context, &link_caller);
     let mount_namespace = context.mount_namespace().clone();
     let target = if path.starts_with('/') {
         context.resolve(&path)?
     } else {
-        crate::file::with_fs(to_dirfd, |fs| Ok(fs.resolve(&path)?))?
+        crate::file::with_fs(to_dirfd, &link_caller, |fs| Ok(fs.resolve(&path)?))?
     };
     source.inner().mountpoint().attach_detached(&target)?;
     crate::file::notify_mount_namespace_changed(&mount_namespace);
@@ -611,6 +612,7 @@ pub fn sys_mount(
     flags: i32,
     data: *const c_void,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let source = if source.is_null() {
         String::new()
     } else {
@@ -629,7 +631,7 @@ pub fn sys_mount(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let context = fs_context;
+    let context = ax_fs_ng::FsView::current(fs_context, &link_caller);
     let mount_namespace = context.mount_namespace().clone();
     let propagation = flags & PROPAGATION_FLAGS;
 
@@ -831,6 +833,8 @@ impl Drop for LoopMountLease {
 
 #[cfg(feature = "ext4")]
 fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
+    let link_caller =
+        crate::task::ProcLinkCaller::capture(crate::task::current_user_task().as_thread());
     use ax_fs_ng::vfs::{FileBackend, new_filesystem_from_file};
     use axfs_ng_vfs::NodeType;
 
@@ -838,7 +842,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
 
     let (source_location, target_location) = {
         let context = ax_fs_ng::vfs::current_fs_context();
-        let context = context;
+        let context = ax_fs_ng::FsView::current(context, &link_caller);
         (context.resolve(source)?, context.resolve(target)?)
     };
     if source_location.metadata()?.node_type != NodeType::BlockDevice {
@@ -897,6 +901,7 @@ pub fn sys_umount2(
     target: *const c_char,
     flags: i32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let target = vm_load_string(current, target)?;
     debug!("sys_umount2 <= target: {target:?}, flags: {flags:#x}");
 
@@ -913,7 +918,7 @@ pub fn sys_umount2(
     }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let context = fs_context;
+    let context = ax_fs_ng::FsView::current(fs_context, &link_caller);
     let mount_namespace = context.mount_namespace().clone();
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
         context.resolve_no_follow(target)?
@@ -965,16 +970,18 @@ pub fn sys_pivot_root(
     new_root: *const c_char,
     put_old: *const c_char,
 ) -> crate::StarryResult<isize> {
-    let credentials = crate::task::FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let credentials = link_caller.fs_credentials();
     let cred = credentials.as_mutation_credentials();
     let binding = current
         .as_thread()
         .snapshot_fs_binding()?
         .ok_or(StarryError::BadState)?;
     let resolve_directory = |path: &str| -> StarryResult<axfs_ng_vfs::PathHandle> {
-        let location = binding.fs.resolve_checked(path, |directory| {
-            cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
-        })?;
+        let location = ax_fs_ng::FsView::current(binding.fs.clone(), &link_caller)
+            .resolve_checked(path, |directory| {
+                cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+            })?;
         location.check_is_dir()?;
         Ok(axfs_ng_vfs::PathHandle::acquire(location)?)
     };

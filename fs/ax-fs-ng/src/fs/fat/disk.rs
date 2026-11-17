@@ -551,11 +551,13 @@ mod tests {
             )
             .unwrap();
         let native_root = FsContext::from_tree(root.mountpoint().clone(), root.clone()).unwrap();
+        let native_root_caller = axfs_ng_vfs::NativeLinkCaller::root();
+        let native_root = crate::FsView::native(native_root, &native_root_caller);
         let context = native_root.with_current_dir(parent.clone()).unwrap();
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         let file = options
-            .open_with_credentials(&context, "data", &credentials)
+            .open(&context, "data")
             .and_then(OpenResult::into_file)
             .unwrap();
         assert!(matches!(

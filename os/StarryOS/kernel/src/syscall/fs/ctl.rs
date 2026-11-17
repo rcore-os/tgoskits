@@ -29,7 +29,7 @@ use crate::{
         with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load_path_string, vm_load_string, vm_write_slice},
-    task::{FsCredentialsSnapshot, NamespaceChange, UserTaskRef, current_user_task},
+    task::{NamespaceChange, UserTaskRef, current_user_task},
 };
 
 /// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
@@ -80,7 +80,9 @@ const _: () = {
 };
 
 fn path_info_at(dirfd: i32, path: &str) -> StarryResult<(String, bool)> {
-    with_fs(dirfd, |fs| {
+    let link_caller =
+        crate::task::ProcLinkCaller::capture(crate::task::current_user_task().as_thread());
+    with_fs(dirfd, &link_caller, |fs| {
         let loc = fs.resolve_no_follow(path)?;
         let is_dir = loc.metadata()?.node_type == NodeType::Directory;
         Ok((loc.absolute_path()?.to_string(), is_dir))
@@ -241,15 +243,17 @@ pub fn sys_chdir(current: &UserTaskRef, path: *const c_char) -> StarryResult<isi
     let path = vm_load_path_string(current, path)?;
     debug_fn!("sys_chdir <= path: {path}");
 
-    let credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let credentials = link_caller.fs_credentials();
     let cred = credentials.as_mutation_credentials();
     let binding = current
         .as_thread()
         .snapshot_fs_binding()?
         .ok_or(StarryError::BadState)?;
-    let entry = binding.fs.resolve_checked(path, |directory| {
-        cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
-    })?;
+    let entry = ax_fs_ng::FsView::current(binding.fs.clone(), &link_caller)
+        .resolve_checked(path, |directory| {
+            cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+        })?;
     entry.check_is_dir()?;
     cred.check_permission(&entry.metadata()?, NodePermission::OTHER_EXEC)?;
     let cwd = entry.absolute_path().ok().map(|path| path.to_string());
@@ -267,7 +271,8 @@ pub fn sys_fchdir(dirfd: i32) -> StarryResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
     let current = current_user_task();
-    let credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let credentials = link_caller.fs_credentials();
     let directory = Directory::from_fd(dirfd)?;
     credentials
         .as_mutation_credentials()
@@ -298,15 +303,17 @@ pub fn sys_chroot(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
     let path = vm_load_path_string(current, path)?;
     debug!("sys_chroot <= path: {path}");
 
-    let credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let credentials = link_caller.fs_credentials();
     let cred = credentials.as_mutation_credentials();
     let binding = current
         .as_thread()
         .snapshot_fs_binding()?
         .ok_or(StarryError::BadState)?;
-    let loc = binding.fs.resolve_checked(path, |directory| {
-        cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
-    })?;
+    let loc = ax_fs_ng::FsView::current(binding.fs.clone(), &link_caller)
+        .resolve_checked(path, |directory| {
+            cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+        })?;
     loc.check_is_dir()?;
     cred.check_permission(&loc.metadata()?, NodePermission::OTHER_EXEC)?;
     if !credentials.credentials().has_cap(CAP_SYS_CHROOT) {
@@ -372,11 +379,11 @@ pub fn sys_mkdirat(
 
     let mode = mode & !thread.proc_data.umask();
     let mode = NodePermission::from_bits_truncate(mode as u16);
-    let fs_credentials = FsCredentialsSnapshot::capture(thread);
+    let link_caller = crate::task::ProcLinkCaller::capture(thread);
+    let fs_credentials = link_caller.fs_credentials();
     let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = fs_credentials.as_mutation_credentials();
 
     // call tp:trace_sys_mkdirat
     trace_sys_mkdirat(&path, mode.bits());
@@ -386,8 +393,8 @@ pub fn sys_mkdirat(
     } else {
         dirfd
     };
-    let result = with_fs(resolve_dirfd, |fs| {
-        match fs.create_dir(&path, mode, uid, gid, &mutation_cred) {
+    let result = with_fs(resolve_dirfd, &link_caller, |fs| {
+        match fs.create_dir(&path, mode, uid, gid) {
             Ok(_) => Ok(0),
             // mkdir on an existing path should report EEXIST.
             // Use no-follow lookup so dangling symlinks are treated as existing
@@ -439,8 +446,7 @@ pub fn sys_mknodat(
         _ => return Err(StarryError::InvalidInput),
     };
 
-    let fs_credentials = FsCredentialsSnapshot::capture(thread);
-    let mutation_cred = fs_credentials.as_mutation_credentials();
+    let link_caller = crate::task::ProcLinkCaller::capture(thread);
     let resolve_dirfd = if path.starts_with('/') {
         AT_FDCWD
     } else {
@@ -451,14 +457,13 @@ pub fn sys_mknodat(
     } else {
         DeviceId::default()
     };
-    let res = with_fs(resolve_dirfd, |fs| {
+    let res = with_fs(resolve_dirfd, &link_caller, |fs| {
         fs.create_node(
             Path::new(&path),
             CreateAttributes {
                 content: CreateContent::Node(node_type, device),
                 permission: NodePermission::from_bits_truncate(perm as u16),
             },
-            &mutation_cred,
         )?;
         Ok(0)
     })?;
@@ -604,7 +609,8 @@ pub fn sys_linkat(
         (flags & AT_EMPTY_PATH) | AT_SYMLINK_NOFOLLOW
     };
 
-    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let fs_credentials = link_caller.fs_credentials();
     let mutation_cred = fs_credentials.as_mutation_credentials();
     // AT_EMPTY_PATH changes `olddirfd` into an object fd only for the
     // genuinely empty pathname. With a non-empty pathname it is ignored by
@@ -617,10 +623,11 @@ pub fn sys_linkat(
         }
     }
     let (old, old_boundary, old_search) = resolve_at_with_boundary_checked(
+        &link_caller,
         old_dirfd,
         old_path.as_deref(),
         resolve_flags,
-        |fs, directory| fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred),
+        |fs, directory| fs.check_search_path(directory, fs.permission_boundary()),
     )?;
     let old = old.into_file().ok_or(StarryError::BadFileDescriptor)?;
     // Linux rejects hard links to directories before checking the source
@@ -637,10 +644,10 @@ pub fn sys_linkat(
     } else {
         new_dirfd
     };
-    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, |fs| {
+    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, &link_caller, |fs| {
         let (new_dir, new_name, searched) = fs
             .resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
+                fs.check_search_path(directory, fs.permission_boundary())
             })?;
         Ok((
             new_dir,
@@ -649,12 +656,11 @@ pub fn sys_linkat(
             searched,
         ))
     })?;
-    with_fs(AT_FDCWD, |fs| {
+    with_fs(AT_FDCWD, &link_caller, |fs| {
         fs.link_locations_with_boundaries_and_search(
             (&old, &old_search),
             (&new_dir, &new_name, &new_search),
             (old_boundary.as_ref(), new_boundary.as_ref()),
-            &mutation_cred,
         )?;
         Ok(())
     })?;
@@ -682,8 +688,7 @@ pub fn sys_unlinkat(
     flags: i32,
 ) -> StarryResult<isize> {
     let path = vm_load_path_string(current, path)?;
-    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
-    let mutation_cred = fs_credentials.as_mutation_credentials();
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -700,11 +705,11 @@ pub fn sys_unlinkat(
     } else {
         dirfd
     };
-    let result = with_fs(resolve_dirfd, |fs| {
+    let result = with_fs(resolve_dirfd, &link_caller, |fs| {
         if flags & AT_REMOVEDIR as i32 != 0 {
-            fs.remove_dir(&path, &mutation_cred)?;
+            fs.remove_dir(&path)?;
         } else {
-            fs.remove_file(&path, &mutation_cred)?;
+            fs.remove_file(&path)?;
         }
         Ok(0)
     });
@@ -777,18 +782,18 @@ pub fn sys_symlinkat(
     let linkpath = vm_load_path_string(current, linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
-    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let fs_credentials = link_caller.fs_credentials();
     let cred = fs_credentials.credentials();
     let uid = cred.fsuid;
     let gid = cred.fsgid;
-    let mutation_cred = fs_credentials.as_mutation_credentials();
     let resolve_dirfd = if linkpath.starts_with('/') {
         AT_FDCWD
     } else {
         new_dirfd
     };
-    with_fs(resolve_dirfd, |fs| {
-        fs.symlink(target, linkpath, uid, gid, &mutation_cred)?;
+    with_fs(resolve_dirfd, &link_caller, |fs| {
+        fs.symlink(target, linkpath, uid, gid)?;
         Ok(0)
     })
 }
@@ -810,6 +815,7 @@ pub fn sys_readlinkat(
     buf: *mut u8,
     size: usize,
 ) -> StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     if size == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -818,9 +824,9 @@ pub fn sys_readlinkat(
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
-    let link = with_fs(dirfd, |fs| {
+    let link = with_fs(dirfd, &link_caller, |fs| {
         let entry = fs.resolve_no_follow(path)?;
-        Ok(entry.read_link()?)
+        Ok(entry.read_link(&link_caller)?)
     })?;
     let read = size.min(link.len());
     vm_write_slice(current, buf, &link.as_bytes()[..read])?;
@@ -889,12 +895,11 @@ pub fn sys_renameat2(
     };
     // Check search permissions while resolving each parent, before a missing
     // entry or dangling symlink target can mask EACCES.
-    let fs_credentials = FsCredentialsSnapshot::capture(current.as_thread());
-    let mutation_cred = fs_credentials.as_mutation_credentials();
-    let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, |fs| {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let (old_dir, old_name, old_boundary, old_search) = with_fs(old_dirfd, &link_caller, |fs| {
         let (old_dir, old_name, searched) = fs
             .resolve_parent_with_search_checked(Path::new(&old_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
+                fs.check_search_path(directory, fs.permission_boundary())
             })?;
         Ok((
             old_dir,
@@ -903,10 +908,10 @@ pub fn sys_renameat2(
             searched,
         ))
     })?;
-    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, |fs| {
+    let (new_dir, new_name, new_boundary, new_search) = with_fs(new_dirfd, &link_caller, |fs| {
         let (new_dir, new_name, searched) = fs
             .resolve_parent_with_search_checked(Path::new(&new_path), |directory| {
-                fs.check_search_path(directory, fs.permission_boundary(), &mutation_cred)
+                fs.check_search_path(directory, fs.permission_boundary())
             })?;
         Ok((
             new_dir,
@@ -917,14 +922,13 @@ pub fn sys_renameat2(
     })?;
 
     // Propagate the filesystem errno directly to match renameat2 callers.
-    with_fs(AT_FDCWD, |fs| {
+    with_fs(AT_FDCWD, &link_caller, |fs| {
         Ok(fs.rename_locations_with_boundaries_and_search(
             (&old_dir, &old_name),
             (&new_dir, &new_name),
             options,
             (old_boundary.as_ref(), new_boundary.as_ref()),
             (&old_search, &new_search),
-            &mutation_cred,
         )?)
     })?;
     Ok(0)

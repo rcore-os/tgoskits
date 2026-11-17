@@ -12,7 +12,9 @@ pub fn bind_dev_log() -> StarryResult<()> {
     let server = UnixSocket::new(DgramTransport::new(1));
     // The static devfs constructor already owns this inode. Binding the
     // transport neither opens it for file I/O nor requests a directory change.
-    let log = ax_fs_ng::vfs::current_fs_context().resolve("/dev/log")?;
+    let caller = axfs_ng_vfs::NativeLinkCaller::root();
+    let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
+    let log = view.resolve("/dev/log")?;
     if log.node_type() != axfs_ng_vfs::NodeType::Socket {
         return Err(crate::StarryError::BadState);
     }

@@ -87,6 +87,7 @@ pub struct Cred {
 /// The namespace reference pins its identity, not its mutable UID/GID mappings.
 /// Filesystem capability adapters must still enforce their supported mapping
 /// scope; an effective bit alone is not a cross-namespace capability.
+#[derive(Clone)]
 pub(crate) struct FsCredentialsSnapshot {
     cred: Arc<Cred>,
     user_ns: Arc<RawSpinLock<UserNamespace>>,
@@ -114,6 +115,22 @@ impl FsCredentialsSnapshot {
     /// Borrows the immutable credential, including its supplementary groups.
     pub(crate) fn credentials(&self) -> &Cred {
         &self.cred
+    }
+
+    /// Derives access(2)'s identity without resampling its paired namespace.
+    pub(crate) fn for_real_id_access(&self) -> Self {
+        Self {
+            cred: Arc::new(self.cred.for_real_id_access()),
+            user_ns: self.user_ns.clone(),
+        }
+    }
+
+    /// Projects the saved pair into task authorization without reading current.
+    pub(super) fn proc_read_credentials(&self) -> super::proc_access::ProcReadCredentials {
+        super::proc_access::ProcReadCredentials {
+            cred: self.cred.clone(),
+            user_ns: self.user_ns.clone(),
+        }
     }
 
     /// Borrows the paired identity for the current flat, non-idmapped VFS domain.

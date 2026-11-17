@@ -4,7 +4,7 @@ use core::ffi::c_char;
 #[cfg(target_arch = "x86_64")]
 use core::time::Duration;
 
-use axfs_ng_vfs::{MetadataChange, MutationCredentials, NodePermission, PathHandle, TimeChange};
+use axfs_ng_vfs::{MetadataChange, NodePermission, PathHandle, TimeChange};
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_PATH, UTIME_NOW, UTIME_OMIT, timespec,
 };
@@ -13,7 +13,7 @@ use crate::{
     StarryError, StarryResult,
     file::{descriptor_path, get_file_like, resolve_at_checked, with_fs},
     mm::{VmPtr, vm_load_path_string},
-    task::{FsCredentialsSnapshot, UserTaskRef},
+    task::UserTaskRef,
     time::TimeValueLike,
 };
 
@@ -35,7 +35,7 @@ fn at_target(
     dirfd: i32,
     path: *const c_char,
     flags: u32,
-    credentials: &MutationCredentials<'_>,
+    link_caller: &crate::task::ProcLinkCaller,
 ) -> StarryResult<PathHandle> {
     let path = if path.is_null() && flags & AT_EMPTY_PATH != 0 {
         None
@@ -44,14 +44,17 @@ fn at_target(
     };
     if path.as_deref().is_none_or(str::is_empty) && flags & AT_EMPTY_PATH != 0 {
         if dirfd == AT_FDCWD {
-            return with_fs(AT_FDCWD, |fs| {
+            return with_fs(AT_FDCWD, link_caller, |fs| {
                 Ok(PathHandle::acquire(fs.current_dir().clone())?)
             });
         }
         return fd_target(dirfd, DescriptorMode::Path);
     }
-    let target = resolve_at_checked(dirfd, path.as_deref(), flags, |directory| {
-        credentials.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
+    let target = resolve_at_checked(link_caller, dirfd, path.as_deref(), flags, |directory| {
+        link_caller
+            .fs_credentials()
+            .as_mutation_credentials()
+            .check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
     })?
     .into_file()
     .ok_or(StarryError::BadFileDescriptor)?;
@@ -60,7 +63,8 @@ fn at_target(
 
 fn change_fd(current: &UserTaskRef, fd: i32, change: MetadataChange) -> StarryResult<isize> {
     let target = fd_target(fd, DescriptorMode::Ordinary)?;
-    let identity = FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let identity = link_caller.fs_credentials();
     target
         .location()
         .change_metadata(change, &identity.as_mutation_credentials())?;
@@ -74,9 +78,10 @@ fn change_at(
     flags: u32,
     change: MetadataChange,
 ) -> StarryResult<isize> {
-    let identity = FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let identity = link_caller.fs_credentials();
     let credentials = identity.as_mutation_credentials();
-    let target = at_target(current, dirfd, path, flags, &credentials)?;
+    let target = at_target(current, dirfd, path, flags, &link_caller)?;
     target.location().change_metadata(change, &credentials)?;
     Ok(0)
 }
@@ -252,12 +257,13 @@ pub fn sys_utimensat(
     if (descriptor && flags != 0) || flags & !(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) != 0 {
         return Err(StarryError::InvalidInput);
     }
-    let identity = FsCredentialsSnapshot::capture(current.as_thread());
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
+    let identity = link_caller.fs_credentials();
     let credentials = identity.as_mutation_credentials();
     let target = if descriptor {
         fd_target(dirfd, DescriptorMode::Ordinary)?
     } else {
-        at_target(current, dirfd, path, flags, &credentials)?
+        at_target(current, dirfd, path, flags, &link_caller)?
     };
     // Linux validates nanoseconds in vfs_utimes, after fd/path lookup, while
     // the all-OMIT shortcut above precedes flags and even an invalid target.

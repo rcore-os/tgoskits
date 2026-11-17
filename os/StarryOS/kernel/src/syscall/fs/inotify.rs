@@ -28,10 +28,11 @@ pub fn sys_inotify_add_watch(
     path: *const c_char,
     mask: u32,
 ) -> crate::StarryResult<isize> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_path_string(current, path)?;
     debug!("sys_inotify_add_watch <= fd: {fd}, path: {path}, mask: {mask}");
 
-    let resolved_path = resolve_at(AT_FDCWD, Some(&path), 0)?
+    let resolved_path = resolve_at(&link_caller, AT_FDCWD, Some(&path), 0)?
         .into_file()
         .and_then(|loc| loc.absolute_path().ok().map(|path| path.to_string()))
         .ok_or(StarryError::InvalidInput)?;

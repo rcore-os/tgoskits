@@ -39,12 +39,12 @@ pub mod fs_context {
 
     pub use crate::fs_core::{
         FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement,
-        FsUpdateRetirement, PreparedFsUpdate,
+        FsUpdateRetirement, FsView, PreparedFsUpdate,
     };
 }
 pub use fs_context::{
     FsContext, FsContextOwner, FsContextSnapshot, FsPivotRetirement, FsSharingRequirement,
-    FsUpdateRetirement, PreparedFsUpdate,
+    FsUpdateRetirement, FsView, PreparedFsUpdate,
 };
 mod highlevel;
 mod mounts;

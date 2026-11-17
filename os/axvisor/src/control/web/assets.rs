@@ -9,7 +9,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_fs_ng::{current_fs_context, vfs::FsContext};
+use ax_fs_ng::{FsContextSnapshot, current_fs_context};
 use axum::{
     Router,
     extract::{Path, State},
@@ -59,14 +59,14 @@ pub fn router() -> Router {
         .with_state(fs)
 }
 
-async fn app_shell(State(fs): State<FsContext>) -> Response {
+async fn app_shell(State(fs): State<FsContextSnapshot>) -> Response {
     if !PACKAGE_AVAILABLE.load(Ordering::Acquire) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     serve(&fs, APP_SHELL_ENTRY, SHELL_CACHE_CONTROL)
 }
 
-async fn hashed_asset(State(fs): State<FsContext>, Path(path): Path<String>) -> Response {
+async fn hashed_asset(State(fs): State<FsContextSnapshot>, Path(path): Path<String>) -> Response {
     if !PACKAGE_AVAILABLE.load(Ordering::Acquire) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
@@ -83,9 +83,11 @@ async fn hashed_asset(State(fs): State<FsContext>, Path(path): Path<String>) -> 
 }
 
 /// Reads one entry of the built-in dashboard package, or 404 when absent.
-fn serve(fs: &FsContext, entry: &str, cache_control: &'static str) -> Response {
+fn serve(fs: &FsContextSnapshot, entry: &str, cache_control: &'static str) -> Response {
     let path = format!("{BUILTIN_WEB_UI_DIR}/{entry}");
-    match fs.read(&path) {
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let view = ax_fs_ng::FsView::current(fs.clone(), &caller);
+    match view.read(&path) {
         Ok(bytes) => (
             [
                 (header::CONTENT_TYPE, content_type(entry)),
@@ -107,13 +109,15 @@ fn serve(fs: &FsContext, entry: &str, cache_control: &'static str) -> Response {
 ///
 /// The HTTP thread is spawned after `builtin::prepare_root()`, so the snapshot
 /// already reflects the committed disk root when one was installed.
-fn snapshot_fs_context() -> FsContext {
-    FsContext::clone(&current_fs_context())
+fn snapshot_fs_context() -> FsContextSnapshot {
+    current_fs_context()
 }
 
-fn shell_available(fs: &FsContext) -> bool {
+fn shell_available(fs: &FsContextSnapshot) -> bool {
     let shell = format!("{BUILTIN_WEB_UI_DIR}/{APP_SHELL_ENTRY}");
-    let Ok(resource) = fs.resolve(&shell) else {
+    let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
+    let view = ax_fs_ng::FsView::current(fs.clone(), &caller);
+    let Ok(resource) = view.resolve(&shell) else {
         return false;
     };
     resource.check_is_file().is_ok() && resource.len().is_ok_and(|len| len > 0)

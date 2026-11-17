@@ -61,9 +61,10 @@ fn resolve_path(
     path: *const c_char,
     nofollow: bool,
 ) -> StarryResult<Location> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     let path = vm_load_path_string(current, path)?;
     let flags = if nofollow { AT_SYMLINK_NOFOLLOW } else { 0 };
-    resolve_at(AT_FDCWD, Some(&path), flags)?
+    resolve_at(&link_caller, AT_FDCWD, Some(&path), flags)?
         .into_file()
         .ok_or(StarryError::BadFileDescriptor)
 }
@@ -74,13 +75,14 @@ fn resolve_xattrat(
     path: *const c_char,
     at_flags: u32,
 ) -> StarryResult<Location> {
+    let link_caller = crate::task::ProcLinkCaller::capture(current.as_thread());
     const VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
 
     if at_flags & !VALID_FLAGS != 0 {
         return Err(StarryError::InvalidInput);
     }
     let path = vm_load_path_string(current, path)?;
-    resolve_at(dirfd, Some(&path), at_flags)?
+    resolve_at(&link_caller, dirfd, Some(&path), at_flags)?
         .into_file()
         .ok_or(StarryError::BadFileDescriptor)
 }

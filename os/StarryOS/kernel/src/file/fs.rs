@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, FsView};
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
 use axpoll::{IoEvents, Pollable};
@@ -30,18 +30,22 @@ use crate::{
 // FusionIO/directFS atomic-write toggle used by MySQL.
 const DFS_IOCTL_ATOMIC_WRITE_SET: u32 = 0x4004_9502;
 
-pub fn with_fs<R>(dirfd: c_int, f: impl FnOnce(&FsContext) -> StarryResult<R>) -> StarryResult<R> {
+pub(crate) fn with_fs<R>(
+    dirfd: c_int,
+    caller: &crate::task::ProcLinkCaller,
+    f: impl FnOnce(&FsView<'_>) -> StarryResult<R>,
+) -> StarryResult<R> {
     let binding = current_user_task()
         .as_thread()
         .snapshot_fs_binding()?
         .ok_or(StarryError::BadState)?;
-    let fs = &binding.fs;
-    if dirfd == AT_FDCWD {
-        f(fs)
+    let view = if dirfd == AT_FDCWD {
+        FsView::current(binding.fs, caller)
     } else {
-        let dir = Directory::from_fd(dirfd)?.inner().clone();
-        f(&fs.with_dirfd(dir)?)
-    }
+        let directory = Directory::from_fd(dirfd)?.path_handle().clone();
+        FsView::at_directory(binding.fs, caller, directory)?
+    };
+    f(&view)
 }
 
 pub enum ResolveAtResult {
@@ -88,19 +92,21 @@ pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
 }
 
 /// Resolves the same dirfd/empty-path contract with directory search admission.
-pub fn resolve_at_checked(
+pub(crate) fn resolve_at_checked(
+    caller: &crate::task::ProcLinkCaller,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
     check_search: impl Fn(&Location) -> VfsResult<()>,
 ) -> StarryResult<ResolveAtResult> {
-    let check = |_: &FsContext, directory: &Location| check_search(directory);
-    resolve_at_with_search(dirfd, path, flags, Some(&check)).map(|(result, ..)| result)
+    let check = |_: &FsView<'_>, directory: &Location| check_search(directory);
+    resolve_at_with_search(caller, dirfd, path, flags, Some(&check)).map(|(result, ..)| result)
 }
 
-type SearchCheck<'a> = Option<&'a dyn Fn(&FsContext, &Location) -> VfsResult<()>>;
+type SearchCheck<'a> = Option<&'a dyn Fn(&FsView<'_>, &Location) -> VfsResult<()>>;
 
 fn resolve_at_with_search(
+    caller: &crate::task::ProcLinkCaller,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
@@ -112,7 +118,7 @@ fn resolve_at_with_search(
                 return Err(StarryError::NotFound);
             }
             if dirfd == AT_FDCWD {
-                return with_fs(dirfd, |fs| {
+                return with_fs(dirfd, caller, |fs| {
                     Ok((
                         ResolveAtResult::File(fs.current_dir().clone()),
                         None,
@@ -128,7 +134,7 @@ fn resolve_at_with_search(
             } else {
                 dirfd
             };
-            with_fs(dirfd, |fs| {
+            with_fs(dirfd, caller, |fs| {
                 let boundary = fs.permission_boundary().cloned();
                 if let Some(check) = search {
                     let (location, searched) = if flags & AT_SYMLINK_NOFOLLOW != 0 {
@@ -151,27 +157,34 @@ fn resolve_at_with_search(
     }
 }
 
-pub fn resolve_at_with_boundary(
+pub(crate) fn resolve_at_with_boundary(
+    caller: &crate::task::ProcLinkCaller,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
 ) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
-    resolve_at_with_search(dirfd, path, flags, None)
+    resolve_at_with_search(caller, dirfd, path, flags, None)
 }
 
 /// Resolves an `*at` path with a credential-aware search check while retaining
 /// the directory trace needed for dirfd boundary validation.
-pub fn resolve_at_with_boundary_checked(
+pub(crate) fn resolve_at_with_boundary_checked(
+    caller: &crate::task::ProcLinkCaller,
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
-    check_search: impl Fn(&FsContext, &Location) -> VfsResult<()>,
+    check_search: impl Fn(&FsView<'_>, &Location) -> VfsResult<()>,
 ) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
-    resolve_at_with_search(dirfd, path, flags, Some(&check_search))
+    resolve_at_with_search(caller, dirfd, path, flags, Some(&check_search))
 }
 
-pub fn resolve_at(dirfd: c_int, path: Option<&str>, flags: u32) -> StarryResult<ResolveAtResult> {
-    resolve_at_with_boundary(dirfd, path, flags).map(|(result, ..)| result)
+pub(crate) fn resolve_at(
+    caller: &crate::task::ProcLinkCaller,
+    dirfd: c_int,
+    path: Option<&str>,
+    flags: u32,
+) -> StarryResult<ResolveAtResult> {
+    resolve_at_with_boundary(caller, dirfd, path, flags).map(|(result, ..)| result)
 }
 
 pub fn metadata_to_kstat(metadata: &Metadata) -> Kstat {

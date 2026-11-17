@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use linux_raw_sys::general::CAP_SYS_PTRACE;
 
-use super::{Cred, Thread, UserTaskRef};
+use super::{Cred, FsCredentialsSnapshot, ProcessData, Thread, UserTaskRef};
 use crate::{
     StarryError, StarryResult,
     mm::CloneUserRefError,
@@ -15,9 +15,53 @@ use crate::{
 type UserNamespaceRef = Arc<RawSpinLock<UserNamespace>>;
 
 /// One thread's credentials and namespace from the common publication gate.
-struct ProcReadCredentials {
-    cred: Arc<Cred>,
-    user_ns: UserNamespaceRef,
+pub(super) struct ProcReadCredentials {
+    pub(super) cred: Arc<Cred>,
+    pub(super) user_ns: UserNamespaceRef,
+}
+
+/// The original operation's filesystem identity and thread-group allocation.
+/// No task/scope guard or reference to a runtime current-task handle is retained.
+pub(crate) struct ProcLinkCaller {
+    identity: FsCredentialsSnapshot,
+    process: Arc<ProcessData>,
+}
+
+impl ProcLinkCaller {
+    pub(crate) fn capture(thread: &Thread) -> Self {
+        Self::from_identity(FsCredentialsSnapshot::capture(thread), thread)
+    }
+
+    fn from_identity(identity: FsCredentialsSnapshot, thread: &Thread) -> Self {
+        Self {
+            identity,
+            process: thread.proc_data.clone(),
+        }
+    }
+
+    pub(crate) fn capture_under(
+        thread: &Thread,
+        update: &super::ProcessNamespaceUpdate<'_>,
+    ) -> Self {
+        Self::from_identity(FsCredentialsSnapshot::capture_under(thread, update), thread)
+    }
+
+    pub(crate) fn fs_credentials(&self) -> &FsCredentialsSnapshot {
+        &self.identity
+    }
+
+    pub(crate) fn for_real_id_access(&self) -> Self {
+        Self {
+            identity: self.identity.for_real_id_access(),
+            process: self.process.clone(),
+        }
+    }
+}
+
+impl axfs_ng_vfs::LinkCaller for ProcLinkCaller {
+    fn credentials(&self) -> axfs_ng_vfs::MutationCredentials<'_> {
+        self.identity.as_mutation_credentials()
+    }
 }
 
 struct ProcReadTarget {
@@ -31,8 +75,20 @@ struct ProcReadTarget {
 /// This may sleep. Callers must release raw locks before entering and retain
 /// `target` while acquiring the link object; this result is not a reusable
 /// authorization token. Denials are procfs EACCES, not ptrace attach EPERM.
-pub(crate) fn authorize_proc_read(current: &UserTaskRef, target: &UserTaskRef) -> StarryResult<()> {
-    authorize_thread_read(current.as_thread(), target.as_thread())
+pub(crate) fn authorize_proc_read(
+    caller: &ProcLinkCaller,
+    target: &UserTaskRef,
+) -> StarryResult<()> {
+    authorize_saved_thread_read(caller, target.as_thread())
+}
+
+fn authorize_saved_thread_read(caller: &ProcLinkCaller, target: &Thread) -> StarryResult<()> {
+    if Arc::ptr_eq(&caller.process, &target.proc_data) {
+        return Ok(());
+    }
+    let caller = caller.identity.proc_read_credentials();
+    let target = ProcReadTarget::snapshot(target)?;
+    authorize_views(&caller, &target)
 }
 
 /// pidfd setns uses real IDs and the permitted capability set, unlike procfs
@@ -56,18 +112,6 @@ pub(crate) fn authorize_pidfd_namespace_read(
 enum ProcReadMode {
     Filesystem,
     Real,
-}
-
-fn authorize_thread_read(current: &Thread, target: &Thread) -> StarryResult<()> {
-    if Arc::ptr_eq(&current.proc_data, &target.proc_data) {
-        return Ok(());
-    }
-
-    // Never hold two process writer gates: opposite-direction proc reads must
-    // not deadlock. Each view is coherent with its own namespace/cred writers.
-    let caller = ProcReadCredentials::snapshot(current);
-    let target = ProcReadTarget::snapshot(target)?;
-    authorize_views(&caller, &target)
 }
 
 impl ProcReadCredentials {
@@ -366,7 +410,21 @@ mod tests {
         };
         let (_caller_pid, caller) = make_thread();
         let (_target_pid, target) = make_thread();
-        assert!(authorize_thread_read(&caller, &target).is_ok());
+        let saved_caller = ProcLinkCaller::capture(&caller);
+        let original = (*caller.cred()).clone();
+        let mut changed = original.clone();
+        changed.fsuid = 99;
+        changed.fsgid = 99;
+        caller.set_cred(changed);
+        assert!(authorize_saved_thread_read(&saved_caller, &target).is_ok());
+        denied(authorize_saved_thread_read(
+            &ProcLinkCaller::capture(&caller),
+            &target,
+        ));
+        let real_caller = ProcLinkCaller::capture(&caller).for_real_id_access();
+        assert!(authorize_saved_thread_read(&real_caller, &target).is_ok());
+        caller.set_cred(original);
+        assert!(authorize_saved_thread_read(&ProcLinkCaller::capture(&caller), &target).is_ok());
 
         // The caller still matches all six target IDs after only its fsuid
         // changes. Publication itself must make the target nondumpable; relying
@@ -375,7 +433,10 @@ mod tests {
         changed.fsuid += 1;
         target.set_thread_cred(changed);
         assert_eq!(target.proc_data.dumpable(), 0);
-        denied(authorize_thread_read(&caller, &target));
+        denied(authorize_saved_thread_read(
+            &ProcLinkCaller::capture(&caller),
+            &target,
+        ));
 
         let mut changed = (*target.cred()).clone();
         changed.cap_permitted = 1 << CAP_CHOWN;
@@ -395,7 +456,7 @@ mod tests {
         update.set_process_cred(&target, changed);
         assert_eq!(target.proc_data.dumpable(), 0);
         drop(update);
-        assert!(authorize_thread_read(&target, &target).is_ok());
+        assert!(authorize_saved_thread_read(&ProcLinkCaller::capture(&target), &target).is_ok());
         let sibling_pid =
             PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::Thread).unwrap();
         let sibling_identity = sibling_pid.identity();
@@ -408,7 +469,7 @@ mod tests {
             scope_local::Scope::new(),
         )
         .unwrap();
-        assert!(authorize_thread_read(&sibling, &target).is_ok());
+        assert!(authorize_saved_thread_read(&ProcLinkCaller::capture(&sibling), &target).is_ok());
 
         // A CLONE_VM peer can retain a live MM after this task detached it.
         // A mere successful kernel pin must not select the MM-userns branch.
@@ -421,9 +482,12 @@ mod tests {
                 .mm_user_ns
                 .is_none()
         );
-        denied(authorize_thread_read(&caller, &target));
+        denied(authorize_saved_thread_read(
+            &ProcLinkCaller::capture(&caller),
+            &target,
+        ));
         target.proc_data.set_dumpable(1);
-        assert!(authorize_thread_read(&caller, &target).is_ok());
+        assert!(authorize_saved_thread_read(&ProcLinkCaller::capture(&caller), &target).is_ok());
         drop(peer_mm);
     }
 }
