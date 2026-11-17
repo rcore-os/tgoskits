@@ -2504,7 +2504,7 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
 #[cfg(all(test, axtest))]
 fn proc_mountinfo_lines_match_linux_layout() -> bool {
     let ctx = current_fs_context();
-    let text = crate::pseudofs::proc_mountinfo::render_mountinfo(ctx);
+    let text = crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx);
     !text.is_empty()
         && text.lines().any(|line| line.contains(" / / "))
         && text.lines().all(|line| {

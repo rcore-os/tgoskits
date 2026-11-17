@@ -296,7 +296,7 @@ mod tests {
         identity
     }
 
-    #[test]
+    #[axtest::axtest]
     fn namespace_views_share_unique_allocated_inodes() {
         // Independent native ID domains may legally contain the same number.
         // Using those IDs as nsfs inode numbers makes this real IPC/Net pair,
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(observe_namespace(&ipc), ipc_identity);
     }
 
-    #[test]
+    #[axtest::axtest]
     fn namespace_index_canonicalizes_races_and_retires_dead_owners() {
         let native = Arc::new(RawSpinLock::new(IpcNamespace { ns_id: 1 }));
         let weak_native = Arc::downgrade(&native);
