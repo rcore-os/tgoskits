@@ -57,6 +57,8 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(feature = "sg2002")]
+use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 
 use crate::sync::Mutex;

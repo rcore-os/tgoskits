@@ -372,6 +372,8 @@ static void test_unlink_control_file_order(void)
         child_ret = syscall(SYS_unlinkat, dirfd, control_name, 0);
         child_errno = errno;
         if (child_ret != -1 || child_errno != EACCES) {
+            dprintf(STDERR_FILENO, "unprivileged unlinkat(flags=0): ret=%ld errno=%d\n",
+                    child_ret, child_errno);
             _exit(15);
         }
 
@@ -379,6 +381,8 @@ static void test_unlink_control_file_order(void)
         child_ret = syscall(SYS_unlinkat, dirfd, control_name, AT_REMOVEDIR);
         child_errno = errno;
         if (child_ret != -1 || child_errno != EACCES) {
+            dprintf(STDERR_FILENO, "unprivileged unlinkat(AT_REMOVEDIR): ret=%ld errno=%d\n",
+                    child_ret, child_errno);
             _exit(16);
         }
         _exit(0);
