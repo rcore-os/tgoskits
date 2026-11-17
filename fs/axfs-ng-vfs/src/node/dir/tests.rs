@@ -34,6 +34,29 @@ fn missing_names_are_cached_without_evicting_positive_owners() {
 
 #[test]
 fn cache_only_observation_never_falls_back_and_rejects_expired_negatives() {
+    const CHILD_ENV: &str = "AXFS_NG_VFS_CACHE_ONLY_CHILD";
+    if std::env::var_os(CHILD_ENV).is_none() {
+        // Other unit tests intentionally keep global namespace publications
+        // open. Isolate this observation so it reaches the metadata boundary,
+        // rather than correctly returning WouldBlock before traversal starts.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "node::dir::tests::cache_only_observation_never_falls_back_and_rejects_expired_negatives",
+                "--test-threads=1",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated cache-only observation failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        return;
+    }
     let (directory, backend) = fixture();
     let child = create_directory(&directory, "present");
     let root = crate::PathHandle::acquire(directory.0.clone()).unwrap();
