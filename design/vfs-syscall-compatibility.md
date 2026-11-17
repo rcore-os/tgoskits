@@ -82,7 +82,7 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| umount2；x86_64 166；其余三架构 39 | v7.1 [path_umount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2035) | 普通卸载保留目标到拆树提交，其他实际使用者导致 EBUSY；expire、lazy detach 另有顺序和寿命 | sys_umount2 → owned target → retire_executable_cache → PathHandle.prepare_unmount → cache flush/busy → PathUnmount.commit；挂载树为 namespace 状态 | 部分正确 | x86 path-lookup 的 tmpfs 普通卸载通过；公开 AX 旅程证明活动查找结果 busy、释放后可卸载；271ba070e1 原 executable 程序四架构证明存活 busy、退出后可卸载；expire 与 F1-F8 授权未闭合 |
+| umount2；x86_64 166；其余三架构 39 | v7.1 [path_umount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L2035) | 普通卸载保留目标到拆树提交，其他实际使用者导致 EBUSY；expire、lazy detach 另有顺序和寿命 | sys_umount2 → owned target → PathHandle.prepare_unmount → cache flush/busy → PathUnmount.commit；挂载树为 namespace 状态，执行映像与映射保留实际路径 | 部分正确 | 271ba070e1 原 executable 程序四架构证明存活 busy、退出后可卸载；2b31db7844 移除头部 LRU 后完整 x86 system 541/541 仍通过；expire 与 F1-F8 授权未闭合 |
 | mount；x86_64 165；其余三架构 40 | v7.1 [mount](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4363) | 解析并保持来源、目标到相应 mount/bind/move 提交，按实际 namespace 解释授权 | sys_mount → FsView → owned target/source；loop Direct 与 Overlay lower/upper/work 保存原 PathHandle；MountNamespace 持拓扑 | 部分正确 | x86 私有 tmpfs 安装和跨 mount 限制通过；cgroup/devpts 与 readonly 重配置的独立语义见第 8 节；F1-F8 及完整多操作数视图继续处理 |
 | pivot_root；x86_64 155；其余三架构 41 | v7.1 [pivot_root](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/namespace.c#L4759) | new_root 与 put_old 按规定顺序解析并保持到拓扑事务及 root/cwd 修订 | sys_pivot_root → one saved FsBindingSnapshot → owned directories → NamespaceChange.pivot_root → FsContextSnapshot.pivot_root | 无法确认 | 当前迁移通过类型检查；既有组件 pivot 证据不能替代本阶段直接 syscall 的并发及错误顺序证明 |
 | chdir；x86_64 80；其余三架构 49 | v7.1 [chdir](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/open.c#L550) | 跟随路径、检查目录及 search 后更新共享 fs 的 cwd，保留已取得目录 | sys_chdir → saved binding/FsView.resolve_checked → NamespaceChange.prepare_cwd(PathHandle) → commit；FsContextState 保存 cwd | 部分正确 | x86 path-lookup 的 cwd 切换、挂载穿越及恢复通过；共享 CLONE_FS、并发根切换与其余目标仍需直接证明 |
@@ -91,11 +91,11 @@ self 的节点类型修正同时改变打开描述与 nofollow 元数据观察�
 
 ### 4.2 执行映像
 
-装载入口消费拥有型路径，保持主映像、脚本解释器及 PT_INTERP 的实际对象。执行访问租约、页缓存和 MM 映射有各自寿命，完整退出与缓存退休仍需用真实 executable 卸载旅程判定。
+装载入口消费拥有型路径，保持主映像、脚本解释器及 PT_INTERP 的实际对象。每次装载的 ElfImage 读取当前数据页；执行访问租约、页缓存和 MM 映射有各自寿命，完整退出与卸载仍由真实 executable 旅程判定。
 
 | 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
 | --- | --- | --- | --- | --- | --- |
-| execve；x86_64 59；其余三架构 221 | v7.1 [do_open_execat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L764) | 主映像与解释器保留实际对象，proc fd 路径必须经过真实挂载与链接授权，失败释放执行访问 | sys_execve → one FsView.resolve → load_user_app(PathHandle, FsView) → shebang/PT_INTERP resolve in supplied view → ExecutableFile/ELF_CACHE/CachedFile → AddrSpace | 部分正确 | 09ccf6cb2c 的 x86 完整 system 541/541、原 exec family 程序及私有解释器内核测试通过；同一 C 在 Linux 82/0，旧前缀分流两项失败；CLONE_FS 受控并发与 ELF 缓存写后失效仍未闭合 |
+| execve；x86_64 59；其余三架构 221 | v7.1 [do_open_execat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L764) | 主映像与解释器保留实际对象，proc fd 路径必须经过真实挂载与链接授权，失败释放执行访问 | sys_execve → one FsView.resolve → load_user_app(PathHandle, FsView) → shebang/PT_INTERP resolve in supplied view → ExecutableFile/ElfImage/CachedFile → AddrSpace | 部分正确 | 09ccf6cb2c 的 exec family 与视图证明保留；2b31db7844 的同一写后重执行 C 与完整 x86 system 541/541 通过，写后头部失效见 14.1；CLONE_FS 受控并发和解释器错误映射仍有缺口 |
 | execveat；x86_64 322；其余三架构 281 | v7.1 [do_open_execat](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/exec.c#L764) | dirfd、AT_EMPTY_PATH、nofollow 和 AT_EXECVE_CHECK 决定对象与行为，解释器按调用者文件系统视图解析 | sys_execveat → one FsView → resolve_at_from_view or retained memfd path_handle → load_user_app borrowing original view → loader/MM → publication 外退休旧 MM | 部分正确 | 09ccf6cb2c 的原 exec family 程序直接覆盖 dirfd、空路径、nofollow、无效 fd 和参数预算，x86 完整批次通过；AT_EXECVE_CHECK 未实现，全部 fd 类型与错误优先级尚未证明 |
 
 
@@ -409,3 +409,31 @@ mqueue 的路径配方、mqd stat 和后续权限检查共享队列实体。两�
 | epoll_wait；x86_64 232 | v7.1 [就绪入口](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 按所选队列的消息与剩余容量观察就绪 | sys_epoll_wait → eventpoll ready queue → MqDescriptor.poll | 无法确认 | 类型分派与原队列实现共用，缺少此入口的路径描述直接旅程 |
 | epoll_pwait；x86_64 281；其余三架构 22 | v7.1 [就绪入口](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 按所选队列的消息与剩余容量观察就绪 | sys_epoll_pwait → eventpoll wait → queue readiness | 无法确认 | 类型分派与原队列实现共用，缺少此入口的路径描述直接旅程 |
 | epoll_pwait2；四架构 441 | v7.1 [就绪入口](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/eventpoll.c) | 按所选队列的消息与剩余容量观察就绪 | sys_epoll_pwait2 → eventpoll wait → queue readiness | 无法确认 | 类型分派与原队列实现共用，缺少此入口的路径描述直接旅程 |
+
+## 14. 可执行头的当前内容
+
+`ElfImage` 只保留本次加载的解析结果，主映像和 PT_INTERP 都从已有数据页缓存重新读取。
+本轮直接回归增强原执行/写互斥程序，没有增加默认用例或启动。完整 ELF 错误兼容性
+仍按入口分别判断，不能从主映像的写后重执行外推解释器错误或全部 execveat 标志。
+
+### 14.1 写后重执行
+
+已退出的映像允许取得 writer。修改并关闭该 writer 后，下一次执行必须使用当前
+头部；错误执行失败后也要释放执行租约，恢复原始字节后能够再次执行相同 inode。
+
+| 系统调用/编号 | Linux 基准与稳定链接 | Linux 可观察语义 | StarryOS 入口与调用链 | 实现结论 | 测试与证据 |
+| --- | --- | --- | --- | --- | --- |
+| execve/主映像写后重执行；x86_64 59；其余三架构 221 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L855) | 每次装载检查当前 ELF magic，坏主映像返回 ENOEXEC；失败不保留执行访问 | sys_execve → load_user_app → load_elf → ElfImage.load → CachedFile.read_at → 本次 ELFHeaders；ExecutableFile/MM 保留实际路径 | 部分正确 | 相同 C 在 Linux 通过、088637d6cd 稳定失败、2b31db7844 完整 x86 system 541/541 通过；恢复原头后同一 inode 再执行成功。其余目标的本次回归与 PT_INTERP 的 ELIBBAD 尚未据此证明 |
+| execveat/写后重执行；x86_64 322；其余三架构 281 | v7.1 [load_elf_binary](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_elf.c#L855) | 选定文件后同样读取当前头部；dirfd、空路径与 flags 保持各自检查顺序 | sys_execveat → one FsView/retained path → load_user_app → ElfImage.load → CachedFile → loader/MM | 无法确认 | 共用重新读取边界，原 exec family 程序在本轮完整批次通过；未直接运行 execveat 写后损坏/恢复旅程，不把 execve 的判据替代此入口 |
+
+### 14.2 寿命与证据范围
+
+`sys_umount2` 不再需要清理解析结果 LRU，正常 busy 判断继续保留真正的执行映像
+和映射路径。`memtrack` 也移除已经没有对象可清理的头部缓存调用；四目标 72 项
+Clippy 含其功能组合。最终源码 2b31db7844 另通过 Native 265/265 和 Kernel
+标准库检查，原卸载旅程包含在完整 x86 system 中。
+
+Linux v7.1 对坏 PT_INTERP 使用 ELIBBAD，当前 Starry 的该路径仍映射为 EINVAL，
+是保留的具体缺口。直接、映射或后端写入的数据页一致性也需要各自证明；本轮移除
+旧解析头命中，不能代替全部 raw 消费者契约。原始日志、源码摘要及同条件微基准
+输入和样本保存在生产证据键 `elf_header_freshness`。

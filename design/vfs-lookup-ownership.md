@@ -907,13 +907,12 @@ backend/cache 的析构先于它所依赖的最后路径 guard，避免清理尚
 最后 owner 可能在 MM 或文件锁下释放的路径需显式移出后再 Drop，
 不能以“只是增加 Arc”跳过这个核查。
 
-这里的纯缓存包括现有全局 `ELF_LOADER` 的 32 项 LRU：
-`ElfCacheEntry.cache` 当前直接持有 `CachedFile` 包装，而非仅持
-`CachedFileShared`。因此 `CachedFile` 包装本身也不统一升级为活跃路径租约。
-实际执行段与解释器段必须在交给 `MappingOperation::new_cow` 时从本次活跃
-输入取得句柄；主程序 `ExecutableFile` 不能代替另一 mount 上解释器段的使用权。
-共享文件映射当前只向 `MappingOperation::new_file` 传 `CachedFile`，迁移时
-必须补齐实际逻辑路径使用权，不能从低层 cache 猜回 mount。
+`CachedFile` 包装保留 `PathHandle`，其独立共享状态 `CachedFileShared` 保存
+数据页与 backing，不持有用户 mount-use。`ElfImage` 只在本次加载期间保留
+包装，不再通过全局头部 LRU 长期持有路径。执行段与解释器段在交给
+`MappingOperation::new_cow` 时各自保留实际输入；主程序 `ExecutableFile`
+不能代替另一 mount 上解释器段的使用权。共享文件映射同样保留实际逻辑路径，
+不能从低层 cache 猜回 mount。
 
 `AddrSpace::take_file_accesses` 当前只移出 executable/write 租约，
 不移出 VMA backend。`release_retired_mapping_owners` 退出内部 IRQ-safe 锁
@@ -2554,12 +2553,12 @@ gate 增加的代价限定在 cgroup owner 域，不给普通 open 添加全局�
 | 当前父弱索引可达的全局正项 | gate 外撤出并实际释放；不清除活跃弱身份索引 |
 | 仅 registry 保留、clean、已持久化的文件缓存 | 复用既有有界、尽力 prune；返回不表示一次清空全部缓存 |
 | fd、路径句柄、映射、进行中 I/O、脏页或未完成写回 | 保留真实 owner；不能清 dirty、强拆 handle 或降为弱 backing |
-| 其他别名正项、ELF 装载器 LRU 等独立内部 owner | 不宣称通用准备能退出；若仍持原生 holder，保持原生 FAT 相同的拒绝边界 |
+| 其他别名正项等独立内部 owner | 不宣称通用准备能退出；若仍持原生 holder，保持原生 FAT 相同的拒绝边界 |
 | 本轮真实原生观察之后才创建的逻辑 wrapper | 不重新采样 active；只能随原观察一次消费续走 |
 
-`mm/loader.rs::ElfCacheEntry` 的 LRU 已经可以保留原生 `CachedFile`，不仅限于 Overlay。
-本次不修改 ELF 解析、装载、LRU 策略或为删除新增 ELF 清理入口；不把这一内部 owner
-称为外部 fd，也不承诺 POSIX 式的 FAT 活跃文件脱链。必须实现并证明的新增进展是：
+ELF 头现在由每次加载的 `ElfImage` 保存，不再是独立常驻 holder。其他内部
+引用仍不能称为外部 fd，也不能据此承诺 POSIX 式的 FAT 活跃文件脱链。
+必须实现并证明的进展是：
 没有此前 holder、或既有准备已实际退出 holder 时，不能被本轮观察自己新造的引用拒绝。
 这保留原生能力限制，不允许据此统一拒绝所有 FAT upper 删除。
 
@@ -4247,24 +4246,14 @@ ctime 显式取本轮授权时刻；后端不重复 chown/setid 规则，不补�
 
 ### 6.18 执行缓存的退休
 
-普通卸载前，`retire_executable_cache` 仅清除目标 FilesystemId 的 ELF 头缓存。
-活动映像的 ExecutableFile 与各映射的 CachedFile 继续拥有真实路径；卸载计划
-依旧检查实际使用数，不能因内部缓存存在永久 busy，也不能忽略正在执行的映像。
-bind 别名共享 filesystem 身份，缓存退休因此覆盖同一后端的别名，其他文件系统的
-条目和 LRU 次序保留。惰性卸载的独立语义不经过此普通卸载准备。
+活动映像的 `ExecutableFile` 与各映射的 `CachedFile` 拥有真实路径。普通卸载
+依据实际使用数判断 busy，惰性卸载保留自身独立的语义。内部头部解析结果不再
+长期持有路径；当前 `ElfImage` 的读取与寿命见第 6.31 节。
 
-`ELF_CACHE` 只保护有界 LRU 及其发布。命中返回 `Arc<ElfCacheEntry>`，调用方在
-锁外做文件读取、解释器装载和映射；并发 miss 在发布前重新检查实际 Location，
-多余候选与被淘汰条目在锁外退休。清除操作锁内重建保留集合并移出原集合，锁外
-释放最后引用。并发 exec 仍持路径时会使普通卸载 busy，下一次卸载可以再次退休
-缓存，不能靠取消引用记账跨过活动使用者。
-
-不修改 busy 条件是必要的，因为跳过缓存占用无法区分活动 MM；永久禁用缓存会
-丢失现有复用，而强制清除其他文件系统没有必要。采用已有缓存边界和 filesystem
-身份，不增加全局登记表。每个缓存 miss 增加一次 Arc 分配，命中增加引用计数；
-当前未取得同条件性能比较，不声称性能改善。改动无持久格式，可整体回退，但
-回退会恢复退出后无法卸载的问题。完整原 executable 旅程验证存活时 busy、退出
-后可卸载及 proc 对象身份；其余错误、并发与性能边界继续由验收范围约束。
+早期阶段以按 FilesystemId 清理头部 LRU 的方式修复退出后无法普通卸载，并在
+原 executable 旅程中证明存活时 busy、退出后可卸载与 proc 对象身份。该阶段的
+源码及结果仍按证据记录解释；后续写后失效改动移除解析结果 LRU 和专用退休
+入口，数据页缓存与活动 MM 的实际所有者继续保留。
 
 `ProcessMemoryShare::synchronize_retirement` 在退出的 zombie 发布之前，以及 exec
 切换硬件并退出 process publication 之后，等待无用户、无内核 pin 的旧 MM 完成
@@ -4557,6 +4546,28 @@ Linux 固定基准的 `load_elf_binary` 检查本次 `bprm->buf`，并经 `elf_r
 头部副本及其路径引用，代价是重复解析；执行耗时和资源比较需按相同目标、
 配置、输入及采样方案单独记录，不以测试成功推断性能。回滚仅涉及内存中实现，
 没有持久格式迁移；合入前仍需独立领域审查。
+
+最终实现 2b31db7844 的完整 x86 system 为 541/541，包含增强后的原执行/写
+互斥程序；另通过 Native 265/265、Kernel 标准库和四目标 Clippy 72/72。
+默认用例和启动数没有增加。Linux v7.1 的坏 PT_INTERP 使用 ELIBBAD，当前
+解释器解析失败仍映射 EINVAL；该缺口和 execveat 的直接写后恢复证明分别保留。
+
+同条件微基准通过项目外部配置入口构建并运行真实内核，两版交替各启动三次。
+每次固定客机 CPU 0，预热 8 次后保存 128 个样本，计时包含 fork、原始 execve、
+子进程退出和 waitpid。同一静态程序、根文件系统、QEMU 与构建配置的摘要均在
+运行后复核，完整输入内容和原始样本保存在 `elf_header_freshness` 证据键。
+
+| 实现 | 启动与样本 | 各轮中位数 ms | 各轮 p95 ms |
+| --- | --- | --- | --- |
+| 088637d6cd 原解析缓存 | 3 次，各 128 个 | 22.150129 / 21.890948 / 21.830242 | 36.395262 / 32.455601 / 33.010998 |
+| 2b31db7844 当前读取 | 3 次，各 128 个 | 21.741284 / 21.793402 / 21.649660 | 22.269029 / 22.350753 / 22.004322 |
+
+宿主共享且没有独占 CPU 或隔离负载，这些 QEMU/TCG 样本只记录本地观察，
+不证明性能提升，也不替代实体板或固定 Linux RT 对照。相同 Error 日志配置的
+实际 ELF 经 GNU size 统计，text/data/bss 合计由 13,065,475 变为 13,060,043
+字节，bss 均为 565,248 字节；这是节区记账，不能解释为驻留内存或堆峰值。
+旧全局索引的 DWARF sizeof 为 608 字节；头对象类型查询未成功，未据此填写
+单个头对象或总堆大小。直接、映射与后端写的数据页一致性仍属于各自消费者契约。
 
 ## 7. 缓存专用查找
 
