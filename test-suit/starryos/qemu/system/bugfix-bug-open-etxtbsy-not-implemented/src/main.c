@@ -256,6 +256,26 @@ static void check_writer_lifetime(void)
     stop_process(running);
 }
 
+static void check_header_refresh(void)
+{
+    unsigned char magic[4];
+    int writer = (int)syscall(SYS_openat, AT_FDCWD, executable, O_RDWR, 0700);
+    CHECK(writer >= 0, "open previously executed image for header update");
+    CHECK(syscall(SYS_pread64, writer, magic, sizeof(magic), 0) == sizeof(magic)
+          && memcmp(magic, "\177ELF", sizeof(magic)) == 0,
+          "read original executable magic");
+    CHECK(syscall(SYS_pwrite64, writer, "BAD!", sizeof(magic), 0) == sizeof(magic)
+          && close(writer) == 0, "replace cached executable magic and release writer");
+    expect_exec_error(executable, ENOEXEC);
+
+    writer = (int)syscall(SYS_openat, AT_FDCWD, executable, O_RDWR, 0700);
+    CHECK(writer >= 0
+          && syscall(SYS_pwrite64, writer, magic, sizeof(magic), 0) == sizeof(magic)
+          && close(writer) == 0, "restore header on the same executable inode");
+    struct process running = start_process(executable);
+    stop_process(running);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1)
@@ -281,6 +301,8 @@ int main(int argc, char **argv)
     puts("PASS: running image aliases, truncation, fork, exit and replacement");
     check_writer_lifetime();
     puts("PASS: writable descriptions survive dup, fork and mappings");
+    check_header_refresh();
+    puts("PASS: executable headers refresh after a completed file write");
     int fd = (int)syscall(SYS_openat, AT_FDCWD, invalid, O_WRONLY | O_CREAT | O_EXCL, 0700);
     CHECK(fd >= 0 && write(fd, "invalid", 7) == 7 && close(fd) == 0,
           "prepare invalid executable");
