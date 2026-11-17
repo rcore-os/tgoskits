@@ -3,9 +3,40 @@
 #include <mqueue.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #define QUEUE_NAME "/mqueue_fd_read_status"
+
+static int check_shared_inode(int descriptor)
+{
+    const char path[] = "/dev/mqueue" QUEUE_NAME;
+    struct stat before, by_path, by_fd;
+    int failures = 0;
+
+    if (fstat(descriptor, &before) != 0 || stat(path, &by_path) != 0
+        || before.st_dev != by_path.st_dev || before.st_ino != by_path.st_ino) {
+        fputs("mqd and pathname do not name the same inode\n", stderr);
+        failures++;
+    }
+    if (syscall(SYS_fchmodat, AT_FDCWD, path, 0400) != 0
+        || fstat(descriptor, &by_fd) != 0 || (by_fd.st_mode & 0777) != 0400) {
+        fputs("pathname chmod was not visible through the retained mqd\n", stderr);
+        failures++;
+    }
+    if (syscall(SYS_fchmod, descriptor, 0640) != 0 || stat(path, &by_path) != 0
+        || (by_path.st_mode & 0777) != 0640) {
+        fputs("mqd chmod was not visible through a new pathname lookup\n", stderr);
+        failures++;
+    }
+    if (fstat(descriptor, &by_fd) != 0 || by_fd.st_ino != before.st_ino
+        || by_fd.st_dev != before.st_dev || by_fd.st_size != 80) {
+        fputs("metadata changes replaced the queue inode or its fixed size\n", stderr);
+        failures++;
+    }
+    return failures == 0 ? 0 : -1;
+}
 
 int main(void)
 {
@@ -87,7 +118,7 @@ int main(void)
         goto cleanup;
     }
 
-    result = 0;
+    result = check_shared_inode((int)queue) == 0 ? 0 : 1;
 
 cleanup:
     if (write_only != (mqd_t)-1) {
