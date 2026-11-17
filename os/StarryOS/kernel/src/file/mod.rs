@@ -63,7 +63,7 @@ pub use self::{
     pipe::Pipe,
 };
 pub(crate) use self::{
-    fs::{resolve_at, resolve_at_checked, resolve_at_with_boundary_checked, with_fs},
+    fs::{resolve_at, resolve_at_checked, resolve_at_with_boundary_checked, view_at, with_fs},
     mount_table::{MountTableFile, notify_mount_namespace_changed},
 };
 use crate::{
