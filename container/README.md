@@ -16,6 +16,8 @@ Node 24.11.1 自带 npm 11，宿主 JDK 17 编译 Java 测试资产，`container
 
 文件系统与固件工具包括 `debugfs`、`fakeroot`、`sfdisk`、`mkimage`、`dtc` 和 `mtools`。镜像还提供 LLD、Git LFS、Python pip、压缩工具及音视频工具，应用预构建阶段不需要补装这些宿主软件。
 
+容器任务要求 `TGOSKITS_PREBUILT_CONTAINER=1`。缺少宿主工具、Rust target 或 `bpf-linker` 时，预构建脚本返回错误并要求修复镜像，不尝试调用包管理器。直接运行在裸机上的任务保留原有准备路径；Node 的 `setup-node` 也仅用于裸机任务，容器使用预装版本。
+
 `npm ci`、Nix devShell、客机根文件系统内的 `apk` 准备和客机安装测试继续使用当前源码或目标系统的依赖。它们不属于固定宿主环境，不预制到镜像中。
 
 ## 2. 本地使用

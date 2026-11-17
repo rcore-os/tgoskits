@@ -40,6 +40,11 @@ ensure_host_tools() {
     command -v resize2fs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v debugfs   >/dev/null 2>&1 || missing+=(e2fsprogs)
     if [[ ${#missing[@]} -gt 0 ]]; then
+        if [[ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]]; then
+            echo "error: missing host dependencies in prepared container: ${missing[*]}" >&2
+            exit 1
+        fi
+
         if command -v apt-get >/dev/null 2>&1; then
             apt-get update && apt-get install -y --no-install-recommends "${missing[@]}"
         else

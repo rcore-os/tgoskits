@@ -101,6 +101,15 @@ jobs:
             test -r /dev/kvm && test -w /dev/kvm
           fi
 
+      - name: Validate prepared container
+        if: matrix.container_image != ''
+        run: |
+          set -euo pipefail
+          if [ "${TGOSKITS_PREBUILT_CONTAINER:-}" != 1 ]; then
+            echo "::error::This check requires the prepared CI image; rebuild and publish the container prerequisites first" >&2
+            exit 1
+          fi
+
       # Some Starry board builds pack a uImage from a companion `.its` file.
       # Those checks set `requires_mkimage`; FIT conversion also needs `dtc`.
       # Check both tools here so a missing host dependency fails before the
@@ -113,6 +122,11 @@ jobs:
             echo "mkimage: $(command -v mkimage)"
             echo "dtc: $(command -v dtc)"
             exit 0
+          fi
+
+          if [ "${TGOSKITS_PREBUILT_CONTAINER:-}" = 1 ]; then
+            echo "::error::Prepared container is missing mkimage or dtc; rebuild the CI image" >&2
+            exit 1
           fi
 
           distro_ids=""
@@ -195,10 +209,22 @@ jobs:
           test -x "${xtask_path}"
 
       - name: Set up Node
-        if: matrix.node_version != ''
+        if: matrix.node_version != '' && matrix.container_image == ''
         uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node_version }}
+
+      - name: Preflight Node
+        if: matrix.node_version != ''
+        env:
+          REQUIRED_NODE_VERSION: ${{ matrix.node_version }}
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          required_major="${REQUIRED_NODE_VERSION%%.*}"
+          node -e 'if (Number(process.versions.node.split(".")[0]) < Number(process.argv[1])) process.exit(1)' "$required_major"
+          test "$(npm --version | cut -d. -f1)" -ge 11
 
       - name: Show Rust version
         run: rustc --version

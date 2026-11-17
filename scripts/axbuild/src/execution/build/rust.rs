@@ -1,4 +1,5 @@
 use super::*;
+use crate::support::rustup;
 
 pub(crate) fn case_rust_source_dir(case: &TestQemuCase) -> PathBuf {
     case.case_dir.join("rust")
@@ -77,12 +78,7 @@ pub(crate) fn prepare_rust_case_overlay_sync(
     fs::create_dir_all(&layout.apk_cache_dir)
         .with_context(|| format!("failed to create {}", layout.apk_cache_dir.display()))?;
 
-    // Ensure the musl target is installed in the active toolchain.
-    let mut add_target = Command::new("rustup");
-    add_target.arg("target").arg("add").arg(target_triple);
-    add_target
-        .exec()
-        .with_context(|| format!("failed to install Rust target `{target_triple}` via rustup"))?;
+    rustup::ensure_target(target_triple)?;
 
     // Extract the rootfs so we can use the Alpine cross-linker for architectures
     // whose ELF format the host linker cannot handle (e.g. loongarch64).
