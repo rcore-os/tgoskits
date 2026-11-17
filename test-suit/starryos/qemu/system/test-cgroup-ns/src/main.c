@@ -265,14 +265,18 @@ static void test_mount_view(void)
     struct stat root;
     struct stat parent;
     struct stat outside;
+    struct stat global;
     require_true(stat(VIEW_MOUNT "/child", &root) == 0,
                  "namespace-rooted mount exposes descendants");
     require_true(stat(VIEW_MOUNT "/sibling", &root) == -1 && errno == ENOENT,
                  "namespace-rooted mount hides global siblings");
     if (stat(VIEW_MOUNT, &root) != 0 ||
-        stat(VIEW_MOUNT "/..", &parent) != 0 || stat("/tmp", &outside) != 0) {
+        stat(VIEW_MOUNT "/..", &parent) != 0 || stat("/tmp", &outside) != 0 ||
+        stat(GLOBAL_MOUNT, &global) != 0) {
         fail("stat cgroup mount root");
     }
+    require_true(root.st_dev == global.st_dev,
+                 "different cgroup namespace roots share the hierarchy filesystem");
     require_true(parent.st_dev == outside.st_dev && parent.st_ino == outside.st_ino,
                  "dotdot at the mounted cgroup root reaches the mountpoint parent");
 }
