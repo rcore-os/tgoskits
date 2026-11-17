@@ -14,16 +14,13 @@ use linux_raw_sys::general::*;
 use crate::{
     StarryError, StarryResult,
     file::{
-        Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, NsFd, Pipe,
-        add_file_like, close_file_like, get_file_like, memfd::Memfd, with_fs,
+        Directory, FD_TABLE, File, FileDescriptor, FileLike, MountTableFile, Pipe, add_file_like,
+        close_file_like, get_file_like, memfd::Memfd, with_fs,
     },
     mm::{VmMutPtr, VmPtr, vm_load, vm_load_path_string},
     pseudofs::{Device, dev::tty},
     sync::RawSpinRwLock,
-    task::{
-        TgidNumber, TidNumber, current_pid_view, get_user_process_data_by_number,
-        get_user_task_by_number,
-    },
+    task::{TidNumber, current_pid_view, get_user_task_by_number},
 };
 
 /// Convert open flags to [`OpenOptions`].
@@ -386,76 +383,6 @@ fn openat2_check_extra_bytes(
     Ok(())
 }
 
-/// Check whether `path` refers to a `/proc/<pid>/ns/<type>` entry.
-/// If so, create an [`NsFd`] and add it to the fd table instead of
-/// opening a regular file.
-///
-/// Returns `Some(fd)` on success, `Some(Err(...))` on failure, or
-/// `None` if the path does not match (fall through to regular open).
-fn try_open_nsfd(
-    current: &crate::task::UserTaskRef,
-    path: &str,
-    flags: u32,
-) -> Option<crate::StarryResult<i32>> {
-    // Must be of the form /proc/<pid>/ns/<type>
-    if !path.starts_with("/proc/") {
-        return None;
-    }
-    let rest = path.strip_prefix("/proc/")?;
-    let (pid_str, ns_type_str) = rest.split_once("/ns/")?;
-    if pid_str.is_empty() || ns_type_str.is_empty() {
-        return None;
-    }
-    // Reject paths with extra components, e.g. /proc/1/ns/uts/extra
-    if ns_type_str.contains('/') {
-        return None;
-    }
-
-    let tgid = if pid_str == "self" {
-        current_pid_view().visible_process_number(&current.as_thread().proc_data.identity())?
-    } else {
-        TgidNumber::try_from(pid_str.parse::<u32>().ok()?).ok()?
-    };
-
-    let proc_data = match get_user_process_data_by_number(tgid) {
-        Ok(p) => p,
-        Err(_) => return Some(Err(StarryError::NotFound)),
-    };
-
-    let mount_namespace = if ns_type_str == "mnt" {
-        let task = match get_user_task_by_number(TidNumber::from(tgid.pid_number())) {
-            Ok(task) => task,
-            Err(_) => return Some(Err(StarryError::NotFound)),
-        };
-        let binding = match task.as_thread().snapshot_fs_binding() {
-            Ok(Some(binding)) => binding,
-            Ok(None) => return Some(Err(StarryError::NotFound)),
-            Err(error) => return Some(Err(error)),
-        };
-        Some(binding.mnt)
-    } else {
-        None
-    };
-
-    let nsproxy = proc_data.namespace_snapshot();
-
-    let nsfd: NsFd = match ns_type_str {
-        "uts" => NsFd::Uts(nsproxy.uts_ns.clone()),
-        "ipc" => NsFd::Ipc(nsproxy.ipc_ns.clone()),
-        "mnt" => NsFd::Mnt(mount_namespace.expect("selected mount binding")),
-        "pid" => NsFd::Pid(proc_data.identity().active_namespace()),
-        "net" => NsFd::Net(nsproxy.net_ns.clone()),
-        "user" => NsFd::User(nsproxy.user_ns.clone()),
-        "cgroup" => NsFd::Cgroup(nsproxy.cgroup_ns.clone()),
-        _ => return Some(Err(StarryError::NotFound)),
-    };
-
-    drop(nsproxy);
-
-    let fd = nsfd.add_to_fd_table(flags & O_CLOEXEC != 0);
-    Some(fd)
-}
-
 ax_tracepoint::define_event_trace!(
     sys_enter_openat,
     TP_kops(crate::tracepoint::KernelTraceAux),
@@ -549,12 +476,6 @@ pub fn sys_openat(
     };
 
     let mode = mode & !thread.proc_data.umask();
-
-    // Intercept /proc/<pid>/ns/<type> opens: create an NsFd instead of
-    // a regular file descriptor so that setns(2) receives a valid target.
-    if let Some(result) = try_open_nsfd(current, &path, uflags) {
-        return result.map(|fd| fd as isize);
-    }
 
     let link_caller = crate::task::ProcLinkCaller::capture(thread);
     let fs_credentials = link_caller.fs_credentials();
