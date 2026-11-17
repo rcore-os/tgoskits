@@ -17,7 +17,10 @@ extern crate ax_runtime;
 extern crate log;
 
 use axfs_ng_vfs::Location;
-pub use axfs_ng_vfs::{CreateAttributes, CreateContent, MutationCredentials, VfsError, VfsResult};
+pub use axfs_ng_vfs::{
+    CreateAttributes, CreateContent, LinkCaller, MutationCredentials, NativeLinkCaller, VfsError,
+    VfsResult,
+};
 
 pub mod api;
 pub(crate) mod block;
@@ -71,7 +74,7 @@ pub mod vfs {
     /// Create a filesystem from a native block runtime handle.
     #[cfg(any(feature = "ext4", feature = "fat"))]
     pub use crate::fs::new_from_handle as new_filesystem_from_handle;
-    pub use crate::highlevel::*;
+    pub use crate::{LinkCaller, NativeLinkCaller, highlevel::*};
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

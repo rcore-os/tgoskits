@@ -487,8 +487,8 @@ pub fn place(id: &str, name: &str) -> Result<SessionView, FileError> {
         }
     }
     let caller = ax_fs_ng::vfs::NativeLinkCaller::root();
-    let view = ax_fs_ng::FsView::current(ax_fs_ng::current_fs_context(), &caller);
-    if let Err(error) = view.rename_with_options(&from, &to, RenameOptions::NO_REPLACE) {
+    let fs_view = ax_fs_ng::FsView::current(ax_fs_ng::current_fs_context(), &caller);
+    if let Err(error) = fs_view.rename_with_options(&from, &to, RenameOptions::NO_REPLACE) {
         if error == VfsError::AlreadyExists {
             let mut sessions = SESSIONS.lock_unpoisoned();
             if let Some(session) = sessions.get_mut(id) {
