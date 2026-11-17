@@ -156,11 +156,14 @@ fn add_to_fd(
                     let entry = DirEntry::new_file(
                         FileNode::new(master),
                         NodeType::CharacterDevice,
-                        Reference::new(Some(pts.entry().clone()), pty_number.to_string()),
+                        Reference::new(
+                            Some(pts.location().entry().clone()),
+                            pty_number.to_string(),
+                        ),
                     );
                     let loc = Location::new(file.location().mountpoint().clone(), entry);
                     file = ax_fs_ng::vfs::File::new(
-                        FileBackend::Direct(axfs_ng_vfs::PathHandle::acquire(loc)?),
+                        FileBackend::Direct(file.path_handle().rebind(loc)?),
                         file.flags(),
                     );
                 } else if inner.is::<tty::CurrentTty>() {
@@ -175,17 +178,16 @@ fn add_to_fd(
                         StarryError::BadState
                     })?;
                     let loc = match target {
-                        tty::TerminalDevice::Location(location) => location,
+                        tty::TerminalDevice::Location(location) => {
+                            axfs_ng_vfs::PathHandle::acquire(location)?
+                        }
                         tty::TerminalDevice::Path(path) => ax_fs_ng::FsView::current(
                             ax_fs_ng::vfs::current_fs_context(),
                             &link_caller,
                         )
                         .resolve(&path)?,
                     };
-                    file = ax_fs_ng::vfs::File::new(
-                        FileBackend::Direct(axfs_ng_vfs::PathHandle::acquire(loc)?),
-                        file.flags(),
-                    );
+                    file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }
             // Pair one final device open with the last close of the shared file.

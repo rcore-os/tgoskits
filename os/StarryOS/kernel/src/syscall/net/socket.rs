@@ -203,7 +203,10 @@ pub fn sys_bind(
                     VfsError::AlreadyExists => StarryError::from(ax_net::NetError::AddrInUse),
                     error => StarryError::from(error),
                 })?;
-            Ok(location.user_data().get_or_insert_with(Default::default))
+            Ok(location
+                .location()
+                .user_data()
+                .get_or_insert_with(Default::default))
         })?;
     } else {
         socket.bind(addr)?;

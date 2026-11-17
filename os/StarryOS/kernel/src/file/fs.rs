@@ -7,7 +7,9 @@ use core::{
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsView};
 use ax_io::{Seek, SeekFrom};
-use axfs_ng_vfs::{DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, VfsResult};
+use axfs_ng_vfs::{
+    DirectoryCursor, DirectoryReadState, Location, Metadata, NodeFlags, PathHandle, VfsResult,
+};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
@@ -49,12 +51,12 @@ pub(crate) fn with_fs<R>(
 }
 
 pub enum ResolveAtResult {
-    File(Location),
+    File(PathHandle),
     Other(Arc<dyn FileLike>),
 }
 
 impl ResolveAtResult {
-    pub fn into_file(self) -> Option<Location> {
+    pub fn into_file(self) -> Option<PathHandle> {
         match self {
             Self::File(file) => Some(file),
             Self::Other(_) => None,
@@ -63,7 +65,7 @@ impl ResolveAtResult {
 
     pub fn stat(&self) -> StarryResult<Kstat> {
         match self {
-            Self::File(file) => Ok(metadata_to_kstat(&file.metadata()?)),
+            Self::File(file) => Ok(metadata_to_kstat(&file.location().metadata()?)),
             Self::Other(file_like) => file_like.stat(),
         }
     }
@@ -78,14 +80,14 @@ pub fn resolve_fd(fd: c_int) -> StarryResult<ResolveAtResult> {
         // (BadFileDescriptor) which would break fstat(O_PATH-fd).
         // man "O_PATH": fstat(2) is in the allowed-operations list.
         // Fixes bug-open-path-fstat-ebadf.
-        ResolveAtResult::File(file.inner().location().clone())
+        ResolveAtResult::File(file.inner().path_handle().clone())
     } else if let Some(file) = f
         .downcast_ref::<super::Pipe>()
         .and_then(super::Pipe::named_file)
     {
-        ResolveAtResult::File(file.inner().location().clone())
+        ResolveAtResult::File(file.inner().path_handle().clone())
     } else if let Some(dir) = f.downcast_ref::<Directory>() {
-        ResolveAtResult::File(dir.inner().clone())
+        ResolveAtResult::File(dir.path_handle().clone())
     } else {
         ResolveAtResult::Other(file_like)
     })
@@ -111,7 +113,7 @@ fn resolve_at_with_search(
     path: Option<&str>,
     flags: u32,
     search: SearchCheck<'_>,
-) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
+) -> StarryResult<(ResolveAtResult, Option<PathHandle>, Vec<PathHandle>)> {
     match path {
         Some("") | None => {
             if flags & AT_EMPTY_PATH == 0 {
@@ -119,11 +121,7 @@ fn resolve_at_with_search(
             }
             if dirfd == AT_FDCWD {
                 return with_fs(dirfd, caller, |fs| {
-                    Ok((
-                        ResolveAtResult::File(fs.current_dir().clone()),
-                        None,
-                        Vec::new(),
-                    ))
+                    Ok((ResolveAtResult::File(fs.cwd().clone()), None, Vec::new()))
                 });
             }
             Ok((resolve_fd(dirfd)?, None, Vec::new()))
@@ -162,7 +160,7 @@ pub(crate) fn resolve_at_with_boundary(
     dirfd: c_int,
     path: Option<&str>,
     flags: u32,
-) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
+) -> StarryResult<(ResolveAtResult, Option<PathHandle>, Vec<PathHandle>)> {
     resolve_at_with_search(caller, dirfd, path, flags, None)
 }
 
@@ -174,7 +172,7 @@ pub(crate) fn resolve_at_with_boundary_checked(
     path: Option<&str>,
     flags: u32,
     check_search: impl Fn(&FsView<'_>, &Location) -> VfsResult<()>,
-) -> StarryResult<(ResolveAtResult, Option<Location>, Vec<Location>)> {
+) -> StarryResult<(ResolveAtResult, Option<PathHandle>, Vec<PathHandle>)> {
     resolve_at_with_search(caller, dirfd, path, flags, Some(&check_search))
 }
 

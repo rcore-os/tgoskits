@@ -6,7 +6,7 @@ use core::{ffi::CStr, iter, mem::size_of};
 use ax_fs_ng::vfs::{CachedFile, FileBackend};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
-use axfs_ng_vfs::{Location, NodeType};
+use axfs_ng_vfs::{NodeType, PathHandle};
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
 use uluru::LRUCache;
@@ -663,8 +663,8 @@ struct ElfCacheEntry {
 }
 
 impl ElfCacheEntry {
-    fn load(loc: Location) -> StarryResult<Result<Self, Vec<u8>>> {
-        let cache = CachedFile::get_or_create(axfs_ng_vfs::PathHandle::acquire(loc)?)?;
+    fn load(loc: PathHandle) -> StarryResult<Result<Self, Vec<u8>>> {
+        let cache = CachedFile::get_or_create(loc)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
@@ -699,10 +699,13 @@ impl ElfLoader {
     fn load(
         &mut self,
         uspace: &mut AddrSpace,
-        loc: Location,
+        loc: PathHandle,
         caller: &dyn axfs_ng_vfs::LinkCaller,
     ) -> StarryResult<LoadResult> {
-        if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
+        if !self
+            .0
+            .touch(|e| e.borrow_cache().location().ptr_eq(loc.location()))
+        {
             match ElfCacheEntry::load(loc)? {
                 Ok(e) => {
                     self.0.insert(e);
@@ -755,8 +758,11 @@ impl ElfLoader {
             let fs = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), caller);
             let loc = fs.resolve(ldso)?;
             check_executable_access(&loc, caller)?;
-            _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
-            if !self.0.touch(|e| e.borrow_cache().location().ptr_eq(&loc)) {
+            _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
+            if !self
+                .0
+                .touch(|e| e.borrow_cache().location().ptr_eq(loc.location()))
+            {
                 let e = ElfCacheEntry::load(loc)?.map_err(|_| StarryError::InvalidInput)?;
                 self.0.insert(e);
             }
@@ -833,7 +839,7 @@ pub fn clear_elf_cache() {
 
 /// Load the user app to the user address space.
 ///
-/// The executable is identified by an already-resolved [`Location`] — the
+/// The executable is identified by an already-resolved [`PathHandle`] — the
 /// caller resolves and opens it once (mirroring Linux's `do_open_execat`,
 /// which honors `AT_SYMLINK_NOFOLLOW` at that single lookup), and this never
 /// re-resolves the main executable from its pathname. Interpreters reached
@@ -853,7 +859,7 @@ pub fn clear_elf_cache() {
 /// - The stack pointer of the user app.
 pub fn load_user_app(
     builder: &mut UserImageBuilder,
-    loc: Location,
+    loc: PathHandle,
     path: &str,
     args: &[String],
     envs: &[String],
@@ -891,12 +897,12 @@ pub fn load_user_app(
 
 /// Checks each executable and interpreter even when its ELF image is cached.
 fn check_executable_access(
-    loc: &Location,
+    loc: &PathHandle,
     caller: &dyn axfs_ng_vfs::LinkCaller,
 ) -> StarryResult<()> {
-    let metadata = loc.metadata()?;
+    let metadata = loc.location().metadata()?;
     if metadata.node_type != NodeType::RegularFile
-        || loc.mountpoint().mount_flags() & linux_raw_sys::general::MS_NOEXEC != 0
+        || loc.location().mountpoint().mount_flags() & linux_raw_sys::general::MS_NOEXEC != 0
     {
         return Err(StarryError::PermissionDenied);
     }
@@ -919,7 +925,7 @@ fn check_executable_access(
 
 fn load_user_app_with_depth(
     uspace: &mut AddrSpace,
-    loc: Location,
+    loc: PathHandle,
     path: &str,
     args: &[String],
     envs: &[String],
@@ -927,7 +933,7 @@ fn load_user_app_with_depth(
     interpreter_depth: usize,
 ) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
     check_executable_access(&loc, caller)?;
-    let executable_file = ax_fs_ng::file::ExecutableFile::acquire(loc.clone())?;
+    let executable_file = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
 
     let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc, caller)? } {
         Ok((entry, auxv)) => (entry, auxv),

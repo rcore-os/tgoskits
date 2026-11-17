@@ -498,7 +498,10 @@ pub fn sys_move_mount(
     } else {
         crate::file::with_fs(to_dirfd, &link_caller, |fs| Ok(fs.resolve(&path)?))?
     };
-    source.inner().mountpoint().attach_detached(&target)?;
+    source
+        .inner()
+        .mountpoint()
+        .attach_detached(target.location())?;
     crate::file::notify_mount_namespace_changed(&mount_namespace);
     Ok(0)
 }
@@ -646,10 +649,10 @@ pub fn sys_mount(
         }
 
         let target = context.resolve(target)?;
-        if !target.is_root_of_mount() {
+        if !target.location().is_root_of_mount() {
             return Err(StarryError::InvalidInput);
         }
-        let mountpoint = target.mountpoint().clone();
+        let mountpoint = target.location().mountpoint().clone();
         if (flags & MS_REC) != 0 {
             match propagation {
                 MS_SHARED => mountpoint.set_shared_recursive(),
@@ -673,10 +676,10 @@ pub fn sys_mount(
 
     if (flags & MS_REMOUNT) != 0 {
         let target = context.resolve(target)?;
-        if !target.is_root_of_mount() {
+        if !target.location().is_root_of_mount() {
             return Err(StarryError::InvalidInput);
         }
-        let mp = target.mountpoint();
+        let mp = target.location().mountpoint();
         if flags & MS_BIND == 0 {
             mp.set_filesystem_readonly(flags & MS_RDONLY != 0)?;
         } else {
@@ -690,7 +693,7 @@ pub fn sys_mount(
     if (flags & MS_MOVE) != 0 {
         let source = context.resolve(source)?;
         let target = context.resolve(target)?;
-        source.move_mount(&target)?;
+        source.location().move_mount(target.location())?;
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
@@ -698,7 +701,9 @@ pub fn sys_mount(
     if (flags & MS_BIND) != 0 {
         let source = context.resolve(source)?;
         let target = context.resolve(target)?;
-        target.bind_mount(&source, (flags & MS_REC) != 0)?;
+        target
+            .location()
+            .bind_mount(source.location(), (flags & MS_REC) != 0)?;
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
@@ -710,7 +715,9 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true)?;
             }
@@ -722,7 +729,9 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true)?;
             }
@@ -737,7 +746,9 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true)?;
             }
@@ -749,7 +760,7 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true)?;
             }
-            let mp = target.mount(&fs)?;
+            let mp = target.location().mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true)?;
             }
@@ -767,7 +778,9 @@ pub fn sys_mount(
             if flags & MS_RDONLY != 0 {
                 fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true)?;
@@ -785,8 +798,9 @@ pub fn sys_mount(
                 let (root, _) = context.resolve_with_search_checked(path, |directory| {
                     credentials.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
                 })?;
-                root.check_is_dir()?;
-                credentials.check_permission(&root.metadata()?, NodePermission::OTHER_EXEC)?;
+                root.location().check_is_dir()?;
+                credentials
+                    .check_permission(&root.location().metadata()?, NodePermission::OTHER_EXEC)?;
                 Ok(root)
             };
             let (lower_paths, upper_path, work_path) = parse_overlay_options(current, data)?;
@@ -807,7 +821,9 @@ pub fn sys_mount(
             if readonly || flags & MS_RDONLY != 0 {
                 fs.set_readonly(true)?;
             }
-            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            let mp = target
+                .location()
+                .mount_with_source(&fs, mount_source(&source))?;
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         _ => return Err(StarryError::NoSuchDevice),
@@ -845,10 +861,10 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         let context = ax_fs_ng::FsView::current(context, &link_caller);
         (context.resolve(source)?, context.resolve(target)?)
     };
-    if source_location.metadata()?.node_type != NodeType::BlockDevice {
+    if source_location.location().metadata()?.node_type != NodeType::BlockDevice {
         return Err(Errno::ENOTBLK.into());
     }
-    let device = source_location.entry().downcast::<Device>()?;
+    let device = source_location.location().entry().downcast::<Device>()?;
     let readonly = flags & MS_RDONLY != 0;
     if let Some(physical) = device
         .inner()
@@ -866,7 +882,7 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
         if fs.name() != "ext4" {
             return Err(StarryError::NoSuchDevice);
         }
-        let mount = target_location.mount_with_source(&fs, source)?;
+        let mount = target_location.location().mount_with_source(&fs, source)?;
         mount.set_readonly(readonly || fs.is_readonly())?;
         mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         return Ok(());
@@ -884,13 +900,9 @@ fn mount_ext4(source: &str, target: &str, flags: i32) -> StarryResult<()> {
     // The filesystem owns the lease, including across lazy detach and open files.
     // No filesystem-context lock is held during superblock or backing-file I/O.
     let fs = loop_device.mounted_filesystem(readonly, || {
-        new_filesystem_from_file(
-            FileBackend::Direct(axfs_ng_vfs::PathHandle::acquire(source_location)?),
-            readonly,
-            lease,
-        )
+        new_filesystem_from_file(FileBackend::Direct(source_location), readonly, lease)
     })?;
-    let mount = target_location.mount_with_source(&fs, source)?;
+    let mount = target_location.location().mount_with_source(&fs, source)?;
     mount.set_readonly(readonly || fs.is_readonly())?;
     mount.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
     Ok(())
@@ -931,35 +943,34 @@ pub fn sys_umount2(
     }
 
     // Linux umount2 returns EINVAL for paths that are not mount points.
-    if !target.is_root_of_mount() {
+    if !target.location().is_root_of_mount() {
         return Err(StarryError::InvalidInput);
     }
 
-    if (flags & MNT_EXPIRE) != 0 && !target.mountpoint().mark_expired() {
+    if (flags & MNT_EXPIRE) != 0 && !target.location().mountpoint().mark_expired() {
         return Err(StarryError::from(Errno::EAGAIN));
     }
 
     if (flags & MNT_DETACH) != 0 {
-        target.detach_mount()?;
+        target.location().detach_mount()?;
         crate::file::notify_mount_namespace_changed(&mount_namespace);
         return Ok(0);
     }
 
-    let plan = target
-        .mountpoint()
-        .plan_unmount(axfs_ng_vfs::UnmountKind::Normal)?;
+    let filesystem_path = target.location().clone();
+    let plan = target.prepare_unmount()?;
     if plan.targets().any(is_mount_busy) {
         return Err(StarryError::from(Errno::EBUSY));
     }
 
     // Flush this filesystem's closed-file cache before its own flush. An
     // unrelated filesystem's busy mapping must not reject this unmount.
-    ax_fs_ng::file::sync_filesystem_cached_files(target.filesystem())?;
+    ax_fs_ng::file::sync_filesystem_cached_files(filesystem_path.filesystem())?;
 
     if plan.targets().any(is_mount_busy) {
         return Err(StarryError::from(Errno::EBUSY));
     }
-    target.commit_unmount(plan)?;
+    plan.commit()?;
     crate::file::notify_mount_namespace_changed(&mount_namespace);
 
     Ok(0)
@@ -982,8 +993,8 @@ pub fn sys_pivot_root(
             .resolve_checked(path, |directory| {
                 cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
             })?;
-        location.check_is_dir()?;
-        Ok(axfs_ng_vfs::PathHandle::acquire(location)?)
+        location.location().check_is_dir()?;
+        Ok(location)
     };
     // Match path_pivot_root: new lookup and directory validation precede any
     // observation of put_old, and both precede namespace capability checking.

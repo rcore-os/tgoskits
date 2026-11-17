@@ -134,7 +134,7 @@ pub fn boot_asset_exists(path: &str) -> bool {
     RETAINED_BOOT_CONTEXT.get().is_some_and(|context| {
         FsView::current(context.clone(), &caller)
             .resolve(path)
-            .is_ok_and(|asset| asset.check_is_file().is_ok())
+            .is_ok_and(|asset| asset.location().check_is_file().is_ok())
     })
 }
 
@@ -359,6 +359,7 @@ fn validate_builtin_assets(
                 nonempty = true;
                 context
                     .resolve(format!("{staged}/{}", entry.name))?
+                    .location()
                     .check_is_dir()?;
             }
             "web-ui" => validate_web_ui(context, staged)?,
@@ -370,6 +371,7 @@ fn validate_builtin_assets(
     }
     context
         .resolve(format!("{staged}/configs"))?
+        .location()
         .check_is_dir()?;
     for content in config_files(context, &format!("{staged}/configs"))? {
         let config = GuestConfig::from_toml(&content)?;
@@ -397,9 +399,10 @@ fn validate_builtin_assets(
             }
             .with_context(|| format!("resolve guest boot asset {path}"))?;
             resource
+                .location()
                 .check_is_file()
                 .with_context(|| format!("guest boot asset is not a file: {path}"))?;
-            if resource.len()? == 0 {
+            if resource.location().len()? == 0 {
                 bail!("empty guest boot asset: {path}");
             }
         }
@@ -412,14 +415,16 @@ fn validate_web_ui(context: &FsView<'_>, staged: &str) -> Result<()> {
     let directory = format!("{staged}/web-ui");
     context
         .resolve(&directory)?
+        .location()
         .check_is_dir()
         .with_context(|| format!("check built-in dashboard package {BUILTIN_WEB_UI_DIR}"))?;
     let shell = context.resolve(format!("{directory}/index.html"))?;
     shell
+        .location()
         .check_is_file()
         .with_context(|| format!("check built-in dashboard shell {BUILTIN_WEB_UI_DIR}"))?;
     ensure!(
-        shell.len()? > 0,
+        shell.location().len()? > 0,
         "built-in dashboard shell {BUILTIN_WEB_UI_DIR}/index.html is empty"
     );
     Ok(())

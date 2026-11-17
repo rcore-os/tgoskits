@@ -15,11 +15,14 @@ pub fn bind_dev_log() -> StarryResult<()> {
     let caller = axfs_ng_vfs::NativeLinkCaller::root();
     let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
     let log = view.resolve("/dev/log")?;
-    if log.node_type() != axfs_ng_vfs::NodeType::Socket {
+    if log.location().node_type() != axfs_ng_vfs::NodeType::Socket {
         return Err(crate::StarryError::BadState);
     }
     server.bind_path_with("/dev/log".into(), |_| -> StarryResult<_> {
-        Ok(log.user_data().get_or_insert_with(Default::default))
+        Ok(log
+            .location()
+            .user_data()
+            .get_or_insert_with(Default::default))
     })?;
     crate::task::kernel_thread_builder("dev-log-server".into())
         .spawn(move || {

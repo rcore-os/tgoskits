@@ -953,7 +953,7 @@ pub fn sys_getrandom(
 
     let f = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &link_caller)
         .resolve(path)?;
-    let file = f.entry().as_file()?;
+    let file = f.location().entry().as_file()?;
     let mut kbuf = [0u8; GETRANDOM_CHUNK_SIZE];
     let mut written = 0;
     while written < len {

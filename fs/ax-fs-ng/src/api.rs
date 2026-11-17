@@ -109,7 +109,7 @@ pub fn set_current_dir(path: &str) -> VfsResult {
     let source = current_fs_context();
     let caller = axfs_ng_vfs::NativeLinkCaller::root();
     let view = FsView::current(source.clone(), &caller);
-    let path = axfs_ng_vfs::PathHandle::acquire(view.resolve(path)?)?;
+    let path = view.resolve(path)?;
     let (update, prepared_retirement) = source.prepare_cwd(path);
     let mut update = Some(update?);
     let (result, committed_retirement) = FS_CONTEXT.with(|owner| match owner.as_ref() {
@@ -137,7 +137,7 @@ pub fn metadata_at(
         if follow_symlinks {
             ctx.metadata(path)
         } else {
-            ctx.resolve_no_follow(path)?.metadata()
+            ctx.resolve_no_follow(path)?.location().metadata()
         }
     })
 }

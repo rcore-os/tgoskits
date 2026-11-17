@@ -11,7 +11,6 @@ use core::{
 
 use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::user::UserContext;
-use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
 use starry_vm::VmError;
@@ -105,7 +104,7 @@ pub fn sys_execve(
                 .ok_or(StarryError::PermissionDenied)?
                 .inner()
                 .inner()
-                .location()
+                .path_handle()
                 .clone(),
         }
     } else {
@@ -141,14 +140,18 @@ pub fn sys_execveat(
 
     let path = vm_load_string(current, path)?;
 
-    // Resolve dirfd + path to the `Location` the loader reads from. A regular
+    // Resolve dirfd + path to the `PathHandle` the loader reads from. A regular
     // file yields its filesystem path as the display name; an anonymous memfd
-    // has no path but wraps a tmpfs-backed `Location` we can still load — this
+    // has no path but wraps a tmpfs-backed `PathHandle` we can still load — this
     // is systemd's `execveat(memfd, "", AT_EMPTY_PATH)` path. Other anonymous
     // fds (sockets, eventfd, …) are not executable.
     let (loc, disp_path) = match resolve_at(&link_caller, dirfd, Some(path.as_str()), flags)? {
         ResolveAtResult::File(loc) => {
-            let disp = loc.absolute_path().map(|p| p.to_string()).unwrap_or(path);
+            let disp = loc
+                .location()
+                .absolute_path()
+                .map(|p| p.to_string())
+                .unwrap_or(path);
             (loc, disp)
         }
         ResolveAtResult::Other(f) => {
@@ -156,7 +159,7 @@ pub fn sys_execveat(
                 warn!("sys_execveat: exec from non-memfd anonymous fd is not supported");
                 StarryError::PermissionDenied
             })?;
-            let loc = memfd.inner().inner().location().clone();
+            let loc = memfd.inner().inner().path_handle().clone();
             let disp = format!("/memfd:{} (deleted)", memfd.name());
             (loc, disp)
         }
@@ -166,7 +169,7 @@ pub fn sys_execveat(
 }
 
 /// Shared execve core (Linux's `do_execveat_common` equivalent): both
-/// `sys_execve` and `sys_execveat` resolve the program to a `Location`, then
+/// `sys_execve` and `sys_execveat` resolve the program to a `PathHandle`, then
 /// funnel it plus the raw `argv` / `envp` user pointers here to be loaded once.
 /// `path` is the display name (used for argv0-independent `comm`/`exe_path` and
 /// the loader's shebang handling), not re-resolved against the FS.
@@ -174,7 +177,7 @@ fn do_execve(
     link_caller: &crate::task::ProcLinkCaller,
     current: &crate::task::UserTaskRef,
     uctx: &mut UserContext,
-    loc: Location,
+    loc: axfs_ng_vfs::PathHandle,
     path: String,
     argv: *const *const c_char,
     envp: *const *const c_char,
@@ -236,8 +239,9 @@ fn do_execve(
     // Collect metadata from the already-resolved location before touching
     // anything. An anonymous memfd has no filesystem path, so fall back to the
     // caller-supplied display name (e.g. `/memfd:<name> (deleted)`).
-    let new_name = loc.name().to_string();
+    let new_name = loc.location().name().to_string();
     let new_exe_path = loc
+        .location()
         .absolute_path()
         .map(|p| p.to_string())
         .unwrap_or_else(|_| path.clone());

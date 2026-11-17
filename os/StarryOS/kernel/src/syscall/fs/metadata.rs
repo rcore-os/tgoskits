@@ -58,7 +58,7 @@ fn at_target(
     })?
     .into_file()
     .ok_or(StarryError::BadFileDescriptor)?;
-    Ok(PathHandle::acquire(target)?)
+    Ok(target)
 }
 
 fn change_fd(current: &UserTaskRef, fd: i32, change: MetadataChange) -> StarryResult<isize> {

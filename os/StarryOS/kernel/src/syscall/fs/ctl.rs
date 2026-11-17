@@ -14,8 +14,8 @@ use ax_fs_ng::{
     vfs::{current_fs_context, sync_all_cached_files},
 };
 use axfs_ng_vfs::{
-    DeviceId, DirectoryCursor, FileExtentTarget, NodePermission, NodeType, PathHandle,
-    RenameOptions, VfsError, path::Path,
+    DeviceId, DirectoryCursor, FileExtentTarget, NodePermission, NodeType, RenameOptions, VfsError,
+    path::Path,
 };
 use linux_raw_sys::{
     general::*,
@@ -84,8 +84,8 @@ fn path_info_at(dirfd: i32, path: &str) -> StarryResult<(String, bool)> {
         crate::task::ProcLinkCaller::capture(crate::task::current_user_task().as_thread());
     with_fs(dirfd, &link_caller, |fs| {
         let loc = fs.resolve_no_follow(path)?;
-        let is_dir = loc.metadata()?.node_type == NodeType::Directory;
-        Ok((loc.absolute_path()?.to_string(), is_dir))
+        let is_dir = loc.location().metadata()?.node_type == NodeType::Directory;
+        Ok((loc.location().absolute_path()?.to_string(), is_dir))
     })
 }
 
@@ -254,10 +254,13 @@ pub fn sys_chdir(current: &UserTaskRef, path: *const c_char) -> StarryResult<isi
         .resolve_checked(path, |directory| {
             cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
         })?;
-    entry.check_is_dir()?;
-    cred.check_permission(&entry.metadata()?, NodePermission::OTHER_EXEC)?;
-    let cwd = entry.absolute_path().ok().map(|path| path.to_string());
-    let entry = PathHandle::acquire(entry)?;
+    entry.location().check_is_dir()?;
+    cred.check_permission(&entry.location().metadata()?, NodePermission::OTHER_EXEC)?;
+    let cwd = entry
+        .location()
+        .absolute_path()
+        .ok()
+        .map(|path| path.to_string());
     let mut change = NamespaceChange::new(current.as_thread())?;
     change.prepare_cwd(entry)?;
     change.commit()?;
@@ -314,13 +317,17 @@ pub fn sys_chroot(current: &UserTaskRef, path: *const c_char) -> StarryResult<is
         .resolve_checked(path, |directory| {
             cred.check_permission(&directory.metadata()?, NodePermission::OTHER_EXEC)
         })?;
-    loc.check_is_dir()?;
-    cred.check_permission(&loc.metadata()?, NodePermission::OTHER_EXEC)?;
+    loc.location().check_is_dir()?;
+    cred.check_permission(&loc.location().metadata()?, NodePermission::OTHER_EXEC)?;
     if !credentials.credentials().has_cap(CAP_SYS_CHROOT) {
         return Err(StarryError::OperationNotPermitted);
     }
-    let root = loc.absolute_path().ok().map(|path| path.to_string());
-    let path = PathHandle::acquire(loc)?;
+    let root = loc
+        .location()
+        .absolute_path()
+        .ok()
+        .map(|path| path.to_string());
+    let path = loc;
     let mut change = NamespaceChange::new(current.as_thread())?;
     change.prepare_root(path)?;
     change.commit()?;
@@ -634,7 +641,7 @@ pub fn sys_linkat(
     // parent or the destination. Keep this check at the syscall boundary as
     // well as in the VFS helper, because dirfd/`.` resolution is allowed to
     // return an already-open directory without a normal parent walk.
-    if old.is_dir() {
+    if old.location().is_dir() {
         return Err(StarryError::OperationNotPermitted);
     }
     // An absolute destination path is rooted at the process filesystem and

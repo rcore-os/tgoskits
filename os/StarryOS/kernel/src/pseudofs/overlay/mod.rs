@@ -52,29 +52,49 @@ static NEXT_OVERLAY_DEVICE: AtomicU32 = AtomicU32::new(1);
 
 pub(crate) struct OverlayOptions {
     /// Lower layers ordered from topmost to bottommost.
-    pub lower_dirs: Vec<Location>,
+    pub lower_dirs: Vec<axfs_ng_vfs::PathHandle>,
     /// Writable upper layer. `None` creates a read-only lower-only overlay.
-    pub upper_dir: Option<Location>,
+    pub upper_dir: Option<axfs_ng_vfs::PathHandle>,
     /// Work directory required by the mount ABI when an upper layer exists.
-    pub work_dir: Option<Location>,
+    pub work_dir: Option<axfs_ng_vfs::PathHandle>,
     pub mounter: FsCredentialsSnapshot,
 }
 
 /// Build an overlay filesystem from resolved lower, upper, and work dirs.
 pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
-    if options.lower_dirs.is_empty() {
+    let backing_paths = options
+        .lower_dirs
+        .iter()
+        .chain(options.upper_dir.iter())
+        .chain(options.work_dir.iter())
+        .cloned()
+        .collect();
+    let lower_dirs: Vec<_> = options
+        .lower_dirs
+        .iter()
+        .map(|path| path.location().clone())
+        .collect();
+    let upper_dir = options
+        .upper_dir
+        .as_ref()
+        .map(|path| path.location().clone());
+    let work_dir = options
+        .work_dir
+        .as_ref()
+        .map(|path| path.location().clone());
+    if lower_dirs.is_empty() {
         return Err(VfsError::InvalidInput);
     }
-    if options.upper_dir.is_some() != options.work_dir.is_some() {
+    if upper_dir.is_some() != work_dir.is_some() {
         return Err(VfsError::InvalidInput);
     }
-    if let Some(upper_dir) = &options.upper_dir {
+    if let Some(upper_dir) = &upper_dir {
         upper_dir.check_is_dir()?;
     }
-    if let Some(work_dir) = &options.work_dir {
+    if let Some(work_dir) = &work_dir {
         work_dir.check_is_dir()?;
     }
-    if let (Some(upper), Some(work)) = (&options.upper_dir, &options.work_dir) {
+    if let (Some(upper), Some(work)) = (&upper_dir, &work_dir) {
         if !Arc::ptr_eq(upper.mountpoint(), work.mountpoint()) {
             return Err(VfsError::CrossesDevices);
         }
@@ -82,18 +102,12 @@ pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
             return Err(VfsError::InvalidInput);
         }
     }
-    for lower in &options.lower_dirs {
+    for lower in &lower_dirs {
         lower.check_is_dir()?;
     }
 
-    let write_roots: Vec<_> = options
-        .upper_dir
-        .iter()
-        .chain(options.work_dir.iter())
-        .cloned()
-        .collect();
-    let depth = options
-        .lower_dirs
+    let write_roots: Vec<_> = upper_dir.iter().chain(work_dir.iter()).cloned().collect();
+    let depth = lower_dirs
         .iter()
         .chain(write_roots.iter())
         .map(|root| root.filesystem().stack_depth())
@@ -108,25 +122,24 @@ pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         })
         .map_err(|_| VfsError::NoMemory)?;
     let inodes = InodeIndex::new();
-    let root_metadata = options
-        .upper_dir
+    let root_metadata = upper_dir
         .as_ref()
-        .or_else(|| options.lower_dirs.first())
+        .or_else(|| lower_dirs.first())
         .ok_or(VfsError::InvalidInput)?
         .metadata()?;
     let retired = axfs_ng_vfs::MutationRetire::new();
     let root = inodes.select(
-        options.upper_dir.clone(),
-        options.lower_dirs.clone(),
-        options.upper_dir.is_some(),
+        upper_dir.clone(),
+        lower_dirs.clone(),
+        upper_dir.is_some(),
         &root_metadata,
         &retired,
     )?;
     let fs = Arc::new_cyclic(|this| OverlayFs {
         this: this.clone(),
-        lower_dirs: options.lower_dirs,
-        upper_dir: options.upper_dir,
-        work_dir: options.work_dir,
+        lower_dirs,
+        upper_dir,
+        work_dir,
         mounter: options.mounter,
         write_roots,
         depth,
@@ -135,6 +148,7 @@ pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         namespace: Mutex::new(()),
         root,
         root_entry: RawSpinLock::new(None),
+        _backing_paths: backing_paths,
     });
     Ok(Filesystem::new(fs))
 }
@@ -184,6 +198,8 @@ struct OverlayFs {
     root: Arc<OverlayInode>,
     // root_dir() may be called from VFS mount paths with preemption disabled.
     root_entry: RawSpinLock<Option<WeakDirEntry>>,
+    // Retired after all layer locations and indexed native owners.
+    _backing_paths: Vec<axfs_ng_vfs::PathHandle>,
 }
 
 impl OverlayFs {

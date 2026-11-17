@@ -172,8 +172,8 @@ pub fn sys_statx(
     let mut status: statx = resolved.stat()?.into();
     if let ResolveAtResult::File(location) = &resolved {
         status.stx_mask |= linux_raw_sys::general::STATX_MNT_ID;
-        status.stx_mnt_id = location.mountpoint().mount_id();
-        if location.is_root_of_mount() {
+        status.stx_mnt_id = location.location().mountpoint().mount_id();
+        if location.location().is_root_of_mount() {
             status.stx_attributes |= linux_raw_sys::general::STATX_ATTR_MOUNT_ROOT as u64;
         }
     }
@@ -234,14 +234,14 @@ pub fn sys_faccessat2(
     if let ResolveAtResult::File(location) = &file {
         if mode & X_OK != 0
             && node_type == S_IFREG
-            && location.mountpoint().mount_flags() & MS_NOEXEC != 0
+            && location.location().mountpoint().mount_flags() & MS_NOEXEC != 0
         {
             return Err(StarryError::PermissionDenied);
         }
         // Linux sb_permission precedes DAC; a bind-only restriction does not.
         if mode & W_OK != 0
             && matches!(node_type, S_IFREG | S_IFDIR | S_IFLNK)
-            && location.mountpoint().is_filesystem_readonly()
+            && location.location().mountpoint().is_filesystem_readonly()
         {
             return Err(StarryError::ReadOnlyFilesystem);
         }
@@ -250,7 +250,7 @@ pub fn sys_faccessat2(
     if mode & W_OK != 0
         && !matches!(node_type, S_IFBLK | S_IFCHR | S_IFIFO | S_IFSOCK)
         && let ResolveAtResult::File(location) = &file
-        && location.is_readonly()
+        && location.location().is_readonly()
     {
         return Err(StarryError::ReadOnlyFilesystem);
     }
@@ -334,7 +334,7 @@ pub fn sys_statfs(
     write_statfs(
         current,
         buf,
-        statfs(&location.mountpoint().root_location())?,
+        statfs(&location.location().mountpoint().root_location())?,
     )?;
     Ok(0)
 }
@@ -573,7 +573,7 @@ pub fn sys_name_to_handle_at(
     let loc = resolve_at(&link_caller, dirfd, path.as_deref(), resolve_flags)?
         .into_file()
         .ok_or(StarryError::InvalidInput)?;
-    let stat = loc.metadata()?;
+    let stat = loc.location().metadata()?;
 
     let header_ptr = UserPtr::<FileHandleHeader>::from(handle);
     let mut header = header_ptr.read(current)?;
@@ -595,7 +595,7 @@ pub fn sys_name_to_handle_at(
         .ok_or(crate::StarryError::InvalidInput)? as *mut u8;
     UserPtr::<u8>::from(data_ptr).write_slice(current, &bytes)?;
 
-    let resolved_mount_id = c_int::try_from(loc.mountpoint().mount_id())
+    let resolved_mount_id = c_int::try_from(loc.location().mountpoint().mount_id())
         .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;
     (mount_id as *mut c_int).vm_write(current, resolved_mount_id)?;
     Ok(0)

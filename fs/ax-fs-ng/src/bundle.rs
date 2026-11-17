@@ -166,7 +166,7 @@ pub(crate) fn mkdir_parents(context: &FsView<'_>, path: &str) -> VfsResult<()> {
         if !exists(context, &current)? {
             context.create_dir(&current, NodePermission::from_bits_truncate(0o755), 0, 0)?;
         } else {
-            context.resolve(&current)?.check_is_dir()?;
+            context.resolve(&current)?.location().check_is_dir()?;
         }
     }
     Ok(())
@@ -193,7 +193,7 @@ pub(crate) fn copy_tree(
     to: &str,
 ) -> VfsResult<()> {
     let node = source.resolve_no_follow(from)?;
-    match node.node_type() {
+    match node.location().node_type() {
         NodeType::Directory => {
             target.create_dir(to, NodePermission::from_bits_truncate(0o755), 0, 0)?;
             for name in child_names(source, from)? {
@@ -237,7 +237,7 @@ pub(crate) fn remove_tree(context: &FsView<'_>, path: &str) -> VfsResult<()> {
     if !exists(context, path)? {
         return Ok(());
     }
-    if context.resolve_no_follow(path)?.node_type() == NodeType::Directory {
+    if context.resolve_no_follow(path)?.location().node_type() == NodeType::Directory {
         for name in child_names(context, path)? {
             remove_tree(context, &format!("{path}/{name}"))?;
         }

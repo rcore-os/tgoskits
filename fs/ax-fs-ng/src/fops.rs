@@ -3,7 +3,7 @@ use core::time::Duration;
 
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{
-    FileRangeOperation, Location, Metadata, MetadataUpdate, NodePermission, NodeType, PathHandle,
+    FileRangeOperation, Metadata, MetadataUpdate, NodePermission, NodeType, PathHandle,
     PreallocationMode, VfsError, VfsResult,
 };
 
@@ -316,17 +316,13 @@ impl Directory {
         let caller = axfs_ng_vfs::NativeLinkCaller::root();
         let view = crate::FsView::current(current_fs_context(), &caller);
         let location = view.resolve(path)?;
-        Self::from_location(location)
+        Self::from_path(location)
     }
 
-    pub(crate) fn from_location(location: Location) -> VfsResult<Self> {
-        Self::from_path(PathHandle::acquire(location)?)
-    }
-
-    fn from_path(location: PathHandle) -> VfsResult<Self> {
+    pub(crate) fn from_path(location: PathHandle) -> VfsResult<Self> {
         location.location().check_is_dir()?;
         let mut entries = Vec::new();
-        for entry in ReadDir::from_location(location.location().clone())? {
+        for entry in ReadDir::from_path(location.clone())? {
             let entry = entry?;
             entries.push(DirEntry {
                 name: entry.name,
@@ -455,7 +451,7 @@ mod directory_tests {
         }
     }
 
-    fn test_location() -> Location {
+    fn test_location() -> axfs_ng_vfs::Location {
         axfs_ng_vfs::Mountpoint::new_root(&crate::MemoryFs::new()).root_location()
     }
 

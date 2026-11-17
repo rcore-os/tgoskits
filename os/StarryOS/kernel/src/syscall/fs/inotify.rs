@@ -34,7 +34,12 @@ pub fn sys_inotify_add_watch(
 
     let resolved_path = resolve_at(&link_caller, AT_FDCWD, Some(&path), 0)?
         .into_file()
-        .and_then(|loc| loc.absolute_path().ok().map(|path| path.to_string()))
+        .and_then(|loc| {
+            loc.location()
+                .absolute_path()
+                .ok()
+                .map(|path| path.to_string())
+        })
         .ok_or(StarryError::InvalidInput)?;
 
     let inotify = get_file_like(fd)?

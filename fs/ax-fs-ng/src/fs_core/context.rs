@@ -57,7 +57,7 @@ pub struct FsContext {
     /// A context created for an `*at` call carries its directory fd here. This
     /// is deliberately separate from `root_dir`: the fd supplies a path-walk
     /// starting point, not a process root or a `..`-containment boundary.
-    permission_root: Option<Location>,
+    permission_root: Option<PathHandle>,
 }
 
 impl FsContext {
@@ -109,36 +109,21 @@ impl FsContext {
     /// Selects an owned start without releasing and reacquiring its mount use.
     pub(super) fn with_directory_handle(mut self, directory: PathHandle) -> VfsResult<Self> {
         directory.location().check_is_dir()?;
-        self.permission_root = Some(directory.location().clone());
+        self.permission_root = Some(directory.clone());
         self.current_dir = directory;
         Ok(self)
     }
 
     /// Selects a different relative starting directory without changing task state.
-    pub fn with_current_dir(&self, current_dir: Location) -> VfsResult<Self> {
-        current_dir.check_is_dir()?;
-        let current_dir = if alloc::sync::Arc::ptr_eq(
-            self.current_dir().mountpoint(),
-            current_dir.mountpoint(),
-        ) {
-            self.current_dir.rebind(current_dir)?
-        } else {
-            PathHandle::acquire(current_dir)?
-        };
+    pub fn with_current_dir(&self, current_dir: PathHandle) -> VfsResult<Self> {
+        current_dir.location().check_is_dir()?;
         let mut view = Self::from_paths(self.namespace.clone(), self.root_dir.clone(), current_dir);
         view.permission_root = self.permission_root.clone();
         Ok(view)
     }
 
-    /// Selects a directory fd as a permission boundary, preserving process root.
-    pub fn with_dirfd(&self, dirfd: Location) -> VfsResult<Self> {
-        let mut view = self.with_current_dir(dirfd.clone())?;
-        view.permission_root = Some(dirfd);
-        Ok(view)
-    }
-
     /// Returns the directory boundary used for relative-path permissions.
-    pub fn permission_boundary(&self) -> Option<&Location> {
+    pub fn permission_boundary(&self) -> Option<&PathHandle> {
         self.permission_root.as_ref()
     }
 }
@@ -157,8 +142,7 @@ impl ReadDir {
     // TODO: tune this
     pub const BUF_SIZE: usize = 128;
 
-    pub(crate) fn from_location(dir: Location) -> VfsResult<Self> {
-        let dir = PathHandle::acquire(dir)?;
+    pub(crate) fn from_path(dir: PathHandle) -> VfsResult<Self> {
         let state = dir.location().open_directory_read_state()?;
         Ok(Self {
             dir,

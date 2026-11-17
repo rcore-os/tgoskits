@@ -473,7 +473,7 @@ mod tests {
             let point = view
                 .create_dir("/mount", NodePermission::default(), 0, 0)
                 .unwrap();
-            let mounted = point.mount(&crate::MemoryFs::new()).unwrap();
+            let mounted = point.location().mount(&crate::MemoryFs::new()).unwrap();
             let root = mounted.root_location();
             let location = root
                 .create(
@@ -503,13 +503,18 @@ mod tests {
                                 .unwrap(),
                         )
                     }
-                    "directory" => {
-                        Box::new(crate::fops::Directory::from_location(root.clone()).unwrap())
-                    }
+                    "directory" => Box::new(
+                        crate::fops::Directory::from_path(
+                            PathHandle::acquire(root.clone()).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
                     "dirfd" => Box::new(
-                        crate::fops::Directory::from_location(root.clone())
-                            .unwrap()
-                            .dir_handle(),
+                        crate::fops::Directory::from_path(
+                            PathHandle::acquire(root.clone()).unwrap(),
+                        )
+                        .unwrap()
+                        .dir_handle(),
                     ),
                     "iterator" => Box::new(view.read_dir("/mount").unwrap()),
                     _ => unreachable!(),

@@ -120,7 +120,7 @@ pub fn sys_clone3(
             ResolveAtResult::Other(_) => return Err(StarryError::InvalidInput),
         };
         Some(
-            crate::pseudofs::cgroup::node_from_location(&location)
+            crate::pseudofs::cgroup::node_from_location(location.location())
                 .ok_or(StarryError::InvalidInput)?,
         )
     } else {

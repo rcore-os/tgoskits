@@ -451,7 +451,7 @@ fn validate_entry_contents(
 ) -> VfsResult<()> {
     let location = context.resolve_no_follow(path)?;
     if !matches!(
-        location.node_type(),
+        location.location().node_type(),
         NodeType::RegularFile | NodeType::Directory
     ) {
         return Err(VfsError::InvalidData);
@@ -494,8 +494,8 @@ pub fn content_hash(context: &FsView<'_>, path: &str) -> VfsResult<u64> {
 
 fn content_size_and_hash(context: &FsView<'_>, path: &str) -> VfsResult<(u64, u64)> {
     let location = context.resolve_no_follow(path)?;
-    match location.node_type() {
-        NodeType::RegularFile => Ok((location.len()?, content_hash(context, path)?)),
+    match location.location().node_type() {
+        NodeType::RegularFile => Ok((location.location().len()?, content_hash(context, path)?)),
         NodeType::Directory => {
             let mut names = bundle::child_names(context, path)?;
             names.sort();

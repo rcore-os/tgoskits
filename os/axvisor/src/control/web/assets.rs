@@ -120,7 +120,8 @@ fn shell_available(fs: &FsContextSnapshot) -> bool {
     let Ok(resource) = view.resolve(&shell) else {
         return false;
     };
-    resource.check_is_file().is_ok() && resource.len().is_ok_and(|len| len > 0)
+    resource.location().check_is_file().is_ok()
+        && resource.location().len().is_ok_and(|len| len > 0)
 }
 
 fn content_type(entry: &str) -> &'static str {

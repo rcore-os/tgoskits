@@ -143,7 +143,7 @@ impl FsContextSnapshot {
 
     pub(super) fn with_current_directory(
         mut self,
-        directory: axfs_ng_vfs::Location,
+        directory: axfs_ng_vfs::PathHandle,
     ) -> VfsResult<Self> {
         self.view = self.view.with_current_dir(directory)?;
         Ok(self)

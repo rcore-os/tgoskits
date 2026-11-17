@@ -260,13 +260,13 @@ pub fn sys_truncate(
     }
     let location = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &link_caller)
         .resolve(&path)?;
-    if location.node_type() == axfs_ng_vfs::NodeType::Directory {
+    if location.location().node_type() == axfs_ng_vfs::NodeType::Directory {
         return Err(StarryError::IsADirectory);
     }
-    if location.node_type() != axfs_ng_vfs::NodeType::RegularFile {
+    if location.location().node_type() != axfs_ng_vfs::NodeType::RegularFile {
         return Err(StarryError::InvalidInput);
     }
-    if location.is_readonly() {
+    if location.location().is_readonly() {
         return Err(StarryError::ReadOnlyFilesystem);
     }
     if (length as u64) > u32::MAX as u64 * 4096 {
@@ -276,7 +276,7 @@ pub fn sys_truncate(
     // same owner/group/other + root-bypass rules as faccessat2(2).
     let cred = current.as_thread().cred();
     if cred.fsuid != 0 {
-        let metadata = location.metadata()?;
+        let metadata = location.location().metadata()?;
         let (file_uid, file_gid, file_mode) = (metadata.uid, metadata.gid, metadata.mode);
         let has_write = if cred.fsuid == file_uid {
             file_mode.contains(NodePermission::OWNER_WRITE)
@@ -292,7 +292,7 @@ pub fn sys_truncate(
     // Linux checks write permission before acquiring inode write access.
     let file = OpenOptions::new()
         .write(true)
-        .open_loc(location)?
+        .open_loc(location.location().clone())?
         .into_file()?;
     file.set_len(length as _)?;
     Ok(0)

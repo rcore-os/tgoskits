@@ -440,43 +440,21 @@ impl<'a> Continuation<'a> {
         }
     }
 
-    pub(crate) fn finish_parent(self) -> VfsResult<(Location, String, Vec<Location>)> {
+    pub(crate) fn finish_parent(self) -> VfsResult<(PathHandle, String, Vec<PathHandle>)> {
         self.session.validate_searches()?;
         self.session.validate_result(&self.session.current)?;
         let (directory, name) = match self.entry {
             FinalEntry::Name(name) => {
                 self.session.check_search()?;
-                (self.session.current.location().clone(), name.into_owned())
+                (self.session.current, name.into_owned())
             }
-            FinalEntry::Resolved => {
-                super::FsView::resolved_parent_name(self.session.current.location())?
-                    .ok_or(VfsError::InvalidInput)?
-            }
+            FinalEntry::Resolved => super::FsView::resolved_parent_name(&self.session.current)?
+                .ok_or(VfsError::InvalidInput)?,
         };
-        let searched = self
-            .session
-            .searched
-            .iter()
-            .map(|path| path.location().clone())
-            .collect();
-        Ok((directory, name, searched))
+        Ok((directory, name, self.session.searched))
     }
 
     pub(crate) fn finish_lookup_with_trace(
-        self,
-        follow: bool,
-    ) -> VfsResult<(Location, Vec<Location>)> {
-        let (path, searched) = self.lookup_with_trace(follow)?;
-        Ok((
-            path.location().clone(),
-            searched
-                .into_iter()
-                .map(|path| path.location().clone())
-                .collect(),
-        ))
-    }
-
-    pub(super) fn lookup_with_trace(
         self,
         follow: bool,
     ) -> VfsResult<(PathHandle, Vec<PathHandle>)> {

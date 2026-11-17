@@ -75,9 +75,10 @@ pub fn init_candidates(paths: &[String], init_args: &[String], envs: &[String]) 
     let (loc, image_builder, loaded_image, args) =
         selected.unwrap_or_else(|| panic!("No working init found among candidates: {paths:?}"));
     let path = loc
+        .location()
         .absolute_path()
         .expect("Failed to get executable absolute path");
-    let name = loc.name().into_owned();
+    let name = loc.location().name().into_owned();
 
     let prepared_image = image_builder
         .finish(loaded_image)

@@ -76,7 +76,8 @@ fn mount_at(fs: &FsView<'_>, path: &str, mount_fs: Filesystem) -> StarryResult<(
         fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
     }
     let loc = fs.resolve(path)?;
-    loc.mount_with_source(&mount_fs, mount_fs.name())?;
+    loc.location()
+        .mount_with_source(&mount_fs, mount_fs.name())?;
     info!("Mounted {} at {}", mount_fs.name(), path);
     Ok(())
 }

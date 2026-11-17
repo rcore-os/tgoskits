@@ -98,11 +98,11 @@ impl<'caller> FsView<'caller> {
     pub fn mount_namespace(&self) -> &Arc<MountNamespace> {
         self.namespace()
     }
-    pub fn permission_boundary(&self) -> Option<&Location> {
+    pub fn permission_boundary(&self) -> Option<&PathHandle> {
         self.context().permission_boundary()
     }
 
-    pub fn with_current_dir(&self, directory: Location) -> VfsResult<Self> {
+    pub fn with_current_dir(&self, directory: PathHandle) -> VfsResult<Self> {
         let snapshot = self.snapshot.clone().with_current_directory(directory)?;
         Ok(Self::current(snapshot, self.caller).with_lookup_policy(self.policy))
     }
@@ -112,30 +112,30 @@ impl<'caller> FsView<'caller> {
             .map(|view| view.with_lookup_policy(self.policy))
     }
 
-    pub fn resolve(&self, path: impl AsRef<Path>) -> VfsResult<Location> {
+    pub fn resolve(&self, path: impl AsRef<Path>) -> VfsResult<PathHandle> {
         self.resolve_with_search(path).map(|(location, _)| location)
     }
-    pub fn resolve_no_follow(&self, path: impl AsRef<Path>) -> VfsResult<Location> {
+    pub fn resolve_no_follow(&self, path: impl AsRef<Path>) -> VfsResult<PathHandle> {
         self.resolve_no_follow_with_search(path)
             .map(|(location, _)| location)
     }
     pub fn resolve_with_search(
         &self,
         path: impl AsRef<Path>,
-    ) -> VfsResult<(Location, Vec<Location>)> {
+    ) -> VfsResult<(PathHandle, Vec<PathHandle>)> {
         self.resolve_with_search_checked(path, |_| Ok(()))
     }
     pub fn resolve_no_follow_with_search(
         &self,
         path: impl AsRef<Path>,
-    ) -> VfsResult<(Location, Vec<Location>)> {
+    ) -> VfsResult<(PathHandle, Vec<PathHandle>)> {
         self.resolve_no_follow_with_search_checked(path, |_| Ok(()))
     }
     pub fn resolve_checked(
         &self,
         path: impl AsRef<Path>,
         check: impl Fn(&Location) -> VfsResult<()>,
-    ) -> VfsResult<Location> {
+    ) -> VfsResult<PathHandle> {
         self.resolve_with_search_checked(path, check)
             .map(|(location, _)| location)
     }
@@ -143,7 +143,7 @@ impl<'caller> FsView<'caller> {
         &self,
         path: impl AsRef<Path>,
         check: impl Fn(&Location) -> VfsResult<()>,
-    ) -> VfsResult<Location> {
+    ) -> VfsResult<PathHandle> {
         self.resolve_no_follow_with_search_checked(path, check)
             .map(|(location, _)| location)
     }
@@ -151,7 +151,7 @@ impl<'caller> FsView<'caller> {
         &self,
         path: impl AsRef<Path>,
         check: impl Fn(&Location) -> VfsResult<()>,
-    ) -> VfsResult<(Location, Vec<Location>)> {
+    ) -> VfsResult<(PathHandle, Vec<PathHandle>)> {
         super::LookupSession::new(self, path.as_ref().as_str())?
             .with_search(&check)
             .parent()?
@@ -161,7 +161,7 @@ impl<'caller> FsView<'caller> {
         &self,
         path: impl AsRef<Path>,
         check: impl Fn(&Location) -> VfsResult<()>,
-    ) -> VfsResult<(Location, Vec<Location>)> {
+    ) -> VfsResult<(PathHandle, Vec<PathHandle>)> {
         super::LookupSession::new(self, path.as_ref().as_str())?
             .with_search(&check)
             .parent()?
@@ -170,39 +170,48 @@ impl<'caller> FsView<'caller> {
     pub fn resolve_parent_with_search<'a>(
         &self,
         path: &'a Path,
-    ) -> VfsResult<(Location, Cow<'a, str>, Vec<Location>)> {
+    ) -> VfsResult<(PathHandle, Cow<'a, str>, Vec<PathHandle>)> {
         self.resolve_parent_with_search_checked(path, |_| Ok(()))
     }
     pub fn resolve_parent_with_search_checked<'a>(
         &self,
         path: &'a Path,
         check: impl Fn(&Location) -> VfsResult<()>,
-    ) -> VfsResult<(Location, Cow<'a, str>, Vec<Location>)> {
+    ) -> VfsResult<(PathHandle, Cow<'a, str>, Vec<PathHandle>)> {
         let (directory, name, searched) = super::LookupSession::new(self, path.as_str())?
             .with_search(&check)
             .parent()?
             .finish_parent()?;
         Ok((directory, Cow::Owned(name), searched))
     }
-    pub fn resolve_parent<'a>(&self, path: &'a Path) -> VfsResult<(Location, Cow<'a, str>)> {
+    pub fn resolve_parent<'a>(&self, path: &'a Path) -> VfsResult<(PathHandle, Cow<'a, str>)> {
         self.resolve_parent_with_search(path)
             .map(|(directory, name, _)| (directory, name))
     }
     // Convert an already resolved final entry into a naming pair. This is not a
     // walker step: scoped traversal must inspect each ParentStep itself.
     pub(super) fn resolved_parent_name(
-        location: &Location,
-    ) -> VfsResult<Option<(Location, String)>> {
-        let mut current = location.clone();
+        path: &PathHandle,
+    ) -> VfsResult<Option<(PathHandle, String)>> {
+        let mut current = path.location().clone();
+        let retain = |location: Location| {
+            if Arc::ptr_eq(location.mountpoint(), path.location().mountpoint()) {
+                path.rebind(location)
+            } else {
+                PathHandle::acquire(location)
+            }
+        };
         loop {
             match current.parent_step()? {
                 axfs_ng_vfs::ParentStep::Parent { parent, name } => {
-                    return Ok(Some((parent, name)));
+                    return Ok(Some((retain(parent)?, name)));
                 }
                 axfs_ng_vfs::ParentStep::Covered(covered) => current = covered,
                 axfs_ng_vfs::ParentStep::Root => return Ok(None),
                 axfs_ng_vfs::ParentStep::Unlinked { parent, name } => {
-                    return Ok(parent.map(|parent| (parent, name)));
+                    return parent
+                        .map(|parent| retain(parent).map(|parent| (parent, name)))
+                        .transpose();
                 }
             }
         }
@@ -210,7 +219,7 @@ impl<'caller> FsView<'caller> {
 
     /// Retrieves metadata for the file.
     pub fn metadata(&self, path: impl AsRef<Path>) -> VfsResult<Metadata> {
-        self.resolve(path)?.metadata()
+        self.resolve(path)?.location().metadata()
     }
 
     /// Reads a link using this operation's caller while retaining its path use.
@@ -218,7 +227,7 @@ impl<'caller> FsView<'caller> {
     pub fn read_link(&self, path: impl AsRef<Path>) -> VfsResult<String> {
         let (path, _searched) = super::LookupSession::new(self, path.as_ref().as_str())?
             .parent()?
-            .lookup_with_trace(false)?;
+            .finish_lookup_with_trace(false)?;
         if path.location().node_type() != NodeType::Symlink {
             return Err(VfsError::InvalidInput);
         }
@@ -254,7 +263,7 @@ impl<'caller> FsView<'caller> {
 
     /// Returns an iterator over the entries in a directory.
     pub fn read_dir(&self, path: impl AsRef<Path>) -> VfsResult<ReadDir> {
-        ReadDir::from_location(self.resolve(path)?)
+        ReadDir::from_path(self.resolve(path)?)
     }
 
     /// Check one DAC permission class for a filesystem location.
@@ -276,11 +285,11 @@ impl<'caller> FsView<'caller> {
     pub fn check_search_path(
         &self,
         directory: &Location,
-        boundary: Option<&Location>,
+        boundary: Option<&PathHandle>,
     ) -> VfsResult<()> {
         let credentials = self.credentials();
         let is_boundary = |location: &Location| {
-            boundary.is_some_and(|boundary| location.ptr_eq(boundary))
+            boundary.is_some_and(|boundary| location.ptr_eq(boundary.location()))
                 || location.ptr_eq(self.root_dir())
         };
         let mut current = directory.clone();
@@ -311,11 +320,11 @@ impl<'caller> FsView<'caller> {
     /// Check search permission for every directory visited by path lookup.
     pub(crate) fn check_search_trace(
         &self,
-        searched: &[Location],
-        boundary: Option<&Location>,
+        searched: &[PathHandle],
+        boundary: Option<&PathHandle>,
     ) -> VfsResult<()> {
         for directory in searched {
-            self.check_search_path(directory, boundary)?;
+            self.check_search_path(directory.location(), boundary)?;
         }
         Ok(())
     }
@@ -327,13 +336,13 @@ impl<'caller> FsView<'caller> {
             .resolve_no_follow_with_search_checked(path.as_ref(), |directory| {
                 self.check_search_path(directory, self.permission_boundary())
             })?;
-        if entry.ptr_eq(self.root_dir()) {
+        if entry.location().ptr_eq(self.root_dir()) {
             return Err(VfsError::IsADirectory);
         }
         // The final entry is already known to be a directory. Classify this
         // before consulting its physical parent: an opened dirfd may remain
         // usable after that parent loses search permission.
-        if entry.is_dir() {
+        if entry.location().is_dir() {
             return Err(VfsError::IsADirectory);
         }
         let (directory, name) =
@@ -341,7 +350,7 @@ impl<'caller> FsView<'caller> {
         self.check_search_trace(&searched, self.permission_boundary())?;
         drop(entry);
         drop(searched);
-        directory.unlink(&name, false, credentials)
+        directory.location().unlink(&name, false, credentials)
     }
 
     /// Removes a directory from the filesystem.
@@ -378,7 +387,7 @@ impl<'caller> FsView<'caller> {
         let (entry, searched) = self.resolve_no_follow_with_search_checked(path, |directory| {
             self.check_search_path(directory, self.permission_boundary())
         })?;
-        if entry.ptr_eq(self.root_dir()) || entry.is_root_of_mount() {
+        if entry.location().ptr_eq(self.root_dir()) || entry.location().is_root_of_mount() {
             return Err(VfsError::ResourceBusy);
         }
         let (directory, name) =
@@ -386,7 +395,7 @@ impl<'caller> FsView<'caller> {
         self.check_search_trace(&searched, self.permission_boundary())?;
         drop(entry);
         drop(searched);
-        directory.unlink(&name, true, credentials)
+        directory.location().unlink(&name, true, credentials)
     }
 
     /// Renames a file or directory to a new name, replacing the original file
@@ -422,9 +431,9 @@ impl<'caller> FsView<'caller> {
     /// Rename already resolved entries after applying directory authorization.
     pub fn rename_locations(
         &self,
-        src_dir: &Location,
+        src_dir: &PathHandle,
         src_name: &str,
-        dst_dir: &Location,
+        dst_dir: &PathHandle,
         dst_name: &str,
         options: RenameOptions,
     ) -> VfsResult<()> {
@@ -440,10 +449,10 @@ impl<'caller> FsView<'caller> {
     /// permission boundaries.
     pub fn rename_locations_with_boundaries(
         &self,
-        source: (&Location, &str),
-        destination: (&Location, &str),
+        source: (&PathHandle, &str),
+        destination: (&PathHandle, &str),
         options: RenameOptions,
-        boundaries: (Option<&Location>, Option<&Location>),
+        boundaries: (Option<&PathHandle>, Option<&PathHandle>),
     ) -> VfsResult<()> {
         let (src_dir, src_name) = source;
         let (dst_dir, dst_name) = destination;
@@ -458,11 +467,11 @@ impl<'caller> FsView<'caller> {
 
     pub fn rename_locations_with_boundaries_and_search(
         &self,
-        source: (&Location, &str),
-        destination: (&Location, &str),
+        source: (&PathHandle, &str),
+        destination: (&PathHandle, &str),
         options: RenameOptions,
-        boundaries: (Option<&Location>, Option<&Location>),
-        searches: (&[Location], &[Location]),
+        boundaries: (Option<&PathHandle>, Option<&PathHandle>),
+        searches: (&[PathHandle], &[PathHandle]),
     ) -> VfsResult<()> {
         let credentials = self.credentials();
         let (src_dir, src_name) = source;
@@ -474,17 +483,20 @@ impl<'caller> FsView<'caller> {
         // ENOENT/EEXIST from an inaccessible parent before DAC search checks.
         self.check_search_trace(src_search, src_boundary)?;
         self.check_search_trace(dst_search, dst_boundary)?;
-        if !Arc::ptr_eq(src_dir.mountpoint(), dst_dir.mountpoint()) {
+        if !Arc::ptr_eq(
+            src_dir.location().mountpoint(),
+            dst_dir.location().mountpoint(),
+        ) {
             return Err(VfsError::CrossesDevices);
         }
         // Already-resolved callers may have no search trace. Validate both
         // parent paths before probing names, without deciding write access.
-        self.check_search_path(src_dir, src_boundary)?;
-        self.check_search_path(dst_dir, dst_boundary)?;
+        self.check_search_path(src_dir.location(), src_boundary)?;
+        self.check_search_path(dst_dir.location(), dst_boundary)?;
         // Preserve preflight error ordering; none of these observations grants
         // permission to commit. The backend attempt rechecks current objects.
-        src_dir.lookup_no_follow(src_name)?;
-        let destination = match dst_dir.lookup_no_follow(dst_name) {
+        src_dir.location().lookup_no_follow(src_name)?;
+        let destination = match dst_dir.location().lookup_no_follow(dst_name) {
             Ok(destination) => Some(destination),
             Err(VfsError::NotFound) => None,
             Err(error) => return Err(error),
@@ -499,7 +511,13 @@ impl<'caller> FsView<'caller> {
         // Parent write, sticky, and no-op decisions all depend on the locked
         // current objects. An outer write check could reject a legal no-op
         // after a competing move, even if these probes saw different inodes.
-        src_dir.rename_with_options(src_name, dst_dir, dst_name, options, credentials)
+        src_dir.location().rename_with_options(
+            src_name,
+            dst_dir.location(),
+            dst_name,
+            options,
+            credentials,
+        )
     }
 
     /// Creates a new, empty directory at the provided path.
@@ -509,7 +527,7 @@ impl<'caller> FsView<'caller> {
         mode: NodePermission,
         uid: u32,
         gid: u32,
-    ) -> VfsResult<Location> {
+    ) -> VfsResult<PathHandle> {
         let credentials = self.credentials();
         let path = path.as_ref();
         if path.as_str().is_empty() {
@@ -519,7 +537,14 @@ impl<'caller> FsView<'caller> {
             self.check_search_path(directory, self.permission_boundary())
         })?;
         self.check_search_trace(&searched, self.permission_boundary())?;
-        dir.create(&name, NodeType::Directory, mode, uid, gid, credentials)
+        dir.rebind(dir.location().create(
+            &name,
+            NodeType::Directory,
+            mode,
+            uid,
+            gid,
+            credentials,
+        )?)
     }
 
     /// Creates a new hard link on the filesystem.
@@ -527,7 +552,7 @@ impl<'caller> FsView<'caller> {
         &self,
         old_path: impl AsRef<Path>,
         new_path: impl AsRef<Path>,
-    ) -> VfsResult<Location> {
+    ) -> VfsResult<PathHandle> {
         let (old, old_searched) = self
             .resolve_with_search_checked(old_path.as_ref(), |directory| {
                 self.check_search_path(directory, self.permission_boundary())
@@ -546,10 +571,10 @@ impl<'caller> FsView<'caller> {
     /// Create a hard link between already resolved locations.
     pub fn link_locations(
         &self,
-        old: &Location,
-        new_dir: &Location,
+        old: &PathHandle,
+        new_dir: &PathHandle,
         new_name: &str,
-    ) -> VfsResult<Location> {
+    ) -> VfsResult<PathHandle> {
         self.link_locations_with_boundaries_and_search(
             (old, &[]),
             (new_dir, new_name, &[]),
@@ -561,12 +586,12 @@ impl<'caller> FsView<'caller> {
     /// permission boundaries.
     pub fn link_locations_with_boundaries(
         &self,
-        old: &Location,
-        new_dir: &Location,
+        old: &PathHandle,
+        new_dir: &PathHandle,
         new_name: &str,
-        old_boundary: Option<&Location>,
-        new_boundary: Option<&Location>,
-    ) -> VfsResult<Location> {
+        old_boundary: Option<&PathHandle>,
+        new_boundary: Option<&PathHandle>,
+    ) -> VfsResult<PathHandle> {
         self.link_locations_with_boundaries_and_search(
             (old, &[]),
             (new_dir, new_name, &[]),
@@ -576,10 +601,10 @@ impl<'caller> FsView<'caller> {
 
     pub fn link_locations_with_boundaries_and_search(
         &self,
-        source: (&Location, &[Location]),
-        destination: (&Location, &str, &[Location]),
-        boundaries: (Option<&Location>, Option<&Location>),
-    ) -> VfsResult<Location> {
+        source: (&PathHandle, &[PathHandle]),
+        destination: (&PathHandle, &str, &[PathHandle]),
+        boundaries: (Option<&PathHandle>, Option<&PathHandle>),
+    ) -> VfsResult<PathHandle> {
         let credentials = self.credentials();
         let (old, old_search) = source;
         let (new_dir, new_name, new_search) = destination;
@@ -587,12 +612,16 @@ impl<'caller> FsView<'caller> {
         // A directory cannot be hard-linked. Check this before inspecting
         // the source parent: `linkat(dirfd, ".", ...)` must not re-walk a
         // parent outside the dirfd permission boundary.
-        if old.is_dir() {
+        if old.location().is_dir() {
             return Err(VfsError::OperationNotPermitted);
         }
         self.check_search_trace(old_search, old_boundary)?;
         self.check_search_trace(new_search, new_boundary)?;
-        new_dir.link(new_name, old, credentials)
+        new_dir.rebind(
+            new_dir
+                .location()
+                .link(new_name, old.location(), credentials)?,
+        )
     }
 
     /// Creates a new symbolic link on the filesystem.
@@ -602,21 +631,22 @@ impl<'caller> FsView<'caller> {
         link_path: impl AsRef<Path>,
         uid: u32,
         gid: u32,
-    ) -> VfsResult<Location> {
+    ) -> VfsResult<PathHandle> {
         let credentials = self.credentials();
         let (dir, name, searched) = self
             .resolve_parent_with_search_checked(link_path.as_ref(), |directory| {
                 self.check_search_path(directory, self.permission_boundary())
             })?;
         self.check_search_trace(&searched, self.permission_boundary())?;
-        dir.create_symlink(
+        let location = dir.location().create_symlink(
             &name,
             target.as_ref(),
             NodePermission::default(),
             uid,
             gid,
             credentials,
-        )
+        )?;
+        dir.rebind(location)
     }
 
     /// Create a non-directory node after applying parent-directory DAC.
@@ -624,18 +654,21 @@ impl<'caller> FsView<'caller> {
         &self,
         path: impl AsRef<Path>,
         attributes: CreateAttributes<'_>,
-    ) -> VfsResult<Location> {
+    ) -> VfsResult<PathHandle> {
         let credentials = self.credentials();
         let (dir, name, searched) = self
             .resolve_parent_with_search_checked(path.as_ref(), |directory| {
                 self.check_search_path(directory, self.permission_boundary())
             })?;
         self.check_search_trace(&searched, self.permission_boundary())?;
-        dir.create_initialized(&name, attributes, credentials)
+        dir.rebind(
+            dir.location()
+                .create_initialized(&name, attributes, credentials)?,
+        )
     }
 
     /// Returns the canonical, absolute form of a path.
     pub fn canonicalize(&self, path: impl AsRef<Path>) -> VfsResult<PathBuf> {
-        self.resolve(path.as_ref())?.absolute_path()
+        self.resolve(path.as_ref())?.location().absolute_path()
     }
 }

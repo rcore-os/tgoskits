@@ -68,7 +68,7 @@ pub fn sys_memfd_create(
 
     let fs_context = current_fs_context();
     let fs = ax_fs_ng::FsView::current(fs_context, &link_caller);
-    let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
+    let mountpoint = fs.resolve(mount_path)?.location().mountpoint().clone();
     let cred = current.as_thread().cred();
     // Linux shmem_file_setup creates an executable anonymous inode; the
     // explicit no-exec flag removes its execute bits before publication.

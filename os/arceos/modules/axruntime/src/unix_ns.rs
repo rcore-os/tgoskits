@@ -9,10 +9,17 @@ impl ax_net::unix::UnixNamespace for AxFsUnixNamespace {
         let caller = axfs_ng_vfs::NativeLinkCaller::root();
         let view = ax_fs_ng::FsView::current(ax_fs_ng::vfs::current_fs_context(), &caller);
         let loc = view.resolve(path).map_err(namespace_vfs_error)?;
-        if loc.metadata().map_err(namespace_vfs_error)?.node_type != NodeType::Socket {
+        if loc
+            .location()
+            .metadata()
+            .map_err(namespace_vfs_error)?
+            .node_type
+            != NodeType::Socket
+        {
             return Err(ax_net::NetError::NotASocket);
         }
-        loc.user_data()
+        loc.location()
+            .user_data()
             .get::<ax_net::unix::BindSlot>()
             .ok_or(ax_net::NetError::ConnectionRefused)
     }
