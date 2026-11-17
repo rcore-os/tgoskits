@@ -17,6 +17,7 @@ from typing import Any
 MODULE_PATH = Path(__file__).with_name("ci_plan.py")
 sys.path.insert(0, str(MODULE_PATH.parent))
 
+from ci_impact import analyze_changed_paths
 from ci_suite import SUITE_ROOTS
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -1146,6 +1147,39 @@ command = "true"
 
         self.assertIn(board_check["id"], rows)
         self.assertTrue(qemu_ids.isdisjoint(rows))
+
+    def test_pci_memory_guest_input_selects_axvisor_qemu_check(self) -> None:
+        guest_path = Path("apps/arceos/pci-memory-test/src/main.rs")
+        impact = analyze_changed_paths(
+            ci_plan.WORKSPACE_ROOT,
+            [guest_path],
+            {},
+        )
+
+        pci_checks = [
+            check
+            for check in ci_plan.load_catalog(ci_plan.MAIN_MANIFESTS)
+            if "qemu-pci-memory-test" in check["command"]
+            and any(
+                registration["kind"] == "axvisor-qemu"
+                and registration.get("arch") == "aarch64"
+                and "qemu-pci-memory-test" in registration.get("cases", ())
+                for registration in check.get("suite", ())
+            )
+        ]
+        self.assertTrue(pci_checks)
+        context = ci_plan.replace(self.upstream, impact=impact)
+        rows = self.assert_unique_ids(
+            main_test_rows(ci_plan.build_main_plan(context))
+        )
+
+        for check in pci_checks:
+            with self.subTest(check=check["id"]):
+                self.assertIn(check["id"], rows)
+                self.assertEqual(rows[check["id"]]["group"], "AxVisor")
+                self.assertIn(
+                    "qemu-pci-memory-test", rows[check["id"]]["command"]
+                )
 
     def test_dualguest_robot_board_is_scheduled_in_main_only(self) -> None:
         rows = self.assert_unique_ids(
