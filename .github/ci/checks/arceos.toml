@@ -93,6 +93,7 @@ runner = "qcs"
 timeout_minutes = 30
 cache_key = ""
 command = '''
+cargo xtask cross-test --arch riscv64 --package ax-cpu --features ax-cpu/uspace --no-default-features
 cargo xtask arceos test qemu --arch riscv64 --test-group cpu
 cargo xtask arceos test qemu --arch riscv64 --test-group drivers --test-case riscv-aia
 '''

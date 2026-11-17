@@ -274,14 +274,11 @@ pub(crate) fn run(
 
 impl Owner {
     fn command(&mut self, command: Command, exit: &ControlExit) -> bool {
-        // Reject before accepting a stop/reset/delete or replying to a guest
-        // reset. A policy refusal must not close admission or retire producers.
+        // Reject management requests before changing a live DMA owner's state.
+        // Nonreturning guest resets instead stop execution and retain backing.
         if matches!(
             &command,
-            Command::Stop(..)
-                | Command::Reset(..)
-                | Command::GuestReset { .. }
-                | Command::Destroy(..)
+            Command::Stop(..) | Command::Reset(..) | Command::Destroy(..)
         ) && let Err(error) = self.require_host_dma_quiescence()
         {
             command.reject(error);
@@ -345,7 +342,15 @@ impl Owner {
                     // A reset guest must leave before stop can join it. Reply
                     // only after this FIFO command validates the original run.
                     completion.finish(Ok(0));
-                    let result = self.stop(operation).and_then(|()| self.start(operation));
+                    let result = if self.host_dma_blocker().is_some() {
+                        // Returning an error cannot resume a nonreturning reset
+                        // caller. Stop its peers too, without reclaiming DMA.
+                        self.shutdown_run(operation)
+                    } else {
+                        self.stop(operation)
+                            .and_then(|()| self.start(operation))
+                            .map(|_| ())
+                    };
                     if let Err(error) = result {
                         self.last_failure = Some(error);
                     }

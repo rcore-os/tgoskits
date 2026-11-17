@@ -338,6 +338,12 @@ SMP4、ITS、NVMe 测试停滞时，先采样各核调用栈和实际中断标�
 
 处理器枚举、客户机 hart ID 和宿主亲和性分别核对；页表属性则同时依赖客户机声明、硬件能力和 `GuestBinding` 的 CSR 配置。
 
+RV64 用户态初始镜像与克隆返回镜像须显式设置 `sstatus.UXL=64`，不能写保留编码零后依赖不同 hart 的 WARL 归一化行为。用户入口同时要求 SPP=User、SPIE=1、SIE=0：`trap.S` 在恢复通用寄存器前写 SSTATUS，SIE 提前置位会破坏 IRQ-off 恢复窗口。寄存器镜像契约通过 `cargo xtask cross-test --arch riscv64 --package ax-cpu --features ax-cpu/uspace --no-default-features` 验证；该测试不执行 SRET，真实用户执行仍由 Starry QEMU 的 exec、clone 与亲和用例验证，不能代替异构实板故障复测。
+
+客户机 SBI RFENCE 不得原样转发宿主固件：hart mask 属于客户机拓扑，SFENCE.VMA 对应客户机 VS-stage，不能刷新宿主 HS-stage 后返回成功。标准与 legacy 请求在硬件 binding 退休后进入同一处理路径，先验证全部客户机 hart，再通过同步宿主 IPI 完成刷新。当前所有 G-stage root 使用 VMID 0，因此保守刷新全部已启用虚拟化的宿主 CPU，覆盖 vCPU 迁移历史；A100 等无 H 的 CPU 不进入该集合。VS-stage 刷新暂时选择 VMID 0 并完整恢复 HGATP，嵌套 HFENCE 请求返回不支持。未来分配独立 VMID 时必须一起更新该策略。Linux 的 SBI IPI 驱动会选择 SBI RFENCE，不能只隐藏 RFENCE 扩展来假定其自动改走虚拟 IPI。定向入口为 AxVM `arch::riscv64::rfence` cross-test 与 Axvisor `smp-ipi` QEMU；组件测试不代替真实跨核完成证据。
+
+RISC-V 的 `axvm vcpu_runtime` QEMU 批次将真实跨核刷新与 legacy 故障回归放在同一次启动，配置位于 `virtualization/axvm/tests/vcpu-runtime/riscv64/`。远端固定 CPU 在两次 HLV 之间保持同一 VS 页表装载；替换叶项并完成 RFENCE 后检查新页内容，移除生产刷新时必须读到旧页并失败。legacy 客户机检查 EID 5–7 的未映射及跨页指针故障、ECALL PC 和 a1 保留；`read_guest_virtual()` 保留 HLV 故障信息，VS 故障注入客户机，G-stage 缺页交给嵌套映射处理，均不提前推进 ECALL。该批次使用 PLIC，不涉及虚拟 APLIC/IMSIC。
+
 CPU 身份由 `tree::cpu_reg_address()` 从 `reg` 取得，节点名称不参与硬件编号解析。`phys_cpu_ids`、客户机入口 hart ID、CPU 节点和 PLIC 的 `interrupts-extended` 须一致；后者按每个 hart 的机器上下文占位与监管者中断 9 排列。`ArceOsHost::enable_virtualization_on_all_cpus()` 保留不支持虚拟化的 CPU 给宿主，客户机目标由 `minimum_recorded_target_cpu_capability()` 校验，不通过缩小宿主 CPU 数绕过能力检查。
 
 `GuestBinding` 按硬件能力开放 `henvcfg` 的 CBO/PBMT 权限，保存恢复共用的 `senvcfg`；存在 Smstateen 时还需开放 `hstateen0.ENVCFG`。可选 CSR 通过临时陷阱探测。恢复 `henvcfg` 先于最终 HFENCE，SSTC 不支持的失败路径也要恢复 PBMTE。动态 `MapIdentical` RAM 调整地址时，同步移动属于同一主 RAM 的 initramfs，并检查完整映像边界。
@@ -354,13 +360,19 @@ Axvisor 客户机身份由 `phys_cpu_ids` 与 `phys_cpu_sets` 分开表达：同
 
 运行中的直通客户机若无法发布或订阅 IVC，沿 `Owner::update_memory()` 检查追加映射是否误用了管理 `pause()` 的 DMA 门禁。`Owner::pause_run()` 只收敛 vCPU、虚拟端口和模型设备；追加不重叠映射保留全部原有翻译与 backing 后可复用该流程。不得据此放开管理暂停或 `MemoryUpdate::Unmap`，CPU 暂停不证明物理 DMA 停稳。RISC-V 绑定内更新 G-stage 根还必须同步活动 `hgatp`，否则解绑捕获硬件旧值会覆盖保存的新根；旧根仍需在所有宿主 CPU 完成翻译退休后才能释放。
 
+启动失败通过 `Owner::rollback_start()` 回收已启动的执行任务和 IRQ 生产者；有物理 DMA 资源时复用 `halt_retaining_run()`，保留原页表与 backing，并将原始启动错误发布为 `Failed`。回滚不能经过管理停止的 DMA 拒绝分支。不可返回的客户机 `GuestReset` 同样需要整机停止：无法安全重启时调用 `shutdown_run()` 保留资源，不能只退出发起请求的 vCPU。现有 `vcpu_runtime` QEMU 批次同时验证启动后故障、单/双 vCPU PSCI reset，以及无直通资源时的正常重启。
+
 ### AIA 硬件与完成责任边界
 
 先探测 IMSIC，再探测 APLIC；按 `interrupts-extended` 和文件地址建立逻辑 CPU 到 APLIC Hart Index 的对应，不能直接使用逻辑编号。当前实现以来源号作为 EIID，超过 IMSIC 容量时拒绝配置。每核初始化自身 IMSIC，运行期屏蔽来源只操作 APLIC，不临时改写调用核的 IMSIC EIE。机器域和 MSI 地址配置归 SBI 固件所有。
 
+宿主 APLIC／IMSIC 的 MMIO 由 AxVM 的 `interrupt::is_host_owned_interrupt_provider()` 识别并预留，显式设备树路径直通应拒绝。恒等直通还须由 `build_guest_dtb()` 从宿主树调用 `reserve_host_interrupt_controllers()`，客户机省略节点不能撤销物理范围保护；完全虚拟化的 GPA 则独立于宿主地址布局。客户机设备树需要保留的虚拟控制器由 `is_machine_interrupt_provider()` 单独判断，不能因此继承宿主 AIA 节点。中断控制器连到上游的 `interrupts-extended` 不属于设备来源列表，例如 IMSIC 的 CPU-local cause 9 不能排除物理 APLIC source 9。相关资源选择与排除逻辑位于 [`boot/fdt/core/parser.rs`](../../../../virtualization/axvm/src/boot/fdt/core/parser.rs)。
+
 `somehal::arch::irq` 持有陷阱分类、完成责任、本地中断和 SBI IPI，次核通过 `irq::init_secondary_cpu()` 初始化控制器后再开放本地输入；`plic` 与 `aia` 模块只提供各自控制器操作。APLIC 首次配置先写 SOURCECFG，再写 TARGET，并保留宿主 DTB 的完整触发方式。延期期间 enable 不解除屏蔽，完成时按期望状态重采样；边沿不补发。缺少在途 MSI 排空协议时，激活后固定亲和，停止后来源退休到板级复位；寄存器访问保留 I/O 屏障。恒等映射不提供 DMA 隔离；客户机设备树须保留物理总线的 `dma-noncoherent`，以及驱动需要的时钟、复位和引脚依赖。
 
 APLIC 寄存器操作和监管者 IMSIC 的 CSR/文件几何由 `drivers/intc/riscv-aia-driver` 提供，保持 `no_std` 且不依赖堆分配。`somehal::arch::aia` 负责 FDT、映射、CPU 对应和共享来源锁，保留延期与退休状态；不能把客户机分配策略移入驱动。`RiscvExternalIrqClaim` 的内部完成表示仅由 SomeHAL 构造，`axplat-dyn` 通过 `RiscvExternalIrqClaimSlot` 转移整个令牌，不按 PLIC/APLIC 再编码。显式完成先取走责任，析构只完成剩余责任；槽冲突返回原令牌。槽锁内不完成、不访问 MMIO，避免与来源事务锁嵌套。
+
+`AplicSourceState::ever_enabled` 在来源首次开放后保留，即使随后暂时屏蔽也不能清除。普通 `set_source_affinity()` 和客户机 `activate_guest_source()` 均按实际 MSI 目标拒绝迁移；`Any` 与 CPU0 等价时不误拒绝。来源 45 的真实 MSI 回归与既有延期完成测试共用同一次 QEMU 启动。
 
 ### QEMU AIA 回归
 
@@ -400,6 +412,10 @@ K3 手动双客户机启动用例位于 `test-suit/axvisor/normal/board-bananapi
 ### 处理器与发行版
 
 K3 的 8 个 X100 支持 H 扩展，8 个 A100 不支持，依据见[厂商 OpenSBI 补丁说明](https://lists.infradead.org/pipermail/opensbi/2026-September/010600.html)。本板实测 CPU0–7 可启用虚拟化，CPU8–15 返回不支持；16 核宿主的虚拟化可用掩码为 `0xff`。客户机不能把 A100 加进 vCPU 亲和，或通过缩小宿主核心数掩盖能力差异；运行时按逐核探测结果分配客户机。
+
+原生 StarryOS 在 A100 上的用户态稳定性暂列为已知限制：此前将 BusyBox `sha256sum` 绑定到 CPU8、CPU15 时出现过 SIGSEGV，根因尚未确认，也未完成修复后的同条件验证。16 核上线不能作为该问题已解决的证据。A100 原生用户态适配及跨 X100/A100 核组迁移留待独立处理，本轮不继续扩大到异构核调度和上下文管理。
+
+板载原生 Linux `6.18.3-generic #1.0.2.4` 的对照使用同一份 BusyBox：X100 CPU0–7、A100 CPU8–15 各核运行三次，两组均为 24/24 次退出码及 SHA-256 正确。普通进程直接绑定 A100 返回 EINVAL；测试通过 `/proc/set_ai_thread` 注册无 libc、无向量指令的子进程，在 `execve` 前固定到目标 A100，并检查实际 `Cpus_allowed_list`。该进程级启动方式可参考 [k3_ai 实现说明](https://github.com/brucehoult/k3_ai)。此结果证明 A100 能执行该工作负载，不能据此确认 Starry 的故障根因，或宣称已排除所有硬件问题；该限制与仅在 X100 上运行的 AxVisor Linux 客户机 udev 崩溃分别跟踪。
 
 K3 厂商 Linux `6.18.3-generic #1.0.2.4` 的 `hmp_cpumask_init()` 按硬件 hart ID 填 HMP CPU 掩码；客户机 hart 从 1 开始时，SMP 启动可能在 `select_fallback_rq()` 因逻辑 CPU0 不在掩码中触发 BUG。保留该内核时使用连续客户机 hart 0..N-1，例如 `phys_cpu_ids = [0, 1, 2, 3]`、`phys_cpu_sets = [2, 4, 8, 16]` 绑定宿主 CPU1..4；对应调整客户机 CPU 节点和 PLIC `interrupts-extended`。这是该厂商镜像的兼容约束，不能据此重编号宿主固件 CPU。
 

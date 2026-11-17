@@ -37,6 +37,7 @@ mod irq;
 mod npt;
 mod policy;
 mod resource_pools;
+mod rfence;
 mod vm;
 pub(crate) use vm::RiscvVmPlan;
 
@@ -280,12 +281,38 @@ impl ArchOps for Riscv64Arch {
         if let RiscvExit::SbiCall(call) = exit
             && !console::is_console_call(call)
         {
-            let result = vcpu.forward_task_sbi(call).map_err(|error| {
-                crate::vcpu::map_vcpu_backend_error(
-                    "forward RISC-V SBI call",
-                    riscv_error_to_backend(error),
-                )
-            })?;
+            let legacy_fence = (sbi_spec::legacy::LEGACY_REMOTE_FENCE_I
+                ..=sbi_spec::legacy::LEGACY_REMOTE_SFENCE_VMA_ASID)
+                .contains(&call.extension);
+            let result = if call.extension == sbi_spec::rfnc::EID_RFNC || legacy_fence {
+                let mut request = call;
+                if legacy_fence {
+                    request.extension = sbi_spec::rfnc::EID_RFNC;
+                    request.function = call.extension - sbi_spec::legacy::LEGACY_REMOTE_FENCE_I;
+                }
+                let mut result = rfence::handle(
+                    request,
+                    &entry.topology,
+                    crate::percpu::enabled_cpu_mask(),
+                    rfence::execute,
+                );
+                if result.is_ok() {
+                    vcpu.backend.record_remote_fence(request.function);
+                }
+                if legacy_fence {
+                    // SBI v0.1 preserves a1. The normalized argument image
+                    // retains its original value in the start-address slot.
+                    result.value = call.arguments[2];
+                }
+                result
+            } else {
+                vcpu.forward_task_sbi(call).map_err(|error| {
+                    crate::vcpu::map_vcpu_backend_error(
+                        "forward RISC-V SBI call",
+                        riscv_error_to_backend(error),
+                    )
+                })?
+            };
             exit = RiscvExit::SbiResult {
                 error: result.error,
                 value: result.value,

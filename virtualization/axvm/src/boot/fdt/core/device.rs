@@ -81,8 +81,8 @@ pub(crate) fn find_all_passthrough_devices_from_paths(
                     if dependency != provider && excluded_path(&path) {
                         continue;
                     }
-                    // Machine interrupt providers are installed by their device models.
-                    if super::interrupt::is_machine_interrupt_provider(
+                    // A dependency on host interrupt routing never grants its MMIO.
+                    if super::interrupt::is_host_owned_interrupt_provider(
                         fdt.node(dependency).unwrap(),
                     ) {
                         continue;

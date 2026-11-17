@@ -69,7 +69,7 @@ cargo xtask arceos test qemu --arch x86_64 --test-group cpu --test-case x86-vmx/
 
 x86完整组要求Intel KVM、可访问的`/dev/kvm`及嵌套VMX；SVM/FXSAVE使用TCG。Loong guest使用CI固定的LVZ QEMU，不能用普通Loong QEMU替代。工具链/QEMU可按CI更新，不修改模拟器语义或放宽测试。
 
-RISC-V的`guest-entry`实现位于`src/guest_entry/riscv64.rs`，在固定CPU上进入可信VS代码，检查整数、FP、TLS、scratch、退出快照及`PerCpu`启停状态。`riscv-standard`批次使用SMP4并启用H/V，成员固定到启动CPU；用例通过宿主提供的`StateMemory`银行检查v0、v31和四项向量CSR的重入保存、宿主状态恢复及克隆副本交替执行的独立性，输出`CPU_GUEST_VECTOR_OK`后才返回，由公共入口输出整批完成标记。未启用V的SSTC变体保留无向量路径。该用例采用Bare翻译，不证明二阶段权限隔离或完整绑定生命周期。
+RISC-V的`guest-entry`实现位于`src/guest_entry/riscv64.rs`，在固定CPU上进入可信VS代码，检查整数、FP、TLS、scratch、退出快照及`PerCpu`启停状态。`riscv-standard`批次使用SMP4并启用H/V，成员固定到启动CPU；用例通过宿主提供的`StateMemory`银行检查v0、v31和四项向量CSR的重入保存、宿主状态恢复及克隆副本交替执行的独立性，输出`CPU_GUEST_VECTOR_OK`。`check_vsstage_fence()` 另外安装 Sv39 VS-stage 页表，通过 HLV 在不切换虚拟化模式、不重新绑定的情况下读取数据页，替换页表叶项并调用 `invalidate_vsstage_translations()` 后检查新页内容，输出 `CPU_GUEST_VSSTAGE_FENCE_OK`；移除刷新时必须仍读到旧页并失败。同批检查刷新其他 VMID 后保留已装载 HGATP。全部检查正常返回后，由公共入口输出整批完成标记。未启用V的SSTC变体保留无向量路径。QEMU 的 SFENCE 可能过量刷新，该用例不单独证明 SFENCE/HFENCE 的区分；G-stage 使用 Bare，也不证明二阶段权限隔离、跨核刷新或完整绑定生命周期。
 
 板端配置仍在`../board-orangepi-5-plus/`：
 

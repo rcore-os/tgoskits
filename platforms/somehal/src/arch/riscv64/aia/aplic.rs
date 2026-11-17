@@ -174,6 +174,8 @@ struct RiscvAplicIrqHandler {
 #[derive(Clone, Copy, Default)]
 struct AplicSourceState {
     enabled: bool,
+    // Masking cannot withdraw an MSI already queued in the old IMSIC file.
+    ever_enabled: bool,
     deferred: bool,
     guest_owned: bool,
     retired: bool,
@@ -266,6 +268,7 @@ impl RiscvAplic {
                 .set_target(source, target)
                 .expect("validated source");
             state.sources[index].enabled = true;
+            state.sources[index].ever_enabled = true;
             if !state.sources[index].deferred {
                 state
                     .registers
@@ -290,10 +293,12 @@ impl RiscvAplic {
     ) -> Result<(), IrqError> {
         let index = self.checked_source_index(source)?;
         let target = self.target(source, affinity)?;
+        let previous_target = self.target(source, self.affinity_by_source[index])?;
         let mut state = self.irq.state.lock_irqsave();
         if state.sources[index].retired
             || state.sources[index].guest_owned
             || state.sources[index].deferred
+            || (state.sources[index].ever_enabled && target != previous_target)
         {
             return Err(IrqError::Busy);
         }
@@ -405,12 +410,14 @@ pub(in crate::arch) fn activate_guest_source(
     let mode = source_mode(Some(trigger))?;
     let affinity = IrqAffinity::Fixed { cpu_id: target_cpu };
     let target = aplic.target(source, affinity)?;
+    let previous_target = aplic.target(source, aplic.affinity_by_source[index])?;
     let mut state = aplic.irq.state.lock_irqsave();
     let source_state = &state.sources[index];
     if source_state.retired
         || source_state.guest_owned
         || source_state.enabled
         || source_state.deferred
+        || (source_state.ever_enabled && target != previous_target)
     {
         return Err(IrqError::Busy);
     }
@@ -432,6 +439,7 @@ pub(in crate::arch) fn activate_guest_source(
     aplic.affinity_by_source[index] = affinity;
     state.sources[index].guest_owned = true;
     state.sources[index].enabled = true;
+    state.sources[index].ever_enabled = true;
     if mode.is_level() {
         state.registers.resample(source).expect("validated source");
     }

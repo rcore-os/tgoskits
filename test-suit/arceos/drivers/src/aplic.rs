@@ -62,7 +62,7 @@ pub fn run() {
     .unwrap();
     let base = ax_mm::iomap(address.into(), 0x4000).unwrap();
     let inject = |source: u32| {
-        // SAFETY: this fixture exclusively owns sources 42, 43 and 44; the retained 16 KiB
+        // SAFETY: this fixture exclusively owns sources 42 through 45; the retained 16 KiB
         // mapping contains its aligned APLIC SETIPNUM command register.
         unsafe {
             core::arch::asm!("fence iorw, iorw", options(nostack));
@@ -78,6 +78,65 @@ pub fn run() {
                 != 0
         }
     };
+    let target = |source: u32| {
+        // SAFETY: sources 42 through 45 have aligned TARGET registers inside
+        // the retained APLIC map. This observation does not change ownership.
+        unsafe { ((base.as_usize() + 0x3000 + source as usize * 4) as *const u32).read_volatile() }
+    };
+    let domain =
+        somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvAplic).unwrap();
+    let host_irq = IrqId::new(domain, HwIrq(45));
+    let affinity = |cpu_id| somehal::irq::IrqAffinity::Fixed { cpu_id };
+    somehal::irq::intc_by_domain(domain)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .configure(&somehal::irq::rdif_intc::IrqTranslation::with_trigger(
+            host_irq,
+            somehal::irq::rdif_intc::Trigger::EdgeRising,
+        ))
+        .unwrap();
+    // Initial placement is free until delivery first opens.
+    somehal::irq::irq_set_affinity(host_irq, affinity(1)).unwrap();
+    somehal::irq::irq_set_affinity(host_irq, affinity(0)).unwrap();
+    {
+        let _irq = ax_sync::IrqSaveGuard::new();
+        somehal::irq::irq_set_enable(host_irq, true).unwrap();
+        let original_target = target(45);
+        inject(45);
+        // Masking the APLIC cannot withdraw an MSI already sent to CPU0.
+        somehal::irq::irq_set_enable(host_irq, false).unwrap();
+        assert_eq!(
+            somehal::irq::irq_set_affinity(host_irq, affinity(1)),
+            Err(IrqError::Busy),
+            "masked source migrated with an old MSI outstanding"
+        );
+        assert_eq!(target(45), original_target);
+        somehal::irq::irq_set_affinity(host_irq, somehal::irq::IrqAffinity::Any).unwrap();
+        somehal::irq::irq_set_enable(host_irq, true).unwrap();
+        let began = std::time::Instant::now();
+        loop {
+            if let Some(active) = somehal::irq::begin_irq((1usize << 63) | 9) {
+                assert_eq!(active.id(), host_irq);
+                drop(active);
+                break;
+            }
+            assert!(began.elapsed() < std::time::Duration::from_secs(3));
+            core::hint::spin_loop();
+        }
+        somehal::irq::irq_set_enable(host_irq, false).unwrap();
+        assert_eq!(
+            somehal::irq::irq_set_affinity(host_irq, affinity(1)),
+            Err(IrqError::Busy),
+            "completing one MSI does not establish migration quiescence"
+        );
+        assert_eq!(
+            hv::activate_guest_external_source(45, 1, Some(ControllerIrqTrigger::EdgeRising)),
+            Err(IrqError::Busy),
+            "guest activation migrated a previously opened host source"
+        );
+        assert_eq!(target(45), original_target);
+    }
     for source in [43, 44] {
         hv::activate_guest_external_source(source, 0, Some(ControllerIrqTrigger::EdgeRising))
             .unwrap();
@@ -126,8 +185,6 @@ pub fn run() {
             hv::deactivate_guest_external_source(source).unwrap();
         }
     }
-    let domain =
-        somehal::irq::domain_by_kind_fast(somehal::irq::IrqDomainKind::RiscvAplic).unwrap();
     let irq = IrqId::new(domain, HwIrq(SOURCE));
     hv::activate_guest_external_source(SOURCE, 1, Some(ControllerIrqTrigger::EdgeRising)).unwrap();
     assert!(enabled(SOURCE));

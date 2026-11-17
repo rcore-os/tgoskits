@@ -239,32 +239,14 @@ fn push_reserved_address_range(
         return;
     };
 
-    let mut merged = ReservedAddressConfig { base_gpa, length };
-    let mut index = 0;
-    while index < ranges.len() {
-        let existing = &ranges[index];
-        let merged_end = merged.base_gpa.saturating_add(merged.length);
-        let existing_end = existing.base_gpa.saturating_add(existing.length);
-        if merged.base_gpa <= existing_end && existing.base_gpa <= merged_end {
-            let merged_base = merged.base_gpa.min(existing.base_gpa);
-            let merged_end = merged_end.max(existing_end);
-            merged = ReservedAddressConfig {
-                base_gpa: merged_base,
-                length: merged_end.saturating_sub(merged_base),
-            };
-            ranges.remove(index);
-        } else {
-            index += 1;
-        }
-    }
-
     debug!(
         "Reserving excluded device {} range [{:#x}~{:#x}] from passthrough mapping",
         node_path,
-        merged.base_gpa,
-        merged.base_gpa.saturating_add(merged.length)
+        base_gpa,
+        base_gpa + length
     );
-    ranges.push(merged);
+    // AxVMConfig coalesces reservations across every firmware source.
+    ranges.push(ReservedAddressConfig { base_gpa, length });
 }
 
 fn node_regs(fdt: &Fdt, node_id: usize) -> Vec<fdt_edit::RegFixed> {
@@ -292,6 +274,7 @@ pub fn reserve_excluded_device_ranges(
         )
     })?;
     protect_machine_owned_firmware_devices(vm_cfg, crate_cfg, &fdt)?;
+    reserve_host_interrupt_controllers(vm_cfg, crate_cfg, &fdt)?;
     for device in &crate_cfg.devices.disabled {
         vm_cfg.exclude_device_path(device.path.clone());
     }
@@ -308,6 +291,14 @@ pub fn reserve_excluded_device_ranges(
             continue;
         }
 
+        // Controller MMIO is reserved separately. Their upstream interrupts
+        // (for example IMSIC's CPU-local cause 9) are not device sources here.
+        if fdt
+            .node(node_id)
+            .is_some_and(super::interrupt::is_host_owned_interrupt_provider)
+        {
+            continue;
+        }
         exclude_node_interrupt_sources(vm_cfg, &fdt, node_id, decode_interrupt)?;
         for reg in node_regs(&fdt, node_id) {
             push_reserved_address_range(
@@ -335,6 +326,48 @@ pub fn reserve_excluded_device_ranges(
     Ok(())
 }
 
+/// Reserves physical controller resources even when guest firmware omits them.
+pub(super) fn reserve_host_interrupt_controllers(
+    vm_cfg: &mut AxVMConfig,
+    crate_cfg: &GuestConfig,
+    fdt: &Fdt,
+) -> AxVmResult {
+    let controllers = fdt
+        .iter_node_ids()
+        .filter(|&id| {
+            fdt.node(id)
+                .is_some_and(super::interrupt::is_host_owned_interrupt_provider)
+        })
+        .map(|id| (id, fdt.path_of(id)))
+        .collect::<Vec<_>>();
+    if let Some(selected) = crate_cfg
+        .devices
+        .passthrough
+        .iter()
+        .find(|selected| controllers.iter().any(|(_, path)| path == &selected.path))
+    {
+        return Err(AxVmError::HostOwnedDevice {
+            path: selected.path.clone(),
+        });
+    }
+    let mut ranges = Vec::new();
+    for (id, path) in controllers {
+        for reg in node_regs(fdt, id) {
+            push_reserved_address_range(
+                &mut ranges,
+                &path,
+                reg.address as usize,
+                reg.size.unwrap_or(0) as usize,
+            );
+        }
+        vm_cfg.exclude_device_path(path);
+    }
+    for range in ranges {
+        vm_cfg.add_reserved_address_range(range);
+    }
+    Ok(())
+}
+
 fn exclude_node_interrupt_sources(
     vm_cfg: &mut AxVMConfig,
     fdt: &Fdt,
@@ -345,11 +378,30 @@ fn exclude_node_interrupt_sources(
         return Ok(());
     };
     for interrupt in view.interrupts() {
-        if let Some(interrupt) = decode_interrupt(&interrupt.specifier)? {
+        if let Some(interrupt) =
+            decode_host_controller_interrupt(fdt, &interrupt, decode_interrupt)?
+        {
             vm_cfg.exclude_pass_through_irq_source(interrupt.source);
         }
     }
     Ok(())
+}
+
+fn decode_host_controller_interrupt(
+    fdt: &Fdt,
+    interrupt: &fdt_edit::InterruptRef,
+    decode_interrupt: fn(&[u32]) -> AxVmResult<Option<DecodedInterrupt>>,
+) -> AxVmResult<Option<DecodedInterrupt>> {
+    let controller = fdt
+        .get_by_phandle_id(interrupt.interrupt_parent)
+        .and_then(|id| fdt.node(id))
+        .ok_or_else(|| AxVmError::invalid_config("physical interrupt parent is missing"))?;
+    // A guest-owned secondary controller demultiplexes its own pins. Only its
+    // upstream host-controller line may be forwarded or excluded here.
+    if !super::interrupt::is_host_owned_interrupt_provider(controller) {
+        return Ok(None);
+    }
+    decode_interrupt(&interrupt.specifier)
 }
 
 fn protect_machine_owned_firmware_devices(
@@ -388,9 +440,7 @@ fn protect_machine_owned_firmware_devices(
     });
     host_owned_paths.extend(fdt.iter_node_ids().filter_map(|node_id| {
         let node = fdt.node(node_id)?;
-        (super::interrupt::is_machine_interrupt_provider(node)
-            || super::timer::is_machine_timer_node(node))
-        .then(|| fdt.path_of(node_id))
+        super::timer::is_machine_timer_node(node).then(|| fdt.path_of(node_id))
     }));
     host_owned_paths.sort();
     host_owned_paths.dedup();
@@ -803,7 +853,7 @@ pub fn parse_vm_interrupt(
             || path == "/cpus"
             || path.starts_with("/cpus/")
             || name.starts_with("memory")
-            || super::interrupt::is_machine_interrupt_provider(node)
+            || super::interrupt::is_host_owned_interrupt_provider(node)
             || host_owned_serial_paths.contains(&path)
         {
             continue;
@@ -822,7 +872,9 @@ pub fn parse_vm_interrupt(
             ))
         })?;
         for interrupt in view.interrupts() {
-            if let Some(interrupt) = decode_interrupt(&interrupt.specifier)? {
+            if let Some(interrupt) =
+                decode_host_controller_interrupt(physical_fdt, &interrupt, decode_interrupt)?
+            {
                 if vm_cfg
                     .excluded_passthrough_irq_sources()
                     .contains(&interrupt.source)
@@ -1012,6 +1064,24 @@ mod tests {
         fdt.encode().as_ref().to_vec()
     }
 
+    fn set_test_interrupt_controller(node: &mut Node) {
+        let (compatible, cells) = if cfg!(target_arch = "aarch64") {
+            ("arm,gic-v3", 3)
+        } else {
+            ("riscv,plic0", 1)
+        };
+        node.set_property(super::super::tree::prop_string("compatible", compatible));
+        node.set_property(prop_u32("#interrupt-cells", cells));
+    }
+
+    fn test_external_interrupt(source: u32) -> Vec<u32> {
+        if cfg!(target_arch = "aarch64") {
+            vec![0, source, 4]
+        } else {
+            vec![source]
+        }
+    }
+
     fn fdt_with_pci_hosts_and_endpoint() -> Vec<u8> {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
@@ -1042,15 +1112,11 @@ mod tests {
         fdt.node_mut(intc)
             .unwrap()
             .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
-        fdt.node_mut(intc)
-            .unwrap()
-            .set_property(prop_u32("#interrupt-cells", 1));
+        set_test_interrupt_controller(fdt.node_mut(intc).unwrap());
         fdt.node_mut(intc)
             .unwrap()
             .set_property(prop_u32("phandle", 1));
-        fdt.node_mut(intc)
-            .unwrap()
-            .set_property(super::super::tree::prop_string("compatible", "riscv,plic0"));
+
         let soc = fdt.add_node(root, Node::new("soc"));
         let pci = fdt.add_node(soc, Node::new("pci@30000000"));
         fdt.node_mut(pci)
@@ -1065,7 +1131,7 @@ mod tests {
             .set_property(prop_u32("interrupt-parent", 1));
         fdt.node_mut(nvme)
             .unwrap()
-            .set_property(prop_u32_list("interrupts", &[11]));
+            .set_property(prop_u32_list("interrupts", &test_external_interrupt(11)));
         // A second host bridge on a window that does not touch the first one:
         // the baseline strip has to remove every bridge the guest does not name,
         // and touching windows would merge into a single reserved range. Its
@@ -1084,7 +1150,7 @@ mod tests {
             .set_property(prop_u32("interrupt-parent", 1));
         fdt.node_mut(ethernet)
             .unwrap()
-            .set_property(prop_u32_list("interrupts", &[12]));
+            .set_property(prop_u32_list("interrupts", &test_external_interrupt(12)));
         let virtio = fdt.add_node(soc, Node::new("virtio_mmio@10001000"));
         fdt.node_mut(virtio)
             .unwrap()
@@ -1094,7 +1160,7 @@ mod tests {
             .set_property(prop_u32("interrupt-parent", 1));
         fdt.node_mut(virtio)
             .unwrap()
-            .set_property(prop_u32_list("interrupts", &[11]));
+            .set_property(prop_u32_list("interrupts", &test_external_interrupt(11)));
         fdt.view_typed_mut(virtio)
             .unwrap()
             .set_regs(&[RegInfo::new(0x1000_1000, Some(0x1000))]);
@@ -1108,9 +1174,7 @@ mod tests {
         fdt.node_mut(intc)
             .unwrap()
             .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
-        fdt.node_mut(intc)
-            .unwrap()
-            .set_property(prop_u32("#interrupt-cells", 1));
+        set_test_interrupt_controller(fdt.node_mut(intc).unwrap());
         fdt.node_mut(intc)
             .unwrap()
             .set_property(prop_u32("phandle", 1));
@@ -1128,7 +1192,7 @@ mod tests {
                 .set_property(prop_u32("interrupt-parent", 1));
             fdt.node_mut(node)
                 .unwrap()
-                .set_property(prop_u32_list("interrupts", &[irq]));
+                .set_property(prop_u32_list("interrupts", &test_external_interrupt(irq)));
         }
 
         fdt.encode().as_ref().to_vec()
@@ -1152,9 +1216,7 @@ mod tests {
         fdt.node_mut(intc)
             .unwrap()
             .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
-        fdt.node_mut(intc)
-            .unwrap()
-            .set_property(prop_u32("#interrupt-cells", 1));
+        set_test_interrupt_controller(fdt.node_mut(intc).unwrap());
         fdt.node_mut(intc)
             .unwrap()
             .set_property(prop_u32("phandle", 1));
@@ -1172,7 +1234,7 @@ mod tests {
                 .set_property(prop_u32("interrupt-parent", 1));
             fdt.node_mut(node)
                 .unwrap()
-                .set_property(prop_u32_list("interrupts", &[irq]));
+                .set_property(prop_u32_list("interrupts", &test_external_interrupt(irq)));
             fdt.view_typed_mut(node)
                 .unwrap()
                 .set_regs(&[RegInfo::new(base, Some(0x100))]);
@@ -1202,9 +1264,7 @@ mod tests {
         fdt.node_mut(intc)
             .unwrap()
             .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
-        fdt.node_mut(intc)
-            .unwrap()
-            .set_property(prop_u32("#interrupt-cells", 1));
+        set_test_interrupt_controller(fdt.node_mut(intc).unwrap());
         fdt.node_mut(intc)
             .unwrap()
             .set_property(prop_u32("phandle", 1));
@@ -1235,7 +1295,7 @@ mod tests {
                 .set_property(prop_u32("interrupt-parent", 1));
             fdt.node_mut(node)
                 .unwrap()
-                .set_property(prop_u32_list("interrupts", &[irq]));
+                .set_property(prop_u32_list("interrupts", &test_external_interrupt(irq)));
             fdt.view_typed_mut(node)
                 .unwrap()
                 .set_regs(&[RegInfo::new(base, Some(0x100))]);
@@ -1265,9 +1325,7 @@ mod tests {
         fdt.node_mut(intc)
             .unwrap()
             .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
-        fdt.node_mut(intc)
-            .unwrap()
-            .set_property(prop_u32("#interrupt-cells", 1));
+        set_test_interrupt_controller(fdt.node_mut(intc).unwrap());
         fdt.node_mut(intc)
             .unwrap()
             .set_property(prop_u32("phandle", 1));
@@ -1286,7 +1344,7 @@ mod tests {
                 .set_property(prop_u32("interrupt-parent", 1));
             fdt.node_mut(node)
                 .unwrap()
-                .set_property(prop_u32_list("interrupts", &[irq]));
+                .set_property(prop_u32_list("interrupts", &test_external_interrupt(irq)));
             fdt.view_typed_mut(node)
                 .unwrap()
                 .set_regs(&[RegInfo::new(base, Some(0x1000))]);
@@ -1305,16 +1363,72 @@ mod tests {
             .unwrap()
             .set_property(prop_u32("#size-cells", 2));
 
-        let intc = fdt.add_node(root, Node::new("interrupt-controller@c000000"));
-        fdt.node_mut(intc)
+        for (name, compatible, base, size, cells, phandle) in [
+            (
+                "interrupt-controller@c000000",
+                "riscv,plic0",
+                0x0c00_0000,
+                0x40_0000,
+                1,
+                1,
+            ),
+            (
+                "interrupt-controller@d000000",
+                "riscv,aplic",
+                0x0d00_0000,
+                0x4000,
+                2,
+                2,
+            ),
+            (
+                "interrupt-controller@28000000",
+                "riscv,imsics",
+                0x2800_0000,
+                0x1000,
+                0,
+                3,
+            ),
+        ] {
+            let intc = fdt.add_node(root, Node::new(name));
+            let node = fdt.node_mut(intc).unwrap();
+            node.set_property(super::super::tree::prop_string("compatible", compatible));
+            node.set_property(fdt_edit::Property::new("interrupt-controller", vec![]));
+            node.set_property(prop_u32("#interrupt-cells", cells));
+            node.set_property(prop_u32("phandle", phandle));
+            if compatible == "riscv,aplic" {
+                node.set_property(prop_u32("msi-parent", 3));
+            } else if compatible == "riscv,imsics" {
+                node.set_property(fdt_edit::Property::new("msi-controller", vec![]));
+                node.set_property(prop_u32_list("interrupts-extended", &[10, 9]));
+            }
+            fdt.view_typed_mut(intc)
+                .unwrap()
+                .set_regs(&[RegInfo::new(base, Some(size))]);
+        }
+
+        let cpus = fdt.add_node(root, Node::new("cpus"));
+        fdt.node_mut(cpus)
             .unwrap()
-            .set_property(super::super::tree::prop_string("compatible", "riscv,plic0"));
-        fdt.node_mut(intc)
+            .set_property(prop_u32("#address-cells", 1));
+        fdt.node_mut(cpus)
             .unwrap()
-            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
-        fdt.view_typed_mut(intc)
+            .set_property(prop_u32("#size-cells", 0));
+        let cpu = fdt.add_node(cpus, Node::new("cpu@0"));
+        fdt.node_mut(cpu)
             .unwrap()
-            .set_regs(&[RegInfo::new(0x0c00_0000, Some(0x40_0000))]);
+            .set_property(super::super::tree::prop_string("device_type", "cpu"));
+        fdt.view_typed_mut(cpu)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0, None)]);
+        let local = fdt.add_node(cpu, Node::new("interrupt-controller"));
+        let node = fdt.node_mut(local).unwrap();
+        node.set_property(super::super::tree::prop_string(
+            "compatible",
+            "riscv,cpu-intc",
+        ));
+        node.set_property(fdt_edit::Property::new("interrupt-controller", vec![]));
+        node.set_property(prop_u32("#interrupt-cells", 1));
+        node.set_property(prop_u32("phandle", 10));
 
         for (name, base) in [
             ("ethernet@10001000", 0x1000_1000),
@@ -1324,6 +1438,11 @@ mod tests {
             fdt.view_typed_mut(node)
                 .unwrap()
                 .set_regs(&[RegInfo::new(base, Some(0x1000))]);
+            if name.starts_with("ethernet") {
+                let node = fdt.node_mut(node).unwrap();
+                node.set_property(prop_u32("interrupt-parent", 1));
+                node.set_property(prop_u32("interrupts", 9));
+            }
         }
 
         fdt.encode().as_ref().to_vec()
@@ -1950,6 +2069,12 @@ mod tests {
     #[test]
     fn virtualized_guest_maps_only_the_explicit_physical_device() {
         let dtb = fdt_with_selectable_and_machine_owned_devices();
+        let mut host_fdt = Fdt::from_bytes(&dtb).unwrap();
+        let ethernet = host_fdt.get_by_path_id("/ethernet@10001000").unwrap();
+        let node = host_fdt.node_mut(ethernet).unwrap();
+        node.set_property(prop_u32("interrupt-parent", 2));
+        node.set_property(prop_u32_list("interrupts", &[9, 4]));
+        let host_dtb = host_fdt.encode();
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 2,
             name: "virtualized".to_string(),
@@ -1972,14 +2097,100 @@ mod tests {
         };
 
         reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+        parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb, Some(host_dtb.as_ref())).unwrap();
         parse_passthrough_devices_address(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
 
         assert_eq!(vm_cfg.pass_through_devices().len(), 1);
         assert_eq!(vm_cfg.pass_through_devices()[0].base_gpa, 0x1000_1000);
+        #[cfg(target_arch = "riscv64")]
+        assert!(vm_cfg.pass_through_irqs().iter().any(|irq| {
+            irq.source == 9
+                && irq.controller_trigger == Some(crate::config::ControllerIrqTrigger::LevelHigh)
+        }));
     }
 
     #[test]
-    fn passthrough_guest_reserves_the_machine_interrupt_controller() {
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    fn passthrough_interrupts_preserve_nested_controller_domains() {
+        // Child pins may be zero or collide with an unrelated external source.
+        // Only the GPIO controller's upstream line belongs in the host routes.
+        #[cfg(target_arch = "riscv64")]
+        let controllers = [
+            ("riscv,plic0", vec![9], vec![35]),
+            ("riscv,aplic", vec![9, 4], vec![35, 4]),
+        ];
+        #[cfg(target_arch = "aarch64")]
+        let controllers = [("arm,gic-v3", vec![0, 9, 4], vec![0, 35, 4])];
+
+        for (compatible, device_irq, gpio_irq) in controllers {
+            let mut fdt =
+                Fdt::from_bytes(&fdt_with_selectable_and_machine_owned_devices()).unwrap();
+            let external = fdt.get_by_path_id("/interrupt-controller@c000000").unwrap();
+            let node = fdt.node_mut(external).unwrap();
+            node.set_property(super::super::tree::prop_string("compatible", compatible));
+            node.set_property(prop_u32("#interrupt-cells", device_irq.len() as u32));
+            let ethernet = fdt.get_by_path_id("/ethernet@10001000").unwrap();
+            fdt.node_mut(ethernet)
+                .unwrap()
+                .set_property(prop_u32_list("interrupts", &device_irq));
+
+            let gpio = fdt.get_by_path_id("/gpio@10002000").unwrap();
+            let node = fdt.node_mut(gpio).unwrap();
+            node.set_property(fdt_edit::Property::new("interrupt-controller", vec![]));
+            node.set_property(prop_u32("#interrupt-cells", 2));
+            node.set_property(prop_u32("phandle", 20));
+            node.set_property(prop_u32("interrupt-parent", 1));
+            node.set_property(prop_u32_list("interrupts", &gpio_irq));
+
+            for (name, extended) in [
+                ("gpio-input", false),
+                ("gpio-input-extended", true),
+                ("excluded-gpio-input", false),
+                ("excluded-gpio-input-extended", true),
+            ] {
+                let id = fdt.add_node(fdt.root_id(), Node::new(name));
+                let node = fdt.node_mut(id).unwrap();
+                if extended {
+                    node.set_property(prop_u32_list("interrupts-extended", &[20, 0, 8, 20, 9, 8]));
+                } else {
+                    node.set_property(prop_u32("interrupt-parent", 20));
+                    node.set_property(prop_u32_list("interrupts", &[0, 8, 9, 8]));
+                }
+            }
+            let dtb = fdt.encode();
+            let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+                id: 1,
+                name: "passthrough".to_string(),
+                phys_cpu_ls: PhysCpuList::new(1, None, None),
+                pass_through_devices: vec![HostDeviceAssignment {
+                    name: "/".to_string(),
+                    ..Default::default()
+                }],
+                excluded_devices: vec![vec![
+                    "/excluded-gpio-input".to_string(),
+                    "/excluded-gpio-input-extended".to_string(),
+                ]],
+                address_space_policy: AddressSpacePolicy::Passthrough,
+                ..Default::default()
+            });
+            let mut crate_cfg = GuestConfig::default();
+            crate_cfg.base.guest_type = GuestType::Passthrough;
+
+            reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+            parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb, None).unwrap();
+            let mut sources = vm_cfg
+                .pass_through_irqs()
+                .iter()
+                .map(|irq| irq.source)
+                .collect::<Vec<_>>();
+            sources.sort_unstable();
+            assert_eq!(sources, [9, 35], "{compatible}");
+            assert!(vm_cfg.excluded_passthrough_irq_sources().is_empty());
+        }
+    }
+
+    #[test]
+    fn passthrough_guest_reserves_host_interrupt_controllers() {
         let dtb = fdt_with_selectable_and_machine_owned_devices();
         let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
             id: 3,
@@ -1994,22 +2205,156 @@ mod tests {
         });
         let mut crate_cfg = GuestConfig::default();
         crate_cfg.base.guest_type = GuestType::Passthrough;
+        crate_cfg.base.phys_cpu_ids = Some(vec![0]);
 
-        reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
-        parse_passthrough_devices_address(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+        let guest_dtb = setup_guest_fdt_from_vmm(&dtb, &mut vm_cfg, &crate_cfg).unwrap();
+        parse_passthrough_devices_address(&mut vm_cfg, &crate_cfg, &guest_dtb).unwrap();
 
+        for (base, length) in [
+            (0x0c00_0000, 0x40_0000),
+            (0x0d00_0000, 0x4000),
+            (0x2800_0000, 0x1000),
+        ] {
+            assert!(
+                vm_cfg
+                    .pass_through_devices()
+                    .iter()
+                    .all(|device| device.base_gpa != base)
+            );
+            assert!(
+                vm_cfg
+                    .reserved_address_ranges()
+                    .iter()
+                    .any(|range| range.base_gpa == base && range.length == length)
+            );
+        }
+        let guest = Fdt::from_bytes(&guest_dtb).unwrap();
+        assert!(
+            guest
+                .get_by_path_id("/interrupt-controller@c000000")
+                .is_some()
+        );
+        assert!(
+            guest
+                .get_by_path_id("/interrupt-controller@d000000")
+                .is_none()
+        );
+        assert!(
+            guest
+                .get_by_path_id("/interrupt-controller@28000000")
+                .is_none()
+        );
         assert!(
             vm_cfg
                 .pass_through_devices()
                 .iter()
-                .all(|device| device.base_gpa != 0x0c00_0000)
+                .any(|device| device.base_gpa == 0x1000_1000)
         );
-        assert!(
-            vm_cfg
+        // IMSIC's CPU-local external interrupt is not physical device source 9.
+        assert!(!vm_cfg.excluded_passthrough_irq_sources().contains(&9));
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    fn provided_guest_dtb_cannot_hide_host_interrupt_controller_ranges() {
+        use crate::layout::{GuestOwnedRegion, VmRegionKind, build_address_layout};
+
+        let host_dtb = fdt_with_selectable_and_machine_owned_devices();
+        let mut guest_fdt = Fdt::from_bytes(&host_dtb).unwrap();
+        guest_fdt.remove_by_path("/interrupt-controller@d000000");
+        guest_fdt.remove_by_path("/interrupt-controller@28000000");
+        // The virtual PLIC window need not have the host controller's size.
+        let plic = guest_fdt
+            .get_by_path_id("/interrupt-controller@c000000")
+            .unwrap();
+        guest_fdt
+            .view_typed_mut(plic)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x0c00_0000, Some(0x80_0000))]);
+        let host_dtb = Box::leak(host_dtb.into_boxed_slice());
+        for (guest_type, policy) in [
+            (GuestType::Passthrough, AddressSpacePolicy::Passthrough),
+            (GuestType::Virtualized, AddressSpacePolicy::Virtualized),
+        ] {
+            let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+                phys_cpu_ls: PhysCpuList::new(1, None, None),
+                address_space_policy: policy,
+                ..Default::default()
+            });
+            let mut crate_cfg = GuestConfig::default();
+            crate_cfg.base.guest_type = guest_type;
+            crate_cfg.base.phys_cpu_ids = Some(vec![0]);
+            crate_cfg.base.phys_cpu_sets = Some(vec![1]);
+            let guest = super::super::build_guest_dtb(
+                &mut vm_cfg,
+                &mut crate_cfg,
+                Some(guest_fdt.encode().as_ref().to_vec()),
+                Some(host_dtb),
+            )
+            .unwrap()
+            .unwrap();
+            let guest = Fdt::from_bytes(guest.as_bytes()).unwrap();
+            assert!(
+                guest
+                    .get_by_path_id("/interrupt-controller@c000000")
+                    .is_some()
+            );
+            for base in [0x0d00_0000, 0x2800_0000] {
+                assert_eq!(
+                    vm_cfg
+                        .reserved_address_ranges()
+                        .iter()
+                        .any(|range| range.base_gpa == base),
+                    policy == AddressSpacePolicy::Passthrough,
+                );
+            }
+            let owned = vm_cfg
                 .reserved_address_ranges()
                 .iter()
-                .any(|range| range.base_gpa == 0x0c00_0000 && range.length == 0x40_0000)
-        );
+                .map(|range| {
+                    GuestOwnedRegion::new(range.base_gpa, range.length, VmRegionKind::Reserved)
+                })
+                .collect::<Vec<_>>();
+            let layout =
+                build_address_layout(policy, 0, 0x1_0000_0000, &[], &[], &owned, &[]).unwrap();
+            if policy == AddressSpacePolicy::Passthrough {
+                for address in [0x0c00_0000, 0x0d00_0000, 0x2800_0000] {
+                    assert!(!layout.mappings().iter().any(|mapping| {
+                        let base = mapping.gpa.as_usize();
+                        (base..base + mapping.size).contains(&address)
+                    }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_host_interrupt_controller_passthrough_is_rejected() {
+        let dtb = fdt_with_selectable_and_machine_owned_devices();
+        for path in [
+            "/interrupt-controller@c000000",
+            "/interrupt-controller@d000000",
+            "/interrupt-controller@28000000",
+        ] {
+            let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+                pass_through_devices: vec![HostDeviceAssignment {
+                    name: path.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            let crate_cfg = GuestConfig {
+                devices: GuestDevices {
+                    passthrough: vec![PhysicalDeviceRef { path: path.into() }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert_eq!(
+                reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb),
+                Err(crate::AxVmError::HostOwnedDevice { path: path.into() })
+            );
+        }
     }
 
     #[test]

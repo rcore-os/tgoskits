@@ -19,7 +19,7 @@ targets = [
 
 [package.metadata.axtest]
 runtime = "axvisor"
-target_triples = ["aarch64-unknown-none-softfloat"]
+target_triples = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf"]
 
 [package.metadata.axtest.targets.vcpu_perf]
 board_only = true
@@ -30,7 +30,7 @@ board_only = true
 [[test]]
 name = "vcpu_runtime"
 harness = false
-required-features = ["axtest", "tls"]
+required-features = ["axtest", "tls", "fault-injection"]
 
 [[test]]
 name = "vcpu_perf"
@@ -50,6 +50,8 @@ host-test = [
     "dep:loom",
 ]
 axtest = ["ax-std/std-compat", "dep:axtest"]
+# Private real-kernel regressions, selected by vcpu_runtime.
+fault-injection = ["dep:axtest"]
 sstc = ["ax-cpu/riscv-sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
 

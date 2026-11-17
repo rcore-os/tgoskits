@@ -268,7 +268,39 @@ impl AxVMConfig {
     }
 
     /// Adds a guest address range reserved from default passthrough mapping.
-    pub fn add_reserved_address_range(&mut self, range: ReservedAddressConfig) {
+    /// Coalesces overlapping or adjacent reservations from multiple firmware
+    /// sources. Invalid ranges remain intact for address-layout validation.
+    pub fn add_reserved_address_range(&mut self, mut range: ReservedAddressConfig) {
+        let Some(mut end) = range
+            .base_gpa
+            .checked_add(range.length)
+            .filter(|_| range.length != 0)
+        else {
+            self.reserved_address_ranges.push(range);
+            return;
+        };
+        let mut index = 0;
+        while index < self.reserved_address_ranges.len() {
+            let existing = &self.reserved_address_ranges[index];
+            let Some(existing_end) = existing
+                .base_gpa
+                .checked_add(existing.length)
+                .filter(|_| existing.length != 0)
+            else {
+                index += 1;
+                continue;
+            };
+            if existing.base_gpa > end || range.base_gpa > existing_end {
+                index += 1;
+                continue;
+            }
+            range.base_gpa = range.base_gpa.min(existing.base_gpa);
+            end = end.max(existing_end);
+            self.reserved_address_ranges.swap_remove(index);
+            // Merging can connect earlier, unsorted reservations as well.
+            index = 0;
+        }
+        range.length = end - range.base_gpa;
         self.reserved_address_ranges.push(range);
     }
 

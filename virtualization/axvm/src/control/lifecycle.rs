@@ -19,6 +19,9 @@ use crate::{
     services::{DevicePorts, RunServices, RunSignalWorker, RunSignals},
 };
 
+#[cfg(all(feature = "fault-injection", target_arch = "aarch64"))]
+mod tests;
+
 impl Owner {
     pub(super) fn prepare_run(
         &mut self,
@@ -128,15 +131,7 @@ impl Owner {
         let id = run.id;
         run.worker = Some(RunSignalWorker::start(run.signals.clone())?);
         if let Err(error) = CurrentArch::enter_runtime(&mut self.vm, &run.signals) {
-            return match self.stop(operation) {
-                Ok(()) => Err(error),
-                Err(cleanup) => {
-                    let failure =
-                        AxVmError::lifecycle_rollback("start IRQ runtime", error, cleanup);
-                    self.record_failure(failure.clone());
-                    Err(failure)
-                }
-            };
+            return Err(self.rollback_start(operation, "start IRQ runtime", error));
         }
         self.last_run = Some(id);
         self.last_stop_reason = None;
@@ -148,6 +143,8 @@ impl Owner {
                 instances.push(self.spawn_vcpu(cpu, operation, None)?);
             }
             self.wait_confirm(operation, &instances, Confirmation::Started)?;
+            #[cfg(all(feature = "fault-injection", target_arch = "aarch64"))]
+            tests::after_start(self)?;
             self.resume_participants(operation)?;
             let run = self.run.as_ref().expect("started run");
             run.signals
@@ -161,15 +158,41 @@ impl Owner {
             Ok(())
         })();
         if let Err(error) = result {
-            let cleanup = self.stop(operation);
-            if let Err(cleanup) = cleanup {
-                self.record_failure(cleanup);
-            }
-            return Err(error);
+            return Err(self.rollback_start(operation, "start vCPUs", error));
         }
         self.state = VmStatus::Running;
         self.publish();
         Ok(id)
+    }
+
+    fn rollback_start(
+        &mut self,
+        operation: OperationId,
+        context: &'static str,
+        error: AxVmError,
+    ) -> AxVmError {
+        // A failed startup still owns its tasks and interrupt producers. The
+        // DMA gate prevents reclamation, never execution rollback, including
+        // a run already marked Failed by a startup event.
+        let retain = self.host_dma_blocker().is_some();
+        let cleanup = if retain {
+            self.halt_retaining_run(operation)
+        } else {
+            self.stop(operation)
+        };
+        match cleanup {
+            Ok(()) => {
+                if retain {
+                    self.record_failure(error.clone());
+                }
+                error
+            }
+            Err(cleanup) => {
+                let failure = AxVmError::lifecycle_rollback(context, error, cleanup);
+                self.record_failure(failure.clone());
+                failure
+            }
+        }
     }
 
     pub(super) fn pause(&mut self, operation: OperationId) -> AxVmResult {
@@ -273,7 +296,7 @@ impl Owner {
         Ok(())
     }
 
-    fn host_dma_blocker(&self) -> Option<crate::vm::HostDmaBlocker> {
+    pub(super) fn host_dma_blocker(&self) -> Option<crate::vm::HostDmaBlocker> {
         if self
             .run
             .as_ref()
@@ -301,10 +324,15 @@ impl Owner {
         if self.state == VmStatus::Stopped {
             return Ok(());
         }
-        if let Err(error) = self.halt_run(operation) {
+        if let Err(error) = self.halt_retaining_run(operation) {
             self.record_failure(error.clone());
             return Err(error);
         }
+        Ok(())
+    }
+
+    fn halt_retaining_run(&mut self, operation: OperationId) -> AxVmResult {
+        self.halt_run(operation)?;
         // No guest or virtual worker can access these ports now. Keep the
         // run, page tables, DMA backing and IVC mappings until board reset.
         self.run

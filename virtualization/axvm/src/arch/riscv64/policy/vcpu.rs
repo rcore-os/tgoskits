@@ -514,6 +514,33 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         Ok(())
     }
 
+    fn handle_guest_read_fault(
+        &mut self,
+        fault: ax_cpu::virtualization::GuestAccessFault,
+    ) -> RiscvVcpuResult<RiscvVmExit> {
+        let address = RiscvGuestVirtAddr::from_usize(fault.stval);
+        match fault.scause {
+            cause if cause == Exception::LoadPageFault as usize => {
+                self.inject_guest_exception(Exception::LoadPageFault, address)?;
+            }
+            cause if cause == Exception::LoadFault as usize => {
+                self.inject_guest_exception(Exception::LoadFault, address)?;
+            }
+            cause if cause == Exception::LoadGuestPageFault as usize => {
+                return Ok(RiscvVmExit::NestedPageFault {
+                    addr: RiscvGuestPhysAddr::from_usize(
+                        ax_cpu::virtualization::guest_page_fault_addr(fault.htval, fault.stval),
+                    ),
+                    access_flags: RiscvAccessFlags::READ,
+                });
+            }
+            _ => return Err(RiscvVcpuError::Unsupported),
+        }
+        // The guest exception points to the ECALL, including a fault in a
+        // partially copied mask. Only the guest's handler may advance it.
+        Ok(RiscvVmExit::Nothing)
+    }
+
     fn handle_guest_instruction_fetch_fault(
         &mut self,
         fault: guest_mem::GuestInstructionFetchFault,
@@ -603,6 +630,26 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                                     true,
                                 )
                             });
+                        }
+                        legacy::LEGACY_REMOTE_FENCE_I
+                        | legacy::LEGACY_REMOTE_SFENCE_VMA
+                        | legacy::LEGACY_REMOTE_SFENCE_VMA_ASID => {
+                            let (mask, base) = if param[0] == 0 {
+                                (0, usize::MAX)
+                            } else {
+                                match guest_mem::read_guest_word(RiscvGuestVirtAddr::from(param[0]))
+                                {
+                                    Ok(mask) => (mask, 0),
+                                    Err(fault) => return self.handle_guest_read_fault(fault),
+                                }
+                            };
+                            // Legacy and v0.2 requests share one task-side
+                            // topology validation and synchronous fence path.
+                            return Ok(self.task_sbi_call(
+                                extension_id,
+                                0,
+                                [mask, base, param[1], param[2], param[3], 0],
+                            ));
                         }
                         legacy::LEGACY_CLEAR_IPI => {
                             self.set_virtual_interrupt_pending(S_SOFT, false)?;
@@ -781,21 +828,31 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         if self.binding.is_some() {
             return Err(RiscvVcpuError::BadState);
         }
-        if call.extension == rfnc::EID_RFNC {
-            match call.function {
-                rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
-                rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
-                rfnc::REMOTE_SFENCE_VMA_ASID => self.sbi.pmu.record_sfence_vma_asid_sent(),
-                rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
-                rfnc::REMOTE_HFENCE_GVMA_VMID => self.sbi.pmu.record_hfence_gvma_vmid_sent(),
-                rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
-                rfnc::REMOTE_HFENCE_VVMA_ASID => self.sbi.pmu.record_hfence_vvma_asid_sent(),
-                _ => {}
-            }
+        // RFENCE must pass through the VMM's guest topology and VS-stage
+        // invalidation path, never through firmware with guest hart IDs.
+        if call.extension == rfnc::EID_RFNC
+            || (legacy::LEGACY_REMOTE_FENCE_I..=legacy::LEGACY_REMOTE_SFENCE_VMA_ASID)
+                .contains(&call.extension)
+        {
+            return Ok(SbiRet::not_supported());
         }
         Ok(self
             .sbi
             .handle_ecall(call.extension, call.function, call.arguments))
+    }
+
+    /// Accounts only remote fences successfully completed by the VMM.
+    pub(crate) fn record_remote_fence(&mut self, function: usize) {
+        match function {
+            rfnc::REMOTE_FENCE_I => self.sbi.pmu.record_fence_i_sent(),
+            rfnc::REMOTE_SFENCE_VMA => self.sbi.pmu.record_sfence_vma_sent(),
+            rfnc::REMOTE_SFENCE_VMA_ASID => self.sbi.pmu.record_sfence_vma_asid_sent(),
+            rfnc::REMOTE_HFENCE_GVMA => self.sbi.pmu.record_hfence_gvma_sent(),
+            rfnc::REMOTE_HFENCE_GVMA_VMID => self.sbi.pmu.record_hfence_gvma_vmid_sent(),
+            rfnc::REMOTE_HFENCE_VVMA => self.sbi.pmu.record_hfence_vvma_sent(),
+            rfnc::REMOTE_HFENCE_VVMA_ASID => self.sbi.pmu.record_hfence_vvma_asid_sent(),
+            _ => {}
+        }
     }
 
     #[inline]

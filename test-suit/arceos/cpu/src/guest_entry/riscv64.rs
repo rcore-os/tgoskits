@@ -195,6 +195,61 @@ fn check_owned_vector_state(bytes: usize) {
     std::println!("CPU_GUEST_VECTOR_OK");
 }
 
+/// Remaps a live VS-stage leaf without rebinding or rewriting VSATP.
+fn check_vsstage_fence() {
+    let page = || {
+        let mut page = ax_alloc::GlobalPage::alloc_contiguous(1, 4096).unwrap();
+        page.zero();
+        page
+    };
+    let physical =
+        |address| ax_hal::mem::virt_to_phys(ax_cpu::VirtAddr::from_usize(address)).as_usize();
+    let root = page();
+    let middle = page();
+    let leaf = page();
+    let old = page();
+    let new = page();
+    let mut state: Vcpu = Vcpu::default();
+    state.initialize_supervisor();
+    state.vs_csrs.vsatp = (8usize << 60) | (physical(root.start_vaddr().as_usize()) >> 12);
+    // SAFETY: all five pages are aligned, zeroed and exclusively owned. HLV
+    // only reads the mapped alias. The outer test pins this enabled H owner
+    // with IRQs off. The binding is retired, including invalidation, before
+    // any page is freed; HSTATUS is restored before checking the result.
+    unsafe {
+        old.start_vaddr().as_mut_ptr().cast::<usize>().write(0x123);
+        new.start_vaddr().as_mut_ptr().cast::<usize>().write(0x456);
+        root.start_vaddr()
+            .as_mut_ptr()
+            .cast::<usize>()
+            .add(1)
+            .write((physical(middle.start_vaddr().as_usize()) >> 2) | 1);
+        middle
+            .start_vaddr()
+            .as_mut_ptr()
+            .cast::<usize>()
+            .write((physical(leaf.start_vaddr().as_usize()) >> 2) | 1);
+        let pte = leaf.start_vaddr().as_mut_ptr().cast::<usize>();
+        pte.write((physical(old.start_vaddr().as_usize()) >> 2) | 0xc7);
+        let binding = GuestBinding::load(&state).unwrap();
+        let saved_hstatus: usize;
+        let first: usize;
+        let second: usize;
+        // Select supervisor permission for HLV. Keeping both reads in HS
+        // avoids QEMU's implicit flushes when switching virtualization mode.
+        core::arch::asm!("csrrs {}, hstatus, {}", out(reg) saved_hstatus, in(reg) 1usize << 8, options(nostack));
+        core::arch::asm!(".option push", ".option arch, +h", "hlv.d {}, ({})", ".option pop", out(reg) first, in(reg) 0x4000_0000usize, options(nostack));
+        pte.write((physical(new.start_vaddr().as_usize()) >> 2) | 0xc7);
+        ax_cpu::virtualization::invalidate_vsstage_translations(0);
+        core::arch::asm!(".option push", ".option arch, +h", "hlv.d {}, ({})", ".option pop", out(reg) second, in(reg) 0x4000_0000usize, options(nostack));
+        core::arch::asm!("csrw hstatus, {}", in(reg) saved_hstatus, options(nostack));
+        binding.unload(&mut state);
+        assert_eq!(first, 0x123);
+        assert_eq!(second, 0x456, "VS-stage fence must retire the old leaf");
+    }
+    std::println!("CPU_GUEST_VSSTAGE_FENCE_OK");
+}
+
 pub fn run() {
     assert!(ax_cpu::capability::has_hypervisor_extension());
     let irq = interrupt::irqs_enabled();
@@ -251,6 +306,9 @@ pub fn run() {
         core::arch::asm!("csrw hgatp, zero", "csrw vsatp, zero",
             "csrw vsstatus, {guest_status}", "csrw hedeleg, zero", "csrw hideleg, zero", "csrw hvip, zero",
             ".option push", ".option arch, +h", "hfence.gvma", ".option pop", guest_status = in(reg) (3usize << 13), options(nostack));
+        // A remote RFENCE may interrupt another loaded guest. Selecting the
+        // requested VMID must preserve that guest's live G-stage register.
+        state.virtual_hs_csrs.hgatp = 1usize << 44;
         for (expected, previous) in [(0x123usize, 0), (0x456, 0x123)] {
             let host_vsscratch: usize;
             core::arch::asm!("csrr {}, vsscratch", out(reg) host_vsscratch, options(nostack));
@@ -260,6 +318,15 @@ pub fn run() {
             core::arch::asm!("csrr {}, hvip", out(reg) pending_before_load, options(nostack));
             assert_eq!(pending_before_load & (1 << 10), 0);
             let mut binding = GuestBinding::load(&state).unwrap();
+            let root_before: usize;
+            let root_after: usize;
+            core::arch::asm!("csrr {}, hgatp", out(reg) root_before, options(nostack));
+            ax_cpu::virtualization::invalidate_vsstage_translations(0);
+            core::arch::asm!("csrr {}, hgatp", out(reg) root_after, options(nostack));
+            assert_eq!(
+                root_after, root_before,
+                "RFENCE must restore the loaded guest HGATP"
+            );
             let loaded_pending: usize;
             core::arch::asm!("csrr {}, hvip", out(reg) loaded_pending, options(nostack));
             assert_ne!(loaded_pending & (1 << 10), 0);
@@ -339,6 +406,7 @@ pub fn run() {
         if let Some(bytes) = vector_bytes {
             check_owned_vector_state(bytes);
         }
+        check_vsstage_fence();
         core::arch::asm!("csrw sie, {}", in(reg) saved_sie, options(nostack));
         original_fp.restore();
         registers::sstatus::set_fs(saved_status.fs());

@@ -50,6 +50,9 @@ run_axvm_cross_test --arch aarch64 --package axvm \
 echo "==> axvm aarch64 ECAM automatic MMIO pool boundary regression"
 run_axvm_cross_test --arch aarch64 --package axvm \
   --features axvm/host-test --no-default-features --lib arch::aarch64::pci_plan
+echo "==> axvm aarch64 passthrough interrupt domains"
+run_axvm_cross_test --arch aarch64 --package axvm \
+  --features axvm/host-test --no-default-features --lib boot::fdt::core::parser
 echo "==> axvm aarch64 cloned CPU identity regression"
 run_axvm_cross_test --arch aarch64 --package axvm \
   --features axvm/host-test --no-default-features --lib tree_clones_missing_guest_cpu_nodes_with_fresh_phandles
@@ -147,29 +150,46 @@ node_version = "24"
 command = '''
 echo "==> axvisor riscv64 smoke + APLIC passthrough + guest SMP IPI"
 cargo xtask axvisor test qemu --arch riscv64 --test-case smoke,qemu-riscv-aplic,qemu-aplic-passthrough,smp-ipi
+run_axvm_riscv_cross_test() {
+  local output
+  output="$(cargo xtask cross-test --arch riscv64 \
+    --package axvm --features axvm/host-test --no-default-features \
+    --lib "$@" 2>&1)" || {
+    printf '%s\n' "$output"
+    return 1
+  }
+  printf '%s\n' "$output"
+  printf '%s\n' "$output" | grep -Eq 'test result: ok\. [1-9][0-9]* passed;' || {
+    echo "RISC-V cross-test filter matched no passing test" >&2
+    return 1
+  }
+}
+echo "==> axvm riscv64 remote fence and legacy fault runtime"
+cargo xtask ktest qemu -p axvm --test vcpu_runtime --arch riscv64 \
+  --config virtualization/axvm/tests/vcpu-runtime/riscv64/build.toml \
+  --qemu-config virtualization/axvm/tests/vcpu-runtime/riscv64/qemu.toml
 echo "==> axvisor riscv64 IPI cross-test"
-cargo xtask cross-test --arch riscv64 \
-  --package axvm \
-  --features axvm/host-test --no-default-features --lib ipi
+run_axvm_riscv_cross_test ipi
+echo "==> axvisor riscv64 guest RFENCE isolation"
+run_axvm_riscv_cross_test arch::riscv64::rfence
 echo "==> axvisor riscv64 physical IRQ route lifetime"
-physical_output="$(cargo xtask cross-test --arch riscv64 \
-  --package axvm \
-  --features axvm/host-test --no-default-features \
-  --lib arch::riscv64::irq::physical::tests 2>&1)" || {
-  printf '%s\n' "$physical_output"
-  exit 1
-}
-printf '%s\n' "$physical_output"
-printf '%s\n' "$physical_output" | grep -Eq 'test result: ok\. [1-9][0-9]* passed;' || {
-  echo "physical IRQ route filter matched no passing test" >&2
-  exit 1
-}
+run_axvm_riscv_cross_test arch::riscv64::irq::physical::tests
+echo "==> axvisor riscv64 host interrupt-controller firmware isolation"
+run_axvm_riscv_cross_test boot::fdt::core::parser
 '''
 
 [[check.suite]]
 kind = "axvisor-qemu"
 arch = "riscv64"
 cases = ["smoke", "qemu-riscv-aplic", "qemu-aplic-passthrough", "smp-ipi"]
+
+[[check.suite]]
+kind = "ktest-qemu"
+package = "axvm"
+test = "vcpu_runtime"
+arch = "riscv64"
+config = "virtualization/axvm/tests/vcpu-runtime/riscv64/build.toml"
+qemu_config = "virtualization/axvm/tests/vcpu-runtime/riscv64/qemu.toml"
 
 [[check]]
 id = "test-axvisor-loongarch64-qemu"

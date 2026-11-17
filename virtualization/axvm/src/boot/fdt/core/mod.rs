@@ -333,6 +333,11 @@ fn build_guest_dtb(
             let host_fdt = parse_host_fdt(host_bytes)?;
             set_phys_cpu_sets(vm_config, &host_fdt, vm_create_config)?;
             info!("VM[{}] found DTB, parsing...", vm_config.id());
+            // Identity passthrough must retain host controller holes even when
+            // guest firmware omits them. Fully virtualized GPAs are independent.
+            if vm_config.uses_passthrough_address_space() {
+                parser::reserve_host_interrupt_controllers(vm_config, vm_create_config, &host_fdt)?;
+            }
             reserve_excluded_device_ranges(vm_config, vm_create_config, &provided)?;
             update_provided_fdt(&provided, Some(host_bytes), vm_create_config)
                 .map(GuestDtbImage::new)

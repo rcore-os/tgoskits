@@ -42,19 +42,30 @@ __ax_cpu_copy_to_guest:
 __ax_cpu_copy_from_guest:
     // handle_trap assumes t0 holds the address of where we want to jump to when we encounter
     // a fault and will stick SCAUSE in t1.
-    la    t0, .Lguest_copy_return
+    la    t0, .Lguest_read_fault
     // .Lguest_copy_return assumes the return value is in t2.
     mv    t2, zero
 1:
     beq   t2, a2, .Lguest_copy_return
 2:
     hlv.b t3, (a1)
-    add_extable 2b, .Lguest_copy_return
+    add_extable 2b, .Lguest_read_fault
     sb    t3, (a0)
     addi  a0, a0, 1
     addi  a1, a1, 1
     addi  t2, t2, 1
     j     1b
+
+.Lguest_read_fault:
+    // A3 is null for count-only callers, otherwise a live fault record.
+    beqz  a3, .Lguest_copy_return
+    csrr  t3, scause
+    sd    t3, {fault_scause}(a3)
+    csrr  t3, stval
+    sd    t3, {fault_stval}(a3)
+    csrr  t3, htval
+    sd    t3, {fault_htval}(a3)
+    j     .Lguest_copy_return
 
 // Fetch an instruction from guest memory using HLVX. Only supports 2 or 4 byte instructions.
 //

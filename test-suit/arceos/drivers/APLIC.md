@@ -18,6 +18,10 @@ CPU0 在关闭本地中断的范围内，向独占的未接线来源 43 和 44 �
 
 第三轮在完成前调用 `deactivate_guest_external_source()` 退休来源。迟到完成可以消费既有责任，但不得再次打开 SETIE；重新启用和重新激活均须返回 `Busy`。全部断言完成后才输出 `APLIC_DEFERRED_STATE_OK`。
 
+### 1.4 首次开放后的目标固定
+
+来源 45 通过普通宿主控制接口配置。首次启用前可以在 CPU0 与 CPU1 间选择目标；向 CPU0 发出 MSI 后，即使屏蔽来源，改投 CPU1 也必须返回 `Busy`，等价的 `Any` 与 CPU0 设置仍可成功。原 MSI 必须由 CPU0 正常领取；领取完成后仍不得迁移，也不能通过客户机激活接口改投 CPU1。该检查保护 `AplicSourceState::ever_enabled` 的持久约束，恢复旧实现时在“masked source migrated with an old MSI outstanding”处失败。
+
 ## 2. 执行入口
 
 构建、发现和 QEMU 执行共用项目运行器；RISC-V CPU 合约 CI 同时选择本 drivers 用例，panic 和超时都会使外层命令失败。

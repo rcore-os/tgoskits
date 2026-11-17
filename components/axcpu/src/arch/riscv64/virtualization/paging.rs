@@ -95,3 +95,41 @@ pub unsafe fn invalidate_gstage_translations() {
         );
     }
 }
+
+/// Invalidates every VS-stage translation belonging to `vmid` on this hart.
+/// Preserves the installed G-stage root and its VMID, including in an IPI
+/// interrupting a loaded guest binding. No guest memory is accessed here.
+///
+/// # Safety
+/// Execute in HS mode with H enabled, without migration or concurrent guest
+/// execution on this hart. `vmid` must be implemented by the current hart.
+/// Remote completion and backing-memory retirement belong to the caller.
+pub unsafe fn invalidate_vsstage_translations(vmid: u16) {
+    assert!(vmid < (1 << 14));
+    let _irqs = super::binding::LocalIrqs::disable();
+    // SAFETY: the caller excludes migration and guest execution. IRQ exclusion
+    // keeps the temporary VMID private; the root PPN/mode are preserved and
+    // restored before any interrupt or guest can observe the register bank.
+    unsafe {
+        core::arch::asm!(
+            ".option push",
+            ".option arch, +h",
+            "csrr {saved}, hgatp",
+            "and {temporary}, {saved}, {keep}",
+            "or {temporary}, {temporary}, {vmid}",
+            "beq {temporary}, {saved}, 2f",
+            "csrw hgatp, {temporary}",
+            "2:",
+            "hfence.vvma",
+            "beq {temporary}, {saved}, 3f",
+            "csrw hgatp, {saved}",
+            "3:",
+            ".option pop",
+            saved = out(reg) _,
+            temporary = out(reg) _,
+            keep = in(reg) !(0x3fffusize << 44),
+            vmid = in(reg) usize::from(vmid) << 44,
+            options(nostack)
+        );
+    }
+}

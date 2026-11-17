@@ -1,0 +1,5 @@
+args = ["-nographic", "-cpu", "rv64,h=true,v=false", "-machine", "virt", "-bios", "default", "-smp", "2", "-m", "512M"]
+to_bin = true
+uefi = false
+timeout = 120
+fail_regex = ["panicked at"]
