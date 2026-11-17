@@ -695,13 +695,13 @@ mod tests {
         assert!(!native_parent_present);
 
         #[cfg(feature = "host-test")]
-        assert_unlink_blocks_new_cache_readers(&root);
+        assert_unlink_rejects_new_component_candidates(&root);
     }
 
     #[cfg(feature = "host-test")]
-    fn assert_unlink_blocks_new_cache_readers(root: &axfs_ng_vfs::Location) {
+    fn assert_unlink_rejects_new_component_candidates(root: &axfs_ng_vfs::Location) {
         use axfs_ng_vfs::{
-            MutationCredentials, NodePermission, NodeType, VfsError,
+            LookupConflict, LookupStep, MutationCredentials, NodePermission, NodeType, VfsError,
             testing::UnlinkPublicationProbe,
         };
 
@@ -729,7 +729,7 @@ mod tests {
         let reader_root = root.clone();
         let reader_probe = probe.clone();
         let reader = std::thread::spawn(move || {
-            let result = reader_root.lookup_no_follow("reader");
+            let result = reader_root.lookup_component("reader");
             reader_probe.reader_completed();
             result
         });
@@ -738,9 +738,19 @@ mod tests {
         let removed = writer.join().unwrap();
         let observed = reader.join().unwrap();
         directory.set_unlink_probe(None);
-        assert!(blocked, "lookup bypassed the held native filesystem gate");
+        assert!(
+            !blocked,
+            "a conflicted component must not enter the backend"
+        );
         assert_eq!(removed, Ok(()));
-        assert_eq!(observed.unwrap_err(), VfsError::NotFound);
+        assert!(matches!(
+            observed,
+            LookupStep::Revalidate(LookupConflict::ParentNaming)
+        ));
+        assert_eq!(
+            root.lookup_no_follow("reader").unwrap_err(),
+            VfsError::NotFound
+        );
     }
 
     #[test]

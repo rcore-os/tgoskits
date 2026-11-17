@@ -200,10 +200,20 @@ fn an_alias_mutation_during_lookup_prevents_negative_publication() {
     }));
     // This alias changes the shared provider but not this DirNode's local
     // namespace generation. The real naming publication must take precedence.
-    assert!(matches!(
-        directory.0.lookup_component("created"),
-        LookupStep::Revalidate(LookupConflict::ParentNaming)
-    ));
+    let before = backend.lookups.load(Ordering::Relaxed);
+    loop {
+        let result = directory.0.lookup_component("created");
+        assert!(matches!(
+            result,
+            LookupStep::Revalidate(LookupConflict::ParentNaming)
+        ));
+        if backend.lookups.load(Ordering::Relaxed) != before {
+            break;
+        }
+        // An unrelated test may already be publishing when capture begins.
+        // Require the scripted snapshot-to-commit interleaving to actually run.
+        std::thread::yield_now();
+    }
     assert!(directory.lookup("created").is_ok());
 }
 
