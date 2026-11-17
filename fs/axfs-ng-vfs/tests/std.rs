@@ -1042,6 +1042,23 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
     );
     let root_mount = Mountpoint::new_root(&root_fs);
     let root = root_mount.root_location();
+    let second_mount = Mountpoint::new_root(&root_fs.clone());
+    assert_ne!(root_mount.mount_id(), second_mount.mount_id());
+    assert_eq!(root_mount.filesystem_id(), second_mount.filesystem_id());
+    assert_eq!(
+        root.metadata().unwrap().device,
+        second_mount.root_location().metadata().unwrap().device,
+        "independent mounts of one filesystem preserve st_dev"
+    );
+    let separate_fs = new_fs("rootfs", false, 10, &[]);
+    let separate_mount = Mountpoint::new_root(&separate_fs);
+    assert_ne!(
+        root.metadata().unwrap().device,
+        separate_mount.root_location().metadata().unwrap().device,
+        "distinct filesystem instances remain distinct despite equal inode values"
+    );
+    drop(second_mount);
+    drop(separate_mount);
     assert!(root.is_root());
     assert!(root_mount.is_root());
     assert_eq!(root.metadata().unwrap().device, root_mount.device());
