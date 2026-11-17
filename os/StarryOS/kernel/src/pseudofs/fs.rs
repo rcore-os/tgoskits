@@ -1,6 +1,7 @@
 use alloc::{string::String, sync::Arc};
 use core::{any::Any, time::Duration};
 
+use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::{
     AuthorizedMetadataChange, DeviceId, DirEntry, DirNode, Filesystem, FilesystemOps,
     LockedMetadataAttempt, Metadata, MetadataRequest, MetadataUpdate, NamespaceCompletion,
@@ -11,24 +12,6 @@ use slab::Slab;
 
 use super::DirMaker;
 use crate::sync::{Mutex, MutexGuard, RawSpinLock};
-
-/// Returns a dummy filesystem statistics.
-pub fn dummy_stat_fs(fs_type: u32) -> StatFs {
-    StatFs {
-        fs_type,
-        block_size: 512,
-        blocks: 100,
-        blocks_free: 100,
-        blocks_available: 100,
-
-        file_count: 0,
-        free_file_count: 0,
-
-        name_length: MAX_NAME_LEN as _,
-        fragment_size: 0,
-        mount_flags: 0,
-    }
-}
 
 /// A simple filesystem implementation that uses a slab allocator for inodes.
 pub struct SimpleFs {
@@ -93,7 +76,19 @@ impl FilesystemOps for SimpleFs {
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
-        Ok(dummy_stat_fs(self.fs_type))
+        // Linux simple_statfs reports page geometry without block-capacity accounting.
+        Ok(StatFs {
+            fs_type: self.fs_type,
+            block_size: PAGE_SIZE_4K as u32,
+            blocks: 0,
+            blocks_free: 0,
+            blocks_available: 0,
+            file_count: 0,
+            free_file_count: 0,
+            name_length: MAX_NAME_LEN as u32,
+            fragment_size: PAGE_SIZE_4K as u32,
+            mount_flags: 0,
+        })
     }
 }
 

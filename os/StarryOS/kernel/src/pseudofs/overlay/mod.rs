@@ -39,7 +39,6 @@ use axpoll::{IoEvents, Pollable};
 use inode::{InodeIndex, OverlayInode};
 
 use crate::{
-    pseudofs::dummy_stat_fs,
     sync::{Mutex, RawSpinLock},
     task::FsCredentialsSnapshot,
 };
@@ -116,6 +115,16 @@ pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         .checked_add(1)
         .filter(|depth| *depth <= 2)
         .ok_or(VfsError::InvalidInput)?;
+    let name_length =
+        lower_dirs
+            .iter()
+            .chain(upper_dir.iter())
+            .try_fold(0_u32, |maximum, layer| {
+                layer
+                    .filesystem()
+                    .stat()
+                    .map(|stat| maximum.max(stat.name_length))
+            })?;
     let device = NEXT_OVERLAY_DEVICE
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
             next.checked_add(1)
@@ -143,6 +152,7 @@ pub(crate) fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         mounter: options.mounter,
         write_roots,
         depth,
+        name_length,
         device: DeviceId::new(0, device).0,
         inodes,
         namespace: Mutex::new(()),
@@ -191,6 +201,7 @@ struct OverlayFs {
     mounter: FsCredentialsSnapshot,
     write_roots: Vec<Location>,
     depth: u32,
+    name_length: u32,
     device: u64,
     inodes: InodeIndex,
     // Order: prepared admissions -> this owner -> strictly lower backing gates.
@@ -287,7 +298,17 @@ impl FilesystemOps for OverlayFs {
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
-        Ok(dummy_stat_fs(OVERLAY_MAGIC))
+        let backing = self
+            .upper_dir
+            .as_ref()
+            .or_else(|| self.lower_dirs.first())
+            .ok_or(VfsError::BadState)?;
+        let mut stat = backing.filesystem().stat()?;
+        stat.fs_type = OVERLAY_MAGIC;
+        stat.name_length = self.name_length;
+        // statfs combines these statistics with flags from the logical overlay mount.
+        stat.mount_flags = 0;
+        Ok(stat)
     }
 }
 

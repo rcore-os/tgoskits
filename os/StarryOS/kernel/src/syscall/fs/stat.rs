@@ -13,8 +13,8 @@ use linux_raw_sys::general::{
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, metadata_to_kstat,
-        resolve_at, resolve_at_checked, resolve_fd,
+        ResolveAtResult, descriptor_path, get_file_like, metadata_to_kstat, resolve_at,
+        resolve_at_checked, resolve_fd,
     },
     mm::{UserPtr, VmMutPtr, VmPtr, vm_load_path_string},
 };
@@ -347,21 +347,8 @@ pub fn sys_fstatfs(
     debug!("sys_fstatfs <= fd: {fd}");
 
     let file_like = get_file_like(fd)?;
-    let location = if let Some(directory) = file_like.downcast_ref::<Directory>() {
-        directory.inner()
-    } else if let Some(file) = file_like.downcast_ref::<File>() {
-        file.inner().location()
-    } else if let Some(file) = file_like
-        .downcast_ref::<crate::file::Pipe>()
-        .and_then(crate::file::Pipe::backing_file)
-    {
-        file.inner().location()
-    } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
-        memfd.inner().inner().location()
-    } else {
-        return Err(StarryError::InvalidInput);
-    };
-    write_statfs(current, buf, statfs(location)?)?;
+    let path = descriptor_path(&file_like)?;
+    write_statfs(current, buf, statfs(path.location())?)?;
     Ok(0)
 }
 
