@@ -103,7 +103,8 @@ static int hold_exec_child(int ready_fd, int release_fd)
 }
 
 static void check_exec_child(const char *executable_path,
-                             const char *expected_proc_exe, int remove_name)
+                             const char *expected_proc_exe, int remove_name,
+                             int mounted_executable)
 {
     int ready_pipe[2] = {-1, -1};
     int release_pipe[2] = {-1, -1};
@@ -162,6 +163,11 @@ static void check_exec_child(const char *executable_path,
         }
         check_proc_exe(child, "readlinkat returns exec child executable target",
                        expected_proc_exe, pinned);
+        if (mounted_executable) {
+            errno = 0;
+            check(syscall(SYS_umount2, executable_path, 0) == -1 && errno == EBUSY,
+                  "live executable keeps its bind mount busy");
+        }
     }
 
     char release = 'X';
@@ -193,7 +199,7 @@ static void check_bind_mounted_exec(const char *self_path)
     int mounted = mount(self_path, BIND_EXECUTABLE_PATH, NULL, MS_BIND, NULL) == 0;
     check(mounted, "bind mount executable at a distinct absolute path");
     if (mounted) {
-        check_exec_child(BIND_EXECUTABLE_PATH, BIND_EXECUTABLE_PATH, 0);
+        check_exec_child(BIND_EXECUTABLE_PATH, BIND_EXECUTABLE_PATH, 0, 1);
         check(umount(BIND_EXECUTABLE_PATH) == 0,
               "unmount bind-mounted executable target");
     }
@@ -233,7 +239,7 @@ static void check_unlinked_exec(const char *self_path)
     if (input >= 0) close(input);
     if (output >= 0 && close(output) != 0) copied = 0;
     check(copied, "SETUP private executable copy");
-    if (copied) check_exec_child(copy, copy, 1);
+    if (copied) check_exec_child(copy, copy, 1, 0);
     check(unlink(copy) == 0 || errno == ENOENT, "clean private executable copy");
 }
 
@@ -247,7 +253,7 @@ int main(int argc, char **argv)
     check_proc_exe(getpid(), "readlinkat returns current executable target", NULL, -1);
     check(argv[0][0] == '/', "grouped runner invokes the test by absolute path");
     if (argv[0][0] == '/') {
-        check_exec_child(argv[0], argv[0], 0);
+        check_exec_child(argv[0], argv[0], 0, 0);
         check_bind_mounted_exec(argv[0]);
         check_unlinked_exec(argv[0]);
     }
