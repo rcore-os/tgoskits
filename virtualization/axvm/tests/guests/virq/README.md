@@ -54,6 +54,11 @@ flowchart TD
 
 `VIRQ_CACHE_DIR` 可把缓存移到共享位置，缓存内部分为 `zephyr`、`toolchain`、`venv` 三项，`VIRQ_TOOLCHAIN_SHA256` 可在需要时校验工具链压缩包摘要。源码校验要求检出提交等于 `ZEPHYR_REVISION` 且工作树无改动，避免“用了别人的分支”这种无法复现的输入。
 
+`TOOLCHAIN_ARCHIVE_URL` 直接使用 `armkeil.blob.core.windows.net` 上的固定归档，
+该存储路径也用于 [Arm 的工具链安装文档](https://documentation-service.arm.com/static/685d474547e98523f168f3ab)。
+原 `developer.arm.com/-/media` 下载入口持续返回 HTTP 503 时，冷缓存准备会在编译前失败。
+归档名和解包目录保持不变，已有工具链仍由 `install_toolchain()` 直接复用。
+
 ### 2.2 产物与校验
 
 `inspect_guest()` 从 `.symtab` 读取 `virq_mailbox` 的地址与大小，要求大小等于 20 字节且地址与 ELF 入口都落在客户机 RAM `[0x40000000, 0x48000000)` 内；地址或大小不符时脚本直接失败，不写出半成品资源。`write_vm_config()` 用历史布局写 `vm.toml`：`id = 2`、`cpu_num = 2`、`phys_cpu_ids = [0, 1]`、`kernel_load_addr = 0x40000000`、`dtb_load_addr = 0x47e00000`、`memory_regions = [[0x40000000, 0x08000000, 0x7, 0]]`，`kernel_path` 保持相对路径以便整个输出目录整体搬移。

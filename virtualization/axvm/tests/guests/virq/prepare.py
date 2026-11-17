@@ -27,7 +27,7 @@ from typing import Sequence
 ZEPHYR_REVISION = "32229d0b6cc60a1906307311b8e79ec483ad1e88"
 ZEPHYR_REPOSITORY = "https://github.com/zephyrproject-rtos/zephyr"
 TOOLCHAIN_ARCHIVE_URL = (
-    "https://developer.arm.com/-/media/Files/downloads/gnu-a/10.3-2021.07/binrel/"
+    "https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu-a/10.3-2021.07/binrel/"
     "gcc-arm-10.3-2021.07-x86_64-aarch64-none-elf.tar.xz"
 )
 TOOLCHAIN_ROOT_NAME = "gcc-arm-10.3-2021.07-x86_64-aarch64-none-elf"
