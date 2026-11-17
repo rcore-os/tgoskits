@@ -227,13 +227,13 @@ pub fn open(id: &str, directory: &str, total: usize) -> Result<SessionView, File
         if staged_in != &directory {
             return Err(FileError::Conflict {
                 reason: format!("{id} is already staged in `{staged_in}`, not `{directory}`"),
-                offset: disk_len(&staging_path(&staged_in, id)),
+                offset: disk_len(&staging_path(staged_in, id)),
             });
         }
         if declared != total {
             return Err(FileError::Conflict {
                 reason: format!("{id} was opened as {declared} bytes, not {total}"),
-                offset: disk_len(&staging_path(&staged_in, id)),
+                offset: disk_len(&staging_path(staged_in, id)),
             });
         }
     }
@@ -534,10 +534,10 @@ pub fn drop(id: &str) -> Result<(), FileError> {
     let path = staging_path(&directory, id);
     // Not being there is the outcome the caller asked for, so only a genuine
     // failure to remove something that exists is an error.
-    if let Err(error) = ax_std::fs::remove_file(&path) {
-        if ax_std::fs::metadata(&path).is_ok() {
-            return Err(map_std_error(&error));
-        }
+    if let Err(error) = ax_std::fs::remove_file(&path)
+        && ax_std::fs::metadata(&path).is_ok()
+    {
+        return Err(map_std_error(&error));
     }
     SESSIONS.lock_unpoisoned().remove(id);
     Ok(())

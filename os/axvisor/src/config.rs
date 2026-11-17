@@ -209,9 +209,9 @@ fn vm_config_needs_host_filesystem_release(config: &GuestConfig) -> bool {
         target_arch = "loongarch64"
     ))]
     {
-        return (ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block)
+        (ax_fs_ng::root::root_kind() == Some(ax_fs_ng::root::RootKind::Block)
             && config.base.guest_type == GuestType::Passthrough)
-            || !config.devices.passthrough.is_empty();
+            || !config.devices.passthrough.is_empty()
     }
     #[cfg(not(any(
         target_arch = "aarch64",

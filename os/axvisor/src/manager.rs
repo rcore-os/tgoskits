@@ -194,13 +194,13 @@ impl AxvmManager {
         let vm_id = operation.id().vm().vm_id();
         let vm = self.wait_for_created_vm_locked(operation)?;
         let release_host_filesystem = guest_took_host_storage(&vm, release_host_filesystem);
-        if release_host_filesystem {
-            if let Err(error) = self.release_host_filesystem_for_guest_passthrough_locked() {
-                if let Err(cleanup_error) = self.cleanup_created_vms_locked(&[vm_id]) {
-                    warn!("VM[{vm_id}] release cleanup failed: {cleanup_error}");
-                }
-                return Err(error);
+        if release_host_filesystem
+            && let Err(error) = self.release_host_filesystem_for_guest_passthrough_locked()
+        {
+            if let Err(cleanup_error) = self.cleanup_created_vms_locked(&[vm_id]) {
+                warn!("VM[{vm_id}] release cleanup failed: {cleanup_error}");
             }
+            return Err(error);
         }
         Ok(vm)
     }

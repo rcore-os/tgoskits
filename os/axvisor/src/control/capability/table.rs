@@ -91,19 +91,13 @@ pub fn router() -> Router {
 /// panel this build cannot answer, which is what the manifest used to get wrong
 /// when it listed `GET /ws/vm-{id}` for a route that never existed.
 pub fn resources() -> Vec<&'static Resource> {
-    let mut all = Vec::new();
-
-    all.push(&VMS_RESOURCE);
-
-    all.push(&FILES_RESOURCE);
-
-    all.push(&HOST_RESOURCE);
-
-    all.push(&CONSOLE_RESOURCE);
-
-    all.push(&SHELL_RESOURCE);
-
-    all
+    vec![
+        &VMS_RESOURCE,
+        &FILES_RESOURCE,
+        &HOST_RESOURCE,
+        &CONSOLE_RESOURCE,
+        &SHELL_RESOURCE,
+    ]
 }
 
 static VMS_RESOURCE: Resource = Resource {
