@@ -8143,7 +8143,6 @@ dependencies = [
  "syscalls",
  "thiserror 2.0.21",
  "tock-registers 0.10.1",
- "uluru",
  "usb-serial",
  "x86",
  "xmas-elf",
@@ -9165,15 +9164,6 @@ name = "uguid"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c8352f8c05e47892e7eaf13b34abd76a7f4aeaf817b716e88789381927f199c"
-
-[[package]]
-name = "uluru"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c8a2469e56e6e5095c82ccd3afb98dad95f7af7929aab6d8ba8d6e0f73657da"
-dependencies = [
- "arrayvec",
-]
 
 [[package]]
 name = "uncased"

@@ -939,7 +939,6 @@ pub fn sys_umount2(
     }
 
     let filesystem_path = target.location().clone();
-    crate::mm::retire_executable_cache(filesystem_path.mountpoint().filesystem_id());
     let plan = target.prepare_unmount()?;
     if plan.targets().any(is_mount_busy) {
         return Err(StarryError::from(Errno::EBUSY));

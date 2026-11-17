@@ -9,10 +9,9 @@ use ax_fs_ng::{
 };
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, paging::MappingFlags};
-use axfs_ng_vfs::{FilesystemId, NodeType, PathHandle};
+use axfs_ng_vfs::{NodeType, PathHandle};
 use kernel_elf_parser::{AuxEntry, AuxType, ELFHeaders, ELFHeadersBuilder, ELFParser};
 use ouroboros::self_referencing;
-use uluru::LRUCache;
 use zerocopy::IntoBytes;
 
 use crate::{
@@ -22,7 +21,7 @@ use crate::{
         aspace::{AddrSpace, AddressSpaceId, MappingOperation, VmEpoch},
     },
     namespace::UserNamespace,
-    sync::{Mutex, RawSpinLock},
+    sync::RawSpinLock,
 };
 
 /// Largest argv/envp stack image accepted by execve.
@@ -269,7 +268,7 @@ fn app_stack_region(args: &[String], envs: &[String], auxv: &[AuxEntry], sp: usi
 fn map_elf<'a>(
     uspace: &mut AddrSpace,
     base: usize,
-    entry: &'a ElfCacheEntry,
+    entry: &'a ElfImage,
 ) -> StarryResult<ELFParser<'a>> {
     let elf_parser =
         ELFParser::new(entry.borrow_elf(), base).map_err(|_| StarryError::InvalidData)?;
@@ -657,7 +656,8 @@ fn map_elf_error(err: &'static str) -> StarryError {
 }
 
 #[self_referencing]
-struct ElfCacheEntry {
+/// Parsed headers owned by one load; data pages remain shared by `CachedFile`.
+struct ElfImage {
     cache: CachedFile,
     data: Vec<u8>,
     #[borrows(data)]
@@ -665,14 +665,16 @@ struct ElfCacheEntry {
     elf: ELFHeaders<'this>,
 }
 
-impl ElfCacheEntry {
+impl ElfImage {
     fn load(loc: PathHandle) -> StarryResult<Result<Self, Vec<u8>>> {
+        // A retained inode can have new bytes after its previous execution.
+        // Read its headers anew rather than treating path identity as content.
         let cache = CachedFile::get_or_create(loc)?;
 
         let mut data = vec![0; 4096];
         let read = cache.read_at(&mut data[..], 0)?;
         data.truncate(read);
-        match ElfCacheEntry::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
+        match ElfImage::try_new_or_recover::<StarryError>(cache.clone(), data, |data| {
             let builder = ELFHeadersBuilder::new(data).map_err(map_elf_error)?;
             let range = builder.ph_range();
             if range.end as usize <= data.len() {
@@ -697,7 +699,7 @@ fn load_elf(
     loc: PathHandle,
     view: &FsView<'_>,
 ) -> StarryResult<LoadResult> {
-    let elf = match cached_elf(loc)? {
+    let elf = match ElfImage::load(loc)? {
         Ok(elf) => elf,
         Err(data) => return Ok(Err(data)),
     };
@@ -744,7 +746,7 @@ fn load_elf(
         let loc = view.resolve(ldso)?;
         check_executable_access(&loc, view.credentials())?;
         _interpreter_access = ax_fs_ng::file::ExecutableFile::acquire(loc.location().clone())?;
-        Some(cached_elf(loc)?.map_err(|_| StarryError::InvalidInput)?)
+        Some(ElfImage::load(loc)?.map_err(|_| StarryError::InvalidInput)?)
     } else {
         None
     };
@@ -796,74 +798,10 @@ fn load_elf(
     Ok(Ok((entry, auxv)))
 }
 
-static ELF_CACHE: Mutex<LRUCache<Arc<ElfCacheEntry>, 32>> = Mutex::new(LRUCache::new());
-
-fn cached_elf(loc: PathHandle) -> StarryResult<Result<Arc<ElfCacheEntry>, Vec<u8>>> {
-    let cached = {
-        let mut cache = ELF_CACHE.lock();
-        cache
-            .find(|entry| entry.borrow_cache().location().ptr_eq(loc.location()))
-            .cloned()
-    };
-    if let Some(entry) = cached {
-        return Ok(Ok(entry));
-    }
-
-    // Filesystem I/O and the last path owner must stay outside the cache lock.
-    let entry = match ElfCacheEntry::load(loc)? {
-        Ok(entry) => Arc::new(entry),
-        Err(data) => return Ok(Err(data)),
-    };
-    let (selected, retired) = {
-        let mut cache = ELF_CACHE.lock();
-        if let Some(existing) = cache.find(|existing| {
-            existing
-                .borrow_cache()
-                .location()
-                .ptr_eq(entry.borrow_cache().location())
-        }) {
-            (existing.clone(), None)
-        } else {
-            (entry.clone(), cache.insert(entry.clone()))
-        }
-    };
-    drop(retired);
-    Ok(Ok(selected))
-}
-
-/// Retires discardable ELF headers before checking this filesystem's live uses.
-/// Active address spaces keep their own executable and mapping path owners.
-/// The caller must hold no namespace, topology, backend or FD-table lock.
-pub(crate) fn retire_executable_cache(filesystem: FilesystemId) {
-    let retired = {
-        let mut cache = ELF_CACHE.lock();
-        let mut retained = LRUCache::new();
-        // Reinsert from LRU to MRU, preserving all unrelated entries' order.
-        for index in (0..cache.len()).rev() {
-            let entry = cache.get(index).unwrap();
-            if entry.borrow_cache().location().mountpoint().filesystem_id() != filesystem {
-                let previous = retained.insert(entry.clone());
-                debug_assert!(previous.is_none());
-            }
-        }
-        core::mem::replace(&mut *cache, retained)
-    };
-    drop(retired);
-}
-
 // Linux's exec path bounds chained binary-format rewrites and returns ELOOP
 // for a too-deep interpreter chain. Give StarryOS's recursive script loader
 // the same bounded failure behavior.
 const MAX_INTERPRETER_RECURSION: usize = 5;
-
-/// Clear the ELF cache.
-///
-/// Useful for removing noises during memory leak detect.
-#[cfg(feature = "memtrack")]
-pub fn clear_elf_cache() {
-    let retired = core::mem::replace(&mut *ELF_CACHE.lock(), LRUCache::new());
-    drop(retired);
-}
 
 /// Load the user app to the user address space.
 ///
@@ -925,7 +863,7 @@ pub fn load_user_app(
     }
 }
 
-/// Checks each executable and interpreter even when its ELF image is cached.
+/// Checks each executable and interpreter before reading its current image.
 fn check_executable_access(
     loc: &PathHandle,
     credentials: &axfs_ng_vfs::MutationCredentials<'_>,
