@@ -463,6 +463,17 @@ static void test_interpreter_format_recovery(void)
 
     check_exec_rejection(image, false, ELIBBAD);
     check_exec_rejection(image, true, ELIBBAD);
+    interpreter_fd = open(interpreter, O_WRONLY);
+    CHECK(interpreter_fd >= 0, "reopen the rejected interpreter for truncation");
+    if (interpreter_fd < 0) {
+        goto cleanup;
+    }
+    CHECK(ftruncate(interpreter_fd, SELFMAG) == 0,
+          "truncate the interpreter below a complete native ELF header");
+    close(interpreter_fd);
+    interpreter_fd = -1;
+    check_exec_rejection(image, false, EIO);
+    check_exec_rejection(image, true, EIO);
     image_fd = open(image, O_WRONLY);
     CHECK(image_fd >= 0, "failed exec releases the main image's write exclusion");
     if (image_fd >= 0) {
@@ -475,8 +486,11 @@ static void test_interpreter_format_recovery(void)
     if (interpreter_fd < 0) {
         goto cleanup;
     }
-    CHECK(pwrite(interpreter_fd, ELFMAG, SELFMAG, 0) == SELFMAG,
-          "restore the same interpreter inode's original ELF magic");
+    prepared = copy_file_into(interpreter_fd, original);
+    CHECK(prepared == 0, "restore the same interpreter inode's complete contents");
+    if (prepared != 0) {
+        goto cleanup;
+    }
     close(interpreter_fd);
     interpreter_fd = -1;
     check_execveat_ran(execveat_success_status(AT_FDCWD, image, 0),
